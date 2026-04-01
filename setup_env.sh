@@ -24,11 +24,22 @@ echo "[3/5] requirements.txt 설치 중..."
 $UV pip install --python "$SCRIPT_DIR/.venv/bin/python" \
     -r "$SCRIPT_DIR/requirements.txt"
 
-# ── 4. hf-egl-probe (CMake 호환성 플래그 필요) ───────────────────────
+# ── 4. hf-egl-probe (CMakeLists.txt 패치 후 설치) ────────────────────
 echo "[4/5] hf-egl-probe 설치 중 (cmake 호환성 패치)..."
-CMAKE_ARGS="-DCMAKE_POLICY_VERSION_MINIMUM=3.5" \
-    $UV pip install --python "$SCRIPT_DIR/.venv/bin/python" \
-    "hf-egl-probe==1.0.2"
+TMP_EGL=$(mktemp -d)
+# sdist 다운로드
+$UV pip download --python "$SCRIPT_DIR/.venv/bin/python" \
+    "hf-egl-probe==1.0.2" --no-deps -d "$TMP_EGL"
+# 압축 해제
+EGL_SDIST=$(ls "$TMP_EGL"/*.tar.gz 2>/dev/null | head -1)
+tar xzf "$EGL_SDIST" -C "$TMP_EGL"
+EGL_SRC=$(ls -d "$TMP_EGL"/egl_probe*/ 2>/dev/null | head -1)
+# CMakeLists.txt 패치: cmake_minimum_required 버전을 3.5로 올림
+sed -i 's/cmake_minimum_required(VERSION [0-9.]*/cmake_minimum_required(VERSION 3.5/' "$EGL_SRC/CMakeLists.txt"
+# 패치된 소스에서 설치
+$UV pip install --python "$SCRIPT_DIR/.venv/bin/python" \
+    --no-build-isolation "$EGL_SRC"
+rm -rf "$TMP_EGL"
 
 # ── 5. lerobot editable 설치 ────────────────────────────────────────
 echo "[5/5] lerobot editable 설치 중..."
