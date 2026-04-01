@@ -1,0 +1,41 @@
+# Diffusion Policy pretraining on LIBERO-90 (raw teleop actions)
+# No language conditioning — obs history -> action chunk only
+#
+# Usage:
+#   PYTHONPATH=/data2/dohyeon/SBD/lerobot/src \
+#     /data2/dohyeon/SBD/.venv/bin/lerobot-train \
+#     --config_path /data2/dohyeon/SBD/lerobot/examples/libero/configs/train_dp_libero90_rawteleop.yaml
+
+dataset:
+  repo_id: dohyeon/libero_90
+  root: /data2/dohyeon/SBD/libero_dataset/libero_90
+
+policy:
+  type: diffusion
+  device: cuda
+  push_to_hub: false
+
+  # Temporal settings
+  n_obs_steps: 5      # 5 frames @ 20fps = 250ms history
+  horizon: 8          # UNet prediction length (must be divisible by 2^len(down_dims)=8)
+  n_action_steps: 4   # action chunk length actually executed
+
+  # UNet architecture
+  down_dims: [512, 1024, 2048]
+
+# Training
+batch_size: 256
+steps: 200000
+num_workers: 4
+seed: 42
+
+# Logging & checkpointing
+log_freq: 200
+save_freq: 20000
+eval_freq: 0
+
+output_dir: /data2/dohyeon/SBD/outputs/dp_libero90_rawteleop_pretrain
+
+wandb:
+  enable: true
+  project: lerobot_libero
