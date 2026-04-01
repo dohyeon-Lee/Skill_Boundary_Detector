@@ -35,9 +35,10 @@ urllib.request.urlretrieve(sdist['url'], sys.argv[1])
 print(f"downloaded: {sdist['url']}")
 PYEOF
 tar xzf "$TMP_EGL/egl.tar.gz" -C "$TMP_EGL"
-EGL_SRC=$(find "$TMP_EGL" -maxdepth 1 -mindepth 1 -type d | head -1)
+EGL_SRC=$(find "$TMP_EGL" -name "setup.py" | head -1 | xargs dirname)
+CMAKE_FILE=$(find "$TMP_EGL" -name "CMakeLists.txt" | head -1)
 # CMakeLists.txt: cmake_minimum_required 버전 3.5로 올림
-sed -i 's/cmake_minimum_required(VERSION [0-9.]*)/cmake_minimum_required(VERSION 3.5)/' "$EGL_SRC/CMakeLists.txt"
+sed -i 's/cmake_minimum_required(VERSION [0-9.]*)/cmake_minimum_required(VERSION 3.5)/' "$CMAKE_FILE"
 # setup.py: cmake 명령어에 정책 플래그 추가
 sed -i 's/cmake \.\./cmake -DCMAKE_POLICY_VERSION_MINIMUM=3.5 ../' "$EGL_SRC/setup.py"
 $UV pip install --python "$PYTHON" --no-build-isolation "$EGL_SRC"
