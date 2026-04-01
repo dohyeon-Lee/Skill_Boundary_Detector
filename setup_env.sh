@@ -15,8 +15,20 @@ else
     echo "[1/5] uv 확인: $($UV --version)"
 fi
 
+# cmake 필수 확인
+if ! command -v cmake &>/dev/null; then
+    echo "ERROR: cmake가 설치되어 있지 않습니다. 먼저 cmake를 설치하세요."
+    echo "  예) sudo apt install cmake  또는  module load cmake"
+    exit 1
+fi
+echo "      cmake 확인: $(cmake --version | head -1)"
+
 # ── 2. venv 생성 ────────────────────────────────────────────────────
 echo "[2/5] .venv 생성 중 (python 3.12)..."
+if [ -d "$SCRIPT_DIR/.venv" ]; then
+    echo "      기존 .venv 삭제 후 재생성..."
+    rm -rf "$SCRIPT_DIR/.venv"
+fi
 $UV venv "$SCRIPT_DIR/.venv" --python 3.12
 
 PYTHON="$SCRIPT_DIR/.venv/bin/python"
@@ -25,6 +37,8 @@ PYTHON="$SCRIPT_DIR/.venv/bin/python"
 # robomimic이 egl-probe를 의존성으로 당겨오기 전에 미리 설치해야 함
 echo "[3/5] hf-egl-probe 패치 후 설치 중..."
 TMP_EGL=$(mktemp -d)
+trap "rm -rf '$TMP_EGL'" EXIT
+
 # PyPI JSON API로 sdist URL 조회 후 다운로드
 $PYTHON - "$TMP_EGL/egl.tar.gz" <<'PYEOF'
 import urllib.request, json, sys
@@ -32,16 +46,25 @@ resp = urllib.request.urlopen('https://pypi.org/pypi/hf-egl-probe/1.0.2/json')
 data = json.loads(resp.read())
 sdist = next(r for r in data['urls'] if r['packagetype'] == 'sdist')
 urllib.request.urlretrieve(sdist['url'], sys.argv[1])
-print(f"downloaded: {sdist['url']}")
+print(f"      downloaded: {sdist['url']}")
 PYEOF
+
 tar xzf "$TMP_EGL/egl.tar.gz" -C "$TMP_EGL"
-EGL_SRC=$(find "$TMP_EGL" -name "setup.py" | head -1 | xargs dirname)
+
+# setup.py / CMakeLists.txt 위치를 find로 정확히 탐색
+EGL_SETUP=$(find "$TMP_EGL" -name "setup.py" | head -1)
+EGL_SRC="$(dirname "$EGL_SETUP")"
 CMAKE_FILE=$(find "$TMP_EGL" -name "CMakeLists.txt" | head -1)
+
 # CMakeLists.txt: cmake_minimum_required 버전 3.5로 올림
 sed -i 's/cmake_minimum_required(VERSION [0-9.]*)/cmake_minimum_required(VERSION 3.5)/' "$CMAKE_FILE"
 # setup.py: cmake 명령어에 정책 플래그 추가
 sed -i 's/cmake \.\./cmake -DCMAKE_POLICY_VERSION_MINIMUM=3.5 ../' "$EGL_SRC/setup.py"
+
+$UV pip install --python "$PYTHON" setuptools wheel
 $UV pip install --python "$PYTHON" --no-build-isolation "$EGL_SRC"
+
+trap - EXIT
 rm -rf "$TMP_EGL"
 
 # ── 4. 나머지 패키지 설치 ────────────────────────────────────────────
