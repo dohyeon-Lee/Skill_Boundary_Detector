@@ -20,19 +20,23 @@ echo "[2/4] .venv 생성 중 (python 3.12)..."
 $UV venv "$SCRIPT_DIR/.venv" --python 3.12
 
 # ── 3. 패키지 설치 ──────────────────────────────────────────────────
-echo "[3/4] requirements.txt 설치 중..."
-# hf-egl-probe: EGL headless GPU rendering용 C 확장 (PyPI 버전)
-# /tmp/egl_probe 는 동일 패키지의 로컬 빌드본 - hf-egl-probe로 대체됨
+echo "[3/5] requirements.txt 설치 중..."
 $UV pip install --python "$SCRIPT_DIR/.venv/bin/python" \
     -r "$SCRIPT_DIR/requirements.txt"
 
-# ── 4. lerobot editable 설치 ────────────────────────────────────────
-echo "[4/4] lerobot editable 설치 중..."
+# ── 4. hf-egl-probe (CMake 호환성 플래그 필요) ───────────────────────
+echo "[4/5] hf-egl-probe 설치 중 (cmake 호환성 패치)..."
+CMAKE_ARGS="-DCMAKE_POLICY_VERSION_MINIMUM=3.5" \
+    $UV pip install --python "$SCRIPT_DIR/.venv/bin/python" \
+    "hf-egl-probe==1.0.2"
+
+# ── 5. lerobot editable 설치 ────────────────────────────────────────
+echo "[5/5] lerobot editable 설치 중..."
 $UV pip install --python "$SCRIPT_DIR/.venv/bin/python" \
     -e "$SCRIPT_DIR/lerobot"
 
 echo ""
-echo "완료! 아래 명령어로 환경 활성화:"
+echo "완료 (5/5)! 아래 명령어로 환경 활성화:"
 echo "  source $SCRIPT_DIR/.venv/bin/activate"
 echo ""
 echo "또는 PYTHONPATH 없이 직접 실행:"
