@@ -5,7 +5,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 UV="${HOME}/.local/bin/uv"
 
-# ── 1. uv 설치 확인 ────────────────────────────────────────────────
+# ── 1. uv / cmake 확인 ─────────────────────────────────────────────
 if ! command -v uv &>/dev/null && [ ! -f "$UV" ]; then
     echo "[1/5] uv 설치 중..."
     curl -Ls https://astral.sh/uv/install.sh | sh
@@ -15,31 +15,30 @@ else
     echo "[1/5] uv 확인: $($UV --version)"
 fi
 
-# cmake 필수 확인
 if ! command -v cmake &>/dev/null; then
-    echo "ERROR: cmake가 설치되어 있지 않습니다. 먼저 cmake를 설치하세요."
-    echo "  예) sudo apt install cmake  또는  module load cmake"
+    echo "ERROR: cmake가 없습니다. 먼저 설치하세요 (sudo apt install cmake)"
     exit 1
 fi
 echo "      cmake 확인: $(cmake --version | head -1)"
 
 # ── 2. venv 생성 ────────────────────────────────────────────────────
 echo "[2/5] .venv 생성 중 (python 3.12)..."
-if [ -d "$SCRIPT_DIR/.venv" ]; then
-    echo "      기존 .venv 삭제 후 재생성..."
-    rm -rf "$SCRIPT_DIR/.venv"
-fi
+[ -d "$SCRIPT_DIR/.venv" ] && rm -rf "$SCRIPT_DIR/.venv"
 $UV venv "$SCRIPT_DIR/.venv" --python 3.12
-
 PYTHON="$SCRIPT_DIR/.venv/bin/python"
 
-# ── 3. hf-egl-probe 먼저 설치 (CMakeLists.txt + setup.py 패치) ───────
-# robomimic이 egl-probe를 의존성으로 당겨오기 전에 미리 설치해야 함
-echo "[3/5] hf-egl-probe 패치 후 설치 중..."
-TMP_EGL=$(mktemp -d)
-trap "rm -rf '$TMP_EGL'" EXIT
+# ── 3. hf-egl-probe: 패치 → wheel 빌드 → 로컬 wheel로 설치 ──────────
+# robomimic이 requirements.txt 설치 시 egl-probe를 재다운로드하지 않도록
+# 미리 패치된 wheel을 빌드해두고 --find-links로 그걸 쓰게 함
+echo "[3/5] hf-egl-probe wheel 빌드 중 (cmake 패치)..."
 
-# PyPI JSON API로 sdist URL 조회 후 다운로드
+TMP_EGL=$(mktemp -d)
+WHEELS_DIR=$(mktemp -d)
+# 스크립트 종료 시 임시 디렉토리 정리
+cleanup() { rm -rf "$TMP_EGL" "$WHEELS_DIR"; }
+trap cleanup EXIT
+
+# PyPI에서 sdist 다운로드
 $PYTHON - "$TMP_EGL/egl.tar.gz" <<'PYEOF'
 import urllib.request, json, sys
 resp = urllib.request.urlopen('https://pypi.org/pypi/hf-egl-probe/1.0.2/json')
@@ -51,33 +50,39 @@ PYEOF
 
 tar xzf "$TMP_EGL/egl.tar.gz" -C "$TMP_EGL"
 
-# setup.py / CMakeLists.txt 위치를 find로 정확히 탐색
 EGL_SETUP=$(find "$TMP_EGL" -name "setup.py" | head -1)
 EGL_SRC="$(dirname "$EGL_SETUP")"
 CMAKE_FILE=$(find "$TMP_EGL" -name "CMakeLists.txt" | head -1)
 
-# CMakeLists.txt: cmake_minimum_required 버전 3.5로 올림
+# CMakeLists.txt 패치
 sed -i 's/cmake_minimum_required(VERSION [0-9.]*)/cmake_minimum_required(VERSION 3.5)/' "$CMAKE_FILE"
-# setup.py: cmake 명령어에 정책 플래그 추가
+# setup.py 패치: cmake 명령에 정책 플래그 추가
 sed -i 's/cmake \.\./cmake -DCMAKE_POLICY_VERSION_MINIMUM=3.5 ../' "$EGL_SRC/setup.py"
 
+# 빌드에 필요한 패키지 설치 후 wheel 빌드
 $UV pip install --python "$PYTHON" setuptools wheel
-$UV pip install --python "$PYTHON" --no-build-isolation "$EGL_SRC"
+cd "$EGL_SRC"
+$PYTHON setup.py bdist_wheel --dist-dir "$WHEELS_DIR" 2>/dev/null
+cd "$SCRIPT_DIR"
+
+# 빌드된 wheel 설치
+WHEEL_FILE=$(ls "$WHEELS_DIR"/*.whl | head -1)
+echo "      built wheel: $(basename "$WHEEL_FILE")"
+$UV pip install --python "$PYTHON" "$WHEEL_FILE"
+
+# ── 4. 나머지 패키지 설치 (--find-links로 로컬 wheel 우선 사용) ───────
+echo "[4/5] requirements.txt 설치 중..."
+$UV pip install --python "$PYTHON" \
+    --find-links "$WHEELS_DIR" \
+    -r "$SCRIPT_DIR/requirements.txt"
 
 trap - EXIT
-rm -rf "$TMP_EGL"
-
-# ── 4. 나머지 패키지 설치 ────────────────────────────────────────────
-echo "[4/5] requirements.txt 설치 중..."
-$UV pip install --python "$PYTHON" -r "$SCRIPT_DIR/requirements.txt"
+cleanup
 
 # ── 5. lerobot editable 설치 ────────────────────────────────────────
 echo "[5/5] lerobot editable 설치 중..."
 $UV pip install --python "$PYTHON" -e "$SCRIPT_DIR/lerobot"
 
 echo ""
-echo "완료! 아래 명령어로 환경 활성화:"
+echo "완료! 환경 활성화:"
 echo "  source $SCRIPT_DIR/.venv/bin/activate"
-echo ""
-echo "또는 직접 실행:"
-echo "  $PYTHON examples/libero/replay_demo.py ..."
