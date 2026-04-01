@@ -139,7 +139,7 @@ regex==2026.3.32
 requests==2.33.1
 rerun-sdk==0.26.2
 rich==14.3.3
-robomimic==0.2.0
+# robomimic: setup_env.sh에서 --no-deps로 별도 설치 (egl-probe 재빌드 방지)
 robosuite==1.4.0
 rpds-py==0.30.0
 safetensors==0.7.0

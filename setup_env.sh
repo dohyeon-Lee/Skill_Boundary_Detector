@@ -39,13 +39,23 @@ cleanup() { rm -rf "$TMP_EGL" "$WHEELS_DIR"; }
 trap cleanup EXIT
 
 # PyPI에서 sdist 다운로드
+# robomimic은 'egl-probe'에 의존하므로 egl-probe sdist를 받아야 함
+# (hf-egl-probe는 다른 패키지명이라 uv가 별개로 취급)
 $PYTHON - "$TMP_EGL/egl.tar.gz" <<'PYEOF'
 import urllib.request, json, sys
-resp = urllib.request.urlopen('https://pypi.org/pypi/hf-egl-probe/1.0.2/json')
-data = json.loads(resp.read())
-sdist = next(r for r in data['urls'] if r['packagetype'] == 'sdist')
-urllib.request.urlretrieve(sdist['url'], sys.argv[1])
-print(f"      downloaded: {sdist['url']}")
+for pkg in ['egl-probe', 'hf-egl-probe']:
+    try:
+        resp = urllib.request.urlopen(f'https://pypi.org/pypi/{pkg}/1.0.2/json')
+        data = json.loads(resp.read())
+        sdist = next((r for r in data['urls'] if r['packagetype'] == 'sdist'), None)
+        if sdist:
+            urllib.request.urlretrieve(sdist['url'], sys.argv[1])
+            print(f"      downloaded ({pkg}): {sdist['url']}")
+            break
+    except Exception:
+        continue
+else:
+    raise RuntimeError("egl-probe sdist를 찾을 수 없습니다")
 PYEOF
 
 tar xzf "$TMP_EGL/egl.tar.gz" -C "$TMP_EGL"
@@ -70,11 +80,13 @@ WHEEL_FILE=$(ls "$WHEELS_DIR"/*.whl | head -1)
 echo "      built wheel: $(basename "$WHEEL_FILE")"
 $UV pip install --python "$PYTHON" "$WHEEL_FILE"
 
-# ── 4. 나머지 패키지 설치 (--find-links로 로컬 wheel 우선 사용) ───────
-echo "[4/5] requirements.txt 설치 중..."
+# ── 4. 나머지 패키지 설치 ────────────────────────────────────────────
+echo "[4/5] requirements.txt + robomimic 설치 중..."
 $UV pip install --python "$PYTHON" \
     --find-links "$WHEELS_DIR" \
     -r "$SCRIPT_DIR/requirements.txt"
+# robomimic은 --no-deps로 설치 (egl-probe 재빌드 방지)
+$UV pip install --python "$PYTHON" --no-deps robomimic==0.2.0
 
 trap - EXIT
 cleanup
