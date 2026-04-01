@@ -25,9 +25,16 @@ PYTHON="$SCRIPT_DIR/.venv/bin/python"
 # robomimic이 egl-probe를 의존성으로 당겨오기 전에 미리 설치해야 함
 echo "[3/5] hf-egl-probe 패치 후 설치 중..."
 TMP_EGL=$(mktemp -d)
-$UV pip download --python "$PYTHON" "hf-egl-probe==1.0.2" --no-deps -d "$TMP_EGL"
-EGL_SDIST=$(ls "$TMP_EGL"/*.tar.gz 2>/dev/null | head -1)
-tar xzf "$EGL_SDIST" -C "$TMP_EGL"
+# PyPI JSON API로 sdist URL 조회 후 다운로드
+$PYTHON - "$TMP_EGL/egl.tar.gz" <<'PYEOF'
+import urllib.request, json, sys
+resp = urllib.request.urlopen('https://pypi.org/pypi/hf-egl-probe/1.0.2/json')
+data = json.loads(resp.read())
+sdist = next(r for r in data['urls'] if r['packagetype'] == 'sdist')
+urllib.request.urlretrieve(sdist['url'], sys.argv[1])
+print(f"downloaded: {sdist['url']}")
+PYEOF
+tar xzf "$TMP_EGL/egl.tar.gz" -C "$TMP_EGL"
 EGL_SRC=$(find "$TMP_EGL" -maxdepth 1 -mindepth 1 -type d | head -1)
 # CMakeLists.txt: cmake_minimum_required 버전 3.5로 올림
 sed -i 's/cmake_minimum_required(VERSION [0-9.]*)/cmake_minimum_required(VERSION 3.5)/' "$EGL_SRC/CMakeLists.txt"
