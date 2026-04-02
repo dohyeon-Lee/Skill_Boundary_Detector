@@ -25,16 +25,22 @@ python examples/libero/replay_demo.py \
 
 
 python examples/libero/replay_demo.py \
-  --dataset_dir /data2/dohyeon/SBD/libero_dataset/libero_10 \
-  --task_id 4 --n_episodes 1 \
-  --output_dir /data2/dohyeon/SBD/outputs/replay \
+  --dataset_dir /scratch/mdorazi/Skill_Boundary_Detector/libero_dataset/libero_10 \
+  --n_episodes 20 \
+  --output_dir /scratch/mdorazi/Skill_Boundary_Detector/outputs/replay \
   --wandb_project SBD_replay \
-  --policy_path /data2/dohyeon/SBD/outputs/dp_libero90_yonsei_pretrain/checkpoints/060000/pretrained_model \
+  --policy_path /scratch/mdorazi/Skill_Boundary_Detector/outputs/dp_libero90_yonsei_pretrain/checkpoints/080000/pretrained_model \
   --mse_window 4 \
-  --mse_smooth_window 3 \
-  --replan_interval 4  
-  
+  --savgol_polyorder 4 \
+  --mse_smooth_window 5 \
+  --replan_interval 5 \
+  --mse_smooth_method savgol \
+  --peak_nms \
+  --task_id 0 
+
   --------------
+  savgol
+  --savgol_polyorder 4
   --seed None
 """
 
@@ -72,6 +78,12 @@ class Args:
     """MSE caculation window size (chunk size - mse_window)"""
     mse_smooth_window: int = 1
     """Centered moving average window for MSE smoothing. 1 = no smoothing."""
+    mse_smooth_method: str = "ma"
+    """Smoothing method: 'ma' (moving average), 'savgol' (Savitzky-Golay), or 'both'."""
+    savgol_polyorder: int = 3
+    """Polynomial order for Savitzky-Golay filter."""
+    peak_nms: bool = True
+    """If True, suppress smaller SG peaks within replan_interval*2 distance."""
 
 def extract_clip(src_video: Path, dst_video: Path, start_sec: float, end_sec: float, fps: int) -> None:
     reader = imageio.get_reader(str(src_video))
@@ -149,16 +161,20 @@ def run_policy_inference(
     import torch
     from lerobot.utils.constants import ACTION
 
-    T = len(ep_df)
     n_action_steps = policy.config.n_action_steps
-    states = np.stack(ep_df["observation.state"].values)  # (T, state_dim)
+    states = np.stack(ep_df["observation.state"].values)
 
     cam_frames: dict[str, np.ndarray] = {}
     for cam_key, clip_path in zip(camera_keys, cam_clips):
         reader = imageio.get_reader(str(clip_path))
         frames = [f for f in reader]
         reader.close()
-        cam_frames[cam_key] = np.stack(frames[:T])  # (T, H, W, C) uint8
+        cam_frames[cam_key] = np.stack(frames)  # (N, H, W, C) uint8
+
+    T = min(len(ep_df), *(len(v) for v in cam_frames.values()))  # clamp to shortest
+    states = states[:T]
+    for cam_key in cam_frames:
+        cam_frames[cam_key] = cam_frames[cam_key][:T]
 
     eff_interval = replan_interval if replan_interval > 0 else n_action_steps
     capture_chunks = replan_interval > 0
@@ -235,7 +251,7 @@ def plot_action_compare_multichunk(
         for ci, t in enumerate(replan_ts):
             end = min(t + n_steps, T_gt)
             ax.plot(np.arange(t, end), pred_chunks[ci, : end - t, i],
-                    color="tab:orange", alpha=0.15, linewidth=0.6)
+                    color="tab:orange", alpha=0.4, linewidth=1.0)
         ax.set_ylabel(f"action {label}")
         ax.grid(True, alpha=0.3)
     axes[0].legend(["GT", "Pred chunks"], loc="upper right", fontsize=8)
@@ -266,7 +282,7 @@ def plot_cumulative_multichunk(
             length = end - t
             offset = gt_cum[t - 1, i] if t > 0 else 0.0
             pred_cum = offset + np.cumsum(pred_chunks[ci, :length, i])
-            ax.plot(np.arange(t, end), pred_cum, color="tab:orange", alpha=0.15, linewidth=0.6)
+            ax.plot(np.arange(t, end), pred_cum, color="tab:orange", alpha=0.4, linewidth=1.0)
         ax.set_ylabel(f"Σ Δ{label}")
         ax.grid(True, alpha=0.3)
     axes[0].legend(["GT (cumsum)", "Pred chunks"], loc="upper right", fontsize=8)
@@ -284,6 +300,30 @@ def _centered_moving_avg(vals: list, window: int) -> np.ndarray:
         return np.array(vals, dtype=float)
     kernel = np.ones(window) / window
     return np.convolve(vals, kernel, mode="same")
+
+
+def _savgol_smooth(vals: list, window: int, polyorder: int = 3) -> np.ndarray:
+    """Savitzky-Golay filter: fits local polynomial — preserves peaks better than MA."""
+    from scipy.signal import savgol_filter
+    if window <= 1:
+        return np.array(vals, dtype=float)
+    win = window if window % 2 == 1 else window + 1  # must be odd
+    win = min(win, len(vals))
+    if win % 2 == 0:
+        win -= 1
+    if win < polyorder + 2:
+        return np.array(vals, dtype=float)
+    return savgol_filter(vals, window_length=win, polyorder=polyorder)
+
+
+def _compute_smoothed(vals: list, window: int, method: str, polyorder: int = 3) -> dict[str, np.ndarray]:
+    """Return dict of {method_name: smoothed_array} based on method ('ma', 'savgol', 'both')."""
+    result = {}
+    if method in ("ma", "both"):
+        result["ma"] = _centered_moving_avg(vals, window)
+    if method in ("savgol", "both"):
+        result["savgol"] = _savgol_smooth(vals, window, polyorder)
+    return result
 
 
 def _compute_mse_data(
@@ -318,10 +358,42 @@ def _compute_mse_data(
     return replan_ts, mse_vals, bar_width
 
 
+def _find_peaks_above_mean(vals: np.ndarray, ts: list, min_distance: int = 0) -> tuple[list, list]:
+    """Return (peak_ts, peak_vals) for local maxima above mean.
+
+    If min_distance > 0, suppress the smaller peak when two peaks are closer than min_distance.
+    """
+    from scipy.signal import find_peaks
+    mean_val = float(np.mean(vals))
+    peak_idxs, _ = find_peaks(vals)
+    above = [i for i in peak_idxs if vals[i] > mean_val]
+
+    if min_distance > 0 and len(above) > 1:
+        # Greedy NMS: pick highest peak first, suppress neighbors within min_distance
+        above_sorted = sorted(above, key=lambda i: vals[i], reverse=True)
+        kept = []
+        suppressed = set()
+        for i in above_sorted:
+            if i in suppressed:
+                continue
+            kept.append(i)
+            for j in above_sorted:
+                if j != i and abs(ts[j] - ts[i]) <= min_distance:
+                    suppressed.add(j)
+        above = kept
+
+    return [ts[i] for i in above], [float(vals[i]) for i in above]
+
+
+_SMOOTH_COLORS = {"ma": "tab:orange", "savgol": "tab:green"}
+_SMOOTH_LABELS = {"ma": "Moving Avg", "savgol": "Savitzky-Golay"}
+_SMOOTH_MEAN_LINESTYLES = {"ma": (0, (5, 3)), "savgol": (0, (2, 2))}  # MA: long dash, SG: short dash
+
+
 def render_combined_frame(
     video_frame: np.ndarray,
     replan_ts: list, mse_vals: list, bar_width: float, T: int, t: int,
-    title: str = "", smoothed_vals: np.ndarray | None = None,
+    title: str = "", smoothed_dict: dict | None = None, replan_interval: int = 1, peak_nms: bool = True,
 ) -> np.ndarray:
     """Render video frame (top) + MSE bar chart with vertical line (bottom) as one image."""
     fig = plt.figure(figsize=(10, 7))
@@ -336,8 +408,21 @@ def render_combined_frame(
     # Bottom: MSE bar chart with vertical line
     ax_mse = fig.add_subplot(gs[1])
     ax_mse.bar(replan_ts, mse_vals, width=bar_width, align="center", alpha=0.4, color="tab:purple")
-    if smoothed_vals is not None:
-        ax_mse.plot(replan_ts, smoothed_vals, color="tab:purple", linewidth=2)
+    if smoothed_dict:
+        for method, vals in smoothed_dict.items():
+            color = _SMOOTH_COLORS.get(method, "gray")
+            mean_val = float(np.mean(vals))
+            ax_mse.plot(replan_ts, vals, color=color,
+                        linewidth=2, label=_SMOOTH_LABELS.get(method, method))
+            ax_mse.axhline(mean_val, color=color, linewidth=1.5,
+                           linestyle=_SMOOTH_MEAN_LINESTYLES.get(method, "--"),
+                           label=f"{_SMOOTH_LABELS.get(method, method)} mean={mean_val:.4f}")
+            if method == "savgol":
+                nms_dist = replan_interval * 2 if peak_nms else 0
+                pk_ts, pk_vals = _find_peaks_above_mean(vals, replan_ts, min_distance=nms_dist)
+                if pk_ts:
+                    ax_mse.scatter(pk_ts, pk_vals, color="red", zorder=5, s=40, label="SG peaks > mean")
+        ax_mse.legend(fontsize=7, loc="upper right")
     ax_mse.axvline(x=t, color="red", linewidth=2)
     ax_mse.set_xticks(replan_ts)
     ax_mse.set_xticklabels([str(x) for x in replan_ts], rotation=45, ha="right", fontsize=7)
@@ -362,16 +447,33 @@ def plot_replanning_mse(
     mse_window: int = 0,
     mse_smooth_window: int = 1,
     replan_interval: int = 1,
-) -> tuple[list, list, np.ndarray, float]:
-    """Plot MSE graph and return (replan_ts, mse_vals, smoothed_vals, bar_width) for later use."""
+    smooth_method: str = "ma",
+    savgol_polyorder: int = 3,
+    peak_nms: bool = True,
+) -> tuple[list, list, dict, float]:
+    """Plot MSE graph and return (replan_ts, mse_vals, smoothed_dict, bar_width) for later use."""
     replan_ts, mse_vals, bar_width = _compute_mse_data(
         gt_actions, pred_actions, n_action_steps, pred_chunks, mse_window, replan_interval
     )
-    smoothed = _centered_moving_avg(mse_vals, mse_smooth_window)
+    smoothed_dict = _compute_smoothed(mse_vals, mse_smooth_window, smooth_method, savgol_polyorder) if mse_smooth_window > 1 else {}
+    sg_peak_ts: list = []
     fig, ax = plt.subplots(figsize=(10, 4))
     ax.bar(replan_ts, mse_vals, width=bar_width, align="center", alpha=0.4, color="tab:purple", label="raw")
-    if mse_smooth_window > 1:
-        ax.plot(replan_ts, smoothed, color="tab:purple", linewidth=2, label=f"smooth(w={mse_smooth_window})")
+    for method, vals in smoothed_dict.items():
+        color = _SMOOTH_COLORS.get(method, "gray")
+        mean_val = float(np.mean(vals))
+        ax.plot(replan_ts, vals, color=color,
+                linewidth=2, label=f"{_SMOOTH_LABELS.get(method, method)} (w={mse_smooth_window})")
+        ax.axhline(mean_val, color=color, linewidth=1.5,
+                   linestyle=_SMOOTH_MEAN_LINESTYLES.get(method, "--"),
+                   label=f"{_SMOOTH_LABELS.get(method, method)} mean={mean_val:.4f}")
+        if method == "savgol":
+            nms_dist = replan_interval * 2 if peak_nms else 0
+            pk_ts, pk_vals = _find_peaks_above_mean(vals, replan_ts, min_distance=nms_dist)
+            sg_peak_ts = pk_ts
+            if pk_ts:
+                ax.scatter(pk_ts, pk_vals, color="red", zorder=5, s=40, label="SG peaks > mean")
+    if smoothed_dict:
         ax.legend(fontsize=8)
     ax.set_xticks(replan_ts)
     ax.set_xticklabels([str(t) for t in replan_ts], rotation=45, ha="right", fontsize=7)
@@ -383,7 +485,25 @@ def plot_replanning_mse(
     fig.tight_layout()
     fig.savefig(str(save_path), dpi=120)
     plt.close(fig)
-    return replan_ts, mse_vals, smoothed, bar_width
+    return replan_ts, mse_vals, smoothed_dict, bar_width, sg_peak_ts
+
+
+def cut_skill_videos(
+    src_video: Path, boundaries: list[int], output_dir: Path, ep_id: int, fps: int
+) -> list[Path]:
+    """Cut src_video at frame boundaries and return list of skill video paths."""
+    reader = imageio.get_reader(str(src_video))
+    frames = [f for f in reader]
+    reader.close()
+    skill_paths = []
+    for i, (start, end) in enumerate(zip(boundaries[:-1], boundaries[1:])):
+        skill_path = output_dir / f"ep{ep_id:05d}_skill{i + 1}.mp4"
+        writer = imageio.get_writer(str(skill_path), fps=fps, codec="libx264", pixelformat="yuv420p", macro_block_size=1)
+        for frame in frames[start:min(end, len(frames))]:
+            writer.append_data(frame)
+        writer.close()
+        skill_paths.append(skill_path)
+    return skill_paths
 
 
 def plot_cumulative_trajectory(
@@ -570,7 +690,7 @@ def main(args: Args) -> None:
 
             mse_path = output_dir / f"ep{ep_id:05d}_replanning_mse.png"
             eff_replan = args.replan_interval if args.replan_interval > 0 else n_act
-            mse_data = plot_replanning_mse(gt_actions, pred_actions, n_act, mse_path, title=ep_tag, pred_chunks=pred_chunks, mse_window=args.mse_window, mse_smooth_window=args.mse_smooth_window, replan_interval=eff_replan)
+            mse_data = plot_replanning_mse(gt_actions, pred_actions, n_act, mse_path, title=ep_tag, pred_chunks=pred_chunks, mse_window=args.mse_window, mse_smooth_window=args.mse_smooth_window, replan_interval=eff_replan, smooth_method=args.mse_smooth_method, savgol_polyorder=args.savgol_polyorder, peak_nms=args.peak_nms)
             np.save(str(output_dir / f"ep{ep_id:05d}_pred_actions.npy"), pred_actions)
             print(f"    Action compare:   {pred_path.name}")
             print(f"    Action cumsum:    {cum_path.name}")
@@ -585,7 +705,9 @@ def main(args: Args) -> None:
             "pred_path": str(pred_path) if pred_path else None,
             "cum_path": str(cum_path) if pred_path else None,
             "mse_path": str(mse_path) if pred_path else None,
-            "mse_data": (mse_data[0], mse_data[1], mse_data[2].tolist(), mse_data[3]) if pred_path and mse_data else None,
+            "mse_data": (mse_data[0], mse_data[1], {k: v.tolist() for k, v in mse_data[2].items()}, mse_data[3]) if pred_path and mse_data else None,
+            "sg_peak_ts": mse_data[4] if pred_path and mse_data else [],
+            "n_frames": len(ep_df),
             "slider_video": str(combined_path) if combined_path else (str(cam_clips[0]) if cam_clips else None),
         })
 
@@ -599,7 +721,7 @@ def main(args: Args) -> None:
     if args.wandb_project:
         try:
             import wandb
-            wandb.init(project=args.wandb_project, name=f"demo_replay_{args.mse_window}_{args.replan_interval}")
+            wandb.init(project=args.wandb_project, name=f"task_id_{args.task_id}_ep_{args.n_episodes}")
             wandb.define_metric("timestep")
             wandb.define_metric("slider/*", step_metric="timestep")
             for r in results:
@@ -627,21 +749,40 @@ def main(args: Args) -> None:
                 mse_data = r.get("mse_data")
                 sv = r.get("slider_video")
                 if mse_data is not None and sv and Path(sv).exists():
-                    replan_ts, mse_vals, smoothed_vals, bar_width = mse_data
-                    smoothed_vals = np.array(smoothed_vals)
+                    replan_ts, mse_vals, smoothed_dict_raw, bar_width = mse_data
+                    smoothed_dict = {k: np.array(v) for k, v in smoothed_dict_raw.items()}
                     T_ep = max(replan_ts) + 1 if replan_ts else 1
                     print(f"    Uploading step slider frames for {label} ...")
                     reader = imageio.get_reader(str(sv))
                     for t, frame in enumerate(reader):
                         combined_img = render_combined_frame(
                             frame, replan_ts, mse_vals, bar_width, T_ep, t,
-                            title=label, smoothed_vals=smoothed_vals,
+                            title=label, smoothed_dict=smoothed_dict,
+                            replan_interval=args.replan_interval,
+                            peak_nms=args.peak_nms,
                         )
                         wandb.log({
                             "timestep": t,
                             f"slider/{label}": wandb.Image(combined_img),
                         })
                     reader.close()
+
+                # Skill segmentation: cut video at SG peak boundaries
+                sg_peak_ts = r.get("sg_peak_ts") or []
+                n_frames = r.get("n_frames")
+                if sv and Path(sv).exists() and n_frames:
+                    boundaries = sorted(set([0] + [int(p) for p in sg_peak_ts] + [n_frames]))
+                    if len(boundaries) >= 2:
+                        skill_paths = cut_skill_videos(
+                            Path(sv), boundaries, output_dir, r["episode_id"], args.fps
+                        )
+                        skill_log = {}
+                        for i, sp in enumerate(skill_paths):
+                            if sp.exists():
+                                skill_log[f"skills/{label}/skill_{i + 1}"] = wandb.Video(str(sp), fps=args.fps)
+                        if skill_log:
+                            wandb.log(skill_log)
+                            print(f"    Uploaded {len(skill_log)} skill video(s) for {label}")
 
             wandb.finish()
             print("Logged to wandb.")
