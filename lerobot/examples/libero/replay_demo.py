@@ -6,23 +6,6 @@ from the pre-encoded MP4 videos (no simulation required).
 Produces one video per camera per episode, and optionally logs to wandb.
 
 Usage:
-PYTHONPATH=/data2/dohyeon/SBD/lerobot/src \
-/data2/dohyeon/SBD/.venv/bin/python \
-/data2/dohyeon/SBD/lerobot/examples/libero/replay_demo.py \
---dataset_dir /data2/dohyeon/SBD/libero_dataset/libero_90 \
---task_id 2 --n_episodes 1 \
---output_dir /data2/dohyeon/SBD/outputs/replay \
---wandb_project SBD_replay
-
-
-
-python examples/libero/replay_demo.py \
---dataset_dir /data2/dohyeon/SBD/libero_dataset/libero_10 \
---task_id 4 --n_episodes 1 \
---output_dir /data2/dohyeon/SBD/outputs/replay \
---wandb_project SBD_replay
-
-
 
 python examples/libero/replay_demo.py \
   --dataset_dir /scratch/mdorazi/Skill_Boundary_Detector/libero_dataset/libero_10 \
