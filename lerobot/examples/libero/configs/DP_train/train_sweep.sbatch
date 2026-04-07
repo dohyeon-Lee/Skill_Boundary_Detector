@@ -22,7 +22,8 @@ echo "Node: $SLURMD_NODENAME"
 echo "Array Task ID: $SLURM_ARRAY_TASK_ID"
 nvidia-smi
 
-# Parameter combinations: horizon=16, n_action_steps=12/16, n_obs_steps=5/10
+# current: horizon 16 n_action_steps 8 n_obs_steps 5
+# Parameter combinations: horizon=16, n_action_steps=8/16, n_obs_steps=5/10
 N_OBS_STEPS=( 5  5 10 10)
 HORIZON=(    16 16 16 16)
 N_ACTION=(   8 16 8 16)

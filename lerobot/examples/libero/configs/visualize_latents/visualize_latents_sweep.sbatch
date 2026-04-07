@@ -22,10 +22,11 @@ echo "Array Task ID: $SLURM_ARRAY_TASK_ID"
 
 # ── Experiment list (must match train_vae_sweep) ───────────────────────────────
 EXPS=(
-  "vae_lat32_hid128"
-  "vae_lat64_hid128"
-  "vae_lat32_hid256"
-  "vae_lat64_hid256"
+  "vae_lat8_hid128"
+  # "vae_lat32_hid128"
+  # "vae_lat64_hid128"
+  # "vae_lat32_hid256"
+  # "vae_lat64_hid256"
 )
 
 IDX=$SLURM_ARRAY_TASK_ID

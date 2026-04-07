@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=SBD_replay
+#SBATCH --job-name=skill_generate_10
 #SBATCH --partition=suma_a6000,asus_6000ada,asus_pro6000,suma_rtx4090,big_suma_rtx3090,base_suma_rtx3090
 #SBATCH --exclude=node19,node13,node18,node16,node08,node10,node21,node14,node04,node05,node31
 #SBATCH --qos=base_qos
@@ -36,6 +36,6 @@ PYTHONPATH=/scratch/mdorazi/Skill_Boundary_Detector/lerobot/src \
     --output_dir /scratch/mdorazi/Skill_Boundary_Detector/outputs/replay_libero10/task${TASK_ID} \
     --save_skills \
     --skip_viz \
-    --wandb_project SBD_replay
+    --wandb_project SBD_skill_10
 
 echo "DONE task ${TASK_ID}"
