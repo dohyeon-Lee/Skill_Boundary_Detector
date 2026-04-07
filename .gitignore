@@ -3,10 +3,7 @@ libero_dataset/
 libero_10_old/
 
 # ── 학습 출력물 ───────────────────────────────────────────────────
-# 체크포인트 (safetensors, optimizer state 등 수백 MB~수 GB)
-outputs/*/checkpoints/
-# replay 영상/npy 결과물
-outputs/replay/
+outputs/
 
 # ── wandb 로컬 캐시 ───────────────────────────────────────────────
 wandb/

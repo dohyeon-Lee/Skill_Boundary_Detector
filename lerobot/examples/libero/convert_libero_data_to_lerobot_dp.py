@@ -17,11 +17,10 @@ Usage:
     --data_dir /data2/dohyeon/libero_data \
     --dataset libero_90_openvla_processed
 
-  PYTHONPATH=/data2/dohyeon/SBD/lerobot/src \
-    /data2/dohyeon/SBD/.venv/bin/python \
-    /data2/dohyeon/SBD/lerobot/examples/libero/convert_libero_data_to_lerobot_dp.py \
-    --data_dir /data2/dohyeon/libero_data \
-    --dataset libero_10_no_noops
+    
+    python examples/libero/convert_libero_data_to_lerobot_dp.py \
+    --data_dir /scratch/mdorazi/libero_rlds \
+    --dataset libero_goal_no_noops
 """
 
 import shutil

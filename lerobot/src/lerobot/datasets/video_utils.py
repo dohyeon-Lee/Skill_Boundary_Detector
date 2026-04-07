@@ -117,13 +117,14 @@ def resolve_vcodec(vcodec: str) -> str:
 
 
 def get_safe_default_codec():
-    if importlib.util.find_spec("torchcodec"):
-        return "torchcodec"
-    else:
-        logger.warning(
-            "'torchcodec' is not available in your platform, falling back to 'pyav' as a default decoder"
-        )
-        return "pyav"
+    # if importlib.util.find_spec("torchcodec"):
+    #     return "torchcodec"
+    # else:
+    #     logger.warning(
+    #         "'torchcodec' is not available in your platform, falling back to 'pyav' as a default decoder"
+    #     )
+    #     return "pyav"
+    return "pyav"
 
 
 def decode_video_frames(

@@ -16,7 +16,8 @@ python examples/libero/replay_demo.py \
   --output_dir /scratch/mdorazi/Skill_Boundary_Detector/outputs/replay \
   --policy_path /scratch/mdorazi/Skill_Boundary_Detector/outputs/dp_libero90_yonsei_pretrain/checkpoints/080000/pretrained_model \
   --replan_interval 5 --mse_smooth_method savgol --mse_smooth_window 5 \
-  --wandb_project SBD_replay
+  --wandb_project SBD_replay \
+  --skip_viz
 """
 
 import json
@@ -61,6 +62,10 @@ class Args:
     """Polynomial order for Savitzky-Golay filter."""
     peak_nms: bool = True
     """Suppress smaller SG peaks within replan_interval*2 distance from a larger peak."""
+    save_skills: bool = True
+    """Save detected skill segments (actions + states) as .npz files under output_dir/skills/."""
+    skip_viz: bool = False
+    """Skip all video extraction and plot generation. Only run inference + skill saving."""
 
 
 # ── Signal processing ──────────────────────────────────────────────────────────
@@ -307,6 +312,32 @@ def main(args: Args) -> None:
         print(f"Loading policy from {args.policy_path} ...")
         policy_bundle = load_policy(args.policy_path, args.device)
 
+    skills_dir = output_dir / "skills"
+    if args.save_skills:
+        skills_dir.mkdir(parents=True, exist_ok=True)
+
+    # ── wandb progress run ─────────────────────────────────────────────────────
+    progress_run = None
+    if args.wandb_project:
+        import wandb
+        run_name = f"task{args.task_id}_progress" if args.task_id is not None else "replay_progress"
+        progress_run = wandb.init(
+            project=args.wandb_project,
+            name=run_name,
+            config={
+                "task_id": args.task_id,
+                "n_episodes": len(episode_ids),
+                "replan_interval": args.replan_interval,
+                "mse_smooth_method": args.mse_smooth_method,
+                "mse_smooth_window": args.mse_smooth_window,
+            },
+            reinit=True,
+        )
+
+    n_total = len(episode_ids)
+    n_done = 0
+    total_skills = 0
+
     results = []
     for ep_id in episode_ids:
         row = episodes_meta[episodes_meta["episode_index"] == ep_id]
@@ -316,27 +347,54 @@ def main(args: Args) -> None:
         tasks_list = row.iloc[0]["tasks"]
         lang = str(tasks_list[0] if isinstance(tasks_list, (list, np.ndarray)) else tasks_list)
         ep_tag = f"ep{ep_id}: {lang[:80]}"
+
+        # ── Resume: skip already-processed episodes ────────────────────────────
+        if args.save_skills and any(skills_dir.glob(f"ep{ep_id:05d}_skill*.npz")):
+            existing = list(skills_dir.glob(f"ep{ep_id:05d}_skill*.npz"))
+            n_done += 1
+            total_skills += len(existing)
+            print(f"  [skip] Episode {ep_id} already done ({len(existing)} skills)")
+            if progress_run is not None:
+                import wandb
+                progress_run.log({
+                    "progress/episodes_done": n_done,
+                    "progress/episodes_total": n_total,
+                    "progress/episodes_pct": n_done / n_total * 100,
+                    "progress/skills_found": total_skills,
+                    "progress/skills_this_ep": len(existing),
+                })
+            continue
+
         print(f"\n  Episode {ep_id}: '{lang}'")
 
         # ── Extract clips ──────────────────────────────────────────────────────
         cam_clips = []
+        _tmp_clips = []  # clips to delete after inference when skip_viz
         for cam_key in camera_keys:
             src_video = get_video_path(dataset_dir, ep_id, cam_key, episodes_meta).resolve()
             start_sec, end_sec = get_episode_timestamps(dataset_dir, ep_id, episodes_meta, cam_key)
-            clip_path = output_dir / f"ep{ep_id:05d}_{cam_key.replace('.', '_')}.mp4"
+            if args.skip_viz:
+                import tempfile, os
+                tmp = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
+                clip_path = Path(tmp.name)
+                tmp.close()
+                _tmp_clips.append(clip_path)
+            else:
+                clip_path = output_dir / f"ep{ep_id:05d}_{cam_key.replace('.', '_')}.mp4"
             viz.extract_clip(src_video, clip_path, start_sec, end_sec)
             cam_clips.append(clip_path)
-            print(f"    {cam_key}: {clip_path.name}")
 
         combined_path = None
-        if len(cam_clips) == 2:
-            combined_path = output_dir / f"ep{ep_id:05d}_combined.mp4"
-            viz.stack_clips_side_by_side(cam_clips[0], cam_clips[1], combined_path)
-            print(f"    Combined: {combined_path.name}")
+        if not args.skip_viz:
+            if len(cam_clips) == 2:
+                combined_path = output_dir / f"ep{ep_id:05d}_combined.mp4"
+                viz.stack_clips_side_by_side(cam_clips[0], cam_clips[1], combined_path)
 
         ep_df = all_data[all_data["episode_index"] == ep_id].reset_index(drop=True)
-        traj_path = viz.plot_eef_trajectory(ep_df, ep_id, title=ep_tag)
-        print(f"    EEF traj: {traj_path.name}")
+        if not args.skip_viz:
+            traj_path = viz.plot_eef_trajectory(ep_df, ep_id, title=ep_tag)
+        else:
+            traj_path = None
 
         # ── Policy inference ───────────────────────────────────────────────────
         pred_path = cum_path = mse_path = None
@@ -356,12 +414,13 @@ def main(args: Args) -> None:
             )
 
             # ── Action comparison plots ────────────────────────────────────────
-            if args.replan_interval > 0:
-                pred_path = viz.plot_action_compare_multichunk(gt_actions, pred_chunks, ep_id, ep_tag, args.replan_interval)
-                cum_path = viz.plot_cumulative_multichunk(gt_actions, pred_chunks, ep_id, ep_tag, args.replan_interval)
-            else:
-                pred_path = viz.plot_action_comparison(gt_actions, pred_actions, ep_id, ep_tag)
-                cum_path = viz.plot_cumulative_trajectory(gt_actions, pred_actions, ep_id, ep_tag)
+            if not args.skip_viz:
+                if args.replan_interval > 0:
+                    pred_path = viz.plot_action_compare_multichunk(gt_actions, pred_chunks, ep_id, ep_tag, args.replan_interval)
+                    cum_path = viz.plot_cumulative_multichunk(gt_actions, pred_chunks, ep_id, ep_tag, args.replan_interval)
+                else:
+                    pred_path = viz.plot_action_comparison(gt_actions, pred_actions, ep_id, ep_tag)
+                    cum_path = viz.plot_cumulative_trajectory(gt_actions, pred_actions, ep_id, ep_tag)
 
             # ── MSE signal ────────────────────────────────────────────────────
             replan_ts, mse_vals, bar_width = _compute_mse_per_chunk(
@@ -381,20 +440,69 @@ def main(args: Args) -> None:
                 )
 
             # ── Plot MSE ──────────────────────────────────────────────────────
-            mse_path = viz.plot_mse(
-                replan_ts, mse_vals, bar_width, smoothed_dict, sg_peak_ts,
-                ep_id, ep_tag, args.mse_smooth_window,
-            )
+            if not args.skip_viz:
+                mse_path = viz.plot_mse(
+                    replan_ts, mse_vals, bar_width, smoothed_dict, sg_peak_ts,
+                    ep_id, ep_tag, args.mse_smooth_window,
+                )
             mse_data_for_results = (
                 replan_ts, mse_vals,
                 {k: v.tolist() for k, v in smoothed_dict.items()},
                 bar_width,
             )
-            np.save(str(output_dir / f"ep{ep_id:05d}_pred_actions.npy"), pred_actions)
 
-            print(f"    Action compare:   {pred_path.name}")
-            print(f"    Replanning MSE:   {mse_path.name}")
+            # ── Save skill segments ────────────────────────────────────────────
+            if args.save_skills and sg_peak_ts:
+                states_arr = np.stack(ep_df["observation.state"].values[:len(gt_actions)])
+                cuts = sorted(set(sg_peak_ts))
+                breakpoints = [0] + [min(c, len(gt_actions)) for c in cuts] + [len(gt_actions)]
+                breakpoints = sorted(set(breakpoints))
+                skill_files = []
+                for si in range(len(breakpoints) - 1):
+                    s, e = breakpoints[si], breakpoints[si + 1]
+                    if e - s < 2:
+                        continue
+                    fname = skills_dir / f"ep{ep_id:05d}_skill{si:02d}.npz"
+                    np.savez(
+                        str(fname),
+                        actions=gt_actions[s:e].astype(np.float32),
+                        states=states_arr[s:e].astype(np.float32),
+                        episode_id=np.array(ep_id),
+                        skill_index=np.array(si),
+                        frame_start=np.array(s),
+                        frame_end=np.array(e),
+                    )
+                    skill_files.append(str(fname))
+                print(f"    Skill files:      {len(skill_files)} saved to {skills_dir.name}/")
+
             print(f"    Skill boundaries: {sg_peak_ts}")
+            if not args.skip_viz:
+                if pred_path:
+                    print(f"    Action compare:   {pred_path.name}")
+                if mse_path:
+                    print(f"    Replanning MSE:   {mse_path.name}")
+
+        # ── Clean up temp clips (skip_viz mode) ───────────────────────────────
+        for tmp_clip in _tmp_clips:
+            try:
+                tmp_clip.unlink()
+            except Exception:
+                pass
+
+        # ── wandb progress logging ─────────────────────────────────────────────
+        n_done += 1
+        ep_skills = len(sg_peak_ts) + 1 if sg_peak_ts else 0
+        total_skills += ep_skills
+        if progress_run is not None:
+            import wandb
+            progress_run.log({
+                "progress/episodes_done": n_done,
+                "progress/episodes_total": n_total,
+                "progress/episodes_pct": n_done / n_total * 100,
+                "progress/skills_found": total_skills,
+                "progress/skills_this_ep": ep_skills,
+            })
+            print(f"  [{n_done}/{n_total}] ep{ep_id} done — {ep_skills} skills (total: {total_skills})")
 
         results.append({
             "episode_id": ep_id,
@@ -417,8 +525,8 @@ def main(args: Args) -> None:
         json.dump(results, f, indent=2)
     print(f"\nDone. Results saved to {results_path}")
 
-    # Upload to wandb
-    if args.wandb_project:
+    # Upload to wandb (media/plots — skip_viz면 아무것도 없음)
+    if args.wandb_project and not args.skip_viz:
         try:
             run_name = f"task{args.task_id}_ep{args.n_episodes}"
             viz.log_to_wandb(
@@ -428,6 +536,9 @@ def main(args: Args) -> None:
             )
         except Exception as e:
             print(f"wandb logging failed: {e}")
+
+    if progress_run is not None:
+        progress_run.finish()
 
 
 if __name__ == "__main__":
