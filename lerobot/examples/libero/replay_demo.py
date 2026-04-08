@@ -18,6 +18,17 @@ python examples/libero/replay_demo.py \
   --replan_interval 5 --mse_smooth_method savgol --mse_smooth_window 5 \
   --wandb_project SBD_replay \
   --skip_viz
+
+    python examples/libero/replay_demo.py \
+    --dataset_dir /scratch/mdorazi/Skill_Boundary_Detector/libero_dataset/libero_spatial_object \
+    --task_id  \
+    --n_episodes 10 \
+    --policy_path /scratch/mdorazi/Skill_Boundary_Detector/outputs/dp_libero_spatial_object/checkpoints/080000/pretrained_model \
+    --replan_interval 5 \
+    --mse_smooth_method savgol \
+    --mse_smooth_window 5 \
+    --output_dir /scratch/mdorazi/Skill_Boundary_Detector/outputs/replay_libero_spatial_object/task_test \
+    --wandb_project SBD_skill_SO
 """
 
 import json
@@ -66,6 +77,8 @@ class Args:
     """Save detected skill segments (actions + states) as .npz files under output_dir/skills/."""
     skip_viz: bool = False
     """Skip all video extraction and plot generation. Only run inference + skill saving."""
+    mse_outlier_ratio: float = 10.0
+    """If max(mse) > this × median(mse), the episode is dominated by a single outlier and is excluded from saving."""
 
 
 # ── Signal processing ──────────────────────────────────────────────────────────
@@ -320,7 +333,7 @@ def main(args: Args) -> None:
     progress_run = None
     if args.wandb_project:
         import wandb
-        run_name = f"task{args.task_id}_progress" if args.task_id is not None else "replay_progress"
+        run_name = f"task{args.task_id}_progress_vae2" if args.task_id is not None else "replay_progress"
         progress_run = wandb.init(
             project=args.wandb_project,
             name=run_name,
@@ -337,6 +350,8 @@ def main(args: Args) -> None:
     n_total = len(episode_ids)
     n_done = 0
     total_skills = 0
+    n_skipped_outlier = 0
+    n_skipped_few_skills = 0
 
     results = []
     for ep_id in episode_ids:
@@ -452,28 +467,47 @@ def main(args: Args) -> None:
             )
 
             # ── Save skill segments ────────────────────────────────────────────
-            if args.save_skills and sg_peak_ts:
+            # Outlier check: skip if max raw MSE >> Savitzky-Golay mean
+            mse_arr = np.array(mse_vals)
+            mse_max = float(np.max(mse_arr))
+            sg_mean = float(np.mean(smoothed_dict["savgol"])) if "savgol" in smoothed_dict else float(np.mean(mse_arr))
+            if sg_mean > 0 and mse_max > args.mse_outlier_ratio * sg_mean:
+                n_skipped_outlier += 1
+                print(
+                    f"    Skipping save: MSE outlier detected "
+                    f"(max={mse_max:.4f} > {args.mse_outlier_ratio}× sg_mean={sg_mean:.4f}) "
+                    f"— demo excluded from VAE training."
+                )
+            elif args.save_skills and sg_peak_ts:
                 states_arr = np.stack(ep_df["observation.state"].values[:len(gt_actions)])
                 cuts = sorted(set(sg_peak_ts))
                 breakpoints = [0] + [min(c, len(gt_actions)) for c in cuts] + [len(gt_actions)]
                 breakpoints = sorted(set(breakpoints))
-                skill_files = []
-                for si in range(len(breakpoints) - 1):
-                    s, e = breakpoints[si], breakpoints[si + 1]
-                    if e - s < 2:
-                        continue
-                    fname = skills_dir / f"ep{ep_id:05d}_skill{si:02d}.npz"
-                    np.savez(
-                        str(fname),
-                        actions=gt_actions[s:e].astype(np.float32),
-                        states=states_arr[s:e].astype(np.float32),
-                        episode_id=np.array(ep_id),
-                        skill_index=np.array(si),
-                        frame_start=np.array(s),
-                        frame_end=np.array(e),
-                    )
-                    skill_files.append(str(fname))
-                print(f"    Skill files:      {len(skill_files)} saved to {skills_dir.name}/")
+
+                # Collect valid segments first; skip this demo if ≤ 1 skill
+                valid_segs = [
+                    (si, s, e)
+                    for si, (s, e) in enumerate(zip(breakpoints, breakpoints[1:]))
+                    if e - s >= 2
+                ]
+                if len(valid_segs) <= 1:
+                    n_skipped_few_skills += 1
+                    print(f"    Skipping save: only {len(valid_segs)} valid skill segment(s) — demo excluded from VAE training.")
+                else:
+                    skill_files = []
+                    for si, s, e in valid_segs:
+                        fname = skills_dir / f"ep{ep_id:05d}_skill{si:02d}.npz"
+                        np.savez(
+                            str(fname),
+                            actions=gt_actions[s:e].astype(np.float32),
+                            states=states_arr[s:e].astype(np.float32),
+                            episode_id=np.array(ep_id),
+                            skill_index=np.array(si),
+                            frame_start=np.array(s),
+                            frame_end=np.array(e),
+                        )
+                        skill_files.append(str(fname))
+                    print(f"    Skill files:      {len(skill_files)} saved to {skills_dir.name}/")
 
             print(f"    Skill boundaries: {sg_peak_ts}")
             if not args.skip_viz:
@@ -501,8 +535,11 @@ def main(args: Args) -> None:
                 "progress/episodes_pct": n_done / n_total * 100,
                 "progress/skills_found": total_skills,
                 "progress/skills_this_ep": ep_skills,
+                "progress/skipped_outlier": n_skipped_outlier,
+                "progress/skipped_few_skills": n_skipped_few_skills,
+                "progress/skipped_total": n_skipped_outlier + n_skipped_few_skills,
             })
-            print(f"  [{n_done}/{n_total}] ep{ep_id} done — {ep_skills} skills (total: {total_skills})")
+            print(f"  [{n_done}/{n_total}] ep{ep_id} done — {ep_skills} skills (total: {total_skills}) | skipped: outlier={n_skipped_outlier}, few_skills={n_skipped_few_skills}")
 
         results.append({
             "episode_id": ep_id,
@@ -524,6 +561,7 @@ def main(args: Args) -> None:
     with open(results_path, "w") as f:
         json.dump(results, f, indent=2)
     print(f"\nDone. Results saved to {results_path}")
+    print(f"[Summary] episodes={n_total} | saved={n_done - n_skipped_outlier - n_skipped_few_skills} | skipped_outlier={n_skipped_outlier} | skipped_few_skills={n_skipped_few_skills} | skipped_total={n_skipped_outlier + n_skipped_few_skills}")
 
     # Upload to wandb (media/plots — skip_viz면 아무것도 없음)
     if args.wandb_project and not args.skip_viz:

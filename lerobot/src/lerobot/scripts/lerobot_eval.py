@@ -56,6 +56,21 @@ PYTHONPATH=/data2/dohyeon/SBD/lerobot/src \
 
 ```
 
+```
+PYTHONPATH=/scratch/mdorazi/Skill_Boundary_Detector/lerobot/src \
+  /scratch/mdorazi/Skill_Boundary_Detector/.venv/bin/lerobot-eval \
+  --policy.path=/scratch/mdorazi/Skill_Boundary_Detector/outputs/pi05_libero_spatial_object/checkpoints/013000/pretrained_model \
+  --env.type=libero \
+  --env.task=libero_object \
+  --eval.batch_size=1 \
+  --eval.n_episodes=1 \
+  --policy.device=cuda \
+  --env.task_ids="[0,1,2]" \
+  --wandb_project=libero_pi05_SO \
+  --rename_map='{"observation.images.image2": "observation.images.wrist_image"}'
+
+```
+
 
 Note that in both examples, the repo/folder should contain at least `config.json` and `model.safetensors` files.
 

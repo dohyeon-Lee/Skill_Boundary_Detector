@@ -6,7 +6,6 @@ and trains a BiLSTM VAE (defined in skill_vae.py).
 
 Each .npz file contains:
     actions  : (T, action_dim)  float32
-    states   : (T, state_dim)   float32
     episode_id, skill_index, frame_start, frame_end  (scalar metadata)
 
 After training, saves:
@@ -37,7 +36,7 @@ import torch
 import tyro
 
 sys.path.insert(0, str(Path(__file__).parent))
-from skill_vae import VAEConfig, SkillVAE, SkillDataset, encode_skills, train_skill_vae
+from skill_vae import VAEConfig, encode_skills, train_skill_vae
 
 
 # ── Args ───────────────────────────────────────────────────────────────────────
@@ -79,10 +78,10 @@ class Args:
 
 def load_skill_files(
     skills_dir: Path,
-) -> tuple[list[tuple[np.ndarray, np.ndarray]], list[dict]]:
+) -> tuple[list[np.ndarray], list[dict]]:
     """Load all .npz skill files. Returns (segments, metadata_list).
 
-    segments     : list of (actions, states) numpy arrays
+    segments     : list of action numpy arrays
     metadata_list: list of dicts with episode_id, skill_index, frame_start, frame_end
     """
     npz_files = sorted(skills_dir.rglob("*.npz"))
@@ -93,7 +92,7 @@ def load_skill_files(
     metadata = []
     for f in npz_files:
         d = np.load(str(f))
-        segments.append((d["actions"], d["states"]))
+        segments.append(d["actions"])
         metadata.append({
             "file": str(f.name),
             "episode_id": int(d["episode_id"]),
@@ -129,13 +128,11 @@ def main(args: Args) -> None:
         segments, metadata = list(segments), list(metadata)
         print(f"[VAE] Filtered short skills: {before} → {len(segments)} (min_len={args.min_skill_len})")
 
-    example_a, example_s = segments[0]
+    example_a = segments[0]
     action_dim = example_a.shape[-1]
-    state_dim  = example_s.shape[-1]
 
     cfg = VAEConfig(
         action_dim=action_dim,
-        state_dim=state_dim,
         hidden_dim=args.hidden_dim,
         latent_dim=args.latent_dim,
         num_layers=args.num_layers,
@@ -160,7 +157,6 @@ def main(args: Args) -> None:
             name=args.wandb_run_name,
             config={
                 "action_dim": action_dim,
-                "state_dim": state_dim,
                 "latent_dim": args.latent_dim,
                 "hidden_dim": args.hidden_dim,
                 "num_layers": args.num_layers,

@@ -2,7 +2,7 @@
 Skill VAE — BiLSTM Variational Autoencoder for variable-length skill trajectories.
 
 Architecture:
-  Encoder : BiLSTM over (action + state) sequence
+  Encoder : BiLSTM over action sequence
             → last hidden (fwd + bwd concat) → Linear → (mu, logvar)
   Decoder : LSTM with h0/c0 initialised from z
             → teacher-forced on GT actions during training
@@ -10,7 +10,6 @@ Architecture:
   Loss    : masked MSE reconstruction + beta-weighted KL divergence
 
 Input  : action trajectory  (T, action_dim)
-         proprioceptive state (T, state_dim)   [joint pos]
 Output : reconstructed action trajectory (T, action_dim)
          latent code z  (latent_dim,)
 
@@ -40,7 +39,6 @@ class SkillVAE(nn.Module):
     def __init__(
         self,
         action_dim: int,
-        state_dim: int,
         hidden_dim: int = 256,
         latent_dim: int = 64,
         num_layers: int = 2,
@@ -48,12 +46,11 @@ class SkillVAE(nn.Module):
     ) -> None:
         super().__init__()
         self.action_dim = action_dim
-        self.state_dim = state_dim
         self.hidden_dim = hidden_dim
         self.latent_dim = latent_dim
         self.num_layers = num_layers
 
-        enc_input_dim = action_dim + state_dim
+        enc_input_dim = action_dim
         enc_drop = dropout if num_layers > 1 else 0.0
         self.encoder_lstm = nn.LSTM(
             enc_input_dim, hidden_dim, num_layers,
@@ -93,12 +90,10 @@ class SkillVAE(nn.Module):
     def encode(
         self,
         actions: torch.Tensor,     # (B, T_max, action_dim)  padded
-        states: torch.Tensor,      # (B, T_max, state_dim)   padded
         lengths: torch.Tensor,     # (B,) int64 CPU tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Return (mu, logvar), each (B, latent_dim)."""
-        x = torch.cat([actions, states], dim=-1)  # (B, T, enc_input_dim)
-        packed = pack_padded_sequence(x, lengths.cpu(), batch_first=True, enforce_sorted=False)
+        packed = pack_padded_sequence(actions, lengths.cpu(), batch_first=True, enforce_sorted=False)
         _, (h, _) = self.encoder_lstm(packed)
         # h: (num_layers * 2, B, hidden_dim)  [fwd/bwd interleaved per layer]
         # Last layer: index -2 (fwd) and -1 (bwd)
@@ -168,11 +163,10 @@ class SkillVAE(nn.Module):
     def forward(
         self,
         actions: torch.Tensor,   # (B, T_max, action_dim)
-        states: torch.Tensor,    # (B, T_max, state_dim)
         lengths: torch.Tensor,   # (B,) int64
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Return (recon_actions, mu, logvar)."""
-        mu, logvar = self.encode(actions, states, lengths)
+        mu, logvar = self.encode(actions, lengths)
         z = self.reparameterise(mu, logvar)
         recon = self.decode(z, actions, lengths)
         return recon, mu, logvar
@@ -183,14 +177,12 @@ class SkillVAE(nn.Module):
     def encode_numpy(
         self,
         actions: np.ndarray,   # (T, action_dim)
-        states: np.ndarray,    # (T, state_dim)
         device: str = "cpu",
     ) -> np.ndarray:
         """Encode a single skill. Returns z (latent_dim,) — the mean."""
         a = torch.from_numpy(actions).float().unsqueeze(0).to(device)
-        s = torch.from_numpy(states).float().unsqueeze(0).to(device)
         l = torch.tensor([len(actions)], dtype=torch.long)
-        mu, _ = self.encode(a, s, l)
+        mu, _ = self.encode(a, l)
         return mu.squeeze(0).cpu().numpy()
 
     @torch.no_grad()
@@ -243,38 +235,35 @@ def vae_loss(
 class SkillDataset(Dataset):
     """Dataset of variable-length skill segments.
 
-    Each item is a (action_array, state_array) pair where:
+    Each item is an action array:
         action_array : (T_i, action_dim)  float32 numpy
-        state_array  : (T_i, state_dim)   float32 numpy
     """
 
     def __init__(
         self,
-        segments: list[tuple[np.ndarray, np.ndarray]],
+        segments: list[np.ndarray],
     ) -> None:
         self.segments = segments
 
     def __len__(self) -> int:
         return len(self.segments)
 
-    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor, int]:
-        actions, states = self.segments[idx]
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, int]:
+        actions = self.segments[idx]
         return (
             torch.from_numpy(actions.astype(np.float32)),
-            torch.from_numpy(states.astype(np.float32)),
             len(actions),
         )
 
     @staticmethod
     def collate_fn(
-        batch: list[tuple[torch.Tensor, torch.Tensor, int]],
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Pad to longest sequence in batch and return (actions, states, lengths)."""
-        actions_list, states_list, lengths = zip(*batch)
+        batch: list[tuple[torch.Tensor, int]],
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Pad to longest sequence in batch and return (actions, lengths)."""
+        actions_list, lengths = zip(*batch)
         actions_pad = pad_sequence(actions_list, batch_first=True, padding_value=0.0)
-        states_pad  = pad_sequence(states_list,  batch_first=True, padding_value=0.0)
         lengths_t   = torch.tensor(lengths, dtype=torch.long)
-        return actions_pad, states_pad, lengths_t
+        return actions_pad, lengths_t
 
 
 # ── Training config ────────────────────────────────────────────────────────────
@@ -282,7 +271,6 @@ class SkillDataset(Dataset):
 @dataclass
 class VAEConfig:
     action_dim: int = 7
-    state_dim: int = 8
     hidden_dim: int = 256
     latent_dim: int = 64
     num_layers: int = 2
@@ -302,12 +290,12 @@ class VAEConfig:
 # ── Training loop ──────────────────────────────────────────────────────────────
 
 def train_skill_vae(
-    segments: list[tuple[np.ndarray, np.ndarray]],
+    segments: list[np.ndarray],
     cfg: VAEConfig,
     wandb_run=None,
     metadata: list[dict] | None = None,
 ) -> SkillVAE:
-    """Train a SkillVAE on the given list of (action_array, state_array) segments.
+    """Train a SkillVAE on the given list of action_array segments.
 
     Returns the trained model (on CPU).
     """
@@ -319,9 +307,8 @@ def train_skill_vae(
           f"epochs={cfg.epochs}, beta={cfg.beta})")
 
     # Infer dims from data if not set
-    example_a, example_s = segments[0]
+    example_a = segments[0]
     action_dim = cfg.action_dim if cfg.action_dim > 0 else example_a.shape[-1]
-    state_dim  = cfg.state_dim  if cfg.state_dim  > 0 else example_s.shape[-1]
 
     # Train / val split
     n_val = max(1, int(len(segments) * cfg.val_split))
@@ -342,7 +329,6 @@ def train_skill_vae(
 
     model = SkillVAE(
         action_dim=action_dim,
-        state_dim=state_dim,
         hidden_dim=cfg.hidden_dim,
         latent_dim=cfg.latent_dim,
         num_layers=cfg.num_layers,
@@ -350,7 +336,7 @@ def train_skill_vae(
     ).to(cfg.device)
 
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"[VAE] Parameters: {n_params:,}  |  action_dim={action_dim}  state_dim={state_dim}")
+    print(f"[VAE] Parameters: {n_params:,}  |  action_dim={action_dim}")
 
     optim = torch.optim.Adam(model.parameters(), lr=cfg.lr)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optim, T_max=cfg.epochs, eta_min=cfg.lr * 0.01)
@@ -361,12 +347,11 @@ def train_skill_vae(
         # ── Train ──────────────────────────────────────────────────────────────
         model.train()
         t_total = t_recon = t_kl = 0.0
-        for actions, states, lengths in train_loader:
+        for actions, lengths in train_loader:
             actions = actions.to(cfg.device)
-            states  = states.to(cfg.device)
             lengths = lengths.to(cfg.device)
 
-            recon, mu, logvar = model(actions, states, lengths)
+            recon, mu, logvar = model(actions, lengths)
             loss, recon_l, kl_l = vae_loss(recon, actions, mu, logvar, lengths, cfg.beta)
 
             optim.zero_grad()
@@ -384,10 +369,9 @@ def train_skill_vae(
         model.eval()
         v_total = 0.0
         with torch.no_grad():
-            for actions, states, lengths in val_loader:
+            for actions, lengths in val_loader:
                 actions = actions.to(cfg.device)
-                states  = states.to(cfg.device)
-                recon, mu, logvar = model(actions, states, lengths)
+                recon, mu, logvar = model(actions, lengths)
                 loss, _, _ = vae_loss(recon, actions, mu, logvar, lengths, cfg.beta)
                 v_total += loss.item()
 
@@ -425,8 +409,8 @@ def train_skill_vae(
             model.eval()
             codes = []
             with torch.no_grad():
-                for acts, sts in segments:
-                    z = model.encode_numpy(acts, sts, device=cfg.device)
+                for acts in segments:
+                    z = model.encode_numpy(acts, device=cfg.device)
                     codes.append(z)
             latents_ckpt_path = cfg.save_path.replace(".pt", f"_latents_epoch{epoch:04d}.npz")
             save_dict: dict = {"latents": np.stack(codes)}
@@ -446,14 +430,14 @@ def train_skill_vae(
 
 def encode_skills(
     model: SkillVAE,
-    segments: list[tuple[np.ndarray, np.ndarray]],
+    segments: list[np.ndarray],
     device: str = "cpu",
 ) -> np.ndarray:
     """Encode all segments and return latent codes (N, latent_dim)."""
     model = model.to(device).eval()
     codes = []
-    for actions, states in segments:
-        z = model.encode_numpy(actions, states, device=device)
+    for actions in segments:
+        z = model.encode_numpy(actions, device=device)
         codes.append(z)
     return np.stack(codes)
 

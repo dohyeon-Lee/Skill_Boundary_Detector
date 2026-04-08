@@ -37,7 +37,9 @@ PYTORCH_ALLOC_CONF=expandable_segments:True lerobot-train \
     --steps=30000 \
     --policy.device=cuda \
     --dataset.video_backend=pyav \
-    --batch_size=8
+    --batch_size=8 \
+    --resume=true \
+    --config_path=../outputs/pi05_libero_spatial_object/checkpoints/013000/pretrained_model/train_config.json
 
 # lerobot-train \
 #     --dataset.repo_id=lerobot/libero_90 \

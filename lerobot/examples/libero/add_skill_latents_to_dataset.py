@@ -38,14 +38,11 @@ class Args:
     """skill_vae_latents_epoch*.npz 경로"""
     dst_repo_id: str = "mdorazi/libero_skill"
     """출력 데이터셋 repo_id (info.json에 기록)"""
-    zero_outside_skill: bool = True
-    """스킬 범위 밖 프레임을 zero vector로 채울지 여부 (False면 nearest skill latent 사용)"""
 
 
 def build_frame_latent_map(
     latents_data: dict,
     latent_dim: int,
-    zero_outside: bool,
 ) -> dict[int, np.ndarray]:
     """episode_id별로 (total_frames,) → latent 매핑 딕셔너리 생성.
 
@@ -69,26 +66,13 @@ def get_latent_for_frame(
     frame_idx: int,
     skills: list[tuple[int, int, np.ndarray]],
     latent_dim: int,
-    zero_outside: bool,
+    zero_outside: bool = True,
 ) -> np.ndarray:
-    """주어진 프레임에 해당하는 latent 반환."""
+    """주어진 프레임에 해당하는 latent 반환. 스킬 구간 밖 gap 프레임은 zero."""
     for fs, fe, lat in skills:
         if fs <= frame_idx < fe:
             return lat.astype(np.float32)
-
-    if zero_outside:
-        return np.zeros(latent_dim, dtype=np.float32)
-
-    # nearest skill latent
-    best_lat = skills[0][2]
-    best_dist = float("inf")
-    for fs, fe, lat in skills:
-        mid = (fs + fe) / 2
-        dist = abs(frame_idx - mid)
-        if dist < best_dist:
-            best_dist = dist
-            best_lat = lat
-    return best_lat.astype(np.float32)
+    return np.zeros(latent_dim, dtype=np.float32)
 
 
 def main(args: Args) -> None:
@@ -100,8 +84,9 @@ def main(args: Args) -> None:
     print(f"Loading latents from {latents_path} ...")
     raw = np.load(str(latents_path))
     latent_dim = raw["latents"].shape[1]
-    ep_skill_map = build_frame_latent_map(raw, latent_dim, args.zero_outside_skill)
-    print(f"  latent_dim={latent_dim}, episodes with skills={len(ep_skill_map)}")
+    ep_skill_map = build_frame_latent_map(raw, latent_dim)
+    valid_ep_ids = set(ep_skill_map.keys())
+    print(f"  latent_dim={latent_dim}, episodes with skills={len(valid_ep_ids)}")
 
     # ── Copy dataset ───────────────────────────────────────────────
     if dst_dir.exists():
@@ -110,54 +95,75 @@ def main(args: Args) -> None:
     print(f"Copying dataset {src_dir} → {dst_dir} ...")
     shutil.copytree(src_dir, dst_dir)
 
+    # ── Process data parquet files: remove no-skill episodes, add latents ──
+    data_files = sorted((dst_dir / "data").rglob("*.parquet"))
+    print(f"Processing {len(data_files)} data parquet files ...")
+
+    removed_ep_ids: set[int] = set()
+    n_frames_removed = 0
+
+    for parquet_path in tqdm(data_files):
+        df = pd.read_parquet(parquet_path)
+
+        # 스킬 latent가 없는 에피소드 제거
+        missing = set(df["episode_index"].unique().tolist()) - valid_ep_ids
+        if missing:
+            removed_ep_ids |= missing
+            before = len(df)
+            df = df[df["episode_index"].isin(valid_ep_ids)].reset_index(drop=True)
+            n_frames_removed += before - len(df)
+
+        if df.empty:
+            df.to_parquet(parquet_path, index=False)
+            continue
+
+        # 남은 프레임에 skill latent 할당
+        # (스킬 구간 안: 해당 latent / 구간 밖 gap: zero)
+        skill_latents = [
+            get_latent_for_frame(
+                int(row["frame_index"]),
+                ep_skill_map[int(row["episode_index"])],
+                latent_dim,
+                zero_outside=True,  # gap 프레임은 항상 zero
+            )
+            for _, row in df.iterrows()
+        ]
+        df["observation.states.skill"] = skill_latents
+        df.to_parquet(parquet_path, index=False)
+
+    print(f"  Removed {len(removed_ep_ids)} episodes (no skill latent): {sorted(removed_ep_ids)}")
+    print(f"  Removed {n_frames_removed} frames total")
+
+    # ── Remove from meta/episodes parquet ─────────────────────────
+    ep_meta_files = sorted((dst_dir / "meta" / "episodes").rglob("*.parquet"))
+    for ep_meta_path in ep_meta_files:
+        ep_df = pd.read_parquet(ep_meta_path)
+        ep_df = ep_df[ep_df["episode_index"].isin(valid_ep_ids)].reset_index(drop=True)
+        ep_df.to_parquet(ep_meta_path, index=False)
+
     # ── Update info.json ───────────────────────────────────────────
     info_path = dst_dir / "meta" / "info.json"
     info = json.loads(info_path.read_text())
     info["repo_id"] = args.dst_repo_id
+    info["total_episodes"] = info.get("total_episodes", 0) - len(removed_ep_ids)
+    info["total_frames"] = info.get("total_frames", 0) - n_frames_removed
     info["features"]["observation.states.skill"] = {
         "dtype": "float32",
         "shape": [latent_dim],
         "names": [f"skill_z{i}" for i in range(latent_dim)],
     }
     info_path.write_text(json.dumps(info, indent=2))
-    print(f"  Updated info.json (added observation.states.skill dim={latent_dim})")
-
-    # ── Process each parquet file ──────────────────────────────────
-    data_files = sorted((dst_dir / "data").rglob("*.parquet"))
-    print(f"Processing {len(data_files)} parquet files ...")
-
-    for parquet_path in tqdm(data_files):
-        df = pd.read_parquet(parquet_path)
-
-        skill_latents = []
-        for _, row in df.iterrows():
-            ep_id = int(row["episode_index"])
-            frame_idx = int(row["frame_index"])
-
-            if ep_id in ep_skill_map:
-                lat = get_latent_for_frame(
-                    frame_idx,
-                    ep_skill_map[ep_id],
-                    latent_dim,
-                    args.zero_outside_skill,
-                )
-            else:
-                lat = np.zeros(latent_dim, dtype=np.float32)
-
-            skill_latents.append(lat)
-
-        df["observation.states.skill"] = skill_latents
-        df.to_parquet(parquet_path, index=False)
+    print(f"  Updated info.json (episodes={info['total_episodes']}, frames={info['total_frames']})")
 
     # ── Update stats.json ──────────────────────────────────────────
     stats_path = dst_dir / "meta" / "stats.json"
     if stats_path.exists():
         stats = json.loads(stats_path.read_text())
-        # 모든 latent 모아서 통계 계산
         all_latents = []
         for parquet_path in sorted((dst_dir / "data").rglob("*.parquet")):
             df = pd.read_parquet(parquet_path)
-            all_latents.extend(df["observation.states.skill"].tolist())
+            if "observation.states.skill" in df.columns:
+                all_latents.extend(df["observation.states.skill"].tolist())
         all_latents = np.array(all_latents)
         stats["observation.states.skill"] = {
             "min":  all_latents.min(axis=0).tolist(),
@@ -170,6 +176,7 @@ def main(args: Args) -> None:
 
     print(f"\n완료! 출력 데이터셋: {dst_dir}")
     print(f"  observation.states.skill (dim={latent_dim}) 추가됨")
+    print(f"  제거된 에피소드: {len(removed_ep_ids)}개 / 제거된 프레임: {n_frames_removed}개")
 
 
 if __name__ == "__main__":
