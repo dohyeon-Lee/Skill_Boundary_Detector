@@ -87,7 +87,6 @@ class PI05Config(PreTrainedConfig):
     skill_lstm_hidden_dim: int = 512
     skill_lstm_num_layers: int = 2
     skill_teacher_forcing: bool = True  # Use GT i, z to compute z_hold during training
-    skill_sequence_length: int = 10    # T: number of consecutive frames for LSTM training
 
     # Skill Generator loss weights (used when i, z labels are available)
     skill_loss_weight_i: float = 1.0
@@ -183,12 +182,7 @@ class PI05Config(PreTrainedConfig):
         )
 
     @property
-    def observation_delta_indices(self) -> list | None:
-        if self.use_skill_generator:
-            # Load skill_sequence_length consecutive frames for LSTM training.
-            # e.g. skill_sequence_length=10 → [-9, -8, ..., -1, 0]
-            # At inference, only current frame (T=1) is used with hidden state carry-over.
-            return list(range(1 - self.skill_sequence_length, 1))
+    def observation_delta_indices(self) -> None:
         return None
 
     @property

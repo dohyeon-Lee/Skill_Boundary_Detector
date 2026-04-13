@@ -585,49 +585,19 @@ class SkillGenerator(nn.Module):
         img_embs: list[torch.Tensor],
         hidden_state: tuple[torch.Tensor, torch.Tensor] | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
-        """Forward pass supporting single-frame (inference) and T-frame (training) inputs.
+        # lang_emb: (B, L, vlm_width) → mean pool → (B, vlm_width)
+        lang_enc = self.lang_proj(lang_emb.mean(dim=1))  # (B, lstm_hidden_dim)
 
-        Args:
-            lang_emb: (B, L, W) — language embeddings (shared across all T steps)
-            img_embs: list of (B, N, W) for T=1, or list of (B, T, N, W) for T>1
-            hidden_state: LSTM hidden state for inference carry-over
+        # img_embs: list of (B, N, vlm_width) → mean pool patches → mean pool cameras → (B, vlm_width)
+        img_pooled = torch.stack([img.mean(dim=1) for img in img_embs], dim=0).mean(dim=0)  # (B, vlm_width)
+        img_enc = self.img_proj(img_pooled)  # (B, lstm_hidden_dim)
 
-        Returns:
-            z: (B, skill_z_dim) for T=1, (B, T, skill_z_dim) for T>1
-            i: (B, 1) for T=1, (B, T, 1) for T>1
-            new_hidden: updated LSTM hidden state
-        """
-        multi_step = img_embs[0].dim() == 4  # (B, T, N, W) vs (B, N, W)
+        combined = torch.cat([lang_enc, img_enc], dim=-1)  # (B, lstm_hidden_dim * 2)
+        lstm_out, new_hidden = self.lstm(combined.unsqueeze(1), hidden_state)  # (B, 1, lstm_hidden_dim)
+        lstm_out = lstm_out.squeeze(1)  # (B, lstm_hidden_dim)
 
-        # Language encoding: mean pool over tokens, shared across T steps
-        lang_enc = self.lang_proj(lang_emb.mean(dim=1))  # (B, H)
-
-        if multi_step:
-            T = img_embs[0].shape[1]
-            # img_embs[k]: (B, T, N, W) → mean over patches N → (B, T, W)
-            img_pooled = torch.stack([img.mean(dim=2) for img in img_embs], dim=0).mean(dim=0)  # (B, T, W)
-            img_enc = self.img_proj(img_pooled)  # (B, T, H)
-            # Expand language encoding to match T: (B, H) → (B, T, H)
-            lang_enc = lang_enc.unsqueeze(1).expand(-1, T, -1)  # (B, T, H)
-        else:
-            # img_embs[k]: (B, N, W) → mean over patches → (B, W)
-            img_pooled = torch.stack([img.mean(dim=1) for img in img_embs], dim=0).mean(dim=0)  # (B, W)
-            img_enc = self.img_proj(img_pooled).unsqueeze(1)  # (B, 1, H)
-            lang_enc = lang_enc.unsqueeze(1)  # (B, 1, H)
-
-        combined = torch.cat([lang_enc, img_enc], dim=-1)  # (B, T_or_1, H*2)
-        lstm_out, new_hidden = self.lstm(combined, hidden_state)  # (B, T_or_1, H)
-
-        z = self.z_head(lstm_out)                    # (B, T_or_1, skill_z_dim)
-        i = torch.sigmoid(self.i_head(lstm_out))     # (B, T_or_1, 1) — soft in [0, 1]
-
-        # At inference: binarize i to hard 0/1 via threshold
-        if not self.training:
-            i = (i > 0.5).to(dtype=z.dtype)
-
-        if not multi_step:
-            z = z.squeeze(1)  # (B, skill_z_dim)
-            i = i.squeeze(1)  # (B, 1)
+        z = self.z_head(lstm_out)               # (B, skill_z_dim)
+        i = torch.sigmoid(self.i_head(lstm_out))  # (B, 1)
 
         return z, i, new_hidden
 
@@ -734,26 +704,12 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
         return time.to(dtype=torch.float32, device=device)
 
     def embed_images(self, images) -> list[torch.Tensor]:
-        """Embed images with SigLIP.
-
-        Supports both single-frame (B, C, H, W) and multi-frame (B, T, C, H, W) inputs.
-
-        Returns:
-            list of (B, N, vlm_width) for single-frame input, or (B, T, N, vlm_width) for T-frame input.
-        """
+        """Embed images with SigLIP. Returns list of (B, N, vlm_width) per camera."""
         img_embs = []
         for img in images:
             def image_embed_func(img):
                 return self.paligemma_with_expert.embed_image(img)
-
-            if img.dim() == 5:  # (B, T, C, H, W) — multi-step
-                B, T, C, H, W = img.shape
-                img_flat = img.reshape(B * T, C, H, W)
-                emb_flat = self._apply_checkpoint(image_embed_func, img_flat)  # (B*T, N, vlm_width)
-                N, vlm_width = emb_flat.shape[1], emb_flat.shape[2]
-                img_embs.append(emb_flat.reshape(B, T, N, vlm_width))  # (B, T, N, vlm_width)
-            else:  # (B, C, H, W) — single step
-                img_embs.append(self._apply_checkpoint(image_embed_func, img))  # (B, N, vlm_width)
+            img_embs.append(self._apply_checkpoint(image_embed_func, img))
         return img_embs
 
     def embed_prefix(
@@ -878,34 +834,21 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
         x_t = time_expanded * noise + (1 - time_expanded) * actions
         u_t = noise - actions
 
-        # Embed images — supports both (B, C, H, W) and (B, T, C, H, W) inputs
+        # Embed images once — reused by both embed_prefix and skill_generator
         img_embs = self.embed_images(images)
 
         # Skill Generator: compute z, i, z_hold
         z, i, new_skill_hidden = None, None, None
         if self.config.use_skill_generator:
-            lang_emb = self.paligemma_with_expert.embed_language_tokens(tokens)  # unscaled: (B, L, W)
+            lang_emb = self.paligemma_with_expert.embed_language_tokens(tokens)  # unscaled
             z, i, new_skill_hidden = self.skill_generator(lang_emb, img_embs, skill_hidden)
-            # z: (B, skill_z_dim) for T=1, or (B, T, skill_z_dim) for T>1
-            # i: (B, 1)           for T=1, or (B, T, 1)           for T>1
-
-            # If no z_hold was provided (no teacher forcing), derive it from model predictions.
-            # If z_hold was provided (teacher forcing or inference carry-over), use it as-is
-            # so the action expert receives a clean conditioning signal independent of current z, i.
             if z_hold is None:
-                z_cur = z[:, -1] if z.dim() == 3 else z  # (B, skill_z_dim)
-                i_cur = i[:, -1] if i.dim() == 3 else i  # (B, 1)
-                z_hold = i_cur * z_cur  # first step: no prior z_hold, so start from scratch
-
-        # For embed_prefix and action expert: use only the current (last) frame
-        if img_embs and img_embs[0].dim() == 4:  # (B, T, N, W) → select last T
-            img_embs_cur = [e[:, -1] for e in img_embs]  # list of (B, N, W)
-        else:
-            img_embs_cur = img_embs
+                z_hold = torch.zeros_like(z)
+            z_hold = (1 - i) * z_hold + i * z  # (B, skill_z_dim)
 
         include_language = not self.config.use_skill_generator
         prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(
-            img_embs_cur, img_masks, tokens, masks, include_language=include_language
+            img_embs, img_masks, tokens, masks, include_language=include_language
         )
         suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = self.embed_suffix(x_t, time, z_hold)
 
@@ -1394,12 +1337,6 @@ class PI05Policy(PreTrainedPolicy):
             if img.dtype != torch.float32:
                 img = img.to(torch.float32)
 
-            # Handle multi-step input: (B, T, C, H, W) — flatten T into batch for processing
-            has_T = img.dim() == 5
-            if has_T:
-                B, T, C, H, W = img.shape
-                img = img.reshape(B * T, C, H, W)
-
             # from openpi preprocess_observation_pytorch: Handle both [B, C, H, W] and [B, H, W, C] formats
             is_channels_first = img.shape[1] == 3  # Check if channels are in dimension 1
 
@@ -1418,12 +1355,8 @@ class PI05Policy(PreTrainedPolicy):
             if is_channels_first:
                 img = img.permute(0, 3, 1, 2)  # [B, H, W, C] -> [B, C, H, W]
 
-            # Restore T dimension if it was flattened
-            if has_T:
-                img = img.reshape(B, T, C, H, W)
-
             images.append(img)
-            # Create mask (all ones for real images) — one per batch element (T doesn't affect presence)
+            # Create mask (all ones for real images)
             bsize = img.shape[0]
             mask = torch.ones(bsize, dtype=torch.bool, device=device)
             img_masks.append(mask)
@@ -1507,36 +1440,20 @@ class PI05Policy(PreTrainedPolicy):
         )
 
         # Prepare GT skill labels if available
-        # When observation_delta_indices loads T frames, labels have shape (B, T, ...).
         gt_i, gt_z = None, None
         if has_skill_labels:
-            gt_i = batch[SKILL_I_KEY].to(dtype=torch.float32)  # (B, 1) or (B, T, 1)
-            gt_z = batch[SKILL_Z_KEY].to(dtype=torch.float32)  # (B, Z) or (B, T, Z)
-            # Ensure trailing dim for i: (B,) → (B, 1), (B, T) → (B, T, 1)
+            gt_i = batch[SKILL_I_KEY].to(dtype=torch.float32)  # (B,) or (B, 1)
+            gt_z = batch[SKILL_Z_KEY].to(dtype=torch.float32)  # (B, skill_z_dim)
             if gt_i.dim() == 1:
                 gt_i = gt_i.unsqueeze(-1)
-            elif gt_i.dim() == 2 and gt_z.dim() == 3:
-                # (B, T) but z has 3 dims → (B, T, 1)
-                gt_i = gt_i.unsqueeze(-1)
 
-        # Teacher forcing: compute z_hold for the current (last) timestep using GT labels.
-        # We run the sequential z_hold update from t=0 to T-1 using GT z, i so the action
-        # expert receives a clean, label-derived conditioning signal.
+        # Teacher forcing: pass GT z_hold into model so action expert gets clean conditioning
         z_hold_for_model = None
         if has_skill_labels and self.config.skill_teacher_forcing:
-            if gt_i.dim() == 3:  # (B, T, 1)
-                # Sequential z_hold update: start from zeros, apply T steps of GT labels
-                z_hold_tf = torch.zeros(gt_z.shape[0], gt_z.shape[2], device=gt_z.device)
-                for t in range(gt_i.shape[1]):
-                    i_t = gt_i[:, t]    # (B, 1)
-                    z_t = gt_z[:, t]    # (B, Z)
-                    z_hold_tf = (1 - i_t) * z_hold_tf + i_t * z_t
-                z_hold_for_model = z_hold_tf  # (B, Z) — z_hold at last timestep
-            else:
-                # Single-step: z_hold = gt_i * gt_z (no prior context)
-                z_hold_for_model = gt_i * gt_z  # (B, Z)
+            # z_hold_t = (1 - gt_i) * 0 + gt_i * gt_z  (no prev z_hold in training batch)
+            z_hold_for_model = gt_i * gt_z
 
-        # Compute action loss (uses only the current/last frame images and z_hold)
+        # Compute action loss
         losses, z, i, _ = self.model.forward(
             images, img_masks, tokens, masks, actions, z_hold=z_hold_for_model
         )
@@ -1553,9 +1470,8 @@ class PI05Policy(PreTrainedPolicy):
 
         total_loss = action_loss
 
-        # Skill losses: computed over all T timesteps when T>1, or single step when T=1.
+        # Skill losses (only when i, z ground truth labels are available)
         if has_skill_labels:
-            # z: (B, T, Z) or (B, Z) — match shape to gt_z
             i_loss = F.binary_cross_entropy(i, gt_i)
             z_loss = F.mse_loss(z, gt_z)
 
