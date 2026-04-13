@@ -547,61 +547,6 @@ class PaliGemmaWithExpertModel(
         return [prefix_output, suffix_output], prefix_past_key_values
 
 
-class SkillGenerator(nn.Module):
-    """LSTM-based skill generator that outputs skill latent vector z and change indicator i.
-
-    Inputs:
-        lang_emb : (B, L, vlm_width) - language token embeddings (includes task + state)
-        img_embs : list of (B, N, vlm_width) - image patch embeddings per camera
-
-    Outputs:
-        z          : (B, skill_z_dim) - skill latent vector
-        i          : (B, 1)           - skill change indicator in [0, 1]
-        new_hidden : updated LSTM hidden state
-
-    State update (outside this module):
-        z_hold_t = (1 - i_t) * z_hold_{t-1} + i_t * z_t
-    """
-
-    def __init__(self, vlm_width: int, skill_z_dim: int, lstm_hidden_dim: int, lstm_num_layers: int):
-        super().__init__()
-
-        self.lang_proj = nn.Sequential(nn.Linear(vlm_width, lstm_hidden_dim), nn.SiLU())
-        self.img_proj = nn.Sequential(nn.Linear(vlm_width, lstm_hidden_dim), nn.SiLU())
-
-        self.lstm = nn.LSTM(
-            input_size=lstm_hidden_dim * 2,
-            hidden_size=lstm_hidden_dim,
-            num_layers=lstm_num_layers,
-            batch_first=True,
-        )
-
-        self.z_head = nn.Linear(lstm_hidden_dim, skill_z_dim)
-        self.i_head = nn.Linear(lstm_hidden_dim, 1)
-
-    def forward(
-        self,
-        lang_emb: torch.Tensor,
-        img_embs: list[torch.Tensor],
-        hidden_state: tuple[torch.Tensor, torch.Tensor] | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
-        # lang_emb: (B, L, vlm_width) → mean pool → (B, vlm_width)
-        lang_enc = self.lang_proj(lang_emb.mean(dim=1))  # (B, lstm_hidden_dim)
-
-        # img_embs: list of (B, N, vlm_width) → mean pool patches → mean pool cameras → (B, vlm_width)
-        img_pooled = torch.stack([img.mean(dim=1) for img in img_embs], dim=0).mean(dim=0)  # (B, vlm_width)
-        img_enc = self.img_proj(img_pooled)  # (B, lstm_hidden_dim)
-
-        combined = torch.cat([lang_enc, img_enc], dim=-1)  # (B, lstm_hidden_dim * 2)
-        lstm_out, new_hidden = self.lstm(combined.unsqueeze(1), hidden_state)  # (B, 1, lstm_hidden_dim)
-        lstm_out = lstm_out.squeeze(1)  # (B, lstm_hidden_dim)
-
-        z = self.z_head(lstm_out)               # (B, skill_z_dim)
-        i = torch.sigmoid(self.i_head(lstm_out))  # (B, 1)
-
-        return z, i, new_hidden
-
-
 class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
     """Core PI05 PyTorch model."""
 
@@ -633,17 +578,6 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
 
         self.time_mlp_in = nn.Linear(action_expert_config.width, action_expert_config.width)
         self.time_mlp_out = nn.Linear(action_expert_config.width, action_expert_config.width)
-
-        # Skill Generator
-        if config.use_skill_generator:
-            self.skill_generator = SkillGenerator(
-                vlm_width=paligemma_config.width,
-                skill_z_dim=config.skill_z_dim,
-                lstm_hidden_dim=config.skill_lstm_hidden_dim,
-                lstm_num_layers=config.skill_lstm_num_layers,
-            )
-            # Projects z_hold into action expert embedding space (direct add, not attention)
-            self.z_hold_proj = nn.Linear(config.skill_z_dim, action_expert_config.width)
 
         # Initialize gradient checkpointing flag
         self.gradient_checkpointing_enabled = False
@@ -703,43 +637,39 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
         time = time_beta * self.config.time_sampling_scale + self.config.time_sampling_offset
         return time.to(dtype=torch.float32, device=device)
 
-    def embed_images(self, images) -> list[torch.Tensor]:
-        """Embed images with SigLIP. Returns list of (B, N, vlm_width) per camera."""
-        img_embs = []
-        for img in images:
-            def image_embed_func(img):
-                return self.paligemma_with_expert.embed_image(img)
-            img_embs.append(self._apply_checkpoint(image_embed_func, img))
-        return img_embs
-
     def embed_prefix(
-        self, img_embs, img_masks, tokens, masks, include_language: bool = True
+        self, images, img_masks, tokens, masks
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Embed images and (optionally) language tokens into prefix embeddings."""
+        """Embed images with SigLIP and language tokens with embedding layer."""
         embs = []
         pad_masks = []
         att_masks = []
 
-        # Process pre-computed image embeddings
-        for img_emb, img_mask in zip(img_embs, img_masks, strict=True):
+        # Process images
+        for img, img_mask in zip(images, img_masks, strict=True):
+
+            def image_embed_func(img):
+                return self.paligemma_with_expert.embed_image(img)
+
+            img_emb = self._apply_checkpoint(image_embed_func, img)
             bsize, num_img_embs = img_emb.shape[:2]
+
             embs.append(img_emb)
             pad_masks.append(img_mask[:, None].expand(bsize, num_img_embs))
             att_masks += [0] * num_img_embs
 
-        # Process language tokens (skipped when skill generator is used)
-        if include_language:
-            def lang_embed_func(tokens):
-                lang_emb = self.paligemma_with_expert.embed_language_tokens(tokens)
-                lang_emb_dim = lang_emb.shape[-1]
-                return lang_emb * math.sqrt(lang_emb_dim)
+        # Process language tokens
+        def lang_embed_func(tokens):
+            lang_emb = self.paligemma_with_expert.embed_language_tokens(tokens)
+            lang_emb_dim = lang_emb.shape[-1]
+            return lang_emb * math.sqrt(lang_emb_dim)
 
-            lang_emb = self._apply_checkpoint(lang_embed_func, tokens)
-            embs.append(lang_emb)
-            pad_masks.append(masks)
+        lang_emb = self._apply_checkpoint(lang_embed_func, tokens)
+        embs.append(lang_emb)
+        pad_masks.append(masks)
 
-            num_lang_embs = lang_emb.shape[1]
-            att_masks += [0] * num_lang_embs
+        num_lang_embs = lang_emb.shape[1]
+        att_masks += [0] * num_lang_embs
 
         embs = torch.cat(embs, dim=1)
         pad_masks = torch.cat(pad_masks, dim=1)
@@ -750,12 +680,8 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
 
         return embs, pad_masks, att_masks
 
-    def embed_suffix(self, noisy_actions, timestep, z_hold: torch.Tensor | None = None):
-        """Embed noisy_actions, timestep to prepare for Expert Gemma processing.
-
-        If z_hold is provided (skill generator enabled), it is directly added to the
-        action embeddings before passing to the transformer (not via attention).
-        """
+    def embed_suffix(self, noisy_actions, timestep):
+        """Embed noisy_actions, timestep to prepare for Expert Gemma processing."""
         embs = []
         pad_masks = []
         att_masks = []
@@ -786,11 +712,6 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
         action_time_emb = action_emb
         adarms_cond = time_emb
 
-        # Inject z_hold into action embeddings (direct add, not attention)
-        if z_hold is not None:
-            z_hold_emb = self.z_hold_proj(z_hold.to(dtype=action_time_emb.dtype))  # (B, expert_width)
-            action_time_emb = action_time_emb + z_hold_emb.unsqueeze(1)  # broadcast over chunk_size
-
         embs.append(action_time_emb)
         bsize, action_time_dim = action_time_emb.shape[:2]
         action_time_mask = torch.ones(bsize, action_time_dim, dtype=torch.bool, device=timestep.device)
@@ -806,24 +727,8 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
 
         return embs, pad_masks, att_masks, adarms_cond
 
-    def forward(
-        self,
-        images,
-        img_masks,
-        tokens,
-        masks,
-        actions,
-        noise=None,
-        time=None,
-        z_hold: torch.Tensor | None = None,
-        skill_hidden: tuple[torch.Tensor, torch.Tensor] | None = None,
-    ) -> tuple[Tensor, torch.Tensor | None, torch.Tensor | None, tuple | None]:
-        """Do a full training forward pass and compute the loss.
-
-        Returns:
-            loss, z, i, new_skill_hidden
-            z, i, new_skill_hidden are None when use_skill_generator=False.
-        """
+    def forward(self, images, img_masks, tokens, masks, actions, noise=None, time=None) -> Tensor:
+        """Do a full training forward pass and compute the loss."""
         if noise is None:
             noise = self.sample_noise(actions.shape, actions.device)
 
@@ -834,23 +739,8 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
         x_t = time_expanded * noise + (1 - time_expanded) * actions
         u_t = noise - actions
 
-        # Embed images once — reused by both embed_prefix and skill_generator
-        img_embs = self.embed_images(images)
-
-        # Skill Generator: compute z, i, z_hold
-        z, i, new_skill_hidden = None, None, None
-        if self.config.use_skill_generator:
-            lang_emb = self.paligemma_with_expert.embed_language_tokens(tokens)  # unscaled
-            z, i, new_skill_hidden = self.skill_generator(lang_emb, img_embs, skill_hidden)
-            if z_hold is None:
-                z_hold = torch.zeros_like(z)
-            z_hold = (1 - i) * z_hold + i * z  # (B, skill_z_dim)
-
-        include_language = not self.config.use_skill_generator
-        prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(
-            img_embs, img_masks, tokens, masks, include_language=include_language
-        )
-        suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = self.embed_suffix(x_t, time, z_hold)
+        prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(images, img_masks, tokens, masks)
+        suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = self.embed_suffix(x_t, time)
 
         if (
             self.paligemma_with_expert.paligemma.model.language_model.layers[0].self_attn.q_proj.weight.dtype
@@ -890,8 +780,7 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
 
         v_t = self._apply_checkpoint(action_out_proj_func, suffix_out)
 
-        loss = F.mse_loss(u_t, v_t, reduction="none")
-        return loss, z, i, new_skill_hidden
+        return F.mse_loss(u_t, v_t, reduction="none")
 
     @torch.no_grad()  # see openpi `sample_actions` (slightly adapted)
     def sample_actions(
@@ -902,16 +791,9 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
         masks,
         noise=None,
         num_steps=None,
-        z_hold: torch.Tensor | None = None,
-        skill_hidden: tuple[torch.Tensor, torch.Tensor] | None = None,
         **kwargs: Unpack[ActionSelectKwargs],
-    ) -> tuple[Tensor, torch.Tensor | None, tuple | None]:
-        """Do a full inference forward and compute the action.
-
-        Returns:
-            actions, z_hold, new_skill_hidden
-            z_hold and new_skill_hidden are None when use_skill_generator=False.
-        """
+    ) -> Tensor:
+        """Do a full inference forward and compute the action."""
         if num_steps is None:
             num_steps = self.config.num_inference_steps
 
@@ -919,29 +801,15 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
         device = tokens.device
 
         if noise is None:
+            # Sample noise with padded dimension as expected by action_in_proj
             actions_shape = (
                 bsize,
                 self.config.chunk_size,
                 self.config.max_action_dim,
-            )
+            )  # Use config max_action_dim for internal processing
             noise = self.sample_noise(actions_shape, device)
 
-        # Embed images once — reused by both embed_prefix and skill_generator
-        img_embs = self.embed_images(images)
-
-        # Skill Generator: compute z, i, z_hold (once per observation, fixed during denoising loop)
-        new_skill_hidden = None
-        if self.config.use_skill_generator:
-            lang_emb = self.paligemma_with_expert.embed_language_tokens(tokens)  # unscaled
-            z, i, new_skill_hidden = self.skill_generator(lang_emb, img_embs, skill_hidden)
-            if z_hold is None:
-                z_hold = torch.zeros_like(z)
-            z_hold = (1 - i) * z_hold + i * z
-
-        include_language = not self.config.use_skill_generator
-        prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(
-            img_embs, img_masks, tokens, masks, include_language=include_language
-        )
+        prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(images, img_masks, tokens, masks)
         prefix_att_2d_masks = make_att_2d_masks(prefix_pad_masks, prefix_att_masks)
         prefix_position_ids = torch.cumsum(prefix_pad_masks, dim=1) - 1
 
@@ -969,7 +837,6 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
                     past_key_values=past_key_values,
                     x_t=input_x_t,
                     timestep=current_timestep,
-                    z_hold=z_hold,
                 )
 
             if self._rtc_enabled():
@@ -993,7 +860,7 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
             if self.rtc_processor is not None and self.rtc_processor.is_debug_enabled():
                 self.rtc_processor.track(time=time, x_t=x_t, v_t=v_t)
 
-        return x_t, z_hold, new_skill_hidden
+        return x_t
 
     def denoise_step(
         self,
@@ -1001,10 +868,9 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
         past_key_values,
         x_t,
         timestep,
-        z_hold: torch.Tensor | None = None,
     ):
         """Apply one denoising step of the noise `x_t` at a given timestep."""
-        suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = self.embed_suffix(x_t, timestep, z_hold)
+        suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = self.embed_suffix(x_t, timestep)
 
         suffix_len = suffix_pad_masks.shape[1]
         batch_size = prefix_pad_masks.shape[0]
@@ -1250,43 +1116,12 @@ class PI05Policy(PreTrainedPolicy):
     def get_optim_params(self) -> dict:
         return self.parameters()
 
-    def freeze_action_expert(self):
-        """Freeze action expert params (for unlabeled dataset training).
-        Gradients still flow THROUGH frozen layers to reach skill_generator + z_hold_proj.
-        """
-        modules_to_freeze = [
-            self.model.paligemma_with_expert,
-            self.model.action_in_proj,
-            self.model.action_out_proj,
-            self.model.time_mlp_in,
-            self.model.time_mlp_out,
-        ]
-        for m in modules_to_freeze:
-            for p in m.parameters():
-                p.requires_grad_(False)
-
-    def unfreeze_action_expert(self):
-        """Unfreeze action expert params."""
-        modules_to_unfreeze = [
-            self.model.paligemma_with_expert,
-            self.model.action_in_proj,
-            self.model.action_out_proj,
-            self.model.time_mlp_in,
-            self.model.time_mlp_out,
-        ]
-        for m in modules_to_unfreeze:
-            for p in m.parameters():
-                p.requires_grad_(True)
-
     def reset(self):
         """Reset internal state - called when environment resets."""
         self._action_queue = deque(maxlen=self.config.n_action_steps)
         self._queues = {
             ACTION: deque(maxlen=self.config.n_action_steps),
         }
-        # Skill generator state (maintained across timesteps during inference)
-        self._z_hold = None
-        self._skill_hidden = None
 
     def init_rtc_processor(self):
         """Initialize RTC processor if RTC is enabled in config."""
@@ -1401,13 +1236,8 @@ class PI05Policy(PreTrainedPolicy):
         images, img_masks = self._preprocess_images(batch)
         tokens, masks = batch[f"{OBS_LANGUAGE_TOKENS}"], batch[f"{OBS_LANGUAGE_ATTENTION_MASK}"]
 
-        # Sample actions — pass skill generator state if enabled
-        actions, self._z_hold, self._skill_hidden = self.model.sample_actions(
-            images, img_masks, tokens, masks,
-            z_hold=self._z_hold,
-            skill_hidden=self._skill_hidden,
-            **kwargs,
-        )
+        # Sample actions using the model (pass through RTC kwargs, no separate state needed for PI05)
+        actions = self.model.sample_actions(images, img_masks, tokens, masks, **kwargs)
 
         # Unpad actions to actual action dimension
         original_action_dim = self.config.output_features[ACTION].shape[0]
@@ -1430,66 +1260,27 @@ class PI05Policy(PreTrainedPolicy):
 
         actions = self.prepare_action(batch)
 
-        # Check if skill labels are available in batch
-        SKILL_Z_KEY = "observation.states.skill"
-        SKILL_I_KEY = "observation.states.skill_i"
-        has_skill_labels = (
-            self.config.use_skill_generator
-            and SKILL_I_KEY in batch
-            and SKILL_Z_KEY in batch
-        )
-
-        # Prepare GT skill labels if available
-        gt_i, gt_z = None, None
-        if has_skill_labels:
-            gt_i = batch[SKILL_I_KEY].to(dtype=torch.float32)  # (B,) or (B, 1)
-            gt_z = batch[SKILL_Z_KEY].to(dtype=torch.float32)  # (B, skill_z_dim)
-            if gt_i.dim() == 1:
-                gt_i = gt_i.unsqueeze(-1)
-
-        # Teacher forcing: pass GT z_hold into model so action expert gets clean conditioning
-        z_hold_for_model = None
-        if has_skill_labels and self.config.skill_teacher_forcing:
-            # z_hold_t = (1 - gt_i) * 0 + gt_i * gt_z  (no prev z_hold in training batch)
-            z_hold_for_model = gt_i * gt_z
-
-        # Compute action loss
-        losses, z, i, _ = self.model.forward(
-            images, img_masks, tokens, masks, actions, z_hold=z_hold_for_model
-        )
+        # Compute loss (no separate state needed for PI05)
+        losses = self.model.forward(images, img_masks, tokens, masks, actions)
 
         # Truncate losses to actual action dimensions
         original_action_dim = self.config.output_features[ACTION].shape[0]
         losses = losses[:, :, :original_action_dim]
-        action_loss = losses.mean()
 
         loss_dict = {
             "loss_per_dim": losses.mean(dim=[0, 1]).detach().cpu().numpy().tolist(),
-            "action_loss": action_loss.item(),
         }
 
-        total_loss = action_loss
-
-        # Skill losses (only when i, z ground truth labels are available)
-        if has_skill_labels:
-            i_loss = F.binary_cross_entropy(i, gt_i)
-            z_loss = F.mse_loss(z, gt_z)
-
-            total_loss = (
-                action_loss
-                + self.config.skill_loss_weight_i * i_loss
-                + self.config.skill_loss_weight_z * z_loss
-            )
-            loss_dict["i_loss"] = i_loss.item()
-            loss_dict["z_loss"] = z_loss.item()
-
-        loss_dict["loss"] = total_loss.item()
-
         if reduction == "none":
+            # Return per-sample losses (B,) by averaging over time and action dims
             per_sample_loss = losses.mean(dim=(1, 2))
+            loss_dict["loss"] = per_sample_loss.mean().item()
             return per_sample_loss, loss_dict
         else:
-            return total_loss, loss_dict
+            # Default: return scalar mean loss
+            loss = losses.mean()
+            loss_dict["loss"] = loss.item()
+            return loss, loss_dict
 
     def _get_default_peft_targets(self) -> dict[str, any]:
         """Return default PEFT target modules for PI0.5 fine-tuning."""
