@@ -38,7 +38,7 @@ for TASK_ID in $(seq ${START_TASK} ${END_TASK}); do
       python examples/libero/replay_demo.py \
         --dataset_dir /scratch/mdorazi/Skill_Boundary_Detector/libero_dataset/libero_90 \
         --task_id ${TASK_ID} \
-        --n_episodes 60 \
+        --n_episodes 150 \
         --policy_path /scratch/mdorazi/Skill_Boundary_Detector/outputs/dp_libero90_yonsei_pretrain/checkpoints/080000/pretrained_model \
         --replan_interval 5 \
         --mse_smooth_method savgol \

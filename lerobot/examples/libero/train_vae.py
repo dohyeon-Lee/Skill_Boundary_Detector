@@ -2,10 +2,15 @@
 Skill VAE Training Script.
 
 Loads skill segment files (.npz) produced by replay_demo.py --save_skills
-and trains a BiLSTM VAE (defined in skill_vae.py).
+and trains a BiLSTM VAE.
+
+Supports two modes:
+  action : encoder/decoder use action trajectory only      (skill_vae.py)
+  state  : encoder/decoder use action + state trajectory   (skill_state_vae.py)
 
 Each .npz file contains:
     actions  : (T, action_dim)  float32
+    states   : (T, state_dim)   float32   (required for state mode)
     episode_id, skill_index, frame_start, frame_end  (scalar metadata)
 
 After training, saves:
@@ -13,16 +18,17 @@ After training, saves:
     <output_dir>/skill_latents.npz   — latent codes for every segment
 
 Usage:
-    python examples/libero/train_vae.py \\
-      --skills_dir /path/to/replay_output/skills \\
-      --output_dir /path/to/vae_output \\
-      --latent_dim 64 --hidden_dim 256 --epochs 200 --beta 1.0
-    
     python examples/libero/train_vae.py \
-    --skills_dir /scratch/mdorazi/Skill_Boundary_Detector/outputs/replay_libero10 \
-    --output_dir /scratch/mdorazi/Skill_Boundary_Detector/outputs/vae \
-    --latent_dim 64 --hidden_dim 256 --epochs 200 --beta 1.0
-    
+      --skills_dir /path/to/skills \
+      --output_dir /path/to/vae_output \
+      --mode action \
+      --latent_dim 64 --hidden_dim 256 --epochs 200 --beta 1.0
+
+    python examples/libero/train_vae.py \
+      --skills_dir /path/to/skills \
+      --output_dir /path/to/vae_output \
+      --mode state \
+      --latent_dim 64 --hidden_dim 256 --epochs 200 --beta 1.0
 """
 
 from __future__ import annotations
@@ -30,13 +36,13 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 import torch
 import tyro
 
 sys.path.insert(0, str(Path(__file__).parent))
-from skill_vae import VAEConfig, encode_skills, train_skill_vae
 
 
 # ── Args ───────────────────────────────────────────────────────────────────────
@@ -47,6 +53,9 @@ class Args:
     """Directory containing .npz skill files output by replay_demo.py."""
     output_dir: str = ""
     """Where to save skill_vae.pt and skill_latents.npz. Defaults to skills_dir/.."""
+
+    mode: Literal["action", "state"] = "action"
+    """'action': encode/decode action only. 'state': encode/decode action+state."""
 
     # Model
     latent_dim: int = 64
@@ -78,11 +87,13 @@ class Args:
 
 def load_skill_files(
     skills_dir: Path,
-) -> tuple[list[np.ndarray], list[dict]]:
-    """Load all .npz skill files. Returns (segments, metadata_list).
+    mode: str,
+) -> tuple[list, list[dict]]:
+    """Load all .npz skill files.
 
-    segments     : list of action numpy arrays
-    metadata_list: list of dicts with episode_id, skill_index, frame_start, frame_end
+    Returns:
+      action mode : segments = list of action arrays
+      state  mode : segments = list of (action, state) tuples
     """
     npz_files = sorted(skills_dir.rglob("*.npz"))
     if not npz_files:
@@ -92,7 +103,10 @@ def load_skill_files(
     metadata = []
     for f in npz_files:
         d = np.load(str(f))
-        segments.append(d["actions"])
+        if mode == "action":
+            segments.append(d["actions"])
+        else:
+            segments.append((d["actions"], d["states"]))
         metadata.append({
             "file": str(f.name),
             "episode_id": int(d["episode_id"]),
@@ -118,7 +132,7 @@ def main(args: Args) -> None:
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
 
-    segments, metadata = load_skill_files(skills_dir)
+    segments, metadata = load_skill_files(skills_dir, args.mode)
 
     if args.min_skill_len > 0:
         before = len(segments)
@@ -128,26 +142,59 @@ def main(args: Args) -> None:
         segments, metadata = list(segments), list(metadata)
         print(f"[VAE] Filtered short skills: {before} → {len(segments)} (min_len={args.min_skill_len})")
 
-    example_a = segments[0]
-    action_dim = example_a.shape[-1]
+    device = args.device if torch.cuda.is_available() else "cpu"
 
-    cfg = VAEConfig(
-        action_dim=action_dim,
-        hidden_dim=args.hidden_dim,
-        latent_dim=args.latent_dim,
-        num_layers=args.num_layers,
-        dropout=args.dropout,
-        beta=args.beta,
-        lr=args.lr,
-        batch_size=args.batch_size,
-        grad_clip=args.grad_clip,
-        epochs=args.epochs,
-        val_split=args.val_split,
-        log_every=args.log_every,
-        device=args.device if torch.cuda.is_available() else "cpu",
-        save_path=str(output_dir / "skill_vae.pt"),
-        checkpoint_every=args.checkpoint_every,
-    )
+    if args.mode == "action":
+        from skill_vae import VAEConfig, encode_skills, train_skill_vae
+
+        action_dim = segments[0].shape[-1]
+        cfg = VAEConfig(
+            action_dim=action_dim,
+            hidden_dim=args.hidden_dim,
+            latent_dim=args.latent_dim,
+            num_layers=args.num_layers,
+            dropout=args.dropout,
+            beta=args.beta,
+            lr=args.lr,
+            batch_size=args.batch_size,
+            grad_clip=args.grad_clip,
+            epochs=args.epochs,
+            val_split=args.val_split,
+            log_every=args.log_every,
+            device=device,
+            save_path=str(output_dir / "skill_vae.pt"),
+            checkpoint_every=args.checkpoint_every,
+        )
+        wandb_cfg_extra = {"action_dim": action_dim}
+        train_fn  = train_skill_vae
+        encode_fn = encode_skills
+
+    else:  # state mode
+        from skill_state_vae import StateVAEConfig, encode_skills, train_skill_state_vae
+
+        action_dim = segments[0][0].shape[-1]
+        state_dim  = segments[0][1].shape[-1]
+        cfg = StateVAEConfig(
+            action_dim=action_dim,
+            state_dim=state_dim,
+            hidden_dim=args.hidden_dim,
+            latent_dim=args.latent_dim,
+            num_layers=args.num_layers,
+            dropout=args.dropout,
+            beta=args.beta,
+            lr=args.lr,
+            batch_size=args.batch_size,
+            grad_clip=args.grad_clip,
+            epochs=args.epochs,
+            val_split=args.val_split,
+            log_every=args.log_every,
+            device=device,
+            save_path=str(output_dir / "skill_vae.pt"),
+            checkpoint_every=args.checkpoint_every,
+        )
+        wandb_cfg_extra = {"action_dim": action_dim, "state_dim": state_dim}
+        train_fn  = train_skill_state_vae
+        encode_fn = encode_skills
 
     wandb_run = None
     if args.wandb_project:
@@ -156,7 +203,8 @@ def main(args: Args) -> None:
             project=args.wandb_project,
             name=args.wandb_run_name,
             config={
-                "action_dim": action_dim,
+                **wandb_cfg_extra,
+                "mode": args.mode,
                 "latent_dim": args.latent_dim,
                 "hidden_dim": args.hidden_dim,
                 "num_layers": args.num_layers,
@@ -168,14 +216,12 @@ def main(args: Args) -> None:
             },
         )
 
-    model = train_skill_vae(segments, cfg, wandb_run=wandb_run, metadata=metadata)
+    model = train_fn(segments, cfg, wandb_run=wandb_run, metadata=metadata)
 
-    # Encode all segments with the trained model
     print("[VAE] Encoding all skill segments...")
-    latent_codes = encode_skills(model, segments, device="cpu")  # (N, latent_dim)
+    latent_codes = encode_fn(model, segments, device="cpu")
     print(f"[VAE] Latent codes: {latent_codes.shape}")
 
-    # Save latent codes alongside metadata
     latents_path = output_dir / "skill_latents.npz"
     save_dict = {"latents": latent_codes}
     for key in ("episode_id", "skill_index", "frame_start", "frame_end", "length"):

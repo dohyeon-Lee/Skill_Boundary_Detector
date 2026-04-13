@@ -9,10 +9,10 @@ skill_vae_latents_epoch*.npz에서 (episode_id, frame_start, frame_end, latent)�
 
 Usage:
     python examples/libero/add_skill_latents_to_dataset.py \
-        --src_dataset_dir /scratch/mdorazi/Skill_Boundary_Detector/libero_dataset/libero_10 \
-        --dst_dataset_dir /scratch/mdorazi/Skill_Boundary_Detector/libero_dataset/libero_10_skill \
-        --latents_path /scratch/mdorazi/Skill_Boundary_Detector/outputs/vae_sweep_epoch/vae_lat8_hid128/skill_vae_latents_epoch0100.npz \
-        --dst_repo_id mdorazi/libero_10_skill
+        --src_dataset_dir /scratch/mdorazi/Skill_Boundary_Detector/libero_dataset/libero_spatial_object \
+        --dst_dataset_dir /scratch/mdorazi/Skill_Boundary_Detector/libero_dataset/libero_spatial_object_skill \
+        --latents_path /scratch/mdorazi/Skill_Boundary_Detector/outputs/vae_SO/vaeSO_lat8_hid128/skill_vae_latents_epoch0200.npz \
+        --dst_repo_id mdorazi/libero_SO_skill
 """
 
 from __future__ import annotations
@@ -75,6 +75,32 @@ def get_latent_for_frame(
     return np.zeros(latent_dim, dtype=np.float32)
 
 
+def compute_skill_change_indicators(
+    frame_indices: list[int],
+    skills: list[tuple[int, int, np.ndarray]],
+    latent_dim: int,
+) -> list[float]:
+    """에피소드 내 각 프레임에 대해 skill change indicator (i) 계산.
+
+    i=1: 해당 프레임에서 스킬이 바뀜 (새 스킬 구간의 첫 프레임)
+    i=0: 스킬 유지
+
+    예) z1 z1 z2 z2 → 0 0 1 0
+    """
+    indicators = []
+    prev_lat = None
+    for frame_idx in frame_indices:
+        curr_lat = get_latent_for_frame(frame_idx, skills, latent_dim)
+        if prev_lat is None:
+            # 에피소드 첫 프레임은 항상 1 (새 skill 시작)
+            indicators.append(1.0)
+        else:
+            changed = not np.allclose(curr_lat, prev_lat)
+            indicators.append(1.0 if changed else 0.0)
+        prev_lat = curr_lat
+    return indicators
+
+
 def main(args: Args) -> None:
     src_dir = Path(args.src_dataset_dir)
     dst_dir = Path(args.dst_dataset_dir)
@@ -117,18 +143,28 @@ def main(args: Args) -> None:
             df.to_parquet(parquet_path, index=False)
             continue
 
-        # 남은 프레임에 skill latent 할당
-        # (스킬 구간 안: 해당 latent / 구간 밖 gap: zero)
-        skill_latents = [
-            get_latent_for_frame(
-                int(row["frame_index"]),
-                ep_skill_map[int(row["episode_index"])],
-                latent_dim,
-                zero_outside=True,  # gap 프레임은 항상 zero
-            )
-            for _, row in df.iterrows()
-        ]
+        # 남은 프레임에 skill latent 및 change indicator 할당
+        # 데이터는 이미 episode_index, frame_index 순으로 정렬되어 있음
+        df = df.sort_values(["episode_index", "frame_index"]).reset_index(drop=True)
+
+        skill_latents = []
+        skill_indicators = []
+
+        for ep_id, ep_df in df.groupby("episode_index", sort=True):
+            skills = ep_skill_map[int(ep_id)]
+            frame_indices = ep_df["frame_index"].tolist()
+
+            latents = [
+                get_latent_for_frame(int(f), skills, latent_dim)
+                for f in frame_indices
+            ]
+            indicators = compute_skill_change_indicators(frame_indices, skills, latent_dim)
+
+            skill_latents.extend(latents)
+            skill_indicators.extend(indicators)
+
         df["observation.states.skill"] = skill_latents
+        df["observation.states.skill_i"] = skill_indicators
         df.to_parquet(parquet_path, index=False)
 
     print(f"  Removed {len(removed_ep_ids)} episodes (no skill latent): {sorted(removed_ep_ids)}")
@@ -152,6 +188,11 @@ def main(args: Args) -> None:
         "shape": [latent_dim],
         "names": [f"skill_z{i}" for i in range(latent_dim)],
     }
+    info["features"]["observation.states.skill_i"] = {
+        "dtype": "float32",
+        "shape": [1],
+        "names": ["skill_i"],
+    }
     info_path.write_text(json.dumps(info, indent=2))
     print(f"  Updated info.json (episodes={info['total_episodes']}, frames={info['total_frames']})")
 
@@ -165,17 +206,31 @@ def main(args: Args) -> None:
             if "observation.states.skill" in df.columns:
                 all_latents.extend(df["observation.states.skill"].tolist())
         all_latents = np.array(all_latents)
+        all_indicators = []
+        for parquet_path in sorted((dst_dir / "data").rglob("*.parquet")):
+            df = pd.read_parquet(parquet_path)
+            if "observation.states.skill_i" in df.columns:
+                all_indicators.extend(df["observation.states.skill_i"].tolist())
+        all_indicators = np.array(all_indicators, dtype=np.float32)
+
         stats["observation.states.skill"] = {
             "min":  all_latents.min(axis=0).tolist(),
             "max":  all_latents.max(axis=0).tolist(),
             "mean": all_latents.mean(axis=0).tolist(),
             "std":  all_latents.std(axis=0).tolist(),
         }
+        stats["observation.states.skill_i"] = {
+            "min":  [float(all_indicators.min())],
+            "max":  [float(all_indicators.max())],
+            "mean": [float(all_indicators.mean())],
+            "std":  [float(all_indicators.std())],
+        }
         stats_path.write_text(json.dumps(stats, indent=2))
         print("  Updated stats.json")
 
     print(f"\n완료! 출력 데이터셋: {dst_dir}")
     print(f"  observation.states.skill (dim={latent_dim}) 추가됨")
+    print(f"  observation.states.skill_i (change indicator) 추가됨")
     print(f"  제거된 에피소드: {len(removed_ep_ids)}개 / 제거된 프레임: {n_frames_removed}개")
 
 

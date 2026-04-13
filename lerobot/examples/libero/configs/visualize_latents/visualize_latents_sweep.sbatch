@@ -22,7 +22,8 @@ echo "Array Task ID: $SLURM_ARRAY_TASK_ID"
 
 # ── Experiment list (must match train_vae_sweep) ───────────────────────────────
 EXPS=(
-  "vae90_lat8_hid128"
+  "vaeSO_lat8_hid128"
+  # "vae90_lat8_hid128"
   # "vae_lat32_hid128"
   # "vae_lat64_hid128"
   # "vae_lat32_hid256"
@@ -31,7 +32,7 @@ EXPS=(
 
 IDX=$SLURM_ARRAY_TASK_ID
 EXP=${EXPS[$IDX]}
-SWEEP_DIR="/scratch/mdorazi/Skill_Boundary_Detector/outputs/vae_90/${EXP}"
+SWEEP_DIR="/scratch/mdorazi/Skill_Boundary_Detector/outputs/vae_SO/${EXP}"
 
 echo "Experiment: ${EXP}"
 
@@ -49,8 +50,8 @@ for LATENTS_PATH in ${SWEEP_DIR}/skill_vae_latents_epoch*.npz; do
         --latents_path ${LATENTS_PATH} \
         --output_dir ${OUTPUT_DIR} \
         --color_by all \
-        --n_clusters 10 \
-        --dataset_dir /scratch/mdorazi/Skill_Boundary_Detector/libero_dataset/libero_90 \
+        --n_clusters 15 \
+        --dataset_dir /scratch/mdorazi/Skill_Boundary_Detector/libero_dataset/libero_spatial_object \
         --skills_per_cluster 10 \
         --wandb_project SBD_vae_viz \
         --wandb_run_name ${EXP}_${BASENAME}

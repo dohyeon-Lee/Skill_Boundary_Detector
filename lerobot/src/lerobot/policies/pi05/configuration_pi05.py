@@ -81,6 +81,18 @@ class PI05Config(PreTrainedConfig):
     freeze_vision_encoder: bool = False  # Freeze only the vision encoder
     train_expert_only: bool = False  # Freeze entire VLM, train only action expert and projections
 
+    # Skill Generator settings
+    use_skill_generator: bool = False
+    skill_z_dim: int = 8            # Dimension of skill latent vector z
+    skill_lstm_hidden_dim: int = 512
+    skill_lstm_num_layers: int = 2
+    skill_teacher_forcing: bool = True  # Use GT i, z to compute z_hold during training
+    skill_sequence_length: int = 10    # T: number of consecutive frames for LSTM training
+
+    # Skill Generator loss weights (used when i, z labels are available)
+    skill_loss_weight_i: float = 1.0
+    skill_loss_weight_z: float = 1.0
+
     # Optimizer settings: see openpi `AdamW`
     optimizer_lr: float = 2.5e-5  # see openpi `CosineDecaySchedule: peak_lr`
     optimizer_betas: tuple[float, float] = (0.9, 0.95)
@@ -132,6 +144,20 @@ class PI05Config(PreTrainedConfig):
             )
             self.input_features[OBS_STATE] = state_feature
 
+        if self.use_skill_generator:
+            skill_z_key = "observation.states.skill"
+            skill_i_key = "observation.states.skill_i"
+            if skill_z_key not in self.input_features:
+                self.input_features[skill_z_key] = PolicyFeature(
+                    type=FeatureType.STATE,
+                    shape=(self.skill_z_dim,),
+                )
+            if skill_i_key not in self.input_features:
+                self.input_features[skill_i_key] = PolicyFeature(
+                    type=FeatureType.STATE,
+                    shape=(1,),
+                )
+
         if ACTION not in self.output_features:
             action_feature = PolicyFeature(
                 type=FeatureType.ACTION,
@@ -157,7 +183,12 @@ class PI05Config(PreTrainedConfig):
         )
 
     @property
-    def observation_delta_indices(self) -> None:
+    def observation_delta_indices(self) -> list | None:
+        if self.use_skill_generator:
+            # Load skill_sequence_length consecutive frames for LSTM training.
+            # e.g. skill_sequence_length=10 → [-9, -8, ..., -1, 0]
+            # At inference, only current frame (T=1) is used with hidden state carry-over.
+            return list(range(1 - self.skill_sequence_length, 1))
         return None
 
     @property

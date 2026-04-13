@@ -225,7 +225,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
 
         # Load actual data
         if force_cache_sync or not self.reader.try_load():
-            if is_valid_version(self.revision):
+            if is_valid_version(self.revision) and self._requested_root is None:
                 self.revision = get_safe_version(self.repo_id, self.revision)
             self._download(download_videos)
             self.reader.load_and_activate()
