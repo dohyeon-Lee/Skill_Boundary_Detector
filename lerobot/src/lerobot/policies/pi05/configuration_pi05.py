@@ -80,6 +80,10 @@ class PI05Config(PreTrainedConfig):
     # Finetuning settings
     freeze_vision_encoder: bool = False  # Freeze only the vision encoder
     train_expert_only: bool = False  # Freeze entire VLM, train only action expert and projections
+    use_lora: bool = False  # Apply LoRA to action expert transformer layers
+    lora_rank: int = 16  # LoRA rank
+    lora_alpha: int = 16  # LoRA scaling factor
+    lora_dropout: float = 0.05  # LoRA dropout
 
     # Optimizer settings: see openpi `AdamW`
     optimizer_lr: float = 2.5e-5  # see openpi `CosineDecaySchedule: peak_lr`

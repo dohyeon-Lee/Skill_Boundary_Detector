@@ -7,16 +7,14 @@ Architecture:
   Decoder : LSTM with h0/c0 initialised from z
             → teacher-forced on GT actions during training
             → autoregressive at inference time
-  Loss    : masked MSE reconstruction + beta-weighted KL divergence
-
-Input  : action trajectory  (T, action_dim)
-Output : reconstructed action trajectory (T, action_dim)
-         latent code z  (latent_dim,)
+            → two heads: output_head (action) + stop_head (stop probability)
+  Loss    : masked MSE reconstruction + stop BCE + beta-weighted KL divergence
 
 Variable-length handling:
   Sequences within a batch are right-padded to the longest sequence.
   pack_padded_sequence / pad_packed_sequence are used so padding frames
   do not affect LSTM hidden states or loss computation.
+  At inference, generation stops when stop_prob > stop_threshold.
 """
 
 from __future__ import annotations
@@ -27,6 +25,7 @@ from dataclasses import dataclass
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence, pad_sequence
 from torch.utils.data import DataLoader, Dataset
 
@@ -41,37 +40,40 @@ class SkillVAE(nn.Module):
         action_dim: int,
         hidden_dim: int = 256,
         latent_dim: int = 64,
+        state_dim: int,
         num_layers: int = 2,
         dropout: float = 0.1,
+        stop_threshold: float = 0.5,
+        max_decode_steps: int = 500,
     ) -> None:
         super().__init__()
         self.action_dim = action_dim
         self.hidden_dim = hidden_dim
         self.latent_dim = latent_dim
+        self.state_dim  = state_dim
         self.num_layers = num_layers
+        self.stop_threshold = stop_threshold
+        self.max_decode_steps = max_decode_steps
 
-        enc_input_dim = action_dim
         enc_drop = dropout if num_layers > 1 else 0.0
         self.encoder_lstm = nn.LSTM(
-            enc_input_dim, hidden_dim, num_layers,
+            action_dim, hidden_dim, num_layers,
             batch_first=True, bidirectional=True, dropout=enc_drop,
         )
-        # BiLSTM last layer: fwd (hidden_dim) + bwd (hidden_dim) → 2*hidden_dim
-        self.mu_head = nn.Linear(hidden_dim * 2, latent_dim)
+        self.mu_head     = nn.Linear(hidden_dim * 2, latent_dim)
         self.logvar_head = nn.Linear(hidden_dim * 2, latent_dim)
 
-        # Decoder LSTM: h0 and c0 each have shape (num_layers, B, hidden_dim)
         dec_drop = dropout if num_layers > 1 else 0.0
-        self.z_to_h = nn.Linear(latent_dim, hidden_dim * num_layers)
-        self.z_to_c = nn.Linear(latent_dim, hidden_dim * num_layers)
-        # Decoder input: shifted GT actions (teacher forcing)
+        dec_cond_dim = latent_dim + state_dim
+        self.z_to_h = nn.Linear(dec_cond_dim, hidden_dim * num_layers)
+        self.z_to_c = nn.Linear(dec_cond_dim, hidden_dim * num_layers)
         self.decoder_lstm = nn.LSTM(
             action_dim, hidden_dim, num_layers,
             batch_first=True, dropout=dec_drop,
         )
         self.output_head = nn.Linear(hidden_dim, action_dim)
+        self.stop_head   = nn.Linear(hidden_dim, 1)
 
-        # Learned start token fed as the first decoder input
         self.start_token = nn.Parameter(torch.zeros(1, 1, action_dim))
 
         self._init_weights()
@@ -89,17 +91,15 @@ class SkillVAE(nn.Module):
 
     def encode(
         self,
-        actions: torch.Tensor,     # (B, T_max, action_dim)  padded
-        lengths: torch.Tensor,     # (B,) int64 CPU tensor
+        actions: torch.Tensor,   # (B, T_max, action_dim)
+        lengths: torch.Tensor,   # (B,) int64 CPU tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Return (mu, logvar), each (B, latent_dim)."""
         packed = pack_padded_sequence(actions, lengths.cpu(), batch_first=True, enforce_sorted=False)
         _, (h, _) = self.encoder_lstm(packed)
-        # h: (num_layers * 2, B, hidden_dim)  [fwd/bwd interleaved per layer]
-        # Last layer: index -2 (fwd) and -1 (bwd)
-        h_fwd = h[-2]   # (B, hidden_dim)
-        h_bwd = h[-1]   # (B, hidden_dim)
-        h_cat = torch.cat([h_fwd, h_bwd], dim=-1)  # (B, hidden_dim*2)
+        h_fwd = h[-2]
+        h_bwd = h[-1]
+        h_cat = torch.cat([h_fwd, h_bwd], dim=-1)
         return self.mu_head(h_cat), self.logvar_head(h_cat)
 
     # ── Reparameterisation ─────────────────────────────────────────────────────
@@ -114,62 +114,79 @@ class SkillVAE(nn.Module):
 
     # ── Decoder ────────────────────────────────────────────────────────────────
 
-    def _z_to_hidden(self, z: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """Map latent z → (h0, c0) for decoder LSTM."""
+    def _z_to_hidden(self, z: torch.Tensor, state: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         B = z.size(0)
-        h0 = self.z_to_h(z).view(B, self.num_layers, self.hidden_dim).transpose(0, 1).contiguous()
-        c0 = self.z_to_c(z).view(B, self.num_layers, self.hidden_dim).transpose(0, 1).contiguous()
+        cond = torch.cat([z, state], dim=-1)
+        h0 = self.z_to_h(cond).view(B, self.num_layers, self.hidden_dim).transpose(0, 1).contiguous()
+        c0 = self.z_to_c(cond).view(B, self.num_layers, self.hidden_dim).transpose(0, 1).contiguous()
         return h0, c0
 
     def decode(
         self,
-        z: torch.Tensor,           # (B, latent_dim)
-        actions_in: torch.Tensor,  # (B, T_max, action_dim) teacher-forced (GT actions)
-        lengths: torch.Tensor,     # (B,) int64 CPU tensor — lengths of actions_in
-    ) -> torch.Tensor:
-        """Teacher-forced decode. Return reconstructed actions (B, T_max, action_dim)."""
-        B, T, _ = actions_in.shape
-        h0, c0 = self._z_to_hidden(z)
+        z: torch.Tensor,                    # (B, latent_dim)
+        actions_in: torch.Tensor,  # (B, T_max, action_dim) teacher-forced
+        lengths: torch.Tensor,    # (B,) int64 CPU tensor
+        state: torch.Tensor,      # (B, state_dim) initial eef state
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Teacher-forced decode.
 
-        # Prepend start token; drop last GT action → decoder sees [start, a0, ..., a_{T-2}]
+        Returns:
+            recon  : (B, T_max, action_dim)
+            stop_logits : (B, T_max, 1)
+        """
+        B, T, _ = actions_in.shape
+        h0, c0 = self._z_to_hidden(z, state)
+
         start = self.start_token.expand(B, 1, -1)
-        dec_in = torch.cat([start, actions_in[:, :-1, :]], dim=1)  # (B, T, action_dim)
+        dec_in = torch.cat([start, actions_in[:, :-1, :]], dim=1)
 
         packed = pack_padded_sequence(dec_in, lengths.cpu(), batch_first=True, enforce_sorted=False)
         out_packed, _ = self.decoder_lstm(packed, (h0, c0))
         out, _ = pad_packed_sequence(out_packed, batch_first=True, total_length=T)
-        return self.output_head(out)  # (B, T, action_dim)
+
+        recon       = self.output_head(out)   # (B, T, action_dim)
+        stop_logits = self.stop_head(out)     # (B, T, 1)
+        return recon, stop_logits
 
     @torch.no_grad()
     def decode_autoregressive(
         self,
-        z: torch.Tensor,   # (B, latent_dim)
-        length: int,
+        z: torch.Tensor,      # (B, latent_dim)
+        state: torch.Tensor,  # (B, state_dim) initial eef state
     ) -> torch.Tensor:
-        """Autoregressive decode (inference). Return (B, length, action_dim)."""
+        """Autoregressive decode. Stops when stop_prob > threshold or max_decode_steps.
+
+        Returns:
+            actions : (B, T, action_dim)  where T varies per sample in batch
+                      (all samples stop at the same step — the earliest stop in batch)
+        """
         B = z.size(0)
-        h, c = self._z_to_hidden(z)
+        h, c = self._z_to_hidden(z, state)
         x = self.start_token.expand(B, 1, -1)
         outputs = []
-        for _ in range(length):
+        for _ in range(self.max_decode_steps):
             out, (h, c) = self.decoder_lstm(x, (h, c))
-            a = self.output_head(out)   # (B, 1, action_dim)
+            a    = self.output_head(out)              # (B, 1, action_dim)
+            stop = torch.sigmoid(self.stop_head(out)) # (B, 1, 1)
             outputs.append(a)
             x = a
-        return torch.cat(outputs, dim=1)  # (B, length, action_dim)
+            if stop.max().item() > self.stop_threshold:
+                break
+        return torch.cat(outputs, dim=1)  # (B, T, action_dim)
 
     # ── Forward ────────────────────────────────────────────────────────────────
 
     def forward(
         self,
-        actions: torch.Tensor,   # (B, T_max, action_dim)
-        lengths: torch.Tensor,   # (B,) int64
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Return (recon_actions, mu, logvar)."""
+        actions: torch.Tensor,  # (B, T_max, action_dim)
+        lengths: torch.Tensor,  # (B,) int64
+        state: torch.Tensor,    # (B, state_dim) initial eef state
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Return (recon_actions, stop_logits, mu, logvar)."""
         mu, logvar = self.encode(actions, lengths)
         z = self.reparameterise(mu, logvar)
-        recon = self.decode(z, actions, lengths)
-        return recon, mu, logvar
+        recon, stop_logits = self.decode(z, actions, lengths, state)
+        return recon, stop_logits, mu, logvar
 
     # ── Convenience encode/decode for numpy arrays ─────────────────────────────
 
@@ -188,46 +205,56 @@ class SkillVAE(nn.Module):
     @torch.no_grad()
     def decode_numpy(
         self,
-        z: np.ndarray,   # (latent_dim,)
-        length: int,
+        z: np.ndarray,      # (latent_dim,)
+        state: np.ndarray,  # (state_dim,) initial eef state
         device: str = "cpu",
     ) -> np.ndarray:
-        """Decode a latent code. Returns reconstructed actions (length, action_dim)."""
+        """Decode a latent code. Returns reconstructed actions (T, action_dim)."""
         z_t = torch.from_numpy(z).float().unsqueeze(0).to(device)
-        recon = self.decode_autoregressive(z_t, length)
+        s_t = torch.from_numpy(state).float().unsqueeze(0).to(device)
+        recon = self.decode_autoregressive(z_t, s_t)
         return recon.squeeze(0).cpu().numpy()
 
 
 # ── Loss ───────────────────────────────────────────────────────────────────────
 
 def vae_loss(
-    recon: torch.Tensor,    # (B, T_max, action_dim)
-    target: torch.Tensor,   # (B, T_max, action_dim)
-    mu: torch.Tensor,       # (B, latent_dim)
-    logvar: torch.Tensor,   # (B, latent_dim)
-    lengths: torch.Tensor,  # (B,) int64
+    recon: torch.Tensor,        # (B, T_max, action_dim)
+    stop_logits: torch.Tensor,  # (B, T_max, 1)
+    target: torch.Tensor,       # (B, T_max, action_dim)
+    mu: torch.Tensor,           # (B, latent_dim)
+    logvar: torch.Tensor,       # (B, latent_dim)
+    lengths: torch.Tensor,      # (B,) int64
     beta: float = 1.0,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Masked reconstruction MSE + beta * KL divergence.
+    stop_weight: float = 1.0,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Masked reconstruction MSE + stop BCE + beta * KL divergence.
 
-    Returns (total_loss, recon_loss, kl_loss).
+    Returns (total_loss, recon_loss, stop_loss, kl_loss).
     """
     B, T, D = target.shape
-    # Build validity mask (B, T, 1)
+
+    # Validity mask (B, T, 1)
     mask = torch.zeros(B, T, device=target.device)
     for i, l in enumerate(lengths):
         mask[i, :l] = 1.0
-    mask = mask.unsqueeze(-1)  # (B, T, 1)
+    mask = mask.unsqueeze(-1)
 
-    # Per-element MSE, averaged over valid positions
-    sq_err = ((recon - target) ** 2) * mask            # (B, T, D)
+    # Reconstruction loss (masked MSE)
+    sq_err    = ((recon - target) ** 2) * mask
     recon_loss = sq_err.sum() / (mask.sum() * D + 1e-8)
 
-    # KL: mean over batch and latent dims
+    # Stop loss: target is 1 at the last valid step, 0 elsewhere
+    stop_target = torch.zeros(B, T, 1, device=target.device)
+    for i, l in enumerate(lengths):
+        stop_target[i, l - 1, 0] = 1.0
+    stop_loss = (F.binary_cross_entropy_with_logits(stop_logits, stop_target, reduction="none") * mask).sum() / (mask.sum() + 1e-8)
+
+    # KL divergence
     kl_loss = -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp())
 
-    total = recon_loss + beta * kl_loss
-    return total, recon_loss, kl_loss
+    total = recon_loss + stop_weight * stop_loss + beta * kl_loss
+    return total, recon_loss, stop_loss, kl_loss
 
 
 # ── Dataset ────────────────────────────────────────────────────────────────────
@@ -235,35 +262,35 @@ def vae_loss(
 class SkillDataset(Dataset):
     """Dataset of variable-length skill segments.
 
-    Each item is an action array:
-        action_array : (T_i, action_dim)  float32 numpy
+    segments: list of action arrays (T, action_dim)
+    init_states: optional list of initial eef states (state_dim,), one per segment
     """
 
     def __init__(
         self,
         segments: list[np.ndarray],
+        init_states: list[np.ndarray],
     ) -> None:
-        self.segments = segments
+        self.segments    = segments
+        self.init_states = init_states
 
     def __len__(self) -> int:
         return len(self.segments)
 
-    def __getitem__(self, idx: int) -> tuple[torch.Tensor, int]:
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, int, torch.Tensor]:
         actions = self.segments[idx]
-        return (
-            torch.from_numpy(actions.astype(np.float32)),
-            len(actions),
-        )
+        state   = torch.from_numpy(self.init_states[idx].astype(np.float32))
+        return torch.from_numpy(actions.astype(np.float32)), len(actions), state
 
     @staticmethod
     def collate_fn(
-        batch: list[tuple[torch.Tensor, int]],
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Pad to longest sequence in batch and return (actions, lengths)."""
-        actions_list, lengths = zip(*batch)
+        batch: list[tuple[torch.Tensor, int, torch.Tensor]],
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        actions_list, lengths, states = zip(*batch)
         actions_pad = pad_sequence(actions_list, batch_first=True, padding_value=0.0)
         lengths_t   = torch.tensor(lengths, dtype=torch.long)
-        return actions_pad, lengths_t
+        states_t    = torch.stack(states)
+        return actions_pad, lengths_t, states_t
 
 
 # ── Training config ────────────────────────────────────────────────────────────
@@ -271,20 +298,25 @@ class SkillDataset(Dataset):
 @dataclass
 class VAEConfig:
     action_dim: int = 7
+    state_dim: int = 0
+    """Dimension of initial eef state fed to decoder. 0 = not used."""
     hidden_dim: int = 256
     latent_dim: int = 64
     num_layers: int = 2
     dropout: float = 0.1
-    beta: float = 1.0          # KL weight in ELBO
+    beta: float = 1.0
+    stop_weight: float = 1.0
+    stop_threshold: float = 0.5
+    max_decode_steps: int = 500
     lr: float = 3e-4
     batch_size: int = 32
     epochs: int = 100
     grad_clip: float = 1.0
     device: str = "cuda"
     val_split: float = 0.1
-    log_every: int = 10        # print every N epochs
+    log_every: int = 10
     save_path: str | None = None
-    checkpoint_every: int = 0  # 0 = disabled, N = save checkpoint every N epochs
+    checkpoint_every: int = 0
 
 
 # ── Training loop ──────────────────────────────────────────────────────────────
@@ -294,36 +326,31 @@ def train_skill_vae(
     cfg: VAEConfig,
     wandb_run=None,
     metadata: list[dict] | None = None,
+    init_states: list[np.ndarray],
 ) -> SkillVAE:
-    """Train a SkillVAE on the given list of action_array segments.
-
-    Returns the trained model (on CPU).
-    """
     if len(segments) == 0:
         raise ValueError("No skill segments provided for VAE training.")
 
+    action_dim = cfg.action_dim if cfg.action_dim > 0 else segments[0].shape[-1]
+
     print(f"[VAE] Training on {len(segments)} skill segments "
           f"(latent_dim={cfg.latent_dim}, hidden_dim={cfg.hidden_dim}, "
-          f"epochs={cfg.epochs}, beta={cfg.beta})")
+          f"epochs={cfg.epochs}, beta={cfg.beta}, stop_weight={cfg.stop_weight}, "
+          f"state_dim={cfg.state_dim})")
 
-    # Infer dims from data if not set
-    example_a = segments[0]
-    action_dim = cfg.action_dim if cfg.action_dim > 0 else example_a.shape[-1]
-
-    # Train / val split
     n_val = max(1, int(len(segments) * cfg.val_split))
     indices = np.random.permutation(len(segments))
-    train_segs = [segments[i] for i in indices[n_val:]]
-    val_segs   = [segments[i] for i in indices[:n_val]]
+    train_segs   = [segments[i] for i in indices[n_val:]]
+    val_segs     = [segments[i] for i in indices[:n_val]]
+    train_states = [init_states[i] for i in indices[n_val:]]
+    val_states   = [init_states[i] for i in indices[:n_val]]
 
-    train_ds = SkillDataset(train_segs)
-    val_ds   = SkillDataset(val_segs)
     train_loader = DataLoader(
-        train_ds, batch_size=cfg.batch_size, shuffle=True,
+        SkillDataset(train_segs, train_states), batch_size=cfg.batch_size, shuffle=True,
         collate_fn=SkillDataset.collate_fn, drop_last=False,
     )
     val_loader = DataLoader(
-        val_ds, batch_size=cfg.batch_size, shuffle=False,
+        SkillDataset(val_segs, val_states), batch_size=cfg.batch_size, shuffle=False,
         collate_fn=SkillDataset.collate_fn,
     )
 
@@ -331,8 +358,11 @@ def train_skill_vae(
         action_dim=action_dim,
         hidden_dim=cfg.hidden_dim,
         latent_dim=cfg.latent_dim,
+        state_dim=cfg.state_dim,
         num_layers=cfg.num_layers,
         dropout=cfg.dropout,
+        stop_threshold=cfg.stop_threshold,
+        max_decode_steps=cfg.max_decode_steps,
     ).to(cfg.device)
 
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -344,15 +374,17 @@ def train_skill_vae(
     best_val = math.inf
 
     for epoch in range(1, cfg.epochs + 1):
-        # ── Train ──────────────────────────────────────────────────────────────
         model.train()
-        t_total = t_recon = t_kl = 0.0
-        for actions, lengths in train_loader:
+        t_total = t_recon = t_stop = t_kl = 0.0
+        for actions, lengths, states in train_loader:
             actions = actions.to(cfg.device)
             lengths = lengths.to(cfg.device)
+            states  = states.to(cfg.device) if states is not None else None
 
-            recon, mu, logvar = model(actions, lengths)
-            loss, recon_l, kl_l = vae_loss(recon, actions, mu, logvar, lengths, cfg.beta)
+            recon, stop_logits, mu, logvar = model(actions, lengths, states)
+            loss, recon_l, stop_l, kl_l = vae_loss(
+                recon, stop_logits, actions, mu, logvar, lengths, cfg.beta, cfg.stop_weight
+            )
 
             optim.zero_grad()
             loss.backward()
@@ -361,27 +393,31 @@ def train_skill_vae(
 
             t_total += loss.item()
             t_recon += recon_l.item()
+            t_stop  += stop_l.item()
             t_kl    += kl_l.item()
 
         scheduler.step()
 
-        # ── Validation ─────────────────────────────────────────────────────────
         model.eval()
         v_total = 0.0
         with torch.no_grad():
-            for actions, lengths in val_loader:
+            for actions, lengths, states in val_loader:
                 actions = actions.to(cfg.device)
-                recon, mu, logvar = model(actions, lengths)
-                loss, _, _ = vae_loss(recon, actions, mu, logvar, lengths, cfg.beta)
+                states  = states.to(cfg.device) if states is not None else None
+                recon, stop_logits, mu, logvar = model(actions, lengths, states)
+                loss, _, _, _ = vae_loss(
+                    recon, stop_logits, actions, mu, logvar, lengths, cfg.beta, cfg.stop_weight
+                )
                 v_total += loss.item()
 
         n_train = len(train_loader)
         n_val_b = len(val_loader)
         log_dict = {
-            "train/loss": t_total / n_train,
+            "train/loss":  t_total / n_train,
             "train/recon": t_recon / n_train,
-            "train/kl": t_kl / n_train,
-            "val/loss": v_total / n_val_b,
+            "train/stop":  t_stop  / n_train,
+            "train/kl":    t_kl    / n_train,
+            "val/loss":    v_total / n_val_b,
             "epoch": epoch,
         }
         if wandb_run is not None:
@@ -390,22 +426,20 @@ def train_skill_vae(
             print(
                 f"[VAE] epoch {epoch:4d}/{cfg.epochs}  "
                 f"train: {log_dict['train/loss']:.4f} "
-                f"(recon={log_dict['train/recon']:.4f}, kl={log_dict['train/kl']:.4f})  "
+                f"(recon={log_dict['train/recon']:.4f}, "
+                f"stop={log_dict['train/stop']:.4f}, "
+                f"kl={log_dict['train/kl']:.4f})  "
                 f"val: {log_dict['val/loss']:.4f}"
             )
 
         if v_total < best_val:
             best_val = v_total
             if cfg.save_path:
-                torch.save(
-                    {"model_state": model.state_dict(), "cfg": cfg},
-                    cfg.save_path,
-                )
+                torch.save({"model_state": model.state_dict(), "cfg": cfg}, cfg.save_path)
 
         if cfg.checkpoint_every > 0 and epoch % cfg.checkpoint_every == 0 and cfg.save_path:
             ckpt_path = cfg.save_path.replace(".pt", f"_epoch{epoch:04d}.pt")
             torch.save({"model_state": model.state_dict(), "cfg": cfg, "epoch": epoch}, ckpt_path)
-            # Also save latent codes at this checkpoint
             model.eval()
             codes = []
             with torch.no_grad():
@@ -445,23 +479,16 @@ def encode_skills(
 # ── Utility: extract skill segments from episode data ─────────────────────────
 
 def extract_skill_segments(
-    gt_actions: np.ndarray,     # (T, action_dim)
-    states: np.ndarray,         # (T, state_dim)
-    boundary_ts: list[int],     # replan-frame indices of skill boundaries (from SBD)
+    gt_actions: np.ndarray,
+    states: np.ndarray,
+    boundary_ts: list[int],
     ep_end: int | None = None,
 ) -> list[tuple[np.ndarray, np.ndarray]]:
-    """Cut (gt_actions, states) into skill segments at boundary_ts.
-
-    boundary_ts are indices relative to the start of gt_actions (i.e. replan-chunk
-    indices × replan_interval).  Returns a list of (action_seg, state_seg) tuples,
-    one per skill.
-    """
     T = len(gt_actions)
     if ep_end is None:
         ep_end = T
 
     cuts = sorted(set(boundary_ts))
-    # Build segment start/end pairs: [0, cut0, cut1, ..., T]
     breakpoints = [0] + [min(c, T) for c in cuts] + [T]
     breakpoints = sorted(set(breakpoints))
 
@@ -469,7 +496,7 @@ def extract_skill_segments(
     for i in range(len(breakpoints) - 1):
         s, e = breakpoints[i], breakpoints[i + 1]
         if e - s < 2:
-            continue  # skip degenerate single-frame "skills"
+            continue
         segments.append((
             gt_actions[s:e].astype(np.float32),
             states[s:e].astype(np.float32),

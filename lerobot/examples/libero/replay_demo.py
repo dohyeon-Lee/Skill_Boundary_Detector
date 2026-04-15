@@ -56,6 +56,8 @@ class Args:
     n_episodes: int = 3
     output_dir: str = "/data2/dohyeon/SBD/outputs/replay"
     wandb_project: str | None = None
+    wandb_run_name: str | None = None
+    """Custom wandb run name. Auto-generated if None."""
     fps: int = 20
     policy_path: str | None = None
     """Path to pretrained_model dir (e.g. .../checkpoints/060000/pretrained_model)."""
@@ -83,6 +85,116 @@ class Args:
     """Override noise scheduler: 'DDPM' or 'DDIM'. None = use saved config default."""
     num_inference_steps: int | None = None
     """Override denoising steps at inference. None = use saved config default (100)."""
+    eval_at_step: int | None = None
+    """If set, compute VF error at this denoising step index (0-based) and log to wandb.
+    Requires --noise_scheduler_type DDIM --num_inference_steps N (e.g. eval_at_step=8, N=10)."""
+
+
+# ── VF error analysis ─────────────────────────────────────────────────────────
+
+def _query_vf_error(policy, global_cond, gt_chunk, eval_at_step: int):
+    """Add noise to GT action chunk at the given step's timestep, feed into UNet,
+    and return the prediction error at the last action position: (action_dim,)."""
+    import torch
+    with torch.no_grad():
+        scheduler = policy.diffusion.noise_scheduler
+        t = scheduler.timesteps[eval_at_step]
+        t_batch = torch.full((1,), t, dtype=torch.long, device=gt_chunk.device)
+        error = policy.diffusion.unet(gt_chunk, t_batch, global_cond=global_cond)
+        return error[0, -1, :].cpu().numpy()  # (action_dim,)
+
+
+def run_vf_analysis(
+    policy, preprocessor, ep_df, cam_clips, camera_keys,
+    eval_at_step: int, replan_interval: int,
+) -> tuple:
+    """Returns (replan_ts, vf_values) where vf_values is (N, action_dim).
+
+    select_action을 그대로 호출해 queue/image stacking을 동일하게 유지하고,
+    _prepare_global_conditioning을 hook으로 가로채 global_cond를 캡처한다.
+    """
+    import torch
+    from lerobot.utils.constants import OBS_STATE
+
+    policy.diffusion.noise_scheduler.set_timesteps(policy.diffusion.num_inference_steps)
+
+    n_action_steps = policy.config.n_action_steps
+    horizon = policy.config.horizon
+    eff_interval = replan_interval if replan_interval > 0 else n_action_steps
+    device = next(policy.parameters()).device
+
+    states = np.stack(ep_df["observation.state"].values)
+    cam_frames = {}
+    for cam_key, clip_path in zip(camera_keys, cam_clips):
+        reader = imageio.get_reader(str(clip_path))
+        cam_frames[cam_key] = np.stack([f for f in reader])
+        reader.close()
+
+    T = min(len(ep_df), *(len(v) for v in cam_frames.values()))
+    states = states[:T]
+    gt_actions = np.stack(ep_df["action"].values[:T])
+    for k in cam_frames:
+        cam_frames[k] = cam_frames[k][:T]
+
+    replan_ts, vf_values = [], []
+    policy.reset()
+
+    # Hook: select_action 내부의 _prepare_global_conditioning 결과를 캡처
+    _captured = {}
+    _orig_pgc = policy.diffusion._prepare_global_conditioning
+
+    def _hooking_pgc(batch):
+        gc = _orig_pgc(batch)
+        _captured["global_cond"] = gc.detach()
+        return gc
+
+    policy.diffusion._prepare_global_conditioning = _hooking_pgc
+
+    try:
+        for t in range(T):
+            obs = {k: torch.from_numpy(cam_frames[k][t]).float().div(255.0).permute(2, 0, 1)
+                   for k in camera_keys}
+            obs[OBS_STATE] = torch.from_numpy(states[t]).float()
+            obs = preprocessor(obs)
+
+            with torch.no_grad():
+                policy.select_action(obs)  # queue 유지 + global_cond 캡처
+
+            # replan 시점에만 VF error 계산
+            if t % eff_interval == 0 and "global_cond" in _captured:
+                global_cond = _captured["global_cond"]
+
+                end = min(t + horizon, T)
+                chunk = gt_actions[t:end]
+                if len(chunk) < horizon:
+                    chunk = np.concatenate([chunk, np.tile(chunk[-1:], (horizon - len(chunk), 1))], axis=0)
+                gt_chunk = torch.from_numpy(chunk).float().unsqueeze(0).to(device)
+
+                vf = _query_vf_error(policy, global_cond, gt_chunk, eval_at_step)
+                replan_ts.append(t)
+                vf_values.append(vf)
+    finally:
+        policy.diffusion._prepare_global_conditioning = _orig_pgc
+
+    return replan_ts, np.stack(vf_values)
+
+
+def plot_vf_error(replan_ts, vf_values, ep_id, ep_tag, eval_at_step, output_dir) -> Path:
+    """Plot xyz (first 3 dims) of VF error over time. Returns saved path."""
+    import matplotlib.pyplot as plt
+    fig, axes = plt.subplots(3, 1, figsize=(12, 6), sharex=True)
+    for i, (ax, label) in enumerate(zip(axes, ["x", "y", "z"])):
+        ax.plot(replan_ts, vf_values[:, i], marker="o", markersize=3)
+        ax.axhline(0, color="gray", linestyle="--", linewidth=0.8)
+        ax.set_ylabel(f"err_{label}")
+        ax.grid(True, alpha=0.3)
+    axes[-1].set_xlabel("Frame")
+    axes[0].set_title(f"VF Error | ep{ep_id} | step={eval_at_step} | {ep_tag[:60]}")
+    fig.tight_layout()
+    path = Path(output_dir) / f"ep{ep_id:05d}_vf_step{eval_at_step}.png"
+    fig.savefig(str(path), dpi=120)
+    plt.close(fig)
+    return path
 
 
 # ── Signal processing ──────────────────────────────────────────────────────────
@@ -365,7 +477,12 @@ def main(args: Args) -> None:
     progress_run = None
     if args.wandb_project:
         import wandb
-        run_name = f"task{args.task_id}_progress_vae2" if args.task_id is not None else "replay_progress"
+        if args.wandb_run_name:
+            run_name = args.wandb_run_name
+        elif args.task_id is not None:
+            run_name = f"task{args.task_id}_progress"
+        else:
+            run_name = "replay_progress"
         progress_run = wandb.init(
             project=args.wandb_project,
             name=run_name,
@@ -375,6 +492,9 @@ def main(args: Args) -> None:
                 "replan_interval": args.replan_interval,
                 "mse_smooth_method": args.mse_smooth_method,
                 "mse_smooth_window": args.mse_smooth_window,
+                "noise_scheduler_type": args.noise_scheduler_type,
+                "num_inference_steps": args.num_inference_steps,
+                "eval_at_step": args.eval_at_step,
             },
             reinit=True,
         )
@@ -548,12 +668,32 @@ def main(args: Args) -> None:
                 if mse_path:
                     print(f"    Replanning MSE:   {mse_path.name}")
 
+        # ── VF error analysis ─────────────────────────────────────────────────
+        vf_plot_path = None
+        if args.eval_at_step is not None and policy_bundle is not None:
+            print(f"    Running VF error analysis at step {args.eval_at_step} ...")
+            policy, preprocessor, postprocessor = policy_bundle
+            vf_replan_ts, vf_values = run_vf_analysis(
+                policy, preprocessor, ep_df, cam_clips, camera_keys,
+                args.eval_at_step, args.replan_interval,
+            )
+            vf_plot_path = plot_vf_error(
+                vf_replan_ts, vf_values, ep_id, ep_tag, args.eval_at_step, output_dir
+            )
+            print(f"    VF error plot:    {vf_plot_path.name}")
+
         # ── Clean up temp clips (skip_viz mode) ───────────────────────────────
         for tmp_clip in _tmp_clips:
             try:
                 tmp_clip.unlink()
             except Exception:
                 pass
+
+        # ── wandb: VF error graph ─────────────────────────────────────────────
+        if progress_run is not None and args.eval_at_step is not None:
+            if vf_plot_path and vf_plot_path.exists():
+                import wandb
+                progress_run.log({"vf_error": wandb.Image(str(vf_plot_path))})
 
         # ── wandb progress logging ─────────────────────────────────────────────
         n_done += 1

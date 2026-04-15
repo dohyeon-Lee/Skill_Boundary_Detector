@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Literal, TypedDict, Unpack
 import torch
 import torch.nn.functional as F  # noqa: N812
 from torch import Tensor, nn
+from peft import get_peft_model, LoraConfig
 
 from lerobot.utils.import_utils import _transformers_available
 
@@ -434,19 +435,33 @@ class PaliGemmaWithExpertModel(
         if self.train_expert_only:
             self.paligemma.eval()
 
+    @property
+    def _base_paligemma(self):
+        """Return unwrapped paligemma (handles PEFT wrapping)."""
+        if hasattr(self.paligemma, 'base_model'):
+            return self.paligemma.base_model.model
+        return self.paligemma
+
+    @property
+    def _base_gemma_expert(self):
+        """Return unwrapped gemma_expert (handles PEFT wrapping)."""
+        if hasattr(self.gemma_expert, 'base_model'):
+            return self.gemma_expert.base_model.model
+        return self.gemma_expert
+
     def embed_image(self, image: torch.Tensor):
         # Vision tower and multi_modal_projector are kept in float32 (params_to_keep_float32).
         out_dtype = image.dtype
         if image.dtype != torch.float32:
             image = image.to(torch.float32)
-        image_outputs = self.paligemma.model.get_image_features(image)
-        features = image_outputs.pooler_output * self.paligemma.config.text_config.hidden_size**0.5
+        image_outputs = self._base_paligemma.model.get_image_features(image)
+        features = image_outputs.pooler_output * self._base_paligemma.config.text_config.hidden_size**0.5
         if features.dtype != out_dtype:
             features = features.to(out_dtype)
         return features
 
     def embed_language_tokens(self, tokens: torch.Tensor):
-        return self.paligemma.model.language_model.embed_tokens(tokens)
+        return self._base_paligemma.model.language_model.embed_tokens(tokens)
 
     def forward(
         self,
@@ -459,8 +474,10 @@ class PaliGemmaWithExpertModel(
     ):
         if adarms_cond is None:
             adarms_cond = [None, None]
+        base_pg = self._base_paligemma
+        base_expert = self._base_gemma_expert
         if inputs_embeds[1] is None:
-            prefix_output = self.paligemma.model.language_model.forward(
+            prefix_output = base_pg.model.language_model.forward(
                 inputs_embeds=inputs_embeds[0],
                 attention_mask=attention_mask,
                 position_ids=position_ids,
@@ -472,7 +489,7 @@ class PaliGemmaWithExpertModel(
             prefix_output = prefix_output.last_hidden_state
             suffix_output = None
         elif inputs_embeds[0] is None:
-            suffix_output = self.gemma_expert.model.forward(
+            suffix_output = base_expert.model.forward(
                 inputs_embeds=inputs_embeds[1],
                 attention_mask=attention_mask,
                 position_ids=position_ids,
@@ -484,13 +501,13 @@ class PaliGemmaWithExpertModel(
             prefix_output = None
             prefix_past_key_values = None
         else:
-            models = [self.paligemma.model.language_model, self.gemma_expert.model]
-            num_layers = self.paligemma.config.text_config.num_hidden_layers
+            models = [base_pg.model.language_model, base_expert.model]
+            num_layers = base_pg.config.text_config.num_hidden_layers
 
             # Check if gradient checkpointing is enabled for any of the models
             use_gradient_checkpointing = (
-                hasattr(self.gemma_expert.model, "gradient_checkpointing")
-                and self.gemma_expert.model.gradient_checkpointing
+                hasattr(base_expert.model, "gradient_checkpointing")
+                and base_expert.model.gradient_checkpointing
                 and self.training
             ) or (hasattr(self, "gradient_checkpointing") and self.gradient_checkpointing and self.training)
 
@@ -506,8 +523,8 @@ class PaliGemmaWithExpertModel(
                         adarms_cond,
                         use_reentrant=False,
                         preserve_rng_state=False,
-                        paligemma=self.paligemma,
-                        gemma_expert=self.gemma_expert,
+                        paligemma=base_pg,
+                        gemma_expert=base_expert,
                     )
                 else:
                     inputs_embeds = compute_layer_complete(
@@ -516,8 +533,8 @@ class PaliGemmaWithExpertModel(
                         attention_mask,
                         position_ids,
                         adarms_cond,
-                        paligemma=self.paligemma,
-                        gemma_expert=self.gemma_expert,
+                        paligemma=base_pg,
+                        gemma_expert=base_expert,
                     )
 
             # final norm
@@ -573,6 +590,27 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
             train_expert_only=config.train_expert_only,
         )
 
+        if config.use_lora:
+            lora_config = LoraConfig(
+                r=config.lora_rank,
+                lora_alpha=config.lora_alpha,
+                target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+                lora_dropout=config.lora_dropout,
+            )
+            # gemma_expert has embed_tokens=None (embeddings are handled by paligemma).
+            # PEFT requires a valid embedding layer, so we temporarily restore it.
+            expert = self.paligemma_with_expert.gemma_expert
+            hidden_size = action_expert_config.width
+            dummy_embed = nn.Embedding(257152, hidden_size)
+            expert.model.embed_tokens = dummy_embed
+            expert = get_peft_model(expert, lora_config)
+            expert.model.embed_tokens = None
+            self.paligemma_with_expert.gemma_expert = expert
+
+            self.paligemma_with_expert.paligemma = get_peft_model(
+                self.paligemma_with_expert.paligemma, lora_config
+            )
+
         self.action_in_proj = nn.Linear(config.max_action_dim, action_expert_config.width)
         self.action_out_proj = nn.Linear(action_expert_config.width, config.max_action_dim)
 
@@ -589,20 +627,30 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
             # Also compile the main forward pass used during training
             self.forward = torch.compile(self.forward, mode=config.compile_mode)
 
+    def _get_paligemma_inner(self):
+        """Return the unwrapped paligemma model (handles PEFT wrapping)."""
+        pg = self.paligemma_with_expert.paligemma
+        return pg.base_model.model if self.config.use_lora else pg
+
+    def _get_gemma_expert_inner(self):
+        """Return the unwrapped gemma_expert model (handles PEFT wrapping)."""
+        expert = self.paligemma_with_expert.gemma_expert
+        return expert.base_model.model if self.config.use_lora else expert
+
     def gradient_checkpointing_enable(self):
         """Enable gradient checkpointing for memory optimization."""
         self.gradient_checkpointing_enabled = True
-        self.paligemma_with_expert.paligemma.model.language_model.gradient_checkpointing = True
-        self.paligemma_with_expert.paligemma.model.vision_tower.gradient_checkpointing = True
-        self.paligemma_with_expert.gemma_expert.model.gradient_checkpointing = True
+        self._get_paligemma_inner().model.language_model.gradient_checkpointing = True
+        self._get_paligemma_inner().model.vision_tower.gradient_checkpointing = True
+        self._get_gemma_expert_inner().model.gradient_checkpointing = True
         logging.info("Enabled gradient checkpointing for PI05Pytorch model")
 
     def gradient_checkpointing_disable(self):
         """Disable gradient checkpointing."""
         self.gradient_checkpointing_enabled = False
-        self.paligemma_with_expert.paligemma.model.language_model.gradient_checkpointing = False
-        self.paligemma_with_expert.paligemma.model.vision_tower.gradient_checkpointing = False
-        self.paligemma_with_expert.gemma_expert.model.gradient_checkpointing = False
+        self._get_paligemma_inner().model.language_model.gradient_checkpointing = False
+        self._get_paligemma_inner().model.vision_tower.gradient_checkpointing = False
+        self._get_gemma_expert_inner().model.gradient_checkpointing = False
         logging.info("Disabled gradient checkpointing for PI05Pytorch model")
 
     def _rtc_enabled(self):
