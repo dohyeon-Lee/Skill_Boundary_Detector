@@ -625,22 +625,6 @@ def eval_main(cfg: EvalPipelineConfig):
                 },
             )
 
-            # Log overall metrics
-            overall = info["overall"]
-            wandb.log({
-                "eval/pc_success": overall["pc_success"],
-                "eval/avg_sum_reward": overall["avg_sum_reward"],
-                "eval/avg_max_reward": overall["avg_max_reward"],
-                "eval/n_episodes": overall["n_episodes"],
-            })
-
-            # Log per-group metrics
-            for group_name, group_info in info.get("per_group", {}).items():
-                wandb.log({
-                    f"eval/{group_name}/pc_success": group_info["pc_success"],
-                    f"eval/{group_name}/avg_sum_reward": group_info["avg_sum_reward"],
-                })
-
             # Build task_id -> language description mapping from LIBERO suite
             task_id_to_desc: dict[int, str] = {}
             try:
@@ -652,9 +636,50 @@ def eval_main(cfg: EvalPipelineConfig):
             except Exception:
                 pass
 
-            fps = cfg.env.fps if hasattr(cfg.env, "fps") else 20
+            # Collect all scalar metrics into one dict for a single wandb.log call
+            log_dict: dict = {}
 
-            # Log videos per task with task_id and language description as title
+            # Overall metrics
+            overall = info["overall"]
+            log_dict["eval/pc_success"] = overall["pc_success"]
+            log_dict["eval/avg_sum_reward"] = overall["avg_sum_reward"]
+            log_dict["eval/avg_max_reward"] = overall["avg_max_reward"]
+            log_dict["eval/n_episodes"] = overall["n_episodes"]
+
+            # Per-group metrics
+            for group_name, group_info in info.get("per_group", {}).items():
+                log_dict[f"eval/{group_name}/pc_success"] = group_info["pc_success"]
+                log_dict[f"eval/{group_name}/avg_sum_reward"] = group_info["avg_sum_reward"]
+
+            # Per-task success count as a bar chart
+            bar_data: list[list] = []
+            for task_info in info.get("per_task", []):
+                task_id = task_info.get("task_id", 0)
+                task_group = task_info.get("task_group", "unknown")
+                successes = task_info.get("metrics", {}).get("successes", [])
+                success_count = int(sum(successes))
+                desc = task_id_to_desc.get(task_id, f"task_{task_id}")
+                label = f"task{task_id:02d}: {desc}"
+                bar_data.append([label, success_count])
+                # Also log individual task scalars for easy filtering
+                log_dict[f"eval/per_task/{task_group}/task{task_id:02d}/success_count"] = success_count
+                log_dict[f"eval/per_task/{task_group}/task{task_id:02d}/pc_success"] = (
+                    success_count / len(successes) * 100 if successes else float("nan")
+                )
+
+            if bar_data:
+                bar_data.sort(key=lambda x: x[0])  # sort by label for consistent ordering
+                table = wandb.Table(data=bar_data, columns=["task", "success_count"])
+                log_dict["eval/task_success_bar"] = wandb.plot.bar(
+                    table, "task", "success_count", title="Success Count per Task"
+                )
+
+            # Log all scalars and the bar chart in a single step
+            wandb.log(log_dict)
+
+            # Log videos separately (wandb.Video objects can't be batched with bar charts cleanly)
+            fps = cfg.env.fps if hasattr(cfg.env, "fps") else 20
+            video_log: dict = {}
             for task_info in info.get("per_task", []):
                 task_id = task_info.get("task_id", 0)
                 task_group = task_info.get("task_group", "unknown")
@@ -663,7 +688,9 @@ def eval_main(cfg: EvalPipelineConfig):
                 for video_path in task_info.get("metrics", {}).get("video_paths", []):
                     video_path = Path(video_path)
                     if video_path.exists():
-                        wandb.log({f"eval/videos/{task_group}/{label}": wandb.Video(str(video_path), fps=fps)})
+                        video_log[f"eval/videos/{task_group}/{label}"] = wandb.Video(str(video_path), fps=fps)
+            if video_log:
+                wandb.log(video_log)
 
             wandb.finish()
             logging.info("Logged eval results to wandb.")

@@ -46,7 +46,9 @@ for TASK_ID in $(seq ${START_TASK} ${END_TASK}); do
         --output_dir /scratch/mdorazi/Skill_Boundary_Detector/outputs/replay_libero_spatial_object/task${TASK_ID} \
         --save_skills \
         --skip_viz \
-        --wandb_project SBD_skill_SO
+        --wandb_project SBD_skill_SO \
+        --noise_scheduler_type DDIM \
+        --num_inference_steps 10
 
     echo "DONE task ${TASK_ID}"
 done

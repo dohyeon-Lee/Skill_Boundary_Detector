@@ -79,6 +79,10 @@ class Args:
     """Skip all video extraction and plot generation. Only run inference + skill saving."""
     mse_outlier_ratio: float = 10.0
     """If max(mse) > this × median(mse), the episode is dominated by a single outlier and is excluded from saving."""
+    noise_scheduler_type: str | None = None
+    """Override noise scheduler: 'DDPM' or 'DDIM'. None = use saved config default."""
+    num_inference_steps: int | None = None
+    """Override denoising steps at inference. None = use saved config default (100)."""
 
 
 # ── Signal processing ──────────────────────────────────────────────────────────
@@ -203,11 +207,39 @@ def get_episode_timestamps(dataset_dir: Path, episode_index: int, episodes_meta:
 
 # ── Policy loading and inference ───────────────────────────────────────────────
 
-def load_policy(policy_path: str, device: str = "cuda"):
-    from lerobot.policies.diffusion.modeling_diffusion import DiffusionPolicy
+def load_policy(
+    policy_path: str,
+    device: str = "cuda",
+    noise_scheduler_type: str | None = None,
+    num_inference_steps: int | None = None,
+):
+    from lerobot.policies.diffusion.modeling_diffusion import DiffusionPolicy, _make_noise_scheduler
     from lerobot.policies.factory import make_pre_post_processors
     policy = DiffusionPolicy.from_pretrained(policy_path)
     policy = policy.to(device).eval()
+
+    # Override scheduler type / inference steps if requested
+    if noise_scheduler_type is not None or num_inference_steps is not None:
+        cfg = policy.config
+        sched_type = noise_scheduler_type if noise_scheduler_type is not None else cfg.noise_scheduler_type
+        policy.diffusion.noise_scheduler = _make_noise_scheduler(
+            sched_type,
+            num_train_timesteps=cfg.num_train_timesteps,
+            beta_start=cfg.beta_start,
+            beta_end=cfg.beta_end,
+            beta_schedule=cfg.beta_schedule,
+            clip_sample=cfg.clip_sample,
+            clip_sample_range=cfg.clip_sample_range,
+            prediction_type=cfg.prediction_type,
+        )
+        policy.diffusion.num_inference_steps = (
+            num_inference_steps if num_inference_steps is not None else cfg.num_train_timesteps
+        )
+        print(
+            f"  [scheduler] type={sched_type}, "
+            f"num_inference_steps={policy.diffusion.num_inference_steps}"
+        )
+
     preprocessor, postprocessor = make_pre_post_processors(policy.config, pretrained_path=policy_path)
     return policy, preprocessor, postprocessor
 
