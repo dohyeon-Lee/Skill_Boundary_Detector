@@ -636,46 +636,52 @@ def eval_main(cfg: EvalPipelineConfig):
             except Exception:
                 pass
 
-            # Collect all scalar metrics into one dict for a single wandb.log call
-            log_dict: dict = {}
-
-            # Overall metrics
+            # summary/ : overall & per-group scalar metrics
+            summary_log: dict = {}
             overall = info["overall"]
-            log_dict["eval/pc_success"] = overall["pc_success"]
-            log_dict["eval/avg_sum_reward"] = overall["avg_sum_reward"]
-            log_dict["eval/avg_max_reward"] = overall["avg_max_reward"]
-            log_dict["eval/n_episodes"] = overall["n_episodes"]
+            summary_log["summary/pc_success"] = overall["pc_success"]
+            summary_log["summary/avg_sum_reward"] = overall["avg_sum_reward"]
+            summary_log["summary/avg_max_reward"] = overall["avg_max_reward"]
 
-            # Per-group metrics
             for group_name, group_info in info.get("per_group", {}).items():
-                log_dict[f"eval/{group_name}/pc_success"] = group_info["pc_success"]
-                log_dict[f"eval/{group_name}/avg_sum_reward"] = group_info["avg_sum_reward"]
+                summary_log[f"summary/{group_name}/pc_success"] = group_info["pc_success"]
+                summary_log[f"summary/{group_name}/avg_sum_reward"] = group_info["avg_sum_reward"]
+            wandb.run.summary.update(summary_log)
 
-            # Per-task success count as a bar chart
+            # charts/ : per-task success bar chart + per-episode success line chart
             bar_data: list[list] = []
-            for task_info in info.get("per_task", []):
+            episode_xs: list[list[int]] = []
+            episode_ys: list[list[int]] = []
+            task_keys: list[str] = []
+
+            for task_info in sorted(info.get("per_task", []), key=lambda t: t.get("task_id", 0)):
                 task_id = task_info.get("task_id", 0)
-                task_group = task_info.get("task_group", "unknown")
                 successes = task_info.get("metrics", {}).get("successes", [])
                 success_count = int(sum(successes))
                 desc = task_id_to_desc.get(task_id, f"task_{task_id}")
                 label = f"task{task_id:02d}: {desc}"
-                bar_data.append([label, success_count])
-                # Also log individual task scalars for easy filtering
-                log_dict[f"eval/per_task/{task_group}/task{task_id:02d}/success_count"] = success_count
-                log_dict[f"eval/per_task/{task_group}/task{task_id:02d}/pc_success"] = (
-                    success_count / len(successes) * 100 if successes else float("nan")
-                )
 
+                bar_data.append([label, success_count])
+                episode_xs.append(list(range(1, len(successes) + 1)))
+                episode_ys.append([int(s) for s in successes])
+                task_keys.append(f"task{task_id:02d}")
+
+            charts_log: dict = {}
             if bar_data:
-                bar_data.sort(key=lambda x: x[0])  # sort by label for consistent ordering
                 table = wandb.Table(data=bar_data, columns=["task", "success_count"])
-                log_dict["eval/task_success_bar"] = wandb.plot.bar(
+                charts_log["charts/task_success_bar"] = wandb.plot.bar(
                     table, "task", "success_count", title="Success Count per Task"
                 )
-
-            # Log all scalars and the bar chart in a single step
-            wandb.log(log_dict)
+            if episode_xs:
+                charts_log["charts/per_task_episode_success"] = wandb.plot.line_series(
+                    xs=episode_xs,
+                    ys=episode_ys,
+                    keys=task_keys,
+                    title="Per-Task Success per Episode",
+                    xname="episode",
+                )
+            if charts_log:
+                wandb.log(charts_log)
 
             # Log videos separately (wandb.Video objects can't be batched with bar charts cleanly)
             fps = cfg.env.fps if hasattr(cfg.env, "fps") else 20
@@ -685,10 +691,10 @@ def eval_main(cfg: EvalPipelineConfig):
                 task_group = task_info.get("task_group", "unknown")
                 desc = task_id_to_desc.get(task_id, f"task_{task_id}")
                 label = f"task{task_id:02d}: {desc}"
-                for video_path in task_info.get("metrics", {}).get("video_paths", []):
+                for ep_idx, video_path in enumerate(task_info.get("metrics", {}).get("video_paths", [])):
                     video_path = Path(video_path)
                     if video_path.exists():
-                        video_log[f"eval/videos/{task_group}/{label}"] = wandb.Video(str(video_path), fps=fps)
+                        video_log[f"videos/{task_group}/{label}/ep{ep_idx:02d}"] = wandb.Video(str(video_path), fps=fps)
             if video_log:
                 wandb.log(video_log)
 
