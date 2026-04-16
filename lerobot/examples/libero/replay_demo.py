@@ -92,23 +92,40 @@ class Args:
 
 # ── VF error analysis ─────────────────────────────────────────────────────────
 
-def _query_vf_error(policy, global_cond, gt_chunk, eval_at_step: int):
-    """Add noise to GT action chunk at the given step's timestep, feed into UNet,
-    and return the prediction error at the last action position: (action_dim,)."""
+def _query_vf_error(policy, global_cond, chunks_batch, eval_at_step: int):
+    """Feed action chunks into UNet, apply one deterministic denoising step, return x^{k-1}.
+
+    Args:
+        chunks_batch: (B, H, action_dim) tensor — GT chunk + probe chunks stacked.
+        global_cond:  (1, cond_dim) tensor — broadcast to batch size B.
+    Returns:
+        (B, action_dim) numpy array — last action step of x^{k-1} for each chunk.
+    """
     import torch
     with torch.no_grad():
         scheduler = policy.diffusion.noise_scheduler
         t = scheduler.timesteps[eval_at_step]
-        t_batch = torch.full((1,), t, dtype=torch.long, device=gt_chunk.device)
-        error = policy.diffusion.unet(gt_chunk, t_batch, global_cond=global_cond)
-        return error[0, -1, :].cpu().numpy()  # (action_dim,)
+        B = chunks_batch.shape[0]
+        t_batch = torch.full((B,), t, dtype=torch.long, device=chunks_batch.device)
+        gc = global_cond.expand(B, -1)
+        eps_pred = policy.diffusion.unet(chunks_batch, t_batch, global_cond=gc)
+        # One deterministic denoising step: x^{k-1} = α(x^k - γ·ε_θ)
+        # scheduler.step handles α/γ coefficients; DDIM is σ=0 (no noise added)
+        denoised = scheduler.step(eps_pred, t, chunks_batch).prev_sample
+        return denoised.sum(dim=1).cpu().numpy()  # (B, action_dim) — total displacement
 
 
 def run_vf_analysis(
     policy, preprocessor, ep_df, cam_clips, camera_keys,
     eval_at_step: int, replan_interval: int,
+    polar_degs=(30, 60), azimuth_step_deg=30,
+    n_gmm_components=3,
 ) -> tuple:
-    """Returns (replan_ts, vf_values) where vf_values is (N, action_dim).
+    """Returns (replan_ts, vf_values, gt_orig, divergences).
+
+    vf_values:   (N_replan, N_samples, action_dim) — index 0 is GT, rest probes.
+    gt_orig:     (N_replan, action_dim) — original GT total displacement.
+    divergences: (N_replan,) — GMM divergence scalar per replan step.
 
     select_action을 그대로 호출해 queue/image stacking을 동일하게 유지하고,
     _prepare_global_conditioning을 hook으로 가로채 global_cond를 캡처한다.
@@ -136,7 +153,7 @@ def run_vf_analysis(
     for k in cam_frames:
         cam_frames[k] = cam_frames[k][:T]
 
-    replan_ts, vf_values = [], []
+    replan_ts, vf_values, gt_orig, divergences = [], [], [], []
     policy.reset()
 
     # Hook: select_action 내부의 _prepare_global_conditioning 결과를 캡처
@@ -168,28 +185,194 @@ def run_vf_analysis(
                 chunk = gt_actions[t:end]
                 if len(chunk) < horizon:
                     chunk = np.concatenate([chunk, np.tile(chunk[-1:], (horizon - len(chunk), 1))], axis=0)
-                gt_chunk = torch.from_numpy(chunk).float().unsqueeze(0).to(device)
 
-                vf = _query_vf_error(policy, global_cond, gt_chunk, eval_at_step)
+                # Build GT + probe batch
+                chunks_np = _make_probe_chunks(chunk, polar_degs, azimuth_step_deg)  # (N, H, action_dim)
+                chunks_t = torch.from_numpy(chunks_np).float().to(device)  # (N, H, action_dim)
+                vf_batch = _query_vf_error(policy, global_cond, chunks_t, eval_at_step)  # (N, action_dim)
+                div, _ = compute_vf_divergence(vf_batch, n_components=n_gmm_components)
                 replan_ts.append(t)
-                vf_values.append(vf)
+                vf_values.append(vf_batch)
+                gt_orig.append(chunk.sum(axis=0))  # original GT total displacement (action_dim,)
+                divergences.append(div)
     finally:
         policy.diffusion._prepare_global_conditioning = _orig_pgc
 
-    return replan_ts, np.stack(vf_values)
+    return replan_ts, np.stack(vf_values), np.stack(gt_orig), np.array(divergences)
+    # shapes: (N,), (N, S, D), (N, D), (N,)
 
 
-def plot_vf_error(replan_ts, vf_values, ep_id, ep_tag, eval_at_step, output_dir) -> Path:
-    """Plot xyz (first 3 dims) of VF error over time. Returns saved path."""
+
+# ── Spherical probe sampling ───────────────────────────────────────────────────
+
+def _normalize(v, eps=1e-8):
+    n = np.linalg.norm(v)
+    if n < eps:
+        return None, n
+    return v / n, n
+
+
+def _make_local_basis(pole_vec):
+    """pole_vec: (3,) nonzero. Returns (e1, e2, e3) orthonormal basis where e3=pole direction."""
+    e3, _ = _normalize(pole_vec)
+    ref = np.array([1.0, 0.0, 0.0]) if abs(e3[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+    e1 = ref - np.dot(ref, e3) * e3
+    e1, _ = _normalize(e1)
+    e2 = np.cross(e3, e1)
+    e2, _ = _normalize(e2)
+    return e1, e2, e3
+
+
+def _rodrigues_rotation(u, v, eps=1e-8):
+    """Rotation matrix that rotates unit vector u → v."""
+    cross = np.cross(u, v)
+    dot = np.clip(np.dot(u, v), -1.0, 1.0)
+    s = np.linalg.norm(cross)
+    if s < eps and dot > 0:
+        return np.eye(3)
+    if s < eps and dot < 0:
+        ref = np.array([1.0, 0.0, 0.0]) if abs(u[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+        axis = ref - np.dot(ref, u) * u
+        axis, _ = _normalize(axis)
+        return -np.eye(3) + 2.0 * np.outer(axis, axis)
+    K = np.array([[0.0, -cross[2], cross[1]],
+                  [cross[2], 0.0, -cross[0]],
+                  [-cross[1], cross[0], 0.0]])
+    return np.eye(3) + K + K @ K * ((1.0 - dot) / (s ** 2))
+
+
+def _generate_spherical_samples(gt_delta_xyz, polar_degs=(30, 60), azimuth_step_deg=30):
+    """Generate GT + spherical probe trajectories around the GT endpoint direction.
+
+    Args:
+        gt_delta_xyz: (H, 3) delta EEF xyz chunk.
+        polar_degs: polar angles (degrees from GT direction) to sample.
+        azimuth_step_deg: azimuth step size in degrees.
+    Returns:
+        list of (H, 3) delta arrays — index 0 is GT, rest are probes.
+    """
+    gt_path = np.cumsum(gt_delta_xyz, axis=0)
+    endpoint = gt_path[-1]
+    u, _ = _normalize(endpoint)
+    if u is None:
+        return [gt_delta_xyz.copy()]  # endpoint near zero → GT only
+
+    e1, e2, e3 = _make_local_basis(endpoint)
+    result = [gt_delta_xyz.copy()]
+
+    for theta_deg in polar_degs:
+        theta = np.deg2rad(theta_deg)
+        for phi_deg in range(0, 360, azimuth_step_deg):
+            phi = np.deg2rad(phi_deg)
+            d_local = np.array([np.sin(theta) * np.cos(phi),
+                                 np.sin(theta) * np.sin(phi),
+                                 np.cos(theta)])
+            d_world, _ = _normalize(d_local[0] * e1 + d_local[1] * e2 + d_local[2] * e3)
+            R = _rodrigues_rotation(u, d_world)
+            new_path = (R @ gt_path.T).T
+            new_delta = np.zeros_like(new_path)
+            new_delta[0] = new_path[0]
+            new_delta[1:] = new_path[1:] - new_path[:-1]
+            result.append(new_delta)
+
+    return result
+
+
+def _make_probe_chunks(gt_chunk_np, polar_degs=(30, 60), azimuth_step_deg=30):
+    """Build a batch of action chunks: GT + spherical probes (xyz perturbed, rest unchanged).
+
+    Args:
+        gt_chunk_np: (H, action_dim) GT action chunk.
+    Returns:
+        (N_samples, H, action_dim) — index 0 is GT, rest are probes.
+    """
+    xyz = gt_chunk_np[:, :3]
+    rest = gt_chunk_np[:, 3:]
+
+    xyz_samples = _generate_spherical_samples(xyz, polar_degs, azimuth_step_deg)
+    chunks = []
+    for xyz_s in xyz_samples:
+        chunks.append(np.concatenate([xyz_s, rest], axis=1))
+
+    return np.stack(chunks, axis=0)  # (N_samples, H, action_dim)
+
+
+# ── GMM divergence ─────────────────────────────────────────────────────────────
+
+def compute_vf_divergence(vf_batch, n_components=3):
+    """Fit GMM to VF vectors and compute mean pairwise divergence of cluster means.
+
+    Divergence formula (cosine-based, as in the paper):
+        D = 1/(n(n-1)) * Σ_{i≠j} (1 - S_c(μ_i, μ_j))
+        S_c(a, b) = (a·b) / (||a|| ||b||)
+
+    Args:
+        vf_batch: (N_samples, action_dim) — denoised vectors at one replan step.
+        n_components: number of GMM clusters N.
+    Returns:
+        divergence: scalar
+        means: (n_components, action_dim) cluster means
+    """
+    from sklearn.mixture import GaussianMixture
+
+    n_components = min(n_components, len(vf_batch))
+    gmm = GaussianMixture(n_components=n_components, random_state=0, max_iter=200)
+    gmm.fit(vf_batch)
+    means = gmm.means_  # (n_components, action_dim)
+
+    if n_components < 2:
+        return 0.0, means
+
+    total, count = 0.0, 0
+    for i in range(n_components):
+        for j in range(n_components):
+            if i != j:
+                g_i, g_j = means[i], means[j]
+                denom = np.linalg.norm(g_i) * np.linalg.norm(g_j) + 1e-8
+                cos_sim = np.dot(g_i, g_j) / denom
+                total += 1.0 - cos_sim
+                count += 1
+
+    return total / count, means  # scalar, (n_components, action_dim)
+
+
+
+def plot_vf_error(replan_ts, vf_values, gt_orig, divergences, ep_id, ep_tag, eval_at_step, output_dir) -> Path:
+    """Plot xyz denoised trajectories + GMM divergence over replan timesteps.
+
+    Args:
+        vf_values:   (N_replan, N_samples, action_dim) — index 0 is denoised GT, rest probes.
+        gt_orig:     (N_replan, action_dim) — original GT total displacement.
+        divergences: (N_replan,) — GMM divergence scalar per replan step.
+    """
     import matplotlib.pyplot as plt
-    fig, axes = plt.subplots(3, 1, figsize=(12, 6), sharex=True)
-    for i, (ax, label) in enumerate(zip(axes, ["x", "y", "z"])):
-        ax.plot(replan_ts, vf_values[:, i], marker="o", markersize=3)
+    vf = np.array(vf_values)        # (N_replan, N_samples, action_dim)
+    gt_denoised = vf[:, 0, :]       # (N_replan, action_dim)
+    probe_vf = vf[:, 1:, :]         # (N_replan, N_probes, action_dim)
+    gt_orig = np.array(gt_orig)     # (N_replan, action_dim)
+    divs = np.array(divergences)    # (N_replan,)
+
+    fig, axes = plt.subplots(4, 1, figsize=(12, 9), sharex=True)
+    for i, (ax, label) in enumerate(zip(axes[:3], ["x", "y", "z"])):
+        for p in range(probe_vf.shape[1]):
+            ax.plot(replan_ts, probe_vf[:, p, i], color="steelblue", alpha=0.2, linewidth=0.8)
+        ax.plot(replan_ts, gt_denoised[:, i], color="tab:blue", linewidth=2.0,
+                marker="o", markersize=3, label="GT denoised")
+        ax.plot(replan_ts, gt_orig[:, i], color="tab:orange", linewidth=1.5,
+                linestyle="--", marker="x", markersize=4, label="GT orig")
         ax.axhline(0, color="gray", linestyle="--", linewidth=0.8)
-        ax.set_ylabel(f"err_{label}")
+        ax.set_ylabel(f"Δ{label}")
         ax.grid(True, alpha=0.3)
-    axes[-1].set_xlabel("Frame")
-    axes[0].set_title(f"VF Error | ep{ep_id} | step={eval_at_step} | {ep_tag[:60]}")
+    axes[0].legend(loc="upper right", fontsize=8)
+
+    # divergence subplot
+    ax_div = axes[3]
+    ax_div.plot(replan_ts, divs, color="tab:red", linewidth=2.0, marker="o", markersize=4)
+    ax_div.set_ylabel("divergence")
+    ax_div.set_xlabel("Frame")
+    ax_div.grid(True, alpha=0.3)
+
+    axes[0].set_title(f"VF denoised + GMM divergence | ep{ep_id} | step={eval_at_step} | {ep_tag[:60]}")
     fig.tight_layout()
     path = Path(output_dir) / f"ep{ep_id:05d}_vf_step{eval_at_step}.png"
     fig.savefig(str(path), dpi=120)
@@ -673,12 +856,13 @@ def main(args: Args) -> None:
         if args.eval_at_step is not None and policy_bundle is not None:
             print(f"    Running VF error analysis at step {args.eval_at_step} ...")
             policy, preprocessor, postprocessor = policy_bundle
-            vf_replan_ts, vf_values = run_vf_analysis(
+            vf_replan_ts, vf_values, gt_orig, divergences = run_vf_analysis(
                 policy, preprocessor, ep_df, cam_clips, camera_keys,
                 args.eval_at_step, args.replan_interval,
             )
             vf_plot_path = plot_vf_error(
-                vf_replan_ts, vf_values, ep_id, ep_tag, args.eval_at_step, output_dir
+                vf_replan_ts, vf_values, gt_orig, divergences,
+                ep_id, ep_tag, args.eval_at_step, output_dir
             )
             print(f"    VF error plot:    {vf_plot_path.name}")
 
@@ -691,9 +875,17 @@ def main(args: Args) -> None:
 
         # ── wandb: VF error graph ─────────────────────────────────────────────
         if progress_run is not None and args.eval_at_step is not None:
+            import wandb
             if vf_plot_path and vf_plot_path.exists():
-                import wandb
                 progress_run.log({"vf_error": wandb.Image(str(vf_plot_path))})
+            # log divergence as wandb line chart
+            div_table = wandb.Table(
+                data=[[int(ts), float(d)] for ts, d in zip(vf_replan_ts, divergences)],
+                columns=["frame", "divergence"],
+            )
+            progress_run.log({"vf_divergence": wandb.plot.line(
+                div_table, "frame", "divergence", title=f"GMM Divergence ep{ep_id}"
+            )})
 
         # ── wandb progress logging ─────────────────────────────────────────────
         n_done += 1

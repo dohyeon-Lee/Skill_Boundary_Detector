@@ -435,33 +435,34 @@ class PaliGemmaWithExpertModel(
         if self.train_expert_only:
             self.paligemma.eval()
 
-    @property
-    def _base_paligemma(self):
+    def _get_base_paligemma(self):
         """Return unwrapped paligemma (handles PEFT wrapping)."""
-        if hasattr(self.paligemma, 'base_model'):
-            return self.paligemma.base_model.model
-        return self.paligemma
+        pg = self.paligemma
+        if hasattr(pg, 'base_model'):
+            return pg.base_model.model
+        return pg
 
-    @property
-    def _base_gemma_expert(self):
+    def _get_base_gemma_expert(self):
         """Return unwrapped gemma_expert (handles PEFT wrapping)."""
-        if hasattr(self.gemma_expert, 'base_model'):
-            return self.gemma_expert.base_model.model
-        return self.gemma_expert
+        expert = self.gemma_expert
+        if hasattr(expert, 'base_model'):
+            return expert.base_model.model
+        return expert
 
     def embed_image(self, image: torch.Tensor):
         # Vision tower and multi_modal_projector are kept in float32 (params_to_keep_float32).
         out_dtype = image.dtype
         if image.dtype != torch.float32:
             image = image.to(torch.float32)
-        image_outputs = self._base_paligemma.model.get_image_features(image)
-        features = image_outputs.pooler_output * self._base_paligemma.config.text_config.hidden_size**0.5
+        pg = self._get_base_paligemma()
+        image_outputs = pg.model.get_image_features(image)
+        features = image_outputs.pooler_output * pg.config.text_config.hidden_size**0.5
         if features.dtype != out_dtype:
             features = features.to(out_dtype)
         return features
 
     def embed_language_tokens(self, tokens: torch.Tensor):
-        return self._base_paligemma.model.language_model.embed_tokens(tokens)
+        return self._get_base_paligemma().model.language_model.embed_tokens(tokens)
 
     def forward(
         self,
@@ -474,8 +475,8 @@ class PaliGemmaWithExpertModel(
     ):
         if adarms_cond is None:
             adarms_cond = [None, None]
-        base_pg = self._base_paligemma
-        base_expert = self._base_gemma_expert
+        base_pg = self._get_base_paligemma()
+        base_expert = self._get_base_gemma_expert()
         if inputs_embeds[1] is None:
             prefix_output = base_pg.model.language_model.forward(
                 inputs_embeds=inputs_embeds[0],

@@ -38,12 +38,14 @@ PYTORCH_ALLOC_CONF=expandable_segments:True lerobot-train \
     --policy.lora_alpha=16 \
     --policy.lora_dropout=0.05 \
     --policy.push_to_hub=false \
-    --save_freq=1000 \
+    --save_freq=500 \
     --steps=30000 \
     --policy.device=cuda \
     --dataset.video_backend=pyav \
     --batch_size=32 \
     --log_freq=50 \
-    --resume=true
+    --resume=true \
+    --config_path=../outputs/pi05_lora_libero_90/checkpoints/last/pretrained_model/train_config.json
+
 
 echo "DONE"
