@@ -17,6 +17,10 @@ cd /scratch/mdorazi/Skill_Boundary_Detector/lerobot
 
 source /scratch/mdorazi/Skill_Boundary_Detector/.venv/bin/activate
 
+export WANDB_CACHE_DIR=/scratch/mdorazi/.wandb_cache
+export WANDB_DATA_DIR=/scratch/mdorazi/.wandb_data
+mkdir -p ${WANDB_CACHE_DIR} ${WANDB_DATA_DIR}
+
 echo "START JOB"
 echo "Node: $SLURMD_NODENAME"
 echo "Array Task ID: $SLURM_ARRAY_TASK_ID"

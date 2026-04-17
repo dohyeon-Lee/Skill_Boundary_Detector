@@ -88,6 +88,10 @@ class Args:
     eval_at_step: int | None = None
     """If set, compute VF error at this denoising step index (0-based) and log to wandb.
     Requires --noise_scheduler_type DDIM --num_inference_steps N (e.g. eval_at_step=8, N=10)."""
+    n_gmm_components: int = 3
+    """Number of GMM clusters for VF divergence computation."""
+    plot_gmm_3d: bool = False
+    """If True, save an interactive 3D HTML plot of GMM cluster mean vectors per replanning timestep."""
 
 
 # ── VF error analysis ─────────────────────────────────────────────────────────
@@ -153,7 +157,7 @@ def run_vf_analysis(
     for k in cam_frames:
         cam_frames[k] = cam_frames[k][:T]
 
-    replan_ts, vf_values, gt_orig, divergences = [], [], [], []
+    replan_ts, vf_values, gt_orig, div_cos_list, div_l2_list, gmm_means_list = [], [], [], [], [], []
     policy.reset()
 
     # Hook: select_action 내부의 _prepare_global_conditioning 결과를 캡처
@@ -190,16 +194,19 @@ def run_vf_analysis(
                 chunks_np = _make_probe_chunks(chunk, polar_degs, azimuth_step_deg)  # (N, H, action_dim)
                 chunks_t = torch.from_numpy(chunks_np).float().to(device)  # (N, H, action_dim)
                 vf_batch = _query_vf_error(policy, global_cond, chunks_t, eval_at_step)  # (N, action_dim)
-                div, _ = compute_vf_divergence(vf_batch, n_components=n_gmm_components)
+                div_cos, div_l2, means = compute_vf_divergence(vf_batch, n_components=n_gmm_components)
                 replan_ts.append(t)
                 vf_values.append(vf_batch)
-                gt_orig.append(chunk.sum(axis=0))  # original GT total displacement (action_dim,)
-                divergences.append(div)
+                gt_orig.append(chunk.sum(axis=0))
+                div_cos_list.append(div_cos)
+                div_l2_list.append(div_l2)
+                gmm_means_list.append(means)  # (n_components, action_dim)
     finally:
         policy.diffusion._prepare_global_conditioning = _orig_pgc
 
-    return replan_ts, np.stack(vf_values), np.stack(gt_orig), np.array(divergences)
-    # shapes: (N,), (N, S, D), (N, D), (N,)
+    return (replan_ts, np.stack(vf_values), np.stack(gt_orig),
+            np.array(div_cos_list), np.array(div_l2_list), np.stack(gmm_means_list))
+    # shapes: (N,), (N, S, D), (N, D), (N,), (N,), (N, K, D)
 
 
 
@@ -253,11 +260,11 @@ def _generate_spherical_samples(gt_delta_xyz, polar_degs=(30, 60), azimuth_step_
     """
     gt_path = np.cumsum(gt_delta_xyz, axis=0)
     endpoint = gt_path[-1]
-    u, _ = _normalize(endpoint)
+    u, _ = _normalize(endpoint, eps=0.0)
     if u is None:
-        return [gt_delta_xyz.copy()]  # endpoint near zero → GT only
+        return [gt_delta_xyz.copy()]  # endpoint exactly zero → no direction, GT only
 
-    e1, e2, e3 = _make_local_basis(endpoint)
+    e1, e2, e3 = _make_local_basis(u)
     result = [gt_delta_xyz.copy()]
 
     for theta_deg in polar_degs:
@@ -300,59 +307,81 @@ def _make_probe_chunks(gt_chunk_np, polar_degs=(30, 60), azimuth_step_deg=30):
 # ── GMM divergence ─────────────────────────────────────────────────────────────
 
 def compute_vf_divergence(vf_batch, n_components=3):
-    """Fit GMM to VF vectors and compute mean pairwise divergence of cluster means.
+    """Fit GMM and compute both cosine and L2 pairwise divergence over xyz cluster means.
 
-    Divergence formula (cosine-based, as in the paper):
-        D = 1/(n(n-1)) * Σ_{i≠j} (1 - S_c(μ_i, μ_j))
-        S_c(a, b) = (a·b) / (||a|| ||b||)
-
-    Args:
-        vf_batch: (N_samples, action_dim) — denoised vectors at one replan step.
-        n_components: number of GMM clusters N.
     Returns:
-        divergence: scalar
-        means: (n_components, action_dim) cluster means
+        div_cos:  1/(n(n-1)) * Σ_{i≠j} (1 - cosine_sim(μ_i[:3], μ_j[:3]))
+        div_l2:   1/(n(n-1)) * Σ_{i≠j} ||μ_i[:3] - μ_j[:3]||₂
+        means:    (n_components, action_dim) cluster means
     """
     from sklearn.mixture import GaussianMixture
 
     n_components = min(n_components, len(vf_batch))
-    gmm = GaussianMixture(n_components=n_components, random_state=0, max_iter=200)
-    gmm.fit(vf_batch)
-    means = gmm.means_  # (n_components, action_dim)
+    data = vf_batch[:, :3].astype(np.float64)  # float64 improves numerical stability
+
+    # Try fitting with progressively relaxed reg_covar if singular covariance occurs
+    fitted = False
+    for reg_covar in [1e-6, 1e-4, 1e-2]:
+        try:
+            gmm = GaussianMixture(n_components=n_components, random_state=0, max_iter=200, reg_covar=reg_covar)
+            gmm.fit(data)
+            fitted = True
+            break
+        except (ValueError, np.linalg.LinAlgError):
+            continue
+    if not fitted:
+        # Last resort: reduce to 2 components
+        try:
+            gmm = GaussianMixture(n_components=min(2, n_components), random_state=0, max_iter=200, reg_covar=1e-1)
+            gmm.fit(data)
+            n_components = gmm.n_components
+        except Exception:
+            return 0.0, 0.0, np.zeros((n_components, vf_batch.shape[1]))
+
+    # hard assignment means — same values used for both plotting and divergence
+    labels = gmm.predict(data)
+    means_full = np.zeros((n_components, vf_batch.shape[1]))
+    for k in range(n_components):
+        mask = labels == k
+        means_full[k] = vf_batch[mask].mean(axis=0) if mask.any() else 0.0
+    means = means_full  # (n_components, action_dim)
+    means_xyz = means_full[:, :3]  # used for divergence — matches what is plotted
 
     if n_components < 2:
-        return 0.0, means
-
-    total, count = 0.0, 0
+        return 0.0, 0.0, means
+    cos_sq_total, l2_sq_total, count = 0.0, 0.0, 0
     for i in range(n_components):
         for j in range(n_components):
             if i != j:
-                g_i, g_j = means[i], means[j]
+                g_i, g_j = means_xyz[i], means_xyz[j]
                 denom = np.linalg.norm(g_i) * np.linalg.norm(g_j) + 1e-8
-                cos_sim = np.dot(g_i, g_j) / denom
-                total += 1.0 - cos_sim
+                cos_d = 1.0 - np.dot(g_i, g_j) / denom
+                l2_d = np.linalg.norm(g_i - g_j)
+                cos_sq_total += cos_d ** 2
+                l2_sq_total += l2_d ** 2
                 count += 1
 
-    return total / count, means  # scalar, (n_components, action_dim)
+    return float(np.sqrt(cos_sq_total / count)), float(np.sqrt(l2_sq_total / count)), means
 
 
 
-def plot_vf_error(replan_ts, vf_values, gt_orig, divergences, ep_id, ep_tag, eval_at_step, output_dir) -> Path:
-    """Plot xyz denoised trajectories + GMM divergence over replan timesteps.
-
-    Args:
-        vf_values:   (N_replan, N_samples, action_dim) — index 0 is denoised GT, rest probes.
-        gt_orig:     (N_replan, action_dim) — original GT total displacement.
-        divergences: (N_replan,) — GMM divergence scalar per replan step.
-    """
+def plot_vf_error(replan_ts, vf_values, gt_orig, div_cos, div_l2, gmm_means,
+                  ep_id, ep_tag, eval_at_step, output_dir) -> Path:
+    """5 subplots: Δx, Δy, Δz, cosine divergence, L2 divergence."""
     import matplotlib.pyplot as plt
-    vf = np.array(vf_values)        # (N_replan, N_samples, action_dim)
-    gt_denoised = vf[:, 0, :]       # (N_replan, action_dim)
-    probe_vf = vf[:, 1:, :]         # (N_replan, N_probes, action_dim)
-    gt_orig = np.array(gt_orig)     # (N_replan, action_dim)
-    divs = np.array(divergences)    # (N_replan,)
+    vf = np.array(vf_values)         # (N_replan, N_samples, action_dim)
+    gt_denoised = vf[:, 0, :]        # (N_replan, action_dim)
+    probe_vf = vf[:, 1:, :]          # (N_replan, N_probes, action_dim)
+    gt_orig = np.array(gt_orig)      # (N_replan, action_dim)
+    means = np.array(gmm_means)      # (N_replan, K, action_dim)
+    K = means.shape[1]
+    bar_width = (replan_ts[1] - replan_ts[0]) * 0.8 if len(replan_ts) > 1 else 4
 
-    fig, axes = plt.subplots(4, 1, figsize=(12, 9), sharex=True)
+    mean_colors = plt.cm.Set1(np.linspace(0, 1, K))
+
+    fig, axes = plt.subplots(5, 1, figsize=(12, 11), sharex=True)
+
+    # ── xyz subplots ─────────────────────────────────────────────────────────
     for i, (ax, label) in enumerate(zip(axes[:3], ["x", "y", "z"])):
         for p in range(probe_vf.shape[1]):
             ax.plot(replan_ts, probe_vf[:, p, i], color="steelblue", alpha=0.2, linewidth=0.8)
@@ -360,19 +389,26 @@ def plot_vf_error(replan_ts, vf_values, gt_orig, divergences, ep_id, ep_tag, eva
                 marker="o", markersize=3, label="GT denoised")
         ax.plot(replan_ts, gt_orig[:, i], color="tab:orange", linewidth=1.5,
                 linestyle="--", marker="x", markersize=4, label="GT orig")
+        for k in range(K):
+            ax.scatter(replan_ts, means[:, k, i], color=mean_colors[k],
+                       marker="D", s=40, zorder=5, label=f"GMM {k}" if i == 0 else None)
         ax.axhline(0, color="gray", linestyle="--", linewidth=0.8)
         ax.set_ylabel(f"Δ{label}")
         ax.grid(True, alpha=0.3)
-    axes[0].legend(loc="upper right", fontsize=8)
+    axes[0].legend(loc="upper right", fontsize=7, ncol=2)
 
-    # divergence subplot
-    ax_div = axes[3]
-    ax_div.plot(replan_ts, divs, color="tab:red", linewidth=2.0, marker="o", markersize=4)
-    ax_div.set_ylabel("divergence")
-    ax_div.set_xlabel("Frame")
-    ax_div.grid(True, alpha=0.3)
+    # ── cosine divergence ─────────────────────────────────────────────────────
+    axes[3].bar(replan_ts, div_cos, width=bar_width, align="center", alpha=0.6, color="tab:red")
+    axes[3].set_ylabel("cos div")
+    axes[3].grid(True, alpha=0.3)
 
-    axes[0].set_title(f"VF denoised + GMM divergence | ep{ep_id} | step={eval_at_step} | {ep_tag[:60]}")
+    # ── L2 divergence ─────────────────────────────────────────────────────────
+    axes[4].bar(replan_ts, div_l2, width=bar_width, align="center", alpha=0.6, color="tab:purple")
+    axes[4].set_ylabel("L2 div")
+    axes[4].set_xlabel("Frame")
+    axes[4].grid(True, alpha=0.3)
+
+    axes[0].set_title(f"VF | ep{ep_id} | step={eval_at_step} | {ep_tag[:60]}")
     fig.tight_layout()
     path = Path(output_dir) / f"ep{ep_id:05d}_vf_step{eval_at_step}.png"
     fig.savefig(str(path), dpi=120)
@@ -381,6 +417,203 @@ def plot_vf_error(replan_ts, vf_values, gt_orig, divergences, ep_id, ep_tag, eva
 
 
 # ── Signal processing ──────────────────────────────────────────────────────────
+
+def plot_vf_divergence(replan_ts, div_cos, ep_id, ep_tag, eval_at_step,
+                       output_dir, smooth_window=5, peak_nms_dist=0, polyorder=3) -> Path:
+    """Bar chart of cos divergence with SG filter, mean line, and peak markers.
+    Same visual style as replanning_mse plot.
+    """
+    import matplotlib.pyplot as plt
+
+    vals = np.array(div_cos, dtype=float)
+    bar_width = (replan_ts[1] - replan_ts[0]) * 0.8 if len(replan_ts) > 1 else 4
+
+    # SG smooth
+    sg_vals = _savgol_smooth(vals.tolist(), smooth_window, polyorder=polyorder)
+    mean_val = float(np.mean(sg_vals))
+
+    # Peak detection on smoothed signal
+    div_peak_ts, div_peak_vals = _find_peaks_above_mean(sg_vals, replan_ts, min_distance=peak_nms_dist)
+
+    fig, ax = plt.subplots(figsize=(10, 4))
+    ax.bar(replan_ts, vals, width=bar_width, align="center", alpha=0.4, color="tab:red", label="raw")
+    ax.plot(replan_ts, sg_vals, color="tab:orange", linewidth=2,
+            label=f"SG (w={smooth_window})")
+    ax.axhline(mean_val, color="tab:orange", linewidth=1.5, linestyle="--",
+               label=f"SG mean={mean_val:.4f}")
+    if div_peak_ts:
+        ax.scatter(div_peak_ts, div_peak_vals, color="red", zorder=5, s=40, label="peaks > mean")
+    ax.set_xlabel("frame")
+    ax.set_ylabel("cos divergence")
+    ax.set_xticks(replan_ts)
+    ax.set_xticklabels([str(t) for t in replan_ts], rotation=45, ha="right", fontsize=7)
+    ax.legend(fontsize=8, loc="upper right")
+    ax.grid(True, alpha=0.3, axis="y")
+    ax.set_title(f"[VF Cos Divergence] ep{ep_id} | step={eval_at_step} | {ep_tag[:60]}", fontsize=9)
+    fig.tight_layout()
+    path = Path(output_dir) / f"ep{ep_id:05d}_vf_divergence_step{eval_at_step}.png"
+    fig.savefig(str(path), dpi=120)
+    plt.close(fig)
+    return path, div_peak_ts
+
+
+def plot_vf_l2_divergence(replan_ts, div_l2, ep_id, ep_tag, eval_at_step,
+                          output_dir, smooth_window=5, peak_nms_dist=0, polyorder=3) -> Path:
+    """Bar chart of L2 divergence with SG filter, mean line, and peak markers.
+    Same visual style as plot_vf_divergence (cos).
+    """
+    import matplotlib.pyplot as plt
+
+    vals = np.array(div_l2, dtype=float)
+    bar_width = (replan_ts[1] - replan_ts[0]) * 0.8 if len(replan_ts) > 1 else 4
+
+    sg_vals = _savgol_smooth(vals.tolist(), smooth_window, polyorder=polyorder)
+    mean_val = float(np.mean(sg_vals))
+
+    l2_peak_ts, l2_peak_vals = _find_peaks_above_mean(sg_vals, replan_ts, min_distance=peak_nms_dist)
+
+    fig, ax = plt.subplots(figsize=(10, 4))
+    ax.bar(replan_ts, vals, width=bar_width, align="center", alpha=0.4, color="tab:blue", label="raw")
+    ax.plot(replan_ts, sg_vals, color="tab:cyan", linewidth=2,
+            label=f"SG (w={smooth_window})")
+    ax.axhline(mean_val, color="tab:cyan", linewidth=1.5, linestyle="--",
+               label=f"SG mean={mean_val:.4f}")
+    if l2_peak_ts:
+        ax.scatter(l2_peak_ts, l2_peak_vals, color="blue", zorder=5, s=40, label="peaks > mean")
+    ax.set_xlabel("frame")
+    ax.set_ylabel("L2 divergence")
+    ax.set_xticks(replan_ts)
+    ax.set_xticklabels([str(t) for t in replan_ts], rotation=45, ha="right", fontsize=7)
+    ax.legend(fontsize=8, loc="upper right")
+    ax.grid(True, alpha=0.3, axis="y")
+    ax.set_title(f"[VF L2 Divergence] ep{ep_id} | step={eval_at_step} | {ep_tag[:60]}", fontsize=9)
+    fig.tight_layout()
+    path = Path(output_dir) / f"ep{ep_id:05d}_vf_l2_divergence_step{eval_at_step}.png"
+    fig.savefig(str(path), dpi=120)
+    plt.close(fig)
+    return path, l2_peak_ts
+
+
+def plot_gmm_3d_interactive(
+    replan_ts, vf_values, gmm_means,
+    ep_id, ep_tag, eval_at_step, output_dir,
+) -> Path:
+    """Interactive 3D HTML: slider over replanning timesteps, each frame shows
+    GMM cluster mean vectors (from origin) and all probe VF points as scatter.
+
+    vf_values:  (N_replan, N_samples, action_dim)
+    gmm_means:  (N_replan, K, action_dim)
+    """
+    import plotly.graph_objects as go
+
+    vf = np.array(vf_values)    # (N, S, D)
+    gm = np.array(gmm_means)    # (N, K, D)
+    N, S, _ = vf.shape
+    K = gm.shape[1]
+
+    COLORS = [
+        "#e6194b", "#3cb44b", "#4363d8", "#f58231",
+        "#911eb4", "#42d4f4", "#f032e6", "#bfef45",
+    ]
+
+    frames = []
+    for idx, t in enumerate(replan_ts):
+        data = []
+
+        # ── probe scatter points ──────────────────────────────────────────────
+        pts = vf[idx]  # (S, D)
+        data.append(go.Scatter3d(
+            x=pts[:, 0], y=pts[:, 1], z=pts[:, 2],
+            mode="markers",
+            marker=dict(size=4, color="lightblue", opacity=0.6),
+            name="probes",
+        ))
+        # GT probe (index 0) highlighted
+        data.append(go.Scatter3d(
+            x=[pts[0, 0]], y=[pts[0, 1]], z=[pts[0, 2]],
+            mode="markers",
+            marker=dict(size=7, color="navy", symbol="diamond"),
+            name="GT",
+        ))
+
+        # ── GMM cluster mean vectors (origin → mean) ──────────────────────────
+        for k in range(K):
+            mx, my, mz = gm[idx, k, 0], gm[idx, k, 1], gm[idx, k, 2]
+            color = COLORS[k % len(COLORS)]
+            # line from origin to mean
+            data.append(go.Scatter3d(
+                x=[0, mx], y=[0, my], z=[0, mz],
+                mode="lines+markers",
+                line=dict(color=color, width=6),
+                marker=dict(size=[2, 10], color=color, symbol=["circle", "diamond"]),
+                name=f"cluster {k}",
+            ))
+            # cone tip for direction
+            data.append(go.Cone(
+                x=[mx], y=[my], z=[mz],
+                u=[mx * 0.15], v=[my * 0.15], w=[mz * 0.15],
+                colorscale=[[0, color], [1, color]],
+                showscale=False,
+                sizemode="absolute", sizeref=0.05,
+                name=f"cluster {k} tip",
+            ))
+
+        frames.append(go.Frame(data=data, name=str(t)))
+
+    # Build axis range from all data
+    all_xyz = vf[:, :, :3].reshape(-1, 3)
+    pad = max(np.abs(all_xyz).max() * 0.1, 0.01)
+    ax_min, ax_max = float(all_xyz.min()) - pad, float(all_xyz.max()) + pad
+
+    # Initial frame data
+    init_data = frames[0].data if frames else []
+
+    fig = go.Figure(
+        data=list(init_data),
+        frames=frames,
+        layout=go.Layout(
+            title=f"GMM 3D | ep{ep_id} | step={eval_at_step} | {ep_tag[:50]}",
+            scene=dict(
+                xaxis=dict(title="Δx", range=[ax_min, ax_max]),
+                yaxis=dict(title="Δy", range=[ax_min, ax_max]),
+                zaxis=dict(title="Δz", range=[ax_min, ax_max]),
+                aspectmode="cube",
+            ),
+            updatemenus=[dict(
+                type="buttons",
+                showactive=False,
+                y=0,
+                x=0.5,
+                xanchor="center",
+                buttons=[
+                    dict(label="▶ Play",
+                         method="animate",
+                         args=[None, {"frame": {"duration": 400, "redraw": True},
+                                      "fromcurrent": True}]),
+                    dict(label="⏸ Pause",
+                         method="animate",
+                         args=[[None], {"frame": {"duration": 0}, "mode": "immediate"}]),
+                ],
+            )],
+            sliders=[dict(
+                active=0,
+                steps=[dict(
+                    method="animate",
+                    args=[[str(t)], {"frame": {"duration": 0, "redraw": True},
+                                     "mode": "immediate"}],
+                    label=str(t),
+                ) for t in replan_ts],
+                x=0.05, y=0,
+                len=0.9,
+                currentvalue=dict(prefix="frame: ", visible=True, xanchor="center"),
+            )],
+        ),
+    )
+
+    path = Path(output_dir) / f"ep{ep_id:05d}_gmm_3d_step{eval_at_step}.html"
+    fig.write_html(str(path))
+    return path
+
 
 def _centered_moving_avg(vals: list, window: int) -> np.ndarray:
     if window <= 1:
@@ -650,7 +883,8 @@ def main(args: Args) -> None:
     policy_bundle = None
     if args.policy_path:
         print(f"Loading policy from {args.policy_path} ...")
-        policy_bundle = load_policy(args.policy_path, args.device)
+        policy_bundle = load_policy(args.policy_path, args.device,
+                                    args.noise_scheduler_type, args.num_inference_steps)
 
     skills_dir = output_dir / "skills"
     if args.save_skills:
@@ -853,18 +1087,50 @@ def main(args: Args) -> None:
 
         # ── VF error analysis ─────────────────────────────────────────────────
         vf_plot_path = None
+        vf_div_plot_path = None
+        vf_l2_div_plot_path = None
+        gmm_3d_path = None
+        div_cos_peak_ts: list = []
+        cos_div_data = None
         if args.eval_at_step is not None and policy_bundle is not None:
-            print(f"    Running VF error analysis at step {args.eval_at_step} ...")
-            policy, preprocessor, postprocessor = policy_bundle
-            vf_replan_ts, vf_values, gt_orig, divergences = run_vf_analysis(
-                policy, preprocessor, ep_df, cam_clips, camera_keys,
-                args.eval_at_step, args.replan_interval,
-            )
-            vf_plot_path = plot_vf_error(
-                vf_replan_ts, vf_values, gt_orig, divergences,
-                ep_id, ep_tag, args.eval_at_step, output_dir
-            )
-            print(f"    VF error plot:    {vf_plot_path.name}")
+            try:
+                print(f"    Running VF error analysis at step {args.eval_at_step} ...")
+                policy, preprocessor, postprocessor = policy_bundle
+                vf_replan_ts, vf_values, gt_orig, div_cos, div_l2, gmm_means = run_vf_analysis(
+                    policy, preprocessor, ep_df, cam_clips, camera_keys,
+                    args.eval_at_step, args.replan_interval,
+                    n_gmm_components=args.n_gmm_components,
+                )
+                vf_plot_path = plot_vf_error(
+                    vf_replan_ts, vf_values, gt_orig, div_cos, div_l2, gmm_means,
+                    ep_id, ep_tag, args.eval_at_step, output_dir
+                )
+                nms_dist = eff_replan * 2 if args.peak_nms else 0
+                vf_div_plot_path, div_cos_peak_ts = plot_vf_divergence(
+                    vf_replan_ts, div_cos, ep_id, ep_tag, args.eval_at_step,
+                    output_dir, smooth_window=args.mse_smooth_window, peak_nms_dist=nms_dist,
+                    polyorder=args.savgol_polyorder,
+                )
+                cos_div_data = (vf_replan_ts, div_cos.tolist())
+                vf_l2_div_plot_path, _ = plot_vf_l2_divergence(
+                    vf_replan_ts, div_l2, ep_id, ep_tag, args.eval_at_step,
+                    output_dir, smooth_window=args.mse_smooth_window, peak_nms_dist=nms_dist,
+                    polyorder=args.savgol_polyorder,
+                )
+                print(f"    VF error plot:    {vf_plot_path.name}")
+                print(f"    VF cos divergence:{vf_div_plot_path.name}")
+                print(f"    VF L2 divergence: {vf_l2_div_plot_path.name}")
+                if args.plot_gmm_3d:
+                    print(f"    Building GMM 3D interactive plot ...")
+                    gmm_3d_path = plot_gmm_3d_interactive(
+                        vf_replan_ts, vf_values, gmm_means,
+                        ep_id, ep_tag, args.eval_at_step, output_dir,
+                    )
+                    print(f"    GMM 3D plot:      {gmm_3d_path.name}")
+            except Exception as e:
+                import traceback
+                print(f"    [ERROR] VF analysis failed: {e}")
+                traceback.print_exc()
 
         # ── Clean up temp clips (skip_viz mode) ───────────────────────────────
         for tmp_clip in _tmp_clips:
@@ -872,20 +1138,6 @@ def main(args: Args) -> None:
                 tmp_clip.unlink()
             except Exception:
                 pass
-
-        # ── wandb: VF error graph ─────────────────────────────────────────────
-        if progress_run is not None and args.eval_at_step is not None:
-            import wandb
-            if vf_plot_path and vf_plot_path.exists():
-                progress_run.log({"vf_error": wandb.Image(str(vf_plot_path))})
-            # log divergence as wandb line chart
-            div_table = wandb.Table(
-                data=[[int(ts), float(d)] for ts, d in zip(vf_replan_ts, divergences)],
-                columns=["frame", "divergence"],
-            )
-            progress_run.log({"vf_divergence": wandb.plot.line(
-                div_table, "frame", "divergence", title=f"GMM Divergence ep{ep_id}"
-            )})
 
         # ── wandb progress logging ─────────────────────────────────────────────
         n_done += 1
@@ -914,8 +1166,14 @@ def main(args: Args) -> None:
             "pred_path": str(pred_path) if pred_path else None,
             "cum_path": str(cum_path) if cum_path else None,
             "mse_path": str(mse_path) if mse_path else None,
+            "vf_plot_path": str(vf_plot_path) if vf_plot_path else None,
+            "vf_div_plot_path": str(vf_div_plot_path) if vf_div_plot_path else None,
+            "vf_l2_div_plot_path": str(vf_l2_div_plot_path) if vf_l2_div_plot_path else None,
+            "gmm_3d_path": str(gmm_3d_path) if gmm_3d_path else None,
             "mse_data": mse_data_for_results,
             "sg_peak_ts": sg_peak_ts,
+            "div_cos_peak_ts": div_cos_peak_ts,
+            "cos_div_data": cos_div_data,
             "n_frames": len(ep_df),
             "slider_video": str(combined_path) if combined_path else (str(cam_clips[0]) if cam_clips else None),
         })
@@ -936,6 +1194,7 @@ def main(args: Args) -> None:
                 results, args.wandb_project, run_name,
                 replan_interval=args.replan_interval,
                 mse_smooth_window=args.mse_smooth_window,
+                savgol_polyorder=args.savgol_polyorder,
             )
         except Exception as e:
             print(f"wandb logging failed: {e}")

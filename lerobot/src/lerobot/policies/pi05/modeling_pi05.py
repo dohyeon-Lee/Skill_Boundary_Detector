@@ -438,15 +438,23 @@ class PaliGemmaWithExpertModel(
     def _get_base_paligemma(self):
         """Return unwrapped paligemma (handles PEFT wrapping)."""
         pg = self.paligemma
-        if hasattr(pg, 'base_model'):
-            return pg.base_model.model
+        try:
+            from peft import PeftModel
+            if isinstance(pg, PeftModel):
+                return pg.base_model.model
+        except ImportError:
+            pass
         return pg
 
     def _get_base_gemma_expert(self):
         """Return unwrapped gemma_expert (handles PEFT wrapping)."""
         expert = self.gemma_expert
-        if hasattr(expert, 'base_model'):
-            return expert.base_model.model
+        try:
+            from peft import PeftModel
+            if isinstance(expert, PeftModel):
+                return expert.base_model.model
+        except ImportError:
+            pass
         return expert
 
     def embed_image(self, image: torch.Tensor):

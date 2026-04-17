@@ -16,14 +16,23 @@ cd /scratch/mdorazi/Skill_Boundary_Detector/lerobot
 
 source /scratch/mdorazi/Skill_Boundary_Detector/.venv/bin/activate
 
+export WANDB_CACHE_DIR=/scratch/mdorazi/.wandb_cache
+export WANDB_DATA_DIR=/scratch/mdorazi/.wandb_data
+mkdir -p ${WANDB_CACHE_DIR} ${WANDB_DATA_DIR}
+
 echo "START JOB"
 echo "Node: $SLURMD_NODENAME"
 nvidia-smi
 
+N_OBS_STEPS=5    # obs history 길이
+N_ACTION_STEPS=16  # action chunk 길이
+HORIZON=16         # UNet prediction horizon
+
 TRAIN_CONFIG_PATH=/scratch/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/DP_train/train_dp_libero90.yaml
-OUTPUT_DIR=/scratch/mdorazi/Skill_Boundary_Detector/outputs/dp_libero_90
+OUTPUT_DIR=/scratch/mdorazi/Skill_Boundary_Detector/outputs/dp_libero_90_obs${N_OBS_STEPS}_horizon${HORIZON}
 WANDB_PROJECT=DP_train
-JOB_NAME=DP_libero90_obs10_action8_horizon8
+JOB_NAME=DP_libero90_obs${N_OBS_STEPS}_horizon${HORIZON}
+SAVE_FREQ=2000   # 체크포인트 저장 주기 (steps)
 
 RESUME_FLAG=""
 CHECKPOINT_CONFIG="${OUTPUT_DIR}/checkpoints/last/pretrained_model/train_config.json"
@@ -41,6 +50,10 @@ PYTHONPATH=/scratch/mdorazi/Skill_Boundary_Detector/lerobot/src \
   --job_name=${JOB_NAME} \
   --wandb.enable=true \
   --wandb.project=${WANDB_PROJECT} \
+  --save_freq=${SAVE_FREQ} \
+  --policy.n_obs_steps=${N_OBS_STEPS} \
+  --policy.n_action_steps=${N_ACTION_STEPS} \
+  --policy.horizon=${HORIZON} \
   ${RESUME_FLAG}
 
 echo "DONE"

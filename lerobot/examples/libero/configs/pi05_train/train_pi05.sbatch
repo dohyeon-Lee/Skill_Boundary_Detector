@@ -15,6 +15,10 @@ mkdir -p logs
 cd /scratch/mdorazi/Skill_Boundary_Detector/lerobot
 source /scratch/mdorazi/Skill_Boundary_Detector/.venv/bin/activate
 
+export WANDB_CACHE_DIR=/scratch/mdorazi/.wandb_cache
+export WANDB_DATA_DIR=/scratch/mdorazi/.wandb_data
+mkdir -p ${WANDB_CACHE_DIR} ${WANDB_DATA_DIR}
+
 echo "START JOB"
 echo "Node: $SLURMD_NODENAME"
 nvidia-smi
@@ -34,13 +38,13 @@ PYTORCH_ALLOC_CONF=expandable_segments:True lerobot-train \
     --policy.freeze_vision_encoder=false \
     --policy.train_expert_only=false \
     --policy.push_to_hub=false \
-    --save_freq=1000 \
-    --steps=30000 \
+    --save_freq=2000 \
+    --steps=100000 \
     --policy.device=cuda \
     --dataset.video_backend=pyav \
-    --batch_size=16 
-    # --resume=true \
-    # --config_path=../outputs/pi05_libero_spatial_object/checkpoints/013000/pretrained_model/train_config.json
+    --batch_size=16 \
+    --resume=true \
+    --config_path=../outputs/pi05_libero_90/checkpoints/last/pretrained_model/train_config.json
 
 # lerobot-train \
 #     --dataset.repo_id=lerobot/libero_90 \
