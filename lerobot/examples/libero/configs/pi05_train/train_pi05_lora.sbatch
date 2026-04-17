@@ -2,7 +2,7 @@
 #SBATCH --job-name=pi05_lora_train
 #SBATCH --partition=suma_a6000,asus_6000ada #asus_pro6000,suma_rtx4090,big_suma_rtx3090,base_suma_rtx3090
 #SBATCH --exclude=node19,node13,node18,node16,node08,node10,node21,node14,node04,node05,node31
-#SBATCH --qos=big_qos
+#SBATCH --qos=base_qos
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G

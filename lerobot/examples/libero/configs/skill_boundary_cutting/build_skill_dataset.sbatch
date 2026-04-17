@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=skill_divider
+#SBATCH --job-name=build_skill_dataset
 #SBATCH --partition=suma_a6000,asus_6000ada,asus_pro6000,suma_rtx4090,big_suma_rtx3090,base_suma_rtx3090
 #SBATCH --exclude=node19,node13,node18,node16,node08,node10,node21,node14,node04,node05,node31
 #SBATCH --qos=base_qos
@@ -7,8 +7,9 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
 #SBATCH --time=4:00:00
-#SBATCH --output=logs/%x_%j.out
-#SBATCH --error=logs/%x_%j.err
+#SBATCH --array=0-14
+#SBATCH --output=logs/%x_%A_%a.out
+#SBATCH --error=logs/%x_%A_%a.err
 set -euo pipefail
 mkdir -p logs
 
@@ -22,40 +23,55 @@ mkdir -p ${WANDB_CACHE_DIR} ${WANDB_DATA_DIR}
 
 echo "START JOB"
 echo "Node: $SLURMD_NODENAME"
+echo "Array Task ID: $SLURM_ARRAY_TASK_ID"
 nvidia-smi
 
 # ── 설정 ──────────────────────────────────────────────────────────────────────
-# 스킬 영상 상단에 episode번호, 해당 episode에서 몇번째 스킬인지도 표시 필요
-TASK_ID=4
-N_EPISODES=3
-N_GMM=5
 DN_STEP=7
+N_GMM=5
 
-SMOOTH_WINDOW=7 
+SMOOTH_WINDOW=7
 SAVGOL_POLYORDER=4
 
-REPLAN_INTERVAL=3 
+REPLAN_INTERVAL=3
 NMS_DIST=10
 
-POLICY_PATH=/scratch/mdorazi/Skill_Boundary_Detector/outputs/dp_libero90_yonsei_pretrain/checkpoints/080000/pretrained_model
-DATASET_DIR=/scratch/mdorazi/Skill_Boundary_Detector/libero_dataset/libero_90
-OUTPUT_DIR=/scratch/mdorazi/Skill_Boundary_Detector/outputs/skill_divider/task${TASK_ID}
+POLICY=dp_libero90_yonsei_pretrain
+CHECKPOINT=080000
+DATASET=libero_90
 
-PLOT_GMM_3D=false   # true로 바꾸면 에피소드별 인터랙티브 3D HTML 생성
+POLICY_PATH=/scratch/mdorazi/Skill_Boundary_Detector/outputs/${POLICY}/checkpoints/${CHECKPOINT}/pretrained_model
+DATASET_DIR=/scratch/mdorazi/Skill_Boundary_Detector/libero_dataset/${DATASET}
+OUTPUT_DIR=/scratch/mdorazi/Skill_Boundary_Detector/outputs/skill_dataset
 
-WANDB_PROJECT=DP_eval
-WANDB_RUN_NAME=task${TASK_ID}_${N_EPISODES}eps_${N_GMM}gmm_${DN_STEP}step
+WANDB_PROJECT=Skill_dataset
 # ─────────────────────────────────────────────────────────────────────────────
+
+# 각 array job이 5개 task 처리 (0-14 × 5 = task 0~74, 72 초과는 skip)
+TASKS_PER_JOB=5
+START_TASK=$(( SLURM_ARRAY_TASK_ID * TASKS_PER_JOB ))
+END_TASK=$(( START_TASK + TASKS_PER_JOB - 1 ))
+
+TASK_IDS=""
+for TASK_ID in $(seq ${START_TASK} ${END_TASK}); do
+    if [ ${TASK_ID} -gt 72 ]; then
+        break
+    fi
+    TASK_IDS="${TASK_IDS} ${TASK_ID}"
+done
+
+echo "Processing tasks:${TASK_IDS}"
+
+WANDB_RUN_NAME=array${SLURM_ARRAY_TASK_ID}_tasks${START_TASK}-${END_TASK}
 
 WANDB_MODE=online \
 WANDB_DIR=${OUTPUT_DIR} \
 PYTHONPATH=/scratch/mdorazi/Skill_Boundary_Detector/lerobot/src \
-  python examples/libero/skill_divider.py \
+  python examples/libero/build_skill_dataset.py \
     --dataset_dir ${DATASET_DIR} \
-    --task_id ${TASK_ID} \
-    --n_episodes ${N_EPISODES} \
     --policy_path ${POLICY_PATH} \
     --output_dir ${OUTPUT_DIR} \
+    --task_ids ${TASK_IDS} \
     --replan_interval ${REPLAN_INTERVAL} \
     --nms_dist ${NMS_DIST} \
     --noise_scheduler_type DDIM \
@@ -64,8 +80,8 @@ PYTHONPATH=/scratch/mdorazi/Skill_Boundary_Detector/lerobot/src \
     --n_gmm_components ${N_GMM} \
     --smooth_window ${SMOOTH_WINDOW} \
     --savgol_polyorder ${SAVGOL_POLYORDER} \
-    $([ "${PLOT_GMM_3D}" = "true" ] && echo "--plot_gmm_3d") \
+    --resume \
     --wandb_project ${WANDB_PROJECT} \
     --wandb_run_name ${WANDB_RUN_NAME}
 
-echo "DONE"
+echo "DONE array ${SLURM_ARRAY_TASK_ID}"

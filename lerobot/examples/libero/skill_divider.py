@@ -667,7 +667,7 @@ def main(args: Args) -> None:
         t1b = time.time()
         main_cam_key = camera_keys[0]
         combined_path = output_dir / f"ep{ep_id:05d}_main.mp4"
-        viz.write_single_video(cam_frames[main_cam_key], combined_path)
+        viz.write_single_video(cam_frames[main_cam_key], combined_path, ep_id=ep_id)
         print(f"    [time] video write: {time.time()-t1b:.1f}s")
 
         # ── VF divergence analysis ─────────────────────────────────────────────

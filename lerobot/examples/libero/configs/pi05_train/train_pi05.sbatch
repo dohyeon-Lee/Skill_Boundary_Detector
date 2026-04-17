@@ -23,12 +23,15 @@ echo "START JOB"
 echo "Node: $SLURMD_NODENAME"
 nvidia-smi
 
+DATASET=libero_spatial_object # libero_spatial_object
+CONFIG_PATH=../outputs/pi05_${DATASET}/checkpoints/last/pretrained_model/train_config.json
+
 PYTORCH_ALLOC_CONF=expandable_segments:True lerobot-train \
-    --dataset.repo_id=lerobot/libero_90 \
-    --dataset.root=/scratch/mdorazi/Skill_Boundary_Detector/libero_dataset/libero_90 \
+    --dataset.repo_id=lerobot/${DATASET} \
+    --dataset.root=/scratch/mdorazi/Skill_Boundary_Detector/libero_dataset/${DATASET} \
     --policy.type=pi05 \
-    --output_dir=../outputs/pi05_libero_90 \
-    --job_name=pi05_PT_libero90 \
+    --output_dir=../outputs/pi05_${DATASET} \
+    --job_name=pi05_PT_${DATASET} \
     --policy.pretrained_path=lerobot/pi05_base \
     --policy.compile_model=true \
     --policy.gradient_checkpointing=true \
@@ -38,13 +41,13 @@ PYTORCH_ALLOC_CONF=expandable_segments:True lerobot-train \
     --policy.freeze_vision_encoder=false \
     --policy.train_expert_only=false \
     --policy.push_to_hub=false \
-    --save_freq=2000 \
+    --save_freq=1000 \
     --steps=100000 \
     --policy.device=cuda \
     --dataset.video_backend=pyav \
     --batch_size=16 \
     --resume=true \
-    --config_path=../outputs/pi05_libero_90/checkpoints/last/pretrained_model/train_config.json
+    --config_path=${CONFIG_PATH}
 
 # lerobot-train \
 #     --dataset.repo_id=lerobot/libero_90 \

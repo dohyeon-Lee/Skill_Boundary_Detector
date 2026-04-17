@@ -38,9 +38,9 @@ class SkillVAE(nn.Module):
     def __init__(
         self,
         action_dim: int,
+        state_dim: int,
         hidden_dim: int = 256,
         latent_dim: int = 64,
-        state_dim: int,
         num_layers: int = 2,
         dropout: float = 0.1,
         stop_threshold: float = 0.5,
@@ -235,19 +235,15 @@ def vae_loss(
     B, T, D = target.shape
 
     # Validity mask (B, T, 1)
-    mask = torch.zeros(B, T, device=target.device)
-    for i, l in enumerate(lengths):
-        mask[i, :l] = 1.0
-    mask = mask.unsqueeze(-1)
+    arange = torch.arange(T, device=target.device).unsqueeze(0)  # (1, T)
+    lengths_dev = lengths.to(target.device)
+    mask = (arange < lengths_dev.unsqueeze(1)).unsqueeze(-1).float()  # (B, T, 1)
 
     # Reconstruction loss (masked MSE)
-    sq_err    = ((recon - target) ** 2) * mask
-    recon_loss = sq_err.sum() / (mask.sum() * D + 1e-8)
+    recon_loss = (((recon - target) ** 2) * mask).sum() / (mask.sum() * D + 1e-8)
 
     # Stop loss: target is 1 at the last valid step, 0 elsewhere
-    stop_target = torch.zeros(B, T, 1, device=target.device)
-    for i, l in enumerate(lengths):
-        stop_target[i, l - 1, 0] = 1.0
+    stop_target = (arange == (lengths_dev.unsqueeze(1) - 1)).unsqueeze(-1).float()  # (B, T, 1)
     stop_loss = (F.binary_cross_entropy_with_logits(stop_logits, stop_target, reduction="none") * mask).sum() / (mask.sum() + 1e-8)
 
     # KL divergence
@@ -378,8 +374,7 @@ def train_skill_vae(
         t_total = t_recon = t_stop = t_kl = 0.0
         for actions, lengths, states in train_loader:
             actions = actions.to(cfg.device)
-            lengths = lengths.to(cfg.device)
-            states  = states.to(cfg.device) if states is not None else None
+            states  = states.to(cfg.device)
 
             recon, stop_logits, mu, logvar = model(actions, lengths, states)
             loss, recon_l, stop_l, kl_l = vae_loss(
@@ -403,7 +398,7 @@ def train_skill_vae(
         with torch.no_grad():
             for actions, lengths, states in val_loader:
                 actions = actions.to(cfg.device)
-                states  = states.to(cfg.device) if states is not None else None
+                states  = states.to(cfg.device)
                 recon, stop_logits, mu, logvar = model(actions, lengths, states)
                 loss, _, _, _ = vae_loss(
                     recon, stop_logits, actions, mu, logvar, lengths, cfg.beta, cfg.stop_weight
@@ -475,30 +470,3 @@ def encode_skills(
         codes.append(z)
     return np.stack(codes)
 
-
-# ── Utility: extract skill segments from episode data ─────────────────────────
-
-def extract_skill_segments(
-    gt_actions: np.ndarray,
-    states: np.ndarray,
-    boundary_ts: list[int],
-    ep_end: int | None = None,
-) -> list[tuple[np.ndarray, np.ndarray]]:
-    T = len(gt_actions)
-    if ep_end is None:
-        ep_end = T
-
-    cuts = sorted(set(boundary_ts))
-    breakpoints = [0] + [min(c, T) for c in cuts] + [T]
-    breakpoints = sorted(set(breakpoints))
-
-    segments = []
-    for i in range(len(breakpoints) - 1):
-        s, e = breakpoints[i], breakpoints[i + 1]
-        if e - s < 2:
-            continue
-        segments.append((
-            gt_actions[s:e].astype(np.float32),
-            states[s:e].astype(np.float32),
-        ))
-    return segments

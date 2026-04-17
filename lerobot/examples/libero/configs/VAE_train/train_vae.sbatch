@@ -23,14 +23,16 @@ echo "START JOB"
 echo "Node: $SLURMD_NODENAME"
 nvidia-smi
 
-EXP_NAME="vaeSO_lat8_hid128"
-OUTPUT_DIR="/scratch/mdorazi/Skill_Boundary_Detector/outputs/vae_SO_beta_state/${EXP_NAME}"
+DATA=libero_90
+LATENT_DIM=16
+EXP_NAME="${LATENT_DIM}_lat${LATENT_DIM}"
+OUTPUT_DIR="/scratch/mdorazi/Skill_Boundary_Detector/outputs/${LATENT_DIM}_skill_latents/${EXP_NAME}"
 
 PYTHONPATH=/scratch/mdorazi/Skill_Boundary_Detector/lerobot/src \
   python examples/libero/train_vae.py \
-    --skills_dir /scratch/mdorazi/Skill_Boundary_Detector/outputs/replay_libero_spatial_object \
+    --skills_dir /scratch/mdorazi/Skill_Boundary_Detector/outputs/skill_dataset/skills \
     --output_dir ${OUTPUT_DIR} \
-    --latent_dim 8 \
+    --latent_dim ${LATENT_DIM} \
     --hidden_dim 128 \
     --num_layers 2 \
     --epochs 500 \
@@ -39,8 +41,7 @@ PYTHONPATH=/scratch/mdorazi/Skill_Boundary_Detector/lerobot/src \
     --batch_size 32 \
     --min_skill_len 10 \
     --checkpoint_every 100 \
-    --mode state \
-    --wandb_project SBD_vae_SO \
+    --wandb_project VAE_train \
     --wandb_run_name ${EXP_NAME}
 
 echo "DONE ${EXP_NAME}"

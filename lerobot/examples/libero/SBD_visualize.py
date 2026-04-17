@@ -25,10 +25,17 @@ class SkillVisualizer:
 
     # ── Video helpers ──────────────────────────────────────────────────────────
 
-    def _overlay_timestep(self, frame: np.ndarray, t: int, ep_start: int = 0) -> np.ndarray:
+    def _overlay_timestep(self, frame: np.ndarray, t: int, ep_start: int = 0,
+                          ep_id: int | None = None, skill_idx: int | None = None) -> np.ndarray:
         img = Image.fromarray(frame)
         draw = ImageDraw.Draw(img)
-        text = f"t={t - ep_start:04d}  (frame {t})"
+        parts = []
+        if ep_id is not None:
+            parts.append(f"ep{ep_id:05d}")
+        if skill_idx is not None:
+            parts.append(f"skill {skill_idx}")
+        parts.append(f"t={t - ep_start:04d}  (frame {t})")
+        text = " | ".join(parts)
         draw.text((9, 9), text, fill=(0, 0, 0))
         draw.text((8, 8), text, fill=(255, 255, 255))
         return np.array(img)
@@ -53,11 +60,11 @@ class SkillVisualizer:
         n_frames = len(raw) // frame_size
         return np.frombuffer(raw, dtype=np.uint8).reshape(n_frames, h, w, 3).copy()
 
-    def write_single_video(self, frames: np.ndarray, dst: Path) -> None:
+    def write_single_video(self, frames: np.ndarray, dst: Path, ep_id: int | None = None) -> None:
         """단일 카메라 프레임을 mp4로 저장. frames: (T, H, W, C)"""
         writer = imageio.get_writer(str(dst), fps=self.fps, codec="libx264", pixelformat="yuv420p", macro_block_size=1)
         for i, frame in enumerate(frames):
-            writer.append_data(self._overlay_timestep(frame, i))
+            writer.append_data(self._overlay_timestep(frame, i, ep_id=ep_id))
         writer.close()
 
     def write_combined_video(self, frames_l: np.ndarray, frames_r: np.ndarray, dst: Path) -> None:
@@ -74,7 +81,7 @@ class SkillVisualizer:
             skill_path = self.output_dir / f"ep{ep_id:05d}_skill{i + 1}.mp4"
             writer = imageio.get_writer(str(skill_path), fps=self.fps, codec="libx264", pixelformat="yuv420p", macro_block_size=1)
             for t, frame in enumerate(frames[start:min(end, len(frames))]):
-                writer.append_data(self._overlay_timestep(frame, start + t))
+                writer.append_data(self._overlay_timestep(frame, start + t, ep_id=ep_id, skill_idx=i + 1))
             writer.close()
             skill_paths.append(skill_path)
         return skill_paths
