@@ -12,11 +12,13 @@
 set -euo pipefail
 mkdir -p logs
 
-cd /scratch/mdorazi/Skill_Boundary_Detector/lerobot
-source /scratch/mdorazi/Skill_Boundary_Detector/.venv/bin/activate
+HOMEDIR=/scratch/mdorazi
+PROJDIR=/Skill_Boundary_Detector
+cd ${HOMEDIR}${PROJDIR}/lerobot
+source ${HOMEDIR}${PROJDIR}/.venv/bin/activate
 
-export WANDB_CACHE_DIR=/scratch/mdorazi/.wandb_cache
-export WANDB_DATA_DIR=/scratch/mdorazi/.wandb_data
+export WANDB_CACHE_DIR=${HOMEDIR}/.wandb_cache
+export WANDB_DATA_DIR=${HOMEDIR}/.wandb_data
 mkdir -p ${WANDB_CACHE_DIR} ${WANDB_DATA_DIR}
 export WANDB_DISABLE_SYMLINKS=true
 
@@ -24,7 +26,7 @@ echo "START JOB"
 echo "Node: $SLURMD_NODENAME"
 nvidia-smi
 
-DATASET=libero_spatial_object # libero_spatial_object
+DATASET=libero_90 # libero_spatial_object
 CONFIG_PATH=../outputs/pi05_${DATASET}/checkpoints/last/pretrained_model/train_config.json
 
 RESUME_ARGS=""
@@ -37,9 +39,9 @@ fi
 
 PYTORCH_ALLOC_CONF=expandable_segments:True lerobot-train \
     --dataset.repo_id=lerobot/${DATASET} \
-    --dataset.root=/scratch/mdorazi/Skill_Boundary_Detector/libero_dataset/${DATASET} \
+    --dataset.root=${HOMEDIR}${PROJDIR}/libero_dataset/${DATASET} \
     --policy.type=pi05 \
-    --output_dir=../outputs/pi05_${DATASET} \
+    --output_dir=../outputs/pi05_${DATASET}_2 \
     --job_name=pi05_PT_${DATASET} \
     --policy.pretrained_path=lerobot/pi05_base \
     --policy.compile_model=true \
@@ -51,55 +53,10 @@ PYTORCH_ALLOC_CONF=expandable_segments:True lerobot-train \
     --policy.train_expert_only=false \
     --policy.push_to_hub=false \
     --save_freq=1000 \
-    --steps=100000 \
+    --steps=500000 \
     --policy.device=cuda \
     --dataset.video_backend=pyav \
     --batch_size=16 \
     ${RESUME_ARGS}
-
-# lerobot-train \
-#     --dataset.repo_id=lerobot/libero_90 \
-#     --dataset.root=/scratch/mdorazi/Skill_Boundary_Detector/libero_dataset/libero_90 \
-#     --policy.type=pi05 \
-#     --output_dir=../outputs/pi05_libero_90 \
-#     --job_name=pi05_training_90 \
-#     --policy.pretrained_path=lerobot/pi05_base \
-#     --policy.compile_model=true \
-#     --policy.gradient_checkpointing=true \
-#     --wandb.enable=true \
-#     --policy.dtype=bfloat16 \
-#     --policy.freeze_vision_encoder=false \
-#     --policy.train_expert_only=false \
-#     --policy.push_to_hub=false \
-#     --save_freq=1000 \
-#     --steps=30000 \
-#     --policy.device=cuda \
-#     --dataset.video_backend=pyav \
-#     --batch_size=32
-#     # --resume=true
-
-# for RLLAB cluster
-# PYTORCH_ALLOC_CONF=expandable_segments:True lerobot-train \
-#     --dataset.repo_id=lerobot/libero_spatial_object \
-#     --dataset.root=/data2/dohyeon/SBD/libero_dataset/libero_spatial_object \
-#     --policy.type=pi05 \
-#     --output_dir=../outputs/pi05_libero_spatial_object \
-#     --job_name=pi05_training_SO \
-#     --policy.pretrained_path=lerobot/pi05_base \
-#     --policy.compile_model=true \
-#     --policy.gradient_checkpointing=true \
-#     --wandb.enable=true \
-#     --policy.dtype=bfloat16 \
-#     --policy.freeze_vision_encoder=false \
-#     --policy.train_expert_only=false \
-#     --policy.push_to_hub=false \
-#     --save_freq=1000 \
-#     --steps=30000 \
-#     --policy.device=cuda \
-#     --dataset.video_backend=pyav \
-#     --batch_size=8
-
-# # cd /scratch/mdorazi/Skill_Boundary_Detector/lerobot
-# # wandb sync outputs/pi05_libero_90/wandb/run-*
 
 echo "DONE"
