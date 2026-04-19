@@ -66,6 +66,8 @@ class Args:
     """Filter out skill segments shorter than this (frames)."""
     checkpoint_every: int = 0
     """Save a checkpoint every N epochs. 0 = disabled."""
+    resume_from: str | None = None
+    """Path to a checkpoint .pt file to resume training from."""
     wandb_project: str | None = None
     """If set, log training loss to this wandb project."""
     wandb_run_name: str = "skill_vae"
@@ -88,6 +90,7 @@ def load_skill_files(skills_dir: Path) -> tuple[list, list[np.ndarray], list[dic
         metadata.append({
             "file": str(f.name),
             "episode_id": int(d["episode_id"]),
+            "task_id": int(d["task_id"]) if "task_id" in d else -1,
             "skill_index": int(d["skill_index"]),
             "frame_start": int(d["frame_start"]),
             "frame_end": int(d["frame_end"]),
@@ -120,6 +123,14 @@ def main(args: Args) -> None:
         segments, init_states, metadata = list(segments), list(init_states), list(metadata)
         print(f"[VAE] Filtered short skills: {before} → {len(segments)} (min_len={args.min_skill_len})")
 
+    all_actions = np.concatenate(segments, axis=0)
+    action_min = all_actions.min(axis=0)
+    action_max = all_actions.max(axis=0)
+    np.savez(str(output_dir / "action_stats.npz"), action_min=action_min, action_max=action_max)
+    print(f"[VAE] Action stats saved → {output_dir / 'action_stats.npz'}")
+    print(f"[VAE] action_min: {np.round(action_min, 4)}")
+    print(f"[VAE] action_max: {np.round(action_max, 4)}")
+
     device = args.device if torch.cuda.is_available() else "cpu"
 
     from skill_vae import VAEConfig, encode_skills, train_skill_vae
@@ -146,6 +157,8 @@ def main(args: Args) -> None:
         device=device,
         save_path=str(output_dir / "skill_vae.pt"),
         checkpoint_every=args.checkpoint_every,
+        action_min=action_min,
+        action_max=action_max,
     )
 
     wandb_run = None
@@ -169,7 +182,8 @@ def main(args: Args) -> None:
             },
         )
 
-    model = train_skill_vae(segments, cfg, wandb_run=wandb_run, metadata=metadata, init_states=init_states)
+    model = train_skill_vae(segments, init_states, cfg, wandb_run=wandb_run, metadata=metadata,
+                            resume_from=args.resume_from)
 
     print("[VAE] Encoding all skill segments...")
     latent_codes = encode_skills(model, segments, device="cpu")
@@ -177,7 +191,7 @@ def main(args: Args) -> None:
 
     latents_path = output_dir / "skill_latents.npz"
     save_dict = {"latents": latent_codes}
-    for key in ("episode_id", "skill_index", "frame_start", "frame_end", "length"):
+    for key in ("episode_id", "task_id", "skill_index", "frame_start", "frame_end", "length"):
         save_dict[key] = np.array([m[key] for m in metadata])
     np.savez(str(latents_path), **save_dict)
     print(f"[VAE] Saved latents + metadata → {latents_path}")

@@ -18,18 +18,19 @@ source /scratch/mdorazi/Skill_Boundary_Detector/.venv/bin/activate
 export WANDB_CACHE_DIR=/scratch/mdorazi/.wandb_cache
 export WANDB_DATA_DIR=/scratch/mdorazi/.wandb_data
 mkdir -p ${WANDB_CACHE_DIR} ${WANDB_DATA_DIR}
+export WANDB_DISABLE_SYMLINKS=true
 
 echo "START JOB"
 echo "Node: $SLURMD_NODENAME"
 nvidia-smi
 
-# MODEL=pi05_libero_90
-# CHECKPOINT=030000
-# TARGET_TASK=libero_90
+MODEL=pi05_libero_90
+CHECKPOINT=100000
+TARGET_TASK=libero_90
 
-MODEL=pi05_libero_spatial_object
-CHECKPOINT=013000
-TARGET_TASK=libero_object
+# MODEL=pi05_libero_spatial_object
+# CHECKPOINT=013000
+# TARGET_TASK=libero_object
 
 WANDB_PROJECT=VLA_eval
 WANDB_RUN_NAME=${MODEL}PT_${CHECKPOINT}_${TARGET_TASK}
@@ -45,6 +46,5 @@ PYTHONPATH=/scratch/mdorazi/Skill_Boundary_Detector/lerobot/src \
   --policy.device=cuda \
   --env.task_ids="[0,1,2]" \
   --wandb_project ${WANDB_PROJECT} \
+  --job_name ${WANDB_RUN_NAME} \
   --rename_map='{"observation.images.image2": "observation.images.wrist_image"}'
-
-#   --wandb_run_name ${WANDB_RUN_NAME} \

@@ -7,7 +7,7 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=8G
 #SBATCH --time=1:00:00
-#SBATCH --array=0-3
+#SBATCH --array=0-0
 #SBATCH --output=logs/%x_%A_%a.out
 #SBATCH --error=logs/%x_%A_%a.err
 set -euo pipefail
@@ -19,6 +19,7 @@ source /scratch/mdorazi/Skill_Boundary_Detector/.venv/bin/activate
 export WANDB_CACHE_DIR=/scratch/mdorazi/.wandb_cache
 export WANDB_DATA_DIR=/scratch/mdorazi/.wandb_data
 mkdir -p ${WANDB_CACHE_DIR} ${WANDB_DATA_DIR}
+export WANDB_DISABLE_SYMLINKS=true
 
 echo "START JOB"
 echo "Node: $SLURMD_NODENAME"
@@ -26,17 +27,12 @@ echo "Array Task ID: $SLURM_ARRAY_TASK_ID"
 
 # ── Experiment list (must match train_vae_sweep) ───────────────────────────────
 EXPS=(
-  "vaeSO_lat8_hid128"
-  # "vae90_lat8_hid128"
-  # "vae_lat32_hid128"
-  # "vae_lat64_hid128"
-  # "vae_lat32_hid256"
-  # "vae_lat64_hid256"
+  "16_lat16_fast"
 )
 
 IDX=$SLURM_ARRAY_TASK_ID
 EXP=${EXPS[$IDX]}
-SWEEP_DIR="/scratch/mdorazi/Skill_Boundary_Detector/outputs/vae_SO/${EXP}"
+SWEEP_DIR="/scratch/mdorazi/Skill_Boundary_Detector/outputs/16_skill_latents/${EXP}"
 
 echo "Experiment: ${EXP}"
 
@@ -55,9 +51,9 @@ for LATENTS_PATH in ${SWEEP_DIR}/skill_vae_latents_epoch*.npz; do
         --output_dir ${OUTPUT_DIR} \
         --color_by all \
         --n_clusters 15 \
-        --dataset_dir /scratch/mdorazi/Skill_Boundary_Detector/libero_dataset/libero_spatial_object \
+        --dataset_dir /scratch/mdorazi/Skill_Boundary_Detector/libero_dataset/libero_90 \
         --skills_per_cluster 10 \
-        --wandb_project SBD_vae_viz \
+        --wandb_project VAE_eval \
         --wandb_run_name ${EXP}_${BASENAME}
 done
 

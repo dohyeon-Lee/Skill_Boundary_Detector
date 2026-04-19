@@ -377,14 +377,7 @@ class SkillVisualizer:
             if gmm_p and Path(gmm_p).exists():
                 html_content = Path(gmm_p).read_text()
                 wandb.log({f"gmm_3d/{label}": wandb.Html(html_content)})
-                artifact = wandb.Artifact(
-                    name=f"gmm_3d_ep{r['episode_id']:05d}",
-                    type="html",
-                    description=f"GMM 3D interactive plot for {label}",
-                )
-                artifact.add_file(gmm_p)
-                wandb.log_artifact(artifact)
-                print(f"    Uploaded GMM 3D: inline + artifact ep{r['episode_id']:05d}")
+                print(f"    Uploaded GMM 3D: inline ep{r['episode_id']:05d}")
 
             # Per-timestep slider (video frame + cos div chart)
             mse_data = r.get("mse_data")

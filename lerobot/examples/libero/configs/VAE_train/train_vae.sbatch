@@ -18,15 +18,25 @@ source /scratch/mdorazi/Skill_Boundary_Detector/.venv/bin/activate
 export WANDB_CACHE_DIR=/scratch/mdorazi/.wandb_cache
 export WANDB_DATA_DIR=/scratch/mdorazi/.wandb_data
 mkdir -p ${WANDB_CACHE_DIR} ${WANDB_DATA_DIR}
+export WANDB_DISABLE_SYMLINKS=true
 
 echo "START JOB"
 echo "Node: $SLURMD_NODENAME"
 nvidia-smi
 
 DATA=libero_90
-LATENT_DIM=16
-EXP_NAME="${LATENT_DIM}_lat${LATENT_DIM}"
-OUTPUT_DIR="/scratch/mdorazi/Skill_Boundary_Detector/outputs/${LATENT_DIM}_skill_latents/${EXP_NAME}"
+LATENT_DIM=32
+EXP_NAME="${DATA}_lat${LATENT_DIM}"
+OUTPUT_DIR="/scratch/mdorazi/Skill_Boundary_Detector/outputs/${DATA}_skill_latents/${EXP_NAME}"
+
+RESUME_ARG=""
+LATEST_CKPT=$(ls -v "${OUTPUT_DIR}"/skill_vae_epoch*.pt 2>/dev/null | tail -1 || true)
+if [ -n "${LATEST_CKPT}" ]; then
+  RESUME_ARG="--resume_from ${LATEST_CKPT}"
+  echo "Resuming from ${LATEST_CKPT}"
+else
+  echo "No checkpoint found, training from scratch"
+fi
 
 PYTHONPATH=/scratch/mdorazi/Skill_Boundary_Detector/lerobot/src \
   python examples/libero/train_vae.py \
@@ -35,13 +45,17 @@ PYTHONPATH=/scratch/mdorazi/Skill_Boundary_Detector/lerobot/src \
     --latent_dim ${LATENT_DIM} \
     --hidden_dim 128 \
     --num_layers 2 \
-    --epochs 500 \
+    --epochs 10000 \
     --beta 0.01 \
-    --lr 3e-4 \
-    --batch_size 32 \
+    --lr 1.5e-3 \
+    --batch_size 512 \
     --min_skill_len 10 \
     --checkpoint_every 100 \
     --wandb_project VAE_train \
-    --wandb_run_name ${EXP_NAME}
-
+    --wandb_run_name ${EXP_NAME} \
+    ${RESUME_ARG}
+#     --beta 0.001 \
 echo "DONE ${EXP_NAME}"
+
+
+##3e-4 \

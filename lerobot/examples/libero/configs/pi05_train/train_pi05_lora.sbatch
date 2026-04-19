@@ -18,6 +18,7 @@ source /scratch/mdorazi/Skill_Boundary_Detector/.venv/bin/activate
 export WANDB_CACHE_DIR=/scratch/mdorazi/.wandb_cache
 export WANDB_DATA_DIR=/scratch/mdorazi/.wandb_data
 mkdir -p ${WANDB_CACHE_DIR} ${WANDB_DATA_DIR}
+export WANDB_DISABLE_SYMLINKS=true
 
 echo "START JOB"
 echo "Node: $SLURMD_NODENAME"

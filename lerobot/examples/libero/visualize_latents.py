@@ -74,6 +74,8 @@ class Args:
     # wandb
     wandb_project: str | None = None
     wandb_run_name: str = "latent_tsne"
+    no_html: bool = False
+    """Skip interactive Plotly HTML generation and wandb upload."""
 
 
 def load_episode_task_map(dataset_dir: str) -> dict[int, int]:
@@ -575,12 +577,15 @@ def main(args: Args) -> None:
     # ── Color values ───────────────────────────────────────────────────────────
     plots_to_save = []
 
-    # ── episode_id → task_id mapping (if dataset_dir provided) ───────────────
+    # ── task_id: npz에서 직접 읽기, 없으면 dataset_dir에서 매핑 ─────────────────
     task_ids = None
-    if args.dataset_dir:
+    if "task_id" in data and not np.all(data["task_id"] == -1):
+        task_ids = data["task_id"]
+        print(f"  Tasks found (from npz): {np.unique(task_ids)}")
+    elif args.dataset_dir:
         ep_task_map = load_episode_task_map(args.dataset_dir)
         task_ids = np.array([ep_task_map.get(int(ep), -1) for ep in episode_ids])
-        print(f"  Tasks found: {np.unique(task_ids)}")
+        print(f"  Tasks found (from dataset_dir): {np.unique(task_ids)}")
 
     color_configs = []
     if args.color_by == "cluster" or args.color_by == "all":
@@ -662,7 +667,7 @@ def main(args: Args) -> None:
 
     # ── Interactive Plotly (task_skill) ────────────────────────────────────────
     plotly_fig = None
-    if task_ids is not None:
+    if task_ids is not None and not args.no_html:
         plotly_fig = make_interactive_plotly(
             xy, task_ids, skill_idxs.astype(int), episode_ids,
             point_size=args.point_size, alpha=args.alpha,
@@ -674,7 +679,7 @@ def main(args: Args) -> None:
     # ── Interactive Plotly (cluster + video) ───────────────────────────────────
     cluster_video_html = None
     _cluster_labels_computed = args.color_by in ("cluster", "all")
-    if args.dataset_dir and _cluster_labels_computed:
+    if args.dataset_dir and _cluster_labels_computed and not args.no_html:
         print(f"[Cluster Video] Building interactive cluster video plot ...")
         _, cluster_video_html = make_interactive_cluster_plotly(
             xy=xy,
@@ -695,6 +700,8 @@ def main(args: Args) -> None:
         with open(str(cluster_video_path), "w") as f:
             f.write(cluster_video_html)
         print(f"  Saved cluster video plot → {cluster_video_path}")
+    elif args.no_html:
+        print("Skipping interactive HTML (--no_html)")
 
     # ── wandb ──────────────────────────────────────────────────────────────────
     if args.wandb_project:
@@ -712,8 +719,6 @@ def main(args: Args) -> None:
         )
         print(f"  Logging to wandb: {[tag for tag, _ in plots_to_save]}")
         log_dict = {f"tsne/{tag}": wandb.Image(str(save_path)) for tag, save_path in plots_to_save}
-        if plotly_fig is not None:
-            log_dict["tsne/task_skill_interactive"] = wandb.Plotly(plotly_fig)
         if cluster_video_html is not None:
             log_dict["tsne/cluster_video"] = wandb.Html(cluster_video_html)
         run.log(log_dict, commit=True)

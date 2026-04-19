@@ -18,6 +18,7 @@ source /scratch/mdorazi/Skill_Boundary_Detector/.venv/bin/activate
 export WANDB_CACHE_DIR=/scratch/mdorazi/.wandb_cache
 export WANDB_DATA_DIR=/scratch/mdorazi/.wandb_data
 mkdir -p ${WANDB_CACHE_DIR} ${WANDB_DATA_DIR}
+export WANDB_DISABLE_SYMLINKS=true
 
 echo "START JOB"
 echo "Node: $SLURMD_NODENAME"
@@ -25,6 +26,14 @@ nvidia-smi
 
 DATASET=libero_spatial_object # libero_spatial_object
 CONFIG_PATH=../outputs/pi05_${DATASET}/checkpoints/last/pretrained_model/train_config.json
+
+RESUME_ARGS=""
+if [ -f "${CONFIG_PATH}" ]; then
+    echo "Checkpoint found. Resuming from ${CONFIG_PATH}"
+    RESUME_ARGS="--resume=true --config_path=${CONFIG_PATH}"
+else
+    echo "No checkpoint found. Starting fresh training."
+fi
 
 PYTORCH_ALLOC_CONF=expandable_segments:True lerobot-train \
     --dataset.repo_id=lerobot/${DATASET} \
@@ -46,8 +55,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True lerobot-train \
     --policy.device=cuda \
     --dataset.video_backend=pyav \
     --batch_size=16 \
-    --resume=true \
-    --config_path=${CONFIG_PATH}
+    ${RESUME_ARGS}
 
 # lerobot-train \
 #     --dataset.repo_id=lerobot/libero_90 \

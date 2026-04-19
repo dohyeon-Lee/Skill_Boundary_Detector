@@ -45,6 +45,8 @@ class SkillVAE(nn.Module):
         dropout: float = 0.1,
         stop_threshold: float = 0.5,
         max_decode_steps: int = 500,
+        action_min: np.ndarray | None = None,
+        action_max: np.ndarray | None = None,
     ) -> None:
         super().__init__()
         self.action_dim = action_dim
@@ -75,6 +77,11 @@ class SkillVAE(nn.Module):
         self.stop_head   = nn.Linear(hidden_dim, 1)
 
         self.start_token = nn.Parameter(torch.zeros(1, 1, action_dim))
+
+        _min = action_min if action_min is not None else np.zeros(action_dim)
+        _max = action_max if action_max is not None else np.ones(action_dim)
+        self.register_buffer("action_min", torch.tensor(_min, dtype=torch.float32))
+        self.register_buffer("action_max", torch.tensor(_max, dtype=torch.float32))
 
         self._init_weights()
 
@@ -144,8 +151,8 @@ class SkillVAE(nn.Module):
         out_packed, _ = self.decoder_lstm(packed, (h0, c0))
         out, _ = pad_packed_sequence(out_packed, batch_first=True, total_length=T)
 
-        recon       = self.output_head(out)   # (B, T, action_dim)
-        stop_logits = self.stop_head(out)     # (B, T, 1)
+        recon       = torch.tanh(self.output_head(out))  # (B, T, action_dim)
+        stop_logits = self.stop_head(out)                # (B, T, 1)
         return recon, stop_logits
 
     @torch.no_grad()
@@ -166,7 +173,7 @@ class SkillVAE(nn.Module):
         outputs = []
         for _ in range(self.max_decode_steps):
             out, (h, c) = self.decoder_lstm(x, (h, c))
-            a    = self.output_head(out)              # (B, 1, action_dim)
+            a    = torch.tanh(self.output_head(out))  # (B, 1, action_dim)
             stop = torch.sigmoid(self.stop_head(out)) # (B, 1, 1)
             outputs.append(a)
             x = a
@@ -190,14 +197,25 @@ class SkillVAE(nn.Module):
 
     # ── Convenience encode/decode for numpy arrays ─────────────────────────────
 
+    def _normalize(self, actions: np.ndarray) -> np.ndarray:
+        a_min = self.action_min.cpu().numpy()
+        a_max = self.action_max.cpu().numpy()
+        return (actions - a_min) / (a_max - a_min + 1e-8) * 2 - 1
+
+    def _denormalize(self, actions: np.ndarray) -> np.ndarray:
+        a_min = self.action_min.cpu().numpy()
+        a_max = self.action_max.cpu().numpy()
+        return (actions + 1) / 2 * (a_max - a_min + 1e-8) + a_min
+
     @torch.no_grad()
     def encode_numpy(
         self,
-        actions: np.ndarray,   # (T, action_dim)
+        actions: np.ndarray,   # (T, action_dim) raw actions
         device: str = "cpu",
     ) -> np.ndarray:
         """Encode a single skill. Returns z (latent_dim,) — the mean."""
-        a = torch.from_numpy(actions).float().unsqueeze(0).to(device)
+        actions_norm = self._normalize(actions)
+        a = torch.from_numpy(actions_norm).float().unsqueeze(0).to(device)
         l = torch.tensor([len(actions)], dtype=torch.long)
         mu, _ = self.encode(a, l)
         return mu.squeeze(0).cpu().numpy()
@@ -209,11 +227,11 @@ class SkillVAE(nn.Module):
         state: np.ndarray,  # (state_dim,) initial eef state
         device: str = "cpu",
     ) -> np.ndarray:
-        """Decode a latent code. Returns reconstructed actions (T, action_dim)."""
+        """Decode a latent code. Returns reconstructed actions (T, action_dim) in raw space."""
         z_t = torch.from_numpy(z).float().unsqueeze(0).to(device)
         s_t = torch.from_numpy(state).float().unsqueeze(0).to(device)
         recon = self.decode_autoregressive(z_t, s_t)
-        return recon.squeeze(0).cpu().numpy()
+        return self._denormalize(recon.squeeze(0).cpu().numpy())
 
 
 # ── Loss ───────────────────────────────────────────────────────────────────────
@@ -313,16 +331,19 @@ class VAEConfig:
     log_every: int = 10
     save_path: str | None = None
     checkpoint_every: int = 0
+    action_min: np.ndarray | None = None
+    action_max: np.ndarray | None = None
 
 
 # ── Training loop ──────────────────────────────────────────────────────────────
 
 def train_skill_vae(
     segments: list[np.ndarray],
+    init_states: list[np.ndarray],
     cfg: VAEConfig,
     wandb_run=None,
     metadata: list[dict] | None = None,
-    init_states: list[np.ndarray],
+    resume_from: str | None = None,
 ) -> SkillVAE:
     if len(segments) == 0:
         raise ValueError("No skill segments provided for VAE training.")
@@ -341,12 +362,22 @@ def train_skill_vae(
     train_states = [init_states[i] for i in indices[n_val:]]
     val_states   = [init_states[i] for i in indices[:n_val]]
 
+    if cfg.action_min is not None and cfg.action_max is not None:
+        a_min, a_max = cfg.action_min, cfg.action_max
+        def _norm(s): return (s - a_min) / (a_max - a_min + 1e-8) * 2 - 1
+        train_segs_in = [_norm(s) for s in train_segs]
+        val_segs_in   = [_norm(s) for s in val_segs]
+        print(f"[VAE] Action normalization applied (min-max → [-1, 1])")
+    else:
+        train_segs_in = train_segs
+        val_segs_in   = val_segs
+
     train_loader = DataLoader(
-        SkillDataset(train_segs, train_states), batch_size=cfg.batch_size, shuffle=True,
+        SkillDataset(train_segs_in, train_states), batch_size=cfg.batch_size, shuffle=True,
         collate_fn=SkillDataset.collate_fn, drop_last=False,
     )
     val_loader = DataLoader(
-        SkillDataset(val_segs, val_states), batch_size=cfg.batch_size, shuffle=False,
+        SkillDataset(val_segs_in, val_states), batch_size=cfg.batch_size, shuffle=False,
         collate_fn=SkillDataset.collate_fn,
     )
 
@@ -359,17 +390,37 @@ def train_skill_vae(
         dropout=cfg.dropout,
         stop_threshold=cfg.stop_threshold,
         max_decode_steps=cfg.max_decode_steps,
+        action_min=cfg.action_min,
+        action_max=cfg.action_max,
     ).to(cfg.device)
 
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"[VAE] Parameters: {n_params:,}  |  action_dim={action_dim}")
 
+    start_epoch = 1
     optim = torch.optim.Adam(model.parameters(), lr=cfg.lr)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optim, T_max=cfg.epochs, eta_min=cfg.lr * 0.01)
+    for pg in optim.param_groups:
+        pg["initial_lr"] = cfg.lr
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optim, T_max=cfg.epochs, eta_min=cfg.lr * 0.01, last_epoch=start_epoch - 2
+    )
+
+    if resume_from is not None:
+        ckpt = torch.load(resume_from, map_location=cfg.device, weights_only=False)
+        model.load_state_dict(ckpt["model_state"])
+        if "optim_state" in ckpt:
+            optim.load_state_dict(ckpt["optim_state"])
+        start_epoch = ckpt.get("epoch", 0) + 1
+        for pg in optim.param_groups:
+            pg["initial_lr"] = cfg.lr
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optim, T_max=cfg.epochs, eta_min=cfg.lr * 0.01, last_epoch=start_epoch - 2
+        )
+        print(f"[VAE] Resumed from {resume_from} (epoch {start_epoch - 1}), continuing from epoch {start_epoch}")
 
     best_val = math.inf
 
-    for epoch in range(1, cfg.epochs + 1):
+    for epoch in range(start_epoch, cfg.epochs + 1):
         model.train()
         t_total = t_recon = t_stop = t_kl = 0.0
         for actions, lengths, states in train_loader:
@@ -434,7 +485,7 @@ def train_skill_vae(
 
         if cfg.checkpoint_every > 0 and epoch % cfg.checkpoint_every == 0 and cfg.save_path:
             ckpt_path = cfg.save_path.replace(".pt", f"_epoch{epoch:04d}.pt")
-            torch.save({"model_state": model.state_dict(), "cfg": cfg, "epoch": epoch}, ckpt_path)
+            torch.save({"model_state": model.state_dict(), "optim_state": optim.state_dict(), "cfg": cfg, "epoch": epoch}, ckpt_path)
             model.eval()
             codes = []
             with torch.no_grad():
@@ -444,7 +495,7 @@ def train_skill_vae(
             latents_ckpt_path = cfg.save_path.replace(".pt", f"_latents_epoch{epoch:04d}.npz")
             save_dict: dict = {"latents": np.stack(codes)}
             if metadata is not None:
-                for key in ("episode_id", "skill_index", "frame_start", "frame_end", "length"):
+                for key in ("episode_id", "task_id", "skill_index", "frame_start", "frame_end", "length"):
                     save_dict[key] = np.array([m[key] for m in metadata])
             np.savez(latents_ckpt_path, **save_dict)
             model.train()
