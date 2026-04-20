@@ -70,6 +70,10 @@ class Args:
     # ── Output / wandb ───────────────────────────────────────────────────────
     plot_gmm_3d: bool = False
     """Save interactive 3D GMM HTML per episode (slower)."""
+    plot_pred_mse: bool = False
+    """Overlay pred-vs-demo action xyz MSE (SG-filtered) on the boundary criteria plot. Adds full denoising per replan step (global_cond already computed, no extra CNN call)."""
+    mse_window: int = 4
+    """Number of action steps used to compute pred-demo MSE (first N steps of each chunk)."""
     fps: int = 20
     wandb_project: str | None = None
     wandb_run_name: str | None = None
@@ -229,6 +233,8 @@ def run_vf_analysis(
     eval_at_step: int, replan_interval: int,
     polar_degs=(30, 60), azimuth_step_deg=30,
     n_gmm_components=3,
+    compute_pred_mse: bool = False,
+    mse_window: int = 4,
 ) -> tuple:
     """Returns (replan_ts, vf_values, gt_orig, divergences).
 
@@ -261,6 +267,8 @@ def run_vf_analysis(
         cam_frames[k] = cam_frames[k][:T]
 
     replan_ts, vf_values, gt_orig, div_cos_list, div_l2_list, gmm_means_list = [], [], [], [], [], []
+    pred_mse_list = [] if compute_pred_mse else None
+    action_dim = gt_actions.shape[1]
 
     def _build_obs_batch(t: int) -> dict:
         """replan step t에서 쓸 (1, n_obs_steps, ...) 배치 구성.
@@ -307,9 +315,24 @@ def run_vf_analysis(
             div_l2_list.append(div_l2)
             gmm_means_list.append(means)  # (n_components, action_dim)
 
+            # Full denoising for pred-demo MSE (global_cond already computed — no extra CNN call)
+            if compute_pred_mse:
+                noise = torch.randn(1, horizon, action_dim, device=device)
+                x = noise
+                scheduler = policy.diffusion.noise_scheduler
+                for ts in scheduler.timesteps:
+                    t_batch = torch.full((1,), ts.item(), dtype=torch.long, device=device)
+                    eps = policy.diffusion.unet(x, t_batch, global_cond=global_cond)
+                    x = scheduler.step(eps, ts, x).prev_sample
+                pred_chunk = x[0].cpu().numpy()  # (H, action_dim)
+                win = min(mse_window, end - t)
+                mse = float(np.mean((pred_chunk[:win, :3] - gt_actions[t:t + win, :3]) ** 2))
+                pred_mse_list.append(mse)
+
     return (replan_ts, np.stack(vf_values), np.stack(gt_orig),
-            np.array(div_cos_list), np.array(div_l2_list), np.stack(gmm_means_list))
-    # shapes: (N,), (N, S, D), (N, D), (N,), (N,), (N, K, D)
+            np.array(div_cos_list), np.array(div_l2_list), np.stack(gmm_means_list),
+            np.array(pred_mse_list) if pred_mse_list is not None else None)
+    # shapes: (N,), (N, S, D), (N, D), (N,), (N,), (N, K, D), (N,) or None
 
 
 # ── Signal processing ─────────────────────────────────────────────────────────
@@ -361,8 +384,13 @@ def _find_peaks_above_mean(vals: np.ndarray, ts: list, min_distance: int = 0,
 
 def plot_cos_divergence(replan_ts, div_cos, ep_id, ep_tag, eval_at_step,
                         output_dir, smooth_window=5, peak_nms_dist=0,
-                        edge_margin=0, polyorder=3) -> tuple[Path, list]:
-    """Bar chart of cos divergence with SG smooth, mean line, and skill boundary markers."""
+                        edge_margin=0, polyorder=3,
+                        pred_mse_vals: np.ndarray | None = None) -> tuple[Path, list]:
+    """Bar chart of cos divergence with SG smooth, mean line, and skill boundary markers.
+
+    If pred_mse_vals is given (xyz MSE between full-denoised predicted action and GT action),
+    a second subplot is added below with SG-filtered MSE and boundary markers.
+    """
     vals = np.array(div_cos, dtype=float)
     bar_width = (replan_ts[1] - replan_ts[0]) * 0.8 if len(replan_ts) > 1 else 4
     sg_vals = _savgol_smooth(vals.tolist(), smooth_window, polyorder=polyorder)
@@ -370,20 +398,38 @@ def plot_cos_divergence(replan_ts, div_cos, ep_id, ep_tag, eval_at_step,
     peak_ts, peak_vals = _find_peaks_above_mean(sg_vals, replan_ts, min_distance=peak_nms_dist,
                                                 margin=edge_margin)
 
-    fig, ax = plt.subplots(figsize=(10, 4))
+    n_rows = 2 if pred_mse_vals is not None else 1
+    fig, axes = plt.subplots(n_rows, 1, figsize=(10, 4 * n_rows), sharex=True)
+    ax = axes[0] if n_rows == 2 else axes
+
     ax.bar(replan_ts, vals, width=bar_width, align="center", alpha=0.4, color="tab:red", label="raw")
     ax.plot(replan_ts, sg_vals, color="tab:orange", linewidth=2, label=f"SG (w={smooth_window})")
     ax.axhline(mean_val, color="tab:orange", linewidth=1.5, linestyle="--",
                label=f"SG mean={mean_val:.4f}")
     if peak_ts:
         ax.scatter(peak_ts, peak_vals, color="red", zorder=5, s=60, label="skill boundary")
-    ax.set_xlabel("frame")
     ax.set_ylabel("cos divergence")
-    ax.set_xticks(replan_ts)
-    ax.set_xticklabels([str(t) for t in replan_ts], rotation=45, ha="right", fontsize=7)
     ax.legend(fontsize=8, loc="upper right")
     ax.grid(True, alpha=0.3, axis="y")
     ax.set_title(f"[Cos Divergence] ep{ep_id} | step={eval_at_step} | {ep_tag[:60]}", fontsize=9)
+
+    if pred_mse_vals is not None:
+        ax2 = axes[1]
+        sg_mse = _savgol_smooth(pred_mse_vals.tolist(), smooth_window, polyorder=polyorder)
+        ax2.bar(replan_ts, pred_mse_vals, width=bar_width, align="center", alpha=0.35, color="tab:blue", label="raw MSE")
+        ax2.plot(replan_ts, sg_mse, color="tab:blue", linewidth=2, label=f"SG (w={smooth_window})")
+        ax2.set_xlabel("frame")
+        ax2.set_ylabel("pred-demo xyz MSE")
+        ax2.legend(fontsize=8, loc="upper right")
+        ax2.grid(True, alpha=0.3, axis="y")
+        ax2.set_title("Predicted vs Demo Action MSE", fontsize=9)
+        ax2.set_xticks(replan_ts)
+        ax2.set_xticklabels([str(t) for t in replan_ts], rotation=45, ha="right", fontsize=7)
+    else:
+        ax.set_xlabel("frame")
+        ax.set_xticks(replan_ts)
+        ax.set_xticklabels([str(t) for t in replan_ts], rotation=45, ha="right", fontsize=7)
+
     fig.tight_layout()
     path = Path(output_dir) / f"ep{ep_id:05d}_cos_divergence_step{eval_at_step}.png"
     fig.savefig(str(path), dpi=120)
@@ -674,10 +720,12 @@ def main(args: Args) -> None:
         t2 = time.time()
         try:
             print(f"    Running VF analysis (eval_at_step={args.eval_at_step}) ...")
-            vf_replan_ts, vf_values, gt_orig, div_cos, div_l2, gmm_means = run_vf_analysis(
+            vf_replan_ts, vf_values, gt_orig, div_cos, div_l2, gmm_means, pred_mse = run_vf_analysis(
                 policy, preprocessor, ep_df, cam_frames, camera_keys,
                 args.eval_at_step, args.replan_interval,
                 n_gmm_components=args.n_gmm_components,
+                compute_pred_mse=args.plot_pred_mse,
+                mse_window=args.mse_window,
             )
         except Exception as e:
             import traceback
@@ -699,6 +747,7 @@ def main(args: Args) -> None:
             vf_replan_ts, div_cos, ep_id, ep_tag, args.eval_at_step,
             output_dir, smooth_window=args.smooth_window,
             peak_nms_dist=nms_dist, edge_margin=nms_dist, polyorder=args.savgol_polyorder,
+            pred_mse_vals=pred_mse,
         )
         print(f"    Skill boundaries: {div_cos_peak_ts}")
         print(f"    Cos div plot:     {cos_div_plot.name}")

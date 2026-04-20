@@ -27,7 +27,7 @@ echo "Node: $SLURMD_NODENAME"
 nvidia-smi
 
 DATASET=libero_90 # libero_spatial_object
-CONFIG_PATH=../outputs/pi05_${DATASET}/checkpoints/last/pretrained_model/train_config.json
+CONFIG_PATH=../outputs/pi05_${DATASET}_2/checkpoints/last/pretrained_model/train_config.json
 
 RESUME_ARGS=""
 if [ -f "${CONFIG_PATH}" ]; then

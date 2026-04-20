@@ -28,8 +28,8 @@ nvidia-smi
 
 # ── 설정 ──────────────────────────────────────────────────────────────────────
 # 스킬 영상 상단에 episode번호, 해당 episode에서 몇번째 스킬인지도 표시 필요
-TASK_ID=1
-N_EPISODES=3
+TASK_ID=0
+N_EPISODES=5
 N_GMM=5
 DN_STEP=7
 
@@ -37,16 +37,19 @@ SMOOTH_WINDOW=7
 SAVGOL_POLYORDER=4
 
 REPLAN_INTERVAL=3 
-NMS_DIST=30
+NMS_DIST=25
 
-POLICY_PATH=/scratch/mdorazi/Skill_Boundary_Detector/outputs/dp_libero90_yonsei_pretrain/checkpoints/080000/pretrained_model
+# POLICY_PATH=/scratch/mdorazi/Skill_Boundary_Detector/outputs/dp_libero90_yonsei_pretrain/checkpoints/060000/pretrained_model # 5 16
+POLICY_PATH=/scratch/mdorazi/Skill_Boundary_Detector/outputs/dp_libero_90_obs10_horizon16/checkpoints/002000/pretrained_model # 10 16
 DATASET_DIR=/scratch/mdorazi/Skill_Boundary_Detector/libero_dataset/libero_90
 OUTPUT_DIR=/scratch/mdorazi/Skill_Boundary_Detector/outputs/skill_divider/task${TASK_ID}
 
 PLOT_GMM_3D=false   # true로 바꾸면 에피소드별 인터랙티브 3D HTML 생성
+PLOT_PRED_MSE=true # true로 바꾸면 boundary criteria 그래프에 pred-demo xyz MSE subplot 추가
+MSE_WINDOW=4        # pred-demo MSE 계산에 사용할 chunk 앞 N 스텝
 
 WANDB_PROJECT=DP_eval
-WANDB_RUN_NAME=task${TASK_ID}_${N_EPISODES}eps_${N_GMM}gmm_${DN_STEP}step
+WANDB_RUN_NAME=task${TASK_ID}_${N_EPISODES}eps_${N_GMM}gmm
 # ─────────────────────────────────────────────────────────────────────────────
 
 # WANDB_MODE=online \
@@ -67,6 +70,7 @@ PYTHONPATH=/scratch/mdorazi/Skill_Boundary_Detector/lerobot/src \
     --smooth_window ${SMOOTH_WINDOW} \
     --savgol_polyorder ${SAVGOL_POLYORDER} \
     $([ "${PLOT_GMM_3D}" = "true" ] && echo "--plot_gmm_3d") \
+    $([ "${PLOT_PRED_MSE}" = "true" ] && echo "--plot_pred_mse --mse_window ${MSE_WINDOW}") \
     --wandb_project ${WANDB_PROJECT} \
     --wandb_run_name ${WANDB_RUN_NAME}
 

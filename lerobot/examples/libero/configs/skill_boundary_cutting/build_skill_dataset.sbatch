@@ -34,7 +34,7 @@ SMOOTH_WINDOW=7
 SAVGOL_POLYORDER=4
 
 REPLAN_INTERVAL=3
-NMS_DIST=20
+NMS_DIST=25
 #NMS_DIST=10
 
 POLICY=dp_libero90_yonsei_pretrain
@@ -43,7 +43,7 @@ DATASET=libero_90
 
 POLICY_PATH=/scratch/mdorazi/Skill_Boundary_Detector/outputs/${POLICY}/checkpoints/${CHECKPOINT}/pretrained_model
 DATASET_DIR=/scratch/mdorazi/Skill_Boundary_Detector/libero_dataset/${DATASET}
-OUTPUT_DIR=/scratch/mdorazi/Skill_Boundary_Detector/outputs/skill_dataset
+OUTPUT_DIR=/scratch/mdorazi/Skill_Boundary_Detector/outputs/skill_dataset_${NMS_DIST}
 
 WANDB_PROJECT=Skill_dataset
 # ─────────────────────────────────────────────────────────────────────────────

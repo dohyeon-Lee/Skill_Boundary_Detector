@@ -117,6 +117,14 @@ def make_comparison_b64(gt: np.ndarray, pred: np.ndarray,
     if n_dims == 1:
         axes = [axes]
 
+    gripper_idx = next((i for i, n in enumerate(dim_names) if n == "gripper"), None)
+    non_gripper = [i for i in range(n_dims) if i != gripper_idx]
+    if non_gripper:
+        all_vals = np.concatenate([gt[:, non_gripper], pred[:, non_gripper]], axis=0)
+        y_min, y_max = float(all_vals.min()), float(all_vals.max())
+        pad = (y_max - y_min) * 0.05 if y_max > y_min else 0.1
+        y_min, y_max = y_min - pad, y_max + pad
+
     for i, (ax, name) in enumerate(zip(axes, dim_names)):
         ax.plot(t_gt,   gt[:, i],   color="tab:blue",   linewidth=1.0, label="GT")
         ax.plot(t_pred, pred[:, i], color="tab:orange", linewidth=1.0,
@@ -124,6 +132,10 @@ def make_comparison_b64(gt: np.ndarray, pred: np.ndarray,
         ax.set_ylabel(name, fontsize=7)
         ax.tick_params(labelsize=6)
         ax.grid(True, alpha=0.3)
+        if i == gripper_idx:
+            ax.set_ylim(-0.5, 1.5)
+        elif non_gripper:
+            ax.set_ylim(y_min, y_max)
         if i == 0:
             ax.legend(fontsize=7, loc="upper right")
 

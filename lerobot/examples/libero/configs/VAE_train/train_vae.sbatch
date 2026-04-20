@@ -26,6 +26,7 @@ nvidia-smi
 
 DATA=libero_90
 LATENT_DIM=32
+
 EXP_NAME="${DATA}_lat${LATENT_DIM}"
 OUTPUT_DIR="/scratch/mdorazi/Skill_Boundary_Detector/outputs/${DATA}_skill_latents/${EXP_NAME}"
 

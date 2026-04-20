@@ -253,7 +253,7 @@ def main(args: Args) -> None:
                 cam_frames = dict(pool.map(_load_cam, camera_keys))
 
             try:
-                vf_replan_ts, _, _, div_cos, _, _ = run_vf_analysis(
+                vf_replan_ts, _, _, div_cos, _, _, _ = run_vf_analysis(
                     policy, preprocessor, ep_df, cam_frames, camera_keys,
                     args.eval_at_step, args.replan_interval,
                     n_gmm_components=args.n_gmm_components,

@@ -25,12 +25,12 @@ echo "START JOB"
 echo "Node: $SLURMD_NODENAME"
 
 # ── 설정 ──────────────────────────────────────────────────────────────────────
-CHECKPOINT_EPOCH=3800   # 평가할 체크포인트 epoch (예: 0100, 0200, ...)
+CHECKPOINT_EPOCH=7900   # 평가할 체크포인트 epoch (예: 0100, 0200, ...)
 NO_HTML=true            # true: interactive HTML 생성 스킵 (업로드 빠름), false: 생성
 
 
 DATA=libero_90
-LATENT_DIM=16
+LATENT_DIM=32
 EXP="${DATA}_lat${LATENT_DIM}"
 SWEEP_DIR="/scratch/mdorazi/Skill_Boundary_Detector/outputs/${DATA}_skill_latents/${EXP}"
 
