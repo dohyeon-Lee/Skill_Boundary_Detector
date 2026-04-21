@@ -24,13 +24,13 @@ echo "START JOB"
 echo "Node: $SLURMD_NODENAME"
 nvidia-smi
 
-# MODEL=pi05_libero_90
-# CHECKPOINT=100000
-# TARGET_TASK=libero_90
+MODEL=pi05_libero_90
+CHECKPOINT=050000
+TARGET_TASK=libero_90
 
-MODEL=pi05_libero_spatial_object
-CHECKPOINT=046000
-TARGET_TASK=libero_spatial
+# MODEL=pi05_libero_spatial_object
+# CHECKPOINT=065000
+# TARGET_TASK=libero_10
 
 WANDB_PROJECT=VLA_eval
 WANDB_RUN_NAME=${MODEL}PT_${CHECKPOINT}_${TARGET_TASK}
@@ -38,13 +38,13 @@ WANDB_RUN_NAME=${MODEL}PT_${CHECKPOINT}_${TARGET_TASK}
 
 PYTHONPATH=/scratch/mdorazi/Skill_Boundary_Detector/lerobot/src \
   /scratch/mdorazi/Skill_Boundary_Detector/.venv/bin/lerobot-eval \
-  --policy.path=/scratch/mdorazi/Skill_Boundary_Detector/outputs/${MODEL}/checkpoints/${CHECKPOINT}/pretrained_model \
+  --policy.path=/scratch/mdorazi/Skill_Boundary_Detector/outputs/${MODEL}_2/checkpoints/${CHECKPOINT}/pretrained_model \
   --env.type=libero \
   --env.task=${TARGET_TASK} \
   --eval.batch_size=1 \
   --eval.n_episodes=1 \
   --policy.device=cuda \
-  --env.task_ids="[0,1,2]" \
+  --env.task_ids="[0,1,2,3,4,5,6,7,8,9]" \
   --wandb_project ${WANDB_PROJECT} \
   --job_name ${WANDB_RUN_NAME} \
   --rename_map='{"observation.images.image2": "observation.images.wrist_image"}'

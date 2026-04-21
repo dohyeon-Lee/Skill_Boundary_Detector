@@ -28,7 +28,7 @@ DATA=libero_90
 LATENT_DIM=32
 
 EXP_NAME="${DATA}_lat${LATENT_DIM}"
-OUTPUT_DIR="/scratch/mdorazi/Skill_Boundary_Detector/outputs/${DATA}_skill_latents/${EXP_NAME}"
+OUTPUT_DIR="/scratch/mdorazi/Skill_Boundary_Detector/outputs/${DATA}_skill_latents_25/${EXP_NAME}"
 
 RESUME_ARG=""
 LATEST_CKPT=$(ls -v "${OUTPUT_DIR}"/skill_vae_epoch*.pt 2>/dev/null | tail -1 || true)
@@ -41,7 +41,7 @@ fi
 
 PYTHONPATH=/scratch/mdorazi/Skill_Boundary_Detector/lerobot/src \
   python examples/libero/train_vae.py \
-    --skills_dir /scratch/mdorazi/Skill_Boundary_Detector/outputs/skill_dataset/skills \
+    --skills_dir /scratch/mdorazi/Skill_Boundary_Detector/outputs/skill_dataset_25/skills \
     --output_dir ${OUTPUT_DIR} \
     --latent_dim ${LATENT_DIM} \
     --hidden_dim 128 \
