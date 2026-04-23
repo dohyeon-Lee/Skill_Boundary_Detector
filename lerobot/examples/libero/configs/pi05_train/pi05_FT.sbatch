@@ -17,6 +17,7 @@
 set -euo pipefail
 mkdir -p logs
 
+# current RLLAB code
 HOMEDIR=/data2/dohyeon
 PROJDIR=/SBD
 cd ${HOMEDIR}${PROJDIR}/lerobot
