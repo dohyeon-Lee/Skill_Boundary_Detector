@@ -143,6 +143,7 @@ rich==14.3.3
 robosuite==1.4.0
 rpds-py==0.30.0
 safetensors==0.7.0
+scikit-learn>=1.5.0
 scipy==1.17.1
 sentry-sdk==2.57.0
 setuptools==80.10.2

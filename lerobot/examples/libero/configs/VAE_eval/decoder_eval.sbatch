@@ -1,23 +1,33 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=decoder_eval
-#SBATCH --partition=suma_a6000,asus_6000ada,asus_pro6000,suma_rtx4090,big_suma_rtx3090,base_suma_rtx3090
-#SBATCH --exclude=node19,node13,node18,node16,node08,node10,node21,node14,node04,node05,node31,node25
+#SBATCH --job-name=VAE_eval
+
+# SBATCH --partition=asus_pro6000 #,suma_rtx4090,big_suma_rtx3090,base_suma_rtx3090
+# SBATCH --exclude=node19,node13,node18,node16,node08,node10,node21,node14,node04,node05,node31
+# SBATCH --qos=pro6000_qos
+
+#SBATCH --partition=debug
+#SBATCH --nodelist=node100
 #SBATCH --qos=big_qos
 #SBATCH --gres=gpu:1
-#SBATCH --cpus-per-task=4
-#SBATCH --mem=8G
-#SBATCH --time=1:00:00
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=32G
+#SBATCH --time=48:00:00
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 set -euo pipefail
 mkdir -p logs
 
-cd /scratch/mdorazi/Skill_Boundary_Detector/lerobot
-source /scratch/mdorazi/Skill_Boundary_Detector/.venv/bin/activate
+# HOMEDIR=/scratch/mdorazi
+# PROJDIR=/Skill_Boundary_Detector
 
+HOMEDIR=/data2/dohyeon
+PROJDIR=/SBD
 
-export WANDB_CACHE_DIR=/scratch/mdorazi/.wandb_cache
-export WANDB_DATA_DIR=/scratch/mdorazi/.wandb_data
+cd ${HOMEDIR}${PROJDIR}/lerobot
+source ${HOMEDIR}${PROJDIR}/.venv/bin/activate
+
+export WANDB_CACHE_DIR=${HOMEDIR}/.wandb_cache
+export WANDB_DATA_DIR=${HOMEDIR}/.wandb_data
 mkdir -p ${WANDB_CACHE_DIR} ${WANDB_DATA_DIR}
 export WANDB_DISABLE_SYMLINKS=true
 
@@ -27,17 +37,18 @@ echo "Node: $SLURMD_NODENAME"
 # ── 설정 ──────────────────────────────────────────────────────────────────────
 CHECKPOINT_EPOCH=7900   # 평가할 체크포인트 epoch (예: 0100, 0200, ...)
 NO_HTML=false           # true: interactive HTML 생성 스킵 (업로드 빠름), false: 생성
+VAE_TYPE=spline   # 'raw' (BiLSTM) or 'spline' (MLP)
 
 DATA=libero_90
-LATENT_DIM=32
+LATENT_DIM=16
 
-EXP="${DATA}_lat${LATENT_DIM}"
-SWEEP_DIR="/scratch/mdorazi/Skill_Boundary_Detector/outputs/${DATA}_skill_latents/${EXP}"
+EXP="${DATA}_lat${LATENT_DIM}_${VAE_TYPE}"
+SWEEP_DIR="${HOMEDIR}${PROJDIR}/outputs/${DATA}_skill_latents/${EXP}"
 
-MODEL_PATH="${SWEEP_DIR}/skill_vae_epoch${CHECKPOINT_EPOCH}.pt"
-TSNE_COORDS="${SWEEP_DIR}/latent/skill_vae_latents_epoch${CHECKPOINT_EPOCH}/tsne_coords.npz"
-SKILLS_DIR="/scratch/mdorazi/Skill_Boundary_Detector/outputs/skill_dataset/skills"
-OUTPUT_DIR="${SWEEP_DIR}/decoder/skill_vae_latents_epoch${CHECKPOINT_EPOCH}"
+MODEL_PATH="${SWEEP_DIR}/${VAE_TYPE}_vae_epoch${CHECKPOINT_EPOCH}.pt"
+TSNE_COORDS="${SWEEP_DIR}/latent/${VAE_TYPE}_latents_epoch${CHECKPOINT_EPOCH}/tsne_coords.npz"
+SKILLS_DIR="${HOMEDIR}${PROJDIR}/outputs/skill_dataset_25/skills"
+OUTPUT_DIR="${SWEEP_DIR}/decoder/${VAE_TYPE}_latents_epoch${CHECKPOINT_EPOCH}"
 # ─────────────────────────────────────────────────────────────────────────────
 
 echo "Experiment : ${EXP}"
@@ -49,7 +60,8 @@ rm -rf ${OUTPUT_DIR}/wandb
 
 WANDB_MODE=online \
 WANDB_DIR=${OUTPUT_DIR} \
-PYTHONPATH=/scratch/mdorazi/Skill_Boundary_Detector/lerobot/src \
+
+PYTHONPATH=${HOMEDIR}${PROJDIR}/lerobot/src \
   python examples/libero/visualize_decoder.py \
     --model_path ${MODEL_PATH} \
     --tsne_coords ${TSNE_COORDS} \

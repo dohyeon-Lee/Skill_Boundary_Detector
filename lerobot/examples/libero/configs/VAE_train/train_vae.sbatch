@@ -1,22 +1,33 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=vae_train
-#SBATCH --partition=suma_a6000,asus_6000ada,asus_pro6000,suma_rtx4090,big_suma_rtx3090,base_suma_rtx3090
-#SBATCH --exclude=node19,node13,node18,node16,node08,node10,node21,node14,node04,node05,node31
+#SBATCH --job-name=VAE_train
+
+# SBATCH --partition=asus_pro6000 #,suma_rtx4090,big_suma_rtx3090,base_suma_rtx3090
+# SBATCH --exclude=node19,node13,node18,node16,node08,node10,node21,node14,node04,node05,node31
+# SBATCH --qos=pro6000_qos
+
+#SBATCH --partition=debug
+#SBATCH --nodelist=node100
 #SBATCH --qos=big_qos
 #SBATCH --gres=gpu:1
-#SBATCH --cpus-per-task=4
-#SBATCH --mem=16G
-#SBATCH --time=4:00:00
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=32G
+#SBATCH --time=48:00:00
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 set -euo pipefail
 mkdir -p logs
 
-cd /scratch/mdorazi/Skill_Boundary_Detector/lerobot
-source /scratch/mdorazi/Skill_Boundary_Detector/.venv/bin/activate
+# HOMEDIR=/scratch/mdorazi
+# PROJDIR=/Skill_Boundary_Detector
 
-export WANDB_CACHE_DIR=/scratch/mdorazi/.wandb_cache
-export WANDB_DATA_DIR=/scratch/mdorazi/.wandb_data
+HOMEDIR=/data2/dohyeon
+PROJDIR=/SBD
+
+cd ${HOMEDIR}${PROJDIR}/lerobot
+source ${HOMEDIR}${PROJDIR}/.venv/bin/activate
+
+export WANDB_CACHE_DIR=${HOMEDIR}/.wandb_cache
+export WANDB_DATA_DIR=${HOMEDIR}/.wandb_data
 mkdir -p ${WANDB_CACHE_DIR} ${WANDB_DATA_DIR}
 export WANDB_DISABLE_SYMLINKS=true
 
@@ -25,13 +36,23 @@ echo "Node: $SLURMD_NODENAME"
 nvidia-smi
 
 DATA=libero_90
-LATENT_DIM=32
+LATENT_DIM=16
+VAE_TYPE=spline   # 'raw' (BiLSTM) or 'spline' (MLP)
 
-EXP_NAME="${DATA}_lat${LATENT_DIM}"
-OUTPUT_DIR="/scratch/mdorazi/Skill_Boundary_Detector/outputs/${DATA}_skill_latents_25/${EXP_NAME}"
+
+
+EXP_NAME="${DATA}_lat${LATENT_DIM}_${VAE_TYPE}"
+OUTPUT_DIR="${HOMEDIR}${PROJDIR}/outputs/${DATA}_skill_latents/${EXP_NAME}"
+
+# checkpoint filename differs per vae_type
+if [ "${VAE_TYPE}" = "spline" ]; then
+  CKPT_PATTERN="spline_vae_epoch*.pt"
+else
+  CKPT_PATTERN="skill_vae_epoch*.pt"
+fi
 
 RESUME_ARG=""
-LATEST_CKPT=$(ls -v "${OUTPUT_DIR}"/skill_vae_epoch*.pt 2>/dev/null | tail -1 || true)
+LATEST_CKPT=$(ls -v "${OUTPUT_DIR}"/${CKPT_PATTERN} 2>/dev/null | tail -1 || true)
 if [ -n "${LATEST_CKPT}" ]; then
   RESUME_ARG="--resume_from ${LATEST_CKPT}"
   echo "Resuming from ${LATEST_CKPT}"
@@ -39,10 +60,11 @@ else
   echo "No checkpoint found, training from scratch"
 fi
 
-PYTHONPATH=/scratch/mdorazi/Skill_Boundary_Detector/lerobot/src \
+PYTHONPATH=${HOMEDIR}${PROJDIR}/lerobot/src \
   python examples/libero/train_vae.py \
-    --skills_dir /scratch/mdorazi/Skill_Boundary_Detector/outputs/skill_dataset_25/skills \
+    --skills_dir ${HOMEDIR}${PROJDIR}/outputs/skill_dataset_25/skills \
     --output_dir ${OUTPUT_DIR} \
+    --vae_type ${VAE_TYPE} \
     --latent_dim ${LATENT_DIM} \
     --hidden_dim 128 \
     --num_layers 2 \
@@ -50,7 +72,6 @@ PYTHONPATH=/scratch/mdorazi/Skill_Boundary_Detector/lerobot/src \
     --beta 0.01 \
     --lr 1.5e-3 \
     --batch_size 512 \
-    --min_skill_len 10 \
     --checkpoint_every 100 \
     --wandb_project VAE_train \
     --wandb_run_name ${EXP_NAME} \

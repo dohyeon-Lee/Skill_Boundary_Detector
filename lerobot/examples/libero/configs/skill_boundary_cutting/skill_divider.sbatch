@@ -1,24 +1,33 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=skill_divider
-#SBATCH --partition=suma_a6000,asus_6000ada,asus_pro6000,suma_rtx4090,big_suma_rtx3090,base_suma_rtx3090
-#SBATCH --exclude=node19,node13,node18,node16,node08,node10,node21,node14,node04,node05,node31,node25
-#SBATCH --qos=base_qos
+#SBATCH --job-name=DP_eval
+
+# SBATCH --partition=asus_pro6000 #,suma_rtx4090,big_suma_rtx3090,base_suma_rtx3090
+# SBATCH --exclude=node19,node13,node18,node16,node08,node10,node21,node14,node04,node05,node31
+# SBATCH --qos=pro6000_qos
+
+#SBATCH --partition=debug
+#SBATCH --nodelist=node01
+#SBATCH --qos=big_qos
 #SBATCH --gres=gpu:1
-#SBATCH --cpus-per-task=4
+#SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
-#SBATCH --time=4:00:00
+#SBATCH --time=48:00:00
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 set -euo pipefail
 mkdir -p logs
 
-cd /scratch/mdorazi/Skill_Boundary_Detector/lerobot
+# HOMEDIR=/scratch/mdorazi
+# PROJDIR=/Skill_Boundary_Detector
 
-source /scratch/mdorazi/Skill_Boundary_Detector/.venv/bin/activate
+HOMEDIR=/data2/dohyeon
+PROJDIR=/SBD
 
+cd ${HOMEDIR}${PROJDIR}/lerobot
+source ${HOMEDIR}${PROJDIR}/.venv/bin/activate
 
-export WANDB_CACHE_DIR=/scratch/mdorazi/.wandb_cache
-export WANDB_DATA_DIR=/scratch/mdorazi/.wandb_data
+export WANDB_CACHE_DIR=${HOMEDIR}/.wandb_cache
+export WANDB_DATA_DIR=${HOMEDIR}/.wandb_data
 mkdir -p ${WANDB_CACHE_DIR} ${WANDB_DATA_DIR}
 export WANDB_DISABLE_SYMLINKS=true
 
@@ -28,6 +37,9 @@ nvidia-smi
 
 # ── 설정 ──────────────────────────────────────────────────────────────────────
 # 스킬 영상 상단에 episode번호, 해당 episode에서 몇번째 스킬인지도 표시 필요
+DATASET=libero_spatial_object
+DP=dp_${DATASET}_obs5_horizon16
+CHECKPOINT=080000
 TASK_ID=0
 N_EPISODES=5
 N_GMM=5
@@ -40,9 +52,9 @@ REPLAN_INTERVAL=3
 NMS_DIST=25
 
 # POLICY_PATH=/scratch/mdorazi/Skill_Boundary_Detector/outputs/dp_libero90_yonsei_pretrain/checkpoints/060000/pretrained_model # 5 16
-POLICY_PATH=/scratch/mdorazi/Skill_Boundary_Detector/outputs/dp_libero_90_obs10_horizon16/checkpoints/002000/pretrained_model # 10 16
-DATASET_DIR=/scratch/mdorazi/Skill_Boundary_Detector/libero_dataset/libero_90
-OUTPUT_DIR=/scratch/mdorazi/Skill_Boundary_Detector/outputs/skill_divider/task${TASK_ID}
+POLICY_PATH=${HOMEDIR}${PROJDIR}/outputs/${DP}/checkpoints/${CHECKPOINT}/pretrained_model # 10 16
+DATASET_DIR=${HOMEDIR}${PROJDIR}/libero_dataset/${DATASET}
+OUTPUT_DIR=${HOMEDIR}${PROJDIR}/outputs/skill_divider_${DATASET}/task${TASK_ID}
 
 PLOT_GMM_3D=false   # true로 바꾸면 에피소드별 인터랙티브 3D HTML 생성
 PLOT_PRED_MSE=true # true로 바꾸면 boundary criteria 그래프에 pred-demo xyz MSE subplot 추가
@@ -54,7 +66,7 @@ WANDB_RUN_NAME=task${TASK_ID}_${N_EPISODES}eps_${N_GMM}gmm
 
 # WANDB_MODE=online \
 # WANDB_DIR=${OUTPUT_DIR} \
-PYTHONPATH=/scratch/mdorazi/Skill_Boundary_Detector/lerobot/src \
+PYTHONPATH=${HOMEDIR}${PROJDIR}/lerobot/src \
   python examples/libero/skill_divider.py \
     --dataset_dir ${DATASET_DIR} \
     --task_id ${TASK_ID} \

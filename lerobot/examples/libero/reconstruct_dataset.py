@@ -24,7 +24,8 @@ import numpy as np
 import pandas as pd
 
 
-BASE_DIR = Path("/scratch/mdorazi/Skill_Boundary_Detector")
+# BASE_DIR = Path("/scratch/mdorazi/Skill_Boundary_Detector")
+BASE_DIR = Path("/data2/dohyeon/SBD")
 SRC_ROOT = BASE_DIR / "libero_dataset"
 DST_ROOT = BASE_DIR / "libero_small_dataset"
 
@@ -152,7 +153,7 @@ def build_subset(
     data_df: pd.DataFrame,
     episodes_df: pd.DataFrame,
 ) -> Path:
-    out_name = f"{dataset_name}_option{option}_{value}"
+    out_name = f"{dataset_name}_op{option}_{value}"
     dst = DST_ROOT / out_name
 
     if dst.exists():

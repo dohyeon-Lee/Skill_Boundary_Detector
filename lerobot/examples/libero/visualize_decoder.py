@@ -70,19 +70,35 @@ class Args:
 # ── Model ─────────────────────────────────────────────────────────────────────
 
 def load_model(model_path: str, device: str):
-    from skill_vae import SkillVAE, VAEConfig
     ckpt = torch.load(model_path, map_location="cpu", weights_only=False)
-    cfg: VAEConfig = ckpt["cfg"]
-    model = SkillVAE(
-        action_dim=cfg.action_dim,
-        state_dim=cfg.state_dim,
-        hidden_dim=cfg.hidden_dim,
-        latent_dim=cfg.latent_dim,
-        num_layers=cfg.num_layers,
-        dropout=cfg.dropout,
-        stop_threshold=cfg.stop_threshold,
-        max_decode_steps=cfg.max_decode_steps,
-    )
+    cfg = ckpt["cfg"]
+
+    if type(cfg).__name__ == "SplineVAEConfig":
+        from spline_vae import SplineVAE
+        model = SplineVAE(
+            action_dim=cfg.action_dim,
+            state_dim=cfg.state_dim,
+            n_control=cfg.n_control,
+            spline_degree=cfg.spline_degree,
+            hidden_dim=cfg.hidden_dim,
+            latent_dim=cfg.latent_dim,
+            num_layers=cfg.num_layers,
+            dropout=cfg.dropout,
+            max_length=cfg.max_length,
+        )
+    else:
+        from skill_vae import SkillVAE
+        model = SkillVAE(
+            action_dim=cfg.action_dim,
+            state_dim=cfg.state_dim,
+            hidden_dim=cfg.hidden_dim,
+            latent_dim=cfg.latent_dim,
+            num_layers=cfg.num_layers,
+            dropout=cfg.dropout,
+            stop_threshold=cfg.stop_threshold,
+            max_decode_steps=cfg.max_decode_steps,
+        )
+
     model.load_state_dict(ckpt["model_state"])
     return model.to(device).eval(), cfg
 
@@ -170,14 +186,27 @@ def plot_mse_boxplot(mse_per_dim: np.ndarray, n_dims: int) -> plt.Figure:
 def plot_length_scatter(gt_lengths: list[int], pred_lengths: list[int]) -> plt.Figure:
     gt, pred = np.array(gt_lengths), np.array(pred_lengths)
     max_len = max(gt.max(), pred.max())
-    fig, ax = plt.subplots(figsize=(5, 5))
+    fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+
+    ax = axes[0]
     ax.scatter(gt, pred, alpha=0.4, s=10, color="tab:blue")
     ax.plot([0, max_len], [0, max_len], "r--", linewidth=1, label="GT = pred")
     ax.set_xlabel("GT length (frames)")
     ax.set_ylabel("Decoded length (frames)")
-    ax.set_title("Stop token quality")
+    ax.set_title("Length: GT vs Predicted")
     ax.legend()
     ax.grid(True, alpha=0.3)
+
+    ax = axes[1]
+    err = pred - gt
+    ax.boxplot(err, vert=True, patch_artist=True,
+               medianprops=dict(color="red", linewidth=2))
+    ax.axhline(0, color="gray", linestyle="--", linewidth=1)
+    ax.set_xticklabels(["pred - GT"])
+    ax.set_ylabel("Length error (frames)")
+    ax.set_title(f"Length error  μ={err.mean():.1f}  σ={err.std():.1f}  MAE={np.abs(err).mean():.1f}")
+    ax.grid(True, alpha=0.3, axis="y")
+
     fig.tight_layout()
     return fig
 
@@ -428,6 +457,8 @@ def main(args: Args) -> None:
             "metrics/overall_mse":    overall_mse,
             "metrics/mean_gt_len":    float(np.mean(gt_lengths)),
             "metrics/mean_pred_len":  float(np.mean(pred_lengths)),
+            "metrics/length_mae":     float(np.mean(np.abs(np.array(pred_lengths) - np.array(gt_lengths)))),
+            "metrics/length_err_std": float(np.std(np.array(pred_lengths) - np.array(gt_lengths))),
         }
         if html_str is not None:
             log_dict["decoder/interactive"] = wandb.Html(html_str)

@@ -119,7 +119,16 @@ class TrainPipelineConfig(HubMixin):
             else:
                 self.job_name = f"{self.env.type}_{self.policy.type}"
 
-        if not self.resume and isinstance(self.output_dir, Path) and self.output_dir.is_dir():
+        # FIXME(dohyeon): original check runs on all ranks, causing race condition in multi-GPU:
+        # rank 0 creates output_dir via wandb.init() before rank 1 reaches validate(), so rank 1 fails.
+        # Guard with LOCAL_RANK so only rank 0 raises the error.
+        # if not self.resume and isinstance(self.output_dir, Path) and self.output_dir.is_dir():
+        #     raise FileExistsError(
+        #         f"Output directory {self.output_dir} already exists and resume is {self.resume}. "
+        #         f"Please change your output directory so that {self.output_dir} is not overwritten."
+        #     )
+        import os
+        if int(os.environ.get("LOCAL_RANK", 0)) == 0 and not self.resume and isinstance(self.output_dir, Path) and self.output_dir.is_dir():
             raise FileExistsError(
                 f"Output directory {self.output_dir} already exists and resume is {self.resume}. "
                 f"Please change your output directory so that {self.output_dir} is not overwritten."
