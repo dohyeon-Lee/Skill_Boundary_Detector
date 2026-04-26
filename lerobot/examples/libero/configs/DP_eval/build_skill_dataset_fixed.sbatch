@@ -24,35 +24,16 @@ PROJDIR=/SBD
 cd ${HOMEDIR}${PROJDIR}/lerobot
 source ${HOMEDIR}${PROJDIR}/.venv/bin/activate
 
-export WANDB_CACHE_DIR=${HOMEDIR}${PROJDIR}/.wandb_cache
-export WANDB_DATA_DIR=${HOMEDIR}${PROJDIR}/.wandb_data
-mkdir -p ${WANDB_CACHE_DIR} ${WANDB_DATA_DIR}
-
 echo "START JOB"
 echo "Node: $SLURMD_NODENAME"
 echo "Array Task ID: $SLURM_ARRAY_TASK_ID"
-nvidia-smi
 
 # ── 설정 ──────────────────────────────────────────────────────────────────────
-DN_STEP=7
-N_GMM=5
-
-SMOOTH_WINDOW=7
-SAVGOL_POLYORDER=4
-
-REPLAN_INTERVAL=3
-NMS_DIST=25
-#NMS_DIST=10
-
-POLICY=dp_libero_90_obs10_horizon16
-CHECKPOINT=080000
+CHUNK_LEN=40
 DATASET=libero_90
 
-POLICY_PATH=${HOMEDIR}${PROJDIR}/outputs/${POLICY}/checkpoints/${CHECKPOINT}/pretrained_model
 DATASET_DIR=${HOMEDIR}${PROJDIR}/libero_dataset/${DATASET}
-OUTPUT_DIR=${HOMEDIR}${PROJDIR}/libero_dataset/${DATASET}_skillset
-
-WANDB_PROJECT=Skill_dataset
+OUTPUT_DIR=${HOMEDIR}${PROJDIR}/libero_dataset/${DATASET}_skillset_fixed${CHUNK_LEN}
 # ─────────────────────────────────────────────────────────────────────────────
 
 # 각 array job이 5개 task 처리 (0-14 × 5 = task 0~74, 72 초과는 skip)
@@ -70,27 +51,12 @@ done
 
 echo "Processing tasks:${TASK_IDS}"
 
-WANDB_RUN_NAME=array${SLURM_ARRAY_TASK_ID}_tasks${START_TASK}-${END_TASK}
-
-WANDB_MODE=online \
-WANDB_DIR=${OUTPUT_DIR} \
-
 PYTHONPATH=${HOMEDIR}${PROJDIR}/lerobot/src \
-  python examples/libero/build_skill_dataset.py \
+  python examples/libero/build_skill_dataset_fixed.py \
     --dataset_dir ${DATASET_DIR} \
-    --policy_path ${POLICY_PATH} \
     --output_dir ${OUTPUT_DIR} \
+    --chunk_len ${CHUNK_LEN} \
     --task_ids ${TASK_IDS} \
-    --replan_interval ${REPLAN_INTERVAL} \
-    --nms_dist ${NMS_DIST} \
-    --noise_scheduler_type DDIM \
-    --num_inference_steps 10 \
-    --eval_at_step ${DN_STEP} \
-    --n_gmm_components ${N_GMM} \
-    --smooth_window ${SMOOTH_WINDOW} \
-    --savgol_polyorder ${SAVGOL_POLYORDER} \
-    --resume \
-    --wandb_project ${WANDB_PROJECT} \
-    --wandb_run_name ${WANDB_RUN_NAME}
+    --resume
 
 echo "DONE array ${SLURM_ARRAY_TASK_ID}"

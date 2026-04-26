@@ -38,11 +38,11 @@ nvidia-smi
 DATA=libero_90
 LATENT_DIM=16
 VAE_TYPE=spline   # 'raw' (BiLSTM) or 'spline' (MLP)
-
+SKILLSET=${DATA}_skillset_fixed40
 
 
 EXP_NAME="${DATA}_lat${LATENT_DIM}_${VAE_TYPE}"
-OUTPUT_DIR="${HOMEDIR}${PROJDIR}/outputs/${DATA}_skill_latents/${EXP_NAME}"
+OUTPUT_DIR="${HOMEDIR}${PROJDIR}/outputs/${SKILLSET}_latents/${EXP_NAME}"
 
 # checkpoint filename differs per vae_type
 if [ "${VAE_TYPE}" = "spline" ]; then
@@ -62,7 +62,7 @@ fi
 
 PYTHONPATH=${HOMEDIR}${PROJDIR}/lerobot/src \
   python examples/libero/train_vae.py \
-    --skills_dir ${HOMEDIR}${PROJDIR}/outputs/skill_dataset_25/skills \
+    --skills_dir ${HOMEDIR}${PROJDIR}/libero_dataset/${SKILLSET} \
     --output_dir ${OUTPUT_DIR} \
     --vae_type ${VAE_TYPE} \
     --latent_dim ${LATENT_DIM} \
@@ -72,7 +72,7 @@ PYTHONPATH=${HOMEDIR}${PROJDIR}/lerobot/src \
     --beta 0.01 \
     --lr 1.5e-3 \
     --batch_size 512 \
-    --checkpoint_every 100 \
+    --checkpoint_every 1000 \
     --wandb_project VAE_train \
     --wandb_run_name ${EXP_NAME} \
     ${RESUME_ARG}

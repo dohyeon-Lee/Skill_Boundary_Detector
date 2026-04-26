@@ -35,7 +35,8 @@ echo "START JOB"
 echo "Node: $SLURMD_NODENAME"
 nvidia-smi
 
-DATASET=libero_10 # libero_spatial_object
+DATASET=libero_10_op1_50 # libero_10
+DATASET_ROOT=libero_small_dataset # libero_dataset
 LR=2.5e-05      # default: 2.5e-05
 BATCH_SIZE=32
 NUM_GPUS=1      # --gres=gpu:N 과 맞춰야 함
@@ -57,7 +58,7 @@ fi
 
 PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes=${NUM_GPUS} ${HOMEDIR}${PROJDIR}/.venv/bin/lerobot-train \
     --dataset.repo_id=lerobot/${DATASET} \
-    --dataset.root=${HOMEDIR}${PROJDIR}/libero_dataset/${DATASET} \
+    --dataset.root=${HOMEDIR}${PROJDIR}/${DATASET_ROOT}/${DATASET} \
     --policy.type=pi05 \
     --output_dir=${OUTPUT_DIR} \
     --job_name=pi05_PT_${DATASET} \
@@ -70,8 +71,8 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes=${
     --policy.freeze_vision_encoder=false \
     --policy.train_expert_only=false \
     --policy.push_to_hub=false \
-    --save_freq=1000 \
-    --steps=500000 \
+    --save_freq=10000 \
+    --steps=100000 \
     --policy.device=cuda \
     --dataset.video_backend=pyav \
     --batch_size=${BATCH_SIZE} \

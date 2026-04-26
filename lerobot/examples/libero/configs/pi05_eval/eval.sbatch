@@ -30,22 +30,22 @@ echo "START JOB"
 echo "Node: $SLURMD_NODENAME"
 nvidia-smi
 
-MODEL=pi05_libero_spatial_object065000_libero_10_FT
-# MODEL=pi05_libero_spatial_object065000_libero_10_option1_50_FT
-CHECKPOINT=102000
-TARGET_TASK=libero_10
-
-# MODEL=pi05_libero_10
-# CHECKPOINT=055000
+# MODEL=pi05_libero_spatial_object065000_libero_10_FT
+# # MODEL=pi05_libero_spatial_object065000_libero_10_option1_50_FT
+# CHECKPOINT=102000
 # TARGET_TASK=libero_10
+
+MODEL=pi05_libero_10
+CHECKPOINT=050000
+TARGET_TASK=libero_10
 
 # MODEL=pi05_libero_spatial_object
 # CHECKPOINT=065000
 # TARGET_TASK=libero_object
 
 # MODEL=pi05_libero_90
-# CHECKPOINT=098000
-# TARGET_TASK=pi05_libero_90
+# CHECKPOINT=070000
+# TARGET_TASK=libero_90
 
 WANDB_PROJECT=VLA_eval
 WANDB_RUN_NAME=${MODEL}PT_${CHECKPOINT}_${TARGET_TASK}

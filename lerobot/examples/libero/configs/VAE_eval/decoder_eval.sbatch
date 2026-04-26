@@ -35,19 +35,20 @@ echo "START JOB"
 echo "Node: $SLURMD_NODENAME"
 
 # ── 설정 ──────────────────────────────────────────────────────────────────────
-CHECKPOINT_EPOCH=7900   # 평가할 체크포인트 epoch (예: 0100, 0200, ...)
+CHECKPOINT_EPOCH=10000   # 평가할 체크포인트 epoch (예: 0100, 0200, ...)
 NO_HTML=false           # true: interactive HTML 생성 스킵 (업로드 빠름), false: 생성
 VAE_TYPE=spline   # 'raw' (BiLSTM) or 'spline' (MLP)
 
 DATA=libero_90
 LATENT_DIM=16
+SKILLSET=${DATA}_skillset_fixed40
 
 EXP="${DATA}_lat${LATENT_DIM}_${VAE_TYPE}"
-SWEEP_DIR="${HOMEDIR}${PROJDIR}/outputs/${DATA}_skill_latents/${EXP}"
+SWEEP_DIR="${HOMEDIR}${PROJDIR}/outputs/${SKILLSET}_latents/${EXP}"
 
 MODEL_PATH="${SWEEP_DIR}/${VAE_TYPE}_vae_epoch${CHECKPOINT_EPOCH}.pt"
 TSNE_COORDS="${SWEEP_DIR}/latent/${VAE_TYPE}_latents_epoch${CHECKPOINT_EPOCH}/tsne_coords.npz"
-SKILLS_DIR="${HOMEDIR}${PROJDIR}/outputs/skill_dataset_25/skills"
+SKILLS_DIR="${HOMEDIR}${PROJDIR}/libero_dataset/${SKILLSET}/skills"
 OUTPUT_DIR="${SWEEP_DIR}/decoder/${VAE_TYPE}_latents_epoch${CHECKPOINT_EPOCH}"
 # ─────────────────────────────────────────────────────────────────────────────
 

@@ -37,10 +37,10 @@ nvidia-smi
 
 # ── 설정 ──────────────────────────────────────────────────────────────────────
 # 스킬 영상 상단에 episode번호, 해당 episode에서 몇번째 스킬인지도 표시 필요
-DATASET=libero_spatial_object
-DP=dp_${DATASET}_obs5_horizon16
-CHECKPOINT=080000
-TASK_ID=0
+DATASET=libero_90
+DP=dp_${DATASET}_obs10_horizon16
+CHECKPOINT=060000
+TASK_ID=2
 N_EPISODES=5
 N_GMM=5
 DN_STEP=7

@@ -2,32 +2,47 @@
 set -euo pipefail
 
 # 사용법:
-#   1) DRY_RUN=1 ./prune_checkpoints.sh   # 삭제 없이 미리보기
-#   2) DRY_RUN=0 ./prune_checkpoints.sh   # 실제 삭제
-#
+#   1) DRY_RUN=1 ./prune_checkpoints.sh           # 삭제 없이 미리보기
+#   2) DRY_RUN=0 ./prune_checkpoints.sh           # 실제 삭제
+#   3) OUTPUTS_DIR=... DRY_RUN=1 ./prune_checkpoints.sh
+#   4) EXCLUDE=pi05_libero_10 DRY_RUN=0 ./prune_checkpoints.sh
 # 옵션:
 #   KEEP=5 DRY_RUN=1 ./prune_checkpoints.sh
-#   TARGETS를 원하는 경로로 수정 가능
 
 KEEP="${KEEP:-5}"
 DRY_RUN="${DRY_RUN:-1}"
+OUTPUTS_DIR="${OUTPUTS_DIR:-/data2/dohyeon/SBD/outputs}"
+EXCLUDE="${EXCLUDE:-}"  # 제외할 checkpoints 경로 (부분 문자열 매칭)
 
-TARGETS=(
-  "/data2/dohyeon/SBD/outputs/pi05_libero_10/checkpoints"
-  "/data2/dohyeon/SBD/outputs/pi05_libero_spatial_object065000_libero_10_FT/checkpoints"
-  "/data2/dohyeon/SBD/outputs/pi05_libero_spatial_object065000_libero_10_option1_50_FT/checkpoints"
-)
-
-echo "[INFO] KEEP=$KEEP DRY_RUN=$DRY_RUN"
+echo "[INFO] KEEP=$KEEP DRY_RUN=$DRY_RUN OUTPUTS_DIR=$OUTPUTS_DIR"
+[[ -n "$EXCLUDE" ]] && echo "[INFO] EXCLUDE=$EXCLUDE"
 echo "[INFO] before:"
 df -h /data2 | sed -n '1,2p'
 echo
 
-for t in "${TARGETS[@]}"; do
-  if [[ ! -d "$t" ]]; then
-    echo "[WARN] skip (not found): $t"
-    continue
-  fi
+# outputs 폴더 아래에서 checkpoints 디렉토리를 자동으로 찾음
+mapfile -t all_targets < <(
+  find "$OUTPUTS_DIR" -mindepth 2 -maxdepth 2 -type d -name "checkpoints" | sort
+)
+
+if (( ${#all_targets[@]} == 0 )); then
+  echo "[WARN] No checkpoints directories found under $OUTPUTS_DIR"
+  exit 0
+fi
+
+# ── 용량 요약 먼저 출력 ────────────────────────────────────────────────────────
+echo "=== Checkpoint size summary ==="
+printf "%-12s  %s\n" "SIZE" "CHECKPOINTS DIR"
+for t in "${all_targets[@]}"; do
+  [[ -n "$EXCLUDE" && "$t" == *"$EXCLUDE"* ]] && continue
+  sz=$(du -sh "$t" 2>/dev/null | cut -f1)
+  printf "%-12s  %s\n" "$sz" "$t"
+done
+echo
+
+# ── checkpoint 별 prune ───────────────────────────────────────────────────────
+for t in "${all_targets[@]}"; do
+  [[ -n "$EXCLUDE" && "$t" == *"$EXCLUDE"* ]] && { echo "[SKIP] $t"; echo; continue; }
 
   mapfile -t steps < <(
     find "$t" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' \

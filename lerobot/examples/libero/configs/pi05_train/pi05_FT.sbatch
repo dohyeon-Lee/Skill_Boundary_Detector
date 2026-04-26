@@ -32,18 +32,18 @@ echo "START JOB"
 echo "Node: $SLURMD_NODENAME"
 nvidia-smi
 
-# FT_DATASET=libero_10_option1_50
-# FT_DATASET_LOC=libero_small_dataset
+FT_DATASET=libero_10_op1_50
+FT_DATASET_LOC=libero_small_dataset
 
-FT_DATASET=libero_10
-FT_DATASET_LOC=libero_dataset
+# FT_DATASET=libero_10
+# FT_DATASET_LOC=libero_dataset
 
-PT_DATASET=libero_spatial_object
-PT_check=065000
+PT_DATASET=libero_90
+PT_check=070000
 LR=2.5e-05        # default: 2.5e-05
 NUM_WORKERS=4     # shm 에러 시 0으로 낮출 것
 
-CONFIG_PATH=../outputs/pi05_${PT_DATASET}${PT_check}_${FT_DATASET}_FT/checkpoints/last/pretrained_model/train_config.json
+CONFIG_PATH=../outputs/pi05_${PT_check}PT_${FT_DATASET}FT/checkpoints/last/pretrained_model/train_config.json
 PT_MODEL_PATH=${HOMEDIR}${PROJDIR}/outputs/pi05_${PT_DATASET}/checkpoints/${PT_check}/pretrained_model
 RESUME_ARGS=""
 if [ -f "${CONFIG_PATH}" ]; then
@@ -57,7 +57,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True lerobot-train \
     --dataset.repo_id=lerobot/${FT_DATASET} \
     --dataset.root=${HOMEDIR}${PROJDIR}/${FT_DATASET_LOC}/${FT_DATASET} \
     --policy.type=pi05 \
-    --output_dir=../outputs/pi05_${PT_DATASET}${PT_check}_${FT_DATASET}_FT \
+    --output_dir=../outputs/pi05_${PT_check}PT_${FT_DATASET}FT \
     --job_name=pi05_FT_${PT_DATASET}${PT_check}_${FT_DATASET} \
     --policy.pretrained_path=${PT_MODEL_PATH} \
     --policy.compile_model=true \
@@ -68,8 +68,8 @@ PYTORCH_ALLOC_CONF=expandable_segments:True lerobot-train \
     --policy.freeze_vision_encoder=true \
     --policy.train_expert_only=false \
     --policy.push_to_hub=false \
-    --save_freq=1000 \
-    --steps=500000 \
+    --save_freq=5000 \
+    --steps=100000 \
     --policy.device=cuda \
     --dataset.video_backend=pyav \
     --batch_size=32 \
