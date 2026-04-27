@@ -36,9 +36,10 @@ echo "Node: $SLURMD_NODENAME"
 nvidia-smi
 
 DATA=libero_90
-LATENT_DIM=16
+LATENT_DIM=64
 VAE_TYPE=spline   # 'raw' (BiLSTM) or 'spline' (MLP)
-SKILLSET=${DATA}_skillset_fixed40
+# SKILLSET=${DATA}_skillset_fixed40
+SKILLSET=${DATA}_skillset
 
 
 EXP_NAME="${DATA}_lat${LATENT_DIM}_${VAE_TYPE}"
@@ -52,10 +53,14 @@ else
 fi
 
 RESUME_ARG=""
-LATEST_CKPT=$(ls -v "${OUTPUT_DIR}"/${CKPT_PATTERN} 2>/dev/null | tail -1 || true)
-if [ -n "${LATEST_CKPT}" ]; then
-  RESUME_ARG="--resume_from ${LATEST_CKPT}"
-  echo "Resuming from ${LATEST_CKPT}"
+if [ -d "${OUTPUT_DIR}" ]; then
+  LATEST_CKPT=$(ls -v "${OUTPUT_DIR}"/${CKPT_PATTERN} 2>/dev/null | tail -1 || true)
+  if [ -n "${LATEST_CKPT}" ]; then
+    RESUME_ARG="--resume_from ${LATEST_CKPT}"
+    echo "Resuming from ${LATEST_CKPT}"
+  else
+    echo "No checkpoint found, training from scratch"
+  fi
 else
   echo "No checkpoint found, training from scratch"
 fi

@@ -32,7 +32,7 @@ echo "START JOB"
 echo "Node: $SLURMD_NODENAME"
 nvidia-smi
 
-FT_DATASET=libero_10_op1_50
+FT_DATASET=libero_10_op1_10
 FT_DATASET_LOC=libero_small_dataset
 
 # FT_DATASET=libero_10
@@ -58,7 +58,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True lerobot-train \
     --dataset.root=${HOMEDIR}${PROJDIR}/${FT_DATASET_LOC}/${FT_DATASET} \
     --policy.type=pi05 \
     --output_dir=../outputs/pi05_${PT_check}PT_${FT_DATASET}FT \
-    --job_name=pi05_FT_${PT_DATASET}${PT_check}_${FT_DATASET} \
+    --job_name=pi05_${PT_check}PT_${FT_DATASET}FT \
     --policy.pretrained_path=${PT_MODEL_PATH} \
     --policy.compile_model=true \
     --policy.gradient_checkpointing=true \

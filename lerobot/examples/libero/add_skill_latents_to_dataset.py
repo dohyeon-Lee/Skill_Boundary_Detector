@@ -1,18 +1,26 @@
 """
-Skill latent vector를 LeRobot 데이터셋에 추가하는 스크립트.
+SkillVLA용 컬럼을 LeRobot 데이터셋에 추가하는 스크립트.
 
-skill_vae_latents_epoch*.npz에서 (episode_id, frame_start, frame_end, latent)를 읽어
-해당 프레임 범위의 모든 프레임에 동일한 latent를 할당한다.
-스킬 범위 밖의 프레임은 zero vector로 채운다.
+VAE encoder로 뽑은 skill latents (.npz) 를 원본 데이터셋에 추가한다.
 
-결과 데이터셋은 기존 데이터셋을 복사한 뒤 observation.states.skill 피처를 추가한다.
+추가되는 컬럼:
+  skill_latent        : (latent_dim,)   현재 스킬의 z
+  skill_latent_prev   : (latent_dim,)   직전 프레임의 z (lag-1)
+  skill_boundary      : int8            새 스킬의 첫 프레임에서만 1 (에피소드 첫 스킬 포함)
+  skill_start_state   : (state_dim,)    현재 스킬 시작 시점의 proprioceptive state
+  skill_frame_index   : int32           스킬 내 0-based step 위치
+
+마지막 스킬 이후 남은 프레임은 마지막 스킬의 z/start_state로 채워지고
+skill_frame_index는 마지막 스킬 시작점 기준으로 이어서 카운팅된다.
+
+스킬 latent가 없는 에피소드는 제거하지 않고 모든 컬럼을 0으로 채운다.
+(전체의 ~0.3% 수준이라 학습 영향 미미, LeRobot index 연속성 유지)
 
 Usage:
     python examples/libero/add_skill_latents_to_dataset.py \
-        --src_dataset_dir /scratch/mdorazi/Skill_Boundary_Detector/libero_dataset/libero_90 \
-        --dst_dataset_dir /scratch/mdorazi/Skill_Boundary_Detector/libero_dataset/libero_90_skill \
-        --latents_path /scratch/mdorazi/Skill_Boundary_Detector/outputs/vae_90/vae90_lat8_hid128/skill_vae_latents_epoch0100.npz \
-        --dst_repo_id mdorazi/libero_90_skill
+        --src_dataset_dir /data2/dohyeon/SBD/libero_dataset/libero_90 \
+        --dst_dataset_dir /data2/dohyeon/SBD/libero_dataset/libero_90_skillvla \
+        --latents_path    /data2/dohyeon/SBD/outputs/libero_90_skillset_latents/libero_90_lat64_spline/spline_vae_latents_epoch10000.npz
 """
 
 from __future__ import annotations
@@ -35,148 +43,210 @@ class Args:
     dst_dataset_dir: str
     """출력 데이터셋 경로"""
     latents_path: str
-    """skill_vae_latents_epoch*.npz 경로"""
-    dst_repo_id: str = "mdorazi/libero_skill"
-    """출력 데이터셋 repo_id (info.json에 기록)"""
+    """VAE encoder 결과 .npz (keys: episode_id, frame_start, frame_end, latents)"""
+    dst_repo_id: str = "dohyeon/libero_90_skillvla"
 
 
-def build_frame_latent_map(
-    latents_data: dict,
-    latent_dim: int,
-) -> dict[int, np.ndarray]:
-    """episode_id별로 (total_frames,) → latent 매핑 딕셔너리 생성.
+# ── latents .npz 파싱 ─────────────────────────────────────────────────────────
 
-    Returns:
-        {episode_id: np.ndarray of shape (max_frame, latent_dim)}
-    """
-    episode_ids  = latents_data["episode_id"]
-    frame_starts = latents_data["frame_start"]
-    frame_ends   = latents_data["frame_end"]
-    latents      = latents_data["latents"]
-
-    # episode별로 그룹핑
-    ep_map: dict[int, list[tuple[int, int, np.ndarray]]] = {}
-    for ep_id, fs, fe, lat in zip(episode_ids, frame_starts, frame_ends, latents):
-        ep_map.setdefault(int(ep_id), []).append((int(fs), int(fe), lat))
-
-    return ep_map
+def load_skill_map(npz_path: Path) -> dict[int, list[tuple[int, int, np.ndarray]]]:
+    """episode_id → [(frame_start, frame_end, z), ...] sorted by frame_start."""
+    raw = np.load(str(npz_path))
+    skill_map: dict[int, list] = {}
+    for ep_id, fs, fe, z in zip(
+        raw["episode_id"], raw["frame_start"], raw["frame_end"], raw["latents"]
+    ):
+        skill_map.setdefault(int(ep_id), []).append((int(fs), int(fe), z.astype(np.float32)))
+    for ep_id in skill_map:
+        skill_map[ep_id].sort(key=lambda x: x[0])
+    return skill_map
 
 
-def get_latent_for_frame(
-    frame_idx: int,
+# ── episode별 컬럼 계산 ───────────────────────────────────────────────────────
+
+def compute_skill_columns(
+    ep_df: pd.DataFrame,
     skills: list[tuple[int, int, np.ndarray]],
     latent_dim: int,
-    zero_outside: bool = True,
-) -> np.ndarray:
-    """주어진 프레임에 해당하는 latent 반환. 스킬 구간 밖 gap 프레임은 zero."""
-    for fs, fe, lat in skills:
-        if fs <= frame_idx < fe:
-            return lat.astype(np.float32)
-    return np.zeros(latent_dim, dtype=np.float32)
+) -> dict[str, np.ndarray]:
+    """
+    ep_df : frame_index 순으로 정렬된 한 에피소드의 DataFrame
+    skills: [(frame_start, frame_end, z), ...] sorted by frame_start
 
+    Returns dict of arrays, each length len(ep_df).
+    """
+    n          = len(ep_df)
+    frames     = ep_df["frame_index"].values                        # (n,)
+    states     = np.stack(ep_df["observation.state"].values)        # (n, state_dim)
+    state_dim  = states.shape[1]
+
+    z_arr          = np.zeros((n, latent_dim),  dtype=np.float32)
+    z_prev_arr     = np.zeros((n, latent_dim),  dtype=np.float32)
+    f_b_arr        = np.zeros(n,                dtype=np.int8)
+    start_state_arr= np.zeros((n, state_dim),   dtype=np.float32)
+    frame_idx_arr  = np.full(n, -1,             dtype=np.int32)
+
+    # frame_index → row position
+    frame_to_row = {int(f): i for i, f in enumerate(frames)}
+
+    for fs, fe, z in skills:
+        mask = (frames >= fs) & (frames < fe)
+        if not mask.any():
+            continue
+
+        z_arr[mask]           = z
+        frame_idx_arr[mask]   = frames[mask] - fs
+
+        # skill_start_state: state at the first frame of this skill
+        if fs in frame_to_row:
+            start_state_arr[mask] = states[frame_to_row[fs]]
+
+        # f_b = 1 at the FIRST frame of every skill (z_prev=zero for first skill)
+        boundary_mask = frames == fs
+        f_b_arr[boundary_mask] = 1
+
+    # 마지막 스킬 이후 남은 프레임: 마지막 스킬의 z/state로 채움
+    if skills:
+        last_fs, last_fe, last_z = skills[-1]
+        leftover_mask = frame_idx_arr == -1
+        if leftover_mask.any():
+            z_arr[leftover_mask]          = last_z
+            frame_idx_arr[leftover_mask]  = frames[leftover_mask] - last_fs
+            if last_fs in frame_to_row:
+                start_state_arr[leftover_mask] = states[frame_to_row[last_fs]]
+
+    # z_prev: lag-1 of z_arr (first frame uses zero vector)
+    z_prev_arr[1:] = z_arr[:-1]
+
+    return {
+        "skill_latent":       list(z_arr),
+        "skill_latent_prev":  list(z_prev_arr),
+        "skill_boundary":     f_b_arr,
+        "skill_start_state":  list(start_state_arr),
+        "skill_frame_index":  frame_idx_arr,
+    }
+
+
+# ── Main ─────────────────────────────────────────────────────────────────────
 
 def main(args: Args) -> None:
     src_dir = Path(args.src_dataset_dir)
     dst_dir = Path(args.dst_dataset_dir)
-    latents_path = Path(args.latents_path)
 
-    # ── Load latents ───────────────────────────────────────────────
-    print(f"Loading latents from {latents_path} ...")
-    raw = np.load(str(latents_path))
-    latent_dim = raw["latents"].shape[1]
-    ep_skill_map = build_frame_latent_map(raw, latent_dim)
-    valid_ep_ids = set(ep_skill_map.keys())
-    print(f"  latent_dim={latent_dim}, episodes with skills={len(valid_ep_ids)}")
+    # ── Load skill latents ────────────────────────────────────────────────────
+    print(f"Loading skill latents from {args.latents_path} ...")
+    skill_map  = load_skill_map(Path(args.latents_path))
+    latent_dim = next(iter(skill_map.values()))[0][2].shape[0]
+    print(f"  latent_dim={latent_dim}, episodes={len(skill_map)}")
 
-    # ── Copy dataset ───────────────────────────────────────────────
+    # ── Copy dataset ──────────────────────────────────────────────────────────
     if dst_dir.exists():
         print(f"Removing existing {dst_dir} ...")
         shutil.rmtree(dst_dir)
-    print(f"Copying dataset {src_dir} → {dst_dir} ...")
+    print(f"Copying {src_dir} → {dst_dir} ...")
     shutil.copytree(src_dir, dst_dir)
 
-    # ── Process data parquet files: remove no-skill episodes, add latents ──
+    # ── Process data parquets ─────────────────────────────────────────────────
     data_files = sorted((dst_dir / "data").rglob("*.parquet"))
-    print(f"Processing {len(data_files)} data parquet files ...")
+    print(f"Processing {len(data_files)} parquet files ...")
 
-    removed_ep_ids: set[int] = set()
-    n_frames_removed = 0
+    n_zero_fill_eps: int = 0
 
     for parquet_path in tqdm(data_files):
         df = pd.read_parquet(parquet_path)
-
-        # 스킬 latent가 없는 에피소드 제거
-        missing = set(df["episode_index"].unique().tolist()) - valid_ep_ids
-        if missing:
-            removed_ep_ids |= missing
-            before = len(df)
-            df = df[df["episode_index"].isin(valid_ep_ids)].reset_index(drop=True)
-            n_frames_removed += before - len(df)
 
         if df.empty:
             df.to_parquet(parquet_path, index=False)
             continue
 
-        # 남은 프레임에 skill latent 할당
-        # (스킬 구간 안: 해당 latent / 구간 밖 gap: zero)
-        skill_latents = [
-            get_latent_for_frame(
-                int(row["frame_index"]),
-                ep_skill_map[int(row["episode_index"])],
-                latent_dim,
-                zero_outside=True,  # gap 프레임은 항상 zero
-            )
-            for _, row in df.iterrows()
-        ]
-        df["observation.states.skill"] = skill_latents
+        # 스킬 latent 없는 에피소드: 제거하지 않고 zero-fill
+        missing = set(df["episode_index"].unique()) - set(skill_map.keys())
+        if missing:
+            n_zero_fill_eps += len(missing)
+
+        # 정렬 후 직접 대입 (벡터 컬럼의 pandas loc 할당 버그 회피)
+        df = df.sort_values(["episode_index", "frame_index"]).reset_index(drop=True)
+
+        col_buffers: dict[str, list] = {
+            "skill_latent":      [],
+            "skill_latent_prev": [],
+            "skill_boundary":    [],
+            "skill_start_state": [],
+            "skill_frame_index": [],
+        }
+
+        for ep_id, ep_df in df.groupby("episode_index"):
+            ep_df = ep_df.sort_values("frame_index")
+            # missing episode → empty skills list → all zero arrays (compute_skill_columns handles this)
+            skills = skill_map.get(int(ep_id), [])
+            cols   = compute_skill_columns(ep_df, skills, latent_dim)
+            for k in col_buffers:
+                col_buffers[k].extend(cols[k] if isinstance(cols[k], list) else cols[k].tolist())
+
+        for k, vals in col_buffers.items():
+            df[k] = vals
+
         df.to_parquet(parquet_path, index=False)
 
-    print(f"  Removed {len(removed_ep_ids)} episodes (no skill latent): {sorted(removed_ep_ids)}")
-    print(f"  Removed {n_frames_removed} frames total")
+    print(f"  Zero-filled {n_zero_fill_eps} episodes without skill latents (kept in dataset)")
 
-    # ── Remove from meta/episodes parquet ─────────────────────────
-    ep_meta_files = sorted((dst_dir / "meta" / "episodes").rglob("*.parquet"))
-    for ep_meta_path in ep_meta_files:
-        ep_df = pd.read_parquet(ep_meta_path)
-        ep_df = ep_df[ep_df["episode_index"].isin(valid_ep_ids)].reset_index(drop=True)
-        ep_df.to_parquet(ep_meta_path, index=False)
-
-    # ── Update info.json ───────────────────────────────────────────
+    # ── Update info.json ──────────────────────────────────────────────────────
     info_path = dst_dir / "meta" / "info.json"
     info = json.loads(info_path.read_text())
     info["repo_id"] = args.dst_repo_id
-    info["total_episodes"] = info.get("total_episodes", 0) - len(removed_ep_ids)
-    info["total_frames"] = info.get("total_frames", 0) - n_frames_removed
-    info["features"]["observation.states.skill"] = {
-        "dtype": "float32",
-        "shape": [latent_dim],
-        "names": [f"skill_z{i}" for i in range(latent_dim)],
-    }
-    info_path.write_text(json.dumps(info, indent=2))
-    print(f"  Updated info.json (episodes={info['total_episodes']}, frames={info['total_frames']})")
 
-    # ── Update stats.json ──────────────────────────────────────────
+    state_dim = None
+    for pf in sorted((dst_dir / "data").rglob("*.parquet")):
+        sample = pd.read_parquet(pf)
+        if "skill_start_state" in sample.columns:
+            state_dim = len(sample["skill_start_state"].iloc[0])
+            break
+
+    info["features"].update({
+        "skill_latent": {
+            "dtype": "float32", "shape": [latent_dim],
+            "names": [f"z{i}" for i in range(latent_dim)],
+        },
+        "skill_latent_prev": {
+            "dtype": "float32", "shape": [latent_dim],
+            "names": [f"z_prev{i}" for i in range(latent_dim)],
+        },
+        "skill_boundary": {
+            "dtype": "int8", "shape": [1], "names": ["skill_boundary"],
+        },
+        "skill_start_state": {
+            "dtype": "float32", "shape": [state_dim],
+            "names": [f"s0_{i}" for i in range(state_dim)],
+        } if state_dim else {},
+        "skill_frame_index": {
+            "dtype": "int32", "shape": [1], "names": ["skill_frame_index"],
+        },
+    })
+    info_path.write_text(json.dumps(info, indent=2))
+
+    # ── Update stats.json ─────────────────────────────────────────────────────
     stats_path = dst_dir / "meta" / "stats.json"
     if stats_path.exists():
         stats = json.loads(stats_path.read_text())
-        all_latents = []
-        for parquet_path in sorted((dst_dir / "data").rglob("*.parquet")):
-            df = pd.read_parquet(parquet_path)
-            if "observation.states.skill" in df.columns:
-                all_latents.extend(df["observation.states.skill"].tolist())
-        all_latents = np.array(all_latents)
-        stats["observation.states.skill"] = {
-            "min":  all_latents.min(axis=0).tolist(),
-            "max":  all_latents.max(axis=0).tolist(),
-            "mean": all_latents.mean(axis=0).tolist(),
-            "std":  all_latents.std(axis=0).tolist(),
+        all_z = []
+        for pf in sorted((dst_dir / "data").rglob("*.parquet")):
+            df = pd.read_parquet(pf)
+            if "skill_latent" in df.columns:
+                all_z.extend(df["skill_latent"].tolist())
+        all_z = np.array(all_z)
+        stats["skill_latent"] = {
+            "min":  all_z.min(axis=0).tolist(),
+            "max":  all_z.max(axis=0).tolist(),
+            "mean": all_z.mean(axis=0).tolist(),
+            "std":  all_z.std(axis=0).tolist(),
         }
         stats_path.write_text(json.dumps(stats, indent=2))
-        print("  Updated stats.json")
 
-    print(f"\n완료! 출력 데이터셋: {dst_dir}")
-    print(f"  observation.states.skill (dim={latent_dim}) 추가됨")
-    print(f"  제거된 에피소드: {len(removed_ep_ids)}개 / 제거된 프레임: {n_frames_removed}개")
+    print(f"\n완료: {dst_dir}")
+    print(f"  추가된 컬럼: skill_latent, skill_latent_prev, skill_boundary, "
+          f"skill_start_state, skill_frame_index")
+    print(f"  latent_dim={latent_dim}, episodes={info['total_episodes']}, "
+          f"frames={info['total_frames']}")
 
 
 if __name__ == "__main__":

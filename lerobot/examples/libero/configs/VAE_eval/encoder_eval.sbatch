@@ -40,8 +40,8 @@ NO_HTML=false            # true: interactive HTML 생성 스킵 (업로드 빠�
 VAE_TYPE=spline   # 'raw' (BiLSTM) or 'spline' (MLP)
 
 DATA=libero_90
-LATENT_DIM=16
-SKILLSET=${DATA}_skillset_fixed40
+LATENT_DIM=64
+SKILLSET=${DATA}_skillset
 
 EXP="${DATA}_lat${LATENT_DIM}_${VAE_TYPE}"
 SWEEP_DIR="${HOMEDIR}${PROJDIR}/outputs/${SKILLSET}_latents/${EXP}"

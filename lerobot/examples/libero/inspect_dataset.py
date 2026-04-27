@@ -3,7 +3,7 @@ LeRobot 데이터셋 구조 검사 스크립트.
 
 Usage:
     python examples/libero/inspect_dataset.py \
-        --dataset_dir /scratch/mdorazi/Skill_Boundary_Detector/libero_dataset/libero_10
+        --dataset_dir /data2/dohyeon/SBD/libero_dataset/libero_90_skillvla
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ import tyro
 
 @dataclass
 class Args:
-    dataset_dir: str = "/scratch/mdorazi/Skill_Boundary_Detector/libero_dataset/libero_90"
+    dataset_dir: str = "/data2/dohyeon/SBD/libero_dataset/libero_90"
     episode_idx: int = 0
     """출력할 예시 에피소드 인덱스"""
 

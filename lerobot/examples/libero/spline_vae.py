@@ -187,7 +187,12 @@ class SplineVAE(nn.Module):
         B = z.size(0)
         x = torch.cat([z, state], dim=-1) if self.state_dim > 0 else z
         h = self.decoder_mlp(x)
-        ctrl_pts = torch.tanh(self.ctrl_head(h)).view(B, self.n_control, self.action_dim)
+        raw = self.ctrl_head(h).view(B, self.n_control, self.action_dim)
+        gripper_idx = (self.action_dim + GRIPPER_DIM) % self.action_dim
+        ctrl_pts = torch.tanh(raw)
+        # Gripper dim: keep as raw logit (used with BCE loss; tanh is replaced by sigmoid+threshold)
+        ctrl_pts = ctrl_pts.clone()
+        ctrl_pts[:, :, gripper_idx] = raw[:, :, gripper_idx]
         length_norm = torch.sigmoid(self.length_head(h))   # (B, 1)  ∈ (0, 1)
         return ctrl_pts, length_norm
 
@@ -239,7 +244,12 @@ class SplineVAE(nn.Module):
         s_t = torch.from_numpy(state).float().unsqueeze(0).to(device)
         ctrl_norm, len_norm = self.decode(z_t, s_t)
         ctrl_norm_np = ctrl_norm.squeeze(0).cpu().numpy()
-        ctrl_pts     = self._np_denorm_actions(ctrl_norm_np)
+        # Gripper: sigmoid(logit) > 0.5 → +1, else → -1  (in normalised ±1 space)
+        gripper_idx = (self.action_dim + GRIPPER_DIM) % self.action_dim
+        ctrl_norm_np[:, gripper_idx] = np.where(
+            1.0 / (1.0 + np.exp(-ctrl_norm_np[:, gripper_idx])) > 0.5, 1.0, -1.0
+        )
+        ctrl_pts = self._np_denorm_actions(ctrl_norm_np)
         T = max(2, round(float(len_norm.item()) * self.max_length))
         return spline_decode(ctrl_pts, T, self.spline_degree)
 
@@ -247,19 +257,33 @@ class SplineVAE(nn.Module):
 # ── Loss ───────────────────────────────────────────────────────────────────────
 
 def spline_vae_loss(
-    recon_ctrl: torch.Tensor,    # (B, N, D)
+    recon_ctrl: torch.Tensor,    # (B, N, D)  — gripper dim is raw logit
     recon_len:  torch.Tensor,    # (B, 1)
-    target_ctrl: torch.Tensor,   # (B, N, D)
+    target_ctrl: torch.Tensor,   # (B, N, D)  — gripper dim is ±1 normalised
     target_len:  torch.Tensor,   # (B, 1)  normalised
     mu: torch.Tensor,            # (B, latent_dim)
     logvar: torch.Tensor,        # (B, latent_dim)
     beta: float = 1.0,
     length_weight: float = 1.0,
+    gripper_loss_weight: float = 1.0,
+    action_dim: int = 7,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    ctrl_loss  = F.mse_loss(recon_ctrl, target_ctrl)
-    len_loss   = F.mse_loss(recon_len, target_len)
-    kl_loss    = -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp())
-    total      = ctrl_loss + length_weight * len_loss + beta * kl_loss
+    gripper_idx = (action_dim + GRIPPER_DIM) % action_dim
+    non_gripper = [i for i in range(action_dim) if i != gripper_idx]
+
+    # Continuous dims: MSE
+    ctrl_loss_cont = F.mse_loss(recon_ctrl[:, :, non_gripper], target_ctrl[:, :, non_gripper])
+
+    # Gripper dim: BCE (target ±1 → 0/1, prediction is raw logit)
+    gripper_target_01 = (target_ctrl[:, :, gripper_idx] + 1.0) / 2.0
+    ctrl_loss_gripper = F.binary_cross_entropy_with_logits(
+        recon_ctrl[:, :, gripper_idx], gripper_target_01
+    )
+
+    ctrl_loss = ctrl_loss_cont + gripper_loss_weight * ctrl_loss_gripper
+    len_loss  = F.mse_loss(recon_len, target_len)
+    kl_loss   = -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp())
+    total     = ctrl_loss + length_weight * len_loss + beta * kl_loss
     return total, ctrl_loss, len_loss, kl_loss
 
 
@@ -322,9 +346,10 @@ class SplineVAEConfig:
     latent_dim:    int   = 64
     num_layers:    int   = 3
     dropout:       float = 0.1
-    beta:          float = 1.0
-    length_weight: float = 10.0
-    max_length:    float = 500.0
+    beta:                float = 1.0
+    length_weight:       float = 10.0
+    gripper_loss_weight: float = 1.0
+    max_length:          float = 500.0
     lr:            float = 3e-4
     batch_size:    int   = 64
     epochs:        int   = 100
@@ -408,7 +433,8 @@ def train_spline_vae(
             cp, l_norm, state = cp.to(cfg.device), l_norm.to(cfg.device), state.to(cfg.device)
             recon_ctrl, recon_len, mu, logvar = model(cp, l_raw, state)
             loss, ctrl_l, len_l, kl_l = spline_vae_loss(
-                recon_ctrl, recon_len, cp, l_norm, mu, logvar, cfg.beta, cfg.length_weight
+                recon_ctrl, recon_len, cp, l_norm, mu, logvar,
+                cfg.beta, cfg.length_weight, cfg.gripper_loss_weight, cfg.action_dim,
             )
             optim.zero_grad(); loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
@@ -422,7 +448,10 @@ def train_spline_vae(
             for cp, l_raw, l_norm, state in val_loader:
                 cp, l_norm, state = cp.to(cfg.device), l_norm.to(cfg.device), state.to(cfg.device)
                 recon_ctrl, recon_len, mu, logvar = model(cp, l_raw, state)
-                loss, *_ = spline_vae_loss(recon_ctrl, recon_len, cp, l_norm, mu, logvar, cfg.beta, cfg.length_weight)
+                loss, *_ = spline_vae_loss(
+                    recon_ctrl, recon_len, cp, l_norm, mu, logvar,
+                    cfg.beta, cfg.length_weight, cfg.gripper_loss_weight, cfg.action_dim,
+                )
                 v_total += loss.item()
 
         n_tr, n_vl = len(train_loader), len(val_loader)

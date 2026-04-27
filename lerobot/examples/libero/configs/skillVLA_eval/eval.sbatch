@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=VLA_eval
+#SBATCH --job-name=skillVLA_eval
 
-# SBATCH --partition=asus_pro6000 #,suma_rtx4090,big_suma_rtx3090,base_suma_rtx3090
-# SBATCH --exclude=node19,node13,node18,node16,node08,node10,node21,node14,node04,node05,node31
+# SBATCH --partition=asus_pro6000
 # SBATCH --qos=pro6000_qos
 
 #SBATCH --partition=debug
@@ -17,9 +16,6 @@
 set -euo pipefail
 mkdir -p logs
 
-# HOMEDIR=/scratch/mdorazi
-# PROJDIR=/Skill_Boundary_Detector
-
 HOMEDIR=/data2/dohyeon
 PROJDIR=/SBD
 
@@ -30,26 +26,13 @@ echo "START JOB"
 echo "Node: $SLURMD_NODENAME"
 nvidia-smi
 
-
-# MODEL=pi05_libero_10
-# CHECKPOINT=050000
-# TARGET_TASK=libero_10
-
-# MODEL=pi05_070000PT_libero_10FT
-# CHECKPOINT=040000
-# TARGET_TASK=libero_10
-
-MODEL=pi05_070000PT_libero_10_op1_10FT
-CHECKPOINT=040000
-TARGET_TASK=libero_10
-
-# MODEL=pi05_libero_90
-# CHECKPOINT=070000
-# TARGET_TASK=libero_90
+# ── 설정 ──────────────────────────────────────────────────────────────────────
+MODEL=skillVLA_libero_90_skillvla_PT
+CHECKPOINT=060000
+TARGET_TASK=libero_90
 
 WANDB_PROJECT=VLA_eval
-WANDB_RUN_NAME=${MODEL}PT_${CHECKPOINT}_${TARGET_TASK}
-
+WANDB_RUN_NAME=${MODEL}_${CHECKPOINT}_${TARGET_TASK}
 
 PYTHONPATH=${HOMEDIR}${PROJDIR}/lerobot/src \
   ${HOMEDIR}${PROJDIR}/.venv/bin/lerobot-eval \
@@ -63,3 +46,5 @@ PYTHONPATH=${HOMEDIR}${PROJDIR}/lerobot/src \
   --wandb_project ${WANDB_PROJECT} \
   --job_name ${WANDB_RUN_NAME} \
   --rename_map='{"observation.images.image2": "observation.images.wrist_image"}'
+
+echo "DONE"

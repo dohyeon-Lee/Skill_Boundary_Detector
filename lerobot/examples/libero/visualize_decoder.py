@@ -149,7 +149,7 @@ def make_comparison_b64(gt: np.ndarray, pred: np.ndarray,
         ax.tick_params(labelsize=6)
         ax.grid(True, alpha=0.3)
         if i == gripper_idx:
-            ax.set_ylim(-0.5, 1.5)
+            ax.set_ylim(-1.5, 1.5)
         elif non_gripper:
             ax.set_ylim(y_min, y_max)
         if i == 0:
