@@ -1,2 +1,3 @@
 from .configuration_skillVLA import SkillVLAConfig as SkillVLAConfig
 from .modeling_skillVLA import SkillVLAPolicy as SkillVLAPolicy
+from .processor_skillVLA import make_skill_vla_pre_post_processors as make_skill_vla_pre_post_processors

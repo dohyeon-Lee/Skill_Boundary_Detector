@@ -38,8 +38,8 @@ nvidia-smi
 DATA=libero_90
 LATENT_DIM=64
 VAE_TYPE=spline   # 'raw' (BiLSTM) or 'spline' (MLP)
-# SKILLSET=${DATA}_skillset_fixed40
-SKILLSET=${DATA}_skillset
+SKILLSET=${DATA}_skillset_fixed50
+# SKILLSET=${DATA}_skillset
 
 
 EXP_NAME="${DATA}_lat${LATENT_DIM}_${VAE_TYPE}"

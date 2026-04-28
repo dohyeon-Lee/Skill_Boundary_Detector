@@ -254,6 +254,14 @@ def make_pre_post_processors(
         NotImplementedError: If a processor factory is not implemented for the given
             policy configuration type.
     """
+    if isinstance(policy_cfg, SkillVLAConfig):
+        from lerobot.policies.skillVLA.processor_skillVLA import make_skill_vla_pre_post_processors
+
+        return make_skill_vla_pre_post_processors(
+            config=policy_cfg,
+            dataset_stats=kwargs.get("dataset_stats"),
+        )
+
     if pretrained_path:
         # TODO(Steven): Temporary patch, implement correctly the processors for Gr00t
         if isinstance(policy_cfg, GrootConfig):
@@ -344,6 +352,14 @@ def make_pre_post_processors(
         from lerobot.policies.pi0.processor_pi0 import make_pi0_pre_post_processors
 
         processors = make_pi0_pre_post_processors(
+            config=policy_cfg,
+            dataset_stats=kwargs.get("dataset_stats"),
+        )
+
+    elif isinstance(policy_cfg, SkillVLAConfig):
+        from lerobot.policies.skillVLA.processor_skillVLA import make_skill_vla_pre_post_processors
+
+        processors = make_skill_vla_pre_post_processors(
             config=policy_cfg,
             dataset_stats=kwargs.get("dataset_stats"),
         )

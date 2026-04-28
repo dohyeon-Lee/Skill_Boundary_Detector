@@ -32,7 +32,7 @@ echo "START JOB"
 echo "Node: $SLURMD_NODENAME"
 nvidia-smi
 
-FT_DATASET=libero_10_op1_10
+FT_DATASET=libero_10_op2_1
 FT_DATASET_LOC=libero_small_dataset
 
 # FT_DATASET=libero_10

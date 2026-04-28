@@ -31,20 +31,41 @@ echo "Node: $SLURMD_NODENAME"
 nvidia-smi
 
 
+
 # MODEL=pi05_libero_10
-# CHECKPOINT=050000
+# CHECKPOINT=030000
+# TARGET_TASK=libero_10
+
+
+# MODEL=pi05_070000PT_libero_10_op1_10FT
+# CHECKPOINT=030000
+# TARGET_TASK=libero_10
+
+# MODEL=pi05_070000PT_libero_10_op1_10FT
+# CHECKPOINT=030000
+# TARGET_TASK=libero_90
+
+
+# MODEL=pi05_070000PT_libero_10FT
+# CHECKPOINT=030000
 # TARGET_TASK=libero_10
 
 # MODEL=pi05_070000PT_libero_10FT
-# CHECKPOINT=040000
-# TARGET_TASK=libero_10
+# CHECKPOINT=030000
+# TARGET_TASK=libero_90
 
-MODEL=pi05_070000PT_libero_10_op1_10FT
-CHECKPOINT=040000
-TARGET_TASK=libero_10
 
 # MODEL=pi05_libero_90
 # CHECKPOINT=070000
+# TARGET_TASK=libero_90
+
+
+MODEL=pi05_070000PT_libero_10_op2_1FT
+CHECKPOINT=030000
+TARGET_TASK=libero_10
+
+# MODEL=pi05_070000PT_libero_10_op2_1FT
+# CHECKPOINT=030000
 # TARGET_TASK=libero_90
 
 WANDB_PROJECT=VLA_eval
@@ -63,3 +84,4 @@ PYTHONPATH=${HOMEDIR}${PROJDIR}/lerobot/src \
   --wandb_project ${WANDB_PROJECT} \
   --job_name ${WANDB_RUN_NAME} \
   --rename_map='{"observation.images.image2": "observation.images.wrist_image"}'
+  # --env.task_ids="[0,1,2,3,4,5,6,7,8,9]" \

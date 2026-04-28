@@ -35,7 +35,7 @@ nvidia-smi
 DATASET=libero_90_skillvla
 DATASET_ROOT=libero_dataset
 PI_BASE=lerobot/pi05_base
-VAE_CKPT=${HOMEDIR}${PROJDIR}/outputs/libero_90_skillset_latents/libero_90_lat64_spline/spline_vae.pt
+VAE_CKPT=${HOMEDIR}${PROJDIR}/outputs/libero_90_skillset_latents/libero_90_lat64_spline/spline_vae_epoch10000.pt
 
 LR=2.5e-05
 BATCH_SIZE=32
@@ -43,13 +43,21 @@ NUM_WORKERS=4
 NUM_GPUS=1
 
 # boundary 프레임 비율(~1/chunk_len) 보정. 10~40 사이로 튜닝
-SP_LOSS_WEIGHT=10.0
+SP_LOSS_WEIGHT=1.0
 
 # true: action expert가 image token만 attend (language 차단)
 # false: pi05 기본 동작 (language + obs 모두 attend)
 BLOCK_LANG=true
 
-OUTPUT_DIR=../outputs/skillVLA_${DATASET}_PT
+# Scheduled sampling for the latent fed to the action expert and VAE decoder.
+# false: teacher-forced GT z only. true: linearly replace GT z with skill-predictor z.
+PREDICTED_LATENT_SAMPLING=false
+PREDICTED_LATENT_START_STEP=0
+PREDICTED_LATENT_RAMP_STEPS=50000
+PREDICTED_LATENT_MAX_PROB=1.0
+PREDICTED_LATENT_DETACH=true
+
+OUTPUT_DIR=../outputs/PT_${DATASET}_coupled_${PREDICTED_LATENT_SAMPLING}
 CONFIG_PATH=${OUTPUT_DIR}/checkpoints/last/pretrained_model/train_config.json
 
 RESUME_ARGS=""
@@ -70,21 +78,26 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes=${
     --dataset.root=${HOMEDIR}${PROJDIR}/${DATASET_ROOT}/${DATASET} \
     --policy.type=skill_vla \
     --output_dir=${OUTPUT_DIR} \
-    --job_name=skillVLA_PT_${DATASET} \
+    --job_name=${DATASET}_PT_coupled_${PREDICTED_LATENT_SAMPLING} \
     --policy.pretrained_path=${PI_BASE} \
-    --policy.compile_model=true \
+    --policy.compile_model=false \
     --policy.gradient_checkpointing=true \
     --wandb.enable=true \
     --wandb.project=VLA_posttrain \
     --policy.dtype=bfloat16 \
     --policy.freeze_vision_encoder=false \
     --policy.push_to_hub=false \
-    --policy.training_stage=3 \
     --policy.block_lang_to_action=${BLOCK_LANG} \
     --policy.vae_decoder_path=${VAE_CKPT} \
     --policy.skill_latent_dim=64 \
+    --policy.skill_predictor_state_dim=8 \
     --policy.skill_predictor_loss_weight=${SP_LOSS_WEIGHT} \
-    --save_freq=10000 \
+    --policy.predicted_latent_sampling=${PREDICTED_LATENT_SAMPLING} \
+    --policy.predicted_latent_start_step=${PREDICTED_LATENT_START_STEP} \
+    --policy.predicted_latent_ramp_steps=${PREDICTED_LATENT_RAMP_STEPS} \
+    --policy.predicted_latent_max_prob=${PREDICTED_LATENT_MAX_PROB} \
+    --policy.predicted_latent_detach=${PREDICTED_LATENT_DETACH} \
+    --save_freq=5000 \
     --steps=100000 \
     --policy.device=cuda \
     --dataset.video_backend=pyav \
@@ -92,5 +105,6 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes=${
     --policy.optimizer_lr=${LR} \
     --num_workers=${NUM_WORKERS} \
     ${RESUME_ARGS}
+
 
 echo "DONE"

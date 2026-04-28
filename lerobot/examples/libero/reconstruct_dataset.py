@@ -10,8 +10,8 @@ Usage:
   → output: libero_small_dataset/libero_10_option1_30
 
   # Option 2: Keep ALL episodes from first 4 tasks only
-  python reconstruct_dataset.py --dataset libero_10 --option 2 --value 4
-  → output: libero_small_dataset/libero_10_option2_4
+  python reconstruct_dataset.py --dataset libero_10 --option 2 --value 5
+  → output: libero_small_dataset/libero_10_op2_5
 """
 
 import argparse

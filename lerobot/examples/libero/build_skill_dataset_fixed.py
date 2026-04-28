@@ -3,7 +3,9 @@ build_skill_dataset_fixed.py — libero 데모를 fixed-length chunk로 스킬 �
 
 build_skill_dataset.py와 동일한 출력 포맷이지만,
 VF/policy 없이 단순히 고정 길이로 episode를 자름.
-마지막 잔여 프레임이 chunk_len 미만이면 버림.
+잔여 프레임 처리:
+  - 잔여 ≤ chunk_len/2 : 마지막 스킬에 붙임 (해당 스킬이 chunk_len보다 길어짐)
+  - 잔여 > chunk_len/2 : 별도 스킬로 저장 (해당 스킬은 chunk_len보다 짧음)
 
 Output layout:
   output_dir/skills/task{task_id:02d}/ep{ep_id:05d}_task{task_id:02d}_skill{si:02d}.npz
@@ -35,7 +37,7 @@ class Args:
     dataset_dir: str = "/data2/dohyeon/SBD/libero_dataset/libero_90"
     output_dir: str = "/data2/dohyeon/SBD/outputs/skill_dataset_fixed"
     chunk_len: int = 40
-    """각 스킬 세그먼트의 고정 프레임 수. 나머지는 버림."""
+    """각 스킬 세그먼트의 기준 프레임 수."""
     task_ids: list[int] | None = None
     """처리할 task index 목록. None이면 전체 task 처리."""
     resume: bool = True
@@ -44,13 +46,39 @@ class Args:
 
 # ── Core ──────────────────────────────────────────────────────────────────────
 
+def _save_skill(task_dir: Path, ep_id: int, task_id: int, si: int,
+                actions: np.ndarray, states: np.ndarray,
+                frame_start: int, frame_end: int) -> str:
+    fname = task_dir / f"ep{ep_id:05d}_task{task_id:02d}_skill{si:02d}.npz"
+    np.savez(
+        str(fname),
+        actions=actions.astype(np.float32),
+        states=states.astype(np.float32),
+        episode_id=np.array(ep_id),
+        task_id=np.array(task_id),
+        skill_index=np.array(si),
+        frame_start=np.array(frame_start),
+        frame_end=np.array(frame_end),
+    )
+    return str(fname)
+
+
 def _save_fixed_skills(skills_dir: Path, ep_id: int, task_id: int,
                         gt_actions: np.ndarray, states: np.ndarray,
                         chunk_len: int) -> list[str]:
-    n_frames = len(gt_actions)
-    n_chunks = n_frames // chunk_len  # 나머지 버림
+    n_frames  = len(gt_actions)
+    n_chunks  = n_frames // chunk_len
+    remainder = n_frames % chunk_len
+    half      = chunk_len // 2
 
+    # 에피소드 전체가 chunk_len 미만인 경우
     if n_chunks == 0:
+        if remainder > half:
+            # chunk_len/2 초과 → 단독 스킬로 저장
+            task_dir = skills_dir / f"task{task_id:02d}"
+            task_dir.mkdir(exist_ok=True)
+            return [_save_skill(task_dir, ep_id, task_id, 0,
+                                gt_actions, states, 0, n_frames)]
         return []
 
     task_dir = skills_dir / f"task{task_id:02d}"
@@ -60,18 +88,25 @@ def _save_fixed_skills(skills_dir: Path, ep_id: int, task_id: int,
     for si in range(n_chunks):
         s = si * chunk_len
         e = s + chunk_len
-        fname = task_dir / f"ep{ep_id:05d}_task{task_id:02d}_skill{si:02d}.npz"
-        np.savez(
-            str(fname),
-            actions=gt_actions[s:e].astype(np.float32),
-            states=states[s:e].astype(np.float32),
-            episode_id=np.array(ep_id),
-            task_id=np.array(task_id),
-            skill_index=np.array(si),
-            frame_start=np.array(s),
-            frame_end=np.array(e),
-        )
-        saved.append(str(fname))
+        saved.append(_save_skill(task_dir, ep_id, task_id, si,
+                                 gt_actions[s:e], states[s:e], s, e))
+
+    # 잔여 프레임 처리
+    if remainder > 0:
+        tail_s = n_chunks * chunk_len
+        if remainder <= half:
+            # 마지막 스킬에 붙여서 덮어씀
+            prev_s = tail_s - chunk_len
+            _save_skill(task_dir, ep_id, task_id, n_chunks - 1,
+                        gt_actions[prev_s:], states[prev_s:],
+                        prev_s, n_frames)
+            # saved[-1] 경로는 그대로 (fname 동일), 내용만 확장됨
+        else:
+            # 별도 스킬로 저장
+            saved.append(_save_skill(task_dir, ep_id, task_id, n_chunks,
+                                     gt_actions[tail_s:], states[tail_s:],
+                                     tail_s, n_frames))
+
     return saved
 
 

@@ -1,13 +1,16 @@
-"""SkillVLA policy — extends PI05 with a skill predictor and frozen VAE decoder prior.
+"""SkillVLA policy — stage 3 joint training.
+
+Extends PI05 with skill conditioning and a frozen VAE decoder prior.
+All parameters are trainable; skill predictor gradient flows into the VLM.
 
 Architecture changes vs PI05:
-  1. embed_suffix : z (skill latent) projected and added to action embeddings.
-  2. forward      : residual target = actions - prior_slice; skill predictor loss at f_b==1.
-  3. denoise_step : passes z into embed_suffix during inference denoising.
+  1. embed_suffix  : z (skill latent) projected and prepended to action embeddings.
+  2. forward       : prior-start flow matching + SP loss jointly.
+  3. denoise_step  : passes z into embed_suffix during inference denoising.
   4. sample_actions: accepts z; caches prior and slices per step.
-  5. select_action : manages z / prior / step-counter across timesteps.
+  5. select_action : skill predictor predicts z; manages prior / step-counter.
 
-Everything else (VLM, action expert, flow matching, processors) is inherited from PI05.
+For stages 1 & 2 (decoupled pre-training) use skillVLA_decouple instead.
 
 Expected batch keys beyond standard PI05:
   - "skill_latent"        : (B, skill_latent_dim)   current skill z
@@ -15,6 +18,7 @@ Expected batch keys beyond standard PI05:
   - "skill_boundary"      : (B,)                    1 at first frame of new skill
   - "skill_start_state"   : (B, state_dim)          proprioceptive state at skill start
   - "skill_frame_index"   : (B,)                    step index within current skill (0-based)
+  - "skill_progress"      : (B,)                    0-1 progress within current skill
 """
 
 from __future__ import annotations
@@ -22,12 +26,14 @@ from __future__ import annotations
 import copy
 import logging
 import sys
+from collections import deque
 from pathlib import Path
 from typing import Tuple
 
 import numpy as np
 import torch
 import torch.nn.functional as F
+from safetensors.torch import load_file
 from torch import Tensor, nn
 
 from lerobot.policies.pi05.modeling_pi05 import (
@@ -39,6 +45,7 @@ from lerobot.policies.pi05.modeling_pi05 import (
 from lerobot.utils.constants import ACTION, OBS_LANGUAGE_ATTENTION_MASK, OBS_LANGUAGE_TOKENS
 
 from .configuration_skillVLA import SkillVLAConfig
+from .processor_skillVLA import OBS_LANG_TO_ACTION_ATTENTION_MASK
 from .skill_predictor import SkillPredictor
 
 log = logging.getLogger(__name__)
@@ -60,12 +67,37 @@ class SkillVLAPytorch(PI05Pytorch):
         self.skill_predictor = SkillPredictor(
             skill_latent_dim  = config.skill_latent_dim,
             prefix_hidden_dim = paligemma_config.width,
+            state_dim         = config.skill_predictor_state_dim,
             hidden_dim        = config.skill_predictor_hidden_dim,
         )
 
         self.vae_decoder = None
+        self.register_buffer("_action_q01", torch.empty(0), persistent=False)
+        self.register_buffer("_action_q99", torch.empty(0), persistent=False)
+        self.register_buffer("_predicted_latent_train_step", torch.zeros((), dtype=torch.long), persistent=False)
+        self._last_predicted_latent_prob = 0.0
+        self._last_predicted_latent_fraction = 0.0
         if config.vae_decoder_path:
             self.load_vae_decoder(config.vae_decoder_path)
+
+    def set_action_quantile_stats(self, q01: Tensor | np.ndarray | None, q99: Tensor | np.ndarray | None) -> None:
+        if q01 is None or q99 is None:
+            return
+        self._action_q01 = torch.as_tensor(q01, dtype=torch.float32)
+        self._action_q99 = torch.as_tensor(q99, dtype=torch.float32)
+
+    def _normalize_prior_actions(self, prior: Tensor) -> Tensor:
+        """Map raw VAE-decoded actions into the policy's normalized action space."""
+        if self._action_q01.numel() == 0 or self._action_q99.numel() == 0:
+            raise RuntimeError(
+                "Action quantile stats are required to normalize VAE prior actions. "
+                "Run with dataset stats or load a checkpoint containing the normalizer safetensors."
+            )
+
+        q01 = self._action_q01.to(device=prior.device, dtype=prior.dtype)
+        q99 = self._action_q99.to(device=prior.device, dtype=prior.dtype)
+        denom = torch.where(q99 == q01, torch.full_like(q99, 1e-8), q99 - q01)
+        return 2.0 * (prior - q01) / denom - 1.0
 
     # ── VAE decoder ───────────────────────────────────────────────────────────
 
@@ -142,7 +174,8 @@ class SkillVLAPytorch(PI05Pytorch):
         for b, r in enumerate(results):
             padded[b, :r.shape[0]] = r
 
-        return torch.from_numpy(padded).to(device)
+        prior = torch.from_numpy(padded).to(device)
+        return self._normalize_prior_actions(prior)
 
     def _get_prior_slice(
         self, prior: Tensor, skill_frame_index: Tensor
@@ -159,7 +192,10 @@ class SkillVLAPytorch(PI05Pytorch):
         chunk_size = self.config.chunk_size
         result = torch.zeros(B, chunk_size, action_dim, device=prior.device, dtype=prior.dtype)
         for b in range(B):
-            t   = int(skill_frame_index[b].item())
+            t   = max(0, int(skill_frame_index[b].item()))
+            if t >= skill_len:
+                result[b] = prior[b, skill_len - 1]
+                continue
             end = min(t + chunk_size, skill_len)
             n   = end - t
             result[b, :n] = prior[b, t:end]
@@ -169,17 +205,27 @@ class SkillVLAPytorch(PI05Pytorch):
 
     # ── embed_prefix override: record lang token count ───────────────────────
 
-    def embed_prefix(self, images, img_masks, tokens, masks):
+    def embed_prefix(self, images, img_masks, tokens, masks, lang_to_action_masks: Tensor | None = None):
         embs, pad_masks, att_masks = super().embed_prefix(images, img_masks, tokens, masks)
         self._n_lang_tokens = tokens.shape[1]
+        self._lang_to_action_masks = lang_to_action_masks
         return embs, pad_masks, att_masks
 
-    def _block_lang_attention(self, att_2d_masks: Tensor, n_prefix: int) -> Tensor:
-        """Zero out action→language columns in att_2d_masks (in-place)."""
+    def _block_lang_attention(
+        self,
+        att_2d_masks: Tensor,
+        n_prefix: int,
+        lang_to_action_masks: Tensor | None = None,
+    ) -> Tensor:
+        """Block action→task-language columns while allowing state/action-marker tokens."""
         n_lang = getattr(self, "_n_lang_tokens", 0)
         if n_lang > 0:
             att_2d_masks = att_2d_masks.clone()
-            att_2d_masks[:, n_prefix:, n_prefix - n_lang : n_prefix] = False
+            lang_start = n_prefix - n_lang
+            att_2d_masks[:, n_prefix:, lang_start:n_prefix] = False
+            if lang_to_action_masks is not None:
+                visible_lang = lang_to_action_masks.to(device=att_2d_masks.device, dtype=torch.bool)
+                att_2d_masks[:, n_prefix:, lang_start:n_prefix] = visible_lang[:, None, :]
         return att_2d_masks
 
     # ── embed_suffix override: inject z ──────────────────────────────────────
@@ -197,6 +243,40 @@ class SkillVLAPytorch(PI05Pytorch):
             att_masks = torch.cat([z_att, att_masks], dim=1)
         return embs, pad_masks, att_masks, adarms_cond
 
+    def _predicted_latent_prob(self, train_step: int | None) -> float:
+        if not self.config.predicted_latent_sampling:
+            return 0.0
+        step = 0 if train_step is None else train_step
+        if step < self.config.predicted_latent_start_step:
+            return 0.0
+        max_prob = float(self.config.predicted_latent_max_prob)
+        if self.config.predicted_latent_ramp_steps <= 0:
+            return max(0.0, min(1.0, max_prob))
+        progress = (step - self.config.predicted_latent_start_step) / self.config.predicted_latent_ramp_steps
+        return max(0.0, min(1.0, max_prob * progress))
+
+    def _sample_z_for_action(
+        self,
+        z: Tensor | None,
+        z_pred: Tensor | None,
+        train_step: int | None,
+    ) -> Tensor | None:
+        """Scheduled-sample the latent used by the action expert and VAE prior."""
+        self._last_predicted_latent_prob = 0.0
+        self._last_predicted_latent_fraction = 0.0
+        if z is None or z_pred is None:
+            return z
+
+        prob = self._predicted_latent_prob(train_step)
+        self._last_predicted_latent_prob = prob
+        if prob <= 0.0:
+            return z
+
+        pred = z_pred.detach() if self.config.predicted_latent_detach else z_pred
+        mask = torch.rand(z.shape[0], 1, device=z.device) < prob
+        self._last_predicted_latent_fraction = float(mask.float().mean().item())
+        return torch.where(mask, pred.to(z.dtype), z)
+
     # ── Training forward ─────────────────────────────────────────────────────
 
     def forward(
@@ -211,42 +291,73 @@ class SkillVLAPytorch(PI05Pytorch):
         f_b              : Tensor | None = None,   # (B,) 1 at skill start
         skill_start_state: Tensor | None = None,   # (B, state_dim)
         skill_frame_index: Tensor | None = None,   # (B,) int
+        skill_progress   : Tensor | None = None,   # (B,) float in [0, 1]
+        lang_to_action_masks: Tensor | None = None,
         noise            : Tensor | None = None,
         time             : Tensor | None = None,
         detach_sp_prefix : bool          = True,   # False → sp_loss gradient flows into VLM
+        train_step       : int | None    = None,
     ) -> Tuple[Tensor, Tensor]:
         """Returns (flow_loss [B,chunk,max_dim], skill_predictor_loss scalar)."""
-
-        # ── Residual target ───────────────────────────────────────────────────
-        if z is not None and skill_start_state is not None and skill_frame_index is not None:
-            full_prior = self._compute_full_prior(z, skill_start_state)
-            if full_prior is not None:
-                prior_slice = self._get_prior_slice(full_prior, skill_frame_index)
-                # Pad prior to max_action_dim
-                pad = torch.zeros_like(actions)
-                action_dim = prior_slice.shape[-1]
-                pad[:, :, :action_dim] = prior_slice.to(actions.dtype)
-                target = actions - pad
-            else:
-                target = actions
-        else:
-            target = actions
-
-        # ── Flow matching ─────────────────────────────────────────────────────
-        if noise is None:
-            noise = self.sample_noise(target.shape, target.device)
-        if time is None:
-            time = self.sample_time(target.shape[0], target.device)
-
-        time_exp = time[:, None, None]
-        x_t = time_exp * noise + (1 - time_exp) * target
-        u_t = noise - target
+        if f_b is not None and f_b.ndim > 1:
+            f_b = f_b.squeeze(-1)
+        if skill_frame_index is not None and skill_frame_index.ndim > 1:
+            skill_frame_index = skill_frame_index.squeeze(-1)
+        if skill_progress is not None and skill_progress.ndim > 1:
+            skill_progress = skill_progress.squeeze(-1)
 
         prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(
-            images, img_masks, tokens, masks
+            images, img_masks, tokens, masks, lang_to_action_masks=lang_to_action_masks
         )
+
+        # Skill predictor is supervised against teacher-forced z, while z_for_action
+        # can gradually switch to predicted z for the action expert and VAE prior.
+        z_pred = None
+        sp_loss = torch.tensor(0.0, device=actions.device)
+        if (
+            z is not None
+            and z_prev is not None
+            and (skill_progress is not None or skill_frame_index is not None)
+            and skill_start_state is not None
+        ):
+            skill_predictor_progress = skill_progress if skill_progress is not None else skill_frame_index
+            prefix_pooled = prefix_embs.float().mean(dim=1)
+            sp_prefix = prefix_pooled.detach() if detach_sp_prefix else prefix_pooled
+            z_pred = self.skill_predictor(
+                z_prev.to(sp_prefix.dtype),
+                sp_prefix,
+                skill_predictor_progress,
+                skill_start_state.to(sp_prefix.dtype),
+            )
+            sp_loss = F.mse_loss(z_pred, z.to(z_pred.dtype))
+
+        z_for_action = self._sample_z_for_action(z, z_pred, train_step)
+
+        # ── Prior-start flow matching ─────────────────────────────────────────
+        # Source (t=1): prior_slice if available, else Gaussian noise.
+        # Target (t=0): full actions (no residual subtraction).
+        # Path: x_t = t * source + (1-t) * actions,  u_t = source - actions.
+        prior_pad = None
+        if z_for_action is not None and skill_start_state is not None and skill_frame_index is not None:
+            full_prior = self._compute_full_prior(z_for_action, skill_start_state)
+            if full_prior is not None:
+                prior_slice = self._get_prior_slice(full_prior, skill_frame_index)
+                prior_pad = torch.zeros_like(actions)
+                action_dim = prior_slice.shape[-1]
+                prior_pad[:, :, :action_dim] = prior_slice.to(actions.dtype)
+
+        if noise is None:
+            noise = self.sample_noise(actions.shape, actions.device)
+        if time is None:
+            time = self.sample_time(actions.shape[0], actions.device)
+
+        source    = prior_pad if prior_pad is not None else noise
+        time_exp  = time[:, None, None]
+        x_t = time_exp * source + (1 - time_exp) * actions
+        u_t = source - actions
+
         suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = self.embed_suffix(
-            x_t, time, z=z
+            x_t, time, z=z_for_action
         )
 
         if (
@@ -260,7 +371,9 @@ class SkillVLAPytorch(PI05Pytorch):
         att_masks     = torch.cat([prefix_att_masks, suffix_att_masks], dim=1)
         att_2d_masks  = make_att_2d_masks(pad_masks, att_masks)
         if self.config.block_lang_to_action:
-            att_2d_masks = self._block_lang_attention(att_2d_masks, prefix_pad_masks.shape[1])
+            att_2d_masks = self._block_lang_attention(
+                att_2d_masks, prefix_pad_masks.shape[1], lang_to_action_masks=lang_to_action_masks
+            )
         position_ids  = torch.cumsum(pad_masks, dim=1) - 1
         att_2d_masks_4d = self._prepare_attention_masks_4d(att_2d_masks)
 
@@ -282,20 +395,6 @@ class SkillVLAPytorch(PI05Pytorch):
         v_t        = self._apply_checkpoint(self.action_out_proj, suffix_out)
         flow_loss  = F.mse_loss(u_t, v_t, reduction="none")
 
-        # ── Skill predictor loss (f_b == 1 frames only) ───────────────────────
-        sp_loss = torch.tensor(0.0, device=actions.device)
-        if z is not None and z_prev is not None and f_b is not None:
-            boundary = f_b.bool()
-            if boundary.any():
-                prefix_pooled = prefix_embs.float().mean(dim=1)
-                if detach_sp_prefix:
-                    prefix_pooled = prefix_pooled.detach()
-                z_pred = self.skill_predictor(
-                    z_prev[boundary].to(prefix_pooled.dtype),
-                    prefix_pooled[boundary],
-                )
-                sp_loss = F.mse_loss(z_pred, z[boundary].to(z_pred.dtype))
-
         return flow_loss, sp_loss
 
     # ── Inference: denoise_step override (pass z) ────────────────────────────
@@ -313,8 +412,13 @@ class SkillVLAPytorch(PI05Pytorch):
         if self.config.block_lang_to_action:
             n_lang = getattr(self, "_n_lang_tokens", 0)
             if n_lang > 0:
+                lang_to_action_masks = getattr(self, "_lang_to_action_masks", None)
+                lang_start = prefix_len - n_lang
                 prefix_pad_2d = prefix_pad_2d.clone()
-                prefix_pad_2d[:, :, prefix_len - n_lang : prefix_len] = False
+                prefix_pad_2d[:, :, lang_start:prefix_len] = False
+                if lang_to_action_masks is not None:
+                    visible_lang = lang_to_action_masks.to(device=prefix_pad_2d.device, dtype=torch.bool)
+                    prefix_pad_2d[:, :, lang_start:prefix_len] = visible_lang[:, None, :]
         suffix_att_2d = make_att_2d_masks(suffix_pad_masks, suffix_att_masks)
         full_att_2d   = torch.cat([prefix_pad_2d, suffix_att_2d], dim=2)
 
@@ -325,7 +429,7 @@ class SkillVLAPytorch(PI05Pytorch):
         self.paligemma_with_expert.gemma_expert.model.config._attn_implementation = "eager"  # noqa: SLF001
 
         past_key_values = copy.deepcopy(past_key_values)
-        outputs_embeds, _ = self.paligemma_with_expert.forward(
+        (_, suffix_out_full), _ = self.paligemma_with_expert.forward(
             attention_mask  = full_att_2d_4d,
             position_ids    = position_ids,
             past_key_values = past_key_values,
@@ -333,7 +437,7 @@ class SkillVLAPytorch(PI05Pytorch):
             use_cache       = True,
             adarms_cond     = [None, adarms_cond],
         )
-        suffix_out = outputs_embeds[:, -self.config.chunk_size:].to(torch.float32)
+        suffix_out = suffix_out_full[:, -self.config.chunk_size:].to(torch.float32)
         return self.action_out_proj(suffix_out)
 
     # ── Inference: sample_actions override (pass z, add prior) ───────────────
@@ -345,15 +449,16 @@ class SkillVLAPytorch(PI05Pytorch):
         img_masks,
         tokens,
         masks,
-        z                : Tensor | None = None,   # (B, skill_latent_dim)
-        skill_start_state: Tensor | None = None,   # (B, state_dim)  — at skill boundary
-        prior_cache      : Tensor | None = None,   # (B, skill_len, action_dim) precomputed
-        skill_step       : int = 0,                # current step within skill
-        noise            : Tensor | None = None,
-        num_steps        : int | None = None,
+        z                   : Tensor | None = None,   # (B, skill_latent_dim)
+        skill_start_state   : Tensor | None = None,   # (B, state_dim)  — at skill boundary
+        prior_cache         : Tensor | None = None,   # (B, skill_len, action_dim) precomputed
+        skill_step          : int = 0,                # current step within skill
+        lang_to_action_masks: Tensor | None = None,
+        noise               : Tensor | None = None,
+        num_steps           : int | None = None,
         **kwargs,
     ) -> Tuple[Tensor, Tensor | None]:
-        """Returns (residual_actions, full_prior) where full_prior is computed if not cached."""
+        """Denoise from prior (or noise) → action.  Returns (actions, prior_cache)."""
         if num_steps is None:
             num_steps = self.config.num_inference_steps
 
@@ -364,17 +469,22 @@ class SkillVLAPytorch(PI05Pytorch):
         if prior_cache is None and z is not None and skill_start_state is not None:
             prior_cache = self._compute_full_prior(z, skill_start_state)
 
-        if noise is None:
-            noise = self.sample_noise(
-                (bsize, self.config.chunk_size, self.config.max_action_dim), device
-            )
+        # Starting point: prior slice at current skill_step (fast path), else Gaussian noise
+        shape = (bsize, self.config.chunk_size, self.config.max_action_dim)
+        if prior_cache is not None:
+            idx         = torch.full((bsize,), skill_step, dtype=torch.long, device=device)
+            prior_slice = self._get_prior_slice(prior_cache, idx)
+            x_t = torch.zeros(shape, device=device, dtype=prior_slice.dtype)
+            x_t[:, :, :prior_slice.shape[-1]] = prior_slice
+        else:
+            x_t = self.sample_noise(shape, device) if noise is None else noise
 
         prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(
-            images, img_masks, tokens, masks
+            images, img_masks, tokens, masks, lang_to_action_masks=lang_to_action_masks
         )
-        prefix_att_2d     = make_att_2d_masks(prefix_pad_masks, prefix_att_masks)
+        prefix_att_2d       = make_att_2d_masks(prefix_pad_masks, prefix_att_masks)
         prefix_position_ids = torch.cumsum(prefix_pad_masks, dim=1) - 1
-        prefix_att_2d_4d  = self._prepare_attention_masks_4d(prefix_att_2d)
+        prefix_att_2d_4d    = self._prepare_attention_masks_4d(prefix_att_2d)
 
         self.paligemma_with_expert.paligemma.model.language_model.config._attn_implementation = "eager"  # noqa: SLF001
         _, past_key_values = self.paligemma_with_expert.forward(
@@ -385,101 +495,86 @@ class SkillVLAPytorch(PI05Pytorch):
             use_cache       = True,
         )
 
-        dt  = -1.0 / num_steps
-        x_t = noise
+        dt = -1.0 / num_steps
         for step in range(num_steps):
-            t_val   = 1.0 + step * dt
+            t_val    = 1.0 + step * dt
             t_tensor = torch.tensor(t_val, dtype=torch.float32, device=device).expand(bsize)
             v_t = self.denoise_step(prefix_pad_masks, past_key_values, x_t, t_tensor, z=z)
             x_t = x_t + dt * v_t
 
-        # x_t is the residual action ã; add prior slice → full action
-        if prior_cache is not None:
-            idx   = torch.full((bsize,), skill_step, dtype=torch.long, device=device)
-            prior_slice = self._get_prior_slice(prior_cache, idx)
-            pad         = torch.zeros_like(x_t)
-            adim        = prior_slice.shape[-1]
-            pad[:, :, :adim] = prior_slice.to(x_t.dtype)
-            x_t = x_t + pad
-
+        # x_t converges to the full action (no residual addition needed)
         return x_t, prior_cache
 
 
-# ── Policy wrapper ────────────────────────────────────────────────────────────
+# ── Policy wrapper (stage 3 only) ─────────────────────────────────────────────
 
 class SkillVLAPolicy(PI05Policy):
+    """Stage 3: joint flow-matching + skill-predictor training.
+
+    All parameters trainable. Skill predictor MSE gradient flows into the VLM
+    (detach_sp_prefix=False). Teacher-forced skill latents from the dataset are
+    used during training; at inference the skill predictor auto-regressively
+    predicts z from the previous skill and the current VLM prefix.
+    """
+
     config_class = SkillVLAConfig
     name         = "skill_vla"
 
     def __init__(self, config: SkillVLAConfig, **kwargs):
         super().__init__(config, **kwargs)
-        # Replace PI05Pytorch with SkillVLAPytorch
         self.model = SkillVLAPytorch(config, rtc_processor=self.rtc_processor)
+        self._set_action_stats_for_prior(kwargs.get("dataset_stats"))
         if config.gradient_checkpointing:
             self.model.gradient_checkpointing_enable()
-        self._apply_stage_freezing()
         self.model.to(config.device)
         self.reset()
 
-    def _apply_stage_freezing(self) -> None:
-        """Freeze parameters according to training_stage."""
-        stage = self.config.training_stage
-        if stage == 1:
-            # VLM + action expert train freely; skill predictor is idle in stage 1
-            for p in self.model.skill_predictor.parameters():
-                p.requires_grad_(False)
-            log.info("Stage 1: skill predictor frozen")
-        elif stage == 2:
-            # Freeze everything, then unfreeze only skill predictor
-            for p in self.model.parameters():
-                p.requires_grad_(False)
-            for p in self.model.skill_predictor.parameters():
-                p.requires_grad_(True)
-            log.info("Stage 2: VLM + action expert frozen, skill predictor trainable")
-        elif stage == 3:
-            # All params trainable; sp_loss gradient flows into VLM (path 3)
-            log.info("Stage 3: joint training — teacher forcing + path3 active")
-        else:
-            raise ValueError(f"training_stage must be 1, 2, or 3, got {stage}")
+    def _set_action_stats_for_prior(self, dataset_stats=None) -> None:
+        action_stats = (dataset_stats or {}).get(ACTION, {}) if dataset_stats else {}
+        q01 = action_stats.get("q01")
+        q99 = action_stats.get("q99")
 
-    # ── Training ─────────────────────────────────────────────────────────────
+        if (q01 is None or q99 is None) and self.config.pretrained_path is not None:
+            stats_paths = sorted(Path(self.config.pretrained_path).glob("policy_preprocessor_step_*_normalizer_processor.safetensors"))
+            if stats_paths:
+                stats = load_file(str(stats_paths[0]))
+                q01 = stats.get("action.q01")
+                q99 = stats.get("action.q99")
+
+        self.model.set_action_quantile_stats(q01, q99)
+        if self.model._action_q01.numel() == 0:
+            log.warning("Action quantile stats not found; VAE prior normalization will fail if a prior is used.")
+
+    # ── Training ──────────────────────────────────────────────────────────────
 
     def forward(self, batch: dict[str, Tensor], reduction: str = "mean"):
         images, img_masks = self._preprocess_images(batch)
         tokens = batch[OBS_LANGUAGE_TOKENS]
         masks  = batch[OBS_LANGUAGE_ATTENTION_MASK]
 
-        z      = batch.get("skill_latent")
-        z_prev = batch.get("skill_latent_prev")
-        f_b    = batch.get("skill_boundary")
-
-        # ── Stage 2: skill predictor only (lightweight — skip flow matching) ──
-        if self.config.training_stage == 2:
-            sp_loss = self._sp_loss_only(images, img_masks, tokens, masks, z, z_prev, f_b)
-            total_loss = self.config.skill_predictor_loss_weight * sp_loss
-            loss_dict = {
-                "loss":                 total_loss.item(),
-                "loss_flow":            0.0,
-                "loss_skill_predictor": sp_loss.item(),
-            }
-            return total_loss, loss_dict
-
-        # ── Stage 1 / 3: flow matching ────────────────────────────────────────
+        z                 = batch.get("skill_latent")
+        z_prev            = batch.get("skill_latent_prev")
+        f_b               = batch.get("skill_boundary")
         actions           = self.prepare_action(batch)
         skill_start_state = batch.get("skill_start_state")
         skill_frame_index = batch.get("skill_frame_index")
+        skill_progress    = batch.get("skill_progress")
+        lang_to_action_masks = batch.get(OBS_LANG_TO_ACTION_ATTENTION_MASK)
+        train_step = int(self.model._predicted_latent_train_step.item())
 
-        # Stage 3: pass f_b so sp_loss is computed; gradient flows into VLM (no detach)
-        # Stage 1: f_b=None skips sp_loss entirely
-        stage = self.config.training_stage
+        # SP gradient flows into VLM (detach_sp_prefix=False)
         flow_losses, sp_loss = self.model.forward(
             images, img_masks, tokens, masks, actions,
-            z=z, z_prev=z_prev if stage == 3 else None,
-            f_b=f_b if stage == 3 else None,
+            z=z, z_prev=z_prev, f_b=f_b,
             skill_start_state=skill_start_state,
             skill_frame_index=skill_frame_index,
-            detach_sp_prefix=(stage != 3),
+            skill_progress=skill_progress,
+            lang_to_action_masks=lang_to_action_masks,
+            detach_sp_prefix=False,
+            train_step=train_step,
         )
+        if self.training:
+            self.model._predicted_latent_train_step.add_(1)
 
         action_dim  = self.config.output_features[ACTION].shape[0]
         flow_losses = flow_losses[:, :, :action_dim]
@@ -488,93 +583,87 @@ class SkillVLAPolicy(PI05Policy):
 
         n_boundaries = int(f_b.bool().sum().item()) if f_b is not None else 0
         loss_dict = {
-            "loss":                       total_loss.item(),
-            "loss_flow":                  flow_loss.item(),
-            "loss_skill_predictor":       sp_loss.item(),
+            "loss":                        total_loss.item(),
+            "loss_flow":                   flow_loss.item(),
+            "loss_skill_predictor":        sp_loss.item(),
             "n_skill_boundaries_in_batch": n_boundaries,
-            "loss_per_dim":               flow_losses.mean(dim=[0, 1]).detach().cpu().numpy().tolist(),
+            "predicted_latent_prob":        self.model._last_predicted_latent_prob,
+            "predicted_latent_fraction":    self.model._last_predicted_latent_fraction,
+            "loss_per_dim":                flow_losses.mean(dim=[0, 1]).detach().cpu().numpy().tolist(),
         }
 
         if reduction == "none":
-            per_sample = flow_losses.mean(dim=(1, 2))
-            return per_sample, loss_dict
+            return flow_losses.mean(dim=(1, 2)), loss_dict
         return total_loss, loss_dict
-
-    def _sp_loss_only(
-        self,
-        images, img_masks, tokens, masks,
-        z: Tensor | None,
-        z_prev: Tensor | None,
-        f_b: Tensor | None,
-    ) -> Tensor:
-        """Lightweight forward for stage 2: embed prefix → skill predictor → MSE loss."""
-        device = tokens.device
-        zero = torch.zeros(1, device=device).squeeze()
-
-        if z is None or z_prev is None or f_b is None:
-            return zero
-
-        boundary = f_b.bool()
-        if not boundary.any():
-            return zero
-
-        prefix_embs, _, _ = self.model.embed_prefix(images, img_masks, tokens, masks)
-        prefix_pooled = prefix_embs.float().mean(dim=1)  # VLM frozen → no need to detach
-        z_pred = self.model.skill_predictor(
-            z_prev[boundary].to(prefix_pooled.dtype),
-            prefix_pooled[boundary],
-        )
-        return F.mse_loss(z_pred, z[boundary].to(z_pred.dtype))
 
     # ── Inference state ───────────────────────────────────────────────────────
 
     def reset(self):
         super().reset()
-        self._current_z      : Tensor | None = None
-        self._prior_cache    : Tensor | None = None
-        self._skill_step     : int           = 0
-        self._trigger_new_skill: bool        = False
+        self._current_z        : Tensor | None = None
+        self._prior_cache      : Tensor | None = None
+        self._skill_step       : int           = 0
+        self._trigger_new_skill: bool          = False
+        self._action_queue     : deque         = deque(maxlen=self.config.n_action_steps)
 
-    def _update_skill(self, prefix_embs: Tensor, skill_start_state: Tensor) -> None:
-        """Run skill predictor → update z; run VAE decoder → cache full prior."""
+    def _update_skill(self, prefix_embs: Tensor, current_state: Tensor, skill_progress: Tensor) -> None:
+        """Skill predictor → update z; VAE decoder → cache full prior.
+
+        Called at skill boundaries. Passes the current skill progress and
+        current observation state.
+        """
         b      = prefix_embs.shape[0]
         device = prefix_embs.device
         z_prev = self._current_z if self._current_z is not None else \
                  torch.zeros(b, self.config.skill_latent_dim, device=device)
-        prefix_pooled     = prefix_embs.float().mean(dim=1)
-        self._current_z   = self.model.skill_predictor(z_prev, prefix_pooled)
-        self._prior_cache = self.model._compute_full_prior(self._current_z, skill_start_state)
+        prefix_pooled = prefix_embs.float().mean(dim=1)
+        self._current_z   = self.model.skill_predictor(
+            z_prev.to(prefix_pooled.dtype),
+            prefix_pooled,
+            skill_progress.to(prefix_pooled.dtype),
+            current_state.to(prefix_pooled.dtype),
+        )
+        self._prior_cache = self.model._compute_full_prior(self._current_z, current_state)
         self._skill_step  = 0
         self._trigger_new_skill = False
-
-    # ── Inference forward ─────────────────────────────────────────────────────
 
     @torch.no_grad()
     def select_action(self, batch: dict[str, Tensor], **kwargs) -> Tensor:
         images, img_masks = self._preprocess_images(batch)
         tokens = batch[OBS_LANGUAGE_TOKENS]
         masks  = batch[OBS_LANGUAGE_ATTENTION_MASK]
+        lang_to_action_masks = batch.get(OBS_LANG_TO_ACTION_ATTENTION_MASK)
 
-        # New skill: first call or prior end was reached last step
         if self._current_z is None or self._trigger_new_skill:
-            state = batch.get("observation.state")
-            prefix_embs, _, _ = self.model.embed_prefix(images, img_masks, tokens, masks)
-            self._update_skill(prefix_embs, state)
+            state = batch.get("skill_start_state")
+            if state is None:
+                state = batch.get("observation.state")
+            prefix_embs, _, _ = self.model.embed_prefix(
+                images, img_masks, tokens, masks, lang_to_action_masks=lang_to_action_masks
+            )
+            skill_progress = torch.full(
+                (tokens.shape[0],),
+                0,
+                device=tokens.device,
+                dtype=torch.float32,
+            )
+            self._update_skill(prefix_embs, state, skill_progress)
 
-        actions, _ = self.model.sample_actions(
-            images, img_masks, tokens, masks,
-            z           = self._current_z,
-            prior_cache = self._prior_cache,
-            skill_step  = self._skill_step,
-        )
+        if len(self._action_queue) == 0:
+            actions, _ = self.model.sample_actions(
+                images, img_masks, tokens, masks,
+                z           = self._current_z,
+                prior_cache = self._prior_cache,
+                skill_step  = self._skill_step,
+                lang_to_action_masks=lang_to_action_masks,
+            )
+            action_dim = self.config.output_features[ACTION].shape[0]
+            actions = actions[:, : self.config.n_action_steps, :action_dim]
+            self._action_queue.extend(actions.transpose(0, 1))
 
-        self._skill_step += 1
+            self._skill_step += self.config.n_action_steps
+            if self._prior_cache is not None:
+                if self._skill_step >= self._prior_cache.shape[1]:
+                    self._trigger_new_skill = True
 
-        # Check if current chunk reaches the end of the prior → trigger next step
-        if self._prior_cache is not None:
-            prior_length = self._prior_cache.shape[1]
-            if self._skill_step + self.config.chunk_size >= prior_length:
-                self._trigger_new_skill = True
-
-        action_dim = self.config.output_features[ACTION].shape[0]
-        return actions[:, :, :action_dim]
+        return self._action_queue.popleft()

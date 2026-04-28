@@ -34,9 +34,11 @@ class PI05Config(PreTrainedConfig):
     dtype: str = "float32"  # Options: "bfloat16", "float32"
 
     n_obs_steps: int = 1
-    chunk_size: int = 50  # Number of action steps to predict, in openpi called "action_horizon"
-    n_action_steps: int = 50  # Number of action steps to execute
-
+    # chunk_size: int = 50  # Number of action steps to predict, in openpi called "action_horizon"
+    # n_action_steps: int = 50  # Number of action steps to execute
+    chunk_size: int = 10 
+    n_action_steps: int = 10 
+    
     # Shorter state and action vectors will be padded to these dimensions
     max_state_dim: int = 32
     max_action_dim: int = 32

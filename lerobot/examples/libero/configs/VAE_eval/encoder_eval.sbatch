@@ -41,7 +41,9 @@ VAE_TYPE=spline   # 'raw' (BiLSTM) or 'spline' (MLP)
 
 DATA=libero_90
 LATENT_DIM=64
-SKILLSET=${DATA}_skillset
+# SKILLSET=${DATA}_skillset
+SKILLSET=${DATA}_skillset_fixed50
+
 
 EXP="${DATA}_lat${LATENT_DIM}_${VAE_TYPE}"
 SWEEP_DIR="${HOMEDIR}${PROJDIR}/outputs/${SKILLSET}_latents/${EXP}"

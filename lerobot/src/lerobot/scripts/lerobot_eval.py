@@ -640,6 +640,11 @@ def eval_main(cfg: EvalPipelineConfig):
             summary_log: dict = {}
             overall = info["overall"]
             summary_log["summary/pc_success"] = overall["pc_success"]
+            summary_log["summary/success_rate"] = overall["pc_success"] / 100.0
+            summary_log["summary/success_count"] = int(
+                round((overall["pc_success"] / 100.0) * overall["n_episodes"])
+            )
+            summary_log["summary/n_episodes"] = overall["n_episodes"]
             summary_log["summary/avg_sum_reward"] = overall["avg_sum_reward"]
             summary_log["summary/avg_max_reward"] = overall["avg_max_reward"]
 
@@ -647,30 +652,52 @@ def eval_main(cfg: EvalPipelineConfig):
                 summary_log[f"summary/{group_name}/pc_success"] = group_info["pc_success"]
                 summary_log[f"summary/{group_name}/avg_sum_reward"] = group_info["avg_sum_reward"]
             wandb.run.summary.update(summary_log)
+            wandb.log(
+                {
+                    "eval/overall_pc_success": overall["pc_success"],
+                    "eval/overall_success_rate": overall["pc_success"] / 100.0,
+                    "eval/overall_success_count": summary_log["summary/success_count"],
+                    "eval/overall_n_episodes": overall["n_episodes"],
+                }
+            )
 
             # charts/ : per-task success bar chart + per-episode success line chart
             bar_data: list[list] = []
+            episode_table_data: list[list] = []
             episode_xs: list[list[int]] = []
-            episode_ys: list[list[int]] = []
+            episode_ys: list[list[float]] = []
             task_keys: list[str] = []
+
+            def _success_to_float(value) -> float:
+                if hasattr(value, "item"):
+                    value = value.item()
+                return float(bool(value))
 
             for task_info in sorted(info.get("per_task", []), key=lambda t: t.get("task_id", 0)):
                 task_id = task_info.get("task_id", 0)
                 successes = task_info.get("metrics", {}).get("successes", [])
-                success_count = int(sum(successes))
+                success_values = [_success_to_float(s) for s in successes]
+                success_count = int(sum(success_values))
                 desc = task_id_to_desc.get(task_id, f"task_{task_id}")
                 label = f"task{task_id:02d}: {desc}"
 
                 bar_data.append([label, success_count])
-                episode_xs.append(list(range(1, len(successes) + 1)))
-                episode_ys.append([int(s) for s in successes])
+                episode_xs.append(list(range(1, len(success_values) + 1)))
+                episode_ys.append(success_values)
                 task_keys.append(f"task{task_id:02d}")
+                for episode_idx, success in enumerate(success_values, start=1):
+                    episode_table_data.append([task_id, label, episode_idx, success])
 
             charts_log: dict = {}
             if bar_data:
                 table = wandb.Table(data=bar_data, columns=["task", "success_count"])
                 charts_log["charts/task_success_bar"] = wandb.plot.bar(
                     table, "task", "success_count", title="Success Count per Task"
+                )
+            if episode_table_data:
+                charts_log["tables/per_task_episode_success"] = wandb.Table(
+                    data=episode_table_data,
+                    columns=["task_id", "task", "episode", "success"],
                 )
             if episode_xs:
                 charts_log["charts/per_task_episode_success"] = wandb.plot.line_series(

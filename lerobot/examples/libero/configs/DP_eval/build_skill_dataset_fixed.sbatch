@@ -29,7 +29,7 @@ echo "Node: $SLURMD_NODENAME"
 echo "Array Task ID: $SLURM_ARRAY_TASK_ID"
 
 # ── 설정 ──────────────────────────────────────────────────────────────────────
-CHUNK_LEN=40
+CHUNK_LEN=70
 DATASET=libero_90
 
 DATASET_DIR=${HOMEDIR}${PROJDIR}/libero_dataset/${DATASET}
