@@ -1,13 +1,13 @@
 {
   "codebase_version": "v3.0",
   "robot_type": "franka",
-  "total_episodes": 118,
-  "total_frames": 31631,
-  "total_tasks": 10,
+  "total_episodes": 192,
+  "total_frames": 51177,
+  "total_tasks": 5,
   "chunks_size": 1000,
   "fps": 20,
   "splits": {
-    "train": "0:118"
+    "train": "0:192"
   },
   "data_path": "data/chunk-{chunk_index:03d}/file-{file_index:03d}.parquet",
   "video_path": "videos/{video_key}/chunk-{chunk_index:03d}/file-{file_index:03d}.mp4",

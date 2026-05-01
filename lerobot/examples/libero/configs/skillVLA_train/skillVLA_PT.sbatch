@@ -49,15 +49,22 @@ SP_LOSS_WEIGHT=1.0
 # false: pi05 기본 동작 (language + obs 모두 attend)
 BLOCK_LANG=true
 
+# context: Paligemma prefix-only forward 이후 contextual hidden을 SP가 attend
+# embs: embed_prefix 직후 raw prefix token embedding을 SP가 attend
+SP_PREFIX_SOURCE=embs
+
 # Scheduled sampling for the latent fed to the action expert and VAE decoder.
 # false: teacher-forced GT z only. true: linearly replace GT z with skill-predictor z.
 PREDICTED_LATENT_SAMPLING=false
+
+VAE_PRIOR_SCALE=0.5
+
 PREDICTED_LATENT_START_STEP=0
 PREDICTED_LATENT_RAMP_STEPS=50000
 PREDICTED_LATENT_MAX_PROB=1.0
 PREDICTED_LATENT_DETACH=true
 
-OUTPUT_DIR=../outputs/PT_${DATASET}_coupled_${PREDICTED_LATENT_SAMPLING}
+OUTPUT_DIR=../outputs/PT_${DATASET}_coupled_${PREDICTED_LATENT_SAMPLING}_${SP_PREFIX_SOURCE}_${VAE_PRIOR_SCALE}
 CONFIG_PATH=${OUTPUT_DIR}/checkpoints/last/pretrained_model/train_config.json
 
 RESUME_ARGS=""
@@ -89,8 +96,10 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes=${
     --policy.push_to_hub=false \
     --policy.block_lang_to_action=${BLOCK_LANG} \
     --policy.vae_decoder_path=${VAE_CKPT} \
+    --policy.vae_prior_scale=${VAE_PRIOR_SCALE} \
     --policy.skill_latent_dim=64 \
     --policy.skill_predictor_state_dim=8 \
+    --policy.skill_predictor_prefix_source=${SP_PREFIX_SOURCE} \
     --policy.skill_predictor_loss_weight=${SP_LOSS_WEIGHT} \
     --policy.predicted_latent_sampling=${PREDICTED_LATENT_SAMPLING} \
     --policy.predicted_latent_start_step=${PREDICTED_LATENT_START_STEP} \

@@ -25,9 +25,10 @@ echo "Node: $SLURMD_NODENAME"
 # ── 경로 설정 ─────────────────────────────────────────────────────────────────
 LATENT_DIM=64
 STEP=10000
+FIXED=30
 
-FIXED50_NPZ=${HOMEDIR}${PROJDIR}/outputs/libero_90_skillset_fixed50_latents/libero_90_lat${LATENT_DIM}_spline/spline_vae_latents_epoch${STEP}.npz
-FIXED50_VAE=${HOMEDIR}${PROJDIR}/outputs/libero_90_skillset_fixed50_latents/libero_90_lat${LATENT_DIM}_spline/spline_vae_epoch${STEP}.pt
+FIXED50_NPZ=${HOMEDIR}${PROJDIR}/outputs/libero_90_skillset_fixed${FIXED}_latents/libero_90_lat${LATENT_DIM}_spline/spline_vae_latents_epoch${STEP}.npz
+FIXED50_VAE=${HOMEDIR}${PROJDIR}/outputs/libero_90_skillset_fixed${FIXED}_latents/libero_90_lat${LATENT_DIM}_spline/spline_vae_epoch${STEP}.pt
 
 VARIABLE_NPZ=${HOMEDIR}${PROJDIR}/outputs/libero_90_skillset_latents/libero_90_lat${LATENT_DIM}_spline/spline_vae_latents_epoch${STEP}.npz
 VARIABLE_VAE=${HOMEDIR}${PROJDIR}/outputs/libero_90_skillset_latents/libero_90_lat${LATENT_DIM}_spline/spline_vae_epoch${STEP}.pt
@@ -45,13 +46,13 @@ mkdir -p ${WANDB_CACHE_DIR} ${WANDB_DATA_DIR}
 export WANDB_DISABLE_SYMLINKS=true
 
 # ── 평가 실행 ─────────────────────────────────────────────────────────────────
-for K in 20 30 40; do
+for K in 20; do
     echo ""
     echo "=== K=${K} clusters ==="
     python examples/libero/eval_latent_space.py \
         --npz_A   ${FIXED50_NPZ} \
         --vae_A   ${FIXED50_VAE} \
-        --name_A  fixed50 \
+        --name_A  fixed${FIXED} \
         --npz_B   ${VARIABLE_NPZ} \
         --vae_B   ${VARIABLE_VAE} \
         --name_B  variable \
@@ -64,7 +65,7 @@ for K in 20 30 40; do
         --seed         42 \
         --wandb_enable \
         --wandb_project  ${WANDB_PROJECT} \
-        --wandb_job_name ${WANDB_JOB}_k${K}_${LATENT_DIM}_${STEP}
+        --wandb_job_name ${WANDB_JOB}_k${K}_${LATENT_DIM}_${STEP}_${FIXED}
 done
 
 echo "DONE"

@@ -718,6 +718,7 @@ def plot_recon_ctrl_perdim_comparison(
     _bar_chart(ax, labels, vals_A, vals_B, name_A, name_B, fmt=".4f")
     ax.set_title("Reconstruction — Control-point L2 per dimension (normalized, ↓ better)", fontsize=11)
     ax.set_ylabel("MAE (normalized space)")
+    ax.set_ylim(0, 0.2)
     fig.tight_layout()
 
     out_png = out_dir / "latent_eval_recon_ctrl_perdim.png"

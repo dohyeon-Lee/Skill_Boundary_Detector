@@ -69,6 +69,10 @@ class SkillVLAPytorch(PI05Pytorch):
             prefix_hidden_dim = paligemma_config.width,
             state_dim         = config.skill_predictor_state_dim,
             hidden_dim        = config.skill_predictor_hidden_dim,
+            num_heads         = config.skill_predictor_num_heads,
+            num_layers        = config.skill_predictor_num_layers,
+            num_query_tokens  = config.skill_predictor_num_query_tokens,
+            dropout           = config.skill_predictor_dropout,
         )
 
         self.vae_decoder = None
@@ -77,6 +81,9 @@ class SkillVLAPytorch(PI05Pytorch):
         self.register_buffer("_predicted_latent_train_step", torch.zeros((), dtype=torch.long), persistent=False)
         self._last_predicted_latent_prob = 0.0
         self._last_predicted_latent_fraction = 0.0
+        self._last_prior_raw_actions: Tensor | None = None
+        self._last_prior_normalized_actions: Tensor | None = None
+        self._last_prior_lengths: list[int] = []
         if config.vae_decoder_path:
             self.load_vae_decoder(config.vae_decoder_path)
 
@@ -136,6 +143,9 @@ class SkillVLAPytorch(PI05Pytorch):
             prior: (B, skill_len, action_dim)  padded to the longest decoded length
         """
         if self.vae_decoder is None:
+            self._last_prior_raw_actions = None
+            self._last_prior_normalized_actions = None
+            self._last_prior_lengths = []
             return None
 
         vae    = self.vae_decoder
@@ -174,8 +184,29 @@ class SkillVLAPytorch(PI05Pytorch):
         for b, r in enumerate(results):
             padded[b, :r.shape[0]] = r
 
+        if self.config.vae_prior_position_clip > 0:
+            # Action convention: [dx, dy, dz, droll, dpitch, dyaw, gripper].
+            # Clamp position in raw action units before quantile normalization.
+            pos_clip = float(self.config.vae_prior_position_clip)
+            padded[:, :, :3] = np.clip(padded[:, :, :3], -pos_clip, pos_clip)
+
+        if self.config.zero_vae_prior_orientation:
+            # Zero in raw action space before quantile normalization.
+            padded[:, :, 3:6] = 0.0
+        elif self.config.vae_prior_orientation_clip > 0:
+            # Keep orientation prior in raw action units, but prevent large
+            # decoded rotations from dominating the denoising start point.
+            ori_clip = float(self.config.vae_prior_orientation_clip)
+            padded[:, :, 3:6] = np.clip(padded[:, :, 3:6], -ori_clip, ori_clip)
+
         prior = torch.from_numpy(padded).to(device)
-        return self._normalize_prior_actions(prior)
+        normalized_prior = self._normalize_prior_actions(prior)
+
+        self._last_prior_raw_actions = prior.detach().cpu()
+        self._last_prior_normalized_actions = normalized_prior.detach().cpu()
+        self._last_prior_lengths = [int(r.shape[0]) for r in results]
+
+        return normalized_prior
 
     def _get_prior_slice(
         self, prior: Tensor, skill_frame_index: Tensor
@@ -227,6 +258,57 @@ class SkillVLAPytorch(PI05Pytorch):
                 visible_lang = lang_to_action_masks.to(device=att_2d_masks.device, dtype=torch.bool)
                 att_2d_masks[:, n_prefix:, lang_start:n_prefix] = visible_lang[:, None, :]
         return att_2d_masks
+
+    def contextualize_prefix(
+        self,
+        prefix_embs: Tensor,
+        prefix_pad_masks: Tensor,
+        prefix_att_masks: Tensor,
+        *,
+        use_cache: bool = False,
+    ):
+        prefix_att_2d = make_att_2d_masks(prefix_pad_masks, prefix_att_masks)
+        prefix_position_ids = torch.cumsum(prefix_pad_masks, dim=1) - 1
+        prefix_att_2d_4d = self._prepare_attention_masks_4d(prefix_att_2d)
+
+        if (
+            self.paligemma_with_expert.paligemma.model.language_model
+            .layers[0].self_attn.q_proj.weight.dtype == torch.bfloat16
+        ):
+            prefix_embs = prefix_embs.to(torch.bfloat16)
+
+        self.paligemma_with_expert.paligemma.model.language_model.config._attn_implementation = "eager"  # noqa: SLF001
+        (prefix_context, _), past_key_values = self.paligemma_with_expert.forward(
+            attention_mask=prefix_att_2d_4d,
+            position_ids=prefix_position_ids,
+            past_key_values=None,
+            inputs_embeds=[prefix_embs, None],
+            use_cache=use_cache,
+        )
+        return prefix_context, past_key_values
+
+    def get_skill_predictor_prefix(
+        self,
+        prefix_embs: Tensor,
+        prefix_pad_masks: Tensor,
+        prefix_att_masks: Tensor,
+        *,
+        use_cache: bool = False,
+    ):
+        prefix_source = self.config.skill_predictor_prefix_source
+        if prefix_source == "context":
+            return self.contextualize_prefix(
+                prefix_embs,
+                prefix_pad_masks,
+                prefix_att_masks,
+                use_cache=use_cache,
+            )
+        if prefix_source == "embs":
+            return prefix_embs, None
+        raise ValueError(
+            "Unsupported skill_predictor_prefix_source="
+            f"{prefix_source!r}. Expected 'context' or 'embs'."
+        )
 
     # ── embed_suffix override: inject z ──────────────────────────────────────
 
@@ -321,13 +403,19 @@ class SkillVLAPytorch(PI05Pytorch):
             and skill_start_state is not None
         ):
             skill_predictor_progress = skill_progress if skill_progress is not None else skill_frame_index
-            prefix_pooled = prefix_embs.float().mean(dim=1)
-            sp_prefix = prefix_pooled.detach() if detach_sp_prefix else prefix_pooled
+            skill_predictor_prefix, _ = self.get_skill_predictor_prefix(
+                prefix_embs,
+                prefix_pad_masks,
+                prefix_att_masks,
+                use_cache=False,
+            )
+            sp_prefix = skill_predictor_prefix.detach() if detach_sp_prefix else skill_predictor_prefix
             z_pred = self.skill_predictor(
-                z_prev.to(sp_prefix.dtype),
+                z_prev.float(),
                 sp_prefix,
+                prefix_pad_masks,
                 skill_predictor_progress,
-                skill_start_state.to(sp_prefix.dtype),
+                skill_start_state.float(),
             )
             sp_loss = F.mse_loss(z_pred, z.to(z_pred.dtype))
 
@@ -342,6 +430,7 @@ class SkillVLAPytorch(PI05Pytorch):
             full_prior = self._compute_full_prior(z_for_action, skill_start_state)
             if full_prior is not None:
                 prior_slice = self._get_prior_slice(full_prior, skill_frame_index)
+                prior_slice = prior_slice * float(self.config.vae_prior_scale)
                 prior_pad = torch.zeros_like(actions)
                 action_dim = prior_slice.shape[-1]
                 prior_pad[:, :, :action_dim] = prior_slice.to(actions.dtype)
@@ -469,11 +558,13 @@ class SkillVLAPytorch(PI05Pytorch):
         if prior_cache is None and z is not None and skill_start_state is not None:
             prior_cache = self._compute_full_prior(z, skill_start_state)
 
-        # Starting point: prior slice at current skill_step (fast path), else Gaussian noise
+        # Starting point: prior slice at current skill_step (fast path), else Gaussian noise.
+        # The decoder may still be loaded when use_vae_prior=false so eval can plot decoded skills.
         shape = (bsize, self.config.chunk_size, self.config.max_action_dim)
-        if prior_cache is not None:
+        if prior_cache is not None and self.config.use_vae_prior:
             idx         = torch.full((bsize,), skill_step, dtype=torch.long, device=device)
             prior_slice = self._get_prior_slice(prior_cache, idx)
+            prior_slice = prior_slice * float(self.config.vae_prior_scale)
             x_t = torch.zeros(shape, device=device, dtype=prior_slice.dtype)
             x_t[:, :, :prior_slice.shape[-1]] = prior_slice
         else:
@@ -482,17 +573,11 @@ class SkillVLAPytorch(PI05Pytorch):
         prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(
             images, img_masks, tokens, masks, lang_to_action_masks=lang_to_action_masks
         )
-        prefix_att_2d       = make_att_2d_masks(prefix_pad_masks, prefix_att_masks)
-        prefix_position_ids = torch.cumsum(prefix_pad_masks, dim=1) - 1
-        prefix_att_2d_4d    = self._prepare_attention_masks_4d(prefix_att_2d)
-
-        self.paligemma_with_expert.paligemma.model.language_model.config._attn_implementation = "eager"  # noqa: SLF001
-        _, past_key_values = self.paligemma_with_expert.forward(
-            attention_mask  = prefix_att_2d_4d,
-            position_ids    = prefix_position_ids,
-            past_key_values = None,
-            inputs_embeds   = [prefix_embs, None],
-            use_cache       = True,
+        _, past_key_values = self.contextualize_prefix(
+            prefix_embs,
+            prefix_pad_masks,
+            prefix_att_masks,
+            use_cache=True,
         )
 
         dt = -1.0 / num_steps
@@ -605,27 +690,116 @@ class SkillVLAPolicy(PI05Policy):
         self._skill_step       : int           = 0
         self._trigger_new_skill: bool          = False
         self._action_queue     : deque         = deque(maxlen=self.config.n_action_steps)
+        self._skill_trace      : list[dict]    = []
+        self._active_skill_trace_indices: list[int | None] = []
+        self._episode_timestep : int           = 0
 
-    def _update_skill(self, prefix_embs: Tensor, current_state: Tensor, skill_progress: Tensor) -> None:
+    def _update_skill(
+        self,
+        skill_predictor_prefix: Tensor,
+        prefix_pad_masks: Tensor,
+        current_state: Tensor,
+        skill_progress: Tensor,
+    ) -> None:
         """Skill predictor → update z; VAE decoder → cache full prior.
 
         Called at skill boundaries. Passes the current skill progress and
         current observation state.
         """
-        b      = prefix_embs.shape[0]
-        device = prefix_embs.device
+        b      = skill_predictor_prefix.shape[0]
+        device = skill_predictor_prefix.device
         z_prev = self._current_z if self._current_z is not None else \
                  torch.zeros(b, self.config.skill_latent_dim, device=device)
-        prefix_pooled = prefix_embs.float().mean(dim=1)
         self._current_z   = self.model.skill_predictor(
-            z_prev.to(prefix_pooled.dtype),
-            prefix_pooled,
-            skill_progress.to(prefix_pooled.dtype),
-            current_state.to(prefix_pooled.dtype),
+            z_prev.float(),
+            skill_predictor_prefix,
+            prefix_pad_masks,
+            skill_progress.float(),
+            current_state.float(),
         )
         self._prior_cache = self.model._compute_full_prior(self._current_z, current_state)
+        self._record_decoded_skill_actions()
         self._skill_step  = 0
         self._trigger_new_skill = False
+
+    def _record_decoded_skill_actions(self) -> None:
+        raw_actions = self.model._last_prior_raw_actions
+        normalized_actions = self.model._last_prior_normalized_actions
+        lengths = self.model._last_prior_lengths
+        self._active_skill_trace_indices = []
+        if raw_actions is None or normalized_actions is None:
+            return
+
+        batch_size = raw_actions.shape[0]
+        for batch_index in range(batch_size):
+            length = lengths[batch_index] if batch_index < len(lengths) else raw_actions.shape[1]
+            trace_index = len(self._skill_trace)
+            self._skill_trace.append(
+                {
+                    "skill_index": trace_index,
+                    "batch_index": batch_index,
+                    "length": int(length),
+                    "episode_timestep": self._episode_timestep,
+                    "raw_actions": raw_actions[batch_index, :length].numpy().copy(),
+                    "normalized_actions": normalized_actions[batch_index, :length].numpy().copy(),
+                    "expert_raw_actions": [],
+                    "expert_normalized_actions": [],
+                    "z": self._current_z[batch_index].detach().cpu().numpy().copy(),
+                }
+            )
+            self._active_skill_trace_indices.append(trace_index)
+
+    def _denormalize_action_chunk(self, actions: Tensor) -> Tensor | None:
+        if self.model._action_q01.numel() == 0 or self.model._action_q99.numel() == 0:
+            return None
+
+        q01 = self.model._action_q01.to(device=actions.device, dtype=actions.dtype)
+        q99 = self.model._action_q99.to(device=actions.device, dtype=actions.dtype)
+        action_dim = actions.shape[-1]
+        q01 = q01[:action_dim]
+        q99 = q99[:action_dim]
+        return (actions + 1.0) / 2.0 * (q99 - q01) + q01
+
+    def _record_expert_action_chunk(self, actions: Tensor, skill_step: int) -> None:
+        """Append action expert outputs to the active skill trace for overlay plots."""
+        if not self._active_skill_trace_indices:
+            return
+
+        raw_actions = self._denormalize_action_chunk(actions)
+        actions_cpu = actions.detach().cpu()
+        raw_actions_cpu = raw_actions.detach().cpu() if raw_actions is not None else None
+
+        batch_size = actions.shape[0]
+        for batch_index in range(batch_size):
+            if batch_index >= len(self._active_skill_trace_indices):
+                continue
+            trace_index = self._active_skill_trace_indices[batch_index]
+            if trace_index is None or trace_index >= len(self._skill_trace):
+                continue
+
+            record = self._skill_trace[trace_index]
+            length = int(record.get("length", actions.shape[1]))
+            start = max(0, int(skill_step))
+            if start >= length:
+                continue
+            end = min(start + actions.shape[1], length)
+            n = end - start
+            record["expert_normalized_actions"].append(
+                {
+                    "start": start,
+                    "actions": actions_cpu[batch_index, :n].numpy().copy(),
+                }
+            )
+            if raw_actions_cpu is not None:
+                record["expert_raw_actions"].append(
+                    {
+                        "start": start,
+                        "actions": raw_actions_cpu[batch_index, :n].numpy().copy(),
+                    }
+                )
+
+    def get_skill_trace(self) -> list[dict]:
+        return list(self._skill_trace)
 
     @torch.no_grad()
     def select_action(self, batch: dict[str, Tensor], **kwargs) -> Tensor:
@@ -638,8 +812,14 @@ class SkillVLAPolicy(PI05Policy):
             state = batch.get("skill_start_state")
             if state is None:
                 state = batch.get("observation.state")
-            prefix_embs, _, _ = self.model.embed_prefix(
+            prefix_embs, prefix_pad_masks, prefix_att_masks = self.model.embed_prefix(
                 images, img_masks, tokens, masks, lang_to_action_masks=lang_to_action_masks
+            )
+            skill_predictor_prefix, _ = self.model.get_skill_predictor_prefix(
+                prefix_embs,
+                prefix_pad_masks,
+                prefix_att_masks,
+                use_cache=False,
             )
             skill_progress = torch.full(
                 (tokens.shape[0],),
@@ -647,7 +827,7 @@ class SkillVLAPolicy(PI05Policy):
                 device=tokens.device,
                 dtype=torch.float32,
             )
-            self._update_skill(prefix_embs, state, skill_progress)
+            self._update_skill(skill_predictor_prefix, prefix_pad_masks, state, skill_progress)
 
         if len(self._action_queue) == 0:
             actions, _ = self.model.sample_actions(
@@ -659,6 +839,7 @@ class SkillVLAPolicy(PI05Policy):
             )
             action_dim = self.config.output_features[ACTION].shape[0]
             actions = actions[:, : self.config.n_action_steps, :action_dim]
+            self._record_expert_action_chunk(actions, self._skill_step)
             self._action_queue.extend(actions.transpose(0, 1))
 
             self._skill_step += self.config.n_action_steps
@@ -666,4 +847,6 @@ class SkillVLAPolicy(PI05Policy):
                 if self._skill_step >= self._prior_cache.shape[1]:
                     self._trigger_new_skill = True
 
-        return self._action_queue.popleft()
+        action = self._action_queue.popleft()
+        self._episode_timestep += 1
+        return action

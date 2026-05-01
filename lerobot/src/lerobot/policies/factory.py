@@ -255,7 +255,33 @@ def make_pre_post_processors(
             policy configuration type.
     """
     if isinstance(policy_cfg, SkillVLAConfig):
-        from lerobot.policies.skillVLA.processor_skillVLA import make_skill_vla_pre_post_processors
+        from lerobot.policies.skillVLA.processor_skillVLA import (
+            make_skill_vla_pre_post_processors,
+            skill_vla_batch_to_transition,
+            skill_vla_transition_to_batch,
+        )
+
+        if pretrained_path:
+            return (
+                PolicyProcessorPipeline.from_pretrained(
+                    pretrained_model_name_or_path=pretrained_path,
+                    config_filename=kwargs.get(
+                        "preprocessor_config_filename", f"{POLICY_PREPROCESSOR_DEFAULT_NAME}.json"
+                    ),
+                    overrides=kwargs.get("preprocessor_overrides", {}),
+                    to_transition=skill_vla_batch_to_transition,
+                    to_output=skill_vla_transition_to_batch,
+                ),
+                PolicyProcessorPipeline.from_pretrained(
+                    pretrained_model_name_or_path=pretrained_path,
+                    config_filename=kwargs.get(
+                        "postprocessor_config_filename", f"{POLICY_POSTPROCESSOR_DEFAULT_NAME}.json"
+                    ),
+                    overrides=kwargs.get("postprocessor_overrides", {}),
+                    to_transition=policy_action_to_transition,
+                    to_output=transition_to_policy_action,
+                ),
+            )
 
         return make_skill_vla_pre_post_processors(
             config=policy_cfg,

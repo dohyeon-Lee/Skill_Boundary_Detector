@@ -5,7 +5,7 @@ VAE encoder로 뽑은 skill latents (.npz) 를 원본 데이터셋에 추가한�
 
 추가되는 컬럼:
   skill_latent        : (latent_dim,)   현재 스킬의 z
-  skill_latent_prev   : (latent_dim,)   직전 프레임의 z (lag-1)
+  skill_latent_prev   : (latent_dim,)   이전 스킬의 z (스킬 단위 lag)
   skill_boundary      : int8            새 스킬의 첫 프레임에서만 1 (에피소드 첫 스킬 포함)
   skill_start_state   : (state_dim,)    현재 스킬 시작 시점의 proprioceptive state
   skill_frame_index   : int32           스킬 내 0-based step 위치
@@ -128,8 +128,18 @@ def compute_skill_columns(
             if last_fs in frame_to_row:
                 start_state_arr[leftover_mask] = states[frame_to_row[last_fs]]
 
-    # z_prev: lag-1 of z_arr (first frame uses zero vector)
-    z_prev_arr[1:] = z_arr[:-1]
+    # z_prev: previous skill's z for all frames in current skill
+    # e.g. z=[z1 z1 z1 z2 z2] → z_prev=[z0 z0 z0 z1 z1] (z0=zeros for first skill)
+    prev_z = np.zeros(latent_dim, dtype=np.float32)
+    for fs, fe, z in skills:
+        mask = (frames >= fs) & (frames < fe)
+        z_prev_arr[mask] = prev_z
+        prev_z = z
+    # leftover frames after last skill also get last skill's z as prev
+    if skills:
+        last_fs, last_fe, _ = skills[-1]
+        leftover_mask = frame_idx_arr >= (last_fe - last_fs)
+        z_prev_arr[leftover_mask] = prev_z
 
     return {
         "skill_latent":       list(z_arr),
