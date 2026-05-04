@@ -11,7 +11,8 @@ class SkillPredictor(nn.Module):
     structure instead of mean-pooling or concatenating modalities away.
 
     Input  : z_prev, contextual prefix hidden states, prefix pad mask, skill progress, skill start state
-    Output : z_k  (B, skill_latent_dim)
+    Output : z_k  (B, skill_latent_dim)   — VAE mode (num_embeddings=0)
+             logits (B, num_embeddings)   — VQAE mode (num_embeddings>0)
 
     skill_progress is the 0-1 normalized progress within the current skill.
     """
@@ -26,6 +27,7 @@ class SkillPredictor(nn.Module):
         num_layers       : int = 2,
         num_query_tokens : int = 4,
         dropout          : float = 0.0,
+        num_embeddings   : int = 0,   # >0 → VQAE: output logits over codebook
     ):
         super().__init__()
         if prefix_hidden_dim % num_heads != 0:
@@ -51,12 +53,13 @@ class SkillPredictor(nn.Module):
         )
         self.decoder = nn.TransformerDecoder(decoder_layer, num_layers=num_layers)
         self.output_norm = nn.LayerNorm(prefix_hidden_dim)
+        out_dim = num_embeddings if num_embeddings > 0 else skill_latent_dim
         self.out_mlp = nn.Sequential(
             nn.Linear(prefix_hidden_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim // 2),
             nn.ReLU(),
-            nn.Linear(hidden_dim // 2, skill_latent_dim),
+            nn.Linear(hidden_dim // 2, out_dim),
         )
 
     def forward(

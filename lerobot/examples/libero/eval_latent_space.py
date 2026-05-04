@@ -57,19 +57,29 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from spline_vae import GRIPPER_DIM, SplineVAE, spline_decode, spline_encode  # noqa: E402
 
 
-# ── VAE loading ───────────────────────────────────────────────────────────────
+# ── VAE / VQAE loading ────────────────────────────────────────────────────────
 
-def load_vae(ckpt_path: str) -> SplineVAE:
-    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
-    cfg  = ckpt["cfg"]
+def load_vae(ckpt_path: str):
+    """Load SplineVAE or SplineVQAE from checkpoint (auto-detected by config type)."""
+    ckpt  = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    cfg   = ckpt["cfg"]
     cfg_d = dataclasses.asdict(cfg)
-    vae_keys = {"action_dim", "state_dim", "n_control", "spline_degree",
-                "hidden_dim", "latent_dim", "num_layers", "dropout",
-                "max_length", "action_min", "action_max"}
-    vae = SplineVAE(**{k: v for k, v in cfg_d.items() if k in vae_keys})
-    vae.load_state_dict(ckpt["model_state"])
-    vae.eval()
-    return vae
+
+    if type(cfg).__name__ == "SplineVQAEConfig":
+        from spline_vqae import SplineVQAE
+        keys  = {"action_dim", "state_dim", "n_control", "spline_degree",
+                 "hidden_dim", "latent_dim", "num_embeddings", "num_layers",
+                 "dropout", "commitment_cost", "max_length", "action_min", "action_max"}
+        model = SplineVQAE(**{k: v for k, v in cfg_d.items() if k in keys})
+    else:
+        keys  = {"action_dim", "state_dim", "n_control", "spline_degree",
+                 "hidden_dim", "latent_dim", "num_layers", "dropout",
+                 "max_length", "action_min", "action_max"}
+        model = SplineVAE(**{k: v for k, v in cfg_d.items() if k in keys})
+
+    model.load_state_dict(ckpt["model_state"])
+    model.eval()
+    return model
 
 
 # ── Data loaders ──────────────────────────────────────────────────────────────

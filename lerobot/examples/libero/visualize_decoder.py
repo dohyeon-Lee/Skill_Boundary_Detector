@@ -73,7 +73,22 @@ def load_model(model_path: str, device: str):
     ckpt = torch.load(model_path, map_location="cpu", weights_only=False)
     cfg = ckpt["cfg"]
 
-    if type(cfg).__name__ == "SplineVAEConfig":
+    if type(cfg).__name__ == "SplineVQAEConfig":
+        from spline_vqae import SplineVQAE
+        model = SplineVQAE(
+            action_dim=cfg.action_dim,
+            state_dim=cfg.state_dim,
+            n_control=cfg.n_control,
+            spline_degree=cfg.spline_degree,
+            hidden_dim=cfg.hidden_dim,
+            latent_dim=cfg.latent_dim,
+            num_embeddings=cfg.num_embeddings,
+            num_layers=cfg.num_layers,
+            dropout=cfg.dropout,
+            commitment_cost=cfg.commitment_cost,
+            max_length=cfg.max_length,
+        )
+    elif type(cfg).__name__ == "SplineVAEConfig":
         from spline_vae import SplineVAE
         model = SplineVAE(
             action_dim=cfg.action_dim,

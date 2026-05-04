@@ -4,12 +4,16 @@ SkillVLA용 컬럼을 LeRobot 데이터셋에 추가하는 스크립트.
 VAE encoder로 뽑은 skill latents (.npz) 를 원본 데이터셋에 추가한다.
 
 추가되는 컬럼:
-  skill_latent        : (latent_dim,)   현재 스킬의 z
-  skill_latent_prev   : (latent_dim,)   이전 스킬의 z (스킬 단위 lag)
+  skill_latent        : (latent_dim,) float32  현재 스킬의 z  [VAE 모드]
+                        ()            int32    현재 스킬의 token index  [VQAE 모드]
+  skill_latent_prev   : 위와 동일, 이전 스킬
   skill_boundary      : int8            새 스킬의 첫 프레임에서만 1 (에피소드 첫 스킬 포함)
   skill_start_state   : (state_dim,)    현재 스킬 시작 시점의 proprioceptive state
   skill_frame_index   : int32           스킬 내 0-based step 위치
   skill_progress      : float32         현재 스킬 진행률 [0, 1]
+
+latents.npz의 latents 배열이 1D int (ndim==1) 이면 VQAE token 모드로 자동 전환.
+2D float (ndim==2) 이면 기존 VAE 벡터 모드.
 
 마지막 스킬 이후 남은 프레임은 마지막 스킬의 z/start_state로 채워지고
 skill_frame_index는 마지막 스킬 시작점 기준으로 이어서 카운팅된다.
@@ -21,8 +25,8 @@ skill_progress는 해당 스킬 길이로 나눈 0~1 진행률이다.
 Usage:
     python examples/libero/add_skill_latents_to_dataset.py \
         --src_dataset_dir /data2/dohyeon/SBD/libero_dataset/libero_90 \
-        --dst_dataset_dir /data2/dohyeon/SBD/libero_dataset/libero_90_skillvla \
-        --latents_path    /data2/dohyeon/SBD/outputs/libero_90_skillset_latents/libero_90_lat64_spline/spline_vae_latents_epoch10000.npz \
+        --dst_dataset_dir /data2/dohyeon/SBD/libero_dataset/libero_90_skillvla_8 \
+        --latents_path    /data2/dohyeon/SBD/outputs/libero_90_skillset_latents/libero_90_lat8_spline/spline_vae_latents_epoch10000.npz \
         --window 1
 """
 
@@ -54,73 +58,96 @@ class Args:
 
 # ── latents .npz 파싱 ─────────────────────────────────────────────────────────
 
-def load_skill_map(npz_path: Path) -> dict[int, list[tuple[int, int, np.ndarray]]]:
-    """episode_id → [(frame_start, frame_end, z), ...] sorted by frame_start."""
+def load_skill_map(
+    npz_path: Path,
+) -> tuple[dict[int, list], bool]:
+    """
+    Returns (skill_map, token_mode).
+      skill_map  : episode_id → [(frame_start, frame_end, value), ...]
+      token_mode : True if latents are int token indices (VQAE), False if float vectors (VAE)
+    """
     raw = np.load(str(npz_path))
+    # VQAE: "tokens" 키 우선, 없으면 "latents" ndim==1 fallback, 아니면 VAE 벡터 모드
+    if "tokens" in raw:
+        token_mode = True
+        values = raw["tokens"]
+    elif raw["latents"].ndim == 1:
+        token_mode = True
+        values = raw["latents"]
+    else:
+        token_mode = False
+        values = raw["latents"]
     skill_map: dict[int, list] = {}
-    for ep_id, fs, fe, z in zip(
-        raw["episode_id"], raw["frame_start"], raw["frame_end"], raw["latents"]
+    for ep_id, fs, fe, val in zip(
+        raw["episode_id"], raw["frame_start"], raw["frame_end"], values
     ):
-        skill_map.setdefault(int(ep_id), []).append((int(fs), int(fe), z.astype(np.float32)))
+        entry = int(val) if token_mode else val.astype(np.float32)
+        skill_map.setdefault(int(ep_id), []).append((int(fs), int(fe), entry))
     for ep_id in skill_map:
         skill_map[ep_id].sort(key=lambda x: x[0])
-    return skill_map
+    return skill_map, token_mode
 
 
 # ── episode별 컬럼 계산 ───────────────────────────────────────────────────────
 
 def compute_skill_columns(
     ep_df: pd.DataFrame,
-    skills: list[tuple[int, int, np.ndarray]],
+    skills: list[tuple[int, int, np.ndarray | int]],
     latent_dim: int,
     boundary_window: int = 1,
+    token_mode: bool = False,
 ) -> dict[str, np.ndarray]:
     """
     ep_df : frame_index 순으로 정렬된 한 에피소드의 DataFrame
-    skills: [(frame_start, frame_end, z), ...] sorted by frame_start
+    skills: [(frame_start, frame_end, value), ...] sorted by frame_start
+            value는 VAE 모드에서 (latent_dim,) float, VQAE 모드에서 int token
 
     Returns dict of arrays, each length len(ep_df).
     """
-    n          = len(ep_df)
-    frames     = ep_df["frame_index"].values                        # (n,)
-    states     = np.stack(ep_df["observation.state"].values)        # (n, state_dim)
-    state_dim  = states.shape[1]
+    n         = len(ep_df)
+    frames    = ep_df["frame_index"].values                  # (n,)
+    states    = np.stack(ep_df["observation.state"].values)  # (n, state_dim)
+    state_dim = states.shape[1]
 
-    z_arr          = np.zeros((n, latent_dim),  dtype=np.float32)
-    z_prev_arr     = np.zeros((n, latent_dim),  dtype=np.float32)
-    f_b_arr        = np.zeros(n,                dtype=np.int8)
-    start_state_arr= np.zeros((n, state_dim),   dtype=np.float32)
-    frame_idx_arr  = np.full(n, -1,             dtype=np.int32)
-    progress_arr   = np.zeros(n,                dtype=np.float32)
+    if token_mode:
+        z_arr      = np.zeros(n, dtype=np.int32)
+        z_prev_arr = np.zeros(n, dtype=np.int32)
+        zero_val   = 0
+    else:
+        z_arr      = np.zeros((n, latent_dim), dtype=np.float32)
+        z_prev_arr = np.zeros((n, latent_dim), dtype=np.float32)
+        zero_val   = np.zeros(latent_dim, dtype=np.float32)
 
-    # frame_index → row position
+    f_b_arr         = np.zeros(n,          dtype=np.int8)
+    start_state_arr = np.zeros((n, state_dim), dtype=np.float32)
+    frame_idx_arr   = np.full(n, -1,       dtype=np.int32)
+    progress_arr    = np.zeros(n,          dtype=np.float32)
+
     frame_to_row = {int(f): i for i, f in enumerate(frames)}
 
-    for fs, fe, z in skills:
+    for fs, fe, val in skills:
         mask = (frames >= fs) & (frames < fe)
         if not mask.any():
             continue
 
-        z_arr[mask]           = z
-        frame_idx_arr[mask]   = frames[mask] - fs
+        z_arr[mask]         = val
+        frame_idx_arr[mask] = frames[mask] - fs
         skill_len = max(1, fe - fs - 1)
         progress_arr[mask] = np.clip((frames[mask] - fs) / skill_len, 0.0, 1.0)
 
-        # skill_start_state: state at the first frame of this skill
         if fs in frame_to_row:
             start_state_arr[mask] = states[frame_to_row[fs]]
 
-        # f_b = 1 for a short window starting at every skill boundary.
         boundary_mask = (frames >= fs) & (frames < fs + boundary_window)
         f_b_arr[boundary_mask] = 1
 
-    # 마지막 스킬 이후 남은 프레임: 마지막 스킬의 z/state로 채움
+    # 마지막 스킬 이후 남은 프레임: 마지막 스킬의 값으로 채움
     if skills:
-        last_fs, last_fe, last_z = skills[-1]
+        last_fs, last_fe, last_val = skills[-1]
         leftover_mask = frame_idx_arr == -1
         if leftover_mask.any():
-            z_arr[leftover_mask]          = last_z
-            frame_idx_arr[leftover_mask]  = frames[leftover_mask] - last_fs
+            z_arr[leftover_mask]         = last_val
+            frame_idx_arr[leftover_mask] = frames[leftover_mask] - last_fs
             last_len = max(1, last_fe - last_fs - 1)
             progress_arr[leftover_mask] = np.clip(
                 (frames[leftover_mask] - last_fs) / last_len, 0.0, 1.0
@@ -128,26 +155,24 @@ def compute_skill_columns(
             if last_fs in frame_to_row:
                 start_state_arr[leftover_mask] = states[frame_to_row[last_fs]]
 
-    # z_prev: previous skill's z for all frames in current skill
-    # e.g. z=[z1 z1 z1 z2 z2] → z_prev=[z0 z0 z0 z1 z1] (z0=zeros for first skill)
-    prev_z = np.zeros(latent_dim, dtype=np.float32)
-    for fs, fe, z in skills:
+    # z_prev: 한 스킬 이전 스킬의 값
+    prev_val = zero_val
+    for fs, fe, val in skills:
         mask = (frames >= fs) & (frames < fe)
-        z_prev_arr[mask] = prev_z
-        prev_z = z
-    # leftover frames after last skill also get last skill's z as prev
+        z_prev_arr[mask] = prev_val
+        prev_val = val
     if skills:
         last_fs, last_fe, _ = skills[-1]
         leftover_mask = frame_idx_arr >= (last_fe - last_fs)
-        z_prev_arr[leftover_mask] = prev_z
+        z_prev_arr[leftover_mask] = prev_val
 
     return {
-        "skill_latent":       list(z_arr),
-        "skill_latent_prev":  list(z_prev_arr),
-        "skill_boundary":     f_b_arr,
-        "skill_start_state":  list(start_state_arr),
-        "skill_frame_index":  frame_idx_arr,
-        "skill_progress":     progress_arr,
+        "skill_latent":      z_arr.tolist(),
+        "skill_latent_prev": z_prev_arr.tolist(),
+        "skill_boundary":    f_b_arr,
+        "skill_start_state": list(start_state_arr),
+        "skill_frame_index": frame_idx_arr,
+        "skill_progress":    progress_arr,
     }
 
 
@@ -159,9 +184,13 @@ def main(args: Args) -> None:
 
     # ── Load skill latents ────────────────────────────────────────────────────
     print(f"Loading skill latents from {args.latents_path} ...")
-    skill_map  = load_skill_map(Path(args.latents_path))
-    latent_dim = next(iter(skill_map.values()))[0][2].shape[0]
-    print(f"  latent_dim={latent_dim}, episodes={len(skill_map)}")
+    skill_map, token_mode = load_skill_map(Path(args.latents_path))
+    if token_mode:
+        latent_dim = 1  # token은 scalar (info.json schema 용)
+        print(f"  mode=VQAE (token indices), episodes={len(skill_map)}")
+    else:
+        latent_dim = next(iter(skill_map.values()))[0][2].shape[0]
+        print(f"  mode=VAE (latent vectors), latent_dim={latent_dim}, episodes={len(skill_map)}")
     boundary_window = max(1, int(args.window))
     print(f"  boundary_window={boundary_window}")
 
@@ -206,7 +235,7 @@ def main(args: Args) -> None:
             ep_df = ep_df.sort_values("frame_index")
             # missing episode → empty skills list → all zero arrays (compute_skill_columns handles this)
             skills = skill_map.get(int(ep_id), [])
-            cols   = compute_skill_columns(ep_df, skills, latent_dim, boundary_window=boundary_window)
+            cols   = compute_skill_columns(ep_df, skills, latent_dim, boundary_window=boundary_window, token_mode=token_mode)
             for k in col_buffers:
                 col_buffers[k].extend(cols[k] if isinstance(cols[k], list) else cols[k].tolist())
 
@@ -229,15 +258,21 @@ def main(args: Args) -> None:
             state_dim = len(sample["skill_start_state"].iloc[0])
             break
 
-    info["features"].update({
-        "skill_latent": {
+    if token_mode:
+        latent_feature = {"dtype": "int32", "shape": [1], "names": ["skill_token"]}
+        latent_prev_feature = {"dtype": "int32", "shape": [1], "names": ["skill_token_prev"]}
+    else:
+        latent_feature = {
             "dtype": "float32", "shape": [latent_dim],
             "names": [f"z{i}" for i in range(latent_dim)],
-        },
-        "skill_latent_prev": {
+        }
+        latent_prev_feature = {
             "dtype": "float32", "shape": [latent_dim],
             "names": [f"z_prev{i}" for i in range(latent_dim)],
-        },
+        }
+    info["features"].update({
+        "skill_latent": latent_feature,
+        "skill_latent_prev": latent_prev_feature,
         "skill_boundary": {
             "dtype": "int8", "shape": [1], "names": ["skill_boundary"],
         },
@@ -256,7 +291,7 @@ def main(args: Args) -> None:
 
     # ── Update stats.json ─────────────────────────────────────────────────────
     stats_path = dst_dir / "meta" / "stats.json"
-    if stats_path.exists():
+    if stats_path.exists() and not token_mode:
         stats = json.loads(stats_path.read_text())
         all_z = []
         for pf in sorted((dst_dir / "data").rglob("*.parquet")):

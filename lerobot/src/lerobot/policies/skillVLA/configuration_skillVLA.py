@@ -25,6 +25,17 @@ class SkillVLAConfig(PI05Config):
     # "context": Paligemma contextual prefix hidden states. "embs": raw embed_prefix token embeddings.
     skill_predictor_prefix_source: str = "context"
     skill_predictor_loss_weight: float = 1.0
+    # "mse": direct latent MSE. "decoded": compare frozen VAE decoder control points and length.
+    # "token_ce": cross-entropy over codebook indices (VQAE mode).
+    skill_predictor_loss_type: str = "mse"
+    # > 0: VQAE mode — skill predictor outputs logits over codebook (num_embeddings classes).
+    # 0: VAE continuous mode (default).
+    skill_predictor_num_embeddings: int = 0
+    skill_predictor_decoded_position_weight: float = 1.0
+    skill_predictor_decoded_orientation_weight: float = 1.0
+    skill_predictor_decoded_gripper_weight: float = 0.2
+    skill_predictor_decoded_length_weight: float = 0.1
+    skill_predictor_decoded_latent_cos_weight: float = 0.0
     predicted_latent_sampling: bool = False
     predicted_latent_start_step: int = 0
     predicted_latent_ramp_steps: int = 20_000

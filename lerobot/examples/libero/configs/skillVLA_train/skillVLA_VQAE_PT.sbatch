@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=skillVLA_PT
+#SBATCH --job-name=skillVLA_VQAE_PT
 
 # SBATCH --partition=asus_pro6000
 # SBATCH --qos=pro6000_qos
@@ -32,46 +32,44 @@ echo "Node: $SLURMD_NODENAME"
 nvidia-smi
 
 # ── 설정 ──────────────────────────────────────────────────────────────────────
-DATASET=libero_90_skillvla_8
+# Dataset must have skill_latent as int32 token (add_skill_latents_to_dataset with VQAE npz)
+DATASET=libero_90_skillvla_vqae
 DATASET_ROOT=libero_dataset
 PI_BASE=lerobot/pi05_base
-# VAE_CKPT=${HOMEDIR}${PROJDIR}/outputs/libero_90_skillset_latents/libero_90_lat64_spline/spline_vae_epoch10000.pt
-VAE_CKPT=${HOMEDIR}${PROJDIR}/outputs/libero_90_skillset_latents/libero_90_lat8_spline/spline_vae_epoch10000.pt
+
+LATENT_DIM=64
+NUM_EMBEDDINGS=512
+VQAE_STEP=5000
+SKILLSET=libero_90_skillset_fixed50
+
+VQAE_CKPT=${HOMEDIR}${PROJDIR}/outputs/${SKILLSET}_latents/libero_90_lat${LATENT_DIM}_vq${NUM_EMBEDDINGS}/spline_vqae_epoch$(printf '%04d' ${VQAE_STEP}).pt
 
 LR=2.5e-05
 BATCH_SIZE=32
 NUM_WORKERS=4
 NUM_GPUS=1
 
-# boundary 프레임 비율(~1/chunk_len) 보정. 10~40 사이로 튜닝
+# VQAE mode: skill predictor does token classification (CE loss)
 SP_LOSS_WEIGHT=1.0
-SP_LOSS_TYPE=decoded
-SP_DECODED_POS_WEIGHT=3.0
-SP_DECODED_ORI_WEIGHT=1.0
-SP_DECODED_GRIPPER_WEIGHT=0.005
-SP_DECODED_LENGTH_WEIGHT=10
-SP_DECODED_LATENT_COS_WEIGHT=0.01
+SP_LOSS_TYPE=token_ce
 
 # true: action expert가 image token만 attend (language 차단)
-# false: pi05 기본 동작 (language + obs 모두 attend)
 BLOCK_LANG=true
 
-# context: Paligemma prefix-only forward 이후 contextual hidden을 SP가 attend
-# embs: embed_prefix 직후 raw prefix token embedding을 SP가 attend
+# context: Paligemma prefix-only forward 이후 contextual hidden
+# embs: embed_prefix 직후 raw prefix token embedding
 SP_PREFIX_SOURCE=embs
 
-# Scheduled sampling for the latent fed to the action expert and VAE decoder.
-# false: teacher-forced GT z only. true: linearly replace GT z with skill-predictor z.
+# Scheduled sampling: linearly ramp from GT token → predicted token
 PREDICTED_LATENT_SAMPLING=true
-
-VAE_PRIOR_SCALE=0.5
-
 PREDICTED_LATENT_START_STEP=0
 PREDICTED_LATENT_RAMP_STEPS=50000
 PREDICTED_LATENT_MAX_PROB=1.0
 PREDICTED_LATENT_DETACH=true
-LATENT_SPACE=8
-OUTPUT_DIR=../outputs/PT_${DATASET}_coupled_${PREDICTED_LATENT_SAMPLING}_${SP_PREFIX_SOURCE}_${SP_LOSS_TYPE}_${LATENT_SPACE}
+
+VAE_PRIOR_SCALE=0.5
+
+OUTPUT_DIR=../outputs/PT_${DATASET}_coupled_${PREDICTED_LATENT_SAMPLING}_${SP_PREFIX_SOURCE}_${SP_LOSS_TYPE}_lat${LATENT_DIM}_vq${NUM_EMBEDDINGS}
 CONFIG_PATH=${OUTPUT_DIR}/checkpoints/last/pretrained_model/train_config.json
 
 RESUME_ARGS=""
@@ -85,14 +83,14 @@ else
     echo "No checkpoint found. Starting fresh training."
 fi
 
-# ── Stage 3: joint 학습 — teacher forcing + path3 (sp_loss → SP → VLM) ────────
+# ── Stage 3 VQAE: joint 학습 — token CE skill predictor ──────────────────────
 PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes=${NUM_GPUS} \
     ${HOMEDIR}${PROJDIR}/.venv/bin/lerobot-train \
     --dataset.repo_id=dohyeon/${DATASET} \
     --dataset.root=${HOMEDIR}${PROJDIR}/${DATASET_ROOT}/${DATASET} \
     --policy.type=skill_vla \
     --output_dir=${OUTPUT_DIR} \
-    --job_name=${DATASET}_PT_coupled_${PREDICTED_LATENT_SAMPLING} \
+    --job_name=${DATASET}_PT_coupled_${PREDICTED_LATENT_SAMPLING}_vqae \
     --policy.pretrained_path=${PI_BASE} \
     --policy.compile_model=false \
     --policy.gradient_checkpointing=true \
@@ -102,18 +100,14 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes=${
     --policy.freeze_vision_encoder=false \
     --policy.push_to_hub=false \
     --policy.block_lang_to_action=${BLOCK_LANG} \
-    --policy.vae_decoder_path=${VAE_CKPT} \
+    --policy.vae_decoder_path=${VQAE_CKPT} \
     --policy.vae_prior_scale=${VAE_PRIOR_SCALE} \
-    --policy.skill_latent_dim=${LATENT_SPACE} \
+    --policy.skill_latent_dim=${LATENT_DIM} \
     --policy.skill_predictor_state_dim=8 \
+    --policy.skill_predictor_num_embeddings=${NUM_EMBEDDINGS} \
     --policy.skill_predictor_prefix_source=${SP_PREFIX_SOURCE} \
     --policy.skill_predictor_loss_weight=${SP_LOSS_WEIGHT} \
     --policy.skill_predictor_loss_type=${SP_LOSS_TYPE} \
-    --policy.skill_predictor_decoded_position_weight=${SP_DECODED_POS_WEIGHT} \
-    --policy.skill_predictor_decoded_orientation_weight=${SP_DECODED_ORI_WEIGHT} \
-    --policy.skill_predictor_decoded_gripper_weight=${SP_DECODED_GRIPPER_WEIGHT} \
-    --policy.skill_predictor_decoded_length_weight=${SP_DECODED_LENGTH_WEIGHT} \
-    --policy.skill_predictor_decoded_latent_cos_weight=${SP_DECODED_LATENT_COS_WEIGHT} \
     --policy.predicted_latent_sampling=${PREDICTED_LATENT_SAMPLING} \
     --policy.predicted_latent_start_step=${PREDICTED_LATENT_START_STEP} \
     --policy.predicted_latent_ramp_steps=${PREDICTED_LATENT_RAMP_STEPS} \

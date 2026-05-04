@@ -55,6 +55,10 @@ class Args:
     length_weight: float = 10.0
     max_length: float = 500.0
 
+    # Model — spline_vq only
+    num_embeddings: int = 512
+    commitment_cost: float = 0.25
+
     # Training
     epochs: int = 200
     beta: float = 1.0
@@ -102,7 +106,7 @@ def load_skill_files(skills_dir: Path) -> tuple[list, list[np.ndarray], list[dic
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 def main(args: Args) -> None:
-    assert args.vae_type in ("raw", "spline"), f"Unknown vae_type: {args.vae_type}"
+    assert args.vae_type in ("raw", "spline", "spline_vq"), f"Unknown vae_type: {args.vae_type}"
 
     skills_dir = Path(args.skills_dir)
     output_dir = Path(args.output_dir) if args.output_dir else skills_dir.parent
@@ -155,8 +159,8 @@ def main(args: Args) -> None:
         latent_codes = encode_skills(model, segments, device="cpu")
         model_path   = output_dir / "skill_vae.pt"
 
-    # ── spline (MLP) ───────────────────────────────────────────────────────────
-    else:
+    # ── spline VAE (MLP) ───────────────────────────────────────────────────────
+    elif args.vae_type == "spline":
         from spline_vae import SplineVAEConfig, encode_skills, train_spline_vae
 
         cfg = SplineVAEConfig(
@@ -177,10 +181,37 @@ def main(args: Args) -> None:
         latent_codes = encode_skills(model, segments, device="cpu")
         model_path   = output_dir / "spline_vae.pt"
 
+    # ── spline VQAE (MLP + VQ codebook) ───────────────────────────────────────
+    else:
+        from spline_vqae import SplineVQAEConfig, encode_skill_vectors, encode_skills, train_spline_vqae
+
+        cfg = SplineVQAEConfig(
+            action_dim=action_dim, state_dim=state_dim,
+            n_control=args.n_control, spline_degree=args.spline_degree,
+            hidden_dim=args.hidden_dim, latent_dim=args.latent_dim,
+            num_embeddings=args.num_embeddings,
+            num_layers=args.num_layers, dropout=args.dropout,
+            commitment_cost=args.commitment_cost,
+            length_weight=args.length_weight, max_length=args.max_length,
+            lr=args.lr, batch_size=args.batch_size, grad_clip=args.grad_clip,
+            epochs=args.epochs, val_split=args.val_split, log_every=args.log_every,
+            device=device,
+            save_path=str(output_dir / "spline_vqae.pt"),
+            checkpoint_every=args.checkpoint_every,
+            action_min=action_min, action_max=action_max,
+        )
+        model = train_spline_vqae(segments, init_states, cfg, wandb_run=wandb_run,
+                                  metadata=metadata, resume_from=args.resume_from)
+        latent_codes  = encode_skill_vectors(model, segments, device="cpu")  # (N, latent_dim) float
+        latent_tokens = encode_skills(model, segments, device="cpu")          # (N,) int32
+        model_path    = output_dir / "spline_vqae.pt"
+
     # ── save latents ───────────────────────────────────────────────────────────
     print(f"[VAE] Latent codes: {latent_codes.shape}")
     latents_path = output_dir / "skill_latents.npz"
     save_dict = {"latents": latent_codes}
+    if args.vae_type == "spline_vq":
+        save_dict["tokens"] = latent_tokens  # (N,) int32 — skill predictor target
     for key in ("episode_id", "task_id", "skill_index", "frame_start", "frame_end", "length"):
         save_dict[key] = np.array([m[key] for m in metadata])
     np.savez(str(latents_path), **save_dict)

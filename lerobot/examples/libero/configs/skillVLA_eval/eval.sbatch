@@ -33,10 +33,14 @@ nvidia-smi
 
 # ── 설정 ──────────────────────────────────────────────────────────────────────
 # VAE_PRIOR_SCALE=1
-MODEL=PT_libero_90_skillvla_coupled_false_embs_0.5
-CHECKPOINT=020000
+# MODEL=PT_libero_90_skillvla_coupled_true_embs_decoded_weight
+# VAE_CKPT=${HOMEDIR}${PROJDIR}/outputs/libero_90_skillset_latents/libero_90_lat64_spline/spline_vae_epoch10000.pt
+
+MODEL=PT_libero_90_skillvla_8_coupled_true_embs_decoded_8
+VAE_CKPT=${HOMEDIR}${PROJDIR}/outputs/libero_90_skillset_latents/libero_90_lat8_spline/spline_vae_epoch10000.pt
+
+CHECKPOINT=080000
 TARGET_TASK=libero_90
-VAE_CKPT=${HOMEDIR}${PROJDIR}/outputs/libero_90_skillset_latents/libero_90_lat64_spline/spline_vae_epoch10000.pt
 USE_VAE_PRIOR=true
 SAVE_SKILL_DECODE_PLOTS=true
 
@@ -93,7 +97,7 @@ PYTHONPATH=${HOMEDIR}${PROJDIR}/lerobot/src \
   --env.fps=20 \
   --eval.batch_size=1 \
   --eval.n_episodes=1 \
-  --policy.n_action_steps=5 \
+  --policy.n_action_steps=10 \
   --policy.device=cuda \
   --policy.compile_model=false \
   --policy.gradient_checkpointing=false \
