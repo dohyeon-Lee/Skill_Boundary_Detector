@@ -735,14 +735,33 @@ class SkillVLAPolicy(PI05Policy):
         device = skill_predictor_prefix.device
         z_prev = self._current_z if self._current_z is not None else \
                  torch.zeros(b, self.config.skill_latent_dim, device=device)
+
+        # State dim mismatch guard: dataset stores compact EEF state (e.g. 8-dim) but
+        # the LIBERO eval env returns full robot+object state (much larger). If dims don't
+        # match the trained dims, fall back to zeros — wrong content is worse than no signal.
+        sp_state_dim = self.config.skill_predictor_state_dim
+        if current_state.shape[-1] == sp_state_dim:
+            sp_state = current_state
+        else:
+            sp_state = torch.zeros(b, sp_state_dim, device=device, dtype=current_state.dtype)
+
         self._current_z   = self.model.skill_predictor(
             z_prev.float(),
             skill_predictor_prefix,
             prefix_pad_masks,
             skill_progress.float(),
-            current_state.float(),
+            sp_state.float(),
         )
-        self._prior_cache = self.model._compute_full_prior(self._current_z, current_state)
+
+        if self.model.vae_decoder is not None:
+            vae_state_dim = self.model.vae_decoder.state_dim
+            if current_state.shape[-1] == vae_state_dim:
+                vae_state = current_state
+            else:
+                vae_state = torch.zeros(b, vae_state_dim, device=device, dtype=current_state.dtype)
+        else:
+            vae_state = sp_state
+        self._prior_cache = self.model._compute_full_prior(self._current_z, vae_state)
         self._record_decoded_skill_actions()
         self._skill_step  = 0
         self._trigger_new_skill = False

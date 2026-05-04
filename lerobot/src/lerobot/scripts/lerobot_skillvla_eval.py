@@ -617,7 +617,7 @@ def _save_skill_trace_plots(
                 timesteps,
                 raw_actions[:, action_index],
                 linewidth=1.5,
-                label="VAE prior",
+                label="VQAE prior",
             )
             if expert_actions is not None:
                 axes[action_index].plot(
@@ -633,7 +633,7 @@ def _save_skill_trace_plots(
             if action_index == 0:
                 axes[action_index].legend(loc="best")
 
-        fig.suptitle(f"Skill {skill_index + 1} raw actions: VAE prior vs action expert")
+        fig.suptitle(f"Skill {skill_index + 1} raw actions: VQAE prior vs action expert")
         axes[-1].set_xlabel("skill timestep")
         fig.tight_layout()
 

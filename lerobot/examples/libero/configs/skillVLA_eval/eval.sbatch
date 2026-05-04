@@ -32,21 +32,26 @@ echo "Node: $SLURMD_NODENAME"
 nvidia-smi
 
 # ── 설정 ──────────────────────────────────────────────────────────────────────
-# VAE_PRIOR_SCALE=1
-# MODEL=PT_libero_90_skillvla_coupled_true_embs_decoded_weight
-# VAE_CKPT=${HOMEDIR}${PROJDIR}/outputs/libero_90_skillset_latents/libero_90_lat64_spline/spline_vae_epoch10000.pt
+DATASET=libero_90_skillvla_vqae
+LATENT_DIM=64
+NUM_EMBEDDINGS=512
+VQAE_STEP=10000
+SKILLSET=libero_90_skillset          # variable-length
+# SKILLSET=libero_90_skillset_fixed50  # fixed-length (uncomment to use)
 
-MODEL=PT_libero_90_skillvla_8_coupled_true_embs_decoded_8
-VAE_CKPT=${HOMEDIR}${PROJDIR}/outputs/libero_90_skillset_latents/libero_90_lat8_spline/spline_vae_epoch10000.pt
+VQAE_CKPT=${HOMEDIR}${PROJDIR}/outputs/${SKILLSET}_latents/libero_90_lat${LATENT_DIM}_vq${NUM_EMBEDDINGS}/spline_vqae_epoch$(printf '%04d' ${VQAE_STEP}).pt
 
-CHECKPOINT=080000
+PREDICTED_LATENT_SAMPLING=true
+SP_PREFIX_SOURCE=embs
+
+MODEL=PT_${DATASET}_coupled_${PREDICTED_LATENT_SAMPLING}_${SP_PREFIX_SOURCE}_lat${LATENT_DIM}_vq${NUM_EMBEDDINGS}
+
+CHECKPOINT=010000
 TARGET_TASK=libero_90
 USE_VAE_PRIOR=true
 SAVE_SKILL_DECODE_PLOTS=true
+VAE_PRIOR_SCALE=0.5
 
-VAE_PRIOR_POSITION_CLIP=0
-ZERO_VAE_PRIOR_ORIENTATION=false
-VAE_PRIOR_ORIENTATION_CLIP=0
 # Leave empty to use the checkpoint config. Set to "context" or "embs" to override at eval time.
 SP_PREFIX_SOURCE_OVERRIDE=""
 
@@ -56,19 +61,7 @@ TASK_IDS="[0,1,2]"
 
 WANDB_PROJECT=VLA_eval
 PRIOR_TAG=$([ "${USE_VAE_PRIOR}" = "true" ] && echo "prior_on" || echo "prior_off")
-if [ "${ZERO_VAE_PRIOR_ORIENTATION}" = "true" ]; then
-  ORI_TAG="ori_zero"
-elif awk "BEGIN {exit !(${VAE_PRIOR_ORIENTATION_CLIP} > 0)}"; then
-  ORI_TAG="ori_clip${VAE_PRIOR_ORIENTATION_CLIP}"
-else
-  ORI_TAG="ori_prior"
-fi
-if awk "BEGIN {exit !(${VAE_PRIOR_POSITION_CLIP} > 0)}"; then
-  POS_TAG="pos_clip${VAE_PRIOR_POSITION_CLIP}"
-else
-  POS_TAG="pos_prior"
-fi
-WANDB_RUN_NAME=${MODEL}_${CHECKPOINT}_${TARGET_TASK}_${PRIOR_TAG}_${POS_TAG}_${ORI_TAG}
+WANDB_RUN_NAME=${MODEL}_${CHECKPOINT}_${TARGET_TASK}_${PRIOR_TAG}
 POLICY_PATH=${HOMEDIR}${PROJDIR}/outputs/${MODEL}/checkpoints/${CHECKPOINT}/pretrained_model
 
 if [ ! -d "${POLICY_PATH}" ]; then
@@ -77,9 +70,8 @@ if [ ! -d "${POLICY_PATH}" ]; then
 fi
 
 if [ "${USE_VAE_PRIOR}" = "true" ] || [ "${SAVE_SKILL_DECODE_PLOTS}" = "true" ]; then
-  VAE_PRIOR_ARG="--policy.vae_decoder_path=${VAE_CKPT}"
+  VAE_PRIOR_ARG="--policy.vae_decoder_path=${VQAE_CKPT}"
 else
-  # Override any vae_decoder_path saved in the checkpoint config.
   VAE_PRIOR_ARG="--policy.vae_decoder_path="
 fi
 
@@ -103,16 +95,12 @@ PYTHONPATH=${HOMEDIR}${PROJDIR}/lerobot/src \
   --policy.gradient_checkpointing=false \
   ${VAE_PRIOR_ARG} \
   --policy.use_vae_prior=${USE_VAE_PRIOR} \
-  --policy.vae_prior_position_clip=${VAE_PRIOR_POSITION_CLIP} \
-  --policy.zero_vae_prior_orientation=${ZERO_VAE_PRIOR_ORIENTATION} \
-  --policy.vae_prior_orientation_clip=${VAE_PRIOR_ORIENTATION_CLIP} \
+  --policy.vae_prior_scale=${VAE_PRIOR_SCALE} \
   ${SP_PREFIX_SOURCE_ARG} \
   --env.task_ids=${TASK_IDS} \
   --env.max_parallel_tasks=1 \
   --wandb_project ${WANDB_PROJECT} \
   --job_name ${WANDB_RUN_NAME} \
   --rename_map='{"observation.images.image2": "observation.images.wrist_image"}'
-
-  # --policy.vae_prior_scale=${VAE_PRIOR_SCALE} \
 
 echo "DONE"
