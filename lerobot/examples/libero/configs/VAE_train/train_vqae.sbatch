@@ -58,7 +58,6 @@ PYTHONPATH=${HOMEDIR}${PROJDIR}/lerobot/src \
   python examples/libero/train_vae.py \
     --skills_dir ${HOMEDIR}${PROJDIR}/libero_dataset/${SKILLSET} \
     --output_dir ${OUTPUT_DIR} \
-    --vae_type spline_vq \
     --latent_dim ${LATENT_DIM} \
     --num_embeddings ${NUM_EMBEDDINGS} \
     --commitment_cost 0.25 \

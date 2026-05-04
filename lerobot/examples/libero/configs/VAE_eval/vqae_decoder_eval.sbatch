@@ -31,14 +31,14 @@ echo "START JOB"
 echo "Node: $SLURMD_NODENAME"
 
 # ── 설정 ──────────────────────────────────────────────────────────────────────
-CHECKPOINT_EPOCH=2000
+CHECKPOINT_EPOCH=10000
 NO_HTML=false
 
 DATA=libero_90
 LATENT_DIM=64
 NUM_EMBEDDINGS=512
-# SKILLSET=${DATA}_skillset
-SKILLSET=${DATA}_skillset_fixed50
+SKILLSET=${DATA}_skillset
+# SKILLSET=${DATA}_skillset_fixed50
 
 EXP="${DATA}_lat${LATENT_DIM}_vq${NUM_EMBEDDINGS}"
 SWEEP_DIR="${HOMEDIR}${PROJDIR}/outputs/${SKILLSET}_latents/${EXP}"

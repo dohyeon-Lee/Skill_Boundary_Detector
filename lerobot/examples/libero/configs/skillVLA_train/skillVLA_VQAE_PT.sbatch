@@ -39,8 +39,8 @@ PI_BASE=lerobot/pi05_base
 
 LATENT_DIM=64
 NUM_EMBEDDINGS=512
-VQAE_STEP=5000
-SKILLSET=libero_90_skillset_fixed50
+VQAE_STEP=10000
+SKILLSET=libero_90_skillset
 
 VQAE_CKPT=${HOMEDIR}${PROJDIR}/outputs/${SKILLSET}_latents/libero_90_lat${LATENT_DIM}_vq${NUM_EMBEDDINGS}/spline_vqae_epoch$(printf '%04d' ${VQAE_STEP}).pt
 
@@ -51,7 +51,6 @@ NUM_GPUS=1
 
 # VQAE mode: skill predictor does token classification (CE loss)
 SP_LOSS_WEIGHT=1.0
-SP_LOSS_TYPE=token_ce
 
 # true: action expert가 image token만 attend (language 차단)
 BLOCK_LANG=true
@@ -69,7 +68,7 @@ PREDICTED_LATENT_DETACH=true
 
 VAE_PRIOR_SCALE=0.5
 
-OUTPUT_DIR=../outputs/PT_${DATASET}_coupled_${PREDICTED_LATENT_SAMPLING}_${SP_PREFIX_SOURCE}_${SP_LOSS_TYPE}_lat${LATENT_DIM}_vq${NUM_EMBEDDINGS}
+OUTPUT_DIR=../outputs/PT_${DATASET}_coupled_${PREDICTED_LATENT_SAMPLING}_${SP_PREFIX_SOURCE}_lat${LATENT_DIM}_vq${NUM_EMBEDDINGS}
 CONFIG_PATH=${OUTPUT_DIR}/checkpoints/last/pretrained_model/train_config.json
 
 RESUME_ARGS=""
@@ -107,7 +106,6 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes=${
     --policy.skill_predictor_num_embeddings=${NUM_EMBEDDINGS} \
     --policy.skill_predictor_prefix_source=${SP_PREFIX_SOURCE} \
     --policy.skill_predictor_loss_weight=${SP_LOSS_WEIGHT} \
-    --policy.skill_predictor_loss_type=${SP_LOSS_TYPE} \
     --policy.predicted_latent_sampling=${PREDICTED_LATENT_SAMPLING} \
     --policy.predicted_latent_start_step=${PREDICTED_LATENT_START_STEP} \
     --policy.predicted_latent_ramp_steps=${PREDICTED_LATENT_RAMP_STEPS} \

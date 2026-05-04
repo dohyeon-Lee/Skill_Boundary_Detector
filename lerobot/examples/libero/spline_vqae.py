@@ -4,13 +4,13 @@ Spline VQAE — Deterministic Vector-Quantized Autoencoder for skill trajectorie
 Architecture
 ------------
   Spline codec  : variable-length action trajectory ↔ fixed-size control points + length
-  Encoder (MLP) : flatten(ctrl_pts) + length_norm → z_e  (no mu/logvar, deterministic)
+  Encoder (MLP) : flatten(ctrl_pts) + length_norm → z_e  (deterministic, no mu/logvar)
   VQ layer      : z_e → nearest codebook entry z_q + integer token index
   Decoder (MLP) : z_q + initial_state → flatten(ctrl_pts) + length_norm
   Loss          : MSE on ctrl_pts + MSE on length + codebook loss + commitment loss
 
-encode_numpy returns the integer token index.
-decode_numpy takes the integer token index and reconstructs the trajectory.
+encode_numpy  → integer token index
+decode_numpy  → trajectory from token index + initial state
 
 Gripper dimension (last) uses degree-0 (nearest-neighbor) spline.
 All other dims use the configured spline degree (default: cubic).
@@ -25,16 +25,113 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader
+from scipy.interpolate import make_interp_spline
+from torch.utils.data import DataLoader, Dataset
 
-from spline_vae import (
-    GRIPPER_DIM,
-    MLPBlock,
-    SplineSkillDataset,
-    collate_fn,
-    spline_decode,
-    spline_encode,
-)
+
+# ── Spline codec (numpy) ──────────────────────────────────────────────────────
+
+GRIPPER_DIM = -1  # last dim always uses degree-0 spline
+
+
+def spline_encode(
+    trajectory: np.ndarray,   # (T, action_dim)
+    n_control: int,
+    degree: int,
+) -> tuple[np.ndarray, int]:
+    """trajectory → control points (n_control, action_dim) + length T."""
+    T, D = trajectory.shape
+    t_orig = np.linspace(0.0, 1.0, T)
+    t_ctrl = np.linspace(0.0, 1.0, n_control)
+    ctrl_pts = np.zeros((n_control, D), dtype=np.float32)
+    gripper_idx = (D + GRIPPER_DIM) % D
+    for d in range(D):
+        k = 0 if d == gripper_idx else degree
+        k = min(k, T - 1)
+        spl = make_interp_spline(t_orig, trajectory[:, d], k=k)
+        ctrl_pts[:, d] = spl(t_ctrl)
+    return ctrl_pts, T
+
+
+def spline_decode(
+    ctrl_pts: np.ndarray,  # (n_control, action_dim)
+    length: int,
+    degree: int,
+) -> np.ndarray:
+    """Control points + length → reconstructed trajectory (length, action_dim)."""
+    n_control, D = ctrl_pts.shape
+    t_ctrl = np.linspace(0.0, 1.0, n_control)
+    t_out  = np.linspace(0.0, 1.0, length)
+    recon = np.zeros((length, D), dtype=np.float32)
+    gripper_idx = (D + GRIPPER_DIM) % D
+    for d in range(D):
+        k = 0 if d == gripper_idx else degree
+        k = min(k, n_control - 1)
+        spl = make_interp_spline(t_ctrl, ctrl_pts[:, d], k=k)
+        recon[:, d] = spl(t_out)
+    return recon
+
+
+# ── MLP block ─────────────────────────────────────────────────────────────────
+
+class MLPBlock(nn.Module):
+    def __init__(self, in_dim: int, out_dim: int, dropout: float = 0.0) -> None:
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(in_dim, out_dim),
+            nn.LayerNorm(out_dim),
+            nn.SiLU(),
+            nn.Dropout(dropout),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x)
+
+
+# ── Dataset ───────────────────────────────────────────────────────────────────
+
+class SplineSkillDataset(Dataset):
+    """Pre-encodes trajectories to spline control points at construction time."""
+
+    def __init__(
+        self,
+        segments: list[np.ndarray],
+        init_states: list[np.ndarray],
+        n_control: int,
+        spline_degree: int,
+        action_min: np.ndarray,
+        action_max: np.ndarray,
+        max_length: float,
+    ) -> None:
+        self.init_states = init_states
+        self.max_length  = max_length
+        self.ctrl_pts: list[np.ndarray] = []
+        self.lengths:  list[int]        = []
+        for seg in segments:
+            cp, T = spline_encode(seg, n_control, spline_degree)
+            cp_norm = (cp - action_min) / (action_max - action_min + 1e-8) * 2 - 1
+            self.ctrl_pts.append(cp_norm.astype(np.float32))
+            self.lengths.append(T)
+
+    def __len__(self) -> int:
+        return len(self.ctrl_pts)
+
+    def __getitem__(self, idx: int):
+        cp    = torch.from_numpy(self.ctrl_pts[idx])
+        state = torch.from_numpy(self.init_states[idx].astype(np.float32))
+        l_raw  = torch.tensor(self.lengths[idx], dtype=torch.long)
+        l_norm = torch.tensor(self.lengths[idx] / self.max_length, dtype=torch.float32)
+        return cp, l_raw, l_norm, state
+
+
+def collate_fn(batch):
+    cp, l_raw, l_norm, state = zip(*batch)
+    return (
+        torch.stack(cp),
+        torch.stack(l_raw),
+        torch.stack(l_norm).unsqueeze(-1),  # (B, 1)
+        torch.stack(state),
+    )
 
 
 # ── Vector Quantizer ──────────────────────────────────────────────────────────

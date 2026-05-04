@@ -25,7 +25,7 @@ echo "Node: $SLURMD_NODENAME"
 # ── 경로 설정 ─────────────────────────────────────────────────────────────────
 LATENT_DIM=64
 NUM_EMBEDDINGS=512
-STEP=5000
+STEP=10000
 FIXED=50
 
 # A: VQAE fixed-length skillset
@@ -38,7 +38,8 @@ VARIABLE_DIR=${HOMEDIR}${PROJDIR}/outputs/libero_90_skillset_latents/libero_90_l
 VARIABLE_NPZ=${VARIABLE_DIR}/spline_vqae_latents_epoch$(printf '%04d' ${STEP}).npz
 VARIABLE_PT=${VARIABLE_DIR}/spline_vqae_epoch$(printf '%04d' ${STEP}).pt
 
-DATASET=${HOMEDIR}${PROJDIR}/libero_dataset/libero_90_skillvla
+# fixed/variable 모두 같은 libero_90 에피소드를 참조 → base dataset 하나면 충분
+DATASET=${HOMEDIR}${PROJDIR}/libero_dataset/libero_90
 
 OUTPUT_DIR=${HOMEDIR}${PROJDIR}/outputs/latent_eval_vqae
 
@@ -51,26 +52,21 @@ mkdir -p ${WANDB_CACHE_DIR} ${WANDB_DATA_DIR}
 export WANDB_DISABLE_SYMLINKS=true
 
 # ── 평가 실행 ─────────────────────────────────────────────────────────────────
-for K in 20; do
-    echo ""
-    echo "=== K=${K} clusters ==="
-    python examples/libero/eval_latent_space.py \
-        --npz_A   ${FIXED_NPZ} \
-        --vae_A   ${FIXED_PT} \
-        --name_A  fixed${FIXED} \
-        --npz_B   ${VARIABLE_NPZ} \
-        --vae_B   ${VARIABLE_PT} \
-        --name_B  variable \
-        --dataset_path ${DATASET} \
-        --output_dir   ${OUTPUT_DIR} \
-        --n_clusters   ${K} \
-        --n_sample     20 \
-        --n_resample   80 \
-        --n_recon_eval 500 \
-        --seed         42 \
-        --wandb_enable \
-        --wandb_project  ${WANDB_PROJECT} \
-        --wandb_job_name ${WANDB_JOB}_k${K}_lat${LATENT_DIM}_vq${NUM_EMBEDDINGS}_fixed${FIXED}_ep${STEP}
-done
+python examples/libero/eval_latent_space.py \
+    --npz_A   ${FIXED_NPZ} \
+    --vae_A   ${FIXED_PT} \
+    --name_A  fixed${FIXED} \
+    --npz_B   ${VARIABLE_NPZ} \
+    --vae_B   ${VARIABLE_PT} \
+    --name_B  variable \
+    --dataset_path ${DATASET} \
+    --output_dir   ${OUTPUT_DIR} \
+    --n_sample     20 \
+    --n_resample   80 \
+    --n_recon_eval 500 \
+    --seed         42 \
+    --wandb_enable \
+    --wandb_project  ${WANDB_PROJECT} \
+    --wandb_job_name ${WANDB_JOB}_lat${LATENT_DIM}_vq${NUM_EMBEDDINGS}_fixed${FIXED}_ep${STEP}
 
 echo "DONE"

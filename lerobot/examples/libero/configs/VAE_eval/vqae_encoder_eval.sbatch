@@ -31,7 +31,7 @@ echo "START JOB"
 echo "Node: $SLURMD_NODENAME"
 
 # ── 설정 ──────────────────────────────────────────────────────────────────────
-CHECKPOINT_EPOCH=2000
+CHECKPOINT_EPOCH=10000
 NO_HTML=true
 
 DATA=libero_90

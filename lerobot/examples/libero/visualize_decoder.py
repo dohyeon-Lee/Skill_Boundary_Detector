@@ -13,7 +13,7 @@ Pipeline:
 
 Usage:
     python examples/libero/visualize_decoder.py \
-        --model_path   .../skill_vae.pt \
+        --model_path   .../spline_vqae_epoch5000.pt \
         --tsne_coords  .../tsne_coords.npz \
         --skills_dir   .../skill_dataset/skills \
         --output_dir   .../decoder_eval \
@@ -70,50 +70,22 @@ class Args:
 # ── Model ─────────────────────────────────────────────────────────────────────
 
 def load_model(model_path: str, device: str):
+    from spline_vqae import SplineVQAE
     ckpt = torch.load(model_path, map_location="cpu", weights_only=False)
-    cfg = ckpt["cfg"]
-
-    if type(cfg).__name__ == "SplineVQAEConfig":
-        from spline_vqae import SplineVQAE
-        model = SplineVQAE(
-            action_dim=cfg.action_dim,
-            state_dim=cfg.state_dim,
-            n_control=cfg.n_control,
-            spline_degree=cfg.spline_degree,
-            hidden_dim=cfg.hidden_dim,
-            latent_dim=cfg.latent_dim,
-            num_embeddings=cfg.num_embeddings,
-            num_layers=cfg.num_layers,
-            dropout=cfg.dropout,
-            commitment_cost=cfg.commitment_cost,
-            max_length=cfg.max_length,
-        )
-    elif type(cfg).__name__ == "SplineVAEConfig":
-        from spline_vae import SplineVAE
-        model = SplineVAE(
-            action_dim=cfg.action_dim,
-            state_dim=cfg.state_dim,
-            n_control=cfg.n_control,
-            spline_degree=cfg.spline_degree,
-            hidden_dim=cfg.hidden_dim,
-            latent_dim=cfg.latent_dim,
-            num_layers=cfg.num_layers,
-            dropout=cfg.dropout,
-            max_length=cfg.max_length,
-        )
-    else:
-        from skill_vae import SkillVAE
-        model = SkillVAE(
-            action_dim=cfg.action_dim,
-            state_dim=cfg.state_dim,
-            hidden_dim=cfg.hidden_dim,
-            latent_dim=cfg.latent_dim,
-            num_layers=cfg.num_layers,
-            dropout=cfg.dropout,
-            stop_threshold=cfg.stop_threshold,
-            max_decode_steps=cfg.max_decode_steps,
-        )
-
+    cfg  = ckpt["cfg"]
+    model = SplineVQAE(
+        action_dim=cfg.action_dim,
+        state_dim=cfg.state_dim,
+        n_control=cfg.n_control,
+        spline_degree=cfg.spline_degree,
+        hidden_dim=cfg.hidden_dim,
+        latent_dim=cfg.latent_dim,
+        num_embeddings=cfg.num_embeddings,
+        num_layers=cfg.num_layers,
+        dropout=cfg.dropout,
+        commitment_cost=cfg.commitment_cost,
+        max_length=cfg.max_length,
+    )
     model.load_state_dict(ckpt["model_state"])
     return model.to(device).eval(), cfg
 

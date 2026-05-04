@@ -1,16 +1,13 @@
 """
-Skill VAE Training Script.
+Spline VQAE Training Script.
 
-Supports two VAE types:
-  raw    — BiLSTM encoder / LSTM decoder on raw variable-length action trajectories (skill_vae.py)
-  spline — MLP encoder / MLP decoder on spline-encoded fixed-size representations (spline_vae.py)
+Trains a deterministic MLP AE with a VQ codebook over spline-encoded skill trajectories.
 
 Usage:
     python examples/libero/train_vae.py \
       --skills_dir /path/to/skills \
-      --output_dir /path/to/vae_output \
-      --vae_type spline \
-      --latent_dim 64 --hidden_dim 256 --epochs 200 --beta 1.0
+      --output_dir /path/to/output \
+      --latent_dim 64 --num_embeddings 512 --epochs 5000
 """
 
 from __future__ import annotations
@@ -35,35 +32,22 @@ class Args:
     output_dir: str = ""
     """Where to save model and latents. Defaults to skills_dir/.."""
 
-    vae_type: str = "raw"
-    """VAE architecture: 'raw' (BiLSTM) or 'spline' (MLP)."""
-
-    # Model — shared
+    # Model
     latent_dim: int = 64
     hidden_dim: int = 256
-    num_layers: int = 2
+    num_layers: int = 3
     dropout: float = 0.1
-
-    # Model — raw only
-    stop_threshold: float = 0.5
-    max_decode_steps: int = 500
-    stop_weight: float = 1.0
-
-    # Model — spline only
     n_control: int = 30
     spline_degree: int = 3
+    num_embeddings: int = 512
+    commitment_cost: float = 0.25
     length_weight: float = 10.0
     max_length: float = 500.0
 
-    # Model — spline_vq only
-    num_embeddings: int = 512
-    commitment_cost: float = 0.25
-
     # Training
-    epochs: int = 200
-    beta: float = 1.0
+    epochs: int = 5000
     lr: float = 3e-4
-    batch_size: int = 32
+    batch_size: int = 64
     grad_clip: float = 1.0
     val_split: float = 0.1
     log_every: int = 10
@@ -72,7 +56,7 @@ class Args:
     checkpoint_every: int = 0
     resume_from: str | None = None
     wandb_project: str | None = None
-    wandb_run_name: str = "skill_vae"
+    wandb_run_name: str = "spline_vqae"
 
 
 # ── Data loading ───────────────────────────────────────────────────────────────
@@ -97,16 +81,16 @@ def load_skill_files(skills_dir: Path) -> tuple[list, list[np.ndarray], list[dic
             "length": len(d["actions"]),
         })
 
-    print(f"[VAE] Loaded {len(segments)} skill segments from {skills_dir}")
+    print(f"[VQAE] Loaded {len(segments)} skill segments from {skills_dir}")
     lengths = [m["length"] for m in metadata]
-    print(f"[VAE] Skill lengths — min: {min(lengths)}, max: {max(lengths)}, mean: {np.mean(lengths):.1f}")
+    print(f"[VQAE] Skill lengths — min: {min(lengths)}, max: {max(lengths)}, mean: {np.mean(lengths):.1f}")
     return segments, init_states, metadata
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 def main(args: Args) -> None:
-    assert args.vae_type in ("raw", "spline", "spline_vq"), f"Unknown vae_type: {args.vae_type}"
+    from spline_vqae import SplineVQAEConfig, encode_skill_vectors, encode_skills, train_spline_vqae
 
     skills_dir = Path(args.skills_dir)
     output_dir = Path(args.output_dir) if args.output_dir else skills_dir.parent
@@ -121,8 +105,8 @@ def main(args: Args) -> None:
     action_min  = all_actions.min(axis=0)
     action_max  = all_actions.max(axis=0)
     np.savez(str(output_dir / "action_stats.npz"), action_min=action_min, action_max=action_max)
-    print(f"[VAE] action_min: {np.round(action_min, 4)}")
-    print(f"[VAE] action_max: {np.round(action_max, 4)}")
+    print(f"[VQAE] action_min: {np.round(action_min, 4)}")
+    print(f"[VQAE] action_max: {np.round(action_max, 4)}")
 
     device     = args.device if torch.cuda.is_available() else "cpu"
     action_dim = segments[0].shape[-1]
@@ -137,86 +121,37 @@ def main(args: Args) -> None:
             config={**vars(args), "action_dim": action_dim, "state_dim": state_dim, "n_segments": len(segments)},
         )
 
-    # ── raw (BiLSTM) ───────────────────────────────────────────────────────────
-    if args.vae_type == "raw":
-        from skill_vae import VAEConfig, encode_skills, train_skill_vae
+    cfg = SplineVQAEConfig(
+        action_dim=action_dim, state_dim=state_dim,
+        n_control=args.n_control, spline_degree=args.spline_degree,
+        hidden_dim=args.hidden_dim, latent_dim=args.latent_dim,
+        num_embeddings=args.num_embeddings,
+        num_layers=args.num_layers, dropout=args.dropout,
+        commitment_cost=args.commitment_cost,
+        length_weight=args.length_weight, max_length=args.max_length,
+        lr=args.lr, batch_size=args.batch_size, grad_clip=args.grad_clip,
+        epochs=args.epochs, val_split=args.val_split, log_every=args.log_every,
+        device=device,
+        save_path=str(output_dir / "spline_vqae.pt"),
+        checkpoint_every=args.checkpoint_every,
+        action_min=action_min, action_max=action_max,
+    )
+    model = train_spline_vqae(segments, init_states, cfg, wandb_run=wandb_run,
+                              metadata=metadata, resume_from=args.resume_from)
 
-        cfg = VAEConfig(
-            action_dim=action_dim, state_dim=state_dim,
-            hidden_dim=args.hidden_dim, latent_dim=args.latent_dim,
-            num_layers=args.num_layers, dropout=args.dropout,
-            beta=args.beta, stop_weight=args.stop_weight,
-            stop_threshold=args.stop_threshold, max_decode_steps=args.max_decode_steps,
-            lr=args.lr, batch_size=args.batch_size, grad_clip=args.grad_clip,
-            epochs=args.epochs, val_split=args.val_split, log_every=args.log_every,
-            device=device,
-            save_path=str(output_dir / "skill_vae.pt"),
-            checkpoint_every=args.checkpoint_every,
-            action_min=action_min, action_max=action_max,
-        )
-        model = train_skill_vae(segments, init_states, cfg, wandb_run=wandb_run,
-                                metadata=metadata, resume_from=args.resume_from)
-        latent_codes = encode_skills(model, segments, device="cpu")
-        model_path   = output_dir / "skill_vae.pt"
+    latent_codes  = encode_skill_vectors(model, segments, device="cpu")  # (N, latent_dim) float
+    latent_tokens = encode_skills(model, segments, device="cpu")          # (N,) int32
 
-    # ── spline VAE (MLP) ───────────────────────────────────────────────────────
-    elif args.vae_type == "spline":
-        from spline_vae import SplineVAEConfig, encode_skills, train_spline_vae
-
-        cfg = SplineVAEConfig(
-            action_dim=action_dim, state_dim=state_dim,
-            n_control=args.n_control, spline_degree=args.spline_degree,
-            hidden_dim=args.hidden_dim, latent_dim=args.latent_dim,
-            num_layers=args.num_layers, dropout=args.dropout,
-            beta=args.beta, length_weight=args.length_weight, max_length=args.max_length,
-            lr=args.lr, batch_size=args.batch_size, grad_clip=args.grad_clip,
-            epochs=args.epochs, val_split=args.val_split, log_every=args.log_every,
-            device=device,
-            save_path=str(output_dir / "spline_vae.pt"),
-            checkpoint_every=args.checkpoint_every,
-            action_min=action_min, action_max=action_max,
-        )
-        model = train_spline_vae(segments, init_states, cfg, wandb_run=wandb_run,
-                                 metadata=metadata, resume_from=args.resume_from)
-        latent_codes = encode_skills(model, segments, device="cpu")
-        model_path   = output_dir / "spline_vae.pt"
-
-    # ── spline VQAE (MLP + VQ codebook) ───────────────────────────────────────
-    else:
-        from spline_vqae import SplineVQAEConfig, encode_skill_vectors, encode_skills, train_spline_vqae
-
-        cfg = SplineVQAEConfig(
-            action_dim=action_dim, state_dim=state_dim,
-            n_control=args.n_control, spline_degree=args.spline_degree,
-            hidden_dim=args.hidden_dim, latent_dim=args.latent_dim,
-            num_embeddings=args.num_embeddings,
-            num_layers=args.num_layers, dropout=args.dropout,
-            commitment_cost=args.commitment_cost,
-            length_weight=args.length_weight, max_length=args.max_length,
-            lr=args.lr, batch_size=args.batch_size, grad_clip=args.grad_clip,
-            epochs=args.epochs, val_split=args.val_split, log_every=args.log_every,
-            device=device,
-            save_path=str(output_dir / "spline_vqae.pt"),
-            checkpoint_every=args.checkpoint_every,
-            action_min=action_min, action_max=action_max,
-        )
-        model = train_spline_vqae(segments, init_states, cfg, wandb_run=wandb_run,
-                                  metadata=metadata, resume_from=args.resume_from)
-        latent_codes  = encode_skill_vectors(model, segments, device="cpu")  # (N, latent_dim) float
-        latent_tokens = encode_skills(model, segments, device="cpu")          # (N,) int32
-        model_path    = output_dir / "spline_vqae.pt"
-
-    # ── save latents ───────────────────────────────────────────────────────────
-    print(f"[VAE] Latent codes: {latent_codes.shape}")
     latents_path = output_dir / "skill_latents.npz"
-    save_dict = {"latents": latent_codes}
-    if args.vae_type == "spline_vq":
-        save_dict["tokens"] = latent_tokens  # (N,) int32 — skill predictor target
+    save_dict = {
+        "latents": latent_codes,
+        "tokens":  latent_tokens,
+    }
     for key in ("episode_id", "task_id", "skill_index", "frame_start", "frame_end", "length"):
         save_dict[key] = np.array([m[key] for m in metadata])
     np.savez(str(latents_path), **save_dict)
-    print(f"[VAE] Saved latents → {latents_path}")
-    print(f"[VAE] Saved model   → {model_path}")
+    print(f"[VQAE] Saved latents → {latents_path}")
+    print(f"[VQAE] Saved model   → {output_dir / 'spline_vqae.pt'}")
 
     if wandb_run is not None:
         wandb_run.finish()

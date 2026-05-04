@@ -1,18 +1,27 @@
 """
-eval_latent_space.py
+eval_latent_space.py  (VQAE edition)
 
-Compare two VAE latent spaces (fixed-length vs variable-length skill segmentation)
-by KMeans clustering on latent vectors → actual EEF trajectory comparison.
+Compare two VQAE latent spaces (e.g. fixed-length vs variable-length skill segmentation)
+using natural token clusters — no KMeans.
 
 Pipeline:
-  Load NPZ → KMeans on latents → for each cluster, load actual EEF state sequences
-  from dataset parquet (observation.states.ee_state) → compute 6 metrics
+  Load NPZ (tokens + metadata)
+  → group skills by token index (natural clusters from codebook)
+  → for each token group, compute pairwise EEF trajectory metrics (intra)
+  → pick one representative per token, compute pairwise metrics (inter)
+  → compare A vs B
 
-6 Metrics (within-cluster vs between-cluster):
-  direction    : cosine similarity of start→end displacement vector (6D)
-  shape        : mean pairwise L2 of resampled relative EEF trajectory
-  final_pose   : Euclidean distance of absolute final EEF position (xyz)
-  delta_pose   : MSE of total displacement vector (6D)
+3 evaluation blocks per system:
+  1. Token cluster quality  : intra (same token) vs inter (different token) EEF metrics
+  2. Reconstruction quality : decode(token, own_initial_state) vs GT action sequence
+  3. Codebook utilization   : # tokens used, skills-per-token distribution
+
+6 EEF metrics (intra / inter):
+  direction    : cosine similarity of start→end displacement (xyz)
+  shape_rel    : mean pairwise L2 of relative (start-subtracted) EEF trajectory
+  shape_abs    : mean pairwise L2 of absolute EEF trajectory
+  final_pose   : Euclidean distance of final EEF position (xyz)
+  delta_pose   : MSE of total displacement vector (xyz)
   dtw          : DTW distance of relative EEF trajectory (normalized by length)
   wasserstein  : mean per-dim Wasserstein distance of per-step EEF deltas
 
@@ -20,17 +29,13 @@ Separation score:
   direction    : intra_mean - inter_mean  (higher → better)
   others       : inter_mean / intra_mean  (higher → better)
 
-Also kept:
-  reconstruction eval : decoded action (cumsum) vs original action sequence
-  dataset stats       : skill count, average skill length
-
 Usage:
   python examples/libero/eval_latent_space.py \\
-    --npz_A  .../spline_vae_latents_epoch10000.npz \\
-    --vae_A  .../spline_vae_epoch10000.pt \\
-    --npz_B  .../spline_vae_latents_epoch10000.npz \\
-    --vae_B  .../spline_vae_epoch10000.pt \\
-    --dataset_path .../libero_dataset/libero_90_skillvla \\
+    --npz_A  .../spline_vqae_latents_epoch5000.npz \\
+    --vae_A  .../spline_vqae_epoch5000.pt \\
+    --npz_B  .../spline_vqae_latents_epoch5000.npz \\
+    --vae_B  .../spline_vqae_epoch5000.pt \\
+    --dataset_path .../libero_dataset/libero_90 \\
     --output_dir .../outputs/latent_eval
 """
 
@@ -50,33 +55,22 @@ import numpy as np
 import pandas as pd
 import torch
 import wandb
-from sklearn.cluster import KMeans
 from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from spline_vae import GRIPPER_DIM, SplineVAE, spline_decode, spline_encode  # noqa: E402
+from spline_vqae import GRIPPER_DIM, SplineVQAE, spline_decode, spline_encode  # noqa: E402
 
 
-# ── VAE / VQAE loading ────────────────────────────────────────────────────────
+# ── VQAE loading ──────────────────────────────────────────────────────────────
 
-def load_vae(ckpt_path: str):
-    """Load SplineVAE or SplineVQAE from checkpoint (auto-detected by config type)."""
+def load_vae(ckpt_path: str) -> SplineVQAE:
     ckpt  = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     cfg   = ckpt["cfg"]
     cfg_d = dataclasses.asdict(cfg)
-
-    if type(cfg).__name__ == "SplineVQAEConfig":
-        from spline_vqae import SplineVQAE
-        keys  = {"action_dim", "state_dim", "n_control", "spline_degree",
-                 "hidden_dim", "latent_dim", "num_embeddings", "num_layers",
-                 "dropout", "commitment_cost", "max_length", "action_min", "action_max"}
-        model = SplineVQAE(**{k: v for k, v in cfg_d.items() if k in keys})
-    else:
-        keys  = {"action_dim", "state_dim", "n_control", "spline_degree",
-                 "hidden_dim", "latent_dim", "num_layers", "dropout",
-                 "max_length", "action_min", "action_max"}
-        model = SplineVAE(**{k: v for k, v in cfg_d.items() if k in keys})
-
+    keys  = {"action_dim", "state_dim", "n_control", "spline_degree",
+             "hidden_dim", "latent_dim", "num_embeddings", "num_layers",
+             "dropout", "commitment_cost", "max_length", "action_min", "action_max"}
+    model = SplineVQAE(**{k: v for k, v in cfg_d.items() if k in keys})
     model.load_state_dict(ckpt["model_state"])
     model.eval()
     return model
@@ -120,7 +114,6 @@ def _load_seq_from_parquet(
     column      : str,
     desc        : str,
 ) -> dict[tuple[int, int], np.ndarray]:
-    """Generic loader: returns {(ep_id, frame_start): (T, D)} for a given column."""
     parquets = sorted((Path(dataset_path) / "data").rglob("*.parquet"))
     result: dict[tuple[int, int], np.ndarray] = {}
 
@@ -162,7 +155,6 @@ def load_ee_state_sequences(
     frame_starts: np.ndarray,
     frame_ends  : np.ndarray,
 ) -> dict[tuple[int, int], np.ndarray]:
-    """Return {(episode_id, frame_start): ee_state_seq} where ee_state_seq is (T, 6)."""
     needed: dict[int, dict[int, int]] = {}
     for ep, fs, fe in zip(episode_ids.tolist(), frame_starts.tolist(), frame_ends.tolist()):
         needed.setdefault(int(ep), {})[int(fs)] = int(fe)
@@ -171,10 +163,203 @@ def load_ee_state_sequences(
     )
 
 
-# ── Reconstruction evaluation (decoded action vs original action) ──────────────
+# ── EEF trajectory metrics ────────────────────────────────────────────────────
+
+def _resample(seq: np.ndarray, n: int) -> np.ndarray:
+    T = len(seq)
+    if T == n:
+        return seq
+    t_orig = np.linspace(0.0, 1.0, T)
+    t_new  = np.linspace(0.0, 1.0, n)
+    return np.stack(
+        [np.interp(t_new, t_orig, seq[:, d]) for d in range(seq.shape[1])], axis=-1
+    ).astype(np.float32)
+
+
+def _dtw_normalized(a: np.ndarray, b: np.ndarray) -> float:
+    na, nb = len(a), len(b)
+    cost = np.linalg.norm(a[:, None, :] - b[None, :, :], axis=-1)
+    prev = np.full(nb + 1, np.inf)
+    prev[0] = 0.0
+    for i in range(na):
+        curr = np.full(nb + 1, np.inf)
+        for j in range(nb):
+            curr[j + 1] = cost[i, j] + min(prev[j + 1], curr[j], prev[j])
+        prev = curr
+    return float(prev[nb]) / ((na + nb) / 2)
+
+
+def _wasserstein_mean(a: np.ndarray, b: np.ndarray) -> float:
+    from scipy.stats import wasserstein_distance
+    return float(np.mean([
+        wasserstein_distance(a[:, d], b[:, d]) for d in range(a.shape[1])
+    ]))
+
+
+def pairwise_ee_metrics(
+    ee_seqs   : list[np.ndarray],
+    n_resample: int,
+) -> dict | None:
+    """Pairwise EEF metrics between GT EEF state sequences (each (T_i, 3) xyz)."""
+    pairs = list(combinations(range(len(ee_seqs)), 2))
+    if not pairs:
+        return None
+
+    dir_sims, final_dists, delta_mses, dtw_dists, was_dists = [], [], [], [], []
+    shape_rel_all, shape_abs_all = [], []
+    shape_rel_dim_all, shape_abs_dim_all = [], []
+
+    for i, j in pairs:
+        si = ee_seqs[i][:, :3].astype(np.float32)
+        sj = ee_seqs[j][:, :3].astype(np.float32)
+
+        # Relative (start-subtracted)
+        rel_i = si - si[0]
+        rel_j = sj - sj[0]
+
+        # 1. Direction: cos-sim of total displacement (xyz)
+        disp_i, disp_j = rel_i[-1], rel_j[-1]
+        dir_sims.append(float(
+            np.dot(disp_i, disp_j) / (np.linalg.norm(disp_i) * np.linalg.norm(disp_j) + 1e-8)
+        ))
+
+        # 2a. Shape L2 relative
+        rri = _resample(rel_i, n_resample)
+        rrj = _resample(rel_j, n_resample)
+        diff_rel = rri - rrj
+        shape_rel_all.append(float(np.mean(np.linalg.norm(diff_rel, axis=-1))))
+        shape_rel_dim_all.append(np.mean(np.abs(diff_rel), axis=0))
+
+        # 2b. Shape L2 absolute
+        rai = _resample(si, n_resample)
+        raj = _resample(sj, n_resample)
+        diff_abs = rai - raj
+        shape_abs_all.append(float(np.mean(np.linalg.norm(diff_abs, axis=-1))))
+        shape_abs_dim_all.append(np.mean(np.abs(diff_abs), axis=0))
+
+        # 3. Final pose
+        final_dists.append(float(np.linalg.norm(si[-1] - sj[-1])))
+
+        # 4. Delta pose MSE
+        delta_mses.append(float(np.mean((disp_i - disp_j) ** 2)))
+
+        # 5. DTW on relative trajectory
+        dtw_dists.append(_dtw_normalized(rel_i, rel_j))
+
+        # 6. Wasserstein on per-step EEF deltas
+        was_dists.append(_wasserstein_mean(np.diff(si, axis=0), np.diff(sj, axis=0)))
+
+    return {
+        "direction_cos_sim":    float(np.mean(dir_sims)),
+        "shape_l2_rel":         float(np.mean(shape_rel_all)),
+        "shape_l2_abs":         float(np.mean(shape_abs_all)),
+        "shape_l2_rel_per_dim": np.mean(shape_rel_dim_all, axis=0).tolist(),
+        "shape_l2_abs_per_dim": np.mean(shape_abs_dim_all, axis=0).tolist(),
+        "final_pose_dist":      float(np.mean(final_dists)),
+        "delta_pose_mse":       float(np.mean(delta_mses)),
+        "dtw":                  float(np.mean(dtw_dists)),
+        "wasserstein":          float(np.mean(was_dists)),
+    }
+
+
+# ── Token cluster evaluation ──────────────────────────────────────────────────
+
+def evaluate_token_clusters(
+    npz_path            : str,
+    ee_map              : dict[tuple[int, int], np.ndarray],
+    vae_num_embeddings  : int,
+    n_sample_per_token  : int = 10,
+    n_resample          : int = 80,
+    seed                : int = 42,
+) -> dict:
+    """Group skills by token index (no KMeans), compute intra/inter EEF metrics."""
+    rng  = np.random.default_rng(seed)
+    data = np.load(npz_path)
+    tokens       = data["tokens"].astype(np.int32)     # (N,) — natural clusters
+    episode_ids  = data["episode_id"]
+    frame_starts = data["frame_start"]
+
+    unique_tokens = np.unique(tokens)
+    n_used = len(unique_tokens)
+    print(f"  Codebook utilization: {n_used} / {vae_num_embeddings} tokens used "
+          f"({100 * n_used / vae_num_embeddings:.1f}%)")
+
+    # Build per-token EEF sequences (sampled)
+    token_seqs: dict[int, list[np.ndarray]] = {}
+    for tok in tqdm(unique_tokens, desc="  Grouping by token"):
+        indices = np.where(tokens == tok)[0]
+        sample  = rng.choice(indices, min(n_sample_per_token, len(indices)), replace=False)
+        seqs = [ee_map[(int(episode_ids[i]), int(frame_starts[i]))]
+                for i in sample
+                if (int(episode_ids[i]), int(frame_starts[i])) in ee_map]
+        if seqs:
+            token_seqs[tok] = seqs
+
+    valid_tokens = [t for t, seqs in token_seqs.items() if len(seqs) >= 2]
+    print(f"  Valid tokens (≥2 EEF seqs): {len(valid_tokens)} / {n_used}")
+
+    # ── Intra-token: pairwise GT trajectory similarity ────────────────────────
+    intra_list = []
+    for tok in tqdm(valid_tokens, desc="  Intra metrics"):
+        m = pairwise_ee_metrics(token_seqs[tok], n_resample)
+        if m:
+            intra_list.append(m)
+
+    intra_avg: dict = {}
+    for k in intra_list[0]:
+        vals = [m[k] for m in intra_list]
+        intra_avg[k] = np.mean(vals, axis=0).tolist() if k.endswith("_per_dim") else float(np.mean(vals))
+
+    # ── Inter-token: one representative skill per token ───────────────────────
+    inter_seqs = []
+    for tok in valid_tokens:
+        indices = np.where(tokens == tok)[0]
+        rep_idx = int(rng.choice(indices))
+        key = (int(episode_ids[rep_idx]), int(frame_starts[rep_idx]))
+        if key in ee_map:
+            inter_seqs.append(ee_map[key])
+
+    inter_avg = pairwise_ee_metrics(inter_seqs, n_resample)
+
+    # ── Separation scores ─────────────────────────────────────────────────────
+    eps = 1e-8
+    separation = {
+        "direction_separation":    intra_avg["direction_cos_sim"] - inter_avg["direction_cos_sim"],
+        "shape_l2_rel_separation": inter_avg["shape_l2_rel"]      / (intra_avg["shape_l2_rel"]      + eps),
+        "shape_l2_abs_separation": inter_avg["shape_l2_abs"]      / (intra_avg["shape_l2_abs"]      + eps),
+        "final_pose_separation":   inter_avg["final_pose_dist"]   / (intra_avg["final_pose_dist"]   + eps),
+        "delta_pose_separation":   inter_avg["delta_pose_mse"]    / (intra_avg["delta_pose_mse"]    + eps),
+        "dtw_separation":          inter_avg["dtw"]               / (intra_avg["dtw"]               + eps),
+        "wasserstein_separation":  inter_avg["wasserstein"]       / (intra_avg["wasserstein"]       + eps),
+    }
+
+    # ── Codebook utilization stats ────────────────────────────────────────────
+    counts = np.array([int(np.sum(tokens == t)) for t in unique_tokens])
+    utilization = {
+        "n_tokens_used":           int(n_used),
+        "n_tokens_total":          int(vae_num_embeddings),
+        "utilization_pct":         float(100 * n_used / vae_num_embeddings),
+        "skills_per_token_mean":   float(np.mean(counts)),
+        "skills_per_token_std":    float(np.std(counts)),
+        "skills_per_token_min":    int(np.min(counts)),
+        "skills_per_token_max":    int(np.max(counts)),
+        "skills_per_token_median": float(np.median(counts)),
+    }
+
+    return {
+        "n_skills":     int(len(tokens)),
+        "valid_tokens": int(len(valid_tokens)),
+        "intra":        intra_avg,
+        "inter":        inter_avg,
+        "separation":   separation,
+        "utilization":  utilization,
+        "token_counts": counts.tolist(),   # skills per used token (for histogram)
+    }
+
+
+# ── Reconstruction evaluation ─────────────────────────────────────────────────
 
 def process_raw_traj(raw_traj: np.ndarray, n_resample: int) -> np.ndarray:
-    """cumsum(pos+ori) + resample on a raw delta action sequence."""
     gripper_idx = raw_traj.shape[1] - 1
     cum = raw_traj.copy()
     cum[:, :gripper_idx] = np.cumsum(raw_traj[:, :gripper_idx], axis=0)
@@ -188,24 +373,24 @@ def process_raw_traj(raw_traj: np.ndarray, n_resample: int) -> np.ndarray:
     ).astype(np.float32)
 
 
-def decode_and_process(
-    vae       : SplineVAE,
-    z         : np.ndarray,
+def decode_token_and_process(
+    vae        : SplineVQAE,
+    token      : int,
     start_state: np.ndarray,
-    n_resample: int = 100,
+    n_resample : int = 100,
 ) -> np.ndarray:
-    """Decode z → resampled cumulative trajectory (n_resample, action_dim)."""
+    """decode(token, own_initial_state) → resampled cumulative trajectory."""
     with torch.no_grad():
-        z_t = torch.from_numpy(z).unsqueeze(0).float()
-        s_t = torch.from_numpy(start_state).unsqueeze(0).float()
-        ctrl_pts_norm, len_norm = vae.decode(z_t, s_t)
+        idx_t = torch.tensor([token], dtype=torch.long)
+        z_q   = vae.quantizer.embedding(idx_t)          # (1, D)
+        s_t   = torch.from_numpy(start_state).unsqueeze(0).float()
+        ctrl_pts_norm, len_norm = vae.decode(z_q, s_t)
 
     ctrl_np = ctrl_pts_norm[0].cpu().numpy()
     len_np  = float(len_norm[0, 0].cpu().numpy())
-
     lo = vae.action_min.cpu().numpy()
     hi = vae.action_max.cpu().numpy()
-    gripper_idx = vae.action_dim + GRIPPER_DIM
+    gripper_idx = (vae.action_dim + GRIPPER_DIM) % vae.action_dim
 
     ctrl_np[:, gripper_idx] = np.where(
         1.0 / (1.0 + np.exp(-ctrl_np[:, gripper_idx])) > 0.5, 1.0, -1.0
@@ -237,17 +422,17 @@ def evaluate_reconstruction(
     n_resample : int = 100,
     seed       : int = 42,
 ) -> dict:
-    """Compare decoded trajectory vs original action sequence for n_eval random skills."""
+    """decode(token, own_initial_state) vs GT action sequence."""
     rng  = np.random.default_rng(seed)
     data = np.load(npz_path)
-    latents      = data["latents"]
+    tokens       = data["tokens"].astype(np.int32)
     episode_ids  = data["episode_id"]
     frame_starts = data["frame_start"]
 
     vae = load_vae(vae_ckpt)
 
     available = [
-        i for i in range(len(latents))
+        i for i in range(len(tokens))
         if (int(episode_ids[i]), int(frame_starts[i])) in action_map
         and (int(episode_ids[i]), int(frame_starts[i])) in state_map
     ]
@@ -264,10 +449,9 @@ def evaluate_reconstruction(
         orig_raw    = action_map[key]
 
         orig_traj = process_raw_traj(orig_raw, n_resample)
-        dec_traj  = decode_and_process(vae, latents[idx], start_state, n_resample)
+        dec_traj  = decode_token_and_process(vae, int(tokens[idx]), start_state, n_resample)
 
         diff = orig_traj - dec_traj
-
         mses.append(float(np.mean(diff ** 2)))
         l2s.append(float(np.mean(np.linalg.norm(diff, axis=-1))))
         mse_per_dim_list.append(np.mean(diff ** 2, axis=0))
@@ -284,7 +468,7 @@ def evaluate_reconstruction(
         "recon_direction_cos": float(np.mean(dir_sims)),
         "recon_mse_per_dim":   np.mean(mse_per_dim_list, axis=0).tolist(),
         "recon_l2_per_dim":    np.mean(l2_per_dim_list,  axis=0).tolist(),
-        "n_eval":              len(sampled),
+        "n_eval":              int(len(sampled)),
     }
 
 
@@ -296,10 +480,10 @@ def evaluate_reconstruction_ctrl(
     n_eval     : int = 500,
     seed       : int = 42,
 ) -> dict:
-    """Compare decoded vs original using (1) control points and (2) DTW on raw deltas."""
+    """Control-point L2 and DTW on raw deltas: decoded vs original."""
     rng  = np.random.default_rng(seed)
     data = np.load(npz_path)
-    latents      = data["latents"]
+    tokens       = data["tokens"].astype(np.int32)
     episode_ids  = data["episode_id"]
     frame_starts = data["frame_start"]
 
@@ -308,7 +492,7 @@ def evaluate_reconstruction_ctrl(
     hi  = vae.action_max.cpu().numpy()
 
     available = [
-        i for i in range(len(latents))
+        i for i in range(len(tokens))
         if (int(episode_ids[i]), int(frame_starts[i])) in action_map
         and (int(episode_ids[i]), int(frame_starts[i])) in state_map
     ]
@@ -321,30 +505,27 @@ def evaluate_reconstruction_ctrl(
     for idx in tqdm(sampled, desc="  Ctrl/DTW eval"):
         key         = (int(episode_ids[idx]), int(frame_starts[idx]))
         start_state = state_map[key]
-        orig_raw    = action_map[key]                   # (T_orig, action_dim)
+        orig_raw    = action_map[key]
 
-        # ── Control points ────────────────────────────────────────────────────
-        # Original: bspline-fit raw action → control points → normalize
         orig_ctrl, _ = spline_encode(orig_raw, vae.n_control, vae.spline_degree)
-        orig_ctrl_norm = 2 * (orig_ctrl - lo) / (hi - lo + 1e-8) - 1   # (n_ctrl, D)
+        orig_ctrl_norm = 2 * (orig_ctrl - lo) / (hi - lo + 1e-8) - 1
 
-        # Decoded: VAE decode → already normalized control points
         with torch.no_grad():
-            z_t = torch.from_numpy(latents[idx]).unsqueeze(0).float()
-            s_t = torch.from_numpy(start_state).unsqueeze(0).float()
-            dec_ctrl_norm, _ = vae.decode(z_t, s_t)
-        dec_ctrl_norm = dec_ctrl_norm[0].cpu().numpy()                   # (n_ctrl, D)
+            idx_t = torch.tensor([int(tokens[idx])], dtype=torch.long)
+            z_q   = vae.quantizer.embedding(idx_t)
+            s_t   = torch.from_numpy(start_state).unsqueeze(0).float()
+            dec_ctrl_norm, _ = vae.decode(z_q, s_t)
+        dec_ctrl_norm = dec_ctrl_norm[0].cpu().numpy()
 
-        # Per-dim L2 (gripper excluded: last dim)
-        gripper_idx = vae.action_dim + GRIPPER_DIM
+        gripper_idx = (vae.action_dim + GRIPPER_DIM) % vae.action_dim
         diff_ctrl   = orig_ctrl_norm[:, :gripper_idx] - dec_ctrl_norm[:, :gripper_idx]
-        ctrl_l2_per_dim_list.append(np.mean(np.abs(diff_ctrl), axis=0))  # (D-1,)
+        ctrl_l2_per_dim_list.append(np.mean(np.abs(diff_ctrl), axis=0))
 
-        # ── DTW on raw delta actions (gripper excluded) ───────────────────────
         orig_no_grip = orig_raw[:, :gripper_idx].astype(np.float32)
         dec_raw = spline_decode(
-            (dec_ctrl_norm[:, :gripper_idx] + 1) / 2 * (hi[:gripper_idx] - lo[:gripper_idx] + 1e-8) + lo[:gripper_idx],
-            max(2, orig_raw.shape[0]),      # decode to same length as original for fair DTW
+            (dec_ctrl_norm[:, :gripper_idx] + 1) / 2
+            * (hi[:gripper_idx] - lo[:gripper_idx] + 1e-8) + lo[:gripper_idx],
+            max(2, orig_raw.shape[0]),
             vae.spline_degree,
         )
         dtw_list.append(_dtw_normalized(orig_no_grip, dec_raw))
@@ -353,429 +534,171 @@ def evaluate_reconstruction_ctrl(
     n_dims = ctrl_l2_per_dim_list[0].shape[0]
 
     return {
-        "ctrl_l2_per_dim":  np.mean(ctrl_l2_per_dim_list, axis=0).tolist(),
-        "ctrl_l2":          float(np.mean([v.mean() for v in ctrl_l2_per_dim_list])),
-        "dtw_mean":         float(np.mean(dtw_list)),
-        "n_eval":           len(sampled),
-        "dim_labels":       action_dim_labels[:n_dims],
-    }
-
-
-# ── EEF trajectory metrics ────────────────────────────────────────────────────
-
-def _resample(seq: np.ndarray, n: int) -> np.ndarray:
-    """Resample a (T, D) sequence to (n, D) using linear interpolation."""
-    T = len(seq)
-    if T == n:
-        return seq
-    t_orig = np.linspace(0.0, 1.0, T)
-    t_new  = np.linspace(0.0, 1.0, n)
-    return np.stack(
-        [np.interp(t_new, t_orig, seq[:, d]) for d in range(seq.shape[1])], axis=-1
-    ).astype(np.float32)
-
-
-def _dtw_normalized(a: np.ndarray, b: np.ndarray) -> float:
-    """DTW distance normalized by average sequence length."""
-    na, nb = len(a), len(b)
-    cost = np.linalg.norm(a[:, None, :] - b[None, :, :], axis=-1)  # (na, nb)
-    prev = np.full(nb + 1, np.inf)
-    prev[0] = 0.0
-    for i in range(na):
-        curr = np.full(nb + 1, np.inf)
-        for j in range(nb):
-            curr[j + 1] = cost[i, j] + min(prev[j + 1], curr[j], prev[j])
-        prev = curr
-    return float(prev[nb]) / ((na + nb) / 2)
-
-
-def _wasserstein_mean(a: np.ndarray, b: np.ndarray) -> float:
-    """Mean per-dimension Wasserstein-1 distance."""
-    from scipy.stats import wasserstein_distance
-    return float(np.mean([
-        wasserstein_distance(a[:, d], b[:, d]) for d in range(a.shape[1])
-    ]))
-
-
-def pairwise_ee_metrics(
-    ee_seqs   : list[np.ndarray],  # each (T_i, 6) absolute EEF state
-    n_resample: int,
-) -> dict | None:
-    """Compute pairwise metrics between actual EEF state sequences."""
-    pairs = list(combinations(range(len(ee_seqs)), 2))
-    if not pairs:
-        return None
-
-    dir_sims, final_dists, delta_mses, dtw_dists, was_dists = [], [], [], [], []
-    shape_rel_all, shape_abs_all   = [], []   # aggregate L2
-    shape_rel_dim_all, shape_abs_dim_all = [], []   # per-dim MAE
-
-    for i, j in pairs:
-        si, sj = ee_seqs[i][:, :3], ee_seqs[j][:, :3]   # xyz only
-
-        # Relative trajectories (subtract initial position)
-        rel_i = (si - si[0]).astype(np.float32)
-        rel_j = (sj - sj[0]).astype(np.float32)
-
-        # 1. Direction: cos-sim of start→end displacement (6D)
-        disp_i = rel_i[-1]
-        disp_j = rel_j[-1]
-        dir_sims.append(float(
-            np.dot(disp_i, disp_j) / (np.linalg.norm(disp_i) * np.linalg.norm(disp_j) + 1e-8)
-        ))
-
-        # 2a. Shape L2 relative (skill's own movement, initial subtracted)
-        res_rel_i = _resample(rel_i, n_resample)
-        res_rel_j = _resample(rel_j, n_resample)
-        diff_rel  = res_rel_i - res_rel_j
-        shape_rel_all.append(float(np.mean(np.linalg.norm(diff_rel, axis=-1))))
-        shape_rel_dim_all.append(np.mean(np.abs(diff_rel), axis=0))   # (6,)
-
-        # 2b. Shape L2 absolute (where in space the robot is)
-        res_abs_i = _resample(si, n_resample)
-        res_abs_j = _resample(sj, n_resample)
-        diff_abs  = res_abs_i - res_abs_j
-        shape_abs_all.append(float(np.mean(np.linalg.norm(diff_abs, axis=-1))))
-        shape_abs_dim_all.append(np.mean(np.abs(diff_abs), axis=0))   # (6,)
-
-        # 3. Final pose dist: absolute final xyz position
-        final_dists.append(float(np.linalg.norm(si[-1] - sj[-1])))
-
-        # 4. Delta pose MSE: total displacement (6D)
-        delta_mses.append(float(np.mean((disp_i - disp_j) ** 2)))
-
-        # 5. DTW: on relative EEF trajectory (no resampling needed)
-        dtw_dists.append(_dtw_normalized(rel_i, rel_j))
-
-        # 6. Wasserstein: on per-step EEF deltas
-        d_i = np.diff(si, axis=0)
-        d_j = np.diff(sj, axis=0)
-        was_dists.append(_wasserstein_mean(d_i, d_j))
-
-    return {
-        "direction_cos_sim":      float(np.mean(dir_sims)),
-        "shape_l2_rel":           float(np.mean(shape_rel_all)),
-        "shape_l2_abs":           float(np.mean(shape_abs_all)),
-        "shape_l2_rel_per_dim":   np.mean(shape_rel_dim_all, axis=0).tolist(),
-        "shape_l2_abs_per_dim":   np.mean(shape_abs_dim_all, axis=0).tolist(),
-        "final_pose_dist":        float(np.mean(final_dists)),
-        "delta_pose_mse":         float(np.mean(delta_mses)),
-        "dtw":                    float(np.mean(dtw_dists)),
-        "wasserstein":            float(np.mean(was_dists)),
-    }
-
-
-# ── EEF-based clustering evaluation ──────────────────────────────────────────
-
-def evaluate_ee(
-    npz_path            : str,
-    ee_map              : dict[tuple[int, int], np.ndarray],
-    n_clusters          : int = 20,
-    n_sample_per_cluster: int = 10,
-    n_resample          : int = 80,
-    seed                : int = 42,
-) -> dict:
-    rng          = np.random.default_rng(seed)
-    data         = np.load(npz_path)
-    latents      = data["latents"]
-    episode_ids  = data["episode_id"]
-    frame_starts = data["frame_start"]
-
-    print(f"  Clustering {len(latents)} latents → {n_clusters} clusters ...")
-    km     = KMeans(n_clusters=n_clusters, random_state=seed, n_init=10, verbose=0)
-    labels = km.fit_predict(latents)
-
-    # Group by cluster
-    cluster_seqs: dict[int, list[np.ndarray]] = {c: [] for c in range(n_clusters)}
-    for c in tqdm(range(n_clusters), desc="  Sampling EEF seqs"):
-        indices = np.where(labels == c)[0]
-        if len(indices) == 0:
-            continue
-        sampled = rng.choice(indices, min(n_sample_per_cluster, len(indices)), replace=False)
-        for idx in sampled:
-            key = (int(episode_ids[idx]), int(frame_starts[idx]))
-            if key in ee_map:
-                cluster_seqs[c].append(ee_map[key])
-
-    valid_clusters = [c for c, seqs in cluster_seqs.items() if len(seqs) >= 2]
-    print(f"  Valid clusters (≥2 EEF seqs): {len(valid_clusters)}/{n_clusters}")
-
-    # Intra-cluster metrics
-    intra_list = []
-    for c in valid_clusters:
-        m = pairwise_ee_metrics(cluster_seqs[c], n_resample)
-        if m:
-            intra_list.append(m)
-
-    intra_avg = {}
-    for k in intra_list[0]:
-        if k.endswith("_per_dim"):
-            intra_avg[k] = np.mean([m[k] for m in intra_list], axis=0).tolist()
-        else:
-            intra_avg[k] = float(np.mean([m[k] for m in intra_list]))
-
-    # Inter-cluster metrics: medoid per cluster (closest latent to centroid)
-    print("  Finding medoids for inter-cluster comparison ...")
-    centroids  = km.cluster_centers_
-    inter_seqs = []
-    for c in valid_clusters:
-        indices    = np.where(labels == c)[0]
-        dists      = np.linalg.norm(latents[indices] - centroids[c], axis=1)
-        medoid_idx = indices[np.argmin(dists)]
-        key        = (int(episode_ids[medoid_idx]), int(frame_starts[medoid_idx]))
-        if key in ee_map:
-            inter_seqs.append(ee_map[key])
-
-    inter_avg = pairwise_ee_metrics(inter_seqs, n_resample)
-
-    # Separation scores (scalars only)
-    eps = 1e-8
-    separation = {
-        "direction_separation":    intra_avg["direction_cos_sim"] - inter_avg["direction_cos_sim"],
-        "shape_l2_rel_separation": inter_avg["shape_l2_rel"]      / (intra_avg["shape_l2_rel"]      + eps),
-        "shape_l2_abs_separation": inter_avg["shape_l2_abs"]      / (intra_avg["shape_l2_abs"]      + eps),
-        "final_pose_separation":   inter_avg["final_pose_dist"]   / (intra_avg["final_pose_dist"]   + eps),
-        "delta_pose_separation":   inter_avg["delta_pose_mse"]    / (intra_avg["delta_pose_mse"]    + eps),
-        "dtw_separation":          inter_avg["dtw"]               / (intra_avg["dtw"]               + eps),
-        "wasserstein_separation":  inter_avg["wasserstein"]       / (intra_avg["wasserstein"]       + eps),
-    }
-
-    return {
-        "n_latents":      int(len(latents)),
-        "n_clusters":     n_clusters,
-        "valid_clusters": len(valid_clusters),
-        "intra":          intra_avg,
-        "inter":          inter_avg,
-        "separation":     separation,
+        "ctrl_l2_per_dim": np.mean(ctrl_l2_per_dim_list, axis=0).tolist(),
+        "ctrl_l2":         float(np.mean([v.mean() for v in ctrl_l2_per_dim_list])),
+        "dtw_mean":        float(np.mean(dtw_list)),
+        "n_eval":          int(len(sampled)),
+        "dim_labels":      action_dim_labels[:n_dims],
     }
 
 
 # ── Plotting ──────────────────────────────────────────────────────────────────
 
-_DIM_LABELS = ["pos_x", "pos_y", "pos_z", "ori_roll", "ori_pitch", "ori_yaw", "gripper"]
-_COLORS     = ["#4C72B0", "#DD8452"]
+_DIM_LABELS = ["dx", "dy", "dz", "droll", "dpitch", "dyaw", "gripper"]
+_EE_DIM_LABELS = ["ee_x", "ee_y", "ee_z"]
+_COLORS = ["#4C72B0", "#DD8452"]
 
 
 def _bar_chart(ax, labels, vals_A, vals_B, name_A, name_B, fmt=".3f"):
-    n     = len(labels)
-    x     = np.arange(n)
+    x     = np.arange(len(labels))
     width = 0.35
     bA = ax.bar(x - width / 2, vals_A, width, label=name_A, color=_COLORS[0], alpha=0.85)
     bB = ax.bar(x + width / 2, vals_B, width, label=name_B, color=_COLORS[1], alpha=0.85)
     for bar in [*bA, *bB]:
         h = bar.get_height()
-        ax.annotate(
-            f"{h:{fmt}}",
-            xy=(bar.get_x() + bar.get_width() / 2, h),
-            xytext=(0, 3), textcoords="offset points",
-            ha="center", va="bottom", fontsize=7,
-        )
+        ax.annotate(f"{h:{fmt}}", xy=(bar.get_x() + bar.get_width() / 2, h),
+                    xytext=(0, 3), textcoords="offset points",
+                    ha="center", va="bottom", fontsize=7)
     ax.set_xticks(x)
     ax.set_xticklabels(labels, rotation=15, ha="right", fontsize=8)
     ax.legend(fontsize=8)
     ax.grid(axis="y", linestyle="--", alpha=0.4)
 
 
-def plot_ee_comparison(
-    results   : dict,
-    name_A    : str,
-    name_B    : str,
-    n_clusters: int,
-    out_dir   : Path,
+def plot_token_cluster_comparison(
+    results: dict, name_A: str, name_B: str, out_dir: Path,
 ) -> list:
-    """Save three bar-chart PNGs (intra / inter / separation) for EEF metrics."""
     groups = {
         "intra": {
-            "Direction cos-sim (↑)":  "direction_cos_sim",
-            "Shape L2 rel (↓)":       "shape_l2_rel",
-            "Shape L2 abs (↓)":       "shape_l2_abs",
-            "Final pose dist (↓)":    "final_pose_dist",
-            "Delta pose MSE (↓)":     "delta_pose_mse",
-            "DTW (↓)":                "dtw",
-            "Wasserstein (↓)":        "wasserstein",
+            "Direction (↑)":    "direction_cos_sim",
+            "Shape rel (↓)":    "shape_l2_rel",
+            "Shape abs (↓)":    "shape_l2_abs",
+            "Final pose (↓)":   "final_pose_dist",
+            "Delta pose (↓)":   "delta_pose_mse",
+            "DTW (↓)":          "dtw",
+            "Wasserstein (↓)":  "wasserstein",
         },
         "inter": {
-            "Direction cos-sim (↓)":  "direction_cos_sim",
-            "Shape L2 rel (↑)":       "shape_l2_rel",
-            "Shape L2 abs (↑)":       "shape_l2_abs",
-            "Final pose dist (↑)":    "final_pose_dist",
-            "Delta pose MSE (↑)":     "delta_pose_mse",
-            "DTW (↑)":                "dtw",
-            "Wasserstein (↑)":        "wasserstein",
+            "Direction (↓)":    "direction_cos_sim",
+            "Shape rel (↑)":    "shape_l2_rel",
+            "Shape abs (↑)":    "shape_l2_abs",
+            "Final pose (↑)":   "final_pose_dist",
+            "Delta pose (↑)":   "delta_pose_mse",
+            "DTW (↑)":          "dtw",
+            "Wasserstein (↑)":  "wasserstein",
         },
         "separation": {
-            "Direction sep (↑)":      "direction_separation",
-            "Shape rel sep (↑)":      "shape_l2_rel_separation",
-            "Shape abs sep (↑)":      "shape_l2_abs_separation",
-            "Final pose sep (↑)":     "final_pose_separation",
-            "Delta pose sep (↑)":     "delta_pose_separation",
-            "DTW sep (↑)":            "dtw_separation",
-            "Wasserstein sep (↑)":    "wasserstein_separation",
+            "Direction (↑)":    "direction_separation",
+            "Shape rel (↑)":    "shape_l2_rel_separation",
+            "Shape abs (↑)":    "shape_l2_abs_separation",
+            "Final pose (↑)":   "final_pose_separation",
+            "Delta pose (↑)":   "delta_pose_separation",
+            "DTW (↑)":          "dtw_separation",
+            "Wasserstein (↑)":  "wasserstein_separation",
         },
     }
     titles = {
-        "intra":      "EEF — Within-cluster similarity (actual trajectories)",
-        "inter":      "EEF — Between-cluster distance (medoids)",
-        "separation": "EEF — Separation scores",
+        "intra":      "Within-token EEF similarity — GT trajectories (same token)",
+        "inter":      "Between-token EEF distance — GT trajectories (different tokens)",
+        "separation": "Separation scores (inter/intra ratio, higher → more distinct tokens)",
     }
     saved = []
-    for group_key, metric_map in groups.items():
+    for gk, metric_map in groups.items():
         labels = list(metric_map.keys())
         keys   = list(metric_map.values())
-        vals_A = [results[name_A][group_key][k] for k in keys]
-        vals_B = [results[name_B][group_key][k] for k in keys]
-
+        vals_A = [results[name_A][gk][k] for k in keys]
+        vals_B = [results[name_B][gk][k] for k in keys]
         fig, ax = plt.subplots(figsize=(max(10, len(labels) * 2.0), 5))
         _bar_chart(ax, labels, vals_A, vals_B, name_A, name_B)
-        ax.set_title(f"{titles[group_key]}  (K={n_clusters})", fontsize=12)
+        ax.set_title(titles[gk], fontsize=11)
         fig.tight_layout()
-
-        out_png = out_dir / f"latent_eval_k{n_clusters}_{group_key}.png"
+        out_png = out_dir / f"token_cluster_{gk}.png"
         fig.savefig(out_png, dpi=150)
         plt.close(fig)
         saved.append(out_png)
         print(f"Saved → {out_png}")
-
     return saved
 
 
-_EE_DIM_LABELS = ["ee_x", "ee_y", "ee_z"]
-
-
-def plot_shape_l2_perdim_comparison(
-    results   : dict,
-    name_A    : str,
-    name_B    : str,
-    n_clusters: int,
-    out_dir   : Path,
+def plot_codebook_utilization(
+    results: dict, name_A: str, name_B: str, out_dir: Path,
 ) -> list:
-    """Two PNGs: per-dim shape L2 (rel and abs) for intra and inter, A vs B."""
+    """Codebook utilization bars + skills-per-token histogram."""
     saved = []
-    for variant in ("rel", "abs"):
-        key_intra = f"shape_l2_{variant}_per_dim"
-        key_inter = f"shape_l2_{variant}_per_dim"
 
-        intra_A = np.array(results[name_A]["intra"][key_intra])
-        intra_B = np.array(results[name_B]["intra"][key_intra])
-        inter_A = np.array(results[name_A]["inter"][key_intra])
-        inter_B = np.array(results[name_B]["inter"][key_intra])
+    # 1. Summary bar chart
+    u_A = results[name_A]["utilization"]
+    u_B = results[name_B]["utilization"]
+    metrics = ["utilization_pct", "skills_per_token_mean", "skills_per_token_std",
+               "skills_per_token_median"]
+    labels  = ["Utilization %", "Skills/token (mean)", "Skills/token (std)", "Skills/token (median)"]
+    vA = [u_A[m] for m in metrics]
+    vB = [u_B[m] for m in metrics]
 
-        n_dims = len(intra_A)
-        labels = _EE_DIM_LABELS[:n_dims]
-        title_sfx = "relative (initial subtracted)" if variant == "rel" else "absolute"
+    fig, ax = plt.subplots(figsize=(10, 5))
+    _bar_chart(ax, labels, vA, vB, name_A, name_B, fmt=".1f")
+    ax.set_title("Codebook utilization summary", fontsize=11)
+    fig.tight_layout()
+    p = out_dir / "codebook_utilization_summary.png"
+    fig.savefig(p, dpi=150); plt.close(fig)
+    saved.append(p); print(f"Saved → {p}")
 
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(max(10, n_dims * 1.8), 9))
-        _bar_chart(ax1, labels, intra_A, intra_B, name_A, name_B, fmt=".4f")
-        ax1.set_title(f"Shape L2 {title_sfx} — Within-cluster (↓ better)  K={n_clusters}", fontsize=11)
-        ax1.set_ylabel("MAE per step")
-        _bar_chart(ax2, labels, inter_A, inter_B, name_A, name_B, fmt=".4f")
-        ax2.set_title(f"Shape L2 {title_sfx} — Between-cluster medoids (↑ better)  K={n_clusters}", fontsize=11)
-        ax2.set_ylabel("MAE per step")
-
-        fig.tight_layout()
-        out_png = out_dir / f"latent_eval_k{n_clusters}_shape_l2_{variant}_perdim.png"
-        fig.savefig(out_png, dpi=150)
-        plt.close(fig)
-        saved.append(out_png)
-        print(f"Saved → {out_png}")
+    # 2. Skills-per-token histogram (one panel per system)
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    for ax, name in zip(axes, [name_A, name_B]):
+        counts = results[name]["token_counts"]
+        ax.hist(counts, bins=30, color=_COLORS[0] if name == name_A else _COLORS[1],
+                alpha=0.75, edgecolor="white")
+        ax.set_title(f"{name} — skills per token (n={u_A['n_tokens_used'] if name == name_A else u_B['n_tokens_used']} tokens used)", fontsize=10)
+        ax.set_xlabel("Skills per token")
+        ax.set_ylabel("# tokens")
+        ax.grid(axis="y", linestyle="--", alpha=0.4)
+    fig.suptitle("Skills-per-token distribution", fontsize=12)
+    fig.tight_layout()
+    p = out_dir / "codebook_utilization_histogram.png"
+    fig.savefig(p, dpi=150); plt.close(fig)
+    saved.append(p); print(f"Saved → {p}")
 
     return saved
 
 
-def plot_recon_perdim_comparison(
-    recon_results: dict,
-    name_A       : str,
-    name_B       : str,
-    out_dir      : Path,
-) -> Path:
-    """2-subplot bar chart: L2 per step and MSE per action dimension."""
-    l2_A  = np.array(recon_results[name_A]["recon_l2_per_dim"])
-    l2_B  = np.array(recon_results[name_B]["recon_l2_per_dim"])
-    mse_A = np.array(recon_results[name_A]["recon_mse_per_dim"])
-    mse_B = np.array(recon_results[name_B]["recon_mse_per_dim"])
-
+def plot_recon_perdim(recon: dict, name_A: str, name_B: str, out_dir: Path) -> Path:
+    l2_A  = np.array(recon[name_A]["recon_l2_per_dim"])
+    l2_B  = np.array(recon[name_B]["recon_l2_per_dim"])
+    mse_A = np.array(recon[name_A]["recon_mse_per_dim"])
+    mse_B = np.array(recon[name_B]["recon_mse_per_dim"])
     n_dims = len(l2_A)
     labels = _DIM_LABELS[:n_dims]
-
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(max(10, n_dims * 1.6), 9))
     _bar_chart(ax1, labels, l2_A, l2_B, name_A, name_B, fmt=".4f")
-    ax1.set_title("Reconstruction L2 per step per dimension (↓ better)", fontsize=11)
+    ax1.set_title("Reconstruction L2 per step per action dim (↓ better)", fontsize=11)
     ax1.set_ylabel("MAE")
     _bar_chart(ax2, labels, mse_A, mse_B, name_A, name_B, fmt=".4f")
-    ax2.set_title("Reconstruction MSE per dimension (↓ better)", fontsize=11)
+    ax2.set_title("Reconstruction MSE per action dim (↓ better)", fontsize=11)
     ax2.set_ylabel("MSE")
-
     fig.tight_layout()
-    out_png = out_dir / "latent_eval_recon_perdim.png"
-    fig.savefig(out_png, dpi=150)
-    plt.close(fig)
-    print(f"Saved → {out_png}")
-    return out_png
+    p = out_dir / "recon_perdim.png"
+    fig.savefig(p, dpi=150); plt.close(fig)
+    print(f"Saved → {p}")
+    return p
 
 
-def plot_recon_ctrl_perdim_comparison(
-    ctrl_results: dict,
-    name_A      : str,
-    name_B      : str,
-    out_dir     : Path,
-) -> Path:
-    """Bar chart: control-point L2 per action dimension, A vs B."""
-    vals_A = np.array(ctrl_results[name_A]["ctrl_l2_per_dim"])
-    vals_B = np.array(ctrl_results[name_B]["ctrl_l2_per_dim"])
-    labels = ctrl_results[name_A]["dim_labels"][: len(vals_A)]
-
+def plot_recon_ctrl_perdim(ctrl: dict, name_A: str, name_B: str, out_dir: Path) -> Path:
+    vA = np.array(ctrl[name_A]["ctrl_l2_per_dim"])
+    vB = np.array(ctrl[name_B]["ctrl_l2_per_dim"])
+    labels = ctrl[name_A]["dim_labels"][:len(vA)]
     fig, ax = plt.subplots(figsize=(max(8, len(labels) * 1.6), 5))
-    _bar_chart(ax, labels, vals_A, vals_B, name_A, name_B, fmt=".4f")
-    ax.set_title("Reconstruction — Control-point L2 per dimension (normalized, ↓ better)", fontsize=11)
-    ax.set_ylabel("MAE (normalized space)")
-    ax.set_ylim(0, 0.2)
+    _bar_chart(ax, labels, vA, vB, name_A, name_B, fmt=".4f")
+    ax.set_title("Control-point L2 per action dim (normalized, ↓ better)", fontsize=11)
+    ax.set_ylabel("MAE (normalized)")
     fig.tight_layout()
-
-    out_png = out_dir / "latent_eval_recon_ctrl_perdim.png"
-    fig.savefig(out_png, dpi=150)
-    plt.close(fig)
-    print(f"Saved → {out_png}")
-    return out_png
+    p = out_dir / "recon_ctrl_perdim.png"
+    fig.savefig(p, dpi=150); plt.close(fig)
+    print(f"Saved → {p}")
+    return p
 
 
-def plot_recon_dtw_comparison(
-    ctrl_results: dict,
-    name_A      : str,
-    name_B      : str,
-    out_dir     : Path,
-) -> Path:
-    """Bar chart: DTW reconstruction error, A vs B."""
-    vals = [ctrl_results[name_A]["dtw_mean"], ctrl_results[name_B]["dtw_mean"]]
-
-    fig, ax = plt.subplots(figsize=(5, 5))
-    bars = ax.bar([name_A, name_B], vals, color=_COLORS, alpha=0.85, width=0.4)
-    for bar, v in zip(bars, vals):
-        ax.annotate(
-            f"{v:.4f}",
-            xy=(bar.get_x() + bar.get_width() / 2, v),
-            xytext=(0, 4), textcoords="offset points",
-            ha="center", va="bottom", fontsize=10,
-        )
-    ax.set_title("Reconstruction — DTW distance (raw deltas, ↓ better)", fontsize=11)
-    ax.set_ylabel("DTW (normalized by length)")
-    ax.set_ylim(0, max(vals) * 1.25)
-    ax.grid(axis="y", linestyle="--", alpha=0.4)
-    fig.tight_layout()
-
-    out_png = out_dir / "latent_eval_recon_dtw.png"
-    fig.savefig(out_png, dpi=150)
-    plt.close(fig)
-    print(f"Saved → {out_png}")
-    return out_png
-
-
-def plot_dataset_stats(
-    stats  : dict,
-    name_A : str,
-    name_B : str,
-    out_dir: Path,
-) -> Path:
-    """Bar chart comparing skill count and average skill length."""
+def plot_dataset_stats(stats: dict, name_A: str, name_B: str, out_dir: Path) -> Path:
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(9, 5))
     for ax, key, title, fmt in [
         (ax1, "n_skills",         "Total skill count",         "{:.0f}"),
@@ -784,22 +707,18 @@ def plot_dataset_stats(
         vals = [stats[name_A][key], stats[name_B][key]]
         bars = ax.bar([name_A, name_B], vals, color=_COLORS, alpha=0.85, width=0.4)
         for bar, v in zip(bars, vals):
-            ax.annotate(
-                fmt.format(v),
-                xy=(bar.get_x() + bar.get_width() / 2, v),
-                xytext=(0, 4), textcoords="offset points",
-                ha="center", va="bottom", fontsize=10,
-            )
+            ax.annotate(fmt.format(v),
+                        xy=(bar.get_x() + bar.get_width() / 2, v),
+                        xytext=(0, 4), textcoords="offset points",
+                        ha="center", va="bottom", fontsize=10)
         ax.set_title(title, fontsize=11)
         ax.grid(axis="y", linestyle="--", alpha=0.4)
         ax.set_ylim(0, max(vals) * 1.2)
-
     fig.tight_layout()
-    out_png = out_dir / "latent_eval_dataset_stats.png"
-    fig.savefig(out_png, dpi=150)
-    plt.close(fig)
-    print(f"Saved → {out_png}")
-    return out_png
+    p = out_dir / "dataset_stats.png"
+    fig.savefig(p, dpi=150); plt.close(fig)
+    print(f"Saved → {p}")
+    return p
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -814,17 +733,16 @@ def main():
     parser.add_argument("--name_B",       default="variable")
     parser.add_argument("--dataset_path", required=True)
     parser.add_argument("--output_dir",   required=True)
-    parser.add_argument("--n_clusters",   type=int, default=20)
     parser.add_argument("--n_sample",     type=int, default=10,
-                        help="Skills sampled per cluster for intra metrics")
+                        help="Skills sampled per token for intra metrics")
     parser.add_argument("--n_resample",   type=int, default=80,
                         help="Steps for shape L2 resampling")
-    parser.add_argument("--seed",         type=int, default=42)
     parser.add_argument("--n_recon_eval", type=int, default=500,
-                        help="Skills sampled for reconstruction error eval")
+                        help="Skills sampled for reconstruction eval")
+    parser.add_argument("--seed",         type=int, default=42)
     parser.add_argument("--wandb_enable",   action="store_true")
     parser.add_argument("--wandb_project",  default="VAE_eval")
-    parser.add_argument("--wandb_job_name", default="latent_eval")
+    parser.add_argument("--wandb_job_name", default="vqae_latent_eval")
     args = parser.parse_args()
 
     out_dir = Path(args.output_dir)
@@ -840,132 +758,136 @@ def main():
     all_fe = np.concatenate([data_A["frame_end"],   data_B["frame_end"]])
 
     # Dataset-level stats
-    dataset_stats = {}
+    dataset_stats: dict = {}
     for name, data in [(args.name_A, data_A), (args.name_B, data_B)]:
         lengths = data["frame_end"] - data["frame_start"]
         dataset_stats[name] = {
-            "n_skills":         int(len(data["latents"])),
+            "n_skills":         int(len(data["tokens"])),
             "avg_skill_length": float(np.mean(lengths)),
         }
 
-    # Load EEF sequences (for clustering eval)
-    print("Loading EEF state sequences from dataset ...")
+    print("Loading EEF state sequences ...")
     ee_map = load_ee_state_sequences(args.dataset_path, all_ep, all_fs, all_fe)
-    print(f"  Loaded {len(ee_map)} skill EEF sequences")
+    print(f"  Loaded {len(ee_map)} EEF sequences")
 
-    # Load action sequences + start states (for reconstruction eval)
-    print("Loading action sequences from dataset ...")
+    print("Loading action sequences ...")
     action_map = load_action_sequences(args.dataset_path, all_ep, all_fs, all_fe)
-    print(f"  Loaded {len(action_map)} skill action sequences")
+    print(f"  Loaded {len(action_map)} action sequences")
 
-    print("Loading observation states from dataset ...")
+    print("Loading initial states ...")
     state_map = load_skill_states(args.dataset_path, all_ep, all_fs)
-    print(f"  Loaded {len(state_map)} unique (episode, frame) states")
+    print(f"  Loaded {len(state_map)} initial states")
 
-    results = {}
-    recon_results = {}
-    ctrl_results  = {}
+    token_results: dict = {}
+    recon_results: dict = {}
+    ctrl_results:  dict = {}
+
     for name, npz, vae_ckpt in [
         (args.name_A, args.npz_A, args.vae_A),
         (args.name_B, args.npz_B, args.vae_B),
     ]:
-        print(f"\n=== Evaluating: {name} ===")
-        results[name] = evaluate_ee(
-            npz_path             = npz,
-            ee_map               = ee_map,
-            n_clusters           = args.n_clusters,
-            n_sample_per_cluster = args.n_sample,
-            n_resample           = args.n_resample,
-            seed                 = args.seed,
+        print(f"\n=== {name} ===")
+        vae = load_vae(vae_ckpt)
+
+        print(f"--- Token cluster eval: {name} ---")
+        token_results[name] = evaluate_token_clusters(
+            npz_path           = npz,
+            ee_map             = ee_map,
+            vae_num_embeddings = vae.num_embeddings,
+            n_sample_per_token = args.n_sample,
+            n_resample         = args.n_resample,
+            seed               = args.seed,
         )
-        print(f"\n--- Reconstruction eval: {name} ---")
+        u = token_results[name]["utilization"]
+        print(f"  utilization={u['utilization_pct']:.1f}%  "
+              f"skills/token: mean={u['skills_per_token_mean']:.1f} "
+              f"std={u['skills_per_token_std']:.1f}")
+
+        print(f"--- Reconstruction eval: {name} ---")
         recon_results[name] = evaluate_reconstruction(
-            npz_path   = npz,
-            vae_ckpt   = vae_ckpt,
-            action_map = action_map,
-            state_map  = state_map,
-            n_eval     = args.n_recon_eval,
-            n_resample = args.n_resample,
-            seed       = args.seed,
+            npz_path=npz, vae_ckpt=vae_ckpt,
+            action_map=action_map, state_map=state_map,
+            n_eval=args.n_recon_eval, n_resample=args.n_resample, seed=args.seed,
         )
         r = recon_results[name]
-        print(f"  recon_mse={r['recon_mse']:.4f}  "
-              f"recon_l2={r['recon_l2_per_step']:.4f}  "
-              f"recon_dir_cos={r['recon_direction_cos']:.4f}")
+        print(f"  mse={r['recon_mse']:.4f}  l2={r['recon_l2_per_step']:.4f}  "
+              f"dir_cos={r['recon_direction_cos']:.4f}")
 
-        print(f"\n--- Control-point + DTW eval: {name} ---")
+        print(f"--- Control-point + DTW eval: {name} ---")
         ctrl_results[name] = evaluate_reconstruction_ctrl(
-            npz_path   = npz,
-            vae_ckpt   = vae_ckpt,
-            action_map = action_map,
-            state_map  = state_map,
-            n_eval     = args.n_recon_eval,
-            seed       = args.seed,
+            npz_path=npz, vae_ckpt=vae_ckpt,
+            action_map=action_map, state_map=state_map,
+            n_eval=args.n_recon_eval, seed=args.seed,
         )
         c = ctrl_results[name]
-        print(f"  ctrl_l2={c['ctrl_l2']:.4f}  dtw_mean={c['dtw_mean']:.4f}")
+        print(f"  ctrl_l2={c['ctrl_l2']:.4f}  dtw={c['dtw_mean']:.4f}")
 
-    # Print comparison table
+    # Summary table
     print("\n" + "=" * 70)
-    print(f"{'Metric':<30} {args.name_A:>16} {args.name_B:>16}")
+    print(f"{'Metric':<32} {args.name_A:>16} {args.name_B:>16}")
     print("=" * 70)
-    table_rows = [
+    rows = [
         ("intra", "direction_cos_sim",     "Intra direction (↑)"),
         ("intra", "shape_l2_rel",          "Intra shape L2 rel (↓)"),
         ("intra", "shape_l2_abs",          "Intra shape L2 abs (↓)"),
-        ("intra", "final_pose_dist",       "Intra final pose (↓)"),
-        ("intra", "delta_pose_mse",        "Intra delta pose (↓)"),
         ("intra", "dtw",                   "Intra DTW (↓)"),
         ("intra", "wasserstein",           "Intra Wasserstein (↓)"),
         ("inter", "direction_cos_sim",     "Inter direction (↓)"),
         ("inter", "shape_l2_rel",          "Inter shape L2 rel (↑)"),
         ("inter", "shape_l2_abs",          "Inter shape L2 abs (↑)"),
-        ("inter", "final_pose_dist",       "Inter final pose (↑)"),
-        ("inter", "delta_pose_mse",        "Inter delta pose (↑)"),
         ("inter", "dtw",                   "Inter DTW (↑)"),
-        ("inter", "wasserstein",           "Inter Wasserstein (↑)"),
         ("separation", "direction_separation",    "Sep direction (↑)"),
         ("separation", "shape_l2_rel_separation", "Sep shape rel (↑)"),
-        ("separation", "shape_l2_abs_separation", "Sep shape abs (↑)"),
-        ("separation", "final_pose_separation",   "Sep final pose (↑)"),
-        ("separation", "delta_pose_separation",   "Sep delta pose (↑)"),
         ("separation", "dtw_separation",          "Sep DTW (↑)"),
         ("separation", "wasserstein_separation",  "Sep Wasserstein (↑)"),
     ]
-    for group, key, label in table_rows:
-        va = results[args.name_A][group][key]
-        vb = results[args.name_B][group][key]
-        print(f"  {label:<28} {va:>16.4f} {vb:>16.4f}")
+    for group, key, label in rows:
+        va = token_results[args.name_A][group][key]
+        vb = token_results[args.name_B][group][key]
+        print(f"  {label:<30} {va:>16.4f} {vb:>16.4f}")
     print("=" * 70)
 
     # Save JSON
-    out_path = out_dir / f"latent_eval_k{args.n_clusters}.json"
-    with open(out_path, "w") as f:
-        json.dump({"args": vars(args), "results": results}, f, indent=2)
-    print(f"\nSaved → {out_path}")
+    out_json = out_dir / "latent_eval.json"
+    with open(out_json, "w") as f:
+        json.dump({
+            "args": vars(args),
+            "token_clusters": token_results,
+            "reconstruction": recon_results,
+        }, f, indent=2)
+    print(f"\nSaved → {out_json}")
 
-    # Save charts
-    ee_pngs         = plot_ee_comparison(results, args.name_A, args.name_B, args.n_clusters, out_dir)
-    perdim_pngs     = plot_shape_l2_perdim_comparison(results, args.name_A, args.name_B, args.n_clusters, out_dir)
-    recon_png       = plot_recon_perdim_comparison(recon_results, args.name_A, args.name_B, out_dir)
-    ctrl_perdim_png = plot_recon_ctrl_perdim_comparison(ctrl_results, args.name_A, args.name_B, out_dir)
-    dtw_png         = plot_recon_dtw_comparison(ctrl_results, args.name_A, args.name_B, out_dir)
-    stats_png       = plot_dataset_stats(dataset_stats, args.name_A, args.name_B, out_dir)
+    # Plots
+    cluster_pngs = plot_token_cluster_comparison(token_results, args.name_A, args.name_B, out_dir)
+    util_pngs    = plot_codebook_utilization(token_results, args.name_A, args.name_B, out_dir)
+    recon_png    = plot_recon_perdim(recon_results, args.name_A, args.name_B, out_dir)
+    ctrl_png     = plot_recon_ctrl_perdim(ctrl_results, args.name_A, args.name_B, out_dir)
+    stats_png    = plot_dataset_stats(dataset_stats, args.name_A, args.name_B, out_dir)
 
-    # wandb logging
     if args.wandb_enable:
-        log_dict = {}
-        for png in ee_pngs:
-            tag = png.stem.split("_", 3)[-1]       # intra / inter / separation
-            log_dict[f"k{args.n_clusters}/chart/{tag}"] = wandb.Image(str(png))
-        for png in perdim_pngs:
-            # stem: latent_eval_k20_shape_l2_rel_perdim → tag: shape_l2_rel_perdim
-            tag = png.stem.split(f"k{args.n_clusters}_", 1)[-1]
-            log_dict[f"k{args.n_clusters}/chart/{tag}"] = wandb.Image(str(png))
-        log_dict["recon/chart_perdim"]      = wandb.Image(str(recon_png))
-        log_dict["recon/chart_ctrl_perdim"] = wandb.Image(str(ctrl_perdim_png))
-        log_dict["recon/chart_dtw"]         = wandb.Image(str(dtw_png))
-        log_dict["dataset/chart_stats"]     = wandb.Image(str(stats_png))
+        log_dict: dict = {}
+        for png in cluster_pngs:
+            log_dict[f"cluster/{png.stem}"] = wandb.Image(str(png))
+        for png in util_pngs:
+            log_dict[f"utilization/{png.stem}"] = wandb.Image(str(png))
+        log_dict["recon/perdim"]      = wandb.Image(str(recon_png))
+        log_dict["recon/ctrl_perdim"] = wandb.Image(str(ctrl_png))
+        log_dict["dataset/stats"]     = wandb.Image(str(stats_png))
+
+        flat: dict = {}
+        for name in [args.name_A, args.name_B]:
+            u  = token_results[name]["utilization"]
+            r  = recon_results[name]
+            flat[f"{name}/utilization_pct"]       = u["utilization_pct"]
+            flat[f"{name}/skills_per_token_mean"] = u["skills_per_token_mean"]
+            flat[f"{name}/intra_direction"]        = token_results[name]["intra"]["direction_cos_sim"]
+            flat[f"{name}/intra_shape_rel"]        = token_results[name]["intra"]["shape_l2_rel"]
+            flat[f"{name}/intra_dtw"]              = token_results[name]["intra"]["dtw"]
+            flat[f"{name}/sep_direction"]          = token_results[name]["separation"]["direction_separation"]
+            flat[f"{name}/sep_shape_rel"]          = token_results[name]["separation"]["shape_l2_rel_separation"]
+            flat[f"{name}/recon_mse"]              = r["recon_mse"]
+            flat[f"{name}/recon_l2"]               = r["recon_l2_per_step"]
+        log_dict.update(flat)
         wandb.log(log_dict)
 
 

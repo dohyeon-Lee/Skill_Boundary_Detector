@@ -109,46 +109,30 @@ class SkillVLAPytorch(PI05Pytorch):
         denom = torch.where(q99 == q01, torch.full_like(q99, 1e-8), q99 - q01)
         return 2.0 * (prior - q01) / denom - 1.0
 
-    # ── VAE decoder ───────────────────────────────────────────────────────────
+    # ── VQAE decoder ──────────────────────────────────────────────────────────
 
     def load_vae_decoder(self, path: str) -> None:
         sys.path.insert(
             0, str(Path(__file__).resolve().parents[4] / "examples" / "libero")
         )
         import dataclasses  # noqa: PLC0415
-        from spline_vae import GRIPPER_DIM, SplineVAE, spline_decode  # noqa: PLC0415
+        from spline_vqae import GRIPPER_DIM, SplineVQAE, spline_decode  # noqa: PLC0415
 
         ckpt = torch.load(path, map_location="cpu", weights_only=False)
-        cfg = ckpt["cfg"]
+        cfg  = ckpt["cfg"]
         cfg_dict = dataclasses.asdict(cfg)
-
-        if type(cfg).__name__ == "SplineVQAEConfig":
-            from spline_vqae import SplineVQAE  # noqa: PLC0415
-            vqae_keys = {"action_dim", "state_dim", "n_control", "spline_degree",
-                         "hidden_dim", "latent_dim", "num_embeddings", "num_layers",
-                         "dropout", "commitment_cost", "max_length", "action_min", "action_max"}
-            vae = SplineVQAE(**{k: v for k, v in cfg_dict.items() if k in vqae_keys})
-            vae.load_state_dict(ckpt["model_state"])
-            for p in vae.parameters():
-                p.requires_grad_(False)
-            self._vqae_codebook = vae.quantizer.embedding.weight.detach().clone()
-        else:
-            vae_keys = {"action_dim", "state_dim", "n_control", "spline_degree",
-                        "hidden_dim", "latent_dim", "num_layers", "dropout",
-                        "max_length", "action_min", "action_max"}
-            vae = SplineVAE(**{k: v for k, v in cfg_dict.items() if k in vae_keys})
-            vae.load_state_dict(ckpt["model_state"])
-            for p in vae.parameters():
-                p.requires_grad_(False)
-
-        self.vae_decoder = vae
+        keys = {"action_dim", "state_dim", "n_control", "spline_degree",
+                "hidden_dim", "latent_dim", "num_embeddings", "num_layers",
+                "dropout", "commitment_cost", "max_length", "action_min", "action_max"}
+        vae = SplineVQAE(**{k: v for k, v in cfg_dict.items() if k in keys})
+        vae.load_state_dict(ckpt["model_state"])
+        for p in vae.parameters():
+            p.requires_grad_(False)
+        self._vqae_codebook = vae.quantizer.embedding.weight.detach().clone()
+        self.vae_decoder    = vae
         self._spline_decode = spline_decode
         self._gripper_dim   = GRIPPER_DIM
-        log.info(f"Loaded frozen VAE decoder from {path}")
-
-    @property
-    def _is_vqae(self) -> bool:
-        return self.config.skill_predictor_num_embeddings > 0
+        log.info(f"Loaded frozen VQAE decoder from {path}")
 
     def _token_to_z(self, tokens: Tensor) -> Tensor:
         """int token (B,) or (B,1) → codebook float vector (B, latent_dim)."""
@@ -156,112 +140,11 @@ class SkillVLAPytorch(PI05Pytorch):
         cb  = self._vqae_codebook.to(device=idx.device)
         return cb[idx]
 
-    def _decode_vae_controls_for_loss(
-        self,
-        z: Tensor,
-        skill_start_state: Tensor,
-    ) -> tuple[Tensor, Tensor]:
-        """Decode z to differentiable VAE control points and normalized length."""
-        if self.vae_decoder is None:
-            raise RuntimeError(
-                "skill_predictor_loss_type='decoded' requires policy.vae_decoder_path "
-                "so the frozen VAE decoder can supervise predicted skill latents."
-            )
-
-        vae = self.vae_decoder
-        vae_param = next(vae.parameters())
-        vae_device = vae_param.device
-        vae_dtype = vae_param.dtype
-        return vae.decode(
-            z.to(device=vae_device, dtype=vae_dtype),
-            skill_start_state.to(device=vae_device, dtype=vae_dtype),
-        )
-
-    def _decoded_skill_predictor_loss(
-        self,
-        z_pred: Tensor,
-        z_target: Tensor,
-        skill_start_state: Tensor,
-    ) -> Tensor:
-        z_target = z_target.detach()
-        ctrl_pred, len_pred = self._decode_vae_controls_for_loss(z_pred, skill_start_state)
-        ctrl_pred = ctrl_pred.float()
-        len_pred = len_pred.float()
-        with torch.no_grad():
-            ctrl_target, len_target = self._decode_vae_controls_for_loss(z_target, skill_start_state)
-            ctrl_target = ctrl_target.float()
-            len_target = len_target.float()
-
-        action_dim = ctrl_pred.shape[-1]
-        gripper_idx = (action_dim + self._gripper_dim) % action_dim
-        non_gripper = [i for i in range(action_dim) if i != gripper_idx]
-        pos_idx = [i for i in range(min(3, action_dim)) if i != gripper_idx]
-        ori_idx = [i for i in range(3, min(6, action_dim)) if i != gripper_idx]
-        other_idx = [i for i in non_gripper if i not in pos_idx and i not in ori_idx]
-
-        zero = ctrl_pred.sum() * 0.0
-
-        def _smooth_l1_on_dims(indices: list[int]) -> Tensor:
-            if not indices:
-                return zero
-            index = torch.as_tensor(indices, device=ctrl_pred.device, dtype=torch.long)
-            return F.smooth_l1_loss(
-                ctrl_pred.index_select(-1, index),
-                ctrl_target.index_select(-1, index),
-            )
-
-        pos_loss = _smooth_l1_on_dims(pos_idx)
-        ori_loss = _smooth_l1_on_dims(ori_idx)
-        other_loss = _smooth_l1_on_dims(other_idx)
-        grip_loss = _smooth_l1_on_dims([gripper_idx])
-        ctrl_loss = (
-            float(self.config.skill_predictor_decoded_position_weight) * pos_loss
-            + float(self.config.skill_predictor_decoded_orientation_weight) * ori_loss
-            + other_loss
-            + float(self.config.skill_predictor_decoded_gripper_weight) * grip_loss
-        )
-        len_loss = F.smooth_l1_loss(len_pred, len_target)
-        cos_loss = 1.0 - F.cosine_similarity(z_pred.float(), z_target.float(), dim=-1).mean()
-        loss = (
-            ctrl_loss
-            + float(self.config.skill_predictor_decoded_length_weight) * len_loss
-            + float(self.config.skill_predictor_decoded_latent_cos_weight) * cos_loss
-        )
-        self._last_sp_loss_components = {
-            "decoded_ctrl": float(ctrl_loss.detach().cpu()),
-            "decoded_pos": float(pos_loss.detach().cpu()),
-            "decoded_ori": float(ori_loss.detach().cpu()),
-            "decoded_other": float(other_loss.detach().cpu()),
-            "decoded_gripper": float(grip_loss.detach().cpu()),
-            "decoded_length": float(len_loss.detach().cpu()),
-            "latent_cos": float(cos_loss.detach().cpu()),
-        }
+    def _skill_predictor_loss(self, z_pred: Tensor, token_target: Tensor) -> Tensor:
+        """Cross-entropy over codebook logits. z_pred: (B, K), token_target: (B,) int."""
+        loss = F.cross_entropy(z_pred.float(), token_target.view(-1).long())
+        self._last_sp_loss_components = {"token_ce": float(loss.detach().cpu())}
         return loss
-
-    def _skill_predictor_loss(
-        self,
-        z_pred: Tensor,
-        z_target: Tensor,
-        skill_start_state: Tensor,
-        token_target: Tensor | None = None,
-    ) -> Tensor:
-        loss_type = self.config.skill_predictor_loss_type
-        if loss_type == "token_ce":
-            # z_pred: (B, num_embeddings) logits; token_target: (B,) int
-            assert token_target is not None, "token_target required for loss_type='token_ce'"
-            loss = F.cross_entropy(z_pred.float(), token_target.view(-1).long())
-            self._last_sp_loss_components = {"token_ce": float(loss.detach().cpu())}
-            return loss
-        if loss_type == "mse":
-            loss = F.mse_loss(z_pred, z_target.detach().to(z_pred.dtype))
-            self._last_sp_loss_components = {"latent_mse": float(loss.detach().cpu())}
-            return loss
-        if loss_type == "decoded":
-            return self._decoded_skill_predictor_loss(z_pred, z_target, skill_start_state)
-        raise ValueError(
-            "Unsupported skill_predictor_loss_type="
-            f"{loss_type!r}. Expected 'mse', 'decoded', or 'token_ce'."
-        )
 
     @torch.no_grad()
     def _compute_full_prior(
@@ -487,12 +370,9 @@ class SkillVLAPytorch(PI05Pytorch):
         if prob <= 0.0:
             return z
 
-        if self._is_vqae:
-            # z_pred is (B, num_embeddings) logits → argmax → codebook vector
-            pred_tokens = z_pred.detach().argmax(dim=-1)  # (B,)
-            pred = self._token_to_z(pred_tokens).to(dtype=z.dtype, device=z.device)
-        else:
-            pred = z_pred.detach() if self.config.predicted_latent_detach else z_pred
+        # z_pred: (B, num_embeddings) logits → argmax → codebook vector
+        pred_tokens = z_pred.detach().argmax(dim=-1)  # (B,)
+        pred = self._token_to_z(pred_tokens).to(dtype=z.dtype, device=z.device)
 
         mask = torch.rand(z.shape[0], 1, device=z.device) < prob
         self._last_predicted_latent_fraction = float(mask.float().mean().item())
@@ -541,12 +421,9 @@ class SkillVLAPytorch(PI05Pytorch):
             and (skill_progress is not None or skill_frame_index is not None)
             and skill_start_state is not None
         ):
-            # VQAE mode: z and z_prev are int tokens → convert to float codebook vectors
-            token_target = None
-            if self._is_vqae:
-                token_target = z.view(-1).long()       # (B,) int — CE loss target
-                z      = self._token_to_z(z)           # (B, latent_dim) float
-                z_prev = self._token_to_z(z_prev)      # (B, latent_dim) float
+            token_target = z.view(-1).long()       # (B,) int — CE loss target
+            z      = self._token_to_z(z)           # (B, latent_dim) float
+            z_prev = self._token_to_z(z_prev)      # (B, latent_dim) float
 
             skill_predictor_progress = skill_progress if skill_progress is not None else skill_frame_index
             skill_predictor_prefix, _ = self.get_skill_predictor_prefix(
@@ -563,7 +440,7 @@ class SkillVLAPytorch(PI05Pytorch):
                 skill_predictor_progress,
                 skill_start_state.float(),
             )
-            sp_loss = self._skill_predictor_loss(z_pred, z, skill_start_state, token_target=token_target)
+            sp_loss = self._skill_predictor_loss(z_pred, token_target)
 
         z_for_action = self._sample_z_for_action(z, z_pred, train_step)
 
