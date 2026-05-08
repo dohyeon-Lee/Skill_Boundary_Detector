@@ -5,7 +5,7 @@
 # SBATCH --qos=pro6000_qos
 
 #SBATCH --partition=debug
-#SBATCH --nodelist=node100
+#SBATCH --nodelist=node01
 #SBATCH --qos=big_qos
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
@@ -46,7 +46,7 @@ SP_PREFIX_SOURCE=embs
 
 MODEL=PT_${DATASET}_coupled_${PREDICTED_LATENT_SAMPLING}_${SP_PREFIX_SOURCE}_lat${LATENT_DIM}_vq${NUM_EMBEDDINGS}
 
-CHECKPOINT=020000
+CHECKPOINT=085000
 TARGET_TASK=libero_90
 USE_VAE_PRIOR=true
 SAVE_SKILL_DECODE_PLOTS=true

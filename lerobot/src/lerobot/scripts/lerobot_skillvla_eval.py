@@ -335,6 +335,7 @@ def eval_policy(
     all_seeds = []
     skill_plot_paths = []
     skill_timeline_paths = []
+    skill_token_records: list[dict] = []
     threads = []  # for video saving threads
     n_episodes_rendered = 0  # for saving the correct number of videos
 
@@ -388,7 +389,7 @@ def eval_policy(
         # Note: this relies on a property of argmax: that it returns the first occurrence as a tiebreaker.
         done_indices = torch.argmax(rollout_data["done"].to(int), dim=1)
         if videos_dir is not None:
-            new_skill_plot_paths, new_skill_timeline_paths = _save_skill_trace_plots(
+            new_skill_plot_paths, new_skill_timeline_paths, new_token_records = _save_skill_trace_plots(
                 policy=policy,
                 output_dir=videos_dir,
                 episode_index=batch_ix * env.num_envs,
@@ -396,6 +397,7 @@ def eval_policy(
             )
             skill_plot_paths.extend(new_skill_plot_paths)
             skill_timeline_paths.extend(new_skill_timeline_paths)
+            skill_token_records.extend(new_token_records)
 
         # Make a mask with shape (batch, n_steps) to mask out rollout data after the first done
         # (batch-element-wise). Note the `done_indices + 1` to make sure to keep the data from the done step.
@@ -498,6 +500,7 @@ def eval_policy(
         info["video_paths"] = video_paths
     info["skill_plot_paths"] = skill_plot_paths
     info["skill_timeline_paths"] = skill_timeline_paths
+    info["skill_token_records"] = skill_token_records
 
     return info
 
@@ -549,14 +552,14 @@ def _compile_episode_data(
 
 def _save_skill_trace_plots(
     policy: PreTrainedPolicy, output_dir: Path, episode_index: int, episode_steps: int | None = None
-) -> tuple[list[str], list[str]]:
+) -> tuple[list[str], list[str], list[dict]]:
     get_skill_trace = getattr(policy, "get_skill_trace", None)
     if get_skill_trace is None:
-        return [], []
+        return [], [], []
 
     trace = get_skill_trace()
     if not trace:
-        return [], []
+        return [], [], []
 
     try:
         import matplotlib
@@ -565,7 +568,7 @@ def _save_skill_trace_plots(
         import matplotlib.pyplot as plt
     except Exception as exc:
         logging.warning(f"Could not save SkillVLA skill plots because matplotlib failed to import: {exc}")
-        return [], []
+        return [], [], []
 
     def _merge_action_chunks(chunks: list[dict], length: int, dim: int) -> np.ndarray | None:
         if not chunks:
@@ -595,12 +598,22 @@ def _save_skill_trace_plots(
     saved_paths = []
     timeline_paths = []
     skill_start_timesteps = []
+    token_records = []
     for record in trace:
         raw_actions = np.asarray(record["raw_actions"])
         skill_index = int(record.get("skill_index", len(saved_paths)))
         batch_index = int(record.get("batch_index", 0))
         episode_timestep = int(record.get("episode_timestep", 0))
-        skill_start_timesteps.append((episode_timestep, skill_index))
+        codebook_token = record.get("codebook_token")
+        skill_length = int(record.get("length", raw_actions.shape[0]))
+        skill_start_timesteps.append((episode_timestep, skill_index, codebook_token))
+        token_records.append({
+            "episode": episode_index + batch_index,
+            "skill_idx": skill_index + 1,
+            "episode_timestep": episode_timestep,
+            "codebook_token": codebook_token if codebook_token is not None else -1,
+            "skill_length": skill_length,
+        })
         timesteps = np.arange(raw_actions.shape[0])
         dim = raw_actions.shape[1]
         labels = action_names[:dim] + [f"a{i}" for i in range(len(action_names), dim)]
@@ -633,7 +646,8 @@ def _save_skill_trace_plots(
             if action_index == 0:
                 axes[action_index].legend(loc="best")
 
-        fig.suptitle(f"Skill {skill_index + 1} raw actions: VQAE prior vs action expert")
+        token_str = f" [token #{codebook_token}]" if codebook_token is not None else ""
+        fig.suptitle(f"Skill {skill_index + 1}{token_str} raw actions: VQAE prior vs action expert")
         axes[-1].set_xlabel("skill timestep")
         fig.tight_layout()
 
@@ -644,20 +658,21 @@ def _save_skill_trace_plots(
 
     if skill_start_timesteps:
         skill_start_timesteps = sorted(skill_start_timesteps)
-        x_values = [step for step, _ in skill_start_timesteps]
-        y_values = [skill_index + 1 for _, skill_index in skill_start_timesteps]
+        x_values = [step for step, _, _t in skill_start_timesteps]
+        y_values = [skill_index + 1 for _, skill_index, _t in skill_start_timesteps]
         if episode_steps is not None and episode_steps > 0:
             x_values = [*x_values, episode_steps]
             y_values = [*y_values, y_values[-1]]
 
         fig, ax = plt.subplots(figsize=(12, 3.5))
         ax.step(x_values, y_values, where="post", linewidth=2.0)
-        for timestep, skill_index in skill_start_timesteps:
+        for timestep, skill_index, codebook_token in skill_start_timesteps:
             ax.axvline(timestep, color="tab:red", alpha=0.3, linewidth=1.0)
+            token_label = f"\n#{codebook_token}" if codebook_token is not None else ""
             ax.text(
                 timestep,
                 skill_index + 1,
-                f"S{skill_index + 1}",
+                f"S{skill_index + 1}{token_label}",
                 rotation=90,
                 va="bottom",
                 ha="right",
@@ -666,7 +681,7 @@ def _save_skill_trace_plots(
         ax.set_title("Skill calls over task timesteps")
         ax.set_xlabel("task timestep")
         ax.set_ylabel("active skill")
-        ax.set_yticks([skill_index + 1 for _, skill_index in skill_start_timesteps])
+        ax.set_yticks([skill_index + 1 for _, skill_index, _t in skill_start_timesteps])
         ax.grid(True, axis="x", alpha=0.25)
         fig.tight_layout()
 
@@ -675,7 +690,7 @@ def _save_skill_trace_plots(
         plt.close(fig)
         timeline_paths.append(str(timeline_path))
 
-    return saved_paths, timeline_paths
+    return saved_paths, timeline_paths, token_records
 
 
 @parser.wrap()
@@ -907,6 +922,18 @@ def eval_main(cfg: EvalPipelineConfig):
                         )
             if skill_timeline_log:
                 wandb.log(skill_timeline_log)
+
+            # Log codebook token sequence table
+            token_records_all = info.get("skill_token_records", [])
+            if token_records_all:
+                token_table = wandb.Table(
+                    columns=["episode", "skill_idx", "episode_timestep", "codebook_token", "skill_length"],
+                    data=[
+                        [r["episode"], r["skill_idx"], r["episode_timestep"], r["codebook_token"], r["skill_length"]]
+                        for r in token_records_all
+                    ],
+                )
+                wandb.log({"tables/skill_codebook_tokens": token_table})
 
             wandb.finish()
             logging.info("Logged eval results to wandb.")

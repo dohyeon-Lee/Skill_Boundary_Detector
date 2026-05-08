@@ -748,11 +748,11 @@ class SkillVLAPolicy(PI05Policy):
         self._current_z = self.model._token_to_z(pred_tokens).to(dtype=z_prev.dtype, device=device)
 
         self._prior_cache = self.model._compute_full_prior(self._current_z, current_state)
-        self._record_decoded_skill_actions()
+        self._record_decoded_skill_actions(pred_tokens.detach().cpu())
         self._skill_step  = 0
         self._trigger_new_skill = False
 
-    def _record_decoded_skill_actions(self) -> None:
+    def _record_decoded_skill_actions(self, pred_tokens: Tensor | None = None) -> None:
         raw_actions = self.model._last_prior_raw_actions
         normalized_actions = self.model._last_prior_normalized_actions
         lengths = self.model._last_prior_lengths
@@ -764,6 +764,7 @@ class SkillVLAPolicy(PI05Policy):
         for batch_index in range(batch_size):
             length = lengths[batch_index] if batch_index < len(lengths) else raw_actions.shape[1]
             trace_index = len(self._skill_trace)
+            token_val = int(pred_tokens[batch_index].item()) if pred_tokens is not None and batch_index < len(pred_tokens) else None
             self._skill_trace.append(
                 {
                     "skill_index": trace_index,
@@ -775,6 +776,7 @@ class SkillVLAPolicy(PI05Policy):
                     "expert_raw_actions": [],
                     "expert_normalized_actions": [],
                     "z": self._current_z[batch_index].detach().cpu().numpy().copy(),
+                    "codebook_token": token_val,
                 }
             )
             self._active_skill_trace_indices.append(trace_index)
