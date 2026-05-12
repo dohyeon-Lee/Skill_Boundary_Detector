@@ -12,7 +12,9 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
 #SBATCH --time=4:00:00
-#SBATCH --array=0-14
+# libero_90: #SBATCH --array=0-14
+# libero_10:
+#SBATCH --array=0-4
 #SBATCH --output=logs/%x_%A_%a.out
 #SBATCH --error=logs/%x_%A_%a.err
 set -euo pipefail
@@ -42,27 +44,35 @@ SAVGOL_POLYORDER=4
 
 REPLAN_INTERVAL=3
 NMS_DIST=25
-#NMS_DIST=10
 
 POLICY=dp_libero_90_obs10_horizon16
 CHECKPOINT=080000
-DATASET=libero_90
+
+# DATASET=libero_10
+DATASET=libero_10_op1_10
+# DATASET=libero_10_op1_50
 
 POLICY_PATH=${HOMEDIR}${PROJDIR}/outputs/${POLICY}/checkpoints/${CHECKPOINT}/pretrained_model
-DATASET_DIR=${HOMEDIR}${PROJDIR}/libero_dataset/${DATASET}
-OUTPUT_DIR=${HOMEDIR}${PROJDIR}/libero_dataset/${DATASET}_skillset
+# DATASET_DIR=${HOMEDIR}${PROJDIR}/libero_dataset/${DATASET}
+# OUTPUT_DIR=${HOMEDIR}${PROJDIR}/libero_dataset/${DATASET}_skillset
+
+DATASET_DIR=${HOMEDIR}${PROJDIR}/libero_small_dataset/${DATASET}
+OUTPUT_DIR=${HOMEDIR}${PROJDIR}/libero_small_dataset/${DATASET}_skillset
 
 WANDB_PROJECT=Skill_dataset
 # ─────────────────────────────────────────────────────────────────────────────
 
-# 각 array job이 5개 task 처리 (0-14 × 5 = task 0~74, 72 초과는 skip)
-TASKS_PER_JOB=5
+# 각 array job이 5개 task 처리
+# libero_90: array=0-14, MAX_TASK_ID=72, TASKS_PER_JOB=5  (0-14 × 5 = task 0~74, 72 초과는 skip)
+# libero_10: array=0-4,  MAX_TASK_ID=9,  TASKS_PER_JOB=2  (0-4  × 2 = task 0~9)
+MAX_TASK_ID=9
+TASKS_PER_JOB=2
 START_TASK=$(( SLURM_ARRAY_TASK_ID * TASKS_PER_JOB ))
 END_TASK=$(( START_TASK + TASKS_PER_JOB - 1 ))
 
 TASK_IDS=""
 for TASK_ID in $(seq ${START_TASK} ${END_TASK}); do
-    if [ ${TASK_ID} -gt 72 ]; then
+    if [ ${TASK_ID} -gt ${MAX_TASK_ID} ]; then
         break
     fi
     TASK_IDS="${TASK_IDS} ${TASK_ID}"

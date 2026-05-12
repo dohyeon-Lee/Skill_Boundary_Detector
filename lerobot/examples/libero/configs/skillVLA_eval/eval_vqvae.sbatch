@@ -59,9 +59,9 @@ INFERENCE_SKILL_MAX_ORDER=20
 INFERENCE_SKILL_MAX_LENGTH=200
 
 # ── Eval settings ────────────────────────────────────────────────────────────
-TARGET_TASK=libero_90
-TASK_IDS="[2,3,4]"
-N_EPISODES=3
+TARGET_TASK=libero_10
+TASK_IDS="[1,2,3]"
+N_EPISODES=1
 N_ACTION_STEPS=5
 
 # Optional oracle/diagnostic modes. Default eval uses predicted skill tokens.

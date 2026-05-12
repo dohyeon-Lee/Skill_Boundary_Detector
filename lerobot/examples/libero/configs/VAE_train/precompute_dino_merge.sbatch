@@ -16,7 +16,8 @@ source ${HOMEDIR}${PROJDIR}/.venv/bin/activate
 
 echo "START DINO MERGE  |  N_WORKERS=${N_WORKERS}"
 
-DATA=libero_90
+DATA=${DATA:-libero_90}
+DATADIR=${DATADIR:-libero_dataset}
 SKILLSET=${DATA}_skillset
 VISUAL_BACKBONE=${VISUAL_BACKBONE:-dinov2_small}
 
@@ -25,8 +26,8 @@ resolve_visual_backbone
 
 PYTHONPATH=${HOMEDIR}${PROJDIR}/lerobot/src \
   python -u examples/libero/precompute_dino_merge.py \
-    --skills_dir    ${HOMEDIR}${PROJDIR}/libero_dataset/${SKILLSET} \
-    --dataset_dir   ${HOMEDIR}${PROJDIR}/libero_dataset/${DATA} \
+    --skills_dir    ${HOMEDIR}${PROJDIR}/${DATADIR}/${SKILLSET} \
+    --dataset_dir   ${HOMEDIR}${PROJDIR}/${DATADIR}/${DATA} \
     --output_path   ${IMAGE_FEATURES_PATH} \
     --image_model_name ${IMAGE_MODEL_PATH} \
     --num_workers   ${N_WORKERS}

@@ -31,25 +31,69 @@ echo "START JOB"
 echo "Node: $SLURMD_NODENAME"
 nvidia-smi
 
-# ── 설정 ──────────────────────────────────────────────────────────────────────
-DATASET=libero_90_skillvla
-DATASET_ROOT=libero_dataset
-PI05_CKPT_PATH=${HOMEDIR}${PROJDIR}/outputs/pi05_libero_90/checkpoints/070000/pretrained_model
-VAE_CKPT=${HOMEDIR}${PROJDIR}/outputs/libero_90_skillset_latents/libero_90_lat64_spline/spline_vae.pt
+# ── Fine-tune dataset / base checkpoint ─────────────────────────────────────
+# FT_DATASET must have the same SkillVLA columns as libero_90_skillvla.
+FT_DATASET=libero_10_op1_10_skillvla
+FT_DATASET_ROOT=libero_dataset
 
+# SkillVLA checkpoint trained on libero_90.
+PT_RUN_NAME=PT_libero_90_skillvla_true_embs_lat128_vq128
+PT_CHECKPOINT=025000
+BASE_POLICY=${HOMEDIR}${PROJDIR}/outputs/${PT_RUN_NAME}/checkpoints/${PT_CHECKPOINT}/pretrained_model
+
+# VQ-VAE decoder used by the base SkillVLA run. Keep this matched to PT.
+LATENT_DIM=128
+NUM_EMBEDDINGS=128
+VQVAE_STEP=1500
+SKILLSET=libero_90_skillset
+VQVAE_CKPT=${HOMEDIR}${PROJDIR}/outputs/${SKILLSET}_latents/libero_90_vqvae_dinov3_vits16_gru_mlp_zero_lat${LATENT_DIM}_vq${NUM_EMBEDDINGS}_0.1_exp3/spline_vqae_epoch$(printf '%04d' ${VQVAE_STEP}).pt
+
+if [ ! -f "${BASE_POLICY}/model.safetensors" ]; then
+    echo "Missing base SkillVLA checkpoint: ${BASE_POLICY}"
+    exit 1
+fi
+
+if [ ! -f "${VQVAE_CKPT}" ]; then
+    echo "Missing VQ-VAE checkpoint: ${VQVAE_CKPT}"
+    exit 1
+fi
+
+# ── Optimization ─────────────────────────────────────────────────────────────
 LR=2.5e-05
 BATCH_SIZE=32
 NUM_WORKERS=4
 NUM_GPUS=1
 
-# boundary 프레임 비율(~1/chunk_len) 보정. 10~40 사이로 튜닝
-SP_LOSS_WEIGHT=10.0
+# ── SkillVLA losses / boundary randomization ────────────────────────────────
+SP_LOSS_WEIGHT=1.0
+SKILL_DECODER_LOSS_WEIGHT=1.0
+SKILL_DECODER_END_POS_WEIGHT=1.0
+SKILL_DECODER_END_THRESHOLD=0.5
+SKILL_DECODER_STATE_INDICES="[0,1,2,3,4,5]"
+FREEZE_VAE_DECODER=false
+INFERENCE_SKILL_MAX_ORDER=20
+INFERENCE_SKILL_MAX_LENGTH=200
+SKILL_BOUNDARY_RANDOM_P=10
 
-# true: action expert가 image token만 attend (language 차단)
-# false: pi05 기본 동작 (language + obs 모두 attend)
+# Fine-tuning follows pi05_FT: keep the vision encoder frozen by default.
+FREEZE_VISION_ENCODER=true
+
+# true: action expert attends to image/state prefix tokens, not language tokens.
 BLOCK_LANG=true
 
-OUTPUT_DIR=../outputs/skillVLA_s3_${DATASET}_blang${BLOCK_LANG}
+# context: Paligemma prefix-only forward 이후 contextual hidden
+# embs: embed_prefix 직후 raw prefix token embedding
+SP_PREFIX_SOURCE=embs
+
+# Scheduled sampling is restarted for this fine-tuning run:
+# full teacher forcing at step 0, then gradually uses predicted tokens.
+PREDICTED_LATENT_SAMPLING=true
+PREDICTED_LATENT_START_STEP=0
+PREDICTED_LATENT_RAMP_STEPS=30000
+PREDICTED_LATENT_MAX_PROB=1.0
+
+RUN_NAME=${PT_CHECKPOINT}PT_${FT_DATASET}FT_${PREDICTED_LATENT_SAMPLING}_${SP_PREFIX_SOURCE}_lat${LATENT_DIM}_vq${NUM_EMBEDDINGS}
+OUTPUT_DIR=../outputs/FT_${RUN_NAME}
 CONFIG_PATH=${OUTPUT_DIR}/checkpoints/last/pretrained_model/train_config.json
 
 RESUME_ARGS=""
@@ -60,31 +104,44 @@ elif [ -d "${OUTPUT_DIR}" ]; then
     echo "No checkpoint found. Removing existing output dir and starting fresh."
     rm -rf "${OUTPUT_DIR}"
 else
-    echo "No checkpoint found. Starting fresh training."
+    echo "No checkpoint found. Starting fresh fine-tuning."
 fi
 
-# ── Stage 3: joint 학습 — teacher forcing + path3 (sp_loss → SP → VLM) ────────
+# ── SkillVLA fine-tuning from libero_90 checkpoint ──────────────────────────
 PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes=${NUM_GPUS} \
     ${HOMEDIR}${PROJDIR}/.venv/bin/lerobot-train \
-    --dataset.repo_id=dohyeon/${DATASET} \
-    --dataset.root=${HOMEDIR}${PROJDIR}/${DATASET_ROOT}/${DATASET} \
+    --dataset.repo_id=dohyeon/${FT_DATASET} \
+    --dataset.root=${HOMEDIR}${PROJDIR}/${FT_DATASET_ROOT}/${FT_DATASET} \
     --policy.type=skill_vla \
     --output_dir=${OUTPUT_DIR} \
-    --job_name=skillVLA_${DATASET}_PT \
-    --policy.pretrained_path=${PI05_CKPT_PATH} \
-    --policy.compile_model=true \
+    --job_name=${RUN_NAME} \
+    --policy.pretrained_path=${BASE_POLICY} \
+    --policy.compile_model=false \
     --policy.gradient_checkpointing=true \
     --wandb.enable=true \
-    --wandb.project=VLA_posttrain \
+    --wandb.project=VLA_Finetune \
     --policy.dtype=bfloat16 \
-    --policy.freeze_vision_encoder=false \
+    --policy.freeze_vision_encoder=${FREEZE_VISION_ENCODER} \
     --policy.push_to_hub=false \
-    --policy.training_stage=3 \
     --policy.block_lang_to_action=${BLOCK_LANG} \
-    --policy.vae_decoder_path=${VAE_CKPT} \
-    --policy.skill_latent_dim=64 \
+    --policy.vae_decoder_path=${VQVAE_CKPT} \
+    --policy.freeze_vae_decoder=${FREEZE_VAE_DECODER} \
+    --policy.skill_latent_dim=${LATENT_DIM} \
+    --policy.skill_predictor_num_embeddings=${NUM_EMBEDDINGS} \
+    --policy.skill_predictor_prefix_source=${SP_PREFIX_SOURCE} \
     --policy.skill_predictor_loss_weight=${SP_LOSS_WEIGHT} \
-    --save_freq=10000 \
+    --policy.skill_decoder_loss_weight=${SKILL_DECODER_LOSS_WEIGHT} \
+    --policy.skill_decoder_end_pos_weight=${SKILL_DECODER_END_POS_WEIGHT} \
+    --policy.skill_decoder_end_threshold=${SKILL_DECODER_END_THRESHOLD} \
+    --policy.skill_decoder_state_indices=${SKILL_DECODER_STATE_INDICES} \
+    --policy.inference_skill_max_order=${INFERENCE_SKILL_MAX_ORDER} \
+    --policy.inference_skill_max_length=${INFERENCE_SKILL_MAX_LENGTH} \
+    --policy.skill_boundary_random_p=${SKILL_BOUNDARY_RANDOM_P} \
+    --policy.predicted_latent_sampling=${PREDICTED_LATENT_SAMPLING} \
+    --policy.predicted_latent_start_step=${PREDICTED_LATENT_START_STEP} \
+    --policy.predicted_latent_ramp_steps=${PREDICTED_LATENT_RAMP_STEPS} \
+    --policy.predicted_latent_max_prob=${PREDICTED_LATENT_MAX_PROB} \
+    --save_freq=5000 \
     --steps=100000 \
     --policy.device=cuda \
     --dataset.video_backend=pyav \

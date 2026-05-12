@@ -36,6 +36,33 @@ Usage:
         --dino_features_path /data2/dohyeon/SBD/outputs/libero_90_skillset_dino_features/dinov3_vits16_image.npz \
         --max_order 20 \
         --max_length 200
+    
+    python examples/libero/add_skill_latents_to_dataset.py \
+        --src_dataset_dir /data2/dohyeon/SBD/libero_dataset/libero_10 \
+        --dst_dataset_dir /data2/dohyeon/SBD/libero_dataset/libero_10_skillvla \
+        --dst_repo_id dohyeon/libero_10_skillvla \
+        --latents_path    /data2/dohyeon/SBD/outputs/libero_10_skillset_latents/libero_90_vqvae_dinov3_vits16_gru_mlp_zero_lat128_vq128_0.1_exp3/spline_vqae_latents_epoch1500.npz \
+        --dino_features_path /data2/dohyeon/SBD/outputs/libero_90_skillset_dino_features/dinov3_vits16_image.npz \
+        --max_order 20 \
+        --max_length 200
+    
+    python examples/libero/add_skill_latents_to_dataset.py \
+        --src_dataset_dir /data2/dohyeon/SBD/libero_small_dataset/libero_10_op1_50 \
+        --dst_dataset_dir /data2/dohyeon/SBD/libero_dataset/libero_10_op1_50_skillvla \
+        --dst_repo_id dohyeon/libero_10_op1_50_skillvla \
+        --latents_path    /data2/dohyeon/SBD/outputs/libero_10_op1_50_skillset_latents/libero_90_vqvae_dinov3_vits16_gru_mlp_zero_lat128_vq128_0.1_exp3/spline_vqae_latents_epoch1500.npz \
+        --dino_features_path /data2/dohyeon/SBD/outputs/libero_10_op1_50_skillset_dino_features/dinov3_vits16_image.npz \
+        --max_order 20 \
+        --max_length 200
+
+    python examples/libero/add_skill_latents_to_dataset.py \
+        --src_dataset_dir /data2/dohyeon/SBD/libero_small_dataset/libero_10_op1_10 \
+        --dst_dataset_dir /data2/dohyeon/SBD/libero_dataset/libero_10_op1_10_skillvla \
+        --dst_repo_id dohyeon/libero_10_op1_10_skillvla \
+        --latents_path    /data2/dohyeon/SBD/outputs/libero_10_op1_10_skillset_latents/libero_90_vqvae_dinov3_vits16_gru_mlp_zero_lat128_vq128_0.1_exp3/spline_vqae_latents_epoch1500.npz \
+        --dino_features_path /data2/dohyeon/SBD/outputs/libero_10_op1_10_skillset_dino_features/dinov3_vits16_image.npz \
+        --max_order 20 \
+        --max_length 200
 """
 
 from __future__ import annotations

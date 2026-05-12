@@ -35,8 +35,8 @@ echo "START JOB"
 echo "Node: $SLURMD_NODENAME"
 nvidia-smi
 
-DATASET=libero_10_op1_50 # libero_10
-DATASET_ROOT=libero_small_dataset # libero_dataset
+DATASET=libero_90 # libero_10
+DATASET_ROOT=libero_dataset # libero_dataset
 LR=2.5e-05      # default: 2.5e-05
 BATCH_SIZE=32
 NUM_GPUS=1      # --gres=gpu:N 과 맞춰야 함

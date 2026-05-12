@@ -10,7 +10,9 @@ GPU_MAX_PER_NODE=7      # hard cap per node
 QOS=big_qos
 HOMEDIR=/data2/dohyeon
 PROJDIR=/SBD
-VISUAL_BACKBONE=dinov3_vits16 # ${VISUAL_BACKBONE:-dinov2_small} # dinov2_small, dinov3_vits16, dinov3_convnext_small
+VISUAL_BACKBONE=dinov3_vits16 # dinov2_small, dinov3_vits16, dinov3_convnext_small
+DATA=libero_10_op1_10                # libero_90, libero_10, libero_10_op1_50, ...
+DATADIR=libero_small_dataset        # libero_dataset, libero_small_dataset
 # ─────────────────────────────────────────────────────
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -68,7 +70,7 @@ if [ "$N_WORKERS" -eq 0 ]; then
     exit 1
 fi
 
-COMMON_EXPORT="ALL,N_WORKERS=${N_WORKERS},HOMEDIR=${HOMEDIR},PROJDIR=${PROJDIR},VISUAL_BACKBONE=${VISUAL_BACKBONE}"
+COMMON_EXPORT="ALL,N_WORKERS=${N_WORKERS},HOMEDIR=${HOMEDIR},PROJDIR=${PROJDIR},VISUAL_BACKBONE=${VISUAL_BACKBONE},DATA=${DATA},DATADIR=${DATADIR}"
 JOB_IDS=()
 WORKER_OFFSET=0
 ALL_NODES=()

@@ -55,19 +55,20 @@ nvidia-smi
 # TARGET_TASK=libero_90
 
 
-# MODEL=pi05_libero_90
-# CHECKPOINT=070000
-# TARGET_TASK=libero_90
-
-
-MODEL=pi05_070000PT_libero_10_op2_1FT
-CHECKPOINT=030000
+MODEL=pi05_libero_90
+CHECKPOINT=020000
 TARGET_TASK=libero_10
+
+
+# MODEL=pi05_070000PT_libero_10_op2_1FT
+# CHECKPOINT=030000
+# TARGET_TASK=libero_10
 
 # MODEL=pi05_070000PT_libero_10_op2_1FT
 # CHECKPOINT=030000
 # TARGET_TASK=libero_90
 
+N_ACTION_STEPS=5
 WANDB_PROJECT=VLA_eval
 WANDB_RUN_NAME=${MODEL}PT_${CHECKPOINT}_${TARGET_TASK}
 
@@ -80,7 +81,8 @@ PYTHONPATH=${HOMEDIR}${PROJDIR}/lerobot/src \
   --eval.batch_size=1 \
   --eval.n_episodes=1 \
   --policy.device=cuda \
-  --env.task_ids="[0,1,2,3,4,5,6,7,8,9]" \
+  --policy.n_action_steps=${N_ACTION_STEPS} \
+  --env.task_ids="[1,2,3]" \
   --wandb_project ${WANDB_PROJECT} \
   --job_name ${WANDB_RUN_NAME} \
   --rename_map='{"observation.images.image2": "observation.images.wrist_image"}'
