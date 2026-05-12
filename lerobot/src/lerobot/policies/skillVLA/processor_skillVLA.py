@@ -40,12 +40,18 @@ from lerobot.utils.constants import (
 OBS_LANG_TO_ACTION_ATTENTION_MASK = "observation.language.to_action_attention_mask"
 _STATE_ACTION_PREFIX_KEY = "skill_vla_state_action_prefix"
 SKILL_VLA_BATCH_KEYS = (
-    "skill_latent",
-    "skill_latent_prev",
+    "skill_index",
+    "skill_sequence",
+    "skill_length_sequence",
+    "skill_sequence_mask",
+    "skill_sequence_len",
+    "skill_ds",
+    "skill_de",
     "skill_boundary",
-    "skill_start_state",
-    "skill_frame_index",
-    "skill_progress",
+    "skill_max_order",
+    "skill_max_length",
+    "skill_decoder_state",
+    "skill_decoder_image",
 )
 
 
@@ -92,16 +98,21 @@ def skill_vla_transition_to_batch(transition: EnvTransition) -> dict[str, Any]:
 @dataclass
 @ProcessorStepRegistry.register(name="skill_vla_preserve_raw_state_processor_step")
 class SkillVLAPreserveRawStateProcessorStep(ProcessorStep):
-    """Keep raw proprioceptive state for the skill predictor and VAE decoder."""
+    """Keep raw proprioceptive/image features for the VQ-VAE skill decoder."""
 
     def __call__(self, transition: EnvTransition) -> EnvTransition:
         transition = transition.copy()
         comp_data = dict(transition.get(TransitionKey.COMPLEMENTARY_DATA, {}) or {})
 
-        if "skill_start_state" not in comp_data:
-            state = transition.get(TransitionKey.OBSERVATION, {}).get(OBS_STATE)
+        observation = transition.get(TransitionKey.OBSERVATION, {}) or {}
+        if "skill_decoder_state" not in comp_data:
+            state = observation.get(OBS_STATE)
             if state is not None:
-                comp_data["skill_start_state"] = state.clone() if isinstance(state, torch.Tensor) else deepcopy(state)
+                comp_data["skill_decoder_state"] = state.clone() if isinstance(state, torch.Tensor) else deepcopy(state)
+        if "skill_decoder_image" not in comp_data:
+            visual = observation.get("observation.dino.image")
+            if visual is not None:
+                comp_data["skill_decoder_image"] = visual.clone() if isinstance(visual, torch.Tensor) else deepcopy(visual)
 
         transition[TransitionKey.COMPLEMENTARY_DATA] = comp_data
         return transition

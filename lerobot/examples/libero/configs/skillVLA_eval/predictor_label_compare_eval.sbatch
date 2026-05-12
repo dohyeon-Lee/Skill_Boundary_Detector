@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=skillVLA_eval
+#SBATCH --job-name=skillVLA_pred_label_eval
 
 # SBATCH --partition=asus_pro6000
 # SBATCH --qos=pro6000_qos
@@ -33,11 +33,13 @@ nvidia-smi
 
 # ── 설정 ──────────────────────────────────────────────────────────────────────
 DATASET=libero_90_skillvla
+DATASET_ROOT=libero_dataset
+LABEL_DATASET_DIR=${HOMEDIR}${PROJDIR}/${DATASET_ROOT}/${DATASET}
+
 LATENT_DIM=64
 NUM_EMBEDDINGS=512
 VQAE_STEP=10000
-SKILLSET=libero_90_skillset          # variable-length
-# SKILLSET=libero_90_skillset_fixed50  # fixed-length (uncomment to use)
+SKILLSET=libero_90_skillset
 
 VQAE_CKPT=${HOMEDIR}${PROJDIR}/outputs/${SKILLSET}_latents/libero_90_lat${LATENT_DIM}_vq${NUM_EMBEDDINGS}/spline_vqae_epoch$(printf '%04d' ${VQAE_STEP}).pt
 
@@ -45,25 +47,30 @@ PREDICTED_LATENT_SAMPLING=true
 SP_PREFIX_SOURCE=embs
 
 MODEL=PT_${DATASET}_coupled_${PREDICTED_LATENT_SAMPLING}_${SP_PREFIX_SOURCE}_lat${LATENT_DIM}_vq${NUM_EMBEDDINGS}
-
 CHECKPOINT=100000
+
 TARGET_TASK=libero_90
+TASK_IDS="[0,1,2,3,4]"
+N_EPISODES=1
+LABEL_EPISODE_OFFSET=0
+
 LOAD_VQAE_DECODER=true
 
 # Leave empty to use the checkpoint config. Set to "context" or "embs" to override at eval time.
 SP_PREFIX_SOURCE_OVERRIDE=""
 
-# libero_90 전체를 한 번에 env 생성하면 EGL context가 많이 잡혀 OOM이 날 수 있음.
-# 전체 평가가 필요하면 task_ids를 10개 정도씩 나눠 여러 번 돌리는 쪽이 안정적.
-TASK_IDS="[0,1,2]"
-
 WANDB_PROJECT=VLA_eval
 DECODER_TAG=$([ "${LOAD_VQAE_DECODER}" = "true" ] && echo "decoder_on" || echo "decoder_off")
-WANDB_RUN_NAME=${MODEL}_${CHECKPOINT}_${TARGET_TASK}_${DECODER_TAG}
+WANDB_RUN_NAME=${MODEL}_${CHECKPOINT}_${TARGET_TASK}_pred_vs_label_${DECODER_TAG}
 POLICY_PATH=${HOMEDIR}${PROJDIR}/outputs/${MODEL}/checkpoints/${CHECKPOINT}/pretrained_model
 
 if [ ! -d "${POLICY_PATH}" ]; then
   echo "Policy checkpoint not found: ${POLICY_PATH}" >&2
+  exit 1
+fi
+
+if [ ! -d "${LABEL_DATASET_DIR}" ]; then
+  echo "Label dataset not found: ${LABEL_DATASET_DIR}" >&2
   exit 1
 fi
 
@@ -86,14 +93,20 @@ PYTHONPATH=${HOMEDIR}${PROJDIR}/lerobot/src \
   --env.task=${TARGET_TASK} \
   --env.fps=20 \
   --eval.batch_size=1 \
-  --eval.n_episodes=1 \
+  --eval.n_episodes=${N_EPISODES} \
   --policy.n_action_steps=10 \
   --policy.device=cuda \
   --policy.compile_model=false \
   --policy.gradient_checkpointing=false \
   ${VQAE_DECODER_ARG} \
+  --policy.use_label_skill_tokens_eval=false \
+  --policy.compare_label_skill_tokens_eval=true \
+  --policy.label_skill_dataset_dir=${LABEL_DATASET_DIR} \
+  --policy.label_skill_episode_offset=${LABEL_EPISODE_OFFSET} \
   ${SP_PREFIX_SOURCE_ARG} \
   --env.task_ids=${TASK_IDS} \
+  --env.init_states=true \
+  --env.init_state_offset=${LABEL_EPISODE_OFFSET} \
   --env.max_parallel_tasks=1 \
   --wandb_project ${WANDB_PROJECT} \
   --job_name ${WANDB_RUN_NAME} \

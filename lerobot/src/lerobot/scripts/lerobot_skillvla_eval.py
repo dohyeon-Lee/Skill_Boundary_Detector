@@ -96,6 +96,7 @@ import einops
 import gymnasium as gym
 import numpy as np
 import torch
+import torch.nn.functional as F
 from termcolor import colored
 from torch import Tensor, nn
 from tqdm import trange
@@ -291,6 +292,8 @@ def eval_policy(
     videos_dir: Path | None = None,
     return_episode_data: bool = False,
     start_seed: int | None = None,
+    forced_skill_token_sequences: list[list[int]] | None = None,
+    reference_skill_token_sequences: list[list[int]] | None = None,
 ) -> dict:
     """
     Args:
@@ -371,6 +374,20 @@ def eval_policy(
             seeds = range(
                 start_seed + (batch_ix * env.num_envs), start_seed + ((batch_ix + 1) * env.num_envs)
             )
+        if forced_skill_token_sequences is not None:
+            start = batch_ix * env.num_envs
+            end = start + env.num_envs
+            set_forced = getattr(policy, "set_forced_skill_token_sequences", None)
+            if set_forced is None:
+                raise ValueError("Policy does not support forced skill token sequences.")
+            set_forced(forced_skill_token_sequences[start:end])
+        if reference_skill_token_sequences is not None:
+            start = batch_ix * env.num_envs
+            end = start + env.num_envs
+            set_reference = getattr(policy, "set_reference_skill_token_sequences", None)
+            if set_reference is None:
+                raise ValueError("Policy does not support reference skill token sequences.")
+            set_reference(reference_skill_token_sequences[start:end])
         rollout_data = rollout(
             env=env,
             policy=policy,
@@ -589,6 +606,33 @@ def _save_skill_trace_plots(
             return None
         return merged
 
+    def _codebook_similarity(pred_token, label_token) -> dict[str, float | int]:
+        default = {
+            "codebook_cosine": np.nan,
+            "codebook_l2": np.nan,
+            "codebook_label_neighbor_rank": -1,
+        }
+        if pred_token is None or label_token is None:
+            return default
+        model = getattr(policy, "model", None)
+        codebook = getattr(model, "_vqae_codebook", None)
+        if codebook is None or codebook.numel() == 0:
+            return default
+        pred = int(pred_token)
+        label = int(label_token)
+        if pred < 0 or label < 0 or pred >= codebook.shape[0] or label >= codebook.shape[0]:
+            return default
+        cb = codebook.detach().float().cpu()
+        pred_vec = cb[pred]
+        label_vec = cb[label]
+        dists = torch.linalg.vector_norm(cb - label_vec[None, :], dim=-1)
+        rank = int((dists < dists[pred]).sum().item() + 1)
+        return {
+            "codebook_cosine": float(F.cosine_similarity(pred_vec[None], label_vec[None]).item()),
+            "codebook_l2": float(torch.linalg.vector_norm(pred_vec - label_vec).item()),
+            "codebook_label_neighbor_rank": rank,
+        }
+
     action_names = ["x", "y", "z", "r", "p", "yaw", "gripper"]
     skill_dir = output_dir / "skill_plots" / f"episode_{episode_index:04d}"
     timeline_dir = output_dir / "skill_timelines" / f"episode_{episode_index:04d}"
@@ -599,24 +643,91 @@ def _save_skill_trace_plots(
     timeline_paths = []
     skill_start_timesteps = []
     token_records = []
+    length_records = []
     for record in trace:
-        raw_actions = np.asarray(record["raw_actions"])
         skill_index = int(record.get("skill_index", len(saved_paths)))
         batch_index = int(record.get("batch_index", 0))
         episode_timestep = int(record.get("episode_timestep", 0))
         codebook_token = record.get("codebook_token")
-        skill_length = int(record.get("length", raw_actions.shape[0]))
-        skill_start_timesteps.append((episode_timestep, skill_index, codebook_token))
+        raw_actions_value = record.get("raw_actions")
+        raw_actions = None if raw_actions_value is None else np.asarray(raw_actions_value)
+        skill_length = int(record.get("length", 0 if raw_actions is None else raw_actions.shape[0]))
+        dataset_skill_length = record.get("dataset_skill_length")
+        dataset_prior_length = record.get("dataset_prior_length")
+        label_prior_length = record.get("label_prior_length")
+        label_codebook_token = record.get("label_codebook_token")
+        token_match = record.get("token_match")
+        similarity = _codebook_similarity(codebook_token, label_codebook_token)
+        skill_source = record.get("skill_source", "unknown")
+        has_label_records = bool(record.get("has_label_records", False))
+        has_label_prior = bool(record.get("has_label_prior", False))
+        end_signal_timestep = record.get("end_signal_timestep")
+        end_signal_prob = record.get("end_signal_prob")
+        skill_start_timesteps.append(
+            (
+                episode_timestep,
+                skill_index,
+                codebook_token,
+                label_codebook_token,
+                token_match,
+                end_signal_timestep,
+                end_signal_prob,
+                skill_length,
+                similarity["codebook_cosine"],
+            )
+        )
         token_records.append({
             "episode": episode_index + batch_index,
             "skill_idx": skill_index + 1,
             "episode_timestep": episode_timestep,
+            "skill_source": skill_source,
             "codebook_token": codebook_token if codebook_token is not None else -1,
+            "label_codebook_token": label_codebook_token if label_codebook_token is not None else -1,
+            "token_match": token_match if token_match is not None else False,
+            "has_label_records": has_label_records,
+            "has_label_prior": has_label_prior,
             "skill_length": skill_length,
+            "dataset_skill_length": dataset_skill_length if dataset_skill_length is not None else -1,
+            "dataset_prior_length": dataset_prior_length if dataset_prior_length is not None else -1,
+            "label_prior_length": label_prior_length if label_prior_length is not None else -1,
+            "end_signal_timestep": end_signal_timestep if end_signal_timestep is not None else -1,
+            "end_signal_prob": end_signal_prob if end_signal_prob is not None else -1.0,
+            "codebook_cosine": similarity["codebook_cosine"],
+            "codebook_l2": similarity["codebook_l2"],
+            "codebook_label_neighbor_rank": similarity["codebook_label_neighbor_rank"],
+            "eval_minus_dataset_skill_length": (
+                skill_length - int(dataset_skill_length) if dataset_skill_length is not None else None
+            ),
+            "eval_minus_dataset_prior_length": (
+                skill_length - int(dataset_prior_length) if dataset_prior_length is not None else None
+            ),
+            "pred_minus_label_prior_length": (
+                skill_length - int(label_prior_length) if label_prior_length is not None else None
+            ),
         })
+        length_records.append(
+            {
+                "skill_idx": skill_index + 1,
+                "pred_codebook_token": codebook_token,
+                "label_codebook_token": label_codebook_token,
+                "eval_prior_length": skill_length,
+                "dataset_skill_length": dataset_skill_length,
+                "dataset_prior_length": dataset_prior_length,
+                "label_prior_length": label_prior_length,
+                "end_signal_timestep": end_signal_timestep,
+                "end_signal_prob": end_signal_prob,
+                **similarity,
+            }
+        )
+        if raw_actions is None:
+            continue
         timesteps = np.arange(raw_actions.shape[0])
         dim = raw_actions.shape[1]
         labels = action_names[:dim] + [f"a{i}" for i in range(len(action_names), dim)]
+        dataset_prior = record.get("dataset_prior_raw_actions")
+        dataset_prior = None if dataset_prior is None else np.asarray(dataset_prior)
+        label_prior = record.get("label_prior_raw_actions")
+        label_prior = None if label_prior is None else np.asarray(label_prior)
         expert_actions = _merge_action_chunks(
             record.get("expert_raw_actions", []),
             length=raw_actions.shape[0],
@@ -630,8 +741,26 @@ def _save_skill_trace_plots(
                 timesteps,
                 raw_actions[:, action_index],
                 linewidth=1.5,
-                label="VQAE prior",
+                label="pred-token sim-start VQAE prior",
             )
+            if label_prior is not None and label_prior.ndim == 2:
+                axes[action_index].plot(
+                    np.arange(label_prior.shape[0]),
+                    label_prior[:, action_index],
+                    linewidth=1.2,
+                    linestyle="-.",
+                    alpha=0.9,
+                    label="label-token sim-start VQAE prior",
+                )
+            if dataset_prior is not None and dataset_prior.ndim == 2:
+                axes[action_index].plot(
+                    np.arange(dataset_prior.shape[0]),
+                    dataset_prior[:, action_index],
+                    linewidth=1.2,
+                    linestyle=":",
+                    alpha=0.9,
+                    label="dataset-start VQAE prior",
+                )
             if expert_actions is not None:
                 axes[action_index].plot(
                     timesteps,
@@ -647,6 +776,9 @@ def _save_skill_trace_plots(
                 axes[action_index].legend(loc="best")
 
         token_str = f" [token #{codebook_token}]" if codebook_token is not None else ""
+        label_token = record.get("label_codebook_token")
+        if label_token is not None:
+            token_str += f" / label #{label_token}"
         fig.suptitle(f"Skill {skill_index + 1}{token_str} raw actions: VQAE prior vs action expert")
         axes[-1].set_xlabel("skill timestep")
         fig.tight_layout()
@@ -658,17 +790,35 @@ def _save_skill_trace_plots(
 
     if skill_start_timesteps:
         skill_start_timesteps = sorted(skill_start_timesteps)
-        x_values = [step for step, _, _t in skill_start_timesteps]
-        y_values = [skill_index + 1 for _, skill_index, _t in skill_start_timesteps]
+        x_values = [step for step, *_rest in skill_start_timesteps]
+        y_values = [skill_index + 1 for _, skill_index, *_rest in skill_start_timesteps]
         if episode_steps is not None and episode_steps > 0:
             x_values = [*x_values, episode_steps]
             y_values = [*y_values, y_values[-1]]
 
         fig, ax = plt.subplots(figsize=(12, 3.5))
         ax.step(x_values, y_values, where="post", linewidth=2.0)
-        for timestep, skill_index, codebook_token in skill_start_timesteps:
+        for (
+            timestep,
+            skill_index,
+            codebook_token,
+            label_token,
+            token_match,
+            end_timestep,
+            end_prob,
+            skill_length,
+            codebook_cosine,
+        ) in skill_start_timesteps:
             ax.axvline(timestep, color="tab:red", alpha=0.3, linewidth=1.0)
-            token_label = f"\n#{codebook_token}" if codebook_token is not None else ""
+            if end_timestep is not None:
+                ax.axvline(int(end_timestep), color="tab:green", alpha=0.35, linewidth=1.0, linestyle="--")
+            if label_token is not None:
+                sim_label = "" if np.isnan(codebook_cosine) else f"\ncos={codebook_cosine:.2f}"
+                token_label = f"\np#{codebook_token}/l#{label_token}{sim_label}"
+            else:
+                token_label = f"\np#{codebook_token}" if codebook_token is not None else ""
+            if end_timestep is not None:
+                token_label += f"\nend@{int(end_timestep)}"
             ax.text(
                 timestep,
                 skill_index + 1,
@@ -681,7 +831,7 @@ def _save_skill_trace_plots(
         ax.set_title("Skill calls over task timesteps")
         ax.set_xlabel("task timestep")
         ax.set_ylabel("active skill")
-        ax.set_yticks([skill_index + 1 for _, skill_index, _t in skill_start_timesteps])
+        ax.set_yticks([skill_index + 1 for _, skill_index, *_rest in skill_start_timesteps])
         ax.grid(True, axis="x", alpha=0.25)
         fig.tight_layout()
 
@@ -690,7 +840,147 @@ def _save_skill_trace_plots(
         plt.close(fig)
         timeline_paths.append(str(timeline_path))
 
+        pred_tokens = [
+            -1 if pred_token is None else int(pred_token)
+            for _step, _skill_index, pred_token, _label_token, _match, *_rest in skill_start_timesteps
+        ]
+        label_tokens = [
+            np.nan if label_token is None else int(label_token)
+            for _step, _skill_index, _pred_token, label_token, _match, *_rest in skill_start_timesteps
+        ]
+        fig, ax = plt.subplots(figsize=(max(8, len(skill_start_timesteps) * 1.1), 4.0))
+        skill_x = np.arange(1, len(skill_start_timesteps) + 1)
+        ax.plot(skill_x, pred_tokens, marker="o", linewidth=1.8, label="pred token")
+        ax.plot(skill_x, label_tokens, marker="x", linewidth=1.8, linestyle="--", label="label token")
+        for i, (_step, _skill_index, pred_token, label_token, match, *_rest) in enumerate(skill_start_timesteps, start=1):
+            label = f"p{pred_token}/l{label_token}" if label_token is not None else f"p{pred_token}/l?"
+            ax.text(i, pred_tokens[i - 1], label, fontsize="small", ha="center", va="bottom")
+            if label_token is not None and not bool(match):
+                ax.axvspan(i - 0.35, i + 0.35, color="tab:red", alpha=0.08)
+        ax.set_title("Predicted vs label skill tokens")
+        ax.set_xlabel("skill")
+        ax.set_ylabel("codebook token")
+        ax.set_xticks(skill_x)
+        ax.grid(True, alpha=0.25)
+        ax.legend(loc="best")
+        fig.tight_layout()
+
+        token_compare_path = timeline_dir / "pred_vs_label_tokens.png"
+        fig.savefig(token_compare_path, dpi=150)
+        plt.close(fig)
+        timeline_paths.append(str(token_compare_path))
+
+        cosine_values = [
+            float(cosine)
+            for *_prefix, cosine in skill_start_timesteps
+            if not np.isnan(cosine)
+        ]
+        if cosine_values:
+            similarity_x = [
+                i
+                for i, (*_prefix, cosine) in enumerate(skill_start_timesteps, start=1)
+                if not np.isnan(cosine)
+            ]
+            fig, ax = plt.subplots(figsize=(max(8, len(skill_start_timesteps) * 1.1), 4.0))
+            ax.plot(similarity_x, cosine_values, marker="o", linewidth=1.8)
+            ax.set_ylim(-1.05, 1.05)
+            ax.set_title("Predicted vs label skill embedding cosine")
+            ax.set_xlabel("skill order")
+            ax.set_ylabel("codebook cosine similarity")
+            ax.set_xticks(np.arange(1, len(skill_start_timesteps) + 1))
+            ax.grid(True, alpha=0.25)
+            fig.tight_layout()
+
+            similarity_path = timeline_dir / "pred_vs_label_codebook_similarity.png"
+            fig.savefig(similarity_path, dpi=150)
+            plt.close(fig)
+            timeline_paths.append(str(similarity_path))
+
     return saved_paths, timeline_paths, token_records
+
+
+def _as_scalar_int(value: Any) -> int:
+    arr = np.asarray(value)
+    return int(arr.reshape(-1)[0])
+
+
+def _as_int_list(value: Any) -> list[int]:
+    arr = np.asarray(value)
+    return [int(x) for x in arr.reshape(-1).tolist()]
+
+
+def _load_label_skill_token_sequences(
+    dataset_dir: str | Path,
+    *,
+    episode_offset: int = 0,
+    n_episodes: int | None = None,
+    task_ids: set[int] | None = None,
+) -> dict[int, list[list[dict]]]:
+    """Load real VQ skill-token records grouped by LIBERO task_index."""
+    try:
+        import pandas as pd
+    except Exception as exc:
+        raise RuntimeError("pandas is required to load label skill tokens from a LeRobot dataset.") from exc
+
+    dataset_dir = Path(dataset_dir)
+    data_files = sorted((dataset_dir / "data").glob("**/*.parquet"))
+    if not data_files:
+        raise FileNotFoundError(f"No parquet data files found under {dataset_dir / 'data'}")
+
+    columns = [
+        "episode_index",
+        "frame_index",
+        "task_index",
+        "skill_sequence",
+        "skill_length_sequence",
+        "skill_sequence_len",
+    ]
+    frames = [pd.read_parquet(path, columns=columns) for path in data_files]
+    df = pd.concat(frames, ignore_index=True).sort_values(["episode_index", "frame_index"])
+    if task_ids is not None:
+        df = df[df["task_index"].map(_as_scalar_int).isin(task_ids)]
+
+    episode_skills: dict[int, tuple[int, list[dict]]] = {}
+    for episode_index, ep_df in df.groupby("episode_index", sort=True):
+        task_index = _as_scalar_int(ep_df["task_index"].iloc[0])
+        row = ep_df.iloc[0]
+        seq = _as_int_list(row["skill_sequence"])
+        lengths = _as_int_list(row["skill_length_sequence"])
+        seq_len = _as_scalar_int(row["skill_sequence_len"])
+        first_frame = _as_scalar_int(ep_df["frame_index"].iloc[0])
+        real_tokens = seq[1 : max(1, seq_len - 1)]  # drop BOS and EOS/PAD
+        real_lengths = lengths[1 : 1 + len(real_tokens)]
+
+        records: list[dict] = []
+        cursor = first_frame
+        for token, skill_length in zip(real_tokens, real_lengths, strict=False):
+            skill_length = int(skill_length)
+            frame_start = cursor
+            frame_end = cursor + max(1, skill_length)
+            records.append(
+                {
+                    "token": int(token),
+                    "frame_start": frame_start,
+                    "frame_end": frame_end,
+                    "skill_length": int(frame_end - frame_start),
+                }
+            )
+            cursor = frame_end
+        episode_skills[int(episode_index)] = (task_index, records)
+
+    by_task: dict[int, list[tuple[int, list[dict]]]] = defaultdict(list)
+    for episode_index, (task_index, records) in episode_skills.items():
+        by_task[task_index].append((episode_index, records))
+
+    out: dict[int, list[list[dict]]] = {}
+    for task_index, episodes in by_task.items():
+        selected = [records for _episode_index, records in sorted(episodes)]
+        if episode_offset:
+            selected = selected[episode_offset:]
+        if n_episodes is not None:
+            selected = selected[:n_episodes]
+        out[task_index] = selected
+    return out
 
 
 @parser.wrap()
@@ -731,6 +1021,46 @@ def eval_main(cfg: EvalPipelineConfig):
 
     policy.eval()
 
+    forced_skill_token_sequences_by_task = None
+    reference_skill_token_sequences_by_task = None
+    needs_label_sequences = cfg.policy.use_label_skill_tokens_eval or cfg.policy.compare_label_skill_tokens_eval
+    if needs_label_sequences:
+        if not cfg.policy.label_skill_dataset_dir:
+            raise ValueError(
+                "--policy.label_skill_dataset_dir is required when "
+                "--policy.use_label_skill_tokens_eval=true or "
+                "--policy.compare_label_skill_tokens_eval=true"
+            )
+        label_sequences = _load_label_skill_token_sequences(
+            cfg.policy.label_skill_dataset_dir,
+            episode_offset=cfg.policy.label_skill_episode_offset,
+            n_episodes=cfg.eval.n_episodes,
+            task_ids={task_id for task_map in envs.values() for task_id in task_map},
+        )
+        target = {} if cfg.policy.use_label_skill_tokens_eval else None
+        reference_target = {} if cfg.policy.compare_label_skill_tokens_eval else None
+        for task_group, task_map in envs.items():
+            for task_id in task_map:
+                sequences = label_sequences.get(task_id)
+                if sequences is None or len(sequences) < cfg.eval.n_episodes:
+                    raise ValueError(
+                        f"Not enough label skill-token episodes for task_id={task_id}: "
+                        f"found {0 if sequences is None else len(sequences)}, need {cfg.eval.n_episodes}."
+                    )
+                if target is not None:
+                    target[(task_group, task_id)] = sequences[: cfg.eval.n_episodes]
+                if reference_target is not None:
+                    reference_target[(task_group, task_id)] = sequences[: cfg.eval.n_episodes]
+        forced_skill_token_sequences_by_task = target
+        reference_skill_token_sequences_by_task = reference_target
+        logging.info(
+            "Using training-set label skill tokens for eval: "
+            f"dataset={cfg.policy.label_skill_dataset_dir}, "
+            f"episode_offset={cfg.policy.label_skill_episode_offset}, "
+            f"force_tokens={cfg.policy.use_label_skill_tokens_eval}, "
+            f"compare_tokens={cfg.policy.compare_label_skill_tokens_eval}"
+        )
+
     # The inference device is automatically set to match the detected hardware, overriding any previous device settings from training to ensure compatibility.
     preprocessor_overrides = {
         "device_processor": {"device": str(policy.config.device)},
@@ -759,6 +1089,8 @@ def eval_main(cfg: EvalPipelineConfig):
             videos_dir=Path(cfg.output_dir) / "videos",
             start_seed=cfg.seed,
             max_parallel_tasks=cfg.env.max_parallel_tasks,
+            forced_skill_token_sequences_by_task=forced_skill_token_sequences_by_task,
+            reference_skill_token_sequences_by_task=reference_skill_token_sequences_by_task,
         )
         print("Overall Aggregated Metrics:")
         print(info["overall"])
@@ -924,16 +1256,168 @@ def eval_main(cfg: EvalPipelineConfig):
                 wandb.log(skill_timeline_log)
 
             # Log codebook token sequence table
-            token_records_all = info.get("skill_token_records", [])
+            token_records_all = info.get("overall", {}).get("skill_token_records", [])
             if token_records_all:
+                def _pairwise_pred_skill_consistency(records: list[dict], task_group: str, task_id: int) -> list[list]:
+                    model = getattr(policy, "model", None)
+                    codebook = getattr(model, "_vqae_codebook", None)
+                    if codebook is None or codebook.numel() == 0:
+                        return []
+                    cb = codebook.detach().float().cpu()
+                    by_skill: dict[int, list[dict]] = defaultdict(list)
+                    for record in records:
+                        token = int(record.get("codebook_token", -1))
+                        if 0 <= token < cb.shape[0]:
+                            by_skill[int(record.get("skill_idx", -1))].append(record)
+
+                    rows = []
+                    for skill_idx, skill_records in sorted(by_skill.items()):
+                        if skill_idx < 0 or len(skill_records) < 2:
+                            continue
+                        cosines = []
+                        tokens = [int(r["codebook_token"]) for r in skill_records]
+                        for i in range(len(tokens)):
+                            for j in range(i + 1, len(tokens)):
+                                a = cb[tokens[i]]
+                                b = cb[tokens[j]]
+                                cosines.append(float(F.cosine_similarity(a[None], b[None]).item()))
+                        if not cosines:
+                            continue
+                        rows.append(
+                            [
+                                task_group,
+                                task_id,
+                                skill_idx,
+                                len(skill_records),
+                                len(set(tokens)),
+                                float(np.mean(cosines)),
+                                float(np.std(cosines)),
+                                float(np.min(cosines)),
+                                float(np.max(cosines)),
+                                ",".join(str(t) for t in tokens),
+                                ",".join(str(int(r.get("episode", -1))) for r in skill_records),
+                            ]
+                        )
+                    return rows
+
+                consistency_rows: list[list] = []
+                for task_info in info.get("per_task", []):
+                    consistency_rows.extend(
+                        _pairwise_pred_skill_consistency(
+                            task_info.get("metrics", {}).get("skill_token_records", []),
+                            task_info.get("task_group", "unknown"),
+                            int(task_info.get("task_id", -1)),
+                        )
+                    )
+                if consistency_rows:
+                    consistency_columns = [
+                        "task_group",
+                        "task_id",
+                        "skill_idx",
+                        "n_episodes",
+                        "n_unique_pred_tokens",
+                        "mean_pairwise_cosine",
+                        "std_pairwise_cosine",
+                        "min_pairwise_cosine",
+                        "max_pairwise_cosine",
+                        "pred_tokens_by_episode",
+                        "episodes",
+                    ]
+                    consistency_table = wandb.Table(columns=consistency_columns, data=consistency_rows)
+                    consistency_means = [float(row[5]) for row in consistency_rows]
+                    consistency_log = {
+                        "eval/skill_consistency_cosine_mean": float(np.mean(consistency_means)),
+                        "eval/skill_consistency_cosine_min": float(np.min(consistency_means)),
+                        "eval/skill_consistency_n_groups": len(consistency_rows),
+                    }
+                    wandb.run.summary.update(consistency_log)
+                    wandb.log(
+                        {
+                            **consistency_log,
+                            "tables/task_episode_skill_consistency": consistency_table,
+                        }
+                    )
+
+                valid_cos = [
+                    float(r["codebook_cosine"])
+                    for r in token_records_all
+                    if not np.isnan(float(r.get("codebook_cosine", np.nan)))
+                ]
+                valid_l2 = [
+                    float(r["codebook_l2"])
+                    for r in token_records_all
+                    if not np.isnan(float(r.get("codebook_l2", np.nan)))
+                ]
+                valid_rank = [
+                    int(r["codebook_label_neighbor_rank"])
+                    for r in token_records_all
+                    if int(r.get("codebook_label_neighbor_rank", -1)) > 0
+                ]
+                similarity_log = {}
+                if valid_cos:
+                    similarity_log["eval/skill_codebook_cosine_mean"] = float(np.mean(valid_cos))
+                    similarity_log["eval/skill_codebook_cosine_min"] = float(np.min(valid_cos))
+                if valid_l2:
+                    similarity_log["eval/skill_codebook_l2_mean"] = float(np.mean(valid_l2))
+                if valid_rank:
+                    similarity_log["eval/skill_codebook_neighbor_rank_mean"] = float(np.mean(valid_rank))
+                if similarity_log:
+                    wandb.run.summary.update(similarity_log)
+                    wandb.log(similarity_log)
+
+                token_columns = [
+                    "episode",
+                    "skill_idx",
+                    "episode_timestep",
+                    "skill_source",
+                    "pred_codebook_token",
+                    "label_codebook_token",
+                    "token_match",
+                    "has_label_records",
+                    "has_label_prior",
+                    "pred_prior_length",
+                    "end_signal_timestep",
+                    "end_signal_prob",
+                    "codebook_cosine",
+                    "codebook_l2",
+                    "codebook_label_neighbor_rank",
+                    "label_prior_length",
+                    "dataset_skill_length",
+                    "dataset_start_prior_length",
+                    "eval_minus_dataset_skill_length",
+                    "eval_minus_dataset_start_prior_length",
+                    "pred_minus_label_prior_length",
+                ]
                 token_table = wandb.Table(
-                    columns=["episode", "skill_idx", "episode_timestep", "codebook_token", "skill_length"],
+                    columns=token_columns,
                     data=[
-                        [r["episode"], r["skill_idx"], r["episode_timestep"], r["codebook_token"], r["skill_length"]]
+                        [
+                            r["episode"],
+                            r["skill_idx"],
+                            r["episode_timestep"],
+                            r.get("skill_source", "unknown"),
+                            r["codebook_token"],
+                            r.get("label_codebook_token", -1),
+                            r.get("token_match", False),
+                            r.get("has_label_records", False),
+                            r.get("has_label_prior", False),
+                            r["skill_length"],
+                            r.get("end_signal_timestep", -1),
+                            r.get("end_signal_prob", -1.0),
+                            r.get("codebook_cosine", np.nan),
+                            r.get("codebook_l2", np.nan),
+                            r.get("codebook_label_neighbor_rank", -1),
+                            r.get("label_prior_length", -1),
+                            r.get("dataset_skill_length", -1),
+                            r.get("dataset_prior_length", -1),
+                            r.get("eval_minus_dataset_skill_length"),
+                            r.get("eval_minus_dataset_prior_length"),
+                            r.get("pred_minus_label_prior_length"),
+                        ]
                         for r in token_records_all
                     ],
                 )
-                wandb.log({"tables/skill_codebook_tokens": token_table})
+                wandb.log({"tables/skill_codebook_tokens_and_lengths": token_table})
 
             wandb.finish()
             logging.info("Logged eval results to wandb.")
@@ -951,6 +1435,7 @@ class TaskMetrics(TypedDict):
     video_paths: list[str]
     skill_plot_paths: list[str]
     skill_timeline_paths: list[str]
+    skill_token_records: list[dict]
 
 
 ACC_KEYS = (
@@ -960,6 +1445,7 @@ ACC_KEYS = (
     "video_paths",
     "skill_plot_paths",
     "skill_timeline_paths",
+    "skill_token_records",
 )
 
 
@@ -976,6 +1462,8 @@ def eval_one(
     videos_dir: Path | None,
     return_episode_data: bool,
     start_seed: int | None,
+    forced_skill_token_sequences: list[list[int]] | None = None,
+    reference_skill_token_sequences: list[list[int]] | None = None,
 ) -> TaskMetrics:
     """Evaluates one task_id of one suite using the provided vec env."""
 
@@ -993,6 +1481,8 @@ def eval_one(
         videos_dir=task_videos_dir,
         return_episode_data=return_episode_data,
         start_seed=start_seed,
+        forced_skill_token_sequences=forced_skill_token_sequences,
+        reference_skill_token_sequences=reference_skill_token_sequences,
     )
 
     per_episode = task_result["per_episode"]
@@ -1003,6 +1493,7 @@ def eval_one(
         video_paths=task_result.get("video_paths", []),
         skill_plot_paths=task_result.get("skill_plot_paths", []),
         skill_timeline_paths=task_result.get("skill_timeline_paths", []),
+        skill_token_records=task_result.get("skill_token_records", []),
     )
 
 
@@ -1021,6 +1512,8 @@ def run_one(
     videos_dir: Path | None,
     return_episode_data: bool,
     start_seed: int | None,
+    forced_skill_token_sequences_by_task: dict[tuple[str, int], list[list[int]]] | None = None,
+    reference_skill_token_sequences_by_task: dict[tuple[str, int], list[list[int]]] | None = None,
 ):
     """
     Run eval_one for a single (task_group, task_id, env).
@@ -1045,6 +1538,16 @@ def run_one(
         videos_dir=task_videos_dir,
         return_episode_data=return_episode_data,
         start_seed=start_seed,
+        forced_skill_token_sequences=(
+            None
+            if forced_skill_token_sequences_by_task is None
+            else forced_skill_token_sequences_by_task.get((task_group, task_id))
+        ),
+        reference_skill_token_sequences=(
+            None
+            if reference_skill_token_sequences_by_task is None
+            else reference_skill_token_sequences_by_task.get((task_group, task_id))
+        ),
     )
     # ensure we always provide video_paths key to simplify accumulation
     if max_episodes_rendered > 0:
@@ -1068,6 +1571,8 @@ def eval_policy_all(
     return_episode_data: bool = False,
     start_seed: int | None = None,
     max_parallel_tasks: int = 1,
+    forced_skill_token_sequences_by_task: dict[tuple[str, int], list[list[int]]] | None = None,
+    reference_skill_token_sequences_by_task: dict[tuple[str, int], list[list[int]]] | None = None,
 ) -> dict:
     """
     Evaluate a nested `envs` dict: {task_group: {task_id: vec_env}}.
@@ -1117,6 +1622,10 @@ def eval_policy_all(
         if skill_timeline_paths:
             group_acc[group]["skill_timeline_paths"].extend(skill_timeline_paths)
             overall["skill_timeline_paths"].extend(skill_timeline_paths)
+        skill_token_records = metrics.get("skill_token_records", [])
+        if skill_token_records:
+            group_acc[group]["skill_token_records"].extend(skill_token_records)
+            overall["skill_token_records"].extend(skill_token_records)
 
     # Choose runner (sequential vs threaded)
     task_runner = partial(
@@ -1131,6 +1640,8 @@ def eval_policy_all(
         videos_dir=videos_dir,
         return_episode_data=return_episode_data,
         start_seed=start_seed,
+        forced_skill_token_sequences_by_task=forced_skill_token_sequences_by_task,
+        reference_skill_token_sequences_by_task=reference_skill_token_sequences_by_task,
     )
 
     if max_parallel_tasks <= 1:
@@ -1170,6 +1681,7 @@ def eval_policy_all(
             "video_paths": list(acc["video_paths"]),
             "skill_plot_paths": list(acc["skill_plot_paths"]),
             "skill_timeline_paths": list(acc["skill_timeline_paths"]),
+            "skill_token_records": list(acc["skill_token_records"]),
         }
 
     # overall aggregates
@@ -1183,6 +1695,7 @@ def eval_policy_all(
         "video_paths": list(overall["video_paths"]),
         "skill_plot_paths": list(overall["skill_plot_paths"]),
         "skill_timeline_paths": list(overall["skill_timeline_paths"]),
+        "skill_token_records": list(overall["skill_token_records"]),
     }
 
     return {

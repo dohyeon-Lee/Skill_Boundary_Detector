@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=skillVLA_VQAE_PT
+#SBATCH --job-name=skillVLA_vqvae_train
 
 # SBATCH --partition=asus_pro6000
 # SBATCH --qos=pro6000_qos
@@ -31,28 +31,37 @@ echo "START JOB"
 echo "Node: $SLURMD_NODENAME"
 nvidia-smi
 
-# ── 설정 ──────────────────────────────────────────────────────────────────────
-# Dataset must have skill_latent as int32 token (add_skill_latents_to_dataset with VQAE npz)
-DATASET=libero_90_skillvla_vqae
+# ── Dataset / checkpoints ────────────────────────────────────────────────────
+# Dataset must have skill_sequence/skill_index columns from add_skill_latents_to_dataset.py.
+DATASET=libero_90_skillvla
 DATASET_ROOT=libero_dataset
 PI_BASE=lerobot/pi05_base
 
-LATENT_DIM=64
-NUM_EMBEDDINGS=512
-VQAE_STEP=10000
+LATENT_DIM=128
+NUM_EMBEDDINGS=128
+VQVAE_STEP=1500
 SKILLSET=libero_90_skillset
 
-VQAE_CKPT=${HOMEDIR}${PROJDIR}/outputs/${SKILLSET}_latents/libero_90_lat${LATENT_DIM}_vq${NUM_EMBEDDINGS}/spline_vqae_epoch$(printf '%04d' ${VQAE_STEP}).pt
+VQVAE_CKPT=${HOMEDIR}${PROJDIR}/outputs/${SKILLSET}_latents/libero_90_vqvae_dinov3_vits16_gru_mlp_zero_lat${LATENT_DIM}_vq${NUM_EMBEDDINGS}_0.1_exp3/spline_vqae_epoch$(printf '%04d' ${VQVAE_STEP}).pt
 
+# ── Optimization ─────────────────────────────────────────────────────────────
 LR=2.5e-05
 BATCH_SIZE=32
 NUM_WORKERS=4
 NUM_GPUS=1
 
-# VQAE mode: skill predictor does token classification (CE loss)
+# ── SkillVLA losses / boundary randomization ────────────────────────────────
 SP_LOSS_WEIGHT=1.0
+SKILL_DECODER_LOSS_WEIGHT=1.0
+SKILL_DECODER_END_POS_WEIGHT=1.0
+SKILL_DECODER_END_THRESHOLD=0.5
+SKILL_DECODER_STATE_INDICES="[0,1,2,3,4,5]"
+FREEZE_VAE_DECODER=false
+INFERENCE_SKILL_MAX_ORDER=20
+INFERENCE_SKILL_MAX_LENGTH=200
+SKILL_BOUNDARY_RANDOM_P=10
 
-# true: action expert가 image token만 attend (language 차단)
+# true: action expert attends to image/state prefix tokens, not language tokens.
 BLOCK_LANG=true
 
 # context: Paligemma prefix-only forward 이후 contextual hidden
@@ -64,11 +73,9 @@ PREDICTED_LATENT_SAMPLING=true
 PREDICTED_LATENT_START_STEP=0
 PREDICTED_LATENT_RAMP_STEPS=50000
 PREDICTED_LATENT_MAX_PROB=1.0
-PREDICTED_LATENT_DETACH=true
 
-VAE_PRIOR_SCALE=0.5
-
-OUTPUT_DIR=../outputs/PT_${DATASET}_coupled_${PREDICTED_LATENT_SAMPLING}_${SP_PREFIX_SOURCE}_lat${LATENT_DIM}_vq${NUM_EMBEDDINGS}
+RUN_NAME=${DATASET}_${PREDICTED_LATENT_SAMPLING}_${SP_PREFIX_SOURCE}_lat${LATENT_DIM}_vq${NUM_EMBEDDINGS}
+OUTPUT_DIR=../outputs/PT_${RUN_NAME}
 CONFIG_PATH=${OUTPUT_DIR}/checkpoints/last/pretrained_model/train_config.json
 
 RESUME_ARGS=""
@@ -82,14 +89,14 @@ else
     echo "No checkpoint found. Starting fresh training."
 fi
 
-# ── Stage 3 VQAE: joint 학습 — token CE skill predictor ──────────────────────
+# ── SkillVLA VQ-VAE-end training ─────────────────────────────────────────────
 PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes=${NUM_GPUS} \
     ${HOMEDIR}${PROJDIR}/.venv/bin/lerobot-train \
     --dataset.repo_id=dohyeon/${DATASET} \
     --dataset.root=${HOMEDIR}${PROJDIR}/${DATASET_ROOT}/${DATASET} \
     --policy.type=skill_vla \
     --output_dir=${OUTPUT_DIR} \
-    --job_name=${DATASET}_PT_coupled_${PREDICTED_LATENT_SAMPLING}_vqae \
+    --job_name=${RUN_NAME} \
     --policy.pretrained_path=${PI_BASE} \
     --policy.compile_model=false \
     --policy.gradient_checkpointing=true \
@@ -99,18 +106,23 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes=${
     --policy.freeze_vision_encoder=false \
     --policy.push_to_hub=false \
     --policy.block_lang_to_action=${BLOCK_LANG} \
-    --policy.vae_decoder_path=${VQAE_CKPT} \
-    --policy.vae_prior_scale=${VAE_PRIOR_SCALE} \
+    --policy.vae_decoder_path=${VQVAE_CKPT} \
+    --policy.freeze_vae_decoder=${FREEZE_VAE_DECODER} \
     --policy.skill_latent_dim=${LATENT_DIM} \
-    --policy.skill_predictor_state_dim=8 \
     --policy.skill_predictor_num_embeddings=${NUM_EMBEDDINGS} \
     --policy.skill_predictor_prefix_source=${SP_PREFIX_SOURCE} \
     --policy.skill_predictor_loss_weight=${SP_LOSS_WEIGHT} \
+    --policy.skill_decoder_loss_weight=${SKILL_DECODER_LOSS_WEIGHT} \
+    --policy.skill_decoder_end_pos_weight=${SKILL_DECODER_END_POS_WEIGHT} \
+    --policy.skill_decoder_end_threshold=${SKILL_DECODER_END_THRESHOLD} \
+    --policy.skill_decoder_state_indices=${SKILL_DECODER_STATE_INDICES} \
+    --policy.inference_skill_max_order=${INFERENCE_SKILL_MAX_ORDER} \
+    --policy.inference_skill_max_length=${INFERENCE_SKILL_MAX_LENGTH} \
+    --policy.skill_boundary_random_p=${SKILL_BOUNDARY_RANDOM_P} \
     --policy.predicted_latent_sampling=${PREDICTED_LATENT_SAMPLING} \
     --policy.predicted_latent_start_step=${PREDICTED_LATENT_START_STEP} \
     --policy.predicted_latent_ramp_steps=${PREDICTED_LATENT_RAMP_STEPS} \
     --policy.predicted_latent_max_prob=${PREDICTED_LATENT_MAX_PROB} \
-    --policy.predicted_latent_detach=${PREDICTED_LATENT_DETACH} \
     --save_freq=5000 \
     --steps=100000 \
     --policy.device=cuda \

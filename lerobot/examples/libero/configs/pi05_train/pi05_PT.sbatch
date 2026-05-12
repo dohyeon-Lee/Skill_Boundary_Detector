@@ -71,7 +71,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes=${
     --policy.freeze_vision_encoder=false \
     --policy.train_expert_only=false \
     --policy.push_to_hub=false \
-    --save_freq=10000 \
+    --save_freq=5000 \
     --steps=100000 \
     --policy.device=cuda \
     --dataset.video_backend=pyav \

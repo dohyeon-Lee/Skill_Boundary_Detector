@@ -261,7 +261,12 @@ def make_pre_post_processors(
             skill_vla_transition_to_batch,
         )
 
-        if pretrained_path:
+        # Fresh SkillVLA training starts from a PI05 checkpoint for model weights,
+        # but it must not reuse the PI05 processor: SkillVLA needs an extra early
+        # step that preserves raw observation.state as skill_decoder_state before
+        # normalization. During resume/eval, dataset_stats is absent and we load
+        # the processor saved with the SkillVLA checkpoint.
+        if pretrained_path and kwargs.get("dataset_stats") is None:
             return (
                 PolicyProcessorPipeline.from_pretrained(
                     pretrained_model_name_or_path=pretrained_path,

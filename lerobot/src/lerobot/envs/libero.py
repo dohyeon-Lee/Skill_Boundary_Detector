@@ -362,6 +362,7 @@ def _make_env_fns(
     camera_names: list[str],
     episode_length: int | None,
     init_states: bool,
+    init_state_offset: int,
     gym_kwargs: Mapping[str, Any],
     control_mode: str,
 ) -> list[Callable[[], LiberoEnv]]:
@@ -384,7 +385,7 @@ def _make_env_fns(
 
     fns: list[Callable[[], LiberoEnv]] = []
     for episode_index in range(n_envs):
-        fns.append(partial(_make_env, episode_index, **gym_kwargs))
+        fns.append(partial(_make_env, init_state_offset + episode_index, **gym_kwargs))
     return fns
 
 
@@ -418,6 +419,7 @@ def create_libero_envs(
 
     gym_kwargs = dict(gym_kwargs or {})
     task_ids_filter = gym_kwargs.pop("task_ids", None)  # optional: limit to specific tasks
+    init_state_offset = int(gym_kwargs.pop("init_state_offset", 0))
 
     camera_names = _parse_camera_names(camera_name)
     suite_names = [s.strip() for s in str(task).split(",") if s.strip()]
@@ -429,6 +431,8 @@ def create_libero_envs(
     )
     if task_ids_filter is not None:
         print(f"Restricting to task_ids={task_ids_filter}")
+    if init_state_offset:
+        print(f"Using LIBERO init_state_offset={init_state_offset}")
 
     out: dict[str, dict[int, Any]] = defaultdict(dict)
     for suite_name in suite_names:
@@ -447,6 +451,7 @@ def create_libero_envs(
                 n_envs=n_envs,
                 camera_names=camera_names,
                 init_states=init_states,
+                init_state_offset=init_state_offset,
                 gym_kwargs=gym_kwargs,
                 control_mode=control_mode,
             )
