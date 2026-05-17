@@ -20,13 +20,13 @@ source ${HOMEDIR}${PROJDIR}/.venv/bin/activate
 unset LD_LIBRARY_PATH
 
 # ── 설정 ──────────────────────────────────────────────────────────────────────
-CHECKPOINT_EPOCH=2000
+CHECKPOINT_EPOCH=500
 DATA=libero_90
-LATENT_DIM=128
-NUM_EMBEDDINGS=128
+LATENT_DIM=32
+NUM_EMBEDDINGS=10
 ENCODER_TYPE=gru
 DECODER_RNN_TYPE=mlp
-ZERO_START_EEF=true
+ZERO_START_EEF=false
 END_POS_WEIGHT=1
 COMMITMENT_COST=0.1   # default 0.25;
 VISUAL_BACKBONE=dinov3_vits16 # dinov2_small

@@ -35,21 +35,19 @@ echo "Node: $SLURMD_NODENAME"
 nvidia-smi
 
 # ── SkillVLA checkpoint ──────────────────────────────────────────────────────
-DATASET=libero_90_skillvla
-DATASET_ROOT=libero_dataset
-
 LATENT_DIM=128
 NUM_EMBEDDINGS=128
-PREDICTED_LATENT_SAMPLING=true
-SP_PREFIX_SOURCE=embs
 
-RUN_NAME=${DATASET}_${PREDICTED_LATENT_SAMPLING}_${SP_PREFIX_SOURCE}_lat${LATENT_DIM}_vq${NUM_EMBEDDINGS}
-MODEL=PT_${RUN_NAME}
-CHECKPOINT=025000
+# Set this directly so PT and FT checkpoints can be evaluated without changing
+# dataset/label variables below.
+# Example PT: PT_libero_90_skillvla_true_embs_lat128_vq128
+# Example FT: FT_025000PT_libero_10_op1_10_skillvlaFT_true_embs_lat128_vq128
+MODEL=FT_025000PT_libero_10_op1_10_skillvlaFT_true_embs_lat128_vq128_true # PT_libero_90_skillvla_true_embs_lat128_vq128
+CHECKPOINT=030000 # 025000
 POLICY_PATH=${HOMEDIR}${PROJDIR}/outputs/${MODEL}/checkpoints/${CHECKPOINT}/pretrained_model
 
 # ── VQ-VAE decoder used for end-signal inference ─────────────────────────────
-SKILLSET=libero_90_skillset
+SKILLSET=libero_90_skillset 
 VQVAE_STEP=1500
 VQVAE_CKPT=${HOMEDIR}${PROJDIR}/outputs/${SKILLSET}_latents/libero_90_vqvae_dinov3_vits16_gru_mlp_zero_lat${LATENT_DIM}_vq${NUM_EMBEDDINGS}_0.1_exp3/spline_vqae_epoch$(printf '%04d' ${VQVAE_STEP}).pt
 
@@ -60,15 +58,20 @@ INFERENCE_SKILL_MAX_LENGTH=200
 
 # ── Eval settings ────────────────────────────────────────────────────────────
 TARGET_TASK=libero_10
-TASK_IDS="[1,2,3]"
+TASK_IDS="[0,1,2,3,4,5,6,7,8,9]"
 N_EPISODES=1
 N_ACTION_STEPS=5
 
 # Optional oracle/diagnostic modes. Default eval uses predicted skill tokens.
-USE_LABEL_SKILL_TOKENS=false
+USE_LABEL_SKILL_TOKENS=false  # false
 COMPARE_LABEL_SKILL_TOKENS=true
 LABEL_EPISODE_OFFSET=0
-LABEL_DATASET_DIR=${HOMEDIR}${PROJDIR}/${DATASET_ROOT}/${DATASET}
+
+# Keep DATASET/DATASET_ROOT tied to POLICY_PATH above. Label tokens can come from
+# a different add_skill_latents_to_dataset.py output, e.g. libero_10_skillvla.
+LABEL_DATASET=libero_10_op1_10_skillvla # libero_10_op1_10_skillvla
+LABEL_DATASET_ROOT=libero_dataset
+LABEL_DATASET_DIR=${HOMEDIR}${PROJDIR}/${LABEL_DATASET_ROOT}/${LABEL_DATASET}
 
 # Leave empty to use the checkpoint config. Set to "context" or "embs" to override.
 SP_PREFIX_SOURCE_OVERRIDE=""

@@ -77,6 +77,10 @@ SKILL_BOUNDARY_RANDOM_P=10
 
 # Fine-tuning follows pi05_FT: keep the vision encoder frozen by default.
 FREEZE_VISION_ENCODER=true
+# true: freeze the full Paligemma VLM, while leaving the action expert,
+# skill predictor, and SkillVLA projection/decoder modules controlled by
+# their own freeze flags.
+TRAIN_EXPERT_ONLY=false
 
 # true: action expert attends to image/state prefix tokens, not language tokens.
 BLOCK_LANG=true
@@ -92,7 +96,7 @@ PREDICTED_LATENT_START_STEP=0
 PREDICTED_LATENT_RAMP_STEPS=30000
 PREDICTED_LATENT_MAX_PROB=1.0
 
-RUN_NAME=${PT_CHECKPOINT}PT_${FT_DATASET}FT_${PREDICTED_LATENT_SAMPLING}_${SP_PREFIX_SOURCE}_lat${LATENT_DIM}_vq${NUM_EMBEDDINGS}
+RUN_NAME=${PT_CHECKPOINT}PT_${FT_DATASET}FT_${PREDICTED_LATENT_SAMPLING}_${SP_PREFIX_SOURCE}_lat${LATENT_DIM}_vq${NUM_EMBEDDINGS}_${TRAIN_EXPERT_ONLY}
 OUTPUT_DIR=../outputs/FT_${RUN_NAME}
 CONFIG_PATH=${OUTPUT_DIR}/checkpoints/last/pretrained_model/train_config.json
 
@@ -122,6 +126,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes=${
     --wandb.project=VLA_Finetune \
     --policy.dtype=bfloat16 \
     --policy.freeze_vision_encoder=${FREEZE_VISION_ENCODER} \
+    --policy.train_expert_only=${TRAIN_EXPERT_ONLY} \
     --policy.push_to_hub=false \
     --policy.block_lang_to_action=${BLOCK_LANG} \
     --policy.vae_decoder_path=${VQVAE_CKPT} \
@@ -141,7 +146,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes=${
     --policy.predicted_latent_start_step=${PREDICTED_LATENT_START_STEP} \
     --policy.predicted_latent_ramp_steps=${PREDICTED_LATENT_RAMP_STEPS} \
     --policy.predicted_latent_max_prob=${PREDICTED_LATENT_MAX_PROB} \
-    --save_freq=5000 \
+    --save_freq=2000 \
     --steps=100000 \
     --policy.device=cuda \
     --dataset.video_backend=pyav \
