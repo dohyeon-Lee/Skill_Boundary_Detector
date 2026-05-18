@@ -51,8 +51,13 @@ class Args:
     # Changed / green 검출
     min_centroid_dist: float = 20.0
     min_visible_ratio: float = 0.1
-    top_crop_ratio: float = 0.4
+    changed_top_crop_ratio: float = 0.15
+    """changed(빨강) 물체 검출 시 상단 제외 비율."""
+    green_top_crop_ratio: float = 0.3
+    """green(초록) 물체 검출 시 상단 제외 비율."""
     changed_prop_back: int = 2
+    min_object_area_ratio: float = 0.002
+    """changed 검출 시 start 마스크 면적이 이미지 대비 이 비율 미만이면 무시."""
     # DINOv3
     dino_model: str = "/data2/dohyeon/SBD/models/dinov3-vits16"
     image_size: int = 224
@@ -195,17 +200,25 @@ def _centroid(mask):
 
 def compute_changed_objects(start_obj, end_obj, gripper_id=0,
                             min_centroid_dist=5.0, min_visible_ratio=0.4,
-                            top_crop_ratio=0.0) -> set[int]:
+                            top_crop_ratio=0.0, min_object_area_ratio=0.0,
+                            exempt_ids: set[int] | None = None) -> set[int]:
+    """
+    exempt_ids: 이전 스킬에서 이미 changed로 검출된 obj_id 집합.
+    top_crop_ratio 필터를 적용하되, exempt_ids에 속한 물체는 상단에 있어도 제외하지 않음.
+    """
     changed: set[int] = set()
     for obj_id in set(start_obj) | set(end_obj):
         if obj_id == gripper_id: continue
         s_mask = start_obj.get(obj_id); e_mask = end_obj.get(obj_id)
         if s_mask is None or not s_mask.any(): continue
         if e_mask is None or not e_mask.any(): continue
-        if top_crop_ratio > 0.0:
+        if top_crop_ratio > 0.0 and (exempt_ids is None or obj_id not in exempt_ids):
             c = _centroid(s_mask)
             if c is not None and c[0] < s_mask.shape[0] * top_crop_ratio: continue
         s_area, e_area = s_mask.sum(), e_mask.sum()
+        if min_object_area_ratio > 0.0:
+            total = s_mask.shape[0] * s_mask.shape[1]
+            if s_area / total < min_object_area_ratio: continue
         if min_visible_ratio > 0.0 and min(s_area, e_area) / max(s_area, e_area) < min_visible_ratio:
             continue
         c_s = _centroid(s_mask); c_e = _centroid(e_mask)
@@ -520,16 +533,22 @@ def main(args: Args) -> None:
         tracked = track_episode(vid_pred, ep_frames, init_masks, target_indices, args.device)
 
         # pre-pass: changed/green 검출 + 범위 기반 전파
+        # 스킬 순서대로 처리 — 이전 스킬의 changed IDs를 exempt로 전달
         skill_changed_map: dict[int, set[int]] = {}
-        for s in skills:
+        cumulative_changed: set[int] = set()
+        for s in sorted(skills, key=lambda x: x["skill_index"]):
             fi_s = min(s["frame_start"], T - 1)
             fi_e = min(s["frame_end"] - 1, T - 1)
-            skill_changed_map[s["skill_index"]] = compute_changed_objects(
+            detected = compute_changed_objects(
                 tracked.get(fi_s, {}), tracked.get(fi_e, {}),
                 min_centroid_dist=args.min_centroid_dist,
                 min_visible_ratio=args.min_visible_ratio,
-                top_crop_ratio=args.top_crop_ratio,
+                top_crop_ratio=args.changed_top_crop_ratio,
+                min_object_area_ratio=args.min_object_area_ratio,
+                exempt_ids=cumulative_changed,
             )
+            skill_changed_map[s["skill_index"]] = detected
+            cumulative_changed |= detected
 
         # movement group 구성
         changed_indices = sorted(k for k, v in skill_changed_map.items() if v)
@@ -558,7 +577,7 @@ def main(args: Args) -> None:
             orig_changed: set[int] = set()
             for si in group: orig_changed |= skill_changed_map[si]
             group_green[(group[0], group[-1])] = find_closest_to_changed(
-                orig_changed, tracked.get(fi_e, {}), top_crop_ratio=args.top_crop_ratio,
+                orig_changed, tracked.get(fi_e, {}), top_crop_ratio=args.green_top_crop_ratio,
             )
 
         # 범위 기반 전파: [first - bp, last]

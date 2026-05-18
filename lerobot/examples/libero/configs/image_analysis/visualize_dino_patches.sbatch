@@ -29,9 +29,10 @@ SAM2_CONFIG=configs/sam2.1/sam2.1_hiera_l.yaml
 
 MAX_EPISODES_PER_TASK=1
 
-MIN_CENTROID_DIST=20.0
-MIN_VISIBLE_RATIO=0.1
-TOP_CROP_RATIO=0.4
+MIN_CENTROID_DIST=30.0
+MIN_VISIBLE_RATIO=0.05
+CHANGED_TOP_CROP_RATIO=0.35
+GREEN_TOP_CROP_RATIO=0.35
 CHANGED_PROP_BACK=2
 
 DINO_MODEL=${HOMEDIR}${PROJDIR}/models/dinov3-vits16   # patch_size=16 → 14x14=196 patches
@@ -62,10 +63,11 @@ PYTHONPATH=${HOMEDIR}${PROJDIR}/lerobot/src \
     --min_stability_score    0.85 \
     --gripper_point          128 45 \
     --max_episodes_per_task  ${MAX_EPISODES_PER_TASK} \
-    --min_centroid_dist      ${MIN_CENTROID_DIST} \
-    --min_visible_ratio      ${MIN_VISIBLE_RATIO} \
-    --top_crop_ratio         ${TOP_CROP_RATIO} \
-    --changed_prop_back      ${CHANGED_PROP_BACK} \
+    --min_centroid_dist        ${MIN_CENTROID_DIST} \
+    --min_visible_ratio        ${MIN_VISIBLE_RATIO} \
+    --changed_top_crop_ratio   ${CHANGED_TOP_CROP_RATIO} \
+    --green_top_crop_ratio     ${GREEN_TOP_CROP_RATIO} \
+    --changed_prop_back        ${CHANGED_PROP_BACK} \
     --dino_model             ${DINO_MODEL} \
     --image_size             224 \
     --patch_size             16 \

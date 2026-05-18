@@ -11,8 +11,9 @@ QOS=big_qos
 HOMEDIR=/data2/dohyeon
 PROJDIR=/SBD
 VISUAL_BACKBONE=dinov3_vits16 # dinov2_small, dinov3_vits16, dinov3_convnext_small
-DATA=libero_10_op1_10                # libero_90, libero_10, libero_10_op1_50, ...
-DATADIR=libero_small_dataset        # libero_dataset, libero_small_dataset
+DATA=libero_90                # libero_90, libero_10, libero_10_op1_50, ...
+DATADIR=libero_dataset        # libero_dataset, libero_small_dataset
+SAM2_OUTPUT_DIR=${HOMEDIR}${PROJDIR}/outputs/${DATA}_skillset_FSQ
 # ─────────────────────────────────────────────────────
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -70,7 +71,7 @@ if [ "$N_WORKERS" -eq 0 ]; then
     exit 1
 fi
 
-COMMON_EXPORT="ALL,N_WORKERS=${N_WORKERS},HOMEDIR=${HOMEDIR},PROJDIR=${PROJDIR},VISUAL_BACKBONE=${VISUAL_BACKBONE},DATA=${DATA},DATADIR=${DATADIR}"
+COMMON_EXPORT="ALL,N_WORKERS=${N_WORKERS},HOMEDIR=${HOMEDIR},PROJDIR=${PROJDIR},VISUAL_BACKBONE=${VISUAL_BACKBONE},DATA=${DATA},DATADIR=${DATADIR},SAM2_OUTPUT_DIR=${SAM2_OUTPUT_DIR}"
 JOB_IDS=()
 WORKER_OFFSET=0
 ALL_NODES=()
@@ -113,7 +114,36 @@ MERGE_JOB=$(sbatch --parsable \
     precompute_dino_merge.sbatch)
 echo "Merge job: ${MERGE_JOB}  (starts after all workers finish)"
 
+# ── SAM2 mask precompute (DINO와 병렬 실행) ──────────────────────────────────
+echo ""
+echo "=== Submitting SAM2 mask workers ==="
+SAM2_JOB_IDS=()
+SAM2_WORKER_OFFSET=0
+
+for node in "${SORTED_NODES[@]}"; do
+    w=${NODE_WORKERS[$node]}
+    [ "$w" -eq 0 ] && continue
+
+    part=${NODE_PARTITION[$node]}
+    START=$SAM2_WORKER_OFFSET
+    END=$(( SAM2_WORKER_OFFSET + w - 1 ))
+
+    JOB=$(sbatch --parsable \
+        --partition="$part" \
+        --qos="$QOS" \
+        --nodelist="$node" \
+        --array="${START}-${END}" \
+        --export="$COMMON_EXPORT" \
+        precompute_sam2_masks_worker.sbatch)
+    SAM2_JOB_IDS+=("$JOB")
+    echo "${node} SAM2 job: ${JOB}  (workers ${START}–${END})"
+
+    SAM2_WORKER_OFFSET=$(( SAM2_WORKER_OFFSET + w ))
+done
+
 echo ""
 echo "Backbone: ${VISUAL_BACKBONE}"
 echo "Monitor: squeue -u \$USER"
 echo "Logs   : tail -f logs/DINO_worker_${JOB_IDS[0]}_0.err"
+echo "SAM2   : tail -f logs/SAM2_masks_${SAM2_JOB_IDS[0]}_0.err"
+echo "Output : ${SAM2_OUTPUT_DIR}"
