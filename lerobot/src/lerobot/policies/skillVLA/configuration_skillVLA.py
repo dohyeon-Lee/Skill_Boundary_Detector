@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from lerobot.configs.policies import PreTrainedConfig
 from lerobot.policies.pi05.configuration_pi05 import PI05Config
@@ -7,21 +7,22 @@ from lerobot.policies.pi05.configuration_pi05 import PI05Config
 @PreTrainedConfig.register_subclass("skill_vla")
 @dataclass
 class SkillVLAConfig(PI05Config):
-    """SkillVLA with VLM, action expert, skill predictor, and VQ-VAE end decoder.
+    """SkillVLA with VLM, action expert, skill predictor, and FSQ end decoder.
 
-    The action expert denoises actions from noise. The VQ-VAE decoder is used
+    The action expert denoises actions from noise. The FSQ decoder is used
     only for end-signal supervision/control.
     """
 
     model_type: str = "skill_vla"
 
-    skill_latent_dim: int = 64
+    skill_latent_dim: int = 3
+    skill_fsq_levels: list[int] = field(default_factory=lambda: [5, 5, 5])
     skill_predictor_hidden_dim: int = 512
     skill_predictor_num_heads: int = 8
     skill_predictor_num_layers: int = 2
     skill_predictor_num_query_tokens: int = 4
     skill_predictor_dropout: float = 0.0
-    skill_predictor_num_embeddings: int = 512   # VQ-VAE codebook size
+    skill_predictor_num_embeddings: int = 125   # FSQ code count; inferred from skill_fsq_levels/checkpoint when possible.
     # "context": Paligemma contextual prefix hidden states. "embs": raw embed_prefix token embeddings.
     skill_predictor_prefix_source: str = "context"
     skill_predictor_loss_weight: float = 1.0
@@ -33,13 +34,13 @@ class SkillVLAConfig(PI05Config):
     skill_boundary_random_p: int = 0
     """Maximum simulated end-signal timing error in steps. 0 disables boundary randomization."""
 
-    # Path to pretrained VQ-VAE checkpoint (.pt file).
+    # Path to pretrained FSQ checkpoint (.pt file).
     vae_decoder_path: str | None = None
     skill_decoder_loss_weight: float = 1.0
     skill_decoder_end_pos_weight: float = 1.0
     skill_decoder_end_threshold: float = 0.5
     skill_decoder_state_indices: list[int] | None = None
-    """Raw observation.state indices fed to the VQ-VAE decoder. None uses the first VQ-VAE state_dim dims."""
+    """Raw observation.state indices fed to the FSQ decoder. None uses the first FSQ state_dim dims."""
     freeze_vae_decoder: bool = False
     inference_skill_max_order: int = 8
     inference_skill_max_length: int = 200
@@ -48,7 +49,7 @@ class SkillVLAConfig(PI05Config):
     block_lang_to_action: bool = True
 
     # Eval-only oracle mode: bypass the skill predictor and feed dataset label
-    # skill tokens to the action expert / VQ-VAE end decoder.
+    # skill tokens to the action expert / FSQ end decoder.
     use_label_skill_tokens_eval: bool = False
     label_skill_dataset_dir: str | None = None
     label_skill_episode_offset: int = 0

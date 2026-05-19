@@ -33,7 +33,7 @@ CHUNK_LEN=70
 DATASET=libero_90
 
 DATASET_DIR=${HOMEDIR}${PROJDIR}/libero_dataset/${DATASET}
-OUTPUT_DIR=${HOMEDIR}${PROJDIR}/libero_dataset/${DATASET}_skillset_fixed${CHUNK_LEN}
+OUTPUT_DIR=${HOMEDIR}${PROJDIR}/libero_dataset/${DATASET}_data/${DATASET}_for_FSQ/${DATASET}_skillset_fixed${CHUNK_LEN}
 # ─────────────────────────────────────────────────────────────────────────────
 
 # 각 array job이 5개 task 처리 (0-14 × 5 = task 0~74, 72 초과는 skip)

@@ -1,11 +1,11 @@
 """SkillVLA policy — stage 3 joint training.
 
-Extends PI05 with skill conditioning and a VQ-VAE end-signal decoder.
+Extends PI05 with skill conditioning and an FSQ end-signal decoder.
 All parameters are trainable; skill predictor gradient flows into the VLM.
 
 Architecture changes vs PI05:
   1. embed_suffix  : z (skill latent) projected and prepended to action embeddings.
-  2. forward       : flow matching + skill predictor + skill decoder losses.
+  2. forward       : flow matching + FSQ skill predictor + skill decoder losses.
   3. denoise_step  : passes z into embed_suffix during inference denoising.
   4. sample_actions: accepts z and denoises from noise.
   5. select_action : skill predictor predicts z; manages skill step.
@@ -19,12 +19,13 @@ Expected batch keys beyond standard PI05:
   - "skill_ds" / "skill_de": (B,) distance from skill start/end
   - "skill_boundary"       : (B,) 1 at current skill end
   - "skill_max_order"      : (B,) maximum real skill count
-  - "skill_max_length"     : (B,) VQ-VAE max skill length
+  - "skill_max_length"     : (B,) FSQ max skill length
 """
 
 from __future__ import annotations
 
 import copy
+import math
 import logging
 import sys
 from collections import deque
@@ -52,7 +53,7 @@ log = logging.getLogger(__name__)
 # ── Core model ────────────────────────────────────────────────────────────────
 
 class SkillVLAPytorch(PI05Pytorch):
-    """PI05Pytorch + skill conditioning + VQ-VAE end-signal decoder."""
+    """PI05Pytorch + skill conditioning + FSQ end-signal decoder."""
 
     def __init__(self, config: SkillVLAConfig, rtc_processor=None):
         super().__init__(config, rtc_processor=rtc_processor)
@@ -60,21 +61,45 @@ class SkillVLAPytorch(PI05Pytorch):
         action_expert_config = get_gemma_config(config.action_expert_variant)
         paligemma_config     = get_gemma_config(config.paligemma_variant)
 
-        self.z_to_suffix_proj = nn.Linear(config.skill_latent_dim, action_expert_config.width)
+        fsq_levels = self._resolve_fsq_levels(config.vae_decoder_path, config.skill_fsq_levels)
+        if len(set(fsq_levels)) != 1:
+            raise ValueError(f"SkillVLA currently expects equal FSQ levels per dim, got {fsq_levels}.")
+        config.skill_fsq_levels = fsq_levels
+        config.skill_latent_dim = len(fsq_levels)
+        config.skill_predictor_num_embeddings = int(math.prod(fsq_levels))
+        self.fsq_level = fsq_levels[0]
+        self.register_buffer("_fsq_levels", torch.tensor(fsq_levels, dtype=torch.long), persistent=False)
+        strides = torch.ones(len(fsq_levels), dtype=torch.long)
+        for i in range(1, len(fsq_levels)):
+            strides[i] = strides[i - 1] * fsq_levels[i - 1]
+        self.register_buffer("_fsq_strides", strides, persistent=False)
+        self.register_buffer(
+            "_fsq_half",
+            torch.tensor([(level - 1) / 2.0 for level in fsq_levels], dtype=torch.float32),
+            persistent=False,
+        )
+
+        skill_condition_dim = config.skill_latent_dim + config.skill_latent_dim * self.fsq_level
+        self.z_to_suffix_proj = nn.Sequential(
+            nn.Linear(skill_condition_dim, config.skill_predictor_hidden_dim),
+            nn.SiLU(),
+            nn.LayerNorm(config.skill_predictor_hidden_dim),
+            nn.Linear(config.skill_predictor_hidden_dim, action_expert_config.width),
+        )
 
         self.skill_predictor = SkillPredictor(
             skill_latent_dim  = config.skill_latent_dim,
             prefix_hidden_dim = paligemma_config.width,
+            fsq_dim           = config.skill_latent_dim,
+            fsq_level         = self.fsq_level,
             hidden_dim        = config.skill_predictor_hidden_dim,
             num_heads         = config.skill_predictor_num_heads,
             num_layers        = config.skill_predictor_num_layers,
             num_query_tokens  = config.skill_predictor_num_query_tokens,
             dropout           = config.skill_predictor_dropout,
-            num_embeddings    = config.skill_predictor_num_embeddings,
         )
 
         self.vae_decoder = None
-        self.register_buffer("_vqae_codebook", torch.empty(0), persistent=False)
         self.special_skill_embeddings = nn.Embedding(3, config.skill_latent_dim)
         self.register_buffer("_predicted_latent_train_step", torch.zeros((), dtype=torch.long), persistent=False)
         self._last_predicted_latent_prob = 0.0
@@ -84,56 +109,104 @@ class SkillVLAPytorch(PI05Pytorch):
         if config.vae_decoder_path:
             self.load_vae_decoder(config.vae_decoder_path)
 
-    # ── VQAE decoder ──────────────────────────────────────────────────────────
+    # ── FSQ decoder ───────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _resolve_fsq_levels(path: str | None, fallback: list[int]) -> list[int]:
+        if not path:
+            return list(fallback)
+        try:
+            ckpt = torch.load(path, map_location="cpu", weights_only=False)
+            cfg = ckpt.get("cfg")
+            levels = getattr(cfg, "fsq_levels", None)
+            if levels is not None:
+                return [int(x) for x in levels]
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Could not infer FSQ levels from %s: %s", path, exc)
+        return list(fallback)
 
     def load_vae_decoder(self, path: str) -> None:
         sys.path.insert(
             0, str(Path(__file__).resolve().parents[4] / "examples" / "libero")
         )
         import dataclasses  # noqa: PLC0415
-        from spline_vqae import SplineVQAE  # noqa: PLC0415
+        from FSQ import SplineFSQAE  # noqa: PLC0415
 
         ckpt = torch.load(path, map_location="cpu", weights_only=False)
         cfg  = ckpt["cfg"]
         cfg_dict = dataclasses.asdict(cfg)
         keys = {"action_dim", "state_dim", "n_control", "spline_degree",
-                "hidden_dim", "latent_dim", "num_embeddings", "num_layers",
-                "dropout", "encoder_type", "decoder_rnn_type", "commitment_cost",
+                "hidden_dim", "fsq_levels", "num_layers", "dropout",
                 "max_length", "action_min", "action_max", "delta_min", "delta_max",
-                "image_model_name", "image_feature_dim", "image_size", "use_images"}
-        vae = SplineVQAE(**{k: v for k, v in cfg_dict.items() if k in keys})
+                "feat_dim", "n_tokens", "decoder_image_mode", "image_encoder_layers",
+                "image_encoder_heads", "image_model_name", "image_size", "patch_grid",
+                "n_patch_raw", "decoder_output_mode", "chunk_size"}
+        vae = SplineFSQAE(**{k: v for k, v in cfg_dict.items() if k in keys})
         vae.load_state_dict(ckpt["model_state"])
         for p in vae.parameters():
             p.requires_grad_(False)
         if not self.config.freeze_vae_decoder:
-            for name in ("image_proj", "decoder", "rnn", "init_hidden", "delta_head", "end_head"):
+            for name in ("dec_image_encoder", "dec_mlp", "delta_head", "end_head"):
                 module = getattr(vae, name, None)
                 if module is not None:
                     for p in module.parameters():
                         p.requires_grad_(True)
-        self._vqae_codebook = vae.quantizer.embedding.weight.detach().clone()
         self.vae_decoder    = vae
         log.info(
-            "Loaded VQ-VAE decoder from %s (freeze=%s)",
+            "Loaded FSQ decoder from %s (levels=%s, freeze=%s)",
             path,
+            self.config.skill_fsq_levels,
             self.config.freeze_vae_decoder,
         )
 
     def _token_to_z(self, tokens: Tensor) -> Tensor:
-        """int token (B,) or (B,1) → codebook float vector (B, latent_dim)."""
+        """FSQ scalar index (B,) or (B,1) → quantized z vector (B, fsq_dim)."""
         idx = tokens.view(-1).long()
-        cb  = self._vqae_codebook.to(device=idx.device)
-        return cb[idx]
+        strides = self._fsq_strides.to(device=idx.device)
+        half = self._fsq_half.to(device=idx.device, dtype=torch.float32)
+        levels = self._fsq_levels.to(device=idx.device)
+        level_ids = torch.div(idx[:, None], strides[None, :], rounding_mode="floor") % levels[None, :]
+        return level_ids.to(torch.float32) - half[None, :]
+
+    def _token_to_fsq_targets(self, tokens: Tensor) -> Tensor:
+        """FSQ scalar index (B,) → per-dim class ids (B, fsq_dim)."""
+        idx = tokens.view(-1).long()
+        strides = self._fsq_strides.to(device=idx.device)
+        levels = self._fsq_levels.to(device=idx.device)
+        return (torch.div(idx[:, None], strides[None, :], rounding_mode="floor") % levels[None, :]).long()
+
+    def _fsq_logits_to_z(self, logits: Tensor) -> Tensor:
+        """Dim-wise logits (B,D,L) → hard FSQ z_q vector (B,D)."""
+        level_ids = logits.argmax(dim=-1)
+        return level_ids.to(torch.float32) - self._fsq_half.to(device=logits.device)[None, :]
+
+    def _fsq_logits_to_token(self, logits: Tensor) -> Tensor:
+        """Dim-wise logits (B,D,L) → scalar FSQ index (B,)."""
+        level_ids = logits.argmax(dim=-1).long()
+        strides = self._fsq_strides.to(device=logits.device)
+        return (level_ids * strides[None, :]).sum(dim=-1)
+
+    def _z_to_fsq_level_ids(self, z: Tensor) -> Tensor:
+        half = self._fsq_half.to(device=z.device, dtype=z.dtype)
+        levels = self._fsq_levels.to(device=z.device)
+        level_ids = torch.round(z + half[None, :]).long()
+        return level_ids.clamp_min(0).minimum((levels - 1)[None, :])
+
+    def _skill_action_condition(self, z: Tensor) -> Tensor:
+        """FSQ z_q → concat[z_q, dim-wise one-hot] for action-expert conditioning."""
+        z = z.float()
+        level_ids = self._z_to_fsq_level_ids(z)
+        one_hot = F.one_hot(level_ids, num_classes=self.fsq_level).to(dtype=z.dtype)
+        return torch.cat([z, one_hot.flatten(start_dim=1)], dim=-1)
 
     def _skill_token_embedding(self, tokens: Tensor) -> Tensor:
-        """Map VQ tokens and BOS/EOS/PAD special tokens to predictor embeddings."""
+        """Map FSQ tokens and BOS/EOS/PAD special tokens to predictor inputs."""
         idx = tokens.view(-1).long()
-        cb = self._vqae_codebook.to(device=idx.device)
-        out = torch.zeros(idx.shape[0], cb.shape[-1], device=idx.device, dtype=cb.dtype)
-        vq_mask = (idx >= 0) & (idx < self.config.skill_predictor_num_embeddings)
-        if vq_mask.any():
-            out[vq_mask] = cb[idx[vq_mask]]
-        special_mask = ~vq_mask
+        out = torch.zeros(idx.shape[0], self.config.skill_latent_dim, device=idx.device, dtype=torch.float32)
+        real_mask = (idx >= 0) & (idx < self.config.skill_predictor_num_embeddings)
+        if real_mask.any():
+            out[real_mask] = self._token_to_z(idx[real_mask]).to(out.dtype)
+        special_mask = ~real_mask
         if special_mask.any():
             special_idx = (idx[special_mask] - self.config.skill_predictor_num_embeddings).clamp(0, 2)
             out[special_mask] = self.special_skill_embeddings(special_idx).to(out.dtype)
@@ -147,14 +220,19 @@ class SkillVLAPytorch(PI05Pytorch):
         return torch.where(valid, tokens, fallback)
 
     def _skill_predictor_loss(self, z_pred: Tensor, token_target: Tensor) -> Tensor:
-        """Cross-entropy over codebook logits. z_pred: (B, K), token_target: (B,) int."""
+        """Dim-wise CE over FSQ levels. z_pred: (B,D,L), token_target: scalar FSQ index."""
         token_target = token_target.view(-1).long()
-        valid = (token_target >= 0) & (token_target < z_pred.shape[-1])
+        valid = (token_target >= 0) & (token_target < self.config.skill_predictor_num_embeddings)
         if not valid.any():
             loss = z_pred.float().sum() * 0.0
         else:
-            loss = F.cross_entropy(z_pred[valid].float(), token_target[valid])
-        self._last_sp_loss_components = {"token_ce": float(loss.detach().cpu())}
+            target_levels = self._token_to_fsq_targets(token_target[valid]).to(z_pred.device)
+            logits = z_pred[valid].float()
+            loss = F.cross_entropy(
+                logits.reshape(-1, logits.shape[-1]),
+                target_levels.reshape(-1),
+            )
+        self._last_sp_loss_components = {"fsq_dim_ce": float(loss.detach().cpu())}
         return loss
 
     # ── embed_prefix override: record lang token count ───────────────────────
@@ -239,7 +317,8 @@ class SkillVLAPytorch(PI05Pytorch):
         embs, pad_masks, att_masks, adarms_cond = super().embed_suffix(noisy_actions, timestep)
         if z is not None:
             B = embs.shape[0]
-            z_token = self.z_to_suffix_proj(z.to(embs.dtype)).unsqueeze(1)  # (B, 1, width)
+            z_cond = self._skill_action_condition(z).to(embs.dtype)
+            z_token = self.z_to_suffix_proj(z_cond).unsqueeze(1)  # (B, 1, width)
             embs = torch.cat([z_token, embs], dim=1)                         # (B, 1+chunk_size, width)
             # att_mask=0: z_token behaves like prefix — action tokens can attend to it, not vice versa
             z_pad = torch.ones(B, 1, dtype=pad_masks.dtype, device=pad_masks.device)
@@ -267,7 +346,7 @@ class SkillVLAPytorch(PI05Pytorch):
         fallback_tokens: Tensor,
         train_step: int | None,
     ) -> tuple[Tensor, Tensor]:
-        """Scheduled-sample real VQ tokens for action expert and skill decoder."""
+        """Scheduled-sample real FSQ tokens for action expert and skill decoder."""
         self._last_predicted_latent_prob = 0.0
         self._last_predicted_latent_fraction = 0.0
         label_tokens = label_tokens.view(-1).long()
@@ -281,7 +360,7 @@ class SkillVLAPytorch(PI05Pytorch):
         if prob <= 0.0:
             return label_tokens, use_pred
 
-        pred_tokens = z_pred.detach().argmax(dim=-1)
+        pred_tokens = self._fsq_logits_to_token(z_pred.detach())
         pred_tokens = self._safe_real_tokens(pred_tokens, fallback_tokens)
         use_pred = torch.rand(label_tokens.shape[0], device=label_tokens.device) < prob
         self._last_predicted_latent_fraction = float(use_pred.float().mean().item())
@@ -394,13 +473,34 @@ class SkillVLAPytorch(PI05Pytorch):
 
         if states.shape[-1] != expected_dim:
             raise ValueError(
-                f"VQ-VAE decoder expects state_dim={expected_dim}, "
+                f"FSQ decoder expects state_dim={expected_dim}, "
                 f"but got skill_decoder_state dim={raw_dim}. "
-                "Set --policy.skill_decoder_state_indices to select the raw state dims used by VQ-VAE."
+                "Set --policy.skill_decoder_state_indices to select the raw state dims used by FSQ."
             )
         self._last_skill_decoder_components["state_raw_dim"] = float(raw_dim)
         self._last_skill_decoder_components["state_used_dim"] = float(expected_dim)
         return states
+
+    def _prepare_skill_decoder_tokens(
+        self,
+        images: Tensor | None,
+        *,
+        batch_size: int,
+        steps: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> Tensor | None:
+        """Return FSQ decoder image input. It may be precomputed DINO tokens or raw RGB images."""
+        if images is None:
+            return None
+        image_input = images.to(device=device, dtype=dtype)
+        if image_input.shape[0] != batch_size:
+            raise ValueError(f"FSQ decoder image batch mismatch: got {image_input.shape[0]}, expected {batch_size}.")
+        return image_input
+
+    def _zero_patch_flags(self, batch_size: int, *, device: torch.device, dtype: torch.dtype) -> Tensor:
+        n_patches = int(getattr(self.vae_decoder, "n_patches", 64))
+        return torch.zeros(batch_size, n_patches, 2, device=device, dtype=dtype)
 
     def _skill_decoder_end_loss(
         self,
@@ -422,12 +522,18 @@ class SkillVLAPytorch(PI05Pytorch):
         vae.train(self.training and not self.config.freeze_vae_decoder)
         z = self._token_to_z(tokens).to(device=target.device)
         states = self._prepare_skill_decoder_state(states, device=target.device, dtype=z.dtype)
-        image_input = None
-        if images is not None:
-            image_input = images.to(device=target.device, dtype=z.dtype)
-            if image_input.ndim in (2, 4):
-                image_input = image_input.unsqueeze(1)
-        _, end_logits = vae.decode(z, states, image_input, frame_index=progress.view(-1, 1))
+        image_tokens = self._prepare_skill_decoder_tokens(
+            images,
+            batch_size=z.shape[0],
+            steps=states.shape[1],
+            device=target.device,
+            dtype=z.dtype,
+        )
+        if image_tokens is None:
+            self._last_skill_decoder_components["skipped"] = 1.0
+            return torch.tensor(0.0, device=target.device)
+        patch_flags = self._zero_patch_flags(z.shape[0], device=target.device, dtype=z.dtype)
+        _, end_logits = vae.decode(z, states, image_tokens, patch_flags, progress.view(-1, 1))
         pred = (torch.sigmoid(end_logits.squeeze(1).float()) >= float(self.config.skill_decoder_end_threshold)).float()
         target_f = target.float()
         self._last_skill_decoder_components.update(
@@ -459,16 +565,22 @@ class SkillVLAPytorch(PI05Pytorch):
             return None
         self.vae_decoder.eval()
         state = self._prepare_skill_decoder_state(state, device=z.device, dtype=z.dtype)
-        image_input = None
-        if image is not None:
-            image_input = image.to(device=z.device, dtype=z.dtype)
-            if image_input.ndim in (2, 4):
-                image_input = image_input.unsqueeze(1)
+        image_tokens = self._prepare_skill_decoder_tokens(
+            image,
+            batch_size=z.shape[0],
+            steps=state.shape[1],
+            device=z.device,
+            dtype=z.dtype,
+        )
+        if image_tokens is None:
+            return None
+        patch_flags = self._zero_patch_flags(z.shape[0], device=z.device, dtype=z.dtype)
         _, end_logits = self.vae_decoder.decode(
             z,
             state,
-            image_input,
-            frame_index=progress.to(device=z.device, dtype=z.dtype).view(-1, 1),
+            image_tokens,
+            patch_flags,
+            progress.to(device=z.device, dtype=z.dtype).view(-1, 1),
         )
         return torch.sigmoid(end_logits.squeeze(1))
 
@@ -710,7 +822,7 @@ class SkillVLAPytorch(PI05Pytorch):
         bsize  = tokens.shape[0]
         device = tokens.device
 
-        # Starting point: action expert now denoises from noise; VQ-VAE decoder
+        # Starting point: action expert now denoises from noise; FSQ decoder
         # is used only for end-signal supervision/control.
         shape = (bsize, self.config.chunk_size, self.config.max_action_dim)
         x_t = self.sample_noise(shape, device) if noise is None else noise
@@ -741,7 +853,7 @@ class SkillVLAPytorch(PI05Pytorch):
 class SkillVLAPolicy(PI05Policy):
     """Stage 3: joint flow-matching + skill-predictor training.
 
-    All parameters trainable. Skill predictor MSE gradient flows into the VLM
+    All parameters trainable. Skill predictor CE gradient flows into the VLM
     (detach_sp_prefix=False). Teacher-forced skill latents from the dataset are
     used during training; at inference the skill predictor auto-regressively
     predicts z from the previous skill and the current VLM prefix.
@@ -750,10 +862,12 @@ class SkillVLAPolicy(PI05Policy):
     config_class = SkillVLAConfig
     name         = "skill_vla"
     _VAE_DECODER_CHECKPOINT_PREFIXES = (
-        "model.vae_decoder.image_proj.",
-        "model.vae_decoder.decoder.",
-        "model.vae_decoder.rnn.",
-        "model.vae_decoder.init_hidden.",
+        "model.vae_decoder.enc_image_encoder.",
+        "model.vae_decoder.enc_traj_proj.",
+        "model.vae_decoder.enc_mlp.",
+        "model.vae_decoder.z_head.",
+        "model.vae_decoder.dec_image_encoder.",
+        "model.vae_decoder.dec_mlp.",
         "model.vae_decoder.delta_head.",
         "model.vae_decoder.end_head.",
     )
@@ -794,8 +908,7 @@ class SkillVLAPolicy(PI05Policy):
             )
         skill_decoder_image = batch.get("skill_decoder_image")
         if skill_decoder_image is None and images:
-            # VQ-VAE visual encoder expects [0,1], while PI05 image preprocess maps to [-1,1].
-            skill_decoder_image = ((images[0] + 1.0) / 2.0).clamp(0.0, 1.0)
+            skill_decoder_image = images[0]
 
         # SP gradient flows into VLM (detach_sp_prefix=False)
         flow_losses, sp_loss, sd_loss = self.model.forward(
@@ -1035,10 +1148,10 @@ class SkillVLAPolicy(PI05Policy):
             skill_index_norm,
             skill_progress.float(),
         )
-        # logits (B, K) → argmax token → codebook vector (B, latent_dim)
-        pred_tokens    = sp_logits.argmax(dim=-1)
+        # logits (B,D,L) → per-dim argmax → scalar FSQ index + z_q vector
+        pred_tokens    = self.model._fsq_logits_to_token(sp_logits)
         self._current_token = pred_tokens
-        self._current_z = self.model._token_to_z(pred_tokens).to(dtype=z_prev.dtype, device=device)
+        self._current_z = self.model._fsq_logits_to_z(sp_logits).to(dtype=z_prev.dtype, device=device)
 
         self._skill_step  = 0
         self._skill_index += 1
@@ -1049,11 +1162,7 @@ class SkillVLAPolicy(PI05Policy):
     def _decoder_image_from_batch(self, batch: dict[str, Tensor], images: list[Tensor]) -> Tensor | None:
         if "skill_decoder_image" in batch:
             return batch["skill_decoder_image"]
-        if not images:
-            return None
-        # _preprocess_images maps raw [0,1] camera tensors to [-1,1] for SigLIP.
-        # The VQ-VAE visual encoder expects [0,1].
-        return ((images[0] + 1.0) / 2.0).clamp(0.0, 1.0)
+        return images[0] if images else None
 
     def _maybe_trigger_skill_end(self, batch: dict[str, Tensor], images: list[Tensor]) -> None:
         if self._trigger_new_skill or self._current_z is None:
@@ -1061,7 +1170,7 @@ class SkillVLAPolicy(PI05Policy):
         state = batch.get("skill_decoder_state")
         if state is None:
             raise ValueError(
-                "skill_decoder_state is required for VQ-VAE end-signal inference. "
+                "skill_decoder_state is required for FSQ end-signal inference. "
                 "It should be copied from raw observation.state before normalization."
             )
         progress = torch.full(

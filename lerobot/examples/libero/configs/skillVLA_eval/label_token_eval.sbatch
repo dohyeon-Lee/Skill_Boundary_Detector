@@ -34,7 +34,8 @@ nvidia-smi
 # ── 설정 ──────────────────────────────────────────────────────────────────────
 DATASET=libero_90_skillvla
 DATASET_ROOT=libero_dataset
-LABEL_DATASET_DIR=${HOMEDIR}${PROJDIR}/${DATASET_ROOT}/${DATASET}
+DATASET_SOURCE=${DATASET%_skillvla}
+LABEL_DATASET_DIR=${HOMEDIR}${PROJDIR}/${DATASET_ROOT}/${DATASET_SOURCE}_data/${DATASET}
 
 LATENT_DIM=64
 NUM_EMBEDDINGS=512

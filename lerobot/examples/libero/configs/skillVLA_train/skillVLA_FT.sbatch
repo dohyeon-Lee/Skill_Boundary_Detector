@@ -35,6 +35,8 @@ nvidia-smi
 # FT_DATASET must have the same SkillVLA columns as libero_90_skillvla.
 FT_DATASET=libero_10_op1_10_skillvla
 FT_DATASET_ROOT=libero_dataset
+FT_DATASET_SOURCE=${FT_DATASET%_skillvla}
+FT_DATASET_DIR=${HOMEDIR}${PROJDIR}/${FT_DATASET_ROOT}/${FT_DATASET_SOURCE}_data/${FT_DATASET}
 
 # SkillVLA checkpoint trained on libero_90.
 PT_RUN_NAME=PT_libero_90_skillvla_true_embs_lat128_vq128
@@ -115,7 +117,7 @@ fi
 PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes=${NUM_GPUS} \
     ${HOMEDIR}${PROJDIR}/.venv/bin/lerobot-train \
     --dataset.repo_id=dohyeon/${FT_DATASET} \
-    --dataset.root=${HOMEDIR}${PROJDIR}/${FT_DATASET_ROOT}/${FT_DATASET} \
+    --dataset.root=${FT_DATASET_DIR} \
     --policy.type=skill_vla \
     --output_dir=${OUTPUT_DIR} \
     --job_name=${RUN_NAME} \

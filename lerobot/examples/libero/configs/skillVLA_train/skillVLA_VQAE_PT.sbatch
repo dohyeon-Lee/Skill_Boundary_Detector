@@ -35,6 +35,8 @@ nvidia-smi
 # Dataset must have skill_sequence/skill_index columns from add_skill_latents_to_dataset.py.
 DATASET=libero_90_skillvla
 DATASET_ROOT=libero_dataset
+DATASET_SOURCE=${DATASET%_skillvla}
+DATASET_DIR=${HOMEDIR}${PROJDIR}/${DATASET_ROOT}/${DATASET_SOURCE}_data/${DATASET}
 PI_BASE=lerobot/pi05_base
 
 LATENT_DIM=128
@@ -93,7 +95,7 @@ fi
 PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes=${NUM_GPUS} \
     ${HOMEDIR}${PROJDIR}/.venv/bin/lerobot-train \
     --dataset.repo_id=dohyeon/${DATASET} \
-    --dataset.root=${HOMEDIR}${PROJDIR}/${DATASET_ROOT}/${DATASET} \
+    --dataset.root=${DATASET_DIR} \
     --policy.type=skill_vla \
     --output_dir=${OUTPUT_DIR} \
     --job_name=${RUN_NAME} \

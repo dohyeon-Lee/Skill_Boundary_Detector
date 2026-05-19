@@ -25,6 +25,9 @@ DATA=libero_90
 DATADIR=libero_dataset
 VISUAL_BACKBONE=dinov3_vits16
 SKILLSET=${DATA}_skillset
+DERIVED_DATA_DIR=${HOMEDIR}${PROJDIR}/${DATADIR}/${DATA}_data
+FSQ_PRECOMPUTE_DIR=${DERIVED_DATA_DIR}/${DATA}_for_FSQ
+SKILLSET_DIR=${FSQ_PRECOMPUTE_DIR}/${SKILLSET}
 
 DECODER_MODE=chunk
 CHUNK_SIZE=10
@@ -57,9 +60,15 @@ else
 fi
 
 LATENTS_PATH="${SWEEP_DIR}/skill_latents.npz"
-SKILLS_DIR="${HOMEDIR}${PROJDIR}/${DATADIR}/${SKILLSET}/skills"
-DINO_TOKENS_PATH="${HOMEDIR}${PROJDIR}/outputs/${SKILLSET}_${VISUAL_BACKBONE}_tokens.npz"
-SAM2_MASKS_DIR="${HOMEDIR}${PROJDIR}/outputs/${SKILLSET}_FSQ"
+SKILLS_DIR="${SKILLSET_DIR}/skills"
+DINO_TOKENS_PATH="${FSQ_PRECOMPUTE_DIR}/${IMAGE_FEATURE_TAG}_tokens.npz"
+SAM2_FLAGS_PATH="${FSQ_PRECOMPUTE_DIR}/patch_flags.npz"
+SAM2_MASKS_DIR="${FSQ_PRECOMPUTE_DIR}/sam2_masks"
+if [ -f "${SAM2_FLAGS_PATH}" ]; then
+  SAM2_INPUT="${SAM2_FLAGS_PATH}"
+else
+  SAM2_INPUT="${SAM2_MASKS_DIR}"
+fi
 OUTPUT_HTML="${SWEEP_DIR}/decoder_eval/${EPOCH_TAG}.html"
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -73,7 +82,7 @@ PYTHONPATH=${HOMEDIR}${PROJDIR}/lerobot/src \
     --latents_path          ${LATENTS_PATH} \
     --skills_dir            ${SKILLS_DIR} \
     --dino_features         ${DINO_TOKENS_PATH} \
-    --sam2_masks_dir        ${SAM2_MASKS_DIR} \
+    --sam2_masks_dir        ${SAM2_INPUT} \
     ${ZERO_START_ARG} \
     --end_threshold         ${END_THRESHOLD} \
     --max_plot_samples      ${MAX_PLOT_SAMPLES} \

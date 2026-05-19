@@ -43,6 +43,10 @@ def load_model(model_path: str, device: str) -> tuple[SplineFSQAE, SplineFSQAECo
         dropout              = 0.0,
         feat_dim             = cfg.feat_dim,
         n_tokens             = cfg.n_tokens,
+        image_model_name     = getattr(cfg, "image_model_name", "/data2/dohyeon/SBD/models/dinov3-vits16"),
+        image_size           = getattr(cfg, "image_size", 224),
+        patch_grid           = getattr(cfg, "patch_grid", 8),
+        n_patch_raw          = getattr(cfg, "n_patch_raw", 196),
         decoder_image_mode   = getattr(cfg, "decoder_image_mode", "dino_flags"),
         image_encoder_layers = getattr(cfg, "image_encoder_layers", 1),
         image_encoder_heads  = getattr(cfg, "image_encoder_heads", 4),
@@ -71,7 +75,7 @@ def run_decode_single(
     z_q: np.ndarray,           # (D,)  FSQ latent vector
     states: np.ndarray,        # (T, state_dim)
     dec_tokens: np.ndarray,    # (T, n_tokens, feat_dim)
-    patch_flags: np.ndarray,   # (n_patches, 2)
+    patch_flags: np.ndarray,   # (T, n_patches, 2)
     device: str,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Returns (pred_deltas, pred_end_probs).
@@ -85,9 +89,9 @@ def run_decode_single(
     s_t  = torch.from_numpy(states.astype(np.float32)).unsqueeze(0).to(device)
     d_t  = torch.from_numpy(dec_tokens[:T].astype(np.float32)).unsqueeze(0).to(device)
     p_t  = torch.from_numpy(patch_flags.astype(np.float32)).unsqueeze(0).to(device)
-    fi   = torch.arange(T, dtype=torch.float32).unsqueeze(0).to(device)
+    progress = (torch.arange(T, dtype=torch.float32) / model.max_length).unsqueeze(0).to(device)
 
-    pred_d, pred_e = model.decode(z_t, s_t, d_t, p_t, fi)
+    pred_d, pred_e = model.decode(z_t, s_t, d_t, p_t, progress)
     return pred_d.squeeze(0).cpu().numpy(), torch.sigmoid(pred_e).squeeze(0).cpu().numpy()
 
 
@@ -469,7 +473,7 @@ def main():
     if args.sam2_masks_dir:
         patch_flags_list = load_patch_flags(Path(args.sam2_masks_dir), metadata, n_patches)
     else:
-        patch_flags_list = [np.zeros((n_patches, 2), np.float32) for _ in metadata]
+        patch_flags_list = [np.zeros((m["length"], n_patches, 2), np.float32) for m in metadata]
 
     lat    = np.load(args.latents_path)
     latents = lat["latents"].astype(np.float32)  # (N, D) — z_q vectors
@@ -486,7 +490,7 @@ def main():
         gt_d_i   = dec_targets[i][:T]
         z_q_i    = latents[i]                      # (D,)
         dtok_i   = dec_tokens_list[i][:T]          # (T, n_tok, F)
-        pf_i     = patch_flags_list[i]             # (n_patches, 2)
+        pf_i     = patch_flags_list[i][:T]         # (T, n_patches, 2)
 
         pred_d, pred_p = run_decode_single(model, z_q_i, states_i, dtok_i, pf_i, device)
 

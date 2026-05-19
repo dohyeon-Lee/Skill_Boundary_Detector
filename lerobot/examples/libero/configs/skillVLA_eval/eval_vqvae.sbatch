@@ -71,7 +71,8 @@ LABEL_EPISODE_OFFSET=0
 # a different add_skill_latents_to_dataset.py output, e.g. libero_10_skillvla.
 LABEL_DATASET=libero_10_op1_10_skillvla # libero_10_op1_10_skillvla
 LABEL_DATASET_ROOT=libero_dataset
-LABEL_DATASET_DIR=${HOMEDIR}${PROJDIR}/${LABEL_DATASET_ROOT}/${LABEL_DATASET}
+LABEL_DATASET_SOURCE=${LABEL_DATASET%_skillvla}
+LABEL_DATASET_DIR=${HOMEDIR}${PROJDIR}/${LABEL_DATASET_ROOT}/${LABEL_DATASET_SOURCE}_data/${LABEL_DATASET}
 
 # Leave empty to use the checkpoint config. Set to "context" or "embs" to override.
 SP_PREFIX_SOURCE_OVERRIDE=""

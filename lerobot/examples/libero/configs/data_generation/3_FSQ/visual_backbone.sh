@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 
-# Shared visual-backbone presets for VQ-VAE train/eval/precompute scripts.
+# Shared visual-backbone presets for FSQ data generation scripts.
 # VISUAL_BACKBONE choices:
 #   dinov2_small
 #   dinov3_vits16        (also accepts dinov3_vits14 as an alias)
 #   dinov3_convnext_small
 
 resolve_visual_backbone() {
-  : "${HOMEDIR:?}" "${PROJDIR:?}" "${SKILLSET:?}"
+  : "${HOMEDIR:?}" "${PROJDIR:?}"
   VISUAL_BACKBONE="${VISUAL_BACKBONE:-dinov2_small}"
 
   case "${VISUAL_BACKBONE}" in
@@ -37,8 +37,7 @@ resolve_visual_backbone() {
   esac
 
   IMAGE_MODEL_PATH="${HOMEDIR}${PROJDIR}/models/${IMAGE_MODEL_DIR}"
-  IMAGE_FEATURES_PATH="${HOMEDIR}${PROJDIR}/outputs/${SKILLSET}_dino_features/${IMAGE_FEATURE_TAG}_image.npz"
 
   export VISUAL_BACKBONE IMAGE_MODEL_REPO IMAGE_MODEL_DIR IMAGE_FEATURE_TAG IMAGE_EXP_TAG
-  export IMAGE_MODEL_PATH IMAGE_FEATURES_PATH
+  export IMAGE_MODEL_PATH
 }

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Worker template — all server-specific values injected via run_dino_parallel.sh
+# SAM2 worker for FSQ patch flags.
+# All dataset/server values are injected by run_dino_parallel.sh.
 #SBATCH --job-name=SAM2_masks
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
@@ -20,13 +21,18 @@ nvidia-smi | head -20
 
 DATA=${DATA:-libero_90}
 DATADIR=${DATADIR:-libero_dataset}
-SKILLSET=${DATA}_skillset
+SKILLSET=${SKILLSET:-${DATA}_skillset}
 DERIVED_DATA_DIR=${DERIVED_DATA_DIR:-${HOMEDIR}${PROJDIR}/${DATADIR}/${DATA}_data}
 FSQ_PRECOMPUTE_DIR=${FSQ_PRECOMPUTE_DIR:-${DERIVED_DATA_DIR}/${DATA}_for_FSQ}
 SKILLSET_DIR=${SKILLSET_DIR:-${FSQ_PRECOMPUTE_DIR}/${SKILLSET}}
 
-SAM2_CHECKPOINT=${HOMEDIR}${PROJDIR}/models/sam2/sam2.1_hiera_large.pt
+SAM2_CHECKPOINT=${SAM2_CHECKPOINT:-${HOMEDIR}${PROJDIR}/models/sam2/sam2.1_hiera_large.pt}
 SAM2_CONFIG=configs/sam2.1/sam2.1_hiera_l.yaml
+
+if [ ! -f "${SAM2_CHECKPOINT}" ]; then
+  echo "ERROR: SAM2 checkpoint not found: ${SAM2_CHECKPOINT}" >&2
+  exit 1
+fi
 
 PYTHONPATH=${HOMEDIR}${PROJDIR}/lerobot/src \
   python -u examples/libero/precompute_sam2_masks.py \

@@ -33,6 +33,9 @@ DATA=libero_90
 DATADIR=libero_dataset
 VISUAL_BACKBONE=dinov3_vits16
 SKILLSET=${DATA}_skillset
+DERIVED_DATA_DIR=${HOMEDIR}${PROJDIR}/${DATADIR}/${DATA}_data
+FSQ_PRECOMPUTE_DIR="${DERIVED_DATA_DIR}/${DATA}_for_FSQ"
+SKILLSET_DIR="${FSQ_PRECOMPUTE_DIR}/${SKILLSET}"
 
 DECODER_MODE=chunk        # single_step | chunk
 DECODER_IMAGE_MODE=dino_flags  # dino_only | dino_flags
@@ -60,18 +63,24 @@ MODE_TAG="${DECODER_MODE}K${CHUNK_SIZE}"
 EXP_NAME="${DATA}_${FSQ_TAG}_${IMAGE_EXP_TAG}_${EEF_MODE}_${MODE_TAG}_${DECODER_IMAGE_MODE}"
 OUTPUT_DIR="${HOMEDIR}${PROJDIR}/outputs/${SKILLSET}_latents/${EXP_NAME}"
 
-# DINO full-token features (T × n_tokens × feat_dim) — precomputed by precompute_dino_features.py
-# NOTE: precompute_dino_features.py must be run in token mode (outputs all patch tokens, not CLS only)
-DINO_TOKENS_PATH="${HOMEDIR}${PROJDIR}/outputs/${SKILLSET}_${VISUAL_BACKBONE}_tokens.npz"
+DINO_TOKENS_PATH="${FSQ_PRECOMPUTE_DIR}/${IMAGE_FEATURE_TAG}_tokens.npz"
 
-# SAM2 masks output directory — produced by run_dino_parallel.sh + precompute_sam2_masks_worker.sbatch
-SAM2_MASKS_DIR="${HOMEDIR}${PROJDIR}/outputs/${SKILLSET}_FSQ"
+# SAM2 patch flags — run_dino_parallel.sh writes per-skill temporal masks, then
+# merges them into temporal patch_flags.npz for faster FSQ training.
+SAM2_MASKS_DIR="${FSQ_PRECOMPUTE_DIR}/sam2_masks"
+SAM2_FLAGS_PATH="${FSQ_PRECOMPUTE_DIR}/patch_flags.npz"
 # ─────────────────────────────────────────────────────────────────────────────
 
 if [ ! -f "${DINO_TOKENS_PATH}" ]; then
   echo "ERROR: DINO token features not found at ${DINO_TOKENS_PATH}"
-  echo "Run precompute_dino_features.py in token mode first."
+  echo "Run VAE_train/run_dino_parallel.sh first."
   exit 1
+fi
+
+if [ -f "${SAM2_FLAGS_PATH}" ]; then
+  SAM2_INPUT="${SAM2_FLAGS_PATH}"
+else
+  SAM2_INPUT="${SAM2_MASKS_DIR}"
 fi
 
 RESUME_ARG=""
@@ -89,9 +98,9 @@ fi
 
 PYTHONPATH=${HOMEDIR}${PROJDIR}/lerobot/src \
   python -u examples/libero/train_FSQ.py \
-    --skills_dir              ${HOMEDIR}${PROJDIR}/${DATADIR}/${SKILLSET}/skills \
+    --skills_dir              ${SKILLSET_DIR}/skills \
     --dino_features           ${DINO_TOKENS_PATH} \
-    --sam2_masks_dir          ${SAM2_MASKS_DIR} \
+    --sam2_masks_dir          ${SAM2_INPUT} \
     --output_dir              ${OUTPUT_DIR} \
     --fsq_levels              5 5 5 \
     --decoder_output_mode     ${DECODER_MODE} \
@@ -102,6 +111,7 @@ PYTHONPATH=${HOMEDIR}${PROJDIR}/lerobot/src \
     --n_control               30 \
     --feat_dim                384 \
     --n_tokens                65 \
+    --image_model_name        ${IMAGE_MODEL_PATH} \
     --epochs                  5000 \
     --lr                      3e-4 \
     --batch_size              64 \

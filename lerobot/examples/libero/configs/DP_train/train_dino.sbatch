@@ -40,7 +40,7 @@ HORIZON=16
 
 VISUAL_BACKBONE=dinov3_vits16
 PATCH_GRID=8
-DINO_FEATURE_DIR=${HOMEDIR}${PROJDIR}/outputs/${DATASET}_frame_dino_features/${VISUAL_BACKBONE}_pg${PATCH_GRID}
+DINO_FEATURE_DIR=${HOMEDIR}${PROJDIR}/${DATASET_ROOT}/${DATASET}_data/${DATASET}_DINO/${VISUAL_BACKBONE}_pg${PATCH_GRID}
 DINO_IMAGE_KEYS='["observation.images.image"]'
 
 TRAIN_CONFIG_PATH=${HOMEDIR}${PROJDIR}/lerobot/examples/libero/configs/DP_train/train_dp_${DATASET}.yaml

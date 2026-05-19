@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import tempfile
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -343,157 +344,176 @@ def main(args: Args) -> None:
         args.sam2_checkpoint, args.sam2_config, args.points_per_side, args.device,
     )
 
-    for ep_id in tqdm(my_ep_ids, desc="episodes"):
-        skills = ep_to_skills[ep_id]
-
-        # 이미 모든 출력이 존재하면 건너뜀 (재실행 지원)
-        all_exist = all(
-            (output_dir / f"task{s['task_id']}" / f"ep{ep_id:05d}_skill{s['skill_index']:03d}.npz").exists()
-            for s in skills
-        )
-        if all_exist:
-            tqdm.write(f"  [skip] ep {ep_id}: all outputs exist")
-            continue
-
+    def _fetch_frames(ep_id: int):
+        """Load episode frames for prefetching (returns None on missing episode)."""
         try:
             vpath = get_video_path(dataset_dir, meta, ep_id, args.image_key)
         except KeyError:
-            tqdm.write(f"  [warn] ep {ep_id} not in meta, skip")
-            continue
-
-        row       = meta.loc[ep_id]
+            return None
+        row = meta.loc[ep_id]
         from_ts   = float(row[f"videos/{args.image_key}/from_timestamp"])
         to_ts     = float(row[f"videos/{args.image_key}/to_timestamp"])
         ep_length = int(row["length"])
-        ep_frames = read_episode_frames(vpath, from_ts, to_ts, ep_length)
-        T         = len(ep_frames)
-        H, W      = ep_frames[0].shape[:2]
+        return read_episode_frames(vpath, from_ts, to_ts, ep_length)
 
-        # 필요한 프레임 집합: 스킬 경계(changed 검출용) + 스킬 내 전 프레임(마스크 저장용)
-        needed_frames: set[int] = set()
-        for s in skills:
-            fi_s = min(s["frame_start"], T - 1)
-            fi_e = min(s["frame_end"] - 1, T - 1)
-            needed_frames.add(fi_s)
-            needed_frames.add(fi_e)
-            for fi in range(s["frame_start"], min(s["frame_end"], T)):
-                needed_frames.add(fi)
+    progress = tqdm(total=len(my_ep_ids), desc="episodes")
+    # Prefetch next episode's frames in background while GPU processes current episode.
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        prefetch = executor.submit(_fetch_frames, my_ep_ids[0]) if my_ep_ids else None
 
-        # SAM2: 그리퍼 분리 → AMG → 비디오 트래킹
-        gripper_mask, arm_mask = segment_gripper(img_pred, ep_frames[0], args.gripper_point)
+        for i, ep_id in enumerate(my_ep_ids):
+            ep_frames = prefetch.result()
 
-        amg_masks = run_amg(
-            amg, ep_frames[0],
-            max_area=args.max_mask_area_ratio, min_area=args.min_mask_area_ratio,
-            min_score=args.min_stability_score,
-            gripper_mask=gripper_mask, arm_mask=arm_mask, iou_thr=args.gripper_iou_threshold,
-        )
+            # Start prefetching next episode while GPU processes current
+            if i + 1 < len(my_ep_ids):
+                prefetch = executor.submit(_fetch_frames, my_ep_ids[i + 1])
 
-        if gripper_mask is not None:
-            init_masks = (np.concatenate([[gripper_mask], amg_masks])
-                          if len(amg_masks) > 0 else gripper_mask[None])
-        else:
-            init_masks = amg_masks
+            skills = ep_to_skills[ep_id]
 
-        tracked = track_needed_frames(vid_pred, ep_frames, init_masks, needed_frames, args.device)
-
-        # Pre-pass: 스킬 순서대로 changed 검출 (이전 changed는 exempt로 전달)
-        skill_changed_map: dict[int, set[int]] = {}
-        cumulative_changed: set[int] = set()
-        for s in sorted(skills, key=lambda x: x["skill_index"]):
-            fi_s = min(s["frame_start"], T - 1)
-            fi_e = min(s["frame_end"] - 1, T - 1)
-            detected = compute_changed(
-                tracked.get(fi_s, {}), tracked.get(fi_e, {}),
-                min_centroid_dist=args.min_centroid_dist,
-                min_visible_ratio=args.min_visible_ratio,
-                top_crop_ratio=args.changed_top_crop_ratio,
-                exempt_ids=cumulative_changed,
-                min_object_area_ratio=args.min_object_area_ratio,
+            # 이미 모든 출력이 존재하면 건너뜀 (재실행 지원)
+            all_exist = all(
+                (output_dir / f"task{s['task_id']}" / f"ep{ep_id:05d}_skill{s['skill_index']:03d}.npz").exists()
+                for s in skills
             )
-            skill_changed_map[s["skill_index"]] = detected
-            cumulative_changed |= detected
-
-        # Movement group 구성
-        changed_indices = sorted(k for k, v in skill_changed_map.items() if v)
-        groups          = _get_groups(changed_indices)
-        skill_idx_to_s  = {s["skill_index"]: s for s in skills}
-
-        # 각 group의 마지막 스킬 end frame에서 green 탐색
-        group_green: dict[tuple[int, int], set[int]] = {}
-        for group in groups:
-            key    = (group[0], group[-1])
-            last_s = skill_idx_to_s.get(group[-1])
-            if last_s is None:
-                group_green[key] = set()
+            if all_exist:
+                tqdm.write(f"  [skip] ep {ep_id}: all outputs exist")
+                progress.update(1)
                 continue
-            fi_e = min(last_s["frame_end"] - 1, T - 1)
-            orig_changed: set[int] = set()
-            for si in group:
-                orig_changed |= skill_changed_map[si]
-            group_green[key] = find_green(
-                orig_changed, tracked.get(fi_e, {}),
-                top_crop_ratio=args.green_top_crop_ratio,
+
+            if ep_frames is None:
+                tqdm.write(f"  [warn] ep {ep_id} not in meta, skip")
+                progress.update(1)
+                continue
+
+            T    = len(ep_frames)
+            H, W = ep_frames[0].shape[:2]
+
+            # 필요한 프레임 집합: 스킬 경계(changed 검출용) + 스킬 내 전 프레임(마스크 저장용)
+            needed_frames: set[int] = set()
+            for s in skills:
+                fi_s = min(s["frame_start"], T - 1)
+                fi_e = min(s["frame_end"] - 1, T - 1)
+                needed_frames.add(fi_s)
+                needed_frames.add(fi_e)
+                for fi in range(s["frame_start"], min(s["frame_end"], T)):
+                    needed_frames.add(fi)
+
+            # SAM2: 그리퍼 분리 → AMG → 비디오 트래킹
+            gripper_mask, arm_mask = segment_gripper(img_pred, ep_frames[0], args.gripper_point)
+
+            amg_masks = run_amg(
+                amg, ep_frames[0],
+                max_area=args.max_mask_area_ratio, min_area=args.min_mask_area_ratio,
+                min_score=args.min_stability_score,
+                gripper_mask=gripper_mask, arm_mask=arm_mask, iou_thr=args.gripper_iou_threshold,
             )
 
-        # 범위 기반 전파: [first - bp, last] (fwd 없음)
-        bp = args.changed_prop_back
-        propagated_changed: dict[int, set[int]] = {}
-        propagated_green:   dict[int, set[int]] = {}
-        for s in skills:
-            si = s["skill_index"]
-            ch: set[int] = set()
-            gr: set[int] = set()
+            if gripper_mask is not None:
+                init_masks = (np.concatenate([[gripper_mask], amg_masks])
+                              if len(amg_masks) > 0 else gripper_mask[None])
+            else:
+                init_masks = amg_masks
+
+            tracked = track_needed_frames(vid_pred, ep_frames, init_masks, needed_frames, args.device)
+
+            # Pre-pass: 스킬 순서대로 changed 검출 (이전 changed는 exempt로 전달)
+            skill_changed_map: dict[int, set[int]] = {}
+            cumulative_changed: set[int] = set()
+            for s in sorted(skills, key=lambda x: x["skill_index"]):
+                fi_s = min(s["frame_start"], T - 1)
+                fi_e = min(s["frame_end"] - 1, T - 1)
+                detected = compute_changed(
+                    tracked.get(fi_s, {}), tracked.get(fi_e, {}),
+                    min_centroid_dist=args.min_centroid_dist,
+                    min_visible_ratio=args.min_visible_ratio,
+                    top_crop_ratio=args.changed_top_crop_ratio,
+                    exempt_ids=cumulative_changed,
+                    min_object_area_ratio=args.min_object_area_ratio,
+                )
+                skill_changed_map[s["skill_index"]] = detected
+                cumulative_changed |= detected
+
+            # Movement group 구성
+            changed_indices = sorted(k for k, v in skill_changed_map.items() if v)
+            groups          = _get_groups(changed_indices)
+            skill_idx_to_s  = {s["skill_index"]: s for s in skills}
+
+            # 각 group의 마지막 스킬 end frame에서 green 탐색
+            group_green: dict[tuple[int, int], set[int]] = {}
             for group in groups:
-                first, last = group[0], group[-1]
-                if first - bp <= si <= last:
-                    for g in group:
-                        ch |= skill_changed_map[g]
-                    gr |= group_green[(first, last)]
-            propagated_changed[si] = ch
-            propagated_green[si]   = gr
-
-        # 스킬별 NPZ 저장
-        for s in skills:
-            si          = s["skill_index"]
-            changed_ids = propagated_changed[si]
-            green_ids   = propagated_green[si]
-
-            frames_in_skill = list(range(s["frame_start"], min(s["frame_end"], T)))
-            TT = len(frames_in_skill)
-            patch_masks = np.zeros((TT, args.pool_size, args.pool_size, 2), dtype=bool)
-
-            for ti, fi in enumerate(frames_in_skill):
-                obj_data = tracked.get(fi, {})
-
-                ch_mask = np.zeros((H, W), dtype=bool)
-                for oid in changed_ids:
-                    m = obj_data.get(oid)
-                    if m is not None and m.any():
-                        ch_mask |= m
-
-                gr_mask = np.zeros((H, W), dtype=bool)
-                for oid in green_ids:
-                    m = obj_data.get(oid)
-                    if m is not None and m.any():
-                        gr_mask |= m
-
-                patch_masks[ti, :, :, 0] = mask_to_pooled(
-                    ch_mask, args.image_size, args.patch_size, args.pool_size, args.patch_hit_threshold,
-                )
-                patch_masks[ti, :, :, 1] = mask_to_pooled(
-                    gr_mask, args.image_size, args.patch_size, args.pool_size, args.patch_hit_threshold,
+                key    = (group[0], group[-1])
+                last_s = skill_idx_to_s.get(group[-1])
+                if last_s is None:
+                    group_green[key] = set()
+                    continue
+                fi_e = min(last_s["frame_end"] - 1, T - 1)
+                orig_changed: set[int] = set()
+                for si in group:
+                    orig_changed |= skill_changed_map[si]
+                group_green[key] = find_green(
+                    orig_changed, tracked.get(fi_e, {}),
+                    top_crop_ratio=args.green_top_crop_ratio,
                 )
 
-            task_out = output_dir / f"task{s['task_id']}"
-            task_out.mkdir(parents=True, exist_ok=True)
-            np.savez_compressed(
-                str(task_out / f"ep{ep_id:05d}_skill{si:03d}.npz"),
-                patch_masks=patch_masks,
-                frame_indices=np.array(frames_in_skill, dtype=np.int32),
-            )
+            # 범위 기반 전파: [first - bp, last] (fwd 없음)
+            bp = args.changed_prop_back
+            propagated_changed: dict[int, set[int]] = {}
+            propagated_green:   dict[int, set[int]] = {}
+            for s in skills:
+                si = s["skill_index"]
+                ch: set[int] = set()
+                gr: set[int] = set()
+                for group in groups:
+                    first, last = group[0], group[-1]
+                    if first - bp <= si <= last:
+                        for g in group:
+                            ch |= skill_changed_map[g]
+                        gr |= group_green[(first, last)]
+                propagated_changed[si] = ch
+                propagated_green[si]   = gr
 
-        tqdm.write(f"  [done] ep {ep_id}: {len(skills)} skills → {output_dir}")
+            # 스킬별 NPZ 저장
+            for s in skills:
+                si          = s["skill_index"]
+                changed_ids = propagated_changed[si]
+                green_ids   = propagated_green[si]
+
+                frames_in_skill = list(range(s["frame_start"], min(s["frame_end"], T)))
+                TT = len(frames_in_skill)
+                patch_masks = np.zeros((TT, args.pool_size, args.pool_size, 2), dtype=bool)
+
+                for ti, fi in enumerate(frames_in_skill):
+                    obj_data = tracked.get(fi, {})
+
+                    ch_mask = np.zeros((H, W), dtype=bool)
+                    for oid in changed_ids:
+                        m = obj_data.get(oid)
+                        if m is not None and m.any():
+                            ch_mask |= m
+
+                    gr_mask = np.zeros((H, W), dtype=bool)
+                    for oid in green_ids:
+                        m = obj_data.get(oid)
+                        if m is not None and m.any():
+                            gr_mask |= m
+
+                    patch_masks[ti, :, :, 0] = mask_to_pooled(
+                        ch_mask, args.image_size, args.patch_size, args.pool_size, args.patch_hit_threshold,
+                    )
+                    patch_masks[ti, :, :, 1] = mask_to_pooled(
+                        gr_mask, args.image_size, args.patch_size, args.pool_size, args.patch_hit_threshold,
+                    )
+
+                task_out = output_dir / f"task{s['task_id']}"
+                task_out.mkdir(parents=True, exist_ok=True)
+                np.savez_compressed(
+                    str(task_out / f"ep{ep_id:05d}_skill{si:03d}.npz"),
+                    patch_masks=patch_masks,
+                    frame_indices=np.array(frames_in_skill, dtype=np.int32),
+                )
+
+            tqdm.write(f"  [done] ep {ep_id}: {len(skills)} skills → {output_dir}")
+            progress.update(1)
 
     print("[sam2_masks] Done.")
 

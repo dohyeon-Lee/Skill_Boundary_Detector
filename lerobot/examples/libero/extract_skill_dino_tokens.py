@@ -7,9 +7,9 @@ as precompute_dino_features.py (N_total, n_tokens, feat_dim) float16.
 
 Usage:
     python extract_skill_dino_tokens.py \
-        --frame_dino_dir .../libero_90_frame_dino_features/dinov3_vits16_pg8 \
-        --skills_dir     .../libero_90_skillset/skills \
-        --output_path    .../libero_90_skillset_dinov3_vits16_tokens.npz \
+        --frame_dino_dir .../libero_dataset/libero_90_data/libero_90_DINO/dinov3_vits16_pg8 \
+        --skills_dir     .../libero_dataset/libero_90_data/libero_90_for_FSQ/libero_90_skillset/skills \
+        --output_path    .../libero_dataset/libero_90_data/libero_90_for_FSQ/dinov3_vits16_tokens.npz \
         --image_key      observation.images.image
 """
 

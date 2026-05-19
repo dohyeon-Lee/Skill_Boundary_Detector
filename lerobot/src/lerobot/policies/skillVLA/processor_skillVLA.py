@@ -98,7 +98,7 @@ def skill_vla_transition_to_batch(transition: EnvTransition) -> dict[str, Any]:
 @dataclass
 @ProcessorStepRegistry.register(name="skill_vla_preserve_raw_state_processor_step")
 class SkillVLAPreserveRawStateProcessorStep(ProcessorStep):
-    """Keep raw proprioceptive/image features for the VQ-VAE skill decoder."""
+    """Keep raw proprioceptive/image features for the FSQ skill decoder."""
 
     def __call__(self, transition: EnvTransition) -> EnvTransition:
         transition = transition.copy()

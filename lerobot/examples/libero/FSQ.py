@@ -12,9 +12,9 @@ Architecture
 
   Decoder image encoder (per timestep):
     dino_only:  DINO tokens → Linear(F→H) → positional embedding
-    dino_flags: DINO tokens + patch flags → Linear(F+2→H) → positional embedding
+    dino_flags: DINO tokens + timestep-aligned patch flags → Linear(F+2→H) → positional embedding
     Both modes then use a small Transformer encoder and learned-query pooling.
-    dec_mlp (MLP D+S+H+1 → H): z + state(7D) + img_feat + frame_idx_norm
+    dec_mlp (MLP D+S+H+1 → H): z + state(7D) + img_feat + normalized skill progress
     delta_head: Linear(H → A) in single_step, Linear(H → K*A) in chunk
     end_head:   Linear(H → 1) in single_step, Linear(H → K) in chunk
                 — chunk mode predicts which slot inside the K-step chunk ends the skill
@@ -122,15 +122,18 @@ class ImageTokenEncoder(nn.Module):
     def forward(self, tokens: torch.Tensor, patch_flags: torch.Tensor | None = None) -> torch.Tensor:
         """
         tokens:      (B, T, N, F), token 0 is CLS and tokens 1..N-1 are patches.
-        patch_flags: (B, N-1, 2), per-patch [is_red, is_green]. Ignored in dino_only mode.
+        patch_flags: (B, T, N-1, 2), per-timestep patch [is_red, is_green].
+                     Ignored in dino_only mode.
         returns:     (B, T, H)
         """
         B, T, N, _ = tokens.shape
         assert N == self.n_tokens, f"expected {self.n_tokens} image tokens, got {N}"
         if self.image_mode == "dino_flags":
             assert patch_flags is not None, "patch_flags are required when image_mode='dino_flags'"
+            assert patch_flags.shape == (B, T, N - 1, 2), \
+                f"expected patch_flags {(B, T, N - 1, 2)}, got {tuple(patch_flags.shape)}"
             cls_flags = tokens.new_zeros(B, T, 1, 2)
-            pf = patch_flags.unsqueeze(1).expand(B, T, -1, -1).to(tokens.dtype)
+            pf = patch_flags.to(device=tokens.device, dtype=tokens.dtype)
             tokens = torch.cat([tokens, torch.cat([cls_flags, pf], dim=2)], dim=-1)
 
         x = self.token_proj(tokens.reshape(B * T, N, -1))
@@ -186,6 +189,10 @@ class SplineFSQAEConfig:
     dropout: float = 0.1
     feat_dim: int = 384       # DINO token feature dimension
     n_tokens: int = 65        # 1 CLS + 64 patch tokens (8×8 grid)
+    image_model_name: str = "/data2/dohyeon/SBD/models/dinov3-vits16"
+    image_size: int = 224
+    patch_grid: int = 8
+    n_patch_raw: int = 196
     decoder_image_mode: str = "dino_flags"  # "dino_only" or "dino_flags"
     image_encoder_layers: int = 1
     image_encoder_heads: int = 4
@@ -228,6 +235,10 @@ class SplineFSQAE(nn.Module):
         dropout: float = 0.1,
         feat_dim: int = 384,
         n_tokens: int = 65,
+        image_model_name: str = "/data2/dohyeon/SBD/models/dinov3-vits16",
+        image_size: int = 224,
+        patch_grid: int = 8,
+        n_patch_raw: int = 196,
         decoder_image_mode: str = "dino_flags",
         image_encoder_layers: int = 1,
         image_encoder_heads: int = 4,
@@ -255,6 +266,12 @@ class SplineFSQAE(nn.Module):
         self.decoder_output_mode = decoder_output_mode
         self.decoder_image_mode = decoder_image_mode
         self.chunk_size = chunk_size
+        self.feat_dim = feat_dim
+        self.n_tokens = n_tokens
+        self.image_model_name = image_model_name
+        self.image_size = image_size
+        self.patch_grid = patch_grid
+        self.n_patch_raw = n_patch_raw
 
         self.fsq = FSQ(fsq_levels)
         D = self.fsq.latent_dim
@@ -288,7 +305,7 @@ class SplineFSQAE(nn.Module):
             n_heads=image_encoder_heads,
             dropout=dropout,
         )
-        dec_in = D + state_dim + H + 1   # z, state, img_feat, frame_idx_norm
+        dec_in = D + state_dim + H + 1   # z, state, img_feat, normalized skill progress
         dec_layers: list[nn.Module] = [MLPBlock(dec_in, H, dropout)]
         for _ in range(num_layers - 1):
             dec_layers.append(MLPBlock(H, H, dropout))
@@ -307,6 +324,9 @@ class SplineFSQAE(nn.Module):
         self.register_buffer("action_max", torch.tensor(_amax, dtype=torch.float32))
         self.register_buffer("delta_min",  torch.tensor(_dmin, dtype=torch.float32))
         self.register_buffer("delta_max",  torch.tensor(_dmax, dtype=torch.float32))
+        object.__setattr__(self, "_raw_image_model", None)
+        object.__setattr__(self, "_raw_image_mean", None)
+        object.__setattr__(self, "_raw_image_std", None)
 
     # ── helpers ───────────────────────────────────────────────────────────────
 
@@ -337,29 +357,112 @@ class SplineFSQAE(nn.Module):
 
     # ── decode ────────────────────────────────────────────────────────────────
 
+    def _load_raw_image_model(self, device: torch.device):
+        model = getattr(self, "_raw_image_model", None)
+        if model is not None:
+            return model
+        from transformers import AutoImageProcessor, AutoModel  # noqa: PLC0415
+
+        model = AutoModel.from_pretrained(self.image_model_name)
+        for p in model.parameters():
+            p.requires_grad_(False)
+        model.eval().to(device)
+        try:
+            proc = AutoImageProcessor.from_pretrained(self.image_model_name)
+            mean = getattr(proc, "image_mean", [0.485, 0.456, 0.406])
+            std = getattr(proc, "image_std", [0.229, 0.224, 0.225])
+        except Exception:
+            mean = [0.485, 0.456, 0.406]
+            std = [0.229, 0.224, 0.225]
+        object.__setattr__(self, "_raw_image_model", model)
+        object.__setattr__(self, "_raw_image_mean", torch.tensor(mean, dtype=torch.float32, device=device).view(1, 3, 1, 1))
+        object.__setattr__(self, "_raw_image_std", torch.tensor(std, dtype=torch.float32, device=device).view(1, 3, 1, 1))
+        return model
+
+    @torch.no_grad()
+    def _raw_images_to_tokens(self, images: torch.Tensor, *, target_t: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+        """Raw RGB images → DINO CLS + pooled patch tokens, shape (B,T,N,F)."""
+        x = images.to(device=device)
+        if x.ndim == 4:
+            x = x.unsqueeze(1)  # (B,1,C,H,W) or (B,1,H,W,C)
+        if x.ndim != 5:
+            raise ValueError(
+                "Raw FSQ decoder images must have shape (B,C,H,W), (B,H,W,C), "
+                "(B,T,C,H,W), or (B,T,H,W,C)."
+            )
+        if x.shape[-1] in (1, 3):
+            x = x.permute(0, 1, 4, 2, 3)  # channels-last → channels-first
+        if x.shape[2] == 1:
+            x = x.expand(-1, -1, 3, -1, -1)
+        if x.shape[2] != 3:
+            raise ValueError(f"Raw FSQ decoder images must have 3 channels, got shape {tuple(images.shape)}.")
+        if x.shape[1] == 1 and target_t > 1:
+            x = x.expand(x.shape[0], target_t, x.shape[2], x.shape[3], x.shape[4])
+        if x.shape[1] != target_t:
+            raise ValueError(f"Raw FSQ decoder image time mismatch: got {x.shape[1]}, expected {target_t}.")
+
+        B, T, C, H, W = x.shape
+        x = x.reshape(B * T, C, H, W).float()
+        if x.numel() and float(x.detach().amin()) < -0.05:
+            x = (x + 1.0) / 2.0
+        if x.numel() and float(x.detach().amax()) > 2.0:
+            x = x / 255.0
+        x = x.clamp(0.0, 1.0)
+        x = F.interpolate(x, size=(self.image_size, self.image_size), mode="bilinear", align_corners=False)
+
+        model = self._load_raw_image_model(device)
+        mean = getattr(self, "_raw_image_mean").to(device=device)
+        std = getattr(self, "_raw_image_std").to(device=device)
+        x = (x - mean) / std
+        device_type = device.type
+        with torch.autocast(device_type=device_type, dtype=torch.float16, enabled=(device_type == "cuda")):
+            out = model(pixel_values=x)
+        last_hidden = out.last_hidden_state.float()
+        b_frames, _, feat_dim = last_hidden.shape
+        cls_tok = last_hidden[:, :1, :]
+        patch_tok = last_hidden[:, -self.n_patch_raw:, :]
+        sqrt_raw = int(math.sqrt(self.n_patch_raw))
+        patch_spatial = patch_tok.reshape(b_frames, sqrt_raw, sqrt_raw, feat_dim).permute(0, 3, 1, 2)
+        patch_pooled = F.adaptive_avg_pool2d(patch_spatial, (self.patch_grid, self.patch_grid))
+        patch_pooled = patch_pooled.permute(0, 2, 3, 1).reshape(b_frames, self.patch_grid * self.patch_grid, feat_dim)
+        tokens = torch.cat([cls_tok, patch_pooled], dim=1).view(B, T, 1 + self.patch_grid * self.patch_grid, feat_dim)
+        return tokens.to(dtype=dtype)
+
+    def _prepare_decoder_tokens(self, image_input: torch.Tensor, *, states: torch.Tensor) -> torch.Tensor:
+        """Accept precomputed DINO tokens or raw RGB images and return (B,T,N,F) tokens."""
+        if image_input.ndim == 4 and image_input.shape[-2] == self.n_tokens and image_input.shape[-1] == self.feat_dim:
+            return image_input.to(device=states.device, dtype=states.dtype)
+        if image_input.ndim == 3 and image_input.shape[-2] == self.n_tokens and image_input.shape[-1] == self.feat_dim:
+            tokens = image_input.unsqueeze(1).to(device=states.device, dtype=states.dtype)
+            if states.shape[1] > 1:
+                tokens = tokens.expand(tokens.shape[0], states.shape[1], tokens.shape[2], tokens.shape[3])
+            return tokens
+        return self._raw_images_to_tokens(image_input, target_t=states.shape[1], device=states.device, dtype=states.dtype)
+
     def decode(
         self,
         z: torch.Tensor,             # (B, D)
         states: torch.Tensor,        # (B, T, state_dim)
-        dec_tokens: torch.Tensor,    # (B, T, n_tokens, feat_dim)
-        patch_flags: torch.Tensor,   # (B, n_patches, 2)
-        frame_indices: torch.Tensor | None = None,  # (B, T) raw frame idx
+        dec_tokens: torch.Tensor,    # DINO tokens (B,T,N,F)/(B,N,F) or raw images
+        patch_flags: torch.Tensor,   # (B, T, n_patches, 2)
+        frame_progress: torch.Tensor | None = None,  # (B, T), normalized skill progress
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Returns:
           single_step → delta (B, T, A),    end_logit (B, T)
           chunk       → delta (B, T, K, A), end_logit (B, T, K)
         """
+        dec_tokens = self._prepare_decoder_tokens(dec_tokens, states=states)
         B, T, n_tokens, _ = dec_tokens.shape
 
         img_feat = self.dec_image_encoder(dec_tokens, patch_flags)  # (B, T, H)
 
-        if frame_indices is None:
+        if frame_progress is None:
             fi = torch.arange(T, device=states.device, dtype=states.dtype).view(1, T)
-            fi = fi.expand(B, T)
+            fi = fi.expand(B, T) / self.max_length
         else:
-            fi = frame_indices.to(device=states.device, dtype=states.dtype)
-        fi = (fi / self.max_length).unsqueeze(-1)  # (B, T, 1)
+            fi = frame_progress.to(device=states.device, dtype=states.dtype)
+        fi = fi.unsqueeze(-1)  # (B, T, 1)
 
         z_seq = z.unsqueeze(1).expand(B, T, -1).to(states.dtype)
         x = torch.cat([z_seq, states, img_feat, fi], dim=-1)       # (B, T, D+S+H+1)
@@ -393,12 +496,12 @@ class SplineFSQAE(nn.Module):
         end_tokens: torch.Tensor,    # (B, n_tokens, feat_dim)
         states: torch.Tensor,        # (B, T, state_dim)
         dec_tokens: torch.Tensor,    # (B, T, n_tokens, feat_dim)
-        patch_flags: torch.Tensor,   # (B, n_patches, 2)
-        frame_indices: torch.Tensor | None = None,
+        patch_flags: torch.Tensor,   # (B, T, n_patches, 2)
+        frame_progress: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Returns (delta, end_logits, indices)."""
         z_q, indices = self.encode(ctrl_pts, lengths, start_tokens, end_tokens)
-        delta, end_logits = self.decode(z_q, states, dec_tokens, patch_flags, frame_indices)
+        delta, end_logits = self.decode(z_q, states, dec_tokens, patch_flags, frame_progress)
         return delta, end_logits, indices
 
     # ── inference helpers ─────────────────────────────────────────────────────
@@ -447,8 +550,8 @@ class SplineFSQDataset(Dataset):
 
     dec_tokens : list of (T, n_tokens, feat_dim) float32 arrays.
                  Token 0 = CLS; tokens 1..n_tokens-1 = patch tokens.
-    patch_flags: list of (n_patches, 2) float32 arrays — [is_red, is_green] per patch.
-                 Constant per skill; broadcast to all T in model forward.
+    patch_flags: list of (T, n_patches, 2) float32 arrays — timestep-aligned
+                 [is_red, is_green] flags per patch.
     states     : list of (T, 7) arrays (proprioception including gripper).
     deltas     : list of (T, action_dim) arrays — target action deltas.
     """
@@ -483,8 +586,14 @@ class SplineFSQDataset(Dataset):
         self.states  = [s.astype(np.float32) for s in states]
         self.deltas  = [d.astype(np.float32) for d in deltas]
 
-        for seg in segments:
+        for i, seg in enumerate(segments):
             cp, T = spline_encode(seg.astype(np.float32), n_control, spline_degree)
+            if self.dec_tokens[i].shape[0] < T:
+                raise ValueError(f"dec_tokens[{i}] length {self.dec_tokens[i].shape[0]} < skill length {T}")
+            if self.patch_flags[i].shape[0] < T:
+                raise ValueError(f"patch_flags[{i}] length {self.patch_flags[i].shape[0]} < skill length {T}")
+            if self.patch_flags[i].ndim != 3 or self.patch_flags[i].shape[-1] != 2:
+                raise ValueError(f"patch_flags[{i}] must have shape (T, n_patches, 2), got {self.patch_flags[i].shape}")
             cp_norm = (cp - self.action_min) / (self.action_max - self.action_min + 1e-8) * 2.0 - 1.0
             self.ctrl_pts.append(cp_norm)
             self.lengths.append(T)
@@ -503,9 +612,9 @@ class SplineFSQDataset(Dataset):
             "start_tokens": torch.from_numpy(tokens[0]),               # (n_tokens, F)
             "end_tokens":   torch.from_numpy(tokens[T - 1]),           # (n_tokens, F)
             "dec_tokens":   torch.from_numpy(tokens[:T]),              # (T, n_tokens, F)
-            "patch_flags":  torch.from_numpy(self.patch_flags[idx]),   # (n_patches, 2)
+            "patch_flags":  torch.from_numpy(self.patch_flags[idx][:T]),   # (T, n_patches, 2)
             "state":        torch.from_numpy(self.states[idx][:T]),    # (T, 7)
-            "frame_idx":    torch.arange(T, dtype=torch.float32),      # (T,)
+            "frame_progress": torch.arange(T, dtype=torch.float32) / self.max_length,  # (T,)
         }
 
         if self.decoder_output_mode == "single_step":
@@ -541,15 +650,15 @@ def collate_fsq_batch(batch: list[dict]) -> dict:
     ctrl         = torch.stack([b["ctrl"]         for b in batch])  # (B, n_ctrl, A)
     start_tokens = torch.stack([b["start_tokens"] for b in batch])  # (B, n_tokens, F)
     end_tokens   = torch.stack([b["end_tokens"]   for b in batch])  # (B, n_tokens, F)
-    patch_flags  = torch.stack([b["patch_flags"]  for b in batch])  # (B, n_patches, 2)
-
     n_tokens = batch[0]["dec_tokens"].shape[1]
     feat_dim = batch[0]["dec_tokens"].shape[2]
+    n_patches = batch[0]["patch_flags"].shape[1]
     state_dim = batch[0]["state"].shape[-1]
 
     dec_tokens = torch.zeros(B, max_T, n_tokens, feat_dim)
+    patch_flags = torch.zeros(B, max_T, n_patches, 2)
     state      = torch.zeros(B, max_T, state_dim)
-    frame_idx  = torch.zeros(B, max_T)
+    frame_progress = torch.zeros(B, max_T)
     mask       = torch.zeros(B, max_T, dtype=torch.bool)
 
     is_chunk = "chunk_valid" in batch[0]
@@ -567,8 +676,9 @@ def collate_fsq_batch(batch: list[dict]) -> dict:
     for i, b in enumerate(batch):
         T = int(b["length"].item())
         dec_tokens[i, :T] = b["dec_tokens"]
+        patch_flags[i, :T] = b["patch_flags"]
         state[i, :T]      = b["state"]
-        frame_idx[i, :T]  = b["frame_idx"]
+        frame_progress[i, :T] = b["frame_progress"]
         delta[i, :T]      = b["delta"]
         end[i, :T]        = b["end"]
         mask[i, :T]       = True
@@ -583,7 +693,7 @@ def collate_fsq_batch(batch: list[dict]) -> dict:
         "dec_tokens":   dec_tokens,
         "patch_flags":  patch_flags,
         "state":        state,
-        "frame_idx":    frame_idx,
+        "frame_progress": frame_progress,
         "delta":        delta,
         "end":          end,
         "mask":         mask,
@@ -802,13 +912,13 @@ def train_spline_fsqae(
         dec_tok   = batch["dec_tokens"].to(dev)
         pf        = batch["patch_flags"].to(dev)
         states    = batch["state"].to(dev)
-        frame_idx = batch["frame_idx"].to(dev)
+        frame_progress = batch["frame_progress"].to(dev)
         tgt_delta = batch["delta"].to(dev)
         tgt_end   = batch["end"].to(dev)
         mask      = batch["mask"].to(dev)
         cv        = batch["chunk_valid"].to(dev) if batch["chunk_valid"] is not None else None
 
-        pred_delta, pred_end, _ = model(ctrl, lengths, start_tok, end_tok, states, dec_tok, pf, frame_idx)
+        pred_delta, pred_end, _ = model(ctrl, lengths, start_tok, end_tok, states, dec_tok, pf, frame_progress)
         total, d_l, e_l = fsqae_loss(
             pred_delta, pred_end, tgt_delta, tgt_end, mask,
             model.delta_min, model.delta_max, cv,

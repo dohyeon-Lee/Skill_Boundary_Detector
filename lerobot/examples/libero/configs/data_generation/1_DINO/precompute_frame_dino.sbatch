@@ -16,8 +16,8 @@
 set -euo pipefail
 mkdir -p logs
 
-HOMEDIR=${HOMEDIR:-/scratch/mdorazi}
-PROJDIR=${PROJDIR:-/Skill_Boundary_Detector}
+HOMEDIR=${HOMEDIR:-/data2/dohyeon}
+PROJDIR=${PROJDIR:-/SBD}
 
 cd ${HOMEDIR}${PROJDIR}/lerobot
 source ${HOMEDIR}${PROJDIR}/.venv/bin/activate

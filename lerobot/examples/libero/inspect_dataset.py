@@ -3,10 +3,10 @@ LeRobot 데이터셋 구조 검사 스크립트.
 
 Usage:
     python examples/libero/inspect_dataset.py \
-        --dataset_dir /data2/dohyeon/SBD/libero_dataset/libero_90_skillvla
+        --dataset_dir /data2/dohyeon/SBD/libero_dataset/libero_90_data/libero_90_skillvla
         
     python examples/libero/inspect_dataset.py \
-        --dataset_dir /data2/dohyeon/SBD/libero_dataset/libero_90_skillset_fixed50
+        --dataset_dir /data2/dohyeon/SBD/libero_dataset/libero_90_data/libero_90_for_FSQ/libero_90_skillset_fixed50
         
     python examples/libero/inspect_dataset.py \
         --dataset_dir /data2/dohyeon/SBD/libero_small_dataset/libero_10_op1_50

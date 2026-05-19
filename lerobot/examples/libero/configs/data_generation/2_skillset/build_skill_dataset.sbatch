@@ -12,9 +12,7 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
 #SBATCH --time=4:00:00
-# libero_90: #SBATCH --array=0-14
-# libero_10:
-#SBATCH --array=0-4
+#SBATCH --array=0-14
 #SBATCH --output=logs/%x_%A_%a.out
 #SBATCH --error=logs/%x_%A_%a.err
 set -euo pipefail
@@ -48,9 +46,7 @@ NMS_DIST=25
 POLICY=dp_libero_90_obs10_horizon16
 CHECKPOINT=080000
 
-# DATASET=libero_10
-DATASET=libero_10_op1_10
-# DATASET=libero_10_op1_50
+DATASET=libero_90
 
 POLICY_PATH=${HOMEDIR}${PROJDIR}/outputs/${POLICY}/checkpoints/${CHECKPOINT}/pretrained_model
 DATASET_ROOT=libero_dataset
@@ -60,11 +56,10 @@ OUTPUT_DIR=${HOMEDIR}${PROJDIR}/${DATASET_ROOT}/${DATASET}_data/${DATASET}_for_F
 WANDB_PROJECT=Skill_dataset
 # ─────────────────────────────────────────────────────────────────────────────
 
-# 각 array job이 5개 task 처리
-# libero_90: array=0-14, MAX_TASK_ID=72, TASKS_PER_JOB=5  (0-14 × 5 = task 0~74, 72 초과는 skip)
-# libero_10: array=0-4,  MAX_TASK_ID=9,  TASKS_PER_JOB=2  (0-4  × 2 = task 0~9)
-MAX_TASK_ID=9
-TASKS_PER_JOB=2
+# Each array job processes 5 tasks.
+# libero_90: array=0-14, MAX_TASK_ID=72, TASKS_PER_JOB=5.
+MAX_TASK_ID=72
+TASKS_PER_JOB=5
 START_TASK=$(( SLURM_ARRAY_TASK_ID * TASKS_PER_JOB ))
 END_TASK=$(( START_TASK + TASKS_PER_JOB - 1 ))
 
