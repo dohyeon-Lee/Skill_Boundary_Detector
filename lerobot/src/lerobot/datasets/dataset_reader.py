@@ -49,6 +49,7 @@ class DatasetReader:
         video_backend: str,
         delta_timestamps: dict[str, list[float]] | None,
         image_transforms: Callable | None,
+        video_keys_to_load: list[str] | None = None,
     ):
         """Initialize the reader with metadata, filtering, and transform config.
 
@@ -73,6 +74,7 @@ class DatasetReader:
         self._tolerance_s = tolerance_s
         self._video_backend = video_backend
         self._image_transforms = image_transforms
+        self._video_keys_to_load = video_keys_to_load
 
         self.hf_dataset: datasets.Dataset | None = None
         self._absolute_to_relative_idx: dict[int, int] | None = None
@@ -199,7 +201,8 @@ class DatasetReader:
         query_indices: dict[str, list[int]] | None = None,
     ) -> dict[str, list[float]]:
         query_timestamps = {}
-        for key in self._meta.video_keys:
+        video_keys = self._meta.video_keys if self._video_keys_to_load is None else self._video_keys_to_load
+        for key in video_keys:
             if query_indices is not None and key in query_indices:
                 if self._absolute_to_relative_idx is not None:
                     relative_indices = [self._absolute_to_relative_idx[idx] for idx in query_indices[key]]

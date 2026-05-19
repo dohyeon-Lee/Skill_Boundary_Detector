@@ -21,11 +21,12 @@ import torch
 from lerobot.configs.policies import PreTrainedConfig
 from lerobot.configs.train import TrainPipelineConfig
 from lerobot.datasets.dataset_metadata import LeRobotDatasetMetadata
+from lerobot.datasets.dino_feature_dataset import DinoFrameFeatureDataset
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.datasets.multi_dataset import MultiLeRobotDataset
 from lerobot.datasets.streaming_dataset import StreamingLeRobotDataset
 from lerobot.datasets.transforms import ImageTransforms
-from lerobot.utils.constants import ACTION, OBS_PREFIX, REWARD
+from lerobot.utils.constants import ACTION, OBS_PREFIX, OBS_STATE, REWARD
 
 IMAGENET_STATS = {
     "mean": [[[0.485]], [[0.456]], [[0.406]]],  # (c,1,1)
@@ -58,6 +59,8 @@ def resolve_delta_timestamps(
         if key == ACTION and cfg.action_delta_indices is not None:
             delta_timestamps[key] = [i / ds_meta.fps for i in cfg.action_delta_indices]
         if key.startswith(OBS_PREFIX) and cfg.observation_delta_indices is not None:
+            if getattr(cfg, "use_dino_features", False) and key != OBS_STATE:
+                continue
             delta_timestamps[key] = [i / ds_meta.fps for i in cfg.observation_delta_indices]
 
     if len(delta_timestamps) == 0:
@@ -87,6 +90,7 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
             cfg.dataset.repo_id, root=cfg.dataset.root, revision=cfg.dataset.revision
         )
         delta_timestamps = resolve_delta_timestamps(cfg.policy, ds_meta)
+        video_keys_to_load = [] if getattr(cfg.policy, "use_dino_features", False) else None
         if not cfg.dataset.streaming:
             dataset = LeRobotDataset(
                 cfg.dataset.repo_id,
@@ -97,6 +101,7 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
                 revision=cfg.dataset.revision,
                 video_backend=cfg.dataset.video_backend,
                 tolerance_s=cfg.tolerance_s,
+                video_keys_to_load=video_keys_to_load,
             )
         else:
             dataset = StreamingLeRobotDataset(
@@ -127,5 +132,17 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
         for key in dataset.meta.camera_keys:
             for stats_type, stats in IMAGENET_STATS.items():
                 dataset.meta.stats[key][stats_type] = torch.tensor(stats, dtype=torch.float32)
+
+    if getattr(cfg.policy, "use_dino_features", False):
+        if not getattr(cfg.policy, "dino_feature_dir", None):
+            raise ValueError("policy.dino_feature_dir is required when policy.use_dino_features=true")
+        dataset = DinoFrameFeatureDataset(
+            dataset,
+            feature_dir=cfg.policy.dino_feature_dir,
+            image_keys=list(cfg.policy.dino_image_keys),
+            output_key=cfg.policy.dino_token_key,
+            observation_delta_indices=cfg.policy.observation_delta_indices,
+            cache_size=cfg.policy.dino_cache_size,
+        )
 
     return dataset

@@ -128,6 +128,18 @@ class DiffusionConfig(PreTrainedConfig):
     use_group_norm: bool = True
     spatial_softmax_num_keypoints: int = 32
     use_separate_rgb_encoder_per_camera: bool = False
+    # Precomputed DINO/DINOv3 frame-token features.
+    use_dino_features: bool = False
+    dino_feature_dir: str | None = None
+    dino_image_keys: list[str] = field(
+        default_factory=lambda: ["observation.images.image"]
+    )
+    dino_token_key: str = "observation.dino.tokens"
+    dino_feature_dim: int = 384
+    dino_patch_grid: int = 8
+    dino_visual_feature_dim: int = 512
+    dino_conv_hidden_dim: int = 256
+    dino_cache_size: int = 8
     # Unet.
     down_dims: tuple[int, ...] = (512, 1024, 2048)
     kernel_size: int = 5
@@ -166,7 +178,7 @@ class DiffusionConfig(PreTrainedConfig):
         super().__post_init__()
 
         """Input validation (not exhaustive)."""
-        if not self.vision_backbone.startswith("resnet"):
+        if not self.use_dino_features and not self.vision_backbone.startswith("resnet"):
             raise ValueError(
                 f"`vision_backbone` must be one of the ResNet variants. Got {self.vision_backbone}."
             )
@@ -226,7 +238,7 @@ class DiffusionConfig(PreTrainedConfig):
         )
 
     def validate_features(self) -> None:
-        if len(self.image_features) == 0 and self.env_state_feature is None:
+        if len(self.image_features) == 0 and self.env_state_feature is None and not self.use_dino_features:
             raise ValueError("You must provide at least one image or the environment state among the inputs.")
 
         if self.resize_shape is None and self.crop_shape is not None:
@@ -245,6 +257,12 @@ class DiffusionConfig(PreTrainedConfig):
                     raise ValueError(
                         f"`{key}` does not match `{first_image_key}`, but we expect all image shapes to match."
                     )
+
+    @property
+    def image_features(self) -> dict:
+        if self.use_dino_features:
+            return {}
+        return super().image_features
 
     @property
     def observation_delta_indices(self) -> list:

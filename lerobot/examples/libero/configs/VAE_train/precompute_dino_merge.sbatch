@@ -26,10 +26,11 @@ resolve_visual_backbone
 
 PYTHONPATH=${HOMEDIR}${PROJDIR}/lerobot/src \
   python -u examples/libero/precompute_dino_merge.py \
-    --skills_dir    ${HOMEDIR}${PROJDIR}/${DATADIR}/${SKILLSET} \
-    --dataset_dir   ${HOMEDIR}${PROJDIR}/${DATADIR}/${DATA} \
-    --output_path   ${IMAGE_FEATURES_PATH} \
+    --skills_dir       ${HOMEDIR}${PROJDIR}/${DATADIR}/${SKILLSET} \
+    --dataset_dir      ${HOMEDIR}${PROJDIR}/${DATADIR}/${DATA} \
+    --output_path      ${DINO_TOKENS_PATH} \
     --image_model_name ${IMAGE_MODEL_PATH} \
-    --num_workers   ${N_WORKERS}
+    --patch_grid       8 \
+    --num_workers      ${N_WORKERS}
 
-echo "DONE ${IMAGE_FEATURES_PATH}"
+echo "DONE ${DINO_TOKENS_PATH}"

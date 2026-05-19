@@ -25,7 +25,7 @@ import torch
 import tyro
 
 sys.path.insert(0, str(Path(__file__).parent))
-from train_vae import _compute_skill_orders, load_skill_files
+from train_FSQ import _compute_skill_orders, load_skill_files
 
 
 @dataclass
@@ -46,13 +46,13 @@ class Args:
 
 
 def load_model(model_path: str, device: str):
-    from spline_vqae import SplineVQAE
+    from FSQ import SplineFSQAE
 
     ckpt = torch.load(model_path, map_location=device, weights_only=False)
     cfg = ckpt["cfg"]
     epoch = ckpt.get("epoch", 0)
 
-    model = SplineVQAE(
+    model = SplineFSQAE(
         action_dim=cfg.action_dim if hasattr(cfg, "action_dim") else None,
         state_dim=cfg.state_dim,
         n_control=cfg.n_control,
@@ -83,7 +83,7 @@ def load_model(model_path: str, device: str):
 
 
 def main(args: Args) -> None:
-    from spline_vqae import encode_skill_vectors, encode_skills
+    from FSQ import encode_skill_vectors, encode_skills
 
     eef_dims = args.eef_dims if args.eef_dims is not None else [0, 1, 2, 3, 4, 5]
 

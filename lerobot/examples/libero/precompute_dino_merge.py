@@ -10,8 +10,14 @@ import numpy as np
 import tyro
 
 sys.path.insert(0, str(Path(__file__).parent))
-from precompute_dino_features import load_skill_metadata, _save_npz, _partial_output_path
-from train_vae import _load_episodes_meta, _resolve_image_key
+
+from precompute_dino_features import (
+    load_skill_metadata,
+    _load_episodes_meta,
+    _resolve_image_key,
+    _save_npz,
+    _partial_path,
+)
 
 
 @dataclass
@@ -21,7 +27,8 @@ class Args:
     output_path: str
     num_workers: int
     image_key: str = "observation.images.image"
-    image_model_name: str = "/data2/dohyeon/SBD/models/dinov2-small"
+    image_model_name: str = "/data2/dohyeon/SBD/models/dinov3-vits16"
+    patch_grid: int = 8
 
 
 def main(args: Args) -> None:
@@ -37,7 +44,7 @@ def main(args: Args) -> None:
     feature_chunks: list[np.ndarray | None] = [None] * len(metadata)
 
     for worker_id in range(args.num_workers):
-        partial_path = _partial_output_path(output_path, worker_id, args.num_workers)
+        partial_path = _partial_path(output_path, worker_id, args.num_workers)
         if not partial_path.exists():
             raise FileNotFoundError(f"Missing partial file: {partial_path}")
 
@@ -60,14 +67,13 @@ def main(args: Args) -> None:
     for feat in ordered_chunks:
         offsets_out.append(offsets_out[-1] + len(feat))
 
-    features_all = np.concatenate(ordered_chunks, axis=0).astype(np.float32)
-    _save_npz(output_path, features_all, offsets_out, metadata, image_key, args.image_model_name)
+    features_all = np.concatenate(ordered_chunks, axis=0).astype(np.float16)
+    _save_npz(output_path, features_all, offsets_out, metadata, image_key, args.image_model_name, args.patch_grid)
 
     print(f"[MERGE] Saved {features_all.shape} → {output_path}")
 
-    # Clean up partial files
     for worker_id in range(args.num_workers):
-        partial_path = _partial_output_path(output_path, worker_id, args.num_workers)
+        partial_path = _partial_path(output_path, worker_id, args.num_workers)
         partial_path.unlink(missing_ok=True)
     print("[MERGE] Cleaned up partial files.")
 

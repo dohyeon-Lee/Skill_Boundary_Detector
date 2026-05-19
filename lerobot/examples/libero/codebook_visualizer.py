@@ -1,12 +1,12 @@
 """
-Codebook visualizer: generates an interactive HTML page and logs it to wandb.
+FSQ codebook visualizer: interactive HTML + wandb logging.
 
-The HTML shows a bar chart of skill counts per codebook entry.
-Clicking a bar reveals the start/end image pairs for skills in that entry.
+Bar chart of skill counts per FSQ index (0..codebook_size-1).
+Clicking a bar reveals start/end image pairs for skills mapped to that entry.
 
 Usage:
     python codebook_visualizer.py \
-        --latents_path .../spline_vqae_latents_epochXXXX.npz \
+        --latents_path .../skill_latents.npz \
         --dataset_dir  .../libero_90 \
         --wandb_project VAE_eval \
         --wandb_run_name my_run
@@ -26,7 +26,33 @@ import numpy as np
 from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).parent))
-from train_vae import _load_episodes_meta, _resolve_image_key, _video_path
+
+
+# ── video-frame helpers (LeRobot dataset format) ──────────────────────────────
+
+def _load_episodes_meta(dataset_dir: Path):
+    import pandas as pd
+    files = sorted((dataset_dir / "meta" / "episodes").rglob("file-*.parquet"))
+    if not files:
+        raise FileNotFoundError(f"No episode parquet files under {dataset_dir / 'meta' / 'episodes'}")
+    return pd.concat([pd.read_parquet(f) for f in files], ignore_index=True)
+
+
+def _resolve_image_key(episodes_meta, image_key: str) -> str:
+    video_cols = [c for c in episodes_meta.columns if c.startswith("videos/") and c.endswith("/chunk_index")]
+    keys = [c.split("/")[1] for c in video_cols]
+    if image_key and image_key in keys:
+        return image_key
+    if not keys:
+        raise ValueError("No video camera keys found in episode metadata.")
+    return keys[0]
+
+
+def _video_path(dataset_dir: Path, episodes_meta, episode_id: int, image_key: str) -> Path:
+    row = episodes_meta[episodes_meta["episode_index"] == episode_id].iloc[0]
+    chunk_idx = int(row[f"videos/{image_key}/chunk_index"])
+    file_idx  = int(row[f"videos/{image_key}/file_index"])
+    return dataset_dir / "videos" / image_key / f"chunk-{chunk_idx:03d}" / f"file-{file_idx:03d}.mp4"
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -58,6 +84,7 @@ def collect_data(args) -> dict:
     frame_starts = data["frame_start"].astype(np.int64)
     frame_ends   = data["frame_end"].astype(np.int64)
 
+    # FSQ codebook_size = product(levels); default 125 for [5,5,5]
     num_emb = args.num_embeddings or (int(tokens.max()) + 1)
 
     token_to_idxs: dict[int, list[int]] = defaultdict(list)
@@ -66,9 +93,9 @@ def collect_data(args) -> dict:
 
     counts = [len(token_to_idxs.get(k, [])) for k in range(num_emb)]
     used   = sum(1 for c in counts if c > 0)
-    print(f"[VIZ] {used}/{num_emb} codebook entries used  "
-          f"| mean={np.mean([c for c in counts if c>0]):.1f}  "
-          f"max={max(counts)}  total skills={len(tokens)}")
+    active = [c for c in counts if c > 0]
+    print(f"[VIZ] FSQ codebook: {used}/{num_emb} entries used  "
+          f"| mean={np.mean(active):.1f}  max={max(counts)}  total skills={len(tokens)}")
 
     import imageio
 
@@ -130,7 +157,7 @@ _HTML_TEMPLATE = """\
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Codebook Visualizer</title>
+<title>FSQ Codebook Visualizer</title>
 <style>
   body {{ font-family: sans-serif; background:#f5f5f5; margin:0; padding:12px; }}
   h2   {{ margin:0 0 4px; font-size:15px; }}
@@ -160,7 +187,7 @@ _HTML_TEMPLATE = """\
 </style>
 </head>
 <body>
-<h2>Codebook Visualizer</h2>
+<h2>FSQ Codebook Visualizer</h2>
 <div id="stats">
   {total} skills &nbsp;|&nbsp; {used}/{num_emb} entries active &nbsp;|&nbsp;
   mean {mean:.1f} skills/entry &nbsp;|&nbsp; max {mx}

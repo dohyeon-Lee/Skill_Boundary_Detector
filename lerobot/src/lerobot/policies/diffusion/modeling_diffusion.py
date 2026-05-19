@@ -171,6 +171,9 @@ class DiffusionModel(nn.Module):
 
         # Build observation encoders (depending on which observations are provided).
         global_cond_dim = self.config.robot_state_feature.shape[0]
+        if self.config.use_dino_features:
+            self.dino_encoder = DiffusionDinoTokenEncoder(config)
+            global_cond_dim += self.dino_encoder.feature_dim * len(self.config.dino_image_keys)
         if self.config.image_features:
             num_images = len(self.config.image_features)
             if self.config.use_separate_rgb_encoder_per_camera:
@@ -247,6 +250,32 @@ class DiffusionModel(nn.Module):
         """Encode image features and concatenate them all together along with the state vector."""
         batch_size, n_obs_steps = batch[OBS_STATE].shape[:2]
         global_cond_feats = [batch[OBS_STATE]]
+
+        if self.config.use_dino_features:
+            if self.config.dino_token_key not in batch:
+                raise KeyError(
+                    f"Missing precomputed DINO tokens '{self.config.dino_token_key}' in batch. "
+                    "Set policy.dino_feature_dir and use the DINO feature dataset wrapper."
+                )
+            dino_tokens = batch[self.config.dino_token_key]
+            if dino_tokens.ndim != 5:
+                raise ValueError(
+                    f"Expected {self.config.dino_token_key} shape (B,S,N,T,F), got {tuple(dino_tokens.shape)}"
+                )
+            _, _, num_images, _, _ = dino_tokens.shape
+            if num_images != len(self.config.dino_image_keys):
+                raise ValueError(
+                    f"DINO token camera count mismatch: batch has {num_images}, "
+                    f"config has {len(self.config.dino_image_keys)} keys."
+                )
+            dino_features = self.dino_encoder(
+                einops.rearrange(dino_tokens, "b s n t f -> (b s n) t f")
+            )
+            dino_features = einops.rearrange(
+                dino_features, "(b s n) f -> b s (n f)", b=batch_size, s=n_obs_steps, n=num_images
+            )
+            global_cond_feats.append(dino_features)
+
         # Extract image features.
         if self.config.image_features:
             if self.config.use_separate_rgb_encoder_per_camera:
@@ -372,6 +401,51 @@ class DiffusionModel(nn.Module):
             loss = loss * in_episode_bound.unsqueeze(-1)
 
         return loss.mean()
+
+
+class DiffusionDinoTokenEncoder(nn.Module):
+    """Compact DINO CLS + pooled patch tokens into one vector per camera frame."""
+
+    def __init__(self, config: DiffusionConfig):
+        super().__init__()
+        self.patch_grid = int(config.dino_patch_grid)
+        self.feature_dim = int(config.dino_visual_feature_dim)
+        hidden_dim = int(config.dino_conv_hidden_dim)
+        cls_dim = self.feature_dim // 2
+        patch_dim = self.feature_dim - cls_dim
+
+        self.cls_proj = nn.Sequential(
+            nn.LayerNorm(config.dino_feature_dim),
+            nn.Linear(config.dino_feature_dim, cls_dim),
+            nn.SiLU(),
+        )
+        self.patch_conv = nn.Sequential(
+            nn.Conv2d(config.dino_feature_dim, hidden_dim, kernel_size=3, padding=1),
+            nn.GroupNorm(num_groups=max(1, min(8, hidden_dim // 16)), num_channels=hidden_dim),
+            nn.SiLU(),
+            nn.Conv2d(hidden_dim, hidden_dim, kernel_size=3, padding=1),
+            nn.GroupNorm(num_groups=max(1, min(8, hidden_dim // 16)), num_channels=hidden_dim),
+            nn.SiLU(),
+            nn.AdaptiveAvgPool2d((1, 1)),
+            nn.Flatten(),
+            nn.Linear(hidden_dim, patch_dim),
+            nn.SiLU(),
+        )
+
+    def forward(self, tokens: Tensor) -> Tensor:
+        if tokens.ndim != 3:
+            raise ValueError(f"Expected DINO tokens shape (B,T,F), got {tuple(tokens.shape)}")
+        expected_tokens = 1 + self.patch_grid * self.patch_grid
+        if tokens.shape[1] != expected_tokens:
+            raise ValueError(f"Expected {expected_tokens} DINO tokens, got {tokens.shape[1]}")
+
+        dtype = self.cls_proj[1].weight.dtype
+        tokens = tokens.to(dtype=dtype)
+        cls = tokens[:, 0]
+        patch = tokens[:, 1:]
+        bsz, _, feat_dim = patch.shape
+        patch = patch.reshape(bsz, self.patch_grid, self.patch_grid, feat_dim).permute(0, 3, 1, 2)
+        return torch.cat([self.cls_proj(cls), self.patch_conv(patch)], dim=-1)
 
 
 class SpatialSoftmax(nn.Module):
