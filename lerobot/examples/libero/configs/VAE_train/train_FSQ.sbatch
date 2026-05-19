@@ -35,6 +35,7 @@ VISUAL_BACKBONE=dinov3_vits16
 SKILLSET=${DATA}_skillset
 
 DECODER_MODE=chunk        # single_step | chunk
+DECODER_IMAGE_MODE=dino_flags  # dino_only | dino_flags
 CHUNK_SIZE=10
 ZERO_START_EEF=true
 END_THRESHOLD=0.5
@@ -56,7 +57,7 @@ fi
 # FSQ 고정: levels=555, codebook=125
 FSQ_TAG="fsq555"
 MODE_TAG="${DECODER_MODE}K${CHUNK_SIZE}"
-EXP_NAME="${DATA}_${FSQ_TAG}_${IMAGE_EXP_TAG}_${EEF_MODE}_${MODE_TAG}"
+EXP_NAME="${DATA}_${FSQ_TAG}_${IMAGE_EXP_TAG}_${EEF_MODE}_${MODE_TAG}_${DECODER_IMAGE_MODE}"
 OUTPUT_DIR="${HOMEDIR}${PROJDIR}/outputs/${SKILLSET}_latents/${EXP_NAME}"
 
 # DINO full-token features (T × n_tokens × feat_dim) — precomputed by precompute_dino_features.py
@@ -94,6 +95,7 @@ PYTHONPATH=${HOMEDIR}${PROJDIR}/lerobot/src \
     --output_dir              ${OUTPUT_DIR} \
     --fsq_levels              5 5 5 \
     --decoder_output_mode     ${DECODER_MODE} \
+    --decoder_image_mode      ${DECODER_IMAGE_MODE} \
     --chunk_size              ${CHUNK_SIZE} \
     --hidden_dim              256 \
     --num_layers              2 \

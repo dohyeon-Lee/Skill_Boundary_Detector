@@ -4,7 +4,7 @@ Spline FSQ-AE — Finite Scalar Quantization skill encoder with observation-cond
 Architecture
 ------------
   Encoder:
-    enc_img_proj (shared Linear F→H): mean-pool projected start/end DINO tokens
+    enc_image_encoder: pure-DINO mini encoder for start/end image tokens
     enc_traj_proj (Linear n_control*A+1 → H): control points + length_norm
     enc_mlp (MLP 3H→H): fuse start/end/traj features
     z_head (Linear H→D): produce pre-quantization latent
@@ -119,7 +119,7 @@ class ImageTokenEncoder(nn.Module):
         nn.init.trunc_normal_(self.pos_embed, std=0.02)
         nn.init.trunc_normal_(self.query, std=0.02)
 
-    def forward(self, tokens: torch.Tensor, patch_flags: torch.Tensor) -> torch.Tensor:
+    def forward(self, tokens: torch.Tensor, patch_flags: torch.Tensor | None = None) -> torch.Tensor:
         """
         tokens:      (B, T, N, F), token 0 is CLS and tokens 1..N-1 are patches.
         patch_flags: (B, N-1, 2), per-patch [is_red, is_green]. Ignored in dino_only mode.
@@ -128,6 +128,7 @@ class ImageTokenEncoder(nn.Module):
         B, T, N, _ = tokens.shape
         assert N == self.n_tokens, f"expected {self.n_tokens} image tokens, got {N}"
         if self.image_mode == "dino_flags":
+            assert patch_flags is not None, "patch_flags are required when image_mode='dino_flags'"
             cls_flags = tokens.new_zeros(B, T, 1, 2)
             pf = patch_flags.unsqueeze(1).expand(B, T, -1, -1).to(tokens.dtype)
             tokens = torch.cat([tokens, torch.cat([cls_flags, pf], dim=2)], dim=-1)
@@ -260,7 +261,15 @@ class SplineFSQAE(nn.Module):
         H = hidden_dim
 
         # ── Encoder ──────────────────────────────────────────────────────────
-        self.enc_img_proj = nn.Linear(feat_dim, H)  # shared for start / end tokens
+        self.enc_image_encoder = ImageTokenEncoder(
+            feat_dim=feat_dim,
+            n_tokens=n_tokens,
+            hidden_dim=H,
+            image_mode="dino_only",
+            n_layers=image_encoder_layers,
+            n_heads=image_encoder_heads,
+            dropout=dropout,
+        )
         self.enc_traj_proj = nn.Linear(n_control * action_dim + 1, H)
         enc_layers: list[nn.Module] = [MLPBlock(3 * H, H, dropout)]
         for _ in range(num_layers - 1):
@@ -270,7 +279,7 @@ class SplineFSQAE(nn.Module):
 
         # ── Decoder ──────────────────────────────────────────────────────────
         self.n_patches = n_tokens - 1  # token 0 = CLS, tokens 1.. = patches
-        self.image_encoder = ImageTokenEncoder(
+        self.dec_image_encoder = ImageTokenEncoder(
             feat_dim=feat_dim,
             n_tokens=n_tokens,
             hidden_dim=H,
@@ -317,8 +326,8 @@ class SplineFSQAE(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Returns (z_q, indices)."""
         B = ctrl_pts.size(0)
-        start_feat = self.enc_img_proj(start_tokens).mean(dim=1)  # (B, H)
-        end_feat   = self.enc_img_proj(end_tokens).mean(dim=1)    # (B, H)
+        start_feat = self.enc_image_encoder(start_tokens.unsqueeze(1)).squeeze(1)  # (B, H)
+        end_feat   = self.enc_image_encoder(end_tokens.unsqueeze(1)).squeeze(1)    # (B, H)
         ctrl_flat = ctrl_pts.reshape(B, -1)
         l_norm = (lengths.float() / self.max_length).unsqueeze(-1).to(ctrl_pts.dtype)
         traj_feat = self.enc_traj_proj(torch.cat([ctrl_flat, l_norm], dim=-1))  # (B, H)
@@ -343,7 +352,7 @@ class SplineFSQAE(nn.Module):
         """
         B, T, n_tokens, _ = dec_tokens.shape
 
-        img_feat = self.image_encoder(dec_tokens, patch_flags)  # (B, T, H)
+        img_feat = self.dec_image_encoder(dec_tokens, patch_flags)  # (B, T, H)
 
         if frame_indices is None:
             fi = torch.arange(T, device=states.device, dtype=states.dtype).view(1, T)
@@ -737,4 +746,138 @@ def train_spline_fsqae(
     val_loader   = DataLoader(mk_ds(val_idx),   batch_size=cfg.batch_size, shuffle=False, collate_fn=collate_fsq_batch)
 
     model = SplineFSQAE(
-        action
+        action_dim=action_dim,
+        state_dim=cfg.state_dim,
+        n_control=cfg.n_control,
+        spline_degree=cfg.spline_degree,
+        hidden_dim=cfg.hidden_dim,
+        fsq_levels=cfg.fsq_levels,
+        num_layers=cfg.num_layers,
+        dropout=cfg.dropout,
+        feat_dim=cfg.feat_dim,
+        n_tokens=cfg.n_tokens,
+        decoder_image_mode=cfg.decoder_image_mode,
+        image_encoder_layers=cfg.image_encoder_layers,
+        image_encoder_heads=cfg.image_encoder_heads,
+        decoder_output_mode=cfg.decoder_output_mode,
+        chunk_size=cfg.chunk_size,
+        max_length=cfg.max_length,
+        action_min=a_min, action_max=a_max,
+        delta_min=d_min,  delta_max=d_max,
+    ).to(cfg.device)
+
+    print(f"[SplineFSQAE] trainable params: {sum(p.numel() for p in model.parameters() if p.requires_grad):,}")
+    optim = torch.optim.Adam(model.parameters(), lr=cfg.lr)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optim, T_max=cfg.epochs, eta_min=cfg.lr * 0.01)
+    start_epoch = 1
+    best_val = math.inf
+
+    if resume_from is not None:
+        ckpt = torch.load(resume_from, map_location=cfg.device, weights_only=False)
+        model.load_state_dict(ckpt["model_state"])
+        if "optim_state" in ckpt:
+            optim.load_state_dict(ckpt["optim_state"])
+        start_epoch = ckpt.get("epoch", 0) + 1
+        best_val = ckpt.get("val_loss", math.inf)
+        print(f"[SplineFSQAE] resumed from {resume_from}, starting epoch {start_epoch}")
+
+    def _save(path: str, epoch: int, val_loss: float) -> None:
+        torch.save(
+            {
+                "model_state": model.state_dict(),
+                "optim_state": optim.state_dict(),
+                "cfg": cfg,
+                "epoch": epoch,
+                "val_loss": val_loss,
+            },
+            path,
+        )
+
+    def _step(batch: dict, train: bool):
+        dev = cfg.device
+        ctrl      = batch["ctrl"].to(dev)
+        lengths   = batch["lengths"].to(dev)
+        start_tok = batch["start_tokens"].to(dev)
+        end_tok   = batch["end_tokens"].to(dev)
+        dec_tok   = batch["dec_tokens"].to(dev)
+        pf        = batch["patch_flags"].to(dev)
+        states    = batch["state"].to(dev)
+        frame_idx = batch["frame_idx"].to(dev)
+        tgt_delta = batch["delta"].to(dev)
+        tgt_end   = batch["end"].to(dev)
+        mask      = batch["mask"].to(dev)
+        cv        = batch["chunk_valid"].to(dev) if batch["chunk_valid"] is not None else None
+
+        pred_delta, pred_end, _ = model(ctrl, lengths, start_tok, end_tok, states, dec_tok, pf, frame_idx)
+        total, d_l, e_l = fsqae_loss(
+            pred_delta, pred_end, tgt_delta, tgt_end, mask,
+            model.delta_min, model.delta_max, cv,
+            cfg.delta_loss_weight, cfg.end_loss_weight, cfg.end_pos_weight,
+        )
+        if train:
+            optim.zero_grad()
+            total.backward()
+            nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
+            optim.step()
+        em = end_signal_metrics(pred_end, tgt_end, mask, cfg.end_threshold)
+        return total.item(), d_l.item(), e_l.item(), em
+
+    for epoch in range(start_epoch, cfg.epochs + 1):
+        model.train()
+        t_tot = t_d = t_e = t_acc = t_rec = n_tr = 0.0
+        for batch in train_loader:
+            tot, d, e, em = _step(batch, train=True)
+            t_tot += tot; t_d += d; t_e += e
+            t_acc += em["acc"]; t_rec += em["recall"]; n_tr += 1
+
+        scheduler.step()
+
+        model.eval()
+        v_tot = v_d = v_e = v_acc = v_rec = n_vl = 0.0
+        with torch.no_grad():
+            for batch in val_loader:
+                tot, d, e, em = _step(batch, train=False)
+                v_tot += tot; v_d += d; v_e += e
+                v_acc += em["acc"]; v_rec += em["recall"]; n_vl += 1
+
+        n_tr = max(1, n_tr); n_vl = max(1, n_vl)
+        train_loss = t_tot / n_tr
+        val_loss = v_tot / n_vl
+        log = {
+            "train/loss": train_loss,
+            "train/delta_loss": t_d / n_tr,
+            "train/end_loss": t_e / n_tr,
+            "train/end_acc": t_acc / n_tr,
+            "train/end_recall": t_rec / n_tr,
+            "val/loss": val_loss,
+            "val/delta_loss": v_d / n_vl,
+            "val/end_loss": v_e / n_vl,
+            "val/end_acc": v_acc / n_vl,
+            "val/end_recall": v_rec / n_vl,
+            "lr": scheduler.get_last_lr()[0],
+            "end_pos_weight": cfg.end_pos_weight,
+        }
+        if wandb_run is not None:
+            wandb_run.log(log, step=epoch)
+
+        if epoch % cfg.log_every == 0 or epoch == 1:
+            print(
+                f"[SplineFSQAE] {epoch:4d}/{cfg.epochs}  "
+                f"train={train_loss:.4f}  val={val_loss:.4f}  "
+                f"delta={log['train/delta_loss']:.4f}  end={log['train/end_loss']:.4f}  "
+                f"end_acc={log['train/end_acc']:.3f}  end_rec={log['train/end_recall']:.3f}"
+            )
+
+        if cfg.save_path is not None and val_loss < best_val:
+            best_val = val_loss
+            _save(cfg.save_path, epoch, val_loss)
+
+        if cfg.checkpoint_every > 0 and epoch % cfg.checkpoint_every == 0 and cfg.save_path is not None:
+            ckpt_path = cfg.save_path.replace(".pt", f"_epoch{epoch:04d}.pt")
+            _save(ckpt_path, epoch, val_loss)
+
+    if cfg.save_path is not None and best_val == math.inf:
+        _save(cfg.save_path, cfg.epochs, val_loss)
+
+    print(f"[SplineFSQAE] done. best val loss: {best_val:.4f}")
+    return model
