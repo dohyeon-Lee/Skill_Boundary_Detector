@@ -1,23 +1,42 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=skillVLA_fsq_train
+#SBATCH --job-name=skillVLA_fsq_train 
 
-# SBATCH --partition=asus_pro6000
-# SBATCH --qos=pro6000_qos
+# for yonsei cluster: 
+# suma_pro6000, asus_pro6000                            : ~96GB GPU memory, --qos=pro6000_qos
+# suma_a6000, asus_6000ada, gigabyte_a6000, tyan_a6000  : ~48GB GPU memory, --qos=big_qos, base_qos
+# model size : 
+# BATCH_SIZE=32                                         : 48593MiB       
+# BATCH_SIZE=16                                         : 25624MiB
+
+# SBATCH --partition=suma_a6000
+# SBATCH --qos=base_qos
 
 #SBATCH --partition=debug
 #SBATCH --nodelist=node200
 #SBATCH --qos=big_qos
+
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=128G
 #SBATCH --time=48:00:00
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
+
+# ── Optimization ─────────────────────────────────────────────────────────────
+BATCH_SIZE=32
+NUM_WORKERS=4
+NUM_GPUS=1
+LR=$(python3 -c "print(2.5e-05 * ${NUM_GPUS})")
+# ── Optimization ─────────────────────────────────────────────────────────────
+
 set -euo pipefail
 mkdir -p logs
 
-HOMEDIR=/data2/dohyeon
-PROJDIR=/SBD
+HOMEDIR=/scratch/mdorazi
+PROJDIR=/Skill_Boundary_Detector
+
+# HOMEDIR=/data2/dohyeon
+# PROJDIR=/SBD
 
 cd ${HOMEDIR}${PROJDIR}/lerobot
 source ${HOMEDIR}${PROJDIR}/.venv/bin/activate
@@ -57,11 +76,6 @@ if [ ! -f "${DINO_TOKENS_PATH}" ]; then
     exit 1
 fi
 
-# ── Optimization ─────────────────────────────────────────────────────────────
-LR=2.5e-05
-BATCH_SIZE=32
-NUM_WORKERS=4
-NUM_GPUS=1
 
 # ── SkillVLA losses / boundary randomization ────────────────────────────────
 SP_LOSS_WEIGHT=1.0

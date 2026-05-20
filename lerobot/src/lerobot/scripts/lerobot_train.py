@@ -451,6 +451,13 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                             "rabc_num_frames": rabc_stats["num_frames"],
                         }
                     )
+                _wandb_keep = {
+                    "loss", "grad_norm", "lr", "epochs", "episodes",
+                    "dataloading_s",
+                    "loss_skill_decoder", "loss_flow", "loss_skill_predictor",
+                    "predicted_latent_prob",
+                }
+                wandb_log_dict = {k: v for k, v in wandb_log_dict.items() if k in _wandb_keep}
                 wandb_logger.log_dict(wandb_log_dict, step)
             train_tracker.reset_averages()
 
