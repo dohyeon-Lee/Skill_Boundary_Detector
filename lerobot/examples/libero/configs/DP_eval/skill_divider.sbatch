@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=DP_eval
 
-# SBATCH --partition=asus_pro6000 #,suma_rtx4090,big_suma_rtx3090,base_suma_rtx3090
 # SBATCH --exclude=node19,node13,node18,node16,node08,node10,node21,node14,node04,node05,node31
-# SBATCH --qos=pro6000_qos
 
 #SBATCH --partition=debug
 #SBATCH --nodelist=node01
@@ -14,6 +12,7 @@
 #SBATCH --time=48:00:00
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
+
 set -euo pipefail
 mkdir -p logs
 

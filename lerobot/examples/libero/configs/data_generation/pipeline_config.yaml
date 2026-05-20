@@ -32,7 +32,7 @@ action_mode: single_step
 decoder_image_mode: dino_flags
 
 # ── Diffusion Policy ─────────────────────────────────────────
-dp_checkpoint: "020000"
+dp_checkpoint: "045000"
 
 # ── SkillVLA 데이터셋 생성 ───────────────────────────────────
 max_order: 0

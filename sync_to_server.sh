@@ -33,8 +33,11 @@ PATHS+=("${FSQ_SOURCE_CKPT}")
 LABELS+=("FSQ 패키지 디렉토리 (FSQ.pt + skill_latents.npz)")
 PATHS+=("${FSQ_PACKAGE_DIR}")
 
-LABELS+=("DINO precomputed tokens (.npz)")
+LABELS+=("DINO precomputed tokens (.npz, FSQ용)")
 PATHS+=("${DINO_TOKENS_PATH}")
+
+LABELS+=("DINO feature 디렉토리 (에피소드별 npz, DP eval용)")
+PATHS+=("${DINO_FEATURE_DIR}")
 
 LABELS+=("Skillset 디렉토리")
 PATHS+=("${SKILLSET_DIR}")
@@ -97,9 +100,10 @@ for idx in "${SELECTED[@]}"; do
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
     if [ -f "${SRC}" ]; then
-        ssh "${REMOTE}" "mkdir -p $(dirname "${REMOTE_BASE}/${REL}")" 2>/dev/null || true
+        ssh "${REMOTE}" "mkdir -p \"$(dirname "${REMOTE_BASE}/${REL}")\""
         rsync -avzh --progress "${SRC}" "${DST}"
     elif [ -d "${SRC}" ]; then
+        ssh "${REMOTE}" "mkdir -p \"${REMOTE_BASE}/${REL}\""
         rsync -avzh --progress "${SRC}/" "${DST}/"
     else
         echo "  경고: 경로가 존재하지 않음, 건너뜀: ${SRC}" >&2

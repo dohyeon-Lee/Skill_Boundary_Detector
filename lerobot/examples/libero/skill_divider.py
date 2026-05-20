@@ -610,52 +610,75 @@ def load_policy(policy_path: str, device: str,
 
 # ── wandb logging ─────────────────────────────────────────────────────────────
 
-def log_to_wandb(results: list[dict], args: Args) -> None:
-    import wandb
+def _dino_pca_episode(dino_tokens: np.ndarray, patch_grid: int = 8, out_size: int = 128) -> np.ndarray:
+    """(T, 65, feat) → (T, out_size, out_size, 3) uint8 PCA visualization."""
+    from PIL import Image as _PIL
+    patches = dino_tokens[:, 1:, :].astype(np.float32)  # (T, P, feat), skip CLS
+    T, P, F = patches.shape
+    flat = patches.reshape(-1, F)
+    flat_c = flat - flat.mean(0)
+    cov = flat_c.T @ flat_c  # (F, F)
+    _, eigvecs = np.linalg.eigh(cov)
+    components = eigvecs[:, -3:][:, ::-1].T  # (3, F), top-3 PCs
+    projected = flat_c @ components.T  # (T*P, 3)
+    lo, hi = projected.min(0), projected.max(0)
+    projected = (projected - lo) / (hi - lo + 1e-8)
+    spatial = (projected.reshape(T, patch_grid, patch_grid, 3) * 255).astype(np.uint8)
+    return np.stack([
+        np.array(_PIL.fromarray(spatial[t]).resize((out_size, out_size), _PIL.NEAREST))
+        for t in range(T)
+    ])  # (T, out_size, out_size, 3)
 
-    run_name = args.wandb_run_name or f"task{args.task_id}_{args.n_episodes}eps_{args.n_gmm_components}gmm"
-    wandb.init(
-        project=args.wandb_project,
-        name=run_name,
-        config={
-            "task_id": args.task_id, "n_episodes": args.n_episodes,
-            "replan_interval": args.replan_interval,
-            "eval_at_step": args.eval_at_step,
-            "n_gmm_components": args.n_gmm_components,
-            "smooth_window": args.smooth_window,
-            "savgol_polyorder": args.savgol_polyorder,
-        },
-    )
-    for r in results:
-        label = f"ep{r['episode_id']:05d}: {r['language'][:60]}"
-        log_dict = {}
 
-        # Full demo video
-        vp = r.get("combined_path") or (r["cam_clips"][0] if r["cam_clips"] else None)
-        if vp and Path(vp).exists():
-            log_dict[f"video/{label}"] = wandb.Video(vp, format="mp4")
+def _make_wandb_episode_row(
+    frames: np.ndarray,
+    boundaries: list[int],
+    dino_pca: np.ndarray | None,
+    episode_id: int,
+    image_size: int = 128,
+    separator_width: int = 6,
+) -> "Image.Image":
+    """eval.py 포맷과 동일한 row 이미지. 스킬마다 [start|end|dino_start|dino_end] 구성."""
+    from PIL import Image, ImageDraw
 
-        # Cos divergence static plot
-        if r.get("cos_div_plot") and Path(r["cos_div_plot"]).exists():
-            log_dict[f"boundary_criteria/{label}"] = wandb.Image(r["cos_div_plot"])
+    T = len(frames)
+    skills = list(zip(boundaries[:-1], boundaries[1:]))
+    has_dino = dino_pca is not None
+    imgs_per_skill = 4 if has_dino else 2
 
-        # Per-skill videos
-        for i, sp in enumerate(r.get("skill_video_paths") or []):
-            if Path(sp).exists():
-                log_dict[f"skills/{label}/skill_{i + 1}"] = wandb.Video(sp, format="mp4")
+    def get_frame(idx: int) -> Image.Image:
+        return Image.fromarray(frames[max(0, min(idx, T - 1))]).resize((image_size, image_size), Image.BILINEAR)
 
-        print(f"  [wandb] logging keys: {list(log_dict.keys())}")
-        if log_dict:
-            wandb.log(log_dict)
+    def get_dino(idx: int) -> Image.Image:
+        return Image.fromarray(dino_pca[max(0, min(idx, len(dino_pca) - 1))]).resize((image_size, image_size), Image.NEAREST)
 
-        # GMM 3D HTML artifact
-        if r.get("gmm_3d_path") and Path(r["gmm_3d_path"]).exists():
-            artifact = wandb.Artifact(f"gmm_3d_ep{r['episode_id']:05d}", type="html")
-            artifact.add_file(r["gmm_3d_path"])
-            wandb.log_artifact(artifact)
-            wandb.log({f"gmm_3d/{label}": wandb.Html(Path(r["gmm_3d_path"]).read_text())})
+    width_per_skill = image_size * imgs_per_skill + separator_width
+    total_w = image_size + separator_width + width_per_skill * len(skills) + image_size
+    canvas = Image.new("RGB", (total_w, image_size), "white")
+    draw = ImageDraw.Draw(canvas)
 
-    wandb.finish()
+    canvas.paste(get_frame(0), (0, 0))
+    draw.rectangle([image_size, 0, image_size + separator_width - 1, image_size], fill=(10, 10, 10))
+    draw.text((4, 4), f"ep{episode_id}", fill=(255, 255, 255))
+
+    for i, (fs, fe) in enumerate(skills):
+        x = image_size + separator_width + i * width_per_skill
+        fs_c = max(0, min(fs, T - 1))
+        fe_c = max(0, min(fe - 1, T - 1))
+        canvas.paste(get_frame(fs_c), (x, 0))
+        canvas.paste(get_frame(fe_c), (x + image_size, 0))
+        if has_dino:
+            canvas.paste(get_dino(fs_c), (x + image_size * 2, 0))
+            canvas.paste(get_dino(fe_c), (x + image_size * 3, 0))
+        draw.rectangle([x, 0, x + separator_width - 1, image_size], fill=(10, 10, 10))
+        draw.text((x + separator_width + 4, 4), f"s{i + 1}", fill=(255, 255, 255))
+        draw.text((x + separator_width + 4, 18), f"{fs_c}→{fe_c}", fill=(200, 200, 200))
+
+    end_x = image_size + separator_width + width_per_skill * len(skills)
+    canvas.paste(get_frame(T - 1), (end_x, 0))
+    draw.text((end_x + 4, 4), "end", fill=(255, 255, 255))
+
+    return canvas
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -666,6 +689,23 @@ def main(args: Args) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     viz = SkillVisualizer(output_dir, fps=args.fps)
+
+    wb_run = None
+    if args.wandb_project:
+        import wandb as _wandb
+        run_name = args.wandb_run_name or f"task{args.task_id}_{args.n_episodes}eps_{args.n_gmm_components}gmm"
+        wb_run = _wandb.init(
+            project=args.wandb_project,
+            name=run_name,
+            config={
+                "task_id": args.task_id, "n_episodes": args.n_episodes,
+                "replan_interval": args.replan_interval,
+                "eval_at_step": args.eval_at_step,
+                "n_gmm_components": args.n_gmm_components,
+                "smooth_window": args.smooth_window,
+                "savgol_polyorder": args.savgol_polyorder,
+            },
+        )
 
     if args.seed is not None:
         import random, torch
@@ -799,6 +839,24 @@ def main(args: Args) -> None:
         print(f"    [time] cut skills: {time.time()-t3:.1f}s")
         print(f"    [time] episode total: {time.time()-t_ep:.1f}s")
 
+        # ── wandb per-episode logging ──────────────────────────────────────────
+        if wb_run is not None:
+            import wandb as _wandb
+            patch_grid = policy.config.dino_patch_grid if use_dino else 8
+            dino_pca = _dino_pca_episode(ep_dino_tokens, patch_grid) if ep_dino_tokens is not None else None
+            row_img = _make_wandb_episode_row(
+                cam_frames[main_cam_key], boundaries, dino_pca, ep_id,
+            )
+            log_dict: dict = {f"episodes/ep{ep_id:05d}_skills": _wandb.Image(row_img, caption=lang)}
+            if cos_div_plot and Path(cos_div_plot).exists():
+                log_dict[f"episodes/ep{ep_id:05d}_boundary"] = _wandb.Image(str(cos_div_plot))
+            if args.plot_gmm_3d and gmm_3d_path and Path(gmm_3d_path).exists():
+                artifact = _wandb.Artifact(f"gmm_3d_ep{ep_id:05d}", type="html")
+                artifact.add_file(str(gmm_3d_path))
+                wb_run.log_artifact(artifact)
+            _wandb.log(log_dict)
+            print(f"    [wandb] logged ep{ep_id:05d}")
+
         # ── Optional GMM 3D HTML ───────────────────────────────────────────────
         gmm_3d_path = None
         if args.plot_gmm_3d:
@@ -827,11 +885,9 @@ def main(args: Args) -> None:
         json.dump(results, f, indent=2)
     print(f"\nDone. Results saved to {results_path}")
 
-    if args.wandb_project:
-        try:
-            log_to_wandb(results, args)
-        except Exception as e:
-            print(f"wandb logging failed: {e}")
+    if wb_run is not None:
+        import wandb as _wandb
+        _wandb.finish()
 
 
 if __name__ == "__main__":
