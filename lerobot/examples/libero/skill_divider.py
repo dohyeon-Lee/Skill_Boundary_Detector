@@ -652,31 +652,32 @@ def _make_wandb_episode_row(
     def get_dino(idx: int) -> Image.Image:
         return Image.fromarray(dino_pca[max(0, min(idx, len(dino_pca) - 1))]).resize((image_size, image_size), Image.NEAREST)
 
-    width_per_skill = image_size * imgs_per_skill + separator_width
-    total_w = image_size + separator_width + width_per_skill * len(skills) + image_size
-    canvas = Image.new("RGB", (total_w, image_size), "white")
+    # Layout: [sep | start | end | sep | start | end | ...] per skill
+    # Height: image_size (RGB only) or image_size*2 (RGB top + DINO bottom)
+    width_per_skill = image_size * 2 + separator_width
+    total_w = separator_width + width_per_skill * len(skills)
+    total_h = image_size * 2 if has_dino else image_size
+    canvas = Image.new("RGB", (total_w, total_h), (20, 20, 20))
     draw = ImageDraw.Draw(canvas)
 
-    canvas.paste(get_frame(0), (0, 0))
-    draw.rectangle([image_size, 0, image_size + separator_width - 1, image_size], fill=(10, 10, 10))
-    draw.text((4, 4), f"ep{episode_id}", fill=(255, 255, 255))
-
     for i, (fs, fe) in enumerate(skills):
-        x = image_size + separator_width + i * width_per_skill
+        x = separator_width + i * width_per_skill
         fs_c = max(0, min(fs, T - 1))
         fe_c = max(0, min(fe - 1, T - 1))
+
+        # Top row: RGB
         canvas.paste(get_frame(fs_c), (x, 0))
         canvas.paste(get_frame(fe_c), (x + image_size, 0))
-        if has_dino:
-            canvas.paste(get_dino(fs_c), (x + image_size * 2, 0))
-            canvas.paste(get_dino(fe_c), (x + image_size * 3, 0))
-        draw.rectangle([x, 0, x + separator_width - 1, image_size], fill=(10, 10, 10))
-        draw.text((x + separator_width + 4, 4), f"s{i + 1}", fill=(255, 255, 255))
-        draw.text((x + separator_width + 4, 18), f"{fs_c}→{fe_c}", fill=(200, 200, 200))
 
-    end_x = image_size + separator_width + width_per_skill * len(skills)
-    canvas.paste(get_frame(T - 1), (end_x, 0))
-    draw.text((end_x + 4, 4), "end", fill=(255, 255, 255))
+        # Bottom row: DINO PCA
+        if has_dino:
+            canvas.paste(get_dino(fs_c), (x, image_size))
+            canvas.paste(get_dino(fe_c), (x + image_size, image_size))
+
+        # Separator + label
+        draw.rectangle([x - separator_width, 0, x - 1, total_h], fill=(10, 10, 10))
+        draw.text((x + 2, 2), f"s{i + 1}", fill=(255, 255, 255))
+        draw.text((x + 2, 14), f"{fs_c}→{fe_c}", fill=(180, 180, 180))
 
     return canvas
 
@@ -847,9 +848,9 @@ def main(args: Args) -> None:
             row_img = _make_wandb_episode_row(
                 cam_frames[main_cam_key], boundaries, dino_pca, ep_id,
             )
-            log_dict: dict = {f"episodes/ep{ep_id:05d}_skills": _wandb.Image(row_img, caption=lang)}
+            log_dict: dict = {f"skills/ep{ep_id:05d}": _wandb.Image(row_img, caption=lang)}
             if cos_div_plot and Path(cos_div_plot).exists():
-                log_dict[f"episodes/ep{ep_id:05d}_boundary"] = _wandb.Image(str(cos_div_plot))
+                log_dict[f"boundary/ep{ep_id:05d}"] = _wandb.Image(str(cos_div_plot))
             if args.plot_gmm_3d and gmm_3d_path and Path(gmm_3d_path).exists():
                 artifact = _wandb.Artifact(f"gmm_3d_ep{ep_id:05d}", type="html")
                 artifact.add_file(str(gmm_3d_path))
