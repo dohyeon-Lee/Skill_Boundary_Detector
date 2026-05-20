@@ -537,7 +537,7 @@ def plot_gmm_3d_interactive(replan_ts, vf_values, gmm_means,
 
 def load_dino_episode(dino_feature_dir: Path, image_key: str, episode_id: int) -> np.ndarray:
     """Load per-episode DINO tokens. Returns (T, n_tokens, feat_dim) float16."""
-    npz_path = dino_feature_dir / image_key / f"episode_{episode_id:07d}.npz"
+    npz_path = dino_feature_dir / image_key.replace(".", "_") / f"episode_{episode_id:07d}.npz"
     if not npz_path.exists():
         raise FileNotFoundError(f"DINO episode file not found: {npz_path}")
     return np.load(str(npz_path))["features"]  # (T, 65, 384) float16
