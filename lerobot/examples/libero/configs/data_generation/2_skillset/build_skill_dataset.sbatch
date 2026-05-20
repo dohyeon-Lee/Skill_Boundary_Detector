@@ -33,7 +33,10 @@ echo "Node: $SLURMD_NODENAME"
 echo "Array Task ID: $SLURM_ARRAY_TASK_ID"
 nvidia-smi
 
-# ── 설정 ──────────────────────────────────────────────────────────────────────
+CONFIG_PY=examples/libero/configs/data_generation/pipeline_config.py
+eval "$(python "${CONFIG_PY}" --shell)"
+
+# ── Skill division hyperparameters ───────────────────────────────────────────
 DN_STEP=7
 N_GMM=5
 
@@ -43,15 +46,15 @@ SAVGOL_POLYORDER=4
 REPLAN_INTERVAL=3
 NMS_DIST=25
 
-POLICY=dp_libero_90_obs10_horizon16
-CHECKPOINT=080000
+DATASET=${DATA}
+POLICY=${DP_POLICY}
+CHECKPOINT=${DP_CHECKPOINT}
+DINO_FEATURE_DIR=${DINO_FEATURE_DIR}
 
-DATASET=libero_90
-
-POLICY_PATH=${HOMEDIR}${PROJDIR}/outputs/${POLICY}/checkpoints/${CHECKPOINT}/pretrained_model
-DATASET_ROOT=libero_dataset
-DATASET_DIR=${HOMEDIR}${PROJDIR}/${DATASET_ROOT}/${DATASET}
-OUTPUT_DIR=${HOMEDIR}${PROJDIR}/${DATASET_ROOT}/${DATASET}_data/${DATASET}_for_FSQ/${DATASET}_skillset
+POLICY_PATH=${DP_POLICY_PATH}
+DATASET_ROOT=${DATADIR}
+DATASET_DIR=${RAW_DATASET_DIR}
+OUTPUT_DIR=${SKILLSET_DIR}
 
 WANDB_PROJECT=Skill_dataset
 # ─────────────────────────────────────────────────────────────────────────────
@@ -92,6 +95,7 @@ PYTHONPATH=${HOMEDIR}${PROJDIR}/lerobot/src \
     --n_gmm_components ${N_GMM} \
     --smooth_window ${SMOOTH_WINDOW} \
     --savgol_polyorder ${SAVGOL_POLYORDER} \
+    --dino_feature_dir ${DINO_FEATURE_DIR} \
     --resume \
     --wandb_project ${WANDB_PROJECT} \
     --wandb_run_name ${WANDB_RUN_NAME}

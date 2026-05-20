@@ -36,6 +36,7 @@ from skill_divider import (
     get_episode_timestamps,
     get_video_path,
     load_data,
+    load_dino_episode,
     load_episodes_meta,
     load_policy,
     run_vf_analysis,
@@ -72,6 +73,8 @@ class Args:
     min_skills: int = 2
     """유효 스킬 수가 이 값 미만이면 episode 전체 skip."""
     # ── Misc ─────────────────────────────────────────────────────────────────
+    dino_feature_dir: str = ""
+    """Per-episode DINO feature dir (e.g. .../libero_90_DINO/dinov3_vits16_pg8). Required when policy uses DINO features."""
     seed: int | None = 42
     resume: bool = True
     """True면 이미 저장된 episode skip."""
@@ -173,6 +176,12 @@ def main(args: Args) -> None:
     )
     print(f"  [time] policy load: {time.time()-t0:.1f}s")
 
+    use_dino = policy.config.use_dino_features
+    dino_feature_dir = Path(args.dino_feature_dir) if args.dino_feature_dir else None
+    if use_dino and dino_feature_dir is None:
+        raise ValueError("--dino_feature_dir is required when policy uses DINO features.")
+    dino_image_key = policy.config.dino_image_keys[0] if use_dino else None
+
     viz = SkillVisualizer(output_dir)
 
     # ── WandB init ────────────────────────────────────────────────────────────
@@ -244,19 +253,25 @@ def main(args: Args) -> None:
             print(f"  ep{ep_id:05d} ...", end="", flush=True)
             t_ep = time.time()
 
-            def _load_cam(cam_key):
-                src = get_video_path(dataset_dir, ep_id, cam_key, episodes_meta).resolve()
-                start_sec, end_sec = get_episode_timestamps(dataset_dir, ep_id, episodes_meta, cam_key)
-                return cam_key, viz.load_episode_frames(src, start_sec, end_sec)
+            if use_dino:
+                cam_frames = {}
+                ep_dino_tokens = load_dino_episode(dino_feature_dir, dino_image_key, ep_id)
+            else:
+                def _load_cam(cam_key):
+                    src = get_video_path(dataset_dir, ep_id, cam_key, episodes_meta).resolve()
+                    start_sec, end_sec = get_episode_timestamps(dataset_dir, ep_id, episodes_meta, cam_key)
+                    return cam_key, viz.load_episode_frames(src, start_sec, end_sec)
 
-            with ThreadPoolExecutor(max_workers=len(camera_keys)) as pool:
-                cam_frames = dict(pool.map(_load_cam, camera_keys))
+                with ThreadPoolExecutor(max_workers=len(camera_keys)) as pool:
+                    cam_frames = dict(pool.map(_load_cam, camera_keys))
+                ep_dino_tokens = None
 
             try:
                 vf_replan_ts, _, _, div_cos, _, _, _ = run_vf_analysis(
                     policy, preprocessor, ep_df, cam_frames, camera_keys,
                     args.eval_at_step, args.replan_interval,
                     n_gmm_components=args.n_gmm_components,
+                    dino_tokens=ep_dino_tokens,
                 )
             except Exception as e:
                 import traceback

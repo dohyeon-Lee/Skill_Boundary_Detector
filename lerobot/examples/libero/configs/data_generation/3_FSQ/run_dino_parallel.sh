@@ -17,32 +17,17 @@ GPU_RESERVE=0
 GPU_MAX_PER_NODE=7
 QOS=big_qos
 
-# Dataset config
-HOMEDIR=/data2/dohyeon
-PROJDIR=/SBD
-DATADIR=libero_dataset
-DATA=libero_90
-SKILLSET=${DATA}_skillset
-
-# Visual feature config. Must match Stage 1_DINO.
-VISUAL_BACKBONE=dinov3_vits16
-PATCH_GRID=8
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "${SCRIPT_DIR}"
 mkdir -p logs
 
-source "${SCRIPT_DIR}/visual_backbone.sh"
-resolve_visual_backbone
+CONFIG_PY="${SCRIPT_DIR}/../pipeline_config.py"
+eval "$(python3 "${CONFIG_PY}" --shell)"
 
-DERIVED_DATA_DIR=${HOMEDIR}${PROJDIR}/${DATADIR}/${DATA}_data
-FSQ_PRECOMPUTE_DIR=${DERIVED_DATA_DIR}/${DATA}_for_FSQ
-SKILLSET_DIR=${FSQ_PRECOMPUTE_DIR}/${SKILLSET}
-FRAME_DINO_DIR=${DERIVED_DATA_DIR}/${DATA}_DINO/${IMAGE_FEATURE_TAG}_pg${PATCH_GRID}
-DINO_TOKENS_PATH=${FSQ_PRECOMPUTE_DIR}/${IMAGE_FEATURE_TAG}_tokens.npz
-SAM2_OUTPUT_DIR=${FSQ_PRECOMPUTE_DIR}/sam2_masks
-SAM2_MERGED_PATH=${FSQ_PRECOMPUTE_DIR}/patch_flags.npz
-SAM2_CHECKPOINT=${HOMEDIR}${PROJDIR}/models/sam2/sam2.1_hiera_large.pt
+DERIVED_DATA_DIR=${DATA_DIR}
+FRAME_DINO_DIR=${FRAME_DINO_DIR}
+SAM2_OUTPUT_DIR=${SAM2_MASKS_DIR}
+SAM2_MERGED_PATH=${SAM2_FLAGS_PATH}
 
 mkdir -p "${FSQ_PRECOMPUTE_DIR}"
 

@@ -12,25 +12,26 @@ GPU_RESERVE=0
 GPU_MAX_PER_NODE=7
 QOS=big_qos
 
-HOMEDIR=/data2/dohyeon
-PROJDIR=/SBD
+HOMEDIR=${HOMEDIR:-/data2/dohyeon}
+PROJDIR=${PROJDIR:-/SBD}
 
 # HOMEDIR=/scratch/mdorazi
 # PROJDIR=/Skill_Boundary_Detector
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONFIG_PY="${SCRIPT_DIR}/../pipeline_config.py"
+eval "$(python3 "${CONFIG_PY}" --shell)"
+
 # ── Precompute defaults ──────────────────────────────────────────────────────
-DATASET=libero_90
-DATASET_ROOT=libero_dataset
-VISUAL_BACKBONE=dinov3_vits16  # dinov3_vits16, dinov2_small
-IMAGE_KEYS=observation.images.image
-PATCH_GRID=8
-IMAGE_SIZE=224
+DATASET=${DATA}
+DATASET_ROOT=${DATADIR}
+IMAGE_KEYS=${IMAGE_KEY}
 BATCH_SIZE=1024
 DTYPE=float16
 WANDB_PROJECT=DP_train
 
 set -euo pipefail
-cd "$(dirname "$0")"
+cd "${SCRIPT_DIR}"
 mkdir -p logs
 
 declare -A NODE_PARTITION

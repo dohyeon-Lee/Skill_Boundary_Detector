@@ -353,7 +353,7 @@ class DiffusionModel(nn.Module):
         """
         # Input validation.
         assert set(batch).issuperset({OBS_STATE, ACTION, "action_is_pad"})
-        assert OBS_IMAGES in batch or OBS_ENV_STATE in batch
+        assert OBS_IMAGES in batch or OBS_ENV_STATE in batch or self.config.dino_token_key in batch
         n_obs_steps = batch[OBS_STATE].shape[1]
         horizon = batch[ACTION].shape[1]
         assert horizon == self.config.horizon
@@ -404,48 +404,43 @@ class DiffusionModel(nn.Module):
 
 
 class DiffusionDinoTokenEncoder(nn.Module):
-    """Compact DINO CLS + pooled patch tokens into one vector per camera frame."""
+    """DINO CLS + patch tokens → one vector via mini transformer + learned query pooling."""
 
-    def __init__(self, config: DiffusionConfig):
+    def __init__(self, config: DiffusionConfig) -> None:
         super().__init__()
-        self.patch_grid = int(config.dino_patch_grid)
-        self.feature_dim = int(config.dino_visual_feature_dim)
-        hidden_dim = int(config.dino_conv_hidden_dim)
-        cls_dim = self.feature_dim // 2
-        patch_dim = self.feature_dim - cls_dim
+        feat_dim = config.dino_feature_dim
+        hidden_dim = config.dino_visual_feature_dim
+        n_tokens = 1 + config.dino_patch_grid ** 2
+        n_heads = config.dino_transformer_n_heads
+        n_layers = config.dino_transformer_n_layers
 
-        self.cls_proj = nn.Sequential(
-            nn.LayerNorm(config.dino_feature_dim),
-            nn.Linear(config.dino_feature_dim, cls_dim),
-            nn.SiLU(),
+        self.feature_dim = hidden_dim
+        self.token_proj = nn.Linear(feat_dim, hidden_dim)
+        self.pos_embed = nn.Parameter(torch.zeros(1, n_tokens, hidden_dim))
+        enc_layer = nn.TransformerEncoderLayer(
+            d_model=hidden_dim,
+            nhead=n_heads,
+            dim_feedforward=hidden_dim * 4,
+            dropout=0.0,
+            activation="gelu",
+            batch_first=True,
         )
-        self.patch_conv = nn.Sequential(
-            nn.Conv2d(config.dino_feature_dim, hidden_dim, kernel_size=3, padding=1),
-            nn.GroupNorm(num_groups=max(1, min(8, hidden_dim // 16)), num_channels=hidden_dim),
-            nn.SiLU(),
-            nn.Conv2d(hidden_dim, hidden_dim, kernel_size=3, padding=1),
-            nn.GroupNorm(num_groups=max(1, min(8, hidden_dim // 16)), num_channels=hidden_dim),
-            nn.SiLU(),
-            nn.AdaptiveAvgPool2d((1, 1)),
-            nn.Flatten(),
-            nn.Linear(hidden_dim, patch_dim),
-            nn.SiLU(),
-        )
+        self.encoder = nn.TransformerEncoder(enc_layer, num_layers=n_layers)
+        self.query = nn.Parameter(torch.zeros(1, 1, hidden_dim))
+        self.pool = nn.MultiheadAttention(hidden_dim, n_heads, dropout=0.0, batch_first=True)
+        self.out_norm = nn.LayerNorm(hidden_dim)
+        nn.init.trunc_normal_(self.pos_embed, std=0.02)
+        nn.init.trunc_normal_(self.query, std=0.02)
 
     def forward(self, tokens: Tensor) -> Tensor:
-        if tokens.ndim != 3:
-            raise ValueError(f"Expected DINO tokens shape (B,T,F), got {tuple(tokens.shape)}")
-        expected_tokens = 1 + self.patch_grid * self.patch_grid
-        if tokens.shape[1] != expected_tokens:
-            raise ValueError(f"Expected {expected_tokens} DINO tokens, got {tokens.shape[1]}")
-
-        dtype = self.cls_proj[1].weight.dtype
+        """tokens: (B, N, F) → (B, hidden_dim)"""
+        dtype = self.token_proj.weight.dtype
         tokens = tokens.to(dtype=dtype)
-        cls = tokens[:, 0]
-        patch = tokens[:, 1:]
-        bsz, _, feat_dim = patch.shape
-        patch = patch.reshape(bsz, self.patch_grid, self.patch_grid, feat_dim).permute(0, 3, 1, 2)
-        return torch.cat([self.cls_proj(cls), self.patch_conv(patch)], dim=-1)
+        x = self.token_proj(tokens) + self.pos_embed.to(dtype=dtype)
+        x = self.encoder(x)
+        q = self.query.to(dtype=dtype).expand(tokens.shape[0], -1, -1)
+        pooled, _ = self.pool(q, x, x, need_weights=False)
+        return self.out_norm(pooled.squeeze(1))
 
 
 class SpatialSoftmax(nn.Module):

@@ -137,8 +137,9 @@ class DiffusionConfig(PreTrainedConfig):
     dino_token_key: str = "observation.dino.tokens"
     dino_feature_dim: int = 384
     dino_patch_grid: int = 8
-    dino_visual_feature_dim: int = 512
-    dino_conv_hidden_dim: int = 256
+    dino_visual_feature_dim: int = 256
+    dino_transformer_n_layers: int = 1
+    dino_transformer_n_heads: int = 4
     dino_cache_size: int = 8
     # Unet.
     down_dims: tuple[int, ...] = (512, 1024, 2048)

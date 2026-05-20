@@ -75,6 +75,8 @@ class Args:
     mse_window: int = 4
     """Number of action steps used to compute pred-demo MSE (first N steps of each chunk)."""
     fps: int = 20
+    dino_feature_dir: str = ""
+    """Per-episode DINO feature dir (e.g. .../libero_90_DINO/dinov3_vits16_pg8). Required when policy uses DINO features."""
     wandb_project: str | None = None
     wandb_run_name: str | None = None
 
@@ -235,6 +237,7 @@ def run_vf_analysis(
     n_gmm_components=3,
     compute_pred_mse: bool = False,
     mse_window: int = 4,
+    dino_tokens: np.ndarray | None = None,
 ) -> tuple:
     """Returns (replan_ts, vf_values, gt_orig, divergences).
 
@@ -257,10 +260,14 @@ def run_vf_analysis(
     eff_interval = replan_interval if replan_interval > 0 else policy.config.n_action_steps
     device = next(policy.parameters()).device
     image_keys = list(policy.config.image_features.keys())
+    _use_dino = (dino_tokens is not None) and policy.config.use_dino_features
+    _dino_key = policy.config.dino_token_key  # "observation.dino.tokens"
 
     states = np.stack(ep_df["observation.state"].values)
 
-    T = min(len(ep_df), *(len(v) for v in cam_frames.values()))
+    T = min(len(ep_df), *(len(v) for v in cam_frames.values())) if cam_frames else len(ep_df)
+    if _use_dino:
+        T = min(T, len(dino_tokens))
     states = states[:T]
     gt_actions = np.stack(ep_df["action"].values[:T])
     for k in cam_frames:
@@ -278,19 +285,28 @@ def run_vf_analysis(
         pad = n_obs_steps - len(indices)
         indices = [indices[0]] * pad + indices  # 앞쪽 패딩
 
-        obs_states, obs_imgs = [], []
+        obs_states = []
+        obs_imgs = [] if not _use_dino else None
         for fi in indices:
-            obs = {k: torch.from_numpy(cam_frames[k][fi]).float().div(255.0).permute(2, 0, 1)
-                   for k in camera_keys}
-            obs[OBS_STATE] = torch.from_numpy(states[fi]).float()
+            obs = {OBS_STATE: torch.from_numpy(states[fi]).float()}
+            if not _use_dino:
+                obs.update({k: torch.from_numpy(cam_frames[k][fi]).float().div(255.0).permute(2, 0, 1)
+                             for k in camera_keys})
             obs = preprocessor(obs)
             obs_states.append(obs[OBS_STATE])
-            obs_imgs.append(torch.stack([obs[k] for k in image_keys], dim=-4))
+            if not _use_dino:
+                obs_imgs.append(torch.stack([obs[k] for k in image_keys], dim=-4))
 
-        return {
-            OBS_STATE: torch.stack(obs_states, dim=1).to(device),   # (1, n_obs, state_dim)
-            OBS_IMAGES: torch.stack(obs_imgs, dim=1).to(device),    # (1, n_obs, n_cam, C, H, W)
-        }
+        batch = {OBS_STATE: torch.stack(obs_states, dim=1).to(device)}  # (1, n_obs, state_dim)
+        if _use_dino:
+            # (n_obs, n_tokens, feat_dim) → (1, n_obs, 1, n_tokens, feat_dim)
+            tok = torch.from_numpy(
+                np.stack([dino_tokens[i] for i in indices]).astype(np.float32)
+            ).unsqueeze(0).unsqueeze(2).to(device)
+            batch[_dino_key] = tok
+        else:
+            batch[OBS_IMAGES] = torch.stack(obs_imgs, dim=1).to(device)  # (1, n_obs, n_cam, C, H, W)
+        return batch
 
     # replan step에서만 순회 (T회 → T/eff_interval회)
     for t in range(0, T, eff_interval):
@@ -517,6 +533,16 @@ def plot_gmm_3d_interactive(replan_ts, vf_values, gmm_means,
     return path
 
 
+# ── DINO episode loader ───────────────────────────────────────────────────────
+
+def load_dino_episode(dino_feature_dir: Path, image_key: str, episode_id: int) -> np.ndarray:
+    """Load per-episode DINO tokens. Returns (T, n_tokens, feat_dim) float16."""
+    npz_path = dino_feature_dir / image_key / f"episode_{episode_id:07d}.npz"
+    if not npz_path.exists():
+        raise FileNotFoundError(f"DINO episode file not found: {npz_path}")
+    return np.load(str(npz_path))["features"]  # (T, 65, 384) float16
+
+
 # ── Data loading ──────────────────────────────────────────────────────────────
 
 def load_data(dataset_dir: Path, episode_ids: list[int] | None = None) -> pd.DataFrame:
@@ -680,6 +706,12 @@ def main(args: Args) -> None:
     )
     print(f"  [time] policy load: {time.time()-t0:.1f}s")
 
+    use_dino = policy.config.use_dino_features
+    dino_feature_dir = Path(args.dino_feature_dir) if args.dino_feature_dir else None
+    if use_dino and dino_feature_dir is None:
+        raise ValueError("--dino_feature_dir is required when policy uses DINO features.")
+    dino_image_key = policy.config.dino_image_keys[0] if use_dino else None
+
     nms_dist = (args.nms_dist if args.nms_dist is not None else args.replan_interval * 2) if args.peak_nms else 0
     results = []
 
@@ -716,6 +748,11 @@ def main(args: Args) -> None:
         viz.write_single_video(cam_frames[main_cam_key], combined_path, ep_id=ep_id)
         print(f"    [time] video write: {time.time()-t1b:.1f}s")
 
+        # ── DINO token 로드 ────────────────────────────────────────────────────
+        ep_dino_tokens = None
+        if use_dino:
+            ep_dino_tokens = load_dino_episode(dino_feature_dir, dino_image_key, ep_id)
+
         # ── VF divergence analysis ─────────────────────────────────────────────
         t2 = time.time()
         try:
@@ -726,6 +763,7 @@ def main(args: Args) -> None:
                 n_gmm_components=args.n_gmm_components,
                 compute_pred_mse=args.plot_pred_mse,
                 mse_window=args.mse_window,
+                dino_tokens=ep_dino_tokens,
             )
         except Exception as e:
             import traceback

@@ -24,6 +24,7 @@ from lerobot.datasets.dataset_metadata import LeRobotDatasetMetadata
 from lerobot.datasets.dino_feature_dataset import DinoFrameFeatureDataset
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.datasets.multi_dataset import MultiLeRobotDataset
+from lerobot.datasets.skillvla_dino_token_dataset import SkillVLADinoTokenDataset
 from lerobot.datasets.streaming_dataset import StreamingLeRobotDataset
 from lerobot.datasets.transforms import ImageTransforms
 from lerobot.utils.constants import ACTION, OBS_PREFIX, OBS_STATE, REWARD
@@ -143,6 +144,15 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
             output_key=cfg.policy.dino_token_key,
             observation_delta_indices=cfg.policy.observation_delta_indices,
             cache_size=cfg.policy.dino_cache_size,
+        )
+
+    if getattr(cfg.policy, "skill_decoder_dino_tokens_path", None):
+        dataset = SkillVLADinoTokenDataset(
+            dataset,
+            tokens_path=cfg.policy.skill_decoder_dino_tokens_path,
+            output_key=cfg.policy.skill_decoder_dino_output_key,
+            cache_path=cfg.policy.skill_decoder_dino_cache_path,
+            build_cache=cfg.policy.skill_decoder_dino_build_cache,
         )
 
     return dataset

@@ -31,17 +31,20 @@ echo "START JOB"
 echo "Node: ${SLURMD_NODENAME:-unknown}"
 nvidia-smi
 
+CONFIG_PY=examples/libero/configs/data_generation/pipeline_config.py
+eval "$(python "${CONFIG_PY}" --shell --data "${DATASET:-${DATA:-}}")"
+
 # Raw LeRobot dataset to precompute.
-DATASET=${DATASET:-libero_90}
-DATASET_ROOT=${DATASET_ROOT:-libero_dataset}
+DATASET=${DATA}
+DATASET_ROOT=${DATADIR}
 
 # Comma-separated camera keys, or "all".
 # IMAGE_KEYS is exported with colons instead of commas to avoid SLURM --export parsing issues
-IMAGE_KEYS=$(echo "${IMAGE_KEYS:-observation.images.image}" | tr ':' ',')
+IMAGE_KEYS=$(echo "${IMAGE_KEYS:-${IMAGE_KEY}}" | tr ':' ',')
 
 # Visual backbone preset.
 # Supported here: dinov3_vits16, dinov2_small
-VISUAL_BACKBONE=${VISUAL_BACKBONE:-dinov3_vits16}
+VISUAL_BACKBONE=${VISUAL_BACKBONE:-${VISUAL_BACKBONE}}
 case "${VISUAL_BACKBONE}" in
   dinov3_vits16|dinov3_vits14)
     IMAGE_MODEL_DIR=dinov3-vits16
@@ -53,6 +56,11 @@ case "${VISUAL_BACKBONE}" in
     IMAGE_FEATURE_TAG=dinov2_small
     N_PATCH_RAW=${N_PATCH_RAW:-256}
     ;;
+  dinov3_convnext_small)
+    IMAGE_MODEL_DIR=dinov3-convnext-small
+    IMAGE_FEATURE_TAG=dinov3_convnext_small
+    N_PATCH_RAW=${N_PATCH_RAW:-196}
+    ;;
   *)
     echo "Unknown VISUAL_BACKBONE=${VISUAL_BACKBONE}" >&2
     exit 1
@@ -61,17 +69,17 @@ esac
 
 IMAGE_MODEL_PATH=${HOMEDIR}${PROJDIR}/models/${IMAGE_MODEL_DIR}
 
-PATCH_GRID=${PATCH_GRID:-8}
-IMAGE_SIZE=${IMAGE_SIZE:-224}
+PATCH_GRID=${PATCH_GRID:-${PATCH_GRID}}
+IMAGE_SIZE=${IMAGE_SIZE:-${IMAGE_SIZE}}
 BATCH_SIZE=${BATCH_SIZE:-1024}
 DTYPE=${DTYPE:-float16}
 NUM_WORKERS=${N_WORKERS:-1}
 WORKER_ID=${SLURM_ARRAY_TASK_ID:-0}
 WANDB_PROJECT=${WANDB_PROJECT:-}
 
-DATASET_DIR=${HOMEDIR}${PROJDIR}/${DATASET_ROOT}/${DATASET}
-DERIVED_DATA_DIR=${HOMEDIR}${PROJDIR}/${DATASET_ROOT}/${DATASET}_data
-OUTPUT_DIR=${DERIVED_DATA_DIR}/${DATASET}_DINO/${IMAGE_FEATURE_TAG}_pg${PATCH_GRID}
+DATASET_DIR=${RAW_DATASET_DIR}
+DERIVED_DATA_DIR=${DATA_DIR}
+OUTPUT_DIR=${FRAME_DINO_DIR}
 
 if [ ! -d "${DATASET_DIR}" ]; then
   echo "Dataset not found: ${DATASET_DIR}" >&2

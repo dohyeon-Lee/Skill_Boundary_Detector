@@ -1,0 +1,50 @@
+# SkillVLA 파이프라인 설정
+# 이 파일의 값을 직접 수정하세요.
+# 환경변수가 있으면 여기 값보다 우선합니다 (sbatch --export 사용 시).
+
+# ── 디렉토리 ─────────────────────────────────────────────────
+homedir: /data2/dohyeon
+projdir: /SBD
+datadir: libero_dataset
+
+# ── 데이터셋 ─────────────────────────────────────────────────
+data: libero_90
+
+# ── 비전 백본 ────────────────────────────────────────────────
+# 선택지: dinov2_small | dinov3_vits16 | dinov3_convnext_small
+visual_backbone: dinov3_vits16
+patch_grid: 8
+image_size: 224
+image_key: observation.images.image
+
+# ── FSQ ─────────────────────────────────────────────────────
+fsq_levels: [5, 5, 5]
+fsq_epoch: "0500"
+
+# FSQ 모델이 학습된 데이터셋 (보통 data와 동일)
+fsq_model_data: libero_90
+
+# eef_mode: abs | zero
+eef_mode: abs
+# action_mode: single_step | chunk
+action_mode: single_step
+# decoder_image_mode: dino_flags | dino_only
+decoder_image_mode: dino_flags
+
+# ── Diffusion Policy ─────────────────────────────────────────
+dp_checkpoint: "080000"
+
+# ── SkillVLA 데이터셋 생성 ───────────────────────────────────
+max_order: 0
+max_length: 200
+inference_skill_max_order: 20
+inference_skill_max_length: 200
+skill_decoder_state_indices: "[0,1,2,3,4,5,6]"
+
+# ── SkillVLA 학습 ────────────────────────────────────────────
+# true: action expert가 language 토큰 대신 image/state prefix 토큰에 attend
+block_lang: false
+
+# ── SAM2 ────────────────────────────────────────────────────
+# 비워두면 기본 경로 사용: {homedir}{projdir}/models/sam2/sam2.1_hiera_large.pt
+sam2_checkpoint: ""

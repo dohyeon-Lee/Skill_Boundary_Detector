@@ -16,20 +16,27 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 from PIL import Image, ImageDraw
 
+CONFIG_DIR = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(CONFIG_DIR))
+
+from pipeline_config import load_config  # noqa: E402
+
 
 def parse_args() -> argparse.Namespace:
+    cfg = load_config()
     p = argparse.ArgumentParser()
-    p.add_argument("--homedir", default="/data2/dohyeon")
-    p.add_argument("--projdir", default="/SBD")
-    p.add_argument("--dataset", default="libero_90")
-    p.add_argument("--dataset_root", default="libero_dataset")
-    p.add_argument("--image_key", default="observation.images.image")
+    p.add_argument("--homedir", default=cfg.homedir)
+    p.add_argument("--projdir", default=cfg.projdir)
+    p.add_argument("--dataset", default=cfg.data)
+    p.add_argument("--dataset_root", default=cfg.datadir)
+    p.add_argument("--image_key", default=cfg.image_key)
     p.add_argument("--task_id", type=int, default=0)
     p.add_argument("--num_episodes", type=int, default=4)
     p.add_argument("--episode_offset", type=int, default=0)

@@ -124,9 +124,17 @@ def _make_encoder_traj(states, actions, eef_dims, gripper_idx, zero_start):
 
 
 def _make_decoder_state(states, actions, eef_dims, gripper_idx):
-    """Returns 7D state: EEF (6D) + gripper (1D)."""
+    """Returns 7D state: EEF (6D) + previous gripper command (1D).
+
+    The decoder predicts action[t], so feeding action[t]'s gripper value as
+    input would leak the target. Use 0 at the first step and action[t-1]
+    afterwards.
+    """
     pose = states[:, eef_dims].astype(np.float32)
-    gripper = actions[:, gripper_idx:gripper_idx + 1].astype(np.float32)
+    grip = actions[:, gripper_idx:gripper_idx + 1].astype(np.float32)
+    gripper = np.zeros_like(grip)
+    if len(grip) > 1:
+        gripper[1:] = grip[:-1]
     return np.concatenate([pose, gripper], axis=-1)
 
 

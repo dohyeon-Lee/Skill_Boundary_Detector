@@ -1,7 +1,7 @@
 """
 SkillVLA용 컬럼을 LeRobot 데이터셋에 추가하는 스크립트.
 
-VQAE encoder로 뽑은 skill tokens (.npz) 를 원본 데이터셋에 추가한다.
+FSQ encoder로 뽑은 skill tokens (.npz) 를 원본 데이터셋에 추가한다.
 선택적으로 precompute_dino_features.py가 만든 frozen visual backbone
 feature cache를 frame별 column으로 붙일 수 있다. 이 visual column은 VLA
 학습 속도를 높이기 위한 train-time cache이며, eval/sim에서는 raw image를
@@ -17,50 +17,41 @@ feature cache를 frame별 column으로 붙일 수 있다. 이 visual column은 V
   skill_de             : int32   현재 스킬 종료점까지 남은 distance, 종료 프레임에서 0
   skill_boundary       : int8    현재 스킬 종료 프레임에서만 1
   skill_max_order      : int32   데이터셋에서 허용하는 최대 real skill 개수
-  skill_max_length     : int32   VQ-VAE와 공유하는 skill max length hyperparameter
+  skill_max_length     : int32   FSQ와 공유하는 skill max length hyperparameter
+  skill_decoder_state  : (7,) float32  FSQ decoder state = eef 6D + previous gripper action
   observation.dino.image: (F,) float32  optional precomputed visual feature
 
-npz는 VQAE로 저장된 것이어야 한다 ("tokens" key 또는 1D "latents" key).
+skill_sequence는 FSQ scalar token index (0 ~ prod(fsq_levels)-1) 를 저장한다.
+특수 토큰은 scalar index 공간 바로 위에 배치된다:
+  EOS = num_embeddings + 0
+  BOS = num_embeddings + 1  ← modeling_skillVLA.py 인퍼런스와 반드시 일치해야 함
+  PAD = num_embeddings + 2
+
+num_embeddings는 --fsq_levels로 자동 계산하거나 --num_embeddings로 직접 지정한다.
+--fsq_levels [3,3,3] → num_embeddings=27, --fsq_levels [5,5,5] → num_embeddings=125.
 
 마지막 스킬 이후 남은 프레임은 마지막 스킬 index로 채워지고 ds는 마지막
 스킬 시작점 기준으로 이어서 카운팅된다.
 
 스킬 latent가 없는 에피소드는 제거하지 않고 모든 컬럼을 0으로 채운다.
 
-Usage:
+Usage (FSQ 333):
     python examples/libero/add_skill_latents_to_dataset.py \
         --src_dataset_dir /data2/dohyeon/SBD/libero_dataset/libero_90 \
         --dst_dataset_dir /data2/dohyeon/SBD/libero_dataset/libero_90_data/libero_90_skillvla \
         --dst_repo_id dohyeon/libero_90_skillvla \
-        --latents_path    /data2/dohyeon/SBD/outputs/libero_90_skillset_latents/libero_90_vqvae_dinov3_vits16_gru_mlp_zero_lat128_vq128_0.1_exp3/spline_vqae_latents_epoch1500.npz \
-        --dino_features_path /data2/dohyeon/SBD/outputs/libero_90_skillset_dino_features/dinov3_vits16_image.npz \
-        --max_order 20 \
-        --max_length 200
-    
-    python examples/libero/add_skill_latents_to_dataset.py \
-        --src_dataset_dir /data2/dohyeon/SBD/libero_dataset/libero_10 \
-        --dst_dataset_dir /data2/dohyeon/SBD/libero_dataset/libero_10_data/libero_10_skillvla \
-        --dst_repo_id dohyeon/libero_10_skillvla \
-        --latents_path    /data2/dohyeon/SBD/outputs/libero_10_skillset_latents/libero_90_vqvae_dinov3_vits16_gru_mlp_zero_lat128_vq128_0.1_exp3/spline_vqae_latents_epoch1500.npz \
-        --dino_features_path /data2/dohyeon/SBD/outputs/libero_90_skillset_dino_features/dinov3_vits16_image.npz \
-        --max_order 20 \
-        --max_length 200
-    
-    python examples/libero/add_skill_latents_to_dataset.py \
-        --src_dataset_dir /data2/dohyeon/SBD/libero_small_dataset/libero_10_op1_50 \
-        --dst_dataset_dir /data2/dohyeon/SBD/libero_dataset/libero_10_op1_50_data/libero_10_op1_50_skillvla \
-        --dst_repo_id dohyeon/libero_10_op1_50_skillvla \
-        --latents_path    /data2/dohyeon/SBD/outputs/libero_10_op1_50_skillset_latents/libero_90_vqvae_dinov3_vits16_gru_mlp_zero_lat128_vq128_0.1_exp3/spline_vqae_latents_epoch1500.npz \
-        --dino_features_path /data2/dohyeon/SBD/outputs/libero_10_op1_50_skillset_dino_features/dinov3_vits16_image.npz \
+        --latents_path /data2/dohyeon/SBD/outputs/libero_90_skillset_FSQ/skill_latents.npz \
+        --fsq_levels 3 3 3 \
         --max_order 20 \
         --max_length 200
 
+Usage (FSQ 555):
     python examples/libero/add_skill_latents_to_dataset.py \
-        --src_dataset_dir /data2/dohyeon/SBD/libero_small_dataset/libero_10_op1_10 \
-        --dst_dataset_dir /data2/dohyeon/SBD/libero_dataset/libero_10_op1_10_data/libero_10_op1_10_skillvla \
-        --dst_repo_id dohyeon/libero_10_op1_10_skillvla \
-        --latents_path    /data2/dohyeon/SBD/outputs/libero_10_op1_10_skillset_latents/libero_90_vqvae_dinov3_vits16_gru_mlp_zero_lat128_vq128_0.1_exp3/spline_vqae_latents_epoch1500.npz \
-        --dino_features_path /data2/dohyeon/SBD/outputs/libero_10_op1_10_skillset_dino_features/dinov3_vits16_image.npz \
+        --src_dataset_dir /data2/dohyeon/SBD/libero_dataset/libero_90 \
+        --dst_dataset_dir /data2/dohyeon/SBD/libero_dataset/libero_90_data/libero_90_skillvla \
+        --dst_repo_id dohyeon/libero_90_skillvla \
+        --latents_path /data2/dohyeon/SBD/outputs/libero_90_skillset_FSQ/skill_latents.npz \
+        --fsq_levels 5 5 5 \
         --max_order 20 \
         --max_length 200
 """
@@ -68,8 +59,9 @@ Usage:
 from __future__ import annotations
 
 import json
+import math
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -85,14 +77,16 @@ class Args:
     dst_dataset_dir: str
     """출력 데이터셋 경로"""
     latents_path: str
-    """VQAE encoder 결과 .npz (keys: episode_id, frame_start, frame_end, tokens)"""
-    dst_repo_id: str = "dohyeon/libero_90_skillvla_vqae"
+    """FSQ encoder 결과 .npz (keys: episode_id, frame_start, frame_end, tokens)"""
+    dst_repo_id: str = "dohyeon/libero_90_skillvla"
     max_order: int = 0
     """Maximum number of real skills per episode. 0 infers it from latents_path."""
     max_length: int = 200
-    """Skill max length shared with VQ-VAE max_length."""
-    num_embeddings: int = 512
-    """VQ codebook size K. EOS=K, BOS=K+1, PAD=K+2."""
+    """Skill max length shared with FSQ max_length."""
+    fsq_levels: list[int] = field(default_factory=list)
+    """FSQ levels (e.g. 3 3 3 or 5 5 5). num_embeddings = prod(fsq_levels). --num_embeddings보다 우선."""
+    num_embeddings: int = 0
+    """FSQ codebook size = prod(fsq_levels). EOS=K, BOS=K+1, PAD=K+2. fsq_levels 미지정 시 직접 입력."""
     dino_features_path: str = ""
     """Optional precomputed visual feature npz from precompute_dino_features.py."""
     dino_column: str = "observation.dino.image"
@@ -112,8 +106,8 @@ def load_skill_map(npz_path: Path) -> dict[int, list]:
         tokens = raw["latents"].astype(np.int32)
     else:
         raise ValueError(
-            f"{npz_path} contains float latent vectors, not VQAE tokens. "
-            "Re-encode with a VQAE checkpoint to get integer tokens."
+            f"{npz_path} contains float latent vectors, not FSQ tokens. "
+            "train_FSQ.py 출력 npz의 'tokens' key를 확인하세요."
         )
 
     skill_map: dict[int, list] = {}
@@ -243,20 +237,72 @@ def compute_skill_columns(
     }
 
 
+def compute_skill_decoder_state(
+    ep_df: pd.DataFrame,
+    skill_ds: np.ndarray,
+    *,
+    state_column: str = "observation.state",
+    action_column: str = "action",
+    eef_state_dim: int = 6,
+    gripper_action_dim: int = -1,
+) -> list[np.ndarray]:
+    """Build the exact state input used by the FSQ single-step decoder.
+
+    FSQ training used EEF pose plus the previous gripper command. The first
+    frame of each skill receives 0 for the previous gripper to avoid leaking
+    the current target action.
+    """
+    if state_column not in ep_df.columns:
+        raise KeyError(f"Missing required column: {state_column}")
+    if action_column not in ep_df.columns:
+        raise KeyError(f"Missing required column: {action_column}")
+
+    states = np.stack(ep_df[state_column].to_numpy()).astype(np.float32)
+    actions = np.stack(ep_df[action_column].to_numpy()).astype(np.float32)
+    if states.shape[-1] < eef_state_dim:
+        raise ValueError(f"{state_column} has dim={states.shape[-1]}, need at least {eef_state_dim}")
+    if actions.shape[-1] == 0:
+        raise ValueError(f"{action_column} is empty")
+
+    grip_idx = (actions.shape[-1] + gripper_action_dim) % actions.shape[-1]
+    prev_gripper = np.zeros((len(ep_df), 1), dtype=np.float32)
+    if len(ep_df) > 1:
+        prev_gripper[1:, 0] = actions[:-1, grip_idx]
+
+    # FSQ decoder states are built per skill segment, so reset the previous
+    # gripper command at every skill start.
+    prev_gripper[np.asarray(skill_ds) == 0, 0] = 0.0
+
+    decoder_state = np.concatenate([states[:, :eef_state_dim], prev_gripper], axis=-1)
+    return [row.astype(np.float32) for row in decoder_state]
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main(args: Args) -> None:
     src_dir = Path(args.src_dataset_dir)
     dst_dir = Path(args.dst_dataset_dir)
 
+    # num_embeddings 결정: fsq_levels 우선, 없으면 num_embeddings 직접 사용
+    if args.fsq_levels:
+        num_embeddings = math.prod(args.fsq_levels)
+        print(f"FSQ levels={args.fsq_levels}  →  num_embeddings={num_embeddings}")
+    elif args.num_embeddings > 0:
+        num_embeddings = args.num_embeddings
+        print(f"num_embeddings={num_embeddings} (직접 지정)")
+    else:
+        raise ValueError(
+            "--fsq_levels (e.g. 3 3 3) 또는 --num_embeddings 를 지정해야 합니다."
+        )
+
     print(f"Loading skill tokens from {args.latents_path} ...")
     skill_map = load_skill_map(Path(args.latents_path))
     print(f"  episodes={len(skill_map)}")
-    eos_token_id = args.num_embeddings
-    bos_token_id = args.num_embeddings + 1
-    pad_token_id = args.num_embeddings + 2
-    skill_output_vocab_size = args.num_embeddings + 1  # VQ tokens + EOS
-    skill_vocab_size = args.num_embeddings + 3         # VQ tokens + EOS/BOS/PAD
+    eos_token_id = num_embeddings
+    bos_token_id = num_embeddings + 1
+    pad_token_id = num_embeddings + 2
+    skill_output_vocab_size = num_embeddings + 1  # FSQ tokens + EOS
+    skill_vocab_size = num_embeddings + 3         # FSQ tokens + EOS/BOS/PAD
     observed_max_order = max((len(v) for v in skill_map.values()), default=0)
     observed_max_length = max((max((fe - fs for fs, fe, _ in v), default=0) for v in skill_map.values()), default=0)
     max_order = int(args.max_order) if int(args.max_order) > 0 else observed_max_order
@@ -268,7 +314,7 @@ def main(args: Args) -> None:
     if observed_max_length > max_length:
         raise ValueError(
             f"--max_length={max_length} is smaller than observed max skill length {observed_max_length}. "
-            "Use the same max_length used for VQ-VAE training."
+            "Use the same max_length used for FSQ training."
         )
     max_seq_len = max_order + 2
     print(f"  observed_max_order={observed_max_order}, max_order={max_order}")
@@ -321,6 +367,7 @@ def main(args: Args) -> None:
             "skill_boundary": [],
             "skill_max_order": [],
             "skill_max_length": [],
+            "skill_decoder_state": [],
         }
         dino_values: list | None = [] if dino_map is not None else None
 
@@ -336,6 +383,7 @@ def main(args: Args) -> None:
                 bos_token_id=bos_token_id,
                 pad_token_id=pad_token_id,
             )
+            cols["skill_decoder_state"] = compute_skill_decoder_state(ep_df, cols["skill_ds"])
             for k in col_buffers:
                 col_buffers[k].extend(cols[k] if isinstance(cols[k], list) else cols[k].tolist())
             if dino_values is not None:
@@ -357,7 +405,8 @@ def main(args: Args) -> None:
     info_path = dst_dir / "meta" / "info.json"
     info = json.loads(info_path.read_text())
     info["repo_id"] = args.dst_repo_id
-    info["skill_num_embeddings"] = args.num_embeddings
+    info["skill_num_embeddings"] = num_embeddings
+    info["skill_fsq_levels"] = list(args.fsq_levels) if args.fsq_levels else []
     info["skill_eos_token_id"] = eos_token_id
     info["skill_bos_token_id"] = bos_token_id
     info["skill_pad_token_id"] = pad_token_id
@@ -397,6 +446,11 @@ def main(args: Args) -> None:
         "skill_boundary": {"dtype": "int8", "shape": [1], "names": ["skill_boundary"]},
         "skill_max_order": {"dtype": "int32", "shape": [1], "names": ["skill_max_order"]},
         "skill_max_length": {"dtype": "int32", "shape": [1], "names": ["skill_max_length"]},
+        "skill_decoder_state": {
+            "dtype": "float32",
+            "shape": [7],
+            "names": ["eef_x", "eef_y", "eef_z", "eef_rx", "eef_ry", "eef_rz", "prev_gripper"],
+        },
     })
     if dino_dim is not None:
         info["features"][args.dino_column] = {
@@ -409,7 +463,7 @@ def main(args: Args) -> None:
     print(f"\n완료: {dst_dir}")
     print(f"  추가된 컬럼: skill_index, skill_sequence, skill_length_sequence, "
           f"skill_sequence_mask, skill_sequence_len, skill_ds, skill_de, "
-          f"skill_boundary, skill_max_order, skill_max_length")
+          f"skill_boundary, skill_max_order, skill_max_length, skill_decoder_state")
     if dino_dim is not None:
         print(f"  추가된 DINO 컬럼: {args.dino_column} ({dino_dim} dims)")
     print(f"  episodes={info['total_episodes']}, frames={info['total_frames']}")

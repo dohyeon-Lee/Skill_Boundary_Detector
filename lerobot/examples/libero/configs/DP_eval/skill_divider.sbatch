@@ -38,7 +38,10 @@ nvidia-smi
 # ── 설정 ──────────────────────────────────────────────────────────────────────
 # 스킬 영상 상단에 episode번호, 해당 episode에서 몇번째 스킬인지도 표시 필요
 DATASET=libero_90
-DP=dp_${DATASET}_obs10_horizon16
+VISUAL_BACKBONE=dinov3_vits16
+PATCH_GRID=8
+DP=dp_${DATASET}_dino_${VISUAL_BACKBONE}_pg${PATCH_GRID}_obs10_horizon16
+DINO_FEATURE_DIR=/data2/dohyeon/SBD/libero_dataset/${DATASET}_data/${DATASET}_DINO/${VISUAL_BACKBONE}_pg${PATCH_GRID}
 CHECKPOINT=060000
 TASK_ID=2
 N_EPISODES=5
@@ -83,6 +86,7 @@ PYTHONPATH=${HOMEDIR}${PROJDIR}/lerobot/src \
     --savgol_polyorder ${SAVGOL_POLYORDER} \
     $([ "${PLOT_GMM_3D}" = "true" ] && echo "--plot_gmm_3d") \
     $([ "${PLOT_PRED_MSE}" = "true" ] && echo "--plot_pred_mse --mse_window ${MSE_WINDOW}") \
+    --dino_feature_dir ${DINO_FEATURE_DIR} \
     --wandb_project ${WANDB_PROJECT} \
     --wandb_run_name ${WANDB_RUN_NAME}
 

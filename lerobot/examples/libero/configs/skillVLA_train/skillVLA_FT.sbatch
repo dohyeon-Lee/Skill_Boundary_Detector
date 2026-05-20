@@ -22,6 +22,8 @@ PROJDIR=/SBD
 cd ${HOMEDIR}${PROJDIR}/lerobot
 source ${HOMEDIR}${PROJDIR}/.venv/bin/activate
 
+CONFIG_PY=examples/libero/configs/data_generation/pipeline_config.py
+
 export WANDB_CACHE_DIR=${HOMEDIR}/.wandb_cache
 export WANDB_DATA_DIR=${HOMEDIR}/.wandb_data
 mkdir -p ${WANDB_CACHE_DIR} ${WANDB_DATA_DIR}
@@ -32,31 +34,48 @@ echo "Node: $SLURMD_NODENAME"
 nvidia-smi
 
 # ── Fine-tune dataset / base checkpoint ─────────────────────────────────────
-# FT_DATASET must have the same SkillVLA columns as libero_90_skillvla.
-FT_DATASET=libero_10_op1_10_skillvla
-FT_DATASET_ROOT=libero_dataset
-FT_DATASET_SOURCE=${FT_DATASET%_skillvla}
-FT_DATASET_DIR=${HOMEDIR}${PROJDIR}/${FT_DATASET_ROOT}/${FT_DATASET_SOURCE}_data/${FT_DATASET}
+# All generated artifacts live under:
+#   libero_dataset/${DATA}_data/
+FT_DATA=${FT_DATA:-libero_10_op1_10}
+PT_DATA=${PT_DATA:-libero_90}
+eval "$(python "${CONFIG_PY}" --shell --data "${FT_DATA}" --prefix FT_)"
+eval "$(python "${CONFIG_PY}" --shell --data "${PT_DATA}" --prefix PT_)"
+FT_DATASET=${FT_SKILLVLA_DATASET}
+FT_DATASET_ROOT=${FT_DATADIR}
+FT_DATASET_DIR=${FT_SKILLVLA_DATASET_DIR}
+FT_DINO_TOKENS_PATH=${FT_DINO_TOKENS_PATH}
+FT_DINO_CACHE_PATH=${FT_DINO_CACHE_PATH}
 
 # SkillVLA checkpoint trained on libero_90.
-PT_RUN_NAME=PT_libero_90_skillvla_true_embs_lat128_vq128
+PT_FSQ_RUN_TAG=${PT_FSQ_RUN#${PT_FSQ_MODEL_DATA}_}
+PT_RUN_NAME=PT_${PT_SKILLVLA_DATASET}_${PT_FSQ_RUN_TAG}_true_embs
 PT_CHECKPOINT=025000
 BASE_POLICY=${HOMEDIR}${PROJDIR}/outputs/${PT_RUN_NAME}/checkpoints/${PT_CHECKPOINT}/pretrained_model
 
-# VQ-VAE decoder used by the base SkillVLA run. Keep this matched to PT.
-LATENT_DIM=128
-NUM_EMBEDDINGS=128
-VQVAE_STEP=1500
-SKILLSET=libero_90_skillset
-VQVAE_CKPT=${HOMEDIR}${PROJDIR}/outputs/${SKILLSET}_latents/libero_90_vqvae_dinov3_vits16_gru_mlp_zero_lat${LATENT_DIM}_vq${NUM_EMBEDDINGS}_0.1_exp3/spline_vqae_epoch$(printf '%04d' ${VQVAE_STEP}).pt
+# FSQ decoder used by the base SkillVLA run. Keep this matched to PT.
+FSQ_LEVELS_ARG=${PT_FSQ_LEVELS_ARG}
+FSQ_DIM=${PT_FSQ_DIM}
+FSQ_NUM_EMBEDDINGS=${PT_FSQ_NUM_EMBEDDINGS}
+FSQ_RUN=${PT_FSQ_RUN}
+FSQ_CKPT=${PT_FSQ_CKPT}
 
 if [ ! -f "${BASE_POLICY}/model.safetensors" ]; then
     echo "Missing base SkillVLA checkpoint: ${BASE_POLICY}"
     exit 1
 fi
 
-if [ ! -f "${VQVAE_CKPT}" ]; then
-    echo "Missing VQ-VAE checkpoint: ${VQVAE_CKPT}"
+if [ ! -d "${FT_DATASET_DIR}" ]; then
+    echo "Missing fine-tune SkillVLA dataset: ${FT_DATASET_DIR}"
+    exit 1
+fi
+
+if [ ! -f "${FSQ_CKPT}" ]; then
+    echo "Missing FSQ checkpoint: ${FSQ_CKPT}"
+    exit 1
+fi
+
+if [ ! -f "${FT_DINO_TOKENS_PATH}" ]; then
+    echo "Missing fine-tune DINO token npz: ${FT_DINO_TOKENS_PATH}"
     exit 1
 fi
 
@@ -71,10 +90,10 @@ SP_LOSS_WEIGHT=1.0
 SKILL_DECODER_LOSS_WEIGHT=1.0
 SKILL_DECODER_END_POS_WEIGHT=1.0
 SKILL_DECODER_END_THRESHOLD=0.5
-SKILL_DECODER_STATE_INDICES="[0,1,2,3,4,5]"
+SKILL_DECODER_STATE_INDICES=${PT_SKILL_DECODER_STATE_INDICES}
 FREEZE_VAE_DECODER=false
-INFERENCE_SKILL_MAX_ORDER=20
-INFERENCE_SKILL_MAX_LENGTH=200
+INFERENCE_SKILL_MAX_ORDER=${PT_INFERENCE_SKILL_MAX_ORDER}
+INFERENCE_SKILL_MAX_LENGTH=${PT_INFERENCE_SKILL_MAX_LENGTH}
 SKILL_BOUNDARY_RANDOM_P=10
 
 # Fine-tuning follows pi05_FT: keep the vision encoder frozen by default.
@@ -85,7 +104,7 @@ FREEZE_VISION_ENCODER=true
 TRAIN_EXPERT_ONLY=false
 
 # true: action expert attends to image/state prefix tokens, not language tokens.
-BLOCK_LANG=true
+# pipeline_config.yaml 의 block_lang 값에서 옵니다.
 
 # context: Paligemma prefix-only forward 이후 contextual hidden
 # embs: embed_prefix 직후 raw prefix token embedding
@@ -98,7 +117,8 @@ PREDICTED_LATENT_START_STEP=0
 PREDICTED_LATENT_RAMP_STEPS=30000
 PREDICTED_LATENT_MAX_PROB=1.0
 
-RUN_NAME=${PT_CHECKPOINT}PT_${FT_DATASET}FT_${PREDICTED_LATENT_SAMPLING}_${SP_PREFIX_SOURCE}_lat${LATENT_DIM}_vq${NUM_EMBEDDINGS}_${TRAIN_EXPERT_ONLY}
+FT_FSQ_RUN_TAG=${PT_FSQ_RUN#${PT_FSQ_MODEL_DATA}_}
+RUN_NAME=${PT_CHECKPOINT}PT_${FT_DATASET}FT_${FT_FSQ_RUN_TAG}_${PREDICTED_LATENT_SAMPLING}_${SP_PREFIX_SOURCE}_${TRAIN_EXPERT_ONLY}
 OUTPUT_DIR=../outputs/FT_${RUN_NAME}
 CONFIG_PATH=${OUTPUT_DIR}/checkpoints/last/pretrained_model/train_config.json
 
@@ -131,10 +151,14 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes=${
     --policy.train_expert_only=${TRAIN_EXPERT_ONLY} \
     --policy.push_to_hub=false \
     --policy.block_lang_to_action=${BLOCK_LANG} \
-    --policy.vae_decoder_path=${VQVAE_CKPT} \
+    --policy.vae_decoder_path=${FSQ_CKPT} \
     --policy.freeze_vae_decoder=${FREEZE_VAE_DECODER} \
-    --policy.skill_latent_dim=${LATENT_DIM} \
-    --policy.skill_predictor_num_embeddings=${NUM_EMBEDDINGS} \
+    --policy.skill_latent_dim=${FSQ_DIM} \
+    --policy.skill_fsq_levels=${FSQ_LEVELS_ARG} \
+    --policy.skill_predictor_num_embeddings=${FSQ_NUM_EMBEDDINGS} \
+    --policy.skill_decoder_dino_tokens_path=${FT_DINO_TOKENS_PATH} \
+    --policy.skill_decoder_dino_cache_path=${FT_DINO_CACHE_PATH} \
+    --policy.skill_decoder_dino_build_cache=true \
     --policy.skill_predictor_prefix_source=${SP_PREFIX_SOURCE} \
     --policy.skill_predictor_loss_weight=${SP_LOSS_WEIGHT} \
     --policy.skill_decoder_loss_weight=${SKILL_DECODER_LOSS_WEIGHT} \

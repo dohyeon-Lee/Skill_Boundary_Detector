@@ -4,7 +4,7 @@
 #SBATCH --nodelist=node100
 #SBATCH --qos=big_qos
 #SBATCH --gres=gpu:1
-#SBATCH --cpus-per-task=8
+#SBATCH --cpus-per-task=12
 #SBATCH --mem=64G
 #SBATCH --time=48:00:00
 #SBATCH --output=logs/%x_%j.out
@@ -37,10 +37,11 @@ DERIVED_DATA_DIR=${HOMEDIR}${PROJDIR}/${DATADIR}/${DATA}_data
 FSQ_PRECOMPUTE_DIR="${DERIVED_DATA_DIR}/${DATA}_for_FSQ"
 SKILLSET_DIR="${FSQ_PRECOMPUTE_DIR}/${SKILLSET}"
 
-DECODER_MODE=chunk        # single_step | chunk
-DECODER_IMAGE_MODE=dino_flags  # dino_only | dino_flags
+DECODER_MODE=single_step  # single_step | chunk
+DECODER_IMAGE_MODE=dino_only  # dino_only | dino_flags
 CHUNK_SIZE=10
-ZERO_START_EEF=true
+FSQ_LEVELS=(3 3 3)
+ZERO_START_EEF=false
 END_THRESHOLD=0.5
 END_POS_WEIGHT=1
 DELTA_LOSS_WEIGHT=10.0
@@ -57,11 +58,18 @@ else
   ZERO_START_ARG="--no-zero_start_eef"
 fi
 
-# FSQ 고정: levels=555, codebook=125
-FSQ_TAG="fsq555"
-MODE_TAG="${DECODER_MODE}K${CHUNK_SIZE}"
+FSQ_TAG="fsq$(IFS=; echo "${FSQ_LEVELS[*]}")"
+FSQ_CODEBOOK_SIZE=1
+for level in "${FSQ_LEVELS[@]}"; do
+  FSQ_CODEBOOK_SIZE=$((FSQ_CODEBOOK_SIZE * level))
+done
+if [ "${DECODER_MODE}" = "chunk" ]; then
+  MODE_TAG="chunkK${CHUNK_SIZE}"
+else
+  MODE_TAG="single_step"
+fi
 EXP_NAME="${DATA}_${FSQ_TAG}_${IMAGE_EXP_TAG}_${EEF_MODE}_${MODE_TAG}_${DECODER_IMAGE_MODE}"
-OUTPUT_DIR="${HOMEDIR}${PROJDIR}/outputs/${SKILLSET}_latents/${EXP_NAME}"
+OUTPUT_DIR="${HOMEDIR}${PROJDIR}/outputs/${SKILLSET}_FSQ/${EXP_NAME}"
 
 DINO_TOKENS_PATH="${FSQ_PRECOMPUTE_DIR}/${IMAGE_FEATURE_TAG}_tokens.npz"
 
@@ -102,7 +110,7 @@ PYTHONPATH=${HOMEDIR}${PROJDIR}/lerobot/src \
     --dino_features           ${DINO_TOKENS_PATH} \
     --sam2_masks_dir          ${SAM2_INPUT} \
     --output_dir              ${OUTPUT_DIR} \
-    --fsq_levels              5 5 5 \
+    --fsq_levels              "${FSQ_LEVELS[@]}" \
     --decoder_output_mode     ${DECODER_MODE} \
     --decoder_image_mode      ${DECODER_IMAGE_MODE} \
     --chunk_size              ${CHUNK_SIZE} \

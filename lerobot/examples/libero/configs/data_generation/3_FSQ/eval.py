@@ -11,34 +11,47 @@ Section 3 (Grid) : 각 스킬별로 n개 랜덤 샘플 프레임의 패치 시�
   green   only  → 초록  (0, 200, 0)
   둘 다         → 파랑  (0, 0, 255)
   없음          → DINO PCA 색상 (dino_tokens_path 미지정 시 회색)
+
+  python eval.py --task_id 1 --num_episodes 1 
+  --dino_tokens_path ""
 """
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 import numpy as np
 from PIL import Image, ImageDraw
 
+CONFIG_DIR = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(CONFIG_DIR))
+
+from pipeline_config import load_config  # noqa: E402
+
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 def parse_args() -> argparse.Namespace:
+    cfg = load_config()
     p = argparse.ArgumentParser()
-    p.add_argument("--homedir",          default="/data2/dohyeon")
-    p.add_argument("--projdir",          default="/SBD")
-    p.add_argument("--dataset",          default="libero_90")
-    p.add_argument("--dataset_root",     default="libero_dataset")
-    p.add_argument("--image_key",        default="observation.images.image")
+    p.add_argument("--homedir",          default=cfg.homedir)
+    p.add_argument("--projdir",          default=cfg.projdir)
+    p.add_argument("--dataset",          default=cfg.data)
+    p.add_argument("--dataset_root",     default=cfg.datadir)
+    p.add_argument("--image_key",        default=cfg.image_key)
     p.add_argument("--task_id",          type=int, required=True)
-    p.add_argument("--episode_id",       type=int, required=True)
+    p.add_argument("--num_episodes",     type=int, default=2,
+                   help="Number of episodes to visualize (taken in order from skills dir).")
+    p.add_argument("--episode_offset",   type=int, default=0,
+                   help="Skip this many episodes before starting.")
     p.add_argument("--image_size",       type=int, default=128,
                    help="Pixel size of each skill image panel (sections 1 & 2).")
     p.add_argument("--n_samples",        type=int, default=10,
                    help="Number of random frames to sample per skill for section 3.")
     p.add_argument("--dino_tokens_path", default="",
                    help="Path to merged DINO tokens npz. Auto-resolved if empty.")
-    p.add_argument("--visual_backbone",  default="dinov3_vits16")
+    p.add_argument("--visual_backbone",  default=cfg.visual_backbone)
     p.add_argument("--seed",             type=int, default=42)
     p.add_argument("--output_dir",       default="")
     return p.parse_args()
@@ -76,7 +89,7 @@ def read_episode_frames(dataset_dir: Path, meta_df, ep_id: int, image_key: str) 
 
 # ── Skillset utils ────────────────────────────────────────────────────────────
 
-def load_episode_skills(skills_dir: Path, task_id: int, episode_id: int) -> list[dict]:
+def _get_task_dir(skills_dir: Path, task_id: int) -> Path:
     candidates = [skills_dir / f"task{task_id:02d}", skills_dir / f"task{task_id}"]
     task_dir   = next((d for d in candidates if d.exists()), None)
     if task_dir is None:
@@ -84,9 +97,23 @@ def load_episode_skills(skills_dir: Path, task_id: int, episode_id: int) -> list
             f"No task dir for task_id={task_id} in {skills_dir}\n"
             f"Tried: {[str(d) for d in candidates]}"
         )
-    files = sorted(task_dir.glob(f"ep{episode_id:05d}_*.npz"))
+    return task_dir
+
+
+def list_task_episode_ids(skills_dir: Path, task_id: int) -> list[int]:
+    task_dir = _get_task_dir(skills_dir, task_id)
+    return sorted({int(f.name[2:7]) for f in task_dir.glob("ep*.npz")})
+
+
+def load_episode_skills(skills_dir: Path, task_id: int, episode_id: int) -> list[dict]:
+    task_dir = _get_task_dir(skills_dir, task_id)
+    files    = sorted(task_dir.glob(f"ep{episode_id:05d}_*.npz"))
     if not files:
-        raise FileNotFoundError(f"No skill files for ep {episode_id} in {task_dir}")
+        available = list_task_episode_ids(skills_dir, task_id)
+        raise FileNotFoundError(
+            f"No skill files for ep {episode_id} in {task_dir}\n"
+            f"Available episode IDs: {available}"
+        )
     skills = []
     for path in files:
         d = np.load(str(path))
@@ -100,31 +127,77 @@ def load_episode_skills(skills_dir: Path, task_id: int, episode_id: int) -> list
     return skills
 
 
-# ── SAM2 mask utils ───────────────────────────────────────────────────────────
+# ── SAM2 patch flags utils (merged patch_flags.npz) ──────────────────────────
 
-def load_all_sam2_masks(sam2_dir: Path, task_id: int, ep_id: int,
+def load_flags_cache(flags_path: Path | None) -> dict | None:
+    """Load patch_flags.npz once. Returns dict with arrays, or None."""
+    if flags_path is None or not flags_path.exists():
+        return None
+    print(f"[eval] loading patch_flags ...")
+    d = np.load(str(flags_path))
+    cache = {
+        "patch_flags": d["patch_flags"],   # (N_total, 64, 2) uint8
+        "offsets":     d["offsets"],        # (n_skills+1,)
+        "episode_id":  d["episode_id"],
+        "skill_index": d["skill_index"],
+        "missing":     d["missing"],
+    }
+    n_skills = len(cache["episode_id"])
+    print(f"[eval] patch_flags loaded: {n_skills} skills, "
+          f"missing={int(cache['missing'].sum())}")
+    return cache
+
+
+def load_all_sam2_masks(flags_cache: dict | None, ep_id: int,
                         skill_index: int) -> np.ndarray | None:
     """Returns (T, 8, 8, 2) bool or None."""
-    path = sam2_dir / f"task{task_id}" / f"ep{ep_id:05d}_skill{skill_index:03d}.npz"
-    if not path.exists():
+    if flags_cache is None:
         return None
-    d  = np.load(str(path))
-    pm = d["patch_masks"]
-    return pm.astype(bool) if len(pm) > 0 else None
+    ep_ids  = flags_cache["episode_id"]
+    sk_ids  = flags_cache["skill_index"]
+    offsets = flags_cache["offsets"]
+    flags   = flags_cache["patch_flags"]
+    missing = flags_cache["missing"]
+
+    idx = np.where((ep_ids == ep_id) & (sk_ids == skill_index))[0]
+    if len(idx) == 0:
+        return None
+    i = int(idx[0])
+    if missing[i]:
+        return None
+    flat = flags[offsets[i]:offsets[i + 1]]   # (T, 64, 2) uint8
+    if len(flat) == 0:
+        return None
+    return flat.reshape(len(flat), 8, 8, 2).astype(bool)
 
 
 # ── DINO token utils ──────────────────────────────────────────────────────────
 
-def load_all_dino_patches(tokens_path: Path, ep_id: int,
-                          skill_index: int) -> np.ndarray | None:
-    """Returns (T, 64, feat_dim) float32 or None."""
+def load_tokens_cache(tokens_path: Path | None) -> dict | None:
+    """Load the tokens npz once. Returns dict with arrays, or None."""
     if tokens_path is None or not tokens_path.exists():
         return None
-    d        = np.load(str(tokens_path))
-    ep_ids   = d["episode_id"]
-    sk_ids   = d["skill_index"]
-    offsets  = d["offsets"]
-    features = d["features"]   # (N_total, n_tokens, feat_dim) float16
+    print(f"[eval] loading DINO tokens (this may take a moment) ...")
+    d = np.load(str(tokens_path))
+    cache = {
+        "features":   d["features"],     # (N_total, n_tokens, feat_dim) float16
+        "episode_id": d["episode_id"],
+        "skill_index": d["skill_index"],
+        "offsets":    d["offsets"],
+    }
+    print(f"[eval] tokens loaded: features{cache['features'].shape}")
+    return cache
+
+
+def load_all_dino_patches(tokens_cache: dict | None, ep_id: int,
+                          skill_index: int) -> np.ndarray | None:
+    """Returns (T, 64, feat_dim) float32 or None."""
+    if tokens_cache is None:
+        return None
+    ep_ids   = tokens_cache["episode_id"]
+    sk_ids   = tokens_cache["skill_index"]
+    offsets  = tokens_cache["offsets"]
+    features = tokens_cache["features"]
 
     idx = np.where((ep_ids == ep_id) & (sk_ids == skill_index))[0]
     if len(idx) == 0:
@@ -138,18 +211,64 @@ def load_all_dino_patches(tokens_path: Path, ep_id: int,
 
 # ── PCA coloring ──────────────────────────────────────────────────────────────
 
-def pca_to_rgb(patches: np.ndarray) -> np.ndarray:
-    """(64, feat_dim) float32 → (8, 8, 3) uint8 via SVD-based PCA."""
-    X = patches.copy().astype(np.float32)
-    X -= X.mean(axis=0)
-    try:
-        _, _, Vt = np.linalg.svd(X, full_matrices=False)
-        proj = X @ Vt[:3].T   # (64, 3)
-    except np.linalg.LinAlgError:
-        proj = np.zeros((64, 3), dtype=np.float32)
-    for c in range(3):
-        lo, hi = float(proj[:, c].min()), float(proj[:, c].max())
-        proj[:, c] = (proj[:, c] - lo) / (hi - lo) if hi > lo else np.full(64, 0.5)
+def build_episode_pca(tokens_cache: dict | None, ep_id: int,
+                      skills: list[dict]) -> dict | None:
+    """
+    Fit PCA on all patches from every skill/frame of the episode.
+    Returns dict(Vt, mean, proj_min, proj_max) for consistent coloring,
+    or None if tokens are unavailable.
+    Uses covariance-matrix eigenvectors (fast when n_samples >> feat_dim).
+    """
+    if tokens_cache is None:
+        return None
+
+    all_patches = []
+    for skill in skills:
+        patches = load_all_dino_patches(tokens_cache, ep_id, skill["skill_index"])
+        if patches is not None:
+            all_patches.append(patches.reshape(-1, patches.shape[-1]))
+
+    if not all_patches:
+        return None
+
+    X = np.concatenate(all_patches, axis=0).astype(np.float32)  # (N, feat_dim)
+    mean = X.mean(axis=0)
+    X -= mean
+
+    # Covariance eigenvectors — O(feat_dim^3), much faster than full SVD on large N
+    cov = (X.T @ X) / len(X)                   # (feat_dim, feat_dim)
+    _, vecs = np.linalg.eigh(cov)               # ascending eigenvalues
+    Vt = vecs[:, ::-1][:, :3].T.astype(np.float32)  # (3, feat_dim), top-3 components
+
+    proj = X @ Vt.T                             # (N, 3)
+    return {
+        "Vt":       Vt,
+        "mean":     mean,
+        "proj_min": proj.min(axis=0),
+        "proj_max": proj.max(axis=0),
+    }
+
+
+def pca_to_rgb(patches: np.ndarray, ep_pca: dict | None) -> np.ndarray:
+    """(64, feat_dim) float32 → (8, 8, 3) uint8.
+    Uses episode-level PCA axes if provided, otherwise per-frame fallback."""
+    X = patches.astype(np.float32)
+    if ep_pca is not None:
+        X = X - ep_pca["mean"]
+        proj = X @ ep_pca["Vt"].T                          # (64, 3)
+        lo, hi = ep_pca["proj_min"], ep_pca["proj_max"]
+        scale = np.where(hi > lo, hi - lo, 1.0)
+        proj = (proj - lo) / scale
+    else:
+        X -= X.mean(axis=0)
+        try:
+            _, _, Vt = np.linalg.svd(X, full_matrices=False)
+            proj = X @ Vt[:3].T
+        except np.linalg.LinAlgError:
+            proj = np.zeros((64, 3), dtype=np.float32)
+        for c in range(3):
+            lo, hi = float(proj[:, c].min()), float(proj[:, c].max())
+            proj[:, c] = (proj[:, c] - lo) / (hi - lo) if hi > lo else np.full(64, 0.5)
     return (proj * 255).clip(0, 255).astype(np.uint8).reshape(8, 8, 3)
 
 
@@ -163,14 +282,15 @@ _GRAY  = (180, 180, 180)
 
 def make_patch_image(patches_64: np.ndarray | None,
                      mask_8x8_2: np.ndarray | None,
-                     cell_size: int) -> Image.Image:
+                     cell_size: int,
+                     ep_pca: dict | None = None) -> Image.Image:
     """
     patches_64 : (64, feat_dim) float32 or None
     mask_8x8_2 : (8, 8, 2) bool  ch0=changed ch1=green  or None
     Returns PIL image of size (8*cell_size, 8*cell_size).
     """
     if patches_64 is not None:
-        base_rgb = pca_to_rgb(patches_64)
+        base_rgb = pca_to_rgb(patches_64, ep_pca)
     else:
         base_rgb = np.full((8, 8, 3), _GRAY, dtype=np.uint8)
 
@@ -205,9 +325,10 @@ def make_patch_image(patches_64: np.ndarray | None,
 
 SEP_W    = 4
 LABEL_H  = 16
-BG       = (30,  30,  30)
-SEP_COL  = (60,  60,  60)
-TXT_COL  = (230, 230, 230)
+BG            = (30,  30,  30)
+SEP_COL       = (60,  60,  60)   # within-skill separator (init | final)
+SKILL_SEP_COL = (200, 200, 200)  # between-skill separator
+TXT_COL       = (230, 230, 230)
 
 
 def _label(draw: ImageDraw.ImageDraw, x: int, y: int, text: str) -> None:
@@ -219,9 +340,10 @@ def _label(draw: ImageDraw.ImageDraw, x: int, y: int, text: str) -> None:
 def build_sections_12(
     ep_frames: np.ndarray,
     skills: list[dict],
-    sam2_dir: Path,
+    flags_cache: dict | None,
     ep_id: int,
-    tokens_path: Path | None,
+    tokens_cache: dict | None,
+    ep_pca: dict | None,
     image_size: int,
     cell_size: int,
 ) -> Image.Image:
@@ -238,10 +360,11 @@ def build_sections_12(
     canvas = Image.new("RGB", (total_w, total_h), BG)
     draw   = ImageDraw.Draw(canvas)
 
-    # vertical separators
+    # vertical separators: even k = skill boundary (bright), odd k = init|final (dim)
     for k in range(n_panels + 1):
-        sx = k * (panel_w + SEP_W)
-        draw.rectangle([sx, 0, sx + SEP_W - 1, total_h - 1], fill=SEP_COL)
+        sx    = k * (panel_w + SEP_W)
+        color = SKILL_SEP_COL if k % 2 == 0 else SEP_COL
+        draw.rectangle([sx, 0, sx + SEP_W - 1, total_h - 1], fill=color)
 
     # horizontal sep between sec 1 and sec 2
     draw.rectangle([0, sec_h, total_w - 1, sec_h + SEP_W - 1], fill=SEP_COL)
@@ -252,8 +375,8 @@ def build_sections_12(
         sk_idx  = skill["skill_index"]
         task_id = skill["task_id"]
 
-        all_masks  = load_all_sam2_masks(sam2_dir, task_id, ep_id, sk_idx)
-        all_dino   = load_all_dino_patches(tokens_path, ep_id, sk_idx)
+        all_masks  = load_all_sam2_masks(flags_cache, ep_id, sk_idx)
+        all_dino   = load_all_dino_patches(tokens_cache, ep_id, sk_idx)
 
         for col, (abs_fi, t_rel, phase) in enumerate([
             (fs, 0,  "init"),
@@ -274,7 +397,7 @@ def build_sections_12(
             # ── Section 2: patch PCA + SAM2 ──
             patches  = all_dino[t_rel]   if all_dino  is not None else None
             mask     = all_masks[t_rel]  if all_masks is not None else None
-            pimg     = make_patch_image(patches, mask, cell_size)
+            pimg     = make_patch_image(patches, mask, cell_size, ep_pca)
             if patch_size < panel_w:
                 bg = Image.new("RGB", (panel_w, panel_w), BG)
                 bg.paste(pimg, ((panel_w - patch_size) // 2, (panel_w - patch_size) // 2))
@@ -289,9 +412,10 @@ def build_sections_12(
 
 def build_section3(
     skills: list[dict],
-    sam2_dir: Path,
+    flags_cache: dict | None,
     ep_id: int,
-    tokens_path: Path | None,
+    tokens_cache: dict | None,
+    ep_pca: dict | None,
     n_samples: int,
     cell_size: int,
     rng: np.random.Generator,
@@ -324,8 +448,8 @@ def build_section3(
         fe        = int(skill["frame_end"])
         sk_len    = fe - fs        # number of frames in skill
 
-        all_masks = load_all_sam2_masks(sam2_dir, task_id, ep_id, sk_idx)
-        all_dino  = load_all_dino_patches(tokens_path, ep_id, sk_idx)
+        all_masks = load_all_sam2_masks(flags_cache, ep_id, sk_idx)
+        all_dino  = load_all_dino_patches(tokens_cache, ep_id, sk_idx)
         actual_T  = sk_len if all_dino is None else len(all_dino)
 
         # Sample n indices within [0, actual_T), sorted ascending
@@ -339,7 +463,7 @@ def build_section3(
 
             patches = all_dino[t_rel]   if all_dino  is not None else None
             mask    = all_masks[t_rel]  if all_masks is not None else None
-            pimg    = make_patch_image(patches, mask, cell_size)
+            pimg    = make_patch_image(patches, mask, cell_size, ep_pca)
             canvas.paste(pimg, (px, row_y + LABEL_H))
             _label(draw, px, row_y, f"s{sk_idx} t={fs + t_rel}")
 
@@ -376,7 +500,7 @@ def main() -> None:
     dataset_dir = root / args.dataset_root / args.dataset
     fsq_dir     = root / args.dataset_root / f"{args.dataset}_data" / f"{args.dataset}_for_FSQ"
     skills_dir  = fsq_dir / f"{args.dataset}_skillset" / "skills"
-    sam2_dir    = fsq_dir / "sam2_masks"
+    flags_path  = fsq_dir / "patch_flags.npz"
 
     tokens_path: Path | None = Path(args.dino_tokens_path) if args.dino_tokens_path else \
                                fsq_dir / f"{args.visual_backbone}_tokens.npz"
@@ -389,54 +513,53 @@ def main() -> None:
 
     print(f"[eval] dataset   : {dataset_dir}")
     print(f"[eval] skills    : {skills_dir}")
-    print(f"[eval] sam2      : {sam2_dir}")
+    print(f"[eval] flags     : {flags_path}")
     print(f"[eval] tokens    : {tokens_path or '(none)'}")
 
-    meta   = load_episodes_meta(dataset_dir)
-    skills = load_episode_skills(skills_dir, args.task_id, args.episode_id)
-    print(f"[eval] episode={args.episode_id}  task={args.task_id}  skills={len(skills)}")
-    for s in skills:
-        print(f"       skill {s['skill_index']:2d}: frames {s['frame_start']}–{s['frame_end'] - 1}")
+    flags_cache  = load_flags_cache(flags_path)
+    tokens_cache = load_tokens_cache(tokens_path)
 
-    frames    = read_episode_frames(dataset_dir, meta, args.episode_id, args.image_key)
+    all_ep_ids = list_task_episode_ids(skills_dir, args.task_id)
+    ep_ids     = all_ep_ids[args.episode_offset : args.episode_offset + args.num_episodes]
+    print(f"[eval] task={args.task_id}  total_episodes={len(all_ep_ids)}  selected={ep_ids}")
+
+    meta      = load_episodes_meta(dataset_dir)
     cell_size = max(1, args.image_size // 8)
 
-    print(f"[eval] decoded {len(frames)} frames")
-    print(f"[eval] building sections 1+2 ...")
-    sec12 = build_sections_12(
-        ep_frames   = frames,
-        skills      = skills,
-        sam2_dir    = sam2_dir,
-        ep_id       = args.episode_id,
-        tokens_path = tokens_path,
-        image_size  = args.image_size,
-        cell_size   = cell_size,
-    )
+    for ep_id in ep_ids:
+        skills = load_episode_skills(skills_dir, args.task_id, ep_id)
+        print(f"[eval] ep={ep_id}  skills={len(skills)}")
+        for s in skills:
+            print(f"       skill {s['skill_index']:2d}: frames {s['frame_start']}–{s['frame_end'] - 1}")
 
-    print(f"[eval] building section 3 (n_samples={args.n_samples}) ...")
-    sec3 = build_section3(
-        skills      = skills,
-        sam2_dir    = sam2_dir,
-        ep_id       = args.episode_id,
-        tokens_path = tokens_path,
-        n_samples   = args.n_samples,
-        cell_size   = cell_size,
-        rng         = rng,
-    )
+        frames = read_episode_frames(dataset_dir, meta, ep_id, args.image_key)
+        print(f"       decoded {len(frames)} frames")
 
-    # Stack vertically: sec12 / legend / sec3
-    legend     = make_legend(max(sec12.width, sec3.width))
-    total_w    = max(sec12.width, sec3.width, legend.width)
-    total_h    = sec12.height + SEP_W + legend.height + SEP_W + sec3.height
+        ep_pca = build_episode_pca(tokens_cache, ep_id, skills)
+        print(f"       episode PCA {'fitted' if ep_pca else 'skipped (no tokens)'}")
 
-    out = Image.new("RGB", (total_w, total_h), BG)
-    out.paste(sec12,   (0, 0))
-    out.paste(legend,  (0, sec12.height + SEP_W))
-    out.paste(sec3,    (0, sec12.height + SEP_W + legend.height + SEP_W))
+        sec12 = build_sections_12(
+            ep_frames=frames, skills=skills, flags_cache=flags_cache, ep_id=ep_id,
+            tokens_cache=tokens_cache, ep_pca=ep_pca,
+            image_size=args.image_size, cell_size=cell_size,
+        )
+        sec3 = build_section3(
+            skills=skills, flags_cache=flags_cache, ep_id=ep_id,
+            tokens_cache=tokens_cache, ep_pca=ep_pca,
+            n_samples=args.n_samples, cell_size=cell_size, rng=rng,
+        )
+        legend  = make_legend(max(sec12.width, sec3.width))
+        total_w = max(sec12.width, sec3.width, legend.width)
+        total_h = sec12.height + SEP_W + legend.height + SEP_W + sec3.height
 
-    out_path = output_dir / f"fsq_task{args.task_id:02d}_ep{args.episode_id:05d}.png"
-    out.save(str(out_path))
-    print(f"[eval] saved → {out_path}")
+        out = Image.new("RGB", (total_w, total_h), BG)
+        out.paste(sec12,  (0, 0))
+        out.paste(legend, (0, sec12.height + SEP_W))
+        out.paste(sec3,   (0, sec12.height + SEP_W + legend.height + SEP_W))
+
+        out_path = output_dir / f"fsq_task{args.task_id:02d}_ep{ep_id:05d}.png"
+        out.save(str(out_path))
+        print(f"       saved → {out_path}")
 
 
 if __name__ == "__main__":

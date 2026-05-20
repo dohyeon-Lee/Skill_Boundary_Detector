@@ -102,27 +102,37 @@ def compute_skill_metrics(
     gt_deltas: np.ndarray,      # (T, A)
     pred_end_probs: np.ndarray, # (T,) or (T, K)
     end_threshold: float,
+    chunk_stride: int = 1,
 ) -> dict:
     T, A = gt_deltas.shape
     gdim = A - 1  # gripper is last dim
 
-    # primary metric: immediate next-action (first step of each chunk)
-    pred_d0 = pred_deltas[:, 0, :] if pred_deltas.ndim == 3 else pred_deltas
+    if pred_deltas.ndim == 3:
+        # chunk mode: sample every chunk_stride steps
+        sampled_t = np.arange(0, T, max(1, chunk_stride))
+        pred_d0 = pred_deltas[sampled_t, 0, :]
+        gt_d0   = gt_deltas[sampled_t]
+    else:
+        # single_step: use all timesteps as-is
+        sampled_t = np.arange(T)
+        pred_d0 = pred_deltas
+        gt_d0   = gt_deltas
 
-    err2 = (pred_d0 - gt_deltas) ** 2
+    err2 = (pred_d0 - gt_d0) ** 2
     mse_all     = float(np.mean(err2))
     mse_per_dim = [float(np.mean(err2[:, d])) for d in range(A)]
     mse_eef     = float(np.mean(err2[:, :gdim]))
     mse_grip    = float(np.mean(err2[:, gdim]))
 
-    # chunk MSE: compare pred_deltas[t, k] vs gt_deltas[t+k] for all valid (t,k)
+    # chunk MSE: pred[t,k] vs gt[t+k] at sampled timesteps only
     chunk_mse = None
     if pred_deltas.ndim == 3:
         K = pred_deltas.shape[1]
-        t_idx = np.arange(T)[:, None] + np.arange(K)[None, :]  # (T, K)
-        valid = (t_idx < T)                                      # (T, K)
-        gt_exp = gt_deltas[np.minimum(t_idx, T - 1)]            # (T, K, A)
-        chunk_err = ((pred_deltas - gt_exp) ** 2) * valid[..., None]
+        t_idx = sampled_t[:, None] + np.arange(K)[None, :]  # (S, K)
+        valid = (t_idx < T)
+        gt_exp = gt_deltas[np.minimum(t_idx, T - 1)]         # (S, K, A)
+        pred_s = pred_deltas[sampled_t]                       # (S, K, A)
+        chunk_err = ((pred_s - gt_exp) ** 2) * valid[..., None]
         n_valid = valid.sum() * A
         chunk_mse = float(chunk_err.sum() / n_valid) if n_valid > 0 else 0.0
 
@@ -182,10 +192,25 @@ def make_skill_plot(traj: dict, dim_labels: list[str], skill_idx: int) -> str:
 
     D = len(dim_labels)
     fig, axes = plt.subplots(D, 1, figsize=(3.0, 1.2 * D), squeeze=False)
-    t = np.arange(len(traj["gt"]))
+    T = len(traj["gt"])
+    t_full = np.arange(T)
+
+    pred_chunks = traj.get("pred_chunks")  # (S, K, A) or None
+    sampled_t   = traj.get("sampled_t")   # (S,) or None
+    K           = traj.get("K")
+
     for d, (ax, label) in enumerate(zip(axes[:, 0], dim_labels)):
-        ax.plot(t, traj["gt"][:, d],   color="#1976D2", linewidth=0.9, label="GT")
-        ax.plot(t, traj["pred"][:, d], color="#D32F2F", linewidth=0.9, linestyle="--", label="Pred")
+        ax.plot(t_full, traj["gt"][:, d], color="#1976D2", linewidth=0.9, label="GT")
+        if pred_chunks is not None:
+            # chunk mode: draw K-step segments starting at each sampled timestep
+            for si, t0 in enumerate(sampled_t):
+                t_seg = t0 + np.arange(K)
+                valid = t_seg < T
+                lbl = "Pred" if si == 0 else None
+                ax.plot(t_seg[valid], pred_chunks[si, valid, d],
+                        color="#D32F2F", linewidth=0.7, alpha=0.65, label=lbl)
+        else:
+            ax.plot(t_full, traj["pred"][:, d], color="#D32F2F", linewidth=0.9, linestyle="--", label="Pred")
         ax.set_ylabel(label, fontsize=7, rotation=0, labelpad=28)
         ax.tick_params(labelsize=6)
         ax.yaxis.set_major_locator(plt.MaxNLocator(3))
@@ -335,6 +360,7 @@ def build_html(
     summary_str: str,
     dim_labels: list[str],
     max_plot_samples: int,
+    max_plot_entries: int,
 ) -> str:
     D = len(dim_labels)
     counts = [0] * codebook_size
@@ -347,11 +373,16 @@ def build_html(
         by_entry[int(tok)].append(m)
         by_entry_traj[int(tok)].append(tr)
 
+    active_tokens = sorted(by_entry)
+    if max_plot_entries > 0:
+        plot_tokens = set(sorted(active_tokens, key=lambda t: (-counts[t], t))[:max_plot_entries])
+    else:
+        plot_tokens = set(active_tokens)
+
     entry_data: dict[int, dict] = {}
     entry_imgs: dict[int, list[str]] = {}
-    for tok in tqdm(sorted(by_entry), desc="Rendering plots"):
+    for tok in tqdm(active_tokens, desc="Rendering plots"):
         ms  = by_entry[tok]
-        trs = by_entry_traj[tok][:max_plot_samples]
         ed: dict = {
             "mse_all":           float(np.mean([m["mse_all"]    for m in ms])),
             "mse_per_dim":       [float(np.mean([m["mse_per_dim"][d] for m in ms])) for d in range(D)],
@@ -367,7 +398,11 @@ def build_html(
         if is_chunk and "chunk_mse" in ms[0]:
             ed["chunk_mse"] = float(np.mean([m["chunk_mse"] for m in ms]))
         entry_data[tok] = ed
-        entry_imgs[tok] = [make_skill_plot(tr, dim_labels, i) for i, tr in enumerate(trs)]
+        if max_plot_samples > 0 and tok in plot_tokens:
+            trs = by_entry_traj[tok][:max_plot_samples]
+            entry_imgs[tok] = [make_skill_plot(tr, dim_labels, i) for i, tr in enumerate(trs)]
+        else:
+            entry_imgs[tok] = []
 
     return _HTML.format(
         summary         = summary_str,
@@ -432,6 +467,8 @@ def parse_args():
     p.add_argument("--zero_start_eef",  action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--device",          default="cuda")
     p.add_argument("--max_plot_samples", type=int, default=20)
+    p.add_argument("--max_plot_entries", type=int, default=20,
+                   help="Only render trajectory images for this many most-populated entries. 0 = all entries.")
     p.add_argument("--output_html",     default="")
     p.add_argument("--end_threshold",   type=float, default=None)
     p.add_argument("--wandb_project",   default="VAE_eval")
@@ -495,17 +532,26 @@ def main():
         pred_d, pred_p = run_decode_single(model, z_q_i, states_i, dtok_i, pf_i, device)
 
         # trim to T (padding safeguard)
-        if pred_d.ndim == 3:
-            pred_d = pred_d[:T]
-            pred_d0 = pred_d[:, 0, :]
-        else:
-            pred_d = pred_d[:T]
-            pred_d0 = pred_d
+        pred_d = pred_d[:T]
         pred_p = pred_p[:T]
 
-        metrics = compute_skill_metrics(pred_d, gt_d_i, pred_p, end_threshold)
-        per_skill.append(metrics)
-        per_skill_trajs.append({"gt": gt_d_i, "pred": pred_d0})
+        if pred_d.ndim == 3:
+            K = pred_d.shape[1]
+            chunk_stride = max(1, K // 2)
+            sampled_t = np.arange(0, T, chunk_stride)
+            metrics = compute_skill_metrics(pred_d, gt_d_i, pred_p, end_threshold, chunk_stride=chunk_stride)
+            per_skill.append(metrics)
+            per_skill_trajs.append({
+                "gt":          gt_d_i,
+                "pred":        pred_d[sampled_t, 0, :],
+                "pred_chunks": pred_d[sampled_t],   # (S, K, A)
+                "sampled_t":   sampled_t,
+                "K":           K,
+            })
+        else:
+            metrics = compute_skill_metrics(pred_d, gt_d_i, pred_p, end_threshold)
+            per_skill.append(metrics)
+            per_skill_trajs.append({"gt": gt_d_i, "pred": pred_d, "pred_chunks": None, "sampled_t": None, "K": None})
 
     mse_all  = np.mean([m["mse_all"]    for m in per_skill])
     mse_eef  = np.mean([m["mse_eef"]    for m in per_skill])
@@ -535,7 +581,17 @@ def main():
 
     html_path = Path(args.output_html) if args.output_html else Path(args.latents_path).with_suffix(".decoder_eval.html")
     html_path.parent.mkdir(parents=True, exist_ok=True)
-    html = build_html(per_skill, per_skill_trajs, tokens, codebook_size, is_chunk, summary, dim_labels, args.max_plot_samples)
+    html = build_html(
+        per_skill,
+        per_skill_trajs,
+        tokens,
+        codebook_size,
+        is_chunk,
+        summary,
+        dim_labels,
+        args.max_plot_samples,
+        args.max_plot_entries,
+    )
     html_path.write_text(html, encoding="utf-8")
     print(f"[EVAL] HTML → {html_path}")
 

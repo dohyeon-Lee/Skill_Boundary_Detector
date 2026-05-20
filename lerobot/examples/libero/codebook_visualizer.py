@@ -48,8 +48,12 @@ def _resolve_image_key(episodes_meta, image_key: str) -> str:
     return keys[0]
 
 
+def _episode_row(episodes_meta, episode_id: int):
+    return episodes_meta[episodes_meta["episode_index"] == episode_id].iloc[0]
+
+
 def _video_path(dataset_dir: Path, episodes_meta, episode_id: int, image_key: str) -> Path:
-    row = episodes_meta[episodes_meta["episode_index"] == episode_id].iloc[0]
+    row = _episode_row(episodes_meta, episode_id)
     chunk_idx = int(row[f"videos/{image_key}/chunk_index"])
     file_idx  = int(row[f"videos/{image_key}/file_index"])
     return dataset_dir / "videos" / image_key / f"chunk-{chunk_idx:03d}" / f"file-{file_idx:03d}.mp4"
@@ -57,12 +61,28 @@ def _video_path(dataset_dir: Path, episodes_meta, episode_id: int, image_key: st
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
-def _read_frame(reader, idx: int, thumb_size: int) -> np.ndarray:
-    """Seek to a specific frame index in an open imageio reader."""
-    try:
-        return reader.get_data(idx)[..., :3].astype(np.uint8)
-    except Exception:
+def _read_episode_clip(vpath: Path, from_ts: float, to_ts: float, expected_len: int) -> np.ndarray:
+    """Read only one episode span from a larger LeRobot video file."""
+    from torchvision.io import read_video
+
+    frames, _, _ = read_video(
+        str(vpath),
+        start_pts=from_ts,
+        end_pts=to_ts - 0.001,
+        pts_unit="sec",
+        output_format="THWC",
+    )
+    arr = frames.numpy().astype(np.uint8)[..., :3]
+    if len(arr) > expected_len:
+        arr = arr[len(arr) - expected_len:]
+    return arr
+
+
+def _clip_frame_or_blank(clip: np.ndarray, idx: int, thumb_size: int) -> np.ndarray:
+    if len(clip) == 0:
         return np.full((thumb_size, thumb_size, 3), 80, np.uint8)
+    idx = int(np.clip(idx, 0, len(clip) - 1))
+    return clip[idx]
 
 
 def _img_to_b64(arr: np.ndarray, size: int, quality: int = 75) -> str:
@@ -86,6 +106,12 @@ def collect_data(args) -> dict:
 
     # FSQ codebook_size = product(levels); default 125 for [5,5,5]
     num_emb = args.num_embeddings or (int(tokens.max()) + 1)
+    fsq_levels = args.fsq_levels
+    if not fsq_levels:
+        side = round(num_emb ** (1.0 / 3.0))
+        fsq_levels = [side, side, side] if side ** 3 == num_emb else [num_emb, 1, 1]
+    if int(np.prod(fsq_levels)) != num_emb:
+        raise ValueError(f"fsq_levels product {int(np.prod(fsq_levels))} != num_embeddings {num_emb}")
 
     token_to_idxs: dict[int, list[int]] = defaultdict(list)
     for i, tok in enumerate(tokens):
@@ -97,8 +123,6 @@ def collect_data(args) -> dict:
     print(f"[VIZ] FSQ codebook: {used}/{num_emb} entries used  "
           f"| mean={np.mean(active):.1f}  max={max(counts)}  total skills={len(tokens)}")
 
-    import imageio
-
     dataset_dir   = Path(args.dataset_dir)
     episodes_meta = _load_episodes_meta(dataset_dir)
     image_key     = _resolve_image_key(episodes_meta, args.image_key)
@@ -109,44 +133,57 @@ def collect_data(args) -> dict:
             vpath_cache[ep_id] = _video_path(dataset_dir, episodes_meta, ep_id, image_key)
         return vpath_cache[ep_id]
 
-    entries: dict[str, list[dict]] = {}
     active = sorted(k for k in token_to_idxs if token_to_idxs[k])
+    selected_by_token = {tok: token_to_idxs[tok][: args.max_per_entry] for tok in active}
 
-    for tok in tqdm(active, desc="Extracting thumbnails"):
-        idxs = token_to_idxs[tok][: args.max_per_entry]
-
-        # Group by episode → open each video once, seek to needed frames
-        ep_to_idxs: dict[int, list[int]] = defaultdict(list)
+    ep_to_idxs: dict[int, list[int]] = defaultdict(list)
+    for idxs in selected_by_token.values():
         for i in idxs:
             ep_to_idxs[int(episode_ids[i])].append(i)
 
-        results: dict[int, dict] = {}
-        blank_b64 = _img_to_b64(
-            np.full((args.thumb_size, args.thumb_size, 3), 80, np.uint8), args.thumb_size)
+    results: dict[int, dict] = {}
+    blank_b64 = _img_to_b64(
+        np.full((args.thumb_size, args.thumb_size, 3), 80, np.uint8), args.thumb_size
+    )
 
-        for ep_id, ep_idxs in ep_to_idxs.items():
-            try:
-                reader = imageio.get_reader(str(_vpath(ep_id)))
-                try:
-                    for i in ep_idxs:
-                        fs = int(frame_starts[i])
-                        fe = int(frame_ends[i])
-                        s_b64 = _img_to_b64(_read_frame(reader, fs,       args.thumb_size), args.thumb_size)
-                        e_b64 = _img_to_b64(_read_frame(reader, max(0, fe-1), args.thumb_size), args.thumb_size)
-                        results[i] = {"ep": ep_id, "sk": int(skill_idxs[i]),
-                                      "fs": fs, "fe": fe, "s": s_b64, "e": e_b64}
-                finally:
-                    reader.close()
-            except Exception as exc:
-                print(f"  [warn] ep{ep_id}: {exc}")
-                for i in ep_idxs:
-                    results[i] = {"ep": ep_id, "sk": int(skill_idxs[i]),
-                                  "fs": int(frame_starts[i]), "fe": int(frame_ends[i]),
-                                  "s": blank_b64, "e": blank_b64}
+    for ep_id, ep_idxs in tqdm(sorted(ep_to_idxs.items()), desc="Extracting thumbnails"):
+        try:
+            row = _episode_row(episodes_meta, ep_id)
+            from_ts = float(row[f"videos/{image_key}/from_timestamp"])
+            to_ts = float(row[f"videos/{image_key}/to_timestamp"])
+            expected_len = int(row["length"])
+            clip = _read_episode_clip(_vpath(ep_id), from_ts, to_ts, expected_len)
+            for i in ep_idxs:
+                fs = int(frame_starts[i])
+                fe = int(frame_ends[i])
+                s_b64 = _img_to_b64(_clip_frame_or_blank(clip, fs, args.thumb_size), args.thumb_size)
+                e_b64 = _img_to_b64(_clip_frame_or_blank(clip, max(0, fe - 1), args.thumb_size), args.thumb_size)
+                results[i] = {
+                    "ep": ep_id,
+                    "sk": int(skill_idxs[i]),
+                    "fs": fs,
+                    "fe": fe,
+                    "s": s_b64,
+                    "e": e_b64,
+                }
+        except Exception as exc:
+            print(f"  [warn] ep{ep_id}: {exc}")
+            for i in ep_idxs:
+                results[i] = {
+                    "ep": ep_id,
+                    "sk": int(skill_idxs[i]),
+                    "fs": int(frame_starts[i]),
+                    "fe": int(frame_ends[i]),
+                    "s": blank_b64,
+                    "e": blank_b64,
+                }
 
-        entries[str(tok)] = [results[i] for i in idxs]
+    entries: dict[str, list[dict]] = {
+        str(tok): [results[i] for i in idxs]
+        for tok, idxs in selected_by_token.items()
+    }
 
-    return {"num_emb": num_emb, "counts": counts, "entries": entries,
+    return {"num_emb": num_emb, "fsq_levels": fsq_levels, "counts": counts, "entries": entries,
             "total": int(len(tokens)), "used": used}
 
 
@@ -166,6 +203,11 @@ _HTML_TEMPLATE = """\
     width:100%; overflow-x:auto; background:#fff;
     border:1px solid #ddd; border-radius:6px; padding:10px; box-sizing:border-box;
   }}
+  #cube-wrap {{
+    margin-top:10px; background:#fff; border:1px solid #ddd;
+    border-radius:6px; padding:10px; box-sizing:border-box;
+  }}
+  #cube-title {{ font-size:12px; color:#555; margin-bottom:6px; }}
   canvas {{ display:block; }}
   #panel {{
     margin-top:12px; background:#fff; border:1px solid #ddd;
@@ -195,6 +237,10 @@ _HTML_TEMPLATE = """\
 <div id="chart-wrap">
   <canvas id="chart"></canvas>
 </div>
+<div id="cube-wrap">
+  <div id="cube-title">FSQ lattice view</div>
+  <canvas id="cube"></canvas>
+</div>
 <div id="panel">
   <h3 id="panel-title"></h3>
   <div class="grid" id="grid"></div>
@@ -203,6 +249,7 @@ _HTML_TEMPLATE = """\
 <script>
 const COUNTS  = {counts_json};
 const ENTRIES = {entries_json};
+const LEVELS  = {fsq_levels_json};
 const N       = COUNTS.length;
 const MAX_PER = {max_per};
 
@@ -249,14 +296,147 @@ function drawChart(sel) {{
 let selected = -1;
 drawChart(selected);
 
+function idxToCoord(idx) {{
+  const lx = LEVELS[0], ly = LEVELS[1], lz = LEVELS[2];
+  const x = idx % lx;
+  const y = Math.floor(idx / lx) % ly;
+  const z = Math.floor(idx / (lx * ly)) % lz;
+  return [x, y, z];
+}}
+
+const cubeCanvas = document.getElementById('cube');
+const cubeCtx = cubeCanvas.getContext('2d');
+cubeCanvas.width = 560;
+cubeCanvas.height = 420;
+
+function projectCoord(coord) {{
+  const [x, y, z] = coord;
+  const lx = Math.max(1, LEVELS[0] - 1);
+  const ly = Math.max(1, LEVELS[1] - 1);
+  const lz = Math.max(1, LEVELS[2] - 1);
+  const xn = lx > 0 ? (x / lx - 0.5) * 2.0 : 0.0;
+  const yn = ly > 0 ? (y / ly - 0.5) * 2.0 : 0.0;
+  const zn = lz > 0 ? (z / lz - 0.5) * 2.0 : 0.0;
+
+  // Camera: slightly diagonal and above the lattice so all three axes are visible.
+  const yaw = -0.63;
+  const pitch = 0.46;
+  const cyaw = Math.cos(yaw), syaw = Math.sin(yaw);
+  const cp = Math.cos(pitch), sp = Math.sin(pitch);
+  const xr = cyaw * xn - syaw * yn;
+  const yr = syaw * xn + cyaw * yn;
+  const zr = zn;
+
+  const scale = 118;
+  const cx = cubeCanvas.width * 0.50;
+  const cy = cubeCanvas.height * 0.56;
+  const sx = cx + xr * scale;
+  const sy = cy + yr * scale * sp - zr * scale * cp;
+  const depth = yr * cp + zr * sp;
+  return [sx, sy, depth];
+}}
+
+function drawCube(sel) {{
+  const ctx = cubeCtx;
+  ctx.clearRect(0, 0, cubeCanvas.width, cubeCanvas.height);
+  const maxC = Math.max(...COUNTS, 1);
+  const lx = LEVELS[0], ly = LEVELS[1], lz = LEVELS[2];
+
+  // Interior lattice lines make FSQ neighborhood distance readable.
+  ctx.strokeStyle = 'rgba(120,120,120,0.50)';
+  ctx.lineWidth = 1.2;
+  const drawLine = (a, b) => {{
+    const pa = projectCoord(a);
+    const pb = projectCoord(b);
+    ctx.beginPath();
+    ctx.moveTo(pa[0], pa[1]);
+    ctx.lineTo(pb[0], pb[1]);
+    ctx.stroke();
+  }};
+  for (let x = 0; x < lx; x++) {{
+    for (let y = 0; y < ly; y++) {{
+      for (let z = 0; z < lz; z++) {{
+        if (x + 1 < lx) drawLine([x, y, z], [x + 1, y, z]);
+        if (y + 1 < ly) drawLine([x, y, z], [x, y + 1, z]);
+        if (z + 1 < lz) drawLine([x, y, z], [x, y, z + 1]);
+      }}
+    }}
+  }}
+
+  const corners = [
+    [0,0,0], [lx-1,0,0], [0,ly-1,0], [0,0,lz-1],
+    [lx-1,ly-1,0], [lx-1,0,lz-1], [0,ly-1,lz-1], [lx-1,ly-1,lz-1],
+  ];
+  const edges = [[0,1],[0,2],[0,3],[1,4],[1,5],[2,4],[2,6],[3,5],[3,6],[4,7],[5,7],[6,7]];
+  ctx.strokeStyle = 'rgba(70,70,70,0.72)';
+  ctx.lineWidth = 1.8;
+  edges.forEach(([a,b]) => {{
+    const pa = projectCoord(corners[a]);
+    const pb = projectCoord(corners[b]);
+    ctx.beginPath(); ctx.moveTo(pa[0], pa[1]); ctx.lineTo(pb[0], pb[1]); ctx.stroke();
+  }});
+
+  const pts = [];
+  for (let i = 0; i < N; i++) {{
+    const coord = idxToCoord(i);
+    const p = projectCoord(coord);
+    pts.push({{i, coord, p, depth: p[2]}});
+  }}
+  pts.sort((a,b) => a.depth - b.depth);
+  pts.forEach(pt => {{
+    const c = COUNTS[pt.i];
+    const active = c > 0;
+    const r = pt.i === sel ? 9 : (active ? 4 + 7 * Math.sqrt(c / maxC) : 2.8);
+    ctx.beginPath();
+    ctx.arc(pt.p[0], pt.p[1], r, 0, Math.PI * 2);
+    ctx.fillStyle = pt.i === sel ? '#f44336' : (active ? 'rgba(25,118,210,0.78)' : 'rgba(180,180,180,0.45)');
+    ctx.fill();
+    if (pt.i === sel) {{
+      ctx.strokeStyle = '#8b0000';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.fillStyle = '#333';
+      ctx.font = '11px sans-serif';
+      ctx.fillText(`entry ${{pt.i}}  (${{pt.coord.join(',')}})`, 10, 18);
+    }}
+  }});
+  ctx.fillStyle = '#777';
+  ctx.font = '10px sans-serif';
+  ctx.fillText(`levels = ${{LEVELS.join(' x ')}}`, 10, cubeCanvas.height - 10);
+}}
+
+cubeCanvas.addEventListener('click', e => {{
+  const rect = cubeCanvas.getBoundingClientRect();
+  const scaleX = cubeCanvas.width / rect.width;
+  const scaleY = cubeCanvas.height / rect.height;
+  const mx = (e.clientX - rect.left) * scaleX;
+  const my = (e.clientY - rect.top) * scaleY;
+  let best = -1, bestD = Infinity;
+  for (let i = 0; i < N; i++) {{
+    const p = projectCoord(idxToCoord(i));
+    const d = (p[0] - mx) ** 2 + (p[1] - my) ** 2;
+    if (d < bestD) {{ bestD = d; best = i; }}
+  }}
+  if (best >= 0 && bestD < 625) {{
+    selectEntry(best);
+  }}
+}});
+
+drawCube(selected);
+
+function selectEntry(i) {{
+  if (i < 0 || i >= N || COUNTS[i] === 0) return;
+  selected = i;
+  drawChart(selected);
+  drawCube(selected);
+  showPanel(i);
+}}
+
 canvas.addEventListener('click', e => {{
   const rect = canvas.getBoundingClientRect();
   const mx   = e.clientX - rect.left;
   const i    = Math.floor((mx - PAD_L) / BAR_W);
-  if (i < 0 || i >= N || COUNTS[i] === 0) return;
-  selected = i;
-  drawChart(selected);
-  showPanel(i);
+  selectEntry(i);
 }});
 
 function showPanel(tok) {{
@@ -303,6 +483,7 @@ def generate_html(vdata: dict, max_per: int, thumb: int) -> str:
         mx           = int(max(counts)),
         counts_json  = json.dumps(counts),
         entries_json = json.dumps(vdata["entries"]),
+        fsq_levels_json = json.dumps(vdata["fsq_levels"]),
         max_per      = max_per,
     )
 
@@ -348,6 +529,8 @@ def parse_args():
     p.add_argument("--image_key",      default="observation.images.image")
     p.add_argument("--num_embeddings", type=int, default=0,
                    help="Codebook size (0 = infer from data)")
+    p.add_argument("--fsq_levels", type=int, nargs="*", default=[],
+                   help="FSQ lattice levels, e.g. 5 5 5. Empty = infer cubic levels from num_embeddings.")
     p.add_argument("--max_per_entry",  type=int, default=50,
                    help="Max skills shown per codebook entry (shows all if entry has fewer)")
     p.add_argument("--thumb_size",     type=int, default=96,

@@ -20,7 +20,7 @@ source ${HOMEDIR}${PROJDIR}/.venv/bin/activate
 unset LD_LIBRARY_PATH
 
 # ── 설정 ──────────────────────────────────────────────────────────────────────
-CHECKPOINT_EPOCH=2000      # 0 → best checkpoint (FSQ.pt), else FSQ_epoch{N:04d}.pt
+CHECKPOINT_EPOCH=500      # 0 → best checkpoint (FSQ.pt), else FSQ_epoch{N:04d}.pt
 DATA=libero_90
 DATADIR=libero_dataset
 VISUAL_BACKBONE=dinov3_vits16
@@ -29,11 +29,14 @@ DERIVED_DATA_DIR=${HOMEDIR}${PROJDIR}/${DATADIR}/${DATA}_data
 FSQ_PRECOMPUTE_DIR=${DERIVED_DATA_DIR}/${DATA}_for_FSQ
 SKILLSET_DIR=${FSQ_PRECOMPUTE_DIR}/${SKILLSET}
 
-DECODER_MODE=chunk
+DECODER_MODE=single_step
+DECODER_IMAGE_MODE=dino_flags
 CHUNK_SIZE=10
-ZERO_START_EEF=true
+FSQ_LEVELS=(5 5 5)
+ZERO_START_EEF=false
 END_THRESHOLD=0.5
-MAX_PLOT_SAMPLES=20
+MAX_PLOT_SAMPLES=5
+MAX_PLOT_ENTRIES=20
 
 source examples/libero/configs/VAE_train/visual_backbone.sh
 resolve_visual_backbone
@@ -46,20 +49,29 @@ else
   ZERO_START_ARG="--no-zero_start_eef"
 fi
 
-FSQ_TAG="fsq555"
-MODE_TAG="${DECODER_MODE}K${CHUNK_SIZE}"
-EXP_NAME="${DATA}_${FSQ_TAG}_${IMAGE_EXP_TAG}_${EEF_MODE}_${MODE_TAG}"
-SWEEP_DIR="${HOMEDIR}${PROJDIR}/outputs/${SKILLSET}_latents/${EXP_NAME}"
+FSQ_TAG="fsq$(IFS=; echo "${FSQ_LEVELS[*]}")"
+FSQ_CODEBOOK_SIZE=1
+for level in "${FSQ_LEVELS[@]}"; do
+  FSQ_CODEBOOK_SIZE=$((FSQ_CODEBOOK_SIZE * level))
+done
+if [ "${DECODER_MODE}" = "chunk" ]; then
+  MODE_TAG="chunkK${CHUNK_SIZE}"
+else
+  MODE_TAG="single_step"
+fi
+EXP_NAME="${DATA}_${FSQ_TAG}_${IMAGE_EXP_TAG}_${EEF_MODE}_${MODE_TAG}_${DECODER_IMAGE_MODE}"
+SWEEP_DIR="${HOMEDIR}${PROJDIR}/outputs/${SKILLSET}_FSQ/${EXP_NAME}"
 
 if [ "${CHECKPOINT_EPOCH}" -eq 0 ]; then
   MODEL_PATH="${SWEEP_DIR}/FSQ.pt"
+  LATENTS_PATH="${SWEEP_DIR}/skill_latents.npz"
   EPOCH_TAG="best"
 else
   MODEL_PATH="${SWEEP_DIR}/FSQ_epoch$(printf '%04d' ${CHECKPOINT_EPOCH}).pt"
+  LATENTS_PATH="${SWEEP_DIR}/skill_latents_epoch$(printf '%04d' ${CHECKPOINT_EPOCH}).npz"
   EPOCH_TAG="epoch$(printf '%04d' ${CHECKPOINT_EPOCH})"
 fi
 
-LATENTS_PATH="${SWEEP_DIR}/skill_latents.npz"
 SKILLS_DIR="${SKILLSET_DIR}/skills"
 DINO_TOKENS_PATH="${FSQ_PRECOMPUTE_DIR}/${IMAGE_FEATURE_TAG}_tokens.npz"
 SAM2_FLAGS_PATH="${FSQ_PRECOMPUTE_DIR}/patch_flags.npz"
@@ -76,6 +88,18 @@ echo "Model   : ${MODEL_PATH}"
 echo "Latents : ${LATENTS_PATH}"
 echo "Output  : ${OUTPUT_HTML}"
 
+if [ ! -f "${LATENTS_PATH}" ]; then
+  echo "Latents not found; encoding skills from checkpoint..."
+  PYTHONPATH=${HOMEDIR}${PROJDIR}/lerobot/src \
+    python examples/libero/encode_FSQ_skills.py \
+      --model_path      ${MODEL_PATH} \
+      --skills_dir      ${SKILLS_DIR} \
+      --dino_features   ${DINO_TOKENS_PATH} \
+      --output_path     ${LATENTS_PATH} \
+      ${ZERO_START_ARG} \
+      --device          cuda
+fi
+
 PYTHONPATH=${HOMEDIR}${PROJDIR}/lerobot/src \
   python examples/libero/decoder_eval.py \
     --model_path            ${MODEL_PATH} \
@@ -86,6 +110,7 @@ PYTHONPATH=${HOMEDIR}${PROJDIR}/lerobot/src \
     ${ZERO_START_ARG} \
     --end_threshold         ${END_THRESHOLD} \
     --max_plot_samples      ${MAX_PLOT_SAMPLES} \
+    --max_plot_entries      ${MAX_PLOT_ENTRIES} \
     --wandb_project         VAE_eval \
     --wandb_run_name        ${EXP_NAME}_decoder_${EPOCH_TAG} \
     --output_html           ${OUTPUT_HTML}

@@ -496,11 +496,36 @@ class SkillVLAPytorch(PI05Pytorch):
         image_input = images.to(device=device, dtype=dtype)
         if image_input.shape[0] != batch_size:
             raise ValueError(f"FSQ decoder image batch mismatch: got {image_input.shape[0]}, expected {batch_size}.")
+        n_tokens = int(getattr(self.vae_decoder, "n_tokens", 0))
+        feat_dim = int(getattr(self.vae_decoder, "feat_dim", 0))
+        is_token_frame = (
+            image_input.ndim == 3
+            and n_tokens > 0
+            and feat_dim > 0
+            and image_input.shape[-2] == n_tokens
+            and image_input.shape[-1] == feat_dim
+        )
+        is_token_sequence = (
+            image_input.ndim == 4
+            and n_tokens > 0
+            and feat_dim > 0
+            and image_input.shape[-2] == n_tokens
+            and image_input.shape[-1] == feat_dim
+        )
+        if is_token_frame:
+            image_input = image_input.unsqueeze(1)
+        elif is_token_sequence and image_input.shape[1] != steps:
+            if image_input.shape[1] == 1:
+                image_input = image_input.expand(-1, steps, -1, -1)
+            else:
+                raise ValueError(
+                    f"FSQ decoder image time mismatch: got T={image_input.shape[1]}, expected {steps}."
+                )
         return image_input
 
-    def _zero_patch_flags(self, batch_size: int, *, device: torch.device, dtype: torch.dtype) -> Tensor:
+    def _zero_patch_flags(self, batch_size: int, steps: int, *, device: torch.device, dtype: torch.dtype) -> Tensor:
         n_patches = int(getattr(self.vae_decoder, "n_patches", 64))
-        return torch.zeros(batch_size, n_patches, 2, device=device, dtype=dtype)
+        return torch.zeros(batch_size, steps, n_patches, 2, device=device, dtype=dtype)
 
     def _skill_decoder_end_loss(
         self,
@@ -532,7 +557,7 @@ class SkillVLAPytorch(PI05Pytorch):
         if image_tokens is None:
             self._last_skill_decoder_components["skipped"] = 1.0
             return torch.tensor(0.0, device=target.device)
-        patch_flags = self._zero_patch_flags(z.shape[0], device=target.device, dtype=z.dtype)
+        patch_flags = self._zero_patch_flags(z.shape[0], states.shape[1], device=target.device, dtype=z.dtype)
         _, end_logits = vae.decode(z, states, image_tokens, patch_flags, progress.view(-1, 1))
         pred = (torch.sigmoid(end_logits.squeeze(1).float()) >= float(self.config.skill_decoder_end_threshold)).float()
         target_f = target.float()
@@ -574,7 +599,7 @@ class SkillVLAPytorch(PI05Pytorch):
         )
         if image_tokens is None:
             return None
-        patch_flags = self._zero_patch_flags(z.shape[0], device=z.device, dtype=z.dtype)
+        patch_flags = self._zero_patch_flags(z.shape[0], state.shape[1], device=z.device, dtype=z.dtype)
         _, end_logits = self.vae_decoder.decode(
             z,
             state,

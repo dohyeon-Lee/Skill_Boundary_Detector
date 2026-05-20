@@ -45,12 +45,15 @@ SAVGOL_POLYORDER=4
 REPLAN_INTERVAL=3
 NMS_DIST=25
 
-POLICY=dp_libero_90_obs10_horizon16
-CHECKPOINT=080000
-
 # DATASET=libero_10
 DATASET=libero_10_op1_10
 # DATASET=libero_10_op1_50
+
+VISUAL_BACKBONE=dinov3_vits16
+PATCH_GRID=8
+POLICY=dp_libero_90_dino_${VISUAL_BACKBONE}_pg${PATCH_GRID}_obs10_horizon16
+CHECKPOINT=080000
+DINO_FEATURE_DIR=/data2/dohyeon/SBD/libero_dataset/${DATASET}_data/${DATASET}_DINO/${VISUAL_BACKBONE}_pg${PATCH_GRID}
 
 POLICY_PATH=${HOMEDIR}${PROJDIR}/outputs/${POLICY}/checkpoints/${CHECKPOINT}/pretrained_model
 DATASET_ROOT=libero_dataset
@@ -97,6 +100,7 @@ PYTHONPATH=${HOMEDIR}${PROJDIR}/lerobot/src \
     --n_gmm_components ${N_GMM} \
     --smooth_window ${SMOOTH_WINDOW} \
     --savgol_polyorder ${SAVGOL_POLYORDER} \
+    --dino_feature_dir ${DINO_FEATURE_DIR} \
     --resume \
     --wandb_project ${WANDB_PROJECT} \
     --wandb_run_name ${WANDB_RUN_NAME}

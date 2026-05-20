@@ -3,7 +3,7 @@
 #SBATCH --partition=debug
 #SBATCH --nodelist=node100
 #SBATCH --qos=big_qos
-#SBATCH --gres=gpu:0
+#SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
 #SBATCH --time=01:00:00
@@ -20,48 +20,101 @@ source ${HOMEDIR}${PROJDIR}/.venv/bin/activate
 unset LD_LIBRARY_PATH
 
 # ── 설정 ──────────────────────────────────────────────────────────────────────
-CHECKPOINT_EPOCH=2000      # 0 → best checkpoint (FSQ.pt), else FSQ_epoch{N:04d}.pt
+CHECKPOINT_EPOCH=500      # 0 → best checkpoint (FSQ.pt), else FSQ_epoch{N:04d}.pt
 DATA=libero_90
 DATADIR=libero_dataset
 VISUAL_BACKBONE=dinov3_vits16
 SKILLSET=${DATA}_skillset
+DERIVED_DATA_DIR=${HOMEDIR}${PROJDIR}/${DATADIR}/${DATA}_data
+FSQ_PRECOMPUTE_DIR=${DERIVED_DATA_DIR}/${DATA}_for_FSQ
+SKILLSET_DIR=${FSQ_PRECOMPUTE_DIR}/${SKILLSET}
 
-DECODER_MODE=chunk
+DECODER_MODE=single_step
+DECODER_IMAGE_MODE=dino_flags
 CHUNK_SIZE=10
-ZERO_START_EEF=true
+FSQ_LEVELS=(5 5 5)
+ZERO_START_EEF=false
 
 source examples/libero/configs/VAE_train/visual_backbone.sh
 resolve_visual_backbone
 
 if [ "${ZERO_START_EEF}" = "true" ]; then EEF_MODE=zero; else EEF_MODE=abs; fi
 
-FSQ_TAG="fsq555"
-MODE_TAG="${DECODER_MODE}K${CHUNK_SIZE}"
-EXP_NAME="${DATA}_${FSQ_TAG}_${IMAGE_EXP_TAG}_${EEF_MODE}_${MODE_TAG}"
-SWEEP_DIR="${HOMEDIR}${PROJDIR}/outputs/${SKILLSET}_latents/${EXP_NAME}"
+FSQ_TAG="fsq$(IFS=; echo "${FSQ_LEVELS[*]}")"
+FSQ_CODEBOOK_SIZE=1
+for level in "${FSQ_LEVELS[@]}"; do
+  FSQ_CODEBOOK_SIZE=$((FSQ_CODEBOOK_SIZE * level))
+done
+if [ "${DECODER_MODE}" = "chunk" ]; then
+  MODE_TAG="chunkK${CHUNK_SIZE}"
+else
+  MODE_TAG="single_step"
+fi
+EXP_NAME="${DATA}_${FSQ_TAG}_${IMAGE_EXP_TAG}_${EEF_MODE}_${MODE_TAG}_${DECODER_IMAGE_MODE}"
+SWEEP_DIR="${HOMEDIR}${PROJDIR}/outputs/${SKILLSET}_FSQ/${EXP_NAME}"
 
 if [ "${CHECKPOINT_EPOCH}" -eq 0 ]; then
+  MODEL_PATH="${SWEEP_DIR}/FSQ.pt"
   LATENTS_PATH="${SWEEP_DIR}/skill_latents.npz"
   EPOCH_TAG="best"
 else
-  # checkpoint_every 저장 시 별도 latents 파일이 없으므로 기본 파일 사용
-  LATENTS_PATH="${SWEEP_DIR}/skill_latents.npz"
+  MODEL_PATH="${SWEEP_DIR}/FSQ_epoch$(printf '%04d' ${CHECKPOINT_EPOCH}).pt"
+  LATENTS_PATH="${SWEEP_DIR}/skill_latents_epoch$(printf '%04d' ${CHECKPOINT_EPOCH}).npz"
   EPOCH_TAG="epoch$(printf '%04d' ${CHECKPOINT_EPOCH})"
 fi
 
 OUTPUT_DIR="${SWEEP_DIR}/codebook_vis/${EPOCH_TAG}"
+DINO_TOKENS_PATH="${FSQ_PRECOMPUTE_DIR}/${IMAGE_FEATURE_TAG}_tokens.npz"
 # ─────────────────────────────────────────────────────────────────────────────
 
+echo "Model   : ${MODEL_PATH}"
 echo "Latents : ${LATENTS_PATH}"
+echo "Skills  : ${SKILLSET_DIR}/skills"
+echo "DINO    : ${DINO_TOKENS_PATH}"
 echo "Output  : ${OUTPUT_DIR}"
+
+if [ ! -f "${MODEL_PATH}" ]; then
+  echo "ERROR: model checkpoint not found: ${MODEL_PATH}" >&2
+  echo "Check EXP_NAME=${EXP_NAME}" >&2
+  exit 1
+fi
+
+if [ ! -d "${SKILLSET_DIR}/skills" ]; then
+  echo "ERROR: skills directory not found: ${SKILLSET_DIR}/skills" >&2
+  exit 1
+fi
+
+if [ ! -f "${DINO_TOKENS_PATH}" ]; then
+  echo "ERROR: DINO token file not found: ${DINO_TOKENS_PATH}" >&2
+  exit 1
+fi
+
+if [ ! -f "${LATENTS_PATH}" ]; then
+  echo "Latents not found; encoding skills from checkpoint..."
+  if [ "${ZERO_START_EEF}" = "true" ]; then
+    ZERO_START_ARG="--zero_start_eef"
+  else
+    ZERO_START_ARG="--no-zero_start_eef"
+  fi
+  PYTHONPATH=${HOMEDIR}${PROJDIR}/lerobot/src \
+    python examples/libero/encode_FSQ_skills.py \
+      --model_path      ${MODEL_PATH} \
+      --skills_dir      ${SKILLSET_DIR}/skills \
+      --dino_features   ${DINO_TOKENS_PATH} \
+      --output_path     ${LATENTS_PATH} \
+      ${ZERO_START_ARG} \
+      --device          cuda
+fi
 
 PYTHONPATH=${HOMEDIR}${PROJDIR}/lerobot/src \
   python examples/libero/codebook_visualizer.py \
     --latents_path      ${LATENTS_PATH} \
     --dataset_dir       ${HOMEDIR}${PROJDIR}/${DATADIR}/${DATA} \
-    --num_embeddings    125 \
+    --num_embeddings    ${FSQ_CODEBOOK_SIZE} \
+    --fsq_levels        "${FSQ_LEVELS[@]}" \
     --thumb_size        96 \
-    --max_per_entry     50 \
+    --max_per_entry     20 \
+    --output_html       ${OUTPUT_DIR}/codebook_vis.html \
     --wandb_project     VAE_eval \
     --wandb_run_name    ${EXP_NAME}_codebook_${EPOCH_TAG}
 

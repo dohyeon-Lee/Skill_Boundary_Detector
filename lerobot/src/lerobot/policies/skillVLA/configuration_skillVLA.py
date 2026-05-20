@@ -41,6 +41,14 @@ class SkillVLAConfig(PI05Config):
     skill_decoder_end_threshold: float = 0.5
     skill_decoder_state_indices: list[int] | None = None
     """Raw observation.state indices fed to the FSQ decoder. None uses the first FSQ state_dim dims."""
+    skill_decoder_dino_tokens_path: str | None = None
+    """FSQ decoder DINO token npz. Provides per-frame (CLS + pooled patches) tokens as skill_decoder_image."""
+    skill_decoder_dino_cache_path: str | None = None
+    """Optional .npy cache path for mmap-friendly FSQ decoder DINO tokens."""
+    skill_decoder_dino_output_key: str = "skill_decoder_image"
+    """Batch key written by the SkillVLA DINO-token dataset wrapper."""
+    skill_decoder_dino_build_cache: bool = True
+    """Build the .npy mmap cache from the .npz token file when missing."""
     freeze_vae_decoder: bool = False
     inference_skill_max_order: int = 8
     inference_skill_max_length: int = 200
