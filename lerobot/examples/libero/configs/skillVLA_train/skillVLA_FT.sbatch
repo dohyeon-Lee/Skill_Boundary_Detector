@@ -58,6 +58,7 @@ FSQ_DIM=${PT_FSQ_DIM}
 FSQ_NUM_EMBEDDINGS=${PT_FSQ_NUM_EMBEDDINGS}
 FSQ_RUN=${PT_FSQ_RUN}
 FSQ_CKPT=${PT_FSQ_CKPT}
+FSQ_IMAGE_MODEL_PATH=${PT_IMAGE_MODEL_PATH}
 
 if [ ! -f "${BASE_POLICY}/model.safetensors" ]; then
     echo "Missing base SkillVLA checkpoint: ${BASE_POLICY}"
@@ -152,6 +153,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes=${
     --policy.push_to_hub=false \
     --policy.block_lang_to_action=${BLOCK_LANG} \
     --policy.vae_decoder_path=${FSQ_CKPT} \
+    --policy.skill_decoder_image_model_name=${FSQ_IMAGE_MODEL_PATH} \
     --policy.freeze_vae_decoder=${FREEZE_VAE_DECODER} \
     --policy.skill_latent_dim=${FSQ_DIM} \
     --policy.skill_fsq_levels=${FSQ_LEVELS_ARG} \

@@ -36,6 +36,8 @@ class SkillVLAConfig(PI05Config):
 
     # Path to pretrained FSQ checkpoint (.pt file).
     vae_decoder_path: str | None = None
+    skill_decoder_image_model_name: str | None = None
+    """Override the DINO path/repo stored inside the FSQ checkpoint."""
     skill_decoder_loss_weight: float = 1.0
     skill_decoder_end_pos_weight: float = 1.0
     skill_decoder_end_threshold: float = 0.5

@@ -68,6 +68,10 @@ class EvalConfig:
     batch_size: int = 50
     # `use_async_envs` specifies whether to use asynchronous environments (multiprocessing).
     use_async_envs: bool = False
+    # SkillVLA/LIBERO eval video controls. Rendering video frames can be a large part of eval runtime.
+    max_videos_per_task: int = 1
+    video_frame_stride: int = 1
+    video_fps: int | None = None
 
     def __post_init__(self) -> None:
         if self.batch_size > self.n_episodes:

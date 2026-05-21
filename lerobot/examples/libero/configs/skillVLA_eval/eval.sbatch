@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=skillVLA_eval
 #SBATCH --partition=debug
-#SBATCH --nodelist=node01
+#SBATCH --nodelist=node100
 #SBATCH --qos=big_qos
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
@@ -12,21 +12,24 @@
 set -euo pipefail
 mkdir -p logs
 
-HOMEDIR=${HOMEDIR:-/data2/dohyeon}
-PROJDIR=${PROJDIR:-/SBD}
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+BOOTSTRAP_LEROBOT_DIR=$(cd "${SCRIPT_DIR}/../../../.." && pwd)
+BOOTSTRAP_PYTHON=${BOOTSTRAP_LEROBOT_DIR}/../.venv/bin/python
+if [ ! -x "${BOOTSTRAP_PYTHON}" ]; then
+  BOOTSTRAP_PYTHON=python3
+fi
+CONFIG_PY=${BOOTSTRAP_LEROBOT_DIR}/examples/libero/configs/data_generation/pipeline_config.py
+if [ -n "${EVAL_DATA:-}" ]; then
+  eval "$("${BOOTSTRAP_PYTHON}" "${CONFIG_PY}" --shell --data "${EVAL_DATA}")"
+else
+  eval "$("${BOOTSTRAP_PYTHON}" "${CONFIG_PY}" --shell)"
+fi
 
 cd "${HOMEDIR}${PROJDIR}/lerobot"
 source "${HOMEDIR}${PROJDIR}/.venv/bin/activate"
 
 # Avoid system cuDNN shadowing the cuDNN bundled with the installed PyTorch.
 unset LD_LIBRARY_PATH
-
-CONFIG_PY=examples/libero/configs/data_generation/pipeline_config.py
-if [ -n "${EVAL_DATA:-}" ]; then
-  eval "$(python "${CONFIG_PY}" --shell --data "${EVAL_DATA}")"
-else
-  eval "$(python "${CONFIG_PY}" --shell)"
-fi
 CFG_SKILL_DECODER_STATE_INDICES=${SKILL_DECODER_STATE_INDICES}
 CFG_INFERENCE_SKILL_MAX_ORDER=${INFERENCE_SKILL_MAX_ORDER}
 CFG_INFERENCE_SKILL_MAX_LENGTH=${INFERENCE_SKILL_MAX_LENGTH}
@@ -49,6 +52,9 @@ N_EPISODES=${N_EPISODES:-1}
 N_ACTION_STEPS=${N_ACTION_STEPS:-5}
 EVAL_BATCH_SIZE=${EVAL_BATCH_SIZE:-1}
 MAX_PARALLEL_TASKS=${MAX_PARALLEL_TASKS:-1}
+MAX_VIDEOS_PER_TASK=${MAX_VIDEOS_PER_TASK:-1}
+VIDEO_FRAME_STRIDE=${VIDEO_FRAME_STRIDE:-2}
+VIDEO_FPS=${VIDEO_FPS:-10}
 
 # ── SkillVLA checkpoint ──────────────────────────────────────────────────────
 # If MODEL is unset, this evaluates the PT run implied by pipeline_config.yaml.
@@ -84,6 +90,7 @@ echo "SkillVLA FSQ eval"
 echo "  target     : ${TARGET_TASK}"
 echo "  task_ids   : ${TASK_IDS}"
 echo "  episodes   : ${N_EPISODES} per task"
+echo "  videos     : ${MAX_VIDEOS_PER_TASK} per task, stride=${VIDEO_FRAME_STRIDE}, fps=${VIDEO_FPS}"
 echo "  policy     : ${POLICY_PATH}"
 echo "  fsq        : ${FSQ_CKPT}"
 
@@ -96,11 +103,15 @@ PYTHONPATH=${HOMEDIR}${PROJDIR}/lerobot/src \
   --env.fps=20 \
   --eval.batch_size=${EVAL_BATCH_SIZE} \
   --eval.n_episodes=${N_EPISODES} \
+  --eval.max_videos_per_task=${MAX_VIDEOS_PER_TASK} \
+  --eval.video_frame_stride=${VIDEO_FRAME_STRIDE} \
+  --eval.video_fps=${VIDEO_FPS} \
   --policy.n_action_steps=${N_ACTION_STEPS} \
   --policy.device=cuda \
   --policy.compile_model=false \
   --policy.gradient_checkpointing=false \
   --policy.vae_decoder_path=${FSQ_CKPT} \
+  --policy.skill_decoder_image_model_name=${IMAGE_MODEL_PATH} \
   --policy.freeze_vae_decoder=true \
   --policy.skill_latent_dim=${FSQ_DIM} \
   --policy.skill_fsq_levels=${FSQ_LEVELS_ARG} \

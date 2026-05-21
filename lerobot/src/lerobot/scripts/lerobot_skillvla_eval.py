@@ -289,6 +289,8 @@ def eval_policy(
     postprocessor: PolicyProcessorPipeline[PolicyAction, PolicyAction],
     n_episodes: int,
     max_episodes_rendered: int = 0,
+    video_frame_stride: int = 1,
+    video_fps: int | None = None,
     videos_dir: Path | None = None,
     return_episode_data: bool = False,
     start_seed: int | None = None,
@@ -341,11 +343,17 @@ def eval_policy(
     skill_token_records: list[dict] = []
     threads = []  # for video saving threads
     n_episodes_rendered = 0  # for saving the correct number of videos
+    render_frame_index = 0
+    video_frame_stride = max(1, int(video_frame_stride))
 
     # Callback for visualization.
     def render_frame(env: gym.vector.VectorEnv):
         # noqa: B023
+        nonlocal render_frame_index
         if n_episodes_rendered >= max_episodes_rendered:
+            return
+        if render_frame_index % video_frame_stride != 0:
+            render_frame_index += 1
             return
         n_to_render_now = min(max_episodes_rendered - n_episodes_rendered, env.num_envs)
         if isinstance(env, gym.vector.SyncVectorEnv):
@@ -353,6 +361,7 @@ def eval_policy(
         elif isinstance(env, gym.vector.AsyncVectorEnv):
             # Here we must render all frames and discard any we don't need.
             ep_frames.append(np.stack(env.call("render")[:n_to_render_now]))
+        render_frame_index += 1
 
     if max_episodes_rendered > 0:
         video_paths: list[str] = []
@@ -455,7 +464,7 @@ def eval_policy(
                     args=(
                         str(video_path),
                         stacked_frames[: done_index + 1],  # + 1 to capture the last observation
-                        env.unwrapped.metadata["render_fps"],
+                        int(video_fps or max(1, env.unwrapped.metadata["render_fps"] // video_frame_stride)),
                     ),
                 )
                 thread.start()
@@ -1097,7 +1106,9 @@ def eval_main(cfg: EvalPipelineConfig):
             preprocessor=preprocessor,
             postprocessor=postprocessor,
             n_episodes=cfg.eval.n_episodes,
-            max_episodes_rendered=10,
+            max_episodes_rendered=cfg.eval.max_videos_per_task,
+            video_frame_stride=cfg.eval.video_frame_stride,
+            video_fps=cfg.eval.video_fps,
             videos_dir=Path(cfg.output_dir) / "videos",
             start_seed=cfg.seed,
             max_parallel_tasks=cfg.env.max_parallel_tasks,
@@ -1146,37 +1157,44 @@ def eval_main(cfg: EvalPipelineConfig):
             except Exception:
                 pass
 
-            # WandB stays intentionally small: success rates and rollout videos only.
-            summary_log: dict = {}
-            overall = info["overall"]
-            summary_log["summary/success_rate"] = overall["pc_success"] / 100.0
-
-            for group_name, group_info in info.get("per_group", {}).items():
-                summary_log[f"summary/{group_name}/success_rate"] = group_info["pc_success"] / 100.0
-            wandb.run.summary.update(summary_log)
-            wandb.log(
-                {
-                    "eval/overall_success_rate": overall["pc_success"] / 100.0,
-                }
-            )
-
             def _success_to_float(value) -> float:
                 if hasattr(value, "item"):
                     value = value.item()
                 return float(bool(value))
 
-            task_success_log: dict[str, float | int] = {}
+            task_labels: list[str] = []
+            task_success_rates: list[float] = []
             for task_info in sorted(info.get("per_task", []), key=lambda t: t.get("task_id", 0)):
                 task_id = task_info.get("task_id", 0)
-                task_group = task_info.get("task_group", "unknown")
                 successes = task_info.get("metrics", {}).get("successes", [])
                 success_values = [_success_to_float(s) for s in successes]
                 success_rate = float(np.mean(success_values)) if success_values else float("nan")
-                key = f"eval/{task_group}/task{int(task_id):02d}"
-                task_success_log[f"{key}/success_rate"] = success_rate
-            if task_success_log:
-                wandb.run.summary.update(task_success_log)
-                wandb.log(task_success_log)
+                task_labels.append(f"task{int(task_id):02d}")
+                task_success_rates.append(success_rate)
+            if task_labels:
+                import matplotlib
+
+                matplotlib.use("Agg")
+                import matplotlib.pyplot as plt
+
+                height = max(2.8, 0.38 * len(task_labels) + 0.9)
+                fig, ax = plt.subplots(figsize=(8.0, height))
+                y = np.arange(len(task_labels))
+                values = np.nan_to_num(np.asarray(task_success_rates, dtype=np.float32), nan=0.0)
+                ax.barh(y, values, color="#4C78A8")
+                ax.set_yticks(y)
+                ax.set_yticklabels(task_labels)
+                ax.invert_yaxis()
+                ax.set_xlim(0.0, 1.0)
+                ax.set_xlabel("success rate")
+                ax.grid(axis="x", alpha=0.25)
+                for yi, value in zip(y, values, strict=False):
+                    ax.text(min(value + 0.02, 0.98), yi, f"{value:.2f}", va="center", fontsize=8)
+                fig.tight_layout()
+                chart_path = Path(cfg.output_dir) / "task_success_rates.png"
+                fig.savefig(chart_path, dpi=160)
+                plt.close(fig)
+                wandb.log({"charts/task_success_rate": wandb.Image(str(chart_path))})
 
             # Log videos separately (wandb.Video objects can't be batched with bar charts cleanly)
             fps = cfg.env.fps if hasattr(cfg.env, "fps") else 20
@@ -1233,6 +1251,8 @@ def eval_one(
     postprocessor: PolicyProcessorPipeline[PolicyAction, PolicyAction],
     n_episodes: int,
     max_episodes_rendered: int,
+    video_frame_stride: int,
+    video_fps: int | None,
     videos_dir: Path | None,
     return_episode_data: bool,
     start_seed: int | None,
@@ -1252,6 +1272,8 @@ def eval_one(
         postprocessor=postprocessor,
         n_episodes=n_episodes,
         max_episodes_rendered=max_episodes_rendered,
+        video_frame_stride=video_frame_stride,
+        video_fps=video_fps,
         videos_dir=task_videos_dir,
         return_episode_data=return_episode_data,
         start_seed=start_seed,
@@ -1283,6 +1305,8 @@ def run_one(
     postprocessor,
     n_episodes: int,
     max_episodes_rendered: int,
+    video_frame_stride: int,
+    video_fps: int | None,
     videos_dir: Path | None,
     return_episode_data: bool,
     start_seed: int | None,
@@ -1309,6 +1333,8 @@ def run_one(
         postprocessor=postprocessor,
         n_episodes=n_episodes,
         max_episodes_rendered=max_episodes_rendered,
+        video_frame_stride=video_frame_stride,
+        video_fps=video_fps,
         videos_dir=task_videos_dir,
         return_episode_data=return_episode_data,
         start_seed=start_seed,
@@ -1341,6 +1367,8 @@ def eval_policy_all(
     n_episodes: int,
     *,
     max_episodes_rendered: int = 0,
+    video_frame_stride: int = 1,
+    video_fps: int | None = None,
     videos_dir: Path | None = None,
     return_episode_data: bool = False,
     start_seed: int | None = None,
@@ -1411,6 +1439,8 @@ def eval_policy_all(
         postprocessor=postprocessor,
         n_episodes=n_episodes,
         max_episodes_rendered=max_episodes_rendered,
+        video_frame_stride=video_frame_stride,
+        video_fps=video_fps,
         videos_dir=videos_dir,
         return_episode_data=return_episode_data,
         start_seed=start_seed,

@@ -135,6 +135,9 @@ class SkillVLAPytorch(PI05Pytorch):
         ckpt = torch.load(path, map_location="cpu", weights_only=False)
         cfg  = ckpt["cfg"]
         cfg_dict = dataclasses.asdict(cfg)
+        image_model_name = self.config.skill_decoder_image_model_name
+        if image_model_name:
+            cfg_dict["image_model_name"] = image_model_name
         keys = {"action_dim", "state_dim", "n_control", "spline_degree",
                 "hidden_dim", "fsq_levels", "num_layers", "dropout",
                 "max_length", "action_min", "action_max", "delta_min", "delta_max",
@@ -153,10 +156,11 @@ class SkillVLAPytorch(PI05Pytorch):
                         p.requires_grad_(True)
         self.vae_decoder    = vae
         log.info(
-            "Loaded FSQ decoder from %s (levels=%s, freeze=%s)",
+            "Loaded FSQ decoder from %s (levels=%s, freeze=%s, image_model=%s)",
             path,
             self.config.skill_fsq_levels,
             self.config.freeze_vae_decoder,
+            getattr(vae, "image_model_name", None),
         )
 
     def _token_to_z(self, tokens: Tensor) -> Tensor:

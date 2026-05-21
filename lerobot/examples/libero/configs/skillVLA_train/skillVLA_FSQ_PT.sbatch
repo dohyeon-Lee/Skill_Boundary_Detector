@@ -36,17 +36,17 @@ LR=$(python3 -c "print(2.5e-05 * ${NUM_GPUS})")
 set -euo pipefail
 mkdir -p logs
 
-# HOMEDIR=/scratch/mdorazi
-# PROJDIR=/Skill_Boundary_Detector
-
-HOMEDIR=/data2/dohyeon
-PROJDIR=/SBD
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+BOOTSTRAP_LEROBOT_DIR=$(cd "${SCRIPT_DIR}/../../../.." && pwd)
+BOOTSTRAP_PYTHON=${BOOTSTRAP_LEROBOT_DIR}/../.venv/bin/python
+if [ ! -x "${BOOTSTRAP_PYTHON}" ]; then
+    BOOTSTRAP_PYTHON=python3
+fi
+CONFIG_PY=${BOOTSTRAP_LEROBOT_DIR}/examples/libero/configs/data_generation/pipeline_config.py
+eval "$("${BOOTSTRAP_PYTHON}" "${CONFIG_PY}" --shell)"
 
 cd ${HOMEDIR}${PROJDIR}/lerobot
 source ${HOMEDIR}${PROJDIR}/.venv/bin/activate
-
-CONFIG_PY=examples/libero/configs/data_generation/pipeline_config.py
-eval "$(python "${CONFIG_PY}" --shell)"
 
 export WANDB_CACHE_DIR=${HOMEDIR}/.wandb_cache
 export WANDB_DATA_DIR=${HOMEDIR}/.wandb_data
@@ -139,6 +139,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes=${
     --policy.push_to_hub=false \
     --policy.block_lang_to_action=${BLOCK_LANG} \
     --policy.vae_decoder_path=${FSQ_CKPT} \
+    --policy.skill_decoder_image_model_name=${IMAGE_MODEL_PATH} \
     --policy.freeze_vae_decoder=${FREEZE_VAE_DECODER} \
     --policy.skill_latent_dim=${FSQ_DIM} \
     --policy.skill_fsq_levels=${FSQ_LEVELS_ARG} \
