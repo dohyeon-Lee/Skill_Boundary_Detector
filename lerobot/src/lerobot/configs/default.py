@@ -72,6 +72,12 @@ class EvalConfig:
     max_videos_per_task: int = 1
     video_frame_stride: int = 1
     video_fps: int | None = None
+    # SkillVLA FSQ skill-trace HTML controls.
+    skill_html: bool = True
+    skill_html_train_samples: int = 6
+    skill_html_skill_latents_path: str | None = None
+    skill_html_raw_dataset_dir: str | None = None
+    skill_html_image_key: str | None = None
 
     def __post_init__(self) -> None:
         if self.batch_size > self.n_episodes:

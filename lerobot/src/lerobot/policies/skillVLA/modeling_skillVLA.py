@@ -583,13 +583,13 @@ class SkillVLAPytorch(PI05Pytorch):
         )
 
     @torch.no_grad()
-    def skill_decoder_end_prob(
+    def skill_decoder_delta_end(
         self,
         z: Tensor | None,
         state: Tensor | None,
         image: Tensor | None,
         progress: Tensor,
-    ) -> Tensor | None:
+    ) -> tuple[Tensor, Tensor] | None:
         if self.vae_decoder is None or z is None or state is None:
             return None
         self.vae_decoder.eval()
@@ -604,14 +604,29 @@ class SkillVLAPytorch(PI05Pytorch):
         if image_tokens is None:
             return None
         patch_flags = self._zero_patch_flags(z.shape[0], state.shape[1], device=z.device, dtype=z.dtype)
-        _, end_logits = self.vae_decoder.decode(
+        delta, end_logits = self.vae_decoder.decode(
             z,
             state,
             image_tokens,
             patch_flags,
             progress.to(device=z.device, dtype=z.dtype).view(-1, 1),
         )
-        return torch.sigmoid(end_logits.squeeze(1))
+        if delta.ndim == 4:
+            delta = delta[:, :, 0, :]
+        return delta.squeeze(1), torch.sigmoid(end_logits.squeeze(1))
+
+    @torch.no_grad()
+    def skill_decoder_end_prob(
+        self,
+        z: Tensor | None,
+        state: Tensor | None,
+        image: Tensor | None,
+        progress: Tensor,
+    ) -> Tensor | None:
+        out = self.skill_decoder_delta_end(z, state, image, progress)
+        if out is None:
+            return None
+        return out[1]
 
     # ── Training forward ─────────────────────────────────────────────────────
 
@@ -1097,6 +1112,8 @@ class SkillVLAPolicy(PI05Policy):
                     "end_signal_skill_step": None,
                     "end_signal_prob": None,
                     "end_probs": [],
+                    "expert_actions": [],
+                    "decoder_actions": [],
                 }
             )
             self._active_skill_trace_indices.append(trace_index)
@@ -1127,6 +1144,42 @@ class SkillVLAPolicy(PI05Policy):
                 record["end_signal_timestep"] = int(self._episode_timestep)
                 record["end_signal_skill_step"] = int(self._skill_step)
                 record["end_signal_prob"] = float(prob)
+
+    def _record_decoder_delta(self, delta: Tensor) -> None:
+        deltas = delta.detach().float().cpu().view(delta.shape[0], -1).tolist()
+        for batch_index, values in enumerate(deltas):
+            if batch_index >= len(self._active_skill_trace_indices):
+                continue
+            trace_index = self._active_skill_trace_indices[batch_index]
+            if trace_index is None or trace_index >= len(self._skill_trace):
+                continue
+            self._skill_trace[trace_index].setdefault("decoder_actions", []).append(
+                {
+                    "episode_timestep": int(self._episode_timestep),
+                    "skill_step": int(self._skill_step),
+                    "delta": [float(v) for v in values],
+                }
+            )
+
+    def record_executed_action(self, action: Tensor) -> None:
+        actions = action.detach().float().cpu().view(action.shape[0], -1).tolist()
+        # select_action increments these counters before the env step; the action
+        # being recorded belongs to the previous policy timestep.
+        episode_timestep = max(0, int(self._episode_timestep) - 1)
+        skill_step = max(0, int(self._skill_step) - 1)
+        for batch_index, values in enumerate(actions):
+            if batch_index >= len(self._active_skill_trace_indices):
+                continue
+            trace_index = self._active_skill_trace_indices[batch_index]
+            if trace_index is None or trace_index >= len(self._skill_trace):
+                continue
+            self._skill_trace[trace_index].setdefault("expert_actions", []).append(
+                {
+                    "episode_timestep": episode_timestep,
+                    "skill_step": skill_step,
+                    "action": [float(v) for v in values],
+                }
+            )
 
     def get_skill_trace(self) -> list[dict]:
         self._update_active_skill_trace_length()
@@ -1211,13 +1264,15 @@ class SkillVLAPolicy(PI05Policy):
             dtype=torch.float32,
             device=self._current_z.device,
         )
-        end_prob = self.model.skill_decoder_end_prob(
+        decoder_out = self.model.skill_decoder_delta_end(
             self._current_z,
             state,
             self._decoder_image_from_batch(batch, images),
             progress,
         )
+        end_prob = None if decoder_out is None else decoder_out[1]
         if end_prob is not None:
+            self._record_decoder_delta(decoder_out[0])
             self._record_end_signal(end_prob)
         if end_prob is not None and bool((end_prob >= float(self.config.skill_decoder_end_threshold)).any().item()):
             self._trigger_new_skill = True

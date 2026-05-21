@@ -78,6 +78,7 @@ You can learn about the CLI options for this script in the `EvalPipelineConfig` 
 """
 
 import concurrent.futures as cf
+import html
 import json
 import logging
 import threading
@@ -213,6 +214,9 @@ def rollout(
         action_transition = {ACTION: action}
         action_transition = env_postprocessor(action_transition)
         action = action_transition[ACTION]
+        record_executed_action = getattr(policy, "record_executed_action", None)
+        if record_executed_action is not None:
+            record_executed_action(action)
 
         # Convert to CPU / numpy.
         action_numpy: np.ndarray = action.to("cpu").numpy()
@@ -280,6 +284,426 @@ def rollout(
     return ret
 
 
+def _skill_fsq_levels(policy: PreTrainedPolicy) -> list[int]:
+    config = getattr(getattr(policy, "model", None), "config", getattr(policy, "config", None))
+    levels = getattr(config, "skill_fsq_levels", None)
+    if levels is None:
+        n_tokens = int(getattr(config, "skill_predictor_num_embeddings", 0) or 0)
+        side = round(n_tokens ** (1.0 / 3.0))
+        levels = [side, side, side] if side > 0 and side ** 3 == n_tokens else [5, 5, 5]
+    if isinstance(levels, str):
+        cleaned = levels.replace("[", " ").replace("]", " ").replace(",", " ")
+        levels = [int(v) for v in cleaned.split()]
+    return [int(v) for v in levels]
+
+
+def _token_to_fsq_coord(token: int, levels: list[int]) -> list[int]:
+    token = int(max(0, token))
+    coords = []
+    base = 1
+    for level in levels:
+        coords.append((token // base) % int(level))
+        base *= int(level)
+    return coords
+
+
+def _save_frame_png(frame: np.ndarray, path: Path, size: int = 144) -> str:
+    from PIL import Image
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    arr = np.asarray(frame, dtype=np.uint8)[..., :3]
+    Image.fromarray(arr).resize((size, size), Image.BILINEAR).save(path)
+    return path.name
+
+
+def _ordered_trace_values(items: list[dict], value_key: str, dim: int = 7) -> np.ndarray:
+    if not items:
+        return np.zeros((0, dim), dtype=np.float32)
+    max_step = max(int(item.get("skill_step", 0)) for item in items)
+    arr = np.full((max_step + 1, dim), np.nan, dtype=np.float32)
+    for item in items:
+        step = int(item.get("skill_step", 0))
+        values = np.asarray(item.get(value_key, []), dtype=np.float32).reshape(-1)
+        if values.size == 0:
+            continue
+        arr[step, : min(dim, values.size)] = values[:dim]
+    return arr
+
+
+def _plot_skill_action_compare(path: Path, expert_items: list[dict], decoder_items: list[dict]) -> str:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    labels = ["dx", "dy", "dz", "droll", "dpitch", "dyaw", "grip"]
+    expert = _ordered_trace_values(expert_items, "action", dim=7)
+    decoder = _ordered_trace_values(decoder_items, "delta", dim=7)
+    length = max(len(expert), len(decoder), 1)
+    x = np.arange(length)
+
+    fig, axes = plt.subplots(7, 1, figsize=(3.3, 7.4), sharex=True)
+    for i, ax in enumerate(np.atleast_1d(axes)):
+        if len(expert):
+            ax.plot(np.arange(len(expert)), expert[:, i], color="#1f77b4", linewidth=1.2, label="expert")
+        if len(decoder):
+            ax.plot(np.arange(len(decoder)), decoder[:, i], color="#d62728", linewidth=1.1, linestyle="--", label="decoder")
+        ax.set_ylabel(labels[i], fontsize=7)
+        ax.tick_params(axis="both", labelsize=6)
+        ax.grid(True, alpha=0.25)
+        ax.set_xlim(0, max(0, len(x) - 1))
+        if i == 0:
+            ax.legend(loc="upper right", fontsize=6)
+    axes[-1].set_xlabel("skill step", fontsize=7)
+    fig.tight_layout(pad=0.35)
+    fig.savefig(path, dpi=140)
+    plt.close(fig)
+    return path.name
+
+
+def _load_raw_dataset_meta(dataset_dir: Path):
+    import pandas as pd
+
+    files = sorted((dataset_dir / "meta" / "episodes").rglob("file-*.parquet"))
+    if not files:
+        raise FileNotFoundError(f"No episode parquet files under {dataset_dir / 'meta' / 'episodes'}")
+    return pd.concat([pd.read_parquet(path) for path in files], ignore_index=True)
+
+
+def _raw_video_path(dataset_dir: Path, episodes_meta, episode_id: int, image_key: str) -> Path:
+    row = episodes_meta[episodes_meta["episode_index"] == int(episode_id)].iloc[0]
+    chunk_idx = int(row[f"videos/{image_key}/chunk_index"])
+    file_idx = int(row[f"videos/{image_key}/file_index"])
+    return dataset_dir / "videos" / image_key / f"chunk-{chunk_idx:03d}" / f"file-{file_idx:03d}.mp4"
+
+
+def _read_video_frame(path: Path, frame_index: int) -> np.ndarray:
+    try:
+        import imageio.v2 as imageio
+
+        reader = imageio.get_reader(str(path))
+        try:
+            return np.asarray(reader.get_data(max(0, int(frame_index))))[..., :3].astype(np.uint8)
+        finally:
+            reader.close()
+    except Exception:
+        from torchvision.io import read_video
+
+        frames, _, _ = read_video(str(path), output_format="THWC", pts_unit="sec")
+        if frames.numel() == 0:
+            raise ValueError(f"No frames decoded from {path}")
+        idx = max(0, min(int(frame_index), int(frames.shape[0]) - 1))
+        return frames[idx].numpy().astype(np.uint8)[..., :3]
+
+
+def _save_training_skill_examples(
+    *,
+    tokens: set[int],
+    assets_dir: Path,
+    skill_latents_path: str | None,
+    raw_dataset_dir: str | None,
+    image_key: str | None,
+    n_samples: int,
+    image_size: int = 112,
+) -> dict[int, list[dict[str, str]]]:
+    if not tokens or not skill_latents_path or not raw_dataset_dir or not image_key:
+        return {}
+    latents_path = Path(skill_latents_path)
+    dataset_dir = Path(raw_dataset_dir)
+    if not latents_path.exists() or not dataset_dir.exists():
+        logging.warning(
+            "Skipping FSQ training examples: missing skill_latents_path=%s or raw_dataset_dir=%s",
+            latents_path,
+            dataset_dir,
+        )
+        return {}
+
+    data = np.load(str(latents_path), mmap_mode="r")
+    required = {"tokens", "episode_id", "frame_start", "frame_end"}
+    if not required.issubset(set(data.files)):
+        logging.warning("Skipping FSQ examples because %s does not contain %s", latents_path, sorted(required))
+        return {}
+
+    meta = _load_raw_dataset_meta(dataset_dir)
+    token_arr = np.asarray(data["tokens"])
+    out: dict[int, list[dict[str, str]]] = {}
+    for token in sorted(tokens):
+        rows = np.flatnonzero(token_arr == int(token))[: max(0, int(n_samples))]
+        examples = []
+        for local_i, row in enumerate(rows):
+            episode_id = int(np.asarray(data["episode_id"])[row])
+            frame_start = int(np.asarray(data["frame_start"])[row])
+            frame_end = max(frame_start, int(np.asarray(data["frame_end"])[row]) - 1)
+            try:
+                video = _raw_video_path(dataset_dir, meta, episode_id, image_key)
+                start_img = _read_video_frame(video, frame_start)
+                end_img = _read_video_frame(video, frame_end)
+            except Exception as exc:
+                logging.warning("Could not load FSQ example token=%s row=%s: %s", token, row, exc)
+                continue
+            start_name = _save_frame_png(start_img, assets_dir / f"token{token:04d}_ex{local_i:02d}_start.png", image_size)
+            end_name = _save_frame_png(end_img, assets_dir / f"token{token:04d}_ex{local_i:02d}_end.png", image_size)
+            examples.append(
+                {
+                    "start": start_name,
+                    "end": end_name,
+                    "episode_id": episode_id,
+                    "frame_start": frame_start,
+                    "frame_end": frame_end,
+                }
+            )
+        out[int(token)] = examples
+    return out
+
+
+def _write_task_skill_html(
+    *,
+    task_group: str,
+    task_id: int,
+    records: list[dict],
+    policy: PreTrainedPolicy,
+    output_dir: Path,
+    train_samples: int,
+    skill_latents_path: str | None,
+    raw_dataset_dir: str | None,
+    image_key: str | None,
+) -> str | None:
+    if not records:
+        return None
+
+    task_dir = output_dir / f"{task_group}_task{task_id:02d}"
+    assets_dir = task_dir / "assets"
+    task_dir.mkdir(parents=True, exist_ok=True)
+    assets_dir.mkdir(parents=True, exist_ok=True)
+
+    levels = _skill_fsq_levels(policy)
+    num_tokens = int(np.prod(levels))
+    used_tokens: set[int] = set()
+    episode_payloads = []
+
+    for episode_record in records:
+        episode_idx = int(episode_record.get("episode_index", 0))
+        frames = np.asarray(episode_record.get("frames", []), dtype=np.uint8)
+        trace = episode_record.get("trace", [])
+        skill_payloads = []
+        for skill in trace:
+            token = int(skill.get("codebook_token", -1))
+            if token < 0 or token >= num_tokens:
+                continue
+            used_tokens.add(token)
+            skill_idx = int(skill.get("skill_index", len(skill_payloads)))
+            start_t = max(0, int(skill.get("episode_timestep", 0)))
+            length = max(
+                int(skill.get("length", 0) or 0),
+                len(skill.get("expert_actions", [])),
+                len(skill.get("decoder_actions", [])),
+                1,
+            )
+            end_t = max(start_t, start_t + length)
+            if len(frames) > 0:
+                start_frame = frames[min(start_t, len(frames) - 1)]
+                end_frame = frames[min(end_t, len(frames) - 1)]
+            else:
+                start_frame = np.zeros((144, 144, 3), dtype=np.uint8)
+                end_frame = start_frame
+            stem = f"ep{episode_idx:03d}_skill{skill_idx:03d}_token{token:04d}"
+            start_name = _save_frame_png(start_frame, assets_dir / f"{stem}_start.png")
+            end_name = _save_frame_png(end_frame, assets_dir / f"{stem}_end.png")
+            graph_name = _plot_skill_action_compare(
+                assets_dir / f"{stem}_actions.png",
+                skill.get("expert_actions", []),
+                skill.get("decoder_actions", []),
+            )
+            skill_payloads.append(
+                {
+                    "skill_index": skill_idx,
+                    "token": token,
+                    "coord": _token_to_fsq_coord(token, levels),
+                    "start": start_name,
+                    "end": end_name,
+                    "graph": graph_name,
+                    "start_t": start_t,
+                    "end_t": end_t,
+                    "source": str(skill.get("skill_source", "pred")),
+                }
+            )
+        episode_payloads.append({"episode_index": episode_idx, "skills": skill_payloads})
+
+    examples_by_token = _save_training_skill_examples(
+        tokens=used_tokens,
+        assets_dir=assets_dir,
+        skill_latents_path=skill_latents_path,
+        raw_dataset_dir=raw_dataset_dir,
+        image_key=image_key,
+        n_samples=train_samples,
+    )
+
+    payload = {
+        "task_group": task_group,
+        "task_id": int(task_id),
+        "levels": levels,
+        "episodes": episode_payloads,
+        "examples": examples_by_token,
+    }
+    data_json = json.dumps(payload)
+    html_path = task_dir / "skill_trace.html"
+    html_path.write_text(
+        f"""<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>SkillVLA FSQ Trace task {task_id}</title>
+  <style>
+    body {{ margin: 0; font-family: Arial, sans-serif; background: #f5f6f8; color: #17202a; }}
+    header {{ padding: 14px 18px; background: #ffffff; border-bottom: 1px solid #d8dee8; }}
+    h1 {{ font-size: 18px; margin: 0; }}
+    .episode {{ margin: 16px; padding: 14px; background: white; border: 1px solid #d8dee8; border-radius: 8px; }}
+    .episode-title {{ font-weight: 700; margin-bottom: 10px; }}
+    .row {{ display: grid; grid-template-columns: 430px 1fr; gap: 16px; align-items: start; }}
+    .cube-wrap {{ position: sticky; top: 12px; border: 1px solid #cfd7e5; border-radius: 8px; padding: 10px; background: #fbfcff; }}
+    svg {{ width: 100%; height: 420px; display: block; }}
+    .skills {{ overflow-x: auto; display: flex; gap: 18px; padding-bottom: 10px; }}
+    .skill-card {{ flex: 0 0 330px; border: 1px solid #ccd5e3; border-radius: 8px; padding: 8px; cursor: pointer; background: #ffffff; }}
+    .skill-card.active {{ border-color: #d62728; box-shadow: 0 0 0 2px rgba(214,39,40,0.18); }}
+    .skill-title {{ font-weight: 700; font-size: 13px; margin-bottom: 7px; }}
+    .pair {{ display: flex; gap: 8px; }}
+    .pair img {{ width: 144px; height: 144px; object-fit: cover; border: 1px solid #ccd5e3; }}
+    .graph {{ margin-top: 8px; width: 100%; border: 1px solid #ccd5e3; }}
+    .examples {{ margin-top: 14px; padding: 12px; background: #eef1f5; border: 1px solid #ccd5e3; border-radius: 8px; min-height: 138px; }}
+    .examples h3 {{ margin: 0 0 10px; font-size: 14px; }}
+    .example-strip {{ display: flex; gap: 18px; overflow-x: auto; }}
+    .example {{ display: flex; gap: 6px; align-items: start; }}
+    .example img {{ width: 112px; height: 112px; object-fit: cover; border: 1px solid #b8c2d1; }}
+    .muted {{ color: #687386; font-size: 12px; }}
+  </style>
+</head>
+<body>
+<header><h1>SkillVLA FSQ Trace: {html.escape(task_group)} / task {int(task_id)}</h1></header>
+<div id="app"></div>
+<script>
+const DATA = {data_json};
+const ASSET = "assets/";
+
+function coordToToken(coord, levels) {{
+  let token = 0, base = 1;
+  for (let i = 0; i < coord.length; i++) {{ token += coord[i] * base; base *= levels[i]; }}
+  return token;
+}}
+
+function project(c, levels) {{
+  const scale = 54;
+  const x = c[0] - (levels[0] - 1) / 2;
+  const y = c[1] - (levels[1] - 1) / 2;
+  const z = c[2] || 0;
+  return [205 + (x - y) * scale * 0.72, 276 + (x + y) * scale * 0.34 - z * scale * 0.82];
+}}
+
+function renderCube(svg, selectedToken) {{
+  const levels = DATA.levels;
+  const maxToken = levels.reduce((a,b)=>a*b, 1);
+  svg.innerHTML = "";
+  const NS = "http://www.w3.org/2000/svg";
+  const make = (name, attrs) => {{
+    const el = document.createElementNS(NS, name);
+    Object.entries(attrs).forEach(([k,v]) => el.setAttribute(k, v));
+    svg.appendChild(el);
+    return el;
+  }};
+  for (let t = 0; t < maxToken; t++) {{
+    const c = [];
+    let base = 1;
+    for (const L of levels) {{ c.push(Math.floor(t / base) % L); base *= L; }}
+    for (let d = 0; d < Math.min(3, levels.length); d++) {{
+      const n = c.slice(); n[d] += 1;
+      if (n[d] < levels[d]) {{
+        const [x1,y1] = project(c, levels), [x2,y2] = project(n, levels);
+        make("line", {{x1, y1, x2, y2, stroke: "#8fa1b8", "stroke-width": 1.3, opacity: 0.72}});
+      }}
+    }}
+  }}
+  for (let t = 0; t < maxToken; t++) {{
+    const c = [];
+    let base = 1;
+    for (const L of levels) {{ c.push(Math.floor(t / base) % L); base *= L; }}
+    const [x,y] = project(c, levels);
+    const used = DATA.episodes.some(ep => ep.skills.some(s => s.token === t));
+    make("circle", {{
+      cx: x, cy: y, r: t === selectedToken ? 8 : (used ? 5.5 : 3.8),
+      fill: t === selectedToken ? "#d62728" : (used ? "#2f6f9f" : "#d7dde8"),
+      stroke: "#26384d", "stroke-width": t === selectedToken ? 1.7 : 0.6,
+      "data-token": t
+    }}).addEventListener("click", () => selectToken(t));
+  }}
+}}
+
+function renderExamples(root, token) {{
+  const examples = DATA.examples[String(token)] || DATA.examples[token] || [];
+  root.innerHTML = `<h3>FSQ training samples for token #${{token}}</h3>`;
+  if (!examples.length) {{
+    root.innerHTML += `<div class="muted">No saved training examples for this token.</div>`;
+    return;
+  }}
+  const strip = document.createElement("div");
+  strip.className = "example-strip";
+  for (const ex of examples) {{
+    const box = document.createElement("div");
+    box.className = "example";
+    box.innerHTML = `<div><img src="${{ASSET + ex.start}}"><div class="muted">ep${{ex.episode_id}} f${{ex.frame_start}}</div></div>` +
+                    `<div><img src="${{ASSET + ex.end}}"><div class="muted">f${{ex.frame_end}}</div></div>`;
+    strip.appendChild(box);
+  }}
+  root.appendChild(strip);
+}}
+
+function selectToken(token) {{
+  document.querySelectorAll(".skill-card").forEach(el => el.classList.toggle("active", Number(el.dataset.token) === token));
+  document.querySelectorAll(".cube").forEach(svg => renderCube(svg, token));
+  document.querySelectorAll(".examples").forEach(root => renderExamples(root, token));
+}}
+
+const app = document.getElementById("app");
+for (const ep of DATA.episodes) {{
+  const section = document.createElement("section");
+  section.className = "episode";
+  section.innerHTML = `<div class="episode-title">Episode ${{ep.episode_index}}</div>`;
+  const row = document.createElement("div");
+  row.className = "row";
+  const cubeWrap = document.createElement("div");
+  cubeWrap.className = "cube-wrap";
+  cubeWrap.innerHTML = `<svg class="cube" viewBox="0 0 430 420"></svg>`;
+  const skills = document.createElement("div");
+  skills.className = "skills";
+  for (const s of ep.skills) {{
+    const card = document.createElement("div");
+    card.className = "skill-card";
+    card.dataset.token = s.token;
+    card.innerHTML = `<div class="skill-title">skill ${{s.skill_index + 1}} | token #${{s.token}} | [${{s.coord.join(", ")}}]</div>` +
+      `<div class="muted">${{s.source}} · t=${{s.start_t}}→${{s.end_t}}</div>` +
+      `<div class="pair"><img src="${{ASSET + s.start}}"><img src="${{ASSET + s.end}}"></div>` +
+      `<img class="graph" src="${{ASSET + s.graph}}">`;
+    card.addEventListener("click", () => selectToken(s.token));
+    skills.appendChild(card);
+  }}
+  row.appendChild(cubeWrap);
+  row.appendChild(skills);
+  const examples = document.createElement("div");
+  examples.className = "examples";
+  section.appendChild(row);
+  section.appendChild(examples);
+  app.appendChild(section);
+  renderCube(cubeWrap.querySelector("svg"), ep.skills[0]?.token ?? -1);
+}}
+selectToken(DATA.episodes[0]?.skills[0]?.token ?? 0);
+</script>
+</body>
+</html>
+""",
+        encoding="utf-8",
+    )
+    return str(html_path)
+
+
 def eval_policy(
     env: gym.vector.VectorEnv,
     policy: PreTrainedPolicy,
@@ -296,6 +720,7 @@ def eval_policy(
     start_seed: int | None = None,
     forced_skill_token_sequences: list[list[int]] | None = None,
     reference_skill_token_sequences: list[list[int]] | None = None,
+    collect_skill_html: bool = False,
 ) -> dict:
     """
     Args:
@@ -341,6 +766,7 @@ def eval_policy(
     skill_plot_paths = []
     skill_timeline_paths = []
     skill_token_records: list[dict] = []
+    skill_html_records: list[dict] = []
     threads = []  # for video saving threads
     n_episodes_rendered = 0  # for saving the correct number of videos
     render_frame_index = 0
@@ -350,13 +776,24 @@ def eval_policy(
     def render_frame(env: gym.vector.VectorEnv):
         # noqa: B023
         nonlocal render_frame_index
+        all_frames = None
+        if collect_skill_html:
+            if isinstance(env, gym.vector.SyncVectorEnv):
+                all_frames = np.stack([sub_env.render() for sub_env in env.envs])
+            elif isinstance(env, gym.vector.AsyncVectorEnv):
+                all_frames = np.stack(env.call("render"))
+            ep_html_frames.append(all_frames)  # noqa: B023
+
         if n_episodes_rendered >= max_episodes_rendered:
+            render_frame_index += 1
             return
         if render_frame_index % video_frame_stride != 0:
             render_frame_index += 1
             return
         n_to_render_now = min(max_episodes_rendered - n_episodes_rendered, env.num_envs)
-        if isinstance(env, gym.vector.SyncVectorEnv):
+        if all_frames is not None:
+            ep_frames.append(all_frames[:n_to_render_now])  # noqa: B023
+        elif isinstance(env, gym.vector.SyncVectorEnv):
             ep_frames.append(np.stack([env.envs[i].render() for i in range(n_to_render_now)]))  # noqa: B023
         elif isinstance(env, gym.vector.AsyncVectorEnv):
             # Here we must render all frames and discard any we don't need.
@@ -376,6 +813,9 @@ def eval_policy(
         # step.
         if max_episodes_rendered > 0:
             ep_frames: list[np.ndarray] = []
+        if collect_skill_html:
+            ep_html_frames: list[np.ndarray] = []
+        render_frame_index = 0
 
         if start_seed is None:
             seeds = None
@@ -406,7 +846,7 @@ def eval_policy(
             postprocessor=postprocessor,
             seeds=list(seeds) if seeds else None,
             return_observations=return_episode_data,
-            render_callback=render_frame if max_episodes_rendered > 0 else None,
+            render_callback=render_frame if (max_episodes_rendered > 0 or collect_skill_html) else None,
         )
 
         # Figure out where in each rollout sequence the first done condition was encountered (results after
@@ -471,6 +911,28 @@ def eval_policy(
                 threads.append(thread)
                 n_episodes_rendered += 1
 
+        if collect_skill_html and len(ep_html_frames) > 0:
+            batch_html_frames = np.stack(ep_html_frames, axis=1)  # (b, t, h, w, c)
+            trace = []
+            get_skill_trace = getattr(policy, "get_skill_trace", None)
+            if get_skill_trace is not None:
+                trace = get_skill_trace()
+            by_batch: dict[int, list[dict]] = defaultdict(list)
+            for record in trace:
+                by_batch[int(record.get("batch_index", 0))].append(record)
+            for local_i, done_index in enumerate(done_indices.flatten().tolist()):
+                episode_index = batch_ix * env.num_envs + local_i
+                if episode_index >= n_episodes or local_i >= batch_html_frames.shape[0]:
+                    continue
+                max_frame = min(int(done_index) + 2, batch_html_frames.shape[1])
+                skill_html_records.append(
+                    {
+                        "episode_index": episode_index,
+                        "frames": batch_html_frames[local_i, :max_frame].copy(),
+                        "trace": by_batch.get(local_i, []),
+                    }
+                )
+
         progbar.set_postfix(
             {"running_success_rate": f"{np.mean(all_successes[:n_episodes]).item() * 100:.1f}%"}
         )
@@ -516,6 +978,7 @@ def eval_policy(
     info["skill_plot_paths"] = skill_plot_paths
     info["skill_timeline_paths"] = skill_timeline_paths
     info["skill_token_records"] = skill_token_records
+    info["skill_html_records"] = skill_html_records
 
     return info
 
@@ -1114,6 +1577,11 @@ def eval_main(cfg: EvalPipelineConfig):
             max_parallel_tasks=cfg.env.max_parallel_tasks,
             forced_skill_token_sequences_by_task=forced_skill_token_sequences_by_task,
             reference_skill_token_sequences_by_task=reference_skill_token_sequences_by_task,
+            skill_html_dir=(Path(cfg.output_dir) / "skill_html") if cfg.eval.skill_html else None,
+            skill_html_train_samples=cfg.eval.skill_html_train_samples,
+            skill_html_skill_latents_path=cfg.eval.skill_html_skill_latents_path,
+            skill_html_raw_dataset_dir=cfg.eval.skill_html_raw_dataset_dir,
+            skill_html_image_key=cfg.eval.skill_html_image_key,
         )
         print("Overall Aggregated Metrics:")
         print(info["overall"])
@@ -1228,6 +1696,8 @@ class TaskMetrics(TypedDict):
     skill_plot_paths: list[str]
     skill_timeline_paths: list[str]
     skill_token_records: list[dict]
+    skill_html_paths: list[str]
+    skill_html_records: list[dict]
 
 
 ACC_KEYS = (
@@ -1238,6 +1708,7 @@ ACC_KEYS = (
     "skill_plot_paths",
     "skill_timeline_paths",
     "skill_token_records",
+    "skill_html_paths",
 )
 
 
@@ -1258,6 +1729,7 @@ def eval_one(
     start_seed: int | None,
     forced_skill_token_sequences: list[list[int]] | None = None,
     reference_skill_token_sequences: list[list[int]] | None = None,
+    collect_skill_html: bool = False,
 ) -> TaskMetrics:
     """Evaluates one task_id of one suite using the provided vec env."""
 
@@ -1279,6 +1751,7 @@ def eval_one(
         start_seed=start_seed,
         forced_skill_token_sequences=forced_skill_token_sequences,
         reference_skill_token_sequences=reference_skill_token_sequences,
+        collect_skill_html=collect_skill_html,
     )
 
     per_episode = task_result["per_episode"]
@@ -1290,6 +1763,8 @@ def eval_one(
         skill_plot_paths=task_result.get("skill_plot_paths", []),
         skill_timeline_paths=task_result.get("skill_timeline_paths", []),
         skill_token_records=task_result.get("skill_token_records", []),
+        skill_html_paths=[],
+        skill_html_records=task_result.get("skill_html_records", []),
     )
 
 
@@ -1312,6 +1787,11 @@ def run_one(
     start_seed: int | None,
     forced_skill_token_sequences_by_task: dict[tuple[str, int], list[list[int]]] | None = None,
     reference_skill_token_sequences_by_task: dict[tuple[str, int], list[list[int]]] | None = None,
+    skill_html_dir: Path | None = None,
+    skill_html_train_samples: int = 6,
+    skill_html_skill_latents_path: str | None = None,
+    skill_html_raw_dataset_dir: str | None = None,
+    skill_html_image_key: str | None = None,
 ):
     """
     Run eval_one for a single (task_group, task_id, env).
@@ -1348,12 +1828,28 @@ def run_one(
             if reference_skill_token_sequences_by_task is None
             else reference_skill_token_sequences_by_task.get((task_group, task_id))
         ),
+        collect_skill_html=skill_html_dir is not None,
     )
+    if skill_html_dir is not None:
+        html_path = _write_task_skill_html(
+            task_group=task_group,
+            task_id=task_id,
+            records=metrics.get("skill_html_records", []),
+            policy=policy,
+            output_dir=skill_html_dir,
+            train_samples=skill_html_train_samples,
+            skill_latents_path=skill_html_skill_latents_path,
+            raw_dataset_dir=skill_html_raw_dataset_dir,
+            image_key=skill_html_image_key,
+        )
+        metrics["skill_html_paths"] = [] if html_path is None else [html_path]
+    metrics.pop("skill_html_records", None)
     # ensure we always provide video_paths key to simplify accumulation
     if max_episodes_rendered > 0:
         metrics.setdefault("video_paths", [])
     metrics.setdefault("skill_plot_paths", [])
     metrics.setdefault("skill_timeline_paths", [])
+    metrics.setdefault("skill_html_paths", [])
     return task_group, task_id, metrics
 
 
@@ -1375,6 +1871,11 @@ def eval_policy_all(
     max_parallel_tasks: int = 1,
     forced_skill_token_sequences_by_task: dict[tuple[str, int], list[list[int]]] | None = None,
     reference_skill_token_sequences_by_task: dict[tuple[str, int], list[list[int]]] | None = None,
+    skill_html_dir: Path | None = None,
+    skill_html_train_samples: int = 6,
+    skill_html_skill_latents_path: str | None = None,
+    skill_html_raw_dataset_dir: str | None = None,
+    skill_html_image_key: str | None = None,
 ) -> dict:
     """
     Evaluate a nested `envs` dict: {task_group: {task_id: vec_env}}.
@@ -1428,6 +1929,10 @@ def eval_policy_all(
         if skill_token_records:
             group_acc[group]["skill_token_records"].extend(skill_token_records)
             overall["skill_token_records"].extend(skill_token_records)
+        skill_html_paths = metrics.get("skill_html_paths", [])
+        if skill_html_paths:
+            group_acc[group]["skill_html_paths"].extend(skill_html_paths)
+            overall["skill_html_paths"].extend(skill_html_paths)
 
     # Choose runner (sequential vs threaded)
     task_runner = partial(
@@ -1446,6 +1951,11 @@ def eval_policy_all(
         start_seed=start_seed,
         forced_skill_token_sequences_by_task=forced_skill_token_sequences_by_task,
         reference_skill_token_sequences_by_task=reference_skill_token_sequences_by_task,
+        skill_html_dir=skill_html_dir,
+        skill_html_train_samples=skill_html_train_samples,
+        skill_html_skill_latents_path=skill_html_skill_latents_path,
+        skill_html_raw_dataset_dir=skill_html_raw_dataset_dir,
+        skill_html_image_key=skill_html_image_key,
     )
 
     if max_parallel_tasks <= 1:
@@ -1486,6 +1996,7 @@ def eval_policy_all(
             "skill_plot_paths": list(acc["skill_plot_paths"]),
             "skill_timeline_paths": list(acc["skill_timeline_paths"]),
             "skill_token_records": list(acc["skill_token_records"]),
+            "skill_html_paths": list(acc["skill_html_paths"]),
         }
 
     # overall aggregates
@@ -1500,6 +2011,7 @@ def eval_policy_all(
         "skill_plot_paths": list(overall["skill_plot_paths"]),
         "skill_timeline_paths": list(overall["skill_timeline_paths"]),
         "skill_token_records": list(overall["skill_token_records"]),
+        "skill_html_paths": list(overall["skill_html_paths"]),
     }
 
     return {

@@ -67,6 +67,8 @@ MAX_PARALLEL_TASKS=${MAX_PARALLEL_TASKS:-1}
 MAX_VIDEOS_PER_TASK=${MAX_VIDEOS_PER_TASK:-1}
 VIDEO_FRAME_STRIDE=${VIDEO_FRAME_STRIDE:-2}
 VIDEO_FPS=${VIDEO_FPS:-10}
+SKILL_HTML=${SKILL_HTML:-true}
+SKILL_HTML_TRAIN_SAMPLES=${SKILL_HTML_TRAIN_SAMPLES:-6}
 
 # ── SkillVLA checkpoint ──────────────────────────────────────────────────────
 # If MODEL is unset, this evaluates the PT run implied by pipeline_config.yaml.
@@ -103,6 +105,7 @@ echo "  target     : ${TARGET_TASK}"
 echo "  task_ids   : ${TASK_IDS}"
 echo "  episodes   : ${N_EPISODES} per task"
 echo "  videos     : ${MAX_VIDEOS_PER_TASK} per task, stride=${VIDEO_FRAME_STRIDE}, fps=${VIDEO_FPS}"
+echo "  skill html : ${SKILL_HTML}, train_samples=${SKILL_HTML_TRAIN_SAMPLES}"
 echo "  policy     : ${POLICY_PATH}"
 echo "  fsq        : ${FSQ_CKPT}"
 
@@ -118,6 +121,11 @@ PYTHONPATH=${HOMEDIR}${PROJDIR}/lerobot/src \
   --eval.max_videos_per_task=${MAX_VIDEOS_PER_TASK} \
   --eval.video_frame_stride=${VIDEO_FRAME_STRIDE} \
   --eval.video_fps=${VIDEO_FPS} \
+  --eval.skill_html=${SKILL_HTML} \
+  --eval.skill_html_train_samples=${SKILL_HTML_TRAIN_SAMPLES} \
+  --eval.skill_html_skill_latents_path=${SKILL_LATENTS_PATH} \
+  --eval.skill_html_raw_dataset_dir=${RAW_DATASET_DIR} \
+  --eval.skill_html_image_key=${IMAGE_KEY} \
   --policy.n_action_steps=${N_ACTION_STEPS} \
   --policy.device=cuda \
   --policy.compile_model=false \
