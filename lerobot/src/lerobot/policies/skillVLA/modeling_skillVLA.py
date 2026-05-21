@@ -723,13 +723,16 @@ class SkillVLAPytorch(PI05Pytorch):
             skill_targets["shifted_decoder_target"].to(actions.device),
             skill_targets["decoder_label_target"].to(actions.device),
         )
-        skill_decoder_loss = self._skill_decoder_end_loss(
-            sampled_tokens,
-            skill_decoder_state,
-            skill_decoder_image,
-            decoder_progress,
-            decoder_target,
-        )
+        if self.config.freeze_vae_decoder:
+            skill_decoder_loss = torch.tensor(0.0, device=actions.device)
+        else:
+            skill_decoder_loss = self._skill_decoder_end_loss(
+                sampled_tokens,
+                skill_decoder_state,
+                skill_decoder_image,
+                decoder_progress,
+                decoder_target,
+            )
 
         if noise is None:
             noise = self.sample_noise(actions.shape, actions.device)

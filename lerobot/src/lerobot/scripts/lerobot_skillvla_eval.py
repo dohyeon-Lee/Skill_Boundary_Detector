@@ -405,17 +405,6 @@ def eval_policy(
         n_steps = rollout_data["done"].shape[1]
         # Note: this relies on a property of argmax: that it returns the first occurrence as a tiebreaker.
         done_indices = torch.argmax(rollout_data["done"].to(int), dim=1)
-        if videos_dir is not None:
-            new_skill_plot_paths, new_skill_timeline_paths, new_token_records = _save_skill_trace_plots(
-                policy=policy,
-                output_dir=videos_dir,
-                episode_index=batch_ix * env.num_envs,
-                episode_steps=int(done_indices.max().item()) + 1,
-            )
-            skill_plot_paths.extend(new_skill_plot_paths)
-            skill_timeline_paths.extend(new_skill_timeline_paths)
-            skill_token_records.extend(new_token_records)
-
         # Make a mask with shape (batch, n_steps) to mask out rollout data after the first done
         # (batch-element-wise). Note the `done_indices + 1` to make sure to keep the data from the done step.
         mask = (torch.arange(n_steps) <= einops.repeat(done_indices + 1, "b -> b s", s=n_steps)).int()
@@ -567,6 +556,30 @@ def _compile_episode_data(
     return data_dict
 
 
+def _skill_token_table(policy: PreTrainedPolicy) -> torch.Tensor | None:
+    """Return the skill-token embedding table used for similarity metrics.
+
+    Older VQ-AE checkpoints exposed a learned codebook as `_vqae_codebook`.
+    FSQ checkpoints do not have a learned codebook, so we reconstruct the
+    table by mapping every scalar FSQ token id through SkillVLA's `_token_to_z`.
+    """
+
+    model = getattr(policy, "model", None)
+    codebook = getattr(model, "_vqae_codebook", None)
+    if codebook is not None and codebook.numel() > 0:
+        return codebook.detach().float().cpu()
+
+    if model is None or not hasattr(model, "_token_to_z"):
+        return None
+    config = getattr(model, "config", None)
+    n_tokens = int(getattr(config, "skill_predictor_num_embeddings", 0))
+    if n_tokens <= 0:
+        return None
+    device = next(model.parameters()).device
+    tokens = torch.arange(n_tokens, device=device, dtype=torch.long)
+    return model._token_to_z(tokens).detach().float().cpu()
+
+
 def _save_skill_trace_plots(
     policy: PreTrainedPolicy, output_dir: Path, episode_index: int, episode_steps: int | None = None
 ) -> tuple[list[str], list[str], list[dict]]:
@@ -614,15 +627,14 @@ def _save_skill_trace_plots(
         }
         if pred_token is None or label_token is None:
             return default
-        model = getattr(policy, "model", None)
-        codebook = getattr(model, "_vqae_codebook", None)
+        codebook = _skill_token_table(policy)
         if codebook is None or codebook.numel() == 0:
             return default
         pred = int(pred_token)
         label = int(label_token)
         if pred < 0 or label < 0 or pred >= codebook.shape[0] or label >= codebook.shape[0]:
             return default
-        cb = codebook.detach().float().cpu()
+        cb = codebook
         pred_vec = cb[pred]
         label_vec = cb[label]
         dists = torch.linalg.vector_norm(cb - label_vec[None, :], dim=-1)
@@ -916,7 +928,7 @@ def _load_label_skill_token_sequences(
     n_episodes: int | None = None,
     task_ids: set[int] | None = None,
 ) -> dict[int, list[list[dict]]]:
-    """Load real VQ skill-token records grouped by LIBERO task_index."""
+    """Load real FSQ skill-token records grouped by LIBERO task_index."""
     try:
         import pandas as pd
     except Exception as exc:
@@ -1134,79 +1146,37 @@ def eval_main(cfg: EvalPipelineConfig):
             except Exception:
                 pass
 
-            # summary/ : overall & per-group scalar metrics
+            # WandB stays intentionally small: success rates and rollout videos only.
             summary_log: dict = {}
             overall = info["overall"]
-            summary_log["summary/pc_success"] = overall["pc_success"]
             summary_log["summary/success_rate"] = overall["pc_success"] / 100.0
-            summary_log["summary/success_count"] = int(
-                round((overall["pc_success"] / 100.0) * overall["n_episodes"])
-            )
-            summary_log["summary/n_episodes"] = overall["n_episodes"]
-            summary_log["summary/avg_sum_reward"] = overall["avg_sum_reward"]
-            summary_log["summary/avg_max_reward"] = overall["avg_max_reward"]
 
             for group_name, group_info in info.get("per_group", {}).items():
-                summary_log[f"summary/{group_name}/pc_success"] = group_info["pc_success"]
-                summary_log[f"summary/{group_name}/avg_sum_reward"] = group_info["avg_sum_reward"]
+                summary_log[f"summary/{group_name}/success_rate"] = group_info["pc_success"] / 100.0
             wandb.run.summary.update(summary_log)
             wandb.log(
                 {
-                    "eval/overall_pc_success": overall["pc_success"],
                     "eval/overall_success_rate": overall["pc_success"] / 100.0,
-                    "eval/overall_success_count": summary_log["summary/success_count"],
-                    "eval/overall_n_episodes": overall["n_episodes"],
                 }
             )
-
-            # charts/ : per-task success bar chart + per-episode success line chart
-            bar_data: list[list] = []
-            episode_table_data: list[list] = []
-            episode_xs: list[list[int]] = []
-            episode_ys: list[list[float]] = []
-            task_keys: list[str] = []
 
             def _success_to_float(value) -> float:
                 if hasattr(value, "item"):
                     value = value.item()
                 return float(bool(value))
 
+            task_success_log: dict[str, float | int] = {}
             for task_info in sorted(info.get("per_task", []), key=lambda t: t.get("task_id", 0)):
                 task_id = task_info.get("task_id", 0)
+                task_group = task_info.get("task_group", "unknown")
                 successes = task_info.get("metrics", {}).get("successes", [])
                 success_values = [_success_to_float(s) for s in successes]
-                success_count = int(sum(success_values))
-                desc = task_id_to_desc.get(task_id, f"task_{task_id}")
-                label = f"task{task_id:02d}: {desc}"
-
-                bar_data.append([label, success_count])
-                episode_xs.append(list(range(1, len(success_values) + 1)))
-                episode_ys.append(success_values)
-                task_keys.append(f"task{task_id:02d}")
-                for episode_idx, success in enumerate(success_values, start=1):
-                    episode_table_data.append([task_id, label, episode_idx, success])
-
-            charts_log: dict = {}
-            if bar_data:
-                table = wandb.Table(data=bar_data, columns=["task", "success_count"])
-                charts_log["charts/task_success_bar"] = wandb.plot.bar(
-                    table, "task", "success_count", title="Success Count per Task"
-                )
-            if episode_table_data:
-                charts_log["tables/per_task_episode_success"] = wandb.Table(
-                    data=episode_table_data,
-                    columns=["task_id", "task", "episode", "success"],
-                )
-            if episode_xs:
-                charts_log["charts/per_task_episode_success"] = wandb.plot.line_series(
-                    xs=episode_xs,
-                    ys=episode_ys,
-                    keys=task_keys,
-                    title="Per-Task Success per Episode",
-                    xname="episode",
-                )
-            if charts_log:
-                wandb.log(charts_log)
+                success_rate = float(np.mean(success_values)) if success_values else float("nan")
+                key = f"eval/{task_group}/task{int(task_id):02d}"
+                task_success_log[f"{key}/success_rate"] = success_rate
+            if task_success_log:
+                wandb.run.summary.update(task_success_log)
+                wandb.log(task_success_log)
 
             # Log videos separately (wandb.Video objects can't be batched with bar charts cleanly)
             fps = cfg.env.fps if hasattr(cfg.env, "fps") else 20
@@ -1222,202 +1192,6 @@ def eval_main(cfg: EvalPipelineConfig):
                         video_log[f"videos/{task_group}/{label}/ep{ep_idx:02d}"] = wandb.Video(str(video_path), fps=fps)
             if video_log:
                 wandb.log(video_log)
-
-            def _wandb_slot_name(task_group: str, task_id: int) -> str:
-                safe_group = "".join(c if c.isalnum() or c in ("_", "-") else "_" for c in task_group)
-                return f"{safe_group}_task{task_id:02d}"
-
-            skill_plot_log: dict = {}
-            for task_info in info.get("per_task", []):
-                task_id = task_info.get("task_id", 0)
-                task_group = task_info.get("task_group", "unknown")
-                slot_name = _wandb_slot_name(task_group, task_id)
-                for plot_idx, plot_path in enumerate(task_info.get("metrics", {}).get("skill_plot_paths", [])):
-                    plot_path = Path(plot_path)
-                    if plot_path.exists():
-                        skill_plot_log[f"skill_plots_{slot_name}/skill{plot_idx + 1:03d}"] = (
-                            wandb.Image(str(plot_path))
-                        )
-            if skill_plot_log:
-                wandb.log(skill_plot_log)
-
-            skill_timeline_log: dict = {}
-            for task_info in info.get("per_task", []):
-                task_id = task_info.get("task_id", 0)
-                task_group = task_info.get("task_group", "unknown")
-                slot_name = _wandb_slot_name(task_group, task_id)
-                for plot_idx, plot_path in enumerate(task_info.get("metrics", {}).get("skill_timeline_paths", [])):
-                    plot_path = Path(plot_path)
-                    if plot_path.exists():
-                        skill_timeline_log[f"skill_timelines_{slot_name}/timeline{plot_idx + 1:03d}"] = (
-                            wandb.Image(str(plot_path))
-                        )
-            if skill_timeline_log:
-                wandb.log(skill_timeline_log)
-
-            # Log codebook token sequence table
-            token_records_all = info.get("overall", {}).get("skill_token_records", [])
-            if token_records_all:
-                def _pairwise_pred_skill_consistency(records: list[dict], task_group: str, task_id: int) -> list[list]:
-                    model = getattr(policy, "model", None)
-                    codebook = getattr(model, "_vqae_codebook", None)
-                    if codebook is None or codebook.numel() == 0:
-                        return []
-                    cb = codebook.detach().float().cpu()
-                    by_skill: dict[int, list[dict]] = defaultdict(list)
-                    for record in records:
-                        token = int(record.get("codebook_token", -1))
-                        if 0 <= token < cb.shape[0]:
-                            by_skill[int(record.get("skill_idx", -1))].append(record)
-
-                    rows = []
-                    for skill_idx, skill_records in sorted(by_skill.items()):
-                        if skill_idx < 0 or len(skill_records) < 2:
-                            continue
-                        cosines = []
-                        tokens = [int(r["codebook_token"]) for r in skill_records]
-                        for i in range(len(tokens)):
-                            for j in range(i + 1, len(tokens)):
-                                a = cb[tokens[i]]
-                                b = cb[tokens[j]]
-                                cosines.append(float(F.cosine_similarity(a[None], b[None]).item()))
-                        if not cosines:
-                            continue
-                        rows.append(
-                            [
-                                task_group,
-                                task_id,
-                                skill_idx,
-                                len(skill_records),
-                                len(set(tokens)),
-                                float(np.mean(cosines)),
-                                float(np.std(cosines)),
-                                float(np.min(cosines)),
-                                float(np.max(cosines)),
-                                ",".join(str(t) for t in tokens),
-                                ",".join(str(int(r.get("episode", -1))) for r in skill_records),
-                            ]
-                        )
-                    return rows
-
-                consistency_rows: list[list] = []
-                for task_info in info.get("per_task", []):
-                    consistency_rows.extend(
-                        _pairwise_pred_skill_consistency(
-                            task_info.get("metrics", {}).get("skill_token_records", []),
-                            task_info.get("task_group", "unknown"),
-                            int(task_info.get("task_id", -1)),
-                        )
-                    )
-                if consistency_rows:
-                    consistency_columns = [
-                        "task_group",
-                        "task_id",
-                        "skill_idx",
-                        "n_episodes",
-                        "n_unique_pred_tokens",
-                        "mean_pairwise_cosine",
-                        "std_pairwise_cosine",
-                        "min_pairwise_cosine",
-                        "max_pairwise_cosine",
-                        "pred_tokens_by_episode",
-                        "episodes",
-                    ]
-                    consistency_table = wandb.Table(columns=consistency_columns, data=consistency_rows)
-                    consistency_means = [float(row[5]) for row in consistency_rows]
-                    consistency_log = {
-                        "eval/skill_consistency_cosine_mean": float(np.mean(consistency_means)),
-                        "eval/skill_consistency_cosine_min": float(np.min(consistency_means)),
-                        "eval/skill_consistency_n_groups": len(consistency_rows),
-                    }
-                    wandb.run.summary.update(consistency_log)
-                    wandb.log(
-                        {
-                            **consistency_log,
-                            "tables/task_episode_skill_consistency": consistency_table,
-                        }
-                    )
-
-                valid_cos = [
-                    float(r["codebook_cosine"])
-                    for r in token_records_all
-                    if not np.isnan(float(r.get("codebook_cosine", np.nan)))
-                ]
-                valid_l2 = [
-                    float(r["codebook_l2"])
-                    for r in token_records_all
-                    if not np.isnan(float(r.get("codebook_l2", np.nan)))
-                ]
-                valid_rank = [
-                    int(r["codebook_label_neighbor_rank"])
-                    for r in token_records_all
-                    if int(r.get("codebook_label_neighbor_rank", -1)) > 0
-                ]
-                similarity_log = {}
-                if valid_cos:
-                    similarity_log["eval/skill_codebook_cosine_mean"] = float(np.mean(valid_cos))
-                    similarity_log["eval/skill_codebook_cosine_min"] = float(np.min(valid_cos))
-                if valid_l2:
-                    similarity_log["eval/skill_codebook_l2_mean"] = float(np.mean(valid_l2))
-                if valid_rank:
-                    similarity_log["eval/skill_codebook_neighbor_rank_mean"] = float(np.mean(valid_rank))
-                if similarity_log:
-                    wandb.run.summary.update(similarity_log)
-                    wandb.log(similarity_log)
-
-                token_columns = [
-                    "episode",
-                    "skill_idx",
-                    "episode_timestep",
-                    "skill_source",
-                    "pred_codebook_token",
-                    "label_codebook_token",
-                    "token_match",
-                    "has_label_records",
-                    "has_label_prior",
-                    "pred_prior_length",
-                    "end_signal_timestep",
-                    "end_signal_prob",
-                    "codebook_cosine",
-                    "codebook_l2",
-                    "codebook_label_neighbor_rank",
-                    "label_prior_length",
-                    "dataset_skill_length",
-                    "dataset_start_prior_length",
-                    "eval_minus_dataset_skill_length",
-                    "eval_minus_dataset_start_prior_length",
-                    "pred_minus_label_prior_length",
-                ]
-                token_table = wandb.Table(
-                    columns=token_columns,
-                    data=[
-                        [
-                            r["episode"],
-                            r["skill_idx"],
-                            r["episode_timestep"],
-                            r.get("skill_source", "unknown"),
-                            r["codebook_token"],
-                            r.get("label_codebook_token", -1),
-                            r.get("token_match", False),
-                            r.get("has_label_records", False),
-                            r.get("has_label_prior", False),
-                            r["skill_length"],
-                            r.get("end_signal_timestep", -1),
-                            r.get("end_signal_prob", -1.0),
-                            r.get("codebook_cosine", np.nan),
-                            r.get("codebook_l2", np.nan),
-                            r.get("codebook_label_neighbor_rank", -1),
-                            r.get("label_prior_length", -1),
-                            r.get("dataset_skill_length", -1),
-                            r.get("dataset_prior_length", -1),
-                            r.get("eval_minus_dataset_skill_length"),
-                            r.get("eval_minus_dataset_prior_length"),
-                            r.get("pred_minus_label_prior_length"),
-                        ]
-                        for r in token_records_all
-                    ],
-                )
-                wandb.log({"tables/skill_codebook_tokens_and_lengths": token_table})
 
             wandb.finish()
             logging.info("Logged eval results to wandb.")

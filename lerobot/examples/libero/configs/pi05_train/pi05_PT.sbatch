@@ -1,14 +1,24 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=pi05_PT
 
-# SBATCH --partition=asus_pro6000 #,suma_rtx4090,big_suma_rtx3090,base_suma_rtx3090
-# SBATCH --exclude=node19,node13,node18,node16,node08,node10,node21,node14,node04,node05,node31
-# SBATCH --qos=pro6000_qos
+# for yonsei cluster: 
+# suma_pro6000, asus_pro6000                            : ~96GB GPU memory, --qos=pro6000_qos
+# suma_a6000, asus_6000ada, gigabyte_a6000, tyan_a6000  : ~48GB GPU memory, --qos=big_qos, base_qos
+# model size : 
+# BATCH_SIZE=32                                         : 48593MiB       
+# BATCH_SIZE=16                                         : 40374MiB
+
+# for RLLAB: 
+# node100, node01                                       : 46068MiB
+
+# SBATCH --partition=suma_a6000
+# SBATCH --qos=base_qos
 
 #SBATCH --partition=debug
-#SBATCH --nodelist=node200
+#SBATCH --nodelist=node01
 #SBATCH --qos=big_qos
-#SBATCH --gres=gpu:1
+
+#SBATCH --gres=gpu:2
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=128G
 #SBATCH --time=48:00:00
@@ -23,6 +33,15 @@ mkdir -p logs
 HOMEDIR=/data2/dohyeon
 PROJDIR=/SBD
 
+# -------------------------------------------------------------------------------- #
+DATASET=libero_90 # libero_90 / libero_10_op1_10
+DATASET_ROOT=libero_dataset # libero_dataset / libero_small_dataset
+BATCH_SIZE=16
+NUM_GPUS=2      # --gres=gpu:N 과 맞춰야 함
+NUM_WORKERS=4   # shm 에러 시 0 유지, 여유 있으면 2~4로 올릴 것
+LR=$(python3 -c "print(2.5e-05 * ${NUM_GPUS})")
+# -------------------------------------------------------------------------------- #
+
 cd ${HOMEDIR}${PROJDIR}/lerobot
 source ${HOMEDIR}${PROJDIR}/.venv/bin/activate
 
@@ -35,16 +54,11 @@ echo "START JOB"
 echo "Node: $SLURMD_NODENAME"
 nvidia-smi
 
-DATASET=libero_90 # libero_10
-DATASET_ROOT=libero_dataset # libero_dataset
-LR=2.5e-05      # default: 2.5e-05
-BATCH_SIZE=32
-NUM_GPUS=1      # --gres=gpu:N 과 맞춰야 함
-NUM_WORKERS=4   # shm 에러 시 0 유지, 여유 있으면 2~4로 올릴 것
+
 
 CONFIG_PATH=../outputs/pi05_${DATASET}/checkpoints/last/pretrained_model/train_config.json
 
-OUTPUT_DIR=../outputs/pi05_${DATASET}
+OUTPUT_DIR=../outputs/pi05_${DATASET}_batch${BATCH_SIZE}
 RESUME_ARGS=""
 if [ -f "${CONFIG_PATH}" ]; then
     echo "Checkpoint found. Resuming from ${CONFIG_PATH}"
@@ -63,7 +77,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes=${
     --output_dir=${OUTPUT_DIR} \
     --job_name=pi05_PT_${DATASET} \
     --policy.pretrained_path=lerobot/pi05_base \
-    --policy.compile_model=true \
+    --policy.compile_model=false \
     --policy.gradient_checkpointing=true \
     --wandb.enable=true \
     --wandb.project=VLA_posttrain \

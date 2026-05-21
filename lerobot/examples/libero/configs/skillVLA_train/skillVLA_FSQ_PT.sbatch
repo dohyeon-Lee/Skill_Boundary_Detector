@@ -6,8 +6,12 @@
 # suma_a6000, asus_6000ada, gigabyte_a6000, tyan_a6000  : ~48GB GPU memory, --qos=big_qos, base_qos
 # model size : 
 # BATCH_SIZE=32                                         : 48593MiB       
-# BATCH_SIZE=16                                         : 25624MiB
+# BATCH_SIZE=16                                         : 40374MiB
 
+# for RLLAB: 
+# node100, node01                                       : 46068MiB
+
+# SBATCH --exclude=node19,node13,node18,node16,node08,node10,node21,node14,node04,node05,node31,node28
 # SBATCH --partition=suma_a6000
 # SBATCH --qos=base_qos
 
@@ -32,11 +36,11 @@ LR=$(python3 -c "print(2.5e-05 * ${NUM_GPUS})")
 set -euo pipefail
 mkdir -p logs
 
-HOMEDIR=/scratch/mdorazi
-PROJDIR=/Skill_Boundary_Detector
+# HOMEDIR=/scratch/mdorazi
+# PROJDIR=/Skill_Boundary_Detector
 
-# HOMEDIR=/data2/dohyeon
-# PROJDIR=/SBD
+HOMEDIR=/data2/dohyeon
+PROJDIR=/SBD
 
 cd ${HOMEDIR}${PROJDIR}/lerobot
 source ${HOMEDIR}${PROJDIR}/.venv/bin/activate
@@ -83,7 +87,7 @@ SKILL_DECODER_LOSS_WEIGHT=1.0
 SKILL_DECODER_END_POS_WEIGHT=1.0
 SKILL_DECODER_END_THRESHOLD=0.5
 SKILL_DECODER_STATE_INDICES=${SKILL_DECODER_STATE_INDICES}
-FREEZE_VAE_DECODER=false
+FREEZE_VAE_DECODER=true # false 
 INFERENCE_SKILL_MAX_ORDER=${INFERENCE_SKILL_MAX_ORDER}
 INFERENCE_SKILL_MAX_LENGTH=${INFERENCE_SKILL_MAX_LENGTH}
 SKILL_BOUNDARY_RANDOM_P=10
