@@ -100,6 +100,15 @@ fi
 WANDB_PROJECT=${WANDB_PROJECT:-VLA_eval}
 WANDB_RUN_NAME=${WANDB_RUN_NAME:-${MODEL}_${CHECKPOINT}_${TARGET_TASK}_fsq_eval}
 
+# ── Output directory (inside skillVLA_eval folder) ───────────────────────────
+if [ -d "${SUBMIT_DIR}/examples/libero/configs/skillVLA_eval" ]; then
+  _EVAL_BASE="${SUBMIT_DIR}/examples/libero/configs/skillVLA_eval"
+else
+  _EVAL_BASE="${SUBMIT_DIR}"
+fi
+EVAL_OUT_DIR=${EVAL_OUT_DIR:-${_EVAL_BASE}/outputs/${WANDB_RUN_NAME}}
+mkdir -p "${EVAL_OUT_DIR}"
+
 echo "SkillVLA FSQ eval"
 echo "  target     : ${TARGET_TASK}"
 echo "  task_ids   : ${TASK_IDS}"
@@ -145,6 +154,7 @@ PYTHONPATH=${HOMEDIR}${PROJDIR}/lerobot/src \
   --env.max_parallel_tasks=${MAX_PARALLEL_TASKS} \
   --wandb_project ${WANDB_PROJECT} \
   --job_name ${WANDB_RUN_NAME} \
+  --output_dir="${EVAL_OUT_DIR}" \
   --rename_map='{"observation.images.image2": "observation.images.wrist_image"}' \
   ${EXTRA_ARGS:-}
 

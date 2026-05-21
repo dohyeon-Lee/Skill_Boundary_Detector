@@ -54,6 +54,19 @@ echo "START JOB"
 echo "Node: $SLURMD_NODENAME"
 nvidia-smi
 
+# GPU가 완전히 빌 때까지 대기 (사용 중인 메모리가 500 MiB 이하일 때 시작)
+GPU_FREE_THRESHOLD_MIB=500
+echo "Waiting for GPU to be free (threshold: ${GPU_FREE_THRESHOLD_MIB} MiB)..."
+while true; do
+    USED_MIB=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | awk '{s+=$1} END {print s}')
+    if [ "${USED_MIB}" -le "${GPU_FREE_THRESHOLD_MIB}" ]; then
+        echo "GPU is free (${USED_MIB} MiB used). Starting training."
+        break
+    fi
+    echo "  GPU in use: ${USED_MIB} MiB. Waiting 60s..."
+    sleep 60
+done
+
 
 
 CONFIG_PATH=../outputs/pi05_${DATASET}/checkpoints/last/pretrained_model/train_config.json

@@ -525,6 +525,7 @@ def _write_task_skill_html(
                     "graph": graph_name,
                     "start_t": start_t,
                     "end_t": end_t,
+                    "skill_length": length,
                     "source": str(skill.get("skill_source", "pred")),
                 }
             )
@@ -543,6 +544,7 @@ def _write_task_skill_html(
         "task_group": task_group,
         "task_id": int(task_id),
         "levels": levels,
+        "chunk_size": int(getattr(policy.config, "chunk_size", 0)),
         "episodes": episode_payloads,
         "examples": examples_by_token,
     }
@@ -560,9 +562,10 @@ def _write_task_skill_html(
     h1 {{ font-size: 18px; margin: 0; }}
     .episode {{ margin: 16px; padding: 14px; background: white; border: 1px solid #d8dee8; border-radius: 8px; }}
     .episode-title {{ font-weight: 700; margin-bottom: 10px; }}
-    .row {{ display: grid; grid-template-columns: 430px 1fr; gap: 16px; align-items: start; }}
+    .row {{ display: grid; grid-template-columns: 520px 1fr; gap: 16px; align-items: start; }}
     .cube-wrap {{ position: sticky; top: 12px; border: 1px solid #cfd7e5; border-radius: 8px; padding: 10px; background: #fbfcff; }}
-    svg {{ width: 100%; height: 420px; display: block; }}
+    svg {{ width: 100%; height: 470px; display: block; }}
+    .skill-card--short {{ background: #f0f2f5; border-color: #c8cdd6; opacity: 0.6; }}
     .skills {{ overflow-x: auto; display: flex; gap: 18px; padding-bottom: 10px; }}
     .skill-card {{ flex: 0 0 330px; border: 1px solid #ccd5e3; border-radius: 8px; padding: 8px; cursor: pointer; background: #ffffff; }}
     .skill-card.active {{ border-color: #d62728; box-shadow: 0 0 0 2px rgba(214,39,40,0.18); }}
@@ -592,11 +595,15 @@ function coordToToken(coord, levels) {{
 }}
 
 function project(c, levels) {{
-  const scale = 54;
-  const x = c[0] - (levels[0] - 1) / 2;
-  const y = c[1] - (levels[1] - 1) / 2;
-  const z = c[2] || 0;
-  return [205 + (x - y) * scale * 0.72, 276 + (x + y) * scale * 0.34 - z * scale * 0.82];
+  const lx=Math.max(1,levels[0]-1), ly=Math.max(1,levels[1]-1);
+  const lz=levels.length>2 ? Math.max(1,levels[2]-1) : 1;
+  const xn=(c[0]/lx-0.5)*2, yn=(c[1]/ly-0.5)*2;
+  const zn=levels.length>2 ? (c[2]/lz-0.5)*2 : 0;
+  const yaw=-0.63, pitch=0.46;
+  const cyaw=Math.cos(yaw), syaw=Math.sin(yaw), cp=Math.cos(pitch), sp=Math.sin(pitch);
+  const xr=cyaw*xn-syaw*yn, yr=syaw*xn+cyaw*yn;
+  const scale=115;
+  return [260+xr*scale, 240+yr*scale*sp-zn*scale*cp, yr*cp+zn*sp];
 }}
 
 function renderCube(svg, selectedToken) {{
@@ -610,31 +617,44 @@ function renderCube(svg, selectedToken) {{
     svg.appendChild(el);
     return el;
   }};
+  // inner grid lines
   for (let t = 0; t < maxToken; t++) {{
-    const c = [];
-    let base = 1;
+    const c = []; let base = 1;
     for (const L of levels) {{ c.push(Math.floor(t / base) % L); base *= L; }}
     for (let d = 0; d < Math.min(3, levels.length); d++) {{
       const n = c.slice(); n[d] += 1;
       if (n[d] < levels[d]) {{
         const [x1,y1] = project(c, levels), [x2,y2] = project(n, levels);
-        make("line", {{x1, y1, x2, y2, stroke: "#8fa1b8", "stroke-width": 1.3, opacity: 0.72}});
+        make("line", {{x1, y1, x2, y2, stroke: "rgba(100,100,100,0.5)", "stroke-width": 1.5}});
       }}
     }}
   }}
+  // outer box edges
+  const BL = levels.map(l => l-1);
+  const corners = [0,1,2,3,4,5,6,7].map(b => [BL[0]*(b&1), BL[1]*((b>>1)&1), (BL[2]||0)*((b>>2)&1)]);
+  [[0,1],[0,2],[0,4],[1,3],[1,5],[2,3],[2,6],[3,7],[4,5],[4,6],[5,7],[6,7]].forEach(([a,b]) => {{
+    const [x1,y1] = project(corners[a], levels), [x2,y2] = project(corners[b], levels);
+    make("line", {{x1, y1, x2, y2, stroke: "rgba(50,50,50,0.75)", "stroke-width": 2.2}});
+  }});
+  // depth-sorted circles
+  const pts = [];
   for (let t = 0; t < maxToken; t++) {{
-    const c = [];
-    let base = 1;
+    const c = []; let base = 1;
     for (const L of levels) {{ c.push(Math.floor(t / base) % L); base *= L; }}
-    const [x,y] = project(c, levels);
+    const p = project(c, levels);
     const used = DATA.episodes.some(ep => ep.skills.some(s => s.token === t));
+    pts.push({{t, p, used}});
+  }}
+  pts.sort((a,b) => a.p[2] - b.p[2]);
+  pts.forEach(({t, p, used}) => {{
     make("circle", {{
-      cx: x, cy: y, r: t === selectedToken ? 8 : (used ? 5.5 : 3.8),
+      cx: p[0], cy: p[1], r: t === selectedToken ? 9 : (used ? 5.5 : 3.8),
       fill: t === selectedToken ? "#d62728" : (used ? "#2f6f9f" : "#d7dde8"),
-      stroke: "#26384d", "stroke-width": t === selectedToken ? 1.7 : 0.6,
+      stroke: t === selectedToken ? "#8b0000" : "#26384d",
+      "stroke-width": t === selectedToken ? 2.0 : 0.9,
       "data-token": t
     }}).addEventListener("click", () => selectToken(t));
-  }}
+  }});
 }}
 
 function renderExamples(root, token) {{
@@ -671,12 +691,12 @@ for (const ep of DATA.episodes) {{
   row.className = "row";
   const cubeWrap = document.createElement("div");
   cubeWrap.className = "cube-wrap";
-  cubeWrap.innerHTML = `<svg class="cube" viewBox="0 0 430 420"></svg>`;
+  cubeWrap.innerHTML = `<svg class="cube" viewBox="0 0 520 470"></svg>`;
   const skills = document.createElement("div");
   skills.className = "skills";
   for (const s of ep.skills) {{
     const card = document.createElement("div");
-    card.className = "skill-card";
+    card.className = "skill-card" + (DATA.chunk_size > 0 && s.skill_length < DATA.chunk_size ? " skill-card--short" : "");
     card.dataset.token = s.token;
     card.innerHTML = `<div class="skill-title">skill ${{s.skill_index + 1}} | token #${{s.token}} | [${{s.coord.join(", ")}}]</div>` +
       `<div class="muted">${{s.source}} · t=${{s.start_t}}→${{s.end_t}}</div>` +
@@ -903,7 +923,7 @@ def eval_policy(
                     target=write_video,
                     args=(
                         str(video_path),
-                        stacked_frames[: done_index + 1],  # + 1 to capture the last observation
+                        stacked_frames[: done_index // video_frame_stride + 1],  # exclude auto-reset frame
                         int(video_fps or max(1, env.unwrapped.metadata["render_fps"] // video_frame_stride)),
                     ),
                 )
@@ -924,7 +944,7 @@ def eval_policy(
                 episode_index = batch_ix * env.num_envs + local_i
                 if episode_index >= n_episodes or local_i >= batch_html_frames.shape[0]:
                     continue
-                max_frame = min(int(done_index) + 2, batch_html_frames.shape[1])
+                max_frame = min(int(done_index) + 1, batch_html_frames.shape[1])
                 skill_html_records.append(
                     {
                         "episode_index": episode_index,
