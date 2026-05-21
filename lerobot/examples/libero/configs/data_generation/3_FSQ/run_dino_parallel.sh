@@ -5,8 +5,19 @@
 # frame-level CLS/pooled-patch features, and Stage 2_skillset to have produced
 # the per-skill dataset. It then:
 #   1. extracts skill-level DINO tokens into one npz,
-#   2. runs SAM2 workers for per-skill patch flags,
-#   3. merges those flags into one npz.
+#   2. (dino_flags only) runs SAM2 workers for per-skill patch flags,
+#   3. (dino_flags only) merges those flags into one npz.
+#
+# ── Final outputs ────────────────────────────────────────────────────────────
+#   ${DINO_TOKENS_PATH}   — skill-level DINO tokens npz (always produced)
+#                           used by: train_FSQ.py --dino_features
+#
+#   ${SAM2_FLAGS_PATH}    — merged temporal patch flags npz (dino_flags only)
+#                           used by: train_FSQ.py --sam2_masks_dir
+#
+# decoder_image_mode=dino_only  → only DINO_TOKENS_PATH is produced;
+#                                  SAM2 jobs are skipped entirely.
+# ─────────────────────────────────────────────────────────────────────────────
 
 set -euo pipefail
 
@@ -49,7 +60,12 @@ if [ ! -d "${FRAME_DINO_DIR}" ]; then
   exit 1
 fi
 
-if [ ! -f "${SAM2_CHECKPOINT}" ]; then
+USE_SAM2=true
+if [ "${DECODER_IMAGE_MODE:-dino_flags}" = "dino_only" ]; then
+  USE_SAM2=false
+fi
+
+if $USE_SAM2 && [ ! -f "${SAM2_CHECKPOINT}" ]; then
   echo "ERROR: SAM2 checkpoint not found:"
   echo "  ${SAM2_CHECKPOINT}"
   exit 1
@@ -57,55 +73,23 @@ fi
 
 echo "FSQ precompute"
 echo "  dataset       : ${DATA}"
+echo "  decoder mode  : ${DECODER_IMAGE_MODE:-dino_flags}"
 echo "  skillset      : ${SKILLSET_DIR}/skills"
 echo "  frame DINO    : ${FRAME_DINO_DIR}"
 echo "  DINO tokens   : ${DINO_TOKENS_PATH}"
-echo "  SAM2 masks    : ${SAM2_OUTPUT_DIR}"
-echo "  SAM2 flags    : ${SAM2_MERGED_PATH}"
-echo ""
-
-declare -A NODE_PARTITION
-declare -A NODE_TOTAL_GPU
-
-for part in "${PARTITIONS[@]}"; do
-  while read -r node gres; do
-    [ -z "${node}" ] && continue
-    total=$(echo "${gres}" | sed -nE 's/.*gpu(:[^:[:space:]]*)?:([0-9]+).*/\2/p' | head -1)
-    if [ -z "${total}" ] || [ "${total}" -eq 0 ]; then continue; fi
-    [ "${NODE_PARTITION[$node]+_}" ] && continue
-    for ex in "${EXCLUDE_NODES[@]+"${EXCLUDE_NODES[@]}"}"; do
-      [ "${node}" = "${ex}" ] && continue 2
-    done
-    NODE_PARTITION[$node]=${part}
-    NODE_TOTAL_GPU[$node]=${total}
-  done < <(sinfo -p "${part}" -N -o "%N %G" --noheader 2>/dev/null)
-done
-
-# N_WORKERS = total GPUs across all nodes (capped per node), regardless of current availability.
-# SLURM will queue the jobs and run them when GPUs become free.
-N_WORKERS=0
-for node in "${!NODE_TOTAL_GPU[@]}"; do
-  total=${NODE_TOTAL_GPU[$node]}
-  w=$(( total - GPU_RESERVE ))
-  [ $w -lt 0 ] && w=0
-  [ $w -gt $GPU_MAX_PER_NODE ] && w=$GPU_MAX_PER_NODE
-  N_WORKERS=$(( N_WORKERS + w ))
-done
-
-if [ "${N_WORKERS}" -eq 0 ]; then
-  echo "ERROR: No GPU nodes found in partitions: ${PARTITIONS[*]}"
-  exit 1
+if $USE_SAM2; then
+  echo "  SAM2 masks    : ${SAM2_OUTPUT_DIR}"
+  echo "  SAM2 flags    : ${SAM2_MERGED_PATH}"
+else
+  echo "  SAM2          : skipped (dino_only mode)"
 fi
-
-echo "SAM2 workers to submit: ${N_WORKERS}  (queued until GPUs free)"
 echo ""
 
-COMMON_EXPORT="ALL,N_WORKERS=${N_WORKERS},HOMEDIR=${HOMEDIR},PROJDIR=${PROJDIR}"
+COMMON_EXPORT="ALL,HOMEDIR=${HOMEDIR},PROJDIR=${PROJDIR}"
 COMMON_EXPORT+=",VISUAL_BACKBONE=${VISUAL_BACKBONE},PATCH_GRID=${PATCH_GRID}"
 COMMON_EXPORT+=",DATA=${DATA},DATADIR=${DATADIR},SKILLSET=${SKILLSET},DERIVED_DATA_DIR=${DERIVED_DATA_DIR}"
 COMMON_EXPORT+=",FSQ_PRECOMPUTE_DIR=${FSQ_PRECOMPUTE_DIR},SKILLSET_DIR=${SKILLSET_DIR}"
-COMMON_EXPORT+=",DINO_TOKENS_PATH=${DINO_TOKENS_PATH},SAM2_OUTPUT_DIR=${SAM2_OUTPUT_DIR}"
-COMMON_EXPORT+=",SAM2_MERGED_PATH=${SAM2_MERGED_PATH},SAM2_CHECKPOINT=${SAM2_CHECKPOINT}"
+COMMON_EXPORT+=",DINO_TOKENS_PATH=${DINO_TOKENS_PATH}"
 
 FIRST_PART="${PARTITIONS[0]}"
 
@@ -116,21 +100,63 @@ EXTRACT_JOB=$(sbatch --parsable \
   extract_skill_tokens.sbatch)
 echo "Skill token extraction job: ${EXTRACT_JOB}"
 
-SAM2_JOB=$(sbatch --parsable \
-  --partition="${FIRST_PART}" \
-  --qos="${QOS}" \
-  --array="0-$(( N_WORKERS - 1 ))" \
-  --export="${COMMON_EXPORT}" \
-  precompute_sam2_masks_worker.sbatch)
-echo "SAM2 mask workers job:      ${SAM2_JOB}  (array 0–$(( N_WORKERS - 1 )), queued)"
+if $USE_SAM2; then
+  declare -A NODE_PARTITION
+  declare -A NODE_TOTAL_GPU
 
-MERGE_JOB=$(sbatch --parsable \
-  --partition="${FIRST_PART}" \
-  --qos="${QOS}" \
-  --dependency="afterok:${SAM2_JOB}" \
-  --export="${COMMON_EXPORT}" \
-  merge_sam2_patch_flags.sbatch)
-echo "SAM2 merge job:             ${MERGE_JOB}  (runs after all SAM2 workers finish)"
+  for part in "${PARTITIONS[@]}"; do
+    while read -r node gres; do
+      [ -z "${node}" ] && continue
+      total=$(echo "${gres}" | sed -nE 's/.*gpu(:[^:[:space:]]*)?:([0-9]+).*/\2/p' | head -1)
+      if [ -z "${total}" ] || [ "${total}" -eq 0 ]; then continue; fi
+      [ "${NODE_PARTITION[$node]+_}" ] && continue
+      for ex in "${EXCLUDE_NODES[@]+"${EXCLUDE_NODES[@]}"}"; do
+        [ "${node}" = "${ex}" ] && continue 2
+      done
+      NODE_PARTITION[$node]=${part}
+      NODE_TOTAL_GPU[$node]=${total}
+    done < <(sinfo -p "${part}" -N -o "%N %G" --noheader 2>/dev/null)
+  done
+
+  # N_WORKERS = total GPUs across all nodes (capped per node), regardless of current availability.
+  # SLURM will queue the jobs and run them when GPUs become free.
+  N_WORKERS=0
+  for node in "${!NODE_TOTAL_GPU[@]}"; do
+    total=${NODE_TOTAL_GPU[$node]}
+    w=$(( total - GPU_RESERVE ))
+    [ $w -lt 0 ] && w=0
+    [ $w -gt $GPU_MAX_PER_NODE ] && w=$GPU_MAX_PER_NODE
+    N_WORKERS=$(( N_WORKERS + w ))
+  done
+
+  if [ "${N_WORKERS}" -eq 0 ]; then
+    echo "ERROR: No GPU nodes found in partitions: ${PARTITIONS[*]}"
+    exit 1
+  fi
+
+  echo "SAM2 workers to submit: ${N_WORKERS}  (queued until GPUs free)"
+  echo ""
+
+  SAM2_EXPORT="${COMMON_EXPORT},N_WORKERS=${N_WORKERS}"
+  SAM2_EXPORT+=",SAM2_OUTPUT_DIR=${SAM2_OUTPUT_DIR},SAM2_MERGED_PATH=${SAM2_MERGED_PATH}"
+  SAM2_EXPORT+=",SAM2_CHECKPOINT=${SAM2_CHECKPOINT}"
+
+  SAM2_JOB=$(sbatch --parsable \
+    --partition="${FIRST_PART}" \
+    --qos="${QOS}" \
+    --array="0-$(( N_WORKERS - 1 ))" \
+    --export="${SAM2_EXPORT}" \
+    precompute_sam2_masks_worker.sbatch)
+  echo "SAM2 mask workers job:      ${SAM2_JOB}  (array 0–$(( N_WORKERS - 1 )), queued)"
+
+  MERGE_JOB=$(sbatch --parsable \
+    --partition="${FIRST_PART}" \
+    --qos="${QOS}" \
+    --dependency="afterok:${SAM2_JOB}" \
+    --export="${SAM2_EXPORT}" \
+    merge_sam2_patch_flags.sbatch)
+  echo "SAM2 merge job:             ${MERGE_JOB}  (runs after all SAM2 workers finish)"
+fi
 
 echo ""
 echo "Backbone : ${VISUAL_BACKBONE}  patch_grid=${PATCH_GRID}"

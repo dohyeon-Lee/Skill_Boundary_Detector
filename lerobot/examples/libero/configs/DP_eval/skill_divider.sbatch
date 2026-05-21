@@ -4,7 +4,7 @@
 # SBATCH --exclude=node19,node13,node18,node16,node08,node10,node21,node14,node04,node05,node31
 
 #SBATCH --partition=debug
-#SBATCH --nodelist=node01
+# SBATCH --nodelist=node01
 #SBATCH --qos=big_qos
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
@@ -41,7 +41,7 @@ VISUAL_BACKBONE=dinov3_vits16
 PATCH_GRID=8
 DP=dp_${DATASET}_dino_${VISUAL_BACKBONE}_pg${PATCH_GRID}_obs10_horizon16
 DINO_FEATURE_DIR=${HOMEDIR}${PROJDIR}/libero_dataset/${DATASET}_data/${DATASET}_DINO/${VISUAL_BACKBONE}_pg${PATCH_GRID}
-CHECKPOINT=050000
+CHECKPOINT=100000
 TASK_ID=2
 N_EPISODES=5
 N_GMM=5

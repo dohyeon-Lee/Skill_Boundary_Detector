@@ -8,6 +8,7 @@
 
 homedir: /data2/dohyeon
 projdir: /SBD
+
 datadir: libero_dataset #libero_small_dataset
 
 
