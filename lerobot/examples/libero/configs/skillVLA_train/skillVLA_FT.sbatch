@@ -16,13 +16,20 @@
 set -euo pipefail
 mkdir -p logs
 
-HOMEDIR=/data2/dohyeon
-PROJDIR=/SBD
+LEROBOT_DIR=${SLURM_SUBMIT_DIR:-$(pwd)}
+CONFIG_PY=${LEROBOT_DIR}/examples/libero/configs/data_generation/pipeline_config.py
+if [ ! -f "${CONFIG_PY}" ]; then
+    echo "Could not find ${CONFIG_PY}. Submit this job from the lerobot repo root." >&2
+    exit 1
+fi
+BOOTSTRAP_PYTHON=${LEROBOT_DIR}/../.venv/bin/python
+if [ ! -x "${BOOTSTRAP_PYTHON}" ]; then
+    BOOTSTRAP_PYTHON=python3
+fi
+eval "$("${BOOTSTRAP_PYTHON}" "${CONFIG_PY}" --shell)"
 
 cd ${HOMEDIR}${PROJDIR}/lerobot
 source ${HOMEDIR}${PROJDIR}/.venv/bin/activate
-
-CONFIG_PY=examples/libero/configs/data_generation/pipeline_config.py
 
 export WANDB_CACHE_DIR=${HOMEDIR}/.wandb_cache
 export WANDB_DATA_DIR=${HOMEDIR}/.wandb_data
