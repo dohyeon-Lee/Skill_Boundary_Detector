@@ -13,6 +13,10 @@ set -euo pipefail
 # Server config
 PARTITIONS=("debug")
 EXCLUDE_NODES=("node200")
+
+# PARTITIONS=(base_suma_rtx3090 dell_rtx3090 big_suma_rtx3090 suma_a6000 suma_rtx4090)
+# EXCLUDE_NODES=(node19 node13 node18 node16 node08 node10 node21 node14 node04 node05 node31 node28)
+
 GPU_RESERVE=0
 GPU_MAX_PER_NODE=7
 QOS=big_qos

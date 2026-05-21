@@ -34,8 +34,8 @@ HOMEDIR=/data2/dohyeon
 PROJDIR=/SBD
 
 # -------------------------------------------------------------------------------- #
-DATASET=libero_10_op1_10 # libero_90 / libero_10_op1_10
-DATASET_ROOT=libero_small_dataset # libero_dataset / libero_small_dataset
+DATASET=libero_90 # libero_90 / libero_10_op1_10
+DATASET_ROOT=libero_dataset # libero_dataset / libero_small_dataset
 BATCH_SIZE=16
 NUM_GPUS=1      # --gres=gpu:N 과 맞춰야 함
 NUM_WORKERS=4   # shm 에러 시 0 유지, 여유 있으면 2~4로 올릴 것
@@ -69,7 +69,7 @@ done
 
 
 
-CONFIG_PATH=../outputs/pi05_${DATASET}/checkpoints/last/pretrained_model/train_config.json
+CONFIG_PATH=../outputs/pi05_${DATASET}_batch${BATCH_SIZE}/checkpoints/last/pretrained_model/train_config.json
 
 OUTPUT_DIR=../outputs/pi05_${DATASET}_batch${BATCH_SIZE}
 RESUME_ARGS=""

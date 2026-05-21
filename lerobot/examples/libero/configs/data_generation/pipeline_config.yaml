@@ -33,10 +33,10 @@ eef_mode: abs
 # action_mode: single_step | chunk
 action_mode: single_step
 # decoder_image_mode: dino_flags | dino_only
-decoder_image_mode: dino_only
+decoder_image_mode: dino_flags
 
 # ── Diffusion Policy ─────────────────────────────────────────
-dp_checkpoint: "050000"
+dp_checkpoint: "100000"
 
 # ── SkillVLA 데이터셋 생성 ───────────────────────────────────
 max_order: 0
