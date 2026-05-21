@@ -1196,8 +1196,8 @@ class SkillVLAPolicy(PI05Policy):
                 values = list(values[:-1]) + [gripper]
             self._skill_trace[trace_index].setdefault("state_deltas", []).append(
                 {
-                    "episode_timestep": int(self._episode_timestep),
-                    "skill_step": int(self._skill_step),
+                    "episode_timestep": max(0, int(self._episode_timestep) - 1),
+                    "skill_step": max(0, int(self._skill_step) - 1),
                     "delta": [float(v) for v in values],
                 }
             )

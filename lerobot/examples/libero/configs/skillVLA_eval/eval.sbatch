@@ -59,7 +59,7 @@ nvidia-smi
 # ── Evaluation target ────────────────────────────────────────────────────────
 # Edit these per run. EVAL_DATA defaults to pipeline_config.yaml:data.
 TARGET_TASK=${TARGET_TASK:-${DATA}}
-TASK_IDS=${TASK_IDS:-"[0,1,2]"}
+TASK_IDS=${TASK_IDS:-"[0,1,2,3,4,5,6,7,8,9]"}
 N_EPISODES=${N_EPISODES:-1}
 N_ACTION_STEPS=${N_ACTION_STEPS:-5}
 EVAL_BATCH_SIZE=${EVAL_BATCH_SIZE:-1}
@@ -68,7 +68,7 @@ MAX_VIDEOS_PER_TASK=${MAX_VIDEOS_PER_TASK:-1}
 VIDEO_FRAME_STRIDE=${VIDEO_FRAME_STRIDE:-2}
 VIDEO_FPS=${VIDEO_FPS:-10}
 SKILL_HTML=${SKILL_HTML:-true}
-SKILL_HTML_TRAIN_SAMPLES=${SKILL_HTML_TRAIN_SAMPLES:-6}
+SKILL_HTML_TRAIN_SAMPLES=${SKILL_HTML_TRAIN_SAMPLES:-10}
 
 # ── SkillVLA checkpoint ──────────────────────────────────────────────────────
 # If MODEL is unset, this evaluates the PT run implied by pipeline_config.yaml.

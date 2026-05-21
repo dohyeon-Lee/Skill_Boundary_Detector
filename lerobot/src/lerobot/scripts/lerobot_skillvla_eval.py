@@ -562,9 +562,9 @@ def _write_task_skill_html(
     h1 {{ font-size: 18px; margin: 0; }}
     .episode {{ margin: 16px; padding: 14px; background: white; border: 1px solid #d8dee8; border-radius: 8px; }}
     .episode-title {{ font-weight: 700; margin-bottom: 10px; }}
-    .row {{ display: grid; grid-template-columns: 520px 1fr; gap: 16px; align-items: start; }}
+    .row {{ display: grid; grid-template-columns: 600px 1fr; gap: 16px; align-items: start; }}
     .cube-wrap {{ position: sticky; top: 12px; border: 1px solid #cfd7e5; border-radius: 8px; padding: 10px; background: #fbfcff; }}
-    svg {{ width: 100%; height: 470px; display: block; }}
+    svg {{ width: 100%; height: 540px; display: block; }}
     .skill-card--short {{ background: #f0f2f5; border-color: #c8cdd6; opacity: 0.6; }}
     .skills {{ overflow-x: auto; display: flex; gap: 18px; padding-bottom: 10px; }}
     .skill-card {{ flex: 0 0 330px; border: 1px solid #ccd5e3; border-radius: 8px; padding: 8px; cursor: pointer; background: #ffffff; }}
@@ -602,8 +602,8 @@ function project(c, levels) {{
   const yaw=-0.63, pitch=0.46;
   const cyaw=Math.cos(yaw), syaw=Math.sin(yaw), cp=Math.cos(pitch), sp=Math.sin(pitch);
   const xr=cyaw*xn-syaw*yn, yr=syaw*xn+cyaw*yn;
-  const scale=115;
-  return [260+xr*scale, 240+yr*scale*sp-zn*scale*cp, yr*cp+zn*sp];
+  const scale=140;
+  return [300+xr*scale, 275+yr*scale*sp-zn*scale*cp, yr*cp+zn*sp];
 }}
 
 function renderCube(svg, selectedToken) {{
@@ -691,7 +691,7 @@ for (const ep of DATA.episodes) {{
   row.className = "row";
   const cubeWrap = document.createElement("div");
   cubeWrap.className = "cube-wrap";
-  cubeWrap.innerHTML = `<svg class="cube" viewBox="0 0 520 470"></svg>`;
+  cubeWrap.innerHTML = `<svg class="cube" viewBox="0 0 600 540"></svg>`;
   const skills = document.createElement("div");
   skills.className = "skills";
   for (const s of ep.skills) {{

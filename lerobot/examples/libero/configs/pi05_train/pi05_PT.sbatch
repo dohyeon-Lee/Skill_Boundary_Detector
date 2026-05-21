@@ -15,10 +15,10 @@
 # SBATCH --qos=base_qos
 
 #SBATCH --partition=debug
-#SBATCH --nodelist=node01
+# SBATCH --nodelist=node01
 #SBATCH --qos=big_qos
 
-#SBATCH --gres=gpu:2
+#SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=128G
 #SBATCH --time=48:00:00
@@ -34,10 +34,10 @@ HOMEDIR=/data2/dohyeon
 PROJDIR=/SBD
 
 # -------------------------------------------------------------------------------- #
-DATASET=libero_90 # libero_90 / libero_10_op1_10
-DATASET_ROOT=libero_dataset # libero_dataset / libero_small_dataset
+DATASET=libero_10_op1_10 # libero_90 / libero_10_op1_10
+DATASET_ROOT=libero_small_dataset # libero_dataset / libero_small_dataset
 BATCH_SIZE=16
-NUM_GPUS=2      # --gres=gpu:N 과 맞춰야 함
+NUM_GPUS=1      # --gres=gpu:N 과 맞춰야 함
 NUM_WORKERS=4   # shm 에러 시 0 유지, 여유 있으면 2~4로 올릴 것
 LR=$(python3 -c "print(2.5e-05 * ${NUM_GPUS})")
 # -------------------------------------------------------------------------------- #
