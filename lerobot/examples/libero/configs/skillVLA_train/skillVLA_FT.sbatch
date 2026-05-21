@@ -16,13 +16,20 @@
 set -euo pipefail
 mkdir -p logs
 
-LEROBOT_DIR=${SLURM_SUBMIT_DIR:-$(pwd)}
-CONFIG_PY=${LEROBOT_DIR}/examples/libero/configs/data_generation/pipeline_config.py
+SUBMIT_DIR=${SLURM_SUBMIT_DIR:-$(pwd)}
+CONFIG_PY=${SUBMIT_DIR}/examples/libero/configs/data_generation/pipeline_config.py
 if [ ! -f "${CONFIG_PY}" ]; then
-    echo "Could not find ${CONFIG_PY}. Submit this job from the lerobot repo root." >&2
+    CONFIG_PY=${SUBMIT_DIR}/../data_generation/pipeline_config.py
+fi
+if [ ! -f "${CONFIG_PY}" ]; then
+    echo "Could not find pipeline_config.py from ${SUBMIT_DIR}." >&2
+    echo "Submit from lerobot root or from examples/libero/configs/skillVLA_train." >&2
     exit 1
 fi
-BOOTSTRAP_PYTHON=${LEROBOT_DIR}/../.venv/bin/python
+BOOTSTRAP_PYTHON=${SUBMIT_DIR}/../.venv/bin/python
+if [ ! -x "${BOOTSTRAP_PYTHON}" ]; then
+    BOOTSTRAP_PYTHON=${SUBMIT_DIR}/../../../../../.venv/bin/python
+fi
 if [ ! -x "${BOOTSTRAP_PYTHON}" ]; then
     BOOTSTRAP_PYTHON=python3
 fi
