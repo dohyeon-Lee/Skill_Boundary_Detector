@@ -1023,6 +1023,8 @@ class SkillVLAPolicy(PI05Policy):
         self._episode_timestep : int           = 0
         self._skill_trace      : list[dict]    = []
         self._active_skill_trace_indices: list[int | None] = []
+        self._prev_skill_decoder_state: Tensor | None = None
+        self._last_executed_gripper: dict[int, float] = {}
         n_forced = len(self._forced_skill_token_sequences) if hasattr(self, "_forced_skill_token_sequences") else 0
         self._forced_skill_token_cursors: list[int] = [0] * n_forced
         n_ref = len(self._reference_skill_token_sequences) if hasattr(self, "_reference_skill_token_sequences") else 0
@@ -1161,13 +1163,56 @@ class SkillVLAPolicy(PI05Policy):
                 }
             )
 
+    def _record_state_delta(self, state: Tensor) -> None:
+        """Record actual state delta (state_t - state_{t-1}) using same dims as FSQ decoder."""
+        indices = self.config.skill_decoder_state_indices
+        if indices is not None:
+            idx = torch.as_tensor(indices, dtype=torch.long, device=state.device)
+            sel = state.index_select(-1, idx).detach().float().cpu()
+        else:
+            vae = getattr(self.model, "vae_decoder", None)
+            expected = int(getattr(vae, "state_dim", state.shape[-1])) if vae is not None else state.shape[-1]
+            sel = state[..., :expected].detach().float().cpu()
+
+        if self._prev_skill_decoder_state is None:
+            self._prev_skill_decoder_state = sel
+            return
+
+        delta = sel - self._prev_skill_decoder_state
+        self._prev_skill_decoder_state = sel
+
+        if not self._active_skill_trace_indices:
+            return
+        deltas_list = delta.view(delta.shape[0], -1).tolist()
+        for batch_index, values in enumerate(deltas_list):
+            if batch_index >= len(self._active_skill_trace_indices):
+                continue
+            trace_index = self._active_skill_trace_indices[batch_index]
+            if trace_index is None or trace_index >= len(self._skill_trace):
+                continue
+            # Replace last dim with actual gripper action (matches FSQ training convention)
+            gripper = self._last_executed_gripper.get(batch_index)
+            if gripper is not None and len(values) > 0:
+                values = list(values[:-1]) + [gripper]
+            self._skill_trace[trace_index].setdefault("state_deltas", []).append(
+                {
+                    "episode_timestep": int(self._episode_timestep),
+                    "skill_step": int(self._skill_step),
+                    "delta": [float(v) for v in values],
+                }
+            )
+
     def record_executed_action(self, action: Tensor) -> None:
-        actions = action.detach().float().cpu().view(action.shape[0], -1).tolist()
+        actions = action.detach().float().cpu().view(action.shape[0], -1)
+        # Store last gripper action per batch element for state-delta gripper correction.
+        for b in range(actions.shape[0]):
+            self._last_executed_gripper[b] = float(actions[b, -1])
+        actions_list = actions.tolist()
         # select_action increments these counters before the env step; the action
         # being recorded belongs to the previous policy timestep.
         episode_timestep = max(0, int(self._episode_timestep) - 1)
         skill_step = max(0, int(self._skill_step) - 1)
-        for batch_index, values in enumerate(actions):
+        for batch_index, values in enumerate(actions_list):
             if batch_index >= len(self._active_skill_trace_indices):
                 continue
             trace_index = self._active_skill_trace_indices[batch_index]
@@ -1330,6 +1375,9 @@ class SkillVLAPolicy(PI05Policy):
         self._maybe_trigger_skill_end(batch, images)
 
         action = self._action_queue.popleft()
+        raw_state = batch.get("skill_decoder_state")
+        if raw_state is not None:
+            self._record_state_delta(raw_state)
         self._skill_step += 1
         self._episode_timestep += 1
         self._update_active_skill_trace_length()

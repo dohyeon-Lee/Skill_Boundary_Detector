@@ -330,7 +330,7 @@ def _ordered_trace_values(items: list[dict], value_key: str, dim: int = 7) -> np
     return arr
 
 
-def _plot_skill_action_compare(path: Path, expert_items: list[dict], decoder_items: list[dict]) -> str:
+def _plot_skill_action_compare(path: Path, state_delta_items: list[dict], decoder_items: list[dict]) -> str:
     import matplotlib
 
     matplotlib.use("Agg")
@@ -338,15 +338,15 @@ def _plot_skill_action_compare(path: Path, expert_items: list[dict], decoder_ite
 
     path.parent.mkdir(parents=True, exist_ok=True)
     labels = ["dx", "dy", "dz", "droll", "dpitch", "dyaw", "grip"]
-    expert = _ordered_trace_values(expert_items, "action", dim=7)
+    actual = _ordered_trace_values(state_delta_items, "delta", dim=7)
     decoder = _ordered_trace_values(decoder_items, "delta", dim=7)
-    length = max(len(expert), len(decoder), 1)
+    length = max(len(actual), len(decoder), 1)
     x = np.arange(length)
 
     fig, axes = plt.subplots(7, 1, figsize=(3.3, 7.4), sharex=True)
     for i, ax in enumerate(np.atleast_1d(axes)):
-        if len(expert):
-            ax.plot(np.arange(len(expert)), expert[:, i], color="#1f77b4", linewidth=1.2, label="expert")
+        if len(actual):
+            ax.plot(np.arange(len(actual)), actual[:, i], color="#1f77b4", linewidth=1.2, label="actual Δ")
         if len(decoder):
             ax.plot(np.arange(len(decoder)), decoder[:, i], color="#d62728", linewidth=1.1, linestyle="--", label="decoder")
         ax.set_ylabel(labels[i], fontsize=7)
@@ -512,7 +512,7 @@ def _write_task_skill_html(
             end_name = _save_frame_png(end_frame, assets_dir / f"{stem}_end.png")
             graph_name = _plot_skill_action_compare(
                 assets_dir / f"{stem}_actions.png",
-                skill.get("expert_actions", []),
+                skill.get("state_deltas", []),
                 skill.get("decoder_actions", []),
             )
             skill_payloads.append(
@@ -646,7 +646,7 @@ function renderCube(svg, selectedToken) {{
     pts.push({{t, p, used}});
   }}
   pts.sort((a,b) => a.p[2] - b.p[2]);
-  pts.forEach(({t, p, used}) => {{
+  pts.forEach(({{t, p, used}}) => {{
     make("circle", {{
       cx: p[0], cy: p[1], r: t === selectedToken ? 9 : (used ? 5.5 : 3.8),
       fill: t === selectedToken ? "#d62728" : (used ? "#2f6f9f" : "#d7dde8"),
