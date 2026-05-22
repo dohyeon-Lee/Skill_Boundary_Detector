@@ -24,15 +24,28 @@
 set -euo pipefail
 mkdir -p logs
 
-HOMEDIR=/data2/dohyeon
-PROJDIR=/SBD
+SUBMIT_DIR=${SLURM_SUBMIT_DIR:-$(pwd)}
+CONFIG_PY=${SUBMIT_DIR}/examples/libero/configs/data_generation/pipeline_config.py
+if [ ! -f "${CONFIG_PY}" ]; then
+  CONFIG_PY=${SUBMIT_DIR}/../pipeline_config.py
+fi
+if [ ! -f "${CONFIG_PY}" ]; then
+  echo "Could not find pipeline_config.py from ${SUBMIT_DIR}." >&2
+  echo "Submit from lerobot root or from examples/libero/configs/data_generation/4_skillVLA." >&2
+  exit 1
+fi
+BOOTSTRAP_PYTHON=${SUBMIT_DIR}/../.venv/bin/python
+if [ ! -x "${BOOTSTRAP_PYTHON}" ]; then
+  BOOTSTRAP_PYTHON=${SUBMIT_DIR}/../../../../../../.venv/bin/python
+fi
+if [ ! -x "${BOOTSTRAP_PYTHON}" ]; then
+  BOOTSTRAP_PYTHON=python3
+fi
+eval "$("${BOOTSTRAP_PYTHON}" "${CONFIG_PY}" --shell)"
 
-cd ${HOMEDIR}${PROJDIR}/lerobot
-source ${HOMEDIR}${PROJDIR}/.venv/bin/activate
+cd "${HOMEDIR}${PROJDIR}/lerobot"
+source "${HOMEDIR}${PROJDIR}/.venv/bin/activate"
 unset LD_LIBRARY_PATH
-
-CONFIG_PY=examples/libero/configs/data_generation/pipeline_config.py
-eval "$(python "${CONFIG_PY}" --shell)"
 
 FSQ_MODEL_PATH=${FSQ_SOURCE_CKPT}
 OUTPUT_DIR=${FSQ_PACKAGE_DIR}

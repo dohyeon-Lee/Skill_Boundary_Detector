@@ -34,7 +34,7 @@ eef_mode: abs
 # action_mode: single_step | chunk
 action_mode: single_step
 # decoder_image_mode: dino_flags | dino_only
-decoder_image_mode: dino_flags
+decoder_image_mode: dino_only
 
 # ── Diffusion Policy ─────────────────────────────────────────
 dp_checkpoint: "100000"
