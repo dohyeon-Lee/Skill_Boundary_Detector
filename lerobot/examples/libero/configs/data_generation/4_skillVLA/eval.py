@@ -22,7 +22,17 @@ Output:
   
   python eval.py \
   --data libero_90 \
-  --run_name libero_90_fsq555_dinov3_vits16_abs_single_step_dino_flags_FSQ_epoch0500 \
+  --run_name libero_90_fsq333_dinov3_vits16_abs_single_step_dino_flags_FSQ_epoch0500 \
+  --device auto
+  
+  python eval.py \
+  --data libero_90 \
+  --run_name libero_90_fsq333_dinov3_vits16_abs_single_step_dino_only_FSQ_epoch0500 \
+  --device auto
+  
+  python eval.py \
+  --data libero_90 \
+  --run_name libero_90_fsq555_dinov3_vits16_abs_chunk_dino_only_FSQ_epoch0500 \
   --device auto
 """
 
@@ -60,7 +70,7 @@ from codebook_visualizer import (  # noqa: E402
 )
 from decoder_eval import compute_skill_metrics, load_model, run_decode_single  # noqa: E402
 from pipeline_config import load_config  # noqa: E402
-from train_FSQ import load_dino_tokens, load_patch_flags, load_skill_files  # noqa: E402
+from train_FSQ import load_patch_flags, load_skill_files  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
@@ -123,6 +133,36 @@ def choose_device(name: str) -> str:
         print("[eval] CUDA requested but unavailable; using CPU.")
         return "cpu"
     return name
+
+
+def load_dino_tokens_eval(
+    features_path: Path,
+    metadata: list[dict],
+    eval_indices: list[int],
+) -> list:
+    """Load DINO tokens only for eval_indices using memory-mapping to avoid loading 27 GB into RAM."""
+    print(f"[eval] Loading DINO tokens (mmap) for {len(eval_indices)}/{len(metadata)} skills ...")
+    d = np.load(str(features_path), allow_pickle=False, mmap_mode="r")
+    features = d["features"]  # mmap: not read into RAM yet
+    offsets = d["offsets"].astype(np.int64)
+
+    if features.ndim == 2:
+        features = features[:, None, :]
+
+    if len(offsets) != len(metadata) + 1:
+        raise ValueError(f"Offset count {len(offsets) - 1} != skill count {len(metadata)}")
+
+    clips: list = [None] * len(metadata)
+    for i in eval_indices:
+        m = metadata[i]
+        expected = (int(m["episode_id"]), int(m["frame_start"]), int(m["frame_end"]), int(m["length"]))
+        got = (int(d["episode_id"][i]), int(d["frame_start"][i]), int(d["frame_end"][i]), int(d["length"][i]))
+        if got != expected:
+            raise ValueError(f"DINO metadata mismatch at index {i}: got {got}, expected {expected}")
+        clips[i] = features[offsets[i] : offsets[i + 1]].astype(np.float32)
+
+    print(f"[eval] DINO tokens ready — clip shape example: {clips[eval_indices[0]].shape}")
+    return clips
 
 
 def codebook_size_from_model(model) -> int:
@@ -551,12 +591,7 @@ def main() -> None:
     )
     action_dim = int(dec_targets[0].shape[-1])
     dim_labels = [f"d{i}" for i in range(action_dim - 1)] + ["grip"]
-    dec_tokens = load_dino_tokens(paths["dino_tokens"], metadata)
     n_patches = model.n_patches
-    if getattr(cfg, "decoder_image_mode", "dino_only") == "dino_flags" and paths["patch_flags"].exists():
-        patch_flags = load_patch_flags(paths["patch_flags"], metadata, n_patches=n_patches)
-    else:
-        patch_flags = [np.zeros((m["length"], n_patches, 2), dtype=np.float32) for m in metadata]
 
     lat = np.load(paths["latents"])
     latents = lat["latents"].astype(np.float32)
@@ -569,6 +604,12 @@ def main() -> None:
         eval_indices = sorted(random.sample(all_indices, args.max_eval_skills))
     else:
         eval_indices = all_indices
+
+    dec_tokens = load_dino_tokens_eval(paths["dino_tokens"], metadata, eval_indices)
+    if getattr(cfg, "decoder_image_mode", "dino_only") == "dino_flags" and paths["patch_flags"].exists():
+        patch_flags = load_patch_flags(paths["patch_flags"], metadata, n_patches=n_patches)
+    else:
+        patch_flags = [np.zeros((m["length"], n_patches, 2), dtype=np.float32) for m in metadata]
 
     by_entry_eval: dict[int, list[int]] = defaultdict(list)
     for i in eval_indices:
