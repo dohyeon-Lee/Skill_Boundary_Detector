@@ -16,6 +16,8 @@ Architecture
     Both modes then use a small Transformer encoder and learned-query pooling.
     dec_mlp (MLP D+S+H+1 → H): z + state(7D) + img_feat + normalized skill progress
     delta_head: Linear(H → A) in single_step, Linear(H → K*A) in chunk
+                — predicts dataset actions; the historical "delta" name is
+                  kept in code/checkpoints for compatibility
     end_head:   Linear(H → 1) in single_step, Linear(H → K) in chunk
                 — chunk mode predicts which slot inside the K-step chunk ends the skill
 
@@ -203,6 +205,7 @@ class SplineFSQAEConfig:
     end_loss_weight: float = 1.0
     end_pos_weight: float = 1.0
     end_threshold: float = 0.5
+    end_random_p: int = 0
     lr: float = 3e-4
     batch_size: int = 64
     epochs: int = 100
@@ -553,7 +556,10 @@ class SplineFSQDataset(Dataset):
     patch_flags: list of (T, n_patches, 2) float32 arrays — timestep-aligned
                  [is_red, is_green] flags per patch.
     states     : list of (T, 7) arrays (proprioception including gripper).
-    deltas     : list of (T, action_dim) arrays — target action deltas.
+    deltas     : list of arrays with shape at least (T, action_dim).
+                 Values are dataset actions. In chunk mode each array may extend
+                 past the current skill to the end of the episode so chunks can
+                 be supervised across skill boundaries.
     """
 
     def __init__(
@@ -572,9 +578,11 @@ class SplineFSQDataset(Dataset):
         max_length: float,
         decoder_output_mode: str = "single_step",
         chunk_size: int = 10,
+        end_random_p: int = 0,
     ) -> None:
         self.decoder_output_mode = decoder_output_mode
         self.chunk_size = chunk_size
+        self.end_random_p = max(0, int(end_random_p))
         self.max_length = max_length
         self.action_min = action_min.astype(np.float32)
         self.action_max = action_max.astype(np.float32)
@@ -592,6 +600,8 @@ class SplineFSQDataset(Dataset):
                 raise ValueError(f"dec_tokens[{i}] length {self.dec_tokens[i].shape[0]} < skill length {T}")
             if self.patch_flags[i].shape[0] < T:
                 raise ValueError(f"patch_flags[{i}] length {self.patch_flags[i].shape[0]} < skill length {T}")
+            if self.deltas[i].shape[0] < T:
+                raise ValueError(f"deltas[{i}] length {self.deltas[i].shape[0]} < skill length {T}")
             if self.patch_flags[i].ndim != 3 or self.patch_flags[i].shape[-1] != 2:
                 raise ValueError(f"patch_flags[{i}] must have shape (T, n_patches, 2), got {self.patch_flags[i].shape}")
             cp_norm = (cp - self.action_min) / (self.action_max - self.action_min + 1e-8) * 2.0 - 1.0
@@ -603,8 +613,14 @@ class SplineFSQDataset(Dataset):
 
     def __getitem__(self, idx: int) -> dict:
         T = self.lengths[idx]
-        delta = self.deltas[idx]   # (T, A)
+        delta = self.deltas[idx]   # (T_future, A), dataset actions
         tokens = self.dec_tokens[idx]  # (T, n_tokens, F)
+        T_future = len(delta)
+        end_index = T - 1
+        if self.end_random_p > 0:
+            lo = max(0, end_index - self.end_random_p)
+            hi = min(T_future - 1, end_index + self.end_random_p)
+            end_index = int(np.random.randint(lo, hi + 1))
 
         item: dict = {
             "ctrl":         torch.from_numpy(self.ctrl_pts[idx]),      # (n_control, A)
@@ -620,19 +636,23 @@ class SplineFSQDataset(Dataset):
         if self.decoder_output_mode == "single_step":
             item["delta"] = torch.from_numpy(delta[:T])   # (T, A)
             end = torch.zeros(T)
-            end[-1] = 1.0
+            # Single-step mode cannot represent "late" end labels beyond the
+            # current skill's input range, so clamp those labels to the last
+            # available skill timestep.
+            end[min(end_index, T - 1)] = 1.0
             item["end"] = end
         else:
             K, A = self.chunk_size, delta.shape[-1]
             # vectorised chunk construction
             t_idx = np.arange(T).reshape(-1, 1) + np.arange(K).reshape(1, -1)  # (T, K)
-            valid = (t_idx < T)                                                  # (T, K) bool
-            t_clamped = np.minimum(t_idx, T - 1)
+            valid = (t_idx < T_future)                                           # (T, K) bool
+            t_clamped = np.minimum(t_idx, T_future - 1)
             chunk_target = delta[t_clamped]          # (T, K, A)
             chunk_target[~valid] = 0.0
             chunk_valid = valid.astype(np.float32)   # (T, K)
-            # end flag: one slot per chunk horizon. If skill ends at t+k, slot k is 1.
-            chunk_end = (t_idx == (T - 1)).astype(np.float32)  # (T, K)
+            # Cumulative end flag: once the current skill has ended inside the
+            # chunk horizon, all later chunk slots are also marked ended.
+            chunk_end = (t_idx >= end_index).astype(np.float32)  # (T, K)
             item["delta"]       = torch.from_numpy(chunk_target)  # (T, K, A)
             item["chunk_valid"] = torch.from_numpy(chunk_valid)   # (T, K)
             item["end"]         = torch.from_numpy(chunk_end)     # (T, K)
@@ -814,13 +834,17 @@ def train_spline_fsqae(
     d_max = cfg.delta_max  if cfg.delta_max  is not None else np.concatenate(decoder_targets).max(axis=0)
 
     if cfg.end_pos_weight <= 0:
-        total_steps = sum(len(x) for x in decoder_targets)
+        skill_lengths = [len(x) for x in segments]
+        total_steps = sum(skill_lengths)
         if cfg.decoder_output_mode == "chunk":
-            positives = sum(min(cfg.chunk_size, len(x)) for x in decoder_targets)
+            positives = sum(
+                sum(max(0, cfg.chunk_size - (T - 1 - t)) for t in range(T))
+                for T in skill_lengths
+            )
             total_slots = total_steps * cfg.chunk_size
             negatives = total_slots - positives
         else:
-            positives = len(decoder_targets)
+            positives = len(segments)
             negatives = total_steps - positives
         cfg.end_pos_weight = max(1.0, float(negatives / max(1, positives)))
 
@@ -829,6 +853,7 @@ def train_spline_fsqae(
         f"n_control={cfg.n_control} fsq={cfg.fsq_levels} "
         f"hidden={cfg.hidden_dim} mode={cfg.decoder_output_mode}"
         + (f" K={cfg.chunk_size}" if cfg.decoder_output_mode == "chunk" else "")
+        + (f" end_random_p=±{cfg.end_random_p}" if cfg.end_random_p > 0 else "")
     )
 
     n_val = max(1, int(len(segments) * cfg.val_split))
@@ -838,7 +863,7 @@ def train_spline_fsqae(
     def take(xs: list, ids) -> list:
         return [xs[i] for i in ids]
 
-    def mk_ds(ids) -> SplineFSQDataset:
+    def mk_ds(ids, *, train: bool) -> SplineFSQDataset:
         return SplineFSQDataset(
             take(segments, ids),
             take(dec_tokens, ids),
@@ -850,10 +875,11 @@ def train_spline_fsqae(
             cfg.max_length,
             cfg.decoder_output_mode,
             cfg.chunk_size,
+            cfg.end_random_p if train else 0,
         )
 
-    train_loader = DataLoader(mk_ds(train_idx), batch_size=cfg.batch_size, shuffle=True,  collate_fn=collate_fsq_batch)
-    val_loader   = DataLoader(mk_ds(val_idx),   batch_size=cfg.batch_size, shuffle=False, collate_fn=collate_fsq_batch)
+    train_loader = DataLoader(mk_ds(train_idx, train=True),  batch_size=cfg.batch_size, shuffle=True,  collate_fn=collate_fsq_batch)
+    val_loader   = DataLoader(mk_ds(val_idx,   train=False), batch_size=cfg.batch_size, shuffle=False, collate_fn=collate_fsq_batch)
 
     model = SplineFSQAE(
         action_dim=action_dim,

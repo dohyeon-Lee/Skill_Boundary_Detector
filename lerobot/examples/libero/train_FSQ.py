@@ -84,6 +84,8 @@ class Args:
     end_pos_weight: float = 0.0
     """<=0: auto-computed from skill lengths."""
     end_threshold: float = 0.5
+    end_random_p: int = 0
+    """Train-time end target jitter in frames: sample boundary from [end-p, end+p]."""
 
     # ── training
     epochs: int = 5000
@@ -138,13 +140,38 @@ def _make_decoder_state(states, actions, eef_dims, gripper_idx):
     return np.concatenate([pose, gripper], axis=-1)
 
 
-def _make_target_delta(states, actions, eef_dims, gripper_idx):
-    pose = states[:, eef_dims].astype(np.float32)
-    delta = np.zeros_like(pose)
-    if len(pose) > 1:
-        delta[:-1] = pose[1:] - pose[:-1]
-    gripper = actions[:, gripper_idx:gripper_idx + 1].astype(np.float32)
-    return np.concatenate([delta, gripper], axis=-1)
+def _make_target_action(actions):
+    """Decoder target is the real dataset action_t."""
+    return actions.astype(np.float32)
+
+
+def _make_episode_future_targets(current_targets: list[np.ndarray], metadata: list[dict]) -> list[np.ndarray]:
+    """Return per-skill action targets from this skill start to the episode end.
+
+    Decoder inputs remain limited to the current skill. In chunk mode, however,
+    target slots after the current skill boundary can be supervised by the next
+    skill's actions as long as the chunk stays inside the same episode.
+    """
+    by_episode: dict[int, list[int]] = {}
+    for i, m in enumerate(metadata):
+        by_episode.setdefault(int(m["episode_id"]), []).append(i)
+
+    future_targets: list[np.ndarray | None] = [None] * len(current_targets)
+    for ids in by_episode.values():
+        ids.sort(key=lambda i: (metadata[i]["frame_start"], metadata[i]["skill_index"]))
+        for a, b in zip(ids, ids[1:]):
+            if int(metadata[a]["frame_end"]) != int(metadata[b]["frame_start"]):
+                raise ValueError(
+                    "Non-contiguous skill boundary in episode "
+                    f"{metadata[a]['episode_id']}: skill {metadata[a]['skill_index']} "
+                    f"ends at {metadata[a]['frame_end']}, next skill starts at {metadata[b]['frame_start']}."
+                )
+        episode_actions = np.concatenate([current_targets[i] for i in ids], axis=0)
+        offsets = np.cumsum([0] + [len(current_targets[i]) for i in ids])
+        for local_i, idx in enumerate(ids):
+            future_targets[idx] = episode_actions[offsets[local_i]:]
+
+    return [x if x is not None else current_targets[i] for i, x in enumerate(future_targets)]
 
 
 def load_skill_files(
@@ -165,7 +192,7 @@ def load_skill_files(
         gripper_idx = (actions.shape[-1] + gripper_action_dim) % actions.shape[-1]
         segments.append(_make_encoder_traj(states, actions, eef_dims, gripper_idx, zero_start_eef))
         dec_states.append(_make_decoder_state(states, actions, eef_dims, gripper_idx))
-        dec_targets.append(_make_target_delta(states, actions, eef_dims, gripper_idx))
+        dec_targets.append(_make_target_action(actions))
         metadata.append({
             "file":        str(f.name),
             "episode_id":  int(d["episode_id"]),
@@ -175,6 +202,8 @@ def load_skill_files(
             "frame_end":   int(d["frame_end"]),
             "length":      len(actions),
         })
+
+    dec_targets = _make_episode_future_targets(dec_targets, metadata)
 
     print(f"[FSQ] Loaded {len(segments)} skills from {skills_dir}")
     lengths = [m["length"] for m in metadata]
@@ -337,7 +366,7 @@ def main(args: Args) -> None:
     )
 
     all_enc = np.concatenate(segments)
-    all_tgt = np.concatenate(dec_targets)
+    all_tgt = np.concatenate([target[: int(m["length"])] for target, m in zip(dec_targets, metadata, strict=True)])
     action_min, action_max = all_enc.min(0), all_enc.max(0)
     delta_min,  delta_max  = all_tgt.min(0), all_tgt.max(0)
     np.savez(str(output_dir / "action_stats.npz"),
@@ -389,6 +418,7 @@ def main(args: Args) -> None:
         end_loss_weight=args.end_loss_weight,
         end_pos_weight=args.end_pos_weight,
         end_threshold=args.end_threshold,
+        end_random_p=args.end_random_p,
         lr=args.lr,
         batch_size=args.batch_size,
         grad_clip=args.grad_clip,

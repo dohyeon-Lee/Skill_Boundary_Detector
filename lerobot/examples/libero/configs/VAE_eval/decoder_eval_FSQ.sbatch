@@ -32,6 +32,7 @@ SKILLSET_DIR=${FSQ_PRECOMPUTE_DIR}/${SKILLSET}
 DECODER_MODE=single_step
 DECODER_IMAGE_MODE=dino_flags
 CHUNK_SIZE=10
+N_ACTION_STEPS=5
 FSQ_LEVELS=(5 5 5)
 ZERO_START_EEF=false
 END_THRESHOLD=0.5
@@ -111,6 +112,7 @@ PYTHONPATH=${HOMEDIR}${PROJDIR}/lerobot/src \
     --end_threshold         ${END_THRESHOLD} \
     --max_plot_samples      ${MAX_PLOT_SAMPLES} \
     --max_plot_entries      ${MAX_PLOT_ENTRIES} \
+    --n_action_steps        ${N_ACTION_STEPS} \
     --wandb_project         VAE_eval \
     --wandb_run_name        ${EXP_NAME}_decoder_${EPOCH_TAG} \
     --output_html           ${OUTPUT_HTML}

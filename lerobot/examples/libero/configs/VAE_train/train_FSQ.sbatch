@@ -38,12 +38,13 @@ FSQ_PRECOMPUTE_DIR="${DERIVED_DATA_DIR}/${DATA}_for_FSQ"
 SKILLSET_DIR="${FSQ_PRECOMPUTE_DIR}/${SKILLSET}"
 
 DECODER_MODE=single_step  # single_step | chunk
-DECODER_IMAGE_MODE=dino_only  # dino_only | dino_flags
+DECODER_IMAGE_MODE=dino_flags  # dino_only | dino_flags
 CHUNK_SIZE=10
 FSQ_LEVELS=(3 3 3)
 ZERO_START_EEF=false
 END_THRESHOLD=0.5
 END_POS_WEIGHT=1
+END_RANDOM_P=5
 DELTA_LOSS_WEIGHT=10.0
 END_LOSS_WEIGHT=10.0
 
@@ -125,6 +126,7 @@ PYTHONPATH=${HOMEDIR}${PROJDIR}/lerobot/src \
     --batch_size              64 \
     --end_threshold           ${END_THRESHOLD} \
     --end_pos_weight          ${END_POS_WEIGHT} \
+    --end_random_p            ${END_RANDOM_P} \
     --delta_loss_weight       ${DELTA_LOSS_WEIGHT} \
     --end_loss_weight         ${END_LOSS_WEIGHT} \
     --max_length              200 \

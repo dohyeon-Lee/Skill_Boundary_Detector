@@ -2,8 +2,8 @@
 FSQ-AE Decoder evaluation.
 
 Metrics per skill and per FSQ codebook index (0..124):
-  - Delta pose MSE (first-step): immediate next-action prediction accuracy
-  - Chunk MSE (chunk mode only): avg MSE across all K future steps in the chunk
+  - Action MSE (first-step): immediate action prediction accuracy
+  - Chunk Action MSE (chunk mode only): avg MSE across all valid K future steps in the chunk
   - End timing error: first step where sigmoid(end_logit) >= threshold vs GT (signed, steps)
 
 """
@@ -78,10 +78,10 @@ def run_decode_single(
     patch_flags: np.ndarray,   # (T, n_patches, 2)
     device: str,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Returns (pred_deltas, pred_end_probs).
+    """Returns (pred_actions, pred_end_probs).
 
-    single_step mode: pred_deltas (T, A)
-    chunk mode:       pred_deltas (T, K, A)
+    single_step mode: pred_actions (T, A)
+    chunk mode:       pred_actions (T, K, A)
     pred_end_probs:   (T,) in single_step, (T, K) in chunk after sigmoid
     """
     T = len(states)
@@ -98,25 +98,23 @@ def run_decode_single(
 # ── metrics ───────────────────────────────────────────────────────────────────
 
 def compute_skill_metrics(
-    pred_deltas: np.ndarray,    # (T, A) or (T, K, A)
-    gt_deltas: np.ndarray,      # (T, A)
+    pred_actions: np.ndarray,   # (T, A) or (T, K, A)
+    gt_actions: np.ndarray,     # (T_future, A); first T rows are current skill
     pred_end_probs: np.ndarray, # (T,) or (T, K)
     end_threshold: float,
-    chunk_stride: int = 1,
+    skill_length: int | None = None,
 ) -> dict:
-    T, A = gt_deltas.shape
+    T_pred = pred_actions.shape[0]
+    T_skill = int(skill_length or T_pred)
+    T_future, A = gt_actions.shape
     gdim = A - 1  # gripper is last dim
 
-    if pred_deltas.ndim == 3:
-        # chunk mode: sample every chunk_stride steps
-        sampled_t = np.arange(0, T, max(1, chunk_stride))
-        pred_d0 = pred_deltas[sampled_t, 0, :]
-        gt_d0   = gt_deltas[sampled_t]
+    if pred_actions.ndim == 3:
+        pred_d0 = pred_actions[:T_skill, 0, :]
+        gt_d0   = gt_actions[:T_skill]
     else:
-        # single_step: use all timesteps as-is
-        sampled_t = np.arange(T)
-        pred_d0 = pred_deltas
-        gt_d0   = gt_deltas
+        pred_d0 = pred_actions[:T_skill]
+        gt_d0   = gt_actions[:T_skill]
 
     err2 = (pred_d0 - gt_d0) ** 2
     mse_all     = float(np.mean(err2))
@@ -124,23 +122,24 @@ def compute_skill_metrics(
     mse_eef     = float(np.mean(err2[:, :gdim]))
     mse_grip    = float(np.mean(err2[:, gdim]))
 
-    # chunk MSE: pred[t,k] vs gt[t+k] at sampled timesteps only
+    # chunk MSE: pred[t,k] vs gt[t+k]. Targets may cross skill
+    # boundaries; only slots past the episode end are invalid.
     chunk_mse = None
-    if pred_deltas.ndim == 3:
-        K = pred_deltas.shape[1]
-        t_idx = sampled_t[:, None] + np.arange(K)[None, :]  # (S, K)
-        valid = (t_idx < T)
-        gt_exp = gt_deltas[np.minimum(t_idx, T - 1)]         # (S, K, A)
-        pred_s = pred_deltas[sampled_t]                       # (S, K, A)
+    if pred_actions.ndim == 3:
+        K = pred_actions.shape[1]
+        t_idx = np.arange(T_skill)[:, None] + np.arange(K)[None, :]  # (T, K)
+        valid = (t_idx < T_future)
+        gt_exp = gt_actions[np.minimum(t_idx, T_future - 1)]         # (T, K, A)
+        pred_s = pred_actions[:T_skill]                              # (T, K, A)
         chunk_err = ((pred_s - gt_exp) ** 2) * valid[..., None]
         n_valid = valid.sum() * A
         chunk_mse = float(chunk_err.sum() / n_valid) if n_valid > 0 else 0.0
 
     # end timing
-    gt_end_t = T - 1
+    gt_end_t = T_skill - 1
     if pred_end_probs.ndim == 2:
         K = pred_end_probs.shape[1]
-        abs_t = np.arange(T)[:, None] + np.arange(K)[None, :]
+        abs_t = np.arange(T_skill)[:, None] + np.arange(K)[None, :]
         hits_2d = np.argwhere(pred_end_probs >= end_threshold)
         missed = len(hits_2d) == 0
         if missed:
@@ -158,10 +157,10 @@ def compute_skill_metrics(
     prob = np.clip(pred_end_probs, 1e-8, 1.0 - 1e-8)
     if pred_end_probs.ndim == 2:
         K = pred_end_probs.shape[1]
-        tgt_idx = np.arange(T)[:, None] + np.arange(K)[None, :]
-        tgt = (tgt_idx == gt_end_t).astype(np.float32)
+        tgt_idx = np.arange(T_skill)[:, None] + np.arange(K)[None, :]
+        tgt = (tgt_idx >= gt_end_t).astype(np.float32)
     else:
-        tgt  = np.zeros(T, np.float32); tgt[gt_end_t] = 1.0
+        tgt  = np.zeros(T_skill, np.float32); tgt[gt_end_t] = 1.0
     end_bce = float(np.mean(-(tgt * np.log(prob) + (1.0 - tgt) * np.log(1.0 - prob))))
     end_acc = float(np.mean((pred_end_probs >= end_threshold) == (tgt > 0.5)))
 
@@ -176,7 +175,7 @@ def compute_skill_metrics(
         "end_acc":     end_acc,
         "end_missed":  float(missed),
         "pred_end_t":  pred_end_t,
-        "length":      T,
+        "length":      T_skill,
     }
     if chunk_mse is not None:
         result["chunk_mse"] = chunk_mse
@@ -195,22 +194,30 @@ def make_skill_plot(traj: dict, dim_labels: list[str], skill_idx: int) -> str:
     T = len(traj["gt"])
     t_full = np.arange(T)
 
-    pred_chunks = traj.get("pred_chunks")  # (S, K, A) or None
-    sampled_t   = traj.get("sampled_t")   # (S,) or None
-    K           = traj.get("K")
+    chunk_starts = traj.get("chunk_starts")
+    pred_chunks = traj.get("pred_chunks")
+    is_chunk = chunk_starts is not None and pred_chunks is not None
 
     for d, (ax, label) in enumerate(zip(axes[:, 0], dim_labels)):
         ax.plot(t_full, traj["gt"][:, d], color="#1976D2", linewidth=0.9, label="GT")
-        if pred_chunks is not None:
-            # chunk mode: draw K-step segments starting at each sampled timestep
-            for si, t0 in enumerate(sampled_t):
-                t_seg = t0 + np.arange(K)
-                valid = t_seg < T
-                lbl = "Pred" if si == 0 else None
-                ax.plot(t_seg[valid], pred_chunks[si, valid, d],
-                        color="#D32F2F", linewidth=0.7, alpha=0.65, label=lbl)
+        if is_chunk:
+            for j, (start, chunk) in enumerate(zip(chunk_starts, pred_chunks)):
+                x = start + np.arange(chunk.shape[0])
+                valid = x < T
+                if not np.any(valid):
+                    continue
+                ax.plot(
+                    x[valid],
+                    chunk[: int(valid.sum()), d],
+                    color="#D32F2F",
+                    linewidth=0.8,
+                    alpha=0.55,
+                    linestyle="--",
+                    label="Pred chunk" if j == 0 else None,
+                )
         else:
-            ax.plot(t_full, traj["pred"][:, d], color="#D32F2F", linewidth=0.9, linestyle="--", label="Pred")
+            ax.plot(np.arange(len(traj["pred"])), traj["pred"][:, d],
+                    color="#D32F2F", linewidth=0.9, linestyle="--", label="Pred")
         ax.set_ylabel(label, fontsize=7, rotation=0, labelpad=28)
         ax.tick_params(labelsize=6)
         ax.yaxis.set_major_locator(plt.MaxNLocator(3))
@@ -255,7 +262,7 @@ _HTML = """\
 <h2>FSQ-AE Decoder Evaluation</h2>
 <div class="summary">{summary}</div>
 <div class="chart-box">
-  <h4>Delta Pose MSE per Codebook Entry &nbsp;<span style="font-weight:normal;font-size:11px;color:#888">(first-step, lower=better)</span></h4>
+  <h4>Action MSE per Codebook Entry &nbsp;<span style="font-weight:normal;font-size:11px;color:#888">(first-step, lower=better)</span></h4>
   <canvas id="c1"></canvas>
 </div>
 <div class="chart-box">
@@ -323,11 +330,11 @@ function showPanel(tok) {{
   const dimRows = d.mse_per_dim.map((v,i)=>[`&nbsp;&nbsp;MSE ${{DIM_LABELS[i]}}`, v.toExponential(3)]);
   const rows = [
     ['# skills',               COUNTS[tok]],
-    ['Delta MSE (first-step)', d.mse_all.toExponential(3)],
-    ['Delta MSE EEF',          d.mse_eef.toExponential(3)],
-    ['Delta MSE Gripper',      d.mse_grip.toExponential(3)],
+    ['Action MSE (first-step)', d.mse_all.toExponential(3)],
+    ['Action MSE first 6D',     d.mse_eef.toExponential(3)],
+    ['Action MSE Gripper',      d.mse_grip.toExponential(3)],
     ...dimRows,
-    ...(IS_CHUNK && d.chunk_mse != null ? [['Chunk MSE (all K)', d.chunk_mse.toExponential(3)]] : []),
+    ...(IS_CHUNK && d.chunk_mse != null ? [['Chunk Action MSE (valid K)', d.chunk_mse.toExponential(3)]] : []),
     ['|Timing error| (steps)', d.timing_abs.toFixed(2)],
     ['Timing error (signed)',  d.timing_err_signed.toFixed(2)],
     ['End accuracy',           d.end_acc.toFixed(3)],
@@ -427,9 +434,9 @@ def log_wandb(per_skill: list[dict], tokens: np.ndarray, html_path: Path, is_chu
     timing      = [m["timing_err"] for m in per_skill]
     timing_a    = [m["timing_abs"] for m in per_skill]
     log_dict = {
-        "eval/delta_mse_mean":      float(np.mean(mse_all)),
-        "eval/delta_mse_eef":       float(np.mean(mse_eef)),
-        "eval/delta_mse_grip":      float(np.mean(mse_grip)),
+        "eval/action_mse_mean":     float(np.mean(mse_all)),
+        "eval/action_mse_first6":   float(np.mean(mse_eef)),
+        "eval/action_mse_grip":     float(np.mean(mse_grip)),
         "eval/end_timing_err_mean": float(np.mean(timing)),
         "eval/end_timing_abs_mean": float(np.mean(timing_a)),
         "eval/end_bce_mean":        float(np.mean([m["end_bce"]    for m in per_skill])),
@@ -440,9 +447,9 @@ def log_wandb(per_skill: list[dict], tokens: np.ndarray, html_path: Path, is_chu
         "eval/num_skills":          len(per_skill),
     }
     for d, label in enumerate(dim_labels):
-        log_dict[f"eval/delta_mse_{label}"] = float(np.mean(mse_per_dim[:, d]))
+        log_dict[f"eval/action_mse_{label}"] = float(np.mean(mse_per_dim[:, d]))
     if is_chunk and "chunk_mse" in per_skill[0]:
-        log_dict["eval/chunk_mse_mean"] = float(np.mean([m["chunk_mse"] for m in per_skill]))
+        log_dict["eval/chunk_action_mse_mean"] = float(np.mean([m["chunk_mse"] for m in per_skill]))
     wandb.log(log_dict)
     wandb.log({"eval/visualizer": wandb.Html(str(html_path), inject=False)})
     wandb.finish()
@@ -469,6 +476,8 @@ def parse_args():
     p.add_argument("--max_plot_samples", type=int, default=20)
     p.add_argument("--max_plot_entries", type=int, default=20,
                    help="Only render trajectory images for this many most-populated entries. 0 = all entries.")
+    p.add_argument("--n_action_steps", type=int, default=0,
+                   help="Chunk-mode plot stride. 0 = use model chunk_size.")
     p.add_argument("--output_html",     default="")
     p.add_argument("--end_threshold",   type=float, default=None)
     p.add_argument("--wandb_project",   default="VAE_eval")
@@ -496,7 +505,8 @@ def main():
     )
     N = len(segments)
     A = dec_targets[0].shape[-1]
-    dim_labels = [f"d{i}" for i in range(A - 1)] + ["grip"]
+    dim_labels = [f"a{i}" for i in range(A - 1)] + ["grip"]
+    chunk_plot_stride = max(1, int(args.n_action_steps or cfg.chunk_size))
 
     print("[EVAL] Loading DINO tokens …")
     if args.dino_features:
@@ -524,7 +534,7 @@ def main():
     for i in tqdm(range(N)):
         T        = int(metadata[i]["length"])
         states_i = dec_states[i][:T]
-        gt_d_i   = dec_targets[i][:T]
+        gt_i     = dec_targets[i]
         z_q_i    = latents[i]                      # (D,)
         dtok_i   = dec_tokens_list[i][:T]          # (T, n_tok, F)
         pf_i     = patch_flags_list[i][:T]         # (T, n_patches, 2)
@@ -537,21 +547,20 @@ def main():
 
         if pred_d.ndim == 3:
             K = pred_d.shape[1]
-            chunk_stride = max(1, K // 2)
-            sampled_t = np.arange(0, T, chunk_stride)
-            metrics = compute_skill_metrics(pred_d, gt_d_i, pred_p, end_threshold, chunk_stride=chunk_stride)
+            sampled_t = np.arange(0, T, chunk_plot_stride)
+            target_len = min(len(gt_i), T + K - 1)
+            metrics = compute_skill_metrics(pred_d, gt_i, pred_p, end_threshold, skill_length=T)
             per_skill.append(metrics)
             per_skill_trajs.append({
-                "gt":          gt_d_i,
-                "pred":        pred_d[sampled_t, 0, :],
+                "gt":          gt_i[:target_len],
+                "pred":        None,
                 "pred_chunks": pred_d[sampled_t],   # (S, K, A)
-                "sampled_t":   sampled_t,
-                "K":           K,
+                "chunk_starts": sampled_t.tolist(),
             })
         else:
-            metrics = compute_skill_metrics(pred_d, gt_d_i, pred_p, end_threshold)
+            metrics = compute_skill_metrics(pred_d, gt_i, pred_p, end_threshold, skill_length=T)
             per_skill.append(metrics)
-            per_skill_trajs.append({"gt": gt_d_i, "pred": pred_d, "pred_chunks": None, "sampled_t": None, "K": None})
+            per_skill_trajs.append({"gt": gt_i[:T], "pred": pred_d[:T]})
 
     mse_all  = np.mean([m["mse_all"]    for m in per_skill])
     mse_eef  = np.mean([m["mse_eef"]    for m in per_skill])
@@ -566,13 +575,13 @@ def main():
     late     = np.mean([m["timing_err"] > 0 for m in per_skill])
     chunk_str = ""
     if is_chunk and "chunk_mse" in per_skill[0]:
-        chunk_str = f"  ChunkMSE={np.mean([m['chunk_mse'] for m in per_skill]):.4f}"
+        chunk_str = f"  ChunkActionMSE={np.mean([m['chunk_mse'] for m in per_skill]):.4f}  plot_stride={chunk_plot_stride}"
 
     mse_dims = "  ".join(f"{l}={v:.4f}" for l, v in
                          zip(dim_labels, np.mean([m["mse_per_dim"] for m in per_skill], axis=0)))
     summary = (
         f"N={N}  mode={cfg.decoder_output_mode}  |  "
-        f"ΔPose MSE={mse_all:.4f} (EEF={mse_eef:.4f} grip={mse_grip:.4f})  [{mse_dims}]{chunk_str}  |  "
+        f"Action MSE={mse_all:.4f} (first6={mse_eef:.4f} grip={mse_grip:.4f})  [{mse_dims}]{chunk_str}  |  "
         f"End@{end_threshold:.2f} |err|={t_abs:.2f}steps  mean={t_mean:+.2f}±{t_std:.2f}  "
         f"early={early:.1%} late={late:.1%} missed={missed:.1%}  |  "
         f"EndAcc={end_acc:.3f} EndBCE={end_bce:.3f}"
