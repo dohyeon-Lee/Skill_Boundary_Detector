@@ -32,9 +32,9 @@ fsq_model_data: libero_90
 # eef_mode: abs | zero
 eef_mode: abs
 # action_mode: single_step | chunk
-action_mode: single_step
+action_mode: chunk
 # decoder_image_mode: dino_flags | dino_only
-decoder_image_mode: dino_only
+decoder_image_mode: dino_flags
 
 # ── Diffusion Policy ─────────────────────────────────────────
 dp_checkpoint: "100000"

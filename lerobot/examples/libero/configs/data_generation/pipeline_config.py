@@ -3,7 +3,7 @@
 
 설정 방법:
   1. pipeline_config.yaml 의 값을 직접 수정한다  ← 기본 방법
-  2. 환경변수로 override 한다 (yaml 값보다 우선)  ← sbatch --export 사용 시
+  2. 환경변수로 override 한다 (일반 값만; homedir/projdir는 yaml 우선)
 
 이 파일이 관리하는 것: 어떤 artifact를 쓸지 (경로 파생)
 이 파일이 관리하지 않는 것: DP/FSQ 학습 하이퍼파라미터
@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import math
 import os
 import shlex
@@ -28,10 +29,37 @@ _YAML_PATH = Path(__file__).parent / "pipeline_config.yaml"
 
 
 def _load_yaml() -> dict:
-    if not _YAML_AVAILABLE or not _YAML_PATH.exists():
+    if not _YAML_PATH.exists():
         return {}
     with open(_YAML_PATH) as f:
-        return yaml.safe_load(f) or {}
+        text = f.read()
+    if _YAML_AVAILABLE:
+        return yaml.safe_load(text) or {}
+
+    # Minimal flat-YAML fallback for bootstrap interpreters without PyYAML.
+    # This config intentionally uses only top-level scalar/list values.
+    out: dict = {}
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        key = key.strip()
+        value = value.strip()
+        if " #" in value:
+            value = value.split(" #", 1)[0].rstrip()
+        if value == "":
+            out[key] = ""
+            continue
+        low = value.lower()
+        if low in {"true", "false"}:
+            out[key] = low == "true"
+            continue
+        try:
+            out[key] = ast.literal_eval(value)
+        except (SyntaxError, ValueError):
+            out[key] = value.strip("\"'")
+    return out
 
 
 def _get(yaml_cfg: dict, key: str, default) -> str:
@@ -42,6 +70,21 @@ def _get(yaml_cfg: dict, key: str, default) -> str:
     val = yaml_cfg.get(key)
     if val is not None:
         return str(val)
+    return str(default)
+
+
+def _get_yaml_first(yaml_cfg: dict, key: str, default) -> str:
+    """yaml > 환경변수 > default.
+
+    Use this for root paths so inherited Slurm environment variables do not
+    accidentally point jobs at another checkout.
+    """
+    val = yaml_cfg.get(key)
+    if val is not None:
+        return str(val)
+    env_key = key.upper()
+    if env_key in os.environ:
+        return os.environ[env_key]
     return str(default)
 
 
@@ -189,8 +232,8 @@ class PipelineConfig:
 def load_config(data: str | None = None) -> PipelineConfig:
     y = _load_yaml()
 
-    homedir = _get(y, "homedir", "/data2/dohyeon")
-    projdir = _get(y, "projdir", "/SBD")
+    homedir = _get_yaml_first(y, "homedir", "/data2/dohyeon")
+    projdir = _get_yaml_first(y, "projdir", "/SBD")
     datadir = _get(y, "datadir", "libero_dataset")
     data_name = data or _get(y, "data", "libero_90")
     if data_name.endswith("_skillvla"):
