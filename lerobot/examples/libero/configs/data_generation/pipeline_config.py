@@ -172,6 +172,16 @@ class PipelineConfig:
     dp_policy: str
     dp_policy_path: str
     dino_feature_dir: str
+    dp_n_obs_steps: int
+    dp_n_action_steps: int
+    dp_horizon: int
+    dp_batch_size: int
+    dp_num_workers: int
+    dp_save_freq: int
+    dp_dino_feature_dim: int
+    dp_dino_visual_feature_dim: int
+    dp_dino_transformer_n_layers: int
+    dp_dino_transformer_n_heads: int
 
     block_lang: bool
 
@@ -220,9 +230,12 @@ def load_config(data: str | None = None) -> PipelineConfig:
 
     skillset = _get(y, "skillset", f"{data_name}_skillset")
     dp_checkpoint = _get(y, "dp_checkpoint", "080000")
+    dp_n_obs_steps = _get_int(y, "dp_n_obs_steps", 10)
+    dp_n_action_steps = _get_int(y, "dp_n_action_steps", 16)
+    dp_horizon = _get_int(y, "dp_horizon", 16)
     dp_policy = _get(
         y, "dp_policy",
-        f"dp_{data_name}_dino_{image_feature_tag}_pg{patch_grid}_obs10_horizon16",
+        f"dp_{data_name}_dino_{image_feature_tag}_pg{patch_grid}_obs{dp_n_obs_steps}_horizon{dp_horizon}",
     )
 
     sam2_ckpt_default = f"{root}/models/sam2/sam2.1_hiera_large.pt"
@@ -289,6 +302,16 @@ def load_config(data: str | None = None) -> PipelineConfig:
         dp_policy=dp_policy,
         dp_policy_path=f"{root}/outputs/{dp_policy}/checkpoints/{dp_checkpoint}/pretrained_model",
         dino_feature_dir=f"{data_dir}/{data_name}_DINO/{image_feature_tag}_pg{patch_grid}",
+        dp_n_obs_steps=dp_n_obs_steps,
+        dp_n_action_steps=dp_n_action_steps,
+        dp_horizon=dp_horizon,
+        dp_batch_size=_get_int(y, "dp_batch_size", 64),
+        dp_num_workers=_get_int(y, "dp_num_workers", 4),
+        dp_save_freq=_get_int(y, "dp_save_freq", 5000),
+        dp_dino_feature_dim=_get_int(y, "dp_dino_feature_dim", 384),
+        dp_dino_visual_feature_dim=_get_int(y, "dp_dino_visual_feature_dim", 256),
+        dp_dino_transformer_n_layers=_get_int(y, "dp_dino_transformer_n_layers", 1),
+        dp_dino_transformer_n_heads=_get_int(y, "dp_dino_transformer_n_heads", 4),
         block_lang=_get_bool(y, "block_lang", True),
     )
 

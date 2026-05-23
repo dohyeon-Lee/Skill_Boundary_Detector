@@ -1,7 +1,23 @@
 #!/usr/bin/env bash
+#
+# Stage 2: build a skillset dataset from the raw LIBERO demonstrations.
+#
+# Inputs come from examples/libero/configs/data_generation/pipeline_config.yaml:
+#   - RAW_DATASET_DIR : ${HOMEDIR}${PROJDIR}/${DATADIR}/${DATA}
+#   - DP_POLICY_PATH  : trained DINO-DP checkpoint used for VF boundary analysis
+#   - DINO_FEATURE_DIR: frame-level DINO tokens from Stage 1_DINO
+#
+# Output:
+#   ${SKILLSET_DIR}/skills/taskXX/*.npz
+#
+# With the default yaml this is:
+#   /data2/dohyeon/SBD/libero_dataset/libero_90_data/libero_90_for_FSQ/libero_90_skillset/skills/
+#
+# Each .npz stores one segmented skill:
+#   actions, states, episode_id, task_id, skill_index, frame_start, frame_end
+#
 #SBATCH --job-name=DP_skill
 
-# SBATCH --partition=suma_a6000,asus_6000ada,asus_pro6000,suma_rtx4090,big_suma_rtx3090,base_suma_rtx3090
 # SBATCH --exclude=node19,node13,node18,node16,node08,node10,node21,node14,node04,node05,node31
 # SBATCH --qos=base_qos
 
@@ -18,23 +34,40 @@
 set -euo pipefail
 mkdir -p logs
 
-HOMEDIR=/data2/dohyeon
-PROJDIR=/SBD
+SUBMIT_DIR=${SLURM_SUBMIT_DIR:-$(pwd)}
+CONFIG_PY=${SUBMIT_DIR}/examples/libero/configs/data_generation/pipeline_config.py
+if [ ! -f "${CONFIG_PY}" ]; then
+    CONFIG_PY=${SUBMIT_DIR}/../pipeline_config.py
+fi
+if [ ! -f "${CONFIG_PY}" ]; then
+    echo "Could not find pipeline_config.py from ${SUBMIT_DIR}." >&2
+    echo "Submit from lerobot root or from examples/libero/configs/data_generation/2_skillset." >&2
+    exit 1
+fi
+BOOTSTRAP_PYTHON=${SUBMIT_DIR}/../.venv/bin/python
+if [ ! -x "${BOOTSTRAP_PYTHON}" ]; then
+    BOOTSTRAP_PYTHON=${SUBMIT_DIR}/../../../../../.venv/bin/python
+fi
+if [ ! -x "${BOOTSTRAP_PYTHON}" ]; then
+    BOOTSTRAP_PYTHON=python3
+fi
+if [ -n "${BUILD_DATA:-}" ]; then
+    eval "$("${BOOTSTRAP_PYTHON}" "${CONFIG_PY}" --shell --data "${BUILD_DATA}")"
+else
+    eval "$("${BOOTSTRAP_PYTHON}" "${CONFIG_PY}" --shell)"
+fi
 
-cd ${HOMEDIR}${PROJDIR}/lerobot
-source ${HOMEDIR}${PROJDIR}/.venv/bin/activate
+cd "${HOMEDIR}${PROJDIR}/lerobot"
+source "${HOMEDIR}${PROJDIR}/.venv/bin/activate"
 
-export WANDB_CACHE_DIR=${HOMEDIR}${PROJDIR}/.wandb_cache
-export WANDB_DATA_DIR=${HOMEDIR}${PROJDIR}/.wandb_data
-mkdir -p ${WANDB_CACHE_DIR} ${WANDB_DATA_DIR}
+export WANDB_CACHE_DIR=${WANDB_CACHE_DIR:-${HOMEDIR}/.wandb_cache}
+export WANDB_DATA_DIR=${WANDB_DATA_DIR:-${HOMEDIR}/.wandb_data}
+mkdir -p "${WANDB_CACHE_DIR}" "${WANDB_DATA_DIR}"
 
 echo "START JOB"
-echo "Node: $SLURMD_NODENAME"
-echo "Array Task ID: $SLURM_ARRAY_TASK_ID"
+echo "Node: ${SLURMD_NODENAME:-local}"
+echo "Array Task ID: ${SLURM_ARRAY_TASK_ID:-0}"
 nvidia-smi
-
-CONFIG_PY=examples/libero/configs/data_generation/pipeline_config.py
-eval "$(python "${CONFIG_PY}" --shell)"
 
 # ── Skill division hyperparameters ───────────────────────────────────────────
 DN_STEP=7
@@ -63,7 +96,7 @@ WANDB_PROJECT=Skill_dataset
 # libero_90: array=0-14, MAX_TASK_ID=72, TASKS_PER_JOB=5.
 MAX_TASK_ID=72
 TASKS_PER_JOB=5
-START_TASK=$(( SLURM_ARRAY_TASK_ID * TASKS_PER_JOB ))
+START_TASK=$(( ${SLURM_ARRAY_TASK_ID:-0} * TASKS_PER_JOB ))
 END_TASK=$(( START_TASK + TASKS_PER_JOB - 1 ))
 
 TASK_IDS=""
@@ -76,10 +109,10 @@ done
 
 echo "Processing tasks:${TASK_IDS}"
 
-WANDB_RUN_NAME=array${SLURM_ARRAY_TASK_ID}_tasks${START_TASK}-${END_TASK}
+WANDB_RUN_NAME=${DATASET}_skillset_array${SLURM_ARRAY_TASK_ID:-0}_tasks${START_TASK}-${END_TASK}
 
-WANDB_MODE=online \
-WANDB_DIR=${OUTPUT_DIR} \
+export WANDB_MODE=${WANDB_MODE:-online}
+export WANDB_DIR=${WANDB_DIR:-${OUTPUT_DIR}}
 
 PYTHONPATH=${HOMEDIR}${PROJDIR}/lerobot/src \
   python examples/libero/build_skill_dataset.py \
@@ -100,4 +133,4 @@ PYTHONPATH=${HOMEDIR}${PROJDIR}/lerobot/src \
     --wandb_project ${WANDB_PROJECT} \
     --wandb_run_name ${WANDB_RUN_NAME}
 
-echo "DONE array ${SLURM_ARRAY_TASK_ID}"
+echo "DONE array ${SLURM_ARRAY_TASK_ID:-0}"

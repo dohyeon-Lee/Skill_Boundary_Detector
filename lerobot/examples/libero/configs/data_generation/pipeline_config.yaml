@@ -38,6 +38,16 @@ decoder_image_mode: dino_only
 
 # ── Diffusion Policy ─────────────────────────────────────────
 dp_checkpoint: "100000"
+dp_n_obs_steps: 10
+dp_n_action_steps: 16
+dp_horizon: 16
+dp_batch_size: 64
+dp_num_workers: 4
+dp_save_freq: 5000
+dp_dino_feature_dim: 384
+dp_dino_visual_feature_dim: 256
+dp_dino_transformer_n_layers: 1
+dp_dino_transformer_n_heads: 4
 
 # ── SkillVLA 데이터셋 생성 ───────────────────────────────────
 max_order: 0
