@@ -37,7 +37,7 @@ FSQ_LEVELS=(5 5 5)
 ZERO_START_EEF=false
 END_THRESHOLD=0.5
 MAX_PLOT_SAMPLES=5
-MAX_PLOT_ENTRIES=20
+MAX_PLOT_ENTRIES=0   # 0 = render plots for every active FSQ entry
 
 source examples/libero/configs/VAE_train/visual_backbone.sh
 resolve_visual_backbone

@@ -190,7 +190,7 @@ def make_skill_plot(traj: dict, dim_labels: list[str], skill_idx: int) -> str:
     import matplotlib.pyplot as plt
 
     D = len(dim_labels)
-    fig, axes = plt.subplots(D, 1, figsize=(3.0, 1.2 * D), squeeze=False)
+    fig, axes = plt.subplots(D, 1, figsize=(8.5, 1.55 * D), squeeze=False)
     T = len(traj["gt"])
     t_full = np.arange(T)
 
@@ -199,7 +199,7 @@ def make_skill_plot(traj: dict, dim_labels: list[str], skill_idx: int) -> str:
     is_chunk = chunk_starts is not None and pred_chunks is not None
 
     for d, (ax, label) in enumerate(zip(axes[:, 0], dim_labels)):
-        ax.plot(t_full, traj["gt"][:, d], color="#1976D2", linewidth=0.9, label="GT")
+        ax.plot(t_full, traj["gt"][:, d], color="#0D47A1", linewidth=1.6, label="GT", zorder=3)
         if is_chunk:
             for j, (start, chunk) in enumerate(zip(chunk_starts, pred_chunks)):
                 x = start + np.arange(chunk.shape[0])
@@ -209,25 +209,27 @@ def make_skill_plot(traj: dict, dim_labels: list[str], skill_idx: int) -> str:
                 ax.plot(
                     x[valid],
                     chunk[: int(valid.sum()), d],
-                    color="#D32F2F",
-                    linewidth=0.8,
-                    alpha=0.55,
+                    color="#B71C1C",
+                    linewidth=1.7,
+                    alpha=0.92,
                     linestyle="--",
                     label="Pred chunk" if j == 0 else None,
+                    zorder=4,
                 )
         else:
             ax.plot(np.arange(len(traj["pred"])), traj["pred"][:, d],
-                    color="#D32F2F", linewidth=0.9, linestyle="--", label="Pred")
-        ax.set_ylabel(label, fontsize=7, rotation=0, labelpad=28)
-        ax.tick_params(labelsize=6)
+                    color="#B71C1C", linewidth=1.8, alpha=0.96, linestyle="--", label="Pred", zorder=4)
+        ax.grid(True, color="#e8e8e8", linewidth=0.7)
+        ax.set_ylabel(label, fontsize=9, rotation=0, labelpad=34)
+        ax.tick_params(labelsize=8)
         ax.yaxis.set_major_locator(plt.MaxNLocator(3))
         if d < D - 1:
             ax.set_xticks([])
-    axes[0, 0].set_title(f"skill {skill_idx}", fontsize=8)
-    axes[0, 0].legend(fontsize=6, loc="upper right", framealpha=0.6)
-    fig.tight_layout(h_pad=0.3)
+    axes[0, 0].set_title(f"skill {skill_idx}", fontsize=10)
+    axes[0, 0].legend(fontsize=8, loc="upper right", framealpha=0.8)
+    fig.tight_layout(h_pad=0.35)
     buf = io.BytesIO()
-    fig.savefig(buf, format="jpeg", dpi=70, bbox_inches="tight", pil_kwargs={"quality": 55})
+    fig.savefig(buf, format="jpeg", dpi=120, bbox_inches="tight", pil_kwargs={"quality": 90})
     plt.close(fig)
     return base64.b64encode(buf.getvalue()).decode()
 
@@ -253,9 +255,10 @@ _HTML = """\
   th,td {{ border:1px solid #e0e0e0; padding:4px 8px; text-align:right; }}
   th {{ background:#f0f0f0; text-align:center; font-weight:600; }}
   td:first-child {{ text-align:left; }}
-  #skill-imgs {{ display:flex; flex-wrap:nowrap; overflow-x:auto; gap:6px; margin-top:10px; padding-bottom:4px; }}
-  .skill-img-wrap {{ flex-shrink:0; text-align:center; font-size:9px; color:#666; }}
-  .skill-img-wrap img {{ display:block; width:120px; }}
+  #skill-imgs {{ display:flex; flex-wrap:nowrap; overflow-x:auto; gap:14px; margin-top:12px; padding-bottom:8px; }}
+  .skill-img-wrap {{ flex-shrink:0; text-align:center; font-size:11px; color:#555; }}
+  .skill-img-wrap img {{ display:block; width:min(760px, 86vw); border:1px solid #ddd; border-radius:4px; background:#fff; }}
+  .empty-plots {{ color:#777; font-size:12px; padding:10px; border:1px dashed #ccc; border-radius:4px; background:#fafafa; }}
 </style>
 </head>
 <body>
@@ -346,9 +349,9 @@ function showPanel(tok) {{
     '<tr><th>Metric</th><th>Value</th></tr>' +
     rows.map(([k,v])=>`<tr><td>${{k}}</td><td>${{v}}</td></tr>`).join('');
   const imgs = ENTRY_IMGS[tok] || [];
-  document.getElementById('skill-imgs').innerHTML = imgs.map((b64,i)=>
-    `<div class="skill-img-wrap">sk${{i}}<img src="data:image/jpeg;base64,${{b64}}"></div>`
-  ).join('');
+  document.getElementById('skill-imgs').innerHTML = imgs.length
+    ? imgs.map((b64,i)=>`<div class="skill-img-wrap">sample ${{i}}<img src="data:image/jpeg;base64,${{b64}}"></div>`).join('')
+    : '<div class="empty-plots">No trajectory plot was pre-rendered for this entry. Increase --max_plot_entries or set it to 0.</div>';
   document.getElementById('panel').style.display='block';
   document.getElementById('panel').scrollIntoView({{behavior:'smooth',block:'nearest'}});
 }}
