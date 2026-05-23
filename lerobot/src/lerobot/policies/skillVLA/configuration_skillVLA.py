@@ -23,14 +23,8 @@ class SkillVLAConfig(PI05Config):
     skill_predictor_num_query_tokens: int = 4
     skill_predictor_dropout: float = 0.0
     skill_predictor_num_embeddings: int = 125   # FSQ code count; inferred from skill_fsq_levels/checkpoint when possible.
-    # "context": Paligemma contextual prefix hidden states. "embs": raw embed_prefix token embeddings.
-    skill_predictor_prefix_source: str = "context"
     skill_predictor_loss_weight: float = 1.0
 
-    predicted_latent_sampling: bool = False
-    predicted_latent_start_step: int = 0
-    predicted_latent_ramp_steps: int = 20_000
-    predicted_latent_max_prob: float = 1.0
     skill_boundary_random_p: int = 0
     """Maximum simulated end-signal timing error in steps. 0 disables boundary randomization."""
 

@@ -65,7 +65,7 @@ for level in "${FSQ_LEVELS[@]}"; do
   FSQ_CODEBOOK_SIZE=$((FSQ_CODEBOOK_SIZE * level))
 done
 if [ "${DECODER_MODE}" = "chunk" ]; then
-  MODE_TAG="chunkK${CHUNK_SIZE}"
+  MODE_TAG="chunk"
 else
   MODE_TAG="single_step"
 fi

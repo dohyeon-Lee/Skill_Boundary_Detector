@@ -47,6 +47,8 @@ inference_skill_max_length: 200
 skill_decoder_state_indices: "[0,1,2,3,4,5,6]"
 
 # ── SkillVLA 학습 ────────────────────────────────────────────
+# skill predictor prefix는 embed_prefix raw embeddings 고정입니다.
+# context/embs 선택 분기는 코드와 sbatch에서 제거했습니다.
 # true: action expert가 language 토큰 대신 image/state prefix 토큰에 attend
 block_lang: false
 

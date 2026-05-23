@@ -73,10 +73,8 @@ SKILL_HTML_TRAIN_SAMPLES=${SKILL_HTML_TRAIN_SAMPLES:-10}
 # ── SkillVLA checkpoint ──────────────────────────────────────────────────────
 # If MODEL is unset, this evaluates the PT run implied by pipeline_config.yaml.
 # For FT checkpoints, set MODEL and CHECKPOINT here or via sbatch --export.
-SP_PREFIX_SOURCE=${SP_PREFIX_SOURCE:-embs}
-PREDICTED_LATENT_SAMPLING=${PREDICTED_LATENT_SAMPLING:-true}
 FSQ_RUN_TAG=${FSQ_RUN#${FSQ_MODEL_DATA}_}
-MODEL=${MODEL:-PT_${SKILLVLA_DATASET}_${FSQ_RUN_TAG}_${PREDICTED_LATENT_SAMPLING}_${SP_PREFIX_SOURCE}}
+MODEL=${MODEL:-PT_${SKILLVLA_DATASET}_${FSQ_RUN_TAG}}
 CHECKPOINT=${CHECKPOINT:-025000}
 POLICY_PATH=${POLICY_PATH:-${HOMEDIR}${PROJDIR}/outputs/${MODEL}/checkpoints/${CHECKPOINT}/pretrained_model}
 

@@ -7,9 +7,9 @@ class SkillPredictor(nn.Module):
 
     Previous skill token, normalized skill index, and normalized skill progress
     are projected into condition tokens. Learned skill query tokens attend over
-    those condition tokens and contextual Paligemma prefix hidden states.
+    those condition tokens and raw embed_prefix token embeddings.
 
-    Input  : z_prev (B, skill_latent_dim), prefix hidden states, prefix pad mask,
+    Input  : z_prev (B, skill_latent_dim), prefix embeddings, prefix pad mask,
              skill_index (B,), skill_progress (B,)
     Output : logits (B, fsq_dim, fsq_level) — dim-wise cross-entropy target
     """

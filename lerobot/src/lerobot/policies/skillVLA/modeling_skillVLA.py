@@ -101,9 +101,6 @@ class SkillVLAPytorch(PI05Pytorch):
 
         self.vae_decoder = None
         self.special_skill_embeddings = nn.Embedding(3, config.skill_latent_dim)
-        self.register_buffer("_predicted_latent_train_step", torch.zeros((), dtype=torch.long), persistent=False)
-        self._last_predicted_latent_prob = 0.0
-        self._last_predicted_latent_fraction = 0.0
         self._last_sp_loss_components: dict[str, float] = {}
         self._last_skill_decoder_components: dict[str, float] = {}
         if config.vae_decoder_path:
@@ -217,7 +214,7 @@ class SkillVLAPytorch(PI05Pytorch):
         return out
 
     def _safe_real_tokens(self, tokens: Tensor, fallback: Tensor) -> Tensor:
-        """Use fallback when scheduled sampling predicts a special token."""
+        """Use fallback when a token is BOS/EOS/PAD but FSQ z is required."""
         tokens = tokens.view(-1).long()
         fallback = fallback.view(-1).long()
         valid = (tokens >= 0) & (tokens < self.config.skill_predictor_num_embeddings)
@@ -292,29 +289,6 @@ class SkillVLAPytorch(PI05Pytorch):
         )
         return prefix_context, past_key_values
 
-    def get_skill_predictor_prefix(
-        self,
-        prefix_embs: Tensor,
-        prefix_pad_masks: Tensor,
-        prefix_att_masks: Tensor,
-        *,
-        use_cache: bool = False,
-    ):
-        prefix_source = self.config.skill_predictor_prefix_source
-        if prefix_source == "context":
-            return self.contextualize_prefix(
-                prefix_embs,
-                prefix_pad_masks,
-                prefix_att_masks,
-                use_cache=use_cache,
-            )
-        if prefix_source == "embs":
-            return prefix_embs, None
-        raise ValueError(
-            "Unsupported skill_predictor_prefix_source="
-            f"{prefix_source!r}. Expected 'context' or 'embs'."
-        )
-
     # ── embed_suffix override: inject z ──────────────────────────────────────
 
     def embed_suffix(self, noisy_actions: Tensor, timestep: Tensor, z: Tensor | None = None):
@@ -330,45 +304,6 @@ class SkillVLAPytorch(PI05Pytorch):
             pad_masks = torch.cat([z_pad, pad_masks], dim=1)
             att_masks = torch.cat([z_att, att_masks], dim=1)
         return embs, pad_masks, att_masks, adarms_cond
-
-    def _predicted_latent_prob(self, train_step: int | None) -> float:
-        if not self.config.predicted_latent_sampling:
-            return 0.0
-        step = 0 if train_step is None else train_step
-        if step < self.config.predicted_latent_start_step:
-            return 0.0
-        max_prob = float(self.config.predicted_latent_max_prob)
-        if self.config.predicted_latent_ramp_steps <= 0:
-            return max(0.0, min(1.0, max_prob))
-        progress = (step - self.config.predicted_latent_start_step) / self.config.predicted_latent_ramp_steps
-        return max(0.0, min(1.0, max_prob * progress))
-
-    def _sample_tokens_for_action(
-        self,
-        label_tokens: Tensor,
-        z_pred: Tensor | None,
-        fallback_tokens: Tensor,
-        train_step: int | None,
-    ) -> tuple[Tensor, Tensor]:
-        """Scheduled-sample real FSQ tokens for action expert and skill decoder."""
-        self._last_predicted_latent_prob = 0.0
-        self._last_predicted_latent_fraction = 0.0
-        label_tokens = label_tokens.view(-1).long()
-        fallback_tokens = fallback_tokens.view(-1).long()
-        use_pred = torch.zeros(label_tokens.shape[0], dtype=torch.bool, device=label_tokens.device)
-        if z_pred is None:
-            return label_tokens, use_pred
-
-        prob = self._predicted_latent_prob(train_step)
-        self._last_predicted_latent_prob = prob
-        if prob <= 0.0:
-            return label_tokens, use_pred
-
-        pred_tokens = self._fsq_logits_to_token(z_pred.detach())
-        pred_tokens = self._safe_real_tokens(pred_tokens, fallback_tokens)
-        use_pred = torch.rand(label_tokens.shape[0], device=label_tokens.device) < prob
-        self._last_predicted_latent_fraction = float(use_pred.float().mean().item())
-        return torch.where(use_pred, pred_tokens, label_tokens), use_pred
 
     def _gather_skill_sequence(self, sequence: Tensor, index: Tensor) -> Tensor:
         index = index.view(-1).long().clamp(0, sequence.shape[1] - 1)
@@ -455,9 +390,7 @@ class SkillVLAPytorch(PI05Pytorch):
             "predictor_target": predictor_target,
             "action_label_token": current,
             "shifted_action_token": shifted_action_token,
-            "decoder_label_progress": ds.float() / max_length,
             "shifted_decoder_progress": shifted_decoder_progress,
-            "decoder_label_target": skill_boundary.view(-1).float(),
             "shifted_decoder_target": shifted_decoder_target,
         }
 
@@ -652,7 +585,6 @@ class SkillVLAPytorch(PI05Pytorch):
         noise            : Tensor | None = None,
         time             : Tensor | None = None,
         detach_sp_prefix : bool          = True,   # False → sp_loss gradient flows into VLM
-        train_step       : int | None    = None,
     ) -> tuple[Tensor, Tensor, Tensor]:
         """Returns (flow_loss [B,chunk,max_dim], skill_predictor_loss, skill_decoder_loss)."""
         for name in (
@@ -699,13 +631,7 @@ class SkillVLAPytorch(PI05Pytorch):
             skill_max_length,
         )
         predictor_input_z = self._skill_token_embedding(skill_targets["predictor_input_token"]).to(actions.device)
-        skill_predictor_prefix, _ = self.get_skill_predictor_prefix(
-            prefix_embs,
-            prefix_pad_masks,
-            prefix_att_masks,
-            use_cache=False,
-        )
-        sp_prefix = skill_predictor_prefix.detach() if detach_sp_prefix else skill_predictor_prefix
+        sp_prefix = prefix_embs.detach() if detach_sp_prefix else prefix_embs
         z_pred = self.skill_predictor(
             predictor_input_z.float(),
             sp_prefix,
@@ -720,33 +646,19 @@ class SkillVLAPytorch(PI05Pytorch):
             skill_targets["action_label_token"].to(actions.device),
             zero_fallback,
         )
-        shifted_action_tokens = self._safe_real_tokens(
+        action_tokens = self._safe_real_tokens(
             skill_targets["shifted_action_token"].to(actions.device),
             action_label_tokens,
         )
-        sampled_tokens, use_pred_mask = self._sample_tokens_for_action(
-            action_label_tokens,
-            z_pred,
-            shifted_action_tokens,
-            train_step,
-        )
-        z_for_action = self._token_to_z(sampled_tokens).to(actions.device)
+        z_for_action = self._token_to_z(action_tokens).to(actions.device)
 
-        decoder_progress = torch.where(
-            use_pred_mask,
-            skill_targets["shifted_decoder_progress"].to(actions.device),
-            skill_targets["decoder_label_progress"].to(actions.device),
-        )
-        decoder_target = torch.where(
-            use_pred_mask,
-            skill_targets["shifted_decoder_target"].to(actions.device),
-            skill_targets["decoder_label_target"].to(actions.device),
-        )
+        decoder_progress = skill_targets["shifted_decoder_progress"].to(actions.device)
+        decoder_target = skill_targets["shifted_decoder_target"].to(actions.device)
         if self.config.freeze_vae_decoder:
             skill_decoder_loss = torch.tensor(0.0, device=actions.device)
         else:
             skill_decoder_loss = self._skill_decoder_end_loss(
-                sampled_tokens,
+                action_tokens,
                 skill_decoder_state,
                 skill_decoder_image,
                 decoder_progress,
@@ -946,7 +858,6 @@ class SkillVLAPolicy(PI05Policy):
 
         actions           = self.prepare_action(batch)
         lang_to_action_masks = batch.get(OBS_LANG_TO_ACTION_ATTENTION_MASK)
-        train_step = int(self.model._predicted_latent_train_step.item())
         skill_decoder_state = batch.get("skill_decoder_state")
         if skill_decoder_state is None:
             raise ValueError(
@@ -973,10 +884,7 @@ class SkillVLAPolicy(PI05Policy):
             skill_decoder_image=skill_decoder_image,
             lang_to_action_masks=lang_to_action_masks,
             detach_sp_prefix=False,
-            train_step=train_step,
         )
-        if self.training:
-            self.model._predicted_latent_train_step.add_(1)
 
         action_dim  = self.config.output_features[ACTION].shape[0]
         flow_losses = flow_losses[:, :, :action_dim]
@@ -995,8 +903,6 @@ class SkillVLAPolicy(PI05Policy):
             "loss_skill_predictor":        sp_loss.item(),
             "loss_skill_decoder":          sd_loss.item(),
             "n_skill_boundaries_in_batch": n_boundaries,
-            "predicted_latent_prob":        self.model._last_predicted_latent_prob,
-            "predicted_latent_fraction":    self.model._last_predicted_latent_fraction,
         }
         per_dim = flow_losses.mean(dim=[0, 1]).detach().cpu().tolist()
         for dim, value in enumerate(per_dim):
@@ -1343,12 +1249,6 @@ class SkillVLAPolicy(PI05Policy):
                 prefix_embs, prefix_pad_masks, prefix_att_masks = self.model.embed_prefix(
                     images, img_masks, tokens, masks, lang_to_action_masks=lang_to_action_masks
                 )
-                skill_predictor_prefix, _ = self.model.get_skill_predictor_prefix(
-                    prefix_embs,
-                    prefix_pad_masks,
-                    prefix_att_masks,
-                    use_cache=False,
-                )
                 skill_progress = torch.full(
                     (tokens.shape[0],),
                     0,
@@ -1356,7 +1256,7 @@ class SkillVLAPolicy(PI05Policy):
                     dtype=torch.float32,
                 )
                 self._update_skill(
-                    skill_predictor_prefix,
+                    prefix_embs,
                     prefix_pad_masks,
                     state,
                     skill_progress,

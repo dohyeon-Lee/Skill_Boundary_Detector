@@ -105,18 +105,8 @@ SKILL_BOUNDARY_RANDOM_P=10
 # true: action expert attends to image/state prefix tokens, not language tokens.
 # pipeline_config.yaml 의 block_lang 값에서 옵니다.
 
-# context: Paligemma prefix-only forward 이후 contextual hidden
-# embs: embed_prefix 직후 raw prefix token embedding
-SP_PREFIX_SOURCE=embs
-
-# Scheduled sampling: linearly ramp from GT token → predicted token
-PREDICTED_LATENT_SAMPLING=true
-PREDICTED_LATENT_START_STEP=0
-PREDICTED_LATENT_RAMP_STEPS=50000
-PREDICTED_LATENT_MAX_PROB=1.0
-
 FSQ_RUN_TAG=${FSQ_RUN#${FSQ_MODEL_DATA}_}
-RUN_NAME=${DATASET}_${FSQ_RUN_TAG}_${PREDICTED_LATENT_SAMPLING}_${SP_PREFIX_SOURCE}
+RUN_NAME=${DATASET}_${FSQ_RUN_TAG}
 OUTPUT_DIR=../outputs/PT_${RUN_NAME}
 CONFIG_PATH=${OUTPUT_DIR}/checkpoints/last/pretrained_model/train_config.json
 
@@ -157,7 +147,6 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes=${
     --policy.skill_decoder_dino_tokens_path=${DINO_TOKENS_PATH} \
     --policy.skill_decoder_dino_cache_path=${DINO_CACHE_PATH} \
     --policy.skill_decoder_dino_build_cache=true \
-    --policy.skill_predictor_prefix_source=${SP_PREFIX_SOURCE} \
     --policy.skill_predictor_loss_weight=${SP_LOSS_WEIGHT} \
     --policy.skill_decoder_loss_weight=${SKILL_DECODER_LOSS_WEIGHT} \
     --policy.skill_decoder_end_pos_weight=${SKILL_DECODER_END_POS_WEIGHT} \
@@ -166,10 +155,6 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes=${
     --policy.inference_skill_max_order=${INFERENCE_SKILL_MAX_ORDER} \
     --policy.inference_skill_max_length=${INFERENCE_SKILL_MAX_LENGTH} \
     --policy.skill_boundary_random_p=${SKILL_BOUNDARY_RANDOM_P} \
-    --policy.predicted_latent_sampling=${PREDICTED_LATENT_SAMPLING} \
-    --policy.predicted_latent_start_step=${PREDICTED_LATENT_START_STEP} \
-    --policy.predicted_latent_ramp_steps=${PREDICTED_LATENT_RAMP_STEPS} \
-    --policy.predicted_latent_max_prob=${PREDICTED_LATENT_MAX_PROB} \
     --save_freq=5000 \
     --steps=100000 \
     --policy.device=cuda \

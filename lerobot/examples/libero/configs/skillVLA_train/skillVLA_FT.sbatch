@@ -62,7 +62,7 @@ FT_DINO_CACHE_PATH=${FT_DINO_CACHE_PATH}
 
 # SkillVLA checkpoint trained on libero_90.
 PT_FSQ_RUN_TAG=${PT_FSQ_RUN#${PT_FSQ_MODEL_DATA}_}
-PT_RUN_NAME=PT_${PT_SKILLVLA_DATASET}_${PT_FSQ_RUN_TAG}_true_embs
+PT_RUN_NAME=PT_${PT_SKILLVLA_DATASET}_${PT_FSQ_RUN_TAG}
 PT_CHECKPOINT=025000
 BASE_POLICY=${HOMEDIR}${PROJDIR}/outputs/${PT_RUN_NAME}/checkpoints/${PT_CHECKPOINT}/pretrained_model
 
@@ -121,19 +121,8 @@ TRAIN_EXPERT_ONLY=false
 # true: action expert attends to image/state prefix tokens, not language tokens.
 # pipeline_config.yaml 의 block_lang 값에서 옵니다.
 
-# context: Paligemma prefix-only forward 이후 contextual hidden
-# embs: embed_prefix 직후 raw prefix token embedding
-SP_PREFIX_SOURCE=embs
-
-# Scheduled sampling is restarted for this fine-tuning run:
-# full teacher forcing at step 0, then gradually uses predicted tokens.
-PREDICTED_LATENT_SAMPLING=true
-PREDICTED_LATENT_START_STEP=0
-PREDICTED_LATENT_RAMP_STEPS=30000
-PREDICTED_LATENT_MAX_PROB=1.0
-
 FT_FSQ_RUN_TAG=${PT_FSQ_RUN#${PT_FSQ_MODEL_DATA}_}
-RUN_NAME=${PT_CHECKPOINT}PT_${FT_DATASET}FT_${FT_FSQ_RUN_TAG}_${PREDICTED_LATENT_SAMPLING}_${SP_PREFIX_SOURCE}_${TRAIN_EXPERT_ONLY}
+RUN_NAME=${PT_CHECKPOINT}PT_${FT_DATASET}FT_${FT_FSQ_RUN_TAG}_${TRAIN_EXPERT_ONLY}
 OUTPUT_DIR=../outputs/FT_${RUN_NAME}
 CONFIG_PATH=${OUTPUT_DIR}/checkpoints/last/pretrained_model/train_config.json
 
@@ -175,7 +164,6 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes=${
     --policy.skill_decoder_dino_tokens_path=${FT_DINO_TOKENS_PATH} \
     --policy.skill_decoder_dino_cache_path=${FT_DINO_CACHE_PATH} \
     --policy.skill_decoder_dino_build_cache=true \
-    --policy.skill_predictor_prefix_source=${SP_PREFIX_SOURCE} \
     --policy.skill_predictor_loss_weight=${SP_LOSS_WEIGHT} \
     --policy.skill_decoder_loss_weight=${SKILL_DECODER_LOSS_WEIGHT} \
     --policy.skill_decoder_end_pos_weight=${SKILL_DECODER_END_POS_WEIGHT} \
@@ -184,10 +172,6 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes=${
     --policy.inference_skill_max_order=${INFERENCE_SKILL_MAX_ORDER} \
     --policy.inference_skill_max_length=${INFERENCE_SKILL_MAX_LENGTH} \
     --policy.skill_boundary_random_p=${SKILL_BOUNDARY_RANDOM_P} \
-    --policy.predicted_latent_sampling=${PREDICTED_LATENT_SAMPLING} \
-    --policy.predicted_latent_start_step=${PREDICTED_LATENT_START_STEP} \
-    --policy.predicted_latent_ramp_steps=${PREDICTED_LATENT_RAMP_STEPS} \
-    --policy.predicted_latent_max_prob=${PREDICTED_LATENT_MAX_PROB} \
     --save_freq=2000 \
     --steps=100000 \
     --policy.device=cuda \
