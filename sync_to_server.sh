@@ -16,37 +16,43 @@ eval "$(python "${CONFIG_PY}" --shell)"
 LOCAL_BASE="${HOMEDIR}${PROJDIR}"   # /data2/dohyeon/SBD
 
 # ── 전송 항목 정의 ────────────────────────────────────────────
-declare -a LABELS PATHS
+declare -a LABELS PATHS RENAMEABLE
 
-LABELS+=("DINO backbone 모델")
-PATHS+=("${IMAGE_MODEL_PATH}")
+add_item() {
+    LABELS+=("$1")
+    PATHS+=("$2")
+    RENAMEABLE+=("${3:-0}")  # 1이면 remote 폴더명 변경 prompt 제공
+}
 
-LABELS+=("SAM2 모델")
-PATHS+=("$(dirname "${SAM2_CHECKPOINT}")")   # models/sam2/ 디렉토리째
+add_item "DINO backbone 모델" "${IMAGE_MODEL_PATH}"
 
-LABELS+=("DP policy 체크포인트")
-PATHS+=("${DP_POLICY_PATH}")
+add_item "SAM2 모델" "$(dirname "${SAM2_CHECKPOINT}")"   # models/sam2/ 디렉토리째
 
-LABELS+=("FSQ source 체크포인트 (.pt)")
-PATHS+=("${FSQ_SOURCE_CKPT}")
+add_item "DP policy 체크포인트" "${DP_POLICY_PATH}"
 
-LABELS+=("FSQ 패키지 디렉토리 (FSQ.pt + skill_latents.npz)")
-PATHS+=("${FSQ_PACKAGE_DIR}")
+add_item "FSQ source 체크포인트 (.pt)" "${FSQ_SOURCE_CKPT}"
 
-LABELS+=("DINO precomputed tokens (.npz, FSQ용)")
-PATHS+=("${DINO_TOKENS_PATH}")
+add_item "FSQ 패키지 디렉토리 (FSQ.pt + skill_latents.npz)" "${FSQ_PACKAGE_DIR}"
 
-LABELS+=("DINO feature 디렉토리 (에피소드별 npz, DP eval용)")
-PATHS+=("${DINO_FEATURE_DIR}")
+add_item "DINO precomputed tokens (.npz, FSQ용)" "${DINO_TOKENS_PATH}"
 
-LABELS+=("Skillset 디렉토리")
-PATHS+=("${SKILLSET_DIR}")
+add_item "SAM2 mask 디렉토리 (FSQ dino_flags용)" "${SAM2_MASKS_DIR}"
 
-LABELS+=("SkillVLA 데이터셋")
-PATHS+=("${SKILLVLA_DATASET_DIR}")
+add_item "SAM2 patch flags (.npz, FSQ dino_flags용)" "${SAM2_FLAGS_PATH}"
 
-LABELS+=("Raw 원본 데이터셋")
-PATHS+=("${RAW_DATASET_DIR}")
+add_item "DINO feature 디렉토리 (에피소드별 npz, DP eval용)" "${DINO_FEATURE_DIR}"
+
+add_item "Skillset 디렉토리" "${SKILLSET_DIR}"
+
+add_item "SkillVLA 데이터셋" "${SKILLVLA_DATASET_DIR}"
+
+add_item "Raw 원본 데이터셋" "${RAW_DATASET_DIR}"
+
+add_item "전체 ${DATA}_DINO 디렉토리" "${DATA_DIR}/${DATA}_DINO" 1
+
+add_item "전체 ${DATA}_for_FSQ 디렉토리" "${FSQ_PRECOMPUTE_DIR}" 1
+
+add_item "전체 ${DATA}_for_skillVLA 디렉토리" "${SKILLVLA_ROOT}" 1
 
 # ── 메뉴 출력 ─────────────────────────────────────────────────
 echo ""
@@ -91,7 +97,16 @@ for idx in "${SELECTED[@]}"; do
     SRC="${PATHS[$idx]}"
     # 로컬 base를 제거하고 리모트 base로 교체
     REL="${SRC#${LOCAL_BASE}/}"
-    DST="${REMOTE}:${REMOTE_BASE}/${REL}"
+    REMOTE_REL="${REL}"
+    if [ "${RENAMEABLE[$idx]}" = "1" ] && [ -d "${SRC}" ]; then
+        DEFAULT_NAME="$(basename "${SRC}")"
+        read -r -p "  remote 폴더명 [${DEFAULT_NAME}] (${LABELS[$idx]}): " REMOTE_NAME
+        if [ -n "${REMOTE_NAME}" ]; then
+            REMOTE_PARENT="$(dirname "${REL}")"
+            REMOTE_REL="${REMOTE_PARENT}/${REMOTE_NAME}"
+        fi
+    fi
+    DST="${REMOTE}:${REMOTE_BASE}/${REMOTE_REL}"
 
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo "  [${LABELS[$idx]}]"
@@ -100,10 +115,10 @@ for idx in "${SELECTED[@]}"; do
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
     if [ -f "${SRC}" ]; then
-        ssh "${REMOTE}" "mkdir -p \"$(dirname "${REMOTE_BASE}/${REL}")\""
+        ssh "${REMOTE}" "mkdir -p \"$(dirname "${REMOTE_BASE}/${REMOTE_REL}")\""
         rsync -avzh --progress "${SRC}" "${DST}"
     elif [ -d "${SRC}" ]; then
-        ssh "${REMOTE}" "mkdir -p \"${REMOTE_BASE}/${REL}\""
+        ssh "${REMOTE}" "mkdir -p \"${REMOTE_BASE}/${REMOTE_REL}\""
         rsync -avzh --progress "${SRC}/" "${DST}/"
     else
         echo "  경고: 경로가 존재하지 않음, 건너뜀: ${SRC}" >&2
