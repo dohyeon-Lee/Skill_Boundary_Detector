@@ -2,7 +2,7 @@
 #SBATCH --job-name=FSQ_decoder_eval
 
 #SBATCH --exclude=node19,node13,node18,node16,node08,node10,node21,node14,node04,node05,node31
-#SBATCH --partition=suma_pro6000
+#SBATCH --partition=asus_pro6000
 #SBATCH --qos=pro6000_qos
 
 # SBATCH --partition=debug
@@ -19,8 +19,8 @@ set -euo pipefail
 mkdir -p logs
 
 SUBMIT_DIR=${SLURM_SUBMIT_DIR:-$(pwd)}
-CONFIG_PY=${SUBMIT_DIR}/examples/libero/configs/data_generation/pipeline_config.py
-[ ! -f "${CONFIG_PY}" ] && CONFIG_PY=${SUBMIT_DIR}/../pipeline_config.py
+CONFIG_PY=${SUBMIT_DIR}/../data_generation/pipeline_config.py
+[ ! -f "${CONFIG_PY}" ] && CONFIG_PY=${SUBMIT_DIR}/examples/libero/configs/data_generation/pipeline_config.py
 eval "$(python3 "${CONFIG_PY}" --shell | grep -E '^export (HOMEDIR|PROJDIR)=')"
 
 cd ${HOMEDIR}${PROJDIR}/lerobot
@@ -34,11 +34,11 @@ DATADIR=libero_dataset
 VISUAL_BACKBONE=dinov3_vits16
 SKILLSET=${DATA}_skillset_prev
 DERIVED_DATA_DIR=${HOMEDIR}${PROJDIR}/${DATADIR}/${DATA}_data
-FSQ_PRECOMPUTE_DIR=${DERIVED_DATA_DIR}/${DATA}_for_FSQ
+FSQ_PRECOMPUTE_DIR=${DERIVED_DATA_DIR}/${DATA}_for_FSQ_prev
 SKILLSET_DIR=${FSQ_PRECOMPUTE_DIR}/${SKILLSET}
 
 DECODER_MODE=chunk
-DECODER_IMAGE_MODE=dino_flags
+DECODER_IMAGE_MODE=dino_only
 CHUNK_SIZE=10
 FSQ_LEVELS=(5 5 5)
 ZERO_START_EEF=false
