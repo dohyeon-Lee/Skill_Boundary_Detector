@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=FSQ_train
-#SBATCH --partition=debug
-#SBATCH --nodelist=node100
-#SBATCH --qos=big_qos
+
+#SBATCH --exclude=node19,node13,node18,node16,node08,node10,node21,node14,node04,node05,node31,node28
+#SBATCH --partition=asus_pro6000
+#SBATCH --qos=pro6000_qos
+
+# SBATCH --partition=debug
+# SBATCH --nodelist=node100
+# SBATCH --qos=big_qos
+
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=12
 #SBATCH --mem=64G
@@ -12,8 +18,8 @@
 set -euo pipefail
 mkdir -p logs
 
-HOMEDIR=/data2/dohyeon
-PROJDIR=/SBD
+HOMEDIR=/scratch/mdorazi
+PROJDIR=/Skill_Boundary_Detector
 
 cd ${HOMEDIR}${PROJDIR}/lerobot
 source ${HOMEDIR}${PROJDIR}/.venv/bin/activate
@@ -32,21 +38,21 @@ nvidia-smi
 DATA=libero_90
 DATADIR=libero_dataset
 VISUAL_BACKBONE=dinov3_vits16
-SKILLSET=${DATA}_skillset
+SKILLSET=${DATA}_skillset_dino
 DERIVED_DATA_DIR=${HOMEDIR}${PROJDIR}/${DATADIR}/${DATA}_data
 FSQ_PRECOMPUTE_DIR="${DERIVED_DATA_DIR}/${DATA}_for_FSQ"
 SKILLSET_DIR="${FSQ_PRECOMPUTE_DIR}/${SKILLSET}"
 
-DECODER_MODE=single_step  # single_step | chunk
-DECODER_IMAGE_MODE=dino_flags  # dino_only | dino_flags
+DECODER_MODE=chunk  # single_step | chunk
+DECODER_IMAGE_MODE=dino_only  # dino_only | dino_flags
 CHUNK_SIZE=10
-FSQ_LEVELS=(3 3 3)
+FSQ_LEVELS=(5 5 5)
 ZERO_START_EEF=false
 END_THRESHOLD=0.5
 END_POS_WEIGHT=1
 END_RANDOM_P=5
 DELTA_LOSS_WEIGHT=10.0
-END_LOSS_WEIGHT=10.0
+END_LOSS_WEIGHT=1.0
 
 source examples/libero/configs/VAE_train/visual_backbone.sh
 resolve_visual_backbone
@@ -69,7 +75,7 @@ if [ "${DECODER_MODE}" = "chunk" ]; then
 else
   MODE_TAG="single_step"
 fi
-EXP_NAME="${DATA}_${FSQ_TAG}_${IMAGE_EXP_TAG}_${EEF_MODE}_${MODE_TAG}_${DECODER_IMAGE_MODE}"
+EXP_NAME="${DATA}_${FSQ_TAG}_${IMAGE_EXP_TAG}_${EEF_MODE}_${MODE_TAG}_${DECODER_IMAGE_MODE}_1"
 OUTPUT_DIR="${HOMEDIR}${PROJDIR}/outputs/${SKILLSET}_FSQ/${EXP_NAME}"
 
 DINO_TOKENS_PATH="${FSQ_PRECOMPUTE_DIR}/${IMAGE_FEATURE_TAG}_tokens.npz"

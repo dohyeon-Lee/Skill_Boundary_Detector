@@ -9,7 +9,7 @@ Skills are laid out horizontally with thick vertical separators. Multiple
 episodes are stacked vertically.
 
 Example:
-    python eval.py --task_id 25 --num_episodes 5
+    python eval.py --task_id 0 --num_episodes 5
 """
 
 from __future__ import annotations

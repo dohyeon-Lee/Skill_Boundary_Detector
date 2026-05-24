@@ -18,12 +18,12 @@
 #
 #SBATCH --job-name=DP_skill
 
-# SBATCH --exclude=node19,node13,node18,node16,node08,node10,node21,node14,node04,node05,node31
-# SBATCH --qos=base_qos
+#SBATCH --exclude=node19,node13,node18,node16,node08,node10,node21,node14,node04,node05,node31
+#SBATCH --qos=base_qos
 
-#SBATCH --partition=debug
-#SBATCH --nodelist=node100
-#SBATCH --qos=big_qos
+# SBATCH --partition=debug
+# SBATCH --nodelist=node100
+# SBATCH --qos=big_qos
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
