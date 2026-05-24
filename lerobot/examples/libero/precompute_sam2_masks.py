@@ -339,6 +339,19 @@ def main(args: Args) -> None:
     my_ep_ids  = all_ep_ids[args.worker_id::args.num_workers]
     print(f"[sam2_masks] episodes total={len(all_ep_ids)}, this worker={len(my_ep_ids)}")
 
+    already_done = [
+        ep_id for ep_id in my_ep_ids
+        if all(
+            (output_dir / f"task{s['task_id']}" / f"ep{ep_id:05d}_skill{s['skill_index']:03d}.npz").exists()
+            for s in ep_to_skills[ep_id]
+        )
+    ]
+    my_ep_ids = [ep_id for ep_id in my_ep_ids if ep_id not in set(already_done)]
+    print(f"[sam2_masks] already done={len(already_done)}, remaining={len(my_ep_ids)}")
+    if not my_ep_ids:
+        print("[sam2_masks] All episodes already processed. Exiting.")
+        return
+
     print("[sam2_masks] Building SAM2 ...")
     amg, img_pred, vid_pred = build_sam2_predictors(
         args.sam2_checkpoint, args.sam2_config, args.points_per_side, args.device,

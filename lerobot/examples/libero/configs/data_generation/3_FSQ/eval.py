@@ -12,7 +12,7 @@ Section 3 (Grid) : 각 스킬별로 n개 랜덤 샘플 프레임의 패치 시�
   둘 다         → 파랑  (0, 0, 255)
   없음          → DINO PCA 색상 (dino_tokens_path 미지정 시 회색)
 
-  python eval.py --task_id 1 --num_episodes 1 
+  python eval.py --task_id 5 --num_episodes 5 
   --dino_tokens_path ""
 """
 from __future__ import annotations

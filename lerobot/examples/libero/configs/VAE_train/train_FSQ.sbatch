@@ -2,7 +2,7 @@
 #SBATCH --job-name=FSQ_train
 
 #SBATCH --exclude=node19,node13,node18,node16,node08,node10,node21,node14,node04,node05,node31,node28
-#SBATCH --partition=asus_pro6000
+#SBATCH --partition=suma_pro6000 # asus_pro6000 suma_pro6000
 #SBATCH --qos=pro6000_qos
 
 # SBATCH --partition=debug
@@ -46,7 +46,7 @@ SKILLSET_DIR="${FSQ_PRECOMPUTE_DIR}/${SKILLSET}"
 DECODER_MODE=chunk  # single_step | chunk
 DECODER_IMAGE_MODE=dino_only  # dino_only | dino_flags
 CHUNK_SIZE=10
-FSQ_LEVELS=(5 5 5)
+FSQ_LEVELS=(4 4 4)
 ZERO_START_EEF=false
 END_THRESHOLD=0.5
 END_POS_WEIGHT=1

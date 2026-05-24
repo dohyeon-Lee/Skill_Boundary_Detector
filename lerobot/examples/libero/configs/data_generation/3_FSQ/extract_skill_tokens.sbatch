@@ -2,6 +2,7 @@
 # Extract skill-level DINO tokens from precomputed frame DINO features.
 # CPU-only; all paths are injected by run_dino_parallel.sh.
 #SBATCH --job-name=skill_tokens
+#SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
 #SBATCH --time=00:30:00

@@ -2,6 +2,7 @@
 # Merge per-skill SAM2 mask files into one FSQ patch-flag npz (CPU job).
 # All values are injected by run_dino_parallel.sh.
 #SBATCH --job-name=merge_SAM2_flags
+#SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=16G
 #SBATCH --time=01:00:00
