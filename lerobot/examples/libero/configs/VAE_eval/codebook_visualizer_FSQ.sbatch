@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=FSQ_codebook_vis
-#SBATCH --partition=debug
-#SBATCH --nodelist=node100
-#SBATCH --qos=big_qos
+
+#SBATCH --exclude=node19,node13,node18,node16,node08,node10,node21,node14,node04,node05,node31
+#SBATCH --partition=asus_pro6000
+#SBATCH --qos=pro6000_qos
+
+# SBATCH --partition=debug
+# SBATCH --nodelist=node100
+# SBATCH --qos=big_qos
+
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
@@ -12,24 +18,26 @@
 set -euo pipefail
 mkdir -p logs
 
-HOMEDIR=/data2/dohyeon
-PROJDIR=/SBD
+SUBMIT_DIR=${SLURM_SUBMIT_DIR:-$(pwd)}
+CONFIG_PY=${SUBMIT_DIR}/examples/libero/configs/data_generation/pipeline_config.py
+[ ! -f "${CONFIG_PY}" ] && CONFIG_PY=${SUBMIT_DIR}/../pipeline_config.py
+eval "$(python3 "${CONFIG_PY}" --shell | grep -E '^export (HOMEDIR|PROJDIR)=')"
 
 cd ${HOMEDIR}${PROJDIR}/lerobot
 source ${HOMEDIR}${PROJDIR}/.venv/bin/activate
 unset LD_LIBRARY_PATH
 
 # ── 설정 ──────────────────────────────────────────────────────────────────────
-CHECKPOINT_EPOCH=500      # 0 → best checkpoint (FSQ.pt), else FSQ_epoch{N:04d}.pt
+CHECKPOINT_EPOCH=1000      # 0 → best checkpoint (FSQ.pt), else FSQ_epoch{N:04d}.pt
 DATA=libero_90
 DATADIR=libero_dataset
 VISUAL_BACKBONE=dinov3_vits16
-SKILLSET=${DATA}_skillset
+SKILLSET=${DATA}_skillset_prev
 DERIVED_DATA_DIR=${HOMEDIR}${PROJDIR}/${DATADIR}/${DATA}_data
 FSQ_PRECOMPUTE_DIR=${DERIVED_DATA_DIR}/${DATA}_for_FSQ
 SKILLSET_DIR=${FSQ_PRECOMPUTE_DIR}/${SKILLSET}
 
-DECODER_MODE=single_step
+DECODER_MODE=chunk
 DECODER_IMAGE_MODE=dino_flags
 CHUNK_SIZE=10
 FSQ_LEVELS=(5 5 5)
@@ -46,7 +54,7 @@ for level in "${FSQ_LEVELS[@]}"; do
   FSQ_CODEBOOK_SIZE=$((FSQ_CODEBOOK_SIZE * level))
 done
 if [ "${DECODER_MODE}" = "chunk" ]; then
-  MODE_TAG="chunkK${CHUNK_SIZE}"
+  MODE_TAG="chunk"
 else
   MODE_TAG="single_step"
 fi
