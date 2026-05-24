@@ -7,6 +7,7 @@
 #SBATCH --mem=48G
 #SBATCH --time=12:00:00
 #SBATCH --requeue
+#SBATCH --exclude=node19,node13,node18,node16,node08,node10,node21,node14,node04,node05,node31,node28,cs-gpu-01
 #SBATCH --output=logs/%x_%A_%a.out
 #SBATCH --error=logs/%x_%A_%a.err
 set -euo pipefail

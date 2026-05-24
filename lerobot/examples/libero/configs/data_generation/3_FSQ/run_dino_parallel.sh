@@ -26,10 +26,12 @@ set -euo pipefail
 # EXCLUDE_NODES=("node200")
 
 PARTITIONS=(base_suma_rtx3090 dell_rtx3090 big_suma_rtx3090 suma_a6000 suma_rtx4090)
-EXCLUDE_NODES=(node19 node13 node18 node16 node08 node10 node21 node14 node04 node05 node31 node28)
+EXCLUDE_NODES=(node19 node13 node18 node16 node08 node10 node21 node14 node04 node05 node31 node28 cs-gpu-01)
 
 GPU_RESERVE=0
 GPU_MAX_PER_NODE=7
+MAX_WORKERS=40        # hard cap on SAM2 array size — raise if cluster is healthy
+RECOVERY_WORKERS=20   # workers for the recovery pass after the main array
 QOS=big_qos
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -115,7 +117,7 @@ if $USE_SAM2; then
       done
       NODE_PARTITION[$node]=${part}
       NODE_TOTAL_GPU[$node]=${total}
-    done < <(sinfo -p "${part}" -N -o "%N %G" --noheader 2>/dev/null)
+    done < <(sinfo -p "${part}" -N -t idle,alloc,mix -o "%N %G" --noheader 2>/dev/null)
   done
 
   # N_WORKERS = total GPUs across all nodes (capped per node), regardless of current availability.
@@ -134,7 +136,8 @@ if $USE_SAM2; then
     exit 1
   fi
 
-  echo "SAM2 workers to submit: ${N_WORKERS}  (queued until GPUs free)"
+  [ "${N_WORKERS}" -gt "${MAX_WORKERS}" ] && N_WORKERS="${MAX_WORKERS}"
+  echo "SAM2 workers to submit: ${N_WORKERS}  (capped at MAX_WORKERS=${MAX_WORKERS})"
   echo ""
 
   SAM2_EXPORT="${COMMON_EXPORT},N_WORKERS=${N_WORKERS}"
@@ -156,14 +159,30 @@ if $USE_SAM2; then
     precompute_sam2_masks_worker.sbatch)
   echo "SAM2 mask workers job:      ${SAM2_JOB}  (array 0–$(( N_WORKERS - 1 )), queued)"
 
+  # Recovery pass: runs after main array (even if some fail), fills in any missed episodes.
+  # Uses fewer workers + skip logic so only unprocessed episodes are touched.
+  RECOVERY_EXPORT="${COMMON_EXPORT},N_WORKERS=${RECOVERY_WORKERS}"
+  RECOVERY_EXPORT+=",SAM2_OUTPUT_DIR=${SAM2_OUTPUT_DIR},SAM2_MERGED_PATH=${SAM2_MERGED_PATH}"
+  RECOVERY_EXPORT+=",SAM2_CHECKPOINT=${SAM2_CHECKPOINT}"
+
+  RECOVERY_JOB=$(sbatch --parsable \
+    --partition="${PARTITIONS_STR}" \
+    --qos="${QOS}" \
+    "${SAM2_EXCLUDE_ARGS[@]+"${SAM2_EXCLUDE_ARGS[@]}"}" \
+    --array="0-$(( RECOVERY_WORKERS - 1 ))" \
+    --dependency="afterany:${SAM2_JOB}" \
+    --export="${RECOVERY_EXPORT}" \
+    precompute_sam2_masks_worker.sbatch)
+  echo "SAM2 recovery job:          ${RECOVERY_JOB}  (runs after main array, fills gaps)"
+
   MERGE_JOB=$(sbatch --parsable \
     --partition="${PARTITIONS_STR}" \
     --qos="${QOS}" \
     "${SAM2_EXCLUDE_ARGS[@]+"${SAM2_EXCLUDE_ARGS[@]}"}" \
-    --dependency="afterok:${SAM2_JOB}" \
+    --dependency="afterok:${RECOVERY_JOB}" \
     --export="${SAM2_EXPORT}" \
     merge_sam2_patch_flags.sbatch)
-  echo "SAM2 merge job:             ${MERGE_JOB}  (runs after all SAM2 workers finish)"
+  echo "SAM2 merge job:             ${MERGE_JOB}  (runs after recovery pass)"
 fi
 
 echo ""
