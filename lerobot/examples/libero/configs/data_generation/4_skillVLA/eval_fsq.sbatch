@@ -9,8 +9,9 @@
 #   MAX_EVAL_SKILLS=500 sbatch eval_fsq.sbatch   # 빠른 테스트용 (0 = 전체)
 
 #SBATCH --job-name=FSQ_eval
-#SBATCH --exclude=node19,node13,node18,node16,node08,node10,node21,node14,node04,node05,node31,node28
-#SBATCH --qos=big_qos
+#SBATCH --exclude=node19,node13,node18,node16,node08,node10,node21,node14,node04,node05,node31
+#SBATCH --partition=suma_a6000
+#SBATCH --qos=base_qos
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G

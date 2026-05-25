@@ -3,11 +3,11 @@
 # 환경변수가 있으면 여기 값보다 우선합니다 (sbatch --export 사용 시).
 
 # ── 디렉토리 ─────────────────────────────────────────────────
-# homedir: /scratch/mdorazi
-# projdir: /Skill_Boundary_Detector
+homedir: /scratch/mdorazi
+projdir: /Skill_Boundary_Detector
 
-homedir: /data2/dohyeon
-projdir: /SBD
+# homedir: /data2/dohyeon
+# projdir: /SBD
 
 datadir: libero_dataset #libero_small_dataset
 

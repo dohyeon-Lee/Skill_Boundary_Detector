@@ -83,7 +83,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--dino_tag", default=cfg.image_feature_tag)
     p.add_argument("--image_key", default=cfg.image_key)
     p.add_argument("--output_html", default="")
-    p.add_argument("--samples_per_entry", type=int, default=5)
+    p.add_argument("--samples_per_entry", type=int, default=10)
     p.add_argument("--max_eval_skills", type=int, default=0, help="0 = evaluate all skills; otherwise random subset.")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--thumb_size", type=int, default=120)
