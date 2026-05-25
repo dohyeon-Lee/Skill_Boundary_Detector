@@ -33,6 +33,10 @@ class SkillVLAConfig(PI05Config):
     skill_decoder_image_model_name: str | None = None
     """Override the DINO path/repo stored inside the FSQ checkpoint."""
     skill_decoder_loss_weight: float = 1.0
+    skill_decoder_delta_loss_weight: float = 10.0
+    """Weight for FSQ decoder action/chunk reconstruction loss inside skill_decoder_loss."""
+    skill_decoder_end_loss_weight: float = 1.0
+    """Weight for FSQ decoder end-signal BCE inside skill_decoder_loss."""
     skill_decoder_end_pos_weight: float = 1.0
     skill_decoder_end_threshold: float = 0.5
     skill_decoder_state_indices: list[int] | None = None

@@ -103,6 +103,8 @@ NUM_GPUS=1
 # ── SkillVLA losses / boundary randomization ────────────────────────────────
 SP_LOSS_WEIGHT=1.0
 SKILL_DECODER_LOSS_WEIGHT=1.0
+SKILL_DECODER_DELTA_LOSS_WEIGHT=10.0
+SKILL_DECODER_END_LOSS_WEIGHT=1.0
 SKILL_DECODER_END_POS_WEIGHT=1.0
 SKILL_DECODER_END_THRESHOLD=0.5
 SKILL_DECODER_STATE_INDICES=${PT_SKILL_DECODER_STATE_INDICES}
@@ -166,6 +168,8 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes=${
     --policy.skill_decoder_dino_build_cache=true \
     --policy.skill_predictor_loss_weight=${SP_LOSS_WEIGHT} \
     --policy.skill_decoder_loss_weight=${SKILL_DECODER_LOSS_WEIGHT} \
+    --policy.skill_decoder_delta_loss_weight=${SKILL_DECODER_DELTA_LOSS_WEIGHT} \
+    --policy.skill_decoder_end_loss_weight=${SKILL_DECODER_END_LOSS_WEIGHT} \
     --policy.skill_decoder_end_pos_weight=${SKILL_DECODER_END_POS_WEIGHT} \
     --policy.skill_decoder_end_threshold=${SKILL_DECODER_END_THRESHOLD} \
     --policy.skill_decoder_state_indices=${SKILL_DECODER_STATE_INDICES} \

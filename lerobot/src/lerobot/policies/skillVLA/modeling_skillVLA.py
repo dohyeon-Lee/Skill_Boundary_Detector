@@ -272,7 +272,9 @@ class SkillVLAPytorch(PI05Pytorch):
             reduction="mean",
             pos_weight=pos_w,
         )
-        total = action_loss + end_loss
+        delta_weight = float(self.config.skill_decoder_delta_loss_weight)
+        end_weight = float(self.config.skill_decoder_end_loss_weight)
+        total = delta_weight * action_loss + end_weight * end_loss
         with torch.no_grad():
             end_prob = torch.sigmoid(pred_end_logits.detach().float())
             end_pred = (end_prob >= float(self.config.skill_decoder_end_threshold)).float()
@@ -281,6 +283,8 @@ class SkillVLAPytorch(PI05Pytorch):
                 {
                     "action_loss": float(action_loss.detach().cpu()),
                     "end_loss": float(end_loss.detach().cpu()),
+                    "delta_loss_weight": delta_weight,
+                    "end_loss_weight": end_weight,
                     "end_target_pos_rate": float(end_target_f.mean().cpu()),
                     "end_pred_pos_rate": float(end_pred.mean().cpu()),
                     "end_prob_mean": float(end_prob.mean().cpu()),
