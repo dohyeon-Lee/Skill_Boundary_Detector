@@ -53,8 +53,10 @@ class SkillVLAConfig(PI05Config):
     inference_skill_max_order: int = 8
     inference_skill_max_length: int = 200
 
-    # If True, action expert cannot attend to language tokens (only image tokens).
+    # If True, block action expert attention to language tokens; False keeps full prefix attention.
     block_lang_to_action: bool = True
+    detach_action_prefix_grad: bool = False
+    """If True, flow/action loss uses prefix attention but does not update VLM/prefix parameters."""
 
     # Eval-only oracle mode: bypass the skill predictor and feed dataset label
     # skill tokens to the action expert / FSQ end decoder.

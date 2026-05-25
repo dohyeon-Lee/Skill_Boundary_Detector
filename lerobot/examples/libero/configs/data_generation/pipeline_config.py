@@ -227,6 +227,7 @@ class PipelineConfig:
     dp_dino_transformer_n_heads: int
 
     block_lang: bool
+    detach_action_prefix_grad: bool
 
 
 def load_config(data: str | None = None) -> PipelineConfig:
@@ -356,6 +357,7 @@ def load_config(data: str | None = None) -> PipelineConfig:
         dp_dino_transformer_n_layers=_get_int(y, "dp_dino_transformer_n_layers", 1),
         dp_dino_transformer_n_heads=_get_int(y, "dp_dino_transformer_n_heads", 4),
         block_lang=_get_bool(y, "block_lang", True),
+        detach_action_prefix_grad=_get_bool(y, "detach_action_prefix_grad", False),
     )
 
 

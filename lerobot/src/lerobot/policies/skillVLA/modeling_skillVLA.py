@@ -995,43 +995,53 @@ class SkillVLAPytorch(PI05Pytorch):
         x_t = time_exp * source + (1 - time_exp) * actions
         u_t = source - actions
 
-        suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = self.embed_suffix(
-            x_t, time, z=z_for_action
-        )
-
-        if (
-            self.paligemma_with_expert.paligemma.model.language_model
-            .layers[0].self_attn.q_proj.weight.dtype == torch.bfloat16
-        ):
-            suffix_embs = suffix_embs.to(torch.bfloat16)
-            prefix_embs = prefix_embs.to(torch.bfloat16)
-
-        pad_masks     = torch.cat([prefix_pad_masks, suffix_pad_masks], dim=1)
-        att_masks     = torch.cat([prefix_att_masks, suffix_att_masks], dim=1)
-        att_2d_masks  = make_att_2d_masks(pad_masks, att_masks)
-        if self.config.block_lang_to_action:
-            att_2d_masks = self._block_lang_attention(
-                att_2d_masks, prefix_pad_masks.shape[1], lang_to_action_masks=lang_to_action_masks
+        if self.config.detach_action_prefix_grad:
+            with torch.no_grad():
+                _, past_key_values = self.contextualize_prefix(
+                    prefix_embs.detach(),
+                    prefix_pad_masks,
+                    prefix_att_masks,
+                    use_cache=True,
+                )
+            v_t = self.denoise_step(prefix_pad_masks, past_key_values, x_t, time, z=z_for_action)
+        else:
+            suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = self.embed_suffix(
+                x_t, time, z=z_for_action
             )
-        position_ids  = torch.cumsum(pad_masks, dim=1) - 1
-        att_2d_masks_4d = self._prepare_attention_masks_4d(att_2d_masks)
 
-        def _fwd(prefix_embs, suffix_embs, att_2d_masks_4d, position_ids, adarms_cond):
-            (_, suffix_out), _ = self.paligemma_with_expert.forward(
-                attention_mask  = att_2d_masks_4d,
-                position_ids    = position_ids,
-                past_key_values = None,
-                inputs_embeds   = [prefix_embs, suffix_embs],
-                use_cache       = False,
-                adarms_cond     = [None, adarms_cond],
+            if (
+                self.paligemma_with_expert.paligemma.model.language_model
+                .layers[0].self_attn.q_proj.weight.dtype == torch.bfloat16
+            ):
+                suffix_embs = suffix_embs.to(torch.bfloat16)
+                prefix_embs = prefix_embs.to(torch.bfloat16)
+
+            pad_masks     = torch.cat([prefix_pad_masks, suffix_pad_masks], dim=1)
+            att_masks     = torch.cat([prefix_att_masks, suffix_att_masks], dim=1)
+            att_2d_masks  = make_att_2d_masks(pad_masks, att_masks)
+            if self.config.block_lang_to_action:
+                att_2d_masks = self._block_lang_attention(
+                    att_2d_masks, prefix_pad_masks.shape[1], lang_to_action_masks=lang_to_action_masks
+                )
+            position_ids  = torch.cumsum(pad_masks, dim=1) - 1
+            att_2d_masks_4d = self._prepare_attention_masks_4d(att_2d_masks)
+
+            def _fwd(prefix_embs, suffix_embs, att_2d_masks_4d, position_ids, adarms_cond):
+                (_, suffix_out), _ = self.paligemma_with_expert.forward(
+                    attention_mask  = att_2d_masks_4d,
+                    position_ids    = position_ids,
+                    past_key_values = None,
+                    inputs_embeds   = [prefix_embs, suffix_embs],
+                    use_cache       = False,
+                    adarms_cond     = [None, adarms_cond],
+                )
+                return suffix_out
+
+            suffix_out = self._apply_checkpoint(
+                _fwd, prefix_embs, suffix_embs, att_2d_masks_4d, position_ids, adarms_cond
             )
-            return suffix_out
-
-        suffix_out = self._apply_checkpoint(
-            _fwd, prefix_embs, suffix_embs, att_2d_masks_4d, position_ids, adarms_cond
-        )
-        suffix_out = suffix_out[:, -self.config.chunk_size:].to(torch.float32)
-        v_t        = self._apply_checkpoint(self.action_out_proj, suffix_out)
+            suffix_out = suffix_out[:, -self.config.chunk_size:].to(torch.float32)
+            v_t        = self._apply_checkpoint(self.action_out_proj, suffix_out)
         flow_loss  = F.mse_loss(u_t, v_t, reduction="none")
 
         return flow_loss, sp_loss, skill_decoder_loss
@@ -1232,6 +1242,7 @@ class SkillVLAPolicy(PI05Policy):
             "loss_skill_predictor":        sp_loss.item(),
             "loss_skill_decoder":          sd_loss.item(),
             "n_skill_boundaries_in_batch": n_boundaries,
+            "detach_action_prefix_grad":   float(self.config.detach_action_prefix_grad),
         }
         per_dim = flow_losses.mean(dim=[0, 1]).detach().cpu().tolist()
         for dim, value in enumerate(per_dim):

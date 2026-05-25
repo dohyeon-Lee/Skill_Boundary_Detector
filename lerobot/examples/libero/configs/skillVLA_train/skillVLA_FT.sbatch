@@ -120,8 +120,10 @@ FREEZE_VISION_ENCODER=true
 # their own freeze flags.
 TRAIN_EXPERT_ONLY=false
 
-# true: action expert attends to image/state prefix tokens, not language tokens.
+# BLOCK_LANG=true이면 action expert의 language-token attention을 막습니다.
+# false이면 action expert가 language + image/state prefix 전체를 볼 수 있습니다.
 # pipeline_config.yaml 의 block_lang 값에서 옵니다.
+# DETACH_ACTION_PREFIX_GRAD=true이면 action flow loss는 prefix/VLM 경로를 업데이트하지 않습니다.
 
 FT_FSQ_RUN_TAG=${PT_FSQ_RUN#${PT_FSQ_MODEL_DATA}_}
 RUN_NAME=${PT_CHECKPOINT}PT_${FT_DATASET}FT_${FT_FSQ_RUN_TAG}_${TRAIN_EXPERT_ONLY}
@@ -157,6 +159,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes=${
     --policy.train_expert_only=${TRAIN_EXPERT_ONLY} \
     --policy.push_to_hub=false \
     --policy.block_lang_to_action=${BLOCK_LANG} \
+    --policy.detach_action_prefix_grad=${DETACH_ACTION_PREFIX_GRAD} \
     --policy.vae_decoder_path=${FSQ_CKPT} \
     --policy.skill_decoder_image_model_name=${FSQ_IMAGE_MODEL_PATH} \
     --policy.freeze_vae_decoder=${FREEZE_VAE_DECODER} \

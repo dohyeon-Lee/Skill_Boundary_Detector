@@ -3,11 +3,11 @@
 # 환경변수가 있으면 여기 값보다 우선합니다 (sbatch --export 사용 시).
 
 # ── 디렉토리 ─────────────────────────────────────────────────
-homedir: /scratch/mdorazi
-projdir: /Skill_Boundary_Detector
+# homedir: /scratch/mdorazi
+# projdir: /Skill_Boundary_Detector
 
-# homedir: /data2/dohyeon
-# projdir: /SBD
+homedir: /data2/dohyeon
+projdir: /SBD
 
 datadir: libero_dataset #libero_small_dataset
 
@@ -59,8 +59,11 @@ skill_decoder_state_indices: "[0,1,2,3,4,5,6]"
 # ── SkillVLA 학습 ────────────────────────────────────────────
 # skill predictor prefix는 embed_prefix raw embeddings 고정입니다.
 # context/embs 선택 분기는 코드와 sbatch에서 제거했습니다.
-# true: action expert가 language 토큰 대신 image/state prefix 토큰에 attend
+# true: action expert의 language-token attention을 막고 image/state prefix만 보게 함
+# false: action expert가 language + image/state prefix 전체를 볼 수 있음
 block_lang: false
+# true: action expert는 prefix에 attend하지만 flow/action loss gradient는 VLM prefix 경로로 보내지 않음
+detach_action_prefix_grad: true
 
 # ── SAM2 ────────────────────────────────────────────────────
 # 비워두면 기본 경로 사용: {homedir}{projdir}/models/sam2/sam2.1_hiera_large.pt
