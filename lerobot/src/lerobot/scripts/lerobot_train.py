@@ -455,6 +455,7 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                     "loss", "grad_norm", "lr", "epochs", "episodes",
                     "dataloading_s",
                     "loss_skill_decoder", "loss_flow", "loss_skill_predictor",
+                    "loss_skill_decoder_action_loss", "loss_skill_decoder_end_loss",
                     "predicted_latent_prob",
                 }
                 wandb_log_dict = {k: v for k, v in wandb_log_dict.items() if k in _wandb_keep}

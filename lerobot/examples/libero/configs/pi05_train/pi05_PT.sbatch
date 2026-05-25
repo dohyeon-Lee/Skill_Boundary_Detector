@@ -15,7 +15,7 @@
 # SBATCH --qos=base_qos
 
 #SBATCH --partition=debug
-# SBATCH --nodelist=node01
+#SBATCH --nodelist=node200
 #SBATCH --qos=big_qos
 
 #SBATCH --gres=gpu:1
@@ -27,18 +27,18 @@
 set -euo pipefail
 mkdir -p logs
 
-# HOMEDIR=/scratch/mdorazi
-# PROJDIR=/Skill_Boundary_Detector
-
-HOMEDIR=/data2/dohyeon
-PROJDIR=/SBD
+SUBMIT_DIR=${SLURM_SUBMIT_DIR:-$(pwd)}
+CONFIG_PY=${SUBMIT_DIR}/../data_generation/pipeline_config.py
+[ ! -f "${CONFIG_PY}" ] && CONFIG_PY=${SUBMIT_DIR}/examples/libero/configs/data_generation/pipeline_config.py
+eval "$(python3 "${CONFIG_PY}" --shell | grep -E '^export (HOMEDIR|PROJDIR)=')"
 
 # -------------------------------------------------------------------------------- #
 DATASET=libero_90 # libero_90 / libero_10_op1_10
 DATASET_ROOT=libero_dataset # libero_dataset / libero_small_dataset
-BATCH_SIZE=16
+BATCH_SIZE=32
 NUM_GPUS=1      # --gres=gpu:N 과 맞춰야 함
 NUM_WORKERS=4   # shm 에러 시 0 유지, 여유 있으면 2~4로 올릴 것
+EXP=${EXP:-exp1}
 LR=$(python3 -c "print(2.5e-05 * ${NUM_GPUS})")
 # -------------------------------------------------------------------------------- #
 
@@ -69,9 +69,14 @@ done
 
 
 
-CONFIG_PATH=../outputs/pi05_${DATASET}_batch${BATCH_SIZE}/checkpoints/last/pretrained_model/train_config.json
+VLA_OUTPUT_ROOT=${HOMEDIR}${PROJDIR}/VLA_outputs
+RUN_NAME=PT_${DATASET}_pi05_batch${BATCH_SIZE}
+if [ -n "${EXP}" ]; then
+    RUN_NAME=${RUN_NAME}_${EXP}
+fi
+OUTPUT_DIR=${VLA_OUTPUT_ROOT}/${RUN_NAME}
+CONFIG_PATH=${OUTPUT_DIR}/checkpoints/last/pretrained_model/train_config.json
 
-OUTPUT_DIR=../outputs/pi05_${DATASET}_batch${BATCH_SIZE}
 RESUME_ARGS=""
 if [ -f "${CONFIG_PATH}" ]; then
     echo "Checkpoint found. Resuming from ${CONFIG_PATH}"
@@ -88,7 +93,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes=${
     --dataset.root=${HOMEDIR}${PROJDIR}/${DATASET_ROOT}/${DATASET} \
     --policy.type=pi05 \
     --output_dir=${OUTPUT_DIR} \
-    --job_name=pi05_PT_${DATASET} \
+    --job_name=${RUN_NAME} \
     --policy.pretrained_path=lerobot/pi05_base \
     --policy.compile_model=false \
     --policy.gradient_checkpointing=true \

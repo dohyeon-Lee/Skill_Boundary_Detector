@@ -61,10 +61,21 @@ FT_DINO_TOKENS_PATH=${FT_DINO_TOKENS_PATH}
 FT_DINO_CACHE_PATH=${FT_DINO_CACHE_PATH}
 
 # SkillVLA checkpoint trained on libero_90.
-PT_FSQ_RUN_TAG=${PT_FSQ_RUN#${PT_FSQ_MODEL_DATA}_}
-PT_RUN_NAME=PT_${PT_SKILLVLA_DATASET}_${PT_FSQ_RUN_TAG}
+VLA_OUTPUT_ROOT=${HOMEDIR}${PROJDIR}/VLA_outputs
+PT_BATCH_SIZE=${PT_BATCH_SIZE:-32}
+PT_EXP=${PT_EXP:-}
+PT_FSQ_TAG=fsq${PT_FSQ_LEVELS_STR// /}
+if [ "${PT_BLOCK_LANG}" = "true" ]; then
+    PT_BLOCK_LANG_TAG=blocklang
+else
+    PT_BLOCK_LANG_TAG=allowlang
+fi
+PT_RUN_NAME=PT_${PT_SKILLVLA_DATASET}_${PT_FSQ_TAG}_FSQ_epoch${PT_FSQ_EPOCH}_${PT_BLOCK_LANG_TAG}_batch${PT_BATCH_SIZE}
+if [ -n "${PT_EXP}" ]; then
+    PT_RUN_NAME=${PT_RUN_NAME}_${PT_EXP}
+fi
 PT_CHECKPOINT=025000
-BASE_POLICY=${HOMEDIR}${PROJDIR}/outputs/${PT_RUN_NAME}/checkpoints/${PT_CHECKPOINT}/pretrained_model
+BASE_POLICY=${VLA_OUTPUT_ROOT}/${PT_RUN_NAME}/checkpoints/${PT_CHECKPOINT}/pretrained_model
 
 # FSQ decoder used by the base SkillVLA run. Keep this matched to PT.
 FSQ_LEVELS_ARG=${PT_FSQ_LEVELS_ARG}
@@ -99,6 +110,7 @@ LR=2.5e-05
 BATCH_SIZE=32
 NUM_WORKERS=4
 NUM_GPUS=1
+EXP=${EXP:-}
 
 # ── SkillVLA losses / boundary randomization ────────────────────────────────
 SP_LOSS_WEIGHT=1.0
@@ -126,8 +138,11 @@ TRAIN_EXPERT_ONLY=false
 # DETACH_ACTION_PREFIX_GRAD=true이면 action flow loss는 prefix/VLM 경로를 업데이트하지 않습니다.
 
 FT_FSQ_RUN_TAG=${PT_FSQ_RUN#${PT_FSQ_MODEL_DATA}_}
-RUN_NAME=${PT_CHECKPOINT}PT_${FT_DATASET}FT_${FT_FSQ_RUN_TAG}_${TRAIN_EXPERT_ONLY}
-OUTPUT_DIR=../outputs/FT_${RUN_NAME}
+RUN_NAME=${PT_CHECKPOINT}PT_${FT_DATASET}FT_${FT_FSQ_RUN_TAG}_${TRAIN_EXPERT_ONLY}_batch${BATCH_SIZE}
+if [ -n "${EXP}" ]; then
+    RUN_NAME=${RUN_NAME}_${EXP}
+fi
+OUTPUT_DIR=${VLA_OUTPUT_ROOT}/FT_${RUN_NAME}
 CONFIG_PATH=${OUTPUT_DIR}/checkpoints/last/pretrained_model/train_config.json
 
 RESUME_ARGS=""

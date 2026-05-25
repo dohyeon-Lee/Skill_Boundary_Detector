@@ -30,6 +30,7 @@
 BATCH_SIZE=32
 NUM_WORKERS=4
 NUM_GPUS=1
+EXP=${EXP:-exp1}
 LR=$(python3 -c "print(2.5e-05 * ${NUM_GPUS})")
 # ── Optimization ─────────────────────────────────────────────────────────────
 
@@ -109,9 +110,18 @@ SKILL_BOUNDARY_RANDOM_P=10
 # pipeline_config.yaml 의 block_lang 값에서 옵니다.
 # DETACH_ACTION_PREFIX_GRAD=true이면 action flow loss는 prefix/VLM 경로를 업데이트하지 않습니다.
 
-FSQ_RUN_TAG=${FSQ_RUN#${FSQ_MODEL_DATA}_}
-RUN_NAME=${DATASET}_${FSQ_RUN_TAG}
-OUTPUT_DIR=../outputs/PT_${RUN_NAME}
+FSQ_TAG=fsq${FSQ_LEVELS_STR// /}
+if [ "${BLOCK_LANG}" = "true" ]; then
+    BLOCK_LANG_TAG=blocklang
+else
+    BLOCK_LANG_TAG=allowlang
+fi
+VLA_OUTPUT_ROOT=${HOMEDIR}${PROJDIR}/VLA_outputs
+RUN_NAME=${DATASET}_${FSQ_TAG}_FSQ_epoch${FSQ_EPOCH}_${BLOCK_LANG_TAG}_batch${BATCH_SIZE}
+if [ -n "${EXP}" ]; then
+    RUN_NAME=${RUN_NAME}_${EXP}
+fi
+OUTPUT_DIR=${VLA_OUTPUT_ROOT}/PT_${RUN_NAME}
 CONFIG_PATH=${OUTPUT_DIR}/checkpoints/last/pretrained_model/train_config.json
 
 RESUME_ARGS=""
