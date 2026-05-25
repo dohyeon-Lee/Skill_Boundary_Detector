@@ -24,7 +24,7 @@ image_key: observation.images.image
 
 # ── FSQ ─────────────────────────────────────────────────────
 fsq_levels: [5, 5, 5]
-fsq_epoch: "0500"
+fsq_epoch: "1000"
 
 # FSQ 모델이 학습된 데이터셋 (보통 data와 동일)
 fsq_model_data: libero_90

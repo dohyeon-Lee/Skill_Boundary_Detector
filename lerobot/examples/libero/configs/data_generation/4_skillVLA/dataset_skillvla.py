@@ -15,9 +15,14 @@
 # Submit to SLURM: sbatch dataset_skillvla.py
 
 #SBATCH --job-name=skillvla_dataset
-#SBATCH --partition=debug
-#SBATCH --nodelist=node100
-#SBATCH --qos=big_qos
+# SBATCH --partition=debug
+# SBATCH --nodelist=node100
+# SBATCH --qos=big_qos
+
+#SBATCH --exclude=node19,node13,node18,node16,node08,node10,node21,node14,node04,node05,node31
+#SBATCH --partition=suma_a6000
+#SBATCH --qos=base_qos
+
 #SBATCH --gres=gpu:0
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
