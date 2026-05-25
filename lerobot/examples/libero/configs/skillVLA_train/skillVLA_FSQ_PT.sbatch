@@ -30,7 +30,7 @@
 BATCH_SIZE=32
 NUM_WORKERS=4
 NUM_GPUS=1
-EXP=${EXP:-exp5}
+EXP=${EXP:-dino_only_exp2}
 LR=$(python3 -c "print(2.5e-05 * ${NUM_GPUS})")
 # ── Optimization ─────────────────────────────────────────────────────────────
 
@@ -74,6 +74,10 @@ nvidia-smi
 DATASET=${SKILLVLA_DATASET}
 DATASET_ROOT=${DATADIR}
 DATASET_DIR=${SKILLVLA_DATASET_DIR}
+
+DATASET=libero_90_skillvla_dino_only
+DATASET_DIR=${HOMEDIR}${PROJDIR}/libero_dataset/libero_90_data/libero_90_for_skillVLA/libero_90_skillvla_dino_only
+
 PI_BASE=lerobot/pi05_base
 
 if [ ! -d "${DATASET_DIR}" ]; then

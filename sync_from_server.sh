@@ -21,7 +21,7 @@ declare -a LABELS PATHS RENAMEABLE
 add_item() {
     LABELS+=("$1")
     PATHS+=("$2")
-    RENAMEABLE+=("${3:-0}")  # 1이면 remote 폴더명 변경 prompt 제공
+    RENAMEABLE+=("${3:-0}")  # 1이면 로컬 저장 폴더명 변경 prompt 제공
 }
 
 add_item "DINO backbone 모델" "${IMAGE_MODEL_PATH}"
@@ -44,7 +44,7 @@ add_item "DINO feature 디렉토리 (에피소드별 npz, DP eval용)" "${DINO_F
 
 add_item "Skillset 디렉토리" "${SKILLSET_DIR}"
 
-add_item "SkillVLA 데이터셋" "${SKILLVLA_DATASET_DIR}"
+add_item "SkillVLA 데이터셋" "${SKILLVLA_DATASET_DIR}" 1
 
 add_item "Raw 원본 데이터셋" "${RAW_DATASET_DIR}"
 
@@ -94,16 +94,17 @@ fi
 # ── rsync 실행 ────────────────────────────────────────────────
 echo ""
 for idx in "${SELECTED[@]}"; do
-    DST="${PATHS[$idx]}"
-    REL="${DST#${LOCAL_BASE}/}"
+    DEFAULT_DST="${PATHS[$idx]}"
+    DST="${DEFAULT_DST}"
+    REL="${DEFAULT_DST#${LOCAL_BASE}/}"
     REMOTE_REL="${REL}"
 
     if [ "${RENAMEABLE[$idx]}" = "1" ]; then
-        DEFAULT_NAME="$(basename "${DST}")"
-        read -r -p "  remote 폴더명 [${DEFAULT_NAME}] (${LABELS[$idx]}): " REMOTE_NAME
-        if [ -n "${REMOTE_NAME}" ]; then
-            REMOTE_PARENT="$(dirname "${REL}")"
-            REMOTE_REL="${REMOTE_PARENT}/${REMOTE_NAME}"
+        DEFAULT_NAME="$(basename "${DEFAULT_DST}")"
+        read -r -p "  로컬 저장 폴더명 [${DEFAULT_NAME}] (${LABELS[$idx]}): " LOCAL_NAME
+        if [ -n "${LOCAL_NAME}" ]; then
+            LOCAL_PARENT="$(dirname "${DEFAULT_DST}")"
+            DST="${LOCAL_PARENT}/${LOCAL_NAME}"
         fi
     fi
 

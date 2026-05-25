@@ -89,7 +89,7 @@ if [ -n "${PT_EXP}" ]; then
   DEFAULT_MODEL=${DEFAULT_MODEL}_${PT_EXP}
 fi
 MODEL=${MODEL:-${DEFAULT_MODEL}}
-CHECKPOINT=${CHECKPOINT:-010000}
+CHECKPOINT=${CHECKPOINT:-020000}
 POLICY_PATH=${POLICY_PATH:-${VLA_OUTPUT_ROOT}/${MODEL}/checkpoints/${CHECKPOINT}/pretrained_model}
 
 # ── FSQ decoder and inference settings ───────────────────────────────────────
