@@ -2,8 +2,8 @@
 #SBATCH --job-name=FSQ_decoder_eval
 
 #SBATCH --exclude=node19,node13,node18,node16,node08,node10,node21,node14,node04,node05,node31
-#SBATCH --partition=asus_pro6000
-#SBATCH --qos=pro6000_qos
+#SBATCH --partition=suma_a6000
+#SBATCH --qos=base_qos
 
 # SBATCH --partition=debug
 # SBATCH --nodelist=node100
@@ -28,13 +28,13 @@ source ${HOMEDIR}${PROJDIR}/.venv/bin/activate
 unset LD_LIBRARY_PATH
 
 # ── 설정 ──────────────────────────────────────────────────────────────────────
-CHECKPOINT_EPOCH=1000      # 0 → best checkpoint (FSQ.pt), else FSQ_epoch{N:04d}.pt
+CHECKPOINT_EPOCH=500      # 0 → best checkpoint (FSQ.pt), else FSQ_epoch{N:04d}.pt
 DATA=libero_90
 DATADIR=libero_dataset
 VISUAL_BACKBONE=dinov3_vits16
-SKILLSET=${DATA}_skillset_prev
+SKILLSET=${DATA}_skillset
 DERIVED_DATA_DIR=${HOMEDIR}${PROJDIR}/${DATADIR}/${DATA}_data
-FSQ_PRECOMPUTE_DIR=${DERIVED_DATA_DIR}/${DATA}_for_FSQ_prev
+FSQ_PRECOMPUTE_DIR=${DERIVED_DATA_DIR}/${DATA}_for_FSQ
 SKILLSET_DIR=${FSQ_PRECOMPUTE_DIR}/${SKILLSET}
 
 DECODER_MODE=chunk
@@ -68,7 +68,7 @@ if [ "${DECODER_MODE}" = "chunk" ]; then
 else
   MODE_TAG="single_step"
 fi
-EXP_NAME="${DATA}_${FSQ_TAG}_${IMAGE_EXP_TAG}_${EEF_MODE}_${MODE_TAG}_${DECODER_IMAGE_MODE}_2"
+EXP_NAME="${DATA}_${FSQ_TAG}_${IMAGE_EXP_TAG}_${EEF_MODE}_${MODE_TAG}_${DECODER_IMAGE_MODE}_1"
 SWEEP_DIR="${HOMEDIR}${PROJDIR}/outputs/${SKILLSET}_FSQ/${EXP_NAME}"
 
 if [ "${CHECKPOINT_EPOCH}" -eq 0 ]; then

@@ -28,13 +28,13 @@ source ${HOMEDIR}${PROJDIR}/.venv/bin/activate
 unset LD_LIBRARY_PATH
 
 # ── 설정 ──────────────────────────────────────────────────────────────────────
-CHECKPOINT_EPOCH=1000      # 0 → best checkpoint (FSQ.pt), else FSQ_epoch{N:04d}.pt
+CHECKPOINT_EPOCH=500      # 0 → best checkpoint (FSQ.pt), else FSQ_epoch{N:04d}.pt
 DATA=libero_90
 DATADIR=libero_dataset
 VISUAL_BACKBONE=dinov3_vits16
-SKILLSET=${DATA}_skillset_prev
+SKILLSET=${DATA}_skillset
 DERIVED_DATA_DIR=${HOMEDIR}${PROJDIR}/${DATADIR}/${DATA}_data
-FSQ_PRECOMPUTE_DIR=${DERIVED_DATA_DIR}/${DATA}_for_FSQ_prev
+FSQ_PRECOMPUTE_DIR=${DERIVED_DATA_DIR}/${DATA}_for_FSQ
 SKILLSET_DIR=${FSQ_PRECOMPUTE_DIR}/${SKILLSET}
 
 DECODER_MODE=chunk
@@ -58,7 +58,7 @@ if [ "${DECODER_MODE}" = "chunk" ]; then
 else
   MODE_TAG="single_step"
 fi
-EXP_NAME="${DATA}_${FSQ_TAG}_${IMAGE_EXP_TAG}_${EEF_MODE}_${MODE_TAG}_${DECODER_IMAGE_MODE}_2"
+EXP_NAME="${DATA}_${FSQ_TAG}_${IMAGE_EXP_TAG}_${EEF_MODE}_${MODE_TAG}_${DECODER_IMAGE_MODE}_1"
 SWEEP_DIR="${HOMEDIR}${PROJDIR}/outputs/${SKILLSET}_FSQ/${EXP_NAME}"
 
 if [ "${CHECKPOINT_EPOCH}" -eq 0 ]; then
