@@ -88,6 +88,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--thumb_size", type=int, default=120)
     p.add_argument("--end_threshold", type=float, default=None)
+    p.add_argument(
+        "--n_action_steps",
+        type=int,
+        default=0,
+        help="Chunk-mode plot stride. 0 = use model chunk_size.",
+    )
     p.add_argument("--eef_dims", type=int, nargs="+", default=[0, 1, 2, 3, 4, 5])
     p.add_argument("--gripper_action_dim", type=int, default=-1)
     p.add_argument("--zero_start_eef", action=argparse.BooleanOptionalAction, default=cfg.zero_start_eef)
@@ -188,6 +194,8 @@ def make_error_plot(
     end_prob: np.ndarray,
     threshold: float,
     dim_labels: list[str],
+    *,
+    chunk_starts: list[int] | None = None,
 ) -> str:
     import matplotlib
 
@@ -196,34 +204,82 @@ def make_error_plot(
 
     t = np.arange(len(gt))
     dim_count = gt.shape[-1]
-    fig, axes = plt.subplots(dim_count + 1, 1, figsize=(4.0, 1.05 * (dim_count + 1)), squeeze=False)
+    is_chunk = pred.ndim == 3 and chunk_starts is not None
+    fig, axes = plt.subplots(dim_count + 1, 1, figsize=(8.5, 1.55 * (dim_count + 1)), squeeze=False)
     for d, ax in enumerate(axes[:dim_count, 0]):
         label = dim_labels[d] if d < len(dim_labels) else f"d{d}"
-        ax.plot(t, gt[:, d], color="#1976D2", linewidth=0.9, label="GT")
-        ax.plot(t, pred[:, d], color="#D32F2F", linewidth=0.9, linestyle="--", label="Pred")
-        ax.set_ylabel(label, fontsize=7, rotation=0, labelpad=20)
-        ax.tick_params(labelsize=6)
+        ax.plot(t, gt[:, d], color="#0D47A1", linewidth=1.6, label="GT", zorder=3)
+        if is_chunk:
+            for j, (start, chunk) in enumerate(zip(chunk_starts, pred, strict=True)):
+                x = start + np.arange(chunk.shape[0])
+                valid = x < len(gt)
+                if not np.any(valid):
+                    continue
+                ax.plot(
+                    x[valid],
+                    chunk[: int(valid.sum()), d],
+                    color="#B71C1C",
+                    linewidth=1.7,
+                    alpha=0.92,
+                    linestyle="--",
+                    label="Pred chunk" if j == 0 else None,
+                    zorder=4,
+                )
+        else:
+            ax.plot(
+                np.arange(len(pred)),
+                pred[:, d],
+                color="#B71C1C",
+                linewidth=1.8,
+                alpha=0.96,
+                linestyle="--",
+                label="Pred",
+                zorder=4,
+            )
+        ax.grid(True, color="#e8e8e8", linewidth=0.7)
+        ax.set_ylabel(label, fontsize=9, rotation=0, labelpad=34)
+        ax.tick_params(labelsize=8)
         ax.yaxis.set_major_locator(plt.MaxNLocator(3))
         ax.set_xticks([])
 
     ax = axes[dim_count, 0]
-    if end_prob.ndim == 2:
+    if is_chunk and end_prob.ndim == 2:
+        for j, start in enumerate(chunk_starts):
+            if start >= end_prob.shape[0]:
+                continue
+            chunk = end_prob[start]
+            x = start + np.arange(chunk.shape[0])
+            valid = x < len(gt)
+            if not np.any(valid):
+                continue
+            ax.plot(
+                x[valid],
+                chunk[: int(valid.sum())],
+                color="#7B1FA2",
+                linewidth=1.3,
+                alpha=0.85,
+                linestyle="--",
+                label="Pred end chunk" if j == 0 else None,
+            )
+    elif end_prob.ndim == 2:
         end_show = end_prob.max(axis=1)
+        ax.plot(np.arange(len(end_show)), end_show, color="#7B1FA2", linewidth=1.3, linestyle="--", label="Pred end")
     else:
         end_show = end_prob
+        ax.plot(np.arange(len(end_show)), end_show, color="#7B1FA2", linewidth=1.3, linestyle="--", label="Pred end")
     end_gt = np.zeros(len(gt), dtype=np.float32)
-    end_gt[-1] = 1.0
-    ax.plot(t, end_gt, color="#1976D2", linewidth=0.9, label="GT end")
-    ax.plot(t, end_show, color="#7B1FA2", linewidth=0.9, linestyle="--", label="Pred end")
-    ax.axhline(threshold, color="#999", linewidth=0.7, linestyle=":")
-    ax.set_ylabel("end", fontsize=7, rotation=0, labelpad=20)
+    end_start = min(max(0, end_prob.shape[0] - 1), len(end_gt) - 1)
+    end_gt[end_start:] = 1.0
+    ax.plot(t, end_gt, color="#0D47A1", linewidth=1.4, label="GT end")
+    ax.axhline(threshold, color="#999", linewidth=0.9, linestyle=":")
+    ax.set_ylabel("end", fontsize=9, rotation=0, labelpad=34)
     ax.set_ylim(-0.05, 1.05)
-    ax.tick_params(labelsize=6)
-    axes[0, 0].legend(fontsize=6, loc="upper right", framealpha=0.6)
-    axes[-1, 0].set_xlabel("t", fontsize=7)
-    fig.tight_layout(h_pad=0.25)
+    ax.tick_params(labelsize=8)
+    axes[0, 0].legend(fontsize=8, loc="upper right", framealpha=0.8)
+    axes[-1, 0].set_xlabel("t", fontsize=9)
+    fig.tight_layout(h_pad=0.35)
     buf = io.BytesIO()
-    fig.savefig(buf, format="jpeg", dpi=82, bbox_inches="tight", pil_kwargs={"quality": 72})
+    fig.savefig(buf, format="jpeg", dpi=120, bbox_inches="tight", pil_kwargs={"quality": 90})
     plt.close(fig)
     return base64.b64encode(buf.getvalue()).decode()
 
@@ -580,6 +636,8 @@ def main() -> None:
     device = choose_device(args.device)
     model, cfg = load_model(str(paths["model"]), device)
     end_threshold = cfg.end_threshold if args.end_threshold is None else args.end_threshold
+    is_chunk = getattr(cfg, "decoder_output_mode", "single_step") == "chunk"
+    chunk_plot_stride = max(1, int(args.n_action_steps or getattr(cfg, "chunk_size", 1)))
     codebook_size = codebook_size_from_model(model)
     levels = fsq_levels_from_model(model)
 
@@ -633,13 +691,31 @@ def main() -> None:
             patch_flags[i][:T],
             device,
         )
-        pred_d0 = pred_d[:T, 0, :] if pred_d.ndim == 3 else pred_d[:T]
         pred_p = pred_p[:T]
-        metrics = compute_skill_metrics(pred_d[:T], dec_targets[i][:T], pred_p, end_threshold)
+        gt_i = dec_targets[i]
+        metrics = compute_skill_metrics(pred_d[:T], gt_i, pred_p, end_threshold, skill_length=T)
         per_skill[i] = metrics
         if i in sample_indices:
+            if pred_d.ndim == 3:
+                K = pred_d.shape[1]
+                sampled_t = np.arange(0, T, chunk_plot_stride)
+                target_len = min(len(gt_i), T + K - 1)
+                plot_gt = gt_i[:target_len]
+                plot_pred = pred_d[sampled_t]
+                plot_starts = sampled_t.tolist()
+            else:
+                plot_gt = gt_i[:T]
+                plot_pred = pred_d[:T]
+                plot_starts = None
             sample_cache[i] = {
-                "plot": make_error_plot(dec_targets[i][:T], pred_d0, pred_p, end_threshold, dim_labels),
+                "plot": make_error_plot(
+                    plot_gt,
+                    plot_pred,
+                    pred_p,
+                    end_threshold,
+                    dim_labels,
+                    chunk_starts=plot_starts,
+                ),
             }
 
     counts, entry_data = aggregate_entry_data(per_skill, tokens, codebook_size)
@@ -669,6 +745,7 @@ def main() -> None:
         f"delta MSE mean={np.mean(mse_vals):.4g} | length/end |err| mean={np.mean(len_vals):.2f} steps | "
         f"decoder_mode={cfg.decoder_output_mode} | image_mode={getattr(cfg, 'decoder_image_mode', 'unknown')} | "
         f"levels={'x'.join(map(str, levels))}"
+        + (f" | chunk_plot_stride={chunk_plot_stride}" if is_chunk else "")
     )
 
     html = build_html(summary, levels, counts, entry_data, samples, dim_labels)

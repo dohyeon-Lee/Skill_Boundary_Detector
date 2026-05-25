@@ -52,6 +52,7 @@ unset LD_LIBRARY_PATH
 DATA=${DATA:-${DATA:-libero_90}}
 RUN_NAME=${RUN_NAME:-${FSQ_RUN_NAME:-}}
 MAX_EVAL_SKILLS=${MAX_EVAL_SKILLS:-0}
+N_ACTION_STEPS=${N_ACTION_STEPS:-5}
 
 # RUN_NAME이 없으면 pipeline_config 기본값 사용 (eval.py 내부에서 처리)
 if [ -n "${RUN_NAME}" ]; then
@@ -67,6 +68,7 @@ echo "SkillVLA FSQ eval (GPU)"
 echo "  data            : ${DATA}"
 echo "  run_name        : ${RUN_NAME:-<pipeline_config default>}"
 echo "  max_eval_skills : ${MAX_EVAL_SKILLS} (0=전체)"
+echo "  n_action_steps  : ${N_ACTION_STEPS} (chunk plot stride)"
 echo "  device          : cuda"
 echo "  output          : ${OUTPUT_HTML}"
 echo "  job id          : ${SLURM_JOB_ID}"
@@ -78,6 +80,7 @@ PYTHONPATH=${HOMEDIR}${PROJDIR}/lerobot/src \
     --data              "${DATA}" \
     ${RUN_NAME_ARG} \
     --max_eval_skills   "${MAX_EVAL_SKILLS}" \
+    --n_action_steps    "${N_ACTION_STEPS}" \
     --device            cuda
 
 echo "DONE — HTML: ${OUTPUT_HTML}"
