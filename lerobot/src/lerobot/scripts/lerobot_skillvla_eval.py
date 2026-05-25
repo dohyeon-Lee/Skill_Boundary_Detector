@@ -471,6 +471,17 @@ def _read_video_frame(path: Path, frame_index: int) -> np.ndarray:
         return frames[idx].numpy().astype(np.uint8)[..., :3]
 
 
+def _libero_task_descriptions(suite_name: str) -> dict[int, str]:
+    try:
+        from libero.libero import benchmark
+
+        suite = benchmark.get_benchmark_dict()[suite_name]()
+        return {int(i): str(task.language) for i, task in enumerate(suite.tasks)}
+    except Exception as exc:
+        logging.warning("Could not load LIBERO task descriptions for %s: %s", suite_name, exc)
+        return {}
+
+
 def _save_training_skill_examples(
     *,
     tokens: set[int],
@@ -535,6 +546,7 @@ def _write_task_skill_html(
     *,
     task_group: str,
     task_id: int,
+    task_description: str | None,
     records: list[dict],
     policy: PreTrainedPolicy,
     output_dir: Path,
@@ -617,6 +629,7 @@ def _write_task_skill_html(
     payload = {
         "task_group": task_group,
         "task_id": int(task_id),
+        "task_description": task_description or "",
         "levels": levels,
         "chunk_size": int(getattr(policy.config, "chunk_size", 0)),
         "episodes": episode_payloads,
@@ -624,6 +637,7 @@ def _write_task_skill_html(
     }
     data_json = json.dumps(payload)
     html_path = task_dir / "skill_trace.html"
+    task_description_html = html.escape(task_description or "unknown")
     html_path.write_text(
         f"""<!doctype html>
 <html>
@@ -634,6 +648,8 @@ def _write_task_skill_html(
     body {{ margin: 0; font-family: Arial, sans-serif; background: #f5f6f8; color: #17202a; }}
     header {{ padding: 14px 18px; background: #ffffff; border-bottom: 1px solid #d8dee8; }}
     h1 {{ font-size: 18px; margin: 0; }}
+    .prompt {{ margin-top: 8px; font-size: 14px; color: #344054; max-width: 1200px; line-height: 1.4; }}
+    .prompt b {{ color: #17202a; }}
     .episode {{ margin: 16px; padding: 14px; background: white; border: 1px solid #d8dee8; border-radius: 8px; }}
     .episode-title {{ font-weight: 700; margin-bottom: 10px; }}
     .row {{ display: grid; grid-template-columns: 600px 1fr; gap: 16px; align-items: start; }}
@@ -656,7 +672,10 @@ def _write_task_skill_html(
   </style>
 </head>
 <body>
-<header><h1>SkillVLA FSQ Trace: {html.escape(task_group)} / task {int(task_id)}</h1></header>
+<header>
+  <h1>SkillVLA FSQ Trace: {html.escape(task_group)} / task {int(task_id)}</h1>
+  <div class="prompt"><b>Language prompt:</b> {task_description_html}</div>
+</header>
 <div id="app"></div>
 <script>
 const DATA = {data_json};
@@ -1653,6 +1672,7 @@ def eval_main(cfg: EvalPipelineConfig):
 
     # Create environment-specific preprocessor and postprocessor (e.g., for LIBERO environments)
     env_preprocessor, env_postprocessor = make_env_pre_post_processors(env_cfg=cfg.env, policy_cfg=cfg.policy)
+    task_id_to_desc = _libero_task_descriptions(cfg.env.task)
 
     with torch.no_grad(), torch.autocast(device_type=device.type) if cfg.policy.use_amp else nullcontext():
         info = eval_policy_all(
@@ -1676,6 +1696,7 @@ def eval_main(cfg: EvalPipelineConfig):
             skill_html_skill_latents_path=cfg.eval.skill_html_skill_latents_path,
             skill_html_raw_dataset_dir=cfg.eval.skill_html_raw_dataset_dir,
             skill_html_image_key=cfg.eval.skill_html_image_key,
+            task_descriptions=task_id_to_desc,
         )
         print("Overall Aggregated Metrics:")
         print(info["overall"])
@@ -1707,17 +1728,6 @@ def eval_main(cfg: EvalPipelineConfig):
                     "n_episodes": cfg.eval.n_episodes,
                 },
             )
-
-            # Build task_id -> language description mapping from LIBERO suite
-            task_id_to_desc: dict[int, str] = {}
-            try:
-                from libero.libero import benchmark
-                suite_name = cfg.env.task
-                suite = benchmark.get_benchmark_dict()[suite_name]()
-                for i, task in enumerate(suite.tasks):
-                    task_id_to_desc[i] = task.language
-            except Exception:
-                pass
 
             def _success_to_float(value) -> float:
                 if hasattr(value, "item"):
@@ -1886,6 +1896,7 @@ def run_one(
     skill_html_skill_latents_path: str | None = None,
     skill_html_raw_dataset_dir: str | None = None,
     skill_html_image_key: str | None = None,
+    task_descriptions: dict[int, str] | None = None,
 ):
     """
     Run eval_one for a single (task_group, task_id, env).
@@ -1928,6 +1939,7 @@ def run_one(
         html_path = _write_task_skill_html(
             task_group=task_group,
             task_id=task_id,
+            task_description=None if task_descriptions is None else task_descriptions.get(int(task_id)),
             records=metrics.get("skill_html_records", []),
             policy=policy,
             output_dir=skill_html_dir,
@@ -1970,6 +1982,7 @@ def eval_policy_all(
     skill_html_skill_latents_path: str | None = None,
     skill_html_raw_dataset_dir: str | None = None,
     skill_html_image_key: str | None = None,
+    task_descriptions: dict[int, str] | None = None,
 ) -> dict:
     """
     Evaluate a nested `envs` dict: {task_group: {task_id: vec_env}}.
@@ -2050,6 +2063,7 @@ def eval_policy_all(
         skill_html_skill_latents_path=skill_html_skill_latents_path,
         skill_html_raw_dataset_dir=skill_html_raw_dataset_dir,
         skill_html_image_key=skill_html_image_key,
+        task_descriptions=task_descriptions,
     )
 
     if max_parallel_tasks <= 1:
