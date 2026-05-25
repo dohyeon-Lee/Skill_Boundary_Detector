@@ -30,7 +30,7 @@
 BATCH_SIZE=32
 NUM_WORKERS=4
 NUM_GPUS=1
-EXP=${EXP:-exp2}
+EXP=${EXP:-exp5}
 LR=$(python3 -c "print(2.5e-05 * ${NUM_GPUS})")
 # ── Optimization ─────────────────────────────────────────────────────────────
 
