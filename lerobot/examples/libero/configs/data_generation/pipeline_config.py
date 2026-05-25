@@ -158,6 +158,7 @@ class PipelineConfig:
     projdir: str
     datadir: str
     data: str
+    target_task: str
     data_dir: str
     raw_dataset_dir: str
 
@@ -210,6 +211,7 @@ class PipelineConfig:
     inference_skill_max_order: int
     inference_skill_max_length: int
     skill_decoder_state_indices: str
+    skill_decoder_prior_noise_ratio: float
 
     dp_checkpoint: str
     dp_policy: str
@@ -292,6 +294,7 @@ def load_config(data: str | None = None) -> PipelineConfig:
         projdir=projdir,
         datadir=datadir,
         data=data_name,
+        target_task=_get(y, "target_task", data_name),
         data_dir=data_dir,
         raw_dataset_dir=raw_dataset_dir,
         visual_backbone=visual_backbone,
@@ -342,6 +345,7 @@ def load_config(data: str | None = None) -> PipelineConfig:
         inference_skill_max_order=_get_int(y, "inference_skill_max_order", 20),
         inference_skill_max_length=_get_int(y, "inference_skill_max_length", 200),
         skill_decoder_state_indices=_get(y, "skill_decoder_state_indices", "[0,1,2,3,4,5,6]"),
+        skill_decoder_prior_noise_ratio=float(_get(y, "skill_decoder_prior_noise_ratio", 0.0)),
         dp_checkpoint=dp_checkpoint,
         dp_policy=dp_policy,
         dp_policy_path=f"{root}/outputs/{dp_policy}/checkpoints/{dp_checkpoint}/pretrained_model",

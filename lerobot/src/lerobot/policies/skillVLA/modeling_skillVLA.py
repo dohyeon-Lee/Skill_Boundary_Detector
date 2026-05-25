@@ -225,6 +225,15 @@ class SkillVLAPytorch(PI05Pytorch):
         source[..., :A] = prior_norm.to(dtype=action_like.dtype)
         return source
 
+    def _mix_decoder_prior_with_noise(self, prior_norm: Tensor) -> Tensor:
+        """Blend normalized FSQ prior with Gaussian noise in action-expert space."""
+        r = float(self.config.skill_decoder_prior_noise_ratio)
+        r = max(0.0, min(1.0, r))
+        if r <= 0.0:
+            return prior_norm
+        eps = self.sample_noise(prior_norm.shape, prior_norm.device).to(dtype=prior_norm.dtype)
+        return (1.0 - r) * prior_norm + r * eps
+
     def _denormalize_action_chunk(self, actions: Tensor, action_dim: int) -> Tensor:
         """Invert the action expert's QUANTILES normalization for FSQ decoder loss targets."""
         if not bool(self._has_action_quantile_stats.item()):
@@ -977,11 +986,14 @@ class SkillVLAPytorch(PI05Pytorch):
             target_actions_raw,
             decoder_end_target,
         )
-        source = self._normalize_decoder_prior(prior_raw, actions).detach()
+        prior_norm = self._normalize_decoder_prior(prior_raw, actions).detach()
+        source = self._mix_decoder_prior_with_noise(prior_norm)
         self._last_skill_decoder_components.update(
             {
                 "prior_raw_abs_mean": float(prior_raw.detach().abs().mean().cpu()),
-                "prior_norm_abs_mean": float(source.detach().abs().mean().cpu()),
+                "prior_norm_abs_mean": float(prior_norm.detach().abs().mean().cpu()),
+                "prior_noise_ratio": float(max(0.0, min(1.0, self.config.skill_decoder_prior_noise_ratio))),
+                "source_abs_mean": float(source.detach().abs().mean().cpu()),
                 "prior_end_prob_mean": float(torch.sigmoid(prior_end_logits.detach().float()).mean().cpu()),
             }
         )
@@ -1404,18 +1416,41 @@ class SkillVLAPolicy(PI05Policy):
                 record["end_signal_prob"] = float(prob)
 
     def _record_decoder_delta(self, delta: Tensor) -> None:
-        deltas = delta.detach().float().cpu().view(delta.shape[0], -1).tolist()
-        for batch_index, values in enumerate(deltas):
+        delta_cpu = delta.detach().float().cpu()
+        is_chunk = delta_cpu.ndim == 3
+        flat_values = delta_cpu.view(delta_cpu.shape[0], -1).tolist()
+        chunk_values = delta_cpu.tolist() if is_chunk else None
+        for batch_index, values in enumerate(flat_values):
             if batch_index >= len(self._active_skill_trace_indices):
                 continue
             trace_index = self._active_skill_trace_indices[batch_index]
             if trace_index is None or trace_index >= len(self._skill_trace):
                 continue
-            self._skill_trace[trace_index].setdefault("decoder_actions", []).append(
+            item = {
+                "episode_timestep": int(self._episode_timestep),
+                "skill_step": int(self._skill_step),
+                "delta": [float(v) for v in values],
+            }
+            if chunk_values is not None:
+                item["chunk"] = [[float(v) for v in row] for row in chunk_values[batch_index]]
+            self._skill_trace[trace_index].setdefault("decoder_actions", []).append(item)
+
+    def _record_expert_chunk(self, actions: Tensor) -> None:
+        actions_cpu = actions.detach().float().cpu()
+        if actions_cpu.ndim != 3:
+            return
+        chunks = actions_cpu.tolist()
+        for batch_index, chunk in enumerate(chunks):
+            if batch_index >= len(self._active_skill_trace_indices):
+                continue
+            trace_index = self._active_skill_trace_indices[batch_index]
+            if trace_index is None or trace_index >= len(self._skill_trace):
+                continue
+            self._skill_trace[trace_index].setdefault("expert_action_chunks", []).append(
                 {
                     "episode_timestep": int(self._episode_timestep),
                     "skill_step": int(self._skill_step),
-                    "delta": [float(v) for v in values],
+                    "chunk": [[float(v) for v in row] for row in chunk],
                 }
             )
 
@@ -1650,7 +1685,8 @@ class SkillVLAPolicy(PI05Policy):
                 dtype=prior_raw.dtype,
                 device=prior_raw.device,
             )
-            source = self.model._normalize_decoder_prior(prior_raw, action_like)
+            prior_norm = self.model._normalize_decoder_prior(prior_raw, action_like)
+            source = self.model._mix_decoder_prior_with_noise(prior_norm)
             actions = self.model.sample_actions(
                 images, img_masks, tokens, masks,
                 z           = self._current_z,
@@ -1658,6 +1694,8 @@ class SkillVLAPolicy(PI05Policy):
                 noise       = source,
             )
             action_dim = self.config.output_features[ACTION].shape[0]
+            expert_actions_raw = self.model._denormalize_action_chunk(actions, action_dim)
+            self._record_expert_chunk(expert_actions_raw)
             actions = actions[:, : self.config.n_action_steps, :action_dim]
             self._action_queue.extend(actions.transpose(0, 1))
 

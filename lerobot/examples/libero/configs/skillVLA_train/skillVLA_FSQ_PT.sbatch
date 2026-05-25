@@ -30,7 +30,7 @@
 BATCH_SIZE=32
 NUM_WORKERS=4
 NUM_GPUS=1
-EXP=${EXP:-exp1}
+EXP=${EXP:-exp2}
 LR=$(python3 -c "print(2.5e-05 * ${NUM_GPUS})")
 # ── Optimization ─────────────────────────────────────────────────────────────
 
@@ -100,6 +100,7 @@ SKILL_DECODER_END_LOSS_WEIGHT=1.0
 SKILL_DECODER_END_POS_WEIGHT=1.0
 SKILL_DECODER_END_THRESHOLD=0.5
 SKILL_DECODER_STATE_INDICES=${SKILL_DECODER_STATE_INDICES}
+SKILL_DECODER_PRIOR_NOISE_RATIO=${SKILL_DECODER_PRIOR_NOISE_RATIO}
 FREEZE_VAE_DECODER=true # false 
 INFERENCE_SKILL_MAX_ORDER=${INFERENCE_SKILL_MAX_ORDER}
 INFERENCE_SKILL_MAX_LENGTH=${INFERENCE_SKILL_MAX_LENGTH}
@@ -169,6 +170,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes=${
     --policy.skill_decoder_end_pos_weight=${SKILL_DECODER_END_POS_WEIGHT} \
     --policy.skill_decoder_end_threshold=${SKILL_DECODER_END_THRESHOLD} \
     --policy.skill_decoder_state_indices=${SKILL_DECODER_STATE_INDICES} \
+    --policy.skill_decoder_prior_noise_ratio=${SKILL_DECODER_PRIOR_NOISE_RATIO} \
     --policy.inference_skill_max_order=${INFERENCE_SKILL_MAX_ORDER} \
     --policy.inference_skill_max_length=${INFERENCE_SKILL_MAX_LENGTH} \
     --policy.skill_boundary_random_p=${SKILL_BOUNDARY_RANDOM_P} \

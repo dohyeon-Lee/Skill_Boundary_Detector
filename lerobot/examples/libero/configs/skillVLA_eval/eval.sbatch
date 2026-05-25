@@ -43,9 +43,11 @@ source "${HOMEDIR}${PROJDIR}/.venv/bin/activate"
 # Avoid system cuDNN shadowing the cuDNN bundled with the installed PyTorch.
 unset LD_LIBRARY_PATH
 CFG_SKILL_DECODER_STATE_INDICES=${SKILL_DECODER_STATE_INDICES}
+CFG_SKILL_DECODER_PRIOR_NOISE_RATIO=${SKILL_DECODER_PRIOR_NOISE_RATIO}
 CFG_INFERENCE_SKILL_MAX_ORDER=${INFERENCE_SKILL_MAX_ORDER}
 CFG_INFERENCE_SKILL_MAX_LENGTH=${INFERENCE_SKILL_MAX_LENGTH}
 CFG_BLOCK_LANG=${BLOCK_LANG}
+CFG_TARGET_TASK=${TARGET_TASK}
 
 export WANDB_CACHE_DIR=${WANDB_CACHE_DIR:-${HOMEDIR}/.wandb_cache}
 export WANDB_DATA_DIR=${WANDB_DATA_DIR:-${HOMEDIR}/.wandb_data}
@@ -58,7 +60,7 @@ nvidia-smi
 
 # ── Evaluation target ────────────────────────────────────────────────────────
 # Edit these per run. EVAL_DATA defaults to pipeline_config.yaml:data.
-TARGET_TASK=${TARGET_TASK:-${DATA}}
+TARGET_TASK=${TARGET_TASK_OVERRIDE:-${CFG_TARGET_TASK}}
 TASK_IDS=${TASK_IDS:-"[0,1,2,3,4,5,6,7,8,9]"}
 N_EPISODES=${N_EPISODES:-1}
 N_ACTION_STEPS=${N_ACTION_STEPS:-5}
@@ -81,7 +83,7 @@ else
   BLOCK_LANG_TAG=allowlang
 fi
 PT_BATCH_SIZE=${PT_BATCH_SIZE:-32}
-PT_EXP=${PT_EXP:-}
+PT_EXP=${PT_EXP:-exp1}
 DEFAULT_MODEL=PT_${SKILLVLA_DATASET}_${FSQ_TAG}_FSQ_epoch${FSQ_EPOCH}_${BLOCK_LANG_TAG}_batch${PT_BATCH_SIZE}
 if [ -n "${PT_EXP}" ]; then
   DEFAULT_MODEL=${DEFAULT_MODEL}_${PT_EXP}
@@ -93,6 +95,7 @@ POLICY_PATH=${POLICY_PATH:-${VLA_OUTPUT_ROOT}/${MODEL}/checkpoints/${CHECKPOINT}
 # ── FSQ decoder and inference settings ───────────────────────────────────────
 SKILL_DECODER_END_THRESHOLD=${SKILL_DECODER_END_THRESHOLD:-0.5}
 SKILL_DECODER_STATE_INDICES=${SKILL_DECODER_STATE_INDICES_OVERRIDE:-${CFG_SKILL_DECODER_STATE_INDICES}}
+SKILL_DECODER_PRIOR_NOISE_RATIO=${SKILL_DECODER_PRIOR_NOISE_RATIO_OVERRIDE:-${CFG_SKILL_DECODER_PRIOR_NOISE_RATIO}}
 INFERENCE_SKILL_MAX_ORDER=${INFERENCE_SKILL_MAX_ORDER_OVERRIDE:-${CFG_INFERENCE_SKILL_MAX_ORDER}}
 INFERENCE_SKILL_MAX_LENGTH=${INFERENCE_SKILL_MAX_LENGTH_OVERRIDE:-${CFG_INFERENCE_SKILL_MAX_LENGTH}}
 BLOCK_LANG=${BLOCK_LANG_OVERRIDE:-${CFG_BLOCK_LANG}}
@@ -127,6 +130,7 @@ echo "  videos     : ${MAX_VIDEOS_PER_TASK} per task, stride=${VIDEO_FRAME_STRID
 echo "  skill html : ${SKILL_HTML}, train_samples=${SKILL_HTML_TRAIN_SAMPLES}"
 echo "  policy     : ${POLICY_PATH}"
 echo "  fsq        : ${FSQ_CKPT}"
+echo "  prior mix r: ${SKILL_DECODER_PRIOR_NOISE_RATIO}"
 
 PYTORCH_ALLOC_CONF=expandable_segments:True \
 PYTHONPATH=${HOMEDIR}${PROJDIR}/lerobot/src \
@@ -157,6 +161,7 @@ PYTHONPATH=${HOMEDIR}${PROJDIR}/lerobot/src \
   --policy.skill_predictor_num_embeddings=${FSQ_NUM_EMBEDDINGS} \
   --policy.skill_decoder_end_threshold=${SKILL_DECODER_END_THRESHOLD} \
   --policy.skill_decoder_state_indices=${SKILL_DECODER_STATE_INDICES} \
+  --policy.skill_decoder_prior_noise_ratio=${SKILL_DECODER_PRIOR_NOISE_RATIO} \
   --policy.inference_skill_max_order=${INFERENCE_SKILL_MAX_ORDER} \
   --policy.inference_skill_max_length=${INFERENCE_SKILL_MAX_LENGTH} \
   --policy.block_lang_to_action=${BLOCK_LANG} \

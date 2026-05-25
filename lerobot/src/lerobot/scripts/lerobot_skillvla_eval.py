@@ -330,7 +330,45 @@ def _ordered_trace_values(items: list[dict], value_key: str, dim: int = 7) -> np
     return arr
 
 
-def _plot_skill_action_compare(path: Path, state_delta_items: list[dict], decoder_items: list[dict]) -> str:
+def _ordered_action_values(items: list[dict], value_key: str, dim: int = 7) -> np.ndarray:
+    if not items:
+        return np.zeros((0, dim), dtype=np.float32)
+    max_step = max(int(item.get("skill_step", 0)) for item in items)
+    arr = np.full((max_step + 1, dim), np.nan, dtype=np.float32)
+    for item in items:
+        step = int(item.get("skill_step", 0))
+        values = np.asarray(item.get(value_key, []), dtype=np.float32).reshape(-1)
+        if values.size == 0:
+            continue
+        arr[step, : min(dim, values.size)] = values[:dim]
+    return arr
+
+
+def _collect_trace_chunks(items: list[dict], *, value_key: str, dim: int = 7) -> tuple[list[tuple[int, np.ndarray]], np.ndarray, int]:
+    chunks: list[tuple[int, np.ndarray]] = []
+    points = np.zeros((0, dim), dtype=np.float32)
+    length = 0
+    for item in items:
+        start = int(item.get("skill_step", 0))
+        if "chunk" in item:
+            chunk = np.asarray(item["chunk"], dtype=np.float32)
+            if chunk.ndim == 2 and chunk.size:
+                chunk = chunk[:, : min(dim, chunk.shape[1])]
+                chunks.append((start, chunk))
+                length = max(length, start + chunk.shape[0])
+                continue
+        values = np.asarray(item.get(value_key, []), dtype=np.float32).reshape(-1)
+        if values.size:
+            if points.shape[0] <= start:
+                padded = np.full((start + 1, dim), np.nan, dtype=np.float32)
+                padded[: points.shape[0]] = points
+                points = padded
+            points[start, : min(dim, values.size)] = values[:dim]
+            length = max(length, start + 1)
+    return chunks, points, length
+
+
+def _plot_skill_action_compare(path: Path, expert_items: list[dict], decoder_items: list[dict]) -> str:
     import matplotlib
 
     matplotlib.use("Agg")
@@ -338,17 +376,53 @@ def _plot_skill_action_compare(path: Path, state_delta_items: list[dict], decode
 
     path.parent.mkdir(parents=True, exist_ok=True)
     labels = ["dx", "dy", "dz", "droll", "dpitch", "dyaw", "grip"]
-    actual = _ordered_trace_values(state_delta_items, "delta", dim=7)
-    decoder = _ordered_trace_values(decoder_items, "delta", dim=7)
-    length = max(len(actual), len(decoder), 1)
+    expert_chunks, expert_points, expert_length = _collect_trace_chunks(expert_items, value_key="action", dim=7)
+    decoder_chunks, decoder_points, decoder_length = _collect_trace_chunks(decoder_items, value_key="delta", dim=7)
+
+    length = max(expert_length, decoder_length, 1)
     x = np.arange(length)
 
-    fig, axes = plt.subplots(7, 1, figsize=(3.3, 7.4), sharex=True)
+    fig, axes = plt.subplots(7, 1, figsize=(5.2, 8.8), sharex=True)
     for i, ax in enumerate(np.atleast_1d(axes)):
-        if len(actual):
-            ax.plot(np.arange(len(actual)), actual[:, i], color="#1f77b4", linewidth=1.2, label="actual Δ")
-        if len(decoder):
-            ax.plot(np.arange(len(decoder)), decoder[:, i], color="#d62728", linewidth=1.1, linestyle="--", label="decoder")
+        if len(expert_points):
+            ax.plot(np.arange(len(expert_points)), expert_points[:, i], color="#1f77b4", linewidth=1.35, label="action expert")
+        chunk_label_added = False
+        for start, chunk in expert_chunks:
+            if i >= chunk.shape[1]:
+                continue
+            chunk_x = start + np.arange(chunk.shape[0])
+            ax.plot(
+                chunk_x,
+                chunk[:, i],
+                color="#1f77b4",
+                linewidth=1.5,
+                alpha=0.78,
+                label="action expert chunks" if not chunk_label_added else None,
+            )
+            chunk_label_added = True
+        if len(decoder_points):
+            ax.plot(
+                np.arange(len(decoder_points)),
+                decoder_points[:, i],
+                color="#d62728",
+                linewidth=1.25,
+                linestyle="--",
+                label="decoder prior",
+            )
+        chunk_label_added = False
+        for start, chunk in decoder_chunks:
+            if i >= chunk.shape[1]:
+                continue
+            chunk_x = start + np.arange(chunk.shape[0])
+            ax.plot(
+                chunk_x,
+                chunk[:, i],
+                color="#d62728",
+                linewidth=1.45,
+                alpha=0.82,
+                label="decoder prior chunks" if not chunk_label_added else None,
+            )
+            chunk_label_added = True
         ax.set_ylabel(labels[i], fontsize=7)
         ax.tick_params(axis="both", labelsize=6)
         ax.grid(True, alpha=0.25)
@@ -512,7 +586,7 @@ def _write_task_skill_html(
             end_name = _save_frame_png(end_frame, assets_dir / f"{stem}_end.png")
             graph_name = _plot_skill_action_compare(
                 assets_dir / f"{stem}_actions.png",
-                skill.get("state_deltas", []),
+                skill.get("expert_action_chunks", skill.get("expert_actions", [])),
                 skill.get("decoder_actions", []),
             )
             skill_payloads.append(

@@ -52,6 +52,8 @@ class SkillVLAConfig(PI05Config):
     freeze_vae_decoder: bool = False
     inference_skill_max_order: int = 8
     inference_skill_max_length: int = 200
+    skill_decoder_prior_noise_ratio: float = 0.0
+    """Mix ratio r for action-expert start source: (1-r)*normalized FSQ prior + r*Gaussian noise."""
 
     # If True, block action expert attention to language tokens; False keeps full prefix attention.
     block_lang_to_action: bool = True
