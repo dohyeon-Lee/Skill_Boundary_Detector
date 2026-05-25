@@ -997,12 +997,22 @@ class SkillVLAPytorch(PI05Pytorch):
 
         if self.config.detach_action_prefix_grad:
             with torch.no_grad():
+                # gradient_checkpointing forces use_cache=False inside the model, which
+                # prevents KV-cache construction. Disable it for this call since we are
+                # already under no_grad — activations are not saved either way.
+                _pg_lm = self.paligemma_with_expert.paligemma.model.language_model
+                _ge_m  = self.paligemma_with_expert.gemma_expert.model
+                _pg_gc, _ge_gc = _pg_lm.gradient_checkpointing, _ge_m.gradient_checkpointing
+                _pg_lm.gradient_checkpointing = False
+                _ge_m.gradient_checkpointing  = False
                 _, past_key_values = self.contextualize_prefix(
                     prefix_embs.detach(),
                     prefix_pad_masks,
                     prefix_att_masks,
                     use_cache=True,
                 )
+                _pg_lm.gradient_checkpointing = _pg_gc
+                _ge_m.gradient_checkpointing  = _ge_gc
             v_t = self.denoise_step(prefix_pad_masks, past_key_values, x_t, time, z=z_for_action)
         else:
             suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = self.embed_suffix(

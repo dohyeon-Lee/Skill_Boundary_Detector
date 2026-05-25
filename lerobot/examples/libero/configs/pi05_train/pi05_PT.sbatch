@@ -33,7 +33,7 @@ CONFIG_PY=${SUBMIT_DIR}/../data_generation/pipeline_config.py
 eval "$(python3 "${CONFIG_PY}" --shell | grep -E '^export (HOMEDIR|PROJDIR)=')"
 
 # -------------------------------------------------------------------------------- #
-DATASET=libero_90 # libero_90 / libero_10_op1_10
+DATASET=libero_10_op1_10 # libero_90 / libero_10_op1_10
 DATASET_ROOT=libero_dataset # libero_dataset / libero_small_dataset
 BATCH_SIZE=32
 NUM_GPUS=1      # --gres=gpu:N 과 맞춰야 함
