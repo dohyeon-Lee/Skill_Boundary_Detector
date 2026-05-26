@@ -62,7 +62,7 @@ skill_decoder_state_indices: "[0,1,2,3,4,5,6]"
 skill_decoder_prior_noise_ratio: 1.0 # 0.4
 # true: action expert의 language-token attention을 막고 image/state prefix만 보게 함
 # false: action expert가 language + image/state prefix 전체를 볼 수 있음
-block_lang: true
+block_lang: false
 # true: action expert는 prefix에 attend하지만 flow/action loss gradient는 VLM prefix 경로로 보내지 않음
 detach_action_prefix_grad: false
 
