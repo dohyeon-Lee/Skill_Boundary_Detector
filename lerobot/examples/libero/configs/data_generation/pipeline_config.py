@@ -208,7 +208,6 @@ class PipelineConfig:
     skillvla_dataset_dir: str
     max_order: int
     max_length: int
-    inference_skill_max_order: int
     inference_skill_max_length: int
     skill_decoder_state_indices: str
     skill_decoder_prior_noise_ratio: float
@@ -230,6 +229,12 @@ class PipelineConfig:
 
     block_lang: bool
     detach_action_prefix_grad: bool
+    train_exp: str
+    eval_exp: str
+    eval_checkpoint: str
+    eval_skill_decoder_prior_noise_ratio: float
+    eval_block_lang: bool
+    eval_detach_action_prefix_grad: bool
 
 
 def load_config(data: str | None = None) -> PipelineConfig:
@@ -289,6 +294,8 @@ def load_config(data: str | None = None) -> PipelineConfig:
     if not sam2_checkpoint_val:
         sam2_checkpoint_val = sam2_ckpt_default
 
+    skillvla_dataset = _get(y, "skillvla_dataset", "{data}_skillvla").format(data=data_name)
+
     return PipelineConfig(
         homedir=homedir,
         projdir=projdir,
@@ -338,11 +345,10 @@ def load_config(data: str | None = None) -> PipelineConfig:
         fsq_package_dir=fsq_package_dir,
         fsq_ckpt=f"{fsq_package_dir}/FSQ.pt",
         skill_latents_path=f"{fsq_package_dir}/skill_latents.npz",
-        skillvla_dataset=f"{data_name}_skillvla",
-        skillvla_dataset_dir=f"{skillvla_root}/{data_name}_skillvla",
+        skillvla_dataset=skillvla_dataset,
+        skillvla_dataset_dir=f"{skillvla_root}/{skillvla_dataset}",
         max_order=_get_int(y, "max_order", 0),
         max_length=_get_int(y, "max_length", 200),
-        inference_skill_max_order=_get_int(y, "inference_skill_max_order", 20),
         inference_skill_max_length=_get_int(y, "inference_skill_max_length", 200),
         skill_decoder_state_indices=_get(y, "skill_decoder_state_indices", "[0,1,2,3,4,5,6]"),
         skill_decoder_prior_noise_ratio=float(_get(y, "skill_decoder_prior_noise_ratio", 0.0)),
@@ -362,6 +368,18 @@ def load_config(data: str | None = None) -> PipelineConfig:
         dp_dino_transformer_n_heads=_get_int(y, "dp_dino_transformer_n_heads", 4),
         block_lang=_get_bool(y, "block_lang", True),
         detach_action_prefix_grad=_get_bool(y, "detach_action_prefix_grad", False),
+        train_exp=_get(y, "train_exp", "B2"),
+        eval_exp=_get(y, "eval_exp", _get(y, "train_exp", "B2")),
+        eval_checkpoint=_get(y, "eval_checkpoint", "045000"),
+        eval_skill_decoder_prior_noise_ratio=float(
+            _get(y, "eval_skill_decoder_prior_noise_ratio", _get(y, "skill_decoder_prior_noise_ratio", 0.0))
+        ),
+        eval_block_lang=_get_bool(y, "eval_block_lang", _get_bool(y, "block_lang", True)),
+        eval_detach_action_prefix_grad=_get_bool(
+            y,
+            "eval_detach_action_prefix_grad",
+            _get_bool(y, "detach_action_prefix_grad", False),
+        ),
     )
 
 

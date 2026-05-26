@@ -613,6 +613,8 @@ def _write_task_skill_html(
                     "end_t": end_t,
                     "skill_length": length,
                     "source": str(skill.get("skill_source", "pred")),
+                    "patch_flags_start": skill.get("patch_flags_start"),  # [is_red, is_green] per patch at skill start
+                    "patch_flags_end": skill.get("patch_flags_end"),    # [is_red, is_green] per patch at skill end
                 }
             )
         episode_payloads.append({"episode_index": episode_idx, "skills": skill_payloads})
@@ -669,6 +671,10 @@ def _write_task_skill_html(
     .example {{ display: flex; gap: 6px; align-items: start; }}
     .example img {{ width: 112px; height: 112px; object-fit: cover; border: 1px solid #b8c2d1; }}
     .muted {{ color: #687386; font-size: 12px; }}
+    .patch-grid-wrap {{ margin-top: 8px; }}
+    .patch-grid-label {{ font-size: 11px; color: #687386; margin-bottom: 4px; }}
+    .patch-grid {{ display: inline-grid; gap: 1px; border: 1px solid #ccd5e3; }}
+    .patch-grid .p {{ width: 16px; height: 16px; }}
   </style>
 </head>
 <body>
@@ -750,6 +756,28 @@ function renderCube(svg, selectedToken) {{
   }});
 }}
 
+function buildPatchGrid(flags, cols) {{
+  return flags.map(([r, g]) => {{
+    let color;
+    if (r >= 0.5 && g >= 0.5) color = "#2196f3";
+    else if (r >= 0.5)         color = "#e53935";
+    else if (g >= 0.5)         color = "#43a047";
+    else                       color = "#f0f2f5";
+    return `<div class="p" style="background:${{color}}"></div>`;
+  }}).join("");
+}}
+
+function renderPatchGrids(flagsStart, flagsEnd) {{
+  if (!flagsStart && !flagsEnd) return "";
+  const flags = flagsStart || flagsEnd;
+  const cols = Math.round(Math.sqrt(flags.length));
+  let html = `<div class="patch-grid-wrap"><div class="patch-grid-label">flag predictor patches (red=is_red · green=is_green · blue=both)</div><div style="display:flex;gap:8px;align-items:flex-start">`;
+  if (flagsStart) html += `<div><div class="muted" style="margin-bottom:2px">start</div><div class="patch-grid" style="grid-template-columns:repeat(${{cols}},16px)">${{buildPatchGrid(flagsStart,cols)}}</div></div>`;
+  if (flagsEnd)   html += `<div><div class="muted" style="margin-bottom:2px">end</div><div class="patch-grid" style="grid-template-columns:repeat(${{cols}},16px)">${{buildPatchGrid(flagsEnd,cols)}}</div></div>`;
+  html += `</div></div>`;
+  return html;
+}}
+
 function renderExamples(root, token) {{
   const examples = DATA.examples[String(token)] || DATA.examples[token] || [];
   root.innerHTML = `<h3>FSQ training samples for token #${{token}}</h3>`;
@@ -794,6 +822,7 @@ for (const ep of DATA.episodes) {{
     card.innerHTML = `<div class="skill-title">skill ${{s.skill_index + 1}} | token #${{s.token}} | [${{s.coord.join(", ")}}]</div>` +
       `<div class="muted">${{s.source}} · t=${{s.start_t}}→${{s.end_t}}</div>` +
       `<div class="pair"><img src="${{ASSET + s.start}}"><img src="${{ASSET + s.end}}"></div>` +
+      renderPatchGrids(s.patch_flags_start, s.patch_flags_end) +
       `<img class="graph" src="${{ASSET + s.graph}}">`;
     card.addEventListener("click", () => selectToken(s.token));
     skills.appendChild(card);

@@ -30,7 +30,6 @@
 BATCH_SIZE=32
 NUM_WORKERS=4
 NUM_GPUS=1
-EXP=${EXP:-dino_only_exp2}
 LR=$(python3 -c "print(2.5e-05 * ${NUM_GPUS})")
 # ── Optimization ─────────────────────────────────────────────────────────────
 
@@ -55,6 +54,7 @@ if [ ! -x "${BOOTSTRAP_PYTHON}" ]; then
     BOOTSTRAP_PYTHON=python3
 fi
 eval "$("${BOOTSTRAP_PYTHON}" "${CONFIG_PY}" --shell)"
+EXP=${EXP:-${TRAIN_EXP}}
 
 cd ${HOMEDIR}${PROJDIR}/lerobot
 source ${HOMEDIR}${PROJDIR}/.venv/bin/activate
@@ -74,9 +74,6 @@ nvidia-smi
 DATASET=${SKILLVLA_DATASET}
 DATASET_ROOT=${DATADIR}
 DATASET_DIR=${SKILLVLA_DATASET_DIR}
-
-DATASET=libero_90_skillvla_dino_only
-DATASET_DIR=${HOMEDIR}${PROJDIR}/libero_dataset/libero_90_data/libero_90_for_skillVLA/libero_90_skillvla_dino_only
 
 PI_BASE=lerobot/pi05_base
 
@@ -106,7 +103,6 @@ SKILL_DECODER_END_THRESHOLD=0.5
 SKILL_DECODER_STATE_INDICES=${SKILL_DECODER_STATE_INDICES}
 SKILL_DECODER_PRIOR_NOISE_RATIO=${SKILL_DECODER_PRIOR_NOISE_RATIO}
 FREEZE_VAE_DECODER=true # false 
-INFERENCE_SKILL_MAX_ORDER=${INFERENCE_SKILL_MAX_ORDER}
 INFERENCE_SKILL_MAX_LENGTH=${INFERENCE_SKILL_MAX_LENGTH}
 SKILL_BOUNDARY_RANDOM_P=10
 
@@ -175,7 +171,6 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes=${
     --policy.skill_decoder_end_threshold=${SKILL_DECODER_END_THRESHOLD} \
     --policy.skill_decoder_state_indices=${SKILL_DECODER_STATE_INDICES} \
     --policy.skill_decoder_prior_noise_ratio=${SKILL_DECODER_PRIOR_NOISE_RATIO} \
-    --policy.inference_skill_max_order=${INFERENCE_SKILL_MAX_ORDER} \
     --policy.inference_skill_max_length=${INFERENCE_SKILL_MAX_LENGTH} \
     --policy.skill_boundary_random_p=${SKILL_BOUNDARY_RANDOM_P} \
     --save_freq=5000 \

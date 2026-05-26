@@ -63,7 +63,7 @@ FT_DINO_CACHE_PATH=${FT_DINO_CACHE_PATH}
 # SkillVLA checkpoint trained on libero_90.
 VLA_OUTPUT_ROOT=${HOMEDIR}${PROJDIR}/VLA_outputs
 PT_BATCH_SIZE=${PT_BATCH_SIZE:-32}
-PT_EXP=${PT_EXP:-}
+PT_EXP=${PT_EXP:-${PT_TRAIN_EXP}}
 PT_FSQ_TAG=fsq${PT_FSQ_LEVELS_STR// /}
 if [ "${PT_BLOCK_LANG}" = "true" ]; then
     PT_BLOCK_LANG_TAG=blocklang
@@ -110,7 +110,7 @@ LR=2.5e-05
 BATCH_SIZE=32
 NUM_WORKERS=4
 NUM_GPUS=1
-EXP=${EXP:-}
+EXP=${EXP:-${TRAIN_EXP}}
 
 # ── SkillVLA losses / boundary randomization ────────────────────────────────
 SP_LOSS_WEIGHT=1.0
@@ -122,7 +122,6 @@ SKILL_DECODER_END_THRESHOLD=0.5
 SKILL_DECODER_STATE_INDICES=${PT_SKILL_DECODER_STATE_INDICES}
 SKILL_DECODER_PRIOR_NOISE_RATIO=${PT_SKILL_DECODER_PRIOR_NOISE_RATIO}
 FREEZE_VAE_DECODER=true
-INFERENCE_SKILL_MAX_ORDER=${PT_INFERENCE_SKILL_MAX_ORDER}
 INFERENCE_SKILL_MAX_LENGTH=${PT_INFERENCE_SKILL_MAX_LENGTH}
 SKILL_BOUNDARY_RANDOM_P=10
 
@@ -193,7 +192,6 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes=${
     --policy.skill_decoder_end_threshold=${SKILL_DECODER_END_THRESHOLD} \
     --policy.skill_decoder_state_indices=${SKILL_DECODER_STATE_INDICES} \
     --policy.skill_decoder_prior_noise_ratio=${SKILL_DECODER_PRIOR_NOISE_RATIO} \
-    --policy.inference_skill_max_order=${INFERENCE_SKILL_MAX_ORDER} \
     --policy.inference_skill_max_length=${INFERENCE_SKILL_MAX_LENGTH} \
     --policy.skill_boundary_random_p=${SKILL_BOUNDARY_RANDOM_P} \
     --save_freq=2000 \

@@ -48,7 +48,6 @@ SKILL_VLA_BATCH_KEYS = (
     "skill_ds",
     "skill_de",
     "skill_boundary",
-    "skill_max_order",
     "skill_max_length",
     "skill_decoder_state",
     "skill_decoder_image",

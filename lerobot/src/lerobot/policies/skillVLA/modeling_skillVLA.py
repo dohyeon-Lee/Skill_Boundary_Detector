@@ -14,11 +14,10 @@ For stages 1 & 2 (decoupled pre-training) use skillVLA_decouple instead.
 
 Expected batch keys beyond standard PI05:
   - "skill_index"          : (B,) current skill index in skill_sequence (BOS=0)
-  - "skill_sequence"       : (B, max_order+2) [BOS, skills..., EOS, PAD...]
-  - "skill_length_sequence": (B, max_order+2) aligned skill lengths
+  - "skill_sequence"       : (B, S) [BOS, skills..., EOS, PAD...]
+  - "skill_length_sequence": (B, S) aligned skill lengths
   - "skill_ds" / "skill_de": (B,) distance from skill start/end
   - "skill_boundary"       : (B,) 1 at current skill end
-  - "skill_max_order"      : (B,) maximum real skill count
   - "skill_max_length"     : (B,) FSQ max skill length
 """
 
@@ -516,7 +515,6 @@ class SkillVLAPytorch(PI05Pytorch):
         skill_ds: Tensor,
         skill_de: Tensor,
         skill_boundary: Tensor,
-        skill_max_order: Tensor,
         skill_max_length: Tensor,
     ) -> dict[str, Tensor]:
         device = skill_sequence.device
@@ -525,7 +523,6 @@ class SkillVLAPytorch(PI05Pytorch):
         de = skill_de.view(-1).long()
         seq_len = skill_sequence_len.view(-1).long()
         last_real = (seq_len - 2).clamp_min(1)
-        max_order = skill_max_order.view(-1).float().clamp_min(1.0)
         max_length = skill_max_length.view(-1).float().clamp_min(1.0)
 
         current = self._gather_skill_sequence(skill_sequence, k)
@@ -533,7 +530,6 @@ class SkillVLAPytorch(PI05Pytorch):
         prev = self._gather_skill_sequence(skill_sequence, prev_idx)
 
         predictor_input_token = prev.clone()
-        predictor_input_index = prev_idx.float() / max_order
         predictor_progress = ds.float() / max_length
         predictor_target = current.clone()
 
@@ -560,7 +556,6 @@ class SkillVLAPytorch(PI05Pytorch):
             if choose_early.any():
                 next_idx = (k + 1).clamp(max=skill_sequence.shape[1] - 1)
                 predictor_input_token = torch.where(choose_early, current, predictor_input_token)
-                predictor_input_index = torch.where(choose_early, k.float() / max_order, predictor_input_index)
                 early_progress = (p.float() - de.float()).clamp_min(0.0) / max_length
                 predictor_progress = torch.where(choose_early, early_progress, predictor_progress)
                 next_token = self._gather_skill_sequence(skill_sequence, next_idx)
@@ -581,7 +576,6 @@ class SkillVLAPytorch(PI05Pytorch):
                 prev_skill_len = self._gather_skill_sequence(skill_length_sequence, prev_skill_idx).float()
                 late_progress = (prev_skill_len + ds.float()) / max_length
                 predictor_input_token = torch.where(choose_late, prev_prev_token, predictor_input_token)
-                predictor_input_index = torch.where(choose_late, prev_prev_idx.float() / max_order, predictor_input_index)
                 predictor_progress = torch.where(choose_late, late_progress, predictor_progress)
                 predictor_target = torch.where(choose_late, prev_skill_token, predictor_target)
                 shifted_action_token = torch.where(choose_late, prev_skill_token, shifted_action_token)
@@ -596,7 +590,6 @@ class SkillVLAPytorch(PI05Pytorch):
 
         return {
             "predictor_input_token": predictor_input_token,
-            "predictor_input_index": predictor_input_index,
             "predictor_progress": predictor_progress,
             "predictor_target": predictor_target,
             "action_label_token": current,
@@ -717,6 +710,7 @@ class SkillVLAPytorch(PI05Pytorch):
                     "patch_flag_prob_mean": float(torch.sigmoid(flag_logits.detach().float()).mean().cpu()),
                 }
             )
+            self._last_hard_patch_flags = hard_flags.cpu()  # (B, n_patches, 2) for trace recording
         return flags
 
     def _skill_decoder_end_loss(
@@ -890,7 +884,6 @@ class SkillVLAPytorch(PI05Pytorch):
         skill_ds         : Tensor | None = None,
         skill_de         : Tensor | None = None,
         skill_boundary   : Tensor | None = None,
-        skill_max_order  : Tensor | None = None,
         skill_max_length : Tensor | None = None,
         skill_decoder_state: Tensor | None = None,
         skill_decoder_image: Tensor | None = None,
@@ -908,7 +901,6 @@ class SkillVLAPytorch(PI05Pytorch):
             "skill_ds",
             "skill_de",
             "skill_boundary",
-            "skill_max_order",
             "skill_max_length",
         ):
             if locals()[name] is None:
@@ -923,8 +915,6 @@ class SkillVLAPytorch(PI05Pytorch):
             skill_de = skill_de.squeeze(-1)
         if skill_boundary.ndim > 1:
             skill_boundary = skill_boundary.squeeze(-1)
-        if skill_max_order.ndim > 1:
-            skill_max_order = skill_max_order.squeeze(-1)
         if skill_max_length.ndim > 1:
             skill_max_length = skill_max_length.squeeze(-1)
 
@@ -940,7 +930,6 @@ class SkillVLAPytorch(PI05Pytorch):
             skill_ds,
             skill_de,
             skill_boundary,
-            skill_max_order,
             skill_max_length,
         )
         predictor_input_z = self._skill_token_embedding(skill_targets["predictor_input_token"]).to(actions.device)
@@ -949,7 +938,6 @@ class SkillVLAPytorch(PI05Pytorch):
             predictor_input_z.float(),
             sp_prefix,
             prefix_pad_masks,
-            skill_targets["predictor_input_index"].to(actions.device),
             skill_targets["predictor_progress"].to(actions.device),
         )
         sp_loss = self._skill_predictor_loss(z_pred, skill_targets["predictor_target"].to(actions.device))
@@ -1239,7 +1227,6 @@ class SkillVLAPolicy(PI05Policy):
             skill_ds=batch.get("skill_ds"),
             skill_de=batch.get("skill_de"),
             skill_boundary=batch.get("skill_boundary"),
-            skill_max_order=batch.get("skill_max_order"),
             skill_max_length=batch.get("skill_max_length"),
             skill_decoder_state=skill_decoder_state,
             skill_decoder_image=skill_decoder_image,
@@ -1285,7 +1272,6 @@ class SkillVLAPolicy(PI05Policy):
         self._current_z        : Tensor | None = None
         self._current_token    : Tensor | None = None
         self._skill_step       : int           = 0
-        self._skill_index      : int           = 0
         self._trigger_new_skill: bool          = False
         self._action_queue     : deque         = deque(maxlen=self.config.n_action_steps)
         self._episode_timestep : int           = 0
@@ -1387,6 +1373,24 @@ class SkillVLAPolicy(PI05Policy):
                 }
             )
             self._active_skill_trace_indices.append(trace_index)
+
+    def _record_patch_flags_in_trace(self, hard_flags: "Tensor") -> None:
+        """Record hard patch flags (B, n_patches, 2) into each active trace entry.
+
+        patch_flags_start is written only once (first chunk); patch_flags_end is
+        overwritten every chunk so the last chunk before skill end is kept.
+        """
+        flags_cpu = hard_flags.detach().cpu().float()
+        for batch_index, trace_index in enumerate(self._active_skill_trace_indices):
+            if trace_index is None or trace_index >= len(self._skill_trace):
+                continue
+            if batch_index >= flags_cpu.shape[0]:
+                continue
+            record = self._skill_trace[trace_index]
+            patch_list = flags_cpu[batch_index].tolist()  # list of [is_red, is_green] per patch
+            if "patch_flags_start" not in record:
+                record["patch_flags_start"] = patch_list
+            record["patch_flags_end"] = patch_list
 
     def _update_active_skill_trace_length(self) -> None:
         for trace_index in self._active_skill_trace_indices:
@@ -1531,7 +1535,6 @@ class SkillVLAPolicy(PI05Policy):
         self._current_token = label_tokens
         self._current_z = self.model._token_to_z(label_tokens).to(device=current_state.device)
         self._skill_step = 0
-        self._skill_index += 1
         self._trigger_new_skill = False
         self._record_skill_start(label_tokens, source="label", label_records=label_records)
 
@@ -1555,18 +1558,11 @@ class SkillVLAPolicy(PI05Policy):
         else:
             input_token = self._current_token.to(device=device)
         z_prev = self.model._skill_token_embedding(input_token).to(device=device)
-        skill_index_norm = torch.full(
-            (b,),
-            float(self._skill_index) / max(1, int(self.config.inference_skill_max_order)),
-            device=device,
-            dtype=torch.float32,
-        )
 
         sp_logits = self.model.skill_predictor(
             z_prev.float(),
             skill_predictor_prefix,
             prefix_pad_masks,
-            skill_index_norm,
             skill_progress.float(),
         )
         # logits (B,D,L) → per-dim argmax → scalar FSQ index + z_q vector
@@ -1575,7 +1571,6 @@ class SkillVLAPolicy(PI05Policy):
         self._current_z = self.model._fsq_logits_to_z(sp_logits).to(dtype=z_prev.dtype, device=device)
 
         self._skill_step  = 0
-        self._skill_index += 1
         self._trigger_new_skill = False
         reference_records = self._next_reference_skill_records(b)
         self._record_skill_start(pred_tokens, source="pred", label_records=reference_records)
@@ -1704,6 +1699,9 @@ class SkillVLAPolicy(PI05Policy):
             self._record_end_signal(executable_end_prob)
             if bool((executable_end_prob >= float(self.config.skill_decoder_end_threshold)).any().item()):
                 self._trigger_new_skill = True
+            last_flags = getattr(self.model, "_last_hard_patch_flags", None)
+            if last_flags is not None:
+                self._record_patch_flags_in_trace(last_flags)
 
         action = self._action_queue.popleft()
         raw_state = batch.get("skill_decoder_state")

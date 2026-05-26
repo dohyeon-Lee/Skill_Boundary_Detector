@@ -50,7 +50,6 @@ class SkillVLAConfig(PI05Config):
     skill_decoder_dino_build_cache: bool = True
     """Build the .npy mmap cache from the .npz token file when missing."""
     freeze_vae_decoder: bool = False
-    inference_skill_max_order: int = 8
     inference_skill_max_length: int = 200
     skill_decoder_prior_noise_ratio: float = 0.0
     """Mix ratio r for action-expert start source: (1-r)*normalized FSQ prior + r*Gaussian noise."""

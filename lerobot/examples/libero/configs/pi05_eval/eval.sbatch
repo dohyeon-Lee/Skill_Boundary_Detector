@@ -6,7 +6,7 @@
 # SBATCH --qos=pro6000_qos
 
 #SBATCH --partition=debug
-#SBATCH --nodelist=node100
+#SBATCH --nodelist=node200
 #SBATCH --qos=big_qos
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
@@ -63,7 +63,7 @@ EVAL_BATCH_SIZE=${EVAL_BATCH_SIZE:-1}
 # Set MODEL directly to evaluate any custom run.
 VLA_OUTPUT_ROOT=${HOMEDIR}${PROJDIR}/VLA_outputs
 EVAL_STAGE=${EVAL_STAGE:-PT}  # PT or FT
-CHECKPOINT=${CHECKPOINT:-010000}
+CHECKPOINT=${CHECKPOINT:-015000}
 
 PT_DATASET=${PT_DATASET:-libero_90}
 PT_BATCH_SIZE=${PT_BATCH_SIZE:-32}
