@@ -591,7 +591,7 @@ def _write_index_html(
         metrics = task_info.get("metrics", {})
         desc = task_descriptions.get(task_id, "")
         desc_esc = html.escape(desc)
-        card_badge = _index_card_badge(metrics.get("pc_success"))
+        card_badge = _index_card_badge(_task_pc(metrics))
 
         video_tag = ""
         for vp in metrics.get("video_paths", [])[:1]:
