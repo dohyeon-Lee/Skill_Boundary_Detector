@@ -69,9 +69,9 @@ train_exp: A2
 
 # ── SkillVLA eval ────────────────────────────────────────────
 target_task: libero_10
-eval_exp: A2
-eval_checkpoint: "015000"
-eval_skill_decoder_prior_noise_ratio: 1.0
+eval_exp: B2
+eval_checkpoint: "020000"
+eval_skill_decoder_prior_noise_ratio: 0.5
 eval_block_lang: false
 eval_detach_action_prefix_grad: false
 
