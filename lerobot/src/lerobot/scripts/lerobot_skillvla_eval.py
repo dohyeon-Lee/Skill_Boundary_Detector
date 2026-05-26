@@ -542,6 +542,138 @@ def _save_training_skill_examples(
     return out
 
 
+def _index_success_badge(valid_pcts: list) -> str:
+    if not valid_pcts:
+        return ""
+    overall = sum(valid_pcts) / len(valid_pcts)
+    n_ok = sum(1 for p in valid_pcts if p >= 50)
+    pct_str = f"{overall:.0f}%"
+    color = "#22c55e" if overall >= 50 else "#ef4444"
+    return f'<div class="badge" style="background:{color}">{pct_str} Success Rate &nbsp;({n_ok} / {len(valid_pcts)} tasks)</div>'
+
+def _index_card_badge(pc_success) -> str:
+    if pc_success is None or (isinstance(pc_success, float) and pc_success != pc_success):
+        return ""
+    if pc_success >= 50:
+        return '<span class="success">Success</span>'
+    return '<span class="success" style="background:#fee2e2;color:#991b1b;">Fail</span>'
+
+def _write_index_html(
+    *,
+    output_dir: Path,
+    per_task_infos: list[dict],
+    task_descriptions: dict[int, str],
+    job_name: str = "",
+) -> str:
+    """Generate output_dir/index.html — matches the reference template, adds language prompt."""
+    output_dir = Path(output_dir)
+    sorted_tasks = sorted(per_task_infos, key=lambda x: (x.get("task_group", ""), x.get("task_id", 0)))
+
+    def _task_pc(metrics: dict):
+        pc = metrics.get("pc_success")
+        if pc is None:
+            s = metrics.get("successes", [])
+            pc = sum(1 for x in s if x) / len(s) * 100 if s else None
+        return float(pc) if pc is not None and not (isinstance(pc, float) and pc != pc) else None
+
+    valid_pcts = [p for t in sorted_tasks if (p := _task_pc(t.get("metrics", {}))) is not None]
+    badge_html = _index_success_badge(valid_pcts)
+
+    suite_name = "LIBERO-90"
+    if sorted_tasks:
+        tg = str(sorted_tasks[0].get("task_group", ""))
+        if tg:
+            suite_name = tg.upper().replace("_", "-")
+
+    cards_html = ""
+    for task_info in sorted_tasks:
+        task_id = int(task_info.get("task_id", 0))
+        metrics = task_info.get("metrics", {})
+        desc = task_descriptions.get(task_id, "")
+        desc_esc = html.escape(desc)
+        card_badge = _index_card_badge(metrics.get("pc_success"))
+
+        video_tag = ""
+        for vp in metrics.get("video_paths", [])[:1]:
+            vp = Path(vp)
+            try:
+                rel = vp.relative_to(output_dir)
+            except ValueError:
+                rel = vp
+            video_tag = f'<video controls playsinline preload="metadata" src="{rel}"></video>'
+
+        skill_href = ""
+        for hp in metrics.get("skill_html_paths", [])[:1]:
+            hp = Path(hp)
+            try:
+                rel_h = hp.relative_to(output_dir)
+            except ValueError:
+                rel_h = hp
+            skill_href = str(rel_h)
+
+        prompt_html = f'<div class="card-prompt">{desc_esc}</div>' if desc_esc else ""
+        footer_html = f'<div class="card-footer"><a href="{skill_href}">View Skill Trace</a></div>' if skill_href else ""
+
+        cards_html += f"""    <div class="card">
+      <div class="card-header">
+        <span class="card-title">Task {task_id:02d}</span>
+        {card_badge}
+      </div>
+      {video_tag}
+      {prompt_html}
+      {footer_html}
+    </div>
+"""
+
+    index_path = output_dir / "index.html"
+    index_path.write_text(
+        f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SkillVLA FSQ Eval — {suite_name}</title>
+  <style>
+    * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+    body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f0f2f5; color: #1a1d23; }}
+    header {{ background: #1a1d23; color: #fff; padding: 24px 32px; }}
+    header h1 {{ font-size: 20px; font-weight: 700; letter-spacing: -0.3px; }}
+    header p {{ margin-top: 6px; font-size: 13px; color: #9aa3b0; font-family: monospace; word-break: break-all; }}
+    .badge {{ display: inline-block; margin-top: 14px; color: #fff; font-size: 15px; font-weight: 700; padding: 5px 14px; border-radius: 20px; }}
+    main {{ max-width: 1100px; margin: 0 auto; padding: 28px 20px; }}
+    h2 {{ font-size: 16px; font-weight: 600; color: #4b5563; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 18px; }}
+    .grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px; }}
+    .card {{ background: #fff; border: 1px solid #dde2ea; border-radius: 12px; overflow: hidden; }}
+    .card-header {{ padding: 12px 16px; border-bottom: 1px solid #eef0f4; display: flex; justify-content: space-between; align-items: center; }}
+    .card-title {{ font-weight: 700; font-size: 14px; }}
+    .success {{ background: #dcfce7; color: #15803d; font-size: 12px; font-weight: 600; padding: 3px 9px; border-radius: 12px; }}
+    video {{ width: 100%; display: block; background: #000; }}
+    .card-prompt {{ padding: 10px 16px; font-size: 12px; color: #4b5563; line-height: 1.45; border-top: 1px solid #eef0f4; min-height: 52px; }}
+    .card-footer {{ padding: 10px 16px; }}
+    .card-footer a {{ display: block; text-align: center; background: #3b82f6; color: #fff; text-decoration: none; font-size: 13px; font-weight: 600; padding: 8px; border-radius: 8px; }}
+    .card-footer a:hover {{ background: #2563eb; }}
+    @media (max-width: 480px) {{ .grid {{ grid-template-columns: 1fr; }} header {{ padding: 18px 16px; }} }}
+  </style>
+</head>
+<body>
+<header>
+  <h1>SkillVLA FSQ Eval — {suite_name}</h1>
+  <p>{html.escape(job_name)}</p>
+  {badge_html}
+</header>
+<main>
+  <h2>Tasks</h2>
+  <div class="grid">
+{cards_html}  </div>
+</main>
+</body>
+</html>
+""",
+        encoding="utf-8",
+    )
+    return str(index_path)
+
+
 def _write_task_skill_html(
     *,
     task_group: str,
@@ -1741,6 +1873,19 @@ def eval_main(cfg: EvalPipelineConfig):
     with open(Path(cfg.output_dir) / "eval_info.json", "w") as f:
         json.dump(info, f, indent=2)
 
+    # Generate index.html for Netlify / static hosting
+    if cfg.eval.skill_html:
+        try:
+            index_path = _write_index_html(
+                output_dir=Path(cfg.output_dir),
+                per_task_infos=info.get("per_task", []),
+                task_descriptions=task_id_to_desc,
+                job_name=getattr(cfg, "job_name", ""),
+            )
+            logging.info("Generated index.html: %s", index_path)
+        except Exception as exc:
+            logging.warning("Failed to write index.html: %s", exc)
+
     # Log to wandb if enabled
     wandb_project = getattr(cfg, "wandb_project", None)
     if wandb_project:
@@ -1985,6 +2130,10 @@ def run_one(
     metrics.setdefault("skill_plot_paths", [])
     metrics.setdefault("skill_timeline_paths", [])
     metrics.setdefault("skill_html_paths", [])
+    # compute per-task pc_success so index.html can show the badge
+    successes = metrics.get("successes", [])
+    if successes:
+        metrics["pc_success"] = sum(1 for s in successes if s) / len(successes) * 100
     return task_group, task_id, metrics
 
 
