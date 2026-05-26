@@ -1,0 +1,291 @@
+{
+    "dataset": {
+        "repo_id": "dohyeon/libero_90_skillvla_single",
+        "root": "/data2/dohyeon/SBD/libero_dataset/libero_90_data/libero_90_for_skillVLA/libero_90_skillvla_single",
+        "episodes": null,
+        "image_transforms": {
+            "enable": false,
+            "max_num_transforms": 3,
+            "random_order": false,
+            "tfs": {
+                "brightness": {
+                    "weight": 1.0,
+                    "type": "ColorJitter",
+                    "kwargs": {
+                        "brightness": [
+                            0.8,
+                            1.2
+                        ]
+                    }
+                },
+                "contrast": {
+                    "weight": 1.0,
+                    "type": "ColorJitter",
+                    "kwargs": {
+                        "contrast": [
+                            0.8,
+                            1.2
+                        ]
+                    }
+                },
+                "saturation": {
+                    "weight": 1.0,
+                    "type": "ColorJitter",
+                    "kwargs": {
+                        "saturation": [
+                            0.5,
+                            1.5
+                        ]
+                    }
+                },
+                "hue": {
+                    "weight": 1.0,
+                    "type": "ColorJitter",
+                    "kwargs": {
+                        "hue": [
+                            -0.05,
+                            0.05
+                        ]
+                    }
+                },
+                "sharpness": {
+                    "weight": 1.0,
+                    "type": "SharpnessJitter",
+                    "kwargs": {
+                        "sharpness": [
+                            0.5,
+                            1.5
+                        ]
+                    }
+                },
+                "affine": {
+                    "weight": 1.0,
+                    "type": "RandomAffine",
+                    "kwargs": {
+                        "degrees": [
+                            -5.0,
+                            5.0
+                        ],
+                        "translate": [
+                            0.05,
+                            0.05
+                        ]
+                    }
+                }
+            }
+        },
+        "revision": null,
+        "use_imagenet_stats": true,
+        "video_backend": "pyav",
+        "streaming": false
+    },
+    "env": null,
+    "policy": {
+        "type": "skill_vla",
+        "n_obs_steps": 1,
+        "input_features": {
+            "observation.images.image": {
+                "type": "VISUAL",
+                "shape": [
+                    3,
+                    256,
+                    256
+                ]
+            },
+            "observation.images.wrist_image": {
+                "type": "VISUAL",
+                "shape": [
+                    3,
+                    256,
+                    256
+                ]
+            },
+            "observation.state": {
+                "type": "STATE",
+                "shape": [
+                    8
+                ]
+            },
+            "observation.states.ee_state": {
+                "type": "STATE",
+                "shape": [
+                    6
+                ]
+            },
+            "observation.states.joint_state": {
+                "type": "STATE",
+                "shape": [
+                    7
+                ]
+            },
+            "observation.states.gripper_state": {
+                "type": "STATE",
+                "shape": [
+                    2
+                ]
+            }
+        },
+        "output_features": {
+            "action": {
+                "type": "ACTION",
+                "shape": [
+                    7
+                ]
+            }
+        },
+        "device": "cuda",
+        "use_amp": false,
+        "use_peft": false,
+        "push_to_hub": false,
+        "repo_id": null,
+        "private": null,
+        "tags": null,
+        "license": null,
+        "pretrained_path": "lerobot/pi05_base",
+        "paligemma_variant": "gemma_2b",
+        "action_expert_variant": "gemma_300m",
+        "dtype": "bfloat16",
+        "chunk_size": 10,
+        "n_action_steps": 10,
+        "max_state_dim": 32,
+        "max_action_dim": 32,
+        "num_inference_steps": 10,
+        "time_sampling_beta_alpha": 1.5,
+        "time_sampling_beta_beta": 1.0,
+        "time_sampling_scale": 0.999,
+        "time_sampling_offset": 0.001,
+        "min_period": 0.004,
+        "max_period": 4.0,
+        "rtc_config": null,
+        "image_resolution": [
+            224,
+            224
+        ],
+        "empty_cameras": 0,
+        "tokenizer_max_length": 200,
+        "normalization_mapping": {
+            "VISUAL": "IDENTITY",
+            "STATE": "QUANTILES",
+            "ACTION": "QUANTILES"
+        },
+        "gradient_checkpointing": true,
+        "compile_model": false,
+        "compile_mode": "max-autotune",
+        "freeze_vision_encoder": false,
+        "train_expert_only": false,
+        "optimizer_lr": 2.5e-05,
+        "optimizer_betas": [
+            0.9,
+            0.95
+        ],
+        "optimizer_eps": 1e-08,
+        "optimizer_weight_decay": 0.01,
+        "optimizer_grad_clip_norm": 1.0,
+        "scheduler_warmup_steps": 1000,
+        "scheduler_decay_steps": 30000,
+        "scheduler_decay_lr": 2.5e-06,
+        "model_type": "skill_vla",
+        "skill_latent_dim": 3,
+        "skill_fsq_levels": [
+            5,
+            5,
+            5
+        ],
+        "skill_predictor_hidden_dim": 512,
+        "skill_predictor_num_heads": 8,
+        "skill_predictor_num_layers": 2,
+        "skill_predictor_num_query_tokens": 4,
+        "skill_predictor_dropout": 0.0,
+        "skill_predictor_num_embeddings": 125,
+        "skill_predictor_loss_weight": 1.0,
+        "skill_boundary_random_p": 10,
+        "vae_decoder_path": "/data2/dohyeon/SBD/libero_dataset/libero_90_data/libero_90_for_skillVLA/libero_90_fsq555_dinov3_vits16_abs_single_step_dino_flags_FSQ_epoch1000/FSQ.pt",
+        "skill_decoder_image_model_name": "/data2/dohyeon/SBD/models/dinov3-vits16",
+        "skill_decoder_loss_weight": 1.0,
+        "skill_decoder_end_pos_weight": 1.0,
+        "skill_decoder_end_threshold": 0.5,
+        "skill_decoder_state_indices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6
+        ],
+        "skill_decoder_dino_tokens_path": "/data2/dohyeon/SBD/libero_dataset/libero_90_data/libero_90_for_FSQ/dinov3_vits16_tokens.npz",
+        "skill_decoder_dino_cache_path": "/data2/dohyeon/SBD/libero_dataset/libero_90_data/libero_90_for_FSQ/dinov3_vits16_tokens.features.npy",
+        "skill_decoder_dino_output_key": "skill_decoder_image",
+        "skill_decoder_dino_build_cache": true,
+        "freeze_vae_decoder": true,
+        "inference_skill_max_length": 200,
+        "block_lang_to_action": false,
+        "use_label_skill_tokens_eval": false,
+        "label_skill_dataset_dir": null,
+        "label_skill_episode_offset": 0,
+        "compare_label_skill_tokens_eval": false
+    },
+    "output_dir": "/data2/dohyeon/SBD/VLA_single_outputs/PT_libero_90_skillvla_single_fsq555_single_step_dino_flags_orderX",
+    "job_name": "libero_90_skillvla_single_fsq555_single_step_dino_flags_orderX",
+    "resume": false,
+    "seed": 1000,
+    "cudnn_deterministic": false,
+    "num_workers": 4,
+    "batch_size": 32,
+    "steps": 100000,
+    "eval_freq": 20000,
+    "log_freq": 200,
+    "tolerance_s": 0.0001,
+    "save_checkpoint": true,
+    "save_freq": 5000,
+    "use_policy_training_preset": true,
+    "optimizer": {
+        "type": "adamw",
+        "lr": 2.5e-05,
+        "weight_decay": 0.01,
+        "grad_clip_norm": 1.0,
+        "betas": [
+            0.9,
+            0.95
+        ],
+        "eps": 1e-08
+    },
+    "scheduler": {
+        "type": "cosine_decay_with_warmup",
+        "num_warmup_steps": 1000,
+        "num_decay_steps": 30000,
+        "peak_lr": 2.5e-05,
+        "decay_lr": 2.5e-06
+    },
+    "eval": {
+        "n_episodes": 50,
+        "batch_size": 50,
+        "use_async_envs": false,
+        "max_videos_per_task": 1,
+        "video_frame_stride": 1,
+        "video_fps": null,
+        "skill_html": true,
+        "skill_html_train_samples": 6,
+        "skill_html_skill_latents_path": null,
+        "skill_html_raw_dataset_dir": null,
+        "skill_html_image_key": null
+    },
+    "wandb": {
+        "enable": true,
+        "disable_artifact": false,
+        "project": "VLA_posttrain",
+        "entity": null,
+        "notes": null,
+        "run_id": "yaox4z24",
+        "mode": null,
+        "add_tags": true
+    },
+    "peft": null,
+    "use_rabc": false,
+    "rabc_progress_path": null,
+    "rabc_kappa": 0.01,
+    "rabc_epsilon": 1e-06,
+    "rabc_head_mode": "sparse",
+    "rename_map": {},
+    "checkpoint_path": null
+}
