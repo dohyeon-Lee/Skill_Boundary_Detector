@@ -59,12 +59,12 @@ skill_decoder_state_indices: "[0,1,2,3,4,5,6]"
 # ── SkillVLA 학습 ────────────────────────────────────────────
 # skill predictor prefix는 embed_prefix raw embeddings 고정입니다.
 # context/embs 선택 분기는 코드와 sbatch에서 제거했습니다.
-skill_decoder_prior_noise_ratio: 0.4 # 0.4
+skill_decoder_prior_noise_ratio: 1.0 # 0.4
 # true: action expert의 language-token attention을 막고 image/state prefix만 보게 함
 # false: action expert가 language + image/state prefix 전체를 볼 수 있음
 block_lang: true
 # true: action expert는 prefix에 attend하지만 flow/action loss gradient는 VLM prefix 경로로 보내지 않음
-detach_action_prefix_grad: true
+detach_action_prefix_grad: false
 
 # ── SkillVLA eval ────────────────────────────────────────────
 target_task: libero_90

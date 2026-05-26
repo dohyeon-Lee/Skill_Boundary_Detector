@@ -2,7 +2,7 @@
 #SBATCH --job-name=skillVLA_eval
 
 #SBATCH --partition=debug
-#SBATCH --nodelist=node100
+#SBATCH --nodelist=node200
 
 #SBATCH --qos=big_qos
 #SBATCH --gres=gpu:1
@@ -83,13 +83,13 @@ else
   BLOCK_LANG_TAG=allowlang
 fi
 PT_BATCH_SIZE=${PT_BATCH_SIZE:-32}
-PT_EXP=${PT_EXP:-exp2}
+PT_EXP=${PT_EXP:-exp5}
 DEFAULT_MODEL=PT_${SKILLVLA_DATASET}_${FSQ_TAG}_FSQ_epoch${FSQ_EPOCH}_${BLOCK_LANG_TAG}_batch${PT_BATCH_SIZE}
 if [ -n "${PT_EXP}" ]; then
   DEFAULT_MODEL=${DEFAULT_MODEL}_${PT_EXP}
 fi
 MODEL=${MODEL:-${DEFAULT_MODEL}}
-CHECKPOINT=${CHECKPOINT:-020000}
+CHECKPOINT=${CHECKPOINT:-015000}
 POLICY_PATH=${POLICY_PATH:-${VLA_OUTPUT_ROOT}/${MODEL}/checkpoints/${CHECKPOINT}/pretrained_model}
 
 # ── FSQ decoder and inference settings ───────────────────────────────────────
