@@ -217,7 +217,7 @@ def main() -> None:
     for i, row in enumerate(rows):
         out.paste(row, (0, i * args.image_size))
 
-    out_path = output_dir / f"task{args.task_id:02d}_episodes{episode_ids[0]:05d}-{episode_ids[-1]:05d}.png"
+    out_path = output_dir / f"{args.dataset}_task{args.task_id:02d}_episodes{episode_ids[0]:05d}-{episode_ids[-1]:05d}.png"
     out.save(out_path)
     print(f"[skillset eval] saved -> {out_path}")
 
