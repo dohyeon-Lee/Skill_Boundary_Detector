@@ -50,8 +50,8 @@ nvidia-smi
 # ── Fine-tune dataset / base checkpoint ─────────────────────────────────────
 # All generated artifacts live under:
 #   libero_dataset/${DATA}_data/
-FT_DATA=${FT_DATA:-libero_10_op1_10}
-PT_DATA=${PT_DATA:-libero_90}
+FT_DATA=${FT_DATA:?FT_DATA must be set by pipeline_config.yaml or the environment}
+PT_DATA=${PT_DATA:-${FT_PT_DATA}}
 eval "$(python "${CONFIG_PY}" --shell --data "${FT_DATA}" --prefix FT_)"
 eval "$(python "${CONFIG_PY}" --shell --data "${PT_DATA}" --prefix PT_)"
 FT_DATASET=${FT_SKILLVLA_DATASET}
@@ -62,19 +62,23 @@ FT_DINO_CACHE_PATH=${FT_DINO_CACHE_PATH}
 
 # SkillVLA checkpoint trained on libero_90.
 VLA_OUTPUT_ROOT=${HOMEDIR}${PROJDIR}/VLA_outputs
-PT_BATCH_SIZE=${PT_BATCH_SIZE:-32}
-PT_EXP=${PT_EXP:-${PT_TRAIN_EXP}}
+PT_BATCH_SIZE=${PT_BATCH_SIZE:-${FT_PT_BATCH_SIZE}}
+PT_EXP=${PT_EXP:-${FT_PT_EXP}}
 PT_FSQ_TAG=fsq${PT_FSQ_LEVELS_STR// /}
-if [ "${PT_BLOCK_LANG}" = "true" ]; then
+if [ "${FT_PT_BLOCK_LANG}" = "true" ]; then
     PT_BLOCK_LANG_TAG=blocklang
 else
     PT_BLOCK_LANG_TAG=allowlang
 fi
-PT_RUN_NAME=PT_${PT_SKILLVLA_DATASET}_${PT_FSQ_TAG}_FSQ_epoch${PT_FSQ_EPOCH}_${PT_BLOCK_LANG_TAG}_batch${PT_BATCH_SIZE}
-if [ -n "${PT_EXP}" ]; then
-    PT_RUN_NAME=${PT_RUN_NAME}_${PT_EXP}
+if [ -n "${FT_PT_MODEL}" ]; then
+    PT_RUN_NAME=${FT_PT_MODEL}
+else
+    PT_RUN_NAME=PT_${PT_SKILLVLA_DATASET}_${PT_FSQ_TAG}_FSQ_epoch${PT_FSQ_EPOCH}_${PT_BLOCK_LANG_TAG}_batch${PT_BATCH_SIZE}
+    if [ -n "${PT_EXP}" ]; then
+        PT_RUN_NAME=${PT_RUN_NAME}_${PT_EXP}
+    fi
 fi
-PT_CHECKPOINT=025000
+PT_CHECKPOINT=${PT_CHECKPOINT:-${FT_PT_CHECKPOINT}}
 BASE_POLICY=${VLA_OUTPUT_ROOT}/${PT_RUN_NAME}/checkpoints/${PT_CHECKPOINT}/pretrained_model
 
 # FSQ decoder used by the base SkillVLA run. Keep this matched to PT.
@@ -110,7 +114,7 @@ LR=2.5e-05
 BATCH_SIZE=32
 NUM_WORKERS=4
 NUM_GPUS=1
-EXP=${EXP:-${TRAIN_EXP}}
+EXP=${EXP:-${FT_EXP}}
 
 # ── SkillVLA losses / boundary randomization ────────────────────────────────
 SP_LOSS_WEIGHT=1.0
@@ -120,25 +124,24 @@ SKILL_DECODER_END_LOSS_WEIGHT=1.0
 SKILL_DECODER_END_POS_WEIGHT=1.0
 SKILL_DECODER_END_THRESHOLD=0.5
 SKILL_DECODER_STATE_INDICES=${PT_SKILL_DECODER_STATE_INDICES}
-SKILL_DECODER_PRIOR_NOISE_RATIO=${PT_SKILL_DECODER_PRIOR_NOISE_RATIO}
+SKILL_DECODER_PRIOR_NOISE_RATIO=${FT_SKILL_DECODER_PRIOR_NOISE_RATIO}
 FREEZE_VAE_DECODER=true
 INFERENCE_SKILL_MAX_LENGTH=${PT_INFERENCE_SKILL_MAX_LENGTH}
 SKILL_BOUNDARY_RANDOM_P=10
 
 # Fine-tuning follows pi05_FT: keep the vision encoder frozen by default.
-FREEZE_VISION_ENCODER=true
+FREEZE_VISION_ENCODER=${FT_FREEZE_VISION_ENCODER}
 # true: freeze the full Paligemma VLM, while leaving the action expert,
 # skill predictor, and SkillVLA projection/decoder modules controlled by
 # their own freeze flags.
-TRAIN_EXPERT_ONLY=false
+TRAIN_EXPERT_ONLY=${FT_TRAIN_EXPERT_ONLY}
 
 # BLOCK_LANG=true이면 action expert의 language-token attention을 막습니다.
 # false이면 action expert가 language + image/state prefix 전체를 볼 수 있습니다.
 # pipeline_config.yaml 의 block_lang 값에서 옵니다.
 # DETACH_ACTION_PREFIX_GRAD=true이면 action flow loss는 prefix/VLM 경로를 업데이트하지 않습니다.
 
-FT_FSQ_RUN_TAG=${PT_FSQ_RUN#${PT_FSQ_MODEL_DATA}_}
-RUN_NAME=${PT_CHECKPOINT}PT_${FT_DATASET}FT_${FT_FSQ_RUN_TAG}_${TRAIN_EXPERT_ONLY}_batch${BATCH_SIZE}
+RUN_NAME=${FT_DATASET}_${PT_FSQ_TAG}_${PT_ACTION_MODE}_${PT_DECODER_IMAGE_MODE}_FSQ_epoch${PT_FSQ_EPOCH}
 if [ -n "${EXP}" ]; then
     RUN_NAME=${RUN_NAME}_${EXP}
 fi
@@ -173,8 +176,8 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes=${
     --policy.freeze_vision_encoder=${FREEZE_VISION_ENCODER} \
     --policy.train_expert_only=${TRAIN_EXPERT_ONLY} \
     --policy.push_to_hub=false \
-    --policy.block_lang_to_action=${BLOCK_LANG} \
-    --policy.detach_action_prefix_grad=${DETACH_ACTION_PREFIX_GRAD} \
+    --policy.block_lang_to_action=${FT_BLOCK_LANG} \
+    --policy.detach_action_prefix_grad=${FT_DETACH_ACTION_PREFIX_GRAD} \
     --policy.vae_decoder_path=${FSQ_CKPT} \
     --policy.skill_decoder_image_model_name=${FSQ_IMAGE_MODEL_PATH} \
     --policy.freeze_vae_decoder=${FREEZE_VAE_DECODER} \

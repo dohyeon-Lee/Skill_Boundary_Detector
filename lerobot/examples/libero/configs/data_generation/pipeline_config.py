@@ -237,6 +237,20 @@ class PipelineConfig:
     eval_block_lang: bool
     eval_detach_action_prefix_grad: bool
 
+    ft_data: str
+    ft_pt_data: str
+    ft_pt_model: str
+    ft_pt_checkpoint: str
+    ft_pt_batch_size: int
+    ft_pt_exp: str
+    ft_pt_block_lang: bool
+    ft_exp: str
+    ft_train_expert_only: bool
+    ft_freeze_vision_encoder: bool
+    ft_block_lang: bool
+    ft_detach_action_prefix_grad: bool
+    ft_skill_decoder_prior_noise_ratio: float
+
 
 def load_config(data: str | None = None) -> PipelineConfig:
     y = _load_yaml()
@@ -296,7 +310,14 @@ def load_config(data: str | None = None) -> PipelineConfig:
     if not sam2_checkpoint_val:
         sam2_checkpoint_val = sam2_ckpt_default
 
-    skillvla_dataset = _get(y, "skillvla_dataset", "{data}_skillvla").format(data=data_name)
+    if data is not None:
+        # A prefixed --data invocation often runs after the default config was
+        # exported into the shell. Do not let SKILLVLA_DATASET from that earlier
+        # export leak into this derived dataset name.
+        skillvla_dataset_template = str(y.get("skillvla_dataset", "{data}_skillvla"))
+    else:
+        skillvla_dataset_template = _get(y, "skillvla_dataset", "{data}_skillvla")
+    skillvla_dataset = skillvla_dataset_template.format(data=data_name)
 
     return PipelineConfig(
         homedir=homedir,
@@ -382,6 +403,25 @@ def load_config(data: str | None = None) -> PipelineConfig:
             y,
             "eval_detach_action_prefix_grad",
             _get_bool(y, "detach_action_prefix_grad", False),
+        ),
+        ft_data=_get(y, "ft_data", "libero_10_op1_10"),
+        ft_pt_data=_get(y, "ft_pt_data", data_name),
+        ft_pt_model=_get(y, "ft_pt_model", ""),
+        ft_pt_checkpoint=_get(y, "ft_pt_checkpoint", "025000"),
+        ft_pt_batch_size=_get_int(y, "ft_pt_batch_size", 32),
+        ft_pt_exp=_get(y, "ft_pt_exp", _get(y, "train_exp", "")),
+        ft_pt_block_lang=_get_bool(y, "ft_pt_block_lang", _get_bool(y, "block_lang", True)),
+        ft_exp=_get(y, "ft_exp", _get(y, "train_exp", "")),
+        ft_train_expert_only=_get_bool(y, "ft_train_expert_only", False),
+        ft_freeze_vision_encoder=_get_bool(y, "ft_freeze_vision_encoder", True),
+        ft_block_lang=_get_bool(y, "ft_block_lang", _get_bool(y, "block_lang", True)),
+        ft_detach_action_prefix_grad=_get_bool(
+            y,
+            "ft_detach_action_prefix_grad",
+            _get_bool(y, "detach_action_prefix_grad", False),
+        ),
+        ft_skill_decoder_prior_noise_ratio=float(
+            _get(y, "ft_skill_decoder_prior_noise_ratio", _get(y, "skill_decoder_prior_noise_ratio", 0.0))
         ),
     )
 

@@ -16,13 +16,16 @@ eval "$(python "${CONFIG_PY}" --shell)"
 LOCAL_BASE="${HOMEDIR}${PROJDIR}"   # /data2/dohyeon/SBD
 
 # ── 전송 항목 정의 ────────────────────────────────────────────
-declare -a LABELS PATHS RENAMEABLE
+declare -a LABELS PATHS RENAMEABLE TYPES
 
 add_item() {
     LABELS+=("$1")
     PATHS+=("$2")
     RENAMEABLE+=("${3:-0}")  # 1이면 remote 폴더명 변경 prompt 제공
+    TYPES+=("${4:-normal}")
 }
+
+VLA_OUTPUTS_DIR="${LOCAL_BASE}/VLA_outputs"
 
 add_item "DINO backbone 모델" "${IMAGE_MODEL_PATH}"
 
@@ -53,6 +56,8 @@ add_item "전체 ${DATA}_DINO 디렉토리" "${DATA_DIR}/${DATA}_DINO" 1
 add_item "전체 ${DATA}_for_FSQ 디렉토리" "${FSQ_PRECOMPUTE_DIR}" 1
 
 add_item "전체 ${DATA}_for_skillVLA 디렉토리" "${SKILLVLA_ROOT}" 1
+
+add_item "SkillVLA checkpoint  [eval_exp=${EVAL_EXP}  step=${EVAL_CHECKPOINT}]" "${VLA_OUTPUTS_DIR}" 0 "vla_ckpt"
 
 # ── 메뉴 출력 ─────────────────────────────────────────────────
 echo ""
@@ -95,6 +100,54 @@ fi
 echo ""
 for idx in "${SELECTED[@]}"; do
     SRC="${PATHS[$idx]}"
+
+    # ── VLA checkpoint 특수 처리 ──────────────────────────────
+    if [ "${TYPES[$idx]}" = "vla_ckpt" ]; then
+        # yaml eval 파라미터 기반 자동 탐색
+        VLA_LANG_TAG="allowlang"
+        [ "${EVAL_BLOCK_LANG}" = "true" ] && VLA_LANG_TAG="blocklang"
+        mapfile -t VLA_MATCHES < <(ls -1 "${VLA_OUTPUTS_DIR}" 2>/dev/null \
+            | grep "_${VLA_LANG_TAG}_" | grep "_${EVAL_EXP}$" | grep -v "connectgrad")
+
+        if [ ${#VLA_MATCHES[@]} -eq 0 ]; then
+            echo "  오류: eval_exp='${EVAL_EXP}'로 끝나는 폴더 없음 (VLA_outputs/)" >&2
+            continue
+        elif [ ${#VLA_MATCHES[@]} -eq 1 ]; then
+            VLA_FOLDER="${VLA_MATCHES[0]}"
+        else
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "  [SkillVLA checkpoint] '${EVAL_EXP}' 매칭 폴더 여러 개:"
+            echo ""
+            for i in "${!VLA_MATCHES[@]}"; do
+                printf "    [%d] %s\n" "$((i+1))" "${VLA_MATCHES[$i]}"
+            done
+            echo ""
+            read -r -p "  폴더 번호: " VLA_FOLDER_NUM
+            VLA_FOLDER="${VLA_MATCHES[$((VLA_FOLDER_NUM - 1))]}"
+        fi
+
+        VLA_STEP="${EVAL_CHECKPOINT}"
+        if [ ! -d "${VLA_OUTPUTS_DIR}/${VLA_FOLDER}/checkpoints/${VLA_STEP}" ]; then
+            echo "  오류: 체크포인트 없음 '${VLA_FOLDER}/checkpoints/${VLA_STEP}'" >&2
+            echo "  사용 가능한 스텝: $(ls "${VLA_OUTPUTS_DIR}/${VLA_FOLDER}/checkpoints/" 2>/dev/null | tr '\n' ' ')" >&2
+            continue
+        fi
+
+        SRC="${VLA_OUTPUTS_DIR}/${VLA_FOLDER}/checkpoints/${VLA_STEP}"
+        REL="VLA_outputs/${VLA_FOLDER}/checkpoints/${VLA_STEP}"
+        REMOTE_REL="${REL}"
+        DST="${REMOTE}:${REMOTE_BASE}/${REMOTE_REL}"
+
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "  [SkillVLA checkpoint]"
+        echo "  ${SRC}"
+        echo "  → ${DST}"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        ssh "${REMOTE}" "mkdir -p \"${REMOTE_BASE}/${REMOTE_REL}\""
+        rsync -avzh --progress "${SRC}/" "${DST}/"
+        continue
+    fi
+
     # 로컬 base를 제거하고 리모트 base로 교체
     REL="${SRC#${LOCAL_BASE}/}"
     REMOTE_REL="${REL}"
