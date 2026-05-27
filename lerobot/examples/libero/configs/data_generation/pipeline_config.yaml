@@ -4,17 +4,17 @@
 # test test
 
 # ── 디렉토리 ─────────────────────────────────────────────────
-homedir: /scratch/mdorazi
-projdir: /Skill_Boundary_Detector
+# homedir: /scratch/mdorazi
+# projdir: /Skill_Boundary_Detector
 
-# homedir: /data2/dohyeon
-# projdir: /SBD
+homedir: /data2/dohyeon
+projdir: /SBD
 
 datadir: libero_dataset #libero_small_dataset
 
 
 # ── 데이터셋 ─────────────────────────────────────────────────
-data: libero_10_op1_10 #libero_10_op1_10
+data: libero_90 # libero_90 libero_10_op1_10
 
 # ── 비전 백본 ────────────────────────────────────────────────
 # 선택지: dinov2_small | dinov3_vits16 | dinov3_convnext_small
