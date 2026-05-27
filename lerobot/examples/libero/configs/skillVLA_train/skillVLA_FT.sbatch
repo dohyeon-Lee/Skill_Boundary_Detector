@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=skillVLA_FT
 
-# SBATCH --partition=asus_pro6000
-# SBATCH --qos=pro6000_qos
+#SBATCH --partition=gigabyte_pro6000
+#SBATCH --qos=pro6000_qos
 
-#SBATCH --partition=debug
-#SBATCH --nodelist=node200
-#SBATCH --qos=big_qos
+# SBATCH --partition=debug
+# SBATCH --nodelist=node200
+# SBATCH --qos=big_qos
+
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=128G

@@ -232,7 +232,10 @@ class PipelineConfig:
     detach_action_prefix_grad: bool
     train_exp: str
     eval_exp: str
+    eval_model_type: str
     eval_checkpoint: str
+    eval_ft_checkpoint: str
+    ft_eval_model: str
     eval_skill_decoder_prior_noise_ratio: float
     eval_block_lang: bool
     eval_detach_action_prefix_grad: bool
@@ -393,8 +396,19 @@ def load_config(data: str | None = None) -> PipelineConfig:
         block_lang=_get_bool(y, "block_lang", True),
         detach_action_prefix_grad=_get_bool(y, "detach_action_prefix_grad", False),
         train_exp=_get(y, "train_exp", "B2"),
-        eval_exp=_get(y, "eval_exp", _get(y, "train_exp", "B2")),
+        eval_exp=(eval_exp := _get(y, "eval_exp", _get(y, "train_exp", "B2"))),
+        eval_model_type=_get(y, "eval_model_type", "PT"),
         eval_checkpoint=_get(y, "eval_checkpoint", "045000"),
+        eval_ft_checkpoint=_get(y, "eval_ft_checkpoint", "010000"),
+        ft_eval_model=(
+            "FT_"
+            + _get(y, "ft_data", data_name) + "_skillvla"
+            + "_" + fsq_tag
+            + "_" + action_mode
+            + "_" + decoder_image_mode
+            + "_FSQ_epoch" + fsq_epoch
+            + ("_" + eval_exp if eval_exp else "")
+        ),
         eval_skill_decoder_prior_noise_ratio=float(
             _get(y, "eval_skill_decoder_prior_noise_ratio", _get(y, "skill_decoder_prior_noise_ratio", 0.0))
         ),

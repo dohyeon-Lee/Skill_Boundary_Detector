@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=skillVLA_eval
 
-#SBATCH --partition=debug
-#SBATCH --exclude=node200
+#SBATCH --exclude=node19,node13,node18,node16,node08,node10,node21,node14,node04,node05,node31,node28
+
+# SBATCH --partition=debug
+# SBATCH --exclude=node200
 # SBATCH --nodelist=node100
 
-#SBATCH --qos=big_qos
+#SBATCH --qos=base_qos
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
@@ -74,8 +76,8 @@ SKILL_HTML=${SKILL_HTML:-true}
 SKILL_HTML_TRAIN_SAMPLES=${SKILL_HTML_TRAIN_SAMPLES:-10}
 
 # ── SkillVLA checkpoint ──────────────────────────────────────────────────────
-# If MODEL is unset, this evaluates the PT run implied by pipeline_config.yaml.
-# For FT checkpoints, set MODEL and CHECKPOINT here or via sbatch --export.
+# eval_model_type (from pipeline_config.yaml): PT | FT
+# Override at submit time: sbatch --export=ALL,EVAL_MODEL_TYPE=FT,...
 VLA_OUTPUT_ROOT=${HOMEDIR}${PROJDIR}/VLA_outputs
 FSQ_TAG=fsq${FSQ_LEVELS_STR// /}
 BLOCK_LANG=${BLOCK_LANG_OVERRIDE:-${CFG_BLOCK_LANG}}
@@ -84,14 +86,28 @@ if [ "${BLOCK_LANG}" = "true" ]; then
 else
   BLOCK_LANG_TAG=allowlang
 fi
+
+# PT default model
 PT_BATCH_SIZE=${PT_BATCH_SIZE:-32}
 PT_EXP=${PT_EXP:-${EVAL_EXP}}
-DEFAULT_MODEL=PT_${SKILLVLA_DATASET}_${FSQ_TAG}_FSQ_epoch${FSQ_EPOCH}_${BLOCK_LANG_TAG}_batch${PT_BATCH_SIZE}
+PT_DEFAULT_MODEL=PT_${SKILLVLA_DATASET}_${FSQ_TAG}_FSQ_epoch${FSQ_EPOCH}_${BLOCK_LANG_TAG}_batch${PT_BATCH_SIZE}
 if [ -n "${PT_EXP}" ]; then
-  DEFAULT_MODEL=${DEFAULT_MODEL}_${PT_EXP}
+  PT_DEFAULT_MODEL=${PT_DEFAULT_MODEL}_${PT_EXP}
+fi
+
+# FT default model (derived by pipeline_config.py → FT_EVAL_MODEL)
+FT_DEFAULT_MODEL=${FT_EVAL_MODEL}
+
+# Select model / checkpoint by type
+EVAL_MODEL_TYPE=${EVAL_MODEL_TYPE:-PT}
+if [ "${EVAL_MODEL_TYPE}" = "FT" ]; then
+  DEFAULT_MODEL=${FT_DEFAULT_MODEL}
+  CHECKPOINT=${CHECKPOINT:-${EVAL_FT_CHECKPOINT}}
+else
+  DEFAULT_MODEL=${PT_DEFAULT_MODEL}
+  CHECKPOINT=${CHECKPOINT:-${EVAL_CHECKPOINT}}
 fi
 MODEL=${MODEL:-${DEFAULT_MODEL}}
-CHECKPOINT=${CHECKPOINT:-${EVAL_CHECKPOINT}}
 POLICY_PATH=${POLICY_PATH:-${VLA_OUTPUT_ROOT}/${MODEL}/checkpoints/${CHECKPOINT}/pretrained_model}
 
 # ── FSQ decoder and inference settings ───────────────────────────────────────
