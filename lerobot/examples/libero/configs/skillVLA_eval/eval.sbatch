@@ -2,7 +2,8 @@
 #SBATCH --job-name=skillVLA_eval
 
 #SBATCH --partition=debug
-#SBATCH --nodelist=node200
+#SBATCH --exclude=node200
+# SBATCH --nodelist=node100
 
 #SBATCH --qos=big_qos
 #SBATCH --gres=gpu:1
