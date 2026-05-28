@@ -127,6 +127,7 @@ SKILL_DECODER_END_THRESHOLD=0.5
 SKILL_DECODER_STATE_INDICES=${PT_SKILL_DECODER_STATE_INDICES}
 SKILL_DECODER_PRIOR_NOISE_RATIO=${FT_SKILL_DECODER_PRIOR_NOISE_RATIO}
 FREEZE_VAE_DECODER=true
+FREEZE_PATCH_FLAG_PREDICTOR=${FT_FREEZE_PATCH_FLAG_PREDICTOR}
 INFERENCE_SKILL_MAX_LENGTH=${PT_INFERENCE_SKILL_MAX_LENGTH}
 SKILL_BOUNDARY_RANDOM_P=10
 
@@ -182,6 +183,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes=${
     --policy.vae_decoder_path=${FSQ_CKPT} \
     --policy.skill_decoder_image_model_name=${FSQ_IMAGE_MODEL_PATH} \
     --policy.freeze_vae_decoder=${FREEZE_VAE_DECODER} \
+    --policy.freeze_patch_flag_predictor=${FREEZE_PATCH_FLAG_PREDICTOR} \
     --policy.skill_latent_dim=${FSQ_DIM} \
     --policy.skill_fsq_levels=${FSQ_LEVELS_ARG} \
     --policy.skill_predictor_num_embeddings=${FSQ_NUM_EMBEDDINGS} \
@@ -198,8 +200,8 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes=${
     --policy.skill_decoder_prior_noise_ratio=${SKILL_DECODER_PRIOR_NOISE_RATIO} \
     --policy.inference_skill_max_length=${INFERENCE_SKILL_MAX_LENGTH} \
     --policy.skill_boundary_random_p=${SKILL_BOUNDARY_RANDOM_P} \
-    --save_freq=2000 \
-    --steps=100000 \
+    --save_freq=500 \
+    --steps=5000 \
     --policy.device=cuda \
     --dataset.video_backend=pyav \
     --batch_size=${BATCH_SIZE} \

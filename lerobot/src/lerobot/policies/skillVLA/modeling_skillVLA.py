@@ -349,6 +349,9 @@ class SkillVLAPytorch(PI05Pytorch):
                 num_layers=1,
                 dropout=self.config.skill_predictor_dropout,
             )
+            if self.config.freeze_patch_flag_predictor:
+                for p in self.patch_flag_predictor.parameters():
+                    p.requires_grad_(False)
         log.info(
             "Loaded FSQ decoder from %s (levels=%s, freeze=%s, image_model=%s)",
             path,
@@ -692,7 +695,8 @@ class SkillVLAPytorch(PI05Pytorch):
         if prefix_embs is None or prefix_pad_masks is None:
             raise ValueError("VLM prefix embeddings are required to predict dino_flags patch flags.")
 
-        flag_logits, flags = self.patch_flag_predictor(prefix_embs, prefix_pad_masks)
+        fp_prefix = prefix_embs.detach() if self.config.freeze_patch_flag_predictor else prefix_embs
+        flag_logits, flags = self.patch_flag_predictor(fp_prefix, prefix_pad_masks)
         n_patches = int(getattr(self.vae_decoder, "n_patches", 64))
         if flags.shape[1] != n_patches:
             raise ValueError(f"Patch flag count mismatch: got {flags.shape[1]}, expected {n_patches}.")
