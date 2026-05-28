@@ -6,7 +6,7 @@
 # SBATCH --qos=pro6000_qos
 
 #SBATCH --partition=debug
-#SBATCH --nodelist=node200
+# SBATCH --nodelist=node200
 #SBATCH --qos=big_qos
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
@@ -48,7 +48,7 @@ echo "Node: $SLURMD_NODENAME"
 nvidia-smi
 
 # ── Evaluation target ────────────────────────────────────────────────────────
-TARGET_TASK=${TARGET_TASK:-libero_90}
+TARGET_TASK=${TARGET_TASK:-libero_10}
 TASK_IDS=${TASK_IDS:-"[0,1,2,3,4,5,6,7,8,9]"}
 N_EPISODES=${N_EPISODES:-1}
 N_ACTION_STEPS=${N_ACTION_STEPS:-5}
@@ -65,7 +65,7 @@ VLA_OUTPUT_ROOT=${HOMEDIR}${PROJDIR}/VLA_outputs
 EVAL_STAGE=${EVAL_STAGE:-PT}  # PT or FT
 CHECKPOINT=${CHECKPOINT:-015000}
 
-PT_DATASET=${PT_DATASET:-libero_90}
+PT_DATASET=${PT_DATASET:-libero_10_op1_10}
 PT_BATCH_SIZE=${PT_BATCH_SIZE:-32}
 PT_EXP=${PT_EXP:-exp1}
 
