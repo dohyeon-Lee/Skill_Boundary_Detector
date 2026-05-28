@@ -59,6 +59,8 @@ add_item "전체 ${DATA}_for_skillVLA 디렉토리" "${SKILLVLA_ROOT}" 1
 
 add_item "SkillVLA checkpoint  [eval_exp=${EVAL_EXP}  step=${EVAL_CHECKPOINT}]" "${VLA_OUTPUTS_DIR}" 0 "vla_ckpt"
 
+add_item "SkillVLA checkpoint  [직접 입력: 폴더명 + step]" "${VLA_OUTPUTS_DIR}" 0 "vla_ckpt_manual"
+
 # ── 메뉴 출력 ─────────────────────────────────────────────────
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -144,6 +146,42 @@ for idx in "${SELECTED[@]}"; do
         echo "  → ${DST}"
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         ssh "${REMOTE}" "mkdir -p \"${REMOTE_BASE}/${REMOTE_REL}\""
+        rsync -avzh --progress "${SRC}/" "${DST}/"
+        continue
+    fi
+
+    # ── VLA checkpoint 직접 입력 ──────────────────────────────
+    if [ "${TYPES[$idx]}" = "vla_ckpt_manual" ]; then
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "  [SkillVLA checkpoint 직접 입력]"
+        echo ""
+        echo "  사용 가능한 폴더 목록:"
+        ls -1 "${VLA_OUTPUTS_DIR}" 2>/dev/null | sed 's/^/    /'
+        echo ""
+        read -r -p "  폴더명 (VLA_outputs/ 아래): " VLA_FOLDER
+        if [ -z "${VLA_FOLDER}" ] || [ ! -d "${VLA_OUTPUTS_DIR}/${VLA_FOLDER}" ]; then
+            echo "  오류: 폴더 없음 '${VLA_FOLDER}'" >&2
+            continue
+        fi
+        echo ""
+        echo "  사용 가능한 체크포인트 스텝:"
+        ls -1 "${VLA_OUTPUTS_DIR}/${VLA_FOLDER}/checkpoints/" 2>/dev/null | sed 's/^/    /'
+        echo ""
+        read -r -p "  checkpoint step (예: 060000): " VLA_STEP
+        if [ -z "${VLA_STEP}" ] || [ ! -d "${VLA_OUTPUTS_DIR}/${VLA_FOLDER}/checkpoints/${VLA_STEP}" ]; then
+            echo "  오류: 체크포인트 없음 '${VLA_FOLDER}/checkpoints/${VLA_STEP}'" >&2
+            continue
+        fi
+
+        SRC="${VLA_OUTPUTS_DIR}/${VLA_FOLDER}/checkpoints/${VLA_STEP}"
+        REL="VLA_outputs/${VLA_FOLDER}/checkpoints/${VLA_STEP}"
+        DST="${REMOTE}:${REMOTE_BASE}/${REL}"
+
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "  ${SRC}"
+        echo "  → ${DST}"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        ssh "${REMOTE}" "mkdir -p \"${REMOTE_BASE}/${REL}\""
         rsync -avzh --progress "${SRC}/" "${DST}/"
         continue
     fi
