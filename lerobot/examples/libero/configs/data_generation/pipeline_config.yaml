@@ -98,13 +98,13 @@ ft_detach_action_prefix_grad: false
 
 # ── SkillVLA eval ────────────────────────────────────────────
 target_task: libero_10
-eval_exp: A2
+eval_exp: B1
 # eval 모델 타입: PT (사전학습) | FT (파인튜닝)
 eval_model_type: FT
 eval_checkpoint: "050000"
 eval_ft_checkpoint: "005000"
 eval_skill_decoder_prior_noise_ratio: 1.0
-eval_block_lang: false
+eval_block_lang: true
 eval_detach_action_prefix_grad: false
 
 # ── SAM2 ────────────────────────────────────────────────────
