@@ -108,7 +108,7 @@ eval_block_lang: true
 eval_detach_action_prefix_grad: false
 
 # ── pi05 FT ──────────────────────────────────────────────────
-pi05_ft_freeze_vision_encoder: true
+pi05_ft_freeze_vision_encoder: false
 pi05_ft_train_expert_only: false
 
 # ── SAM2 ────────────────────────────────────────────────────

@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=pi05_FT
 
-# SBATCH --partition=asus_pro6000 #,suma_rtx4090,big_suma_rtx3090,base_suma_rtx3090
-# SBATCH --exclude=node19,node13,node18,node16,node08,node10,node21,node14,node04,node05,node31
-# SBATCH --qos=pro6000_qos
+#SBATCH --partition=gigabyte_pro6000 #,suma_rtx4090,big_suma_rtx3090,base_suma_rtx3090
+#SBATCH --exclude=node19,node13,node18,node16,node08,node10,node21,node14,node04,node05,node31
+#SBATCH --qos=pro6000_qos
 
-#SBATCH --partition=debug
-#SBATCH --nodelist=node200
-#SBATCH --qos=big_qos
+# SBATCH --partition=debug
+# SBATCH --nodelist=node200
+# SBATCH --qos=big_qos
+
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=128G
@@ -34,17 +35,17 @@ echo "START JOB"
 echo "Node: $SLURMD_NODENAME"
 nvidia-smi
 
-FT_DATASET=libero_10_op2_1
-FT_DATASET_LOC=libero_small_dataset
-
+FT_DATASET=libero_10_op1_10
+FT_DATASET_LOC=libero_dataset
+EXP=${EXP:-exp2}
 # FT_DATASET=libero_10
 # FT_DATASET_LOC=libero_dataset
 
 PT_DATASET=libero_90
-PT_check=070000
-PT_BATCH_SIZE=16
-PT_EXP=${PT_EXP:-}
-EXP=${EXP:-}
+PT_check=050000
+PT_BATCH_SIZE=32
+PT_EXP=${PT_EXP:-exp1}
+
 LR=2.5e-05        # default: 2.5e-05
 BATCH_SIZE=32
 NUM_WORKERS=4     # shm 에러 시 0으로 낮출 것
@@ -84,8 +85,8 @@ PYTORCH_ALLOC_CONF=expandable_segments:True lerobot-train \
     --policy.freeze_vision_encoder=${PI05_FT_FREEZE_VISION_ENCODER} \
     --policy.train_expert_only=${PI05_FT_TRAIN_EXPERT_ONLY} \
     --policy.push_to_hub=false \
-    --save_freq=5000 \
-    --steps=100000 \
+    --save_freq=500 \
+    --steps=5000 \
     --policy.device=cuda \
     --dataset.video_backend=pyav \
     --batch_size=${BATCH_SIZE} \

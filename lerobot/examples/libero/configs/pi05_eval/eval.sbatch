@@ -7,7 +7,7 @@
 
 # SBATCH --partition=debug
 # SBATCH --nodelist=node200
-#SBATCH --qos=big_qos
+#SBATCH --qos=base_qos
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
@@ -48,7 +48,7 @@ echo "Node: $SLURMD_NODENAME"
 nvidia-smi
 
 # ── Evaluation target ────────────────────────────────────────────────────────
-TARGET_TASK=${TARGET_TASK:-libero_10}
+TARGET_TASK=${TARGET_TASK:-libero_90}
 TASK_IDS=${TASK_IDS:-"[0,1,2,3,4,5,6,7,8,9]"}
 N_EPISODES=${N_EPISODES:-5}
 EPISODE_OFFSET=${EPISODE_OFFSET:-25}   # 0 = 앞쪽부터, e.g. 45 = 에피소드 45번부터 (총 50개면 끝 5개)
@@ -64,7 +64,7 @@ EVAL_BATCH_SIZE=${EVAL_BATCH_SIZE:-1}
 # Set MODEL directly to evaluate any custom run.
 VLA_OUTPUT_ROOT=${HOMEDIR}${PROJDIR}/VLA_outputs
 EVAL_STAGE=${EVAL_STAGE:-FT}  # PT or FT
-CHECKPOINT=${CHECKPOINT:-003000}
+CHECKPOINT=${CHECKPOINT:-001000}
 
 PT_DATASET=${PT_DATASET:-libero_90}
 PT_BATCH_SIZE=${PT_BATCH_SIZE:-32}

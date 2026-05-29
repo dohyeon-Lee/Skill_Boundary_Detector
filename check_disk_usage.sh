@@ -14,7 +14,7 @@
 
 set -euo pipefail
 
-ROOT="${ROOT:-/data2/dohyeon/SBD}"
+ROOT="${ROOT:-/scratch/mdorazi/Skill_Boundary_Detector}"
 DEPTH="${DEPTH:-1}"
 DIR="${DIR:-}"
 MIN_SIZE="${MIN_SIZE:-0}"
@@ -35,7 +35,7 @@ fi
 
 # ── 전체 디스크 현황 ─────────────────────────────────────────────────────────
 echo "============================  디스크 현황  ============================"
-df -h /data2 | sed -n '1,2p'
+df -h /scratch/mdorazi | sed -n '1,2p'
 echo
 
 # ── 폴더별 용량 출력 ─────────────────────────────────────────────────────────
@@ -81,4 +81,4 @@ for target in "${TARGETS[@]}"; do
     printf "  %-12s  %s\n" "$sz" "$rel"
 done
 echo
-df -h /data2 | sed -n '1,2p'
+df -h /scratch/mdorazi | sed -n '1,2p'
