@@ -20,7 +20,7 @@ mkdir -p logs
 SUBMIT_DIR=${SLURM_SUBMIT_DIR:-$(pwd)}
 CONFIG_PY=${SUBMIT_DIR}/../data_generation/pipeline_config.py
 [ ! -f "${CONFIG_PY}" ] && CONFIG_PY=${SUBMIT_DIR}/examples/libero/configs/data_generation/pipeline_config.py
-eval "$(python3 "${CONFIG_PY}" --shell | grep -E '^export (HOMEDIR|PROJDIR)=')"
+eval "$(python3 "${CONFIG_PY}" --shell | grep -E '^export (HOMEDIR|PROJDIR|PI05_FT_FREEZE_VISION_ENCODER|PI05_FT_TRAIN_EXPERT_ONLY)=')"
 
 cd ${HOMEDIR}${PROJDIR}/lerobot
 source ${HOMEDIR}${PROJDIR}/.venv/bin/activate
@@ -76,13 +76,13 @@ PYTORCH_ALLOC_CONF=expandable_segments:True lerobot-train \
     --output_dir=${OUTPUT_DIR} \
     --job_name=${RUN_NAME} \
     --policy.pretrained_path=${PT_MODEL_PATH} \
-    --policy.compile_model=true \
+    --policy.compile_model=false \
     --policy.gradient_checkpointing=true \
     --wandb.enable=true \
     --wandb.project=VLA_Finetune \
     --policy.dtype=bfloat16 \
-    --policy.freeze_vision_encoder=true \
-    --policy.train_expert_only=false \
+    --policy.freeze_vision_encoder=${PI05_FT_FREEZE_VISION_ENCODER} \
+    --policy.train_expert_only=${PI05_FT_TRAIN_EXPERT_ONLY} \
     --policy.push_to_hub=false \
     --save_freq=5000 \
     --steps=100000 \

@@ -250,6 +250,9 @@ class PipelineConfig:
     ft_exp: str
     ft_train_expert_only: bool
     ft_freeze_vision_encoder: bool
+
+    pi05_ft_freeze_vision_encoder: bool
+    pi05_ft_train_expert_only: bool
     ft_freeze_patch_flag_predictor: bool
     ft_block_lang: bool
     ft_detach_action_prefix_grad: bool
@@ -429,6 +432,8 @@ def load_config(data: str | None = None) -> PipelineConfig:
         ft_exp=_get(y, "ft_exp", _get(y, "train_exp", "")),
         ft_train_expert_only=_get_bool(y, "ft_train_expert_only", False),
         ft_freeze_vision_encoder=_get_bool(y, "ft_freeze_vision_encoder", True),
+        pi05_ft_freeze_vision_encoder=_get_bool(y, "pi05_ft_freeze_vision_encoder", True),
+        pi05_ft_train_expert_only=_get_bool(y, "pi05_ft_train_expert_only", False),
         ft_freeze_patch_flag_predictor=_get_bool(y, "ft_freeze_patch_flag_predictor", False),
         ft_block_lang=_get_bool(y, "ft_block_lang", _get_bool(y, "block_lang", True)),
         ft_detach_action_prefix_grad=_get_bool(
