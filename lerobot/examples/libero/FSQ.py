@@ -3,26 +3,32 @@ Spline FSQ-AE — Finite Scalar Quantization skill encoder with observation-cond
 
 Architecture
 ------------
-  Encoder:
-    enc_image_encoder: pure-DINO mini encoder for start/end image tokens
-    enc_traj_proj (Linear n_control*A+1 → H): control points + length_norm
-    enc_mlp (MLP 3H→H): fuse start/end/traj features
+  Encoder (fully Transformer-based):
+    enc_image_encoder: pure-DINO mini encoder → 1 token each for start/end image
+    enc_ctrl_proj/enc_len_proj (Linear A→H, 1→H): per-control-point + length tokens
+    enc_traj_pool (Transformer + query pool): control-point/length tokens → 1 traj token
+    enc_fusion_pool (Transformer + query pool): [start, traj, end] tokens → fused latent
     z_head (Linear H→D): produce pre-quantization latent
     FSQ: levels=[5,5,5], codebook_size=125, D=3, no learnable params
 
-  Decoder image encoder (per timestep):
-    dino_only:  DINO tokens → Linear(F→H) → positional embedding
-    dino_flags: DINO tokens + timestep-aligned patch flags → Linear(F+2→H) → positional embedding
-    Both modes then use a small Transformer encoder and learned-query pooling.
-    dec_mlp (MLP D+S+H+1 → H): z + state(7D) + img_feat + normalized skill progress
-    delta_head: Linear(H → A) in single_step, Linear(H → K*A) in chunk
-                — predicts dataset actions; the historical "delta" name is
-                  kept in code/checkpoints for compatibility
-    end_head:   Linear(H → 1) in single_step, Linear(H → K) in chunk
-                — chunk mode predicts which slot inside the K-step chunk ends the skill
+  Decoder (3 Transformer sub-networks, per timestep):
+    dec_image_encoder       (DINO+flags) → motion image feature (B,T,H)
+    dec_image_encoder_plain (DINO only)  → termination image feature (B,T,H)
+    (1) skill_decoder: [z token, state token] → TokenTransformerPool → latent (H)
+    (2) motion_reconstructor: [latent, img_feat(+flags), progress] tokens
+            → TokenTransformerPool → delta_head → dataset action chunk (K*A);
+            the historical "delta" name is kept for the action target.
+    (3) skill_termination_predictor: [latent, img_feat(no flags)] tokens
+            → TokenTransformerPool → progress_head (1, sigmoid→[0,1])
+                                   + termination_head (1, end logit).
+    progress is normalized per skill: 0 at the start, 1 at the skill end.
+    In training the GT progress feeds the motion tokens; the termination
+    network learns to predict it.
 
-encode_numpy  → latent vector z_q (numpy, shape D)
-encode_index  → scalar codebook index (int)
+encode_numpy        → latent vector z_q (numpy, shape D)
+encode_index        → scalar codebook index (int)
+predict_termination → skillVLA path: (z_q, states, dino) → (progress, termination),
+                      runs only skill_decoder + skill_termination_predictor.
 """
 
 from __future__ import annotations
@@ -62,28 +68,19 @@ def spline_encode(
     return ctrl_pts, T
 
 
-# ── MLP block ─────────────────────────────────────────────────────────────────
-
-class MLPBlock(nn.Module):
-    def __init__(self, in_dim: int, out_dim: int, dropout: float = 0.0) -> None:
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(in_dim, out_dim),
-            nn.LayerNorm(out_dim),
-            nn.SiLU(),
-            nn.Dropout(dropout),
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x)
-
-
 class ImageTokenEncoder(nn.Module):
-    """Turn DINO CLS+patch tokens into one decoder image feature.
+    """Turn DINO CLS+patch tokens into one image feature.
+
+    Patches are first projected to an internal token dimension N (token_dim),
+    mixed by a Transformer at that dimension, pooled by a learned query, and only
+    then lifted to hidden_dim. This decouples the per-patch processing width from
+    the model-wide hidden_dim.
 
     image_mode:
-      - "dino_only": use pure DINO CLS + patch tokens.
-      - "dino_flags": append [is_red, is_green] to patch tokens; CLS gets [0, 0].
+      - "dino_only": project DINO tokens 384 → N.
+      - "dino_flags": project DINO tokens 384 → N-2, then append [is_changed,
+        is_green] (CLS gets [0, 0]) so the internal width is still N. Flags thus
+        occupy 2 of N channels — smaller N ⇒ larger relative flag weight.
     """
 
     def __init__(
@@ -91,6 +88,7 @@ class ImageTokenEncoder(nn.Module):
         feat_dim: int,
         n_tokens: int,
         hidden_dim: int,
+        token_dim: int,
         image_mode: str = "dino_flags",
         n_layers: int = 1,
         n_heads: int = 4,
@@ -100,11 +98,75 @@ class ImageTokenEncoder(nn.Module):
         assert image_mode in ("dino_only", "dino_flags"), \
             f"image_mode must be 'dino_only' or 'dino_flags', got {image_mode!r}"
         assert n_tokens >= 1, "n_tokens must include at least the CLS token"
-        assert hidden_dim % n_heads == 0, "hidden_dim must be divisible by n_heads"
+        assert token_dim % n_heads == 0, "token_dim must be divisible by n_heads"
+        assert token_dim > 2, "token_dim must exceed the 2 flag channels"
         self.image_mode = image_mode
         self.n_tokens = n_tokens
-        in_dim = feat_dim + (2 if image_mode == "dino_flags" else 0)
-        self.token_proj = nn.Linear(in_dim, hidden_dim)
+        self.token_dim = token_dim
+        # In flag mode the projection leaves room for the 2 appended flag channels.
+        proj_out = token_dim - 2 if image_mode == "dino_flags" else token_dim
+        self.token_proj = nn.Linear(feat_dim, proj_out)
+        self.pos_embed = nn.Parameter(torch.zeros(1, n_tokens, token_dim))
+        enc_layer = nn.TransformerEncoderLayer(
+            d_model=token_dim,
+            nhead=n_heads,
+            dim_feedforward=token_dim * 4,
+            dropout=dropout,
+            activation="gelu",
+            batch_first=True,
+        )
+        self.encoder = nn.TransformerEncoder(enc_layer, num_layers=n_layers)
+        self.query = nn.Parameter(torch.zeros(1, 1, token_dim))
+        self.pool = nn.MultiheadAttention(token_dim, n_heads, dropout=dropout, batch_first=True)
+        self.out_proj = nn.Linear(token_dim, hidden_dim)
+        self.out_norm = nn.LayerNorm(hidden_dim)
+        nn.init.trunc_normal_(self.pos_embed, std=0.02)
+        nn.init.trunc_normal_(self.query, std=0.02)
+
+    def forward(self, tokens: torch.Tensor, patch_flags: torch.Tensor | None = None) -> torch.Tensor:
+        """
+        tokens:      (B, T, N, F), token 0 is CLS and tokens 1..N-1 are patches.
+        patch_flags: (B, T, N-1, 2), per-timestep patch [is_changed, is_green].
+                     Ignored in dino_only mode.
+        returns:     (B, T, hidden_dim)
+        """
+        B, T, N, _ = tokens.shape
+        assert N == self.n_tokens, f"expected {self.n_tokens} image tokens, got {N}"
+        x = self.token_proj(tokens.reshape(B * T, N, -1))   # (B*T, N, token_dim or token_dim-2)
+        if self.image_mode == "dino_flags":
+            assert patch_flags is not None, "patch_flags are required when image_mode='dino_flags'"
+            assert patch_flags.shape == (B, T, N - 1, 2), \
+                f"expected patch_flags {(B, T, N - 1, 2)}, got {tuple(patch_flags.shape)}"
+            cls_flags = x.new_zeros(B * T, 1, 2)
+            pf = patch_flags.to(device=x.device, dtype=x.dtype).reshape(B * T, N - 1, 2)
+            x = torch.cat([x, torch.cat([cls_flags, pf], dim=1)], dim=-1)  # (B*T, N, token_dim)
+        x = x + self.pos_embed.to(dtype=x.dtype)
+        x = self.encoder(x)
+        q = self.query.to(dtype=x.dtype).expand(B * T, -1, -1)
+        pooled, _ = self.pool(q, x, x, need_weights=False)
+        return self.out_norm(self.out_proj(pooled.squeeze(1))).view(B, T, -1)
+
+
+class TokenTransformerPool(nn.Module):
+    """Mix a set of H-dim tokens with a Transformer, then pool to one vector.
+
+    Input  : (B, N, H) tokens already projected to hidden_dim.
+    Output : (B, H) — a learned query cross-attends over the encoded tokens.
+    A learnable positional embedding distinguishes token slots (e.g. control-point
+    order, or the start/traj/end roles in the fusion stage).
+    """
+
+    def __init__(
+        self,
+        hidden_dim: int,
+        n_tokens: int,
+        n_layers: int = 1,
+        n_heads: int = 4,
+        dropout: float = 0.0,
+    ) -> None:
+        super().__init__()
+        assert hidden_dim % n_heads == 0, "hidden_dim must be divisible by n_heads"
+        self.n_tokens = n_tokens
         self.pos_embed = nn.Parameter(torch.zeros(1, n_tokens, hidden_dim))
         enc_layer = nn.TransformerEncoderLayer(
             d_model=hidden_dim,
@@ -121,29 +183,15 @@ class ImageTokenEncoder(nn.Module):
         nn.init.trunc_normal_(self.pos_embed, std=0.02)
         nn.init.trunc_normal_(self.query, std=0.02)
 
-    def forward(self, tokens: torch.Tensor, patch_flags: torch.Tensor | None = None) -> torch.Tensor:
-        """
-        tokens:      (B, T, N, F), token 0 is CLS and tokens 1..N-1 are patches.
-        patch_flags: (B, T, N-1, 2), per-timestep patch [is_red, is_green].
-                     Ignored in dino_only mode.
-        returns:     (B, T, H)
-        """
-        B, T, N, _ = tokens.shape
-        assert N == self.n_tokens, f"expected {self.n_tokens} image tokens, got {N}"
-        if self.image_mode == "dino_flags":
-            assert patch_flags is not None, "patch_flags are required when image_mode='dino_flags'"
-            assert patch_flags.shape == (B, T, N - 1, 2), \
-                f"expected patch_flags {(B, T, N - 1, 2)}, got {tuple(patch_flags.shape)}"
-            cls_flags = tokens.new_zeros(B, T, 1, 2)
-            pf = patch_flags.to(device=tokens.device, dtype=tokens.dtype)
-            tokens = torch.cat([tokens, torch.cat([cls_flags, pf], dim=2)], dim=-1)
-
-        x = self.token_proj(tokens.reshape(B * T, N, -1))
-        x = x + self.pos_embed.to(dtype=x.dtype)
+    def forward(self, tokens: torch.Tensor) -> torch.Tensor:
+        """tokens: (B, N, H) → (B, H)."""
+        B, N, _ = tokens.shape
+        assert N == self.n_tokens, f"expected {self.n_tokens} tokens, got {N}"
+        x = tokens + self.pos_embed.to(dtype=tokens.dtype)
         x = self.encoder(x)
-        q = self.query.to(dtype=x.dtype).expand(B * T, -1, -1)
+        q = self.query.to(dtype=x.dtype).expand(B, -1, -1)
         pooled, _ = self.pool(q, x, x, need_weights=False)
-        return self.out_norm(pooled.squeeze(1)).view(B, T, -1)
+        return self.out_norm(pooled.squeeze(1))
 
 
 # ── Finite Scalar Quantization ────────────────────────────────────────────────
@@ -196,16 +244,16 @@ class SplineFSQAEConfig:
     patch_grid: int = 8
     n_patch_raw: int = 196
     decoder_image_mode: str = "dino_flags"  # "dino_only" or "dino_flags"
+    image_token_dim: int = 128  # internal per-patch width N in the image encoders
     image_encoder_layers: int = 1
     image_encoder_heads: int = 4
-    decoder_output_mode: str = "single_step"  # "single_step" or "chunk"
-    chunk_size: int = 10
+    chunk_size: int = 10  # motion always predicts a K-step action chunk
     max_length: float = 200.0
     delta_loss_weight: float = 1.0
+    progress_loss_weight: float = 1.0
     end_loss_weight: float = 1.0
     end_pos_weight: float = 1.0
     end_threshold: float = 0.5
-    end_random_p: int = 0
     lr: float = 3e-4
     batch_size: int = 64
     epochs: int = 100
@@ -243,9 +291,9 @@ class SplineFSQAE(nn.Module):
         patch_grid: int = 8,
         n_patch_raw: int = 196,
         decoder_image_mode: str = "dino_flags",
+        image_token_dim: int = 128,
         image_encoder_layers: int = 1,
         image_encoder_heads: int = 4,
-        decoder_output_mode: str = "single_step",
         chunk_size: int = 10,
         max_length: float = 200.0,
         action_min: np.ndarray | None = None,
@@ -256,8 +304,6 @@ class SplineFSQAE(nn.Module):
         super().__init__()
         if fsq_levels is None:
             fsq_levels = [5, 5, 5]
-        assert decoder_output_mode in ("single_step", "chunk"), \
-            f"decoder_output_mode must be 'single_step' or 'chunk', got {decoder_output_mode!r}"
         assert decoder_image_mode in ("dino_only", "dino_flags"), \
             f"decoder_image_mode must be 'dino_only' or 'dino_flags', got {decoder_image_mode!r}"
 
@@ -266,7 +312,6 @@ class SplineFSQAE(nn.Module):
         self.n_control = n_control
         self.spline_degree = spline_degree
         self.max_length = max_length
-        self.decoder_output_mode = decoder_output_mode
         self.decoder_image_mode = decoder_image_mode
         self.chunk_size = chunk_size
         self.feat_dim = feat_dim
@@ -285,39 +330,81 @@ class SplineFSQAE(nn.Module):
             feat_dim=feat_dim,
             n_tokens=n_tokens,
             hidden_dim=H,
+            token_dim=image_token_dim,
             image_mode="dino_only",
             n_layers=image_encoder_layers,
             n_heads=image_encoder_heads,
             dropout=dropout,
         )
-        self.enc_traj_proj = nn.Linear(n_control * action_dim + 1, H)
-        enc_layers: list[nn.Module] = [MLPBlock(3 * H, H, dropout)]
-        for _ in range(num_layers - 1):
-            enc_layers.append(MLPBlock(H, H, dropout))
-        self.enc_mlp = nn.Sequential(*enc_layers)
+        # Trajectory: each control point + the length scalar becomes one H-dim token,
+        # a Transformer mixes them, and a learned query pools them into one traj token.
+        self.enc_ctrl_proj = nn.Linear(action_dim, H)
+        self.enc_len_proj = nn.Linear(1, H)
+        self.enc_traj_pool = TokenTransformerPool(
+            hidden_dim=H,
+            n_tokens=n_control + 1,
+            n_layers=image_encoder_layers,
+            n_heads=image_encoder_heads,
+            dropout=dropout,
+        )
+        # Fusion: [start_img, traj, end_img] tokens → Transformer → pooled latent.
+        self.enc_fusion_pool = TokenTransformerPool(
+            hidden_dim=H,
+            n_tokens=3,
+            n_layers=image_encoder_layers,
+            n_heads=image_encoder_heads,
+            dropout=dropout,
+        )
         self.z_head = nn.Linear(H, D)
 
-        # ── Decoder ──────────────────────────────────────────────────────────
+        # ── Decoder (3 Transformer sub-networks) ──────────────────────────────
         self.n_patches = n_tokens - 1  # token 0 = CLS, tokens 1.. = patches
+        # Motion image encoder follows decoder_image_mode (DINO + optional flags).
         self.dec_image_encoder = ImageTokenEncoder(
             feat_dim=feat_dim,
             n_tokens=n_tokens,
             hidden_dim=H,
+            token_dim=image_token_dim,
             image_mode=decoder_image_mode,
             n_layers=image_encoder_layers,
             n_heads=image_encoder_heads,
             dropout=dropout,
         )
-        dec_in = D + state_dim + H + 1   # z, state, img_feat, normalized skill progress
-        dec_layers: list[nn.Module] = [MLPBlock(dec_in, H, dropout)]
-        for _ in range(num_layers - 1):
-            dec_layers.append(MLPBlock(H, H, dropout))
-        self.dec_mlp = nn.Sequential(*dec_layers)
+        # Termination image encoder always uses pure DINO (no flags).
+        self.dec_image_encoder_plain = ImageTokenEncoder(
+            feat_dim=feat_dim,
+            n_tokens=n_tokens,
+            hidden_dim=H,
+            token_dim=image_token_dim,
+            image_mode="dino_only",
+            n_layers=image_encoder_layers,
+            n_heads=image_encoder_heads,
+            dropout=dropout,
+        )
 
-        delta_out = chunk_size * action_dim if decoder_output_mode == "chunk" else action_dim
-        self.delta_head = nn.Linear(H, delta_out)
-        end_out = chunk_size if decoder_output_mode == "chunk" else 1
-        self.end_head = nn.Linear(H, end_out)
+        # (1) skill_decoder: [z token, state token] → latent (H).
+        self.dec_z_proj = nn.Linear(D, H)
+        self.dec_state_proj = nn.Linear(state_dim, H)
+        self.skill_decoder_pool = TokenTransformerPool(
+            hidden_dim=H, n_tokens=2,
+            n_layers=image_encoder_layers, n_heads=image_encoder_heads, dropout=dropout,
+        )
+
+        # (2) motion_reconstructor: [latent, img_feat(+flags), progress] → action chunk.
+        self.motion_prog_proj = nn.Linear(1, H)
+        self.motion_pool = TokenTransformerPool(
+            hidden_dim=H, n_tokens=3,
+            n_layers=image_encoder_layers, n_heads=image_encoder_heads, dropout=dropout,
+        )
+        self.delta_head = nn.Linear(H, chunk_size * action_dim)
+
+        # (3) skill_termination_predictor: [latent, img_feat(no flags)] → progress + termination.
+        self.term_pool = TokenTransformerPool(
+            hidden_dim=H, n_tokens=2,
+            n_layers=image_encoder_layers, n_heads=image_encoder_heads, dropout=dropout,
+        )
+        self.progress_head = nn.Linear(H, 1)
+        self.termination_head = nn.Linear(H, 1)
 
         _amin = action_min if action_min is not None else np.zeros(action_dim, dtype=np.float32)
         _amax = action_max if action_max is not None else np.ones(action_dim, dtype=np.float32)
@@ -351,10 +438,16 @@ class SplineFSQAE(nn.Module):
         B = ctrl_pts.size(0)
         start_feat = self.enc_image_encoder(start_tokens.unsqueeze(1)).squeeze(1)  # (B, H)
         end_feat   = self.enc_image_encoder(end_tokens.unsqueeze(1)).squeeze(1)    # (B, H)
-        ctrl_flat = ctrl_pts.reshape(B, -1)
-        l_norm = (lengths.float() / self.max_length).unsqueeze(-1).to(ctrl_pts.dtype)
-        traj_feat = self.enc_traj_proj(torch.cat([ctrl_flat, l_norm], dim=-1))  # (B, H)
-        h = self.enc_mlp(torch.cat([start_feat, end_feat, traj_feat], dim=-1))  # (B, H)
+
+        # Trajectory tokens: per control point + one length token → traj token.
+        ctrl_tok = self.enc_ctrl_proj(ctrl_pts)                                    # (B, n_control, H)
+        l_norm = (lengths.float() / self.max_length).view(B, 1, 1).to(ctrl_pts.dtype)
+        len_tok = self.enc_len_proj(l_norm)                                        # (B, 1, H)
+        traj_feat = self.enc_traj_pool(torch.cat([ctrl_tok, len_tok], dim=1))      # (B, H)
+
+        # Fuse in order: start image → trajectory → end image.
+        fusion_tokens = torch.stack([start_feat, traj_feat, end_feat], dim=1)      # (B, 3, H)
+        h = self.enc_fusion_pool(fusion_tokens)                                    # (B, H)
         z_e = self.z_head(h)
         return self.fsq(z_e)
 
@@ -448,46 +541,52 @@ class SplineFSQAE(nn.Module):
         states: torch.Tensor,        # (B, T, state_dim)
         dec_tokens: torch.Tensor,    # DINO tokens (B,T,N,F)/(B,N,F) or raw images
         patch_flags: torch.Tensor,   # (B, T, n_patches, 2)
-        frame_progress: torch.Tensor | None = None,  # (B, T), normalized skill progress
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+        frame_progress: torch.Tensor | None = None,  # (B, T), per-skill progress in [0,1]
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Returns:
-          single_step → delta (B, T, A),    end_logit (B, T)
-          chunk       → delta (B, T, K, A), end_logit (B, T, K)
+          delta          (B, T, K, A) — dataset action chunk
+          progress_pred  (B, T) — predicted per-skill progress in [0, 1]
+          term_logits    (B, T) — skill-termination logits
         """
         dec_tokens = self._prepare_decoder_tokens(dec_tokens, states=states)
-        B, T, n_tokens, _ = dec_tokens.shape
+        B, T = dec_tokens.shape[:2]
 
-        img_feat = self.dec_image_encoder(dec_tokens, patch_flags)  # (B, T, H)
+        img_feat = self.dec_image_encoder(dec_tokens, patch_flags)   # (B, T, H) motion (+flags)
+        img_feat_plain = self.dec_image_encoder_plain(dec_tokens)    # (B, T, H) termination (no flags)
 
         if frame_progress is None:
             fi = torch.arange(T, device=states.device, dtype=states.dtype).view(1, T)
-            fi = fi.expand(B, T) / self.max_length
+            fi = fi.expand(B, T) / max(T - 1, 1)
         else:
             fi = frame_progress.to(device=states.device, dtype=states.dtype)
-        fi = fi.unsqueeze(-1)  # (B, T, 1)
+        prog_in = fi.unsqueeze(-1)  # (B, T, 1)
 
-        z_seq = z.unsqueeze(1).expand(B, T, -1).to(states.dtype)
-        x = torch.cat([z_seq, states, img_feat, fi], dim=-1)       # (B, T, D+S+H+1)
-        h = self.dec_mlp(x.reshape(B * T, -1)).view(B, T, -1)      # (B, T, H)
+        # (1) skill_decoder: [z token, state token] → latent.
+        z_seq = z.unsqueeze(1).expand(B, T, -1).to(states.dtype)     # (B, T, D)
+        z_tok = self.dec_z_proj(z_seq)                               # (B, T, H)
+        s_tok = self.dec_state_proj(states)                          # (B, T, H)
+        sd_tokens = torch.stack([z_tok, s_tok], dim=2).reshape(B * T, 2, -1)
+        latent = self.skill_decoder_pool(sd_tokens).view(B, T, -1)   # (B, T, H)
 
-        dmin = self.delta_min.to(z.device, z.dtype)
-        dmax = self.delta_max.to(z.device, z.dtype)
+        # (2) motion_reconstructor: [latent, img_feat(+flags), progress] → action chunk.
+        prog_tok = self.motion_prog_proj(prog_in)                    # (B, T, H)
+        mo_tokens = torch.stack([latent, img_feat, prog_tok], dim=2).reshape(B * T, 3, -1)
+        mo = self.motion_pool(mo_tokens).view(B, T, -1)              # (B, T, H)
 
-        if self.decoder_output_mode == "single_step":
-            d_tanh = torch.tanh(self.delta_head(h))
-            delta = (d_tanh + 1.0) / 2.0 * (dmax - dmin) + dmin   # (B, T, A)
-        else:
-            K, A = self.chunk_size, self.action_dim
-            d_tanh = torch.tanh(self.delta_head(h)).view(B, T, K, A)
-            dmin_k = dmin.view(1, 1, 1, -1)
-            dmax_k = dmax.view(1, 1, 1, -1)
-            delta = (d_tanh + 1.0) / 2.0 * (dmax_k - dmin_k) + dmin_k  # (B, T, K, A)
+        dmin = self.delta_min.to(z.device, z.dtype).view(1, 1, 1, -1)
+        dmax = self.delta_max.to(z.device, z.dtype).view(1, 1, 1, -1)
+        K, A = self.chunk_size, self.action_dim
+        d_tanh = torch.tanh(self.delta_head(mo)).view(B, T, K, A)
+        delta = (d_tanh + 1.0) / 2.0 * (dmax - dmin) + dmin           # (B, T, K, A)
 
-        end_logits = self.end_head(h)
-        if self.decoder_output_mode == "single_step":
-            end_logits = end_logits.squeeze(-1)  # (B, T)
-        return delta, end_logits
+        # (3) skill_termination_predictor: [latent, img_feat(no flags)] → progress + termination.
+        tm_tokens = torch.stack([latent, img_feat_plain], dim=2).reshape(B * T, 2, -1)
+        tm = self.term_pool(tm_tokens).view(B, T, -1)                # (B, T, H)
+        progress_pred = torch.sigmoid(self.progress_head(tm)).squeeze(-1)  # (B, T) in [0, 1]
+        term_logits = self.termination_head(tm).squeeze(-1)          # (B, T)
+
+        return delta, progress_pred, term_logits
 
     # ── forward ───────────────────────────────────────────────────────────────
 
@@ -501,11 +600,57 @@ class SplineFSQAE(nn.Module):
         dec_tokens: torch.Tensor,    # (B, T, n_tokens, feat_dim)
         patch_flags: torch.Tensor,   # (B, T, n_patches, 2)
         frame_progress: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Returns (delta, end_logits, indices)."""
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Returns (delta, progress_pred, term_logits, indices)."""
         z_q, indices = self.encode(ctrl_pts, lengths, start_tokens, end_tokens)
-        delta, end_logits = self.decode(z_q, states, dec_tokens, patch_flags, frame_progress)
-        return delta, end_logits, indices
+        delta, progress_pred, term_logits = self.decode(z_q, states, dec_tokens, patch_flags, frame_progress)
+        return delta, progress_pred, term_logits, indices
+
+    # ── skillVLA inference path ───────────────────────────────────────────────
+
+    @torch.no_grad()
+    def predict_termination(
+        self,
+        z: torch.Tensor,            # (B, D) skill latent in z_q space (e.g. predicted by skillVLA)
+        states: torch.Tensor,       # (B, T, state_dim)
+        dec_tokens: torch.Tensor,   # DINO tokens (B,T,N,F)/(B,N,F) or raw images
+        quantize: bool = True,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Run only skill_decoder + skill_termination_predictor (no motion, no flags).
+
+        This is the subgraph skillVLA uses: a predicted skill latent z (D-dim, in
+        z_q space) plus proprioceptive states and the current DINO image tokens
+        yield per-step skill progress and termination. The motion_reconstructor and
+        the flag image encoder are skipped entirely.
+
+        z is treated as a point in the FSQ codeword space ([-lh, lh] per dim).
+        With quantize=True it is snapped to the nearest codebook grid point
+        (round + clamp), matching the discrete z_q the decoder saw in training.
+
+        Returns:
+          progress     (B, T) in [0, 1]
+          termination  (B, T) termination probability (sigmoid applied)
+        """
+        dec_tokens = self._prepare_decoder_tokens(dec_tokens, states=states)
+        B, T = dec_tokens.shape[:2]
+
+        if quantize:
+            lh = self.fsq.levels_half.to(z.device, z.dtype)
+            z = torch.maximum(torch.minimum(torch.round(z), lh), -lh)
+
+        img_feat_plain = self.dec_image_encoder_plain(dec_tokens)        # (B, T, H)
+
+        z_seq = z.unsqueeze(1).expand(B, T, -1).to(states.dtype)         # (B, T, D)
+        z_tok = self.dec_z_proj(z_seq)
+        s_tok = self.dec_state_proj(states)
+        sd_tokens = torch.stack([z_tok, s_tok], dim=2).reshape(B * T, 2, -1)
+        latent = self.skill_decoder_pool(sd_tokens).view(B, T, -1)       # (B, T, H)
+
+        tm_tokens = torch.stack([latent, img_feat_plain], dim=2).reshape(B * T, 2, -1)
+        tm = self.term_pool(tm_tokens).view(B, T, -1)
+        progress = torch.sigmoid(self.progress_head(tm)).squeeze(-1)         # (B, T)
+        termination = torch.sigmoid(self.termination_head(tm)).squeeze(-1)   # (B, T)
+        return progress, termination
 
     # ── inference helpers ─────────────────────────────────────────────────────
 
@@ -576,13 +721,9 @@ class SplineFSQDataset(Dataset):
         delta_min: np.ndarray,
         delta_max: np.ndarray,
         max_length: float,
-        decoder_output_mode: str = "single_step",
         chunk_size: int = 10,
-        end_random_p: int = 0,
     ) -> None:
-        self.decoder_output_mode = decoder_output_mode
         self.chunk_size = chunk_size
-        self.end_random_p = max(0, int(end_random_p))
         self.max_length = max_length
         self.action_min = action_min.astype(np.float32)
         self.action_max = action_max.astype(np.float32)
@@ -616,11 +757,12 @@ class SplineFSQDataset(Dataset):
         delta = self.deltas[idx]   # (T_future, A), dataset actions
         tokens = self.dec_tokens[idx]  # (T, n_tokens, F)
         T_future = len(delta)
-        end_index = T - 1
-        if self.end_random_p > 0:
-            lo = max(0, end_index - self.end_random_p)
-            hi = min(T_future - 1, end_index + self.end_random_p)
-            end_index = int(np.random.randint(lo, hi + 1))
+
+        # Per-skill progress: 0 at the first step, 1 at the last step.
+        progress = torch.arange(T, dtype=torch.float32) / max(T - 1, 1)  # (T,)
+        # Termination: 1 at the last step, else 0.
+        termination = torch.zeros(T)
+        termination[T - 1] = 1.0
 
         item: dict = {
             "ctrl":         torch.from_numpy(self.ctrl_pts[idx]),      # (n_control, A)
@@ -630,32 +772,20 @@ class SplineFSQDataset(Dataset):
             "dec_tokens":   torch.from_numpy(tokens[:T]),              # (T, n_tokens, F)
             "patch_flags":  torch.from_numpy(self.patch_flags[idx][:T]),   # (T, n_patches, 2)
             "state":        torch.from_numpy(self.states[idx][:T]),    # (T, 7)
-            "frame_progress": torch.arange(T, dtype=torch.float32) / self.max_length,  # (T,)
+            "frame_progress": progress,    # (T,) GT progress: motion input + termination-head target
+            "termination":   termination,  # (T,) per-step end flag
         }
 
-        if self.decoder_output_mode == "single_step":
-            item["delta"] = torch.from_numpy(delta[:T])   # (T, A)
-            end = torch.zeros(T)
-            # Single-step mode cannot represent "late" end labels beyond the
-            # current skill's input range, so clamp those labels to the last
-            # available skill timestep.
-            end[min(end_index, T - 1)] = 1.0
-            item["end"] = end
-        else:
-            K, A = self.chunk_size, delta.shape[-1]
-            # vectorised chunk construction
-            t_idx = np.arange(T).reshape(-1, 1) + np.arange(K).reshape(1, -1)  # (T, K)
-            valid = (t_idx < T_future)                                           # (T, K) bool
-            t_clamped = np.minimum(t_idx, T_future - 1)
-            chunk_target = delta[t_clamped]          # (T, K, A)
-            chunk_target[~valid] = 0.0
-            chunk_valid = valid.astype(np.float32)   # (T, K)
-            # Cumulative end flag: once the current skill has ended inside the
-            # chunk horizon, all later chunk slots are also marked ended.
-            chunk_end = (t_idx >= end_index).astype(np.float32)  # (T, K)
-            item["delta"]       = torch.from_numpy(chunk_target)  # (T, K, A)
-            item["chunk_valid"] = torch.from_numpy(chunk_valid)   # (T, K)
-            item["end"]         = torch.from_numpy(chunk_end)     # (T, K)
+        # Chunk targets: pred[t,k] supervised by action[t+k]; slots may cross the
+        # skill boundary into the next skill (same episode), only episode-end slots invalid.
+        K = self.chunk_size
+        t_idx = np.arange(T).reshape(-1, 1) + np.arange(K).reshape(1, -1)  # (T, K)
+        valid = (t_idx < T_future)                                          # (T, K) bool
+        t_clamped = np.minimum(t_idx, T_future - 1)
+        chunk_target = delta[t_clamped]          # (T, K, A)
+        chunk_target[~valid] = 0.0
+        item["delta"]       = torch.from_numpy(chunk_target)              # (T, K, A)
+        item["chunk_valid"] = torch.from_numpy(valid.astype(np.float32))  # (T, K)
 
         return item
 
@@ -679,19 +809,12 @@ def collate_fsq_batch(batch: list[dict]) -> dict:
     patch_flags = torch.zeros(B, max_T, n_patches, 2)
     state      = torch.zeros(B, max_T, state_dim)
     frame_progress = torch.zeros(B, max_T)
+    termination = torch.zeros(B, max_T)
     mask       = torch.zeros(B, max_T, dtype=torch.bool)
 
-    is_chunk = "chunk_valid" in batch[0]
-    if is_chunk:
-        K, A = batch[0]["delta"].shape[1], batch[0]["delta"].shape[2]
-        delta       = torch.zeros(B, max_T, K, A)
-        end         = torch.zeros(B, max_T, K)
-        chunk_valid = torch.zeros(B, max_T, K)
-    else:
-        A = batch[0]["delta"].shape[1]
-        delta       = torch.zeros(B, max_T, A)
-        end         = torch.zeros(B, max_T)
-        chunk_valid = None
+    K, A = batch[0]["delta"].shape[1], batch[0]["delta"].shape[2]
+    delta       = torch.zeros(B, max_T, K, A)
+    chunk_valid = torch.zeros(B, max_T, K)
 
     for i, b in enumerate(batch):
         T = int(b["length"].item())
@@ -699,11 +822,10 @@ def collate_fsq_batch(batch: list[dict]) -> dict:
         patch_flags[i, :T] = b["patch_flags"]
         state[i, :T]      = b["state"]
         frame_progress[i, :T] = b["frame_progress"]
+        termination[i, :T] = b["termination"]
         delta[i, :T]      = b["delta"]
-        end[i, :T]        = b["end"]
+        chunk_valid[i, :T] = b["chunk_valid"]
         mask[i, :T]       = True
-        if is_chunk:
-            chunk_valid[i, :T] = b["chunk_valid"]
 
     return {
         "ctrl":         ctrl,
@@ -715,85 +837,77 @@ def collate_fsq_batch(batch: list[dict]) -> dict:
         "state":        state,
         "frame_progress": frame_progress,
         "delta":        delta,
-        "end":          end,
+        "termination":  termination,   # (B, max_T) per-step end flag
         "mask":         mask,
-        "chunk_valid":  chunk_valid,  # None in single_step mode
+        "chunk_valid":  chunk_valid,   # (B, max_T, K)
     }
 
 
 # ── Loss ──────────────────────────────────────────────────────────────────────
 
 def fsqae_loss(
-    pred_delta: torch.Tensor,       # (B, T, A) or (B, T, K, A)
-    pred_end_logits: torch.Tensor,  # (B, T) or (B, T, K)
+    pred_delta: torch.Tensor,       # (B, T, K, A)
+    pred_progress: torch.Tensor,    # (B, T) in [0, 1]
+    pred_term_logits: torch.Tensor, # (B, T)
     target_delta: torch.Tensor,
-    target_end: torch.Tensor,       # (B, T) or (B, T, K)
+    target_progress: torch.Tensor,  # (B, T) in [0, 1]
+    target_term: torch.Tensor,      # (B, T)
     mask: torch.Tensor,             # (B, T) bool
     delta_min: torch.Tensor,        # (A,)
     delta_max: torch.Tensor,        # (A,)
-    chunk_valid: torch.Tensor | None = None,  # (B, T, K)
+    chunk_valid: torch.Tensor,      # (B, T, K)
     delta_loss_weight: float = 1.0,
+    progress_loss_weight: float = 1.0,
     end_loss_weight: float = 1.0,
     end_pos_weight: float | torch.Tensor = 1.0,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Returns (total, delta_loss, end_loss). No VQ loss term."""
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Returns (total, delta_loss, progress_loss, end_loss). No VQ loss term."""
     dev, dt = pred_delta.device, pred_delta.dtype
 
-    if pred_delta.ndim == 3:
-        # single_step
-        dmin  = delta_min.to(dev, dt).view(1, 1, -1)
-        dmax  = delta_max.to(dev, dt).view(1, 1, -1)
-        scale = (dmax - dmin).clamp_min(1e-8)
-        per_step = F.smooth_l1_loss(
-            (pred_delta   - dmin) / scale * 2.0 - 1.0,
-            (target_delta - dmin) / scale * 2.0 - 1.0,
-            reduction="none",
-        ).mean(dim=-1)  # (B, T)
-    else:
-        # chunk
-        dmin  = delta_min.to(dev, dt).view(1, 1, 1, -1)
-        dmax  = delta_max.to(dev, dt).view(1, 1, 1, -1)
-        scale = (dmax - dmin).clamp_min(1e-8)
-        per_step_ka = F.smooth_l1_loss(
-            (pred_delta   - dmin) / scale * 2.0 - 1.0,
-            (target_delta - dmin) / scale * 2.0 - 1.0,
-            reduction="none",
-        ).mean(dim=-1)  # (B, T, K)
-        if chunk_valid is not None:
-            cv = chunk_valid.to(dev, dt)
-            per_step = (per_step_ka * cv).sum(dim=-1) / cv.sum(dim=-1).clamp_min(1.0)
-        else:
-            per_step = per_step_ka.mean(dim=-1)
+    # Action chunk loss (B, T, K, A): normalize to [-1,1], SmoothL1, valid-slot mean.
+    dmin  = delta_min.to(dev, dt).view(1, 1, 1, -1)
+    dmax  = delta_max.to(dev, dt).view(1, 1, 1, -1)
+    scale = (dmax - dmin).clamp_min(1e-8)
+    per_step_ka = F.smooth_l1_loss(
+        (pred_delta   - dmin) / scale * 2.0 - 1.0,
+        (target_delta - dmin) / scale * 2.0 - 1.0,
+        reduction="none",
+    ).mean(dim=-1)  # (B, T, K)
+    cv = chunk_valid.to(dev, dt)
+    per_step = (per_step_ka * cv).sum(dim=-1) / cv.sum(dim=-1).clamp_min(1.0)  # (B, T)
 
     m = mask.float()
     delta_loss = ((per_step * m).sum(dim=1) / m.sum(dim=1).clamp_min(1.0)).mean()
 
+    # Progress regression (per-step, masked).
+    prog_per = F.smooth_l1_loss(pred_progress, target_progress.to(dev, dt), reduction="none")
+    progress_loss = ((prog_per * m).sum(dim=1) / m.sum(dim=1).clamp_min(1.0)).mean()
+
+    # Termination classification (per-step, masked).
     pos_w = torch.as_tensor(end_pos_weight, device=dev, dtype=dt)
     end_per = F.binary_cross_entropy_with_logits(
-        pred_end_logits, target_end.to(dev, dt), reduction="none", pos_weight=pos_w
+        pred_term_logits, target_term.to(dev, dt), reduction="none", pos_weight=pos_w
     )
-    if end_per.ndim == 3:
-        end_mask = m.unsqueeze(-1)
-    else:
-        end_mask = m
-    end_loss = (end_per * end_mask).sum() / end_mask.sum().clamp_min(1.0)
+    end_loss = (end_per * m).sum() / m.sum().clamp_min(1.0)
 
-    total = delta_loss_weight * delta_loss + end_loss_weight * end_loss
-    return total, delta_loss, end_loss
+    total = (
+        delta_loss_weight * delta_loss
+        + progress_loss_weight * progress_loss
+        + end_loss_weight * end_loss
+    )
+    return total, delta_loss, progress_loss, end_loss
 
 
 # ── End-signal metrics ────────────────────────────────────────────────────────
 
 @torch.no_grad()
 def end_signal_metrics(
-    pred_end_logits: torch.Tensor,
-    target_end: torch.Tensor,
-    mask: torch.Tensor,
+    pred_end_logits: torch.Tensor,   # (B, T)
+    target_end: torch.Tensor,        # (B, T)
+    mask: torch.Tensor,              # (B, T)
     threshold: float = 0.5,
 ) -> dict[str, float]:
     valid = mask.bool()
-    if pred_end_logits.ndim == 3:
-        valid = valid.unsqueeze(-1).expand_as(pred_end_logits)
     if valid.sum().item() == 0:
         return {"acc": 0.0, "precision": 0.0, "recall": 0.0, "positive_rate": 0.0}
     pred     = torch.sigmoid(pred_end_logits) >= threshold
@@ -833,27 +947,10 @@ def train_spline_fsqae(
     d_min = cfg.delta_min  if cfg.delta_min  is not None else np.concatenate(decoder_targets).min(axis=0)
     d_max = cfg.delta_max  if cfg.delta_max  is not None else np.concatenate(decoder_targets).max(axis=0)
 
-    if cfg.end_pos_weight <= 0:
-        skill_lengths = [len(x) for x in segments]
-        total_steps = sum(skill_lengths)
-        if cfg.decoder_output_mode == "chunk":
-            positives = sum(
-                sum(max(0, cfg.chunk_size - (T - 1 - t)) for t in range(T))
-                for T in skill_lengths
-            )
-            total_slots = total_steps * cfg.chunk_size
-            negatives = total_slots - positives
-        else:
-            positives = len(segments)
-            negatives = total_steps - positives
-        cfg.end_pos_weight = max(1.0, float(negatives / max(1, positives)))
-
     print(
         f"[SplineFSQAE] {len(segments)} segments | "
         f"n_control={cfg.n_control} fsq={cfg.fsq_levels} "
-        f"hidden={cfg.hidden_dim} mode={cfg.decoder_output_mode}"
-        + (f" K={cfg.chunk_size}" if cfg.decoder_output_mode == "chunk" else "")
-        + (f" end_random_p=±{cfg.end_random_p}" if cfg.end_random_p > 0 else "")
+        f"hidden={cfg.hidden_dim} K={cfg.chunk_size}"
     )
 
     n_val = max(1, int(len(segments) * cfg.val_split))
@@ -863,7 +960,7 @@ def train_spline_fsqae(
     def take(xs: list, ids) -> list:
         return [xs[i] for i in ids]
 
-    def mk_ds(ids, *, train: bool) -> SplineFSQDataset:
+    def mk_ds(ids) -> SplineFSQDataset:
         return SplineFSQDataset(
             take(segments, ids),
             take(dec_tokens, ids),
@@ -873,13 +970,11 @@ def train_spline_fsqae(
             cfg.n_control, cfg.spline_degree,
             a_min, a_max, d_min, d_max,
             cfg.max_length,
-            cfg.decoder_output_mode,
             cfg.chunk_size,
-            cfg.end_random_p if train else 0,
         )
 
-    train_loader = DataLoader(mk_ds(train_idx, train=True),  batch_size=cfg.batch_size, shuffle=True,  collate_fn=collate_fsq_batch)
-    val_loader   = DataLoader(mk_ds(val_idx,   train=False), batch_size=cfg.batch_size, shuffle=False, collate_fn=collate_fsq_batch)
+    train_loader = DataLoader(mk_ds(train_idx), batch_size=cfg.batch_size, shuffle=True,  collate_fn=collate_fsq_batch)
+    val_loader   = DataLoader(mk_ds(val_idx),   batch_size=cfg.batch_size, shuffle=False, collate_fn=collate_fsq_batch)
 
     model = SplineFSQAE(
         action_dim=action_dim,
@@ -893,9 +988,9 @@ def train_spline_fsqae(
         feat_dim=cfg.feat_dim,
         n_tokens=cfg.n_tokens,
         decoder_image_mode=cfg.decoder_image_mode,
+        image_token_dim=cfg.image_token_dim,
         image_encoder_layers=cfg.image_encoder_layers,
         image_encoder_heads=cfg.image_encoder_heads,
-        decoder_output_mode=cfg.decoder_output_mode,
         chunk_size=cfg.chunk_size,
         max_length=cfg.max_length,
         action_min=a_min, action_max=a_max,
@@ -940,40 +1035,43 @@ def train_spline_fsqae(
         states    = batch["state"].to(dev)
         frame_progress = batch["frame_progress"].to(dev)
         tgt_delta = batch["delta"].to(dev)
-        tgt_end   = batch["end"].to(dev)
+        tgt_prog  = batch["frame_progress"].to(dev)   # GT progress is the termination-head target
+        tgt_term  = batch["termination"].to(dev)
         mask      = batch["mask"].to(dev)
         cv        = batch["chunk_valid"].to(dev) if batch["chunk_valid"] is not None else None
 
-        pred_delta, pred_end, _ = model(ctrl, lengths, start_tok, end_tok, states, dec_tok, pf, frame_progress)
-        total, d_l, e_l = fsqae_loss(
-            pred_delta, pred_end, tgt_delta, tgt_end, mask,
+        pred_delta, pred_prog, pred_term, _ = model(
+            ctrl, lengths, start_tok, end_tok, states, dec_tok, pf, frame_progress
+        )
+        total, d_l, p_l, e_l = fsqae_loss(
+            pred_delta, pred_prog, pred_term, tgt_delta, tgt_prog, tgt_term, mask,
             model.delta_min, model.delta_max, cv,
-            cfg.delta_loss_weight, cfg.end_loss_weight, cfg.end_pos_weight,
+            cfg.delta_loss_weight, cfg.progress_loss_weight, cfg.end_loss_weight, cfg.end_pos_weight,
         )
         if train:
             optim.zero_grad()
             total.backward()
             nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
             optim.step()
-        em = end_signal_metrics(pred_end, tgt_end, mask, cfg.end_threshold)
-        return total.item(), d_l.item(), e_l.item(), em
+        em = end_signal_metrics(pred_term, tgt_term, mask, cfg.end_threshold)
+        return total.item(), d_l.item(), p_l.item(), e_l.item(), em
 
     for epoch in range(start_epoch, cfg.epochs + 1):
         model.train()
-        t_tot = t_d = t_e = t_acc = t_rec = n_tr = 0.0
+        t_tot = t_d = t_p = t_e = t_acc = t_rec = n_tr = 0.0
         for batch in train_loader:
-            tot, d, e, em = _step(batch, train=True)
-            t_tot += tot; t_d += d; t_e += e
+            tot, d, p, e, em = _step(batch, train=True)
+            t_tot += tot; t_d += d; t_p += p; t_e += e
             t_acc += em["acc"]; t_rec += em["recall"]; n_tr += 1
 
         scheduler.step()
 
         model.eval()
-        v_tot = v_d = v_e = v_acc = v_rec = n_vl = 0.0
+        v_tot = v_d = v_p = v_e = v_acc = v_rec = n_vl = 0.0
         with torch.no_grad():
             for batch in val_loader:
-                tot, d, e, em = _step(batch, train=False)
-                v_tot += tot; v_d += d; v_e += e
+                tot, d, p, e, em = _step(batch, train=False)
+                v_tot += tot; v_d += d; v_p += p; v_e += e
                 v_acc += em["acc"]; v_rec += em["recall"]; n_vl += 1
 
         n_tr = max(1, n_tr); n_vl = max(1, n_vl)
@@ -982,11 +1080,13 @@ def train_spline_fsqae(
         log = {
             "train/loss": train_loss,
             "train/delta_loss": t_d / n_tr,
+            "train/progress_loss": t_p / n_tr,
             "train/end_loss": t_e / n_tr,
             "train/end_acc": t_acc / n_tr,
             "train/end_recall": t_rec / n_tr,
             "val/loss": val_loss,
             "val/delta_loss": v_d / n_vl,
+            "val/progress_loss": v_p / n_vl,
             "val/end_loss": v_e / n_vl,
             "val/end_acc": v_acc / n_vl,
             "val/end_recall": v_rec / n_vl,
@@ -1000,7 +1100,8 @@ def train_spline_fsqae(
             print(
                 f"[SplineFSQAE] {epoch:4d}/{cfg.epochs}  "
                 f"train={train_loss:.4f}  val={val_loss:.4f}  "
-                f"delta={log['train/delta_loss']:.4f}  end={log['train/end_loss']:.4f}  "
+                f"delta={log['train/delta_loss']:.4f}  prog={log['train/progress_loss']:.4f}  "
+                f"end={log['train/end_loss']:.4f}  "
                 f"end_acc={log['train/end_acc']:.3f}  end_rec={log['train/end_recall']:.3f}"
             )
 

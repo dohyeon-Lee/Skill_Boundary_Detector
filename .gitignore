@@ -1,11 +1,14 @@
 # ── 데이터셋 (대용량) ─────────────────────────────────────────────
 libero_dataset/
+libero_small_dataset/
 libero_10_old/
 
 # ── 학습 출력물 ───────────────────────────────────────────────────
 outputs/
 VLA_outputs/
 VLA_single_outputs/
+DP_outputs/
+FSQ_outputs/
 
 # ── wandb 로컬 캐시 ───────────────────────────────────────────────
 wandb/

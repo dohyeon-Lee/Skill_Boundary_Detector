@@ -1,0 +1,50 @@
+# Shared config for configs/generate_training_dataset.
+# Update project_root when moving this workflow to another server.
+
+project_root: /data2/dohyeon/SBD
+dataset_root: libero_dataset
+
+# Defaults for build_training_dataset.py
+build_dataset: libero_90
+build_task_range: full
+build_episodes_per_task: full
+build_output_name: ""
+build_overwrite: false    # false: fail if the output dataset already exists; true: replace it.
+build_allow_fewer: false  # false: fail if a task has fewer episodes than requested; true: use all available.
+
+# Defaults for inspect_training_dataset.py
+inspect_dataset: libero_90
+
+# Defaults for run_frame_dino_parallel.sh
+dino_target_dataset: libero_90
+dino_image_keys: ["observation.images.image"]
+dino_patch_grid: 8
+dino_batch_size: 1024
+dino_dtype: float16
+dino_wandb_project: DP_train
+
+# Slurm/GPU settings for DINO precompute.
+dino_partitions:
+  - debug
+  # - base_suma_rtx3090
+  # - dell_rtx3090
+  # - big_suma_rtx3090
+
+dino_exclude_nodes:
+  - node200
+  # - node19
+  # - node13
+  # - node18
+  # - node16
+  # - node08
+  # - node10
+  # - node21
+  # - node14
+  # - node04
+  # - node05
+  # - node31
+
+dino_qos: base_qos
+dino_gpu_reserve: 0
+dino_gpu_max_per_node: 7
+dino_max_workers: 0

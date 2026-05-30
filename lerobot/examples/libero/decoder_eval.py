@@ -48,9 +48,9 @@ def load_model(model_path: str, device: str) -> tuple[SplineFSQAE, SplineFSQAECo
         patch_grid           = getattr(cfg, "patch_grid", 8),
         n_patch_raw          = getattr(cfg, "n_patch_raw", 196),
         decoder_image_mode   = getattr(cfg, "decoder_image_mode", "dino_flags"),
+        image_token_dim      = getattr(cfg, "image_token_dim", 128),
         image_encoder_layers = getattr(cfg, "image_encoder_layers", 1),
         image_encoder_heads  = getattr(cfg, "image_encoder_heads", 4),
-        decoder_output_mode  = cfg.decoder_output_mode,
         chunk_size           = cfg.chunk_size,
         max_length           = cfg.max_length,
         action_min           = cfg.action_min,
@@ -62,8 +62,7 @@ def load_model(model_path: str, device: str) -> tuple[SplineFSQAE, SplineFSQAECo
     model.to(device).eval()
     codebook_size = model.fsq.codebook_size
     print(f"[EVAL] Loaded FSQ model  fsq_levels={cfg.fsq_levels}  "
-          f"codebook={codebook_size}  mode={cfg.decoder_output_mode}"
-          + (f"  K={cfg.chunk_size}" if cfg.decoder_output_mode == "chunk" else ""))
+          f"codebook={codebook_size}  K={cfg.chunk_size}")
     return model, cfg
 
 
@@ -82,17 +81,18 @@ def run_decode_single(
 
     single_step mode: pred_actions (T, A)
     chunk mode:       pred_actions (T, K, A)
-    pred_end_probs:   (T,) in single_step, (T, K) in chunk after sigmoid
+    pred_end_probs:   (T,) per-step termination probability after sigmoid.
+    GT per-skill progress (0→1) is fed as the motion input, matching training.
     """
     T = len(states)
     z_t  = torch.from_numpy(z_q.astype(np.float32)).unsqueeze(0).to(device)
     s_t  = torch.from_numpy(states.astype(np.float32)).unsqueeze(0).to(device)
     d_t  = torch.from_numpy(dec_tokens[:T].astype(np.float32)).unsqueeze(0).to(device)
     p_t  = torch.from_numpy(patch_flags.astype(np.float32)).unsqueeze(0).to(device)
-    progress = (torch.arange(T, dtype=torch.float32) / model.max_length).unsqueeze(0).to(device)
+    progress = (torch.arange(T, dtype=torch.float32) / max(T - 1, 1)).unsqueeze(0).to(device)
 
-    pred_d, pred_e = model.decode(z_t, s_t, d_t, p_t, progress)
-    return pred_d.squeeze(0).cpu().numpy(), torch.sigmoid(pred_e).squeeze(0).cpu().numpy()
+    pred_d, _pred_prog, pred_term = model.decode(z_t, s_t, d_t, p_t, progress)
+    return pred_d.squeeze(0).cpu().numpy(), torch.sigmoid(pred_term).squeeze(0).cpu().numpy()
 
 
 # ── metrics ───────────────────────────────────────────────────────────────────
@@ -100,7 +100,7 @@ def run_decode_single(
 def compute_skill_metrics(
     pred_actions: np.ndarray,   # (T, A) or (T, K, A)
     gt_actions: np.ndarray,     # (T_future, A); first T rows are current skill
-    pred_end_probs: np.ndarray, # (T,) or (T, K)
+    pred_end_probs: np.ndarray, # (T,) per-step termination probability
     end_threshold: float,
     skill_length: int | None = None,
 ) -> dict:
@@ -135,32 +135,15 @@ def compute_skill_metrics(
         n_valid = valid.sum() * A
         chunk_mse = float(chunk_err.sum() / n_valid) if n_valid > 0 else 0.0
 
-    # end timing
+    # end timing — per-step termination probability (T,)
     gt_end_t = T_skill - 1
-    if pred_end_probs.ndim == 2:
-        K = pred_end_probs.shape[1]
-        abs_t = np.arange(T_skill)[:, None] + np.arange(K)[None, :]
-        hits_2d = np.argwhere(pred_end_probs >= end_threshold)
-        missed = len(hits_2d) == 0
-        if missed:
-            best = np.unravel_index(int(np.argmax(pred_end_probs)), pred_end_probs.shape)
-            pred_end_t = int(abs_t[best])
-        else:
-            hit_abs = abs_t[hits_2d[:, 0], hits_2d[:, 1]]
-            pred_end_t = int(hit_abs.min())
-    else:
-        hits = np.flatnonzero(pred_end_probs >= end_threshold)
-        missed = len(hits) == 0
-        pred_end_t = int(hits[0]) if not missed else int(np.argmax(pred_end_probs))
+    hits = np.flatnonzero(pred_end_probs >= end_threshold)
+    missed = len(hits) == 0
+    pred_end_t = int(hits[0]) if not missed else int(np.argmax(pred_end_probs))
     timing_err = pred_end_t - gt_end_t
 
     prob = np.clip(pred_end_probs, 1e-8, 1.0 - 1e-8)
-    if pred_end_probs.ndim == 2:
-        K = pred_end_probs.shape[1]
-        tgt_idx = np.arange(T_skill)[:, None] + np.arange(K)[None, :]
-        tgt = (tgt_idx >= gt_end_t).astype(np.float32)
-    else:
-        tgt  = np.zeros(T_skill, np.float32); tgt[gt_end_t] = 1.0
+    tgt  = np.zeros(T_skill, np.float32); tgt[gt_end_t] = 1.0
     end_bce = float(np.mean(-(tgt * np.log(prob) + (1.0 - tgt) * np.log(1.0 - prob))))
     end_acc = float(np.mean((pred_end_probs >= end_threshold) == (tgt > 0.5)))
 
@@ -474,7 +457,6 @@ def parse_args():
                    help="Directory with per-skill SAM2 mask npz files")
     p.add_argument("--eef_dims",        type=int, nargs="+", default=[0, 1, 2, 3, 4, 5])
     p.add_argument("--gripper_action_dim", type=int, default=-1)
-    p.add_argument("--zero_start_eef",  action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--device",          default="cuda")
     p.add_argument("--max_plot_samples", type=int, default=20)
     p.add_argument("--max_plot_entries", type=int, default=20,
@@ -495,7 +477,7 @@ def main():
 
     model, cfg = load_model(args.model_path, device)
     end_threshold = cfg.end_threshold if args.end_threshold is None else args.end_threshold
-    is_chunk      = cfg.decoder_output_mode == "chunk"
+    is_chunk      = True  # motion decoder always outputs K-step chunks
     codebook_size = model.fsq.codebook_size
     n_patches     = model.n_patches
 
@@ -504,7 +486,6 @@ def main():
         Path(args.skills_dir),
         eef_dims           = args.eef_dims,
         gripper_action_dim = args.gripper_action_dim,
-        zero_start_eef     = args.zero_start_eef,
     )
     N = len(segments)
     A = dec_targets[0].shape[-1]
@@ -583,7 +564,7 @@ def main():
     mse_dims = "  ".join(f"{l}={v:.4f}" for l, v in
                          zip(dim_labels, np.mean([m["mse_per_dim"] for m in per_skill], axis=0)))
     summary = (
-        f"N={N}  mode={cfg.decoder_output_mode}  |  "
+        f"N={N}  mode=chunk  |  "
         f"Action MSE={mse_all:.4f} (first6={mse_eef:.4f} grip={mse_grip:.4f})  [{mse_dims}]{chunk_str}  |  "
         f"End@{end_threshold:.2f} |err|={t_abs:.2f}steps  mean={t_mean:+.2f}±{t_std:.2f}  "
         f"early={early:.1%} late={late:.1%} missed={missed:.1%}  |  "

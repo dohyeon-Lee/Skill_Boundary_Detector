@@ -49,8 +49,6 @@ class Args:
     """State indices used as EEF pose for the encoder trajectory and decoder state."""
     gripper_action_dim: int = -1
     """Action dim index for gripper signal (used in encoder trajectory and decoder state)."""
-    zero_start_eef: bool = True
-    """Subtract first-frame EEF from encoder trajectories."""
 
     # ── model
     hidden_dim: int = 256
@@ -70,22 +68,21 @@ class Args:
     n_patch_raw: int = 196
     decoder_image_mode: str = "dino_flags"
     """'dino_only' or 'dino_flags'."""
+    image_token_dim: int = 128
+    """Internal per-patch width N in the image encoders (must be divisible by heads, >2)."""
     image_encoder_layers: int = 1
     image_encoder_heads: int = 4
-    decoder_output_mode: str = "single_step"
-    """'single_step' or 'chunk'."""
     chunk_size: int = 10
-    """Steps per output chunk (used when decoder_output_mode='chunk')."""
+    """Steps per motion action chunk."""
     max_length: float = 200.0
 
     # ── loss
     delta_loss_weight: float = 1.0
+    progress_loss_weight: float = 1.0
     end_loss_weight: float = 10.0
-    end_pos_weight: float = 0.0
-    """<=0: auto-computed from skill lengths."""
+    end_pos_weight: float = 1.0
+    """BCE positive-class weight for the termination head."""
     end_threshold: float = 0.5
-    end_random_p: int = 0
-    """Train-time end target jitter in frames: sample boundary from [end-p, end+p]."""
 
     # ── training
     epochs: int = 5000
@@ -117,10 +114,9 @@ def _compute_skill_orders(metadata: list[dict]) -> list[float]:
     return orders
 
 
-def _make_encoder_traj(states, actions, eef_dims, gripper_idx, zero_start):
+def _make_encoder_traj(states, actions, eef_dims, gripper_idx):
+    """Absolute EEF pose (6D) + gripper command (1D) per step."""
     pose = states[:, eef_dims].astype(np.float32)
-    if zero_start:
-        pose = pose - pose[:1]
     gripper = actions[:, gripper_idx:gripper_idx + 1].astype(np.float32)
     return np.concatenate([pose, gripper], axis=-1)
 
@@ -178,7 +174,6 @@ def load_skill_files(
     skills_dir: Path,
     eef_dims: list[int],
     gripper_action_dim: int,
-    zero_start_eef: bool,
 ) -> tuple[list[np.ndarray], list[np.ndarray], list[np.ndarray], list[dict]]:
     npz_files = sorted(skills_dir.rglob("*.npz"))
     if not npz_files:
@@ -190,7 +185,7 @@ def load_skill_files(
         actions = d["actions"].astype(np.float32)
         states  = d["states"].astype(np.float32)
         gripper_idx = (actions.shape[-1] + gripper_action_dim) % actions.shape[-1]
-        segments.append(_make_encoder_traj(states, actions, eef_dims, gripper_idx, zero_start_eef))
+        segments.append(_make_encoder_traj(states, actions, eef_dims, gripper_idx))
         dec_states.append(_make_decoder_state(states, actions, eef_dims, gripper_idx))
         dec_targets.append(_make_target_action(actions))
         metadata.append({
@@ -354,7 +349,6 @@ def main(args: Args) -> None:
         skills_dir,
         eef_dims=args.eef_dims,
         gripper_action_dim=args.gripper_action_dim,
-        zero_start_eef=args.zero_start_eef,
     )
 
     dec_tokens = load_dino_tokens(Path(args.dino_features), metadata)
@@ -372,8 +366,7 @@ def main(args: Args) -> None:
     np.savez(str(output_dir / "action_stats.npz"),
              action_min=action_min, action_max=action_max,
              delta_min=delta_min,   delta_max=delta_max,
-             eef_dims=np.array(args.eef_dims),
-             zero_start_eef=np.array(args.zero_start_eef))
+             eef_dims=np.array(args.eef_dims))
     print(f"[FSQ] action_min: {np.round(action_min, 4)}")
     print(f"[FSQ] action_max: {np.round(action_max, 4)}")
     print(f"[FSQ] delta_min:  {np.round(delta_min,  4)}")
@@ -409,16 +402,16 @@ def main(args: Args) -> None:
         patch_grid=args.patch_grid,
         n_patch_raw=args.n_patch_raw,
         decoder_image_mode=args.decoder_image_mode,
+        image_token_dim=args.image_token_dim,
         image_encoder_layers=args.image_encoder_layers,
         image_encoder_heads=args.image_encoder_heads,
-        decoder_output_mode=args.decoder_output_mode,
         chunk_size=args.chunk_size,
         max_length=args.max_length,
         delta_loss_weight=args.delta_loss_weight,
+        progress_loss_weight=args.progress_loss_weight,
         end_loss_weight=args.end_loss_weight,
         end_pos_weight=args.end_pos_weight,
         end_threshold=args.end_threshold,
-        end_random_p=args.end_random_p,
         lr=args.lr,
         batch_size=args.batch_size,
         grad_clip=args.grad_clip,

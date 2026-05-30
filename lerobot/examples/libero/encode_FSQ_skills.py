@@ -37,7 +37,6 @@ class Args:
 
     eef_dims: list[int] = field(default_factory=lambda: [0, 1, 2, 3, 4, 5])
     gripper_action_dim: int = -1
-    zero_start_eef: bool = True
     device: str = "cuda"
 
 
@@ -60,9 +59,9 @@ def load_model(model_path: Path, device: str) -> SplineFSQAE:
         patch_grid=getattr(cfg, "patch_grid", 8),
         n_patch_raw=getattr(cfg, "n_patch_raw", 196),
         decoder_image_mode=getattr(cfg, "decoder_image_mode", "dino_flags"),
+        image_token_dim=getattr(cfg, "image_token_dim", 128),
         image_encoder_layers=getattr(cfg, "image_encoder_layers", 1),
         image_encoder_heads=getattr(cfg, "image_encoder_heads", 4),
-        decoder_output_mode=cfg.decoder_output_mode,
         chunk_size=cfg.chunk_size,
         max_length=cfg.max_length,
         action_min=cfg.action_min,
@@ -85,7 +84,6 @@ def main(args: Args) -> None:
         skills_dir,
         eef_dims=args.eef_dims,
         gripper_action_dim=args.gripper_action_dim,
-        zero_start_eef=args.zero_start_eef,
     )
     dec_tokens = load_dino_tokens(Path(args.dino_features), metadata)
 
