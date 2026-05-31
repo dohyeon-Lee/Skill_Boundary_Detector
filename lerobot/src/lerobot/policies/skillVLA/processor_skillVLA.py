@@ -7,7 +7,7 @@ from typing import Any
 import numpy as np
 import torch
 
-from lerobot.configs.types import FeatureType, PipelineFeatureType, PolicyFeature
+from lerobot.configs.types import PipelineFeatureType, PolicyFeature
 from lerobot.policies.skillVLA.configuration_skillVLA import SkillVLAConfig
 from lerobot.processor import (
     AddBatchDimensionProcessorStep,
@@ -27,7 +27,6 @@ from lerobot.utils.constants import (
     ACTION,
     DONE,
     INFO,
-    OBS_LANGUAGE_ATTENTION_MASK,
     OBS_PREFIX,
     REWARD,
     OBS_STATE,
@@ -37,8 +36,6 @@ from lerobot.utils.constants import (
 )
 
 
-OBS_LANG_TO_ACTION_ATTENTION_MASK = "observation.language.to_action_attention_mask"
-_STATE_ACTION_PREFIX_KEY = "skill_vla_state_action_prefix"
 SKILL_VLA_BATCH_KEYS = (
     "skill_index",
     "skill_sequence",
@@ -90,7 +87,6 @@ def skill_vla_transition_to_batch(transition: EnvTransition) -> dict[str, Any]:
     if isinstance(observation, dict):
         batch.update(observation)
 
-    batch.pop(_STATE_ACTION_PREFIX_KEY, None)
     return batch
 
 
@@ -125,7 +121,7 @@ class SkillVLAPreserveRawStateProcessorStep(ProcessorStep):
 @dataclass
 @ProcessorStepRegistry.register(name="skill_vla_prepare_state_tokenizer_processor_step")
 class SkillVLAPrepareStateTokenizerProcessorStep(ProcessorStep):
-    """Prepare the PI05 prompt and record where the non-task text starts."""
+    """Prepare the PI05-style prompt with task text and discretized state."""
 
     max_state_dim: int = 32
     task_key: str = "task"
@@ -146,60 +142,19 @@ class SkillVLAPrepareStateTokenizerProcessorStep(ProcessorStep):
         discretized_states = np.digitize(state_np, bins=np.linspace(-1, 1, 256 + 1)[:-1]) - 1
 
         full_prompts = []
-        task_prefixes = []
         for i, task in enumerate(tasks):
             cleaned_text = task.strip().replace("_", " ").replace("\n", " ")
             state_str = " ".join(map(str, discretized_states[i]))
             task_prefix = f"Task: {cleaned_text}, "
             state_action_suffix = f"State: {state_str};\nAction: "
             full_prompts.append(task_prefix + state_action_suffix)
-            task_prefixes.append(task_prefix)
 
         transition[TransitionKey.COMPLEMENTARY_DATA][self.task_key] = full_prompts
-        transition[TransitionKey.COMPLEMENTARY_DATA][_STATE_ACTION_PREFIX_KEY] = task_prefixes
         return transition
 
     def transform_features(
         self, features: dict[PipelineFeatureType, dict[str, PolicyFeature]]
     ) -> dict[PipelineFeatureType, dict[str, PolicyFeature]]:
-        return features
-
-
-@dataclass
-@ProcessorStepRegistry.register(name="skill_vla_tokenizer_processor")
-class SkillVLATokenizerProcessorStep(TokenizerProcessorStep):
-    """Tokenize prompts and mark only `State: ...; Action:` as visible to action tokens."""
-
-    def observation(self, observation):
-        new_observation = super().observation(observation)
-
-        task = self.get_task(self.transition)
-        task_prefixes = self.transition[TransitionKey.COMPLEMENTARY_DATA].get(_STATE_ACTION_PREFIX_KEY)
-        if task_prefixes is None:
-            raise ValueError(f"{_STATE_ACTION_PREFIX_KEY} is required for SkillVLA token masking")
-
-        prefix_tokenized = self._tokenize_text(task_prefixes)
-        valid_mask = new_observation[OBS_LANGUAGE_ATTENTION_MASK]
-
-        lang_to_action_mask = torch.zeros_like(valid_mask, dtype=torch.bool)
-        for i in range(len(task)):
-            full_len = int(valid_mask[i].sum().item())
-            prefix_len = min(int(prefix_tokenized["attention_mask"][i].sum().item()), full_len)
-            lang_to_action_mask[i, prefix_len:full_len] = True
-
-        new_observation[OBS_LANG_TO_ACTION_ATTENTION_MASK] = lang_to_action_mask.to(
-            device=valid_mask.device, dtype=torch.bool
-        )
-        return new_observation
-
-    def transform_features(
-        self, features: dict[PipelineFeatureType, dict[str, PolicyFeature]]
-    ) -> dict[PipelineFeatureType, dict[str, PolicyFeature]]:
-        features = super().transform_features(features)
-        if OBS_LANG_TO_ACTION_ATTENTION_MASK not in features[PipelineFeatureType.OBSERVATION]:
-            features[PipelineFeatureType.OBSERVATION][OBS_LANG_TO_ACTION_ATTENTION_MASK] = PolicyFeature(
-                type=FeatureType.LANGUAGE, shape=(self.max_length,)
-            )
         return features
 
 
@@ -220,7 +175,7 @@ def make_skill_vla_pre_post_processors(
             stats=dataset_stats,
         ),
         SkillVLAPrepareStateTokenizerProcessorStep(max_state_dim=config.max_state_dim),
-        SkillVLATokenizerProcessorStep(
+        TokenizerProcessorStep(
             tokenizer_name="google/paligemma-3b-pt-224",
             max_length=config.tokenizer_max_length,
             padding_side="right",

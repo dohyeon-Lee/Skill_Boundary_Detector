@@ -63,10 +63,7 @@ skill_decoder_state_indices: "[0,1,2,3,4,5,6]"
 # ── SkillVLA 학습 ────────────────────────────────────────────
 # skill predictor prefix는 embed_prefix raw embeddings 고정입니다.
 # context/embs 선택 분기는 코드와 sbatch에서 제거했습니다.
-skill_decoder_prior_noise_ratio: 1.0 
-# true: action expert의 language-token attention을 막고 image/state prefix만 보게 함
-# false: action expert가 language + image/state prefix 전체를 볼 수 있음
-block_lang: false
+use_fsq_latent_suffix: true
 # true: action expert는 prefix에 attend하지만 flow/action loss gradient는 VLM prefix 경로로 보내지 않음
 detach_action_prefix_grad: false
 train_exp: A2
@@ -82,18 +79,12 @@ ft_pt_model: ""
 ft_pt_checkpoint: "050000"
 ft_pt_batch_size: 32
 ft_pt_exp: B2
-ft_pt_block_lang: false
 
 # FT 학습 때 사용할 attention/gradient/noise 설정입니다.
 # 비워두지 않고 명시해서 base PT 선택과 FT 학습 동작을 분리합니다.
 ft_exp: B2_2
 ft_train_expert_only: false
 ft_freeze_vision_encoder: false
-# flag predictor freeze: param 업데이트 차단 + decoder loss의 VLM 역전파 경로 차단
-# detach_action_prefix_grad (action flow 경로)와 독립적으로 동작
-ft_freeze_patch_flag_predictor: true
-ft_skill_decoder_prior_noise_ratio: 0.5
-ft_block_lang: false
 ft_detach_action_prefix_grad: false
 
 # ── SkillVLA eval ────────────────────────────────────────────
@@ -103,8 +94,6 @@ eval_exp: B1
 eval_model_type: FT
 eval_checkpoint: "050000"
 eval_ft_checkpoint: "005000"
-eval_skill_decoder_prior_noise_ratio: 1.0
-eval_block_lang: true
 eval_detach_action_prefix_grad: false
 
 # ── pi05 FT ──────────────────────────────────────────────────

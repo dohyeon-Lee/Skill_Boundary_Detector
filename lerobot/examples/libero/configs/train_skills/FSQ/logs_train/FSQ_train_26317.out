@@ -25,3 +25,111 @@ Sun May 31 03:21:57 2026
 No checkpoint found, training from scratch
 [FSQ] Loaded 11178 skills from /data2/dohyeon/SBD/libero_dataset/FSQ_dataset/libero_90/FSQ_inputs/skillset/skills
 [FSQ] Skill lengths — min:27 max:141 mean:50.7
+[FSQ] Loaded DINO tokens from /data2/dohyeon/SBD/libero_dataset/FSQ_dataset/libero_90/FSQ_inputs/dino_tokens_pg8.npz — shape per clip: (51, 65, 384)
+[FSQ] Loaded merged temporal SAM2 patch flags for all 11178 skills
+[FSQ] action_min: [-0.4862 -0.3971  0.4455 -0.7481 -4.3631 -3.2124 -1.    ]
+[FSQ] action_max: [0.2027 0.4881 1.3585 4.8434 4.0424 2.4015 1.    ]
+[FSQ] delta_min:  [-0.9375 -0.9375 -0.9375 -0.3257 -0.375  -0.375  -1.    ]
+[FSQ] delta_max:  [0.9375 0.9375 0.9375 0.375  0.375  0.375  1.    ]
+[SplineFSQAE] 11178 segments | n_control=30 fsq=[5, 5, 5] hidden=256 K=10
+[SplineFSQAE] trainable params: 6,370,377
+[SplineFSQAE]    1/1000  train=0.7229  val=0.5347  delta=0.0587  prog=0.0390  end=0.0972  end_acc=0.976  end_rec=0.005
+[SplineFSQAE]   10/1000  train=0.2642  val=0.2448  delta=0.0183  prog=0.0187  end=0.0622  end_acc=0.984  end_rec=0.183
+[SplineFSQAE]   20/1000  train=0.2062  val=0.1977  delta=0.0138  prog=0.0125  end=0.0558  end_acc=0.984  end_rec=0.197
+[SplineFSQAE]   30/1000  train=0.1858  val=0.1822  delta=0.0122  prog=0.0104  end=0.0533  end_acc=0.984  end_rec=0.201
+[SplineFSQAE]   40/1000  train=0.1706  val=0.1745  delta=0.0112  prog=0.0088  end=0.0498  end_acc=0.984  end_rec=0.212
+[SplineFSQAE]   50/1000  train=0.1607  val=0.1697  delta=0.0105  prog=0.0084  end=0.0477  end_acc=0.984  end_rec=0.231
+[SplineFSQAE]   60/1000  train=0.1540  val=0.1670  delta=0.0100  prog=0.0079  end=0.0458  end_acc=0.984  end_rec=0.245
+[SplineFSQAE]   70/1000  train=0.1461  val=0.1640  delta=0.0095  prog=0.0075  end=0.0432  end_acc=0.984  end_rec=0.272
+[SplineFSQAE]   80/1000  train=0.1401  val=0.1679  delta=0.0092  prog=0.0072  end=0.0408  end_acc=0.985  end_rec=0.312
+[SplineFSQAE]   90/1000  train=0.1350  val=0.1693  delta=0.0090  prog=0.0069  end=0.0383  end_acc=0.985  end_rec=0.349
+[SplineFSQAE]  100/1000  train=0.1289  val=0.1707  delta=0.0087  prog=0.0067  end=0.0354  end_acc=0.986  end_rec=0.403
+[SplineFSQAE]  110/1000  train=0.1235  val=0.1739  delta=0.0084  prog=0.0065  end=0.0332  end_acc=0.987  end_rec=0.447
+[SplineFSQAE]  120/1000  train=0.1183  val=0.1752  delta=0.0082  prog=0.0064  end=0.0304  end_acc=0.988  end_rec=0.502
+[SplineFSQAE]  130/1000  train=0.1141  val=0.1798  delta=0.0080  prog=0.0062  end=0.0282  end_acc=0.988  end_rec=0.547
+[SplineFSQAE]  140/1000  train=0.1098  val=0.1840  delta=0.0078  prog=0.0060  end=0.0254  end_acc=0.989  end_rec=0.596
+[SplineFSQAE]  150/1000  train=0.1071  val=0.1939  delta=0.0077  prog=0.0059  end=0.0238  end_acc=0.990  end_rec=0.630
+[SplineFSQAE]  160/1000  train=0.1025  val=0.1916  delta=0.0075  prog=0.0059  end=0.0219  end_acc=0.991  end_rec=0.670
+[SplineFSQAE]  170/1000  train=0.1013  val=0.1927  delta=0.0074  prog=0.0059  end=0.0219  end_acc=0.991  end_rec=0.668
+[SplineFSQAE]  180/1000  train=0.0972  val=0.2037  delta=0.0072  prog=0.0056  end=0.0194  end_acc=0.992  end_rec=0.714
+[SplineFSQAE]  190/1000  train=0.0944  val=0.2037  delta=0.0070  prog=0.0056  end=0.0187  end_acc=0.992  end_rec=0.735
+[SplineFSQAE]  200/1000  train=0.0913  val=0.2062  delta=0.0069  prog=0.0055  end=0.0169  end_acc=0.993  end_rec=0.766
+[SplineFSQAE]  210/1000  train=0.0895  val=0.2085  delta=0.0068  prog=0.0054  end=0.0161  end_acc=0.993  end_rec=0.781
+[SplineFSQAE]  220/1000  train=0.0874  val=0.2053  delta=0.0067  prog=0.0054  end=0.0152  end_acc=0.994  end_rec=0.804
+[SplineFSQAE]  230/1000  train=0.0845  val=0.2055  delta=0.0065  prog=0.0052  end=0.0141  end_acc=0.994  end_rec=0.819
+[SplineFSQAE]  240/1000  train=0.0832  val=0.2125  delta=0.0065  prog=0.0051  end=0.0133  end_acc=0.994  end_rec=0.831
+[SplineFSQAE]  250/1000  train=0.0822  val=0.2172  delta=0.0064  prog=0.0052  end=0.0131  end_acc=0.995  end_rec=0.833
+[SplineFSQAE]  260/1000  train=0.0801  val=0.2227  delta=0.0063  prog=0.0050  end=0.0117  end_acc=0.995  end_rec=0.859
+[SplineFSQAE]  270/1000  train=0.0792  val=0.2184  delta=0.0062  prog=0.0051  end=0.0117  end_acc=0.995  end_rec=0.858
+[SplineFSQAE]  280/1000  train=0.0777  val=0.2204  delta=0.0061  prog=0.0049  end=0.0114  end_acc=0.995  end_rec=0.864
+[SplineFSQAE]  290/1000  train=0.0759  val=0.2236  delta=0.0061  prog=0.0049  end=0.0103  end_acc=0.996  end_rec=0.879
+[SplineFSQAE]  300/1000  train=0.0754  val=0.2289  delta=0.0060  prog=0.0048  end=0.0102  end_acc=0.996  end_rec=0.884
+[SplineFSQAE]  310/1000  train=0.0738  val=0.2221  delta=0.0059  prog=0.0047  end=0.0100  end_acc=0.996  end_rec=0.886
+[SplineFSQAE]  320/1000  train=0.0731  val=0.2245  delta=0.0059  prog=0.0048  end=0.0096  end_acc=0.996  end_rec=0.891
+[SplineFSQAE]  330/1000  train=0.0715  val=0.2299  delta=0.0058  prog=0.0046  end=0.0089  end_acc=0.996  end_rec=0.899
+[SplineFSQAE]  340/1000  train=0.0697  val=0.2310  delta=0.0057  prog=0.0045  end=0.0082  end_acc=0.997  end_rec=0.906
+[SplineFSQAE]  350/1000  train=0.0690  val=0.2320  delta=0.0057  prog=0.0044  end=0.0077  end_acc=0.997  end_rec=0.914
+[SplineFSQAE]  360/1000  train=0.0678  val=0.2390  delta=0.0056  prog=0.0044  end=0.0074  end_acc=0.997  end_rec=0.916
+[SplineFSQAE]  370/1000  train=0.0673  val=0.2404  delta=0.0056  prog=0.0045  end=0.0070  end_acc=0.997  end_rec=0.921
+[SplineFSQAE]  380/1000  train=0.0672  val=0.2386  delta=0.0056  prog=0.0043  end=0.0072  end_acc=0.997  end_rec=0.919
+[SplineFSQAE]  390/1000  train=0.0655  val=0.2452  delta=0.0055  prog=0.0043  end=0.0067  end_acc=0.997  end_rec=0.926
+[SplineFSQAE]  400/1000  train=0.0644  val=0.2452  delta=0.0054  prog=0.0042  end=0.0063  end_acc=0.998  end_rec=0.932
+[SplineFSQAE]  410/1000  train=0.0637  val=0.2478  delta=0.0053  prog=0.0041  end=0.0062  end_acc=0.998  end_rec=0.933
+[SplineFSQAE]  420/1000  train=0.0635  val=0.2416  delta=0.0053  prog=0.0042  end=0.0061  end_acc=0.998  end_rec=0.933
+[SplineFSQAE]  430/1000  train=0.0622  val=0.2518  delta=0.0053  prog=0.0041  end=0.0053  end_acc=0.998  end_rec=0.942
+[SplineFSQAE]  440/1000  train=0.0624  val=0.2490  delta=0.0053  prog=0.0041  end=0.0057  end_acc=0.998  end_rec=0.936
+[SplineFSQAE]  450/1000  train=0.0608  val=0.2547  delta=0.0052  prog=0.0040  end=0.0052  end_acc=0.998  end_rec=0.941
+[SplineFSQAE]  460/1000  train=0.0605  val=0.2535  delta=0.0051  prog=0.0040  end=0.0051  end_acc=0.998  end_rec=0.943
+[SplineFSQAE]  470/1000  train=0.0595  val=0.2620  delta=0.0051  prog=0.0039  end=0.0047  end_acc=0.998  end_rec=0.948
+[SplineFSQAE]  480/1000  train=0.0591  val=0.2554  delta=0.0051  prog=0.0038  end=0.0046  end_acc=0.998  end_rec=0.951
+[SplineFSQAE]  490/1000  train=0.0587  val=0.2514  delta=0.0050  prog=0.0038  end=0.0046  end_acc=0.998  end_rec=0.952
+[SplineFSQAE]  500/1000  train=0.0581  val=0.2564  delta=0.0050  prog=0.0038  end=0.0044  end_acc=0.998  end_rec=0.955
+[SplineFSQAE]  510/1000  train=0.0583  val=0.2519  delta=0.0050  prog=0.0038  end=0.0048  end_acc=0.998  end_rec=0.949
+[SplineFSQAE]  520/1000  train=0.0569  val=0.2622  delta=0.0050  prog=0.0037  end=0.0037  end_acc=0.999  end_rec=0.962
+[SplineFSQAE]  530/1000  train=0.0566  val=0.2652  delta=0.0049  prog=0.0037  end=0.0039  end_acc=0.998  end_rec=0.959
+[SplineFSQAE]  540/1000  train=0.0556  val=0.2681  delta=0.0048  prog=0.0036  end=0.0036  end_acc=0.999  end_rec=0.960
+[SplineFSQAE]  550/1000  train=0.0552  val=0.2721  delta=0.0048  prog=0.0036  end=0.0034  end_acc=0.999  end_rec=0.963
+[SplineFSQAE]  560/1000  train=0.0557  val=0.2689  delta=0.0048  prog=0.0036  end=0.0037  end_acc=0.999  end_rec=0.961
+[SplineFSQAE]  570/1000  train=0.0550  val=0.2680  delta=0.0048  prog=0.0035  end=0.0034  end_acc=0.999  end_rec=0.964
+[SplineFSQAE]  580/1000  train=0.0546  val=0.2718  delta=0.0048  prog=0.0035  end=0.0033  end_acc=0.999  end_rec=0.966
+[SplineFSQAE]  590/1000  train=0.0541  val=0.2743  delta=0.0047  prog=0.0035  end=0.0033  end_acc=0.999  end_rec=0.967
+[SplineFSQAE]  600/1000  train=0.0537  val=0.2721  delta=0.0047  prog=0.0035  end=0.0032  end_acc=0.999  end_rec=0.967
+[SplineFSQAE]  610/1000  train=0.0529  val=0.2825  delta=0.0047  prog=0.0034  end=0.0028  end_acc=0.999  end_rec=0.970
+[SplineFSQAE]  620/1000  train=0.0526  val=0.2787  delta=0.0047  prog=0.0034  end=0.0027  end_acc=0.999  end_rec=0.973
+[SplineFSQAE]  630/1000  train=0.0524  val=0.2849  delta=0.0046  prog=0.0034  end=0.0026  end_acc=0.999  end_rec=0.972
+[SplineFSQAE]  640/1000  train=0.0521  val=0.2785  delta=0.0046  prog=0.0033  end=0.0028  end_acc=0.999  end_rec=0.971
+[SplineFSQAE]  650/1000  train=0.0513  val=0.2857  delta=0.0046  prog=0.0032  end=0.0023  end_acc=0.999  end_rec=0.976
+[SplineFSQAE]  660/1000  train=0.0514  val=0.2879  delta=0.0046  prog=0.0033  end=0.0023  end_acc=0.999  end_rec=0.976
+[SplineFSQAE]  670/1000  train=0.0510  val=0.2837  delta=0.0045  prog=0.0032  end=0.0023  end_acc=0.999  end_rec=0.978
+[SplineFSQAE]  680/1000  train=0.0508  val=0.2825  delta=0.0045  prog=0.0032  end=0.0024  end_acc=0.999  end_rec=0.975
+[SplineFSQAE]  690/1000  train=0.0503  val=0.2987  delta=0.0045  prog=0.0032  end=0.0020  end_acc=0.999  end_rec=0.979
+[SplineFSQAE]  700/1000  train=0.0499  val=0.2921  delta=0.0045  prog=0.0031  end=0.0020  end_acc=0.999  end_rec=0.980
+[SplineFSQAE]  710/1000  train=0.0497  val=0.2993  delta=0.0045  prog=0.0031  end=0.0019  end_acc=0.999  end_rec=0.979
+[SplineFSQAE]  720/1000  train=0.0496  val=0.3007  delta=0.0045  prog=0.0031  end=0.0018  end_acc=0.999  end_rec=0.980
+[SplineFSQAE]  730/1000  train=0.0492  val=0.2990  delta=0.0044  prog=0.0031  end=0.0017  end_acc=0.999  end_rec=0.981
+[SplineFSQAE]  740/1000  train=0.0490  val=0.3036  delta=0.0044  prog=0.0031  end=0.0017  end_acc=0.999  end_rec=0.982
+[SplineFSQAE]  750/1000  train=0.0488  val=0.3045  delta=0.0044  prog=0.0030  end=0.0016  end_acc=0.999  end_rec=0.984
+[SplineFSQAE]  760/1000  train=0.0487  val=0.3047  delta=0.0044  prog=0.0030  end=0.0017  end_acc=0.999  end_rec=0.980
+[SplineFSQAE]  770/1000  train=0.0486  val=0.3054  delta=0.0044  prog=0.0030  end=0.0016  end_acc=0.999  end_rec=0.983
+[SplineFSQAE]  780/1000  train=0.0480  val=0.3103  delta=0.0044  prog=0.0030  end=0.0014  end_acc=0.999  end_rec=0.986
+[SplineFSQAE]  790/1000  train=0.0481  val=0.3101  delta=0.0044  prog=0.0030  end=0.0016  end_acc=0.999  end_rec=0.984
+[SplineFSQAE]  800/1000  train=0.0479  val=0.3151  delta=0.0044  prog=0.0030  end=0.0014  end_acc=0.999  end_rec=0.985
+[SplineFSQAE]  810/1000  train=0.0475  val=0.3152  delta=0.0043  prog=0.0029  end=0.0013  end_acc=1.000  end_rec=0.988
+[SplineFSQAE]  820/1000  train=0.0476  val=0.3196  delta=0.0043  prog=0.0029  end=0.0013  end_acc=0.999  end_rec=0.987
+[SplineFSQAE]  830/1000  train=0.0474  val=0.3174  delta=0.0043  prog=0.0029  end=0.0013  end_acc=0.999  end_rec=0.987
+[SplineFSQAE]  840/1000  train=0.0472  val=0.3149  delta=0.0043  prog=0.0029  end=0.0012  end_acc=1.000  end_rec=0.987
+[SplineFSQAE]  850/1000  train=0.0470  val=0.3263  delta=0.0043  prog=0.0029  end=0.0011  end_acc=1.000  end_rec=0.988
+[SplineFSQAE]  860/1000  train=0.0471  val=0.3236  delta=0.0043  prog=0.0029  end=0.0012  end_acc=1.000  end_rec=0.988
+[SplineFSQAE]  870/1000  train=0.0468  val=0.3224  delta=0.0043  prog=0.0029  end=0.0011  end_acc=1.000  end_rec=0.988
+[SplineFSQAE]  880/1000  train=0.0469  val=0.3264  delta=0.0043  prog=0.0029  end=0.0011  end_acc=1.000  end_rec=0.988
+[SplineFSQAE]  890/1000  train=0.0468  val=0.3255  delta=0.0043  prog=0.0028  end=0.0011  end_acc=1.000  end_rec=0.989
+[SplineFSQAE]  900/1000  train=0.0467  val=0.3272  delta=0.0043  prog=0.0028  end=0.0011  end_acc=1.000  end_rec=0.988
+[SplineFSQAE]  910/1000  train=0.0466  val=0.3287  delta=0.0043  prog=0.0029  end=0.0010  end_acc=1.000  end_rec=0.989
+[SplineFSQAE]  920/1000  train=0.0464  val=0.3295  delta=0.0043  prog=0.0028  end=0.0010  end_acc=1.000  end_rec=0.989
+[SplineFSQAE]  930/1000  train=0.0464  val=0.3308  delta=0.0043  prog=0.0028  end=0.0009  end_acc=1.000  end_rec=0.990
+[SplineFSQAE]  940/1000  train=0.0463  val=0.3307  delta=0.0043  prog=0.0028  end=0.0009  end_acc=1.000  end_rec=0.991
+[SplineFSQAE]  950/1000  train=0.0463  val=0.3309  delta=0.0043  prog=0.0028  end=0.0009  end_acc=1.000  end_rec=0.990
+[SplineFSQAE]  960/1000  train=0.0463  val=0.3311  delta=0.0043  prog=0.0028  end=0.0010  end_acc=1.000  end_rec=0.988
+[SplineFSQAE]  970/1000  train=0.0462  val=0.3324  delta=0.0042  prog=0.0028  end=0.0010  end_acc=1.000  end_rec=0.990
+[SplineFSQAE]  980/1000  train=0.0462  val=0.3323  delta=0.0042  prog=0.0028  end=0.0010  end_acc=1.000  end_rec=0.989
+[SplineFSQAE]  990/1000  train=0.0461  val=0.3328  delta=0.0042  prog=0.0028  end=0.0009  end_acc=1.000  end_rec=0.990

@@ -32,12 +32,6 @@ class SkillVLAConfig(PI05Config):
     vae_decoder_path: str | None = None
     skill_decoder_image_model_name: str | None = None
     """Override the DINO path/repo stored inside the FSQ checkpoint."""
-    skill_decoder_loss_weight: float = 1.0
-    skill_decoder_delta_loss_weight: float = 10.0
-    """Weight for FSQ decoder action/chunk reconstruction loss inside skill_decoder_loss."""
-    skill_decoder_end_loss_weight: float = 1.0
-    """Weight for FSQ decoder end-signal BCE inside skill_decoder_loss."""
-    skill_decoder_end_pos_weight: float = 1.0
     skill_decoder_end_threshold: float = 0.5
     skill_decoder_state_indices: list[int] | None = None
     """Raw observation.state indices fed to the FSQ decoder. None uses the first FSQ state_dim dims."""
@@ -49,17 +43,10 @@ class SkillVLAConfig(PI05Config):
     """Batch key written by the SkillVLA DINO-token dataset wrapper."""
     skill_decoder_dino_build_cache: bool = True
     """Build the .npy mmap cache from the .npz token file when missing."""
-    freeze_vae_decoder: bool = False
-    freeze_patch_flag_predictor: bool = False
-    """Freeze PatchFlagPredictor weights and detach prefix_embs before flag prediction,
-    so the skill-decoder loss does not backprop into VLM via the flag path.
-    Orthogonal to detach_action_prefix_grad (action flow path)."""
+    use_fsq_latent_suffix: bool = True
+    """If True, feed the frozen FSQ skill-decoder latent as an extra action-expert suffix token."""
     inference_skill_max_length: int = 200
-    skill_decoder_prior_noise_ratio: float = 0.0
-    """Mix ratio r for action-expert start source: (1-r)*normalized FSQ prior + r*Gaussian noise."""
 
-    # If True, block action expert attention to language tokens; False keeps full prefix attention.
-    block_lang_to_action: bool = True
     detach_action_prefix_grad: bool = False
     """If True, flow/action loss uses prefix attention but does not update VLM/prefix parameters."""
 

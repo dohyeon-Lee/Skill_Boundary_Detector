@@ -66,15 +66,10 @@ VLA_OUTPUT_ROOT=${HOMEDIR}${PROJDIR}/VLA_outputs
 PT_BATCH_SIZE=${PT_BATCH_SIZE:-${FT_PT_BATCH_SIZE}}
 PT_EXP=${PT_EXP:-${FT_PT_EXP}}
 PT_FSQ_TAG=fsq${PT_FSQ_LEVELS_STR// /}
-if [ "${FT_PT_BLOCK_LANG}" = "true" ]; then
-    PT_BLOCK_LANG_TAG=blocklang
-else
-    PT_BLOCK_LANG_TAG=allowlang
-fi
 if [ -n "${FT_PT_MODEL}" ]; then
     PT_RUN_NAME=${FT_PT_MODEL}
 else
-    PT_RUN_NAME=PT_${PT_SKILLVLA_DATASET}_${PT_FSQ_TAG}_FSQ_epoch${PT_FSQ_EPOCH}_${PT_BLOCK_LANG_TAG}_batch${PT_BATCH_SIZE}
+    PT_RUN_NAME=PT_${PT_SKILLVLA_DATASET}_${PT_FSQ_TAG}_FSQ_epoch${PT_FSQ_EPOCH}_batch${PT_BATCH_SIZE}
     if [ -n "${PT_EXP}" ]; then
         PT_RUN_NAME=${PT_RUN_NAME}_${PT_EXP}
     fi
@@ -138,9 +133,6 @@ FREEZE_VISION_ENCODER=${FT_FREEZE_VISION_ENCODER}
 # their own freeze flags.
 TRAIN_EXPERT_ONLY=${FT_TRAIN_EXPERT_ONLY}
 
-# BLOCK_LANG=true이면 action expert의 language-token attention을 막습니다.
-# false이면 action expert가 language + image/state prefix 전체를 볼 수 있습니다.
-# pipeline_config.yaml 의 block_lang 값에서 옵니다.
 # DETACH_ACTION_PREFIX_GRAD=true이면 action flow loss는 prefix/VLM 경로를 업데이트하지 않습니다.
 
 RUN_NAME=${FT_DATASET}_${PT_FSQ_TAG}_${PT_ACTION_MODE}_${PT_DECODER_IMAGE_MODE}_FSQ_epoch${PT_FSQ_EPOCH}
@@ -178,12 +170,9 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes=${
     --policy.freeze_vision_encoder=${FREEZE_VISION_ENCODER} \
     --policy.train_expert_only=${TRAIN_EXPERT_ONLY} \
     --policy.push_to_hub=false \
-    --policy.block_lang_to_action=${FT_BLOCK_LANG} \
     --policy.detach_action_prefix_grad=${FT_DETACH_ACTION_PREFIX_GRAD} \
     --policy.vae_decoder_path=${FSQ_CKPT} \
     --policy.skill_decoder_image_model_name=${FSQ_IMAGE_MODEL_PATH} \
-    --policy.freeze_vae_decoder=${FREEZE_VAE_DECODER} \
-    --policy.freeze_patch_flag_predictor=${FREEZE_PATCH_FLAG_PREDICTOR} \
     --policy.skill_latent_dim=${FSQ_DIM} \
     --policy.skill_fsq_levels=${FSQ_LEVELS_ARG} \
     --policy.skill_predictor_num_embeddings=${FSQ_NUM_EMBEDDINGS} \
@@ -191,13 +180,9 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes=${
     --policy.skill_decoder_dino_cache_path=${FT_DINO_CACHE_PATH} \
     --policy.skill_decoder_dino_build_cache=true \
     --policy.skill_predictor_loss_weight=${SP_LOSS_WEIGHT} \
-    --policy.skill_decoder_loss_weight=${SKILL_DECODER_LOSS_WEIGHT} \
-    --policy.skill_decoder_delta_loss_weight=${SKILL_DECODER_DELTA_LOSS_WEIGHT} \
-    --policy.skill_decoder_end_loss_weight=${SKILL_DECODER_END_LOSS_WEIGHT} \
-    --policy.skill_decoder_end_pos_weight=${SKILL_DECODER_END_POS_WEIGHT} \
     --policy.skill_decoder_end_threshold=${SKILL_DECODER_END_THRESHOLD} \
     --policy.skill_decoder_state_indices=${SKILL_DECODER_STATE_INDICES} \
-    --policy.skill_decoder_prior_noise_ratio=${SKILL_DECODER_PRIOR_NOISE_RATIO} \
+    --policy.use_fsq_latent_suffix=${USE_FSQ_LATENT_SUFFIX} \
     --policy.inference_skill_max_length=${INFERENCE_SKILL_MAX_LENGTH} \
     --policy.skill_boundary_random_p=${SKILL_BOUNDARY_RANDOM_P} \
     --save_freq=500 \

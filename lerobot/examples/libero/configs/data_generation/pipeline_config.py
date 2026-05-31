@@ -210,7 +210,6 @@ class PipelineConfig:
     max_length: int
     inference_skill_max_length: int
     skill_decoder_state_indices: str
-    skill_decoder_prior_noise_ratio: float
 
     dp_model_data: str
     dp_checkpoint: str
@@ -228,7 +227,7 @@ class PipelineConfig:
     dp_dino_transformer_n_layers: int
     dp_dino_transformer_n_heads: int
 
-    block_lang: bool
+    use_fsq_latent_suffix: bool
     detach_action_prefix_grad: bool
     train_exp: str
     eval_exp: str
@@ -236,8 +235,6 @@ class PipelineConfig:
     eval_checkpoint: str
     eval_ft_checkpoint: str
     ft_eval_model: str
-    eval_skill_decoder_prior_noise_ratio: float
-    eval_block_lang: bool
     eval_detach_action_prefix_grad: bool
 
     ft_data: str
@@ -246,17 +243,13 @@ class PipelineConfig:
     ft_pt_checkpoint: str
     ft_pt_batch_size: int
     ft_pt_exp: str
-    ft_pt_block_lang: bool
     ft_exp: str
     ft_train_expert_only: bool
     ft_freeze_vision_encoder: bool
 
     pi05_ft_freeze_vision_encoder: bool
     pi05_ft_train_expert_only: bool
-    ft_freeze_patch_flag_predictor: bool
-    ft_block_lang: bool
     ft_detach_action_prefix_grad: bool
-    ft_skill_decoder_prior_noise_ratio: float
 
 
 def load_config(data: str | None = None) -> PipelineConfig:
@@ -381,7 +374,6 @@ def load_config(data: str | None = None) -> PipelineConfig:
         max_length=_get_int(y, "max_length", 200),
         inference_skill_max_length=_get_int(y, "inference_skill_max_length", 200),
         skill_decoder_state_indices=_get(y, "skill_decoder_state_indices", "[0,1,2,3,4,5,6]"),
-        skill_decoder_prior_noise_ratio=float(_get(y, "skill_decoder_prior_noise_ratio", 0.0)),
         dp_model_data=dp_model_data,
         dp_checkpoint=dp_checkpoint,
         dp_policy=dp_policy,
@@ -397,7 +389,7 @@ def load_config(data: str | None = None) -> PipelineConfig:
         dp_dino_visual_feature_dim=_get_int(y, "dp_dino_visual_feature_dim", 256),
         dp_dino_transformer_n_layers=_get_int(y, "dp_dino_transformer_n_layers", 1),
         dp_dino_transformer_n_heads=_get_int(y, "dp_dino_transformer_n_heads", 4),
-        block_lang=_get_bool(y, "block_lang", True),
+        use_fsq_latent_suffix=_get_bool(y, "use_fsq_latent_suffix", True),
         detach_action_prefix_grad=_get_bool(y, "detach_action_prefix_grad", False),
         train_exp=_get(y, "train_exp", "B2"),
         eval_exp=(eval_exp := _get(y, "eval_exp", _get(y, "train_exp", "B2"))),
@@ -413,10 +405,6 @@ def load_config(data: str | None = None) -> PipelineConfig:
             + "_FSQ_epoch" + fsq_epoch
             + ("_" + eval_exp if eval_exp else "")
         ),
-        eval_skill_decoder_prior_noise_ratio=float(
-            _get(y, "eval_skill_decoder_prior_noise_ratio", _get(y, "skill_decoder_prior_noise_ratio", 0.0))
-        ),
-        eval_block_lang=_get_bool(y, "eval_block_lang", _get_bool(y, "block_lang", True)),
         eval_detach_action_prefix_grad=_get_bool(
             y,
             "eval_detach_action_prefix_grad",
@@ -428,21 +416,15 @@ def load_config(data: str | None = None) -> PipelineConfig:
         ft_pt_checkpoint=_get(y, "ft_pt_checkpoint", "025000"),
         ft_pt_batch_size=_get_int(y, "ft_pt_batch_size", 32),
         ft_pt_exp=_get(y, "ft_pt_exp", _get(y, "train_exp", "")),
-        ft_pt_block_lang=_get_bool(y, "ft_pt_block_lang", _get_bool(y, "block_lang", True)),
         ft_exp=_get(y, "ft_exp", _get(y, "train_exp", "")),
         ft_train_expert_only=_get_bool(y, "ft_train_expert_only", False),
         ft_freeze_vision_encoder=_get_bool(y, "ft_freeze_vision_encoder", True),
         pi05_ft_freeze_vision_encoder=_get_bool(y, "pi05_ft_freeze_vision_encoder", True),
         pi05_ft_train_expert_only=_get_bool(y, "pi05_ft_train_expert_only", False),
-        ft_freeze_patch_flag_predictor=_get_bool(y, "ft_freeze_patch_flag_predictor", False),
-        ft_block_lang=_get_bool(y, "ft_block_lang", _get_bool(y, "block_lang", True)),
         ft_detach_action_prefix_grad=_get_bool(
             y,
             "ft_detach_action_prefix_grad",
             _get_bool(y, "detach_action_prefix_grad", False),
-        ),
-        ft_skill_decoder_prior_noise_ratio=float(
-            _get(y, "ft_skill_decoder_prior_noise_ratio", _get(y, "skill_decoder_prior_noise_ratio", 0.0))
         ),
     )
 

@@ -3,13 +3,13 @@
 # are taken from ../train_skills_config.yaml. Keep this file minimal.
 
 # Which trained FSQ to evaluate (folder name under {project_root}/FSQ_outputs/).
-fsq_eval_run_name: libero_90_fsq555_pg8_dino_flags_image128
+fsq_eval_run_name: libero_90_fsq555_pg8_dino_flags_image64
 # 0 = best checkpoint (FSQ.pt), else epoch number → FSQ_epoch{N:04d}.pt
-fsq_eval_checkpoint: 0
+fsq_eval_checkpoint: 1000
 
 # Evaluation / HTML knobs
 fsq_eval_n_action_steps: 5       # chunk plot stride (draw a predicted chunk every N steps)
-fsq_eval_n_samples: 5            # sample skills shown per codebook entry
+fsq_eval_n_samples: 10            # sample skills shown per codebook entry
 fsq_eval_max_entries: 0          # 0 = render sample plots for every active entry
 fsq_eval_end_threshold: 0.5      # termination probability threshold for timing
 fsq_eval_thumb_size: 160
@@ -22,8 +22,9 @@ fsq_eval_partition:
 fsq_eval_qos: base_qos
 fsq_eval_gres: gpu:1
 fsq_eval_cpus_per_task: 4
-fsq_eval_mem: 32G
+fsq_eval_mem: 64G   # DINO token npz is large; keep headroom so the load never swaps
 fsq_eval_time: "02:00:00"
 fsq_eval_nodelist: ""
 fsq_eval_exclude_nodes:
-  - node200
+  # - node01
+  # - node200

@@ -1,0 +1,9 @@
+wandb: [wandb.login()] Loaded credentials for https://api.wandb.ai from /home/dohyeon/.netrc.
+wandb: W&B API key is configured. Use `wandb login --relogin` to force relogin
+wandb: setting up run ddgl0194
+wandb: Tracking run with wandb version 0.24.2
+wandb: Run data is saved locally in /data2/dohyeon/SBD/lerobot/wandb/run-20260531_143904-ddgl0194
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run libero_90_fsq555_pg8_dino_only_image64
+wandb: ⭐️ View project at https://wandb.ai/dohyeonlee-postech/VAE_train
+wandb: 🚀 View run at https://wandb.ai/dohyeonlee-postech/VAE_train/runs/ddgl0194

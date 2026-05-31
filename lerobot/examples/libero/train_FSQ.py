@@ -218,7 +218,10 @@ def load_dino_tokens(
       episode_id, frame_start, frame_end, length : (N_skills,)
     """
     d = np.load(str(features_path), allow_pickle=False)
-    features = d["features"].astype(np.float32)    # (N_total, n_tokens, F)
+    # Keep the native dtype (usually float16); downstream consumers convert per
+    # clip, so a full float32 copy here would just waste memory/time (the array is
+    # tens of GB) and risk swapping.
+    features = d["features"]                         # (N_total, n_tokens, F)
     offsets  = d["offsets"].astype(np.int64)        # (N+1,)
 
     if features.ndim == 2:

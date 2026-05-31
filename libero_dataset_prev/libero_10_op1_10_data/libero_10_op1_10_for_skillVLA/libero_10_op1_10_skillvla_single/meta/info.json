@@ -1,0 +1,286 @@
+{
+  "codebase_version": "v3.0",
+  "robot_type": "franka",
+  "total_episodes": 43,
+  "total_frames": 11745,
+  "total_tasks": 10,
+  "chunks_size": 1000,
+  "fps": 20,
+  "splits": {
+    "train": "0:43"
+  },
+  "data_path": "data/chunk-{chunk_index:03d}/file-{file_index:03d}.parquet",
+  "video_path": "videos/{video_key}/chunk-{chunk_index:03d}/file-{file_index:03d}.mp4",
+  "features": {
+    "observation.images.wrist_image": {
+      "dtype": "video",
+      "shape": [
+        256,
+        256,
+        3
+      ],
+      "names": [
+        "height",
+        "width",
+        "channel"
+      ],
+      "info": {
+        "video.height": 256,
+        "video.width": 256,
+        "video.codec": "av1",
+        "video.pix_fmt": "yuv420p",
+        "video.is_depth_map": false,
+        "video.fps": 20,
+        "video.channels": 3,
+        "has_audio": false
+      }
+    },
+    "observation.images.image": {
+      "dtype": "video",
+      "shape": [
+        256,
+        256,
+        3
+      ],
+      "names": [
+        "height",
+        "width",
+        "channel"
+      ],
+      "info": {
+        "video.height": 256,
+        "video.width": 256,
+        "video.codec": "av1",
+        "video.pix_fmt": "yuv420p",
+        "video.is_depth_map": false,
+        "video.fps": 20,
+        "video.channels": 3,
+        "has_audio": false
+      }
+    },
+    "observation.state": {
+      "dtype": "float32",
+      "shape": [
+        8
+      ],
+      "names": {
+        "motors": [
+          "x",
+          "y",
+          "z",
+          "axis_angle1",
+          "axis_angle2",
+          "axis_angle3",
+          "gripper",
+          "gripper"
+        ]
+      },
+      "fps": 20
+    },
+    "action": {
+      "dtype": "float32",
+      "shape": [
+        7
+      ],
+      "names": {
+        "motors": [
+          "x",
+          "y",
+          "z",
+          "axis_angle1",
+          "axis_angle2",
+          "axis_angle3",
+          "gripper"
+        ]
+      },
+      "fps": 20
+    },
+    "timestamp": {
+      "dtype": "float32",
+      "shape": [
+        1
+      ],
+      "names": null,
+      "fps": 20
+    },
+    "frame_index": {
+      "dtype": "int64",
+      "shape": [
+        1
+      ],
+      "names": null,
+      "fps": 20
+    },
+    "episode_index": {
+      "dtype": "int64",
+      "shape": [
+        1
+      ],
+      "names": null,
+      "fps": 20
+    },
+    "index": {
+      "dtype": "int64",
+      "shape": [
+        1
+      ],
+      "names": null,
+      "fps": 20
+    },
+    "task_index": {
+      "dtype": "int64",
+      "shape": [
+        1
+      ],
+      "names": null,
+      "fps": 20
+    },
+    "skill_index": {
+      "dtype": "int32",
+      "shape": [
+        1
+      ],
+      "names": [
+        "skill_index"
+      ]
+    },
+    "skill_sequence": {
+      "dtype": "int32",
+      "shape": [
+        9
+      ],
+      "names": [
+        "skill_0",
+        "skill_1",
+        "skill_2",
+        "skill_3",
+        "skill_4",
+        "skill_5",
+        "skill_6",
+        "skill_7",
+        "skill_8"
+      ]
+    },
+    "skill_length_sequence": {
+      "dtype": "int32",
+      "shape": [
+        9
+      ],
+      "names": [
+        "skill_len_0",
+        "skill_len_1",
+        "skill_len_2",
+        "skill_len_3",
+        "skill_len_4",
+        "skill_len_5",
+        "skill_len_6",
+        "skill_len_7",
+        "skill_len_8"
+      ]
+    },
+    "skill_sequence_mask": {
+      "dtype": "int8",
+      "shape": [
+        9
+      ],
+      "names": [
+        "skill_mask_0",
+        "skill_mask_1",
+        "skill_mask_2",
+        "skill_mask_3",
+        "skill_mask_4",
+        "skill_mask_5",
+        "skill_mask_6",
+        "skill_mask_7",
+        "skill_mask_8"
+      ]
+    },
+    "skill_sequence_len": {
+      "dtype": "int32",
+      "shape": [
+        1
+      ],
+      "names": [
+        "skill_sequence_len"
+      ]
+    },
+    "skill_ds": {
+      "dtype": "int32",
+      "shape": [
+        1
+      ],
+      "names": [
+        "skill_ds"
+      ]
+    },
+    "skill_de": {
+      "dtype": "int32",
+      "shape": [
+        1
+      ],
+      "names": [
+        "skill_de"
+      ]
+    },
+    "skill_boundary": {
+      "dtype": "int8",
+      "shape": [
+        1
+      ],
+      "names": [
+        "skill_boundary"
+      ]
+    },
+    "skill_max_order": {
+      "dtype": "int32",
+      "shape": [
+        1
+      ],
+      "names": [
+        "skill_max_order"
+      ]
+    },
+    "skill_max_length": {
+      "dtype": "int32",
+      "shape": [
+        1
+      ],
+      "names": [
+        "skill_max_length"
+      ]
+    },
+    "skill_decoder_state": {
+      "dtype": "float32",
+      "shape": [
+        7
+      ],
+      "names": [
+        "eef_x",
+        "eef_y",
+        "eef_z",
+        "eef_rx",
+        "eef_ry",
+        "eef_rz",
+        "prev_gripper"
+      ]
+    }
+  },
+  "note": "gripper remapped with mapping=zero_close",
+  "repo_id": "dohyeon/libero_10_op1_10_skillvla_single",
+  "skill_num_embeddings": 125,
+  "skill_fsq_levels": [
+    5,
+    5,
+    5
+  ],
+  "skill_eos_token_id": 125,
+  "skill_bos_token_id": 126,
+  "skill_pad_token_id": 127,
+  "skill_vocab_size": 128,
+  "skill_output_vocab_size": 126,
+  "skill_max_order": 7,
+  "skill_observed_max_order": 7,
+  "skill_max_length": 200,
+  "skill_observed_max_length": 114,
+  "skill_sequence_size": 9
+}

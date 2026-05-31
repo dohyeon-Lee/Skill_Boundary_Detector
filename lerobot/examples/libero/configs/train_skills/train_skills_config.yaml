@@ -137,7 +137,7 @@ fsq_n_control: 30
 # Internal per-patch width N inside the image encoders (must be divisible by
 # image heads=4 and >2). Flags occupy 2 of N channels in dino_flags mode, so
 # smaller N raises the relative flag weight. Image-encoder output is still 256.
-fsq_image_token_dim: 256 # 64 128 256
+fsq_image_token_dim: 64 # 64 128 256
 fsq_chunk_size: 10
 fsq_max_length: 200
 fsq_delta_loss_weight: 10.0
@@ -151,6 +151,7 @@ fsq_train_partition:
 fsq_train_nodelist: ""
 fsq_train_exclude_nodes:
   - node200
+  - node01
 fsq_train_qos: base_qos
 fsq_train_gres: gpu:1
 fsq_train_cpus_per_task: 12

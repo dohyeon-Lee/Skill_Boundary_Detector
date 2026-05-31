@@ -1,0 +1,74 @@
+START FSQ TRAIN
+Node       : node01
+Inputs     : /data2/dohyeon/SBD/libero_dataset/FSQ_dataset/libero_90/FSQ_inputs
+Output     : /data2/dohyeon/SBD/FSQ_outputs/libero_90_fsq555_pg8_dino_flags_image256
+Sun May 31 11:56:26 2026       
++---------------------------------------------------------------------------------------+
+| NVIDIA-SMI 535.129.03             Driver Version: 535.129.03   CUDA Version: 12.2     |
+|-----------------------------------------+----------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id        Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |         Memory-Usage | GPU-Util  Compute M. |
+|                                         |                      |               MIG M. |
+|=========================================+======================+======================|
+|   0  NVIDIA L40S                    On  | 00000000:E1:00.0 Off |                    0 |
+| N/A   32C    P8              34W / 350W |      3MiB / 46068MiB |      0%      Default |
+|                                         |                      |                  N/A |
++-----------------------------------------+----------------------+----------------------+
+                                                                                         
++---------------------------------------------------------------------------------------+
+| Processes:                                                                            |
+|  GPU   GI   CI        PID   Type   Process name                            GPU Memory |
+|        ID   ID                                                             Usage      |
+|=======================================================================================|
+|  No running processes found                                                           |
++---------------------------------------------------------------------------------------+
+No checkpoint found, training from scratch
+[FSQ] Loaded 11178 skills from /data2/dohyeon/SBD/libero_dataset/FSQ_dataset/libero_90/FSQ_inputs/skillset/skills
+[FSQ] Skill lengths — min:27 max:141 mean:50.7
+[FSQ] Loaded DINO tokens from /data2/dohyeon/SBD/libero_dataset/FSQ_dataset/libero_90/FSQ_inputs/dino_tokens_pg8.npz — shape per clip: (51, 65, 384)
+[FSQ] Loaded merged temporal SAM2 patch flags for all 11178 skills
+[FSQ] action_min: [-0.4862 -0.3971  0.4455 -0.7481 -4.3631 -3.2124 -1.    ]
+[FSQ] action_max: [0.2027 0.4881 1.3585 4.8434 4.0424 2.4015 1.    ]
+[FSQ] delta_min:  [-0.9375 -0.9375 -0.9375 -0.3257 -0.375  -0.375  -1.    ]
+[FSQ] delta_max:  [0.9375 0.9375 0.9375 0.375  0.375  0.375  1.    ]
+[SplineFSQAE] 11178 segments | n_control=30 fsq=[5, 5, 5] hidden=256 K=10
+[SplineFSQAE] trainable params: 9,007,689
+[SplineFSQAE]    1/1000  train=0.6355  val=0.4901  delta=0.0509  prog=0.0357  end=0.0910  end_acc=0.977  end_rec=0.011
+[SplineFSQAE]   10/1000  train=0.2409  val=0.2301  delta=0.0160  prog=0.0180  end=0.0625  end_acc=0.984  end_rec=0.179
+[SplineFSQAE]   20/1000  train=0.1907  val=0.1899  delta=0.0123  prog=0.0123  end=0.0552  end_acc=0.984  end_rec=0.212
+[SplineFSQAE]   30/1000  train=0.1717  val=0.1834  delta=0.0110  prog=0.0104  end=0.0511  end_acc=0.984  end_rec=0.212
+[SplineFSQAE]   40/1000  train=0.1575  val=0.1780  delta=0.0101  prog=0.0093  end=0.0469  end_acc=0.984  end_rec=0.237
+[SplineFSQAE]   50/1000  train=0.1455  val=0.1779  delta=0.0094  prog=0.0087  end=0.0425  end_acc=0.984  end_rec=0.287
+[SplineFSQAE]   60/1000  train=0.1336  val=0.1867  delta=0.0088  prog=0.0081  end=0.0373  end_acc=0.986  end_rec=0.379
+[SplineFSQAE]   70/1000  train=0.1248  val=0.1854  delta=0.0084  prog=0.0078  end=0.0328  end_acc=0.987  end_rec=0.466
+[SplineFSQAE]   80/1000  train=0.1163  val=0.1966  delta=0.0080  prog=0.0075  end=0.0286  end_acc=0.988  end_rec=0.551
+[SplineFSQAE]   90/1000  train=0.1097  val=0.1951  delta=0.0077  prog=0.0071  end=0.0251  end_acc=0.990  end_rec=0.635
+[SplineFSQAE]  100/1000  train=0.1029  val=0.2065  delta=0.0073  prog=0.0069  end=0.0229  end_acc=0.991  end_rec=0.674
+[SplineFSQAE]  110/1000  train=0.0971  val=0.2093  delta=0.0070  prog=0.0066  end=0.0201  end_acc=0.992  end_rec=0.726
+[SplineFSQAE]  120/1000  train=0.0930  val=0.2093  delta=0.0068  prog=0.0066  end=0.0184  end_acc=0.992  end_rec=0.757
+[SplineFSQAE]  130/1000  train=0.0891  val=0.2218  delta=0.0066  prog=0.0064  end=0.0163  end_acc=0.993  end_rec=0.797
+[SplineFSQAE]  140/1000  train=0.0853  val=0.2266  delta=0.0064  prog=0.0061  end=0.0150  end_acc=0.994  end_rec=0.812
+[SplineFSQAE]  150/1000  train=0.0819  val=0.2228  delta=0.0062  prog=0.0059  end=0.0138  end_acc=0.994  end_rec=0.833
+[SplineFSQAE]  160/1000  train=0.0789  val=0.2232  delta=0.0060  prog=0.0058  end=0.0127  end_acc=0.995  end_rec=0.850
+[SplineFSQAE]  170/1000  train=0.0764  val=0.2233  delta=0.0059  prog=0.0057  end=0.0121  end_acc=0.995  end_rec=0.855
+[SplineFSQAE]  180/1000  train=0.0734  val=0.2286  delta=0.0057  prog=0.0055  end=0.0109  end_acc=0.996  end_rec=0.874
+[SplineFSQAE]  190/1000  train=0.0719  val=0.2327  delta=0.0056  prog=0.0056  end=0.0101  end_acc=0.996  end_rec=0.890
+[SplineFSQAE]  200/1000  train=0.0704  val=0.2312  delta=0.0055  prog=0.0054  end=0.0099  end_acc=0.996  end_rec=0.888
+[SplineFSQAE]  210/1000  train=0.0682  val=0.2321  delta=0.0054  prog=0.0052  end=0.0091  end_acc=0.996  end_rec=0.898
+[SplineFSQAE]  220/1000  train=0.0673  val=0.2352  delta=0.0053  prog=0.0052  end=0.0091  end_acc=0.997  end_rec=0.901
+[SplineFSQAE]  230/1000  train=0.0644  val=0.2389  delta=0.0051  prog=0.0049  end=0.0083  end_acc=0.997  end_rec=0.908
+[SplineFSQAE]  240/1000  train=0.0634  val=0.2469  delta=0.0050  prog=0.0049  end=0.0083  end_acc=0.997  end_rec=0.908
+[SplineFSQAE]  250/1000  train=0.0620  val=0.2516  delta=0.0050  prog=0.0048  end=0.0074  end_acc=0.997  end_rec=0.920
+[SplineFSQAE]  260/1000  train=0.0598  val=0.2492  delta=0.0049  prog=0.0045  end=0.0065  end_acc=0.998  end_rec=0.931
+[SplineFSQAE]  270/1000  train=0.0601  val=0.2449  delta=0.0048  prog=0.0047  end=0.0071  end_acc=0.997  end_rec=0.924
+[SplineFSQAE]  280/1000  train=0.0583  val=0.2466  delta=0.0047  prog=0.0046  end=0.0067  end_acc=0.998  end_rec=0.931
+[SplineFSQAE]  290/1000  train=0.0573  val=0.2467  delta=0.0046  prog=0.0045  end=0.0064  end_acc=0.998  end_rec=0.935
+[SplineFSQAE]  300/1000  train=0.0558  val=0.2615  delta=0.0046  prog=0.0044  end=0.0059  end_acc=0.998  end_rec=0.938
+[SplineFSQAE]  310/1000  train=0.0550  val=0.2549  delta=0.0045  prog=0.0042  end=0.0057  end_acc=0.998  end_rec=0.941
+[SplineFSQAE]  320/1000  train=0.0534  val=0.2590  delta=0.0044  prog=0.0042  end=0.0051  end_acc=0.998  end_rec=0.946
+[SplineFSQAE]  330/1000  train=0.0536  val=0.2621  delta=0.0044  prog=0.0041  end=0.0051  end_acc=0.998  end_rec=0.948
+[SplineFSQAE]  340/1000  train=0.0525  val=0.2601  delta=0.0043  prog=0.0040  end=0.0050  end_acc=0.998  end_rec=0.948
+[SplineFSQAE]  350/1000  train=0.0514  val=0.2622  delta=0.0043  prog=0.0039  end=0.0045  end_acc=0.998  end_rec=0.954
+[SplineFSQAE]  360/1000  train=0.0516  val=0.2549  delta=0.0043  prog=0.0040  end=0.0050  end_acc=0.998  end_rec=0.947
+[SplineFSQAE]  370/1000  train=0.0500  val=0.2627  delta=0.0042  prog=0.0039  end=0.0045  end_acc=0.998  end_rec=0.953
+[SplineFSQAE]  380/1000  train=0.0489  val=0.2588  delta=0.0041  prog=0.0037  end=0.0042  end_acc=0.998  end_rec=0.956

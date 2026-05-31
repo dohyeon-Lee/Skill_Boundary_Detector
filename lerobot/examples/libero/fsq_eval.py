@@ -49,22 +49,11 @@ from codebook_visualizer import (  # noqa: E402
     _video_path,
 )
 from decoder_eval import load_model  # noqa: E402
+from FSQ import spline_encode  # noqa: E402
 from train_FSQ import load_dino_tokens, load_patch_flags, load_skill_files  # noqa: E402
 
 
-# ── latent encoding (regenerated from the checkpoint) ──────────────────────────
-
-def encode_latents(model, segments, dec_tokens, metadata, device):
-    """Return (latents (N,D) float32, tokens (N,) int32) for all skills."""
-    latents, tokens = [], []
-    for i, (seg, m) in enumerate(zip(segments, metadata)):
-        end = min(len(dec_tokens[i]) - 1, int(m["length"]) - 1)
-        z_q = model.encode_numpy(seg, dec_tokens[i][0], dec_tokens[i][end], device=device)
-        idx = model.encode_index(seg, dec_tokens[i][0], dec_tokens[i][end], device=device)
-        latents.append(z_q)
-        tokens.append(idx)
-    return np.stack(latents).astype(np.float32), np.array(tokens, dtype=np.int32)
-
+# ── latent saving ──────────────────────────────────────────────────────────────
 
 def save_latents(path: Path, latents, tokens, metadata):
     save: dict = {"latents": latents, "tokens": tokens}
@@ -81,23 +70,6 @@ def _dim_groups(action_dim: int) -> dict[str, list[int]]:
     """xyz / rpy / gripper index groups (gripper = last dim)."""
     g = {"xyz": [0, 1, 2], "rpy": [3, 4, 5], "gripper": [action_dim - 1]}
     return {k: [i for i in v if i < action_dim] for k, v in g.items()}
-
-
-@torch.no_grad()
-def decode_skill(model, z_q, states, dec_tokens, patch_flags, device):
-    """Run the full decoder once. Returns delta (T,K,A), progress (T,), term_prob (T,)."""
-    T = len(states)
-    z = torch.from_numpy(z_q.astype(np.float32)).unsqueeze(0).to(device)
-    s = torch.from_numpy(states.astype(np.float32)).unsqueeze(0).to(device)
-    d = torch.from_numpy(dec_tokens[:T].astype(np.float32)).unsqueeze(0).to(device)
-    p = torch.from_numpy(patch_flags[:T].astype(np.float32)).unsqueeze(0).to(device)
-    fp = (torch.arange(T, dtype=torch.float32) / max(T - 1, 1)).unsqueeze(0).to(device)  # GT progress input
-    delta, progress, term_logits = model.decode(z, s, d, p, fp)
-    return (
-        delta.squeeze(0).cpu().numpy(),
-        progress.squeeze(0).cpu().numpy(),
-        torch.sigmoid(term_logits.squeeze(0)).cpu().numpy(),
-    )
 
 
 def skill_metrics(delta, progress, term_prob, gt_actions, T, end_threshold, groups):
@@ -140,10 +112,113 @@ def skill_metrics(delta, progress, term_prob, gt_actions, T, end_threshold, grou
     }
 
 
+# ── batched inference (fp16 clips → per-batch float32, no_grad) ─────────────────
+
+@torch.no_grad()
+def batched_encode(model, segments, clips, lengths, device, batch_size):
+    """Encode all skills in length-bucketed batches. Returns latents (N,D), tokens (N,)."""
+    N = len(segments)
+    A = segments[0].shape[-1]
+    n_tokens, feat = model.n_tokens, model.feat_dim
+    nctrl, deg = model.n_control, model.spline_degree
+    amin = model.action_min.cpu().numpy()
+    amax = model.action_max.cpu().numpy()
+
+    ctrl_norm = []
+    for seg in segments:
+        cp, _ = spline_encode(seg.astype(np.float32), nctrl, deg)
+        cp = (cp - amin) / (amax - amin + 1e-8) * 2.0 - 1.0
+        ctrl_norm.append(cp.astype(np.float32))
+
+    latents = np.zeros((N, int(model.fsq.latent_dim)), np.float32)
+    tokens = np.zeros(N, np.int32)
+    order = sorted(range(N), key=lambda i: lengths[i])
+    for s in tqdm(range(0, N, batch_size), desc="Encoding (batched)"):
+        idxs = order[s:s + batch_size]
+        B = len(idxs)
+        ctrl = torch.zeros(B, nctrl, A)
+        lens = torch.zeros(B, dtype=torch.long)
+        start = torch.zeros(B, n_tokens, feat)
+        end = torch.zeros(B, n_tokens, feat)
+        for b, i in enumerate(idxs):
+            T = lengths[i]
+            clip = clips[i]
+            ctrl[b] = torch.from_numpy(ctrl_norm[i])
+            lens[b] = T
+            start[b] = torch.from_numpy(clip[0].astype(np.float32))
+            end[b] = torch.from_numpy(clip[min(len(clip) - 1, T - 1)].astype(np.float32))
+        z_q, idx = model.encode(ctrl.to(device), lens.to(device), start.to(device), end.to(device))
+        z_q = z_q.cpu().numpy()
+        idx = idx.cpu().numpy()
+        for b, i in enumerate(idxs):
+            latents[i] = z_q[b]
+            tokens[i] = idx[b]
+    return latents, tokens
+
+
+@torch.no_grad()
+def batched_decode(model, latents, states, clips, patch_flags, lengths, device, batch_size):
+    """Decode all skills in length-bucketed batches.
+
+    Returns per-skill lists sliced to T: deltas[i] (T,K,A), progresses[i] (T,),
+    term_probs[i] (T,). GT progress is fed as the motion input (matches training).
+    """
+    N = len(latents)
+    n_tokens, feat = model.n_tokens, model.feat_dim
+    n_patches, state_dim = model.n_patches, model.state_dim
+    D = int(model.fsq.latent_dim)
+    deltas: list = [None] * N
+    progs: list = [None] * N
+    terms: list = [None] * N
+    order = sorted(range(N), key=lambda i: lengths[i])
+    for s in tqdm(range(0, N, batch_size), desc="Decoding (batched)"):
+        idxs = order[s:s + batch_size]
+        B = len(idxs)
+        maxT = max(lengths[i] for i in idxs)
+        z = torch.zeros(B, D)
+        st = torch.zeros(B, maxT, state_dim)
+        dec = torch.zeros(B, maxT, n_tokens, feat)
+        pf = torch.zeros(B, maxT, n_patches, 2)
+        fp = torch.zeros(B, maxT)
+        for b, i in enumerate(idxs):
+            T = lengths[i]
+            z[b] = torch.from_numpy(latents[i].astype(np.float32))
+            st[b, :T] = torch.from_numpy(states[i][:T].astype(np.float32))
+            dec[b, :T] = torch.from_numpy(clips[i][:T].astype(np.float32))
+            pf[b, :T] = torch.from_numpy(patch_flags[i][:T].astype(np.float32))
+            fp[b, :T] = torch.arange(T, dtype=torch.float32) / max(T - 1, 1)
+        delta, prog, term_logits = model.decode(
+            z.to(device), st.to(device), dec.to(device), pf.to(device), fp.to(device))
+        term = torch.sigmoid(term_logits)
+        for b, i in enumerate(idxs):
+            T = lengths[i]
+            deltas[i] = delta[b, :T].cpu().numpy()
+            progs[i] = prog[b, :T].cpu().numpy()
+            terms[i] = term[b, :T].cpu().numpy()
+    return deltas, progs, terms
+
+
 # ── per-sample composite plot (start/end frame + recon/termination/progress) ────
 
+def _flag_overlay(ax, frame, flags, grid, title) -> None:
+    """Draw a frame with an 8x8 patch flag overlay: red=is_changed, green=is_green."""
+    from PIL import Image
+    ax.imshow(frame)
+    H, W = frame.shape[:2]
+    f = np.asarray(flags, dtype=np.float32).reshape(grid, grid, 2)
+    rgba = np.zeros((grid, grid, 4), dtype=np.float32)
+    rgba[..., 0] = np.clip(f[..., 0], 0.0, 1.0)          # red  = is_changed
+    rgba[..., 1] = np.clip(f[..., 1], 0.0, 1.0)          # green = is_green
+    rgba[..., 3] = 0.45 * (f.max(axis=-1) > 0)           # alpha where any flag
+    big = np.asarray(Image.fromarray((rgba * 255).astype(np.uint8)).resize((W, H), Image.NEAREST),
+                     dtype=np.float32) / 255.0
+    ax.imshow(big)
+    ax.set_title(title, fontsize=9); ax.axis("off")
+
+
 def make_sample_plot(start_img, end_img, delta, progress, term_prob, gt_actions, T,
-                     dim_labels, n_action_steps, end_threshold) -> str:
+                     dim_labels, n_action_steps, end_threshold,
+                     start_flags=None, end_flags=None, patch_grid=8) -> str:
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -152,20 +227,30 @@ def make_sample_plot(start_img, end_img, delta, progress, term_prob, gt_actions,
     A = delta.shape[2]
     K = delta.shape[1]
     n_rows = A + 2  # per-dim recon + termination + progress
-    fig = plt.figure(figsize=(8.5, 1.7 + 1.25 * n_rows))
-    gs = GridSpec(n_rows + 1, 2, figure=fig, height_ratios=[1.5] + [1.0] * n_rows)
+    has_flags = start_flags is not None and end_flags is not None
+    n_img_rows = 2 if has_flags else 1     # row0: frames; row1 (optional): flag overlay
+    img_h = 4.0     # inches per image row (≈ half figure width → fills the row)
+    row_h = 1.0
+    fig = plt.figure(figsize=(8.5, img_h * n_img_rows + row_h * n_rows))
+    gs = GridSpec(n_img_rows + n_rows, 2, figure=fig,
+                  height_ratios=[img_h] * n_img_rows + [row_h] * n_rows, wspace=0.03)
 
-    # top row: start / end frames
+    # row 0: start / end frames (large, filling the row width)
     ax_s = fig.add_subplot(gs[0, 0]); ax_e = fig.add_subplot(gs[0, 1])
-    ax_s.imshow(start_img); ax_s.set_title("start", fontsize=9); ax_s.axis("off")
-    ax_e.imshow(end_img);   ax_e.set_title("end",   fontsize=9); ax_e.axis("off")
+    ax_s.imshow(start_img); ax_s.set_title("start", fontsize=10); ax_s.axis("off")
+    ax_e.imshow(end_img);   ax_e.set_title("end",   fontsize=10); ax_e.axis("off")
+    # row 1 (optional): SAM2 patch flags overlaid on start / end frames
+    if has_flags:
+        _flag_overlay(fig.add_subplot(gs[1, 0]), start_img, start_flags, patch_grid, "start +flag")
+        _flag_overlay(fig.add_subplot(gs[1, 1]), end_img, end_flags, patch_grid, "end +flag")
 
+    base = n_img_rows
     t_full = np.arange(T)
     chunk_starts = np.arange(0, T, max(1, n_action_steps))
 
     # per-dim reconstruction (GT vs predicted chunks)
     for d in range(A):
-        ax = fig.add_subplot(gs[1 + d, :])
+        ax = fig.add_subplot(gs[base + d, :])
         ax.plot(t_full, gt_actions[:T, d], color="#0D47A1", linewidth=1.5, label="GT", zorder=3)
         for j, start in enumerate(chunk_starts):
             x = start + np.arange(K)
@@ -182,7 +267,7 @@ def make_sample_plot(start_img, end_img, delta, progress, term_prob, gt_actions,
             ax.legend(fontsize=7, loc="upper right", framealpha=0.8)
 
     # termination GT vs pred
-    ax_t = fig.add_subplot(gs[1 + A, :])
+    ax_t = fig.add_subplot(gs[base + A, :])
     gt_term = np.zeros(T); gt_term[T - 1] = 1.0
     ax_t.plot(t_full, gt_term, color="#0D47A1", linewidth=1.5, label="GT end")
     ax_t.plot(t_full, term_prob[:T], color="#B71C1C", linewidth=1.4, linestyle="--", label="pred prob")
@@ -193,7 +278,7 @@ def make_sample_plot(start_img, end_img, delta, progress, term_prob, gt_actions,
     ax_t.legend(fontsize=7, loc="upper left", framealpha=0.8)
 
     # progress GT vs pred
-    ax_p = fig.add_subplot(gs[2 + A, :])
+    ax_p = fig.add_subplot(gs[base + 1 + A, :])
     gt_prog = np.arange(T, dtype=np.float32) / max(T - 1, 1)
     ax_p.plot(t_full, gt_prog, color="#0D47A1", linewidth=1.5, label="GT")
     ax_p.plot(t_full, progress[:T], color="#B71C1C", linewidth=1.4, linestyle="--", label="pred")
@@ -213,21 +298,23 @@ def make_sample_plot(start_img, end_img, delta, progress, term_prob, gt_actions,
 
 _CSS = """
   body {font-family:sans-serif;background:#f5f5f5;margin:0;padding:12px;font-size:13px;}
+  h1 {margin:0 0 4px;font-size:19px;color:#222;word-break:break-all;}
   h2 {margin:0 0 4px;font-size:16px;}
   .summary {color:#555;margin-bottom:10px;font-size:12px;}
-  #top {display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap;}
-  #cube-box {background:#fff;border:1px solid #ddd;border-radius:6px;padding:10px;}
-  #charts {flex:1;min-width:420px;display:flex;flex-direction:column;gap:10px;}
-  .chart-box {background:#fff;border:1px solid #ddd;border-radius:6px;padding:8px;overflow-x:auto;}
-  .chart-box h4 {margin:0 0 6px;font-size:12px;color:#333;}
+  #top {display:flex;gap:12px;align-items:flex-start;}
+  #cube-box {background:#fff;border:1px solid #ddd;border-radius:6px;padding:8px;}
+  #charts {flex:1;min-width:360px;display:flex;flex-direction:column;gap:6px;}
+  .chart-box {background:#fff;border:1px solid #ddd;border-radius:6px;padding:4px 6px;overflow-x:auto;}
+  .chart-box h4 {margin:0 0 3px;font-size:11px;color:#333;}
   canvas {display:block;cursor:pointer;}
   #panel {margin-top:12px;background:#fff;border:1px solid #ddd;border-radius:6px;padding:10px;display:none;}
   table {border-collapse:collapse;font-size:12px;margin-bottom:10px;}
   th,td {border:1px solid #e0e0e0;padding:4px 8px;text-align:right;}
   th {background:#f0f0f0;text-align:center;}
   td:first-child {text-align:left;}
-  #samples {display:flex;flex-direction:column;gap:14px;}
-  .sample img {display:block;width:min(820px,92vw);border:1px solid #ddd;border-radius:4px;background:#fff;}
+  #samples {display:flex;flex-direction:row;flex-wrap:nowrap;gap:10px;overflow-x:auto;padding-bottom:8px;}
+  .sample {flex:0 0 auto;}
+  .sample img {display:block;width:300px;height:auto;border:1px solid #ddd;border-radius:4px;background:#fff;}
   .sample .cap {font-size:11px;color:#555;margin-bottom:3px;}
 """
 
@@ -239,14 +326,14 @@ const LEVELS = FSQ_LEVELS;
 // ── FSQ lattice cube ──────────────────────────────────────────────
 const cubeCanvas = document.getElementById('cube');
 const cubeCtx = cubeCanvas.getContext('2d');
-cubeCanvas.width = 520; cubeCanvas.height = 400;
+cubeCanvas.width = 560; cubeCanvas.height = 560;
 function idxToCoord(idx){const lx=LEVELS[0],ly=LEVELS[1];return [idx%lx, Math.floor(idx/lx)%ly, Math.floor(idx/(lx*ly))];}
 function projectCoord(c){
   const lx=Math.max(1,LEVELS[0]-1),ly=Math.max(1,LEVELS[1]-1),lz=Math.max(1,LEVELS[2]-1);
   const xn=(c[0]/lx-0.5)*2,yn=(c[1]/ly-0.5)*2,zn=(c[2]/lz-0.5)*2;
   const yaw=-0.63,pitch=0.46,cy=Math.cos(yaw),sy=Math.sin(yaw),cp=Math.cos(pitch),sp=Math.sin(pitch);
-  const xr=cy*xn-sy*yn,yr=sy*xn+cy*yn,zr=zn,scale=110;
-  const ox=cubeCanvas.width*0.5,oy=cubeCanvas.height*0.56;
+  const xr=cy*xn-sy*yn,yr=sy*xn+cy*yn,zr=zn,scale=150;
+  const ox=cubeCanvas.width*0.5,oy=cubeCanvas.height*0.52;
   return [ox+xr*scale, oy+yr*scale*sp-zr*scale*cp, yr*cp+zr*sp];
 }
 function drawCube(sel){
@@ -289,8 +376,8 @@ const CHARTS=[
 function VAL(key){return Array.from({length:N},(_,i)=>ENTRY[i]?ENTRY[i][key]:null);}
 function drawChart(ch,sel){
   const canvas=document.getElementById(ch.id),ctx=canvas.getContext('2d');
-  const BW=Math.max(2,Math.min(16,Math.floor(1300/N))),PL=46,PR=10,PT=8,PB=18;
-  canvas.width=PL+N*BW+PR; canvas.height=150;
+  const BW=Math.max(2,Math.min(16,Math.floor(1300/N))),PL=46,PR=10,PT=8,PB=16;
+  canvas.width=PL+N*BW+PR; canvas.height=110;
   const vals=ch.vals,maxV=Math.max(...vals.filter(v=>v!=null),1e-12),H=canvas.height-PT-PB;
   ctx.clearRect(0,0,canvas.width,canvas.height);
   ctx.strokeStyle='#bbb';ctx.beginPath();ctx.moveTo(PL,PT);ctx.lineTo(PL,PT+H);ctx.stroke();
@@ -337,7 +424,7 @@ drawCube(-1);drawAllCharts();
 """
 
 
-def build_html(summary, fsq_levels, counts, entry_data, samples, codebook_size) -> str:
+def build_html(title, summary, fsq_levels, counts, entry_data, samples, codebook_size) -> str:
     data_js = (
         "const SUMMARY=" + json.dumps(summary) + ";\n"
         "const FSQ_LEVELS=" + json.dumps(list(fsq_levels)) + ";\n"
@@ -347,9 +434,9 @@ def build_html(summary, fsq_levels, counts, entry_data, samples, codebook_size) 
     )
     return (
         "<!DOCTYPE html><html lang='en'><head><meta charset='UTF-8'>"
-        "<title>FSQ Eval</title><style>" + _CSS + "</style></head><body>"
-        "<h2>FSQ Unified Evaluation</h2>"
-        "<div class='summary'>" + summary + "</div>"
+        "<title>" + title + "</title><style>" + _CSS + "</style></head><body>"
+        "<h1>" + title + "</h1>"
+        "<div class='summary'>FSQ Unified Evaluation &nbsp;|&nbsp; " + summary + "</div>"
         "<div id='top'>"
         "  <div id='cube-box'><canvas id='cube'></canvas></div>"
         "  <div id='charts'>"
@@ -417,9 +504,8 @@ def log_wandb(args, enc_stats, dec_means, html_path):
         "decoder/late_rate":              dec_means["late_rate"],
         "decoder/progress_err_mean":      dec_means["prog_err"],
     })
-    wandb.log({"fsq_eval/visualizer": wandb.Html(str(html_path), inject=False)})
     wandb.finish()
-    print(f"[wandb] logged scalars + HTML to project '{args.wandb_project}'")
+    print(f"[wandb] logged scalars to project '{args.wandb_project}' (HTML saved locally: {html_path})")
 
 
 # ── main ────────────────────────────────────────────────────────────────────────
@@ -442,6 +528,8 @@ def parse_args():
     p.add_argument("--max_plot_samples", type=int, default=5, help="sample skills per entry")
     p.add_argument("--max_plot_entries", type=int, default=0, help="0 = render all active entries")
     p.add_argument("--thumb_size", type=int, default=160)
+    p.add_argument("--batch_size", type=int, default=64, help="batch size for encode/decode inference")
+    p.add_argument("--seed", type=int, default=42, help="seed for random sample selection per codebook entry")
     p.add_argument("--end_threshold", type=float, default=0.5)
     p.add_argument("--force_encode", action="store_true",
                    help="Re-encode latents even if skill_latents.npz already exists in output_dir.")
@@ -487,8 +575,9 @@ def main():
             print(f"[fsq_eval] reusing existing latents → {latents_path} (--force_encode to redo)")
         else:
             print(f"[fsq_eval] existing latents at {latents_path} do not match skills; re-encoding")
+    lengths = [int(m["length"]) for m in metadata]
     if latents is None:
-        latents, tokens = encode_latents(model, segments, dec_tokens, metadata, device)
+        latents, tokens = batched_encode(model, segments, dec_tokens, lengths, device, args.batch_size)
         save_latents(latents_path, latents, tokens, metadata)
 
     counts = [0] * codebook_size
@@ -504,17 +593,17 @@ def main():
     print(f"[fsq_eval] codebook {len(active)}/{codebook_size} used "
           f"({enc_stats['utilization_pct']:.1f}%)  mean={enc_stats['skills_per_entry_mean']:.1f}")
 
-    # ── decoder: per-skill metrics ──
+    # ── decoder: batched inference, then per-skill metrics ──
     action_dim = dec_targets[0].shape[-1]
     groups = _dim_groups(action_dim)
     dim_labels = [f"d{i}" for i in range(action_dim - 1)] + ["grip"]
-    per_skill = []
-    for i, m in enumerate(tqdm(metadata, desc="Decoding skills")):
-        T = int(m["length"])
-        delta, progress, term_prob = decode_skill(
-            model, latents[i], dec_states[i][:T], dec_tokens[i], patch_flags[i], device)
-        per_skill.append(skill_metrics(delta, progress, term_prob, dec_targets[i], T,
-                                       args.end_threshold, groups))
+    deltas, progresses, term_probs = batched_decode(
+        model, latents, dec_states, dec_tokens, patch_flags, lengths, device, args.batch_size)
+    per_skill = [
+        skill_metrics(deltas[i], progresses[i], term_probs[i], dec_targets[i], lengths[i],
+                      args.end_threshold, groups)
+        for i in range(len(metadata))
+    ]
 
     keys = ["chunk_mse", "mse_xyz", "mse_rpy", "mse_grip", "timing_abs", "prog_err"]
     dec_means = {k: float(np.mean([s[k] for s in per_skill])) for k in keys}
@@ -547,26 +636,36 @@ def main():
         plot_tokens = set(sorted(active_tokens, key=lambda t: (-counts[t], t))[: args.max_plot_entries])
     else:
         plot_tokens = set(active_tokens)
+    rng = np.random.default_rng(args.seed)
     sample_ids: list[int] = []
     sample_by_tok: dict[int, list[int]] = {}
     for tok in plot_tokens:
-        chosen = by_entry[tok][: args.max_plot_samples]
+        pool = by_entry[tok]
+        n = min(args.max_plot_samples, len(pool))
+        chosen = [pool[j] for j in rng.choice(len(pool), size=n, replace=False)] if n > 0 else []
         sample_by_tok[tok] = chosen
         sample_ids.extend(chosen)
 
     frames = ({} if args.max_plot_samples <= 0 else
               load_sample_frames(metadata, sample_ids, Path(args.dataset_dir), args.image_key, args.thumb_size))
 
+    show_flags = bool(args.sam2_masks_dir)   # only overlay flags when SAM2 patch flags were loaded
+    patch_grid = int(round(n_patches ** 0.5))
     samples: dict[int, list[str]] = {}
     for tok in tqdm(sample_by_tok, desc="Rendering samples"):
         imgs = []
         for i in sample_by_tok[tok]:
-            T = int(metadata[i]["length"])
-            delta, progress, term_prob = decode_skill(
-                model, latents[i], dec_states[i][:T], dec_tokens[i], patch_flags[i], device)
-            s_img, e_img = frames.get(i, (np.full((args.thumb_size,) * 2 + (3,), 80, np.uint8),) * 2)
-            imgs.append(make_sample_plot(s_img, e_img, delta, progress, term_prob, dec_targets[i], T,
-                                         dim_labels, args.n_action_steps, args.end_threshold))
+            T = lengths[i]
+            blank = np.full((args.thumb_size,) * 2 + (3,), 80, np.uint8)
+            s_img, e_img = frames.get(i, (blank, blank))
+            s_flags = e_flags = None
+            if show_flags:
+                pf = patch_flags[i]
+                s_flags = pf[0]
+                e_flags = pf[min(T - 1, len(pf) - 1)]
+            imgs.append(make_sample_plot(s_img, e_img, deltas[i], progresses[i], term_probs[i],
+                                         dec_targets[i], T, dim_labels, args.n_action_steps, args.end_threshold,
+                                         start_flags=s_flags, end_flags=e_flags, patch_grid=patch_grid))
         samples[tok] = imgs
 
     summary = (
@@ -576,7 +675,8 @@ def main():
         f"grip={dec_means['mse_grip']:.2e}) | term|err|={dec_means['timing_abs']:.2f} "
         f"early={dec_means['early_rate']:.0%} late={dec_means['late_rate']:.0%} | progress|err|={dec_means['prog_err']:.3f}"
     )
-    html = build_html(summary, levels, counts, entry_data, samples, codebook_size)
+    title = f"{Path(args.model_path).parent.name} ({Path(args.model_path).stem})"
+    html = build_html(title, summary, levels, counts, entry_data, samples, codebook_size)
     html_path = out_dir / "fsq_eval.html"
     html_path.write_text(html, encoding="utf-8")
     print(f"[fsq_eval] HTML → {html_path}")

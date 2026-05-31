@@ -1,0 +1,39 @@
+# Eval-only knobs for configs/train_skillVLA evals.
+# Evals run off the FINAL artifacts only (no skillset/per-episode DINO):
+#   raw video ({dataset_root}/{source_dataset})  +  {run_dir}/skillvla/  +  {run_dir}/dino.npz  +  {run_dir}/FSQ.pt
+# Root paths + run_tag come from train_skillVLA_config.yaml.
+#
+# Outputs: {run_dir}/eval/{dino,skillset,fsq_patch,fsq_recon}/
+#   eval_dino       : DINO patch-token PCA vs raw frames (sanity check)
+#   eval_skillset   : skill-boundary split visualization (start/end frames per skill)
+#   eval_fsq_patch  : per-skill init/final frames + DINO PCA + random patch samples
+#   eval_fsq_recon  : FSQ reconstruction/termination/progress eval — same HTML as train_skills/FSQ_eval
+
+# Which evals to run
+eval_run_dino: true
+eval_run_skillset: true
+eval_run_fsq_patch: true
+eval_run_fsq_recon: true
+
+# Visualization sampling
+eval_n_episodes: 12        # episodes shown per visual eval (dino/skillset/fsq_patch)
+eval_n_samples: 10         # sample skills per codebook entry (fsq_recon)
+eval_max_entries: 0        # 0 = render sample plots for every active entry (fsq_recon)
+eval_n_action_steps: 5     # chunk plot stride (fsq_recon)
+eval_end_threshold: 0.5
+eval_thumb_size: 160
+eval_seed: 42
+eval_wandb_project: VAE_eval
+eval_wandb_enable: false   # fsq_recon scalar logging (HTML is saved locally only)
+
+# Slurm / GPU. partition accepts one or more (Slurm picks the first available).
+eval_partition:
+  - debug
+eval_qos: base_qos
+eval_gres: gpu:1           # only fsq_recon needs GPU; others ignore it
+eval_cpus_per_task: 8
+eval_mem: 64G
+eval_time: "04:00:00"
+eval_nodelist: ""
+eval_exclude_nodes:
+  - node200

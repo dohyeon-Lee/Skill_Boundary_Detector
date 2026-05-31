@@ -48,7 +48,6 @@ unset LD_LIBRARY_PATH
 CFG_SKILL_DECODER_STATE_INDICES=${SKILL_DECODER_STATE_INDICES}
 CFG_SKILL_DECODER_PRIOR_NOISE_RATIO=${EVAL_SKILL_DECODER_PRIOR_NOISE_RATIO}
 CFG_INFERENCE_SKILL_MAX_LENGTH=${INFERENCE_SKILL_MAX_LENGTH}
-CFG_BLOCK_LANG=${EVAL_BLOCK_LANG}
 CFG_DETACH_ACTION_PREFIX_GRAD=${EVAL_DETACH_ACTION_PREFIX_GRAD}
 CFG_TARGET_TASK=${TARGET_TASK}
 
@@ -80,17 +79,11 @@ SKILL_HTML_TRAIN_SAMPLES=${SKILL_HTML_TRAIN_SAMPLES:-10}
 # Override at submit time: sbatch --export=ALL,EVAL_MODEL_TYPE=FT,...
 VLA_OUTPUT_ROOT=${HOMEDIR}${PROJDIR}/VLA_outputs
 FSQ_TAG=fsq${FSQ_LEVELS_STR// /}
-BLOCK_LANG=${BLOCK_LANG_OVERRIDE:-${CFG_BLOCK_LANG}}
-if [ "${BLOCK_LANG}" = "true" ]; then
-  BLOCK_LANG_TAG=blocklang
-else
-  BLOCK_LANG_TAG=allowlang
-fi
 
 # PT default model
 PT_BATCH_SIZE=${PT_BATCH_SIZE:-32}
 PT_EXP=${PT_EXP:-${EVAL_EXP}}
-PT_DEFAULT_MODEL=PT_${SKILLVLA_DATASET}_${FSQ_TAG}_FSQ_epoch${FSQ_EPOCH}_${BLOCK_LANG_TAG}_batch${PT_BATCH_SIZE}
+PT_DEFAULT_MODEL=PT_${SKILLVLA_DATASET}_${FSQ_TAG}_FSQ_epoch${FSQ_EPOCH}_batch${PT_BATCH_SIZE}
 if [ -n "${PT_EXP}" ]; then
   PT_DEFAULT_MODEL=${PT_DEFAULT_MODEL}_${PT_EXP}
 fi
@@ -173,15 +166,13 @@ PYTHONPATH=${HOMEDIR}${PROJDIR}/lerobot/src \
   --policy.gradient_checkpointing=false \
   --policy.vae_decoder_path=${FSQ_CKPT} \
   --policy.skill_decoder_image_model_name=${IMAGE_MODEL_PATH} \
-  --policy.freeze_vae_decoder=true \
   --policy.skill_latent_dim=${FSQ_DIM} \
   --policy.skill_fsq_levels=${FSQ_LEVELS_ARG} \
   --policy.skill_predictor_num_embeddings=${FSQ_NUM_EMBEDDINGS} \
   --policy.skill_decoder_end_threshold=${SKILL_DECODER_END_THRESHOLD} \
   --policy.skill_decoder_state_indices=${SKILL_DECODER_STATE_INDICES} \
-  --policy.skill_decoder_prior_noise_ratio=${SKILL_DECODER_PRIOR_NOISE_RATIO} \
+  --policy.use_fsq_latent_suffix=${USE_FSQ_LATENT_SUFFIX} \
   --policy.inference_skill_max_length=${INFERENCE_SKILL_MAX_LENGTH} \
-  --policy.block_lang_to_action=${BLOCK_LANG} \
   --policy.detach_action_prefix_grad=${DETACH_ACTION_PREFIX_GRAD} \
   --env.task_ids=${TASK_IDS} \
   --env.max_parallel_tasks=${MAX_PARALLEL_TASKS} \

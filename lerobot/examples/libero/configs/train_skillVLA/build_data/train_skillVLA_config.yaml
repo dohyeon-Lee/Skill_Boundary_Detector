@@ -1,0 +1,99 @@
+# Shared config for configs/train_skillVLA.
+# This folder turns already-trained DP + FSQ models into SkillVLA *training data*.
+# (It does NOT train/fine-tune/eval the SkillVLA model itself.)
+#
+# Pipeline:
+#   1. source dataset 지정
+#   2. source 데이터셋의 DINO precompute npz 생성            → dino.npz
+#   3. 지정한 DP 모델로 원본을 skill 단위로 분할 (skillset)  → (중간물)
+#   4. 지정한 FSQ 인코더로 각 skill → latent vector 매핑      → skill_latents.npz (중간물)
+#   5. vector + skillset 으로 SkillVLA 최종 데이터 생성       → skillvla/
+#
+# No SAM2 here: encoding only uses the pure-DINO encoder, which ignores flags.
+#
+# Final outputs land under:
+#   {project_root}/{dataset_root}/{skillvla_dataset_root}/{source_dataset}/{run_tag}/
+#     ├─ dino.npz       (step 2)
+#     ├─ FSQ.pt         (copied FSQ checkpoint used for encoding, step 4)
+#     └─ skillvla/      (final LeRobot SkillVLA dataset, step 5)
+# Intermediate artifacts (skillset/, skill_latents.npz, ...) are removed at the end.
+
+# ── Paths ─────────────────────────────────────────────────────
+# Change this when moving to another server.
+project_root: /data2/dohyeon/SBD
+dataset_root: libero_dataset
+fsq_outputs_root: FSQ_outputs            # trained FSQ models live here
+dp_outputs_root: DP_outputs              # trained DP models live here
+skillvla_dataset_root: skillvla_dataset  # outputs under {dataset_root}/{skillvla_dataset_root}/
+
+# ── Source dataset (원본) ─────────────────────────────────────
+# Raw LeRobot dataset to convert into SkillVLA data (may differ from the
+# dataset the DP/FSQ were trained on).
+source_dataset: libero_90
+
+# ── DINO precompute (step 2) ──────────────────────────────────
+# Per-episode DINO tokens for the source dataset. Sliced from a base full-dataset
+# DINO ({dataset_root}/{dino_base_dataset}_DINO/pg{grid}/) using the source
+# dataset's meta/episodes source_episode_index mapping. (Used by DP segmentation;
+# the merged dino.npz for SkillVLA is built later at the FSQ step.)
+dino_base_dataset: libero_90             # full dataset whose DINO we slice from
+dino_image_keys: ["observation.images.image"]
+dino_patch_grid: 8
+dino_feature_dim: 384
+dino_image_size: 224
+dino_copy_mode: symlink                  # copy | hardlink | symlink (intermediate, so symlink is cheap)
+
+# ── DP model for skill segmentation (step 3) ──────────────────
+# A trained Diffusion Policy from train_skills (under {project_root}/DP_outputs/).
+# Used to replan and detect skill boundaries on the source dataset.
+# The policy's n_obs_steps / n_action_steps / horizon are read from the checkpoint
+# config at load time, so they are not specified here.
+dp_policy_name: "dp_libero_90_dino8_obs10_horizon16"   # folder under DP_outputs/
+dp_checkpoint: "100000"
+# Skill-boundary detection params (same meaning as train_skills skillset_*).
+skillset_dn_step: 7
+skillset_n_gmm: 5
+skillset_smooth_window: 7
+skillset_savgol_polyorder: 4
+skillset_replan_interval: 3
+skillset_nms_dist: 25
+# Parallelism: step-3 (DP segmentation) is the slow stage, so it is split across
+# GPUs as a Slurm array. Each array job handles `skillset_tasks_per_job` tasks on
+# one GPU; the array size is computed automatically from the source task count.
+skillset_tasks_per_job: 5
+skillset_array_throttle: 0   # max concurrent array jobs (0 = no cap → use all available GPUs)
+# After the array, a verify job checks every episode was segmented and re-runs
+# tasks that still have missing episodes (e.g. a dead GPU left gaps). It sweeps up
+# to this many times, then fails (halting the chain) if still incomplete.
+skillset_max_sweeps: 2
+
+# ── FSQ encoder (step 4) ──────────────────────────────────────
+# A trained FSQ from train_skills (under {project_root}/FSQ_outputs/).
+# The model dir name is rebuilt as:
+#   {fsq_train_dataset}_fsq{levels}_pg{dino_patch_grid}_{decoder_image_mode}_image{fsq_image_token_dim}
+# and the run tag for outputs as:
+#   FSQ{levels}_pg{dino_patch_grid}_{decoder_image_mode}_image{fsq_image_token_dim}_{fsq_checkpoint}
+fsq_train_dataset: libero_90             # dataset the FSQ was trained on (for run-name lookup)
+fsq_levels: [5, 5, 5]
+decoder_image_mode: dino_flags
+fsq_image_token_dim: 64
+fsq_checkpoint: 1000                     # epoch number; 0 = best (FSQ.pt)
+
+# ── SkillVLA dataset build (step 5) ───────────────────────────
+max_order: 0
+max_length: 200
+skill_decoder_state_indices: "[0,1,2,3,4,5,6]"
+cleanup_intermediate: true               # remove skillset/, skill_latents.npz after skillvla is built
+
+# ── Slurm (shared by all build_data jobs: skillset / encode / build) ──
+# partition accepts one or more (Slurm picks the first available).
+skillvla_partition:
+  - debug
+skillvla_qos: base_qos
+skillvla_gres: gpu:1
+skillvla_cpus_per_task: 8
+skillvla_mem: 64G
+skillvla_time: "8:00:00"
+skillvla_nodelist: ""
+skillvla_exclude_nodes:
+  - node200

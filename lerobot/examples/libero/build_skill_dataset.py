@@ -78,6 +78,8 @@ class Args:
     seed: int | None = 42
     resume: bool = True
     """True면 이미 저장된 episode skip."""
+    write_done_markers: bool = False
+    """True면 episode 처리 완료 시 .done 마커 기록 (필터/0-skill 포함). 재시도 검증용 (verify_skillset.py)."""
     # ── WandB ────────────────────────────────────────────────────────────────
     wandb_project: str | None = None
     wandb_run_name: str | None = None
@@ -124,6 +126,19 @@ def _save_skills(skills_dir: Path, ep_id: int, task_id: int,
         )
         saved.append(str(fname))
     return saved
+
+
+def _done_marker(skills_dir: Path, ep_id: int, task_id: int) -> Path:
+    return skills_dir / f"task{task_id:02d}" / f"ep{ep_id:05d}_task{task_id:02d}.done"
+
+
+def _touch_done(skills_dir: Path, ep_id: int, task_id: int) -> None:
+    """Mark an (episode, task) as processed, even when it produced 0 skills
+    (filtered / empty). Lets verify_skillset.py tell finished-but-empty episodes
+    apart from ones a dead GPU never reached (so retries terminate)."""
+    m = _done_marker(skills_dir, ep_id, task_id)
+    m.parent.mkdir(parents=True, exist_ok=True)
+    m.touch()
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -234,20 +249,28 @@ def main(args: Args) -> None:
         ep_data = load_data(dataset_dir, episode_ids=episode_ids)
 
         for ep_id in episode_ids:
-            # Resume
+            # Resume: an episode is done if it has a .done marker (covers filtered /
+            # 0-skill episodes too) or any saved skill npz.
             task_dir = skills_dir / f"task{task_id:02d}"
-            if args.resume and any(task_dir.glob(f"ep{ep_id:05d}_task{task_id:02d}_skill*.npz")):
-                existing = list(task_dir.glob(f"ep{ep_id:05d}_task{task_id:02d}_skill*.npz"))
+            marker = _done_marker(skills_dir, ep_id, task_id)
+            existing = list(task_dir.glob(f"ep{ep_id:05d}_task{task_id:02d}_skill*.npz"))
+            if args.resume and (marker.exists() or existing):
                 n_skipped_resume += 1
                 n_processed += 1
                 total_skills += len(existing)
+                if args.write_done_markers and not marker.exists():
+                    _touch_done(skills_dir, ep_id, task_id)
                 print(f"  [skip] ep{ep_id:05d} already done ({len(existing)} skills)")
                 continue
 
             if episodes_meta[episodes_meta["episode_index"] == ep_id].empty:
+                if args.write_done_markers:
+                    _touch_done(skills_dir, ep_id, task_id)
                 continue
             ep_df = ep_data[ep_data["episode_index"] == ep_id].reset_index(drop=True)
             if len(ep_df) == 0:
+                if args.write_done_markers:
+                    _touch_done(skills_dir, ep_id, task_id)
                 continue
 
             print(f"  ep{ep_id:05d} ...", end="", flush=True)
@@ -299,6 +322,10 @@ def main(args: Args) -> None:
             else:
                 n_skipped_filter += 1
                 print(f" skipped (≤{args.min_skills - 1} valid skills)  [{elapsed:.1f}s]")
+
+            # mark processed (errors above `continue` earlier → no marker → retried)
+            if args.write_done_markers:
+                _touch_done(skills_dir, ep_id, task_id)
 
             if wandb_run is not None:
                 import wandb

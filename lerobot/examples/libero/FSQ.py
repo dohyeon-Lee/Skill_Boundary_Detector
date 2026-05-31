@@ -606,7 +606,29 @@ class SplineFSQAE(nn.Module):
         delta, progress_pred, term_logits = self.decode(z_q, states, dec_tokens, patch_flags, frame_progress)
         return delta, progress_pred, term_logits, indices
 
-    # ── skillVLA inference path ───────────────────────────────────────────────
+    # ── skillVLA termination path ─────────────────────────────────────────────
+
+    @torch.no_grad()
+    def predict_skill_latent(
+        self,
+        z: torch.Tensor,
+        states: torch.Tensor,
+        quantize: bool = True,
+    ) -> torch.Tensor:
+        """Run only the skill_decoder subgraph and return latent (B, T, H)."""
+        if states.ndim == 2:
+            states = states.unsqueeze(1)
+        B, T = states.shape[:2]
+
+        if quantize:
+            lh = self.fsq.levels_half.to(z.device, z.dtype)
+            z = torch.maximum(torch.minimum(torch.round(z), lh), -lh)
+
+        z_seq = z.unsqueeze(1).expand(B, T, -1).to(states.dtype)
+        z_tok = self.dec_z_proj(z_seq)
+        s_tok = self.dec_state_proj(states)
+        sd_tokens = torch.stack([z_tok, s_tok], dim=2).reshape(B * T, 2, -1)
+        return self.skill_decoder_pool(sd_tokens).view(B, T, -1)
 
     @torch.no_grad()
     def predict_termination(
