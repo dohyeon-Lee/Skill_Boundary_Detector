@@ -7,3 +7,4 @@ wandb: Run `wandb offline` to turn off syncing.
 wandb: Syncing run libero_90_fsq555_pg8_dino_only_image64
 wandb: ⭐️ View project at https://wandb.ai/dohyeonlee-postech/VAE_train
 wandb: 🚀 View run at https://wandb.ai/dohyeonlee-postech/VAE_train/runs/ddgl0194
+slurmstepd: error: *** JOB 26343 ON node100 CANCELLED AT 2026-06-01T22:52:53 ***

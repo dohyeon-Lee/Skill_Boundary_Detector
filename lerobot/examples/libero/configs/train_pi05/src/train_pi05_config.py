@@ -47,6 +47,15 @@ def get_value(cfg: dict[str, Any], key: str, default: Any = None, *, env: str | 
     return cfg.get(key, default)
 
 
+def get_nonempty(cfg: dict[str, Any], key: str, default: Any = None, *, env: str | None = None) -> Any:
+    value = get_value(cfg, key, default, env=env)
+    if value is None:
+        return default
+    if isinstance(value, str) and not value.strip():
+        return default
+    return value
+
+
 def shell_value(value: Any) -> str:
     if isinstance(value, bool):
         value = "true" if value else "false"
@@ -107,7 +116,7 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
 
     eval_stage = str(get_value(cfg, "eval_stage", "FT", env="EVAL_STAGE")).upper()
     eval_checkpoint = str(get_value(cfg, "eval_checkpoint", "001000", env="CHECKPOINT"))
-    eval_model = os.environ.get("MODEL", "")
+    eval_model = str(get_nonempty(cfg, "eval_model", "", env="MODEL")).strip()
     if not eval_model:
         eval_model = ft_run_name if eval_stage == "FT" else pt_run_name
     eval_target_task = str(get_value(cfg, "eval_target_task", "libero_90", env="TARGET_TASK"))

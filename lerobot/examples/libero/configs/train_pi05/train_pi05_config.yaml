@@ -49,20 +49,21 @@ ft_train_expert_only: false
 
 # Slurm defaults for pi05 FT. partition accepts one or more.
 ft_partition:
-  - gigabyte_pro6000
+  - debug
+  # - gigabyte_pro6000
 ft_nodelist: ""
-ft_exclude_nodes:
-  - node19
-  - node13
-  - node18
-  - node16
-  - node08
-  - node10
-  - node21
-  - node14
-  - node04
-  - node05
-  - node31
+ft_exclude_nodes: []
+  # - node19
+  # - node13
+  # - node18
+  # - node16
+  # - node08
+  # - node10
+  # - node21
+  # - node14
+  # - node04
+  # - node05
+  # - node31
 ft_qos: pro6000_qos
 ft_gres: gpu:1
 ft_cpus_per_task: 16
@@ -77,7 +78,10 @@ eval_episode_offset: 25
 eval_n_action_steps: 5
 eval_batch_size: 1
 eval_stage: FT
-eval_checkpoint: "001000"
+eval_checkpoint: "005000"
+# Blank = infer from eval_stage and the PT/FT training settings above.
+# Otherwise, set this to the exact folder name under {project_root}/pi05_outputs/.
+eval_model: "PT_libero_90_pi05_batch16_exp1"
 eval_max_parallel_tasks: 1
 eval_max_videos_per_task: 1
 eval_video_frame_stride: 2
@@ -88,18 +92,11 @@ eval_wandb_project: VLA_eval
 eval_partition:
   - debug
 eval_nodelist: ""
-eval_exclude_nodes:
-  - node19
-  - node13
-  - node18
-  - node16
-  - node08
-  - node10
-  - node21
-  - node14
-  - node04
-  - node05
-  - node31
+eval_exclude_nodes: []
+# Example:
+# eval_exclude_nodes:
+#   - node19
+#   - node13
 eval_qos: base_qos
 eval_gres: gpu:1
 eval_cpus_per_task: 8

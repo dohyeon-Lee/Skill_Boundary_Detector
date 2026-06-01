@@ -10,7 +10,6 @@
 #   ../train_pi05_config.yaml
 #SBATCH --job-name=pi05_PT
 #SBATCH --partition=debug
-#SBATCH --nodelist=node200
 #SBATCH --qos=big_qos
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=16

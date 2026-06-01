@@ -95,5 +95,4 @@ skillvla_cpus_per_task: 8
 skillvla_mem: 64G
 skillvla_time: "8:00:00"
 skillvla_nodelist: ""
-skillvla_exclude_nodes:
-  - node200
+skillvla_exclude_nodes: []
