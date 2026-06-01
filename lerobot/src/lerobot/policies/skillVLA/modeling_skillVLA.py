@@ -80,7 +80,6 @@ class SkillVLAPytorch(PI05Pytorch):
             hidden_dim        = config.skill_predictor_hidden_dim,
             num_heads         = config.skill_predictor_num_heads,
             num_layers        = config.skill_predictor_num_layers,
-            num_query_tokens  = config.skill_predictor_num_query_tokens,
             dropout           = config.skill_predictor_dropout,
         )
         self.action_skill_memory_proj = nn.Sequential(
@@ -337,14 +336,14 @@ class SkillVLAPytorch(PI05Pytorch):
             prefix_embs = prefix_embs.to(torch.bfloat16)
 
         self.paligemma_with_expert.paligemma.model.language_model.config._attn_implementation = "eager"  # noqa: SLF001
-        _, past_key_values = self.paligemma_with_expert.forward(
+        (prefix_context, _), past_key_values = self.paligemma_with_expert.forward(
             attention_mask=prefix_att_2d_4d,
             position_ids=prefix_position_ids,
             past_key_values=None,
             inputs_embeds=[prefix_embs, None],
             use_cache=use_cache,
         )
-        return prefix_pad_masks, past_key_values
+        return prefix_context, prefix_pad_masks, past_key_values
 
     def _gather_skill_sequence(self, sequence: Tensor, index: Tensor) -> Tensor:
         index = index.view(-1).long().clamp(0, sequence.shape[1] - 1)
@@ -606,7 +605,7 @@ class SkillVLAPytorch(PI05Pytorch):
         prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(images, img_masks, tokens, masks)
         action_memory_tokens = self._action_memory_tokens(skill_z, skill_progress, dtype=prefix_embs.dtype)
         fsq_latent_token = self._fsq_latent_suffix_token(skill_z, skill_decoder_state, device=device)
-        prefix_memory_pad_masks, past_key_values = self._contextualize_prefix_with_action_memory(
+        _, prefix_memory_pad_masks, past_key_values = self._contextualize_prefix_with_action_memory(
             prefix_embs,
             prefix_pad_masks,
             prefix_att_masks,
@@ -664,7 +663,6 @@ class SkillVLAPytorch(PI05Pytorch):
         skill_ds         : Tensor | None = None,
         skill_de         : Tensor | None = None,
         skill_boundary   : Tensor | None = None,
-        skill_max_length : Tensor | None = None,
         skill_decoder_state: Tensor | None = None,
         skill_decoder_image: Tensor | None = None,
         noise            : Tensor | None = None,
@@ -706,14 +704,6 @@ class SkillVLAPytorch(PI05Pytorch):
             skill_boundary,
         )
         predictor_input_z = self._skill_token_embedding(skill_targets["predictor_input_token"]).to(actions.device)
-        sp_prefix = prefix_embs.detach() if detach_sp_prefix else prefix_embs
-        z_pred = self.skill_predictor(
-            predictor_input_z.float(),
-            sp_prefix,
-            prefix_pad_masks,
-            skill_targets["predictor_progress"].to(actions.device),
-        )
-        sp_loss = self._skill_predictor_loss(z_pred, skill_targets["predictor_target"].to(actions.device))
 
         fallback_token = torch.zeros_like(skill_targets["action_condition_token"].to(actions.device))
         action_condition_token = self._safe_real_tokens(
@@ -738,6 +728,11 @@ class SkillVLAPytorch(PI05Pytorch):
         x_t = time_exp * source + (1 - time_exp) * actions
         u_t = source - actions
 
+        prefix_len = prefix_pad_masks.shape[1]
+
+        # The action expert runs the prefix through the PaliGemma LLM; the skill
+        # predictor reuses that SAME gemma-contextualized prefix (prefix portion —
+        # action-memory tokens are attention-isolated so they don't affect it).
         if self.config.detach_action_prefix_grad:
             with torch.no_grad():
                 # gradient_checkpointing forces use_cache=False inside the model, which
@@ -748,7 +743,7 @@ class SkillVLAPytorch(PI05Pytorch):
                 _pg_gc, _ge_gc = _pg_lm.gradient_checkpointing, _ge_m.gradient_checkpointing
                 _pg_lm.gradient_checkpointing = False
                 _ge_m.gradient_checkpointing  = False
-                prefix_memory_pad_masks, past_key_values = self._contextualize_prefix_with_action_memory(
+                prefix_context, prefix_memory_pad_masks, past_key_values = self._contextualize_prefix_with_action_memory(
                     prefix_embs.detach(),
                     prefix_pad_masks,
                     prefix_att_masks,
@@ -764,6 +759,15 @@ class SkillVLAPytorch(PI05Pytorch):
                 time,
                 fsq_latent_token=fsq_latent_token,
             )
+            # Action grad is detached above (no_grad). If the skill-predictor loss
+            # should still train the VLM, re-contextualize the prefix WITH grad
+            # (image+lang only — one extra prefix pass, only in this config);
+            # otherwise reuse the detached context.
+            if detach_sp_prefix:
+                sp_prefix_ctx = prefix_context[:, :prefix_len]
+            else:
+                sp_prefix_ctx, _ = self.contextualize_prefix(prefix_embs, prefix_pad_masks, prefix_att_masks)
+                sp_prefix_ctx = sp_prefix_ctx[:, :prefix_len]
         else:
             suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = self.embed_suffix(x_t, time)
             suffix_embs, suffix_pad_masks, suffix_att_masks = self._prepend_latent_suffix_token(
@@ -778,7 +782,6 @@ class SkillVLAPytorch(PI05Pytorch):
                 prefix_embs = prefix_embs.to(torch.bfloat16)
                 action_memory_tokens = action_memory_tokens.to(torch.bfloat16)
 
-            prefix_len = prefix_pad_masks.shape[1]
             memory_len = action_memory_tokens.shape[1]
             prefix_memory_embs, prefix_memory_pad_masks, prefix_memory_att_masks = self._append_action_memory(
                 prefix_embs, prefix_pad_masks, prefix_att_masks, action_memory_tokens
@@ -791,7 +794,7 @@ class SkillVLAPytorch(PI05Pytorch):
             att_2d_masks_4d = self._prepare_attention_masks_4d(att_2d_masks)
 
             def _fwd(prefix_memory_embs, suffix_embs, att_2d_masks_4d, position_ids, adarms_cond):
-                (_, suffix_out), _ = self.paligemma_with_expert.forward(
+                (prefix_out, suffix_out), _ = self.paligemma_with_expert.forward(
                     attention_mask  = att_2d_masks_4d,
                     position_ids    = position_ids,
                     past_key_values = None,
@@ -799,14 +802,26 @@ class SkillVLAPytorch(PI05Pytorch):
                     use_cache       = False,
                     adarms_cond     = [None, adarms_cond],
                 )
-                return suffix_out
+                return prefix_out, suffix_out
 
-            suffix_out = self._apply_checkpoint(
+            prefix_out, suffix_out = self._apply_checkpoint(
                 _fwd, prefix_memory_embs, suffix_embs, att_2d_masks_4d, position_ids, adarms_cond
             )
+            sp_prefix_ctx = prefix_out[:, :prefix_len]
+            if detach_sp_prefix:
+                sp_prefix_ctx = sp_prefix_ctx.detach()
             suffix_out = suffix_out[:, -self.config.chunk_size:].to(torch.float32)
             v_t        = self._apply_checkpoint(self.action_out_proj, suffix_out)
         flow_loss  = F.mse_loss(u_t, v_t, reduction="none")
+
+        # Skill predictor reads the gemma-contextualized prefix (read-only cross-attn).
+        z_pred = self.skill_predictor(
+            predictor_input_z.float(),
+            sp_prefix_ctx,
+            prefix_pad_masks,
+            skill_targets["predictor_progress"].to(actions.device),
+        )
+        sp_loss = self._skill_predictor_loss(z_pred, skill_targets["predictor_target"].to(actions.device))
 
         return flow_loss, sp_loss
 
@@ -815,9 +830,11 @@ class SkillVLAPytorch(PI05Pytorch):
 class SkillVLAPolicy(PI05Policy):
     """Stage 3: joint flow-matching + skill-predictor training.
 
-    All parameters trainable. Skill predictor CE gradient flows into the VLM
-    (detach_sp_prefix=False). The action expert follows the original PI05
-    denoising path; predicted skills are used for FSQ end-signal control.
+    The skill predictor reads the same gemma-contextualized prefix the action expert
+    uses (read-only cross-attention) and predicts the FSQ skill token. Whether each
+    loss updates the VLM is controlled independently by detach_sp_prefix /
+    detach_action_prefix_grad (both default False → both train it). The action expert
+    follows the PI05 denoising path; predicted skills drive FSQ end-signal control.
     """
 
     config_class = SkillVLAConfig
@@ -878,7 +895,8 @@ class SkillVLAPolicy(PI05Policy):
         if skill_decoder_image is None and images:
             skill_decoder_image = images[0]
 
-        # SP gradient flows into VLM (detach_sp_prefix=False)
+        # detach_sp_prefix / detach_action_prefix_grad independently control whether
+        # each loss updates the VLM (both default False → both train it).
         flow_losses, sp_loss = self.model.forward(
             images, img_masks, tokens, masks, actions,
             skill_index=batch.get("skill_index"),
@@ -888,10 +906,9 @@ class SkillVLAPolicy(PI05Policy):
             skill_ds=batch.get("skill_ds"),
             skill_de=batch.get("skill_de"),
             skill_boundary=batch.get("skill_boundary"),
-            skill_max_length=batch.get("skill_max_length"),
             skill_decoder_state=skill_decoder_state,
             skill_decoder_image=skill_decoder_image,
-            detach_sp_prefix=False,
+            detach_sp_prefix=self.config.detach_sp_prefix,
         )
 
         action_dim  = self.config.output_features[ACTION].shape[0]
@@ -1219,9 +1236,11 @@ class SkillVLAPolicy(PI05Policy):
             self._update_skill_from_label_records(label_records, state)
             return
 
-        prefix_embs, prefix_pad_masks, _ = self.model.embed_prefix(images, img_masks, tokens, masks)
+        prefix_embs, prefix_pad_masks, prefix_att_masks = self.model.embed_prefix(images, img_masks, tokens, masks)
+        # Match training: the skill predictor reads the gemma-contextualized prefix.
+        prefix_ctx, _ = self.model.contextualize_prefix(prefix_embs, prefix_pad_masks, prefix_att_masks)
         skill_progress = torch.zeros(tokens.shape[0], device=tokens.device, dtype=torch.float32)
-        self._update_skill(prefix_embs, prefix_pad_masks, state, skill_progress)
+        self._update_skill(prefix_ctx, prefix_pad_masks, state, skill_progress)
 
     def _refresh_current_progress(self, batch: dict[str, Tensor], images: list[Tensor]) -> Tensor | None:
         if self._current_z is None:
@@ -1244,6 +1263,12 @@ class SkillVLAPolicy(PI05Policy):
 
     def _maybe_trigger_skill_end(self, batch: dict[str, Tensor], images: list[Tensor]) -> None:
         if self._trigger_new_skill or self._current_z is None:
+            return
+        # Safety cap (inference only): force a skill switch once the current skill has
+        # run for inference_skill_max_length steps, even if FSQ termination never fired.
+        max_len = int(self.config.inference_skill_max_length)
+        if max_len > 0 and self._skill_step >= max_len:
+            self._trigger_new_skill = True
             return
         end_prob = self._refresh_current_progress(batch, images)
         if end_prob is not None:

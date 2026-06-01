@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Submit pi05 PT using Slurm settings from ../train_pi05_config.yaml.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+CONFIG_PATH="${TRAIN_PI05_CONFIG:-${ROOT_DIR}/train_pi05_config.yaml}"
+CONFIG_PY="${ROOT_DIR}/src/train_pi05_config.py"
+
+BOOTSTRAP_PYTHON="${ROOT_DIR}/../../../../../.venv/bin/python"
+[ -x "${BOOTSTRAP_PYTHON}" ] || BOOTSTRAP_PYTHON=python3
+eval "$("${BOOTSTRAP_PYTHON}" "${CONFIG_PY}" --config "${CONFIG_PATH}" --shell)"
+
+SBATCH_ARGS=(
+  --partition="${PT_PARTITION}"
+  --qos="${PT_QOS}"
+  --gres="${PT_GRES}"
+  --cpus-per-task="${PT_CPUS_PER_TASK}"
+  --mem="${PT_MEM}"
+  --time="${PT_TIME}"
+)
+[ -n "${PT_NODELIST}" ] && SBATCH_ARGS+=(--nodelist="${PT_NODELIST}")
+[ -n "${PT_EXCLUDE_NODES}" ] && SBATCH_ARGS+=(--exclude="${PT_EXCLUDE_NODES}")
+
+cd "${SCRIPT_DIR}"
+mkdir -p logs
+
+echo "Submit pi05 PT"
+echo "  dataset : ${PT_DATASET_DIR}"
+echo "  output  : ${PT_OUTPUT_DIR}"
+echo "  slurm   : partition=${PT_PARTITION} nodelist=${PT_NODELIST:-<none>} exclude=${PT_EXCLUDE_NODES:-<none>}"
+
+TRAIN_PI05_CONFIG="${CONFIG_PATH}" sbatch "${SBATCH_ARGS[@]}" "${SCRIPT_DIR}/pi05_PT.sbatch"

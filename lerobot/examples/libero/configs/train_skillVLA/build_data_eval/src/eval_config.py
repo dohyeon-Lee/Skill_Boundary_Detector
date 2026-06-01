@@ -22,6 +22,7 @@ def build_settings(config_path: str | None = None) -> dict:
         "eval_run_fsq_patch":  str(as_bool(get_value(cfg, "eval_run_fsq_patch", True))).lower(),
         "eval_run_fsq_recon":  str(as_bool(get_value(cfg, "eval_run_fsq_recon", True))).lower(),
         "eval_n_episodes":     int(get_value(cfg, "eval_n_episodes", 12)),
+        "eval_task_ids":       " ".join(str(int(t)) for t in as_list(get_value(cfg, "eval_task_ids", []))),
         "eval_n_samples":      int(get_value(cfg, "eval_n_samples", 10)),
         "eval_max_entries":    int(get_value(cfg, "eval_max_entries", 0)),
         "eval_n_action_steps": int(get_value(cfg, "eval_n_action_steps", 5)),

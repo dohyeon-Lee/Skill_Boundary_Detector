@@ -17,6 +17,11 @@ eval_run_fsq_recon: true
 
 # Visualization sampling
 eval_n_episodes: 12        # episodes shown per visual eval (dino/skillset/fsq_patch)
+# Restrict the 3 visual evals (dino/skillset/fsq_patch) to specific tasks, showing
+# eval_n_episodes episodes PER task (so several tasks are covered, not just task 0).
+# Empty list = current behavior (first eval_n_episodes episodes overall).
+# fsq_recon is unaffected (it aggregates over all skills/codebook entries).
+eval_task_ids: []          # e.g. [1, 2, 3, 4, 5]
 eval_n_samples: 10         # sample skills per codebook entry (fsq_recon)
 eval_max_entries: 0        # 0 = render sample plots for every active entry (fsq_recon)
 eval_n_action_steps: 5     # chunk plot stride (fsq_recon)

@@ -128,3 +128,12 @@ No checkpoint found, training from scratch
 [SplineFSQAE]  930/1000  train=0.0517  val=0.3542  delta=0.0048  prog=0.0030  end=0.0009  end_acc=1.000  end_rec=0.989
 [SplineFSQAE]  940/1000  train=0.0516  val=0.3577  delta=0.0048  prog=0.0030  end=0.0008  end_acc=1.000  end_rec=0.991
 [SplineFSQAE]  950/1000  train=0.0516  val=0.3578  delta=0.0048  prog=0.0030  end=0.0008  end_acc=1.000  end_rec=0.991
+[SplineFSQAE]  960/1000  train=0.0513  val=0.3586  delta=0.0048  prog=0.0030  end=0.0007  end_acc=1.000  end_rec=0.992
+[SplineFSQAE]  970/1000  train=0.0514  val=0.3583  delta=0.0048  prog=0.0030  end=0.0008  end_acc=1.000  end_rec=0.991
+[SplineFSQAE]  980/1000  train=0.0515  val=0.3610  delta=0.0048  prog=0.0030  end=0.0008  end_acc=1.000  end_rec=0.992
+[SplineFSQAE]  990/1000  train=0.0514  val=0.3605  delta=0.0048  prog=0.0030  end=0.0008  end_acc=1.000  end_rec=0.992
+[SplineFSQAE] 1000/1000  train=0.0513  val=0.3609  delta=0.0048  prog=0.0030  end=0.0008  end_acc=1.000  end_rec=0.992
+[SplineFSQAE] done. best val loss: 0.1768
+[1;34mwandb[0m: 
+[1;34mwandb[0m: 🚀 View run [33mlibero_90_fsq555_pg8_dino_only_image128[0m at: [34mhttps://wandb.ai/dohyeonlee-postech/VAE_train/runs/lmwau9a3[0m
+[1;34mwandb[0m: Find logs at: [1;35mwandb/run-20260531_035606-lmwau9a3/logs[0m

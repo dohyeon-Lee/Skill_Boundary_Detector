@@ -45,6 +45,9 @@ RUN_ARGS=()
 [ "${EVAL_RUN_FSQ_PATCH}" = "true" ] && RUN_ARGS+=(--run_fsq_patch)
 [ "${EVAL_RUN_FSQ_RECON}" = "true" ] && RUN_ARGS+=(--run_fsq_recon)
 
+TASK_ARGS=()
+[ -n "${EVAL_TASK_IDS}" ] && TASK_ARGS=(--task_ids ${EVAL_TASK_IDS})
+
 PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
   python -u "${SRC_DIR}/run_eval.py" \
     --skillvla_dir   "${SKILLVLA_DATASET_DIR}" \
@@ -54,6 +57,7 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     --image_key      "${DINO_IMAGE_KEY}" \
     --out_dir        "${EVAL_DIR}" \
     "${RUN_ARGS[@]}" \
+    ${TASK_ARGS[@]+"${TASK_ARGS[@]}"} \
     --n_episodes     "${EVAL_N_EPISODES}" \
     --n_samples      "${EVAL_N_SAMPLES}" \
     --max_entries    "${EVAL_MAX_ENTRIES}" \

@@ -31,7 +31,7 @@ dino_overwrite_prepared: false
 
 # ── Diffusion Policy ──────────────────────────────────────────
 train_DP: true  # false: only prepare target DINO; skip DP training submission.
-dp_base_config: examples/libero/configs/DP_train/train_dp_libero_90.yaml
+dp_base_config: examples/libero/configs/train_skills/DP/src/train_dp_libero_90.yaml
 dp_policy_name: "dp_{target_dataset}_dino{dino_patch_grid}_obs{dp_n_obs_steps}_horizon{dp_horizon}"
 dp_checkpoint: "100000"
 

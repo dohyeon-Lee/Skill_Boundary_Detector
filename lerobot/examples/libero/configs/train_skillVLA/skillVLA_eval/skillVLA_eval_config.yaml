@@ -1,0 +1,48 @@
+# SkillVLA closed-loop EVAL (PT model) on LIBERO sim via lerobot_skillvla_eval.
+#
+# The PT model path, FSQ path, and roots are pulled from
+#   ../skillVLA/skillVLA_train_config.yaml
+# so this file only holds eval-only knobs. The evaluated model is:
+#   {project_root}/skillVLA_outputs/PT_{source_dataset}_{run_tag}_batch{N}[_{exp}]/checkpoints/{checkpoint}/
+
+# ── Which trained model to evaluate ──
+# Blank = inherit ../skillVLA/skillVLA_train_config.yaml. Set these (dataset name +
+# sub-folder + batch/exp) to target a different PT run.
+source_dataset: libero_90          # e.g. libero_90
+run_tag: FSQ555_pg8_dino_flags_image128_1000                 # e.g. FSQ555_pg8_dino_only_image128_1000
+batch_size: 16              # must match the trained model's batch_size
+exp:                      # must match the trained model's exp suffix
+checkpoint: "005000"          # "last" or a step number (e.g. 100000)
+
+# ── Eval rollout ──
+target_task: libero_90    # LIBERO suite for the sim env
+task_ids: "[0,1,2,3,4,5,6,7,8,9]"
+n_episodes: 1             # episodes per task
+n_action_steps: 5
+eval_batch_size: 1
+max_parallel_tasks: 1
+
+# ── Video / skill HTML ──
+max_videos_per_task: 1
+video_frame_stride: 2
+video_fps: 10
+skill_html: true          # auto-disabled if skill_latents.npz was cleaned up
+skill_html_train_samples: 10
+
+# ── FSQ decoder / inference ──
+skill_decoder_end_threshold: 0.5
+inference_skill_max_length: 200    # force a skill switch after this many steps (0 = off)
+
+# ── wandb ──
+wandb_project: VLA_eval
+
+# ── Slurm ──
+eval_partition:
+  - debug
+eval_qos: base_qos
+eval_gres: gpu:1
+eval_cpus_per_task: 8
+eval_mem: 32G
+eval_time: "1:00:00"
+eval_nodelist: ""
+eval_exclude_nodes: []

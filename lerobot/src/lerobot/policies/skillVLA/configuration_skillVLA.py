@@ -20,7 +20,6 @@ class SkillVLAConfig(PI05Config):
     skill_predictor_hidden_dim: int = 512
     skill_predictor_num_heads: int = 8
     skill_predictor_num_layers: int = 2
-    skill_predictor_num_query_tokens: int = 4
     skill_predictor_dropout: float = 0.0
     skill_predictor_num_embeddings: int = 125   # FSQ code count; inferred from skill_fsq_levels/checkpoint when possible.
     skill_predictor_loss_weight: float = 1.0
@@ -49,6 +48,9 @@ class SkillVLAConfig(PI05Config):
 
     detach_action_prefix_grad: bool = False
     """If True, flow/action loss uses prefix attention but does not update VLM/prefix parameters."""
+    detach_sp_prefix: bool = False
+    """If True, the skill-predictor loss does not update the VLM/prefix (it still reads the
+    contextualized prefix, but gradient is stopped). Independent of detach_action_prefix_grad."""
 
     # Eval-only oracle mode: bypass the skill predictor and feed dataset label
     # skill tokens to the action expert / FSQ end decoder.

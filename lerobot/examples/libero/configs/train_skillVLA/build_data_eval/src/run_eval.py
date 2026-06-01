@@ -92,20 +92,47 @@ class DinoNpz:
         return np.asarray(self.features[int(self.offsets[i]):int(self.offsets[i + 1])]).astype(np.float32)
 
 
-def patch_pca_rgb(patch_tokens: np.ndarray, grid: int, size: int = 96) -> np.ndarray:
-    """(P, F) patch tokens → (size, size, 3) uint8 via 3-component PCA mapped to RGB."""
-    x = patch_tokens.astype(np.float32)
-    x = x - x.mean(0, keepdims=True)
+def patch_pca_rgb_clip(clip_patches: np.ndarray, grid: int, size: int = 96) -> np.ndarray:
+    """(T, P, F) episode patch tokens → (T, size, size, 3) uint8.
+
+    A SINGLE 3-component PCA is fit over the WHOLE episode (all frames stacked) and
+    reused for every frame, so patch colours are temporally consistent — i.e. the
+    PCA basis is per-EPISODE, not per-frame. (Per-frame PCA would re-fit each frame
+    and the same region's colour would flicker over time.)"""
+    x = np.asarray(clip_patches, dtype=np.float32)            # (T, P, F)
+    T, P, F = x.shape
+    flat = x.reshape(T * P, F)
+    flat = flat - flat.mean(0, keepdims=True)
     try:
-        _, _, vt = np.linalg.svd(x, full_matrices=False)
-        comp = x @ vt[:3].T                                   # (P, 3)
+        _, _, vt = np.linalg.svd(flat, full_matrices=False)
+        comp = flat @ vt[:3].T                                # (T*P, 3) — shared basis
     except np.linalg.LinAlgError:
-        comp = x[:, :3]
-    lo, hi = comp.min(0), comp.max(0)
-    rgb = ((comp - lo) / (hi - lo + 1e-8) * 255).astype(np.uint8)   # (P, 3)
-    img = rgb.reshape(grid, grid, 3)
+        comp = flat[:, :3]
+    lo, hi = comp.min(0), comp.max(0)                         # shared normalization
+    rgb = ((comp - lo) / (hi - lo + 1e-8) * 255).astype(np.uint8).reshape(T, grid, grid, 3)
     from PIL import Image
-    return np.asarray(Image.fromarray(img).resize((size, size), Image.NEAREST))
+    out = np.empty((T, size, size, 3), dtype=np.uint8)
+    for t in range(T):
+        out[t] = np.asarray(Image.fromarray(rgb[t]).resize((size, size), Image.NEAREST))
+    return out
+
+
+def select_episodes(df: pd.DataFrame, task_ids, n_episodes: int) -> list[tuple]:
+    """Ordered [(task_label, [ep, ...]), ...].
+
+    task_ids empty/None → first n_episodes episodes overall (task_label=None).
+    Otherwise → n_episodes episodes per listed task (so several tasks are covered)."""
+    if not task_ids:
+        return [(None, sorted(df["episode_index"].unique())[:n_episodes])]
+    groups = []
+    for t in task_ids:
+        sub = df[df["task_index"] == int(t)]
+        groups.append((int(t), sorted(sub["episode_index"].unique())[:n_episodes]))
+    return groups
+
+
+def _cap(task_label, ep) -> str:
+    return f"episode {ep}" if task_label is None else f"task{int(task_label):02d} · episode {ep}"
 
 
 def _fig_to_b64(fig) -> str:
@@ -116,22 +143,34 @@ def _fig_to_b64(fig) -> str:
     return base64.b64encode(buf.getvalue()).decode()
 
 
-def _save_gallery(out_dir: Path, title: str, images_b64: list[tuple[str, str]]) -> None:
-    """Write a simple HTML gallery (caption, base64 jpeg) to out_dir/index.html."""
+def _save_gallery(out_dir: Path, title: str, cards: list[tuple]) -> None:
+    """Write an HTML gallery to out_dir/index.html.
+
+    cards: [(task_label, caption, jpeg_b64), ...]. When task_label is not None, a
+    sticky section header is inserted whenever it changes, so episodes are grouped
+    and visually separated per task. (task_label None → flat gallery as before.)"""
     out_dir.mkdir(parents=True, exist_ok=True)
-    cards = "".join(
-        f"<div class='card'><div class='cap'>{cap}</div>"
-        f"<img src='data:image/jpeg;base64,{b}'></div>"
-        for cap, b in images_b64
-    )
+    blocks, prev = [], "\0"
+    for task_label, cap, b in cards:
+        if task_label is not None and task_label != prev:
+            blocks.append(f"<h2 class='task'>task {int(task_label):02d}</h2>")
+        prev = task_label
+        blocks.append(
+            f"<div class='card'><div class='cap'>{cap}</div>"
+            f"<img src='data:image/jpeg;base64,{b}'></div>"
+        )
+    body = "".join(blocks)
     html = (
         "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>" + title + "</title><style>"
         "body{font-family:sans-serif;background:#f5f5f5;margin:0;padding:12px;}"
-        "h1{font-size:18px;}.grid{display:flex;flex-direction:column;gap:14px;}"
+        "h1{font-size:18px;}"
+        "h2.task{font-size:15px;color:#fff;background:#3367d6;margin:18px 0 4px;"
+        "padding:5px 10px;border-radius:4px;position:sticky;top:0;z-index:2;}"
+        ".grid{display:flex;flex-direction:column;gap:14px;}"
         ".card{background:#fff;border:1px solid #ddd;border-radius:6px;padding:8px;overflow-x:auto;}"
         ".cap{font-size:12px;color:#555;margin-bottom:4px;}"
         ".card img{display:block;max-width:none;}"
-        "</style></head><body><h1>" + title + "</h1><div class='grid'>" + cards + "</div></body></html>"
+        "</style></head><body><h1>" + title + "</h1><div class='grid'>" + body + "</div></body></html>"
     )
     (out_dir / "index.html").write_text(html, encoding="utf-8")
     print(f"[eval] {title} → {out_dir / 'index.html'}")
@@ -139,90 +178,95 @@ def _save_gallery(out_dir: Path, title: str, images_b64: list[tuple[str, str]]) 
 
 # ── eval 1: DINO sanity ──────────────────────────────────────────────────────────
 
-def eval_dino(df, dino: DinoNpz, frames_src, out_dir: Path, n_episodes: int, n_cols: int = 8):
+def eval_dino(df, dino: DinoNpz, frames_src, out_dir: Path, n_episodes: int,
+              task_ids=None, n_cols: int = 8):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     grid = int(round(((dino.n_tokens - 1) ** 0.5)))
-    eps = sorted(df["episode_index"].unique())[:n_episodes]
     cards = []
-    for ep in eps:
-        clip = dino.episode_clip(ep)                          # (T, n_tokens, F)
-        raw = frames_src(int(ep))                             # (T_raw, H, W, 3) or None
-        T = len(clip)
-        idxs = np.linspace(0, T - 1, min(n_cols, T)).astype(int)
-        fig, axes = plt.subplots(2, len(idxs), figsize=(1.6 * len(idxs), 3.4), squeeze=False)
-        for c, t in enumerate(idxs):
-            frame = _clip_frame_or_blank(raw, t, 96) if raw is not None and len(raw) else np.full((96, 96, 3), 80, np.uint8)
-            axes[0][c].imshow(frame); axes[0][c].axis("off"); axes[0][c].set_title(f"t{t}", fontsize=7)
-            axes[1][c].imshow(patch_pca_rgb(clip[t, 1:], grid)); axes[1][c].axis("off")
-        axes[0][0].set_ylabel("raw", fontsize=8); axes[1][0].set_ylabel("PCA", fontsize=8)
-        fig.suptitle(f"episode {ep}", fontsize=9)
-        cards.append((f"episode {ep}", _fig_to_b64(fig)))
+    for task_label, eps in select_episodes(df, task_ids, n_episodes):
+        for ep in eps:
+            clip = dino.episode_clip(ep)                          # (T, n_tokens, F)
+            raw = frames_src(int(ep))                             # (T_raw, H, W, 3) or None
+            T = len(clip)
+            pca = patch_pca_rgb_clip(clip[:, 1:], grid)           # (T, 96, 96, 3) — per-episode basis
+            idxs = np.linspace(0, T - 1, min(n_cols, T)).astype(int)
+            fig, axes = plt.subplots(2, len(idxs), figsize=(1.6 * len(idxs), 3.4), squeeze=False)
+            for c, t in enumerate(idxs):
+                frame = _clip_frame_or_blank(raw, t, 96) if raw is not None and len(raw) else np.full((96, 96, 3), 80, np.uint8)
+                axes[0][c].imshow(frame); axes[0][c].axis("off"); axes[0][c].set_title(f"t{t}", fontsize=7)
+                axes[1][c].imshow(pca[t]); axes[1][c].axis("off")
+            axes[0][0].set_ylabel("raw", fontsize=8); axes[1][0].set_ylabel("PCA", fontsize=8)
+            fig.suptitle(_cap(task_label, ep), fontsize=9)
+            cards.append((task_label, _cap(task_label, ep), _fig_to_b64(fig)))
     _save_gallery(out_dir, "DINO patch sanity", cards)
 
 
 # ── eval 2: skillset split ───────────────────────────────────────────────────────
 
-def eval_skillset(df, frames_src, out_dir: Path, n_episodes: int, thumb: int = 110):
+def eval_skillset(df, frames_src, out_dir: Path, n_episodes: int,
+                  task_ids=None, thumb: int = 110):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    eps = sorted(df["episode_index"].unique())[:n_episodes]
     cards = []
-    for ep in eps:
-        ep_df = df[df["episode_index"] == ep]
-        skills = reconstruct_skills(ep_df)
-        raw = frames_src(int(ep))
-        ncol = max(1, 2 * len(skills))
-        fig, axes = plt.subplots(1, ncol, figsize=(1.3 * ncol, 1.7), squeeze=False)
-        for k, (fs, fe, tok) in enumerate(skills):
-            s = _clip_frame_or_blank(raw, fs, thumb) if raw is not None and len(raw) else np.full((thumb,)*2+(3,), 80, np.uint8)
-            e = _clip_frame_or_blank(raw, max(0, fe - 1), thumb) if raw is not None and len(raw) else np.full((thumb,)*2+(3,), 80, np.uint8)
-            axes[0][2*k].imshow(s);   axes[0][2*k].axis("off");   axes[0][2*k].set_title(f"sk{k} tok{tok}\nf{fs}", fontsize=6)
-            axes[0][2*k+1].imshow(e); axes[0][2*k+1].axis("off"); axes[0][2*k+1].set_title(f"→f{fe}", fontsize=6)
-        fig.suptitle(f"episode {ep} — {len(skills)} skills", fontsize=9)
-        cards.append((f"episode {ep}", _fig_to_b64(fig)))
+    for task_label, eps in select_episodes(df, task_ids, n_episodes):
+        for ep in eps:
+            ep_df = df[df["episode_index"] == ep]
+            skills = reconstruct_skills(ep_df)
+            raw = frames_src(int(ep))
+            ncol = max(1, 2 * len(skills))
+            fig, axes = plt.subplots(1, ncol, figsize=(1.3 * ncol, 1.7), squeeze=False)
+            for k, (fs, fe, tok) in enumerate(skills):
+                s = _clip_frame_or_blank(raw, fs, thumb) if raw is not None and len(raw) else np.full((thumb,)*2+(3,), 80, np.uint8)
+                e = _clip_frame_or_blank(raw, max(0, fe - 1), thumb) if raw is not None and len(raw) else np.full((thumb,)*2+(3,), 80, np.uint8)
+                axes[0][2*k].imshow(s);   axes[0][2*k].axis("off");   axes[0][2*k].set_title(f"sk{k} tok{tok}\nf{fs}", fontsize=6)
+                axes[0][2*k+1].imshow(e); axes[0][2*k+1].axis("off"); axes[0][2*k+1].set_title(f"→f{fe}", fontsize=6)
+            fig.suptitle(f"{_cap(task_label, ep)} — {len(skills)} skills", fontsize=9)
+            cards.append((task_label, _cap(task_label, ep), _fig_to_b64(fig)))
     _save_gallery(out_dir, "Skill boundary split", cards)
 
 
 # ── eval 3: FSQ patch ────────────────────────────────────────────────────────────
 
-def eval_fsq_patch(df, dino: DinoNpz, frames_src, out_dir: Path, n_episodes: int, n_samples: int = 3, seed: int = 42):
+def eval_fsq_patch(df, dino: DinoNpz, frames_src, out_dir: Path, n_episodes: int,
+                   n_samples: int = 3, seed: int = 42, task_ids=None):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     grid = int(round(((dino.n_tokens - 1) ** 0.5)))
     rng = np.random.default_rng(seed)
-    eps = sorted(df["episode_index"].unique())[:n_episodes]
     cards = []
-    for ep in eps:
-        ep_df = df[df["episode_index"] == ep]
-        skills = reconstruct_skills(ep_df)
-        clip = dino.episode_clip(ep)
-        raw = frames_src(int(ep))
-        rows = len(skills)
-        if rows == 0:
-            continue
-        ncol = 2 + n_samples
-        fig, axes = plt.subplots(rows, ncol, figsize=(1.5 * ncol, 1.5 * rows), squeeze=False)
-        for r, (fs, fe, tok) in enumerate(skills):
-            fi = _clip_frame_or_blank(raw, fs, 96) if raw is not None and len(raw) else np.full((96,96,3),80,np.uint8)
-            ff = _clip_frame_or_blank(raw, max(0, fe-1), 96) if raw is not None and len(raw) else np.full((96,96,3),80,np.uint8)
-            axes[r][0].imshow(fi); axes[r][0].axis("off"); axes[r][0].set_ylabel(f"sk{r}\ntok{tok}", fontsize=7)
-            axes[r][1].imshow(ff); axes[r][1].axis("off")
-            cand = list(range(fs, min(fe, len(clip))))
-            pick = rng.choice(cand, size=min(n_samples, len(cand)), replace=False) if cand else []
-            for c, t in enumerate(sorted(pick)):
-                axes[r][2 + c].imshow(patch_pca_rgb(clip[t, 1:], grid)); axes[r][2 + c].axis("off")
-            for c in range(len(pick), n_samples):
-                axes[r][2 + c].axis("off")
-        axes[0][0].set_title("init", fontsize=7); axes[0][1].set_title("final", fontsize=7)
-        fig.suptitle(f"episode {ep} — patch PCA", fontsize=9)
-        cards.append((f"episode {ep}", _fig_to_b64(fig)))
+    for task_label, eps in select_episodes(df, task_ids, n_episodes):
+        for ep in eps:
+            ep_df = df[df["episode_index"] == ep]
+            skills = reconstruct_skills(ep_df)
+            clip = dino.episode_clip(ep)
+            raw = frames_src(int(ep))
+            rows = len(skills)
+            if rows == 0:
+                continue
+            pca = patch_pca_rgb_clip(clip[:, 1:], grid)           # per-episode basis (shared across frames)
+            ncol = 2 + n_samples
+            fig, axes = plt.subplots(rows, ncol, figsize=(1.5 * ncol, 1.5 * rows), squeeze=False)
+            for r, (fs, fe, tok) in enumerate(skills):
+                fi = _clip_frame_or_blank(raw, fs, 96) if raw is not None and len(raw) else np.full((96,96,3),80,np.uint8)
+                ff = _clip_frame_or_blank(raw, max(0, fe-1), 96) if raw is not None and len(raw) else np.full((96,96,3),80,np.uint8)
+                axes[r][0].imshow(fi); axes[r][0].axis("off"); axes[r][0].set_ylabel(f"sk{r}\ntok{tok}", fontsize=7)
+                axes[r][1].imshow(ff); axes[r][1].axis("off")
+                cand = list(range(fs, min(fe, len(clip))))
+                pick = rng.choice(cand, size=min(n_samples, len(cand)), replace=False) if cand else []
+                for c, t in enumerate(sorted(pick)):
+                    axes[r][2 + c].imshow(pca[t]); axes[r][2 + c].axis("off")
+                for c in range(len(pick), n_samples):
+                    axes[r][2 + c].axis("off")
+            axes[0][0].set_title("init", fontsize=7); axes[0][1].set_title("final", fontsize=7)
+            fig.suptitle(f"{_cap(task_label, ep)} — patch PCA", fontsize=9)
+            cards.append((task_label, _cap(task_label, ep), _fig_to_b64(fig)))
     _save_gallery(out_dir, "FSQ patch visualization", cards)
 
 
@@ -366,7 +410,11 @@ def parse_args():
     p.add_argument("--run_skillset", action="store_true")
     p.add_argument("--run_fsq_patch", action="store_true")
     p.add_argument("--run_fsq_recon", action="store_true")
-    p.add_argument("--n_episodes", type=int, default=12)
+    p.add_argument("--n_episodes", type=int, default=12,
+                   help="episodes shown per visual eval; per task when --task_ids is given")
+    p.add_argument("--task_ids", type=int, nargs="*", default=None,
+                   help="restrict dino/skillset/fsq_patch to these tasks (n_episodes each); "
+                        "empty = first n_episodes overall")
     p.add_argument("--n_samples", type=int, default=10)
     p.add_argument("--max_entries", type=int, default=0)
     p.add_argument("--n_action_steps", type=int, default=5)
@@ -390,11 +438,12 @@ def main():
         dino = DinoNpz(Path(args.dino_npz))
 
     if args.run_dino:
-        eval_dino(df, dino, frames_src, out / "dino", args.n_episodes)
+        eval_dino(df, dino, frames_src, out / "dino", args.n_episodes, task_ids=args.task_ids)
     if args.run_skillset:
-        eval_skillset(df, frames_src, out / "skillset", args.n_episodes)
+        eval_skillset(df, frames_src, out / "skillset", args.n_episodes, task_ids=args.task_ids)
     if args.run_fsq_patch:
-        eval_fsq_patch(df, dino, frames_src, out / "fsq_patch", args.n_episodes, seed=args.seed)
+        eval_fsq_patch(df, dino, frames_src, out / "fsq_patch", args.n_episodes,
+                       seed=args.seed, task_ids=args.task_ids)
     if args.run_fsq_recon:
         import torch
         device = args.device if torch.cuda.is_available() and args.device == "cuda" else "cpu"

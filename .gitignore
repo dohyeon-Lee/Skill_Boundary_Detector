@@ -2,6 +2,8 @@
 libero_dataset/
 libero_small_dataset/
 libero_10_old/
+libero_original_dataset/
+libero_dataset_prev/
 
 # ── 학습 출력물 ───────────────────────────────────────────────────
 outputs/
@@ -9,6 +11,8 @@ VLA_outputs/
 VLA_single_outputs/
 DP_outputs/
 FSQ_outputs/
+pi05_outputs/
+skillVLA_outputs/
 
 # ── wandb 로컬 캐시 ───────────────────────────────────────────────
 wandb/
