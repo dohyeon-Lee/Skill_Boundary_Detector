@@ -25,6 +25,25 @@ eval "$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/skillVLA_eval_config.py" --config "${C
 cd "${LEROBOT_ROOT}"
 source "${PROJECT_ROOT}/.venv/bin/activate"
 unset LD_LIBRARY_PATH          # avoid system cuDNN shadowing the bundled one
+
+LIBERO_REPO_ROOT="${PROJECT_ROOT}/tools/lerobot-libero"
+LIBERO_SOURCE_ROOT="${LIBERO_REPO_ROOT}/libero"
+LIBERO_BENCHMARK_ROOT="${LIBERO_SOURCE_ROOT}/libero"
+LIBERO_LOCAL_CONFIG_DIR="${LIBERO_REPO_ROOT}/.libero_config"
+if [ ! -d "${LIBERO_BENCHMARK_ROOT}/init_files" ]; then
+  echo "LIBERO init_files not found: ${LIBERO_BENCHMARK_ROOT}/init_files" >&2
+  exit 1
+fi
+mkdir -p "${LIBERO_LOCAL_CONFIG_DIR}"
+cat > "${LIBERO_LOCAL_CONFIG_DIR}/config.yaml" <<EOF
+benchmark_root: ${LIBERO_BENCHMARK_ROOT}
+bddl_files: ${LIBERO_BENCHMARK_ROOT}/bddl_files
+init_states: ${LIBERO_BENCHMARK_ROOT}/init_files
+datasets: ${LIBERO_SOURCE_ROOT}/datasets
+assets: ${LIBERO_BENCHMARK_ROOT}/assets
+EOF
+export LIBERO_CONFIG_PATH="${LIBERO_LOCAL_CONFIG_DIR}"
+
 export WANDB_CACHE_DIR="${WANDB_CACHE_DIR:-${HOME}/.wandb_cache}"
 export WANDB_DATA_DIR="${WANDB_DATA_DIR:-${HOME}/.wandb_data}"
 mkdir -p "${WANDB_CACHE_DIR}" "${WANDB_DATA_DIR}"
@@ -56,7 +75,7 @@ fi
 mkdir -p "${EVAL_OUT_DIR}"
 
 PYTORCH_ALLOC_CONF=expandable_segments:True \
-PYTHONPATH="${LEROBOT_ROOT}/src" \
+PYTHONPATH="${LEROBOT_ROOT}/src:${LIBERO_REPO_ROOT}" \
   "${PROJECT_ROOT}/.venv/bin/python" -m lerobot.scripts.lerobot_skillvla_eval \
     --policy.path="${POLICY_PATH}" \
     --env.type=libero \

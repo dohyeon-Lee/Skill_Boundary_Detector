@@ -32,6 +32,24 @@ cd "${LEROBOT_ROOT}"
 source "${PROJECT_ROOT}/.venv/bin/activate"
 unset LD_LIBRARY_PATH
 
+LIBERO_REPO_ROOT="${PROJECT_ROOT}/tools/lerobot-libero"
+LIBERO_SOURCE_ROOT="${LIBERO_REPO_ROOT}/libero"
+LIBERO_BENCHMARK_ROOT="${LIBERO_SOURCE_ROOT}/libero"
+LIBERO_LOCAL_CONFIG_DIR="${LIBERO_REPO_ROOT}/.libero_config"
+if [ ! -d "${LIBERO_BENCHMARK_ROOT}/init_files" ]; then
+  echo "LIBERO init_files not found: ${LIBERO_BENCHMARK_ROOT}/init_files" >&2
+  exit 1
+fi
+mkdir -p "${LIBERO_LOCAL_CONFIG_DIR}"
+cat > "${LIBERO_LOCAL_CONFIG_DIR}/config.yaml" <<EOF
+benchmark_root: ${LIBERO_BENCHMARK_ROOT}
+bddl_files: ${LIBERO_BENCHMARK_ROOT}/bddl_files
+init_states: ${LIBERO_BENCHMARK_ROOT}/init_files
+datasets: ${LIBERO_SOURCE_ROOT}/datasets
+assets: ${LIBERO_BENCHMARK_ROOT}/assets
+EOF
+export LIBERO_CONFIG_PATH="${LIBERO_LOCAL_CONFIG_DIR}"
+
 export WANDB_CACHE_DIR="${WANDB_CACHE_DIR:-${HOME}/.wandb_cache}"
 export WANDB_DATA_DIR="${WANDB_DATA_DIR:-${HOME}/.wandb_data}"
 mkdir -p "${WANDB_CACHE_DIR}" "${WANDB_DATA_DIR}"
@@ -53,7 +71,7 @@ fi
 EVAL_OUT_DIR="${EVAL_OUT_DIR:-${ROOT_DIR}/pi05_eval/outputs/${EVAL_WANDB_RUN_NAME}_offset${EVAL_EPISODE_OFFSET}}"
 mkdir -p "${EVAL_OUT_DIR}"
 
-PYTHONPATH="${LEROBOT_ROOT}/src" "${EVAL_BIN}" \
+PYTHONPATH="${LEROBOT_ROOT}/src:${LIBERO_REPO_ROOT}" "${EVAL_BIN}" \
   --policy.path="${EVAL_POLICY_PATH}" \
   --env.type=libero \
   --env.task="${EVAL_TARGET_TASK}" \
@@ -72,7 +90,7 @@ PYTHONPATH="${LEROBOT_ROOT}/src" "${EVAL_BIN}" \
   --output_dir="${EVAL_OUT_DIR}" \
   --rename_map='{"observation.images.image2": "observation.images.wrist_image"}'
 
-PYTHONPATH="${LEROBOT_ROOT}/src" "${PYTHON_BIN}" - <<PYEOF
+PYTHONPATH="${LEROBOT_ROOT}/src:${LIBERO_REPO_ROOT}" "${PYTHON_BIN}" - <<PYEOF
 import json, sys
 from pathlib import Path
 import numpy as np
