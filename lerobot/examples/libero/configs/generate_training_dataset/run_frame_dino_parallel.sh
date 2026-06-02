@@ -140,10 +140,25 @@ if [ "${MAX_WORKERS}" -gt 0 ] && [ "${N_WORKERS}" -gt "${MAX_WORKERS}" ]; then
   N_WORKERS=${MAX_WORKERS}
 fi
 
+echo "  Counting dataset shards..."
 VIDEO_FILE_COUNT=$(find "${DATASET_DIR}/videos" -name "*.mp4" 2>/dev/null | wc -l)
 if [ "${VIDEO_FILE_COUNT}" -gt 0 ] && [ "${N_WORKERS}" -gt "${VIDEO_FILE_COUNT}" ]; then
   echo "  Capping N_WORKERS: ${N_WORKERS} -> ${VIDEO_FILE_COUNT} (video files)"
   N_WORKERS=${VIDEO_FILE_COUNT}
+fi
+if [ "${VIDEO_FILE_COUNT}" -eq 0 ]; then
+  EPISODE_COUNT="$("${BOOTSTRAP_PYTHON}" - "${DATASET_DIR}" <<'PY'
+import json, sys
+from pathlib import Path
+info = Path(sys.argv[1]) / "meta" / "info.json"
+print(json.loads(info.read_text()).get("total_episodes", 0) if info.exists() else 0)
+PY
+)"
+  echo "  Detected image/parquet dataset (no mp4 videos); episodes=${EPISODE_COUNT}"
+  if [ "${EPISODE_COUNT}" -gt 0 ] && [ "${N_WORKERS}" -gt "${EPISODE_COUNT}" ]; then
+    echo "  Capping N_WORKERS: ${N_WORKERS} -> ${EPISODE_COUNT} (episodes)"
+    N_WORKERS=${EPISODE_COUNT}
+  fi
 fi
 
 mapfile -t SORTED_NODES < <(

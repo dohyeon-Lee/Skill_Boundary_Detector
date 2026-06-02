@@ -43,8 +43,8 @@ if [ ! -f "${DINO_TOKENS_PATH}" ]; then
   echo "Run FSQ/submit_prepare_fsq_inputs.sh first." >&2
   exit 1
 fi
-if [ "${DECODER_IMAGE_MODE}" = "dino_flags" ] && [ ! -f "${SAM2_FLAGS_PATH}" ] && [ ! -d "${SAM2_MASKS_DIR}" ]; then
-  echo "Patch flags not found for decoder_image_mode=dino_flags:" >&2
+if [ "${RECONSTRUCTOR_MODE}" = "flags" ] && [ ! -f "${SAM2_FLAGS_PATH}" ] && [ ! -d "${SAM2_MASKS_DIR}" ]; then
+  echo "Patch flags not found for reconstructor_mode=flags:" >&2
   echo "  ${SAM2_FLAGS_PATH}" >&2
   echo "Run FSQ/submit_prepare_fsq_inputs.sh with fsq_build_patch_flags: true." >&2
   exit 1

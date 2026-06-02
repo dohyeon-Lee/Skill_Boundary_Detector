@@ -1,14 +1,18 @@
-# Diffusion Policy pretraining on LIBERO-90 (raw teleop actions)
-# No language conditioning — obs history -> action chunk only
+# Base config for Diffusion Policy + DINO pretraining (no language conditioning).
+# Used as dp_base_config (--config_path) by ../train_dp_dino.sbatch.
 #
-# Usage:
-#   PYTHONPATH=/data2/dohyeon/SBD/lerobot/src \
-#     /data2/dohyeon/SBD/.venv/bin/lerobot-train \
-#     --config_path /data2/dohyeon/SBD/lerobot/examples/libero/configs/train_dp_libero90_rawteleop.yaml
+# IMPORTANT: dataset (repo_id/root), output_dir, training (steps/freqs/seed/
+# batch/workers), wandb, and policy temporal settings (n_obs_steps/n_action_steps/
+# horizon) are ALL OVERRIDDEN AT RUNTIME by train_dp_dino.sbatch using
+# train_skills_config.yaml. To change the dataset / root / output / etc., edit
+# train_skills_config.yaml (target_dataset, dataset_root, dp_*), NOT this file.
+# The literals below are only fallbacks for standalone `lerobot-train --config_path`
+# use; they are kept consistent with the current train_skills_config for that case.
+# Only the policy ARCHITECTURE here (type, down_dims) is not overridden.
 
 dataset:
-  repo_id: dohyeon/libero_90
-  root: /scratch/mdorazi/Skill_Boundary_Detector/libero_dataset/libero_90
+  repo_id: lerobot/libero_90_full_full              # overridden: lerobot/${TARGET_DATASET}
+  root: /data2/dohyeon/SBD/libero_original_dataset/libero_90_full_full  # overridden: ${RAW_DATASET_DIR}
   video_backend: pyav
 
 policy:
@@ -16,27 +20,26 @@ policy:
   device: cuda
   push_to_hub: false
 
-  # Temporal settings
+  # Temporal settings (overridden by dp_n_obs_steps / dp_n_action_steps / dp_horizon)
   n_obs_steps: 10      # 10 frames @ 20fps = 500ms history
   horizon: 16          # UNet prediction length (must be divisible by 2^len(down_dims)=8)
   n_action_steps: 16   # action chunk length actually executed
 
-  # UNet architecture
+  # UNet architecture (NOT overridden — real base-config value)
   down_dims: [512, 1024, 2048]
 
-# Training
+# Training (overridden by dp_steps / dp_batch_size / dp_num_workers / dp_seed / dp_*_freq)
 batch_size: 64
 steps: 200000
 num_workers: 4
 seed: 42
-
-# Logging & checkpointing
 log_freq: 200
 save_freq: 20000
 eval_freq: 0
 
-output_dir: /data2/dohyeon/SBD/outputs/dp_libero90_rawteleop_pretrain
+# overridden: ${DP_OUTPUT_DIR} (= {project_root}/{dp_outputs_root}/{dp_policy_name})
+output_dir: /data2/dohyeon/SBD/outputs_DP/dp_libero_90_full_full_dino8_obs10_horizon16
 
 wandb:
   enable: true
-  project: lerobot_libero
+  project: DP_train     # overridden by dp_wandb_project

@@ -9,7 +9,7 @@
 """Print task/language/episode counts for a dataset under libero_dataset/.
 
 Examples:
-  python inspect_training_dataset.py --dataset libero_90
+  python inspect_training_dataset.py --dataset libero_90_full_full
   python inspect_training_dataset.py --dataset libero_10
   python inspect_training_dataset.py --dataset libero_90_00to20_full
 """

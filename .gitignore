@@ -4,6 +4,7 @@ libero_small_dataset/
 libero_10_old/
 libero_original_dataset/
 libero_dataset_prev/
+models/
 
 # ── 학습 출력물 ───────────────────────────────────────────────────
 outputs/

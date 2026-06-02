@@ -9,9 +9,12 @@
 
 # ── Which skillvla dataset to train on ────────────────────────
 # Just the dataset name + its sub-folder. Resolves to:
-#   {project_root}/libero_dataset/skillvla_dataset/{source_dataset}/{run_tag}/
+#   {project_root}/{dataset_root}/skillvla_dataset/{source_dataset}/{run_tag}/
 #   (→ skillvla/ + FSQ.pt + dino.npz, built by configs/train_skillVLA/build_data)
-source_dataset: libero_90                                   # e.g. libero_90, libero_90_00to20_10
+# NOTE: project_root / dataset_root / skillvla_dataset_root are inherited from
+#   ../build_data/train_skillVLA_config.yaml (single source). To switch the data
+#   root (e.g. libero_dataset → libero_original_dataset), change dataset_root THERE.
+source_dataset: libero_90_full_full                                   # e.g. libero_90, libero_90_00to20_10
 run_tag: FSQ555_pg8_dino_only_image128_1000                 # the sub-folder name
 skill_decoder_state_indices: "[0,1,2,3,4,5,6]"              # raw state dims fed to the FSQ decoder
 image_key: observation.images.image
@@ -19,7 +22,7 @@ image_key: observation.images.image
 # ── Model init ────────────────────────────────────────────────
 pi_base: lerobot/pi05_base
 image_model_path: /data2/dohyeon/SBD/models/dinov3-vits16   # DINO repo/dir for the FSQ decoder
-skillvla_outputs_root: skillVLA_outputs                      # under {project_root}/
+skillvla_outputs_root: outputs_skillVLA                      # under {project_root}/
 
 # ── Optimization ──────────────────────────────────────────────
 batch_size: 16

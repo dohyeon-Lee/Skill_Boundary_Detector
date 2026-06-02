@@ -3,13 +3,13 @@
 # Change project_root when moving this workflow to another server.
 
 project_root: /data2/dohyeon/SBD
-dataset_root: libero_dataset
-pi05_outputs_root: pi05_outputs
+dataset_root: libero_original_dataset
+pi05_outputs_root: outputs_pi05
 pi_base: lerobot/pi05_base
 
 # ── pi05 PT ───────────────────────────────────────────────────
-pt_dataset: libero_90
-pt_dataset_root: libero_dataset
+pt_dataset: libero_90_full_full
+pt_dataset_root: libero_original_dataset
 pt_batch_size: 16
 pt_num_gpus: 1
 pt_num_workers: 4
@@ -32,7 +32,7 @@ pt_time: "48:00:00"
 
 # ── pi05 FT ───────────────────────────────────────────────────
 ft_dataset: libero_10_op1_10
-ft_dataset_root: libero_dataset
+ft_dataset_root: libero_original_dataset
 ft_batch_size: 32
 ft_num_workers: 4
 ft_exp: exp2

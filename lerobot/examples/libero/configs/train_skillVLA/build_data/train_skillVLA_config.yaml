@@ -21,22 +21,22 @@
 # ── Paths ─────────────────────────────────────────────────────
 # Change this when moving to another server.
 project_root: /data2/dohyeon/SBD
-dataset_root: libero_dataset
-fsq_outputs_root: FSQ_outputs            # trained FSQ models live here
-dp_outputs_root: DP_outputs              # trained DP models live here
+dataset_root: libero_original_dataset
+fsq_outputs_root: outputs_FSQ            # trained FSQ models live here
+dp_outputs_root: outputs_DP              # trained DP models live here
 skillvla_dataset_root: skillvla_dataset  # outputs under {dataset_root}/{skillvla_dataset_root}/
 
 # ── Source dataset (원본) ─────────────────────────────────────
 # Raw LeRobot dataset to convert into SkillVLA data (may differ from the
 # dataset the DP/FSQ were trained on).
-source_dataset: libero_90
+source_dataset: libero_90_full_full
 
 # ── DINO precompute (step 2) ──────────────────────────────────
 # Per-episode DINO tokens for the source dataset. Sliced from a base full-dataset
 # DINO ({dataset_root}/{dino_base_dataset}_DINO/pg{grid}/) using the source
 # dataset's meta/episodes source_episode_index mapping. (Used by DP segmentation;
 # the merged dino.npz for SkillVLA is built later at the FSQ step.)
-dino_base_dataset: libero_90             # full dataset whose DINO we slice from
+dino_base_dataset: libero_90_full_full             # full dataset whose DINO we slice from
 dino_image_keys: ["observation.images.image"]
 dino_patch_grid: 8
 dino_feature_dim: 384
@@ -70,19 +70,19 @@ skillset_max_sweeps: 2
 # ── FSQ encoder (step 4) ──────────────────────────────────────
 # A trained FSQ from train_skills (under {project_root}/FSQ_outputs/).
 # The model dir name is rebuilt as:
-#   {fsq_train_dataset}_fsq{levels}_pg{dino_patch_grid}_{decoder_image_mode}_image{fsq_image_token_dim}
+#   {fsq_train_dataset}_fsq{levels}_pg{dino_patch_grid}_{reconstructor_mode}_image{fsq_image_token_dim}
 # and the run tag for outputs as:
-#   FSQ{levels}_pg{dino_patch_grid}_{decoder_image_mode}_image{fsq_image_token_dim}_{fsq_checkpoint}
-fsq_train_dataset: libero_90             # dataset the FSQ was trained on (for run-name lookup)
+#   FSQ{levels}_pg{dino_patch_grid}_{reconstructor_mode}_image{fsq_image_token_dim}_{fsq_checkpoint}
+fsq_train_dataset: libero_90_full_full             # dataset the FSQ was trained on (for run-name lookup)
 fsq_levels: [5, 5, 5]
-decoder_image_mode: dino_only
+reconstructor_mode: only                 # flags | only (must match the trained FSQ)
 fsq_image_token_dim: 128
 fsq_checkpoint: 1000                     # epoch number; 0 = best (FSQ.pt)
 
 # ── SkillVLA dataset build (step 5) ───────────────────────────
 max_order: 0
 max_length: 200
-skill_decoder_state_indices: "[0,1,2,3,4,5,6]"
+skill_decoder_state_indices: "[0,1,2,3,4,5,6,7]"   # full observation.state (ee6 + gripper_state2)
 cleanup_intermediate: false               # remove skillset/, skill_latents.npz after skillvla is built
 
 # ── Slurm (shared by all build_data jobs: skillset / encode / build) ──

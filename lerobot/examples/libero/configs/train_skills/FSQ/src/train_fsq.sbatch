@@ -68,13 +68,13 @@ if [ ! -f "${DINO_TOKENS_PATH}" ]; then
 fi
 
 SAM2_ARGS=()
-if [ "${DECODER_IMAGE_MODE}" = "dino_flags" ]; then
+if [ "${RECONSTRUCTOR_MODE}" = "flags" ]; then
   if [ -f "${SAM2_FLAGS_PATH}" ]; then
     SAM2_ARGS=(--sam2_masks_dir "${SAM2_FLAGS_PATH}")
   elif [ -d "${SAM2_MASKS_DIR}" ]; then
     SAM2_ARGS=(--sam2_masks_dir "${SAM2_MASKS_DIR}")
   else
-    echo "Patch flags not found for decoder_image_mode=dino_flags: ${SAM2_FLAGS_PATH}" >&2
+    echo "Patch flags not found for reconstructor_mode=flags: ${SAM2_FLAGS_PATH}" >&2
     exit 1
   fi
 fi
@@ -100,7 +100,7 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     "${SAM2_ARGS[@]}" \
     --output_dir              "${FSQ_OUTPUT_DIR}" \
     --fsq_levels              "${FSQ_LEVELS[@]}" \
-    --decoder_image_mode      "${DECODER_IMAGE_MODE}" \
+    --reconstructor_mode      "${RECONSTRUCTOR_MODE}" \
     --chunk_size              "${FSQ_CHUNK_SIZE}" \
     --hidden_dim              "${FSQ_HIDDEN_DIM}" \
     --num_layers              "${FSQ_NUM_LAYERS}" \

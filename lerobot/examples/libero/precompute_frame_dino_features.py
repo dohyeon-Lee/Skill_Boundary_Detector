@@ -23,6 +23,7 @@ import json
 import os
 import sys
 import time
+from io import BytesIO
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,6 +32,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import tyro
+from PIL import Image
 from tqdm import tqdm
 
 
@@ -71,14 +73,26 @@ def _available_video_keys(episodes_meta) -> list[str]:
     return sorted(c.split("/")[1] for c in cols)
 
 
-def _parse_image_keys(image_keys: str, episodes_meta) -> list[str]:
-    available = _available_video_keys(episodes_meta)
+def _available_image_keys(dataset_dir: Path) -> list[str]:
+    info_path = dataset_dir / "meta" / "info.json"
+    if not info_path.exists():
+        return []
+    with open(info_path) as f:
+        info = json.load(f)
+    features = info.get("features", {})
+    return sorted(k for k, v in features.items() if v.get("dtype") in {"image", "video"})
+
+
+def _parse_image_keys(image_keys: str, dataset_dir: Path, episodes_meta) -> list[str]:
+    video_keys = _available_video_keys(episodes_meta)
+    image_keys_available = _available_image_keys(dataset_dir)
+    available = video_keys or image_keys_available
     if image_keys.strip().lower() in {"all", "*"}:
         return available
     requested = [k.strip() for k in image_keys.split(",") if k.strip()]
     missing = [k for k in requested if k not in available]
     if missing:
-        raise ValueError(f"Missing image keys {missing}. Available video keys: {available}")
+        raise ValueError(f"Missing image keys {missing}. Available image/video keys: {available}")
     return requested
 
 
@@ -91,6 +105,26 @@ def _video_path(dataset_dir: Path, episodes_meta, episode_id: int, image_key: st
 
 def _safe_key(image_key: str) -> str:
     return image_key.replace("/", "_").replace(".", "_")
+
+
+def _decode_image_value(value) -> np.ndarray:
+    if isinstance(value, np.ndarray):
+        arr = value
+    elif isinstance(value, dict) and "bytes" in value:
+        with Image.open(BytesIO(value["bytes"])) as img:
+            arr = np.asarray(img.convert("RGB"), dtype=np.uint8)
+    elif isinstance(value, (bytes, bytearray)):
+        with Image.open(BytesIO(value)) as img:
+            arr = np.asarray(img.convert("RGB"), dtype=np.uint8)
+    elif isinstance(value, str):
+        with Image.open(value) as img:
+            arr = np.asarray(img.convert("RGB"), dtype=np.uint8)
+    else:
+        raise TypeError(f"Unsupported image value type: {type(value)}")
+
+    if arr.ndim == 2:
+        arr = np.repeat(arr[..., None], 3, axis=-1)
+    return arr[..., :3].astype(np.uint8)
 
 
 @dataclass
@@ -265,13 +299,14 @@ def _write_manifest(
 
 def main(args: Args) -> None:
     from collections import defaultdict
+    import pandas as pd
 
     dataset_dir = Path(args.dataset_dir)
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     episodes_meta = _load_episodes_meta(dataset_dir)
-    image_keys = _parse_image_keys(args.image_keys, episodes_meta)
+    image_keys = _parse_image_keys(args.image_keys, dataset_dir, episodes_meta)
     episode_ids = sorted(int(x) for x in episodes_meta["episode_index"].tolist())
 
     # Read FPS from meta/info.json
@@ -289,6 +324,136 @@ def main(args: Args) -> None:
 
     # Build O(1) lookup
     ep_index = episodes_meta.set_index("episode_index")
+    video_keys = _available_video_keys(episodes_meta)
+
+    def _init_wandb() -> object | None:
+        if not args.wandb_project:
+            return None
+        try:
+            import wandb
+
+            group = os.environ.get("SLURM_ARRAY_JOB_ID", os.environ.get("SLURM_JOB_ID", "local"))
+            return wandb.init(
+                project=args.wandb_project,
+                group=group,
+                name=f"frame_dino_w{args.worker_id}",
+                config=vars(args),
+                resume="allow",
+            )
+        except Exception as exc:
+            print(f"[FrameDINO] wandb init failed: {exc}")
+            return None
+
+    def _load_episode_image_frames(ep_id: int, image_key: str) -> np.ndarray:
+        row = ep_index.loc[ep_id]
+        chunk_idx = int(row["data/chunk_index"])
+        file_idx = int(row["data/file_index"])
+        path = dataset_dir / "data" / f"chunk-{chunk_idx:03d}" / f"file-{file_idx:03d}.parquet"
+        df = pd.read_parquet(path, columns=[image_key, "episode_index", "frame_index"])
+        df = df[df["episode_index"] == ep_id].sort_values("frame_index")
+        if df.empty:
+            raise ValueError(f"No frames for episode {ep_id} in {path}")
+        return np.stack([_decode_image_value(value) for value in df[image_key].tolist()], axis=0)
+
+    if not video_keys:
+        all_work_items = [(key, ep_id) for key in image_keys for ep_id in episode_ids]
+        my_work_items = [
+            (key, ep_id)
+            for i, (key, ep_id) in enumerate(all_work_items)
+            if i % args.num_workers == args.worker_id
+        ]
+        work_items = [
+            (key, ep_id)
+            for key, ep_id in my_work_items
+            if not (args.skip_existing and _episode_out_path(output_dir, key, ep_id).exists())
+        ]
+        skipped = len(my_work_items) - len(work_items)
+
+        print(f"[FrameDINO] dataset={dataset_dir}  fps={fps}")
+        print(f"[FrameDINO] output={output_dir}")
+        print(f"[FrameDINO] image_keys={image_keys}")
+        print(f"[FrameDINO] storage=image/parquet")
+        print(f"[FrameDINO] model={args.image_model_name}")
+        print(
+            f"[FrameDINO] worker={args.worker_id}/{args.num_workers}  "
+            f"episodes={len(work_items)}  skipped={skipped}"
+        )
+        print(f"[FrameDINO] tokens/frame={n_tokens}  device={device}  batch_size={args.batch_size}")
+
+        _write_manifest(
+            output_dir,
+            dataset_dir=dataset_dir,
+            image_keys=image_keys,
+            image_model_name=args.image_model_name,
+            image_size=args.image_size,
+            patch_grid=args.patch_grid,
+            n_patch_raw=args.n_patch_raw,
+            dtype=args.dtype,
+        )
+
+        wandb_run = _init_wandb()
+        if not work_items:
+            print("[FrameDINO] nothing to do")
+            if wandb_run:
+                wandb_run.finish()
+            return
+
+        model, mean_t, std_t = load_dino_model(args.image_model_name, device)
+        if args.compile_model and device_type == "cuda" and hasattr(torch, "compile"):
+            print("[FrameDINO] torch.compile model")
+            model = torch.compile(model)
+
+        total_frames = 0
+        episodes_done = 0
+        t0 = time.perf_counter()
+        progress = tqdm(total=len(work_items), desc=f"[w{args.worker_id}] frame DINO (episodes)")
+        for key, ep_id in work_items:
+            frames = _load_episode_image_frames(ep_id, key)
+            features = encode_frames(
+                model,
+                mean_t,
+                std_t,
+                frames,
+                batch_size=args.batch_size,
+                image_size=args.image_size,
+                device=device,
+                device_type=device_type,
+                patch_grid=args.patch_grid,
+                n_patch_raw=args.n_patch_raw,
+            )
+            _save_episode_features(
+                _episode_out_path(output_dir, key, ep_id),
+                features=features,
+                episode_id=ep_id,
+                image_key=key,
+                image_model_name=args.image_model_name,
+                patch_grid=args.patch_grid,
+                n_patch_raw=args.n_patch_raw,
+                dtype=args.dtype,
+            )
+            total_frames += len(frames)
+            episodes_done += 1
+            elapsed = max(time.perf_counter() - t0, 1e-6)
+            fps_now = total_frames / elapsed
+            progress.update(1)
+            progress.set_postfix({"ep_done": episodes_done, "frames": total_frames, "fps": f"{fps_now:.1f}"})
+            if wandb_run is not None:
+                wandb_run.log(
+                    {
+                        "episodes_done": episodes_done + skipped,
+                        "progress_pct": 100.0 * (episodes_done + skipped) / max(1, len(my_work_items)),
+                        "frames_done": total_frames,
+                        "fps": fps_now,
+                    }
+                )
+
+        elapsed = max(time.perf_counter() - t0, 1e-6)
+        print(f"[FrameDINO] done worker={args.worker_id}/{args.num_workers}")
+        print(f"[FrameDINO] encoded frames={total_frames}  fps={total_frames / elapsed:.2f}")
+        print(f"[FrameDINO] episodes saved={episodes_done}")
+        if wandb_run is not None:
+            wandb_run.finish()
+        return
 
     # Each LeRobot v2 mp4 file bundles hundreds of episodes sequentially.
     # Group episodes by unique (key, chunk_idx, file_idx) so each mp4 is read once.
@@ -349,21 +514,7 @@ def main(args: Args) -> None:
         dtype=args.dtype,
     )
 
-    wandb_run = None
-    if args.wandb_project:
-        try:
-            import wandb
-
-            group = os.environ.get("SLURM_ARRAY_JOB_ID", os.environ.get("SLURM_JOB_ID", "local"))
-            wandb_run = wandb.init(
-                project=args.wandb_project,
-                group=group,
-                name=f"frame_dino_w{args.worker_id}",
-                config=vars(args),
-                resume="allow",
-            )
-        except Exception as exc:
-            print(f"[FrameDINO] wandb init failed: {exc}")
+    wandb_run = _init_wandb()
 
     if not work_items:
         print("[FrameDINO] nothing to do")

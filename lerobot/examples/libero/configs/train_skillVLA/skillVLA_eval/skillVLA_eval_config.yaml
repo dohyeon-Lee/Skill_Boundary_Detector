@@ -8,7 +8,7 @@
 # ── Which trained model to evaluate ──
 # Blank = inherit ../skillVLA/skillVLA_train_config.yaml. Set these (dataset name +
 # sub-folder + batch/exp) to target a different PT run.
-source_dataset: libero_90          # e.g. libero_90
+source_dataset: libero_90_full_full          # e.g. libero_90
 run_tag: FSQ555_pg8_dino_flags_image128_1000                 # e.g. FSQ555_pg8_dino_only_image128_1000
 batch_size: 16              # must match the trained model's batch_size
 exp:                      # must match the trained model's exp suffix

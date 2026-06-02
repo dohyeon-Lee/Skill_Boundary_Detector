@@ -58,7 +58,7 @@ def load_model(model_path: Path, device: str) -> SplineFSQAE:
         image_size=getattr(cfg, "image_size", 224),
         patch_grid=getattr(cfg, "patch_grid", 8),
         n_patch_raw=getattr(cfg, "n_patch_raw", 196),
-        decoder_image_mode=getattr(cfg, "decoder_image_mode", "dino_flags"),
+        reconstructor_mode=getattr(cfg, "reconstructor_mode", "flags"),
         image_token_dim=getattr(cfg, "image_token_dim", 128),
         image_encoder_layers=getattr(cfg, "image_encoder_layers", 1),
         image_encoder_heads=getattr(cfg, "image_encoder_heads", 4),

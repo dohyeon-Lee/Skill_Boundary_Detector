@@ -4,13 +4,13 @@
 # ── Paths ─────────────────────────────────────────────────────
 # Change this when moving to another server.
 project_root: /data2/dohyeon/SBD
-dataset_root: libero_dataset
-outputs_root: DP_outputs
-fsq_outputs_root: FSQ_outputs
+dataset_root: libero_original_dataset
+outputs_root: outputs_DP # DP_outputs
+fsq_outputs_root: outputs_FSQ # FSQ_outputs
 fsq_dataset_root: FSQ_dataset
 
 # Dataset to train on. This can be a full dataset or a generated subset.
-target_dataset: libero_90
+target_dataset: libero_90_full_full
 
 # ── DINO features ─────────────────────────────────────────────
 # DP consumes precomputed frame-level DINO tokens.
@@ -41,7 +41,7 @@ dp_horizon: 16
 dp_batch_size: 64
 dp_steps: 100000
 dp_num_workers: 4
-dp_save_freq: 5000
+dp_save_freq: 50000
 dp_log_freq: 200
 dp_eval_freq: 0
 dp_seed: 42
@@ -120,13 +120,13 @@ fsq_cleanup_sam2_masks: true
 # ── FSQ specs, used by later train_skills stages ──────────────
 # EEF pose is always absolute and the motion decoder always predicts K-step
 # action chunks, so eef_mode/action_mode are no longer configurable.
-fsq_run_name: "{target_dataset}_{fsq_tag}_pg{dino_patch_grid}_{decoder_image_mode}_image{fsq_image_token_dim}"
+fsq_run_name: "{target_dataset}_{fsq_tag}_pg{dino_patch_grid}_{reconstructor_mode}_image{fsq_image_token_dim}"
 fsq_levels: [5, 5, 5]
 fsq_epoch: "1000"
-# motion_reconstructor image feature: dino_flags = include SAM2 [is_changed, is_green]
-# patch flags, dino_only = pure DINO (no flags). The skill_termination_predictor
-# always uses pure DINO. This is the main knob to A/B the motion flags.
-decoder_image_mode: dino_only # dino_only | dino_flags
+# reconstructor flag token: flags = add a SAM2 start-frame flag token ([is_changed,
+# is_green]) to the reconstructor; only = no flag token. The terminator never uses
+# flags. Main knob to A/B the reconstructor flags. (siglip variant added in stage 2.)
+reconstructor_mode: only # flags | only
 fsq_batch_size: 128
 fsq_num_epochs: 1000
 fsq_checkpoint_every: 500
@@ -151,7 +151,7 @@ fsq_train_partition:
 fsq_train_nodelist: ""
 fsq_train_exclude_nodes:
   - node200
-  - node01
+  # - node01
 fsq_train_qos: base_qos
 fsq_train_gres: gpu:1
 fsq_train_cpus_per_task: 12

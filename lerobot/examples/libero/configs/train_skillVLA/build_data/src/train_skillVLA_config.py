@@ -52,12 +52,12 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
     fsq_train_dataset = str(get_value(cfg, "fsq_train_dataset", "libero_90"))
     fsq_levels = _levels(get_value(cfg, "fsq_levels", [5, 5, 5]))
     fsq_tag = "fsq" + "".join(str(v) for v in fsq_levels)
-    decoder_image_mode = str(get_value(cfg, "decoder_image_mode", "dino_flags"))
+    reconstructor_mode = str(get_value(cfg, "reconstructor_mode", "flags"))
     image_token_dim = int(get_value(cfg, "fsq_image_token_dim", 128))
     fsq_checkpoint = str(get_value(cfg, "fsq_checkpoint", "1000"))
 
     fsq_run_name = (
-        f"{fsq_train_dataset}_{fsq_tag}_pg{patch_grid}_{decoder_image_mode}_image{image_token_dim}"
+        f"{fsq_train_dataset}_{fsq_tag}_pg{patch_grid}_{reconstructor_mode}_image{image_token_dim}"
     )
     fsq_model_dir = fsq_outputs_root / fsq_run_name
     if fsq_checkpoint in ("0", "best"):
@@ -70,7 +70,7 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
     # ── output layout ──
     #   {skillvla_root}/{source_dataset}/{run_tag}/   ← final outputs (dino.npz, FSQ.pt, skillvla/)
     #   {skillvla_root}/{source_dataset}/_work/        ← shared intermediates (deleted at the end)
-    run_tag = f"FSQ{''.join(str(v) for v in fsq_levels)}_pg{patch_grid}_{decoder_image_mode}_image{image_token_dim}_{ckpt_tag}"
+    run_tag = f"FSQ{''.join(str(v) for v in fsq_levels)}_pg{patch_grid}_{reconstructor_mode}_image{image_token_dim}_{ckpt_tag}"
     source_out_dir = skillvla_root / source_dataset
     run_dir = source_out_dir / run_tag
     work_dir = source_out_dir / "_work"

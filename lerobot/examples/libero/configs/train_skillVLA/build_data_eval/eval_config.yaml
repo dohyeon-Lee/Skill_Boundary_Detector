@@ -16,7 +16,7 @@ eval_run_fsq_patch: true
 eval_run_fsq_recon: true
 
 # Visualization sampling
-eval_n_episodes: 12        # episodes shown per visual eval (dino/skillset/fsq_patch)
+eval_n_episodes: 10        # episodes shown per visual eval (dino/skillset/fsq_patch)
 # Restrict the 3 visual evals (dino/skillset/fsq_patch) to specific tasks, showing
 # eval_n_episodes episodes PER task (so several tasks are covered, not just task 0).
 # Empty list = current behavior (first eval_n_episodes episodes overall).

@@ -99,6 +99,33 @@ used by the current training pipeline. The converted LeRobot datasets are stored
 under `libero_original_dataset/` as well, so they stay separate from the current
 training datasets under `libero_dataset/`.
 
+Edit:
+
+```text
+original_dataset_config.yaml
+```
+
+Then submit:
+
+```bash
+cd /data2/dohyeon/SBD/lerobot/examples/libero/configs/generate_training_dataset/original_dataset
+./submit_convert_original_libero.sh
+```
+
+The default conversion uses `convert_vcodec: libsvtav1`, matching the current
+local datasets' AV1 video-backed LeRobot format. If conversion speed matters
+more than codec parity, run on a GPU node and set:
+
+```yaml
+convert_vcodec: auto
+convert_streaming_encoding: true
+convert_encoder_queue_maxsize: 120
+```
+
+`auto` may select NVIDIA NVENC (`h264_nvenc`/`hevc_nvenc`) when available.
+This changes the compression codec metadata, but decoded RGB frames remain
+ordinary LeRobot video frames for DP/FSQ/VLA training.
+
 Smoke test:
 
 ```bash

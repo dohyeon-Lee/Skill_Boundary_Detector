@@ -66,8 +66,8 @@ class Args:
     image_size: int = 224
     patch_grid: int = 8
     n_patch_raw: int = 196
-    decoder_image_mode: str = "dino_flags"
-    """'dino_only' or 'dino_flags'."""
+    reconstructor_mode: str = "flags"
+    """'flags' | 'only' (siglip added in stage 2). Controls the reconstructor's flag token."""
     image_token_dim: int = 128
     """Internal per-patch width N in the image encoders (must be divisible by heads, >2)."""
     image_encoder_layers: int = 1
@@ -122,18 +122,13 @@ def _make_encoder_traj(states, actions, eef_dims, gripper_idx):
 
 
 def _make_decoder_state(states, actions, eef_dims, gripper_idx):
-    """Returns 7D state: EEF (6D) + previous gripper command (1D).
+    """Decoder/terminator proprioception = full observation.state (EEF pose + gripper STATE).
 
-    The decoder predicts action[t], so feeding action[t]'s gripper value as
-    input would leak the target. Use 0 at the first step and action[t-1]
-    afterwards.
+    Gripper here is the observed gripper STATE (part of observation.state), not the
+    action command, so there is no target leak — the current-step value is used as-is.
+    For LIBERO this is 8D: ee_state(6) + gripper_state(2).
     """
-    pose = states[:, eef_dims].astype(np.float32)
-    grip = actions[:, gripper_idx:gripper_idx + 1].astype(np.float32)
-    gripper = np.zeros_like(grip)
-    if len(grip) > 1:
-        gripper[1:] = grip[:-1]
-    return np.concatenate([pose, gripper], axis=-1)
+    return states.astype(np.float32)
 
 
 def _make_target_action(actions):
@@ -404,7 +399,7 @@ def main(args: Args) -> None:
         image_size=args.image_size,
         patch_grid=args.patch_grid,
         n_patch_raw=args.n_patch_raw,
-        decoder_image_mode=args.decoder_image_mode,
+        reconstructor_mode=args.reconstructor_mode,
         image_token_dim=args.image_token_dim,
         image_encoder_layers=args.image_encoder_layers,
         image_encoder_heads=args.image_encoder_heads,

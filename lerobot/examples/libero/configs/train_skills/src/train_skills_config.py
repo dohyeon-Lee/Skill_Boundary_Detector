@@ -167,20 +167,20 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
 
     fsq_levels = as_levels(get_value(cfg, "fsq_levels", [5, 5, 5]))
     fsq_tag = "fsq" + "".join(str(v) for v in fsq_levels)
-    decoder_image_mode = str(get_value(cfg, "decoder_image_mode", "dino_flags"))
+    reconstructor_mode = str(get_value(cfg, "reconstructor_mode", "flags"))
     fsq_image_token_dim = int(get_value(cfg, "fsq_image_token_dim", 128))
     fsq_run_template = str(
         get_value(
             cfg,
             "fsq_run_name",
-            "{target_dataset}_{fsq_tag}_pg{dino_patch_grid}_{decoder_image_mode}_image{fsq_image_token_dim}",
+            "{target_dataset}_{fsq_tag}_pg{dino_patch_grid}_{reconstructor_mode}_image{fsq_image_token_dim}",
         )
     )
     fsq_run_name = fsq_run_template.format(
         target_dataset=target_dataset,
         fsq_tag=fsq_tag,
         dino_patch_grid=dino_patch_grid,
-        decoder_image_mode=decoder_image_mode,
+        reconstructor_mode=reconstructor_mode,
         fsq_image_token_dim=fsq_image_token_dim,
     )
     slurm_partitions = as_list(get_value(cfg, "slurm_partitions", ["debug"]))
@@ -243,7 +243,7 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "fsq_dim": len(fsq_levels),
         "fsq_num_embeddings": math.prod(fsq_levels),
         "fsq_epoch": str(get_value(cfg, "fsq_epoch", "1000")),
-        "decoder_image_mode": decoder_image_mode,
+        "reconstructor_mode": reconstructor_mode,
         "fsq_batch_size": int(get_value(cfg, "fsq_batch_size", 256)),
         "fsq_num_epochs": int(get_value(cfg, "fsq_num_epochs", 1000)),
         "fsq_checkpoint_every": int(get_value(cfg, "fsq_checkpoint_every", 500)),

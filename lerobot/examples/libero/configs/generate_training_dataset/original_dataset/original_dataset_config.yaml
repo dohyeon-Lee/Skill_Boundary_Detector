@@ -1,0 +1,51 @@
+# Shared config for original LIBERO download/convert utilities.
+# Change project_root when moving this workflow to another server.
+
+project_root: /data2/dohyeon/SBD
+
+# ── Convert original HDF5 -> LeRobot v3 ───────────────────────
+# Input:
+#   {convert_source_root}/{convert_suite}/*.hdf5
+# Output:
+#   {convert_output_root}/{convert_output_name}
+convert_suite: libero_90
+convert_source_root: /data2/dohyeon/SBD/libero_original_dataset
+convert_output_root: /data2/dohyeon/SBD/libero_original_dataset
+convert_output_name: libero_90_full_full
+convert_overwrite: false
+
+# match-current mirrors the video-backed schema under {project_root}/libero_dataset/{suite}.
+# Use rich only when you explicitly want all helper state columns and do not need exact schema parity.
+convert_schema: match-current
+convert_image_size: 256
+
+# Exact parity with current local datasets uses libsvtav1/AV1.
+# Keep this default unless the node's NVIDIA driver supports the selected NVENC API.
+convert_vcodec: libsvtav1
+convert_streaming_encoding: false
+convert_encoder_queue_maxsize: 30
+
+# Faster GPU encoding option. Enable only if FFmpeg/NVENC works on the target node.
+# convert_vcodec: auto
+# convert_streaming_encoding: true
+# convert_encoder_queue_maxsize: 120
+
+convert_encoder_threads: ""       # blank = let FFmpeg/LeRobot choose
+convert_batch_encoding_size: 1
+convert_image_writer_threads: 10
+convert_image_writer_processes: 5
+
+# Debug limits. Blank = full.
+convert_max_tasks: ""
+convert_max_episodes_per_task: ""
+
+# ── Slurm for conversion ──────────────────────────────────────
+convert_partition:
+  - debug
+convert_qos: base_qos
+convert_gres: gpu:1
+convert_cpus_per_task: 32
+convert_mem: 128G
+convert_time: "48:00:00"
+convert_nodelist: ""
+convert_exclude_nodes: []

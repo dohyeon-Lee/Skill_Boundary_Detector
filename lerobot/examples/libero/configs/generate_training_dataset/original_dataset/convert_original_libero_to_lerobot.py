@@ -146,13 +146,35 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--image-size", type=int, default=DEFAULT_IMAGE_SIZE)
     parser.add_argument("--image-writer-threads", type=int, default=10)
     parser.add_argument("--image-writer-processes", type=int, default=5)
-    parser.add_argument("--vcodec", default="libsvtav1")
+    parser.add_argument(
+        "--vcodec",
+        default="libsvtav1",
+        help="Video codec: libsvtav1 matches current datasets; auto may use GPU NVENC on GPU nodes.",
+    )
+    parser.add_argument(
+        "--encoder-threads",
+        type=int,
+        default=None,
+        help="Threads per video encoder. None lets LeRobot/FFmpeg choose.",
+    )
+    parser.add_argument(
+        "--batch-encoding-size",
+        type=int,
+        default=1,
+        help="Accumulate this many episodes before video encoding. 1 encodes each episode immediately.",
+    )
+    parser.add_argument(
+        "--streaming-encoding",
+        action="store_true",
+        help="Encode video as frames are added. Useful for reducing temp image overhead.",
+    )
+    parser.add_argument("--encoder-queue-maxsize", type=int, default=30)
     parser.add_argument(
         "--schema",
         choices=["match-current", "rich"],
         default="match-current",
         help=(
-            "match-current mirrors the feature keys of an existing libero_dataset/{suite} "
+            "match-current mirrors the feature schema of an existing libero_dataset/{suite} "
             "when present; rich always includes observation.states.* helper columns."
         ),
     )
@@ -256,7 +278,7 @@ def task_files(source_dir: Path, project_dir: Path, suite: str) -> list[Path]:
     return [files_by_stem[name] for name in official]
 
 
-def current_feature_keys(output_root: Path, suite: str) -> set[str] | None:
+def current_feature_specs(output_root: Path, suite: str) -> dict[str, Any] | None:
     info_path = output_root / suite / "meta" / "info.json"
     if not info_path.exists():
         return None
@@ -265,16 +287,47 @@ def current_feature_keys(output_root: Path, suite: str) -> set[str] | None:
     features = info.get("features")
     if not isinstance(features, dict):
         return None
-    return set(features)
+    allowed = set(FEATURES)
+    return {key: value for key, value in features.items() if key in allowed}
 
 
-def update_feature_shapes(image_size: int, keep_keys: set[str] | None = None) -> dict[str, Any]:
+def normalize_feature_spec(spec: dict[str, Any]) -> dict[str, Any]:
+    out = dict(spec)
+    if isinstance(out.get("shape"), list):
+        out["shape"] = tuple(out["shape"])
+    if isinstance(out.get("info"), dict):
+        out["info"] = dict(out["info"])
+    return out
+
+
+def codec_metadata_name(vcodec: str) -> str:
+    if vcodec == "libsvtav1":
+        return "av1"
+    if vcodec.startswith("h264"):
+        return "h264"
+    if vcodec.startswith("hevc"):
+        return "hevc"
+    return vcodec
+
+
+def update_feature_shapes(
+    image_size: int,
+    base_features: dict[str, Any] | None = None,
+    resolved_vcodec: str = "libsvtav1",
+) -> dict[str, Any]:
     features = {key: dict(value) for key, value in FEATURES.items()}
-    if keep_keys is not None:
-        features = {key: value for key, value in features.items() if key in keep_keys}
+    if base_features is not None:
+        features = {key: normalize_feature_spec(value) for key, value in base_features.items()}
     for key in ("observation.images.image", "observation.images.wrist_image"):
-        features[key] = dict(features[key])
-        features[key]["shape"] = (image_size, image_size, 3)
+        if key in features:
+            features[key] = dict(features[key])
+            features[key]["shape"] = (image_size, image_size, 3)
+            if "info" in features[key]:
+                features[key]["info"] = dict(features[key]["info"])
+                features[key]["info"]["video.height"] = image_size
+                features[key]["info"]["video.width"] = image_size
+                features[key]["info"]["video.fps"] = FPS
+                features[key]["info"]["video.codec"] = codec_metadata_name(resolved_vcodec)
     return features
 
 
@@ -283,7 +336,7 @@ def main() -> None:
     project_dir, configured_output_root = load_paths(args.config)
     source_root = args.source_root or (project_dir / "libero_original_dataset")
     output_root = args.output_root or source_root
-    schema_root = configured_output_root
+    schema_root = project_dir / "libero_dataset"
     source_dir = source_root / args.suite
     output_name = args.output_name or f"{args.suite}_full_full"
     output_dir = output_root / output_name
@@ -297,6 +350,7 @@ def main() -> None:
 
     import_lerobot(project_dir)
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
+    from lerobot.datasets.video_utils import resolve_vcodec
 
     files = task_files(source_dir, project_dir, args.suite)
     if args.max_tasks is not None:
@@ -311,16 +365,22 @@ def main() -> None:
     print(f"  task files   : {len(files)}")
     print(f"  image size   : {args.image_size}")
 
-    keep_keys = None
+    base_features = None
     if args.schema == "match-current":
-        keep_keys = current_feature_keys(schema_root, args.suite)
-        if keep_keys is not None:
+        base_features = current_feature_specs(schema_root, args.suite)
+        if base_features is not None:
             print(f"  schema       : match-current ({schema_root / args.suite})")
         else:
             print("  schema       : match-current requested, no current dataset found; using rich schema")
     else:
         print("  schema       : rich")
-    features = update_feature_shapes(args.image_size, keep_keys=keep_keys)
+    resolved_vcodec = resolve_vcodec(args.vcodec)
+    print(f"  codec        : requested={args.vcodec} resolved={resolved_vcodec}")
+    features = update_feature_shapes(
+        args.image_size,
+        base_features=base_features,
+        resolved_vcodec=resolved_vcodec,
+    )
 
     dataset = LeRobotDataset.create(
         repo_id=f"{REPO_PREFIX}/{output_name}",
@@ -330,7 +390,11 @@ def main() -> None:
         features=features,
         image_writer_threads=args.image_writer_threads,
         image_writer_processes=args.image_writer_processes,
-        vcodec=args.vcodec,
+        vcodec=resolved_vcodec,
+        encoder_threads=args.encoder_threads,
+        batch_encoding_size=args.batch_encoding_size,
+        streaming_encoding=args.streaming_encoding,
+        encoder_queue_maxsize=args.encoder_queue_maxsize,
     )
 
     total_episodes = 0
