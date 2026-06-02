@@ -13,10 +13,10 @@ build_overwrite: false    # false: fail if the output dataset already exists; tr
 build_allow_fewer: false  # false: fail if a task has fewer episodes than requested; true: use all available.
 
 # Defaults for inspect_training_dataset.py
-inspect_dataset: libero_90_full_full
+inspect_dataset: libero_10_full_full
 
 # Defaults for run_frame_dino_parallel.sh
-dino_target_dataset: libero_90_full_full
+dino_target_dataset: libero_10_full_full
 dino_image_keys: ["observation.images.image"]
 dino_patch_grid: 8  # 14 <- original
 dino_batch_size: 1024
