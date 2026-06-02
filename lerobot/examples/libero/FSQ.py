@@ -220,6 +220,59 @@ class FlagTokenEncoder(nn.Module):
         return self.pool(x)
 
 
+class SiglipHeatmapEncoder(nn.Module):
+    """Frozen SigLIP2: (start image, language) → text-image cosine heatmap → 1 token.
+
+    The heatmap is the per-patch cosine similarity between SigLIP vision patch
+    features and the pooled text embedding (MaskCLIP-style language grounding); it
+    is downsampled to the FSQ patch_grid and tokenized ([Linear(1→H) + pos_emb] over
+    patch_grid² → TokenTransformerPool). Used by reconstructor_mode='siglip', where
+    it replaces the start-image (+flag) token. SigLIP2 is loaded lazily so flags/only
+    runs never import it. Set freeze=False to fine-tune it jointly (heavier).
+    """
+
+    def __init__(self, model_path: str, patch_grid: int, hidden_dim: int,
+                 n_layers: int = 1, n_heads: int = 4, dropout: float = 0.0,
+                 freeze: bool = True) -> None:
+        super().__init__()
+        from transformers import AutoModel  # noqa: PLC0415  (only siglip mode)
+        self.siglip = AutoModel.from_pretrained(model_path)
+        self.freeze = bool(freeze)
+        if self.freeze:
+            self.siglip.eval()
+            for p in self.siglip.parameters():
+                p.requires_grad_(False)
+        self.patch_grid = patch_grid
+        n_patches = patch_grid * patch_grid
+        self.heat_proj = nn.Linear(1, hidden_dim)
+        self.pos_emb = nn.Parameter(torch.zeros(1, n_patches, hidden_dim))
+        nn.init.normal_(self.pos_emb, std=0.02)
+        self.pool = TokenTransformerPool(
+            hidden_dim=hidden_dim, n_tokens=n_patches,
+            n_layers=n_layers, n_heads=n_heads, dropout=dropout,
+        )
+
+    def _heatmap(self, pixel_values, input_ids, attention_mask) -> torch.Tensor:
+        vis = self.siglip.vision_model(pixel_values=pixel_values).last_hidden_state  # (B, Nsig, Dsig)
+        txt = self.siglip.text_model(input_ids=input_ids, attention_mask=attention_mask).pooler_output  # (B, Dsig)
+        v = F.normalize(vis.float(), dim=-1)
+        t = F.normalize(txt.float(), dim=-1).unsqueeze(1)                             # (B, 1, Dsig)
+        heat = (v * t).sum(-1)                                                         # (B, Nsig) cosine
+        side = int(round(heat.shape[1] ** 0.5))
+        heat = heat.view(heat.shape[0], 1, side, side)
+        heat = F.adaptive_avg_pool2d(heat, (self.patch_grid, self.patch_grid))
+        return heat.reshape(heat.shape[0], self.patch_grid * self.patch_grid)         # (B, pg²)
+
+    def forward(self, pixel_values, input_ids, attention_mask) -> torch.Tensor:        # → (B, H)
+        if self.freeze:
+            with torch.no_grad():
+                heat = self._heatmap(pixel_values, input_ids, attention_mask)
+        else:
+            heat = self._heatmap(pixel_values, input_ids, attention_mask)
+        x = self.heat_proj(heat.unsqueeze(-1).to(self.pos_emb.dtype)) + self.pos_emb   # (B, pg², H)
+        return self.pool(x)
+
+
 class FSQ(nn.Module):
     """FSQ: each dim quantized via tanh-scaling + rounding. No learnable params.
 
@@ -267,7 +320,9 @@ class SplineFSQAEConfig:
     image_size: int = 224
     patch_grid: int = 8
     n_patch_raw: int = 196
-    reconstructor_mode: str = "flags"  # "flags" | "only" (siglip added in stage 2)
+    reconstructor_mode: str = "flags"  # "flags" | "only" | "siglip"
+    siglip_checkpoint: str = "/data2/dohyeon/SBD/models/siglip2-large-patch16-256"  # siglip mode only
+    siglip_freeze: bool = True  # siglip mode: freeze SigLIP2 (set False to fine-tune jointly)
     image_token_dim: int = 128  # internal per-patch width N in the image encoders
     image_encoder_layers: int = 1
     image_encoder_heads: int = 4
@@ -315,6 +370,8 @@ class SplineFSQAE(nn.Module):
         patch_grid: int = 8,
         n_patch_raw: int = 196,
         reconstructor_mode: str = "flags",
+        siglip_checkpoint: str = "/data2/dohyeon/SBD/models/siglip2-large-patch16-256",
+        siglip_freeze: bool = True,
         image_token_dim: int = 128,
         image_encoder_layers: int = 1,
         image_encoder_heads: int = 4,
@@ -328,8 +385,8 @@ class SplineFSQAE(nn.Module):
         super().__init__()
         if fsq_levels is None:
             fsq_levels = [5, 5, 5]
-        assert reconstructor_mode in ("flags", "only"), \
-            f"reconstructor_mode must be 'flags' or 'only', got {reconstructor_mode!r}"
+        assert reconstructor_mode in ("flags", "only", "siglip"), \
+            f"reconstructor_mode must be 'flags' | 'only' | 'siglip', got {reconstructor_mode!r}"
 
         self.action_dim = action_dim
         self.state_dim = state_dim
@@ -404,21 +461,35 @@ class SplineFSQAE(nn.Module):
         self.progress_head = nn.Linear(H, 1)
         self.termination_head = nn.Linear(H, 1)
 
-        # (B) reconstructor: [z, start state, start image, (flag), progress] → action chunk.
+        # (B) reconstructor → action chunk. Per reconstructor_mode:
+        #   only   : [z, start_state, start_img, progress]            (4)
+        #   flags  : [z, start_state, start_img, flag, progress]      (5)
+        #   siglip : [z, start_state, siglip_heatmap, progress]       (4)  (heatmap replaces start_img+flag)
         # Everything except progress is fixed at the skill-start frame (latent-free).
-        self.dec_image_encoder_recon = _plain_image_encoder()       # separate params (start image)
         self.recon_state_proj = nn.Linear(state_dim, H)             # separate params (start state)
         self.motion_prog_proj = nn.Linear(1, H)
         self.recon_use_flags = (reconstructor_mode == "flags")
-        if self.recon_use_flags:
-            self.dec_flag_encoder = FlagTokenEncoder(
-                n_patches=self.n_patches, hidden_dim=H,
-                n_layers=image_encoder_layers, n_heads=image_encoder_heads, dropout=dropout,
+        self.recon_use_siglip = (reconstructor_mode == "siglip")
+        self.dec_flag_encoder = None
+        self.siglip_heatmap_encoder = None
+        self.dec_image_encoder_recon = None
+        if self.recon_use_siglip:
+            self.siglip_heatmap_encoder = SiglipHeatmapEncoder(
+                model_path=siglip_checkpoint, patch_grid=patch_grid, hidden_dim=H,
+                n_layers=image_encoder_layers, n_heads=image_encoder_heads,
+                dropout=dropout, freeze=siglip_freeze,
             )
-            motion_n_tokens = 5   # [z, start_state, start_img, flag, progress]
+            motion_n_tokens = 4   # [z, start_state, heatmap, progress]
         else:
-            self.dec_flag_encoder = None
-            motion_n_tokens = 4   # [z, start_state, start_img, progress]
+            self.dec_image_encoder_recon = _plain_image_encoder()   # separate params (start image)
+            if self.recon_use_flags:
+                self.dec_flag_encoder = FlagTokenEncoder(
+                    n_patches=self.n_patches, hidden_dim=H,
+                    n_layers=image_encoder_layers, n_heads=image_encoder_heads, dropout=dropout,
+                )
+                motion_n_tokens = 5   # [z, start_state, start_img, flag, progress]
+            else:
+                motion_n_tokens = 4   # [z, start_state, start_img, progress]
         self.motion_pool = TokenTransformerPool(
             hidden_dim=H, n_tokens=motion_n_tokens,
             n_layers=image_encoder_layers, n_heads=image_encoder_heads, dropout=dropout,
@@ -561,6 +632,9 @@ class SplineFSQAE(nn.Module):
         dec_tokens: torch.Tensor,    # DINO tokens (B,T,N,F)/(B,N,F) or raw images
         patch_flags: torch.Tensor,   # (B, T, n_patches, 2)
         frame_progress: torch.Tensor | None = None,  # (B, T), per-skill progress in [0,1]
+        siglip_pixel_values: torch.Tensor | None = None,    # (B, 3, Hs, Ws) start frame (SigLIP-preprocessed)
+        siglip_input_ids: torch.Tensor | None = None,       # (B, L) language tokens (siglip mode)
+        siglip_attention_mask: torch.Tensor | None = None,  # (B, L)
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Returns:
@@ -589,14 +663,19 @@ class SplineFSQAE(nn.Module):
         progress_pred = torch.sigmoid(self.progress_head(tm)).squeeze(-1)  # (B, T) in [0, 1]
         term_logits = self.termination_head(tm).squeeze(-1)         # (B, T)
 
-        # ── (B) reconstructor: [z, start state, start image, (flag), progress] ──
-        # All but progress are fixed at the skill-start frame; only progress varies per step.
-        start_img = self.dec_image_encoder_recon(dec_tokens[:, :1]).expand(B, T, -1)  # (B, T, H)
+        # ── (B) reconstructor: start-frame inputs fixed, only progress varies per step ──
         start_state = self.recon_state_proj(states[:, :1]).expand(B, T, -1)           # (B, T, H)
-        recon_tokens = [z_tok, start_state, start_img]
-        if self.recon_use_flags:
-            start_flag = self.dec_flag_encoder(patch_flags[:, 0]).unsqueeze(1).expand(B, T, -1)
-            recon_tokens.append(start_flag)
+        recon_tokens = [z_tok, start_state]
+        if self.recon_use_siglip:
+            heat = self.siglip_heatmap_encoder(
+                siglip_pixel_values, siglip_input_ids, siglip_attention_mask)         # (B, H) start, fixed
+            recon_tokens.append(heat.to(z_tok.dtype).unsqueeze(1).expand(B, T, -1))
+        else:
+            start_img = self.dec_image_encoder_recon(dec_tokens[:, :1]).expand(B, T, -1)  # (B, T, H)
+            recon_tokens.append(start_img)
+            if self.recon_use_flags:
+                start_flag = self.dec_flag_encoder(patch_flags[:, 0]).unsqueeze(1).expand(B, T, -1)
+                recon_tokens.append(start_flag)
         recon_tokens.append(prog_tok)
         mo_tokens = torch.stack(recon_tokens, dim=2).reshape(B * T, len(recon_tokens), -1)
         mo = self.motion_pool(mo_tokens).view(B, T, -1)             # (B, T, H)
@@ -621,10 +700,18 @@ class SplineFSQAE(nn.Module):
         dec_tokens: torch.Tensor,    # (B, T, n_tokens, feat_dim)
         patch_flags: torch.Tensor,   # (B, T, n_patches, 2)
         frame_progress: torch.Tensor | None = None,
+        siglip_pixel_values: torch.Tensor | None = None,
+        siglip_input_ids: torch.Tensor | None = None,
+        siglip_attention_mask: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Returns (delta, progress_pred, term_logits, indices)."""
         z_q, indices = self.encode(ctrl_pts, lengths, start_tokens, end_tokens)
-        delta, progress_pred, term_logits = self.decode(z_q, states, dec_tokens, patch_flags, frame_progress)
+        delta, progress_pred, term_logits = self.decode(
+            z_q, states, dec_tokens, patch_flags, frame_progress,
+            siglip_pixel_values=siglip_pixel_values,
+            siglip_input_ids=siglip_input_ids,
+            siglip_attention_mask=siglip_attention_mask,
+        )
         return delta, progress_pred, term_logits, indices
 
     # ── skillVLA termination path ─────────────────────────────────────────────
