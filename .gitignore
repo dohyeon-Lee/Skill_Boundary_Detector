@@ -8,6 +8,9 @@ models/
 
 # ── 학습 출력물 ───────────────────────────────────────────────────
 outputs/
+outputs_*/
+outputs_DP/
+outputs_FSQ/
 VLA_outputs/
 VLA_single_outputs/
 DP_outputs/
