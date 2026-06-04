@@ -4,13 +4,17 @@
 # ── Paths ─────────────────────────────────────────────────────
 # Change this when moving to another server.
 project_root: /data2/dohyeon/SBD
-dataset_root: libero_original_dataset
-outputs_root: outputs_DP # DP_outputs
-fsq_outputs_root: outputs_FSQ # FSQ_outputs
+# libero_dataset | libero_original_dataset 
+dataset_root: libero_dataset 
+# DP_outputs | outputs_DP
+outputs_root: DP_outputs 
+# FSQ_outputs | outputs_FSQ
+fsq_outputs_root: FSQ_outputs 
 fsq_dataset_root: FSQ_dataset
 
 # Dataset to train on. This can be a full dataset or a generated subset.
-target_dataset: libero_90_full_full
+# libero_90 | libero_90_full_full
+target_dataset: libero_90
 
 # ── DINO features ─────────────────────────────────────────────
 # DP consumes precomputed frame-level DINO tokens.
@@ -18,7 +22,7 @@ target_dataset: libero_90_full_full
 # train_skills prepares target-specific DINO copies under:
 #   {project_root}/{dataset_root}/{fsq_dataset_root}/{target_dataset}/DINO/pg{grid}
 dino_feature_dataset: "{target_dataset}"
-dino_source_dataset: ""
+dino_source_dataset: "" #  "" | 
 dino_image_keys: ["observation.images.image"]
 dino_patch_grid: 8
 dino_feature_dim: 384
@@ -120,16 +124,18 @@ fsq_cleanup_sam2_masks: true
 # ── FSQ specs, used by later train_skills stages ──────────────
 # EEF pose is always absolute and the motion decoder always predicts K-step
 # action chunks, so eef_mode/action_mode are no longer configurable.
-fsq_run_name: "{target_dataset}_{fsq_tag}_pg{dino_patch_grid}_{reconstructor_mode}_image{fsq_image_token_dim}"
+fsq_exp: "eqloss"  # optional suffix for ablations, e.g. exp1 -> ..._exp1
+fsq_run_name: "{target_dataset}_{fsq_tag}_pg{dino_patch_grid}_{reconstructor_mode}_image{fsq_image_token_dim}{fsq_exp_suffix}"
 fsq_levels: [5, 5, 5]
 fsq_epoch: "1000"
-# reconstructor flag token: flags = add a SAM2 start-frame flag token ([is_changed,
-# is_green]) to the reconstructor; only = no flag token. The terminator never uses
-# flags. Main knob to A/B the reconstructor flags. (siglip variant added in stage 2.)
+# reconstructor start-frame token (terminator never uses any of these):
+#   only   = no extra start-frame token (state + progress only)
+#   flags  = + a SAM2 start-frame flag token ([is_changed, is_green])
 reconstructor_mode: only # flags | only
+
 fsq_batch_size: 128
 fsq_num_epochs: 1000
-fsq_checkpoint_every: 500
+fsq_checkpoint_every: 100
 fsq_lr: 3e-4
 fsq_hidden_dim: 256
 fsq_num_layers: 2
@@ -137,10 +143,10 @@ fsq_n_control: 30
 # Internal per-patch width N inside the image encoders (must be divisible by
 # image heads=4 and >2). Flags occupy 2 of N channels in dino_flags mode, so
 # smaller N raises the relative flag weight. Image-encoder output is still 256.
-fsq_image_token_dim: 64 # 64 128 256
+fsq_image_token_dim: 256 # 64 128 256
 fsq_chunk_size: 10
 fsq_max_length: 200
-fsq_delta_loss_weight: 10.0
+fsq_delta_loss_weight: 1.0 # 10
 fsq_progress_loss_weight: 1.0
 fsq_end_loss_weight: 1.0
 fsq_wandb_project: VAE_train

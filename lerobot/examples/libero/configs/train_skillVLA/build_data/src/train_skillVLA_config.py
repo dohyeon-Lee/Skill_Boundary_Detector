@@ -55,9 +55,12 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
     reconstructor_mode = str(get_value(cfg, "reconstructor_mode", "flags"))
     image_token_dim = int(get_value(cfg, "fsq_image_token_dim", 128))
     fsq_checkpoint = str(get_value(cfg, "fsq_checkpoint", "1000"))
+    fsq_exp = str(get_value(cfg, "fsq_exp", "")).strip()
+    fsq_exp_suffix = f"_{fsq_exp}" if fsq_exp else ""
 
     fsq_run_name = (
         f"{fsq_train_dataset}_{fsq_tag}_pg{patch_grid}_{reconstructor_mode}_image{image_token_dim}"
+        f"{fsq_exp_suffix}"
     )
     fsq_model_dir = fsq_outputs_root / fsq_run_name
     if fsq_checkpoint in ("0", "best"):
@@ -70,7 +73,10 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
     # ── output layout ──
     #   {skillvla_root}/{source_dataset}/{run_tag}/   ← final outputs (dino.npz, FSQ.pt, skillvla/)
     #   {skillvla_root}/{source_dataset}/_work/        ← shared intermediates (deleted at the end)
-    run_tag = f"FSQ{''.join(str(v) for v in fsq_levels)}_pg{patch_grid}_{reconstructor_mode}_image{image_token_dim}_{ckpt_tag}"
+    run_tag = (
+        f"FSQ{''.join(str(v) for v in fsq_levels)}_pg{patch_grid}_{reconstructor_mode}_image{image_token_dim}"
+        f"{fsq_exp_suffix}_{ckpt_tag}"
+    )
     source_out_dir = skillvla_root / source_dataset
     run_dir = source_out_dir / run_tag
     work_dir = source_out_dir / "_work"
@@ -128,6 +134,8 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
         "skillset_max_sweeps": int(get_value(cfg, "skillset_max_sweeps", 2)),
         # FSQ (step 4)
         "fsq_run_name": fsq_run_name,
+        "fsq_exp": fsq_exp,
+        "fsq_exp_suffix": fsq_exp_suffix,
         "fsq_model_dir": fsq_model_dir,
         "fsq_model_path": fsq_model_path,
         "fsq_checkpoint": fsq_checkpoint,
@@ -135,7 +143,7 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
         # SkillVLA build (step 5)
         "max_order": int(get_value(cfg, "max_order", 0)),
         "max_length": int(get_value(cfg, "max_length", 200)),
-        "skill_decoder_state_indices": str(get_value(cfg, "skill_decoder_state_indices", "[0,1,2,3,4,5,6]")),
+        "skill_decoder_state_indices": str(get_value(cfg, "skill_decoder_state_indices", "[0,1,2,3,4,5,6,7]")),
         "cleanup_intermediate": str(get_value(cfg, "cleanup_intermediate", True)).lower(),
         # output layout
         "run_tag": run_tag,

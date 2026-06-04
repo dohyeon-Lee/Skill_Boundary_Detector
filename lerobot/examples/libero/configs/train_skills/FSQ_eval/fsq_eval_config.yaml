@@ -3,7 +3,7 @@
 # are taken from ../train_skills_config.yaml. Keep this file minimal.
 
 # Which trained FSQ to evaluate (folder name under {project_root}/FSQ_outputs/).
-fsq_eval_run_name: libero_90_fsq555_pg8_dino_only_image256
+fsq_eval_run_name: libero_90_fsq555_pg8_flags_image256_eqloss
 # 0 = best checkpoint (FSQ.pt), else epoch number → FSQ_epoch{N:04d}.pt
 fsq_eval_checkpoint: 1000
 

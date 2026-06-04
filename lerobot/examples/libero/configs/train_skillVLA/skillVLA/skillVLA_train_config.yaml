@@ -14,15 +14,17 @@
 # NOTE: project_root / dataset_root / skillvla_dataset_root are inherited from
 #   ../build_data/train_skillVLA_config.yaml (single source). To switch the data
 #   root (e.g. libero_dataset → libero_original_dataset), change dataset_root THERE.
-source_dataset: libero_90_full_full                                   # e.g. libero_90, libero_90_00to20_10
-run_tag: FSQ555_pg8_dino_only_image128_1000                 # the sub-folder name
-skill_decoder_state_indices: "[0,1,2,3,4,5,6]"              # raw state dims fed to the FSQ decoder
+# libero_90 | libero_90_full_full
+source_dataset: libero_90                                   # e.g. libero_90, libero_90_00to20_10
+run_tag: FSQ555_pg8_flags_image256_eqloss_200                 # the sub-folder name
+skill_decoder_state_indices: "[0,1,2,3,4,5,6,7]"            # raw state dims fed to FSQ (8 = ee6 + gripper_state2)
 image_key: observation.images.image
 
 # ── Model init ────────────────────────────────────────────────
 pi_base: lerobot/pi05_base
 image_model_path: /data2/dohyeon/SBD/models/dinov3-vits16   # DINO repo/dir for the FSQ decoder
-skillvla_outputs_root: outputs_skillVLA                      # under {project_root}/
+# skillVLA_outputs | outputs_skillVLA
+skillvla_outputs_root: skillVLA_outputs                      # under {project_root}/
 
 # ── Optimization ──────────────────────────────────────────────
 batch_size: 16
@@ -30,13 +32,14 @@ num_workers: 4
 num_gpus: 1
 lr_base: 2.5e-05         # effective lr = lr_base * num_gpus
 steps: 100000
-save_freq: 5000
+save_freq: 2500
 
 # ── SkillVLA losses / conditioning ────────────────────────────
 skill_predictor_loss_weight: 1.0
 skill_boundary_random_p: 10          # simulated end-signal timing jitter (0 disables)
 skill_decoder_end_threshold: 0.5
-use_fsq_latent_suffix: true
+# branch: true = terminator + reconstructor (chunk suffix token); false = terminator only.
+use_reconstructor_chunk_suffix: false
 # (inference_skill_max_length is an eval-only knob → lives in skillVLA_eval_config.yaml)
 # Independent VLM-gradient gates (see modeling_skillVLA): both False → both train the VLM.
 detach_action_prefix_grad: false
@@ -57,5 +60,5 @@ train_gres: gpu:1
 train_cpus_per_task: 16
 train_mem: 128G
 train_time: "48:00:00"
-train_nodelist: node01
+train_nodelist: node100
 train_exclude_nodes: []

@@ -22,11 +22,14 @@ if [ ! -x "${BOOTSTRAP_PYTHON}" ]; then
   BOOTSTRAP_PYTHON=python3
 fi
 
+mkdir -p "${SCRIPT_DIR}/../logs"
+SNAPSHOT_ENV="${SCRIPT_DIR}/../logs/skillvla_env_encode_$(date +%Y%m%d_%H%M%S)_$$.sh"
 if [ -n "${SOURCE_DATASET}" ]; then
-  eval "$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/train_skillVLA_config.py" --config "${CONFIG_PATH}" --dataset "${SOURCE_DATASET}" --shell)"
+  "${BOOTSTRAP_PYTHON}" "${SRC_DIR}/train_skillVLA_config.py" --config "${CONFIG_PATH}" --dataset "${SOURCE_DATASET}" --shell > "${SNAPSHOT_ENV}"
 else
-  eval "$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/train_skillVLA_config.py" --config "${CONFIG_PATH}" --shell)"
+  "${BOOTSTRAP_PYTHON}" "${SRC_DIR}/train_skillVLA_config.py" --config "${CONFIG_PATH}" --shell > "${SNAPSHOT_ENV}"
 fi
+source "${SNAPSHOT_ENV}"
 
 if [ ! -d "${SKILLSET_DIR}/skills" ]; then
   echo "Skillset not found: ${SKILLSET_DIR}/skills" >&2
@@ -78,5 +81,5 @@ echo "  FSQ model : ${FSQ_MODEL_PATH}"
 echo "  tokens    : ${SKILL_TOKENS_PATH}"
 echo "  latents   : ${SKILL_LATENTS_PATH}"
 
-TRAIN_SKILLVLA_CONFIG="${CONFIG_PATH}" SOURCE_DATA="${SOURCE_DATASET}" \
+TRAIN_SKILLVLA_CONFIG="${CONFIG_PATH}" SOURCE_DATA="${SOURCE_DATASET}" SKILLVLA_ENV_SNAPSHOT="${SNAPSHOT_ENV}" \
   sbatch "${SBATCH_ARGS[@]}" "${SRC_DIR}/encode_skills.sbatch"

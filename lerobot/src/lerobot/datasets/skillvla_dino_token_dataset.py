@@ -53,11 +53,15 @@ class SkillVLADinoTokenDataset(torch.utils.data.Dataset):
             meta.close()
 
         self._frame_to_row: dict[tuple[int, int], int] = {}
+        # Every frame → its own skill's START frame, so the reconstructor branch can
+        # fetch the skill-start image/state for any step (start = frame - skill_ds).
+        self._frame_to_skill_start: dict[tuple[int, int], int] = {}
 
         for skill_i, (ep, fs, length) in enumerate(zip(episode_ids, frame_starts, lengths, strict=True)):
             start = int(offsets[skill_i])
             for j in range(int(length)):
                 self._frame_to_row[(int(ep), int(fs) + j)] = start + j
+                self._frame_to_skill_start[(int(ep), int(fs) + j)] = int(fs)
 
         self.features = self._open_or_build_feature_cache(build_cache=build_cache)
         if self.features.shape[1:] != (self.n_tokens, self.feat_dim):
@@ -101,11 +105,25 @@ class SkillVLADinoTokenDataset(torch.utils.data.Dataset):
             return int(value.reshape(-1)[0].item())
         return int(value)
 
+    def _feat_at(self, episode_id: int, frame: int) -> np.ndarray:
+        row = self._frame_to_row.get((episode_id, frame))
+        return self._zero if row is None else self.features[row]
+
     def __getitem__(self, idx) -> dict:
         item = self.dataset[idx]
         episode_id = self._scalar_int(item["episode_index"])
         frame_index = self._scalar_int(item["frame_index"])
-        row = self._frame_to_row.get((episode_id, frame_index))
-        feat = self._zero if row is None else self.features[row]
-        item[self.output_key] = torch.from_numpy(np.asarray(feat, dtype=np.float32))
+        item[self.output_key] = torch.from_numpy(
+            np.asarray(self._feat_at(episode_id, frame_index), dtype=np.float32)
+        )
+
+        # Skill-START frame image (DINO) + raw state, for the reconstructor branch.
+        # The start frame is in the same episode, so its global index is idx - skill_ds.
+        start_frame = self._frame_to_skill_start.get((episode_id, frame_index), frame_index)
+        item["skill_decoder_start_image"] = torch.from_numpy(
+            np.asarray(self._feat_at(episode_id, start_frame), dtype=np.float32)
+        )
+        start_idx = int(idx) - (frame_index - start_frame)
+        start_state = self.dataset.hf_dataset[start_idx]["observation.state"]
+        item["skill_decoder_start_state"] = torch.as_tensor(start_state, dtype=torch.float32)
         return item

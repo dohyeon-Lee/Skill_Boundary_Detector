@@ -42,8 +42,10 @@ class SkillVLAConfig(PI05Config):
     """Batch key written by the SkillVLA DINO-token dataset wrapper."""
     skill_decoder_dino_build_cache: bool = True
     """Build the .npy mmap cache from the .npz token file when missing."""
-    use_fsq_latent_suffix: bool = True
-    """If True, feed the frozen FSQ skill-decoder latent as an extra action-expert suffix token."""
+    use_reconstructor_chunk_suffix: bool = True
+    """Branch selector. True = terminator + reconstructor: the frozen FSQ reconstructs the
+    action chunk from the skill-START frame and feeds it as ONE extra action-expert suffix
+    token. False = terminator only (skill + progress reach the action expert via attention)."""
     inference_skill_max_length: int = 200
 
     detach_action_prefix_grad: bool = False

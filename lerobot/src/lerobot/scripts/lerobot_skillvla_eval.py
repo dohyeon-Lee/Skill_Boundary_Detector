@@ -316,121 +316,35 @@ def _save_frame_png(frame: np.ndarray, path: Path, size: int = 144) -> str:
     return path.name
 
 
-def _ordered_trace_values(items: list[dict], value_key: str, dim: int = 7) -> np.ndarray:
-    if not items:
-        return np.zeros((0, dim), dtype=np.float32)
-    max_step = max(int(item.get("skill_step", 0)) for item in items)
-    arr = np.full((max_step + 1, dim), np.nan, dtype=np.float32)
-    for item in items:
-        step = int(item.get("skill_step", 0))
-        values = np.asarray(item.get(value_key, []), dtype=np.float32).reshape(-1)
-        if values.size == 0:
-            continue
-        arr[step, : min(dim, values.size)] = values[:dim]
-    return arr
-
-
-def _ordered_action_values(items: list[dict], value_key: str, dim: int = 7) -> np.ndarray:
-    if not items:
-        return np.zeros((0, dim), dtype=np.float32)
-    max_step = max(int(item.get("skill_step", 0)) for item in items)
-    arr = np.full((max_step + 1, dim), np.nan, dtype=np.float32)
-    for item in items:
-        step = int(item.get("skill_step", 0))
-        values = np.asarray(item.get(value_key, []), dtype=np.float32).reshape(-1)
-        if values.size == 0:
-            continue
-        arr[step, : min(dim, values.size)] = values[:dim]
-    return arr
-
-
-def _collect_trace_chunks(items: list[dict], *, value_key: str, dim: int = 7) -> tuple[list[tuple[int, np.ndarray]], np.ndarray, int]:
-    chunks: list[tuple[int, np.ndarray]] = []
-    points = np.zeros((0, dim), dtype=np.float32)
-    length = 0
-    for item in items:
-        start = int(item.get("skill_step", 0))
-        if "chunk" in item:
-            chunk = np.asarray(item["chunk"], dtype=np.float32)
-            if chunk.ndim == 2 and chunk.size:
-                chunk = chunk[:, : min(dim, chunk.shape[1])]
-                chunks.append((start, chunk))
-                length = max(length, start + chunk.shape[0])
-                continue
-        values = np.asarray(item.get(value_key, []), dtype=np.float32).reshape(-1)
-        if values.size:
-            if points.shape[0] <= start:
-                padded = np.full((start + 1, dim), np.nan, dtype=np.float32)
-                padded[: points.shape[0]] = points
-                points = padded
-            points[start, : min(dim, values.size)] = values[:dim]
-            length = max(length, start + 1)
-    return chunks, points, length
-
-
-def _plot_skill_action_compare(path: Path, expert_items: list[dict], decoder_items: list[dict]) -> str:
+def _plot_skill_progress(path: Path, end_probs: list[dict], *, end_threshold: float = 0.5) -> str:
+    """Per-skill FSQ terminator curve: predicted progress (0→1) + end probability over
+    the skill's steps. (Replaces the old 7-dim action graph — the decoder action is no
+    longer used directly by skillVLA.)"""
     import matplotlib
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    labels = ["dx", "dy", "dz", "droll", "dpitch", "dyaw", "grip"]
-    expert_chunks, expert_points, expert_length = _collect_trace_chunks(expert_items, value_key="action", dim=7)
-    decoder_chunks, decoder_points, decoder_length = _collect_trace_chunks(decoder_items, value_key="delta", dim=7)
+    items = sorted(end_probs or [], key=lambda r: int(r.get("skill_step", 0)))
+    prog_steps = [int(r["skill_step"]) for r in items if r.get("progress") is not None]
+    progress = [float(r["progress"]) for r in items if r.get("progress") is not None]
+    end_steps = [int(r["skill_step"]) for r in items]
+    end_p = [float(r.get("prob", 0.0)) for r in items]
 
-    length = max(expert_length, decoder_length, 1)
-    x = np.arange(length)
-
-    fig, axes = plt.subplots(7, 1, figsize=(5.2, 8.8), sharex=True)
-    for i, ax in enumerate(np.atleast_1d(axes)):
-        if len(expert_points):
-            ax.plot(np.arange(len(expert_points)), expert_points[:, i], color="#1f77b4", linewidth=1.35, label="action expert")
-        chunk_label_added = False
-        for start, chunk in expert_chunks:
-            if i >= chunk.shape[1]:
-                continue
-            chunk_x = start + np.arange(chunk.shape[0])
-            ax.plot(
-                chunk_x,
-                chunk[:, i],
-                color="#1f77b4",
-                linewidth=1.5,
-                alpha=0.78,
-                label="action expert chunks" if not chunk_label_added else None,
-            )
-            chunk_label_added = True
-        if len(decoder_points):
-            ax.plot(
-                np.arange(len(decoder_points)),
-                decoder_points[:, i],
-                color="#d62728",
-                linewidth=1.25,
-                linestyle="--",
-                label="decoder prior",
-            )
-        chunk_label_added = False
-        for start, chunk in decoder_chunks:
-            if i >= chunk.shape[1]:
-                continue
-            chunk_x = start + np.arange(chunk.shape[0])
-            ax.plot(
-                chunk_x,
-                chunk[:, i],
-                color="#d62728",
-                linewidth=1.45,
-                alpha=0.82,
-                label="decoder prior chunks" if not chunk_label_added else None,
-            )
-            chunk_label_added = True
-        ax.set_ylabel(labels[i], fontsize=7)
-        ax.tick_params(axis="both", labelsize=6)
-        ax.grid(True, alpha=0.25)
-        ax.set_xlim(0, max(0, len(x) - 1))
-        if i == 0:
-            ax.legend(loc="upper right", fontsize=6)
-    axes[-1].set_xlabel("skill step", fontsize=7)
-    fig.tight_layout(pad=0.35)
+    fig, ax = plt.subplots(figsize=(5.2, 2.6))
+    if prog_steps:
+        ax.plot(prog_steps, progress, color="#1f77b4", linewidth=1.6, marker="o", markersize=2.5, label="progress")
+    if end_steps:
+        ax.plot(end_steps, end_p, color="#d62728", linewidth=1.3, linestyle="--", label="end prob")
+    ax.axhline(float(end_threshold), color="#888888", linewidth=0.8, linestyle=":", label=f"end thr {end_threshold:g}")
+    ax.set_ylim(-0.02, 1.02)
+    ax.set_xlabel("skill step", fontsize=8)
+    ax.set_ylabel("FSQ terminator", fontsize=8)
+    ax.tick_params(axis="both", labelsize=7)
+    ax.grid(True, alpha=0.25)
+    ax.legend(loc="best", fontsize=7)
+    fig.tight_layout(pad=0.4)
     fig.savefig(path, dpi=140)
     plt.close(fig)
     return path.name
@@ -512,9 +426,15 @@ def _save_training_skill_examples(
 
     meta = _load_raw_dataset_meta(dataset_dir)
     token_arr = np.asarray(data["tokens"])
+    rng = np.random.default_rng(0)  # reproducible RANDOM sampling of examples per token
     out: dict[int, list[dict[str, str]]] = {}
     for token in sorted(tokens):
-        rows = np.flatnonzero(token_arr == int(token))[: max(0, int(n_samples))]
+        matches = np.flatnonzero(token_arr == int(token))
+        k = max(0, int(n_samples))
+        if k and len(matches) > k:
+            rows = np.sort(rng.choice(matches, size=k, replace=False))  # random subset, shown in order
+        else:
+            rows = matches[:k]
         examples = []
         for local_i, row in enumerate(rows):
             episode_id = int(np.asarray(data["episode_id"])[row])
@@ -728,10 +648,10 @@ def _write_task_skill_html(
             stem = f"ep{episode_idx:03d}_skill{skill_idx:03d}_token{token:04d}"
             start_name = _save_frame_png(start_frame, assets_dir / f"{stem}_start.png")
             end_name = _save_frame_png(end_frame, assets_dir / f"{stem}_end.png")
-            graph_name = _plot_skill_action_compare(
-                assets_dir / f"{stem}_actions.png",
-                skill.get("expert_action_chunks", skill.get("expert_actions", [])),
-                skill.get("decoder_actions", []),
+            graph_name = _plot_skill_progress(
+                assets_dir / f"{stem}_progress.png",
+                skill.get("end_probs", []),
+                end_threshold=float(getattr(policy.config, "skill_decoder_end_threshold", 0.5)),
             )
             skill_payloads.append(
                 {

@@ -92,7 +92,7 @@ class SkillVLAPytorch(PI05Pytorch):
             nn.SiLU(),
             nn.LayerNorm(paligemma_config.width),
         )
-        self.action_fsq_latent_suffix_proj: nn.Module | None = None
+        self.action_chunk_suffix_proj: nn.Module | None = None
 
         self.vae_decoder = None
         self.special_skill_embeddings = nn.Embedding(3, config.skill_latent_dim)
@@ -132,7 +132,7 @@ class SkillVLAPytorch(PI05Pytorch):
         keys = {"action_dim", "state_dim", "n_control", "spline_degree",
                 "hidden_dim", "fsq_levels", "num_layers", "dropout",
                 "max_length", "action_min", "action_max", "delta_min", "delta_max",
-                "feat_dim", "n_tokens", "decoder_image_mode", "image_encoder_layers",
+                "feat_dim", "n_tokens", "reconstructor_mode", "image_encoder_layers",
                 "image_encoder_heads", "image_model_name", "image_size", "patch_grid",
                 "n_patch_raw", "image_token_dim", "chunk_size"}
         vae = SplineFSQAE(**{k: v for k, v in cfg_dict.items() if k in keys})
@@ -141,9 +141,12 @@ class SkillVLAPytorch(PI05Pytorch):
             p.requires_grad_(False)
         self.vae_decoder    = vae
         action_expert_config = get_gemma_config(self.config.action_expert_variant)
-        fsq_hidden_dim = int(getattr(cfg, "hidden_dim", getattr(vae.dec_z_proj, "out_features")))
-        self.action_fsq_latent_suffix_proj = nn.Sequential(
-            nn.Linear(fsq_hidden_dim, action_expert_config.width),
+        # Reconstructor chunk suffix: the FSQ-reconstructed action chunk (K×A values)
+        # is flattened and projected into ONE action-expert suffix token.
+        fsq_chunk_size = int(getattr(cfg, "chunk_size", self.config.chunk_size))
+        fsq_action_dim = int(getattr(cfg, "action_dim", 0)) or int(getattr(vae, "action_dim", 0))
+        self.action_chunk_suffix_proj = nn.Sequential(
+            nn.Linear(fsq_chunk_size * fsq_action_dim, action_expert_config.width),
             nn.SiLU(),
             nn.LayerNorm(action_expert_config.width),
         )
@@ -250,36 +253,57 @@ class SkillVLAPytorch(PI05Pytorch):
         progress_tok = self.action_progress_memory_proj(progress.float().view(-1, 1)).unsqueeze(1)
         return torch.cat([skill_tok, progress_tok], dim=1).to(dtype=dtype)
 
-    def _fsq_latent_suffix_token(self, skill_z: Tensor, states: Tensor | None, *, device: torch.device) -> Tensor | None:
-        if not self.config.use_fsq_latent_suffix:
+    def _reconstructor_chunk_suffix_token(
+        self,
+        skill_z: Tensor,
+        start_state: Tensor | None,
+        start_image: Tensor | None,
+        progress: Tensor,
+        *,
+        device: torch.device,
+    ) -> Tensor | None:
+        """Branch-2 suffix token. The frozen FSQ reconstructor predicts the action chunk
+        from the skill-START frame ([z, start_state, start_img, progress]); the whole
+        chunk (K×A) is flattened into ONE action-expert suffix token. progress is the
+        terminator output (the same value used for the action-memory progress token)."""
+        if not self.config.use_reconstructor_chunk_suffix:
             return None
-        if self.vae_decoder is None or self.action_fsq_latent_suffix_proj is None or states is None:
-            raise ValueError("FSQ skill latent suffix is enabled, but FSQ decoder/state is missing.")
-        states = self._prepare_skill_decoder_state(states, device=device, dtype=skill_z.dtype)
-        fsq_latent = self.vae_decoder.predict_skill_latent(skill_z.to(device=device), states, quantize=True)
-        fsq_latent = fsq_latent[:, 0].float() if fsq_latent.ndim == 3 else fsq_latent.float()
-        return self.action_fsq_latent_suffix_proj(fsq_latent).unsqueeze(1)
+        if self.vae_decoder is None or self.action_chunk_suffix_proj is None:
+            raise ValueError("Reconstructor chunk suffix is enabled, but the FSQ decoder is missing.")
+        if start_state is None or start_image is None:
+            raise ValueError("Reconstructor chunk suffix needs the skill-start state and image.")
+        start_state = self._prepare_skill_decoder_state(start_state, device=device, dtype=skill_z.dtype)
+        start_image = self._prepare_skill_decoder_tokens(
+            start_image, batch_size=start_state.shape[0], steps=start_state.shape[1],
+            device=device, dtype=skill_z.dtype,
+        )
+        chunk = self.vae_decoder.predict_action_chunk(
+            skill_z.to(device=device), start_state, start_image,
+            progress.to(device=device), quantize=True,
+        )                                       # (B, T, K, A)
+        chunk = chunk[:, 0].flatten(1).float()  # (B, K*A) — skill-start step
+        return self.action_chunk_suffix_proj(chunk).unsqueeze(1)  # (B, 1, width)
 
-    def _prepend_latent_suffix_token(
+    def _prepend_suffix_token(
         self,
         suffix_embs: Tensor,
         suffix_pad_masks: Tensor,
         suffix_att_masks: Tensor,
-        latent_token: Tensor | None,
+        suffix_token: Tensor | None,
     ) -> tuple[Tensor, Tensor, Tensor]:
-        if latent_token is None:
+        if suffix_token is None:
             return suffix_embs, suffix_pad_masks, suffix_att_masks
-        latent_token = latent_token.to(device=suffix_embs.device, dtype=suffix_embs.dtype)
-        latent_pad = torch.ones(
+        suffix_token = suffix_token.to(device=suffix_embs.device, dtype=suffix_embs.dtype)
+        token_pad = torch.ones(
             suffix_embs.shape[0], 1, dtype=suffix_pad_masks.dtype, device=suffix_pad_masks.device
         )
-        latent_att = torch.ones(
+        token_att = torch.ones(
             suffix_embs.shape[0], 1, dtype=suffix_att_masks.dtype, device=suffix_att_masks.device
         )
         return (
-            torch.cat([latent_token, suffix_embs], dim=1),
-            torch.cat([latent_pad, suffix_pad_masks], dim=1),
-            torch.cat([latent_att, suffix_att_masks], dim=1),
+            torch.cat([suffix_token, suffix_embs], dim=1),
+            torch.cat([token_pad, suffix_pad_masks], dim=1),
+            torch.cat([token_att, suffix_att_masks], dim=1),
         )
 
     def _append_action_memory(
@@ -430,6 +454,13 @@ class SkillVLAPytorch(PI05Pytorch):
         indices = self.config.skill_decoder_state_indices
         if indices is not None:
             idx = torch.as_tensor(indices, dtype=torch.long, device=states.device)
+            if int(idx.max()) >= raw_dim:
+                raise ValueError(
+                    f"skill_decoder_state_indices={list(indices)} out of range for "
+                    f"skill_decoder_state shape {tuple(states.shape)} (last dim {raw_dim}). "
+                    f"FSQ was trained with state_dim={expected_dim}; the runtime observation.state "
+                    f"is only {raw_dim}-dim."
+                )
             states = states.index_select(-1, idx)
         elif raw_dim > expected_dim:
             states = states[..., :expected_dim]
@@ -540,11 +571,11 @@ class SkillVLAPytorch(PI05Pytorch):
         past_key_values,
         x_t,
         timestep,
-        fsq_latent_token: Tensor | None = None,
+        suffix_token: Tensor | None = None,
     ):
         suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = self.embed_suffix(x_t, timestep)
-        suffix_embs, suffix_pad_masks, suffix_att_masks = self._prepend_latent_suffix_token(
-            suffix_embs, suffix_pad_masks, suffix_att_masks, fsq_latent_token
+        suffix_embs, suffix_pad_masks, suffix_att_masks = self._prepend_suffix_token(
+            suffix_embs, suffix_pad_masks, suffix_att_masks, suffix_token
         )
 
         suffix_len = suffix_pad_masks.shape[1]
@@ -586,7 +617,8 @@ class SkillVLAPytorch(PI05Pytorch):
         *,
         skill_z: Tensor,
         skill_progress: Tensor,
-        skill_decoder_state: Tensor | None = None,
+        skill_decoder_start_state: Tensor | None = None,
+        skill_decoder_start_image: Tensor | None = None,
         noise=None,
         num_steps=None,
         **kwargs,
@@ -604,7 +636,9 @@ class SkillVLAPytorch(PI05Pytorch):
 
         prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(images, img_masks, tokens, masks)
         action_memory_tokens = self._action_memory_tokens(skill_z, skill_progress, dtype=prefix_embs.dtype)
-        fsq_latent_token = self._fsq_latent_suffix_token(skill_z, skill_decoder_state, device=device)
+        suffix_token = self._reconstructor_chunk_suffix_token(
+            skill_z, skill_decoder_start_state, skill_decoder_start_image, skill_progress, device=device,
+        )
         _, prefix_memory_pad_masks, past_key_values = self._contextualize_prefix_with_action_memory(
             prefix_embs,
             prefix_pad_masks,
@@ -625,7 +659,7 @@ class SkillVLAPytorch(PI05Pytorch):
                     past_key_values=past_key_values,
                     x_t=input_x_t,
                     timestep=current_timestep,
-                    fsq_latent_token=fsq_latent_token,
+                    suffix_token=suffix_token,
                 )
 
             if self._rtc_enabled():
@@ -665,6 +699,8 @@ class SkillVLAPytorch(PI05Pytorch):
         skill_boundary   : Tensor | None = None,
         skill_decoder_state: Tensor | None = None,
         skill_decoder_image: Tensor | None = None,
+        skill_decoder_start_state: Tensor | None = None,
+        skill_decoder_start_image: Tensor | None = None,
         noise            : Tensor | None = None,
         time             : Tensor | None = None,
         detach_sp_prefix : bool          = True,   # False → sp_loss gradient flows into VLM
@@ -718,7 +754,10 @@ class SkillVLAPytorch(PI05Pytorch):
             device=actions.device,
         )
         action_memory_tokens = self._action_memory_tokens(action_skill_z, action_progress, dtype=prefix_embs.dtype)
-        fsq_latent_token = self._fsq_latent_suffix_token(action_skill_z, skill_decoder_state, device=actions.device)
+        chunk_suffix_token = self._reconstructor_chunk_suffix_token(
+            action_skill_z, skill_decoder_start_state, skill_decoder_start_image, action_progress,
+            device=actions.device,
+        )
 
         if time is None:
             time = self.sample_time(actions.shape[0], actions.device)
@@ -757,7 +796,7 @@ class SkillVLAPytorch(PI05Pytorch):
                 past_key_values,
                 x_t,
                 time,
-                fsq_latent_token=fsq_latent_token,
+                suffix_token=chunk_suffix_token,
             )
             # Action grad is detached above (no_grad). If the skill-predictor loss
             # should still train the VLM, re-contextualize the prefix WITH grad
@@ -770,8 +809,8 @@ class SkillVLAPytorch(PI05Pytorch):
                 sp_prefix_ctx = sp_prefix_ctx[:, :prefix_len]
         else:
             suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = self.embed_suffix(x_t, time)
-            suffix_embs, suffix_pad_masks, suffix_att_masks = self._prepend_latent_suffix_token(
-                suffix_embs, suffix_pad_masks, suffix_att_masks, fsq_latent_token
+            suffix_embs, suffix_pad_masks, suffix_att_masks = self._prepend_suffix_token(
+                suffix_embs, suffix_pad_masks, suffix_att_masks, chunk_suffix_token
             )
 
             if (
@@ -908,6 +947,8 @@ class SkillVLAPolicy(PI05Policy):
             skill_boundary=batch.get("skill_boundary"),
             skill_decoder_state=skill_decoder_state,
             skill_decoder_image=skill_decoder_image,
+            skill_decoder_start_state=batch.get("skill_decoder_start_state"),
+            skill_decoder_start_image=batch.get("skill_decoder_start_image"),
             detach_sp_prefix=self.config.detach_sp_prefix,
         )
 
@@ -945,6 +986,10 @@ class SkillVLAPolicy(PI05Policy):
         self._current_z        : Tensor | None = None
         self._current_token    : Tensor | None = None
         self._current_progress : Tensor | None = None
+        # Skill-START raw state + DINO image, cached when a skill begins; reused by the
+        # reconstructor chunk suffix for every chunk of that skill (branch 2).
+        self._start_state      : Tensor | None = None
+        self._start_image      : Tensor | None = None
         self._skill_step       : int           = 0
         self._trigger_new_skill: bool          = False
         self._action_queue     : deque         = deque(maxlen=self.config.n_action_steps)
@@ -1055,6 +1100,11 @@ class SkillVLAPolicy(PI05Policy):
 
     def _record_end_signal(self, end_prob: Tensor) -> None:
         probs = end_prob.detach().float().cpu().view(-1).tolist()
+        # The terminator also predicts per-step progress (self._current_progress); log it
+        # alongside the end probability so the eval HTML can plot the progress curve.
+        prog = None
+        if self._current_progress is not None:
+            prog = self._current_progress.detach().float().cpu().view(-1).tolist()
         for batch_index, prob in enumerate(probs):
             if batch_index >= len(self._active_skill_trace_indices):
                 continue
@@ -1067,6 +1117,7 @@ class SkillVLAPolicy(PI05Policy):
                     "episode_timestep": int(self._episode_timestep),
                     "skill_step": int(self._skill_step),
                     "prob": float(prob),
+                    "progress": (float(prog[batch_index]) if prog is not None and batch_index < len(prog) else None),
                 }
             )
             if prob >= float(self.config.skill_decoder_end_threshold) and record.get("end_signal_timestep") is None:
@@ -1231,6 +1282,10 @@ class SkillVLAPolicy(PI05Policy):
                 "skill_decoder_state is required for SkillVLA inference. "
                 "It should be copied from raw observation.state before normalization."
             )
+        # Cache the skill-START frame (raw state + DINO image); the reconstructor chunk
+        # suffix reuses it for every chunk of this skill (branch 2).
+        self._start_state = state
+        self._start_image = self._decoder_image_from_batch(batch, images)
         label_records = self._next_forced_skill_records(tokens.shape[0])
         if label_records is not None:
             self._update_skill_from_label_records(label_records, state)
@@ -1303,7 +1358,8 @@ class SkillVLAPolicy(PI05Policy):
                 images, img_masks, tokens, masks,
                 skill_z=self._current_z,
                 skill_progress=self._current_progress,
-                skill_decoder_state=state,
+                skill_decoder_start_state=self._start_state,
+                skill_decoder_start_image=self._start_image,
             )
             action_dim = self.config.output_features[ACTION].shape[0]
             self._record_expert_chunk(actions[:, :, :action_dim])

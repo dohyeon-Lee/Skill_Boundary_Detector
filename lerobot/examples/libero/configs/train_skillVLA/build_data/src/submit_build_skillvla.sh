@@ -20,11 +20,14 @@ if [ ! -x "${BOOTSTRAP_PYTHON}" ]; then
   BOOTSTRAP_PYTHON=python3
 fi
 
+mkdir -p "${SCRIPT_DIR}/../logs"
+SNAPSHOT_ENV="${SCRIPT_DIR}/../logs/skillvla_env_build_$(date +%Y%m%d_%H%M%S)_$$.sh"
 if [ -n "${SOURCE_DATASET}" ]; then
-  eval "$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/train_skillVLA_config.py" --config "${CONFIG_PATH}" --dataset "${SOURCE_DATASET}" --shell)"
+  "${BOOTSTRAP_PYTHON}" "${SRC_DIR}/train_skillVLA_config.py" --config "${CONFIG_PATH}" --dataset "${SOURCE_DATASET}" --shell > "${SNAPSHOT_ENV}"
 else
-  eval "$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/train_skillVLA_config.py" --config "${CONFIG_PATH}" --shell)"
+  "${BOOTSTRAP_PYTHON}" "${SRC_DIR}/train_skillVLA_config.py" --config "${CONFIG_PATH}" --shell > "${SNAPSHOT_ENV}"
 fi
+source "${SNAPSHOT_ENV}"
 
 # ── skip if the final outputs already exist (checked first: intermediates may have
 #    been cleaned up after a prior successful run) ──
@@ -79,5 +82,5 @@ echo "  FSQ.pt    : ${FSQ_COPY_PATH}"
 echo "  skillvla  : ${SKILLVLA_DATASET_DIR}"
 echo "  cleanup   : ${CLEANUP_INTERMEDIATE}"
 
-TRAIN_SKILLVLA_CONFIG="${CONFIG_PATH}" SOURCE_DATA="${SOURCE_DATASET}" \
+TRAIN_SKILLVLA_CONFIG="${CONFIG_PATH}" SOURCE_DATA="${SOURCE_DATASET}" SKILLVLA_ENV_SNAPSHOT="${SNAPSHOT_ENV}" \
   sbatch "${SBATCH_ARGS[@]}" "${SRC_DIR}/build_skillvla.sbatch"

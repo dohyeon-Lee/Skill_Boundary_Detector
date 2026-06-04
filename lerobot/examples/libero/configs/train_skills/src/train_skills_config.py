@@ -169,11 +169,13 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
     fsq_tag = "fsq" + "".join(str(v) for v in fsq_levels)
     reconstructor_mode = str(get_value(cfg, "reconstructor_mode", "flags"))
     fsq_image_token_dim = int(get_value(cfg, "fsq_image_token_dim", 128))
+    fsq_exp = str(get_value(cfg, "fsq_exp", "")).strip()
+    fsq_exp_suffix = f"_{fsq_exp}" if fsq_exp else ""
     fsq_run_template = str(
         get_value(
             cfg,
             "fsq_run_name",
-            "{target_dataset}_{fsq_tag}_pg{dino_patch_grid}_{reconstructor_mode}_image{fsq_image_token_dim}",
+            "{target_dataset}_{fsq_tag}_pg{dino_patch_grid}_{reconstructor_mode}_image{fsq_image_token_dim}{fsq_exp_suffix}",
         )
     )
     fsq_run_name = fsq_run_template.format(
@@ -182,6 +184,8 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         dino_patch_grid=dino_patch_grid,
         reconstructor_mode=reconstructor_mode,
         fsq_image_token_dim=fsq_image_token_dim,
+        fsq_exp=fsq_exp,
+        fsq_exp_suffix=fsq_exp_suffix,
     )
     slurm_partitions = as_list(get_value(cfg, "slurm_partitions", ["debug"]))
     slurm_partition = slurm_partitions[0] if slurm_partitions else "debug"
@@ -238,6 +242,8 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "fsq_levels_str": " ".join(str(v) for v in fsq_levels),
         "fsq_levels_arg": "[" + ",".join(str(v) for v in fsq_levels) + "]",
         "fsq_tag": fsq_tag,
+        "fsq_exp": fsq_exp,
+        "fsq_exp_suffix": fsq_exp_suffix,
         "fsq_run_name": fsq_run_name,
         "fsq_output_dir": fsq_outputs_root / fsq_run_name,
         "fsq_dim": len(fsq_levels),

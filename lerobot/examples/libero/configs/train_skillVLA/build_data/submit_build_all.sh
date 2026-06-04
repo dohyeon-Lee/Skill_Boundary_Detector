@@ -21,11 +21,15 @@ if [ ! -x "${BOOTSTRAP_PYTHON}" ]; then
   BOOTSTRAP_PYTHON=python3
 fi
 
+mkdir -p "${SCRIPT_DIR}/logs"
+SNAPSHOT_ENV="${SCRIPT_DIR}/logs/skillvla_env_$(date +%Y%m%d_%H%M%S)_$$.sh"
 if [ -n "${SOURCE_DATASET}" ]; then
-  eval "$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/train_skillVLA_config.py" --config "${CONFIG_PATH}" --dataset "${SOURCE_DATASET}" --shell)"
+  "${BOOTSTRAP_PYTHON}" "${SRC_DIR}/train_skillVLA_config.py" --config "${CONFIG_PATH}" --dataset "${SOURCE_DATASET}" --shell > "${SNAPSHOT_ENV}"
 else
-  eval "$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/train_skillVLA_config.py" --config "${CONFIG_PATH}" --shell)"
+  "${BOOTSTRAP_PYTHON}" "${SRC_DIR}/train_skillVLA_config.py" --config "${CONFIG_PATH}" --shell > "${SNAPSHOT_ENV}"
 fi
+# Freeze all downstream jobs to the exact config resolved at submit time.
+source "${SNAPSHOT_ENV}"
 
 # ── short-circuit: whole pipeline already done? (final outputs survive cleanup) ──
 build_complete () {
@@ -74,7 +78,7 @@ SBATCH_ARGS=(
 [ -n "${SKILLVLA_NODELIST}" ]      && SBATCH_ARGS+=(--nodelist="${SKILLVLA_NODELIST}")
 [ -n "${SKILLVLA_EXCLUDE_NODES}" ] && SBATCH_ARGS+=(--exclude="${SKILLVLA_EXCLUDE_NODES}")
 
-ENV=(TRAIN_SKILLVLA_CONFIG="${CONFIG_PATH}" SOURCE_DATA="${SOURCE_DATASET}")
+ENV=(TRAIN_SKILLVLA_CONFIG="${CONFIG_PATH}" SOURCE_DATA="${SOURCE_DATASET}" SKILLVLA_ENV_SNAPSHOT="${SNAPSHOT_ENV}")
 DEP=""   # dependency clause (e.g. "afterok:123") carried to the next non-skipped stage
 
 # ── stage 3: skillset (GPU array over tasks) + verify/re-run ──

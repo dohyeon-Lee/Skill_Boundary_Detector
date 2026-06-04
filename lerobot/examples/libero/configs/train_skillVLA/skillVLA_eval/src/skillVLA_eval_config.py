@@ -1,58 +1,72 @@
 #!/usr/bin/env python3
 """Config for SkillVLA closed-loop EVAL (PT) on LIBERO sim.
 
-Imports the PT training config for the model path + FSQ path + roots, then merges
-eval-only knobs. Pick which trained model to evaluate by NAME + sub-folder
-(+ batch_size / exp / checkpoint); blank fields inherit
-../skillVLA/skillVLA_train_config.yaml. Emits shell exports (--shell).
+Pick the model to evaluate by its OUTPUT FOLDER NAME + checkpoint (under
+{project_root}/{skillvla_outputs_root}/). The trained policy's params — FSQ path,
+state indices, and the branch (use_reconstructor_chunk_suffix) — live in the
+checkpoint's config.json and are restored automatically when lerobot loads
+--policy.path, so the eval never re-specifies them (branch1/branch2 just work). The
+FSQ / skill_latents / raw-dataset paths used for the run are derived from that config.
+
+Emits shell exports (--shell). project_root is read from build_data (single source).
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
 _HERE = Path(__file__).resolve()
 sys.path.insert(0, str(_HERE.parent.parent.parent.parent / "train_skills" / "src"))
-sys.path.insert(0, str(_HERE.parent.parent.parent / "skillVLA" / "src"))
 from train_skills_config import as_bool, as_list, get_value, load_config, print_shell  # noqa: E402
-from skillVLA_train_config import _is_set, build_settings as train_settings  # noqa: E402
 
 DEFAULT_CONFIG_PATH = _HERE.parent.parent / "skillVLA_eval_config.yaml"
-TRAIN_CONFIG_PATH = _HERE.parent.parent.parent / "skillVLA" / "skillVLA_train_config.yaml"
-
-# Fields that identify which PT run to evaluate (blank → inherit the train yaml).
-MODEL_SELECTORS = ("source_dataset", "run_tag", "batch_size", "exp")
+# project_root is shared across all train_skillVLA configs → read it from build_data.
+BUILD_DATA_CONFIG = _HERE.parent.parent.parent / "build_data" / "train_skillVLA_config.yaml"
 
 
-def build_settings(cfg: dict, train_cfg_path: Path | None = None) -> dict:
-    train_cfg = load_config(str(train_cfg_path or TRAIN_CONFIG_PATH))
-    for key in MODEL_SELECTORS:
-        if _is_set(cfg.get(key)):
-            train_cfg[key] = cfg[key]
-    tr = train_settings(train_cfg)
-
+def build_settings(cfg: dict) -> dict:
+    project_root = Path(str(get_value(load_config(BUILD_DATA_CONFIG), "project_root"))).expanduser()
+    outputs_root = str(get_value(cfg, "skillvla_outputs_root", "skillVLA_outputs"))
+    model_dir = str(get_value(cfg, "model_dir"))
     checkpoint = str(get_value(cfg, "checkpoint", "last"))
     target_task = str(get_value(cfg, "target_task", "libero_90"))
-    policy_path = Path(str(tr["pt_output_dir"])) / "checkpoints" / checkpoint / "pretrained_model"
-    run_name = f"{tr['pt_run_name']}_{checkpoint}_{target_task}_fsq_eval"
+    image_key = str(get_value(cfg, "image_key", "observation.images.image"))
+
+    policy_path = project_root / outputs_root / model_dir / "checkpoints" / checkpoint / "pretrained_model"
+
+    # The checkpoint config.json is the single source of truth for the trained model.
+    # FSQ path → derive the skill_latents + raw-dataset paths used for skill_html.
+    pol: dict = {}
+    cfg_json = policy_path / "config.json"
+    if cfg_json.is_file():
+        pol = json.loads(cfg_json.read_text())
+    fsq_ckpt = str(pol.get("vae_decoder_path") or "")
+    skill_latents_path = ""
+    raw_dataset_dir = ""
+    if fsq_ckpt:
+        fp = Path(fsq_ckpt)  # {root}/{dataset_root}/skillvla_dataset/{source}/{run_tag}/FSQ.pt
+        skill_latents_path = str(fp.parent / "skill_latents.npz")
+        try:
+            raw_dataset_dir = str(fp.parents[3] / fp.parents[1].name)  # {dataset_root}/{source}
+        except IndexError:
+            raw_dataset_dir = ""
+
+    run_name = f"{model_dir}_{checkpoint}_{target_task}_fsq_eval"
     eval_out_dir = _HERE.parent.parent / "outputs" / run_name
 
     settings: dict = {
-        "project_root": tr["project_root"],
-        "lerobot_root": tr["lerobot_root"],
-        # model + FSQ (from the PT run)
+        "project_root": project_root,
+        "lerobot_root": project_root / "lerobot",
+        # model (everything else is restored from the checkpoint config on --policy.path)
         "policy_path": policy_path,
-        "pt_run_name": tr["pt_run_name"],
         "checkpoint": checkpoint,
-        "fsq_ckpt": tr["fsq_ckpt"],
-        "image_model_path": tr["image_model_path"],
-        "skill_decoder_state_indices": tr["skill_decoder_state_indices"],
-        "use_fsq_latent_suffix": tr["use_fsq_latent_suffix"],
-        "raw_dataset_dir": tr["raw_dataset_dir"],
-        "image_key": tr["image_key"],
-        "skill_latents_path": tr["skill_latents_path"],
+        "fsq_ckpt": fsq_ckpt,                 # existence check (model loads it from its own config)
+        "skill_latents_path": skill_latents_path,
+        "raw_dataset_dir": raw_dataset_dir,
+        "image_key": image_key,
         # eval rollout
         "target_task": target_task,
         "task_ids": str(get_value(cfg, "task_ids", "[0,1,2,3,4,5,6,7,8,9]")),
@@ -65,7 +79,7 @@ def build_settings(cfg: dict, train_cfg_path: Path | None = None) -> dict:
         "video_fps": int(get_value(cfg, "video_fps", 10)),
         "skill_html": as_bool(get_value(cfg, "skill_html", True)),
         "skill_html_train_samples": int(get_value(cfg, "skill_html_train_samples", 10)),
-        # inference knobs (eval-only)
+        # inference knobs (eval-time tuning; model structure comes from the checkpoint)
         "skill_decoder_end_threshold": str(get_value(cfg, "skill_decoder_end_threshold", 0.5)),
         "inference_skill_max_length": int(get_value(cfg, "inference_skill_max_length", 200)),
         # output / wandb
@@ -92,10 +106,9 @@ def build_settings(cfg: dict, train_cfg_path: Path | None = None) -> dict:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
-    ap.add_argument("--train_config", type=Path, default=None)
     ap.add_argument("--shell", action="store_true")
     args = ap.parse_args()
-    settings = build_settings(load_config(args.config), train_cfg_path=args.train_config)
+    settings = build_settings(load_config(args.config))
     if args.shell:
         print_shell(settings)
     else:

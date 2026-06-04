@@ -67,7 +67,7 @@ class Args:
     patch_grid: int = 8
     n_patch_raw: int = 196
     reconstructor_mode: str = "flags"
-    """'flags' | 'only' (siglip added in stage 2). Controls the reconstructor's flag token."""
+    """'flags' | 'only'. Controls the reconstructor's start-frame flag token."""
     image_token_dim: int = 128
     """Internal per-patch width N in the image encoders (must be divisible by heads, >2)."""
     image_encoder_layers: int = 1

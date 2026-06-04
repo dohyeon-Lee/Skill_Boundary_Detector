@@ -79,6 +79,64 @@ def _video_path(dataset_dir: Path, episodes_meta, episode_id: int, image_key: st
     return dataset_dir / "videos" / image_key / f"chunk-{chunk_idx:03d}" / f"file-{file_idx:03d}.mp4"
 
 
+def _episode_language_map(episodes_meta) -> dict[int, str]:
+    """episode_index → task language string (from the episodes 'tasks' column)."""
+    lang: dict[int, str] = {}
+    if "tasks" not in episodes_meta.columns:
+        return lang
+    for _, row in episodes_meta.iterrows():
+        ts = row["tasks"]
+        if isinstance(ts, (list, tuple, np.ndarray)):
+            ts = ts[0] if len(ts) else ""
+        lang[int(row["episode_index"])] = str(ts)
+    return lang
+
+
+def _task_language_map(dataset_dir: Path) -> dict[int, str]:
+    """task_index → task language string (fallback when episode 'tasks' is absent)."""
+    import pandas as pd  # noqa: PLC0415
+    p = dataset_dir / "meta" / "tasks.parquet"
+    if not p.exists():
+        return {}
+    tm = pd.read_parquet(p).reset_index()
+    return {int(r["task_index"]): str(r["task"]) for _, r in tm.iterrows()}
+
+
+def _read_file_start_frames(path: Path, targets: list[tuple[int, int]], fps: float):
+    """Decode one shared mp4 ONCE, returning only the requested absolute frames.
+
+    LIBERO packs many episodes per mp4; the absolute frame for a skill is
+    round(from_timestamp*fps) + episode-relative frame_start. targets: (skill_idx,
+    absolute_frame). Picks frames by presentation time (round(frame.time * fps)) so it
+    is robust to B-frame decode reordering, and stops once every target is collected.
+    Returns [(skill_idx, rgb_uint8 (H,W,3))].
+    """
+    import av  # noqa: PLC0415
+    from collections import defaultdict  # noqa: PLC0415
+
+    want: dict[int, list[int]] = defaultdict(list)
+    for si, af in targets:
+        want[af].append(si)
+    max_t = (max(want) + 2) / fps
+    out: list[tuple[int, np.ndarray]] = []
+    with av.open(str(path)) as container:
+        stream = container.streams.video[0]
+        stream.thread_type = "AUTO"
+        for frame in container.decode(stream):
+            if frame.time is None:
+                continue
+            if frame.time > max_t:
+                break
+            fidx = int(round(frame.time * fps))
+            if fidx in want:
+                img = frame.to_ndarray(format="rgb24")
+                for si in want.pop(fidx):
+                    out.append((si, img))
+                if not want:
+                    break
+    return out
+
+
 # ── args ──────────────────────────────────────────────────────────────────────
 
 @dataclass

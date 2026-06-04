@@ -48,6 +48,8 @@ SKILL_VLA_BATCH_KEYS = (
     "skill_max_length",
     "skill_decoder_state",
     "skill_decoder_image",
+    "skill_decoder_start_state",
+    "skill_decoder_start_image",
 )
 
 
@@ -100,10 +102,13 @@ class SkillVLAPreserveRawStateProcessorStep(ProcessorStep):
         comp_data = dict(transition.get(TransitionKey.COMPLEMENTARY_DATA, {}) or {})
 
         observation = transition.get(TransitionKey.OBSERVATION, {}) or {}
-        if "skill_decoder_state" not in comp_data:
-            state = observation.get(OBS_STATE)
-            if state is not None:
-                comp_data["skill_decoder_state"] = state.clone() if isinstance(state, torch.Tensor) else deepcopy(state)
+        # The FSQ (terminator + reconstructor) uses the full raw observation.state
+        # (ee pose + gripper STATE). Always copy it here, BEFORE normalization, and
+        # override any precomputed skill_decoder_state — older datasets baked a 7-dim
+        # (ee6 + prev gripper action) column that must not shadow the real 8-dim state.
+        state = observation.get(OBS_STATE)
+        if state is not None:
+            comp_data["skill_decoder_state"] = state.clone() if isinstance(state, torch.Tensor) else deepcopy(state)
         if "skill_decoder_image" not in comp_data:
             visual = observation.get("observation.dino.image")
             if visual is not None:

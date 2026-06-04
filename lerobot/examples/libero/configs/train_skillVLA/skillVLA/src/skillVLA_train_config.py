@@ -54,7 +54,11 @@ def build_settings(cfg: dict) -> dict:
     lr_base = float(get_value(cfg, "lr_base", 2.5e-05))
     exp = str(get_value(cfg, "exp", "")).strip()
 
-    run_name = f"{source_dataset}_{run_tag}_batch{batch_size}"
+    # branch suffix: branch2 = terminator + reconstructor chunk suffix; branch1 = terminator only.
+    use_recon_suffix = as_bool(get_value(cfg, "use_reconstructor_chunk_suffix", True))
+    branch = "branch2" if use_recon_suffix else "branch1"
+
+    run_name = f"{source_dataset}_{run_tag}_batch{batch_size}_{branch}"
     if exp:
         run_name = f"{run_name}_{exp}"
     vla_root = project_root / str(get_value(cfg, "skillvla_outputs_root", "skillVLA_outputs"))
@@ -75,7 +79,7 @@ def build_settings(cfg: dict) -> dict:
         "skill_latents_path": run_dir / "skill_latents.npz",   # eval skill_html ref (may be cleaned up)
         "raw_dataset_dir": dataset_root / source_dataset,       # raw LeRobot dataset (eval ref)
         "image_key": str(get_value(cfg, "image_key", "observation.images.image")),
-        "skill_decoder_state_indices": str(get_value(cfg, "skill_decoder_state_indices", "[0,1,2,3,4,5,6]")),
+        "skill_decoder_state_indices": str(get_value(cfg, "skill_decoder_state_indices", "[0,1,2,3,4,5,6,7]")),
         # model init
         "pi_base": str(get_value(cfg, "pi_base", "lerobot/pi05_base")),
         "image_model_path": str(get_value(cfg, "image_model_path", "/data2/dohyeon/SBD/models/dinov3-vits16")),
@@ -95,7 +99,7 @@ def build_settings(cfg: dict) -> dict:
         "skill_predictor_loss_weight": str(get_value(cfg, "skill_predictor_loss_weight", 1.0)),
         "skill_boundary_random_p": int(get_value(cfg, "skill_boundary_random_p", 10)),
         "skill_decoder_end_threshold": str(get_value(cfg, "skill_decoder_end_threshold", 0.5)),
-        "use_fsq_latent_suffix": as_bool(get_value(cfg, "use_fsq_latent_suffix", True)),
+        "use_reconstructor_chunk_suffix": use_recon_suffix,
         "detach_action_prefix_grad": as_bool(get_value(cfg, "detach_action_prefix_grad", False)),
         "detach_sp_prefix": as_bool(get_value(cfg, "detach_sp_prefix", False)),
         # wandb

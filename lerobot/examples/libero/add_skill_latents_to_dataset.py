@@ -246,35 +246,19 @@ def compute_skill_decoder_state(
     eef_state_dim: int = 6,
     gripper_action_dim: int = -1,
 ) -> list[np.ndarray]:
-    """Build the exact state input used by the FSQ single-step decoder.
+    """State input used by the FSQ decoder/terminator = the FULL raw observation.state
+    (ee pose + gripper STATE), matching train_FSQ._make_decoder_state.
 
-    FSQ training used EEF pose plus the previous gripper command. The first
-    frame of each skill receives 0 for the previous gripper to avoid leaking
-    the current target action.
+    (The previous FSQ used ee pose + the previous gripper *command* — a 7-dim state.
+    The current FSQ uses the observed gripper STATE that is already part of
+    observation.state, so no action-derived gripper is needed and there is no target
+    leak. action_column / eef_state_dim / gripper_action_dim are kept for signature
+    compatibility but unused.)
     """
     if state_column not in ep_df.columns:
         raise KeyError(f"Missing required column: {state_column}")
-    if action_column not in ep_df.columns:
-        raise KeyError(f"Missing required column: {action_column}")
-
     states = np.stack(ep_df[state_column].to_numpy()).astype(np.float32)
-    actions = np.stack(ep_df[action_column].to_numpy()).astype(np.float32)
-    if states.shape[-1] < eef_state_dim:
-        raise ValueError(f"{state_column} has dim={states.shape[-1]}, need at least {eef_state_dim}")
-    if actions.shape[-1] == 0:
-        raise ValueError(f"{action_column} is empty")
-
-    grip_idx = (actions.shape[-1] + gripper_action_dim) % actions.shape[-1]
-    prev_gripper = np.zeros((len(ep_df), 1), dtype=np.float32)
-    if len(ep_df) > 1:
-        prev_gripper[1:, 0] = actions[:-1, grip_idx]
-
-    # FSQ decoder states are built per skill segment, so reset the previous
-    # gripper command at every skill start.
-    prev_gripper[np.asarray(skill_ds) == 0, 0] = 0.0
-
-    decoder_state = np.concatenate([states[:, :eef_state_dim], prev_gripper], axis=-1)
-    return [row.astype(np.float32) for row in decoder_state]
+    return [row.astype(np.float32) for row in states]
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
