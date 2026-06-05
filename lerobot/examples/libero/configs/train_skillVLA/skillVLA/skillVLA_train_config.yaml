@@ -16,7 +16,7 @@
 #   root (e.g. libero_dataset → libero_original_dataset), change dataset_root THERE.
 # libero_90 | libero_90_full_full
 source_dataset: libero_90                                   # e.g. libero_90, libero_90_00to20_10
-run_tag: FSQ555_pg8_flags_image256_eqloss_200                 # the sub-folder name
+run_tag: FSQ555_pg8_only_image256_eqloss_200                 # the sub-folder name
 skill_decoder_state_indices: "[0,1,2,3,4,5,6,7]"            # raw state dims fed to FSQ (8 = ee6 + gripper_state2)
 image_key: observation.images.image
 
@@ -39,14 +39,14 @@ skill_predictor_loss_weight: 1.0
 skill_boundary_random_p: 10          # simulated end-signal timing jitter (0 disables)
 skill_decoder_end_threshold: 0.5
 # branch: true = terminator + reconstructor (chunk suffix token); false = terminator only.
-use_reconstructor_chunk_suffix: false
+use_reconstructor_chunk_suffix: true
 # (inference_skill_max_length is an eval-only knob → lives in skillVLA_eval_config.yaml)
 # Independent VLM-gradient gates (see modeling_skillVLA): both False → both train the VLM.
 detach_action_prefix_grad: false
 detach_sp_prefix: false
 
 # ── Run naming ────────────────────────────────────────────────
-exp: ""                  # optional suffix → PT_{source}_{run_tag}_batch{N}_{exp}
+exp: "v2"                  # optional suffix → PT_{source}_{run_tag}_batch{N}_{exp}
 
 # ── wandb ─────────────────────────────────────────────────────
 wandb_enable: true
@@ -60,5 +60,5 @@ train_gres: gpu:1
 train_cpus_per_task: 16
 train_mem: 128G
 train_time: "48:00:00"
-train_nodelist: node100
+train_nodelist: ""
 train_exclude_nodes: []

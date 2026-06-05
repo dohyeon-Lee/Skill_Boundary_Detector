@@ -20,6 +20,7 @@ class SkillVLAConfig(PI05Config):
     skill_predictor_hidden_dim: int = 512
     skill_predictor_num_heads: int = 8
     skill_predictor_num_layers: int = 2
+    skill_predictor_num_reader_tokens: int = 4
     skill_predictor_dropout: float = 0.0
     skill_predictor_num_embeddings: int = 125   # FSQ code count; inferred from skill_fsq_levels/checkpoint when possible.
     skill_predictor_loss_weight: float = 1.0

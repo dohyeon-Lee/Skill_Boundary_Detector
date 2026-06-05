@@ -80,19 +80,24 @@ class SkillVLAPytorch(PI05Pytorch):
             hidden_dim        = config.skill_predictor_hidden_dim,
             num_heads         = config.skill_predictor_num_heads,
             num_layers        = config.skill_predictor_num_layers,
+            num_reader_tokens = config.skill_predictor_num_reader_tokens,
             dropout           = config.skill_predictor_dropout,
         )
-        self.action_skill_memory_proj = nn.Sequential(
-            nn.Linear(config.skill_latent_dim, paligemma_config.width),
+        # skill_z + progress reach the action expert as SUFFIX conditioning tokens
+        # (the action tokens read them via attention), so they project to the action
+        # EXPERT width. The chunk-prior projection is created in load_vae_decoder.
+        action_expert_config = get_gemma_config(config.action_expert_variant)
+        self.skill_cond_proj = nn.Sequential(
+            nn.Linear(config.skill_latent_dim, action_expert_config.width),
             nn.SiLU(),
-            nn.LayerNorm(paligemma_config.width),
+            nn.LayerNorm(action_expert_config.width),
         )
-        self.action_progress_memory_proj = nn.Sequential(
-            nn.Linear(1, paligemma_config.width),
+        self.progress_cond_proj = nn.Sequential(
+            nn.Linear(1, action_expert_config.width),
             nn.SiLU(),
-            nn.LayerNorm(paligemma_config.width),
+            nn.LayerNorm(action_expert_config.width),
         )
-        self.action_chunk_suffix_proj: nn.Module | None = None
+        self.chunk_prior_proj: nn.Module | None = None
 
         self.vae_decoder = None
         self.special_skill_embeddings = nn.Embedding(3, config.skill_latent_dim)
@@ -141,11 +146,11 @@ class SkillVLAPytorch(PI05Pytorch):
             p.requires_grad_(False)
         self.vae_decoder    = vae
         action_expert_config = get_gemma_config(self.config.action_expert_variant)
-        # Reconstructor chunk suffix: the FSQ-reconstructed action chunk (K×A values)
-        # is flattened and projected into ONE action-expert suffix token.
+        # Reconstructor chunk prior (branch 2): the FSQ-reconstructed action chunk
+        # (K×A values) is flattened and projected into ONE action-expert suffix token.
         fsq_chunk_size = int(getattr(cfg, "chunk_size", self.config.chunk_size))
         fsq_action_dim = int(getattr(cfg, "action_dim", 0)) or int(getattr(vae, "action_dim", 0))
-        self.action_chunk_suffix_proj = nn.Sequential(
+        self.chunk_prior_proj = nn.Sequential(
             nn.Linear(fsq_chunk_size * fsq_action_dim, action_expert_config.width),
             nn.SiLU(),
             nn.LayerNorm(action_expert_config.width),
@@ -248,12 +253,7 @@ class SkillVLAPytorch(PI05Pytorch):
         )
         return prefix_context, past_key_values
 
-    def _action_memory_tokens(self, skill_z: Tensor, progress: Tensor, *, dtype: torch.dtype) -> Tensor:
-        skill_tok = self.action_skill_memory_proj(skill_z.float()).unsqueeze(1)
-        progress_tok = self.action_progress_memory_proj(progress.float().view(-1, 1)).unsqueeze(1)
-        return torch.cat([skill_tok, progress_tok], dim=1).to(dtype=dtype)
-
-    def _reconstructor_chunk_suffix_token(
+    def _chunk_prior_token(
         self,
         skill_z: Tensor,
         start_state: Tensor | None,
@@ -261,17 +261,15 @@ class SkillVLAPytorch(PI05Pytorch):
         progress: Tensor,
         *,
         device: torch.device,
-    ) -> Tensor | None:
-        """Branch-2 suffix token. The frozen FSQ reconstructor predicts the action chunk
+    ) -> Tensor:
+        """Branch-2 chunk prior. The frozen FSQ reconstructor predicts the action chunk
         from the skill-START frame ([z, start_state, start_img, progress]); the whole
-        chunk (K×A) is flattened into ONE action-expert suffix token. progress is the
-        terminator output (the same value used for the action-memory progress token)."""
-        if not self.config.use_reconstructor_chunk_suffix:
-            return None
-        if self.vae_decoder is None or self.action_chunk_suffix_proj is None:
-            raise ValueError("Reconstructor chunk suffix is enabled, but the FSQ decoder is missing.")
+        chunk (K×A) is flattened into ONE action-expert conditioning token. progress is
+        the terminator output."""
+        if self.vae_decoder is None or self.chunk_prior_proj is None:
+            raise ValueError("Reconstructor chunk prior is enabled, but the FSQ decoder is missing.")
         if start_state is None or start_image is None:
-            raise ValueError("Reconstructor chunk suffix needs the skill-start state and image.")
+            raise ValueError("Reconstructor chunk prior needs the skill-start state and image.")
         start_state = self._prepare_skill_decoder_state(start_state, device=device, dtype=skill_z.dtype)
         start_image = self._prepare_skill_decoder_tokens(
             start_image, batch_size=start_state.shape[0], steps=start_state.shape[1],
@@ -282,92 +280,50 @@ class SkillVLAPytorch(PI05Pytorch):
             progress.to(device=device), quantize=True,
         )                                       # (B, T, K, A)
         chunk = chunk[:, 0].flatten(1).float()  # (B, K*A) — skill-start step
-        return self.action_chunk_suffix_proj(chunk).unsqueeze(1)  # (B, 1, width)
+        return self.chunk_prior_proj(chunk).unsqueeze(1)  # (B, 1, width)
 
-    def _prepend_suffix_token(
+    def _suffix_cond_tokens(
+        self,
+        skill_z: Tensor,
+        progress: Tensor,
+        start_state: Tensor | None,
+        start_image: Tensor | None,
+        *,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> Tensor:
+        """Action-expert suffix conditioning block, prepended before the action tokens:
+        [skill, progress] (branch 1) or [skill, progress, chunk_prior] (branch 2). The
+        action tokens read this block via attention; it never reads them back."""
+        cond = [
+            self.skill_cond_proj(skill_z.float()).unsqueeze(1),
+            self.progress_cond_proj(progress.float().view(-1, 1)).unsqueeze(1),
+        ]
+        if self.config.use_reconstructor_chunk_suffix:
+            cond.append(self._chunk_prior_token(skill_z, start_state, start_image, progress, device=device))
+        return torch.cat(cond, dim=1).to(device=device, dtype=dtype)
+
+    def _prepend_cond_block(
         self,
         suffix_embs: Tensor,
         suffix_pad_masks: Tensor,
         suffix_att_masks: Tensor,
-        suffix_token: Tensor | None,
+        cond_embeds: Tensor,
     ) -> tuple[Tensor, Tensor, Tensor]:
-        if suffix_token is None:
-            return suffix_embs, suffix_pad_masks, suffix_att_masks
-        suffix_token = suffix_token.to(device=suffix_embs.device, dtype=suffix_embs.dtype)
-        token_pad = torch.ones(
-            suffix_embs.shape[0], 1, dtype=suffix_pad_masks.dtype, device=suffix_pad_masks.device
-        )
-        token_att = torch.ones(
-            suffix_embs.shape[0], 1, dtype=suffix_att_masks.dtype, device=suffix_att_masks.device
-        )
+        """Prepend the conditioning block before the action tokens. It is ONE attention
+        group (att = [1, 0, ...]) so it attends to the prefix and to itself; the action
+        tokens (a later group) attend to it, but it never attends to them. This keeps the
+        conditioning independent of the (changing) noisy actions."""
+        B, M = cond_embeds.shape[:2]
+        cond_embeds = cond_embeds.to(device=suffix_embs.device, dtype=suffix_embs.dtype)
+        cond_pad = torch.ones(B, M, dtype=suffix_pad_masks.dtype, device=suffix_pad_masks.device)
+        cond_att = torch.zeros(B, M, dtype=suffix_att_masks.dtype, device=suffix_att_masks.device)
+        cond_att[:, 0] = 1  # start a new attention group after the prefix
         return (
-            torch.cat([suffix_token, suffix_embs], dim=1),
-            torch.cat([token_pad, suffix_pad_masks], dim=1),
-            torch.cat([token_att, suffix_att_masks], dim=1),
+            torch.cat([cond_embeds, suffix_embs], dim=1),
+            torch.cat([cond_pad, suffix_pad_masks], dim=1),
+            torch.cat([cond_att, suffix_att_masks], dim=1),
         )
-
-    def _append_action_memory(
-        self,
-        prefix_embs: Tensor,
-        prefix_pad_masks: Tensor,
-        prefix_att_masks: Tensor,
-        memory_tokens: Tensor,
-    ) -> tuple[Tensor, Tensor, Tensor]:
-        B, M = memory_tokens.shape[:2]
-        memory_pad = torch.ones(B, M, dtype=prefix_pad_masks.dtype, device=prefix_pad_masks.device)
-        memory_att = torch.zeros(B, M, dtype=prefix_att_masks.dtype, device=prefix_att_masks.device)
-        return (
-            torch.cat([prefix_embs, memory_tokens.to(device=prefix_embs.device, dtype=prefix_embs.dtype)], dim=1),
-            torch.cat([prefix_pad_masks, memory_pad], dim=1),
-            torch.cat([prefix_att_masks, memory_att], dim=1),
-        )
-
-    def _isolate_action_memory(self, att_2d_masks: Tensor, prefix_len: int, memory_len: int) -> Tensor:
-        if memory_len <= 0:
-            return att_2d_masks
-        mem_start = prefix_len
-        mem_end = prefix_len + memory_len
-        att_2d_masks = att_2d_masks.clone()
-        att_2d_masks[:, :prefix_len, mem_start:mem_end] = False
-        att_2d_masks[:, mem_start:mem_end, :mem_end] = False
-        idx = torch.arange(memory_len, device=att_2d_masks.device)
-        att_2d_masks[:, mem_start + idx, mem_start + idx] = True
-        return att_2d_masks
-
-    def _contextualize_prefix_with_action_memory(
-        self,
-        prefix_embs: Tensor,
-        prefix_pad_masks: Tensor,
-        prefix_att_masks: Tensor,
-        memory_tokens: Tensor,
-        *,
-        use_cache: bool,
-    ) -> tuple[Tensor, object]:
-        prefix_len = prefix_pad_masks.shape[1]
-        memory_len = memory_tokens.shape[1]
-        prefix_embs, prefix_pad_masks, prefix_att_masks = self._append_action_memory(
-            prefix_embs, prefix_pad_masks, prefix_att_masks, memory_tokens
-        )
-        prefix_att_2d = make_att_2d_masks(prefix_pad_masks, prefix_att_masks)
-        prefix_att_2d = self._isolate_action_memory(prefix_att_2d, prefix_len, memory_len)
-        prefix_position_ids = torch.cumsum(prefix_pad_masks, dim=1) - 1
-        prefix_att_2d_4d = self._prepare_attention_masks_4d(prefix_att_2d)
-
-        if (
-            self.paligemma_with_expert.paligemma.model.language_model
-            .layers[0].self_attn.q_proj.weight.dtype == torch.bfloat16
-        ):
-            prefix_embs = prefix_embs.to(torch.bfloat16)
-
-        self.paligemma_with_expert.paligemma.model.language_model.config._attn_implementation = "eager"  # noqa: SLF001
-        (prefix_context, _), past_key_values = self.paligemma_with_expert.forward(
-            attention_mask=prefix_att_2d_4d,
-            position_ids=prefix_position_ids,
-            past_key_values=None,
-            inputs_embeds=[prefix_embs, None],
-            use_cache=use_cache,
-        )
-        return prefix_context, prefix_pad_masks, past_key_values
 
     def _gather_skill_sequence(self, sequence: Tensor, index: Tensor) -> Tensor:
         index = index.view(-1).long().clamp(0, sequence.shape[1] - 1)
@@ -571,11 +527,14 @@ class SkillVLAPytorch(PI05Pytorch):
         past_key_values,
         x_t,
         timestep,
-        suffix_token: Tensor | None = None,
+        cond_embeds: Tensor,
     ):
+        # Suffix = [conditioning block (skill/progress/prior)] + [action tokens]. The
+        # conditioning is constant across denoising steps but is re-run here each step
+        # (only a few tokens); the heavy prefix lives in the past_key_values cache.
         suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = self.embed_suffix(x_t, timestep)
-        suffix_embs, suffix_pad_masks, suffix_att_masks = self._prepend_suffix_token(
-            suffix_embs, suffix_pad_masks, suffix_att_masks, suffix_token
+        suffix_embs, suffix_pad_masks, suffix_att_masks = self._prepend_cond_block(
+            suffix_embs, suffix_pad_masks, suffix_att_masks, cond_embeds
         )
 
         suffix_len = suffix_pad_masks.shape[1]
@@ -635,16 +594,14 @@ class SkillVLAPytorch(PI05Pytorch):
             )
 
         prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(images, img_masks, tokens, masks)
-        action_memory_tokens = self._action_memory_tokens(skill_z, skill_progress, dtype=prefix_embs.dtype)
-        suffix_token = self._reconstructor_chunk_suffix_token(
-            skill_z, skill_decoder_start_state, skill_decoder_start_image, skill_progress, device=device,
+        # Heavy prefix (image + language) is contextualized once and cached. The suffix
+        # conditioning (skill/progress/prior) is constant per chunk and re-fed each step.
+        cond_embeds = self._suffix_cond_tokens(
+            skill_z, skill_progress, skill_decoder_start_state, skill_decoder_start_image,
+            device=device, dtype=prefix_embs.dtype,
         )
-        _, prefix_memory_pad_masks, past_key_values = self._contextualize_prefix_with_action_memory(
-            prefix_embs,
-            prefix_pad_masks,
-            prefix_att_masks,
-            action_memory_tokens,
-            use_cache=True,
+        _, past_key_values = self.contextualize_prefix(
+            prefix_embs, prefix_pad_masks, prefix_att_masks, use_cache=True,
         )
 
         dt = -1.0 / num_steps
@@ -655,11 +612,11 @@ class SkillVLAPytorch(PI05Pytorch):
 
             def denoise_step_partial_call(input_x_t, current_timestep=time_tensor):
                 return self.denoise_step(
-                    prefix_pad_masks=prefix_memory_pad_masks,
+                    prefix_pad_masks=prefix_pad_masks,
                     past_key_values=past_key_values,
                     x_t=input_x_t,
                     timestep=current_timestep,
-                    suffix_token=suffix_token,
+                    cond_embeds=cond_embeds,
                 )
 
             if self._rtc_enabled():
@@ -753,10 +710,9 @@ class SkillVLAPytorch(PI05Pytorch):
             skill_decoder_image,
             device=actions.device,
         )
-        action_memory_tokens = self._action_memory_tokens(action_skill_z, action_progress, dtype=prefix_embs.dtype)
-        chunk_suffix_token = self._reconstructor_chunk_suffix_token(
-            action_skill_z, skill_decoder_start_state, skill_decoder_start_image, action_progress,
-            device=actions.device,
+        cond_embeds = self._suffix_cond_tokens(
+            action_skill_z, action_progress, skill_decoder_start_state, skill_decoder_start_image,
+            device=actions.device, dtype=prefix_embs.dtype,
         )
 
         if time is None:
@@ -769,9 +725,10 @@ class SkillVLAPytorch(PI05Pytorch):
 
         prefix_len = prefix_pad_masks.shape[1]
 
-        # The action expert runs the prefix through the PaliGemma LLM; the skill
-        # predictor reuses that SAME gemma-contextualized prefix (prefix portion —
-        # action-memory tokens are attention-isolated so they don't affect it).
+        # The action expert reads the gemma-contextualized prefix (image + language) plus
+        # the suffix conditioning block [skill, progress, (chunk prior)] + action tokens.
+        # The skill predictor reads the SAME clean prefix. No prefix-side memory tokens:
+        # the block-causal suffix mask keeps the conditioning out of the prefix.
         if self.config.detach_action_prefix_grad:
             with torch.no_grad():
                 # gradient_checkpointing forces use_cache=False inside the model, which
@@ -782,35 +739,23 @@ class SkillVLAPytorch(PI05Pytorch):
                 _pg_gc, _ge_gc = _pg_lm.gradient_checkpointing, _ge_m.gradient_checkpointing
                 _pg_lm.gradient_checkpointing = False
                 _ge_m.gradient_checkpointing  = False
-                prefix_context, prefix_memory_pad_masks, past_key_values = self._contextualize_prefix_with_action_memory(
-                    prefix_embs.detach(),
-                    prefix_pad_masks,
-                    prefix_att_masks,
-                    action_memory_tokens,
-                    use_cache=True,
+                prefix_context, past_key_values = self.contextualize_prefix(
+                    prefix_embs.detach(), prefix_pad_masks, prefix_att_masks, use_cache=True,
                 )
                 _pg_lm.gradient_checkpointing = _pg_gc
                 _ge_m.gradient_checkpointing  = _ge_gc
-            v_t = self.denoise_step(
-                prefix_memory_pad_masks,
-                past_key_values,
-                x_t,
-                time,
-                suffix_token=chunk_suffix_token,
-            )
-            # Action grad is detached above (no_grad). If the skill-predictor loss
-            # should still train the VLM, re-contextualize the prefix WITH grad
-            # (image+lang only — one extra prefix pass, only in this config);
-            # otherwise reuse the detached context.
+            v_t = self.denoise_step(prefix_pad_masks, past_key_values, x_t, time, cond_embeds)
+            # Action grad is detached above (no_grad). If the skill-predictor loss should
+            # still train the VLM, re-contextualize the prefix WITH grad; otherwise reuse
+            # the detached context.
             if detach_sp_prefix:
-                sp_prefix_ctx = prefix_context[:, :prefix_len]
+                sp_prefix_ctx = prefix_context
             else:
                 sp_prefix_ctx, _ = self.contextualize_prefix(prefix_embs, prefix_pad_masks, prefix_att_masks)
-                sp_prefix_ctx = sp_prefix_ctx[:, :prefix_len]
         else:
             suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = self.embed_suffix(x_t, time)
-            suffix_embs, suffix_pad_masks, suffix_att_masks = self._prepend_suffix_token(
-                suffix_embs, suffix_pad_masks, suffix_att_masks, chunk_suffix_token
+            suffix_embs, suffix_pad_masks, suffix_att_masks = self._prepend_cond_block(
+                suffix_embs, suffix_pad_masks, suffix_att_masks, cond_embeds
             )
 
             if (
@@ -819,32 +764,26 @@ class SkillVLAPytorch(PI05Pytorch):
             ):
                 suffix_embs = suffix_embs.to(torch.bfloat16)
                 prefix_embs = prefix_embs.to(torch.bfloat16)
-                action_memory_tokens = action_memory_tokens.to(torch.bfloat16)
 
-            memory_len = action_memory_tokens.shape[1]
-            prefix_memory_embs, prefix_memory_pad_masks, prefix_memory_att_masks = self._append_action_memory(
-                prefix_embs, prefix_pad_masks, prefix_att_masks, action_memory_tokens
-            )
-            pad_masks     = torch.cat([prefix_memory_pad_masks, suffix_pad_masks], dim=1)
-            att_masks     = torch.cat([prefix_memory_att_masks, suffix_att_masks], dim=1)
+            pad_masks     = torch.cat([prefix_pad_masks, suffix_pad_masks], dim=1)
+            att_masks     = torch.cat([prefix_att_masks, suffix_att_masks], dim=1)
             att_2d_masks  = make_att_2d_masks(pad_masks, att_masks)
-            att_2d_masks = self._isolate_action_memory(att_2d_masks, prefix_len, memory_len)
             position_ids  = torch.cumsum(pad_masks, dim=1) - 1
             att_2d_masks_4d = self._prepare_attention_masks_4d(att_2d_masks)
 
-            def _fwd(prefix_memory_embs, suffix_embs, att_2d_masks_4d, position_ids, adarms_cond):
+            def _fwd(prefix_embs, suffix_embs, att_2d_masks_4d, position_ids, adarms_cond):
                 (prefix_out, suffix_out), _ = self.paligemma_with_expert.forward(
                     attention_mask  = att_2d_masks_4d,
                     position_ids    = position_ids,
                     past_key_values = None,
-                    inputs_embeds   = [prefix_memory_embs, suffix_embs],
+                    inputs_embeds   = [prefix_embs, suffix_embs],
                     use_cache       = False,
                     adarms_cond     = [None, adarms_cond],
                 )
                 return prefix_out, suffix_out
 
             prefix_out, suffix_out = self._apply_checkpoint(
-                _fwd, prefix_memory_embs, suffix_embs, att_2d_masks_4d, position_ids, adarms_cond
+                _fwd, prefix_embs, suffix_embs, att_2d_masks_4d, position_ids, adarms_cond
             )
             sp_prefix_ctx = prefix_out[:, :prefix_len]
             if detach_sp_prefix:
