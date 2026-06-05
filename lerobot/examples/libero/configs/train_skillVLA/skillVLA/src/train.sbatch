@@ -84,6 +84,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.skill_decoder_end_threshold="${SKILL_DECODER_END_THRESHOLD}" \
     --policy.skill_decoder_state_indices="${SKILL_DECODER_STATE_INDICES}" \
     --policy.use_reconstructor_chunk_suffix="${USE_RECONSTRUCTOR_CHUNK_SUFFIX}" \
+    --policy.skill_predictor_prefix_source="${SKILL_PREDICTOR_PREFIX_SOURCE}" \
     --policy.skill_boundary_random_p="${SKILL_BOUNDARY_RANDOM_P}" \
     --policy.detach_action_prefix_grad="${DETACH_ACTION_PREFIX_GRAD}" \
     --policy.detach_sp_prefix="${DETACH_SP_PREFIX}" \

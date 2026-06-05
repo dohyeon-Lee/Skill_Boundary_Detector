@@ -58,7 +58,11 @@ def build_settings(cfg: dict) -> dict:
     use_recon_suffix = as_bool(get_value(cfg, "use_reconstructor_chunk_suffix", True))
     branch = "branch2" if use_recon_suffix else "branch1"
 
-    run_name = f"{source_dataset}_{run_tag}_batch{batch_size}_{branch}"
+    # skill-predictor prefix source goes in the run name so embs vs context runs are distinct.
+    prefix_source = str(get_value(cfg, "skill_predictor_prefix_source", "embs")).strip().lower()
+    src_tag = "embs" if prefix_source == "embs" else "ctx"
+
+    run_name = f"{source_dataset}_{run_tag}_batch{batch_size}_{branch}_{src_tag}"
     if exp:
         run_name = f"{run_name}_{exp}"
     vla_root = project_root / str(get_value(cfg, "skillvla_outputs_root", "skillVLA_outputs"))
@@ -100,6 +104,7 @@ def build_settings(cfg: dict) -> dict:
         "skill_boundary_random_p": int(get_value(cfg, "skill_boundary_random_p", 10)),
         "skill_decoder_end_threshold": str(get_value(cfg, "skill_decoder_end_threshold", 0.5)),
         "use_reconstructor_chunk_suffix": use_recon_suffix,
+        "skill_predictor_prefix_source": str(get_value(cfg, "skill_predictor_prefix_source", "embs")),
         "detach_action_prefix_grad": as_bool(get_value(cfg, "detach_action_prefix_grad", False)),
         "detach_sp_prefix": as_bool(get_value(cfg, "detach_sp_prefix", False)),
         # wandb

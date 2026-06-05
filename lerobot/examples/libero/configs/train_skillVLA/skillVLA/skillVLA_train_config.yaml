@@ -39,7 +39,10 @@ skill_predictor_loss_weight: 1.0
 skill_boundary_random_p: 10          # simulated end-signal timing jitter (0 disables)
 skill_decoder_end_threshold: 0.5
 # branch: true = terminator + reconstructor (chunk suffix token); false = terminator only.
-use_reconstructor_chunk_suffix: true
+use_reconstructor_chunk_suffix: false
+# skill predictor prefix source: "embs" (raw embed_prefix, pre-LLM, stable → faster converge)
+# or "context" (gemma-contextualized prefix, richer but a moving target).
+skill_predictor_prefix_source: embs # embs | context
 # (inference_skill_max_length is an eval-only knob → lives in skillVLA_eval_config.yaml)
 # Independent VLM-gradient gates (see modeling_skillVLA): both False → both train the VLM.
 detach_action_prefix_grad: false

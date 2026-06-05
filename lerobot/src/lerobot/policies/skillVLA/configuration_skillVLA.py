@@ -22,6 +22,12 @@ class SkillVLAConfig(PI05Config):
     skill_predictor_num_layers: int = 2
     skill_predictor_num_reader_tokens: int = 4
     skill_predictor_dropout: float = 0.0
+    skill_predictor_prefix_source: str = "embs"
+    """What the skill predictor reads via cross-attention. "embs" = the raw embed_prefix
+    output (SigLIP image tokens + language token embeddings, BEFORE the PaliGemma LLM) —
+    a stable, literal target that tends to converge faster. "context" = the gemma-
+    contextualized prefix (richer scene understanding, but a moving target while the VLM
+    co-trains)."""
     skill_predictor_num_embeddings: int = 125   # FSQ code count; inferred from skill_fsq_levels/checkpoint when possible.
     skill_predictor_loss_weight: float = 1.0
 

@@ -52,6 +52,12 @@ class SkillVLAPytorch(PI05Pytorch):
     def __init__(self, config: SkillVLAConfig, rtc_processor=None):
         super().__init__(config, rtc_processor=rtc_processor)
 
+        if config.skill_predictor_prefix_source not in ("embs", "context"):
+            raise ValueError(
+                f"skill_predictor_prefix_source must be 'embs' or 'context', "
+                f"got {config.skill_predictor_prefix_source!r}."
+            )
+
         paligemma_config     = get_gemma_config(config.paligemma_variant)
 
         fsq_levels = self._resolve_fsq_levels(config.vae_decoder_path, config.skill_fsq_levels)
@@ -745,13 +751,7 @@ class SkillVLAPytorch(PI05Pytorch):
                 _pg_lm.gradient_checkpointing = _pg_gc
                 _ge_m.gradient_checkpointing  = _ge_gc
             v_t = self.denoise_step(prefix_pad_masks, past_key_values, x_t, time, cond_embeds)
-            # Action grad is detached above (no_grad). If the skill-predictor loss should
-            # still train the VLM, re-contextualize the prefix WITH grad; otherwise reuse
-            # the detached context.
-            if detach_sp_prefix:
-                sp_prefix_ctx = prefix_context
-            else:
-                sp_prefix_ctx, _ = self.contextualize_prefix(prefix_embs, prefix_pad_masks, prefix_att_masks)
+            sp_context = prefix_context   # detached (built under no_grad above)
         else:
             suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = self.embed_suffix(x_t, time)
             suffix_embs, suffix_pad_masks, suffix_att_masks = self._prepend_cond_block(
@@ -785,14 +785,25 @@ class SkillVLAPytorch(PI05Pytorch):
             prefix_out, suffix_out = self._apply_checkpoint(
                 _fwd, prefix_embs, suffix_embs, att_2d_masks_4d, position_ids, adarms_cond
             )
-            sp_prefix_ctx = prefix_out[:, :prefix_len]
-            if detach_sp_prefix:
-                sp_prefix_ctx = sp_prefix_ctx.detach()
+            sp_context = prefix_out
             suffix_out = suffix_out[:, -self.config.chunk_size:].to(torch.float32)
             v_t        = self._apply_checkpoint(self.action_out_proj, suffix_out)
         flow_loss  = F.mse_loss(u_t, v_t, reduction="none")
 
-        # Skill predictor reads the gemma-contextualized prefix (read-only cross-attn).
+        # ── Skill-predictor prefix source ──
+        # "embs": raw embed_prefix output (stable, pre-LLM). "context": the gemma-
+        # contextualized prefix (richer but a moving target during training).
+        if self.config.skill_predictor_prefix_source == "embs":
+            sp_prefix_ctx = prefix_embs
+        elif self.config.detach_action_prefix_grad and not detach_sp_prefix:
+            # context mode + the action path detached the VLM → re-run the prefix WITH grad
+            sp_prefix_ctx, _ = self.contextualize_prefix(prefix_embs, prefix_pad_masks, prefix_att_masks)
+        else:
+            sp_prefix_ctx = sp_context
+        sp_prefix_ctx = sp_prefix_ctx[:, :prefix_len]
+        if detach_sp_prefix:
+            sp_prefix_ctx = sp_prefix_ctx.detach()
+
         z_pred = self.skill_predictor(
             predictor_input_z.float(),
             sp_prefix_ctx,
@@ -1231,10 +1242,14 @@ class SkillVLAPolicy(PI05Policy):
             return
 
         prefix_embs, prefix_pad_masks, prefix_att_masks = self.model.embed_prefix(images, img_masks, tokens, masks)
-        # Match training: the skill predictor reads the gemma-contextualized prefix.
-        prefix_ctx, _ = self.model.contextualize_prefix(prefix_embs, prefix_pad_masks, prefix_att_masks)
+        # Match training: the skill predictor reads either the raw embs or the
+        # gemma-contextualized prefix (config.skill_predictor_prefix_source).
+        if self.config.skill_predictor_prefix_source == "embs":
+            sp_prefix = prefix_embs
+        else:
+            sp_prefix, _ = self.model.contextualize_prefix(prefix_embs, prefix_pad_masks, prefix_att_masks)
         skill_progress = torch.zeros(tokens.shape[0], device=tokens.device, dtype=torch.float32)
-        self._update_skill(prefix_ctx, prefix_pad_masks, state, skill_progress)
+        self._update_skill(sp_prefix, prefix_pad_masks, state, skill_progress)
 
     def _refresh_current_progress(self, batch: dict[str, Tensor], images: list[Tensor]) -> Tensor | None:
         if self._current_z is None:

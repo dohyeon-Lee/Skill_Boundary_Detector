@@ -10,8 +10,8 @@
 # ── Which trained model to evaluate ──
 skillvla_outputs_root: skillVLA_outputs   # parent folder under {project_root}/
 # The PT run folder name (exactly as created by training, incl. _branch1/_branch2):
-model_dir: PT_libero_90_FSQ555_pg8_only_image256_eqloss_200_batch16_branch2
-checkpoint: "050000"          # "last" or a step number (e.g. 100000)
+model_dir: PT_libero_90_FSQ555_pg8_only_image256_eqloss_200_batch16_branch1_embs_v2
+checkpoint: "005000"          # "last" or a step number (e.g. 100000)
 
 # ── Eval rollout ──
 target_task: libero_90    # LIBERO suite for the sim env
