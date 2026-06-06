@@ -1,0 +1,46 @@
+# SkillVLA Stage-1 training — standalone action expert (policy.type=skill_expert).
+# Trains the action expert by flow matching on the build_data skillvla dataset
+# (raw images + skill code + actions). No VLM, no language, no FSQ/DINO-token artifacts.
+# The expert encodes raw images with its own trainable DINOv3.
+
+# ── Which skillvla dataset to train on (built by configs/train_skillVLA/build_data) ──
+source_dataset: libero_90
+run_tag: FSQ555_pg8_only_image256_eqloss_200   # sub-folder under skillvla_dataset/{source}/
+skillvla_outputs_root: skillVLA_outputs        # output under {project_root}/
+
+# ── Model init ──
+init_from_pi05: true            # true = warm-start expert from pi05_base; false = scratch
+pi_base: lerobot/pi05_base
+
+# ── Vision encoder (DINOv3, trainable, shared across the 2 cameras) ──
+dino_model_path: /data2/dohyeon/SBD/models/dinov3-vits16
+dino_lr: null                   # null = same LR as the rest; set a float to use a separate DINO LR
+freeze_dino: true
+
+# ── Skill ──
+skill_vocab_size: 125           # number of FSQ codes (prod of FSQ levels)
+
+# ── Optimization ──
+batch_size: 32
+num_workers: 8
+num_gpus: 1
+lr_base: 2.5e-05                # effective LR = lr_base * num_gpus
+steps: 100000
+save_freq: 2500
+
+exp: "freeze_dino"                         # optional run-name suffix → S1_{source}_{run_tag}_batch{N}_stage1_{init|scratch}_{exp}
+
+# ── wandb ──
+wandb_enable: true
+wandb_project: VLA_stage1
+
+# ── Slurm ──
+train_partition:
+  - debug
+train_qos: base_qos
+train_gres: gpu:1
+train_cpus_per_task: 16
+train_mem: 128G
+train_time: "48:00:00"
+train_nodelist: ""
+train_exclude_nodes: []
