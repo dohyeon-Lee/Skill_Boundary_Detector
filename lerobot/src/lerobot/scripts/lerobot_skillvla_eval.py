@@ -350,6 +350,81 @@ def _plot_skill_progress(path: Path, end_probs: list[dict], *, end_threshold: fl
     return path.name
 
 
+def _plot_skill_timeline_comparison(
+    path: Path,
+    gt_timeline: list[dict],
+    actual_skills: list[dict],
+) -> str | None:
+    """Wide horizontal Gantt comparing GT skill-transition timing (top row) against the runtime
+    FSQ-terminator timing (bottom row). Both follow the same ordered skill codes, so each segment
+    is colored by its FSQ token and faint guide lines mark the GT transition boundaries — the
+    terminator firing early/late shows as its colored bands shifting left/right of those lines.
+
+    gt_timeline: [{"token", "length"}, ...] (GT demo frame count per skill).
+    actual_skills: episode "skills" payload [{"token", "start_t", "end_t"}, ...] (env steps).
+    """
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.cm as cm
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Rectangle
+
+    if not gt_timeline and not actual_skills:
+        return None
+
+    def tok_color(tok: int):
+        return cm.tab20((int(tok) % 20) / 20.0)
+
+    # GT segments laid out cumulatively from t=0.
+    gt_segs, t0 = [], 0
+    for s in gt_timeline:
+        length = max(int(s.get("length", 0) or 0), 0)
+        gt_segs.append((t0, length, int(s.get("token", -1))))
+        t0 += length
+    gt_total = t0
+
+    # Actual (terminator) segments from recorded start/end timesteps.
+    act_segs = []
+    for s in actual_skills:
+        st, en = int(s.get("start_t", 0)), int(s.get("end_t", 0))
+        act_segs.append((st, max(en - st, 0), int(s.get("token", -1))))
+    act_total = max((st + length for st, length, _ in act_segs), default=0)
+
+    xmax = max(gt_total, act_total, 1)
+    fig, ax = plt.subplots(figsize=(13, 1.9))
+    rows = [("GT (demo)", gt_segs, 1.1), ("Terminator", act_segs, 0.1)]
+    for _label, segs, y in rows:
+        for st, length, tok in segs:
+            if length <= 0:
+                continue
+            ax.add_patch(Rectangle((st, y), length, 0.7, facecolor=tok_color(tok),
+                                   edgecolor="white", linewidth=1.0))
+            if length >= xmax * 0.03:
+                ax.text(st + length / 2, y + 0.35, f"#{tok}", ha="center", va="center",
+                        fontsize=7, color="#17202a")
+
+    # Faint guide lines at GT transition boundaries (span both rows for visual comparison).
+    for boundary, *_ in gt_segs[1:]:
+        ax.axvline(boundary, color="#888888", linewidth=0.7, linestyle="--", alpha=0.55)
+    if gt_total:
+        ax.axvline(gt_total, color="#888888", linewidth=0.7, linestyle="--", alpha=0.55)
+
+    ax.set_xlim(0, xmax * 1.01)
+    ax.set_ylim(-0.05, 2.0)
+    ax.set_yticks([0.45, 1.45])
+    ax.set_yticklabels(["terminator", "GT (demo)"], fontsize=9)
+    ax.set_xlabel("timestep", fontsize=8)
+    ax.tick_params(axis="x", labelsize=7)
+    ax.set_title("skill transition timing — GT vs terminator (dashed = GT boundaries)", fontsize=9)
+    for spine in ("top", "right", "left"):
+        ax.spines[spine].set_visible(False)
+    fig.tight_layout(pad=0.4)
+    fig.savefig(path, dpi=140)
+    plt.close(fig)
+    return path.name
+
+
 def _load_raw_dataset_meta(dataset_dir: Path):
     import pandas as pd
 
@@ -624,6 +699,7 @@ def _write_task_skill_html(
         episode_idx = int(episode_record.get("episode_index", 0))
         frames = np.asarray(episode_record.get("frames", []), dtype=np.uint8)
         trace = episode_record.get("trace", [])
+        gt_trace = episode_record.get("gt_trace", [])  # [{token, length}] GT demo timing (oracle eval)
         skill_payloads = []
         for skill in trace:
             token = int(skill.get("codebook_token", -1))
@@ -651,7 +727,8 @@ def _write_task_skill_html(
             graph_name = _plot_skill_progress(
                 assets_dir / f"{stem}_progress.png",
                 skill.get("end_probs", []),
-                end_threshold=float(getattr(policy.config, "skill_decoder_end_threshold", 0.5)),
+                end_threshold=float(getattr(policy.config, "skill_end_threshold",
+                                            getattr(policy.config, "skill_decoder_end_threshold", 0.5))),
             )
             skill_payloads.append(
                 {
@@ -669,7 +746,15 @@ def _write_task_skill_html(
                     "patch_flags_end": skill.get("patch_flags_end"),    # [is_red, is_green] per patch at skill end
                 }
             )
-        episode_payloads.append({"episode_index": episode_idx, "skills": skill_payloads})
+        # GT-vs-terminator skill-transition timing comparison (oracle eval only; gt_trace present).
+        timeline_graph = None
+        if gt_trace:
+            timeline_graph = _plot_skill_timeline_comparison(
+                assets_dir / f"ep{episode_idx:03d}_timeline.png", gt_trace, skill_payloads
+            )
+        episode_payloads.append(
+            {"episode_index": episode_idx, "skills": skill_payloads, "timeline_graph": timeline_graph}
+        )
 
     examples_by_token = _save_training_skill_examples(
         tokens=used_tokens,
@@ -706,6 +791,7 @@ def _write_task_skill_html(
     .prompt b {{ color: #17202a; }}
     .episode {{ margin: 16px; padding: 14px; background: white; border: 1px solid #d8dee8; border-radius: 8px; }}
     .episode-title {{ font-weight: 700; margin-bottom: 10px; }}
+    .timeline {{ width: 100%; display: block; margin: 2px 0 14px; border: 1px solid #d8dee8; border-radius: 6px; }}
     .row {{ display: grid; grid-template-columns: 600px 1fr; gap: 16px; align-items: start; }}
     .cube-wrap {{ position: sticky; top: 12px; border: 1px solid #cfd7e5; border-radius: 8px; padding: 10px; background: #fbfcff; }}
     svg {{ width: 100%; height: 540px; display: block; }}
@@ -860,6 +946,9 @@ for (const ep of DATA.episodes) {{
   const section = document.createElement("section");
   section.className = "episode";
   section.innerHTML = `<div class="episode-title">Episode ${{ep.episode_index}}</div>`;
+  if (ep.timeline_graph) {{
+    section.innerHTML += `<img class="timeline" src="${{ASSET + ep.timeline_graph}}">`;
+  }}
   const row = document.createElement("div");
   row.className = "row";
   const cubeWrap = document.createElement("div");
@@ -1111,6 +1200,10 @@ def eval_policy(
             get_skill_trace = getattr(policy, "get_skill_trace", None)
             if get_skill_trace is not None:
                 trace = get_skill_trace()
+            gt_timeline: dict[int, list[dict]] = {}
+            get_gt_timeline = getattr(policy, "get_gt_timeline", None)
+            if get_gt_timeline is not None:
+                gt_timeline = get_gt_timeline() or {}
             by_batch: dict[int, list[dict]] = defaultdict(list)
             for record in trace:
                 by_batch[int(record.get("batch_index", 0))].append(record)
@@ -1124,6 +1217,7 @@ def eval_policy(
                         "episode_index": episode_index,
                         "frames": batch_html_frames[local_i, :max_frame].copy(),
                         "trace": by_batch.get(local_i, []),
+                        "gt_trace": gt_timeline.get(local_i, []),
                     }
                 )
 

@@ -35,6 +35,7 @@ from lerobot.policies.multi_task_dit.configuration_multi_task_dit import MultiTa
 from lerobot.policies.pi0.configuration_pi0 import PI0Config
 from lerobot.policies.pi05.configuration_pi05 import PI05Config
 from lerobot.policies.skillVLA.configuration_skillVLA import SkillVLAConfig
+from lerobot.policies.skill_expert.configuration_skill_expert import SkillExpertConfig
 from lerobot.policies.pretrained import PreTrainedPolicy
 from lerobot.policies.sac.configuration_sac import SACConfig
 from lerobot.policies.sac.reward_model.configuration_classifier import RewardClassifierConfig
@@ -113,6 +114,10 @@ def get_policy_class(name: str) -> type[PreTrainedPolicy]:
         from lerobot.policies.skillVLA.modeling_skillVLA import SkillVLAPolicy
 
         return SkillVLAPolicy
+    elif name == "skill_expert":
+        from lerobot.policies.skill_expert.modeling_skill_expert import SkillExpertPolicy
+
+        return SkillExpertPolicy
     elif name == "sac":
         from lerobot.policies.sac.modeling_sac import SACPolicy
 
@@ -183,6 +188,8 @@ def make_policy_config(policy_type: str, **kwargs) -> PreTrainedConfig:
         return PI05Config(**kwargs)
     elif policy_type == "skill_vla":
         return SkillVLAConfig(**kwargs)
+    elif policy_type == "skill_expert":
+        return SkillExpertConfig(**kwargs)
     elif policy_type == "sac":
         return SACConfig(**kwargs)
     elif policy_type == "smolvla":
@@ -290,6 +297,44 @@ def make_pre_post_processors(
             )
 
         return make_skill_vla_pre_post_processors(
+            config=policy_cfg,
+            dataset_stats=kwargs.get("dataset_stats"),
+        )
+
+    if isinstance(policy_cfg, SkillExpertConfig):
+        from lerobot.policies.skill_expert.processor_skill_expert import (
+            make_skill_expert_pre_post_processors,
+            skill_expert_batch_to_transition,
+            skill_expert_transition_to_batch,
+        )
+
+        # Fresh Stage-1 training inits weights from a PI05 checkpoint but must NOT reuse
+        # the PI05 processor (no language tokenizer, no state discretization). During
+        # resume/eval (dataset_stats absent) we load the saved SkillExpert processor.
+        # NOTE: must precede the PI05Config branch below — SkillExpertConfig subclasses it.
+        if pretrained_path and kwargs.get("dataset_stats") is None:
+            return (
+                PolicyProcessorPipeline.from_pretrained(
+                    pretrained_model_name_or_path=pretrained_path,
+                    config_filename=kwargs.get(
+                        "preprocessor_config_filename", f"{POLICY_PREPROCESSOR_DEFAULT_NAME}.json"
+                    ),
+                    overrides=kwargs.get("preprocessor_overrides", {}),
+                    to_transition=skill_expert_batch_to_transition,
+                    to_output=skill_expert_transition_to_batch,
+                ),
+                PolicyProcessorPipeline.from_pretrained(
+                    pretrained_model_name_or_path=pretrained_path,
+                    config_filename=kwargs.get(
+                        "postprocessor_config_filename", f"{POLICY_POSTPROCESSOR_DEFAULT_NAME}.json"
+                    ),
+                    overrides=kwargs.get("postprocessor_overrides", {}),
+                    to_transition=policy_action_to_transition,
+                    to_output=transition_to_policy_action,
+                ),
+            )
+
+        return make_skill_expert_pre_post_processors(
             config=policy_cfg,
             dataset_stats=kwargs.get("dataset_stats"),
         )

@@ -1,0 +1,5 @@
+benchmark_root: /data2/dohyeon/SBD/lerobot/tools/lerobot-libero/libero/libero
+bddl_files: /data2/dohyeon/SBD/lerobot/tools/lerobot-libero/libero/libero/bddl_files
+init_states: /data2/dohyeon/SBD/lerobot/tools/lerobot-libero/libero/libero/init_files
+datasets: /data2/dohyeon/SBD/lerobot/tools/lerobot-libero/libero/datasets
+assets: /data2/dohyeon/SBD/lerobot/tools/lerobot-libero/libero/libero/assets
