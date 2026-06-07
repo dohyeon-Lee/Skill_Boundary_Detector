@@ -89,6 +89,7 @@ fsq_checkpoint: 200                     # epoch number; 0 = best (FSQ.pt)
 # ── SkillVLA dataset build (step 5) ───────────────────────────
 max_order: 0
 max_length: 200
+pmax: 10                                   # Stage-2 transition randomization 반폭 (skill 시작 ±pmax). ISS window=2*pmax+1
 skill_decoder_state_indices: "[0,1,2,3,4,5,6,7]"   # full observation.state (ee6 + gripper_state2)
 cleanup_intermediate: false               # remove skillset/, skill_latents.npz after skillvla is built
 

@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Step 5 (final): assemble the SkillVLA dataset and final outputs.
-#   (a) merge per-episode DINO → dino.npz
-#   (b) add_skill_latents_to_dataset → skillvla/
+#   (a) merge per-episode DINO → dino.npz        (for build_data_eval viz only; merge/copy, cheap)
+#   (b) add_skill_latents_to_dataset → skillvla/ (skill columns) + skill_initial_state.npz (ISS)
 #   (c) copy FSQ checkpoint → FSQ.pt
 #   (d) optional cleanup of intermediates (_work, skill_latents.npz)
+# Note: Stage-2 training does NOT use dino.npz (VLM/expert encode raw images on the fly); it is
+# kept only for build_data_eval. The per-frame observation.dino.image train cache is removed.
 #SBATCH --job-name=skillVLA_build
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
@@ -40,20 +42,21 @@ echo "START SKILLVLA BUILD"
 echo "Node     : ${SLURMD_NODENAME:-local}"
 echo "Source   : ${RAW_DATASET_DIR}"
 echo "Latents  : ${SKILL_LATENTS_PATH}"
-echo "dino.npz : ${DINO_NPZ_PATH}"
+echo "dino.npz : ${DINO_NPZ_PATH}   (eval-only)"
+echo "ISS npz  : ${ISS_NPZ_PATH}   (pmax=${SKILL_PMAX})"
 echo "FSQ.pt   : ${FSQ_COPY_PATH}"
 echo "skillvla : ${SKILLVLA_DATASET_DIR}"
 
 mkdir -p "${SKILLVLA_RUN_DIR}"
 
-# ── (a) merge per-episode DINO → dino.npz ──
+# ── (a) merge per-episode DINO → dino.npz (build_data_eval viz only; not used by training) ──
 PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
   "${BOOTSTRAP_PYTHON}" "${SRC_DIR}/merge_frame_dino.py" \
     --frame_dino_dir "${DINO_PER_EPISODE_DIR}" \
     --image_key      "${DINO_IMAGE_KEY}" \
     --output_path    "${DINO_NPZ_PATH}"
 
-# ── (b) add skill columns → SkillVLA LeRobot dataset ──
+# ── (b) add skill columns → SkillVLA LeRobot dataset + skill_initial_state.npz ──
 read -r -a FSQ_LEVELS <<< "${FSQ_LEVELS_STR}"
 PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
   python -u examples/libero/add_skill_latents_to_dataset.py \
@@ -61,6 +64,8 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     --dst_dataset_dir "${SKILLVLA_DATASET_DIR}" \
     --dst_repo_id     "skillvla/${SOURCE_DATASET}_${RUN_TAG}" \
     --latents_path    "${SKILL_LATENTS_PATH}" \
+    --iss_npz_path    "${ISS_NPZ_PATH}" \
+    --pmax            "${SKILL_PMAX}" \
     --fsq_levels      "${FSQ_LEVELS[@]}" \
     --max_order       "${MAX_ORDER}" \
     --max_length      "${MAX_LENGTH}"
@@ -77,4 +82,4 @@ if [ "${CLEANUP_INTERMEDIATE}" = "true" ]; then
   echo "  removed ${SKILLVLA_WORK_DIR} and ${SKILL_LATENTS_PATH}"
 fi
 
-echo "DONE → ${SKILLVLA_RUN_DIR}  (dino.npz, FSQ.pt, skillvla/)"
+echo "DONE → ${SKILLVLA_RUN_DIR}  (skillvla/, skill_initial_state.npz, dino.npz, FSQ.pt)"

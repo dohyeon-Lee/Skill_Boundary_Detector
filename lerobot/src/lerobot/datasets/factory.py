@@ -93,7 +93,13 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
         delta_timestamps = resolve_delta_timestamps(cfg.policy, ds_meta)
         video_keys_to_load = [] if getattr(cfg.policy, "use_dino_features", False) else None
         if not cfg.dataset.streaming:
-            dataset = LeRobotDataset(
+            # Stage-2 SkillVLA adds the (jittered) skill-start image/state + skill code per item.
+            dataset_cls = LeRobotDataset
+            if getattr(cfg.policy, "type", None) == "skill_vla":
+                from lerobot.policies.skillVLA.dataset_skillVLA import SkillVLADataset
+
+                dataset_cls = SkillVLADataset
+            dataset = dataset_cls(
                 cfg.dataset.repo_id,
                 root=cfg.dataset.root,
                 episodes=cfg.dataset.episodes,

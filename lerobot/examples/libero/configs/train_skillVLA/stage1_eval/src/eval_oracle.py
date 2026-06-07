@@ -101,9 +101,13 @@ def load_skill_sequences_by_language(dataset_dir: str | Path) -> dict[str, list[
     (``skill_length_sequence``, aligned to ``skill_sequence``) — used by the eval to compare
     GT skill-transition timing against the runtime terminator. Episodes ordered by
     episode_index."""
+    import json
+
     import pandas as pd
 
     dataset_dir = Path(dataset_dir)
+    info = json.loads((dataset_dir / "meta" / "info.json").read_text())
+    num_embeddings = int(info["skill_num_embeddings"])  # real FSQ codes < K; BOS/EOS/PAD >= K
     data_files = sorted((dataset_dir / "data").glob("**/*.parquet"))
     if not data_files:
         raise FileNotFoundError(f"No parquet under {dataset_dir / 'data'}")
@@ -121,9 +125,10 @@ def load_skill_sequences_by_language(dataset_dir: str | Path) -> dict[str, list[
     for _, row in first.iterrows():
         seq = [int(x) for x in np.asarray(row["skill_sequence"]).reshape(-1)]
         lens = [int(x) for x in np.asarray(row["skill_length_sequence"]).reshape(-1)]
-        seq_len = int(np.asarray(row["skill_sequence_len"]).reshape(-1)[0])
-        lo, hi = 1, max(1, seq_len - 1)  # drop BOS (0) and EOS/PAD (>= seq_len-1)
-        skills = [{"token": seq[i], "gt_length": lens[i]} for i in range(lo, hi)]
+        # Drop special tokens by VALUE (real FSQ codes < num_embeddings; BOS/EOS/PAD >= it).
+        # Scheme-agnostic: works whether or not the dataset has a leading BOS.
+        skills = [{"token": seq[i], "gt_length": lens[i]}
+                  for i in range(min(len(seq), len(lens))) if seq[i] < num_embeddings]
         if skills:
             by_lang[_norm_lang(idx_to_lang[int(row["task_index"])])].append(skills)
     return dict(by_lang)

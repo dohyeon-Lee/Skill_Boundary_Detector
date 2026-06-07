@@ -1,0 +1,9 @@
+wandb: [wandb.login()] Loaded credentials for https://api.wandb.ai from /home/dohyeon/.netrc.
+wandb: Currently logged in as: dohyeonlee (dohyeonlee-postech) to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
+wandb: setting up run 1u2uwtdz
+wandb: Tracking run with wandb version 0.24.2
+wandb: Run data is saved locally in /data2/dohyeon/SBD/lerobot/wandb/run-20260607_185917-1u2uwtdz
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run libero_90_full_full_fsq865_pg8_image256
+wandb: ⭐️ View project at https://wandb.ai/dohyeonlee-postech/VAE_train
+wandb: 🚀 View run at https://wandb.ai/dohyeonlee-postech/VAE_train/runs/1u2uwtdz

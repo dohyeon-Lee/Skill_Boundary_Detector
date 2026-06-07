@@ -1,59 +1,56 @@
 """
-SkillVLA용 컬럼을 LeRobot 데이터셋에 추가하는 스크립트.
+Stage-2 (SkillVLA) 데이터셋 빌더 — 원본 LeRobot 데이터셋에 스킬 컬럼을 추가하고,
+스킬 시작 시점 randomization용 "skill-initial-state" npz를 따로 만든다.
 
-FSQ encoder로 뽑은 skill tokens (.npz) 를 원본 데이터셋에 추가한다.
-선택적으로 precompute_dino_features.py가 만든 frozen visual backbone
-feature cache를 frame별 column으로 붙일 수 있다. 이 visual column은 VLA
-학습 속도를 높이기 위한 train-time cache이며, eval/sim에서는 raw image를
-모델 안의 같은 frozen visual encoder로 통과시키는 경로를 유지한다.
+이미지는 원본 video(mp4) 그대로 두고(프레임 참조), parquet에는 스킬 메타 컬럼만 붙인다.
+VLM/action expert는 학습·추론 모두 raw 이미지를 자기 인코더로 on-the-fly 통과시키므로
+precompute된 DINO/visual feature 캐시는 만들지 않는다.
 
-추가되는 컬럼:
-  skill_index          : int32   현재 스킬이 skill_sequence에서 차지하는 index (BOS=0, 첫 실제 스킬=1)
-  skill_sequence       : (max_order+2,) int32  [BOS, episode skill tokens..., EOS, PAD...]
-  skill_length_sequence: (max_order+2,) int32  [0, episode skill lengths..., 0, 0...]
-  skill_sequence_mask  : (max_order+2,) int8   padding이 아닌 sequence 위치
-  skill_sequence_len   : int32   BOS/EOS를 포함한 sequence 길이
-  skill_ds             : int32   현재 스킬 시작점으로부터의 distance, 시작 프레임에서 0
-  skill_de             : int32   현재 스킬 종료점까지 남은 distance, 종료 프레임에서 0
-  skill_boundary       : int8    현재 스킬 종료 프레임에서만 1
-  skill_max_order      : int32   데이터셋에서 허용하는 최대 real skill 개수
-  skill_max_length     : int32   FSQ와 공유하는 skill max length hyperparameter
-  skill_decoder_state  : (7,) float32  FSQ decoder state = eef 6D + previous gripper action
-  observation.dino.image: (F,) float32  optional precomputed visual feature
+────────────────────────────────────────────────────────────────────────────
+parquet에 추가되는 per-frame 컬럼  (max_seq_len = max_order + 1, BOS 없음)
+────────────────────────────────────────────────────────────────────────────
+  skill_index          : int32              현재 프레임이 속한 스킬의 0-based index (첫 실제 스킬 = 0)
+  skill_sequence (SS)  : (max_seq_len,) int32   [skill0..skill_{N-1}, EOS, PAD...]  에피소드 스킬 코드열
+  skill_length_sequence: (max_seq_len,) int32   [len0..len_{N-1}, 0, 0...]          스킬별 프레임 길이
+  skill_initial_frame  : (max_seq_len,) int32   [fs0..fs_{N-1}, -1, -1...]  (IFS) 스킬별 "시작 프레임 index"
+                                                 → VLM 시작 이미지 디코딩 + ISS npz 교차검증 키
+  skill_sequence_mask  : (max_seq_len,) int8    real skill/EOS = 1, PAD = 0
+  skill_sequence_len   : int32              real skill 개수 + EOS (= N + 1)
+  skill_ds             : int32              현재 스킬 시작으로부터의 거리 (시작 프레임 = 0)
+  skill_de             : int32              현재 스킬 끝까지 남은 거리 (끝 프레임 = 0)
+  skill_boundary       : int8               현재 스킬 마지막 프레임에서만 1
+  skill_max_order      : int32              허용 최대 real skill 개수
+  skill_max_length     : int32              FSQ와 공유하는 skill max length
+  skill_decoder_state  : (state_dim,) float32   FSQ decoder/terminator용 state (= observation.state 전체)
 
-skill_sequence는 FSQ scalar token index (0 ~ prod(fsq_levels)-1) 를 저장한다.
-특수 토큰은 scalar index 공간 바로 위에 배치된다:
-  EOS = num_embeddings + 0
-  BOS = num_embeddings + 1  ← modeling_skillVLA.py 인퍼런스와 반드시 일치해야 함
-  PAD = num_embeddings + 2
+skill_sequence 토큰 = FSQ scalar code(0 ~ prod(fsq_levels)-1). 특수 토큰은 그 바로 위:
+  EOS = num_embeddings(K),  PAD = K + 1     (BOS 제거 — Stage-2 VLM이 scene에서 skill을 직접 예측하므로 불필요)
 
-num_embeddings는 --fsq_levels로 자동 계산하거나 --num_embeddings로 직접 지정한다.
---fsq_levels [3,3,3] → num_embeddings=27, --fsq_levels [5,5,5] → num_embeddings=125.
+────────────────────────────────────────────────────────────────────────────
+별도 산출물: skill-initial-state npz  ({iss_npz_path})   ← Stage-2 transition randomization용
+────────────────────────────────────────────────────────────────────────────
+  episode_id  : (total_skills,) int32        각 스킬이 속한 episode_index (parquet과 같은 id 규약)
+  frame_start : (total_skills,) int32        각 스킬 시작 프레임 (= 그 스킬의 IFS, 교차검증용)
+  offsets     : (n_episodes+1,) int64        episode → 스킬 슬라이스 (offsets[i]:offsets[i+1])
+  iss_windows : (total_skills, 2*pmax+1, state_dim) float32
+                스킬 시작 ±pmax 프레임의 observation.state 윈도우 (에피 경계 clamp).
+                중앙 index [pmax] = 실제 시작 프레임의 state.
 
-마지막 스킬 이후 남은 프레임은 마지막 스킬 index로 채워지고 ds는 마지막
-스킬 시작점 기준으로 이어서 카운팅된다.
+학습 로더는 매 스텝 p~half-normal[0,pmax]를 뽑아 스킬 시작을 jitter한다(early/late/else):
+  이미지 = IFS[k'] ± p 프레임을 video에서 디코딩,  state = iss_windows[k'][pmax ± p].
+  (이 스크립트는 데이터만 준비하고, jitter/디코딩은 로더가 수행.)
 
+마지막 스킬 이후 남은 프레임은 마지막 스킬 index로 채워지고 ds는 이어서 카운팅된다.
 스킬 latent가 없는 에피소드는 제거하지 않고 모든 컬럼을 0으로 채운다.
 
-Usage (FSQ 333):
+Usage:
     python examples/libero/add_skill_latents_to_dataset.py \
-        --src_dataset_dir /data2/dohyeon/SBD/libero_dataset/libero_90 \
-        --dst_dataset_dir /data2/dohyeon/SBD/libero_dataset/libero_90_data/libero_90_skillvla \
-        --dst_repo_id dohyeon/libero_90_skillvla \
-        --latents_path /data2/dohyeon/SBD/outputs/libero_90_skillset_FSQ/skill_latents.npz \
-        --fsq_levels 3 3 3 \
-        --max_order 20 \
-        --max_length 200
-
-Usage (FSQ 555):
-    python examples/libero/add_skill_latents_to_dataset.py \
-        --src_dataset_dir /data2/dohyeon/SBD/libero_dataset/libero_90 \
-        --dst_dataset_dir /data2/dohyeon/SBD/libero_dataset/libero_90_data/libero_90_skillvla \
-        --dst_repo_id dohyeon/libero_90_skillvla \
-        --latents_path /data2/dohyeon/SBD/outputs/libero_90_skillset_FSQ/skill_latents.npz \
-        --fsq_levels 5 5 5 \
-        --max_order 20 \
-        --max_length 200
+        --src_dataset_dir .../libero_90 \
+        --dst_dataset_dir .../libero_90_skillvla \
+        --dst_repo_id skillvla/libero_90 \
+        --latents_path .../skill_latents.npz \
+        --iss_npz_path .../skill_initial_state.npz \
+        --fsq_levels 8 6 5 --max_order 20 --max_length 200 --pmax 10
 """
 
 from __future__ import annotations
@@ -86,11 +83,13 @@ class Args:
     fsq_levels: list[int] = field(default_factory=list)
     """FSQ levels (e.g. 3 3 3 or 5 5 5). num_embeddings = prod(fsq_levels). --num_embeddings보다 우선."""
     num_embeddings: int = 0
-    """FSQ codebook size = prod(fsq_levels). EOS=K, BOS=K+1, PAD=K+2. fsq_levels 미지정 시 직접 입력."""
-    dino_features_path: str = ""
-    """Optional precomputed visual feature npz from precompute_dino_features.py."""
-    dino_column: str = "observation.dino.image"
-    """Dataset column name for per-frame visual features."""
+    """FSQ codebook size = prod(fsq_levels). EOS=K, PAD=K+1 (no BOS). fsq_levels 미지정 시 직접 입력."""
+    pmax: int = 10
+    """Stage-2 transition randomization half-window (steps). ISS는 스킬 시작 ±pmax state를 저장."""
+    iss_npz_path: str = ""
+    """skill-initial-state npz 출력 경로. 비우면 dst_dataset_dir 옆 skill_initial_state.npz."""
+    state_column: str = "observation.state"
+    """ISS/decoder-state로 쓸 로봇 state 컬럼."""
 
 
 # ── latents .npz 파싱 ─────────────────────────────────────────────────────────
@@ -118,37 +117,6 @@ def load_skill_map(npz_path: Path) -> dict[int, list]:
     return skill_map
 
 
-def load_dino_feature_map(features_path: Path) -> tuple[dict[int, dict[int, np.ndarray]], int, dict]:
-    """Return episode_id -> frame_index -> visual feature."""
-    raw = np.load(str(features_path), allow_pickle=False)
-    required = {"features", "offsets", "episode_id", "frame_start", "length"}
-    missing = required - set(raw.files)
-    if missing:
-        raise ValueError(f"{features_path} is missing keys: {sorted(missing)}")
-
-    features = raw["features"].astype(np.float32)
-    offsets = raw["offsets"].astype(np.int64)
-    feature_dim = int(features.shape[-1])
-    fmap: dict[int, dict[int, np.ndarray]] = {}
-
-    for i, (ep, fs, length) in enumerate(zip(raw["episode_id"], raw["frame_start"], raw["length"])):
-        start, end = int(offsets[i]), int(offsets[i + 1])
-        clip = features[start:end]
-        if len(clip) != int(length):
-            raise ValueError(f"Feature length mismatch at skill index {i}: {len(clip)} != {int(length)}")
-        ep_map = fmap.setdefault(int(ep), {})
-        for j, feat in enumerate(clip):
-            ep_map[int(fs) + j] = feat
-
-    meta = {
-        "path": str(features_path),
-        "image_key": str(raw["image_key"]) if "image_key" in raw.files else "",
-        "image_model_name": str(raw["image_model_name"]) if "image_model_name" in raw.files else "",
-        "feature_dim": feature_dim,
-    }
-    return fmap, feature_dim, meta
-
-
 # ── episode별 컬럼 계산 ───────────────────────────────────────────────────────
 
 def compute_skill_columns(
@@ -157,20 +125,21 @@ def compute_skill_columns(
     max_order: int = 1,
     max_length: int = 200,
     eos_token_id: int = 512,
-    bos_token_id: int = 513,
-    pad_token_id: int = 514,
+    pad_token_id: int = 513,
 ) -> dict[str, np.ndarray]:
     """
     ep_df : frame_index 순으로 정렬된 한 에피소드의 DataFrame
     skills: [(frame_start, frame_end, token), ...] sorted by frame_start
 
-    Returns dict of arrays, each length len(ep_df).
+    Returns dict of arrays, each length len(ep_df). (BOS 없음 — skill_index 0-based,
+    skill_sequence = [skill0..skill_{N-1}, EOS, PAD...], IFS는 스킬별 시작 프레임 index.)
     """
     n = len(ep_df)
     frames = ep_df["frame_index"].values.astype(np.int64)
-    max_seq_len = max_order + 2  # BOS + real skills + EOS
+    max_seq_len = max_order + 1  # real skills + EOS (no BOS)
 
-    skill_index_arr = np.zeros(n, dtype=np.int32)
+    skill_index_arr = np.zeros(n, dtype=np.int32)   # default 0 = 첫 실제 스킬 (pre-skill 프레임도 여기로)
+    assigned = np.zeros(n, dtype=bool)
     ds_arr = np.zeros(n, dtype=np.int32)
     de_arr = np.zeros(n, dtype=np.int32)
     boundary_arr = np.zeros(n, dtype=np.int8)
@@ -180,53 +149,54 @@ def compute_skill_columns(
     seq_tokens = np.full((max_seq_len,), pad_token_id, dtype=np.int32)
     seq_lengths = np.zeros((max_seq_len,), dtype=np.int32)
     seq_mask = np.zeros((max_seq_len,), dtype=np.int8)
-    seq_tokens[0] = bos_token_id
-    seq_mask[0] = 1
+    seq_initial_frame = np.full((max_seq_len,), -1, dtype=np.int32)  # IFS: 스킬 시작 프레임 (EOS/PAD = -1)
 
     n_real = len(skills)
     if n_real > max_order:
         raise ValueError(f"Episode has {n_real} skills, but max_order={max_order}.")
 
     if skills:
-        tokens = np.array([tok for _, _, tok in skills], dtype=np.int32)
-        lengths = np.array([max(0, fe - fs) for fs, fe, _ in skills], dtype=np.int32)
-        seq_tokens[1:1 + n_real] = tokens
-        seq_lengths[1:1 + n_real] = lengths
-        seq_mask[1:1 + n_real] = 1
+        seq_tokens[:n_real] = np.array([tok for _, _, tok in skills], dtype=np.int32)
+        seq_lengths[:n_real] = np.array([max(0, fe - fs) for fs, fe, _ in skills], dtype=np.int32)
+        seq_initial_frame[:n_real] = np.array([fs for fs, _, _ in skills], dtype=np.int32)
+        seq_mask[:n_real] = 1
 
-    eos_index = 1 + n_real
+    eos_index = n_real
     seq_tokens[eos_index] = eos_token_id
     seq_mask[eos_index] = 1
-    seq_len = n_real + 2
+    seq_len = n_real + 1
     seq_len_arr = np.full(n, seq_len, dtype=np.int32)
     seq_arr = np.repeat(seq_tokens[None, :], n, axis=0)
     seq_length_arr = np.repeat(seq_lengths[None, :], n, axis=0)
     seq_mask_arr = np.repeat(seq_mask[None, :], n, axis=0)
+    seq_if_arr = np.repeat(seq_initial_frame[None, :], n, axis=0)
 
     for skill_rank, (fs, fe, tok) in enumerate(skills):
         mask = (frames >= fs) & (frames < fe)
         if not mask.any():
             continue
-        seq_idx = skill_rank + 1  # index 0 is BOS
-        skill_index_arr[mask] = seq_idx
+        skill_index_arr[mask] = skill_rank   # 0-based (no BOS)
         ds_arr[mask] = frames[mask] - fs
         de_arr[mask] = np.maximum((fe - 1) - frames[mask], 0)
         boundary_arr[mask & (frames == fe - 1)] = 1
+        assigned |= mask
 
-    # 마지막 스킬 이후 남은 프레임: 마지막 스킬 index로 채움
+    # 마지막 스킬 이후 남은 프레임: 마지막 스킬 index로 채우고 ds 이어서 카운팅 (de=0)
     if skills:
         last_fs, last_fe, _ = skills[-1]
-        leftover = (skill_index_arr == 0) & (frames >= last_fe)
+        leftover = (~assigned) & (frames >= last_fe)
         if leftover.any():
-            seq_idx = len(skills)
-            skill_index_arr[leftover] = seq_idx
+            skill_index_arr[leftover] = n_real - 1
             ds_arr[leftover] = frames[leftover] - last_fs
-            de_arr[leftover] = np.maximum((last_fe - 1) - frames[leftover], 0)
+            de_arr[leftover] = 0
+            assigned |= leftover
+    # 첫 스킬 이전 프레임(있다면)은 skill 0, ds=0 기본값으로 둠 (드묾)
 
     return {
         "skill_index": skill_index_arr,
         "skill_sequence": list(seq_arr),
         "skill_length_sequence": list(seq_length_arr),
+        "skill_initial_frame": list(seq_if_arr),
         "skill_sequence_mask": list(seq_mask_arr),
         "skill_sequence_len": seq_len_arr,
         "skill_ds": ds_arr,
@@ -261,6 +231,49 @@ def compute_skill_decoder_state(
     return [row.astype(np.float32) for row in states]
 
 
+# ── skill-initial-state npz (Stage-2 transition randomization) ───────────────────
+
+def build_skill_initial_state_npz(
+    skill_map: dict[int, list],
+    ep_states: dict[int, np.ndarray],
+    pmax: int,
+    state_dim: int,
+    out_path: Path,
+) -> int:
+    """각 스킬의 시작 ±pmax 프레임 observation.state 윈도우를 flat npz로 저장.
+
+    skill_latents.npz와 같은 규약(per-skill flat + episode_id 키)이라, 로더가 episode_index로
+    그룹핑 + frame_start 정렬(=skill_index 순서)해서 [episode][k]로 인덱싱한다. frame_start는
+    parquet의 skill_initial_frame(IFS)과 교차검증용.
+    """
+    win = 2 * pmax + 1
+    episode_ids: list[int] = []
+    frame_starts: list[int] = []
+    windows: list[np.ndarray] = []
+    for ep_id in sorted(skill_map.keys()):
+        states = ep_states.get(int(ep_id))
+        for fs, _fe, _tok in skill_map[ep_id]:  # sorted by frame_start
+            if states is None or len(states) == 0:
+                w = np.zeros((win, state_dim), dtype=np.float32)
+            else:
+                idx = np.clip(np.arange(fs - pmax, fs + pmax + 1), 0, len(states) - 1)
+                w = states[idx].astype(np.float32)  # (win, state_dim), 경계 clamp; 중앙 [pmax]=시작
+            episode_ids.append(int(ep_id))
+            frame_starts.append(int(fs))
+            windows.append(w)
+    iss = np.stack(windows) if windows else np.zeros((0, win, state_dim), dtype=np.float32)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez(
+        str(out_path),
+        episode_id=np.asarray(episode_ids, dtype=np.int32),
+        frame_start=np.asarray(frame_starts, dtype=np.int32),
+        iss_windows=iss,
+        pmax=np.int32(pmax),
+        state_dim=np.int32(state_dim),
+    )
+    return len(windows)
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main(args: Args) -> None:
@@ -282,11 +295,10 @@ def main(args: Args) -> None:
     print(f"Loading skill tokens from {args.latents_path} ...")
     skill_map = load_skill_map(Path(args.latents_path))
     print(f"  episodes={len(skill_map)}")
-    eos_token_id = num_embeddings
-    bos_token_id = num_embeddings + 1
-    pad_token_id = num_embeddings + 2
+    eos_token_id = num_embeddings        # EOS = K
+    pad_token_id = num_embeddings + 1    # PAD = K+1  (BOS 제거)
     skill_output_vocab_size = num_embeddings + 1  # FSQ tokens + EOS
-    skill_vocab_size = num_embeddings + 3         # FSQ tokens + EOS/BOS/PAD
+    skill_vocab_size = num_embeddings + 2         # FSQ tokens + EOS/PAD (no BOS)
     observed_max_order = max((len(v) for v in skill_map.values()), default=0)
     observed_max_length = max((max((fe - fs for fs, fe, _ in v), default=0) for v in skill_map.values()), default=0)
     max_order = int(args.max_order) if int(args.max_order) > 0 else observed_max_order
@@ -300,22 +312,19 @@ def main(args: Args) -> None:
             f"--max_length={max_length} is smaller than observed max skill length {observed_max_length}. "
             "Use the same max_length used for FSQ training."
         )
-    max_seq_len = max_order + 2
+    max_seq_len = max_order + 1   # real skills + EOS (no BOS)
     print(f"  observed_max_order={observed_max_order}, max_order={max_order}")
     print(f"  observed_max_length={observed_max_length}, max_length={max_length}")
-    print(f"  max_skill_sequence_len={max_seq_len} (max_order + BOS/EOS)")
+    print(f"  max_skill_sequence_len={max_seq_len} (real skills + EOS, no BOS)")
     print(
-        f"  eos_token_id={eos_token_id}, bos_token_id={bos_token_id}, "
-        f"pad_token_id={pad_token_id}, skill_vocab_size={skill_vocab_size}, "
-        f"skill_output_vocab_size={skill_output_vocab_size}"
+        f"  eos_token_id={eos_token_id}, pad_token_id={pad_token_id}, "
+        f"skill_vocab_size={skill_vocab_size}, skill_output_vocab_size={skill_output_vocab_size}"
     )
-    dino_map = None
-    dino_dim = None
-    dino_meta = None
-    if args.dino_features_path:
-        print(f"Loading DINO features from {args.dino_features_path} ...")
-        dino_map, dino_dim, dino_meta = load_dino_feature_map(Path(args.dino_features_path))
-        print(f"  dino episodes={len(dino_map)}, dim={dino_dim}, column={args.dino_column}")
+    pmax = int(args.pmax)
+    iss_npz_path = Path(args.iss_npz_path) if args.iss_npz_path else dst_dir.parent / "skill_initial_state.npz"
+    ep_states_map: dict[int, np.ndarray] = {}   # episode_index → (ep_len, state_dim), ISS 윈도우용
+    state_dim: int | None = None
+    print(f"  pmax={pmax}  →  ISS window={2 * pmax + 1}, npz={iss_npz_path}")
 
     if dst_dir.exists():
         print(f"Removing existing {dst_dir} ...")
@@ -344,6 +353,7 @@ def main(args: Args) -> None:
             "skill_index": [],
             "skill_sequence": [],
             "skill_length_sequence": [],
+            "skill_initial_frame": [],
             "skill_sequence_mask": [],
             "skill_sequence_len": [],
             "skill_ds": [],
@@ -353,7 +363,6 @@ def main(args: Args) -> None:
             "skill_max_length": [],
             "skill_decoder_state": [],
         }
-        dino_values: list | None = [] if dino_map is not None else None
 
         for ep_id, ep_df in df.groupby("episode_index"):
             ep_df  = ep_df.sort_values("frame_index")
@@ -364,26 +373,29 @@ def main(args: Args) -> None:
                 max_order=max_order,
                 max_length=max_length,
                 eos_token_id=eos_token_id,
-                bos_token_id=bos_token_id,
                 pad_token_id=pad_token_id,
             )
             cols["skill_decoder_state"] = compute_skill_decoder_state(ep_df, cols["skill_ds"])
             for k in col_buffers:
                 col_buffers[k].extend(cols[k] if isinstance(cols[k], list) else cols[k].tolist())
-            if dino_values is not None:
-                ep_features = dino_map.get(int(ep_id), {})
-                zero = np.zeros((dino_dim,), dtype=np.float32)
-                for frame in ep_df["frame_index"].values:
-                    dino_values.append(ep_features.get(int(frame), zero))
+            # ISS 윈도우용: 이 에피소드의 frame-정렬 state (frame_index 0-based 가정)
+            ep_states = np.stack(ep_df[args.state_column].to_numpy()).astype(np.float32)
+            ep_states_map[int(ep_id)] = ep_states
+            if state_dim is None:
+                state_dim = int(ep_states.shape[1])
 
         for k, vals in col_buffers.items():
             df[k] = vals
-        if dino_values is not None:
-            df[args.dino_column] = list(dino_values)
 
         df.to_parquet(parquet_path, index=False)
 
     print(f"  Zero-filled {n_zero_fill_eps} episodes without skill tokens (kept in dataset)")
+
+    # ── skill-initial-state npz (Stage-2 randomization) ──
+    if state_dim is None:
+        state_dim = 0
+    n_iss = build_skill_initial_state_npz(skill_map, ep_states_map, pmax, state_dim, iss_npz_path)
+    print(f"  Wrote ISS npz: {iss_npz_path}  (skills={n_iss}, window={2 * pmax + 1}, state_dim={state_dim})")
 
     # ── Update info.json ──────────────────────────────────────────────────────
     info_path = dst_dir / "meta" / "info.json"
@@ -392,8 +404,7 @@ def main(args: Args) -> None:
     info["skill_num_embeddings"] = num_embeddings
     info["skill_fsq_levels"] = list(args.fsq_levels) if args.fsq_levels else []
     info["skill_eos_token_id"] = eos_token_id
-    info["skill_bos_token_id"] = bos_token_id
-    info["skill_pad_token_id"] = pad_token_id
+    info["skill_pad_token_id"] = pad_token_id          # BOS 제거됨
     info["skill_vocab_size"] = skill_vocab_size
     info["skill_output_vocab_size"] = skill_output_vocab_size
     info["skill_max_order"] = max_order
@@ -401,11 +412,9 @@ def main(args: Args) -> None:
     info["skill_max_length"] = max_length
     info["skill_observed_max_length"] = observed_max_length
     info["skill_sequence_size"] = max_seq_len
-    if dino_meta is not None:
-        info["dino_features_path"] = dino_meta["path"]
-        info["dino_image_key"] = dino_meta["image_key"]
-        info["dino_model_name"] = dino_meta["image_model_name"]
-        info["dino_feature_dim"] = dino_meta["feature_dim"]
+    info["skill_pmax"] = pmax                          # ISS window 반폭 (= transition randomization)
+    info["skill_initial_state_path"] = str(iss_npz_path)
+    info["skill_initial_state_window"] = 2 * pmax + 1
 
     info["features"].update({
         "skill_index": {"dtype": "int32", "shape": [1], "names": ["skill_index"]},
@@ -418,6 +427,11 @@ def main(args: Args) -> None:
             "dtype": "int32",
             "shape": [max_seq_len],
             "names": [f"skill_len_{i}" for i in range(max_seq_len)],
+        },
+        "skill_initial_frame": {
+            "dtype": "int32",
+            "shape": [max_seq_len],
+            "names": [f"skill_if_{i}" for i in range(max_seq_len)],
         },
         "skill_sequence_mask": {
             "dtype": "int8",
@@ -432,24 +446,17 @@ def main(args: Args) -> None:
         "skill_max_length": {"dtype": "int32", "shape": [1], "names": ["skill_max_length"]},
         "skill_decoder_state": {
             "dtype": "float32",
-            "shape": [7],
-            "names": ["eef_x", "eef_y", "eef_z", "eef_rx", "eef_ry", "eef_rz", "prev_gripper"],
+            "shape": [state_dim],
+            "names": [f"decoder_state_{i}" for i in range(state_dim)],
         },
     })
-    if dino_dim is not None:
-        info["features"][args.dino_column] = {
-            "dtype": "float32",
-            "shape": [dino_dim],
-            "names": [f"dino_{i}" for i in range(dino_dim)],
-        }
     info_path.write_text(json.dumps(info, indent=2))
 
     print(f"\n완료: {dst_dir}")
-    print(f"  추가된 컬럼: skill_index, skill_sequence, skill_length_sequence, "
+    print(f"  추가된 컬럼: skill_index, skill_sequence, skill_length_sequence, skill_initial_frame, "
           f"skill_sequence_mask, skill_sequence_len, skill_ds, skill_de, "
           f"skill_boundary, skill_max_order, skill_max_length, skill_decoder_state")
-    if dino_dim is not None:
-        print(f"  추가된 DINO 컬럼: {args.dino_column} ({dino_dim} dims)")
+    print(f"  ISS npz: {iss_npz_path}  (window={2 * pmax + 1}, state_dim={state_dim})")
     print(f"  episodes={info['total_episodes']}, frames={info['total_frames']}")
 
 

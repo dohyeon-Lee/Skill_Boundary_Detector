@@ -4,7 +4,7 @@
 #   job 1    build_skillset.sbatch  — DP skill segmentation (Slurm array over tasks)
 #   job 1b   verify_skillset.sbatch — verify + re-run tasks a dead GPU missed (afterany:1)
 #   job 2    encode_skills.sbatch   — extract skill DINO tokens + FSQ encode   (after 1b)
-#   job 3    build_skillvla.sbatch  — dino.npz + skillvla/ + FSQ.pt + cleanup  (after 2)
+#   job 3    build_skillvla.sbatch  — dino.npz + skillvla/ + skill_initial_state.npz + FSQ.pt  (after 2)
 #
 # Stages whose outputs already exist are skipped and the --dependency chain is
 # rewired around them. Final outputs land in {skillvla_dataset}/{source}/{run_tag}/.
@@ -33,7 +33,7 @@ source "${SNAPSHOT_ENV}"
 
 # ── short-circuit: whole pipeline already done? (final outputs survive cleanup) ──
 build_complete () {
-  [ -f "${DINO_NPZ_PATH}" ] && [ -f "${FSQ_COPY_PATH}" ] \
+  [ -f "${ISS_NPZ_PATH}" ] && [ -f "${FSQ_COPY_PATH}" ] \
     && [ -d "${SKILLVLA_DATASET_DIR}" ] && [ -n "$(ls -A "${SKILLVLA_DATASET_DIR}" 2>/dev/null)" ]
 }
 if build_complete; then
@@ -128,4 +128,4 @@ JID3=$(env "${ENV[@]}" \
   sbatch --parsable ${DEP_ARG[@]+"${DEP_ARG[@]}"} "${SBATCH_ARGS[@]}" "${SRC_DIR}/build_skillvla.sbatch")
 echo "       build ${JID3}"
 
-echo "Submitted. Final outputs → ${SKILLVLA_RUN_DIR}  (dino.npz, FSQ.pt, skillvla/)"
+echo "Submitted. Final outputs → ${SKILLVLA_RUN_DIR}  (skillvla/, skill_initial_state.npz, dino.npz, FSQ.pt)"

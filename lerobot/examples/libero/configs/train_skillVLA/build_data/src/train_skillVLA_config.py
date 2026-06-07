@@ -62,6 +62,16 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
         f"{fsq_exp_suffix}"
     )
     fsq_model_dir = fsq_outputs_root / fsq_run_name
+    # Back-compat: pre-flag-removal FSQ runs put an "only" tag before "image"
+    # (e.g. ..._pg8_only_image256_...). Prefer the canonical name; fall back to the
+    # legacy "only" folder if that's the only one present. (Output run_tag stays canonical.)
+    if not fsq_model_dir.exists():
+        legacy_dir = fsq_outputs_root / (
+            f"{fsq_train_dataset}_{fsq_tag}_pg{patch_grid}_only_image{image_token_dim}{fsq_exp_suffix}"
+        )
+        if legacy_dir.exists():
+            fsq_model_dir = legacy_dir
+            fsq_run_name = legacy_dir.name
     if fsq_checkpoint in ("0", "best"):
         fsq_model_path = fsq_model_dir / "FSQ.pt"
         ckpt_tag = "best"
@@ -142,16 +152,18 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
         # SkillVLA build (step 5)
         "max_order": int(get_value(cfg, "max_order", 0)),
         "max_length": int(get_value(cfg, "max_length", 200)),
+        "skill_pmax": int(get_value(cfg, "pmax", 10)),   # Stage-2 transition randomization 반폭 (ISS window)
         "skill_decoder_state_indices": str(get_value(cfg, "skill_decoder_state_indices", "[0,1,2,3,4,5,6,7]")),
         "cleanup_intermediate": str(get_value(cfg, "cleanup_intermediate", True)).lower(),
         # output layout
         "run_tag": run_tag,
         "skillvla_run_dir": run_dir,
         "skillvla_work_dir": work_dir,
-        "dino_npz_path": run_dir / "dino.npz",
+        "iss_npz_path": run_dir / "skill_initial_state.npz",   # Stage-2 skill-initial-state (ISS)
+        "dino_npz_path": run_dir / "dino.npz",                 # build_data_eval viz only (not used by training)
         "fsq_copy_path": run_dir / "FSQ.pt",
         "skillvla_dataset_dir": run_dir / "skillvla",
-        # eval outputs (run off the final artifacts: raw video + skillvla/ + dino.npz + FSQ.pt)
+        # eval outputs (build_data_eval runs off: raw video + skillvla/ + dino.npz + FSQ.pt)
         "eval_dir": run_dir / "eval",
         "eval_dino_dir": run_dir / "eval" / "dino",
         "eval_skillset_dir": run_dir / "eval" / "skillset",
