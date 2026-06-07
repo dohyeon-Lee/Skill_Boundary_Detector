@@ -21,7 +21,7 @@ pi_base: lerobot/pi05_base                  # VLM (PaliGemma) init
 # checkpoints/{stage1_checkpoint}/pretrained_model warm-starts the action expert + cond side. Its
 # config supplies expert_arch (A/B) / vision_backbone / skill_vocab — no need to repeat them here.
 stage1_run_name: S1_libero_90_FSQ555_pg8_only_image256_eqloss_200_batch32_stage1_init_joint_unfreeze_siglip
-stage1_checkpoint: last     # "last" (newest at launch time) or a step number, e.g. "020000", to pin it
+stage1_checkpoint: "025000"     # "last" (newest at launch time) or a step number, e.g. "020000", to pin it
 skillvla_outputs_root: skillVLA_outputs
 
 # ── Skill head / FSQ ──────────────────────────────────────────

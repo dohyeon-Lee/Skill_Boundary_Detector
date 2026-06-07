@@ -5,7 +5,7 @@
 
 # ── Which skillvla dataset to train on (built by configs/train_skillVLA/build_data) ──
 source_dataset: libero_90
-run_tag: FSQ555_pg8_image256_eqloss_200   # sub-folder under skillvla_dataset/{source}/
+run_tag: FSQ555_pg8_image256_eqloss_1000   # sub-folder under skillvla_dataset/{source}/
 skillvla_outputs_root: skillVLA_outputs        # output under {project_root}/
 
 # ── Conditioning architecture ──

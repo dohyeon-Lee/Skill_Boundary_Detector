@@ -323,7 +323,7 @@ def _save_npz(output_path: Path, features: np.ndarray, offsets: list, metadata: 
               image_key: str, model_name: str, patch_grid: int) -> None:
     np.savez(
         str(output_path),
-        features=features.astype(np.float16),
+        features=features.astype(np.float16, copy=False),  # already float16 → skip a redundant full-size copy
         offsets=np.array(offsets, dtype=np.int64),
         episode_id  =np.array([m["episode_id"]  for m in metadata], dtype=np.int64),
         task_id     =np.array([m["task_id"]     for m in metadata], dtype=np.int64),

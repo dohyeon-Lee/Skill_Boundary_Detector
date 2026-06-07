@@ -57,3 +57,31 @@ eval_mem: 32G
 eval_time: "1:00:00"
 eval_nodelist: ""
 eval_exclude_nodes: []
+
+# eval_partition:
+#   - base_suma_rtx3090
+#   - dell_rtx3090
+#   - big_suma_rtx3090
+#   - suma_a6000
+#   - suma_rtx4090
+#   - gigabyte_a6000
+#   - asus_6000ada
+#   - tyan_a6000
+# eval_qos: base_qos
+# eval_gres: gpu:1
+# eval_cpus_per_task: 8
+# eval_mem: 32G
+# eval_time: "1:00:00"
+# eval_nodelist: ""
+# eval_exclude_nodes:
+#   - node19
+#   - node13
+#   - node18
+#   - node16
+#   - node08
+#   - node10
+#   - node21
+#   - node14
+#   - node04
+#   - node05
+#   - node31

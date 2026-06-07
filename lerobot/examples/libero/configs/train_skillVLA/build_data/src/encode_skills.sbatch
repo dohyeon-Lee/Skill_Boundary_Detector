@@ -52,13 +52,18 @@ if [ ! -f "${FSQ_MODEL_PATH}" ]; then
   exit 1
 fi
 
-# ── (a) extract skill-level DINO tokens (CPU) ──
-PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
-  python -u examples/libero/extract_skill_dino_tokens.py \
-    --frame_dino_dir "${DINO_PER_EPISODE_DIR}" \
-    --skills_dir     "${SKILLSET_DIR}/skills" \
-    --output_path    "${SKILL_TOKENS_PATH}" \
-    --image_key      "${DINO_IMAGE_KEY}"
+# ── (a) extract skill-level DINO tokens (CPU). FSQ-independent → reuse if it already exists
+#        (the same skillset/pg8 DINO tokens are shared across FSQ epochs; set FORCE_EXTRACT=1 to rebuild).
+if [ "${FORCE_EXTRACT:-0}" != "1" ] && [ -f "${SKILL_TOKENS_PATH}" ]; then
+  echo "skill_tokens.npz exists → reuse (FSQ-independent): ${SKILL_TOKENS_PATH}"
+else
+  PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
+    python -u examples/libero/extract_skill_dino_tokens.py \
+      --frame_dino_dir "${DINO_PER_EPISODE_DIR}" \
+      --skills_dir     "${SKILLSET_DIR}/skills" \
+      --output_path    "${SKILL_TOKENS_PATH}" \
+      --image_key      "${DINO_IMAGE_KEY}"
+fi
 
 # ── (b) encode skills with FSQ → latent vectors (GPU) ──
 PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \

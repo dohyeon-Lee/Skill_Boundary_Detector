@@ -55,3 +55,5 @@ No checkpoint found, training from scratch
 [SplineFSQAE]  190/1000  train=0.0149  val=0.1368  delta=0.0068  prog=0.0035  end=0.0046  end_acc=0.998  end_rec=0.953
 [SplineFSQAE]  200/1000  train=0.0141  val=0.1532  delta=0.0065  prog=0.0035  end=0.0042  end_acc=0.998  end_rec=0.955
 [SplineFSQAE]  210/1000  train=0.0136  val=0.1570  delta=0.0064  prog=0.0034  end=0.0038  end_acc=0.999  end_rec=0.962
+[SplineFSQAE]  220/1000  train=0.0136  val=0.1544  delta=0.0062  prog=0.0034  end=0.0040  end_acc=0.999  end_rec=0.962
+[SplineFSQAE]  230/1000  train=0.0136  val=0.1466  delta=0.0062  prog=0.0034  end=0.0040  end_acc=0.999  end_rec=0.961
