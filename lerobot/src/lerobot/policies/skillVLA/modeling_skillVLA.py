@@ -48,6 +48,7 @@ from lerobot.policies.pi05.modeling_pi05 import (
     PI05Pytorch,
     create_sinusoidal_pos_embedding,
     get_gemma_config,
+    make_att_2d_masks,
     pad_vector,
     resize_with_pad_torch,
 )
@@ -229,13 +230,21 @@ class SkillVLAPytorch(PI05Pytorch):
         x = x.to(dtype=next(self.siglip.parameters()).dtype)
         return self.siglip(pixel_values=x).last_hidden_state
 
-    def _cond_tokens(self, images: list[Tensor], state: Tensor, skill_code: Tensor) -> Tensor:
-        """[img1 tokens, img2 tokens, state, skill] → (B, M, expert_width)."""
+    def _cond_image_state_tokens(self, images: list[Tensor], state: Tensor) -> Tensor:
+        """[img1 tokens, img2 tokens, state] → (B, M-1, expert_width). The skill token (which needs the
+        predicted code at inference) is appended separately by ``_cond_tokens``."""
         tokens = [self.image_proj(self._image_features(img).to(self._wdtype)) for img in images]
         state = pad_vector(state.to(dtype=torch.float32), self.stage1_config.max_state_dim)
         tokens.append(self.state_proj(state.to(self._wdtype)).unsqueeze(1))
-        tokens.append(self.skill_emb(skill_code.view(-1).long()).unsqueeze(1))
         return torch.cat(tokens, dim=1)
+
+    def _skill_token(self, skill_code: Tensor) -> Tensor:
+        return self.skill_emb(skill_code.view(-1).long()).unsqueeze(1).to(self._wdtype)
+
+    def _cond_tokens(self, images: list[Tensor], state: Tensor, skill_code: Tensor) -> Tensor:
+        """[img1 tokens, img2 tokens, state, skill] → (B, M, expert_width)."""
+        base = self._cond_image_state_tokens(images, state)
+        return torch.cat([base, self._skill_token(skill_code)], dim=1)
 
     def _vlm_tokens(
         self, start_images: list[Tensor], lang_tokens: Tensor, lang_masks: Tensor
@@ -421,6 +430,116 @@ class SkillVLAPytorch(PI05Pytorch):
         ).last_hidden_state
         return self.skill_head.decode(self._skill_hidden(out))
 
+    # ── cached inference (branch A): VLM cached per skill, cond per call, action per denoise step ──
+    def _encode_prefix_kv(self, layers, embeds, pad, position_ids, adarms=None):
+        """Run a prefix stream standalone (bidirectional within its valid tokens) → per-layer
+        post-RoPE (K, V) + the pre-final-norm hidden. Because the streams are block-isolated
+        (cond ⊥ vlm, both ⊥ action), this reproduces the joint forward's per-layer K/V for the
+        stream exactly, so the cached denoise below is numerically identical to a full joint forward.
+        """
+        embeds = embeds.to(self._wdtype)
+        att_2d = make_att_2d_masks(pad, torch.zeros_like(pad))
+        att_4d = torch.where(att_2d[:, None], 0.0, OPENPI_ATTENTION_MASK_VALUE)
+        rotary = self._vlm.rotary_emb
+        h, kv = embeds, []
+        for layer in layers:
+            hn, gate = layernorm_forward(layer.input_layernorm, h, adarms)
+            shape = (*hn.shape[:-1], -1, layer.self_attn.head_dim)
+            q = layer.self_attn.q_proj(hn).view(shape).transpose(1, 2)
+            k = layer.self_attn.k_proj(hn).view(shape).transpose(1, 2)
+            v = layer.self_attn.v_proj(hn).view(shape).transpose(1, 2)
+            dummy = torch.zeros(q.shape[0], q.shape[2], q.shape[-1], device=q.device, dtype=q.dtype)
+            cos, sin = rotary(dummy, position_ids)
+            q, k = modeling_gemma.apply_rotary_pos_emb(q, k, cos, sin, unsqueeze_dim=1)
+            kv.append((k, v))
+            att_out, _ = modeling_gemma.eager_attention_forward(
+                layer.self_attn, q, k, v, att_4d, layer.self_attn.scaling)
+            att_out = att_out.reshape(att_out.shape[0], -1, q.shape[1] * layer.self_attn.head_dim)
+            if att_out.dtype != layer.self_attn.o_proj.weight.dtype:
+                att_out = att_out.to(layer.self_attn.o_proj.weight.dtype)
+            o = _gated_residual(h, layer.self_attn.o_proj(att_out), gate)
+            after = o.clone()
+            o, gate2 = layernorm_forward(layer.post_attention_layernorm, o, adarms)
+            if layer.mlp.up_proj.weight.dtype == torch.bfloat16:
+                o = o.to(torch.bfloat16)
+            h = _gated_residual(after, layer.mlp(o), gate2)
+        return kv, h
+
+    def _action_layer_cached(self, layer_idx, h, prefix_kv, att_4d, position_ids, adarms):
+        """One action-expert layer attending the FIXED combined prefix K/V + its own (RoPE'd) tokens."""
+        layer = self._expert.layers[layer_idx]
+        hn, gate = layernorm_forward(layer.input_layernorm, h, adarms)
+        shape = (*hn.shape[:-1], -1, layer.self_attn.head_dim)
+        q = layer.self_attn.q_proj(hn).view(shape).transpose(1, 2)
+        k = layer.self_attn.k_proj(hn).view(shape).transpose(1, 2)
+        v = layer.self_attn.v_proj(hn).view(shape).transpose(1, 2)
+        dummy = torch.zeros(q.shape[0], q.shape[2], q.shape[-1], device=q.device, dtype=q.dtype)
+        cos, sin = self._vlm.rotary_emb(dummy, position_ids)
+        q, k = modeling_gemma.apply_rotary_pos_emb(q, k, cos, sin, unsqueeze_dim=1)
+        pk, pv = prefix_kv[layer_idx]
+        key, val = torch.cat([pk, k], dim=2), torch.cat([pv, v], dim=2)
+        att_out, _ = modeling_gemma.eager_attention_forward(
+            layer.self_attn, q, key, val, att_4d, layer.self_attn.scaling)
+        att_out = att_out.reshape(att_out.shape[0], -1, q.shape[1] * layer.self_attn.head_dim)
+        if att_out.dtype != layer.self_attn.o_proj.weight.dtype:
+            att_out = att_out.to(layer.self_attn.o_proj.weight.dtype)
+        o = _gated_residual(h, layer.self_attn.o_proj(att_out), gate)
+        after = o.clone()
+        o, gate2 = layernorm_forward(layer.post_attention_layernorm, o, adarms)
+        if layer.mlp.up_proj.weight.dtype == torch.bfloat16:
+            o = o.to(torch.bfloat16)
+        return _gated_residual(after, layer.mlp(o), gate2)
+
+    @torch.no_grad()
+    def _sample_actions_A(self, cond_images, start_images, lang_tokens, lang_masks, state, skill_code, noise, num_steps):
+        """Branch A cached sampling: VLM + cond encoded once, only the action expert runs per step."""
+        bsize, device = state.shape[0], state.device
+        na = self.config.chunk_size
+        cond_base = self._cond_image_state_tokens(cond_images, state)   # (B, nc-1, w)
+        nc = cond_base.shape[1] + 1
+        vlm_embeds, vlm_pad, vlm_is_lang = self._vlm_tokens(start_images, lang_tokens, lang_masks)
+        nv = vlm_embeds.shape[1]
+
+        # positions = single cumsum over [cond, vlm, action] (identical to the training joint forward)
+        full_pad = torch.cat([
+            torch.ones(bsize, nc, dtype=torch.bool, device=device), vlm_pad,
+            torch.ones(bsize, na, dtype=torch.bool, device=device)], dim=1)
+        full_pos = torch.cumsum(full_pad, dim=1) - 1
+        cond_pos, vlm_pos, action_pos = full_pos[:, :nc], full_pos[:, nc : nc + nv], full_pos[:, nc + nv :]
+        cond_pad = torch.ones(bsize, nc, dtype=torch.bool, device=device)
+
+        # VLM: encode once → skill prediction + cached K/V
+        vlm_kv, vlm_h = self._encode_prefix_kv(self._vlm.layers, vlm_embeds, vlm_pad, vlm_pos, adarms=None)
+        vlm_h, _ = layernorm_forward(self._vlm.norm, vlm_h, None)
+        if skill_code is None:
+            skill_code = self.skill_head.decode(vlm_h[:, -1])
+
+        # cond: teacher-force the (predicted) skill, encode once → cached K/V
+        cond_tokens = torch.cat([cond_base, self._skill_token(skill_code)], dim=1)
+        cond_kv, _ = self._encode_prefix_kv(self.cond_encoder.model.layers, cond_tokens, cond_pad, cond_pos, adarms=None)
+
+        # combined prefix K/V (per layer) + action mask (action sees cond + vlm-nonlang + action)
+        prefix_kv = [(torch.cat([cond_kv[i][0], vlm_kv[i][0]], dim=2),
+                      torch.cat([cond_kv[i][1], vlm_kv[i][1]], dim=2)) for i in range(len(cond_kv))]
+        prefix_valid = torch.cat([cond_pad, vlm_pad & ~vlm_is_lang[None, :]], dim=1)
+        cols = torch.cat([prefix_valid, torch.ones(bsize, na, dtype=torch.bool, device=device)], dim=1)
+        att_4d = torch.where(cols[:, None, None, :].expand(bsize, 1, na, cols.shape[1]),
+                             0.0, OPENPI_ATTENTION_MASK_VALUE)
+
+        if noise is None:
+            noise = self.sample_noise((bsize, na, self.config.max_action_dim), device)
+        dt, x_t = -1.0 / num_steps, noise
+        for step in range(num_steps):
+            t = torch.full((bsize,), 1.0 + step * dt, dtype=torch.float32, device=device)
+            time_cond = self._time_cond(t)
+            h = self.action_in_proj(x_t.to(self._wdtype))
+            for i in range(len(prefix_kv)):
+                h = self._action_layer_cached(i, h, prefix_kv, att_4d, action_pos, time_cond)
+            h, _ = layernorm_forward(self._expert.norm, h, time_cond)
+            v_t = self.action_out_proj(h.to(self._wdtype)).float()
+            x_t = x_t + dt * v_t
+        return x_t
+
     @torch.no_grad()
     def sample_actions(
         self,
@@ -435,22 +554,24 @@ class SkillVLAPytorch(PI05Pytorch):
     ) -> Tensor:
         """Flow-matching sampling. ``skill_code`` (cond teacher value) defaults to the VLM prediction.
 
-        TODO(stage2-inference): this v1 re-runs the full joint (VLM + cond) every denoise step. Cache
-        the VLM (constant per skill) and cond (constant per call) K/V once — see pi05 ``denoise_step``.
+        Branch A caches the VLM (per skill) and cond (per call) and runs only the action expert per
+        denoise step. Branch B is still the v1 uncached joint — TODO(stage2-inference): cache its VLM
+        prefix like pi05 ``denoise_step``.
         """
         if num_steps is None:
             num_steps = self.config.num_inference_steps
+        if self.expert_arch == "joint":
+            return self._sample_actions_A(
+                cond_images, start_images, lang_tokens, lang_masks, state, skill_code, noise, num_steps)
+
         bsize, device = state.shape[0], state.device
         if skill_code is None:
             skill_code = self.predict_skill_code(start_images, lang_tokens, lang_masks)
         if noise is None:
             noise = self.sample_noise((bsize, self.config.chunk_size, self.config.max_action_dim), device)
-
         cond_tokens = self._cond_tokens(cond_images, state, skill_code)
         vlm_embeds, vlm_pad, vlm_is_lang = self._vlm_tokens(start_images, lang_tokens, lang_masks)
-
-        dt = -1.0 / num_steps
-        x_t = noise
+        dt, x_t = -1.0 / num_steps, noise
         for step in range(num_steps):
             t = torch.full((bsize,), 1.0 + step * dt, dtype=torch.float32, device=device)
             action_tokens = self.action_in_proj(x_t.to(self._wdtype))
