@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import logging
 import math
+import sys
 from collections import deque
 from pathlib import Path
 
@@ -168,6 +169,19 @@ class SkillVLAPytorch(PI05Pytorch):
             )
         self.skill_query = nn.Parameter(torch.randn(1, 1, vlm_width) * 0.02)
         self.skill_head = SkillHead(vlm_width, config.skill_fsq_levels)
+
+        # ── Inference-only FSQ terminator (loaded lazily from config.fsq_path) ──
+        # Flat FSQ code → z_q uses the FSQ codebook's OWN (little-endian) convention
+        # (strides[i]=prod(levels[:i]), z_q = level_id - half), independent of SkillHead's
+        # internal mixed-radix — the terminator reads FSQ geometry, the skill_emb does not.
+        levels = config.skill_fsq_levels
+        strides = torch.ones(len(levels), dtype=torch.long)
+        for i in range(1, len(levels)):
+            strides[i] = strides[i - 1] * levels[i - 1]
+        self.register_buffer("_fsq_strides", strides, persistent=False)
+        self.register_buffer("_fsq_levels", torch.tensor(levels, dtype=torch.long), persistent=False)
+        self.register_buffer("_fsq_half", torch.tensor([(lv - 1) / 2.0 for lv in levels], dtype=torch.float32), persistent=False)
+        self.fsq_term = None
 
     # ── construction helpers ──
     def _build_cond_side(self, s1) -> None:
@@ -541,6 +555,49 @@ class SkillVLAPytorch(PI05Pytorch):
         return x_t
 
     @torch.no_grad()
+    def _sample_actions_B(self, cond_images, start_images, lang_tokens, lang_masks, state, skill_code, noise, num_steps):
+        """Branch B (fused) cached sampling: only the VLM is a constant prefix (cached per skill). The
+        fused expert's suffix = [cond, action] (full self-attn, cond attends the noisy action so it is
+        re-run each step) reads the cached VLM-nonlang K/V — pi05 ``denoise_step`` with cond in the suffix."""
+        bsize, device = state.shape[0], state.device
+        na = self.config.chunk_size
+        vlm_embeds, vlm_pad, vlm_is_lang = self._vlm_tokens(start_images, lang_tokens, lang_masks)
+        nv = vlm_embeds.shape[1]
+        cond_base = self._cond_image_state_tokens(cond_images, state)
+        nc = cond_base.shape[1] + 1
+        ne = nc + na
+
+        # positions = single cumsum over [vlm, expert(cond+action)] (identical to the joint forward)
+        full_pad = torch.cat([vlm_pad, torch.ones(bsize, ne, dtype=torch.bool, device=device)], dim=1)
+        full_pos = torch.cumsum(full_pad, dim=1) - 1
+        vlm_pos, suffix_pos = full_pos[:, :nv], full_pos[:, nv:]
+
+        vlm_kv, vlm_h = self._encode_prefix_kv(self._vlm.layers, vlm_embeds, vlm_pad, vlm_pos, adarms=None)
+        vlm_h, _ = layernorm_forward(self._vlm.norm, vlm_h, None)
+        if skill_code is None:
+            skill_code = self.skill_head.decode(vlm_h[:, -1])
+        cond_tokens = torch.cat([cond_base, self._skill_token(skill_code)], dim=1)
+
+        # suffix rows attend vlm-nonlang + all suffix (full self-attn within cond+action)
+        cols = torch.cat([vlm_pad & ~vlm_is_lang[None, :], torch.ones(bsize, ne, dtype=torch.bool, device=device)], dim=1)
+        att_4d = torch.where(cols[:, None, None, :].expand(bsize, 1, ne, cols.shape[1]),
+                             0.0, OPENPI_ATTENTION_MASK_VALUE)
+
+        if noise is None:
+            noise = self.sample_noise((bsize, na, self.config.max_action_dim), device)
+        dt, x_t = -1.0 / num_steps, noise
+        for step in range(num_steps):
+            t = torch.full((bsize,), 1.0 + step * dt, dtype=torch.float32, device=device)
+            time_cond = self._time_cond(t)
+            h = torch.cat([cond_tokens, self.action_in_proj(x_t.to(self._wdtype))], dim=1)
+            for i in range(len(vlm_kv)):
+                h = self._action_layer_cached(i, h, vlm_kv, att_4d, suffix_pos, time_cond)
+            h, _ = layernorm_forward(self._expert.norm, h, time_cond)
+            v_t = self.action_out_proj(h[:, -na:].to(self._wdtype)).float()
+            x_t = x_t + dt * v_t
+        return x_t
+
+    @torch.no_grad()
     def sample_actions(
         self,
         cond_images: list[Tensor],
@@ -552,34 +609,84 @@ class SkillVLAPytorch(PI05Pytorch):
         noise: Tensor | None = None,
         num_steps: int | None = None,
     ) -> Tensor:
-        """Flow-matching sampling. ``skill_code`` (cond teacher value) defaults to the VLM prediction.
-
-        Branch A caches the VLM (per skill) and cond (per call) and runs only the action expert per
-        denoise step. Branch B is still the v1 uncached joint — TODO(stage2-inference): cache its VLM
-        prefix like pi05 ``denoise_step``.
-        """
+        """Flow-matching sampling with a cached VLM prefix (per skill). ``skill_code`` (cond teacher
+        value) defaults to the VLM prediction. A also caches cond; B re-runs the fused suffix each step."""
         if num_steps is None:
             num_steps = self.config.num_inference_steps
-        if self.expert_arch == "joint":
-            return self._sample_actions_A(
-                cond_images, start_images, lang_tokens, lang_masks, state, skill_code, noise, num_steps)
+        sampler = self._sample_actions_A if self.expert_arch == "joint" else self._sample_actions_B
+        return sampler(cond_images, start_images, lang_tokens, lang_masks, state, skill_code, noise, num_steps)
 
-        bsize, device = state.shape[0], state.device
-        if skill_code is None:
-            skill_code = self.predict_skill_code(start_images, lang_tokens, lang_masks)
-        if noise is None:
-            noise = self.sample_noise((bsize, self.config.chunk_size, self.config.max_action_dim), device)
-        cond_tokens = self._cond_tokens(cond_images, state, skill_code)
-        vlm_embeds, vlm_pad, vlm_is_lang = self._vlm_tokens(start_images, lang_tokens, lang_masks)
-        dt, x_t = -1.0 / num_steps, noise
-        for step in range(num_steps):
-            t = torch.full((bsize,), 1.0 + step * dt, dtype=torch.float32, device=device)
-            action_tokens = self.action_in_proj(x_t.to(self._wdtype))
-            _, action_out = self._joint_forward(
-                cond_tokens, vlm_embeds, vlm_pad, vlm_is_lang, action_tokens, self._time_cond(t))
-            v_t = self.action_out_proj(action_out.to(self._wdtype)).float()
-            x_t = x_t + dt * v_t
-        return x_t
+    # ── FSQ terminator (inference-only skill-transition gating) ──
+    def load_terminator(self, path: str) -> None:
+        """Load the frozen FSQ checkpoint's terminator (decides skill transitions in closed loop).
+        Only ``predict_termination`` is used (the action chunk comes from the flow-matching expert)."""
+        sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "examples" / "libero"))
+        import dataclasses  # noqa: PLC0415
+
+        from FSQ import SplineFSQAE  # noqa: PLC0415
+
+        ckpt = torch.load(path, map_location="cpu", weights_only=False)
+        cfg_dict = dataclasses.asdict(ckpt["cfg"])
+        keys = {"action_dim", "state_dim", "n_control", "spline_degree", "hidden_dim", "fsq_levels",
+                "num_layers", "dropout", "max_length", "action_min", "action_max", "delta_min", "delta_max",
+                "feat_dim", "n_tokens", "image_encoder_layers", "terminator_use_wrist", "image_encoder_heads",
+                "image_model_name", "image_size", "patch_grid", "n_patch_raw", "image_token_dim", "chunk_size",
+                "reconstructor_mode"}
+        fsq = SplineFSQAE(**{k: v for k, v in cfg_dict.items() if k in keys})
+        fsq.load_state_dict(ckpt["model_state"])
+        for p in fsq.parameters():
+            p.requires_grad_(False)
+        fsq.eval()
+        self.fsq_term = fsq.to(device=next(self.parameters()).device)
+        log.info("Loaded FSQ terminator from %s (state_dim=%s, use_wrist=%s).",
+                 path, getattr(fsq, "state_dim", None), getattr(fsq, "terminator_use_wrist", False))
+
+    def _code_to_z(self, code: Tensor) -> Tensor:
+        """Flat FSQ code (B,) → z_q (B, D) in the FSQ codebook's coordinate frame."""
+        idx = code.view(-1, 1).long()
+        strides, levels = self._fsq_strides[None, :], self._fsq_levels[None, :]
+        level_ids = torch.div(idx, strides, rounding_mode="floor") % levels
+        return level_ids.float() - self._fsq_half[None, :]
+
+    def _prepare_term_state(self, state: Tensor) -> Tensor:
+        s = state.to(device=next(self.parameters()).device, dtype=torch.float32)
+        if s.ndim == 2:
+            s = s.unsqueeze(1)  # (B, 1, dim)
+        sd = int(getattr(self.fsq_term, "state_dim", s.shape[-1]))
+        if s.shape[-1] < sd:
+            raise ValueError(f"FSQ terminator expects state_dim={sd}, got {s.shape[-1]}-dim raw state.")
+        return s[..., :sd]
+
+    def _prepare_term_image(self, img: Tensor | None, steps: int) -> Tensor | None:
+        """Accept precomputed FSQ tokens (B,N,F)/(B,T,N,F) or raw RGB; shape to (B,T,…)."""
+        if img is None:
+            return None
+        x = img.to(device=next(self.parameters()).device, dtype=torch.float32)
+        n_tok, feat = int(getattr(self.fsq_term, "n_tokens", 0)), int(getattr(self.fsq_term, "feat_dim", 0))
+        is_tok_frame = x.ndim == 3 and n_tok and feat and x.shape[-2] == n_tok and x.shape[-1] == feat
+        is_tok_seq = x.ndim == 4 and n_tok and feat and x.shape[-2] == n_tok and x.shape[-1] == feat
+        if is_tok_frame:
+            x = x.unsqueeze(1)
+        elif is_tok_seq and x.shape[1] != steps:
+            x = x.expand(-1, steps, -1, -1) if x.shape[1] == 1 else x
+        return x
+
+    @torch.no_grad()
+    def terminator_step(self, code, state, image, wrist=None):
+        """Run the FSQ terminator on the CURRENT obs for the active skill → (progress, end_prob), each (B,)."""
+        z = self._code_to_z(code)
+        st = self._prepare_term_state(state)
+        img = self._prepare_term_image(image, st.shape[1])
+        if img is None:
+            return None
+        use_wrist = bool(getattr(self.fsq_term, "terminator_use_wrist", False))
+        w = self._prepare_term_image(wrist, st.shape[1]) if use_wrist else None
+        if use_wrist and w is None:
+            raise ValueError("FSQ terminator_use_wrist=True but no wrist image supplied (skill_decoder_wrist).")
+        progress, end_prob = self.fsq_term.predict_termination(z, st, img, w, quantize=True)
+        progress = progress[:, 0] if progress.ndim == 2 else progress
+        end_prob = end_prob[:, 0] if end_prob.ndim == 2 else end_prob
+        return progress, end_prob
 
 
 # ── Warm-start key remapping ────────────────────────────────────────────────────────────────
@@ -687,24 +794,35 @@ class SkillVLAPolicy(PI05Policy):
             images.append(img)
         return images
 
+    def _preprocess_vlm_tensor(self, img: Tensor) -> Tensor:
+        """pi05-style VLM image preprocessing (resize-with-pad to image_resolution, [-1,1])."""
+        img = img.to(device=next(self.parameters()).device).float()
+        channels_first = img.shape[1] == 3
+        if channels_first:
+            img = img.permute(0, 2, 3, 1)
+        if tuple(img.shape[1:3]) != tuple(self.config.image_resolution):
+            img = resize_with_pad_torch(img, *self.config.image_resolution)
+        img = img * 2.0 - 1.0
+        if channels_first:
+            img = img.permute(0, 3, 1, 2)
+        return img
+
     def _start_images(self, batch: dict) -> list[Tensor]:
-        """SKILL-START images for the VLM, pi05-preprocessed (resize-with-pad, [-1,1])."""
-        device = next(self.parameters()).device
+        """SKILL-START images for the VLM (offline/dataset eval: the SkillVLADataset keys)."""
         out = []
         for key in (SKILL_START_IMAGE, SKILL_START_WRIST_IMAGE):
             if key not in batch:
                 raise ValueError(f"Missing '{key}' in batch (SkillVLADataset must supply skill-start images).")
-            img = batch[key].to(device=device).float()
-            channels_first = img.shape[1] == 3
-            if channels_first:
-                img = img.permute(0, 2, 3, 1)
-            if tuple(img.shape[1:3]) != tuple(self.config.image_resolution):
-                img = resize_with_pad_torch(img, *self.config.image_resolution)
-            img = img * 2.0 - 1.0
-            if channels_first:
-                img = img.permute(0, 3, 1, 2)
-            out.append(img)
+            out.append(self._preprocess_vlm_tensor(batch[key]))
         return out
+
+    def _snapshot_vlm_images(self, batch: dict) -> list[Tensor]:
+        """Closed-loop: snapshot the CURRENT cameras as the VLM's skill-start view (same physical
+        cameras as SKILL_START_*; preprocessed identically)."""
+        present = [k for k in self.config.image_features if k in batch]
+        if not present:
+            raise ValueError(f"No image features in batch. Expected one of {list(self.config.image_features)}.")
+        return [self._preprocess_vlm_tensor(batch[k]) for k in present]
 
     def _skill_code(self, batch: dict) -> Tensor:
         code = batch[SKILL_CODE].view(-1).long()
@@ -748,14 +866,62 @@ class SkillVLAPolicy(PI05Policy):
         action_dim = self.config.output_features[ACTION].shape[0]
         return actions[:, :, :action_dim]
 
-    def select_action(self, batch: dict[str, Tensor], **kwargs) -> Tensor:
-        raise NotImplementedError(
-            "Closed-loop select_action (FSQ-terminator skill transitions + skill-start obs caching) "
-            "is TODO(stage2-inference). Use predict_action_chunk with skill-start inputs for now."
-        )
-
     def reset(self):
+        """Per-episode state for the closed loop."""
         self._action_queue = deque(maxlen=self.config.n_action_steps)
+        self._skill_code: Tensor | None = None   # active skill (VLM-predicted at skill start)
+        self._start_images: list[Tensor] | None = None  # skill-start view fed to the VLM
+        self._skill_steps = 0
+
+    def _begin_skill(self, batch: dict, lang_tokens: Tensor, lang_masks: Tensor) -> None:
+        """Snapshot the current obs as the skill-start view and predict the new skill (VLM)."""
+        self._start_images = self._snapshot_vlm_images(batch)
+        self._skill_code = self.model.predict_skill_code(self._start_images, lang_tokens, lang_masks)
+        self._skill_steps = 0
+
+    def _should_end_skill(self, batch: dict) -> bool:
+        """Advance the skill when the FSQ terminator fires (or the safety cap is hit)."""
+        cap = int(self.config.inference_skill_max_length)
+        if cap > 0 and self._skill_steps >= cap:
+            return True
+        if self.model.fsq_term is None:
+            return False
+        state, image = batch.get("skill_decoder_state"), batch.get("skill_decoder_image")
+        if state is None or image is None:
+            return False
+        out = self.model.terminator_step(self._skill_code, state, image, batch.get("skill_decoder_wrist"))
+        if out is None:
+            return False
+        progress, end_prob = out
+        signal = end_prob if self.config.skill_end_mode == "termination" else progress
+        return bool((signal >= float(self.config.skill_end_threshold)).any().item())
+
+    @torch.no_grad()
+    def select_action(self, batch: dict[str, Tensor], **kwargs) -> Tensor:
+        """Closed loop: VLM predicts the skill at each (FSQ-terminator-decided) skill start; the action
+        expert flow-matches chunks (VLM cached per skill); the terminator gates skill transitions."""
+        self.eval()
+        if self.model.fsq_term is None and self.config.fsq_path:
+            self.model.load_terminator(self.config.fsq_path)
+        lang_tokens, lang_masks = batch[OBS_LANGUAGE_TOKENS], batch[OBS_LANGUAGE_ATTENTION_MASK]
+
+        if self._skill_code is None:
+            self._begin_skill(batch, lang_tokens, lang_masks)
+
+        if len(self._action_queue) == 0:
+            actions = self.model.sample_actions(
+                self._cond_images(batch), self._start_images, lang_tokens, lang_masks,
+                batch[OBS_STATE], skill_code=self._skill_code)
+            action_dim = self.config.output_features[ACTION].shape[0]
+            actions = actions[:, : self.config.n_action_steps, :action_dim]
+            self._action_queue.extend(actions.transpose(0, 1))
+
+        action = self._action_queue.popleft()
+        self._skill_steps += 1
+        if self._should_end_skill(batch):           # next call begins (and re-predicts) a new skill
+            self._skill_code, self._start_images = None, None
+            self._action_queue.clear()
+        return action
 
     @classmethod
     def from_pretrained(cls, pretrained_name_or_path, *, config=None, strict: bool = False, **kwargs):
