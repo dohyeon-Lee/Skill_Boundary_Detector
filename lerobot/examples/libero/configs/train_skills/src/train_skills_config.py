@@ -167,7 +167,6 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
 
     fsq_levels = as_levels(get_value(cfg, "fsq_levels", [5, 5, 5]))
     fsq_tag = "fsq" + "".join(str(v) for v in fsq_levels)
-    reconstructor_mode = str(get_value(cfg, "reconstructor_mode", "flags"))
     fsq_image_token_dim = int(get_value(cfg, "fsq_image_token_dim", 128))
     fsq_exp = str(get_value(cfg, "fsq_exp", "")).strip()
     fsq_exp_suffix = f"_{fsq_exp}" if fsq_exp else ""
@@ -175,14 +174,13 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         get_value(
             cfg,
             "fsq_run_name",
-            "{target_dataset}_{fsq_tag}_pg{dino_patch_grid}_{reconstructor_mode}_image{fsq_image_token_dim}{fsq_exp_suffix}",
+            "{target_dataset}_{fsq_tag}_pg{dino_patch_grid}_image{fsq_image_token_dim}{fsq_exp_suffix}",
         )
     )
     fsq_run_name = fsq_run_template.format(
         target_dataset=target_dataset,
         fsq_tag=fsq_tag,
         dino_patch_grid=dino_patch_grid,
-        reconstructor_mode=reconstructor_mode,
         fsq_image_token_dim=fsq_image_token_dim,
         fsq_exp=fsq_exp,
         fsq_exp_suffix=fsq_exp_suffix,
@@ -249,7 +247,6 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "fsq_dim": len(fsq_levels),
         "fsq_num_embeddings": math.prod(fsq_levels),
         "fsq_epoch": str(get_value(cfg, "fsq_epoch", "1000")),
-        "reconstructor_mode": reconstructor_mode,
         "fsq_batch_size": int(get_value(cfg, "fsq_batch_size", 256)),
         "fsq_num_epochs": int(get_value(cfg, "fsq_num_epochs", 1000)),
         "fsq_checkpoint_every": int(get_value(cfg, "fsq_checkpoint_every", 500)),
@@ -258,6 +255,7 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "fsq_num_layers": int(get_value(cfg, "fsq_num_layers", 2)),
         "fsq_n_control": int(get_value(cfg, "fsq_n_control", 30)),
         "fsq_image_token_dim": int(get_value(cfg, "fsq_image_token_dim", 128)),
+        "fsq_terminator_use_wrist": as_bool(get_value(cfg, "fsq_terminator_use_wrist", True)),
         "fsq_chunk_size": int(get_value(cfg, "fsq_chunk_size", 10)),
         "fsq_max_length": int(get_value(cfg, "fsq_max_length", 200)),
         "fsq_delta_loss_weight": str(get_value(cfg, "fsq_delta_loss_weight", 10.0)),
@@ -291,25 +289,16 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
             fsq_inputs_dir
             / f"dino_tokens_pg{dino_patch_grid}.npz"
         ),
-        "sam2_checkpoint": (
-            Path(str(get_value(cfg, "sam2_checkpoint", ""))).expanduser()
-            if str(get_value(cfg, "sam2_checkpoint", ""))
-            else root / "models" / "sam2" / "sam2.1_hiera_large.pt"
+        "dino_tokens_wrist_path": (
+            fsq_inputs_dir
+            / f"dino_tokens_wrist_pg{dino_patch_grid}.npz"
         ),
-        "sam2_masks_dir": fsq_inputs_dir / "sam2_masks",
-        "sam2_flags_path": fsq_inputs_dir / "patch_flags.npz",
         "slurm_partitions": slurm_partitions,
         "slurm_partition": slurm_partition,
         "slurm_nodelist": str(get_value(cfg, "slurm_nodelist", "")),
         "slurm_exclude_nodes": as_list(get_value(cfg, "slurm_exclude_nodes", [])),
         "slurm_qos": str(get_value(cfg, "slurm_qos", "base_qos")),
         "slurm_gres": str(get_value(cfg, "slurm_gres", "gpu:1")),
-        "slurm_gpu_reserve": int(get_value(cfg, "slurm_gpu_reserve", 0)),
-        "slurm_gpu_max_per_node": int(get_value(cfg, "slurm_gpu_max_per_node", 7)),
-        "fsq_precompute_max_workers": int(get_value(cfg, "fsq_precompute_max_workers", 40)),
-        "fsq_precompute_recovery_workers": int(get_value(cfg, "fsq_precompute_recovery_workers", 20)),
-        "fsq_build_patch_flags": as_bool(get_value(cfg, "fsq_build_patch_flags", True)),
-        "fsq_cleanup_sam2_masks": as_bool(get_value(cfg, "fsq_cleanup_sam2_masks", True)),
         "fsq_train_partition": ",".join(as_list(get_value(cfg, "fsq_train_partition", ["debug"]))) or "debug",
         "fsq_train_nodelist": str(get_value(cfg, "fsq_train_nodelist", "")),
         "fsq_train_exclude_nodes": as_list(get_value(cfg, "fsq_train_exclude_nodes", [])),

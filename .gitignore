@@ -68,3 +68,6 @@ Thumbs.db
 
 # ── 생성된 HTML 리포트 (대용량) ──────────────────────────────────────
 *.html
+
+# Per-submit frozen config copies (snapshot_config.sh)
+.config_snapshots/

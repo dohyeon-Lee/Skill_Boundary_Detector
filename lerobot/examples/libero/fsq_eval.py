@@ -19,7 +19,7 @@ Usage:
       --model_path   .../FSQ.pt \
       --skills_dir   .../skillset/skills \
       --dino_features .../dino_tokens.npz \
-      --sam2_masks_dir .../patch_flags.npz \
+      --dino_features_wrist .../dino_tokens_wrist.npz \
       --dataset_dir  .../libero_90 \
       --output_dir   FSQ_eval/outputs/<run>/<epoch>
 """
@@ -50,7 +50,7 @@ from codebook_visualizer import (  # noqa: E402
 )
 from decoder_eval import load_model  # noqa: E402
 from FSQ import spline_encode  # noqa: E402
-from train_FSQ import load_dino_tokens, load_patch_flags, load_skill_files  # noqa: E402
+from train_FSQ import load_dino_tokens, load_skill_files  # noqa: E402
 
 
 # ── latent saving ──────────────────────────────────────────────────────────────
@@ -157,15 +157,16 @@ def batched_encode(model, segments, clips, lengths, device, batch_size):
 
 
 @torch.no_grad()
-def batched_decode(model, latents, states, clips, patch_flags, lengths, device, batch_size):
+def batched_decode(model, latents, states, clips, clips_wrist, lengths, device, batch_size):
     """Decode all skills in length-bucketed batches.
 
     Returns per-skill lists sliced to T: deltas[i] (T,K,A), progresses[i] (T,),
     term_probs[i] (T,). GT progress is fed as the motion input (matches training).
+    The terminator reads both cameras (clips = 3rd-person, clips_wrist = wrist).
     """
     N = len(latents)
     n_tokens, feat = model.n_tokens, model.feat_dim
-    n_patches, state_dim = model.n_patches, model.state_dim
+    state_dim = model.state_dim
     D = int(model.fsq.latent_dim)
     deltas: list = [None] * N
     progs: list = [None] * N
@@ -178,17 +179,17 @@ def batched_decode(model, latents, states, clips, patch_flags, lengths, device, 
         z = torch.zeros(B, D)
         st = torch.zeros(B, maxT, state_dim)
         dec = torch.zeros(B, maxT, n_tokens, feat)
-        pf = torch.zeros(B, maxT, n_patches, 2)
+        dec_w = torch.zeros(B, maxT, n_tokens, feat)
         fp = torch.zeros(B, maxT)
         for b, i in enumerate(idxs):
             T = lengths[i]
             z[b] = torch.from_numpy(latents[i].astype(np.float32))
             st[b, :T] = torch.from_numpy(states[i][:T].astype(np.float32))
             dec[b, :T] = torch.from_numpy(clips[i][:T].astype(np.float32))
-            pf[b, :T] = torch.from_numpy(patch_flags[i][:T].astype(np.float32))
+            dec_w[b, :T] = torch.from_numpy(clips_wrist[i][:T].astype(np.float32))
             fp[b, :T] = torch.arange(T, dtype=torch.float32) / max(T - 1, 1)
         delta, prog, term_logits = model.decode(
-            z.to(device), st.to(device), dec.to(device), pf.to(device), fp.to(device))
+            z.to(device), st.to(device), dec.to(device), dec_w.to(device), fp.to(device))
         term = torch.sigmoid(term_logits)
         for b, i in enumerate(idxs):
             T = lengths[i]
@@ -200,25 +201,8 @@ def batched_decode(model, latents, states, clips, patch_flags, lengths, device, 
 
 # ── per-sample composite plot (start/end frame + recon/termination/progress) ────
 
-def _flag_overlay(ax, frame, flags, grid, title) -> None:
-    """Draw a frame with an 8x8 patch flag overlay: red=is_changed, green=is_green."""
-    from PIL import Image
-    ax.imshow(frame)
-    H, W = frame.shape[:2]
-    f = np.asarray(flags, dtype=np.float32).reshape(grid, grid, 2)
-    rgba = np.zeros((grid, grid, 4), dtype=np.float32)
-    rgba[..., 0] = np.clip(f[..., 0], 0.0, 1.0)          # red  = is_changed
-    rgba[..., 1] = np.clip(f[..., 1], 0.0, 1.0)          # green = is_green
-    rgba[..., 3] = 0.45 * (f.max(axis=-1) > 0)           # alpha where any flag
-    big = np.asarray(Image.fromarray((rgba * 255).astype(np.uint8)).resize((W, H), Image.NEAREST),
-                     dtype=np.float32) / 255.0
-    ax.imshow(big)
-    ax.set_title(title, fontsize=9); ax.axis("off")
-
-
 def make_sample_plot(start_img, end_img, delta, progress, term_prob, gt_actions, T,
-                     dim_labels, n_action_steps, end_threshold,
-                     start_flags=None, end_flags=None, patch_grid=8) -> str:
+                     dim_labels, n_action_steps, end_threshold) -> str:
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -227,8 +211,7 @@ def make_sample_plot(start_img, end_img, delta, progress, term_prob, gt_actions,
     A = delta.shape[2]
     K = delta.shape[1]
     n_rows = A + 2  # per-dim recon + termination + progress
-    has_flags = start_flags is not None and end_flags is not None
-    n_img_rows = 2 if has_flags else 1     # row0: frames; row1 (optional): flag overlay
+    n_img_rows = 1     # row0: start / end frames
     img_h = 4.0     # inches per image row (≈ half figure width → fills the row)
     row_h = 1.0
     fig = plt.figure(figsize=(8.5, img_h * n_img_rows + row_h * n_rows))
@@ -239,10 +222,6 @@ def make_sample_plot(start_img, end_img, delta, progress, term_prob, gt_actions,
     ax_s = fig.add_subplot(gs[0, 0]); ax_e = fig.add_subplot(gs[0, 1])
     ax_s.imshow(start_img); ax_s.set_title("start", fontsize=10); ax_s.axis("off")
     ax_e.imshow(end_img);   ax_e.set_title("end",   fontsize=10); ax_e.axis("off")
-    # row 1 (optional): SAM2 patch flags overlaid on start / end frames
-    if has_flags:
-        _flag_overlay(fig.add_subplot(gs[1, 0]), start_img, start_flags, patch_grid, "start +flag")
-        _flag_overlay(fig.add_subplot(gs[1, 1]), end_img, end_flags, patch_grid, "end +flag")
 
     base = n_img_rows
     t_full = np.arange(T)
@@ -515,7 +494,7 @@ def parse_args():
     p.add_argument("--model_path", required=True)
     p.add_argument("--skills_dir", required=True)
     p.add_argument("--dino_features", required=True)
-    p.add_argument("--sam2_masks_dir", default="")
+    p.add_argument("--dino_features_wrist", required=True, help="wrist DINO tokens npz (terminator's 2nd camera)")
     p.add_argument("--dataset_dir", required=True, help="LeRobot dataset dir (videos + meta) for frames")
     p.add_argument("--image_key", default="observation.images.image")
     p.add_argument("--output_dir", required=True, help="where the HTML is written (FSQ_eval/outputs/<run>/<epoch>)")
@@ -550,16 +529,11 @@ def main():
     levels = list(cfg.fsq_levels)
     codebook_size = int(model.fsq.codebook_size)
 
-    print("[fsq_eval] loading skills / DINO / SAM2 ...")
+    print("[fsq_eval] loading skills / DINO (3rd-person + wrist) ...")
     segments, dec_states, dec_targets, metadata = load_skill_files(
         Path(args.skills_dir), eef_dims=args.eef_dims, gripper_action_dim=args.gripper_action_dim)
     dec_tokens = load_dino_tokens(Path(args.dino_features), metadata)
-    n_patches = model.n_patches
-    patch_flags = (
-        load_patch_flags(Path(args.sam2_masks_dir), metadata, n_patches=n_patches)
-        if args.sam2_masks_dir
-        else [np.zeros((m["length"], n_patches, 2), dtype=np.float32) for m in metadata]
-    )
+    dec_tokens_wrist = load_dino_tokens(Path(args.dino_features_wrist), metadata)
 
     # ── encoder: reuse latents if already present for this run, else encode ──
     latents_path = Path(args.latents_path) if args.latents_path else out_dir / "skill_latents.npz"
@@ -598,7 +572,7 @@ def main():
     groups = _dim_groups(action_dim)
     dim_labels = [f"d{i}" for i in range(action_dim - 1)] + ["grip"]
     deltas, progresses, term_probs = batched_decode(
-        model, latents, dec_states, dec_tokens, patch_flags, lengths, device, args.batch_size)
+        model, latents, dec_states, dec_tokens, dec_tokens_wrist, lengths, device, args.batch_size)
     per_skill = [
         skill_metrics(deltas[i], progresses[i], term_probs[i], dec_targets[i], lengths[i],
                       args.end_threshold, groups)
@@ -649,8 +623,6 @@ def main():
     frames = ({} if args.max_plot_samples <= 0 else
               load_sample_frames(metadata, sample_ids, Path(args.dataset_dir), args.image_key, args.thumb_size))
 
-    show_flags = bool(args.sam2_masks_dir)   # only overlay flags when SAM2 patch flags were loaded
-    patch_grid = int(round(n_patches ** 0.5))
     samples: dict[int, list[str]] = {}
     for tok in tqdm(sample_by_tok, desc="Rendering samples"):
         imgs = []
@@ -658,14 +630,8 @@ def main():
             T = lengths[i]
             blank = np.full((args.thumb_size,) * 2 + (3,), 80, np.uint8)
             s_img, e_img = frames.get(i, (blank, blank))
-            s_flags = e_flags = None
-            if show_flags:
-                pf = patch_flags[i]
-                s_flags = pf[0]
-                e_flags = pf[min(T - 1, len(pf) - 1)]
             imgs.append(make_sample_plot(s_img, e_img, deltas[i], progresses[i], term_probs[i],
-                                         dec_targets[i], T, dim_labels, args.n_action_steps, args.end_threshold,
-                                         start_flags=s_flags, end_flags=e_flags, patch_grid=patch_grid))
+                                         dec_targets[i], T, dim_labels, args.n_action_steps, args.end_threshold))
         samples[tok] = imgs
 
     summary = (

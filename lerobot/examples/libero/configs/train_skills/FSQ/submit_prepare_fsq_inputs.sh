@@ -6,14 +6,13 @@
 #   skillset     : {project_root}/{dataset_root}/FSQ_dataset/{target_dataset}/FSQ_inputs/skillset
 # Reference models:
 #   DP policy    : {project_root}/DP_outputs/{dp_policy_name}/checkpoints/{dp_checkpoint}/pretrained_model
-#   SAM2         : sam2_checkpoint or {project_root}/models/sam2/sam2.1_hiera_large.pt
 # Outputs:
 #   skillset     : {project_root}/{dataset_root}/FSQ_dataset/{target_dataset}/FSQ_inputs/skillset
-#   DINO tokens  : {project_root}/{dataset_root}/FSQ_dataset/{target_dataset}/FSQ_inputs/dino_tokens_pg{dino_patch_grid}.npz
-#   SAM2 flags   : {project_root}/{dataset_root}/FSQ_dataset/{target_dataset}/FSQ_inputs/patch_flags.npz
+#   DINO tokens  : {.../FSQ_inputs/dino_tokens_pg{grid}.npz, dino_tokens_wrist_pg{grid}.npz}
 #
 # Prepare FSQ inputs from skillset + prepared frame DINO.
-# Produces skill-level DINO tokens and, in dino_flags mode, SAM2 patch flags.
+# Produces skill-level DINO tokens for BOTH cameras (3rd-person + wrist) — the FSQ
+# terminator reads both via separate DINO-token encoders.
 
 set -euo pipefail
 
@@ -21,6 +20,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMMON_SRC_DIR="${SCRIPT_DIR}/../src"
 FSQ_SRC_DIR="${SCRIPT_DIR}/src"
 CONFIG_PATH="${TRAIN_SKILLS_CONFIG:-${SCRIPT_DIR}/../train_skills_config.yaml}"
+
+# Freeze the config so this job ignores later edits to the repo yaml (see configs/snapshot_config.sh).
+_lib="$(dirname "${CONFIG_PATH}")"; while [ ! -f "${_lib}/snapshot_config.sh" ]; do _lib="$(dirname "${_lib}")"; done
+source "${_lib}/snapshot_config.sh"
+CONFIG_PATH="$(snapshot_config "${CONFIG_PATH}")"
 TARGET_DATASET="${TRAIN_DATA:-}"
 
 BOOTSTRAP_PYTHON="${SCRIPT_DIR}/../../../../../../.venv/bin/python"
@@ -37,15 +41,6 @@ fi
 if [ ! -d "${DINO_FEATURE_DIR}" ]; then
   echo "Prepared frame DINO not found: ${DINO_FEATURE_DIR}" >&2
   echo "Run DP/submit_train_dp_dino.sh first." >&2
-  exit 1
-fi
-
-BUILD_PATCH_FLAGS=false
-if [ "${FSQ_BUILD_PATCH_FLAGS}" = "true" ]; then
-  BUILD_PATCH_FLAGS=true
-fi
-if ${BUILD_PATCH_FLAGS} && [ ! -f "${SAM2_CHECKPOINT}" ]; then
-  echo "SAM2 checkpoint not found: ${SAM2_CHECKPOINT}" >&2
   exit 1
 fi
 
@@ -123,12 +118,8 @@ echo "Prepare FSQ inputs"
 echo "  dataset      : ${TARGET_DATASET}"
 echo "  skillset     : ${SKILLSET_DIR}/skills"
 echo "  frame DINO   : ${DINO_FEATURE_DIR}"
-echo "  tokens       : ${DINO_TOKENS_PATH}"
-echo "  patch flags  : ${FSQ_BUILD_PATCH_FLAGS}"
-if ${BUILD_PATCH_FLAGS}; then
-  echo "  sam2 masks   : ${SAM2_MASKS_DIR}"
-  echo "  sam2 flags   : ${SAM2_FLAGS_PATH}"
-fi
+echo "  tokens 3rd   : ${DINO_TOKENS_PATH}"
+echo "  tokens wrist : ${DINO_TOKENS_WRIST_PATH}"
 
 EXTRACT_JOB=$(sbatch --parsable \
   --partition="${FIRST_PART}" \
@@ -137,90 +128,4 @@ EXTRACT_JOB=$(sbatch --parsable \
   ${SKILLSET_DEPENDENCY:+${SKILLSET_DEPENDENCY}} \
   --export="${COMMON_EXPORT}" \
   "${FSQ_SRC_DIR}/extract_skill_tokens.sbatch")
-echo "Skill token extraction job: ${EXTRACT_JOB}"
-
-if ! ${BUILD_PATCH_FLAGS}; then
-  echo "SAM2 patch flags skipped (fsq_build_patch_flags=false)"
-  exit 0
-fi
-
-declare -A NODE_PARTITION
-declare -A NODE_TOTAL_GPU
-for part in "${PARTITIONS[@]}"; do
-  [ -z "${part}" ] && continue
-  while read -r node gres; do
-    [ -z "${node}" ] && continue
-    total=$(echo "${gres}" | sed -nE 's/.*gpu(:[^:[:space:]]*)?:([0-9]+).*/\2/p' | head -1)
-    if [ -z "${total}" ] || [ "${total}" -eq 0 ]; then
-      continue
-    fi
-    [ "${NODE_PARTITION[$node]+_}" ] && continue
-    for ex in "${EXCLUDE_NODES[@]}"; do
-      [ -n "${ex}" ] && [ "${node}" = "${ex}" ] && continue 2
-    done
-    NODE_PARTITION[$node]=${part}
-    NODE_TOTAL_GPU[$node]=${total}
-  done < <(sinfo -p "${part}" -N -t idle,alloc,mix -o "%N %G" --noheader 2>/dev/null)
-done
-
-N_WORKERS=0
-for node in "${!NODE_TOTAL_GPU[@]}"; do
-  total=${NODE_TOTAL_GPU[$node]}
-  w=$(( total - SLURM_GPU_RESERVE ))
-  [ "${w}" -lt 0 ] && w=0
-  [ "${w}" -gt "${SLURM_GPU_MAX_PER_NODE}" ] && w=${SLURM_GPU_MAX_PER_NODE}
-  N_WORKERS=$(( N_WORKERS + w ))
-done
-
-if [ "${N_WORKERS}" -eq 0 ]; then
-  echo "ERROR: No GPU nodes found in partitions: ${PARTITIONS[*]}" >&2
-  exit 1
-fi
-if [ "${N_WORKERS}" -gt "${FSQ_PRECOMPUTE_MAX_WORKERS}" ]; then
-  N_WORKERS=${FSQ_PRECOMPUTE_MAX_WORKERS}
-fi
-
-PARTITIONS_STR=$(IFS=,; echo "${PARTITIONS[*]}")
-SAM2_EXPORT="${COMMON_EXPORT},N_WORKERS=${N_WORKERS}"
-RECOVERY_WORKERS=${FSQ_PRECOMPUTE_RECOVERY_WORKERS}
-
-SAM2_JOB=$(sbatch --parsable \
-  --partition="${PARTITIONS_STR}" \
-  --qos="${SLURM_QOS}" \
-  ${EXCLUDE_STR:+--exclude="${EXCLUDE_STR}"} \
-  --array="0-$(( N_WORKERS - 1 ))" \
-  ${SKILLSET_DEPENDENCY:+${SKILLSET_DEPENDENCY}} \
-  --export="${SAM2_EXPORT}" \
-  "${FSQ_SRC_DIR}/precompute_sam2_masks_worker.sbatch")
-echo "SAM2 mask workers job: ${SAM2_JOB} (array 0-$(( N_WORKERS - 1 )))"
-
-RECOVERY_EXPORT="${COMMON_EXPORT},N_WORKERS=${RECOVERY_WORKERS}"
-RECOVERY_JOB=$(sbatch --parsable \
-  --partition="${PARTITIONS_STR}" \
-  --qos="${SLURM_QOS}" \
-  ${EXCLUDE_STR:+--exclude="${EXCLUDE_STR}"} \
-  --array="0-$(( RECOVERY_WORKERS - 1 ))" \
-  --dependency="afterany:${SAM2_JOB}" \
-  --export="${RECOVERY_EXPORT}" \
-  "${FSQ_SRC_DIR}/precompute_sam2_masks_worker.sbatch")
-echo "SAM2 recovery job: ${RECOVERY_JOB}"
-
-MERGE_JOB=$(sbatch --parsable \
-  --partition="${PARTITIONS_STR}" \
-  --qos="${SLURM_QOS}" \
-  ${EXCLUDE_STR:+--exclude="${EXCLUDE_STR}"} \
-  --dependency="afterok:${RECOVERY_JOB}" \
-  --export="${COMMON_EXPORT}" \
-  "${FSQ_SRC_DIR}/merge_sam2_patch_flags.sbatch")
-echo "SAM2 merge job: ${MERGE_JOB}"
-
-if [ "${FSQ_CLEANUP_SAM2_MASKS}" = "true" ]; then
-  CLEANUP_JOB=$(sbatch --parsable \
-    --partition="${FIRST_PART}" \
-    --qos="${SLURM_QOS}" \
-    ${EXCLUDE_STR:+--exclude="${EXCLUDE_STR}"} \
-    --dependency="afterok:${MERGE_JOB}" \
-    --export="${COMMON_EXPORT}" \
-    "${FSQ_SRC_DIR}/cleanup_sam2_masks.sbatch")
-  echo "SAM2 cleanup job: ${CLEANUP_JOB}"
-fi
+echo "Skill token extraction job (both cameras): ${EXTRACT_JOB}"

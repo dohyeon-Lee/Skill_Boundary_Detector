@@ -70,6 +70,7 @@ def write_manifest(
     settings: dict,
     mapping: list[dict],
     counts: dict[str, int],
+    image_keys: list[str],
 ) -> None:
     source_manifest = src_dir / "manifest.json"
     manifest = {}
@@ -84,7 +85,7 @@ def write_manifest(
             "target_dino_dir": str(dst_dir),
             "target_dataset": settings["target_dataset"],
             "source_dataset": settings["dino_source_dataset"],
-            "image_keys": settings["dino_image_keys"],
+            "image_keys": image_keys,
             "patch_grid": settings["dino_patch_grid"],
             "format": "per_episode_npz",
             "episode_mapping": mapping,
@@ -101,6 +102,12 @@ def main() -> None:
     parser.add_argument("--dataset", default=None, help="Override target_dataset from yaml")
     parser.add_argument("--mode", choices=["copy", "hardlink", "symlink"], default=None)
     parser.add_argument("--overwrite", action="store_true", help="Replace existing prepared DINO files")
+    parser.add_argument(
+        "--image_keys", default=None,
+        help="Comma-separated camera keys to copy (overrides yaml dino_image_keys). Use this to "
+             "stage BOTH cameras for the FSQ terminator without changing the DP's dino_image_keys, "
+             "e.g. observation.images.image,observation.images.wrist_image",
+    )
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -111,12 +118,23 @@ def main() -> None:
     dataset_dir = Path(settings["raw_dataset_dir"])
     src_dir = Path(settings["base_dino_feature_dir"])
     dst_dir = Path(settings["dino_feature_dir"])
-    image_keys = list(settings["dino_image_keys"])
-
     if not dataset_dir.exists():
         raise FileNotFoundError(f"Dataset not found: {dataset_dir}")
     if not src_dir.exists():
         raise FileNotFoundError(f"Base DINO feature dir not found: {src_dir}")
+
+    # Which camera subdirs to copy. Default: auto-detect every camera present in the base DINO
+    # dir (wrist absent → copy 3rd only; both present → copy both). --image_keys restricts to a
+    # specific set. DP is unaffected either way — it reads its own dino_image_keys at train time.
+    if args.image_keys:
+        key_dirs = [safe_key(k.strip()) for k in args.image_keys.split(",") if k.strip()]
+        for kd in key_dirs:
+            if not (src_dir / kd).is_dir():
+                raise FileNotFoundError(f"Requested camera not found in base DINO: {src_dir / kd}")
+    else:
+        key_dirs = sorted(p.name for p in src_dir.iterdir() if p.is_dir())
+        if not key_dirs:
+            raise FileNotFoundError(f"No camera subdirs found in base DINO: {src_dir}")
 
     episodes = load_episodes(dataset_dir).sort_values("episode_index").reset_index(drop=True)
     if "source_episode_index" not in episodes.columns:
@@ -133,7 +151,7 @@ def main() -> None:
     print(f"  source dataset : {settings['dino_source_dataset']}")
     print(f"  source DINO    : {src_dir}")
     print(f"  target DINO    : {dst_dir}")
-    print(f"  image keys     : {image_keys}")
+    print(f"  cameras        : {key_dirs}")
     print(f"  mode           : {mode}")
     print(f"  overwrite      : {overwrite}")
 
@@ -145,8 +163,7 @@ def main() -> None:
             entry["source_task_index"] = int(row["source_task_index"])
         mapping.append(entry)
 
-        for image_key in image_keys:
-            key_dir = safe_key(image_key)
+        for key_dir in key_dirs:
             src_file = src_dir / key_dir / f"episode_{source_ep:07d}.npz"
             dst_file = dst_dir / key_dir / f"episode_{target_ep:07d}.npz"
             if not src_file.exists():
@@ -161,7 +178,7 @@ def main() -> None:
             f"Missing {len(missing)} source DINO files. First missing files:\n  {preview}"
         )
 
-    write_manifest(dst_dir, src_dir, settings, mapping, counts)
+    write_manifest(dst_dir, src_dir, settings, mapping, counts, key_dirs)
     print(f"  wrote/skipped  : {counts}")
     print("DONE")
 

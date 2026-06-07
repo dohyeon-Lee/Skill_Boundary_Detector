@@ -15,6 +15,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC_DIR="${SCRIPT_DIR}/src"
 CONFIG_PATH="${ORIGINAL_DATASET_CONFIG:-${SCRIPT_DIR}/original_dataset_config.yaml}"
+
+# Freeze the config so this job ignores later edits to the repo yaml (see configs/snapshot_config.sh).
+_lib="$(dirname "${CONFIG_PATH}")"; while [ ! -f "${_lib}/snapshot_config.sh" ]; do _lib="$(dirname "${_lib}")"; done
+source "${_lib}/snapshot_config.sh"
+CONFIG_PATH="$(snapshot_config "${CONFIG_PATH}")"
 CONFIG_PY="${SRC_DIR}/original_dataset_config.py"
 
 BOOTSTRAP_PYTHON="${SCRIPT_DIR}/../../../../../.venv/bin/python"

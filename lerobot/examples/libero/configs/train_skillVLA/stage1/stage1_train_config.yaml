@@ -12,13 +12,25 @@ skillvla_outputs_root: skillVLA_outputs        # output under {project_root}/
 init_from_pi05: true            # true = warm-start expert from pi05_base; false = scratch
 pi_base: lerobot/pi05_base
 
-# ── Vision encoder (DINOv3, trainable, shared across the 2 cameras) ──
+# ── Vision encoder (shared across the 2 cameras) ──
+# dino   = trainable DINOv3 (own weights)
+# siglip = PaliGemma/SigLIP tower, warm-started from pi_base's vision_tower (robot-adapted);
+#          params separate from the Stage-2 VLM. Needs init_from_pi05: true for the warm-start.
+vision_backbone: siglip           # dino | siglip
+# DINO backbone
 dino_model_path: /data2/dohyeon/SBD/models/dinov3-vits16
 dino_lr: null                   # null = same LR as the rest; set a float to use a separate DINO LR
 freeze_dino: true
+# SigLIP backbone (used when vision_backbone: siglip)
+freeze_siglip: false             # default true: reuse pi05's robot-adapted features (only image_proj trains)
+siglip_lr: null                 # separate LR when unfrozen; null = same as the rest
+siglip_image_size: 224          # patch 14 → 16×16 = 256 tokens at 224
 
 # ── Skill ──
-skill_vocab_size: 125           # number of FSQ codes (prod of FSQ levels)
+# Codebook size + FSQ levels auto-derive from build_data's fsq_levels (the FSQ the dataset was
+# built with), so any FSQ dimension count just works. Uncomment to override:
+# skill_fsq_levels: [5, 5, 5]    # FSQ levels per dim (any length); vocab = prod(levels)
+# skill_vocab_size: 125          # number of FSQ codes (default = prod(skill_fsq_levels))
 
 # ── Optimization ──
 batch_size: 32
@@ -28,7 +40,7 @@ lr_base: 2.5e-05                # effective LR = lr_base * num_gpus
 steps: 100000
 save_freq: 2500
 
-exp: "freeze_dino"                         # optional run-name suffix → S1_{source}_{run_tag}_batch{N}_stage1_{init|scratch}_{exp}
+exp: "unfreeze_siglip"                         # optional run-name suffix → S1_{source}_{run_tag}_batch{N}_stage1_{init|scratch}_{exp}
 
 # ── wandb ──
 wandb_enable: true
@@ -43,4 +55,4 @@ train_cpus_per_task: 16
 train_mem: 128G
 train_time: "48:00:00"
 train_nodelist: ""
-train_exclude_nodes: [node01]
+train_exclude_nodes: []

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Inputs:
-#   roots        : ../train_skills_config.yaml  (skills / DINO / SAM2 / dataset / FSQ_outputs root)
+#   roots        : ../train_skills_config.yaml  (skills / DINO / dataset / FSQ_outputs root)
 #   eval knobs   : ./fsq_eval_config.yaml       (run_name, checkpoint, N_ACTION_STEPS, samples, slurm)
 #   FSQ model    : {project_root}/FSQ_outputs/{fsq_eval_run_name}/FSQ.pt (or FSQ_epoch*.pt)
 # Outputs:
@@ -15,6 +15,12 @@ COMMON_SRC_DIR="${SCRIPT_DIR}/../src"
 EVAL_SRC_DIR="${SCRIPT_DIR}/src"
 TRAIN_CONFIG="${TRAIN_SKILLS_CONFIG:-${SCRIPT_DIR}/../train_skills_config.yaml}"
 EVAL_CONFIG="${FSQ_EVAL_CONFIG:-${SCRIPT_DIR}/fsq_eval_config.yaml}"
+
+# Freeze the config so this job ignores later edits to the repo yaml (see configs/snapshot_config.sh).
+_lib="$(dirname "${TRAIN_CONFIG}")"; while [ ! -f "${_lib}/snapshot_config.sh" ]; do _lib="$(dirname "${_lib}")"; done
+source "${_lib}/snapshot_config.sh"
+TRAIN_CONFIG="$(snapshot_config "${TRAIN_CONFIG}")"
+EVAL_CONFIG="$(snapshot_config "${EVAL_CONFIG}")"
 TARGET_DATASET="${TRAIN_DATA:-}"
 
 BOOTSTRAP_PYTHON="${SCRIPT_DIR}/../../../../../../.venv/bin/python"

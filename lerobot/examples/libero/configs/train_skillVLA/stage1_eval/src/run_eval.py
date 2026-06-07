@@ -45,7 +45,8 @@ from eval_oracle import FsqTerminator, load_skill_sequences_by_language, map_env
 
 # Path to examples/libero so eval_oracle can import the FSQ model definition.
 _LIBERO_EXAMPLES = _HERE.parents[3]  # .../examples/libero
-_IMAGE_KEY = "observation.images.image"  # 3rd-person view for the terminator
+_IMAGE_KEY = "observation.images.image"        # 3rd-person view for the terminator
+_WRIST_KEY = "observation.images.wrist_image"  # wrist view for the terminator (2nd DINO encoder)
 
 log = logging.getLogger(__name__)
 
@@ -64,7 +65,7 @@ class OracleSkillExpertPolicy(PreTrainedPolicy):
     name = "skill_expert_oracle"
 
     def __init__(self, policy, terminator: FsqTerminator, *, end_threshold: float,
-                 end_mode: str, max_skill_len: int, n_action_steps: int):
+                 end_mode: str, advance_mode: str, max_skill_len: int, n_action_steps: int):
         super().__init__(policy.config)
         self.policy = policy
         self.terminator = terminator
@@ -72,6 +73,9 @@ class OracleSkillExpertPolicy(PreTrainedPolicy):
         self.end_mode = str(end_mode)        # "termination" (term prob) | "progress"
         if self.end_mode not in ("termination", "progress"):
             raise ValueError(f"skill_end_mode must be 'termination' or 'progress', got {end_mode!r}")
+        self.advance_mode = str(advance_mode)  # "terminator" (FSQ gates) | "gt" (advance by GT duration)
+        if self.advance_mode not in ("terminator", "gt"):
+            raise ValueError(f"skill_advance_mode must be 'terminator' or 'gt', got {advance_mode!r}")
         self.max_skill_len = int(max_skill_len)
         self.n_action_steps = int(n_action_steps)
         self._seqs: list[list[int]] | None = None
@@ -153,7 +157,11 @@ class OracleSkillExpertPolicy(PreTrainedPolicy):
 
         # 1) FSQ terminator every step → record progress, then advance the per-env skill cursor.
         codes = self._current_codes(bsize, device)
-        progress, term = self.terminator.terminate(codes, batch["skill_decoder_state"], batch[_IMAGE_KEY])
+        # wrist is used only by a dual-camera terminator; pass it when present (single ignores it).
+        progress, term = self.terminator.terminate(
+            codes, batch["skill_decoder_state"], batch[_IMAGE_KEY],
+            batch.get(_WRIST_KEY) if self.terminator.use_wrist else None,
+        )
         advanced = False
         for b in range(bsize):
             rec = self._trace[self._active[b]]
@@ -162,10 +170,16 @@ class OracleSkillExpertPolicy(PreTrainedPolicy):
             )
             self._skill_step[b] += 1
             rec["length"] = self._skill_step[b]
-            signal = float(progress[b]) if self.end_mode == "progress" else float(term[b])
-            fired = signal >= self.end_threshold or (
-                self.max_skill_len > 0 and self._skill_step[b] >= self.max_skill_len
-            )
+            # Skill-transition gate: GT duration (oracle timing) or the FSQ terminator. The
+            # terminator still runs every step above so its curves are recorded either way.
+            if self.advance_mode == "gt":
+                gt_len = self._gt_lengths[b][min(self._cursors[b], len(self._gt_lengths[b]) - 1)]
+                fired = self._skill_step[b] >= max(1, int(gt_len))
+            else:
+                signal = float(progress[b]) if self.end_mode == "progress" else float(term[b])
+                fired = signal >= self.end_threshold or (
+                    self.max_skill_len > 0 and self._skill_step[b] >= self.max_skill_len
+                )
             if fired and self._cursors[b] < len(self._seqs[b]) - 1:
                 self._cursors[b] += 1
                 self._skill_step[b] = 0
@@ -240,6 +254,7 @@ def eval_main(cfg: EvalPipelineConfig):
         policy, terminator,
         end_threshold=cfg.policy.skill_end_threshold,
         end_mode=cfg.policy.skill_end_mode,
+        advance_mode=cfg.policy.skill_advance_mode,
         max_skill_len=cfg.policy.inference_skill_max_length,
         n_action_steps=cfg.policy.n_action_steps,
     )

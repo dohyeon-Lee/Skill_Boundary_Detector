@@ -27,7 +27,7 @@ def _norm_lang(s: str) -> str:
 _FSQ_KEYS = {
     "action_dim", "state_dim", "n_control", "spline_degree", "hidden_dim", "fsq_levels",
     "num_layers", "dropout", "max_length", "action_min", "action_max", "delta_min", "delta_max",
-    "feat_dim", "n_tokens", "reconstructor_mode", "image_encoder_layers", "image_encoder_heads",
+    "feat_dim", "n_tokens", "image_encoder_layers", "image_encoder_heads", "terminator_use_wrist",
     "image_model_name", "image_size", "patch_grid", "n_patch_raw", "image_token_dim", "chunk_size",
 }
 
@@ -74,14 +74,22 @@ class FsqTerminator:
         z = level_ids.to(torch.float32) - self._half[None, :]
         return z.to(self.device)
 
+    @property
+    def use_wrist(self) -> bool:
+        return bool(getattr(self.vae, "terminator_use_wrist", False))
+
     @torch.no_grad()
-    def terminate(self, codes: torch.Tensor, state: torch.Tensor, image: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """codes (B,), state (B, state_dim) raw, image (B,C,H,W) raw 3rd-person.
+    def terminate(self, codes: torch.Tensor, state: torch.Tensor, image: torch.Tensor,
+                  wrist_image: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
+        """codes (B,), state (B, state_dim) raw, image / wrist_image (B,C,H,W) raw current frames.
+        wrist_image is used only by a dual-camera terminator (ignored / may be None for single).
         Returns (progress (B,), termination_prob (B,))."""
         z = self.code_to_z(codes)
         state = state.to(self.device, torch.float32)[:, : self.state_dim].unsqueeze(1)  # (B,1,state_dim)
         image = image.to(self.device)
-        progress, term = self.vae.predict_termination(z, state, image, quantize=True)
+        if wrist_image is not None:
+            wrist_image = wrist_image.to(self.device)
+        progress, term = self.vae.predict_termination(z, state, image, wrist_image, quantize=True)
         return progress[:, 0], term[:, 0]
 
 

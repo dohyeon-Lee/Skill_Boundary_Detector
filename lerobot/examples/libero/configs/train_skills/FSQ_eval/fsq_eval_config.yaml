@@ -1,5 +1,5 @@
 # FSQ_eval — evaluation-only knobs.
-# Root paths (skills / DINO tokens / SAM2 flags / dataset videos / FSQ_outputs root)
+# Root paths (skills / DINO tokens / dataset videos / FSQ_outputs root)
 # are taken from ../train_skills_config.yaml. Keep this file minimal.
 
 # Which trained FSQ to evaluate (folder name under {project_root}/FSQ_outputs/).

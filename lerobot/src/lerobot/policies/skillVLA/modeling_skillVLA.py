@@ -143,7 +143,7 @@ class SkillVLAPytorch(PI05Pytorch):
         keys = {"action_dim", "state_dim", "n_control", "spline_degree",
                 "hidden_dim", "fsq_levels", "num_layers", "dropout",
                 "max_length", "action_min", "action_max", "delta_min", "delta_max",
-                "feat_dim", "n_tokens", "reconstructor_mode", "image_encoder_layers",
+                "feat_dim", "n_tokens", "image_encoder_layers", "terminator_use_wrist",
                 "image_encoder_heads", "image_model_name", "image_size", "patch_grid",
                 "n_patch_raw", "image_token_dim", "chunk_size"}
         vae = SplineFSQAE(**{k: v for k, v in cfg_dict.items() if k in keys})
@@ -483,21 +483,25 @@ class SkillVLAPytorch(PI05Pytorch):
         z: Tensor | None,
         state: Tensor | None,
         image: Tensor | None,
+        wrist_image: Tensor | None = None,
     ) -> tuple[Tensor, Tensor] | None:
+        # The FSQ terminator now reads BOTH cameras (3rd-person + wrist). The Stage-2 redesign
+        # must wire the current wrist frame into `wrist_image`; until then this returns None.
         if self.vae_decoder is None or z is None or state is None:
             return None
         self.vae_decoder.eval()
         state = self._prepare_skill_decoder_state(state, device=z.device, dtype=z.dtype)
         image_tokens = self._prepare_skill_decoder_tokens(
-            image,
-            batch_size=z.shape[0],
-            steps=state.shape[1],
-            device=z.device,
-            dtype=z.dtype,
+            image, batch_size=z.shape[0], steps=state.shape[1], device=z.device, dtype=z.dtype,
         )
-        if image_tokens is None:
+        wrist_tokens = self._prepare_skill_decoder_tokens(
+            wrist_image, batch_size=z.shape[0], steps=state.shape[1], device=z.device, dtype=z.dtype,
+        )
+        if image_tokens is None or wrist_tokens is None:
             return None
-        progress, end_prob = self.vae_decoder.predict_termination(z, state, image_tokens, quantize=True)
+        progress, end_prob = self.vae_decoder.predict_termination(
+            z, state, image_tokens, wrist_tokens, quantize=True
+        )
         progress = progress[:, 0] if progress.ndim == 2 else progress
         end_prob = end_prob[:, 0] if end_prob.ndim == 2 else end_prob
         return progress, end_prob

@@ -283,10 +283,12 @@ def eval_fsq_recon(df, dino: DinoNpz, frames_src, fsq_model_path: Path, out_dir:
     model, cfg = load_model(str(fsq_model_path), device)
     levels = list(cfg.fsq_levels)
     codebook_size = int(model.fsq.codebook_size)
-    n_patches = model.n_patches
 
     # reconstruct per-skill inputs from skillvla columns + dino.npz
-    segments, dec_states, dec_targets_cur, dec_tokens, patch_flags, metadata = [], [], [], [], [], []
+    # NOTE: this diagnostic only has the 3rd-person dino.npz, so the same clip stands in for the
+    # wrist camera. Action reconstruction (3rd-person only) is exact; the terminator's
+    # progress/termination curves are approximate (real wrist tokens not loaded here).
+    segments, dec_states, dec_targets_cur, dec_tokens, metadata = [], [], [], [], []
     for ep in sorted(df["episode_index"].unique()):
         ep_df = df[df["episode_index"] == ep].sort_values("frame_index").reset_index(drop=True)
         skills = reconstruct_skills(ep_df)
@@ -302,15 +304,15 @@ def eval_fsq_recon(df, dino: DinoNpz, frames_src, fsq_model_path: Path, out_dir:
             dec_states.append(dstate[fs:fe])
             dec_targets_cur.append(actions[fs:fe].astype(np.float32))
             dec_tokens.append(clip[fs:fe])
-            patch_flags.append(np.zeros((fe - fs, n_patches, 2), dtype=np.float32))   # no SAM2 here
             metadata.append({"episode_id": int(ep), "task_id": -1, "skill_index": len(metadata),
                              "frame_start": int(fs), "frame_end": int(fe), "length": int(fe - fs)})
     dec_targets = _make_episode_future_targets(dec_targets_cur, metadata)
     lengths = [m["length"] for m in metadata]
 
     latents, tokens = FE.batched_encode(model, segments, dec_tokens, lengths, device, batch_size)
+    # dec_tokens stands in for the wrist camera here (see NOTE above).
     deltas, progresses, term_probs = FE.batched_decode(
-        model, latents, dec_states, dec_tokens, patch_flags, lengths, device, batch_size)
+        model, latents, dec_states, dec_tokens, dec_tokens, lengths, device, batch_size)
 
     action_dim = dec_targets[0].shape[-1]
     groups = FE._dim_groups(action_dim)

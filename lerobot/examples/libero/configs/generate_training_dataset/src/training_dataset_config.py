@@ -102,6 +102,27 @@ DINO_N_PATCH_RAW = 196
 DINO_IMAGE_SIZE = 224
 
 
+def _resolve_dino_image_keys(cfg: dict[str, Any]) -> list[str]:
+    """Camera selection for the frame-DINO precompute. `dino_camera` is the ergonomic knob
+    (image | wrist | both, or a raw comma-separated key list); falls back to `dino_image_keys`.
+    Independent of DP — DP reads its own dino_image_keys from train_skills_config."""
+    cam_map = {
+        "image": ["observation.images.image"],
+        "third": ["observation.images.image"],
+        "3rd":   ["observation.images.image"],
+        "wrist": ["observation.images.wrist_image"],
+        "eye_in_hand": ["observation.images.wrist_image"],
+        "both":  ["observation.images.image", "observation.images.wrist_image"],
+        "all":   ["observation.images.image", "observation.images.wrist_image"],
+    }
+    camera = str(get_value(cfg, "dino_camera", "", env="DINO_CAMERA")).strip()
+    if not camera:
+        return as_list(get_value(cfg, "dino_image_keys", ["observation.images.image"], env="DINO_IMAGE_KEYS"))
+    if camera.lower() in cam_map:
+        return cam_map[camera.lower()]
+    return [k.strip() for k in camera.split(",") if k.strip()]  # raw key(s)
+
+
 def dino_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str, Any]:
     target_dataset = dataset or str(get_value(cfg, "dino_target_dataset", "libero_90", env="TARGET_DATASET"))
     root = project_root(cfg)
@@ -121,7 +142,7 @@ def dino_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str, 
         "image_model_dir": DINO_IMAGE_MODEL_DIR,
         "image_model_path": root / "models" / DINO_IMAGE_MODEL_DIR,
         "n_patch_raw": DINO_N_PATCH_RAW,
-        "image_keys": as_list(get_value(cfg, "dino_image_keys", ["observation.images.image"], env="DINO_IMAGE_KEYS")),
+        "image_keys": _resolve_dino_image_keys(cfg),
         "patch_grid": patch_grid,
         "image_size": DINO_IMAGE_SIZE,
         "batch_size": int(get_value(cfg, "dino_batch_size", 1024, env="DINO_BATCH_SIZE")),

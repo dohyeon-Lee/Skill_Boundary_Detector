@@ -17,8 +17,14 @@ inspect_dataset: libero_90_full_full
 
 # Defaults for run_frame_dino_parallel.sh
 dino_target_dataset: libero_90_full_full
+# Which camera(s) the frame-DINO precompute runs for. Ergonomic knob (CLI --camera overrides):
+#   image (3rd-person) | wrist | both | <raw comma-separated keys>
+# Run 3rd-person and wrist separately (image then wrist) or together (both); each writes a
+# separate camera subdir under the same output dir. DP is unaffected (it reads its own
+# dino_image_keys from train_skills_config). Empty → fall back to dino_image_keys below.
+dino_camera: both
 dino_image_keys: ["observation.images.image"]
-dino_patch_grid: 8  # 14 <- original
+dino_patch_grid: 14  # 14 <- original
 dino_batch_size: 1024
 dino_dtype: float16
 dino_wandb_project: DP_train

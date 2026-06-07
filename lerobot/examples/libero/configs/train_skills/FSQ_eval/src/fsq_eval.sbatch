@@ -61,19 +61,12 @@ fi
 # HTML stays under FSQ_eval/outputs; latents live next to the checkpoint in FSQ_outputs.
 OUTPUT_DIR="${EVAL_DIR}/outputs/${FSQ_EVAL_RUN_NAME}/${EPOCH_TAG}"
 
-SAM2_INPUT=""
-if [ -f "${SAM2_FLAGS_PATH}" ]; then
-  SAM2_INPUT="${SAM2_FLAGS_PATH}"
-elif [ -d "${SAM2_MASKS_DIR}" ]; then
-  SAM2_INPUT="${SAM2_MASKS_DIR}"
-fi
-
 echo "START FSQ EVAL"
 echo "Node    : ${SLURMD_NODENAME:-local}"
 echo "Model   : ${MODEL_PATH}"
 echo "Skills  : ${SKILLSET_DIR}/skills"
-echo "DINO    : ${DINO_TOKENS_PATH}"
-echo "SAM2    : ${SAM2_INPUT}"
+echo "DINO 3rd: ${DINO_TOKENS_PATH}"
+echo "DINO wri: ${DINO_TOKENS_WRIST_PATH}"
 echo "Dataset : ${DATASET_VIDEO_DIR}"
 echo "Latents : ${LATENTS_PATH}"
 echo "Output  : ${OUTPUT_DIR}"
@@ -85,17 +78,12 @@ if [ ! -f "${MODEL_PATH}" ]; then
   exit 1
 fi
 
-SAM2_ARG=()
-if [ -n "${SAM2_INPUT}" ]; then
-  SAM2_ARG=(--sam2_masks_dir "${SAM2_INPUT}")
-fi
-
 PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
   python -u examples/libero/fsq_eval.py \
-    --model_path       "${MODEL_PATH}" \
-    --skills_dir       "${SKILLSET_DIR}/skills" \
-    --dino_features    "${DINO_TOKENS_PATH}" \
-    "${SAM2_ARG[@]}" \
+    --model_path          "${MODEL_PATH}" \
+    --skills_dir          "${SKILLSET_DIR}/skills" \
+    --dino_features       "${DINO_TOKENS_PATH}" \
+    --dino_features_wrist "${DINO_TOKENS_WRIST_PATH}" \
     --dataset_dir      "${DATASET_VIDEO_DIR}" \
     --image_key        "${FSQ_EVAL_IMAGE_KEY}" \
     --output_dir       "${OUTPUT_DIR}" \

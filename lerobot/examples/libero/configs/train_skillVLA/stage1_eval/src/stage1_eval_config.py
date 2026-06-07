@@ -41,9 +41,17 @@ def build_settings(cfg: dict) -> dict:
     checkpoint = str(get_value(cfg, "checkpoint", "last"))
     policy_path = vla_root / model_dir / "checkpoints" / checkpoint / "pretrained_model"
 
-    # Results under stage1_eval/outputs/{model_dir}_{checkpoint}/
+    # Output folder name = model + checkpoint + skill-advance mode + optional free-form tag,
+    # so terminator vs gt (and any ablation) runs land in distinct folders.
+    advance_mode = str(get_value(cfg, "skill_advance_mode", "terminator"))
+    eval_exp = str(get_value(cfg, "eval_exp", "")).strip()
+    run_tag = f"{model_dir}_{checkpoint}_adv-{advance_mode}"
+    if eval_exp:
+        run_tag = f"{run_tag}_{eval_exp}"
+
+    # Results under stage1_eval/outputs/{run_tag}/
     stage1_eval_dir = _HERE.parent.parent
-    eval_out_dir = stage1_eval_dir / "outputs" / f"{model_dir}_{checkpoint}"
+    eval_out_dir = stage1_eval_dir / "outputs" / run_tag
 
     settings: dict = {
         "project_root": project_root,
@@ -73,12 +81,13 @@ def build_settings(cfg: dict) -> dict:
         "video_frame_stride": int(get_value(cfg, "video_frame_stride", 2)),
         "video_fps": int(get_value(cfg, "video_fps", 10)),
         # terminator
+        "skill_advance_mode": advance_mode,
         "skill_end_mode": str(get_value(cfg, "skill_end_mode", "termination")),
         "skill_end_threshold": str(get_value(cfg, "skill_end_threshold", 0.5)),
         "inference_skill_max_length": int(get_value(cfg, "inference_skill_max_length", 200)),
         # wandb
         "wandb_project": str(get_value(cfg, "wandb_project", "VLA_stage1_eval")),
-        "wandb_run_name": f"S1eval_{model_dir}_{checkpoint}",
+        "wandb_run_name": f"S1eval_{run_tag}",
     }
 
     part = ",".join(as_list(get_value(cfg, "eval_partition", ["debug"]))) or "debug"

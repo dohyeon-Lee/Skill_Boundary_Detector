@@ -3,7 +3,7 @@
 #   FSQ inputs   : {project_root}/{dataset_root}/FSQ_dataset/{target_dataset}/FSQ_inputs
 #   skillset     : {project_root}/{dataset_root}/FSQ_dataset/{target_dataset}/FSQ_inputs/skillset/skills
 #   DINO tokens  : {project_root}/{dataset_root}/FSQ_dataset/{target_dataset}/FSQ_inputs/dino_tokens_pg{dino_patch_grid}.npz
-#   SAM2 flags   : {project_root}/{dataset_root}/FSQ_dataset/{target_dataset}/FSQ_inputs/patch_flags.npz
+#   wrist tokens : {project_root}/{dataset_root}/FSQ_dataset/{target_dataset}/FSQ_inputs/dino_tokens_wrist_pg{dino_patch_grid}.npz
 # Reference models:
 #   DINO model   : {project_root}/models/dinov3-vits16
 # Outputs:
@@ -67,16 +67,17 @@ if [ ! -f "${DINO_TOKENS_PATH}" ]; then
   exit 1
 fi
 
-SAM2_ARGS=()
-if [ "${RECONSTRUCTOR_MODE}" = "flags" ]; then
-  if [ -f "${SAM2_FLAGS_PATH}" ]; then
-    SAM2_ARGS=(--sam2_masks_dir "${SAM2_FLAGS_PATH}")
-  elif [ -d "${SAM2_MASKS_DIR}" ]; then
-    SAM2_ARGS=(--sam2_masks_dir "${SAM2_MASKS_DIR}")
-  else
-    echo "Patch flags not found for reconstructor_mode=flags: ${SAM2_FLAGS_PATH}" >&2
+# Wrist tokens + --terminator_use_wrist only for the dual-camera terminator.
+WRIST_ARGS=(--terminator_use_wrist)
+if [ "${FSQ_TERMINATOR_USE_WRIST}" = "true" ]; then
+  if [ ! -f "${DINO_TOKENS_WRIST_PATH}" ]; then
+    echo "Wrist DINO tokens not found: ${DINO_TOKENS_WRIST_PATH}" >&2
+    echo "Run FSQ/submit_prepare_fsq_inputs.sh with fsq_terminator_use_wrist: true." >&2
     exit 1
   fi
+  WRIST_ARGS+=(--dino_features_wrist "${DINO_TOKENS_WRIST_PATH}")
+else
+  WRIST_ARGS=(--no-terminator_use_wrist)
 fi
 
 read -r -a FSQ_LEVELS <<< "${FSQ_LEVELS_STR}"
@@ -97,10 +98,9 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
   python -u examples/libero/train_FSQ.py \
     --skills_dir              "${SKILLSET_DIR}/skills" \
     --dino_features           "${DINO_TOKENS_PATH}" \
-    "${SAM2_ARGS[@]}" \
+    "${WRIST_ARGS[@]}" \
     --output_dir              "${FSQ_OUTPUT_DIR}" \
     --fsq_levels              "${FSQ_LEVELS[@]}" \
-    --reconstructor_mode      "${RECONSTRUCTOR_MODE}" \
     --chunk_size              "${FSQ_CHUNK_SIZE}" \
     --hidden_dim              "${FSQ_HIDDEN_DIM}" \
     --num_layers              "${FSQ_NUM_LAYERS}" \

@@ -12,11 +12,21 @@
 #
 # Defaults come from training_dataset_config.yaml. Command-line flags override
 # the yaml for this run:
-#   ./run_frame_dino_parallel.sh --dataset libero_90
+#   ./run_frame_dino_parallel.sh --dataset libero_90                 # 3rd-person (yaml default)
+#   ./run_frame_dino_parallel.sh --dataset libero_90 --camera wrist  # wrist only (separate run)
+#   ./run_frame_dino_parallel.sh --dataset libero_90 --camera both   # both cameras in one run
 #   ./run_frame_dino_parallel.sh --dataset libero_10 --config ./training_dataset_config.yaml
 #
+# --camera picks which camera(s) this run precomputes (independent runs write to the same
+#   {dataset}_DINO/pg{patch_grid}/ dir, one subdir per camera):
+#     image  -> observation.images.image        (3rd-person)
+#     wrist  -> observation.images.wrist_image
+#     both   -> both
+#     (anything else is treated as a raw comma-separated image-key list)
+#   Omit --camera to use the yaml's dino_image_keys (the DP path stays 3rd-person).
+#
 # Output:
-#   {project_root}/{dataset_root}/{dataset}_DINO/pg{patch_grid}/
+#   {project_root}/{dataset_root}/{dataset}_DINO/pg{patch_grid}/<camera_subdir>/
 
 set -euo pipefail
 
@@ -24,6 +34,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC_DIR="${SCRIPT_DIR}/src"
 CONFIG_PATH="${SCRIPT_DIR}/training_dataset_config.yaml"
 TARGET_DATASET=""
+CAMERA=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -35,8 +46,12 @@ while [ "$#" -gt 0 ]; do
       TARGET_DATASET="$2"
       shift 2
       ;;
+    --camera)
+      CAMERA="$2"
+      shift 2
+      ;;
     -h|--help)
-      sed -n '1,25p' "$0"
+      sed -n '1,33p' "$0"
       exit 0
       ;;
     *)
@@ -59,6 +74,15 @@ if [ -n "${TARGET_DATASET}" ]; then
 else
   eval "$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/training_dataset_config.py" --config "${CONFIG_PATH}" --shell-dino)"
 fi
+
+# --camera overrides which camera(s) this run precomputes (yaml dino_image_keys otherwise).
+case "${CAMERA}" in
+  "")                       ;;  # keep yaml IMAGE_KEYS
+  image|third|3rd)         IMAGE_KEYS="observation.images.image" ;;
+  wrist|eye_in_hand)       IMAGE_KEYS="observation.images.wrist_image" ;;
+  both|all)                IMAGE_KEYS="observation.images.image,observation.images.wrist_image" ;;
+  *)                       IMAGE_KEYS="${CAMERA}" ;;  # raw comma-separated image-key list
+esac
 
 cd "${SCRIPT_DIR}"
 mkdir -p logs

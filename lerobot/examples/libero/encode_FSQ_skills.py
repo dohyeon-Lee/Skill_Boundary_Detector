@@ -2,7 +2,7 @@
 
 This produces the skill_latents*.npz file consumed by codebook_visualizer.py
 and decoder_eval.py. The FSQ encoder uses spline control points, skill length,
-and start/end DINO tokens; decoder SAM2 flags are not needed for encoding.
+and start/end DINO tokens (encoding uses only the pure-DINO encoder).
 """
 
 from __future__ import annotations
@@ -58,7 +58,6 @@ def load_model(model_path: Path, device: str) -> SplineFSQAE:
         image_size=getattr(cfg, "image_size", 224),
         patch_grid=getattr(cfg, "patch_grid", 8),
         n_patch_raw=getattr(cfg, "n_patch_raw", 196),
-        reconstructor_mode=getattr(cfg, "reconstructor_mode", "flags"),
         image_token_dim=getattr(cfg, "image_token_dim", 128),
         image_encoder_layers=getattr(cfg, "image_encoder_layers", 1),
         image_encoder_heads=getattr(cfg, "image_encoder_heads", 4),

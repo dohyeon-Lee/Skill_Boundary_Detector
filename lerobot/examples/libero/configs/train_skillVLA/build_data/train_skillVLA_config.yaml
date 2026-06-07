@@ -75,14 +75,13 @@ skillset_max_sweeps: 2
 # ── FSQ encoder (step 4) ──────────────────────────────────────
 # A trained FSQ from train_skills (under {project_root}/FSQ_outputs/).
 # The model dir name is rebuilt as:
-#   {fsq_train_dataset}_fsq{levels}_pg{dino_patch_grid}_{reconstructor_mode}_image{fsq_image_token_dim}{fsq_exp_suffix}
+#   {fsq_train_dataset}_fsq{levels}_pg{dino_patch_grid}_image{fsq_image_token_dim}{fsq_exp_suffix}
 # and the run tag for outputs as:
-#   FSQ{levels}_pg{dino_patch_grid}_{reconstructor_mode}_image{fsq_image_token_dim}{fsq_exp_suffix}_{fsq_checkpoint}
+#   FSQ{levels}_pg{dino_patch_grid}_image{fsq_image_token_dim}{fsq_exp_suffix}_{fsq_checkpoint}
 
 # libero_90 | libero_90_full_full
 fsq_train_dataset: libero_90             # dataset the FSQ was trained on (for run-name lookup)
 fsq_levels: [5, 5, 5]
-reconstructor_mode: flags                 # flags | only (must match the trained FSQ)
 fsq_image_token_dim: 256
 fsq_exp: "eqloss"                              # optional suffix used in train_skills fsq_exp, e.g. eqloss
 fsq_checkpoint: 200                     # epoch number; 0 = best (FSQ.pt)

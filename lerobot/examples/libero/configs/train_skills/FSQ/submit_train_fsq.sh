@@ -3,8 +3,7 @@
 #   dataset name : TRAIN_DATA or target_dataset in ../train_skills_config.yaml
 #   FSQ inputs   : {project_root}/{dataset_root}/FSQ_dataset/{target_dataset}/FSQ_inputs
 #   skillset     : {project_root}/{dataset_root}/FSQ_dataset/{target_dataset}/FSQ_inputs/skillset/skills
-#   DINO tokens  : {project_root}/{dataset_root}/FSQ_dataset/{target_dataset}/FSQ_inputs/dino_tokens_pg{dino_patch_grid}.npz
-#   SAM2 flags   : {project_root}/{dataset_root}/FSQ_dataset/{target_dataset}/FSQ_inputs/patch_flags.npz
+#   DINO tokens  : {.../FSQ_inputs/dino_tokens_pg{grid}.npz, dino_tokens_wrist_pg{grid}.npz}
 # Reference models:
 #   DINO model   : {project_root}/models/dinov3-vits16
 # Outputs:
@@ -20,6 +19,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMMON_SRC_DIR="${SCRIPT_DIR}/../src"
 FSQ_SRC_DIR="${SCRIPT_DIR}/src"
 CONFIG_PATH="${TRAIN_SKILLS_CONFIG:-${SCRIPT_DIR}/../train_skills_config.yaml}"
+
+# Freeze the config so this job ignores later edits to the repo yaml (see configs/snapshot_config.sh).
+_lib="$(dirname "${CONFIG_PATH}")"; while [ ! -f "${_lib}/snapshot_config.sh" ]; do _lib="$(dirname "${_lib}")"; done
+source "${_lib}/snapshot_config.sh"
+CONFIG_PATH="$(snapshot_config "${CONFIG_PATH}")"
 TARGET_DATASET="${TRAIN_DATA:-}"
 
 BOOTSTRAP_PYTHON="${SCRIPT_DIR}/../../../../../../.venv/bin/python"
@@ -43,10 +47,9 @@ if [ ! -f "${DINO_TOKENS_PATH}" ]; then
   echo "Run FSQ/submit_prepare_fsq_inputs.sh first." >&2
   exit 1
 fi
-if [ "${RECONSTRUCTOR_MODE}" = "flags" ] && [ ! -f "${SAM2_FLAGS_PATH}" ] && [ ! -d "${SAM2_MASKS_DIR}" ]; then
-  echo "Patch flags not found for reconstructor_mode=flags:" >&2
-  echo "  ${SAM2_FLAGS_PATH}" >&2
-  echo "Run FSQ/submit_prepare_fsq_inputs.sh with fsq_build_patch_flags: true." >&2
+if [ ! -f "${DINO_TOKENS_WRIST_PATH}" ]; then
+  echo "Wrist DINO tokens not found: ${DINO_TOKENS_WRIST_PATH}" >&2
+  echo "Run FSQ/submit_prepare_fsq_inputs.sh first." >&2
   exit 1
 fi
 
@@ -74,7 +77,7 @@ echo "  dataset     : ${TARGET_DATASET}"
 echo "  FSQ inputs  : ${FSQ_INPUTS_DIR}"
 echo "  skillset    : ${SKILLSET_DIR}/skills"
 echo "  DINO tokens : ${DINO_TOKENS_PATH}"
-echo "  SAM2 flags  : ${SAM2_FLAGS_PATH}"
+echo "  wrist tokens: ${DINO_TOKENS_WRIST_PATH}"
 echo "  output      : ${FSQ_OUTPUT_DIR}"
 echo "  slurm       : partition=${FSQ_TRAIN_PARTITION} qos=${FSQ_TRAIN_QOS} gres=${FSQ_TRAIN_GRES}"
 

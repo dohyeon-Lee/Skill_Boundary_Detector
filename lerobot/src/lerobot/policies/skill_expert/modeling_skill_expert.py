@@ -39,6 +39,20 @@ from .configuration_skill_expert import SkillExpertConfig
 log = logging.getLogger(__name__)
 
 
+def _build_siglip_vision_tower(image_size: int):
+    """Standalone SigLIP vision tower matching the pi05 PaliGemma vision_tower (So400m, patch 14)
+    so the pi05 checkpoint's `...vision_tower.vision_model.*` weights load 1:1 (verified)."""
+    from transformers import SiglipVisionModel  # noqa: PLC0415
+
+    vlm_cfg = CONFIG_MAPPING["paligemma"]()
+    vc = vlm_cfg.vision_config
+    vc.image_size = image_size
+    vc.intermediate_size = 4304
+    vc.projection_dim = 2048
+    vc.projector_hidden_act = "gelu_fast"
+    return SiglipVisionModel(vc)
+
+
 class SkillExpertPytorch(nn.Module):
     """The Stage-1 action expert network (see module docstring)."""
 
@@ -48,18 +62,36 @@ class SkillExpertPytorch(nn.Module):
         expert_cfg = get_gemma_config(config.action_expert_variant)
         self.width = expert_cfg.width
 
-        # ── Vision: trainable DINOv3, shared across the two cameras ──
-        self.dino = AutoModel.from_pretrained(config.dino_model_path)
-        dino_dim = int(self.dino.config.hidden_size)
-        self.n_register = int(getattr(self.dino.config, "num_register_tokens", 0))
-        if config.freeze_dino:
-            for p in self.dino.parameters():
-                p.requires_grad_(False)
-        self.register_buffer("_dino_mean", torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1), persistent=False)
-        self.register_buffer("_dino_std", torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1), persistent=False)
+        # ── Vision encoder, shared across the two cameras (DINOv3 or SigLIP) ──
+        self.vision_backbone = config.vision_backbone
+        self.dino = None
+        self.siglip = None
+        self.n_register = 0
+        if config.vision_backbone == "dino":
+            self.dino = AutoModel.from_pretrained(config.dino_model_path)
+            vis_dim = int(self.dino.config.hidden_size)
+            self.n_register = int(getattr(self.dino.config, "num_register_tokens", 0))
+            self.vision_image_size = config.dino_image_size
+            mean, std = [0.485, 0.456, 0.406], [0.229, 0.224, 0.225]  # ImageNet
+            if config.freeze_dino:
+                for p in self.dino.parameters():
+                    p.requires_grad_(False)
+        elif config.vision_backbone == "siglip":
+            # Warm-started from pi05's vision_tower in from_pretrained (params separate from the VLM).
+            self.siglip = _build_siglip_vision_tower(config.siglip_image_size)
+            vis_dim = int(self.siglip.config.hidden_size)
+            self.vision_image_size = config.siglip_image_size
+            mean, std = [0.5, 0.5, 0.5], [0.5, 0.5, 0.5]  # SigLIP: [0,1] → [-1,1]
+            if config.freeze_siglip:
+                for p in self.siglip.parameters():
+                    p.requires_grad_(False)
+        else:
+            raise ValueError(f"vision_backbone must be 'dino' or 'siglip', got {config.vision_backbone!r}")
+        self.register_buffer("_img_mean", torch.tensor(mean).view(1, 3, 1, 1), persistent=False)
+        self.register_buffer("_img_std", torch.tensor(std).view(1, 3, 1, 1), persistent=False)
 
         # ── Token projections (all → expert width) ──
-        self.image_proj = nn.Linear(dino_dim, self.width)               # DINO token → expert token
+        self.image_proj = nn.Linear(vis_dim, self.width)                # image token → expert token
         self.state_proj = nn.Linear(config.max_state_dim, self.width)   # continuous state → 1 token
         self.skill_emb = nn.Embedding(config.skill_vocab_size, self.width)  # discrete FSQ code → 1 token
 
@@ -96,8 +128,12 @@ class SkillExpertPytorch(nn.Module):
     def gradient_checkpointing_enable(self) -> None:
         if hasattr(self.gemma_expert, "gradient_checkpointing_enable"):
             self.gemma_expert.gradient_checkpointing_enable()
-        if not self.config.freeze_dino and hasattr(self.dino, "gradient_checkpointing_enable"):
+        if self.vision_backbone == "dino" and not self.config.freeze_dino \
+                and hasattr(self.dino, "gradient_checkpointing_enable"):
             self.dino.gradient_checkpointing_enable()
+        elif self.vision_backbone == "siglip" and not self.config.freeze_siglip \
+                and hasattr(self.siglip, "gradient_checkpointing_enable"):
+            self.siglip.gradient_checkpointing_enable()
 
     # ── Flow-matching samplers (copied from PI05Pytorch) ──
     def sample_noise(self, shape, device) -> Tensor:
@@ -111,21 +147,25 @@ class SkillExpertPytorch(nn.Module):
         return time.to(dtype=torch.float32, device=device)
 
     # ── Tokenization ──
-    def _dino_features(self, image: Tensor) -> Tensor:
-        """image (B, C, H, W) in [0, 1] → (B, 1 + num_patches, dino_dim): CLS + patches (registers dropped)."""
+    def _image_features(self, image: Tensor) -> Tensor:
+        """image (B, C, H, W) in [0, 1] → (B, n_tokens, vis_dim) image tokens.
+        DINO: CLS + patches (registers dropped). SigLIP: 256 patch tokens (no CLS)."""
         x = image.to(dtype=torch.float32)
-        size = (self.config.dino_image_size, self.config.dino_image_size)
+        size = (self.vision_image_size, self.vision_image_size)
         x = F.interpolate(x, size=size, mode="bilinear", align_corners=False)
-        x = (x - self._dino_mean.float()) / self._dino_std.float()
-        x = x.to(dtype=next(self.dino.parameters()).dtype)
-        out = self.dino(x).last_hidden_state            # (B, 1 + n_register + num_patches, dino_dim)
-        cls = out[:, :1, :]
-        patches = out[:, 1 + self.n_register :, :]      # drop CLS + register tokens, keep patches
-        return torch.cat([cls, patches], dim=1)
+        x = (x - self._img_mean.float()) / self._img_std.float()
+        if self.vision_backbone == "dino":
+            x = x.to(dtype=next(self.dino.parameters()).dtype)
+            out = self.dino(x).last_hidden_state        # (B, 1 + n_register + num_patches, dino_dim)
+            cls = out[:, :1, :]
+            patches = out[:, 1 + self.n_register :, :]  # drop CLS + register tokens, keep patches
+            return torch.cat([cls, patches], dim=1)
+        x = x.to(dtype=next(self.siglip.parameters()).dtype)
+        return self.siglip(pixel_values=x).last_hidden_state  # (B, 256, siglip_dim)
 
     def _cond_tokens(self, images: list[Tensor], state: Tensor, skill_code: Tensor) -> Tensor:
-        """Conditioning tokens [img1 (CLS+patches), img2 (CLS+patches), state, skill] → (B, M, width)."""
-        tokens = [self.image_proj(self._dino_features(image).to(self._wdtype)) for image in images]
+        """Conditioning tokens [img1 tokens, img2 tokens, state, skill] → (B, M, width)."""
+        tokens = [self.image_proj(self._image_features(image).to(self._wdtype)) for image in images]
         state = pad_vector(state.to(dtype=torch.float32), self.config.max_state_dim)
         tokens.append(self.state_proj(state.to(self._wdtype)).unsqueeze(1))
         tokens.append(self.skill_emb(skill_code.view(-1).long()).unsqueeze(1))
@@ -211,18 +251,24 @@ class SkillExpertPytorch(nn.Module):
 
 # ── Checkpoint loading helpers (Stage-1 init from a PI05 checkpoint, or resume) ──────────
 
-def _map_pi05_key(key: str) -> str | None:
+def _map_pi05_key(key: str, vision_backbone: str = "dino") -> str | None:
     """Map a PI05 checkpoint key to the SkillExpert model key, or None to drop it.
 
-    Keeps only the action expert: the Gemma transformer (incl. AdaRMS norms), the action
-    in/out projections, and the time MLP. PaliGemma/SigLIP, the expert lm_head, and the
-    PI05 discretized-state path are dropped (SkillExpert has its own DINO + skill/state).
+    Always keeps the action expert: the Gemma transformer (incl. AdaRMS norms), the action
+    in/out projections, and the time MLP. When vision_backbone="siglip", ALSO warm-start the
+    expert's vision tower from PI05's `vision_tower` (robot-adapted prior). Everything else
+    (PaliGemma LLM, multi_modal_projector, expert lm_head, discretized-state path) is dropped.
     """
     if key.startswith("paligemma_with_expert.gemma_expert."):
         rest = key[len("paligemma_with_expert.gemma_expert.") :]
         if rest.startswith("lm_head"):
             return None
         return f"model.gemma_expert.{rest}"
+    # SigLIP backbone: PI05 vision_tower → expert's own SigLIP (keys are vision_model.*).
+    if vision_backbone == "siglip":
+        vt = "paligemma_with_expert.paligemma.model.vision_tower."
+        if key.startswith(vt):
+            return f"model.siglip.{key[len(vt):]}"
     if key.startswith("paligemma_with_expert."):
         return None
     for proj in ("action_in_proj.", "action_out_proj.", "time_mlp_in.", "time_mlp_out."):
@@ -236,13 +282,13 @@ def _map_pi05_key(key: str) -> str | None:
     return None
 
 
-def _build_state_dict(raw: dict) -> dict:
+def _build_state_dict(raw: dict, vision_backbone: str = "dino") -> dict:
     """Remap a raw checkpoint to SkillExpert keys. Handles a PI05 checkpoint (partial init)
     and a SkillExpert checkpoint (resume), keyed by whether PI05 prefixes are present."""
     is_pi05 = any("paligemma_with_expert" in k for k in raw)
     out = {}
     for k, v in raw.items():
-        nk = _map_pi05_key(k) if is_pi05 else (k if k.startswith("model.") else f"model.{k}")
+        nk = _map_pi05_key(k, vision_backbone) if is_pi05 else (k if k.startswith("model.") else f"model.{k}")
         if nk is not None:
             out[nk] = v
     return out
@@ -303,18 +349,22 @@ class SkillExpertPolicy(PreTrainedPolicy):
         self._action_queue = deque(maxlen=self.config.n_action_steps)
 
     def get_optim_params(self):
-        if self.config.dino_lr is None:
+        # Optional separate LR for the vision encoder (dino_lr / siglip_lr) vs everything else.
+        if self.model.vision_backbone == "dino":
+            vis_module, vis_lr = self.model.dino, self.config.dino_lr
+        else:
+            vis_module, vis_lr = self.model.siglip, self.config.siglip_lr
+        if vis_lr is None:
             return self.parameters()
-        # Separate LR for the DINO encoder (config.dino_lr) vs everything else.
-        dino_ids = {id(p) for p in self.model.dino.parameters()}
-        dino = [p for p in self.model.dino.parameters() if p.requires_grad]
-        others = [p for p in self.parameters() if id(p) not in dino_ids and p.requires_grad]
-        return [{"params": others}, {"params": dino, "lr": self.config.dino_lr}]
+        vis_ids = {id(p) for p in vis_module.parameters()}
+        vis = [p for p in vis_module.parameters() if p.requires_grad]
+        others = [p for p in self.parameters() if id(p) not in vis_ids and p.requires_grad]
+        return [{"params": others}, {"params": vis, "lr": vis_lr}]
 
     # ── batch → model inputs ──
     def _collect_images(self, batch: dict) -> tuple[list[Tensor], list[Tensor]]:
-        """Gather present camera images as [0, 1] float tensors (DINO normalization happens
-        inside the model). No SigLIP-style [-1, 1] rescale."""
+        """Gather present camera images as [0, 1] float tensors. The vision encoder's own
+        normalization (ImageNet for DINO, [-1,1] for SigLIP) is applied inside the model."""
         device = next(self.parameters()).device
         images, masks = [], []
         present = [k for k in self.config.image_features if k in batch]
@@ -380,7 +430,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
         if raw is None:
             log.warning("SkillExpert: no weights loaded, using fresh init.")
             return model
-        state_dict = {k: v.to(model._torch_dtype()) for k, v in _build_state_dict(raw).items()}
+        state_dict = {k: v.to(model._torch_dtype()) for k, v in _build_state_dict(raw, config.vision_backbone).items()}
         missing, unexpected = model.load_state_dict(state_dict, strict=False)
         log.info(
             "SkillExpert weights: %d mapped & loaded, %d missing (fresh init), %d unexpected.",

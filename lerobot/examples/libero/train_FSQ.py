@@ -1,22 +1,23 @@
 """
 Train SplineFSQAE: Finite Scalar Quantization skill tokenizer with DINO-token-conditioned decoder.
 
+The terminator reads BOTH cameras (3rd-person + wrist) via separate DINO-token encoders, so
+two skill-token npz files are required (one per camera, same skill order).
+
 Usage:
     python examples/libero/train_FSQ.py \
-      --skills_dir     /path/to/skillset/skills \
-      --dino_features  /path/to/dino_features.npz \
-      --sam2_masks_dir /path/to/sam2_masks_or_merged_flags.npz \
-      --output_dir     /path/to/output
+      --skills_dir          /path/to/skillset/skills \
+      --dino_features       /path/to/dino_tokens.npz \
+      --dino_features_wrist /path/to/dino_tokens_wrist.npz \
+      --output_dir          /path/to/output
 
 Data requirements:
-  skills_dir/*.npz  — per-skill npz with keys: actions, states, episode_id, skill_index,
-                       frame_start, frame_end, task_id (optional)
-  dino_features.npz — precomputed DINO tokens produced by precompute_dino_features.py,
-                       keys: features (N_total, n_tokens, feat_dim), offsets, episode_id,
-                       frame_start, frame_end, length
-  sam2_masks_dir/   — either a merged temporal patch_flags.npz produced by
-                       merge_sam2_patch_flags.py, or the per-skill directory
-                       produced by precompute_sam2_masks.py.
+  skills_dir/*.npz       — per-skill npz with keys: actions, states, episode_id, skill_index,
+                            frame_start, frame_end, task_id (optional)
+  dino_features.npz       — precomputed 3rd-person DINO tokens (extract_skill_dino_tokens.py),
+                            keys: features (N_total, n_tokens, feat_dim), offsets, episode_id,
+                            frame_start, frame_end, length
+  dino_features_wrist.npz — the same, extracted from the wrist camera (same skill order).
 """
 
 from __future__ import annotations
@@ -40,9 +41,12 @@ class Args:
     skills_dir: str = ""
     """Directory (recursively searched) for per-skill .npz files."""
     dino_features: str = ""
-    """Path to precomputed DINO token npz (features shape: N_total × n_tokens × feat_dim)."""
-    sam2_masks_dir: str = ""
-    """Merged SAM2 patch_flags.npz or directory with per-skill SAM2 mask npz files."""
+    """Path to precomputed 3rd-person DINO token npz (features: N_total × n_tokens × feat_dim)."""
+    dino_features_wrist: str = ""
+    """Path to precomputed wrist DINO token npz (same skill order). Required iff terminator_use_wrist."""
+    terminator_use_wrist: bool = True
+    """Terminator cameras: True = 3rd-person + wrist (two DINO encoders); False = 3rd-person only
+    (original single-camera FSQ; no wrist tokens needed, old checkpoints stay loadable)."""
     output_dir: str = ""
     """Output directory. Defaults to parent of skills_dir."""
     eef_dims: list[int] = field(default_factory=lambda: [0, 1, 2, 3, 4, 5])
@@ -66,8 +70,6 @@ class Args:
     image_size: int = 224
     patch_grid: int = 8
     n_patch_raw: int = 196
-    reconstructor_mode: str = "flags"
-    """'flags' | 'only'. Controls the reconstructor's start-frame flag token."""
     image_token_dim: int = 128
     """Internal per-patch width N in the image encoders (must be divisible by heads, >2)."""
     image_encoder_layers: int = 1
@@ -239,98 +241,6 @@ def load_dino_tokens(
     return clips
 
 
-def load_patch_flags(
-    sam2_masks_dir: Path,
-    metadata: list[dict],
-    n_patches: int = 64,
-) -> list[np.ndarray]:
-    """Load per-skill temporal [is_changed, is_green] flags (T, n_patches, 2).
-
-    Prefer a merged patch_flags.npz for fast training. Directory loading is kept
-    as a fallback and preserves every timestep from each per-skill mask npz.
-    """
-    if sam2_masks_dir.is_file():
-        d = np.load(str(sam2_masks_dir))
-        flags = d["patch_flags"].astype(np.float32)
-        if "offsets" not in d:
-            raise ValueError("Merged SAM2 patch_flags.npz must contain temporal offsets.")
-        offsets = d["offsets"].astype(np.int64)
-        for i, m in enumerate(metadata):
-            expected = (
-                int(m["episode_id"]),
-                int(m["skill_index"]),
-                int(m["frame_start"]),
-                int(m["frame_end"]),
-                int(m["length"]),
-            )
-            got = (
-                int(d["episode_id"][i]),
-                int(d["skill_index"][i]),
-                int(d["frame_start"][i]),
-                int(d["frame_end"][i]),
-                int(d["length"][i]),
-            )
-            if got != expected:
-                raise ValueError(f"Merged SAM2 metadata mismatch at index {i}: got {got}, expected {expected}")
-
-        if len(offsets) != len(metadata) + 1:
-            raise ValueError(f"Merged SAM2 offsets count {len(offsets) - 1} != skill count {len(metadata)}")
-        expected_total = sum(int(m["length"]) for m in metadata)
-        expected_shape = (expected_total, n_patches, 2)
-        if flags.shape != expected_shape:
-            raise ValueError(f"Merged SAM2 patch_flags shape mismatch: got {flags.shape}, expected {expected_shape}")
-        out = []
-        for i, m in enumerate(metadata):
-            clip = flags[offsets[i]:offsets[i + 1]]
-            if len(clip) != int(m["length"]):
-                raise ValueError(
-                    f"Merged SAM2 length mismatch at index {i}: got {len(clip)}, expected {int(m['length'])}"
-                )
-            out.append(clip)
-
-        n_missing = int(d["missing"].sum()) if "missing" in d else 0
-        if n_missing:
-            print(f"[FSQ] Warning: merged SAM2 has {n_missing}/{len(metadata)} missing skills — using zero flags")
-        else:
-            print(f"[FSQ] Loaded merged temporal SAM2 patch flags for all {len(metadata)} skills")
-        return out
-
-    def mask_path(m: dict) -> Path:
-        return (
-            sam2_masks_dir
-            / f"task{int(m['task_id'])}"
-            / f"ep{int(m['episode_id']):05d}_skill{int(m['skill_index']):03d}.npz"
-        )
-
-    flags_list = []
-    n_missing = 0
-    for m in metadata:
-        expected_len = int(m["length"])
-        f = mask_path(m)
-        if not f.exists():
-            flags_list.append(np.zeros((expected_len, n_patches, 2), dtype=np.float32))
-            n_missing += 1
-            continue
-        msk = np.load(str(f))
-        pm = msk["patch_masks"].astype(np.float32)  # (T_samp, H_p, W_p, 2)
-        if len(pm) == 0:
-            flags_list.append(np.zeros((expected_len, n_patches, 2), dtype=np.float32))
-            n_missing += 1
-            continue
-        temporal = pm.reshape(len(pm), -1, 2)
-        if temporal.shape[1] != n_patches:
-            raise ValueError(f"{f} has {temporal.shape[1]} patches after flattening, expected {n_patches}")
-        if len(temporal) != expected_len:
-            raise ValueError(f"{f} length mismatch: patch_masks has {len(temporal)}, expected {expected_len}")
-        flags_list.append(temporal)
-
-    if n_missing:
-        print(f"[FSQ] Warning: {n_missing}/{len(metadata)} skills missing SAM2 masks — using zero flags")
-    else:
-        print(f"[FSQ] Loaded temporal SAM2 patch flags for all {len(metadata)} skills")
-    return flags_list
-
-
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 def main(args: Args) -> None:
@@ -350,12 +260,12 @@ def main(args: Args) -> None:
     )
 
     dec_tokens = load_dino_tokens(Path(args.dino_features), metadata)
-    n_patches = (args.n_tokens - 1)  # subtract CLS token
-    patch_flags = (
-        load_patch_flags(Path(args.sam2_masks_dir), metadata, n_patches=n_patches)
-        if args.sam2_masks_dir
-        else [np.zeros((m["length"], n_patches, 2), dtype=np.float32) for m in metadata]
-    )
+    if args.terminator_use_wrist:
+        if not args.dino_features_wrist:
+            raise ValueError("--dino_features_wrist is required when terminator_use_wrist=True.")
+        dec_tokens_wrist = load_dino_tokens(Path(args.dino_features_wrist), metadata)
+    else:
+        dec_tokens_wrist = None  # single-camera terminator
 
     all_enc = np.concatenate(segments)
     all_tgt = np.concatenate([target[: int(m["length"])] for target, m in zip(dec_targets, metadata, strict=True)])
@@ -399,7 +309,7 @@ def main(args: Args) -> None:
         image_size=args.image_size,
         patch_grid=args.patch_grid,
         n_patch_raw=args.n_patch_raw,
-        reconstructor_mode=args.reconstructor_mode,
+        terminator_use_wrist=args.terminator_use_wrist,
         image_token_dim=args.image_token_dim,
         image_encoder_layers=args.image_encoder_layers,
         image_encoder_heads=args.image_encoder_heads,
@@ -429,7 +339,7 @@ def main(args: Args) -> None:
     model = train_spline_fsqae(
         segments=segments,
         dec_tokens=dec_tokens,
-        patch_flags=patch_flags,
+        dec_tokens_wrist=dec_tokens_wrist,
         decoder_states=dec_states,
         decoder_targets=dec_targets,
         cfg=cfg,

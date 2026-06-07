@@ -12,6 +12,12 @@ SRC_DIR="${SCRIPT_DIR}/src"
 BUILD_SRC_DIR="${SCRIPT_DIR}/../build_data/src"   # train_skillVLA_config.py lives with build_data
 CONFIG_PATH="${TRAIN_SKILLVLA_CONFIG:-${SCRIPT_DIR}/../build_data/train_skillVLA_config.yaml}"
 EVAL_CONFIG_PATH="${EVAL_CONFIG:-${SCRIPT_DIR}/eval_config.yaml}"
+
+# Freeze the config so this job ignores later edits to the repo yaml (see configs/snapshot_config.sh).
+_lib="$(dirname "${CONFIG_PATH}")"; while [ ! -f "${_lib}/snapshot_config.sh" ]; do _lib="$(dirname "${_lib}")"; done
+source "${_lib}/snapshot_config.sh"
+CONFIG_PATH="$(snapshot_config "${CONFIG_PATH}")"
+EVAL_CONFIG_PATH="$(snapshot_config "${EVAL_CONFIG_PATH}")"
 SOURCE_DATASET="${SOURCE_DATA:-}"
 
 BOOTSTRAP_PYTHON="${SCRIPT_DIR}/../../../../../../.venv/bin/python"

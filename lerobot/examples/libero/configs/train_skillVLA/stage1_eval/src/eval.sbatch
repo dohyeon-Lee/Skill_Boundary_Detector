@@ -86,6 +86,7 @@ PYTHONPATH="${LEROBOT_ROOT}/src:${LEROBOT_ROOT}/examples/libero:${LIBERO_REPO_RO
     --policy.fsq_path="${FSQ_CKPT}" \
     --policy.skill_label_dataset_dir="${SKILL_LABEL_DATASET_DIR}" \
     --policy.dino_model_path="${DINO_MODEL_PATH}" \
+    --policy.skill_advance_mode="${SKILL_ADVANCE_MODE}" \
     --policy.skill_end_mode="${SKILL_END_MODE}" \
     --policy.skill_end_threshold="${SKILL_END_THRESHOLD}" \
     --policy.inference_skill_max_length="${INFERENCE_SKILL_MAX_LENGTH}" \

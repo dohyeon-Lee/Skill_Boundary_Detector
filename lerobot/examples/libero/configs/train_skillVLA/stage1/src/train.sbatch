@@ -44,13 +44,16 @@ if [ ! -e "${SKILLVLA_DATASET_DIR}" ]; then
   exit 1
 fi
 
-# Optional args: pi05 warm-start and a separate DINO LR (empty → omitted).
+# Optional args: pi05 warm-start and a separate vision LR (empty → omitted).
 EXTRA_ARGS=()
 if [ -n "${PI_BASE}" ]; then
   EXTRA_ARGS+=(--policy.pretrained_path="${PI_BASE}")
 fi
 if [ -n "${DINO_LR}" ]; then
   EXTRA_ARGS+=(--policy.dino_lr="${DINO_LR}")
+fi
+if [ -n "${SIGLIP_LR}" ]; then
+  EXTRA_ARGS+=(--policy.siglip_lr="${SIGLIP_LR}")
 fi
 
 # Resume if a checkpoint exists; otherwise wipe a stale (incomplete) output dir.
@@ -77,9 +80,13 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.dtype=bfloat16 \
     --policy.device=cuda \
     --policy.push_to_hub=false \
+    --policy.vision_backbone="${VISION_BACKBONE}" \
     --policy.dino_model_path="${DINO_MODEL_PATH}" \
     --policy.freeze_dino="${FREEZE_DINO}" \
+    --policy.freeze_siglip="${FREEZE_SIGLIP}" \
+    --policy.siglip_image_size="${SIGLIP_IMAGE_SIZE}" \
     --policy.skill_vocab_size="${SKILL_VOCAB_SIZE}" \
+    --policy.skill_fsq_levels="${SKILL_FSQ_LEVELS}" \
     --batch_size="${BATCH_SIZE}" \
     --num_workers="${NUM_WORKERS}" \
     --steps="${STEPS}" \

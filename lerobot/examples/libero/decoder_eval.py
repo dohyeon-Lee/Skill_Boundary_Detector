@@ -24,7 +24,7 @@ from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).parent))
 from FSQ import SplineFSQAE, SplineFSQAEConfig
-from train_FSQ import load_skill_files, load_dino_tokens, load_patch_flags
+from train_FSQ import load_skill_files, load_dino_tokens
 
 
 # ── model loading ─────────────────────────────────────────────────────────────
@@ -47,7 +47,6 @@ def load_model(model_path: str, device: str) -> tuple[SplineFSQAE, SplineFSQAECo
         image_size           = getattr(cfg, "image_size", 224),
         patch_grid           = getattr(cfg, "patch_grid", 8),
         n_patch_raw          = getattr(cfg, "n_patch_raw", 196),
-        reconstructor_mode   = getattr(cfg, "reconstructor_mode", "flags"),
         image_token_dim      = getattr(cfg, "image_token_dim", 128),
         image_encoder_layers = getattr(cfg, "image_encoder_layers", 1),
         image_encoder_heads  = getattr(cfg, "image_encoder_heads", 4),
@@ -71,10 +70,10 @@ def load_model(model_path: str, device: str) -> tuple[SplineFSQAE, SplineFSQAECo
 @torch.no_grad()
 def run_decode_single(
     model: SplineFSQAE,
-    z_q: np.ndarray,           # (D,)  FSQ latent vector
-    states: np.ndarray,        # (T, state_dim)
-    dec_tokens: np.ndarray,    # (T, n_tokens, feat_dim)
-    patch_flags: np.ndarray,   # (T, n_patches, 2)
+    z_q: np.ndarray,              # (D,)  FSQ latent vector
+    states: np.ndarray,          # (T, state_dim)
+    dec_tokens: np.ndarray,      # (T, n_tokens, feat_dim) 3rd-person
+    dec_tokens_wrist: np.ndarray,  # (T, n_tokens, feat_dim) wrist
     device: str,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Returns (pred_actions, pred_end_probs).
@@ -83,15 +82,16 @@ def run_decode_single(
     chunk mode:       pred_actions (T, K, A)
     pred_end_probs:   (T,) per-step termination probability after sigmoid.
     GT per-skill progress (0→1) is fed as the motion input, matching training.
+    The terminator reads both cameras (dec_tokens = 3rd-person, dec_tokens_wrist = wrist).
     """
     T = len(states)
     z_t  = torch.from_numpy(z_q.astype(np.float32)).unsqueeze(0).to(device)
     s_t  = torch.from_numpy(states.astype(np.float32)).unsqueeze(0).to(device)
     d_t  = torch.from_numpy(dec_tokens[:T].astype(np.float32)).unsqueeze(0).to(device)
-    p_t  = torch.from_numpy(patch_flags.astype(np.float32)).unsqueeze(0).to(device)
+    dw_t = torch.from_numpy(dec_tokens_wrist[:T].astype(np.float32)).unsqueeze(0).to(device)
     progress = (torch.arange(T, dtype=torch.float32) / max(T - 1, 1)).unsqueeze(0).to(device)
 
-    pred_d, _pred_prog, pred_term = model.decode(z_t, s_t, d_t, p_t, progress)
+    pred_d, _pred_prog, pred_term = model.decode(z_t, s_t, d_t, dw_t, progress)
     return pred_d.squeeze(0).cpu().numpy(), torch.sigmoid(pred_term).squeeze(0).cpu().numpy()
 
 
@@ -452,9 +452,9 @@ def parse_args():
     p.add_argument("--skills_dir",      required=True,
                    help="Directory of per-skill npz files")
     p.add_argument("--dino_features",   default="",
-                   help="Precomputed DINO token npz (N_total × n_tokens × feat_dim)")
-    p.add_argument("--sam2_masks_dir",  default="",
-                   help="Directory with per-skill SAM2 mask npz files")
+                   help="Precomputed 3rd-person DINO token npz (N_total × n_tokens × feat_dim)")
+    p.add_argument("--dino_features_wrist", default="",
+                   help="Precomputed wrist DINO token npz (terminator's 2nd camera)")
     p.add_argument("--eef_dims",        type=int, nargs="+", default=[0, 1, 2, 3, 4, 5])
     p.add_argument("--gripper_action_dim", type=int, default=-1)
     p.add_argument("--device",          default="cuda")
@@ -479,7 +479,6 @@ def main():
     end_threshold = cfg.end_threshold if args.end_threshold is None else args.end_threshold
     is_chunk      = True  # motion decoder always outputs K-step chunks
     codebook_size = model.fsq.codebook_size
-    n_patches     = model.n_patches
 
     print("[EVAL] Loading skill files …")
     segments, dec_states, dec_targets, metadata = load_skill_files(
@@ -492,19 +491,19 @@ def main():
     dim_labels = [f"a{i}" for i in range(A - 1)] + ["grip"]
     chunk_plot_stride = max(1, int(args.n_action_steps or cfg.chunk_size))
 
-    print("[EVAL] Loading DINO tokens …")
+    print("[EVAL] Loading DINO tokens (3rd-person + wrist) …")
+    n_tok, F = cfg.n_tokens, cfg.feat_dim
     if args.dino_features:
         dec_tokens_list = load_dino_tokens(Path(args.dino_features), metadata)
     else:
         print("[EVAL] WARNING: no --dino_features given — using zero tokens")
-        n_tok, F = cfg.n_tokens, cfg.feat_dim
         dec_tokens_list = [np.zeros((m["length"], n_tok, F), np.float32) for m in metadata]
 
-    print("[EVAL] Loading SAM2 patch flags …")
-    if args.sam2_masks_dir:
-        patch_flags_list = load_patch_flags(Path(args.sam2_masks_dir), metadata, n_patches)
+    if args.dino_features_wrist:
+        dec_tokens_wrist_list = load_dino_tokens(Path(args.dino_features_wrist), metadata)
     else:
-        patch_flags_list = [np.zeros((m["length"], n_patches, 2), np.float32) for m in metadata]
+        print("[EVAL] WARNING: no --dino_features_wrist given — using zero wrist tokens")
+        dec_tokens_wrist_list = [np.zeros((m["length"], n_tok, F), np.float32) for m in metadata]
 
     lat    = np.load(args.latents_path)
     latents = lat["latents"].astype(np.float32)  # (N, D) — z_q vectors
@@ -519,11 +518,11 @@ def main():
         T        = int(metadata[i]["length"])
         states_i = dec_states[i][:T]
         gt_i     = dec_targets[i]
-        z_q_i    = latents[i]                      # (D,)
-        dtok_i   = dec_tokens_list[i][:T]          # (T, n_tok, F)
-        pf_i     = patch_flags_list[i][:T]         # (T, n_patches, 2)
+        z_q_i    = latents[i]                          # (D,)
+        dtok_i   = dec_tokens_list[i][:T]              # (T, n_tok, F) 3rd-person
+        dtok_w_i = dec_tokens_wrist_list[i][:T]        # (T, n_tok, F) wrist
 
-        pred_d, pred_p = run_decode_single(model, z_q_i, states_i, dtok_i, pf_i, device)
+        pred_d, pred_p = run_decode_single(model, z_q_i, states_i, dtok_i, dtok_w_i, device)
 
         # trim to T (padding safeguard)
         pred_d = pred_d[:T]
