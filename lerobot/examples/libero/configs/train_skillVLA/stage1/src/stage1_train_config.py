@@ -45,6 +45,12 @@ def build_settings(cfg: dict) -> dict:
     lr_base = float(get_value(cfg, "lr_base", 2.5e-05))
     exp = str(get_value(cfg, "exp", "")).strip()
 
+    # Conditioning architecture: "fused" (one self-attn stream) or "joint" (cond-encoder ⊥ expert).
+    expert_arch = str(get_value(cfg, "expert_arch", "fused")).strip() or "fused"
+    cond_encoder_variant = str(get_value(cfg, "cond_encoder_variant", "")).strip()
+    if cond_encoder_variant.lower() in ("none", "null"):  # blank yaml → omit (use action expert's variant)
+        cond_encoder_variant = ""
+
     init_from_pi05 = as_bool(get_value(cfg, "init_from_pi05", True))
     pi_base = str(get_value(cfg, "pi_base", "lerobot/pi05_base")) if init_from_pi05 else ""
 
@@ -55,6 +61,8 @@ def build_settings(cfg: dict) -> dict:
 
     init_tag = "init" if init_from_pi05 else "scratch"
     run_name = f"{source_dataset}_{run_tag}_batch{batch_size}_stage1_{init_tag}"
+    if expert_arch != "fused":      # keep existing fused run names unchanged; tag only non-default archs
+        run_name = f"{run_name}_{expert_arch}"
     if exp:
         run_name = f"{run_name}_{exp}"
     vla_root = project_root / str(get_value(cfg, "skillvla_outputs_root", "skillVLA_outputs"))
@@ -78,6 +86,9 @@ def build_settings(cfg: dict) -> dict:
         "run_tag": run_tag,
         "skillvla_dataset_dir": run_dir / "skillvla",
         "repo_id": f"dohyeon/{source_dataset}",
+        # conditioning architecture
+        "expert_arch": expert_arch,               # "fused" | "joint"
+        "cond_encoder_variant": cond_encoder_variant,  # "" → same as action_expert_variant
         # model init
         "pi_base": pi_base,                       # "" → train the expert from scratch
         # vision encoder: "dino" or "siglip" (siglip warm-starts from pi_base's vision_tower)

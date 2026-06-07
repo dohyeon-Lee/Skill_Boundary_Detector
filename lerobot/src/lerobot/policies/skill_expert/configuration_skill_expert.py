@@ -22,6 +22,19 @@ class SkillExpertConfig(PI05Config):
 
     model_type: str = "skill_expert"
 
+    # ── Conditioning architecture ──
+    expert_arch: str = "fused"
+    """How the action expert consumes the conditioning (image/state/skill):
+    "fused" → ONE Gemma does full self-attention over [cond tokens, action tokens] (cond and
+              action mutually attend; the expert weights also encode the conditioning);
+    "joint" → a SEPARATE cond-encoder (own Gemma, same config) encodes the conditioning, and the
+              action expert receives ONLY action tokens, reading the cond stream via PI05-style
+              joint block attention (block mask: action sees cond+action, cond⊥action). The action
+              expert still warm-starts from pi05; the cond-encoder is fresh. The run/output folder
+              reflects this so fused/joint checkpoints don't collide."""
+    cond_encoder_variant: str | None = None
+    """Gemma variant for the joint cond-encoder. None → same as action_expert_variant."""
+
     # ── Vision encoder (shared across the two cameras) ──
     vision_backbone: str = "dino"
     """Which image encoder feeds the action expert:

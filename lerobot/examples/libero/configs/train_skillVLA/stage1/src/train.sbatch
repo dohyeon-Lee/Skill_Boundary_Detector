@@ -55,6 +55,9 @@ fi
 if [ -n "${SIGLIP_LR}" ]; then
   EXTRA_ARGS+=(--policy.siglip_lr="${SIGLIP_LR}")
 fi
+if [ -n "${COND_ENCODER_VARIANT}" ]; then
+  EXTRA_ARGS+=(--policy.cond_encoder_variant="${COND_ENCODER_VARIANT}")
+fi
 
 # Resume if a checkpoint exists; otherwise wipe a stale (incomplete) output dir.
 CONFIG_JSON="${PT_OUTPUT_DIR}/checkpoints/last/pretrained_model/train_config.json"
@@ -80,6 +83,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.dtype=bfloat16 \
     --policy.device=cuda \
     --policy.push_to_hub=false \
+    --policy.expert_arch="${EXPERT_ARCH}" \
     --policy.vision_backbone="${VISION_BACKBONE}" \
     --policy.dino_model_path="${DINO_MODEL_PATH}" \
     --policy.freeze_dino="${FREEZE_DINO}" \

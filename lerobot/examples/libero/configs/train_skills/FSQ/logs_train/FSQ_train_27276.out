@@ -1,0 +1,38 @@
+START FSQ TRAIN
+Node       : node100
+Inputs     : /data2/dohyeon/SBD/libero_original_dataset/FSQ_dataset/libero_90_full_full/FSQ_inputs
+Output     : /data2/dohyeon/SBD/outputs_FSQ/libero_90_full_full_fsq88_pg8_image256
+Sun Jun  7 15:18:38 2026       
++---------------------------------------------------------------------------------------+
+| NVIDIA-SMI 535.129.03             Driver Version: 535.129.03   CUDA Version: 12.2     |
+|-----------------------------------------+----------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id        Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |         Memory-Usage | GPU-Util  Compute M. |
+|                                         |                      |               MIG M. |
+|=========================================+======================+======================|
+|   0  NVIDIA L40S                    On  | 00000000:61:00.0 Off |                    0 |
+| N/A   38C    P8              35W / 350W |      3MiB / 46068MiB |      0%      Default |
+|                                         |                      |                  N/A |
++-----------------------------------------+----------------------+----------------------+
+                                                                                         
++---------------------------------------------------------------------------------------+
+| Processes:                                                                            |
+|  GPU   GI   CI        PID   Type   Process name                            GPU Memory |
+|        ID   ID                                                             Usage      |
+|=======================================================================================|
+|  No running processes found                                                           |
++---------------------------------------------------------------------------------------+
+No checkpoint found, training from scratch
+[FSQ] Loaded 12995 skills from /data2/dohyeon/SBD/libero_original_dataset/FSQ_dataset/libero_90_full_full/FSQ_inputs/skillset/skills
+[FSQ] Skill lengths — min:27 max:132 mean:51.4
+[FSQ] Loaded DINO tokens from /data2/dohyeon/SBD/libero_original_dataset/FSQ_dataset/libero_90_full_full/FSQ_inputs/dino_tokens_pg8.npz — shape per clip: (30, 65, 384)
+[FSQ] Loaded DINO tokens from /data2/dohyeon/SBD/libero_original_dataset/FSQ_dataset/libero_90_full_full/FSQ_inputs/dino_tokens_wrist_pg8.npz — shape per clip: (30, 65, 384)
+[FSQ] action_min: [-0.4941 -0.392   0.4453 -0.716  -4.3609 -3.1193 -1.    ]
+[FSQ] action_max: [0.2033 0.5048 1.3516 4.8438 4.115  2.5568 1.    ]
+[FSQ] delta_min:  [-0.9375 -0.9375 -0.9375 -0.3396 -0.375  -0.375  -1.    ]
+[FSQ] delta_max:  [0.9375 0.9375 0.9375 0.375  0.375  0.375  1.    ]
+[SplineFSQAE] 12995 segments | n_control=30 fsq=[8, 8] hidden=256 K=10
+[SplineFSQAE] trainable params: 9,191,754
+[1;34mwandb[0m: 
+[1;34mwandb[0m: 🚀 View run [33mlibero_90_full_full_fsq88_pg8_image256[0m at: [34mhttps://wandb.ai/dohyeonlee-postech/VAE_train/runs/tybshq3g[0m
+[1;34mwandb[0m: Find logs at: [1;35mwandb/run-20260607_152039-tybshq3g/logs[0m

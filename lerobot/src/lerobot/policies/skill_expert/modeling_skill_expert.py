@@ -11,9 +11,11 @@ Stage 2 (`skill_vla`) adds the VLM and can init its action expert from a Stage-1
 
 from __future__ import annotations
 
+import copy
 import logging
 from collections import deque
 from pathlib import Path
+from types import SimpleNamespace
 
 import torch
 import torch.nn.functional as F
@@ -24,8 +26,10 @@ from transformers.models.auto import CONFIG_MAPPING
 from lerobot.configs.policies import PreTrainedConfig
 from lerobot.policies.pi05.modeling_pi05 import (
     OPENPI_ATTENTION_MASK_VALUE,
+    compute_layer_complete,
     create_sinusoidal_pos_embedding,
     get_gemma_config,
+    layernorm_forward,
     make_att_2d_masks,
     pad_vector,
     sample_beta,
@@ -51,6 +55,30 @@ def _build_siglip_vision_tower(image_size: int):
     vc.projection_dim = 2048
     vc.projector_hidden_act = "gelu_fast"
     return SiglipVisionModel(vc)
+
+
+def _build_gemma(variant: str, *, use_adarms: bool) -> PiGemmaForCausalLM:
+    """A bare PiGemma transformer (our projections feed it, so no vocab embed table / lm_head).
+    use_adarms=True for the action expert (AdaRMS on the flow timestep); False for the cond-encoder."""
+    cfg = get_gemma_config(variant)
+    hf = CONFIG_MAPPING["gemma"](
+        head_dim=cfg.head_dim,
+        hidden_size=cfg.width,
+        intermediate_size=cfg.mlp_dim,
+        num_attention_heads=cfg.num_heads,
+        num_hidden_layers=cfg.depth,
+        num_key_value_heads=cfg.num_kv_heads,
+        vocab_size=257152,
+        hidden_activation="gelu_pytorch_tanh",
+        dtype="float32",
+        use_adarms=use_adarms,
+        adarms_cond_dim=cfg.width if use_adarms else None,
+    )
+    model = PiGemmaForCausalLM(config=hf)
+    model.model.embed_tokens = None  # tokens come from our projections, not a vocab table
+    model.lm_head = None             # unused (we decode actions via action_out_proj)
+    model.model.config._attn_implementation = "eager"  # noqa: SLF001  (custom 4D mask)
+    return model
 
 
 class SkillExpertPytorch(nn.Module):
@@ -101,24 +129,21 @@ class SkillExpertPytorch(nn.Module):
         self.time_mlp_in = nn.Linear(self.width, self.width)
         self.time_mlp_out = nn.Linear(self.width, self.width)
 
-        # ── Gemma expert transformer (AdaRMS conditioned on the flow timestep) ──
-        expert_hf = CONFIG_MAPPING["gemma"](
-            head_dim=expert_cfg.head_dim,
-            hidden_size=expert_cfg.width,
-            intermediate_size=expert_cfg.mlp_dim,
-            num_attention_heads=expert_cfg.num_heads,
-            num_hidden_layers=expert_cfg.depth,
-            num_key_value_heads=expert_cfg.num_kv_heads,
-            vocab_size=257152,
-            hidden_activation="gelu_pytorch_tanh",
-            dtype="float32",
-            use_adarms=True,
-            adarms_cond_dim=expert_cfg.width,
-        )
-        self.gemma_expert = PiGemmaForCausalLM(config=expert_hf)
-        self.gemma_expert.model.embed_tokens = None  # tokens come from our projections, not a vocab table
-        self.gemma_expert.lm_head = None             # unused (we decode actions via action_out_proj)
-        self.gemma_expert.model.config._attn_implementation = "eager"  # noqa: SLF001  (custom 4D mask)
+        # ── Action expert transformer (Gemma, AdaRMS conditioned on the flow timestep) ──
+        self.gemma_expert = _build_gemma(config.action_expert_variant, use_adarms=True)
+
+        # ── How the conditioning is consumed ──
+        # "fused": the action expert self-attends [cond tokens, action tokens] together.
+        # "joint": a separate cond-encoder encodes the conditioning; the action expert takes only
+        #          action tokens and reads the cond stream via PI05-style block attention (cond⊥action).
+        self.expert_arch = config.expert_arch
+        self.cond_encoder = None
+        self._grad_ckpt = False
+        if config.expert_arch == "joint":
+            variant = config.cond_encoder_variant or config.action_expert_variant
+            self.cond_encoder = _build_gemma(variant, use_adarms=False)  # fresh; no time conditioning
+        elif config.expert_arch != "fused":
+            raise ValueError(f"expert_arch must be 'fused' or 'joint', got {config.expert_arch!r}")
 
     @property
     def _wdtype(self) -> torch.dtype:
@@ -126,8 +151,11 @@ class SkillExpertPytorch(nn.Module):
         return self.action_in_proj.weight.dtype
 
     def gradient_checkpointing_enable(self) -> None:
+        self._grad_ckpt = True  # _run_joint checkpoints its layer loop (the fused path uses the expert's own flag)
         if hasattr(self.gemma_expert, "gradient_checkpointing_enable"):
             self.gemma_expert.gradient_checkpointing_enable()
+        if self.cond_encoder is not None and hasattr(self.cond_encoder, "gradient_checkpointing_enable"):
+            self.cond_encoder.gradient_checkpointing_enable()
         if self.vision_backbone == "dino" and not self.config.freeze_dino \
                 and hasattr(self.dino, "gradient_checkpointing_enable"):
             self.dino.gradient_checkpointing_enable()
@@ -202,6 +230,50 @@ class SkillExpertPytorch(nn.Module):
         action_hidden = out[:, -self.config.chunk_size :]
         return self.action_out_proj(action_hidden.to(self._wdtype)).float()
 
+    def _run_joint(self, cond_tokens: Tensor, x_t: Tensor, timestep: Tensor) -> Tensor:
+        """Joint block attention over two streams (PI05 VLM↔expert pattern, cond-encoder as prefix).
+        The action expert's input is ONLY the action tokens; it reads the cond stream through the
+        shared attention (block mask: action attends cond+action, cond⊥action). Decode action."""
+        action_tokens = self.action_in_proj(x_t.to(self._wdtype))
+        embeds = [cond_tokens, action_tokens]
+        bsize, n_cond = cond_tokens.shape[:2]
+        n_act = action_tokens.shape[1]
+        device = cond_tokens.device
+
+        pad_masks = torch.ones(bsize, n_cond + n_act, dtype=torch.bool, device=device)
+        # cond: one bidirectional block (0…0); action: a new block attending cond + action (1,0…0)
+        ar = torch.tensor([0] * n_cond + [1] + [0] * (n_act - 1), dtype=torch.bool, device=device)
+        att_masks = ar[None, :].expand(bsize, n_cond + n_act)
+        att_2d_4d = make_att_2d_masks(pad_masks, att_masks)[:, None, :, :]
+        att_2d_4d = torch.where(att_2d_4d, 0.0, OPENPI_ATTENTION_MASK_VALUE)
+        position_ids = torch.cumsum(pad_masks, dim=1) - 1
+
+        time_cond = self._time_cond(timestep)
+        adarms_cond = [None, time_cond]  # cond stream: plain RMSNorm; action stream: AdaRMS(time)
+        # Reuse PI05's two-stream layer; cond_encoder plays the "prefix" model via a tiny shim.
+        shim = SimpleNamespace(model=SimpleNamespace(language_model=self.cond_encoder.model))
+        use_ckpt = self._grad_ckpt and self.training
+        for layer_idx in range(self.cond_encoder.model.config.num_hidden_layers):
+            if use_ckpt:
+                embeds = torch.utils.checkpoint.checkpoint(
+                    compute_layer_complete, layer_idx, embeds, att_2d_4d, position_ids, adarms_cond,
+                    use_reentrant=False, preserve_rng_state=False,
+                    paligemma=shim, gemma_expert=self.gemma_expert,
+                )
+            else:
+                embeds = compute_layer_complete(
+                    layer_idx, embeds, att_2d_4d, position_ids, adarms_cond,
+                    paligemma=shim, gemma_expert=self.gemma_expert,
+                )
+        action_hidden, _ = layernorm_forward(self.gemma_expert.model.norm, embeds[1], time_cond)
+        return self.action_out_proj(action_hidden.to(self._wdtype)).float()
+
+    def _velocity(self, cond_tokens: Tensor, x_t: Tensor, timestep: Tensor) -> Tensor:
+        """Predict the flow velocity for the chosen conditioning architecture."""
+        if self.expert_arch == "joint":
+            return self._run_joint(cond_tokens, x_t, timestep)
+        return self._run_expert(cond_tokens, x_t, timestep)
+
     # ── Training / inference ──
     def forward(
         self,
@@ -222,7 +294,7 @@ class SkillExpertPytorch(nn.Module):
         time_exp = time[:, None, None]
         x_t = time_exp * source + (1 - time_exp) * actions
         u_t = source - actions
-        v_t = self._run_expert(cond, x_t, time)
+        v_t = self._velocity(cond, x_t, time)
         return F.mse_loss(u_t, v_t, reduction="none")
 
     @torch.no_grad()
@@ -240,12 +312,58 @@ class SkillExpertPytorch(nn.Module):
         bsize, device = state.shape[0], state.device
         if noise is None:
             noise = self.sample_noise((bsize, self.config.chunk_size, self.config.max_action_dim), device)
-        cond = self._cond_tokens(images, state, skill_code)  # constant across denoising steps
+        cond = self._cond_tokens(images, state, skill_code)  # encoded once; constant across steps
+        if self.expert_arch == "joint":
+            # cond⊥action, so the cond stream is identical every step → encode it once, cache its
+            # per-layer K/V, and run only the action stream against the cache each step (PI05-style).
+            return self._sample_joint_cached(cond, noise, num_steps)
+        # fused: cond and action share one self-attention stream, so it must be recomputed each step.
         dt = -1.0 / num_steps
         x_t = noise
         for step in range(num_steps):
             t = torch.full((bsize,), 1.0 + step * dt, dtype=torch.float32, device=device)
             x_t = x_t + dt * self._run_expert(cond, x_t, t)
+        return x_t
+
+    def _sample_joint_cached(self, cond_tokens: Tensor, noise: Tensor, num_steps: int) -> Tensor:
+        """Joint-mode inference with a cached cond stream (mirrors PI05 prefix-cache / denoise_step).
+        The cond-encoder runs ONCE → per-layer K/V cache; each denoising step runs only the action
+        expert, attending the cached cond + itself (cond⊥action)."""
+        bsize, n_cond = cond_tokens.shape[:2]
+        n_act = noise.shape[1]
+        device = cond_tokens.device
+
+        # Prefix (cond): one bidirectional block, encoded once → past_key_values.
+        prefix_pad = torch.ones(bsize, n_cond, dtype=torch.bool, device=device)
+        prefix_att = torch.zeros(bsize, n_cond, dtype=torch.bool, device=device)  # all-0 → bidirectional
+        prefix_4d = torch.where(make_att_2d_masks(prefix_pad, prefix_att)[:, None], 0.0, OPENPI_ATTENTION_MASK_VALUE)
+        prefix_pos = torch.cumsum(prefix_pad, dim=1) - 1
+        past_key_values = self.cond_encoder.model.forward(
+            inputs_embeds=cond_tokens, attention_mask=prefix_4d, position_ids=prefix_pos,
+            past_key_values=None, use_cache=True, adarms_cond=None,
+        ).past_key_values
+
+        # Suffix (action): attends all cond + itself (first token opens the block, rest bidirectional).
+        suffix_pad = torch.ones(bsize, n_act, dtype=torch.bool, device=device)
+        suffix_ar = torch.tensor([1] + [0] * (n_act - 1), dtype=torch.bool, device=device)
+        suffix_att = suffix_ar[None, :].expand(bsize, n_act)
+        prefix_pad_2d = prefix_pad[:, None, :].expand(bsize, n_act, n_cond)
+        full_2d = torch.cat([prefix_pad_2d, make_att_2d_masks(suffix_pad, suffix_att)], dim=2)
+        full_4d = torch.where(full_2d[:, None], 0.0, OPENPI_ATTENTION_MASK_VALUE)
+        suffix_pos = n_cond + torch.cumsum(suffix_pad, dim=1) - 1
+
+        dt = -1.0 / num_steps
+        x_t = noise
+        for step in range(num_steps):
+            t = torch.full((bsize,), 1.0 + step * dt, dtype=torch.float32, device=device)
+            action_tokens = self.action_in_proj(x_t.to(self._wdtype))
+            action_hidden = self.gemma_expert.model.forward(
+                inputs_embeds=action_tokens, attention_mask=full_4d, position_ids=suffix_pos,
+                past_key_values=copy.deepcopy(past_key_values), use_cache=False,
+                adarms_cond=self._time_cond(t),
+            ).last_hidden_state
+            v_t = self.action_out_proj(action_hidden.to(self._wdtype)).float()
+            x_t = x_t + dt * v_t
         return x_t
 
 

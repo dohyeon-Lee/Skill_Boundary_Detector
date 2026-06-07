@@ -136,7 +136,7 @@ fsq_run_name: "{target_dataset}_{fsq_tag}_pg{dino_patch_grid}_image{fsq_image_to
 fsq_levels: [8, 8]
 fsq_epoch: "1000"
 
-fsq_batch_size: 128
+fsq_batch_size: 64 
 fsq_num_epochs: 1000
 fsq_checkpoint_every: 100
 fsq_lr: 3e-4

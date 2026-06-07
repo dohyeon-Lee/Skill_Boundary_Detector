@@ -8,6 +8,15 @@ source_dataset: libero_90
 run_tag: FSQ555_pg8_only_image256_eqloss_200   # sub-folder under skillvla_dataset/{source}/
 skillvla_outputs_root: skillVLA_outputs        # output under {project_root}/
 
+# ── Conditioning architecture ──
+# fused = ONE gemma self-attends [image/state/skill tokens, action tokens] together (current).
+# joint = SEPARATE cond-encoder (own gemma, same config) encodes image/state/skill; the action
+#         expert takes only action tokens and reads the cond stream via PI05-style block attention
+#         (action sees cond, cond⊥action). Action expert still warm-starts from pi05; cond-encoder
+#         is fresh. fused/joint write to different output folders, so both can be A/B-compared.
+expert_arch: joint              # fused | joint
+cond_encoder_variant:          # blank = same gemma variant as the action expert (recommended)
+
 # ── Model init ──
 init_from_pi05: true            # true = warm-start expert from pi05_base; false = scratch
 pi_base: lerobot/pi05_base
@@ -16,13 +25,13 @@ pi_base: lerobot/pi05_base
 # dino   = trainable DINOv3 (own weights)
 # siglip = PaliGemma/SigLIP tower, warm-started from pi_base's vision_tower (robot-adapted);
 #          params separate from the Stage-2 VLM. Needs init_from_pi05: true for the warm-start.
-vision_backbone: siglip           # dino | siglip
+vision_backbone: dino           # dino | siglip
 # DINO backbone
 dino_model_path: /data2/dohyeon/SBD/models/dinov3-vits16
 dino_lr: null                   # null = same LR as the rest; set a float to use a separate DINO LR
-freeze_dino: true
+freeze_dino: false
 # SigLIP backbone (used when vision_backbone: siglip)
-freeze_siglip: false             # default true: reuse pi05's robot-adapted features (only image_proj trains)
+freeze_siglip: true             # default true: reuse pi05's robot-adapted features (only image_proj trains)
 siglip_lr: null                 # separate LR when unfrozen; null = same as the rest
 siglip_image_size: 224          # patch 14 → 16×16 = 256 tokens at 224
 
@@ -40,7 +49,7 @@ lr_base: 2.5e-05                # effective LR = lr_base * num_gpus
 steps: 100000
 save_freq: 2500
 
-exp: "unfreeze_siglip"                         # optional run-name suffix → S1_{source}_{run_tag}_batch{N}_stage1_{init|scratch}_{exp}
+exp: "unfreeze_DINO"       # freeze_DINO | freeze_siglip                   # optional run-name suffix → S1_{source}_{run_tag}_batch{N}_stage1_{init|scratch}_{exp}
 
 # ── wandb ──
 wandb_enable: true
