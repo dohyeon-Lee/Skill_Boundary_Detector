@@ -1,17 +1,15 @@
-# SkillVLA closed-loop EVAL (PT) on LIBERO sim via lerobot_skillvla_eval.
+# SkillVLA Stage-2 closed-loop EVAL on LIBERO sim via lerobot_skillvla_eval.
 #
-# Point at a trained PT run by its OUTPUT FOLDER NAME + checkpoint. Everything about
-# the model — FSQ path, state indices, and the branch (use_reconstructor_chunk_suffix:
-# branch1 terminator-only vs branch2 terminator+reconstructor) — is loaded from the
-# checkpoint's config.json, so branch1/branch2 is handled automatically (no need to
-# re-specify it here). FSQ + skill_latents + raw-dataset paths are derived from that
-# config too.
+# Point at a trained Stage-2 run by its OUTPUT FOLDER NAME + checkpoint. The model
+# (expert_arch A/B, vision_backbone, skill_vocab, fsq_path) is restored from the
+# checkpoint's config.json on --policy.path, so it is not re-specified here. The FSQ
+# (terminator) + raw-dataset paths are derived from that config.
 
 # ── Which trained model to evaluate ──
 skillvla_outputs_root: skillVLA_outputs   # parent folder under {project_root}/
-# The PT run folder name (exactly as created by training, incl. _branch1/_branch2):
-model_dir: PT_libero_90_FSQ555_pg8_only_image256_eqloss_200_batch16_branch1_embs_v2
-checkpoint: "005000"          # "last" or a step number (e.g. 100000)
+# The Stage-2 run folder name, exactly as created by training (S2_..._stage2_{A|B}[_exp]):
+model_dir: S2_libero_90_FSQ555_pg8_only_image256_eqloss_200_batch16_stage2_A
+checkpoint: "last"            # "last" or a step number (e.g. 100000)
 
 # ── Eval rollout ──
 target_task: libero_90    # LIBERO suite for the sim env
@@ -29,7 +27,7 @@ skill_html: true          # auto-disabled if skill_latents.npz was cleaned up
 skill_html_train_samples: 10
 
 # ── Inference (eval-time tuning; the model STRUCTURE comes from the checkpoint) ──
-skill_decoder_end_threshold: 0.5 #0.5
+skill_end_threshold: 0.5 #0.5
 inference_skill_max_length: 200    # force a skill switch after this many steps (0 = off)
 
 # ── wandb ──

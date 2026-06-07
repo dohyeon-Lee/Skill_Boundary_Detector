@@ -84,7 +84,7 @@ fsq_train_dataset: libero_90             # dataset the FSQ was trained on (for r
 fsq_levels: [5, 5, 5]
 fsq_image_token_dim: 256
 fsq_exp: "eqloss"                              # optional suffix used in train_skills fsq_exp, e.g. eqloss
-fsq_checkpoint: 200                     # epoch number; 0 = best (FSQ.pt)
+fsq_checkpoint: 1000                     # epoch number; 0 = best (FSQ.pt)
 
 # ── SkillVLA dataset build (step 5) ───────────────────────────
 max_order: 0

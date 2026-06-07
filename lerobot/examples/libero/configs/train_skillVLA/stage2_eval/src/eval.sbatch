@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SkillVLA closed-loop EVAL (PT) on LIBERO sim via lerobot_skillvla_eval.
 # Rolls out the PT policy; the frozen FSQ decoder runs its own DINO internally.
-#SBATCH --job-name=skillVLA_eval
+#SBATCH --job-name=stage2_eval
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
@@ -11,16 +11,16 @@
 set -euo pipefail
 mkdir -p logs
 
-SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"   # skillVLA_eval
+SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"   # stage2_eval
 SRC_DIR="${SUBMIT_DIR}/src"
-CONFIG_PATH="${SKILLVLA_EVAL_CONFIG:-${SUBMIT_DIR}/skillVLA_eval_config.yaml}"
+CONFIG_PATH="${STAGE2_EVAL_CONFIG:-${SUBMIT_DIR}/stage2_eval_config.yaml}"
 
 BOOTSTRAP_PYTHON="${SUBMIT_DIR}/../../../../../../.venv/bin/python"
 if [ ! -x "${BOOTSTRAP_PYTHON}" ]; then
   BOOTSTRAP_PYTHON=python3
 fi
 
-eval "$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/skillVLA_eval_config.py" --config "${CONFIG_PATH}" --shell)"
+eval "$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/stage2_eval_config.py" --config "${CONFIG_PATH}" --shell)"
 
 cd "${LEROBOT_ROOT}"
 source "${PROJECT_ROOT}/.venv/bin/activate"
@@ -97,7 +97,7 @@ PYTHONPATH="${LEROBOT_ROOT}/src:${LIBERO_REPO_ROOT}" \
     --policy.device=cuda \
     --policy.compile_model=false \
     --policy.gradient_checkpointing=false \
-    --policy.skill_decoder_end_threshold="${SKILL_DECODER_END_THRESHOLD}" \
+    --policy.skill_end_threshold="${SKILL_END_THRESHOLD}" \
     --policy.inference_skill_max_length="${INFERENCE_SKILL_MAX_LENGTH}" \
     --wandb_project="${WANDB_PROJECT}" \
     --job_name="${WANDB_RUN_NAME}" \

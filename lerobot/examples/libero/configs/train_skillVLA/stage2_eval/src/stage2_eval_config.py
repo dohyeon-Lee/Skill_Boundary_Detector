@@ -22,7 +22,7 @@ _HERE = Path(__file__).resolve()
 sys.path.insert(0, str(_HERE.parent.parent.parent.parent / "train_skills" / "src"))
 from train_skills_config import as_bool, as_list, get_value, load_config, print_shell  # noqa: E402
 
-DEFAULT_CONFIG_PATH = _HERE.parent.parent / "skillVLA_eval_config.yaml"
+DEFAULT_CONFIG_PATH = _HERE.parent.parent / "stage2_eval_config.yaml"
 # project_root is shared across all train_skillVLA configs → read it from build_data.
 BUILD_DATA_CONFIG = _HERE.parent.parent.parent / "build_data" / "train_skillVLA_config.yaml"
 
@@ -43,7 +43,7 @@ def build_settings(cfg: dict) -> dict:
     cfg_json = policy_path / "config.json"
     if cfg_json.is_file():
         pol = json.loads(cfg_json.read_text())
-    fsq_ckpt = str(pol.get("vae_decoder_path") or "")
+    fsq_ckpt = str(pol.get("fsq_path") or "")
     skill_latents_path = ""
     raw_dataset_dir = ""
     if fsq_ckpt:
@@ -80,7 +80,7 @@ def build_settings(cfg: dict) -> dict:
         "skill_html": as_bool(get_value(cfg, "skill_html", True)),
         "skill_html_train_samples": int(get_value(cfg, "skill_html_train_samples", 10)),
         # inference knobs (eval-time tuning; model structure comes from the checkpoint)
-        "skill_decoder_end_threshold": str(get_value(cfg, "skill_decoder_end_threshold", 0.5)),
+        "skill_end_threshold": str(get_value(cfg, "skill_end_threshold", 0.5)),
         "inference_skill_max_length": int(get_value(cfg, "inference_skill_max_length", 200)),
         # output / wandb
         "wandb_project": str(get_value(cfg, "wandb_project", "VLA_eval")),

@@ -36,20 +36,22 @@ from lerobot.utils.constants import (
 )
 
 
+# Stage-2 keys carried in complementary_data (model + closed-loop select_action consume these):
+#   skill_start_*  : the VLM's skill-START view + state + FSQ code (from SkillVLADataset; training)
+#   skill_decoder_*: RAW current obs for the FSQ terminator at inference (copied pre-normalization)
+SKILL_START_IMAGE = "skill_start_image"
+SKILL_START_WRIST_IMAGE = "skill_start_wrist_image"
+SKILL_START_STATE = "skill_start_state"
+SKILL_CODE = "skill_code"
+
 SKILL_VLA_BATCH_KEYS = (
-    "skill_index",
-    "skill_sequence",
-    "skill_length_sequence",
-    "skill_sequence_mask",
-    "skill_sequence_len",
-    "skill_ds",
-    "skill_de",
-    "skill_boundary",
-    "skill_max_length",
+    SKILL_START_IMAGE,
+    SKILL_START_WRIST_IMAGE,
+    SKILL_START_STATE,
+    SKILL_CODE,
     "skill_decoder_state",
     "skill_decoder_image",
-    "skill_decoder_start_state",
-    "skill_decoder_start_image",
+    "skill_decoder_wrist",
 )
 
 
@@ -95,24 +97,29 @@ def skill_vla_transition_to_batch(transition: EnvTransition) -> dict[str, Any]:
 @dataclass
 @ProcessorStepRegistry.register(name="skill_vla_preserve_raw_state_processor_step")
 class SkillVLAPreserveRawStateProcessorStep(ProcessorStep):
-    """Keep raw proprioceptive/image features for the FSQ skill decoder."""
+    """Snapshot the RAW current obs (pre-normalization) for the FSQ terminator used by closed-loop
+    select_action: raw state + raw 3rd-person + wrist (DINO tokens if present, else RGB; the
+    terminator auto-detects). Unused during training (the terminator only runs at inference)."""
 
     def __call__(self, transition: EnvTransition) -> EnvTransition:
         transition = transition.copy()
         comp_data = dict(transition.get(TransitionKey.COMPLEMENTARY_DATA, {}) or {})
-
         observation = transition.get(TransitionKey.OBSERVATION, {}) or {}
-        # The FSQ (terminator + reconstructor) uses the full raw observation.state
-        # (ee pose + gripper STATE). Always copy it here, BEFORE normalization, and
-        # override any precomputed skill_decoder_state — older datasets baked a 7-dim
-        # (ee6 + prev gripper action) column that must not shadow the real 8-dim state.
+
+        def _copy(v):
+            return v.clone() if isinstance(v, torch.Tensor) else deepcopy(v)
+
+        # Raw state (full observation.state) — always overwrite so a stale baked column can't shadow it.
         state = observation.get(OBS_STATE)
         if state is not None:
-            comp_data["skill_decoder_state"] = state.clone() if isinstance(state, torch.Tensor) else deepcopy(state)
-        if "skill_decoder_image" not in comp_data:
-            visual = observation.get("observation.dino.image")
-            if visual is not None:
-                comp_data["skill_decoder_image"] = visual.clone() if isinstance(visual, torch.Tensor) else deepcopy(visual)
+            comp_data["skill_decoder_state"] = _copy(state)
+        # Raw images: prefer precomputed DINO tokens (token-FSQ), else RGB (image-FSQ); 3rd + wrist.
+        third = observation.get("observation.dino.image") or observation.get("observation.images.image")
+        if third is not None:
+            comp_data["skill_decoder_image"] = _copy(third)
+        wrist = observation.get("observation.dino.wrist") or observation.get("observation.images.wrist_image")
+        if wrist is not None:
+            comp_data["skill_decoder_wrist"] = _copy(wrist)
 
         transition[TransitionKey.COMPLEMENTARY_DATA] = comp_data
         return transition
@@ -126,33 +133,56 @@ class SkillVLAPreserveRawStateProcessorStep(ProcessorStep):
 @dataclass
 @ProcessorStepRegistry.register(name="skill_vla_prepare_state_tokenizer_processor_step")
 class SkillVLAPrepareStateTokenizerProcessorStep(ProcessorStep):
-    """Prepare the PI05-style prompt with task text and discretized state."""
+    """PI05-style prompt (task text + discretized state) describing the VLM's SKILL-START obs.
+
+    Training: discretize the raw ``skill_start_state`` (normalized here with observation.state's
+    QUANTILES stats so it matches the normalizer). Inference: ``skill_start_state`` is absent, so
+    discretize the current (already-normalized) observation.state — at a skill boundary the current
+    frame *is* the skill start, and select_action snapshots these tokens for the rest of the skill.
+    """
 
     max_state_dim: int = 32
     task_key: str = "task"
+    state_q01: object = None  # observation.state q01/q99 (np arrays) for normalizing skill_start_state
+    state_q99: object = None
+
+    def _normalize_start_state(self, state_np: np.ndarray) -> np.ndarray:
+        if self.state_q01 is None or self.state_q99 is None:
+            raise ValueError(
+                "skill_start_state needs observation.state q01/q99 stats to be discretized "
+                "(QUANTILES). Pass dataset_stats with quantile stats to make_skill_vla_pre_post_processors."
+            )
+        q01 = np.asarray(self.state_q01, dtype=np.float32).reshape(-1)[: state_np.shape[-1]]
+        q99 = np.asarray(self.state_q99, dtype=np.float32).reshape(-1)[: state_np.shape[-1]]
+        denom = np.where((q99 - q01) == 0, 1.0, q99 - q01)
+        return 2.0 * (state_np - q01) / denom - 1.0
 
     def __call__(self, transition: EnvTransition) -> EnvTransition:
         transition = transition.copy()
+        comp = transition.get(TransitionKey.COMPLEMENTARY_DATA, {}) or {}
 
-        state = transition.get(TransitionKey.OBSERVATION, {}).get(OBS_STATE)
-        if state is None:
-            raise ValueError("State is required for SkillVLA")
+        start_state = comp.get(SKILL_START_STATE)
+        if start_state is not None:  # training: raw skill-start state → normalize to [-1, 1]
+            sn = start_state.cpu().numpy() if isinstance(start_state, torch.Tensor) else np.asarray(start_state)
+            state_np = self._normalize_start_state(sn)
+        else:  # inference: current state, already normalized by the NormalizerProcessorStep
+            state = transition.get(TransitionKey.OBSERVATION, {}).get(OBS_STATE)
+            if state is None:
+                raise ValueError("State is required for SkillVLA")
+            state_np = state.cpu().numpy()
+        if state_np.ndim == 1:
+            state_np = state_np[None, :]
 
-        tasks = transition.get(TransitionKey.COMPLEMENTARY_DATA, {}).get(self.task_key)
+        tasks = comp.get(self.task_key)
         if tasks is None:
             raise ValueError("No task found in complementary data")
 
-        state = deepcopy(state)
-        state_np = state.cpu().numpy()
         discretized_states = np.digitize(state_np, bins=np.linspace(-1, 1, 256 + 1)[:-1]) - 1
-
         full_prompts = []
         for i, task in enumerate(tasks):
             cleaned_text = task.strip().replace("_", " ").replace("\n", " ")
             state_str = " ".join(map(str, discretized_states[i]))
-            task_prefix = f"Task: {cleaned_text}, "
-            state_action_suffix = f"State: {state_str};\nAction: "
-            full_prompts.append(task_prefix + state_action_suffix)
+            full_prompts.append(f"Task: {cleaned_text}, State: {state_str};\nAction: ")
 
         transition[TransitionKey.COMPLEMENTARY_DATA][self.task_key] = full_prompts
         return transition
@@ -170,6 +200,7 @@ def make_skill_vla_pre_post_processors(
     PolicyProcessorPipeline[dict[str, Any], dict[str, Any]],
     PolicyProcessorPipeline[PolicyAction, PolicyAction],
 ]:
+    state_stats = (dataset_stats or {}).get(OBS_STATE, {}) or {}
     input_steps: list[ProcessorStep] = [
         RenameObservationsProcessorStep(rename_map={}),
         AddBatchDimensionProcessorStep(),
@@ -179,7 +210,11 @@ def make_skill_vla_pre_post_processors(
             norm_map=config.normalization_mapping,
             stats=dataset_stats,
         ),
-        SkillVLAPrepareStateTokenizerProcessorStep(max_state_dim=config.max_state_dim),
+        SkillVLAPrepareStateTokenizerProcessorStep(
+            max_state_dim=config.max_state_dim,
+            state_q01=state_stats.get("q01"),
+            state_q99=state_stats.get("q99"),
+        ),
         TokenizerProcessorStep(
             tokenizer_name="google/paligemma-3b-pt-224",
             max_length=config.tokenizer_max_length,

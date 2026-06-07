@@ -183,6 +183,18 @@ class SkillVLAPytorch(PI05Pytorch):
         self.register_buffer("_fsq_half", torch.tensor([(lv - 1) / 2.0 for lv in levels], dtype=torch.float32), persistent=False)
         self.fsq_term = None
 
+        # Match pi05's working dtype for the trainable Stage-1-side tokenizers + skill head, so the
+        # bf16 expert stream never sees float32 inputs (the vision encoders stay float32 like pi05's
+        # vision_tower — their features are cast to the working dtype before the projections).
+        # Stage-1-side tokenizers run in the expert's working dtype (Stage-1 trained them in bf16).
+        # The pi05-inherited action_in/out_proj + time_mlp stay float32 (pi05 convention): their
+        # outputs are cast to the working dtype only at the attention boundary (_action_in/_action_out).
+        if str(config.dtype) == "bfloat16":
+            for m in (self.image_proj, self.state_proj, self.skill_emb, self.cond_encoder, self.skill_head):
+                if m is not None:
+                    m.to(dtype=torch.bfloat16)
+            self.skill_query.data = self.skill_query.data.to(torch.bfloat16)
+
     # ── construction helpers ──
     def _build_cond_side(self, s1) -> None:
         """Stage-1 vision + projections (+ joint cond-encoder). Mirrors ``SkillExpertPytorch``
@@ -285,18 +297,28 @@ class SkillVLAPytorch(PI05Pytorch):
         pad.append(torch.ones(bsize, 1, dtype=torch.bool, device=lang_emb.device))
         is_lang += [False]
 
-        embeds = torch.cat(embs, dim=1).to(self._wdtype)
+        embeds = torch.cat([e.to(self._wdtype) for e in embs], dim=1)  # img feats are f32; unify to wdtype
         pad = torch.cat(pad, dim=1)
         is_lang = torch.tensor(is_lang, dtype=torch.bool, device=embeds.device)
         return embeds, pad, is_lang
 
     def _time_cond(self, timestep: Tensor) -> Tensor:
+        # float32 throughout: time_mlp stays float32 and its output is the expert's AdaRMS cond,
+        # whose norm dense (pi05 keeps it float32) requires a float32 condition.
         t = create_sinusoidal_pos_embedding(
             timestep, self.action_in_proj.out_features,
             min_period=self.config.min_period, max_period=self.config.max_period, device=timestep.device,
-        ).to(self._wdtype)
+        ).to(torch.float32)
         t = F.silu(self.time_mlp_in(t))
         return F.silu(self.time_mlp_out(t))
+
+    def _action_in(self, x_t: Tensor) -> Tensor:
+        """pi05: float32 action_in_proj → cast to the working dtype for the (bf16) attention stream."""
+        return self.action_in_proj(x_t.to(torch.float32)).to(self._wdtype)
+
+    def _action_out(self, action_hidden: Tensor) -> Tensor:
+        """pi05: float32 action_out_proj on a float32 hidden → float32 flow velocity."""
+        return self.action_out_proj(action_hidden.to(torch.float32))
 
     # ── attention masks ──
     def _mask_branch_A(
@@ -421,12 +443,12 @@ class SkillVLAPytorch(PI05Pytorch):
 
         cond_tokens = self._cond_tokens(cond_images, state, skill_code)
         vlm_embeds, vlm_pad, vlm_is_lang = self._vlm_tokens(start_images, lang_tokens, lang_masks)
-        action_tokens = self.action_in_proj(x_t.to(self._wdtype))
+        action_tokens = self._action_in(x_t)
         time_cond = self._time_cond(time)
 
         vlm_out, action_out = self._joint_forward(
             cond_tokens, vlm_embeds, vlm_pad, vlm_is_lang, action_tokens, time_cond)
-        v_t = self.action_out_proj(action_out.to(self._wdtype)).float()
+        v_t = self._action_out(action_out)
         return F.mse_loss(u_t, v_t, reduction="none"), self._skill_hidden(vlm_out)
 
     # ── inference ──
@@ -546,11 +568,11 @@ class SkillVLAPytorch(PI05Pytorch):
         for step in range(num_steps):
             t = torch.full((bsize,), 1.0 + step * dt, dtype=torch.float32, device=device)
             time_cond = self._time_cond(t)
-            h = self.action_in_proj(x_t.to(self._wdtype))
+            h = self._action_in(x_t)
             for i in range(len(prefix_kv)):
                 h = self._action_layer_cached(i, h, prefix_kv, att_4d, action_pos, time_cond)
             h, _ = layernorm_forward(self._expert.norm, h, time_cond)
-            v_t = self.action_out_proj(h.to(self._wdtype)).float()
+            v_t = self._action_out(h)
             x_t = x_t + dt * v_t
         return x_t
 
@@ -589,11 +611,11 @@ class SkillVLAPytorch(PI05Pytorch):
         for step in range(num_steps):
             t = torch.full((bsize,), 1.0 + step * dt, dtype=torch.float32, device=device)
             time_cond = self._time_cond(t)
-            h = torch.cat([cond_tokens, self.action_in_proj(x_t.to(self._wdtype))], dim=1)
+            h = torch.cat([cond_tokens, self._action_in(x_t)], dim=1)
             for i in range(len(vlm_kv)):
                 h = self._action_layer_cached(i, h, vlm_kv, att_4d, suffix_pos, time_cond)
             h, _ = layernorm_forward(self._expert.norm, h, time_cond)
-            v_t = self.action_out_proj(h[:, -na:].to(self._wdtype)).float()
+            v_t = self._action_out(h[:, -na:])
             x_t = x_t + dt * v_t
         return x_t
 
@@ -807,8 +829,9 @@ class SkillVLAPolicy(PI05Policy):
             img = img.permute(0, 3, 1, 2)
         return img
 
-    def _start_images(self, batch: dict) -> list[Tensor]:
-        """SKILL-START images for the VLM (offline/dataset eval: the SkillVLADataset keys)."""
+    def _dataset_start_images(self, batch: dict) -> list[Tensor]:
+        """SKILL-START images for the VLM (offline/dataset eval: the SkillVLADataset keys).
+        Distinct from the ``self._start_images`` closed-loop snapshot attribute (set in reset)."""
         out = []
         for key in (SKILL_START_IMAGE, SKILL_START_WRIST_IMAGE):
             if key not in batch:
@@ -824,16 +847,18 @@ class SkillVLAPolicy(PI05Policy):
             raise ValueError(f"No image features in batch. Expected one of {list(self.config.image_features)}.")
         return [self._preprocess_vlm_tensor(batch[k]) for k in present]
 
-    def _skill_code(self, batch: dict) -> Tensor:
+    def _dataset_skill_code(self, batch: dict) -> Tensor:
+        """GT skill code from the dataset batch (training). Distinct from the ``self._skill_code``
+        closed-loop attribute (the active VLM-predicted skill, set in reset/_begin_skill)."""
         code = batch[SKILL_CODE].view(-1).long()
         return code.clamp(0, self.stage1_config.skill_vocab_size - 1)
 
     def forward(self, batch: dict[str, Tensor], reduction: str = "mean"):
         cond_images = self._cond_images(batch)
-        start_images = self._start_images(batch)
+        start_images = self._dataset_start_images(batch)
         lang_tokens, lang_masks = batch[OBS_LANGUAGE_TOKENS], batch[OBS_LANGUAGE_ATTENTION_MASK]
         actions = pad_vector(batch[ACTION], self.config.max_action_dim)
-        skill_code = self._skill_code(batch)
+        skill_code = self._dataset_skill_code(batch)
 
         flow_losses, skill_hidden = self.model.forward(
             cond_images, start_images, lang_tokens, lang_masks, batch[OBS_STATE], skill_code, actions)
@@ -861,7 +886,7 @@ class SkillVLAPolicy(PI05Policy):
         """Offline / dataset eval: requires skill-start inputs in the batch."""
         self.eval()
         actions = self.model.sample_actions(
-            self._cond_images(batch), self._start_images(batch),
+            self._cond_images(batch), self._dataset_start_images(batch),
             batch[OBS_LANGUAGE_TOKENS], batch[OBS_LANGUAGE_ATTENTION_MASK], batch[OBS_STATE], **kwargs)
         action_dim = self.config.output_features[ACTION].shape[0]
         return actions[:, :, :action_dim]
@@ -871,11 +896,15 @@ class SkillVLAPolicy(PI05Policy):
         self._action_queue = deque(maxlen=self.config.n_action_steps)
         self._skill_code: Tensor | None = None   # active skill (VLM-predicted at skill start)
         self._start_images: list[Tensor] | None = None  # skill-start view fed to the VLM
+        self._start_lang: tuple[Tensor, Tensor] | None = None  # skill-start prompt (tokens, masks)
         self._skill_steps = 0
 
     def _begin_skill(self, batch: dict, lang_tokens: Tensor, lang_masks: Tensor) -> None:
-        """Snapshot the current obs as the skill-start view and predict the new skill (VLM)."""
+        """Snapshot the current obs (image + prompt) as the skill-start view and predict the new skill.
+        At a skill boundary the current frame IS the skill start, so the processor's current-state
+        prompt is the skill-start prompt; freeze it (with the images) for the rest of the skill."""
         self._start_images = self._snapshot_vlm_images(batch)
+        self._start_lang = (lang_tokens, lang_masks)
         self._skill_code = self.model.predict_skill_code(self._start_images, lang_tokens, lang_masks)
         self._skill_steps = 0
 
@@ -909,8 +938,9 @@ class SkillVLAPolicy(PI05Policy):
             self._begin_skill(batch, lang_tokens, lang_masks)
 
         if len(self._action_queue) == 0:
+            start_lang, start_masks = self._start_lang  # frozen skill-start prompt
             actions = self.model.sample_actions(
-                self._cond_images(batch), self._start_images, lang_tokens, lang_masks,
+                self._cond_images(batch), self._start_images, start_lang, start_masks,
                 batch[OBS_STATE], skill_code=self._skill_code)
             action_dim = self.config.output_features[ACTION].shape[0]
             actions = actions[:, : self.config.n_action_steps, :action_dim]
