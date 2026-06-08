@@ -72,3 +72,9 @@ Thumbs.db
 
 # Per-submit frozen config copies (snapshot_config.sh)
 .config_snapshots/
+
+# ── Training/slurm logs under libero configs (folders + job stdout/stderr) ──
+/lerobot/examples/libero/configs/**/logs/
+/lerobot/examples/libero/configs/**/logs_train/
+/lerobot/examples/libero/configs/**/*.out
+/lerobot/examples/libero/configs/**/*.err
