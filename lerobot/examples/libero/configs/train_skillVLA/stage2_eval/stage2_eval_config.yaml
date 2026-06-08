@@ -26,9 +26,10 @@ max_parallel_tasks: 1
 max_videos_per_task: 1
 video_frame_stride: 2
 video_fps: 10
-skill_html: false         # OFF for Stage-2: skill_html visualizes the OLD skill_predictor trace,
-                          # which the new VLM-skill model doesn't produce (closed-loop success
-                          # metrics + videos still work). New-model skill viz = TODO.
+skill_html: true          # per-skill viz: VLM-predicted FSQ code, start/end frame, and the FSQ
+                          # terminator end-probability curve per skill (policy.get_skill_trace()).
+                          # Needs skill_latents.npz for the per-token training-example panel;
+                          # the sbatch auto-disables if that npz is missing.
 skill_html_train_samples: 10
 
 # ── Inference (eval-time tuning; the model STRUCTURE comes from the checkpoint) ──

@@ -910,6 +910,10 @@ class SkillVLAPolicy(PI05Policy):
         self._start_images: list[Tensor] | None = None  # skill-start view fed to the VLM
         self._start_lang: tuple[Tensor, Tensor] | None = None  # skill-start prompt (tokens, masks)
         self._skill_steps = 0
+        # skill_html trace: one record per executed skill (VLM-predicted code + terminator series).
+        self._skill_trace: list[dict] = []
+        self._cur_skill: dict | None = None   # in-progress skill record
+        self._episode_step = 0                # global env step within the episode
 
     def _begin_skill(self, batch: dict, lang_tokens: Tensor, lang_masks: Tensor) -> None:
         """Snapshot the current obs (image + prompt) as the skill-start view and predict the new skill.
@@ -919,6 +923,15 @@ class SkillVLAPolicy(PI05Policy):
         self._start_lang = (lang_tokens, lang_masks)
         self._skill_code = self.model.predict_skill_code(self._start_images, lang_tokens, lang_masks)
         self._skill_steps = 0
+        # open a skill_html trace record for this skill (env 0; eval runs single-env per task)
+        self._cur_skill = {
+            "batch_index": 0,
+            "skill_index": len(self._skill_trace),
+            "codebook_token": int(self._skill_code.reshape(-1)[0].item()),
+            "episode_timestep": int(self._episode_step),
+            "end_probs": [],
+            "skill_source": "pred",
+        }
 
     def _should_end_skill(self, batch: dict) -> bool:
         """Advance the skill when the FSQ terminator fires (or the safety cap is hit)."""
@@ -935,6 +948,12 @@ class SkillVLAPolicy(PI05Policy):
             return False
         progress, end_prob = out
         signal = end_prob if self.config.skill_end_mode == "termination" else progress
+        if self._cur_skill is not None:  # per-step terminator series for skill_html (_plot_skill_progress)
+            self._cur_skill["end_probs"].append({
+                "skill_step": int(self._skill_steps),
+                "prob": float(end_prob.reshape(-1)[0].item()),
+                "progress": float(progress.reshape(-1)[0].item()),
+            })
         return bool((signal >= float(self.config.skill_end_threshold)).any().item())
 
     @torch.no_grad()
@@ -961,9 +980,25 @@ class SkillVLAPolicy(PI05Policy):
         action = self._action_queue.popleft()
         self._skill_steps += 1
         if self._should_end_skill(batch):           # next call begins (and re-predicts) a new skill
+            if self._cur_skill is not None:         # close the skill_html record
+                self._cur_skill["length"] = int(self._skill_steps)
+                self._skill_trace.append(self._cur_skill)
+                self._cur_skill = None
             self._skill_code, self._start_images = None, None
             self._action_queue.clear()
+        self._episode_step += 1
         return action
+
+    def get_skill_trace(self) -> list[dict]:
+        """skill_html hook: per-skill records (VLM-predicted FSQ code, start timestep + length, and
+        the terminator end-probability series). The still-open skill is finalized on read so the last
+        skill of an episode is included even if the terminator never fired before ``done``."""
+        trace = list(self._skill_trace)
+        if self._cur_skill is not None:
+            rec = dict(self._cur_skill)
+            rec["length"] = int(self._skill_steps)
+            trace.append(rec)
+        return trace
 
     @classmethod
     def from_pretrained(cls, pretrained_name_or_path, *, config=None, strict: bool = False, **kwargs):
