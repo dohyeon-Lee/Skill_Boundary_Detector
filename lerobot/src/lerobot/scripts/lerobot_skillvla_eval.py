@@ -1755,6 +1755,63 @@ def _load_label_skill_token_sequences(
     return out
 
 
+def _load_gt_skill_sequences(
+    dataset_dir: str | Path,
+    *,
+    n_episodes: int | None = None,
+    task_ids: set[int] | None = None,
+) -> dict[int, list[list[dict]]]:
+    """GT skill sequences for Stage-2 oracle eval, grouped by LIBERO task_index.
+
+    Reads the (no-BOS) ``skill_sequence`` = [skill0 .. skill_{N-1}, EOS, PAD...] and the matching
+    ``skill_length_sequence`` (GT demo frames per skill). Returns task_index -> per-episode list of
+    ``[{"token", "gt_length"}]`` (consumed by ``policy.set_forced_skill_token_sequences``).
+    """
+    try:
+        import pandas as pd
+    except Exception as exc:
+        raise RuntimeError("pandas is required to load GT skill sequences.") from exc
+
+    dataset_dir = Path(dataset_dir)
+    data_files = sorted((dataset_dir / "data").glob("**/*.parquet"))
+    if not data_files:
+        raise FileNotFoundError(f"No parquet data files found under {dataset_dir / 'data'}")
+    columns = ["episode_index", "frame_index", "task_index", "skill_sequence",
+               "skill_length_sequence", "skill_sequence_len"]
+    df = pd.concat([pd.read_parquet(p, columns=columns) for p in data_files], ignore_index=True)
+    df = df.sort_values(["episode_index", "frame_index"])
+    if task_ids is not None:
+        df = df[df["task_index"].map(_as_scalar_int).isin(task_ids)]
+
+    # Real FSQ codes are < skill_num_embeddings; EOS/PAD are >= it. Filter specials by VALUE
+    # (scheme-agnostic — works with or without a leading BOS), matching stage1's eval_oracle loader.
+    info_path = dataset_dir / "meta" / "info.json"
+    num_emb = json.loads(info_path.read_text()).get("skill_num_embeddings") if info_path.is_file() else None
+
+    by_task: dict[int, list[tuple[int, list[dict]]]] = defaultdict(list)
+    for episode_index, ep_df in df.groupby("episode_index", sort=True):
+        row = ep_df.iloc[0]
+        task_index = _as_scalar_int(row["task_index"])
+        seq = _as_int_list(row["skill_sequence"])
+        lengths = _as_int_list(row["skill_length_sequence"])
+        if num_emb is not None:
+            idxs = [i for i in range(len(seq)) if seq[i] < int(num_emb)]
+        else:  # fallback (no info.json): no-BOS schema → real skills are the first (seq_len - 1)
+            idxs = list(range(max(0, _as_scalar_int(row["skill_sequence_len"]) - 1)))
+        records = [
+            {"token": int(seq[i]), "gt_length": int(lengths[i] if i < len(lengths) else 0)}
+            for i in idxs
+        ]
+        if records:  # skip skill-less episodes (no real skills)
+            by_task[task_index].append((int(episode_index), records))
+
+    out: dict[int, list[list[dict]]] = {}
+    for task_index, episodes in by_task.items():
+        selected = [records for _ep, records in sorted(episodes)]
+        out[task_index] = selected if n_episodes is None else selected[:n_episodes]
+    return out
+
+
 @parser.wrap()
 def eval_main(cfg: EvalPipelineConfig):
     logging.info(pformat(asdict(cfg)))
@@ -1836,6 +1893,30 @@ def eval_main(cfg: EvalPipelineConfig):
             f"episode_offset={cfg.policy.label_skill_episode_offset}, "
             f"force_tokens={cfg.policy.use_label_skill_tokens_eval}, "
             f"compare_tokens={cfg.policy.compare_label_skill_tokens_eval}"
+        )
+
+    # Stage-2 oracle eval: teacher-force the dataset's GT skill sequence (per task) into the policy's
+    # cond-encoder (set_forced_skill_token_sequences); skill_advance_mode picks GT vs terminator timing.
+    if getattr(cfg.policy, "use_gt_skill", False):
+        gt_dir = getattr(cfg.policy, "gt_skill_dataset_dir", None)
+        if not gt_dir:
+            raise ValueError("--policy.gt_skill_dataset_dir is required when --policy.use_gt_skill=true")
+        eval_task_ids = {task_id for task_map in envs.values() for task_id in task_map}
+        gt_by_task = _load_gt_skill_sequences(gt_dir, n_episodes=cfg.eval.n_episodes, task_ids=eval_task_ids)
+        forced_skill_token_sequences_by_task = {}
+        for task_group, task_map in envs.items():
+            for task_id in task_map:
+                seqs = gt_by_task.get(task_id)
+                if not seqs or len(seqs) < cfg.eval.n_episodes:
+                    raise ValueError(
+                        f"Not enough GT skill episodes for task_id={task_id}: "
+                        f"found {0 if not seqs else len(seqs)}, need {cfg.eval.n_episodes} (dir={gt_dir})."
+                    )
+                forced_skill_token_sequences_by_task[(task_group, task_id)] = seqs[: cfg.eval.n_episodes]
+        logging.info(
+            "Oracle eval: GT skills from %s | advance_mode=%s | tasks=%d",
+            gt_dir, getattr(cfg.policy, "skill_advance_mode", "terminator"),
+            len(forced_skill_token_sequences_by_task),
         )
 
     # The inference device is automatically set to match the detected hardware, overriding any previous device settings from training to ensure compatibility.

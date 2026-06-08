@@ -914,6 +914,54 @@ class SkillVLAPolicy(PI05Policy):
         self._skill_trace: list[dict] = []
         self._cur_skill: dict | None = None   # in-progress skill record
         self._episode_step = 0                # global env step within the episode
+        self._oracle_cursor = 0               # index into the GT skill sequence (oracle eval)
+
+    # ── oracle eval: GT skill sequence injected via the cond-encoder (see config.use_gt_skill) ──
+    def _oracle_active(self) -> bool:
+        return bool(getattr(self.config, "use_gt_skill", False)) and getattr(self, "_forced_seqs", None) is not None
+
+    def set_forced_skill_token_sequences(self, sequences) -> None:
+        """Oracle eval: per-episode GT skill sequences — each item a bare code or
+        ``{"token": code, "gt_length": frames}`` dict (gt_length drives the "gt" advance mode and the
+        skill_html GT-vs-terminator timeline). Called once per task; reset() then zeroes the cursor."""
+        self._forced_seqs, self._gt_lengths = [], []
+        for seq in sequences:
+            codes, lens = [], []
+            for x in seq:
+                codes.append(int(x["token"] if isinstance(x, dict) else x))
+                lens.append(int(x.get("gt_length", x.get("skill_length", 0))) if isinstance(x, dict) else 0)
+            self._forced_seqs.append(codes)
+            self._gt_lengths.append(lens)
+        self.reset()
+
+    def set_reference_skill_token_sequences(self, sequences) -> None:
+        return None  # no skill-predictor comparison in the VLM-skill model
+
+    def get_gt_timeline(self) -> dict[int, list[dict]]:
+        """skill_html hook: per batch index → GT skill timeline [{token, length}] (length = GT demo
+        frame count per skill) for the GT-vs-terminator transition-timing comparison plot."""
+        if not self._oracle_active():
+            return {}
+        return {
+            b: [{"token": int(c), "length": int(n)} for c, n in zip(self._forced_seqs[b], self._gt_lengths[b])]
+            for b in range(len(self._forced_seqs))
+        }
+
+    def _oracle_code(self, batch: dict) -> Tensor:
+        """GT skill code at the current cursor, shaped (B,)."""
+        device, bsize = batch[OBS_STATE].device, batch[OBS_STATE].shape[0]
+        codes = []
+        for b in range(bsize):
+            seq = self._forced_seqs[b if b < len(self._forced_seqs) else 0]
+            codes.append(seq[min(self._oracle_cursor, len(seq) - 1)])
+        return torch.tensor(codes, dtype=torch.long, device=device)
+
+    def _oracle_gt_length(self) -> int:
+        lens = self._gt_lengths[0] if self._gt_lengths else []
+        return int(lens[min(self._oracle_cursor, len(lens) - 1)]) if lens else 0
+
+    def _oracle_at_last(self) -> bool:
+        return self._oracle_active() and self._oracle_cursor >= len(self._forced_seqs[0]) - 1
 
     def _begin_skill(self, batch: dict, lang_tokens: Tensor, lang_masks: Tensor) -> None:
         """Snapshot the current obs (image + prompt) as the skill-start view and predict the new skill.
@@ -921,7 +969,12 @@ class SkillVLAPolicy(PI05Policy):
         prompt is the skill-start prompt; freeze it (with the images) for the rest of the skill."""
         self._start_images = self._snapshot_vlm_images(batch)
         self._start_lang = (lang_tokens, lang_masks)
-        self._skill_code = self.model.predict_skill_code(self._start_images, lang_tokens, lang_masks)
+        if self._oracle_active():  # teacher-force the GT code (VLM still encodes start obs for its hidden)
+            self._skill_code = self._oracle_code(batch)
+            source = "oracle"
+        else:
+            self._skill_code = self.model.predict_skill_code(self._start_images, lang_tokens, lang_masks)
+            source = "pred"
         self._skill_steps = 0
         # open a skill_html trace record for this skill (env 0; eval runs single-env per task)
         self._cur_skill = {
@@ -930,31 +983,35 @@ class SkillVLAPolicy(PI05Policy):
             "codebook_token": int(self._skill_code.reshape(-1)[0].item()),
             "episode_timestep": int(self._episode_step),
             "end_probs": [],
-            "skill_source": "pred",
+            "skill_source": source,
         }
 
     def _should_end_skill(self, batch: dict) -> bool:
-        """Advance the skill when the FSQ terminator fires (or the safety cap is hit)."""
+        """Whether the current skill ends this step. The FSQ terminator runs whenever available (to
+        record the skill_html curves and to gate in "terminator" mode); ``skill_advance_mode="gt"``
+        (oracle only) instead ends by the GT demo duration. A safety cap force-advances either way."""
         cap = int(self.config.inference_skill_max_length)
         if cap > 0 and self._skill_steps >= cap:
             return True
-        if self.model.fsq_term is None:
-            return False
-        state, image = batch.get("skill_decoder_state"), batch.get("skill_decoder_image")
-        if state is None or image is None:
-            return False
-        out = self.model.terminator_step(self._skill_code, state, image, batch.get("skill_decoder_wrist"))
-        if out is None:
-            return False
-        progress, end_prob = out
-        signal = end_prob if self.config.skill_end_mode == "termination" else progress
-        if self._cur_skill is not None:  # per-step terminator series for skill_html (_plot_skill_progress)
-            self._cur_skill["end_probs"].append({
-                "skill_step": int(self._skill_steps),
-                "prob": float(end_prob.reshape(-1)[0].item()),
-                "progress": float(progress.reshape(-1)[0].item()),
-            })
-        return bool((signal >= float(self.config.skill_end_threshold)).any().item())
+        term_fired = False
+        if self.model.fsq_term is not None:
+            state, image = batch.get("skill_decoder_state"), batch.get("skill_decoder_image")
+            if state is not None and image is not None:
+                out = self.model.terminator_step(
+                    self._skill_code, state, image, batch.get("skill_decoder_wrist"))
+                if out is not None:
+                    progress, end_prob = out
+                    signal = end_prob if self.config.skill_end_mode == "termination" else progress
+                    if self._cur_skill is not None:  # per-step series for skill_html (_plot_skill_progress)
+                        self._cur_skill["end_probs"].append({
+                            "skill_step": int(self._skill_steps),
+                            "prob": float(end_prob.reshape(-1)[0].item()),
+                            "progress": float(progress.reshape(-1)[0].item()),
+                        })
+                    term_fired = bool((signal >= float(self.config.skill_end_threshold)).any().item())
+        if self._oracle_active() and str(self.config.skill_advance_mode) == "gt":
+            return self._skill_steps >= max(1, self._oracle_gt_length())
+        return term_fired
 
     @torch.no_grad()
     def select_action(self, batch: dict[str, Tensor], **kwargs) -> Tensor:
@@ -979,11 +1036,14 @@ class SkillVLAPolicy(PI05Policy):
 
         action = self._action_queue.popleft()
         self._skill_steps += 1
-        if self._should_end_skill(batch):           # next call begins (and re-predicts) a new skill
+        # Oracle at its last GT skill: keep running it to episode end (don't re-begin) — mirrors stage1.
+        if self._should_end_skill(batch) and not self._oracle_at_last():
             if self._cur_skill is not None:         # close the skill_html record
                 self._cur_skill["length"] = int(self._skill_steps)
                 self._skill_trace.append(self._cur_skill)
                 self._cur_skill = None
+            if self._oracle_active():               # advance the GT skill cursor
+                self._oracle_cursor += 1
             self._skill_code, self._start_images = None, None
             self._action_queue.clear()
         self._episode_step += 1

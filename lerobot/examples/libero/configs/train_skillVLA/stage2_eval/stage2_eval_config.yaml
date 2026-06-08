@@ -36,6 +36,13 @@ skill_html_train_samples: 10
 skill_end_threshold: 0.5 #0.5
 inference_skill_max_length: 200    # force a skill switch after this many steps (0 = off)
 
+# ── Oracle eval (isolate the action expert from the VLM's skill prediction) ──
+use_gt_skill: true        # true = teacher-force the dataset's GT skill sequence (per task) into the
+                          # cond-encoder; the VLM still encodes the start obs but its predicted code
+                          # is bypassed. GT skills come from the run's skillvla dataset (auto-derived).
+skill_advance_mode: gt    # how a skill ends: "terminator" (FSQ signal) or "gt" (GT demo
+                          # duration; oracle only). Terminator curves are recorded either way.
+
 # ── wandb ──
 wandb_project: VLA_eval
 

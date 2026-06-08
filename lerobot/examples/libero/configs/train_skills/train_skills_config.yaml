@@ -112,7 +112,7 @@ fsq_inputs_name: FSQ_inputs
 fsq_terminator_use_wrist: true
 fsq_run_name: "{target_dataset}_{fsq_tag}_dino{dino_patch_grid}{fsq_exp_suffix}"
 fsq_exp: ""  # optional suffix for ablations, e.g. exp1 -> ..._exp1
-fsq_levels: [8, 8]
+fsq_levels: [8, 6, 5]
 fsq_epoch: "1000"
 
 fsq_batch_size: 64 

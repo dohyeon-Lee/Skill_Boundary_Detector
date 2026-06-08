@@ -46,15 +46,21 @@ def build_settings(cfg: dict) -> dict:
     fsq_ckpt = str(pol.get("fsq_path") or "")
     skill_latents_path = ""
     raw_dataset_dir = ""
+    gt_skill_dataset_dir = ""
     if fsq_ckpt:
         fp = Path(fsq_ckpt)  # {root}/{dataset_root}/skillvla_dataset/{source}/{run_tag}/FSQ.pt
         skill_latents_path = str(fp.parent / "skill_latents.npz")
+        gt_skill_dataset_dir = str(fp.parent / "skillvla")  # skillvla dataset (skill_sequence) for oracle GT
         try:
             raw_dataset_dir = str(fp.parents[3] / fp.parents[1].name)  # {dataset_root}/{source}
         except IndexError:
             raw_dataset_dir = ""
 
-    run_name = f"{model_dir}_{checkpoint}_{target_task}_fsq_eval"
+    # Skill-source tag so oracle (GT) vs VLM-predicted and the advance mode land in DISTINCT folders.
+    use_gt_skill = as_bool(get_value(cfg, "use_gt_skill", False))
+    advance_mode = str(get_value(cfg, "skill_advance_mode", "terminator"))
+    skill_tag = f"gtskill-{advance_mode}" if use_gt_skill else "pred"
+    run_name = f"{model_dir}_{checkpoint}_{target_task}_{skill_tag}_fsq_eval"
     eval_out_dir = _HERE.parent.parent / "outputs" / run_name
 
     settings: dict = {
@@ -82,6 +88,10 @@ def build_settings(cfg: dict) -> dict:
         # inference knobs (eval-time tuning; model structure comes from the checkpoint)
         "skill_end_threshold": str(get_value(cfg, "skill_end_threshold", 0.5)),
         "inference_skill_max_length": int(get_value(cfg, "inference_skill_max_length", 200)),
+        # oracle eval: teacher-force GT skills + pick transition timing (gt vs terminator)
+        "use_gt_skill": use_gt_skill,
+        "gt_skill_dataset_dir": gt_skill_dataset_dir,
+        "skill_advance_mode": advance_mode,
         # output / wandb
         "wandb_project": str(get_value(cfg, "wandb_project", "VLA_eval")),
         "wandb_run_name": run_name,

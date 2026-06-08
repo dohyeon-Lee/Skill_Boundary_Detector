@@ -67,3 +67,15 @@ class SkillVLAConfig(PI05Config):
     skill_end_threshold: float = 0.5
     inference_skill_max_length: int = 200
     """Force-advance the skill after this many steps even if the terminator never fires (0 = off)."""
+
+    # ── Oracle eval: feed GT skill codes (per task) into the cond-encoder instead of the VLM ──
+    use_gt_skill: bool = False
+    """Oracle eval: teacher-force the dataset's GT skill code sequence into the cond-side skill
+    embedding (the VLM still encodes the start obs, but its predicted code is bypassed). Isolates
+    the action expert / terminator from the VLM's skill-prediction quality."""
+    gt_skill_dataset_dir: str | None = None
+    """skillvla dataset whose ``skill_sequence`` (per task) supplies the GT skills for oracle eval."""
+    skill_advance_mode: str = "terminator"
+    """How a skill ends during rollout: "terminator" (FSQ signal >= threshold) or "gt" (advance by
+    the GT skill's demo duration; oracle only). The terminator still runs each step either way so
+    its curves are recorded for skill_html."""
