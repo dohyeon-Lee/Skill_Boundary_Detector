@@ -422,8 +422,11 @@ def main() -> None:
                 for t in range(length):
                     state = np.concatenate([ee_states[t], gripper_states[t]], axis=0).astype(np.float32)
                     frame = {
-                        "observation.images.image": resize_rgb(agentview[t], args.image_size),
-                        "observation.images.wrist_image": resize_rgb(wrist[t], args.image_size),
+                        # Original LIBERO HDF5 stores agentview/eye-in-hand frames rotated 180
+                        # (mujoco renders bottom-to-top). Rotate H+W to match the upright
+                        # convention used by libero_dataset and eval's LiberoProcessorStep.
+                        "observation.images.image": resize_rgb(agentview[t][::-1, ::-1], args.image_size),
+                        "observation.images.wrist_image": resize_rgb(wrist[t][::-1, ::-1], args.image_size),
                         "observation.state": state,
                         "action": actions[t],
                         "task": task,

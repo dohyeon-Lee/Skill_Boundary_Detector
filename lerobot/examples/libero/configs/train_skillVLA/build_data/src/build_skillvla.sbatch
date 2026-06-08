@@ -75,11 +75,13 @@ cp -f "${FSQ_MODEL_PATH}" "${FSQ_COPY_PATH}"
 echo "Copied FSQ checkpoint → ${FSQ_COPY_PATH}"
 
 # ── (d) cleanup intermediates ──
+# Only this DP's segmentation (skillset + skill_tokens) and this run's latents.
+# The shared dino/ stays so other DP/FSQ runs on the same source can reuse it.
 if [ "${CLEANUP_INTERMEDIATE}" = "true" ]; then
   echo "Cleaning up intermediates ..."
-  rm -rf "${SKILLVLA_WORK_DIR}"
+  rm -rf "${SKILLVLA_SEG_DIR}"
   rm -f "${SKILL_LATENTS_PATH}"
-  echo "  removed ${SKILLVLA_WORK_DIR} and ${SKILL_LATENTS_PATH}"
+  echo "  removed ${SKILLVLA_SEG_DIR} and ${SKILL_LATENTS_PATH}"
 fi
 
 echo "DONE → ${SKILLVLA_RUN_DIR}  (skillvla/, skill_initial_state.npz, dino.npz, FSQ.pt)"

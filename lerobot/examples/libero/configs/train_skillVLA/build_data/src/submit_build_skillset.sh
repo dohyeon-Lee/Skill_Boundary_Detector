@@ -9,7 +9,7 @@
 #   DP policy      : {project_root}/DP_outputs/{dp_policy_name}/checkpoints/{dp_checkpoint}/pretrained_model
 # Outputs (intermediate, removed at end of full pipeline):
 #   per-episode DINO : {skillvla_dataset}/{source}/_work/dino/pg{grid}/
-#   skillset         : {skillvla_dataset}/{source}/_work/skillset/skills/
+#   skillset         : {skillvla_dataset}/{source}/_work/seg_{dp}_ck{ckpt}/skillset/skills/
 
 set -euo pipefail
 

@@ -5,7 +5,7 @@
 #   frame DINO   : {project_root}/{dataset_root}/FSQ_dataset/{target_dataset}/DINO/pg{dino_patch_grid}
 #   skillset     : {project_root}/{dataset_root}/FSQ_dataset/{target_dataset}/FSQ_inputs/skillset
 # Reference models:
-#   DP policy    : {project_root}/DP_outputs/{dp_policy_name}/checkpoints/{dp_checkpoint}/pretrained_model
+#   DP policy    : {project_root}/outputs/DP/{dp_policy_name}/checkpoints/{dp_checkpoint}/pretrained_model
 # Outputs:
 #   skillset     : {project_root}/{dataset_root}/FSQ_dataset/{target_dataset}/FSQ_inputs/skillset
 #   DINO tokens  : {.../FSQ_inputs/dino_tokens_pg{grid}.npz, dino_tokens_wrist_pg{grid}.npz}

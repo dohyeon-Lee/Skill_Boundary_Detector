@@ -5,14 +5,14 @@ A PaliGemma VLM (warm-started from pi05_base) predicts the skill from the skill-
 expert warm-started from a Stage-1 ``skill_expert`` checkpoint flow-matches the action chunk. The
 Stage-1 checkpoint's config supplies expert_arch (A=joint / B=fused), vision_backbone,
 action_expert_variant and skill_vocab_size — the model reads them itself, so here we only point to
-it. Roots + FSQ levels come from build_data's yaml; FSQ.pt (eval terminator) lives in the run dir.
-Emits shell exports (--shell).
+it. All roots are declared in this yaml (standalone); source/run_tag/FSQ levels are parsed from
+stage1_run_name; FSQ.pt (eval terminator) lives in the run dir. Emits shell exports (--shell).
 """
 
 from __future__ import annotations
 
 import argparse
-import json
+import re
 import sys
 from pathlib import Path
 
@@ -21,57 +21,50 @@ sys.path.insert(0, str(_HERE.parent.parent.parent.parent / "train_skills" / "src
 from train_skills_config import as_bool, as_levels, as_list, get_value, load_config, print_shell  # noqa: E402
 
 DEFAULT_CONFIG_PATH = _HERE.parent.parent / "stage2_train_config.yaml"
-BUILD_DATA_CONFIG_PATH = _HERE.parent.parent.parent / "build_data" / "train_skillVLA_config.yaml"
-
-
-def _roots() -> tuple[Path, Path, Path, Path, list[int]]:
-    """(project_root, dataset_root, skillvla_root, lerobot_root, fsq_levels) from build_data yaml."""
-    bc = load_config(str(BUILD_DATA_CONFIG_PATH))
-    project_root = Path(str(get_value(bc, "project_root"))).expanduser()
-    dataset_root = project_root / str(get_value(bc, "dataset_root", "libero_dataset"))
-    skillvla_root = dataset_root / str(get_value(bc, "skillvla_dataset_root", "skillvla_dataset"))
-    fsq_levels = list(as_levels(get_value(bc, "fsq_levels", [5, 5, 5])))
-    return project_root, dataset_root, skillvla_root, project_root / "lerobot", fsq_levels
-
-
-def _stage1_arch(ckpt_dir: Path) -> str:
-    """expert_arch (joint/fused) from the Stage-1 checkpoint config — for the run-name tag only
-    (the model itself re-reads the full Stage-1 config at load time)."""
-    cfg = ckpt_dir / "train_config.json"
-    if cfg.is_file():
-        try:
-            return str(json.loads(cfg.read_text()).get("policy", {}).get("expert_arch", "")) or "fused"
-        except Exception:  # noqa: BLE001
-            pass
-    return "fused"
 
 
 def build_settings(cfg: dict) -> dict:
-    project_root, dataset_root, skillvla_root, lerobot_root, build_fsq_levels = _roots()
+    # Standalone: every root is declared in this yaml (no build_data dependency).
+    project_root = Path(str(get_value(cfg, "project_root"))).expanduser()
+    dataset_root = project_root / str(get_value(cfg, "dataset_root", "dataset"))
+    skillvla_root = dataset_root / str(get_value(cfg, "skillvla_dataset_root", "skillvla_dataset"))
+    lerobot_root = project_root / "lerobot"
 
-    source_dataset = str(get_value(cfg, "source_dataset"))
-    run_tag = str(get_value(cfg, "run_tag"))
-    run_dir = skillvla_root / source_dataset / run_tag
+    # Single outputs root from yaml; per-stage subdirs fixed here. Warm-start lives in stage1's.
+    outputs_root = project_root / str(get_value(cfg, "outputs_root", "outputs"))
+    stage1_vla_root = outputs_root / "skillVLA_stage1"
+    vla_root = outputs_root / "skillVLA_stage2"
 
-    vla_root = project_root / str(get_value(cfg, "skillvla_outputs_root", "skillVLA_outputs"))
     stage1_run_name = str(get_value(cfg, "stage1_run_name")).strip()
     stage1_checkpoint = str(get_value(cfg, "stage1_checkpoint", "last")).strip() or "last"
-    stage1_ckpt = vla_root / stage1_run_name / "checkpoints" / stage1_checkpoint / "pretrained_model"
-    arch = _stage1_arch(stage1_ckpt)
-    arch_tag = "A" if arch == "joint" else "B"
+    stage1_ckpt = stage1_vla_root / stage1_run_name / "checkpoints" / stage1_checkpoint / "pretrained_model"
+
+    # Everything is parsed from stage1_run_name = {source}_{run_tag}_batch{N}_{A|B}[_exp]: the
+    # skillvla dataset (source + run_tag) Stage-1 trained on, the FSQ levels, and the arch tag.
+    # (Works before the Stage-1 checkpoint exists; the model re-reads the real Stage-1 config
+    # at load time anyway, so arch here is just for the run name.)
+    _rt = re.search(r"(FSQ\d+_dino\d+.*?)_batch\d+", stage1_run_name)
+    if not _rt:
+        raise ValueError(f"stage1_run_name must embed a 'FSQ..._dino..._batch<N>' run tag, got: {stage1_run_name}")
+    run_tag = _rt.group(1)
+    source_dataset = stage1_run_name[: _rt.start()].rstrip("_")
+    run_dir = skillvla_root / source_dataset / run_tag
+    build_fsq_levels = [int(d) for d in re.search(r"FSQ(\d+)", run_tag).group(1)]
+    arch_tag = (stage1_run_name[_rt.end():].lstrip("_").split("_")[0] or "B")  # "A"=joint, "B"=fused
+    arch = "joint" if arch_tag == "A" else "fused"
 
     batch_size = int(get_value(cfg, "batch_size", 16))
     num_gpus = int(get_value(cfg, "num_gpus", 1))
     lr_base = float(get_value(cfg, "lr_base", 2.5e-05))
     exp = str(get_value(cfg, "exp", "")).strip()
 
-    # FSQ skill structure: auto-match the FSQ the dataset was built with (build_data fsq_levels).
+    # FSQ skill structure: auto-match the FSQ the dataset was built with (parsed from run_tag).
     skill_fsq_levels = list(as_levels(get_value(cfg, "skill_fsq_levels", build_fsq_levels)))
 
-    run_name = f"{source_dataset}_{run_tag}_batch{batch_size}_stage2_{arch_tag}"
+    run_name = f"{source_dataset}_{run_tag}_batch{batch_size}_{arch_tag}"
     if exp:
         run_name = f"{run_name}_{exp}"
-    output_dir = vla_root / f"S2_{run_name}"
+    output_dir = vla_root / run_name   # under skillVLA_stage2/, so no extra stage prefix
 
     settings: dict = {
         # roots

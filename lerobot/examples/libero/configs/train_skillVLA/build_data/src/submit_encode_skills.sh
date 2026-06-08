@@ -3,11 +3,11 @@
 #   (sbatch) extract skill-level DINO tokens, then encode them with the trained FSQ.
 #
 # Inputs (from train_skillVLA_config.yaml + submit_build_skillset.sh outputs):
-#   skillset         : {skillvla_dataset}/{source}/_work/skillset/skills/
+#   skillset         : {skillvla_dataset}/{source}/_work/seg_{dp}_ck{ckpt}/skillset/skills/
 #   per-episode DINO : {skillvla_dataset}/{source}/_work/dino/pg{grid}/ (manifest + episode npz)
 #   FSQ model        : {project_root}/FSQ_outputs/{fsq_run_name}/FSQ_epoch{ckpt:04d}.pt (or FSQ.pt)
 # Outputs (intermediate, merged into skillvla later):
-#   skill DINO tokens: {skillvla_dataset}/{source}/_work/skill_tokens.npz
+#   skill DINO tokens: {skillvla_dataset}/{source}/_work/seg_{dp}_ck{ckpt}/skill_tokens.npz
 #   skill latents    : {skillvla_dataset}/{source}/{run_tag}/skill_latents.npz
 
 set -euo pipefail

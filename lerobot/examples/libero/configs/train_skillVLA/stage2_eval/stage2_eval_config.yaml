@@ -5,10 +5,13 @@
 # checkpoint's config.json on --policy.path, so it is not re-specified here. The FSQ
 # (terminator) + raw-dataset paths are derived from that config.
 
+# ── Paths (standalone) ──
+project_root: /data2/dohyeon/SBD
+outputs_root: outputs   # trained S2 under {project_root}/{outputs_root}/skillVLA_stage2/ (subdir fixed in resolver)
+
 # ── Which trained model to evaluate ──
-skillvla_outputs_root: skillVLA_outputs   # parent folder under {project_root}/
-# The Stage-2 run folder name, exactly as created by training (S2_..._stage2_{A|B}[_exp]):
-model_dir: S2_libero_90_FSQ555_pg8_image256_eqloss_200_batch16_stage2_A
+# The Stage-2 run folder name, exactly as created by training ({source}_{run_tag}_batch{N}_{A|B}[_exp]):
+model_dir: libero_90_full_full_FSQ88_dino8_1000_batch8_A_loss01
 checkpoint: "last"            # "last" or a step number (e.g. 100000)
 
 # ── Eval rollout ──

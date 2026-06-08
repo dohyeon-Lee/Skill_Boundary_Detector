@@ -2,7 +2,7 @@
 # Inputs:
 #   roots      : ../../train_skills_config.yaml
 #   eval knobs : ../fsq_eval_config.yaml
-#   FSQ model  : {project_root}/FSQ_outputs/{fsq_eval_run_name}/FSQ.pt (or FSQ_epoch{N:04d}.pt)
+#   FSQ model  : {project_root}/outputs/FSQ/{fsq_eval_run_name}/FSQ.pt (or FSQ_epoch{N:04d}.pt)
 # Outputs:
 #   {FSQ_eval}/outputs/{run}/{epoch}/skill_latents.npz
 #   {FSQ_eval}/outputs/{run}/{epoch}/fsq_eval.html
@@ -59,7 +59,7 @@ else
   EPOCH_TAG="epoch$(printf '%04d' "${FSQ_EVAL_CHECKPOINT}")"
   LATENTS_PATH="${MODEL_DIR}/skill_latents_${EPOCH_TAG}.npz"
 fi
-# HTML stays under FSQ_eval/outputs; latents live next to the checkpoint in FSQ_outputs.
+# HTML stays under FSQ_eval/outputs; latents live next to the checkpoint in outputs/FSQ.
 OUTPUT_DIR="${EVAL_DIR}/outputs/${FSQ_EVAL_RUN_NAME}/${EPOCH_TAG}"
 
 echo "START FSQ EVAL"

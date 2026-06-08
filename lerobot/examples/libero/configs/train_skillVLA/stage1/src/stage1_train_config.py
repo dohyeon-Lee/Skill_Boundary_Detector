@@ -5,12 +5,13 @@ Trains the action expert by flow matching on the build_data skillvla dataset (ra
 skill_sequence/skill_index + actions). No FSQ / DINO-token / VLM artifacts are needed here:
 the expert encodes raw images with its OWN trainable DINOv3 and reads the GT skill code from
 the dataset. Weights can warm-start from pi05_base (action-expert motion prior) or train from
-scratch. Roots come from build_data's yaml. Emits shell exports (--shell).
+scratch. All roots are declared in this yaml (standalone). Emits shell exports (--shell).
 """
 
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
@@ -19,26 +20,21 @@ sys.path.insert(0, str(_HERE.parent.parent.parent.parent / "train_skills" / "src
 from train_skills_config import as_bool, as_levels, as_list, get_value, load_config, print_shell  # noqa: E402
 
 DEFAULT_CONFIG_PATH = _HERE.parent.parent / "stage1_train_config.yaml"
-BUILD_DATA_CONFIG_PATH = _HERE.parent.parent.parent / "build_data" / "train_skillVLA_config.yaml"
-
-
-def _roots() -> tuple[Path, Path, Path, Path, list[int]]:
-    """(project_root, dataset_root, skillvla_root, lerobot_root, fsq_levels) from build_data yaml.
-    fsq_levels = the FSQ codebook structure the skillvla dataset was built with."""
-    bc = load_config(str(BUILD_DATA_CONFIG_PATH))
-    project_root = Path(str(get_value(bc, "project_root"))).expanduser()
-    dataset_root = project_root / str(get_value(bc, "dataset_root", "libero_dataset"))
-    skillvla_root = dataset_root / str(get_value(bc, "skillvla_dataset_root", "skillvla_dataset"))
-    fsq_levels = list(as_levels(get_value(bc, "fsq_levels", [5, 5, 5])))  # robust to "[5,5,5]" env round-trip
-    return project_root, dataset_root, skillvla_root, project_root / "lerobot", fsq_levels
 
 
 def build_settings(cfg: dict) -> dict:
-    project_root, dataset_root, skillvla_root, lerobot_root, build_fsq_levels = _roots()
+    # Standalone: every root is declared in this yaml (no build_data dependency).
+    project_root = Path(str(get_value(cfg, "project_root"))).expanduser()
+    dataset_root = project_root / str(get_value(cfg, "dataset_root", "dataset"))
+    skillvla_root = dataset_root / str(get_value(cfg, "skillvla_dataset_root", "skillvla_dataset"))
+    lerobot_root = project_root / "lerobot"
 
     source_dataset = str(get_value(cfg, "source_dataset"))
     run_tag = str(get_value(cfg, "run_tag"))
     run_dir = skillvla_root / source_dataset / run_tag
+    # FSQ codebook structure is encoded in run_tag's FSQ<levels> tag (e.g. FSQ88 → [8,8]).
+    _m = re.search(r"FSQ(\d+)", run_tag)
+    build_fsq_levels = [int(d) for d in _m.group(1)] if _m else [5, 5, 5]
 
     batch_size = int(get_value(cfg, "batch_size", 32))
     num_gpus = int(get_value(cfg, "num_gpus", 1))
@@ -59,16 +55,17 @@ def build_settings(cfg: dict) -> dict:
     siglip_lr = get_value(cfg, "siglip_lr", None)
     siglip_lr_str = "" if siglip_lr in (None, "", "null") else str(siglip_lr)
 
-    init_tag = "init" if init_from_pi05 else "scratch"
-    run_name = f"{source_dataset}_{run_tag}_batch{batch_size}_stage1_{init_tag}"
-    if expert_arch != "fused":      # keep existing fused run names unchanged; tag only non-default archs
-        run_name = f"{run_name}_{expert_arch}"
+    # run-name arch tag: joint→A, fused→B. init_from_pi05 is fixed true → not in the name.
+    arch_tag = {"joint": "A", "fused": "B"}.get(expert_arch, expert_arch)
+    run_name = f"{source_dataset}_{run_tag}_batch{batch_size}_{arch_tag}"
     if exp:
         run_name = f"{run_name}_{exp}"
-    vla_root = project_root / str(get_value(cfg, "skillvla_outputs_root", "skillVLA_outputs"))
-    output_dir = vla_root / f"S1_{run_name}"
+    # Single outputs root from yaml; the per-stage subdir is fixed here (not in yaml).
+    outputs_root = project_root / str(get_value(cfg, "outputs_root", "outputs"))
+    vla_root = outputs_root / "skillVLA_stage1"
+    output_dir = vla_root / run_name   # under skillVLA_stage1/, so no extra stage prefix
 
-    # FSQ skill structure: auto-match the FSQ the dataset was built with (build_data fsq_levels).
+    # FSQ skill structure: auto-match the FSQ the dataset was built with (parsed from run_tag's FSQ<levels> tag).
     # The expert only needs the codebook size (= prod(levels)) for its skill embedding; levels are
     # kept for the eval cube viz. Either may be overridden in the stage1 yaml.
     skill_fsq_levels = list(as_levels(get_value(cfg, "skill_fsq_levels", build_fsq_levels)))

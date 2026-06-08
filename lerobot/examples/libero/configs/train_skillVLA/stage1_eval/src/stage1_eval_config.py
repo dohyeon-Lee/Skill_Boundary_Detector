@@ -3,13 +3,14 @@
 
 Point at a trained Stage-1 run by OUTPUT FOLDER NAME + checkpoint. The FSQ terminator
 (FSQ.pt) and the GT skill sequences (skillvla dataset) come from the same {run_dir} the
-model was trained on (source_dataset + run_tag, resolved via build_data's yaml). Env tasks
-are matched to dataset tasks by language. Emits shell exports (--shell).
+model was trained on (source_dataset + run_tag). All roots are declared in this yaml
+(standalone). Env tasks are matched to dataset tasks by language. Emits shell exports (--shell).
 """
 
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
@@ -18,26 +19,28 @@ sys.path.insert(0, str(_HERE.parent.parent.parent.parent / "train_skills" / "src
 from train_skills_config import as_bool, as_list, get_value, load_config, print_shell  # noqa: E402
 
 DEFAULT_CONFIG_PATH = _HERE.parent.parent / "stage1_eval_config.yaml"
-BUILD_DATA_CONFIG_PATH = _HERE.parent.parent.parent / "build_data" / "train_skillVLA_config.yaml"
-
-
-def _roots() -> tuple[Path, Path, Path, Path]:
-    bc = load_config(str(BUILD_DATA_CONFIG_PATH))
-    project_root = Path(str(get_value(bc, "project_root"))).expanduser()
-    dataset_root = project_root / str(get_value(bc, "dataset_root", "libero_dataset"))
-    skillvla_root = dataset_root / str(get_value(bc, "skillvla_dataset_root", "skillvla_dataset"))
-    return project_root, dataset_root, skillvla_root, project_root / "lerobot"
 
 
 def build_settings(cfg: dict) -> dict:
-    project_root, dataset_root, skillvla_root, lerobot_root = _roots()
+    # Standalone: every root is declared in this yaml (no build_data dependency).
+    project_root = Path(str(get_value(cfg, "project_root"))).expanduser()
+    dataset_root = project_root / str(get_value(cfg, "dataset_root", "dataset"))
+    skillvla_root = dataset_root / str(get_value(cfg, "skillvla_dataset_root", "skillvla_dataset"))
+    lerobot_root = project_root / "lerobot"
 
-    source_dataset = str(get_value(cfg, "source_dataset"))
-    run_tag = str(get_value(cfg, "run_tag"))
+    model_dir = str(get_value(cfg, "model_dir"))           # e.g. libero_90_full_full_FSQ88_dino8_1000_batch32_A
+    # model_dir fully identifies the trained run: {source}_{run_tag}_batch{N}_{A|B}[_exp].
+    # Parse both run_tag (FSQ..._dino..._{ckpt}[_exp]) and source_dataset (the prefix) from it.
+    _rt = re.search(r"(FSQ\d+_dino\d+.*?)_batch\d+", model_dir)
+    if not _rt:
+        raise ValueError(f"model_dir must embed a 'FSQ..._dino..._batch<N>' run tag, got: {model_dir}")
+    run_tag = _rt.group(1)
+    source_dataset = model_dir[: _rt.start()].rstrip("_")  # the part before the run tag
     run_dir = skillvla_root / source_dataset / run_tag
 
-    vla_root = project_root / str(get_value(cfg, "skillvla_outputs_root", "skillVLA_outputs"))
-    model_dir = str(get_value(cfg, "model_dir"))           # e.g. S1_libero_90_..._stage1_init
+    # Single outputs root from yaml; the stage-1 subdir is fixed here (matches stage1 training).
+    outputs_root = project_root / str(get_value(cfg, "outputs_root", "outputs"))
+    vla_root = outputs_root / "skillVLA_stage1"
     checkpoint = str(get_value(cfg, "checkpoint", "last"))
     policy_path = vla_root / model_dir / "checkpoints" / checkpoint / "pretrained_model"
 

@@ -7,7 +7,7 @@
 # each on its own GPU). The submit script sizes --array from the source task count
 # and exports ALL_TASK_IDS; this script picks its own shard from SLURM_ARRAY_TASK_ID.
 #
-# Output: {skillvla_dataset}/{source}/_work/skillset/skills/ep*_skill*.npz
+# Output: {skillvla_dataset}/{source}/_work/seg_{dp}_ck{ckpt}/skillset/skills/ep*_skill*.npz
 #SBATCH --job-name=skillVLA_skillset
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4

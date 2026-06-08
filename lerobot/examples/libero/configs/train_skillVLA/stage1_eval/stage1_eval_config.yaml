@@ -5,13 +5,16 @@
 # This is a TASK-level eval (env runs the task's LIBERO init states in order, fed that task's
 # GT skill sequences index-paired) — scene-level alignment is not available from the dataset.
 
-# ── Which trained Stage-1 model + which FSQ/skills (same {run_dir} it trained on) ──
-source_dataset: libero_90
-run_tag: FSQ555_pg8_image256_eqloss_1000   # → {run_dir}/FSQ.pt + {run_dir}/skillvla (GT skills)
-skillvla_outputs_root: skillVLA_outputs
-model_dir: S1_libero_90_FSQ555_pg8_image256_eqloss_1000_batch32_stage1_init_joint_unfreeze_siglip # _freeze_dino   # the trained S1 folder
+# ── Paths (standalone — not inherited from build_data) ──
+project_root: /data2/dohyeon/SBD
+dataset_root: dataset                    # skillvla dataset lives under {project_root}/{dataset_root}/
+skillvla_dataset_root: skillvla_dataset  # .../{skillvla_dataset_root}/{source_dataset}/{run_tag}/
+outputs_root: outputs   # trained S1 under {project_root}/{outputs_root}/skillVLA_stage1/ (subdir fixed in resolver)
 
-# model_dir: S1_libero_90_FSQ555_pg8_only_image256_eqloss_200_batch32_stage1_init_joint_unfreeze_siglip # _freeze_dino   # the trained S1 folder
+# ── Which trained Stage-1 model + which FSQ/skills (same {run_dir} it trained on) ──
+# model_dir alone identifies the run: source_dataset + run_tag (which skillvla dataset folder)
+# are both parsed from it ({source}_FSQ..._dino..._batch{N}_{A|B}).
+model_dir: libero_90_full_full_FSQ88_dino8_1000_batch32_A   # trained S1 folder under outputs/skillVLA_stage1/ (joint=A, fused=B)
 checkpoint: "020000"            # "last" or a step number
 # Output folder = outputs/{model_dir}_{checkpoint}_adv-{skill_advance_mode}[_{eval_exp}]
 eval_exp: ""                    # optional free-form tag for the eval output folder (e.g. ablation name)

@@ -7,10 +7,10 @@
 # Reference models:
 #   DINO model   : {project_root}/models/dinov3-vits16
 # Outputs:
-#   FSQ run      : {project_root}/FSQ_outputs/{fsq_run_name}
-#   FSQ model    : {project_root}/FSQ_outputs/{fsq_run_name}/FSQ.pt
-#   checkpoints  : {project_root}/FSQ_outputs/{fsq_run_name}/FSQ_epoch*.pt
-#   skill tokens : {project_root}/FSQ_outputs/{fsq_run_name}/skill_latents.npz
+#   FSQ run      : {project_root}/outputs/FSQ/{fsq_run_name}
+#   FSQ model    : {project_root}/outputs/FSQ/{fsq_run_name}/FSQ.pt
+#   checkpoints  : {project_root}/outputs/FSQ/{fsq_run_name}/FSQ_epoch*.pt
+#   skill tokens : {project_root}/outputs/FSQ/{fsq_run_name}/skill_latents.npz
 #
 # Train FSQ from prepared FSQ_inputs.
 #SBATCH --job-name=FSQ_train

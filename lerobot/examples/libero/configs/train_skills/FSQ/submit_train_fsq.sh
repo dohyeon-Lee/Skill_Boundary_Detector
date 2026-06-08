@@ -7,9 +7,9 @@
 # Reference models:
 #   DINO model   : {project_root}/models/dinov3-vits16
 # Outputs:
-#   FSQ run      : {project_root}/FSQ_outputs/{fsq_run_name}
-#   FSQ model    : {project_root}/FSQ_outputs/{fsq_run_name}/FSQ.pt
-#   skill tokens : {project_root}/FSQ_outputs/{fsq_run_name}/skill_latents.npz
+#   FSQ run      : {project_root}/outputs/FSQ/{fsq_run_name}
+#   FSQ model    : {project_root}/outputs/FSQ/{fsq_run_name}/FSQ.pt
+#   skill tokens : {project_root}/outputs/FSQ/{fsq_run_name}/skill_latents.npz
 #
 # Submit FSQ training using Slurm values from train_skills_config.yaml.
 

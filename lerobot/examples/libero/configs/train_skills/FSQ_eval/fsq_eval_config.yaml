@@ -1,9 +1,9 @@
 # FSQ_eval — evaluation-only knobs.
-# Root paths (skills / DINO tokens / dataset videos / FSQ_outputs root)
+# Root paths (skills / DINO tokens / dataset videos / outputs/FSQ root)
 # are taken from ../train_skills_config.yaml. Keep this file minimal.
 
-# Which trained FSQ to evaluate (folder name under {project_root}/FSQ_outputs/).
-fsq_eval_run_name: libero_90_full_full_fsq88_pg8_image256
+# Which trained FSQ to evaluate (folder name under {project_root}/outputs/FSQ/).
+fsq_eval_run_name: libero_90_full_full_fsq88_dino8
 # 0 = best checkpoint (FSQ.pt), else epoch number → FSQ_epoch{N:04d}.pt
 fsq_eval_checkpoint: 400
 

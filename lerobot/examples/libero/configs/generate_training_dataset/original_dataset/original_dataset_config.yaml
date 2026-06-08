@@ -9,8 +9,8 @@ project_root: /data2/dohyeon/SBD
 # Output:
 #   {convert_output_root}/{convert_output_name}
 convert_suite: libero_90
-convert_source_root: /data2/dohyeon/SBD/libero_original_dataset
-convert_output_root: /data2/dohyeon/SBD/libero_original_dataset
+convert_source_root: /data2/dohyeon/SBD/dataset
+convert_output_root: /data2/dohyeon/SBD/dataset
 convert_output_name: libero_90_full_full
 convert_overwrite: false
 

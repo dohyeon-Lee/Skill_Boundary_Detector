@@ -2,7 +2,7 @@
 # Update project_root when moving this workflow to another server.
 
 project_root: /data2/dohyeon/SBD
-dataset_root: libero_original_dataset
+dataset_root: dataset
 
 # Defaults for build_training_dataset.py
 build_dataset: libero_90_full_full
@@ -24,7 +24,7 @@ dino_target_dataset: libero_90_full_full
 # dino_image_keys from train_skills_config). Empty → fall back to dino_image_keys below.
 dino_camera: both
 dino_image_keys: ["observation.images.image"]
-dino_patch_grid: 14  # 14 <- original
+dino_patch_grid: 8  # 14 <- original
 dino_batch_size: 1024
 dino_dtype: float16
 dino_wandb_project: DP_train

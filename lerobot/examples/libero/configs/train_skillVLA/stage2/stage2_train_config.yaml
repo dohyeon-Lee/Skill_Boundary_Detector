@@ -5,29 +5,29 @@
 # expert_arch (A=joint / B=fused), vision_backbone, action_expert_variant and skill_vocab_size are
 # read from the Stage-1 checkpoint by the model — set only the Stage-1 run name below.
 #
-# Roots come from ../build_data/train_skillVLA_config.yaml; skill_fsq_levels defaults to the FSQ the
-# dataset was built with. Output:
-#   {project_root}/skillVLA_outputs/S2_{source_dataset}_{run_tag}_batch{N}_stage2_{A|B}[_{exp}]/
+# All roots are declared below (standalone); source/run_tag/skill_fsq_levels are parsed from
+# stage1_run_name (the dataset this stage trains on = the one Stage-1 trained on). Output:
+#   {project_root}/{outputs_root}/skillVLA_stage2/{source_dataset}_{run_tag}_batch{N}_{A|B}[_{exp}]/
 
-# ── Which skillvla dataset to train on ────────────────────────
-# Resolves to {project_root}/{dataset_root}/{skillvla_dataset_root}/{source_dataset}/{run_tag}/
-#   (→ skillvla/ + FSQ.pt, built by configs/train_skillVLA/build_data).
-source_dataset: libero_90
-run_tag: FSQ555_pg8_image256_eqloss_1000
+# ── Paths (standalone — not inherited from build_data) ──
+project_root: /data2/dohyeon/SBD
+dataset_root: dataset                    # skillvla dataset under {project_root}/{dataset_root}/{skillvla_dataset_root}/
+skillvla_dataset_root: skillvla_dataset
+outputs_root: outputs   # stage1 warm-start in {outputs_root}/skillVLA_stage1/, this stage in .../skillVLA_stage2/ (subdirs fixed in resolver)
 
-# ── Warm-start ────────────────────────────────────────────────
+# ── Warm-start (also selects the dataset: source + run_tag parsed from stage1_run_name) ──
 pi_base: lerobot/pi05_base                  # VLM (PaliGemma) init
-# Stage-1 skill_expert run folder under {project_root}/{skillvla_outputs_root}/ whose
+# Stage-1 skill_expert run folder under {outputs_root}/skillVLA_stage1/ whose
 # checkpoints/{stage1_checkpoint}/pretrained_model warm-starts the action expert + cond side. Its
 # config supplies expert_arch (A/B) / vision_backbone / skill_vocab — no need to repeat them here.
-stage1_run_name: S1_libero_90_FSQ555_pg8_image256_eqloss_1000_batch32_stage1_init_joint_unfreeze_siglip
+# The skillvla dataset to train on is the one this Stage-1 trained on (parsed from this name).
+stage1_run_name: libero_90_full_full_FSQ88_dino8_1000_batch32_A
 stage1_checkpoint: "020000"     # "last" (newest at launch time) or a step number, e.g. "020000", to pin it
-skillvla_outputs_root: skillVLA_outputs
 
 # ── Skill head / FSQ ──────────────────────────────────────────
-# skill_fsq_levels defaults to build_data's fsq_levels; override only to mismatch deliberately.
-# skill_fsq_levels: [5,5,5]
 skill_loss_weight: 0.1 # 0.5                       # total = BC + λ·skill_CE (λ<1 keeps BC dominant)
+# ── Run naming ────────────────────────────────────────────────
+exp: "loss01"                                      # optional suffix → ..._batch{N}_{A|B}_{exp}
 
 # ── Freeze toggles (all parts otherwise trained) ──────────────
 freeze_cond_encoder: true                    # [A only] reuse the Stage-1 current-obs encoding
@@ -45,8 +45,6 @@ lr_base: 2.5e-05                             # effective lr = lr_base * num_gpus
 steps: 100000
 save_freq: 2500
 
-# ── Run naming ────────────────────────────────────────────────
-exp: "loss01"                                      # optional suffix → ..._stage2_{A|B}_{exp}
 
 # ── wandb ─────────────────────────────────────────────────────
 wandb_enable: true

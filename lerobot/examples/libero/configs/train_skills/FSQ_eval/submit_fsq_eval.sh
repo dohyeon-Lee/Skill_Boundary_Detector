@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Inputs:
-#   roots        : ../train_skills_config.yaml  (skills / DINO / dataset / FSQ_outputs root)
+#   roots        : ../train_skills_config.yaml  (skills / DINO / dataset / outputs/FSQ root)
 #   eval knobs   : ./fsq_eval_config.yaml       (run_name, checkpoint, N_ACTION_STEPS, samples, slurm)
-#   FSQ model    : {project_root}/FSQ_outputs/{fsq_eval_run_name}/FSQ.pt (or FSQ_epoch*.pt)
+#   FSQ model    : {project_root}/outputs/FSQ/{fsq_eval_run_name}/FSQ.pt (or FSQ_epoch*.pt)
 # Outputs:
 #   latents+HTML : ./outputs/{fsq_eval_run_name}/{epoch}/{skill_latents.npz, fsq_eval.html}
 #

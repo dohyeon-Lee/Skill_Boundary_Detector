@@ -6,8 +6,8 @@
 # Reference models/configs:
 #   base DP cfg  : {project_root}/lerobot/{dp_base_config}
 # Outputs:
-#   DP policy    : {project_root}/DP_outputs/{dp_policy_name}
-#   checkpoint   : {project_root}/DP_outputs/{dp_policy_name}/checkpoints/{dp_checkpoint}/pretrained_model
+#   DP policy    : {project_root}/outputs/DP/{dp_policy_name}
+#   checkpoint   : {project_root}/outputs/DP/{dp_policy_name}/checkpoints/{dp_checkpoint}/pretrained_model
 #
 # Train Diffusion Policy with precomputed frame-level DINO tokens.
 #

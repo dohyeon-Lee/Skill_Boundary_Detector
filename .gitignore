@@ -1,4 +1,5 @@
 # ── 데이터셋 (대용량) ─────────────────────────────────────────────
+dataset/
 libero_dataset/
 libero_small_dataset/
 libero_10_old/

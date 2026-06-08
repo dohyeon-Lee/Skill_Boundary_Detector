@@ -121,8 +121,10 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
     root = Path(str(get_value(cfg, "project_root"))).expanduser()
     dataset_root_name = str(get_value(cfg, "dataset_root", "libero_dataset"))
     dataset_root = root / dataset_root_name
-    outputs_root = root / str(get_value(cfg, "outputs_root", "DP_outputs"))
-    fsq_outputs_root = root / str(get_value(cfg, "fsq_outputs_root", "FSQ_outputs"))
+    outputs_root = root / str(get_value(cfg, "outputs_root", "outputs"))
+    # Fixed per-stage subdirs under the single outputs root (not configurable in yaml).
+    dp_outputs_root = outputs_root / "DP"
+    fsq_outputs_root = outputs_root / "FSQ"
     fsq_dataset_root_name = str(get_value(cfg, "fsq_dataset_root", "FSQ_dataset"))
     fsq_dataset_root = dataset_root / fsq_dataset_root_name
     fsq_inputs_name = str(get_value(cfg, "fsq_inputs_name", "FSQ_inputs"))
@@ -167,7 +169,7 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
 
     fsq_levels = as_levels(get_value(cfg, "fsq_levels", [5, 5, 5]))
     fsq_tag = "fsq" + "".join(str(v) for v in fsq_levels)
-    fsq_image_token_dim = int(get_value(cfg, "fsq_image_token_dim", 128))
+    fsq_image_token_dim = int(get_value(cfg, "fsq_image_token_dim", 256))
     fsq_exp = str(get_value(cfg, "fsq_exp", "")).strip()
     fsq_exp_suffix = f"_{fsq_exp}" if fsq_exp else ""
     fsq_run_template = str(
@@ -199,6 +201,7 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "raw_dataset_dir": raw_dataset_dir,
         "data_dir": dataset_root / f"{target_dataset}_data",
         "outputs_root": outputs_root,
+        "dp_outputs_root": dp_outputs_root,
         "fsq_outputs_root": fsq_outputs_root,
         "dino_source_dataset": dino_source_dataset,
         "dino_feature_dataset": dino_feature_dataset,
@@ -220,23 +223,23 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "dino_overwrite_prepared": as_bool(get_value(cfg, "dino_overwrite_prepared", False)),
         "dp_base_config": root / "lerobot" / str(get_value(cfg, "dp_base_config")),
         "dp_policy": dp_policy,
-        "dp_output_dir": outputs_root / dp_policy,
-        "dp_policy_path": outputs_root / dp_policy / "checkpoints" / str(get_value(cfg, "dp_checkpoint", "100000")) / "pretrained_model",
+        "dp_output_dir": dp_outputs_root / dp_policy,
+        "dp_policy_path": dp_outputs_root / dp_policy / "checkpoints" / str(get_value(cfg, "dp_checkpoint", "100000")) / "pretrained_model",
         "dp_checkpoint": str(get_value(cfg, "dp_checkpoint", "100000")),
         "train_DP": train_dp,
         "dp_n_obs_steps": dp_n_obs_steps,
         "dp_n_action_steps": int(get_value(cfg, "dp_n_action_steps", 16)),
         "dp_horizon": dp_horizon,
         "dp_batch_size": int(get_value(cfg, "dp_batch_size", 64)),
-        "dp_steps": int(get_value(cfg, "dp_steps", 200000)),
+        "dp_steps": int(get_value(cfg, "dp_steps", 100000)),
         "dp_num_workers": int(get_value(cfg, "dp_num_workers", 4)),
-        "dp_save_freq": int(get_value(cfg, "dp_save_freq", 5000)),
+        "dp_save_freq": int(get_value(cfg, "dp_save_freq", 50000)),
         "dp_log_freq": int(get_value(cfg, "dp_log_freq", 200)),
         "dp_eval_freq": int(get_value(cfg, "dp_eval_freq", 0)),
         "dp_seed": int(get_value(cfg, "dp_seed", 42)),
         "dp_wandb_project": str(get_value(cfg, "dp_wandb_project", "DP_train")),
         "dp_wandb_enable": as_bool(get_value(cfg, "dp_wandb_enable", True)),
-        "dp_overwrite_output": as_bool(get_value(cfg, "dp_overwrite_output", False)),
+        "dp_overwrite_output": as_bool(get_value(cfg, "dp_overwrite_output", True)),
         "fsq_levels_str": " ".join(str(v) for v in fsq_levels),
         "fsq_levels_arg": "[" + ",".join(str(v) for v in fsq_levels) + "]",
         "fsq_tag": fsq_tag,
@@ -254,11 +257,11 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "fsq_hidden_dim": int(get_value(cfg, "fsq_hidden_dim", 256)),
         "fsq_num_layers": int(get_value(cfg, "fsq_num_layers", 2)),
         "fsq_n_control": int(get_value(cfg, "fsq_n_control", 30)),
-        "fsq_image_token_dim": int(get_value(cfg, "fsq_image_token_dim", 128)),
+        "fsq_image_token_dim": int(get_value(cfg, "fsq_image_token_dim", 256)),
         "fsq_terminator_use_wrist": as_bool(get_value(cfg, "fsq_terminator_use_wrist", True)),
         "fsq_chunk_size": int(get_value(cfg, "fsq_chunk_size", 10)),
         "fsq_max_length": int(get_value(cfg, "fsq_max_length", 200)),
-        "fsq_delta_loss_weight": str(get_value(cfg, "fsq_delta_loss_weight", 10.0)),
+        "fsq_delta_loss_weight": str(get_value(cfg, "fsq_delta_loss_weight", 1.0)),
         "fsq_progress_loss_weight": str(get_value(cfg, "fsq_progress_loss_weight", 1.0)),
         "fsq_end_loss_weight": str(get_value(cfg, "fsq_end_loss_weight", 1.0)),
         "fsq_wandb_project": str(get_value(cfg, "fsq_wandb_project", "VAE_train")),

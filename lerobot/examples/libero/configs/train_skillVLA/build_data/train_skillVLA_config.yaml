@@ -21,19 +21,17 @@
 # ── Paths ─────────────────────────────────────────────────────
 # Change this when moving to another server.
 project_root: /data2/dohyeon/SBD
-# libero_dataset | libero_original_dataset
-dataset_root: libero_dataset
-# FSQ_outputs | outputs_FSQ
-fsq_outputs_root: FSQ_outputs            # trained FSQ models live here
-# DP_outputs | outputs_DP
-dp_outputs_root: DP_outputs              # trained DP models live here
+dataset_root: dataset
+# Single checkpoint output root (matches train_skills). DP/FSQ subdirs are fixed
+# by the resolver: DP -> {outputs_root}/DP, FSQ -> {outputs_root}/FSQ.
+outputs_root: outputs
 skillvla_dataset_root: skillvla_dataset  # outputs under {dataset_root}/{skillvla_dataset_root}/
 
 # ── Source dataset (원본) ─────────────────────────────────────
 # Raw LeRobot dataset to convert into SkillVLA data (may differ from the
 # dataset the DP/FSQ were trained on).
 # libero_90 | libero_90_full_full
-source_dataset: libero_90
+source_dataset: libero_90_full_full
 
 # ── DINO precompute (step 2) ──────────────────────────────────
 # Per-episode DINO tokens for the source dataset. Sliced from a base full-dataset
@@ -41,53 +39,42 @@ source_dataset: libero_90
 # dataset's meta/episodes source_episode_index mapping. (Used by DP segmentation;
 # the merged dino.npz for SkillVLA is built later at the FSQ step.)
 # libero_90 | libero_90_full_full
-dino_base_dataset: libero_90             # full dataset whose DINO we slice from
+dino_base_dataset: libero_90_full_full   # full dataset whose DINO we slice from
 dino_image_keys: ["observation.images.image"]
-dino_patch_grid: 8
-dino_feature_dim: 384
-dino_image_size: 224
+# patch grid is parsed from fsq_run_name's dino<grid> tag (kept in lockstep with the FSQ/DP)
 dino_copy_mode: symlink                  # copy | hardlink | symlink (intermediate, so symlink is cheap)
 
 # ── DP model for skill segmentation (step 3) ──────────────────
-# A trained Diffusion Policy from train_skills (under {project_root}/DP_outputs/).
+# A trained Diffusion Policy from train_skills (under {project_root}/outputs/DP/).
 # Used to replan and detect skill boundaries on the source dataset.
 # The policy's n_obs_steps / n_action_steps / horizon are read from the checkpoint
 # config at load time, so they are not specified here.
-dp_policy_name: "dp_libero_90_dino8_obs10_horizon16"   # folder under DP_outputs/
+dp_policy_name: "libero_90_full_full_dino8"   # folder under outputs/DP/
 dp_checkpoint: "100000"
-# Skill-boundary detection params (same meaning as train_skills skillset_*).
-skillset_dn_step: 7
-skillset_n_gmm: 5
-skillset_smooth_window: 7
-skillset_savgol_polyorder: 4
-skillset_replan_interval: 3
-skillset_nms_dist: 25
+# Fixed skill-boundary detection params (dn_step, n_gmm, smooth_window, savgol_polyorder,
+# replan_interval, nms_dist; same meaning as train_skills) live as defaults in
+# src/train_skillVLA_config.py — change them there if ever needed.
 # Parallelism: step-3 (DP segmentation) is the slow stage, so it is split across
 # GPUs as a Slurm array. Each array job handles `skillset_tasks_per_job` tasks on
 # one GPU; the array size is computed automatically from the source task count.
 skillset_tasks_per_job: 5
 skillset_array_throttle: 0   # max concurrent array jobs (0 = no cap → use all available GPUs)
+skillset_max_sweeps: 2
 # After the array, a verify job checks every episode was segmented and re-runs
 # tasks that still have missing episodes (e.g. a dead GPU left gaps). It sweeps up
 # to this many times, then fails (halting the chain) if still incomplete.
-skillset_max_sweeps: 2
+
 
 # ── FSQ encoder (step 4) ──────────────────────────────────────
-# A trained FSQ from train_skills (under {project_root}/FSQ_outputs/).
-# The model dir name is rebuilt as:
-#   {fsq_train_dataset}_fsq{levels}_pg{dino_patch_grid}_image{fsq_image_token_dim}{fsq_exp_suffix}
-# and the run tag for outputs as:
-#   FSQ{levels}_pg{dino_patch_grid}_image{fsq_image_token_dim}{fsq_exp_suffix}_{fsq_checkpoint}
-
-# libero_90 | libero_90_full_full
-fsq_train_dataset: libero_90             # dataset the FSQ was trained on (for run-name lookup)
-fsq_levels: [5, 5, 5]
-fsq_image_token_dim: 256
-fsq_exp: "eqloss"                              # optional suffix used in train_skills fsq_exp, e.g. eqloss
-fsq_checkpoint: 1000                     # epoch number; 0 = best (FSQ.pt)
+# A trained FSQ from train_skills. Declared like dp_policy_name: just the folder
+# name under {project_root}/outputs/FSQ/ + the checkpoint. Levels are parsed from
+# the fsq<levels> tag in the name (codebook size = prod(levels)); the rest of the
+# FSQ config lives in the checkpoint.
+fsq_run_name: "libero_90_full_full_fsq88_dino8"   # folder under outputs/FSQ/
+fsq_checkpoint: 1000                              # epoch number; 0 = best (FSQ.pt)
 
 # ── SkillVLA dataset build (step 5) ───────────────────────────
-max_order: 0
+max_order: 0                               # 0 : auto
 max_length: 200
 pmax: 10                                   # Stage-2 transition randomization 반폭 (skill 시작 ±pmax). ISS window=2*pmax+1
 skill_decoder_state_indices: "[0,1,2,3,4,5,6,7]"   # full observation.state (ee6 + gripper_state2)

@@ -4,7 +4,7 @@
 #   (b) encode each skill with the trained FSQ → skill latent vectors
 #
 # Outputs:
-#   {skillvla_dataset}/{source}/_work/skill_tokens.npz   (DINO tokens, FSQ-independent)
+#   {skillvla_dataset}/{source}/_work/seg_{dp}_ck{ckpt}/skill_tokens.npz   (DINO tokens, FSQ-independent)
 #   {skillvla_dataset}/{source}/{run_tag}/skill_latents.npz   (FSQ vectors)
 #SBATCH --job-name=skillVLA_encode
 #SBATCH --gres=gpu:1

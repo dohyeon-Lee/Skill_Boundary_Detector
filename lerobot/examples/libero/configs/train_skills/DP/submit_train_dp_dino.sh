@@ -8,8 +8,8 @@
 #   DINO source  : {project_root}/{dataset_root}/{dino_source_dataset}_DINO/pg{dino_patch_grid}
 # Outputs:
 #   prepared DINO: {project_root}/{dataset_root}/FSQ_dataset/{target_dataset}/DINO/pg{dino_patch_grid}
-#   DP policy    : {project_root}/DP_outputs/{dp_policy_name}
-#   checkpoint   : {project_root}/DP_outputs/{dp_policy_name}/checkpoints/{dp_checkpoint}/pretrained_model
+#   DP policy    : {project_root}/outputs/DP/{dp_policy_name}
+#   checkpoint   : {project_root}/outputs/DP/{dp_policy_name}/checkpoints/{dp_checkpoint}/pretrained_model
 # Skip DP train:
 #   train_DP: false, or checkpoint already exists at the checkpoint path above
 #

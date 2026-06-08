@@ -3,10 +3,15 @@
 # (raw images + skill code + actions). No VLM, no language, no FSQ/DINO-token artifacts.
 # The expert encodes raw images with its own trainable DINOv3.
 
+# ── Paths (standalone — not inherited from build_data) ──
+project_root: /data2/dohyeon/SBD
+dataset_root: dataset                    # skillvla dataset lives under {project_root}/{dataset_root}/
+skillvla_dataset_root: skillvla_dataset  # .../{skillvla_dataset_root}/{source_dataset}/{run_tag}/
+
 # ── Which skillvla dataset to train on (built by configs/train_skillVLA/build_data) ──
-source_dataset: libero_90
-run_tag: FSQ555_pg8_image256_eqloss_1000   # sub-folder under skillvla_dataset/{source}/
-skillvla_outputs_root: skillVLA_outputs        # output under {project_root}/
+source_dataset: libero_90_full_full
+run_tag: FSQ88_dino8_1000   # sub-folder under {skillvla_dataset_root}/{source}/
+outputs_root: outputs   # checkpoints under {project_root}/{outputs_root}/skillVLA_stage1/ (subdir fixed in resolver)
 
 # ── Conditioning architecture ──
 # fused = ONE gemma self-attends [image/state/skill tokens, action tokens] together (current).
@@ -14,11 +19,11 @@ skillvla_outputs_root: skillVLA_outputs        # output under {project_root}/
 #         expert takes only action tokens and reads the cond stream via PI05-style block attention
 #         (action sees cond, cond⊥action). Action expert still warm-starts from pi05; cond-encoder
 #         is fresh. fused/joint write to different output folders, so both can be A/B-compared.
-expert_arch: joint              # fused | joint
+expert_arch: joint              # fused | joint   (run-name tag: joint→A, fused→B)
 cond_encoder_variant:          # blank = same gemma variant as the action expert (recommended)
 
 # ── Model init ──
-init_from_pi05: true            # true = warm-start expert from pi05_base; false = scratch
+# init_from_pi05 is fixed true (always warm-start from pi_base) in src/stage1_train_config.py.
 pi_base: lerobot/pi05_base
 
 # ── Vision encoder (shared across the 2 cameras) ──
@@ -35,11 +40,7 @@ freeze_siglip: false             # default true: reuse pi05's robot-adapted feat
 siglip_lr: null                 # separate LR when unfrozen; null = same as the rest
 siglip_image_size: 224          # patch 14 → 16×16 = 256 tokens at 224
 
-# ── Skill ──
-# Codebook size + FSQ levels auto-derive from build_data's fsq_levels (the FSQ the dataset was
-# built with), so any FSQ dimension count just works. Uncomment to override:
-# skill_fsq_levels: [5, 5, 5]    # FSQ levels per dim (any length); vocab = prod(levels)
-# skill_vocab_size: 125          # number of FSQ codes (default = prod(skill_fsq_levels))
+
 
 # ── Optimization ──
 batch_size: 32
@@ -49,7 +50,7 @@ lr_base: 2.5e-05                # effective LR = lr_base * num_gpus
 steps: 100000
 save_freq: 2500
 
-exp: "unfreeze_siglip"       # freeze_DINO | freeze_siglip                   # optional run-name suffix → S1_{source}_{run_tag}_batch{N}_stage1_{init|scratch}_{exp}
+exp: ""       # freeze_DINO | freeze_siglip                   # optional run-name suffix → {source}_{run_tag}_batch{N}_{A|B}_{exp}
 
 # ── wandb ──
 wandb_enable: true
