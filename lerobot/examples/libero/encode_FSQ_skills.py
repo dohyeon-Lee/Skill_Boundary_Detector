@@ -67,6 +67,7 @@ def load_model(model_path: Path, device: str) -> SplineFSQAE:
         action_max=cfg.action_max,
         delta_min=cfg.delta_min,
         delta_max=cfg.delta_max,
+        terminator_use_wrist=getattr(cfg, "terminator_use_wrist", False),
     )
     model.load_state_dict(ckpt["model_state"])
     model.to(device).eval()

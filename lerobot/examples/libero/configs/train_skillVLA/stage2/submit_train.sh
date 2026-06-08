@@ -60,5 +60,16 @@ echo "  expert   : ${STAGE1_CHECKPOINT_PATH}"
 echo "  output   : ${PT_OUTPUT_DIR}"
 echo "  slurm    : partition=${TRAIN_PARTITION} qos=${TRAIN_QOS} gres=${TRAIN_GRES} mem=${TRAIN_MEM}"
 
-STAGE2_TRAIN_CONFIG="${CONFIG_PATH}" \
-  sbatch "${SBATCH_ARGS[@]}" "${SRC_DIR}/train.sbatch"
+if [ -n "${SLURM_JOB_ID:-}" ]; then
+  # Inside an existing allocation (e.g. salloc) → reuse the held GPU as a job
+  # step instead of queueing a fresh job. Resources come from the allocation,
+  # so SBATCH_ARGS are ignored here; the config snapshot still applies.
+  # NB: training runs in the FOREGROUND of this shell until it finishes.
+  echo "  mode     : srun (reusing allocation ${SLURM_JOB_ID})"
+  STAGE2_TRAIN_CONFIG="${CONFIG_PATH}" \
+    srun "${SRC_DIR}/train.sbatch"
+else
+  echo "  mode     : sbatch (new job)"
+  STAGE2_TRAIN_CONFIG="${CONFIG_PATH}" \
+    sbatch "${SBATCH_ARGS[@]}" "${SRC_DIR}/train.sbatch"
+fi

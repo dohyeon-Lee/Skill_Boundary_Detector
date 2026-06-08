@@ -3,9 +3,9 @@
 # are taken from ../train_skills_config.yaml. Keep this file minimal.
 
 # Which trained FSQ to evaluate (folder name under {project_root}/FSQ_outputs/).
-fsq_eval_run_name: libero_90_fsq555_pg8_flags_image256_eqloss
+fsq_eval_run_name: libero_90_full_full_fsq88_pg8_image256
 # 0 = best checkpoint (FSQ.pt), else epoch number → FSQ_epoch{N:04d}.pt
-fsq_eval_checkpoint: 1000
+fsq_eval_checkpoint: 400
 
 # Evaluation / HTML knobs
 fsq_eval_n_action_steps: 5       # chunk plot stride (draw a predicted chunk every N steps)

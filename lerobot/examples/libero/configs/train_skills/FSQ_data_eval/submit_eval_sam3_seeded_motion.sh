@@ -80,5 +80,15 @@ echo "  raw data  : ${RAW_DATASET_DIR}"
 echo "  slurm     : partition=${PARTITION} qos=${QOS} gres=${GRES} mem=${MEM}"
 echo "  args      : ${EVAL_ARGS_QUOTED}"
 
-TRAIN_SKILLS_CONFIG="${CONFIG_PATH}" TRAIN_DATA="${TARGET_DATASET}" EVAL_ARGS_QUOTED="${EVAL_ARGS_QUOTED}" \
-  sbatch "${SBATCH_ARGS[@]}" "${SCRIPT_DIR}/eval_sam3_seeded_motion.sbatch"
+if [ -n "${SLURM_JOB_ID:-}" ]; then
+  # Inside an existing allocation (e.g. salloc) → reuse the held GPU as a job
+  # step instead of queueing a fresh job. Resources come from the allocation,
+  # so SBATCH_ARGS are ignored here; the config snapshot still applies.
+  echo "  mode      : srun (reusing allocation ${SLURM_JOB_ID})"
+  TRAIN_SKILLS_CONFIG="${CONFIG_PATH}" TRAIN_DATA="${TARGET_DATASET}" EVAL_ARGS_QUOTED="${EVAL_ARGS_QUOTED}" \
+    srun "${SCRIPT_DIR}/eval_sam3_seeded_motion.sbatch"
+else
+  echo "  mode      : sbatch (new job)"
+  TRAIN_SKILLS_CONFIG="${CONFIG_PATH}" TRAIN_DATA="${TARGET_DATASET}" EVAL_ARGS_QUOTED="${EVAL_ARGS_QUOTED}" \
+    sbatch "${SBATCH_ARGS[@]}" "${SCRIPT_DIR}/eval_sam3_seeded_motion.sbatch"
+fi

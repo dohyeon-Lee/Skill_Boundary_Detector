@@ -39,6 +39,7 @@ from pathlib import Path
 
 import torch
 import torch.nn.functional as F
+import torch.utils.checkpoint
 from torch import Tensor, nn
 from transformers import AutoModel
 from transformers.models.gemma import modeling_gemma
@@ -364,12 +365,21 @@ class SkillVLAPytorch(PI05Pytorch):
     # ── joint stream runners ──
     def _run_streams(self, hiddens, layers_per_stream, adarms, att_4d, position_ids):
         """Run the shared transformer over the streams (pre-final-norm hiddens out). All streams
-        share the VLM's RoPE and have equal depth (gemma_*: 18 layers)."""
+        share the VLM's RoPE and have equal depth (gemma_*: 18 layers). When gradient checkpointing
+        is on (training), each layer is recomputed in backward instead of stored (memory↓, ~25% slower)
+        — the inference cache paths are @torch.no_grad so they are unaffected."""
         hiddens = [h.to(self._wdtype) for h in hiddens]
         rotary = self._vlm.rotary_emb
+        use_ckpt = getattr(self, "gradient_checkpointing_enabled", False) and self.training
         for layer_idx in range(len(layers_per_stream[0])):
             layers = [ls[layer_idx] for ls in layers_per_stream]
-            hiddens = compute_layer_multi(layer_idx, hiddens, layers, att_4d, position_ids, adarms, rotary)
+            if use_ckpt:
+                hiddens = torch.utils.checkpoint.checkpoint(
+                    compute_layer_multi, layer_idx, hiddens, layers, att_4d, position_ids, adarms, rotary,
+                    use_reentrant=False, preserve_rng_state=False,
+                )
+            else:
+                hiddens = compute_layer_multi(layer_idx, hiddens, layers, att_4d, position_ids, adarms, rotary)
         return hiddens
 
     def _joint_forward_A(self, cond_tokens, vlm_embeds, vlm_pad, vlm_is_lang, action_tokens, time_cond):

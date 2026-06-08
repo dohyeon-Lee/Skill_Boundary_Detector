@@ -22,6 +22,7 @@ from __future__ import annotations
 import numpy as np
 import torch
 
+from lerobot.datasets.dataset_metadata import LeRobotDatasetMetadata
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.policies.skillVLA.skill_jitter import choose_jitter
 
@@ -70,6 +71,14 @@ class SkillVLADataset(LeRobotDataset):
     """LeRobotDataset that also yields the VLM's (jittered) skill-start image/state + skill code."""
 
     def __init__(self, *args, **kwargs):
+        # Sample only episodes that actually have skills. The skill segmentation
+        # (build_skill_dataset.py, min_skills=2) drops episodes with <2 detected skills, so they are
+        # absent from the ISS npz and carry no Stage-2 supervision — but the LeRobot parquet still
+        # keeps them (skill_sequence_len=1, IFS=-1), and sampling one would KeyError in _ISSStore.state.
+        # We mirror the segmentation's decision by restricting `episodes` to the npz-covered set.
+        valid = self._episodes_with_skills(args, kwargs)
+        requested = kwargs.get("episodes")
+        kwargs["episodes"] = sorted(valid) if requested is None else [e for e in requested if e in valid]
         super().__init__(*args, **kwargs)
         info = self.meta.info
         iss_path = info.get("skill_initial_state_path")
@@ -80,6 +89,21 @@ class SkillVLADataset(LeRobotDataset):
             )
         self._iss = _ISSStore(iss_path)
         self._pmax = int(info.get("skill_pmax", self._iss.pmax))
+
+    @staticmethod
+    def _episodes_with_skills(args, kwargs) -> set[int]:
+        """Episode indices present in the ISS npz (= have >=1 skill), read before super().__init__
+        so they can be passed as the `episodes` subset. Same npz that _ISSStore later consumes."""
+        repo_id = args[0] if args else kwargs["repo_id"]
+        meta = LeRobotDatasetMetadata(repo_id, root=kwargs.get("root"), revision=kwargs.get("revision"))
+        iss_path = meta.info.get("skill_initial_state_path")
+        if not iss_path:
+            raise ValueError(
+                "Dataset info.json has no 'skill_initial_state_path'. Rebuild the dataset with the "
+                "updated add_skill_latents_to_dataset.py (Stage-2 schema)."
+            )
+        with np.load(iss_path) as z:
+            return {int(e) for e in np.unique(np.asarray(z["episode_id"]))}
 
     def __getitem__(self, idx) -> dict:
         item = super().__getitem__(idx)

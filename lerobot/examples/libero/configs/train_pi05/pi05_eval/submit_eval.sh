@@ -40,4 +40,13 @@ echo "  policy : ${EVAL_POLICY_PATH}"
 echo "  target : ${EVAL_TARGET_TASK}"
 echo "  slurm  : partition=${EVAL_PARTITION} nodelist=${EVAL_NODELIST:-<none>} exclude=${EVAL_EXCLUDE_NODES:-<none>}"
 
-TRAIN_PI05_CONFIG="${CONFIG_PATH}" sbatch "${SBATCH_ARGS[@]}" "${SCRIPT_DIR}/eval.sbatch"
+if [ -n "${SLURM_JOB_ID:-}" ]; then
+  # Inside an existing allocation (e.g. salloc) → reuse the held GPU as a job
+  # step instead of queueing a fresh job. Resources come from the allocation,
+  # so SBATCH_ARGS are ignored here; the config snapshot still applies.
+  echo "  mode   : srun (reusing allocation ${SLURM_JOB_ID})"
+  TRAIN_PI05_CONFIG="${CONFIG_PATH}" srun "${SCRIPT_DIR}/eval.sbatch"
+else
+  echo "  mode   : sbatch (new job)"
+  TRAIN_PI05_CONFIG="${CONFIG_PATH}" sbatch "${SBATCH_ARGS[@]}" "${SCRIPT_DIR}/eval.sbatch"
+fi

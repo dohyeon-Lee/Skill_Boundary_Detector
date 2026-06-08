@@ -7,10 +7,12 @@
 
 # ── Which trained Stage-1 model + which FSQ/skills (same {run_dir} it trained on) ──
 source_dataset: libero_90
-run_tag: FSQ555_pg8_only_image256_eqloss_200   # → {run_dir}/FSQ.pt + {run_dir}/skillvla (GT skills)
+run_tag: FSQ555_pg8_image256_eqloss_1000   # → {run_dir}/FSQ.pt + {run_dir}/skillvla (GT skills)
 skillvla_outputs_root: skillVLA_outputs
-model_dir: S1_libero_90_FSQ555_pg8_only_image256_eqloss_200_batch32_stage1_init_joint_unfreeze_DINO # _freeze_dino   # the trained S1 folder
-checkpoint: "010000"            # "last" or a step number
+model_dir: S1_libero_90_FSQ555_pg8_image256_eqloss_1000_batch32_stage1_init_joint_unfreeze_siglip # _freeze_dino   # the trained S1 folder
+
+# model_dir: S1_libero_90_FSQ555_pg8_only_image256_eqloss_200_batch32_stage1_init_joint_unfreeze_siglip # _freeze_dino   # the trained S1 folder
+checkpoint: "020000"            # "last" or a step number
 # Output folder = outputs/{model_dir}_{checkpoint}_adv-{skill_advance_mode}[_{eval_exp}]
 eval_exp: ""                    # optional free-form tag for the eval output folder (e.g. ablation name)
 

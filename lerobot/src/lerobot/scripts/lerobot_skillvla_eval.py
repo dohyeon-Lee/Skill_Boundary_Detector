@@ -1795,7 +1795,12 @@ def eval_main(cfg: EvalPipelineConfig):
 
     forced_skill_token_sequences_by_task = None
     reference_skill_token_sequences_by_task = None
-    needs_label_sequences = cfg.policy.use_label_skill_tokens_eval or cfg.policy.compare_label_skill_tokens_eval
+    # Old skill-predictor "label skill tokens" eval (forcing/comparing GT token sequences) — removed in
+    # the Stage-2 redesign (the VLM predicts skills). getattr keeps the new config (which lacks these
+    # fields) from crashing; the whole block is skipped for Stage-2.
+    needs_label_sequences = getattr(cfg.policy, "use_label_skill_tokens_eval", False) or getattr(
+        cfg.policy, "compare_label_skill_tokens_eval", False
+    )
     if needs_label_sequences:
         if not cfg.policy.label_skill_dataset_dir:
             raise ValueError(

@@ -15,7 +15,7 @@ Three cases (mirrors the previous skill_boundary_random_p logic, but as a frame-
   early (near end,  de<=p, k<last_real): pretend the NEXT skill already started p frames early
                                           → k'=k+1, offset=-p
   late  (near start, ds<=p, k>0)        : pretend the PREVIOUS skill is still running (late fire)
-                                          → k'=k-1, offset=0   (= prev skill's own GT start)
+                                          → k'=k-1, offset=±p  (prev skill's own start, jittered)
   else                                   : jitter THIS skill's start by ±p
                                           → k'=k,   offset=±p
 Both early & late eligible → coin flip. p ~ half-normal truncated at pmax (0 most likely).
@@ -62,7 +62,7 @@ def choose_jitter(
 
     if can_early:
         return k + 1, -p          # next skill, started p early
-    if can_late:
-        return k - 1, 0           # still in prev skill, its own GT start
     sign = 1 if r.random() < 0.5 else -1
+    if can_late:
+        return k - 1, sign * p    # still in prev skill; jitter its own start ±p
     return k, sign * p            # this skill, ±p jitter

@@ -18,9 +18,10 @@
 set -euo pipefail
 mkdir -p logs
 
-# Under Slurm the script runs from a spool copy, so ${BASH_SOURCE[0]} is unreliable.
-# Anchor on SLURM_SUBMIT_DIR (the FSQ_eval dir the submit script cd'd into).
-EVAL_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"   # FSQ_eval
+# Anchor on FSQ_EVAL_DIR passed explicitly by the submit script — correct for both sbatch and
+# srun-in-salloc (where SLURM_SUBMIT_DIR points to the allocation's launch dir, not FSQ_eval).
+# Fall back to SLURM_SUBMIT_DIR, then to the spool path.
+EVAL_DIR="${FSQ_EVAL_DIR:-${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}}"   # FSQ_eval
 COMMON_SRC_DIR="${EVAL_DIR}/../src"                          # train_skills/src
 TRAIN_CONFIG="${TRAIN_SKILLS_CONFIG:-${EVAL_DIR}/../train_skills_config.yaml}"
 EVAL_CONFIG="${FSQ_EVAL_CONFIG:-${EVAL_DIR}/fsq_eval_config.yaml}"

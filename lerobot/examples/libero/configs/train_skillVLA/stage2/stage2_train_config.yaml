@@ -13,31 +13,32 @@
 # Resolves to {project_root}/{dataset_root}/{skillvla_dataset_root}/{source_dataset}/{run_tag}/
 #   (→ skillvla/ + FSQ.pt, built by configs/train_skillVLA/build_data).
 source_dataset: libero_90
-run_tag: FSQ555_pg8_image256_eqloss_200
+run_tag: FSQ555_pg8_image256_eqloss_1000
 
 # ── Warm-start ────────────────────────────────────────────────
 pi_base: lerobot/pi05_base                  # VLM (PaliGemma) init
 # Stage-1 skill_expert run folder under {project_root}/{skillvla_outputs_root}/ whose
 # checkpoints/{stage1_checkpoint}/pretrained_model warm-starts the action expert + cond side. Its
 # config supplies expert_arch (A/B) / vision_backbone / skill_vocab — no need to repeat them here.
-stage1_run_name: S1_libero_90_FSQ555_pg8_only_image256_eqloss_200_batch32_stage1_init_joint_unfreeze_siglip
-stage1_checkpoint: "025000"     # "last" (newest at launch time) or a step number, e.g. "020000", to pin it
+stage1_run_name: S1_libero_90_FSQ555_pg8_image256_eqloss_1000_batch32_stage1_init_joint_unfreeze_siglip
+stage1_checkpoint: "020000"     # "last" (newest at launch time) or a step number, e.g. "020000", to pin it
 skillvla_outputs_root: skillVLA_outputs
 
 # ── Skill head / FSQ ──────────────────────────────────────────
 # skill_fsq_levels defaults to build_data's fsq_levels; override only to mismatch deliberately.
 # skill_fsq_levels: [5,5,5]
-skill_loss_weight: 0.5                       # total = BC + λ·skill_CE (λ<1 keeps BC dominant)
+skill_loss_weight: 0.1 # 0.5                       # total = BC + λ·skill_CE (λ<1 keeps BC dominant)
 
 # ── Freeze toggles (all parts otherwise trained) ──────────────
+freeze_cond_encoder: true                    # [A only] reuse the Stage-1 current-obs encoding
+freeze_expert_vision: true
 freeze_vlm: false
 freeze_vlm_vision: false                     # train the SigLIP tower for the new skill-start view
-freeze_cond_encoder: true                    # [A only] reuse the Stage-1 current-obs encoding
 freeze_action_expert: false
-freeze_expert_vision: false
+
 
 # ── Optimization ──────────────────────────────────────────────
-batch_size: 16
+batch_size: 8
 num_workers: 4
 num_gpus: 1
 lr_base: 2.5e-05                             # effective lr = lr_base * num_gpus
@@ -45,7 +46,7 @@ steps: 100000
 save_freq: 2500
 
 # ── Run naming ────────────────────────────────────────────────
-exp: ""                                      # optional suffix → ..._stage2_{A|B}_{exp}
+exp: "loss01"                                      # optional suffix → ..._stage2_{A|B}_{exp}
 
 # ── wandb ─────────────────────────────────────────────────────
 wandb_enable: true
@@ -53,8 +54,8 @@ wandb_project: VLA_stage2
 
 # ── Slurm ─────────────────────────────────────────────────────
 train_partition:
-  - big
-train_qos: big_qos
+  - debug
+train_qos: base_qos
 train_gres: gpu:1
 train_cpus_per_task: 16
 train_mem: 128G

@@ -8,7 +8,7 @@
 # ── Which trained model to evaluate ──
 skillvla_outputs_root: skillVLA_outputs   # parent folder under {project_root}/
 # The Stage-2 run folder name, exactly as created by training (S2_..._stage2_{A|B}[_exp]):
-model_dir: S2_libero_90_FSQ555_pg8_only_image256_eqloss_200_batch16_stage2_A
+model_dir: S2_libero_90_FSQ555_pg8_image256_eqloss_200_batch16_stage2_A
 checkpoint: "last"            # "last" or a step number (e.g. 100000)
 
 # ── Eval rollout ──
@@ -23,7 +23,9 @@ max_parallel_tasks: 1
 max_videos_per_task: 1
 video_frame_stride: 2
 video_fps: 10
-skill_html: true          # auto-disabled if skill_latents.npz was cleaned up
+skill_html: false         # OFF for Stage-2: skill_html visualizes the OLD skill_predictor trace,
+                          # which the new VLM-skill model doesn't produce (closed-loop success
+                          # metrics + videos still work). New-model skill viz = TODO.
 skill_html_train_samples: 10
 
 # ── Inference (eval-time tuning; the model STRUCTURE comes from the checkpoint) ──

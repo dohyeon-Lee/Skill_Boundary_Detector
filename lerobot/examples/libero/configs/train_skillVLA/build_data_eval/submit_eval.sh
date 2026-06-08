@@ -65,5 +65,15 @@ echo "  FSQ.pt   : ${FSQ_COPY_PATH}"
 echo "  out      : ${EVAL_DIR}"
 echo "  run      : dino=${EVAL_RUN_DINO} skillset=${EVAL_RUN_SKILLSET} fsq_patch=${EVAL_RUN_FSQ_PATCH} fsq_recon=${EVAL_RUN_FSQ_RECON}"
 
-TRAIN_SKILLVLA_CONFIG="${CONFIG_PATH}" EVAL_CONFIG="${EVAL_CONFIG_PATH}" SOURCE_DATA="${SOURCE_DATASET}" \
-  sbatch "${SBATCH_ARGS[@]}" "${SRC_DIR}/eval.sbatch"
+if [ -n "${SLURM_JOB_ID:-}" ]; then
+  # Inside an existing allocation (e.g. salloc) → reuse the held GPU as a job
+  # step instead of queueing a fresh job. Resources come from the allocation,
+  # so SBATCH_ARGS are ignored here; the config snapshot still applies.
+  echo "  mode     : srun (reusing allocation ${SLURM_JOB_ID})"
+  TRAIN_SKILLVLA_CONFIG="${CONFIG_PATH}" EVAL_CONFIG="${EVAL_CONFIG_PATH}" SOURCE_DATA="${SOURCE_DATASET}" \
+    srun "${SRC_DIR}/eval.sbatch"
+else
+  echo "  mode     : sbatch (new job)"
+  TRAIN_SKILLVLA_CONFIG="${CONFIG_PATH}" EVAL_CONFIG="${EVAL_CONFIG_PATH}" SOURCE_DATA="${SOURCE_DATASET}" \
+    sbatch "${SBATCH_ARGS[@]}" "${SRC_DIR}/eval.sbatch"
+fi

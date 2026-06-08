@@ -11,7 +11,7 @@
 set -euo pipefail
 mkdir -p logs
 
-SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"   # stage2_eval
+SUBMIT_DIR="${STAGE2_EVAL_DIR:-${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}}"   # stage2_eval (STAGE2_EVAL_DIR passed by submit → correct under srun-in-salloc)
 SRC_DIR="${SUBMIT_DIR}/src"
 CONFIG_PATH="${STAGE2_EVAL_CONFIG:-${SUBMIT_DIR}/stage2_eval_config.yaml}"
 
