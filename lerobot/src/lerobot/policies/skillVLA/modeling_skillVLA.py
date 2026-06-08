@@ -468,7 +468,9 @@ class SkillVLAPytorch(PI05Pytorch):
         vlm_embeds, vlm_pad, _ = self._vlm_tokens(start_images, lang_tokens, lang_masks)
         bsize, nv = vlm_pad.shape
         att_2d = vlm_pad[:, None, :] & vlm_pad[:, :, None]
-        att_4d = torch.where(att_2d[:, None], 0.0, OPENPI_ATTENTION_MASK_VALUE)
+        # SDPA (the VLM's default attn) requires the additive bias dtype to match the query's; the
+        # python-float `torch.where` yields float32, so cast to the bf16 working dtype.
+        att_4d = torch.where(att_2d[:, None], 0.0, OPENPI_ATTENTION_MASK_VALUE).to(vlm_embeds.dtype)
         position_ids = torch.cumsum(vlm_pad, dim=1) - 1
         out = self._vlm.forward(
             inputs_embeds=vlm_embeds, attention_mask=att_4d, position_ids=position_ids,
