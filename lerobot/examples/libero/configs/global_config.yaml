@@ -11,13 +11,30 @@
 # flat (key: value), and do NOT put inline comments on empty-value lines.
 # ============================================================================
 
+
+# ============================================================================
+# Cluster A (RLLAB) ==========================================================
+# ============================================================================
+
 # --- Roots (module yamls may override locally, e.g. pi05 uses libero_dataset) ---
 project_root: /data2/dohyeon/SBD
 dataset_root: dataset
-
 # --- Slurm common defaults (canonical; every module reads these) ---
 # train_partition: accepts one or more (comma/list); blank -> Slurm picks first available.
-# Known cluster partitions (uncomment / list under train_partition as needed):
+# NOTE: leave non-empty — resolvers fall back to per-module defaults (big/debug) when this is
+# blank, which would re-introduce divergence. Set the partition(s) you actually want here.
+train_partition: debug
+train_qos: base_qos
+train_nodelist: ""
+train_exclude_nodes: []
+
+# ============================================================================
+# Cluster B (Yonsei) =========================================================
+# ============================================================================
+
+# project_root: /scratch/mdorazi/Skill_Boundary_Detector
+# dataset_root: dataset
+# train_partition: 
 #   - base_suma_rtx3090
 #   - dell_rtx3090
 #   - big_suma_rtx3090
@@ -26,9 +43,17 @@ dataset_root: dataset
 #   - gigabyte_a6000
 #   - asus_6000ada
 #   - tyan_a6000
-# NOTE: leave non-empty — resolvers fall back to per-module defaults (big/debug) when this is
-# blank, which would re-introduce divergence. Set the partition(s) you actually want here.
-train_partition: debug
-train_qos: base_qos
-train_nodelist: ""
-train_exclude_nodes: []
+# train_qos: base_qos
+# train_nodelist: ""
+# train_exclude_nodes: 
+#   - node19
+#   - node13
+#   - node18
+#   - node16
+#   - node08
+#   - node10
+#   - node21
+#   - node14
+#   - node04
+#   - node05
+#   - node31
