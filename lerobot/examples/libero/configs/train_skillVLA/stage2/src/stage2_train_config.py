@@ -39,11 +39,13 @@ def build_settings(cfg: dict) -> dict:
     stage1_checkpoint = str(get_value(cfg, "stage1_checkpoint", "last")).strip() or "last"
     stage1_ckpt = stage1_vla_root / stage1_run_name / "checkpoints" / stage1_checkpoint / "pretrained_model"
 
-    # Everything is parsed from stage1_run_name = {source}_{run_tag}_batch{N}_{A|B}[_exp]: the
-    # skillvla dataset (source + run_tag) Stage-1 trained on, the FSQ levels, and the arch tag.
-    # (Works before the Stage-1 checkpoint exists; the model re-reads the real Stage-1 config
-    # at load time anyway, so arch here is just for the run name.)
-    _rt = re.search(r"(FSQ\d+_dino\d+.*?)_batch\d+", stage1_run_name)
+    # Everything is parsed from the stage1_run_name:
+    #   {source}_{run_tag}_[{dino|siglip}_{freeze|unfreeze}_]batch{N}_{A|B}[_exp]
+    # → the skillvla dataset (source + run_tag), the FSQ levels, and the arch tag. The optional
+    # vision tag (backbone + freeze) sits between run_tag and batch and is skipped here (the model
+    # re-reads the real Stage-1 config at load time, so it isn't needed for the stage-2 run name).
+    _rt = re.search(
+        r"(FSQ\d+_dino\d+.*?)(?:_(?:dino|siglip)_(?:freeze|unfreeze))?_batch\d+", stage1_run_name)
     if not _rt:
         raise ValueError(f"stage1_run_name must embed a 'FSQ..._dino..._batch<N>' run tag, got: {stage1_run_name}")
     run_tag = _rt.group(1)

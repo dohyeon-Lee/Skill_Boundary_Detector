@@ -55,9 +55,17 @@ def build_settings(cfg: dict) -> dict:
     siglip_lr = get_value(cfg, "siglip_lr", None)
     siglip_lr_str = "" if siglip_lr in (None, "", "null") else str(siglip_lr)
 
+    # run-name vision tag: <backbone>_<freeze|unfreeze> (the backbone trained + whether it was frozen).
+    vision_backbone = (str(get_value(cfg, "vision_backbone", "dino")).strip().lower() or "dino")
+    if vision_backbone == "siglip":
+        vfrozen = as_bool(get_value(cfg, "freeze_siglip", False))
+    else:
+        vfrozen = as_bool(get_value(cfg, "freeze_dino", False))
+    vis_tag = f"{vision_backbone}_{'freeze' if vfrozen else 'unfreeze'}"
+
     # run-name arch tag: joint→A, fused→B. init_from_pi05 is fixed true → not in the name.
     arch_tag = {"joint": "A", "fused": "B"}.get(expert_arch, expert_arch)
-    run_name = f"{source_dataset}_{run_tag}_batch{batch_size}_{arch_tag}"
+    run_name = f"{source_dataset}_{run_tag}_{vis_tag}_batch{batch_size}_{arch_tag}"
     if exp:
         run_name = f"{run_name}_{exp}"
     # Single outputs root from yaml; the per-stage subdir is fixed here (not in yaml).
