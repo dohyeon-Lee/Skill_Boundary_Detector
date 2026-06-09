@@ -8,7 +8,7 @@ skillvla_dataset_root: skillvla_dataset  # .../{skillvla_dataset_root}/{source_d
 
 # ── Which skillvla dataset to train on (built by configs/train_skillVLA/build_data) ──
 source_dataset: libero_90_full_full
-run_tag: FSQ88_dino8_1000   # sub-folder under {skillvla_dataset_root}/{source}/
+run_tag: FSQ865_dino8_200   # sub-folder under {skillvla_dataset_root}/{source}/
 outputs_root: outputs   # checkpoints under {project_root}/{outputs_root}/skillVLA_stage1/ (subdir fixed in resolver)
 
 # ── Conditioning architecture ──
@@ -18,7 +18,7 @@ outputs_root: outputs   # checkpoints under {project_root}/{outputs_root}/skillV
 #         expert takes only action tokens and reads the cond stream via PI05-style block attention
 #         (action sees cond, cond⊥action). Action expert still warm-starts from pi05; cond-encoder
 #         is fresh. fused/joint write to different output folders, so both can be A/B-compared.
-expert_arch: joint              # fused | joint   (run-name tag: joint→A, fused→B)
+expert_arch: fused              # fused | joint   (run-name tag: joint→A, fused→B)
 cond_encoder_variant:          # blank = same gemma variant as the action expert (recommended)
 
 # ── Model init ──
@@ -35,7 +35,7 @@ dino_model_path: /data2/dohyeon/SBD/models/dinov3-vits16
 dino_lr: null                   # null = same LR as the rest; set a float to use a separate DINO LR
 freeze_dino: false
 # SigLIP backbone (used when vision_backbone: siglip)
-freeze_siglip: false             # default true: reuse pi05's robot-adapted features (only image_proj trains)
+freeze_siglip: true             # default true: reuse pi05's robot-adapted features (only image_proj trains)
 siglip_lr: null                 # separate LR when unfrozen; null = same as the rest
 siglip_image_size: 224          # patch 14 → 16×16 = 256 tokens at 224
 
