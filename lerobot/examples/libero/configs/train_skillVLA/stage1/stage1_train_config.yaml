@@ -12,7 +12,8 @@ run_tag: FSQ88_dino8_1000   # sub-folder under {skillvla_dataset_root}/{source}/
 outputs_root: outputs   # checkpoints under {project_root}/{outputs_root}/skillVLA_stage1/ (subdir fixed in resolver)
 
 # ── Conditioning architecture ──
-# fused = ONE gemma self-attends [image/state/skill tokens, action tokens] together (current).
+# fused = ONE gemma over [image/state/skill tokens, action tokens], BLOCK-CAUSAL: cond⊥action
+#         (cond doesn't see the noisy action), action sees cond+action (DP/pi0-standard).
 # joint = SEPARATE cond-encoder (own gemma, same config) encodes image/state/skill; the action
 #         expert takes only action tokens and reads the cond stream via PI05-style block attention
 #         (action sees cond, cond⊥action). Action expert still warm-starts from pi05; cond-encoder

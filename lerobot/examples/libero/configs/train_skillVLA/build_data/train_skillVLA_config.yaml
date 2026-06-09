@@ -68,7 +68,7 @@ skillset_max_sweeps: 2
 # the fsq<levels> tag in the name (codebook size = prod(levels)); the rest of the
 # FSQ config lives in the checkpoint.
 fsq_run_name: "libero_90_full_full_fsq88_dino8"   # folder under outputs/FSQ/
-fsq_checkpoint: 1000                              # epoch number; 0 = best (FSQ.pt)
+fsq_checkpoint: 200                              # epoch number; 0 = best (FSQ.pt)
 
 # ── SkillVLA dataset build (step 5) ───────────────────────────
 max_order: 0                               # 0 : auto

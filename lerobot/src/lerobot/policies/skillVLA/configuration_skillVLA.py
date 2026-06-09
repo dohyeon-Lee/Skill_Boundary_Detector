@@ -20,7 +20,9 @@ class SkillVLAConfig(PI05Config):
     Branch is taken from the loaded Stage-1 checkpoint's ``expert_arch``:
       A (joint): the action expert ALSO cross-attends the Stage-1 cond-encoder (current obs + skill),
                  so it reads two prefixes — cond-encoder (fresh every step) + VLM (cached per skill).
-      B (fused): the fused action expert reads the VLM; its own image/state/skill stay self-attended.
+      B (fused): the fused action expert reads the VLM; its own [image/state/skill, action] stream is
+                 block-causal — cond (image/state/skill) ⊥ action (cond does not attend the noisy
+                 action), action attends cond + action.
 
     Skill flow: the discrete GT skill is teacher-forced into the cond-encoder (A) / expert (B) via the
     Stage-1 skill embedding at train time (the VLM's prediction is used at inference); the VLM's

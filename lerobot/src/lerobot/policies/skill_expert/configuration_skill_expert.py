@@ -25,8 +25,9 @@ class SkillExpertConfig(PI05Config):
     # ── Conditioning architecture ──
     expert_arch: str = "fused"
     """How the action expert consumes the conditioning (image/state/skill):
-    "fused" → ONE Gemma does full self-attention over [cond tokens, action tokens] (cond and
-              action mutually attend; the expert weights also encode the conditioning);
+    "fused" → ONE Gemma over [cond tokens, action tokens] with BLOCK-CAUSAL attention: cond is one
+              bidirectional block that does NOT attend the noisy action; action attends cond + action
+              (DP/pi0-standard obs→action one-directional structure; expert weights also encode cond);
     "joint" → a SEPARATE cond-encoder (own Gemma, same config) encodes the conditioning, and the
               action expert receives ONLY action tokens, reading the cond stream via PI05-style
               joint block attention (block mask: action sees cond+action, cond⊥action). The action

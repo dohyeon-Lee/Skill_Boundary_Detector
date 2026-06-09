@@ -345,16 +345,20 @@ class SkillVLAPytorch(PI05Pytorch):
         return att_4d, col_valid
 
     def _mask_branch_B(
-        self, vlm_pad: Tensor, vlm_is_lang: Tensor, ne: int
+        self, vlm_pad: Tensor, vlm_is_lang: Tensor, nc: int, na: int
     ) -> tuple[Tensor, Tensor]:
-        """Branch-B (B,1,T,T) additive mask + (B,T) pad. Streams ordered [vlm, expert]:
-        vlm bidirectional within itself; expert (cond+action) full self-attn + attends vlm-nonlang."""
+        """Branch-B (B,1,T,T) additive mask + (B,T) pad. Streams ordered [vlm, expert(cond+action)]:
+        vlm bidirectional within itself; the expert is BLOCK-CAUSAL — cond is a bidirectional block
+        that does NOT attend the action; action attends cond+action; both expert groups read
+        vlm-nonlang (image+skill, language excluded). cond⊥action mirrors the Stage-1 fused expert."""
         bsize, nv = vlm_pad.shape
         device = vlm_pad.device
+        ne = nc + na
         total = nv + ne
         allow = torch.zeros(bsize, total, total, dtype=torch.bool, device=device)
         allow[:, :nv, :nv] = True                                    # vlm block
         allow[:, nv:, nv:] = True                                    # expert self (cond+action)
+        allow[:, nv : nv + nc, nv + nc :] = False                    # cond ⊥ action (block-causal)
         allow[:, nv:, :nv] = (~vlm_is_lang)[None, None, :]           # expert → vlm-nonlang
         col_valid = torch.cat(
             [vlm_pad, torch.ones(bsize, ne, dtype=torch.bool, device=device)], dim=1)
@@ -396,9 +400,9 @@ class SkillVLAPytorch(PI05Pytorch):
         return vlm_out, action_out
 
     def _joint_forward_B(self, cond_tokens, vlm_embeds, vlm_pad, vlm_is_lang, action_tokens, time_cond):
+        nc = cond_tokens.shape[1]
         expert_in = torch.cat([cond_tokens, action_tokens], dim=1)
-        ne = expert_in.shape[1]
-        att_4d, pad = self._mask_branch_B(vlm_pad, vlm_is_lang, ne)
+        att_4d, pad = self._mask_branch_B(vlm_pad, vlm_is_lang, nc, action_tokens.shape[1])
         position_ids = torch.cumsum(pad, dim=1) - 1
         layers_per_stream = [self._vlm.layers, self._expert.layers]
         adarms = [None, time_cond]
@@ -591,8 +595,9 @@ class SkillVLAPytorch(PI05Pytorch):
     @torch.no_grad()
     def _sample_actions_B(self, cond_images, start_images, lang_tokens, lang_masks, state, skill_code, noise, num_steps):
         """Branch B (fused) cached sampling: only the VLM is a constant prefix (cached per skill). The
-        fused expert's suffix = [cond, action] (full self-attn, cond attends the noisy action so it is
-        re-run each step) reads the cached VLM-nonlang K/V — pi05 ``denoise_step`` with cond in the suffix."""
+        fused expert's suffix = [cond, action] is BLOCK-CAUSAL (cond ⊥ action); it is still re-run each
+        step (the suffix gets the per-step time AdaRMS) and reads the cached VLM-nonlang K/V — pi05
+        ``denoise_step`` with cond in the suffix."""
         bsize, device = state.shape[0], state.device
         na = self.config.chunk_size
         vlm_embeds, vlm_pad, vlm_is_lang = self._vlm_tokens(start_images, lang_tokens, lang_masks)
@@ -612,10 +617,13 @@ class SkillVLAPytorch(PI05Pytorch):
             skill_code = self.skill_head.decode(vlm_h[:, -1])
         cond_tokens = torch.cat([cond_base, self._skill_token(skill_code)], dim=1)
 
-        # suffix rows attend vlm-nonlang + all suffix (full self-attn within cond+action)
-        cols = torch.cat([vlm_pad & ~vlm_is_lang[None, :], torch.ones(bsize, ne, dtype=torch.bool, device=device)], dim=1)
-        att_4d = torch.where(cols[:, None, None, :].expand(bsize, 1, ne, cols.shape[1]),
-                             0.0, OPENPI_ATTENTION_MASK_VALUE)
+        # suffix rows attend vlm-nonlang + the suffix, BLOCK-CAUSAL: cond ⊥ action (cond rows do not
+        # attend the action cols); action attends cond+action. Matches the joint _mask_branch_B block.
+        prefix_cols = (vlm_pad & ~vlm_is_lang[None, :])[:, None, :].expand(bsize, ne, nv)
+        suffix_block = torch.ones(bsize, ne, ne, dtype=torch.bool, device=device)
+        suffix_block[:, :nc, nc:] = False                                    # cond ⊥ action
+        allow_rows = torch.cat([prefix_cols, suffix_block], dim=2)           # (B, ne, nv+ne)
+        att_4d = torch.where(allow_rows[:, None], 0.0, OPENPI_ATTENTION_MASK_VALUE)
 
         if noise is None:
             noise = self.sample_noise((bsize, na, self.config.max_action_dim), device)

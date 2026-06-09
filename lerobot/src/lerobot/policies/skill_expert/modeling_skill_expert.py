@@ -133,7 +133,7 @@ class SkillExpertPytorch(nn.Module):
         self.gemma_expert = _build_gemma(config.action_expert_variant, use_adarms=True)
 
         # ── How the conditioning is consumed ──
-        # "fused": the action expert self-attends [cond tokens, action tokens] together.
+        # "fused": ONE expert over [cond tokens, action tokens], block-causal (cond⊥action; action sees both).
         # "joint": a separate cond-encoder encodes the conditioning; the action expert takes only
         #          action tokens and reads the cond stream via PI05-style block attention (cond⊥action).
         self.expert_arch = config.expert_arch
@@ -208,14 +208,19 @@ class SkillExpertPytorch(nn.Module):
         return t
 
     def _run_expert(self, cond_tokens: Tensor, x_t: Tensor, timestep: Tensor) -> Tensor:
-        """Full self-attention over [cond tokens, noisy action tokens]; decode action velocity."""
+        """Block-causal attention over [cond tokens, noisy action tokens]; decode action velocity.
+        cond is one bidirectional block that does NOT attend the action; action attends cond + action
+        (DP/pi0-standard obs→action one-directional structure within a single shared-weight stream)."""
         action_tokens = self.action_in_proj(x_t.to(self._wdtype))     # (B, chunk, width)
         tokens = torch.cat([cond_tokens, action_tokens], dim=1)       # (B, M + chunk, width)
         bsize, seq_len = tokens.shape[:2]
         device = tokens.device
+        n_cond = cond_tokens.shape[1]
 
         pad_masks = torch.ones(bsize, seq_len, dtype=torch.bool, device=device)
-        att_masks = torch.zeros(bsize, seq_len, dtype=torch.bool, device=device)  # all 0 → full self-attn
+        # cond = block 0 (bidirectional, ⊥action); action opens a new block (sees cond + action).
+        ar = torch.tensor([0] * n_cond + [1] + [0] * (seq_len - n_cond - 1), dtype=torch.bool, device=device)
+        att_masks = ar[None, :].expand(bsize, seq_len)
         att_2d_4d = make_att_2d_masks(pad_masks, att_masks)[:, None, :, :]
         att_2d_4d = torch.where(att_2d_4d, 0.0, OPENPI_ATTENTION_MASK_VALUE)
         position_ids = torch.cumsum(pad_masks, dim=1) - 1
@@ -225,7 +230,7 @@ class SkillExpertPytorch(nn.Module):
             attention_mask=att_2d_4d,
             position_ids=position_ids,
             adarms_cond=self._time_cond(timestep),
-            use_cache=False,  # full self-attn, no KV cache (silences the gradient-checkpointing warning)
+            use_cache=False,  # single forward, no KV cache (silences the gradient-checkpointing warning)
         ).last_hidden_state
         action_hidden = out[:, -self.config.chunk_size :]
         return self.action_out_proj(action_hidden.to(self._wdtype)).float()

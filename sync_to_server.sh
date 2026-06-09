@@ -23,6 +23,7 @@ die() {
 }
 
 SYNC_ROOT_PATTERNS=(
+    "dataset"
     "libero_dataset"
     "libero_small_dataset"
     "libero_10_old"
