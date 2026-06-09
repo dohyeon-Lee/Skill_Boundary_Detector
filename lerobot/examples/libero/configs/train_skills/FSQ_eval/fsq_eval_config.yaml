@@ -16,15 +16,9 @@ fsq_eval_thumb_size: 160
 fsq_eval_image_key: observation.images.image
 fsq_eval_wandb_project: VAE_eval
 
-# Slurm / GPU. partition accepts one or more (Slurm picks the first available).
-fsq_eval_partition:
-  - debug
-fsq_eval_qos: base_qos
+# Slurm / GPU. partition/qos/nodelist/exclude_nodes come from configs/global_config.yaml.
 fsq_eval_gres: gpu:1
 fsq_eval_cpus_per_task: 4
 fsq_eval_mem: 64G   # DINO token npz is large; keep headroom so the load never swaps
 fsq_eval_time: "02:00:00"
-fsq_eval_nodelist: ""
-fsq_eval_exclude_nodes:
-  # - node01
   # - node200

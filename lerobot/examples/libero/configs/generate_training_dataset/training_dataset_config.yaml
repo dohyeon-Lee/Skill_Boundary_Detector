@@ -1,8 +1,7 @@
 # Shared config for configs/generate_training_dataset.
 # Update project_root when moving this workflow to another server.
 
-project_root: /data2/dohyeon/SBD
-dataset_root: dataset
+# project_root/dataset_root come from configs/global_config.yaml.
 
 # Defaults for build_training_dataset.py
 build_dataset: libero_90_full_full
@@ -30,27 +29,7 @@ dino_dtype: float16
 dino_wandb_project: DP_train
 
 # Slurm/GPU settings for DINO precompute.
-dino_partitions:
-  - debug
-  # - base_suma_rtx3090
-  # - dell_rtx3090
-  # - big_suma_rtx3090
-
-dino_exclude_nodes:
-  - node200
-  # - node19
-  # - node13
-  # - node18
-  # - node16
-  # - node08
-  # - node10
-  # - node21
-  # - node14
-  # - node04
-  # - node05
-  # - node31
-
-dino_qos: base_qos
+# partition/qos/exclude_nodes come from configs/global_config.yaml.
 dino_gpu_reserve: 0
 dino_gpu_max_per_node: 7
 dino_max_workers: 0

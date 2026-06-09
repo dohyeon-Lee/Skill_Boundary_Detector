@@ -15,9 +15,26 @@ import yaml
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "original_dataset_config.yaml"
 
 
+def _find_global(start: Path) -> Path | None:
+    """Walk up from `start` to find the nearest global_config.yaml (stops at first hit)."""
+    for d in [start.resolve(), *start.resolve().parents]:
+        candidate = d / "global_config.yaml"
+        if candidate.exists():
+            return candidate
+    return None
+
+
 def load_config(path: Path) -> dict[str, Any]:
-    with open(path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f) or {}
+    config_path = Path(path)
+    with open(config_path, "r", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f) or {}
+    # Merge the nearest global_config.yaml as a base (module cfg keys win for roots).
+    gpath = _find_global(config_path.parent)
+    if gpath is not None and gpath.resolve() != config_path.resolve():
+        with open(gpath, "r", encoding="utf-8") as f:
+            gcfg = yaml.safe_load(f) or {}
+        cfg = {**gcfg, **cfg}
+    return cfg
 
 
 def as_bool(value: Any) -> bool:
@@ -79,8 +96,9 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
     ))).expanduser()
     output_name = str(get_value(cfg, "convert_output_name", f"{suite}_full_full", env="CONVERT_OUTPUT_NAME"))
 
-    partitions = ",".join(as_list(get_value(cfg, "convert_partition", ["debug"]))) or "debug"
-    exclude = ",".join(as_list(get_value(cfg, "convert_exclude_nodes", [])))
+    # Slurm partition/qos/nodelist/exclude are canonical (global_config.yaml train_*); env vars still override.
+    partitions = ",".join(as_list(get_value(cfg, "train_partition", ["debug"]))) or "debug"
+    exclude = ",".join(as_list(get_value(cfg, "train_exclude_nodes", [])))
 
     return {
         "project_root": project_root,
@@ -118,12 +136,12 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
             cfg, "convert_max_episodes_per_task", "", env="CONVERT_MAX_EPISODES_PER_TASK"
         )),
         "convert_partition": partitions,
-        "convert_qos": str(get_value(cfg, "convert_qos", "base_qos", env="CONVERT_QOS")),
+        "convert_qos": str(get_value(cfg, "train_qos", "base_qos", env="CONVERT_QOS")),
         "convert_gres": str(get_value(cfg, "convert_gres", "gpu:1", env="CONVERT_GRES")),
         "convert_cpus_per_task": int(get_value(cfg, "convert_cpus_per_task", 16, env="CONVERT_CPUS_PER_TASK")),
         "convert_mem": str(get_value(cfg, "convert_mem", "128G", env="CONVERT_MEM")),
         "convert_time": str(get_value(cfg, "convert_time", "48:00:00", env="CONVERT_TIME")),
-        "convert_nodelist": str(get_value(cfg, "convert_nodelist", "", env="CONVERT_NODELIST")),
+        "convert_nodelist": str(get_value(cfg, "train_nodelist", "", env="CONVERT_NODELIST")),
         "convert_exclude_nodes": exclude,
     }
 

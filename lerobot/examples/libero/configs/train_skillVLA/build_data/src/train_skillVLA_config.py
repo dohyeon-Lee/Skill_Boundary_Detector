@@ -95,16 +95,18 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
     skillset_dir = seg_dir / "skillset"
 
     def slurm(prefix: str, *, cpus: int, mem: str, time: str) -> dict:
-        part = ",".join(as_list(get_value(cfg, f"{prefix}_partition", ["debug"]))) or "debug"
-        excl = ",".join(as_list(get_value(cfg, f"{prefix}_exclude_nodes", [])))
+        # partition/qos/nodelist/exclude are canonical (global_config.yaml train_*); output keys
+        # keep the per-job prefix so submit scripts read the same $<PREFIX>_* vars.
+        part = ",".join(as_list(get_value(cfg, "train_partition", ["debug"]))) or "debug"
+        excl = ",".join(as_list(get_value(cfg, "train_exclude_nodes", [])))
         return {
             f"{prefix}_partition": part,
-            f"{prefix}_qos": str(get_value(cfg, f"{prefix}_qos", "base_qos")),
+            f"{prefix}_qos": str(get_value(cfg, "train_qos", "base_qos")),
             f"{prefix}_gres": str(get_value(cfg, f"{prefix}_gres", "gpu:1")),
             f"{prefix}_cpus_per_task": int(get_value(cfg, f"{prefix}_cpus_per_task", cpus)),
             f"{prefix}_mem": str(get_value(cfg, f"{prefix}_mem", mem)),
             f"{prefix}_time": str(get_value(cfg, f"{prefix}_time", time)),
-            f"{prefix}_nodelist": str(get_value(cfg, f"{prefix}_nodelist", "")),
+            f"{prefix}_nodelist": str(get_value(cfg, "train_nodelist", "")),
             f"{prefix}_exclude_nodes": excl,
         }
 

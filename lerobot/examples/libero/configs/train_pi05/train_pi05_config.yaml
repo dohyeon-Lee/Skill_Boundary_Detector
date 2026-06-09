@@ -2,7 +2,8 @@
 # This folder owns pi05 PT/FT training and pi05 closed-loop eval.
 # Change project_root when moving this workflow to another server.
 
-project_root: /data2/dohyeon/SBD
+# project_root comes from configs/global_config.yaml. dataset_root is overridden here
+# (pi05 uses libero_dataset, not the global default).
 dataset_root: libero_dataset
 pi05_outputs_root: pi05_outputs
 pi_base: lerobot/pi05_base
@@ -19,12 +20,7 @@ pt_steps: 100000
 pt_save_freq: 5000
 pt_wandb_project: VLA_posttrain
 
-# Slurm defaults for pi05 PT. partition accepts one or more.
-pt_partition:
-  - debug
-pt_nodelist: node01
-pt_exclude_nodes: []
-pt_qos: big_qos
+# Slurm for pi05 PT (partition/qos/nodelist/exclude from configs/global_config.yaml).
 pt_gres: gpu:1
 pt_cpus_per_task: 16
 pt_mem: 128G
@@ -47,24 +43,7 @@ ft_pretrained_checkpoint: "050000"
 ft_freeze_vision_encoder: false
 ft_train_expert_only: false
 
-# Slurm defaults for pi05 FT. partition accepts one or more.
-ft_partition:
-  - debug
-  # - gigabyte_pro6000
-ft_nodelist: ""
-ft_exclude_nodes: []
-  # - node19
-  # - node13
-  # - node18
-  # - node16
-  # - node08
-  # - node10
-  # - node21
-  # - node14
-  # - node04
-  # - node05
-  # - node31
-ft_qos: pro6000_qos
+# Slurm for pi05 FT (partition/qos/nodelist/exclude from configs/global_config.yaml).
 ft_gres: gpu:1
 ft_cpus_per_task: 16
 ft_mem: 128G
@@ -88,16 +67,7 @@ eval_video_frame_stride: 2
 eval_video_fps: 10
 eval_wandb_project: VLA_eval
 
-# Slurm defaults for pi05 eval. partition accepts one or more.
-eval_partition:
-  - debug
-eval_nodelist: ""
-eval_exclude_nodes: []
-# Example:
-# eval_exclude_nodes:
-#   - node19
-#   - node13
-eval_qos: base_qos
+# Slurm for pi05 eval (partition/qos/nodelist/exclude from configs/global_config.yaml).
 eval_gres: gpu:1
 eval_cpus_per_task: 8
 eval_mem: 32G

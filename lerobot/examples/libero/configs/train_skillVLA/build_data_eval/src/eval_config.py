@@ -15,7 +15,8 @@ DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "eval_config.yaml
 
 def build_settings(config_path: str | None = None) -> dict:
     cfg = load_config(config_path or DEFAULT_CONFIG_PATH)
-    exclude = as_list(get_value(cfg, "eval_exclude_nodes", []))
+    # Slurm partition/qos/nodelist/exclude are canonical (global_config.yaml train_*).
+    exclude = as_list(get_value(cfg, "train_exclude_nodes", []))
     return {
         "eval_run_dino":       str(as_bool(get_value(cfg, "eval_run_dino", True))).lower(),
         "eval_run_skillset":   str(as_bool(get_value(cfg, "eval_run_skillset", True))).lower(),
@@ -31,13 +32,13 @@ def build_settings(config_path: str | None = None) -> dict:
         "eval_seed":           int(get_value(cfg, "eval_seed", 42)),
         "eval_wandb_project":  str(get_value(cfg, "eval_wandb_project", "VAE_eval")),
         "eval_wandb_enable":   str(as_bool(get_value(cfg, "eval_wandb_enable", False))).lower(),
-        "eval_partition":      ",".join(as_list(get_value(cfg, "eval_partition", ["debug"]))) or "debug",
-        "eval_qos":            str(get_value(cfg, "eval_qos", "base_qos")),
+        "eval_partition":      ",".join(as_list(get_value(cfg, "train_partition", ["debug"]))) or "debug",
+        "eval_qos":            str(get_value(cfg, "train_qos", "base_qos")),
         "eval_gres":           str(get_value(cfg, "eval_gres", "gpu:1")),
         "eval_cpus_per_task":  int(get_value(cfg, "eval_cpus_per_task", 8)),
         "eval_mem":            str(get_value(cfg, "eval_mem", "64G")),
         "eval_time":           str(get_value(cfg, "eval_time", "04:00:00")),
-        "eval_nodelist":       str(get_value(cfg, "eval_nodelist", "")),
+        "eval_nodelist":       str(get_value(cfg, "train_nodelist", "")),
         "eval_exclude_nodes":  ",".join(exclude),
     }
 

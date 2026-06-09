@@ -16,8 +16,7 @@
 # Single checkpoint output root. Per-stage subdirs are fixed by the resolver
 # (not configurable here): DP -> {outputs_root}/DP/{dp_policy_name},
 #                          FSQ -> {outputs_root}/FSQ/{fsq_run_name}.
-project_root: /data2/dohyeon/SBD
-dataset_root: dataset
+# project_root/dataset_root come from configs/global_config.yaml.
 outputs_root: outputs
 target_dataset: libero_90_full_full
 
@@ -49,10 +48,7 @@ dp_checkpoint: "100000"
 dp_steps: 100000
 dp_save_freq: 50000
 dp_log_freq: 200
-# ── Slurm (DP training) ───────────────────────────────────────
-dp_partition: debug
-dp_nodelist: ""
-dp_qos: base_qos
+# ── Slurm (DP training; partition/qos/nodelist/exclude from configs/global_config.yaml) ──
 dp_gres: gpu:1
 dp_cpus_per_task: 8
 dp_mem: 64G
@@ -65,27 +61,7 @@ dp_time: "48:00:00"
 # replan_interval, nms_dist) live as defaults in src/train_skills_config.py.
 # ── Shared Slurm defaults for FSQ preparation jobs ────────────
 # Used by skillset generation and DINO token extraction.
-
-slurm_partitions:
-  - debug
-  # - base_suma_rtx3090
-  # - dell_rtx3090
-  # - big_suma_rtx3090
-slurm_nodelist: ""
-slurm_exclude_nodes:
-  - node200
-  # - node19
-  # - node13
-  # - node18
-  # - node16
-  # - node08
-  # - node10
-  # - node21
-  # - node14
-  # - node04
-  # - node05
-  # - node31
-slurm_qos: base_qos
+# partition/qos/nodelist/exclude_nodes come from configs/global_config.yaml.
 slurm_gres: gpu:1
 skillset_tasks_per_job: 5
 skillset_wandb_project: Skill_dataset
@@ -127,12 +103,7 @@ fsq_max_length: 200
 # Fixed FSQ hyperparams (lr, hidden_dim, num_layers, n_control, image_token_dim=256,
 # delta/progress/end loss weights) live as defaults in src/train_skills_config.py.
 
-# ── Slurm (FSQ training) ──────────────────────────────────────
-fsq_train_partition:
-  - debug
-fsq_train_nodelist: ""
-fsq_train_exclude_nodes: ""
-fsq_train_qos: base_qos
+# ── Slurm (FSQ training; partition/qos/nodelist/exclude from configs/global_config.yaml) ──
 fsq_train_gres: gpu:1
 fsq_train_cpus_per_task: 12
 fsq_train_mem: 64G

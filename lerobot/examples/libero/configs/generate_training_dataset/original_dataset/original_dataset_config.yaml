@@ -1,7 +1,5 @@
 # Shared config for original LIBERO download/convert utilities.
-# Change project_root when moving this workflow to another server.
-
-project_root: /data2/dohyeon/SBD
+# project_root comes from configs/global_config.yaml.
 
 # ── Convert original HDF5 -> LeRobot v3 ───────────────────────
 # Input:
@@ -39,13 +37,8 @@ convert_image_writer_processes: 5
 convert_max_tasks: ""
 convert_max_episodes_per_task: ""
 
-# ── Slurm for conversion ──────────────────────────────────────
-convert_partition:
-  - debug
-convert_qos: base_qos
+# ── Slurm for conversion (partition/qos/nodelist/exclude from configs/global_config.yaml) ──
 convert_gres: gpu:1
 convert_cpus_per_task: 32
 convert_mem: 128G
 convert_time: "48:00:00"
-convert_nodelist: ""
-convert_exclude_nodes: []

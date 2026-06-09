@@ -5,9 +5,7 @@
 # This is a TASK-level eval (env runs the task's LIBERO init states in order, fed that task's
 # GT skill sequences index-paired) — scene-level alignment is not available from the dataset.
 
-# ── Paths (standalone — not inherited from build_data) ──
-project_root: /data2/dohyeon/SBD
-dataset_root: dataset                    # skillvla dataset lives under {project_root}/{dataset_root}/
+# ── Paths (project_root/dataset_root come from configs/global_config.yaml) ──
 skillvla_dataset_root: skillvla_dataset  # .../{skillvla_dataset_root}/{source_dataset}/{run_tag}/
 outputs_root: outputs   # trained S1 under {project_root}/{outputs_root}/skillVLA_stage1/ (subdir fixed in resolver)
 
@@ -52,33 +50,11 @@ skill_html_train_samples: 5      # how many training-frame samples to show per F
 wandb_enable: true               # false = no wandb upload
 wandb_project: VLA_stage1_eval
 
-# ── Slurm ──
-eval_partition:
-  - debug
-eval_qos: base_qos
+# ── Slurm (partition/qos/nodelist/exclude_nodes come from configs/global_config.yaml) ──
 eval_gres: gpu:1
 eval_cpus_per_task: 8
 eval_mem: 32G
 eval_time: "1:00:00"
-eval_nodelist: ""
-eval_exclude_nodes: []
-
-# eval_partition:
-#   - base_suma_rtx3090
-#   - dell_rtx3090
-#   - big_suma_rtx3090
-#   - suma_a6000
-#   - suma_rtx4090
-#   - gigabyte_a6000
-#   - asus_6000ada
-#   - tyan_a6000
-# eval_qos: base_qos
-# eval_gres: gpu:1
-# eval_cpus_per_task: 8
-# eval_mem: 32G
-# eval_time: "1:00:00"
-# eval_nodelist: ""
-# eval_exclude_nodes:
 #   - node19
 #   - node13
 #   - node18

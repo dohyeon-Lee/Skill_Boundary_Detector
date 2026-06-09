@@ -19,9 +19,26 @@ import yaml
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "train_pi05_config.yaml"
 
 
+def _find_global(start: Path) -> Path | None:
+    """Walk up from `start` to find the nearest global_config.yaml (stops at first hit)."""
+    for d in [start.resolve(), *start.resolve().parents]:
+        candidate = d / "global_config.yaml"
+        if candidate.exists():
+            return candidate
+    return None
+
+
 def load_config(path: Path) -> dict[str, Any]:
-    with open(path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f) or {}
+    config_path = Path(path)
+    with open(config_path, "r", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f) or {}
+    # Merge the nearest global_config.yaml as a base (module cfg keys win for roots).
+    gpath = _find_global(config_path.parent)
+    if gpath is not None and gpath.resolve() != config_path.resolve():
+        with open(gpath, "r", encoding="utf-8") as f:
+            gcfg = yaml.safe_load(f) or {}
+        cfg = {**gcfg, **cfg}
+    return cfg
 
 
 def as_bool(value: Any) -> bool:
@@ -77,11 +94,13 @@ def run_name(prefix: str, dataset: str, batch_size: int, exp: str) -> str:
 
 
 def slurm_settings(cfg: dict[str, Any], prefix: str, *, cpus: int, mem: str, time: str, qos: str) -> dict[str, Any]:
+    # partition/qos/nodelist/exclude are canonical (global_config.yaml train_*); output keys keep
+    # the per-job prefix so the pt/ft/eval sbatch files read the same $<PREFIX>_* vars.
     return {
-        f"{prefix}_partition": ",".join(as_list(get_value(cfg, f"{prefix}_partition", ["debug"]))) or "debug",
-        f"{prefix}_nodelist": str(get_value(cfg, f"{prefix}_nodelist", "")),
-        f"{prefix}_exclude_nodes": ",".join(as_list(get_value(cfg, f"{prefix}_exclude_nodes", []))),
-        f"{prefix}_qos": str(get_value(cfg, f"{prefix}_qos", qos)),
+        f"{prefix}_partition": ",".join(as_list(get_value(cfg, "train_partition", ["debug"]))) or "debug",
+        f"{prefix}_nodelist": str(get_value(cfg, "train_nodelist", "")),
+        f"{prefix}_exclude_nodes": ",".join(as_list(get_value(cfg, "train_exclude_nodes", []))),
+        f"{prefix}_qos": str(get_value(cfg, "train_qos", qos)),
         f"{prefix}_gres": str(get_value(cfg, f"{prefix}_gres", "gpu:1")),
         f"{prefix}_cpus_per_task": int(get_value(cfg, f"{prefix}_cpus_per_task", cpus)),
         f"{prefix}_mem": str(get_value(cfg, f"{prefix}_mem", mem)),

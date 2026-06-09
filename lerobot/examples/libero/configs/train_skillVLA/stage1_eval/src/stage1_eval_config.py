@@ -93,16 +93,17 @@ def build_settings(cfg: dict) -> dict:
         "wandb_run_name": f"S1eval_{run_tag}",
     }
 
-    part = ",".join(as_list(get_value(cfg, "eval_partition", ["debug"]))) or "debug"
-    excl = ",".join(as_list(get_value(cfg, "eval_exclude_nodes", [])))
+    # Slurm partition/qos/nodelist/exclude are canonical (global_config.yaml train_*).
+    part = ",".join(as_list(get_value(cfg, "train_partition", ["debug"]))) or "debug"
+    excl = ",".join(as_list(get_value(cfg, "train_exclude_nodes", [])))
     settings.update({
         "eval_partition": part,
-        "eval_qos": str(get_value(cfg, "eval_qos", "base_qos")),
+        "eval_qos": str(get_value(cfg, "train_qos", "base_qos")),
         "eval_gres": str(get_value(cfg, "eval_gres", "gpu:1")),
         "eval_cpus_per_task": int(get_value(cfg, "eval_cpus_per_task", 8)),
         "eval_mem": str(get_value(cfg, "eval_mem", "32G")),
         "eval_time": str(get_value(cfg, "eval_time", "1:00:00")),
-        "eval_nodelist": str(get_value(cfg, "eval_nodelist", "")),
+        "eval_nodelist": str(get_value(cfg, "train_nodelist", "")),
         "eval_exclude_nodes": excl,
     })
     return settings

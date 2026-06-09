@@ -54,10 +54,7 @@ def _load_flat_yaml(path: Path) -> dict[str, Any]:
     return out
 
 
-def load_config(path: Path | str | None = None) -> dict[str, Any]:
-    config_path = Path(path) if path else DEFAULT_CONFIG_PATH
-    if not config_path.exists():
-        raise FileNotFoundError(f"Config not found: {config_path}")
+def _read_yaml(config_path: Path) -> dict[str, Any]:
     try:
         import yaml
 
@@ -65,6 +62,27 @@ def load_config(path: Path | str | None = None) -> dict[str, Any]:
             return yaml.safe_load(f) or {}
     except ImportError:
         return _load_flat_yaml(config_path)
+
+
+def _find_global(start: Path) -> Path | None:
+    """Walk up from `start` to find the nearest global_config.yaml (stops at first hit)."""
+    for d in [start.resolve(), *start.resolve().parents]:
+        candidate = d / "global_config.yaml"
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def load_config(path: Path | str | None = None) -> dict[str, Any]:
+    config_path = Path(path) if path else DEFAULT_CONFIG_PATH
+    if not config_path.exists():
+        raise FileNotFoundError(f"Config not found: {config_path}")
+    cfg = _read_yaml(config_path)
+    # Merge the nearest global_config.yaml as a base (module cfg keys win for roots).
+    gpath = _find_global(config_path.parent)
+    if gpath is not None and gpath.resolve() != config_path.resolve():
+        cfg = {**_read_yaml(gpath), **cfg}
+    return cfg
 
 
 def get_value(cfg: dict[str, Any], key: str, default: Any = None, env: str | None = None) -> Any:
@@ -148,9 +166,10 @@ def dino_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str, 
         "batch_size": int(get_value(cfg, "dino_batch_size", 1024, env="DINO_BATCH_SIZE")),
         "dtype": str(get_value(cfg, "dino_dtype", "float16", env="DINO_DTYPE")),
         "wandb_project": str(get_value(cfg, "dino_wandb_project", "", env="DINO_WANDB_PROJECT")),
-        "partitions": as_list(get_value(cfg, "dino_partitions", ["debug"], env="DINO_PARTITIONS")),
-        "exclude_nodes": as_list(get_value(cfg, "dino_exclude_nodes", [], env="DINO_EXCLUDE_NODES")),
-        "qos": str(get_value(cfg, "dino_qos", "big_qos", env="DINO_QOS")),
+        # Slurm partition/qos/exclude are canonical (global_config.yaml train_*); env vars still override.
+        "partitions": as_list(get_value(cfg, "train_partition", ["debug"], env="DINO_PARTITIONS")),
+        "exclude_nodes": as_list(get_value(cfg, "train_exclude_nodes", [], env="DINO_EXCLUDE_NODES")),
+        "qos": str(get_value(cfg, "train_qos", "big_qos", env="DINO_QOS")),
         "gpu_reserve": int(get_value(cfg, "dino_gpu_reserve", 0, env="DINO_GPU_RESERVE")),
         "gpu_max_per_node": int(get_value(cfg, "dino_gpu_max_per_node", 7, env="DINO_GPU_MAX_PER_NODE")),
         "max_workers": int(get_value(cfg, "dino_max_workers", 0, env="DINO_MAX_WORKERS")),

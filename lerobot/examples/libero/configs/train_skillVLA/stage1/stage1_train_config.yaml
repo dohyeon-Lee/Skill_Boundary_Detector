@@ -3,9 +3,7 @@
 # (raw images + skill code + actions). No VLM, no language, no FSQ/DINO-token artifacts.
 # The expert encodes raw images with its own trainable DINOv3.
 
-# ── Paths (standalone — not inherited from build_data) ──
-project_root: /data2/dohyeon/SBD
-dataset_root: dataset                    # skillvla dataset lives under {project_root}/{dataset_root}/
+# ── Paths (project_root/dataset_root come from configs/global_config.yaml) ──
 skillvla_dataset_root: skillvla_dataset  # .../{skillvla_dataset_root}/{source_dataset}/{run_tag}/
 
 # ── Which skillvla dataset to train on (built by configs/train_skillVLA/build_data) ──
@@ -56,13 +54,8 @@ exp: ""       # freeze_DINO | freeze_siglip                   # optional run-nam
 wandb_enable: true
 wandb_project: VLA_stage1
 
-# ── Slurm ──
-train_partition:
-  - debug
-train_qos: base_qos
+# ── Slurm (partition/qos/nodelist/exclude_nodes come from configs/global_config.yaml) ──
 train_gres: gpu:1
 train_cpus_per_task: 16
 train_mem: 128G
 train_time: "48:00:00"
-train_nodelist: ""
-train_exclude_nodes: []

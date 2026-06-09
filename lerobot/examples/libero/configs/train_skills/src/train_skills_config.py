@@ -56,10 +56,10 @@ def _load_flat_yaml(path: Path) -> dict[str, Any]:
     return out
 
 
-def load_config(path: Path | str | None = None) -> dict[str, Any]:
-    config_path = Path(path) if path else DEFAULT_CONFIG_PATH
-    if not config_path.exists():
-        raise FileNotFoundError(f"Config not found: {config_path}")
+GLOBAL_CONFIG_NAME = "global_config.yaml"
+
+
+def _read_yaml(config_path: Path) -> dict[str, Any]:
     try:
         import yaml
 
@@ -67,6 +67,30 @@ def load_config(path: Path | str | None = None) -> dict[str, Any]:
             return yaml.safe_load(f) or {}
     except ImportError:
         return _load_flat_yaml(config_path)
+
+
+def _find_global(start: Path) -> Path | None:
+    """Walk up from `start` to find the nearest global_config.yaml (stops at first hit)."""
+    for d in [start.resolve(), *start.resolve().parents]:
+        candidate = d / GLOBAL_CONFIG_NAME
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _merge_global(config_path: Path, cfg: dict[str, Any]) -> dict[str, Any]:
+    """Merge the nearest global_config.yaml as a base (module cfg keys win)."""
+    gpath = _find_global(config_path.parent)
+    if gpath is None or gpath.resolve() == config_path.resolve():
+        return cfg
+    return {**_read_yaml(gpath), **cfg}
+
+
+def load_config(path: Path | str | None = None) -> dict[str, Any]:
+    config_path = Path(path) if path else DEFAULT_CONFIG_PATH
+    if not config_path.exists():
+        raise FileNotFoundError(f"Config not found: {config_path}")
+    return _merge_global(config_path, _read_yaml(config_path))
 
 
 def get_value(cfg: dict[str, Any], key: str, default: Any = None, env: str | None = None) -> Any:
@@ -187,7 +211,9 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         fsq_exp=fsq_exp,
         fsq_exp_suffix=fsq_exp_suffix,
     )
-    slurm_partitions = as_list(get_value(cfg, "slurm_partitions", ["debug"]))
+    # Slurm partition/qos/nodelist/exclude are canonical (read from global_config.yaml's train_*);
+    # output keys below keep their per-job prefix so submit scripts read the same $..._PARTITION vars.
+    slurm_partitions = as_list(get_value(cfg, "train_partition", ["debug"]))
     slurm_partition = slurm_partitions[0] if slurm_partitions else "debug"
 
     return {
@@ -265,9 +291,9 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "fsq_progress_loss_weight": str(get_value(cfg, "fsq_progress_loss_weight", 1.0)),
         "fsq_end_loss_weight": str(get_value(cfg, "fsq_end_loss_weight", 1.0)),
         "fsq_wandb_project": str(get_value(cfg, "fsq_wandb_project", "VAE_train")),
-        "dp_partition": str(get_value(cfg, "dp_partition", "debug")),
-        "dp_nodelist": str(get_value(cfg, "dp_nodelist", "")),
-        "dp_qos": str(get_value(cfg, "dp_qos", "big_qos")),
+        "dp_partition": slurm_partition,
+        "dp_nodelist": str(get_value(cfg, "train_nodelist", "")),
+        "dp_qos": str(get_value(cfg, "train_qos", "base_qos")),
         "dp_gres": str(get_value(cfg, "dp_gres", "gpu:1")),
         "dp_cpus_per_task": int(get_value(cfg, "dp_cpus_per_task", 8)),
         "dp_mem": str(get_value(cfg, "dp_mem", "64G")),
@@ -298,14 +324,14 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         ),
         "slurm_partitions": slurm_partitions,
         "slurm_partition": slurm_partition,
-        "slurm_nodelist": str(get_value(cfg, "slurm_nodelist", "")),
-        "slurm_exclude_nodes": as_list(get_value(cfg, "slurm_exclude_nodes", [])),
-        "slurm_qos": str(get_value(cfg, "slurm_qos", "base_qos")),
+        "slurm_nodelist": str(get_value(cfg, "train_nodelist", "")),
+        "slurm_exclude_nodes": as_list(get_value(cfg, "train_exclude_nodes", [])),
+        "slurm_qos": str(get_value(cfg, "train_qos", "base_qos")),
         "slurm_gres": str(get_value(cfg, "slurm_gres", "gpu:1")),
-        "fsq_train_partition": ",".join(as_list(get_value(cfg, "fsq_train_partition", ["debug"]))) or "debug",
-        "fsq_train_nodelist": str(get_value(cfg, "fsq_train_nodelist", "")),
-        "fsq_train_exclude_nodes": as_list(get_value(cfg, "fsq_train_exclude_nodes", [])),
-        "fsq_train_qos": str(get_value(cfg, "fsq_train_qos", "base_qos")),
+        "fsq_train_partition": ",".join(slurm_partitions) or "debug",
+        "fsq_train_nodelist": str(get_value(cfg, "train_nodelist", "")),
+        "fsq_train_exclude_nodes": as_list(get_value(cfg, "train_exclude_nodes", [])),
+        "fsq_train_qos": str(get_value(cfg, "train_qos", "base_qos")),
         "fsq_train_gres": str(get_value(cfg, "fsq_train_gres", "gpu:1")),
         "fsq_train_cpus_per_task": int(get_value(cfg, "fsq_train_cpus_per_task", 12)),
         "fsq_train_mem": str(get_value(cfg, "fsq_train_mem", "64G")),

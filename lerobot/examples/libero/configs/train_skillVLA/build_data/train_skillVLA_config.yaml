@@ -18,10 +18,7 @@
 #     └─ skillvla/      (final LeRobot SkillVLA dataset, step 5)
 # Intermediate artifacts (skillset/, skill_latents.npz, ...) are removed at the end.
 
-# ── Paths ─────────────────────────────────────────────────────
-# Change this when moving to another server.
-project_root: /data2/dohyeon/SBD
-dataset_root: dataset
+# ── Paths (project_root/dataset_root come from configs/global_config.yaml) ──
 # Single checkpoint output root (matches train_skills). DP/FSQ subdirs are fixed
 # by the resolver: DP -> {outputs_root}/DP, FSQ -> {outputs_root}/FSQ.
 outputs_root: outputs
@@ -81,13 +78,8 @@ skill_decoder_state_indices: "[0,1,2,3,4,5,6,7]"   # full observation.state (ee6
 cleanup_intermediate: false               # remove skillset/, skill_latents.npz after skillvla is built
 
 # ── Slurm (shared by all build_data jobs: skillset / encode / build) ──
-# partition accepts one or more (Slurm picks the first available).
-skillvla_partition:
-  - debug
-skillvla_qos: base_qos
+# partition/qos/nodelist/exclude_nodes come from configs/global_config.yaml.
 skillvla_gres: gpu:1
 skillvla_cpus_per_task: 8
 skillvla_mem: 64G
 skillvla_time: "8:00:00"
-skillvla_nodelist: ""
-skillvla_exclude_nodes: []
