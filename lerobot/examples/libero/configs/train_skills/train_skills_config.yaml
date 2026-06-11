@@ -85,10 +85,10 @@ fsq_inputs_name: FSQ_inputs
 ################################################################
 # EEF pose is always absolute and the motion decoder always predicts K-step
 # action chunks, so eef_mode/action_mode are no longer configurable.
-fsq_terminator_use_wrist: true
+fsq_terminator_use_wrist: false
 fsq_run_name: "{target_dataset}_{fsq_tag}_dino{dino_patch_grid}{fsq_exp_suffix}"
-fsq_exp: ""  # optional suffix for ablations, e.g. exp1 -> ..._exp1
-fsq_levels: [8, 8]
+fsq_exp: "wow"  # optional suffix for ablations, e.g. exp1 -> ..._exp1
+fsq_levels: [5, 5, 5]
 fsq_epoch: "1000"
 
 fsq_batch_size: 64 
@@ -100,8 +100,12 @@ fsq_checkpoint_every: 100
 #   false = 3rd-person only (original single-camera FSQ; old checkpoints stay loadable)
 fsq_chunk_size: 10
 fsq_max_length: 200
-# Fixed FSQ hyperparams (lr, hidden_dim, num_layers, n_control, image_token_dim=256,
-# delta/progress/end loss weights) live as defaults in src/train_skills_config.py.
+# ── FSQ loss weights ──────────────────────────────────────────
+fsq_delta_loss_weight: 1.0      # action chunk reconstruction (SmoothL1)
+fsq_progress_loss_weight: 1.0   # skill progress prediction (SmoothL1)
+fsq_end_loss_weight: 1.0        # skill termination (BCE)
+# Fixed FSQ hyperparams (lr, hidden_dim, num_layers, n_control, image_token_dim=256)
+# live as defaults in src/train_skills_config.py.
 
 # ── Slurm (FSQ training; partition/qos/nodelist/exclude from configs/global_config.yaml) ──
 fsq_train_gres: gpu:1

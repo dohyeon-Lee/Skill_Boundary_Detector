@@ -19,13 +19,13 @@ pi_base: lerobot/pi05_base                  # VLM (PaliGemma) init
 # checkpoints/{stage1_checkpoint}/pretrained_model warm-starts the action expert + cond side. Its
 # config supplies expert_arch (A/B) / vision_backbone / skill_vocab — no need to repeat them here.
 # The skillvla dataset to train on is the one this Stage-1 trained on (parsed from this name).
-stage1_run_name: libero_90_full_full_FSQ88_dino8_1000_batch32_A
-stage1_checkpoint: "020000"     # "last" (newest at launch time) or a step number, e.g. "020000", to pin it
+stage1_run_name: libero_90_full_full_FSQ865_dino8_300_siglip_unfreeze_batch32_B
+stage1_checkpoint: "025000"     # "last" (newest at launch time) or a step number, e.g. "020000", to pin it
 
 # ── Skill head / FSQ ──────────────────────────────────────────
 skill_loss_weight: 0.1 # 0.5                       # total = BC + λ·skill_CE (λ<1 keeps BC dominant)
 # ── Run naming ────────────────────────────────────────────────
-exp: "loss01"                                      # optional suffix → ..._batch{N}_{A|B}_{exp}
+exp: "unfreeze_freeze"                                      # optional suffix → ..._batch{N}_{A|B}_{exp}
 
 # ── Freeze toggles (all parts otherwise trained) ──────────────
 freeze_cond_encoder: true                    # [A only] reuse the Stage-1 current-obs encoding

@@ -111,7 +111,10 @@ def as_list(value: Any) -> list[str]:
         return []
     if isinstance(value, (list, tuple)):
         return [str(v) for v in value]
-    return [v.strip() for v in str(value).split(",") if v.strip()]
+    s = str(value).strip()
+    if "," in s:
+        return [v.strip() for v in s.split(",") if v.strip()]
+    return [v.strip() for v in s.split() if v.strip()]
 
 
 def as_levels(value: Any) -> tuple[int, ...]:

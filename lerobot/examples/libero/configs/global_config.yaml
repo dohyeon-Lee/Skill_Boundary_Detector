@@ -17,43 +17,48 @@
 # ============================================================================
 
 # --- Roots (module yamls may override locally, e.g. pi05 uses libero_dataset) ---
-project_root: /data2/dohyeon/SBD
-dataset_root: dataset
-# --- Slurm common defaults (canonical; every module reads these) ---
-# train_partition: accepts one or more (comma/list); blank -> Slurm picks first available.
-# NOTE: leave non-empty — resolvers fall back to per-module defaults (big/debug) when this is
-# blank, which would re-introduce divergence. Set the partition(s) you actually want here.
-train_partition: debug
-train_qos: base_qos
-train_nodelist: ""
-train_exclude_nodes: []
+# project_root: /data2/dohyeon/SBD
+# dataset_root: dataset
+# # --- Slurm common defaults (canonical; every module reads these) ---
+# # train_partition: accepts one or more (comma/list); blank -> Slurm picks first available.
+# # NOTE: leave non-empty — resolvers fall back to per-module defaults (big/debug) when this is
+# # blank, which would re-introduce divergence. Set the partition(s) you actually want here.
+# train_partition: debug
+# train_qos: base_qos
+# train_nodelist: ""
+# train_exclude_nodes: []
 
 # ============================================================================
 # Cluster B (Yonsei) =========================================================
 # ============================================================================
 
-# project_root: /scratch/mdorazi/Skill_Boundary_Detector
-# dataset_root: dataset
-# train_partition: 
-#   - base_suma_rtx3090
-#   - dell_rtx3090
-#   - big_suma_rtx3090
-#   - suma_a6000
-#   - suma_rtx4090
-#   - gigabyte_a6000
-#   - asus_6000ada
-#   - tyan_a6000
-# train_qos: base_qos
-# train_nodelist: ""
-# train_exclude_nodes: 
-#   - node19
-#   - node13
-#   - node18
-#   - node16
-#   - node08
-#   - node10
-#   - node21
-#   - node14
-#   - node04
-#   - node05
-#   - node31
+project_root: /scratch/mdorazi/Skill_Boundary_Detector
+dataset_root: dataset
+train_partition:
+  - asus_pro6000
+  - gigabyte_pro6000
+  - suma_rtx4090
+  - base_suma_rtx3090
+  - dell_rtx3090
+  - big_suma_rtx3090
+  - suma_a6000
+  - gigabyte_a6000
+  - asus_6000ada
+  - tyan_a6000
+
+train_qos: base_qos # pro6000_qos
+train_nodelist: ""
+train_exclude_nodes: 
+  - node19
+  - node13
+  - node18
+  - node16
+  - node08
+  - node10
+  - node21
+  - node14
+  - node04
+  - node05
+  - node31
+  - cs-gpu-01
+  # - node58

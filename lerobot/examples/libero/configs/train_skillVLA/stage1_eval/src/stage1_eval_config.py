@@ -31,9 +31,11 @@ def build_settings(cfg: dict) -> dict:
     model_dir = str(get_value(cfg, "model_dir"))           # e.g. libero_90_full_full_FSQ88_dino8_1000_batch32_A
     # model_dir fully identifies the trained run: {source}_{run_tag}_batch{N}_{A|B}[_exp].
     # Parse both run_tag (FSQ..._dino..._{ckpt}[_exp]) and source_dataset (the prefix) from it.
-    _rt = re.search(r"(FSQ\d+_dino\d+.*?)_batch\d+", model_dir)
+    # run_tag ends with _<ckpt> (numeric or "best"); vis_tag follows (e.g. siglip_freeze).
+    # Pattern: FSQ..._dino..._<ckpt> then optional letter-starting tokens, then _batch<N>.
+    _rt = re.search(r"(FSQ\d+_dino\d+.*?_(?:\d+|best))_(?:[a-zA-Z][^_]*_)*batch\d+", model_dir)
     if not _rt:
-        raise ValueError(f"model_dir must embed a 'FSQ..._dino..._batch<N>' run tag, got: {model_dir}")
+        raise ValueError(f"model_dir must embed a 'FSQ..._dino..._<ckpt>_batch<N>' run tag, got: {model_dir}")
     run_tag = _rt.group(1)
     source_dataset = model_dir[: _rt.start()].rstrip("_")  # the part before the run tag
     run_dir = skillvla_root / source_dataset / run_tag

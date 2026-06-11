@@ -2,7 +2,7 @@
 # SkillVLA Stage-1 training: policy.type=skill_expert (standalone action expert).
 # Trains the action expert by flow matching on the build_data skillvla dataset (raw images +
 # skill code + actions). Warm-starts from pi05_base (or scratch). Resumes if a checkpoint exists.
-#SBATCH --job-name=skillExpert_S1
+#SBATCH --job-name=stage1
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=128G

@@ -6,9 +6,9 @@
 
 set -euo pipefail
 
-BASE=/data2/dohyeon/SBD
-CACHE_DIR=/data2/dohyeon/.wandb_cache
-DATA_DIR=/data2/dohyeon/.wandb_data
+BASE=/scratch/mdorazi/Skill_Boundary_Detector
+CACHE_DIR=/scratch/mdorazi/.wandb_cache
+DATA_DIR=/scratch/mdorazi/.wandb_data
 ALL=false
 
 if [[ "${1:-}" == "--all" ]]; then

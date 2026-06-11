@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -205,6 +206,21 @@ class FSQ(nn.Module):
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_DEFAULT_IMAGE_MODEL = str(_REPO_ROOT / "models" / "dinov3-vits16")
+
+
+def resolve_image_model_path(name: str) -> str:
+    """Map an absolute model path from another machine (e.g. stored in a checkpoint cfg)
+    to this repo's ``models/<basename>`` if the original path does not exist here.
+    HF hub repo ids and existing paths pass through unchanged."""
+    p = Path(name)
+    if not p.is_absolute() or p.exists():
+        return name
+    local = _REPO_ROOT / "models" / p.name
+    return str(local) if local.exists() else name
+
+
 @dataclass
 class SplineFSQAEConfig:
     action_dim: int = 7
@@ -217,7 +233,7 @@ class SplineFSQAEConfig:
     dropout: float = 0.1
     feat_dim: int = 384       # DINO token feature dimension
     n_tokens: int = 65        # 1 CLS + 64 patch tokens (8×8 grid)
-    image_model_name: str = "/data2/dohyeon/SBD/models/dinov3-vits16"
+    image_model_name: str = _DEFAULT_IMAGE_MODEL
     image_size: int = 224
     patch_grid: int = 8
     n_patch_raw: int = 196
@@ -267,7 +283,7 @@ class SplineFSQAE(nn.Module):
         dropout: float = 0.1,
         feat_dim: int = 384,
         n_tokens: int = 65,
-        image_model_name: str = "/data2/dohyeon/SBD/models/dinov3-vits16",
+        image_model_name: str = _DEFAULT_IMAGE_MODEL,
         image_size: int = 224,
         patch_grid: int = 8,
         n_patch_raw: int = 196,
@@ -294,7 +310,7 @@ class SplineFSQAE(nn.Module):
         self.chunk_size = chunk_size
         self.feat_dim = feat_dim
         self.n_tokens = n_tokens
-        self.image_model_name = image_model_name
+        self.image_model_name = resolve_image_model_path(image_model_name)
         self.image_size = image_size
         self.patch_grid = patch_grid
         self.n_patch_raw = n_patch_raw

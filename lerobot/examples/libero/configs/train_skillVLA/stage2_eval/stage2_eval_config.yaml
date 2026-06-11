@@ -10,19 +10,19 @@ outputs_root: outputs   # trained S2 under {project_root}/{outputs_root}/skillVL
 
 # ── Which trained model to evaluate ──
 # The Stage-2 run folder name, exactly as created by training ({source}_{run_tag}_batch{N}_{A|B}[_exp]):
-model_dir: libero_90_full_full_FSQ88_dino8_1000_batch8_A_loss01
+model_dir: libero_90_full_full_FSQ865_dino8_300_batch8_B_unfreeze_freeze
 checkpoint: "last"            # "last" or a step number (e.g. 100000)
 
 # ── Eval rollout ──
 target_task: libero_90    # LIBERO suite for the sim env
 task_ids: "[0,1,2,3,4,5,6,7,8,9]"
-n_episodes: 1             # episodes per task
+n_episodes: 5             # episodes per task
 n_action_steps: 5
 eval_batch_size: 1
 max_parallel_tasks: 1
 
 # ── Video / skill HTML ──
-max_videos_per_task: 1
+max_videos_per_task: 5
 video_frame_stride: 2
 video_fps: 10
 skill_html: true          # per-skill viz: VLM-predicted FSQ code, start/end frame, and the FSQ

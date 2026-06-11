@@ -214,10 +214,12 @@ def load_dino_tokens(
       offsets   : (N_skills + 1,) int64
       episode_id, frame_start, frame_end, length : (N_skills,)
     """
-    d = np.load(str(features_path), allow_pickle=False)
+    # mmap_mode='r': file is memory-mapped — initial open is instant and only accessed
+    # pages are read from disk. Critical for 30+ GB npz files where a full upfront
+    # np.load would block for >1h on a cold page cache.
+    d = np.load(str(features_path), allow_pickle=False, mmap_mode='r')
     # Keep the native dtype (usually float16); downstream consumers convert per
-    # clip, so a full float32 copy here would just waste memory/time (the array is
-    # tens of GB) and risk swapping.
+    # clip, so a full float32 copy here would just waste memory/time and risk swapping.
     features = d["features"]                         # (N_total, n_tokens, F)
     offsets  = d["offsets"].astype(np.int64)        # (N+1,)
 

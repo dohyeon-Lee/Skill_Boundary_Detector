@@ -3,9 +3,9 @@
 # are taken from ../train_skills_config.yaml. Keep this file minimal.
 
 # Which trained FSQ to evaluate (folder name under {project_root}/outputs/FSQ/).
-fsq_eval_run_name: libero_90_full_full_fsq88_dino8
+fsq_eval_run_name: libero_90_full_full_fsq865_dino8_wow
 # 0 = best checkpoint (FSQ.pt), else epoch number → FSQ_epoch{N:04d}.pt
-fsq_eval_checkpoint: 400
+fsq_eval_checkpoint: 900
 
 # Evaluation / HTML knobs
 fsq_eval_n_action_steps: 5       # chunk plot stride (draw a predicted chunk every N steps)
@@ -19,6 +19,6 @@ fsq_eval_wandb_project: VAE_eval
 # Slurm / GPU. partition/qos/nodelist/exclude_nodes come from configs/global_config.yaml.
 fsq_eval_gres: gpu:1
 fsq_eval_cpus_per_task: 4
-fsq_eval_mem: 64G   # DINO token npz is large; keep headroom so the load never swaps
+fsq_eval_mem: 64G   # DINO npz loaded via mmap_mode='r' — only accessed pages are paged in
 fsq_eval_time: "02:00:00"
   # - node200
