@@ -3,7 +3,8 @@
 Flow-matching action chunk predictor conditioned on:
   - current 3rd-person + wrist images (trainable DINOv3, shared weights),
   - robot state,
-  - GT FSQ skill code (nn.Embedding lookup, like a language token).
+  - GT FSQ skill code, fed as its FSQ grid coordinate z_q normalized to [-1, 1] through a
+    Linear projection (one token) — neighboring codes stay neighboring in the conditioning.
 
 All tokens self-attend; only the action-token hidden states are decoded into actions.
 Stage 2 (`skill_vla`) adds the VLM and can init its action expert from a Stage-1 checkpoint.
@@ -121,7 +122,16 @@ class SkillExpertPytorch(nn.Module):
         # ── Token projections (all → expert width) ──
         self.image_proj = nn.Linear(vis_dim, self.width)                # image token → expert token
         self.state_proj = nn.Linear(config.max_state_dim, self.width)   # continuous state → 1 token
-        self.skill_emb = nn.Embedding(config.skill_vocab_size, self.width)  # discrete FSQ code → 1 token
+        # Skill: flat code → FSQ grid coordinate z_q (codebook's little-endian frame, the same
+        # value the FSQ decoder consumes), normalized per dim to [-1, 1] → one Linear token.
+        levels = torch.tensor(config.skill_fsq_levels, dtype=torch.long)
+        strides = torch.ones_like(levels)
+        for i in range(1, len(config.skill_fsq_levels)):
+            strides[i] = strides[i - 1] * config.skill_fsq_levels[i - 1]
+        self.register_buffer("_fsq_levels", levels, persistent=False)
+        self.register_buffer("_fsq_strides", strides, persistent=False)
+        self.register_buffer("_fsq_half", (levels - 1).float() / 2.0, persistent=False)
+        self.skill_proj = nn.Linear(len(config.skill_fsq_levels), self.width)  # z_q → 1 token
 
         # ── Flow-matching action head (mirrors PI05) ──
         self.action_in_proj = nn.Linear(config.max_action_dim, self.width)
@@ -191,12 +201,19 @@ class SkillExpertPytorch(nn.Module):
         x = x.to(dtype=next(self.siglip.parameters()).dtype)
         return self.siglip(pixel_values=x).last_hidden_state  # (B, 256, siglip_dim)
 
+    def _code_to_zq(self, code: Tensor) -> Tensor:
+        """Flat FSQ code (B,) → normalized grid coordinate z_q/half ∈ [-1, 1]^D (little-endian
+        strides — the FSQ codebook's own convention, matching the FSQ decoder's z input)."""
+        idx = code.view(-1, 1).long()
+        level_ids = torch.div(idx, self._fsq_strides[None, :], rounding_mode="floor") % self._fsq_levels[None, :]
+        return (level_ids.float() - self._fsq_half[None, :]) / self._fsq_half[None, :]
+
     def _cond_tokens(self, images: list[Tensor], state: Tensor, skill_code: Tensor) -> Tensor:
         """Conditioning tokens [img1 tokens, img2 tokens, state, skill] → (B, M, width)."""
         tokens = [self.image_proj(self._image_features(image).to(self._wdtype)) for image in images]
         state = pad_vector(state.to(dtype=torch.float32), self.config.max_state_dim)
         tokens.append(self.state_proj(state.to(self._wdtype)).unsqueeze(1))
-        tokens.append(self.skill_emb(skill_code.view(-1).long()).unsqueeze(1))
+        tokens.append(self.skill_proj(self._code_to_zq(skill_code).to(self._wdtype)).unsqueeze(1))
         return torch.cat(tokens, dim=1)
 
     def _time_cond(self, timestep: Tensor) -> Tensor:

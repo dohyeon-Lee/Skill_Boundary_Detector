@@ -59,10 +59,12 @@ class SkillExpertConfig(PI05Config):
 
     # ── Skill conditioning ──
     skill_vocab_size: int = 125
-    """Number of FSQ skill codes (= prod(fsq_levels)). The skill is a discrete code fed
-    through an nn.Embedding lookup, exactly like a language token."""
+    """Number of FSQ skill codes (= prod(skill_fsq_levels)); bounds the codes in the dataset."""
     skill_fsq_levels: list[int] = field(default_factory=lambda: [5, 5, 5])
-    """FSQ levels per dim (for the eval FSQ-cube visualization). prod = skill_vocab_size."""
+    """FSQ levels per dim. The flat dataset code is mapped back to its FSQ grid coordinate z_q
+    (little-endian strides — the codebook's own convention, the same value the FSQ decoder
+    consumes), normalized per dim to [-1, 1], and fed through a Linear(D → width) as ONE cond
+    token — so neighboring codes stay neighboring in the conditioning space."""
 
     # ── Eval-only (oracle closed-loop sim). Ignored during training. ──
     fsq_path: str | None = None
@@ -71,6 +73,11 @@ class SkillExpertConfig(PI05Config):
     skill_label_dataset_dir: str | None = None
     """skillvla dataset dir whose skill_sequence columns give the GT skill sequence per task
     (matched to the env task by language) for the oracle eval."""
+    terminator_dino_model_path: str | None = None
+    """DINO weights for the FSQ terminator's raw-image encoder at eval. None → the FSQ
+    checkpoint's own image_model_name (auto-resolved to this repo's models/ if absent).
+    Kept SEPARATE from dino_model_path, which is the policy's OWN vision backbone and must
+    match the checkpoint being loaded — never override that one at eval."""
     skill_advance_mode: str = "terminator"
     """How the oracle eval advances through the GT skill sequence:
     "terminator" → the FSQ terminator decides each transition (skill_end_mode/threshold);

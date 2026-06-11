@@ -4,6 +4,25 @@
 # env task <-> dataset task is matched by LANGUAGE; the FSQ terminator advances the skill.
 # This is a TASK-level eval (env runs the task's LIBERO init states in order, fed that task's
 # GT skill sequences index-paired) — scene-level alignment is not available from the dataset.
+#
+# =========================================================================================
+# 사용법 (이 폴더에서 실행; 전부 아래 model_dir 기준)
+# =========================================================================================
+# ① 클로즈드루프 oracle eval (sim, GT skill 시퀀스 주입):
+#      ./submit_eval.sh                          # model_dir + checkpoint 사용
+#
+# ② teacher-forced (sim 없음, skill 민감도 측정: swap_delta / win_rate):
+#      ./submit_teacher_forced.sh                # model_dir + checkpoint 1개
+#
+# ③ teacher-forced 체크포인트 스윕 (win_rate 추이 — skill 사용 여부 판정):
+#      ./submit_teacher_forced_sweep.sh          # 모든 숫자 체크포인트, 완료된 건 스킵
+#      TF_CKPTS="005000 025000 last" ./submit_teacher_forced_sweep.sh   # 일부만
+#
+# ④ 추이 표만 다시 출력 (GPU 불필요):
+#      python src/tf_trend.py --model_dir {아래 model_dir 값}
+#
+# 해석: win_rate 0.5 = skill 무시 / →1.0 = skill이 action을 조향 (FSQ 디코더 기준 0.94)
+# =========================================================================================
 
 # ── Paths (project_root/dataset_root come from configs/global_config.yaml) ──
 skillvla_dataset_root: skillvla_dataset  # .../{skillvla_dataset_root}/{source_dataset}/{run_tag}/
@@ -12,12 +31,14 @@ outputs_root: outputs   # trained S1 under {project_root}/{outputs_root}/skillVL
 # ── Which trained Stage-1 model + which FSQ/skills (same {run_dir} it trained on) ──
 # model_dir alone identifies the run: source_dataset + run_tag (which skillvla dataset folder)
 # are both parsed from it ({source}_FSQ..._dino..._batch{N}_{A|B}).
-model_dir: libero_90_full_full_FSQ865_dino8_700_siglip_unfreeze_batch32_A   # trained S1 folder under outputs/skillVLA_stage1/ (joint=A, fused=B)
-checkpoint: "035000"            # "last" or a step number
+model_dir: libero_90_full_full_FSQ865_dino8_1000_dino_unfreeze_batch64_A_dinoB_c25   # trained S1 folder under outputs/skillVLA_stage1/ (joint=A, fused=B)
+checkpoint: "005000"            # "last" or a step number
 # Output folder = outputs/{model_dir}_{checkpoint}_adv-{skill_advance_mode}[_{eval_exp}]
 eval_exp: ""                    # optional free-form tag for the eval output folder (e.g. ablation name)
 
-dino_model_path: /scratch/mdorazi/Skill_Boundary_Detector/models/dinov3-vits16   # terminator's DINO
+# FSQ TERMINATOR's raw-image DINO only. The policy's own vision backbone is NOT set here —
+# it comes from the checkpoint's saved config and must match the trained weights (vits/vitb/...).
+terminator_dino_model_path: /scratch/mdorazi/Skill_Boundary_Detector/models/dinov3-vits16
 
 # ── Eval rollout ──
 target_task: libero_90

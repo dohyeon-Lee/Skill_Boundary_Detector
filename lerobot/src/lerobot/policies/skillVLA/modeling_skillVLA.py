@@ -8,15 +8,17 @@ generates the action chunk by flow matching from the CURRENT observation, readin
 PI05-style joint block attention.
 
 Branch (from the Stage-1 checkpoint's ``expert_arch``):
-  A (joint, primary): three streams — a Stage-1 cond-encoder over the CURRENT obs (+ teacher-forced
-      skill), the VLM over the START obs, and the action expert (action tokens only). The action
-      attends cond + the VLM's image/skill tokens (NOT its language) + itself; cond ⊥ VLM; neither
-      cond nor VLM attends the action.
+  A (joint, primary): three streams in a one-directional chain VLM → cond → action — a Stage-1
+      cond-encoder over the CURRENT obs (+ teacher-forced skill), the VLM over the START obs, and
+      the action expert (action tokens only). cond attends itself + the VLM's image/skill-query
+      hiddens (NOT its language tokens — language reaches cond only indirectly, via VLM hiddens
+      that attended it, pressuring the VLM image hiddens to absorb the instruction); the action
+      attends cond + itself (no direct VLM edge). Nothing attends the action.
   B (fused): two streams — the VLM, and the fused expert whose input is [cond tokens, action tokens]
       (full self-attention) and which additionally reads the VLM's image/skill tokens.
 
 Skill flow: the discrete GT skill is teacher-forced into the cond-encoder (A) / fused expert (B)
-through the Stage-1 skill embedding at train time (the VLM's prediction is used at inference). The
+through the Stage-1 z_q skill projection at train time (the VLM's prediction is used at inference). The
 VLM's skill-query hidden is the categorical-prediction signal (skill CE loss).
 
 loss = BC(flow-matching MSE) + skill_loss_weight · skill_CE.
@@ -171,10 +173,10 @@ class SkillVLAPytorch(PI05Pytorch):
         self.skill_query = nn.Parameter(torch.randn(1, 1, vlm_width) * 0.02)
         self.skill_head = SkillHead(vlm_width, config.skill_fsq_levels)
 
-        # ── Inference-only FSQ terminator (loaded lazily from config.fsq_path) ──
+        # ── FSQ grid buffers (skill cond token + inference-only terminator) ──
         # Flat FSQ code → z_q uses the FSQ codebook's OWN (little-endian) convention
         # (strides[i]=prod(levels[:i]), z_q = level_id - half), independent of SkillHead's
-        # internal mixed-radix — the terminator reads FSQ geometry, the skill_emb does not.
+        # internal mixed-radix — both the terminator and _skill_token read this geometry.
         levels = config.skill_fsq_levels
         strides = torch.ones(len(levels), dtype=torch.long)
         for i in range(1, len(levels)):
@@ -191,7 +193,7 @@ class SkillVLAPytorch(PI05Pytorch):
         # The pi05-inherited action_in/out_proj + time_mlp stay float32 (pi05 convention): their
         # outputs are cast to the working dtype only at the attention boundary (_action_in/_action_out).
         if str(config.dtype) == "bfloat16":
-            for m in (self.image_proj, self.state_proj, self.skill_emb, self.cond_encoder, self.skill_head):
+            for m in (self.image_proj, self.state_proj, self.skill_proj, self.cond_encoder, self.skill_head):
                 if m is not None:
                     m.to(dtype=torch.bfloat16)
             self.skill_query.data = self.skill_query.data.to(torch.bfloat16)
@@ -221,7 +223,8 @@ class SkillVLAPytorch(PI05Pytorch):
 
         self.image_proj = nn.Linear(vis_dim, self.expert_width)
         self.state_proj = nn.Linear(s1.max_state_dim, self.expert_width)
-        self.skill_emb = nn.Embedding(s1.skill_vocab_size, self.expert_width)
+        # Skill cond token mirrors Stage-1: flat code → normalized z_q → Linear (see _skill_token).
+        self.skill_proj = nn.Linear(len(s1.skill_fsq_levels), self.expert_width)
 
         self.cond_encoder = None
         if self.expert_arch == "joint":
@@ -266,7 +269,9 @@ class SkillVLAPytorch(PI05Pytorch):
         return torch.cat(tokens, dim=1)
 
     def _skill_token(self, skill_code: Tensor) -> Tensor:
-        return self.skill_emb(skill_code.view(-1).long()).unsqueeze(1).to(self._wdtype)
+        """Flat code → normalized z_q ∈ [-1, 1]^D → Linear → (B, 1, expert_width) cond token."""
+        zq = self._code_to_z(skill_code) / self._fsq_half[None, :]
+        return self.skill_proj(zq.to(self._wdtype)).unsqueeze(1)
 
     def _cond_tokens(self, images: list[Tensor], state: Tensor, skill_code: Tensor) -> Tensor:
         """[img1 tokens, img2 tokens, state, skill] → (B, M, expert_width)."""
@@ -326,16 +331,18 @@ class SkillVLAPytorch(PI05Pytorch):
         self, nc: int, vlm_pad: Tensor, vlm_is_lang: Tensor, na: int
     ) -> tuple[Tensor, Tensor]:
         """Branch-A (B,1,T,T) additive mask + the (B,T) validity/pad vector. Streams ordered
-        [cond, vlm, action]: cond⊥vlm (each bidirectional within itself); action attends
-        cond + vlm-nonlang + action; neither cond nor vlm attends action."""
+        [cond, vlm, action], one-directional chain VLM → cond → action: the VLM reads only
+        itself; cond reads itself + vlm-nonlang (language hiddens excluded — language reaches
+        cond only indirectly, through VLM image/query hiddens that attended it); action reads
+        cond + itself (NO direct VLM edge). Nothing attends action."""
         bsize, nv = vlm_pad.shape
         device = vlm_pad.device
         total = nc + nv + na
         allow = torch.zeros(bsize, total, total, dtype=torch.bool, device=device)
         allow[:, :nc, :nc] = True                                    # cond block
+        allow[:, :nc, nc : nc + nv] = (~vlm_is_lang)[None, None, :]  # cond → vlm-nonlang
         allow[:, nc : nc + nv, nc : nc + nv] = True                  # vlm block
         allow[:, nc + nv :, :nc] = True                              # action → cond
-        allow[:, nc + nv :, nc : nc + nv] = (~vlm_is_lang)[None, None, :]  # action → vlm-nonlang
         allow[:, nc + nv :, nc + nv :] = True                        # action → action
         col_valid = torch.cat(
             [torch.ones(bsize, nc, dtype=torch.bool, device=device), vlm_pad,
@@ -483,18 +490,24 @@ class SkillVLAPytorch(PI05Pytorch):
         return self.skill_head.decode(self._skill_hidden(out))
 
     # ── cached inference (branch A): VLM cached per skill, cond per call, action per denoise step ──
-    def _encode_prefix_kv(self, layers, embeds, pad, position_ids, adarms=None):
-        """Run a prefix stream standalone (bidirectional within its valid tokens) → per-layer
-        post-RoPE (K, V) + the pre-final-norm hidden. Because the streams are block-isolated
-        (cond ⊥ vlm, both ⊥ action), this reproduces the joint forward's per-layer K/V for the
-        stream exactly, so the cached denoise below is numerically identical to a full joint forward.
-        """
+    def _encode_prefix_kv(self, layers, embeds, pad, position_ids, adarms=None,
+                          extra_kv=None, extra_valid=None):
+        """Run a prefix stream (bidirectional within its valid tokens) → per-layer post-RoPE
+        (K, V) + the pre-final-norm hidden. ``extra_kv``/``extra_valid`` optionally prepend a
+        FIXED already-RoPE'd per-layer K/V context the stream may attend (branch A: cond reads
+        the cached VLM K/V at vlm-nonlang columns). With the same mask/positions as training,
+        this reproduces the joint forward's per-layer K/V for the stream exactly, so the cached
+        denoise below is numerically identical to a full joint forward."""
         embeds = embeds.to(self._wdtype)
-        att_2d = make_att_2d_masks(pad, torch.zeros_like(pad))
+        att_2d = make_att_2d_masks(pad, torch.zeros_like(pad))                     # (B, n, n) own block
+        if extra_kv is not None:
+            ne = extra_valid.shape[1]
+            extra_cols = extra_valid[:, None, :].expand(-1, pad.shape[1], -1)      # (B, n, ne)
+            att_2d = torch.cat([extra_cols, att_2d], dim=2)                        # keys = [extra, own]
         att_4d = torch.where(att_2d[:, None], 0.0, OPENPI_ATTENTION_MASK_VALUE)
         rotary = self._vlm.rotary_emb
         h, kv = embeds, []
-        for layer in layers:
+        for li, layer in enumerate(layers):
             hn, gate = layernorm_forward(layer.input_layernorm, h, adarms)
             shape = (*hn.shape[:-1], -1, layer.self_attn.head_dim)
             q = layer.self_attn.q_proj(hn).view(shape).transpose(1, 2)
@@ -504,8 +517,13 @@ class SkillVLAPytorch(PI05Pytorch):
             cos, sin = rotary(dummy, position_ids)
             q, k = modeling_gemma.apply_rotary_pos_emb(q, k, cos, sin, unsqueeze_dim=1)
             kv.append((k, v))
+            if extra_kv is not None:
+                k_att = torch.cat([extra_kv[li][0], k], dim=2)
+                v_att = torch.cat([extra_kv[li][1], v], dim=2)
+            else:
+                k_att, v_att = k, v
             att_out, _ = modeling_gemma.eager_attention_forward(
-                layer.self_attn, q, k, v, att_4d, layer.self_attn.scaling)
+                layer.self_attn, q, k_att, v_att, att_4d, layer.self_attn.scaling)
             att_out = att_out.reshape(att_out.shape[0], -1, q.shape[1] * layer.self_attn.head_dim)
             if att_out.dtype != layer.self_attn.o_proj.weight.dtype:
                 att_out = att_out.to(layer.self_attn.o_proj.weight.dtype)
@@ -544,7 +562,9 @@ class SkillVLAPytorch(PI05Pytorch):
 
     @torch.no_grad()
     def _sample_actions_A(self, cond_images, start_images, lang_tokens, lang_masks, state, skill_code, noise, num_steps):
-        """Branch A cached sampling: VLM + cond encoded once, only the action expert runs per step."""
+        """Branch A cached sampling (chain VLM → cond → action): the VLM is encoded once
+        (self-contained), cond is encoded once reading the VLM cache, and each denoise step
+        runs only the action expert against the cond cache."""
         bsize, device = state.shape[0], state.device
         na = self.config.chunk_size
         cond_base = self._cond_image_state_tokens(cond_images, state)   # (B, nc-1, w)
@@ -566,15 +586,16 @@ class SkillVLAPytorch(PI05Pytorch):
         if skill_code is None:
             skill_code = self.skill_head.decode(vlm_h[:, -1])
 
-        # cond: teacher-force the (predicted) skill, encode once → cached K/V
+        # cond: teacher-force the (predicted) skill; encode once READING the cached VLM K/V at
+        # vlm-nonlang columns (VLM → cond edge) → cached K/V
         cond_tokens = torch.cat([cond_base, self._skill_token(skill_code)], dim=1)
-        cond_kv, _ = self._encode_prefix_kv(self.cond_encoder.model.layers, cond_tokens, cond_pad, cond_pos, adarms=None)
+        cond_kv, _ = self._encode_prefix_kv(
+            self.cond_encoder.model.layers, cond_tokens, cond_pad, cond_pos, adarms=None,
+            extra_kv=vlm_kv, extra_valid=vlm_pad & ~vlm_is_lang[None, :])
 
-        # combined prefix K/V (per layer) + action mask (action sees cond + vlm-nonlang + action)
-        prefix_kv = [(torch.cat([cond_kv[i][0], vlm_kv[i][0]], dim=2),
-                      torch.cat([cond_kv[i][1], vlm_kv[i][1]], dim=2)) for i in range(len(cond_kv))]
-        prefix_valid = torch.cat([cond_pad, vlm_pad & ~vlm_is_lang[None, :]], dim=1)
-        cols = torch.cat([prefix_valid, torch.ones(bsize, na, dtype=torch.bool, device=device)], dim=1)
+        # denoise prefix = cond only (action has NO direct VLM edge; VLM info arrives via cond)
+        prefix_kv = cond_kv
+        cols = torch.cat([cond_pad, torch.ones(bsize, na, dtype=torch.bool, device=device)], dim=1)
         att_4d = torch.where(cols[:, None, None, :].expand(bsize, 1, na, cols.shape[1]),
                              0.0, OPENPI_ATTENTION_MASK_VALUE)
 
@@ -750,14 +771,14 @@ def _remap_pi05_to_vlm(raw: dict) -> dict:
 def _remap_stage1_to_expert(raw: dict) -> dict:
     """Stage-1 ``skill_expert`` checkpoint → Stage-2 expert/cond side. Stage-1 keys are ``model.*``:
     gemma_expert → paligemma_with_expert.gemma_expert; action/time projections + cond-side
-    (cond_encoder, dino/siglip, image_proj, state_proj, skill_emb) keep their names under ``model.``."""
+    (cond_encoder, dino/siglip, image_proj, state_proj, skill_proj) keep their names under ``model.``."""
     out = {}
     for k, v in raw.items():
         key = k[len("model.") :] if k.startswith("model.") else k
         if key.startswith("gemma_expert."):
             out[f"model.paligemma_with_expert.{key}"] = v
         elif key.startswith((
-            "cond_encoder.", "dino.", "siglip.", "image_proj.", "state_proj.", "skill_emb.",
+            "cond_encoder.", "dino.", "siglip.", "image_proj.", "state_proj.", "skill_proj.",
             "action_in_proj.", "action_out_proj.", "time_mlp_in.", "time_mlp_out.",
         )):
             out[f"model.{key}"] = v

@@ -288,9 +288,7 @@ def _skill_fsq_levels(policy: PreTrainedPolicy) -> list[int]:
     config = getattr(getattr(policy, "model", None), "config", getattr(policy, "config", None))
     levels = getattr(config, "skill_fsq_levels", None)
     if levels is None:
-        n_tokens = int(getattr(config, "skill_predictor_num_embeddings", 0) or 0)
-        side = round(n_tokens ** (1.0 / 3.0))
-        levels = [side, side, side] if side > 0 and side ** 3 == n_tokens else [5, 5, 5]
+        raise ValueError(f"Policy config {type(config).__name__} has no skill_fsq_levels.")
     if isinstance(levels, str):
         cleaned = levels.replace("[", " ").replace("]", " ").replace(",", " ")
         levels = [int(v) for v in cleaned.split()]
@@ -1317,27 +1315,18 @@ def _compile_episode_data(
 
 
 def _skill_token_table(policy: PreTrainedPolicy) -> torch.Tensor | None:
-    """Return the skill-token embedding table used for similarity metrics.
-
-    Older VQ-AE checkpoints exposed a learned codebook as `_vqae_codebook`.
-    FSQ checkpoints do not have a learned codebook, so we reconstruct the
-    table by mapping every scalar FSQ token id through SkillVLA's `_token_to_z`.
-    """
-
-    model = getattr(policy, "model", None)
-    codebook = getattr(model, "_vqae_codebook", None)
-    if codebook is not None and codebook.numel() > 0:
-        return codebook.detach().float().cpu()
-
-    if model is None or not hasattr(model, "_token_to_z"):
+    """FSQ codebook table for the similarity metrics: every flat code's grid coordinate z_q
+    (little-endian strides, z_q = level_id - half — the codebook's own geometry, the same
+    representation the policies' skill_proj conditioning consumes)."""
+    levels = _skill_fsq_levels(policy)
+    n_tokens = int(np.prod(levels))
+    if n_tokens <= 1:
         return None
-    config = getattr(model, "config", None)
-    n_tokens = int(getattr(config, "skill_predictor_num_embeddings", 0))
-    if n_tokens <= 0:
-        return None
-    device = next(model.parameters()).device
-    tokens = torch.arange(n_tokens, device=device, dtype=torch.long)
-    return model._token_to_z(tokens).detach().float().cpu()
+    half = torch.tensor([(lv - 1) / 2.0 for lv in levels], dtype=torch.float32)
+    coords = torch.tensor(
+        [_token_to_fsq_coord(t, levels) for t in range(n_tokens)], dtype=torch.float32
+    )
+    return coords - half[None, :]
 
 
 def _save_skill_trace_plots(

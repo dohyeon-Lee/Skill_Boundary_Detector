@@ -75,6 +75,12 @@ from .policy_robot_bridge import (
     PolicyActionToRobotActionProcessorStep,
     RobotActionToPolicyActionProcessorStep,
 )
+from .relative_action_processor import (
+    AbsoluteActionsProcessorStep,
+    RelativeActionsProcessorStep,
+    to_absolute_actions,
+    to_relative_actions,
+)
 from .rename_processor import RenameObservationsProcessorStep
 from .tokenizer_processor import ActionTokenizerProcessorStep, TokenizerProcessorStep
 
@@ -100,6 +106,7 @@ __all__ = [
     "make_default_teleop_action_processor",
     "make_default_robot_action_processor",
     "make_default_robot_observation_processor",
+    "AbsoluteActionsProcessorStep",
     "MapDeltaActionToRobotActionStep",
     "MapTensorToDeltaActionDictStep",
     "NormalizerProcessorStep",
@@ -114,6 +121,7 @@ __all__ = [
     "RobotAction",
     "RobotActionProcessorStep",
     "RobotObservation",
+    "RelativeActionsProcessorStep",
     "RenameObservationsProcessorStep",
     "RewardClassifierProcessorStep",
     "RewardProcessorStep",
@@ -126,6 +134,8 @@ __all__ = [
     "Torch2NumpyActionProcessorStep",
     "RobotActionToPolicyActionProcessorStep",
     "PolicyActionToRobotActionProcessorStep",
+    "to_absolute_actions",
+    "to_relative_actions",
     "transition_to_batch",
     "TransitionKey",
     "TruncatedProcessorStep",

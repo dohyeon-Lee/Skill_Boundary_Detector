@@ -65,7 +65,10 @@ def build_settings(cfg: dict) -> dict:
         "policy_path": policy_path,
         "fsq_ckpt": run_dir / "FSQ.pt",
         "skill_label_dataset_dir": run_dir / "skillvla",
-        "dino_model_path": str(get_value(cfg, "dino_model_path", "/data2/dohyeon/SBD/models/dinov3-vits16")),
+        # FSQ terminator's raw-image DINO (the policy's own backbone comes from the checkpoint).
+        "terminator_dino_model_path": str(get_value(
+            cfg, "terminator_dino_model_path",
+            project_root / "models" / "dinov3-vits16")),
         "eval_out_dir": eval_out_dir,
         # skill HTML (FSQ cube + used skills + per-skill progress + FSQ-space samples)
         "skill_html": as_bool(get_value(cfg, "skill_html", True)),

@@ -41,6 +41,14 @@ def build_settings(cfg: dict) -> dict:
     lr_base = float(get_value(cfg, "lr_base", 2.5e-05))
     exp = str(get_value(cfg, "exp", "")).strip()
 
+    # Action chunk horizon. Longer chunks make the far future under-determined by the current
+    # obs alone, pushing the flow-matching loss to actually use the skill (z_q) condition.
+    # Weights are chunk-length agnostic (per-step projections + RoPE), so Stage-2 may
+    # warm-start from a Stage-1 checkpoint trained with a different chunk_size.
+    chunk_size = int(get_value(cfg, "chunk_size", 10))
+    n_action_steps = get_value(cfg, "n_action_steps", None)
+    n_action_steps = chunk_size if n_action_steps in (None, "", "null") else int(n_action_steps)
+
     # Conditioning architecture: "fused" (one self-attn stream) or "joint" (cond-encoder ⊥ expert).
     expert_arch = str(get_value(cfg, "expert_arch", "fused")).strip() or "fused"
     cond_encoder_variant = str(get_value(cfg, "cond_encoder_variant", "")).strip()
@@ -68,6 +76,7 @@ def build_settings(cfg: dict) -> dict:
     run_name = f"{source_dataset}_{run_tag}_{vis_tag}_batch{batch_size}_{arch_tag}"
     if exp:
         run_name = f"{run_name}_{exp}"
+    run_name = f"{run_name}_c{chunk_size}"  # chunk horizon always trails the run name
     # Single outputs root from yaml; the per-stage subdir is fixed here (not in yaml).
     outputs_root = project_root / str(get_value(cfg, "outputs_root", "outputs"))
     vla_root = outputs_root / "skillVLA_stage1"
@@ -110,6 +119,9 @@ def build_settings(cfg: dict) -> dict:
         "skillvla_outputs_root": vla_root,
         "pt_run_name": run_name,
         "pt_output_dir": output_dir,
+        # action chunk horizon
+        "chunk_size": chunk_size,
+        "n_action_steps": n_action_steps,
         # optimization
         "batch_size": batch_size,
         "num_workers": int(get_value(cfg, "num_workers", 8)),

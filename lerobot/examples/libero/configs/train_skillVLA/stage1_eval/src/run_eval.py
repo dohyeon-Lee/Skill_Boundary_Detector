@@ -240,7 +240,7 @@ def eval_main(cfg: EvalPipelineConfig):
     logging.info("Making policy + FSQ terminator.")
     policy = make_policy(cfg=cfg.policy, env_cfg=cfg.env, rename_map=cfg.rename_map)
     policy.eval()
-    terminator = FsqTerminator(cfg.policy.fsq_path, device, dino_path=cfg.policy.dino_model_path,
+    terminator = FsqTerminator(cfg.policy.fsq_path, device, dino_path=cfg.policy.terminator_dino_model_path,
                                libero_examples_dir=_LIBERO_EXAMPLES)
 
     # Oracle GT skill sequences: dataset (by language) → env task_id.
