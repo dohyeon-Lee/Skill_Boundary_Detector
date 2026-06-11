@@ -16,7 +16,7 @@
 #
 # ③ teacher-forced 체크포인트 스윕 (win_rate 추이 — skill 사용 여부 판정):
 #      ./submit_teacher_forced_sweep.sh          # 모든 숫자 체크포인트, 완료된 건 스킵
-#      TF_CKPTS="005000 025000 last" ./submit_teacher_forced_sweep.sh   # 일부만
+#      TF_CKPTS="last" ./submit_teacher_forced_sweep.sh   # 일부만
 #
 # ④ 추이 표만 다시 출력 (GPU 불필요):
 #      python src/tf_trend.py --model_dir {아래 model_dir 값}
@@ -31,7 +31,7 @@ outputs_root: outputs   # trained S1 under {project_root}/{outputs_root}/skillVL
 # ── Which trained Stage-1 model + which FSQ/skills (same {run_dir} it trained on) ──
 # model_dir alone identifies the run: source_dataset + run_tag (which skillvla dataset folder)
 # are both parsed from it ({source}_FSQ..._dino..._batch{N}_{A|B}).
-model_dir: libero_90_full_full_FSQ865_dino8_1000_dino_unfreeze_batch64_A_dinoB_c25   # trained S1 folder under outputs/skillVLA_stage1/ (joint=A, fused=B)
+model_dir: libero_90_full_full_FSQ865_dino8_1000_siglip_unfreeze_batch64_A_c25   # trained S1 folder under outputs/skillVLA_stage1/ (joint=A, fused=B)
 checkpoint: "005000"            # "last" or a step number
 # Output folder = outputs/{model_dir}_{checkpoint}_adv-{skill_advance_mode}[_{eval_exp}]
 eval_exp: ""                    # optional free-form tag for the eval output folder (e.g. ablation name)
