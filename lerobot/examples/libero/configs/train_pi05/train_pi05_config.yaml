@@ -2,15 +2,12 @@
 # This folder owns pi05 PT/FT training and pi05 closed-loop eval.
 # Change project_root when moving this workflow to another server.
 
-# project_root comes from configs/global_config.yaml. dataset_root is overridden here
-# (pi05 uses libero_dataset, not the global default).
-dataset_root: libero_dataset
-pi05_outputs_root: pi05_outputs
+# project_root and dataset_root come from configs/global_config.yaml.
+pi05_outputs_root: outputs/pi05_PT
 pi_base: lerobot/pi05_base
 
 # ── pi05 PT ───────────────────────────────────────────────────
-pt_dataset: libero_90
-pt_dataset_root: libero_dataset
+pt_dataset: libero_90_full_full
 pt_batch_size: 16
 pt_num_gpus: 1
 pt_num_workers: 4
@@ -28,7 +25,6 @@ pt_time: "48:00:00"
 
 # ── pi05 FT ───────────────────────────────────────────────────
 ft_dataset: libero_10_op1_10
-ft_dataset_root: libero_original_dataset
 ft_batch_size: 32
 ft_num_workers: 4
 ft_exp: exp2
@@ -36,7 +32,7 @@ ft_lr: 2.5e-05
 ft_steps: 5000
 ft_save_freq: 500
 ft_wandb_project: VLA_Finetune
-ft_pretrained_dataset: libero_90
+ft_pretrained_dataset: libero_90_full_full
 ft_pretrained_batch_size: 32
 ft_pretrained_exp: exp1
 ft_pretrained_checkpoint: "050000"
@@ -60,7 +56,7 @@ eval_stage: FT
 eval_checkpoint: "005000"
 # Blank = infer from eval_stage and the PT/FT training settings above.
 # Otherwise, set this to the exact folder name under {project_root}/pi05_outputs/.
-eval_model: "PT_libero_90_pi05_batch16_exp1"
+eval_model: "PT_libero_90_full_full_pi05_batch16_exp1"
 eval_max_parallel_tasks: 1
 eval_max_videos_per_task: 1
 eval_video_frame_stride: 2

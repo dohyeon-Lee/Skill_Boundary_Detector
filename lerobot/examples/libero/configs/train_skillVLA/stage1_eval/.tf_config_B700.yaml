@@ -12,8 +12,8 @@ outputs_root: outputs   # trained S1 under {project_root}/{outputs_root}/skillVL
 # ── Which trained Stage-1 model + which FSQ/skills (same {run_dir} it trained on) ──
 # model_dir alone identifies the run: source_dataset + run_tag (which skillvla dataset folder)
 # are both parsed from it ({source}_FSQ..._dino..._batch{N}_{A|B}).
-model_dir: libero_90_full_full_FSQ865_dino8_700_siglip_unfreeze_batch32_A   # trained S1 folder under outputs/skillVLA_stage1/ (joint=A, fused=B)
-checkpoint: "035000"            # "last" or a step number
+model_dir: libero_90_full_full_FSQ865_dino8_700_siglip_unfreeze_batch32_B
+checkpoint: "last"
 # Output folder = outputs/{model_dir}_{checkpoint}_adv-{skill_advance_mode}[_{eval_exp}]
 eval_exp: ""                    # optional free-form tag for the eval output folder (e.g. ablation name)
 

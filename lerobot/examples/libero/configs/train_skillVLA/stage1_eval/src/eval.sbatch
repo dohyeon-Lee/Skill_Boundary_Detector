@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SkillVLA Stage-1 (skill_expert) closed-loop ORACLE eval on LIBERO sim.
 # GT skill sequence per task (matched by language) + frozen FSQ terminator advances skills.
-#SBATCH --job-name=skillExpert_S1_eval
+#SBATCH --job-name=S1eval
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
