@@ -11,7 +11,7 @@ pt_dataset: libero_90_full_full
 pt_batch_size: 16
 pt_num_gpus: 1
 pt_num_workers: 4
-pt_exp: exp1
+pt_exp: ""
 pt_lr_base: 2.5e-05
 pt_steps: 100000
 pt_save_freq: 5000
@@ -52,11 +52,11 @@ eval_n_episodes: 5
 eval_episode_offset: 25
 eval_n_action_steps: 5
 eval_batch_size: 1
-eval_stage: FT
-eval_checkpoint: "005000"
+eval_stage: PT
+eval_checkpoint: "010000"
 # Blank = infer from eval_stage and the PT/FT training settings above.
 # Otherwise, set this to the exact folder name under {project_root}/pi05_outputs/.
-eval_model: "PT_libero_90_full_full_pi05_batch16_exp1"
+eval_model: "PT_libero_90_full_full_pi05_batch16"
 eval_max_parallel_tasks: 1
 eval_max_videos_per_task: 1
 eval_video_frame_stride: 2

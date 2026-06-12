@@ -64,7 +64,15 @@ class SkillExpertConfig(PI05Config):
     """FSQ levels per dim. The flat dataset code is mapped back to its FSQ grid coordinate z_q
     (little-endian strides — the codebook's own convention, the same value the FSQ decoder
     consumes), normalized per dim to [-1, 1], and fed through a Linear(D → width) as ONE cond
-    token — so neighboring codes stay neighboring in the conditioning space."""
+    token, constant within a skill — neighboring codes stay neighboring. The skill progress is
+    a SEPARATE cond token (raw [0, 1] → Linear(1 → width)), mirroring the FSQ decoder's
+    dec_z_proj / motion_prog_proj split."""
+    progress_jitter: float = 0.1
+    """Train-time uniform noise (±jitter, clamped to [0, 1]) on the GT skill progress fed to the
+    progress token. The GT progress is skill_ds/(skill_ds+skill_de) (0 at skill start, 1 at its
+    last frame — the FSQ terminator's training target); at inference the terminator's PREDICTED
+    progress is injected via batch["skill_progress"], so the jitter teaches robustness to that
+    estimator's error. 0 = clean GT."""
 
     # ── Eval-only (oracle closed-loop sim). Ignored during training. ──
     fsq_path: str | None = None

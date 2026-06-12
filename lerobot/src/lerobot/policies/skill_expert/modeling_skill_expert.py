@@ -3,8 +3,11 @@
 Flow-matching action chunk predictor conditioned on:
   - current 3rd-person + wrist images (trainable DINOv3, shared weights),
   - robot state,
-  - GT FSQ skill code, fed as its FSQ grid coordinate z_q normalized to [-1, 1] through a
-    Linear projection (one token) — neighboring codes stay neighboring in the conditioning.
+  - GT FSQ skill code as its grid coordinate z_q ∈ [-1,1]^D (one Linear token, constant
+    within a skill — neighboring codes stay neighboring),
+  - skill progress ∈ [0,1] as a SEPARATE Linear token (mirrors the FSQ decoder's
+    dec_z_proj / motion_prog_proj split). GT = skill_ds/(ds+de) at train time (jittered for
+    robustness); the FSQ terminator's estimate is injected at inference.
 
 All tokens self-attend; only the action-token hidden states are decoded into actions.
 Stage 2 (`skill_vla`) adds the VLM and can init its action expert from a Stage-1 checkpoint.
@@ -123,7 +126,9 @@ class SkillExpertPytorch(nn.Module):
         self.image_proj = nn.Linear(vis_dim, self.width)                # image token → expert token
         self.state_proj = nn.Linear(config.max_state_dim, self.width)   # continuous state → 1 token
         # Skill: flat code → FSQ grid coordinate z_q (codebook's little-endian frame, the same
-        # value the FSQ decoder consumes), normalized per dim to [-1, 1] → one Linear token.
+        # value the FSQ decoder consumes), normalized per dim to [-1, 1] → ONE token, constant
+        # within a skill. The skill PROGRESS is a SEPARATE token (mirrors the FSQ decoder's
+        # dec_z_proj / motion_prog_proj split): raw [0, 1] through its own Linear.
         levels = torch.tensor(config.skill_fsq_levels, dtype=torch.long)
         strides = torch.ones_like(levels)
         for i in range(1, len(config.skill_fsq_levels)):
@@ -132,6 +137,7 @@ class SkillExpertPytorch(nn.Module):
         self.register_buffer("_fsq_strides", strides, persistent=False)
         self.register_buffer("_fsq_half", (levels - 1).float() / 2.0, persistent=False)
         self.skill_proj = nn.Linear(len(config.skill_fsq_levels), self.width)  # z_q → 1 token
+        self.progress_proj = nn.Linear(1, self.width)                          # progress → 1 token
 
         # ── Flow-matching action head (mirrors PI05) ──
         self.action_in_proj = nn.Linear(config.max_action_dim, self.width)
@@ -208,12 +214,17 @@ class SkillExpertPytorch(nn.Module):
         level_ids = torch.div(idx, self._fsq_strides[None, :], rounding_mode="floor") % self._fsq_levels[None, :]
         return (level_ids.float() - self._fsq_half[None, :]) / self._fsq_half[None, :]
 
-    def _cond_tokens(self, images: list[Tensor], state: Tensor, skill_code: Tensor) -> Tensor:
-        """Conditioning tokens [img1 tokens, img2 tokens, state, skill] → (B, M, width)."""
+    def _cond_tokens(self, images: list[Tensor], state: Tensor, skill_code: Tensor,
+                     skill_progress: Tensor) -> Tensor:
+        """Conditioning tokens [img1 tokens, img2 tokens, state, skill, progress] → (B, M, width).
+        skill = z_q ∈ [-1,1]^D (constant within a skill); progress = raw [0,1] as its own token
+        (mirrors the FSQ decoder's dec_z_proj / motion_prog_proj split)."""
         tokens = [self.image_proj(self._image_features(image).to(self._wdtype)) for image in images]
         state = pad_vector(state.to(dtype=torch.float32), self.config.max_state_dim)
         tokens.append(self.state_proj(state.to(self._wdtype)).unsqueeze(1))
         tokens.append(self.skill_proj(self._code_to_zq(skill_code).to(self._wdtype)).unsqueeze(1))
+        prog = skill_progress.view(-1, 1).float().to(state.device)
+        tokens.append(self.progress_proj(prog.to(self._wdtype)).unsqueeze(1))
         return torch.cat(tokens, dim=1)
 
     def _time_cond(self, timestep: Tensor) -> Tensor:
@@ -303,12 +314,13 @@ class SkillExpertPytorch(nn.Module):
         img_masks: list[Tensor],
         state: Tensor,
         skill_code: Tensor,
+        skill_progress: Tensor,
         actions: Tensor,
         noise: Tensor | None = None,
         time: Tensor | None = None,
     ) -> Tensor:
         """Flow-matching loss. Returns per-(b, t, dim) MSE: (B, chunk_size, max_action_dim)."""
-        cond = self._cond_tokens(images, state, skill_code)
+        cond = self._cond_tokens(images, state, skill_code, skill_progress)
         if time is None:
             time = self.sample_time(actions.shape[0], actions.device)
         source = self.sample_noise(actions.shape, actions.device) if noise is None else noise
@@ -326,6 +338,7 @@ class SkillExpertPytorch(nn.Module):
         img_masks: list[Tensor],
         state: Tensor,
         skill_code: Tensor,
+        skill_progress: Tensor,
         noise: Tensor | None = None,
         num_steps: int | None = None,
     ) -> Tensor:
@@ -334,7 +347,7 @@ class SkillExpertPytorch(nn.Module):
         bsize, device = state.shape[0], state.device
         if noise is None:
             noise = self.sample_noise((bsize, self.config.chunk_size, self.config.max_action_dim), device)
-        cond = self._cond_tokens(images, state, skill_code)  # encoded once; constant across steps
+        cond = self._cond_tokens(images, state, skill_code, skill_progress)  # encoded once; constant across steps
         if self.expert_arch == "joint":
             # cond⊥action, so the cond stream is identical every step → encode it once, cache its
             # per-layer K/V, and run only the action stream against the cache each step (PI05-style).
@@ -527,10 +540,26 @@ class SkillExpertPolicy(PreTrainedPolicy):
         code = seq.gather(1, idx).squeeze(1)
         return code.clamp(0, self.config.skill_vocab_size - 1)
 
+    def _skill_progress(self, batch: dict) -> Tensor:
+        """Per-frame skill progress ∈ [0, 1] (0 at skill start, 1 at its last frame — the FSQ
+        terminator's training target). ``skill_progress`` in the batch (injected at inference
+        with the terminator's prediction) wins; otherwise GT = skill_ds / (skill_ds+skill_de)."""
+        if "skill_progress" in batch:
+            return batch["skill_progress"].float().view(-1).clamp(0.0, 1.0)
+        ds = batch["skill_ds"].float().view(-1)
+        de = batch["skill_de"].float().view(-1)
+        return ds / (ds + de).clamp(min=1.0)
+
     def forward(self, batch: dict, reduction: str = "mean"):
         images, img_masks = self._collect_images(batch)
         actions = pad_vector(batch[ACTION], self.config.max_action_dim)
-        losses = self.model.forward(images, img_masks, batch[OBS_STATE], self._skill_code(batch), actions)
+        progress = self._skill_progress(batch)
+        if self.training and self.config.progress_jitter > 0:
+            # robustness to the terminator's progress-estimation error at inference
+            jit = (torch.rand_like(progress) * 2.0 - 1.0) * self.config.progress_jitter
+            progress = (progress + jit).clamp(0.0, 1.0)
+        losses = self.model.forward(
+            images, img_masks, batch[OBS_STATE], self._skill_code(batch), progress, actions)
         real_dim = self.config.output_features[ACTION].shape[0]
         losses = losses[:, :, :real_dim]
         loss_dict = {"loss_per_dim": losses.mean(dim=[0, 1]).detach().cpu().numpy().tolist()}
@@ -546,7 +575,8 @@ class SkillExpertPolicy(PreTrainedPolicy):
     def predict_action_chunk(self, batch: dict, **kwargs) -> Tensor:
         self.eval()
         images, img_masks = self._collect_images(batch)
-        actions = self.model.sample_actions(images, img_masks, batch[OBS_STATE], self._skill_code(batch), **kwargs)
+        actions = self.model.sample_actions(
+            images, img_masks, batch[OBS_STATE], self._skill_code(batch), self._skill_progress(batch), **kwargs)
         real_dim = self.config.output_features[ACTION].shape[0]
         return actions[:, :, :real_dim]
 

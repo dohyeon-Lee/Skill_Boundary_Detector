@@ -122,6 +122,8 @@ def build_settings(cfg: dict) -> dict:
         # action chunk horizon
         "chunk_size": chunk_size,
         "n_action_steps": n_action_steps,
+        # skill progress conditioning (train-time GT jitter; see configuration_skill_expert)
+        "progress_jitter": float(get_value(cfg, "progress_jitter", 0.1)),
         # optimization
         "batch_size": batch_size,
         "num_workers": int(get_value(cfg, "num_workers", 8)),

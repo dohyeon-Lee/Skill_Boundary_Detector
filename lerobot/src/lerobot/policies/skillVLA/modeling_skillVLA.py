@@ -73,6 +73,7 @@ from lerobot.utils.constants import (
 from .configuration_skillVLA import SkillVLAConfig
 from .dataset_skillVLA import (
     SKILL_CODE,
+    SKILL_PROGRESS,
     SKILL_START_IMAGE,
     SKILL_START_STATE,
     SKILL_START_WRIST_IMAGE,
@@ -193,7 +194,8 @@ class SkillVLAPytorch(PI05Pytorch):
         # The pi05-inherited action_in/out_proj + time_mlp stay float32 (pi05 convention): their
         # outputs are cast to the working dtype only at the attention boundary (_action_in/_action_out).
         if str(config.dtype) == "bfloat16":
-            for m in (self.image_proj, self.state_proj, self.skill_proj, self.cond_encoder, self.skill_head):
+            for m in (self.image_proj, self.state_proj, self.skill_proj, self.progress_proj,
+                      self.cond_encoder, self.skill_head):
                 if m is not None:
                     m.to(dtype=torch.bfloat16)
             self.skill_query.data = self.skill_query.data.to(torch.bfloat16)
@@ -223,8 +225,10 @@ class SkillVLAPytorch(PI05Pytorch):
 
         self.image_proj = nn.Linear(vis_dim, self.expert_width)
         self.state_proj = nn.Linear(s1.max_state_dim, self.expert_width)
-        # Skill cond token mirrors Stage-1: flat code → normalized z_q → Linear (see _skill_token).
+        # Skill cond tokens mirror Stage-1: flat code → normalized z_q → Linear (constant within a
+        # skill) + the skill progress ∈ [0,1] as a SEPARATE token (see _skill_token/_progress_token).
         self.skill_proj = nn.Linear(len(s1.skill_fsq_levels), self.expert_width)
+        self.progress_proj = nn.Linear(1, self.expert_width)
 
         self.cond_encoder = None
         if self.expert_arch == "joint":
@@ -273,10 +277,17 @@ class SkillVLAPytorch(PI05Pytorch):
         zq = self._code_to_z(skill_code) / self._fsq_half[None, :]
         return self.skill_proj(zq.to(self._wdtype)).unsqueeze(1)
 
-    def _cond_tokens(self, images: list[Tensor], state: Tensor, skill_code: Tensor) -> Tensor:
-        """[img1 tokens, img2 tokens, state, skill] → (B, M, expert_width)."""
+    def _progress_token(self, skill_progress: Tensor) -> Tensor:
+        """Skill progress ∈ [0, 1] → Linear → (B, 1, expert_width) cond token (mirrors the FSQ
+        decoder's motion_prog_proj; GT at train time, the terminator's estimate in closed loop)."""
+        prog = skill_progress.view(-1, 1).float().to(next(self.parameters()).device)
+        return self.progress_proj(prog.to(self._wdtype)).unsqueeze(1)
+
+    def _cond_tokens(self, images: list[Tensor], state: Tensor, skill_code: Tensor,
+                     skill_progress: Tensor) -> Tensor:
+        """[img1 tokens, img2 tokens, state, skill, progress] → (B, M, expert_width)."""
         base = self._cond_image_state_tokens(images, state)
-        return torch.cat([base, self._skill_token(skill_code)], dim=1)
+        return torch.cat([base, self._skill_token(skill_code), self._progress_token(skill_progress)], dim=1)
 
     def _vlm_tokens(
         self, start_images: list[Tensor], lang_tokens: Tensor, lang_masks: Tensor
@@ -443,6 +454,7 @@ class SkillVLAPytorch(PI05Pytorch):
         lang_masks: Tensor,
         state: Tensor,
         skill_code: Tensor,
+        skill_progress: Tensor,
         actions: Tensor,
         noise: Tensor | None = None,
         time: Tensor | None = None,
@@ -462,7 +474,7 @@ class SkillVLAPytorch(PI05Pytorch):
         x_t = t_exp * noise + (1 - t_exp) * actions
         u_t = noise - actions
 
-        cond_tokens = self._cond_tokens(cond_images, state, skill_code)
+        cond_tokens = self._cond_tokens(cond_images, state, skill_code, skill_progress)
         vlm_embeds, vlm_pad, vlm_is_lang = self._vlm_tokens(start_images, lang_tokens, lang_masks)
         action_tokens = self._action_in(x_t)
         time_cond = self._time_cond(time)
@@ -561,14 +573,15 @@ class SkillVLAPytorch(PI05Pytorch):
         return _gated_residual(after, layer.mlp(o), gate2)
 
     @torch.no_grad()
-    def _sample_actions_A(self, cond_images, start_images, lang_tokens, lang_masks, state, skill_code, noise, num_steps):
+    def _sample_actions_A(self, cond_images, start_images, lang_tokens, lang_masks, state, skill_code,
+                          skill_progress, noise, num_steps):
         """Branch A cached sampling (chain VLM → cond → action): the VLM is encoded once
         (self-contained), cond is encoded once reading the VLM cache, and each denoise step
         runs only the action expert against the cond cache."""
         bsize, device = state.shape[0], state.device
         na = self.config.chunk_size
-        cond_base = self._cond_image_state_tokens(cond_images, state)   # (B, nc-1, w)
-        nc = cond_base.shape[1] + 1
+        cond_base = self._cond_image_state_tokens(cond_images, state)   # (B, nc-2, w)
+        nc = cond_base.shape[1] + 2                                     # + skill + progress tokens
         vlm_embeds, vlm_pad, vlm_is_lang = self._vlm_tokens(start_images, lang_tokens, lang_masks)
         nv = vlm_embeds.shape[1]
 
@@ -586,9 +599,10 @@ class SkillVLAPytorch(PI05Pytorch):
         if skill_code is None:
             skill_code = self.skill_head.decode(vlm_h[:, -1])
 
-        # cond: teacher-force the (predicted) skill; encode once READING the cached VLM K/V at
-        # vlm-nonlang columns (VLM → cond edge) → cached K/V
-        cond_tokens = torch.cat([cond_base, self._skill_token(skill_code)], dim=1)
+        # cond: teacher-force the (predicted) skill + progress; encode once READING the cached VLM
+        # K/V at vlm-nonlang columns (VLM → cond edge) → cached K/V
+        cond_tokens = torch.cat(
+            [cond_base, self._skill_token(skill_code), self._progress_token(skill_progress)], dim=1)
         cond_kv, _ = self._encode_prefix_kv(
             self.cond_encoder.model.layers, cond_tokens, cond_pad, cond_pos, adarms=None,
             extra_kv=vlm_kv, extra_valid=vlm_pad & ~vlm_is_lang[None, :])
@@ -614,7 +628,8 @@ class SkillVLAPytorch(PI05Pytorch):
         return x_t
 
     @torch.no_grad()
-    def _sample_actions_B(self, cond_images, start_images, lang_tokens, lang_masks, state, skill_code, noise, num_steps):
+    def _sample_actions_B(self, cond_images, start_images, lang_tokens, lang_masks, state, skill_code,
+                          skill_progress, noise, num_steps):
         """Branch B (fused) cached sampling: only the VLM is a constant prefix (cached per skill). The
         fused expert's suffix = [cond, action] is BLOCK-CAUSAL (cond ⊥ action); it is still re-run each
         step (the suffix gets the per-step time AdaRMS) and reads the cached VLM-nonlang K/V — pi05
@@ -624,7 +639,7 @@ class SkillVLAPytorch(PI05Pytorch):
         vlm_embeds, vlm_pad, vlm_is_lang = self._vlm_tokens(start_images, lang_tokens, lang_masks)
         nv = vlm_embeds.shape[1]
         cond_base = self._cond_image_state_tokens(cond_images, state)
-        nc = cond_base.shape[1] + 1
+        nc = cond_base.shape[1] + 2                                     # + skill + progress tokens
         ne = nc + na
 
         # positions = single cumsum over [vlm, expert(cond+action)] (identical to the joint forward)
@@ -636,7 +651,8 @@ class SkillVLAPytorch(PI05Pytorch):
         vlm_h, _ = layernorm_forward(self._vlm.norm, vlm_h, None)
         if skill_code is None:
             skill_code = self.skill_head.decode(vlm_h[:, -1])
-        cond_tokens = torch.cat([cond_base, self._skill_token(skill_code)], dim=1)
+        cond_tokens = torch.cat(
+            [cond_base, self._skill_token(skill_code), self._progress_token(skill_progress)], dim=1)
 
         # suffix rows attend vlm-nonlang + the suffix, BLOCK-CAUSAL: cond ⊥ action (cond rows do not
         # attend the action cols); action attends cond+action. Matches the joint _mask_branch_B block.
@@ -669,15 +685,20 @@ class SkillVLAPytorch(PI05Pytorch):
         lang_masks: Tensor,
         state: Tensor,
         skill_code: Tensor | None = None,
+        skill_progress: Tensor | None = None,
         noise: Tensor | None = None,
         num_steps: int | None = None,
     ) -> Tensor:
         """Flow-matching sampling with a cached VLM prefix (per skill). ``skill_code`` (cond teacher
-        value) defaults to the VLM prediction. A also caches cond; B re-runs the fused suffix each step."""
+        value) defaults to the VLM prediction; ``skill_progress`` defaults to 0 (skill start).
+        A also caches cond; B re-runs the fused suffix each step."""
         if num_steps is None:
             num_steps = self.config.num_inference_steps
+        if skill_progress is None:
+            skill_progress = torch.zeros(state.shape[0], dtype=torch.float32, device=state.device)
         sampler = self._sample_actions_A if self.expert_arch == "joint" else self._sample_actions_B
-        return sampler(cond_images, start_images, lang_tokens, lang_masks, state, skill_code, noise, num_steps)
+        return sampler(cond_images, start_images, lang_tokens, lang_masks, state, skill_code,
+                       skill_progress, noise, num_steps)
 
     # ── FSQ terminator (inference-only skill-transition gating) ──
     def load_terminator(self, path: str) -> None:
@@ -779,6 +800,7 @@ def _remap_stage1_to_expert(raw: dict) -> dict:
             out[f"model.paligemma_with_expert.{key}"] = v
         elif key.startswith((
             "cond_encoder.", "dino.", "siglip.", "image_proj.", "state_proj.", "skill_proj.",
+            "progress_proj.",
             "action_in_proj.", "action_out_proj.", "time_mlp_in.", "time_mlp_out.",
         )):
             out[f"model.{key}"] = v
@@ -900,9 +922,15 @@ class SkillVLAPolicy(PI05Policy):
         lang_tokens, lang_masks = batch[OBS_LANGUAGE_TOKENS], batch[OBS_LANGUAGE_ATTENTION_MASK]
         actions = pad_vector(batch[ACTION], self.config.max_action_dim)
         skill_code = self._dataset_skill_code(batch)
+        progress = batch[SKILL_PROGRESS].float().view(-1)
+        if self.training and self.config.progress_jitter > 0:
+            # robustness to the terminator's progress-estimation error in the closed loop
+            jit = (torch.rand_like(progress) * 2.0 - 1.0) * self.config.progress_jitter
+            progress = (progress + jit).clamp(0.0, 1.0)
 
         flow_losses, skill_hidden = self.model.forward(
-            cond_images, start_images, lang_tokens, lang_masks, batch[OBS_STATE], skill_code, actions)
+            cond_images, start_images, lang_tokens, lang_masks, batch[OBS_STATE], skill_code,
+            progress, actions)
         skill_loss = self.model.skill_head.loss(skill_hidden, skill_code)
 
         action_dim = self.config.output_features[ACTION].shape[0]
@@ -926,6 +954,8 @@ class SkillVLAPolicy(PI05Policy):
     def predict_action_chunk(self, batch: dict[str, Tensor], **kwargs) -> Tensor:
         """Offline / dataset eval: requires skill-start inputs in the batch."""
         self.eval()
+        if "skill_progress" not in kwargs and SKILL_PROGRESS in batch:
+            kwargs["skill_progress"] = batch[SKILL_PROGRESS].float().view(-1)
         actions = self.model.sample_actions(
             self._cond_images(batch), self._dataset_start_images(batch),
             batch[OBS_LANGUAGE_TOKENS], batch[OBS_LANGUAGE_ATTENTION_MASK], batch[OBS_STATE], **kwargs)
@@ -936,6 +966,7 @@ class SkillVLAPolicy(PI05Policy):
         """Per-episode state for the closed loop."""
         self._action_queue = deque(maxlen=self.config.n_action_steps)
         self._skill_code: Tensor | None = None   # active skill (VLM-predicted at skill start)
+        self._skill_progress: Tensor | None = None  # terminator's latest progress estimate (B,)
         self._start_images: list[Tensor] | None = None  # skill-start view fed to the VLM
         self._start_lang: tuple[Tensor, Tensor] | None = None  # skill-start prompt (tokens, masks)
         self._skill_steps = 0
@@ -1030,6 +1061,8 @@ class SkillVLAPolicy(PI05Policy):
                     self._skill_code, state, image, batch.get("skill_decoder_wrist"))
                 if out is not None:
                     progress, end_prob = out
+                    # latest estimate feeds the expert's progress token at the next chunk prediction
+                    self._skill_progress = progress.detach().float().view(-1).clamp(0.0, 1.0)
                     signal = end_prob if self.config.skill_end_mode == "termination" else progress
                     if self._cur_skill is not None:  # per-step series for skill_html (_plot_skill_progress)
                         self._cur_skill["end_probs"].append({
@@ -1058,7 +1091,7 @@ class SkillVLAPolicy(PI05Policy):
             start_lang, start_masks = self._start_lang  # frozen skill-start prompt
             actions = self.model.sample_actions(
                 self._cond_images(batch), self._start_images, start_lang, start_masks,
-                batch[OBS_STATE], skill_code=self._skill_code)
+                batch[OBS_STATE], skill_code=self._skill_code, skill_progress=self._skill_progress)
             action_dim = self.config.output_features[ACTION].shape[0]
             actions = actions[:, : self.config.n_action_steps, :action_dim]
             self._action_queue.extend(actions.transpose(0, 1))
@@ -1074,6 +1107,7 @@ class SkillVLAPolicy(PI05Policy):
             if self._oracle_active():               # advance the GT skill cursor
                 self._oracle_cursor += 1
             self._skill_code, self._start_images = None, None
+            self._skill_progress = None             # new skill starts at progress 0
             self._action_queue.clear()
         self._episode_step += 1
         return action

@@ -93,6 +93,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.skill_fsq_levels="${SKILL_FSQ_LEVELS}" \
     --policy.chunk_size="${CHUNK_SIZE}" \
     --policy.n_action_steps="${N_ACTION_STEPS}" \
+    --policy.progress_jitter="${PROGRESS_JITTER}" \
     --batch_size="${BATCH_SIZE}" \
     --num_workers="${NUM_WORKERS}" \
     --steps="${STEPS}" \

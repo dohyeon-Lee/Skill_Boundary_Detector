@@ -46,11 +46,16 @@ siglip_image_size: 224          # patch 14 → 16×16 = 256 tokens at 224
 # flow-matching loss is pushed to actually use the skill (z_q) condition. The run name
 # always ends with a _c{N} tag. Weights are chunk-length agnostic, so Stage-2 can
 # warm-start from a Stage-1 checkpoint trained with a different chunk_size.
-chunk_size: 50 # 10 25 50
+chunk_size: 25 # 10 25 50
 n_action_steps:                 # blank = chunk_size (must be <= chunk_size)
 
+# ── Skill progress conditioning ──
+# The skill token is [z_q, progress] — progress is GT (skill_ds/(ds+de)) at train time with
+# ±jitter noise (robustness to the terminator's estimate used at inference). 0 = clean GT.
+progress_jitter: 0.1
+
 # ── Optimization ──
-batch_size: 256
+batch_size: 128
 num_workers: 8
 num_gpus: 1
 lr_base: 2.5e-05                # effective LR = lr_base * num_gpus

@@ -89,10 +89,10 @@ fsq_terminator_use_wrist: false
 fsq_run_name: "{target_dataset}_{fsq_tag}_dino{dino_patch_grid}{fsq_exp_suffix}"
 fsq_exp: "wow"  # optional suffix for ablations, e.g. exp1 -> ..._exp1
 fsq_levels: [5, 5, 5]
-fsq_epoch: "1000"
+fsq_epoch: "2000"
 
-fsq_batch_size: 64 
-fsq_num_epochs: 1000
+fsq_batch_size: 128 
+fsq_num_epochs: 2000
 fsq_checkpoint_every: 100
 # FSQ terminator cameras (also decides whether STAGE 2 extracts wrist tokens):
 #   true  = 3rd-person + wrist (two DINO encoders) — needs the wrist DINO tokens

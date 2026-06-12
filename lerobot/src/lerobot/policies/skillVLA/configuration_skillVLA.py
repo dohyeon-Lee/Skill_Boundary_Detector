@@ -47,6 +47,11 @@ class SkillVLAConfig(PI05Config):
     skill_loss_weight: float = 0.5
     """λ_skill in ``total = BC + λ_skill * skill_CE``. < 1 keeps the action BC dominant (including the
     BC gradient that flows into the VLM via cross-attention)."""
+    progress_jitter: float = 0.1
+    """Train-time uniform noise (±jitter, clamped to [0, 1]) on the GT skill progress fed to the
+    cond progress token (GT comes from the dataset wrapper, relative to the jitter-chosen skill).
+    In the closed loop the FSQ terminator's progress estimate is used instead — the jitter teaches
+    robustness to that estimator's error. 0 = clean GT."""
 
     # ── Freeze toggles (all parts otherwise trained) ──
     freeze_vlm: bool = False
