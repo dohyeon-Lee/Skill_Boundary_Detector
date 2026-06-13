@@ -17,7 +17,7 @@
 #       run name's trailing number (..._200 vs ..._300)
 #   • a full path (absolute, or relative-to-project with a "/") → used as-is
 # (also overridable per-run via env: EVAL_RUN_DIR=... ./submit_eval.sh)
-eval_run_dir: "FSQ865_dino8_wow_imgX_200"
+eval_run_dir: "FSQ865_dino8_wow_imgX_500"
 # Source dataset = the LIBERO suite the run was built from (raw video at {dataset_root}/{source};
 # also the {source} in the bare-name expansion above). Empty → "libero_90_full_full" for a bare
 # name, or derived from the parent folder for a full path.
