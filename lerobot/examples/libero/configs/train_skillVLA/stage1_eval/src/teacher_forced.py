@@ -10,7 +10,8 @@ Feeds GT dataset frames (obs + state + GT skill code) straight to the policy and
 Distinguishes "training problem (skill/obs ignored)" from "sim-eval pipeline problem":
 good chunk accuracy here + drawer-only behavior in sim ⇒ the sim eval is feeding bad inputs.
 
-Run via submit_teacher_forced.sh (same config resolution as the oracle eval).
+Per-model metric computer (one model+checkpoint per call): --policy_path, --dataset_dir,
+--output_dir. Driven by TF_compare/ (multi-model comparison → outputs/summary.md).
 """
 
 from __future__ import annotations

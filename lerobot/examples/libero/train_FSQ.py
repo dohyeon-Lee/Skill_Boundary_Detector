@@ -47,6 +47,9 @@ class Args:
     terminator_use_wrist: bool = True
     """Terminator cameras: True = 3rd-person + wrist (two DINO encoders); False = 3rd-person only
     (original single-camera FSQ; no wrist tokens needed, old checkpoints stay loadable)."""
+    reconstructor_use_image: bool = True
+    """Reconstructor inputs: True = [z, start_state, start_img, progress]; False drops the start
+    image (forces z to be the sole motion source). Architecture-invariant (image token zeroed)."""
     output_dir: str = ""
     """Output directory. Defaults to parent of skills_dir."""
     eef_dims: list[int] = field(default_factory=lambda: [0, 1, 2, 3, 4, 5])
@@ -85,6 +88,9 @@ class Args:
     end_pos_weight: float = 1.0
     """BCE positive-class weight for the termination head."""
     end_threshold: float = 0.5
+    end_target_sigma: float = 0.0
+    """Soft termination target std in frames (Gaussian bump at the skill end). 0 = hard 1-frame
+    spike. σ≈2-3 curbs the val overfit a sharp spike causes and adds ±tolerance to recall/precision."""
 
     # ── training
     epochs: int = 5000
@@ -312,6 +318,7 @@ def main(args: Args) -> None:
         patch_grid=args.patch_grid,
         n_patch_raw=args.n_patch_raw,
         terminator_use_wrist=args.terminator_use_wrist,
+        reconstructor_use_image=args.reconstructor_use_image,
         image_token_dim=args.image_token_dim,
         image_encoder_layers=args.image_encoder_layers,
         image_encoder_heads=args.image_encoder_heads,
@@ -322,6 +329,7 @@ def main(args: Args) -> None:
         end_loss_weight=args.end_loss_weight,
         end_pos_weight=args.end_pos_weight,
         end_threshold=args.end_threshold,
+        end_target_sigma=args.end_target_sigma,
         lr=args.lr,
         batch_size=args.batch_size,
         grad_clip=args.grad_clip,

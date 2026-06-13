@@ -80,6 +80,13 @@ else
   WRIST_ARGS=(--no-terminator_use_wrist)
 fi
 
+# Reconstructor start-image input (drop it to force z to be the sole motion source).
+if [ "${FSQ_RECONSTRUCTOR_USE_IMAGE}" = "true" ]; then
+  RECON_ARGS=(--reconstructor_use_image)
+else
+  RECON_ARGS=(--no-reconstructor_use_image)
+fi
+
 read -r -a FSQ_LEVELS <<< "${FSQ_LEVELS_STR}"
 N_TOKENS=$(( DINO_PATCH_GRID * DINO_PATCH_GRID + 1 ))
 
@@ -99,6 +106,7 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     --skills_dir              "${SKILLSET_DIR}/skills" \
     --dino_features           "${DINO_TOKENS_PATH}" \
     "${WRIST_ARGS[@]}" \
+    "${RECON_ARGS[@]}" \
     --output_dir              "${FSQ_OUTPUT_DIR}" \
     --fsq_levels              "${FSQ_LEVELS[@]}" \
     --chunk_size              "${FSQ_CHUNK_SIZE}" \
@@ -118,6 +126,7 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     --delta_loss_weight       "${FSQ_DELTA_LOSS_WEIGHT}" \
     --progress_loss_weight    "${FSQ_PROGRESS_LOSS_WEIGHT}" \
     --end_loss_weight         "${FSQ_END_LOSS_WEIGHT}" \
+    --end_target_sigma        "${FSQ_END_TARGET_SIGMA}" \
     --max_length              "${FSQ_MAX_LENGTH}" \
     --checkpoint_every        "${FSQ_CHECKPOINT_EVERY}" \
     --wandb_project           "${FSQ_WANDB_PROJECT}" \

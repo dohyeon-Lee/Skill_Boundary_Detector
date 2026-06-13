@@ -296,12 +296,20 @@ function drawChart(sel) {{
 let selected = -1;
 drawChart(selected);
 
+// Dimension-aware lattice: works for 1D (line), 2D (flat grid, e.g. [8,8]),
+// and 3D (isometric cube, e.g. [5,5,5] or [8,6,5]). Generic little-endian decode.
+const NDIM = LEVELS.length;
+const MAXL = Math.max.apply(null, LEVELS);
 function idxToCoord(idx) {{
-  const lx = LEVELS[0], ly = LEVELS[1], lz = LEVELS[2];
-  const x = idx % lx;
-  const y = Math.floor(idx / lx) % ly;
-  const z = Math.floor(idx / (lx * ly)) % lz;
-  return [x, y, z];
+  const c = []; let r = idx;
+  for (let d = 0; d < NDIM; d++) {{ c.push(r % LEVELS[d]); r = Math.floor(r / LEVELS[d]); }}
+  return c;
+}}
+// Center each axis and scale ALL axes by the SAME (MAXL-1) so a non-cubic lattice keeps its true
+// proportions (e.g. 8x6x5 reads as a box, not a stretched cube). Returns coords in ~[-1, 1].
+function normCoord(c) {{
+  const s = Math.max(1, MAXL - 1) / 2.0;
+  return LEVELS.map(function(L, d) {{ return ((c[d] || 0) - (L - 1) / 2.0) / s; }});
 }}
 
 const cubeCanvas = document.getElementById('cube');
@@ -310,71 +318,45 @@ cubeCanvas.width = 560;
 cubeCanvas.height = 420;
 
 function projectCoord(coord) {{
-  const [x, y, z] = coord;
-  const lx = Math.max(1, LEVELS[0] - 1);
-  const ly = Math.max(1, LEVELS[1] - 1);
-  const lz = Math.max(1, LEVELS[2] - 1);
-  const xn = lx > 0 ? (x / lx - 0.5) * 2.0 : 0.0;
-  const yn = ly > 0 ? (y / ly - 0.5) * 2.0 : 0.0;
-  const zn = lz > 0 ? (z / lz - 0.5) * 2.0 : 0.0;
-
-  // Camera: slightly diagonal and above the lattice so all three axes are visible.
-  const yaw = -0.63;
-  const pitch = 0.46;
+  const n = normCoord(coord);
+  const cx = cubeCanvas.width * 0.50;
+  const cy = cubeCanvas.height * 0.54;
+  if (NDIM <= 2) {{
+    // 1D (y=0) or 2D flat grid — no perspective, larger scale.
+    const xn = n[0] || 0.0, yn = (n.length > 1 ? n[1] : 0.0);
+    return [cx + xn * 150, cy - yn * 150, 0.0];
+  }}
+  // 3D isometric (camera slightly diagonal/above so all axes are visible).
+  const xn = n[0] || 0.0, yn = n[1] || 0.0, zn = n[2] || 0.0;
+  const yaw = -0.63, pitch = 0.46;
   const cyaw = Math.cos(yaw), syaw = Math.sin(yaw);
   const cp = Math.cos(pitch), sp = Math.sin(pitch);
   const xr = cyaw * xn - syaw * yn;
   const yr = syaw * xn + cyaw * yn;
   const zr = zn;
-
   const scale = 118;
-  const cx = cubeCanvas.width * 0.50;
-  const cy = cubeCanvas.height * 0.56;
-  const sx = cx + xr * scale;
-  const sy = cy + yr * scale * sp - zr * scale * cp;
-  const depth = yr * cp + zr * sp;
-  return [sx, sy, depth];
+  return [cx + xr * scale, cy + yr * scale * sp - zr * scale * cp, yr * cp + zr * sp];
 }}
 
 function drawCube(sel) {{
   const ctx = cubeCtx;
   ctx.clearRect(0, 0, cubeCanvas.width, cubeCanvas.height);
   const maxC = Math.max(...COUNTS, 1);
-  const lx = LEVELS[0], ly = LEVELS[1], lz = LEVELS[2];
 
-  // Interior lattice lines make FSQ neighborhood distance readable.
+  // Interior lattice lines (neighbor along each present axis) make FSQ distance readable; for a
+  // boundary cell these also trace the bounding box, so no separate outline is needed.
   ctx.strokeStyle = 'rgba(120,120,120,0.50)';
   ctx.lineWidth = 1.2;
   const drawLine = (a, b) => {{
-    const pa = projectCoord(a);
-    const pb = projectCoord(b);
-    ctx.beginPath();
-    ctx.moveTo(pa[0], pa[1]);
-    ctx.lineTo(pb[0], pb[1]);
-    ctx.stroke();
+    const pa = projectCoord(a), pb = projectCoord(b);
+    ctx.beginPath(); ctx.moveTo(pa[0], pa[1]); ctx.lineTo(pb[0], pb[1]); ctx.stroke();
   }};
-  for (let x = 0; x < lx; x++) {{
-    for (let y = 0; y < ly; y++) {{
-      for (let z = 0; z < lz; z++) {{
-        if (x + 1 < lx) drawLine([x, y, z], [x + 1, y, z]);
-        if (y + 1 < ly) drawLine([x, y, z], [x, y + 1, z]);
-        if (z + 1 < lz) drawLine([x, y, z], [x, y, z + 1]);
-      }}
+  for (let i = 0; i < N; i++) {{
+    const c = idxToCoord(i);
+    for (let d = 0; d < NDIM; d++) {{
+      if (c[d] + 1 < LEVELS[d]) {{ const c2 = c.slice(); c2[d] += 1; drawLine(c, c2); }}
     }}
   }}
-
-  const corners = [
-    [0,0,0], [lx-1,0,0], [0,ly-1,0], [0,0,lz-1],
-    [lx-1,ly-1,0], [lx-1,0,lz-1], [0,ly-1,lz-1], [lx-1,ly-1,lz-1],
-  ];
-  const edges = [[0,1],[0,2],[0,3],[1,4],[1,5],[2,4],[2,6],[3,5],[3,6],[4,7],[5,7],[6,7]];
-  ctx.strokeStyle = 'rgba(70,70,70,0.72)';
-  ctx.lineWidth = 1.8;
-  edges.forEach(([a,b]) => {{
-    const pa = projectCoord(corners[a]);
-    const pb = projectCoord(corners[b]);
-    ctx.beginPath(); ctx.moveTo(pa[0], pa[1]); ctx.lineTo(pb[0], pb[1]); ctx.stroke();
-  }});
 
   const pts = [];
   for (let i = 0; i < N; i++) {{

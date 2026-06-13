@@ -47,15 +47,15 @@ train_partition:
   - gigabyte_a6000
   - asus_6000ada
   - tyan_a6000
-  # - asus_pro6000
-  # - gigabyte_pro6000
+  - asus_pro6000
+  - gigabyte_pro6000
   - suma_rtx4090
   - base_suma_rtx3090
   - dell_rtx3090
   - big_suma_rtx3090
 
 
-train_qos: base_qos # pro6000_qos
+train_qos: base_qos # pro6000_qos | base_qos
 train_nodelist: ""
 train_exclude_nodes: 
   - node19
@@ -70,4 +70,4 @@ train_exclude_nodes:
   - node05
   - node31
   - cs-gpu-01
-  # - node58
+  # - node57

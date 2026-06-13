@@ -6,22 +6,14 @@
 # GT skill sequences index-paired) — scene-level alignment is not available from the dataset.
 #
 # =========================================================================================
-# 사용법 (이 폴더에서 실행; 전부 아래 model_dir 기준)
+# 사용법 (이 폴더에서 실행; 아래 model_dir 기준)
 # =========================================================================================
 # ① 클로즈드루프 oracle eval (sim, GT skill 시퀀스 주입):
 #      ./submit_eval.sh                          # model_dir + checkpoint 사용
 #
-# ② teacher-forced (sim 없음, skill 민감도 측정: swap_delta / win_rate):
-#      ./submit_teacher_forced.sh                # model_dir + checkpoint 1개
-#
-# ③ teacher-forced 체크포인트 스윕 (win_rate 추이 — skill 사용 여부 판정):
-#      ./submit_teacher_forced_sweep.sh          # 모든 숫자 체크포인트, 완료된 건 스킵
-#      TF_CKPTS="last" ./submit_teacher_forced_sweep.sh   # 일부만
-#
-# ④ 추이 표만 다시 출력 (GPU 불필요):
-#      python src/tf_trend.py --model_dir {아래 model_dir 값}
-#
-# 해석: win_rate 0.5 = skill 무시 / →1.0 = skill이 action을 조향 (FSQ 디코더 기준 0.94)
+# teacher-forced (sim 없음, skill 민감도 swap_delta / win_rate)는 별도 비교 모듈로 이동:
+#      TF_compare/  →  yaml에 모델들 나열 후 ./submit_tf_compare.sh  (여러 모델/체크포인트 비교표)
+#      해석: win_rate 0.5 = skill 무시 / →1.0 = skill이 action을 조향 (FSQ 디코더 기준 0.94)
 # =========================================================================================
 
 # ── Paths (project_root/dataset_root come from configs/global_config.yaml) ──
@@ -31,7 +23,7 @@ skillvla_dataset_root: skillvla_dataset  # .../{skillvla_dataset_root}/{source_d
 # ── Which trained Stage-1 model + which FSQ/skills (same {run_dir} it trained on) ──
 # model_dir alone identifies the run: source_dataset + run_tag (which skillvla dataset folder)
 # are both parsed from it ({source}_FSQ..._dino..._batch{N}_{A|B}).
-model_dir: libero_90_full_full_FSQ555_dino8_prev_200_siglip_unfreeze_batch128_A_c25   # trained S1 folder under outputs/skillVLA_stage1/ (joint=A, fused=B)
+model_dir: libero_90_full_full_FSQ865_dino8_wow_200_dino_freeze_batch128_A_c25   # trained S1 folder under outputs/skillVLA_stage1/ (joint=A, fused=B)
 checkpoint: "010000"            # "last" or a step number
 # Output folder = outputs/{model_dir}_{checkpoint}_adv-{skill_advance_mode}[_{eval_exp}]
 eval_exp: ""                    # optional free-form tag for the eval output folder (e.g. ablation name)
@@ -53,7 +45,7 @@ max_parallel_tasks: 1
 #   terminator = FSQ terminator decides each transition (uses skill_end_mode/threshold below)
 #   gt         = advance by each skill's GT demo duration (ideal timing; isolates the action
 #                expert from terminator errors). Terminator still runs → its curves still recorded.
-skill_advance_mode: terminator    # terminator | gt
+skill_advance_mode: gt    # terminator | gt
 skill_end_mode: termination       # "termination" (term prob >= thr) | "progress" (progress >= thr)
 skill_end_threshold: 0.5          # threshold on the chosen signal (termination~0.5, progress~0.9)
 inference_skill_max_length: 200   # force-advance skill after N steps (0 = off; terminator mode)

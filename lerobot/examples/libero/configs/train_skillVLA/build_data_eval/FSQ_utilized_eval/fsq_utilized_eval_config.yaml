@@ -17,18 +17,56 @@
 # skill_latents.npz의 z도 그 체크포인트 산물). fsq_ckpt는 ② 전용 override —
 # npz의 z(인코더)와 다른 epoch 디코더를 교차시키는 의도적 실험에만 사용 (경고 출력됨).
 targets:
-  prev_200:
-    run_dir: dataset/skillvla_dataset/libero_90_full_full/FSQ555_dino8_prev_200
-  wow_1000:
-    run_dir: dataset/skillvla_dataset/libero_90_full_full/FSQ555_dino8_wow_1000
-  865wow_1000:
-    run_dir: dataset/skillvla_dataset/libero_90_full_full/FSQ865_dino8_wow_1000
-  88ww_300:
-    run_dir: dataset/skillvla_dataset/libero_90_full_full/FSQ88_dino8_300
-  865ww_700:
-    run_dir: dataset/skillvla_dataset/libero_90_full_full/FSQ865_dino8_700
-  865ww_1000:
-    run_dir: dataset/skillvla_dataset/libero_90_full_full/FSQ865_dino8_1000
+  865wow_100_imgX:
+    run_dir: dataset_filtered/skillvla_dataset/libero_90_full_full/FSQ865_dino8_wow_imgX_100
+  865wow_200_imgX:
+    run_dir: dataset_filtered/skillvla_dataset/libero_90_full_full/FSQ865_dino8_wow_imgX_200
+  865wow_300_imgX:
+    run_dir: dataset_filtered/skillvla_dataset/libero_90_full_full/FSQ865_dino8_wow_imgX_300
+  555wow_100_imgX:
+    run_dir: dataset_filtered/skillvla_dataset/libero_90_full_full/FSQ555_dino8_wow_imgX_100
+  555wow_200_imgX:
+    run_dir: dataset_filtered/skillvla_dataset/libero_90_full_full/FSQ555_dino8_wow_imgX_200
+  555wow_300_imgX:
+    run_dir: dataset_filtered/skillvla_dataset/libero_90_full_full/FSQ555_dino8_wow_imgX_300
+  88wow_100:
+    run_dir: dataset_filtered/skillvla_dataset/libero_90_full_full/FSQ88_dino8_wow_100
+  88wow_200:
+    run_dir: dataset_filtered/skillvla_dataset/libero_90_full_full/FSQ88_dino8_wow_200
+  88wow_300:
+    run_dir: dataset_filtered/skillvla_dataset/libero_90_full_full/FSQ88_dino8_wow_300
+  88wow_500:
+    run_dir: dataset_filtered/skillvla_dataset/libero_90_full_full/FSQ88_dino8_wow_500
+  88wow_600:
+    run_dir: dataset_filtered/skillvla_dataset/libero_90_full_full/FSQ88_dino8_wow_600
+  865wow_100:
+    run_dir: dataset_filtered/skillvla_dataset/libero_90_full_full/FSQ865_dino8_wow_100
+  865wow_200:
+    run_dir: dataset_filtered/skillvla_dataset/libero_90_full_full/FSQ865_dino8_wow_200
+  865wow_300:
+    run_dir: dataset_filtered/skillvla_dataset/libero_90_full_full/FSQ865_dino8_wow_300
+  865wow_500:
+    run_dir: dataset_filtered/skillvla_dataset/libero_90_full_full/FSQ865_dino8_wow_500
+  865wow_600:
+    run_dir: dataset_filtered/skillvla_dataset/libero_90_full_full/FSQ865_dino8_wow_600
+  865ww_200:
+    run_dir: dataset_filtered/skillvla_dataset/libero_90_full_full/FSQ865_dino8_ww_200
+  865ww_500:
+    run_dir: dataset_filtered/skillvla_dataset/libero_90_full_full/FSQ865_dino8_ww_500
+  88ww_500:
+    run_dir: dataset_filtered/skillvla_dataset/libero_90_full_full/FSQ88_dino8_ww_500
+  # prev_200:
+  #   run_dir: dataset/skillvla_dataset/libero_90_full_full/FSQ555_dino8_prev_200
+  # wow_1000:
+  #   run_dir: dataset/skillvla_dataset/libero_90_full_full/FSQ555_dino8_wow_1000
+  # 865wow_1000:
+  #   run_dir: dataset/skillvla_dataset/libero_90_full_full/FSQ865_dino8_wow_1000
+  # 88ww_300:
+  #   run_dir: dataset/skillvla_dataset/libero_90_full_full/FSQ88_dino8_300
+  # 865ww_700:
+  #   run_dir: dataset/skillvla_dataset/libero_90_full_full/FSQ865_dino8_700
+  # 865ww_1000:
+  #   run_dir: dataset/skillvla_dataset/libero_90_full_full/FSQ865_dino8_1000
 
 # ── 옵션 ──
 run_zswap: true            # ② 실행 여부 (①③은 항상)

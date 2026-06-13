@@ -3,13 +3,14 @@ Spline FSQ-AE — Finite Scalar Quantization skill encoder with observation-cond
 
 Architecture
 ------------
-  Encoder (fully Transformer-based):
-    enc_image_encoder: pure-DINO mini encoder → 1 token each for start/end image
+  Encoder (action-only, fully Transformer-based):
     enc_ctrl_proj/enc_len_proj (Linear A→H, 1→H): per-control-point + length tokens
-    enc_traj_pool (Transformer + query pool): control-point/length tokens → 1 traj token
-    enc_fusion_pool (Transformer + query pool): [start, traj, end] tokens → fused latent
+    enc_traj_pool (Transformer + query pool): control-point/length tokens → pooled latent (H)
     z_head (Linear H→D): produce pre-quantization latent
     FSQ: levels=[5,5,5], codebook_size=125, D=3, no learnable params
+  The encoder sees ONLY the (zero-grounded) action trajectory — no images. z therefore
+  encodes the task-agnostic motion ("what motion", translation-invariant); scene grounding
+  ("where/what object") is supplied to the decoder via its start-frame inputs instead.
 
   Decoder (3 Transformer sub-networks, per timestep):
     dec_image_encoder       (DINO+flags) → motion image feature (B,T,H)
@@ -42,7 +43,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from scipy.interpolate import make_interp_spline
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, Sampler
 
 
 # ── Spline codec ──────────────────────────────────────────────────────────────
@@ -50,12 +51,28 @@ from torch.utils.data import DataLoader, Dataset
 GRIPPER_DIM = -1
 
 
+def zero_ground_trajectory(trajectory: np.ndarray) -> np.ndarray:
+    """Make the pose trajectory relative to its skill-start frame; the gripper dim stays absolute.
+
+    Translation-invariant encoder input: the same motion gets the same code regardless of where in
+    the workspace it starts (kills the start-position jitter and the scene-layout leak that absolute
+    coordinates carry). Spline interpolation passes through the start point, so subtracting here is
+    equivalent to subtracting on the control points."""
+    traj = np.asarray(trajectory, dtype=np.float32).copy()
+    D = traj.shape[1]
+    gripper_idx = (D + GRIPPER_DIM) % D
+    offset = traj[0].copy()
+    offset[gripper_idx] = 0.0  # keep gripper absolute (it is a state flag, not a pose)
+    return traj - offset
+
+
 def spline_encode(
     trajectory: np.ndarray,  # (T, action_dim)
     n_control: int,
     degree: int,
 ) -> tuple[np.ndarray, int]:
-    """trajectory → control points (n_control, action_dim) + original length T."""
+    """trajectory → zero-grounded control points (n_control, action_dim) + original length T."""
+    trajectory = zero_ground_trajectory(trajectory)
     T, D = trajectory.shape
     t_orig = np.linspace(0.0, 1.0, T)
     t_ctrl = np.linspace(0.0, 1.0, n_control)
@@ -237,6 +254,12 @@ class SplineFSQAEConfig:
     image_size: int = 224
     patch_grid: int = 8
     n_patch_raw: int = 196
+    reconstructor_use_image: bool = True
+    """Reconstructor inputs: True = [z, start_state, start_img, progress]; False = [z, start_state,
+    progress] (drop the skill-start image). The start image is a high-dim per-skill channel that
+    competes with the 3-dim z as the decoder's skill code — dropping it forces z to be the sole
+    motion source. Architecture-invariant (the image token is zeroed when False), so old/new
+    checkpoints stay mutually loadable; only the recorded flag changes behaviour."""
     terminator_use_wrist: bool = False
     """Terminator camera inputs: False = 3rd-person only ([z, img, state], original single-camera
     FSQ — keeps old checkpoints loadable); True = 3rd-person + wrist ([z, img, wrist, state], two
@@ -246,6 +269,11 @@ class SplineFSQAEConfig:
     image_encoder_heads: int = 4
     chunk_size: int = 10  # motion always predicts a K-step action chunk
     max_length: float = 200.0
+    end_target_sigma: float = 0.0
+    """Soft termination target: Gaussian bump (std in FRAMES) peaking at the skill's last frame
+    instead of a 1-frame spike. DP skill boundaries are fuzzy, so a spike makes the head memorize
+    exact end frames (val overfit). σ≈2-3 encodes that ±tolerance and gives dense gradients; the
+    bump's ≥0.5 region also makes the recall/precision metric window-tolerant for free. 0 = hard."""
     delta_loss_weight: float = 1.0
     progress_loss_weight: float = 1.0
     end_loss_weight: float = 1.0
@@ -287,6 +315,7 @@ class SplineFSQAE(nn.Module):
         image_size: int = 224,
         patch_grid: int = 8,
         n_patch_raw: int = 196,
+        reconstructor_use_image: bool = True,
         terminator_use_wrist: bool = False,
         image_token_dim: int = 128,
         image_encoder_layers: int = 1,
@@ -314,37 +343,21 @@ class SplineFSQAE(nn.Module):
         self.image_size = image_size
         self.patch_grid = patch_grid
         self.n_patch_raw = n_patch_raw
+        self.reconstructor_use_image = bool(reconstructor_use_image)
         self.terminator_use_wrist = terminator_use_wrist
 
         self.fsq = FSQ(fsq_levels)
         D = self.fsq.latent_dim
         H = hidden_dim
 
-        # ── Encoder (3rd-person camera only) ──────────────────────────────────
-        self.enc_image_encoder = ImageTokenEncoder(
-            feat_dim=feat_dim,
-            n_tokens=n_tokens,
-            hidden_dim=H,
-            token_dim=image_token_dim,
-            n_layers=image_encoder_layers,
-            n_heads=image_encoder_heads,
-            dropout=dropout,
-        )
-        # Trajectory: each control point + the length scalar becomes one H-dim token,
-        # a Transformer mixes them, and a learned query pools them into one traj token.
+        # ── Encoder (action trajectory only — no images) ──────────────────────
+        # Each (zero-grounded) control point + the length scalar becomes one H-dim token,
+        # a Transformer mixes them, and a learned query pools them into the latent.
         self.enc_ctrl_proj = nn.Linear(action_dim, H)
         self.enc_len_proj = nn.Linear(1, H)
         self.enc_traj_pool = TokenTransformerPool(
             hidden_dim=H,
             n_tokens=n_control + 1,
-            n_layers=image_encoder_layers,
-            n_heads=image_encoder_heads,
-            dropout=dropout,
-        )
-        # Fusion: [start_img, traj, end_img] tokens → Transformer → pooled latent.
-        self.enc_fusion_pool = TokenTransformerPool(
-            hidden_dim=H,
-            n_tokens=3,
             n_layers=image_encoder_layers,
             n_heads=image_encoder_heads,
             dropout=dropout,
@@ -414,25 +427,16 @@ class SplineFSQAE(nn.Module):
 
     def encode(
         self,
-        ctrl_pts: torch.Tensor,      # (B, n_control, action_dim)
+        ctrl_pts: torch.Tensor,      # (B, n_control, action_dim) — zero-grounded, normalized
         lengths: torch.Tensor,       # (B,)
-        start_tokens: torch.Tensor,  # (B, n_tokens, feat_dim)
-        end_tokens: torch.Tensor,    # (B, n_tokens, feat_dim)
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Returns (z_q, indices)."""
+        """Action-only encode. Returns (z_q, indices)."""
         B = ctrl_pts.size(0)
-        start_feat = self.enc_image_encoder(start_tokens.unsqueeze(1)).squeeze(1)  # (B, H)
-        end_feat   = self.enc_image_encoder(end_tokens.unsqueeze(1)).squeeze(1)    # (B, H)
-
-        # Trajectory tokens: per control point + one length token → traj token.
+        # Tokens: per control point + one length token → Transformer pool → latent.
         ctrl_tok = self.enc_ctrl_proj(ctrl_pts)                                    # (B, n_control, H)
         l_norm = (lengths.float() / self.max_length).view(B, 1, 1).to(ctrl_pts.dtype)
         len_tok = self.enc_len_proj(l_norm)                                        # (B, 1, H)
-        traj_feat = self.enc_traj_pool(torch.cat([ctrl_tok, len_tok], dim=1))      # (B, H)
-
-        # Fuse in order: start image → trajectory → end image.
-        fusion_tokens = torch.stack([start_feat, traj_feat, end_feat], dim=1)      # (B, 3, H)
-        h = self.enc_fusion_pool(fusion_tokens)                                    # (B, H)
+        h = self.enc_traj_pool(torch.cat([ctrl_tok, len_tok], dim=1))             # (B, H)
         z_e = self.z_head(h)
         return self.fsq(z_e)
 
@@ -595,12 +599,17 @@ class SplineFSQAE(nn.Module):
 
         Inputs except progress are fixed at the skill-start 3rd-person frame:
           [z, start_state, start_img, progress]            (4)
+        When reconstructor_use_image=False the start-image token is zeroed (architecture-invariant:
+        the slot/params stay, only the content is dropped), forcing z to be the sole motion source.
         Shared by decode() (FSQ training, GT progress) and predict_action_chunk()
         (skillVLA inference, terminator progress).
         """
         B, T = z_tok.shape[:2]
         start_state = self.recon_state_proj(states[:, :1]).expand(B, T, -1)            # (B, T, H)
-        start_img = self.dec_image_encoder_recon(dec_tokens[:, :1]).expand(B, T, -1)   # (B, T, H)
+        if self.reconstructor_use_image:
+            start_img = self.dec_image_encoder_recon(dec_tokens[:, :1]).expand(B, T, -1)   # (B, T, H)
+        else:
+            start_img = torch.zeros_like(start_state)  # drop the skill-start image channel
         recon_tokens = [z_tok, start_state, start_img, prog_tok]
         mo = self.motion_pool(
             torch.stack(recon_tokens, dim=2).reshape(B * T, len(recon_tokens), -1)
@@ -616,15 +625,13 @@ class SplineFSQAE(nn.Module):
         self,
         ctrl_pts: torch.Tensor,      # (B, n_control, action_dim)
         lengths: torch.Tensor,       # (B,)
-        start_tokens: torch.Tensor,  # (B, n_tokens, feat_dim)
-        end_tokens: torch.Tensor,    # (B, n_tokens, feat_dim)
         states: torch.Tensor,             # (B, T, state_dim)
         dec_tokens: torch.Tensor,         # 3rd-person (B, T, n_tokens, feat_dim)
         dec_tokens_wrist: torch.Tensor | None = None,  # wrist (dual terminator only)
         frame_progress: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Returns (delta, progress_pred, term_logits, indices)."""
-        z_q, indices = self.encode(ctrl_pts, lengths, start_tokens, end_tokens)
+        z_q, indices = self.encode(ctrl_pts, lengths)
         delta, progress_pred, term_logits = self.decode(
             z_q, states, dec_tokens, dec_tokens_wrist, frame_progress,
         )
@@ -689,8 +696,6 @@ class SplineFSQAE(nn.Module):
     def encode_numpy(
         self,
         trajectory: np.ndarray,      # (T, action_dim)
-        start_tokens: np.ndarray,    # (n_tokens, feat_dim)
-        end_tokens: np.ndarray,      # (n_tokens, feat_dim)
         device: str = "cpu",
     ) -> np.ndarray:
         """Returns latent vector z_q as numpy array, shape (D,)."""
@@ -698,17 +703,13 @@ class SplineFSQAE(nn.Module):
         cp_norm = self._np_norm_actions(ctrl_pts)
         cp_t = torch.from_numpy(cp_norm).float().unsqueeze(0).to(device)
         l_t  = torch.tensor([T], dtype=torch.long, device=device)
-        st_t = torch.from_numpy(start_tokens.astype(np.float32)).unsqueeze(0).to(device)
-        et_t = torch.from_numpy(end_tokens.astype(np.float32)).unsqueeze(0).to(device)
-        z_q, _ = self.encode(cp_t, l_t, st_t, et_t)
+        z_q, _ = self.encode(cp_t, l_t)
         return z_q.squeeze(0).cpu().numpy()
 
     @torch.no_grad()
     def encode_index(
         self,
         trajectory: np.ndarray,
-        start_tokens: np.ndarray,
-        end_tokens: np.ndarray,
         device: str = "cpu",
     ) -> int:
         """Returns scalar FSQ codebook index."""
@@ -716,9 +717,7 @@ class SplineFSQAE(nn.Module):
         cp_norm = self._np_norm_actions(ctrl_pts)
         cp_t = torch.from_numpy(cp_norm).float().unsqueeze(0).to(device)
         l_t  = torch.tensor([T], dtype=torch.long, device=device)
-        st_t = torch.from_numpy(start_tokens.astype(np.float32)).unsqueeze(0).to(device)
-        et_t = torch.from_numpy(end_tokens.astype(np.float32)).unsqueeze(0).to(device)
-        _, idx = self.encode(cp_t, l_t, st_t, et_t)
+        _, idx = self.encode(cp_t, l_t)
         return int(idx[0].item())
 
 
@@ -753,9 +752,11 @@ class SplineFSQDataset(Dataset):
         delta_max: np.ndarray,
         max_length: float,
         chunk_size: int = 10,
+        end_target_sigma: float = 0.0,
     ) -> None:
         self.chunk_size = chunk_size
         self.max_length = max_length
+        self.end_target_sigma = float(end_target_sigma)
         self.action_min = action_min.astype(np.float32)
         self.action_max = action_max.astype(np.float32)
 
@@ -791,15 +792,19 @@ class SplineFSQDataset(Dataset):
 
         # Per-skill progress: 0 at the first step, 1 at the last step.
         progress = torch.arange(T, dtype=torch.float32) / max(T - 1, 1)  # (T,)
-        # Termination: 1 at the last step, else 0.
-        termination = torch.zeros(T)
-        termination[T - 1] = 1.0
+        # Termination target: hard 1-frame spike, or (end_target_sigma>0) a soft Gaussian bump that
+        # rises to 1.0 at the last frame (a half-bump, since no frames exist past the end). The soft
+        # form matches the fuzzy DP boundary and curbs the val overfit a sharp spike causes.
+        if self.end_target_sigma > 0.0:
+            t = torch.arange(T, dtype=torch.float32)
+            termination = torch.exp(-((t - (T - 1)) ** 2) / (2.0 * self.end_target_sigma ** 2))
+        else:
+            termination = torch.zeros(T)
+            termination[T - 1] = 1.0
 
         item: dict = {
             "ctrl":         torch.from_numpy(self.ctrl_pts[idx]),      # (n_control, A)
             "length":       torch.tensor(T, dtype=torch.long),
-            "start_tokens": torch.from_numpy(tokens[0]),               # (n_tokens, F)
-            "end_tokens":   torch.from_numpy(tokens[T - 1]),           # (n_tokens, F)
             "dec_tokens":       torch.from_numpy(tokens[:T]),         # (T, n_tokens, F) 3rd-person
             "state":        torch.from_numpy(self.states[idx][:T]),    # (T, 7)
             "frame_progress": progress,    # (T,) GT progress: motion input + termination-head target
@@ -830,8 +835,6 @@ def collate_fsq_batch(batch: list[dict]) -> dict:
     B = len(batch)
 
     ctrl         = torch.stack([b["ctrl"]         for b in batch])  # (B, n_ctrl, A)
-    start_tokens = torch.stack([b["start_tokens"] for b in batch])  # (B, n_tokens, F)
-    end_tokens   = torch.stack([b["end_tokens"]   for b in batch])  # (B, n_tokens, F)
     n_tokens = batch[0]["dec_tokens"].shape[1]
     feat_dim = batch[0]["dec_tokens"].shape[2]
     state_dim = batch[0]["state"].shape[-1]
@@ -863,8 +866,6 @@ def collate_fsq_batch(batch: list[dict]) -> dict:
     return {
         "ctrl":         ctrl,
         "lengths":      lengths,
-        "start_tokens": start_tokens,
-        "end_tokens":   end_tokens,
         "dec_tokens":       dec_tokens,
         "dec_tokens_wrist": dec_tokens_wrist,
         "state":        state,
@@ -874,6 +875,49 @@ def collate_fsq_batch(batch: list[dict]) -> dict:
         "mask":         mask,
         "chunk_valid":  chunk_valid,   # (B, max_T, K)
     }
+
+
+# ── Length-bucketed batching ──────────────────────────────────────────────────
+
+
+class LengthBucketBatchSampler(Sampler):
+    """Group similar-length skills into the same batch to cut padding waste, while keeping
+    randomness. Per epoch (shuffle=True): permute all indices → cut into mega-buckets of
+    batch_size*bucket_mult → sort within each bucket by length → form batches → shuffle batch order.
+
+    Every skill appears exactly once per epoch, so epoch-level gradient coverage is unchanged; only
+    mini-batch composition differs (a standard, low-impact technique). The decoder processes
+    (B, max_T) tensors, so a batch's cost scales with its longest skill — homogeneous batches mean
+    far fewer padding frames decoded. shuffle=False gives a deterministic global length sort (val)."""
+
+    def __init__(self, lengths, batch_size: int, shuffle: bool = True, bucket_mult: int = 40, seed: int = 0):
+        self.lengths = np.asarray(lengths)
+        self.batch_size = int(batch_size)
+        self.shuffle = shuffle
+        self.bucket_size = max(self.batch_size * bucket_mult, self.batch_size)
+        self.seed = seed
+        self.epoch = 0
+
+    def __len__(self) -> int:
+        return (len(self.lengths) + self.batch_size - 1) // self.batch_size
+
+    def __iter__(self):
+        n = len(self.lengths)
+        if self.shuffle:
+            rng = np.random.default_rng(self.seed + self.epoch)
+            idx = rng.permutation(n)
+        else:
+            idx = np.argsort(self.lengths, kind="stable")  # deterministic global sort
+        batches = []
+        for s in range(0, n, self.bucket_size):
+            bucket = idx[s:s + self.bucket_size]
+            bucket = bucket[np.argsort(self.lengths[bucket], kind="stable")]
+            for b in range(0, len(bucket), self.batch_size):
+                batches.append(bucket[b:b + self.batch_size].tolist())
+        if self.shuffle:
+            rng.shuffle(batches)
+        self.epoch += 1
+        return iter(batches)
 
 
 # ── Loss ──────────────────────────────────────────────────────────────────────
@@ -975,8 +1019,12 @@ def train_spline_fsqae(
         raise ValueError("No skill segments provided.")
 
     action_dim = cfg.action_dim if cfg.action_dim > 0 else segments[0].shape[-1]
-    a_min = cfg.action_min if cfg.action_min is not None else np.concatenate(segments).min(axis=0)
-    a_max = cfg.action_max if cfg.action_max is not None else np.concatenate(segments).max(axis=0)
+    # Encoder normalization stats must match what the encoder actually sees: zero-grounded control
+    # points (spline_encode grounds internally). Computing min/max on grounded segments keeps the
+    # normalization centered on the relative-pose distribution.
+    grounded = np.concatenate([zero_ground_trajectory(s) for s in segments])
+    a_min = cfg.action_min if cfg.action_min is not None else grounded.min(axis=0)
+    a_max = cfg.action_max if cfg.action_max is not None else grounded.max(axis=0)
     d_min = cfg.delta_min  if cfg.delta_min  is not None else np.concatenate(decoder_targets).min(axis=0)
     d_max = cfg.delta_max  if cfg.delta_max  is not None else np.concatenate(decoder_targets).max(axis=0)
 
@@ -1004,10 +1052,18 @@ def train_spline_fsqae(
             a_min, a_max, d_min, d_max,
             cfg.max_length,
             cfg.chunk_size,
+            cfg.end_target_sigma,
         )
 
-    train_loader = DataLoader(mk_ds(train_idx), batch_size=cfg.batch_size, shuffle=True,  collate_fn=collate_fsq_batch)
-    val_loader   = DataLoader(mk_ds(val_idx),   batch_size=cfg.batch_size, shuffle=False, collate_fn=collate_fsq_batch)
+    train_ds, val_ds = mk_ds(train_idx), mk_ds(val_idx)
+    train_loader = DataLoader(
+        train_ds, collate_fn=collate_fsq_batch,
+        batch_sampler=LengthBucketBatchSampler(train_ds.lengths, cfg.batch_size, shuffle=True),
+    )
+    val_loader = DataLoader(
+        val_ds, collate_fn=collate_fsq_batch,
+        batch_sampler=LengthBucketBatchSampler(val_ds.lengths, cfg.batch_size, shuffle=False),
+    )
 
     model = SplineFSQAE(
         action_dim=action_dim,
@@ -1021,6 +1077,7 @@ def train_spline_fsqae(
         feat_dim=cfg.feat_dim,
         n_tokens=cfg.n_tokens,
         patch_grid=cfg.patch_grid,
+        reconstructor_use_image=cfg.reconstructor_use_image,
         terminator_use_wrist=cfg.terminator_use_wrist,
         image_token_dim=cfg.image_token_dim,
         image_encoder_layers=cfg.image_encoder_layers,
@@ -1062,8 +1119,6 @@ def train_spline_fsqae(
         dev = cfg.device
         ctrl      = batch["ctrl"].to(dev)
         lengths   = batch["lengths"].to(dev)
-        start_tok = batch["start_tokens"].to(dev)
-        end_tok   = batch["end_tokens"].to(dev)
         dec_tok   = batch["dec_tokens"].to(dev)
         dec_tok_wrist = batch["dec_tokens_wrist"]
         dec_tok_wrist = dec_tok_wrist.to(dev) if dec_tok_wrist is not None else None
@@ -1076,7 +1131,7 @@ def train_spline_fsqae(
         cv        = batch["chunk_valid"].to(dev) if batch["chunk_valid"] is not None else None
 
         pred_delta, pred_prog, pred_term, _ = model(
-            ctrl, lengths, start_tok, end_tok, states, dec_tok, dec_tok_wrist, frame_progress,
+            ctrl, lengths, states, dec_tok, dec_tok_wrist, frame_progress,
         )
         total, d_l, p_l, e_l = fsqae_loss(
             pred_delta, pred_prog, pred_term, tgt_delta, tgt_prog, tgt_term, mask,

@@ -18,7 +18,7 @@ from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).parent))
 from FSQ import SplineFSQAE, SplineFSQAEConfig
-from train_FSQ import _compute_skill_orders, load_dino_tokens, load_skill_files
+from train_FSQ import _compute_skill_orders, load_skill_files
 
 
 @dataclass
@@ -28,9 +28,6 @@ class Args:
 
     skills_dir: str
     """Directory containing per-skill npz files."""
-
-    dino_features: str
-    """Merged DINO token npz produced for FSQ training."""
 
     output_path: str
     """Output skill_latents npz path."""
@@ -85,7 +82,6 @@ def main(args: Args) -> None:
         eef_dims=args.eef_dims,
         gripper_action_dim=args.gripper_action_dim,
     )
-    dec_tokens = load_dino_tokens(Path(args.dino_features), metadata)
 
     model = load_model(Path(args.model_path), device)
     print(f"[FSQ encode] model={args.model_path}")
@@ -93,10 +89,9 @@ def main(args: Args) -> None:
 
     latents = []
     tokens = []
-    for i, (seg, meta) in enumerate(tqdm(list(zip(segments, metadata)), desc="Encoding FSQ skills")):
-        end_idx = min(len(dec_tokens[i]) - 1, int(meta["length"]) - 1)
-        latents.append(model.encode_numpy(seg, dec_tokens[i][0], dec_tokens[i][end_idx], device=device))
-        tokens.append(model.encode_index(seg, dec_tokens[i][0], dec_tokens[i][end_idx], device=device))
+    for seg in tqdm(segments, desc="Encoding FSQ skills"):  # action-only encoder: no images needed
+        latents.append(model.encode_numpy(seg, device=device))
+        tokens.append(model.encode_index(seg, device=device))
 
     save_dict: dict[str, np.ndarray] = {
         "latents": np.stack(latents).astype(np.float32),

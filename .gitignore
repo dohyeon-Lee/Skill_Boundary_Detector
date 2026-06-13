@@ -1,5 +1,7 @@
 # ── 데이터셋 (대용량) ─────────────────────────────────────────────
 dataset/
+# dataset_filtered 등 (outputs_*/와 동일 컨벤션)
+dataset_*/
 libero_dataset/
 libero_small_dataset/
 libero_10_old/

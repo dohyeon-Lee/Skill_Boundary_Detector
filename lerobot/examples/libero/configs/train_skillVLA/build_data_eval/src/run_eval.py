@@ -309,7 +309,7 @@ def eval_fsq_recon(df, dino: DinoNpz, frames_src, fsq_model_path: Path, out_dir:
     dec_targets = _make_episode_future_targets(dec_targets_cur, metadata)
     lengths = [m["length"] for m in metadata]
 
-    latents, tokens = FE.batched_encode(model, segments, dec_tokens, lengths, device, batch_size)
+    latents, tokens = FE.batched_encode(model, segments, lengths, device, batch_size)  # action-only encoder
     # dec_tokens stands in for the wrist camera here (see NOTE above).
     deltas, progresses, term_probs = FE.batched_decode(
         model, latents, dec_states, dec_tokens, dec_tokens, lengths, device, batch_size)

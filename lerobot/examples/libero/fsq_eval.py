@@ -115,11 +115,10 @@ def skill_metrics(delta, progress, term_prob, gt_actions, T, end_threshold, grou
 # ── batched inference (fp16 clips → per-batch float32, no_grad) ─────────────────
 
 @torch.no_grad()
-def batched_encode(model, segments, clips, lengths, device, batch_size):
-    """Encode all skills in length-bucketed batches. Returns latents (N,D), tokens (N,)."""
+def batched_encode(model, segments, lengths, device, batch_size):
+    """Encode all skills (action-only) in length-bucketed batches. Returns latents (N,D), tokens (N,)."""
     N = len(segments)
     A = segments[0].shape[-1]
-    n_tokens, feat = model.n_tokens, model.feat_dim
     nctrl, deg = model.n_control, model.spline_degree
     amin = model.action_min.cpu().numpy()
     amax = model.action_max.cpu().numpy()
@@ -138,16 +137,10 @@ def batched_encode(model, segments, clips, lengths, device, batch_size):
         B = len(idxs)
         ctrl = torch.zeros(B, nctrl, A)
         lens = torch.zeros(B, dtype=torch.long)
-        start = torch.zeros(B, n_tokens, feat)
-        end = torch.zeros(B, n_tokens, feat)
         for b, i in enumerate(idxs):
-            T = lengths[i]
-            clip = clips[i]
             ctrl[b] = torch.from_numpy(ctrl_norm[i])
-            lens[b] = T
-            start[b] = torch.from_numpy(clip[0].astype(np.float32))
-            end[b] = torch.from_numpy(clip[min(len(clip) - 1, T - 1)].astype(np.float32))
-        z_q, idx = model.encode(ctrl.to(device), lens.to(device), start.to(device), end.to(device))
+            lens[b] = lengths[i]
+        z_q, idx = model.encode(ctrl.to(device), lens.to(device))
         z_q = z_q.cpu().numpy()
         idx = idx.cpu().numpy()
         for b, i in enumerate(idxs):
@@ -162,7 +155,8 @@ def batched_decode(model, latents, states, clips, clips_wrist, lengths, device, 
 
     Returns per-skill lists sliced to T: deltas[i] (T,K,A), progresses[i] (T,),
     term_probs[i] (T,). GT progress is fed as the motion input (matches training).
-    The terminator reads both cameras (clips = 3rd-person, clips_wrist = wrist).
+    clips = 3rd-person tokens; clips_wrist = wrist tokens (None for single-camera models,
+    where the terminator reads 3rd-person only).
     """
     N = len(latents)
     n_tokens, feat = model.n_tokens, model.feat_dim
@@ -179,17 +173,19 @@ def batched_decode(model, latents, states, clips, clips_wrist, lengths, device, 
         z = torch.zeros(B, D)
         st = torch.zeros(B, maxT, state_dim)
         dec = torch.zeros(B, maxT, n_tokens, feat)
-        dec_w = torch.zeros(B, maxT, n_tokens, feat)
+        dec_w = torch.zeros(B, maxT, n_tokens, feat) if clips_wrist is not None else None
         fp = torch.zeros(B, maxT)
         for b, i in enumerate(idxs):
             T = lengths[i]
             z[b] = torch.from_numpy(latents[i].astype(np.float32))
             st[b, :T] = torch.from_numpy(states[i][:T].astype(np.float32))
             dec[b, :T] = torch.from_numpy(clips[i][:T].astype(np.float32))
-            dec_w[b, :T] = torch.from_numpy(clips_wrist[i][:T].astype(np.float32))
+            if dec_w is not None:
+                dec_w[b, :T] = torch.from_numpy(clips_wrist[i][:T].astype(np.float32))
             fp[b, :T] = torch.arange(T, dtype=torch.float32) / max(T - 1, 1)
         delta, prog, term_logits = model.decode(
-            z.to(device), st.to(device), dec.to(device), dec_w.to(device), fp.to(device))
+            z.to(device), st.to(device), dec.to(device),
+            dec_w.to(device) if dec_w is not None else None, fp.to(device))
         term = torch.sigmoid(term_logits)
         for b, i in enumerate(idxs):
             T = lengths[i]
@@ -306,23 +302,27 @@ const LEVELS = FSQ_LEVELS;
 const cubeCanvas = document.getElementById('cube');
 const cubeCtx = cubeCanvas.getContext('2d');
 cubeCanvas.width = 560; cubeCanvas.height = 560;
-function idxToCoord(idx){const lx=LEVELS[0],ly=LEVELS[1];return [idx%lx, Math.floor(idx/lx)%ly, Math.floor(idx/(lx*ly))];}
+// Dimension-aware lattice: 1D line, 2D flat grid (e.g. [8,8]), 3D iso cube (e.g. [5,5,5] / [8,6,5]).
+const NDIM = LEVELS.length;
+const MAXL = Math.max.apply(null, LEVELS);
+function idxToCoord(idx){const c=[];let r=idx;for(let d=0;d<NDIM;d++){c.push(r%LEVELS[d]);r=Math.floor(r/LEVELS[d]);}return c;}
+// Center each axis, scale ALL axes by the same (MAXL-1) so non-cubic lattices keep true proportions.
+function normCoord(c){const s=Math.max(1,MAXL-1)/2;return LEVELS.map((L,d)=>((c[d]||0)-(L-1)/2)/s);}
 function projectCoord(c){
-  const lx=Math.max(1,LEVELS[0]-1),ly=Math.max(1,LEVELS[1]-1),lz=Math.max(1,LEVELS[2]-1);
-  const xn=(c[0]/lx-0.5)*2,yn=(c[1]/ly-0.5)*2,zn=(c[2]/lz-0.5)*2;
+  const n=normCoord(c);
+  const ox=cubeCanvas.width*0.5,oy=cubeCanvas.height*0.52;
+  if(NDIM<=2){const xn=n[0]||0,yn=(n.length>1?n[1]:0);return [ox+xn*200, oy-yn*200, 0];}
+  const xn=n[0]||0,yn=n[1]||0,zn=n[2]||0;
   const yaw=-0.63,pitch=0.46,cy=Math.cos(yaw),sy=Math.sin(yaw),cp=Math.cos(pitch),sp=Math.sin(pitch);
   const xr=cy*xn-sy*yn,yr=sy*xn+cy*yn,zr=zn,scale=150;
-  const ox=cubeCanvas.width*0.5,oy=cubeCanvas.height*0.52;
   return [ox+xr*scale, oy+yr*scale*sp-zr*scale*cp, yr*cp+zr*sp];
 }
 function drawCube(sel){
   const ctx=cubeCtx; ctx.clearRect(0,0,cubeCanvas.width,cubeCanvas.height);
-  const maxC=Math.max(...COUNTS,1),lx=LEVELS[0],ly=LEVELS[1],lz=LEVELS[2];
+  const maxC=Math.max(...COUNTS,1);
   ctx.strokeStyle='rgba(120,120,120,0.45)'; ctx.lineWidth=1;
   const line=(a,b)=>{const pa=projectCoord(a),pb=projectCoord(b);ctx.beginPath();ctx.moveTo(pa[0],pa[1]);ctx.lineTo(pb[0],pb[1]);ctx.stroke();};
-  for(let x=0;x<lx;x++)for(let y=0;y<ly;y++)for(let z=0;z<lz;z++){
-    if(x+1<lx)line([x,y,z],[x+1,y,z]); if(y+1<ly)line([x,y,z],[x,y+1,z]); if(z+1<lz)line([x,y,z],[x,y,z+1]);
-  }
+  for(let i=0;i<N;i++){const c=idxToCoord(i);for(let d=0;d<NDIM;d++){if(c[d]+1<LEVELS[d]){const c2=c.slice();c2[d]+=1;line(c,c2);}}}
   const pts=[];
   for(let i=0;i<N;i++){const p=projectCoord(idxToCoord(i));pts.push({i,p,depth:p[2]});}
   pts.sort((a,b)=>a.depth-b.depth);
@@ -494,7 +494,9 @@ def parse_args():
     p.add_argument("--model_path", required=True)
     p.add_argument("--skills_dir", required=True)
     p.add_argument("--dino_features", required=True)
-    p.add_argument("--dino_features_wrist", required=True, help="wrist DINO tokens npz (terminator's 2nd camera)")
+    p.add_argument("--dino_features_wrist", default=None,
+                   help="wrist DINO tokens npz (terminator's 2nd camera); only needed for dual-camera "
+                        "models (terminator_use_wrist=True)")
     p.add_argument("--dataset_dir", required=True, help="LeRobot dataset dir (videos + meta) for frames")
     p.add_argument("--image_key", default="observation.images.image")
     p.add_argument("--output_dir", required=True, help="where the HTML is written (FSQ_eval/outputs/<run>/<epoch>)")
@@ -529,11 +531,17 @@ def main():
     levels = list(cfg.fsq_levels)
     codebook_size = int(model.fsq.codebook_size)
 
-    print("[fsq_eval] loading skills / DINO (3rd-person + wrist) ...")
+    use_wrist = bool(getattr(model, "terminator_use_wrist", False))
+    print(f"[fsq_eval] loading skills / DINO (3rd-person{' + wrist' if use_wrist else ''}) ...")
     segments, dec_states, dec_targets, metadata = load_skill_files(
         Path(args.skills_dir), eef_dims=args.eef_dims, gripper_action_dim=args.gripper_action_dim)
     dec_tokens = load_dino_tokens(Path(args.dino_features), metadata)
-    dec_tokens_wrist = load_dino_tokens(Path(args.dino_features_wrist), metadata)
+    # Wrist is the dual terminator's 2nd camera — load it only when the model actually reads it.
+    dec_tokens_wrist = None
+    if use_wrist:
+        if not args.dino_features_wrist:
+            raise ValueError("Model has terminator_use_wrist=True but --dino_features_wrist was not given.")
+        dec_tokens_wrist = load_dino_tokens(Path(args.dino_features_wrist), metadata)
 
     # ── encoder: reuse latents if already present for this run, else encode ──
     latents_path = Path(args.latents_path) if args.latents_path else out_dir / "skill_latents.npz"
@@ -551,7 +559,7 @@ def main():
             print(f"[fsq_eval] existing latents at {latents_path} do not match skills; re-encoding")
     lengths = [int(m["length"]) for m in metadata]
     if latents is None:
-        latents, tokens = batched_encode(model, segments, dec_tokens, lengths, device, args.batch_size)
+        latents, tokens = batched_encode(model, segments, lengths, device, args.batch_size)
         save_latents(latents_path, latents, tokens, metadata)
 
     counts = [0] * codebook_size

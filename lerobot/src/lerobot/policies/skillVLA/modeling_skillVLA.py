@@ -714,10 +714,23 @@ class SkillVLAPytorch(PI05Pytorch):
         keys = {"action_dim", "state_dim", "n_control", "spline_degree", "hidden_dim", "fsq_levels",
                 "num_layers", "dropout", "max_length", "action_min", "action_max", "delta_min", "delta_max",
                 "feat_dim", "n_tokens", "image_encoder_layers", "terminator_use_wrist", "image_encoder_heads",
+                "reconstructor_use_image",
                 "image_model_name", "image_size", "patch_grid", "n_patch_raw", "image_token_dim", "chunk_size",
                 "reconstructor_mode"}
         fsq = SplineFSQAE(**{k: v for k, v in cfg_dict.items() if k in keys})
-        fsq.load_state_dict(ckpt["model_state"])
+        # The terminator only runs the decoder path (predict_termination); the FSQ encoder is never
+        # used at inference. So we drop any encoder weights the current model no longer has (e.g.
+        # enc_image_encoder/enc_fusion_pool from pre-"action-only-encoder" checkpoints) and keep
+        # strictness on the terminator/reconstructor weights, which must all be present.
+        model_keys = set(fsq.state_dict().keys())
+        state = {k: v for k, v in ckpt["model_state"].items() if k in model_keys}
+        dropped = [k for k in ckpt["model_state"] if k not in model_keys]
+        missing, _ = fsq.load_state_dict(state, strict=False)
+        if missing:
+            raise RuntimeError(f"FSQ terminator checkpoint missing required weights: {sorted(missing)}")
+        if dropped:
+            log.info("Ignored %d non-terminator FSQ key(s) when loading terminator (e.g. %s).",
+                     len(dropped), dropped[0])
         for p in fsq.parameters():
             p.requires_grad_(False)
         fsq.eval()

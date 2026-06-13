@@ -9,10 +9,24 @@
 #   eval_fsq_patch  : per-skill init/final frames + DINO PCA + random patch samples
 #   eval_fsq_recon  : FSQ reconstruction/termination/progress eval — same HTML as train_skills/FSQ_eval
 
+# ── (optional) Evaluate an explicit run folder, independent of build_data/train_skillVLA_config.yaml ──
+# Empty = use the folder the build_data yaml points at (source_dataset + fsq_run_name → run_tag).
+# eval_run_dir accepts EITHER:
+#   • a bare run name (no "/", e.g. "FSQ865_dino8_wow_200") → auto-expanded to
+#       {dataset_root}/{skillvla_dataset_root}/{source}/{name}   ← easiest; pick the epoch via the
+#       run name's trailing number (..._200 vs ..._300)
+#   • a full path (absolute, or relative-to-project with a "/") → used as-is
+# (also overridable per-run via env: EVAL_RUN_DIR=... ./submit_eval.sh)
+eval_run_dir: "FSQ865_dino8_wow_imgX_200"
+# Source dataset = the LIBERO suite the run was built from (raw video at {dataset_root}/{source};
+# also the {source} in the bare-name expansion above). Empty → "libero_90_full_full" for a bare
+# name, or derived from the parent folder for a full path.
+eval_source_dataset: "libero_90_full_full"
+
 # Which evals to run
-eval_run_dino: true
-eval_run_skillset: true
-eval_run_fsq_patch: true
+eval_run_dino: false
+eval_run_skillset: false
+eval_run_fsq_patch: false
 eval_run_fsq_recon: true
 
 # Visualization sampling

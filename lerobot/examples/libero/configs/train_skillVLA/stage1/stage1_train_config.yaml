@@ -8,7 +8,7 @@ skillvla_dataset_root: skillvla_dataset  # .../{skillvla_dataset_root}/{source_d
 
 # ── Which skillvla dataset to train on (built by configs/train_skillVLA/build_data) ──
 source_dataset: libero_90_full_full
-run_tag: FSQ555_dino8_prev_200   # sub-folder under {skillvla_dataset_root}/{source}/
+run_tag: FSQ865_dino8_wow_200   # sub-folder under {skillvla_dataset_root}/{source}/
 # outputs_root comes from configs/global_config.yaml: checkpoints under {project_root}/{outputs_root}/skillVLA_stage1/.
 
 # ── Conditioning architecture ──
@@ -31,7 +31,7 @@ pi_base: /scratch/mdorazi/Skill_Boundary_Detector/models/pi05_base   # local pin
 #          params separate from the Stage-2 VLM. Needs init_from_pi05: true for the warm-start.
 vision_backbone: siglip           # dino | siglip
 # DINO backbone
-dino_model_path: /scratch/mdorazi/Skill_Boundary_Detector/models/dinov3-vitl16   # ViT-B/16 86M (vits16=21M, vitl16=300M)
+dino_model_path: /scratch/mdorazi/Skill_Boundary_Detector/models/dinov3-vitb16   # ViT-B/16 86M (vits16=21M, vitl16=300M)
 dino_lr: null                   # null = same LR as the rest; set a float to use a separate DINO LR
 freeze_dino: false
 # SigLIP backbone (used when vision_backbone: siglip)
@@ -60,7 +60,7 @@ num_workers: 8
 num_gpus: 1
 lr_base: 2.5e-05                # effective LR = lr_base * num_gpus
 steps: 100000
-save_freq: 5000
+save_freq: 2500
 
 exp: ""       # freeze_DINO | freeze_siglip                   # optional run-name suffix → {source}_{run_tag}_batch{N}_{A|B}_{exp}
 

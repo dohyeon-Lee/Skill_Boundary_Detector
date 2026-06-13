@@ -70,7 +70,6 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
   python -u examples/libero/encode_FSQ_skills.py \
     --model_path    "${FSQ_MODEL_PATH}" \
     --skills_dir    "${SKILLSET_DIR}/skills" \
-    --dino_features "${SKILL_TOKENS_PATH}" \
     --output_path   "${SKILL_LATENTS_PATH}" \
     --device        cuda
 

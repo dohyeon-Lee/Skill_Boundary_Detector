@@ -86,13 +86,16 @@ fsq_inputs_name: FSQ_inputs
 # EEF pose is always absolute and the motion decoder always predicts K-step
 # action chunks, so eef_mode/action_mode are no longer configurable.
 fsq_terminator_use_wrist: false
+# Reconstructor start-image input. true = [z, start_state, start_img, progress] (current);
+# false = drop the start image → forces z to be the sole motion source (start_state kept).
+fsq_reconstructor_use_image: false
 fsq_run_name: "{target_dataset}_{fsq_tag}_dino{dino_patch_grid}{fsq_exp_suffix}"
-fsq_exp: "wow"  # optional suffix for ablations, e.g. exp1 -> ..._exp1
+fsq_exp: "wow_imgX"  # optional suffix for ablations, e.g. exp1 -> ..._exp1
 fsq_levels: [5, 5, 5]
-fsq_epoch: "2000"
+fsq_epoch: "1000"
 
-fsq_batch_size: 128 
-fsq_num_epochs: 2000
+fsq_batch_size: 256 
+fsq_num_epochs: 1000
 fsq_checkpoint_every: 100
 # FSQ terminator cameras (also decides whether STAGE 2 extracts wrist tokens):
 #   true  = 3rd-person + wrist (two DINO encoders) — needs the wrist DINO tokens
@@ -104,12 +107,14 @@ fsq_max_length: 200
 fsq_delta_loss_weight: 1.0      # action chunk reconstruction (SmoothL1)
 fsq_progress_loss_weight: 1.0   # skill progress prediction (SmoothL1)
 fsq_end_loss_weight: 1.0        # skill termination (BCE)
+fsq_end_target_sigma: 2.0       # soft end target: Gaussian bump std (frames) at the skill end;
+                                # curbs termination-head val overfit. 0 = hard 1-frame spike.
 # Fixed FSQ hyperparams (lr, hidden_dim, num_layers, n_control, image_token_dim=256)
 # live as defaults in src/train_skills_config.py.
 
 # ── Slurm (FSQ training; partition/qos/nodelist/exclude from configs/global_config.yaml) ──
 fsq_train_gres: gpu:1
 fsq_train_cpus_per_task: 12
-fsq_train_mem: 64G
+fsq_train_mem: 128G
 fsq_train_time: "48:00:00"
 fsq_wandb_project: VAE_train

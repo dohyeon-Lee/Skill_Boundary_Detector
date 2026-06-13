@@ -1,0 +1,40 @@
+# Stage-1 teacher-forced COMPARISON across many models → outputs/summary.md.
+# (project_root/dataset_root/outputs_root come from configs/global_config.yaml.)
+#
+# Run:   ./submit_tf_compare.sh            (sbatch; --force to recompute)
+#   or:  ./run_tf_compare.sh               (in an existing GPU allocation)
+# Each target's result is cached at outputs/{name}/metrics.json (skipped if present); add targets
+# and rerun to extend the table. report.py renders outputs/summary.md.
+
+# ── 비교할 모델들 ─────────────────────────────────────────────
+# name → {model_dir, checkpoint}.  model_dir = stage1 run folder under {outputs_root}/skillVLA_stage1/
+# (source_dataset + run_tag are parsed from it). 같은 모델의 다른 checkpoint를 비교하려면 항목을
+# 여러 개로 나열 (FSQ_utilized_eval에서 epoch별 run_dir 나열한 것과 동일).
+# 다른 루트에 있는 모델(예: prev-server run은 outputs/ + dataset/, 현재 global은 *_filtered/)은
+# target에 dataset_root / outputs_root를 적어 오버라이드 (없으면 global_config 값 사용).
+targets:
+  865wow200_dinoB_c25_005k:
+    model_dir: libero_90_full_full_FSQ865_dino8_wow_200_dino_freeze_batch128_A_c25
+    checkpoint: "005000"
+  865wow200_dinoB_c25_010k:
+    model_dir: libero_90_full_full_FSQ865_dino8_wow_200_dino_freeze_batch128_A_c25
+    checkpoint: "010000"
+  # prev-server run: 정책은 outputs/, skillvla 데이터셋은 dataset/ 아래.
+  # ※ 현재 이 데이터셋의 videos가 퍼지됨 → 비디오 재전송해야 teacher_forced 실행 가능.
+  555prev200_siglip_c25_010k:
+    model_dir: libero_90_full_full_FSQ555_dino8_prev_200_siglip_unfreeze_batch128_A_c25
+    checkpoint: "010000"
+    dataset_root: dataset
+    outputs_root: outputs
+
+# ── 공통 teacher-forced knobs ────────────────────────────────
+n_frames: 512        # random frames evaluated per model
+batch_size: 32
+n_swap: 4            # swapped (wrong) skill codes compared per frame
+seed: 1000
+
+# ── Slurm (partition/qos/nodelist/exclude come from configs/global_config.yaml) ──
+eval_gres: gpu:1
+eval_cpus_per_task: 8
+eval_mem: 32G
+eval_time: "4:00:00"

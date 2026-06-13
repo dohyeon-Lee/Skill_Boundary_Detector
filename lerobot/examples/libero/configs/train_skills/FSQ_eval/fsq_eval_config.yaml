@@ -5,7 +5,7 @@
 # Which trained FSQ to evaluate (folder name under {project_root}/outputs/FSQ/).
 fsq_eval_run_name: libero_90_full_full_fsq865_dino8_wow
 # 0 = best checkpoint (FSQ.pt), else epoch number → FSQ_epoch{N:04d}.pt
-fsq_eval_checkpoint: 900
+fsq_eval_checkpoint: 500
 
 # Evaluation / HTML knobs
 fsq_eval_n_action_steps: 5       # chunk plot stride (draw a predicted chunk every N steps)
