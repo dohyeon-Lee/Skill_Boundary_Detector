@@ -3,6 +3,7 @@
 #   dataset name : TRAIN_DATA or target_dataset in ../train_skills_config.yaml
 #   dataset path : {project_root}/{dataset_root}/{target_dataset}
 #   frame DINO   : {project_root}/{dataset_root}/FSQ_dataset/{target_dataset}/DINO/pg{dino_patch_grid}
+#                  (없으면 {dataset_root}/{dataset}_DINO/pg*에서 자동 준비 — DP 학습 불필요)
 #   skillset     : {project_root}/{dataset_root}/FSQ_dataset/{target_dataset}/FSQ_inputs/skillset
 # Reference models:
 #   DP policy    : {project_root}/outputs/DP/{dp_policy_name}/checkpoints/{dp_checkpoint}/pretrained_model
@@ -39,9 +40,12 @@ else
 fi
 
 if [ ! -d "${DINO_FEATURE_DIR}" ]; then
-  echo "Prepared frame DINO not found: ${DINO_FEATURE_DIR}" >&2
-  echo "Run DP/submit_train_dp_dino.sh first." >&2
-  exit 1
+  echo "Prepared frame DINO not found → 자동 준비 (DINO 배치만, DP 학습 없음)"
+  echo "  source: {dataset_root}/{dataset}_DINO/pg*  →  ${DINO_FEATURE_DIR}"
+  PREPARE_ARGS=(--config "${CONFIG_PATH}")
+  [ -n "${TARGET_DATASET}" ] && PREPARE_ARGS+=(--dataset "${TARGET_DATASET}")
+  "${BOOTSTRAP_PYTHON}" "${SCRIPT_DIR}/../DP/src/prepare_dino_for_training_dataset.py" "${PREPARE_ARGS[@]}"
+  [ -d "${DINO_FEATURE_DIR}" ] || { echo "DINO 준비 실패: ${DINO_FEATURE_DIR}" >&2; exit 1; }
 fi
 
 cd "${SCRIPT_DIR}"
@@ -96,6 +100,7 @@ PY
   MARK_ARGS=(
     --partition="${SLURM_PARTITION}"
     --qos="${SLURM_QOS}"
+    --gres="${SLURM_GRES}"  # QOSMinGRES: 이 클러스터는 모든 job에 GPU >=1 요구
     --cpus-per-task=1
     --mem=2G
     --time=00:10:00

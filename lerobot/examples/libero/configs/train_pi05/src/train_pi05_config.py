@@ -111,7 +111,10 @@ def slurm_settings(cfg: dict[str, Any], prefix: str, *, cpus: int, mem: str, tim
 def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
     project_root = Path(str(get_value(cfg, "project_root"))).expanduser()
     lerobot_root = project_root / "lerobot"
-    pi05_outputs_root = project_root / str(get_value(cfg, "pi05_outputs_root", "pi05_outputs"))
+    # {project_root}/{outputs_root}/{pi05_outputs_root}: outputs_root comes from global_config.yaml
+    # (switchable to outputs_filtered), pi05_outputs_root is this module's subdir.
+    outputs_root = str(get_value(cfg, "outputs_root", "outputs"))
+    pi05_outputs_root = project_root / outputs_root / str(get_value(cfg, "pi05_outputs_root", "pi05_PT"))
 
     pt_dataset = str(get_value(cfg, "pt_dataset", "libero_90", env="PT_DATASET"))
     pt_dataset_root = str(get_value(cfg, "pt_dataset_root", get_value(cfg, "dataset_root", "libero_dataset"), env="PT_DATASET_ROOT"))

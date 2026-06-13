@@ -82,6 +82,7 @@ echo "Skillset array job: ${SKILLSET_JOB}"
 MARK_ARGS=(
   --partition="${SLURM_PARTITION}"
   --qos="${SLURM_QOS}"
+  --gres="${SLURM_GRES}"  # QOSMinGRES: 이 클러스터는 모든 job에 GPU >=1 요구
   --cpus-per-task=1
   --mem=2G
   --time=00:10:00

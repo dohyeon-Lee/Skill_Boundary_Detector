@@ -21,7 +21,7 @@
 # ── Paths (project_root/dataset_root come from configs/global_config.yaml) ──
 # Single checkpoint output root (matches train_skills). DP/FSQ subdirs are fixed
 # by the resolver: DP -> {outputs_root}/DP, FSQ -> {outputs_root}/FSQ.
-outputs_root: outputs
+# outputs_root comes from configs/global_config.yaml.
 skillvla_dataset_root: skillvla_dataset  # outputs under {dataset_root}/{skillvla_dataset_root}/
 
 # ── Source dataset (원본) ─────────────────────────────────────

@@ -1,0 +1,37 @@
+# FSQ utilized eval — build_data 산출물(run_dir) 단위로 FSQ skill space가 "쓸 만한가"를 검사.
+# project_root는 configs/global_config.yaml에서.
+#
+# 분석군 (자세한 메트릭 정의는 src/ 각 스크립트 docstring):
+#   ① skill-space  (skill_latents.npz)  : codes/entropy, z-std, within/random, same-cell, ≤1-cell, purity
+#   ③ label quality (skillvla parquet)  : 1st/seq agreement, n_skills std, len CV, motion R², centroid acc
+#   ② z-swap       (FSQ.pt + run_dir)   : mse_true/swap, output|Δ|, win rate — 디코더의 z 의존도(천장)
+#
+# 사용 (이 폴더에서):
+#   ./run_fsq_eval.sh          # 전 타깃, 캐시된 섹션은 스킵 → 비교표 stdout + outputs/summary.md
+#   ./run_fsq_eval.sh --force  # 캐시 무시 재계산
+#   ./submit_fsq_eval.sh       # 동일 작업을 slurm 잡으로 (②의 DINO 추론 때문에 GPU 권장)
+#   표만 다시: python src/report.py
+
+# ── 검사 대상: 표시이름 → run_dir (project_root 기준 상대경로 가능) ──
+# run_dir 자체가 "어떤 FSQ 체크포인트로 빌드됐는지"를 내장 (run_tag 끝 숫자 = epoch;
+# skill_latents.npz의 z도 그 체크포인트 산물). fsq_ckpt는 ② 전용 override —
+# npz의 z(인코더)와 다른 epoch 디코더를 교차시키는 의도적 실험에만 사용 (경고 출력됨).
+targets:
+  prev_200:
+    run_dir: dataset/skillvla_dataset/libero_90_full_full/FSQ555_dino8_prev_200
+  wow_1000:
+    run_dir: dataset/skillvla_dataset/libero_90_full_full/FSQ555_dino8_wow_1000
+  865wow_1000:
+    run_dir: dataset/skillvla_dataset/libero_90_full_full/FSQ865_dino8_wow_1000
+  88ww_300:
+    run_dir: dataset/skillvla_dataset/libero_90_full_full/FSQ88_dino8_300
+  865ww_700:
+    run_dir: dataset/skillvla_dataset/libero_90_full_full/FSQ865_dino8_700
+  865ww_1000:
+    run_dir: dataset/skillvla_dataset/libero_90_full_full/FSQ865_dino8_1000
+
+# ── 옵션 ──
+run_zswap: true            # ② 실행 여부 (①③은 항상)
+zswap_segments: 300        # ② 표본 세그먼트 수
+zswap_swaps: 4             # 세그먼트당 swap 횟수
+seed: 0

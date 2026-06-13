@@ -19,6 +19,8 @@ reader's `_query_videos`, which handles v3.0 chunk→file→timestamp mapping) a
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import torch
 
@@ -82,14 +84,29 @@ class SkillVLADataset(LeRobotDataset):
         kwargs["episodes"] = sorted(valid) if requested is None else [e for e in requested if e in valid]
         super().__init__(*args, **kwargs)
         info = self.meta.info
-        iss_path = info.get("skill_initial_state_path")
+        iss_path = self._resolve_iss_path(info.get("skill_initial_state_path"), self.root)
+        self._iss = _ISSStore(iss_path)
+        self._pmax = int(info.get("skill_pmax", self._iss.pmax))
+
+    @staticmethod
+    def _resolve_iss_path(iss_path: str | None, root) -> str:
+        """info.json의 ``skill_initial_state_path`` 해석. 다른 서버에서 빌드된 데이터셋은 그
+        서버의 절대경로가 박혀 있으므로, 존재하지 않으면 run 폴더(= dataset root의 부모)의
+        동명 파일로 폴백한다 (FSQ.resolve_image_model_path와 같은 이전(移轉) 면역 패턴)."""
         if not iss_path:
             raise ValueError(
                 "Dataset info.json has no 'skill_initial_state_path'. Rebuild the dataset with the "
                 "updated add_skill_latents_to_dataset.py (Stage-2 schema)."
             )
-        self._iss = _ISSStore(iss_path)
-        self._pmax = int(info.get("skill_pmax", self._iss.pmax))
+        if Path(iss_path).exists():
+            return str(iss_path)
+        local = Path(root).resolve().parent / Path(iss_path).name
+        if local.exists():
+            return str(local)
+        raise FileNotFoundError(
+            f"skill_initial_state npz not found at the recorded path ({iss_path}) "
+            f"nor at the run-dir fallback ({local})."
+        )
 
     @staticmethod
     def _episodes_with_skills(args, kwargs) -> set[int]:
@@ -97,12 +114,7 @@ class SkillVLADataset(LeRobotDataset):
         so they can be passed as the `episodes` subset. Same npz that _ISSStore later consumes."""
         repo_id = args[0] if args else kwargs["repo_id"]
         meta = LeRobotDatasetMetadata(repo_id, root=kwargs.get("root"), revision=kwargs.get("revision"))
-        iss_path = meta.info.get("skill_initial_state_path")
-        if not iss_path:
-            raise ValueError(
-                "Dataset info.json has no 'skill_initial_state_path'. Rebuild the dataset with the "
-                "updated add_skill_latents_to_dataset.py (Stage-2 schema)."
-            )
+        iss_path = SkillVLADataset._resolve_iss_path(meta.info.get("skill_initial_state_path"), meta.root)
         with np.load(iss_path) as z:
             return {int(e) for e in np.unique(np.asarray(z["episode_id"]))}
 

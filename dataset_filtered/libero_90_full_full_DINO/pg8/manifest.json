@@ -1,0 +1,14 @@
+{
+  "dataset_dir": "/scratch/mdorazi/Skill_Boundary_Detector/dataset_filtered/libero_90_full_full",
+  "image_keys": [
+    "observation.images.image",
+    "observation.images.wrist_image"
+  ],
+  "image_model_name": "/scratch/mdorazi/Skill_Boundary_Detector/models/dinov3-vits16",
+  "image_size": 224,
+  "patch_grid": 8,
+  "n_patch_raw": 196,
+  "tokens_per_frame": 65,
+  "dtype": "float16",
+  "format": "per_episode_npz"
+}

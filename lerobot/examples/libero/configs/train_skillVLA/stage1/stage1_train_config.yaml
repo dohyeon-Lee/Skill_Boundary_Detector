@@ -8,8 +8,8 @@ skillvla_dataset_root: skillvla_dataset  # .../{skillvla_dataset_root}/{source_d
 
 # ── Which skillvla dataset to train on (built by configs/train_skillVLA/build_data) ──
 source_dataset: libero_90_full_full
-run_tag: FSQ555_dino8_wow_1000   # sub-folder under {skillvla_dataset_root}/{source}/
-outputs_root: outputs   # checkpoints under {project_root}/{outputs_root}/skillVLA_stage1/ (subdir fixed in resolver)
+run_tag: FSQ555_dino8_prev_200   # sub-folder under {skillvla_dataset_root}/{source}/
+# outputs_root comes from configs/global_config.yaml: checkpoints under {project_root}/{outputs_root}/skillVLA_stage1/.
 
 # ── Conditioning architecture ──
 # fused = ONE gemma over [image/state/skill tokens, action tokens], BLOCK-CAUSAL: cond⊥action

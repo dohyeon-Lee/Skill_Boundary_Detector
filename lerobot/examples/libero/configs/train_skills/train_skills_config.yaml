@@ -17,7 +17,7 @@
 # (not configurable here): DP -> {outputs_root}/DP/{dp_policy_name},
 #                          FSQ -> {outputs_root}/FSQ/{fsq_run_name}.
 # project_root/dataset_root come from configs/global_config.yaml.
-outputs_root: outputs
+# outputs_root comes from configs/global_config.yaml.
 target_dataset: libero_90_full_full
 
 # ── DINO features ─────────────────────────────────────────────
@@ -41,7 +41,7 @@ dino_overwrite_prepared: false
 # Fixed DP training hyperparams (n_obs_steps, n_action_steps, horizon, batch_size,
 # num_workers, eval_freq, seed, overwrite_output=true, wandb project/enable) live as
 # defaults in src/train_skills_config.py — change them there if ever needed.
-train_DP: true  # false: only prepare target DINO; skip DP training submission.
+train_DP: false  # false: only prepare target DINO; skip DP training submission.
 dp_base_config: examples/libero/configs/train_skills/DP/src/train_dp_libero_90.yaml
 dp_policy_name: "{target_dataset}_dino{dino_patch_grid}"
 dp_checkpoint: "100000"

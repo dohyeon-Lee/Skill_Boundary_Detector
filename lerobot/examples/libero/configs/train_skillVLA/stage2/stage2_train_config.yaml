@@ -11,7 +11,7 @@
 
 # ── Paths (project_root/dataset_root come from configs/global_config.yaml) ──
 skillvla_dataset_root: skillvla_dataset
-outputs_root: outputs   # stage1 warm-start in {outputs_root}/skillVLA_stage1/, this stage in .../skillVLA_stage2/ (subdirs fixed in resolver)
+# outputs_root comes from configs/global_config.yaml: stage1 warm-start in {outputs_root}/skillVLA_stage1/, this stage in .../skillVLA_stage2/.
 
 # ── Warm-start (also selects the dataset: source + run_tag parsed from stage1_run_name) ──
 pi_base: /scratch/mdorazi/Skill_Boundary_Detector/models/pi05_base   # local pin (hub 2026-04 snapshot; repo id would track hub main)
@@ -19,17 +19,17 @@ pi_base: /scratch/mdorazi/Skill_Boundary_Detector/models/pi05_base   # local pin
 # checkpoints/{stage1_checkpoint}/pretrained_model warm-starts the action expert + cond side. Its
 # config supplies expert_arch (A/B) / vision_backbone / skill_vocab — no need to repeat them here.
 # The skillvla dataset to train on is the one this Stage-1 trained on (parsed from this name).
-stage1_run_name: libero_90_full_full_FSQ865_dino8_300_siglip_unfreeze_batch32_B
-stage1_checkpoint: "025000"     # "last" (newest at launch time) or a step number, e.g. "020000", to pin it
+stage1_run_name: libero_90_full_full_FSQ555_dino8_prev_200_siglip_unfreeze_batch128_A_c25
+stage1_checkpoint: "010000"     # "last" (newest at launch time) or a step number, e.g. "020000", to pin it
 
 # ── Skill head / FSQ ──────────────────────────────────────────
 skill_loss_weight: 0.1                # total = BC + λ·skill_CE (λ<1 keeps BC dominant)
 # ── Run naming ────────────────────────────────────────────────
-exp: "unfreeze_freeze"                                      # optional suffix → ..._batch{N}_{A|B}_{exp}
+exp: ""                                      # optional suffix → ..._batch{N}_{A|B}_{exp}
 
 # ── Freeze toggles (all parts otherwise trained) ──────────────
 freeze_cond_encoder: false                    # [A only] reuse the Stage-1 current-obs encoding
-freeze_expert_vision: true
+freeze_expert_vision: false
 freeze_vlm: false
 freeze_vlm_vision: false                     # train the SigLIP tower for the new skill-start view
 freeze_action_expert: false

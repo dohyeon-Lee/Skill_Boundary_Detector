@@ -532,7 +532,11 @@ def concatenate_video_files(
         tmp_concatenate_path, mode="r", format="concat", options={"safe": "0"}
     )  # safe = 0 allows absolute paths as well as relative paths
 
-    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp_named_file:
+    # Same directory as the destination: shutil.move stays an atomic same-filesystem rename
+    # (a /tmp tempfile breaks on clusters where /tmp and the dataset root are different devices).
+    with tempfile.NamedTemporaryFile(
+        suffix=".mp4", delete=False, dir=output_video_path.parent
+    ) as tmp_named_file:
         tmp_output_video_path = tmp_named_file.name
 
     output_container = av.open(

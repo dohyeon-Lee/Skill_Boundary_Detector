@@ -19,6 +19,7 @@
 # --- Roots (module yamls may override locally, e.g. pi05 uses libero_dataset) ---
 # project_root: /data2/dohyeon/SBD
 # dataset_root: dataset
+# outputs_root: outputs
 # # --- Slurm common defaults (canonical; every module reads these) ---
 # # train_partition: accepts one or more (comma/list); blank -> Slurm picks first available.
 # # NOTE: leave non-empty — resolvers fall back to per-module defaults (big/debug) when this is
@@ -33,14 +34,21 @@
 # ============================================================================
 
 project_root: /scratch/mdorazi/Skill_Boundary_Detector
-dataset_root: dataset
+# Switch BOTH to *_filtered to run the whole pipeline on the filtered LIBERO data
+# (see generate_training_dataset/filtered_dataset/): dataset_filtered / outputs_filtered.
+
+# dataset | dataset_filtered
+dataset_root: dataset_filtered
+# outputs | outputs_filtered
+outputs_root: outputs_filtered
+
 train_partition:
   - suma_a6000
   - gigabyte_a6000
   - asus_6000ada
   - tyan_a6000
-  - asus_pro6000
-  - gigabyte_pro6000
+  # - asus_pro6000
+  # - gigabyte_pro6000
   - suma_rtx4090
   - base_suma_rtx3090
   - dell_rtx3090
