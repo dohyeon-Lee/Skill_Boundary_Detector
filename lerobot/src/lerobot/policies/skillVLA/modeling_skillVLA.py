@@ -195,7 +195,7 @@ class SkillVLAPytorch(PI05Pytorch):
         # outputs are cast to the working dtype only at the attention boundary (_action_in/_action_out).
         if str(config.dtype) == "bfloat16":
             for m in (self.image_proj, self.state_proj, self.skill_proj, self.progress_proj,
-                      self.cond_encoder, self.skill_head):
+                      self.cond_encoder, self.skill_adaln, self.skill_head):
                 if m is not None:
                     m.to(dtype=torch.bfloat16)
             self.skill_query.data = self.skill_query.data.to(torch.bfloat16)
@@ -231,9 +231,18 @@ class SkillVLAPytorch(PI05Pytorch):
         self.progress_proj = nn.Linear(1, self.expert_width)
 
         self.cond_encoder = None
+        self.skill_adaln = None
         if self.expert_arch == "joint":
             variant = s1.cond_encoder_variant or s1.action_expert_variant
-            self.cond_encoder = _build_gemma(variant, use_adarms=False)
+            # adaLN-zero skill conditioning (mirrors Stage-1 joint): the skill (z_q) feeds the
+            # cond-encoder via AdaRMS instead of a (diluted) cond token, so it modulates the whole
+            # scene/cond encoding. The "zero" no-op-at-init comes from PiGemma's AdaRMS `dense` being
+            # zero-init; skill_adaln keeps the DEFAULT (non-zero) init — a double zero-init would
+            # deadlock (∂L/∂dense ∝ skill_cond and ∂L/∂skill_adaln ∝ dense). At Stage-2 both the
+            # cond_encoder AdaRMS dense and skill_adaln warm-start from the Stage-1 ada checkpoint
+            # (already non-zero; see _remap_stage1_to_expert).
+            self.cond_encoder = _build_gemma(variant, use_adarms=True)
+            self.skill_adaln = nn.Linear(len(s1.skill_fsq_levels), self.expert_width)  # z_q → AdaRMS cond
         elif self.expert_arch != "fused":
             raise ValueError(f"expert_arch must be 'fused' or 'joint', got {self.expert_arch!r}")
 
@@ -283,11 +292,26 @@ class SkillVLAPytorch(PI05Pytorch):
         prog = skill_progress.view(-1, 1).float().to(next(self.parameters()).device)
         return self.progress_proj(prog.to(self._wdtype)).unsqueeze(1)
 
+    def _skill_cond(self, skill_code: Tensor) -> Tensor | None:
+        """Skill (z_q) → AdaRMS conditioning vector (B, expert_width) for the cond-encoder (joint
+        only; mirrors Stage-1 _skill_cond). None for fused, where skill is a cond token instead."""
+        if self.skill_adaln is None:
+            return None
+        zq = self._code_to_z(skill_code) / self._fsq_half[None, :]
+        return self.skill_adaln(zq.to(self._wdtype))
+
     def _cond_tokens(self, images: list[Tensor], state: Tensor, skill_code: Tensor,
                      skill_progress: Tensor) -> Tensor:
-        """[img1 tokens, img2 tokens, state, skill, progress] → (B, M, expert_width)."""
-        base = self._cond_image_state_tokens(images, state)
-        return torch.cat([base, self._skill_token(skill_code), self._progress_token(skill_progress)], dim=1)
+        """Conditioning tokens → (B, M, expert_width).
+        fused: [img1, img2, state, skill, progress] (skill as a token).
+        joint: [img1, img2, state, progress] — skill is injected via the cond-encoder's AdaRMS
+               (adaLN-zero, see _skill_cond) instead of a token, so it isn't diluted among the
+               image tokens (mirrors Stage-1 joint)."""
+        tokens = [self._cond_image_state_tokens(images, state)]
+        if self.expert_arch == "fused":
+            tokens.append(self._skill_token(skill_code))
+        tokens.append(self._progress_token(skill_progress))
+        return torch.cat(tokens, dim=1)
 
     def _vlm_tokens(
         self, start_images: list[Tensor], lang_tokens: Tensor, lang_masks: Tensor
@@ -404,15 +428,15 @@ class SkillVLAPytorch(PI05Pytorch):
                 hiddens = compute_layer_multi(layer_idx, hiddens, layers, att_4d, position_ids, adarms, rotary)
         return hiddens
 
-    def _joint_forward_A(self, cond_tokens, vlm_embeds, vlm_pad, vlm_is_lang, action_tokens, time_cond):
+    def _joint_forward_A(self, cond_tokens, vlm_embeds, vlm_pad, vlm_is_lang, action_tokens, time_cond, skill_cond):
         nc, na = cond_tokens.shape[1], action_tokens.shape[1]
         att_4d, pad = self._mask_branch_A(nc, vlm_pad, vlm_is_lang, na)
         position_ids = torch.cumsum(pad, dim=1) - 1
         layers_per_stream = [self.cond_encoder.model.layers, self._vlm.layers, self._expert.layers]
-        adarms = [None, None, time_cond]
+        adarms = [skill_cond, None, time_cond]  # cond ← AdaRMS(skill) (adaLN-zero); action ← AdaRMS(time)
         outs = self._run_streams([cond_tokens, vlm_embeds, action_tokens], layers_per_stream, adarms, att_4d, position_ids)
         cond_out, vlm_out, action_out = outs
-        cond_out, _ = layernorm_forward(self.cond_encoder.model.norm, cond_out, None)
+        cond_out, _ = layernorm_forward(self.cond_encoder.model.norm, cond_out, skill_cond)
         vlm_out, _ = layernorm_forward(self._vlm.norm, vlm_out, None)
         action_out, _ = layernorm_forward(self._expert.norm, action_out, time_cond)
         return vlm_out, action_out
@@ -430,11 +454,11 @@ class SkillVLAPytorch(PI05Pytorch):
         expert_out, _ = layernorm_forward(self._expert.norm, expert_out, time_cond)
         return vlm_out, expert_out
 
-    def _joint_forward(self, cond_tokens, vlm_embeds, vlm_pad, vlm_is_lang, action_tokens, time_cond):
+    def _joint_forward(self, cond_tokens, vlm_embeds, vlm_pad, vlm_is_lang, action_tokens, time_cond, skill_cond):
         """Returns (vlm_out, action_hidden) where action_hidden is the action-token chunk only."""
         if self.expert_arch == "joint":
             vlm_out, action_out = self._joint_forward_A(
-                cond_tokens, vlm_embeds, vlm_pad, vlm_is_lang, action_tokens, time_cond)
+                cond_tokens, vlm_embeds, vlm_pad, vlm_is_lang, action_tokens, time_cond, skill_cond)
         else:
             vlm_out, expert_out = self._joint_forward_B(
                 cond_tokens, vlm_embeds, vlm_pad, vlm_is_lang, action_tokens, time_cond)
@@ -478,9 +502,10 @@ class SkillVLAPytorch(PI05Pytorch):
         vlm_embeds, vlm_pad, vlm_is_lang = self._vlm_tokens(start_images, lang_tokens, lang_masks)
         action_tokens = self._action_in(x_t)
         time_cond = self._time_cond(time)
+        skill_cond = self._skill_cond(skill_code)  # joint: AdaRMS(skill) for cond-encoder; fused: None
 
         vlm_out, action_out = self._joint_forward(
-            cond_tokens, vlm_embeds, vlm_pad, vlm_is_lang, action_tokens, time_cond)
+            cond_tokens, vlm_embeds, vlm_pad, vlm_is_lang, action_tokens, time_cond, skill_cond)
         v_t = self._action_out(action_out)
         return F.mse_loss(u_t, v_t, reduction="none"), self._skill_hidden(vlm_out)
 
@@ -580,8 +605,8 @@ class SkillVLAPytorch(PI05Pytorch):
         runs only the action expert against the cond cache."""
         bsize, device = state.shape[0], state.device
         na = self.config.chunk_size
-        cond_base = self._cond_image_state_tokens(cond_images, state)   # (B, nc-2, w)
-        nc = cond_base.shape[1] + 2                                     # + skill + progress tokens
+        cond_base = self._cond_image_state_tokens(cond_images, state)   # (B, nc-1, w)
+        nc = cond_base.shape[1] + 1                                     # + progress token (skill via AdaRMS)
         vlm_embeds, vlm_pad, vlm_is_lang = self._vlm_tokens(start_images, lang_tokens, lang_masks)
         nv = vlm_embeds.shape[1]
 
@@ -598,13 +623,13 @@ class SkillVLAPytorch(PI05Pytorch):
         vlm_h, _ = layernorm_forward(self._vlm.norm, vlm_h, None)
         if skill_code is None:
             skill_code = self.skill_head.decode(vlm_h[:, -1])
+        skill_cond = self._skill_cond(skill_code)  # AdaRMS(skill) for the cond-encoder (adaLN-zero)
 
-        # cond: teacher-force the (predicted) skill + progress; encode once READING the cached VLM
-        # K/V at vlm-nonlang columns (VLM → cond edge) → cached K/V
-        cond_tokens = torch.cat(
-            [cond_base, self._skill_token(skill_code), self._progress_token(skill_progress)], dim=1)
+        # cond: teacher-force the (predicted) skill via AdaRMS + progress as a token; encode once
+        # READING the cached VLM K/V at vlm-nonlang columns (VLM → cond edge) → cached K/V
+        cond_tokens = torch.cat([cond_base, self._progress_token(skill_progress)], dim=1)
         cond_kv, _ = self._encode_prefix_kv(
-            self.cond_encoder.model.layers, cond_tokens, cond_pad, cond_pos, adarms=None,
+            self.cond_encoder.model.layers, cond_tokens, cond_pad, cond_pos, adarms=skill_cond,
             extra_kv=vlm_kv, extra_valid=vlm_pad & ~vlm_is_lang[None, :])
 
         # denoise prefix = cond only (action has NO direct VLM edge; VLM info arrives via cond)
@@ -813,7 +838,7 @@ def _remap_stage1_to_expert(raw: dict) -> dict:
             out[f"model.paligemma_with_expert.{key}"] = v
         elif key.startswith((
             "cond_encoder.", "dino.", "siglip.", "image_proj.", "state_proj.", "skill_proj.",
-            "progress_proj.",
+            "progress_proj.", "skill_adaln.",
             "action_in_proj.", "action_out_proj.", "time_mlp_in.", "time_mlp_out.",
         )):
             out[f"model.{key}"] = v
@@ -872,6 +897,8 @@ class SkillVLAPolicy(PI05Policy):
                 freeze(proj)
         if c.freeze_expert_vision:
             freeze(m.dino if m.vision_backbone == "dino" else m.siglip)
+        if c.freeze_skill_adaln:
+            freeze(m.skill_adaln)
 
     def get_optim_params(self):
         return [p for p in self.parameters() if p.requires_grad]

@@ -59,11 +59,17 @@ def build_settings(cfg: dict) -> dict:
     num_gpus = int(get_value(cfg, "num_gpus", 1))
     lr_base = float(get_value(cfg, "lr_base", 2.5e-05))
     exp = str(get_value(cfg, "exp", "")).strip()
+    freeze_cond_encoder = as_bool(get_value(cfg, "freeze_cond_encoder", True))
+    freeze_expert_vision = as_bool(get_value(cfg, "freeze_expert_vision", False))
 
     # FSQ skill structure: auto-match the FSQ the dataset was built with (parsed from run_tag).
     skill_fsq_levels = list(as_levels(get_value(cfg, "skill_fsq_levels", build_fsq_levels)))
 
-    run_name = f"{source_dataset}_{run_tag}_batch{batch_size}_{arch_tag}"
+    # run_name = {source}_{run_tag}_{stage1_checkpoint}_{freeze|unfreeze}[_{exp}], where the
+    # freeze/unfreeze tag reflects freeze_expert_vision (the cond-side DINO/SigLIP). batch{N}/arch(A/B)
+    # are dropped (arch is re-read from the Stage-1 ckpt at load time); exp is last.
+    vis_tag = "freeze" if freeze_expert_vision else "unfreeze"
+    run_name = f"{source_dataset}_{run_tag}_{stage1_checkpoint}_{vis_tag}"
     if exp:
         run_name = f"{run_name}_{exp}"
     output_dir = vla_root / run_name   # under skillVLA_stage2/, so no extra stage prefix
@@ -90,9 +96,10 @@ def build_settings(cfg: dict) -> dict:
         # freeze toggles (all parts otherwise trained)
         "freeze_vlm": as_bool(get_value(cfg, "freeze_vlm", False)),
         "freeze_vlm_vision": as_bool(get_value(cfg, "freeze_vlm_vision", False)),
-        "freeze_cond_encoder": as_bool(get_value(cfg, "freeze_cond_encoder", True)),
+        "freeze_cond_encoder": freeze_cond_encoder,
         "freeze_action_expert": as_bool(get_value(cfg, "freeze_action_expert", False)),
-        "freeze_expert_vision": as_bool(get_value(cfg, "freeze_expert_vision", False)),
+        "freeze_expert_vision": freeze_expert_vision,
+        "freeze_skill_adaln": as_bool(get_value(cfg, "freeze_skill_adaln", False)),
         # output
         "skillvla_outputs_root": vla_root,
         "pt_run_name": run_name,

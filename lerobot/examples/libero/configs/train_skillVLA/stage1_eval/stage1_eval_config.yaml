@@ -45,7 +45,7 @@ max_parallel_tasks: 1
 #   terminator = FSQ terminator decides each transition (uses skill_end_mode/threshold below)
 #   gt         = advance by each skill's GT demo duration (ideal timing; isolates the action
 #                expert from terminator errors). Terminator still runs → its curves still recorded.
-skill_advance_mode: gt    # terminator | gt
+skill_advance_mode: terminator    # terminator | gt
 skill_end_mode: termination       # "termination" (term prob >= thr) | "progress" (progress >= thr)
 skill_end_threshold: 0.5          # threshold on the chosen signal (termination~0.5, progress~0.9)
 inference_skill_max_length: 200   # force-advance skill after N steps (0 = off; terminator mode)

@@ -31,13 +31,13 @@ pi_base: /scratch/mdorazi/Skill_Boundary_Detector/models/pi05_base   # local pin
 # dino   = trainable DINOv3 (own weights)
 # siglip = PaliGemma/SigLIP tower, warm-started from pi_base's vision_tower (robot-adapted);
 #          params separate from the Stage-2 VLM. Needs init_from_pi05: true for the warm-start.
-vision_backbone: dino           # dino | siglip
+vision_backbone: siglip           # dino | siglip
 # DINO backbone
-dino_model_path: /scratch/mdorazi/Skill_Boundary_Detector/models/dinov3-vitb16   # ViT-B/16 86M (vits16=21M, vitl16=300M)
+dino_model_path: /scratch/mdorazi/Skill_Boundary_Detector/models/dinov3-vitl16   # ViT-B/16 86M (vits16=21M, vitl16=300M)
 dino_lr: null                   # null = same LR as the rest; set a float to use a separate DINO LR
-freeze_dino: false
+freeze_dino: true
 # SigLIP backbone (used when vision_backbone: siglip)
-freeze_siglip: false             # default true: reuse pi05's robot-adapted features (only image_proj trains)
+freeze_siglip: true             # default true: reuse pi05's robot-adapted features (only image_proj trains)
 siglip_lr: null                 # separate LR when unfrozen; null = same as the rest
 siglip_image_size: 224          # patch 14 → 16×16 = 256 tokens at 224
 

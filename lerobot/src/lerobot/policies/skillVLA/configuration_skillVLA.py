@@ -64,6 +64,9 @@ class SkillVLAConfig(PI05Config):
     """Freeze the warm-started Gemma action expert (default False = fine-tune)."""
     freeze_expert_vision: bool = False
     """Freeze the action-expert-side vision encoder (DINO/SigLIP) inherited from Stage-1."""
+    freeze_skill_adaln: bool = False
+    """[A+ada only] Freeze the skill→AdaRMS projection (skill_adaln) warm-started from Stage-1
+    (no-op when fused / no adaLN). Lets the Stage-1 skill→cond-modulation map be reused as-is."""
 
     # ── Inference: skill transitions via the frozen FSQ terminator ──
     fsq_path: str | None = None
