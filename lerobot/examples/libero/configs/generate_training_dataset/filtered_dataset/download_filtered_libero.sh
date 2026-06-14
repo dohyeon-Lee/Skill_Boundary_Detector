@@ -6,7 +6,7 @@
 #
 # Usage:
 #   ./download_filtered_libero.sh                 # all suites from the yaml
-#   FILTERED_ONLY="libero_10 libero_goal" ./download_filtered_libero.sh   # subset
+#   FILTERED_ONLY="libero_spatial_full_full" ./download_filtered_libero.sh   # subset
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

@@ -11,7 +11,7 @@
 #
 # Usage:
 #   ./build_filtered_dataset.sh                                   # all suites
-#   FILTERED_ONLY="libero_10" ./build_filtered_dataset.sh         # subset
+#   FILTERED_ONLY="libero_10_full_full" ./build_filtered_dataset.sh         # subset
 #   RECOMPUTE_STATS=1 ./build_filtered_dataset.sh                 # stats를 데이터에서 재계산
 #   CLEAN_V21=1 ./build_filtered_dataset.sh                       # 끝나면 v2.1 원본 삭제
 set -euo pipefail

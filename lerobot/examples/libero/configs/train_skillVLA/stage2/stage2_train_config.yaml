@@ -25,11 +25,11 @@ stage1_checkpoint: "015000"     # "last" (newest at launch time) or a step numbe
 # ── Skill head / FSQ ──────────────────────────────────────────
 skill_loss_weight: 0.1                # total = BC + λ·skill_CE (λ<1 keeps BC dominant)
 # ── Run naming ────────────────────────────────────────────────
-exp: ""                                      # optional suffix → ..._batch{N}_{A|B}_{exp}
+exp: "regress"                                      # optional suffix → ..._batch{N}_{A|B}_{exp}
 
 # ── Freeze toggles (all parts otherwise trained) ──────────────
 freeze_cond_encoder: false                    # [A only] reuse the Stage-1 current-obs encoding
-freeze_expert_vision: true
+freeze_expert_vision: false
 freeze_skill_adaln: true                     # [A+ada only] freeze skill→AdaRMS map (reuse Stage-1 skill modulation)
 
 freeze_vlm: false

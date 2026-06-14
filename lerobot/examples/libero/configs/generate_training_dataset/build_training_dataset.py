@@ -12,9 +12,9 @@
 """Build a task/episode subset under libero_dataset/.
 
 Examples:
-  python build_training_dataset.py --dataset libero_90 --task-range 00to20 --episodes-per-task 10
-  python build_training_dataset.py --dataset libero_10 --task-range full --episodes-per-task 20
-  python build_training_dataset.py --dataset libero_90 --task-range task00-task30 --episodes-per-task full
+  python build_training_dataset.py --dataset libero_90_full_full --task-range 00to20 --episodes-per-task 10
+  python build_training_dataset.py --dataset libero_10_full_full --task-range full --episodes-per-task 5
+  python build_training_dataset.py --dataset libero_90_full_full --task-range task00-task30 --episodes-per-task full
 """
 
 from __future__ import annotations
@@ -366,7 +366,12 @@ def main() -> None:
     if not selected_eps:
         raise ValueError("No episodes were selected")
 
-    output_name = args.output_name or f"{args.dataset}_{task_tag}_{episode_tag}"
+    # Filtered suites are named "<suite>_full_full" (full tasks / full episodes). Strip that base tag
+    # so a subset build doesn't double it (libero_10_full_full + _full_5 → libero_10_full_5; a full
+    # build → libero_10_full_full, matching the libero_90_full_full convention). src/provenance keep
+    # the real source name.
+    base = args.dataset[: -len("_full_full")] if args.dataset.endswith("_full_full") else args.dataset
+    output_name = args.output_name or f"{base}_{task_tag}_{episode_tag}"
     dst = args.dst_root / output_name
 
     print("Training dataset generation")

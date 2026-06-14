@@ -47,8 +47,8 @@ train_partition:
   - gigabyte_a6000
   - asus_6000ada
   - tyan_a6000
-  - asus_pro6000
-  - gigabyte_pro6000
+  # - asus_pro6000
+  # - gigabyte_pro6000
   - suma_rtx4090
   - base_suma_rtx3090
   - dell_rtx3090
