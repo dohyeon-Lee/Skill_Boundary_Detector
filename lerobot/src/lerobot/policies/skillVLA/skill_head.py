@@ -1,13 +1,19 @@
-"""Stage-2 VLM skill head — decode the skill-query hidden into an FSQ skill code.
+"""Stage-2 VLM skill head — REGRESSION (FSQ-style) decode of the skill-query hidden into an FSQ code.
 
-The skill is an FSQ code: a flat index in [0, prod(levels)) ≡ a per-dim tuple (d_0..d_{D-1}) with
-d_i in [0, levels[i]). The head predicts ONE categorical per dim (sizes = levels), so:
-  - train : CE per dim against the GT code's per-dim decomposition, averaged over dims
-  - infer : argmax per dim → flat code (fed to the action expert's skill embedding)
+The skill is an FSQ code: a flat index in [0, prod(levels)) ≡ a per-dim grid coordinate. This head
+REGRESSES the (normalized) FSQ grid coordinate z_q ∈ [-1, 1]^D and rounds to the nearest per-dim level,
+mirroring the FSQ encoder's quantization. Unlike a per-dim categorical head, this preserves FSQ's
+ordinal/metric structure (nearby codes ⇒ nearby z_q ⇒ similar motion), so near-misses stay gentle.
 
-The flat↔per-dim mapping is a self-consistent mixed-radix (row-major, like np.unravel_index): the
-head only needs an invertible mapping, since the action expert keys its skill embedding by the flat
-code (an integer lookup), not by FSQ geometry.
+  - train : MSE between predicted z_q and the GT code's normalized grid coordinate. The round is NOT
+            on the gradient path (loss is on the continuous prediction) → no straight-through needed
+            at this stage. (Finetuning, where the predicted vector feeds a frozen decoder, will add an
+            STE/round path on top of this head.)
+  - infer : round predicted z_q to the nearest per-dim level → flat code.
+
+Geometry matches the FSQ codebook / ``SkillVLAPytorch._code_to_z`` EXACTLY (little-endian strides,
+half = (L-1)/2), so the predicted flat code lives in the same space as the GT codes and the downstream
+code→z_q conditioning, and the regression axes coincide with the true FSQ axes (ordinal alignment).
 """
 
 from __future__ import annotations
@@ -21,36 +27,37 @@ class SkillHead(nn.Module):
     def __init__(self, hidden_dim: int, fsq_levels: list[int]):
         super().__init__()
         self.levels = list(fsq_levels)
-        self.proj = nn.Linear(hidden_dim, sum(self.levels))
-        # row-major strides: code = sum_i d_i * stride_i, stride_i = prod(levels[i+1:])
-        strides: list[int] = []
-        acc = 1
-        for lv in reversed(self.levels):
-            strides.append(acc)
-            acc *= lv
-        self.register_buffer("_strides", torch.tensor(list(reversed(strides)), dtype=torch.long), persistent=False)
+        D = len(self.levels)
+        self.proj = nn.Linear(hidden_dim, D)  # hidden → D continuous FSQ coords (pre-tanh)
+        half = torch.tensor([(L - 1) / 2.0 for L in self.levels], dtype=torch.float32)
+        self.register_buffer("_half", half, persistent=False)
+        # little-endian strides (match the FSQ codebook / _code_to_z): stride_i = prod(levels[:i]).
+        strides = torch.ones(D, dtype=torch.long)
+        for i in range(1, D):
+            strides[i] = strides[i - 1] * self.levels[i - 1]
+        self.register_buffer("_strides", strides, persistent=False)
+        self.register_buffer("_levels", torch.tensor(self.levels, dtype=torch.long), persistent=False)
 
-    def _logits(self, hidden: Tensor) -> list[Tensor]:
-        """(B, hidden) → list of D tensors (B, levels[d])."""
-        return list(torch.split(self.proj(hidden), self.levels, dim=-1))
+    def _pred_z(self, hidden: Tensor) -> Tensor:
+        """(B, hidden) → predicted normalized FSQ coord z_q ∈ (-1, 1)^D."""
+        return torch.tanh(self.proj(hidden))
 
-    def _unravel(self, code: Tensor) -> Tensor:
-        """flat code (B,) → per-dim indices (B, D)."""
-        code = code.long().view(-1, 1)
-        return (code // self._strides) % torch.tensor(self.levels, device=code.device)
-
-    def _ravel(self, per_dim: Tensor) -> Tensor:
-        """per-dim indices (B, D) → flat code (B,)."""
-        return (per_dim.long() * self._strides).sum(dim=-1)
+    def _code_to_norm_z(self, code: Tensor) -> Tensor:
+        """flat code (B,) → normalized grid coord (B, D) ∈ [-1, 1] (little-endian; matches _code_to_z/half)."""
+        idx = code.long().view(-1, 1)
+        level_id = (idx // self._strides) % self._levels  # (B, D) ∈ [0, L)
+        return (level_id.float() - self._half) / self._half
 
     def loss(self, hidden: Tensor, code: Tensor) -> Tensor:
-        """Mean over dims of per-dim CE (hidden vs GT flat code)."""
-        target = self._unravel(code)  # (B, D)
-        logits = self._logits(hidden)
-        return torch.stack([F.cross_entropy(logits[d], target[:, d]) for d in range(len(self.levels))]).mean()
+        """Mean MSE between predicted z_q and the GT code's normalized grid coordinate (over dims + batch)."""
+        pred = self._pred_z(hidden)
+        target = self._code_to_norm_z(code).to(pred.dtype)
+        return F.mse_loss(pred, target)
 
     @torch.no_grad()
     def decode(self, hidden: Tensor) -> Tensor:
-        """argmax per dim → flat FSQ code (B,)."""
-        per_dim = torch.stack([lg.argmax(dim=-1) for lg in self._logits(hidden)], dim=-1)  # (B, D)
-        return self._ravel(per_dim)
+        """Round predicted z_q to the nearest per-dim level → flat FSQ code (B,)."""
+        pred = self._pred_z(hidden).float()
+        level_id = torch.round((pred + 1.0) * self._half).clamp_(min=0.0)  # (pred+1)*half ∈ [0, L-1]
+        level_id = torch.minimum(level_id, (self._levels - 1).to(level_id.dtype)).long()
+        return (level_id * self._strides).sum(dim=-1)

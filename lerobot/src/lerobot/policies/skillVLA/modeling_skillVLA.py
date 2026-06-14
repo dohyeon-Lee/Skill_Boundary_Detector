@@ -316,9 +316,11 @@ class SkillVLAPytorch(PI05Pytorch):
     def _vlm_tokens(
         self, start_images: list[Tensor], lang_tokens: Tensor, lang_masks: Tensor
     ) -> tuple[Tensor, Tensor, Tensor]:
-        """VLM prefix [start imgs, language, skill-query] → (embeds (B,nv,W), pad (B,nv), is_lang (nv,)).
+        """VLM prefix [start imgs, language, skill-query] → (embeds (B,nv,W), pad (B,nv), xattn_block (nv,)).
 
-        ``is_lang`` marks the language sub-block (excluded from the action's cross-attention)."""
+        ``xattn_block`` marks VLM tokens the cond/expert stream must NOT attend: the language sub-block
+        AND the skill-query read-out token. So cond/expert read VLM IMAGE tokens only — the skill reaches
+        the action solely via the FSQ skill vector / AdaRMS, never by attending the skill-query hidden."""
         embs, pad, is_lang = [], [], []
         for img in start_images:
             emb = self.paligemma_with_expert.embed_image(img)
@@ -341,7 +343,10 @@ class SkillVLAPytorch(PI05Pytorch):
         embeds = torch.cat([e.to(self._wdtype) for e in embs], dim=1)  # img feats are f32; unify to wdtype
         pad = torch.cat(pad, dim=1)
         is_lang = torch.tensor(is_lang, dtype=torch.bool, device=embeds.device)
-        return embeds, pad, is_lang
+        # Exclude from cond/expert cross-attention: the language block + the skill-query (last) token.
+        xattn_block = is_lang.clone()
+        xattn_block[-1] = True
+        return embeds, pad, xattn_block
 
     def _time_cond(self, timestep: Tensor) -> Tensor:
         # float32 throughout: time_mlp stays float32 and its output is the expert's AdaRMS cond,
@@ -363,19 +368,19 @@ class SkillVLAPytorch(PI05Pytorch):
 
     # ── attention masks ──
     def _mask_branch_A(
-        self, nc: int, vlm_pad: Tensor, vlm_is_lang: Tensor, na: int
+        self, nc: int, vlm_pad: Tensor, vlm_xattn_block: Tensor, na: int
     ) -> tuple[Tensor, Tensor]:
         """Branch-A (B,1,T,T) additive mask + the (B,T) validity/pad vector. Streams ordered
         [cond, vlm, action], one-directional chain VLM → cond → action: the VLM reads only
-        itself; cond reads itself + vlm-nonlang (language hiddens excluded — language reaches
-        cond only indirectly, through VLM image/query hiddens that attended it); action reads
-        cond + itself (NO direct VLM edge). Nothing attends action."""
+        itself; cond reads itself + VLM IMAGE tokens (language AND the skill-query token excluded —
+        skill reaches the action only via the FSQ skill vector / AdaRMS, not by attending the
+        skill-query hidden); action reads cond + itself (NO direct VLM edge). Nothing attends action."""
         bsize, nv = vlm_pad.shape
         device = vlm_pad.device
         total = nc + nv + na
         allow = torch.zeros(bsize, total, total, dtype=torch.bool, device=device)
         allow[:, :nc, :nc] = True                                    # cond block
-        allow[:, :nc, nc : nc + nv] = (~vlm_is_lang)[None, None, :]  # cond → vlm-nonlang
+        allow[:, :nc, nc : nc + nv] = (~vlm_xattn_block)[None, None, :]  # cond → vlm IMAGE tokens (lang + skill-query excluded)
         allow[:, nc : nc + nv, nc : nc + nv] = True                  # vlm block
         allow[:, nc + nv :, :nc] = True                              # action → cond
         allow[:, nc + nv :, nc + nv :] = True                        # action → action
@@ -387,7 +392,7 @@ class SkillVLAPytorch(PI05Pytorch):
         return att_4d, col_valid
 
     def _mask_branch_B(
-        self, vlm_pad: Tensor, vlm_is_lang: Tensor, nc: int, na: int
+        self, vlm_pad: Tensor, vlm_xattn_block: Tensor, nc: int, na: int
     ) -> tuple[Tensor, Tensor]:
         """Branch-B (B,1,T,T) additive mask + (B,T) pad. Streams ordered [vlm, expert(cond+action)]:
         vlm bidirectional within itself; the expert is BLOCK-CAUSAL — cond is a bidirectional block
@@ -401,7 +406,7 @@ class SkillVLAPytorch(PI05Pytorch):
         allow[:, :nv, :nv] = True                                    # vlm block
         allow[:, nv:, nv:] = True                                    # expert self (cond+action)
         allow[:, nv : nv + nc, nv + nc :] = False                    # cond ⊥ action (block-causal)
-        allow[:, nv:, :nv] = (~vlm_is_lang)[None, None, :]           # expert → vlm-nonlang
+        allow[:, nv:, :nv] = (~vlm_xattn_block)[None, None, :]           # expert → vlm IMAGE tokens (lang + skill-query excluded)
         col_valid = torch.cat(
             [vlm_pad, torch.ones(bsize, ne, dtype=torch.bool, device=device)], dim=1)
         allow = allow & col_valid[:, None, :]
@@ -428,9 +433,9 @@ class SkillVLAPytorch(PI05Pytorch):
                 hiddens = compute_layer_multi(layer_idx, hiddens, layers, att_4d, position_ids, adarms, rotary)
         return hiddens
 
-    def _joint_forward_A(self, cond_tokens, vlm_embeds, vlm_pad, vlm_is_lang, action_tokens, time_cond, skill_cond):
+    def _joint_forward_A(self, cond_tokens, vlm_embeds, vlm_pad, vlm_xattn_block, action_tokens, time_cond, skill_cond):
         nc, na = cond_tokens.shape[1], action_tokens.shape[1]
-        att_4d, pad = self._mask_branch_A(nc, vlm_pad, vlm_is_lang, na)
+        att_4d, pad = self._mask_branch_A(nc, vlm_pad, vlm_xattn_block, na)
         position_ids = torch.cumsum(pad, dim=1) - 1
         layers_per_stream = [self.cond_encoder.model.layers, self._vlm.layers, self._expert.layers]
         adarms = [skill_cond, None, time_cond]  # cond ← AdaRMS(skill) (adaLN-zero); action ← AdaRMS(time)
@@ -441,10 +446,10 @@ class SkillVLAPytorch(PI05Pytorch):
         action_out, _ = layernorm_forward(self._expert.norm, action_out, time_cond)
         return vlm_out, action_out
 
-    def _joint_forward_B(self, cond_tokens, vlm_embeds, vlm_pad, vlm_is_lang, action_tokens, time_cond):
+    def _joint_forward_B(self, cond_tokens, vlm_embeds, vlm_pad, vlm_xattn_block, action_tokens, time_cond):
         nc = cond_tokens.shape[1]
         expert_in = torch.cat([cond_tokens, action_tokens], dim=1)
-        att_4d, pad = self._mask_branch_B(vlm_pad, vlm_is_lang, nc, action_tokens.shape[1])
+        att_4d, pad = self._mask_branch_B(vlm_pad, vlm_xattn_block, nc, action_tokens.shape[1])
         position_ids = torch.cumsum(pad, dim=1) - 1
         layers_per_stream = [self._vlm.layers, self._expert.layers]
         adarms = [None, time_cond]
@@ -454,14 +459,14 @@ class SkillVLAPytorch(PI05Pytorch):
         expert_out, _ = layernorm_forward(self._expert.norm, expert_out, time_cond)
         return vlm_out, expert_out
 
-    def _joint_forward(self, cond_tokens, vlm_embeds, vlm_pad, vlm_is_lang, action_tokens, time_cond, skill_cond):
+    def _joint_forward(self, cond_tokens, vlm_embeds, vlm_pad, vlm_xattn_block, action_tokens, time_cond, skill_cond):
         """Returns (vlm_out, action_hidden) where action_hidden is the action-token chunk only."""
         if self.expert_arch == "joint":
             vlm_out, action_out = self._joint_forward_A(
-                cond_tokens, vlm_embeds, vlm_pad, vlm_is_lang, action_tokens, time_cond, skill_cond)
+                cond_tokens, vlm_embeds, vlm_pad, vlm_xattn_block, action_tokens, time_cond, skill_cond)
         else:
             vlm_out, expert_out = self._joint_forward_B(
-                cond_tokens, vlm_embeds, vlm_pad, vlm_is_lang, action_tokens, time_cond)
+                cond_tokens, vlm_embeds, vlm_pad, vlm_xattn_block, action_tokens, time_cond)
             action_out = expert_out[:, -self.config.chunk_size :]
         return vlm_out, action_out
 
@@ -499,13 +504,13 @@ class SkillVLAPytorch(PI05Pytorch):
         u_t = noise - actions
 
         cond_tokens = self._cond_tokens(cond_images, state, skill_code, skill_progress)
-        vlm_embeds, vlm_pad, vlm_is_lang = self._vlm_tokens(start_images, lang_tokens, lang_masks)
+        vlm_embeds, vlm_pad, vlm_xattn_block = self._vlm_tokens(start_images, lang_tokens, lang_masks)
         action_tokens = self._action_in(x_t)
         time_cond = self._time_cond(time)
         skill_cond = self._skill_cond(skill_code)  # joint: AdaRMS(skill) for cond-encoder; fused: None
 
         vlm_out, action_out = self._joint_forward(
-            cond_tokens, vlm_embeds, vlm_pad, vlm_is_lang, action_tokens, time_cond, skill_cond)
+            cond_tokens, vlm_embeds, vlm_pad, vlm_xattn_block, action_tokens, time_cond, skill_cond)
         v_t = self._action_out(action_out)
         return F.mse_loss(u_t, v_t, reduction="none"), self._skill_hidden(vlm_out)
 
@@ -607,7 +612,7 @@ class SkillVLAPytorch(PI05Pytorch):
         na = self.config.chunk_size
         cond_base = self._cond_image_state_tokens(cond_images, state)   # (B, nc-1, w)
         nc = cond_base.shape[1] + 1                                     # + progress token (skill via AdaRMS)
-        vlm_embeds, vlm_pad, vlm_is_lang = self._vlm_tokens(start_images, lang_tokens, lang_masks)
+        vlm_embeds, vlm_pad, vlm_xattn_block = self._vlm_tokens(start_images, lang_tokens, lang_masks)
         nv = vlm_embeds.shape[1]
 
         # positions = single cumsum over [cond, vlm, action] (identical to the training joint forward)
@@ -630,7 +635,7 @@ class SkillVLAPytorch(PI05Pytorch):
         cond_tokens = torch.cat([cond_base, self._progress_token(skill_progress)], dim=1)
         cond_kv, _ = self._encode_prefix_kv(
             self.cond_encoder.model.layers, cond_tokens, cond_pad, cond_pos, adarms=skill_cond,
-            extra_kv=vlm_kv, extra_valid=vlm_pad & ~vlm_is_lang[None, :])
+            extra_kv=vlm_kv, extra_valid=vlm_pad & ~vlm_xattn_block[None, :])
 
         # denoise prefix = cond only (action has NO direct VLM edge; VLM info arrives via cond)
         prefix_kv = cond_kv
@@ -661,7 +666,7 @@ class SkillVLAPytorch(PI05Pytorch):
         ``denoise_step`` with cond in the suffix."""
         bsize, device = state.shape[0], state.device
         na = self.config.chunk_size
-        vlm_embeds, vlm_pad, vlm_is_lang = self._vlm_tokens(start_images, lang_tokens, lang_masks)
+        vlm_embeds, vlm_pad, vlm_xattn_block = self._vlm_tokens(start_images, lang_tokens, lang_masks)
         nv = vlm_embeds.shape[1]
         cond_base = self._cond_image_state_tokens(cond_images, state)
         nc = cond_base.shape[1] + 2                                     # + skill + progress tokens
@@ -681,7 +686,7 @@ class SkillVLAPytorch(PI05Pytorch):
 
         # suffix rows attend vlm-nonlang + the suffix, BLOCK-CAUSAL: cond ⊥ action (cond rows do not
         # attend the action cols); action attends cond+action. Matches the joint _mask_branch_B block.
-        prefix_cols = (vlm_pad & ~vlm_is_lang[None, :])[:, None, :].expand(bsize, ne, nv)
+        prefix_cols = (vlm_pad & ~vlm_xattn_block[None, :])[:, None, :].expand(bsize, ne, nv)
         suffix_block = torch.ones(bsize, ne, ne, dtype=torch.bool, device=device)
         suffix_block[:, :nc, nc:] = False                                    # cond ⊥ action
         allow_rows = torch.cat([prefix_cols, suffix_block], dim=2)           # (B, ne, nv+ne)
