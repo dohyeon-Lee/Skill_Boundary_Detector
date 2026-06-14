@@ -30,7 +30,7 @@ exp: ""                                      # optional suffix → ..._batch{N}_
 # ── Freeze toggles (all parts otherwise trained) ──────────────
 freeze_cond_encoder: false                    # [A only] reuse the Stage-1 current-obs encoding
 freeze_expert_vision: true
-freeze_skill_adaln: false                     # [A+ada only] freeze skill→AdaRMS map (reuse Stage-1 skill modulation)
+freeze_skill_adaln: true                     # [A+ada only] freeze skill→AdaRMS map (reuse Stage-1 skill modulation)
 
 freeze_vlm: false
 freeze_vlm_vision: false                     # train the SigLIP tower for the new skill-start view
