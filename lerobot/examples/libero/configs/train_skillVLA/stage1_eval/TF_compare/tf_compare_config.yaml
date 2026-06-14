@@ -31,6 +31,24 @@ targets:
   865wow200_dinoB_c25_015k_un:
     model_dir: libero_90_full_full_FSQ865_dino8_wow_200_dino_unfreeze_batch128_A_c25
     checkpoint: "015000"
+  # 555wow500_dinoB_c25_005k:
+  #   model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_freeze_batch128_A_c25
+  #   checkpoint: "005000"
+  865wow200_dinoB_c25_015k:
+    model_dir: libero_90_full_full_FSQ865_dino8_wow_200_dino_freeze_batch128_A_adaLN_c25
+    checkpoint: "015000"
+  555wow_ada_dinoB_c25_015k:
+    model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_freeze_batch128_A_adaLN_c25
+    checkpoint: "015000"
+  865wow_ada_dinoB_c25_015k:
+    model_dir: libero_90_full_full_FSQ865_dino8_wow_imgX_500_dino_freeze_batch128_A_adaLN_c25
+    checkpoint: "015000"
+  555wow_ada_dinoB_c25_05_un:
+    model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_unfreeze_batch128_A_adaLN_c25
+    checkpoint: "005000"
+  865wow_ada_dinoB_c25_05k_un:
+    model_dir: libero_90_full_full_FSQ865_dino8_wow_imgX_500_dino_unfreeze_batch128_A_adaLN_c25
+    checkpoint: "005000"
   # prev-server run: 정책은 outputs/, skillvla 데이터셋은 dataset/ 아래.
   # ※ 현재 이 데이터셋의 videos가 퍼지됨 → 비디오 재전송해야 teacher_forced 실행 가능.
   555prev200_siglip_c25_010k:

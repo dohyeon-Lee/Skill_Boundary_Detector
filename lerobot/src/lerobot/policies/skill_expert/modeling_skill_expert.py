@@ -159,11 +159,14 @@ class SkillExpertPytorch(nn.Module):
             variant = config.cond_encoder_variant or config.action_expert_variant
             # adaLN-zero skill conditioning: the cond-encoder is AdaRMS-conditioned on the skill (z_q),
             # so the skill modulates the whole scene/cond encoding instead of being one (diluted) cond
-            # token among ~400 image tokens. skill_adaln is zero-init → skill starts neutral, learned.
+            # token among ~400 image tokens. The "zero" (no-op at init → warm-start safe) comes from
+            # PiGemma's AdaRMS `dense` being zero-init (scale=0 → identity). skill_adaln must use the
+            # DEFAULT (non-zero) init: if it were also zero, skill_cond=0 → the AdaRMS dense gets zero
+            # gradient (∂L/∂dense ∝ skill_cond) and skill_adaln gets zero gradient (∂L/∂skill_adaln ∝
+            # dense) → both stay 0 forever (a double-zero-init deadlock; DiT zero-inits only the dense,
+            # keeping the condition non-zero).
             self.cond_encoder = _build_gemma(variant, use_adarms=True)
             self.skill_adaln = nn.Linear(len(config.skill_fsq_levels), self.width)  # z_q → AdaRMS cond
-            nn.init.zeros_(self.skill_adaln.weight)
-            nn.init.zeros_(self.skill_adaln.bias)
         elif config.expert_arch != "fused":
             raise ValueError(f"expert_arch must be 'fused' or 'joint', got {config.expert_arch!r}")
 
