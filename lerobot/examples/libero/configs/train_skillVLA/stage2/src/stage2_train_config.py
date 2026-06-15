@@ -96,13 +96,13 @@ def build_settings(cfg: dict) -> dict:
         # skill head / FSQ codebook
         "skill_fsq_levels": "[" + ",".join(str(x) for x in skill_fsq_levels) + "]",
         "skill_loss_weight": str(get_value(cfg, "skill_loss_weight", 0.5)),
+        "cond_attend_language": as_bool(get_value(cfg, "cond_attend_language", False)),
         # freeze toggles (all parts otherwise trained)
         "freeze_vlm": as_bool(get_value(cfg, "freeze_vlm", False)),
         "freeze_vlm_vision": as_bool(get_value(cfg, "freeze_vlm_vision", False)),
         "freeze_cond_encoder": freeze_cond_encoder,
         "freeze_action_expert": as_bool(get_value(cfg, "freeze_action_expert", False)),
         "freeze_expert_vision": freeze_expert_vision,
-        "freeze_skill_adaln": as_bool(get_value(cfg, "freeze_skill_adaln", False)),
         # output
         "skillvla_outputs_root": vla_root,
         "pt_run_name": run_name,
@@ -114,7 +114,6 @@ def build_settings(cfg: dict) -> dict:
         "lr": lr_base * num_gpus,
         "expert_lr_scale": float(get_value(cfg, "expert_lr_scale", 1.0)),
         "cond_lr_scale": float(get_value(cfg, "cond_lr_scale", 1.0)),
-        "skill_adaln_gain": float(get_value(cfg, "skill_adaln_gain", 1.0)),
         "steps": int(get_value(cfg, "steps", 100000)),
         "save_freq": int(get_value(cfg, "save_freq", 2500)),
         # wandb

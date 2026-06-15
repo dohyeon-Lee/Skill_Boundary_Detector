@@ -157,16 +157,7 @@ class SkillExpertPytorch(nn.Module):
         self._grad_ckpt = False
         if config.expert_arch == "joint":
             variant = config.cond_encoder_variant or config.action_expert_variant
-            # adaLN-zero skill conditioning: the cond-encoder is AdaRMS-conditioned on the skill (z_q),
-            # so the skill modulates the whole scene/cond encoding instead of being one (diluted) cond
-            # token among ~400 image tokens. The "zero" (no-op at init → warm-start safe) comes from
-            # PiGemma's AdaRMS `dense` being zero-init (scale=0 → identity). skill_adaln must use the
-            # DEFAULT (non-zero) init: if it were also zero, skill_cond=0 → the AdaRMS dense gets zero
-            # gradient (∂L/∂dense ∝ skill_cond) and skill_adaln gets zero gradient (∂L/∂skill_adaln ∝
-            # dense) → both stay 0 forever (a double-zero-init deadlock; DiT zero-inits only the dense,
-            # keeping the condition non-zero).
-            self.cond_encoder = _build_gemma(variant, use_adarms=True)
-            self.skill_adaln = nn.Linear(len(config.skill_fsq_levels), self.width)  # z_q → AdaRMS cond
+            self.cond_encoder = _build_gemma(variant, use_adarms=False)  # fresh; no time conditioning
         elif config.expert_arch != "fused":
             raise ValueError(f"expert_arch must be 'fused' or 'joint', got {config.expert_arch!r}")
 
@@ -226,22 +217,24 @@ class SkillExpertPytorch(nn.Module):
     def _cond_tokens(self, images: list[Tensor], state: Tensor, skill_code: Tensor,
                      skill_progress: Tensor) -> Tensor:
         """Conditioning tokens → (B, M, width).
-        fused: [img1, img2, state, skill, progress] (skill as a token).
-        joint: [img1, img2, state, progress] — skill is injected via the cond-encoder's AdaRMS
-               (adaLN-zero) instead of a token, so it isn't diluted among the image tokens.
-        progress = raw [0,1] as its own token (mirrors the FSQ decoder's dec_z_proj/motion_prog split)."""
+        fused: [img1, img2, state, skill, progress] (skill/progress as cond tokens).
+        joint: [img1, img2, state] — scene only; skill+progress are prepended to the ACTION stream
+               instead (see _action_prefix) so they sit among the few action tokens (~1:K) rather
+               than diluted among the ~400 image tokens (~1:400)."""
         tokens = [self.image_proj(self._image_features(image).to(self._wdtype)) for image in images]
         state = pad_vector(state.to(dtype=torch.float32), self.config.max_state_dim)
         tokens.append(self.state_proj(state.to(self._wdtype)).unsqueeze(1))
         if self.expert_arch == "fused":
             tokens.append(self.skill_proj(self._code_to_zq(skill_code).to(self._wdtype)).unsqueeze(1))
-        prog = skill_progress.view(-1, 1).float().to(state.device)
-        tokens.append(self.progress_proj(prog.to(self._wdtype)).unsqueeze(1))
+            prog = skill_progress.view(-1, 1).float().to(state.device)
+            tokens.append(self.progress_proj(prog.to(self._wdtype)).unsqueeze(1))
         return torch.cat(tokens, dim=1)
 
-    def _skill_cond(self, skill_code: Tensor) -> Tensor:
-        """Skill (z_q) → AdaRMS conditioning vector (B, width) for the cond-encoder (joint only)."""
-        return self.skill_adaln(self._code_to_zq(skill_code).to(self._wdtype))
+    def _action_prefix(self, skill_code: Tensor, skill_progress: Tensor) -> Tensor:
+        """[skill, progress] tokens prepended to the action stream (joint only) → (B, 2, width)."""
+        skill_tok = self.skill_proj(self._code_to_zq(skill_code).to(self._wdtype)).unsqueeze(1)
+        prog_tok = self.progress_proj(skill_progress.view(-1, 1).float().to(self._wdtype)).unsqueeze(1)
+        return torch.cat([skill_tok, prog_tok], dim=1)
 
     def _time_cond(self, timestep: Tensor) -> Tensor:
         t = create_sinusoidal_pos_embedding(
@@ -280,11 +273,15 @@ class SkillExpertPytorch(nn.Module):
         return self.action_out_proj(action_hidden.to(self._wdtype)).float()
 
     def _run_joint(self, cond_tokens: Tensor, x_t: Tensor, timestep: Tensor,
-                   skill_cond: Tensor | None = None) -> Tensor:
+                   action_prefix: Tensor | None = None) -> Tensor:
         """Joint block attention over two streams (PI05 VLM↔expert pattern, cond-encoder as prefix).
-        The action expert's input is ONLY the action tokens; it reads the cond stream through the
-        shared attention (block mask: action attends cond+action, cond⊥action). Decode action."""
+        The action stream = [skill, progress (action_prefix), action tokens]; it reads the cond stream
+        (scene) through the shared attention (block mask: action stream attends cond + itself,
+        cond⊥action). Only the action positions (last K) are decoded into the velocity."""
         action_tokens = self.action_in_proj(x_t.to(self._wdtype))
+        n_chunk = action_tokens.shape[1]
+        if action_prefix is not None:
+            action_tokens = torch.cat([action_prefix, action_tokens], dim=1)  # [skill, progress, action×K]
         embeds = [cond_tokens, action_tokens]
         bsize, n_cond = cond_tokens.shape[:2]
         n_act = action_tokens.shape[1]
@@ -299,8 +296,7 @@ class SkillExpertPytorch(nn.Module):
         position_ids = torch.cumsum(pad_masks, dim=1) - 1
 
         time_cond = self._time_cond(timestep)
-        # cond stream: AdaRMS(skill) — adaLN-zero skill conditioning; action stream: AdaRMS(time).
-        adarms_cond = [skill_cond, time_cond]
+        adarms_cond = [None, time_cond]  # cond stream: plain RMSNorm; action stream: AdaRMS(time)
         # Reuse PI05's two-stream layer; cond_encoder plays the "prefix" model via a tiny shim.
         shim = SimpleNamespace(model=SimpleNamespace(language_model=self.cond_encoder.model))
         use_ckpt = self._grad_ckpt and self.training
@@ -317,13 +313,13 @@ class SkillExpertPytorch(nn.Module):
                     paligemma=shim, gemma_expert=self.gemma_expert,
                 )
         action_hidden, _ = layernorm_forward(self.gemma_expert.model.norm, embeds[1], time_cond)
-        return self.action_out_proj(action_hidden.to(self._wdtype)).float()
+        return self.action_out_proj(action_hidden[:, -n_chunk:].to(self._wdtype)).float()  # action positions only
 
     def _velocity(self, cond_tokens: Tensor, x_t: Tensor, timestep: Tensor,
-                  skill_cond: Tensor | None = None) -> Tensor:
+                  action_prefix: Tensor | None = None) -> Tensor:
         """Predict the flow velocity for the chosen conditioning architecture."""
         if self.expert_arch == "joint":
-            return self._run_joint(cond_tokens, x_t, timestep, skill_cond)
+            return self._run_joint(cond_tokens, x_t, timestep, action_prefix)
         return self._run_expert(cond_tokens, x_t, timestep)
 
     # ── Training / inference ──
@@ -340,7 +336,7 @@ class SkillExpertPytorch(nn.Module):
     ) -> Tensor:
         """Flow-matching loss. Returns per-(b, t, dim) MSE: (B, chunk_size, max_action_dim)."""
         cond = self._cond_tokens(images, state, skill_code, skill_progress)
-        skill_cond = self._skill_cond(skill_code) if self.expert_arch == "joint" else None
+        action_prefix = self._action_prefix(skill_code, skill_progress) if self.expert_arch == "joint" else None
         if time is None:
             time = self.sample_time(actions.shape[0], actions.device)
         source = self.sample_noise(actions.shape, actions.device) if noise is None else noise
@@ -348,7 +344,7 @@ class SkillExpertPytorch(nn.Module):
         time_exp = time[:, None, None]
         x_t = time_exp * source + (1 - time_exp) * actions
         u_t = source - actions
-        v_t = self._velocity(cond, x_t, time, skill_cond)
+        v_t = self._velocity(cond, x_t, time, action_prefix)
         return F.mse_loss(u_t, v_t, reduction="none")
 
     @torch.no_grad()
@@ -371,7 +367,8 @@ class SkillExpertPytorch(nn.Module):
         if self.expert_arch == "joint":
             # cond⊥action, so the cond stream is identical every step → encode it once, cache its
             # per-layer K/V, and run only the action stream against the cache each step (PI05-style).
-            return self._sample_joint_cached(cond, noise, num_steps, self._skill_cond(skill_code))
+            action_prefix = self._action_prefix(skill_code, skill_progress)  # [skill, progress], constant
+            return self._sample_joint_cached(cond, noise, num_steps, action_prefix)
         # fused: cond and action share one self-attention stream, so it must be recomputed each step.
         dt = -1.0 / num_steps
         x_t = noise
@@ -381,12 +378,14 @@ class SkillExpertPytorch(nn.Module):
         return x_t
 
     def _sample_joint_cached(self, cond_tokens: Tensor, noise: Tensor, num_steps: int,
-                             skill_cond: Tensor | None = None) -> Tensor:
+                             action_prefix: Tensor | None = None) -> Tensor:
         """Joint-mode inference with a cached cond stream (mirrors PI05 prefix-cache / denoise_step).
         The cond-encoder runs ONCE → per-layer K/V cache; each denoising step runs only the action
-        expert, attending the cached cond + itself (cond⊥action)."""
+        stream ([skill, progress (action_prefix), action tokens]) against the cache (cond⊥action)."""
         bsize, n_cond = cond_tokens.shape[:2]
-        n_act = noise.shape[1]
+        n_chunk = noise.shape[1]
+        n_prefix = action_prefix.shape[1] if action_prefix is not None else 0
+        n_act = n_prefix + n_chunk
         device = cond_tokens.device
 
         # Prefix (cond): one bidirectional block, encoded once → past_key_values.
@@ -396,7 +395,7 @@ class SkillExpertPytorch(nn.Module):
         prefix_pos = torch.cumsum(prefix_pad, dim=1) - 1
         past_key_values = self.cond_encoder.model.forward(
             inputs_embeds=cond_tokens, attention_mask=prefix_4d, position_ids=prefix_pos,
-            past_key_values=None, use_cache=True, adarms_cond=skill_cond,  # adaLN-zero skill conditioning
+            past_key_values=None, use_cache=True, adarms_cond=None,
         ).past_key_values
 
         # Suffix (action): attends all cond + itself (first token opens the block, rest bidirectional).
@@ -413,12 +412,14 @@ class SkillExpertPytorch(nn.Module):
         for step in range(num_steps):
             t = torch.full((bsize,), 1.0 + step * dt, dtype=torch.float32, device=device)
             action_tokens = self.action_in_proj(x_t.to(self._wdtype))
+            if action_prefix is not None:
+                action_tokens = torch.cat([action_prefix, action_tokens], dim=1)  # [skill, progress, action×K]
             action_hidden = self.gemma_expert.model.forward(
                 inputs_embeds=action_tokens, attention_mask=full_4d, position_ids=suffix_pos,
                 past_key_values=copy.deepcopy(past_key_values), use_cache=False,
                 adarms_cond=self._time_cond(t),
             ).last_hidden_state
-            v_t = self.action_out_proj(action_hidden.to(self._wdtype)).float()
+            v_t = self.action_out_proj(action_hidden[:, -n_chunk:].to(self._wdtype)).float()  # action positions only
             x_t = x_t + dt * v_t
         return x_t
 

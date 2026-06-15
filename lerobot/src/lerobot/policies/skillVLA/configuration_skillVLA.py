@@ -52,6 +52,10 @@ class SkillVLAConfig(PI05Config):
     cond progress token (GT comes from the dataset wrapper, relative to the jitter-chosen skill).
     In the closed loop the FSQ terminator's progress estimate is used instead — the jitter teaches
     robustness to that estimator's error. 0 = clean GT."""
+    cond_attend_language: bool = False
+    """VLM↔cond cross-attention: by default cond attends the VLM IMAGE tokens only (language excluded
+    → forces visual grounding). True lets cond ALSO attend the VLM language tokens (ablation). The
+    skill-query token is always excluded either way."""
 
     # ── Freeze toggles (all parts otherwise trained) ──
     freeze_vlm: bool = False
@@ -64,21 +68,15 @@ class SkillVLAConfig(PI05Config):
     """Freeze the warm-started Gemma action expert (default False = fine-tune)."""
     freeze_expert_vision: bool = False
     """Freeze the action-expert-side vision encoder (DINO/SigLIP) inherited from Stage-1."""
-    freeze_skill_adaln: bool = False
-    """[A+ada only] Freeze the skill→AdaRMS projection (skill_adaln) warm-started from Stage-1
-    (no-op when fused / no adaLN). Lets the Stage-1 skill→cond-modulation map be reused as-is."""
 
     # ── Differential LR (relative to optimizer_lr) for the warm-started action/cond side ──
     expert_lr_scale: float = 1.0
-    """LR multiplier (× optimizer_lr) for the action expert (gemma_expert + action/time projections).
-    >1 lets the warm-started expert adapt faster to using the obs for intra-skill detail."""
+    """LR multiplier (× optimizer_lr) for the action expert (gemma_expert + action/time projections
+    + the ae skill/progress prefix projections). >1 lets the warm-started expert adapt faster to
+    using the obs for intra-skill detail."""
     cond_lr_scale: float = 1.0
-    """LR multiplier (× optimizer_lr) for the cond side (cond_encoder + image/state/progress/skill
-    projections). The VLM and vision backbones keep the base optimizer_lr."""
-    skill_adaln_gain: float = 1.0
-    """[A+ada only] α scaling the skill-dependent AdaRMS modulation (skill_cond *= α). α<1 weakens
-    skill dominance (lower %scale/win) so the action uses the obs for intra-skill detail (aims to
-    lower the BC floor); α=1 = full Stage-1 strength; α≈0 = skill-free. No-op when fused / no adaLN."""
+    """LR multiplier (× optimizer_lr) for the cond side (cond_encoder + image/state projections).
+    The VLM and vision backbones keep the base optimizer_lr."""
 
     # ── Inference: skill transitions via the frozen FSQ terminator ──
     fsq_path: str | None = None

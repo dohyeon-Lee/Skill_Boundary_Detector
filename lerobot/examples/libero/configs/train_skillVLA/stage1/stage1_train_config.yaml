@@ -33,11 +33,11 @@ pi_base: /scratch/mdorazi/Skill_Boundary_Detector/models/pi05_base   # local pin
 #          params separate from the Stage-2 VLM. Needs init_from_pi05: true for the warm-start.
 vision_backbone: siglip           # dino | siglip
 # DINO backbone
-dino_model_path: /scratch/mdorazi/Skill_Boundary_Detector/models/dinov3-vitl16   # ViT-B/16 86M (vits16=21M, vitl16=300M)
+dino_model_path: /scratch/mdorazi/Skill_Boundary_Detector/models/dinov3-vitb16   # ViT-B/16 86M (vits16=21M, vitl16=300M)
 dino_lr: null                   # null = same LR as the rest; set a float to use a separate DINO LR
 freeze_dino: true
 # SigLIP backbone (used when vision_backbone: siglip)
-freeze_siglip: false             # default true: reuse pi05's robot-adapted features (only image_proj trains)
+freeze_siglip: true             # default true: reuse pi05's robot-adapted features (only image_proj trains)
 siglip_lr: null                 # separate LR when unfrozen; null = same as the rest
 siglip_image_size: 224          # patch 14 → 16×16 = 256 tokens at 224
 
@@ -64,7 +64,7 @@ lr_base: 2.5e-05                # effective LR = lr_base * num_gpus
 steps: 100000
 save_freq: 2500
 
-exp: "adaLN"       # freeze_DINO | freeze_siglip                   # optional run-name suffix → {source}_{run_tag}_batch{N}_{A|B}_{exp}
+exp: "ae"       # freeze_DINO | freeze_siglip                   # optional run-name suffix → {source}_{run_tag}_batch{N}_{A|B}_{exp}
 
 # ── wandb ──
 wandb_enable: true

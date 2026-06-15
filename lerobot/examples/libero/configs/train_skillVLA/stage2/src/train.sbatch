@@ -82,13 +82,13 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.stage1_checkpoint_path="${STAGE1_CHECKPOINT_PATH}" \
     --policy.skill_fsq_levels="${SKILL_FSQ_LEVELS}" \
     --policy.skill_loss_weight="${SKILL_LOSS_WEIGHT}" \
+    --policy.cond_attend_language="${COND_ATTEND_LANGUAGE}" \
     --policy.fsq_path="${FSQ_CKPT}" \
     --policy.freeze_vlm="${FREEZE_VLM}" \
     --policy.freeze_vlm_vision="${FREEZE_VLM_VISION}" \
     --policy.freeze_cond_encoder="${FREEZE_COND_ENCODER}" \
     --policy.freeze_action_expert="${FREEZE_ACTION_EXPERT}" \
     --policy.freeze_expert_vision="${FREEZE_EXPERT_VISION}" \
-    --policy.freeze_skill_adaln="${FREEZE_SKILL_ADALN}" \
     --batch_size="${BATCH_SIZE}" \
     --num_workers="${NUM_WORKERS}" \
     --steps="${STEPS}" \
@@ -96,7 +96,6 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.optimizer_lr="${LR}" \
     --policy.expert_lr_scale="${EXPERT_LR_SCALE}" \
     --policy.cond_lr_scale="${COND_LR_SCALE}" \
-    --policy.skill_adaln_gain="${SKILL_ADALN_GAIN}" \
     --wandb.enable="${WANDB_ENABLE}" \
     --wandb.project="${WANDB_PROJECT}" \
     ${RESUME_ARGS[@]+"${RESUME_ARGS[@]}"}

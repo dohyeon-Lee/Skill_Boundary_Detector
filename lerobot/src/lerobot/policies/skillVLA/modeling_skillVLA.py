@@ -195,7 +195,7 @@ class SkillVLAPytorch(PI05Pytorch):
         # outputs are cast to the working dtype only at the attention boundary (_action_in/_action_out).
         if str(config.dtype) == "bfloat16":
             for m in (self.image_proj, self.state_proj, self.skill_proj, self.progress_proj,
-                      self.cond_encoder, self.skill_adaln, self.skill_head):
+                      self.cond_encoder, self.skill_head):
                 if m is not None:
                     m.to(dtype=torch.bfloat16)
             self.skill_query.data = self.skill_query.data.to(torch.bfloat16)
@@ -231,18 +231,13 @@ class SkillVLAPytorch(PI05Pytorch):
         self.progress_proj = nn.Linear(1, self.expert_width)
 
         self.cond_encoder = None
-        self.skill_adaln = None
         if self.expert_arch == "joint":
             variant = s1.cond_encoder_variant or s1.action_expert_variant
-            # adaLN-zero skill conditioning (mirrors Stage-1 joint): the skill (z_q) feeds the
-            # cond-encoder via AdaRMS instead of a (diluted) cond token, so it modulates the whole
-            # scene/cond encoding. The "zero" no-op-at-init comes from PiGemma's AdaRMS `dense` being
-            # zero-init; skill_adaln keeps the DEFAULT (non-zero) init — a double zero-init would
-            # deadlock (∂L/∂dense ∝ skill_cond and ∂L/∂skill_adaln ∝ dense). At Stage-2 both the
-            # cond_encoder AdaRMS dense and skill_adaln warm-start from the Stage-1 ada checkpoint
-            # (already non-zero; see _remap_stage1_to_expert).
-            self.cond_encoder = _build_gemma(variant, use_adarms=True)
-            self.skill_adaln = nn.Linear(len(s1.skill_fsq_levels), self.expert_width)  # z_q → AdaRMS cond
+            # ae (action-stream skill): the cond-encoder encodes the SCENE ONLY (no skill, no adaLN);
+            # skill (+progress) is injected as prefix tokens in the action-expert stream (see
+            # _action_prefix). cond stays skill-blind → a clean channel for the obs / VLM-grounded
+            # info. use_adarms=False matches the Stage-1 ae checkpoint (cond-encoder has no AdaRMS).
+            self.cond_encoder = _build_gemma(variant, use_adarms=False)
         elif self.expert_arch != "fused":
             raise ValueError(f"expert_arch must be 'fused' or 'joint', got {self.expert_arch!r}")
 
@@ -292,30 +287,21 @@ class SkillVLAPytorch(PI05Pytorch):
         prog = skill_progress.view(-1, 1).float().to(next(self.parameters()).device)
         return self.progress_proj(prog.to(self._wdtype)).unsqueeze(1)
 
-    def _skill_cond(self, skill_code: Tensor) -> Tensor | None:
-        """Skill (z_q) → AdaRMS conditioning vector (B, expert_width) for the cond-encoder (joint
-        only; mirrors Stage-1 _skill_cond). None for fused, where skill is a cond token instead.
-
-        ``skill_adaln_gain`` (α) scales the skill-DEPENDENT modulation: α<1 weakens how strongly the
-        skill dominates the cond encoding (lowers %scale / win), freeing the action to use the obs for
-        intra-skill detail (aims to lower the BC floor). α=1 = full Stage-1 strength; α=0 ≈ skill-free."""
-        if self.skill_adaln is None:
-            return None
-        zq = self._code_to_z(skill_code) / self._fsq_half[None, :]
-        gain = float(getattr(self.config, "skill_adaln_gain", 1.0))
-        return self.skill_adaln(zq.to(self._wdtype)) * gain
+    def _action_prefix(self, skill_code: Tensor, skill_progress: Tensor) -> Tensor:
+        """[skill, progress] tokens prepended to the action-expert stream (joint/ae) → (B, 2, width).
+        ae injects the skill here (action stream) instead of into the cond-encoder, so cond stays
+        skill-blind (mirrors Stage-1 ae's _action_prefix)."""
+        return torch.cat([self._skill_token(skill_code), self._progress_token(skill_progress)], dim=1)
 
     def _cond_tokens(self, images: list[Tensor], state: Tensor, skill_code: Tensor,
                      skill_progress: Tensor) -> Tensor:
         """Conditioning tokens → (B, M, expert_width).
-        fused: [img1, img2, state, skill, progress] (skill as a token).
-        joint: [img1, img2, state, progress] — skill is injected via the cond-encoder's AdaRMS
-               (adaLN-zero, see _skill_cond) instead of a token, so it isn't diluted among the
-               image tokens (mirrors Stage-1 joint)."""
+        joint (ae): [img1, img2, state] — SCENE ONLY; skill+progress go to the action-stream prefix.
+        fused: [img1, img2, state, skill, progress] (skill as a token)."""
         tokens = [self._cond_image_state_tokens(images, state)]
         if self.expert_arch == "fused":
             tokens.append(self._skill_token(skill_code))
-        tokens.append(self._progress_token(skill_progress))
+            tokens.append(self._progress_token(skill_progress))
         return torch.cat(tokens, dim=1)
 
     def _vlm_tokens(
@@ -323,9 +309,10 @@ class SkillVLAPytorch(PI05Pytorch):
     ) -> tuple[Tensor, Tensor, Tensor]:
         """VLM prefix [start imgs, language, skill-query] → (embeds (B,nv,W), pad (B,nv), xattn_block (nv,)).
 
-        ``xattn_block`` marks VLM tokens the cond/expert stream must NOT attend: the language sub-block
-        AND the skill-query read-out token. So cond/expert read VLM IMAGE tokens only — the skill reaches
-        the action solely via the FSQ skill vector / AdaRMS, never by attending the skill-query hidden."""
+        ``xattn_block`` marks VLM tokens the cond/expert stream must NOT attend: the skill-query
+        read-out token always, plus the language sub-block UNLESS cond_attend_language=True. So by
+        default cond reads VLM IMAGE tokens only (visual grounding); the skill reaches the action via
+        the action-stream prefix (ae), never by attending the skill-query hidden."""
         embs, pad, is_lang = [], [], []
         for img in start_images:
             emb = self.paligemma_with_expert.embed_image(img)
@@ -348,9 +335,13 @@ class SkillVLAPytorch(PI05Pytorch):
         embeds = torch.cat([e.to(self._wdtype) for e in embs], dim=1)  # img feats are f32; unify to wdtype
         pad = torch.cat(pad, dim=1)
         is_lang = torch.tensor(is_lang, dtype=torch.bool, device=embeds.device)
-        # Exclude from cond/expert cross-attention: the language block + the skill-query (last) token.
-        xattn_block = is_lang.clone()
+        # Tokens the cond/expert stream must NOT attend. Always exclude the skill-query (last) token.
+        # Language excluded by DEFAULT (cond reads VLM IMAGE tokens only → forces visual grounding);
+        # cond_attend_language=True lets cond ALSO attend the VLM language tokens (ablation toggle).
+        xattn_block = torch.zeros_like(is_lang)
         xattn_block[-1] = True
+        if not bool(getattr(self.config, "cond_attend_language", False)):
+            xattn_block = xattn_block | is_lang
         return embeds, pad, xattn_block
 
     def _time_cond(self, timestep: Tensor) -> Tensor:
@@ -438,15 +429,15 @@ class SkillVLAPytorch(PI05Pytorch):
                 hiddens = compute_layer_multi(layer_idx, hiddens, layers, att_4d, position_ids, adarms, rotary)
         return hiddens
 
-    def _joint_forward_A(self, cond_tokens, vlm_embeds, vlm_pad, vlm_xattn_block, action_tokens, time_cond, skill_cond):
+    def _joint_forward_A(self, cond_tokens, vlm_embeds, vlm_pad, vlm_xattn_block, action_tokens, time_cond):
         nc, na = cond_tokens.shape[1], action_tokens.shape[1]
         att_4d, pad = self._mask_branch_A(nc, vlm_pad, vlm_xattn_block, na)
         position_ids = torch.cumsum(pad, dim=1) - 1
         layers_per_stream = [self.cond_encoder.model.layers, self._vlm.layers, self._expert.layers]
-        adarms = [skill_cond, None, time_cond]  # cond ← AdaRMS(skill) (adaLN-zero); action ← AdaRMS(time)
+        adarms = [None, None, time_cond]  # cond/vlm: plain RMSNorm; action ← AdaRMS(time). skill is in the action prefix (ae)
         outs = self._run_streams([cond_tokens, vlm_embeds, action_tokens], layers_per_stream, adarms, att_4d, position_ids)
         cond_out, vlm_out, action_out = outs
-        cond_out, _ = layernorm_forward(self.cond_encoder.model.norm, cond_out, skill_cond)
+        cond_out, _ = layernorm_forward(self.cond_encoder.model.norm, cond_out, None)
         vlm_out, _ = layernorm_forward(self._vlm.norm, vlm_out, None)
         action_out, _ = layernorm_forward(self._expert.norm, action_out, time_cond)
         return vlm_out, action_out
@@ -464,16 +455,16 @@ class SkillVLAPytorch(PI05Pytorch):
         expert_out, _ = layernorm_forward(self._expert.norm, expert_out, time_cond)
         return vlm_out, expert_out
 
-    def _joint_forward(self, cond_tokens, vlm_embeds, vlm_pad, vlm_xattn_block, action_tokens, time_cond, skill_cond):
-        """Returns (vlm_out, action_hidden) where action_hidden is the action-token chunk only."""
+    def _joint_forward(self, cond_tokens, vlm_embeds, vlm_pad, vlm_xattn_block, action_tokens, time_cond):
+        """Returns (vlm_out, action_hidden) where action_hidden is the action-CHUNK only — the ae
+        skill/progress prefix (joint) and the cond block (fused) are dropped by the final slice."""
         if self.expert_arch == "joint":
             vlm_out, action_out = self._joint_forward_A(
-                cond_tokens, vlm_embeds, vlm_pad, vlm_xattn_block, action_tokens, time_cond, skill_cond)
-        else:
-            vlm_out, expert_out = self._joint_forward_B(
                 cond_tokens, vlm_embeds, vlm_pad, vlm_xattn_block, action_tokens, time_cond)
-            action_out = expert_out[:, -self.config.chunk_size :]
-        return vlm_out, action_out
+        else:
+            vlm_out, action_out = self._joint_forward_B(
+                cond_tokens, vlm_embeds, vlm_pad, vlm_xattn_block, action_tokens, time_cond)
+        return vlm_out, action_out[:, -self.config.chunk_size :]
 
     def _skill_hidden(self, vlm_out: Tensor) -> Tensor:
         """The skill-query hidden (last VLM token) → SkillHead input."""
@@ -511,11 +502,12 @@ class SkillVLAPytorch(PI05Pytorch):
         cond_tokens = self._cond_tokens(cond_images, state, skill_code, skill_progress)
         vlm_embeds, vlm_pad, vlm_xattn_block = self._vlm_tokens(start_images, lang_tokens, lang_masks)
         action_tokens = self._action_in(x_t)
+        if self.expert_arch == "joint":  # ae: prepend [skill, progress] to the action stream
+            action_tokens = torch.cat([self._action_prefix(skill_code, skill_progress), action_tokens], dim=1)
         time_cond = self._time_cond(time)
-        skill_cond = self._skill_cond(skill_code)  # joint: AdaRMS(skill) for cond-encoder; fused: None
 
         vlm_out, action_out = self._joint_forward(
-            cond_tokens, vlm_embeds, vlm_pad, vlm_xattn_block, action_tokens, time_cond, skill_cond)
+            cond_tokens, vlm_embeds, vlm_pad, vlm_xattn_block, action_tokens, time_cond)
         v_t = self._action_out(action_out)
         return F.mse_loss(u_t, v_t, reduction="none"), self._skill_hidden(vlm_out)
 
@@ -610,15 +602,16 @@ class SkillVLAPytorch(PI05Pytorch):
     @torch.no_grad()
     def _sample_actions_A(self, cond_images, start_images, lang_tokens, lang_masks, state, skill_code,
                           skill_progress, noise, num_steps):
-        """Branch A cached sampling (chain VLM → cond → action): the VLM is encoded once
-        (self-contained), cond is encoded once reading the VLM cache, and each denoise step
-        runs only the action expert against the cond cache."""
+        """Branch A (ae) cached sampling: VLM encoded once; cond-encoder (SCENE only, skill-blind)
+        encoded once reading the VLM cache; each denoise step runs the action expert over
+        [skill, progress, action×K] against the cond cache (cond⊥action), decoding the K action tokens."""
         bsize, device = state.shape[0], state.device
-        na = self.config.chunk_size
-        cond_base = self._cond_image_state_tokens(cond_images, state)   # (B, nc-1, w)
-        nc = cond_base.shape[1] + 1                                     # + progress token (skill via AdaRMS)
+        n_chunk = self.config.chunk_size
+        cond_tokens = self._cond_image_state_tokens(cond_images, state)  # scene only (img, img, state)
+        nc = cond_tokens.shape[1]
         vlm_embeds, vlm_pad, vlm_xattn_block = self._vlm_tokens(start_images, lang_tokens, lang_masks)
         nv = vlm_embeds.shape[1]
+        na = 2 + n_chunk                                                 # [skill, progress] + action chunk
 
         # positions = single cumsum over [cond, vlm, action] (identical to the training joint forward)
         full_pad = torch.cat([
@@ -633,32 +626,30 @@ class SkillVLAPytorch(PI05Pytorch):
         vlm_h, _ = layernorm_forward(self._vlm.norm, vlm_h, None)
         if skill_code is None:
             skill_code = self.skill_head.decode(vlm_h[:, -1])
-        skill_cond = self._skill_cond(skill_code)  # AdaRMS(skill) for the cond-encoder (adaLN-zero)
 
-        # cond: teacher-force the (predicted) skill via AdaRMS + progress as a token; encode once
-        # READING the cached VLM K/V at vlm-nonlang columns (VLM → cond edge) → cached K/V
-        cond_tokens = torch.cat([cond_base, self._progress_token(skill_progress)], dim=1)
+        # cond: SCENE only (plain RMSNorm, skill-blind), encoded once READING the cached VLM K/V → cache
         cond_kv, _ = self._encode_prefix_kv(
-            self.cond_encoder.model.layers, cond_tokens, cond_pad, cond_pos, adarms=skill_cond,
+            self.cond_encoder.model.layers, cond_tokens, cond_pad, cond_pos, adarms=None,
             extra_kv=vlm_kv, extra_valid=vlm_pad & ~vlm_xattn_block[None, :])
 
-        # denoise prefix = cond only (action has NO direct VLM edge; VLM info arrives via cond)
+        # denoise: action stream = [skill, progress (constant prefix), action×K]; attends cond cache only
+        action_prefix = self._action_prefix(skill_code, skill_progress)
         prefix_kv = cond_kv
         cols = torch.cat([cond_pad, torch.ones(bsize, na, dtype=torch.bool, device=device)], dim=1)
         att_4d = torch.where(cols[:, None, None, :].expand(bsize, 1, na, cols.shape[1]),
                              0.0, OPENPI_ATTENTION_MASK_VALUE)
 
         if noise is None:
-            noise = self.sample_noise((bsize, na, self.config.max_action_dim), device)
+            noise = self.sample_noise((bsize, n_chunk, self.config.max_action_dim), device)
         dt, x_t = -1.0 / num_steps, noise
         for step in range(num_steps):
             t = torch.full((bsize,), 1.0 + step * dt, dtype=torch.float32, device=device)
             time_cond = self._time_cond(t)
-            h = self._action_in(x_t)
+            h = torch.cat([action_prefix, self._action_in(x_t)], dim=1)  # [skill, progress, action×K]
             for i in range(len(prefix_kv)):
                 h = self._action_layer_cached(i, h, prefix_kv, att_4d, action_pos, time_cond)
             h, _ = layernorm_forward(self._expert.norm, h, time_cond)
-            v_t = self._action_out(h)
+            v_t = self._action_out(h[:, -n_chunk:])                     # decode action positions only
             x_t = x_t + dt * v_t
         return x_t
 
@@ -848,7 +839,7 @@ def _remap_stage1_to_expert(raw: dict) -> dict:
             out[f"model.paligemma_with_expert.{key}"] = v
         elif key.startswith((
             "cond_encoder.", "dino.", "siglip.", "image_proj.", "state_proj.", "skill_proj.",
-            "progress_proj.", "skill_adaln.",
+            "progress_proj.",
             "action_in_proj.", "action_out_proj.", "time_mlp_in.", "time_mlp_out.",
         )):
             out[f"model.{key}"] = v
@@ -907,8 +898,6 @@ class SkillVLAPolicy(PI05Policy):
                 freeze(proj)
         if c.freeze_expert_vision:
             freeze(m.dino if m.vision_backbone == "dino" else m.siglip)
-        if c.freeze_skill_adaln:
-            freeze(m.skill_adaln)
 
     def get_optim_params(self):
         """Param groups with a differential LR (× optimizer_lr) for the warm-started action expert and
@@ -919,9 +908,8 @@ class SkillVLAPolicy(PI05Policy):
         cs = float(getattr(self.config, "cond_lr_scale", 1.0))
         m = self.model
         expert_mods = [m.paligemma_with_expert.gemma_expert, m.action_in_proj, m.action_out_proj,
-                       m.time_mlp_in, m.time_mlp_out]
-        cond_mods = [m.cond_encoder, m.image_proj, m.state_proj, m.progress_proj,
-                     m.skill_adaln, m.skill_proj]
+                       m.time_mlp_in, m.time_mlp_out, m.skill_proj, m.progress_proj]  # ae: skill+progress = action prefix
+        cond_mods = [m.cond_encoder, m.image_proj, m.state_proj]
 
         chosen: set[int] = set()
 
