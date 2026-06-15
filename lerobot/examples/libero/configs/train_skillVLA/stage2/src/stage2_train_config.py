@@ -41,14 +41,15 @@ def build_settings(cfg: dict) -> dict:
 
     # Everything is parsed from the stage1_run_name:
     #   {source}_{run_tag}_[{dino|siglip}_{freeze|unfreeze}_]batch{N}_{A|B}[_exp]
-    # → the skillvla dataset (source + run_tag), the FSQ levels, and the arch tag. The optional
-    # vision tag (backbone + freeze) sits between run_tag and batch and is skipped here (the model
-    # re-reads the real Stage-1 config at load time, so it isn't needed for the stage-2 run name).
+    # → the skillvla dataset (source + run_tag), the FSQ levels, the arch tag, and the Stage-1 policy
+    # vision tag (backbone + freeze, e.g. "dino_unfreeze"/"siglip_freeze") captured below so the
+    # Stage-2 run name records which vision encoder it warm-started from.
     _rt = re.search(
-        r"(FSQ\d+_dino\d+.*?)(?:_(?:dino|siglip)_(?:freeze|unfreeze))?_batch\d+", stage1_run_name)
+        r"(FSQ\d+_dino\d+.*?)(?:_((?:dino|siglip)_(?:freeze|unfreeze)))?_batch\d+", stage1_run_name)
     if not _rt:
         raise ValueError(f"stage1_run_name must embed a 'FSQ..._dino..._batch<N>' run tag, got: {stage1_run_name}")
     run_tag = _rt.group(1)
+    s1_vis_tag = _rt.group(2) or ""   # Stage-1 vision: dino_freeze / siglip_unfreeze / ... ("" if absent)
     source_dataset = stage1_run_name[: _rt.start()].rstrip("_")
     run_dir = skillvla_root / source_dataset / run_tag
     build_fsq_levels = [int(d) for d in re.search(r"FSQ(\d+)", run_tag).group(1)]
@@ -65,11 +66,13 @@ def build_settings(cfg: dict) -> dict:
     # FSQ skill structure: auto-match the FSQ the dataset was built with (parsed from run_tag).
     skill_fsq_levels = list(as_levels(get_value(cfg, "skill_fsq_levels", build_fsq_levels)))
 
-    # run_name = {source}_{run_tag}_{stage1_checkpoint}_{freeze|unfreeze}[_{exp}], where the
-    # freeze/unfreeze tag reflects freeze_expert_vision (the cond-side DINO/SigLIP). batch{N}/arch(A/B)
-    # are dropped (arch is re-read from the Stage-1 ckpt at load time); exp is last.
+    # run_name = {source}_{run_tag}_[{s1_vis_tag}_]{stage1_checkpoint}_{freeze|unfreeze}[_{exp}]:
+    #   s1_vis_tag             = Stage-1 vision the expert warm-started from (dino_unfreeze/siglip_freeze/…)
+    #   trailing {freeze|unfreeze} = Stage-2's own freeze_expert_vision choice.
+    # batch{N}/arch(A/B) are dropped (arch is re-read from the Stage-1 ckpt at load time); exp is last.
     vis_tag = "freeze" if freeze_expert_vision else "unfreeze"
-    run_name = f"{source_dataset}_{run_tag}_{stage1_checkpoint}_{vis_tag}"
+    parts = [source_dataset, run_tag] + ([s1_vis_tag] if s1_vis_tag else []) + [stage1_checkpoint, vis_tag]
+    run_name = "_".join(parts)
     if exp:
         run_name = f"{run_name}_{exp}"
     output_dir = vla_root / run_name   # under skillVLA_stage2/, so no extra stage prefix

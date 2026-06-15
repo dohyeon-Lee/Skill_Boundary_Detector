@@ -37,7 +37,7 @@ dino_model_path: /scratch/mdorazi/Skill_Boundary_Detector/models/dinov3-vitl16  
 dino_lr: null                   # null = same LR as the rest; set a float to use a separate DINO LR
 freeze_dino: true
 # SigLIP backbone (used when vision_backbone: siglip)
-freeze_siglip: true             # default true: reuse pi05's robot-adapted features (only image_proj trains)
+freeze_siglip: false             # default true: reuse pi05's robot-adapted features (only image_proj trains)
 siglip_lr: null                 # separate LR when unfrozen; null = same as the rest
 siglip_image_size: 224          # patch 14 → 16×16 = 256 tokens at 224
 

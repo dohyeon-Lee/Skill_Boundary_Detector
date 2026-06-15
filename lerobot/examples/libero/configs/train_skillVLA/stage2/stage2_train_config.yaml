@@ -19,8 +19,8 @@ pi_base: /scratch/mdorazi/Skill_Boundary_Detector/models/pi05_base   # local pin
 # checkpoints/{stage1_checkpoint}/pretrained_model warm-starts the action expert + cond side. Its
 # config supplies expert_arch (A/B) / vision_backbone / skill_vocab — no need to repeat them here.
 # The skillvla dataset to train on is the one this Stage-1 trained on (parsed from this name).
-stage1_run_name: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_freeze_batch128_A_adaLN_c25
-stage1_checkpoint: "015000"     # "last" (newest at launch time) or a step number, e.g. "020000", to pin it
+stage1_run_name: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_unfreeze_batch128_A_adaLN_c25
+stage1_checkpoint: "020000"     # "last" (newest at launch time) or a step number, e.g. "020000", to pin it
 
 # ── Skill head / FSQ ──────────────────────────────────────────
 skill_loss_weight: 0.1                # total = BC + λ·skill_CE (λ<1 keeps BC dominant)
