@@ -112,6 +112,9 @@ def build_settings(cfg: dict) -> dict:
         "num_workers": int(get_value(cfg, "num_workers", 4)),
         "num_gpus": num_gpus,
         "lr": lr_base * num_gpus,
+        "expert_lr_scale": float(get_value(cfg, "expert_lr_scale", 1.0)),
+        "cond_lr_scale": float(get_value(cfg, "cond_lr_scale", 1.0)),
+        "skill_adaln_gain": float(get_value(cfg, "skill_adaln_gain", 1.0)),
         "steps": int(get_value(cfg, "steps", 100000)),
         "save_freq": int(get_value(cfg, "save_freq", 2500)),
         # wandb

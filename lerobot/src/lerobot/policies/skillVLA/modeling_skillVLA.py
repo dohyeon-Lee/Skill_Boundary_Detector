@@ -294,11 +294,16 @@ class SkillVLAPytorch(PI05Pytorch):
 
     def _skill_cond(self, skill_code: Tensor) -> Tensor | None:
         """Skill (z_q) → AdaRMS conditioning vector (B, expert_width) for the cond-encoder (joint
-        only; mirrors Stage-1 _skill_cond). None for fused, where skill is a cond token instead."""
+        only; mirrors Stage-1 _skill_cond). None for fused, where skill is a cond token instead.
+
+        ``skill_adaln_gain`` (α) scales the skill-DEPENDENT modulation: α<1 weakens how strongly the
+        skill dominates the cond encoding (lowers %scale / win), freeing the action to use the obs for
+        intra-skill detail (aims to lower the BC floor). α=1 = full Stage-1 strength; α=0 ≈ skill-free."""
         if self.skill_adaln is None:
             return None
         zq = self._code_to_z(skill_code) / self._fsq_half[None, :]
-        return self.skill_adaln(zq.to(self._wdtype))
+        gain = float(getattr(self.config, "skill_adaln_gain", 1.0))
+        return self.skill_adaln(zq.to(self._wdtype)) * gain
 
     def _cond_tokens(self, images: list[Tensor], state: Tensor, skill_code: Tensor,
                      skill_progress: Tensor) -> Tensor:
@@ -906,7 +911,43 @@ class SkillVLAPolicy(PI05Policy):
             freeze(m.skill_adaln)
 
     def get_optim_params(self):
-        return [p for p in self.parameters() if p.requires_grad]
+        """Param groups with a differential LR (× optimizer_lr) for the warm-started action expert and
+        cond side; the VLM + vision backbones keep the base LR. Frozen params (requires_grad=False)
+        are excluded, so empty groups never reach the optimizer."""
+        base = float(self.config.optimizer_lr)
+        es = float(getattr(self.config, "expert_lr_scale", 1.0))
+        cs = float(getattr(self.config, "cond_lr_scale", 1.0))
+        m = self.model
+        expert_mods = [m.paligemma_with_expert.gemma_expert, m.action_in_proj, m.action_out_proj,
+                       m.time_mlp_in, m.time_mlp_out]
+        cond_mods = [m.cond_encoder, m.image_proj, m.state_proj, m.progress_proj,
+                     m.skill_adaln, m.skill_proj]
+
+        chosen: set[int] = set()
+
+        def collect(mods):
+            out = []
+            for mod in mods:
+                if mod is None:
+                    continue
+                for p in mod.parameters():
+                    if p.requires_grad and id(p) not in chosen:
+                        chosen.add(id(p))
+                        out.append(p)
+            return out
+
+        expert_params = collect(expert_mods)
+        cond_params = collect(cond_mods)
+        rest = [p for p in self.parameters() if p.requires_grad and id(p) not in chosen]
+
+        groups: list[dict] = []
+        if rest:
+            groups.append({"params": rest})                       # base optimizer_lr
+        if expert_params:
+            groups.append({"params": expert_params, "lr": base * es})
+        if cond_params:
+            groups.append({"params": cond_params, "lr": base * cs})
+        return groups
 
     # ── batch → model inputs ──
     def _cond_images(self, batch: dict) -> list[Tensor]:

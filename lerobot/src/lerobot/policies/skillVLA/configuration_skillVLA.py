@@ -68,6 +68,18 @@ class SkillVLAConfig(PI05Config):
     """[A+ada only] Freeze the skill→AdaRMS projection (skill_adaln) warm-started from Stage-1
     (no-op when fused / no adaLN). Lets the Stage-1 skill→cond-modulation map be reused as-is."""
 
+    # ── Differential LR (relative to optimizer_lr) for the warm-started action/cond side ──
+    expert_lr_scale: float = 1.0
+    """LR multiplier (× optimizer_lr) for the action expert (gemma_expert + action/time projections).
+    >1 lets the warm-started expert adapt faster to using the obs for intra-skill detail."""
+    cond_lr_scale: float = 1.0
+    """LR multiplier (× optimizer_lr) for the cond side (cond_encoder + image/state/progress/skill
+    projections). The VLM and vision backbones keep the base optimizer_lr."""
+    skill_adaln_gain: float = 1.0
+    """[A+ada only] α scaling the skill-dependent AdaRMS modulation (skill_cond *= α). α<1 weakens
+    skill dominance (lower %scale/win) so the action uses the obs for intra-skill detail (aims to
+    lower the BC floor); α=1 = full Stage-1 strength; α≈0 = skill-free. No-op when fused / no adaLN."""
+
     # ── Inference: skill transitions via the frozen FSQ terminator ──
     fsq_path: str | None = None
     """Frozen FSQ checkpoint whose terminator decides skill transitions during closed-loop rollout.

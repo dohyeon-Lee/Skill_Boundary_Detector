@@ -20,15 +20,20 @@ pi_base: /scratch/mdorazi/Skill_Boundary_Detector/models/pi05_base   # local pin
 # config supplies expert_arch (A/B) / vision_backbone / skill_vocab — no need to repeat them here.
 # The skillvla dataset to train on is the one this Stage-1 trained on (parsed from this name).
 
-# stage1_run_name: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_freeze_batch128_A_adaLN_c25
+stage1_run_name: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_freeze_batch128_A_adaLN_c25
+stage1_checkpoint: "015000" 
+# stage1_run_name: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_freeze_batch128_A_adaLN_c25
 # stage1_checkpoint: "015000" 
-stage1_run_name: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_freeze_batch128_A_adaLN_c25
-stage1_checkpoint: "012500"     # "last" (newest at launch time) or a step number, e.g. "020000", to pin it
+# stage1_run_name: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_freeze_batch128_A_adaLN_c25
+# stage1_checkpoint: "012500"     # "last" (newest at launch time) or a step number, e.g. "020000", to pin it
 
 # ── Skill head / FSQ ──────────────────────────────────────────
 skill_loss_weight: 0.1                # total = BC + λ·skill_CE (λ<1 keeps BC dominant)
+# skill 지배 완화 다이얼 [A+ada only]: skill_cond *= α. α<1 → skill 영향(%scale/win)↓, action이 obs로
+# 디테일 채울 여지↑ (BC floor↓ 노림). α=1=현재(강함), α≈0=skill 무시. ae(%scale~45%) 흉내는 0.5 근처.
+skill_adaln_gain: 0.5
 # ── Run naming ────────────────────────────────────────────────
-exp: "regress"                                      # optional suffix → ..._batch{N}_{A|B}_{exp}
+exp: "regress_a05"                                      # optional suffix → ..._batch{N}_{A|B}_{exp}
 
 # ── Freeze toggles (all parts otherwise trained) ──────────────
 freeze_cond_encoder: false                    # [A only] reuse the Stage-1 current-obs encoding
@@ -45,7 +50,11 @@ freeze_action_expert: false
 batch_size: 16
 num_workers: 4
 num_gpus: 1
-lr_base: 2.5e-05                             # effective lr = lr_base * num_gpus
+lr_base: 2.5e-05                             # effective base lr = lr_base * num_gpus (VLM + vision use this)
+# 차등 LR (× base): warm-start된 action expert / cond side만 더 빠르게 적응시켜 보는 실험용.
+# VLM·비전 백본은 base 유지(망각 방지). 1.0 = 기존과 동일. (warm-start라 너무 키우면 stage1 지식 손상 → 2~3배 권장)
+expert_lr_scale: 1.0                         # action expert(gemma_expert + action/time proj) LR 배수
+cond_lr_scale: 1.0                           # cond side(cond_encoder + image/state/progress/skill proj) LR 배수
 steps: 100000
 save_freq: 2500
 

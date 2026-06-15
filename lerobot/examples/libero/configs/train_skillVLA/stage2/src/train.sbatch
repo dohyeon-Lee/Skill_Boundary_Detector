@@ -88,11 +88,15 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.freeze_cond_encoder="${FREEZE_COND_ENCODER}" \
     --policy.freeze_action_expert="${FREEZE_ACTION_EXPERT}" \
     --policy.freeze_expert_vision="${FREEZE_EXPERT_VISION}" \
+    --policy.freeze_skill_adaln="${FREEZE_SKILL_ADALN}" \
     --batch_size="${BATCH_SIZE}" \
     --num_workers="${NUM_WORKERS}" \
     --steps="${STEPS}" \
     --save_freq="${SAVE_FREQ}" \
     --policy.optimizer_lr="${LR}" \
+    --policy.expert_lr_scale="${EXPERT_LR_SCALE}" \
+    --policy.cond_lr_scale="${COND_LR_SCALE}" \
+    --policy.skill_adaln_gain="${SKILL_ADALN_GAIN}" \
     --wandb.enable="${WANDB_ENABLE}" \
     --wandb.project="${WANDB_PROJECT}" \
     ${RESUME_ARGS[@]+"${RESUME_ARGS[@]}"}
