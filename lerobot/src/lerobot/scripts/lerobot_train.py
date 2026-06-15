@@ -275,6 +275,16 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
         processor_kwargs["preprocessor_overrides"]["rename_observations_processor"] = {
             "rename_map": cfg.rename_map
         }
+        if cfg.policy.type == "skill_vla":
+            # SkillVLA's state-tokenizer step needs observation.state q01/q99 to discretize the
+            # skill-start state. These aren't carried by the saved processor, so (like the normalizer
+            # above) re-inject them from the dataset on resume — otherwise the step gets None and
+            # crashes. Salvages pre-fix checkpoints too (whose saved step config is empty).
+            state_stats = dataset.meta.stats.get("observation.state", {}) or {}
+            processor_kwargs["preprocessor_overrides"]["skill_vla_prepare_state_tokenizer_processor_step"] = {
+                "state_q01": state_stats.get("q01"),
+                "state_q99": state_stats.get("q99"),
+            }
         postprocessor_kwargs["postprocessor_overrides"] = {
             "unnormalizer_processor": {
                 "stats": dataset.meta.stats,
