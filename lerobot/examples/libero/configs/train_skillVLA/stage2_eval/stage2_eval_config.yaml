@@ -11,9 +11,10 @@
 # ── Which trained model to evaluate ──
 # The Stage-2 run folder name, exactly as created by training ({source}_{run_tag}_batch{N}_{A|B}[_exp]):
 # model_dir: libero_90_full_full_FSQ555_dino8_prev_200_batch8_A
+# model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_freeze_012500_unfreeze_regress
 model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_015000_unfreeze_regress
 
-checkpoint: "032500"            # "last" or a step number (e.g. 100000)
+checkpoint: "050000"            # "last" or a step number (e.g. 100000)
 
 # ── Eval rollout ──
 target_task: libero_90    # LIBERO suite for the sim env
@@ -38,7 +39,7 @@ skill_end_threshold: 0.5 #0.5
 inference_skill_max_length: 200    # force a skill switch after this many steps (0 = off)
 
 # ── Oracle eval (isolate the action expert from the VLM's skill prediction) ──
-use_gt_skill: true        # true = teacher-force the dataset's GT skill sequence (per task) into the
+use_gt_skill: false        # true = teacher-force the dataset's GT skill sequence (per task) into the
                           # cond-encoder; the VLM still encodes the start obs but its predicted code
                           # is bypassed. GT skills come from the run's skillvla dataset (auto-derived).
 skill_advance_mode: terminator    # how a skill ends: "terminator" (FSQ signal) or "gt" (GT demo

@@ -147,6 +147,16 @@ class SkillVLAPrepareStateTokenizerProcessorStep(ProcessorStep):
     state_q01: object = None  # observation.state q01/q99 (np arrays) for normalizing skill_start_state
     state_q99: object = None
 
+    def get_config(self) -> dict[str, Any]:
+        # Persist q01/q99 (as lists) so a saved checkpoint is self-contained: on resume the step is
+        # reconstructed WITH its quantiles instead of None (mirrors how the normalizer step persists
+        # its stats). Without this the saved config is empty and resume crashes in _normalize_start_state.
+        cfg: dict[str, Any] = {"max_state_dim": self.max_state_dim, "task_key": self.task_key}
+        for name, val in (("state_q01", self.state_q01), ("state_q99", self.state_q99)):
+            if val is not None:
+                cfg[name] = np.asarray(val, dtype=np.float32).reshape(-1).tolist()
+        return cfg
+
     def _normalize_start_state(self, state_np: np.ndarray) -> np.ndarray:
         if self.state_q01 is None or self.state_q99 is None:
             raise ValueError(
