@@ -29,9 +29,9 @@ stage1_checkpoint: "010000"
 skill_loss_weight: 0.1                # total = BC + λ·skill_CE (λ<1 keeps BC dominant)
 # VLM↔cond attention: false=cond가 VLM 이미지 토큰만 봄(언어 제외, visual grounding 강제).
 # true=cond가 VLM 언어 토큰도 attend(ablation). skill-query는 둘 다 항상 제외.
-cond_attend_language: false
+cond_attend_language: true
 # ── Run naming ────────────────────────────────────────────────
-exp: "regress_ae"                                      # optional suffix → ..._batch{N}_{A|B}_{exp}
+exp: "regress_ae_langO"                                      # optional suffix → ..._batch{N}_{A|B}_{exp}
 
 # ── Freeze toggles (all parts otherwise trained) ──────────────
 freeze_cond_encoder: false                    # [A only] reuse the Stage-1 current-obs encoding
