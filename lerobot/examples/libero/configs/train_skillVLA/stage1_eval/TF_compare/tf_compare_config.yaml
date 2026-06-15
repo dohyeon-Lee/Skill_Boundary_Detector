@@ -61,6 +61,30 @@ targets:
   555wow_ada_dinoB_c25_005k_un:
     model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_unfreeze_batch128_A_adaLN_c25
     checkpoint: "005000"
+  555wow_ada_dinoB_c25_010k_un:
+    model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_unfreeze_batch128_A_adaLN_c25
+    checkpoint: "010000"
+  555wow_ada_dinoB_c25_015k_un:
+    model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_unfreeze_batch128_A_adaLN_c25
+    checkpoint: "015000"
+  555wow_ada_dinoB_c25_020k_un:
+    model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_unfreeze_batch128_A_adaLN_c25
+    checkpoint: "020000"
+  555wow_ada_dinoL_c25_005k:
+    model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_freeze_batch128_A_adaLN_dinoL_c25
+    checkpoint: "005000"
+  555wow_ada_dinoL_c25_010k:
+    model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_freeze_batch128_A_adaLN_dinoL_c25
+    checkpoint: "010000"
+  555wow_ada_dinoL_c25_015k:
+    model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_freeze_batch128_A_adaLN_dinoL_c25
+    checkpoint: "015000"
+  555wow_ada_siglip_c25_005k:
+    model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_freeze_batch128_A_adaLN_c25
+    checkpoint: "005000"
+  555wow_ada_siglip_c25_010k:
+    model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_freeze_batch128_A_adaLN_c25
+    checkpoint: "010000"
   # action-stream (ae) — skill+progress as action-expert tokens (cached results)
   865wow200_dinoB_c25_005k_ae:
     model_dir: libero_90_full_full_FSQ865_dino8_wow_200_dino_freeze_batch128_A_ae_c25
