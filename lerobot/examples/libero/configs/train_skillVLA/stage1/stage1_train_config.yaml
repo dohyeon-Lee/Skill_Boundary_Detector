@@ -39,9 +39,9 @@ vision_backbone: siglip           # dino | siglip
 # DINO backbone
 dino_model_path: models/dinov3-vitb16   # project_root 기준 상대경로. ViT-B/16 86M (vits16=21M, vitl16=300M)
 dino_lr: null                   # null = same LR as the rest; set a float to use a separate DINO LR
-freeze_dino: false
+freeze_dino: true
 # SigLIP backbone (used when vision_backbone: siglip)
-freeze_siglip: false             # default true: reuse pi05's robot-adapted features (only image_proj trains)
+freeze_siglip: true             # default true: reuse pi05's robot-adapted features (only image_proj trains)
 siglip_lr: null                 # separate LR when unfrozen; null = same as the rest
 siglip_image_size: 224          # patch 14 → 16×16 = 256 tokens at 224
 
