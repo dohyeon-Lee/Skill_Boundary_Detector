@@ -214,17 +214,27 @@ class SkillExpertPytorch(nn.Module):
         level_ids = torch.div(idx, self._fsq_strides[None, :], rounding_mode="floor") % self._fsq_levels[None, :]
         return (level_ids.float() - self._fsq_half[None, :]) / self._fsq_half[None, :]
 
+    @property
+    def _skill_in_cond(self) -> bool:
+        """Skill+progress enter the COND-encoder tokens: fused always; joint when skill_inject=cond_token."""
+        return self.expert_arch == "fused" or getattr(self.config, "skill_inject", "action_prefix") == "cond_token"
+
+    @property
+    def _skill_in_prefix(self) -> bool:
+        """Skill+progress enter the ACTION stream as a prefix: joint + skill_inject=action_prefix only."""
+        return self.expert_arch == "joint" and getattr(self.config, "skill_inject", "action_prefix") == "action_prefix"
+
     def _cond_tokens(self, images: list[Tensor], state: Tensor, skill_code: Tensor,
                      skill_progress: Tensor) -> Tensor:
         """Conditioning tokens → (B, M, width).
         fused: [img1, img2, state, skill, progress] (skill/progress as cond tokens).
-        joint: [img1, img2, state] — scene only; skill+progress are prepended to the ACTION stream
-               instead (see _action_prefix) so they sit among the few action tokens (~1:K) rather
-               than diluted among the ~400 image tokens (~1:400)."""
+        joint: scene-only [img1, img2, state] when skill_inject="action_prefix" (skill+progress go on
+               the ACTION stream, ~1:K — see _action_prefix); or [img1, img2, state, skill, progress]
+               when skill_inject="cond_token" (baseline/prev: skill diluted ~1:400 among image tokens)."""
         tokens = [self.image_proj(self._image_features(image).to(self._wdtype)) for image in images]
         state = pad_vector(state.to(dtype=torch.float32), self.config.max_state_dim)
         tokens.append(self.state_proj(state.to(self._wdtype)).unsqueeze(1))
-        if self.expert_arch == "fused":
+        if self._skill_in_cond:
             tokens.append(self.skill_proj(self._code_to_zq(skill_code).to(self._wdtype)).unsqueeze(1))
             prog = skill_progress.view(-1, 1).float().to(state.device)
             tokens.append(self.progress_proj(prog.to(self._wdtype)).unsqueeze(1))
@@ -336,7 +346,7 @@ class SkillExpertPytorch(nn.Module):
     ) -> Tensor:
         """Flow-matching loss. Returns per-(b, t, dim) MSE: (B, chunk_size, max_action_dim)."""
         cond = self._cond_tokens(images, state, skill_code, skill_progress)
-        action_prefix = self._action_prefix(skill_code, skill_progress) if self.expert_arch == "joint" else None
+        action_prefix = self._action_prefix(skill_code, skill_progress) if self._skill_in_prefix else None
         if time is None:
             time = self.sample_time(actions.shape[0], actions.device)
         source = self.sample_noise(actions.shape, actions.device) if noise is None else noise
@@ -367,7 +377,7 @@ class SkillExpertPytorch(nn.Module):
         if self.expert_arch == "joint":
             # cond⊥action, so the cond stream is identical every step → encode it once, cache its
             # per-layer K/V, and run only the action stream against the cache each step (PI05-style).
-            action_prefix = self._action_prefix(skill_code, skill_progress)  # [skill, progress], constant
+            action_prefix = self._action_prefix(skill_code, skill_progress) if self._skill_in_prefix else None
             return self._sample_joint_cached(cond, noise, num_steps, action_prefix)
         # fused: cond and action share one self-attention stream, so it must be recomputed each step.
         dt = -1.0 / num_steps

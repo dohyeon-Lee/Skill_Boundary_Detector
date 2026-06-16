@@ -35,6 +35,11 @@ class SkillExpertConfig(PI05Config):
               reflects this so fused/joint checkpoints don't collide."""
     cond_encoder_variant: str | None = None
     """Gemma variant for the joint cond-encoder. None → same as action_expert_variant."""
+    skill_inject: str = "action_prefix"
+    """[joint only] Where the skill (z_q) + progress tokens enter (fused ALWAYS uses cond tokens):
+    "action_prefix" → prepended to the ACTION stream (~1:K among action tokens; current default);
+    "cond_token"    → appended to the COND-encoder tokens (~1:400, diluted among image tokens; the
+                      "prev"/baseline recipe). Both feed the same Linear(D→width) on z_q (vector input)."""
 
     # ── Vision encoder (shared across the two cameras) ──
     vision_backbone: str = "dino"

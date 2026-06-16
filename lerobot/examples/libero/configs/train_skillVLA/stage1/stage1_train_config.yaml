@@ -22,6 +22,10 @@ run_tag: FSQ555_dino8_wow_imgX_500   # sub-folder under {skillvla_dataset_root}/
 #         is fresh. fused/joint write to different output folders, so both can be A/B-compared.
 expert_arch: joint              # fused | joint   (run-name tag: joint→A, fused→B)
 cond_encoder_variant:          # blank = same gemma variant as the action expert (recommended)
+# [joint 전용] skill(z_q)+progress 주입 위치 — fused는 항상 cond 토큰:
+#   action_prefix = action 스트림 prefix (현행 ae, run-name 태그 _ae)
+#   cond_token    = cond-encoder 토큰으로 (prev/baseline 재현, run-name 태그 _cond)
+skill_inject: cond_token     # action_prefix | cond_token
 
 # ── Model init ──
 # init_from_pi05 is fixed true (always warm-start from pi_base) in src/stage1_train_config.py.
@@ -37,7 +41,7 @@ dino_model_path: /scratch/mdorazi/Skill_Boundary_Detector/models/dinov3-vitb16  
 dino_lr: null                   # null = same LR as the rest; set a float to use a separate DINO LR
 freeze_dino: true
 # SigLIP backbone (used when vision_backbone: siglip)
-freeze_siglip: true             # default true: reuse pi05's robot-adapted features (only image_proj trains)
+freeze_siglip: false             # default true: reuse pi05's robot-adapted features (only image_proj trains)
 siglip_lr: null                 # separate LR when unfrozen; null = same as the rest
 siglip_image_size: 224          # patch 14 → 16×16 = 256 tokens at 224
 
@@ -62,9 +66,9 @@ num_workers: 8
 num_gpus: 1
 lr_base: 2.5e-05                # effective LR = lr_base * num_gpus
 steps: 100000
-save_freq: 2500
+save_freq: 5000
 
-exp: "ae"       # freeze_DINO | freeze_siglip                   # optional run-name suffix → {source}_{run_tag}_batch{N}_{A|B}_{exp}
+exp: ""         # optional EXTRA run-name suffix (variant tag _ae/_cond is now auto from skill_inject)
 
 # ── wandb ──
 wandb_enable: true

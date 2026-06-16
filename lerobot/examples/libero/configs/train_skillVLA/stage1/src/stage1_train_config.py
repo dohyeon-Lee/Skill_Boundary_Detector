@@ -54,6 +54,10 @@ def build_settings(cfg: dict) -> dict:
     cond_encoder_variant = str(get_value(cfg, "cond_encoder_variant", "")).strip()
     if cond_encoder_variant.lower() in ("none", "null"):  # blank yaml → omit (use action expert's variant)
         cond_encoder_variant = ""
+    # [joint only] where skill+progress enter: "action_prefix" (ae) | "cond_token" (prev/baseline).
+    skill_inject = str(get_value(cfg, "skill_inject", "action_prefix")).strip() or "action_prefix"
+    if skill_inject not in ("action_prefix", "cond_token"):
+        raise ValueError(f"skill_inject must be 'action_prefix' or 'cond_token', got {skill_inject!r}")
 
     init_from_pi05 = as_bool(get_value(cfg, "init_from_pi05", True))
     pi_base = str(get_value(cfg, "pi_base", "lerobot/pi05_base")) if init_from_pi05 else ""
@@ -74,6 +78,8 @@ def build_settings(cfg: dict) -> dict:
     # run-name arch tag: joint→A, fused→B. init_from_pi05 is fixed true → not in the name.
     arch_tag = {"joint": "A", "fused": "B"}.get(expert_arch, expert_arch)
     run_name = f"{source_dataset}_{run_tag}_{vis_tag}_batch{batch_size}_{arch_tag}"
+    if expert_arch == "joint":  # skill-injection variant (fused always uses cond tokens → no tag)
+        run_name = f"{run_name}_{'ae' if skill_inject == 'action_prefix' else 'cond'}"
     if exp:
         run_name = f"{run_name}_{exp}"
     run_name = f"{run_name}_c{chunk_size}"  # chunk horizon always trails the run name
@@ -103,6 +109,7 @@ def build_settings(cfg: dict) -> dict:
         # conditioning architecture
         "expert_arch": expert_arch,               # "fused" | "joint"
         "cond_encoder_variant": cond_encoder_variant,  # "" → same as action_expert_variant
+        "skill_inject": skill_inject,             # [joint] "action_prefix" (ae) | "cond_token" (prev)
         # model init
         "pi_base": pi_base,                       # "" → train the expert from scratch
         # vision encoder: "dino" or "siglip" (siglip warm-starts from pi_base's vision_tower)
