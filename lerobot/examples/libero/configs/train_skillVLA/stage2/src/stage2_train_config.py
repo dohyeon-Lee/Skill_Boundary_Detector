@@ -18,7 +18,7 @@ from pathlib import Path
 
 _HERE = Path(__file__).resolve()
 sys.path.insert(0, str(_HERE.parent.parent.parent.parent / "train_skills" / "src"))
-from train_skills_config import as_bool, as_levels, as_list, get_value, load_config, print_shell  # noqa: E402
+from train_skills_config import as_bool, as_levels, as_list, get_value, load_config, print_shell, resolve_path  # noqa: E402
 
 DEFAULT_CONFIG_PATH = _HERE.parent.parent / "stage2_train_config.yaml"
 
@@ -88,7 +88,7 @@ def build_settings(cfg: dict) -> dict:
         "fsq_ckpt": run_dir / "FSQ.pt",            # eval-time terminator (recorded in the checkpoint)
         "repo_id": f"dohyeon/{source_dataset}",
         # warm-start: pi05 → VLM, Stage-1 skill_expert → action expert / cond side
-        "pi_base": str(get_value(cfg, "pi_base", "lerobot/pi05_base")),
+        "pi_base": resolve_path(project_root, get_value(cfg, "pi_base", "models/pi05_base")),
         "stage1_run_name": stage1_run_name,
         "stage1_checkpoint": stage1_checkpoint,
         "stage1_checkpoint_path": stage1_ckpt,

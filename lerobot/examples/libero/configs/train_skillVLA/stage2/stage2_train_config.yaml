@@ -14,7 +14,7 @@ skillvla_dataset_root: skillvla_dataset
 # outputs_root comes from configs/global_config.yaml: stage1 warm-start in {outputs_root}/skillVLA_stage1/, this stage in .../skillVLA_stage2/.
 
 # ── Warm-start (also selects the dataset: source + run_tag parsed from stage1_run_name) ──
-pi_base: /scratch/mdorazi/Skill_Boundary_Detector/models/pi05_base   # local pin (hub 2026-04 snapshot; repo id would track hub main)
+pi_base: models/pi05_base   # project_root(global_config) 기준 상대경로 → 서버마다 자동. 절대경로도 허용.
 # Stage-1 skill_expert run folder under {outputs_root}/skillVLA_stage1/ whose
 # checkpoints/{stage1_checkpoint}/pretrained_model warm-starts the action expert + cond side. Its
 # config supplies expert_arch (A/B) / vision_backbone / skill_vocab — no need to repeat them here.

@@ -4,7 +4,7 @@
 
 # project_root and dataset_root come from configs/global_config.yaml.
 pi05_outputs_root: pi05_PT      # subdir under {project_root}/{outputs_root} (outputs_root from global_config.yaml)
-pi_base: /scratch/mdorazi/Skill_Boundary_Detector/models/pi05_base   # local pin (hub 2026-04 snapshot; repo id would track hub main)
+pi_base: models/pi05_base   # project_root(global_config) 기준 상대경로 → 서버마다 자동. 절대경로도 허용.
 
 # ── pi05 PT ───────────────────────────────────────────────────
 pt_dataset: libero_90_full_full

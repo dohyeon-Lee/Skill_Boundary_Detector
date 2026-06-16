@@ -17,7 +17,7 @@ from pathlib import Path
 
 _HERE = Path(__file__).resolve()
 sys.path.insert(0, str(_HERE.parent.parent.parent.parent / "train_skills" / "src"))
-from train_skills_config import as_bool, as_levels, as_list, get_value, load_config, print_shell  # noqa: E402
+from train_skills_config import as_bool, as_levels, as_list, get_value, load_config, print_shell, resolve_path  # noqa: E402
 
 DEFAULT_CONFIG_PATH = _HERE.parent.parent / "stage1_train_config.yaml"
 
@@ -56,7 +56,7 @@ def build_settings(cfg: dict) -> dict:
         cond_encoder_variant = ""
 
     init_from_pi05 = as_bool(get_value(cfg, "init_from_pi05", True))
-    pi_base = str(get_value(cfg, "pi_base", "lerobot/pi05_base")) if init_from_pi05 else ""
+    pi_base = resolve_path(project_root, get_value(cfg, "pi_base", "models/pi05_base")) if init_from_pi05 else ""
 
     dino_lr = get_value(cfg, "dino_lr", None)
     dino_lr_str = "" if dino_lr in (None, "", "null") else str(dino_lr)
@@ -107,7 +107,7 @@ def build_settings(cfg: dict) -> dict:
         "pi_base": pi_base,                       # "" → train the expert from scratch
         # vision encoder: "dino" or "siglip" (siglip warm-starts from pi_base's vision_tower)
         "vision_backbone": str(get_value(cfg, "vision_backbone", "dino")),
-        "dino_model_path": str(get_value(cfg, "dino_model_path", "/data2/dohyeon/SBD/models/dinov3-vits16")),
+        "dino_model_path": resolve_path(project_root, get_value(cfg, "dino_model_path", "models/dinov3-vits16")),
         "dino_lr": dino_lr_str,                   # "" → same LR as the rest
         "freeze_dino": as_bool(get_value(cfg, "freeze_dino", False)),
         "freeze_siglip": as_bool(get_value(cfg, "freeze_siglip", True)),

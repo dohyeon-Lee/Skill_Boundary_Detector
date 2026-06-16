@@ -25,7 +25,7 @@ cond_encoder_variant:          # blank = same gemma variant as the action expert
 
 # ── Model init ──
 # init_from_pi05 is fixed true (always warm-start from pi_base) in src/stage1_train_config.py.
-pi_base: /scratch/mdorazi/Skill_Boundary_Detector/models/pi05_base   # local pin (hub 2026-04 snapshot; repo id would track hub main)
+pi_base: models/pi05_base   # project_root(global_config) 기준 상대경로 → 서버마다 자동. 절대경로도 허용.
 
 # ── Vision encoder (shared across the 2 cameras) ──
 # dino   = trainable DINOv3 (own weights)
@@ -33,7 +33,7 @@ pi_base: /scratch/mdorazi/Skill_Boundary_Detector/models/pi05_base   # local pin
 #          params separate from the Stage-2 VLM. Needs init_from_pi05: true for the warm-start.
 vision_backbone: siglip           # dino | siglip
 # DINO backbone
-dino_model_path: /scratch/mdorazi/Skill_Boundary_Detector/models/dinov3-vitl16   # ViT-B/16 86M (vits16=21M, vitl16=300M)
+dino_model_path: models/dinov3-vitl16   # project_root 기준 상대경로 (vits16=21M, vitb16=86M, vitl16=300M)
 dino_lr: null                   # null = same LR as the rest; set a float to use a separate DINO LR
 freeze_dino: true
 # SigLIP backbone (used when vision_backbone: siglip)
