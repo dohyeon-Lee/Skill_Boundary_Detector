@@ -25,7 +25,7 @@ cond_encoder_variant:          # blank = same gemma variant as the action expert
 # [joint 전용] skill(z_q)+progress 주입 위치 — fused는 항상 cond 토큰:
 #   action_prefix = action 스트림 prefix (현행 ae, run-name 태그 _ae)
 #   cond_token    = cond-encoder 토큰으로 (prev/baseline 재현, run-name 태그 _cond)
-skill_inject: cond_token     # action_prefix | cond_token
+skill_inject: action_prefix     # action_prefix | cond_token
 
 # ── Model init ──
 # init_from_pi05 is fixed true (always warm-start from pi_base) in src/stage1_train_config.py.
@@ -39,7 +39,7 @@ vision_backbone: siglip           # dino | siglip
 # DINO backbone
 dino_model_path: models/dinov3-vitb16   # project_root 기준 상대경로. ViT-B/16 86M (vits16=21M, vitl16=300M)
 dino_lr: null                   # null = same LR as the rest; set a float to use a separate DINO LR
-freeze_dino: true
+freeze_dino: false
 # SigLIP backbone (used when vision_backbone: siglip)
 freeze_siglip: false             # default true: reuse pi05's robot-adapted features (only image_proj trains)
 siglip_lr: null                 # separate LR when unfrozen; null = same as the rest
@@ -61,7 +61,7 @@ n_action_steps:                 # blank = chunk_size (must be <= chunk_size)
 progress_jitter: 0.1
 
 # ── Optimization ──
-batch_size: 128
+batch_size: 256
 num_workers: 8
 num_gpus: 1
 lr_base: 2.5e-05                # effective LR = lr_base * num_gpus
