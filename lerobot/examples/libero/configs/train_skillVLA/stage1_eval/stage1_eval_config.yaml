@@ -30,7 +30,7 @@ eval_exp: ""                    # optional free-form tag for the eval output fol
 
 # FSQ TERMINATOR's raw-image DINO only. The policy's own vision backbone is NOT set here —
 # it comes from the checkpoint's saved config and must match the trained weights (vits/vitb/...).
-terminator_dino_model_path: /scratch/mdorazi/Skill_Boundary_Detector/models/dinov3-vits16
+terminator_dino_model_path: models/dinov3-vits16   # project_root 기준 상대경로 → 서버마다 자동
 
 # ── Eval rollout ──
 target_task: libero_90

@@ -16,7 +16,7 @@ from pathlib import Path
 
 _HERE = Path(__file__).resolve()
 sys.path.insert(0, str(_HERE.parent.parent.parent.parent / "train_skills" / "src"))
-from train_skills_config import as_bool, as_list, get_value, load_config, print_shell  # noqa: E402
+from train_skills_config import as_bool, as_list, get_value, load_config, print_shell, resolve_path  # noqa: E402
 
 DEFAULT_CONFIG_PATH = _HERE.parent.parent / "stage1_eval_config.yaml"
 
@@ -66,9 +66,8 @@ def build_settings(cfg: dict) -> dict:
         "fsq_ckpt": run_dir / "FSQ.pt",
         "skill_label_dataset_dir": run_dir / "skillvla",
         # FSQ terminator's raw-image DINO (the policy's own backbone comes from the checkpoint).
-        "terminator_dino_model_path": str(get_value(
-            cfg, "terminator_dino_model_path",
-            project_root / "models" / "dinov3-vits16")),
+        "terminator_dino_model_path": resolve_path(
+            project_root, get_value(cfg, "terminator_dino_model_path", "models/dinov3-vits16")),
         "eval_out_dir": eval_out_dir,
         # skill HTML (FSQ cube + used skills + per-skill progress + FSQ-space samples)
         "skill_html": as_bool(get_value(cfg, "skill_html", True)),

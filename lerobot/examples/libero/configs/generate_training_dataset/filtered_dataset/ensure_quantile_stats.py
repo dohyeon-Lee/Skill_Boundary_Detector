@@ -13,6 +13,7 @@
   full (true): 모든 feature를 에피소드별 비디오 디코딩 포함 전체 재계산 — 수 시간.
 
 이미 충분한 stats가 있으면 빠르게 종료; --overwrite로 강제 재계산.
+python ensure_quantile_stats.py --dataset libero_90_full_full --overwrite
 """
 
 from __future__ import annotations
@@ -62,19 +63,14 @@ def stats_sufficient(stats: dict | None, video_keys: set[str], include_videos: b
     return True
 
 
-def fast_recompute(dataset_dir: Path, video_keys: set[str], lerobot_src: Path) -> None:
-    """비-비디오 feature의 stat(quantile 포함)을 data parquet에서 계산해 stats.json에 병합.
+def fast_recompute(dataset_dir: Path, video_keys: set[str]) -> None:
+    """비-비디오 feature의 stat(quantile 포함)을 data parquet 전체에서 GLOBAL exact로 계산해 stats.json에 병합.
 
-    lerobot 생태계 표준 방식 그대로: 에피소드별 get_feature_stats(히스토그램 quantile 추정)
-    → aggregate_feature_stats(count-가중 평균). 이는 writer가 데이터셋 생성 시 쓰는 경로와
-    동일하므로 기존 데이터셋들(libero_90, libero_90_full_full)의 stats와 값이 일치한다.
-    (전역 exact quantile이 수학적으로는 더 정확하지만, 생태계 일관성을 위해 표준을 따름)"""
+    quantile은 전체 프레임을 모아 한 번에(np.quantile) 계산한다. 에피소드별로 quantile을 구해
+    count-가중 평균하는 lerobot 표준 aggregate는 각 에피소드(짧음)의 q01/q99를 평균내 전역 꼬리를
+    중심으로 끌어당기므로(= q01/q99가 좁아지는 편향) 쓰지 않는다. min/max/mean/std도 전역으로 계산
+    (정확; 표준 aggregate와도 동일 값). 비디오 feature는 건드리지 않는다(변환 시 집계값 유지)."""
     import pandas as pd
-
-    sys.path.insert(0, str(lerobot_src))
-    from lerobot.datasets.compute_stats import (  # noqa: PLC0415
-        DEFAULT_QUANTILES, aggregate_feature_stats, get_feature_stats,
-    )
 
     stats_path = dataset_dir / "meta" / "stats.json"
     stats = json.loads(stats_path.read_text()) if stats_path.exists() else {}
@@ -82,24 +78,17 @@ def fast_recompute(dataset_dir: Path, video_keys: set[str], lerobot_src: Path) -
     if not files:
         raise FileNotFoundError(f"No data parquet under {dataset_dir}")
     df = pd.concat([pd.read_parquet(p) for p in files], ignore_index=True)
-    df = df.sort_values(["episode_index", "frame_index"])
     feats = [f for f in (stats.keys() or df.columns) if f not in video_keys and f in df.columns]
 
-    per_feat_eps: dict[str, list[dict]] = {f: [] for f in feats}
-    for _, g in df.groupby("episode_index"):
-        for feat in feats:
-            col = g[feat].to_numpy()
-            # augment의 process_single_episode와 동일한 모양/호출: 벡터 (T,D) → axis=0,
-            # 스칼라 (T,) → axis=0 + keepdims (reshape 없이 그대로).
-            arr = np.stack(col) if isinstance(col[0], np.ndarray) else np.asarray(col)
-            per_feat_eps[feat].append(
-                get_feature_stats(arr, axis=0, keepdims=arr.ndim == 1, quantile_list=DEFAULT_QUANTILES)
-            )
-
     for feat in feats:
-        agg = aggregate_feature_stats(per_feat_eps[feat])
-        stats[feat] = {k: (np.asarray(v).tolist() if k != "count" else [int(np.asarray(v).reshape(-1)[0])])
-                       for k, v in agg.items()}
+        col = df[feat].to_numpy()
+        arr = (np.stack(col) if isinstance(col[0], np.ndarray) else np.asarray(col).reshape(len(col), -1)).astype(np.float64)
+        block = {"min": arr.min(0), "max": arr.max(0), "mean": arr.mean(0), "std": arr.std(0),
+                 "count": np.array([arr.shape[0]])}
+        for key, q in zip(QUANTILE_KEYS, QUANTILE_Q):
+            block[key] = np.quantile(arr, q, axis=0)
+        stats[feat] = {k: ([int(np.asarray(v).reshape(-1)[0])] if k == "count"
+                           else [float(x) for x in np.asarray(v).ravel()]) for k, v in block.items()}
     stats_path.write_text(json.dumps(stats, indent=4))
 
 
@@ -120,8 +109,8 @@ def main() -> None:
         return
 
     if not include_videos:
-        print(f"Computing quantile stats (fast: non-video features only): {dataset_dir}")
-        fast_recompute(dataset_dir, vkeys, project_root(cfg) / "lerobot" / "src")
+        print(f"Computing GLOBAL exact quantile stats (fast: non-video features only): {dataset_dir}")
+        fast_recompute(dataset_dir, vkeys)
         print(f"DONE → {stats_path} (video features keep converted min/max/mean/std)")
         return
 

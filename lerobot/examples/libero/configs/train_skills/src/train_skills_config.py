@@ -100,6 +100,19 @@ def get_value(cfg: dict[str, Any], key: str, default: Any = None, env: str | Non
     return cfg.get(key, default)
 
 
+def resolve_path(project_root: "Path | str", value: Any, default: str = "") -> str:
+    """Resolve a config path against project_root for cross-server portability.
+
+    Absolute path → used as-is; relative/bare name → joined under project_root; blank → "".
+    Lets configs store e.g. ``models/pi05_base`` (relative) and work on any machine — project_root
+    comes from global_config — instead of hardcoding one server's absolute path."""
+    s = str(value if value not in (None, "", "null") else default).strip()
+    if not s:
+        return ""
+    p = Path(s).expanduser()
+    return str(p if p.is_absolute() else (Path(project_root) / p))
+
+
 def as_bool(value: Any) -> bool:
     if isinstance(value, bool):
         return value

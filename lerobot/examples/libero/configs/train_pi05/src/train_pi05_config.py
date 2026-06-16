@@ -64,6 +64,16 @@ def get_value(cfg: dict[str, Any], key: str, default: Any = None, *, env: str | 
     return cfg.get(key, default)
 
 
+def resolve_path(project_root: "Path | str", value: Any, default: str = "") -> str:
+    """Resolve a config path against project_root: absolute → as-is; relative → under project_root;
+    blank → "". Keeps model paths portable across servers (project_root from global_config)."""
+    s = str(value if value not in (None, "", "null") else default).strip()
+    if not s:
+        return ""
+    p = Path(s).expanduser()
+    return str(p if p.is_absolute() else (Path(project_root) / p))
+
+
 def get_nonempty(cfg: dict[str, Any], key: str, default: Any = None, *, env: str | None = None) -> Any:
     value = get_value(cfg, key, default, env=env)
     if value is None:
@@ -151,7 +161,7 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         "train_bin": project_root / ".venv" / "bin" / "lerobot-train",
         "eval_bin": project_root / ".venv" / "bin" / "lerobot-eval",
         "pi05_outputs_root": pi05_outputs_root,
-        "pi_base": str(get_value(cfg, "pi_base", "lerobot/pi05_base")),
+        "pi_base": resolve_path(project_root, get_value(cfg, "pi_base", "models/pi05_base")),
         # PT
         "pt_dataset": pt_dataset,
         "pt_dataset_root": pt_dataset_root,

@@ -8,7 +8,7 @@ skillvla_dataset_root: skillvla_dataset  # .../{skillvla_dataset_root}/{source_d
 
 # ── Which skillvla dataset to train on (built by configs/train_skillVLA/build_data) ──
 source_dataset: libero_90_full_full
-# run_tag: FSQ865_dino8_wow_200   # sub-folder under {skillvla_dataset_root}/{source}/
+# run_tag: FSQ555_dino8_prev_200   # sub-folder under {skillvla_dataset_root}/{source}/
 run_tag: FSQ555_dino8_wow_imgX_500   # sub-folder under {skillvla_dataset_root}/{source}/
 
 # outputs_root comes from configs/global_config.yaml: checkpoints under {project_root}/{outputs_root}/skillVLA_stage1/.
@@ -29,7 +29,7 @@ skill_inject: cond_token     # action_prefix | cond_token
 
 # ── Model init ──
 # init_from_pi05 is fixed true (always warm-start from pi_base) in src/stage1_train_config.py.
-pi_base: /scratch/mdorazi/Skill_Boundary_Detector/models/pi05_base   # local pin (hub 2026-04 snapshot; repo id would track hub main)
+pi_base: models/pi05_base   # project_root(global_config) 기준 상대경로 → 서버마다 자동. 절대경로도 허용.
 
 # ── Vision encoder (shared across the 2 cameras) ──
 # dino   = trainable DINOv3 (own weights)
@@ -37,7 +37,7 @@ pi_base: /scratch/mdorazi/Skill_Boundary_Detector/models/pi05_base   # local pin
 #          params separate from the Stage-2 VLM. Needs init_from_pi05: true for the warm-start.
 vision_backbone: siglip           # dino | siglip
 # DINO backbone
-dino_model_path: /scratch/mdorazi/Skill_Boundary_Detector/models/dinov3-vitb16   # ViT-B/16 86M (vits16=21M, vitl16=300M)
+dino_model_path: models/dinov3-vitb16   # project_root 기준 상대경로. ViT-B/16 86M (vits16=21M, vitl16=300M)
 dino_lr: null                   # null = same LR as the rest; set a float to use a separate DINO LR
 freeze_dino: true
 # SigLIP backbone (used when vision_backbone: siglip)
