@@ -20,8 +20,8 @@ pi_base: models/pi05_base   # project_root(global_config) 기준 상대경로 �
 # config supplies expert_arch (A/B) / vision_backbone / skill_vocab — no need to repeat them here.
 # The skillvla dataset to train on is the one this Stage-1 trained on (parsed from this name).
 
-stage1_run_name: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_freeze_batch128_A_ae_c25
-stage1_checkpoint: "010000"
+stage1_run_name: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_freeze_batch256_A_ae_c25
+stage1_checkpoint: "005000"
 # stage1_run_name: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_freeze_batch128_A_ae_c25
 # stage1_checkpoint: "010000"     # (ae siglip stage1 체크포인트 존재 시) "last" 또는 스텝번호로 핀
 
@@ -31,7 +31,7 @@ skill_loss_weight: 0.1                # total = BC + λ·skill_CE (λ<1 keeps BC
 # true=cond가 VLM 언어 토큰도 attend(ablation). skill-query는 둘 다 항상 제외.
 cond_attend_language: false
 # ── Run naming ────────────────────────────────────────────────
-exp: "regress_ae"                                      # optional suffix → ..._batch{N}_{A|B}_{exp}
+exp: "ae"                                      # optional suffix → ..._batch{N}_{A|B}_{exp}
 
 # ── Freeze toggles (all parts otherwise trained) ──────────────
 freeze_cond_encoder: false                    # [A only] reuse the Stage-1 current-obs encoding
@@ -53,7 +53,7 @@ lr_base: 2.5e-05                             # effective base lr = lr_base * num
 expert_lr_scale: 1.0                         # action expert(gemma_expert + action/time proj) LR 배수
 cond_lr_scale: 1.0                           # cond side(cond_encoder + image/state proj) LR 배수
 steps: 100000
-save_freq: 2500
+save_freq: 5000
 
 
 # ── wandb ─────────────────────────────────────────────────────
