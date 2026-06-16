@@ -23,8 +23,8 @@ skillvla_dataset_root: skillvla_dataset  # .../{skillvla_dataset_root}/{source_d
 # ── Which trained Stage-1 model + which FSQ/skills (same {run_dir} it trained on) ──
 # model_dir alone identifies the run: source_dataset + run_tag (which skillvla dataset folder)
 # are both parsed from it ({source}_FSQ..._dino..._batch{N}_{A|B}).
-model_dir: libero_90_full_full_FSQ865_dino8_wow_imgX_500_dino_freeze_batch128_A_adaLN_c25   # trained S1 folder under outputs/skillVLA_stage1/ (joint=A, fused=B)
-checkpoint: "015000"            # "last" or a step number
+model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_freeze_batch256_A_ae_c25   # trained S1 folder under outputs/skillVLA_stage1/ (joint=A, fused=B)
+checkpoint: "005000"            # "last" or a step number
 # Output folder = outputs/{model_dir}_{checkpoint}_adv-{skill_advance_mode}[_{eval_exp}]
 eval_exp: ""                    # optional free-form tag for the eval output folder (e.g. ablation name)
 
@@ -45,7 +45,7 @@ max_parallel_tasks: 1
 #   terminator = FSQ terminator decides each transition (uses skill_end_mode/threshold below)
 #   gt         = advance by each skill's GT demo duration (ideal timing; isolates the action
 #                expert from terminator errors). Terminator still runs → its curves still recorded.
-skill_advance_mode: terminator    # terminator | gt
+skill_advance_mode: gt    # terminator | gt
 skill_end_mode: termination       # "termination" (term prob >= thr) | "progress" (progress >= thr)
 skill_end_threshold: 0.5          # threshold on the chosen signal (termination~0.5, progress~0.9)
 inference_skill_max_length: 200   # force-advance skill after N steps (0 = off; terminator mode)
