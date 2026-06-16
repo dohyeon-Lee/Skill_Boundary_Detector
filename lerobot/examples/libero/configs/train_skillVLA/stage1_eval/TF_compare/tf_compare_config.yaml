@@ -92,6 +92,15 @@ targets:
   555wow_imgX_500_dinoB_c25_005k_ae:
     model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_freeze_batch128_A_ae_c25
     checkpoint: "005000"
+  newdata_555_dino_freeze_c25_005k_adaLN:
+    model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_freeze_batch256_A_adaLN_c25
+    checkpoint: "005000"
+  newdata_555_dino_freeze_c10_005k_adaLN:
+    model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_freeze_batch256_A_adaLN_c10
+    checkpoint: "005000"
+  newdata_555_dino_freeze_c25_005k_ae:
+    model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_freeze_batch256_A_ae_c25
+    checkpoint: "005000"
   # 555wow_ada_dinoB_c25_05_un:
   #   model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_unfreeze_batch128_A_adaLN_c25
   #   checkpoint: "005000"

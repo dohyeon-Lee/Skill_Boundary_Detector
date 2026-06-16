@@ -35,7 +35,7 @@ pi_base: models/pi05_base   # project_root(global_config) 기준 상대경로 �
 # dino   = trainable DINOv3 (own weights)
 # siglip = PaliGemma/SigLIP tower, warm-started from pi_base's vision_tower (robot-adapted);
 #          params separate from the Stage-2 VLM. Needs init_from_pi05: true for the warm-start.
-vision_backbone: dino           # dino | siglip
+vision_backbone: siglip           # dino | siglip
 # DINO backbone
 dino_model_path: models/dinov3-vitb16   # project_root 기준 상대경로. ViT-B/16 86M (vits16=21M, vitl16=300M)
 dino_lr: null                   # null = same LR as the rest; set a float to use a separate DINO LR
