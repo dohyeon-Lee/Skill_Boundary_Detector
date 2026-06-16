@@ -33,11 +33,11 @@ pi_base: models/pi05_base   # project_root(global_config) 기준 상대경로 �
 #          params separate from the Stage-2 VLM. Needs init_from_pi05: true for the warm-start.
 vision_backbone: siglip           # dino | siglip
 # DINO backbone
-dino_model_path: models/dinov3-vitl16   # project_root 기준 상대경로 (vits16=21M, vitb16=86M, vitl16=300M)
+dino_model_path: models/dinov3-vitb16   # project_root 기준 상대경로 (vits16=21M, vitb16=86M, vitl16=300M)
 dino_lr: null                   # null = same LR as the rest; set a float to use a separate DINO LR
 freeze_dino: true
 # SigLIP backbone (used when vision_backbone: siglip)
-freeze_siglip: false             # default true: reuse pi05's robot-adapted features (only image_proj trains)
+freeze_siglip: true             # default true: reuse pi05's robot-adapted features (only image_proj trains)
 siglip_lr: null                 # separate LR when unfrozen; null = same as the rest
 siglip_image_size: 224          # patch 14 → 16×16 = 256 tokens at 224
 
@@ -48,7 +48,7 @@ siglip_image_size: 224          # patch 14 → 16×16 = 256 tokens at 224
 # flow-matching loss is pushed to actually use the skill (z_q) condition. The run name
 # always ends with a _c{N} tag. Weights are chunk-length agnostic, so Stage-2 can
 # warm-start from a Stage-1 checkpoint trained with a different chunk_size.
-chunk_size: 25 # 10 25 50
+chunk_size: 10 # 10 25 50
 n_action_steps:                 # blank = chunk_size (must be <= chunk_size)
 
 # ── Skill progress conditioning ──
@@ -57,12 +57,12 @@ n_action_steps:                 # blank = chunk_size (must be <= chunk_size)
 progress_jitter: 0.1
 
 # ── Optimization ──
-batch_size: 128
+batch_size: 256
 num_workers: 8
 num_gpus: 1
 lr_base: 2.5e-05                # effective LR = lr_base * num_gpus
 steps: 100000
-save_freq: 2500
+save_freq: 5000
 
 exp: "adaLN"       # freeze_DINO | freeze_siglip                   # optional run-name suffix → {source}_{run_tag}_batch{N}_{A|B}_{exp}
 
