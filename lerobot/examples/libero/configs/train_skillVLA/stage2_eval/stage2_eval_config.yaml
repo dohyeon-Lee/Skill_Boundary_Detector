@@ -13,10 +13,10 @@
 # model_dir: libero_90_full_full_FSQ555_dino8_prev_200_batch8_A
 model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_freeze_005000_unfreeze_ae
 
-checkpoint: "015000"            # "last" or a step number (e.g. 100000)
+checkpoint: "last"            # "last" or a step number (e.g. 100000)
 
 # ── Eval rollout ──
-target_task: libero_90    # LIBERO suite for the sim env
+target_task: libero_10    # LIBERO suite for the sim env
 task_ids: "[0,1,2,3,4,5,6,7,8,9]"
 n_episodes: 5             # episodes per task
 n_action_steps: 5
