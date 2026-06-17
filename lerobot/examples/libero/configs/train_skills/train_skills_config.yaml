@@ -97,7 +97,8 @@ fsq_exp: "ww_imgX"  # optional suffix for ablations, e.g. exp1 -> ..._exp1
 fsq_levels: [5, 5, 5]
 fsq_epoch: "1000"
 
-fsq_batch_size: 256 
+fsq_batch_size: 128 
+fsq_num_workers: 8             # DataLoader 워커 수 (0=메인스레드 단일 → 데이터로딩 병목). cpus_per_task 내에서.
 fsq_num_epochs: 1000
 fsq_checkpoint_every: 100
 # FSQ terminator cameras (also decides whether STAGE 2 extracts wrist tokens):
@@ -110,7 +111,7 @@ fsq_max_length: 200
 fsq_delta_loss_weight: 1.0      # action chunk reconstruction (SmoothL1)
 fsq_progress_loss_weight: 1.0   # skill progress prediction (SmoothL1)
 fsq_end_loss_weight: 1.0        # skill termination (BCE)
-fsq_end_target_sigma: 2.0       # soft end target: Gaussian bump std (frames) at the skill end;
+fsq_end_target_sigma: 1.0       # soft end target: Gaussian bump std (frames) at the skill end;
                                 # curbs termination-head val overfit. 0 = hard 1-frame spike.
 # Fixed FSQ hyperparams (lr, hidden_dim, num_layers, n_control, image_token_dim=256)
 # live as defaults in src/train_skills_config.py.

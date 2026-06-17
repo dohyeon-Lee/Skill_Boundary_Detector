@@ -123,6 +123,7 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     --epochs                  "${FSQ_NUM_EPOCHS}" \
     --lr                      "${FSQ_LR}" \
     --batch_size              "${FSQ_BATCH_SIZE}" \
+    --num_workers             "${FSQ_NUM_WORKERS}" \
     --delta_loss_weight       "${FSQ_DELTA_LOSS_WEIGHT}" \
     --progress_loss_weight    "${FSQ_PROGRESS_LOSS_WEIGHT}" \
     --end_loss_weight         "${FSQ_END_LOSS_WEIGHT}" \

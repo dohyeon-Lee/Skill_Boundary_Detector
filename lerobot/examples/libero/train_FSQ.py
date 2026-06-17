@@ -96,6 +96,7 @@ class Args:
     epochs: int = 5000
     lr: float = 3e-4
     batch_size: int = 64
+    num_workers: int = 8
     grad_clip: float = 1.0
     val_split: float = 0.1
     log_every: int = 10
@@ -332,6 +333,7 @@ def main(args: Args) -> None:
         end_target_sigma=args.end_target_sigma,
         lr=args.lr,
         batch_size=args.batch_size,
+        num_workers=args.num_workers,
         grad_clip=args.grad_clip,
         epochs=args.epochs,
         val_split=args.val_split,

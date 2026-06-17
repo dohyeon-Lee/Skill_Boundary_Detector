@@ -281,6 +281,7 @@ class SplineFSQAEConfig:
     end_threshold: float = 0.5
     lr: float = 3e-4
     batch_size: int = 64
+    num_workers: int = 8
     epochs: int = 100
     grad_clip: float = 1.0
     device: str = "cuda"
@@ -1062,10 +1063,12 @@ def train_spline_fsqae(
     train_loader = DataLoader(
         train_ds, collate_fn=collate_fsq_batch,
         batch_sampler=LengthBucketBatchSampler(train_ds.lengths, cfg.batch_size, shuffle=True),
+        num_workers=cfg.num_workers, pin_memory=True, persistent_workers=cfg.num_workers > 0,
     )
     val_loader = DataLoader(
         val_ds, collate_fn=collate_fsq_batch,
         batch_sampler=LengthBucketBatchSampler(val_ds.lengths, cfg.batch_size, shuffle=False),
+        num_workers=cfg.num_workers, pin_memory=True, persistent_workers=cfg.num_workers > 0,
     )
 
     model = SplineFSQAE(
@@ -1133,14 +1136,15 @@ def train_spline_fsqae(
         mask      = batch["mask"].to(dev)
         cv        = batch["chunk_valid"].to(dev) if batch["chunk_valid"] is not None else None
 
-        pred_delta, pred_prog, pred_term, _ = model(
-            ctrl, lengths, states, dec_tok, dec_tok_wrist, frame_progress,
-        )
-        total, d_l, p_l, e_l = fsqae_loss(
-            pred_delta, pred_prog, pred_term, tgt_delta, tgt_prog, tgt_term, mask,
-            model.delta_min, model.delta_max, cv,
-            cfg.delta_loss_weight, cfg.progress_loss_weight, cfg.end_loss_weight, cfg.end_pos_weight,
-        )
+        with torch.autocast(device_type=("cuda" if torch.cuda.is_available() else "cpu"), dtype=torch.bfloat16):
+            pred_delta, pred_prog, pred_term, _ = model(
+                ctrl, lengths, states, dec_tok, dec_tok_wrist, frame_progress,
+            )
+            total, d_l, p_l, e_l = fsqae_loss(
+                pred_delta, pred_prog, pred_term, tgt_delta, tgt_prog, tgt_term, mask,
+                model.delta_min, model.delta_max, cv,
+                cfg.delta_loss_weight, cfg.progress_loss_weight, cfg.end_loss_weight, cfg.end_pos_weight,
+            )
         if train:
             optim.zero_grad()
             total.backward()
