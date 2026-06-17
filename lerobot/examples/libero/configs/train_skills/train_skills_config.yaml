@@ -31,8 +31,11 @@ target_dataset: libero_90_full_full
 dino_feature_dataset: "{target_dataset}"
 dino_source_dataset: libero_90_full_full #  "" | libero_90_full_full
 dino_image_keys: ["observation.images.image"] # what DP use
-dino_patch_grid: 8
+dino_patch_grid: 14
 dino_overwrite_prepared: false
+# 소스/타깃이 같은 파일시스템(/scratch)일 때 hardlink 권장: 데이터 복사 없이 inode만 연결 →
+# 즉시 완료·추가용량0·I/O 경합 없음. (copy=실제 복사, symlink=심볼릭 링크)
+dino_copy_mode: hardlink   # copy | hardlink | symlink
 
 
 ################################################################
@@ -85,12 +88,12 @@ fsq_inputs_name: FSQ_inputs
 ################################################################
 # EEF pose is always absolute and the motion decoder always predicts K-step
 # action chunks, so eef_mode/action_mode are no longer configurable.
-fsq_terminator_use_wrist: false
+fsq_terminator_use_wrist: true
 # Reconstructor start-image input. true = [z, start_state, start_img, progress] (current);
 # false = drop the start image → forces z to be the sole motion source (start_state kept).
 fsq_reconstructor_use_image: false
 fsq_run_name: "{target_dataset}_{fsq_tag}_dino{dino_patch_grid}{fsq_exp_suffix}"
-fsq_exp: "wow_imgX"  # optional suffix for ablations, e.g. exp1 -> ..._exp1
+fsq_exp: "ww_imgX"  # optional suffix for ablations, e.g. exp1 -> ..._exp1
 fsq_levels: [5, 5, 5]
 fsq_epoch: "1000"
 

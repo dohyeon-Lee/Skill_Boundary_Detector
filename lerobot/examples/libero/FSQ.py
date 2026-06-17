@@ -762,9 +762,12 @@ class SplineFSQDataset(Dataset):
 
         self.ctrl_pts: list[np.ndarray] = []
         self.lengths: list[int] = []
-        self.dec_tokens       = [t.astype(np.float32) for t in dec_tokens]
+        # Keep DINO tokens in their on-disk dtype (float16): upcasting to float32 here doubled RAM
+        # (e.g. pg14 = 86GB → 172GB) and OOM'd a 128G node. The collate buffer is float32 and upcasts
+        # each batch on assignment, so the model still trains in float32 (identical inputs, half the RAM).
+        self.dec_tokens       = [np.ascontiguousarray(t) for t in dec_tokens]
         self.dec_tokens_wrist = (
-            None if dec_tokens_wrist is None else [t.astype(np.float32) for t in dec_tokens_wrist]
+            None if dec_tokens_wrist is None else [np.ascontiguousarray(t) for t in dec_tokens_wrist]
         )
         self.states  = [s.astype(np.float32) for s in states]
         self.deltas  = [d.astype(np.float32) for d in deltas]
