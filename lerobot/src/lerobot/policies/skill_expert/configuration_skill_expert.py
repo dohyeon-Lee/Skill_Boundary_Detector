@@ -54,11 +54,27 @@ class SkillExpertConfig(PI05Config):
     """Separate LR for the SigLIP encoder when unfrozen. None → use optimizer_lr."""
 
     # ── State conditioning ──
-    state_n_bins: int = 256
-    """The robot state is QUANTILE-normalized to [-1, 1] and each dim discretized into this many bins,
-    then embedded — ONE token PER state dim (pi05-style discretized state, but as cond tokens). Replaces
-    a single Linear-projected state token, which the action expert ignored (diluted among image tokens +
-    quiet scalar projection; see the stage1_eval/state_probe diagnostic)."""
+    state_cond_mode: str = "token"
+    """How the robot state enters the action expert. The cond-encoder is image-ONLY in both modes;
+    state never rides the (image-dominated) cond stream — the state_probe diagnostic showed a state
+    token buried among ~400 image tokens is starved (Δ≈0). Both modes put state on the ACTION expert,
+    in the pi0 prefix⊥action mask (state is read by the action tokens but does not attend back):
+      "token" → pi0-style: the (max_state_dim) state vector → ONE continuous token via state_proj,
+                prepended to the action-stream prefix [state, skill, progress].
+      "adaln" → DiT/AdaRMS-style global conditioning: state is NOT a token; state_proj(state) is added
+                to the flow-time conditioning (time_cond + state_proj(state)) that drives the action
+                stream's AdaRMS at every layer — un-droppable by attention. Prefix is [skill, progress].
+      "full_adaln" → like "adaln" on the action stream, AND the SAME state_proj(state) also drives the
+                cond-encoder's AdaRMS (built with use_adarms=True only here) → state modulates the scene
+                encoding too. The shared "adaLN weight" is state_proj (the per-layer AdaRMS modulation
+                params remain per-model, since cond-encoder and expert are distinct Gemmas).
+      "ae_adaln" → action-expert-ONLY AdaRMS (cond = plain RMSNorm), but state, skill (z_q) AND progress
+                ALL ride it: action AdaRMS = time_cond + state_proj(state) + skill_proj(z_q) +
+                progress_proj(prog) (each its own projection, summed — DiT ⊕ pattern). NO prefix tokens at
+                all (cond is image-only cross-stream; everything else is global AdaLN conditioning).
+    state_proj = nn.Linear(max_state_dim, width) is allocated in all modes (only its destination
+    differs), so token/adaln/full_adaln checkpoints stay structurally comparable (modulo the
+    cond-encoder's extra AdaRMS params in full_adaln)."""
 
     # ── Skill conditioning ──
     skill_vocab_size: int = 125

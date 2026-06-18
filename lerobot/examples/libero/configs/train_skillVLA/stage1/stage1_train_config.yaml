@@ -14,9 +14,13 @@ run_tag: FSQ555_dino8_wow_imgX_500   # sub-folder under {skillvla_dataset_root}/
 
 # ── Conditioning architecture (joint only) ──
 cond_encoder_variant:          # blank = same gemma variant as the action expert (recommended)
-# State is QUANTILE-normalized to [-1,1] then discretized per-dim → one token per state dim (pi05-style),
-# instead of a single Linear-projected token the expert ignored (see stage1_eval/state_probe).
-state_n_bins: 256
+# State conditioning (cond-encoder is image-ONLY; state rides the ACTION expert, pi0 prefix⊥action):
+#   token      → pi0-style continuous state token in the prefix [state, skill, progress];
+#   adaln      → state added to the flow-time AdaRMS conditioning (DiT-style; no state token);
+#   full_adaln → adaln on the expert AND the same state_proj drives the cond-encoder's AdaRMS too;
+#   ae_adaln   → expert-only AdaRMS, but state+skill+progress ALL summed into it (no prefix tokens).
+# The cond-stream state token was starved among image tokens (see stage1_eval/input_probe); all fix that.
+state_cond_mode: ae_adaln
 
 # ── Model init ──
 pi_base: models/pi05_base   # project_root(global_config) 기준 상대경로 → 서버마다 자동. 절대경로도 허용.
@@ -52,8 +56,8 @@ batch_size: 256
 num_workers: 8
 num_gpus: 1
 lr_base: 2.5e-05                # effective LR = lr_base * num_gpus
-steps: 100000
-save_freq: 5000
+steps: 20000
+save_freq: 2500
 
 exp: ""         # optional EXTRA run-name suffix (variant tag _ae/_cond is now auto from skill_inject)
 

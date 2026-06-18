@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
-"""State-influence probe + pi05 vs SkillVLA-cond COMPARISON — is state actually used, and does the
-cond-encoder's 1-token state get diluted vs pi05's text-tokenized (discretized-in-prompt) state?
+"""INPUT-influence probe — how much each conditioning input (STATE / SKILL / PROGRESS) actually drives
+the predicted action chunk, compared across models (e.g. the Stage-1 state_cond_mode variants vs pi05).
 
-OFFLINE, no simulator. For each model: feed GT dataset frames, fix the flow-matching noise, predict
-the action chunk, then RE-predict with ONE input perturbed *before preprocessing* (so each model's own
-state path runs — pi05 re-tokenizes the prompt, cond re-encodes its state token) and measure how much
-the predicted chunk moves:
+OFFLINE, no simulator. For each model: feed GT dataset frames, fix the flow-matching noise, predict the
+action chunk, then RE-predict with ONE input perturbed *before preprocessing* (so each model's own
+encoder path runs — pi05 re-tokenizes the prompt, the skill_expert re-encodes its state/skill/progress)
+and measure how much the predicted chunk moves:
 
-  state_shuffle  : swap in another frame's state (in-distribution, scale-free)   ← primary, fair metric
-  state_gauss@σ  : add σ·std noise to the state (σ sweep)                         ← sensitivity curve
-  image_zero     : zero the images (reference)                                   ← vision-dominance ref
-  skill_swap     : swap the GT FSQ code (cond/skill models only; reference)
+  state_shuffle / progress_shuffle : swap in another frame's value (in-distribution)   ← primary, fair
+  state_gauss@σ / progress_gauss@σ : add σ·std noise (sensitivity curve)
+  skill_shuffle                    : swap the GT FSQ code (discrete → shuffle only)    ← skill models only
+  image_zero                       : zero the images                                   ← vision-dominance ref
 
-Metric = mean per-step L2 change of the predicted chunk vs unperturbed (action units), and that change
-÷ the GT action step norm. Both models run on the SAME skillvla dataset (same frames). Reading: if
-pi05's state Δ >> cond's state Δ (relative to each model's image_zero / gt_norm), pi05 reflects state
-more and the cond 1-token state is diluted — the hypothesis we set out to test.
+SKILL/PROGRESS exist only for skill models; pi05 (has_skill=False) skips them (shown as — in the report).
+Metric = mean per-step L2 change of the predicted chunk vs unperturbed (action units) ÷ the GT action
+step norm. All models run on the SAME skillvla dataset (same frames). Reading: input Δ ≈ 0 and << that
+model's image_zero ⇒ the input is effectively a dead input for that model.
 """
 
 from __future__ import annotations
@@ -37,14 +37,14 @@ from lerobot.policies.factory import make_policy, make_pre_post_processors
 from lerobot.utils.constants import OBS_STATE
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-log = logging.getLogger("state_probe")
+log = logging.getLogger("input_probe")
 
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--pi05_policy_path", default="", help="plain pi05 checkpoint (state in prompt)")
-    p.add_argument("--cond_policy_path", default="", help="SkillVLA stage-1 skill_expert checkpoint (1-token state)")
-    p.add_argument("--dataset_dir", required=True, help="shared skillvla dataset dir (same frames for both)")
+    p.add_argument("--targets", required=True,
+                   help='JSON list of models to compare: [{"label":..,"policy_path":..}, ...]')
+    p.add_argument("--dataset_dir", required=True, help="shared skillvla dataset dir (same frames for all)")
     p.add_argument("--output_dir", required=True)
     p.add_argument("--n_frames", type=int, default=512)
     p.add_argument("--batch_size", type=int, default=32)
@@ -79,7 +79,7 @@ def probe_one(label: str, policy_path: str, dataset_dir: str, args, device, fram
     cfg = PreTrainedConfig.from_pretrained(policy_path)
     cfg.pretrained_path = policy_path
     chunk, max_adim = int(cfg.chunk_size), int(cfg.max_action_dim)
-    ds = LeRobotDataset(repo_id=f"local/{label}_state_probe", root=dataset_dir,
+    ds = LeRobotDataset(repo_id=f"local/{label}_input_probe", root=dataset_dir,
                         delta_timestamps={"action": [i / fps for i in range(chunk)]})
     policy = make_policy(cfg=cfg, ds_meta=ds.meta)
     policy.eval().to(device)
@@ -120,13 +120,24 @@ def probe_one(label: str, policy_path: str, dataset_dir: str, args, device, fram
                 return nb
             perts["image_zero"] = _imgzero
         if has_skill and "skill_sequence" in batch:
-            def _skillswap(b):
+            def _skillshuffle(b):
                 nb = _clone(b)
                 code = policy._skill_code(pre(_clone(b))).clone()
                 nb["skill_sequence"] = code.roll(shifts=1, dims=0).view(bsize, 1)
                 nb["skill_index"] = torch.zeros(bsize, dtype=torch.long)
                 return nb
-            perts["skill_swap"] = _skillswap
+            perts["skill_shuffle"] = _skillshuffle    # discrete FSQ code → shuffle only (no gauss)
+        if has_skill and "skill_ds" in batch and "skill_de" in batch:
+            ds = batch["skill_ds"].float().view(-1)
+            de = batch["skill_de"].float().view(-1)
+            gt_prog = (ds / (ds + de).clamp(min=1.0)).clamp(0.0, 1.0)   # = policy._skill_progress (GT)
+            pstd = gt_prog.std().clamp(min=1e-6)
+            perts["progress_shuffle"] = (
+                lambda b: {**_clone(b), "skill_progress": gt_prog.roll(shifts=1, dims=0).view(-1, 1)})
+            for sg in sigmas:
+                perts[f"progress_gauss@{sg:g}"] = (
+                    lambda b, s=sg: {**_clone(b), "skill_progress":
+                                     (gt_prog + s * pstd * torch.randn_like(gt_prog)).clamp(0.0, 1.0).view(-1, 1)})
 
         for name, fn in perts.items():
             pred = post(policy.predict_action_chunk(pre(fn(batch)), noise=noise)).cpu()
@@ -149,10 +160,9 @@ def main() -> None:
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     torch.manual_seed(args.seed)
 
-    targets = [("pi05", args.pi05_policy_path), ("cond", args.cond_policy_path)]
-    targets = [(l, p) for l, p in targets if p]
+    targets = [(t["label"], t["policy_path"]) for t in json.loads(args.targets) if t.get("policy_path")]
     if not targets:
-        raise ValueError("Provide at least one of --pi05_policy_path / --cond_policy_path.")
+        raise ValueError("--targets is empty (expect a JSON list of {label, policy_path}).")
 
     results, frame_ids = {}, None
     for label, path in targets:
@@ -162,12 +172,12 @@ def main() -> None:
 
     out = Path(args.output_dir)
     out.mkdir(parents=True, exist_ok=True)
-    (out / "state_probe.json").write_text(json.dumps(results, indent=2))
+    (out / "input_probe.json").write_text(json.dumps(results, indent=2))
 
     # Side-by-side: Δ/gt_norm per perturbation for each model (each line built as one string).
     labels = [l for l, _ in targets]
     names = sorted({n for r in results.values() for n in r["perturbations"]})
-    log.info("==== STATE PROBE COMPARISON (chunk Δ ÷ gt_action_step_norm) ====")
+    log.info("==== INPUT PROBE COMPARISON (chunk Δ ÷ gt_action_step_norm) ====")
     log.info("  " + f"{'perturbation':<16}" + "".join(f"{l:>12}" for l in labels))
     for n in names:
         cells = "".join(
@@ -175,9 +185,9 @@ def main() -> None:
         log.info("  " + f"{n:<16}" + cells)
     for l in labels:
         log.info("  [%s] gt_action_step_norm = %.4f", l, results[l]["gt_action_step_norm"])
-    log.info("Reading: compare state_shuffle (& state_gauss) ÷gt across models. cond << pi05, and cond "
-             "state_* << cond image_zero ⇒ the cond 1-token state is diluted/under-used vs pi05's prompt state.")
-    log.info("Saved → %s", out / "state_probe.json")
+    log.info("Reading: compare *_shuffle (state/skill/progress) ÷gt across models. An input whose Δ ≈ 0 "
+             "and << that model's image_zero is effectively a dead input for the model.")
+    log.info("Saved → %s", out / "input_probe.json")
 
 
 if __name__ == "__main__":

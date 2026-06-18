@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Submit the Stage-1 STATE-influence probe (pi05 vs SkillVLA-cond) — offline, no simulator.
+# Submit the Stage-1 INPUT-influence probe (state / skill / progress, vs pi05) — offline, no simulator.
 #   (login) resolve config + check checkpoints → sbatch probe.sbatch
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # state_probe
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # input_probe
 SRC_DIR="${SCRIPT_DIR}/src"
-CONFIG_PATH="${STATE_PROBE_CONFIG:-${SCRIPT_DIR}/state_probe_config.yaml}"
+CONFIG_PATH="${INPUT_PROBE_CONFIG:-${SCRIPT_DIR}/input_probe_config.yaml}"
 
 # Freeze the config so this job ignores later edits to the repo yaml (see configs/snapshot_config.sh).
 _lib="$(dirname "${CONFIG_PATH}")"; while [ ! -f "${_lib}/snapshot_config.sh" ]; do _lib="$(dirname "${_lib}")"; done
@@ -17,17 +17,13 @@ if [ ! -x "${BOOTSTRAP_PYTHON}" ]; then
   BOOTSTRAP_PYTHON=python3
 fi
 
-eval "$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/state_probe_config.py" --config "${CONFIG_PATH}" --shell)"
+eval "$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/input_probe_config.py" --config "${CONFIG_PATH}" --shell)"
 
-if [ ! -d "${COND_POLICY_PATH}" ]; then
-  echo "cond (stage-1) checkpoint not found: ${COND_POLICY_PATH}" >&2
-  echo "Train Stage-1 first (configs/train_skillVLA/stage1) or fix cond_model_dir/cond_checkpoint." >&2
+if [ ! -e "${DATASET_DIR}" ]; then
+  echo "skillvla dataset not found: ${DATASET_DIR}  (check the first cond target's model_dir)" >&2
   exit 1
 fi
-if [ -n "${PI05_POLICY_PATH}" ] && [ ! -d "${PI05_POLICY_PATH}" ]; then
-  echo "pi05 checkpoint not found: ${PI05_POLICY_PATH}  (fix pi05_model_dir/pi05_checkpoint or blank it)" >&2
-  exit 1
-fi
+# Per-target checkpoint existence is validated inside input_probe.py (clear error per missing path).
 
 SBATCH_ARGS=(
   --partition="${EVAL_PARTITION}"
@@ -47,19 +43,18 @@ fi
 cd "${SCRIPT_DIR}"
 mkdir -p logs
 
-echo "Submit STATE PROBE (pi05 vs cond)"
-echo "  cond   : ${COND_POLICY_PATH}"
-echo "  pi05   : ${PI05_POLICY_PATH:-(none)}"
+echo "Submit INPUT PROBE"
+echo "  targets: ${TARGETS_JSON}"
 echo "  dataset: ${DATASET_DIR}"
 echo "  out    : ${OUTPUT_DIR}"
 echo "  slurm  : partition=${EVAL_PARTITION} qos=${EVAL_QOS} mem=${EVAL_MEM}"
 
 if [ -n "${SLURM_JOB_ID:-}" ]; then
   echo "  mode   : srun (reusing allocation ${SLURM_JOB_ID})"
-  STATE_PROBE_DIR="${SCRIPT_DIR}" STATE_PROBE_CONFIG="${CONFIG_PATH}" \
+  INPUT_PROBE_DIR="${SCRIPT_DIR}" INPUT_PROBE_CONFIG="${CONFIG_PATH}" \
     srun "${SRC_DIR}/probe.sbatch"
 else
   echo "  mode   : sbatch (new job)"
-  STATE_PROBE_DIR="${SCRIPT_DIR}" STATE_PROBE_CONFIG="${CONFIG_PATH}" \
+  INPUT_PROBE_DIR="${SCRIPT_DIR}" INPUT_PROBE_CONFIG="${CONFIG_PATH}" \
     sbatch "${SBATCH_ARGS[@]}" "${SRC_DIR}/probe.sbatch"
 fi

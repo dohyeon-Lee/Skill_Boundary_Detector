@@ -53,7 +53,7 @@ def build_settings(cfg: dict) -> dict:
     cond_encoder_variant = str(get_value(cfg, "cond_encoder_variant", "")).strip()
     if cond_encoder_variant.lower() in ("none", "null"):  # blank yaml → omit (use action expert's variant)
         cond_encoder_variant = ""
-    state_n_bins = int(get_value(cfg, "state_n_bins", 256))   # per-dim discretized state token bins
+    state_cond_mode = str(get_value(cfg, "state_cond_mode", "token")).strip().lower()  # token | adaln
     use_progress_token = as_bool(get_value(cfg, "use_progress_token", True))
 
     init_from_pi05 = as_bool(get_value(cfg, "init_from_pi05", True))
@@ -76,6 +76,7 @@ def build_settings(cfg: dict) -> dict:
     run_name = f"{source_dataset}_{run_tag}_{vis_tag}_batch{batch_size}"
     if not use_progress_token:  # progress-ablation variant (skill token only)
         run_name = f"{run_name}_np"
+    run_name = f"{run_name}_s{state_cond_mode}"   # state path: stoken (pi0) | sadaln (AdaRMS) — never collide
     if exp:
         run_name = f"{run_name}_{exp}"
     run_name = f"{run_name}_c{chunk_size}"  # chunk horizon always trails the run name
@@ -104,7 +105,7 @@ def build_settings(cfg: dict) -> dict:
         "repo_id": f"dohyeon/{source_dataset}",
         # conditioning (joint only; skill+progress on the action prefix)
         "cond_encoder_variant": cond_encoder_variant,  # "" → same as action_expert_variant
-        "state_n_bins": state_n_bins,             # per-dim discretized state token bins
+        "state_cond_mode": state_cond_mode,       # token (pi0 prefix token) | adaln (state→AdaRMS)
         # model init
         "pi_base": pi_base,                       # "" → train the expert from scratch
         # vision encoder: "dino" or "siglip" (siglip warm-starts from pi_base's vision_tower)

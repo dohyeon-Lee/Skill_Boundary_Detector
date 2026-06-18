@@ -1,0 +1,26 @@
+# INPUT-influence probe — compare N models' STATE / SKILL / PROGRESS sensitivity on the SAME skillvla
+# dataset, same raw-input perturbations (offline, no simulator). See src/input_probe.py. SKILL/PROGRESS
+# exist only for skill models (pi05 → — in the report).
+
+# ── Targets (compared side-by-side; run sequentially, one loaded at a time) ──
+# Each: label, kind (cond → outputs_root/skillVLA_stage1 ; pi05 → outputs_root/{pi05_outputs_subdir}),
+# model_dir, checkpoint. The SHARED dataset comes from the FIRST cond target's {source}/{run_tag}.
+# Default below = the 4 Stage-1 state_cond_mode variants (stoken/sadaln/sfull_adaln/sae_adaln) + pi05.
+targets:
+  - {label: token,      kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_freeze_batch256_stoken_c25,      checkpoint: "005000"}
+  - {label: adaln,      kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_freeze_batch256_sadaln_c25,      checkpoint: "005000"}
+  - {label: full_adaln, kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_freeze_batch256_sfull_adaln_c25, checkpoint: "005000"}
+  - {label: ae_adaln,   kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_freeze_batch256_sae_adaln_c25,   checkpoint: "005000"}
+  - {label: pi05,       kind: pi05, model_dir: PT_libero_90_full_full_pi05_batch16, checkpoint: "005000", pi05_outputs_subdir: pi05_PT}
+
+# ── Probe params ──
+n_frames: 256 #512                 # random dataset frames (shared across both models)
+batch_size: 32
+gauss_sigmas: "0.5,1.0,2.0"   # σ sweep for state_gauss (× per-batch state std)
+seed: 1000
+
+# ── Slurm (partition/qos/nodelist/exclude come from configs/global_config.yaml train_*) ──
+eval_gres: gpu:1
+eval_cpus_per_task: 8
+eval_mem: 48G                 # models loaded sequentially (each freed before the next)
+eval_time: "1:00:00"
