@@ -7,7 +7,7 @@
 # Output:
 #   model   : {project_root}/{pi05_outputs_root}/PT_{pt_dataset}_pi05_batch{pt_batch_size}_{pt_exp}
 # Config:
-#   ../train_pi05_config.yaml
+#   ./pi05_config.yaml
 #SBATCH --job-name=pi05_PT
 #SBATCH --partition=debug
 #SBATCH --qos=big_qos
@@ -22,7 +22,7 @@ mkdir -p logs
 
 SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$(pwd)}"             # .../train_pi05/pi05
 ROOT_DIR="$(cd "${SUBMIT_DIR}/.." && pwd)"          # .../train_pi05
-CONFIG_PATH="${TRAIN_PI05_CONFIG:-${ROOT_DIR}/train_pi05_config.yaml}"
+CONFIG_PATH="${TRAIN_PI05_CONFIG:-${SUBMIT_DIR}/pi05_config.yaml}"
 CONFIG_PY="${ROOT_DIR}/src/train_pi05_config.py"
 
 BOOTSTRAP_PYTHON="${ROOT_DIR}/../../../../../.venv/bin/python"

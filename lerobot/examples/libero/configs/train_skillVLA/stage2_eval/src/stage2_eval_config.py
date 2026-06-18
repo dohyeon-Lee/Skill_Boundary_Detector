@@ -2,11 +2,10 @@
 """Config for SkillVLA closed-loop EVAL (PT) on LIBERO sim.
 
 Pick the model to evaluate by its OUTPUT FOLDER NAME + checkpoint (under
-{project_root}/{outputs_root}/skillVLA_stage2/). The trained policy's params — FSQ path,
-state indices, and the branch (use_reconstructor_chunk_suffix) — live in the
-checkpoint's config.json and are restored automatically when lerobot loads
---policy.path, so the eval never re-specifies them (branch1/branch2 just work). The
-FSQ / skill_latents / raw-dataset paths used for the run are derived from that config.
+{project_root}/{outputs_root}/skillVLA_stage2/). The trained policy's params (FSQ path,
+vision_backbone, skill_vocab, state_n_bins, ...) live in the checkpoint's config.json and are
+restored automatically when lerobot loads --policy.path, so the eval never re-specifies them.
+The FSQ / skill_latents / raw-dataset paths used for the run are derived from that config.
 
 Emits shell exports (--shell). All roots are declared in this yaml (standalone).
 """
@@ -43,12 +42,13 @@ def build_settings(cfg: dict) -> dict:
     cfg_json = policy_path / "config.json"
     if cfg_json.is_file():
         pol = json.loads(cfg_json.read_text())
-    fsq_ckpt = str(pol.get("fsq_path") or "")
+    base_fsq = str(pol.get("fsq_path") or "")
+    train_terminator_used = as_bool(pol.get("train_terminator", False))
     skill_latents_path = ""
     raw_dataset_dir = ""
     gt_skill_dataset_dir = ""
-    if fsq_ckpt:
-        fp = Path(fsq_ckpt)  # {root}/{dataset_root}/skillvla_dataset/{source}/{run_tag}/FSQ.pt
+    if base_fsq:
+        fp = Path(base_fsq)  # {root}/{dataset_root}/skillvla_dataset/{source}/{run_tag}/FSQ.pt
         skill_latents_path = str(fp.parent / "skill_latents.npz")
         gt_skill_dataset_dir = str(fp.parent / "skillvla")  # skillvla dataset (skill_sequence) for oracle GT
         try:
@@ -56,11 +56,16 @@ def build_settings(cfg: dict) -> dict:
         except IndexError:
             raw_dataset_dir = ""
 
+    # Terminator co-trained in Stage-2 → use the adapted FSQ from THIS checkpoint (checkpoints/<ckpt>/
+    # FSQ_ft.pt; the eval sbatch lazy-exports it if missing). Else fall back to the base dataset FSQ.
+    ft_fsq_path = policy_path.parent / "FSQ_ft.pt"
+
     # Skill-source tag so oracle (GT) vs VLM-predicted and the advance mode land in DISTINCT folders.
     use_gt_skill = as_bool(get_value(cfg, "use_gt_skill", False))
     advance_mode = str(get_value(cfg, "skill_advance_mode", "terminator"))
     skill_tag = f"gtskill-{advance_mode}" if use_gt_skill else "pred"
-    run_name = f"{model_dir}_{checkpoint}_{target_task}_{skill_tag}_fsq_eval"
+    term_tag = "ftterm" if train_terminator_used else "baseterm"
+    run_name = f"{model_dir}_{checkpoint}_{target_task}_{skill_tag}_{term_tag}_eval"
     eval_out_dir = _HERE.parent.parent / "outputs" / run_name
 
     settings: dict = {
@@ -69,7 +74,12 @@ def build_settings(cfg: dict) -> dict:
         # model (everything else is restored from the checkpoint config on --policy.path)
         "policy_path": policy_path,
         "checkpoint": checkpoint,
-        "fsq_ckpt": fsq_ckpt,                 # existence check (model loads it from its own config)
+        # terminator: eval sbatch resolves FSQ_FOR_EVAL = ft_fsq_path (lazy-exported from THIS checkpoint
+        # if missing) when train_terminator ran, else base_fsq.
+        "base_fsq": base_fsq,                 # dataset FSQ (existence check + fallback + export base)
+        "ft_fsq_path": ft_fsq_path,           # per-checkpoint adapted terminator (checkpoints/<ckpt>/FSQ_ft.pt)
+        "ft_run_dir": vla_root / model_dir,   # for export_ft_terminator.py --ft_run_dir
+        "train_terminator_used": train_terminator_used,
         "skill_latents_path": skill_latents_path,
         "raw_dataset_dir": raw_dataset_dir,
         "image_key": image_key,

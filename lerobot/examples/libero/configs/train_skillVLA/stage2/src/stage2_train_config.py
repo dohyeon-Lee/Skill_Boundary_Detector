@@ -3,10 +3,10 @@
 
 A PaliGemma VLM (warm-started from pi05_base) predicts the skill from the skill-START obs; an action
 expert warm-started from a Stage-1 ``skill_expert`` checkpoint flow-matches the action chunk. The
-Stage-1 checkpoint's config supplies expert_arch (A=joint / B=fused), vision_backbone,
-action_expert_variant and skill_vocab_size — the model reads them itself, so here we only point to
-it. All roots are declared in this yaml (standalone); source/run_tag/FSQ levels are parsed from
-stage1_run_name; FSQ.pt (eval terminator) lives in the run dir. Emits shell exports (--shell).
+Stage-1 checkpoint's config supplies vision_backbone, action_expert_variant, skill_vocab_size and
+state_n_bins — the model reads them itself, so here we only point to it. All roots are declared in
+this yaml (standalone); source/run_tag/FSQ levels are parsed from stage1_run_name; FSQ.pt (eval
+terminator) lives in the run dir. Emits shell exports (--shell).
 """
 
 from __future__ import annotations
@@ -40,10 +40,10 @@ def build_settings(cfg: dict) -> dict:
     stage1_ckpt = stage1_vla_root / stage1_run_name / "checkpoints" / stage1_checkpoint / "pretrained_model"
 
     # Everything is parsed from the stage1_run_name:
-    #   {source}_{run_tag}_[{dino|siglip}_{freeze|unfreeze}_]batch{N}_{A|B}[_exp]
-    # → the skillvla dataset (source + run_tag), the FSQ levels, the arch tag, and the Stage-1 policy
-    # vision tag (backbone + freeze, e.g. "dino_unfreeze"/"siglip_freeze") captured below so the
-    # Stage-2 run name records which vision encoder it warm-started from.
+    #   {source}_{run_tag}_[{dino|siglip}_{freeze|unfreeze}_]batch{N}[_np][_exp][_c{N}]
+    # → the skillvla dataset (source + run_tag), the FSQ levels, and the Stage-1 policy vision tag
+    # (backbone + freeze, e.g. "dino_unfreeze"/"siglip_freeze") captured below so the Stage-2 run name
+    # records which vision encoder it warm-started from. (Arch is always joint now — no A/B tag.)
     _rt = re.search(
         r"(FSQ\d+_dino\d+.*?)(?:_((?:dino|siglip)_(?:freeze|unfreeze)))?_batch\d+", stage1_run_name)
     if not _rt:
@@ -53,8 +53,6 @@ def build_settings(cfg: dict) -> dict:
     source_dataset = stage1_run_name[: _rt.start()].rstrip("_")
     run_dir = skillvla_root / source_dataset / run_tag
     build_fsq_levels = [int(d) for d in re.search(r"FSQ(\d+)", run_tag).group(1)]
-    arch_tag = (stage1_run_name[_rt.end():].lstrip("_").split("_")[0] or "B")  # "A"=joint, "B"=fused
-    arch = "joint" if arch_tag == "A" else "fused"
 
     batch_size = int(get_value(cfg, "batch_size", 16))
     num_gpus = int(get_value(cfg, "num_gpus", 1))
@@ -92,11 +90,17 @@ def build_settings(cfg: dict) -> dict:
         "stage1_run_name": stage1_run_name,
         "stage1_checkpoint": stage1_checkpoint,
         "stage1_checkpoint_path": stage1_ckpt,
-        "expert_arch": arch,                        # informational (read from Stage-1 ckpt)
         # skill head / FSQ codebook
         "skill_fsq_levels": "[" + ",".join(str(x) for x in skill_fsq_levels) + "]",
         "skill_loss_weight": str(get_value(cfg, "skill_loss_weight", 0.5)),
         "cond_attend_language": as_bool(get_value(cfg, "cond_attend_language", False)),
+        # terminator co-training (same as FT): adapt the FSQ terminator on this dataset's GT signals
+        # (disjoint from the SkillVLA params). Warm-starts from fsq_ckpt; exported per-checkpoint for eval.
+        "train_terminator": as_bool(get_value(cfg, "train_terminator", False)),
+        "terminator_lr_scale": float(get_value(cfg, "terminator_lr_scale", 1.0)),
+        "terminator_end_target_sigma": float(get_value(cfg, "terminator_end_target_sigma", 2.0)),
+        "terminator_end_pos_weight": float(get_value(cfg, "terminator_end_pos_weight", 1.0)),
+        "dino_tokens_path": run_dir / "dino.npz",   # current-frame DINO tokens for the terminator
         # freeze toggles (all parts otherwise trained)
         "freeze_vlm": as_bool(get_value(cfg, "freeze_vlm", False)),
         "freeze_vlm_vision": as_bool(get_value(cfg, "freeze_vlm_vision", False)),

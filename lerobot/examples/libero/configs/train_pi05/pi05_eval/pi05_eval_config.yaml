@@ -1,0 +1,32 @@
+# pi05 closed-loop eval config (configs/train_pi05/pi05_eval).
+# Training (PT/FT) lives in a SEPARATE yaml: configs/train_pi05/pi05/pi05_config.yaml.
+# project_root / dataset_root / outputs_root come from configs/global_config.yaml.
+
+# Output subdirs the model is loaded FROM (by eval_stage): PT → pi05_PT, FT → pi05_FT.
+pi05_outputs_root: pi05_PT
+pi05_ft_outputs_root: pi05_FT
+
+# ── Which trained model to evaluate ──
+eval_stage: PT                 # PT → load from pi05_PT ; FT → load from pi05_FT
+eval_checkpoint: "015000"
+# Exact output folder name under {outputs_root}/{pi05_PT|pi05_FT}/ (set explicitly — eval is standalone).
+eval_model: "PT_libero_90_full_full_pi05_batch16"
+
+# ── Eval rollout ──
+eval_target_task: libero_90
+eval_task_ids: "[0,1,2,3,4,5,6,7,8,9]"
+eval_n_episodes: 5
+eval_episode_offset: 25
+eval_n_action_steps: 5
+eval_batch_size: 1
+eval_max_parallel_tasks: 1
+eval_max_videos_per_task: 5
+eval_video_frame_stride: 2
+eval_video_fps: 10
+eval_wandb_project: VLA_eval
+
+# Slurm for pi05 eval (partition/qos/nodelist/exclude from configs/global_config.yaml).
+eval_gres: gpu:1
+eval_cpus_per_task: 8
+eval_mem: 32G
+eval_time: "48:00:00"

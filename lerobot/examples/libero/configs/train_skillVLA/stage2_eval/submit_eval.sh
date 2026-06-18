@@ -24,8 +24,8 @@ if [ ! -d "${POLICY_PATH}" ]; then
   echo "Train it first: configs/train_skillVLA/stage2/submit_train.sh" >&2
   exit 1
 fi
-if [ ! -f "${FSQ_CKPT}" ]; then
-  echo "FSQ checkpoint not found: ${FSQ_CKPT}" >&2
+if [ ! -f "${BASE_FSQ}" ]; then
+  echo "Base FSQ not found: ${BASE_FSQ}  (the dataset's FSQ.pt the model was trained with)" >&2
   exit 1
 fi
 

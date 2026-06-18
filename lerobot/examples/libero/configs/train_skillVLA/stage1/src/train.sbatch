@@ -83,8 +83,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.dtype=bfloat16 \
     --policy.device=cuda \
     --policy.push_to_hub=false \
-    --policy.expert_arch="${EXPERT_ARCH}" \
-    --policy.skill_inject="${SKILL_INJECT}" \
+    --policy.state_n_bins="${STATE_N_BINS}" \
     --policy.vision_backbone="${VISION_BACKBONE}" \
     --policy.dino_model_path="${DINO_MODEL_PATH}" \
     --policy.freeze_dino="${FREEZE_DINO}" \

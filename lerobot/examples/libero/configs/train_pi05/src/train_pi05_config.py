@@ -16,7 +16,7 @@ from typing import Any
 
 import yaml
 
-DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "train_pi05_config.yaml"
+DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "pi05" / "pi05_config.yaml"
 
 
 def _find_global(start: Path) -> Path | None:
@@ -121,10 +121,12 @@ def slurm_settings(cfg: dict[str, Any], prefix: str, *, cpus: int, mem: str, tim
 def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
     project_root = Path(str(get_value(cfg, "project_root"))).expanduser()
     lerobot_root = project_root / "lerobot"
-    # {project_root}/{outputs_root}/{pi05_outputs_root}: outputs_root comes from global_config.yaml
-    # (switchable to outputs_filtered), pi05_outputs_root is this module's subdir.
+    # {project_root}/{outputs_root}/{pi05_PT|pi05_FT}: outputs_root comes from global_config.yaml
+    # (switchable to outputs_filtered). PT and FT write to SEPARATE subdirs; FT still reads its
+    # pretrained PT checkpoint from the PT subdir.
     outputs_root = str(get_value(cfg, "outputs_root", "outputs"))
-    pi05_outputs_root = project_root / outputs_root / str(get_value(cfg, "pi05_outputs_root", "pi05_PT"))
+    pi05_pt_root = project_root / outputs_root / str(get_value(cfg, "pi05_outputs_root", "pi05_PT"))
+    pi05_ft_root = project_root / outputs_root / str(get_value(cfg, "pi05_ft_outputs_root", "pi05_FT"))
 
     pt_dataset = str(get_value(cfg, "pt_dataset", "libero_90", env="PT_DATASET"))
     pt_dataset_root = str(get_value(cfg, "pt_dataset_root", get_value(cfg, "dataset_root", "libero_dataset"), env="PT_DATASET_ROOT"))
@@ -160,7 +162,8 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         "python_bin": project_root / ".venv" / "bin" / "python",
         "train_bin": project_root / ".venv" / "bin" / "lerobot-train",
         "eval_bin": project_root / ".venv" / "bin" / "lerobot-eval",
-        "pi05_outputs_root": pi05_outputs_root,
+        "pi05_pt_outputs_root": pi05_pt_root,
+        "pi05_ft_outputs_root": pi05_ft_root,
         "pi_base": resolve_path(project_root, get_value(cfg, "pi_base", "models/pi05_base")),
         # PT
         "pt_dataset": pt_dataset,
@@ -175,7 +178,7 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         "pt_save_freq": int(get_value(cfg, "pt_save_freq", 5000, env="PT_SAVE_FREQ")),
         "pt_wandb_project": str(get_value(cfg, "pt_wandb_project", "VLA_posttrain", env="PT_WANDB_PROJECT")),
         "pt_run_name": pt_run_name,
-        "pt_output_dir": pi05_outputs_root / pt_run_name,
+        "pt_output_dir": pi05_pt_root / pt_run_name,
         # FT
         "ft_dataset": ft_dataset,
         "ft_dataset_root": ft_dataset_root,
@@ -188,10 +191,10 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         "ft_save_freq": int(get_value(cfg, "ft_save_freq", 500, env="FT_SAVE_FREQ")),
         "ft_wandb_project": str(get_value(cfg, "ft_wandb_project", "VLA_Finetune", env="FT_WANDB_PROJECT")),
         "ft_run_name": ft_run_name,
-        "ft_output_dir": pi05_outputs_root / ft_run_name,
+        "ft_output_dir": pi05_ft_root / ft_run_name,                 # FT → pi05_FT
         "ft_pretrained_run_name": ft_pre_run_name,
         "ft_pretrained_checkpoint": ft_pre_ckpt,
-        "ft_pretrained_model_path": pi05_outputs_root / ft_pre_run_name / "checkpoints" / ft_pre_ckpt / "pretrained_model",
+        "ft_pretrained_model_path": pi05_pt_root / ft_pre_run_name / "checkpoints" / ft_pre_ckpt / "pretrained_model",  # PT source ← pi05_PT
         "ft_freeze_vision_encoder": as_bool(get_value(cfg, "ft_freeze_vision_encoder", False, env="PI05_FT_FREEZE_VISION_ENCODER")),
         "ft_train_expert_only": as_bool(get_value(cfg, "ft_train_expert_only", False, env="PI05_FT_TRAIN_EXPERT_ONLY")),
         # Eval
@@ -204,7 +207,8 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         "eval_stage": eval_stage,
         "eval_checkpoint": eval_checkpoint,
         "eval_model": eval_model,
-        "eval_policy_path": Path(os.environ.get("POLICY_PATH", str(pi05_outputs_root / eval_model / "checkpoints" / eval_checkpoint / "pretrained_model"))),
+        "eval_policy_path": Path(os.environ.get("POLICY_PATH", str(
+            (pi05_ft_root if eval_stage == "FT" else pi05_pt_root) / eval_model / "checkpoints" / eval_checkpoint / "pretrained_model"))),
         "eval_max_parallel_tasks": int(get_value(cfg, "eval_max_parallel_tasks", 1, env="MAX_PARALLEL_TASKS")),
         "eval_max_videos_per_task": int(get_value(cfg, "eval_max_videos_per_task", 1, env="MAX_VIDEOS_PER_TASK")),
         "eval_video_frame_stride": int(get_value(cfg, "eval_video_frame_stride", 2, env="VIDEO_FRAME_STRIDE")),

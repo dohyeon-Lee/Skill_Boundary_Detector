@@ -5,9 +5,9 @@
 #   dataset : {project_root}/{ft_dataset_root}/{ft_dataset}
 #   base    : {project_root}/{pi05_outputs_root}/{ft_pretrained_run_name}/checkpoints/{ft_pretrained_checkpoint}/pretrained_model
 # Output:
-#   model   : {project_root}/{pi05_outputs_root}/FT_{ft_pretrained_checkpoint}PT_{ft_dataset}_pi05_batch{ft_batch_size}_{ft_exp}
+#   model   : {project_root}/{pi05_ft_outputs_root}/FT_{ft_pretrained_checkpoint}PT_{ft_dataset}_pi05_batch{ft_batch_size}_{ft_exp}
 # Config:
-#   ../train_pi05_config.yaml
+#   ./pi05_config.yaml
 #SBATCH --job-name=pi05_FT
 #SBATCH --partition=gigabyte_pro6000
 #SBATCH --qos=pro6000_qos
@@ -22,7 +22,7 @@ mkdir -p logs
 
 SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$(pwd)}"             # .../train_pi05/pi05
 ROOT_DIR="$(cd "${SUBMIT_DIR}/.." && pwd)"          # .../train_pi05
-CONFIG_PATH="${TRAIN_PI05_CONFIG:-${ROOT_DIR}/train_pi05_config.yaml}"
+CONFIG_PATH="${TRAIN_PI05_CONFIG:-${SUBMIT_DIR}/pi05_config.yaml}"
 CONFIG_PY="${ROOT_DIR}/src/train_pi05_config.py"
 
 BOOTSTRAP_PYTHON="${ROOT_DIR}/../../../../../.venv/bin/python"

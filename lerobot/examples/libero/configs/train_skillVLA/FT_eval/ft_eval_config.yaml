@@ -5,8 +5,10 @@
 # FT-adapted FSQ_ft.pt when present (else the base FSQ from the checkpoint config).
 
 # ── Which trained FT model to evaluate (folder name as created by FT training) ──
+# model_dir: libero_10_full_5_FSQ555_dino8_wow_imgX_500_ft085000_pred_term_unfreeze_cond
 model_dir: libero_10_full_5_FSQ555_dino8_wow_imgX_500_ft085000_pred_term
-checkpoint: "003000"               # "last" or a step number
+
+checkpoint: "008000"               # "last" or a step number
 
 # ── Eval rollout (libero_10 = the finetuned task suite) ──
 target_task: libero_10

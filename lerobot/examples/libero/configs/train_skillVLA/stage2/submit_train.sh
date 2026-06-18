@@ -54,7 +54,7 @@ cd "${SCRIPT_DIR}"
 mkdir -p logs
 
 echo "Submit SkillVLA Stage-2"
-echo "  run      : ${PT_RUN_NAME}  (arch=${EXPERT_ARCH})"
+echo "  run      : ${PT_RUN_NAME}  (arch=joint)"
 echo "  dataset  : ${SKILLVLA_DATASET_DIR}"
 echo "  expert   : ${STAGE1_CHECKPOINT_PATH}"
 echo "  output   : ${PT_OUTPUT_DIR}"

@@ -49,15 +49,11 @@ def build_settings(cfg: dict) -> dict:
     n_action_steps = get_value(cfg, "n_action_steps", None)
     n_action_steps = chunk_size if n_action_steps in (None, "", "null") else int(n_action_steps)
 
-    # Conditioning architecture: "fused" (one self-attn stream) or "joint" (cond-encoder ⊥ expert).
-    expert_arch = str(get_value(cfg, "expert_arch", "fused")).strip() or "fused"
+    # Conditioning: joint (cond-encoder ⊥ action expert); skill+progress ride the action-stream prefix.
     cond_encoder_variant = str(get_value(cfg, "cond_encoder_variant", "")).strip()
     if cond_encoder_variant.lower() in ("none", "null"):  # blank yaml → omit (use action expert's variant)
         cond_encoder_variant = ""
-    # [joint only] where skill+progress enter: "action_prefix" (ae) | "cond_token" (prev/baseline).
-    skill_inject = str(get_value(cfg, "skill_inject", "action_prefix")).strip() or "action_prefix"
-    if skill_inject not in ("action_prefix", "cond_token"):
-        raise ValueError(f"skill_inject must be 'action_prefix' or 'cond_token', got {skill_inject!r}")
+    state_n_bins = int(get_value(cfg, "state_n_bins", 256))   # per-dim discretized state token bins
     use_progress_token = as_bool(get_value(cfg, "use_progress_token", True))
 
     init_from_pi05 = as_bool(get_value(cfg, "init_from_pi05", True))
@@ -76,11 +72,8 @@ def build_settings(cfg: dict) -> dict:
         vfrozen = as_bool(get_value(cfg, "freeze_dino", False))
     vis_tag = f"{vision_backbone}_{'freeze' if vfrozen else 'unfreeze'}"
 
-    # run-name arch tag: joint→A, fused→B. init_from_pi05 is fixed true → not in the name.
-    arch_tag = {"joint": "A", "fused": "B"}.get(expert_arch, expert_arch)
-    run_name = f"{source_dataset}_{run_tag}_{vis_tag}_batch{batch_size}_{arch_tag}"
-    if expert_arch == "joint":  # skill-injection variant (fused always uses cond tokens → no tag)
-        run_name = f"{run_name}_{'ae' if skill_inject == 'action_prefix' else 'cond'}"
+    # joint + ae + discretized state is the only arch now → no arch/inject tag. init_from_pi05 fixed true.
+    run_name = f"{source_dataset}_{run_tag}_{vis_tag}_batch{batch_size}"
     if not use_progress_token:  # progress-ablation variant (skill token only)
         run_name = f"{run_name}_np"
     if exp:
@@ -109,10 +102,9 @@ def build_settings(cfg: dict) -> dict:
         "run_tag": run_tag,
         "skillvla_dataset_dir": run_dir / "skillvla",
         "repo_id": f"dohyeon/{source_dataset}",
-        # conditioning architecture
-        "expert_arch": expert_arch,               # "fused" | "joint"
+        # conditioning (joint only; skill+progress on the action prefix)
         "cond_encoder_variant": cond_encoder_variant,  # "" → same as action_expert_variant
-        "skill_inject": skill_inject,             # [joint] "action_prefix" (ae) | "cond_token" (prev)
+        "state_n_bins": state_n_bins,             # per-dim discretized state token bins
         # model init
         "pi_base": pi_base,                       # "" → train the expert from scratch
         # vision encoder: "dino" or "siglip" (siglip warm-starts from pi_base's vision_tower)

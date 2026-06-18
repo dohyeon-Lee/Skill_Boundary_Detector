@@ -7,7 +7,7 @@
 # Output:
 #   eval   : ./outputs/{eval_wandb_run_name}_offset{eval_episode_offset}
 # Config:
-#   ../train_pi05_config.yaml
+#   ./pi05_eval_config.yaml
 #SBATCH --job-name=pi05_eval
 #SBATCH --qos=base_qos
 #SBATCH --gres=gpu:1
@@ -21,7 +21,7 @@ mkdir -p logs
 
 SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$(pwd)}"             # .../train_pi05/pi05_eval
 ROOT_DIR="$(cd "${SUBMIT_DIR}/.." && pwd)"          # .../train_pi05
-CONFIG_PATH="${TRAIN_PI05_CONFIG:-${ROOT_DIR}/train_pi05_config.yaml}"
+CONFIG_PATH="${TRAIN_PI05_CONFIG:-${SUBMIT_DIR}/pi05_eval_config.yaml}"
 CONFIG_PY="${ROOT_DIR}/src/train_pi05_config.py"
 
 BOOTSTRAP_PYTHON="${ROOT_DIR}/../../../../../.venv/bin/python"

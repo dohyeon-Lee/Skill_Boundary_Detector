@@ -13,19 +13,14 @@ run_tag: FSQ555_dino8_wow_imgX_500   # sub-folder under {skillvla_dataset_root}/
 
 # outputs_root comes from configs/global_config.yaml: checkpoints under {project_root}/{outputs_root}/skillVLA_stage1/.
 
-# ── Conditioning architecture ──
-# fused = ONE gemma over [image/state/skill tokens, action tokens], BLOCK-CAUSAL: cond⊥action
-#         (cond doesn't see the noisy action), action sees cond+action (DP/pi0-standard).
-# joint = SEPARATE cond-encoder (own gemma, same config) encodes image/state/skill; the action
-#         expert takes only action tokens and reads the cond stream via PI05-style block attention
-#         (action sees cond, cond⊥action). Action expert still warm-starts from pi05; cond-encoder
-#         is fresh. fused/joint write to different output folders, so both can be A/B-compared.
-expert_arch: joint              # fused | joint   (run-name tag: joint→A, fused→B)
+# ── Conditioning architecture (joint only) ──
+# SEPARATE cond-encoder (own gemma) encodes the scene (images + per-dim discretized state); the action
+# expert takes [skill, progress, action] and reads the cond stream via PI05-style block attention
+# (action sees cond, cond⊥action). Action expert warm-starts from pi05; cond-encoder is fresh.
 cond_encoder_variant:          # blank = same gemma variant as the action expert (recommended)
-# [joint 전용] skill(z_q)+progress 주입 위치 — fused는 항상 cond 토큰:
-#   action_prefix = action 스트림 prefix (현행 ae, run-name 태그 _ae)
-#   cond_token    = cond-encoder 토큰으로 (prev/baseline 재현, run-name 태그 _cond)
-skill_inject: action_prefix     # action_prefix | cond_token
+# State is QUANTILE-normalized to [-1,1] then discretized per-dim → one token per state dim (pi05-style),
+# instead of a single Linear-projected token the expert ignored (see stage1_eval/state_probe).
+state_n_bins: 256
 
 # ── Model init ──
 # init_from_pi05 is fixed true (always warm-start from pi_base) in src/stage1_train_config.py.
@@ -59,7 +54,7 @@ n_action_steps:                 # blank = chunk_size (must be <= chunk_size)
 # The skill token is [z_q, progress] — progress is GT (skill_ds/(ds+de)) at train time with
 # ±jitter noise (robustness to the terminator's estimate used at inference). 0 = clean GT.
 progress_jitter: 0.1
-use_progress_token: false   # false = progress 토큰 제거(skill z_q만으로 조건화); run-name에 _np 자동 태그
+use_progress_token: true   # false = progress 토큰 제거(skill z_q만으로 조건화); run-name에 _np 자동 태그
 
 # ── Optimization ──
 batch_size: 256

@@ -1,7 +1,7 @@
 # SkillVLA Stage-2 closed-loop EVAL on LIBERO sim via lerobot_skillvla_eval.
 #
 # Point at a trained Stage-2 run by its OUTPUT FOLDER NAME + checkpoint. The model
-# (expert_arch A/B, vision_backbone, skill_vocab, fsq_path) is restored from the
+# (vision_backbone, skill_vocab, state_n_bins, fsq_path) is restored from the
 # checkpoint's config.json on --policy.path, so it is not re-specified here. The FSQ
 # (terminator) + raw-dataset paths are derived from that config.
 
@@ -9,9 +9,9 @@
 # outputs_root comes from configs/global_config.yaml: trained S2 under {project_root}/{outputs_root}/skillVLA_stage2/.
 
 # ── Which trained model to evaluate ──
-# The Stage-2 run folder name, exactly as created by training ({source}_{run_tag}_batch{N}_{A|B}[_exp]):
-# model_dir: libero_90_full_full_FSQ555_dino8_prev_200_batch8_A
-model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_freeze_015000_unfreeze_ae
+# The Stage-2 run folder name, exactly as created by training
+# ({source}_{run_tag}_{stage1_checkpoint}_{freeze|unfreeze}[_exp]):
+model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_freeze_015000_unfreeze
 
 checkpoint: "050000"            # "last" or a step number (e.g. 100000)
 

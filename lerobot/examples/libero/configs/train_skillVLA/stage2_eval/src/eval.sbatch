@@ -49,19 +49,33 @@ export WANDB_DATA_DIR="${WANDB_DATA_DIR:-${HOME}/.wandb_data}"
 mkdir -p "${WANDB_CACHE_DIR}" "${WANDB_DATA_DIR}"
 export WANDB_DISABLE_SYMLINKS=true
 
+if [ ! -d "${POLICY_PATH}" ]; then
+  echo "Policy checkpoint not found: ${POLICY_PATH}  (train Stage-2 first)" >&2
+  exit 1
+fi
+
+# Terminator: use the adapted FSQ from THIS checkpoint (checkpoints/<ckpt>/FSQ_ft.pt) when Stage-2
+# co-trained it; lazy-export from the checkpoint if missing. Else fall back to the base dataset FSQ.
+FSQ_FOR_EVAL="${BASE_FSQ}"
+if [ "${TRAIN_TERMINATOR_USED}" = "true" ]; then
+  if [ ! -f "${FT_FSQ_PATH}" ]; then
+    echo "Adapted terminator missing for ${CHECKPOINT} → exporting from the checkpoint"
+    "${PROJECT_ROOT}/.venv/bin/python" "${SRC_DIR}/../../FT/src/export_ft_terminator.py" \
+      --ft_run_dir="${FT_RUN_DIR}" --checkpoint="${CHECKPOINT}" \
+      --base_fsq="${BASE_FSQ}" --out="${FT_FSQ_PATH}" --skip_if_no_terminator
+  fi
+  [ -f "${FT_FSQ_PATH}" ] && FSQ_FOR_EVAL="${FT_FSQ_PATH}"
+fi
+
 echo "START SKILLVLA EVAL (PT)"
 echo "Node     : ${SLURMD_NODENAME:-local}"
 echo "policy   : ${POLICY_PATH}"
-echo "fsq      : ${FSQ_CKPT}"
+echo "fsq      : ${FSQ_FOR_EVAL}"
 echo "target   : ${TARGET_TASK}  task_ids=${TASK_IDS}  episodes=${N_EPISODES}/task"
 nvidia-smi || true
 
-if [ ! -d "${POLICY_PATH}" ]; then
-  echo "Policy checkpoint not found: ${POLICY_PATH}  (train PT first)" >&2
-  exit 1
-fi
-if [ ! -f "${FSQ_CKPT}" ]; then
-  echo "FSQ checkpoint not found: ${FSQ_CKPT}" >&2
+if [ ! -f "${FSQ_FOR_EVAL}" ]; then
+  echo "No terminator FSQ available (neither adapted nor base): ${FSQ_FOR_EVAL}" >&2
   exit 1
 fi
 
@@ -78,6 +92,8 @@ PYTORCH_ALLOC_CONF=expandable_segments:True \
 PYTHONPATH="${LEROBOT_ROOT}/src:${LIBERO_REPO_ROOT}" \
   "${PROJECT_ROOT}/.venv/bin/python" -m lerobot.scripts.lerobot_skillvla_eval \
     --policy.path="${POLICY_PATH}" \
+    --policy.fsq_path="${FSQ_FOR_EVAL}" \
+    --policy.train_terminator=false \
     --env.type=libero \
     --env.task="${TARGET_TASK}" \
     --env.fps=20 \

@@ -38,8 +38,9 @@ echo "START STAGE-2 (skill_vla)"
 echo "Node     : ${SLURMD_NODENAME:-local}"
 echo "dataset  : ${SKILLVLA_DATASET_DIR}"
 echo "VLM init : ${PI_BASE}"
-echo "expert   : ${STAGE1_CHECKPOINT_PATH}  (arch=${EXPERT_ARCH})"
+echo "expert   : ${STAGE1_CHECKPOINT_PATH}  (arch=joint)"
 echo "FSQ(eval): ${FSQ_CKPT}"
+echo "term     : train_terminator=${TRAIN_TERMINATOR}   dino: ${DINO_TOKENS_PATH}"
 echo "output   : ${PT_OUTPUT_DIR}   lr/bs: ${LR}/${BATCH_SIZE}"
 nvidia-smi || true
 
@@ -49,6 +50,10 @@ if [ ! -e "${SKILLVLA_DATASET_DIR}" ]; then
 fi
 if [ ! -e "${STAGE1_CHECKPOINT_PATH}" ]; then
   echo "Missing Stage-1 checkpoint: ${STAGE1_CHECKPOINT_PATH}  (run configs/train_skillVLA/stage1 first)" >&2
+  exit 1
+fi
+if [ "${TRAIN_TERMINATOR}" = "true" ] && [ ! -e "${DINO_TOKENS_PATH}" ]; then
+  echo "train_terminator=true but DINO tokens missing: ${DINO_TOKENS_PATH}  (rebuild dataset)" >&2
   exit 1
 fi
 
@@ -63,8 +68,21 @@ elif [ -d "${PT_OUTPUT_DIR}" ]; then
   rm -rf "${PT_OUTPUT_DIR}"
 fi
 
+# Terminator co-training inputs: attach current-frame DINO tokens only when train_terminator=true.
+TERM_ARGS=()
+if [ "${TRAIN_TERMINATOR}" = "true" ]; then
+  TERM_ARGS=(
+    --policy.train_terminator=true
+    --policy.terminator_lr_scale="${TERMINATOR_LR_SCALE}"
+    --policy.terminator_end_target_sigma="${TERMINATOR_END_TARGET_SIGMA}"
+    --policy.terminator_end_pos_weight="${TERMINATOR_END_POS_WEIGHT}"
+    --policy.skill_decoder_dino_tokens_path="${DINO_TOKENS_PATH}"
+    --policy.skill_decoder_dino_output_key=skill_decoder_dino
+  )
+fi
+
 # pretrained_path=pi05 warm-starts the VLM; stage1_checkpoint_path warm-starts the action/cond side
-# (the policy's from_pretrained loads both). expert_arch/vision/skill_vocab are read from Stage-1.
+# (the policy's from_pretrained loads both). vision/skill_vocab/state_n_bins are read from Stage-1.
 PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="${NUM_GPUS}" \
   "${PROJECT_ROOT}/.venv/bin/lerobot-train" \
     --dataset.repo_id="${REPO_ID}" \
@@ -98,6 +116,22 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.cond_lr_scale="${COND_LR_SCALE}" \
     --wandb.enable="${WANDB_ENABLE}" \
     --wandb.project="${WANDB_PROJECT}" \
+    ${TERM_ARGS[@]+"${TERM_ARGS[@]}"} \
     ${RESUME_ARGS[@]+"${RESUME_ARGS[@]}"}
+
+# Export the co-trained terminator per saved checkpoint (checkpoints/<step>/FSQ_ft.pt) for stage2_eval
+# (the terminator weights live in each checkpoint's model.safetensors; reuses the FT export script).
+if [ "${TRAIN_TERMINATOR}" = "true" ]; then
+  for CKPT_DIR in "${PT_OUTPUT_DIR}"/checkpoints/*/; do
+    [ -d "${CKPT_DIR}pretrained_model" ] || continue
+    STEP="$(basename "${CKPT_DIR}")"
+    OUT="${CKPT_DIR%/}/FSQ_ft.pt"
+    [ -f "${OUT}" ] && continue
+    echo "Exporting terminator @ ${STEP} → ${OUT}"
+    "${PROJECT_ROOT}/.venv/bin/python" "${SRC_DIR}/../../FT/src/export_ft_terminator.py" \
+      --ft_run_dir="${PT_OUTPUT_DIR}" --checkpoint="${STEP}" \
+      --base_fsq="${FSQ_CKPT}" --out="${OUT}" --skip_if_no_terminator
+  done
+fi
 
 echo "DONE → ${PT_OUTPUT_DIR}"

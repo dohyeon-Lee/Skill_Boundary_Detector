@@ -11,9 +11,11 @@ class SkillExpertConfig(PI05Config):
 
     Predicts an action chunk by flow matching from the current 3rd-person + wrist images
     (each encoded by a trainable DINOv3, shared weights), the robot state, and the GT FSQ
-    skill code. All tokens self-attend; only the action-token hidden states are decoded
-    into actions. The VLM is added in Stage 2 (the `skill_vla` policy), which can be
-    initialized from a Stage-1 `skill_expert` checkpoint.
+    skill code. A fresh cond-encoder (own Gemma) encodes the scene — images + the per-dim
+    DISCRETIZED state — and the action expert reads it via PI05-style block attention (action
+    sees cond + action; cond ⊥ action), with skill (z_q) + progress prepended to the action
+    stream. The VLM is added in Stage 2 (the `skill_vla` policy), which can be initialized from
+    a Stage-1 `skill_expert` checkpoint.
 
     Inherits the PI05 action-expert / flow-matching knobs (chunk_size, max_action_dim,
     action_expert_variant, time sampling, num_inference_steps, normalization, ...). The
@@ -22,24 +24,13 @@ class SkillExpertConfig(PI05Config):
 
     model_type: str = "skill_expert"
 
-    # ── Conditioning architecture ──
-    expert_arch: str = "fused"
-    """How the action expert consumes the conditioning (image/state/skill):
-    "fused" → ONE Gemma over [cond tokens, action tokens] with BLOCK-CAUSAL attention: cond is one
-              bidirectional block that does NOT attend the noisy action; action attends cond + action
-              (DP/pi0-standard obs→action one-directional structure; expert weights also encode cond);
-    "joint" → a SEPARATE cond-encoder (own Gemma, same config) encodes the conditioning, and the
-              action expert receives ONLY action tokens, reading the cond stream via PI05-style
-              joint block attention (block mask: action sees cond+action, cond⊥action). The action
-              expert still warm-starts from pi05; the cond-encoder is fresh. The run/output folder
-              reflects this so fused/joint checkpoints don't collide."""
+    # ── Conditioning architecture (joint: cond-encoder ⊥ action expert) ──
+    # A SEPARATE cond-encoder (own Gemma) encodes the scene (images + per-dim discretized state); the
+    # action expert receives [skill, progress, action] and reads the cond stream via PI05-style joint
+    # block attention (action sees cond + action; cond ⊥ action). The action expert warm-starts from
+    # pi05; the cond-encoder is fresh. Skill (z_q) + progress are prepended to the ACTION stream.
     cond_encoder_variant: str | None = None
-    """Gemma variant for the joint cond-encoder. None → same as action_expert_variant."""
-    skill_inject: str = "action_prefix"
-    """[joint only] Where the skill (z_q) + progress tokens enter (fused ALWAYS uses cond tokens):
-    "action_prefix" → prepended to the ACTION stream (~1:K among action tokens; current default);
-    "cond_token"    → appended to the COND-encoder tokens (~1:400, diluted among image tokens; the
-                      "prev"/baseline recipe). Both feed the same Linear(D→width) on z_q (vector input)."""
+    """Gemma variant for the cond-encoder. None → same as action_expert_variant."""
 
     # ── Vision encoder (shared across the two cameras) ──
     vision_backbone: str = "dino"
@@ -62,6 +53,13 @@ class SkillExpertConfig(PI05Config):
     siglip_lr: float | None = None
     """Separate LR for the SigLIP encoder when unfrozen. None → use optimizer_lr."""
 
+    # ── State conditioning ──
+    state_n_bins: int = 256
+    """The robot state is QUANTILE-normalized to [-1, 1] and each dim discretized into this many bins,
+    then embedded — ONE token PER state dim (pi05-style discretized state, but as cond tokens). Replaces
+    a single Linear-projected state token, which the action expert ignored (diluted among image tokens +
+    quiet scalar projection; see the stage1_eval/state_probe diagnostic)."""
+
     # ── Skill conditioning ──
     skill_vocab_size: int = 125
     """Number of FSQ skill codes (= prod(skill_fsq_levels)); bounds the codes in the dataset."""
@@ -81,10 +79,10 @@ class SkillExpertConfig(PI05Config):
     use_progress_token: bool = True
     """Whether the skill PROGRESS enters the model as its own token (alongside the z_q skill token).
     True (default) = current recipe (skill + progress). False = drop the progress token entirely;
-    the action expert conditions on the skill code only (progress ablation). Applies wherever the
-    skill goes: the action-stream prefix (joint + action_prefix → 2→1 tokens) and the cond tokens
-    (fused / joint + cond_token). progress_proj stays allocated either way so progress-on/off
-    checkpoints stay mutually loadable; only whether its output is used changes."""
+    the action expert conditions on the skill code only (progress ablation). The skill (+progress)
+    tokens are prepended to the ACTION stream (2→1 tokens when off). progress_proj stays allocated
+    either way so progress-on/off checkpoints stay mutually loadable; only whether its output is used
+    changes."""
 
     # ── Eval-only (oracle closed-loop sim). Ignored during training. ──
     fsq_path: str | None = None

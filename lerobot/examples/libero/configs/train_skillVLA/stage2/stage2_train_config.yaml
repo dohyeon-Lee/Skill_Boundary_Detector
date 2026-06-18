@@ -1,40 +1,32 @@
-# SkillVLA Stage-2 training (policy.type=skill_vla).
-#
-# A PaliGemma VLM (warm-started from pi05_base) predicts the skill from the skill-START obs; an
-# action expert warm-started from a Stage-1 skill_expert checkpoint flow-matches the action chunk.
-# expert_arch (A=joint / B=fused), vision_backbone, action_expert_variant and skill_vocab_size are
-# read from the Stage-1 checkpoint by the model — set only the Stage-1 run name below.
-#
-# All roots are declared below (standalone); source/run_tag/skill_fsq_levels are parsed from
-# stage1_run_name (the dataset this stage trains on = the one Stage-1 trained on). Output:
-#   {project_root}/{outputs_root}/skillVLA_stage2/{source_dataset}_{run_tag}_batch{N}_{A|B}[_{exp}]/
-
 # ── Paths (project_root/dataset_root come from configs/global_config.yaml) ──
 skillvla_dataset_root: skillvla_dataset
-# outputs_root comes from configs/global_config.yaml: stage1 warm-start in {outputs_root}/skillVLA_stage1/, this stage in .../skillVLA_stage2/.
 
 # ── Warm-start (also selects the dataset: source + run_tag parsed from stage1_run_name) ──
-pi_base: models/pi05_base   # project_root(global_config) 기준 상대경로 → 서버마다 자동. 절대경로도 허용.
-# Stage-1 skill_expert run folder under {outputs_root}/skillVLA_stage1/ whose
-# checkpoints/{stage1_checkpoint}/pretrained_model warm-starts the action expert + cond side. Its
-# config supplies expert_arch (A/B) / vision_backbone / skill_vocab — no need to repeat them here.
-# The skillvla dataset to train on is the one this Stage-1 trained on (parsed from this name).
-
-stage1_run_name: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_freeze_batch256_A_ae_c25
-stage1_checkpoint: "015000"
-# stage1_run_name: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_freeze_batch128_A_ae_c25
-# stage1_checkpoint: "010000"     # (ae siglip stage1 체크포인트 존재 시) "last" 또는 스텝번호로 핀
+pi_base: models/pi05_base   
+stage1_run_name: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_freeze_batch256_c25
+stage1_checkpoint: "015000"   # "last" or a step number of the Stage-1 run above
 
 # ── Skill head / FSQ ──────────────────────────────────────────
 skill_loss_weight: 0.1                # total = BC + λ·skill_CE (λ<1 keeps BC dominant)
+
 # VLM↔cond attention: false=cond가 VLM 이미지 토큰만 봄(언어 제외, visual grounding 강제).
 # true=cond가 VLM 언어 토큰도 attend(ablation). skill-query는 둘 다 항상 제외.
 cond_attend_language: false
+
+# ── FSQ terminator co-training (same as FT; disjoint from the SkillVLA params) ──
+# Adapt the FSQ terminator on this dataset's GT signals (z←true skill, current DINO + state →
+# progress + soft termination) alongside Stage-2. Warm-starts from the run's FSQ.pt and is exported
+# per-checkpoint (checkpoints/<step>/FSQ_ft.pt) for stage2_eval. Needs the dataset's dino.npz.
+train_terminator: true
+terminator_lr_scale: 1.0
+terminator_end_target_sigma: 1.0     # soft termination target std in FRAMES (exp(-de²/2σ²))
+terminator_end_pos_weight: 1.0
+
 # ── Run naming ────────────────────────────────────────────────
-exp: "ae"                                      # optional suffix → ..._batch{N}_{A|B}_{exp}
+exp: ""                                        # optional run-name suffix (blank = none)
 
 # ── Freeze toggles (all parts otherwise trained) ──────────────
-freeze_cond_encoder: false                    # [A only] reuse the Stage-1 current-obs encoding
+freeze_cond_encoder: false                    # reuse the Stage-1 current-obs cond-encoding (frozen)
 freeze_expert_vision: false
 
 freeze_vlm: false
@@ -48,8 +40,6 @@ batch_size: 16
 num_workers: 4
 num_gpus: 1
 lr_base: 2.5e-05                             # effective base lr = lr_base * num_gpus (VLM + vision use this)
-# 차등 LR (× base): warm-start된 action expert / cond side만 더 빠르게 적응시켜 보는 실험용.
-# VLM·비전 백본은 base 유지(망각 방지). 1.0 = 기존과 동일. (warm-start라 너무 키우면 stage1 지식 손상 → 2~3배 권장)
 expert_lr_scale: 1.0                         # action expert(gemma_expert + action/time proj) LR 배수
 cond_lr_scale: 1.0                           # cond side(cond_encoder + image/state proj) LR 배수
 steps: 100000
