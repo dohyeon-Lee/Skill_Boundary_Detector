@@ -46,7 +46,7 @@ def build_settings(cfg: dict) -> dict:
     stage2_ckpt = stage2_vla_root / stage2_run_name / "checkpoints" / stage2_checkpoint / "pretrained_model"
 
     # The Stage-2 checkpoint config is the source of truth for the architecture: stage1_checkpoint_path
-    # (Stage-1 config → expert_arch/vision/skill_vocab; no weights reloaded) and skill_fsq_levels.
+    # (Stage-1 config → vision/skill_vocab/state_n_bins; no weights reloaded) and skill_fsq_levels.
     s2_cfg: dict = {}
     s2_cfg_json = stage2_ckpt / "config.json"
     if s2_cfg_json.is_file():

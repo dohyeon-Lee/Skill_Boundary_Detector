@@ -10,7 +10,7 @@
 skillvla_dataset_root: skillvla_dataset
 
 # ── Warm-start: the Stage-2 run + checkpoint to finetune from ──
-stage2_run_name: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_freeze_005000_unfreeze_ae
+stage2_run_name: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_freeze_015000_unfreeze
 stage2_checkpoint: "085000"          # "last" or a step number
 # stage1_checkpoint_path:            # blank → read from the Stage-2 checkpoint config.json
 # skill_fsq_levels:                  # blank → read from the Stage-2 checkpoint config.json
