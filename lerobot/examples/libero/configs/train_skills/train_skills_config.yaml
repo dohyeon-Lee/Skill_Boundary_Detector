@@ -88,16 +88,17 @@ fsq_inputs_name: FSQ_inputs
 ################################################################
 # EEF pose is always absolute and the motion decoder always predicts K-step
 # action chunks, so eef_mode/action_mode are no longer configurable.
+fsq_terminator_use_third: true   # 3rd-person 카메라. use_wrist와 조합: (T,F)3rd-only (T,T)both (F,T)wrist-only
 fsq_terminator_use_wrist: true
 # Reconstructor start-image input. true = [z, start_state, start_img, progress] (current);
 # false = drop the start image → forces z to be the sole motion source (start_state kept).
 fsq_reconstructor_use_image: false
 fsq_run_name: "{target_dataset}_{fsq_tag}_dino{dino_patch_grid}{fsq_exp_suffix}"
-fsq_exp: "ww_imgX"  # optional suffix for ablations, e.g. exp1 -> ..._exp1
+fsq_exp: "ww_imgX_pro"  # optional suffix for ablations, e.g. exp1 -> ..._exp1
 fsq_levels: [5, 5, 5]
 fsq_epoch: "1000"
 
-fsq_batch_size: 128 
+fsq_batch_size: 64 
 fsq_num_workers: 8             # DataLoader 워커 수 (0=메인스레드 단일 → 데이터로딩 병목). cpus_per_task 내에서.
 fsq_num_epochs: 1000
 fsq_checkpoint_every: 100
@@ -109,8 +110,8 @@ fsq_chunk_size: 10
 fsq_max_length: 200
 # ── FSQ loss weights ──────────────────────────────────────────
 fsq_delta_loss_weight: 1.0      # action chunk reconstruction (SmoothL1)
-fsq_progress_loss_weight: 1.0   # skill progress prediction (SmoothL1)
-fsq_end_loss_weight: 1.0        # skill termination (BCE)
+fsq_progress_loss_weight: 10.0   # skill progress prediction (SmoothL1)
+fsq_end_loss_weight: 10.0        # skill termination (BCE)
 fsq_end_target_sigma: 1.0       # soft end target: Gaussian bump std (frames) at the skill end;
                                 # curbs termination-head val overfit. 0 = hard 1-frame spike.
 # Fixed FSQ hyperparams (lr, hidden_dim, num_layers, n_control, image_token_dim=256)

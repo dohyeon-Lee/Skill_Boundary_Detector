@@ -26,6 +26,9 @@ targets:
   newdata_555_dino_freeze_c25_015k_ae:
     model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_freeze_batch256_A_ae_c25
     checkpoint: "015000"
+  newdata_555_dino_freeze_c25_010k_ae_np:
+    model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_freeze_batch256_A_ae_np_c25
+    checkpoint: "010000"
 
 
 # ── 공통 teacher-forced knobs ────────────────────────────────

@@ -468,6 +468,7 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                     "loss_skill_decoder_action_loss", "loss_skill_decoder_end_loss",
                     "predicted_latent_prob",
                     "loss_skill", "skill_acc",  # Stage-2 SkillVLA: VLM skill CE + skill-code accuracy
+                    "loss_terminator",          # FT SkillVLA: co-trained FSQ terminator (progress + termination)
                 }
                 wandb_log_dict = {k: v for k, v in wandb_log_dict.items() if k in _wandb_keep}
                 wandb_logger.log_dict(wandb_log_dict, step)

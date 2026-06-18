@@ -33,6 +33,7 @@ SKILL_START_IMAGE = "skill_start_image"
 SKILL_START_WRIST_IMAGE = "skill_start_wrist_image"
 SKILL_START_STATE = "skill_start_state"
 SKILL_CODE = "skill_code"
+SKILL_CODE_TRUE = "skill_code_true"
 SKILL_PROGRESS = "skill_progress"
 
 CAM_3RD = "observation.images.image"
@@ -151,6 +152,9 @@ class SkillVLADataset(LeRobotDataset):
         item[SKILL_START_WRIST_IMAGE] = start_imgs[CAM_WRIST]
         item[SKILL_START_STATE] = torch.from_numpy(start_state)
         item[SKILL_CODE] = torch.tensor(skill_code, dtype=torch.long)
+        # TRUE current skill's code (un-jittered) — the FSQ terminator co-training (FT) conditions on
+        # the actual skill the current frame belongs to, with progress/termination from its ds/de.
+        item[SKILL_CODE_TRUE] = torch.tensor(int(ss[k]), dtype=torch.long)
 
         # 4) GT progress of the CURRENT frame within the CHOSEN skill kp (terminator's training
         # scale: 0 at skill start, 1 at its last frame). Transition-jittered samples clamp: a frame

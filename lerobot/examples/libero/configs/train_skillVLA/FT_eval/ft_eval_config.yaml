@@ -1,0 +1,41 @@
+# SkillVLA FT closed-loop EVAL on LIBERO sim via lerobot_skillvla_eval.
+#
+# Point at a FINETUNED run (under {outputs_root}/skillVLA_FT/) by its OUTPUT FOLDER NAME + checkpoint.
+# The model is restored from the checkpoint's config.json; the terminator is swapped to the run's
+# FT-adapted FSQ_ft.pt when present (else the base FSQ from the checkpoint config).
+
+# ── Which trained FT model to evaluate (folder name as created by FT training) ──
+model_dir: libero_10_full_5_FSQ555_dino8_wow_imgX_500_ft085000_pred_term
+checkpoint: "003000"               # "last" or a step number
+
+# ── Eval rollout (libero_10 = the finetuned task suite) ──
+target_task: libero_10
+task_ids: "[0,1,2,3,4,5,6,7,8,9]"
+n_episodes: 5
+n_action_steps: 5
+eval_batch_size: 1
+max_parallel_tasks: 1
+
+# ── Video / skill HTML ──
+max_videos_per_task: 5
+video_frame_stride: 2
+video_fps: 10
+skill_html: true
+skill_html_train_samples: 10
+
+# ── Inference (eval-time tuning; model STRUCTURE comes from the checkpoint) ──
+skill_end_threshold: 0.5
+inference_skill_max_length: 200    # force a skill switch after this many steps (0 = off)
+
+# ── Oracle eval (isolate the action expert from the VLM's skill prediction) ──
+use_gt_skill: false
+skill_advance_mode: terminator     # "terminator" (FSQ signal) or "gt" (oracle only)
+
+# ── wandb ──
+wandb_project: VLA_eval
+
+# ── Slurm (partition/qos/nodelist/exclude_nodes come from configs/global_config.yaml) ──
+eval_gres: gpu:1
+eval_cpus_per_task: 8
+eval_mem: 32G
+eval_time: "1:00:00"

@@ -24,18 +24,18 @@ pt_mem: 128G
 pt_time: "48:00:00"
 
 # ── pi05 FT ───────────────────────────────────────────────────
-ft_dataset: libero_10_op1_10
-ft_batch_size: 32
+ft_dataset: libero_10_full_5
+ft_batch_size: 16
 ft_num_workers: 4
-ft_exp: exp2
+ft_exp: ""
 ft_lr: 2.5e-05
-ft_steps: 5000
-ft_save_freq: 500
+ft_steps: 15000
+ft_save_freq: 5000
 ft_wandb_project: VLA_Finetune
 ft_pretrained_dataset: libero_90_full_full
-ft_pretrained_batch_size: 32
-ft_pretrained_exp: exp1
-ft_pretrained_checkpoint: "050000"
+ft_pretrained_batch_size: 16
+ft_pretrained_exp: ""
+ft_pretrained_checkpoint: "015000"
 ft_freeze_vision_encoder: false
 ft_train_expert_only: false
 
@@ -58,7 +58,7 @@ eval_checkpoint: "010000"
 # Otherwise, set this to the exact folder name under {project_root}/pi05_outputs/.
 eval_model: "PT_libero_90_full_full_pi05_batch16"
 eval_max_parallel_tasks: 1
-eval_max_videos_per_task: 1
+eval_max_videos_per_task: 5
 eval_video_frame_stride: 2
 eval_video_fps: 10
 eval_wandb_project: VLA_eval

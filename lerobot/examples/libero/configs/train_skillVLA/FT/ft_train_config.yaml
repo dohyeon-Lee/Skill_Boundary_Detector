@@ -1,0 +1,70 @@
+# SkillVLA FINETUNING (FT) — adapt a post-trained Stage-2 model to a NEW task.
+#
+# Warm-starts the WHOLE skill_vla policy from a Stage-2 checkpoint (pretrained_path → from_pretrained's
+# is_stage2 full-load: VLM + cond + expert + skill head), then trains on the new task's skillvla
+# dataset (same FSQ codebook). stage1_checkpoint_path / skill_fsq_levels / skill_loss_weight are read
+# from the Stage-2 checkpoint's config.json (architecture only; no Stage-1 weights reloaded).
+# Output: {project_root}/{outputs_root}/skillVLA_FT/{run_name}/
+
+# ── Paths (project_root/dataset_root/outputs_root come from configs/global_config.yaml) ──
+skillvla_dataset_root: skillvla_dataset
+
+# ── Warm-start: the Stage-2 run + checkpoint to finetune from ──
+stage2_run_name: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_freeze_005000_unfreeze_ae
+stage2_checkpoint: "085000"          # "last" or a step number
+# stage1_checkpoint_path:            # blank → read from the Stage-2 checkpoint config.json
+# skill_fsq_levels:                  # blank → read from the Stage-2 checkpoint config.json
+
+# ── New task: the skillvla dataset to finetune ON (built by build_data with the SAME FSQ) ──
+source_dataset: libero_10_full_5
+run_tag: FSQ555_dino8_wow_imgX_500
+
+# ── FT behaviour ──────────────────────────────────────────────
+# cond_skill_source: gt = teacher-force GT skill (Stage-2 style); pred = condition the action prefix
+# on the VLM's OWN predicted skill (STE) → matches inference, flow loss backprops into the VLM.
+cond_skill_source: pred
+skill_loss_weight:                   # blank → inherit the Stage-2 value
+
+# ── Terminator co-training (adapt the FSQ terminator to the new task; disjoint from the policy) ──
+train_terminator: true
+terminator_lr_scale: 1.0
+terminator_end_target_sigma: 1.0     # soft termination target std in FRAMES (exp(-de²/2σ²))
+terminator_end_pos_weight: 1.0
+
+# ── Freeze toggles (FT default: VLM-only finetune) ────────────
+# VLM trunk + its vision + the skill-query token stay TRAINABLE (re-ground obs→skill for the new task);
+# the skill readout head and the whole motor side (cond-encoder, action expert, its vision) are FROZEN.
+freeze_vlm: false
+freeze_vlm_vision: false
+freeze_skill_head: true
+
+freeze_cond_encoder: false
+freeze_expert_vision: false
+
+freeze_action_expert: true
+
+
+exp: "unfreeze_cond"                              # optional EXTRA run-name suffix
+
+# ── Optimization ──────────────────────────────────────────────
+batch_size: 16
+num_workers: 4
+num_gpus: 1
+lr_base: 2.5e-05                     # effective base lr = lr_base * num_gpus
+steps: 15000
+save_freq: 5000
+
+# ── wandb ─────────────────────────────────────────────────────
+wandb_enable: true
+wandb_project: VLA_FT
+
+# ── Slurm ──
+# Pin to the 97GB RTX PRO 6000 nodes (node55-58). FT needs MORE memory than stage2 — cond_skill_source
+# =pred runs the VLM twice + terminator co-training — so the 48GB a6000/6000ada and 24GB 4090/3090
+# nodes OOM at batch 16. These partitions only allow pro6000_qos (base_qos is rejected there).
+train_partition: [asus_pro6000, gigabyte_pro6000]
+train_qos: pro6000_qos
+train_gres: gpu:1
+train_cpus_per_task: 16
+train_mem: 128G
+train_time: "48:00:00"

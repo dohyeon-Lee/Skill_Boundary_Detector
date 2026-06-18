@@ -200,6 +200,14 @@ class SkillVLAPytorch(PI05Pytorch):
                     m.to(dtype=torch.bfloat16)
             self.skill_query.data = self.skill_query.data.to(torch.bfloat16)
 
+        # FT: a TRAINABLE terminator co-trained on GT signals (built last so the bf16 cast above skips
+        # it — it stays float32). Disjoint from the SkillVLA params; warm-starts from config.fsq_path.
+        self.fsq_term_train = None
+        if getattr(config, "train_terminator", False):
+            if not getattr(config, "fsq_path", None):
+                raise ValueError("train_terminator=True requires config.fsq_path (the FSQ checkpoint to adapt).")
+            self._build_terminator_trainable(config.fsq_path)
+
     # ── construction helpers ──
     def _build_cond_side(self, s1) -> None:
         """Stage-1 vision + projections (+ joint cond-encoder). Mirrors ``SkillExpertPytorch``
@@ -276,10 +284,14 @@ class SkillVLAPytorch(PI05Pytorch):
         tokens.append(self.state_proj(state.to(self._wdtype)).unsqueeze(1))
         return torch.cat(tokens, dim=1)
 
+    def _skill_token_from_z(self, zq: Tensor) -> Tensor:
+        """Normalized z_q ∈ [-1, 1]^D → Linear → (B, 1, expert_width) skill token. The z may be the
+        GT code's grid coord or the VLM's STE-rounded prediction (cond_skill_source=pred)."""
+        return self.skill_proj(zq.to(self._wdtype)).unsqueeze(1)
+
     def _skill_token(self, skill_code: Tensor) -> Tensor:
         """Flat code → normalized z_q ∈ [-1, 1]^D → Linear → (B, 1, expert_width) cond token."""
-        zq = self._code_to_z(skill_code) / self._fsq_half[None, :]
-        return self.skill_proj(zq.to(self._wdtype)).unsqueeze(1)
+        return self._skill_token_from_z(self._code_to_z(skill_code) / self._fsq_half[None, :])
 
     def _progress_token(self, skill_progress: Tensor) -> Tensor:
         """Skill progress ∈ [0, 1] → Linear → (B, 1, expert_width) cond token (mirrors the FSQ
@@ -287,22 +299,33 @@ class SkillVLAPytorch(PI05Pytorch):
         prog = skill_progress.view(-1, 1).float().to(next(self.parameters()).device)
         return self.progress_proj(prog.to(self._wdtype)).unsqueeze(1)
 
+    def _action_prefix_from_z(self, zq: Tensor, skill_progress: Tensor) -> Tensor:
+        """[skill, progress] action-stream prefix from a normalized skill z (GT grid coord or the
+        VLM's STE-rounded prediction). See ``_action_prefix``."""
+        return torch.cat([self._skill_token_from_z(zq), self._progress_token(skill_progress)], dim=1)
+
     def _action_prefix(self, skill_code: Tensor, skill_progress: Tensor) -> Tensor:
         """[skill, progress] tokens prepended to the action-expert stream (joint/ae) → (B, 2, width).
         ae injects the skill here (action stream) instead of into the cond-encoder, so cond stays
         skill-blind (mirrors Stage-1 ae's _action_prefix)."""
-        return torch.cat([self._skill_token(skill_code), self._progress_token(skill_progress)], dim=1)
+        return self._action_prefix_from_z(self._code_to_z(skill_code) / self._fsq_half[None, :], skill_progress)
+
+    def _cond_tokens_from_z(self, images: list[Tensor], state: Tensor, skill_zq: Tensor,
+                            skill_progress: Tensor) -> Tensor:
+        """Conditioning tokens from a normalized skill z (GT or predicted). See ``_cond_tokens``."""
+        tokens = [self._cond_image_state_tokens(images, state)]
+        if self.expert_arch == "fused":
+            tokens.append(self._skill_token_from_z(skill_zq))
+            tokens.append(self._progress_token(skill_progress))
+        return torch.cat(tokens, dim=1)
 
     def _cond_tokens(self, images: list[Tensor], state: Tensor, skill_code: Tensor,
                      skill_progress: Tensor) -> Tensor:
         """Conditioning tokens → (B, M, expert_width).
         joint (ae): [img1, img2, state] — SCENE ONLY; skill+progress go to the action-stream prefix.
         fused: [img1, img2, state, skill, progress] (skill as a token)."""
-        tokens = [self._cond_image_state_tokens(images, state)]
-        if self.expert_arch == "fused":
-            tokens.append(self._skill_token(skill_code))
-            tokens.append(self._progress_token(skill_progress))
-        return torch.cat(tokens, dim=1)
+        return self._cond_tokens_from_z(
+            images, state, self._code_to_z(skill_code) / self._fsq_half[None, :], skill_progress)
 
     def _vlm_tokens(
         self, start_images: list[Tensor], lang_tokens: Tensor, lang_masks: Tensor
@@ -470,6 +493,16 @@ class SkillVLAPytorch(PI05Pytorch):
         """The skill-query hidden (last VLM token) → SkillHead input."""
         return vlm_out[:, -1]
 
+    def _pred_skill_ste_z(self, skill_hidden: Tensor) -> Tensor:
+        """cond_skill_source=pred: the VLM's predicted skill as a normalized z, with a straight-through
+        round so the cond/prefix sees the SAME discrete code as inference (skill_head.decode), while the
+        flow loss still backprops the continuous prediction into the VLM trunk (through SkillHead, which
+        stays frozen in FT but conducts the gradient)."""
+        z_pred = self.skill_head._pred_z(skill_hidden)                            # (B, D) ∈ (-1,1), differentiable
+        code = self.skill_head.decode(skill_hidden)                              # (B,) discrete (== inference)
+        z_hard = (self._code_to_z(code) / self._fsq_half[None, :]).to(z_pred.dtype)
+        return z_hard + (z_pred - z_pred.detach())                                # STE: fwd=z_hard, grad=z_pred
+
     # ── training ──
     def forward(
         self,
@@ -486,9 +519,15 @@ class SkillVLAPytorch(PI05Pytorch):
     ) -> tuple[Tensor, Tensor]:
         """Single joint forward → (flow_losses (B, chunk, max_action_dim), skill_hidden (B, vlm_width)).
 
-        ``skill_code`` is teacher-forced into the cond-side; the skill CE target is computed by the
-        policy from the same code. BC gradients flow into the action expert, the VLM (via the action's
-        cross-attention) and the cond-encoder; the skill CE gradient flows into the VLM + skill head.
+        The skill z fed to the cond/action-prefix is GT teacher-forced (``cond_skill_source="gt"``,
+        Stage-2 default) or the VLM's OWN STE-rounded prediction (``"pred"``, FT: matches inference and
+        lets the flow loss backprop through SkillHead into the VLM trunk). The skill CE target is the GT
+        code either way. BC gradients flow into the action expert, the VLM (via the action's cross-
+        attention; plus the cond/prefix skill token in pred mode) and the cond-encoder.
+
+        pred mode runs the VLM once HERE (phase 1) to get the skill before the prefix exists; the joint
+        forward reruns it for cross-attention. The VLM stream is independent (self-attn only), so both
+        are numerically identical — phase-1's hidden is reused for the skill CE.
         """
         if time is None:
             time = self.sample_time(actions.shape[0], actions.device)
@@ -499,34 +538,46 @@ class SkillVLAPytorch(PI05Pytorch):
         x_t = t_exp * noise + (1 - t_exp) * actions
         u_t = noise - actions
 
-        cond_tokens = self._cond_tokens(cond_images, state, skill_code, skill_progress)
         vlm_embeds, vlm_pad, vlm_xattn_block = self._vlm_tokens(start_images, lang_tokens, lang_masks)
+        pred_hidden = None
+        if getattr(self.config, "cond_skill_source", "gt") == "pred":
+            pred_hidden = self._skill_hidden(self._vlm_prefix_out(vlm_embeds, vlm_pad))  # phase 1 (grad)
+            skill_zq = self._pred_skill_ste_z(pred_hidden)
+        else:
+            skill_zq = self._code_to_z(skill_code) / self._fsq_half[None, :]
+
+        cond_tokens = self._cond_tokens_from_z(cond_images, state, skill_zq, skill_progress)
         action_tokens = self._action_in(x_t)
         if self.expert_arch == "joint":  # ae: prepend [skill, progress] to the action stream
-            action_tokens = torch.cat([self._action_prefix(skill_code, skill_progress), action_tokens], dim=1)
+            action_tokens = torch.cat([self._action_prefix_from_z(skill_zq, skill_progress), action_tokens], dim=1)
         time_cond = self._time_cond(time)
 
         vlm_out, action_out = self._joint_forward(
             cond_tokens, vlm_embeds, vlm_pad, vlm_xattn_block, action_tokens, time_cond)
         v_t = self._action_out(action_out)
-        return F.mse_loss(u_t, v_t, reduction="none"), self._skill_hidden(vlm_out)
+        skill_hidden = pred_hidden if pred_hidden is not None else self._skill_hidden(vlm_out)
+        return F.mse_loss(u_t, v_t, reduction="none"), skill_hidden
 
     # ── inference ──
-    @torch.no_grad()
-    def predict_skill_code(self, start_images: list[Tensor], lang_tokens: Tensor, lang_masks: Tensor) -> Tensor:
-        """Run ONLY the VLM (bidirectional prefix) → argmax FSQ skill code (B,)."""
-        vlm_embeds, vlm_pad, _ = self._vlm_tokens(start_images, lang_tokens, lang_masks)
-        bsize, nv = vlm_pad.shape
+    def _vlm_prefix_out(self, vlm_embeds: Tensor, vlm_pad: Tensor) -> Tensor:
+        """VLM transformer over a PRECOMPUTED prefix (bidirectional within valid tokens) → hidden
+        (B, nv, vlm_width). Grad-capable: the gemma language_model gradient-checkpoints internally
+        when training, so the cond_skill_source=pred path (which keeps the graph) stays memory-safe."""
         att_2d = vlm_pad[:, None, :] & vlm_pad[:, :, None]
         # SDPA (the VLM's default attn) requires the additive bias dtype to match the query's; the
         # python-float `torch.where` yields float32, so cast to the bf16 working dtype.
         att_4d = torch.where(att_2d[:, None], 0.0, OPENPI_ATTENTION_MASK_VALUE).to(vlm_embeds.dtype)
         position_ids = torch.cumsum(vlm_pad, dim=1) - 1
-        out = self._vlm.forward(
+        return self._vlm.forward(
             inputs_embeds=vlm_embeds, attention_mask=att_4d, position_ids=position_ids,
             past_key_values=None, use_cache=False, adarms_cond=None,
         ).last_hidden_state
-        return self.skill_head.decode(self._skill_hidden(out))
+
+    @torch.no_grad()
+    def predict_skill_code(self, start_images: list[Tensor], lang_tokens: Tensor, lang_masks: Tensor) -> Tensor:
+        """Run ONLY the VLM (bidirectional prefix) → argmax FSQ skill code (B,)."""
+        vlm_embeds, vlm_pad, _ = self._vlm_tokens(start_images, lang_tokens, lang_masks)
+        return self.skill_head.decode(self._skill_hidden(self._vlm_prefix_out(vlm_embeds, vlm_pad)))
 
     # ── cached inference (branch A): VLM cached per skill, cond per call, action per denoise step ──
     def _encode_prefix_kv(self, layers, embeds, pad, position_ids, adarms=None,
@@ -727,9 +778,15 @@ class SkillVLAPytorch(PI05Pytorch):
                        skill_progress, noise, num_steps)
 
     # ── FSQ terminator (inference-only skill-transition gating) ──
-    def load_terminator(self, path: str) -> None:
-        """Load the frozen FSQ checkpoint's terminator (decides skill transitions in closed loop).
-        Only ``predict_termination`` is used (the action chunk comes from the flow-matching expert)."""
+    # Terminator-path submodules (the ones co-trained in FT; everything else — the FSQ encoder and the
+    # reconstructor — stays frozen). dec_z_proj feeds both, but is on the terminator's input path.
+    _TERM_TRAIN_MODULES = ("dec_z_proj", "term_state_proj", "dec_image_encoder_term",
+                           "dec_image_encoder_term_wrist", "term_pool", "progress_head", "termination_head")
+
+    @staticmethod
+    def _construct_fsq(path: str):
+        """Build a SplineFSQAE from an FSQ checkpoint + load its weights (terminator + reconstructor;
+        the unused encoder weights are dropped). Returns the model on CPU (caller places/casts it)."""
         sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "examples" / "libero"))
         import dataclasses  # noqa: PLC0415
 
@@ -739,15 +796,13 @@ class SkillVLAPytorch(PI05Pytorch):
         cfg_dict = dataclasses.asdict(ckpt["cfg"])
         keys = {"action_dim", "state_dim", "n_control", "spline_degree", "hidden_dim", "fsq_levels",
                 "num_layers", "dropout", "max_length", "action_min", "action_max", "delta_min", "delta_max",
-                "feat_dim", "n_tokens", "image_encoder_layers", "terminator_use_wrist", "image_encoder_heads",
+                "feat_dim", "n_tokens", "image_encoder_layers", "terminator_use_third", "terminator_use_wrist", "image_encoder_heads",
                 "reconstructor_use_image",
                 "image_model_name", "image_size", "patch_grid", "n_patch_raw", "image_token_dim", "chunk_size",
                 "reconstructor_mode"}
         fsq = SplineFSQAE(**{k: v for k, v in cfg_dict.items() if k in keys})
-        # The terminator only runs the decoder path (predict_termination); the FSQ encoder is never
-        # used at inference. So we drop any encoder weights the current model no longer has (e.g.
-        # enc_image_encoder/enc_fusion_pool from pre-"action-only-encoder" checkpoints) and keep
-        # strictness on the terminator/reconstructor weights, which must all be present.
+        # The terminator only runs the decoder path; the FSQ encoder is never used here. Drop encoder
+        # weights the current model no longer has, keep strictness on terminator/reconstructor weights.
         model_keys = set(fsq.state_dict().keys())
         state = {k: v for k, v in ckpt["model_state"].items() if k in model_keys}
         dropped = [k for k in ckpt["model_state"] if k not in model_keys]
@@ -755,14 +810,56 @@ class SkillVLAPytorch(PI05Pytorch):
         if missing:
             raise RuntimeError(f"FSQ terminator checkpoint missing required weights: {sorted(missing)}")
         if dropped:
-            log.info("Ignored %d non-terminator FSQ key(s) when loading terminator (e.g. %s).",
-                     len(dropped), dropped[0])
+            log.info("Ignored %d non-terminator FSQ key(s) when loading FSQ (e.g. %s).", len(dropped), dropped[0])
+        return fsq
+
+    def load_terminator(self, path: str) -> None:
+        """Load the frozen FSQ checkpoint's terminator (decides skill transitions in closed loop).
+        Only ``predict_termination`` is used (the action chunk comes from the flow-matching expert)."""
+        fsq = self._construct_fsq(path)
         for p in fsq.parameters():
             p.requires_grad_(False)
         fsq.eval()
         self.fsq_term = fsq.to(device=next(self.parameters()).device)
         log.info("Loaded FSQ terminator from %s (state_dim=%s, use_wrist=%s).",
                  path, getattr(fsq, "state_dim", None), getattr(fsq, "terminator_use_wrist", False))
+
+    def _build_terminator_trainable(self, path: str) -> None:
+        """FT: a TRAINABLE terminator co-trained on this dataset's GT signals. Warm-starts from the
+        FSQ checkpoint; only the terminator-path submodules (_TERM_TRAIN_MODULES) get gradients — the
+        FSQ encoder + reconstructor stay frozen. Registered as a submodule so it joins the optimizer
+        and is checkpointed; its loss runs on a disjoint graph (GT inputs only) → no SkillVLA effect."""
+        fsq = self._construct_fsq(path)
+        trainable = {n for n in self._TERM_TRAIN_MODULES if getattr(fsq, n, None) is not None}
+        for name, mod in fsq.named_children():
+            req = name in trainable
+            for p in mod.parameters():
+                p.requires_grad_(req)
+        fsq.train()
+        # float32 throughout (the FSQ was trained in fp32; terminator inputs state/dino are fp32).
+        self.fsq_term_train = fsq.to(device=next(self.parameters()).device, dtype=torch.float32)
+        n_tr = sum(p.numel() for p in fsq.parameters() if p.requires_grad)
+        log.info("Built TRAINABLE FSQ terminator from %s (%d trainable params, modules=%s).",
+                 path, n_tr, sorted(trainable))
+
+    def terminator_predict(self, true_code: Tensor, state: Tensor, dino_tokens: Tensor) -> tuple[Tensor, Tensor]:
+        """FT co-training forward (grad ON, logits out): GT skill code + current state + current DINO
+        tokens → (progress (B,), term_logits (B,)). Inputs are all GT/precomputed, so the graph never
+        touches the SkillVLA params (disjoint co-training)."""
+        fsq = self.fsq_term_train
+        dev = next(fsq.parameters()).device
+        st = state.to(device=dev, dtype=torch.float32)
+        if st.ndim == 2:
+            st = st.unsqueeze(1)                                       # (B, 1, state_dim)
+        st = st[..., : int(fsq.state_dim)]
+        z = self._code_to_z(true_code.to(self._fsq_strides.device)).to(device=dev, dtype=st.dtype)  # (B, D) unnormalized z_q
+        dec = fsq._prepare_decoder_tokens(dino_tokens, states=st)      # (B, 1, N, F)
+        B, T = dec.shape[:2]
+        lh = fsq.fsq.levels_half.to(z.device, z.dtype)
+        zq = torch.maximum(torch.minimum(torch.round(z), lh), -lh)
+        z_tok = fsq.dec_z_proj(zq.unsqueeze(1).expand(B, T, -1).to(st.dtype))
+        progress, term_logits = fsq._terminate(z_tok, st, dec, None)   # (B, 1), (B, 1)
+        return progress[:, 0], term_logits[:, 0]
 
     def _code_to_z(self, code: Tensor) -> Tensor:
         """Flat FSQ code (B,) → z_q (B, D) in the FSQ codebook's coordinate frame."""
@@ -898,6 +995,8 @@ class SkillVLAPolicy(PI05Policy):
                 freeze(proj)
         if c.freeze_expert_vision:
             freeze(m.dino if m.vision_backbone == "dino" else m.siglip)
+        if getattr(c, "freeze_skill_head", False):
+            freeze(m.skill_head)   # pin the FSQ readout (skill_query stays trainable)
 
     def get_optim_params(self):
         """Param groups with a differential LR (× optimizer_lr) for the warm-started action expert and
@@ -926,6 +1025,8 @@ class SkillVLAPolicy(PI05Policy):
 
         expert_params = collect(expert_mods)
         cond_params = collect(cond_mods)
+        # FT: co-trained terminator (disjoint from the rest) gets its own LR scale.
+        term_params = collect([m.fsq_term_train]) if getattr(m, "fsq_term_train", None) is not None else []
         rest = [p for p in self.parameters() if p.requires_grad and id(p) not in chosen]
 
         groups: list[dict] = []
@@ -935,6 +1036,9 @@ class SkillVLAPolicy(PI05Policy):
             groups.append({"params": expert_params, "lr": base * es})
         if cond_params:
             groups.append({"params": cond_params, "lr": base * cs})
+        if term_params:
+            ts = float(getattr(self.config, "terminator_lr_scale", 1.0))
+            groups.append({"params": term_params, "lr": base * ts})
         return groups
 
     # ── batch → model inputs ──
@@ -1012,6 +1116,27 @@ class SkillVLAPolicy(PI05Policy):
         flow_loss = flow_losses.mean()
         total = flow_loss + self.config.skill_loss_weight * skill_loss
 
+        # FT: co-train the terminator on GT signals. Disjoint graph (GT/precomputed inputs + its own
+        # params) → adds to `total` but only the terminator gets gradient from it; SkillVLA is untouched.
+        term_loss = None
+        if self.config.train_terminator and self.model.fsq_term_train is not None:
+            for k in ("skill_code_true", "skill_decoder_dino", "skill_ds", "skill_de"):
+                if k not in batch:
+                    raise ValueError(f"train_terminator=True needs '{k}' in the batch (SkillVLADataset).")
+            true_code = batch["skill_code_true"].view(-1).long().clamp(0, self.stage1_config.skill_vocab_size - 1)
+            prog_pred, term_logits = self.model.terminator_predict(
+                true_code, batch[OBS_STATE], batch["skill_decoder_dino"])
+            ds = batch["skill_ds"].float().view(-1).to(prog_pred.device)
+            de = batch["skill_de"].float().view(-1).to(prog_pred.device)
+            prog_tgt = (ds / (ds + de).clamp_min(1.0)).clamp(0.0, 1.0)        # = ds/(length-1)
+            sigma = float(self.config.terminator_end_target_sigma)
+            term_tgt = (torch.exp(-(de ** 2) / (2.0 * sigma ** 2)) if sigma > 0 else (de == 0).float())
+            pos_w = torch.tensor(float(self.config.terminator_end_pos_weight),
+                                 device=term_logits.device, dtype=term_logits.dtype)
+            term_loss = (F.smooth_l1_loss(prog_pred, prog_tgt.to(prog_pred.dtype))
+                         + F.binary_cross_entropy_with_logits(term_logits, term_tgt.to(term_logits.dtype), pos_weight=pos_w))
+            total = total + term_loss
+
         with torch.no_grad():
             skill_acc = (self.model.skill_head.decode(skill_hidden) == skill_code).float().mean()
         loss_dict = {
@@ -1020,6 +1145,8 @@ class SkillVLAPolicy(PI05Policy):
             "loss_skill": skill_loss.detach().item(),
             "skill_acc": skill_acc.item(),
         }
+        if term_loss is not None:
+            loss_dict["loss_terminator"] = term_loss.detach().item()
         if reduction == "none":
             return flow_losses.mean(dim=(1, 2)), loss_dict
         return total, loss_dict

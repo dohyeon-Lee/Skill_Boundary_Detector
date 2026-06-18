@@ -236,13 +236,17 @@ class SkillExpertPytorch(nn.Module):
         tokens.append(self.state_proj(state.to(self._wdtype)).unsqueeze(1))
         if self._skill_in_cond:
             tokens.append(self.skill_proj(self._code_to_zq(skill_code).to(self._wdtype)).unsqueeze(1))
-            prog = skill_progress.view(-1, 1).float().to(state.device)
-            tokens.append(self.progress_proj(prog.to(self._wdtype)).unsqueeze(1))
+            if self.config.use_progress_token:
+                prog = skill_progress.view(-1, 1).float().to(state.device)
+                tokens.append(self.progress_proj(prog.to(self._wdtype)).unsqueeze(1))
         return torch.cat(tokens, dim=1)
 
     def _action_prefix(self, skill_code: Tensor, skill_progress: Tensor) -> Tensor:
-        """[skill, progress] tokens prepended to the action stream (joint only) → (B, 2, width)."""
+        """Skill (+progress) tokens prepended to the action stream (joint only) → (B, 1|2, width).
+        use_progress_token=False drops the progress token → skill-only prefix (B, 1, width)."""
         skill_tok = self.skill_proj(self._code_to_zq(skill_code).to(self._wdtype)).unsqueeze(1)
+        if not self.config.use_progress_token:
+            return skill_tok
         prog_tok = self.progress_proj(skill_progress.view(-1, 1).float().to(self._wdtype)).unsqueeze(1)
         return torch.cat([skill_tok, prog_tok], dim=1)
 

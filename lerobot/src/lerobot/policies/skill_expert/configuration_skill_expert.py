@@ -78,6 +78,13 @@ class SkillExpertConfig(PI05Config):
     last frame — the FSQ terminator's training target); at inference the terminator's PREDICTED
     progress is injected via batch["skill_progress"], so the jitter teaches robustness to that
     estimator's error. 0 = clean GT."""
+    use_progress_token: bool = True
+    """Whether the skill PROGRESS enters the model as its own token (alongside the z_q skill token).
+    True (default) = current recipe (skill + progress). False = drop the progress token entirely;
+    the action expert conditions on the skill code only (progress ablation). Applies wherever the
+    skill goes: the action-stream prefix (joint + action_prefix → 2→1 tokens) and the cond tokens
+    (fused / joint + cond_token). progress_proj stays allocated either way so progress-on/off
+    checkpoints stay mutually loadable; only whether its output is used changes."""
 
     # ── Eval-only (oracle closed-loop sim). Ignored during training. ──
     fsq_path: str | None = None

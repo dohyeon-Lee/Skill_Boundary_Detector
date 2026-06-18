@@ -58,6 +58,7 @@ def build_settings(cfg: dict) -> dict:
     skill_inject = str(get_value(cfg, "skill_inject", "action_prefix")).strip() or "action_prefix"
     if skill_inject not in ("action_prefix", "cond_token"):
         raise ValueError(f"skill_inject must be 'action_prefix' or 'cond_token', got {skill_inject!r}")
+    use_progress_token = as_bool(get_value(cfg, "use_progress_token", True))
 
     init_from_pi05 = as_bool(get_value(cfg, "init_from_pi05", True))
     pi_base = resolve_path(project_root, get_value(cfg, "pi_base", "models/pi05_base")) if init_from_pi05 else ""
@@ -80,6 +81,8 @@ def build_settings(cfg: dict) -> dict:
     run_name = f"{source_dataset}_{run_tag}_{vis_tag}_batch{batch_size}_{arch_tag}"
     if expert_arch == "joint":  # skill-injection variant (fused always uses cond tokens → no tag)
         run_name = f"{run_name}_{'ae' if skill_inject == 'action_prefix' else 'cond'}"
+    if not use_progress_token:  # progress-ablation variant (skill token only)
+        run_name = f"{run_name}_np"
     if exp:
         run_name = f"{run_name}_{exp}"
     run_name = f"{run_name}_c{chunk_size}"  # chunk horizon always trails the run name
@@ -131,6 +134,7 @@ def build_settings(cfg: dict) -> dict:
         "n_action_steps": n_action_steps,
         # skill progress conditioning (train-time GT jitter; see configuration_skill_expert)
         "progress_jitter": float(get_value(cfg, "progress_jitter", 0.1)),
+        "use_progress_token": use_progress_token,   # false → drop the progress token (skill only)
         # optimization
         "batch_size": batch_size,
         "num_workers": int(get_value(cfg, "num_workers", 8)),

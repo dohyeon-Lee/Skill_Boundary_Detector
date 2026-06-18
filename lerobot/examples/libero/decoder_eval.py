@@ -56,6 +56,7 @@ def load_model(model_path: str, device: str) -> tuple[SplineFSQAE, SplineFSQAECo
         action_max           = cfg.action_max,
         delta_min            = cfg.delta_min,
         delta_max            = cfg.delta_max,
+        terminator_use_third = getattr(cfg, "terminator_use_third", True),
         terminator_use_wrist = getattr(cfg, "terminator_use_wrist", False),
         reconstructor_use_image = getattr(cfg, "reconstructor_use_image", True),
     )

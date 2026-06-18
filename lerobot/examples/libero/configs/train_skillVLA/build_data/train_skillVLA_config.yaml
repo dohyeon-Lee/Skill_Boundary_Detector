@@ -28,7 +28,7 @@ skillvla_dataset_root: skillvla_dataset  # outputs under {dataset_root}/{skillvl
 # Raw LeRobot dataset to convert into SkillVLA data (may differ from the
 # dataset the DP/FSQ were trained on).
 # libero_90 | libero_90_full_full
-source_dataset: libero_90_full_full
+source_dataset: libero_10_full_5
 
 # ── DINO precompute (step 2) ──────────────────────────────────
 # Per-episode DINO tokens for the source dataset. Sliced from a base full-dataset
@@ -67,14 +67,15 @@ skillset_max_sweeps: 2
 # name under {project_root}/outputs/FSQ/ + the checkpoint. Levels are parsed from
 # the fsq<levels> tag in the name (codebook size = prod(levels)); the rest of the
 # FSQ config lives in the checkpoint.
-# fsq_run_name: "libero_90_full_full_fsq555_dino8_wow_imgX"   # folder under outputs/FSQ/
-fsq_run_name: "libero_90_full_full_fsq865_dino8_wow_imgX"   # folder under outputs/FSQ/
+fsq_run_name: "libero_90_full_full_fsq555_dino8_wow_imgX"   # folder under outputs/FSQ/
+# fsq_run_name: "libero_90_full_full_fsq555_dino14_wot_imgX"   # folder under outputs/FSQ/
+# fsq_run_name: "libero_90_full_full_fsq555_dino14_ww_imgX"   # folder under outputs/FSQ/
 
 fsq_checkpoint: 500                              # epoch number; 0 = best (FSQ.pt)
 
 # ── SkillVLA dataset build (step 5) ───────────────────────────
 max_order: 0                               # 0 : auto
-max_length: 200
+max_length: 400 # 200
 pmax: 10                                   # Stage-2 transition randomization 반폭 (skill 시작 ±pmax). ISS window=2*pmax+1
 skill_decoder_state_indices: "[0,1,2,3,4,5,6,7]"   # full observation.state (ee6 + gripper_state2)
 cleanup_intermediate: false               # remove skillset/, skill_latents.npz after skillvla is built

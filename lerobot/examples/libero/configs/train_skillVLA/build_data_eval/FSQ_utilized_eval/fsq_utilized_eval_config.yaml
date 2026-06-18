@@ -37,6 +37,10 @@ targets:
     run_dir: dataset_filtered/skillvla_dataset/libero_90_full_full/FSQ555_dino8_wow_imgX_400
   555wow_500_imgX:
     run_dir: dataset_filtered/skillvla_dataset/libero_90_full_full/FSQ555_dino8_wow_imgX_500
+  555ww_500_dino14_imgX:
+    run_dir: dataset_filtered/skillvla_dataset/libero_90_full_full/FSQ555_dino14_ww_imgX_500
+  555wot_500_dino14_imgX:
+    run_dir: dataset_filtered/skillvla_dataset/libero_90_full_full/FSQ555_dino14_wot_imgX_500
 
 # ── 옵션 ──
 run_zswap: true            # ② 실행 여부 (①③은 항상)

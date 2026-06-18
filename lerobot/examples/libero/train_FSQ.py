@@ -44,6 +44,8 @@ class Args:
     """Path to precomputed 3rd-person DINO token npz (features: N_total × n_tokens × feat_dim)."""
     dino_features_wrist: str = ""
     """Path to precomputed wrist DINO token npz (same skill order). Required iff terminator_use_wrist."""
+    terminator_use_third: bool = True
+    """Terminator 3rd-person camera. With terminator_use_wrist → 3 modes: 3rd-only / both / wrist-only."""
     terminator_use_wrist: bool = True
     """Terminator cameras: True = 3rd-person + wrist (two DINO encoders); False = 3rd-person only
     (original single-camera FSQ; no wrist tokens needed, old checkpoints stay loadable)."""
@@ -318,6 +320,7 @@ def main(args: Args) -> None:
         image_size=args.image_size,
         patch_grid=args.patch_grid,
         n_patch_raw=args.n_patch_raw,
+        terminator_use_third=args.terminator_use_third,
         terminator_use_wrist=args.terminator_use_wrist,
         reconstructor_use_image=args.reconstructor_use_image,
         image_token_dim=args.image_token_dim,

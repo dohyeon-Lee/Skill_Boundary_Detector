@@ -260,6 +260,9 @@ class SplineFSQAEConfig:
     competes with the 3-dim z as the decoder's skill code — dropping it forces z to be the sole
     motion source. Architecture-invariant (the image token is zeroed when False), so old/new
     checkpoints stay mutually loadable; only the recorded flag changes behaviour."""
+    terminator_use_third: bool = True
+    """Terminator 3rd-person camera. With terminator_use_wrist → 3 modes (third,wrist):
+    (T,F)=3rd-only, (T,T)=both, (F,T)=wrist-only; (F,F) invalid. Default T = backward-compatible."""
     terminator_use_wrist: bool = False
     """Terminator camera inputs: False = 3rd-person only ([z, img, state], original single-camera
     FSQ — keeps old checkpoints loadable); True = 3rd-person + wrist ([z, img, wrist, state], two
@@ -317,6 +320,7 @@ class SplineFSQAE(nn.Module):
         patch_grid: int = 8,
         n_patch_raw: int = 196,
         reconstructor_use_image: bool = True,
+        terminator_use_third: bool = True,
         terminator_use_wrist: bool = False,
         image_token_dim: int = 128,
         image_encoder_layers: int = 1,
@@ -345,6 +349,7 @@ class SplineFSQAE(nn.Module):
         self.patch_grid = patch_grid
         self.n_patch_raw = n_patch_raw
         self.reconstructor_use_image = bool(reconstructor_use_image)
+        self.terminator_use_third = bool(terminator_use_third)
         self.terminator_use_wrist = terminator_use_wrist
 
         self.fsq = FSQ(fsq_levels)
@@ -382,13 +387,18 @@ class SplineFSQAE(nn.Module):
         #   dual   (terminator_use_wrist=True):  [z, current 3rd img, current wrist img, state]  (4)
         # Cameras use separate DINO-token encoders. single keeps the original (1-camera) FSQ so
         # old checkpoints stay loadable.
-        self.dec_image_encoder_term = _plain_image_encoder()        # 3rd-person, separate params
+        if not (terminator_use_third or terminator_use_wrist):
+            raise ValueError("terminator needs ≥1 camera: set terminator_use_third and/or terminator_use_wrist.")
+        self.dec_image_encoder_term = (
+            _plain_image_encoder() if terminator_use_third else None  # 3rd-person, separate params
+        )
         self.dec_image_encoder_term_wrist = (
             _plain_image_encoder() if terminator_use_wrist else None  # wrist, separate params
         )
         self.term_state_proj = nn.Linear(state_dim, H)              # separate params
+        # terminator tokens: z + (3rd?) + (wrist?) + state
         self.term_pool = TokenTransformerPool(
-            hidden_dim=H, n_tokens=(4 if terminator_use_wrist else 3),
+            hidden_dim=H, n_tokens=(1 + int(terminator_use_third) + int(terminator_use_wrist) + 1),
             n_layers=image_encoder_layers, n_heads=image_encoder_heads, dropout=dropout,
         )
         self.progress_head = nn.Linear(H, 1)
@@ -575,15 +585,16 @@ class SplineFSQAE(nn.Module):
         progress (B, T) in [0, 1] (sigmoid); term_logits (B, T) raw logits. Shared by decode()
         (FSQ training) and predict_termination() (skillVLA inference, which sigmoids the logits)."""
         B, T = z_tok.shape[:2]
-        img_term = self.dec_image_encoder_term(dec_tokens)             # (B, T, H) 3rd-person
         s_term = self.term_state_proj(states)                         # (B, T, H)
+        toks = [z_tok]
+        if self.terminator_use_third:
+            toks.append(self.dec_image_encoder_term(dec_tokens))               # (B, T, H) 3rd-person
         if self.terminator_use_wrist:
             if dec_tokens_wrist is None:
                 raise ValueError("terminator_use_wrist=True requires wrist tokens.")
-            img_term_wrist = self.dec_image_encoder_term_wrist(dec_tokens_wrist)  # (B, T, H) wrist
-            tm_tokens = torch.stack([z_tok, img_term, img_term_wrist, s_term], dim=2).reshape(B * T, 4, -1)
-        else:
-            tm_tokens = torch.stack([z_tok, img_term, s_term], dim=2).reshape(B * T, 3, -1)
+            toks.append(self.dec_image_encoder_term_wrist(dec_tokens_wrist))   # (B, T, H) wrist
+        toks.append(s_term)
+        tm_tokens = torch.stack(toks, dim=2).reshape(B * T, len(toks), -1)
         tm = self.term_pool(tm_tokens).view(B, T, -1)                 # (B, T, H)
         progress = torch.sigmoid(self.progress_head(tm)).squeeze(-1)  # (B, T) in [0, 1]
         term_logits = self.termination_head(tm).squeeze(-1)           # (B, T)
@@ -1084,6 +1095,7 @@ def train_spline_fsqae(
         n_tokens=cfg.n_tokens,
         patch_grid=cfg.patch_grid,
         reconstructor_use_image=cfg.reconstructor_use_image,
+        terminator_use_third=cfg.terminator_use_third,
         terminator_use_wrist=cfg.terminator_use_wrist,
         image_token_dim=cfg.image_token_dim,
         image_encoder_layers=cfg.image_encoder_layers,

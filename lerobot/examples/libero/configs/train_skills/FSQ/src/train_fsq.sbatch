@@ -80,6 +80,13 @@ else
   WRIST_ARGS=(--no-terminator_use_wrist)
 fi
 
+# 3rd-person terminator camera (off → wrist-only terminator; requires use_wrist).
+if [ "${FSQ_TERMINATOR_USE_THIRD}" = "true" ]; then
+  THIRD_ARGS=(--terminator_use_third)
+else
+  THIRD_ARGS=(--no-terminator_use_third)
+fi
+
 # Reconstructor start-image input (drop it to force z to be the sole motion source).
 if [ "${FSQ_RECONSTRUCTOR_USE_IMAGE}" = "true" ]; then
   RECON_ARGS=(--reconstructor_use_image)
@@ -106,6 +113,7 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     --skills_dir              "${SKILLSET_DIR}/skills" \
     --dino_features           "${DINO_TOKENS_PATH}" \
     "${WRIST_ARGS[@]}" \
+    "${THIRD_ARGS[@]}" \
     "${RECON_ARGS[@]}" \
     --output_dir              "${FSQ_OUTPUT_DIR}" \
     --fsq_levels              "${FSQ_LEVELS[@]}" \

@@ -21,7 +21,7 @@ pi_base: models/pi05_base   # project_root(global_config) 기준 상대경로 �
 # The skillvla dataset to train on is the one this Stage-1 trained on (parsed from this name).
 
 stage1_run_name: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_freeze_batch256_A_ae_c25
-stage1_checkpoint: "005000"
+stage1_checkpoint: "015000"
 # stage1_run_name: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_freeze_batch128_A_ae_c25
 # stage1_checkpoint: "010000"     # (ae siglip stage1 체크포인트 존재 시) "last" 또는 스텝번호로 핀
 

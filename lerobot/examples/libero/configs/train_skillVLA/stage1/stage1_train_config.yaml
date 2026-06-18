@@ -59,6 +59,7 @@ n_action_steps:                 # blank = chunk_size (must be <= chunk_size)
 # The skill token is [z_q, progress] — progress is GT (skill_ds/(ds+de)) at train time with
 # ±jitter noise (robustness to the terminator's estimate used at inference). 0 = clean GT.
 progress_jitter: 0.1
+use_progress_token: false   # false = progress 토큰 제거(skill z_q만으로 조건화); run-name에 _np 자동 태그
 
 # ── Optimization ──
 batch_size: 256

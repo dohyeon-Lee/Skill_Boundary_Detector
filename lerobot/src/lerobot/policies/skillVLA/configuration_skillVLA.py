@@ -68,6 +68,12 @@ class SkillVLAConfig(PI05Config):
     """Freeze the warm-started Gemma action expert (default False = fine-tune)."""
     freeze_expert_vision: bool = False
     """Freeze the action-expert-side vision encoder (DINO/SigLIP) inherited from Stage-1."""
+    freeze_skill_head: bool = False
+    """Freeze the VLM skill readout (SkillHead). Default False (Stage-2 trains it). Finetuning sets
+    True: the FSQ-coordinate readout stays pinned to the (unchanged) codebook the frozen action
+    expert / terminator expect, so all skill-prediction adaptation goes into the VLM trunk. The head
+    still conducts gradient to the trunk (incl. the cond_skill_source=pred path), it just isn't updated.
+    The skill-query token is NOT covered here, so it stays trainable."""
 
     # ── Differential LR (relative to optimizer_lr) for the warm-started action/cond side ──
     expert_lr_scale: float = 1.0
@@ -77,6 +83,40 @@ class SkillVLAConfig(PI05Config):
     cond_lr_scale: float = 1.0
     """LR multiplier (× optimizer_lr) for the cond side (cond_encoder + image/state projections).
     The VLM and vision backbones keep the base optimizer_lr."""
+
+    # ── Finetuning (FT): self-conditioned skill + terminator co-training ──
+    cond_skill_source: str = "gt"
+    """Where the skill code fed to the action-prefix (ae) / cond skill-token (fused) comes from at
+    TRAIN time. "gt" (Stage-2 default): teacher-force the dataset's GT code. "pred" (FT): use the
+    VLM's OWN predicted code (matches inference / removes exposure bias) via an STE-round so the flow
+    loss backprops through SkillHead into the VLM trunk. The skill CE loss vs the GT code is kept
+    either way. (progress stays GT-jittered in both.)"""
+    train_terminator: bool = False
+    """FT: also co-train the FSQ terminator on this dataset's GT signals (z←GT code, current DINO +
+    state → progress + termination), so the terminator adapts to the new task before it gates skill
+    transitions at inference. Trained on a DISJOINT graph (GT/precomputed inputs only) → zero effect
+    on the SkillVLA params; only shares the dataloader. Warm-starts from ``fsq_path`` and is exported
+    back to an FSQ checkpoint for eval. Needs the dataset to supply current-frame DINO tokens."""
+    terminator_lr_scale: float = 1.0
+    """LR multiplier (× optimizer_lr) for the co-trained terminator params (train_terminator only)."""
+    terminator_end_target_sigma: float = 2.0
+    """Soft termination target std in FRAMES: target = exp(-(frames_to_end)² / (2σ²)) (Gaussian that
+    is 1.0 at the skill's last frame and decays earlier). Mirrors the FSQ terminator's training."""
+    terminator_end_pos_weight: float = 1.0
+    """BCE positive-class weight for the co-trained terminator's termination head."""
+
+    # ── Current-frame DINO tokens for the co-trained terminator (data factory wraps the dataset) ──
+    skill_decoder_dino_tokens_path: str | None = None
+    """Frame-level DINO token npz (build_data's ``dino.npz``). When set, the data factory wraps the
+    SkillVLADataset with SkillVLADinoTokenDataset to attach the current frame's 3rd-person DINO tokens
+    under ``skill_decoder_dino_output_key`` — the terminator co-training's image input. Train only."""
+    skill_decoder_dino_output_key: str = "skill_decoder_dino"
+    """Batch key for the attached current-frame DINO tokens (kept distinct from the inference-time
+    ``skill_decoder_image`` so the raw-obs processor step can't clobber it during training)."""
+    skill_decoder_dino_cache_path: str | None = None
+    """Optional mmap cache (.npy) for the token npz; None → next to the npz."""
+    skill_decoder_dino_build_cache: bool = True
+    """Build the mmap cache from the npz on first use (else require it to exist)."""
 
     # ── Inference: skill transitions via the frozen FSQ terminator ──
     fsq_path: str | None = None
