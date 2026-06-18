@@ -8,22 +8,17 @@ skillvla_dataset_root: skillvla_dataset  # .../{skillvla_dataset_root}/{source_d
 
 # ── Which skillvla dataset to train on (built by configs/train_skillVLA/build_data) ──
 source_dataset: libero_90_full_full
-# run_tag: FSQ555_dino8_prev_200   # sub-folder under {skillvla_dataset_root}/{source}/
 run_tag: FSQ555_dino8_wow_imgX_500   # sub-folder under {skillvla_dataset_root}/{source}/
 
 # outputs_root comes from configs/global_config.yaml: checkpoints under {project_root}/{outputs_root}/skillVLA_stage1/.
 
 # ── Conditioning architecture (joint only) ──
-# SEPARATE cond-encoder (own gemma) encodes the scene (images + per-dim discretized state); the action
-# expert takes [skill, progress, action] and reads the cond stream via PI05-style block attention
-# (action sees cond, cond⊥action). Action expert warm-starts from pi05; cond-encoder is fresh.
 cond_encoder_variant:          # blank = same gemma variant as the action expert (recommended)
 # State is QUANTILE-normalized to [-1,1] then discretized per-dim → one token per state dim (pi05-style),
 # instead of a single Linear-projected token the expert ignored (see stage1_eval/state_probe).
 state_n_bins: 256
 
 # ── Model init ──
-# init_from_pi05 is fixed true (always warm-start from pi_base) in src/stage1_train_config.py.
 pi_base: models/pi05_base   # project_root(global_config) 기준 상대경로 → 서버마다 자동. 절대경로도 허용.
 
 # ── Vision encoder (shared across the 2 cameras) ──
@@ -43,10 +38,6 @@ siglip_image_size: 224          # patch 14 → 16×16 = 256 tokens at 224
 
 
 # ── Action chunk horizon ──
-# Longer chunks make the far future under-determined by the current obs alone → the
-# flow-matching loss is pushed to actually use the skill (z_q) condition. The run name
-# always ends with a _c{N} tag. Weights are chunk-length agnostic, so Stage-2 can
-# warm-start from a Stage-1 checkpoint trained with a different chunk_size.
 chunk_size: 25 # 10 25 50
 n_action_steps:                 # blank = chunk_size (must be <= chunk_size)
 

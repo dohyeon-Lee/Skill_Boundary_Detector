@@ -84,7 +84,7 @@ def main() -> None:
         pretrained_path=args.policy_path,
         preprocessor_overrides={"device_processor": {"device": str(device)}},
     )
-    log.info("Policy loaded: expert_arch=%s vocab=%d (%s)", getattr(policy_cfg, "expert_arch", "?"), vocab, args.policy_path)
+    log.info("Policy loaded: vocab=%d (%s)", vocab, args.policy_path)
 
     frame_ids = rng.choice(len(ds), size=min(args.n_frames, len(ds)), replace=False)
     loader = DataLoader(Subset(ds, frame_ids.tolist()), batch_size=args.batch_size, shuffle=False, num_workers=4)
