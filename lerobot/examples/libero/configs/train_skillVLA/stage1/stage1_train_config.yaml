@@ -20,7 +20,7 @@ cond_encoder_variant:          # blank = same gemma variant as the action expert
 #   cond_adaln → state drives the cond-encoder's AdaRMS ONLY (pose-aware perception); expert gets no state;
 #   ae_adaln   → expert-only AdaRMS, but state+skill+progress ALL summed into it (no prefix tokens).
 # The cond-stream state token was starved among image tokens (see stage1_eval/input_probe); all fix that.
-state_cond_mode: cond_adaln
+state_cond_mode: adaln
 
 # ── Model init ──
 pi_base: models/pi05_base   # project_root(global_config) 기준 상대경로 → 서버마다 자동. 절대경로도 허용.
@@ -42,21 +42,21 @@ siglip_image_size: 224          # patch 14 → 16×16 = 256 tokens at 224
 
 
 # ── Action chunk horizon ──
-chunk_size: 25 # 10 25 50
+chunk_size: 10 # 10 25 50
 n_action_steps:                 # blank = chunk_size (must be <= chunk_size)
 
 # ── Skill progress conditioning ──
 # The skill token is [z_q, progress] — progress is GT (skill_ds/(ds+de)) at train time with
 # ±jitter noise (robustness to the terminator's estimate used at inference). 0 = clean GT.
 progress_jitter: 0.1
-use_progress_token: true   # false = progress 토큰 제거(skill z_q만으로 조건화); run-name에 _np 자동 태그
+use_progress_token: false   # false = progress 토큰 제거(skill z_q만으로 조건화); run-name에 _np 자동 태그
 
 # ── Optimization ──
 batch_size: 256
 num_workers: 8
 num_gpus: 1
 lr_base: 2.5e-05                # effective LR = lr_base * num_gpus
-steps: 20000
+steps: 15000
 save_freq: 2500
 
 exp: ""         # optional EXTRA run-name suffix (variant tag _ae/_cond is now auto from skill_inject)

@@ -11,9 +11,9 @@ targets:
   - {label: adaln,      kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_freeze_batch256_sadaln_c25,      checkpoint: "005000"}
   - {label: cond_adaln, kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_freeze_batch256_scond_adaln_c25, checkpoint: "005000"}
   - {label: ae_adaln,   kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_freeze_batch256_sae_adaln_c25,   checkpoint: "005000"}
-  - {label: sig_adaln,      kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_sadaln_c25,      checkpoint: "last"}
-  - {label: sig_cond_adaln, kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_scond_adaln_c25, checkpoint: "last"}
-  - {label: sig_ae_adaln,   kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_sae_adaln_c25,   checkpoint: "last"}
+  - {label: sig_adaln,      kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_sadaln_c25,      checkpoint: "005000"}
+  - {label: sig_cond_adaln, kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_scond_adaln_c25, checkpoint: "005000"}
+  - {label: sig_ae_adaln,   kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_sae_adaln_c25,   checkpoint: "005000"}
   - {label: pi05,       kind: pi05, model_dir: PT_libero_90_full_full_pi05_batch16, checkpoint: "005000", pi05_outputs_subdir: pi05_PT}
 
 # ── Probe params ──
