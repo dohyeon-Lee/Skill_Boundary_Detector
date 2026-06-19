@@ -54,6 +54,29 @@ def render(results: dict) -> str:
              + " | ".join(f"{results[l]['gt_action_step_norm']:.4f}" for l in labels) + " |")
     L.append("")
 
+    # TF_compare-style table vs GT: mse_true / mse_swap / swapΔ / %scale / win (per model × perturbation).
+    L.append("## TF-style metrics vs GT (mse_true / mse_swap / swapΔ / %scale / win)")
+    L.append("")
+    L.append("`mse_true` = GT error with REAL inputs (per model; ↓ = better fit). `mse_swap` = GT error with the "
+             "perturbed input. `swapΔ` = output L2 move (= the influence Δ above). `%scale` = swapΔ ÷ gt_step_norm. "
+             "`win` = P(real input closer to GT than perturbed): **0.5 = ignored, →1.0 = decisive**.")
+    L.append("")
+    L.append("| model | perturbation | mse_true | mse_swap | swapΔ | %scale | win |")
+    L.append("|---|---|---|---|---|---|---|")
+    for l in labels:
+        mt = results[l].get("chunk_mse_true")
+        mt_s = f"{mt:.4f}" if mt is not None else "—"
+        for n in perts:
+            m = results[l]["perturbations"].get(n)
+            if not m:
+                continue
+            sw, w = m.get("mse_swap"), m.get("win")
+            L.append(f"| {l} | {n} | {mt_s} | "
+                     + (f"{sw:.4f}" if sw is not None else "—") + " | "
+                     + f"{m['chunk_delta']:.4f} | {m['rel_to_gt_norm'] * 100:.1f}% | "
+                     + (f"{w:.3f}" if w is not None else "—") + " |")
+    L.append("")
+
     # Reading: per input group, the fair *_shuffle metric per model (+ % of that model's image_zero).
     L.append("## Reading")
     L.append("")
@@ -69,7 +92,9 @@ def render(results: dict) -> str:
             if v is None:
                 L.append(f"- {l}: —")
             else:
-                line = f"- {l}: Δ/gt = `{v:.3f}`"
+                w = t.get(sh, {}).get("win")
+                line = f"- {l}: win = `{w:.3f}`, " if w is not None else f"- {l}: "
+                line += f"Δ/gt = `{v:.3f}`"
                 if iz:
                     line += f"  (= {v / iz * 100:.0f}% of image_zero `{iz:.3f}`)"
                 L.append(line)

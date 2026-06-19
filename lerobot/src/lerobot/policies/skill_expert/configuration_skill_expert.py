@@ -64,17 +64,17 @@ class SkillExpertConfig(PI05Config):
       "adaln" → DiT/AdaRMS-style global conditioning: state is NOT a token; state_proj(state) is added
                 to the flow-time conditioning (time_cond + state_proj(state)) that drives the action
                 stream's AdaRMS at every layer — un-droppable by attention. Prefix is [skill, progress].
-      "full_adaln" → like "adaln" on the action stream, AND the SAME state_proj(state) also drives the
-                cond-encoder's AdaRMS (built with use_adarms=True only here) → state modulates the scene
-                encoding too. The shared "adaLN weight" is state_proj (the per-layer AdaRMS modulation
-                params remain per-model, since cond-encoder and expert are distinct Gemmas).
+      "cond_adaln" → state drives ONLY the cond-encoder's AdaRMS (built use_adarms=True only here) →
+                state modulates the SCENE/perception encoding; the action expert gets NO state (its AdaRMS
+                is flow-time only) and reads skill+progress as prefix tokens (mask self-attention). Tests
+                whether pose-aware perception alone suffices, with no direct state→action conditioning.
       "ae_adaln" → action-expert-ONLY AdaRMS (cond = plain RMSNorm), but state, skill (z_q) AND progress
                 ALL ride it: action AdaRMS = time_cond + state_proj(state) + skill_proj(z_q) +
                 progress_proj(prog) (each its own projection, summed — DiT ⊕ pattern). NO prefix tokens at
                 all (cond is image-only cross-stream; everything else is global AdaLN conditioning).
     state_proj = nn.Linear(max_state_dim, width) is allocated in all modes (only its destination
-    differs), so token/adaln/full_adaln checkpoints stay structurally comparable (modulo the
-    cond-encoder's extra AdaRMS params in full_adaln)."""
+    differs), so token/adaln/cond_adaln checkpoints stay structurally comparable (modulo the
+    cond-encoder's extra AdaRMS params in cond_adaln)."""
 
     # ── Skill conditioning ──
     skill_vocab_size: int = 125

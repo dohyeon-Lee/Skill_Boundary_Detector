@@ -60,6 +60,14 @@ def chunk_delta(pred: torch.Tensor, ref: torch.Tensor, pad: torch.Tensor) -> tor
     return (d * valid).sum(dim=1) / valid.sum(dim=1).clamp(min=1)   # (B,)
 
 
+def sample_mse(pred: torch.Tensor, gt: torch.Tensor, pad: torch.Tensor) -> torch.Tensor:
+    """Per-sample MSE of a predicted chunk vs the GT action over valid steps → (B,). For the `win`
+    metric: P(MSE(real input) < MSE(perturbed input)) = how often the real input matches GT better."""
+    valid = (~pad).float().unsqueeze(-1)                           # (B, K, 1)
+    se = ((pred - gt) ** 2 * valid).sum(dim=(1, 2))
+    return se / valid.sum(dim=(1, 2)).clamp(min=1)                 # (B,)
+
+
 def _clone(batch: dict) -> dict:
     return {k: (v.clone() if torch.is_tensor(v) else v) for k, v in batch.items()}
 
@@ -93,7 +101,10 @@ def probe_one(label: str, policy_path: str, dataset_dir: str, args, device, fram
         frame_ids = np.random.default_rng(args.seed).choice(len(ds), size=min(args.n_frames, len(ds)), replace=False)
     loader = DataLoader(Subset(ds, frame_ids.tolist()), batch_size=args.batch_size, shuffle=False, num_workers=4)
 
-    per_frame: dict[str, list] = defaultdict(list)
+    per_frame: dict[str, list] = defaultdict(list)   # Δ = swapΔ (output movement vs unperturbed) per perturbation
+    per_mse: dict[str, list] = defaultdict(list)     # mse_swap: GT error with the PERTURBED input, per perturbation
+    per_win: dict[str, list] = defaultdict(list)     # win = P(mse_true < mse_swap): real input beats perturbed
+    mse_true_all: list = []                          # mse_true: GT error with REAL inputs (per-model, ⊥ perturbation)
     for bi, batch in enumerate(loader):
         gt_raw = batch["action"].clone()
         pad = batch.get("action_is_pad", torch.zeros(gt_raw.shape[:2], dtype=torch.bool)).bool()
@@ -101,6 +112,8 @@ def probe_one(label: str, policy_path: str, dataset_dir: str, args, device, fram
         noise = torch.randn(bsize, chunk, max_adim, dtype=torch.float32, device=device)
 
         pred_ref = post(policy.predict_action_chunk(pre(_clone(batch)), noise=noise)).cpu()
+        mse_true = sample_mse(pred_ref, gt_raw, pad)              # GT error with the REAL (unperturbed) inputs
+        mse_true_all.extend(mse_true.tolist())
 
         # Perturbations applied to the RAW batch (before pre): each model's own state path then runs.
         raw_state = batch[OBS_STATE]
@@ -142,17 +155,21 @@ def probe_one(label: str, policy_path: str, dataset_dir: str, args, device, fram
         for name, fn in perts.items():
             pred = post(policy.predict_action_chunk(pre(fn(batch)), noise=noise)).cpu()
             per_frame[name].extend(chunk_delta(pred, pred_ref, pad).tolist())
+            mse_p = sample_mse(pred, gt_raw, pad)
+            per_mse[name].extend(mse_p.tolist())
+            per_win[name].extend((mse_true < mse_p).float().tolist())
         per_frame["gt_step_norm"].extend(gt_raw.norm(dim=-1).mean(dim=1).tolist())
         log.info("[%s] batch %d/%d", label, bi + 1, len(loader))
 
     gt_norm = float(np.mean(per_frame.pop("gt_step_norm")))
-    table = {n: {"chunk_delta": float(np.mean(v)), "rel_to_gt_norm": float(np.mean(v)) / gt_norm}
+    table = {n: {"chunk_delta": float(np.mean(v)), "rel_to_gt_norm": float(np.mean(v)) / gt_norm,
+                 "mse_swap": float(np.mean(per_mse[n])), "win": float(np.mean(per_win[n]))}
              for n, v in per_frame.items()}
     del policy
     gc.collect()
     torch.cuda.empty_cache()
     return {"label": label, "policy_path": policy_path, "gt_action_step_norm": gt_norm,
-            "perturbations": table, "frame_ids": frame_ids}
+            "chunk_mse_true": float(np.mean(mse_true_all)), "perturbations": table, "frame_ids": frame_ids}
 
 
 def main() -> None:

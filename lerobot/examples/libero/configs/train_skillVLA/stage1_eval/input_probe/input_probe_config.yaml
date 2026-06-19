@@ -5,12 +5,15 @@
 # ── Targets (compared side-by-side; run sequentially, one loaded at a time) ──
 # Each: label, kind (cond → outputs_root/skillVLA_stage1 ; pi05 → outputs_root/{pi05_outputs_subdir}),
 # model_dir, checkpoint. The SHARED dataset comes from the FIRST cond target's {source}/{run_tag}.
-# Default below = the 4 Stage-1 state_cond_mode variants (stoken/sadaln/sfull_adaln/sae_adaln) + pi05.
+# Default below = the 4 Stage-1 state_cond_mode variants (stoken/sadaln/scond_adaln/sae_adaln) + pi05.
 targets:
-  - {label: token,      kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_freeze_batch256_stoken_c25,      checkpoint: "005000"}
+  # - {label: token,      kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_freeze_batch256_stoken_c25,      checkpoint: "last"}
   - {label: adaln,      kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_freeze_batch256_sadaln_c25,      checkpoint: "005000"}
-  - {label: full_adaln, kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_freeze_batch256_sfull_adaln_c25, checkpoint: "005000"}
+  - {label: cond_adaln, kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_freeze_batch256_scond_adaln_c25, checkpoint: "005000"}
   - {label: ae_adaln,   kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_freeze_batch256_sae_adaln_c25,   checkpoint: "005000"}
+  - {label: sig_adaln,      kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_sadaln_c25,      checkpoint: "last"}
+  - {label: sig_cond_adaln, kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_scond_adaln_c25, checkpoint: "last"}
+  - {label: sig_ae_adaln,   kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_sae_adaln_c25,   checkpoint: "last"}
   - {label: pi05,       kind: pi05, model_dir: PT_libero_90_full_full_pi05_batch16, checkpoint: "005000", pi05_outputs_subdir: pi05_PT}
 
 # ── Probe params ──
