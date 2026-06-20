@@ -54,27 +54,23 @@ class SkillExpertConfig(PI05Config):
     """Separate LR for the SigLIP encoder when unfrozen. None → use optimizer_lr."""
 
     # ── State conditioning ──
-    state_cond_mode: str = "token"
-    """How the robot state enters the action expert. The cond-encoder is image-ONLY in both modes;
-    state never rides the (image-dominated) cond stream — the state_probe diagnostic showed a state
-    token buried among ~400 image tokens is starved (Δ≈0). Both modes put state on the ACTION expert,
-    in the pi0 prefix⊥action mask (state is read by the action tokens but does not attend back):
-      "token" → pi0-style: the (max_state_dim) state vector → ONE continuous token via state_proj,
-                prepended to the action-stream prefix [state, skill, progress].
-      "adaln" → DiT/AdaRMS-style global conditioning: state is NOT a token; state_proj(state) is added
-                to the flow-time conditioning (time_cond + state_proj(state)) that drives the action
-                stream's AdaRMS at every layer — un-droppable by attention. Prefix is [skill, progress].
-      "cond_adaln" → state drives ONLY the cond-encoder's AdaRMS (built use_adarms=True only here) →
-                state modulates the SCENE/perception encoding; the action expert gets NO state (its AdaRMS
-                is flow-time only) and reads skill+progress as prefix tokens (mask self-attention). Tests
-                whether pose-aware perception alone suffices, with no direct state→action conditioning.
-      "ae_adaln" → action-expert-ONLY AdaRMS (cond = plain RMSNorm), but state, skill (z_q) AND progress
-                ALL ride it: action AdaRMS = time_cond + state_proj(state) + skill_proj(z_q) +
-                progress_proj(prog) (each its own projection, summed — DiT ⊕ pattern). NO prefix tokens at
-                all (cond is image-only cross-stream; everything else is global AdaLN conditioning).
-    state_proj = nn.Linear(max_state_dim, width) is allocated in all modes (only its destination
-    differs), so token/adaln/cond_adaln checkpoints stay structurally comparable (modulo the
-    cond-encoder's extra AdaRMS params in cond_adaln)."""
+    state_cond_mode: str = "state_skill"
+    """What rides the ACTION expert's flow-time AdaRMS (DiT-style global conditioning, un-droppable by
+    attention). The cond-encoder is image-ONLY and plain-RMSNorm in both modes; state never rides the
+    (image-dominated) cond stream — the input_probe diagnostic showed a state token buried among ~400
+    image tokens is starved (Δ≈0), so state is always summed into the expert AdaRMS instead. The two
+    modes differ only in whether SKILL (and progress) also go global vs stay as attended prefix tokens:
+      "state"       → AdaRMS conditioning = time + state_proj(state). Skill (z_q) + progress are PREFIX
+                      tokens on the action stream (pi0 prefix⊥action: read by the action tokens, do not
+                      attend back). Image stays the dominant motion driver; skill is a lighter, attended
+                      signal — leaves room for Stage-2 language to modulate the motion.
+      "state_skill" → AdaRMS conditioning = time + state_proj(state) + skill_proj(z_q) + progress_proj(prog)
+                      (each its own projection, summed — DiT ⊕ pattern). NO prefix tokens at all; skill is
+                      a strong global signal (heaviest skill influence).
+    progress is included in the AdaRMS / prefix only when use_progress_token=True. state_proj / skill_proj /
+    progress_proj are allocated in both modes (only the destination differs), so "state" and "state_skill"
+    checkpoints stay structurally comparable. (Back-compat: the legacy names "adaln"→"state",
+    "ae_adaln"→"state_skill" are aliased in __post_init__; the old "token"/"cond_adaln" modes were removed.)"""
 
     # ── Skill conditioning ──
     skill_vocab_size: int = 125
@@ -138,3 +134,17 @@ class SkillExpertConfig(PI05Config):
     """Threshold on the signal selected by skill_end_mode, above which the skill is finished."""
     inference_skill_max_length: int = 200
     """Force-advance the skill after this many steps even if the terminator never fires (0 = off)."""
+
+    # ── Back-compat name aliasing for state_cond_mode (old checkpoints stored mechanism names) ──
+    _STATE_COND_ALIASES = {"adaln": "state", "ae_adaln": "state_skill"}
+
+    def __post_init__(self):
+        super().__post_init__()
+        # Map legacy mode names (stored in old checkpoints' config.json) onto the current scheme so they
+        # load + route correctly; the removed "token"/"cond_adaln" modes are not supported any more.
+        self.state_cond_mode = self._STATE_COND_ALIASES.get(self.state_cond_mode, self.state_cond_mode)
+        if self.state_cond_mode not in ("state", "state_skill"):
+            raise ValueError(
+                f"state_cond_mode must be 'state' or 'state_skill' (got {self.state_cond_mode!r}); "
+                "the legacy 'token'/'cond_adaln' modes were removed."
+            )
