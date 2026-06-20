@@ -371,16 +371,23 @@ class SkillVLAPytorch(PI05Pytorch):
         [cond, vlm, action], one-directional chain VLM → cond → action: the VLM reads only
         itself; cond reads itself + VLM IMAGE tokens (language AND the skill-query token excluded —
         skill reaches the action only via the FSQ skill vector / AdaRMS, not by attending the
-        skill-query hidden); action reads cond + itself (NO direct VLM edge). Nothing attends action."""
+        skill-query hidden). The action stream is [skill, progress (prefix), action×K]: the
+        conditioning PREFIX is read by the action tokens but reads NOTHING outside itself
+        (prefix ⊥ cond, prefix ⊥ action); only the ACTION tokens attend cond/scene (NO VLM edge).
+        Nothing attends the action tokens."""
         bsize, nv = vlm_pad.shape
         device = vlm_pad.device
         total = nc + nv + na
+        n_prefix = na - self.config.chunk_size                       # [skill, progress] prefix length
+        pa = nc + nv                                                 # action-stream start
+        pf1 = pa + n_prefix                                          # prefix end / action-token start
         allow = torch.zeros(bsize, total, total, dtype=torch.bool, device=device)
         allow[:, :nc, :nc] = True                                    # cond block
         allow[:, :nc, nc : nc + nv] = (~vlm_xattn_block)[None, None, :]  # cond → vlm IMAGE tokens (lang + skill-query excluded)
         allow[:, nc : nc + nv, nc : nc + nv] = True                  # vlm block
-        allow[:, nc + nv :, :nc] = True                              # action → cond
-        allow[:, nc + nv :, nc + nv :] = True                        # action → action
+        allow[:, pa:pf1, pa:pf1] = True                              # prefix → prefix (skill/progress self; ⊥ cond, ⊥ action)
+        allow[:, pf1:, :nc] = True                                   # action → cond (ONLY action tokens read the scene)
+        allow[:, pf1:, pa:] = True                                   # action → prefix + action
         col_valid = torch.cat(
             [torch.ones(bsize, nc, dtype=torch.bool, device=device), vlm_pad,
              torch.ones(bsize, na, dtype=torch.bool, device=device)], dim=1)
@@ -624,9 +631,15 @@ class SkillVLAPytorch(PI05Pytorch):
         # denoise: action stream = [skill, progress (constant prefix), action×K]; attends cond cache only
         action_prefix = self._action_prefix(skill_code, skill_progress)
         prefix_kv = cond_kv
+        n_prefix = na - n_chunk                                          # [skill, progress]
+        # key layout: [cond(nc), action-stream(na) = prefix(n_prefix) + action(n_chunk)]. Conditioning
+        # prefix ⊥ cond and ⊥ action (reads only itself); only the action tokens attend cond + prefix + action.
         cols = torch.cat([cond_pad, torch.ones(bsize, na, dtype=torch.bool, device=device)], dim=1)
-        att_4d = torch.where(cols[:, None, None, :].expand(bsize, 1, na, cols.shape[1]),
-                             0.0, OPENPI_ATTENTION_MASK_VALUE)
+        allow = torch.zeros(bsize, 1, na, nc + na, dtype=torch.bool, device=device)
+        allow[:, :, :n_prefix, nc : nc + n_prefix] = True               # prefix → prefix
+        allow[:, :, n_prefix:, :nc] = True                              # action → cond
+        allow[:, :, n_prefix:, nc : nc + na] = True                     # action → prefix + action
+        att_4d = torch.where(allow & cols[:, None, None, :], 0.0, OPENPI_ATTENTION_MASK_VALUE)
 
         if noise is None:
             noise = self.sample_noise((bsize, n_chunk, self.config.max_action_dim), device)

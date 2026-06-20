@@ -8,18 +8,29 @@
 # Default below = the 4 Stage-1 state_cond_mode variants (stoken/sadaln/scond_adaln/sae_adaln) + pi05.
 targets:
   # - {label: token,      kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_freeze_batch256_stoken_c25,      checkpoint: "last"}
-  - {label: adaln,      kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_freeze_batch256_sadaln_c25,      checkpoint: "005000"}
-  - {label: cond_adaln, kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_freeze_batch256_scond_adaln_c25, checkpoint: "005000"}
-  - {label: ae_adaln,   kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_freeze_batch256_sae_adaln_c25,   checkpoint: "005000"}
-  - {label: sig_adaln,      kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_sadaln_c25,      checkpoint: "005000"}
-  - {label: sig_cond_adaln, kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_scond_adaln_c25, checkpoint: "005000"}
-  - {label: sig_ae_adaln,   kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_sae_adaln_c25,   checkpoint: "005000"}
-  - {label: pi05,       kind: pi05, model_dir: PT_libero_90_full_full_pi05_batch16, checkpoint: "005000", pi05_outputs_subdir: pi05_PT}
+  # - {label: adaln,      kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_freeze_batch256_sadaln_c25,      checkpoint: "005000"}
+  # - {label: cond_adaln, kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_freeze_batch256_scond_adaln_c25, checkpoint: "005000"}
+  # - {label: ae_adaln,   kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_freeze_batch256_sae_adaln_c25,   checkpoint: "005000"}
+  # - {label: sig_cond_adaln, kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_scond_adaln_c25, checkpoint: "005000"}
+
+  - {label: ae_adaln_np,   kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_np_sae_adaln_c25,   checkpoint: "010000"}
+  - {label: adaln_np,      kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_np_sadaln_c25,      checkpoint: "010000"}
+
+  - {label: ae_adaln,   kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_sae_adaln_c25,   checkpoint: "010000"}
+  - {label: adaln,      kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_sadaln_c25,      checkpoint: "010000"}
+
+  - {label: ae_adaln_np_c10,   kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_np_sae_adaln_c10,   checkpoint: "010000"}
+  - {label: adaln_np_c10,      kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_np_sadaln_c10,      checkpoint: "010000"}
+  
+  - {label: ae_adaln_c10,   kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_sae_adaln_c10,   checkpoint: "010000"}
+  - {label: adaln_c10,      kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_sadaln_c10,      checkpoint: "010000"}
+
+  - {label: pi05,       kind: pi05, model_dir: PT_libero_90_full_full_pi05_batch16, checkpoint: "010000", pi05_outputs_subdir: pi05_PT}
 
 # ── Probe params ──
-n_frames: 256 #512                 # random dataset frames (shared across both models)
-batch_size: 32
-gauss_sigmas: "0.5,1.0,2.0"   # σ sweep for state_gauss (× per-batch state std)
+n_frames: 128 #512                 # random dataset frames (shared across both models)
+batch_size: 64
+gauss_sigmas: "2.0"   # σ sweep for state_gauss (× per-batch state std)
 seed: 1000
 
 # ── Slurm (partition/qos/nodelist/exclude come from configs/global_config.yaml train_*) ──

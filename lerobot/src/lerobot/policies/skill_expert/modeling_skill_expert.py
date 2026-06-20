@@ -332,7 +332,10 @@ class SkillExpertPytorch(nn.Module):
         noise: Tensor | None = None,
         time: Tensor | None = None,
     ) -> Tensor:
-        """Flow-matching loss. Returns per-(b, t, dim) MSE: (B, chunk_size, max_action_dim)."""
+        """Flow-matching: returns the SIGNED velocity residual (u_t - v_t): (B, chunk_size, max_action_dim).
+        Its square is the per-(b,t,dim) flow MSE; it ALSO equals the implied per-step action error
+        (â - a = (source - v_t) - (source - u_t) = u_t - v_t), so cumsum over the chunk gives the
+        cumulative-position error used by the policy's optional cumulative-position loss."""
         cond = self._cond_tokens(images)
         action_prefix = self._action_prefix(skill_code, skill_progress, state)
         if time is None:
@@ -344,7 +347,7 @@ class SkillExpertPytorch(nn.Module):
         u_t = source - actions
         expert_cond = self._expert_cond(time, state, skill_code, skill_progress)
         v_t = self._run_joint(cond, x_t, expert_cond, action_prefix, self._cond_cond(state))
-        return F.mse_loss(u_t, v_t, reduction="none")
+        return u_t - v_t
 
     @torch.no_grad()
     def sample_actions(
@@ -577,16 +580,53 @@ class SkillExpertPolicy(PreTrainedPolicy):
             jit = (torch.rand_like(progress) * 2.0 - 1.0) * self.config.progress_jitter
             progress = (progress + jit).clamp(0.0, 1.0)
         state = pad_vector(batch[OBS_STATE], self.config.max_state_dim)   # → state_proj's fixed width (pi0)
-        losses = self.model.forward(
+        resid = self.model.forward(                                      # signed flow residual (u_t - v_t)
             images, img_masks, state, self._skill_code(batch), progress, actions)
         real_dim = self.config.output_features[ACTION].shape[0]
-        losses = losses[:, :, :real_dim]
-        loss_dict = {"loss_per_dim": losses.mean(dim=[0, 1]).detach().cpu().numpy().tolist()}
+        resid = resid[:, :, :real_dim]                                   # (B, K, real_dim)
+        losses = resid ** 2                                              # per-(b,k,dim) flow MSE = action MSE
+
+        # Supervise ONLY valid chunk steps: drop (a) episode-end padding (action_is_pad — clamped-last
+        # repeats, wrong for delta actions) and (b) steps that spill past the CURRENT skill's end
+        # (offset k > skill_de) so each skill learns only its own actions, not the cross-skill tail.
+        bsize, K = losses.shape[:2]
+        valid = torch.ones(bsize, K, dtype=torch.bool, device=losses.device)
+        pad = batch.get("action_is_pad")
+        if pad is not None:
+            valid &= ~pad.to(losses.device).bool()
+        if "skill_de" in batch:
+            de = batch["skill_de"].to(losses.device).long().view(bsize, 1)   # frames from t to skill's last frame
+            valid &= torch.arange(K, device=losses.device).view(1, K) <= de
+        vf = valid.float().unsqueeze(-1)                                 # (B, K, 1)
+        n_steps = valid.float().sum().clamp(min=1.0)
+
+        loss_dict = {"loss_per_dim": ((losses * vf).sum(dim=(0, 1)) / n_steps).detach().cpu().numpy().tolist()}
         if reduction == "none":
-            per_sample = losses.mean(dim=(1, 2))
+            per_sample = (losses * vf).sum(dim=(1, 2)) / (valid.float().sum(dim=1).clamp(min=1.0) * real_dim)
             loss_dict["loss"] = per_sample.mean().detach().item()
             return per_sample, loss_dict
-        loss = losses.mean()
+        loss = (losses * vf).sum() / (n_steps * real_dim)               # per-delta flow loss (unchanged)
+
+        # Optional cumulative-position loss: integrate the implied per-step action error (= resid) over the
+        # chunk → cumulative-position error, on the ARM (delta) dims only (gripper is absolute → excluded).
+        # Per-step end-weighted so later positions (nearer the skill end = endpoint) count more. lam=0 → off
+        # (identical to the per-delta+masking behavior above).
+        lam = float(self.config.cumulative_pos_loss_weight)
+        if lam > 0.0:
+            arm = real_dim - 1                                          # drop the absolute gripper (last dim)
+            cum = resid[:, :, :arm].cumsum(dim=1)                       # (B, K, arm) ≈ cumulative position error
+            r = float(self.config.skill_end_loss_weight)
+            if "skill_ds" in batch and "skill_de" in batch:
+                ds = batch["skill_ds"].to(losses.device).float().view(bsize, 1)
+                de = batch["skill_de"].to(losses.device).float().view(bsize, 1)
+                kk = torch.arange(K, device=losses.device).float().view(1, K)
+                prog = ((ds + kk) / (ds + de).clamp(min=1.0)).clamp(0.0, 1.0)   # per-step within-skill progress
+            else:
+                prog = torch.arange(K, device=losses.device).float().view(1, K) / max(K - 1, 1)
+            w = (1.0 + (r - 1.0) * prog) * valid.float()               # end-weighted; 0 outside the valid prefix
+            cum_loss = (cum.pow(2) * w.unsqueeze(-1)).sum() / (w.sum().clamp(min=1.0) * arm)
+            loss = loss + lam * cum_loss
+            loss_dict["loss_cum_pos"] = cum_loss.detach().item()
         loss_dict["loss"] = loss.detach().item()
         return loss, loss_dict
 

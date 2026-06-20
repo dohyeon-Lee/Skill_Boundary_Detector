@@ -76,6 +76,14 @@ def _img_keys(batch: dict) -> list[str]:
     return [k for k in batch if k.startswith("observation.images") and torch.is_tensor(batch[k])]
 
 
+_CAM_LABELS = {"image": "3rd", "agentview_image": "3rd", "image2": "wrist", "wrist_image": "wrist"}
+
+
+def _cam_label(key: str) -> str:
+    """Readable camera tag for a per-camera image_zero (e.g. observation.images.image2 → 'wrist')."""
+    return _CAM_LABELS.get(key.split(".")[-1], key.split(".")[-1])
+
+
 @torch.no_grad()
 def probe_one(label: str, policy_path: str, dataset_dir: str, args, device, frame_ids=None) -> dict:
     """Load one policy, perturb the RAW state (+ references) before preprocessing, and measure the
@@ -126,12 +134,32 @@ def probe_one(label: str, policy_path: str, dataset_dir: str, args, device, fram
                 lambda b, s=sg: {**_clone(b), OBS_STATE: b[OBS_STATE] + s * std * torch.randn_like(b[OBS_STATE].float())})
         ik = _img_keys(batch)
         if ik:
-            def _imgzero(b):
+            def _imgzero_all(b):
                 nb = _clone(b)
                 for k in ik:
                     nb[k] = torch.zeros_like(nb[k])
                 return nb
-            perts["image_zero"] = _imgzero
+            perts["image_zero"] = _imgzero_all                 # combined (all cameras)
+            # image_shuffle: swap in ANOTHER frame's image (in-distribution, like state/skill_shuffle) —
+            # cleaner than the OOD blank. Combined rolls all cams by the SAME shift (a coherent other frame).
+            def _imgshuf_all(b):
+                nb = _clone(b)
+                for k in ik:
+                    nb[k] = b[k].roll(shifts=1, dims=0)
+                return nb
+            perts["image_shuffle"] = _imgshuf_all
+            if len(ik) > 1:                                    # + per-camera (3rd / wrist) when multi-cam
+                for k in ik:
+                    def _imgzero_one(b, key=k):
+                        nb = _clone(b)
+                        nb[key] = torch.zeros_like(nb[key])
+                        return nb
+                    perts[f"image_zero@{_cam_label(k)}"] = _imgzero_one
+                    def _imgshuf_one(b, key=k):
+                        nb = _clone(b)
+                        nb[key] = b[key].roll(shifts=1, dims=0)
+                        return nb
+                    perts[f"image_shuffle@{_cam_label(k)}"] = _imgshuf_one
         if has_skill and "skill_sequence" in batch:
             def _skillshuffle(b):
                 nb = _clone(b)
@@ -168,8 +196,9 @@ def probe_one(label: str, policy_path: str, dataset_dir: str, args, device, fram
     del policy
     gc.collect()
     torch.cuda.empty_cache()
-    return {"label": label, "policy_path": policy_path, "gt_action_step_norm": gt_norm,
-            "chunk_mse_true": float(np.mean(mse_true_all)), "perturbations": table, "frame_ids": frame_ids}
+    return {"label": label, "policy_path": policy_path, "checkpoint": Path(policy_path).parent.name,
+            "gt_action_step_norm": gt_norm, "chunk_mse_true": float(np.mean(mse_true_all)),
+            "perturbations": table, "frame_ids": frame_ids}
 
 
 def main() -> None:

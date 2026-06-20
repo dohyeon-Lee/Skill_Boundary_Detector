@@ -100,6 +100,18 @@ class SkillExpertConfig(PI05Config):
     either way so progress-on/off checkpoints stay mutually loadable; only whether its output is used
     changes."""
 
+    # ── Loss (the flow-matching action loss is always on; these add an optional term + masking) ──
+    cumulative_pos_loss_weight: float = 0.0
+    """λ for the optional cumulative-POSITION loss (added to the per-delta flow loss). Actions are
+    RELATIVE (delta), so the endpoint pose = the SUM of the chunk's deltas; matching only the last delta
+    doesn't fix the landing position. This term integrates the implied per-step action error over the
+    chunk (cumsum, on the ARM dims only — the gripper is absolute, excluded) and penalizes the K running
+    positions, so the whole trajectory + endpoint match. 0 = OFF (loss identical to per-delta + masking)."""
+    skill_end_loss_weight: float = 1.0
+    """R for the cumulative-position loss's PER-STEP end weighting: weight = 1 + (R-1)·progress, where
+    progress is each step's within-skill position (0 at skill start → 1 at skill end). R=1 → uniform;
+    R>1 → the skill's END positions (the handoff point) count more. Only affects the cumulative term."""
+
     # ── Eval-only (oracle closed-loop sim). Ignored during training. ──
     fsq_path: str | None = None
     """Frozen FSQ checkpoint ({run_dir}/FSQ.pt): provides the terminator (skill end signal)
