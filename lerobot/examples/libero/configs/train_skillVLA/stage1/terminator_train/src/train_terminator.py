@@ -207,14 +207,17 @@ def collate(items):
     return {k: torch.stack([torch.as_tensor(it[k]) for it in items]) for k in _NEEDED}
 
 
-def save_ckpt(out_dir: Path, step: int, fsq, fsq_cfg) -> Path:
+def save_ckpt(out_dir: Path, step: int, fsq, fsq_cfg, optimizer) -> Path:
+    # optimizer_state + step let training RESUME; the eval loader (FsqTerminator) ignores those keys.
+    blob = {"cfg": fsq_cfg, "model_state": {k: v.cpu() for k, v in fsq.state_dict().items()},
+            "optimizer_state": optimizer.state_dict(), "step": step}
     d = out_dir / "checkpoints" / f"{step:06d}"
     d.mkdir(parents=True, exist_ok=True)
     path = d / "FSQ.pt"  # FSQ.pt format → drop-in terminator for eval
-    torch.save({"cfg": fsq_cfg, "model_state": {k: v.cpu() for k, v in fsq.state_dict().items()}}, path)
+    torch.save(blob, path)
     last = out_dir / "checkpoints" / "last"
     last.mkdir(parents=True, exist_ok=True)
-    torch.save({"cfg": fsq_cfg, "model_state": {k: v.cpu() for k, v in fsq.state_dict().items()}}, last / "FSQ.pt")
+    torch.save(blob, last / "FSQ.pt")
     return path
 
 
@@ -322,13 +325,18 @@ def main() -> None:
                       "use_third": use_third, "use_wrist": use_wrist, "use_state": use_state,
                       "dim": custom_dim, "layers": custom_layers, "heads": custom_heads}
 
+        net = model
+
         def save_fn(step):
-            d = out_dir / "checkpoints" / f"{step:06d}"
-            d.mkdir(parents=True, exist_ok=True)
-            # drop the frozen DINO weights from the ckpt (reloaded from custom_dino at eval)
+            # drop the frozen DINO (reloaded from custom_dino at eval); +optimizer/step for resume.
             sd = {k: v.cpu() for k, v in model.state_dict().items() if not k.startswith("tok.dino.")}
-            torch.save({"arch": "custom", "cfg": custom_cfg, "model_state": sd}, d / "terminator.pt")
-            return d / "terminator.pt"
+            blob = {"arch": "custom", "cfg": custom_cfg, "model_state": sd,
+                    "optimizer_state": optimizer.state_dict(), "step": step}
+            for sub in (f"{step:06d}", "last"):
+                d = out_dir / "checkpoints" / sub
+                d.mkdir(parents=True, exist_ok=True)
+                torch.save(blob, d / "terminator.pt")
+            return out_dir / "checkpoints" / f"{step:06d}" / "terminator.pt"
     else:  # fsq
         for p, name in [(fsq_path, "FSQ.pt"), (dino_path, "dino.npz")]:
             if not p.exists():
@@ -341,18 +349,31 @@ def main() -> None:
         print("[terminator] building lean dataset (parquet cols + DINO mmap, no video)…", flush=True)
         dataset = TerminatorDataset(repo_id, str(skillvla_dir), str(dino_path))
         collate_fn = collate
+        net = fsq
 
         def forward_fn(batch):
             tc = batch["skill_code_true"].view(-1).long().clamp(0, vocab - 1)
             return term_forward(fsq, code2z, tc, batch["observation.state"], batch["skill_decoder_dino"])
 
         def save_fn(step):
-            return save_ckpt(out_dir, step, fsq, fsq_cfg)
+            return save_ckpt(out_dir, step, fsq, fsq_cfg, optimizer)
 
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers,
                         collate_fn=collate_fn, drop_last=True, pin_memory=True,
                         persistent_workers=num_workers > 0)
     print(f"[terminator] dataset frames={len(dataset)} repo={repo_id} arch={arch} — starting train", flush=True)
+
+    # ── resume: auto-continue from checkpoints/last if present (e.g. to extend a finished run: raise `steps`) ──
+    ckpt_name = "terminator.pt" if arch == "custom" else "FSQ.pt"
+    last_ckpt = out_dir / "checkpoints" / "last" / ckpt_name
+    start_step = 0
+    if last_ckpt.exists():
+        rs = torch.load(str(last_ckpt), map_location=device, weights_only=False)
+        net.load_state_dict(rs["model_state"], strict=False)        # frozen DINO/codebook already in `net`
+        if rs.get("optimizer_state") is not None:
+            optimizer.load_state_dict(rs["optimizer_state"])
+        start_step = int(rs.get("step", 0))
+        print(f"[terminator] RESUMING from {last_ckpt} at step {start_step} (target {steps})", flush=True)
 
     wandb = None
     if wandb_enable:
@@ -364,9 +385,9 @@ def main() -> None:
             "progress_loss_weight": w_prog, "termination_loss_weight": w_term})
 
     # ── train ──
-    step = 0
+    step = start_step
     t0 = time.perf_counter()
-    done = False
+    done = step >= steps
     while not done:
         for batch in loader:
             prog, term_logits = forward_fn(batch)
@@ -385,7 +406,7 @@ def main() -> None:
             step += 1
 
             if step % log_freq == 0:
-                sps = step / (time.perf_counter() - t0)
+                sps = (step - start_step) / max(time.perf_counter() - t0, 1e-6)
                 print(f"[{step:>6}/{steps}] loss={loss.item():.4f} (prog={loss_prog.item():.4f} "
                       f"term={loss_term.item():.4f}) {sps:.1f} it/s")
                 if wandb is not None:
