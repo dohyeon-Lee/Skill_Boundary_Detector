@@ -5,7 +5,8 @@
 # ── Targets (compared side-by-side; run sequentially, one loaded at a time) ──
 # Each: label, kind (cond → outputs_root/skillVLA_stage1 ; pi05 → outputs_root/{pi05_outputs_subdir}),
 # model_dir, checkpoint. The SHARED dataset comes from the FIRST cond target's {source}/{run_tag}.
-# Default below = the 4 Stage-1 state_cond_mode variants (stoken/sadaln/scond_adaln/sae_adaln) + pi05.
+# state_cond_mode is now 2 modes: state | state_skill (run-name tag _{mode}). OLD runs use the legacy
+# _s{mode} tags (_sadaln/_sae_adaln); they still load (config.json names are auto-aliased). pi05 → no skill.
 targets:
   # - {label: token,      kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_freeze_batch256_stoken_c25,      checkpoint: "last"}
   # - {label: adaln,      kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_freeze_batch256_sadaln_c25,      checkpoint: "005000"}
@@ -13,19 +14,33 @@ targets:
   # - {label: ae_adaln,   kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_freeze_batch256_sae_adaln_c25,   checkpoint: "005000"}
   # - {label: sig_cond_adaln, kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_scond_adaln_c25, checkpoint: "005000"}
 
-  - {label: ae_adaln_np,   kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_np_sae_adaln_c25,   checkpoint: "010000"}
-  - {label: adaln_np,      kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_np_sadaln_c25,      checkpoint: "010000"}
+  # - {label: ae_adaln_np,   kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_np_sae_adaln_c25,   checkpoint: "010000"}
+  # - {label: adaln_np,      kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_np_sadaln_c25,      checkpoint: "010000"}
 
-  - {label: ae_adaln,   kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_sae_adaln_c25,   checkpoint: "010000"}
-  - {label: adaln,      kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_sadaln_c25,      checkpoint: "010000"}
+  # - {label: ae_adaln,   kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_sae_adaln_c25,   checkpoint: "010000"}
+  # - {label: adaln,      kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_sadaln_c25,      checkpoint: "010000"}
 
-  - {label: ae_adaln_np_c10,   kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_np_sae_adaln_c10,   checkpoint: "010000"}
-  - {label: adaln_np_c10,      kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_np_sadaln_c10,      checkpoint: "010000"}
+  # - {label: ae_adaln_np_c10,   kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_np_sae_adaln_c10,   checkpoint: "010000"}
+  # - {label: adaln_np_c10,      kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_np_sadaln_c10,      checkpoint: "010000"}
   
-  - {label: ae_adaln_c10,   kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_sae_adaln_c10,   checkpoint: "010000"}
-  - {label: adaln_c10,      kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_sadaln_c10,      checkpoint: "010000"}
+  # - {label: ae_adaln_c10,   kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_sae_adaln_c10,   checkpoint: "010000"}
+  # - {label: adaln_c10,      kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_sadaln_c10,      checkpoint: "010000"}
 
-  - {label: pi05,       kind: pi05, model_dir: PT_libero_90_full_full_pi05_batch16, checkpoint: "010000", pi05_outputs_subdir: pi05_PT}
+  - {label: state,   kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_np_state_c10,   checkpoint: "005000"}
+  - {label: state_cum,      kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_np_state_cum0.5r2_c10,      checkpoint: "005000"}
+  
+  - {label: state_skill,   kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_np_state_skill_c10,   checkpoint: "005000"}
+  - {label: state_skill_cum,      kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_np_state_skill_cum0.5r2_c10,      checkpoint: "005000"}
+
+  - {label: dino_state,   kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_unfreeze_batch256_np_state_c10,   checkpoint: "005000"}
+  - {label: dino_state_cum,      kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_unfreeze_batch256_np_state_cum0.5r2_c10,      checkpoint: "005000"}
+  
+  - {label: dino_state_skill,   kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_unfreeze_batch256_np_state_skill_c10,   checkpoint: "005000"}
+  - {label: dino_state_skill_cum,      kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_unfreeze_batch256_np_state_skill_cum0.5r2_c10,      checkpoint: "005000"}
+
+
+
+  - {label: pi05,       kind: pi05, model_dir: PT_libero_90_full_full_pi05_batch16, checkpoint: "005000", pi05_outputs_subdir: pi05_PT}
 
 # ── Probe params ──
 n_frames: 128 #512                 # random dataset frames (shared across both models)

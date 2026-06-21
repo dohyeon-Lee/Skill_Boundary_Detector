@@ -104,9 +104,16 @@ class SkillExpertConfig(PI05Config):
     chunk (cumsum, on the ARM dims only — the gripper is absolute, excluded) and penalizes the K running
     positions, so the whole trajectory + endpoint match. 0 = OFF (loss identical to per-delta + masking)."""
     skill_end_loss_weight: float = 1.0
-    """R for the cumulative-position loss's PER-STEP end weighting: weight = 1 + (R-1)·progress, where
-    progress is each step's within-skill position (0 at skill start → 1 at skill end). R=1 → uniform;
-    R>1 → the skill's END positions (the handoff point) count more. Only affects the cumulative term."""
+    """R for the cumulative-position loss's end weighting: weight = 1 + (R-1)·progress, where progress is the
+    within-skill position (0 at skill start → 1 at skill end). R=1 → uniform; R>1 → skill END positions (the
+    handoff) count more. In mode "all" it weights PER-STEP; in "endpoint" it weights PER-SAMPLE by the
+    anchor's progress. Only affects the cumulative term."""
+    cumulative_pos_mode: str = "all"
+    """How the cumulative-position loss aggregates over the chunk:
+      "all"      → penalize EVERY within-skill running position (the integrated trajectory), end-weighted (R).
+      "endpoint" → penalize ONLY the running position at the LAST valid step (the chunk end, capped to the
+                   skill end / episode padding via the same valid mask) — the predicted-chunk endpoint / skill
+                   handoff. R weights per-sample by where that endpoint falls in the skill."""
 
     # ── Eval-only (oracle closed-loop sim). Ignored during training. ──
     fsq_path: str | None = None

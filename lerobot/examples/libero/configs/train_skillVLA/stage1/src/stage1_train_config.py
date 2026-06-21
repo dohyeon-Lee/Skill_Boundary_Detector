@@ -56,7 +56,8 @@ def build_settings(cfg: dict) -> dict:
     state_cond_mode = str(get_value(cfg, "state_cond_mode", "state_skill")).strip().lower()  # state | state_skill
     use_progress_token = as_bool(get_value(cfg, "use_progress_token", True))
     cum_pos_w = float(get_value(cfg, "cumulative_pos_loss_weight", 0.0))   # λ cumulative-position loss (0=off)
-    skill_end_w = float(get_value(cfg, "skill_end_loss_weight", 1.0))      # R per-step end weighting
+    skill_end_w = float(get_value(cfg, "skill_end_loss_weight", 1.0))      # R end weighting
+    cum_pos_mode = str(get_value(cfg, "cumulative_pos_mode", "all")).strip().lower()  # all | endpoint
 
     init_from_pi05 = as_bool(get_value(cfg, "init_from_pi05", True))
     pi_base = resolve_path(project_root, get_value(cfg, "pi_base", "models/pi05_base")) if init_from_pi05 else ""
@@ -81,6 +82,8 @@ def build_settings(cfg: dict) -> dict:
     run_name = f"{run_name}_{state_cond_mode}"   # state | state_skill (what rides the expert AdaRMS) — never collide
     if cum_pos_w > 0:                             # cumulative-position loss variant → own folder
         run_name = f"{run_name}_cum{cum_pos_w:g}r{skill_end_w:g}"
+        if cum_pos_mode == "endpoint":            # endpoint(A, chunk-end point) vs all → distinct folder
+            run_name = f"{run_name}ep"
     if exp:
         run_name = f"{run_name}_{exp}"
     run_name = f"{run_name}_c{chunk_size}"  # chunk horizon always trails the run name
@@ -132,9 +135,10 @@ def build_settings(cfg: dict) -> dict:
         # skill progress conditioning (train-time GT jitter; see configuration_skill_expert)
         "progress_jitter": float(get_value(cfg, "progress_jitter", 0.1)),
         "use_progress_token": use_progress_token,   # false → drop the progress token (skill only)
-        # loss: optional cumulative-position term (λ) + its per-step end weighting (R). λ=0 → off.
+        # loss: optional cumulative-position term (λ) + end weighting (R) + aggregation mode. λ=0 → off.
         "cumulative_pos_loss_weight": cum_pos_w,
         "skill_end_loss_weight": skill_end_w,
+        "cumulative_pos_mode": cum_pos_mode,      # all | endpoint (chunk-end point)
         # optimization
         "batch_size": batch_size,
         "num_workers": int(get_value(cfg, "num_workers", 8)),

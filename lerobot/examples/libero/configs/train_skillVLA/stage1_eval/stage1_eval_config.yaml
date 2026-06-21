@@ -28,7 +28,7 @@ skillvla_dataset_root: skillvla_dataset  # .../{skillvla_dataset_root}/{source_d
 # model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_freeze_batch256_sadaln_c25  
 
 # model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_sae_adaln_c25 # clear
-model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_sadaln_c25 # clear
+# model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_sadaln_c25 # clear
 
 # model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_np_sadaln_c25 # clear
 # model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_np_sae_adaln_c25 # clear
@@ -39,14 +39,22 @@ model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch25
 # model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_sae_adaln_c10 # clear
 # model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_sadaln_c10 # clear
 
+# model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_np_state_skill_c10
+# model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_np_state_skill_cum0.5r2_c10
+# model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_np_state_c10
+model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_np_state_cum0.5r2_c10
 
-checkpoint: "010000"            # "last" or a step number
+checkpoint: "012500"            # "last" or a step number
 # Output folder = outputs/{model_dir}_{checkpoint}_adv-{skill_advance_mode}[_{eval_exp}]
 eval_exp: ""                    # optional free-form tag for the eval output folder (e.g. ablation name)
 
 # FSQ TERMINATOR's raw-image DINO only. The policy's own vision backbone is NOT set here —
 # it comes from the checkpoint's saved config and must match the trained weights (vits/vitb/...).
 terminator_dino_model_path: models/dinov3-vits16   # project_root 기준 상대경로 → 서버마다 자동
+# REFINED terminator (stage1/terminator_train). 비우면 = 학습 run의 FSQ.pt(기본); 채우면 dedicated
+# terminator를 로드해 FSQ 거랑 비교. code→z_q는 같은 frozen 코드북이라 FSQ.pt 포맷이 그대로 drop-in.
+# 출력 폴더에 _refterm{step} 태그가 붙어 FSQ-terminator run과 안 섞임.
+terminator_path: ""   # 예: outputs_filtered/skillVLA_stage1/terminator/{run_name}/checkpoints/010000/FSQ.pt
 
 # ── Eval rollout ──
 target_task: libero_90

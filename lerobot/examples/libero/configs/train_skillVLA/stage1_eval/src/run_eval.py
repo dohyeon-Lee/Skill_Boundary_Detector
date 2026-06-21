@@ -41,7 +41,7 @@ from lerobot.utils.random_utils import set_seed
 
 _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))  # local eval_oracle
-from eval_oracle import FsqTerminator, load_skill_sequences_by_language, map_env_tasks_to_skills  # noqa: E402
+from eval_oracle import load_skill_sequences_by_language, make_terminator, map_env_tasks_to_skills  # noqa: E402
 
 # Path to examples/libero so eval_oracle can import the FSQ model definition.
 _LIBERO_EXAMPLES = _HERE.parents[3]  # .../examples/libero
@@ -249,8 +249,12 @@ def eval_main(cfg: EvalPipelineConfig):
     logging.info("Making policy + FSQ terminator.")
     policy = make_policy(cfg=cfg.policy, env_cfg=cfg.env, rename_map=cfg.rename_map)
     policy.eval()
-    terminator = FsqTerminator(cfg.policy.fsq_path, device, dino_path=cfg.policy.terminator_dino_model_path,
-                               libero_examples_dir=_LIBERO_EXAMPLES)
+    # fsq_path may be an FSQ.pt (FSQ terminator) OR a custom terminator.pt (stage1/terminator_train) —
+    # make_terminator dispatches on the file. Both expose terminate(codes, state, image[, wrist]).
+    terminator = make_terminator(
+        cfg.policy.fsq_path, device, dino_path=cfg.policy.terminator_dino_model_path,
+        libero_examples_dir=_LIBERO_EXAMPLES, project_root=_LIBERO_EXAMPLES.parents[2],
+        custom_terminator_dir=_HERE.parents[1] / "stage1" / "terminator_train" / "src")
 
     # Oracle GT skill sequences: dataset (by language) → env task_id.
     seqs_by_lang = load_skill_sequences_by_language(cfg.policy.skill_label_dataset_dir)

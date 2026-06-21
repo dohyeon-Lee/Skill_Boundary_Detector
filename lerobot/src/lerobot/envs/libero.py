@@ -293,13 +293,19 @@ class LiberoEnv(gym.Env):
             "Please switch to an image-based obs_type (e.g. 'pixels', 'pixels_agent_pos')."
         )
 
-    def reset(self, seed=None, **kwargs):
+    def reset(self, seed=None, _advance=True, **kwargs):
+        # _advance=False for the in-step auto-reset on termination (see step()): that reset re-inits the
+        # sim for the returned obs but must NOT advance init_state_id. Advancing there made the chosen
+        # init state depend on HOW MANY episodes terminated (success vs timeout) — which is
+        # model-dependent — so the same eval_episode_N got different layouts across models. Only the
+        # eval's explicit per-batch reset advances, tying batch_ix → init_states[batch_ix] deterministically.
         super().reset(seed=seed)
         self._env.seed(seed)
         raw_obs = self._env.reset()
         if self.init_states and self._init_states is not None:
             raw_obs = self._env.set_init_state(self._init_states[self.init_state_id % len(self._init_states)])
-            self.init_state_id += self._reset_stride  # Change init_state_id when reset
+            if _advance:
+                self.init_state_id += self._reset_stride  # advance only on the explicit per-episode reset
 
         # After reset, objects may be unstable (slightly floating, intersecting, etc.).
         # Step the simulator with a no-op action for a few frames so everything settles.
@@ -345,7 +351,7 @@ class LiberoEnv(gym.Env):
                 "done": bool(done),
                 "is_success": bool(is_success),
             }
-            self.reset()
+            self.reset(_advance=False)  # re-init for the obs, but don't advance init_state_id (see reset())
         truncated = False
         return observation, reward, terminated, truncated, info
 

@@ -29,7 +29,7 @@ pi_base: models/pi05_base   # project_root(global_config) 기준 상대경로 �
 # dino   = trainable DINOv3 (own weights)
 # siglip = PaliGemma/SigLIP tower, warm-started from pi_base's vision_tower (robot-adapted);
 #          params separate from the Stage-2 VLM. Needs init_from_pi05: true for the warm-start.
-vision_backbone: dino           # dino | siglip
+vision_backbone: siglip           # dino | siglip
 # DINO backbone
 dino_model_path: models/dinov3-vitl16   # project_root 기준 상대경로. ViT-B/16 86M (vits16=21M, vitl16=300M)
 dino_lr: null                   # null = same LR as the rest; set a float to use a separate DINO LR
@@ -56,7 +56,11 @@ use_progress_token: false   # false = progress 토큰 제거(skill z_q만으로 
 # over the chunk (ARM dims only; gripper=absolute, excluded) → penalize the K running positions so the
 # whole trajectory + endpoint match, not just per-step deltas. End-weighted per step (R).
 cumulative_pos_loss_weight: 0.5   # λ — 0 = OFF (loss identical to per-delta + skill/pad masking)
-skill_end_loss_weight: 2.0        # R — weight=1+(R-1)·progress; skill END positions count more (1=uniform)
+skill_end_loss_weight: 2.0        # R — weight=1+(R-1)·progress; skill END counts more (1=uniform)
+# cumulative_pos_mode: how the cumulative term aggregates over the chunk:
+#   all      → 모든 within-skill 위치 (적분 궤적), per-step end-weight
+#   endpoint → 마지막 valid 스텝(=청크끝, 스킬/패딩 넘으면 그쪽으로 cap) 한 점만; R은 per-sample(앵커 진행도)로 가중
+cumulative_pos_mode: all          # all | endpoint
 
 # ── Optimization ──
 batch_size: 256

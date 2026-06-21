@@ -597,11 +597,15 @@ class SkillExpertPolicy(PreTrainedPolicy):
             loss_dict["loss"] = per_sample.mean().detach().item()
             return per_sample, loss_dict
         loss = (losses * vf).sum() / (n_steps * real_dim)               # per-delta flow loss (unchanged)
+        # wandb "loss" = the per-delta action loss so it overlays old / λ=0 runs (whose total IS this). The
+        # actual optimized objective (per-delta + λ·cum) is logged separately below as "loss_total".
+        loss_dict["loss"] = loss.detach().item()
 
         # Optional cumulative-position loss: integrate the implied per-step action error (= resid) over the
         # chunk → cumulative-position error, on the ARM (delta) dims only (gripper is absolute → excluded).
-        # Per-step end-weighted so later positions (nearer the skill end = endpoint) count more. lam=0 → off
-        # (identical to the per-delta+masking behavior above).
+        # Two modes (cumulative_pos_mode): "all" = penalize EVERY within-skill running position (end-weighted
+        # by R per step); "endpoint" = penalize ONLY the position at the LAST valid step (chunk end, capped to
+        # the skill end / padding) — the predicted-chunk endpoint / handoff; R then weights per-sample. lam=0 → off.
         lam = float(self.config.cumulative_pos_loss_weight)
         if lam > 0.0:
             arm = real_dim - 1                                          # drop the absolute gripper (last dim)
@@ -614,11 +618,25 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 prog = ((ds + kk) / (ds + de).clamp(min=1.0)).clamp(0.0, 1.0)   # per-step within-skill progress
             else:
                 prog = torch.arange(K, device=losses.device).float().view(1, K) / max(K - 1, 1)
-            w = (1.0 + (r - 1.0) * prog) * valid.float()               # end-weighted; 0 outside the valid prefix
-            cum_loss = (cum.pow(2) * w.unsqueeze(-1)).sum() / (w.sum().clamp(min=1.0) * arm)
+            if self.config.cumulative_pos_mode == "endpoint":
+                # A: ONE cumulative-position term per sample = the running position at the LAST valid step
+                # (the chunk END, capped to the skill end / episode padding via `valid`) — the predicted-chunk
+                # endpoint / skill handoff. R weights per-SAMPLE by where that endpoint falls in the skill
+                # (chunks whose endpoint sits nearer the skill end count more).
+                idx = torch.arange(K, device=losses.device).view(1, K).expand(bsize, K)
+                last_valid = torch.where(valid, idx, torch.full_like(idx, -1)).max(dim=1).values  # (B,), -1 if none
+                anchor = last_valid.clamp(min=0)                           # (B,) chunk-end (within-skill) index
+                rows = torch.arange(bsize, device=losses.device)
+                cum_end = cum[rows, anchor]                                 # (B, arm) cumulative pos error at anchor
+                prog_a = prog.expand(bsize, K)[rows, anchor]               # (B,) within-skill progress at anchor
+                sw = (1.0 + (r - 1.0) * prog_a) * (last_valid >= 0).float()  # per-sample weight (0 if no valid step)
+                cum_loss = (cum_end.pow(2).sum(dim=1) * sw).sum() / (sw.sum().clamp(min=1.0) * arm)
+            else:                                                          # "all": every within-skill position
+                w = (1.0 + (r - 1.0) * prog) * valid.float()               # end-weighted; 0 outside the valid prefix
+                cum_loss = (cum.pow(2) * w.unsqueeze(-1)).sum() / (w.sum().clamp(min=1.0) * arm)
             loss = loss + lam * cum_loss
             loss_dict["loss_cum_pos"] = cum_loss.detach().item()
-        loss_dict["loss"] = loss.detach().item()
+        loss_dict["loss_total"] = loss.detach().item()   # optimized objective (per-delta + λ·cum); = "loss" when λ=0
         return loss, loss_dict
 
     @torch.no_grad()
