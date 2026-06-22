@@ -163,18 +163,11 @@ class OracleSkillExpertPolicy(PreTrainedPolicy):
             batch.get(_WRIST_KEY) if self.terminator.use_wrist else None,
         )
         advanced = False
-        # progress injected into the policy's skill token: terminator's estimate in "terminator"
-        # mode; the GT timeline (skill_step / (gt_len-1)) in "gt" mode (oracle timing isolates the
-        # expert from progress-estimation errors too). Reset to 0 when the skill just advanced.
-        prog_inj = progress.detach().float().clone()
         for b in range(bsize):
             rec = self._trace[self._active[b]]
             rec["end_probs"].append(
                 {"skill_step": self._skill_step[b], "prob": float(term[b]), "progress": float(progress[b])}
             )
-            if self.advance_mode == "gt":
-                gt_len = int(self._gt_lengths[b][min(self._cursors[b], len(self._gt_lengths[b]) - 1)])
-                prog_inj[b] = min(1.0, self._skill_step[b] / max(gt_len - 1, 1))
             self._skill_step[b] += 1
             rec["length"] = self._skill_step[b]
             # Skill-transition gate: GT duration (oracle timing) or the FSQ terminator. The
@@ -191,7 +184,6 @@ class OracleSkillExpertPolicy(PreTrainedPolicy):
                 self._cursors[b] += 1
                 self._skill_step[b] = 0
                 self._start_skill(b)
-                prog_inj[b] = 0.0
                 advanced = True
         if advanced:
             self._queue.clear()  # re-predict with the new skill
@@ -202,7 +194,6 @@ class OracleSkillExpertPolicy(PreTrainedPolicy):
             inj = dict(batch)
             inj["skill_sequence"] = codes.view(bsize, 1)
             inj["skill_index"] = torch.zeros(bsize, dtype=torch.long, device=device)
-            inj["skill_progress"] = prog_inj.to(device)
             chunk = self.policy.predict_action_chunk(inj)[:, : self.n_action_steps]
             self._queue.extend(chunk.transpose(0, 1))
         self._t += 1

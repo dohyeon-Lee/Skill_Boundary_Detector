@@ -36,9 +36,9 @@ from lerobot.utils.constants import (
 )
 
 # Skill columns the SkillExpert needs from the dataset: current skill = skill_sequence[skill_index];
-# skill_ds/skill_de give the GT progress (ds/(ds+de)); skill_progress is the inference-injected
-# terminator estimate (when present it overrides the GT — see SkillExpertPolicy._skill_progress).
-SKILL_EXPERT_BATCH_KEYS = ("skill_index", "skill_sequence", "skill_ds", "skill_de", "skill_progress")
+# skill_ds/skill_de give the within-skill offsets (boundary/cum/terminator targets). (The skill-progress
+# token was removed — the action expert conditions on the skill code only.)
+SKILL_EXPERT_BATCH_KEYS = ("skill_index", "skill_sequence", "skill_ds", "skill_de")
 
 
 def skill_expert_batch_to_transition(batch: dict[str, Any]) -> EnvTransition:

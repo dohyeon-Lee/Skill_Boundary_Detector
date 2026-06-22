@@ -54,7 +54,6 @@ def build_settings(cfg: dict) -> dict:
     if cond_encoder_variant.lower() in ("none", "null"):  # blank yaml → omit (use action expert's variant)
         cond_encoder_variant = ""
     state_cond_mode = str(get_value(cfg, "state_cond_mode", "state_skill")).strip().lower()  # state | state_skill
-    use_progress_token = as_bool(get_value(cfg, "use_progress_token", True))
     cum_pos_w = float(get_value(cfg, "cumulative_pos_loss_weight", 0.0))   # λ cumulative-position loss (0=off)
     skill_end_w = float(get_value(cfg, "skill_end_loss_weight", 1.0))      # R end weighting (action + cum)
     cum_loss = str(get_value(cfg, "cum_loss", "all")).strip().lower()      # all | endpoint (cum aggregation)
@@ -79,8 +78,6 @@ def build_settings(cfg: dict) -> dict:
 
     # joint + ae + discretized state is the only arch now → no arch/inject tag. init_from_pi05 fixed true.
     run_name = f"{source_dataset}_{run_tag}_{vis_tag}_batch{batch_size}"
-    if not use_progress_token:  # progress-ablation variant (skill token only)
-        run_name = f"{run_name}_np"
     run_name = f"{run_name}_{state_cond_mode}"   # state | state_skill (what rides the expert AdaRMS) — never collide
     # loss-variant suffix (categorical, NO hyperparameter values): cum part (only when λ>0) + action part.
     suffix = []
@@ -136,9 +133,6 @@ def build_settings(cfg: dict) -> dict:
         # action chunk horizon
         "chunk_size": chunk_size,
         "n_action_steps": n_action_steps,
-        # skill progress conditioning (train-time GT jitter; see configuration_skill_expert)
-        "progress_jitter": float(get_value(cfg, "progress_jitter", 0.1)),
-        "use_progress_token": use_progress_token,   # false → drop the progress token (skill only)
         # loss: optional cumulative-position term (λ) + end weighting (R) + aggregation mode. λ=0 → off.
         "cumulative_pos_loss_weight": cum_pos_w,
         "skill_end_loss_weight": skill_end_w,

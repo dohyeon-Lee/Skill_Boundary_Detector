@@ -49,7 +49,6 @@ SKILL_VLA_BATCH_KEYS = (
     SKILL_START_WRIST_IMAGE,
     SKILL_START_STATE,
     SKILL_CODE,
-    "skill_progress",   # GT progress of the current frame (dataset wrapper; cond progress token)
     "skill_decoder_state",
     "skill_decoder_image",
     "skill_decoder_wrist",

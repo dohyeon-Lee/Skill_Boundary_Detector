@@ -130,8 +130,7 @@ class SkillExpertPytorch(nn.Module):
         self.state_proj = nn.Linear(config.max_state_dim, self.width)
         # Skill: flat code → FSQ grid coordinate z_q (codebook's little-endian frame, the same
         # value the FSQ decoder consumes), normalized per dim to [-1, 1] → ONE token, constant
-        # within a skill. The skill PROGRESS is a SEPARATE token (mirrors the FSQ decoder's
-        # dec_z_proj / motion_prog_proj split): raw [0, 1] through its own Linear.
+        # within a skill.
         levels = torch.tensor(config.skill_fsq_levels, dtype=torch.long)
         strides = torch.ones_like(levels)
         for i in range(1, len(config.skill_fsq_levels)):
@@ -140,7 +139,6 @@ class SkillExpertPytorch(nn.Module):
         self.register_buffer("_fsq_strides", strides, persistent=False)
         self.register_buffer("_fsq_half", (levels - 1).float() / 2.0, persistent=False)
         self.skill_proj = nn.Linear(len(config.skill_fsq_levels), self.width)  # z_q → 1 token
-        self.progress_proj = nn.Linear(1, self.width)                          # progress → 1 token
 
         # ── Flow-matching action head (mirrors PI05) ──
         self.action_in_proj = nn.Linear(config.max_action_dim, self.width)
@@ -215,23 +213,19 @@ class SkillExpertPytorch(nn.Module):
 
     def _cond_tokens(self, images: list[Tensor]) -> Tensor:
         """Scene conditioning tokens → (B, M, width): [img1 patches, img2 patches] — image ONLY.
-        State, skill (z_q) and progress are NOT here — they ride the action expert (see _action_prefix
-        / _expert_cond), so they escape the image-dominated cond stream where state was starved."""
+        State and skill (z_q) are NOT here — they ride the action expert (see _action_prefix / _expert_cond),
+        so they escape the image-dominated cond stream where state was starved."""
         tokens = [self.image_proj(self._image_features(image).to(self._wdtype)) for image in images]
         return torch.cat(tokens, dim=1)
 
-    def _action_prefix(self, skill_code: Tensor, skill_progress: Tensor, state: Tensor) -> Tensor | None:
-        """Tokens prepended to the action stream (read by action tokens; prefix ⊥ action). Order:
-        [skill, progress?]. state_cond_mode="state" → skill (+progress) are prefix tokens (state itself
-        rides the expert AdaRMS, not a token); "state_skill" → NO prefix at all (state+skill+progress ALL
-        ride the action AdaRMS). use_progress_token=False drops the progress token. (state is unused here —
-        it never becomes a token in either mode; kept in the signature for call-site symmetry.)"""
+    def _action_prefix(self, skill_code: Tensor, state: Tensor) -> Tensor | None:
+        """The skill token prepended to the action stream (read by action tokens; prefix ⊥ action).
+        state_cond_mode="state" → the skill (z_q) is a prefix token (state itself rides the expert AdaRMS,
+        not a token); "state_skill" → NO prefix at all (state + skill ride the action AdaRMS). (state is
+        unused here — it never becomes a token in either mode; kept for call-site symmetry.)"""
         if self.config.state_cond_mode == "state_skill":
             return None
-        toks = [self.skill_proj(self._code_to_zq(skill_code).to(self._wdtype)).unsqueeze(1)]
-        if self.config.use_progress_token:
-            toks.append(self.progress_proj(skill_progress.view(-1, 1).float().to(self._wdtype)).unsqueeze(1))
-        return torch.cat(toks, dim=1)
+        return self.skill_proj(self._code_to_zq(skill_code).to(self._wdtype)).unsqueeze(1)   # (B, 1, width)
 
     def _time_cond(self, timestep: Tensor) -> Tensor:
         t = create_sinusoidal_pos_embedding(
@@ -246,16 +240,13 @@ class SkillExpertPytorch(nn.Module):
         in BOTH modes (state / state_skill fuse state into the flow-time AdaRMS)."""
         return self.state_proj(state.to(self._wdtype))
 
-    def _expert_cond(self, timestep: Tensor, state: Tensor,
-                     skill_code: Tensor, skill_progress: Tensor) -> Tensor:
+    def _expert_cond(self, timestep: Tensor, state: Tensor, skill_code: Tensor) -> Tensor:
         """AdaRMS conditioning for the ACTION stream — each signal through its own projection, SUMMED
-        (DiT-style ⊕): flow-time always; + state in BOTH modes; + skill (z_q) + progress only in
-        state_skill (which carries NO prefix tokens — skill/progress ride the AdaRMS instead)."""
+        (DiT-style ⊕): flow-time always; + state in BOTH modes; + skill (z_q) only in state_skill (which
+        carries NO prefix tokens — the skill rides the AdaRMS instead)."""
         c = self._time_cond(timestep) + self._state_cond(state)   # state → expert AdaRMS in both modes
         if self.config.state_cond_mode == "state_skill":
             c = c + self.skill_proj(self._code_to_zq(skill_code).to(self._wdtype))
-            if self.config.use_progress_token:
-                c = c + self.progress_proj(skill_progress.view(-1, 1).float().to(self._wdtype))
         return c
 
     def _run_joint(self, cond_tokens: Tensor, x_t: Tensor, expert_cond: Tensor,
@@ -318,7 +309,6 @@ class SkillExpertPytorch(nn.Module):
         img_masks: list[Tensor],
         state: Tensor,
         skill_code: Tensor,
-        skill_progress: Tensor,
         actions: Tensor,
         noise: Tensor | None = None,
         time: Tensor | None = None,
@@ -328,7 +318,7 @@ class SkillExpertPytorch(nn.Module):
         (â - a = (source - v_t) - (source - u_t) = u_t - v_t), so cumsum over the chunk gives the
         cumulative-position error used by the policy's optional cumulative-position loss."""
         cond = self._cond_tokens(images)
-        action_prefix = self._action_prefix(skill_code, skill_progress, state)
+        action_prefix = self._action_prefix(skill_code, state)
         if time is None:
             time = self.sample_time(actions.shape[0], actions.device)
         source = self.sample_noise(actions.shape, actions.device) if noise is None else noise
@@ -336,7 +326,7 @@ class SkillExpertPytorch(nn.Module):
         time_exp = time[:, None, None]
         x_t = time_exp * source + (1 - time_exp) * actions
         u_t = source - actions
-        expert_cond = self._expert_cond(time, state, skill_code, skill_progress)
+        expert_cond = self._expert_cond(time, state, skill_code)
         v_t = self._run_joint(cond, x_t, expert_cond, action_prefix, None)  # cond stream: plain RMSNorm
         return u_t - v_t
 
@@ -347,7 +337,6 @@ class SkillExpertPytorch(nn.Module):
         img_masks: list[Tensor],
         state: Tensor,
         skill_code: Tensor,
-        skill_progress: Tensor,
         noise: Tensor | None = None,
         num_steps: int | None = None,
     ) -> Tensor:
@@ -359,16 +348,16 @@ class SkillExpertPytorch(nn.Module):
         # cond⊥action, so the cond stream (image-only) is identical every step → encode it once, cache
         # its per-layer K/V, and run only the action stream ([prefix, action]) against the cache.
         cond = self._cond_tokens(images)
-        action_prefix = self._action_prefix(skill_code, skill_progress, state)
-        return self._sample_joint_cached(cond, noise, num_steps, action_prefix, state, skill_code, skill_progress)
+        action_prefix = self._action_prefix(skill_code, state)
+        return self._sample_joint_cached(cond, noise, num_steps, action_prefix, state, skill_code)
 
     def _sample_joint_cached(self, cond_tokens: Tensor, noise: Tensor, num_steps: int,
                              action_prefix: Tensor | None = None, state: Tensor | None = None,
-                             skill_code: Tensor | None = None, skill_progress: Tensor | None = None) -> Tensor:
+                             skill_code: Tensor | None = None) -> Tensor:
         """Joint-mode inference with a cached cond stream (mirrors PI05 prefix-cache / denoise_step).
         The cond-encoder runs ONCE → per-layer K/V cache; each denoising step runs only the action
-        stream ([skill, progress?, action]) against the cache (cond⊥action), with the conditioning
-        prefix ⊥ the action tokens (pi0) and state-fused AdaRMS via _expert_cond."""
+        stream ([skill?, action]) against the cache (cond⊥action), with the conditioning prefix ⊥ the
+        action tokens (pi0) and state-fused AdaRMS via _expert_cond."""
         bsize, n_cond = cond_tokens.shape[:2]
         n_chunk = noise.shape[1]
         n_prefix = action_prefix.shape[1] if action_prefix is not None else 0
@@ -385,8 +374,8 @@ class SkillExpertPytorch(nn.Module):
             past_key_values=None, use_cache=True, adarms_cond=None,  # cond stream: plain RMSNorm
         ).past_key_values
 
-        # Suffix: conditioning prefix block ([skill, progress?]) reads cond+prefix only; action
-        # block reads cond+prefix+action (prefix ⊥ action, pi0). All suffix tokens see all cond.
+        # Suffix: conditioning prefix block ([skill?]) reads cond+prefix only; action block reads
+        # cond+prefix+action (prefix ⊥ action, pi0). All suffix tokens see all cond.
         suffix_pad = torch.ones(bsize, n_act, dtype=torch.bool, device=device)
         suffix_ar_list = ([1] + [0] * (n_prefix - 1)) if n_prefix > 0 else []
         suffix_ar_list += [1] + [0] * (n_chunk - 1)
@@ -403,11 +392,11 @@ class SkillExpertPytorch(nn.Module):
             t = torch.full((bsize,), 1.0 + step * dt, dtype=torch.float32, device=device)
             action_tokens = self.action_in_proj(x_t.to(self._wdtype))
             if action_prefix is not None:
-                action_tokens = torch.cat([action_prefix, action_tokens], dim=1)  # [skill, progress?, action×K]
+                action_tokens = torch.cat([action_prefix, action_tokens], dim=1)  # [skill?, action×K]
             action_hidden = self.gemma_expert.model.forward(
                 inputs_embeds=action_tokens, attention_mask=full_4d, position_ids=suffix_pos,
                 past_key_values=copy.deepcopy(past_key_values), use_cache=False,
-                adarms_cond=self._expert_cond(t, state, skill_code, skill_progress),
+                adarms_cond=self._expert_cond(t, state, skill_code),
             ).last_hidden_state
             v_t = self.action_out_proj(action_hidden[:, -n_chunk:].to(self._wdtype)).float()  # action positions only
             x_t = x_t + dt * v_t
@@ -552,16 +541,6 @@ class SkillExpertPolicy(PreTrainedPolicy):
         code = seq.gather(1, idx).squeeze(1)
         return code.clamp(0, self.config.skill_vocab_size - 1)
 
-    def _skill_progress(self, batch: dict) -> Tensor:
-        """Per-frame skill progress ∈ [0, 1] (0 at skill start, 1 at its last frame — the FSQ
-        terminator's training target). ``skill_progress`` in the batch (injected at inference
-        with the terminator's prediction) wins; otherwise GT = skill_ds / (skill_ds+skill_de)."""
-        if "skill_progress" in batch:
-            return batch["skill_progress"].float().view(-1).clamp(0.0, 1.0)
-        ds = batch["skill_ds"].float().view(-1)
-        de = batch["skill_de"].float().view(-1)
-        return ds / (ds + de).clamp(min=1.0)
-
     def forward(self, batch: dict, reduction: str = "mean"):
         images, img_masks = self._collect_images(batch)
         actions = pad_vector(batch[ACTION], self.config.max_action_dim)
@@ -589,14 +568,9 @@ class SkillExpertPolicy(PreTrainedPolicy):
         hold[:, g] = actions[rows, anchor, g]                           # gripper holds the last valid value
         actions = torch.where(valid.unsqueeze(-1), actions, hold.unsqueeze(1))   # boundary steps → hold target
 
-        progress = self._skill_progress(batch)
-        if self.training and self.config.progress_jitter > 0:
-            # robustness to the terminator's progress-estimation error at inference
-            jit = (torch.rand_like(progress) * 2.0 - 1.0) * self.config.progress_jitter
-            progress = (progress + jit).clamp(0.0, 1.0)
         state = pad_vector(batch[OBS_STATE], self.config.max_state_dim)   # → state_proj's fixed width (pi0)
         resid = self.model.forward(                                      # signed flow residual (u_t - v_t)
-            images, img_masks, state, self._skill_code(batch), progress, actions)
+            images, img_masks, state, self._skill_code(batch), actions)
         resid = resid[:, :, :real_dim]                                   # (B, K, real_dim)
         losses = resid ** 2                                              # per-(b,k,dim) flow MSE = action MSE
 
@@ -669,7 +643,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
         images, img_masks = self._collect_images(batch)
         state = pad_vector(batch[OBS_STATE], self.config.max_state_dim)   # → state_proj's fixed width (pi0)
         actions = self.model.sample_actions(
-            images, img_masks, state, self._skill_code(batch), self._skill_progress(batch), **kwargs)
+            images, img_masks, state, self._skill_code(batch), **kwargs)
         real_dim = self.config.output_features[ACTION].shape[0]
         return actions[:, :, :real_dim]
 

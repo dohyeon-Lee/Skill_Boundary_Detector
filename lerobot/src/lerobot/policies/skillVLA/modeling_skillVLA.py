@@ -69,7 +69,6 @@ from lerobot.utils.constants import (
 from .configuration_skillVLA import SkillVLAConfig
 from .dataset_skillVLA import (
     SKILL_CODE,
-    SKILL_PROGRESS,
     SKILL_START_IMAGE,
     SKILL_START_STATE,
     SKILL_START_WRIST_IMAGE,
@@ -189,7 +188,7 @@ class SkillVLAPytorch(PI05Pytorch):
         # The pi05-inherited action_in/out_proj + time_mlp stay float32 (pi05 convention): their
         # outputs are cast to the working dtype only at the attention boundary (_action_in/_action_out).
         if str(config.dtype) == "bfloat16":
-            for m in (self.image_proj, self.state_proj, self.skill_proj, self.progress_proj,
+            for m in (self.image_proj, self.state_proj, self.skill_proj,
                       self.cond_encoder, self.skill_head):
                 if m is not None:
                     m.to(dtype=torch.bfloat16)
@@ -231,13 +230,12 @@ class SkillVLAPytorch(PI05Pytorch):
         # AdaRMS (mirrors Stage-1's state_cond_mode). State is NOT a cond-stream token anymore — buried
         # among image tokens it was starved (see Stage-1 input_probe). cond stays image-ONLY.
         self.state_proj = nn.Linear(s1.max_state_dim, self.expert_width)
-        # Skill cond tokens mirror Stage-1: flat code → normalized z_q → Linear (constant within a
-        # skill) + the skill progress ∈ [0,1] as a SEPARATE token (see _skill_token_from_z/_progress_token).
+        # Skill cond token mirrors Stage-1: flat code → normalized z_q → Linear (constant within a
+        # skill) — see _skill_token_from_z. (The skill-progress token was removed.)
         self.skill_proj = nn.Linear(len(s1.skill_fsq_levels), self.expert_width)
-        self.progress_proj = nn.Linear(1, self.expert_width)
 
-        # ae: the cond-encoder encodes the SCENE ONLY (no skill, no adaLN); skill (+progress) is injected
-        # as prefix tokens in the action-expert stream (see _action_prefix). cond stays skill-blind → a
+        # ae: the cond-encoder encodes the SCENE ONLY (no skill, no adaLN); the skill is injected as a
+        # prefix token in the action-expert stream (see _action_prefix). cond stays skill-blind → a
         # clean obs / VLM-grounded channel. use_adarms=False matches the Stage-1 ae cond-encoder.
         variant = s1.cond_encoder_variant or s1.action_expert_variant
         self.cond_encoder = _build_gemma(variant, use_adarms=False)
@@ -270,20 +268,16 @@ class SkillVLAPytorch(PI05Pytorch):
         return self.siglip(pixel_values=x).last_hidden_state
 
     # ── Stage-1 state_cond_mode (read from the embedded Stage-1 config so Stage-2 auto-matches the
-    #    Stage-1 expert it warm-starts from). state: skill(+progress) ride the action prefix, AdaRMS=time+
-    #    state (image-dominant cond → stage-2 language room). state_skill: state+skill+progress ALL ride
-    #    the AdaRMS, NO prefix (strongest skill influence). use_progress_token=False (np) drops progress.
+    #    Stage-1 expert it warm-starts from). state: the skill rides the action prefix, AdaRMS=time+state
+    #    (image-dominant cond → stage-2 language room). state_skill: state+skill BOTH ride the AdaRMS,
+    #    NO prefix (strongest skill influence).
     @property
     def _state_cond_mode(self) -> str:
         return getattr(self.stage1_config, "state_cond_mode", "state_skill")
 
-    @property
-    def _use_progress(self) -> bool:
-        return bool(getattr(self.stage1_config, "use_progress_token", True))
-
     def _cond_tokens(self, images: list[Tensor]) -> Tensor:
         """Scene cond tokens → (B, M, expert_width): [img1 patches, img2 patches]. IMAGE-ONLY — state
-        moved to the AdaRMS (_state_cond) and skill(+progress) ride the action prefix / AdaRMS by mode."""
+        moved to the AdaRMS (_state_cond) and the skill rides the action prefix / AdaRMS by mode."""
         tokens = [self.image_proj(self._image_features(img).to(self._wdtype)) for img in images]
         return torch.cat(tokens, dim=1)
 
@@ -301,43 +295,29 @@ class SkillVLAPytorch(PI05Pytorch):
         GT code's grid coord or the VLM's STE-rounded prediction (cond_skill_source=pred)."""
         return self.skill_proj(zq.to(self._wdtype)).unsqueeze(1)
 
-    def _progress_token(self, skill_progress: Tensor) -> Tensor:
-        """Skill progress ∈ [0, 1] → Linear → (B, 1, expert_width) cond token (mirrors the FSQ
-        decoder's motion_prog_proj; GT at train time, the terminator's estimate in closed loop)."""
-        prog = skill_progress.view(-1, 1).float().to(next(self.parameters()).device)
-        return self.progress_proj(prog.to(self._wdtype)).unsqueeze(1)
-
-    def _action_prefix_from_z(self, zq: Tensor, skill_progress: Tensor) -> Tensor | None:
+    def _action_prefix_from_z(self, zq: Tensor) -> Tensor | None:
         """Action-stream prefix from a normalized skill z (GT grid coord or the VLM's STE-rounded
-        prediction). state mode → [skill, progress?] (np drops progress); state_skill mode → None
-        (skill+progress ride the AdaRMS instead). See ``_expert_cond`` / ``_action_prefix``."""
+        prediction). state mode → the skill token; state_skill mode → None (the skill rides the AdaRMS
+        instead). See ``_expert_cond`` / ``_action_prefix``."""
         if self._state_cond_mode == "state_skill":
             return None
-        toks = [self._skill_token_from_z(zq)]
-        if self._use_progress:
-            toks.append(self._progress_token(skill_progress))
-        return torch.cat(toks, dim=1)
+        return self._skill_token_from_z(zq)                              # (B, 1, expert_width)
 
-    def _action_prefix(self, skill_code: Tensor, skill_progress: Tensor) -> Tensor | None:
-        """Skill(+progress) tokens prepended to the action-expert stream (state mode) or None
-        (state_skill). ae injects the skill on the action stream so cond stays skill-blind (Stage-1)."""
-        return self._action_prefix_from_z(self._code_to_z(skill_code) / self._fsq_half[None, :], skill_progress)
+    def _action_prefix(self, skill_code: Tensor) -> Tensor | None:
+        """The skill token prepended to the action-expert stream (state mode) or None (state_skill).
+        ae injects the skill on the action stream so cond stays skill-blind (Stage-1)."""
+        return self._action_prefix_from_z(self._code_to_z(skill_code) / self._fsq_half[None, :])
 
-    def _expert_cond_from_z(self, time: Tensor, state: Tensor, zq: Tensor, skill_progress: Tensor) -> Tensor:
+    def _expert_cond_from_z(self, time: Tensor, state: Tensor, zq: Tensor) -> Tensor:
         """The action expert's AdaRMS conditioning → (B, expert_width). time + state ALWAYS; for
-        state_skill ALSO + skill + progress? (so skill/progress modulate via AdaRMS, not a prefix).
-        Mirrors Stage-1 ``_expert_cond``."""
+        state_skill ALSO + skill (so the skill modulates via AdaRMS, not a prefix). Mirrors Stage-1."""
         c = self._time_cond(time) + self._state_cond(state)
         if self._state_cond_mode == "state_skill":
             c = c + self.skill_proj(zq.to(self._wdtype))
-            if self._use_progress:
-                prog = skill_progress.view(-1, 1).float().to(c.device)
-                c = c + self.progress_proj(prog.to(self._wdtype))
         return c
 
-    def _expert_cond(self, time: Tensor, state: Tensor, skill_code: Tensor, skill_progress: Tensor) -> Tensor:
-        return self._expert_cond_from_z(
-            time, state, self._code_to_z(skill_code) / self._fsq_half[None, :], skill_progress)
+    def _expert_cond(self, time: Tensor, state: Tensor, skill_code: Tensor) -> Tensor:
+        return self._expert_cond_from_z(time, state, self._code_to_z(skill_code) / self._fsq_half[None, :])
 
     def _vlm_tokens(
         self, start_images: list[Tensor], lang_tokens: Tensor, lang_masks: Tensor
@@ -495,7 +475,6 @@ class SkillVLAPytorch(PI05Pytorch):
         lang_masks: Tensor,
         state: Tensor,
         skill_code: Tensor,
-        skill_progress: Tensor,
         actions: Tensor,
         noise: Tensor | None = None,
         time: Tensor | None = None,
@@ -531,10 +510,10 @@ class SkillVLAPytorch(PI05Pytorch):
 
         cond_tokens = self._cond_tokens(cond_images)   # image-only (state→AdaRMS, skill by mode)
         action_tokens = self._action_in(x_t)
-        prefix = self._action_prefix_from_z(skill_zq, skill_progress)   # None in state_skill mode
+        prefix = self._action_prefix_from_z(skill_zq)   # None in state_skill mode
         if prefix is not None:
             action_tokens = torch.cat([prefix, action_tokens], dim=1)
-        expert_cond = self._expert_cond_from_z(time, state, skill_zq, skill_progress)
+        expert_cond = self._expert_cond_from_z(time, state, skill_zq)
 
         vlm_out, action_out = self._joint_forward(
             cond_tokens, vlm_embeds, vlm_pad, vlm_xattn_block, action_tokens, expert_cond)
@@ -636,20 +615,20 @@ class SkillVLAPytorch(PI05Pytorch):
 
     @torch.no_grad()
     def _sample_actions_A(self, cond_images, start_images, lang_tokens, lang_masks, state, skill_code,
-                          skill_progress, noise, num_steps):
+                          noise, num_steps):
         """Branch A (ae) cached sampling: VLM encoded once; cond-encoder (SCENE only, skill-blind)
         encoded once reading the VLM cache; each denoise step runs the action expert over the action
         stream against the cond cache (cond⊥action), decoding the K action tokens. The action prefix is
-        [skill(, progress)] in `state` mode or empty in `state_skill` mode (skill/progress → AdaRMS)."""
+        the skill token in `state` mode or empty in `state_skill` mode (skill → AdaRMS)."""
         bsize, device = state.shape[0], state.device
         n_chunk = self.config.chunk_size
         cond_tokens = self._cond_tokens(cond_images)                    # image-only (state→AdaRMS)
         nc = cond_tokens.shape[1]
         vlm_embeds, vlm_pad, vlm_xattn_block = self._vlm_tokens(start_images, lang_tokens, lang_masks)
         nv = vlm_embeds.shape[1]
-        # action stream = prefix(n_prefix) + action(n_chunk). state mode → [skill(, progress)] prefix;
-        # state_skill → no prefix (skill/progress ride the AdaRMS). np drops the progress token.
-        n_prefix = 0 if self._state_cond_mode == "state_skill" else (2 if self._use_progress else 1)
+        # action stream = prefix(n_prefix) + action(n_chunk). state mode → [skill] prefix (1 token);
+        # state_skill → no prefix (the skill rides the AdaRMS).
+        n_prefix = 0 if self._state_cond_mode == "state_skill" else 1
         na = n_prefix + n_chunk
 
         # positions = single cumsum over [cond, vlm, action] (identical to the training joint forward)
@@ -672,7 +651,7 @@ class SkillVLAPytorch(PI05Pytorch):
             extra_kv=vlm_kv, extra_valid=vlm_pad & ~vlm_xattn_block[None, :])
 
         # denoise: action stream = prefix (constant) + action×K; attends cond cache only (cond⊥action)
-        action_prefix = self._action_prefix(skill_code, skill_progress)  # None in state_skill mode
+        action_prefix = self._action_prefix(skill_code)  # None in state_skill mode
         prefix_kv = cond_kv
         # key layout: [cond(nc), action-stream(na) = prefix(n_prefix) + action(n_chunk)]. Conditioning
         # prefix ⊥ cond and ⊥ action (reads only itself); only the action tokens attend cond + prefix + action.
@@ -689,7 +668,7 @@ class SkillVLAPytorch(PI05Pytorch):
         dt, x_t = -1.0 / num_steps, noise
         for step in range(num_steps):
             t = torch.full((bsize,), 1.0 + step * dt, dtype=torch.float32, device=device)
-            expert_cond = self._expert_cond(t, state, skill_code, skill_progress)  # time+state[+skill+prog]
+            expert_cond = self._expert_cond(t, state, skill_code)  # time + state [+ skill for state_skill]
             a_in = self._action_in(x_t)
             h = a_in if action_prefix is None else torch.cat([action_prefix, a_in], dim=1)
             for i in range(len(prefix_kv)):
@@ -708,19 +687,16 @@ class SkillVLAPytorch(PI05Pytorch):
         lang_masks: Tensor,
         state: Tensor,
         skill_code: Tensor | None = None,
-        skill_progress: Tensor | None = None,
         noise: Tensor | None = None,
         num_steps: int | None = None,
     ) -> Tensor:
         """Flow-matching sampling with a cached VLM prefix (per skill). ``skill_code`` (cond teacher
-        value) defaults to the VLM prediction; ``skill_progress`` defaults to 0 (skill start). The
-        cond stream (scene) is also cached; each denoise step runs only the action stream."""
+        value) defaults to the VLM prediction. The cond stream (scene) is also cached; each denoise
+        step runs only the action stream."""
         if num_steps is None:
             num_steps = self.config.num_inference_steps
-        if skill_progress is None:
-            skill_progress = torch.zeros(state.shape[0], dtype=torch.float32, device=state.device)
         return self._sample_actions_A(cond_images, start_images, lang_tokens, lang_masks, state, skill_code,
-                                      skill_progress, noise, num_steps)
+                                      noise, num_steps)
 
     # ── FSQ terminator (inference-only skill-transition gating) ──
     # Terminator-path submodules (the ones co-trained in FT; everything else — the FSQ encoder and the
@@ -881,7 +857,6 @@ def _remap_stage1_to_expert(raw: dict) -> dict:
             out[f"model.paligemma_with_expert.{key}"] = v
         elif key.startswith((
             "cond_encoder.", "dino.", "siglip.", "image_proj.", "state_proj.", "skill_proj.",
-            "progress_proj.",
             "action_in_proj.", "action_out_proj.", "time_mlp_in.", "time_mlp_out.",
         )):
             out[f"model.{key}"] = v
@@ -951,9 +926,9 @@ class SkillVLAPolicy(PI05Policy):
         es = float(getattr(self.config, "expert_lr_scale", 1.0))
         cs = float(getattr(self.config, "cond_lr_scale", 1.0))
         m = self.model
-        # state/skill/progress projections all feed the action expert's AdaRMS (or its prefix) → expert side.
+        # state/skill projections feed the action expert's AdaRMS (or its prefix) → expert side.
         expert_mods = [m.paligemma_with_expert.gemma_expert, m.action_in_proj, m.action_out_proj,
-                       m.time_mlp_in, m.time_mlp_out, m.state_proj, m.skill_proj, m.progress_proj]
+                       m.time_mlp_in, m.time_mlp_out, m.state_proj, m.skill_proj]
         cond_mods = [m.cond_encoder, m.image_proj]  # scene stream only (state moved to the expert AdaRMS)
 
         chosen: set[int] = set()
@@ -1046,15 +1021,9 @@ class SkillVLAPolicy(PI05Policy):
         lang_tokens, lang_masks = batch[OBS_LANGUAGE_TOKENS], batch[OBS_LANGUAGE_ATTENTION_MASK]
         actions = pad_vector(batch[ACTION], self.config.max_action_dim)
         skill_code = self._dataset_skill_code(batch)
-        progress = batch[SKILL_PROGRESS].float().view(-1)
-        if self.training and self.config.progress_jitter > 0:
-            # robustness to the terminator's progress-estimation error in the closed loop
-            jit = (torch.rand_like(progress) * 2.0 - 1.0) * self.config.progress_jitter
-            progress = (progress + jit).clamp(0.0, 1.0)
 
         flow_losses, skill_hidden = self.model.forward(
-            cond_images, start_images, lang_tokens, lang_masks, batch[OBS_STATE], skill_code,
-            progress, actions)
+            cond_images, start_images, lang_tokens, lang_masks, batch[OBS_STATE], skill_code, actions)
         skill_loss = self.model.skill_head.loss(skill_hidden, skill_code)
 
         action_dim = self.config.output_features[ACTION].shape[0]
@@ -1114,8 +1083,6 @@ class SkillVLAPolicy(PI05Policy):
     def predict_action_chunk(self, batch: dict[str, Tensor], **kwargs) -> Tensor:
         """Offline / dataset eval: requires skill-start inputs in the batch."""
         self.eval()
-        if "skill_progress" not in kwargs and SKILL_PROGRESS in batch:
-            kwargs["skill_progress"] = batch[SKILL_PROGRESS].float().view(-1)
         actions = self.model.sample_actions(
             self._cond_images(batch), self._dataset_start_images(batch),
             batch[OBS_LANGUAGE_TOKENS], batch[OBS_LANGUAGE_ATTENTION_MASK], batch[OBS_STATE], **kwargs)
@@ -1126,7 +1093,6 @@ class SkillVLAPolicy(PI05Policy):
         """Per-episode state for the closed loop."""
         self._action_queue = deque(maxlen=self.config.n_action_steps)
         self._skill_code: Tensor | None = None   # active skill (VLM-predicted at skill start)
-        self._skill_progress: Tensor | None = None  # terminator's latest progress estimate (B,)
         self._start_images: list[Tensor] | None = None  # skill-start view fed to the VLM
         self._start_lang: tuple[Tensor, Tensor] | None = None  # skill-start prompt (tokens, masks)
         self._skill_steps = 0
@@ -1220,9 +1186,7 @@ class SkillVLAPolicy(PI05Policy):
                 out = self.model.terminator_step(
                     self._skill_code, state, image, batch.get("skill_decoder_wrist"))
                 if out is not None:
-                    progress, end_prob = out
-                    # latest estimate feeds the expert's progress token at the next chunk prediction
-                    self._skill_progress = progress.detach().float().view(-1).clamp(0.0, 1.0)
+                    progress, end_prob = out   # progress only gates skill_end / feeds skill_html (no token)
                     signal = end_prob if self.config.skill_end_mode == "termination" else progress
                     if self._cur_skill is not None:  # per-step series for skill_html (_plot_skill_progress)
                         self._cur_skill["end_probs"].append({
@@ -1251,7 +1215,7 @@ class SkillVLAPolicy(PI05Policy):
             start_lang, start_masks = self._start_lang  # frozen skill-start prompt
             actions = self.model.sample_actions(
                 self._cond_images(batch), self._start_images, start_lang, start_masks,
-                batch[OBS_STATE], skill_code=self._skill_code, skill_progress=self._skill_progress)
+                batch[OBS_STATE], skill_code=self._skill_code)
             action_dim = self.config.output_features[ACTION].shape[0]
             actions = actions[:, : self.config.n_action_steps, :action_dim]
             self._action_queue.extend(actions.transpose(0, 1))
@@ -1267,7 +1231,6 @@ class SkillVLAPolicy(PI05Policy):
             if self._oracle_active():               # advance the GT skill cursor
                 self._oracle_cursor += 1
             self._skill_code, self._start_images = None, None
-            self._skill_progress = None             # new skill starts at progress 0
             self._action_queue.clear()
         self._episode_step += 1
         return action

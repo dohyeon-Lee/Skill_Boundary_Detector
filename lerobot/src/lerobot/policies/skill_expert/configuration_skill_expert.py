@@ -13,7 +13,7 @@ class SkillExpertConfig(PI05Config):
     (each encoded by a trainable DINOv3, shared weights), the robot state, and the GT FSQ
     skill code. A fresh cond-encoder (own Gemma) encodes the scene — images + the per-dim
     DISCRETIZED state — and the action expert reads it via PI05-style block attention (action
-    sees cond + action; cond ⊥ action), with skill (z_q) + progress prepended to the action
+    sees cond + action; cond ⊥ action), with the skill (z_q) prepended to the action
     stream. The VLM is added in Stage 2 (the `skill_vla` policy), which can be initialized from
     a Stage-1 `skill_expert` checkpoint.
 
@@ -59,17 +59,16 @@ class SkillExpertConfig(PI05Config):
     attention). The cond-encoder is image-ONLY and plain-RMSNorm in both modes; state never rides the
     (image-dominated) cond stream — the input_probe diagnostic showed a state token buried among ~400
     image tokens is starved (Δ≈0), so state is always summed into the expert AdaRMS instead. The two
-    modes differ only in whether SKILL (and progress) also go global vs stay as attended prefix tokens:
-      "state"       → AdaRMS conditioning = time + state_proj(state). Skill (z_q) + progress are PREFIX
-                      tokens on the action stream (pi0 prefix⊥action: read by the action tokens, do not
-                      attend back). Image stays the dominant motion driver; skill is a lighter, attended
-                      signal — leaves room for Stage-2 language to modulate the motion.
-      "state_skill" → AdaRMS conditioning = time + state_proj(state) + skill_proj(z_q) + progress_proj(prog)
-                      (each its own projection, summed — DiT ⊕ pattern). NO prefix tokens at all; skill is
-                      a strong global signal (heaviest skill influence).
-    progress is included in the AdaRMS / prefix only when use_progress_token=True. state_proj / skill_proj /
-    progress_proj are allocated in both modes (only the destination differs), so "state" and "state_skill"
-    checkpoints stay structurally comparable."""
+    modes differ only in whether SKILL also goes global vs stays as an attended prefix token:
+      "state"       → AdaRMS conditioning = time + state_proj(state). Skill (z_q) is a PREFIX token on the
+                      action stream (pi0 prefix⊥action: read by the action tokens, does not attend back).
+                      Image stays the dominant motion driver; skill is a lighter, attended signal — leaves
+                      room for Stage-2 language to modulate the motion.
+      "state_skill" → AdaRMS conditioning = time + state_proj(state) + skill_proj(z_q) (each its own
+                      projection, summed — DiT ⊕ pattern). NO prefix tokens at all; skill is a strong global
+                      signal (heaviest skill influence).
+    state_proj / skill_proj are allocated in both modes (only the destination differs), so "state" and
+    "state_skill" checkpoints stay structurally comparable."""
 
     # ── Skill conditioning ──
     skill_vocab_size: int = 125
@@ -77,23 +76,9 @@ class SkillExpertConfig(PI05Config):
     skill_fsq_levels: list[int] = field(default_factory=lambda: [5, 5, 5])
     """FSQ levels per dim. The flat dataset code is mapped back to its FSQ grid coordinate z_q
     (little-endian strides — the codebook's own convention, the same value the FSQ decoder
-    consumes), normalized per dim to [-1, 1], and fed through a Linear(D → width) as ONE cond
-    token, constant within a skill — neighboring codes stay neighboring. The skill progress is
-    a SEPARATE cond token (raw [0, 1] → Linear(1 → width)), mirroring the FSQ decoder's
-    dec_z_proj / motion_prog_proj split."""
-    progress_jitter: float = 0.1
-    """Train-time uniform noise (±jitter, clamped to [0, 1]) on the GT skill progress fed to the
-    progress token. The GT progress is skill_ds/(skill_ds+skill_de) (0 at skill start, 1 at its
-    last frame — the FSQ terminator's training target); at inference the terminator's PREDICTED
-    progress is injected via batch["skill_progress"], so the jitter teaches robustness to that
-    estimator's error. 0 = clean GT."""
-    use_progress_token: bool = True
-    """Whether the skill PROGRESS enters the model as its own token (alongside the z_q skill token).
-    True (default) = current recipe (skill + progress). False = drop the progress token entirely;
-    the action expert conditions on the skill code only (progress ablation). The skill (+progress)
-    tokens are prepended to the ACTION stream (2→1 tokens when off). progress_proj stays allocated
-    either way so progress-on/off checkpoints stay mutually loadable; only whether its output is used
-    changes."""
+    consumes), normalized per dim to [-1, 1], and fed through a Linear(D → width) as ONE skill
+    token, constant within a skill — neighboring codes stay neighboring. (The skill-progress token
+    was removed — the action expert conditions on the skill code only.)"""
 
     # ── Loss. Boundary handling: at the skill end (k>skill_de) and episode-end pad, the action TARGET is a
     #    HOLD (arm deltas→0, gripper→last valid value) and supervised — NOT masked out. These add the optional

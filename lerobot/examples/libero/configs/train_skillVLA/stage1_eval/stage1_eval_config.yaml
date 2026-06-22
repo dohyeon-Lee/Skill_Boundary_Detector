@@ -20,38 +20,19 @@
 skillvla_dataset_root: skillvla_dataset  # .../{skillvla_dataset_root}/{source_dataset}/{run_tag}/
 # outputs_root comes from configs/global_config.yaml: trained S1 under {project_root}/{outputs_root}/skillVLA_stage1/.
 
-# ── Which trained Stage-1 model + which FSQ/skills (same {run_dir} it trained on) ──
-# model_dir alone identifies the run: source_dataset + run_tag (which skillvla dataset folder)
-# are both parsed from it ({source}_FSQ..._dino..._batch{N}[_np]_c{N}).
+# model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_state_skill_ac_c10
+# model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_state_skill_cum_all_ac_c10
+# model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_state_ac_c10
+# model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_state_cum_all_ac_c10
+# model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_state_cum_ep_ac_c10
 
-# model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_freeze_batch256_sae_adaln_c25   
-# model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_freeze_batch256_sadaln_c25  
+# model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_unfreeze_batch256_state_skill_ac_c10
+# model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_unfreeze_batch256_state_skill_cum_all_ac_c10
+# model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_unfreeze_batch256_state_ac_c10
+# model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_unfreeze_batch256_state_cum_all_ac_c10
+model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_unfreeze_batch256_state_cum_ep_ac_c10
 
-# model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_sae_adaln_c25 # clear
-# model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_sadaln_c25 # clear
-
-# model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_np_sadaln_c25 # clear
-# model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_np_sae_adaln_c25 # clear
-
-# model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_np_sae_adaln_c10 # clear
-# model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_np_sadaln_c10 # clear
-
-# model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_sae_adaln_c10 # clear
-# model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_sadaln_c10 # clear
-
-# model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_np_state_skill_c10
-# model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_np_state_skill_cum0.5r2_c10
-# model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_np_state_c10
-# model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_np_state_cum0.5r2_c10
-# model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_np_state_cum0.5r2ep_c10
-
-# model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_unfreeze_batch256_np_state_skill_c10
-# model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_unfreeze_batch256_np_state_skill_cum0.5r2_c10
-model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_unfreeze_batch256_np_state_c10
-# model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_unfreeze_batch256_np_state_cum0.5r2_c10
-# model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_unfreeze_batch256_np_state_cum0.5r2ep_c10
-
-checkpoint: "012500"            # "last" or a step number
+checkpoint: "015000"            # "last" or a step number
 # Output folder = outputs/{model_dir}_{checkpoint}_adv-{skill_advance_mode}[_{eval_exp}]
 eval_exp: ""                    # optional free-form tag for the eval output folder (e.g. ablation name)
 

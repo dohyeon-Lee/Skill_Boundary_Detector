@@ -93,11 +93,11 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.skill_fsq_levels="${SKILL_FSQ_LEVELS}" \
     --policy.chunk_size="${CHUNK_SIZE}" \
     --policy.n_action_steps="${N_ACTION_STEPS}" \
-    --policy.progress_jitter="${PROGRESS_JITTER}" \
-    --policy.use_progress_token="${USE_PROGRESS_TOKEN}" \
     --policy.cumulative_pos_loss_weight="${CUMULATIVE_POS_LOSS_WEIGHT}" \
     --policy.skill_end_loss_weight="${SKILL_END_LOSS_WEIGHT}" \
-    --policy.cumulative_pos_mode="${CUMULATIVE_POS_MODE}" \
+    --policy.cum_loss="${CUM_LOSS}" \
+    --policy.action_loss="${ACTION_LOSS}" \
+    --policy.action_weight="${ACTION_WEIGHT}" \
     --batch_size="${BATCH_SIZE}" \
     --num_workers="${NUM_WORKERS}" \
     --steps="${STEPS}" \

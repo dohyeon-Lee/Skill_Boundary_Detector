@@ -40,7 +40,7 @@ def build_settings(cfg: dict) -> dict:
     stage1_ckpt = stage1_vla_root / stage1_run_name / "checkpoints" / stage1_checkpoint / "pretrained_model"
 
     # Everything is parsed from the stage1_run_name:
-    #   {source}_{run_tag}_[{dino|siglip}_{freeze|unfreeze}_]batch{N}[_np][_exp][_c{N}]
+    #   {source}_{run_tag}_[{dino|siglip}_{freeze|unfreeze}_]batch{N}[_exp][_c{N}]
     # → the skillvla dataset (source + run_tag), the FSQ levels, and the Stage-1 policy vision tag
     # (backbone + freeze, e.g. "dino_unfreeze"/"siglip_freeze") captured below so the Stage-2 run name
     # records which vision encoder it warm-started from. (Arch is always joint now — no A/B tag.)
