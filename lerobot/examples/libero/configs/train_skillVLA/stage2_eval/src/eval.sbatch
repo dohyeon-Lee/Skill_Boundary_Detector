@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SkillVLA closed-loop EVAL (PT) on LIBERO sim via lerobot_skillvla_eval.
 # Rolls out the PT policy; the frozen FSQ decoder runs its own DINO internally.
-#SBATCH --job-name=stage2_eval
+#SBATCH --job-name=S2eval
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
