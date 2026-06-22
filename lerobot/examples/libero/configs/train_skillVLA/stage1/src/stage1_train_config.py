@@ -56,8 +56,10 @@ def build_settings(cfg: dict) -> dict:
     state_cond_mode = str(get_value(cfg, "state_cond_mode", "state_skill")).strip().lower()  # state | state_skill
     use_progress_token = as_bool(get_value(cfg, "use_progress_token", True))
     cum_pos_w = float(get_value(cfg, "cumulative_pos_loss_weight", 0.0))   # λ cumulative-position loss (0=off)
-    skill_end_w = float(get_value(cfg, "skill_end_loss_weight", 1.0))      # R end weighting
-    cum_pos_mode = str(get_value(cfg, "cumulative_pos_mode", "all")).strip().lower()  # all | endpoint
+    skill_end_w = float(get_value(cfg, "skill_end_loss_weight", 1.0))      # R end weighting (action + cum)
+    cum_loss = str(get_value(cfg, "cum_loss", "all")).strip().lower()      # all | endpoint (cum aggregation)
+    action_loss = as_bool(get_value(cfg, "action_loss", True))             # include the action MSE in the objective
+    action_weight = as_bool(get_value(cfg, "action_weight", False))        # per-sample sw-weight the action loss
 
     init_from_pi05 = as_bool(get_value(cfg, "init_from_pi05", True))
     pi_base = resolve_path(project_root, get_value(cfg, "pi_base", "models/pi05_base")) if init_from_pi05 else ""
@@ -80,10 +82,12 @@ def build_settings(cfg: dict) -> dict:
     if not use_progress_token:  # progress-ablation variant (skill token only)
         run_name = f"{run_name}_np"
     run_name = f"{run_name}_{state_cond_mode}"   # state | state_skill (what rides the expert AdaRMS) — never collide
-    if cum_pos_w > 0:                             # cumulative-position loss variant → own folder
-        run_name = f"{run_name}_cum{cum_pos_w:g}r{skill_end_w:g}"
-        if cum_pos_mode == "endpoint":            # endpoint(A, chunk-end point) vs all → distinct folder
-            run_name = f"{run_name}ep"
+    # loss-variant suffix (categorical, NO hyperparameter values): cum part (only when λ>0) + action part.
+    suffix = []
+    if cum_pos_w > 0:                             # cum term on → cum_ep / cum_all
+        suffix.append("cum_ep" if cum_loss == "endpoint" else "cum_all")
+    suffix.append("ac_x" if not action_loss else ("ac_w" if action_weight else "ac"))  # action: off / weighted / normal
+    run_name = f"{run_name}_" + "_".join(suffix)
     if exp:
         run_name = f"{run_name}_{exp}"
     run_name = f"{run_name}_c{chunk_size}"  # chunk horizon always trails the run name
@@ -138,7 +142,9 @@ def build_settings(cfg: dict) -> dict:
         # loss: optional cumulative-position term (λ) + end weighting (R) + aggregation mode. λ=0 → off.
         "cumulative_pos_loss_weight": cum_pos_w,
         "skill_end_loss_weight": skill_end_w,
-        "cumulative_pos_mode": cum_pos_mode,      # all | endpoint (chunk-end point)
+        "cum_loss": cum_loss,                     # all | endpoint (cum aggregation; always R-weighted)
+        "action_loss": action_loss,              # include action MSE in the objective (else cum-only)
+        "action_weight": action_weight,          # per-sample sw-weight the action loss → wandb loss_weighted
         # optimization
         "batch_size": batch_size,
         "num_workers": int(get_value(cfg, "num_workers", 8)),

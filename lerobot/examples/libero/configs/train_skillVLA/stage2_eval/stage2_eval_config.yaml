@@ -1,7 +1,7 @@
 # SkillVLA Stage-2 closed-loop EVAL on LIBERO sim via lerobot_skillvla_eval.
 #
 # Point at a trained Stage-2 run by its OUTPUT FOLDER NAME + checkpoint. The model
-# (vision_backbone, skill_vocab, state_n_bins, fsq_path) is restored from the
+# (vision_backbone, skill_vocab, state_cond_mode, fsq_path) is restored from the
 # checkpoint's config.json on --policy.path, so it is not re-specified here. The FSQ
 # (terminator) + raw-dataset paths are derived from that config.
 
@@ -36,6 +36,15 @@ skill_html_train_samples: 10
 # ── Inference (eval-time tuning; the model STRUCTURE comes from the checkpoint) ──
 skill_end_threshold: 0.5 #0.5
 inference_skill_max_length: 200    # force a skill switch after this many steps (0 = off)
+
+# Which terminator decides skill transitions at eval (the action chunk always comes from the expert):
+#   auto      → the terminator co-trained INTO this checkpoint if it was trained with train_terminator,
+#               else the base dataset FSQ.pt (historical default).
+#   cotrained → FORCE the co-trained terminator (lazy-exported to checkpoints/<ckpt>/FSQ_ft.pt);
+#               errors if this checkpoint was trained with train_terminator=false.
+#   base      → FORCE the ORIGINAL dataset FSQ.pt (the terminator BEFORE in-policy co-training).
+# Folders are tagged ftterm/baseterm by the RESOLVED choice, so base vs cotrained land side-by-side.
+eval_terminator: auto
 
 # ── Oracle eval (isolate the action expert from the VLM's skill prediction) ──
 use_gt_skill: false        # true = teacher-force the dataset's GT skill sequence (per task) into the

@@ -3,7 +3,7 @@
 
 Pick the model to evaluate by its OUTPUT FOLDER NAME + checkpoint (under
 {project_root}/{outputs_root}/skillVLA_stage2/). The trained policy's params (FSQ path,
-vision_backbone, skill_vocab, state_n_bins, ...) live in the checkpoint's config.json and are
+vision_backbone, skill_vocab, state_cond_mode, ...) live in the checkpoint's config.json and are
 restored automatically when lerobot loads --policy.path, so the eval never re-specifies them.
 The FSQ / skill_latents / raw-dataset paths used for the run are derived from that config.
 
@@ -56,15 +56,27 @@ def build_settings(cfg: dict) -> dict:
         except IndexError:
             raw_dataset_dir = ""
 
-    # Terminator co-trained in Stage-2 → use the adapted FSQ from THIS checkpoint (checkpoints/<ckpt>/
-    # FSQ_ft.pt; the eval sbatch lazy-exports it if missing). Else fall back to the base dataset FSQ.
+    # Terminator co-trained in Stage-2 → the adapted FSQ from THIS checkpoint (checkpoints/<ckpt>/
+    # FSQ_ft.pt; the eval sbatch lazy-exports it if missing). The base dataset FSQ is the pre-co-train one.
     ft_fsq_path = policy_path.parent / "FSQ_ft.pt"
+
+    # Which terminator to use at eval (user toggle): auto = co-trained if the run trained one else base;
+    # cotrained / base force one. resolved_term (base|cotrained) drives both the eval.sbatch FSQ pick and
+    # the folder tag, so base vs cotrained evals land side-by-side.
+    eval_terminator = str(get_value(cfg, "eval_terminator", "auto")).lower()
+    if eval_terminator not in ("auto", "cotrained", "base"):
+        raise ValueError(f"eval_terminator must be 'auto', 'cotrained' or 'base' (got {eval_terminator!r}).")
+    if eval_terminator == "cotrained" and not train_terminator_used:
+        raise ValueError(
+            "eval_terminator='cotrained' but this checkpoint was trained with train_terminator=false "
+            "(no co-trained terminator exists). Use 'base' or 'auto'.")
+    resolved_term = eval_terminator if eval_terminator != "auto" else ("cotrained" if train_terminator_used else "base")
 
     # Skill-source tag so oracle (GT) vs VLM-predicted and the advance mode land in DISTINCT folders.
     use_gt_skill = as_bool(get_value(cfg, "use_gt_skill", False))
     advance_mode = str(get_value(cfg, "skill_advance_mode", "terminator"))
     skill_tag = f"gtskill-{advance_mode}" if use_gt_skill else "pred"
-    term_tag = "ftterm" if train_terminator_used else "baseterm"
+    term_tag = "ftterm" if resolved_term == "cotrained" else "baseterm"
     run_name = f"{model_dir}_{checkpoint}_{target_task}_{skill_tag}_{term_tag}_eval"
     eval_out_dir = _HERE.parent.parent / "outputs" / run_name
 
@@ -74,11 +86,12 @@ def build_settings(cfg: dict) -> dict:
         # model (everything else is restored from the checkpoint config on --policy.path)
         "policy_path": policy_path,
         "checkpoint": checkpoint,
-        # terminator: eval sbatch resolves FSQ_FOR_EVAL = ft_fsq_path (lazy-exported from THIS checkpoint
-        # if missing) when train_terminator ran, else base_fsq.
-        "base_fsq": base_fsq,                 # dataset FSQ (existence check + fallback + export base)
+        # terminator: eval sbatch picks FSQ_FOR_EVAL by EVAL_TERMINATOR — "cotrained" → ft_fsq_path
+        # (lazy-exported from THIS checkpoint if missing), "base" → base_fsq.
+        "base_fsq": base_fsq,                 # dataset FSQ (pre co-train; existence check + export base)
         "ft_fsq_path": ft_fsq_path,           # per-checkpoint adapted terminator (checkpoints/<ckpt>/FSQ_ft.pt)
         "ft_run_dir": vla_root / model_dir,   # for export_ft_terminator.py --ft_run_dir
+        "eval_terminator": resolved_term,     # resolved base|cotrained → eval.sbatch FSQ pick + folder tag
         "train_terminator_used": train_terminator_used,
         "skill_latents_path": skill_latents_path,
         "raw_dataset_dir": raw_dataset_dir,

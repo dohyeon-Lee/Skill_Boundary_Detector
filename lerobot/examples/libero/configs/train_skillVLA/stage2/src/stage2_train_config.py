@@ -4,7 +4,7 @@
 A PaliGemma VLM (warm-started from pi05_base) predicts the skill from the skill-START obs; an action
 expert warm-started from a Stage-1 ``skill_expert`` checkpoint flow-matches the action chunk. The
 Stage-1 checkpoint's config supplies vision_backbone, action_expert_variant, skill_vocab_size and
-state_n_bins — the model reads them itself, so here we only point to it. All roots are declared in
+state_cond_mode — the model reads them itself, so here we only point to it. All roots are declared in
 this yaml (standalone); source/run_tag/FSQ levels are parsed from stage1_run_name; FSQ.pt (eval
 terminator) lives in the run dir. Emits shell exports (--shell).
 """
@@ -64,12 +64,21 @@ def build_settings(cfg: dict) -> dict:
     # FSQ skill structure: auto-match the FSQ the dataset was built with (parsed from run_tag).
     skill_fsq_levels = list(as_levels(get_value(cfg, "skill_fsq_levels", build_fsq_levels)))
 
-    # run_name = {source}_{run_tag}_[{s1_vis_tag}_]{stage1_checkpoint}_{freeze|unfreeze}[_{exp}]:
+    # run_name = {source}_{run_tag}_[{s1_vis_tag}_]{stage1_checkpoint}_{freeze|unfreeze}[_<loss tags>][_{exp}]:
     #   s1_vis_tag             = Stage-1 vision the expert warm-started from (dino_unfreeze/siglip_freeze/…)
     #   trailing {freeze|unfreeze} = Stage-2's own freeze_expert_vision choice.
+    #   loss tags              = the Stage-1 loss-recipe tags (cum_ep/cum_all + ac/ac_w/ac_x), KEPT so
+    #                            different Stage-1 loss recipes land in DISTINCT Stage-2 folders (np/state/c
+    #                            tags are dropped → they'd otherwise collide).
     # batch{N}/arch(A/B) are dropped (arch is re-read from the Stage-1 ckpt at load time); exp is last.
     vis_tag = "freeze" if freeze_expert_vision else "unfreeze"
-    parts = [source_dataset, run_tag] + ([s1_vis_tag] if s1_vis_tag else []) + [stage1_checkpoint, vis_tag]
+    loss_tags = []
+    for pat in (r"_(cum_(?:ep|all))(?:_|$)", r"_(ac_w|ac_x|ac)(?:_|$)"):
+        m = re.search(pat, stage1_run_name)
+        if m:
+            loss_tags.append(m.group(1))
+    parts = ([source_dataset, run_tag] + ([s1_vis_tag] if s1_vis_tag else [])
+             + [stage1_checkpoint, vis_tag] + loss_tags)
     run_name = "_".join(parts)
     if exp:
         run_name = f"{run_name}_{exp}"

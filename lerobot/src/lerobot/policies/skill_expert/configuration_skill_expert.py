@@ -69,8 +69,7 @@ class SkillExpertConfig(PI05Config):
                       a strong global signal (heaviest skill influence).
     progress is included in the AdaRMS / prefix only when use_progress_token=True. state_proj / skill_proj /
     progress_proj are allocated in both modes (only the destination differs), so "state" and "state_skill"
-    checkpoints stay structurally comparable. (Back-compat: the legacy names "adaln"→"state",
-    "ae_adaln"→"state_skill" are aliased in __post_init__; the old "token"/"cond_adaln" modes were removed.)"""
+    checkpoints stay structurally comparable."""
 
     # ── Skill conditioning ──
     skill_vocab_size: int = 125
@@ -96,24 +95,36 @@ class SkillExpertConfig(PI05Config):
     either way so progress-on/off checkpoints stay mutually loadable; only whether its output is used
     changes."""
 
-    # ── Loss (the flow-matching action loss is always on; these add an optional term + masking) ──
+    # ── Loss. Boundary handling: at the skill end (k>skill_de) and episode-end pad, the action TARGET is a
+    #    HOLD (arm deltas→0, gripper→last valid value) and supervised — NOT masked out. These add the optional
+    #    cum term + the action_loss/action_weight toggles below. ──
     cumulative_pos_loss_weight: float = 0.0
     """λ for the optional cumulative-POSITION loss (added to the per-delta flow loss). Actions are
     RELATIVE (delta), so the endpoint pose = the SUM of the chunk's deltas; matching only the last delta
     doesn't fix the landing position. This term integrates the implied per-step action error over the
     chunk (cumsum, on the ARM dims only — the gripper is absolute, excluded) and penalizes the K running
-    positions, so the whole trajectory + endpoint match. 0 = OFF (loss identical to per-delta + masking)."""
+    positions, so the whole trajectory + endpoint match. 0 = OFF (objective = the action term only)."""
     skill_end_loss_weight: float = 1.0
-    """R for the cumulative-position loss's end weighting: weight = 1 + (R-1)·progress, where progress is the
-    within-skill position (0 at skill start → 1 at skill end). R=1 → uniform; R>1 → skill END positions (the
-    handoff) count more. In mode "all" it weights PER-STEP; in "endpoint" it weights PER-SAMPLE by the
-    anchor's progress. Only affects the cumulative term."""
-    cumulative_pos_mode: str = "all"
-    """How the cumulative-position loss aggregates over the chunk:
-      "all"      → penalize EVERY within-skill running position (the integrated trajectory), end-weighted (R).
-      "endpoint" → penalize ONLY the running position at the LAST valid step (the chunk end, capped to the
-                   skill end / episode padding via the same valid mask) — the predicted-chunk endpoint / skill
-                   handoff. R weights per-sample by where that endpoint falls in the skill."""
+    """R for the end weighting: weight = 1 + (R-1)·progress, where progress is the within-skill position
+    (0 at skill start → 1 at skill end). R=1 → uniform; R>1 → skill END positions (the handoff) count more.
+    Applied IDENTICALLY to the action loss (when action_weight=True, per-SAMPLE by the chunk endpoint's
+    progress) and the cum term (per-STEP in cum_loss="all", per-SAMPLE in "endpoint")."""
+
+    # ── Loss composition — independent toggles (objective = [action term] + λ·[cum term]) ──────────
+    action_loss: bool = True
+    """Include the per-step flow (action) MSE in the OPTIMIZED objective. False → the objective is the cum
+    term ONLY (requires cumulative_pos_loss_weight>0). The plain unweighted action MSE is STILL logged to
+    wandb `loss` either way (comparison-only, never backpropped). Run-name: ac (on) / ac_x (off) / ac_w (below)."""
+    action_weight: bool = False
+    """Weight the action loss PER-SAMPLE (per-chunk) by the endpoint progress sw=1+(R-1)·prog_end (same sw as
+    the endpoint cum term) — chunks ending nearer the skill end count more. Only meaningful when
+    action_loss=True. The weighted value is logged to wandb `loss_weighted` (a SEPARATE panel); wandb `loss`
+    stays the plain unweighted comparison value. Run-name tag: ac_w."""
+    cum_loss: str = "all"
+    """Cumulative-position term aggregation (ALWAYS R-weighted; on/off via cumulative_pos_loss_weight=λ):
+      "all"      → penalize EVERY within-skill running position (integrated trajectory), end-weighted PER-STEP.
+      "endpoint" → penalize ONLY the running position at the LAST valid step (chunk end, capped to skill end /
+                   padding), R weighting PER-SAMPLE. Run-name: cum_all / cum_ep (only when λ>0)."""
 
     # ── Eval-only (oracle closed-loop sim). Ignored during training. ──
     fsq_path: str | None = None
@@ -142,16 +153,15 @@ class SkillExpertConfig(PI05Config):
     inference_skill_max_length: int = 200
     """Force-advance the skill after this many steps even if the terminator never fires (0 = off)."""
 
-    # ── Back-compat name aliasing for state_cond_mode (old checkpoints stored mechanism names) ──
-    _STATE_COND_ALIASES = {"adaln": "state", "ae_adaln": "state_skill"}
-
     def __post_init__(self):
         super().__post_init__()
-        # Map legacy mode names (stored in old checkpoints' config.json) onto the current scheme so they
-        # load + route correctly; the removed "token"/"cond_adaln" modes are not supported any more.
-        self.state_cond_mode = self._STATE_COND_ALIASES.get(self.state_cond_mode, self.state_cond_mode)
         if self.state_cond_mode not in ("state", "state_skill"):
             raise ValueError(
-                f"state_cond_mode must be 'state' or 'state_skill' (got {self.state_cond_mode!r}); "
-                "the legacy 'token'/'cond_adaln' modes were removed."
+                f"state_cond_mode must be 'state' or 'state_skill' (got {self.state_cond_mode!r})."
+            )
+        if self.cum_loss not in ("all", "endpoint"):
+            raise ValueError(f"cum_loss must be 'all' or 'endpoint' (got {self.cum_loss!r}).")
+        if not self.action_loss and float(self.cumulative_pos_loss_weight) <= 0.0:
+            raise ValueError(
+                "action_loss=False needs cumulative_pos_loss_weight>0 (otherwise the objective is empty)."
             )

@@ -3,7 +3,8 @@ skillvla_dataset_root: skillvla_dataset
 
 # ── Warm-start (also selects the dataset: source + run_tag parsed from stage1_run_name) ──
 pi_base: models/pi05_base   
-stage1_run_name: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_freeze_batch256_c25
+# stage1_run_name: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_np_state_c10
+stage1_run_name: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_np_state_cum0.5r2_c10
 stage1_checkpoint: "015000"   # "last" or a step number of the Stage-1 run above
 
 # ── Skill head / FSQ ──────────────────────────────────────────

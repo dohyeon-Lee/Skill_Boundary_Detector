@@ -19,7 +19,6 @@ cond_encoder_variant:          # blank = same gemma variant as the action expert
 #   state       → AdaRMS = time + state; skill(+progress) stay as attended PREFIX tokens (image-dominant,
 #                 leaves room for Stage-2 language to modulate — lighter skill influence).
 #   state_skill → AdaRMS = time + state + skill(+progress); NO prefix tokens (strongest skill influence).
-# (legacy "adaln"→state, "ae_adaln"→state_skill auto-aliased; "token"/"cond_adaln" removed.)
 state_cond_mode: state_skill
 
 # ── Model init ──
@@ -55,12 +54,19 @@ use_progress_token: false   # false = progress 토큰 제거(skill z_q만으로 
 # Adds λ·(cumulative-position MSE) to the per-delta flow loss. cumsum the implied per-step action error
 # over the chunk (ARM dims only; gripper=absolute, excluded) → penalize the K running positions so the
 # whole trajectory + endpoint match, not just per-step deltas. End-weighted per step (R).
-cumulative_pos_loss_weight: 0.5   # λ — 0 = OFF (loss identical to per-delta + skill/pad masking)
+cumulative_pos_loss_weight: 0.5   # λ — 0 = OFF (objective = action term only). Boundary(skill끝/episode pad)는
+                                  #     마스킹 대신 HOLD 타깃(arm=0, gripper=직전값)으로 감독됨.
 skill_end_loss_weight: 2.0        # R — weight=1+(R-1)·progress; skill END counts more (1=uniform)
-# cumulative_pos_mode: how the cumulative term aggregates over the chunk:
-#   all      → 모든 within-skill 위치 (적분 궤적), per-step end-weight
-#   endpoint → 마지막 valid 스텝(=청크끝, 스킬/패딩 넘으면 그쪽으로 cap) 한 점만; R은 per-sample(앵커 진행도)로 가중
-cumulative_pos_mode: all          # all | endpoint
+# Loss composition — independent toggles. objective = [action term if action_loss] + λ·[cum term if λ>0].
+#   cum_loss      : all | endpoint  — cum 집계 (항상 R-weighted). on/off는 위 λ가 게이트. suffix: cum_all/cum_ep (λ>0)
+#   action_loss   : true/false      — objective에 일반 action MSE 포함 (false=cum-only). suffix: ac / ac_x
+#   action_weight : true/false      — action loss를 per-sample sw(=1+(R-1)·끝점진행도)로 가중 (cum endpoint와 동일 sw). suffix: ac_w
+# R(skill_end_loss_weight)는 action·cum에 동일 적용. 폴더명엔 λ/R 숫자값 안 들어감 (카테고리 suffix만).
+# wandb: train/loss = 항상 plain unweighted action MSE(비교용, backprop 안 됨). action_weight면 가중값은 loss_weighted
+#        패널에 따로. loss_total = 실제 최적화 objective.
+cum_loss: all                     # all | endpoint
+action_loss: true                 # true | false
+action_weight: false              # true | false
 
 # ── Optimization ──
 batch_size: 256

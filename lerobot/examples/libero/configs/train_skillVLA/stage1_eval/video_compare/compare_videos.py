@@ -50,25 +50,43 @@ VIDEO_RE = re.compile(r"eval_episode_(\d+)\.mp4$")
 
 
 # ── folder + label helpers ───────────────────────────────────────────────────
-def resolve_folder(arg: str) -> Path:
+def resolve_folder(arg: str, backbone: str = "") -> Path:
     """Resolve a CLI/yaml arg to an eval output folder: exact name, else substring match. When a
     substring matches several (e.g. 'sadaln_c10' ⊂ both '..._sadaln_c10...' and '..._np_sadaln_c10...'),
     prefer the UNIQUELY SHORTEST name — the tightest match, i.e. the one without an extra segment like
-    'np_'. Only errors if the shortest is itself tied."""
+    'np_'. Only errors if the shortest is itself tied.
+
+    When ``backbone`` is 'dino' or 'siglip', restrict to folders whose POLICY vision tag matches —
+    the ``_dino_`` / ``_siglip_`` token (the `{dino|siglip}_{freeze|unfreeze}` policy backbone), NOT the
+    run-tag's ``_dino8_`` (the FSQ tokenizer, present in EVERY folder). So a short substring like
+    'np_state_c10' selects the dino vs siglip variant you asked for instead of silently picking one."""
+    bb = f" (backbone={backbone})" if backbone else ""
+    cand = [p for p in EVAL_OUTPUTS.glob("*") if p.is_dir()]
+    if backbone:
+        cand = [p for p in cand if f"_{backbone}_" in p.name]
     exact = EVAL_OUTPUTS / arg
-    if exact.is_dir():
+    if exact.is_dir() and (not backbone or f"_{backbone}_" in exact.name):
         return exact
-    hits = sorted((p for p in EVAL_OUTPUTS.glob("*") if p.is_dir() and arg in p.name),
-                  key=lambda p: len(p.name))
+    hits = sorted((p for p in cand if arg in p.name), key=lambda p: len(p.name))
     if not hits:
-        sys.exit(f"[error] no eval folder under {EVAL_OUTPUTS} matches {arg!r}")
+        sys.exit(f"[error] no eval folder under {EVAL_OUTPUTS} matches {arg!r}{bb}")
     if len(hits) > 1 and len(hits[0].name) == len(hits[1].name):
         names = "\n  ".join(p.name for p in hits)
-        sys.exit(f"[error] {arg!r} is ambiguous, matches:\n  {names}\n"
+        sys.exit(f"[error] {arg!r}{bb} is ambiguous, matches:\n  {names}\n"
                  f"  → add more of the name (e.g. a preceding token) to disambiguate.")
     if len(hits) > 1:
-        print(f"[note] {arg!r} matched {len(hits)}; using shortest: {hits[0].name}")
+        print(f"[note] {arg!r}{bb} matched {len(hits)}; using shortest: {hits[0].name}")
     return hits[0]
+
+
+def split_backbone(arg: str, default_bb: str) -> tuple[str, str]:
+    """A folder entry may be prefixed ``dino:`` / ``siglip:`` to force THAT panel's policy backbone,
+    overriding the global ``backbone`` — so dino and siglip variants can sit side-by-side in ONE compare
+    (e.g. 'siglip:np_state_c10_012500' next to 'dino:np_state_c10_012500'). Returns (backbone, bare_arg)."""
+    for bb in ("dino", "siglip"):
+        if arg.startswith(bb + ":"):
+            return bb, arg[len(bb) + 1:]
+    return default_bb, arg
 
 
 def short_labels(names: list[str]) -> list[str]:
@@ -165,6 +183,7 @@ def main() -> None:
                     "by default; any CLI flag (and positional folders) overrides the yaml.")
     ap.add_argument("folders", nargs="*", help="eval folders (override the yaml); name or unique substring")
     ap.add_argument("--config", default=str(_HERE / "video_compare_config.yaml"), help="config yaml")
+    ap.add_argument("--backbone", default=None, help="restrict folder matching to dino|siglip policy variants")
     ap.add_argument("--labels", default=None, help="comma-sep panel labels (override yaml; default auto)")
     ap.add_argument("--height", type=int, default=None, help="panel height px")
     ap.add_argument("--tasks", default=None, help="comma-sep task_ids")
@@ -190,16 +209,36 @@ def main() -> None:
     episodes = _as_list(args.episodes) if args.episodes is not None else _as_list(cfg.get("episodes"))
     fps = args.fps if args.fps is not None else float(cfg.get("fps") or 0.0)
     out = args.out if args.out is not None else (cfg.get("out") or "")
+    backbone = (args.backbone if args.backbone is not None else (cfg.get("backbone") or "")).strip().lower()
+    if backbone not in ("", "dino", "siglip"):
+        sys.exit(f"[error] backbone must be 'dino', 'siglip' or '' (got {backbone!r})")
 
-    folders = [resolve_folder(str(a)) for a in raw_folders]
-    names = [f.name for f in folders]
+    # Each entry may carry a per-folder 'dino:'/'siglip:' prefix (overrides the global backbone). When
+    # BOTH backbones appear among the entries → GRID layout: one ROW per backbone (dino on top, siglip
+    # below), each row's columns = its entries in order, rows stacked VERTICALLY. Otherwise a single
+    # horizontal row (original behavior).
+    entries = []                                   # (backbone, resolved folder), in yaml order
+    for a in raw_folders:
+        bb, bare = split_backbone(str(a), backbone)
+        entries.append((bb, resolve_folder(bare, bb)))
+    present = [b for b in ("dino", "siglip", "") if any(bb == b for bb, _ in entries)]
+    grid = len(present) >= 2
+    rows = ([(b, [f for bb, f in entries if bb == b]) for b in present]
+            if grid else [("", [f for _, f in entries])])
+    ncols = len(rows[0][1])
+    if grid and any(len(fs) != ncols for _, fs in rows):
+        sys.exit("[error] grid mode needs the SAME number of panels per backbone row; got "
+                 + ", ".join(f"{b or 'any'}:{len(fs)}" for b, fs in rows))
+
+    # labels are PER COLUMN (shared across rows in grid mode → dino/siglip column labels may overlap).
     lab_override = _as_list(args.labels) or _as_list(cfg.get("labels"))
-    labels = lab_override or short_labels(names)
-    if len(labels) != len(folders):
-        sys.exit(f"[error] labels has {len(labels)} entries but {len(folders)} folders given")
-    print("Comparing:")
-    for lab, f in zip(labels, folders):
-        print(f"  [{lab}]  {f.name}")
+    labels = lab_override or short_labels([f.name for f in rows[0][1]])
+    if len(labels) != ncols:
+        sys.exit(f"[error] labels has {len(labels)} entries but {ncols} column(s) given")
+    print(f"Comparing (grid {len(rows)}×{ncols}):" if grid else f"Comparing ({ncols} panels):")
+    for bb, fs in rows:
+        for ci, f in enumerate(fs):
+            print(f"  [{(bb + '/') if bb else ''}{labels[ci]}]  {f.name}")
 
     # shared (task_id, episode) keys across ALL folders
     def keys_of(folder: Path) -> set[tuple[str, str]]:
@@ -215,7 +254,8 @@ def main() -> None:
                     ks.add((tid, m.group(1)))
         return ks
 
-    shared = set.intersection(*(keys_of(f) for f in folders))
+    all_folders = [f for _, fs in rows for f in fs]
+    shared = set.intersection(*(keys_of(f) for f in all_folders))
     task_filter = set(tasks) if tasks else None
     ep_filter = set(episodes) if episodes else None
     keys = sorted(
@@ -225,54 +265,77 @@ def main() -> None:
     if not keys:
         sys.exit("[error] no shared (task, episode) videos across the given folders")
 
-    out_dir = Path(out) if out else _HERE / "outputs" / "_vs_".join(labels)
+    # default out-dir carries the layout/backbone so different selections with the SAME labels don't clobber.
+    tag = "grid__" if grid else (f"{backbone}__" if backbone else "")
+    out_dir = Path(out) if out else _HERE / "outputs" / (tag + "_vs_".join(labels))
     out_dir.mkdir(parents=True, exist_ok=True)
     bar_h = even(max(20, height // 9))
     font = load_font(int(bar_h * 0.62))
+    H = even(height)
+
+    def pad_w(img, W):                                       # right-pad black so rows of unequal width vstack
+        if img.shape[1] >= W:
+            return img
+        return np.hstack([img, np.zeros((img.shape[0], W - img.shape[1], 3), dtype=img.dtype)])
 
     print(f"\n{len(keys)} clips → {out_dir}")
     for tid, ep in keys:
-        # locate each folder's matching mp4 (task dir name carries the full target_task prefix)
-        clips = []
-        for folder in folders:
-            taskdir = next((d for d in (folder / "videos").glob(f"*_{tid}") if d.is_dir()), None)
-            mp4 = taskdir / f"eval_episode_{ep}.mp4" if taskdir else None
-            if not mp4 or not mp4.exists():
-                clips = None
+        # locate each folder's mp4 (task dir name carries the full target_task prefix), grouped by row
+        rows_fls, out_fps, miss = [], None, False
+        for _bb, fs in rows:
+            fls = []
+            for folder in fs:
+                taskdir = next((d for d in (folder / "videos").glob(f"*_{tid}") if d.is_dir()), None)
+                mp4 = taskdir / f"eval_episode_{ep}.mp4" if taskdir else None
+                if not mp4 or not mp4.exists():
+                    miss = True
+                    break
+                frames, src_fps = read_video(mp4)
+                fls.append(frames)
+                out_fps = out_fps or (fps or src_fps)
+            if miss:
                 break
-            clips.append(mp4)
-        if clips is None:
+            rows_fls.append(fls)
+        if miss:
             continue
 
-        videos = [read_video(p) for p in clips]
-        framelists = [v[0] for v in videos]
-        src_fps = videos[0][1]
-        out_fps = fps or src_fps
-        n = max(len(fl) for fl in framelists)
-        H = even(height)
-
-        # per-panel label bars (built once at each panel's resized width)
-        panels_bars = []
-        for fl, lab in zip(framelists, labels):
-            h0, w0 = fl[0].shape[:2]
-            Wp = even(max(2, round(w0 * H / h0)))
-            panels_bars.append(label_bar(Wp, bar_h, lab, font))
+        n = max(len(fl) for fls in rows_fls for fl in fls)
+        # per-(row,col) label bars: column label shared across rows; leftmost panel of each row carries
+        # the backbone tag (so dino vs siglip rows are identifiable while column labels overlap).
+        rows_bars = []
+        for (bb, _), fls in zip(rows, rows_fls):
+            bars = []
+            for ci, fl in enumerate(fls):
+                h0, w0 = fl[0].shape[:2]
+                Wp = even(max(2, round(w0 * H / h0)))
+                lab = f"{bb} | {labels[ci]}" if (grid and ci == 0 and bb) else labels[ci]
+                bars.append(label_bar(Wp, bar_h, lab, font))
+            rows_bars.append(bars)
 
         writer = imageio.get_writer(
             str(out_dir / f"task{tid}_ep{ep}.mp4"), fps=out_fps,
             codec="libx264", quality=8, macro_block_size=None,
         )
         for i in range(n):
-            cols = []
-            for fl, bar in zip(framelists, panels_bars):
-                fr = fl[i] if i < len(fl) else fl[-1]        # freeze last frame to pad
-                cols.append(make_panel(fr, H, bar))
-            row = np.hstack(cols)
-            if row.shape[1] % 2:                             # yuv420p needs even width
-                row = row[:, :-1]
-            writer.append_data(row)
+            row_imgs = []
+            for fls, bars in zip(rows_fls, rows_bars):
+                cols = []
+                for fl, bar in zip(fls, bars):
+                    fr = fl[i] if i < len(fl) else fl[-1]    # freeze last frame to pad
+                    cols.append(make_panel(fr, H, bar))
+                row_imgs.append(np.hstack(cols))
+            if len(row_imgs) > 1:
+                maxw = max(r.shape[1] for r in row_imgs)
+                row_imgs = [pad_w(r, maxw) for r in row_imgs]
+            frame = np.vstack(row_imgs) if len(row_imgs) > 1 else row_imgs[0]
+            if frame.shape[1] % 2:                           # yuv420p needs even width
+                frame = frame[:, :-1]
+            if frame.shape[0] % 2:                           # ...and even height (vstacked rows may be odd)
+                frame = frame[:-1, :]
+            writer.append_data(frame)
         writer.close()
-        print(f"  task{tid}_ep{ep}.mp4  ({n} frames, {len(clips)} panels)")
+        npan = sum(len(fls) for fls in rows_fls)
+        print(f"  task{tid}_ep{ep}.mp4  ({n} frames, {npan} panels, {len(rows)} row(s))")
 
     print("\nDone.")
 

@@ -64,7 +64,7 @@ class OracleSkillExpertPolicy(PreTrainedPolicy):
     config_class = SkillExpertConfig
     name = "skill_expert_oracle"
 
-    def __init__(self, policy, terminator: FsqTerminator, *, end_threshold: float,
+    def __init__(self, policy, terminator, *, end_threshold: float,
                  end_mode: str, advance_mode: str, max_skill_len: int, n_action_steps: int):
         super().__init__(policy.config)
         self.policy = policy

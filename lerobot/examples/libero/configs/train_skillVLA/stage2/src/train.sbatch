@@ -82,7 +82,7 @@ if [ "${TRAIN_TERMINATOR}" = "true" ]; then
 fi
 
 # pretrained_path=pi05 warm-starts the VLM; stage1_checkpoint_path warm-starts the action/cond side
-# (the policy's from_pretrained loads both). vision/skill_vocab/state_n_bins are read from Stage-1.
+# (the policy's from_pretrained loads both). vision/skill_vocab/state_cond_mode are read from Stage-1.
 PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="${NUM_GPUS}" \
   "${PROJECT_ROOT}/.venv/bin/lerobot-train" \
     --dataset.repo_id="${REPO_ID}" \

@@ -2,23 +2,44 @@
 # (or compare_videos.py). For every SAME task + SAME episode shared by all folders below, their
 # rollout videos are stitched HORIZONTALLY into one clip, each panel labelled on top.
 #
-# Output: video_compare/outputs/{label1_vs_label2_...}/task{T}_ep{E}.mp4
+# GRID layout: if folders carry BOTH `dino:` and `siglip:` prefixes, the panels are laid out in a
+# GRID instead — dino entries on ROW 1, siglip on ROW 2, stacked vertically. Columns share labels
+# (so the same column label may repeat across the two rows); each row's leftmost panel shows its
+# backbone. Each backbone must list the SAME number of folders (equal columns).
+#
+# Output: video_compare/outputs/{label1_vs_label2_...}/task{T}_ep{E}.mp4  (grid → grid__{labels}/)
+
+# ── Backbone ── default policy vision variant for the folder substrings below: "" = any; "dino"/"siglip"
+#    restricts matching to that variant (the `_dino_`/`_siglip_` POLICY tag, NOT the run-tag's `_dino8_`).
+#    To see siglip AND dino TOGETHER in one compare, leave this "" and prefix individual folders with
+#    `dino:` / `siglip:` (per-folder override — see the mixed example below). Both variants may be evaluated
+#    at several checkpoints, so keep the ckpt (e.g. _010000 / _012500) in the substring when it's ambiguous.
+backbone: ""        # "" | dino | siglip   (global default; override per-folder with dino:/siglip:)
 
 # ── Folders to compare (2-4) ── full name OR any unique substring of one (resolved under
-#    stage1_eval/outputs/). Order here = left→right panel order.
+#    stage1_eval/outputs/), optionally prefixed `dino:`/`siglip:`. Order here = left→right panel order.
 folders:
-  # - sadaln_c10_010000
-  # - sae_adaln_c10_010000
-  # - np_sadaln_c10_010000
-  # - np_sae_adaln_c10_010000
-  - np_state_c10_012500
-  - np_state_cum0.5r2_c10_012500
-  - np_state_skill_c10_012500
-  - np_state_skill_cum0.5r2_c10_012500
+  # mix siglip + dino in ONE ROW (per-folder prefix beats `backbone`):
+  #   - siglip:np_state_c10_012500
+  #   - dino:np_state_c10_012500
+  # GRID (dino row 1 / siglip row 2; same columns → labels shared):
+
+  - siglip:np_state_c10_012500
+  - siglip:np_state_cum0.5r2_c10_012500
+  - siglip:np_state_cum0.5r2ep_c10_010000
+  - siglip:np_state_skill_c10_012500
+  - siglip:np_state_skill_cum0.5r2_c10_012500
+
+  - dino:np_state_c10_012500
+  - dino:np_state_cum0.5r2_c10_012500
+  - dino:np_state_cum0.5r2ep_c10_012500
+  - dino:np_state_skill_c10_012500
+  - dino:np_state_skill_cum0.5r2_c10_012500
+
 
 # ── Panel labels ── the text drawn on top of each panel. ONE per folder, SAME order as `folders`
 #    above (count must match). Edit these freely. Set to [] for auto (the part of each name that differs).
-labels: [state, state_cum, state_skill, state_skill_cum]
+labels: [state, state_cum, state_cum_ep, state_skill, state_skill_cum]
 
 # labels: [prev_state_pro, prev_state_skill_pro, prev_state, prev_state_skill, state, state_cum, state_skill, state_skill_cum]
 

@@ -470,8 +470,9 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                     "loss_skill", "skill_acc",  # Stage-2 SkillVLA: VLM skill CE + skill-code accuracy
                     "loss_terminator",          # FT SkillVLA: co-trained FSQ terminator (progress + termination)
                     "loss_cum_pos",             # Stage-1 skill_expert: optional cumulative-position loss term
-                    "loss_total",               # Stage-1 skill_expert: per-delta + λ·cum (optimized objective;
-                                                # "loss" itself is the per-delta term so it overlays λ=0/old runs)
+                    "loss_weighted",            # Stage-1 skill_expert: per-sample-weighted action loss (action_weight)
+                    "loss_total",               # Stage-1 skill_expert: optimized objective (action + λ·cum). "loss"
+                                                # itself is the PLAIN unweighted action MSE (comparison; overlays runs)
                 }
                 wandb_log_dict = {k: v for k, v in wandb_log_dict.items() if k in _wandb_keep}
                 wandb_logger.log_dict(wandb_log_dict, step)

@@ -54,23 +54,24 @@ if [ ! -d "${POLICY_PATH}" ]; then
   exit 1
 fi
 
-# Terminator: use the adapted FSQ from THIS checkpoint (checkpoints/<ckpt>/FSQ_ft.pt) when Stage-2
-# co-trained it; lazy-export from the checkpoint if missing. Else fall back to the base dataset FSQ.
+# Terminator (EVAL_TERMINATOR, resolved base|cotrained by the config): "base" = the ORIGINAL dataset
+# FSQ.pt (pre in-policy co-training); "cotrained" = the terminator co-trained INTO this checkpoint
+# (lazy-exported to checkpoints/<ckpt>/FSQ_ft.pt from the checkpoint if missing).
 FSQ_FOR_EVAL="${BASE_FSQ}"
-if [ "${TRAIN_TERMINATOR_USED}" = "true" ]; then
+if [ "${EVAL_TERMINATOR}" = "cotrained" ]; then
   if [ ! -f "${FT_FSQ_PATH}" ]; then
-    echo "Adapted terminator missing for ${CHECKPOINT} → exporting from the checkpoint"
+    echo "Co-trained terminator missing for ${CHECKPOINT} → exporting from the checkpoint"
     "${PROJECT_ROOT}/.venv/bin/python" "${SRC_DIR}/../../FT/src/export_ft_terminator.py" \
       --ft_run_dir="${FT_RUN_DIR}" --checkpoint="${CHECKPOINT}" \
       --base_fsq="${BASE_FSQ}" --out="${FT_FSQ_PATH}" --skip_if_no_terminator
   fi
-  [ -f "${FT_FSQ_PATH}" ] && FSQ_FOR_EVAL="${FT_FSQ_PATH}"
+  FSQ_FOR_EVAL="${FT_FSQ_PATH}"
 fi
 
 echo "START SKILLVLA EVAL (PT)"
 echo "Node     : ${SLURMD_NODENAME:-local}"
 echo "policy   : ${POLICY_PATH}"
-echo "fsq      : ${FSQ_FOR_EVAL}"
+echo "fsq      : ${FSQ_FOR_EVAL}  (terminator=${EVAL_TERMINATOR})"
 echo "target   : ${TARGET_TASK}  task_ids=${TASK_IDS}  episodes=${N_EPISODES}/task"
 nvidia-smi || true
 
