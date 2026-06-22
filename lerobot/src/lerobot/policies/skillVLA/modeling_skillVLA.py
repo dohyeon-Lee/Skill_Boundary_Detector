@@ -400,9 +400,11 @@ class SkillVLAPytorch(PI05Pytorch):
         allow[:, :nc, :nc] = True                                    # cond block
         allow[:, :nc, nc : nc + nv] = (~vlm_xattn_block)[None, None, :]  # cond → vlm IMAGE tokens (lang + skill-query excluded)
         allow[:, nc : nc + nv, nc : nc + nv] = True                  # vlm block
-        allow[:, pa:pf1, pa:pf1] = True                              # prefix → prefix (skill/progress self; ⊥ cond, ⊥ action)
+        allow[:, pa:pf1, pa:pf1] = True                              # prefix → prefix (skill self; ⊥ cond, ⊥ action)
         allow[:, pf1:, :nc] = True                                   # action → cond (ONLY action tokens read the scene)
         allow[:, pf1:, pa:] = True                                   # action → prefix + action
+        if getattr(self.config, "action_attend_vlm", False):        # optional: action → VLM IMAGE tokens (direct)
+            allow[:, pf1:, nc : nc + nv] = (~vlm_xattn_block)[None, None, :]
         col_valid = torch.cat(
             [torch.ones(bsize, nc, dtype=torch.bool, device=device), vlm_pad,
              torch.ones(bsize, na, dtype=torch.bool, device=device)], dim=1)
@@ -650,17 +652,27 @@ class SkillVLAPytorch(PI05Pytorch):
             self.cond_encoder.model.layers, cond_tokens, cond_pad, cond_pos, adarms=None,
             extra_kv=vlm_kv, extra_valid=vlm_pad & ~vlm_xattn_block[None, :])
 
-        # denoise: action stream = prefix (constant) + action×K; attends cond cache only (cond⊥action)
+        # denoise: action stream = prefix (constant) + action×K; attends the cond cache (cond⊥action). With
+        # action_attend_vlm, the VLM IMAGE K/V is ALSO injected so action tokens read the VLM directly.
         action_prefix = self._action_prefix(skill_code)  # None in state_skill mode
-        prefix_kv = cond_kv
-        # key layout: [cond(nc), action-stream(na) = prefix(n_prefix) + action(n_chunk)]. Conditioning
-        # prefix ⊥ cond and ⊥ action (reads only itself); only the action tokens attend cond + prefix + action.
-        # n_prefix=0 (state_skill) → the prefix→prefix block is empty; action → cond + action.
-        cols = torch.cat([cond_pad, torch.ones(bsize, na, dtype=torch.bool, device=device)], dim=1)
-        allow = torch.zeros(bsize, 1, na, nc + na, dtype=torch.bool, device=device)
-        allow[:, :, :n_prefix, nc : nc + n_prefix] = True               # prefix → prefix
-        allow[:, :, n_prefix:, :nc] = True                              # action → cond
-        allow[:, :, n_prefix:, nc : nc + na] = True                     # action → prefix + action
+        attend_vlm = getattr(self.config, "action_attend_vlm", False)
+        if attend_vlm:                                                  # action keys = [cond, VLM, action-stream]
+            prefix_kv = [(torch.cat([ck, vk], dim=2), torch.cat([cv, vv], dim=2))
+                         for (ck, cv), (vk, vv) in zip(cond_kv, vlm_kv)]
+            npre = nc + nv
+            cols = torch.cat([cond_pad, vlm_pad, torch.ones(bsize, na, dtype=torch.bool, device=device)], dim=1)
+        else:                                                          # action keys = [cond, action-stream]
+            prefix_kv = cond_kv
+            npre = nc
+            cols = torch.cat([cond_pad, torch.ones(bsize, na, dtype=torch.bool, device=device)], dim=1)
+        # prefix ⊥ cond & ⊥ action (reads only itself); action reads cond (+ VLM image if attend_vlm) + prefix
+        # + action. n_prefix=0 (state_skill) → the prefix→prefix block is empty.
+        allow = torch.zeros(bsize, 1, na, npre + na, dtype=torch.bool, device=device)
+        allow[:, :, :n_prefix, npre : npre + n_prefix] = True           # prefix → prefix
+        allow[:, :, n_prefix:, :nc] = True                             # action → cond
+        if attend_vlm:
+            allow[:, :, n_prefix:, nc : nc + nv] = (~vlm_xattn_block)[None, None, None, :]  # action → VLM image
+        allow[:, :, n_prefix:, npre:] = True                          # action → prefix + action
         att_4d = torch.where(allow & cols[:, None, None, :], 0.0, OPENPI_ATTENTION_MASK_VALUE)
 
         if noise is None:
@@ -1041,10 +1053,12 @@ class SkillVLAPolicy(PI05Policy):
         vf = valid.float().unsqueeze(-1)                              # (B, K, 1)
         n_steps = valid.float().sum().clamp(min=1.0)
         flow_loss = (flow_losses * vf).sum() / (n_steps * action_dim)
-        total = flow_loss + self.config.skill_loss_weight * skill_loss
+        loss = flow_loss + self.config.skill_loss_weight * skill_loss   # SkillVLA policy objective (wandb train/loss)
+        total = loss                                                    # backpropped objective (+ terminator below)
 
-        # FT: co-train the terminator on GT signals. Disjoint graph (GT/precomputed inputs + its own
-        # params) → adds to `total` but only the terminator gets gradient from it; SkillVLA is untouched.
+        # FT: co-train the terminator on GT signals. Disjoint graph (GT/precomputed inputs + its own params)
+        # → added to the BACKPROPPED `total` (only the terminator gets gradient; SkillVLA untouched), but it
+        # is EXCLUDED from wandb `loss` (train/loss = the policy loss only) — logged separately as loss_terminator.
         term_loss = None
         if self.config.train_terminator and self.model.fsq_term_train is not None:
             for k in ("skill_code_true", "skill_decoder_dino", "skill_ds", "skill_de"):
@@ -1067,13 +1081,14 @@ class SkillVLAPolicy(PI05Policy):
         with torch.no_grad():
             skill_acc = (self.model.skill_head.decode(skill_hidden) == skill_code).float().mean()
         loss_dict = {
-            "loss": total.detach().item(),
+            "loss": loss.detach().item(),                  # wandb train/loss = policy loss (flow + λ·skill); NO terminator
             "loss_flow": flow_loss.detach().item(),
             "loss_skill": skill_loss.detach().item(),
             "skill_acc": skill_acc.item(),
         }
         if term_loss is not None:
             loss_dict["loss_terminator"] = term_loss.detach().item()
+            loss_dict["loss_total"] = total.detach().item()   # the actual BACKPROPPED objective (policy + terminator)
         if reduction == "none":
             per_sample = (flow_losses * vf).sum(dim=(1, 2)) / (valid.float().sum(dim=1).clamp(min=1.0) * action_dim)
             return per_sample, loss_dict

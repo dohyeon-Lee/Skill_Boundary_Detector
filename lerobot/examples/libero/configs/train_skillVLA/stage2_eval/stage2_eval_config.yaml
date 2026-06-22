@@ -11,13 +11,13 @@
 # ── Which trained model to evaluate ──
 # The Stage-2 run folder name, exactly as created by training
 # ({source}_{run_tag}_{stage1_checkpoint}_{freeze|unfreeze}[_loss tags]):
-# model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_015000_unfreeze
-model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_015000_unfreeze_cum
+model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_015000_unfreeze
+# model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_015000_unfreeze_cum
 
 checkpoint: "040000"              # "last" or a step number (these runs go up to 040000)
 
 # ── Eval rollout ──
-target_task: libero_90    # LIBERO suite for the sim env
+target_task: libero_10    # LIBERO suite for the sim env
 task_ids: "[0,1,2,3,4,5,6,7,8,9]"
 n_episodes: 5             # episodes per task
 n_action_steps: 5

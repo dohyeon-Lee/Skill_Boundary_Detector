@@ -67,18 +67,25 @@ def build_settings(cfg: dict) -> dict:
     # run_name = {source}_{run_tag}_[{s1_vis_tag}_]{stage1_checkpoint}_{freeze|unfreeze}[_<loss tags>][_{exp}]:
     #   s1_vis_tag             = Stage-1 vision the expert warm-started from (dino_unfreeze/siglip_freeze/…)
     #   trailing {freeze|unfreeze} = Stage-2's own freeze_expert_vision choice.
+    #   mode tag               = Stage-1 state_cond_mode (state / state_skill) — KEPT so the two modes don't
+    #                            collide (their loss tags are otherwise identical).
     #   loss tags              = the Stage-1 loss-recipe tags (cum_ep/cum_all + ac/ac_w/ac_x), KEPT so
-    #                            different Stage-1 loss recipes land in DISTINCT Stage-2 folders (np/state/c
-    #                            tags are dropped → they'd otherwise collide).
-    # batch{N}/arch(A/B) are dropped (arch is re-read from the Stage-1 ckpt at load time); exp is last.
+    #                            different Stage-1 loss recipes land in DISTINCT Stage-2 folders.
+    #   actvlm                 = Stage-2's action_attend_vlm (action reads VLM image directly).
+    # batch{N}/c{N}/np are dropped (arch is re-read from the Stage-1 ckpt at load time); exp is last.
     vis_tag = "freeze" if freeze_expert_vision else "unfreeze"
+    action_attend_vlm = as_bool(get_value(cfg, "action_attend_vlm", False))  # action ← VLM image tokens (direct)
+    # state_skill checked first (it contains the substring "_state"); else state; else "" (older naming).
+    mode_tag = ("state_skill" if "_state_skill" in stage1_run_name
+                else "state" if "_state" in stage1_run_name else "")
     loss_tags = []
     for pat in (r"_(cum_(?:ep|all))(?:_|$)", r"_(ac_w|ac_x|ac)(?:_|$)"):
         m = re.search(pat, stage1_run_name)
         if m:
             loss_tags.append(m.group(1))
     parts = ([source_dataset, run_tag] + ([s1_vis_tag] if s1_vis_tag else [])
-             + [stage1_checkpoint, vis_tag] + loss_tags)
+             + [stage1_checkpoint, vis_tag] + ([mode_tag] if mode_tag else []) + loss_tags
+             + (["actvlm"] if action_attend_vlm else []))
     run_name = "_".join(parts)
     if exp:
         run_name = f"{run_name}_{exp}"
@@ -103,6 +110,7 @@ def build_settings(cfg: dict) -> dict:
         "skill_fsq_levels": "[" + ",".join(str(x) for x in skill_fsq_levels) + "]",
         "skill_loss_weight": str(get_value(cfg, "skill_loss_weight", 0.5)),
         "cond_attend_language": as_bool(get_value(cfg, "cond_attend_language", False)),
+        "action_attend_vlm": action_attend_vlm,    # action tokens read the VLM IMAGE tokens directly
         # terminator co-training (same as FT): adapt the FSQ terminator on this dataset's GT signals
         # (disjoint from the SkillVLA params). Warm-starts from fsq_ckpt; exported per-checkpoint for eval.
         "train_terminator": as_bool(get_value(cfg, "train_terminator", False)),

@@ -28,7 +28,7 @@ pi_base: models/pi05_base   # project_root(global_config) 기준 상대경로 �
 # dino   = trainable DINOv3 (own weights)
 # siglip = PaliGemma/SigLIP tower, warm-started from pi_base's vision_tower (robot-adapted);
 #          params separate from the Stage-2 VLM. Needs init_from_pi05: true for the warm-start.
-vision_backbone: siglip           # dino | siglip
+vision_backbone: dino           # dino | siglip
 # DINO backbone
 dino_model_path: models/dinov3-vitl16   # project_root 기준 상대경로. ViT-B/16 86M (vits16=21M, vitl16=300M)
 dino_lr: null                   # null = same LR as the rest; set a float to use a separate DINO LR
@@ -58,9 +58,9 @@ skill_end_loss_weight: 2.0        # R — weight=1+(R-1)·progress; skill END co
 # R(skill_end_loss_weight)는 action·cum에 동일 적용. 폴더명엔 λ/R 숫자값 안 들어감 (카테고리 suffix만).
 # wandb: train/loss = 항상 plain unweighted action MSE(비교용, backprop 안 됨). action_weight면 가중값은 loss_weighted
 #        패널에 따로. loss_total = 실제 최적화 objective.
-cum_loss: all                     # all | endpoint
+cum_loss: endpoint                     # all | endpoint
 action_loss: true                 # true | false
-action_weight: false              # true | false
+action_weight: true              # true | false
 
 # ── Optimization ──
 batch_size: 256

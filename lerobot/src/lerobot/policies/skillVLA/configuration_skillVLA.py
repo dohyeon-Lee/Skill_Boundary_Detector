@@ -51,6 +51,12 @@ class SkillVLAConfig(PI05Config):
     """VLM↔cond cross-attention: by default cond attends the VLM IMAGE tokens only (language excluded
     → forces visual grounding). True lets cond ALSO attend the VLM language tokens (ablation). The
     skill-query token is always excluded either way."""
+    action_attend_vlm: bool = False
+    """Give the ACTION tokens a DIRECT edge to the VLM IMAGE tokens (in addition to the cond cache).
+    Default False = the original one-directional chain (VLM → cond → action; action sees the VLM only via
+    cond). True = action tokens ALSO attend the VLM image tokens directly (lang + skill-query excluded; the
+    skill PREFIX still reads only itself; cond ⊥ action unchanged). Applies to BOTH the training joint mask
+    and the cached inference path — needs a Stage-2 retrain. Run-name tag: actvlm."""
 
     # ── Freeze toggles (all parts otherwise trained) ──
     freeze_vlm: bool = False

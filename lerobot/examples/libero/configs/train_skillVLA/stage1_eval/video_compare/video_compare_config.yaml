@@ -20,21 +20,21 @@ backbone: ""        # "" | dino | siglip   (global default; override per-folder 
 #    stage1_eval/outputs/), optionally prefixed `dino:`/`siglip:`. Order here = left→right panel order.
 folders:
   # mix siglip + dino in ONE ROW (per-folder prefix beats `backbone`):
-  #   - siglip:np_state_c10_012500
-  #   - dino:np_state_c10_012500
+  #   - siglip:state_ac_c10_012500
+  #   - dino:state_ac_c10_012500
   # GRID (dino row 1 / siglip row 2; same columns → labels shared):
 
-  - siglip:np_state_c10_012500
-  - siglip:np_state_cum0.5r2_c10_012500
-  - siglip:np_state_cum0.5r2ep_c10_010000
-  - siglip:np_state_skill_c10_012500
-  - siglip:np_state_skill_cum0.5r2_c10_012500
+  - siglip:state_ac_c10_015000
+  - siglip:state_cum_all_ac_c10_015000
+  - siglip:state_cum_ep_ac_c10_015000
+  - siglip:state_skill_ac_c10_015000
+  - siglip:state_skill_cum_all_ac_c10_015000
 
-  - dino:np_state_c10_012500
-  - dino:np_state_cum0.5r2_c10_012500
-  - dino:np_state_cum0.5r2ep_c10_012500
-  - dino:np_state_skill_c10_012500
-  - dino:np_state_skill_cum0.5r2_c10_012500
+  - dino:state_ac_c10_015000
+  - dino:state_cum_all_ac_c10_015000
+  - dino:state_cum_ep_ac_c10_015000
+  - dino:state_skill_ac_c10_015000
+  - dino:state_skill_cum_all_ac_c10_015000
 
 
 # ── Panel labels ── the text drawn on top of each panel. ONE per folder, SAME order as `folders`

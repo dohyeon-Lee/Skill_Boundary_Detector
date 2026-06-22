@@ -101,6 +101,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.skill_fsq_levels="${SKILL_FSQ_LEVELS}" \
     --policy.skill_loss_weight="${SKILL_LOSS_WEIGHT}" \
     --policy.cond_attend_language="${COND_ATTEND_LANGUAGE}" \
+    --policy.action_attend_vlm="${ACTION_ATTEND_VLM}" \
     --policy.fsq_path="${FSQ_CKPT}" \
     --policy.freeze_vlm="${FREEZE_VLM}" \
     --policy.freeze_vlm_vision="${FREEZE_VLM_VISION}" \

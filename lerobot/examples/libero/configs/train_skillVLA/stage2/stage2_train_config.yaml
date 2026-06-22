@@ -3,8 +3,8 @@ skillvla_dataset_root: skillvla_dataset
 
 # ── Warm-start (also selects the dataset: source + run_tag parsed from stage1_run_name) ──
 pi_base: models/pi05_base   
-# stage1_run_name: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_state_ac_c10
-stage1_run_name: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_state_cum_all_ac_c10
+stage1_run_name: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_state_skill_cum_all_ac_c10
+# stage1_run_name: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_state_cum_all_ac_c10
 stage1_checkpoint: "015000"   # "last" or a step number of the Stage-1 run above
 
 # ── Skill head / FSQ ──────────────────────────────────────────
@@ -13,6 +13,10 @@ skill_loss_weight: 0.1                # total = BC + λ·skill_CE (λ<1 keeps BC
 # VLM↔cond attention: false=cond가 VLM 이미지 토큰만 봄(언어 제외, visual grounding 강제).
 # true=cond가 VLM 언어 토큰도 attend(ablation). skill-query는 둘 다 항상 제외.
 cond_attend_language: false
+# action↔VLM attention: false=기존(VLM→cond→action, action은 cond 통해서만 VLM 봄).
+# true=action 토큰이 VLM 이미지 토큰을 직접 attend. prefix(skill)·cond 동작 불변. 여전히 cond는 action을
+#   못 봄(action은 cond를 봄 — 역방향만 차단 → cond는 skill당 1회 캐싱). run-name에 _actvlm.
+action_attend_vlm: true
 
 # ── FSQ terminator co-training (same as FT; disjoint from the SkillVLA params) ──
 # Adapt the FSQ terminator on this dataset's GT signals (z←true skill, current DINO + state →
@@ -33,7 +37,7 @@ freeze_expert_vision: false
 freeze_vlm: false
 freeze_vlm_vision: false                     # train the SigLIP tower for the new skill-start view
 
-freeze_action_expert: false
+freeze_action_expert: true
 
 
 # ── Optimization ──────────────────────────────────────────────
