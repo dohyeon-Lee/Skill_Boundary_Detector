@@ -59,7 +59,7 @@ if [ ! -d "${RAW_DATASET_DIR}" ]; then
   echo "Dataset not found: ${RAW_DATASET_DIR}" >&2
   exit 1
 fi
-if [ ! -d "${DINO_FEATURE_DIR}" ]; then
+if [ "${DP_VISION}" = "dino" ] && [ ! -d "${DINO_FEATURE_DIR}" ]; then
   echo "DINO feature dir not found: ${DINO_FEATURE_DIR}" >&2
   echo "Run prepare_dino_for_training_dataset.py for ${TARGET_DATASET} first." >&2
   echo "Base DINO source expected at: ${BASE_DINO_FEATURE_DIR}" >&2
@@ -89,19 +89,51 @@ else
   TRAIN_CONFIG_PATH="${DP_BASE_CONFIG}"
 fi
 
-DINO_IMAGE_KEYS_JSON=$(python - <<PY
+WANDB_ENABLE=${DP_WANDB_ENABLE}
+
+# Vision encoder branch: "resnet" = original lerobot Diffusion Policy (ResNet on raw frames,
+# use_dino_features=false; image_features come from the dataset's camera keys). "dino" (default)
+# = this project's precomputed DINO-token encoder.
+POLICY_ARGS=(
+  --policy.n_obs_steps="${DP_N_OBS_STEPS}"
+  --policy.n_action_steps="${DP_N_ACTION_STEPS}"
+  --policy.horizon="${DP_HORIZON}"
+)
+if [ "${DP_VISION}" = "resnet" ]; then
+  echo "DP train (vision=resnet, ORIGINAL Diffusion Policy — no DINO)"
+  echo "  backbone     : ${DP_VISION_BACKBONE}"
+  POLICY_ARGS+=(
+    --policy.use_dino_features=false
+    --policy.vision_backbone="${DP_VISION_BACKBONE}"
+  )
+elif [ "${DP_VISION}" = "state" ]; then
+  echo "DP train (vision=state, proprioceptive-only — no image/DINO input)"
+  POLICY_ARGS+=(
+    --policy.use_dino_features=false
+    --policy.state_only=true
+  )
+else
+  DINO_IMAGE_KEYS_JSON=$(python - <<PY
 import json
 print(json.dumps("${DINO_IMAGE_KEYS}".split(",")))
 PY
 )
-WANDB_ENABLE=${DP_WANDB_ENABLE}
-
-echo "DP DINO train"
+  echo "DP train (vision=dino)"
+  echo "  dino dir     : ${DINO_FEATURE_DIR}"
+  echo "  image keys   : ${DINO_IMAGE_KEYS_JSON}"
+  POLICY_ARGS+=(
+    --policy.use_dino_features=true
+    --policy.dino_feature_dir="${DINO_FEATURE_DIR}"
+    --policy.dino_image_keys="${DINO_IMAGE_KEYS_JSON}"
+    --policy.dino_patch_grid="${DINO_PATCH_GRID}"
+    --policy.dino_feature_dim="${DINO_FEATURE_DIM}"
+    --policy.dino_visual_feature_dim="${DINO_VISUAL_FEATURE_DIM}"
+    --policy.dino_transformer_n_layers="${DINO_TRANSFORMER_N_LAYERS}"
+    --policy.dino_transformer_n_heads="${DINO_TRANSFORMER_N_HEADS}"
+    --policy.dino_cache_size="${DINO_CACHE_SIZE}"
+  )
+fi
 echo "  dataset      : ${TARGET_DATASET}"
-echo "  raw data     : ${RAW_DATASET_DIR}"
-echo "  dino dataset : ${DINO_FEATURE_DATASET}"
-echo "  dino dir     : ${DINO_FEATURE_DIR}"
-echo "  image keys   : ${DINO_IMAGE_KEYS_JSON}"
 echo "  output       : ${DP_OUTPUT_DIR}"
 echo "  config       : ${TRAIN_CONFIG_PATH}"
 echo "  policy       : ${DP_POLICY}"
@@ -118,18 +150,7 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
   --save_freq="${DP_SAVE_FREQ}" \
   --eval_freq="${DP_EVAL_FREQ}" \
   --seed="${DP_SEED}" \
-  --policy.n_obs_steps="${DP_N_OBS_STEPS}" \
-  --policy.n_action_steps="${DP_N_ACTION_STEPS}" \
-  --policy.horizon="${DP_HORIZON}" \
-  --policy.use_dino_features=true \
-  --policy.dino_feature_dir="${DINO_FEATURE_DIR}" \
-  --policy.dino_image_keys="${DINO_IMAGE_KEYS_JSON}" \
-  --policy.dino_patch_grid="${DINO_PATCH_GRID}" \
-  --policy.dino_feature_dim="${DINO_FEATURE_DIM}" \
-  --policy.dino_visual_feature_dim="${DINO_VISUAL_FEATURE_DIM}" \
-  --policy.dino_transformer_n_layers="${DINO_TRANSFORMER_N_LAYERS}" \
-  --policy.dino_transformer_n_heads="${DINO_TRANSFORMER_N_HEADS}" \
-  --policy.dino_cache_size="${DINO_CACHE_SIZE}" \
+  "${POLICY_ARGS[@]}" \
   --dataset.repo_id="lerobot/${TARGET_DATASET}" \
   --dataset.root="${RAW_DATASET_DIR}" \
   --dataset.video_backend=pyav \

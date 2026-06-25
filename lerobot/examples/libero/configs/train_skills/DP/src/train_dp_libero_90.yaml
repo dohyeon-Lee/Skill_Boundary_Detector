@@ -23,7 +23,7 @@ policy:
   # Temporal settings (overridden by dp_n_obs_steps / dp_n_action_steps / dp_horizon)
   n_obs_steps: 10      # 10 frames @ 20fps = 500ms history
   horizon: 16          # UNet prediction length (must be divisible by 2^len(down_dims)=8)
-  n_action_steps: 16   # action chunk length actually executed
+  n_action_steps: 7    # action chunk executed = horizon - n_obs_steps + 1 (max valid)
 
   # UNet architecture (NOT overridden — real base-config value)
   down_dims: [512, 1024, 2048]

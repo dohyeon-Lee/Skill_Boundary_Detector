@@ -141,6 +141,10 @@ class DiffusionConfig(PreTrainedConfig):
     dino_transformer_n_layers: int = 1
     dino_transformer_n_heads: int = 4
     dino_cache_size: int = 8
+    # Proprioceptive-state-only mode: no vision at all (no images, no DINO). Conditions the
+    # diffusion on observation.state history alone. Forces image_features to {} and relaxes the
+    # "need an image/env_state" input checks.
+    state_only: bool = False
     # Unet.
     down_dims: tuple[int, ...] = (512, 1024, 2048)
     kernel_size: int = 5
@@ -179,7 +183,7 @@ class DiffusionConfig(PreTrainedConfig):
         super().__post_init__()
 
         """Input validation (not exhaustive)."""
-        if not self.use_dino_features and not self.vision_backbone.startswith("resnet"):
+        if not self.use_dino_features and not self.state_only and not self.vision_backbone.startswith("resnet"):
             raise ValueError(
                 f"`vision_backbone` must be one of the ResNet variants. Got {self.vision_backbone}."
             )
@@ -239,7 +243,12 @@ class DiffusionConfig(PreTrainedConfig):
         )
 
     def validate_features(self) -> None:
-        if len(self.image_features) == 0 and self.env_state_feature is None and not self.use_dino_features:
+        if (
+            len(self.image_features) == 0
+            and self.env_state_feature is None
+            and not self.use_dino_features
+            and not self.state_only
+        ):
             raise ValueError("You must provide at least one image or the environment state among the inputs.")
 
         if self.resize_shape is None and self.crop_shape is not None:
@@ -261,7 +270,7 @@ class DiffusionConfig(PreTrainedConfig):
 
     @property
     def image_features(self) -> dict:
-        if self.use_dino_features:
+        if self.use_dino_features or self.state_only:
             return {}
         return super().image_features
 

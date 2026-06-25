@@ -262,6 +262,8 @@ def run_vf_analysis(
     image_keys = list(policy.config.image_features.keys())
     _use_dino = (dino_tokens is not None) and policy.config.use_dino_features
     _dino_key = policy.config.dino_token_key  # "observation.dino.tokens"
+    _state_only = getattr(policy.config, "state_only", False)  # proprioceptive-only DP: no vision
+    _load_imgs = (not _use_dino) and (not _state_only)         # raw-frame (resnet/original) DP only
 
     states = np.stack(ep_df["observation.state"].values)
 
@@ -286,15 +288,15 @@ def run_vf_analysis(
         indices = [indices[0]] * pad + indices  # 앞쪽 패딩
 
         obs_states = []
-        obs_imgs = [] if not _use_dino else None
+        obs_imgs = [] if _load_imgs else None
         for fi in indices:
             obs = {OBS_STATE: torch.from_numpy(states[fi]).float()}
-            if not _use_dino:
+            if _load_imgs:
                 obs.update({k: torch.from_numpy(cam_frames[k][fi]).float().div(255.0).permute(2, 0, 1)
                              for k in camera_keys})
             obs = preprocessor(obs)
             obs_states.append(obs[OBS_STATE])
-            if not _use_dino:
+            if _load_imgs:
                 obs_imgs.append(torch.stack([obs[k] for k in image_keys], dim=-4))
 
         batch = {OBS_STATE: torch.stack(obs_states, dim=1).to(device)}  # (1, n_obs, state_dim)
@@ -304,8 +306,9 @@ def run_vf_analysis(
                 np.stack([dino_tokens[i] for i in indices]).astype(np.float32)
             ).unsqueeze(0).unsqueeze(2).to(device)
             batch[_dino_key] = tok
-        else:
+        elif _load_imgs:
             batch[OBS_IMAGES] = torch.stack(obs_imgs, dim=1).to(device)  # (1, n_obs, n_cam, C, H, W)
+        # state_only: batch holds OBS_STATE only (vision pathway absent in the policy).
         return batch
 
     # replan step에서만 순회 (T회 → T/eff_interval회)

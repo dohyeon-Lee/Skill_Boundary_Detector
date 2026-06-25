@@ -60,7 +60,9 @@ def resolve_delta_timestamps(
         if key == ACTION and cfg.action_delta_indices is not None:
             delta_timestamps[key] = [i / ds_meta.fps for i in cfg.action_delta_indices]
         if key.startswith(OBS_PREFIX) and cfg.observation_delta_indices is not None:
-            if getattr(cfg, "use_dino_features", False) and key != OBS_STATE:
+            # DINO / state-only modes condition on observation.state only — skip windowing other obs.
+            vision_off = getattr(cfg, "use_dino_features", False) or getattr(cfg, "state_only", False)
+            if vision_off and key != OBS_STATE:
                 continue
             delta_timestamps[key] = [i / ds_meta.fps for i in cfg.observation_delta_indices]
 
@@ -91,7 +93,9 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
             cfg.dataset.repo_id, root=cfg.dataset.root, revision=cfg.dataset.revision
         )
         delta_timestamps = resolve_delta_timestamps(cfg.policy, ds_meta)
-        video_keys_to_load = [] if getattr(cfg.policy, "use_dino_features", False) else None
+        # DINO uses precomputed tokens, state-only uses no vision → skip loading video frames.
+        _no_video = getattr(cfg.policy, "use_dino_features", False) or getattr(cfg.policy, "state_only", False)
+        video_keys_to_load = [] if _no_video else None
         if not cfg.dataset.streaming:
             # Stage-2 SkillVLA adds the (jittered) skill-start image/state + skill code per item.
             dataset_cls = LeRobotDataset

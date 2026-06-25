@@ -63,19 +63,22 @@ fi
 cd "${SCRIPT_DIR}"
 mkdir -p logs
 
-echo "Submit DP DINO train"
+echo "Submit DP train (vision=${DP_VISION})"
 echo "  dataset : ${TARGET_DATASET}"
 echo "  output  : ${DP_OUTPUT_DIR}"
-echo "  dino    : ${DINO_FEATURE_DIR}"
+[ "${DP_VISION}" = "dino" ] && echo "  dino    : ${DINO_FEATURE_DIR}"
 echo "  slurm   : partition=${DP_PARTITION} qos=${DP_QOS} gres=${DP_GRES}"
 
-echo ""
-echo "Prepare target DINO features"
-PREPARE_ARGS=(--config "${CONFIG_PATH}")
-if [ -n "${TARGET_DATASET}" ]; then
-  PREPARE_ARGS+=(--dataset "${TARGET_DATASET}")
+# ResNet (original DP) trains on raw frames → no DINO features to prepare.
+if [ "${DP_VISION}" = "dino" ]; then
+  echo ""
+  echo "Prepare target DINO features"
+  PREPARE_ARGS=(--config "${CONFIG_PATH}")
+  if [ -n "${TARGET_DATASET}" ]; then
+    PREPARE_ARGS+=(--dataset "${TARGET_DATASET}")
+  fi
+  "${BOOTSTRAP_PYTHON}" "${DP_SRC_DIR}/prepare_dino_for_training_dataset.py" "${PREPARE_ARGS[@]}"
 fi
-"${BOOTSTRAP_PYTHON}" "${DP_SRC_DIR}/prepare_dino_for_training_dataset.py" "${PREPARE_ARGS[@]}"
 
 if [ "${TRAIN_DP}" != "true" ]; then
   echo ""

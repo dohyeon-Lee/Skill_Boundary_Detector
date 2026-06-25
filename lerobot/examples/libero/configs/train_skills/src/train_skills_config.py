@@ -195,11 +195,16 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
     dp_n_obs_steps = int(get_value(cfg, "dp_n_obs_steps", 10))
     dp_horizon = int(get_value(cfg, "dp_horizon", 16))
     train_dp = as_bool(get_value(cfg, "train_DP", get_value(cfg, "train_dp", True), env="TRAIN_DP"))
+    # Vision encoder: "dino" (default) or "resnet" (original DP). dp_vision_tag is the name tag —
+    # "dino{grid}" for dino (keeps the existing name), bare "resnet" for resnet (which has no DINO
+    # grid). dp_policy_name uses {dp_vision_tag} so a resnet DP never clobbers a dino DP.
+    dp_vision = str(get_value(cfg, "dp_vision", "dino"))
+    dp_vision_tag = f"dino{dino_patch_grid}" if dp_vision == "dino" else dp_vision
     dp_policy_template = str(
         get_value(
             cfg,
             "dp_policy_name",
-            "dp_{target_dataset}_dino{dino_patch_grid}_obs{dp_n_obs_steps}_horizon{dp_horizon}",
+            "dp_{target_dataset}_{dp_vision_tag}_obs{dp_n_obs_steps}_horizon{dp_horizon}",
         )
     )
     dp_policy = dp_policy_template.format(
@@ -207,6 +212,8 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         dino_feature_dataset=dino_feature_dataset,
         dino_feature_tag=dino_feature_tag,
         dino_patch_grid=dino_patch_grid,
+        dp_vision=dp_vision,
+        dp_vision_tag=dp_vision_tag,
         dp_n_obs_steps=dp_n_obs_steps,
         dp_horizon=dp_horizon,
     )
@@ -240,7 +247,10 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
     # Slurm partition/qos/nodelist/exclude are canonical (read from global_config.yaml's train_*);
     # output keys below keep their per-job prefix so submit scripts read the same $..._PARTITION vars.
     slurm_partitions = as_list(get_value(cfg, "train_partition", ["debug"]))
-    slurm_partition = slurm_partitions[0] if slurm_partitions else "debug"
+    # Pass the FULL partition list (comma-joined), like fsq_train_partition — so Slurm can place the
+    # job on a partition where the chosen qos is valid. Pinning to just the first partition (e.g. an
+    # a6000) while train_qos=pro6000_qos triggers "Invalid qos specification".
+    slurm_partition = ",".join(slurm_partitions) or "debug"
 
     return {
         "project_root": root,
@@ -283,9 +293,14 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "dp_output_dir": dp_outputs_root / dp_policy,
         "dp_policy_path": dp_outputs_root / dp_policy / "checkpoints" / dp_checkpoint / "pretrained_model",
         "dp_checkpoint": dp_checkpoint,
+        # DP vision encoder: "dino" = precomputed DINO tokens (this project's default);
+        # "resnet" = original lerobot Diffusion Policy (ResNet on raw frames, use_dino_features=false).
+        "dp_vision": dp_vision,
+        "dp_vision_backbone": str(get_value(cfg, "dp_vision_backbone", "resnet18")),
         "train_DP": train_dp,
         "dp_n_obs_steps": dp_n_obs_steps,
-        "dp_n_action_steps": int(get_value(cfg, "dp_n_action_steps", 16)),
+        # Default = max valid chunk (horizon - n_obs + 1); stays consistent if n_obs/horizon change.
+        "dp_n_action_steps": int(get_value(cfg, "dp_n_action_steps", dp_horizon - dp_n_obs_steps + 1)),
         "dp_horizon": dp_horizon,
         "dp_batch_size": int(get_value(cfg, "dp_batch_size", 64)),
         "dp_steps": int(get_value(cfg, "dp_steps", 100000)),

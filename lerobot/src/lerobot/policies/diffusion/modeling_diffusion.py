@@ -353,7 +353,12 @@ class DiffusionModel(nn.Module):
         """
         # Input validation.
         assert set(batch).issuperset({OBS_STATE, ACTION, "action_is_pad"})
-        assert OBS_IMAGES in batch or OBS_ENV_STATE in batch or self.config.dino_token_key in batch
+        assert (
+            OBS_IMAGES in batch
+            or OBS_ENV_STATE in batch
+            or self.config.dino_token_key in batch
+            or self.config.state_only
+        )
         n_obs_steps = batch[OBS_STATE].shape[1]
         horizon = batch[ACTION].shape[1]
         assert horizon == self.config.horizon
