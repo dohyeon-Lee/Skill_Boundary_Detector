@@ -87,13 +87,6 @@ else
   THIRD_ARGS=(--no-terminator_use_third)
 fi
 
-# Reconstructor start-image input (drop it to force z to be the sole motion source).
-if [ "${FSQ_RECONSTRUCTOR_USE_IMAGE}" = "true" ]; then
-  RECON_ARGS=(--reconstructor_use_image)
-else
-  RECON_ARGS=(--no-reconstructor_use_image)
-fi
-
 read -r -a FSQ_LEVELS <<< "${FSQ_LEVELS_STR}"
 N_TOKENS=$(( DINO_PATCH_GRID * DINO_PATCH_GRID + 1 ))
 
@@ -114,7 +107,6 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     --dino_features           "${DINO_TOKENS_PATH}" \
     "${WRIST_ARGS[@]}" \
     "${THIRD_ARGS[@]}" \
-    "${RECON_ARGS[@]}" \
     --output_dir              "${FSQ_OUTPUT_DIR}" \
     --fsq_levels              "${FSQ_LEVELS[@]}" \
     --chunk_size              "${FSQ_CHUNK_SIZE}" \

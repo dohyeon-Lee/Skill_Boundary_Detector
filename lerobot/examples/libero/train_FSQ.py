@@ -49,9 +49,6 @@ class Args:
     terminator_use_wrist: bool = True
     """Terminator cameras: True = 3rd-person + wrist (two DINO encoders); False = 3rd-person only
     (original single-camera FSQ; no wrist tokens needed, old checkpoints stay loadable)."""
-    reconstructor_use_image: bool = True
-    """Reconstructor inputs: True = [z, start_state, start_img, progress]; False drops the start
-    image (forces z to be the sole motion source). Architecture-invariant (image token zeroed)."""
     output_dir: str = ""
     """Output directory. Defaults to parent of skills_dir."""
     eef_dims: list[int] = field(default_factory=lambda: [0, 1, 2, 3, 4, 5])
@@ -322,7 +319,6 @@ def main(args: Args) -> None:
         n_patch_raw=args.n_patch_raw,
         terminator_use_third=args.terminator_use_third,
         terminator_use_wrist=args.terminator_use_wrist,
-        reconstructor_use_image=args.reconstructor_use_image,
         image_token_dim=args.image_token_dim,
         image_encoder_layers=args.image_encoder_layers,
         image_encoder_heads=args.image_encoder_heads,

@@ -53,7 +53,7 @@ _TERM_MODULES = ("dec_z_proj", "term_state_proj", "dec_image_encoder_term",
 _FSQ_CFG_KEYS = {"action_dim", "state_dim", "n_control", "spline_degree", "hidden_dim", "fsq_levels",
                  "num_layers", "dropout", "max_length", "action_min", "action_max", "delta_min", "delta_max",
                  "feat_dim", "n_tokens", "image_encoder_layers", "terminator_use_third", "terminator_use_wrist",
-                 "image_encoder_heads", "reconstructor_use_image", "image_model_name", "image_size",
+                 "image_encoder_heads", "image_model_name", "image_size",
                  "patch_grid", "n_patch_raw", "image_token_dim", "chunk_size", "reconstructor_mode"}
 _NEEDED = ("skill_code_true", "skill_ds", "skill_de", "skill_decoder_dino", "observation.state")
 

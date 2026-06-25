@@ -13,10 +13,9 @@ Architecture
   ("where/what object") is supplied to the decoder via its start-frame inputs instead.
 
   Decoder (3 Transformer sub-networks, per timestep):
-    dec_image_encoder       (DINO+flags) → motion image feature (B,T,H)
-    dec_image_encoder_plain (DINO only)  → termination image feature (B,T,H)
+    dec_image_encoder_term[_wrist] (DINO) → termination image feature (B,T,H)
     (1) skill_decoder: [z token, state token] → TokenTransformerPool → latent (H)
-    (2) motion_reconstructor: [latent, img_feat(+flags), progress] tokens
+    (2) motion_reconstructor: [z, start_state, progress] tokens (image-free)
             → TokenTransformerPool → delta_head → dataset action chunk (K*A);
             the historical "delta" name is kept for the action target.
     (3) skill_termination_predictor: [latent, img_feat(no flags)] tokens
@@ -254,12 +253,6 @@ class SplineFSQAEConfig:
     image_size: int = 224
     patch_grid: int = 8
     n_patch_raw: int = 196
-    reconstructor_use_image: bool = True
-    """Reconstructor inputs: True = [z, start_state, start_img, progress]; False = [z, start_state,
-    progress] (drop the skill-start image). The start image is a high-dim per-skill channel that
-    competes with the 3-dim z as the decoder's skill code — dropping it forces z to be the sole
-    motion source. Architecture-invariant (the image token is zeroed when False), so old/new
-    checkpoints stay mutually loadable; only the recorded flag changes behaviour."""
     terminator_use_third: bool = True
     """Terminator 3rd-person camera. With terminator_use_wrist → 3 modes (third,wrist):
     (T,F)=3rd-only, (T,T)=both, (F,T)=wrist-only; (F,F) invalid. Default T = backward-compatible."""
@@ -319,7 +312,6 @@ class SplineFSQAE(nn.Module):
         image_size: int = 224,
         patch_grid: int = 8,
         n_patch_raw: int = 196,
-        reconstructor_use_image: bool = True,
         terminator_use_third: bool = True,
         terminator_use_wrist: bool = False,
         image_token_dim: int = 128,
@@ -348,7 +340,6 @@ class SplineFSQAE(nn.Module):
         self.image_size = image_size
         self.patch_grid = patch_grid
         self.n_patch_raw = n_patch_raw
-        self.reconstructor_use_image = bool(reconstructor_use_image)
         self.terminator_use_third = bool(terminator_use_third)
         self.terminator_use_wrist = terminator_use_wrist
 
@@ -404,13 +395,12 @@ class SplineFSQAE(nn.Module):
         self.progress_head = nn.Linear(H, 1)
         self.termination_head = nn.Linear(H, 1)
 
-        # (B) reconstructor → action chunk: [z, start_state, start_img, progress] (3rd-person only).
-        # Everything except progress is fixed at the skill-start frame (latent-free).
+        # (B) reconstructor → action chunk: [z, start_state, progress] (image-free).
+        # Everything except progress is fixed at the skill start; z is the sole motion source.
         self.recon_state_proj = nn.Linear(state_dim, H)             # separate params (start state)
         self.motion_prog_proj = nn.Linear(1, H)
-        self.dec_image_encoder_recon = _plain_image_encoder()       # separate params (start image)
         self.motion_pool = TokenTransformerPool(
-            hidden_dim=H, n_tokens=4,  # [z, start_state, start_img, progress]
+            hidden_dim=H, n_tokens=3,  # [z, start_state, progress]
             n_layers=image_encoder_layers, n_heads=image_encoder_heads, dropout=dropout,
         )
         self.delta_head = nn.Linear(H, chunk_size * action_dim)
@@ -567,8 +557,8 @@ class SplineFSQAE(nn.Module):
         # ── (A) terminator: [z, current 3rd img, current wrist img, current state] (per step) ──
         progress_pred, term_logits = self._terminate(z_tok, states, dec_tokens, dec_tokens_wrist)
 
-        # ── (B) reconstructor: start-frame 3rd-person inputs fixed, only progress varies per step ──
-        delta = self._reconstruct_chunk(z_tok, states, dec_tokens, prog_tok)
+        # ── (B) reconstructor: start-frame state fixed, only progress varies per step ──
+        delta = self._reconstruct_chunk(z_tok, states, prog_tok)
 
         return delta, progress_pred, term_logits
 
@@ -604,25 +594,19 @@ class SplineFSQAE(nn.Module):
         self,
         z_tok: torch.Tensor,        # (B, T, H) projected skill code
         states: torch.Tensor,       # (B, T, state_dim) — only states[:, :1] (skill start) is used
-        dec_tokens: torch.Tensor,   # (B, T, N, F)       — only dec_tokens[:, :1] (skill start) is used
         prog_tok: torch.Tensor,     # (B, T, H) projected per-step progress
     ) -> torch.Tensor:
         """Reconstructor motion branch → action chunk (B, T, K, A), denormalized.
 
-        Inputs except progress are fixed at the skill-start 3rd-person frame:
-          [z, start_state, start_img, progress]            (4)
-        When reconstructor_use_image=False the start-image token is zeroed (architecture-invariant:
-        the slot/params stay, only the content is dropped), forcing z to be the sole motion source.
+        Image-free: inputs except progress are fixed at the skill start:
+          [z, start_state, progress]            (3)
+        z is the sole motion source (the skill-start image channel was removed).
         Shared by decode() (FSQ training, GT progress) and predict_action_chunk()
         (skillVLA inference, terminator progress).
         """
         B, T = z_tok.shape[:2]
         start_state = self.recon_state_proj(states[:, :1]).expand(B, T, -1)            # (B, T, H)
-        if self.reconstructor_use_image:
-            start_img = self.dec_image_encoder_recon(dec_tokens[:, :1]).expand(B, T, -1)   # (B, T, H)
-        else:
-            start_img = torch.zeros_like(start_state)  # drop the skill-start image channel
-        recon_tokens = [z_tok, start_state, start_img, prog_tok]
+        recon_tokens = [z_tok, start_state, prog_tok]
         mo = self.motion_pool(
             torch.stack(recon_tokens, dim=2).reshape(B * T, len(recon_tokens), -1)
         ).view(B, T, -1)                                                                # (B, T, H)
@@ -682,17 +666,15 @@ class SplineFSQAE(nn.Module):
         self,
         z: torch.Tensor,            # (B, D) skill code (e.g. predicted by skillVLA)
         states: torch.Tensor,       # (B, T, state_dim) skill-START proprioception (only [:, :1] used)
-        dec_tokens: torch.Tensor,   # skill-START 3rd-person tokens (B,T,N,F)/(B,N,F) or raw images
         progress: torch.Tensor,     # (B,) or (B, T) per-step progress (e.g. terminator output)
         quantize: bool = True,
     ) -> torch.Tensor:
-        """Run only the reconstructor: [z, start_state, start_img, progress] → action chunk.
+        """Run only the reconstructor: [z, start_state, progress] → action chunk (image-free).
 
-        skillVLA's branch-2 path: states/dec_tokens are the skill-START 3rd-person frame (fixed)
-        and progress is the terminator's output. Returns delta (B, T, K, A) — denormalized actions.
+        skillVLA's branch-2 path: states is the skill-START proprioception (fixed) and progress is
+        the terminator's output. Returns delta (B, T, K, A) — denormalized actions.
         """
-        dec_tokens = self._prepare_decoder_tokens(dec_tokens, states=states)
-        B, T = dec_tokens.shape[:2]
+        B, T = states.shape[:2]
         if quantize:
             lh = self.fsq.levels_half.to(z.device, z.dtype)
             z = torch.maximum(torch.minimum(torch.round(z), lh), -lh)
@@ -700,7 +682,7 @@ class SplineFSQAE(nn.Module):
         prog = progress.to(device=states.device, dtype=states.dtype)
         prog = prog.view(B, 1).expand(B, T) if prog.ndim == 1 else prog
         prog_tok = self.motion_prog_proj(prog.unsqueeze(-1))
-        return self._reconstruct_chunk(z_tok, states, dec_tokens, prog_tok)
+        return self._reconstruct_chunk(z_tok, states, prog_tok)
 
     # ── inference helpers ─────────────────────────────────────────────────────
 
@@ -1094,7 +1076,6 @@ def train_spline_fsqae(
         feat_dim=cfg.feat_dim,
         n_tokens=cfg.n_tokens,
         patch_grid=cfg.patch_grid,
-        reconstructor_use_image=cfg.reconstructor_use_image,
         terminator_use_third=cfg.terminator_use_third,
         terminator_use_wrist=cfg.terminator_use_wrist,
         image_token_dim=cfg.image_token_dim,

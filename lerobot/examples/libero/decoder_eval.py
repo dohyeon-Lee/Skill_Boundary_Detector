@@ -58,7 +58,6 @@ def load_model(model_path: str, device: str) -> tuple[SplineFSQAE, SplineFSQAECo
         delta_max            = cfg.delta_max,
         terminator_use_third = getattr(cfg, "terminator_use_third", True),
         terminator_use_wrist = getattr(cfg, "terminator_use_wrist", False),
-        reconstructor_use_image = getattr(cfg, "reconstructor_use_image", True),
     )
     model.load_state_dict(ckpt["model_state"])
     model.to(device).eval()

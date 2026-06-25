@@ -28,7 +28,6 @@ _FSQ_KEYS = {
     "action_dim", "state_dim", "n_control", "spline_degree", "hidden_dim", "fsq_levels",
     "num_layers", "dropout", "max_length", "action_min", "action_max", "delta_min", "delta_max",
     "feat_dim", "n_tokens", "image_encoder_layers", "image_encoder_heads", "terminator_use_third", "terminator_use_wrist",
-    "reconstructor_use_image",
     "image_model_name", "image_size", "patch_grid", "n_patch_raw", "image_token_dim", "chunk_size",
 }
 

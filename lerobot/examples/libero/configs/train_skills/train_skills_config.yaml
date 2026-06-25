@@ -90,9 +90,6 @@ fsq_inputs_name: FSQ_inputs
 # action chunks, so eef_mode/action_mode are no longer configurable.
 fsq_terminator_use_third: true   # 3rd-person 카메라. use_wrist와 조합: (T,F)3rd-only (T,T)both (F,T)wrist-only
 fsq_terminator_use_wrist: true
-# Reconstructor start-image input. true = [z, start_state, start_img, progress] (current);
-# false = drop the start image → forces z to be the sole motion source (start_state kept).
-fsq_reconstructor_use_image: false
 fsq_run_name: "{target_dataset}_{fsq_tag}_dino{dino_patch_grid}{fsq_exp_suffix}"
 fsq_exp: "ww_imgX_pro"  # optional suffix for ablations, e.g. exp1 -> ..._exp1
 fsq_levels: [5, 5, 5]
