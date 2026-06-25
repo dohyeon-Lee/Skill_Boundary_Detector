@@ -59,15 +59,6 @@ skillset_complete () {
 }
 encode_complete () { [ -f "${SKILL_TOKENS_PATH}" ] && [ -f "${SKILL_LATENTS_PATH}" ]; }
 
-# ── step 2 (login): slice per-episode DINO (idempotent — skips existing) ──
-echo "[1/4] Slice per-episode DINO  ${BASE_DINO_DIR} → ${DINO_PER_EPISODE_DIR}"
-"${BOOTSTRAP_PYTHON}" "${SRC_DIR}/prepare_dino_for_skillvla.py" \
-  --dataset_dir   "${RAW_DATASET_DIR}" \
-  --base_dino_dir "${BASE_DINO_DIR}" \
-  --dst_dir       "${DINO_PER_EPISODE_DIR}" \
-  --image_keys    "${DINO_IMAGE_KEYS}" \
-  --mode          "${DINO_COPY_MODE}"
-
 cd "${SCRIPT_DIR}"
 mkdir -p logs
 
@@ -80,6 +71,21 @@ SBATCH_ARGS=(
 
 ENV=(TRAIN_SKILLVLA_CONFIG="${CONFIG_PATH}" SOURCE_DATA="${SOURCE_DATASET}" SKILLVLA_ENV_SNAPSHOT="${SNAPSHOT_ENV}")
 DEP=""   # dependency clause (e.g. "afterok:123") carried to the next non-skipped stage
+
+# ── step 2: per-episode DINO for every required (grid × camera) ──
+#   generate → compute on the source frames (GPU prep job; the rest of the chain waits on it)
+#   <base>   → validate the base has them + slice on the login node (idempotent — skips existing)
+source "${SRC_DIR}/dino_prepare.sh"
+if [ "${DINO_GENERATE}" = "true" ]; then
+  echo "[1/4] Generate per-episode DINO on source frames (GPU prep)  → ${DINO_ROOT}"
+  echo "       required: ${DINO_REQUIRED}"
+  JID0=$(env "${ENV[@]}" sbatch --parsable "${SBATCH_ARGS[@]}" "${SRC_DIR}/dino_prep.sbatch")
+  echo "       dino-prep ${JID0}"
+  DEP="afterok:${JID0}"
+else
+  echo "[1/4] Validate + slice per-episode DINO  (base: ${DINO_BASE_ROOT})  → ${DINO_ROOT}"
+  dino_prepare_slice
+fi
 
 # ── stage 3: skillset (GPU array over tasks) + verify/re-run ──
 if skillset_complete; then
@@ -99,8 +105,10 @@ PY
   [ "${SKILLSET_ARRAY_THROTTLE:-0}" -gt 0 ] && ARRAY_SPEC="${ARRAY_SPEC}%${SKILLSET_ARRAY_THROTTLE}"
 
   echo "[2/4] Submit DP skill segmentation  (array=${ARRAY_SPEC}: ${N_TASKS} tasks / ${TPJ} per job = ${NUM_SHARDS} GPUs)"
+  # In generate mode DEP=afterok:<dino-prep> — the segmentation must wait for the DINO to exist.
+  DEP_ARG=(); [ -n "${DEP}" ] && DEP_ARG=(--dependency="${DEP}")
   JID1=$(env "${ENV[@]}" ALL_TASK_IDS="${ALL_TASK_IDS}" \
-    sbatch --parsable --array="${ARRAY_SPEC}" "${SBATCH_ARGS[@]}" "${SRC_DIR}/build_skillset.sbatch")
+    sbatch --parsable --array="${ARRAY_SPEC}" ${DEP_ARG[@]+"${DEP_ARG[@]}"} "${SBATCH_ARGS[@]}" "${SRC_DIR}/build_skillset.sbatch")
   echo "       skillset ${JID1}"
   # afterany → verify runs even if some array elements died on a bad GPU
   JIDV=$(env "${ENV[@]}" \

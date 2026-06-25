@@ -52,7 +52,7 @@ mkdir -p "${SKILLVLA_RUN_DIR}"
 # ── (a) merge per-episode DINO → dino.npz (build_data_eval viz only; not used by training) ──
 PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
   "${BOOTSTRAP_PYTHON}" "${SRC_DIR}/merge_frame_dino.py" \
-    --frame_dino_dir "${DINO_PER_EPISODE_DIR}" \
+    --frame_dino_dir "${FSQ_DINO_DIR}" \
     --image_key      "${DINO_IMAGE_KEY}" \
     --output_path    "${DINO_NPZ_PATH}"
 

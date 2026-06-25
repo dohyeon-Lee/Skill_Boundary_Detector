@@ -72,12 +72,18 @@ def build_settings(cfg: dict) -> dict:
             "(no co-trained terminator exists). Use 'base' or 'auto'.")
     resolved_term = eval_terminator if eval_terminator != "auto" else ("cotrained" if train_terminator_used else "base")
 
-    # Skill-source tag so oracle (GT) vs VLM-predicted and the advance mode land in DISTINCT folders.
     use_gt_skill = as_bool(get_value(cfg, "use_gt_skill", False))
     advance_mode = str(get_value(cfg, "skill_advance_mode", "terminator"))
-    skill_tag = f"gtskill-{advance_mode}" if use_gt_skill else "pred"
-    term_tag = "ftterm" if resolved_term == "cotrained" else "baseterm"
-    run_name = f"{model_dir}_{checkpoint}_{target_task}_{skill_tag}_{term_tag}_eval"
+    # Folder suffix = _{term}_{mode}: term depends on auto/cotrained/base (cotrained→ft, base→base);
+    # mode is the skill_end_mode (and / pro / ter). Oracle runs get a gtskill prefix so they don't
+    # collide with VLM-predicted runs of the same term/mode.
+    term_tag = "ft" if resolved_term == "cotrained" else "base"
+    mode_tag = {"and": "and", "progress": "pro", "termination": "ter"}.get(
+        str(get_value(cfg, "skill_end_mode", "termination")), "ter")
+    suffix = f"{term_tag}_{mode_tag}"
+    if use_gt_skill:
+        suffix = f"gtskill-{advance_mode}_{suffix}"
+    run_name = f"{model_dir}_{checkpoint}_{target_task}_{suffix}"
     eval_out_dir = _HERE.parent.parent / "outputs" / run_name
 
     settings: dict = {
@@ -109,7 +115,9 @@ def build_settings(cfg: dict) -> dict:
         "skill_html": as_bool(get_value(cfg, "skill_html", True)),
         "skill_html_train_samples": int(get_value(cfg, "skill_html_train_samples", 10)),
         # inference knobs (eval-time tuning; model structure comes from the checkpoint)
+        "skill_end_mode": str(get_value(cfg, "skill_end_mode", "termination")),
         "skill_end_threshold": str(get_value(cfg, "skill_end_threshold", 0.5)),
+        "skill_end_progress_threshold": str(get_value(cfg, "skill_end_progress_threshold", 0.9)),
         "inference_skill_max_length": int(get_value(cfg, "inference_skill_max_length", 200)),
         # oracle eval: teacher-force GT skills + pick transition timing (gt vs terminator)
         "use_gt_skill": use_gt_skill,

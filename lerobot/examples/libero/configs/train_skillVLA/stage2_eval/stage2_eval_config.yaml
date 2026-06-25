@@ -11,13 +11,13 @@
 # ── Which trained model to evaluate ──
 # The Stage-2 run folder name, exactly as created by training
 # ({source}_{run_tag}_{stage1_checkpoint}_{freeze|unfreeze}[_loss tags]):
-model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_015000_unfreeze
-# model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_015000_unfreeze_cum
+model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_015000_unfreeze_state_skill_cum_all_ac_actvlm
+# model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_015000_unfreeze_state_cum_all_ac_actvlm
 
-checkpoint: "040000"              # "last" or a step number (these runs go up to 040000)
+checkpoint: "050000"              # "last" or a step number (these runs go up to 040000)
 
 # ── Eval rollout ──
-target_task: libero_10    # LIBERO suite for the sim env
+target_task: libero_goal    # LIBERO suite for the sim env
 task_ids: "[0,1,2,3,4,5,6,7,8,9]"
 n_episodes: 5             # episodes per task
 n_action_steps: 5
@@ -35,7 +35,14 @@ skill_html: true          # per-skill viz: VLM-predicted FSQ code, start/end fra
 skill_html_train_samples: 10
 
 # ── Inference (eval-time tuning; the model STRUCTURE comes from the checkpoint) ──
+# How a skill ends from the FSQ terminator signals:
+#   termination → end_prob >= skill_end_threshold
+#   progress    → progress >= skill_end_threshold
+#   and         → end_prob >= skill_end_threshold AND progress >= skill_end_progress_threshold
+#                 (both must hold — avoids ending on an early end-prob spike before the skill is done)
+skill_end_mode: and
 skill_end_threshold: 0.5 #0.5
+skill_end_progress_threshold: 0.9   # progress gate for skill_end_mode=and
 inference_skill_max_length: 200    # force a skill switch after this many steps (0 = off)
 
 # Which terminator decides skill transitions at eval (the action chunk always comes from the expert):

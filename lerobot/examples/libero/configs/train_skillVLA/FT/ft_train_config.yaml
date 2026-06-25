@@ -10,20 +10,20 @@
 skillvla_dataset_root: skillvla_dataset
 
 # ── Warm-start: the Stage-2 run + checkpoint to finetune from ──
-stage2_run_name: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_freeze_015000_unfreeze
-stage2_checkpoint: "085000"          # "last" or a step number
+stage2_run_name: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_015000_unfreeze_state_cum_all_ac_actvlm
+stage2_checkpoint: "050000"          # "last" or a step number
 # stage1_checkpoint_path:            # blank → read from the Stage-2 checkpoint config.json
 # skill_fsq_levels:                  # blank → read from the Stage-2 checkpoint config.json
 
 # ── New task: the skillvla dataset to finetune ON (built by build_data with the SAME FSQ) ──
-source_dataset: libero_10_full_5
+source_dataset: libero_10_full_2_FT
 run_tag: FSQ555_dino8_wow_imgX_500
 
 # ── FT behaviour ──────────────────────────────────────────────
 # cond_skill_source: gt = teacher-force GT skill (Stage-2 style); pred = condition the action prefix
 # on the VLM's OWN predicted skill (STE) → matches inference, flow loss backprops into the VLM.
-cond_skill_source: pred
-skill_loss_weight:                   # blank → inherit the Stage-2 value
+cond_skill_source: gt
+skill_loss_weight:                   # blank → inherit the Stage-2 value (0.1)
 
 # ── Terminator co-training (adapt the FSQ terminator to the new task; disjoint from the policy) ──
 train_terminator: true
@@ -38,20 +38,20 @@ freeze_vlm: false
 freeze_vlm_vision: false
 freeze_skill_head: true
 
-freeze_cond_encoder: false
-freeze_expert_vision: false
+freeze_cond_encoder: true
+freeze_expert_vision: true
 
-freeze_action_expert: true
+freeze_action_expert: false
 
 
-exp: "unfreeze_cond"                              # optional EXTRA run-name suffix
+exp: "ae_unfreeze"                              # optional EXTRA run-name suffix
 
 # ── Optimization ──────────────────────────────────────────────
 batch_size: 16
 num_workers: 4
 num_gpus: 1
 lr_base: 2.5e-05                     # effective base lr = lr_base * num_gpus
-steps: 15000
+steps: 50000
 save_freq: 5000
 
 # ── wandb ─────────────────────────────────────────────────────

@@ -26,7 +26,7 @@ pt_mem: 128G
 pt_time: "48:00:00"
 
 # ── pi05 FT (output → pi05_FT; pretrained PT read from pi05_PT) ─
-ft_dataset: libero_10_full_1
+ft_dataset: libero_10_full_2
 ft_batch_size: 16
 ft_num_workers: 4
 ft_exp: ""

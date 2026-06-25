@@ -55,19 +55,42 @@ if [ ! -d "${POLICY_PATH}" ]; then
   exit 1
 fi
 
-# Terminator: use the FT-adapted FSQ from THIS checkpoint (checkpoints/<ckpt>/FSQ_ft.pt). The
-# terminator weights live in the checkpoint's model.safetensors, so lazy-export it here if missing
-# (e.g. evaluating a checkpoint the training run never exported). Fall back to the base dataset FSQ.
-FSQ_FOR_EVAL="${BASE_FSQ}"
-if [ "${TRAIN_TERMINATOR_USED}" = "true" ]; then
-  if [ ! -f "${FT_FSQ_PATH}" ]; then
-    echo "Adapted terminator missing for ${CHECKPOINT} → exporting from the checkpoint"
-    "${PROJECT_ROOT}/.venv/bin/python" "${SRC_DIR}/../../FT/src/export_ft_terminator.py" \
-      --ft_run_dir="${FT_RUN_DIR}" --checkpoint="${CHECKPOINT}" \
-      --base_fsq="${BASE_FSQ}" --out="${FT_FSQ_PATH}" --skip_if_no_terminator
-  fi
-  [ -f "${FT_FSQ_PATH}" ] && FSQ_FOR_EVAL="${FT_FSQ_PATH}"
-fi
+# Terminator to gate skill transitions (action chunk always from the expert). EVAL_TERMINATOR:
+#   ft     → FT-adapted terminator co-trained INTO this checkpoint (checkpoints/<ckpt>/FSQ_ft.pt);
+#            lazy-exported from the checkpoint's model.safetensors if missing, else falls back to base.
+#   base   → the new task's ORIGINAL dataset FSQ.pt (terminator before any in-policy co-training).
+#   stage2 → the terminator FT inherited from its Stage-2 source checkpoint (<stage2_ckpt>/FSQ_ft.pt;
+#            exported by Stage-2 training; lazy-exported from the Stage-2 checkpoint here if missing).
+EXPORT_TERM="${PROJECT_ROOT}/.venv/bin/python ${SRC_DIR}/../../FT/src/export_ft_terminator.py"
+case "${EVAL_TERMINATOR}" in
+  base)
+    FSQ_FOR_EVAL="${BASE_FSQ}"
+    ;;
+  stage2)
+    if [ ! -f "${STAGE2_FSQ_PATH}" ]; then
+      echo "Stage-2 terminator missing → exporting from ${STAGE2_RUN_DIR} @ ${STAGE2_CHECKPOINT}"
+      ${EXPORT_TERM} --ft_run_dir="${STAGE2_RUN_DIR}" --checkpoint="${STAGE2_CHECKPOINT}" \
+        --base_fsq="${BASE_FSQ}" --out="${STAGE2_FSQ_PATH}" --skip_if_no_terminator
+    fi
+    if [ ! -f "${STAGE2_FSQ_PATH}" ]; then
+      echo "eval_terminator=stage2 but no Stage-2 terminator found/exportable: ${STAGE2_FSQ_PATH}" >&2
+      echo "  (was the Stage-2 run trained with train_terminator=true?)" >&2
+      exit 1
+    fi
+    FSQ_FOR_EVAL="${STAGE2_FSQ_PATH}"
+    ;;
+  *)  # ft (default)
+    FSQ_FOR_EVAL="${BASE_FSQ}"
+    if [ "${TRAIN_TERMINATOR_USED}" = "true" ]; then
+      if [ ! -f "${FT_FSQ_PATH}" ]; then
+        echo "Adapted terminator missing for ${CHECKPOINT} → exporting from the checkpoint"
+        ${EXPORT_TERM} --ft_run_dir="${FT_RUN_DIR}" --checkpoint="${CHECKPOINT}" \
+          --base_fsq="${BASE_FSQ}" --out="${FT_FSQ_PATH}" --skip_if_no_terminator
+      fi
+      [ -f "${FT_FSQ_PATH}" ] && FSQ_FOR_EVAL="${FT_FSQ_PATH}"
+    fi
+    ;;
+esac
 
 echo "START SkillVLA FT EVAL"
 echo "Node     : ${SLURMD_NODENAME:-local}"
@@ -115,7 +138,9 @@ PYTHONPATH="${LEROBOT_ROOT}/src:${LIBERO_REPO_ROOT}" \
     --policy.device=cuda \
     --policy.compile_model=false \
     --policy.gradient_checkpointing=false \
+    --policy.skill_end_mode="${SKILL_END_MODE}" \
     --policy.skill_end_threshold="${SKILL_END_THRESHOLD}" \
+    --policy.skill_end_progress_threshold="${SKILL_END_PROGRESS_THRESHOLD}" \
     --policy.inference_skill_max_length="${INFERENCE_SKILL_MAX_LENGTH}" \
     --policy.use_gt_skill="${USE_GT_SKILL}" \
     --policy.gt_skill_dataset_dir="${GT_SKILL_DATASET_DIR}" \

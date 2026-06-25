@@ -27,18 +27,28 @@ skillvla_dataset_root: skillvla_dataset  # outputs under {dataset_root}/{skillvl
 # ── Source dataset (원본) ─────────────────────────────────────
 # Raw LeRobot dataset to convert into SkillVLA data (may differ from the
 # dataset the DP/FSQ were trained on).
-# libero_90 | libero_90_full_full
-source_dataset: libero_10_full_5
+source_dataset: libero_10_full_2
 
 # ── DINO precompute (step 2) ──────────────────────────────────
-# Per-episode DINO tokens for the source dataset. Sliced from a base full-dataset
-# DINO ({dataset_root}/{dino_base_dataset}_DINO/pg{grid}/) using the source
-# dataset's meta/episodes source_episode_index mapping. (Used by DP segmentation;
-# the merged dino.npz for SkillVLA is built later at the FSQ step.)
-# libero_90 | libero_90_full_full
-dino_base_dataset: libero_90_full_full   # full dataset whose DINO we slice from
-dino_image_keys: ["observation.images.image"]
-# patch grid is parsed from fsq_run_name's dino<grid> tag (kept in lockstep with the FSQ/DP)
+# The build declares EXACTLY which (grid × camera) DINO it needs and either VALIDATES a
+# precomputed base has them, or GENERATEs them on the source frames. Two consumers, each
+# its own grid:  DP segmentation → pg{DP_patch_grid} (3rd);  FSQ terminator / skill DINO
+# tokens / dino.npz → pg{FSQ_patch_grid} (dino_third / dino_wrist).
+#
+# dino_base_dataset:
+#   <name>   → slice from {dataset_root}/{name}_DINO/pg{grid}/{camera}/. EVERY required
+#              grid×camera must EXIST there, else the build errors (no silent fallback).
+#   generate → compute every required grid×camera directly from the source dataset's frames
+#              (one frozen DINOv3 pass, idempotent), keyed by the source episode index. No
+#              precomputed base needed (handles merged / mixed-provenance datasets).
+dino_base_dataset: generate   # base dataset name | "generate"
+DP_patch_grid:  8       # grid the DP segmentation consumes (3rd-person)
+FSQ_patch_grid: 8       # grid the FSQ terminator / skill DINO tokens consume
+dino_third: true        # terminator 3rd-person camera (observation.images.image)
+dino_wrist: false       # terminator wrist camera (observation.images.wrist_image). Produced/
+                        # validated as data, but the TRAINING terminator co-train forward
+                        # consumes 3rd-person only today (eval encodes raw images live) → wrist
+                        # is forward-compat.
 dino_copy_mode: symlink                  # copy | hardlink | symlink (intermediate, so symlink is cheap)
 
 # ── DP model for skill segmentation (step 3) ──────────────────
@@ -75,7 +85,7 @@ fsq_checkpoint: 500                              # epoch number; 0 = best (FSQ.p
 
 # ── SkillVLA dataset build (step 5) ───────────────────────────
 max_order: 0                               # 0 : auto
-max_length: 400 # 200
+max_length: 200 # 200
 pmax: 10                                   # Stage-2 transition randomization 반폭 (skill 시작 ±pmax). ISS window=2*pmax+1
 skill_decoder_state_indices: "[0,1,2,3,4,5,6,7]"   # full observation.state (ee6 + gripper_state2)
 cleanup_intermediate: false               # remove skillset/, skill_latents.npz after skillvla is built

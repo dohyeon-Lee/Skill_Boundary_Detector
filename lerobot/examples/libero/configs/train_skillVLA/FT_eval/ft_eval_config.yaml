@@ -6,9 +6,11 @@
 
 # ── Which trained FT model to evaluate (folder name as created by FT training) ──
 # model_dir: libero_10_full_5_FSQ555_dino8_wow_imgX_500_ft085000_pred_term_unfreeze_cond
-model_dir: libero_10_full_5_FSQ555_dino8_wow_imgX_500_ft085000_pred_term
+# model_dir: libero_10_full_1_FSQ555_dino8_wow_imgX_500_ft040000_siglip_state_cum_all_actvlm_pred_term
+model_dir: libero_10_full_2_FT_FSQ555_dino8_wow_imgX_500_ft050000_siglip_state_cum_all_actvlm_gt_term_ae_unfreeze
+# model_dir: libero_10_full_1_FSQ555_dino8_wow_imgX_500_ft050000_siglip_state_cum_all_actvlm_gt_term
 
-checkpoint: "008000"               # "last" or a step number
+checkpoint: "050000"               # "last" or a step number
 
 # ── Eval rollout (libero_10 = the finetuned task suite) ──
 target_task: libero_10
@@ -26,8 +28,24 @@ skill_html: true
 skill_html_train_samples: 10
 
 # ── Inference (eval-time tuning; model STRUCTURE comes from the checkpoint) ──
+# How a skill ends from the FSQ terminator signals:
+#   termination → end_prob >= skill_end_threshold
+#   progress    → progress >= skill_end_threshold
+#   and         → end_prob >= skill_end_threshold AND progress >= skill_end_progress_threshold
+#                 (both must hold — avoids ending on an early end-prob spike before the skill is done)
+skill_end_mode: and
 skill_end_threshold: 0.5
+skill_end_progress_threshold: 0.9   # progress gate for skill_end_mode=and
 inference_skill_max_length: 200    # force a skill switch after this many steps (0 = off)
+
+# Which terminator gates skill transitions (the action chunk always comes from the expert):
+#   ft     → the FT-adapted terminator co-trained INTO this checkpoint (FSQ_ft.pt). Falls back to
+#            base if FT didn't co-train. (default — matches the model you finetuned)
+#   base   → the new task's ORIGINAL dataset FSQ.pt (terminator before any in-policy co-training).
+#   stage2 → the terminator FT INHERITED from its Stage-2 source checkpoint (before FT adapted it).
+#            Requires the Stage-2 run to have co-trained a terminator. Ablates FT's terminator adaptation.
+# Folders are tagged ftterm / baseterm / s2term by the RESOLVED choice, so they land side-by-side.
+eval_terminator: ft
 
 # ── Oracle eval (isolate the action expert from the VLM's skill prediction) ──
 use_gt_skill: false

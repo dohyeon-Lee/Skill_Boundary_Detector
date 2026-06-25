@@ -24,22 +24,26 @@ folders:
   #   - dino:state_ac_c10_012500
   # GRID (dino row 1 / siglip row 2; same columns → labels shared):
 
-  - siglip:state_ac_c10_015000
-  - siglip:state_cum_all_ac_c10_015000
-  - siglip:state_cum_ep_ac_c10_015000
-  - siglip:state_skill_ac_c10_015000
-  - siglip:state_skill_cum_all_ac_c10_015000
+  # - siglip:state_ac_c10_015000
+  # - siglip:state_cum_all_ac_c10_015000
+  # - siglip:state_cum_ep_ac_c10_015000
+  # - siglip:state_skill_ac_c10_015000
+  # - siglip:state_skill_cum_all_ac_c10_015000
 
-  - dino:state_ac_c10_015000
-  - dino:state_cum_all_ac_c10_015000
+  # - dino:state_ac_c10_015000
+  # - dino:state_cum_all_ac_c10_015000
+  # - dino:state_cum_ep_ac_c10_015000
+  # - dino:state_skill_ac_c10_015000
+  # - dino:state_skill_cum_all_ac_c10_015000
+  
   - dino:state_cum_ep_ac_c10_015000
-  - dino:state_skill_ac_c10_015000
-  - dino:state_skill_cum_all_ac_c10_015000
+  - dino:state_cum_ep_ac_w_c10_015000
 
 
 # ── Panel labels ── the text drawn on top of each panel. ONE per folder, SAME order as `folders`
 #    above (count must match). Edit these freely. Set to [] for auto (the part of each name that differs).
-labels: [state, state_cum, state_cum_ep, state_skill, state_skill_cum]
+# labels: [state, state_cum, state_cum_ep, state_skill, state_skill_cum]
+labels: [state_cum_ep_ac, state_cum_ep_ac_w]
 
 # labels: [prev_state_pro, prev_state_skill_pro, prev_state, prev_state_skill, state, state_cum, state_skill, state_skill_cum]
 

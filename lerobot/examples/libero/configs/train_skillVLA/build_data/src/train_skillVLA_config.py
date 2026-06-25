@@ -17,7 +17,7 @@ from typing import Any
 
 # reuse the train_skills yaml-load + shell-emit helpers
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent.parent / "train_skills" / "src"))
-from train_skills_config import as_list, get_value, load_config, print_shell  # noqa: E402
+from train_skills_config import as_bool, as_list, get_value, load_config, print_shell  # noqa: E402
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "train_skillVLA_config.yaml"
 
@@ -56,14 +56,34 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
         )
     fsq_digits = lv_match.group(1)
     fsq_levels = [int(d) for d in fsq_digits]
-    patch_grid = int(pg_match.group(1))
-    fsq_exp_suffix = fsq_run_name.split(f"_dino{patch_grid}", 1)[1]   # e.g. "_eqloss" or ""
+    fsq_name_grid = int(pg_match.group(1))   # grid tag in the FSQ NAME → run_tag label only
+    fsq_exp_suffix = fsq_run_name.split(f"_dino{fsq_name_grid}", 1)[1]   # e.g. "_eqloss" or ""
     fsq_exp = fsq_exp_suffix.lstrip("_")
 
-    # ── DINO (step 2) ──
-    image_keys = as_list(get_value(cfg, "dino_image_keys", ["observation.images.image"]))
-    dino_base_dataset = str(get_value(cfg, "dino_base_dataset", "libero_90"))
-    base_dino_dir = dataset_root / f"{dino_base_dataset}_DINO" / f"pg{patch_grid}"
+    # ── DINO (step 2) ── the build declares WHICH (grid × camera) DINO it needs (yaml), and
+    # either VALIDATES a precomputed base has them or GENERATEs them on the source frames.
+    # Two consumers, possibly different grids: DP segmentation (DP_patch_grid, 3rd-person) and
+    # the FSQ terminator / skill DINO tokens / dino.npz (FSQ_patch_grid, dino_third/dino_wrist).
+    THIRD_KEY, WRIST_KEY = "observation.images.image", "observation.images.wrist_image"
+    dino_base_dataset = str(get_value(cfg, "dino_base_dataset", "libero_90")).strip()
+    dino_generate = dino_base_dataset.lower() == "generate"
+    dp_patch_grid = int(get_value(cfg, "DP_patch_grid", fsq_name_grid))
+    fsq_patch_grid = int(get_value(cfg, "FSQ_patch_grid", fsq_name_grid))
+    dino_third = as_bool(get_value(cfg, "dino_third", True))
+    dino_wrist = as_bool(get_value(cfg, "dino_wrist", False))
+    fsq_cameras = ([THIRD_KEY] if dino_third else []) + ([WRIST_KEY] if dino_wrist else [])
+    if not fsq_cameras:
+        raise ValueError("At least one of dino_third / dino_wrist must be true.")
+    # Required (grid, camera) set: DP needs its grid+3rd; the FSQ side needs its grid×cameras.
+    # de-dup while preserving order (DP and FSQ may share grid/camera).
+    required = []
+    for g, cam in [(dp_patch_grid, THIRD_KEY)] + [(fsq_patch_grid, c) for c in fsq_cameras]:
+        if (g, cam) not in required:
+            required.append((g, cam))
+    # base DINO dir per grid (explicit base mode); generate writes into {source}_DINO instead.
+    gen_base_name = f"{source_dataset}_DINO"            # generate target (source's own DINO)
+    base_name = gen_base_name if dino_generate else f"{dino_base_dataset}_DINO"
+    image_keys = fsq_cameras   # primary image_keys = FSQ cameras (extract/merge); DINO_IMAGE_KEY = 3rd
 
     # ── DP (step 3) ──
     dp_policy_name = str(get_value(cfg, "dp_policy_name"))
@@ -82,13 +102,15 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
     # ── output layout ──
     #   {skillvla_root}/{source_dataset}/{run_tag}/   ← final outputs (dino.npz, FSQ.pt, skillvla/)
     #   {skillvla_root}/{source_dataset}/_work/        ← intermediates, keyed by dependency:
-    #       dino/pg{grid}/            (source+grid; shared across DP/FSQ)
+    #       dino/pg{grid}/            (per-grid; DP uses pg{DP_grid}, FSQ side uses pg{FSQ_grid})
     #       seg_{dp}_ck{ckpt}/        (DP-dependent: skillset + skill_tokens; shared across FSQ)
-    run_tag = f"FSQ{fsq_digits}_dino{patch_grid}{fsq_exp_suffix}_{ckpt_tag}"
+    run_tag = f"FSQ{fsq_digits}_dino{fsq_name_grid}{fsq_exp_suffix}_{ckpt_tag}"
     source_out_dir = skillvla_root / source_dataset
     run_dir = source_out_dir / run_tag
     work_dir = source_out_dir / "_work"
-    dino_per_episode_dir = work_dir / "dino" / f"pg{patch_grid}"
+    dino_root = work_dir / "dino"                         # per-grid subdirs: dino/pg{grid}/{camera}/
+    dp_dino_dir = dino_root / f"pg{dp_patch_grid}"        # DP segmentation reads here (3rd)
+    fsq_dino_dir = dino_root / f"pg{fsq_patch_grid}"      # extract/merge read here (3rd [+ wrist])
     # skillset + skill_tokens depend on the DP model (not FSQ), so key them by DP so a
     # different DP/checkpoint never reuses or clobbers another's segmentation.
     seg_dir = work_dir / f"seg_{dp_policy_name}_ck{dp_checkpoint}"
@@ -118,14 +140,28 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
         # source dataset
         "source_dataset": source_dataset,
         "raw_dataset_dir": dataset_root / source_dataset,
-        # DINO (step 2)
-        "dino_patch_grid": patch_grid,
-        "dino_image_keys": ",".join(image_keys),
-        "dino_image_key": image_keys[0] if image_keys else "observation.images.image",
+        # DINO (step 2) — explicit grids/cameras; validate a base or generate from source.
+        "dino_generate": "true" if dino_generate else "false",
         "dino_base_dataset": dino_base_dataset,
-        "base_dino_dir": base_dino_dir,
+        "dino_base_root": dataset_root / base_name,            # {base|source}_DINO (slice-from / generate-into)
+        "dp_patch_grid": dp_patch_grid,
+        "fsq_patch_grid": fsq_patch_grid,
+        "dino_third": "true" if dino_third else "false",
+        "dino_wrist": "true" if dino_wrist else "false",
+        "dino_required": ";".join(f"{g}:{cam}" for g, cam in required),  # grid:camera to validate/generate
+        "dino_fsq_image_keys": ",".join(fsq_cameras),          # extract/merge cameras (3rd [+ wrist])
+        "dino_image_key": THIRD_KEY,                           # 3rd-person (DP + primary dino.npz)
         "dino_copy_mode": str(get_value(cfg, "dino_copy_mode", "symlink")),
-        "dino_per_episode_dir": dino_per_episode_dir,
+        "dino_root": dino_root,
+        "dp_dino_dir": dp_dino_dir,                            # work dir the DP segmentation reads (pg{DP_grid})
+        "fsq_dino_dir": fsq_dino_dir,                          # work dir extract/merge read (pg{FSQ_grid})
+        # generate-mode precompute params (frozen DINOv3 on source frames; idempotent)
+        "dino_model_path": root / "models" / "dinov3-vits16",
+        "dino_image_size": int(get_value(cfg, "dino_image_size", 224)),
+        "dino_n_patch_raw": int(get_value(cfg, "dino_n_patch_raw", 196)),
+        "dino_dtype": str(get_value(cfg, "dino_dtype", "float16")),
+        "dino_batch_size": int(get_value(cfg, "dino_batch_size", 1024)),
+        "dino_generate_workers": int(get_value(cfg, "dino_generate_workers", 1)),
         # DP (step 3)
         "dp_policy_name": dp_policy_name,
         "dp_checkpoint": dp_checkpoint,

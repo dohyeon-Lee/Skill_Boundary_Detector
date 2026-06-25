@@ -33,25 +33,20 @@ def load_episodes_meta(dataset_dir: Path) -> pd.DataFrame:
 
 
 def task_to_episodes(dataset_dir: Path, task_ids: list[int] | None) -> dict[int, list[int]]:
-    """Episode→task mapping, matching build_skill_dataset.py exactly."""
-    episodes_meta = load_episodes_meta(dataset_dir)
+    """Episode→task mapping by task_index (matching build_skill_dataset.py). The dataset's "tasks"
+    field is the language STRING, which is NOT unique across task_index — a merged FT+PT dataset can
+    have two task_index sharing one language — so map each episode to its task_index from the per-frame
+    data instead (NOT by language; matching against language would mis-count and never converge)."""
     tasks_meta = pd.read_parquet(dataset_dir / "meta" / "tasks.parquet").reset_index()
     if task_ids is None:
         task_ids = sorted(int(t) for t in tasks_meta["task_index"].tolist())
 
-    mapping: dict[int, list[int]] = {}
-    for task_id in task_ids:
-        row = tasks_meta[tasks_meta["task_index"] == task_id]
-        if row.empty:
-            continue
-        target_lang = row.iloc[0]["task"]
-        ep_of_task = episodes_meta[episodes_meta["tasks"].apply(
-            lambda t: target_lang in (
-                [str(x) for x in t] if isinstance(t, (list, np.ndarray)) else [str(t)]
-            )
-        )]
-        mapping[int(task_id)] = [int(e) for e in ep_of_task["episode_index"].tolist()]
-    return mapping
+    ep_task: dict[int, int] = {}
+    for pq in sorted((dataset_dir / "data").glob("*/*.parquet")):
+        df = pd.read_parquet(pq, columns=["episode_index", "task_index"]).drop_duplicates("episode_index")
+        ep_task.update({int(e): int(t) for e, t in zip(df["episode_index"], df["task_index"])})
+
+    return {int(tid): sorted(ep for ep, ti in ep_task.items() if ti == int(tid)) for tid in task_ids}
 
 
 def is_done(skills_dir: Path, ep_id: int, task_id: int) -> bool:

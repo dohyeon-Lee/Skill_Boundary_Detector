@@ -9,18 +9,19 @@
 # _s{mode} tags (_sadaln/_sae_adaln); they still load (config.json names are auto-aliased). pi05 → no skill.
 targets:
   - {label: state,   kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_state_ac_c10,   checkpoint: "015000"}
-  - {label: state_cum,      kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_state_cum_all_ac_c10,      checkpoint: "015000"}
-  - {label: state_cum_ep,      kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_state_cum_ep_ac_c10,      checkpoint: "015000"}
+  # - {label: state_cum,      kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_state_cum_all_ac_c10,      checkpoint: "015000"}
+
+  # - {label: state_cum_ep,      kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_state_cum_ep_ac_c10,      checkpoint: "015000"}
 
   - {label: state_skill,   kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_state_skill_ac_c10,   checkpoint: "015000"}
-  - {label: state_skill_cum,      kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_state_skill_cum_all_ac_c10,      checkpoint: "015000"}
+  # - {label: state_skill_cum,      kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_state_skill_cum_all_ac_c10,      checkpoint: "015000"}
 
-  - {label: dino_state,   kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_unfreeze_batch256_state_ac_c10,   checkpoint: "015000"}
-  - {label: dino_state_cum,      kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_unfreeze_batch256_state_cum_all_ac_c10,      checkpoint: "015000"}
-  - {label: dino_state_cum_ep,      kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_unfreeze_batch256_state_cum_ep_ac_c10,      checkpoint: "015000"}
+  # - {label: dino_state,   kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_unfreeze_batch256_state_ac_c10,   checkpoint: "015000"}
+  # - {label: dino_state_cum,      kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_unfreeze_batch256_state_cum_all_ac_c10,      checkpoint: "015000"}
+  # - {label: dino_state_cum_ep,      kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_unfreeze_batch256_state_cum_ep_ac_c10,      checkpoint: "015000"}
 
-  - {label: dino_state_skill,   kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_unfreeze_batch256_state_skill_ac_c10,   checkpoint: "015000"}
-  - {label: dino_state_skill_cum,      kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_unfreeze_batch256_state_skill_cum_all_ac_c10,      checkpoint: "015000"}
+  # - {label: dino_state_skill,   kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_unfreeze_batch256_state_skill_ac_c10,   checkpoint: "015000"}
+  # - {label: dino_state_skill_cum,      kind: cond, model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_unfreeze_batch256_state_skill_cum_all_ac_c10,      checkpoint: "015000"}
 
 
 

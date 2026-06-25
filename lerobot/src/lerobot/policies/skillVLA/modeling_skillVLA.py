@@ -383,12 +383,16 @@ class SkillVLAPytorch(PI05Pytorch):
     ) -> tuple[Tensor, Tensor]:
         """Branch-A (B,1,T,T) additive mask + the (B,T) validity/pad vector. Streams ordered
         [cond, vlm, action], one-directional chain VLM → cond → action: the VLM reads only
-        itself; cond reads itself + VLM IMAGE tokens (language AND the skill-query token excluded —
-        skill reaches the action only via the FSQ skill vector / AdaRMS, not by attending the
-        skill-query hidden). The action stream is prefix(n_prefix) + action×K, where n_prefix is the
-        [skill(, progress)] prefix in `state` mode or 0 in `state_skill` (skill/progress → AdaRMS): the
-        conditioning PREFIX is read by the action tokens but reads NOTHING outside itself
-        (prefix ⊥ cond, prefix ⊥ action); only the ACTION tokens attend cond/scene (NO VLM edge).
+        itself; cond reads itself + the VLM tokens it is allowed (~vlm_xattn_block): IMAGE tokens
+        ALWAYS, LANGUAGE tokens ONLY if cond_attend_language; the skill-query read-out token is
+        ALWAYS excluded (skill reaches the action via the FSQ skill vector / AdaRMS, not by attending
+        the skill-query hidden). The action stream is prefix(n_prefix) + action×K, where n_prefix is
+        the [skill(, progress)] prefix in `state` mode or 0 in `state_skill` (skill/progress → AdaRMS):
+        the conditioning PREFIX is read by the action tokens but reads NOTHING outside itself
+        (prefix ⊥ cond, prefix ⊥ action). The ACTION tokens ALWAYS attend cond/scene; they ALSO get a
+        DIRECT VLM edge iff action_attend_vlm — and that edge reuses the SAME ~vlm_xattn_block as cond
+        (so images always, language iff cond_attend_language). Without action_attend_vlm there is no
+        VLM edge and the VLM reaches the action only via cond.
         With n_prefix=0 the prefix→prefix block is empty. Nothing attends the action tokens."""
         bsize, nv = vlm_pad.shape
         device = vlm_pad.device
@@ -398,12 +402,12 @@ class SkillVLAPytorch(PI05Pytorch):
         pf1 = pa + n_prefix                                          # prefix end / action-token start
         allow = torch.zeros(bsize, total, total, dtype=torch.bool, device=device)
         allow[:, :nc, :nc] = True                                    # cond block
-        allow[:, :nc, nc : nc + nv] = (~vlm_xattn_block)[None, None, :]  # cond → vlm IMAGE tokens (lang + skill-query excluded)
+        allow[:, :nc, nc : nc + nv] = (~vlm_xattn_block)[None, None, :]  # cond → vlm tokens: images always, language iff cond_attend_language (skill-query always excluded)
         allow[:, nc : nc + nv, nc : nc + nv] = True                  # vlm block
         allow[:, pa:pf1, pa:pf1] = True                              # prefix → prefix (skill self; ⊥ cond, ⊥ action)
         allow[:, pf1:, :nc] = True                                   # action → cond (ONLY action tokens read the scene)
         allow[:, pf1:, pa:] = True                                   # action → prefix + action
-        if getattr(self.config, "action_attend_vlm", False):        # optional: action → VLM IMAGE tokens (direct)
+        if getattr(self.config, "action_attend_vlm", False):        # optional: action → VLM direct, SAME ~vlm_xattn_block as cond (images always, language iff cond_attend_language)
             allow[:, pf1:, nc : nc + nv] = (~vlm_xattn_block)[None, None, :]
         col_valid = torch.cat(
             [torch.ones(bsize, nc, dtype=torch.bool, device=device), vlm_pad,
@@ -653,7 +657,8 @@ class SkillVLAPytorch(PI05Pytorch):
             extra_kv=vlm_kv, extra_valid=vlm_pad & ~vlm_xattn_block[None, :])
 
         # denoise: action stream = prefix (constant) + action×K; attends the cond cache (cond⊥action). With
-        # action_attend_vlm, the VLM IMAGE K/V is ALSO injected so action tokens read the VLM directly.
+        # action_attend_vlm, the VLM K/V is ALSO injected so action reads the VLM directly — gated by the
+        # SAME ~vlm_xattn_block as cond (images always, language iff cond_attend_language, skill-query never).
         action_prefix = self._action_prefix(skill_code)  # None in state_skill mode
         attend_vlm = getattr(self.config, "action_attend_vlm", False)
         if attend_vlm:                                                  # action keys = [cond, VLM, action-stream]
@@ -665,13 +670,14 @@ class SkillVLAPytorch(PI05Pytorch):
             prefix_kv = cond_kv
             npre = nc
             cols = torch.cat([cond_pad, torch.ones(bsize, na, dtype=torch.bool, device=device)], dim=1)
-        # prefix ⊥ cond & ⊥ action (reads only itself); action reads cond (+ VLM image if attend_vlm) + prefix
-        # + action. n_prefix=0 (state_skill) → the prefix→prefix block is empty.
+        # prefix ⊥ cond & ⊥ action (reads only itself); action reads cond (+ VLM via ~vlm_xattn_block if
+        # attend_vlm: images always, language iff cond_attend_language) + prefix + action.
+        # n_prefix=0 (state_skill) → the prefix→prefix block is empty.
         allow = torch.zeros(bsize, 1, na, npre + na, dtype=torch.bool, device=device)
         allow[:, :, :n_prefix, npre : npre + n_prefix] = True           # prefix → prefix
         allow[:, :, n_prefix:, :nc] = True                             # action → cond
         if attend_vlm:
-            allow[:, :, n_prefix:, nc : nc + nv] = (~vlm_xattn_block)[None, None, None, :]  # action → VLM image
+            allow[:, :, n_prefix:, nc : nc + nv] = (~vlm_xattn_block)[None, None, None, :]  # action → VLM: images always, language iff cond_attend_language
         allow[:, :, n_prefix:, npre:] = True                          # action → prefix + action
         att_4d = torch.where(allow & cols[:, None, None, :], 0.0, OPENPI_ATTENTION_MASK_VALUE)
 
@@ -1202,14 +1208,21 @@ class SkillVLAPolicy(PI05Policy):
                     self._skill_code, state, image, batch.get("skill_decoder_wrist"))
                 if out is not None:
                     progress, end_prob = out   # progress only gates skill_end / feeds skill_html (no token)
-                    signal = end_prob if self.config.skill_end_mode == "termination" else progress
                     if self._cur_skill is not None:  # per-step series for skill_html (_plot_skill_progress)
                         self._cur_skill["end_probs"].append({
                             "skill_step": int(self._skill_steps),
                             "prob": float(end_prob.reshape(-1)[0].item()),
                             "progress": float(progress.reshape(-1)[0].item()),
                         })
-                    term_fired = bool((signal >= float(self.config.skill_end_threshold)).any().item())
+                    mode = str(self.config.skill_end_mode)
+                    thr = float(self.config.skill_end_threshold)
+                    if mode == "and":
+                        # both must hold: end-prob crosses threshold AND progress is far enough along
+                        pthr = float(getattr(self.config, "skill_end_progress_threshold", 0.9))
+                        term_fired = bool(((end_prob >= thr) & (progress >= pthr)).any().item())
+                    else:
+                        signal = end_prob if mode == "termination" else progress
+                        term_fired = bool((signal >= thr).any().item())
         if self._oracle_active() and str(self.config.skill_advance_mode) == "gt":
             return self._skill_steps >= max(1, self._oracle_gt_length())
         return term_fired

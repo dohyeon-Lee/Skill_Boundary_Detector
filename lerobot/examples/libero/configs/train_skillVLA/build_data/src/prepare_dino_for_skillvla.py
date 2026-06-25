@@ -31,6 +31,10 @@ def main() -> None:
     p.add_argument("--image_keys", default="observation.images.image", help="Comma-separated image keys")
     p.add_argument("--mode", choices=["copy", "hardlink", "symlink"], default="symlink")
     p.add_argument("--overwrite", action="store_true")
+    p.add_argument("--identity", action="store_true",
+                   help="Map each episode to the SAME index in the base (target_ep == base_ep), "
+                        "ignoring the provenance source_episode_index column. Use when the base DINO "
+                        "was computed on THIS dataset's own frames (generate mode / merged datasets).")
     args = p.parse_args()
 
     dataset_dir = Path(args.dataset_dir)
@@ -47,7 +51,7 @@ def main() -> None:
         )
 
     episodes = load_episodes(dataset_dir).sort_values("episode_index").reset_index(drop=True)
-    if "source_episode_index" not in episodes.columns:
+    if args.identity or "source_episode_index" not in episodes.columns:
         episodes["source_episode_index"] = episodes["episode_index"]
 
     print("Slice per-episode DINO")
@@ -55,7 +59,7 @@ def main() -> None:
     print(f"  base DINO      : {base_dir}")
     print(f"  dst DINO       : {dst_dir}")
     print(f"  image keys     : {image_keys}")
-    print(f"  mode           : {args.mode}")
+    print(f"  mode           : {args.mode}{'  (identity index map)' if args.identity else ''}")
 
     counts = {"write": 0, "skip": 0}
     missing: list[str] = []

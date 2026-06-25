@@ -350,8 +350,7 @@ def main(args: Args) -> None:
         delta_max=delta_max,
     )
 
-    skill_orders = _compute_skill_orders(metadata)
-    model = train_spline_fsqae(
+    train_spline_fsqae(
         segments=segments,
         dec_tokens=dec_tokens,
         dec_tokens_wrist=dec_tokens_wrist,
@@ -363,26 +362,9 @@ def main(args: Args) -> None:
         resume_from=args.resume_from,
     )
 
-    # save latent vectors and indices for all skills
-    latent_codes = np.stack([
-        model.encode_numpy(seg, dec_tokens[i][0], dec_tokens[i][min(len(dec_tokens[i]) - 1, m["length"] - 1)])
-        for i, (seg, m) in enumerate(zip(segments, metadata))
-    ])
-    latent_tokens = np.array([
-        model.encode_index(seg, dec_tokens[i][0], dec_tokens[i][min(len(dec_tokens[i]) - 1, m["length"] - 1)])
-        for i, (seg, m) in enumerate(zip(segments, metadata))
-    ], dtype=np.int32)
-
-    latents_path = output_dir / "skill_latents.npz"
-    save_dict: dict = {
-        "latents":     latent_codes,
-        "tokens":      latent_tokens,
-        "skill_order": np.array(skill_orders, dtype=np.float32),
-    }
-    for key in ("episode_id", "task_id", "skill_index", "frame_start", "frame_end", "length"):
-        save_dict[key] = np.array([m[key] for m in metadata])
-    np.savez(str(latents_path), **save_dict)
-    print(f"[FSQ] Saved latents → {latents_path}")
+    # Skill latents (skill_latents.npz) are produced separately by encode_FSQ_skills.py
+    # (build_data/encode_skills.sbatch) — the canonical, consumer-facing producer. We do
+    # not re-emit them here to avoid a stale/duplicate copy under the training output_dir.
     print(f"[FSQ] Saved model   → {output_dir / 'FSQ.pt'}")
 
     if wandb_run is not None:

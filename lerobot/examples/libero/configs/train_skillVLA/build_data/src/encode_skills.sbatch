@@ -41,7 +41,7 @@ export LD_LIBRARY_PATH=""
 echo "START SKILLVLA ENCODE"
 echo "Node     : ${SLURMD_NODENAME:-local}"
 echo "Skillset : ${SKILLSET_DIR}/skills"
-echo "DINO dir : ${DINO_PER_EPISODE_DIR}"
+echo "DINO dir : ${FSQ_DINO_DIR}"
 echo "FSQ      : ${FSQ_MODEL_PATH}"
 echo "Tokens   : ${SKILL_TOKENS_PATH}"
 echo "Latents  : ${SKILL_LATENTS_PATH}"
@@ -59,7 +59,7 @@ if [ "${FORCE_EXTRACT:-0}" != "1" ] && [ -f "${SKILL_TOKENS_PATH}" ]; then
 else
   PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     python -u examples/libero/extract_skill_dino_tokens.py \
-      --frame_dino_dir "${DINO_PER_EPISODE_DIR}" \
+      --frame_dino_dir "${FSQ_DINO_DIR}" \
       --skills_dir     "${SKILLSET_DIR}/skills" \
       --output_path    "${SKILL_TOKENS_PATH}" \
       --image_key      "${DINO_IMAGE_KEY}"

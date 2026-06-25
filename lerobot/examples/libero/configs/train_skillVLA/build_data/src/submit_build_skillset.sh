@@ -46,16 +46,11 @@ if "${BOOTSTRAP_PYTHON}" "${SRC_DIR}/verify_skillset.py" \
   exit 0
 fi
 
-# ── step 2: slice per-episode DINO from the base full DINO (login node) ──
-echo "Slice per-episode DINO"
-echo "  base DINO : ${BASE_DINO_DIR}"
-echo "  dst       : ${DINO_PER_EPISODE_DIR}"
-"${BOOTSTRAP_PYTHON}" "${SRC_DIR}/prepare_dino_for_skillvla.py" \
-  --dataset_dir   "${RAW_DATASET_DIR}" \
-  --base_dino_dir "${BASE_DINO_DIR}" \
-  --dst_dir       "${DINO_PER_EPISODE_DIR}" \
-  --image_keys    "${DINO_IMAGE_KEYS}" \
-  --mode          "${DINO_COPY_MODE}"
+# ── step 2: per-episode DINO for every required (grid × camera) — validate base + slice (login).
+# generate mode: slices an already-computed source DINO; if it isn't computed yet, use
+# submit_build_all.sh (it submits the GPU dino-prep job + dependency chain).
+source "${SRC_DIR}/dino_prepare.sh"
+dino_prepare_slice
 
 # ── compute the task-shard array (one shard = SKILLSET_TASKS_PER_JOB tasks → 1 GPU) ──
 ALL_TASK_IDS="$("${BOOTSTRAP_PYTHON}" - "${RAW_DATASET_DIR}/meta/tasks.parquet" <<'PY'
@@ -95,7 +90,7 @@ mkdir -p logs
 echo "Submit DP skill segmentation"
 echo "  source    : ${SOURCE_DATASET}"
 echo "  DP policy : ${DP_POLICY_PATH}"
-echo "  dino dir  : ${DINO_PER_EPISODE_DIR}"
+echo "  dino dir  : ${DP_DINO_DIR}"
 echo "  skillset  : ${SKILLSET_DIR}"
 echo "  slurm     : partition=${SKILLVLA_PARTITION} qos=${SKILLVLA_QOS} gres=${SKILLVLA_GRES}"
 echo "  array     : ${ARRAY_SPEC}  (${N_TASKS} tasks / ${TPJ} per job = ${NUM_SHARDS} GPUs)"

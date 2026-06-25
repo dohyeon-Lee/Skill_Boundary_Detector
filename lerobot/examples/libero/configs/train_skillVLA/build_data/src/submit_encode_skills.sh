@@ -36,8 +36,8 @@ if [ ! -d "${SKILLSET_DIR}/skills" ]; then
   echo "Run submit_build_skillset.sh first." >&2
   exit 1
 fi
-if [ ! -d "${DINO_PER_EPISODE_DIR}" ]; then
-  echo "Per-episode DINO not found: ${DINO_PER_EPISODE_DIR}" >&2
+if [ ! -d "${FSQ_DINO_DIR}" ]; then
+  echo "Per-episode DINO not found: ${FSQ_DINO_DIR}" >&2
   echo "Run submit_build_skillset.sh first (it slices the DINO)." >&2
   exit 1
 fi
@@ -76,7 +76,7 @@ mkdir -p logs
 echo "Submit FSQ skill encoding"
 echo "  source    : ${SOURCE_DATASET}"
 echo "  skillset  : ${SKILLSET_DIR}/skills"
-echo "  dino dir  : ${DINO_PER_EPISODE_DIR}"
+echo "  dino dir  : ${FSQ_DINO_DIR}"
 echo "  FSQ model : ${FSQ_MODEL_PATH}"
 echo "  tokens    : ${SKILL_TOKENS_PATH}"
 echo "  latents   : ${SKILL_LATENTS_PATH}"

@@ -59,11 +59,48 @@ def build_settings(cfg: dict) -> dict:
     # when present (train_terminator runs), else falls back to the base FSQ recorded in the config.
     ft_fsq_path = policy_path.parent / "FSQ_ft.pt"
 
+    # Stage-2 terminator: FT warm-starts the WHOLE policy (incl. the co-trained terminator) from a
+    # Stage-2 checkpoint, recorded in the config as pretrained_path. eval_terminator=stage2 evaluates
+    # with THAT terminator — the one FT INHERITED, before FT's own co-training adapted it (an ablation
+    # of FT's terminator adaptation). Stage-2 training exports it per checkpoint to
+    # <stage2_ckpt>/FSQ_ft.pt; the eval sbatch lazy-exports from the Stage-2 checkpoint if missing.
+    stage2_pretrained = str(pol.get("pretrained_path") or "")
+    if stage2_pretrained:
+        _s2 = Path(stage2_pretrained).parent          # …/skillVLA_stage2/<run>/checkpoints/<step>
+        stage2_fsq_path = _s2 / "FSQ_ft.pt"
+        stage2_run_dir = _s2.parents[1]                # …/skillVLA_stage2/<run>
+        stage2_checkpoint = _s2.name                   # <step>
+    else:
+        stage2_fsq_path = stage2_run_dir = stage2_checkpoint = ""
+
+    # Which terminator decides skill transitions at eval (action chunk always from the expert):
+    #   ft     → the FT-adapted terminator co-trained INTO this checkpoint (FSQ_ft.pt); falls back to
+    #            base if FT didn't co-train. (default — matches the model you finetuned)
+    #   base   → the new task's ORIGINAL dataset FSQ.pt (terminator before ANY in-policy co-training)
+    #   stage2 → the terminator FT inherited from its Stage-2 source checkpoint (before FT adapted it)
+    eval_terminator = str(get_value(cfg, "eval_terminator", "ft")).strip().lower()
+    if eval_terminator not in ("ft", "base", "stage2"):
+        raise ValueError(f"eval_terminator must be 'ft', 'base', or 'stage2', got {eval_terminator!r}")
+    if eval_terminator == "stage2" and not stage2_pretrained:
+        raise ValueError("eval_terminator=stage2 but the FT checkpoint config has no pretrained_path "
+                         "(the Stage-2 source). Can't locate the Stage-2 terminator.")
+
     use_gt_skill = as_bool(get_value(cfg, "use_gt_skill", False))
     advance_mode = str(get_value(cfg, "skill_advance_mode", "terminator"))
-    skill_tag = f"gtskill-{advance_mode}" if use_gt_skill else "pred"
-    term_tag = "ftterm" if train_terminator_used else "baseterm"
-    run_name = f"{model_dir}_{checkpoint}_{target_task}_{skill_tag}_{term_tag}_eval"
+    # Folder suffix = _{term}_{mode}: term is the RESOLVED terminator (ft / base / s2), mode is the
+    # skill_end_mode (and / pro / ter). Oracle runs get a gtskill prefix so they don't collide.
+    if eval_terminator == "stage2":
+        term_tag = "s2"
+    elif eval_terminator == "base":
+        term_tag = "base"
+    else:  # ft → resolves to base when FT didn't co-train a terminator
+        term_tag = "ft" if train_terminator_used else "base"
+    mode_tag = {"and": "and", "progress": "pro", "termination": "ter"}.get(
+        str(get_value(cfg, "skill_end_mode", "termination")), "ter")
+    suffix = f"{term_tag}_{mode_tag}"
+    if use_gt_skill:
+        suffix = f"gtskill-{advance_mode}_{suffix}"
+    run_name = f"{model_dir}_{checkpoint}_{target_task}_{suffix}"
     eval_out_dir = _HERE.parent.parent / "outputs" / run_name
 
     settings: dict = {
@@ -78,6 +115,11 @@ def build_settings(cfg: dict) -> dict:
         "ft_fsq_path": ft_fsq_path,           # per-checkpoint adapted terminator (checkpoints/<ckpt>/FSQ_ft.pt)
         "ft_run_dir": run_root,               # for export_ft_terminator.py --ft_run_dir
         "train_terminator_used": train_terminator_used,
+        # terminator choice (ft | base | stage2) + the Stage-2 source terminator paths
+        "eval_terminator": eval_terminator,
+        "stage2_fsq_path": str(stage2_fsq_path),     # Stage-2 ckpt's FSQ_ft.pt (eval_terminator=stage2)
+        "stage2_run_dir": str(stage2_run_dir),       # for lazy export_ft_terminator.py --ft_run_dir
+        "stage2_checkpoint": str(stage2_checkpoint), # Stage-2 ckpt step
         "skill_latents_path": skill_latents_path,
         "raw_dataset_dir": raw_dataset_dir,
         "image_key": image_key,
@@ -94,7 +136,9 @@ def build_settings(cfg: dict) -> dict:
         "skill_html": as_bool(get_value(cfg, "skill_html", True)),
         "skill_html_train_samples": int(get_value(cfg, "skill_html_train_samples", 10)),
         # inference knobs (model structure comes from the checkpoint)
+        "skill_end_mode": str(get_value(cfg, "skill_end_mode", "termination")),
         "skill_end_threshold": str(get_value(cfg, "skill_end_threshold", 0.5)),
+        "skill_end_progress_threshold": str(get_value(cfg, "skill_end_progress_threshold", 0.9)),
         "inference_skill_max_length": int(get_value(cfg, "inference_skill_max_length", 200)),
         # oracle eval
         "use_gt_skill": use_gt_skill,

@@ -76,15 +76,33 @@ def build_settings(cfg: dict) -> dict:
         raise ValueError(f"cond_skill_source must be 'gt' or 'pred', got {cond_skill_source!r}")
     train_terminator = as_bool(get_value(cfg, "train_terminator", True))
 
-    # run_name: new task + run_tag + the Stage-2 checkpoint it forked from + variant tags.
-    tags = []
-    if cond_skill_source == "pred":
-        tags.append("pred")
+    # Attention toggles: INHERIT from the forked Stage-2 checkpoint (must MATCH it — pretrained_path full-
+    # loads the weights, and the action expert was trained with that attention mask). Blank yaml → inherit
+    # from the Stage-2 config.json; set explicitly only to ablate.
+    def _inherit(key):
+        v = get_value(cfg, key, None)
+        return as_bool(s2_cfg.get(key, False)) if v in (None, "", "null") else as_bool(v)
+    action_attend_vlm = _inherit("action_attend_vlm")
+    cond_attend_language = _inherit("cond_attend_language")
+
+    # run_name: new task + run_tag + ft{Stage-2 ckpt} + the Stage-2 SOURCE variant (so FT forks of DIFFERENT
+    # Stage-2 models don't collide — backbone / state_cond_mode / cum) + action↔VLM + the FT variant tags.
+    s2tags = []
+    for pat in (r"_(siglip|dino)_(?:freeze|unfreeze)",   # Stage-1 vision backbone of the forked Stage-2
+                r"_(state_skill|state)(?:_|$)",          # state_cond_mode
+                r"_(cum_(?:ep|all))(?:_|$)"):            # cumulative-loss variant
+        m = re.search(pat, stage2_run_name)
+        if m:
+            s2tags.append(m.group(1))
+    if action_attend_vlm:                                # resolved value (not name-parse) → run-name matches config
+        s2tags.append("actvlm")
+    tags = [cond_skill_source]          # skill source ALWAYS tagged: "pred" | "gt"
     if train_terminator:
         tags.append("term")
     run_name = f"{source_dataset}_{run_tag}_ft{stage2_checkpoint}"
-    if tags:
-        run_name = run_name + "_" + "_".join(tags)
+    parts = s2tags + tags
+    if parts:
+        run_name = run_name + "_" + "_".join(parts)
     if exp:
         run_name = f"{run_name}_{exp}"
     vla_root = outputs_root / "skillVLA_FT"
@@ -107,6 +125,9 @@ def build_settings(cfg: dict) -> dict:
         "stage2_checkpoint_path": stage2_ckpt,
         "stage1_checkpoint_path": stage1_checkpoint_path,
         "skill_fsq_levels": "[" + ",".join(str(x) for x in skill_fsq_levels) + "]",
+        # attention — inherited from the Stage-2 ckpt (must match the forked weights)
+        "action_attend_vlm": action_attend_vlm,
+        "cond_attend_language": cond_attend_language,
         # FT behaviour
         "cond_skill_source": cond_skill_source,
         "train_terminator": train_terminator,

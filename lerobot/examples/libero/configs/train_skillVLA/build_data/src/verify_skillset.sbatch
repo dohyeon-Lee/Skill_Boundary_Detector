@@ -74,7 +74,7 @@ while ! is_complete; do
       --dataset_dir          "${RAW_DATASET_DIR}" \
       --policy_path          "${DP_POLICY_PATH}" \
       --output_dir           "${SKILLSET_DIR}" \
-      --dino_feature_dir     "${DINO_PER_EPISODE_DIR}" \
+      --dino_feature_dir     "${DP_DINO_DIR}" \
       --replan_interval      "${SKILLSET_REPLAN_INTERVAL}" \
       --nms_dist             "${SKILLSET_NMS_DIST}" \
       --noise_scheduler_type DDIM \

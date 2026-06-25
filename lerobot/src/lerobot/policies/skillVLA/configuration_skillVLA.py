@@ -124,8 +124,15 @@ class SkillVLAConfig(PI05Config):
     """Frozen FSQ checkpoint whose terminator decides skill transitions during closed-loop rollout.
     Unused at training (skill boundaries come from the dataset)."""
     skill_end_mode: str = "termination"
-    """Which FSQ signal ends the current skill: "termination" (prob >= threshold) or "progress"."""
+    """Which FSQ signal ends the current skill:
+       "termination" → end_prob   >= skill_end_threshold
+       "progress"    → progress   >= skill_end_threshold
+       "and"         → end_prob >= skill_end_threshold AND progress >= skill_end_progress_threshold
+                       (both must hold — guards against early end-prob spikes before the skill is done)."""
     skill_end_threshold: float = 0.5
+    skill_end_progress_threshold: float = 0.9
+    """Progress gate for skill_end_mode="and": the skill ends only once predicted progress also
+    reaches this (e.g. 0.9). Unused in "termination"/"progress" modes."""
     inference_skill_max_length: int = 200
     """Force-advance the skill after this many steps even if the terminator never fires (0 = off)."""
 

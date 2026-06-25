@@ -160,6 +160,19 @@ def main(args: Args) -> None:
     episodes_meta = load_episodes_meta(dataset_dir)
     tasks_meta = pd.read_parquet(dataset_dir / "meta" / "tasks.parquet").reset_index()
 
+    # Episode → task_index (the UNIQUE task key). The dataset's "tasks" field is the language
+    # STRING, which is NOT unique across task_index — e.g. a merged FT+PT dataset can have two
+    # task_index sharing one language. Selecting episodes by language would conflate them and
+    # segment an episode under every task that shares its language (duplicate skills). Map each
+    # episode to its task_index from the per-frame data instead (each episode has a single one).
+    _ep_task: dict[int, int] = {}
+    for _pq in sorted((dataset_dir / "data").glob("*/*.parquet")):
+        _df = pd.read_parquet(_pq, columns=["episode_index", "task_index"]).drop_duplicates("episode_index")
+        _ep_task.update({int(e): int(t) for e, t in zip(_df["episode_index"], _df["task_index"])})
+
+    def _episodes_for_task(tid: int) -> list[int]:
+        return sorted(ep for ep, ti in _ep_task.items() if ti == tid)
+
     video_cols = [c for c in episodes_meta.columns
                   if c.startswith("videos/") and c.endswith("/chunk_index")]
     camera_keys = [c.split("/")[1] for c in video_cols]
@@ -168,19 +181,10 @@ def main(args: Args) -> None:
     task_ids = args.task_ids if args.task_ids is not None else sorted(tasks_meta["task_index"].tolist())
     print(f"Tasks to process: {len(task_ids)}")
 
-    # Pre-count total episodes for ETA
+    # Pre-count total episodes for ETA (by task_index — see _ep_task note above).
     all_episode_ids = []
     for task_id in task_ids:
-        task_row = tasks_meta[tasks_meta["task_index"] == task_id]
-        if task_row.empty:
-            continue
-        target_lang = task_row.iloc[0]["task"]
-        ep_of_task = episodes_meta[episodes_meta["tasks"].apply(
-            lambda t: target_lang in (
-                [str(x) for x in t] if isinstance(t, (list, np.ndarray)) else [str(t)]
-            )
-        )]
-        all_episode_ids.extend(ep_of_task["episode_index"].tolist())
+        all_episode_ids.extend(_episodes_for_task(task_id))
     n_total_eps_global = len(all_episode_ids)
     print(f"Total episodes: {n_total_eps_global}")
 
@@ -236,13 +240,8 @@ def main(args: Args) -> None:
         if task_row.empty:
             print(f"  [warn] task_id {task_id} not found, skipping.")
             continue
-        target_lang = task_row.iloc[0]["task"]
-        ep_of_task = episodes_meta[episodes_meta["tasks"].apply(
-            lambda t: target_lang in (
-                [str(x) for x in t] if isinstance(t, (list, np.ndarray)) else [str(t)]
-            )
-        )]
-        episode_ids = ep_of_task["episode_index"].tolist()
+        target_lang = task_row.iloc[0]["task"]          # for display / skill metadata
+        episode_ids = _episodes_for_task(task_id)        # by task_index, NOT language (see note above)
         n_total_eps += len(episode_ids)
         print(f"\nTask {task_id}: '{target_lang}' — {len(episode_ids)} episodes")
 

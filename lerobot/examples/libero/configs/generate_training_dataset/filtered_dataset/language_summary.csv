@@ -1,0 +1,114 @@
+dataset,suite,scene,task_index,language
+libero_10_full_full,libero_10,KITCHEN_SCENE3,3,turn on the stove and put the moka pot on it
+libero_10_full_full,libero_10,KITCHEN_SCENE4,8,put the black bowl in the bottom drawer of the cabinet and close it
+libero_10_full_full,libero_10,KITCHEN_SCENE6,2,put the yellow and white mug in the microwave and close it
+libero_10_full_full,libero_10,KITCHEN_SCENE8,6,put both moka pots on the stove
+libero_10_full_full,libero_10,LIVING_ROOM_SCENE1,4,put both the alphabet soup and the cream cheese box in the basket
+libero_10_full_full,libero_10,LIVING_ROOM_SCENE2,5,put both the alphabet soup and the tomato sauce in the basket
+libero_10_full_full,libero_10,LIVING_ROOM_SCENE2,7,put both the cream cheese box and the butter in the basket
+libero_10_full_full,libero_10,LIVING_ROOM_SCENE5,0,put the white mug on the left plate and put the yellow and white mug on the right plate
+libero_10_full_full,libero_10,LIVING_ROOM_SCENE6,1,put the white mug on the plate and put the chocolate pudding to the right of the plate
+libero_10_full_full,libero_10,STUDY_SCENE1,9,pick up the book and place it in the back compartment of the caddy
+libero_90_full_full,libero_90,KITCHEN_SCENE1,62,open the top drawer of the cabinet and put the bowl in it
+libero_90_full_full,libero_90,KITCHEN_SCENE1,72,open the bottom drawer of the cabinet
+libero_90_full_full,libero_90,KITCHEN_SCENE10,18,put the butter at the back in the top drawer of the cabinet and close it
+libero_90_full_full,libero_90,KITCHEN_SCENE10,23,put the chocolate pudding in the top drawer of the cabinet and close it
+libero_90_full_full,libero_90,KITCHEN_SCENE10,26,close the top drawer of the cabinet and put the black bowl on top of it
+libero_90_full_full,libero_90,KITCHEN_SCENE10,32,put the butter at the front in the top drawer of the cabinet and close it
+libero_90_full_full,libero_90,KITCHEN_SCENE2,5,put the middle black bowl on the plate
+libero_90_full_full,libero_90,KITCHEN_SCENE2,14,put the middle black bowl on top of the cabinet
+libero_90_full_full,libero_90,KITCHEN_SCENE2,34,put the black bowl at the front on the plate
+libero_90_full_full,libero_90,KITCHEN_SCENE2,38,stack the middle black bowl on the back black bowl
+libero_90_full_full,libero_90,KITCHEN_SCENE2,55,put the black bowl at the back on the plate
+libero_90_full_full,libero_90,KITCHEN_SCENE2,61,open the top drawer of the cabinet
+libero_90_full_full,libero_90,KITCHEN_SCENE2,67,stack the black bowl at the front on the black bowl in the middle
+libero_90_full_full,libero_90,KITCHEN_SCENE3,64,put the frying pan on the stove
+libero_90_full_full,libero_90,KITCHEN_SCENE3,69,put the moka pot on the stove
+libero_90_full_full,libero_90,KITCHEN_SCENE4,7,put the wine bottle on the wine rack
+libero_90_full_full,libero_90,KITCHEN_SCENE4,28,put the wine bottle in the bottom drawer of the cabinet
+libero_90_full_full,libero_90,KITCHEN_SCENE4,29,close the bottom drawer of the cabinet and open the top drawer
+libero_90_full_full,libero_90,KITCHEN_SCENE4,39,close the bottom drawer of the cabinet
+libero_90_full_full,libero_90,KITCHEN_SCENE4,44,put the black bowl in the bottom drawer of the cabinet
+libero_90_full_full,libero_90,KITCHEN_SCENE5,4,put the black bowl on top of the cabinet
+libero_90_full_full,libero_90,KITCHEN_SCENE5,8,put the black bowl in the top drawer of the cabinet
+libero_90_full_full,libero_90,KITCHEN_SCENE5,31,put the ketchup in the top drawer of the cabinet
+libero_90_full_full,libero_90,KITCHEN_SCENE5,66,put the black bowl on the plate
+libero_90_full_full,libero_90,KITCHEN_SCENE5,70,close the top drawer of the cabinet
+libero_90_full_full,libero_90,KITCHEN_SCENE6,17,close the microwave
+libero_90_full_full,libero_90,KITCHEN_SCENE6,41,put the yellow and white mug to the front of the white mug
+libero_90_full_full,libero_90,KITCHEN_SCENE7,10,put the white bowl on the plate
+libero_90_full_full,libero_90,KITCHEN_SCENE7,20,open the microwave
+libero_90_full_full,libero_90,KITCHEN_SCENE7,63,put the white bowl to the right of the plate
+libero_90_full_full,libero_90,KITCHEN_SCENE8,13,put the right moka pot on the stove
+libero_90_full_full,libero_90,KITCHEN_SCENE8,71,turn off the stove
+libero_90_full_full,libero_90,KITCHEN_SCENE9,6,put the white bowl on top of the cabinet
+libero_90_full_full,libero_90,KITCHEN_SCENE9,11,turn on the stove and put the frying pan on it
+libero_90_full_full,libero_90,KITCHEN_SCENE9,16,put the frying pan under the cabinet shelf
+libero_90_full_full,libero_90,KITCHEN_SCENE9,30,put the frying pan on the cabinet shelf
+libero_90_full_full,libero_90,KITCHEN_SCENE9,43,turn on the stove
+libero_90_full_full,libero_90,KITCHEN_SCENE9,56,put the frying pan on top of the cabinet
+libero_90_full_full,libero_90,LIVING_ROOM_SCENE1,45,pick up the cream cheese box and put it in the basket
+libero_90_full_full,libero_90,LIVING_ROOM_SCENE1,60,pick up the ketchup and put it in the basket
+libero_90_full_full,libero_90,LIVING_ROOM_SCENE2,1,pick up the alphabet soup and put it in the basket
+libero_90_full_full,libero_90,LIVING_ROOM_SCENE2,3,pick up the tomato sauce and put it in the basket
+libero_90_full_full,libero_90,LIVING_ROOM_SCENE2,27,pick up the orange juice and put it in the basket
+libero_90_full_full,libero_90,LIVING_ROOM_SCENE2,49,pick up the milk and put it in the basket
+libero_90_full_full,libero_90,LIVING_ROOM_SCENE3,2,pick up the cream cheese and put it in the tray
+libero_90_full_full,libero_90,LIVING_ROOM_SCENE3,46,pick up the tomato sauce and put it in the tray
+libero_90_full_full,libero_90,LIVING_ROOM_SCENE3,48,pick up the alphabet soup and put it in the tray
+libero_90_full_full,libero_90,LIVING_ROOM_SCENE3,53,pick up the ketchup and put it in the tray
+libero_90_full_full,libero_90,LIVING_ROOM_SCENE3,59,pick up the butter and put it in the tray
+libero_90_full_full,libero_90,LIVING_ROOM_SCENE4,33,pick up the chocolate pudding and put it in the tray
+libero_90_full_full,libero_90,LIVING_ROOM_SCENE4,36,stack the right bowl on the left bowl and place them in the tray
+libero_90_full_full,libero_90,LIVING_ROOM_SCENE4,50,stack the left bowl on the right bowl and place them in the tray
+libero_90_full_full,libero_90,LIVING_ROOM_SCENE4,57,pick up the salad dressing and put it in the tray
+libero_90_full_full,libero_90,LIVING_ROOM_SCENE4,65,pick up the black bowl on the left and put it in the tray
+libero_90_full_full,libero_90,LIVING_ROOM_SCENE5,9,put the yellow and white mug on the right plate
+libero_90_full_full,libero_90,LIVING_ROOM_SCENE5,19,put the red mug on the left plate
+libero_90_full_full,libero_90,LIVING_ROOM_SCENE5,52,put the white mug on the left plate
+libero_90_full_full,libero_90,LIVING_ROOM_SCENE5,58,put the red mug on the right plate
+libero_90_full_full,libero_90,LIVING_ROOM_SCENE6,15,put the red mug on the plate
+libero_90_full_full,libero_90,LIVING_ROOM_SCENE6,24,put the chocolate pudding to the right of the plate
+libero_90_full_full,libero_90,LIVING_ROOM_SCENE6,25,put the chocolate pudding to the left of the plate
+libero_90_full_full,libero_90,LIVING_ROOM_SCENE6,42,put the white mug on the plate
+libero_90_full_full,libero_90,STUDY_SCENE1,21,pick up the yellow and white mug and place it to the right of the caddy
+libero_90_full_full,libero_90,STUDY_SCENE2,37,pick up the book and place it in the back compartment of the caddy
+libero_90_full_full,libero_90,STUDY_SCENE3,0,pick up the book and place it in the right compartment of the caddy
+libero_90_full_full,libero_90,STUDY_SCENE3,12,pick up the book and place it in the front compartment of the caddy
+libero_90_full_full,libero_90,STUDY_SCENE3,35,pick up the book and place it in the left compartment of the caddy
+libero_90_full_full,libero_90,STUDY_SCENE3,47,pick up the white mug and place it to the right of the caddy
+libero_90_full_full,libero_90,STUDY_SCENE3,51,pick up the red mug and place it to the right of the caddy
+libero_90_full_full,libero_90,STUDY_SCENE4,22,pick up the book in the middle and place it on the cabinet shelf
+libero_90_full_full,libero_90,STUDY_SCENE4,40,pick up the book on the right and place it under the cabinet shelf
+libero_90_full_full,libero_90,STUDY_SCENE4,54,pick up the book on the left and place it on top of the shelf
+libero_90_full_full,libero_90,STUDY_SCENE4,68,pick up the book on the right and place it on the cabinet shelf
+libero_goal_full_full,libero_goal,libero_goal · single scene,0,put the bowl on the plate
+libero_goal_full_full,libero_goal,libero_goal · single scene,1,put the wine bottle on the rack
+libero_goal_full_full,libero_goal,libero_goal · single scene,2,open the top drawer and put the bowl inside
+libero_goal_full_full,libero_goal,libero_goal · single scene,3,put the cream cheese in the bowl
+libero_goal_full_full,libero_goal,libero_goal · single scene,4,put the wine bottle on top of the cabinet
+libero_goal_full_full,libero_goal,libero_goal · single scene,5,push the plate to the front of the stove
+libero_goal_full_full,libero_goal,libero_goal · single scene,6,turn on the stove
+libero_goal_full_full,libero_goal,libero_goal · single scene,7,put the bowl on the stove
+libero_goal_full_full,libero_goal,libero_goal · single scene,8,put the bowl on top of the cabinet
+libero_goal_full_full,libero_goal,libero_goal · single scene,9,open the middle drawer of the cabinet
+libero_object_full_full,libero_object,libero_object · single scene,0,pick up the orange juice and place it in the basket
+libero_object_full_full,libero_object,libero_object · single scene,1,pick up the ketchup and place it in the basket
+libero_object_full_full,libero_object,libero_object · single scene,2,pick up the cream cheese and place it in the basket
+libero_object_full_full,libero_object,libero_object · single scene,3,pick up the bbq sauce and place it in the basket
+libero_object_full_full,libero_object,libero_object · single scene,4,pick up the alphabet soup and place it in the basket
+libero_object_full_full,libero_object,libero_object · single scene,5,pick up the milk and place it in the basket
+libero_object_full_full,libero_object,libero_object · single scene,6,pick up the salad dressing and place it in the basket
+libero_object_full_full,libero_object,libero_object · single scene,7,pick up the butter and place it in the basket
+libero_object_full_full,libero_object,libero_object · single scene,8,pick up the tomato sauce and place it in the basket
+libero_object_full_full,libero_object,libero_object · single scene,9,pick up the chocolate pudding and place it in the basket
+libero_spatial_full_full,libero_spatial,libero_spatial · single scene,0,pick up the black bowl next to the cookie box and place it on the plate
+libero_spatial_full_full,libero_spatial,libero_spatial · single scene,1,pick up the black bowl in the top drawer of the wooden cabinet and place it on the plate
+libero_spatial_full_full,libero_spatial,libero_spatial · single scene,2,pick up the black bowl on the ramekin and place it on the plate
+libero_spatial_full_full,libero_spatial,libero_spatial · single scene,3,pick up the black bowl on the stove and place it on the plate
+libero_spatial_full_full,libero_spatial,libero_spatial · single scene,4,pick up the black bowl between the plate and the ramekin and place it on the plate
+libero_spatial_full_full,libero_spatial,libero_spatial · single scene,5,pick up the black bowl on the cookie box and place it on the plate
+libero_spatial_full_full,libero_spatial,libero_spatial · single scene,6,pick up the black bowl next to the plate and place it on the plate
+libero_spatial_full_full,libero_spatial,libero_spatial · single scene,7,pick up the black bowl next to the ramekin and place it on the plate
+libero_spatial_full_full,libero_spatial,libero_spatial · single scene,8,pick up the black bowl from table center and place it on the plate
+libero_spatial_full_full,libero_spatial,libero_spatial · single scene,9,pick up the black bowl on the wooden cabinet and place it on the plate

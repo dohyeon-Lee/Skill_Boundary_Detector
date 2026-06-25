@@ -54,4 +54,7 @@ PYTHONPATH="${LEROBOT_ROOT}/src" \
 # Render the readable comparison table.
 "${PROJECT_ROOT}/.venv/bin/python" "${SRC_DIR}/report.py" --output_dir="${OUTPUT_DIR}"
 
-echo "DONE → ${OUTPUT_DIR}/  (input_probe.json + summary.md)"
+# Render heatmap tables used in figures/slides.
+"${PROJECT_ROOT}/.venv/bin/python" "${SRC_DIR}/probe_table.py" --output_dir="${OUTPUT_DIR}"
+
+echo "DONE → ${OUTPUT_DIR}/  (input_probe.json + summary.md/csv + probe_table_*.png)"

@@ -3,8 +3,8 @@ skillvla_dataset_root: skillvla_dataset
 
 # ── Warm-start (also selects the dataset: source + run_tag parsed from stage1_run_name) ──
 pi_base: models/pi05_base   
-stage1_run_name: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_state_skill_cum_all_ac_c10
-# stage1_run_name: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_state_cum_all_ac_c10
+# stage1_run_name: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_state_skill_cum_all_ac_c10
+stage1_run_name: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_state_cum_all_ac_c10
 stage1_checkpoint: "015000"   # "last" or a step number of the Stage-1 run above
 
 # ── Skill head / FSQ ──────────────────────────────────────────
@@ -12,7 +12,7 @@ skill_loss_weight: 0.1                # total = BC + λ·skill_CE (λ<1 keeps BC
 
 # VLM↔cond attention: false=cond가 VLM 이미지 토큰만 봄(언어 제외, visual grounding 강제).
 # true=cond가 VLM 언어 토큰도 attend(ablation). skill-query는 둘 다 항상 제외.
-cond_attend_language: false
+cond_attend_language: true
 # action↔VLM attention: false=기존(VLM→cond→action, action은 cond 통해서만 VLM 봄).
 # true=action 토큰이 VLM 이미지 토큰을 직접 attend. prefix(skill)·cond 동작 불변. 여전히 cond는 action을
 #   못 봄(action은 cond를 봄 — 역방향만 차단 → cond는 skill당 1회 캐싱). run-name에 _actvlm.
@@ -28,7 +28,7 @@ terminator_end_target_sigma: 1.0     # soft termination target std in FRAMES (ex
 terminator_end_pos_weight: 1.0
 
 # ── Run naming ────────────────────────────────────────────────
-exp: ""                                        # optional run-name suffix (blank = none)
+exp: "lang"                                        # optional run-name suffix (blank = none)
 
 # ── Freeze toggles (all parts otherwise trained) ──────────────
 freeze_cond_encoder: false                    # reuse the Stage-1 current-obs cond-encoding (frozen)

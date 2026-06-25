@@ -48,7 +48,7 @@ echo "START SKILLVLA SKILLSET (DP segmentation)"
 echo "Node    : ${SLURMD_NODENAME:-local}"
 echo "Source  : ${RAW_DATASET_DIR}"
 echo "DP      : ${DP_POLICY_PATH}"
-echo "DINO    : ${DINO_PER_EPISODE_DIR}"
+echo "DINO    : ${DP_DINO_DIR}"
 echo "Output  : ${SKILLSET_DIR}"
 nvidia-smi || true
 
@@ -56,8 +56,8 @@ if [ ! -d "${DP_POLICY_PATH}" ]; then
   echo "DP policy not found: ${DP_POLICY_PATH}" >&2
   exit 1
 fi
-if [ ! -d "${DINO_PER_EPISODE_DIR}" ]; then
-  echo "Per-episode DINO not found: ${DINO_PER_EPISODE_DIR}" >&2
+if [ ! -d "${DP_DINO_DIR}" ]; then
+  echo "Per-episode DINO not found: ${DP_DINO_DIR}" >&2
   echo "Run submit_build_skillset.sh (it slices DINO before submitting)." >&2
   exit 1
 fi
@@ -87,7 +87,7 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     --dataset_dir          "${RAW_DATASET_DIR}" \
     --policy_path          "${DP_POLICY_PATH}" \
     --output_dir           "${SKILLSET_DIR}" \
-    --dino_feature_dir     "${DINO_PER_EPISODE_DIR}" \
+    --dino_feature_dir     "${DP_DINO_DIR}" \
     --replan_interval      "${SKILLSET_REPLAN_INTERVAL}" \
     --nms_dist             "${SKILLSET_NMS_DIST}" \
     --noise_scheduler_type DDIM \
