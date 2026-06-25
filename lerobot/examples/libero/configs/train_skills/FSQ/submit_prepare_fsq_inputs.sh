@@ -4,11 +4,11 @@
 #   dataset path : {project_root}/{dataset_root}/{target_dataset}
 #   frame DINO   : {project_root}/{dataset_root}/FSQ_dataset/{target_dataset}/DINO/pg{dino_patch_grid}
 #                  (없으면 {dataset_root}/{dataset}_DINO/pg*에서 자동 준비 — DP 학습 불필요)
-#   skillset     : {project_root}/{dataset_root}/FSQ_dataset/{target_dataset}/FSQ_inputs/skillset
+#   skillset     : {project_root}/{dataset_root}/FSQ_dataset/{target_dataset}/FSQ_inputs/seg_{dp}_ck{ckpt}/skillset
 # Reference models:
 #   DP policy    : {project_root}/outputs/DP/{dp_policy_name}/checkpoints/{dp_checkpoint}/pretrained_model
 # Outputs:
-#   skillset     : {project_root}/{dataset_root}/FSQ_dataset/{target_dataset}/FSQ_inputs/skillset
+#   skillset     : {project_root}/{dataset_root}/FSQ_dataset/{target_dataset}/FSQ_inputs/seg_{dp}_ck{ckpt}/skillset
 #   DINO tokens  : {.../FSQ_inputs/dino_tokens_pg{grid}.npz, dino_tokens_wrist_pg{grid}.npz}
 #
 # Prepare FSQ inputs from skillset + prepared frame DINO.
@@ -39,14 +39,19 @@ else
   eval "$("${BOOTSTRAP_PYTHON}" "${COMMON_SRC_DIR}/train_skills_config.py" --config "${CONFIG_PATH}" --shell)"
 fi
 
-if [ ! -d "${DINO_FEATURE_DIR}" ]; then
-  echo "Prepared frame DINO not found → 자동 준비 (DINO 배치만, DP 학습 없음)"
-  echo "  source: {dataset_root}/{dataset}_DINO/pg*  →  ${DINO_FEATURE_DIR}"
-  PREPARE_ARGS=(--config "${CONFIG_PATH}")
-  [ -n "${TARGET_DATASET}" ] && PREPARE_ARGS+=(--dataset "${TARGET_DATASET}")
-  "${BOOTSTRAP_PYTHON}" "${SCRIPT_DIR}/../DP/src/prepare_dino_for_training_dataset.py" "${PREPARE_ARGS[@]}"
-  [ -d "${DINO_FEATURE_DIR}" ] || { echo "DINO 준비 실패: ${DINO_FEATURE_DIR}" >&2; exit 1; }
-fi
+# Ensure prepared frame DINO exists for BOTH grids: dp (skillset build) and fsq (token
+# extraction). When fsq_patch_grid == dino_patch_grid the two dirs are identical → 2nd is a no-op.
+ensure_dino() {  # $1 = variant (dp|fsq), $2 = expected dir
+  local variant="$1" dir="$2"
+  [ -d "${dir}" ] && return 0
+  echo "Prepared frame DINO (${variant}) not found → 자동 준비 (DINO 배치만, DP 학습 없음): ${dir}"
+  local args=(--config "${CONFIG_PATH}" --variant "${variant}")
+  [ -n "${TARGET_DATASET}" ] && args+=(--dataset "${TARGET_DATASET}")
+  "${BOOTSTRAP_PYTHON}" "${SCRIPT_DIR}/../DP/src/prepare_dino_for_training_dataset.py" "${args[@]}"
+  [ -d "${dir}" ] || { echo "DINO 준비 실패: ${dir}" >&2; exit 1; }
+}
+ensure_dino dp  "${DINO_FEATURE_DIR}"
+ensure_dino fsq "${FSQ_DINO_FEATURE_DIR}"
 
 cd "${SCRIPT_DIR}"
 mkdir -p logs "${FSQ_INPUTS_DIR}"

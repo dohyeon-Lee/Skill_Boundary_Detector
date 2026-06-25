@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Inputs:
 #   FSQ inputs   : {project_root}/{dataset_root}/FSQ_dataset/{target_dataset}/FSQ_inputs
-#   skillset     : {project_root}/{dataset_root}/FSQ_dataset/{target_dataset}/FSQ_inputs/skillset/skills
+#   skillset     : {project_root}/{dataset_root}/FSQ_dataset/{target_dataset}/FSQ_inputs/seg_{dp}_ck{ckpt}/skillset/skills
 #   DINO tokens  : {project_root}/{dataset_root}/FSQ_dataset/{target_dataset}/FSQ_inputs/dino_tokens_pg{dino_patch_grid}.npz
 #   wrist tokens : {project_root}/{dataset_root}/FSQ_dataset/{target_dataset}/FSQ_inputs/dino_tokens_wrist_pg{dino_patch_grid}.npz
 # Reference models:
@@ -88,7 +88,7 @@ else
 fi
 
 read -r -a FSQ_LEVELS <<< "${FSQ_LEVELS_STR}"
-N_TOKENS=$(( DINO_PATCH_GRID * DINO_PATCH_GRID + 1 ))
+N_TOKENS=$(( FSQ_PATCH_GRID * FSQ_PATCH_GRID + 1 ))
 
 mkdir -p "${FSQ_OUTPUT_DIR}"
 
@@ -118,7 +118,7 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     --n_tokens                "${N_TOKENS}" \
     --image_model_name        "${DINO_IMAGE_MODEL_PATH}" \
     --image_size              "${DINO_IMAGE_SIZE}" \
-    --patch_grid              "${DINO_PATCH_GRID}" \
+    --patch_grid              "${FSQ_PATCH_GRID}" \
     --n_patch_raw             196 \
     --epochs                  "${FSQ_NUM_EPOCHS}" \
     --lr                      "${FSQ_LR}" \

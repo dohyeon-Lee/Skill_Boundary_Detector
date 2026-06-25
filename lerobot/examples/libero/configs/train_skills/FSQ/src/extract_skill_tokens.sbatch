@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Inputs:
 #   frame DINO   : {project_root}/{dataset_root}/FSQ_dataset/{target_dataset}/DINO/pg{dino_patch_grid}
-#   skillset     : {project_root}/{dataset_root}/FSQ_dataset/{target_dataset}/FSQ_inputs/skillset/skills
+#   skillset     : {project_root}/{dataset_root}/FSQ_dataset/{target_dataset}/FSQ_inputs/seg_{dp}_ck{ckpt}/skillset/skills
 # Reference model:
 #   none
 # Outputs:
@@ -37,7 +37,7 @@ cd "${LEROBOT_ROOT}"
 source "${PROJECT_ROOT}/.venv/bin/activate"
 
 echo "Extract skill DINO tokens"
-echo "  frame DINO       : ${DINO_FEATURE_DIR}"
+echo "  frame DINO (FSQ) : ${FSQ_DINO_FEATURE_DIR}"
 echo "  skills           : ${SKILLSET_DIR}/skills"
 echo "  output 3rd       : ${DINO_TOKENS_PATH}"
 echo "  terminator wrist : ${FSQ_TERMINATOR_USE_WRIST}"
@@ -45,7 +45,7 @@ echo "  terminator wrist : ${FSQ_TERMINATOR_USE_WRIST}"
 # 3rd-person camera (always).
 PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
   python -u examples/libero/extract_skill_dino_tokens.py \
-    --frame_dino_dir "${DINO_FEATURE_DIR}" \
+    --frame_dino_dir "${FSQ_DINO_FEATURE_DIR}" \
     --skills_dir     "${SKILLSET_DIR}/skills" \
     --output_path    "${DINO_TOKENS_PATH}" \
     --image_key      observation.images.image
@@ -55,7 +55,7 @@ if [ "${FSQ_TERMINATOR_USE_WRIST}" = "true" ]; then
   echo "  output wrist     : ${DINO_TOKENS_WRIST_PATH}"
   PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     python -u examples/libero/extract_skill_dino_tokens.py \
-      --frame_dino_dir "${DINO_FEATURE_DIR}" \
+      --frame_dino_dir "${FSQ_DINO_FEATURE_DIR}" \
       --skills_dir     "${SKILLSET_DIR}/skills" \
       --output_path    "${DINO_TOKENS_WRIST_PATH}" \
       --image_key      observation.images.wrist_image

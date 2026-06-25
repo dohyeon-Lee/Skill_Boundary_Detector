@@ -173,6 +173,10 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
     backbone = DINO_VISUAL_BACKBONE
     dino_feature_tag = DINO_FEATURE_TAG
     dino_patch_grid = int(get_value(cfg, "dino_patch_grid", 8, env="DINO_PATCH_GRID"))
+    # DP segments/trains on pg{dino_patch_grid}. FSQ may use a DIFFERENT grid for its skill
+    # DINO tokens (e.g. DP on pg8, FSQ on pg14). fsq_patch_grid defaults to dino_patch_grid,
+    # so existing single-grid configs are unchanged; set it to decouple the FSQ side.
+    fsq_patch_grid = int(get_value(cfg, "fsq_patch_grid", dino_patch_grid, env="FSQ_PATCH_GRID"))
     dino_feature_dataset = str(get_value(cfg, "dino_feature_dataset", "{target_dataset}")).format(
         target_dataset=target_dataset
     )
@@ -206,6 +210,11 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         dp_n_obs_steps=dp_n_obs_steps,
         dp_horizon=dp_horizon,
     )
+    dp_checkpoint = str(get_value(cfg, "dp_checkpoint", "100000"))
+    # skillset + per-skill DINO tokens are DP-dependent (the boundaries come from the DP),
+    # so key them by DP/checkpoint — a different DP/checkpoint never reuses or clobbers
+    # another's segmentation. Mirrors train_skillVLA's _work/seg_{dp}_ck{ckpt}/.
+    fsq_seg_dir = fsq_inputs_dir / f"seg_{dp_policy}_ck{dp_checkpoint}"
 
     fsq_levels = as_levels(get_value(cfg, "fsq_levels", [5, 5, 5]))
     fsq_tag = "fsq" + "".join(str(v) for v in fsq_levels)
@@ -216,13 +225,14 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         get_value(
             cfg,
             "fsq_run_name",
-            "{target_dataset}_{fsq_tag}_pg{dino_patch_grid}_image{fsq_image_token_dim}{fsq_exp_suffix}",
+            "{target_dataset}_{fsq_tag}_pg{fsq_patch_grid}_image{fsq_image_token_dim}{fsq_exp_suffix}",
         )
     )
     fsq_run_name = fsq_run_template.format(
         target_dataset=target_dataset,
         fsq_tag=fsq_tag,
         dino_patch_grid=dino_patch_grid,
+        fsq_patch_grid=fsq_patch_grid,
         fsq_image_token_dim=fsq_image_token_dim,
         fsq_exp=fsq_exp,
         fsq_exp_suffix=fsq_exp_suffix,
@@ -249,6 +259,11 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "dino_feature_dataset": dino_feature_dataset,
         "base_dino_feature_dir": dataset_root / f"{dino_source_dataset}_DINO" / f"pg{dino_patch_grid}",
         "dino_feature_dir": fsq_dataset_root / target_dataset / "DINO" / f"pg{dino_patch_grid}",
+        # FSQ-side DINO at its own grid (= DP grid unless fsq_patch_grid is set). The skill-token
+        # extractor and FSQ training read these; DP/skillset keep using the dino_* dirs above.
+        "fsq_patch_grid": fsq_patch_grid,
+        "base_fsq_dino_feature_dir": dataset_root / f"{dino_source_dataset}_DINO" / f"pg{fsq_patch_grid}",
+        "fsq_dino_feature_dir": fsq_dataset_root / target_dataset / "DINO" / f"pg{fsq_patch_grid}",
         "dino_visual_backbone": backbone,
         "dino_image_model_dir": DINO_IMAGE_MODEL_DIR,
         "dino_image_model_path": root / "models" / DINO_IMAGE_MODEL_DIR,
@@ -266,8 +281,8 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "dp_base_config": root / "lerobot" / str(get_value(cfg, "dp_base_config")),
         "dp_policy": dp_policy,
         "dp_output_dir": dp_outputs_root / dp_policy,
-        "dp_policy_path": dp_outputs_root / dp_policy / "checkpoints" / str(get_value(cfg, "dp_checkpoint", "100000")) / "pretrained_model",
-        "dp_checkpoint": str(get_value(cfg, "dp_checkpoint", "100000")),
+        "dp_policy_path": dp_outputs_root / dp_policy / "checkpoints" / dp_checkpoint / "pretrained_model",
+        "dp_checkpoint": dp_checkpoint,
         "train_DP": train_dp,
         "dp_n_obs_steps": dp_n_obs_steps,
         "dp_n_action_steps": int(get_value(cfg, "dp_n_action_steps", 16)),
@@ -317,8 +332,8 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "dp_mem": str(get_value(cfg, "dp_mem", "64G")),
         "dp_time": str(get_value(cfg, "dp_time", "48:00:00")),
         "skillset_name": str(get_value(cfg, "skillset_name", "skillset")),
-        "skillset_dir": fsq_inputs_dir / str(get_value(cfg, "skillset_name", "skillset")),
-        "skillset_done_path": fsq_inputs_dir / str(get_value(cfg, "skillset_name", "skillset")) / ".complete",
+        "skillset_dir": fsq_seg_dir / str(get_value(cfg, "skillset_name", "skillset")),
+        "skillset_done_path": fsq_seg_dir / str(get_value(cfg, "skillset_name", "skillset")) / ".complete",
         "skillset_tasks_per_job": int(get_value(cfg, "skillset_tasks_per_job", 5)),
         "skillset_wandb_project": str(get_value(cfg, "skillset_wandb_project", "Skill_dataset")),
         "skillset_dn_step": int(get_value(cfg, "skillset_dn_step", 7)),
@@ -332,13 +347,14 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "skillset_time": str(get_value(cfg, "skillset_time", "4:00:00")),
         "fsq_inputs_name": fsq_inputs_name,
         "fsq_inputs_dir": fsq_inputs_dir,
+        "fsq_seg_dir": fsq_seg_dir,   # DP-keyed: skillset + per-skill dino_tokens live here
         "dino_tokens_path": (
-            fsq_inputs_dir
-            / f"dino_tokens_pg{dino_patch_grid}.npz"
+            fsq_seg_dir
+            / f"dino_tokens_pg{fsq_patch_grid}.npz"
         ),
         "dino_tokens_wrist_path": (
-            fsq_inputs_dir
-            / f"dino_tokens_wrist_pg{dino_patch_grid}.npz"
+            fsq_seg_dir
+            / f"dino_tokens_wrist_pg{fsq_patch_grid}.npz"
         ),
         "slurm_partitions": slurm_partitions,
         "slurm_partition": slurm_partition,

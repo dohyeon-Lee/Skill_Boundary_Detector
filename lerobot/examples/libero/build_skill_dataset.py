@@ -80,6 +80,11 @@ class Args:
     """True면 이미 저장된 episode skip."""
     write_done_markers: bool = False
     """True면 episode 처리 완료 시 .done 마커 기록 (필터/0-skill 포함). 재시도 검증용 (verify_skillset.py)."""
+    # ── Boundary curves (eval HTML 오버레이용) ────────────────────────────────
+    dump_curves: bool = True
+    """True면 episode별 multimodality(VF cos-divergence) 곡선을 output_dir/curves/에 저장 (eval HTML 그래프용)."""
+    curves_only: bool = False
+    """True면 skill npz는 만들지 않고 곡선만 저장 (이미 빌드된 run 백필용). resume은 곡선 파일 존재 기준."""
     # ── WandB ────────────────────────────────────────────────────────────────
     wandb_project: str | None = None
     wandb_run_name: str | None = None
@@ -95,6 +100,37 @@ def _detect_boundaries(replan_ts: list, div_cos: np.ndarray,
     peak_ts, _ = _find_peaks_above_mean(sg_vals, replan_ts,
                                          min_distance=nms_dist, margin=nms_dist)
     return sorted(set([0] + [int(p) for p in peak_ts] + [n_frames]))
+
+
+def _save_boundary_curve(curves_dir: Path, ep_id: int, task_id: int, replan_ts,
+                         div_cos: np.ndarray, boundaries: list[int], n_frames: int,
+                         args: "Args") -> None:
+    """Persist the per-episode multimodality (VF cos-divergence) curve so the eval
+    HTML can overlay it. Stores raw + SG-smoothed values, the mean threshold, the
+    detected peaks and the final boundaries — everything the plot needs, so eval
+    needs neither scipy nor the detection params (mirrors _detect_boundaries)."""
+    replan_ts = np.asarray(replan_ts, dtype=np.int64)
+    div_cos = np.asarray(div_cos, dtype=np.float32)
+    sg_vals = np.asarray(
+        _savgol_smooth(list(div_cos), args.smooth_window, polyorder=args.savgol_polyorder),
+        dtype=np.float32,
+    )
+    mean_val = float(np.mean(sg_vals)) if len(sg_vals) else 0.0
+    nms_dist = (args.nms_dist if args.nms_dist is not None
+                else args.replan_interval * 2) if args.peak_nms else 0
+    peak_ts, peak_vals = _find_peaks_above_mean(
+        sg_vals, replan_ts.tolist(), min_distance=nms_dist, margin=nms_dist)
+    curves_dir.mkdir(parents=True, exist_ok=True)
+    np.savez(
+        str(curves_dir / f"ep{ep_id:07d}.npz"),
+        episode_id=np.array(ep_id), task_id=np.array(task_id),
+        replan_ts=replan_ts, div_cos=div_cos, sg_vals=sg_vals,
+        mean_val=np.array(mean_val, dtype=np.float32),
+        peak_ts=np.asarray(peak_ts, dtype=np.int64),
+        peak_vals=np.asarray(peak_vals, dtype=np.float32),
+        boundaries=np.asarray(boundaries, dtype=np.int64),
+        n_frames=np.array(n_frames),
+    )
 
 
 def _save_skills(skills_dir: Path, ep_id: int, task_id: int,
@@ -148,6 +184,9 @@ def main(args: Args) -> None:
     output_dir = Path(args.output_dir)
     skills_dir = output_dir / "skills"
     skills_dir.mkdir(parents=True, exist_ok=True)
+    curves_dir = output_dir / "curves"
+    if args.dump_curves or args.curves_only:
+        curves_dir.mkdir(parents=True, exist_ok=True)
 
     if args.seed is not None:
         import random, torch
@@ -253,7 +292,16 @@ def main(args: Args) -> None:
             task_dir = skills_dir / f"task{task_id:02d}"
             marker = _done_marker(skills_dir, ep_id, task_id)
             existing = list(task_dir.glob(f"ep{ep_id:05d}_task{task_id:02d}_skill*.npz"))
-            if args.resume and (marker.exists() or existing):
+            curve_path = curves_dir / f"ep{ep_id:07d}.npz"
+            if args.curves_only:
+                # Backfill mode: resume keyed by the curve file only, so an already
+                # fully-built run (all skills present) still regenerates its curves.
+                if args.resume and curve_path.exists():
+                    n_skipped_resume += 1
+                    n_processed += 1
+                    print(f"  [skip] ep{ep_id:05d} curve exists")
+                    continue
+            elif args.resume and (marker.exists() or existing):
                 n_skipped_resume += 1
                 n_processed += 1
                 total_skills += len(existing)
@@ -305,6 +353,15 @@ def main(args: Args) -> None:
 
             n_frames = len(ep_df)
             boundaries = _detect_boundaries(vf_replan_ts, div_cos, n_frames, args)
+
+            if args.dump_curves or args.curves_only:
+                _save_boundary_curve(curves_dir, ep_id, task_id, vf_replan_ts, div_cos,
+                                     boundaries, n_frames, args)
+
+            if args.curves_only:
+                n_processed += 1
+                print(f" curve saved  [{time.time() - t_ep:.1f}s]")
+                continue
 
             gt_actions = np.stack(ep_df["action"].values[:n_frames])
             states_arr = np.stack(ep_df["observation.state"].values[:n_frames])

@@ -56,6 +56,7 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     --dataset_dir    "${RAW_DATASET_DIR}" \
     --image_key      "${DINO_IMAGE_KEY}" \
     --out_dir        "${EVAL_DIR}" \
+    --boundary_curves_dir "${SKILLSET_DIR}/curves" \
     "${RUN_ARGS[@]}" \
     ${TASK_ARGS[@]+"${TASK_ARGS[@]}"} \
     --n_episodes     "${EVAL_N_EPISODES}" \

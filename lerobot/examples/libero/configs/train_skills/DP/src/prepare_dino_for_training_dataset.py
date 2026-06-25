@@ -71,6 +71,7 @@ def write_manifest(
     mapping: list[dict],
     counts: dict[str, int],
     image_keys: list[str],
+    patch_grid: int,
 ) -> None:
     source_manifest = src_dir / "manifest.json"
     manifest = {}
@@ -86,7 +87,7 @@ def write_manifest(
             "target_dataset": settings["target_dataset"],
             "source_dataset": settings["dino_source_dataset"],
             "image_keys": image_keys,
-            "patch_grid": settings["dino_patch_grid"],
+            "patch_grid": patch_grid,
             "format": "per_episode_npz",
             "episode_mapping": mapping,
             "copy_counts": counts,
@@ -103,6 +104,11 @@ def main() -> None:
     parser.add_argument("--mode", choices=["copy", "hardlink", "symlink"], default=None)
     parser.add_argument("--overwrite", action="store_true", help="Replace existing prepared DINO files")
     parser.add_argument(
+        "--variant", choices=["dp", "fsq"], default="dp",
+        help="Which grid to prepare: 'dp' = pg{dino_patch_grid} (DP/skillset), "
+             "'fsq' = pg{fsq_patch_grid} (FSQ skill-token extraction). Same dir when grids match.",
+    )
+    parser.add_argument(
         "--image_keys", default=None,
         help="Comma-separated camera keys to copy (overrides yaml dino_image_keys). Use this to "
              "stage BOTH cameras for the FSQ terminator without changing the DP's dino_image_keys, "
@@ -116,8 +122,14 @@ def main() -> None:
     mode = args.mode or str(settings["dino_copy_mode"])
     overwrite = bool(args.overwrite or settings["dino_overwrite_prepared"])
     dataset_dir = Path(settings["raw_dataset_dir"])
-    src_dir = Path(settings["base_dino_feature_dir"])
-    dst_dir = Path(settings["dino_feature_dir"])
+    if args.variant == "fsq":
+        src_dir = Path(settings["base_fsq_dino_feature_dir"])
+        dst_dir = Path(settings["fsq_dino_feature_dir"])
+        patch_grid = settings["fsq_patch_grid"]
+    else:
+        src_dir = Path(settings["base_dino_feature_dir"])
+        dst_dir = Path(settings["dino_feature_dir"])
+        patch_grid = settings["dino_patch_grid"]
     if not dataset_dir.exists():
         raise FileNotFoundError(f"Dataset not found: {dataset_dir}")
     if not src_dir.exists():
@@ -178,7 +190,7 @@ def main() -> None:
             f"Missing {len(missing)} source DINO files. First missing files:\n  {preview}"
         )
 
-    write_manifest(dst_dir, src_dir, settings, mapping, counts, key_dirs)
+    write_manifest(dst_dir, src_dir, settings, mapping, counts, key_dirs, patch_grid)
     print(f"  wrote/skipped  : {counts}")
     print("DONE")
 

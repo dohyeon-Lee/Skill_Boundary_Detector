@@ -7,7 +7,7 @@
 #   eval_dino       : DINO patch-token PCA vs raw frames (sanity check)
 #   eval_skillset   : skill-boundary split visualization (start/end frames per skill)
 #   eval_fsq_patch  : per-skill init/final frames + DINO PCA + random patch samples
-#   eval_fsq_recon  : FSQ reconstruction/termination/progress eval — same HTML as train_skills/FSQ_eval
+#   eval_fsq_recon  : FSQ reconstruction/termination/progress eval — same HTML as train_skills/DP_FSQ_eval
 
 # ── (optional) Evaluate an explicit run folder, independent of build_data/train_skillVLA_config.yaml ──
 # Empty = use the folder the build_data yaml points at (source_dataset + fsq_run_name → run_tag).
@@ -26,8 +26,8 @@ eval_source_dataset: "libero_90_full_full"
 # Which evals to run
 eval_run_dino: false
 eval_run_skillset: true
-eval_run_fsq_patch: true
-eval_run_fsq_recon: true
+eval_run_fsq_patch: false
+eval_run_fsq_recon: false
 
 # Visualization sampling
 eval_n_episodes: 10        # episodes shown per visual eval (dino/skillset/fsq_patch)

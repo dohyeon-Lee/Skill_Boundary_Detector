@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # Inputs:
 #   roots        : ../train_skills_config.yaml  (skills / DINO / dataset / outputs/FSQ root)
-#   eval knobs   : ./fsq_eval_config.yaml       (run_name, checkpoint, N_ACTION_STEPS, samples, slurm)
+#   eval knobs   : ./eval_config.yaml           (eval_run_fsq/eval_run_dp, run_name, checkpoint, slurm)
 #   FSQ model    : {project_root}/outputs/FSQ/{fsq_eval_run_name}/FSQ.pt (or FSQ_epoch*.pt)
-# Outputs:
-#   latents+HTML : ./outputs/{fsq_eval_run_name}/{epoch}/{skill_latents.npz, fsq_eval.html}
+# Outputs (per eval_run_fsq / eval_run_dp):
+#   FSQ : ./outputs/{fsq_eval_run_name}/{epoch}/fsq_eval.html
+#   DP  : ./outputs/dp_skillset/{dataset}/index.html
 #
-# Submit unified FSQ evaluation (encoder + decoder) using Slurm values from fsq_eval_config.yaml.
+# Submit FSQ reconstruction eval and/or the DP skill-boundary eval (toggled in eval_config.yaml).
 
 set -euo pipefail
 
@@ -14,7 +15,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMMON_SRC_DIR="${SCRIPT_DIR}/../src"
 EVAL_SRC_DIR="${SCRIPT_DIR}/src"
 TRAIN_CONFIG="${TRAIN_SKILLS_CONFIG:-${SCRIPT_DIR}/../train_skills_config.yaml}"
-EVAL_CONFIG="${FSQ_EVAL_CONFIG:-${SCRIPT_DIR}/fsq_eval_config.yaml}"
+EVAL_CONFIG="${FSQ_EVAL_CONFIG:-${SCRIPT_DIR}/eval_config.yaml}"
 
 # Freeze the config so this job ignores later edits to the repo yaml (see configs/snapshot_config.sh).
 _lib="$(dirname "${TRAIN_CONFIG}")"; while [ ! -f "${_lib}/snapshot_config.sh" ]; do _lib="$(dirname "${_lib}")"; done
@@ -35,7 +36,7 @@ else
   eval "$("${BOOTSTRAP_PYTHON}" "${COMMON_SRC_DIR}/train_skills_config.py" --config "${TRAIN_CONFIG}" --shell)"
 fi
 # Evaluation-only knobs + slurm.
-eval "$("${BOOTSTRAP_PYTHON}" "${EVAL_SRC_DIR}/fsq_eval_config.py" --config "${EVAL_CONFIG}" --shell)"
+eval "$("${BOOTSTRAP_PYTHON}" "${EVAL_SRC_DIR}/eval_config.py" --config "${EVAL_CONFIG}" --shell)"
 
 SBATCH_ARGS=(
   --partition="${FSQ_EVAL_PARTITION}"
@@ -55,12 +56,12 @@ fi
 cd "${SCRIPT_DIR}"
 mkdir -p logs outputs
 
-echo "Submit FSQ eval"
-echo "  run         : ${FSQ_EVAL_RUN_NAME}"
-echo "  checkpoint  : ${FSQ_EVAL_CHECKPOINT}"
+echo "Submit DP_FSQ eval"
+echo "  run_fsq     : ${EVAL_RUN_FSQ}   run_dp : ${EVAL_RUN_DP}"
+echo "  FSQ run     : ${FSQ_EVAL_RUN_NAME} (ckpt ${FSQ_EVAL_CHECKPOINT})"
 echo "  skills      : ${SKILLSET_DIR}/skills"
+echo "  curves      : ${SKILLSET_DIR}/curves"
 echo "  dataset     : ${DATASET_ROOT}/${TARGET_DATASET}"
-echo "  FSQ outputs : $(dirname "${FSQ_OUTPUT_DIR}")/${FSQ_EVAL_RUN_NAME}"
 echo "  slurm       : partition=${FSQ_EVAL_PARTITION} qos=${FSQ_EVAL_QOS} gres=${FSQ_EVAL_GRES}"
 
 if [ -n "${SLURM_JOB_ID:-}" ]; then
@@ -69,9 +70,9 @@ if [ -n "${SLURM_JOB_ID:-}" ]; then
   # so SBATCH_ARGS are ignored here; the config snapshot still applies.
   echo "  mode        : srun (reusing allocation ${SLURM_JOB_ID})"
   FSQ_EVAL_DIR="${SCRIPT_DIR}" TRAIN_SKILLS_CONFIG="${TRAIN_CONFIG}" FSQ_EVAL_CONFIG="${EVAL_CONFIG}" TRAIN_DATA="${TARGET_DATASET}" \
-    srun "${EVAL_SRC_DIR}/fsq_eval.sbatch"
+    srun "${EVAL_SRC_DIR}/eval.sbatch"
 else
   echo "  mode        : sbatch (new job)"
   FSQ_EVAL_DIR="${SCRIPT_DIR}" TRAIN_SKILLS_CONFIG="${TRAIN_CONFIG}" FSQ_EVAL_CONFIG="${EVAL_CONFIG}" TRAIN_DATA="${TARGET_DATASET}" \
-    sbatch "${SBATCH_ARGS[@]}" "${EVAL_SRC_DIR}/fsq_eval.sbatch"
+    sbatch "${SBATCH_ARGS[@]}" "${EVAL_SRC_DIR}/eval.sbatch"
 fi

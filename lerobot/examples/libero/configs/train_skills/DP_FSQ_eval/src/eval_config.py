@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
-"""FSQ_eval config: emit evaluation-only knobs + slurm settings as shell exports.
+"""DP_FSQ_eval config: emit evaluation-only knobs + slurm settings as shell exports.
 
 Root paths come from train_skills_config.py; this only owns eval-specific knobs.
+Owns the eval_run_fsq / eval_run_dp toggles and the DP-eval knobs in addition to
+the FSQ-eval knobs.
 """
 
 from __future__ import annotations
@@ -12,9 +14,9 @@ from pathlib import Path
 
 # reuse the train_skills config helpers (yaml load + shell emitter)
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "src"))
-from train_skills_config import as_list, get_value, load_config, print_shell  # noqa: E402
+from train_skills_config import as_bool, as_list, get_value, load_config, print_shell  # noqa: E402
 
-DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "fsq_eval_config.yaml"
+DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "eval_config.yaml"
 
 
 def build_settings(config_path: str | None = None) -> dict:
@@ -22,6 +24,12 @@ def build_settings(config_path: str | None = None) -> dict:
     # Slurm partition/qos/nodelist/exclude are canonical (global_config.yaml train_*).
     exclude = as_list(get_value(cfg, "train_exclude_nodes", []))
     return {
+        # which eval(s) to run
+        "eval_run_fsq":            str(as_bool(get_value(cfg, "eval_run_fsq", True))).lower(),
+        "eval_run_dp":             str(as_bool(get_value(cfg, "eval_run_dp", True))).lower(),
+        # DP skill-boundary eval knobs
+        "dp_eval_n_episodes":      int(get_value(cfg, "dp_eval_n_episodes", 10)),
+        "dp_eval_task_ids":        " ".join(as_list(get_value(cfg, "dp_eval_task_ids", []))),
         "fsq_eval_run_name":       str(get_value(cfg, "fsq_eval_run_name", "")),
         "fsq_eval_checkpoint":     str(get_value(cfg, "fsq_eval_checkpoint", 0)),
         "fsq_eval_n_action_steps": int(get_value(cfg, "fsq_eval_n_action_steps", 5)),

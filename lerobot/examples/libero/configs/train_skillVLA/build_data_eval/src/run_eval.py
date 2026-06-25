@@ -12,7 +12,7 @@ Evals (toggle via flags), each writing under {out_dir}/{name}/:
   skillset   : skill-boundary split — start/end frames per skill, laid horizontally
   fsq_patch  : per-skill init/final frames + DINO PCA + random sample patches
   fsq_recon  : FSQ reconstruction/termination/progress — same interactive HTML as
-               train_skills/FSQ_eval (reuses fsq_eval.py).
+               train_skills/DP_FSQ_eval (reuses fsq_eval.py).
 
 Skills are reconstructed from the skillvla dataset columns:
   skill_ds==0 marks a skill start, skill_boundary==1 marks a skill end,
@@ -43,6 +43,12 @@ from codebook_visualizer import (  # noqa: E402
     _read_episode_clip,
     _resolve_image_key,
     _video_path,
+)
+from skillset_boundary_viz import (  # noqa: E402
+    fig_to_b64 as _fig_to_b64,
+    load_boundary_curve,
+    render_skillset_card,
+    save_gallery as _save_gallery,
 )
 
 
@@ -135,45 +141,7 @@ def _cap(task_label, ep) -> str:
     return f"episode {ep}" if task_label is None else f"task{int(task_label):02d} · episode {ep}"
 
 
-def _fig_to_b64(fig) -> str:
-    buf = io.BytesIO()
-    fig.savefig(buf, format="jpeg", dpi=110, bbox_inches="tight", pil_kwargs={"quality": 88})
-    import matplotlib.pyplot as plt
-    plt.close(fig)
-    return base64.b64encode(buf.getvalue()).decode()
-
-
-def _save_gallery(out_dir: Path, title: str, cards: list[tuple]) -> None:
-    """Write an HTML gallery to out_dir/index.html.
-
-    cards: [(task_label, caption, jpeg_b64), ...]. When task_label is not None, a
-    sticky section header is inserted whenever it changes, so episodes are grouped
-    and visually separated per task. (task_label None → flat gallery as before.)"""
-    out_dir.mkdir(parents=True, exist_ok=True)
-    blocks, prev = [], "\0"
-    for task_label, cap, b in cards:
-        if task_label is not None and task_label != prev:
-            blocks.append(f"<h2 class='task'>task {int(task_label):02d}</h2>")
-        prev = task_label
-        blocks.append(
-            f"<div class='card'><div class='cap'>{cap}</div>"
-            f"<img src='data:image/jpeg;base64,{b}'></div>"
-        )
-    body = "".join(blocks)
-    html = (
-        "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>" + title + "</title><style>"
-        "body{font-family:sans-serif;background:#f5f5f5;margin:0;padding:12px;}"
-        "h1{font-size:18px;}"
-        "h2.task{font-size:15px;color:#fff;background:#3367d6;margin:18px 0 4px;"
-        "padding:5px 10px;border-radius:4px;position:sticky;top:0;z-index:2;}"
-        ".grid{display:flex;flex-direction:column;gap:14px;}"
-        ".card{background:#fff;border:1px solid #ddd;border-radius:6px;padding:8px;overflow-x:auto;}"
-        ".cap{font-size:12px;color:#555;margin-bottom:4px;}"
-        ".card img{display:block;max-width:none;}"
-        "</style></head><body><h1>" + title + "</h1><div class='grid'>" + body + "</div></body></html>"
-    )
-    (out_dir / "index.html").write_text(html, encoding="utf-8")
-    print(f"[eval] {title} → {out_dir / 'index.html'}")
+# _fig_to_b64 / _save_gallery are imported from skillset_boundary_viz (shared with DP_FSQ_eval).
 
 
 # ── eval 1: DINO sanity ──────────────────────────────────────────────────────────
@@ -207,26 +175,19 @@ def eval_dino(df, dino: DinoNpz, frames_src, out_dir: Path, n_episodes: int,
 # ── eval 2: skillset split ───────────────────────────────────────────────────────
 
 def eval_skillset(df, frames_src, out_dir: Path, n_episodes: int,
-                  task_ids=None, thumb: int = 110):
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
+                  task_ids=None, thumb: int = 110, curves_dir=None):
+    # Rendering (boxed frames + multimodality curve + gallery) is shared with
+    # train_skills/DP_FSQ_eval via skillset_boundary_viz; here the per-episode skills
+    # come from the skillvla dataset parquet (reconstruct_skills).
     cards = []
     for task_label, eps in select_episodes(df, task_ids, n_episodes):
         for ep in eps:
             ep_df = df[df["episode_index"] == ep]
             skills = reconstruct_skills(ep_df)
             raw = frames_src(int(ep))
-            ncol = max(1, 2 * len(skills))
-            fig, axes = plt.subplots(1, ncol, figsize=(1.3 * ncol, 1.7), squeeze=False)
-            for k, (fs, fe, tok) in enumerate(skills):
-                s = _clip_frame_or_blank(raw, fs, thumb) if raw is not None and len(raw) else np.full((thumb,)*2+(3,), 80, np.uint8)
-                e = _clip_frame_or_blank(raw, max(0, fe - 1), thumb) if raw is not None and len(raw) else np.full((thumb,)*2+(3,), 80, np.uint8)
-                axes[0][2*k].imshow(s);   axes[0][2*k].axis("off");   axes[0][2*k].set_title(f"sk{k} tok{tok}\nf{fs}", fontsize=6)
-                axes[0][2*k+1].imshow(e); axes[0][2*k+1].axis("off"); axes[0][2*k+1].set_title(f"→f{fe}", fontsize=6)
-            fig.suptitle(f"{_cap(task_label, ep)} — {len(skills)} skills", fontsize=9)
-            cards.append((task_label, _cap(task_label, ep), _fig_to_b64(fig)))
+            curve = load_boundary_curve(curves_dir, ep)
+            b64 = render_skillset_card(skills, raw, curve, thumb=thumb)
+            cards.append((task_label, f"{_cap(task_label, ep)} — {len(skills)} skills", b64))
     _save_gallery(out_dir, "Skill boundary split", cards)
 
 
@@ -405,6 +366,9 @@ def parse_args():
     p.add_argument("--dataset_dir", required=True, help="raw LeRobot dataset (videos + meta)")
     p.add_argument("--image_key", default="observation.images.image")
     p.add_argument("--out_dir", required=True, help="{run_dir}/eval")
+    p.add_argument("--boundary_curves_dir", default=None,
+                   help="{skillset_dir}/curves with per-episode multimodality curves "
+                        "(build_skill_dataset --dump_curves). Absent → skillset eval shows frames only.")
     p.add_argument("--run_dino", action="store_true")
     p.add_argument("--run_skillset", action="store_true")
     p.add_argument("--run_fsq_patch", action="store_true")
@@ -437,7 +401,8 @@ def main():
     if args.run_dino:
         eval_dino(df, dino, frames_src, out / "dino", args.n_episodes, task_ids=args.task_ids)
     if args.run_skillset:
-        eval_skillset(df, frames_src, out / "skillset", args.n_episodes, task_ids=args.task_ids)
+        eval_skillset(df, frames_src, out / "skillset", args.n_episodes, task_ids=args.task_ids,
+                      curves_dir=args.boundary_curves_dir)
     if args.run_fsq_patch:
         eval_fsq_patch(df, dino, frames_src, out / "fsq_patch", args.n_episodes,
                        seed=args.seed, task_ids=args.task_ids)

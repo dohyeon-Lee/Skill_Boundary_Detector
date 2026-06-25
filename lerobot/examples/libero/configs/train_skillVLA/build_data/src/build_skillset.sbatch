@@ -82,6 +82,11 @@ if [ -n "${ALL_TASK_IDS:-}" ]; then
   TASK_ARGS=(--task_ids "${SHARD_IDS[@]}")
 fi
 
+# Backfill the per-episode multimodality curves (eval HTML overlay) for an already-built
+# run without rewriting skills: submit with CURVES_ONLY=true (resume keyed by curve file).
+EXTRA_ARGS=()
+[ "${CURVES_ONLY:-false}" = "true" ] && EXTRA_ARGS+=(--curves_only)
+
 PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
   python -u examples/libero/build_skill_dataset.py \
     --dataset_dir          "${RAW_DATASET_DIR}" \
@@ -98,6 +103,7 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     --savgol_polyorder     "${SKILLSET_SAVGOL_POLYORDER}" \
     --resume \
     --write_done_markers \
+    ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
     ${TASK_ARGS[@]+"${TASK_ARGS[@]}"}
 
 echo "DONE → ${SKILLSET_DIR}/skills"

@@ -27,7 +27,7 @@ skillvla_dataset_root: skillvla_dataset  # outputs under {dataset_root}/{skillvl
 # ── Source dataset (원본) ─────────────────────────────────────
 # Raw LeRobot dataset to convert into SkillVLA data (may differ from the
 # dataset the DP/FSQ were trained on).
-source_dataset: libero_10_full_2
+source_dataset: libero_90_full_full
 
 # ── DINO precompute (step 2) ──────────────────────────────────
 # The build declares EXACTLY which (grid × camera) DINO it needs and either VALIDATES a
@@ -41,7 +41,7 @@ source_dataset: libero_10_full_2
 #   generate → compute every required grid×camera directly from the source dataset's frames
 #              (one frozen DINOv3 pass, idempotent), keyed by the source episode index. No
 #              precomputed base needed (handles merged / mixed-provenance datasets).
-dino_base_dataset: generate   # base dataset name | "generate"
+dino_base_dataset: libero_90_full_full   # base dataset name | "generate"
 DP_patch_grid:  8       # grid the DP segmentation consumes (3rd-person)
 FSQ_patch_grid: 8       # grid the FSQ terminator / skill DINO tokens consume
 dino_third: true        # terminator 3rd-person camera (observation.images.image)
