@@ -50,8 +50,8 @@ from FSQ import SplineFSQAE  # noqa: E402
 _TERM_MODULES = ("dec_z_proj", "term_state_proj", "dec_image_encoder_term",
                  "dec_image_encoder_term_wrist", "term_pool", "progress_head", "termination_head")
 # Fields the SplineFSQAE constructor accepts (filter the pickled cfg dataclass). Mirrors _construct_fsq.
-_FSQ_CFG_KEYS = {"action_dim", "state_dim", "n_control", "spline_degree", "hidden_dim", "fsq_levels",
-                 "num_layers", "dropout", "max_length", "action_min", "action_max", "delta_min", "delta_max",
+_FSQ_CFG_KEYS = {"action_dim", "enc_dim", "state_dim", "n_control", "spline_degree", "hidden_dim", "fsq_levels",
+                 "num_layers", "dropout", "length_min", "length_max", "action_min", "action_max", "delta_min", "delta_max", "state_min", "state_max",
                  "feat_dim", "n_tokens", "image_encoder_layers", "terminator_use_third", "terminator_use_wrist",
                  "image_encoder_heads", "image_model_name", "image_size",
                  "patch_grid", "n_patch_raw", "image_token_dim", "chunk_size", "reconstructor_mode"}

@@ -51,10 +51,6 @@ class Args:
     (original single-camera FSQ; no wrist tokens needed, old checkpoints stay loadable)."""
     output_dir: str = ""
     """Output directory. Defaults to parent of skills_dir."""
-    eef_dims: list[int] = field(default_factory=lambda: [0, 1, 2, 3, 4, 5])
-    """State indices used as EEF pose for the encoder trajectory and decoder state."""
-    gripper_action_dim: int = -1
-    """Action dim index for gripper signal (used in encoder trajectory and decoder state)."""
 
     # ── model
     hidden_dim: int = 256
@@ -78,7 +74,6 @@ class Args:
     image_encoder_heads: int = 4
     chunk_size: int = 10
     """Steps per motion action chunk."""
-    max_length: float = 200.0
 
     # ── loss
     delta_loss_weight: float = 1.0
@@ -122,14 +117,14 @@ def _compute_skill_orders(metadata: list[dict]) -> list[float]:
     return orders
 
 
-def _make_encoder_traj(states, actions, eef_dims, gripper_idx):
-    """Absolute EEF pose (6D) + gripper command (1D) per step."""
-    pose = states[:, eef_dims].astype(np.float32)
-    gripper = actions[:, gripper_idx:gripper_idx + 1].astype(np.float32)
-    return np.concatenate([pose, gripper], axis=-1)
+def _make_encoder_traj(states):
+    """Encoder trajectory = full observation.state (EEF pose + gripper STATE), same source as the
+    decoder state. Pose dims are zero-grounded downstream; the trailing gripper-STATE dims stay
+    absolute (see N_GRIPPER_DIMS in FSQ.py). For LIBERO this is 8D: ee_state(6) + gripper_state(2)."""
+    return states.astype(np.float32)
 
 
-def _make_decoder_state(states, actions, eef_dims, gripper_idx):
+def _make_decoder_state(states):
     """Decoder/terminator proprioception = full observation.state (EEF pose + gripper STATE).
 
     Gripper here is the observed gripper STATE (part of observation.state), not the
@@ -175,8 +170,6 @@ def _make_episode_future_targets(current_targets: list[np.ndarray], metadata: li
 
 def load_skill_files(
     skills_dir: Path,
-    eef_dims: list[int],
-    gripper_action_dim: int,
 ) -> tuple[list[np.ndarray], list[np.ndarray], list[np.ndarray], list[dict]]:
     npz_files = sorted(skills_dir.rglob("*.npz"))
     if not npz_files:
@@ -187,9 +180,8 @@ def load_skill_files(
         d = np.load(str(f))
         actions = d["actions"].astype(np.float32)
         states  = d["states"].astype(np.float32)
-        gripper_idx = (actions.shape[-1] + gripper_action_dim) % actions.shape[-1]
-        segments.append(_make_encoder_traj(states, actions, eef_dims, gripper_idx))
-        dec_states.append(_make_decoder_state(states, actions, eef_dims, gripper_idx))
+        segments.append(_make_encoder_traj(states))
+        dec_states.append(_make_decoder_state(states))
         dec_targets.append(_make_target_action(actions))
         metadata.append({
             "file":        str(f.name),
@@ -252,7 +244,7 @@ def load_dino_tokens(
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 def main(args: Args) -> None:
-    from FSQ import SplineFSQAEConfig, train_spline_fsqae
+    from FSQ import SplineFSQAEConfig, train_spline_fsqae, zero_ground_trajectory
 
     skills_dir = Path(args.skills_dir)
     output_dir = Path(args.output_dir) if args.output_dir else skills_dir.parent
@@ -261,11 +253,7 @@ def main(args: Args) -> None:
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
 
-    segments, dec_states, dec_targets, metadata = load_skill_files(
-        skills_dir,
-        eef_dims=args.eef_dims,
-        gripper_action_dim=args.gripper_action_dim,
-    )
+    segments, dec_states, dec_targets, metadata = load_skill_files(skills_dir)
 
     dec_tokens = load_dino_tokens(Path(args.dino_features), metadata)
     if args.terminator_use_wrist:
@@ -275,21 +263,33 @@ def main(args: Args) -> None:
     else:
         dec_tokens_wrist = None  # single-camera terminator
 
-    all_enc = np.concatenate(segments)
+    # Encoder stats on ZERO-GROUNDED trajectories — must match what the encoder normalizes
+    # (grounded control points). Length stats are data-driven min/max over skill lengths, used for
+    # the [-1,1] length-token normalization (same scheme as control points).
+    grounded = np.concatenate([zero_ground_trajectory(s) for s in segments])
     all_tgt = np.concatenate([target[: int(m["length"])] for target, m in zip(dec_targets, metadata, strict=True)])
-    action_min, action_max = all_enc.min(0), all_enc.max(0)
+    action_min, action_max = grounded.min(0), grounded.max(0)
     delta_min,  delta_max  = all_tgt.min(0), all_tgt.max(0)
+    all_state = np.concatenate(dec_states)   # decoder/terminator proprioception (raw, all timesteps)
+    state_min,  state_max  = all_state.min(0), all_state.max(0)
+    _lens = [int(m["length"]) for m in metadata]
+    length_min, length_max = float(min(_lens)), float(max(_lens))
     np.savez(str(output_dir / "action_stats.npz"),
              action_min=action_min, action_max=action_max,
              delta_min=delta_min,   delta_max=delta_max,
-             eef_dims=np.array(args.eef_dims))
+             state_min=state_min,   state_max=state_max,
+             length_min=np.float32(length_min), length_max=np.float32(length_max))
     print(f"[FSQ] action_min: {np.round(action_min, 4)}")
     print(f"[FSQ] action_max: {np.round(action_max, 4)}")
     print(f"[FSQ] delta_min:  {np.round(delta_min,  4)}")
     print(f"[FSQ] delta_max:  {np.round(delta_max,  4)}")
+    print(f"[FSQ] state_min:  {np.round(state_min,  4)}")
+    print(f"[FSQ] state_max:  {np.round(state_max,  4)}")
+    print(f"[FSQ] length_min/max: {length_min:.0f} / {length_max:.0f}")
 
     device = args.device if torch.cuda.is_available() else "cpu"
-    action_dim = segments[0].shape[-1]
+    enc_dim    = segments[0].shape[-1]
+    action_dim = dec_targets[0].shape[-1]
     state_dim  = dec_states[0].shape[-1]
 
     wandb_run = None
@@ -298,12 +298,13 @@ def main(args: Args) -> None:
         wandb_run = wandb.init(
             project=args.wandb_project,
             name=args.wandb_run_name,
-            config={**vars(args), "action_dim": action_dim, "state_dim": state_dim,
-                    "n_segments": len(segments)},
+            config={**vars(args), "action_dim": action_dim, "enc_dim": enc_dim,
+                    "state_dim": state_dim, "n_segments": len(segments)},
         )
 
     cfg = SplineFSQAEConfig(
         action_dim=action_dim,
+        enc_dim=enc_dim,
         state_dim=state_dim,
         n_control=args.n_control,
         spline_degree=args.spline_degree,
@@ -323,7 +324,8 @@ def main(args: Args) -> None:
         image_encoder_layers=args.image_encoder_layers,
         image_encoder_heads=args.image_encoder_heads,
         chunk_size=args.chunk_size,
-        max_length=args.max_length,
+        length_min=length_min,
+        length_max=length_max,
         delta_loss_weight=args.delta_loss_weight,
         progress_loss_weight=args.progress_loss_weight,
         end_loss_weight=args.end_loss_weight,
@@ -344,6 +346,8 @@ def main(args: Args) -> None:
         action_max=action_max,
         delta_min=delta_min,
         delta_max=delta_max,
+        state_min=state_min,
+        state_max=state_max,
     )
 
     train_spline_fsqae(

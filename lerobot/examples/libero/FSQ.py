@@ -47,21 +47,22 @@ from torch.utils.data import DataLoader, Dataset, Sampler
 
 # ── Spline codec ──────────────────────────────────────────────────────────────
 
-GRIPPER_DIM = -1
+# The encoder trajectory is the full observation.state: EEF pose dims followed by the trailing
+# gripper-STATE dims (LIBERO = 2 finger positions). Gripper dims stay ABSOLUTE (not zero-grounded)
+# and use a low-degree spline (near-step signal → avoids cubic overshoot at open/close transitions).
+N_GRIPPER_DIMS = 2
 
 
 def zero_ground_trajectory(trajectory: np.ndarray) -> np.ndarray:
-    """Make the pose trajectory relative to its skill-start frame; the gripper dim stays absolute.
+    """Make the pose trajectory relative to its skill-start frame; the gripper dims stay absolute.
 
     Translation-invariant encoder input: the same motion gets the same code regardless of where in
     the workspace it starts (kills the start-position jitter and the scene-layout leak that absolute
     coordinates carry). Spline interpolation passes through the start point, so subtracting here is
     equivalent to subtracting on the control points."""
     traj = np.asarray(trajectory, dtype=np.float32).copy()
-    D = traj.shape[1]
-    gripper_idx = (D + GRIPPER_DIM) % D
     offset = traj[0].copy()
-    offset[gripper_idx] = 0.0  # keep gripper absolute (it is a state flag, not a pose)
+    offset[-N_GRIPPER_DIMS:] = 0.0  # keep gripper-STATE dims absolute (they are not a pose)
     return traj - offset
 
 
@@ -76,9 +77,9 @@ def spline_encode(
     t_orig = np.linspace(0.0, 1.0, T)
     t_ctrl = np.linspace(0.0, 1.0, n_control)
     ctrl_pts = np.zeros((n_control, D), dtype=np.float32)
-    gripper_idx = (D + GRIPPER_DIM) % D
     for d in range(D):
-        k = 0 if d == gripper_idx else degree
+        # trailing gripper-state dims: low-degree (near-step, no overshoot); pose dims: full degree
+        k = 1 if d >= D - N_GRIPPER_DIMS else degree
         k = min(k, T - 1)
         spl = make_interp_spline(t_orig, trajectory[:, d], k=k)
         ctrl_pts[:, d] = spl(t_ctrl)
@@ -239,7 +240,8 @@ def resolve_image_model_path(name: str) -> str:
 
 @dataclass
 class SplineFSQAEConfig:
-    action_dim: int = 7
+    action_dim: int = 7          # decoder output / action-chunk target dim
+    enc_dim: int = 8             # encoder trajectory dim = full state (EEF pose + gripper-state)
     state_dim: int = 7
     n_control: int = 30
     spline_degree: int = 3
@@ -264,7 +266,8 @@ class SplineFSQAEConfig:
     image_encoder_layers: int = 1
     image_encoder_heads: int = 4
     chunk_size: int = 10  # motion always predicts a K-step action chunk
-    max_length: float = 200.0
+    length_min: float = 0.0     # skill-length min-max stats for [-1,1] length-token normalization
+    length_max: float = 200.0
     end_target_sigma: float = 0.0
     """Soft termination target: Gaussian bump (std in FRAMES) peaking at the skill's last frame
     instead of a 1-frame spike. DP skill boundaries are fuzzy, so a spike makes the head memorize
@@ -289,6 +292,8 @@ class SplineFSQAEConfig:
     action_max: np.ndarray | None = None
     delta_min: np.ndarray | None = None
     delta_max: np.ndarray | None = None
+    state_min: np.ndarray | None = None   # decoder/terminator proprioception min-max ([-1,1] norm)
+    state_max: np.ndarray | None = None
 
 
 # ── Model ─────────────────────────────────────────────────────────────────────
@@ -300,6 +305,7 @@ class SplineFSQAE(nn.Module):
         self,
         action_dim: int,
         state_dim: int,
+        enc_dim: int = 8,
         n_control: int = 30,
         spline_degree: int = 3,
         hidden_dim: int = 256,
@@ -318,21 +324,26 @@ class SplineFSQAE(nn.Module):
         image_encoder_layers: int = 1,
         image_encoder_heads: int = 4,
         chunk_size: int = 10,
-        max_length: float = 200.0,
+        length_min: float = 0.0,
+        length_max: float = 200.0,
         action_min: np.ndarray | None = None,
         action_max: np.ndarray | None = None,
         delta_min: np.ndarray | None = None,
         delta_max: np.ndarray | None = None,
+        state_min: np.ndarray | None = None,
+        state_max: np.ndarray | None = None,
     ) -> None:
         super().__init__()
         if fsq_levels is None:
             fsq_levels = [5, 5, 5]
 
         self.action_dim = action_dim
+        self.enc_dim = enc_dim
         self.state_dim = state_dim
         self.n_control = n_control
         self.spline_degree = spline_degree
-        self.max_length = max_length
+        self.length_min = length_min
+        self.length_max = length_max
         self.chunk_size = chunk_size
         self.feat_dim = feat_dim
         self.n_tokens = n_tokens
@@ -350,7 +361,7 @@ class SplineFSQAE(nn.Module):
         # ── Encoder (action trajectory only — no images) ──────────────────────
         # Each (zero-grounded) control point + the length scalar becomes one H-dim token,
         # a Transformer mixes them, and a learned query pools them into the latent.
-        self.enc_ctrl_proj = nn.Linear(action_dim, H)
+        self.enc_ctrl_proj = nn.Linear(enc_dim, H)
         self.enc_len_proj = nn.Linear(1, H)
         self.enc_traj_pool = TokenTransformerPool(
             hidden_dim=H,
@@ -405,14 +416,18 @@ class SplineFSQAE(nn.Module):
         )
         self.delta_head = nn.Linear(H, chunk_size * action_dim)
 
-        _amin = action_min if action_min is not None else np.zeros(action_dim, dtype=np.float32)
-        _amax = action_max if action_max is not None else np.ones(action_dim, dtype=np.float32)
+        _amin = action_min if action_min is not None else np.zeros(enc_dim, dtype=np.float32)
+        _amax = action_max if action_max is not None else np.ones(enc_dim, dtype=np.float32)
         _dmin = delta_min if delta_min is not None else -np.ones(action_dim, dtype=np.float32)
         _dmax = delta_max if delta_max is not None else np.ones(action_dim, dtype=np.float32)
+        _smin = state_min if state_min is not None else np.zeros(state_dim, dtype=np.float32)
+        _smax = state_max if state_max is not None else np.ones(state_dim, dtype=np.float32)
         self.register_buffer("action_min", torch.tensor(_amin, dtype=torch.float32))
         self.register_buffer("action_max", torch.tensor(_amax, dtype=torch.float32))
         self.register_buffer("delta_min",  torch.tensor(_dmin, dtype=torch.float32))
         self.register_buffer("delta_max",  torch.tensor(_dmax, dtype=torch.float32))
+        self.register_buffer("state_min",  torch.tensor(_smin, dtype=torch.float32))
+        self.register_buffer("state_max",  torch.tensor(_smax, dtype=torch.float32))
         object.__setattr__(self, "_raw_image_model", None)
         object.__setattr__(self, "_raw_image_mean", None)
         object.__setattr__(self, "_raw_image_std", None)
@@ -424,18 +439,27 @@ class SplineFSQAE(nn.Module):
         hi = self.action_max.cpu().numpy()
         return (ctrl_pts - lo) / (hi - lo + 1e-8) * 2.0 - 1.0
 
+    def _norm_state(self, s: torch.Tensor) -> torch.Tensor:
+        """Min-max normalize raw proprioception to [-1,1]. Absolute (not grounded) — same basis for
+        the terminator's current state and the reconstructor's start state."""
+        lo = self.state_min.to(s.device, s.dtype)
+        hi = self.state_max.to(s.device, s.dtype)
+        return (s - lo) / (hi - lo + 1e-8) * 2.0 - 1.0
+
     # ── encode ────────────────────────────────────────────────────────────────
 
     def encode(
         self,
-        ctrl_pts: torch.Tensor,      # (B, n_control, action_dim) — zero-grounded, normalized
+        ctrl_pts: torch.Tensor,      # (B, n_control, enc_dim) — zero-grounded, normalized
         lengths: torch.Tensor,       # (B,)
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Action-only encode. Returns (z_q, indices)."""
         B = ctrl_pts.size(0)
         # Tokens: per control point + one length token → Transformer pool → latent.
         ctrl_tok = self.enc_ctrl_proj(ctrl_pts)                                    # (B, n_control, H)
-        l_norm = (lengths.float() / self.max_length).view(B, 1, 1).to(ctrl_pts.dtype)
+        # length token: min-max normalized to [-1,1] (same scheme as the control points)
+        l_norm = (((lengths.float() - self.length_min) / (self.length_max - self.length_min + 1e-8))
+                  * 2.0 - 1.0).view(B, 1, 1).to(ctrl_pts.dtype)
         len_tok = self.enc_len_proj(l_norm)                                        # (B, 1, H)
         h = self.enc_traj_pool(torch.cat([ctrl_tok, len_tok], dim=1))             # (B, H)
         z_e = self.z_head(h)
@@ -575,7 +599,7 @@ class SplineFSQAE(nn.Module):
         progress (B, T) in [0, 1] (sigmoid); term_logits (B, T) raw logits. Shared by decode()
         (FSQ training) and predict_termination() (skillVLA inference, which sigmoids the logits)."""
         B, T = z_tok.shape[:2]
-        s_term = self.term_state_proj(states)                         # (B, T, H)
+        s_term = self.term_state_proj(self._norm_state(states))       # (B, T, H)
         toks = [z_tok]
         if self.terminator_use_third:
             toks.append(self.dec_image_encoder_term(dec_tokens))               # (B, T, H) 3rd-person
@@ -605,7 +629,7 @@ class SplineFSQAE(nn.Module):
         (skillVLA inference, terminator progress).
         """
         B, T = z_tok.shape[:2]
-        start_state = self.recon_state_proj(states[:, :1]).expand(B, T, -1)            # (B, T, H)
+        start_state = self.recon_state_proj(self._norm_state(states[:, :1])).expand(B, T, -1)   # (B, T, H)
         recon_tokens = [z_tok, start_state, prog_tok]
         mo = self.motion_pool(
             torch.stack(recon_tokens, dim=2).reshape(B * T, len(recon_tokens), -1)
@@ -689,7 +713,7 @@ class SplineFSQAE(nn.Module):
     @torch.no_grad()
     def encode_numpy(
         self,
-        trajectory: np.ndarray,      # (T, action_dim)
+        trajectory: np.ndarray,      # (T, enc_dim) — full state trajectory
         device: str = "cpu",
     ) -> np.ndarray:
         """Returns latent vector z_q as numpy array, shape (D,)."""
@@ -744,12 +768,10 @@ class SplineFSQDataset(Dataset):
         action_max: np.ndarray,
         delta_min: np.ndarray,
         delta_max: np.ndarray,
-        max_length: float,
         chunk_size: int = 10,
         end_target_sigma: float = 0.0,
     ) -> None:
         self.chunk_size = chunk_size
-        self.max_length = max_length
         self.end_target_sigma = float(end_target_sigma)
         self.action_min = action_min.astype(np.float32)
         self.action_max = action_max.astype(np.float32)
@@ -1015,7 +1037,8 @@ def train_spline_fsqae(
     if not segments:
         raise ValueError("No skill segments provided.")
 
-    action_dim = cfg.action_dim if cfg.action_dim > 0 else segments[0].shape[-1]
+    enc_dim = cfg.enc_dim if cfg.enc_dim > 0 else segments[0].shape[-1]
+    action_dim = cfg.action_dim if cfg.action_dim > 0 else decoder_targets[0].shape[-1]
     # Encoder normalization stats must match what the encoder actually sees: zero-grounded control
     # points (spline_encode grounds internally). Computing min/max on grounded segments keeps the
     # normalization centered on the relative-pose distribution.
@@ -1024,6 +1047,8 @@ def train_spline_fsqae(
     a_max = cfg.action_max if cfg.action_max is not None else grounded.max(axis=0)
     d_min = cfg.delta_min  if cfg.delta_min  is not None else np.concatenate(decoder_targets).min(axis=0)
     d_max = cfg.delta_max  if cfg.delta_max  is not None else np.concatenate(decoder_targets).max(axis=0)
+    s_min = cfg.state_min  if cfg.state_min  is not None else np.concatenate(decoder_states).min(axis=0)
+    s_max = cfg.state_max  if cfg.state_max  is not None else np.concatenate(decoder_states).max(axis=0)
 
     print(
         f"[SplineFSQAE] {len(segments)} segments | "
@@ -1047,7 +1072,6 @@ def train_spline_fsqae(
             take(decoder_targets, ids),
             cfg.n_control, cfg.spline_degree,
             a_min, a_max, d_min, d_max,
-            cfg.max_length,
             cfg.chunk_size,
             cfg.end_target_sigma,
         )
@@ -1066,6 +1090,7 @@ def train_spline_fsqae(
 
     model = SplineFSQAE(
         action_dim=action_dim,
+        enc_dim=enc_dim,
         state_dim=cfg.state_dim,
         n_control=cfg.n_control,
         spline_degree=cfg.spline_degree,
@@ -1082,9 +1107,10 @@ def train_spline_fsqae(
         image_encoder_layers=cfg.image_encoder_layers,
         image_encoder_heads=cfg.image_encoder_heads,
         chunk_size=cfg.chunk_size,
-        max_length=cfg.max_length,
+        length_min=cfg.length_min, length_max=cfg.length_max,
         action_min=a_min, action_max=a_max,
         delta_min=d_min,  delta_max=d_max,
+        state_min=s_min,  state_max=s_max,
     ).to(cfg.device)
 
     print(f"[SplineFSQAE] trainable params: {sum(p.numel() for p in model.parameters() if p.requires_grad):,}")

@@ -128,7 +128,6 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     --progress_loss_weight    "${FSQ_PROGRESS_LOSS_WEIGHT}" \
     --end_loss_weight         "${FSQ_END_LOSS_WEIGHT}" \
     --end_target_sigma        "${FSQ_END_TARGET_SIGMA}" \
-    --max_length              "${FSQ_MAX_LENGTH}" \
     --checkpoint_every        "${FSQ_CHECKPOINT_EVERY}" \
     --wandb_project           "${FSQ_WANDB_PROJECT}" \
     --wandb_run_name          "${FSQ_RUN_NAME}" \

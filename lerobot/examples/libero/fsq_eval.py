@@ -503,8 +503,6 @@ def parse_args():
     p.add_argument("--latents_path", default="",
                    help="where to save/load skill_latents.npz (default: <output_dir>/skill_latents.npz). "
                         "Point this at the model checkpoint folder to keep latents next to FSQ.pt.")
-    p.add_argument("--eef_dims", type=int, nargs="+", default=[0, 1, 2, 3, 4, 5])
-    p.add_argument("--gripper_action_dim", type=int, default=-1)
     p.add_argument("--n_action_steps", type=int, default=5, help="chunk plot stride")
     p.add_argument("--max_plot_samples", type=int, default=5, help="sample skills per entry")
     p.add_argument("--max_plot_entries", type=int, default=0, help="0 = render all active entries")
@@ -533,8 +531,7 @@ def main():
 
     use_wrist = bool(getattr(model, "terminator_use_wrist", False))
     print(f"[fsq_eval] loading skills / DINO (3rd-person{' + wrist' if use_wrist else ''}) ...")
-    segments, dec_states, dec_targets, metadata = load_skill_files(
-        Path(args.skills_dir), eef_dims=args.eef_dims, gripper_action_dim=args.gripper_action_dim)
+    segments, dec_states, dec_targets, metadata = load_skill_files(Path(args.skills_dir))
     dec_tokens = load_dino_tokens(Path(args.dino_features), metadata)
     # Wrist is the dual terminator's 2nd camera — load it only when the model actually reads it.
     dec_tokens_wrist = None

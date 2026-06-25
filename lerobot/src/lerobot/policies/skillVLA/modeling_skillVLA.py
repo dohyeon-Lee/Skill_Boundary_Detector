@@ -733,8 +733,8 @@ class SkillVLAPytorch(PI05Pytorch):
 
         ckpt = torch.load(path, map_location="cpu", weights_only=False)
         cfg_dict = dataclasses.asdict(ckpt["cfg"])
-        keys = {"action_dim", "state_dim", "n_control", "spline_degree", "hidden_dim", "fsq_levels",
-                "num_layers", "dropout", "max_length", "action_min", "action_max", "delta_min", "delta_max",
+        keys = {"action_dim", "enc_dim", "state_dim", "n_control", "spline_degree", "hidden_dim", "fsq_levels",
+                "num_layers", "dropout", "length_min", "length_max", "action_min", "action_max", "delta_min", "delta_max", "state_min", "state_max",
                 "feat_dim", "n_tokens", "image_encoder_layers", "terminator_use_third", "terminator_use_wrist", "image_encoder_heads",
                 "image_model_name", "image_size", "patch_grid", "n_patch_raw", "image_token_dim", "chunk_size",
                 "reconstructor_mode"}

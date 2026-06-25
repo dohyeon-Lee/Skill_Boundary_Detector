@@ -104,7 +104,6 @@ fsq_checkpoint_every: 100
 #           (run_frame_dino_parallel --camera wrist/both + extract; prepare_dino auto-copies)
 #   false = 3rd-person only (original single-camera FSQ; old checkpoints stay loadable)
 fsq_chunk_size: 10
-fsq_max_length: 200
 # ── FSQ loss weights ──────────────────────────────────────────
 fsq_delta_loss_weight: 1.0      # action chunk reconstruction (SmoothL1)
 fsq_progress_loss_weight: 10.0   # skill progress prediction (SmoothL1)

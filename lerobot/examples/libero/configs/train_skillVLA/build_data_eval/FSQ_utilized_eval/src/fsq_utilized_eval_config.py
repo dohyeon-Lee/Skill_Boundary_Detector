@@ -92,8 +92,8 @@ def load_fsq(run_dir: Path, fsq_ckpt: Path | None, cfg: dict[str, Any]):
     sys.path.insert(0, str(project_root(cfg) / "lerobot" / "examples" / "libero"))
     from FSQ import SplineFSQAE  # noqa: PLC0415
 
-    keys = {"action_dim", "state_dim", "n_control", "spline_degree", "hidden_dim", "fsq_levels",
-            "num_layers", "dropout", "max_length", "action_min", "action_max", "delta_min", "delta_max",
+    keys = {"action_dim", "enc_dim", "state_dim", "n_control", "spline_degree", "hidden_dim", "fsq_levels",
+            "num_layers", "dropout", "length_min", "length_max", "action_min", "action_max", "delta_min", "delta_max", "state_min", "state_max",
             "feat_dim", "n_tokens", "image_encoder_layers", "image_encoder_heads", "terminator_use_third", "terminator_use_wrist",
             "image_model_name", "image_size", "patch_grid", "n_patch_raw", "image_token_dim", "chunk_size",
             "reconstructor_mode"}

@@ -32,8 +32,6 @@ class Args:
     output_path: str
     """Output skill_latents npz path."""
 
-    eef_dims: list[int] = field(default_factory=lambda: [0, 1, 2, 3, 4, 5])
-    gripper_action_dim: int = -1
     device: str = "cuda"
 
 
@@ -42,6 +40,7 @@ def load_model(model_path: Path, device: str) -> SplineFSQAE:
     cfg: SplineFSQAEConfig = ckpt["cfg"]
     model = SplineFSQAE(
         action_dim=cfg.action_dim,
+        enc_dim=getattr(cfg, "enc_dim", 8),
         state_dim=cfg.state_dim,
         n_control=cfg.n_control,
         spline_degree=cfg.spline_degree,
@@ -59,11 +58,14 @@ def load_model(model_path: Path, device: str) -> SplineFSQAE:
         image_encoder_layers=getattr(cfg, "image_encoder_layers", 1),
         image_encoder_heads=getattr(cfg, "image_encoder_heads", 4),
         chunk_size=cfg.chunk_size,
-        max_length=cfg.max_length,
+        length_min=getattr(cfg, "length_min", 0.0),
+        length_max=getattr(cfg, "length_max", 200.0),
         action_min=cfg.action_min,
         action_max=cfg.action_max,
         delta_min=cfg.delta_min,
         delta_max=cfg.delta_max,
+        state_min=getattr(cfg, "state_min", None),
+        state_max=getattr(cfg, "state_max", None),
         terminator_use_third=getattr(cfg, "terminator_use_third", True),
         terminator_use_wrist=getattr(cfg, "terminator_use_wrist", False),
     )
@@ -78,11 +80,7 @@ def main(args: Args) -> None:
     output_path = Path(args.output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    segments, _, _, metadata = load_skill_files(
-        skills_dir,
-        eef_dims=args.eef_dims,
-        gripper_action_dim=args.gripper_action_dim,
-    )
+    segments, _, _, metadata = load_skill_files(skills_dir)
 
     model = load_model(Path(args.model_path), device)
     print(f"[FSQ encode] model={args.model_path}")

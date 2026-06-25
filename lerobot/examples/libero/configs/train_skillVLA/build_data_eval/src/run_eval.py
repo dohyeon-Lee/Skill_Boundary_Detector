@@ -273,7 +273,7 @@ def eval_fsq_patch(df, dino: DinoNpz, frames_src, out_dir: Path, n_episodes: int
 # ── eval 4: FSQ reconstruction (reuse fsq_eval HTML) ─────────────────────────────
 
 def eval_fsq_recon(df, dino: DinoNpz, frames_src, fsq_model_path: Path, out_dir: Path,
-                   image_key: str, dataset_dir: Path, *, eef_dims, gripper_action_dim,
+                   image_key: str, dataset_dir: Path, *,
                    n_action_steps, n_samples, max_entries, end_threshold, thumb, seed, batch_size, device):
     import torch  # noqa: F401
     import fsq_eval as FE
@@ -296,11 +296,8 @@ def eval_fsq_recon(df, dino: DinoNpz, frames_src, fsq_model_path: Path, out_dir:
         actions = np.stack(ep_df["action"].to_numpy()).astype(np.float32)
         dstate = np.stack(ep_df["skill_decoder_state"].to_numpy()).astype(np.float32)
         clip = dino.episode_clip(int(ep))
-        gi = (actions.shape[-1] + gripper_action_dim) % actions.shape[-1]
         for fs, fe, _tok in skills:
-            pose = states[fs:fe, eef_dims].astype(np.float32)
-            grip = actions[fs:fe, gi:gi + 1].astype(np.float32)
-            segments.append(np.concatenate([pose, grip], axis=-1))     # encoder traj (abs)
+            segments.append(states[fs:fe].astype(np.float32))         # encoder traj = full state (8D)
             dec_states.append(dstate[fs:fe])
             dec_targets_cur.append(actions[fs:fe].astype(np.float32))
             dec_tokens.append(clip[fs:fe])
@@ -424,8 +421,6 @@ def parse_args():
     p.add_argument("--thumb_size", type=int, default=160)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--batch_size", type=int, default=64)
-    p.add_argument("--eef_dims", type=int, nargs="+", default=[0, 1, 2, 3, 4, 5])
-    p.add_argument("--gripper_action_dim", type=int, default=-1)
     p.add_argument("--device", default="cuda")
     return p.parse_args()
 
@@ -450,8 +445,8 @@ def main():
         import torch
         device = args.device if torch.cuda.is_available() and args.device == "cuda" else "cpu"
         eval_fsq_recon(df, dino, frames_src, Path(args.fsq_model), out / "fsq_recon",
-                       args.image_key, Path(args.dataset_dir), eef_dims=args.eef_dims,
-                       gripper_action_dim=args.gripper_action_dim, n_action_steps=args.n_action_steps,
+                       args.image_key, Path(args.dataset_dir),
+                       n_action_steps=args.n_action_steps,
                        n_samples=args.n_samples, max_entries=args.max_entries,
                        end_threshold=args.end_threshold, thumb=args.thumb_size, seed=args.seed,
                        batch_size=args.batch_size, device=device)
