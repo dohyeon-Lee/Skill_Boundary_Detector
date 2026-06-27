@@ -1,0 +1,40 @@
+# ── DP training config (Stage 1) ───────────────────────────────────────────────
+# Self-contained: owns everything the DP stage needs. Project paths + slurm come from
+# configs/global_config.yaml. Read by submit_train_dp_dino.sh.
+#
+# Pipeline order: DP (this) → build_data (skillset) → FSQ → DP_FSQ_eval.
+# The DP folder name produced here is what build_data / FSQ / eval reference as dp_run_name.
+
+target_dataset: libero_90_full_full
+
+# DINO features the DP trains on (only used when dp_vision: dino).
+dino_source_dataset: libero_90_full_full   # "" | base dataset whose DINO to copy from
+dino_image_keys: ["observation.images.image"]
+dino_patch_grid: 8                          # DP DINO grid (folder tag dino{grid})
+dino_copy_mode: hardlink                    # copy | hardlink | symlink (prepare step only)
+dino_overwrite_prepared: false              # true = re-create prepared DINO (else skip existing)
+
+# ── DP encoder / temporal ──
+# dp_vision: dino   = precomputed DINO-token encoder (needs prepared DINO).
+#            resnet = ORIGINAL lerobot Diffusion Policy on raw frames (no DINO).
+#            state  = proprioceptive-only: observation.state history, NO vision.
+dp_vision: dino   # dino | resnet | state
+dp_n_obs_steps: 10                          # observation history length
+dp_horizon: 16                              # UNet horizon (multiple of 2^len(down_dims)=8; > n_obs)
+# dp_n_action_steps: auto = horizon - n_obs_steps + 1 (override only if needed)
+
+# Folder name (also keys the skillset's seg_ dir). {dp_vision_tag}="dino{grid}"/"resnet"/"state".
+dp_policy_name: "{target_dataset}_{dp_vision_tag}_obs{dp_n_obs_steps}"
+dp_checkpoint: "100000"
+
+train_DP: false   # false: only prepare target DINO; skip submitting DP training
+dp_base_config: examples/libero/configs/train_skills/DP/src/train_dp_libero_90.yaml
+dp_steps: 100000
+dp_save_freq: 25000
+dp_log_freq: 200
+
+# ── Slurm (partition/qos/nodelist/exclude from configs/global_config.yaml) ──
+dp_gres: gpu:1
+dp_cpus_per_task: 8
+dp_mem: 64G
+dp_time: "48:00:00"

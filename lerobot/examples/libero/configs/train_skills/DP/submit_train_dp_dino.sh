@@ -28,7 +28,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMMON_SRC_DIR="${SCRIPT_DIR}/../src"
 DP_SRC_DIR="${SCRIPT_DIR}/src"
-CONFIG_PATH="${TRAIN_SKILLS_CONFIG:-${SCRIPT_DIR}/../train_skills_config.yaml}"
+CONFIG_PATH="${TRAIN_SKILLS_CONFIG:-${SCRIPT_DIR}/dp_config.yaml}"
 
 # Freeze the config so this job ignores later edits to the repo yaml (see configs/snapshot_config.sh).
 _lib="$(dirname "${CONFIG_PATH}")"; while [ ! -f "${_lib}/snapshot_config.sh" ]; do _lib="$(dirname "${_lib}")"; done

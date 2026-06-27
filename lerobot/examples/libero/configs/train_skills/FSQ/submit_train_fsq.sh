@@ -18,7 +18,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMMON_SRC_DIR="${SCRIPT_DIR}/../src"
 FSQ_SRC_DIR="${SCRIPT_DIR}/src"
-CONFIG_PATH="${TRAIN_SKILLS_CONFIG:-${SCRIPT_DIR}/../train_skills_config.yaml}"
+CONFIG_PATH="${TRAIN_SKILLS_CONFIG:-${SCRIPT_DIR}/fsq_config.yaml}"
 
 # Freeze the config so this job ignores later edits to the repo yaml (see configs/snapshot_config.sh).
 _lib="$(dirname "${CONFIG_PATH}")"; while [ ! -f "${_lib}/snapshot_config.sh" ]; do _lib="$(dirname "${_lib}")"; done
@@ -39,17 +39,17 @@ fi
 
 if [ ! -d "${SKILLSET_DIR}/skills" ]; then
   echo "Skillset not found: ${SKILLSET_DIR}/skills" >&2
-  echo "Run FSQ/submit_prepare_fsq_inputs.sh first." >&2
+  echo "Run build_data/submit_build_data.sh first." >&2
   exit 1
 fi
 if [ ! -f "${DINO_TOKENS_PATH}" ]; then
   echo "DINO tokens not found: ${DINO_TOKENS_PATH}" >&2
-  echo "Run FSQ/submit_prepare_fsq_inputs.sh first." >&2
+  echo "Run build_data/submit_build_data.sh first." >&2
   exit 1
 fi
 if [ ! -f "${DINO_TOKENS_WRIST_PATH}" ]; then
   echo "Wrist DINO tokens not found: ${DINO_TOKENS_WRIST_PATH}" >&2
-  echo "Run FSQ/submit_prepare_fsq_inputs.sh first." >&2
+  echo "Run build_data/submit_build_data.sh first." >&2
   exit 1
 fi
 

@@ -53,14 +53,14 @@ dino_copy_mode: hardlink   # copy | hardlink | symlink
 ################################################################
 # Other fixed DP training hyperparams (batch_size, num_workers, eval_freq, seed,
 # overwrite_output=true, wandb project/enable) live as defaults in src/train_skills_config.py.
-train_DP: true  # false: only prepare target DINO; skip DP training submission.
+train_DP: false  # false: only prepare target DINO; skip DP training submission.
 # DP vision encoder:
 #   dino   = precomputed DINO-token encoder (default; needs prepared DINO).
 #   resnet = ORIGINAL lerobot Diffusion Policy on raw frames (use_dino_features=false, no DINO prepare;
 #            image_features from the dataset's camera keys; backbone=resnet18 default in src).
 #   state  = proprioceptive-only: NO vision at all — conditions on observation.state history only
 #            (eef pose + gripper). Smaller conditioning, no image/DINO.
-dp_vision: state   # dino | resnet | state
+dp_vision: dino   # dino | resnet | state
 # Observation history length (how many past steps condition the diffusion) + action horizon.
 # horizon must be divisible by 2^len(down_dims)=8. n_action_steps (chunk executed) auto-defaults to
 # horizon - n_obs_steps + 1 (max valid, stays consistent) — add `dp_n_action_steps:` to override.
@@ -113,11 +113,11 @@ fsq_inputs_name: FSQ_inputs
 ################################################################
 # EEF pose is always absolute and the motion decoder always predicts K-step
 # action chunks, so eef_mode/action_mode are no longer configurable.
-fsq_terminator_use_third: false   # 3rd-person 카메라. use_wrist와 조합: (T,F)3rd-only (T,T)both (F,T)wrist-only
-fsq_terminator_use_wrist: true
+fsq_terminator_use_third: true   # 3rd-person 카메라. use_wrist와 조합: (T,F)3rd-only (T,T)both (F,T)wrist-only
+fsq_terminator_use_wrist: false
 fsq_run_name: "{target_dataset}_{fsq_tag}_dino{fsq_patch_grid}{fsq_exp_suffix}"
-fsq_exp: "wot"  # optional suffix for ablations, e.g. exp1 -> ..._exp1
-fsq_levels: [8, 8] #  [5, 5, 5]
+fsq_exp: "wow"  # optional suffix for ablations, e.g. exp1 -> ..._exp1
+fsq_levels: [5, 5, 5]
 fsq_epoch: "1000"
 
 fsq_batch_size: 64 

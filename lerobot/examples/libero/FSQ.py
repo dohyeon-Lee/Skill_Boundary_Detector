@@ -195,15 +195,28 @@ class TokenTransformerPool(nn.Module):
 class FSQ(nn.Module):
     """FSQ: each dim quantized via tanh-scaling + rounding. No learnable params.
 
-    levels=[5,5,5] → half=[2,2,2], strides=[1,5,25], codebook_size=125.
+    Odd levels=[5,5,5] → half=[2,2,2], strides=[1,5,25], codebook_size=125 (all levels reached).
+    Even levels get a 0.5 offset (Mentzer 2023): plain symmetric tanh-rounding only reaches L-1
+    levels for even L (tanh never hits ±1, so the extreme level rounds short and dies, e.g. [8,8]
+    collapses to a 7×7=49 grid); the offset shifts the grid so all L levels are reachable.
     Straight-through estimator preserves encoder gradients through rounding.
     """
 
     def __init__(self, levels: list[int]) -> None:
         super().__init__()
         D = len(levels)
-        levels_half = torch.tensor([(L - 1) / 2.0 for L in levels], dtype=torch.float32)
+        lv = torch.tensor(levels, dtype=torch.float32)
+        levels_half = (lv - 1) / 2.0
         self.register_buffer("levels_half", levels_half)
+        # Even L → 0.5 shift so round() reaches all L levels; odd L → offset 0 (identical to before).
+        offset = torch.where(lv % 2 == 0, torch.full_like(lv, 0.5), torch.zeros_like(lv))
+        shift = torch.atanh(offset / levels_half)
+        half_width = torch.div(lv, 2, rounding_mode="floor")              # code/index offset = L//2
+        self.register_buffer("offset",     offset,                persistent=False)
+        self.register_buffer("shift",      shift,                 persistent=False)
+        self.register_buffer("half_width", half_width,            persistent=False)
+        self.register_buffer("level_min",  -half_width,           persistent=False)  # min integer code
+        self.register_buffer("level_max",  (lv - 1) - half_width, persistent=False)  # max integer code
         strides = torch.ones(D, dtype=torch.long)
         for i in range(1, D):
             strides[i] = strides[i - 1] * levels[i - 1]
@@ -214,10 +227,10 @@ class FSQ(nn.Module):
     def forward(self, z: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """z (*, D) → z_q (*, D), indices (*,)."""
         lh = self.levels_half.to(z.dtype)
-        z_scaled = torch.tanh(z) * lh              # bounded to [-lh, +lh]
-        z_int = torch.round(z_scaled)
-        z_q = z_scaled + (z_int - z_scaled).detach()  # straight-through
-        indices = ((z_int + lh).long() * self.strides).sum(dim=-1)
+        z_bounded = torch.tanh(z + self.shift.to(z.dtype)) * lh - self.offset.to(z.dtype)
+        z_int = torch.round(z_bounded)
+        z_q = z_bounded + (z_int - z_bounded).detach()  # straight-through
+        indices = ((z_int + self.half_width.to(z.dtype)).long() * self.strides).sum(dim=-1)
         return z_q, indices
 
 
@@ -679,8 +692,9 @@ class SplineFSQAE(nn.Module):
             dec_tokens_wrist = self._prepare_decoder_tokens(dec_tokens_wrist, states=states)
         B, T = dec_tokens.shape[:2]
         if quantize:
-            lh = self.fsq.levels_half.to(z.device, z.dtype)
-            z = torch.maximum(torch.minimum(torch.round(z), lh), -lh)
+            lo = self.fsq.level_min.to(z.device, z.dtype)
+            hi = self.fsq.level_max.to(z.device, z.dtype)
+            z = torch.maximum(torch.minimum(torch.round(z), hi), lo)
         z_tok = self.dec_z_proj(z.unsqueeze(1).expand(B, T, -1).to(states.dtype))
         progress, term_logits = self._terminate(z_tok, states, dec_tokens, dec_tokens_wrist)
         return progress, torch.sigmoid(term_logits)
@@ -700,8 +714,9 @@ class SplineFSQAE(nn.Module):
         """
         B, T = states.shape[:2]
         if quantize:
-            lh = self.fsq.levels_half.to(z.device, z.dtype)
-            z = torch.maximum(torch.minimum(torch.round(z), lh), -lh)
+            lo = self.fsq.level_min.to(z.device, z.dtype)
+            hi = self.fsq.level_max.to(z.device, z.dtype)
+            z = torch.maximum(torch.minimum(torch.round(z), hi), lo)
         z_tok = self.dec_z_proj(z.unsqueeze(1).expand(B, T, -1).to(states.dtype))
         prog = progress.to(device=states.device, dtype=states.dtype)
         prog = prog.view(B, 1).expand(B, T) if prog.ndim == 1 else prog

@@ -1,0 +1,39 @@
+# ── FSQ-data build config (Stage 2) ────────────────────────────────────────────
+# Self-contained: runs a TRAINED DP to segment the demos into a skillset, then extracts
+# per-skill DINO tokens. This is the ONLY stage that depends on a specific DP (the skillset
+# is keyed by the DP). Read by submit_build_data.sh. Project paths/slurm from global_config.
+#
+# Output: {dataset_root}/{fsq_dataset_root}/{target}/FSQ_inputs/seg_{dp_run_name}_ck{dp_checkpoint}/
+#           skillset/  +  dino_tokens_pg{fsq_patch_grid}.npz (+ wrist if fsq_terminator_use_wrist)
+
+target_dataset: libero_90_full_full
+
+# Which trained DP to segment with — folder name under outputs/DP/ (ls there for choices).
+# The DP-DINO grid below must match this DP (dino{grid}); for resnet/state DPs the grid is unused.
+dp_run_name: libero_90_full_full_dino8_obs10
+dp_checkpoint: "100000"
+
+# DINO grids: DP segmentation reads pg{dino_patch_grid}; FSQ token extraction reads pg{fsq_patch_grid}.
+dino_source_dataset: libero_90_full_full
+dino_patch_grid: 8                  # DP grid (matches dp_run_name)
+fsq_patch_grid: 8                   # FSQ skill-token grid (may differ from DP grid)
+dino_copy_mode: hardlink
+dino_overwrite_prepared: false
+
+# Which cameras the FSQ will use → which tokens to extract (must match fsq_config.yaml):
+#   third=T wrist=F → 3rd-only ;  third=T wrist=T → both ;  third=F wrist=T → wrist-only (no 3rd).
+fsq_terminator_use_third: true
+fsq_terminator_use_wrist: true
+
+# Skillset output roots.
+fsq_dataset_root: FSQ_dataset
+fsq_inputs_name: FSQ_inputs
+skillset_name: skillset
+
+# ── Slurm for skillset generation + token extraction (partition/qos from global_config) ──
+slurm_gres: gpu:1
+skillset_wandb_project: Skill_dataset
+skillset_tasks_per_job: 5
+skillset_cpus_per_task: 4
+skillset_mem: 32G
+skillset_time: "4:00:00"

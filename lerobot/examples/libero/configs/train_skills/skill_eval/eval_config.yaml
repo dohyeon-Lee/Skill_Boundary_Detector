@@ -1,0 +1,59 @@
+# skill_eval — evaluation config (Stage 4). Self-contained: project paths/slurm from
+# configs/global_config.yaml; everything else is here.
+#
+# Two evals share this folder; toggle either/both:
+#   eval_run_fsq : FSQ reconstruction/termination/progress HTML (needs a trained FSQ)
+#   eval_run_dp  : DP skill-boundary split HTML — boxed start/end frames per skill +
+#                  the multimodality (VF cos-divergence) curve. Works off the
+#                  FSQ_dataset skillset (skills npz + curves) only; FSQ-independent.
+
+# ── Roots (used to locate the skillset/tokens to evaluate) ──
+target_dataset: libero_90_full_full
+fsq_patch_grid: 8
+fsq_dataset_root: FSQ_dataset
+fsq_inputs_name: FSQ_inputs
+skillset_name: skillset
+
+eval_run_dp: false
+
+eval_dp_run_name: libero_90_full_full_dino8_obs10        
+# eval_dp_run_name: libero_90_full_full_state_obs10        
+# eval_dp_run_name: libero_90_full_full_state_obs20        
+eval_dp_checkpoint: 100000     
+
+# DP eval (skill-boundary split) knobs.
+dp_eval_n_episodes: 10           # episodes shown (per task when dp_eval_task_ids is set)
+dp_eval_task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]   # empty [] = first dp_eval_n_episodes overall
+
+# ===============================================================================================================
+# ===============================================================================================================
+
+eval_run_fsq: true
+
+# fsq_eval_run_name: libero_90_full_full_fsq555_dino8_wow
+# fsq_eval_run_name: libero_90_full_full_fsq555_dino8_wot
+# fsq_eval_run_name: libero_90_full_full_fsq88_dino8_wow
+fsq_eval_run_name: libero_90_full_full_fsq88_dino8_wot
+
+# fsq_eval_run_name: libero_90_full_full_fsq88_dino8_wow
+# fsq_eval_run_name: libero_90_full_full_fsq88_dino8_wot
+
+fsq_eval_checkpoint: 1000
+# Camera mode (3rd / wrist) is read automatically from the FSQ's fsq_meta.json (written at train time),
+# so it isn't configured here. (Falls back to the shared resolver default only if that meta is missing.)
+
+# Evaluation / HTML knobs
+fsq_eval_n_action_steps: 5       # chunk plot stride (draw a predicted chunk every N steps)
+fsq_eval_n_samples: 10            # sample skills shown per codebook entry
+fsq_eval_max_entries: 50 #0          # 0 = render sample plots for every active entry
+fsq_eval_end_threshold: 0.5      # termination probability threshold for timing
+fsq_eval_thumb_size: 160
+fsq_eval_image_key: observation.images.image
+fsq_eval_wandb_project: VAE_eval
+
+# Slurm / GPU. partition/qos/nodelist/exclude_nodes come from configs/global_config.yaml.
+fsq_eval_gres: gpu:1
+fsq_eval_cpus_per_task: 4
+fsq_eval_mem: 64G   # DINO npz loaded via mmap_mode='r' — only accessed pages are paged in
+fsq_eval_time: "02:00:00"
+  # - node200

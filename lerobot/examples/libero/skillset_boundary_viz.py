@@ -32,12 +32,14 @@ def fig_to_b64(fig) -> str:
     return base64.b64encode(buf.getvalue()).decode()
 
 
-def save_gallery(out_dir: Path, title: str, cards: list[tuple]) -> None:
-    """Write an HTML gallery to out_dir/index.html.
+def save_gallery(out_dir: Path, title: str, cards: list[tuple], filename: str = "index.html") -> None:
+    """Write an HTML gallery to out_dir/filename (default index.html).
 
     cards: [(task_label, caption, jpeg_b64), ...]. When task_label is not None, a
     sticky section header is inserted whenever it changes, so episodes are grouped
-    and visually separated per task. (task_label None → flat gallery as before.)"""
+    and visually separated per task. (task_label None → flat gallery as before.)
+    filename: output HTML name within out_dir — set to e.g. '<dp>_ck<ckpt>.html' to keep multiple
+    runs side by side in one shallow folder instead of overwriting index.html."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     blocks, prev = [], "\0"
@@ -62,8 +64,8 @@ def save_gallery(out_dir: Path, title: str, cards: list[tuple]) -> None:
         ".card img{display:block;max-width:none;}"
         "</style></head><body><h1>" + title + "</h1><div class='grid'>" + body + "</div></body></html>"
     )
-    (out_dir / "index.html").write_text(html, encoding="utf-8")
-    print(f"[eval] {title} → {out_dir / 'index.html'}")
+    (out_dir / filename).write_text(html, encoding="utf-8")
+    print(f"[eval] {title} → {out_dir / filename}")
 
 
 def load_boundary_curve(curves_dir, ep: int) -> dict | None:
@@ -136,9 +138,22 @@ def render_skillset_card(skills, raw, curve, thumb: int = 110) -> str:
     # coloured box per skill, so adjacent skills read as distinct groups instead of
     # one continuous strip. When the multimodality curve is available, it is overlaid
     # in a second row below the frames.
-    frame_w = 2.0 * n + 0.6 * (n - 1) + 0.3
+    #
+    # FIXED inches per skill (start+end pair) so thumbnails are the SAME size regardless of skill count:
+    # the card just grows wider and scrolls horizontally (.card has overflow-x:auto) instead of shrinking
+    # the frames to fit a fixed width. 4.0 ≈ the well-sized 2-skill case (which only looked good before
+    # because of the max(.,8.0) clamp stretching 2 skills across 8in). The curve row, if present, spans
+    # the same width — that's fine; we no longer force the frames to match a fixed total width.
+    per_skill_w = 4.0
+    frame_w = per_skill_w * n + 0.6 * (n - 1) + 0.3
+    # The multimodality curve keeps a FIXED width regardless of skill count — it must NOT stretch with
+    # the (scrollable) frame strip. The figure is as wide as the frames need, but the curve axis is
+    # pinned to curve_w inches (left-anchored) after layout (see the reposition below). 7.0 ≈ the
+    # well-sized 2-skill graph the layout was tuned for.
+    curve_w = 7.0
     if curve is not None:
-        fig = plt.figure(figsize=(max(frame_w, 8.0), 3.7))
+        fig_w = max(frame_w, curve_w)
+        fig = plt.figure(figsize=(fig_w, 3.7))
         gs_v = fig.add_gridspec(2, 1, height_ratios=[2.0, 1.5], hspace=0.6)
         outer = gs_v[0].subgridspec(1, n, wspace=0.55)
         ax_curve = fig.add_subplot(gs_v[1])
@@ -161,6 +176,10 @@ def render_skillset_card(skills, raw, curve, thumb: int = 110) -> str:
         plot_boundary_curve(ax_curve, curve, skills)
     # Boxes need final axes positions, so draw once before reading them.
     fig.canvas.draw()
+    # Pin the curve to curve_w inches (left-anchored) so a wide frame strip doesn't stretch the graph.
+    if ax_curve is not None:
+        cp = ax_curve.get_position()
+        ax_curve.set_position([cp.x0, cp.y0, min(cp.width, curve_w / fig_w), cp.height])
     for ax_s, ax_e in pair_axes:
         ps, pe = ax_s.get_position(), ax_e.get_position()
         x0, x1 = min(ps.x0, pe.x0), max(ps.x1, pe.x1)

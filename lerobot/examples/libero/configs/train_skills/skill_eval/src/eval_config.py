@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""DP_FSQ_eval config: emit evaluation-only knobs + slurm settings as shell exports.
+"""skill_eval config: emit evaluation-only knobs + slurm settings as shell exports.
 
 Root paths come from train_skills_config.py; this only owns eval-specific knobs.
 Owns the eval_run_fsq / eval_run_dp toggles and the DP-eval knobs in addition to
@@ -27,6 +27,9 @@ def build_settings(config_path: str | None = None) -> dict:
         # which eval(s) to run
         "eval_run_fsq":            str(as_bool(get_value(cfg, "eval_run_fsq", True))).lower(),
         "eval_run_dp":             str(as_bool(get_value(cfg, "eval_run_dp", True))).lower(),
+        # DP selection: blank = follow train_skills_config; else the DP folder name (+ checkpoint) to eval.
+        "eval_dp_run_name":        str(get_value(cfg, "eval_dp_run_name", "")),
+        "eval_dp_checkpoint":      str(get_value(cfg, "eval_dp_checkpoint", "")),
         # DP skill-boundary eval knobs
         "dp_eval_n_episodes":      int(get_value(cfg, "dp_eval_n_episodes", 10)),
         "dp_eval_task_ids":        " ".join(as_list(get_value(cfg, "dp_eval_task_ids", []))),

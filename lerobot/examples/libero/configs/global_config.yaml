@@ -52,17 +52,18 @@ train_partition:
   - tyan_a6000
   - asus_pro6000
   - gigabyte_pro6000
-  # - suma_rtx4090
-  # - base_suma_rtx3090
-  # - dell_rtx3090
-  # - big_suma_rtx3090
+  - suma_rtx4090
+  - base_suma_rtx3090
+  - dell_rtx3090
+  - big_suma_rtx3090
 
 
 train_qos: pro6000_qos # pro6000_qos | base_qos
 train_nodelist: ""
-train_exclude_nodes: 
+train_exclude_nodes:
   - node19
   - node13
+  - node26   # GPU present in nvidia-smi but torch "No CUDA GPUs available" — packs jobs, GPU unusable
   - node18
   - node16
   - node08

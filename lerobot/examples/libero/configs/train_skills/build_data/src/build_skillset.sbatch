@@ -21,7 +21,7 @@ mkdir -p logs
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMMON_SRC_DIR="${SCRIPT_DIR}/../../src"
-CONFIG_PATH=${TRAIN_SKILLS_CONFIG:-${SCRIPT_DIR}/../../train_skills_config.yaml}
+CONFIG_PATH=${TRAIN_SKILLS_CONFIG:-${SCRIPT_DIR}/../build_data_config.yaml}
 
 BOOTSTRAP_PYTHON="${SCRIPT_DIR}/../../../../../../../.venv/bin/python"
 if [ ! -x "${BOOTSTRAP_PYTHON}" ]; then
@@ -54,7 +54,8 @@ if [ ! -d "${DP_POLICY_PATH}" ]; then
   echo "DP policy checkpoint not found: ${DP_POLICY_PATH}" >&2
   exit 1
 fi
-if [ ! -d "${DINO_FEATURE_DIR}" ]; then
+# Only a DINO DP needs prepared DINO features to segment; resnet/state DPs run on raw frames/state.
+if [ "${DP_VISION}" = "dino" ] && [ ! -d "${DINO_FEATURE_DIR}" ]; then
   echo "Prepared DINO feature dir not found: ${DINO_FEATURE_DIR}" >&2
   echo "Run DP/submit_train_dp_dino.sh first, or DP/src/prepare_dino_for_training_dataset.py." >&2
   exit 1
@@ -103,12 +104,22 @@ echo "  dino dir   : ${DINO_FEATURE_DIR}"
 echo "  output     : ${SKILLSET_DIR}"
 echo "  task ids   :${TASK_IDS}"
 
+# Curves-only backfill (CURVES_ONLY=true from submit_build_data.sh): regenerate per-episode
+# multimodality curves for an EXISTING skillset; build_skill_dataset leaves skills untouched and only
+# dumps curves/ep*.npz (resume keyed on the curve file).
+CURVES_ARG=()
+if [ "${CURVES_ONLY:-false}" = "true" ]; then
+  CURVES_ARG=(--curves_only)
+  echo "  mode       : CURVES_ONLY (skills unchanged, dumping curves only)"
+fi
+
 PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
   python examples/libero/build_skill_dataset.py \
     --dataset_dir "${RAW_DATASET_DIR}" \
     --policy_path "${DP_POLICY_PATH}" \
     --output_dir "${SKILLSET_DIR}" \
     --task_ids ${TASK_IDS} \
+    ${CURVES_ARG[@]+"${CURVES_ARG[@]}"} \
     --replan_interval "${SKILLSET_REPLAN_INTERVAL}" \
     --nms_dist "${SKILLSET_NMS_DIST}" \
     --noise_scheduler_type DDIM \

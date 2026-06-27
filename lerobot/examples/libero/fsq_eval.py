@@ -493,12 +493,18 @@ def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--model_path", required=True)
     p.add_argument("--skills_dir", required=True)
-    p.add_argument("--dino_features", required=True)
+    p.add_argument("--dino_features", required=True,
+                   help="EITHER a per-frame DINO dir (tokens sliced lazily on the fly — no materialized "
+                        "file) OR a precomputed token npz (extract_skill_dino_tokens.py). Both identical.")
     p.add_argument("--dino_features_wrist", default=None,
                    help="wrist DINO tokens npz (terminator's 2nd camera); only needed for dual-camera "
-                        "models (terminator_use_wrist=True)")
+                        "models in materialized mode. In lazy mode (dino_features is a dir) wrist is read "
+                        "from the SAME dir via --image_key_wrist.")
     p.add_argument("--dataset_dir", required=True, help="LeRobot dataset dir (videos + meta) for frames")
-    p.add_argument("--image_key", default="observation.images.image")
+    p.add_argument("--image_key", default="observation.images.image",
+                   help="primary-camera key; also picks the camera subdir in lazy mode")
+    p.add_argument("--image_key_wrist", default="observation.images.wrist_image",
+                   help="lazy mode: wrist-camera subdir for dual-camera terminator")
     p.add_argument("--output_dir", required=True, help="where the HTML is written (FSQ_eval/outputs/<run>/<epoch>)")
     p.add_argument("--latents_path", default="",
                    help="where to save/load skill_latents.npz (default: <output_dir>/skill_latents.npz). "
@@ -532,13 +538,17 @@ def main():
     use_wrist = bool(getattr(model, "terminator_use_wrist", False))
     print(f"[fsq_eval] loading skills / DINO (3rd-person{' + wrist' if use_wrist else ''}) ...")
     segments, dec_states, dec_targets, metadata = load_skill_files(Path(args.skills_dir))
-    dec_tokens = load_dino_tokens(Path(args.dino_features), metadata)
+    dec_tokens = load_dino_tokens(Path(args.dino_features), metadata, image_key=args.image_key)
     # Wrist is the dual terminator's 2nd camera — load it only when the model actually reads it.
     dec_tokens_wrist = None
     if use_wrist:
-        if not args.dino_features_wrist:
-            raise ValueError("Model has terminator_use_wrist=True but --dino_features_wrist was not given.")
-        dec_tokens_wrist = load_dino_tokens(Path(args.dino_features_wrist), metadata)
+        # Lazy mode: wrist from the SAME per-frame DINO dir (wrist subdir). Materialized: separate npz.
+        if Path(args.dino_features).is_dir():
+            dec_tokens_wrist = load_dino_tokens(Path(args.dino_features), metadata, image_key=args.image_key_wrist)
+        else:
+            if not args.dino_features_wrist:
+                raise ValueError("Model has terminator_use_wrist=True but --dino_features_wrist was not given.")
+            dec_tokens_wrist = load_dino_tokens(Path(args.dino_features_wrist), metadata)
 
     # ── encoder: reuse latents if already present for this run, else encode ──
     latents_path = Path(args.latents_path) if args.latents_path else out_dir / "skill_latents.npz"

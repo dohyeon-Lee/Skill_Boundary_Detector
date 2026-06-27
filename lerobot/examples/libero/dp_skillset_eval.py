@@ -108,6 +108,9 @@ def parse_args():
     p.add_argument("--dataset_dir", required=True, help="raw LeRobot dataset (videos + meta)")
     p.add_argument("--image_key", default="observation.images.image")
     p.add_argument("--out_dir", required=True)
+    p.add_argument("--out_html", default="index.html",
+                   help="output HTML filename within out_dir; encode the DP (e.g. state_obs10_ck100000.html) "
+                        "so different DPs don't overwrite each other in a shallow folder")
     p.add_argument("--n_episodes", type=int, default=12,
                    help="episodes shown; per task when --task_ids is given")
     p.add_argument("--task_ids", type=int, nargs="*", default=None,
@@ -135,8 +138,8 @@ def main():
             curve = load_boundary_curve(args.curves_dir, ep)
             b64 = render_skillset_card(skills, raw, curve, thumb=args.thumb_size)
             cards.append((task_label, f"{_cap(task_label, ep)} — {len(skills)} skills", b64))
-    save_gallery(Path(args.out_dir), "DP skill boundary split", cards)
-    print(f"[dp_eval] done → {Path(args.out_dir) / 'index.html'}")
+    save_gallery(Path(args.out_dir), "DP skill boundary split", cards, filename=args.out_html)
+    print(f"[dp_eval] done → {Path(args.out_dir) / args.out_html}")
 
 
 if __name__ == "__main__":

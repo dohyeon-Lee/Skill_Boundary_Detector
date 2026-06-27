@@ -23,6 +23,7 @@ Data requirements:
 from __future__ import annotations
 
 import sys
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -31,6 +32,8 @@ import torch
 import tyro
 
 sys.path.insert(0, str(Path(__file__).parent))
+
+from precompute_dino_features import fit_feature_length  # noqa: E402  (lazy per-skill DINO slicing)
 
 
 # ── Args ───────────────────────────────────────────────────────────────────────
@@ -41,9 +44,17 @@ class Args:
     skills_dir: str = ""
     """Directory (recursively searched) for per-skill .npz files."""
     dino_features: str = ""
-    """Path to precomputed 3rd-person DINO token npz (features: N_total × n_tokens × feat_dim)."""
+    """3rd-person DINO source. EITHER a per-frame DINO dir (precompute_frame_dino_features.py output)
+    → tokens sliced lazily on the fly (no materialized file, saves ~27GB/camera/skillset); OR a
+    precomputed token npz (extract_skill_dino_tokens.py). Both give identical per-skill clips."""
     dino_features_wrist: str = ""
-    """Path to precomputed wrist DINO token npz (same skill order). Required iff terminator_use_wrist."""
+    """Wrist DINO token npz (same skill order). Required iff terminator_use_wrist AND dino_features is a
+    materialized npz. In lazy mode (dino_features is a dir) wrist is read from the SAME dir."""
+    image_key: str = "observation.images.image"
+    """Lazy mode only: primary-camera subdir of the per-frame DINO dir. For wrist-only FSQ set this to
+    observation.images.wrist_image. Ignored when dino_features is a materialized npz."""
+    image_key_wrist: str = "observation.images.wrist_image"
+    """Lazy mode only: wrist-camera subdir for the dual-camera terminator. Ignored otherwise."""
     terminator_use_third: bool = True
     """Terminator 3rd-person camera. With terminator_use_wrist → 3 modes: 3rd-only / both / wrist-only."""
     terminator_use_wrist: bool = True
@@ -201,21 +212,97 @@ def load_skill_files(
     return segments, dec_states, dec_targets, metadata
 
 
-def load_dino_tokens(
-    features_path: Path,
-    metadata: list[dict],
-) -> list[np.ndarray]:
-    """Load per-skill DINO token sequences (T, n_tokens, feat_dim) from precomputed npz.
+def _image_key_norm(image_key: str) -> str:
+    """Per-frame DINO camera subdir name (matches extract_skill_dino_tokens.py / precompute)."""
+    return image_key.replace(".", "_").replace("/", "_")
 
-    The npz must contain:
-      features  : (N_total, n_tokens, feat_dim) float32
+
+class _LazyDinoClips:
+    """Per-skill DINO token sequences sliced ON-DEMAND from per-frame DINO npz — no materialized token
+    file (saves ~27GB/camera/skillset + the extract step). Indexable like list[np.ndarray]; clip i ==
+    fit_feature_length(episode_features[frame_start:frame_end], length), byte-identical to
+    extract_skill_dino_tokens.py. A small LRU of episode memmaps keeps grouped/sequential access to one
+    open file per episode; mmap means only the sliced frames are paged in.
+
+    Consumed in the MAIN process (SplineFSQDataset copies it into a plain list before any DataLoader
+    fork), so the open memmap handles never need to be pickled to workers.
+    """
+
+    _CACHE_MAX = 8
+
+    def __init__(self, frame_dino_dir: Path, metadata: list[dict], image_key: str):
+        frame_dino_dir = Path(frame_dino_dir)
+        self._ep_dir = frame_dino_dir / _image_key_norm(image_key)
+        if not self._ep_dir.is_dir():
+            avail = [p.name for p in frame_dino_dir.iterdir() if p.is_dir()] if frame_dino_dir.is_dir() else []
+            raise FileNotFoundError(
+                f"Per-frame DINO camera dir not found: {self._ep_dir}\n"
+                f"  frame_dino_dir={frame_dino_dir}  image_key={image_key}\n  available cameras: {avail}")
+        self._meta = metadata
+        self._cache: "OrderedDict[int, np.ndarray]" = OrderedDict()
+
+    def __len__(self) -> int:
+        return len(self._meta)
+
+    def _episode_features(self, ep_id: int) -> np.ndarray:
+        c = self._cache
+        feats = c.get(ep_id)
+        if feats is not None:
+            c.move_to_end(ep_id)
+            return feats
+        f = self._ep_dir / f"episode_{ep_id:07d}.npz"
+        if not f.exists():
+            raise FileNotFoundError(f"Per-frame DINO episode file missing: {f}")
+        feats = np.load(str(f), mmap_mode="r")["features"]   # (T, n_tokens, F) memmap
+        c[ep_id] = feats
+        if len(c) > self._CACHE_MAX:
+            c.popitem(last=False)
+        return feats
+
+    def __getitem__(self, i):
+        if isinstance(i, slice):
+            return [self[j] for j in range(*i.indices(len(self)))]
+        if i < 0:
+            i += len(self._meta)
+        m = self._meta[i]
+        feats = self._episode_features(int(m["episode_id"]))
+        fs, fe = int(m["frame_start"]), int(m["frame_end"])
+        clip = np.ascontiguousarray(feats[fs:min(fe, len(feats))])   # copy the small slice into RAM
+        if clip.ndim == 2:                       # legacy CLS-only (T, F) → (T, 1, F)
+            clip = clip[:, None, :]
+        return fit_feature_length(clip, int(m["length"]))
+
+    def __iter__(self):
+        for i in range(len(self._meta)):
+            yield self[i]
+
+
+def load_dino_tokens(
+    source: Path,
+    metadata: list[dict],
+    image_key: str = "observation.images.image",
+) -> list[np.ndarray]:
+    """Per-skill DINO token sequences (T, n_tokens, feat_dim).
+
+    `source` is EITHER a per-frame DINO **directory** (sliced lazily on access — no materialized file,
+    saves ~27GB/camera/skillset; `image_key` selects the camera subdir) OR a materialized token
+    **npz** (extract_skill_dino_tokens.py; `image_key` ignored). Both yield identical clips.
+
+    A materialized npz must contain:
+      features  : (N_total, n_tokens, feat_dim) float16/float32
       offsets   : (N_skills + 1,) int64
       episode_id, frame_start, frame_end, length : (N_skills,)
     """
+    source = Path(source)
+    if source.is_dir():
+        clips = _LazyDinoClips(source, metadata, image_key)
+        print(f"[FSQ] Lazy DINO tokens ← {source} (key={image_key}, {len(clips)} skills) — clip0 {clips[0].shape}")
+        return clips
+
     # mmap_mode='r': file is memory-mapped — initial open is instant and only accessed
     # pages are read from disk. Critical for 30+ GB npz files where a full upfront
     # np.load would block for >1h on a cold page cache.
-    d = np.load(str(features_path), allow_pickle=False, mmap_mode='r')
+    d = np.load(str(source), allow_pickle=False, mmap_mode='r')
     # Keep the native dtype (usually float16); downstream consumers convert per
     # clip, so a full float32 copy here would just waste memory/time and risk swapping.
     features = d["features"]                         # (N_total, n_tokens, F)
@@ -237,7 +324,7 @@ def load_dino_tokens(
             raise ValueError(f"DINO metadata mismatch at index {i}: got {got}, expected {expected}")
         clips.append(features[offsets[i]:offsets[i + 1]])
 
-    print(f"[FSQ] Loaded DINO tokens from {features_path} — shape per clip: {clips[0].shape}")
+    print(f"[FSQ] Loaded DINO tokens from {source} — shape per clip: {clips[0].shape}")
     return clips
 
 
@@ -255,11 +342,16 @@ def main(args: Args) -> None:
 
     segments, dec_states, dec_targets, metadata = load_skill_files(skills_dir)
 
-    dec_tokens = load_dino_tokens(Path(args.dino_features), metadata)
+    dec_tokens = load_dino_tokens(Path(args.dino_features), metadata, image_key=args.image_key)
     if args.terminator_use_wrist:
-        if not args.dino_features_wrist:
-            raise ValueError("--dino_features_wrist is required when terminator_use_wrist=True.")
-        dec_tokens_wrist = load_dino_tokens(Path(args.dino_features_wrist), metadata)
+        # Lazy mode: wrist comes from the SAME per-frame DINO dir via its wrist subdir (image_key_wrist).
+        # Materialized mode: wrist is a separate token npz (dino_features_wrist).
+        if Path(args.dino_features).is_dir():
+            dec_tokens_wrist = load_dino_tokens(Path(args.dino_features), metadata, image_key=args.image_key_wrist)
+        else:
+            if not args.dino_features_wrist:
+                raise ValueError("--dino_features_wrist is required when terminator_use_wrist=True (materialized mode).")
+            dec_tokens_wrist = load_dino_tokens(Path(args.dino_features_wrist), metadata)
     else:
         dec_tokens_wrist = None  # single-camera terminator
 

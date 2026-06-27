@@ -12,7 +12,7 @@ Evals (toggle via flags), each writing under {out_dir}/{name}/:
   skillset   : skill-boundary split — start/end frames per skill, laid horizontally
   fsq_patch  : per-skill init/final frames + DINO PCA + random sample patches
   fsq_recon  : FSQ reconstruction/termination/progress — same interactive HTML as
-               train_skills/DP_FSQ_eval (reuses fsq_eval.py).
+               train_skills/skill_eval (reuses fsq_eval.py).
 
 Skills are reconstructed from the skillvla dataset columns:
   skill_ds==0 marks a skill start, skill_boundary==1 marks a skill end,
@@ -141,7 +141,7 @@ def _cap(task_label, ep) -> str:
     return f"episode {ep}" if task_label is None else f"task{int(task_label):02d} · episode {ep}"
 
 
-# _fig_to_b64 / _save_gallery are imported from skillset_boundary_viz (shared with DP_FSQ_eval).
+# _fig_to_b64 / _save_gallery are imported from skillset_boundary_viz (shared with train_skills/skill_eval).
 
 
 # ── eval 1: DINO sanity ──────────────────────────────────────────────────────────
@@ -177,7 +177,7 @@ def eval_dino(df, dino: DinoNpz, frames_src, out_dir: Path, n_episodes: int,
 def eval_skillset(df, frames_src, out_dir: Path, n_episodes: int,
                   task_ids=None, thumb: int = 110, curves_dir=None):
     # Rendering (boxed frames + multimodality curve + gallery) is shared with
-    # train_skills/DP_FSQ_eval via skillset_boundary_viz; here the per-episode skills
+    # train_skills/skill_eval via skillset_boundary_viz; here the per-episode skills
     # come from the skillvla dataset parquet (reconstruct_skills).
     cards = []
     for task_label, eps in select_episodes(df, task_ids, n_episodes):

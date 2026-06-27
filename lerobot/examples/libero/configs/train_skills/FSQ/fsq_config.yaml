@@ -1,0 +1,47 @@
+# ── FSQ training config (Stage 3) ──────────────────────────────────────────────
+# Self-contained: trains the FSQ skill autoencoder on the skillset + DINO tokens that
+# build_data produced. Read by submit_train_fsq.sh. Project paths/slurm from global_config.
+#
+# Consumes the skillset under FSQ_inputs/seg_{dp_run_name}_ck{dp_checkpoint}/ — so it points
+# at the SAME DP build_data used.
+
+target_dataset: libero_90_full_full
+
+# Which DP's skillset/tokens to train on — must match the build_data run.
+# dp_run_name: libero_90_full_full_dino8_obs10
+dp_run_name: libero_90_full_full_state_obs20
+
+dp_checkpoint: "100000"
+fsq_patch_grid: 14                  # FSQ token grid (matches build_data)
+fsq_dataset_root: FSQ_dataset
+fsq_inputs_name: FSQ_inputs
+skillset_name: skillset
+
+# ── FSQ model / run ──
+fsq_run_name: "{target_dataset}_{fsq_tag}_dino{fsq_patch_grid}{fsq_exp_suffix}"
+fsq_exp: "wot"                # optional ablation suffix
+fsq_levels: [8, 8]                 # FSQ quantization levels
+fsq_epoch: "1000"
+
+# Terminator cameras (must match build_data's fsq_terminator_use_wrist for token availability).
+fsq_terminator_use_third: false
+fsq_terminator_use_wrist: true
+
+fsq_batch_size: 64
+fsq_num_workers: 8
+fsq_num_epochs: 1000
+fsq_checkpoint_every: 100
+fsq_chunk_size: 10
+
+# ── FSQ loss weights ──
+fsq_delta_loss_weight: 1.0
+fsq_progress_loss_weight: 1.0
+fsq_end_loss_weight: 1.0
+fsq_end_target_sigma: 1.0
+
+# ── Slurm (partition/qos/nodelist/exclude from configs/global_config.yaml) ──
+fsq_train_gres: gpu:1
+fsq_train_cpus_per_task: 12
+fsq_train_mem: 128G
+fsq_train_time: "48:00:00"
+fsq_wandb_project: VAE_train

@@ -30,7 +30,7 @@ mkdir -p logs
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMMON_SRC_DIR="${SCRIPT_DIR}/../../src"
-CONFIG_PATH=${TRAIN_SKILLS_CONFIG:-${SCRIPT_DIR}/../../train_skills_config.yaml}
+CONFIG_PATH=${TRAIN_SKILLS_CONFIG:-${SCRIPT_DIR}/../dp_config.yaml}
 
 BOOTSTRAP_PYTHON="${SCRIPT_DIR}/../../../../../../../.venv/bin/python"
 if [ ! -x "${BOOTSTRAP_PYTHON}" ]; then

@@ -28,7 +28,7 @@ mkdir -p logs_train
 # this file's parent for direct execution.
 SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 COMMON_SRC_DIR="${SUBMIT_DIR}/../src"
-CONFIG_PATH=${TRAIN_SKILLS_CONFIG:-${SUBMIT_DIR}/../train_skills_config.yaml}
+CONFIG_PATH=${TRAIN_SKILLS_CONFIG:-${SUBMIT_DIR}/fsq_config.yaml}
 
 BOOTSTRAP_PYTHON="${SUBMIT_DIR}/../../../../../../.venv/bin/python"
 if [ ! -x "${BOOTSTRAP_PYTHON}" ]; then
@@ -62,35 +62,54 @@ if [ ! -d "${SKILLSET_DIR}/skills" ]; then
   echo "Skillset not found: ${SKILLSET_DIR}/skills" >&2
   exit 1
 fi
-if [ ! -f "${DINO_TOKENS_PATH}" ]; then
-  echo "DINO tokens not found: ${DINO_TOKENS_PATH}" >&2
+# Camera mode from fsq_terminator_use_third / use_wrist:
+#   third=T wrist=F → 3rd-only   (primary=3rd)
+#   third=T wrist=T → both       (primary=3rd, second=wrist)
+#   third=F wrist=T → wrist-only (primary=wrist)
+# LAZY: pass the per-frame DINO dir (NOT a materialized token npz). train_FSQ slices each skill's
+# window on the fly (mmap) — no 27GB/camera token file, no extract step. The primary camera is picked
+# by --image_key; in "both" mode the wrist is read from the SAME dir via --image_key_wrist.
+if [ "${FSQ_TERMINATOR_USE_THIRD}" = "true" ]; then
+  PRIMARY_IMAGE_KEY="observation.images.image"          # 3rd-person primary
+elif [ "${FSQ_TERMINATOR_USE_WRIST}" = "true" ]; then
+  PRIMARY_IMAGE_KEY="observation.images.wrist_image"     # wrist-only: wrist is the single (primary) camera
+else
+  echo "Both fsq_terminator_use_third and fsq_terminator_use_wrist are false — need ≥1 camera." >&2
   exit 1
 fi
-
-# Wrist tokens + --terminator_use_wrist only for the dual-camera terminator.
-WRIST_ARGS=(--terminator_use_wrist)
-if [ "${FSQ_TERMINATOR_USE_WRIST}" = "true" ]; then
-  if [ ! -f "${DINO_TOKENS_WRIST_PATH}" ]; then
-    echo "Wrist DINO tokens not found: ${DINO_TOKENS_WRIST_PATH}" >&2
-    echo "Run FSQ/submit_prepare_fsq_inputs.sh with fsq_terminator_use_wrist: true." >&2
-    exit 1
-  fi
-  WRIST_ARGS+=(--dino_features_wrist "${DINO_TOKENS_WRIST_PATH}")
-else
-  WRIST_ARGS=(--no-terminator_use_wrist)
+if [ ! -d "${FSQ_DINO_FEATURE_DIR}" ]; then
+  echo "Per-frame DINO dir not found: ${FSQ_DINO_FEATURE_DIR}" >&2
+  echo "Run build_data/submit_build_data.sh first (it prepares the per-frame DINO that lazy reads)." >&2
+  exit 1
 fi
+DINO_ARGS=(--dino_features "${FSQ_DINO_FEATURE_DIR}" --image_key "${PRIMARY_IMAGE_KEY}")
 
-# 3rd-person terminator camera (off → wrist-only terminator; requires use_wrist).
-if [ "${FSQ_TERMINATOR_USE_THIRD}" = "true" ]; then
-  THIRD_ARGS=(--terminator_use_third)
+# Terminator always uses the primary slot (--terminator_use_third = the dec_tokens camera); add the
+# wrist slot only in "both" mode (wrist sliced from the same dir via --image_key_wrist).
+TERM_ARGS=(--terminator_use_third)
+if [ "${FSQ_TERMINATOR_USE_THIRD}" = "true" ] && [ "${FSQ_TERMINATOR_USE_WRIST}" = "true" ]; then
+  TERM_ARGS+=(--terminator_use_wrist)
+  DINO_ARGS+=(--image_key_wrist "observation.images.wrist_image")
 else
-  THIRD_ARGS=(--no-terminator_use_third)
+  TERM_ARGS+=(--no-terminator_use_wrist)
 fi
 
 read -r -a FSQ_LEVELS <<< "${FSQ_LEVELS_STR}"
 N_TOKENS=$(( FSQ_PATCH_GRID * FSQ_PATCH_GRID + 1 ))
 
 mkdir -p "${FSQ_OUTPUT_DIR}"
+
+# Provenance so the eval can auto-evaluate this FSQ on the SAME skillset/cameras it was trained on,
+# without the user re-specifying the DP (fsq_run_name doesn't encode the DP).
+cat > "${FSQ_OUTPUT_DIR}/fsq_meta.json" <<JSON
+{
+  "dp_run_name": "${DP_POLICY}",
+  "dp_checkpoint": "${DP_CHECKPOINT}",
+  "fsq_patch_grid": ${FSQ_PATCH_GRID},
+  "fsq_terminator_use_third": ${FSQ_TERMINATOR_USE_THIRD},
+  "fsq_terminator_use_wrist": ${FSQ_TERMINATOR_USE_WRIST}
+}
+JSON
 
 RESUME_ARG=()
 LATEST_CKPT=$(ls -v "${FSQ_OUTPUT_DIR}"/FSQ_epoch*.pt 2>/dev/null | tail -1 || true)
@@ -104,9 +123,8 @@ fi
 PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
   python -u examples/libero/train_FSQ.py \
     --skills_dir              "${SKILLSET_DIR}/skills" \
-    --dino_features           "${DINO_TOKENS_PATH}" \
-    "${WRIST_ARGS[@]}" \
-    "${THIRD_ARGS[@]}" \
+    "${DINO_ARGS[@]}" \
+    "${TERM_ARGS[@]}" \
     --output_dir              "${FSQ_OUTPUT_DIR}" \
     --fsq_levels              "${FSQ_LEVELS[@]}" \
     --chunk_size              "${FSQ_CHUNK_SIZE}" \

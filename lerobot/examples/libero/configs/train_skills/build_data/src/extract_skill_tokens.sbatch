@@ -11,8 +11,10 @@
 #SBATCH --job-name=skill_tokens
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=32G
-#SBATCH --time=00:30:00
+# mem: each camera builds one ~27GB (pg8) float16 array in RAM (list + concatenate copy ≈ 2x). 32G
+# caused swap thrashing (28→3 it/s) and the 30-min wall killed it at 94%. 96G holds it without swap.
+#SBATCH --mem=96G
+#SBATCH --time=02:00:00
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 set -euo pipefail
@@ -20,7 +22,7 @@ mkdir -p logs
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMMON_SRC_DIR="${SCRIPT_DIR}/../../src"
-CONFIG_PATH=${TRAIN_SKILLS_CONFIG:-${SCRIPT_DIR}/../../train_skills_config.yaml}
+CONFIG_PATH=${TRAIN_SKILLS_CONFIG:-${SCRIPT_DIR}/../build_data_config.yaml}
 
 BOOTSTRAP_PYTHON="${SCRIPT_DIR}/../../../../../../../.venv/bin/python"
 if [ ! -x "${BOOTSTRAP_PYTHON}" ]; then
@@ -39,18 +41,19 @@ source "${PROJECT_ROOT}/.venv/bin/activate"
 echo "Extract skill DINO tokens"
 echo "  frame DINO (FSQ) : ${FSQ_DINO_FEATURE_DIR}"
 echo "  skills           : ${SKILLSET_DIR}/skills"
-echo "  output 3rd       : ${DINO_TOKENS_PATH}"
-echo "  terminator wrist : ${FSQ_TERMINATOR_USE_WRIST}"
+echo "  use third / wrist: ${FSQ_TERMINATOR_USE_THIRD} / ${FSQ_TERMINATOR_USE_WRIST}"
 
-# 3rd-person camera (always).
-PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
-  python -u examples/libero/extract_skill_dino_tokens.py \
-    --frame_dino_dir "${FSQ_DINO_FEATURE_DIR}" \
-    --skills_dir     "${SKILLSET_DIR}/skills" \
-    --output_path    "${DINO_TOKENS_PATH}" \
-    --image_key      observation.images.image
+# Extract only the cameras the FSQ uses. wrist-only (third=false, wrist=true) → no 3rd tokens.
+if [ "${FSQ_TERMINATOR_USE_THIRD}" = "true" ]; then
+  echo "  output 3rd       : ${DINO_TOKENS_PATH}"
+  PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
+    python -u examples/libero/extract_skill_dino_tokens.py \
+      --frame_dino_dir "${FSQ_DINO_FEATURE_DIR}" \
+      --skills_dir     "${SKILLSET_DIR}/skills" \
+      --output_path    "${DINO_TOKENS_PATH}" \
+      --image_key      observation.images.image
+fi
 
-# Wrist camera (only for the dual-camera terminator; consumed by its 2nd DINO encoder).
 if [ "${FSQ_TERMINATOR_USE_WRIST}" = "true" ]; then
   echo "  output wrist     : ${DINO_TOKENS_WRIST_PATH}"
   PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
@@ -61,4 +64,4 @@ if [ "${FSQ_TERMINATOR_USE_WRIST}" = "true" ]; then
       --image_key      observation.images.wrist_image
 fi
 
-echo "DONE -> ${DINO_TOKENS_PATH}"
+echo "DONE -> ${DINO_TOKENS_PATH} (third=${FSQ_TERMINATOR_USE_THIRD}) / ${DINO_TOKENS_WRIST_PATH} (wrist=${FSQ_TERMINATOR_USE_WRIST})"

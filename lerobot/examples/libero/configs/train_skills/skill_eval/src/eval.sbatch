@@ -4,11 +4,11 @@
 #   eval knobs : ../eval_config.yaml
 #   FSQ model  : {project_root}/outputs/FSQ/{fsq_eval_run_name}/FSQ.pt (or FSQ_epoch{N:04d}.pt)
 # Outputs (per eval_run_fsq / eval_run_dp toggles):
-#   FSQ : {DP_FSQ_eval}/outputs/{run}/{epoch}/fsq_eval.html  (+ skill_latents.npz next to ckpt)
-#   DP  : {DP_FSQ_eval}/outputs/dp_skillset/{dataset}/index.html
+#   FSQ : {skill_eval}/outputs/{run}/{epoch}/fsq_eval.html  (+ skill_latents.npz next to ckpt)
+#   DP  : {skill_eval}/outputs/dp_skillset/{dataset}/index.html
 #
 # DP_FSQ eval — FSQ reconstruction eval and/or the DP skill-boundary eval (toggled in yaml).
-#SBATCH --job-name=DP_FSQ_eval
+#SBATCH --job-name=skill_eval
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
@@ -21,9 +21,9 @@ mkdir -p logs
 # Anchor on FSQ_EVAL_DIR passed explicitly by the submit script — correct for both sbatch and
 # srun-in-salloc (where SLURM_SUBMIT_DIR points to the allocation's launch dir, not FSQ_eval).
 # Fall back to SLURM_SUBMIT_DIR, then to the spool path.
-EVAL_DIR="${FSQ_EVAL_DIR:-${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}}"   # DP_FSQ_eval
+EVAL_DIR="${FSQ_EVAL_DIR:-${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}}"   # skill_eval
 COMMON_SRC_DIR="${EVAL_DIR}/../src"                          # train_skills/src
-TRAIN_CONFIG="${TRAIN_SKILLS_CONFIG:-${EVAL_DIR}/../train_skills_config.yaml}"
+TRAIN_CONFIG="${TRAIN_SKILLS_CONFIG:-${EVAL_DIR}/eval_config.yaml}"
 EVAL_CONFIG="${FSQ_EVAL_CONFIG:-${EVAL_DIR}/eval_config.yaml}"
 
 BOOTSTRAP_PYTHON="${EVAL_DIR}/../../../../../../.venv/bin/python"
@@ -31,12 +31,15 @@ if [ ! -x "${BOOTSTRAP_PYTHON}" ]; then
   BOOTSTRAP_PYTHON=python3
 fi
 
+# eval knobs FIRST so DP-selection overrides can steer the shared resolver below.
+eval "$("${BOOTSTRAP_PYTHON}" "${EVAL_DIR}/src/eval_config.py" --config "${EVAL_CONFIG}" --shell)"
+[ -n "${EVAL_DP_RUN_NAME}" ]   && export DP_RUN_NAME="${EVAL_DP_RUN_NAME}"
+[ -n "${EVAL_DP_CHECKPOINT}" ] && export DP_CHECKPOINT="${EVAL_DP_CHECKPOINT}"
 if [ -n "${TRAIN_DATA:-}" ]; then
   eval "$("${BOOTSTRAP_PYTHON}" "${COMMON_SRC_DIR}/train_skills_config.py" --config "${TRAIN_CONFIG}" --dataset "${TRAIN_DATA}" --shell)"
 else
   eval "$("${BOOTSTRAP_PYTHON}" "${COMMON_SRC_DIR}/train_skills_config.py" --config "${TRAIN_CONFIG}" --shell)"
 fi
-eval "$("${BOOTSTRAP_PYTHON}" "${EVAL_DIR}/src/eval_config.py" --config "${EVAL_CONFIG}" --shell)"
 
 cd "${LEROBOT_ROOT}"
 source "${PROJECT_ROOT}/.venv/bin/activate"
@@ -62,7 +65,11 @@ fi
 
 # ── DP skill-boundary eval (FSQ-independent; off the FSQ_dataset skillset npz + curves) ──
 if [ "${EVAL_RUN_DP}" = "true" ]; then
+  # Shallow folder + DP-named HTML so different DPs don't overwrite each other (no deep nesting).
+  # Strip the redundant dataset prefix from the run name (libero_90_full_full_state_obs10 → state_obs10).
+  DP_TAG="${DP_POLICY#${TARGET_DATASET}_}"
   DP_OUT_DIR="${EVAL_DIR}/outputs/dp_skillset/${TARGET_DATASET}"
+  DP_OUT_HTML="${DP_TAG}_ck${DP_CHECKPOINT}.html"   # e.g. state_obs10_ck100000.html
   DP_TASK_ARGS=()
   [ -n "${DP_EVAL_TASK_IDS}" ] && DP_TASK_ARGS=(--task_ids ${DP_EVAL_TASK_IDS})
   echo ""
@@ -78,10 +85,11 @@ if [ "${EVAL_RUN_DP}" = "true" ]; then
       --dataset_dir "${DATASET_VIDEO_DIR}" \
       --image_key   "${FSQ_EVAL_IMAGE_KEY}" \
       --out_dir     "${DP_OUT_DIR}" \
+      --out_html    "${DP_OUT_HTML}" \
       --n_episodes  "${DP_EVAL_N_EPISODES}" \
       --thumb_size  "${FSQ_EVAL_THUMB_SIZE}" \
       ${DP_TASK_ARGS[@]+"${DP_TASK_ARGS[@]}"}
-  echo "DONE DP → ${DP_OUT_DIR}/index.html"
+  echo "DONE DP → ${DP_OUT_DIR}/${DP_OUT_HTML}"
 fi
 
 # ── FSQ reconstruction eval (encoder + decoder → wandb scalars + interactive HTML) ──
@@ -97,7 +105,7 @@ if [ "${EVAL_RUN_FSQ}" = "true" ]; then
     EPOCH_TAG="epoch$(printf '%04d' "${FSQ_EVAL_CHECKPOINT}")"
     LATENTS_PATH="${MODEL_DIR}/skill_latents_${EPOCH_TAG}.npz"
   fi
-  # HTML stays under DP_FSQ_eval/outputs; latents live next to the checkpoint in outputs/FSQ.
+  # HTML stays under skill_eval/outputs; latents live next to the checkpoint in outputs/FSQ.
   OUTPUT_DIR="${EVAL_DIR}/outputs/${FSQ_EVAL_RUN_NAME}/${EPOCH_TAG}"
   echo ""
   echo "FSQ eval → ${OUTPUT_DIR}  (model ${MODEL_PATH})"
@@ -106,14 +114,46 @@ if [ "${EVAL_RUN_FSQ}" = "true" ]; then
     echo "Check fsq_eval_run_name / checkpoint in ${EVAL_CONFIG}" >&2
     exit 1
   fi
+  # Evaluate THIS FSQ on the skillset/cameras it was TRAINED on — read from fsq_meta.json (written by
+  # train_fsq). Independent of eval_dp_run_name (that only steers the DP eval). The FSQ's skillset/
+  # tokens already exist (training required them). Fall back to eval_config if no meta (older runs).
+  FSQ_META="${MODEL_DIR}/fsq_meta.json"
+  F_SKILLSET="${SKILLSET_DIR}"; F_DINO_DIR="${FSQ_DINO_FEATURE_DIR}"
+  F_USE_THIRD="${FSQ_TERMINATOR_USE_THIRD}"; F_USE_WRIST="${FSQ_TERMINATOR_USE_WRIST}"
+  if [ -f "${FSQ_META}" ]; then
+    read -r F_DP F_CKPT F_GRID F_USE_THIRD F_USE_WRIST < <("${BOOTSTRAP_PYTHON}" - "${FSQ_META}" <<'PY'
+import json, sys
+m = json.load(open(sys.argv[1]))
+print(m["dp_run_name"], m["dp_checkpoint"], m["fsq_patch_grid"],
+      str(m["fsq_terminator_use_third"]).lower(), str(m["fsq_terminator_use_wrist"]).lower())
+PY
+)
+    # Re-resolve the FSQ's own skillset + per-frame DINO dir for its recorded DP/grid (subshell, no leak).
+    eval "$(DP_RUN_NAME="${F_DP}" DP_CHECKPOINT="${F_CKPT}" FSQ_PATCH_GRID="${F_GRID}" \
+      "${BOOTSTRAP_PYTHON}" "${COMMON_SRC_DIR}/train_skills_config.py" --config "${TRAIN_CONFIG}" --shell 2>/dev/null \
+      | grep -E '^export (SKILLSET_DIR|FSQ_DINO_FEATURE_DIR)=')"
+    F_SKILLSET="${SKILLSET_DIR}"; F_DINO_DIR="${FSQ_DINO_FEATURE_DIR}"
+    echo "  FSQ source DP    : ${F_DP} (ck${F_CKPT}, pg${F_GRID}, third=${F_USE_THIRD} wrist=${F_USE_WRIST})"
+  fi
+  if [ ! -d "${F_SKILLSET}/skills" ]; then
+    echo "FSQ's training skillset not found: ${F_SKILLSET}/skills" >&2; exit 1
+  fi
+  # LAZY: slice the FSQ's per-frame DINO on the fly (no materialized token npz). Primary camera = 3rd if
+  # the FSQ used 3rd, else wrist (also the thumbnail camera); wrist 2nd encoder only in "both" mode.
+  if [ ! -d "${F_DINO_DIR}" ]; then
+    echo "FSQ's per-frame DINO dir not found: ${F_DINO_DIR}" >&2; exit 1
+  fi
+  if [ "${F_USE_THIRD}" = "true" ]; then FSQ_PRIMARY_KEY="observation.images.image"; else FSQ_PRIMARY_KEY="observation.images.wrist_image"; fi
+  FSQ_DINO_ARGS=(--dino_features "${F_DINO_DIR}" --image_key "${FSQ_PRIMARY_KEY}")
+  if [ "${F_USE_THIRD}" = "true" ] && [ "${F_USE_WRIST}" = "true" ]; then
+    FSQ_DINO_ARGS+=(--image_key_wrist "observation.images.wrist_image")
+  fi
   PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     python -u examples/libero/fsq_eval.py \
       --model_path          "${MODEL_PATH}" \
-      --skills_dir          "${SKILLSET_DIR}/skills" \
-      --dino_features       "${DINO_TOKENS_PATH}" \
-      --dino_features_wrist "${DINO_TOKENS_WRIST_PATH}" \
+      --skills_dir          "${F_SKILLSET}/skills" \
+      "${FSQ_DINO_ARGS[@]}" \
       --dataset_dir      "${DATASET_VIDEO_DIR}" \
-      --image_key        "${FSQ_EVAL_IMAGE_KEY}" \
       --output_dir       "${OUTPUT_DIR}" \
       --latents_path     "${LATENTS_PATH}" \
       --n_action_steps   "${FSQ_EVAL_N_ACTION_STEPS}" \

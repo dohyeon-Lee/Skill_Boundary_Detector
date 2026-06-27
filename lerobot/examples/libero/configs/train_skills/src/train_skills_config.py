@@ -217,6 +217,21 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         dp_n_obs_steps=dp_n_obs_steps,
         dp_horizon=dp_horizon,
     )
+    # dp_run_name (or env DP_RUN_NAME) names a trained DP folder DIRECTLY (outputs/DP/<name>).
+    # Downstream stages (build_data / FSQ / eval) set it to target a DP without re-deriving the
+    # name from vision/grid/n_obs. Empty → use the name generated above.
+    _dp_run_name = str(get_value(cfg, "dp_run_name", "")).strip()
+    if _dp_run_name:
+        dp_policy = _dp_run_name
+        # Infer the DP's vision from its name tag so downstream gates (DINO prepare/check) are
+        # correct even when the DP is referenced only by folder name. A state/resnet DP uses no
+        # DINO, so build_data must not require it.
+        if "_state" in _dp_run_name:
+            dp_vision = "state"
+        elif "_resnet" in _dp_run_name:
+            dp_vision = "resnet"
+        elif "_dino" in _dp_run_name:
+            dp_vision = "dino"
     dp_checkpoint = str(get_value(cfg, "dp_checkpoint", "100000"))
     # skillset + per-skill DINO tokens are DP-dependent (the boundaries come from the DP),
     # so key them by DP/checkpoint — a different DP/checkpoint never reuses or clobbers
