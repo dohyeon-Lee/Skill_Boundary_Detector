@@ -82,6 +82,8 @@ class PI05Config(PreTrainedConfig):
     # Finetuning settings
     freeze_vision_encoder: bool = False  # Freeze only the vision encoder
     train_expert_only: bool = False  # Freeze entire VLM, train only action expert and projections
+    freeze_language_model: bool = False  # Freeze only the LLM backbone; vision tower + projector + action expert stay trainable
+    probe_freeze: bool = False  # Log a per-component trainable/frozen parameter breakdown at model init (verification only)
 
     # Optimizer settings: see openpi `AdamW`
     optimizer_lr: float = 2.5e-5  # see openpi `CosineDecaySchedule: peak_lr`

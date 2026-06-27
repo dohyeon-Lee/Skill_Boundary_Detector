@@ -10,14 +10,18 @@ pi_base: models/pi05_base   # project_root(global_config) 기준 상대경로 �
 
 # ── pi05 PT ───────────────────────────────────────────────────
 pt_dataset: libero_90_full_full
-pt_batch_size: 16
+pt_batch_size: 128
 pt_num_gpus: 1
 pt_num_workers: 4
-pt_exp: ""
+pt_exp: "freeze_LANG"
 pt_lr_base: 2.5e-05
 pt_steps: 100000
 pt_save_freq: 5000
 pt_wandb_project: VLA_posttrain
+pt_freeze_vision_encoder: false   # true → vision encoder만 freeze
+pt_train_expert_only: false       # true → VLM 전체 freeze, action expert + projection만 학습
+pt_freeze_language_model: true   # true → LLM 백본만 freeze, vision + action expert는 학습
+pt_probe_freeze: true             # true → 시작 시 컴포넌트별 trainable/frozen 파라미터 수를 로그에 출력(검증용)
 
 # Slurm for pi05 PT (partition/qos/nodelist/exclude from configs/global_config.yaml).
 pt_gres: gpu:1
@@ -40,6 +44,8 @@ ft_pretrained_exp: ""
 ft_pretrained_checkpoint: "015000"
 ft_freeze_vision_encoder: false
 ft_train_expert_only: false
+ft_freeze_language_model: false   # true → LLM 백본만 freeze, vision + action expert는 학습
+ft_probe_freeze: true             # true → 시작 시 컴포넌트별 trainable/frozen 파라미터 수를 로그에 출력(검증용)
 
 # Slurm for pi05 FT (partition/qos/nodelist/exclude from configs/global_config.yaml).
 ft_gres: gpu:1

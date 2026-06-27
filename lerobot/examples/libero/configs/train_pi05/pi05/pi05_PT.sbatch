@@ -50,17 +50,32 @@ if [ ! -d "${PT_DATASET_DIR}" ]; then
   exit 1
 fi
 
-GPU_FREE_THRESHOLD_MIB=500
-echo "Waiting for GPU to be free (threshold: ${GPU_FREE_THRESHOLD_MIB} MiB)..."
-while true; do
-  USED_MIB=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | awk '{s+=$1} END {print s}')
-  if [ "${USED_MIB}" -le "${GPU_FREE_THRESHOLD_MIB}" ]; then
-    echo "GPU is free (${USED_MIB} MiB used). Starting training."
-    break
-  fi
-  echo "  GPU in use: ${USED_MIB} MiB. Waiting 60s..."
-  sleep 60
-done
+# GPU selection.
+# IMPORTANT: under Slurm, gres already pins a dedicated GPU via CUDA_VISIBLE_DEVICES. Overriding
+# it (scanning nvidia-smi and picking the "emptiest" GPU) desyncs Slurm's accounting: Slurm still
+# thinks our reserved GPU is in use and hands the GPU we actually grabbed to another job, so two
+# jobs collide on one physical GPU -> CUDA "unknown error" crashes. So under Slurm we TRUST Slurm's
+# allocation and never rescan. Only in a bare foreground run (no Slurm) do we pick the emptiest GPU.
+if [ -n "${SLURM_JOB_ID:-}" ]; then
+  echo "Under Slurm (job ${SLURM_JOB_ID}); using Slurm-allocated CUDA_VISIBLE_DEVICES='${CUDA_VISIBLE_DEVICES:-<unset>}'. Starting training."
+else
+  GPU_FREE_THRESHOLD_MIB=500
+  NEED_GPUS="${PT_NUM_GPUS:-1}"
+  echo "No Slurm detected; selecting ${NEED_GPUS} emptiest GPU(s) (threshold: ${GPU_FREE_THRESHOLD_MIB} MiB)..."
+  while true; do
+    # index,used sorted by used-memory ascending; the N emptiest are the first N rows.
+    SORTED=$(nvidia-smi --query-gpu=index,memory.used --format=csv,noheader,nounits | sort -t',' -k2,2 -n)
+    SEL_IDX=$(echo "${SORTED}" | head -n "${NEED_GPUS}" | awk -F',' '{gsub(/ /,"",$1); print $1}' | paste -sd, -)
+    MAX_USED=$(echo "${SORTED}" | head -n "${NEED_GPUS}" | awk -F',' '{gsub(/ /,"",$2); print $2}' | sort -n | tail -n1)
+    if [ "${MAX_USED:-999999}" -le "${GPU_FREE_THRESHOLD_MIB}" ]; then
+      export CUDA_VISIBLE_DEVICES="${SEL_IDX}"
+      echo "Selected GPU(s) ${CUDA_VISIBLE_DEVICES} (max ${MAX_USED} MiB used). Starting training."
+      break
+    fi
+    echo "  Emptiest ${NEED_GPUS} GPU(s) still busy (max ${MAX_USED} MiB @ idx ${SEL_IDX}). Waiting 60s..."
+    sleep 60
+  done
+fi
 
 CONFIG_JSON="${PT_OUTPUT_DIR}/checkpoints/last/pretrained_model/train_config.json"
 RESUME_ARGS=()
@@ -84,8 +99,10 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
   --wandb.enable=true \
   --wandb.project="${PT_WANDB_PROJECT}" \
   --policy.dtype=bfloat16 \
-  --policy.freeze_vision_encoder=false \
-  --policy.train_expert_only=false \
+  --policy.freeze_vision_encoder="${PT_FREEZE_VISION_ENCODER}" \
+  --policy.train_expert_only="${PT_TRAIN_EXPERT_ONLY}" \
+  --policy.freeze_language_model="${PT_FREEZE_LANGUAGE_MODEL}" \
+  --policy.probe_freeze="${PT_PROBE_FREEZE}" \
   --policy.push_to_hub=false \
   --save_freq="${PT_SAVE_FREQ}" \
   --steps="${PT_STEPS}" \

@@ -120,6 +120,12 @@ else
   echo "No checkpoint found, training from scratch"
 fi
 
+# weighted_loss probe (tyro bool flag): end-weight the reconstructor delta loss.
+WEIGHTED_ARG=(--no-weighted_loss)
+if [ "${FSQ_WEIGHTED_LOSS:-false}" = "true" ]; then
+  WEIGHTED_ARG=(--weighted_loss)
+fi
+
 PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
   python -u examples/libero/train_FSQ.py \
     --skills_dir              "${SKILLSET_DIR}/skills" \
@@ -146,6 +152,7 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     --progress_loss_weight    "${FSQ_PROGRESS_LOSS_WEIGHT}" \
     --end_loss_weight         "${FSQ_END_LOSS_WEIGHT}" \
     --end_target_sigma        "${FSQ_END_TARGET_SIGMA}" \
+    "${WEIGHTED_ARG[@]}" \
     --checkpoint_every        "${FSQ_CHECKPOINT_EVERY}" \
     --wandb_project           "${FSQ_WANDB_PROJECT}" \
     --wandb_run_name          "${FSQ_RUN_NAME}" \

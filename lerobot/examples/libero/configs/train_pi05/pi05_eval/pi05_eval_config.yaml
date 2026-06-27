@@ -8,14 +8,16 @@ pi05_ft_outputs_root: pi05_FT
 
 # ── Which trained model to evaluate ──
 eval_stage: PT                 # PT → load from pi05_PT ; FT → load from pi05_FT
-eval_checkpoint: "015000"
+eval_checkpoint: "005000"
 # Exact output folder name under {outputs_root}/{pi05_PT|pi05_FT}/ (set explicitly — eval is standalone).
-eval_model: "PT_libero_90_full_full_pi05_batch16"
+# eval_model: "PT_libero_90_full_full_pi05_batch16"
 # eval_model: "FT_015000PT_libero_10_full_2_FT_pi05_batch16"
+eval_model: "PT_libero_90_full_full_pi05_batch128_freeze_VLM"
+# eval_model: "PT_libero_90_full_full_pi05_batch16_full_unfreeze"
 
 
 # ── Eval rollout ──
-eval_target_task: libero_object
+eval_target_task: libero_90
 eval_task_ids: "[0,1,2,3,4,5,6,7,8,9]"
 eval_n_episodes: 5
 eval_episode_offset: 25

@@ -15,8 +15,8 @@ dp_checkpoint: "100000"
 
 # DINO grids: DP segmentation reads pg{dino_patch_grid}; FSQ token extraction reads pg{fsq_patch_grid}.
 dino_source_dataset: libero_90_full_full
-dino_patch_grid: 8                  # DP grid (matches dp_run_name)
-fsq_patch_grid: 8                   # FSQ skill-token grid (may differ from DP grid)
+dino_patch_grid: 14                  # DP grid (matches dp_run_name)
+fsq_patch_grid: 14                   # FSQ skill-token grid (may differ from DP grid)
 dino_copy_mode: hardlink
 dino_overwrite_prepared: false
 
