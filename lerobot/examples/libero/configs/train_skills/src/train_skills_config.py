@@ -243,15 +243,20 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
     fsq_image_token_dim = int(get_value(cfg, "fsq_image_token_dim", 256))
     fsq_exp = str(get_value(cfg, "fsq_exp", "")).strip()
     fsq_exp_suffix = f"_{fsq_exp}" if fsq_exp else ""
+    # DP tag for the FSQ run name = the DP run with the dataset prefix stripped
+    # (libero_90_full_full_state_obs20 → state_obs20), so the FSQ folder shows WHICH DP's skillset it
+    # was trained on (state_obs20 vs dino8_obs10 …), not just the FSQ's own patch grid.
+    dp_tag = dp_policy[len(target_dataset) + 1:] if dp_policy.startswith(f"{target_dataset}_") else dp_policy
     fsq_run_template = str(
         get_value(
             cfg,
             "fsq_run_name",
-            "{target_dataset}_{fsq_tag}_pg{fsq_patch_grid}_image{fsq_image_token_dim}{fsq_exp_suffix}",
+            "{target_dataset}_{dp_tag}_{fsq_tag}_dino{fsq_patch_grid}{fsq_exp_suffix}",
         )
     )
     fsq_run_name = fsq_run_template.format(
         target_dataset=target_dataset,
+        dp_tag=dp_tag,
         fsq_tag=fsq_tag,
         dino_patch_grid=dino_patch_grid,
         fsq_patch_grid=fsq_patch_grid,

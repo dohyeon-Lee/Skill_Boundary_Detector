@@ -42,14 +42,11 @@ if [ ! -d "${SKILLSET_DIR}/skills" ]; then
   echo "Run build_data/submit_build_data.sh first." >&2
   exit 1
 fi
-if [ ! -f "${DINO_TOKENS_PATH}" ]; then
-  echo "DINO tokens not found: ${DINO_TOKENS_PATH}" >&2
-  echo "Run build_data/submit_build_data.sh first." >&2
-  exit 1
-fi
-if [ ! -f "${DINO_TOKENS_WRIST_PATH}" ]; then
-  echo "Wrist DINO tokens not found: ${DINO_TOKENS_WRIST_PATH}" >&2
-  echo "Run build_data/submit_build_data.sh first." >&2
+# LAZY: FSQ slices per-frame DINO on the fly (train_fsq.sbatch passes the dir, not a token npz), so we
+# only need the per-frame DINO dir — no materialized dino_tokens_*.npz. Both cameras live under it.
+if [ ! -d "${FSQ_DINO_FEATURE_DIR}" ]; then
+  echo "Per-frame DINO dir not found: ${FSQ_DINO_FEATURE_DIR}" >&2
+  echo "Run build_data/submit_build_data.sh first (it prepares the per-frame DINO that lazy reads)." >&2
   exit 1
 fi
 
@@ -76,8 +73,7 @@ echo "Submit FSQ train"
 echo "  dataset     : ${TARGET_DATASET}"
 echo "  FSQ inputs  : ${FSQ_INPUTS_DIR}"
 echo "  skillset    : ${SKILLSET_DIR}/skills"
-echo "  DINO tokens : ${DINO_TOKENS_PATH}"
-echo "  wrist tokens: ${DINO_TOKENS_WRIST_PATH}"
+echo "  DINO (lazy) : ${FSQ_DINO_FEATURE_DIR}"
 echo "  output      : ${FSQ_OUTPUT_DIR}"
 echo "  slurm       : partition=${FSQ_TRAIN_PARTITION} qos=${FSQ_TRAIN_QOS} gres=${FSQ_TRAIN_GRES}"
 

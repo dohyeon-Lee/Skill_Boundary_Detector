@@ -30,13 +30,11 @@ dp_eval_task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]   # empty [] = first dp_eval_n_
 
 eval_run_fsq: true
 
-# fsq_eval_run_name: libero_90_full_full_fsq555_dino8_wow
-# fsq_eval_run_name: libero_90_full_full_fsq555_dino8_wot
-# fsq_eval_run_name: libero_90_full_full_fsq88_dino8_wow
-fsq_eval_run_name: libero_90_full_full_fsq88_dino8_wot
-
-# fsq_eval_run_name: libero_90_full_full_fsq88_dino8_wow
-# fsq_eval_run_name: libero_90_full_full_fsq88_dino8_wot
+# Folder names now embed the DP run (dp_tag) that produced the skillset. Renamed runs (all dino8_obs10):
+# fsq_eval_run_name: libero_90_full_full_dino8_obs10_fsq555_dino8_wow
+# fsq_eval_run_name: libero_90_full_full_dino8_obs10_fsq555_dino8_wot
+# fsq_eval_run_name: libero_90_full_full_dino8_obs10_fsq88_dino8_wow
+fsq_eval_run_name: libero_90_full_full_dino8_obs10_fsq88_dino8_wot
 
 fsq_eval_checkpoint: 1000
 # Camera mode (3rd / wrist) is read automatically from the FSQ's fsq_meta.json (written at train time),

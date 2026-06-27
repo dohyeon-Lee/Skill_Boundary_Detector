@@ -10,7 +10,7 @@ target_dataset: libero_90_full_full
 
 # Which trained DP to segment with — folder name under outputs/DP/ (ls there for choices).
 # The DP-DINO grid below must match this DP (dino{grid}); for resnet/state DPs the grid is unused.
-dp_run_name: libero_90_full_full_dino8_obs10
+dp_run_name: libero_90_full_full_state_obs20
 dp_checkpoint: "100000"
 
 # DINO grids: DP segmentation reads pg{dino_patch_grid}; FSQ token extraction reads pg{fsq_patch_grid}.

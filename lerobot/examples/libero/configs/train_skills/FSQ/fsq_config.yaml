@@ -12,13 +12,15 @@ target_dataset: libero_90_full_full
 dp_run_name: libero_90_full_full_state_obs20
 
 dp_checkpoint: "100000"
-fsq_patch_grid: 14                  # FSQ token grid (matches build_data)
+fsq_patch_grid: 8                  # FSQ token grid (matches build_data)
 fsq_dataset_root: FSQ_dataset
 fsq_inputs_name: FSQ_inputs
 skillset_name: skillset
 
 # ── FSQ model / run ──
-fsq_run_name: "{target_dataset}_{fsq_tag}_dino{fsq_patch_grid}{fsq_exp_suffix}"
+# {dp_tag} = the DP run that produced the skillset (dataset prefix stripped, e.g. state_obs20 /
+# dino8_obs10) → the FSQ folder shows WHICH DP it was trained on, not just its own grid.
+fsq_run_name: "{target_dataset}_{dp_tag}_{fsq_tag}_dino{fsq_patch_grid}{fsq_exp_suffix}"
 fsq_exp: "wot"                # optional ablation suffix
 fsq_levels: [8, 8]                 # FSQ quantization levels
 fsq_epoch: "1000"
