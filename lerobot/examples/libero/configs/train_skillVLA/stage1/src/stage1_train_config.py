@@ -118,7 +118,7 @@ def build_settings(cfg: dict, mode: str = "joint", loss_mode_arg: str = "plain")
     if staged:
         phase1_weighting = str(get_value(cfg, "staged_phase1_weighting", "late")).strip().lower()
         steps_total = int(get_value(cfg, "steps", 100000))           # both phases run this many steps
-        phase1_output = output_dir / "1-1"
+        phase1_output = output_dir / f"1-1_{phase1_weighting}"       # weighting tag → late/plain don't collide
         ws = str(get_value(cfg, "staged_phase2_warmstart", "last")).strip()
         if ws.lower() in ("", "last", "null", "none"):
             ws_tag = "last"
