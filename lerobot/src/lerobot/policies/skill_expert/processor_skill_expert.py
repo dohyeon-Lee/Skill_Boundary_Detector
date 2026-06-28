@@ -39,12 +39,20 @@ from lerobot.utils.constants import (
 # skill_ds/skill_de give the within-skill offsets (boundary/cum/terminator targets). (The skill-progress
 # token was removed — the action expert conditions on the skill code only.)
 SKILL_EXPERT_BATCH_KEYS = ("skill_index", "skill_sequence", "skill_ds", "skill_de")
+# Added by the dataset wrappers and read by the model in forward — must SURVIVE the processor:
+#   connector END-frame inputs (SkillExpertDataset) + the terminator's current-frame DINO tokens
+#   (SkillVLADinoTokenDataset, output_key=skill_decoder_dino). These are NOT observation.* prefixed,
+#   so without this they'd be dropped (→ "needs 'skill_decoder_dino'" / silent connector-off).
+CONNECTOR_TERMINATOR_KEYS = (
+    "skill_end_image", "skill_end_wrist_image", "skill_end_state", "skill_decoder_dino",
+)
 
 
 def skill_expert_batch_to_transition(batch: dict[str, Any]) -> EnvTransition:
     observation = {k: v for k, v in batch.items() if k.startswith(OBS_PREFIX)}
     complementary_data: dict[str, Any] = {}
-    for key in ("task", "index", "task_index", "episode_index", *SKILL_EXPERT_BATCH_KEYS):
+    for key in ("task", "index", "task_index", "episode_index",
+                *SKILL_EXPERT_BATCH_KEYS, *CONNECTOR_TERMINATOR_KEYS):
         if key in batch:
             complementary_data[key] = batch[key]
     complementary_data.update({k: v for k, v in batch.items() if "_is_pad" in k})

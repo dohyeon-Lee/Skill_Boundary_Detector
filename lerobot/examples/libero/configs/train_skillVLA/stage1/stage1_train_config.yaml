@@ -80,7 +80,7 @@ skill_end_loss_weight: 2.0        # R — per-step weight = 1+(R-1)·progress (l
 
 # ── Optimization ──
 batch_size: 256
-num_workers: 8
+num_workers: 4
 num_gpus: 1
 lr_base: 2.5e-05                # effective LR = lr_base * num_gpus
 steps: 15000
