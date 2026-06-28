@@ -56,16 +56,15 @@ boundary_mode: hold              # cross-skill chunk tail: hold (stop+hold, clea
 # ── staged params (used by submit_staged_1/2.sh). Both phases run `steps` (below). ──
 staged_phase1_weighting: late     # phase 1-1 action loss: late (skill-end emphasized) | plain (probe)
 staged_phase2_warmstart: last     # 1-1 ckpt that inits 1-2: "last" | step number | path → folder 1-2_<tag>
-# Terminator co-train (isolated skill-end-timing head, gradient-disjoint; needs fsq_path). Lets a
-# checkpoint be evaled (skill transitions). In staged it runs in 1-1.
+# Terminator co-train (isolated skill-end-timing head, gradient-disjoint). fsq_path + dino tokens are
+# AUTO-derived from run_tag (run_dir/FSQ.pt + run_dir/dino.npz, build_data products) — leave blank.
 train_terminator: true
-fsq_path:                         # frozen FSQ checkpoint (e.g. {run_dir}/FSQ.pt); blank → off
+fsq_path:                         # blank → AUTO {run_dir}/FSQ.pt   (override only for a different FSQ)
 terminator_end_target_sigma: 1.0  # termination target = Gaussian bump exp(-de²/2σ²) at skill end
 terminator_end_pos_weight: 1.0    # BCE pos_weight (skill-end frames are rare positives)
 terminator_lr_scale: 1.0          # LR × optimizer_lr for the terminator's own param group
-# Current-frame FSQ-grid DINO tokens (precomputed at build_data; attached by SkillVLADinoTokenDataset).
-# Required when train_terminator: true. Blank → off.
-skill_decoder_dino_tokens_path:   # e.g. {run_dir}/FSQ_inputs/.../skill_decoder_dino.npz
+# Current-frame FSQ-grid DINO tokens (build_data product, attached by SkillVLADinoTokenDataset).
+skill_decoder_dino_tokens_path:   # blank → AUTO {run_dir}/dino.npz
 skill_decoder_dino_cache_path:    # blank → tokens_path.features.npy
 skill_decoder_dino_build_cache: true
 

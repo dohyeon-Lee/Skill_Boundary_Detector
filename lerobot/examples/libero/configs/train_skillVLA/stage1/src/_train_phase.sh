@@ -14,6 +14,16 @@ if [ ! -e "${SKILLVLA_DATASET_DIR}" ]; then
   echo "Missing skillvla dataset: ${SKILLVLA_DATASET_DIR}  (run configs/train_skillVLA/build_data first)" >&2
   exit 1
 fi
+if [ "${TRAIN_TERMINATOR}" = "true" ]; then   # terminator inputs are auto-derived build_data products
+  for _f in "${FSQ_PATH}" "${SKILL_DECODER_DINO_TOKENS_PATH}"; do
+    if [ ! -e "${_f}" ]; then
+      echo "train_terminator=true but a terminator input is missing: ${_f}" >&2
+      echo "  → expected a build_data product under the run dir (FSQ.pt / dino.npz). Rebuild the dataset," >&2
+      echo "    or set train_terminator: false in the yaml." >&2
+      exit 1
+    fi
+  done
+fi
 nvidia-smi || true
 
 # train_phase OUT STEPS USE_CONNECTOR ACTION_WEIGHTING FREEZE_EXPERT_VISION BOUNDARY_MODE PRETRAINED LOSS_MODE

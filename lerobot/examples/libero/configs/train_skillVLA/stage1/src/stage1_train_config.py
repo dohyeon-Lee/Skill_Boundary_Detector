@@ -70,10 +70,17 @@ def build_settings(cfg: dict, mode: str = "joint", loss_mode_arg: str = "plain")
     loss_mode = str(loss_mode_arg).strip().lower()                           # plain | weighted_gated (from --loss-mode)
     if loss_mode not in ("plain", "weighted_gated"):
         raise ValueError(f"--loss-mode must be 'plain' or 'weighted_gated' (got {loss_mode_arg!r}).")
+    # Terminator inputs are build_data products under run_dir → AUTO-derived from run_tag (like the
+    # dataset). Override only if a yaml path is given. (Same as Stage-2: FSQ.pt + dino.npz beside skillvla/.)
     fsq_path_raw = str(get_value(cfg, "fsq_path", "")).strip()
     fsq_path = (
         resolve_path(project_root, fsq_path_raw)
-        if fsq_path_raw and fsq_path_raw.lower() not in ("null", "none") else ""
+        if fsq_path_raw and fsq_path_raw.lower() not in ("null", "none") else run_dir / "FSQ.pt"
+    )
+    sdd_raw = str(get_value(cfg, "skill_decoder_dino_tokens_path", "")).strip()
+    skill_decoder_dino_tokens_path = (
+        resolve_path(project_root, sdd_raw)
+        if sdd_raw and sdd_raw.lower() not in ("null", "none") else run_dir / "dino.npz"
     )
 
     init_from_pi05 = as_bool(get_value(cfg, "init_from_pi05", True))
@@ -196,7 +203,7 @@ def build_settings(cfg: dict, mode: str = "joint", loss_mode_arg: str = "plain")
         "terminator_end_pos_weight": float(get_value(cfg, "terminator_end_pos_weight", 1.0)),
         "terminator_lr_scale": float(get_value(cfg, "terminator_lr_scale", 1.0)),
         # current-frame FSQ-grid DINO tokens for the terminator (attached by SkillVLADinoTokenDataset)
-        "skill_decoder_dino_tokens_path": _resolve_opt(project_root, get_value(cfg, "skill_decoder_dino_tokens_path", "")),
+        "skill_decoder_dino_tokens_path": skill_decoder_dino_tokens_path,   # auto: run_dir/dino.npz
         "skill_decoder_dino_output_key": str(get_value(cfg, "skill_decoder_dino_output_key", "skill_decoder_dino")),
         "skill_decoder_dino_cache_path": _resolve_opt(project_root, get_value(cfg, "skill_decoder_dino_cache_path", "")),
         "skill_decoder_dino_build_cache": as_bool(get_value(cfg, "skill_decoder_dino_build_cache", True)),
