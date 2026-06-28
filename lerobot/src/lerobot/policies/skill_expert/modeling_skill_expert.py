@@ -313,16 +313,20 @@ class SkillExpertPytorch(nn.Module):
         touches SkillExpert params (disjoint co-training)."""
         fsq = self.fsq_term_train
         dev = next(fsq.parameters()).device
-        st = state.to(device=dev, dtype=torch.float32)
+        # Run in the terminator's ACTUAL weight dtype: it is built fp32, but the policy-wide cast
+        # (policy.dtype=bfloat16) turns these params bf16 afterwards, so forcing fp32 inputs would
+        # mismatch the (bf16) Linear weights. levels are small ints → exact in bf16.
+        tdtype = next(fsq.parameters()).dtype
+        st = state.to(device=dev, dtype=tdtype)
         if st.ndim == 2:
             st = st.unsqueeze(1)                                        # (B, 1, state_dim)
         st = st[..., : int(fsq.state_dim)]
-        z = self._code_to_z(true_code.to(self._fsq_strides.device)).to(device=dev, dtype=st.dtype)  # (B, D)
-        dec = fsq._prepare_decoder_tokens(dino_tokens.to(device=dev, dtype=torch.float32), states=st)  # (B,1,N,F)
+        z = self._code_to_z(true_code.to(self._fsq_strides.device)).to(device=dev, dtype=tdtype)  # (B, D)
+        dec = fsq._prepare_decoder_tokens(dino_tokens.to(device=dev, dtype=tdtype), states=st)  # (B,1,N,F)
         B, T = dec.shape[:2]
         lh = fsq.fsq.levels_half.to(z.device, z.dtype)
         zq = torch.maximum(torch.minimum(torch.round(z), lh), -lh)
-        z_tok = fsq.dec_z_proj(zq.unsqueeze(1).expand(B, T, -1).to(st.dtype))
+        z_tok = fsq.dec_z_proj(zq.unsqueeze(1).expand(B, T, -1).to(tdtype))
         progress, term_logits = fsq._terminate(z_tok, st, dec, None)   # (B, 1), (B, 1)
         return progress[:, 0], term_logits[:, 0]
 
