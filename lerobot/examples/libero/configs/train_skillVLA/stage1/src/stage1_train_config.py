@@ -22,7 +22,13 @@ from train_skills_config import as_bool, as_levels, as_list, get_value, load_con
 DEFAULT_CONFIG_PATH = _HERE.parent.parent / "stage1_train_config.yaml"
 
 
-def build_settings(cfg: dict) -> dict:
+def _resolve_opt(project_root, raw) -> str:
+    """Resolve an OPTIONAL path: blank / null / none → "" (omitted); else project_root-relative resolve."""
+    s = str(raw).strip()
+    return resolve_path(project_root, s) if s and s.lower() not in ("null", "none") else ""
+
+
+def build_settings(cfg: dict, mode: str = "joint", loss_mode_arg: str = "plain") -> dict:
     # Standalone: every root is declared in this yaml (no build_data dependency).
     project_root = Path(str(get_value(cfg, "project_root"))).expanduser()
     dataset_root = project_root / str(get_value(cfg, "dataset_root", "dataset"))
@@ -54,11 +60,21 @@ def build_settings(cfg: dict) -> dict:
     if cond_encoder_variant.lower() in ("none", "null"):  # blank yaml → omit (use action expert's variant)
         cond_encoder_variant = ""
     state_cond_mode = str(get_value(cfg, "state_cond_mode", "state_skill")).strip().lower()  # state | state_skill
-    cum_pos_w = float(get_value(cfg, "cumulative_pos_loss_weight", 0.0))   # λ cumulative-position loss (0=off)
-    skill_end_w = float(get_value(cfg, "skill_end_loss_weight", 1.0))      # R end weighting (action + cum)
-    cum_loss = str(get_value(cfg, "cum_loss", "all")).strip().lower()      # all | endpoint (cum aggregation)
-    action_loss = as_bool(get_value(cfg, "action_loss", True))             # include the action MSE in the objective
-    action_weight = as_bool(get_value(cfg, "action_weight", False))        # per-sample sw-weight the action loss
+    skill_end_w = float(get_value(cfg, "skill_end_loss_weight", 1.0))      # R = progress-weighting strength (early/late)
+
+    # ── Stage-1 experiment design: connector on/off + schedule + (joint) loss_mode (3 runs) ──
+    use_connector = as_bool(get_value(cfg, "use_connector", True))
+    schedule = str(mode).strip().lower()                                      # joint | staged (from the .sbatch file)
+    if schedule not in ("joint", "staged"):
+        raise ValueError(f"--mode must be 'joint' or 'staged' (got {mode!r}).")
+    loss_mode = str(loss_mode_arg).strip().lower()                           # plain | weighted_gated (from --loss-mode)
+    if loss_mode not in ("plain", "weighted_gated"):
+        raise ValueError(f"--loss-mode must be 'plain' or 'weighted_gated' (got {loss_mode_arg!r}).")
+    fsq_path_raw = str(get_value(cfg, "fsq_path", "")).strip()
+    fsq_path = (
+        resolve_path(project_root, fsq_path_raw)
+        if fsq_path_raw and fsq_path_raw.lower() not in ("null", "none") else ""
+    )
 
     init_from_pi05 = as_bool(get_value(cfg, "init_from_pi05", True))
     pi_base = resolve_path(project_root, get_value(cfg, "pi_base", "models/pi05_base")) if init_from_pi05 else ""
@@ -79,19 +95,43 @@ def build_settings(cfg: dict) -> dict:
     # joint + ae + discretized state is the only arch now → no arch/inject tag. init_from_pi05 fixed true.
     run_name = f"{source_dataset}_{run_tag}_{vis_tag}_batch{batch_size}"
     run_name = f"{run_name}_{state_cond_mode}"   # state | state_skill (what rides the expert AdaRMS) — never collide
-    # loss-variant suffix (categorical, NO hyperparameter values): cum part (only when λ>0) + action part.
-    suffix = []
-    if cum_pos_w > 0:                             # cum term on → cum_ep / cum_all
-        suffix.append("cum_ep" if cum_loss == "endpoint" else "cum_all")
-    suffix.append("ac_x" if not action_loss else ("ac_w" if action_weight else "ac"))  # action: off / weighted / normal
-    run_name = f"{run_name}_" + "_".join(suffix)
+    # experiment tag so the 3 runs (joint-plain / joint-gated / staged) never collide.
+    exp_tag = ("conn" if use_connector else "noconn") + f"_{schedule}"
+    if schedule == "joint":
+        exp_tag += f"_{loss_mode}"
+    run_name = f"{run_name}_{exp_tag}"
     if exp:
         run_name = f"{run_name}_{exp}"
-    run_name = f"{run_name}_c{chunk_size}"  # chunk horizon always trails the run name
     # Single outputs root from yaml; the per-stage subdir is fixed here (not in yaml).
     outputs_root = project_root / str(get_value(cfg, "outputs_root", "outputs"))
     vla_root = outputs_root / "skillVLA_stage1"
     output_dir = vla_root / run_name   # under skillVLA_stage1/, so no extra stage prefix
+
+    # ── Staged = TWO sequential runs in the sbatch → SEPARATE folders {run_name}/1-1 and
+    # {run_name}/1-2_<warmstart-tag>. Both phases run `steps`. 1-1: expert-vision + action
+    # (use_connector=false, late-weighted). 1-2: freeze expert-vision, add connector (plain),
+    # warm-started from a CHOSEN 1-1 checkpoint (the warm-start tag lets different choices coexist). ──
+    staged = (schedule == "staged")
+    phase1_output = phase2_output = ""
+    phase1_weighting = "late"
+    phase2_warmstart = ""
+    if staged:
+        phase1_weighting = str(get_value(cfg, "staged_phase1_weighting", "late")).strip().lower()
+        steps_total = int(get_value(cfg, "steps", 100000))           # both phases run this many steps
+        phase1_output = output_dir / "1-1"
+        ws = str(get_value(cfg, "staged_phase2_warmstart", "last")).strip()
+        if ws.lower() in ("", "last", "null", "none"):
+            ws_tag = "last"
+            phase2_warmstart = phase1_output / "checkpoints" / "last" / "pretrained_model"
+        elif ws.isdigit():                                            # a 1-1 step number → padded ckpt dir
+            ws_tag = f"step{int(ws)}"
+            phase2_warmstart = phase1_output / "checkpoints" / f"{int(ws):0{len(str(steps_total))}d}" / "pretrained_model"
+        else:                                                         # explicit checkpoint path
+            _p = Path(ws)
+            _name = _p.parent.name if _p.name == "pretrained_model" else _p.name
+            ws_tag = re.sub(r"[^A-Za-z0-9]+", "_", _name).strip("_") or "custom"
+            phase2_warmstart = _p
+        phase2_output = output_dir / f"1-2_{ws_tag}"                  # warm-start tag → choices don't collide
 
     # FSQ skill structure: auto-match the FSQ the dataset was built with (parsed from run_tag's FSQ<levels> tag).
     # The expert only needs the codebook size (= prod(levels)) for its skill embedding; levels are
@@ -126,6 +166,40 @@ def build_settings(cfg: dict) -> dict:
         "siglip_image_size": int(get_value(cfg, "siglip_image_size", 224)),
         "skill_vocab_size": skill_vocab_size,
         "skill_fsq_levels": "[" + ",".join(str(x) for x in skill_fsq_levels) + "]",
+        # ── Connector (Stage-1 future-conditioning → VAE latent z) ──
+        "use_connector": use_connector,
+        "connector_dino_model_path": resolve_path(project_root, get_value(cfg, "connector_dino_model_path", "models/dinov3-vitb16")),
+        "connector_dino_image_size": int(get_value(cfg, "connector_dino_image_size", 224)),
+        "connector_width": int(get_value(cfg, "connector_width", 768)),
+        "connector_depth": int(get_value(cfg, "connector_depth", 4)),
+        "connector_n_heads": int(get_value(cfg, "connector_n_heads", 8)),
+        "connector_n_latents": int(get_value(cfg, "connector_n_latents", 4)),
+        "connector_z_dim": int(get_value(cfg, "connector_z_dim", 64)),
+        "connector_free_bits": float(get_value(cfg, "connector_free_bits", 0.1)),
+        "connector_kl_weight": float(get_value(cfg, "connector_kl_weight", 1e-3)),
+        "connector_z_consistency_weight": float(get_value(cfg, "connector_z_consistency_weight", 0.0)),
+        "z_ablation_every": int(get_value(cfg, "z_ablation_every", 0)),
+        # ── Stage-1 experiment design — action_weighting & freeze_expert_vision are decided by the
+        # .sbatch (joint→plain/false, staged_1→phase1_weighting/false, staged_2→plain/true). ──
+        "loss_mode": loss_mode,                   # plain | weighted_gated
+        "gate_prob": float(get_value(cfg, "gate_prob", 0.5)),
+        "boundary_mode": str(get_value(cfg, "boundary_mode", "hold")).strip().lower(),
+        # staged orchestration (sbatch runs phase 1-1 then 1-2 → separate folders)
+        "staged": staged,
+        "staged_phase1_weighting": phase1_weighting,
+        "phase1_output_dir": phase1_output,
+        "phase2_output_dir": phase2_output,
+        "phase2_warmstart": phase2_warmstart,
+        "train_terminator": as_bool(get_value(cfg, "train_terminator", False)),
+        "fsq_path": fsq_path,                     # "" → terminator co-train off / no eval terminator
+        "terminator_end_target_sigma": float(get_value(cfg, "terminator_end_target_sigma", 1.0)),
+        "terminator_end_pos_weight": float(get_value(cfg, "terminator_end_pos_weight", 1.0)),
+        "terminator_lr_scale": float(get_value(cfg, "terminator_lr_scale", 1.0)),
+        # current-frame FSQ-grid DINO tokens for the terminator (attached by SkillVLADinoTokenDataset)
+        "skill_decoder_dino_tokens_path": _resolve_opt(project_root, get_value(cfg, "skill_decoder_dino_tokens_path", "")),
+        "skill_decoder_dino_output_key": str(get_value(cfg, "skill_decoder_dino_output_key", "skill_decoder_dino")),
+        "skill_decoder_dino_cache_path": _resolve_opt(project_root, get_value(cfg, "skill_decoder_dino_cache_path", "")),
+        "skill_decoder_dino_build_cache": as_bool(get_value(cfg, "skill_decoder_dino_build_cache", True)),
         # output
         "skillvla_outputs_root": vla_root,
         "pt_run_name": run_name,
@@ -134,11 +208,7 @@ def build_settings(cfg: dict) -> dict:
         "chunk_size": chunk_size,
         "n_action_steps": n_action_steps,
         # loss: optional cumulative-position term (λ) + end weighting (R) + aggregation mode. λ=0 → off.
-        "cumulative_pos_loss_weight": cum_pos_w,
-        "skill_end_loss_weight": skill_end_w,
-        "cum_loss": cum_loss,                     # all | endpoint (cum aggregation; always R-weighted)
-        "action_loss": action_loss,              # include action MSE in the objective (else cum-only)
-        "action_weight": action_weight,          # per-sample sw-weight the action loss → wandb loss_weighted
+        "skill_end_loss_weight": skill_end_w,     # R = progress-weighting strength (early/late)
         # optimization
         "batch_size": batch_size,
         "num_workers": int(get_value(cfg, "num_workers", 8)),
@@ -169,9 +239,11 @@ def build_settings(cfg: dict) -> dict:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
+    ap.add_argument("--mode", default="joint", choices=["joint", "staged"])         # which .sbatch is running
+    ap.add_argument("--loss-mode", default="plain", choices=["plain", "weighted_gated"])  # joint only
     ap.add_argument("--shell", action="store_true")
     args = ap.parse_args()
-    settings = build_settings(load_config(args.config))
+    settings = build_settings(load_config(args.config), mode=args.mode, loss_mode_arg=args.loss_mode)
     if args.shell:
         print_shell(settings)
     else:

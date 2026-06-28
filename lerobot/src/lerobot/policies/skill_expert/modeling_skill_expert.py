@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import copy
 import logging
+import sys
 from collections import deque
 from pathlib import Path
 from types import SimpleNamespace
@@ -42,9 +43,16 @@ from lerobot.policies.pi_gemma import PiGemmaForCausalLM
 from lerobot.policies.pretrained import PreTrainedPolicy
 from lerobot.utils.constants import ACTION, OBS_STATE
 
+from .connector import Connector
 from .configuration_skill_expert import SkillExpertConfig
 
 log = logging.getLogger(__name__)
+
+
+def _cat_prefix(*parts: Tensor | None) -> Tensor | None:
+    """Concatenate the non-None action-stream prefix tokens along the token axis (None → dropped)."""
+    kept = [p for p in parts if p is not None]
+    return torch.cat(kept, dim=1) if kept else None
 
 
 def _build_siglip_vision_tower(image_size: int):
@@ -158,6 +166,37 @@ class SkillExpertPytorch(nn.Module):
         # in the cond stream.
         self.cond_encoder = _build_gemma(variant, use_adarms=False)
 
+        # ── Connector (Stage-1 future-conditioning): END frame (own frozen DINO) → VAE latent z →
+        # action-prefix tokens. z carries the within-skill motion detail (skill, current obs)
+        # underdetermine (a skill is a coarse cluster of 100+ motions). See connector.py. ──
+        self.connector = None
+        self.z_proj = None
+        if config.use_connector:
+            self.connector = Connector(config)
+            self.z_proj = nn.Linear(int(config.connector_z_dim), self.width)  # z (z_dim) → 1 prefix token
+        # Runtime toggle: the STAGED schedule turns the connector OFF in phase 1-1 (no z token) and ON
+        # in 1-2 (Approach-2 — z prefix tokens are added then). JOINT keeps it = use_connector.
+        self._connector_active = bool(config.use_connector)
+
+        # ── Optional co-trained FSQ terminator (skill-end timing for eval; gradient-disjoint) ──
+        self.fsq_term_train = None
+        if getattr(config, "train_terminator", False):
+            self._build_terminator_trainable(config.fsq_path)
+
+        # Training-step counter as a BUFFER → checkpointed/restored (used for the z-ablation cadence;
+        # survives preempt/resume).
+        self.register_buffer("train_step", torch.zeros((), dtype=torch.long), persistent=True)
+
+        # Static expert-vision freeze (staged phase 1-2: vision learned in 1-1 is frozen while the
+        # connector trains). Freezes the cond-encoder + image_proj + the vision backbone.
+        if getattr(config, "freeze_expert_vision", False):
+            mods = [self.cond_encoder, self.image_proj,
+                    self.dino if self.vision_backbone == "dino" else self.siglip]
+            for mod in mods:
+                if mod is not None:
+                    for p in mod.parameters():
+                        p.requires_grad_(False)
+
     @property
     def _wdtype(self) -> torch.dtype:
         """Working dtype of the expert stream (drives the cast at every token boundary)."""
@@ -211,6 +250,82 @@ class SkillExpertPytorch(nn.Module):
         level_ids = torch.div(idx, self._fsq_strides[None, :], rounding_mode="floor") % self._fsq_levels[None, :]
         return (level_ids.float() - self._fsq_half[None, :]) / self._fsq_half[None, :]
 
+    def _code_to_z(self, code: Tensor) -> Tensor:
+        """Flat FSQ code (B,) → UNNORMALIZED z_q (B, D) = level_ids − half (FSQ codebook frame; what the
+        FSQ terminator's dec_z_proj consumes after rounding)."""
+        idx = code.view(-1, 1).long()
+        level_ids = torch.div(idx, self._fsq_strides[None, :], rounding_mode="floor") % self._fsq_levels[None, :]
+        return level_ids.float() - self._fsq_half[None, :]
+
+    # ── Optional co-trained FSQ terminator (skill-end timing for eval; gradient-disjoint co-training,
+    # mirrors skillVLA FT). Only the terminator-path submodules get gradients; FSQ enc/reconstructor frozen. ──
+    _TERM_TRAIN_MODULES = ("dec_z_proj", "term_state_proj", "dec_image_encoder_term",
+                           "dec_image_encoder_term_wrist", "term_pool", "progress_head", "termination_head")
+
+    @staticmethod
+    def _construct_fsq(path: str):
+        """Build a SplineFSQAE from an FSQ checkpoint + load its terminator/reconstructor weights
+        (the unused encoder weights are dropped). Returns the model on CPU."""
+        sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "examples" / "libero"))
+        import dataclasses  # noqa: PLC0415
+
+        from FSQ import SplineFSQAE  # noqa: PLC0415
+
+        ckpt = torch.load(path, map_location="cpu", weights_only=False)
+        cfg_dict = dataclasses.asdict(ckpt["cfg"])
+        keys = {"action_dim", "enc_dim", "state_dim", "n_control", "spline_degree", "hidden_dim", "fsq_levels",
+                "num_layers", "dropout", "length_min", "length_max", "action_min", "action_max",
+                "delta_min", "delta_max", "state_min", "state_max", "feat_dim", "n_tokens",
+                "image_encoder_layers", "terminator_use_third", "terminator_use_wrist", "image_encoder_heads",
+                "image_model_name", "image_size", "patch_grid", "n_patch_raw", "image_token_dim", "chunk_size",
+                "reconstructor_mode"}
+        fsq = SplineFSQAE(**{k: v for k, v in cfg_dict.items() if k in keys})
+        model_keys = set(fsq.state_dict().keys())
+        state = {k: v for k, v in ckpt["model_state"].items() if k in model_keys}
+        dropped = [k for k in ckpt["model_state"] if k not in model_keys]
+        missing, _ = fsq.load_state_dict(state, strict=False)
+        if missing:
+            raise RuntimeError(f"FSQ terminator checkpoint missing required weights: {sorted(missing)}")
+        if dropped:
+            log.info("Ignored %d non-terminator FSQ key(s) when loading FSQ.", len(dropped))
+        return fsq
+
+    def _build_terminator_trainable(self, path: str) -> None:
+        """Co-train a TRAINABLE terminator on this dataset's GT signals — warm-started from the FSQ
+        checkpoint; only the terminator-path submodules get gradients (FSQ enc/reconstructor frozen).
+        Registered as a submodule (joins the optimizer, checkpointed); its loss runs on a disjoint
+        graph (GT/precomputed inputs only) → no SkillExpert effect."""
+        fsq = self._construct_fsq(path)
+        trainable = {n for n in self._TERM_TRAIN_MODULES if getattr(fsq, n, None) is not None}
+        for name, mod in fsq.named_children():
+            req = name in trainable
+            for p in mod.parameters():
+                p.requires_grad_(req)
+        fsq.train()
+        self.fsq_term_train = fsq.to(device=next(self.parameters()).device, dtype=torch.float32)
+        n_tr = sum(p.numel() for p in fsq.parameters() if p.requires_grad)
+        log.info("Built TRAINABLE FSQ terminator from %s (%d trainable params, modules=%s).",
+                 path, n_tr, sorted(trainable))
+
+    def terminator_predict(self, true_code: Tensor, state: Tensor, dino_tokens: Tensor) -> tuple[Tensor, Tensor]:
+        """Co-training forward (grad ON, logits out): GT skill code + current state + current FSQ-grid
+        DINO tokens → (progress (B,), term_logits (B,)). Inputs are GT/precomputed, so the graph never
+        touches SkillExpert params (disjoint co-training)."""
+        fsq = self.fsq_term_train
+        dev = next(fsq.parameters()).device
+        st = state.to(device=dev, dtype=torch.float32)
+        if st.ndim == 2:
+            st = st.unsqueeze(1)                                        # (B, 1, state_dim)
+        st = st[..., : int(fsq.state_dim)]
+        z = self._code_to_z(true_code.to(self._fsq_strides.device)).to(device=dev, dtype=st.dtype)  # (B, D)
+        dec = fsq._prepare_decoder_tokens(dino_tokens.to(device=dev, dtype=torch.float32), states=st)  # (B,1,N,F)
+        B, T = dec.shape[:2]
+        lh = fsq.fsq.levels_half.to(z.device, z.dtype)
+        zq = torch.maximum(torch.minimum(torch.round(z), lh), -lh)
+        z_tok = fsq.dec_z_proj(zq.unsqueeze(1).expand(B, T, -1).to(st.dtype))
+        progress, term_logits = fsq._terminate(z_tok, st, dec, None)   # (B, 1), (B, 1)
+        return progress[:, 0], term_logits[:, 0]
+
     def _cond_tokens(self, images: list[Tensor]) -> Tensor:
         """Scene conditioning tokens → (B, M, width): [img1 patches, img2 patches] — image ONLY.
         State and skill (z_q) are NOT here — they ride the action expert (see _action_prefix / _expert_cond),
@@ -226,6 +341,17 @@ class SkillExpertPytorch(nn.Module):
         if self.config.state_cond_mode == "state_skill":
             return None
         return self.skill_proj(self._code_to_zq(skill_code).to(self._wdtype)).unsqueeze(1)   # (B, 1, width)
+
+    def _connector_prefix(
+        self, end_images: list[Tensor] | None, end_state: Tensor | None, skill_code: Tensor, *, sample: bool
+    ) -> tuple[Tensor | None, Tensor | None]:
+        """END frame → connector → z prefix tokens (B, L, width) + KL scalar. Returns (None, None) when
+        the connector is inactive (use_connector off, staged phase 1-1, or end inputs absent)."""
+        if not self._connector_active or self.connector is None or end_images is None or end_state is None:
+            return None, None
+        skill_zq = self._code_to_zq(skill_code)                                  # (B, D) ∈ [-1,1]
+        z, kl = self.connector(end_images, end_state, skill_zq, sample=sample)    # z (B, L, z_dim)
+        return self.z_proj(z.to(self._wdtype)), kl                               # (B, L, width), scalar
 
     def _time_cond(self, timestep: Tensor) -> Tensor:
         t = create_sinusoidal_pos_embedding(
@@ -312,13 +438,18 @@ class SkillExpertPytorch(nn.Module):
         actions: Tensor,
         noise: Tensor | None = None,
         time: Tensor | None = None,
-    ) -> Tensor:
-        """Flow-matching: returns the SIGNED velocity residual (u_t - v_t): (B, chunk_size, max_action_dim).
-        Its square is the per-(b,t,dim) flow MSE; it ALSO equals the implied per-step action error
-        (â - a = (source - v_t) - (source - u_t) = u_t - v_t), so cumsum over the chunk gives the
-        cumulative-position error used by the policy's optional cumulative-position loss."""
+        end_images: list[Tensor] | None = None,
+        end_state: Tensor | None = None,
+    ) -> tuple[Tensor, Tensor | None]:
+        """Flow-matching: returns (signed velocity residual (u_t - v_t), connector KL or None).
+        The residual is (B, chunk_size, max_action_dim); its square is the per-(b,t,dim) flow MSE and
+        ALSO equals the implied per-step action error (â - a = (source - v_t) - (source - u_t) = u_t - v_t),
+        so cumsum over the chunk gives the cumulative-position error. KL is the connector's free-bits VAE
+        term (None when the connector is inactive)."""
         cond = self._cond_tokens(images)
-        action_prefix = self._action_prefix(skill_code, state)
+        skill_prefix = self._action_prefix(skill_code, state)
+        z_prefix, kl = self._connector_prefix(end_images, end_state, skill_code, sample=True)
+        action_prefix = _cat_prefix(skill_prefix, z_prefix)            # [skill?, z×L?] read by action tokens
         if time is None:
             time = self.sample_time(actions.shape[0], actions.device)
         source = self.sample_noise(actions.shape, actions.device) if noise is None else noise
@@ -328,7 +459,7 @@ class SkillExpertPytorch(nn.Module):
         u_t = source - actions
         expert_cond = self._expert_cond(time, state, skill_code)
         v_t = self._run_joint(cond, x_t, expert_cond, action_prefix, None)  # cond stream: plain RMSNorm
-        return u_t - v_t
+        return u_t - v_t, kl
 
     @torch.no_grad()
     def sample_actions(
@@ -339,6 +470,8 @@ class SkillExpertPytorch(nn.Module):
         skill_code: Tensor,
         noise: Tensor | None = None,
         num_steps: int | None = None,
+        end_images: list[Tensor] | None = None,
+        end_state: Tensor | None = None,
     ) -> Tensor:
         if num_steps is None:
             num_steps = self.config.num_inference_steps
@@ -348,7 +481,9 @@ class SkillExpertPytorch(nn.Module):
         # cond⊥action, so the cond stream (image-only) is identical every step → encode it once, cache
         # its per-layer K/V, and run only the action stream ([prefix, action]) against the cache.
         cond = self._cond_tokens(images)
-        action_prefix = self._action_prefix(skill_code, state)
+        skill_prefix = self._action_prefix(skill_code, state)
+        z_prefix, _ = self._connector_prefix(end_images, end_state, skill_code, sample=False)  # μ (no reparam)
+        action_prefix = _cat_prefix(skill_prefix, z_prefix)
         return self._sample_joint_cached(cond, noise, num_steps, action_prefix, state, skill_code)
 
     def _sample_joint_cached(self, cond_tokens: Tensor, noise: Tensor, num_steps: int,
@@ -495,6 +630,9 @@ class SkillExpertPolicy(PreTrainedPolicy):
             self.model.gradient_checkpointing_enable()
         self.model.to(device=config.device, dtype=self._torch_dtype())
         self.reset()
+        # ── Stage-1 schedule/gating state (joint-gated & staged drive per-step module freeze) ──
+        self._connector_trainable_this_step = bool(config.use_connector)
+        self._capture_gating_params()           # (self.model.train_step is the checkpointed step counter)
 
     def _torch_dtype(self) -> torch.dtype:
         return torch.bfloat16 if str(self.config.dtype) == "bfloat16" else torch.float32
@@ -503,17 +641,66 @@ class SkillExpertPolicy(PreTrainedPolicy):
         self._action_queue = deque(maxlen=self.config.n_action_steps)
 
     def get_optim_params(self):
-        # Optional separate LR for the vision encoder (dino_lr / siglip_lr) vs everything else.
-        if self.model.vision_backbone == "dino":
-            vis_module, vis_lr = self.model.dino, self.config.dino_lr
-        else:
-            vis_module, vis_lr = self.model.siglip, self.config.siglip_lr
-        if vis_lr is None:
-            return self.parameters()
-        vis_ids = {id(p) for p in vis_module.parameters()}
-        vis = [p for p in vis_module.parameters() if p.requires_grad]
-        others = [p for p in self.parameters() if id(p) not in vis_ids and p.requires_grad]
-        return [{"params": others}, {"params": vis, "lr": vis_lr}]
+        # Optional separate LRs for: the vision encoder (dino_lr/siglip_lr) and the co-trained
+        # terminator (terminator_lr_scale). Everything else uses the base optimizer_lr.
+        base = float(self.config.optimizer_lr)
+        term = ([p for p in self.model.fsq_term_train.parameters() if p.requires_grad]
+                if getattr(self.model, "fsq_term_train", None) is not None else [])
+        term_ids = {id(p) for p in term}
+
+        vis_module = self.model.dino if self.model.vision_backbone == "dino" else self.model.siglip
+        vis_lr = self.config.dino_lr if self.model.vision_backbone == "dino" else self.config.siglip_lr
+        groups: list[dict] = []
+        excluded = set(term_ids)
+        if vis_lr is not None:
+            vis = [p for p in vis_module.parameters() if p.requires_grad]
+            if vis:
+                groups.append({"params": vis, "lr": vis_lr})
+                excluded |= {id(p) for p in vis_module.parameters()}
+        others = [p for p in self.parameters() if p.requires_grad and id(p) not in excluded]
+        groups.insert(0, {"params": others})
+        if term:
+            groups.append({"params": term, "lr": base * float(self.config.terminator_lr_scale)})
+        return groups
+
+    # ── Stage-1 schedule / gating (joint-gated & staged) ──
+    def _capture_gating_params(self) -> None:
+        """Snapshot the config-TRAINABLE expert-vision vs connector params (config-frozen params —
+        freeze_dino / the connector's own DINO — are excluded, so they are NEVER toggled). The
+        schedule/gating freezes one side per batch (joint-gated) or phase (staged) by flipping
+        requires_grad WITHIN these sets only. The optimizer keeps all groups; a requires_grad=False
+        param simply gets no grad that step (zero_grad set_to_none → skipped by the optimizer)."""
+        ev, conn = [], []
+        for n, p in self.model.named_parameters():
+            if not p.requires_grad:
+                continue
+            if n.startswith(("connector.", "z_proj.")):
+                if not n.startswith("connector.dino."):     # connector DINO stays frozen always
+                    conn.append(p)
+            elif n.startswith(("cond_encoder.", "image_proj.", "dino.", "siglip.")):
+                ev.append(p)                                # expert-vision (cond-encoder + its vision enc)
+        self._ev_params, self._conn_params = ev, conn
+
+    @staticmethod
+    def _set_requires_grad(params: list, flag: bool) -> None:
+        for p in params:
+            p.requires_grad_(flag)
+
+    def _apply_schedule(self) -> str:
+        """Per training step: for weighted_gated, do the per-batch 50/50 module freeze and return the
+        batch's early/late weighting; otherwise return the run's FIXED action_weighting ('none'|'early'
+        |'late'). _connector_active is static (= use_connector, set at init); the expert-vision freeze
+        for staged 1-2 is also static (freeze_expert_vision). Sets _connector_trainable_this_step (KL gate)."""
+        cfg = self.config
+        if cfg.loss_mode == "weighted_gated":
+            early = bool(torch.rand(()).item() < float(cfg.gate_prob))
+            self._set_requires_grad(self._conn_params, early)        # early → connector trains, vision frozen
+            self._set_requires_grad(self._ev_params, not early)      # late  → vision trains, connector frozen
+            self._connector_trainable_this_step = early
+            return "early" if early else "late"
+        self._connector_trainable_this_step = bool(cfg.use_connector)
+        w = str(cfg.action_weighting).lower()
+        return w if w in ("early", "late") else "none"
 
     # ── batch → model inputs ──
     def _collect_images(self, batch: dict) -> tuple[list[Tensor], list[Tensor]]:
@@ -534,6 +721,26 @@ class SkillExpertPolicy(PreTrainedPolicy):
             masks.append(torch.ones(img.shape[0], dtype=torch.bool, device=device))
         return images, masks
 
+    def _collect_end_inputs(self, batch: dict) -> tuple[list[Tensor] | None, Tensor | None]:
+        """Connector inputs (SkillExpertDataset keys): the skill's END frame [3rd, wrist] as [0,1] floats
+        (normalized inside the connector's DINO) + END state padded to max_state_dim. (None, None) when
+        absent — connector inactive or the plain LeRobotDataset (no end-frame keys)."""
+        from .dataset_skill_expert import SKILL_END_IMAGE, SKILL_END_STATE, SKILL_END_WRIST_IMAGE
+
+        if SKILL_END_IMAGE not in batch or SKILL_END_STATE not in batch:
+            return None, None
+        device = next(self.parameters()).device
+        imgs = []
+        for key in (SKILL_END_IMAGE, SKILL_END_WRIST_IMAGE):  # order matches connector view_emb [3rd, wrist]
+            img = batch[key].to(device=device)
+            if img.dtype != torch.float32:
+                img = img.float()
+            if img.ndim == 4 and img.shape[1] != 3 and img.shape[-1] == 3:
+                img = img.permute(0, 3, 1, 2)
+            imgs.append(img)
+        end_state = pad_vector(batch[SKILL_END_STATE].to(device=device), self.config.max_state_dim)
+        return imgs, end_state
+
     def _skill_code(self, batch: dict) -> Tensor:
         """Current GT FSQ skill code = skill_sequence[skill_index]."""
         seq = batch["skill_sequence"].long()
@@ -542,6 +749,10 @@ class SkillExpertPolicy(PreTrainedPolicy):
         return code.clamp(0, self.config.skill_vocab_size - 1)
 
     def forward(self, batch: dict, reduction: str = "mean"):
+        weighting = "none"
+        if self.training and reduction != "none":
+            weighting = self._apply_schedule()   # connector-active + freeze one side; pick action weighting
+            self.model.train_step.add_(1)        # checkpointed step counter (survives resume)
         images, img_masks = self._collect_images(batch)
         actions = pad_vector(batch[ACTION], self.config.max_action_dim)
         real_dim = self.config.output_features[ACTION].shape[0]
@@ -552,25 +763,33 @@ class SkillExpertPolicy(PreTrainedPolicy):
         # the CURRENT skill's end (offset k > skill_de). Instead of MASKING these out of the loss, REPLACE the
         # target with a HOLD action — arm deltas → 0 (stop moving), gripper → the LAST valid step's gripper
         # (absolute, held) — and SUPERVISE them. So each skill learns to STOP + HOLD at its boundary.
+        rows = torch.arange(bsize, device=dev)
         valid = torch.ones(bsize, K, dtype=torch.bool, device=dev)
         pad = batch.get("action_is_pad")
         if pad is not None:
             valid &= ~pad.to(dev).bool()
-        if "skill_de" in batch:
+        # Boundary tail = chunk steps past the CURRENT skill's end (k > skill_de). boundary_mode:
+        #   "hold"      → REPLACE those with a STOP+HOLD target (arm Δ=0, gripper held) → clean skill end.
+        #   "keep_demo" → KEEP the demo's real actions across the boundary (only episode-pad is dropped).
+        boundary = self.config.boundary_mode
+        if boundary == "hold" and "skill_de" in batch:
             de = batch["skill_de"].to(dev).long().view(bsize, 1)        # frames from t to skill's last frame
             valid &= torch.arange(K, device=dev).view(1, K) <= de
         idx = torch.arange(K, device=dev).view(1, K).expand(bsize, K)
         last_valid = torch.where(valid, idx, torch.full_like(idx, -1)).max(dim=1).values  # (B,), -1 if none
-        anchor = last_valid.clamp(min=0)                                # (B,) last within-skill step (= skill end)
-        rows = torch.arange(bsize, device=dev)
-        g = real_dim - 1                                                # gripper = last real dim (absolute)
-        hold = torch.zeros_like(actions[:, 0])                          # (B, max_action_dim): arm + pad = 0
-        hold[:, g] = actions[rows, anchor, g]                           # gripper holds the last valid value
-        actions = torch.where(valid.unsqueeze(-1), actions, hold.unsqueeze(1))   # boundary steps → hold target
+        anchor = last_valid.clamp(min=0)                                # (B,) last valid step (= skill end in hold)
+        if boundary == "hold":
+            g = real_dim - 1                                            # gripper = last real dim (absolute)
+            hold = torch.zeros_like(actions[:, 0])                      # (B, max_action_dim): arm + pad = 0
+            hold[:, g] = actions[rows, anchor, g]                       # gripper holds the last valid value
+            actions = torch.where(valid.unsqueeze(-1), actions, hold.unsqueeze(1))  # boundary steps → hold target
+        # keep_demo: valid = ~pad (full chunk kept with demo actions); actions unchanged.
 
         state = pad_vector(batch[OBS_STATE], self.config.max_state_dim)   # → state_proj's fixed width (pi0)
-        resid = self.model.forward(                                      # signed flow residual (u_t - v_t)
-            images, img_masks, state, self._skill_code(batch), actions)
+        end_images, end_state = self._collect_end_inputs(batch)          # connector END-frame inputs (or None)
+        resid, kl = self.model.forward(                                  # signed flow residual (u_t - v_t), KL
+            images, img_masks, state, self._skill_code(batch), actions,
+            end_images=end_images, end_state=end_state)
         resid = resid[:, :, :real_dim]                                   # (B, K, real_dim)
         losses = resid ** 2                                              # per-(b,k,dim) flow MSE = action MSE
 
@@ -585,65 +804,79 @@ class SkillExpertPolicy(PreTrainedPolicy):
             return per_sample, loss_dict
 
         cfg = self.config
-        lam = float(cfg.cumulative_pos_loss_weight)
         r = float(cfg.skill_end_loss_weight)
 
-        # Per-step within-skill progress (0 at skill start → 1 at last frame). For the endpoint anchor
-        # (action_weight / cum endpoint) and the "all" cum term. Falls back to a linear position if ds/de absent.
-        prog = None
-        if cfg.action_weight or lam > 0.0:
+        # ── Action objective: PLAIN (uniform mean) or PROGRESS-WEIGHTED per-step (early/late). The
+        # weighting direction + on/off come from the experiment mode (gating batches / staged 1-1);
+        # R sets the emphasis strength. No cumulative-position term, no action_loss/weight toggles. ──
+        if weighting in ("early", "late"):
             if "skill_ds" in batch and "skill_de" in batch:
                 ds = batch["skill_ds"].to(dev).float().view(bsize, 1)
                 de_f = batch["skill_de"].to(dev).float().view(bsize, 1)
                 kk = torch.arange(K, device=dev).float().view(1, K)
-                prog = ((ds + kk) / (ds + de_f).clamp(min=1.0)).clamp(0.0, 1.0)
+                prog = ((ds + kk) / (ds + de_f).clamp(min=1.0)).clamp(0.0, 1.0)   # within-skill progress (B,K)
             else:
                 prog = (torch.arange(K, device=dev).float().view(1, K) / max(K - 1, 1)).expand(bsize, K)
+            base = prog if weighting == "late" else (1.0 - prog)        # late → skill-END; early → skill-START
+            w_step = (1.0 + (r - 1.0) * base) * valid.float()           # (B,K) per-step soft weight (≥0)
+            action_term = (losses.mean(dim=2) * w_step).sum() / w_step.sum().clamp(min=1.0)
+            loss_dict["loss_weighted"] = action_term.detach().item()
+        else:
+            action_term = plain_action                                  # plain = the comparison value & objective
 
-        # Per-SAMPLE endpoint weight sw = 1 + (R-1)·prog_at_endpoint (anchor = skill end). Shared by the
-        # weighted action loss AND the endpoint cum term. 0 for chunks with no valid step.
-        sw = None
-        if cfg.action_weight or (lam > 0.0 and cfg.cum_loss == "endpoint"):
-            prog_a = prog[rows, anchor]
-            sw = (1.0 + (r - 1.0) * prog_a) * (last_valid >= 0).float()
+        loss = action_term
+        # ── Connector free-bits VAE KL (β·kl), only when the connector TRAINS this step (skipped on
+        # gated/staged batches where it is frozen — kl would carry no usable gradient there). ──
+        if kl is not None and self._connector_trainable_this_step:
+            loss = loss + float(cfg.connector_kl_weight) * kl
+            loss_dict["loss_kl"] = kl.detach().item()
 
-        # ── ACTION term (in the objective only if action_loss=True; over ALL K steps incl. the hold tail) ──
-        action_term = None
-        if cfg.action_loss:
-            if cfg.action_weight:                                       # per-sample sw-weighted action loss
-                action_term = (per_sample * sw).sum() / sw.sum().clamp(min=1.0)
-                loss_dict["loss_weighted"] = action_term.detach().item()   # SEPARATE wandb panel
-            else:
-                action_term = plain_action                              # = the comparison value (objective too)
+        # ── Co-trained FSQ terminator (skill-end timing for eval). DISJOINT graph (GT/precomputed
+        # inputs + its own params) → added to the backpropped loss; SkillExpert untouched. ──
+        if self.training and cfg.train_terminator and self.model.fsq_term_train is not None:
+            for k in ("skill_decoder_dino", "skill_ds", "skill_de"):
+                if k not in batch:
+                    raise ValueError(f"train_terminator=True needs '{k}' in the batch.")
+            prog_pred, term_logits = self.model.terminator_predict(
+                self._skill_code(batch), batch[OBS_STATE], batch["skill_decoder_dino"])
+            ds = batch["skill_ds"].float().view(-1).to(prog_pred.device)
+            de = batch["skill_de"].float().view(-1).to(prog_pred.device)
+            prog_tgt = (ds / (ds + de).clamp_min(1.0)).clamp(0.0, 1.0)                 # within-skill progress
+            sigma = float(cfg.terminator_end_target_sigma)
+            term_tgt = torch.exp(-(de ** 2) / (2.0 * sigma ** 2)) if sigma > 0 else (de == 0).float()
+            pos_w = torch.tensor(float(cfg.terminator_end_pos_weight), device=term_logits.device, dtype=term_logits.dtype)
+            term_loss = (F.smooth_l1_loss(prog_pred, prog_tgt.to(prog_pred.dtype))
+                         + F.binary_cross_entropy_with_logits(term_logits, term_tgt.to(term_logits.dtype), pos_weight=pos_w))
+            loss = loss + term_loss
+            loss_dict["loss_terminator"] = term_loss.detach().item()
 
-        # ── CUM term (on iff λ>0; always R-weighted). Measures the SKILL trajectory → still restricted to the
-        # within-skill region (valid); the held tail is taught by the action loss above. Gripper excluded. ──
-        cum_term = None
-        if lam > 0.0:
-            arm = real_dim - 1                                          # drop the absolute gripper (last dim)
-            cum = resid[:, :, :arm].cumsum(dim=1)                       # (B, K, arm) ≈ cumulative position error
-            if cfg.cum_loss == "endpoint":
-                cum_end = cum[rows, anchor]                             # (B, arm) cumulative pos error at endpoint
-                cum_term = (cum_end.pow(2).sum(dim=1) * sw).sum() / (sw.sum().clamp(min=1.0) * arm)
-            else:                                                          # "all": every within-skill position
-                w = (1.0 + (r - 1.0) * prog) * valid.float()
-                cum_term = (cum.pow(2) * w.unsqueeze(-1)).sum() / (w.sum().clamp(min=1.0) * arm)
-            loss_dict["loss_cum_pos"] = cum_term.detach().item()
-
-        # ── Optimized objective = action term (+ λ·cum). __post_init__ guards against both being off. ──
-        loss = action_term if action_term is not None else losses.sum() * 0.0
-        if cum_term is not None:
-            loss = loss + lam * cum_term
         loss_dict["loss_total"] = loss.detach().item()   # the BACKPROPPED objective (≠ wandb "loss" when weighted)
+
+        # ── z-ablation diagnostic: extra no-grad forward with z disabled → how much z helps (approx;
+        # fresh noise, batch-averaged). z_gain = zablate − plain > 0 means z lowers the action loss. ──
+        if (self.training and int(cfg.z_ablation_every) > 0 and self.model._connector_active
+                and int(self.model.train_step) % int(cfg.z_ablation_every) == 0):
+            with torch.no_grad():
+                saved = self.model._connector_active
+                self.model._connector_active = False
+                resid_abl, _ = self.model.forward(images, img_masks, state, self._skill_code(batch), actions)
+                self.model._connector_active = saved
+            abl = (resid_abl[:, :, :real_dim] ** 2).mean().item()
+            loss_dict["loss_zablate"] = abl
+            loss_dict["z_gain"] = abl - plain_action.item()
         return loss, loss_dict
 
     @torch.no_grad()
     def predict_action_chunk(self, batch: dict, **kwargs) -> Tensor:
         self.eval()
+        # A phase-1-1 checkpoint has use_connector=False → no connector module → runs WITHOUT z
+        # automatically; a 1-2 checkpoint has the trained connector. No phase guard needed.
         images, img_masks = self._collect_images(batch)
         state = pad_vector(batch[OBS_STATE], self.config.max_state_dim)   # → state_proj's fixed width (pi0)
+        end_images, end_state = self._collect_end_inputs(batch)          # connector END-frame (oracle eval)
         actions = self.model.sample_actions(
-            images, img_masks, state, self._skill_code(batch), **kwargs)
+            images, img_masks, state, self._skill_code(batch),
+            end_images=end_images, end_state=end_state, **kwargs)
         real_dim = self.config.output_features[ACTION].shape[0]
         return actions[:, :, :real_dim]
 

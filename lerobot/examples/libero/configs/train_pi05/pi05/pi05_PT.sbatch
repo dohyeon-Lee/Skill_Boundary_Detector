@@ -50,32 +50,10 @@ if [ ! -d "${PT_DATASET_DIR}" ]; then
   exit 1
 fi
 
-# GPU selection.
-# IMPORTANT: under Slurm, gres already pins a dedicated GPU via CUDA_VISIBLE_DEVICES. Overriding
-# it (scanning nvidia-smi and picking the "emptiest" GPU) desyncs Slurm's accounting: Slurm still
-# thinks our reserved GPU is in use and hands the GPU we actually grabbed to another job, so two
-# jobs collide on one physical GPU -> CUDA "unknown error" crashes. So under Slurm we TRUST Slurm's
-# allocation and never rescan. Only in a bare foreground run (no Slurm) do we pick the emptiest GPU.
-if [ -n "${SLURM_JOB_ID:-}" ]; then
-  echo "Under Slurm (job ${SLURM_JOB_ID}); using Slurm-allocated CUDA_VISIBLE_DEVICES='${CUDA_VISIBLE_DEVICES:-<unset>}'. Starting training."
-else
-  GPU_FREE_THRESHOLD_MIB=500
-  NEED_GPUS="${PT_NUM_GPUS:-1}"
-  echo "No Slurm detected; selecting ${NEED_GPUS} emptiest GPU(s) (threshold: ${GPU_FREE_THRESHOLD_MIB} MiB)..."
-  while true; do
-    # index,used sorted by used-memory ascending; the N emptiest are the first N rows.
-    SORTED=$(nvidia-smi --query-gpu=index,memory.used --format=csv,noheader,nounits | sort -t',' -k2,2 -n)
-    SEL_IDX=$(echo "${SORTED}" | head -n "${NEED_GPUS}" | awk -F',' '{gsub(/ /,"",$1); print $1}' | paste -sd, -)
-    MAX_USED=$(echo "${SORTED}" | head -n "${NEED_GPUS}" | awk -F',' '{gsub(/ /,"",$2); print $2}' | sort -n | tail -n1)
-    if [ "${MAX_USED:-999999}" -le "${GPU_FREE_THRESHOLD_MIB}" ]; then
-      export CUDA_VISIBLE_DEVICES="${SEL_IDX}"
-      echo "Selected GPU(s) ${CUDA_VISIBLE_DEVICES} (max ${MAX_USED} MiB used). Starting training."
-      break
-    fi
-    echo "  Emptiest ${NEED_GPUS} GPU(s) still busy (max ${MAX_USED} MiB @ idx ${SEL_IDX}). Waiting 60s..."
-    sleep 60
-  done
-fi
+# GPU selection: trust Slurm's gres allocation. Slurm sets CUDA_VISIBLE_DEVICES to dedicated
+# GPU(s); we deliberately do NOT scan nvidia-smi or override it. Overriding desyncs Slurm's
+# accounting and can put two jobs on one physical GPU -> CUDA "unknown error" crashes / wedged node.
+echo "GPU allocation: CUDA_VISIBLE_DEVICES='${CUDA_VISIBLE_DEVICES:-<unset; not under Slurm>}'. Starting training."
 
 CONFIG_JSON="${PT_OUTPUT_DIR}/checkpoints/last/pretrained_model/train_config.json"
 RESUME_ARGS=()

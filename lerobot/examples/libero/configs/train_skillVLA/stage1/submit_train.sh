@@ -1,8 +1,18 @@
 #!/usr/bin/env bash
 # Submit SkillVLA Stage-1 training (policy.type=skill_expert).
-#   (login) resolve config + check the skillvla dataset → sbatch train.sbatch
+#   ./submit_train.sh [joint|staged]   (default: joint)
+#   (login) resolve config + check the skillvla dataset → sbatch train_<mode>.sbatch
+#     joint  → one run.   staged → two runs ({run}/1-1 then {run}/1-2).
 # The skillvla dataset comes from configs/train_skillVLA/build_data (run that first if missing).
 set -euo pipefail
+
+EXPERIMENT="${1:-joint_plain}"   # joint_plain | joint_gated | staged_1 | staged_2 → submits src/train_${EXPERIMENT}.sbatch
+case "${EXPERIMENT}" in
+  joint_plain)  EMIT_MODE=joint;  EMIT_LOSS=plain ;;
+  joint_gated)  EMIT_MODE=joint;  EMIT_LOSS=weighted_gated ;;
+  staged_1|staged_2) EMIT_MODE=staged; EMIT_LOSS=plain ;;
+  *) echo "usage: $0 [joint_plain|joint_gated|staged_1|staged_2]  (got '${EXPERIMENT}')" >&2; exit 1 ;;
+esac
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # stage1
 SRC_DIR="${SCRIPT_DIR}/src"
@@ -18,7 +28,7 @@ if [ ! -x "${BOOTSTRAP_PYTHON}" ]; then
   BOOTSTRAP_PYTHON=python3
 fi
 
-eval "$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/stage1_train_config.py" --config "${CONFIG_PATH}" --shell)"
+eval "$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/stage1_train_config.py" --config "${CONFIG_PATH}" --mode "${EMIT_MODE}" --loss-mode "${EMIT_LOSS}" --shell)"
 
 if [ ! -e "${SKILLVLA_DATASET_DIR}" ]; then
   echo "Missing skillvla dataset: ${SKILLVLA_DATASET_DIR}" >&2
@@ -44,7 +54,7 @@ fi
 cd "${SCRIPT_DIR}"
 mkdir -p logs
 
-echo "Submit Stage-1 (skill_expert)"
+echo "Submit Stage-1 (skill_expert)  experiment=${EXPERIMENT}"
 echo "  run      : ${PT_RUN_NAME}"
 echo "  dataset  : ${SKILLVLA_DATASET_DIR}"
 echo "  init     : ${PI_BASE:-scratch}"
@@ -52,4 +62,4 @@ echo "  output   : ${PT_OUTPUT_DIR}"
 echo "  slurm    : partition=${TRAIN_PARTITION} qos=${TRAIN_QOS} gres=${TRAIN_GRES} mem=${TRAIN_MEM}"
 
 STAGE1_TRAIN_CONFIG="${CONFIG_PATH}" \
-  sbatch "${SBATCH_ARGS[@]}" "${SRC_DIR}/train.sbatch"
+  sbatch "${SBATCH_ARGS[@]}" "${SRC_DIR}/train_${EXPERIMENT}.sbatch"

@@ -80,36 +80,78 @@ class SkillExpertConfig(PI05Config):
     token, constant within a skill — neighboring codes stay neighboring. (The skill-progress token
     was removed — the action expert conditions on the skill code only.)"""
 
-    # ── Loss. Boundary handling: at the skill end (k>skill_de) and episode-end pad, the action TARGET is a
-    #    HOLD (arm deltas→0, gripper→last valid value) and supervised — NOT masked out. These add the optional
-    #    cum term + the action_loss/action_weight toggles below. ──
-    cumulative_pos_loss_weight: float = 0.0
-    """λ for the optional cumulative-POSITION loss (added to the per-delta flow loss). Actions are
-    RELATIVE (delta), so the endpoint pose = the SUM of the chunk's deltas; matching only the last delta
-    doesn't fix the landing position. This term integrates the implied per-step action error over the
-    chunk (cumsum, on the ARM dims only — the gripper is absolute, excluded) and penalizes the K running
-    positions, so the whole trajectory + endpoint match. 0 = OFF (objective = the action term only)."""
-    skill_end_loss_weight: float = 1.0
-    """R for the end weighting: weight = 1 + (R-1)·progress, where progress is the within-skill position
-    (0 at skill start → 1 at skill end). R=1 → uniform; R>1 → skill END positions (the handoff) count more.
-    Applied IDENTICALLY to the action loss (when action_weight=True, per-SAMPLE by the chunk endpoint's
-    progress) and the cum term (per-STEP in cum_loss="all", per-SAMPLE in "endpoint")."""
+    # ── Connector (Stage-1 future-conditioning module → VAE latent z; see connector.py) ───────────
+    # A Perceiver pooler with its OWN frozen DINO encodes the skill's END frame (3rd + wrist) + END
+    # state into a small VAE latent z, modulated by the GT skill (z_q) via AdaLN. z is fed to the
+    # action expert as prefix token(s) — supplying the within-skill motion detail that (skill,
+    # current obs) underdetermine (a skill is a coarse cluster of 100+ motions).
+    use_connector: bool = True
+    """Build + use the connector. False → plain Stage-1 action expert (no z). In the STAGED schedule
+    it is forced OFF during phase 1-1 and ON in 1-2 (the z prefix token is added then — Approach-2)."""
+    connector_dino_model_path: str = "/data2/dohyeon/SBD/models/dinov3-vitb16"
+    """The connector's OWN DINO (independent instance, ALWAYS frozen → OOD-robust goal features).
+    May differ from the expert-vision dino_model_path. (vitl16 recommended once downloaded.)"""
+    connector_dino_image_size: int = 224
+    connector_width: int = 768            # Perceiver hidden dim
+    connector_depth: int = 4              # number of Perceiver (cross+self+FFN) blocks
+    connector_n_heads: int = 8
+    connector_n_latents: int = 4          # L learned latent queries = number of z prefix tokens
+    connector_z_dim: int = 64             # per-latent VAE dim (the transfer bottleneck)
+    connector_free_bits: float = 0.1      # free-bits λ (nats/dim): reserves capacity, prevents collapse
+    connector_kl_weight: float = 1e-3     # β on the (free-bits) KL term added to the objective
+    connector_z_consistency_weight: float = 0.0
+    """Method-2 appearance-invariance: weight on ‖z − z(aug(end))‖² (stopgrad teacher). 0 = OFF — hooks
+    present, concrete randomization deferred."""
+    z_ablation_every: int = 0
+    """Diagnostic: every N training steps (when the connector is active) run an extra no-grad forward
+    with z disabled and log loss_zablate + z_gain (= zablate − plain, how much z helps). 0 = OFF.
+    The key probe for 'is z actually used?' across the 3 experiments."""
 
-    # ── Loss composition — independent toggles (objective = [action term] + λ·[cum term]) ──────────
-    action_loss: bool = True
-    """Include the per-step flow (action) MSE in the OPTIMIZED objective. False → the objective is the cum
-    term ONLY (requires cumulative_pos_loss_weight>0). The plain unweighted action MSE is STILL logged to
-    wandb `loss` either way (comparison-only, never backpropped). Run-name: ac (on) / ac_x (off) / ac_w (below)."""
-    action_weight: bool = False
-    """Weight the action loss PER-SAMPLE (per-chunk) by the endpoint progress sw=1+(R-1)·prog_end (same sw as
-    the endpoint cum term) — chunks ending nearer the skill end count more. Only meaningful when
-    action_loss=True. The weighted value is logged to wandb `loss_weighted` (a SEPARATE panel); wandb `loss`
-    stays the plain unweighted comparison value. Run-name tag: ac_w."""
-    cum_loss: str = "all"
-    """Cumulative-position term aggregation (ALWAYS R-weighted; on/off via cumulative_pos_loss_weight=λ):
-      "all"      → penalize EVERY within-skill running position (integrated trajectory), end-weighted PER-STEP.
-      "endpoint" → penalize ONLY the running position at the LAST valid step (chunk end, capped to skill end /
-                   padding), R weighting PER-SAMPLE. Run-name: cum_all / cum_ep (only when λ>0)."""
+    # ── Stage-1 experiment design. Each TRAINING RUN is a single fixed phase. "staged" is TWO runs
+    # orchestrated by the sbatch (1-1 then 1-2, SEPARATE folders, 1-2 warm-starts from a chosen 1-1
+    # checkpoint) — see stage1_train_config.py. The policy only sees a per-phase config. ──
+    loss_mode: str = "plain"
+    """"plain"          → fixed weighting (action_weighting below), no per-batch module gating.
+    "weighted_gated"  → per-batch 50/50 module freeze (connector↔early-weighted / expert-vision↔
+                        late-weighted). Needs use_connector; incompatible with freeze_expert_vision."""
+    action_weighting: str = "plain"
+    """Action-loss weighting for a PLAIN run: 'plain' (uniform) | 'early' (skill-START emphasized) |
+    'late' (skill-END emphasized). Staged sets it per phase (1-1: late, 1-2: plain)."""
+    gate_prob: float = 0.5
+    """weighted_gated: P(connector trains / expert-vision frozen / early-weighted) per batch."""
+    freeze_expert_vision: bool = False
+    """Statically freeze the expert-vision (cond-encoder + image_proj + its DINO/SigLIP) for the whole
+    run. Used by staged phase 1-2 (vision learned in 1-1, frozen while the connector trains)."""
+    boundary_mode: str = "hold"
+    """How chunk steps that spill PAST the current skill's end are supervised:
+      "hold"      → STOP+HOLD target (arm Δ=0, gripper held) → each skill terminates cleanly (modularity).
+      "keep_demo" → keep the demo's real actions across the boundary (stage2-style; goal z guides the tail).
+    The STAGED schedule FORCES 'hold' in phase 1-1 (no connector goal yet); 1-2 / joint use this toggle."""
+    train_terminator: bool = False
+    """Co-train the isolated FSQ terminator (skill-end timing) alongside Stage-1 — gradient-disjoint
+    from the main model (mirrors stage2/FT), warm-started from fsq_path. Lets a checkpoint be evaled
+    (skill transitions). Always-on (its own optimizer group); not gated by schedule/loss_mode."""
+    terminator_end_target_sigma: float = 1.0
+    """Termination target = Gaussian bump exp(-de²/2σ²) peaking at the skill end (σ>0); σ≤0 → hard (de==0)."""
+    terminator_end_pos_weight: float = 1.0
+    """BCE pos_weight for the termination head (skill-end frames are rare positives)."""
+    terminator_lr_scale: float = 1.0
+    """LR scale (× optimizer_lr) for the co-trained terminator's own param group."""
+    # Current-frame FSQ-grid DINO tokens for the terminator (precomputed at build_data; attached by
+    # SkillVLADinoTokenDataset — the SAME generic wrapper Stage-2 uses). Required when train_terminator.
+    skill_decoder_dino_tokens_path: str | None = None
+    skill_decoder_dino_output_key: str = "skill_decoder_dino"
+    skill_decoder_dino_cache_path: str | None = None
+    skill_decoder_dino_build_cache: bool = True
+
+    # ── Action loss = flow MSE over the chunk. Two forms (driven by the experiment mode): PLAIN (uniform)
+    #    or PROGRESS-WEIGHTED per-step (early- or late-emphasized). Boundary tail handled by boundary_mode
+    #    (HOLD / keep_demo). No cumulative-position term, no action_loss/action_weight toggles (removed). ──
+    skill_end_loss_weight: float = 1.0
+    """R = strength of the per-step PROGRESS weighting on the action loss: weight = 1 + (R-1)·base, where
+    base = within-skill progress (LATE-emphasis) or 1-progress (EARLY-emphasis). R=1 → uniform (≡ plain).
+    Direction (early/late) and whether weighting is on come from the experiment mode (joint-gated batches /
+    staged phase 1-1); R only sets how strong the emphasis is."""
 
     # ── Eval-only (oracle closed-loop sim). Ignored during training. ──
     fsq_path: str | None = None
@@ -144,9 +186,20 @@ class SkillExpertConfig(PI05Config):
             raise ValueError(
                 f"state_cond_mode must be 'state' or 'state_skill' (got {self.state_cond_mode!r})."
             )
-        if self.cum_loss not in ("all", "endpoint"):
-            raise ValueError(f"cum_loss must be 'all' or 'endpoint' (got {self.cum_loss!r}).")
-        if not self.action_loss and float(self.cumulative_pos_loss_weight) <= 0.0:
+        if self.loss_mode not in ("plain", "weighted_gated"):
+            raise ValueError(f"loss_mode must be 'plain' or 'weighted_gated' (got {self.loss_mode!r}).")
+        if self.action_weighting not in ("plain", "early", "late"):
+            raise ValueError(f"action_weighting must be 'plain'|'early'|'late' (got {self.action_weighting!r}).")
+        if self.boundary_mode not in ("hold", "keep_demo"):
+            raise ValueError(f"boundary_mode must be 'hold' or 'keep_demo' (got {self.boundary_mode!r}).")
+        if self.loss_mode == "weighted_gated" and not self.use_connector:
+            raise ValueError("loss_mode='weighted_gated' needs use_connector=True (it gates the connector).")
+        if self.loss_mode == "weighted_gated" and self.freeze_expert_vision:
+            raise ValueError("loss_mode='weighted_gated' is incompatible with freeze_expert_vision.")
+        if self.train_terminator and not self.fsq_path:
+            raise ValueError("train_terminator=True needs fsq_path (the FSQ checkpoint to warm-start).")
+        if self.train_terminator and not self.skill_decoder_dino_tokens_path:
             raise ValueError(
-                "action_loss=False needs cumulative_pos_loss_weight>0 (otherwise the objective is empty)."
+                "train_terminator=True needs skill_decoder_dino_tokens_path (FSQ-grid current-frame DINO "
+                "tokens, precomputed at build_data; attached by SkillVLADinoTokenDataset)."
             )

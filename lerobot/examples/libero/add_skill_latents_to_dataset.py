@@ -88,6 +88,9 @@ class Args:
     """Stage-2 transition randomization half-window (steps). ISS는 스킬 시작 ±pmax state를 저장."""
     iss_npz_path: str = ""
     """skill-initial-state npz 출력 경로. 비우면 dst_dataset_dir 옆 skill_initial_state.npz."""
+    ess_npz_path: str = ""
+    """skill-FINAL-state npz 출력 경로(Stage-1 connector의 종료 프레임 state). 비우면 dst_dataset_dir
+    옆 skill_final_state.npz. ISS와 동일하게 ±pmax window라 transition randomization 대비."""
     state_column: str = "observation.state"
     """ISS/decoder-state로 쓸 로봇 state 컬럼."""
 
@@ -274,6 +277,50 @@ def build_skill_initial_state_npz(
     return len(windows)
 
 
+def build_skill_final_state_npz(
+    skill_map: dict[int, list],
+    ep_states: dict[int, np.ndarray],
+    pmax: int,
+    state_dim: int,
+    out_path: Path,
+) -> int:
+    """각 스킬의 끝(마지막 프레임 = fe-1) ±pmax observation.state 윈도우를 flat npz로 저장 — Stage-1
+    connector의 종료 프레임 state 입력.
+
+    ISS(build_skill_initial_state_npz)와 완전히 동일한 규약(per-skill flat + episode_id 키, 중앙
+    [pmax] = 끝 프레임). window로 저장하므로 Stage-1 transition randomization을 켜도 재빌드 없이
+    ess_index=pmax+offset 로 경계 jitter를 인덱싱할 수 있다(현재 로더는 중앙만 사용). frame_end는
+    parquet의 IFS[k]+length-1 과 교차검증용.
+    """
+    win = 2 * pmax + 1
+    episode_ids: list[int] = []
+    frame_ends: list[int] = []
+    windows: list[np.ndarray] = []
+    for ep_id in sorted(skill_map.keys()):
+        states = ep_states.get(int(ep_id))
+        for _fs, fe, _tok in skill_map[ep_id]:  # sorted by frame_start
+            end = fe - 1                        # last frame of the skill ([fs, fe) → fe-1)
+            if states is None or len(states) == 0:
+                w = np.zeros((win, state_dim), dtype=np.float32)
+            else:
+                idx = np.clip(np.arange(end - pmax, end + pmax + 1), 0, len(states) - 1)
+                w = states[idx].astype(np.float32)  # (win, state_dim), 경계 clamp; 중앙 [pmax]=끝
+            episode_ids.append(int(ep_id))
+            frame_ends.append(int(end))
+            windows.append(w)
+    ess = np.stack(windows) if windows else np.zeros((0, win, state_dim), dtype=np.float32)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez(
+        str(out_path),
+        episode_id=np.asarray(episode_ids, dtype=np.int32),
+        frame_end=np.asarray(frame_ends, dtype=np.int32),
+        ess_windows=ess,
+        pmax=np.int32(pmax),
+        state_dim=np.int32(state_dim),
+    )
+    return len(windows)
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main(args: Args) -> None:
@@ -397,6 +444,11 @@ def main(args: Args) -> None:
     n_iss = build_skill_initial_state_npz(skill_map, ep_states_map, pmax, state_dim, iss_npz_path)
     print(f"  Wrote ISS npz: {iss_npz_path}  (skills={n_iss}, window={2 * pmax + 1}, state_dim={state_dim})")
 
+    # ── skill-FINAL-state npz (Stage-1 connector end-frame state; ±pmax window → randomization-ready) ──
+    ess_npz_path = Path(args.ess_npz_path) if args.ess_npz_path else dst_dir.parent / "skill_final_state.npz"
+    n_ess = build_skill_final_state_npz(skill_map, ep_states_map, pmax, state_dim, ess_npz_path)
+    print(f"  Wrote ESS npz: {ess_npz_path}  (skills={n_ess}, window={2 * pmax + 1}, state_dim={state_dim})")
+
     # ── Update info.json ──────────────────────────────────────────────────────
     info_path = dst_dir / "meta" / "info.json"
     info = json.loads(info_path.read_text())
@@ -415,6 +467,8 @@ def main(args: Args) -> None:
     info["skill_pmax"] = pmax                          # ISS window 반폭 (= transition randomization)
     info["skill_initial_state_path"] = str(iss_npz_path)
     info["skill_initial_state_window"] = 2 * pmax + 1
+    info["skill_final_state_path"] = str(ess_npz_path)        # Stage-1 connector end-frame state
+    info["skill_final_state_window"] = 2 * pmax + 1
 
     info["features"].update({
         "skill_index": {"dtype": "int32", "shape": [1], "names": ["skill_index"]},

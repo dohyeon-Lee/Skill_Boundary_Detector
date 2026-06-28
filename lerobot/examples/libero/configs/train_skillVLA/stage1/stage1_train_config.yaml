@@ -1,25 +1,14 @@
-# SkillVLA Stage-1 training — standalone action expert (policy.type=skill_expert).
-# Trains the action expert by flow matching on the build_data skillvla dataset
-# (raw images + skill code + actions). No VLM, no language, no FSQ/DINO-token artifacts.
-# The expert encodes raw images with its own trainable DINOv3.
+skillvla_dataset_root: skillvla_dataset 
 
-# ── Paths (project_root/dataset_root come from configs/global_config.yaml) ──
-skillvla_dataset_root: skillvla_dataset  # .../{skillvla_dataset_root}/{source_dataset}/{run_tag}/
-
-# ── Which skillvla dataset to train on (built by configs/train_skillVLA/build_data) ──
 source_dataset: libero_90_full_full
-run_tag: FSQ555_dino8_wow_imgX_500   # sub-folder under {skillvla_dataset_root}/{source}/
-
-# outputs_root comes from configs/global_config.yaml: checkpoints under {project_root}/{outputs_root}/skillVLA_stage1/.
+run_tag: FSQ88_dino8_wow_1000   
 
 # ── Conditioning architecture (joint only) ──
 cond_encoder_variant:          # blank = same gemma variant as the action expert (recommended)
-# State conditioning — what rides the ACTION expert's flow-time AdaRMS (cond-encoder is image-ONLY).
-# state always goes to the AdaRMS (the cond-stream state token was starved; see stage1_eval/input_probe).
 #   state       → AdaRMS = time + state; skill (z_q) stays as an attended PREFIX token (image-dominant,
 #                 leaves room for Stage-2 language to modulate — lighter skill influence).
 #   state_skill → AdaRMS = time + state + skill(z_q); NO prefix tokens (strongest skill influence).
-state_cond_mode: state_skill
+state_cond_mode: state
 
 # ── Model init ──
 pi_base: models/pi05_base   # project_root(global_config) 기준 상대경로 → 서버마다 자동. 절대경로도 허용.
@@ -40,27 +29,55 @@ siglip_image_size: 224          # patch 14 → 16×16 = 256 tokens at 224
 
 
 
+# ── Connector (Stage-1 future-conditioning → VAE latent z) ──────────────────────────
+# A Perceiver pooler with its OWN frozen DINO encodes the skill's END frame (3rd+wrist) + END
+# state into a small VAE latent z, modulated by the GT skill via AdaLN. z → action-prefix tokens
+# (the within-skill motion detail that skill+current obs underdetermine). Needs the dataset rebuilt
+# with the ESS npz (add_skill_latents_to_dataset.py) — its own DINO is ALWAYS frozen.
+use_connector: true
+connector_dino_model_path: models/dinov3-vitl16   # own frozen DINO (vitl16 recommended once downloaded)
+connector_dino_image_size: 224
+connector_width: 768
+connector_depth: 4                # Perceiver blocks
+connector_n_heads: 8
+connector_n_latents: 4            # L learned queries = number of z prefix tokens
+connector_z_dim: 64              # per-latent VAE dim (transfer bottleneck)
+connector_free_bits: 0.1          # nats/dim reserved (prevents posterior collapse)
+connector_kl_weight: 1.0e-3       # β on the (free-bits) KL term
+connector_z_consistency_weight: 0.0   # method-2 appearance invariance (0=off; hooks only for now)
+z_ablation_every: 0              # diagnostic: every N steps log z_gain (loss without z − with z); 0=off
+
+# ── Stage-1 experiment design. MODE is chosen by WHICH script you submit (not a yaml field):
+#   submit_train.sh joint    → train_joint.sbatch   (single run; loss_mode + action_weighting below)
+#   submit_train.sh staged   → train_staged.sbatch  (TWO runs → {run}/1-1 then {run}/1-2; 1-2 warm-
+#                              starts from a chosen 1-1 checkpoint). staged params at the bottom. ──
+gate_prob: 0.5                    # weighted_gated: P(connector-trainable / vision-frozen / early-weight)
+boundary_mode: hold              # cross-skill chunk tail: hold (stop+hold, clean skill end) | keep_demo
+# ── staged params (used by submit_staged_1/2.sh). Both phases run `steps` (below). ──
+staged_phase1_weighting: late     # phase 1-1 action loss: late (skill-end emphasized) | plain (probe)
+staged_phase2_warmstart: last     # 1-1 ckpt that inits 1-2: "last" | step number | path → folder 1-2_<tag>
+# Terminator co-train (isolated skill-end-timing head, gradient-disjoint; needs fsq_path). Lets a
+# checkpoint be evaled (skill transitions). In staged it runs in 1-1.
+train_terminator: true
+fsq_path:                         # frozen FSQ checkpoint (e.g. {run_dir}/FSQ.pt); blank → off
+terminator_end_target_sigma: 1.0  # termination target = Gaussian bump exp(-de²/2σ²) at skill end
+terminator_end_pos_weight: 1.0    # BCE pos_weight (skill-end frames are rare positives)
+terminator_lr_scale: 1.0          # LR × optimizer_lr for the terminator's own param group
+# Current-frame FSQ-grid DINO tokens (precomputed at build_data; attached by SkillVLADinoTokenDataset).
+# Required when train_terminator: true. Blank → off.
+skill_decoder_dino_tokens_path:   # e.g. {run_dir}/FSQ_inputs/.../skill_decoder_dino.npz
+skill_decoder_dino_cache_path:    # blank → tokens_path.features.npy
+skill_decoder_dino_build_cache: true
+
 # ── Action chunk horizon ──
-chunk_size: 10 # 10 25 50
+chunk_size: 10 
 n_action_steps:                 # blank = chunk_size (must be <= chunk_size)
 
-# ── Loss: cumulative-position term (relative actions → endpoint = sum of deltas) ──
-# Adds λ·(cumulative-position MSE) to the per-delta flow loss. cumsum the implied per-step action error
-# over the chunk (ARM dims only; gripper=absolute, excluded) → penalize the K running positions so the
-# whole trajectory + endpoint match, not just per-step deltas. End-weighted per step (R).
-cumulative_pos_loss_weight: 0.5   # λ — 0 = OFF (objective = action term only). Boundary(skill끝/episode pad)는
-                                  #     마스킹 대신 HOLD 타깃(arm=0, gripper=직전값)으로 감독됨.
-skill_end_loss_weight: 2.0        # R — weight=1+(R-1)·progress; skill END counts more (1=uniform)
-# Loss composition — independent toggles. objective = [action term if action_loss] + λ·[cum term if λ>0].
-#   cum_loss      : all | endpoint  — cum 집계 (항상 R-weighted). on/off는 위 λ가 게이트. suffix: cum_all/cum_ep (λ>0)
-#   action_loss   : true/false      — objective에 일반 action MSE 포함 (false=cum-only). suffix: ac / ac_x
-#   action_weight : true/false      — action loss를 per-sample sw(=1+(R-1)·끝점진행도)로 가중 (cum endpoint와 동일 sw). suffix: ac_w
-# R(skill_end_loss_weight)는 action·cum에 동일 적용. 폴더명엔 λ/R 숫자값 안 들어감 (카테고리 suffix만).
-# wandb: train/loss = 항상 plain unweighted action MSE(비교용, backprop 안 됨). action_weight면 가중값은 loss_weighted
-#        패널에 따로. loss_total = 실제 최적화 objective.
-cum_loss: endpoint                     # all | endpoint
-action_loss: true                 # true | false
-action_weight: true              # true | false
+# ── Action loss: PLAIN (uniform) or PROGRESS-WEIGHTED per-step (early/late). The weighting direction +
+# on/off come from the experiment mode (joint-gated batches / staged 1-1); R below only sets how strong
+# the emphasis is. Boundary tail handled by boundary_mode (hold | keep_demo). No cum/action toggles.
+skill_end_loss_weight: 2.0        # R — per-step weight = 1+(R-1)·progress (late) or ·(1-progress) (early). R=1 → plain
+# wandb: train/loss = plain unweighted action MSE (comparison); loss_weighted = the weighted objective; loss_total = backpropped.
 
 # ── Optimization ──
 batch_size: 256
