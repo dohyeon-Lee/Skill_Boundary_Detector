@@ -53,8 +53,10 @@ r_ablation_every: 200              # diagnostic: every N steps log r_gain (loss 
 # Sweeps (oracle_n_tokens/r_dim/kl/dropout) tag the 1-2/single folder; the shared 1-1 is reused across them. ──
 boundary_mode: hold              # cross-skill chunk tail: hold (stop+hold, clean skill end) | keep_demo
 staged_phase2_warmstart: last    # 1-1 ckpt that inits 1-2: "last" | step number | path → folder 1-2_<tag>_<oracle>
-# staged 1-2 freeze: anchor (skill_proj + null) is ALWAYS frozen; this only controls the VISION encoder.
-freeze_vsa_vision: true          # true = freeze vision in 1-2 (clean residual) | false = keep vision adapting
+# Applies to BOTH 1-2 and single (anchor skill_proj+null is always frozen/A-frozen; this only gates VISION):
+#   1-2 (whole-phase):  true → vision frozen all phase (clean residual) | false → vision keeps adapting.
+#   single (per-batch): true → vision A-frozen(r)/B-trained(null) with the anchor | false → vision always trains.
+freeze_vsa_vision: false
 # Terminator co-train (isolated skill-end-timing head, gradient-disjoint; orthogonal to the Oracle).
 # fsq_path + dino tokens are AUTO-derived from run_tag (run_dir/FSQ.pt + run_dir/dino.npz) — leave blank.
 train_terminator: true
@@ -70,7 +72,7 @@ n_action_steps:                 # blank = chunk_size (must be <= chunk_size)
 
 # ── Optimization ──
 batch_size: 256
-num_workers: 2
+num_workers: 8                  # data loader workers (was 2; raised to clear GPU starvation — data_s≈updt_s)
 num_gpus: 1
 lr_base: 2.5e-05                # effective LR = lr_base * num_gpus
 steps: 15000

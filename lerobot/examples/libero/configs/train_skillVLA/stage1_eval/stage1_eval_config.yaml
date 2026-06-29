@@ -1,9 +1,10 @@
-# SkillVLA Stage-1 (skill_expert) closed-loop ORACLE eval on LIBERO sim.
+# SkillVLA Stage-1 (skill_expert) closed-loop ORACLE eval on LIBERO sim — EPISODE-EXACT.
 #
-# Oracle: no skill predictor in Stage 1, so the GT skill sequence is supplied per task.
-# env task <-> dataset task is matched by LANGUAGE; the FSQ terminator advances the skill.
-# This is a TASK-level eval (env runs the task's LIBERO init states in order, fed that task's
-# GT skill sequences index-paired) — scene-level alignment is not available from the dataset.
+# Oracle: no skill predictor in Stage 1, so the GT skill sequence is supplied. Each rollout
+# reproduces a SPECIFIC dataset episode: the env is reset to that episode's MuJoCo init_state
+# (eval_init_states.npz, FSQ-independent, shared across run_tags — build via oracle_matching/run.sh)
+# and fed that episode's own GT skill sequence. The FSQ terminator advances the skill; for an Oracle
+# checkpoint (1-2/single) that skill's GT state-trajectory feeds the Oracle → r (oracle-r upper bound).
 #
 # =========================================================================================
 # 사용법 (이 폴더에서 실행; 아래 model_dir 기준)
@@ -18,31 +19,25 @@
 
 # ── Paths (project_root/dataset_root come from configs/global_config.yaml) ──
 skillvla_dataset_root: skillvla_dataset  # .../{skillvla_dataset_root}/{source_dataset}/{run_tag}/
-# outputs_root comes from configs/global_config.yaml: trained S1 under {project_root}/{outputs_root}/skillVLA_stage1/.
-
-# model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_state_skill_ac_c10
-# model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_state_skill_cum_all_ac_c10
-# model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_state_ac_c10
-# model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_state_cum_all_ac_c10
-
-# model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_unfreeze_batch256_state_skill_ac_c10
-# model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_unfreeze_batch256_state_skill_cum_all_ac_c10
-# model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_unfreeze_batch256_state_ac_c10
-# model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_unfreeze_batch256_state_cum_all_ac_c10
-
-
-# model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_state_cum_ep_ac_c10
-# model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_siglip_unfreeze_batch256_state_cum_ep_ac_w_c10
-
-# model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_unfreeze_batch256_state_cum_ep_ac_c10
-# model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_unfreeze_batch256_state_cum_ep_ac_w_c10
-model_dir: libero_90_full_full_FSQ555_dino8_wow_imgX_500_dino_unfreeze_batch256_state_cum_ep_ac_x_c10
-
-
-
+# Run path = base_dir / model_dir, UNDER outputs_root/skillVLA_stage1/. Split so you only edit the short
+# model_dir to switch phases (base_dir is long & shared). No phase flag needed — the r regime is auto-detected
+# from the checkpoint's own use_oracle (1-1 → null; 1-2/single → oracle-r). FSQ.pt / skillvla / eval_init_states.npz
+# are auto-derived from base_dir's run_tag (shared across the 3 phases).
+base_dir: libero_90_full_full_FSQ555_dino8_both_1000_dino_unfreeze_batch256_state
+# model_dir = phase suffix:
+#   1-1    → staged/1-1                                     (null token)
+#   1-2    → staged/1-2_last_n4r8_kl0.001_dp0.5_visfrozen   (oracle-r; tag matches the train sweep)
+#   single → single/n4r8_kl0.001_dp0.5_visfrozen           (oracle-r)
+model_dir: staged/1-1
 checkpoint: "015000"            # "last" or a step number
 # Output folder = outputs/{model_dir}_{checkpoint}_adv-{skill_advance_mode}[_{eval_exp}]
 eval_exp: ""                    # optional free-form tag for the eval output folder (e.g. ablation name)
+# ── Oracle r at eval (checkpoints with an Oracle: 1-2 / single) ──
+# true  → feed the episode's GT skill state-trajectory to the Oracle → r (the oracle-r UPPER BOUND).
+# false → use the learned null token even with an Oracle (graceful-degradation / ablation).
+# Moot for a 1-1 checkpoint (no Oracle → always null).
+oracle_r_eval: true
+
 
 # FSQ TERMINATOR's raw-image DINO only. The policy's own vision backbone is NOT set here —
 # it comes from the checkpoint's saved config and must match the trained weights (vits/vitb/...).
@@ -62,8 +57,11 @@ max_parallel_tasks: 1
 #   gt         = advance by each skill's GT demo duration (ideal timing; isolates the action
 #                expert from terminator errors). Terminator still runs → its curves still recorded.
 skill_advance_mode: terminator    # terminator | gt
-skill_end_mode: termination       # "termination" (term prob >= thr) | "progress" (progress >= thr)
-skill_end_threshold: 0.5          # threshold on the chosen signal (termination~0.5, progress~0.9)
+# "termination" (term prob >= thr) | "progress" (progress >= thr) | "and" (BOTH: term prob >= thr AND
+#  progress >= progress_threshold — progress gate blocks premature end-prob spikes; most robust).
+skill_end_mode: and
+skill_end_threshold: 0.5          # threshold on term prob (and termination modes)
+skill_end_progress_threshold: 0.9 # progress gate for skill_end_mode=and
 inference_skill_max_length: 150   # force-advance skill after N steps (0 = off; terminator mode)
 
 # ── Video ──

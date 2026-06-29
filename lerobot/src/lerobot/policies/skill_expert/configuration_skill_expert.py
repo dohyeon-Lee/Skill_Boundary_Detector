@@ -155,8 +155,16 @@ class SkillExpertConfig(PI05Config):
     """Frozen FSQ checkpoint ({run_dir}/FSQ.pt): provides the terminator (skill end signal)
     + code->z_q mapping for eval. Unused in training (skill code comes from the dataset)."""
     skill_label_dataset_dir: str | None = None
-    """skillvla dataset dir whose skill_sequence columns give the GT skill sequence per task
-    (matched to the env task by language) for the oracle eval."""
+    """skillvla dataset dir whose skill_sequence columns give the GT skill sequence per EPISODE
+    (matched to the env scene via eval_init_states_path) for the oracle eval."""
+    eval_init_states_path: str | None = None
+    """eval_init_states.npz (built by stage1_eval/oracle_matching): episode_index → MuJoCo init_state +
+    scene_file. Lets the eval reset each env to the EXACT scene of the dataset episode whose GT skill
+    sequence is injected (episode-exact). None → fall back to LIBERO's built-in per-task init states."""
+    oracle_r_eval: bool = True
+    """When the checkpoint has an Oracle (1-2/single): feed the episode's GT skill state-trajectory →
+    r (the oracle-r upper bound). False → use the learned null token even with an Oracle (degradation
+    test). Moot for a 1-1 checkpoint (no Oracle → always null)."""
     terminator_dino_model_path: str | None = None
     """DINO weights for the FSQ terminator's raw-image encoder at eval. None → the FSQ
     checkpoint's own image_model_name. Kept SEPARATE from dino_model_path (the policy's OWN
@@ -166,9 +174,16 @@ class SkillExpertConfig(PI05Config):
     "terminator" → the FSQ terminator decides each transition (skill_end_mode/threshold);
     "gt"         → advance after each skill's GT demo duration (ideal timing)."""
     skill_end_mode: str = "termination"
-    """Which FSQ terminator signal ends the current skill: "termination" (prob ≥ thr) | "progress" (≥ thr)."""
+    """Which FSQ terminator signal ends the current skill:
+    "termination" → end-prob ≥ skill_end_threshold;
+    "progress"    → progress ≥ skill_end_threshold;
+    "and"         → end-prob ≥ skill_end_threshold AND progress ≥ skill_end_progress_threshold (robust:
+                    the progress gate blocks premature end-prob spikes early in the skill)."""
     skill_end_threshold: float = 0.5
     """Threshold on the signal selected by skill_end_mode, above which the skill is finished."""
+    skill_end_progress_threshold: float = 0.9
+    """Progress gate for skill_end_mode="and": the skill ends only once predicted progress also reaches
+    this (so a spurious early termination spike alone cannot advance the skill)."""
     inference_skill_max_length: int = 200
     """Force-advance the skill after this many steps even if the terminator never fires (0 = off)."""
 

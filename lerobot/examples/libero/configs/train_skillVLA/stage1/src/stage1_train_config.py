@@ -114,7 +114,7 @@ def build_settings(cfg: dict) -> dict:
     freeze_vision_encoder = as_bool(get_value(cfg, "freeze_vision_encoder", False))
     vis_tag = f"{vision_backbone}_{'freeze' if freeze_vision_encoder else 'unfreeze'}"
 
-    # ── Output tree: {base}/staged/{1-1, 1-2_<ws>_<oracle>} and {base}/single/<oracle> ──
+    # ── Output tree: {base}/staged/{1-1, 1-2_<ws>_<oracle>_<fv>} and {base}/single/<oracle>_<fv> ──
     base_name = f"{source_dataset}_{run_tag}_{vis_tag}_batch{batch_size}_{state_cond_mode}"
     if exp:
         base_name = f"{base_name}_{exp}"
@@ -136,10 +136,10 @@ def build_settings(cfg: dict) -> dict:
         _name = _p.parent.name if _p.name == "pretrained_model" else _p.name
         ws_tag = re.sub(r"[^A-Za-z0-9]+", "_", _name).strip("_") or "custom"
         ws_path = _p
-    # staged 1-2 also varies by whether vision is frozen (freeze_vsa_vision) → tag it so both coexist.
+    # freeze_vsa_vision is a sweep knob in BOTH 1-2 and single → tag both folders so the variants coexist.
     fv_tag = "visfrozen" if as_bool(get_value(cfg, "freeze_vsa_vision", True)) else "visadapt"
     staged_1_2_dir = base_dir / "staged" / f"1-2_{ws_tag}_{oracle_tag}_{fv_tag}"  # ws + sweep + vision tags
-    single_dir = base_dir / "single" / oracle_tag                       # Oracle from scratch, sweep tag
+    single_dir = base_dir / "single" / f"{oracle_tag}_{fv_tag}"          # Oracle from scratch: sweep + vision tags
 
     skill_fsq_levels = list(as_levels(get_value(cfg, "skill_fsq_levels", build_fsq_levels)))
     vocab_default = 1
@@ -192,7 +192,7 @@ def build_settings(cfg: dict) -> dict:
         "single_dir": single_dir,
         "staged_1_1_name": f"{base_name}_staged_1-1",
         "staged_1_2_name": f"{base_name}_staged_1-2_{ws_tag}_{oracle_tag}_{fv_tag}",
-        "single_name": f"{base_name}_single_{oracle_tag}",
+        "single_name": f"{base_name}_single_{oracle_tag}_{fv_tag}",
         # ── Terminator co-train (orthogonal to the Oracle) ──
         "train_terminator": as_bool(get_value(cfg, "train_terminator", False)),
         "fsq_path": fsq_path,

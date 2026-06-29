@@ -62,6 +62,11 @@ class SkillExpertDataset(LeRobotDataset):
     def __init__(self, *args, resample_n: int = 30, spline_degree: int = 3, **kwargs):
         self.resample_n = int(resample_n)
         self.spline_degree = int(spline_degree)
+        # (start, end) skill span -> resampled control points. The span is identical for EVERY frame of a
+        # skill, so the trajectory is too: cache it (computed once per skill ~30×8, not once per frame —
+        # ~50× fewer scipy splines + state reads). Per-worker (each loader process owns its copy); the
+        # whole dataset's ~12k skills fit in ~12 MB, so it stays unbounded.
+        self._traj_cache: dict[tuple[int, int], np.ndarray] = {}
         super().__init__(*args, **kwargs)
 
     def __getitem__(self, idx) -> dict:
@@ -78,12 +83,14 @@ class SkillExpertDataset(LeRobotDataset):
         start = max(ep_start, int(idx) - ds)
         end = min(ep_start + ep_len - 1, int(idx) + de)                 # inclusive last frame
 
-        rows = self.hf_dataset[start : end + 1][STATE_KEY]             # states over the skill
-        if isinstance(rows, list):
-            traj = np.stack([np.asarray(s, dtype=np.float32) for s in rows])
-        else:
-            traj = np.asarray(rows, dtype=np.float32)                  # (L, state_dim)
-
-        ctrl = _spline_resample(traj, self.resample_n, self.spline_degree)  # FSQ-style control points
-        item[SKILL_STATE_TRAJ] = torch.from_numpy(ctrl)
+        ctrl = self._traj_cache.get((start, end))                      # one spline per skill (cached)
+        if ctrl is None:
+            rows = self.hf_dataset[start : end + 1][STATE_KEY]         # states over the skill
+            if isinstance(rows, list):
+                traj = np.stack([np.asarray(s, dtype=np.float32) for s in rows])
+            else:
+                traj = np.asarray(rows, dtype=np.float32)              # (L, state_dim)
+            ctrl = _spline_resample(traj, self.resample_n, self.spline_degree)  # FSQ-style control points
+            self._traj_cache[(start, end)] = ctrl
+        item[SKILL_STATE_TRAJ] = torch.from_numpy(ctrl)               # cached array is read-only downstream
         return item

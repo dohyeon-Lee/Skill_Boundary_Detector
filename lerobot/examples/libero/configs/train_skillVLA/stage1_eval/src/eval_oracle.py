@@ -99,57 +99,92 @@ def make_terminator(path: str | Path, device: torch.device, *, dino_path: str | 
     return FsqTerminator(path, device, dino_path=dino_path, libero_examples_dir=libero_examples_dir)
 
 
-def load_skill_sequences_by_language(dataset_dir: str | Path) -> dict[str, list[list[dict]]]:
-    """Per (normalized) language instruction -> list of episodes; each episode is an ordered
-    list of skills ``{"token": fsq_code, "gt_length": frames}`` (BOS/EOS/PAD dropped).
+def build_task_name_to_id(suite_name: str) -> dict[str, int]:
+    """LIBERO suite task .name -> task_id. The task name (e.g. 'KITCHEN_SCENE10_close_the_top_drawer')
+    equals the original HDF5 ``scene_file`` with '_demo.hdf5' stripped, so it uniquely identifies the
+    env scene (disambiguating the ~12 languages shared across two scenes in LIBERO_90)."""
+    from libero.libero import benchmark  # noqa: PLC0415
 
-    ``gt_length`` is the GT number of frames the skill spanned in the demonstration
-    (``skill_length_sequence``, aligned to ``skill_sequence``) — used by the eval to compare
-    GT skill-transition timing against the runtime terminator. Episodes ordered by
-    episode_index."""
-    import json
+    suite = benchmark.get_benchmark_dict()[suite_name]()
+    return {str(t.name): i for i, t in enumerate(suite.tasks)}
 
-    import pandas as pd
 
-    dataset_dir = Path(dataset_dir)
-    info = json.loads((dataset_dir / "meta" / "info.json").read_text())
-    num_embeddings = int(info["skill_num_embeddings"])  # real FSQ codes < K; BOS/EOS/PAD >= K
-    data_files = sorted((dataset_dir / "data").glob("**/*.parquet"))
+def load_episode_oracle_data(
+    skill_dataset_dir: str | Path,
+    init_states_path: str | Path,
+    suite_name: str,
+    *,
+    resample_n: int,
+    spline_degree: int,
+) -> dict[int, list[dict]]:
+    """Per-EPISODE oracle eval data, grouped by LIBERO task_id and ordered by episode_index.
+
+    Joins the skillvla dataset (GT skill sequence + per-frame state) with eval_init_states.npz
+    (episode -> MuJoCo init_state + scene_file). Each record::
+
+        {"episode_index": int,
+         "init_state":  np.float64 (state_dim,)             — episode-exact env reset state,
+         "skills": [{"token": fsq_code,
+                     "gt_length": frames,                   — GT skill duration (timing + length token),
+                     "state_traj": np.float32 (resample_n, state_dim)}, ...]}  — Oracle r input.
+
+    ``state_traj`` is the skill's full state trajectory resampled EXACTLY as training
+    (_spline_resample), so feeding it to the Oracle reproduces the training-time r (the oracle-r
+    upper bound). Special tokens (code >= skill_num_embeddings) are dropped. Only episodes present in
+    BOTH the dataset and the npz, with >=1 real skill, are kept."""
+    import json  # noqa: PLC0415
+
+    import pandas as pd  # noqa: PLC0415
+
+    from lerobot.policies.skill_expert.dataset_skill_expert import STATE_KEY, _spline_resample  # noqa: PLC0415
+
+    skill_dataset_dir = Path(skill_dataset_dir)
+    info = json.loads((skill_dataset_dir / "meta" / "info.json").read_text())
+    num_emb = int(info["skill_num_embeddings"])  # real FSQ codes < num_emb; BOS/EOS/PAD >= it
+
+    npz = np.load(str(init_states_path), allow_pickle=True)
+    inits = {int(e): (st, str(sf)) for e, st, sf in
+             zip(npz["episode_index"], npz["init_states"], npz["scene_file"])}
+    name_to_id = build_task_name_to_id(suite_name)
+
+    cols = ["episode_index", "frame_index", STATE_KEY, "skill_sequence", "skill_length_sequence"]
+    data_files = sorted((skill_dataset_dir / "data").glob("**/*.parquet"))
     if not data_files:
-        raise FileNotFoundError(f"No parquet under {dataset_dir / 'data'}")
-
-    # task_index -> language (meta/tasks.parquet: index=language, col=task_index)
-    tasks = pd.read_parquet(dataset_dir / "meta" / "tasks.parquet")
-    idx_to_lang = {int(ti): str(lang) for lang, ti in zip(tasks.index, tasks["task_index"])}
-
-    cols = ["episode_index", "frame_index", "task_index", "skill_sequence",
-            "skill_length_sequence", "skill_sequence_len"]
+        raise FileNotFoundError(f"No parquet under {skill_dataset_dir / 'data'}")
     df = pd.concat([pd.read_parquet(p, columns=cols) for p in data_files], ignore_index=True)
-    first = df[df["frame_index"] == 0].sort_values("episode_index")
 
-    by_lang: dict[str, list[list[dict]]] = defaultdict(list)
-    for _, row in first.iterrows():
-        seq = [int(x) for x in np.asarray(row["skill_sequence"]).reshape(-1)]
-        lens = [int(x) for x in np.asarray(row["skill_length_sequence"]).reshape(-1)]
-        # Drop special tokens by VALUE (real FSQ codes < num_embeddings; BOS/EOS/PAD >= it).
-        # Scheme-agnostic: works whether or not the dataset has a leading BOS.
-        skills = [{"token": seq[i], "gt_length": lens[i]}
-                  for i in range(min(len(seq), len(lens))) if seq[i] < num_embeddings]
+    by_task: dict[int, list[dict]] = defaultdict(list)
+    for ep, ep_df in df.groupby("episode_index"):
+        ep = int(ep)
+        if ep not in inits:
+            continue
+        init_state, scene_file = inits[ep]
+        task_name = scene_file[: -len("_demo.hdf5")] if scene_file.endswith("_demo.hdf5") else scene_file
+        task_id = name_to_id.get(task_name)
+        if task_id is None:
+            continue
+        ep_df = ep_df.sort_values("frame_index")
+        states = np.stack([np.asarray(s, np.float32) for s in ep_df[STATE_KEY].values])  # (T, state_dim)
+        row0 = ep_df.iloc[0]
+        seq = np.asarray(row0["skill_sequence"]).reshape(-1)
+        lens = np.asarray(row0["skill_length_sequence"]).reshape(-1)
+        offsets = np.concatenate([[0], np.cumsum(lens)])  # frame boundary before skill i
+        skills = []
+        for i in range(min(len(seq), len(lens))):
+            if int(seq[i]) >= num_emb:  # special token
+                continue
+            s, e = int(offsets[i]), min(int(offsets[i] + lens[i]), len(states))
+            if e <= s:
+                continue
+            skills.append({
+                "token": int(seq[i]),
+                "gt_length": int(lens[i]),
+                "state_traj": _spline_resample(states[s:e], resample_n, spline_degree).astype(np.float32),
+            })
         if skills:
-            by_lang[_norm_lang(idx_to_lang[int(row["task_index"])])].append(skills)
-    return dict(by_lang)
+            by_task[task_id].append(
+                {"episode_index": ep, "init_state": np.asarray(init_state, np.float64), "skills": skills})
 
-
-def map_env_tasks_to_skills(
-    env_task_languages: dict[int, str],
-    sequences_by_language: dict[str, list[list[dict]]],
-) -> dict[int, list[list[dict]]]:
-    """env task_id -> list of GT skill sequences (from the dataset task with the same
-    language); each skill is a ``{"token", "gt_length"}`` dict. Env tasks whose language is
-    absent from the dataset are dropped."""
-    out: dict[int, list[list[dict]]] = {}
-    for task_id, lang in env_task_languages.items():
-        seqs = sequences_by_language.get(_norm_lang(lang))
-        if seqs:
-            out[task_id] = seqs
-    return out
+    for tid in by_task:
+        by_task[tid].sort(key=lambda r: r["episode_index"])
+    return dict(by_task)

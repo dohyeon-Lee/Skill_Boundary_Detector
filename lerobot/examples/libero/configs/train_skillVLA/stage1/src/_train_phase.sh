@@ -25,6 +25,23 @@ if [ "${TRAIN_TERMINATOR}" = "true" ]; then   # terminator inputs are auto-deriv
   done
 fi
 nvidia-smi || true
+# GPU isolation: trust Slurm's gres allocation — Slurm sets CUDA_VISIBLE_DEVICES to the dedicated GPU(s).
+# We do NOT scan/override it (overriding desyncs Slurm accounting → two jobs on one GPU → wedged node).
+# A SINGLE id here (e.g. '5') = correctly isolated; '<unset>' or multiple ids = NOT isolated (investigate).
+echo "GPU allocation: CUDA_VISIBLE_DEVICES='${CUDA_VISIBLE_DEVICES:-<unset; not under Slurm>}'  (gres should give 1 id)"
+# SAFETY (shared cluster): if we are under Slurm but NOT isolated to exactly NUM_GPUS device(s), ABORT
+# before launching. Running on a GPU we were not allocated collides with other jobs → wedged/rebooted
+# node. We do NOT override CUDA_VISIBLE_DEVICES (that desyncs Slurm) — we just refuse to run un-isolated.
+if [ -n "${SLURM_JOB_ID:-}" ]; then
+  _n_vis=$(printf '%s' "${CUDA_VISIBLE_DEVICES:-}" | tr ',' '\n' | grep -c .)
+  if [ "${_n_vis}" != "${NUM_GPUS}" ]; then
+    echo "ABORT: under Slurm but CUDA_VISIBLE_DEVICES exposes ${_n_vis} GPU(s), expected NUM_GPUS=${NUM_GPUS}." >&2
+    echo "  → Slurm GPU isolation is off; refusing to launch to avoid colliding with other jobs on the node." >&2
+    echo "  → Check the job's --gres / partition, or report to the cluster admin. (Do NOT manually set CUDA_VISIBLE_DEVICES.)" >&2
+    exit 1
+  fi
+  echo "GPU isolation OK: ${_n_vis} visible == NUM_GPUS=${NUM_GPUS}."
+fi
 
 # train_phase OUT NAME STEPS USE_ORACLE FREEZE_VSA_BASE PRETRAINED
 #   OUT             output dir for this phase
