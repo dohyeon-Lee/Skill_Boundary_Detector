@@ -2,10 +2,15 @@
 """Config for SkillVLA Stage-1 training (standalone action expert, policy.type=skill_expert).
 
 Trains the action expert by flow matching on the build_data skillvla dataset (raw images +
-skill_sequence/skill_index + actions). No FSQ / DINO-token / VLM artifacts are needed here:
-the expert encodes raw images with its OWN trainable DINOv3 and reads the GT skill code from
-the dataset. Weights can warm-start from pi05_base (action-expert motion prior) or train from
-scratch. All roots are declared in this yaml (standalone). Emits shell exports (--shell).
+skill columns + actions). Two experiments, each picked by WHICH .sbatch you submit:
+
+  staged  → train_staged_1.sbatch (1-1: VSA = vision+state+skill, no Oracle) then
+            train_staged_2.sbatch (1-2: freeze the VSA base, add the Oracle + r, CFG A/B dropout,
+            warm-started from a chosen 1-1 checkpoint).
+  single  → train_single.sbatch  (one run, Oracle on from scratch, CFG A/B dropout; no freeze).
+
+The Oracle sweep knobs (r_dim, kl_weight, dropout_p) tag the 1-2 / single output folder so sweeps
+never collide; the shared 1-1 (no Oracle) is reused across them. Emits shell exports (--shell).
 """
 
 from __future__ import annotations
@@ -28,7 +33,12 @@ def _resolve_opt(project_root, raw) -> str:
     return resolve_path(project_root, s) if s and s.lower() not in ("null", "none") else ""
 
 
-def build_settings(cfg: dict, mode: str = "joint", loss_mode_arg: str = "plain") -> dict:
+def _fmt(x: float) -> str:
+    """Compact float tag for folder names: 0.001 → '0.001', 0.5 → '0.5'."""
+    return ("%g" % float(x))
+
+
+def build_settings(cfg: dict) -> dict:
     # Standalone: every root is declared in this yaml (no build_data dependency).
     project_root = Path(str(get_value(cfg, "project_root"))).expanduser()
     dataset_root = project_root / str(get_value(cfg, "dataset_root", "dataset"))
@@ -47,31 +57,32 @@ def build_settings(cfg: dict, mode: str = "joint", loss_mode_arg: str = "plain")
     lr_base = float(get_value(cfg, "lr_base", 2.5e-05))
     exp = str(get_value(cfg, "exp", "")).strip()
 
-    # Action chunk horizon. Longer chunks make the far future under-determined by the current
-    # obs alone, pushing the flow-matching loss to actually use the skill (z_q) condition.
-    # Weights are chunk-length agnostic (per-step projections + RoPE), so Stage-2 may
-    # warm-start from a Stage-1 checkpoint trained with a different chunk_size.
     chunk_size = int(get_value(cfg, "chunk_size", 10))
     n_action_steps = get_value(cfg, "n_action_steps", None)
     n_action_steps = chunk_size if n_action_steps in (None, "", "null") else int(n_action_steps)
 
-    # Conditioning: joint (cond-encoder ⊥ action expert); skill+progress ride the action-stream prefix.
     cond_encoder_variant = str(get_value(cfg, "cond_encoder_variant", "")).strip()
     if cond_encoder_variant.lower() in ("none", "null"):  # blank yaml → omit (use action expert's variant)
         cond_encoder_variant = ""
-    state_cond_mode = str(get_value(cfg, "state_cond_mode", "state_skill")).strip().lower()  # state | state_skill
-    skill_end_w = float(get_value(cfg, "skill_end_loss_weight", 1.0))      # R = progress-weighting strength (early/late)
+    state_cond_mode = str(get_value(cfg, "state_cond_mode", "state")).strip().lower()  # state | state_skill
 
-    # ── Stage-1 experiment design: connector on/off + schedule + (joint) loss_mode (3 runs) ──
-    use_connector = as_bool(get_value(cfg, "use_connector", True))
-    schedule = str(mode).strip().lower()                                      # joint | staged (from the .sbatch file)
-    if schedule not in ("joint", "staged"):
-        raise ValueError(f"--mode must be 'joint' or 'staged' (got {mode!r}).")
-    loss_mode = str(loss_mode_arg).strip().lower()                           # plain | weighted_gated (from --loss-mode)
-    if loss_mode not in ("plain", "weighted_gated"):
-        raise ValueError(f"--loss-mode must be 'plain' or 'weighted_gated' (got {loss_mode_arg!r}).")
-    # Terminator inputs are build_data products under run_dir → AUTO-derived from run_tag (like the
-    # dataset). Override only if a yaml path is given. (Same as Stage-2: FSQ.pt + dino.npz beside skillvla/.)
+    # ── Oracle (Stage-1 residual r) hyperparameters + sweep knobs ──
+    oracle_resample_n = int(get_value(cfg, "oracle_resample_n", 30))
+    oracle_spline_degree = int(get_value(cfg, "oracle_spline_degree", 3))
+    oracle_width = int(get_value(cfg, "oracle_width", 512))
+    oracle_depth = int(get_value(cfg, "oracle_depth", 3))
+    oracle_n_heads = int(get_value(cfg, "oracle_n_heads", 8))
+    oracle_n_tokens = int(get_value(cfg, "oracle_n_tokens", 1))
+    oracle_r_dim = int(get_value(cfg, "oracle_r_dim", 16))           # SWEEP
+    oracle_free_bits = float(get_value(cfg, "oracle_free_bits", 0.1))
+    oracle_kl_weight = float(get_value(cfg, "oracle_kl_weight", 1e-3))  # SWEEP (β)
+    oracle_dropout_p = float(get_value(cfg, "oracle_dropout_p", 0.5))   # SWEEP
+    r_ablation_every = int(get_value(cfg, "r_ablation_every", 0))
+    # Oracle sweep tag → distinguishes 1-2 / single output folders across a sweep. n{tokens}r{dim} is
+    # the latent SHAPE (total bottleneck = n_tokens × r_dim); kl/dp are the other swept knobs.
+    oracle_tag = f"n{oracle_n_tokens}r{oracle_r_dim}_kl{_fmt(oracle_kl_weight)}_dp{_fmt(oracle_dropout_p)}"
+
+    # Terminator inputs are build_data products under run_dir → AUTO-derived from run_tag.
     fsq_path_raw = str(get_value(cfg, "fsq_path", "")).strip()
     fsq_path = (
         resolve_path(project_root, fsq_path_raw)
@@ -99,58 +110,37 @@ def build_settings(cfg: dict, mode: str = "joint", loss_mode_arg: str = "plain")
     siglip_lr = get_value(cfg, "siglip_lr", None)
     siglip_lr_str = "" if siglip_lr in (None, "", "null") else str(siglip_lr)
 
-    # run-name vision tag: <backbone>_<freeze|unfreeze> (the backbone trained + whether it was frozen).
     vision_backbone = (str(get_value(cfg, "vision_backbone", "dino")).strip().lower() or "dino")
-    if vision_backbone == "siglip":
-        vfrozen = as_bool(get_value(cfg, "freeze_siglip", False))
-    else:
-        vfrozen = as_bool(get_value(cfg, "freeze_dino", False))
-    vis_tag = f"{vision_backbone}_{'freeze' if vfrozen else 'unfreeze'}"
+    freeze_vision_encoder = as_bool(get_value(cfg, "freeze_vision_encoder", False))
+    vis_tag = f"{vision_backbone}_{'freeze' if freeze_vision_encoder else 'unfreeze'}"
 
-    # joint + ae + discretized state is the only arch now → no arch/inject tag. init_from_pi05 fixed true.
-    run_name = f"{source_dataset}_{run_tag}_{vis_tag}_batch{batch_size}"
-    run_name = f"{run_name}_{state_cond_mode}"   # state | state_skill (what rides the expert AdaRMS) — never collide
-    # experiment tag so the 3 runs (joint-plain / joint-gated / staged) never collide.
-    exp_tag = ("conn" if use_connector else "noconn") + f"_{schedule}"
-    if schedule == "joint":
-        exp_tag += f"_{loss_mode}"
-    run_name = f"{run_name}_{exp_tag}"
+    # ── Output tree: {base}/staged/{1-1, 1-2_<ws>_<oracle>} and {base}/single/<oracle> ──
+    base_name = f"{source_dataset}_{run_tag}_{vis_tag}_batch{batch_size}_{state_cond_mode}"
     if exp:
-        run_name = f"{run_name}_{exp}"
-    # Single outputs root from yaml; the per-stage subdir is fixed here (not in yaml).
+        base_name = f"{base_name}_{exp}"
     outputs_root = project_root / str(get_value(cfg, "outputs_root", "outputs"))
     vla_root = outputs_root / "skillVLA_stage1"
-    output_dir = vla_root / run_name   # under skillVLA_stage1/, so no extra stage prefix
+    base_dir = vla_root / base_name
 
-    # ── Staged = TWO sequential runs in the sbatch → SEPARATE folders {run_name}/1-1 and
-    # {run_name}/1-2_<warmstart-tag>. Both phases run `steps`. 1-1: expert-vision + action
-    # (use_connector=false, late-weighted). 1-2: freeze expert-vision, add connector (plain),
-    # warm-started from a CHOSEN 1-1 checkpoint (the warm-start tag lets different choices coexist). ──
-    staged = (schedule == "staged")
-    phase1_output = phase2_output = ""
-    phase1_weighting = "late"
-    phase2_warmstart = ""
-    if staged:
-        phase1_weighting = str(get_value(cfg, "staged_phase1_weighting", "late")).strip().lower()
-        steps_total = int(get_value(cfg, "steps", 100000))           # both phases run this many steps
-        phase1_output = output_dir / f"1-1_{phase1_weighting}"       # weighting tag → late/plain don't collide
-        ws = str(get_value(cfg, "staged_phase2_warmstart", "last")).strip()
-        if ws.lower() in ("", "last", "null", "none"):
-            ws_tag = "last"
-            phase2_warmstart = phase1_output / "checkpoints" / "last" / "pretrained_model"
-        elif ws.isdigit():                                            # a 1-1 step number → padded ckpt dir
-            ws_tag = f"step{int(ws)}"
-            phase2_warmstart = phase1_output / "checkpoints" / f"{int(ws):0{len(str(steps_total))}d}" / "pretrained_model"
-        else:                                                         # explicit checkpoint path
-            _p = Path(ws)
-            _name = _p.parent.name if _p.name == "pretrained_model" else _p.name
-            ws_tag = re.sub(r"[^A-Za-z0-9]+", "_", _name).strip("_") or "custom"
-            phase2_warmstart = _p
-        phase2_output = output_dir / f"1-2_{ws_tag}"                  # warm-start tag → choices don't collide
+    steps_total = int(get_value(cfg, "steps", 100000))                   # all phases run this many steps
+    staged_1_1_dir = base_dir / "staged" / "1-1"                         # VSA base (no Oracle), shared across sweeps
+    # 1-2 warm-starts from a CHOSEN 1-1 checkpoint (last | step number | explicit path).
+    ws = str(get_value(cfg, "staged_phase2_warmstart", "last")).strip()
+    if ws.lower() in ("", "last", "null", "none"):
+        ws_tag, ws_path = "last", staged_1_1_dir / "checkpoints" / "last" / "pretrained_model"
+    elif ws.isdigit():
+        ws_tag = f"step{int(ws)}"
+        ws_path = staged_1_1_dir / "checkpoints" / f"{int(ws):0{len(str(steps_total))}d}" / "pretrained_model"
+    else:
+        _p = Path(ws)
+        _name = _p.parent.name if _p.name == "pretrained_model" else _p.name
+        ws_tag = re.sub(r"[^A-Za-z0-9]+", "_", _name).strip("_") or "custom"
+        ws_path = _p
+    # staged 1-2 also varies by whether vision is frozen (freeze_vsa_vision) → tag it so both coexist.
+    fv_tag = "visfrozen" if as_bool(get_value(cfg, "freeze_vsa_vision", True)) else "visadapt"
+    staged_1_2_dir = base_dir / "staged" / f"1-2_{ws_tag}_{oracle_tag}_{fv_tag}"  # ws + sweep + vision tags
+    single_dir = base_dir / "single" / oracle_tag                       # Oracle from scratch, sweep tag
 
-    # FSQ skill structure: auto-match the FSQ the dataset was built with (parsed from run_tag's FSQ<levels> tag).
-    # The expert only needs the codebook size (= prod(levels)) for its skill embedding; levels are
-    # kept for the eval cube viz. Either may be overridden in the stage1 yaml.
     skill_fsq_levels = list(as_levels(get_value(cfg, "skill_fsq_levels", build_fsq_levels)))
     vocab_default = 1
     for _lvl in skill_fsq_levels:
@@ -166,72 +156,63 @@ def build_settings(cfg: dict, mode: str = "joint", loss_mode_arg: str = "plain")
         "run_tag": run_tag,
         "skillvla_dataset_dir": run_dir / "skillvla",
         "repo_id": f"dohyeon/{source_dataset}",
-        # conditioning (joint only; skill+progress on the action prefix)
+        # conditioning
         "cond_encoder_variant": cond_encoder_variant,  # "" → same as action_expert_variant
-        "state_cond_mode": state_cond_mode,       # state (skill=prefix token) | state_skill (skill→AdaRMS too)
+        "state_cond_mode": state_cond_mode,            # state (skill=prefix) | state_skill (skill→AdaRMS)
         # model init
-        "pi_base": pi_base,                       # "" → train the expert from scratch
-        # vision encoder: "dino" or "siglip" (siglip warm-starts from pi_base's vision_tower)
-        "vision_backbone": str(get_value(cfg, "vision_backbone", "dino")),
+        "pi_base": pi_base,                            # "" → train the expert from scratch
+        # vision encoder
+        "vision_backbone": vision_backbone,
         "dino_model_path": resolve_path(project_root, get_value(cfg, "dino_model_path", "models/dinov3-vits16")),
-        "dino_lr": dino_lr_str,                   # "" → same LR as the rest
-        "freeze_dino": as_bool(get_value(cfg, "freeze_dino", False)),
-        "freeze_siglip": as_bool(get_value(cfg, "freeze_siglip", True)),
-        "siglip_lr": siglip_lr_str,               # "" → same LR as the rest (when unfrozen)
+        "dino_lr": dino_lr_str,
+        "freeze_vision_encoder": freeze_vision_encoder,
+        "siglip_lr": siglip_lr_str,
         "siglip_image_size": int(get_value(cfg, "siglip_image_size", 224)),
         "skill_vocab_size": skill_vocab_size,
         "skill_fsq_levels": "[" + ",".join(str(x) for x in skill_fsq_levels) + "]",
-        # ── Connector (Stage-1 future-conditioning → VAE latent z) ──
-        "use_connector": use_connector,
-        "connector_dino_model_path": resolve_path(project_root, get_value(cfg, "connector_dino_model_path", "models/dinov3-vitb16")),
-        "connector_dino_image_size": int(get_value(cfg, "connector_dino_image_size", 224)),
-        "connector_width": int(get_value(cfg, "connector_width", 768)),
-        "connector_depth": int(get_value(cfg, "connector_depth", 4)),
-        "connector_n_heads": int(get_value(cfg, "connector_n_heads", 8)),
-        "connector_n_latents": int(get_value(cfg, "connector_n_latents", 4)),
-        "connector_z_dim": int(get_value(cfg, "connector_z_dim", 64)),
-        "connector_free_bits": float(get_value(cfg, "connector_free_bits", 0.1)),
-        "connector_kl_weight": float(get_value(cfg, "connector_kl_weight", 1e-3)),
-        "connector_z_consistency_weight": float(get_value(cfg, "connector_z_consistency_weight", 0.0)),
-        "z_ablation_every": int(get_value(cfg, "z_ablation_every", 0)),
-        # ── Stage-1 experiment design — action_weighting & freeze_expert_vision are decided by the
-        # .sbatch (joint→plain/false, staged_1→phase1_weighting/false, staged_2→plain/true). ──
-        "loss_mode": loss_mode,                   # plain | weighted_gated
-        "gate_prob": float(get_value(cfg, "gate_prob", 0.5)),
+        # ── Oracle (state-trajectory → 1-token VAE residual r) ──
+        "oracle_resample_n": oracle_resample_n,
+        "oracle_spline_degree": oracle_spline_degree,
+        "oracle_width": oracle_width,
+        "oracle_depth": oracle_depth,
+        "oracle_n_heads": oracle_n_heads,
+        "oracle_n_tokens": oracle_n_tokens,
+        "oracle_r_dim": oracle_r_dim,
+        "oracle_free_bits": oracle_free_bits,
+        "oracle_kl_weight": oracle_kl_weight,
+        "oracle_dropout_p": oracle_dropout_p,
+        "r_ablation_every": r_ablation_every,
+        "freeze_vsa_vision": as_bool(get_value(cfg, "freeze_vsa_vision", True)),  # staged 1-2: also freeze vision?
         "boundary_mode": str(get_value(cfg, "boundary_mode", "hold")).strip().lower(),
-        # staged orchestration (sbatch runs phase 1-1 then 1-2 → separate folders)
-        "staged": staged,
-        "staged_phase1_weighting": phase1_weighting,
-        "phase1_output_dir": phase1_output,
-        "phase2_output_dir": phase2_output,
-        "phase2_warmstart": phase2_warmstart,
+        # ── Output dirs (the sbatch picks the one for its experiment) ──
+        "base_name": base_name,
+        "staged_1_1_dir": staged_1_1_dir,
+        "staged_1_2_dir": staged_1_2_dir,
+        "staged_2_warmstart": ws_path,
+        "single_dir": single_dir,
+        "staged_1_1_name": f"{base_name}_staged_1-1",
+        "staged_1_2_name": f"{base_name}_staged_1-2_{ws_tag}_{oracle_tag}_{fv_tag}",
+        "single_name": f"{base_name}_single_{oracle_tag}",
+        # ── Terminator co-train (orthogonal to the Oracle) ──
         "train_terminator": as_bool(get_value(cfg, "train_terminator", False)),
-        "fsq_path": fsq_path,                     # "" → terminator co-train off / no eval terminator
+        "fsq_path": fsq_path,
         "terminator_end_target_sigma": float(get_value(cfg, "terminator_end_target_sigma", 1.0)),
         "terminator_end_pos_weight": float(get_value(cfg, "terminator_end_pos_weight", 1.0)),
         "terminator_lr_scale": float(get_value(cfg, "terminator_lr_scale", 1.0)),
-        # current-frame FSQ-grid DINO tokens for the terminator (attached by SkillVLADinoTokenDataset)
         "skill_decoder_dino_tokens_path": skill_decoder_dino_tokens_path,   # auto: run_dir/dino.npz
         "skill_decoder_dino_output_key": str(get_value(cfg, "skill_decoder_dino_output_key", "skill_decoder_dino")),
         "skill_decoder_dino_cache_path": _resolve_opt(project_root, get_value(cfg, "skill_decoder_dino_cache_path", "")),
         "skill_decoder_dino_build_cache": as_bool(get_value(cfg, "skill_decoder_dino_build_cache", True)),
-        # wrist tokens for a dual (use_wrist) terminator — "" unless run_dir/dino_wrist.npz exists
-        "skill_decoder_dino_wrist_tokens_path": skill_decoder_dino_wrist_tokens_path,
-        # output
-        "skillvla_outputs_root": vla_root,
-        "pt_run_name": run_name,
-        "pt_output_dir": output_dir,
+        "skill_decoder_dino_wrist_tokens_path": skill_decoder_dino_wrist_tokens_path,  # "" unless dino_wrist.npz exists
         # action chunk horizon
         "chunk_size": chunk_size,
         "n_action_steps": n_action_steps,
-        # loss: optional cumulative-position term (λ) + end weighting (R) + aggregation mode. λ=0 → off.
-        "skill_end_loss_weight": skill_end_w,     # R = progress-weighting strength (early/late)
         # optimization
         "batch_size": batch_size,
         "num_workers": int(get_value(cfg, "num_workers", 8)),
         "num_gpus": num_gpus,
         "lr": lr_base * num_gpus,
-        "steps": int(get_value(cfg, "steps", 100000)),
+        "steps": steps_total,
         "save_freq": int(get_value(cfg, "save_freq", 5000)),
         # wandb
         "wandb_enable": as_bool(get_value(cfg, "wandb_enable", True)),
@@ -256,11 +237,9 @@ def build_settings(cfg: dict, mode: str = "joint", loss_mode_arg: str = "plain")
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
-    ap.add_argument("--mode", default="joint", choices=["joint", "staged"])         # which .sbatch is running
-    ap.add_argument("--loss-mode", default="plain", choices=["plain", "weighted_gated"])  # joint only
     ap.add_argument("--shell", action="store_true")
     args = ap.parse_args()
-    settings = build_settings(load_config(args.config), mode=args.mode, loss_mode_arg=args.loss_mode)
+    settings = build_settings(load_config(args.config))
     if args.shell:
         print_shell(settings)
     else:

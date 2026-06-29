@@ -47,10 +47,6 @@ eval_exp: ""                    # optional free-form tag for the eval output fol
 # FSQ TERMINATOR's raw-image DINO only. The policy's own vision backbone is NOT set here —
 # it comes from the checkpoint's saved config and must match the trained weights (vits/vitb/...).
 terminator_dino_model_path: models/dinov3-vits16   # project_root 기준 상대경로 → 서버마다 자동
-# REFINED terminator (stage1/terminator_train). 비우면 = 학습 run의 FSQ.pt(기본); 채우면 dedicated
-# terminator를 로드해 FSQ 거랑 비교. code→z_q는 같은 frozen 코드북이라 FSQ.pt 포맷이 그대로 drop-in.
-# 출력 폴더에 _refterm{step} 태그가 붙어 FSQ-terminator run과 안 섞임.
-terminator_path: ""   # 예: outputs_filtered/skillVLA_stage1/terminator/{run_name}/checkpoints/010000/FSQ.pt
 
 # ── Eval rollout ──
 target_task: libero_90

@@ -1,6 +1,6 @@
-# Shared by train_joint.sbatch / train_staged.sbatch. SOURCE this AFTER the emitter `eval` (it relies on
-# the exported settings). Sets up the env and defines train_phase() — one lerobot-train run = one fixed
-# PHASE. Per-phase knobs are positional args; everything else comes from the shared env exports.
+# Shared by train_staged_1 / train_staged_2 / train_single. SOURCE this AFTER the emitter `eval`
+# (it relies on the exported settings). Sets up the env and defines train_phase() — one lerobot-train
+# run = one PHASE. Per-phase knobs are positional args; everything else comes from the shared env.
 
 cd "${LEROBOT_ROOT}"
 source "${PROJECT_ROOT}/.venv/bin/activate"
@@ -26,12 +26,16 @@ if [ "${TRAIN_TERMINATOR}" = "true" ]; then   # terminator inputs are auto-deriv
 fi
 nvidia-smi || true
 
-# train_phase OUT STEPS USE_CONNECTOR ACTION_WEIGHTING FREEZE_EXPERT_VISION BOUNDARY_MODE PRETRAINED LOSS_MODE
+# train_phase OUT NAME STEPS USE_ORACLE FREEZE_VSA_BASE PRETRAINED
+#   OUT             output dir for this phase
+#   USE_ORACLE      true (1-2 / single) → Oracle + r-slot=r ; false (1-1) → r-slot=null only
+#   FREEZE_VSA_BASE true (staged 1-2) → freeze vision+skill_proj+null ; false (1-1 / single)
+#   PRETRAINED      pi05 (1-1 / single) or a 1-1 checkpoint (staged 1-2)
 train_phase() {
-  local OUT="$1" STEPS_="$2" USE_CONN="$3" ACT_W="$4" FREEZE_EV="$5" BOUND="$6" PRETRAINED="$7" LMODE="$8"
+  local OUT="$1" NAME="$2" STEPS_="$3" USE_ORACLE="$4" FREEZE_VSA="$5" PRETRAINED="$6"
 
   local EXTRA=()
-  [ -n "${PRETRAINED}" ] && EXTRA+=(--policy.pretrained_path="${PRETRAINED}")   # pi05 (joint/1-1) or 1-1 ckpt (1-2)
+  [ -n "${PRETRAINED}" ] && EXTRA+=(--policy.pretrained_path="${PRETRAINED}")   # pi05 (1-1/single) or 1-1 ckpt (1-2)
   [ -n "${DINO_LR}" ] && EXTRA+=(--policy.dino_lr="${DINO_LR}")
   [ -n "${SIGLIP_LR}" ] && EXTRA+=(--policy.siglip_lr="${SIGLIP_LR}")
   [ -n "${COND_ENCODER_VARIANT}" ] && EXTRA+=(--policy.cond_encoder_variant="${COND_ENCODER_VARIANT}")
@@ -51,7 +55,7 @@ train_phase() {
     rm -rf "${OUT}"
   fi
 
-  echo "── train_phase → ${OUT}  (steps=${STEPS_} use_connector=${USE_CONN} weighting=${ACT_W} freeze_ev=${FREEZE_EV} boundary=${BOUND} init=${PRETRAINED:-scratch}) ──"
+  echo "── train_phase → ${OUT}  (steps=${STEPS_} use_oracle=${USE_ORACLE} freeze_vsa_base=${FREEZE_VSA} init=${PRETRAINED:-scratch}) ──"
   PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="${NUM_GPUS}" \
     "${PROJECT_ROOT}/.venv/bin/lerobot-train" \
       --dataset.repo_id="${REPO_ID}" \
@@ -59,7 +63,7 @@ train_phase() {
       --dataset.video_backend=pyav \
       --policy.type=skill_expert \
       --output_dir="${OUT}" \
-      --job_name="${PT_RUN_NAME}" \
+      --job_name="${NAME}" \
       --policy.compile_model=false \
       --policy.gradient_checkpointing=true \
       --policy.dtype=bfloat16 \
@@ -68,31 +72,27 @@ train_phase() {
       --policy.state_cond_mode="${STATE_COND_MODE}" \
       --policy.vision_backbone="${VISION_BACKBONE}" \
       --policy.dino_model_path="${DINO_MODEL_PATH}" \
-      --policy.freeze_dino="${FREEZE_DINO}" \
-      --policy.freeze_siglip="${FREEZE_SIGLIP}" \
+      --policy.freeze_vision_encoder="${FREEZE_VISION_ENCODER}" \
       --policy.siglip_image_size="${SIGLIP_IMAGE_SIZE}" \
       --policy.skill_vocab_size="${SKILL_VOCAB_SIZE}" \
       --policy.skill_fsq_levels="${SKILL_FSQ_LEVELS}" \
       --policy.chunk_size="${CHUNK_SIZE}" \
       --policy.n_action_steps="${N_ACTION_STEPS}" \
-      --policy.skill_end_loss_weight="${SKILL_END_LOSS_WEIGHT}" \
-      --policy.use_connector="${USE_CONN}" \
-      --policy.connector_dino_model_path="${CONNECTOR_DINO_MODEL_PATH}" \
-      --policy.connector_dino_image_size="${CONNECTOR_DINO_IMAGE_SIZE}" \
-      --policy.connector_width="${CONNECTOR_WIDTH}" \
-      --policy.connector_depth="${CONNECTOR_DEPTH}" \
-      --policy.connector_n_heads="${CONNECTOR_N_HEADS}" \
-      --policy.connector_n_latents="${CONNECTOR_N_LATENTS}" \
-      --policy.connector_z_dim="${CONNECTOR_Z_DIM}" \
-      --policy.connector_free_bits="${CONNECTOR_FREE_BITS}" \
-      --policy.connector_kl_weight="${CONNECTOR_KL_WEIGHT}" \
-      --policy.connector_z_consistency_weight="${CONNECTOR_Z_CONSISTENCY_WEIGHT}" \
-      --policy.z_ablation_every="${Z_ABLATION_EVERY}" \
-      --policy.loss_mode="${LMODE}" \
-      --policy.action_weighting="${ACT_W}" \
-      --policy.freeze_expert_vision="${FREEZE_EV}" \
-      --policy.gate_prob="${GATE_PROB}" \
-      --policy.boundary_mode="${BOUND}" \
+      --policy.use_oracle="${USE_ORACLE}" \
+      --policy.oracle_resample_n="${ORACLE_RESAMPLE_N}" \
+      --policy.oracle_spline_degree="${ORACLE_SPLINE_DEGREE}" \
+      --policy.oracle_width="${ORACLE_WIDTH}" \
+      --policy.oracle_depth="${ORACLE_DEPTH}" \
+      --policy.oracle_n_heads="${ORACLE_N_HEADS}" \
+      --policy.oracle_n_tokens="${ORACLE_N_TOKENS}" \
+      --policy.oracle_r_dim="${ORACLE_R_DIM}" \
+      --policy.oracle_free_bits="${ORACLE_FREE_BITS}" \
+      --policy.oracle_kl_weight="${ORACLE_KL_WEIGHT}" \
+      --policy.oracle_dropout_p="${ORACLE_DROPOUT_P}" \
+      --policy.r_ablation_every="${R_ABLATION_EVERY}" \
+      --policy.freeze_vsa_base="${FREEZE_VSA}" \
+      --policy.freeze_vsa_vision="${FREEZE_VSA_VISION}" \
+      --policy.boundary_mode="${BOUNDARY_MODE}" \
       --policy.train_terminator="${TRAIN_TERMINATOR}" \
       --policy.terminator_end_target_sigma="${TERMINATOR_END_TARGET_SIGMA}" \
       --policy.terminator_end_pos_weight="${TERMINATOR_END_POS_WEIGHT}" \

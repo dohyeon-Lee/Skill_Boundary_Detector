@@ -1,143 +1,89 @@
-"""SkillExpert (Stage-1) training dataset — LeRobotDataset + the skill's END-frame inputs.
+"""SkillExpert (Stage-1) training dataset — LeRobotDataset + the current skill's STATE TRAJECTORY.
 
-On top of the standard (current-frame) sample, each item gains the connector's *skill-END* inputs
-(the future/goal the action expert must reach), decoded live so the connector can DINO-encode them:
+On top of the standard (current-frame) sample, each item gains the Oracle's input: the current
+skill's full state trajectory (start→end), resampled to a fixed length:
 
-  skill_end_image        : 3rd-person frame at the current skill's last frame (fe-1)
-  skill_end_wrist_image  : wrist frame at the same end
-  skill_end_state        : observation.state at that end (from skill_final_state.npz / ESS)
+  skill_state_traj : (resample_n, state_dim) float32
 
-Static ingredients come from build_data:
-  parquet columns  : skill_index(k), skill_initial_frame(IFS), skill_length_sequence
-  ESS npz          : per-skill observation.state window (±pmax) centered on the end frame —
-                     path & pmax read from info.json (built by add_skill_latents_to_dataset.py)
-
-The end frame is decoded with the reader's ``_query_videos`` (v3.0 chunk→file→timestamp mapping),
-mirroring SkillVLADataset's skill-START path. Transition randomization is NOT applied here yet
-(offset=0 → window center = the GT end); the ESS window is pre-built ±pmax so it can be enabled
-later (ess_index = pmax + offset) without a rebuild.
+This is fetched at runtime from the existing dataset — no rebuild needed. The current skill's frame
+range is [idx - skill_ds, idx + skill_de] (skill_ds/skill_de are per-frame parquet columns written by
+add_skill_latents_to_dataset.py; a skill is contiguous within an episode). The states over that range
+are linearly resampled to a fixed N (endpoints anchored). The range is the SAME for every frame of a
+skill, so the trajectory — and hence the Oracle's r — is constant within a skill (matches Stage-2,
+where the VLM emits r once at the skill start and holds it).
 """
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import numpy as np
 import torch
+from scipy.interpolate import make_interp_spline
 
-from lerobot.datasets.dataset_metadata import LeRobotDatasetMetadata
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
-# Batch keys this dataset adds (the policy's forward consumes these for the connector).
-SKILL_END_IMAGE = "skill_end_image"
-SKILL_END_WRIST_IMAGE = "skill_end_wrist_image"
-SKILL_END_STATE = "skill_end_state"
+# Batch key this dataset adds (the policy's forward feeds it to the Oracle).
+SKILL_STATE_TRAJ = "skill_state_traj"
 
-CAM_3RD = "observation.images.image"
-CAM_WRIST = "observation.images.wrist_image"
+STATE_KEY = "observation.state"
+# Trailing gripper-STATE dims (LIBERO observation.state = [x,y,z,roll,pitch,yaw, gripper, gripper]).
+# MIRRORS FSQ.py: gripper dims stay ABSOLUTE + use a degree-1 spline (near-step → no cubic overshoot);
+# pose dims are zero-grounded + use the pose spline degree. Keep in sync with FSQ.py spline_encode.
+N_GRIPPER_DIMS = 2
 
 
 def _scalar(x) -> int:
     return int(x.item() if torch.is_tensor(x) else np.asarray(x).reshape(-1)[0])
 
 
-class _ESSStore:
-    """skill_final_state.npz reader: per-skill observation.state window (±pmax) centered on the end
-    frame, keyed by episode_id. Mirrors _ISSStore (skill order = frame_start order). ``frame_end`` is
-    cross-checked against the parquet IFS[k]+length-1 so a wrong alignment fails loudly."""
-
-    def __init__(self, npz_path: str):
-        z = np.load(npz_path)
-        self.frame_end = np.asarray(z["frame_end"])
-        self.windows = np.asarray(z["ess_windows"])  # (total_skills, 2*pmax+1, state_dim)
-        self.pmax = int(z["pmax"])
-        epid = np.asarray(z["episode_id"])
-        # group by episode, then sort by frame_end (= skill order, same as frame_start order)
-        order = np.lexsort((self.frame_end, epid))
-        self.by_ep: dict[int, list[int]] = {}
-        for i in order:
-            self.by_ep.setdefault(int(epid[i]), []).append(int(i))
-
-    def state(self, ep_idx: int, skill_rank: int, ess_index: int, expected_frame_end: int) -> np.ndarray:
-        flat = self.by_ep[ep_idx][skill_rank]
-        fe = int(self.frame_end[flat])
-        if fe != expected_frame_end:
-            raise ValueError(
-                f"ESS/IFS mismatch (ep={ep_idx}, skill={skill_rank}): npz frame_end={fe} "
-                f"!= IFS+len-1={expected_frame_end}"
-            )
-        return self.windows[flat][ess_index].astype(np.float32)
+def _spline_resample(traj: np.ndarray, n: int, degree: int) -> np.ndarray:
+    """Resample a (L, D) state trajectory to (n, D) control points EXACTLY as the FSQ encoder
+    (FSQ.py spline_encode): zero-ground the pose (gripper stays absolute), then per-dim interpolating
+    spline (gripper dims degree 1, pose dims `degree`) sampled at n uniform points. The Oracle thus sees
+    the trajectory in the same representation the skill code z was derived from → r is a clean residual."""
+    traj = np.asarray(traj, dtype=np.float32)
+    L, D = traj.shape
+    if L < 2:                                                          # degenerate skill → tile the lone frame
+        return np.broadcast_to(traj, (n, D)).astype(np.float32).copy()
+    offset = traj[0].copy()
+    offset[-N_GRIPPER_DIMS:] = 0.0                                     # zero-ground pose; gripper absolute
+    traj = traj - offset
+    t_orig = np.linspace(0.0, 1.0, L)
+    t_ctrl = np.linspace(0.0, 1.0, n)
+    ctrl = np.zeros((n, D), dtype=np.float32)
+    for d in range(D):
+        k = 1 if d >= D - N_GRIPPER_DIMS else degree                  # gripper: degree 1; pose: `degree`
+        ctrl[:, d] = make_interp_spline(t_orig, traj[:, d], k=min(k, L - 1))(t_ctrl)
+    return ctrl
 
 
 class SkillExpertDataset(LeRobotDataset):
-    """LeRobotDataset that also yields the current skill's END image/state (connector inputs)."""
+    """LeRobotDataset that also yields the current skill's resampled state trajectory (Oracle input)."""
 
-    def __init__(self, *args, **kwargs):
-        # Only sample episodes that actually have skills (same reasoning as SkillVLADataset): the
-        # segmentation drops <2-skill episodes, which are absent from the ESS npz; sampling one would
-        # KeyError in _ESSStore. Restrict `episodes` to the npz-covered set.
-        valid = self._episodes_with_skills(args, kwargs)
-        requested = kwargs.get("episodes")
-        kwargs["episodes"] = sorted(valid) if requested is None else [e for e in requested if e in valid]
+    def __init__(self, *args, resample_n: int = 30, spline_degree: int = 3, **kwargs):
+        self.resample_n = int(resample_n)
+        self.spline_degree = int(spline_degree)
         super().__init__(*args, **kwargs)
-        info = self.meta.info
-        ess_path = self._resolve_ess_path(info.get("skill_final_state_path"), self.root)
-        self._ess = _ESSStore(ess_path)
-        self._pmax = int(info.get("skill_pmax", self._ess.pmax))
-
-    @staticmethod
-    def _resolve_ess_path(ess_path: str | None, root) -> str:
-        """info.json의 ``skill_final_state_path`` 해석. 다른 서버에서 빌드된 데이터셋의 절대경로가
-        존재하지 않으면 run 폴더(= dataset root의 부모)의 동명 파일로 폴백한다 (ISS와 동일 패턴)."""
-        if not ess_path:
-            raise ValueError(
-                "Dataset info.json has no 'skill_final_state_path'. Rebuild the dataset with the "
-                "updated add_skill_latents_to_dataset.py (Stage-1 ESS schema)."
-            )
-        if Path(ess_path).exists():
-            return str(ess_path)
-        local = Path(root).resolve().parent / Path(ess_path).name
-        if local.exists():
-            return str(local)
-        raise FileNotFoundError(
-            f"skill_final_state npz not found at the recorded path ({ess_path}) "
-            f"nor at the run-dir fallback ({local})."
-        )
-
-    @staticmethod
-    def _episodes_with_skills(args, kwargs) -> set[int]:
-        """Episode indices present in the ESS npz (= have >=1 skill), read before super().__init__."""
-        repo_id = args[0] if args else kwargs["repo_id"]
-        meta = LeRobotDatasetMetadata(repo_id, root=kwargs.get("root"), revision=kwargs.get("revision"))
-        ess_path = SkillExpertDataset._resolve_ess_path(meta.info.get("skill_final_state_path"), meta.root)
-        with np.load(ess_path) as z:
-            return {int(e) for e in np.unique(np.asarray(z["episode_id"]))}
 
     def __getitem__(self, idx) -> dict:
         item = super().__getitem__(idx)
-        reader = self._ensure_reader()
 
+        ds = _scalar(item["skill_ds"])      # frames since the current skill's start (start = 0)
+        de = _scalar(item["skill_de"])      # frames to the current skill's end (end = 0)
+        frame_index = _scalar(item["frame_index"])
         ep_idx = _scalar(item["episode_index"])
-        k = _scalar(item["skill_index"])                              # 0-based current skill
-        ifs = np.asarray(item["skill_initial_frame"]).reshape(-1)
-        lens = np.asarray(item["skill_length_sequence"]).reshape(-1)
 
-        # End frame of the current skill = IFS[k] + length[k] - 1 (== fe-1). Robust to the "leftover"
-        # frames (de=0 past the skill end) where current_frame + skill_de would be wrong.
-        gt_end = int(ifs[k]) + int(lens[k]) - 1
+        # Skill span in GLOBAL indices (contiguous within the episode); clamp to the episode bounds.
+        ep_start = int(idx) - frame_index
         ep_len = _scalar(self.meta.episodes[ep_idx]["length"])
-        end_frame = int(np.clip(gt_end, 0, ep_len - 1))
-        end_ts = end_frame / self.fps
+        start = max(ep_start, int(idx) - ds)
+        end = min(ep_start + ep_len - 1, int(idx) + de)                 # inclusive last frame
 
-        end_imgs = reader._query_videos({CAM_3RD: [end_ts], CAM_WRIST: [end_ts]}, ep_idx)  # noqa: SLF001
-        if reader._image_transforms is not None:  # noqa: SLF001  (match current-frame transforms)
-            end_imgs = {c: reader._image_transforms(v) for c, v in end_imgs.items()}  # noqa: SLF001
+        rows = self.hf_dataset[start : end + 1][STATE_KEY]             # states over the skill
+        if isinstance(rows, list):
+            traj = np.stack([np.asarray(s, dtype=np.float32) for s in rows])
+        else:
+            traj = np.asarray(rows, dtype=np.float32)                  # (L, state_dim)
 
-        # End state from the ESS window. offset=0 (center) for now — transition randomization, when
-        # added, will pass ess_index = pmax + offset (the window is pre-built for it).
-        end_state = self._ess.state(ep_idx, k, self._pmax, gt_end)
-
-        item[SKILL_END_IMAGE] = end_imgs[CAM_3RD]
-        item[SKILL_END_WRIST_IMAGE] = end_imgs[CAM_WRIST]
-        item[SKILL_END_STATE] = torch.from_numpy(end_state)
+        ctrl = _spline_resample(traj, self.resample_n, self.spline_degree)  # FSQ-style control points
+        item[SKILL_STATE_TRAJ] = torch.from_numpy(ctrl)
         return item

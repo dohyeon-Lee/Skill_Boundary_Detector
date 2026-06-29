@@ -50,17 +50,10 @@ def build_settings(cfg: dict) -> dict:
     # so terminator vs gt (and any ablation) runs land in distinct folders.
     advance_mode = str(get_value(cfg, "skill_advance_mode", "terminator"))
     eval_exp = str(get_value(cfg, "eval_exp", "")).strip()
-    # Optional REFINED terminator: override the FSQ.pt the eval loads the terminator from. The codebook
-    # (code→z_q) is the same frozen FSQ, so a terminator_train checkpoint (FSQ.pt format) drops straight
-    # in. Blank → the training run's own FSQ.pt.
-    terminator_path = str(get_value(cfg, "terminator_path", "")).strip()
-    fsq_ckpt = resolve_path(project_root, terminator_path) if terminator_path else run_dir / "FSQ.pt"
+    fsq_ckpt = run_dir / "FSQ.pt"            # the training run's FSQ terminator (skill-end signal)
     run_tag = f"{model_dir}_{checkpoint}_adv-{advance_mode}"
     if eval_exp:
         run_tag = f"{run_tag}_{eval_exp}"
-    if terminator_path:  # distinct folder so a refined-terminator run doesn't clobber the FSQ-term run
-        _ts = re.search(r"checkpoints/([^/]+)/", terminator_path)
-        run_tag = f"{run_tag}_refterm{_ts.group(1) if _ts else ''}"
 
     # Results under stage1_eval/outputs/{run_tag}/
     stage1_eval_dir = _HERE.parent.parent

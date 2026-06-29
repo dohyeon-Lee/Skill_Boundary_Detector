@@ -4,11 +4,10 @@ source_dataset: libero_90_full_full
 # run_tag: FSQ88_dino8_wow_1000   
 run_tag: FSQ555_dino8_both_1000   
 
-# ── Conditioning architecture (joint only) ──
+# ── Conditioning architecture ──
 cond_encoder_variant:          # blank = same gemma variant as the action expert (recommended)
-#   state       → AdaRMS = time + state; skill (z_q) stays as an attended PREFIX token (image-dominant,
-#                 leaves room for Stage-2 language to modulate — lighter skill influence).
-#   state_skill → AdaRMS = time + state + skill(z_q); NO prefix tokens (strongest skill influence).
+#   state       → AdaRMS = time + state; skill (z) is an attended PREFIX token, then the r-slot → prefix [z, r].
+#   state_skill → AdaRMS = time + state + skill(z); NO skill prefix token, only the r-slot → prefix [r].
 state_cond_mode: state
 
 # ── Model init ──
@@ -19,65 +18,55 @@ pi_base: models/pi05_base   # project_root(global_config) 기준 상대경로 �
 # siglip = PaliGemma/SigLIP tower, warm-started from pi_base's vision_tower (robot-adapted);
 #          params separate from the Stage-2 VLM. Needs init_from_pi05: true for the warm-start.
 vision_backbone: dino           # dino | siglip
-# DINO backbone
-dino_model_path: models/dinov3-vitl16   # project_root 기준 상대경로. ViT-B/16 86M (vits16=21M, vitl16=300M)
-dino_lr: null                   # null = same LR as the rest; set a float to use a separate DINO LR
-freeze_dino: false
-# SigLIP backbone (used when vision_backbone: siglip)
-freeze_siglip: false             # default true: reuse pi05's robot-adapted features (only image_proj trains)
-siglip_lr: null                 # separate LR when unfrozen; null = same as the rest
-siglip_image_size: 224          # patch 14 → 16×16 = 256 tokens at 224
+dino_model_path: models/dinov3-vitl16   # (dino) project_root 기준 상대경로. vitb16=86M (vits16=21M, vitl16=300M)
+freeze_vision_encoder: false    # freeze the SELECTED backbone. dino → false(학습); siglip → 보통 true(pi05 prior 재사용)
+# (dino_lr / siglip_lr default to optimizer_lr; siglip_image_size fixed at 224 to match pi05's vision tower —
+#  add any of them here only to override.)
 
 
 
-# ── Connector (Stage-1 future-conditioning → VAE latent z) ──────────────────────────
-# A Perceiver pooler with its OWN frozen DINO encodes the skill's END frame (3rd+wrist) + END
-# state into a small VAE latent z, modulated by the GT skill via AdaLN. z → action-prefix tokens
-# (the within-skill motion detail that skill+current obs underdetermine). Needs the dataset rebuilt
-# with the ESS npz (add_skill_latents_to_dataset.py) — its own DINO is ALWAYS frozen.
-use_connector: true
-connector_dino_model_path: models/dinov3-vitl16   # own frozen DINO (vitl16 recommended once downloaded)
-connector_dino_image_size: 224
-connector_width: 768
-connector_depth: 4                # Perceiver blocks
-connector_n_heads: 8
-connector_n_latents: 4            # L learned queries = number of z prefix tokens
-connector_z_dim: 64              # per-latent VAE dim (transfer bottleneck)
-connector_free_bits: 0.1          # nats/dim reserved (prevents posterior collapse)
-connector_kl_weight: 1.0e-3       # β on the (free-bits) KL term
-connector_z_consistency_weight: 0.0   # method-2 appearance invariance (0=off; hooks only for now)
-z_ablation_every: 0              # diagnostic: every N steps log z_gain (loss without z − with z); 0=off
+# ── Oracle (Stage-1 residual r) ──────────────────────────────────────────────────────
+# Encodes the current skill's full state TRAJECTORY (start→end, resampled to N, appearance-invariant)
+# + skill z into ONE VAE latent token r (AdaLN by z), fed to the action expert as a prefix token. r
+# carries the within-skill motion detail that (skill, current obs) underdetermine. CFG-style dropout
+# forces r to be the RESIDUAL beyond z. No dataset rebuild — the trajectory is fetched at runtime.
 
-# ── Stage-1 experiment design. MODE is chosen by WHICH script you submit (not a yaml field):
-#   submit_train.sh joint    → train_joint.sbatch   (single run; loss_mode + action_weighting below)
-#   submit_train.sh staged   → train_staged.sbatch  (TWO runs → {run}/1-1 then {run}/1-2; 1-2 warm-
-#                              starts from a chosen 1-1 checkpoint). staged params at the bottom. ──
-gate_prob: 0.5                    # weighted_gated: P(connector-trainable / vision-frozen / early-weight)
+## SWEEP ##
+oracle_n_tokens: 4               # r prefix tokens (= # learned null tokens in 1-1/B; VLM predicts these) — SWEEP
+oracle_dropout_p: 0.5            # P(drop r → learned null) per batch (CFG A/B) — SWEEP
+oracle_r_dim: 8                  # per-token VAE dim — SWEEP. TOTAL bottleneck = n_tokens × r_dim = 32
+oracle_kl_weight: 1.0e-3         # β on the (free-bits) KL term — SWEEP
+
+
+oracle_resample_n: 30            # resample skill state-traj to N control points — matched to FSQ n_control (=30)
+oracle_spline_degree: 3          # pose-dim spline degree (gripper always degree 1) — matched to FSQ spline_degree
+oracle_width: 512                # Perceiver hidden dim
+oracle_depth: 3                  # Perceiver blocks
+oracle_n_heads: 8
+oracle_free_bits: 0.1            # nats/dim reserved (prevents posterior collapse)
+r_ablation_every: 200              # diagnostic: every N steps log r_gain (loss without r − with r); 0=off
+
+# ── Stage-1 experiment design. The EXPERIMENT is chosen by WHICH script you submit (not a yaml field):
+#   ./submit_staged_1.sh → train VSA base (no Oracle) → staged/1-1
+#   ./submit_staged_2.sh → freeze base + Oracle, warm-start from a 1-1 ckpt → staged/1-2_<ws>_<oracle>
+#   ./submit_single.sh   → one run, Oracle from scratch (CFG A/B) → single/<oracle>
+# Sweeps (oracle_n_tokens/r_dim/kl/dropout) tag the 1-2/single folder; the shared 1-1 is reused across them. ──
 boundary_mode: hold              # cross-skill chunk tail: hold (stop+hold, clean skill end) | keep_demo
-# ── staged params (used by submit_staged_1/2.sh). Both phases run `steps` (below). ──
-staged_phase1_weighting: late     # phase 1-1 action loss: late (skill-end emphasized) | plain (probe)
-staged_phase2_warmstart: last     # 1-1 ckpt that inits 1-2: "last" | step number | path → folder 1-2_<tag>
-# Terminator co-train (isolated skill-end-timing head, gradient-disjoint). fsq_path + dino tokens are
-# AUTO-derived from run_tag (run_dir/FSQ.pt + run_dir/dino.npz, build_data products) — leave blank.
+staged_phase2_warmstart: last    # 1-1 ckpt that inits 1-2: "last" | step number | path → folder 1-2_<tag>_<oracle>
+# staged 1-2 freeze: anchor (skill_proj + null) is ALWAYS frozen; this only controls the VISION encoder.
+freeze_vsa_vision: true          # true = freeze vision in 1-2 (clean residual) | false = keep vision adapting
+# Terminator co-train (isolated skill-end-timing head, gradient-disjoint; orthogonal to the Oracle).
+# fsq_path + dino tokens are AUTO-derived from run_tag (run_dir/FSQ.pt + run_dir/dino.npz) — leave blank.
 train_terminator: true
-fsq_path:                         # blank → AUTO {run_dir}/FSQ.pt   (override only for a different FSQ)
 terminator_end_target_sigma: 1.0  # termination target = Gaussian bump exp(-de²/2σ²) at skill end
 terminator_end_pos_weight: 1.0    # BCE pos_weight (skill-end frames are rare positives)
 terminator_lr_scale: 1.0          # LR × optimizer_lr for the terminator's own param group
-# Current-frame FSQ-grid DINO tokens (build_data product, attached by SkillVLADinoTokenDataset).
-skill_decoder_dino_tokens_path:   # blank → AUTO {run_dir}/dino.npz
-skill_decoder_dino_cache_path:    # blank → tokens_path.features.npy
-skill_decoder_dino_build_cache: true
+# Terminator FSQ-grid DINO tokens are AUTO-derived from run_tag: {run_dir}/dino.npz (+ dino_wrist.npz for
+# a "both" FSQ, attached only if it exists). To override, add skill_decoder_dino[_wrist]_tokens_path here.
 
 # ── Action chunk horizon ──
-chunk_size: 10 
+chunk_size: 10
 n_action_steps:                 # blank = chunk_size (must be <= chunk_size)
-
-# ── Action loss: PLAIN (uniform) or PROGRESS-WEIGHTED per-step (early/late). The weighting direction +
-# on/off come from the experiment mode (joint-gated batches / staged 1-1); R below only sets how strong
-# the emphasis is. Boundary tail handled by boundary_mode (hold | keep_demo). No cum/action toggles.
-skill_end_loss_weight: 2.0        # R — per-step weight = 1+(R-1)·progress (late) or ·(1-progress) (early). R=1 → plain
-# wandb: train/loss = plain unweighted action MSE (comparison); loss_weighted = the weighted objective; loss_total = backpropped.
 
 # ── Optimization ──
 batch_size: 256

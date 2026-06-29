@@ -2,15 +2,17 @@
 
 Flow-matching action chunk predictor conditioned on:
   - current 3rd-person + wrist images (trainable DINOv3, shared weights),
-  - robot state,
-  - GT FSQ skill code as its grid coordinate z_q ∈ [-1,1]^D (one Linear token, constant
+  - robot state (rides the action expert's flow-time AdaRMS),
+  - GT FSQ skill code z as its grid coordinate z_q ∈ [-1,1]^D (one Linear token, constant
     within a skill — neighboring codes stay neighboring),
-  - skill progress ∈ [0,1] as a SEPARATE Linear token (mirrors the FSQ decoder's
-    dec_z_proj / motion_prog_proj split). GT = skill_ds/(ds+de) at train time (jittered for
-    robustness); the FSQ terminator's estimate is injected at inference.
+  - the Oracle residual r (optional): the current skill's resampled state TRAJECTORY + z → a
+    1-token VAE latent fed as a prefix token (oracle.py). The action stream prefix is [z, r-slot];
+    the r-slot is ALWAYS present and holds either r_proj(r) or a LEARNED NULL token (CFG-style
+    conditioning dropout — see SkillExpertPolicy.forward). r is forced to be the residual beyond z.
 
-All tokens self-attend; only the action-token hidden states are decoded into actions.
-Stage 2 (`skill_vla`) adds the VLM and can init its action expert from a Stage-1 checkpoint.
+The action tokens read [cond (image), z, r-slot, actions] via PI05-style block attention; only the
+action-token hidden states are decoded into actions. Stage 2 (`skill_vla`) adds the VLM, freezes
+the Oracle, and learns to predict r from language + the current image.
 """
 
 from __future__ import annotations
@@ -43,8 +45,8 @@ from lerobot.policies.pi_gemma import PiGemmaForCausalLM
 from lerobot.policies.pretrained import PreTrainedPolicy
 from lerobot.utils.constants import ACTION, OBS_STATE
 
-from .connector import Connector
 from .configuration_skill_expert import SkillExpertConfig
+from .oracle import Oracle
 
 log = logging.getLogger(__name__)
 
@@ -113,20 +115,18 @@ class SkillExpertPytorch(nn.Module):
             self.n_register = int(getattr(self.dino.config, "num_register_tokens", 0))
             self.vision_image_size = config.dino_image_size
             mean, std = [0.485, 0.456, 0.406], [0.229, 0.224, 0.225]  # ImageNet
-            if config.freeze_dino:
-                for p in self.dino.parameters():
-                    p.requires_grad_(False)
         elif config.vision_backbone == "siglip":
             # Warm-started from pi05's vision_tower in from_pretrained (params separate from the VLM).
             self.siglip = _build_siglip_vision_tower(config.siglip_image_size)
             vis_dim = int(self.siglip.config.hidden_size)
             self.vision_image_size = config.siglip_image_size
             mean, std = [0.5, 0.5, 0.5], [0.5, 0.5, 0.5]  # SigLIP: [0,1] → [-1,1]
-            if config.freeze_siglip:
-                for p in self.siglip.parameters():
-                    p.requires_grad_(False)
         else:
             raise ValueError(f"vision_backbone must be 'dino' or 'siglip', got {config.vision_backbone!r}")
+        # Statically freeze the SELECTED vision backbone (one flag for whichever vision_backbone is active).
+        if config.freeze_vision_encoder:
+            for p in (self.dino if self.dino is not None else self.siglip).parameters():
+                p.requires_grad_(False)
         self.register_buffer("_img_mean", torch.tensor(mean).view(1, 3, 1, 1), persistent=False)
         self.register_buffer("_img_std", torch.tensor(std).view(1, 3, 1, 1), persistent=False)
 
@@ -166,17 +166,21 @@ class SkillExpertPytorch(nn.Module):
         # in the cond stream.
         self.cond_encoder = _build_gemma(variant, use_adarms=False)
 
-        # ── Connector (Stage-1 future-conditioning): END frame (own frozen DINO) → VAE latent z →
-        # action-prefix tokens. z carries the within-skill motion detail (skill, current obs)
-        # underdetermine (a skill is a coarse cluster of 100+ motions). See connector.py. ──
-        self.connector = None
-        self.z_proj = None
-        if config.use_connector:
-            self.connector = Connector(config)
-            self.z_proj = nn.Linear(int(config.connector_z_dim), self.width)  # z (z_dim) → 1 prefix token
-        # Runtime toggle: the STAGED schedule turns the connector OFF in phase 1-1 (no z token) and ON
-        # in 1-2 (Approach-2 — z prefix tokens are added then). JOINT keeps it = use_connector.
-        self._connector_active = bool(config.use_connector)
+        # ── Oracle (Stage-1 residual): skill state-trajectory + skill z → VAE latent r → an
+        # action-prefix token. r carries the within-skill motion detail (skill, current obs)
+        # underdetermine. The r-slot is ALWAYS a prefix token (fixed layout, no positional shift):
+        # when r is used it holds r_proj(oracle(...)); when r is dropped (1-1 / CFG dropout) it holds
+        # the LEARNED NULL token. See oracle.py. ──
+        n_r = int(config.oracle_n_tokens)
+        self.null_r = nn.Parameter(torch.zeros(1, n_r, self.width))     # "no residual" token (CFG ∅)
+        nn.init.trunc_normal_(self.null_r, std=0.02)
+        self.oracle = None
+        self.r_proj = None
+        if config.use_oracle:
+            self.oracle = Oracle(config)
+            self.r_proj = nn.Linear(int(config.oracle_r_dim), self.width)  # r (r_dim) → 1 prefix token
+        # Runtime toggle for the r-ablation diagnostic (force the null slot for a no-grad forward).
+        self._oracle_active = bool(config.use_oracle)
 
         # ── Optional co-trained FSQ terminator (skill-end timing for eval; gradient-disjoint) ──
         self.fsq_term_train = None
@@ -187,15 +191,19 @@ class SkillExpertPytorch(nn.Module):
         # survives preempt/resume).
         self.register_buffer("train_step", torch.zeros((), dtype=torch.long), persistent=True)
 
-        # Static expert-vision freeze (staged phase 1-2: vision learned in 1-1 is frozen while the
-        # connector trains). Freezes the cond-encoder + image_proj + the vision backbone.
-        if getattr(config, "freeze_expert_vision", False):
-            mods = [self.cond_encoder, self.image_proj,
-                    self.dino if self.vision_backbone == "dino" else self.siglip]
-            for mod in mods:
-                if mod is not None:
-                    for p in mod.parameters():
-                        p.requires_grad_(False)
+        # Static VSA-base freeze (staged phase 1-2: the base learned in 1-1 is held fixed while the
+        # Oracle + r_proj + action expert train). Always freeze the CONDITIONING ANCHOR (skill_proj +
+        # the learned null token) so B-mode (null) reproduces 1-1's conditioning exactly. The vision
+        # scene encoder freeze is OPTIONAL (freeze_vsa_vision) — unfreeze to let it keep adapting in 1-2.
+        # (single-stage: freeze_vsa_base=False → nothing frozen here.)
+        if config.freeze_vsa_base:
+            self.skill_proj.requires_grad_(False)
+            self.null_r.requires_grad_(False)
+            if config.freeze_vsa_vision:
+                for mod in (self.cond_encoder, self.image_proj,
+                            self.dino if self.vision_backbone == "dino" else self.siglip):
+                    if mod is not None:
+                        mod.requires_grad_(False)
 
     @property
     def _wdtype(self) -> torch.dtype:
@@ -208,12 +216,9 @@ class SkillExpertPytorch(nn.Module):
             self.gemma_expert.gradient_checkpointing_enable()
         if hasattr(self.cond_encoder, "gradient_checkpointing_enable"):
             self.cond_encoder.gradient_checkpointing_enable()
-        if self.vision_backbone == "dino" and not self.config.freeze_dino \
-                and hasattr(self.dino, "gradient_checkpointing_enable"):
-            self.dino.gradient_checkpointing_enable()
-        elif self.vision_backbone == "siglip" and not self.config.freeze_siglip \
-                and hasattr(self.siglip, "gradient_checkpointing_enable"):
-            self.siglip.gradient_checkpointing_enable()
+        enc = self.dino if self.vision_backbone == "dino" else self.siglip
+        if not self.config.freeze_vision_encoder and hasattr(enc, "gradient_checkpointing_enable"):
+            enc.gradient_checkpointing_enable()
 
     # ── Flow-matching samplers (copied from PI05Pytorch) ──
     def sample_noise(self, shape, device) -> Tensor:
@@ -356,16 +361,21 @@ class SkillExpertPytorch(nn.Module):
             return None
         return self.skill_proj(self._code_to_zq(skill_code).to(self._wdtype)).unsqueeze(1)   # (B, 1, width)
 
-    def _connector_prefix(
-        self, end_images: list[Tensor] | None, end_state: Tensor | None, skill_code: Tensor, *, sample: bool
-    ) -> tuple[Tensor | None, Tensor | None]:
-        """END frame → connector → z prefix tokens (B, L, width) + KL scalar. Returns (None, None) when
-        the connector is inactive (use_connector off, staged phase 1-1, or end inputs absent)."""
-        if not self._connector_active or self.connector is None or end_images is None or end_state is None:
-            return None, None
-        skill_zq = self._code_to_zq(skill_code)                                  # (B, D) ∈ [-1,1]
-        z, kl = self.connector(end_images, end_state, skill_zq, sample=sample)    # z (B, L, z_dim)
-        return self.z_proj(z.to(self._wdtype)), kl                               # (B, L, width), scalar
+    def _oracle_slot(
+        self, state_traj: Tensor | None, skill_len: Tensor | None, skill_code: Tensor,
+        *, use_r: bool, sample: bool,
+    ) -> tuple[Tensor, Tensor | None]:
+        """The r-slot prefix token — ALWAYS present (fixed layout, no positional shift). When r is used
+        (use_r, Oracle active, trajectory supplied) it holds r_proj(oracle(state_traj, len, z)); otherwise
+        the LEARNED NULL token (= 'no residual': 1-1, CFG-dropped batch, or closed-loop eval w/o a
+        trajectory). Returns (token (B, n_r, width), kl or None — KL only when r is actually used)."""
+        bsize = skill_code.shape[0]
+        null = self.null_r.to(self._wdtype).expand(bsize, -1, -1)
+        if not (use_r and self._oracle_active and self.oracle is not None and state_traj is not None):
+            return null, None
+        zq = self._code_to_zq(skill_code)                                        # (B, D) ∈ [-1,1]
+        r, kl = self.oracle(state_traj, skill_len, zq, sample=sample)            # r (B, n_r, r_dim)
+        return self.r_proj(r.to(self._wdtype)), kl                              # (B, n_r, width), scalar
 
     def _time_cond(self, timestep: Tensor) -> Tensor:
         t = create_sinusoidal_pos_embedding(
@@ -452,18 +462,18 @@ class SkillExpertPytorch(nn.Module):
         actions: Tensor,
         noise: Tensor | None = None,
         time: Tensor | None = None,
-        end_images: list[Tensor] | None = None,
-        end_state: Tensor | None = None,
+        state_traj: Tensor | None = None,
+        skill_len: Tensor | None = None,
+        use_r: bool = True,
     ) -> tuple[Tensor, Tensor | None]:
-        """Flow-matching: returns (signed velocity residual (u_t - v_t), connector KL or None).
-        The residual is (B, chunk_size, max_action_dim); its square is the per-(b,t,dim) flow MSE and
-        ALSO equals the implied per-step action error (â - a = (source - v_t) - (source - u_t) = u_t - v_t),
-        so cumsum over the chunk gives the cumulative-position error. KL is the connector's free-bits VAE
-        term (None when the connector is inactive)."""
+        """Flow-matching: returns (signed velocity residual (u_t - v_t), Oracle KL or None).
+        The residual is (B, chunk_size, max_action_dim); its square is the per-(b,t,dim) flow MSE.
+        The action stream prefix is [skill?, r-slot]; the r-slot holds the Oracle's r when use_r (→ KL
+        returned) or the learned null token otherwise (CFG dropout / 1-1 / no trajectory → KL None)."""
         cond = self._cond_tokens(images)
         skill_prefix = self._action_prefix(skill_code, state)
-        z_prefix, kl = self._connector_prefix(end_images, end_state, skill_code, sample=True)
-        action_prefix = _cat_prefix(skill_prefix, z_prefix)            # [skill?, z×L?] read by action tokens
+        r_slot, kl = self._oracle_slot(state_traj, skill_len, skill_code, use_r=use_r, sample=True)
+        action_prefix = _cat_prefix(skill_prefix, r_slot)              # [skill?, r] read by action tokens
         if time is None:
             time = self.sample_time(actions.shape[0], actions.device)
         source = self.sample_noise(actions.shape, actions.device) if noise is None else noise
@@ -484,8 +494,9 @@ class SkillExpertPytorch(nn.Module):
         skill_code: Tensor,
         noise: Tensor | None = None,
         num_steps: int | None = None,
-        end_images: list[Tensor] | None = None,
-        end_state: Tensor | None = None,
+        state_traj: Tensor | None = None,
+        skill_len: Tensor | None = None,
+        use_r: bool = True,
     ) -> Tensor:
         if num_steps is None:
             num_steps = self.config.num_inference_steps
@@ -496,8 +507,8 @@ class SkillExpertPytorch(nn.Module):
         # its per-layer K/V, and run only the action stream ([prefix, action]) against the cache.
         cond = self._cond_tokens(images)
         skill_prefix = self._action_prefix(skill_code, state)
-        z_prefix, _ = self._connector_prefix(end_images, end_state, skill_code, sample=False)  # μ (no reparam)
-        action_prefix = _cat_prefix(skill_prefix, z_prefix)
+        r_slot, _ = self._oracle_slot(state_traj, skill_len, skill_code, use_r=use_r, sample=False)  # μ
+        action_prefix = _cat_prefix(skill_prefix, r_slot)
         return self._sample_joint_cached(cond, noise, num_steps, action_prefix, state, skill_code)
 
     def _sample_joint_cached(self, cond_tokens: Tensor, noise: Tensor, num_steps: int,
@@ -644,9 +655,23 @@ class SkillExpertPolicy(PreTrainedPolicy):
             self.model.gradient_checkpointing_enable()
         self.model.to(device=config.device, dtype=self._torch_dtype())
         self.reset()
-        # ── Stage-1 schedule/gating state (joint-gated & staged drive per-step module freeze) ──
-        self._connector_trainable_this_step = bool(config.use_connector)
-        self._capture_gating_params()           # (self.model.train_step is the checkpointed step counter)
+
+        # SINGLE-stage per-batch base freeze (Oracle on + NO static base freeze). A-mode (r used) FREEZES
+        # the conditioning base so r is a clean residual; B-mode (r dropped) TRAINS it (the stand-alone
+        # no-r objective learns it). Mirrors staged 1-2's static freeze over the A/B split:
+        #   • anchor skill_proj → A-frozen ALWAYS (the skill z representation r is residual to must stay fixed).
+        #   • vision (DINO/SigLIP + image_proj + cond-encoder) → A-frozen only if freeze_vsa_vision.
+        # (null_r needs no toggle: it is used ONLY in B, so it gets gradient only there automatically.)
+        self._single_mode = bool(config.use_oracle and not config.freeze_vsa_base)
+        self._single_gate_params: list = []
+        if self._single_mode:
+            m = self.model
+            gate_mods = [m.skill_proj]                       # anchor — A-frozen ALWAYS in single
+            if config.freeze_vsa_vision:                     # vision — A-frozen optionally
+                gate_mods += [m.cond_encoder, m.image_proj]
+                if not config.freeze_vision_encoder:         # statically-frozen backbone needs no A/B toggle
+                    gate_mods.append(m.dino if m.vision_backbone == "dino" else m.siglip)
+            self._single_gate_params = [p for mod in gate_mods if mod is not None for p in mod.parameters()]
 
     def _torch_dtype(self) -> torch.dtype:
         return torch.bfloat16 if str(self.config.dtype) == "bfloat16" else torch.float32
@@ -677,45 +702,6 @@ class SkillExpertPolicy(PreTrainedPolicy):
             groups.append({"params": term, "lr": base * float(self.config.terminator_lr_scale)})
         return groups
 
-    # ── Stage-1 schedule / gating (joint-gated & staged) ──
-    def _capture_gating_params(self) -> None:
-        """Snapshot the config-TRAINABLE expert-vision vs connector params (config-frozen params —
-        freeze_dino / the connector's own DINO — are excluded, so they are NEVER toggled). The
-        schedule/gating freezes one side per batch (joint-gated) or phase (staged) by flipping
-        requires_grad WITHIN these sets only. The optimizer keeps all groups; a requires_grad=False
-        param simply gets no grad that step (zero_grad set_to_none → skipped by the optimizer)."""
-        ev, conn = [], []
-        for n, p in self.model.named_parameters():
-            if not p.requires_grad:
-                continue
-            if n.startswith(("connector.", "z_proj.")):
-                if not n.startswith("connector.dino."):     # connector DINO stays frozen always
-                    conn.append(p)
-            elif n.startswith(("cond_encoder.", "image_proj.", "dino.", "siglip.")):
-                ev.append(p)                                # expert-vision (cond-encoder + its vision enc)
-        self._ev_params, self._conn_params = ev, conn
-
-    @staticmethod
-    def _set_requires_grad(params: list, flag: bool) -> None:
-        for p in params:
-            p.requires_grad_(flag)
-
-    def _apply_schedule(self) -> str:
-        """Per training step: for weighted_gated, do the per-batch 50/50 module freeze and return the
-        batch's early/late weighting; otherwise return the run's FIXED action_weighting ('none'|'early'
-        |'late'). _connector_active is static (= use_connector, set at init); the expert-vision freeze
-        for staged 1-2 is also static (freeze_expert_vision). Sets _connector_trainable_this_step (KL gate)."""
-        cfg = self.config
-        if cfg.loss_mode == "weighted_gated":
-            early = bool(torch.rand(()).item() < float(cfg.gate_prob))
-            self._set_requires_grad(self._conn_params, early)        # early → connector trains, vision frozen
-            self._set_requires_grad(self._ev_params, not early)      # late  → vision trains, connector frozen
-            self._connector_trainable_this_step = early
-            return "early" if early else "late"
-        self._connector_trainable_this_step = bool(cfg.use_connector)
-        w = str(cfg.action_weighting).lower()
-        return w if w in ("early", "late") else "none"
-
     # ── batch → model inputs ──
     def _collect_images(self, batch: dict) -> tuple[list[Tensor], list[Tensor]]:
         """Gather present camera images as [0, 1] float tensors. The vision encoder's own
@@ -735,25 +721,21 @@ class SkillExpertPolicy(PreTrainedPolicy):
             masks.append(torch.ones(img.shape[0], dtype=torch.bool, device=device))
         return images, masks
 
-    def _collect_end_inputs(self, batch: dict) -> tuple[list[Tensor] | None, Tensor | None]:
-        """Connector inputs (SkillExpertDataset keys): the skill's END frame [3rd, wrist] as [0,1] floats
-        (normalized inside the connector's DINO) + END state padded to max_state_dim. (None, None) when
-        absent — connector inactive or the plain LeRobotDataset (no end-frame keys)."""
-        from .dataset_skill_expert import SKILL_END_IMAGE, SKILL_END_STATE, SKILL_END_WRIST_IMAGE
+    def _collect_state_traj(self, batch: dict) -> tuple[Tensor | None, Tensor | None]:
+        """Oracle inputs: the skill's resampled state trajectory (SkillExpertDataset key) padded to
+        max_state_dim, and the skill's true length (= skill_ds + skill_de + 1, frames). (None, None)
+        when the trajectory is absent (plain LeRobotDataset / closed-loop eval) → the r-slot uses null."""
+        from .dataset_skill_expert import SKILL_STATE_TRAJ
 
-        if SKILL_END_IMAGE not in batch or SKILL_END_STATE not in batch:
+        if SKILL_STATE_TRAJ not in batch:
             return None, None
         device = next(self.parameters()).device
-        imgs = []
-        for key in (SKILL_END_IMAGE, SKILL_END_WRIST_IMAGE):  # order matches connector view_emb [3rd, wrist]
-            img = batch[key].to(device=device)
-            if img.dtype != torch.float32:
-                img = img.float()
-            if img.ndim == 4 and img.shape[1] != 3 and img.shape[-1] == 3:
-                img = img.permute(0, 3, 1, 2)
-            imgs.append(img)
-        end_state = pad_vector(batch[SKILL_END_STATE].to(device=device), self.config.max_state_dim)
-        return imgs, end_state
+        traj = pad_vector(batch[SKILL_STATE_TRAJ].to(device=device), self.config.max_state_dim)  # (B,N,Dpad)
+        if "skill_ds" in batch and "skill_de" in batch:
+            skill_len = (batch["skill_ds"].to(device) + batch["skill_de"].to(device) + 1).float().view(-1)
+        else:
+            skill_len = torch.full((traj.shape[0],), float(traj.shape[1]), device=device)
+        return traj, skill_len
 
     def _skill_code(self, batch: dict) -> Tensor:
         """Current GT FSQ skill code = skill_sequence[skill_index]."""
@@ -763,10 +745,20 @@ class SkillExpertPolicy(PreTrainedPolicy):
         return code.clamp(0, self.config.skill_vocab_size - 1)
 
     def forward(self, batch: dict, reduction: str = "mean"):
-        weighting = "none"
-        if self.training and reduction != "none":
-            weighting = self._apply_schedule()   # connector-active + freeze one side; pick action weighting
+        cfg = self.config
+        training = self.training and reduction != "none"
+        if training:
             self.model.train_step.add_(1)        # checkpointed step counter (survives resume)
+        # CFG-style conditioning dropout (A/B): with prob oracle_dropout_p DROP r this batch (B-mode →
+        # the null slot, so the VSA base must stand alone) else USE r (A-mode). Eval always uses r (the
+        # null fallback applies only when no trajectory is supplied). Oracle off (1-1) → use_r is moot.
+        use_r = self.model._oracle_active and (
+            not training or torch.rand(()).item() >= float(cfg.oracle_dropout_p))
+        # single-stage base gate: A (use_r) → freeze {skill_proj [+ vision]}; B (not use_r) → train them
+        # (set BEFORE the forward so autograd tracks the right params this batch). No-op unless single mode.
+        if training and self._single_gate_params:
+            for p in self._single_gate_params:
+                p.requires_grad_(not use_r)
         images, img_masks = self._collect_images(batch)
         actions = pad_vector(batch[ACTION], self.config.max_action_dim)
         real_dim = self.config.output_features[ACTION].shape[0]
@@ -800,10 +792,10 @@ class SkillExpertPolicy(PreTrainedPolicy):
         # keep_demo: valid = ~pad (full chunk kept with demo actions); actions unchanged.
 
         state = pad_vector(batch[OBS_STATE], self.config.max_state_dim)   # → state_proj's fixed width (pi0)
-        end_images, end_state = self._collect_end_inputs(batch)          # connector END-frame inputs (or None)
+        state_traj, skill_len = self._collect_state_traj(batch)          # Oracle inputs (None when absent)
         resid, kl = self.model.forward(                                  # signed flow residual (u_t - v_t), KL
             images, img_masks, state, self._skill_code(batch), actions,
-            end_images=end_images, end_state=end_state)
+            state_traj=state_traj, skill_len=skill_len, use_r=use_r)
         resid = resid[:, :, :real_dim]                                   # (B, K, real_dim)
         losses = resid ** 2                                              # per-(b,k,dim) flow MSE = action MSE
 
@@ -817,36 +809,21 @@ class SkillExpertPolicy(PreTrainedPolicy):
         if reduction == "none":
             return per_sample, loss_dict
 
-        cfg = self.config
-        r = float(cfg.skill_end_loss_weight)
-
-        # ── Action objective: PLAIN (uniform mean) or PROGRESS-WEIGHTED per-step (early/late). The
-        # weighting direction + on/off come from the experiment mode (gating batches / staged 1-1);
-        # R sets the emphasis strength. No cumulative-position term, no action_loss/weight toggles. ──
-        if weighting in ("early", "late"):
-            if "skill_ds" in batch and "skill_de" in batch:
-                ds = batch["skill_ds"].to(dev).float().view(bsize, 1)
-                de_f = batch["skill_de"].to(dev).float().view(bsize, 1)
-                kk = torch.arange(K, device=dev).float().view(1, K)
-                prog = ((ds + kk) / (ds + de_f).clamp(min=1.0)).clamp(0.0, 1.0)   # within-skill progress (B,K)
-            else:
-                prog = (torch.arange(K, device=dev).float().view(1, K) / max(K - 1, 1)).expand(bsize, K)
-            base = prog if weighting == "late" else (1.0 - prog)        # late → skill-END; early → skill-START
-            w_step = (1.0 + (r - 1.0) * base) * valid.float()           # (B,K) per-step soft weight (≥0)
-            action_term = (losses.mean(dim=2) * w_step).sum() / w_step.sum().clamp(min=1.0)
-            loss_dict["loss_weighted"] = action_term.detach().item()
-        else:
-            action_term = plain_action                                  # plain = the comparison value & objective
-
-        loss = action_term
-        # ── Connector free-bits VAE KL (β·kl), only when the connector TRAINS this step (skipped on
-        # gated/staged batches where it is frozen — kl would carry no usable gradient there). ──
-        if kl is not None and self._connector_trainable_this_step:
-            loss = loss + float(cfg.connector_kl_weight) * kl
+        # ── Objective = plain flow MSE + β·KL. KL is added ONLY on A-mode batches (kl is not None ⟺
+        # r was used) — on B-mode the Oracle isn't in the graph, so there is no KL to add. Progress
+        # weighting was removed (see the weighted-loss-keep-for-later memory). ──
+        loss = plain_action
+        if kl is not None:
+            loss = loss + float(cfg.oracle_kl_weight) * kl
             loss_dict["loss_kl"] = kl.detach().item()
+        # The MAIN-model objective (what updates VSA + Oracle) = action MSE + β·KL. This is the meaningful
+        # "total" → logged here, BEFORE the terminator. The terminator below is an INDEPENDENT
+        # (gradient-disjoint) head; it is added to the backpropped scalar only so it trains inside
+        # lerobot's single-backward loop, but is kept OUT of loss_total (it has its own loss_terminator).
+        loss_dict["loss_total"] = loss.detach().item()
 
         # ── Co-trained FSQ terminator (skill-end timing for eval). DISJOINT graph (GT/precomputed
-        # inputs + its own params) → added to the backpropped loss; SkillExpert untouched. ──
+        # inputs + its own params) → summed into the backpropped scalar; VSA/Oracle grads untouched. ──
         if self.training and cfg.train_terminator and self.model.fsq_term_train is not None:
             for k in ("skill_decoder_dino", "skill_ds", "skill_de"):
                 if k not in batch:
@@ -860,38 +837,47 @@ class SkillExpertPolicy(PreTrainedPolicy):
             sigma = float(cfg.terminator_end_target_sigma)
             term_tgt = torch.exp(-(de ** 2) / (2.0 * sigma ** 2)) if sigma > 0 else (de == 0).float()
             pos_w = torch.tensor(float(cfg.terminator_end_pos_weight), device=term_logits.device, dtype=term_logits.dtype)
-            term_loss = (F.smooth_l1_loss(prog_pred, prog_tgt.to(prog_pred.dtype))
-                         + F.binary_cross_entropy_with_logits(term_logits, term_tgt.to(term_logits.dtype), pos_weight=pos_w))
-            loss = loss + term_loss
-            loss_dict["loss_terminator"] = term_loss.detach().item()
+            prog_l = F.smooth_l1_loss(prog_pred, prog_tgt.to(prog_pred.dtype))              # within-skill progress regression
+            term_l = F.binary_cross_entropy_with_logits(                                    # skill-END detection (BCE)
+                term_logits, term_tgt.to(term_logits.dtype), pos_weight=pos_w)
+            term_loss = prog_l + term_l
+            loss = loss + term_loss                       # backpropped (disjoint) — NOT in loss_total
+            # Logged under the "terminator/" prefix → routed to a SEPARATE wandb panel (train_terminator/*).
+            loss_dict["terminator/loss"] = term_loss.detach().item()
+            loss_dict["terminator/progress"] = prog_l.detach().item()
+            loss_dict["terminator/termination"] = term_l.detach().item()
 
-        loss_dict["loss_total"] = loss.detach().item()   # the BACKPROPPED objective (≠ wandb "loss" when weighted)
-
-        # ── z-ablation diagnostic: extra no-grad forward with z disabled → how much z helps (approx;
-        # fresh noise, batch-averaged). z_gain = zablate − plain > 0 means z lowers the action loss. ──
-        if (self.training and int(cfg.z_ablation_every) > 0 and self.model._connector_active
-                and int(self.model.train_step) % int(cfg.z_ablation_every) == 0):
+        # ── r-ablation diagnostic: every N steps, two no-grad forwards (with r / null) with the SAME
+        # noise → r_gain = without_r − with_r. >0 ⟺ r lowers the action loss (the key 'is r used?'
+        # probe). Sweet spot is positive-but-modest (≈0 = r unused; huge = leakage). ──
+        if (training and int(cfg.r_ablation_every) > 0 and self.model._oracle_active
+                and state_traj is not None
+                and int(self.model.train_step) % int(cfg.r_ablation_every) == 0):
             with torch.no_grad():
-                saved = self.model._connector_active
-                self.model._connector_active = False
-                resid_abl, _ = self.model.forward(images, img_masks, state, self._skill_code(batch), actions)
-                self.model._connector_active = saved
-            abl = (resid_abl[:, :, :real_dim] ** 2).mean().item()
-            loss_dict["loss_zablate"] = abl
-            loss_dict["z_gain"] = abl - plain_action.item()
+                abl_noise = self.model.sample_noise(actions.shape, dev)
+                code = self._skill_code(batch)
+                r_with, _ = self.model.forward(images, img_masks, state, code, actions, noise=abl_noise,
+                                               state_traj=state_traj, skill_len=skill_len, use_r=True)
+                r_null, _ = self.model.forward(images, img_masks, state, code, actions, noise=abl_noise,
+                                               state_traj=state_traj, skill_len=skill_len, use_r=False)
+            with_r = (r_with[:, :, :real_dim] ** 2).mean().item()
+            without_r = (r_null[:, :, :real_dim] ** 2).mean().item()
+            loss_dict["loss_rablate"] = without_r
+            loss_dict["r_gain"] = without_r - with_r
         return loss, loss_dict
 
     @torch.no_grad()
     def predict_action_chunk(self, batch: dict, **kwargs) -> Tensor:
         self.eval()
-        # A phase-1-1 checkpoint has use_connector=False → no connector module → runs WITHOUT z
-        # automatically; a 1-2 checkpoint has the trained connector. No phase guard needed.
+        # A 1-1 checkpoint has use_oracle=False → no Oracle, r-slot = null automatically. A 1-2 / single
+        # checkpoint has the trained Oracle: if a state trajectory is supplied (teacher-forced / oracle
+        # eval) r is used; closed-loop sim supplies none → the null fallback (graceful degradation).
         images, img_masks = self._collect_images(batch)
         state = pad_vector(batch[OBS_STATE], self.config.max_state_dim)   # → state_proj's fixed width (pi0)
-        end_images, end_state = self._collect_end_inputs(batch)          # connector END-frame (oracle eval)
+        state_traj, skill_len = self._collect_state_traj(batch)          # Oracle inputs (None when absent)
         actions = self.model.sample_actions(
             images, img_masks, state, self._skill_code(batch),
-            end_images=end_images, end_state=end_state, **kwargs)
+            state_traj=state_traj, skill_len=skill_len, **kwargs)
         real_dim = self.config.output_features[ACTION].shape[0]
         return actions[:, :, :real_dim]
 

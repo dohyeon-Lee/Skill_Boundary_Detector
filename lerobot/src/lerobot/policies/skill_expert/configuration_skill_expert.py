@@ -11,24 +11,28 @@ class SkillExpertConfig(PI05Config):
 
     Predicts an action chunk by flow matching from the current 3rd-person + wrist images
     (each encoded by a trainable DINOv3, shared weights), the robot state, and the GT FSQ
-    skill code. A fresh cond-encoder (own Gemma) encodes the scene — images + the per-dim
-    DISCRETIZED state — and the action expert reads it via PI05-style block attention (action
-    sees cond + action; cond ⊥ action), with the skill (z_q) prepended to the action
-    stream. The VLM is added in Stage 2 (the `skill_vla` policy), which can be initialized from
-    a Stage-1 `skill_expert` checkpoint.
+    skill code z. A fresh cond-encoder (own Gemma) encodes the scene and the action expert
+    reads it via PI05-style block attention (action sees cond + action; cond ⊥ action). This
+    base — vision + state + action expert + skill — is the **VSA** model.
+
+    Stage-1 also (optionally) adds the **Oracle**: it encodes the current skill's full state
+    trajectory (start→end, appearance-invariant) + skill z into ONE VAE latent token **r** that
+    is fed to the action expert as a prefix token. r carries the within-skill motion detail that
+    (skill, current obs) underdetermine. r is forced to be a RESIDUAL beyond z via CFG-style
+    conditioning dropout: a fraction of batches drop r (replace it with a learned null token),
+    so the VSA base must stand on its own and r only adds the gap. Stage-2 (the `skill_vla`
+    policy) freezes the Oracle and has the VLM predict r from language + current image.
 
     Inherits the PI05 action-expert / flow-matching knobs (chunk_size, max_action_dim,
-    action_expert_variant, time sampling, num_inference_steps, normalization, ...). The
-    PaliGemma/SigLIP and language settings are inherited but unused here.
+    action_expert_variant, time sampling, num_inference_steps, normalization, ...).
     """
 
     model_type: str = "skill_expert"
 
-    # ── Conditioning architecture (joint: cond-encoder ⊥ action expert) ──
-    # A SEPARATE cond-encoder (own Gemma) encodes the scene (images + per-dim discretized state); the
-    # action expert receives [skill, progress, action] and reads the cond stream via PI05-style joint
-    # block attention (action sees cond + action; cond ⊥ action). The action expert warm-starts from
-    # pi05; the cond-encoder is fresh. Skill (z_q) + progress are prepended to the ACTION stream.
+    # ── Conditioning architecture (cond-encoder ⊥ action expert) ──
+    # A SEPARATE cond-encoder (own Gemma) encodes the scene (images); the action expert receives
+    # [skill, r, action] and reads the cond stream via PI05-style block attention (action sees
+    # cond + action; cond ⊥ action). The action expert warm-starts from pi05; the cond-encoder is fresh.
     cond_encoder_variant: str | None = None
     """Gemma variant for the cond-encoder. None → same as action_expert_variant."""
 
@@ -42,95 +46,91 @@ class SkillExpertConfig(PI05Config):
     dino_model_path: str = "/data2/dohyeon/SBD/models/dinov3-vits16"
     dino_image_size: int = 224
     """Square size the camera images are resized to before DINOv3 (patch 16 → 14×14)."""
-    freeze_dino: bool = False
     dino_lr: float | None = None
     """Separate LR for the DINO encoder. None → use optimizer_lr (same as the rest)."""
     # SigLIP backbone (vision_backbone="siglip"); weights come from the pi05 pretrained_path.
     siglip_image_size: int = 224
     """Square size images are resized to before SigLIP (patch 14 → 16×16 = 256 tokens at 224)."""
-    freeze_siglip: bool = True
-    """Freeze the SigLIP tower (default True: reuse pi05's robot-adapted features; only image_proj trains)."""
     siglip_lr: float | None = None
     """Separate LR for the SigLIP encoder when unfrozen. None → use optimizer_lr."""
+    # Freeze the SELECTED vision backbone (one flag for whichever vision_backbone is active).
+    freeze_vision_encoder: bool = False
+    """Statically freeze the active vision backbone. dino → False trains its own DINOv3. siglip → often
+    True (warm-started from pi05's robot-adapted vision_tower; only image_proj trains). Replaces the old
+    per-backbone freeze_dino / freeze_siglip."""
 
     # ── State conditioning ──
-    state_cond_mode: str = "state_skill"
-    """What rides the ACTION expert's flow-time AdaRMS (DiT-style global conditioning, un-droppable by
-    attention). The cond-encoder is image-ONLY and plain-RMSNorm in both modes; state never rides the
-    (image-dominated) cond stream — the input_probe diagnostic showed a state token buried among ~400
-    image tokens is starved (Δ≈0), so state is always summed into the expert AdaRMS instead. The two
-    modes differ only in whether SKILL also goes global vs stays as an attended prefix token:
-      "state"       → AdaRMS conditioning = time + state_proj(state). Skill (z_q) is a PREFIX token on the
-                      action stream (pi0 prefix⊥action: read by the action tokens, does not attend back).
-                      Image stays the dominant motion driver; skill is a lighter, attended signal — leaves
-                      room for Stage-2 language to modulate the motion.
-      "state_skill" → AdaRMS conditioning = time + state_proj(state) + skill_proj(z_q) (each its own
-                      projection, summed — DiT ⊕ pattern). NO prefix tokens at all; skill is a strong global
-                      signal (heaviest skill influence).
-    state_proj / skill_proj are allocated in both modes (only the destination differs), so "state" and
-    "state_skill" checkpoints stay structurally comparable."""
+    state_cond_mode: str = "state"
+    """What rides the ACTION expert's flow-time AdaRMS (DiT-style global conditioning). The cond-encoder
+    is image-ONLY in both modes; state always rides the expert AdaRMS (a state token among ~400 image
+    tokens is starved). The two modes differ only in whether SKILL z also goes global vs stays a prefix token:
+      "state"       → AdaRMS = time + state_proj(state). Skill z is a PREFIX token on the action stream
+                      (pi0 prefix⊥action). The r-slot is the next prefix token → prefix = [z, r].
+      "state_skill" → AdaRMS = time + state_proj(state) + skill_proj(z). NO skill prefix token; the only
+                      prefix token is the r-slot → prefix = [r]."""
 
-    # ── Skill conditioning ──
+    # ── Skill conditioning (z) ──
     skill_vocab_size: int = 125
     """Number of FSQ skill codes (= prod(skill_fsq_levels)); bounds the codes in the dataset."""
     skill_fsq_levels: list[int] = field(default_factory=lambda: [5, 5, 5])
-    """FSQ levels per dim. The flat dataset code is mapped back to its FSQ grid coordinate z_q
-    (little-endian strides — the codebook's own convention, the same value the FSQ decoder
-    consumes), normalized per dim to [-1, 1], and fed through a Linear(D → width) as ONE skill
-    token, constant within a skill — neighboring codes stay neighboring. (The skill-progress token
-    was removed — the action expert conditions on the skill code only.)"""
+    """FSQ levels per dim. The flat dataset code is mapped to its FSQ grid coordinate z_q (little-endian
+    strides — the codebook's own convention), normalized per dim to [-1, 1], and fed through a Linear(D →
+    width) as ONE skill token, constant within a skill."""
 
-    # ── Connector (Stage-1 future-conditioning module → VAE latent z; see connector.py) ───────────
-    # A Perceiver pooler with its OWN frozen DINO encodes the skill's END frame (3rd + wrist) + END
-    # state into a small VAE latent z, modulated by the GT skill (z_q) via AdaLN. z is fed to the
-    # action expert as prefix token(s) — supplying the within-skill motion detail that (skill,
-    # current obs) underdetermine (a skill is a coarse cluster of 100+ motions).
-    use_connector: bool = True
-    """Build + use the connector. False → plain Stage-1 action expert (no z). In the STAGED schedule
-    it is forced OFF during phase 1-1 and ON in 1-2 (the z prefix token is added then — Approach-2)."""
-    connector_dino_model_path: str = "/data2/dohyeon/SBD/models/dinov3-vitb16"
-    """The connector's OWN DINO (independent instance, ALWAYS frozen → OOD-robust goal features).
-    May differ from the expert-vision dino_model_path. (vitl16 recommended once downloaded.)"""
-    connector_dino_image_size: int = 224
-    connector_width: int = 768            # Perceiver hidden dim
-    connector_depth: int = 4              # number of Perceiver (cross+self+FFN) blocks
-    connector_n_heads: int = 8
-    connector_n_latents: int = 4          # L learned latent queries = number of z prefix tokens
-    connector_z_dim: int = 64             # per-latent VAE dim (the transfer bottleneck)
-    connector_free_bits: float = 0.1      # free-bits λ (nats/dim): reserves capacity, prevents collapse
-    connector_kl_weight: float = 1e-3     # β on the (free-bits) KL term added to the objective
-    connector_z_consistency_weight: float = 0.0
-    """Method-2 appearance-invariance: weight on ‖z − z(aug(end))‖² (stopgrad teacher). 0 = OFF — hooks
-    present, concrete randomization deferred."""
-    z_ablation_every: int = 0
-    """Diagnostic: every N training steps (when the connector is active) run an extra no-grad forward
-    with z disabled and log loss_zablate + z_gain (= zablate − plain, how much z helps). 0 = OFF.
-    The key probe for 'is z actually used?' across the 3 experiments."""
+    # ── Oracle (Stage-1 residual module → 1-token VAE latent r; see oracle.py) ─────────────────────
+    # The Oracle encodes the current skill's full state TRAJECTORY (resampled to a fixed length,
+    # appearance-invariant) + skill z into a VAE latent r (n_tokens, r_dim), modulated by z via AdaLN.
+    # r is fed to the action expert as a prefix token, supplying the within-skill motion detail that
+    # (skill, current obs) underdetermine. Forced to be a RESIDUAL via CFG-style dropout (oracle_dropout_p).
+    use_oracle: bool = False
+    """Build + use the Oracle. False → plain VSA (the r-slot is always the learned null token = no
+    residual). The STAGED schedule sets this False in 1-1 and True in 1-2; single-stage sets it True."""
+    oracle_resample_n: int = 30
+    """Resample the skill's state trajectory to this many control points — MATCH the FSQ n_control so the
+    Oracle sees the trajectory at the same resolution the skill code z was derived from."""
+    oracle_spline_degree: int = 3
+    """Pose-dim spline degree for the resample (gripper dims are always degree 1 — near-step, no overshoot)
+    — MATCH the FSQ spline_degree. The trajectory is zero-grounded (pose relative to start, gripper absolute),
+    exactly as the FSQ encoder (mirrors FSQ.py spline_encode)."""
+    oracle_width: int = 512               # Oracle hidden dim
+    oracle_depth: int = 3                 # number of Perceiver (cross+self+FFN) blocks
+    oracle_n_heads: int = 8
+    oracle_n_tokens: int = 1              # number of r prefix tokens (1 = tightest stage-2 target)
+    oracle_r_dim: int = 16                # per-token VAE dim (the transfer bottleneck; SWEEP knob)
+    oracle_free_bits: float = 0.1         # free-bits λ (nats/dim): reserves capacity, prevents collapse
+    oracle_kl_weight: float = 1e-3        # β on the (free-bits) KL term (SWEEP knob)
+    oracle_dropout_p: float = 0.5
+    """CFG-style conditioning dropout: P(drop r → learned null this batch). Forces the VSA base to
+    stand alone (graceful degradation for stage-2) and r to carry only the residual. (SWEEP knob.)"""
+    r_ablation_every: int = 0
+    """Diagnostic: every N steps (Oracle on) run an extra no-grad forward with r dropped → log
+    loss_rablate + r_gain (= rablate − with-r). The key probe for 'is r actually used?'. 0 = OFF."""
 
-    # ── Stage-1 experiment design. Each TRAINING RUN is a single fixed phase. "staged" is TWO runs
-    # orchestrated by the sbatch (1-1 then 1-2, SEPARATE folders, 1-2 warm-starts from a chosen 1-1
-    # checkpoint) — see stage1_train_config.py. The policy only sees a per-phase config. ──
-    loss_mode: str = "plain"
-    """"plain"          → fixed weighting (action_weighting below), no per-batch module gating.
-    "weighted_gated"  → per-batch 50/50 module freeze (connector↔early-weighted / expert-vision↔
-                        late-weighted). Needs use_connector; incompatible with freeze_expert_vision."""
-    action_weighting: str = "plain"
-    """Action-loss weighting for a PLAIN run: 'plain' (uniform) | 'early' (skill-START emphasized) |
-    'late' (skill-END emphasized). Staged sets it per phase (1-1: late, 1-2: plain)."""
-    gate_prob: float = 0.5
-    """weighted_gated: P(connector trains / expert-vision frozen / early-weighted) per batch."""
-    freeze_expert_vision: bool = False
-    """Statically freeze the expert-vision (cond-encoder + image_proj + its DINO/SigLIP) for the whole
-    run. Used by staged phase 1-2 (vision learned in 1-1, frozen while the connector trains)."""
+    # ── Stage-1 staging ──
+    freeze_vsa_base: bool = False
+    """STATICALLY freeze the 1-1 VSA base for the whole run. Always freezes the CONDITIONING ANCHOR
+    (skill_proj + the learned null token) so B-mode reproduces 1-1's z/null exactly; vision is frozen too
+    iff freeze_vsa_vision. Used by STAGED phase 1-2 (only the action expert + Oracle + r_proj train).
+    False for 1-1 and single-stage."""
+    freeze_vsa_vision: bool = True
+    """Whether the VISION scene encoder (DINO/SigLIP + image_proj + cond-encoder) is frozen along with the
+    conditioning anchor (skill_proj), so the base is learned only by the no-r objective and never co-adapts
+    to r. Two regimes:
+      • STAGED 1-2 (freeze_vsa_base=True): the anchor (skill_proj) is STATICALLY frozen; vision too iff True.
+      • SINGLE (freeze_vsa_base=False, use_oracle): PER-BATCH — A-mode (r used) freezes the base, B-mode
+        (r dropped) trains it. The anchor (skill_proj) is A-frozen ALWAYS in single; this flag only adds
+        VISION to that A-freeze. (The single-stage analog of staged 1-2's static freeze, over the A/B split.)
+    Ignored when use_oracle is off (no A/B split, no r). null_r needs no gate — used only in B."""
     boundary_mode: str = "hold"
     """How chunk steps that spill PAST the current skill's end are supervised:
       "hold"      → STOP+HOLD target (arm Δ=0, gripper held) → each skill terminates cleanly (modularity).
-      "keep_demo" → keep the demo's real actions across the boundary (stage2-style; goal z guides the tail).
-    The STAGED schedule FORCES 'hold' in phase 1-1 (no connector goal yet); 1-2 / joint use this toggle."""
+      "keep_demo" → keep the demo's real actions across the boundary (goal r guides the tail)."""
+
+    # ── Co-trained FSQ terminator (skill-end timing for eval; orthogonal to the Oracle) ──
     train_terminator: bool = False
     """Co-train the isolated FSQ terminator (skill-end timing) alongside Stage-1 — gradient-disjoint
     from the main model (mirrors stage2/FT), warm-started from fsq_path. Lets a checkpoint be evaled
-    (skill transitions). Always-on (its own optimizer group); not gated by schedule/loss_mode."""
+    (skill transitions). Always-on (its own optimizer group)."""
     terminator_end_target_sigma: float = 1.0
     """Termination target = Gaussian bump exp(-de²/2σ²) peaking at the skill end (σ>0); σ≤0 → hard (de==0)."""
     terminator_end_pos_weight: float = 1.0
@@ -150,15 +150,6 @@ class SkillExpertConfig(PI05Config):
     skill_decoder_dino_wrist_output_key: str = "skill_decoder_dino_wrist"
     skill_decoder_dino_wrist_cache_path: str | None = None
 
-    # ── Action loss = flow MSE over the chunk. Two forms (driven by the experiment mode): PLAIN (uniform)
-    #    or PROGRESS-WEIGHTED per-step (early- or late-emphasized). Boundary tail handled by boundary_mode
-    #    (HOLD / keep_demo). No cumulative-position term, no action_loss/action_weight toggles (removed). ──
-    skill_end_loss_weight: float = 1.0
-    """R = strength of the per-step PROGRESS weighting on the action loss: weight = 1 + (R-1)·base, where
-    base = within-skill progress (LATE-emphasis) or 1-progress (EARLY-emphasis). R=1 → uniform (≡ plain).
-    Direction (early/late) and whether weighting is on come from the experiment mode (joint-gated batches /
-    staged phase 1-1); R only sets how strong the emphasis is."""
-
     # ── Eval-only (oracle closed-loop sim). Ignored during training. ──
     fsq_path: str | None = None
     """Frozen FSQ checkpoint ({run_dir}/FSQ.pt): provides the terminator (skill end signal)
@@ -168,19 +159,14 @@ class SkillExpertConfig(PI05Config):
     (matched to the env task by language) for the oracle eval."""
     terminator_dino_model_path: str | None = None
     """DINO weights for the FSQ terminator's raw-image encoder at eval. None → the FSQ
-    checkpoint's own image_model_name (auto-resolved to this repo's models/ if absent).
-    Kept SEPARATE from dino_model_path, which is the policy's OWN vision backbone and must
-    match the checkpoint being loaded — never override that one at eval."""
+    checkpoint's own image_model_name. Kept SEPARATE from dino_model_path (the policy's OWN
+    vision backbone, which must match the checkpoint being loaded — never override that at eval)."""
     skill_advance_mode: str = "terminator"
     """How the oracle eval advances through the GT skill sequence:
     "terminator" → the FSQ terminator decides each transition (skill_end_mode/threshold);
-    "gt"         → advance after each skill's GT demo duration (ideal timing; isolates the
-                   action expert from terminator timing errors). The terminator still runs so
-                   its curves are recorded for the HTML either way."""
+    "gt"         → advance after each skill's GT demo duration (ideal timing)."""
     skill_end_mode: str = "termination"
-    """Which FSQ terminator signal ends the current skill (used when skill_advance_mode=terminator):
-    "termination" → termination probability >= skill_end_threshold (e.g. 0.5);
-    "progress"    → predicted progress >= skill_end_threshold (e.g. 0.9)."""
+    """Which FSQ terminator signal ends the current skill: "termination" (prob ≥ thr) | "progress" (≥ thr)."""
     skill_end_threshold: float = 0.5
     """Threshold on the signal selected by skill_end_mode, above which the skill is finished."""
     inference_skill_max_length: int = 200
@@ -189,19 +175,11 @@ class SkillExpertConfig(PI05Config):
     def __post_init__(self):
         super().__post_init__()
         if self.state_cond_mode not in ("state", "state_skill"):
-            raise ValueError(
-                f"state_cond_mode must be 'state' or 'state_skill' (got {self.state_cond_mode!r})."
-            )
-        if self.loss_mode not in ("plain", "weighted_gated"):
-            raise ValueError(f"loss_mode must be 'plain' or 'weighted_gated' (got {self.loss_mode!r}).")
-        if self.action_weighting not in ("plain", "early", "late"):
-            raise ValueError(f"action_weighting must be 'plain'|'early'|'late' (got {self.action_weighting!r}).")
+            raise ValueError(f"state_cond_mode must be 'state' or 'state_skill' (got {self.state_cond_mode!r}).")
         if self.boundary_mode not in ("hold", "keep_demo"):
             raise ValueError(f"boundary_mode must be 'hold' or 'keep_demo' (got {self.boundary_mode!r}).")
-        if self.loss_mode == "weighted_gated" and not self.use_connector:
-            raise ValueError("loss_mode='weighted_gated' needs use_connector=True (it gates the connector).")
-        if self.loss_mode == "weighted_gated" and self.freeze_expert_vision:
-            raise ValueError("loss_mode='weighted_gated' is incompatible with freeze_expert_vision.")
+        if not 0.0 <= self.oracle_dropout_p < 1.0:
+            raise ValueError(f"oracle_dropout_p must be in [0, 1) (got {self.oracle_dropout_p}).")
         if self.train_terminator and not self.fsq_path:
             raise ValueError("train_terminator=True needs fsq_path (the FSQ checkpoint to warm-start).")
         if self.train_terminator and not self.skill_decoder_dino_tokens_path:

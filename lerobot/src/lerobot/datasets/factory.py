@@ -103,11 +103,14 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
                 from lerobot.policies.skillVLA.dataset_skillVLA import SkillVLADataset
 
                 dataset_cls = SkillVLADataset
-            elif getattr(cfg.policy, "type", None) == "skill_expert" and getattr(cfg.policy, "use_connector", False):
-                # Stage-1 connector needs the skill's END frame (3rd + wrist image + state) per item.
+            extra_kwargs: dict = {}
+            if getattr(cfg.policy, "type", None) == "skill_expert" and getattr(cfg.policy, "use_oracle", False):
+                # Stage-1 Oracle needs the current skill's state trajectory (start→end) per item.
                 from lerobot.policies.skill_expert.dataset_skill_expert import SkillExpertDataset
 
                 dataset_cls = SkillExpertDataset
+                extra_kwargs["resample_n"] = int(cfg.policy.oracle_resample_n)
+                extra_kwargs["spline_degree"] = int(cfg.policy.oracle_spline_degree)
             dataset = dataset_cls(
                 cfg.dataset.repo_id,
                 root=cfg.dataset.root,
@@ -118,6 +121,7 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
                 video_backend=cfg.dataset.video_backend,
                 tolerance_s=cfg.tolerance_s,
                 video_keys_to_load=video_keys_to_load,
+                **extra_kwargs,
             )
         else:
             dataset = StreamingLeRobotDataset(

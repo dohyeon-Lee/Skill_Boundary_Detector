@@ -468,14 +468,22 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                     "loss_skill_decoder_action_loss", "loss_skill_decoder_end_loss",
                     "predicted_latent_prob",
                     "loss_skill", "skill_acc",  # Stage-2 SkillVLA: VLM skill CE + skill-code accuracy
-                    "loss_terminator",          # FT SkillVLA: co-trained FSQ terminator (progress + termination)
-                    "loss_cum_pos",             # Stage-1 skill_expert: optional cumulative-position loss term
-                    "loss_weighted",            # Stage-1 skill_expert: per-sample-weighted action loss (action_weight)
-                    "loss_total",               # Stage-1 skill_expert: optimized objective (action + λ·cum). "loss"
-                                                # itself is the PLAIN unweighted action MSE (comparison; overlays runs)
+                    "loss_terminator",          # FT SkillVLA / Stage-1: co-trained FSQ terminator (progress + termination)
+                    "loss_total",               # Stage-1 skill_expert: MAIN-model objective = action MSE + β·KL (terminator
+                                                # EXCLUDED — disjoint head, see loss_terminator). "loss" = plain action MSE
+                    "loss_kl",                  # Stage-1 Oracle: free-bits VAE KL (A-mode batches only)
+                    "r_gain",                   # Stage-1 Oracle: r-ablation gain = action MSE(no r) − action MSE(with r)
+                    "loss_rablate",             # Stage-1 Oracle: r-ablation no-r action MSE (every r_ablation_every steps)
                 }
-                wandb_log_dict = {k: v for k, v in wandb_log_dict.items() if k in _wandb_keep}
-                wandb_logger.log_dict(wandb_log_dict, step)
+                wandb_log_dict = {k: v for k, v in wandb_log_dict.items()
+                                  if k in _wandb_keep or k.startswith("terminator/")}
+                # Route "terminator/*" metrics to a SEPARATE wandb panel (train_terminator/*); rest → train/*.
+                term_metrics = {k[len("terminator/"):]: v for k, v in wandb_log_dict.items()
+                                if k.startswith("terminator/")}
+                main_metrics = {k: v for k, v in wandb_log_dict.items() if not k.startswith("terminator/")}
+                wandb_logger.log_dict(main_metrics, step)
+                if term_metrics:
+                    wandb_logger.log_dict(term_metrics, step, mode="train_terminator")
             train_tracker.reset_averages()
 
         if cfg.save_checkpoint and is_saving_step:
