@@ -372,7 +372,7 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
         batch_size=cfg.batch_size,
         shuffle=shuffle and not cfg.dataset.streaming,
         sampler=sampler,
-        pin_memory=device.type == "cuda",
+        pin_memory=False,  # disabled: pinned-memory alloc under concurrent jobs triggered CUDA "unknown error"; ~free for compute-bound VLA training
         drop_last=False,
         prefetch_factor=2 if cfg.num_workers > 0 else None,
     )

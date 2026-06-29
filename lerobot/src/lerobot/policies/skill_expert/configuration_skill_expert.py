@@ -143,6 +143,12 @@ class SkillExpertConfig(PI05Config):
     skill_decoder_dino_output_key: str = "skill_decoder_dino"
     skill_decoder_dino_cache_path: str | None = None
     skill_decoder_dino_build_cache: bool = True
+    # Wrist-camera FSQ-grid DINO tokens — ONLY needed when the FSQ terminator was trained with
+    # terminator_use_wrist=True (build_data dino_wrist:true → dino_wrist.npz). Leave blank for
+    # 3rd-only ("wow") FSQs. Attached by a SECOND SkillVLADinoTokenDataset wrapper.
+    skill_decoder_dino_wrist_tokens_path: str | None = None
+    skill_decoder_dino_wrist_output_key: str = "skill_decoder_dino_wrist"
+    skill_decoder_dino_wrist_cache_path: str | None = None
 
     # ── Action loss = flow MSE over the chunk. Two forms (driven by the experiment mode): PLAIN (uniform)
     #    or PROGRESS-WEIGHTED per-step (early- or late-emphasized). Boundary tail handled by boundary_mode

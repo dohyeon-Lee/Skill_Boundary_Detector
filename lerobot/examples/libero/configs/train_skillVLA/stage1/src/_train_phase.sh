@@ -37,6 +37,7 @@ train_phase() {
   [ -n "${COND_ENCODER_VARIANT}" ] && EXTRA+=(--policy.cond_encoder_variant="${COND_ENCODER_VARIANT}")
   [ -n "${FSQ_PATH}" ] && EXTRA+=(--policy.fsq_path="${FSQ_PATH}")
   [ -n "${SKILL_DECODER_DINO_TOKENS_PATH}" ] && EXTRA+=(--policy.skill_decoder_dino_tokens_path="${SKILL_DECODER_DINO_TOKENS_PATH}")
+  [ -n "${SKILL_DECODER_DINO_WRIST_TOKENS_PATH:-}" ] && EXTRA+=(--policy.skill_decoder_dino_wrist_tokens_path="${SKILL_DECODER_DINO_WRIST_TOKENS_PATH}")
   [ -n "${SKILL_DECODER_DINO_CACHE_PATH}" ] && EXTRA+=(--policy.skill_decoder_dino_cache_path="${SKILL_DECODER_DINO_CACHE_PATH}")
 
   # Resume from THIS phase's own checkpoint if present; else wipe a stale dir and start (warm-)fresh.

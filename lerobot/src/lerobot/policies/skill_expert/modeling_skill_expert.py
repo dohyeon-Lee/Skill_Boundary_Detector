@@ -307,10 +307,11 @@ class SkillExpertPytorch(nn.Module):
         log.info("Built TRAINABLE FSQ terminator from %s (%d trainable params, modules=%s).",
                  path, n_tr, sorted(trainable))
 
-    def terminator_predict(self, true_code: Tensor, state: Tensor, dino_tokens: Tensor) -> tuple[Tensor, Tensor]:
+    def terminator_predict(self, true_code: Tensor, state: Tensor, dino_tokens: Tensor,
+                           dino_tokens_wrist: Tensor | None = None) -> tuple[Tensor, Tensor]:
         """Co-training forward (grad ON, logits out): GT skill code + current state + current FSQ-grid
-        DINO tokens → (progress (B,), term_logits (B,)). Inputs are GT/precomputed, so the graph never
-        touches SkillExpert params (disjoint co-training)."""
+        DINO tokens (+ wrist tokens for a dual terminator) → (progress (B,), term_logits (B,)). Inputs
+        are GT/precomputed, so the graph never touches SkillExpert params (disjoint co-training)."""
         fsq = self.fsq_term_train
         dev = next(fsq.parameters()).device
         # Run in the terminator's ACTUAL weight dtype: it is built fp32, but the policy-wide cast
@@ -323,11 +324,20 @@ class SkillExpertPytorch(nn.Module):
         st = st[..., : int(fsq.state_dim)]
         z = self._code_to_z(true_code.to(self._fsq_strides.device)).to(device=dev, dtype=tdtype)  # (B, D)
         dec = fsq._prepare_decoder_tokens(dino_tokens.to(device=dev, dtype=tdtype), states=st)  # (B,1,N,F)
+        # Dual terminator (terminator_use_wrist=True): prepare the wrist tokens the same way.
+        dec_wrist = None
+        if bool(getattr(fsq, "terminator_use_wrist", False)):
+            if dino_tokens_wrist is None:
+                raise ValueError(
+                    "FSQ terminator_use_wrist=True but no wrist tokens in the batch. Build dino_wrist.npz "
+                    "(merge_frame_dino.py --image_key observation.images.wrist_image) and set "
+                    "skill_decoder_dino_wrist_tokens_path, or use a 3rd-only ('wow') FSQ.")
+            dec_wrist = fsq._prepare_decoder_tokens(dino_tokens_wrist.to(device=dev, dtype=tdtype), states=st)
         B, T = dec.shape[:2]
         lh = fsq.fsq.levels_half.to(z.device, z.dtype)
         zq = torch.maximum(torch.minimum(torch.round(z), lh), -lh)
         z_tok = fsq.dec_z_proj(zq.unsqueeze(1).expand(B, T, -1).to(tdtype))
-        progress, term_logits = fsq._terminate(z_tok, st, dec, None)   # (B, 1), (B, 1)
+        progress, term_logits = fsq._terminate(z_tok, st, dec, dec_wrist)   # (B, 1), (B, 1)
         return progress[:, 0], term_logits[:, 0]
 
     def _cond_tokens(self, images: list[Tensor]) -> Tensor:
@@ -842,7 +852,8 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 if k not in batch:
                     raise ValueError(f"train_terminator=True needs '{k}' in the batch.")
             prog_pred, term_logits = self.model.terminator_predict(
-                self._skill_code(batch), batch[OBS_STATE], batch["skill_decoder_dino"])
+                self._skill_code(batch), batch[OBS_STATE], batch["skill_decoder_dino"],
+                dino_tokens_wrist=batch.get("skill_decoder_dino_wrist"))  # None unless a dual (use_wrist) FSQ
             ds = batch["skill_ds"].float().view(-1).to(prog_pred.device)
             de = batch["skill_de"].float().view(-1).to(prog_pred.device)
             prog_tgt = (ds / (ds + de).clamp_min(1.0)).clamp(0.0, 1.0)                 # within-skill progress

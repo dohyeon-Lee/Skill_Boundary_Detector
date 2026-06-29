@@ -82,6 +82,14 @@ def build_settings(cfg: dict, mode: str = "joint", loss_mode_arg: str = "plain")
         resolve_path(project_root, sdd_raw)
         if sdd_raw and sdd_raw.lower() not in ("null", "none") else run_dir / "dino.npz"
     )
+    # Wrist tokens (dual terminator). Only a "both" FSQ build produces dino_wrist.npz → AUTO-attach when
+    # it EXISTS (a 3rd-only "wow" build has none, so leave blank). Override with an explicit yaml path.
+    sddw_raw = str(get_value(cfg, "skill_decoder_dino_wrist_tokens_path", "")).strip()
+    if sddw_raw and sddw_raw.lower() not in ("null", "none"):
+        skill_decoder_dino_wrist_tokens_path = resolve_path(project_root, sddw_raw)
+    else:
+        _wrist_cand = run_dir / "dino_wrist.npz"
+        skill_decoder_dino_wrist_tokens_path = _wrist_cand if _wrist_cand.exists() else ""
 
     init_from_pi05 = as_bool(get_value(cfg, "init_from_pi05", True))
     pi_base = resolve_path(project_root, get_value(cfg, "pi_base", "models/pi05_base")) if init_from_pi05 else ""
@@ -207,6 +215,8 @@ def build_settings(cfg: dict, mode: str = "joint", loss_mode_arg: str = "plain")
         "skill_decoder_dino_output_key": str(get_value(cfg, "skill_decoder_dino_output_key", "skill_decoder_dino")),
         "skill_decoder_dino_cache_path": _resolve_opt(project_root, get_value(cfg, "skill_decoder_dino_cache_path", "")),
         "skill_decoder_dino_build_cache": as_bool(get_value(cfg, "skill_decoder_dino_build_cache", True)),
+        # wrist tokens for a dual (use_wrist) terminator — "" unless run_dir/dino_wrist.npz exists
+        "skill_decoder_dino_wrist_tokens_path": skill_decoder_dino_wrist_tokens_path,
         # output
         "skillvla_outputs_root": vla_root,
         "pt_run_name": run_name,

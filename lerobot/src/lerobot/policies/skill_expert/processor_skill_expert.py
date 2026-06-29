@@ -44,7 +44,8 @@ SKILL_EXPERT_BATCH_KEYS = ("skill_index", "skill_sequence", "skill_ds", "skill_d
 #   (SkillVLADinoTokenDataset, output_key=skill_decoder_dino). These are NOT observation.* prefixed,
 #   so without this they'd be dropped (→ "needs 'skill_decoder_dino'" / silent connector-off).
 CONNECTOR_TERMINATOR_KEYS = (
-    "skill_end_image", "skill_end_wrist_image", "skill_end_state", "skill_decoder_dino",
+    "skill_end_image", "skill_end_wrist_image", "skill_end_state",
+    "skill_decoder_dino", "skill_decoder_dino_wrist",  # wrist tokens for the dual (use_wrist) terminator
 )
 
 

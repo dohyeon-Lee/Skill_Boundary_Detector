@@ -203,6 +203,10 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
         "skillvla_seg_dir": seg_dir,   # DP-keyed intermediates (skillset + skill_tokens)
         "iss_npz_path": run_dir / "skill_initial_state.npz",   # Stage-2 skill-initial-state (ISS)
         "dino_npz_path": run_dir / "dino.npz",                 # build_data_eval viz only (not used by training)
+        # Stage-1 terminator wrist tokens: only when dino_wrist:true (FSQ trained terminator_use_wrist).
+        # Same merge as dino.npz but the wrist camera → a second per-skill DINO token cache. Empty = none.
+        "dino_wrist_npz_path": (run_dir / "dino_wrist.npz") if dino_wrist else "",
+        "wrist_image_key": WRIST_KEY if dino_wrist else "",    # merge --image_key for dino_wrist.npz
         "fsq_copy_path": run_dir / "FSQ.pt",
         "skillvla_dataset_dir": run_dir / "skillvla",
         # eval outputs (build_data_eval runs off: raw video + skillvla/ + dino.npz + FSQ.pt)

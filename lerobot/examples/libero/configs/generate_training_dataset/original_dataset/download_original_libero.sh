@@ -53,14 +53,20 @@ echo "  hf retries   : ${HF_RETRIES}"
 echo "  hf xet off   : ${HF_HUB_DISABLE_XET}"
 echo "  hf timeout   : download=${HF_HUB_DOWNLOAD_TIMEOUT}s etag=${HF_HUB_ETAG_TIMEOUT}s"
 
-if [ ! -d "${REPO_DIR}/.git" ]; then
+if [ -d "${REPO_DIR}/.git" ]; then
+  if [ "${UPDATE_REPO}" = "1" ]; then
+    echo "[1/3] Update downloader repo"
+    git -C "${REPO_DIR}" pull --ff-only
+  else
+    echo "[1/3] Downloader repo already exists -> skip clone"
+  fi
+elif [ -d "${REPO_DIR}" ] && [ -n "$(ls -A "${REPO_DIR}" 2>/dev/null)" ]; then
+  # Non-git, non-empty copy already present (e.g. the in-repo LIBERO install with init_files) →
+  # use it as-is. git clone would fail on a non-empty dir, and we must not wipe these init_files.
+  echo "[1/3] Downloader dir exists (non-git, non-empty) -> skip clone, use existing copy"
+else
   echo "[1/3] Clone downloader repo"
   git clone https://github.com/huggingface/lerobot-libero "${REPO_DIR}"
-elif [ "${UPDATE_REPO}" = "1" ]; then
-  echo "[1/3] Update downloader repo"
-  git -C "${REPO_DIR}" pull --ff-only
-else
-  echo "[1/3] Downloader repo already exists -> skip clone"
 fi
 
 if [ "${INSTALL_REPO}" = "1" ]; then

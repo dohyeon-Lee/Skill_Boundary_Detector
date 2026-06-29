@@ -170,4 +170,14 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
             build_cache=cfg.policy.skill_decoder_dino_build_cache,
         )
 
+    # Stage-1 dual terminator (FSQ terminator_use_wrist=True): attach the wrist-camera tokens too.
+    if getattr(cfg.policy, "skill_decoder_dino_wrist_tokens_path", None):
+        dataset = SkillVLADinoTokenDataset(
+            dataset,
+            tokens_path=cfg.policy.skill_decoder_dino_wrist_tokens_path,
+            output_key=cfg.policy.skill_decoder_dino_wrist_output_key,
+            cache_path=cfg.policy.skill_decoder_dino_wrist_cache_path,
+            build_cache=getattr(cfg.policy, "skill_decoder_dino_build_cache", True),
+        )
+
     return dataset

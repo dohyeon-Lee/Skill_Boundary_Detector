@@ -12,7 +12,7 @@ pi_base: models/pi05_base   # project_root(global_config) 기준 상대경로 �
 pt_dataset: libero_90_full_full
 pt_batch_size: 128
 pt_num_gpus: 1
-pt_num_workers: 4
+pt_num_workers: 2
 pt_exp: "freeze_LANG"
 pt_lr_base: 2.5e-05
 pt_steps: 100000
@@ -32,7 +32,7 @@ pt_time: "48:00:00"
 # ── pi05 FT (output → pi05_FT; pretrained PT read from pi05_PT) ─
 ft_dataset: libero_10_full_2
 ft_batch_size: 16
-ft_num_workers: 4
+ft_num_workers: 2
 ft_exp: ""
 ft_lr: 2.5e-05
 ft_steps: 15000

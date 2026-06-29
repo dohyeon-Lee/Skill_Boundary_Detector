@@ -1115,12 +1115,12 @@ def train_spline_fsqae(
     train_loader = DataLoader(
         train_ds, collate_fn=collate_fsq_batch,
         batch_sampler=LengthBucketBatchSampler(train_ds.lengths, cfg.batch_size, shuffle=True),
-        num_workers=cfg.num_workers, pin_memory=True, persistent_workers=cfg.num_workers > 0,
+        num_workers=cfg.num_workers, pin_memory=False, persistent_workers=cfg.num_workers > 0,
     )
     val_loader = DataLoader(
         val_ds, collate_fn=collate_fsq_batch,
         batch_sampler=LengthBucketBatchSampler(val_ds.lengths, cfg.batch_size, shuffle=False),
-        num_workers=cfg.num_workers, pin_memory=True, persistent_workers=cfg.num_workers > 0,
+        num_workers=cfg.num_workers, pin_memory=False, persistent_workers=cfg.num_workers > 0,
     )
 
     model = SplineFSQAE(
