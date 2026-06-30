@@ -679,8 +679,10 @@ class SkillExpertPolicy(PreTrainedPolicy):
         # output_dict — see lerobot_train). NEVER (necessarily) the optimized objective.
         plain_action = losses.mean()
         per_sample = losses.mean(dim=(1, 2))                            # (B,) per-CHUNK action loss
+        # action_loss = the PLAIN (uniform) action MSE — ALWAYS computed & logged (display-only when
+        # action_weight; never the backpropped value in weighted mode). The cross-run comparison axis.
         loss_dict = {"loss_per_dim": losses.mean(dim=(0, 1)).detach().cpu().numpy().tolist(),
-                     "loss": plain_action.detach().item()}
+                     "action_loss": plain_action.detach().item()}
         if reduction == "none":
             return per_sample, loss_dict
 
@@ -703,13 +705,12 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 prog = (torch.arange(K, device=dev).float().view(1, K) / max(K - 1, 1)).expand(bsize, K)
             sw = (1.0 + (r - 1.0) * prog[rows, anchor]) * (last_valid >= 0).float()  # per-sample; 0 if no valid step
             loss = (per_sample * sw).sum() / sw.sum().clamp(min=1.0)
-            loss_dict["loss_weighted"] = loss.detach().item()          # SEPARATE wandb panel
+            loss_dict["action_weighted_loss"] = loss.detach().item()   # the weighted objective (weighted mode only)
         else:
             loss = plain_action
-        # MAIN-model objective logged BEFORE the terminator. The terminator below is an INDEPENDENT
-        # (gradient-disjoint) head; summed into the backpropped scalar only so it trains inside lerobot's
-        # single-backward loop, but kept OUT of loss_total (it has its own terminator/* metrics).
-        loss_dict["loss_total"] = loss.detach().item()   # BACKPROPPED objective (≠ wandb "loss" when weighted)
+        # Objective = action_weighted_loss (weighted) or action_loss (plain) — no separate loss_total. The
+        # terminator below is an INDEPENDENT (gradient-disjoint) head; summed into the backpropped scalar only
+        # so it trains inside lerobot's single-backward loop, kept OUT of the action metrics (own terminator/*).
 
         # ── Co-trained FSQ terminator (skill-end timing for eval). DISJOINT graph (GT/precomputed
         # inputs + its own params) → summed into the backpropped scalar; main-model grads untouched. ──

@@ -45,7 +45,7 @@ dino_base_dataset: libero_90_full_full   # base dataset name | "generate"
 DP_patch_grid:  8       # grid the DP segmentation consumes (3rd-person)
 FSQ_patch_grid: 8       # grid the FSQ terminator / skill DINO tokens consume
 dino_third: true        # terminator 3rd-person camera (observation.images.image)
-dino_wrist: false       # terminator wrist camera (observation.images.wrist_image). Produced/
+dino_wrist: true       # terminator wrist camera (observation.images.wrist_image). Produced/
                         # validated as data, but the TRAINING terminator co-train forward
                         # consumes 3rd-person only today (eval encodes raw images live) → wrist
                         # is forward-compat.
@@ -56,7 +56,7 @@ dino_copy_mode: symlink                  # copy | hardlink | symlink (intermedia
 # Used to replan and detect skill boundaries on the source dataset.
 # The policy's n_obs_steps / n_action_steps / horizon are read from the checkpoint
 # config at load time, so they are not specified here.
-dp_policy_name: "libero_90_full_full_dino8"   # folder under outputs/DP/
+dp_policy_name: "libero_90_full_full_state_obs20"   # folder under outputs/DP/
 dp_checkpoint: "100000"
 # Fixed skill-boundary detection params (dn_step, n_gmm, smooth_window, savgol_polyorder,
 # replan_interval, nms_dist; same meaning as train_skills) live as defaults in
@@ -77,11 +77,9 @@ skillset_max_sweeps: 2
 # name under {project_root}/outputs/FSQ/ + the checkpoint. Levels are parsed from
 # the fsq<levels> tag in the name (codebook size = prod(levels)); the rest of the
 # FSQ config lives in the checkpoint.
-fsq_run_name: "libero_90_full_full_fsq555_dino8_wow_imgX"   # folder under outputs/FSQ/
-# fsq_run_name: "libero_90_full_full_fsq555_dino14_wot_imgX"   # folder under outputs/FSQ/
-# fsq_run_name: "libero_90_full_full_fsq555_dino14_ww_imgX"   # folder under outputs/FSQ/
+fsq_run_name: "libero_90_full_full_state_obs20_fsq88_dino8_weighted_both"   # folder under outputs/FSQ/
 
-fsq_checkpoint: 500                              # epoch number; 0 = best (FSQ.pt)
+fsq_checkpoint: 1000                              # epoch number; 0 = best (FSQ.pt)
 
 # ── SkillVLA dataset build (step 5) ───────────────────────────
 max_order: 0                               # 0 : auto

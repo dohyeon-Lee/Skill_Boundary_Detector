@@ -469,12 +469,15 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                     "predicted_latent_prob",
                     "loss_skill", "skill_acc",  # Stage-2 SkillVLA: VLM skill CE + skill-code accuracy
                     "loss_terminator",          # FT SkillVLA: co-trained FSQ terminator (progress + termination)
-                    "loss_weighted",            # Stage-1 skill_expert: per-sample-weighted action loss (action_weight)
-                    "loss_total",               # Stage-1 skill_expert: optimized objective (the action MSE). "loss"
-                                                # itself is the PLAIN unweighted action MSE (comparison; overlays runs)
+                    "action_loss",              # Stage-1 skill_expert: PLAIN (unweighted) action MSE — always (comparison)
+                    "action_weighted_loss",     # Stage-1 skill_expert: per-sample-weighted action MSE (action_weight only)
                 }
                 wandb_log_dict = {k: v for k, v in wandb_log_dict.items()
                                   if k in _wandb_keep or k.startswith("terminator/")}
+                # A policy that reports its own action_loss (Stage-1 skill_expert) replaces the generic
+                # backprop-scalar "loss" with it → drop the redundant generic "loss".
+                if "action_loss" in wandb_log_dict:
+                    wandb_log_dict.pop("loss", None)
                 # Route "terminator/*" metrics to a SEPARATE wandb panel (train_terminator/*); rest → train/*.
                 term_metrics = {k[len("terminator/"):]: v for k, v in wandb_log_dict.items()
                                 if k.startswith("terminator/")}

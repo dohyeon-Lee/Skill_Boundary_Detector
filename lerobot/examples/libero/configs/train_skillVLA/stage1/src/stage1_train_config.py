@@ -65,19 +65,17 @@ def build_settings(cfg: dict) -> dict:
     siglip_lr = get_value(cfg, "siglip_lr", None)
     siglip_lr_str = "" if siglip_lr in (None, "", "null") else str(siglip_lr)
 
-    # run-name vision tag: <backbone>_<freeze|unfreeze> (the backbone trained + whether it was frozen).
     vision_backbone = (str(get_value(cfg, "vision_backbone", "dino")).strip().lower() or "dino")
-    freeze_vision_encoder = as_bool(get_value(cfg, "freeze_vision_encoder", False))  # one flag → the SELECTED backbone
-    vis_tag = f"{vision_backbone}_{'freeze' if freeze_vision_encoder else 'unfreeze'}"
+    freeze_vision_encoder = as_bool(get_value(cfg, "freeze_vision_encoder", False))  # SELECTED backbone (NOT in run-name)
 
-    # joint + ae + discretized state is the only arch now → no arch/inject tag. init_from_pi05 fixed true.
-    run_name = f"{source_dataset}_{run_tag}_{vis_tag}_batch{batch_size}"
-    run_name = f"{run_name}_{state_cond_mode}"   # state | state_skill (what rides the expert AdaRMS) — never collide
-    # loss-variant suffix (categorical, NO hyperparameter values): action MSE weighted vs plain.
-    run_name = f"{run_name}_" + ("ac_w" if action_weight else "ac")
+    # run-name: run_tag + backbone + batch + state-cond [+ weighted] [+ exp]. source_dataset /
+    # freeze_vision_encoder / chunk_size are OMITTED (fixed — never swept). action_weight → "_weighted" ONLY
+    # when true (plain = no tag).
+    run_name = f"{run_tag}_{vision_backbone}_batch{batch_size}_{state_cond_mode}"
+    if action_weight:
+        run_name = f"{run_name}_weighted"
     if exp:
         run_name = f"{run_name}_{exp}"
-    run_name = f"{run_name}_c{chunk_size}"  # chunk horizon always trails the run name
     # Single outputs root from yaml; the per-stage subdir is fixed here (not in yaml).
     outputs_root = project_root / str(get_value(cfg, "outputs_root", "outputs"))
     vla_root = outputs_root / "skillVLA_stage1"
