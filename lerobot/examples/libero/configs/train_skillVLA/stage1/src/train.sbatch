@@ -58,6 +58,13 @@ fi
 if [ -n "${COND_ENCODER_VARIANT}" ]; then
   EXTRA_ARGS+=(--policy.cond_encoder_variant="${COND_ENCODER_VARIANT}")
 fi
+# Co-trained terminator DINO tokens (empty → omitted; only set when train_terminator).
+if [ -n "${SKILL_DECODER_DINO_TOKENS_PATH}" ]; then
+  EXTRA_ARGS+=(--policy.skill_decoder_dino_tokens_path="${SKILL_DECODER_DINO_TOKENS_PATH}")
+fi
+if [ -n "${SKILL_DECODER_DINO_WRIST_TOKENS_PATH}" ]; then
+  EXTRA_ARGS+=(--policy.skill_decoder_dino_wrist_tokens_path="${SKILL_DECODER_DINO_WRIST_TOKENS_PATH}")
+fi
 
 # Resume if a checkpoint exists; otherwise wipe a stale (incomplete) output dir.
 CONFIG_JSON="${PT_OUTPUT_DIR}/checkpoints/last/pretrained_model/train_config.json"
@@ -86,18 +93,19 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.state_cond_mode="${STATE_COND_MODE}" \
     --policy.vision_backbone="${VISION_BACKBONE}" \
     --policy.dino_model_path="${DINO_MODEL_PATH}" \
-    --policy.freeze_dino="${FREEZE_DINO}" \
-    --policy.freeze_siglip="${FREEZE_SIGLIP}" \
+    --policy.freeze_vision_encoder="${FREEZE_VISION_ENCODER}" \
     --policy.siglip_image_size="${SIGLIP_IMAGE_SIZE}" \
     --policy.skill_vocab_size="${SKILL_VOCAB_SIZE}" \
     --policy.skill_fsq_levels="${SKILL_FSQ_LEVELS}" \
     --policy.chunk_size="${CHUNK_SIZE}" \
     --policy.n_action_steps="${N_ACTION_STEPS}" \
-    --policy.cumulative_pos_loss_weight="${CUMULATIVE_POS_LOSS_WEIGHT}" \
     --policy.skill_end_loss_weight="${SKILL_END_LOSS_WEIGHT}" \
-    --policy.cum_loss="${CUM_LOSS}" \
-    --policy.action_loss="${ACTION_LOSS}" \
     --policy.action_weight="${ACTION_WEIGHT}" \
+    --policy.train_terminator="${TRAIN_TERMINATOR}" \
+    --policy.fsq_path="${FSQ_PATH}" \
+    --policy.terminator_end_target_sigma="${TERMINATOR_END_TARGET_SIGMA}" \
+    --policy.terminator_end_pos_weight="${TERMINATOR_END_POS_WEIGHT}" \
+    --policy.terminator_lr_scale="${TERMINATOR_LR_SCALE}" \
     --batch_size="${BATCH_SIZE}" \
     --num_workers="${NUM_WORKERS}" \
     --steps="${STEPS}" \

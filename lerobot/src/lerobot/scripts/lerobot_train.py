@@ -469,13 +469,19 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                     "predicted_latent_prob",
                     "loss_skill", "skill_acc",  # Stage-2 SkillVLA: VLM skill CE + skill-code accuracy
                     "loss_terminator",          # FT SkillVLA: co-trained FSQ terminator (progress + termination)
-                    "loss_cum_pos",             # Stage-1 skill_expert: optional cumulative-position loss term
                     "loss_weighted",            # Stage-1 skill_expert: per-sample-weighted action loss (action_weight)
-                    "loss_total",               # Stage-1 skill_expert: optimized objective (action + λ·cum). "loss"
+                    "loss_total",               # Stage-1 skill_expert: optimized objective (the action MSE). "loss"
                                                 # itself is the PLAIN unweighted action MSE (comparison; overlays runs)
                 }
-                wandb_log_dict = {k: v for k, v in wandb_log_dict.items() if k in _wandb_keep}
-                wandb_logger.log_dict(wandb_log_dict, step)
+                wandb_log_dict = {k: v for k, v in wandb_log_dict.items()
+                                  if k in _wandb_keep or k.startswith("terminator/")}
+                # Route "terminator/*" metrics to a SEPARATE wandb panel (train_terminator/*); rest → train/*.
+                term_metrics = {k[len("terminator/"):]: v for k, v in wandb_log_dict.items()
+                                if k.startswith("terminator/")}
+                main_metrics = {k: v for k, v in wandb_log_dict.items() if not k.startswith("terminator/")}
+                wandb_logger.log_dict(main_metrics, step)
+                if term_metrics:
+                    wandb_logger.log_dict(term_metrics, step, mode="train_terminator")
             train_tracker.reset_averages()
 
         if cfg.save_checkpoint and is_saving_step:

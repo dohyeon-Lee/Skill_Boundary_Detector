@@ -105,20 +105,18 @@ class SkillExpertPytorch(nn.Module):
             self.n_register = int(getattr(self.dino.config, "num_register_tokens", 0))
             self.vision_image_size = config.dino_image_size
             mean, std = [0.485, 0.456, 0.406], [0.229, 0.224, 0.225]  # ImageNet
-            if config.freeze_dino:
-                for p in self.dino.parameters():
-                    p.requires_grad_(False)
         elif config.vision_backbone == "siglip":
             # Warm-started from pi05's vision_tower in from_pretrained (params separate from the VLM).
             self.siglip = _build_siglip_vision_tower(config.siglip_image_size)
             vis_dim = int(self.siglip.config.hidden_size)
             self.vision_image_size = config.siglip_image_size
             mean, std = [0.5, 0.5, 0.5], [0.5, 0.5, 0.5]  # SigLIP: [0,1] → [-1,1]
-            if config.freeze_siglip:
-                for p in self.siglip.parameters():
-                    p.requires_grad_(False)
         else:
             raise ValueError(f"vision_backbone must be 'dino' or 'siglip', got {config.vision_backbone!r}")
+        # Statically freeze the SELECTED vision backbone (one flag for whichever vision_backbone is active).
+        if config.freeze_vision_encoder:
+            for p in (self.dino if self.dino is not None else self.siglip).parameters():
+                p.requires_grad_(False)
         self.register_buffer("_img_mean", torch.tensor(mean).view(1, 3, 1, 1), persistent=False)
         self.register_buffer("_img_std", torch.tensor(std).view(1, 3, 1, 1), persistent=False)
 
@@ -158,6 +156,11 @@ class SkillExpertPytorch(nn.Module):
         # in the cond stream.
         self.cond_encoder = _build_gemma(variant, use_adarms=False)
 
+        # ── Optional co-trained FSQ terminator (skill-end timing for eval; gradient-disjoint) ──
+        self.fsq_term_train = None
+        if getattr(config, "train_terminator", False):
+            self._build_terminator_trainable(config.fsq_path)
+
     @property
     def _wdtype(self) -> torch.dtype:
         """Working dtype of the expert stream (drives the cast at every token boundary)."""
@@ -169,12 +172,9 @@ class SkillExpertPytorch(nn.Module):
             self.gemma_expert.gradient_checkpointing_enable()
         if hasattr(self.cond_encoder, "gradient_checkpointing_enable"):
             self.cond_encoder.gradient_checkpointing_enable()
-        if self.vision_backbone == "dino" and not self.config.freeze_dino \
-                and hasattr(self.dino, "gradient_checkpointing_enable"):
-            self.dino.gradient_checkpointing_enable()
-        elif self.vision_backbone == "siglip" and not self.config.freeze_siglip \
-                and hasattr(self.siglip, "gradient_checkpointing_enable"):
-            self.siglip.gradient_checkpointing_enable()
+        enc = self.dino if self.vision_backbone == "dino" else self.siglip
+        if not self.config.freeze_vision_encoder and hasattr(enc, "gradient_checkpointing_enable"):
+            enc.gradient_checkpointing_enable()
 
     # ── Flow-matching samplers (copied from PI05Pytorch) ──
     def sample_noise(self, shape, device) -> Tensor:
@@ -210,6 +210,96 @@ class SkillExpertPytorch(nn.Module):
         idx = code.view(-1, 1).long()
         level_ids = torch.div(idx, self._fsq_strides[None, :], rounding_mode="floor") % self._fsq_levels[None, :]
         return (level_ids.float() - self._fsq_half[None, :]) / self._fsq_half[None, :]
+
+    def _code_to_z(self, code: Tensor) -> Tensor:
+        """Flat FSQ code (B,) → UNNORMALIZED z_q (B, D) = level_ids − half (FSQ codebook frame; what the
+        FSQ terminator's dec_z_proj consumes after rounding)."""
+        idx = code.view(-1, 1).long()
+        level_ids = torch.div(idx, self._fsq_strides[None, :], rounding_mode="floor") % self._fsq_levels[None, :]
+        return level_ids.float() - self._fsq_half[None, :]
+
+    # ── Optional co-trained FSQ terminator (skill-end timing for eval; gradient-disjoint co-training,
+    # mirrors skillVLA FT). Only the terminator-path submodules get gradients; FSQ enc/reconstructor frozen. ──
+    _TERM_TRAIN_MODULES = ("dec_z_proj", "term_state_proj", "dec_image_encoder_term",
+                           "dec_image_encoder_term_wrist", "term_pool", "progress_head", "termination_head")
+
+    @staticmethod
+    def _construct_fsq(path: str):
+        """Build a SplineFSQAE from an FSQ checkpoint + load its terminator/reconstructor weights
+        (the unused encoder weights are dropped). Returns the model on CPU."""
+        import sys  # noqa: PLC0415
+        import dataclasses  # noqa: PLC0415
+        sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "examples" / "libero"))
+        from FSQ import SplineFSQAE  # noqa: PLC0415
+
+        ckpt = torch.load(path, map_location="cpu", weights_only=False)
+        cfg_dict = dataclasses.asdict(ckpt["cfg"])
+        keys = {"action_dim", "enc_dim", "state_dim", "n_control", "spline_degree", "hidden_dim", "fsq_levels",
+                "num_layers", "dropout", "length_min", "length_max", "action_min", "action_max",
+                "delta_min", "delta_max", "state_min", "state_max", "feat_dim", "n_tokens",
+                "image_encoder_layers", "terminator_use_third", "terminator_use_wrist", "image_encoder_heads",
+                "image_model_name", "image_size", "patch_grid", "n_patch_raw", "image_token_dim", "chunk_size",
+                "reconstructor_mode"}
+        fsq = SplineFSQAE(**{k: v for k, v in cfg_dict.items() if k in keys})
+        model_keys = set(fsq.state_dict().keys())
+        state = {k: v for k, v in ckpt["model_state"].items() if k in model_keys}
+        dropped = [k for k in ckpt["model_state"] if k not in model_keys]
+        missing, _ = fsq.load_state_dict(state, strict=False)
+        if missing:
+            raise RuntimeError(f"FSQ terminator checkpoint missing required weights: {sorted(missing)}")
+        if dropped:
+            log.info("Ignored %d non-terminator FSQ key(s) when loading FSQ.", len(dropped))
+        return fsq
+
+    def _build_terminator_trainable(self, path: str) -> None:
+        """Co-train a TRAINABLE terminator on this dataset's GT signals — warm-started from the FSQ
+        checkpoint; only the terminator-path submodules get gradients (FSQ enc/reconstructor frozen).
+        Registered as a submodule (joins the optimizer, checkpointed); its loss runs on a disjoint
+        graph (GT/precomputed inputs only) → no SkillExpert effect."""
+        fsq = self._construct_fsq(path)
+        trainable = {n for n in self._TERM_TRAIN_MODULES if getattr(fsq, n, None) is not None}
+        for name, mod in fsq.named_children():
+            req = name in trainable
+            for p in mod.parameters():
+                p.requires_grad_(req)
+        fsq.train()
+        self.fsq_term_train = fsq.to(device=next(self.parameters()).device, dtype=torch.float32)
+        n_tr = sum(p.numel() for p in fsq.parameters() if p.requires_grad)
+        log.info("Built TRAINABLE FSQ terminator from %s (%d trainable params, modules=%s).",
+                 path, n_tr, sorted(trainable))
+
+    def terminator_predict(self, true_code: Tensor, state: Tensor, dino_tokens: Tensor,
+                           dino_tokens_wrist: Tensor | None = None) -> tuple[Tensor, Tensor]:
+        """Co-training forward (grad ON, logits out): GT skill code + current state + current FSQ-grid
+        DINO tokens (+ wrist tokens for a dual terminator) → (progress (B,), term_logits (B,)). Inputs
+        are GT/precomputed, so the graph never touches SkillExpert params (disjoint co-training)."""
+        fsq = self.fsq_term_train
+        dev = next(fsq.parameters()).device
+        # Run in the terminator's ACTUAL weight dtype: it is built fp32, but the policy-wide cast
+        # (policy.dtype=bfloat16) turns these params bf16 afterwards, so forcing fp32 inputs would
+        # mismatch the (bf16) Linear weights. levels are small ints → exact in bf16.
+        tdtype = next(fsq.parameters()).dtype
+        st = state.to(device=dev, dtype=tdtype)
+        if st.ndim == 2:
+            st = st.unsqueeze(1)                                        # (B, 1, state_dim)
+        st = st[..., : int(fsq.state_dim)]
+        z = self._code_to_z(true_code.to(self._fsq_strides.device)).to(device=dev, dtype=tdtype)  # (B, D)
+        dec = fsq._prepare_decoder_tokens(dino_tokens.to(device=dev, dtype=tdtype), states=st)  # (B,1,N,F)
+        # Dual terminator (terminator_use_wrist=True): prepare the wrist tokens the same way.
+        dec_wrist = None
+        if bool(getattr(fsq, "terminator_use_wrist", False)):
+            if dino_tokens_wrist is None:
+                raise ValueError(
+                    "FSQ terminator_use_wrist=True but no wrist tokens in the batch. Build dino_wrist.npz "
+                    "(merge_frame_dino.py --image_key observation.images.wrist_image) and set "
+                    "skill_decoder_dino_wrist_tokens_path, or use a 3rd-only ('wow') FSQ.")
+            dec_wrist = fsq._prepare_decoder_tokens(dino_tokens_wrist.to(device=dev, dtype=tdtype), states=st)
+        B, T = dec.shape[:2]
+        lh = fsq.fsq.levels_half.to(z.device, z.dtype)
+        zq = torch.maximum(torch.minimum(torch.round(z), lh), -lh)
+        z_tok = fsq.dec_z_proj(zq.unsqueeze(1).expand(B, T, -1).to(tdtype))
+        progress, term_logits = fsq._terminate(z_tok, st, dec, dec_wrist)   # (B, 1), (B, 1)
+        return progress[:, 0], term_logits[:, 0]
 
     def _cond_tokens(self, images: list[Tensor]) -> Tensor:
         """Scene conditioning tokens → (B, M, width): [img1 patches, img2 patches] — image ONLY.
@@ -503,17 +593,27 @@ class SkillExpertPolicy(PreTrainedPolicy):
         self._action_queue = deque(maxlen=self.config.n_action_steps)
 
     def get_optim_params(self):
-        # Optional separate LR for the vision encoder (dino_lr / siglip_lr) vs everything else.
-        if self.model.vision_backbone == "dino":
-            vis_module, vis_lr = self.model.dino, self.config.dino_lr
-        else:
-            vis_module, vis_lr = self.model.siglip, self.config.siglip_lr
-        if vis_lr is None:
-            return self.parameters()
-        vis_ids = {id(p) for p in vis_module.parameters()}
-        vis = [p for p in vis_module.parameters() if p.requires_grad]
-        others = [p for p in self.parameters() if id(p) not in vis_ids and p.requires_grad]
-        return [{"params": others}, {"params": vis, "lr": vis_lr}]
+        # Optional separate LRs for: the vision encoder (dino_lr/siglip_lr) and the co-trained
+        # terminator (terminator_lr_scale). Everything else uses the base optimizer_lr.
+        base = float(self.config.optimizer_lr)
+        term = ([p for p in self.model.fsq_term_train.parameters() if p.requires_grad]
+                if getattr(self.model, "fsq_term_train", None) is not None else [])
+        term_ids = {id(p) for p in term}
+
+        vis_module = self.model.dino if self.model.vision_backbone == "dino" else self.model.siglip
+        vis_lr = self.config.dino_lr if self.model.vision_backbone == "dino" else self.config.siglip_lr
+        groups: list[dict] = []
+        excluded = set(term_ids)
+        if vis_lr is not None:
+            vis = [p for p in vis_module.parameters() if p.requires_grad]
+            if vis:
+                groups.append({"params": vis, "lr": vis_lr})
+                excluded |= {id(p) for p in vis_module.parameters()}
+        others = [p for p in self.parameters() if p.requires_grad and id(p) not in excluded]
+        groups.insert(0, {"params": others})
+        if term:
+            groups.append({"params": term, "lr": base * float(self.config.terminator_lr_scale)})
+        return groups
 
     # ── batch → model inputs ──
     def _collect_images(self, batch: dict) -> tuple[list[Tensor], list[Tensor]]:
@@ -585,13 +685,15 @@ class SkillExpertPolicy(PreTrainedPolicy):
             return per_sample, loss_dict
 
         cfg = self.config
-        lam = float(cfg.cumulative_pos_loss_weight)
         r = float(cfg.skill_end_loss_weight)
 
-        # Per-step within-skill progress (0 at skill start → 1 at last frame). For the endpoint anchor
-        # (action_weight / cum endpoint) and the "all" cum term. Falls back to a linear position if ds/de absent.
-        prog = None
-        if cfg.action_weight or lam > 0.0:
+        # ── Objective = action MSE. action_weight=False → plain (uniform) MSE. action_weight=True → per-SAMPLE
+        # endpoint-weighted MSE: sw = 1 + (R-1)·prog_at_endpoint (anchor = the chunk's last valid step = skill
+        # end), so chunks landing near a skill's END count up to R×. UNIFORM within a chunk (the K steps share
+        # one weight). The plain unweighted MSE is always logged as wandb `loss` (comparison). ──
+        if cfg.action_weight:
+            # Per-step within-skill progress (0 at skill start → 1 at last frame); endpoint anchor → sw.
+            # Falls back to a linear position if ds/de absent.
             if "skill_ds" in batch and "skill_de" in batch:
                 ds = batch["skill_ds"].to(dev).float().view(bsize, 1)
                 de_f = batch["skill_de"].to(dev).float().view(bsize, 1)
@@ -599,42 +701,40 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 prog = ((ds + kk) / (ds + de_f).clamp(min=1.0)).clamp(0.0, 1.0)
             else:
                 prog = (torch.arange(K, device=dev).float().view(1, K) / max(K - 1, 1)).expand(bsize, K)
+            sw = (1.0 + (r - 1.0) * prog[rows, anchor]) * (last_valid >= 0).float()  # per-sample; 0 if no valid step
+            loss = (per_sample * sw).sum() / sw.sum().clamp(min=1.0)
+            loss_dict["loss_weighted"] = loss.detach().item()          # SEPARATE wandb panel
+        else:
+            loss = plain_action
+        # MAIN-model objective logged BEFORE the terminator. The terminator below is an INDEPENDENT
+        # (gradient-disjoint) head; summed into the backpropped scalar only so it trains inside lerobot's
+        # single-backward loop, but kept OUT of loss_total (it has its own terminator/* metrics).
+        loss_dict["loss_total"] = loss.detach().item()   # BACKPROPPED objective (≠ wandb "loss" when weighted)
 
-        # Per-SAMPLE endpoint weight sw = 1 + (R-1)·prog_at_endpoint (anchor = skill end). Shared by the
-        # weighted action loss AND the endpoint cum term. 0 for chunks with no valid step.
-        sw = None
-        if cfg.action_weight or (lam > 0.0 and cfg.cum_loss == "endpoint"):
-            prog_a = prog[rows, anchor]
-            sw = (1.0 + (r - 1.0) * prog_a) * (last_valid >= 0).float()
-
-        # ── ACTION term (in the objective only if action_loss=True; over ALL K steps incl. the hold tail) ──
-        action_term = None
-        if cfg.action_loss:
-            if cfg.action_weight:                                       # per-sample sw-weighted action loss
-                action_term = (per_sample * sw).sum() / sw.sum().clamp(min=1.0)
-                loss_dict["loss_weighted"] = action_term.detach().item()   # SEPARATE wandb panel
-            else:
-                action_term = plain_action                              # = the comparison value (objective too)
-
-        # ── CUM term (on iff λ>0; always R-weighted). Measures the SKILL trajectory → still restricted to the
-        # within-skill region (valid); the held tail is taught by the action loss above. Gripper excluded. ──
-        cum_term = None
-        if lam > 0.0:
-            arm = real_dim - 1                                          # drop the absolute gripper (last dim)
-            cum = resid[:, :, :arm].cumsum(dim=1)                       # (B, K, arm) ≈ cumulative position error
-            if cfg.cum_loss == "endpoint":
-                cum_end = cum[rows, anchor]                             # (B, arm) cumulative pos error at endpoint
-                cum_term = (cum_end.pow(2).sum(dim=1) * sw).sum() / (sw.sum().clamp(min=1.0) * arm)
-            else:                                                          # "all": every within-skill position
-                w = (1.0 + (r - 1.0) * prog) * valid.float()
-                cum_term = (cum.pow(2) * w.unsqueeze(-1)).sum() / (w.sum().clamp(min=1.0) * arm)
-            loss_dict["loss_cum_pos"] = cum_term.detach().item()
-
-        # ── Optimized objective = action term (+ λ·cum). __post_init__ guards against both being off. ──
-        loss = action_term if action_term is not None else losses.sum() * 0.0
-        if cum_term is not None:
-            loss = loss + lam * cum_term
-        loss_dict["loss_total"] = loss.detach().item()   # the BACKPROPPED objective (≠ wandb "loss" when weighted)
+        # ── Co-trained FSQ terminator (skill-end timing for eval). DISJOINT graph (GT/precomputed
+        # inputs + its own params) → summed into the backpropped scalar; main-model grads untouched. ──
+        if self.training and cfg.train_terminator and self.model.fsq_term_train is not None:
+            for k in ("skill_decoder_dino", "skill_ds", "skill_de"):
+                if k not in batch:
+                    raise ValueError(f"train_terminator=True needs '{k}' in the batch.")
+            prog_pred, term_logits = self.model.terminator_predict(
+                self._skill_code(batch), batch[OBS_STATE], batch["skill_decoder_dino"],
+                dino_tokens_wrist=batch.get("skill_decoder_dino_wrist"))  # None unless a dual (use_wrist) FSQ
+            ds = batch["skill_ds"].float().view(-1).to(prog_pred.device)
+            de = batch["skill_de"].float().view(-1).to(prog_pred.device)
+            prog_tgt = (ds / (ds + de).clamp_min(1.0)).clamp(0.0, 1.0)                 # within-skill progress
+            sigma = float(cfg.terminator_end_target_sigma)
+            term_tgt = torch.exp(-(de ** 2) / (2.0 * sigma ** 2)) if sigma > 0 else (de == 0).float()
+            pos_w = torch.tensor(float(cfg.terminator_end_pos_weight), device=term_logits.device, dtype=term_logits.dtype)
+            prog_l = F.smooth_l1_loss(prog_pred, prog_tgt.to(prog_pred.dtype))              # within-skill progress regression
+            term_l = F.binary_cross_entropy_with_logits(                                    # skill-END detection (BCE)
+                term_logits, term_tgt.to(term_logits.dtype), pos_weight=pos_w)
+            term_loss = prog_l + term_l
+            loss = loss + term_loss                       # backpropped (disjoint) — NOT in loss_total
+            # Logged under the "terminator/" prefix → routed to a SEPARATE wandb panel (train_terminator/*).
+            loss_dict["terminator/loss"] = term_loss.detach().item()
+            loss_dict["terminator/progress"] = prog_l.detach().item()
+            loss_dict["terminator/termination"] = term_l.detach().item()
         return loss, loss_dict
 
     @torch.no_grad()

@@ -170,7 +170,7 @@ class WandBLogger:
     def log_dict(
         self, d: dict, step: int | None = None, mode: str = "train", custom_step_key: str | None = None
     ):
-        if mode not in {"train", "eval"}:
+        if mode not in {"train", "eval", "train_terminator"}:  # train_terminator → separate wandb panel
             raise ValueError(mode)
         if step is None and custom_step_key is None:
             raise ValueError("Either step or custom_step_key must be provided.")

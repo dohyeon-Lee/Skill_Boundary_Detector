@@ -93,53 +93,10 @@ class FsqTerminator:
         return progress[:, 0], term[:, 0]
 
 
-class CustomTerminatorEval:
-    """Eval wrapper for the CUSTOM-architecture terminator (stage1/terminator_train). Same interface as
-    FsqTerminator: terminate(codes, state, raw image[, raw wrist]) → (progress, termination_prob). Encodes
-    the raw frames through the model's own frozen DINO (identical to training)."""
-
-    def __init__(self, ckpt: dict, device: torch.device, *, project_root: str | Path,
-                 custom_terminator_dir: str | Path):
-        sys.path.insert(0, str(custom_terminator_dir))
-        from custom_terminator import CustomTerminator  # noqa: PLC0415
-
-        cfg = dict(ckpt["cfg"])
-        model = CustomTerminator(**cfg, project_root=str(project_root))
-        model.load_state_dict(ckpt["model_state"], strict=False)  # frozen DINO not in ckpt (reloaded in __init__)
-        model.eval()
-        for p in model.parameters():
-            p.requires_grad_(False)
-        self.model = model.to(device)
-        self.device = device
-        self.state_dim = int(cfg["state_dim"])
-        self._use_third = bool(cfg["use_third"])
-        self._use_wrist = bool(cfg["use_wrist"])
-
-    @property
-    def use_wrist(self) -> bool:
-        return self._use_wrist
-
-    @torch.no_grad()
-    def terminate(self, codes: torch.Tensor, state: torch.Tensor, image: torch.Tensor,
-                  wrist_image: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
-        sk = codes.to(self.device).long().view(-1)
-        st = state.to(self.device, torch.float32)[:, : self.state_dim]
-        i3 = image.to(self.device) if self._use_third else None
-        iw = wrist_image.to(self.device) if (self._use_wrist and wrist_image is not None) else None
-        progress, term_logits = self.model(sk, st, i3, iw)
-        return progress, torch.sigmoid(term_logits)
-
-
 def make_terminator(path: str | Path, device: torch.device, *, dino_path: str | None,
-                    libero_examples_dir: str | Path, project_root: str | Path,
-                    custom_terminator_dir: str | Path):
-    """Dispatch on the checkpoint kind: a custom-arch terminator (.../terminator.pt) → CustomTerminatorEval;
-    otherwise the FSQ terminator (FSQ.pt). Filename-based so the 1GB FSQ.pt isn't loaded just to detect."""
-    if str(path).endswith("terminator.pt"):
-        ckpt = torch.load(str(path), map_location="cpu", weights_only=False)
-        if isinstance(ckpt, dict) and ckpt.get("arch") == "custom":
-            return CustomTerminatorEval(ckpt, device, project_root=project_root,
-                                        custom_terminator_dir=custom_terminator_dir)
+                    libero_examples_dir: str | Path):
+    """The FSQ terminator (FSQ.pt). terminator_path (eval config) may point it at a DIFFERENT run's FSQ.pt
+    to compare terminators — the codebook (code→z_q) is the same frozen FSQ, so any FSQ.pt drops straight in."""
     return FsqTerminator(path, device, dino_path=dino_path, libero_examples_dir=libero_examples_dir)
 
 

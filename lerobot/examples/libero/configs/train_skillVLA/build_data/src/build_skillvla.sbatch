@@ -56,6 +56,17 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     --image_key      "${DINO_IMAGE_KEY}" \
     --output_path    "${DINO_NPZ_PATH}"
 
+# ── (a') wrist DINO → dino_wrist.npz (only when dino_wrist:true; Stage-1 terminator_use_wrist tokens).
+# Same merge, wrist camera. Reuses the already-precomputed wrist features in FSQ_DINO_DIR (no GPU). ──
+if [ -n "${DINO_WRIST_NPZ_PATH:-}" ]; then
+  echo "dino_wrist : ${DINO_WRIST_NPZ_PATH}   (terminator wrist tokens)"
+  PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
+    "${BOOTSTRAP_PYTHON}" "${SRC_DIR}/merge_frame_dino.py" \
+      --frame_dino_dir "${FSQ_DINO_DIR}" \
+      --image_key      "${WRIST_IMAGE_KEY}" \
+      --output_path    "${DINO_WRIST_NPZ_PATH}"
+fi
+
 # ── (b) add skill columns → SkillVLA LeRobot dataset + skill_initial_state.npz ──
 read -r -a FSQ_LEVELS <<< "${FSQ_LEVELS_STR}"
 PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \

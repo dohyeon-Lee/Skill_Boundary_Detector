@@ -42,16 +42,18 @@ class SkillExpertConfig(PI05Config):
     dino_model_path: str = "/data2/dohyeon/SBD/models/dinov3-vits16"
     dino_image_size: int = 224
     """Square size the camera images are resized to before DINOv3 (patch 16 → 14×14)."""
-    freeze_dino: bool = False
     dino_lr: float | None = None
     """Separate LR for the DINO encoder. None → use optimizer_lr (same as the rest)."""
     # SigLIP backbone (vision_backbone="siglip"); weights come from the pi05 pretrained_path.
     siglip_image_size: int = 224
     """Square size images are resized to before SigLIP (patch 14 → 16×16 = 256 tokens at 224)."""
-    freeze_siglip: bool = True
-    """Freeze the SigLIP tower (default True: reuse pi05's robot-adapted features; only image_proj trains)."""
     siglip_lr: float | None = None
     """Separate LR for the SigLIP encoder when unfrozen. None → use optimizer_lr."""
+    # Freeze the SELECTED vision backbone (one flag for whichever vision_backbone is active).
+    freeze_vision_encoder: bool = False
+    """Statically freeze the active vision backbone. dino → False trains its own DINOv3. siglip → often
+    True (warm-started from pi05's robot-adapted vision_tower; only image_proj trains). Replaces the old
+    per-backbone freeze_dino / freeze_siglip."""
 
     # ── State conditioning ──
     state_cond_mode: str = "state_skill"
@@ -80,36 +82,42 @@ class SkillExpertConfig(PI05Config):
     token, constant within a skill — neighboring codes stay neighboring. (The skill-progress token
     was removed — the action expert conditions on the skill code only.)"""
 
-    # ── Loss. Boundary handling: at the skill end (k>skill_de) and episode-end pad, the action TARGET is a
-    #    HOLD (arm deltas→0, gripper→last valid value) and supervised — NOT masked out. These add the optional
-    #    cum term + the action_loss/action_weight toggles below. ──
-    cumulative_pos_loss_weight: float = 0.0
-    """λ for the optional cumulative-POSITION loss (added to the per-delta flow loss). Actions are
-    RELATIVE (delta), so the endpoint pose = the SUM of the chunk's deltas; matching only the last delta
-    doesn't fix the landing position. This term integrates the implied per-step action error over the
-    chunk (cumsum, on the ARM dims only — the gripper is absolute, excluded) and penalizes the K running
-    positions, so the whole trajectory + endpoint match. 0 = OFF (objective = the action term only)."""
+    # ── Loss = action MSE (flow matching). Boundary handling: at the skill end (k>skill_de) and episode-end
+    #    pad, the action TARGET is a HOLD (arm deltas→0, gripper→last valid value) and supervised — NOT masked.
+    #    action_weight selects plain vs per-sample end-weighted MSE. ──
     skill_end_loss_weight: float = 1.0
-    """R for the end weighting: weight = 1 + (R-1)·progress, where progress is the within-skill position
-    (0 at skill start → 1 at skill end). R=1 → uniform; R>1 → skill END positions (the handoff) count more.
-    Applied IDENTICALLY to the action loss (when action_weight=True, per-SAMPLE by the chunk endpoint's
-    progress) and the cum term (per-STEP in cum_loss="all", per-SAMPLE in "endpoint")."""
-
-    # ── Loss composition — independent toggles (objective = [action term] + λ·[cum term]) ──────────
-    action_loss: bool = True
-    """Include the per-step flow (action) MSE in the OPTIMIZED objective. False → the objective is the cum
-    term ONLY (requires cumulative_pos_loss_weight>0). The plain unweighted action MSE is STILL logged to
-    wandb `loss` either way (comparison-only, never backpropped). Run-name: ac (on) / ac_x (off) / ac_w (below)."""
+    """R for the end weighting (only used when action_weight=True): sw = 1 + (R-1)·progress, where progress is
+    the within-skill position of the chunk's ENDPOINT (0 at skill start → 1 at skill end). R=1 → uniform; R>1
+    → chunks landing near the skill END (the handoff) count up to R×."""
     action_weight: bool = False
-    """Weight the action loss PER-SAMPLE (per-chunk) by the endpoint progress sw=1+(R-1)·prog_end (same sw as
-    the endpoint cum term) — chunks ending nearer the skill end count more. Only meaningful when
-    action_loss=True. The weighted value is logged to wandb `loss_weighted` (a SEPARATE panel); wandb `loss`
-    stays the plain unweighted comparison value. Run-name tag: ac_w."""
-    cum_loss: str = "all"
-    """Cumulative-position term aggregation (ALWAYS R-weighted; on/off via cumulative_pos_loss_weight=λ):
-      "all"      → penalize EVERY within-skill running position (integrated trajectory), end-weighted PER-STEP.
-      "endpoint" → penalize ONLY the running position at the LAST valid step (chunk end, capped to skill end /
-                   padding), R weighting PER-SAMPLE. Run-name: cum_all / cum_ep (only when λ>0)."""
+    """Weight the action MSE PER-SAMPLE (per-chunk) by sw=1+(R-1)·prog_end — chunks ending nearer the skill
+    end count more; UNIFORM within a chunk (the K steps share one weight). False → plain (uniform) action MSE.
+    The weighted value is logged to wandb `loss_weighted` (SEPARATE panel); wandb `loss` stays the plain
+    unweighted comparison value. Run-name tag: ac_w (weighted) / ac (plain)."""
+
+    # ── Co-trained FSQ terminator (skill-end timing for eval; gradient-disjoint from the main model) ──
+    train_terminator: bool = False
+    """Co-train the isolated FSQ terminator (skill-end timing) alongside Stage-1 — gradient-disjoint
+    from the main model (mirrors stage2/FT), warm-started from fsq_path. Lets a checkpoint be evaled
+    (skill transitions). Always-on (its own optimizer group)."""
+    terminator_end_target_sigma: float = 1.0
+    """Termination target = Gaussian bump exp(-de²/2σ²) peaking at the skill end (σ>0); σ≤0 → hard (de==0)."""
+    terminator_end_pos_weight: float = 1.0
+    """BCE pos_weight for the termination head (skill-end frames are rare positives)."""
+    terminator_lr_scale: float = 1.0
+    """LR scale (× optimizer_lr) for the co-trained terminator's own param group."""
+    # Current-frame FSQ-grid DINO tokens for the terminator (precomputed at build_data; attached by
+    # SkillVLADinoTokenDataset — the SAME generic wrapper Stage-2 uses). Required when train_terminator.
+    skill_decoder_dino_tokens_path: str | None = None
+    skill_decoder_dino_output_key: str = "skill_decoder_dino"
+    skill_decoder_dino_cache_path: str | None = None
+    skill_decoder_dino_build_cache: bool = True
+    # Wrist-camera FSQ-grid DINO tokens — ONLY needed when the FSQ terminator was trained with
+    # terminator_use_wrist=True (build_data dino_wrist:true → dino_wrist.npz). Leave blank for
+    # 3rd-only ("wow") FSQs. Attached by a SECOND SkillVLADinoTokenDataset wrapper.
+    skill_decoder_dino_wrist_tokens_path: str | None = None
+    skill_decoder_dino_wrist_output_key: str = "skill_decoder_dino_wrist"
+    skill_decoder_dino_wrist_cache_path: str | None = None
 
     # ── Eval-only (oracle closed-loop sim). Ignored during training. ──
     fsq_path: str | None = None
@@ -144,9 +152,10 @@ class SkillExpertConfig(PI05Config):
             raise ValueError(
                 f"state_cond_mode must be 'state' or 'state_skill' (got {self.state_cond_mode!r})."
             )
-        if self.cum_loss not in ("all", "endpoint"):
-            raise ValueError(f"cum_loss must be 'all' or 'endpoint' (got {self.cum_loss!r}).")
-        if not self.action_loss and float(self.cumulative_pos_loss_weight) <= 0.0:
+        if self.train_terminator and not self.fsq_path:
+            raise ValueError("train_terminator=True needs fsq_path (the FSQ checkpoint to warm-start).")
+        if self.train_terminator and not self.skill_decoder_dino_tokens_path:
             raise ValueError(
-                "action_loss=False needs cumulative_pos_loss_weight>0 (otherwise the objective is empty)."
+                "train_terminator=True needs skill_decoder_dino_tokens_path (FSQ-grid current-frame DINO "
+                "tokens, precomputed at build_data; attached by SkillVLADinoTokenDataset)."
             )

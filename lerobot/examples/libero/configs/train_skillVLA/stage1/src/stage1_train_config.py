@@ -54,11 +54,8 @@ def build_settings(cfg: dict) -> dict:
     if cond_encoder_variant.lower() in ("none", "null"):  # blank yaml → omit (use action expert's variant)
         cond_encoder_variant = ""
     state_cond_mode = str(get_value(cfg, "state_cond_mode", "state_skill")).strip().lower()  # state | state_skill
-    cum_pos_w = float(get_value(cfg, "cumulative_pos_loss_weight", 0.0))   # λ cumulative-position loss (0=off)
-    skill_end_w = float(get_value(cfg, "skill_end_loss_weight", 1.0))      # R end weighting (action + cum)
-    cum_loss = str(get_value(cfg, "cum_loss", "all")).strip().lower()      # all | endpoint (cum aggregation)
-    action_loss = as_bool(get_value(cfg, "action_loss", True))             # include the action MSE in the objective
-    action_weight = as_bool(get_value(cfg, "action_weight", False))        # per-sample sw-weight the action loss
+    skill_end_w = float(get_value(cfg, "skill_end_loss_weight", 1.0))      # R end weighting (action_weight only)
+    action_weight = as_bool(get_value(cfg, "action_weight", False))        # per-sample sw-weight the action MSE
 
     init_from_pi05 = as_bool(get_value(cfg, "init_from_pi05", True))
     pi_base = resolve_path(project_root, get_value(cfg, "pi_base", "models/pi05_base")) if init_from_pi05 else ""
@@ -70,21 +67,14 @@ def build_settings(cfg: dict) -> dict:
 
     # run-name vision tag: <backbone>_<freeze|unfreeze> (the backbone trained + whether it was frozen).
     vision_backbone = (str(get_value(cfg, "vision_backbone", "dino")).strip().lower() or "dino")
-    if vision_backbone == "siglip":
-        vfrozen = as_bool(get_value(cfg, "freeze_siglip", False))
-    else:
-        vfrozen = as_bool(get_value(cfg, "freeze_dino", False))
-    vis_tag = f"{vision_backbone}_{'freeze' if vfrozen else 'unfreeze'}"
+    freeze_vision_encoder = as_bool(get_value(cfg, "freeze_vision_encoder", False))  # one flag → the SELECTED backbone
+    vis_tag = f"{vision_backbone}_{'freeze' if freeze_vision_encoder else 'unfreeze'}"
 
     # joint + ae + discretized state is the only arch now → no arch/inject tag. init_from_pi05 fixed true.
     run_name = f"{source_dataset}_{run_tag}_{vis_tag}_batch{batch_size}"
     run_name = f"{run_name}_{state_cond_mode}"   # state | state_skill (what rides the expert AdaRMS) — never collide
-    # loss-variant suffix (categorical, NO hyperparameter values): cum part (only when λ>0) + action part.
-    suffix = []
-    if cum_pos_w > 0:                             # cum term on → cum_ep / cum_all
-        suffix.append("cum_ep" if cum_loss == "endpoint" else "cum_all")
-    suffix.append("ac_x" if not action_loss else ("ac_w" if action_weight else "ac"))  # action: off / weighted / normal
-    run_name = f"{run_name}_" + "_".join(suffix)
+    # loss-variant suffix (categorical, NO hyperparameter values): action MSE weighted vs plain.
+    run_name = f"{run_name}_" + ("ac_w" if action_weight else "ac")
     if exp:
         run_name = f"{run_name}_{exp}"
     run_name = f"{run_name}_c{chunk_size}"  # chunk horizon always trails the run name
@@ -101,6 +91,26 @@ def build_settings(cfg: dict) -> dict:
     for _lvl in skill_fsq_levels:
         vocab_default *= _lvl
     skill_vocab_size = int(get_value(cfg, "skill_vocab_size", vocab_default))
+
+    # ── Co-trained terminator inputs (build_data products under run_dir → AUTO-derived from run_tag).
+    # DINO token paths are attached ONLY when train_terminator (else "" → factory skips the wrappers). ──
+    train_terminator = as_bool(get_value(cfg, "train_terminator", False))
+    fsq_path_raw = str(get_value(cfg, "fsq_path", "")).strip()
+    fsq_path = (resolve_path(project_root, fsq_path_raw)
+                if fsq_path_raw and fsq_path_raw.lower() not in ("null", "none") else run_dir / "FSQ.pt")
+    skill_decoder_dino_tokens_path = ""
+    skill_decoder_dino_wrist_tokens_path = ""
+    if train_terminator:
+        sdd_raw = str(get_value(cfg, "skill_decoder_dino_tokens_path", "")).strip()
+        skill_decoder_dino_tokens_path = (resolve_path(project_root, sdd_raw)
+            if sdd_raw and sdd_raw.lower() not in ("null", "none") else run_dir / "dino.npz")
+        # Wrist tokens: only a "both" FSQ build produces dino_wrist.npz → AUTO-attach when it EXISTS.
+        sddw_raw = str(get_value(cfg, "skill_decoder_dino_wrist_tokens_path", "")).strip()
+        if sddw_raw and sddw_raw.lower() not in ("null", "none"):
+            skill_decoder_dino_wrist_tokens_path = resolve_path(project_root, sddw_raw)
+        else:
+            _wrist_cand = run_dir / "dino_wrist.npz"
+            skill_decoder_dino_wrist_tokens_path = _wrist_cand if _wrist_cand.exists() else ""
 
     settings: dict = {
         # roots
@@ -120,8 +130,7 @@ def build_settings(cfg: dict) -> dict:
         "vision_backbone": str(get_value(cfg, "vision_backbone", "dino")),
         "dino_model_path": resolve_path(project_root, get_value(cfg, "dino_model_path", "models/dinov3-vits16")),
         "dino_lr": dino_lr_str,                   # "" → same LR as the rest
-        "freeze_dino": as_bool(get_value(cfg, "freeze_dino", False)),
-        "freeze_siglip": as_bool(get_value(cfg, "freeze_siglip", True)),
+        "freeze_vision_encoder": freeze_vision_encoder,  # freeze the SELECTED backbone (dino|siglip)
         "siglip_lr": siglip_lr_str,               # "" → same LR as the rest (when unfrozen)
         "siglip_image_size": int(get_value(cfg, "siglip_image_size", 224)),
         "skill_vocab_size": skill_vocab_size,
@@ -134,11 +143,16 @@ def build_settings(cfg: dict) -> dict:
         "chunk_size": chunk_size,
         "n_action_steps": n_action_steps,
         # loss: optional cumulative-position term (λ) + end weighting (R) + aggregation mode. λ=0 → off.
-        "cumulative_pos_loss_weight": cum_pos_w,
-        "skill_end_loss_weight": skill_end_w,
-        "cum_loss": cum_loss,                     # all | endpoint (cum aggregation; always R-weighted)
-        "action_loss": action_loss,              # include action MSE in the objective (else cum-only)
-        "action_weight": action_weight,          # per-sample sw-weight the action loss → wandb loss_weighted
+        "skill_end_loss_weight": skill_end_w,    # R — end weighting (action_weight only)
+        "action_weight": action_weight,          # per-sample sw-weight the action MSE → wandb loss_weighted
+        # co-trained FSQ terminator (gradient-disjoint; AUTO-derived from run_tag)
+        "train_terminator": train_terminator,
+        "fsq_path": fsq_path,                     # {run_dir}/FSQ.pt (warm-start the terminator)
+        "terminator_end_target_sigma": float(get_value(cfg, "terminator_end_target_sigma", 1.0)),
+        "terminator_end_pos_weight": float(get_value(cfg, "terminator_end_pos_weight", 1.0)),
+        "terminator_lr_scale": float(get_value(cfg, "terminator_lr_scale", 1.0)),
+        "skill_decoder_dino_tokens_path": skill_decoder_dino_tokens_path,        # "" unless train_terminator
+        "skill_decoder_dino_wrist_tokens_path": skill_decoder_dino_wrist_tokens_path,  # "" unless dino_wrist.npz exists
         # optimization
         "batch_size": batch_size,
         "num_workers": int(get_value(cfg, "num_workers", 8)),

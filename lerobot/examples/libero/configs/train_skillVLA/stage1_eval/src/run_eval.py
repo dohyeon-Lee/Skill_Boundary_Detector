@@ -240,12 +240,10 @@ def eval_main(cfg: EvalPipelineConfig):
     logging.info("Making policy + FSQ terminator.")
     policy = make_policy(cfg=cfg.policy, env_cfg=cfg.env, rename_map=cfg.rename_map)
     policy.eval()
-    # fsq_path may be an FSQ.pt (FSQ terminator) OR a custom terminator.pt (stage1/terminator_train) —
-    # make_terminator dispatches on the file. Both expose terminate(codes, state, image[, wrist]).
+    # FSQ terminator from fsq_path (an FSQ.pt). Exposes terminate(codes, state, image[, wrist]).
     terminator = make_terminator(
         cfg.policy.fsq_path, device, dino_path=cfg.policy.terminator_dino_model_path,
-        libero_examples_dir=_LIBERO_EXAMPLES, project_root=_LIBERO_EXAMPLES.parents[2],
-        custom_terminator_dir=_HERE.parents[1] / "stage1" / "terminator_train" / "src")
+        libero_examples_dir=_LIBERO_EXAMPLES)
 
     # Oracle GT skill sequences: dataset (by language) → env task_id.
     seqs_by_lang = load_skill_sequences_by_language(cfg.policy.skill_label_dataset_dir)
