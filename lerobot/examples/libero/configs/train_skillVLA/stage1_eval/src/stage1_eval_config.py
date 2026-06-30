@@ -50,8 +50,9 @@ def build_settings(cfg: dict) -> dict:
     checkpoint = str(get_value(cfg, "checkpoint", "last"))
     policy_path = vla_root / run_rel / "checkpoints" / checkpoint / "pretrained_model"
 
-    # Output folder name = run + checkpoint + skill-advance mode + optional free-form tag,
-    # so terminator vs gt (and any ablation) runs land in distinct folders.
+    # Output folder name = run + checkpoint + skill-advance mode + optional free-form tag. The eval ALWAYS
+    # does the A/B side-by-side for Oracle ckpts (skill+residual & skill-only both, in subdirs) and a single
+    # null pass for 1-1 — so no r-regime is chosen here (no oracle_r_eval / eval_side_by_side flag).
     advance_mode = str(get_value(cfg, "skill_advance_mode", "terminator"))
     eval_exp = str(get_value(cfg, "eval_exp", "")).strip()
     fsq_ckpt = run_dir / "FSQ.pt"            # the training run's FSQ terminator (skill-end signal)
@@ -101,8 +102,6 @@ def build_settings(cfg: dict) -> dict:
         "skill_end_threshold": str(get_value(cfg, "skill_end_threshold", 0.5)),
         "skill_end_progress_threshold": str(get_value(cfg, "skill_end_progress_threshold", 0.9)),
         "inference_skill_max_length": int(get_value(cfg, "inference_skill_max_length", 200)),
-        # Oracle r at eval: feed GT skill state-traj → r (oracle-r upper bound) vs learned null token.
-        "oracle_r_eval": as_bool(get_value(cfg, "oracle_r_eval", True)),
         # wandb
         "wandb_project": str(get_value(cfg, "wandb_project", "VLA_stage1_eval")),
         "wandb_run_name": f"S1eval_{out_tag}".replace("/", "_"),  # flatten phase-path slashes for wandb

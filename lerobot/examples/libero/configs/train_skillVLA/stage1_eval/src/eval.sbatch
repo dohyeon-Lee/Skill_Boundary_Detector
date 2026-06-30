@@ -88,7 +88,6 @@ PYTHONPATH="${LEROBOT_ROOT}/src:${LEROBOT_ROOT}/examples/libero:${LIBERO_REPO_RO
     --policy.fsq_path="${FSQ_CKPT}" \
     --policy.skill_label_dataset_dir="${SKILL_LABEL_DATASET_DIR}" \
     --policy.eval_init_states_path="${EVAL_INIT_STATES_PATH}" \
-    --policy.oracle_r_eval="${ORACLE_R_EVAL}" \
     --policy.terminator_dino_model_path="${TERMINATOR_DINO_MODEL_PATH}" \
     --policy.skill_advance_mode="${SKILL_ADVANCE_MODE}" \
     --policy.skill_end_mode="${SKILL_END_MODE}" \

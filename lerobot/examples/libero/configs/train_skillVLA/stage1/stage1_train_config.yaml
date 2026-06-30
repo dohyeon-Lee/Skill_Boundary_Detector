@@ -32,18 +32,25 @@ freeze_vision_encoder: false    # freeze the SELECTED backbone. dino → false(�
 # forces r to be the RESIDUAL beyond z. No dataset rebuild — the trajectory is fetched at runtime.
 
 ## SWEEP ##
-oracle_n_tokens: 4               # r prefix tokens (= # learned null tokens in 1-1/B; VLM predicts these) — SWEEP
+oracle_n_tokens: 2               # r prefix tokens (= # learned null tokens in 1-1/B; VLM predicts these) — SWEEP
 oracle_dropout_p: 0.5            # P(drop r → learned null) per batch (CFG A/B) — SWEEP
-oracle_r_dim: 8                  # per-token VAE dim — SWEEP. TOTAL bottleneck = n_tokens × r_dim = 32
+oracle_r_dim: 2                  # per-token VAE dim — SWEEP. TOTAL bottleneck = n_tokens × r_dim = 4 (tight:
+                                 # action-mode r=8/16/32 leaked → r≈GT chunk → open-loop replay; tighten so r=intent)
 oracle_kl_weight: 1.0e-3         # β on the (free-bits) KL term — SWEEP
 
 
-# Oracle input — what r encodes (the source is tagged in the folder/run name: "_state" | "_action", so
-# the two coexist distinctly):
-#   state  → skill STATE trajectory, spline-resampled, per-skill (geometric residual to z). [default]
-#   action → current GT ACTION chunk (chunk_size×action_dim), per-STEP, NO spline/length token. Carries the
-#            fine-motion detail z's coarse code can't hold (transfers to new tasks). Keep oracle_r_dim TIGHT.
-oracle_input_source: action       # state | action
+# Oracle input — what r encodes (tagged in the folder/run name: "_state"|"_action"|"_residual", so they
+# coexist distinctly):
+#   state    → skill STATE trajectory, spline-resampled, per-skill (geometric residual to z). [default]
+#   action   → current GT ACTION chunk (chunk_size×action_dim), per-STEP, NO spline/length token. Carries the
+#              fine-motion detail z's coarse code can't hold (transfers to new tasks). LEAKS if r_dim loose
+#              (r≈full chunk → open-loop replay) → keep oracle_r_dim TIGHT.
+#   residual → EXPLICIT residual a_GT − â, â = expert(z,obs,null) (the expert's OWN null-pass baseline). r
+#              carries ONLY what (z,obs) can't express BY CONSTRUCTION → no replay leak, graceful fallback to
+#              â. Costs ~+10% (1 extra no_grad baseline sample/A-batch; heavy DINO cond is shared). SINGLE-
+#              stage only (frozen-base 1-2's baseline is stale/marginal). Same shape/arch as "action".
+oracle_input_source: residual       # state | action | residual
+oracle_residual_baseline_steps: 0 # (residual only) flow-ODE steps for â per A-batch. 0 = num_inference_steps; lower = cheaper
 oracle_resample_n: 30            # (state only) resample skill state-traj to N control points — matched to FSQ n_control (=30)
 oracle_spline_degree: 3          # (state only) pose-dim spline degree (gripper always degree 1) — matched to FSQ spline_degree
 oracle_width: 512                # Perceiver hidden dim
@@ -82,7 +89,7 @@ num_workers: 8                  # data loader workers (was 2; raised to clear GP
 num_gpus: 1
 lr_base: 2.5e-05                # effective LR = lr_base * num_gpus
 steps: 50000
-save_freq: 5000
+save_freq: 2500
 
 exp: ""         # optional EXTRA run-name suffix (variant tag _ae/_cond is now auto from skill_inject)
 

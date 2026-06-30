@@ -61,21 +61,25 @@ def resolve_folder(arg: str, backbone: str = "") -> Path:
     run-tag's ``_dino8_`` (the FSQ tokenizer, present in EVERY folder). So a short substring like
     'np_state_c10' selects the dino vs siglip variant you asked for instead of silently picking one."""
     bb = f" (backbone={backbone})" if backbone else ""
-    cand = [p for p in EVAL_OUTPUTS.glob("*") if p.is_dir()]
+    # Run folders = any dir (at ANY depth) holding a videos/ subdir — so NESTED outputs like
+    # {base}/single/{tag}_skillR are found, not just depth-1. Match the substring against the path
+    # RELATIVE to outputs/ (e.g. "single/...._skillR").
+    cand = [v.parent for v in EVAL_OUTPUTS.rglob("videos") if v.is_dir()]
     if backbone:
         cand = [p for p in cand if f"_{backbone}_" in p.name]
+    rel = lambda p: str(p.relative_to(EVAL_OUTPUTS))                          # noqa: E731
     exact = EVAL_OUTPUTS / arg
     if exact.is_dir() and (not backbone or f"_{backbone}_" in exact.name):
         return exact
-    hits = sorted((p for p in cand if arg in p.name), key=lambda p: len(p.name))
+    hits = sorted((p for p in cand if arg in rel(p)), key=lambda p: len(rel(p)))
     if not hits:
         sys.exit(f"[error] no eval folder under {EVAL_OUTPUTS} matches {arg!r}{bb}")
-    if len(hits) > 1 and len(hits[0].name) == len(hits[1].name):
-        names = "\n  ".join(p.name for p in hits)
+    if len(hits) > 1 and len(rel(hits[0])) == len(rel(hits[1])):
+        names = "\n  ".join(rel(p) for p in hits)
         sys.exit(f"[error] {arg!r}{bb} is ambiguous, matches:\n  {names}\n"
                  f"  → add more of the name (e.g. a preceding token) to disambiguate.")
     if len(hits) > 1:
-        print(f"[note] {arg!r}{bb} matched {len(hits)}; using shortest: {hits[0].name}")
+        print(f"[note] {arg!r}{bb} matched {len(hits)}; using shortest: {rel(hits[0])}")
     return hits[0]
 
 

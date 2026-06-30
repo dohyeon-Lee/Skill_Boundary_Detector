@@ -24,23 +24,29 @@ skillvla_dataset_root: skillvla_dataset  # .../{skillvla_dataset_root}/{source_d
 # from the checkpoint's own use_oracle (1-1 → null; 1-2/single → oracle-r). FSQ.pt / skillvla / eval_init_states.npz
 # are auto-derived from base_dir's run_tag (shared across the 3 phases).
 base_dir: libero_90_full_full_FSQ555_dino8_both_1000_dino_unfreeze_batch256_state
-# model_dir = phase suffix (the oracle_tag now carries _state|_action from oracle_input_source — match
+# base_dir: libero_90_full_full_FSQ88_dino8_both_1000_dino_unfreeze_batch256_state
+
+# model_dir = phase suffix (the oracle_tag now carries _state|_action|_residual from oracle_input_source — match
 # the trained folder exactly; runs created before that tag existed have no _state/_action):
 #   1-1    → staged/1-1                                          (null token)
 #   1-2    → staged/1-2_last_n4r8_kl0.001_dp0.5_state_visfrozen  (oracle-r; tag matches the train sweep)
 #   single → single/n4r8_kl0.001_dp0.5_action_visadapt          (oracle-r)
 # model_dir: staged/1-1
-# model_dir: single/n4r8_kl0.001_dp0.5_visadapt
-model_dir: single/n4r8_kl0.001_dp0.5_visfrozen
+# model_dir: staged/1-2_step15000_n4r8_kl0.001_dp0.5_state_visadapt
+# model_dir: staged/1-2_step15000_n4r8_kl0.001_dp0.5_action_visadapt
+# model_dir: staged/1-2_step15000_n4r8_kl0.001_dp0.5_action_visfrozen
+
+# model_dir: single/n2r2_kl0.001_dp0.5_action_visfrozen
+# model_dir: single/n2r2_kl0.001_dp0.5_residual_visfrozen
+# model_dir: single/n4r8_kl0.001_dp0.5_residual_visfrozen
+model_dir: staged/1-2_step15000_n4r8_kl0.001_dp0.5_action_visfrozen
 
 checkpoint: "last"            # "last" or a step number
 # Output folder = outputs/{model_dir}_{checkpoint}_adv-{skill_advance_mode}[_{eval_exp}]
 eval_exp: ""                    # optional free-form tag for the eval output folder (e.g. ablation name)
-# ── Oracle r at eval (checkpoints with an Oracle: 1-2 / single) ──
-# true  → feed the episode's GT skill state-trajectory to the Oracle → r (the oracle-r UPPER BOUND).
-# false → use the learned null token even with an Oracle (graceful-degradation / ablation).
-# Moot for a 1-1 checkpoint (no Oracle → always null).
-oracle_r_eval: true
+# r regime is AUTOMATIC (no flag): an Oracle checkpoint (1-2/single) always runs the A/B side-by-side —
+# each scene rolled out twice (skill+residual [oracle-r] AND skill-only [null]) and stitched into one
+# labelled video per episode under output_dir/side_by_side/. A 1-1 checkpoint (no Oracle) → single null pass.
 
 
 # FSQ TERMINATOR's raw-image DINO only. The policy's own vision backbone is NOT set here —
@@ -50,7 +56,7 @@ terminator_dino_model_path: models/dinov3-vits16   # project_root 기준 상대�
 # ── Eval rollout ──
 target_task: libero_90
 task_ids: "[0,1,2,3,4,5,6,7,8,9]"
-n_episodes: 5                 # episodes (init states) per task
+n_episodes: 3                 # episodes (init states) per task
 n_action_steps: 5
 eval_batch_size: 1
 max_parallel_tasks: 1
@@ -61,9 +67,10 @@ max_parallel_tasks: 1
 #   gt         = advance by each skill's GT demo duration (ideal timing; isolates the action
 #                expert from terminator errors). Terminator still runs → its curves still recorded.
 skill_advance_mode: terminator    # terminator | gt
-# "termination" (term prob >= thr) | "progress" (progress >= thr) | "and" (BOTH: term prob >= thr AND
-#  progress >= progress_threshold — progress gate blocks premature end-prob spikes; most robust).
-skill_end_mode: and
+# "termination" (term prob >= thr) | "progress" (progress >= thr) | "and" (BOTH at the same step) |
+#  "or" (EITHER term>=thr OR progress>=progress_threshold — ends on whichever crosses first; robust when
+#  the term spike and the progress ramp peak at DIFFERENT steps, which made "and" over-run).
+skill_end_mode: or
 skill_end_threshold: 0.5          # threshold on term prob (and termination modes)
 skill_end_progress_threshold: 0.9 # progress gate for skill_end_mode=and
 inference_skill_max_length: 150   # force-advance skill after N steps (0 = off; terminator mode)

@@ -70,6 +70,7 @@ def build_settings(cfg: dict) -> dict:
     oracle_resample_n = int(get_value(cfg, "oracle_resample_n", 30))
     oracle_spline_degree = int(get_value(cfg, "oracle_spline_degree", 3))
     oracle_input_source = (str(get_value(cfg, "oracle_input_source", "state")).strip() or "state")
+    oracle_residual_baseline_steps = int(get_value(cfg, "oracle_residual_baseline_steps", 0))  # residual: â steps (0=num_inference_steps)
     oracle_width = int(get_value(cfg, "oracle_width", 512))
     oracle_depth = int(get_value(cfg, "oracle_depth", 3))
     oracle_n_heads = int(get_value(cfg, "oracle_n_heads", 8))
@@ -179,6 +180,7 @@ def build_settings(cfg: dict) -> dict:
         "oracle_resample_n": oracle_resample_n,
         "oracle_spline_degree": oracle_spline_degree,
         "oracle_input_source": oracle_input_source,
+        "oracle_residual_baseline_steps": oracle_residual_baseline_steps,
         "oracle_width": oracle_width,
         "oracle_depth": oracle_depth,
         "oracle_n_heads": oracle_n_heads,

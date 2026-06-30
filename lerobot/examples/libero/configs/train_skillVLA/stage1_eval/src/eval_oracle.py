@@ -114,24 +114,28 @@ def load_episode_oracle_data(
     init_states_path: str | Path,
     suite_name: str,
     *,
-    resample_n: int,
-    spline_degree: int,
+    input_source: str = "state",
+    resample_n: int = 30,
+    spline_degree: int = 3,
 ) -> dict[int, list[dict]]:
     """Per-EPISODE oracle eval data, grouped by LIBERO task_id and ordered by episode_index.
 
-    Joins the skillvla dataset (GT skill sequence + per-frame state) with eval_init_states.npz
+    Joins the skillvla dataset (GT skill sequence + per-frame state/action) with eval_init_states.npz
     (episode -> MuJoCo init_state + scene_file). Each record::
 
         {"episode_index": int,
-         "init_state":  np.float64 (state_dim,)             — episode-exact env reset state,
-         "skills": [{"token": fsq_code,
-                     "gt_length": frames,                   — GT skill duration (timing + length token),
-                     "state_traj": np.float32 (resample_n, state_dim)}, ...]}  — Oracle r input.
+         "init_state": np.float64 (state_dim,),             — episode-exact env reset state,
+         "skills":  [{"token": fsq_code, "gt_length": frames,  — terminator timing + length token
+                      "state_traj": np.float32 (resample_n, state_dim)}, ...],  — Oracle r input ("state")
+         "gt_actions": np.float32 (T, action_dim) | None}    — Oracle r input ("action"): the episode's
+                                                               per-frame GT actions, sliced per rollout step.
 
-    ``state_traj`` is the skill's full state trajectory resampled EXACTLY as training
-    (_spline_resample), so feeding it to the Oracle reproduces the training-time r (the oracle-r
-    upper bound). Special tokens (code >= skill_num_embeddings) are dropped. Only episodes present in
-    BOTH the dataset and the npz, with >=1 real skill, are kept."""
+    The Oracle input reproduces the training-time r (the oracle-r upper bound):
+      - "state":  each skill's full state trajectory resampled EXACTLY as training (_spline_resample).
+      - "action": the per-frame GT action sequence; the policy slices GT_actions[t : t+chunk] at each
+                  rollout step t (skill-AGNOSTIC — robust to imperfect terminator skill boundaries at eval).
+    Special tokens (code >= skill_num_embeddings) are dropped. Only episodes in BOTH the dataset and the
+    npz, with >=1 real skill, are kept."""
     import json  # noqa: PLC0415
 
     import pandas as pd  # noqa: PLC0415
@@ -141,13 +145,15 @@ def load_episode_oracle_data(
     skill_dataset_dir = Path(skill_dataset_dir)
     info = json.loads((skill_dataset_dir / "meta" / "info.json").read_text())
     num_emb = int(info["skill_num_embeddings"])  # real FSQ codes < num_emb; BOS/EOS/PAD >= it
+    is_action = input_source == "action"
 
     npz = np.load(str(init_states_path), allow_pickle=True)
     inits = {int(e): (st, str(sf)) for e, st, sf in
              zip(npz["episode_index"], npz["init_states"], npz["scene_file"])}
     name_to_id = build_task_name_to_id(suite_name)
 
-    cols = ["episode_index", "frame_index", STATE_KEY, "skill_sequence", "skill_length_sequence"]
+    cols = ["episode_index", "frame_index", "skill_sequence", "skill_length_sequence"]
+    cols += ["action"] if is_action else [STATE_KEY]
     data_files = sorted((skill_dataset_dir / "data").glob("**/*.parquet"))
     if not data_files:
         raise FileNotFoundError(f"No parquet under {skill_dataset_dir / 'data'}")
@@ -164,26 +170,33 @@ def load_episode_oracle_data(
         if task_id is None:
             continue
         ep_df = ep_df.sort_values("frame_index")
-        states = np.stack([np.asarray(s, np.float32) for s in ep_df[STATE_KEY].values])  # (T, state_dim)
         row0 = ep_df.iloc[0]
         seq = np.asarray(row0["skill_sequence"]).reshape(-1)
         lens = np.asarray(row0["skill_length_sequence"]).reshape(-1)
         offsets = np.concatenate([[0], np.cumsum(lens)])  # frame boundary before skill i
+
+        gt_actions = None
+        states = None
+        if is_action:
+            gt_actions = np.stack([np.asarray(a, np.float32) for a in ep_df["action"].values])  # (T, A)
+        else:
+            states = np.stack([np.asarray(s, np.float32) for s in ep_df[STATE_KEY].values])  # (T, state_dim)
+
         skills = []
         for i in range(min(len(seq), len(lens))):
-            if int(seq[i]) >= num_emb:  # special token
+            if int(seq[i]) >= num_emb:  # special token (BOS/EOS/PAD)
                 continue
-            s, e = int(offsets[i]), min(int(offsets[i] + lens[i]), len(states))
+            s, e = int(offsets[i]), int(offsets[i] + lens[i])
             if e <= s:
                 continue
-            skills.append({
-                "token": int(seq[i]),
-                "gt_length": int(lens[i]),
-                "state_traj": _spline_resample(states[s:e], resample_n, spline_degree).astype(np.float32),
-            })
+            sk = {"token": int(seq[i]), "gt_length": int(lens[i])}
+            if not is_action:                                            # state: per-skill resampled traj
+                sk["state_traj"] = _spline_resample(states[s:min(e, len(states))],
+                                                    resample_n, spline_degree).astype(np.float32)
+            skills.append(sk)
         if skills:
-            by_task[task_id].append(
-                {"episode_index": ep, "init_state": np.asarray(init_state, np.float64), "skills": skills})
+            by_task[task_id].append({"episode_index": ep, "init_state": np.asarray(init_state, np.float64),
+                                     "skills": skills, "gt_actions": gt_actions})
 
     for tid in by_task:
         by_task[tid].sort(key=lambda r: r["episode_index"])

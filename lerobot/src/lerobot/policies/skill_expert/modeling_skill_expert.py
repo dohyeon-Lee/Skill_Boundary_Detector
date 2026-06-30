@@ -465,12 +465,15 @@ class SkillExpertPytorch(nn.Module):
         state_traj: Tensor | None = None,
         skill_len: Tensor | None = None,
         use_r: bool = True,
+        cond: Tensor | None = None,
     ) -> tuple[Tensor, Tensor | None]:
         """Flow-matching: returns (signed velocity residual (u_t - v_t), Oracle KL or None).
         The residual is (B, chunk_size, max_action_dim); its square is the per-(b,t,dim) flow MSE.
         The action stream prefix is [skill?, r-slot]; the r-slot holds the Oracle's r when use_r (→ KL
-        returned) or the learned null token otherwise (CFG dropout / 1-1 / no trajectory → KL None)."""
-        cond = self._cond_tokens(images)
+        returned) or the learned null token otherwise (CFG dropout / 1-1 / no trajectory → KL None).
+        `cond` — precomputed scene tokens (residual mode shares ONE _cond_tokens call across the baseline
+        sample + this loss forward); None → encode here."""
+        cond = cond if cond is not None else self._cond_tokens(images)
         skill_prefix = self._action_prefix(skill_code, state)
         r_slot, kl = self._oracle_slot(state_traj, skill_len, skill_code, use_r=use_r, sample=True)
         action_prefix = _cat_prefix(skill_prefix, r_slot)              # [skill?, r] read by action tokens
@@ -497,6 +500,7 @@ class SkillExpertPytorch(nn.Module):
         state_traj: Tensor | None = None,
         skill_len: Tensor | None = None,
         use_r: bool = True,
+        cond: Tensor | None = None,
     ) -> Tensor:
         if num_steps is None:
             num_steps = self.config.num_inference_steps
@@ -505,7 +509,8 @@ class SkillExpertPytorch(nn.Module):
             noise = self.sample_noise((bsize, self.config.chunk_size, self.config.max_action_dim), device)
         # cond⊥action, so the cond stream (image-only) is identical every step → encode it once, cache
         # its per-layer K/V, and run only the action stream ([prefix, action]) against the cache.
-        cond = self._cond_tokens(images)
+        # `cond` may be supplied precomputed (residual-mode baseline shares it with the loss forward).
+        cond = cond if cond is not None else self._cond_tokens(images)
         skill_prefix = self._action_prefix(skill_code, state)
         r_slot, _ = self._oracle_slot(state_traj, skill_len, skill_code, use_r=use_r, sample=False)  # μ
         action_prefix = _cat_prefix(skill_prefix, r_slot)
@@ -792,15 +797,41 @@ class SkillExpertPolicy(PreTrainedPolicy):
         # keep_demo: valid = ~pad (full chunk kept with demo actions); actions unchanged.
 
         state = pad_vector(batch[OBS_STATE], self.config.max_state_dim)   # → state_proj's fixed width (pi0)
-        # Oracle input: "action" mode = the GT action chunk (this skill's target, padded/boundary-adjusted
-        # above) — per-step; "state" mode = the resampled skill state-traj + length. None → null r-slot.
-        if self.config.oracle_input_source == "action":
+        skill_code = self._skill_code(batch)
+        # Oracle input: "action" = the GT action chunk (per-step); "state" = the resampled skill state-traj +
+        # length; "residual" = a_GT − â (â = the expert's OWN null-pass baseline) → r encodes ONLY the
+        # (z,obs)-residual by construction. None → null r-slot. In residual mode ONE _cond_tokens call is
+        # shared across the no_grad baseline sample and the loss forward (cond⊥r), so the overhead is just
+        # the baseline's cheap action-stream ODE steps.
+        cond_shared = None
+        if self.config.oracle_input_source == "residual":
+            skill_len = None
+            if use_r and self.model._oracle_active:
+                cond_shared = self.model._cond_tokens(images)
+                steps = int(cfg.oracle_residual_baseline_steps) or None
+                # â uses the cached-cond sampler (_sample_joint_cached), whose KV cache is INCOMPATIBLE with
+                # gradient checkpointing (it disables the past_key_values concat in train mode → attn-mask
+                # shape mismatch). â is a detached no_grad baseline, so eval mode is semantically correct
+                # (deterministic, no dropout, grad-ckpt off). Restore train mode before the loss forward.
+                was_training = self.model.training
+                self.model.eval()
+                try:
+                    with torch.no_grad():
+                        a_hat = self.model.sample_actions(               # â = expert(z, obs, null)
+                            images, img_masks, state, skill_code, num_steps=steps,
+                            use_r=False, cond=cond_shared.detach())
+                finally:
+                    self.model.train(was_training)
+                state_traj = (actions - a_hat).detach()                   # residual target (DETACH: no grad to â)
+            else:
+                state_traj = None                                         # B-batch / Oracle off → null slot
+        elif self.config.oracle_input_source == "action":
             state_traj, skill_len = actions, None
         else:
             state_traj, skill_len = self._collect_state_traj(batch)
         resid, kl = self.model.forward(                                  # signed flow residual (u_t - v_t), KL
-            images, img_masks, state, self._skill_code(batch), actions,
-            state_traj=state_traj, skill_len=skill_len, use_r=use_r)
+            images, img_masks, state, skill_code, actions,
+            state_traj=state_traj, skill_len=skill_len, use_r=use_r, cond=cond_shared)
         resid = resid[:, :, :real_dim]                                   # (B, K, real_dim)
         losses = resid ** 2                                              # per-(b,k,dim) flow MSE = action MSE
 
@@ -879,15 +910,28 @@ class SkillExpertPolicy(PreTrainedPolicy):
         # eval) r is used; closed-loop sim supplies none → the null fallback (graceful degradation).
         images, img_masks = self._collect_images(batch)
         state = pad_vector(batch[OBS_STATE], self.config.max_state_dim)   # → state_proj's fixed width (pi0)
-        # Oracle input (see forward): "action" mode needs a GT chunk — present only when teacher-forced /
-        # oracle-eval (batch[ACTION]); closed-loop sim has none → None → null r. "state" mode uses the traj.
-        if self.config.oracle_input_source == "action":
-            state_traj = pad_vector(batch[ACTION], self.config.max_action_dim) if ACTION in batch else None
+        # Oracle input (see forward): "action"/"residual" modes need a GT chunk — present only when
+        # teacher-forced / oracle-eval (batch[ACTION]); closed-loop sim has none → None → null r (graceful
+        # fallback). "residual" additionally samples the baseline â and feeds a_GT − â. "state" uses the traj.
+        skill_code = self._skill_code(batch)
+        if self.config.oracle_input_source in ("action", "residual"):
+            # GT chunk present only when injected (oracle-r pass). The eval obs batch can carry ACTION=None
+            # → guard the value, not just the key, else pad_vector(None) crashes the null pass.
+            has_act = ACTION in batch and batch[ACTION] is not None
+            if not has_act:
+                state_traj = None                                        # closed-loop sim → null fallback
+            elif self.config.oracle_input_source == "residual":
+                gt = pad_vector(batch[ACTION], self.config.max_action_dim)
+                a_hat = self.model.sample_actions(                       # â = expert(z, obs, null)
+                    images, img_masks, state, skill_code, use_r=False)
+                state_traj = gt - a_hat                                  # residual = a_GT − â (oracle-r eval)
+            else:                                                        # "action": feed the GT chunk verbatim
+                state_traj = pad_vector(batch[ACTION], self.config.max_action_dim)
             skill_len = None
         else:
             state_traj, skill_len = self._collect_state_traj(batch)
         actions = self.model.sample_actions(
-            images, img_masks, state, self._skill_code(batch),
+            images, img_masks, state, skill_code,
             state_traj=state_traj, skill_len=skill_len, **kwargs)
         real_dim = self.config.output_features[ACTION].shape[0]
         return actions[:, :, :real_dim]

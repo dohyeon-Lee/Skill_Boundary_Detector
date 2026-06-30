@@ -5,7 +5,7 @@ Encodes a per-skill/per-step trajectory + the GT skill code z into a small VAE l
 it supplies the motion detail that (skill z, current obs) underdetermine — a skill is a coarse
 cluster of 100+ motions, so the action expert needs more to disambiguate which one.
 
-Two input modes (config.oracle_input_source):
+Three input modes (config.oracle_input_source):
   - "state": the skill's full STATE trajectory (start→end) resampled to oracle_resample_n control
     points + a LENGTH token (duration lost by resampling). Per-skill (constant within a skill, so r is
     too) — matches Stage-2 emitting r once at skill start. Appearance-invariant, geometric.
@@ -13,6 +13,11 @@ Two input modes (config.oracle_input_source):
     NO length token. Per-STEP (the chunk slides each frame → r changes). Carries the fine-motion detail
     z's coarse code can't hold; motion patterns recur across tasks so the Oracle still generalizes to
     new tasks (language would not — hence action, not language). Keep r_dim TIGHT (residual, not a copy).
+  - "residual": the EXPLICIT residual `a_GT − â` (â = the action expert's null-pass prediction, computed
+    upstream in modeling_skill_expert). SAME shape/architecture as "action" — only the fed tensor differs.
+    z-/obs-expressible motion is subtracted BEFORE encoding, so r is a residual by construction (not soft
+    bottleneck pressure) → no replay leak, graceful fallback to â. The Oracle code here is mode-agnostic;
+    it just encodes whatever `traj` it is given.
 
 Common: Perceiver — ``n_tokens`` learned latent queries cross-attend the trajectory KV set →
 fixed-size output. Skill z conditions WHAT the queries look for via AdaLN (DiT AdaLN-Zero). VAE head
@@ -75,8 +80,9 @@ class Oracle(nn.Module):
         # mirroring FSQ's "control points + length"); "action" mode is fixed length so it has neither
         # resample nor length token. Param names for "state" are kept (state_proj/length_*) so existing
         # state-mode checkpoints load unchanged. ──
-        if self.input_source == "action":
-            n = int(config.chunk_size)                                  # GT action chunk: fixed length
+        if self.input_source in ("action", "residual"):
+            # "action": GT action chunk; "residual": a_GT − â (same shape) — both fixed length, no spline.
+            n = int(config.chunk_size)
             self.action_proj = nn.Linear(config.max_action_dim, d)
         else:
             n = int(config.oracle_resample_n)                           # resampled state-traj control points
@@ -123,12 +129,13 @@ class Oracle(nn.Module):
 
         Returns r (B, n_tokens, r_dim) and the (free-bits) KL scalar.
         """
-        proj = self.action_proj if self.input_source == "action" else self.state_proj
+        is_action_like = self.input_source in ("action", "residual")
+        proj = self.action_proj if is_action_like else self.state_proj
         dtype = proj.weight.dtype
         bsize = traj.shape[0]
 
         kv = proj(traj.to(dtype)) + self.pos_emb.to(dtype)                               # (B, L, d)
-        if self.input_source != "action":                                               # state: + length token
+        if not is_action_like:                                                           # state: + length token
             len_feat = torch.log1p(length.to(dtype).clamp(min=0)).view(bsize, 1, 1)      # scale-robust
             len_tok = self.length_proj(len_feat) + self.length_type.to(dtype)            # (B, 1, d)
             kv = torch.cat([kv, len_tok], dim=1)                                         # (B, N+1, d)

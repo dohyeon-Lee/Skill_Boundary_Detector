@@ -94,7 +94,17 @@ class SkillExpertConfig(PI05Config):
                z's coarse code can't hold (motion patterns recur across tasks → Oracle generalizes to new
                tasks; language would not, which is why this is action- not language-based). Keep oracle_r_dim
                TIGHT so r stays a residual the VLM can predict (not a verbatim action copy).
-               (oracle_resample_n / oracle_spline_degree are ignored in this mode.)"""
+               (oracle_resample_n / oracle_spline_degree are ignored in this mode.)
+    "residual" → the EXPLICIT residual `a_GT − â`, where `â = expert(z, obs, null)` is the action expert's
+               OWN null-pass prediction (= "what (z, obs) already give"). Same shape as "action" (chunk ×
+               action_dim) → identical Oracle architecture; only the fed tensor differs. By construction r
+               carries ONLY what (z, obs) cannot express (structural residual, not soft pressure) → kills the
+               open-loop replay leak (r has no full motion) and degrades GRACEFULLY (bad r → â baseline). Costs
+               one extra no_grad sampling pass per A-batch (oracle_residual_baseline_steps); cond is shared so
+               the overhead is small. Single-stage only (frozen-base 1-2 has a stale/marginal baseline)."""
+    oracle_residual_baseline_steps: int = 0
+    """(residual mode) flow-ODE steps to sample the baseline â per A-batch. 0 → use num_inference_steps.
+    Lower = cheaper baseline (â need only be a reasonable (z,obs) prediction, not a perfect sample)."""
     oracle_resample_n: int = 30
     """Resample the skill's state trajectory to this many control points — MATCH the FSQ n_control so the
     Oracle sees the trajectory at the same resolution the skill code z was derived from."""
@@ -172,9 +182,12 @@ class SkillExpertConfig(PI05Config):
     scene_file. Lets the eval reset each env to the EXACT scene of the dataset episode whose GT skill
     sequence is injected (episode-exact). None → fall back to LIBERO's built-in per-task init states."""
     oracle_r_eval: bool = True
-    """When the checkpoint has an Oracle (1-2/single): feed the episode's GT skill state-trajectory →
-    r (the oracle-r upper bound). False → use the learned null token even with an Oracle (degradation
-    test). Moot for a 1-1 checkpoint (no Oracle → always null)."""
+    eval_side_by_side: bool = False
+    """DEPRECATED / unused — retained only so older checkpoint configs that carry these keys still load.
+    The eval no longer reads them: an Oracle checkpoint (1-2/single) ALWAYS runs the A/B side-by-side
+    (each scene rolled out with r=skill+residual AND null=skill-only, stitched into one labelled video
+    under output_dir/side_by_side/); a 1-1 checkpoint (no Oracle) runs a single null pass. The regime is
+    inferred from the checkpoint's use_oracle — no eval flag needed."""
     terminator_dino_model_path: str | None = None
     """DINO weights for the FSQ terminator's raw-image encoder at eval. None → the FSQ
     checkpoint's own image_model_name. Kept SEPARATE from dino_model_path (the policy's OWN
@@ -187,8 +200,11 @@ class SkillExpertConfig(PI05Config):
     """Which FSQ terminator signal ends the current skill:
     "termination" → end-prob ≥ skill_end_threshold;
     "progress"    → progress ≥ skill_end_threshold;
-    "and"         → end-prob ≥ skill_end_threshold AND progress ≥ skill_end_progress_threshold (robust:
-                    the progress gate blocks premature end-prob spikes early in the skill)."""
+    "and"         → end-prob ≥ skill_end_threshold AND progress ≥ skill_end_progress_threshold, both at the
+                    same step (progress gate blocks premature end-prob spikes, but over-runs if the two
+                    signals peak at DIFFERENT steps);
+    "or"          → EITHER end-prob ≥ skill_end_threshold OR progress ≥ skill_end_progress_threshold (ends on
+                    whichever crosses first — robust to the term spike and progress ramp being misaligned)."""
     skill_end_threshold: float = 0.5
     """Threshold on the signal selected by skill_end_mode, above which the skill is finished."""
     skill_end_progress_threshold: float = 0.9
@@ -205,8 +221,9 @@ class SkillExpertConfig(PI05Config):
             raise ValueError(f"boundary_mode must be 'hold' or 'keep_demo' (got {self.boundary_mode!r}).")
         if not 0.0 <= self.oracle_dropout_p < 1.0:
             raise ValueError(f"oracle_dropout_p must be in [0, 1) (got {self.oracle_dropout_p}).")
-        if self.oracle_input_source not in ("state", "action"):
-            raise ValueError(f"oracle_input_source must be 'state' or 'action' (got {self.oracle_input_source!r}).")
+        if self.oracle_input_source not in ("state", "action", "residual"):
+            raise ValueError(
+                f"oracle_input_source must be 'state', 'action' or 'residual' (got {self.oracle_input_source!r}).")
         if self.train_terminator and not self.fsq_path:
             raise ValueError("train_terminator=True needs fsq_path (the FSQ checkpoint to warm-start).")
         if self.train_terminator and not self.skill_decoder_dino_tokens_path:

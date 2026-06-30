@@ -20,6 +20,7 @@ See eval_oracle.py for the data/FSQ helpers.
 
 import json
 import logging
+import shutil
 import sys
 from collections import deque
 from contextlib import nullcontext
@@ -42,7 +43,7 @@ from lerobot.scripts.lerobot_skillvla_eval import (
     close_envs,
     eval_policy_all,
 )
-from lerobot.utils.constants import OBS_STATE
+from lerobot.utils.constants import ACTION, OBS_STATE
 from lerobot.utils.device_utils import get_safe_torch_device
 from lerobot.utils.random_utils import set_seed
 
@@ -72,24 +73,27 @@ class OracleSkillExpertPolicy(PreTrainedPolicy):
     name = "skill_expert_oracle"
 
     def __init__(self, policy, terminator, *, end_threshold: float, end_mode: str, progress_threshold: float,
-                 advance_mode: str, max_skill_len: int, n_action_steps: int, oracle_r: bool):
+                 advance_mode: str, max_skill_len: int, n_action_steps: int, oracle_r: bool, input_source: str):
         super().__init__(policy.config)
         self.policy = policy
         self.terminator = terminator
         self.end_threshold = float(end_threshold)
         self.progress_threshold = float(progress_threshold)
         self.end_mode = str(end_mode)        # "termination" | "progress" | "and"
-        if self.end_mode not in ("termination", "progress", "and"):
-            raise ValueError(f"skill_end_mode must be 'termination'|'progress'|'and', got {end_mode!r}")
+        if self.end_mode not in ("termination", "progress", "and", "or"):
+            raise ValueError(f"skill_end_mode must be 'termination'|'progress'|'and'|'or', got {end_mode!r}")
         self.advance_mode = str(advance_mode)  # "terminator" (FSQ gates) | "gt" (advance by GT duration)
         if self.advance_mode not in ("terminator", "gt"):
             raise ValueError(f"skill_advance_mode must be 'terminator' or 'gt', got {advance_mode!r}")
         self.max_skill_len = int(max_skill_len)
         self.n_action_steps = int(n_action_steps)
-        self.oracle_r = bool(oracle_r)       # feed GT skill state-traj -> r (else null token)
+        self.oracle_r = bool(oracle_r)       # feed GT Oracle input -> r (else learned null token)
+        self.input_source = str(input_source)  # "state" (per-skill state-traj) | "action" (per-step GT chunk)
+        self.chunk_size = int(policy.config.chunk_size)
         self._seqs: list[list[int]] | None = None
         self._gt_lengths: list[list[int]] | None = None   # GT demo frames per skill
-        self._state_trajs: list[list[np.ndarray | None]] = []  # per skill: (N, state_dim) Oracle input
+        self._state_trajs: list[list[np.ndarray | None]] = []  # per skill: (N, state_dim) Oracle input ("state")
+        self._gt_actions: list[np.ndarray | None] = []    # per episode: (T, action_dim) GT actions ("action")
         self._cursors: list[int] = []
         self._skill_step: list[int] = []
         self._queue: deque = deque(maxlen=n_action_steps)
@@ -101,13 +105,17 @@ class OracleSkillExpertPolicy(PreTrainedPolicy):
 
     # ── oracle skill sequence interface ──
     def set_forced_skill_token_sequences(self, sequences) -> None:
-        """Each sequence is a per-episode list of skills ``{"token", "gt_length", "state_traj"}``
-        (state_traj = the skill's resampled state trajectory for the Oracle; gt_length feeds the length
-        token + the timing compare). Bare ints / dicts without state_traj are tolerated (null r)."""
-        self._seqs, self._gt_lengths, self._state_trajs = [], [], []
-        for seq in sequences:
+        """Each entry is a per-episode dict ``{"skills": [{"token", "gt_length", "state_traj"?}, ...],
+        "gt_actions": (T, action_dim) | None}``. ``skills`` give the GT skill sequence (+ per-skill length
+        for the terminator/timing, and the resampled state-traj for the "state"-mode Oracle); ``gt_actions``
+        is the episode's per-frame GT action sequence for the "action"-mode Oracle. A bare list of skills
+        (no dict) is tolerated (→ no gt_actions)."""
+        self._seqs, self._gt_lengths, self._state_trajs, self._gt_actions = [], [], [], []
+        for entry in sequences:
+            skills = entry["skills"] if isinstance(entry, dict) else entry
+            gt_act = entry.get("gt_actions") if isinstance(entry, dict) else None
             codes, lens, trajs = [], [], []
-            for x in seq:
+            for x in skills:
                 if isinstance(x, dict):
                     codes.append(int(x["token"]))
                     lens.append(int(x.get("gt_length", 0)))
@@ -117,6 +125,7 @@ class OracleSkillExpertPolicy(PreTrainedPolicy):
             self._seqs.append(codes)
             self._gt_lengths.append(lens)
             self._state_trajs.append(trajs)
+            self._gt_actions.append(np.asarray(gt_act, np.float32) if gt_act is not None else None)
         self.reset()
 
     def set_reference_skill_token_sequences(self, sequences) -> None:  # unused (no skill predictor)
@@ -151,6 +160,19 @@ class OracleSkillExpertPolicy(PreTrainedPolicy):
         codes = [self._seqs[b][min(self._cursors[b], len(self._seqs[b]) - 1)] for b in range(batch_size)]
         return torch.tensor(codes, dtype=torch.long, device=device)
 
+    def _gt_action_chunk(self, b: int) -> torch.Tensor:
+        """env b's GT action chunk at the CURRENT rollout step: GT_actions[t : t+chunk_size], tail-padded
+        with the last action (hold). (chunk_size, action_dim) float32. The "action"-mode Oracle input."""
+        ga = self._gt_actions[b]
+        K = self.chunk_size
+        if ga is None or len(ga) == 0:
+            return torch.zeros(K, self.config.output_features[ACTION].shape[0], dtype=torch.float32)
+        t = min(self._t, len(ga) - 1)
+        seg = ga[t : t + K]
+        if seg.shape[0] < K:
+            seg = np.concatenate([seg, np.repeat(ga[-1:], K - seg.shape[0], axis=0)], axis=0)
+        return torch.from_numpy(seg.astype(np.float32))
+
     def _start_skill(self, b: int) -> None:
         code = self._seqs[b][min(self._cursors[b], len(self._seqs[b]) - 1)]
         self._order[b] += 1
@@ -161,16 +183,20 @@ class OracleSkillExpertPolicy(PreTrainedPolicy):
         self._active[b] = len(self._trace) - 1
 
     def _fired(self, b: int, progress: torch.Tensor, term: torch.Tensor) -> bool:
-        """Whether skill b ends this step. GT mode = by demo duration; else the FSQ terminator with the
-        configured signal ('and' = end-prob AND progress gate). A max-length cap force-advances either."""
+        """Whether skill b ends this step. GT mode = by demo duration; else the FSQ terminator:
+        'and' = end-prob AND progress (BOTH at this step), 'or' = EITHER (end-prob OR progress — fires on
+        whichever crosses first, robust to term/progress peaking at different steps), 'termination'|'progress'
+        = that single signal. A max-length cap force-advances regardless."""
         if self.advance_mode == "gt":
             gt_len = self._gt_lengths[b][min(self._cursors[b], len(self._gt_lengths[b]) - 1)]
             return self._skill_step[b] >= max(1, int(gt_len))
+        term_hi, prog_hi = float(term[b]) >= self.end_threshold, float(progress[b]) >= self.progress_threshold
         if self.end_mode == "and":
-            sig = (float(term[b]) >= self.end_threshold) and (float(progress[b]) >= self.progress_threshold)
+            sig = term_hi and prog_hi
+        elif self.end_mode == "or":
+            sig = term_hi or prog_hi
         else:
-            signal = float(progress[b]) if self.end_mode == "progress" else float(term[b])
-            sig = signal >= self.end_threshold
+            sig = (float(progress[b]) if self.end_mode == "progress" else float(term[b])) >= self.end_threshold
         return sig or (self.max_skill_len > 0 and self._skill_step[b] >= self.max_skill_len)
 
     @torch.no_grad()
@@ -213,7 +239,11 @@ class OracleSkillExpertPolicy(PreTrainedPolicy):
             inj = dict(batch)
             inj["skill_sequence"] = codes.view(bsize, 1)
             inj["skill_index"] = torch.zeros(bsize, dtype=torch.long, device=device)
-            if self.oracle_r:
+            if self.oracle_r and self.input_source == "action":
+                # "action" Oracle: per-step GT action chunk, sliced from THIS rollout step (skill-agnostic
+                # → robust to imperfect terminator skill boundaries). Pad the tail with the last action.
+                inj[ACTION] = torch.stack([self._gt_action_chunk(b) for b in range(bsize)]).to(device)
+            elif self.oracle_r:                                                        # "state" Oracle
                 trajs, des = [], []
                 for b in range(bsize):
                     k = min(self._cursors[b], len(self._state_trajs[b]) - 1)
@@ -261,9 +291,63 @@ def _override_init_states(envs: dict, episode_data: dict[int, list[dict]]) -> di
                 base = sub.unwrapped
                 base.init_states = True            # ensure reset() takes the set_init_state path
                 base._init_states = init_arr        # env indexes by init_state_id (= global episode index)
-            # forced[(tg,tid)][i] pairs with init_arr[i % n_ep] via the same global index (eval wraps both)
-            forced[(task_group, int(task_id))] = [r["skills"] for r in records]
+            # forced[(tg,tid)][i] pairs with init_arr[i % n_ep] via the same global index (eval wraps both).
+            # Each entry carries the skill sequence + (action mode) the episode's GT action sequence.
+            forced[(task_group, int(task_id))] = [
+                {"skills": r["skills"], "gt_actions": r.get("gt_actions")} for r in records]
     return forced
+
+
+def _reset_init_state_ids(envs: dict) -> None:
+    """Rewind every task env's init_state_id to its episode_index, so a SECOND eval pass replays the
+    SAME per-episode scenes as the first (side-by-side A/B over identical init states)."""
+    for group in envs.values():
+        for vec in group.values():
+            for sub in getattr(vec, "envs", []):
+                base = sub.unwrapped
+                base.init_state_id = base.episode_index
+
+
+def _stitch_side_by_side(dir_a: Path, dir_b: Path, out_dir: Path, label_a: str, label_b: str,
+                         height: int = 256) -> None:
+    """Glue dir_a | dir_b rollout videos (same videos/{task}/eval_episode_{ep}.mp4 layout) horizontally,
+    each panel labelled, → out_dir/{task}/eval_episode_{ep}.mp4. Reuses the video_compare/ helpers."""
+    try:
+        sys.path.insert(0, str(_HERE.parent / "video_compare"))
+        from compare_videos import even, label_bar, load_font, make_panel, read_video  # noqa: PLC0415
+        import imageio.v2 as imageio  # noqa: PLC0415
+    except Exception as exc:  # noqa: BLE001 — stitching is a convenience; never fail the eval over it
+        log.warning("side-by-side stitch skipped (video libs unavailable): %s", exc)
+        return
+    H, bar_h = even(height), even(max(20, height // 9))
+    font = load_font(int(bar_h * 0.62))
+
+    def panel_bar(frames, label):
+        h, w = frames[0].shape[:2]
+        return label_bar(even(max(2, round(w * H / h))), bar_h, label, font)
+
+    n = 0
+    for taskdir_a in sorted(p for p in dir_a.glob("*") if p.is_dir()):
+        taskdir_b = dir_b / taskdir_a.name
+        for mp4_a in sorted(taskdir_a.glob("eval_episode_*.mp4")):
+            mp4_b = taskdir_b / mp4_a.name
+            if not mp4_b.exists():
+                continue
+            fa, fps = read_video(mp4_a)
+            fb, _ = read_video(mp4_b)
+            if not fa or not fb:
+                continue
+            bar_a, bar_b = panel_bar(fa, label_a), panel_bar(fb, label_b)
+            (out_dir / taskdir_a.name).mkdir(parents=True, exist_ok=True)
+            writer = imageio.get_writer(str(out_dir / taskdir_a.name / mp4_a.name), fps=fps,
+                                        codec="libx264", quality=8, macro_block_size=None)
+            for i in range(max(len(fa), len(fb))):
+                frame = np.hstack([make_panel(fa[min(i, len(fa) - 1)], H, bar_a),
+                                   make_panel(fb[min(i, len(fb) - 1)], H, bar_b)])
+                writer.append_data(frame[:, :-1] if frame.shape[1] % 2 else frame)
+            writer.close()
+            n += 1
+    log.info("side-by-side: wrote %d stitched clips → %s", n, out_dir)
 
 
 @parser.wrap()
@@ -289,19 +373,25 @@ def eval_main(cfg: EvalPipelineConfig):
         cfg.policy.fsq_path, device, dino_path=cfg.policy.terminator_dino_model_path,
         libero_examples_dir=_LIBERO_EXAMPLES)
 
-    # Episode-exact oracle data: join skillvla dataset (GT skills + per-skill state-traj) with the
-    # init-state npz (episode -> MuJoCo init_state + scene), grouped by LIBERO task_id.
+    # Episode-exact oracle data: join skillvla dataset (GT skills + per-skill state-traj OR per-frame GT
+    # actions) with the init-state npz (episode -> MuJoCo init_state + scene), grouped by LIBERO task_id.
+    input_source = str(cfg.policy.oracle_input_source)
     episode_data = load_episode_oracle_data(
         cfg.policy.skill_label_dataset_dir, cfg.policy.eval_init_states_path, cfg.env.task,
+        input_source=input_source,
         resample_n=cfg.policy.oracle_resample_n, spline_degree=cfg.policy.oracle_spline_degree)
     forced_by_task = _override_init_states(envs, episode_data)
     logging.info("Episode-exact eval over %d tasks (n_episodes=%d per task).",
                  len(forced_by_task), cfg.eval.n_episodes)
 
-    # oracle-r only when the checkpoint actually has a trained Oracle (1-2 / single); a 1-1 checkpoint
-    # has no Oracle → use_r is moot (the r-slot is always the learned null token).
-    oracle_r = bool(cfg.policy.oracle_r_eval and policy.model._oracle_active)
-    logging.info("r regime: %s", "oracle-r (GT state-traj → r)" if oracle_r else "null token")
+    # An Oracle checkpoint (1-2/single) → ALWAYS the A/B side-by-side: each scene is rolled out with r
+    # (skill+residual) AND with the null token (skill-only). A 1-1 checkpoint has no Oracle → a single
+    # null pass (the two passes would be identical). The phase + r regime are inferred from the checkpoint
+    # (model_dir path + use_oracle); no eval flag needed.
+    side_by_side = bool(policy.model._oracle_active)
+    gt_in = "GT state-traj" if input_source == "state" else "GT action chunk"
+    logging.info("r regime: %s", (f"side-by-side (skill+residual [oracle-r, {gt_in}] vs skill-only [null])"
+                                  if side_by_side else "null token (no Oracle)"))
 
     oracle = OracleSkillExpertPolicy(
         policy, terminator,
@@ -311,7 +401,8 @@ def eval_main(cfg: EvalPipelineConfig):
         advance_mode=cfg.policy.skill_advance_mode,
         max_skill_len=cfg.policy.inference_skill_max_length,
         n_action_steps=cfg.policy.n_action_steps,
-        oracle_r=oracle_r,
+        input_source=input_source,
+        oracle_r=side_by_side,   # placeholder; _run_pass sets it per pass
     )
 
     # Processors: load the checkpoint's, then insert PreserveRawState so the terminator
@@ -326,35 +417,72 @@ def eval_main(cfg: EvalPipelineConfig):
     env_preprocessor, env_postprocessor = make_env_pre_post_processors(env_cfg=cfg.env, policy_cfg=cfg.policy)
     task_id_to_desc = _libero_task_descriptions(cfg.env.task)
 
-    skill_html_dir = (Path(cfg.output_dir) / "skill_html") if cfg.eval.skill_html else None
-    with torch.no_grad(), torch.autocast(device_type=device.type) if cfg.policy.use_amp else nullcontext():
-        info = eval_policy_all(
-            envs=envs, policy=oracle,
-            env_preprocessor=env_preprocessor, env_postprocessor=env_postprocessor,
-            preprocessor=preprocessor, postprocessor=postprocessor,
-            n_episodes=cfg.eval.n_episodes,
-            max_episodes_rendered=cfg.eval.max_videos_per_task,
-            video_frame_stride=cfg.eval.video_frame_stride, video_fps=cfg.eval.video_fps,
-            videos_dir=Path(cfg.output_dir) / "videos",
-            start_seed=cfg.seed, max_parallel_tasks=cfg.env.max_parallel_tasks,
-            forced_skill_token_sequences_by_task=forced_by_task,
-            reference_skill_token_sequences_by_task=None,
-            skill_html_dir=skill_html_dir,
-            skill_html_train_samples=cfg.eval.skill_html_train_samples,
-            skill_html_skill_latents_path=cfg.eval.skill_html_skill_latents_path,
-            skill_html_raw_dataset_dir=cfg.eval.skill_html_raw_dataset_dir,
-            skill_html_image_key=cfg.eval.skill_html_image_key,
-            task_descriptions=task_id_to_desc,
-        )
-    print("Overall:", info["overall"])
+    # ── Rollout(s). Oracle ckpt → A/B side-by-side, but PER TASK so the STITCHED combined videos stream
+    # out in task/episode order (no separate per-pass video files kept): for each task, pass A (r=skill+
+    # residual) and pass B (null=skill-only) over the SAME scenes (init_state_id rewound between), stitch
+    # immediately → side_by_side/{task}/, then drop that task's raw per-pass videos. skill_html (per pass)
+    # is kept under skillR/ & skillonly/. A 1-1 checkpoint (no Oracle) → a single null pass. ──
+    out = Path(cfg.output_dir)
+    common = dict(
+        policy=oracle, env_preprocessor=env_preprocessor, env_postprocessor=env_postprocessor,
+        preprocessor=preprocessor, postprocessor=postprocessor,
+        n_episodes=cfg.eval.n_episodes, max_episodes_rendered=cfg.eval.max_videos_per_task,
+        video_frame_stride=cfg.eval.video_frame_stride, video_fps=cfg.eval.video_fps,
+        start_seed=cfg.seed, max_parallel_tasks=cfg.env.max_parallel_tasks,
+        reference_skill_token_sequences_by_task=None,
+        skill_html_train_samples=cfg.eval.skill_html_train_samples,
+        skill_html_skill_latents_path=cfg.eval.skill_html_skill_latents_path,
+        skill_html_raw_dataset_dir=cfg.eval.skill_html_raw_dataset_dir,
+        skill_html_image_key=cfg.eval.skill_html_image_key, task_descriptions=task_id_to_desc,
+    )
+
+    def _eval(envs_, use_r, videos_dir, html_dir, forced):
+        oracle.oracle_r = bool(use_r)
+        with torch.no_grad(), (torch.autocast(device_type=device.type) if cfg.policy.use_amp else nullcontext()):
+            return eval_policy_all(envs=envs_, videos_dir=videos_dir, skill_html_dir=html_dir,
+                                   forced_skill_token_sequences_by_task=forced, **common)
+
+    def _merge(tagged):                                               # [(tid, info)] → one {overall, per_task}
+        per_task = [{"task_id": tid, **info.get("overall", {})} for tid, info in tagged]
+        succ = [d.get("pc_success") for d in per_task if isinstance(d.get("pc_success"), (int, float))]
+        return {"overall": {"pc_success": float(np.mean(succ)) if succ else 0.0}, "per_task": per_task}
+
+    if side_by_side:
+        sbs_dir = out / "side_by_side"
+        r_html = (out / "skillR" / "skill_html") if cfg.eval.skill_html else None
+        n_html = (out / "skillonly" / "skill_html") if cfg.eval.skill_html else None
+        tagged_r, tagged_n = [], []
+        for tg, grp in envs.items():
+            for tid in list(grp.keys()):
+                one_env, one_forced = {tg: {tid: grp[tid]}}, {(tg, tid): forced_by_task[(tg, tid)]}
+                tmp_r, tmp_n = out / "_tmp" / "R" / "videos", out / "_tmp" / "null" / "videos"
+                iA = _eval(one_env, True, tmp_r, r_html, one_forced)
+                _reset_init_state_ids(one_env)                        # rewind → pass B sees the same scenes
+                iB = _eval(one_env, False, tmp_n, n_html, one_forced)
+                _stitch_side_by_side(tmp_r, tmp_n, sbs_dir, "skill + residual", "skill only")
+                shutil.rmtree(out / "_tmp", ignore_errors=True)       # drop raw per-pass videos (keep combined)
+                tagged_r.append((tid, iA)); tagged_n.append((tid, iB))
+                log.info("task %s → side_by_side (skill+residual %s | skill-only %s)",
+                         tid, iA.get("overall"), iB.get("overall"))
+        info = {"skill+residual": _merge(tagged_r), "skill_only": _merge(tagged_n)}
+        wandb_infos = {"skillR/": info["skill+residual"], "skillonly/": info["skill_only"]}
+        print("side_by_side done →", sbs_dir)
+    else:                                                             # 1-1: no Oracle → single null pass
+        info = _eval(envs, False, out / "videos",
+                     (out / "skill_html") if cfg.eval.skill_html else None, forced_by_task)
+        print("Overall:", info["overall"])
+        wandb_infos = {"": info}
+
     close_envs(envs)
-    Path(cfg.output_dir).mkdir(parents=True, exist_ok=True)
-    with open(Path(cfg.output_dir) / "eval_info.json", "w") as f:
+    out.mkdir(parents=True, exist_ok=True)
+    with open(out / "eval_info.json", "w") as f:
         json.dump(info, f, indent=2)
-    _maybe_log_wandb(cfg, info)
+    _maybe_log_wandb(cfg, wandb_infos)
 
 
-def _maybe_log_wandb(cfg, info) -> None:
+def _maybe_log_wandb(cfg, infos: dict) -> None:
+    """infos: {prefix: eval_info}. Single pass → {"": info}; side-by-side → {"skillR/":.., "skillonly/":..}
+    (both variants logged to ONE run under their prefixes)."""
     project = getattr(cfg, "wandb_project", None)
     if not project:
         return
@@ -363,11 +491,14 @@ def _maybe_log_wandb(cfg, info) -> None:
 
         wandb.init(project=project, name=cfg.job_name,
                    config={"policy_path": str(cfg.policy.pretrained_path), "n_episodes": cfg.eval.n_episodes})
-        payload = {f"overall/{k}": float(v) for k, v in info.get("overall", {}).items() if isinstance(v, (int, float))}
-        for ti in info.get("per_task", []):
-            tid, sr = ti.get("task_id"), ti.get("pc_success", ti.get("success_rate"))
-            if tid is not None and sr is not None:
-                payload[f"task_{int(tid):02d}/success"] = float(sr)
+        payload: dict[str, float] = {}
+        for pref, info in infos.items():
+            payload.update({f"{pref}overall/{k}": float(v)
+                            for k, v in info.get("overall", {}).items() if isinstance(v, (int, float))})
+            for ti in info.get("per_task", []):
+                tid, sr = ti.get("task_id"), ti.get("pc_success", ti.get("success_rate"))
+                if tid is not None and sr is not None:
+                    payload[f"{pref}task_{int(tid):02d}/success"] = float(sr)
         wandb.log(payload)
         wandb.finish()
     except Exception as exc:  # noqa: BLE001
