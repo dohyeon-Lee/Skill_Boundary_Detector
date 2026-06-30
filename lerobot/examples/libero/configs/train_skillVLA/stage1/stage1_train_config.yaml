@@ -9,9 +9,9 @@ skillvla_dataset_root: skillvla_dataset  # .../{skillvla_dataset_root}/{source_d
 # ── Which skillvla dataset to train on (built by configs/train_skillVLA/build_data) ──
 source_dataset: libero_90_full_full
 run_tag: FSQ555_dino8_both_1000   # sub-folder under {skillvla_dataset_root}/{source}/
-run_tag: FSQ555_dino8_weighted_wow_1000
-run_tag: FSQ88_dino8_both_1000
-run_tag: FSQ88_dino8_weighted_both_1000
+# run_tag: FSQ88_dino8_both_1000
+# run_tag: FSQ555_dino8_weighted_wow_1000
+# run_tag: FSQ88_dino8_weighted_both_1000
 
 # ── Conditioning architecture (joint only) ──
 #   state       → AdaRMS = time + state; skill (z_q) stays as an attended PREFIX token (image-dominant,
@@ -33,7 +33,7 @@ n_action_steps:                 # blank = chunk_size (must be <= chunk_size)
 
 # ── Loss = action MSE (flow matching). action_weight로 per-sample 가중 여부만 선택. ──
 skill_end_loss_weight: 2.0        # R — sw=1+(R-1)·progress; 스킬 END을 더 강조 (1=uniform). action_weight=true일 때만 사용
-action_weight: true               # true=가중 / false=균등
+action_weight: false               # true=가중 / false=균등
 
 # ── Terminator co-train (skill-end timing head, gradient-disjoint from 본체; eval skill 전환용) ──
 # fsq_path + dino tokens는 run_tag에서 AUTO 유도 (run_dir/FSQ.pt, run_dir/dino.npz, dino_wrist.npz는 있을 때만) — 비워둠.

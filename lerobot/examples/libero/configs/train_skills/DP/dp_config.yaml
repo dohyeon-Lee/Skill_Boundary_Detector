@@ -18,7 +18,7 @@ dino_overwrite_prepared: false              # true = re-create prepared DINO (el
 # dp_vision: dino   = precomputed DINO-token encoder (needs prepared DINO).
 #            resnet = ORIGINAL lerobot Diffusion Policy on raw frames (no DINO).
 #            state  = proprioceptive-only: observation.state history, NO vision.
-dp_vision: dino   # dino | resnet | state
+dp_vision: state   # dino | resnet | state
 dp_n_obs_steps: 10                          # observation history length
 dp_horizon: 16                              # UNet horizon (multiple of 2^len(down_dims)=8; > n_obs)
 # dp_n_action_steps: auto = horizon - n_obs_steps + 1 (override only if needed)
