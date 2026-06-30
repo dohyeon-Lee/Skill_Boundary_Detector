@@ -386,6 +386,17 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
 
     policy.train()
 
+    # The Stage-1 Oracle gates its r-ablation diagnostic on the policy's PERSISTENT `train_step` buffer.
+    # A WARM-START (e.g. staged 1-2 loading a 1-1 checkpoint) would otherwise inherit the DONOR's step
+    # count instead of this run's, desyncing the diagnostic from the 0-based log cadence (so r_gain/
+    # loss_rablate never land on a log step). Pin it to THIS run's start step (0 for fresh/warm-start,
+    # the resume step on resume) so train_step tracks the loop step.
+    _raw_policy = accelerator.unwrap_model(policy, keep_fp32_wrapper=True)
+    if hasattr(getattr(_raw_policy, "model", None), "train_step"):
+        _raw_policy.model.train_step.fill_(int(step))
+        if is_main_process:
+            logging.info(f"Pinned policy.model.train_step to start step {int(step)} (r-ablation/log alignment).")
+
     train_metrics = {
         "loss": AverageMeter("loss", ":.3f"),
         "grad_norm": AverageMeter("grdn", ":.3f"),

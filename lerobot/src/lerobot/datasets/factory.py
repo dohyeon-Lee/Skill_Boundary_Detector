@@ -104,8 +104,10 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
 
                 dataset_cls = SkillVLADataset
             extra_kwargs: dict = {}
-            if getattr(cfg.policy, "type", None) == "skill_expert" and getattr(cfg.policy, "use_oracle", False):
-                # Stage-1 Oracle needs the current skill's state trajectory (start→end) per item.
+            if (getattr(cfg.policy, "type", None) == "skill_expert" and getattr(cfg.policy, "use_oracle", False)
+                    and getattr(cfg.policy, "oracle_input_source", "state") == "state"):
+                # Stage-1 Oracle ("state" mode) needs the current skill's state trajectory (start→end) per
+                # item. "action" mode feeds the GT action chunk (already loaded as batch[ACTION]) → no wrapper.
                 from lerobot.policies.skill_expert.dataset_skill_expert import SkillExpertDataset
 
                 dataset_cls = SkillExpertDataset

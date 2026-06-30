@@ -8,7 +8,7 @@ pi05_ft_outputs_root: pi05_FT
 
 # ── Which trained model to evaluate ──
 eval_stage: PT                 # PT → load from pi05_PT ; FT → load from pi05_FT
-eval_checkpoint: "015000"
+eval_checkpoint: "last"
 # Exact output folder name under {outputs_root}/{pi05_PT|pi05_FT}/ (set explicitly — eval is standalone).
 
 # eval_model: "PT_libero_90_full_full_pi05_batch128_freeze_VLM"

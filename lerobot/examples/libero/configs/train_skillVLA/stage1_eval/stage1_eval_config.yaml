@@ -24,12 +24,16 @@ skillvla_dataset_root: skillvla_dataset  # .../{skillvla_dataset_root}/{source_d
 # from the checkpoint's own use_oracle (1-1 → null; 1-2/single → oracle-r). FSQ.pt / skillvla / eval_init_states.npz
 # are auto-derived from base_dir's run_tag (shared across the 3 phases).
 base_dir: libero_90_full_full_FSQ555_dino8_both_1000_dino_unfreeze_batch256_state
-# model_dir = phase suffix:
-#   1-1    → staged/1-1                                     (null token)
-#   1-2    → staged/1-2_last_n4r8_kl0.001_dp0.5_visfrozen   (oracle-r; tag matches the train sweep)
-#   single → single/n4r8_kl0.001_dp0.5_visfrozen           (oracle-r)
-model_dir: staged/1-1
-checkpoint: "015000"            # "last" or a step number
+# model_dir = phase suffix (the oracle_tag now carries _state|_action from oracle_input_source — match
+# the trained folder exactly; runs created before that tag existed have no _state/_action):
+#   1-1    → staged/1-1                                          (null token)
+#   1-2    → staged/1-2_last_n4r8_kl0.001_dp0.5_state_visfrozen  (oracle-r; tag matches the train sweep)
+#   single → single/n4r8_kl0.001_dp0.5_action_visadapt          (oracle-r)
+# model_dir: staged/1-1
+# model_dir: single/n4r8_kl0.001_dp0.5_visadapt
+model_dir: single/n4r8_kl0.001_dp0.5_visfrozen
+
+checkpoint: "last"            # "last" or a step number
 # Output folder = outputs/{model_dir}_{checkpoint}_adv-{skill_advance_mode}[_{eval_exp}]
 eval_exp: ""                    # optional free-form tag for the eval output folder (e.g. ablation name)
 # ── Oracle r at eval (checkpoints with an Oracle: 1-2 / single) ──

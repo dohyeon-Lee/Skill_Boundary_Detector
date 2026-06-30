@@ -1,7 +1,7 @@
 skillvla_dataset_root: skillvla_dataset 
 
 source_dataset: libero_90_full_full
-# run_tag: FSQ88_dino8_wow_1000   
+# run_tag: FSQ88_dino8_both_1000   
 run_tag: FSQ555_dino8_both_1000   
 
 # ── Conditioning architecture ──
@@ -38,8 +38,14 @@ oracle_r_dim: 8                  # per-token VAE dim — SWEEP. TOTAL bottleneck
 oracle_kl_weight: 1.0e-3         # β on the (free-bits) KL term — SWEEP
 
 
-oracle_resample_n: 30            # resample skill state-traj to N control points — matched to FSQ n_control (=30)
-oracle_spline_degree: 3          # pose-dim spline degree (gripper always degree 1) — matched to FSQ spline_degree
+# Oracle input — what r encodes (the source is tagged in the folder/run name: "_state" | "_action", so
+# the two coexist distinctly):
+#   state  → skill STATE trajectory, spline-resampled, per-skill (geometric residual to z). [default]
+#   action → current GT ACTION chunk (chunk_size×action_dim), per-STEP, NO spline/length token. Carries the
+#            fine-motion detail z's coarse code can't hold (transfers to new tasks). Keep oracle_r_dim TIGHT.
+oracle_input_source: action       # state | action
+oracle_resample_n: 30            # (state only) resample skill state-traj to N control points — matched to FSQ n_control (=30)
+oracle_spline_degree: 3          # (state only) pose-dim spline degree (gripper always degree 1) — matched to FSQ spline_degree
 oracle_width: 512                # Perceiver hidden dim
 oracle_depth: 3                  # Perceiver blocks
 oracle_n_heads: 8
@@ -52,11 +58,11 @@ r_ablation_every: 200              # diagnostic: every N steps log r_gain (loss 
 #   ./submit_single.sh   → one run, Oracle from scratch (CFG A/B) → single/<oracle>
 # Sweeps (oracle_n_tokens/r_dim/kl/dropout) tag the 1-2/single folder; the shared 1-1 is reused across them. ──
 boundary_mode: hold              # cross-skill chunk tail: hold (stop+hold, clean skill end) | keep_demo
-staged_phase2_warmstart: last    # 1-1 ckpt that inits 1-2: "last" | step number | path → folder 1-2_<tag>_<oracle>
+staged_phase2_warmstart: "015000"    # 1-1 ckpt that inits 1-2: "last" | step number | path → folder 1-2_<tag>_<oracle>
 # Applies to BOTH 1-2 and single (anchor skill_proj+null is always frozen/A-frozen; this only gates VISION):
 #   1-2 (whole-phase):  true → vision frozen all phase (clean residual) | false → vision keeps adapting.
 #   single (per-batch): true → vision A-frozen(r)/B-trained(null) with the anchor | false → vision always trains.
-freeze_vsa_vision: false
+freeze_vsa_vision: true
 # Terminator co-train (isolated skill-end-timing head, gradient-disjoint; orthogonal to the Oracle).
 # fsq_path + dino tokens are AUTO-derived from run_tag (run_dir/FSQ.pt + run_dir/dino.npz) — leave blank.
 train_terminator: true
@@ -75,8 +81,8 @@ batch_size: 256
 num_workers: 8                  # data loader workers (was 2; raised to clear GPU starvation — data_s≈updt_s)
 num_gpus: 1
 lr_base: 2.5e-05                # effective LR = lr_base * num_gpus
-steps: 15000
-save_freq: 2500
+steps: 50000
+save_freq: 5000
 
 exp: ""         # optional EXTRA run-name suffix (variant tag _ae/_cond is now auto from skill_inject)
 

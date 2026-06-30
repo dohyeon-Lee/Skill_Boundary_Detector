@@ -96,6 +96,7 @@ train_phase() {
       --policy.chunk_size="${CHUNK_SIZE}" \
       --policy.n_action_steps="${N_ACTION_STEPS}" \
       --policy.use_oracle="${USE_ORACLE}" \
+      --policy.oracle_input_source="${ORACLE_INPUT_SOURCE}" \
       --policy.oracle_resample_n="${ORACLE_RESAMPLE_N}" \
       --policy.oracle_spline_degree="${ORACLE_SPLINE_DEGREE}" \
       --policy.oracle_width="${ORACLE_WIDTH}" \

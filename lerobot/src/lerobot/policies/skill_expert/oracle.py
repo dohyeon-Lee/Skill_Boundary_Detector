@@ -1,20 +1,23 @@
-"""Oracle — Stage-1 residual module (state-trajectory pooler → VAE latent r).
+"""Oracle — Stage-1 residual module (trajectory pooler → VAE latent r).
 
-Encodes the current skill's full STATE TRAJECTORY (start→end, resampled to a fixed length) +
-the GT skill code z into a small VAE latent ``r`` (n_tokens, r_dim), modulated by z via AdaLN.
-``r`` is handed to the action expert as a prefix token: it supplies the WITHIN-skill motion
-detail that (skill z, current obs) underdetermine — a skill is a coarse cluster of 100+ motions,
-so the action expert needs the trajectory to disambiguate which one.
+Encodes a per-skill/per-step trajectory + the GT skill code z into a small VAE latent ``r``
+(n_tokens, r_dim), modulated by z via AdaLN. ``r`` is handed to the action expert as a prefix token:
+it supplies the motion detail that (skill z, current obs) underdetermine — a skill is a coarse
+cluster of 100+ motions, so the action expert needs more to disambiguate which one.
 
-Design notes (Stage-1 redesign):
-  - Input is the STATE trajectory, not a future image: appearance-invariant (OOD-robust without
-    color randomization) and a more direct signal for the motion gap than a single goal frame.
-  - The trajectory is the SAME for every frame of a skill (start→end), so r is constant within a
-    skill — matching Stage-2, where the VLM emits r once at the skill start and holds it.
-  - Perceiver: ``n_tokens`` learned latent queries cross-attend the resampled-trajectory KV set →
-    fixed-size output. Skill z conditions WHAT the queries look for via AdaLN (DiT AdaLN-Zero).
-  - VAE head (μ, logσ) + free-bits → a small, anchored latent (Stage-2 target). r is forced to be
-    a RESIDUAL beyond z by CFG-style dropout in the action expert (see modeling_skill_expert.py).
+Two input modes (config.oracle_input_source):
+  - "state": the skill's full STATE trajectory (start→end) resampled to oracle_resample_n control
+    points + a LENGTH token (duration lost by resampling). Per-skill (constant within a skill, so r is
+    too) — matches Stage-2 emitting r once at skill start. Appearance-invariant, geometric.
+  - "action": the current GT ACTION chunk (chunk_size × action_dim), fixed length → NO resample,
+    NO length token. Per-STEP (the chunk slides each frame → r changes). Carries the fine-motion detail
+    z's coarse code can't hold; motion patterns recur across tasks so the Oracle still generalizes to
+    new tasks (language would not — hence action, not language). Keep r_dim TIGHT (residual, not a copy).
+
+Common: Perceiver — ``n_tokens`` learned latent queries cross-attend the trajectory KV set →
+fixed-size output. Skill z conditions WHAT the queries look for via AdaLN (DiT AdaLN-Zero). VAE head
+(μ, logσ) + free-bits → a small anchored latent; CFG-style dropout in the action expert forces r to be
+a RESIDUAL beyond z (see modeling_skill_expert.py).
 """
 
 from __future__ import annotations
@@ -65,17 +68,24 @@ class Oracle(nn.Module):
         super().__init__()
         self.config = config
         d = int(config.oracle_width)
-        n = int(config.oracle_resample_n)
+        self.input_source = str(config.oracle_input_source)
 
-        # ── KV assembly: per-step state proj + learned positional emb over the N resampled points,
-        # plus a LENGTH token (skill duration — lost by resampling to a fixed N, so fed explicitly,
-        # mirroring FSQ's "control points + length"). ──
-        self.state_proj = nn.Linear(config.max_state_dim, d)
+        # ── KV assembly: per-token input proj + learned positional emb over the L tokens. "state" mode
+        # also adds a LENGTH token (skill duration — lost by resampling to a fixed N, so fed explicitly,
+        # mirroring FSQ's "control points + length"); "action" mode is fixed length so it has neither
+        # resample nor length token. Param names for "state" are kept (state_proj/length_*) so existing
+        # state-mode checkpoints load unchanged. ──
+        if self.input_source == "action":
+            n = int(config.chunk_size)                                  # GT action chunk: fixed length
+            self.action_proj = nn.Linear(config.max_action_dim, d)
+        else:
+            n = int(config.oracle_resample_n)                           # resampled state-traj control points
+            self.state_proj = nn.Linear(config.max_state_dim, d)
+            self.length_proj = nn.Linear(1, d)
+            self.length_type = nn.Parameter(torch.zeros(1, 1, d))       # length-token type emb
+            nn.init.trunc_normal_(self.length_type, std=0.02)
         self.pos_emb = nn.Parameter(torch.zeros(1, n, d))
-        self.length_proj = nn.Linear(1, d)
-        self.length_type = nn.Parameter(torch.zeros(1, 1, d))           # length-token type emb
         nn.init.trunc_normal_(self.pos_emb, std=0.02)
-        nn.init.trunc_normal_(self.length_type, std=0.02)
 
         # ── Skill z → AdaLN condition (z_q grid coord, D dims → oracle width) ──
         self.skill_cond = nn.Linear(len(config.skill_fsq_levels), d)
@@ -104,21 +114,24 @@ class Oracle(nn.Module):
         return int(self.config.oracle_n_tokens)
 
     def forward(
-        self, state_traj: Tensor, skill_len: Tensor, skill_zq: Tensor, sample: bool
+        self, traj: Tensor, length: Tensor | None, skill_zq: Tensor, sample: bool
     ) -> tuple[Tensor, Tensor]:
-        """state_traj (B, N, max_state_dim) — the skill's resampled state trajectory;
-        skill_len (B,) — the skill's true duration in frames (lost by resampling);
+        """traj — the Oracle input trajectory: "state" mode = (B, N, max_state_dim) resampled state-traj;
+        "action" mode = (B, chunk_size, max_action_dim) GT action chunk.
+        length (B,) — skill duration in frames ("state" mode only; lost by resampling); None for "action".
         skill_zq (B, D) normalized FSQ grid coord in [-1, 1]. sample → VAE reparam (train) vs μ (eval).
 
         Returns r (B, n_tokens, r_dim) and the (free-bits) KL scalar.
         """
-        dtype = self.state_proj.weight.dtype
-        bsize = state_traj.shape[0]
+        proj = self.action_proj if self.input_source == "action" else self.state_proj
+        dtype = proj.weight.dtype
+        bsize = traj.shape[0]
 
-        state_kv = self.state_proj(state_traj.to(dtype)) + self.pos_emb.to(dtype)        # (B, N, d)
-        len_feat = torch.log1p(skill_len.to(dtype).clamp(min=0)).view(bsize, 1, 1)       # scale-robust
-        len_tok = self.length_proj(len_feat) + self.length_type.to(dtype)                # (B, 1, d)
-        kv = torch.cat([state_kv, len_tok], dim=1)                                       # (B, N+1, d)
+        kv = proj(traj.to(dtype)) + self.pos_emb.to(dtype)                               # (B, L, d)
+        if self.input_source != "action":                                               # state: + length token
+            len_feat = torch.log1p(length.to(dtype).clamp(min=0)).view(bsize, 1, 1)      # scale-robust
+            len_tok = self.length_proj(len_feat) + self.length_type.to(dtype)            # (B, 1, d)
+            kv = torch.cat([kv, len_tok], dim=1)                                         # (B, N+1, d)
         cond = self.skill_cond(skill_zq.to(dtype))                                       # (B, d)
         q = self.latents.to(dtype).expand(bsize, -1, -1)
         for blk in self.blocks:

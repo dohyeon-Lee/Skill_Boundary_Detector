@@ -85,6 +85,16 @@ class SkillExpertConfig(PI05Config):
     use_oracle: bool = False
     """Build + use the Oracle. False → plain VSA (the r-slot is always the learned null token = no
     residual). The STAGED schedule sets this False in 1-1 and True in 1-2; single-stage sets it True."""
+    oracle_input_source: str = "state"
+    """What the Oracle encodes into r:
+    "state"  → the skill's full STATE trajectory (start→end), spline-resampled to oracle_resample_n,
+               per-skill (constant within a skill). Geometric residual to z (uses resample_n/spline_degree).
+    "action" → the current GT ACTION chunk (chunk_size × action_dim), per-STEP (changes every chunk),
+               NO spline / NO length token (fixed length). Carries the transferable fine-motion detail
+               z's coarse code can't hold (motion patterns recur across tasks → Oracle generalizes to new
+               tasks; language would not, which is why this is action- not language-based). Keep oracle_r_dim
+               TIGHT so r stays a residual the VLM can predict (not a verbatim action copy).
+               (oracle_resample_n / oracle_spline_degree are ignored in this mode.)"""
     oracle_resample_n: int = 30
     """Resample the skill's state trajectory to this many control points — MATCH the FSQ n_control so the
     Oracle sees the trajectory at the same resolution the skill code z was derived from."""
@@ -195,6 +205,8 @@ class SkillExpertConfig(PI05Config):
             raise ValueError(f"boundary_mode must be 'hold' or 'keep_demo' (got {self.boundary_mode!r}).")
         if not 0.0 <= self.oracle_dropout_p < 1.0:
             raise ValueError(f"oracle_dropout_p must be in [0, 1) (got {self.oracle_dropout_p}).")
+        if self.oracle_input_source not in ("state", "action"):
+            raise ValueError(f"oracle_input_source must be 'state' or 'action' (got {self.oracle_input_source!r}).")
         if self.train_terminator and not self.fsq_path:
             raise ValueError("train_terminator=True needs fsq_path (the FSQ checkpoint to warm-start).")
         if self.train_terminator and not self.skill_decoder_dino_tokens_path:

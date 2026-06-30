@@ -792,7 +792,12 @@ class SkillExpertPolicy(PreTrainedPolicy):
         # keep_demo: valid = ~pad (full chunk kept with demo actions); actions unchanged.
 
         state = pad_vector(batch[OBS_STATE], self.config.max_state_dim)   # → state_proj's fixed width (pi0)
-        state_traj, skill_len = self._collect_state_traj(batch)          # Oracle inputs (None when absent)
+        # Oracle input: "action" mode = the GT action chunk (this skill's target, padded/boundary-adjusted
+        # above) — per-step; "state" mode = the resampled skill state-traj + length. None → null r-slot.
+        if self.config.oracle_input_source == "action":
+            state_traj, skill_len = actions, None
+        else:
+            state_traj, skill_len = self._collect_state_traj(batch)
         resid, kl = self.model.forward(                                  # signed flow residual (u_t - v_t), KL
             images, img_masks, state, self._skill_code(batch), actions,
             state_traj=state_traj, skill_len=skill_len, use_r=use_r)
@@ -874,7 +879,13 @@ class SkillExpertPolicy(PreTrainedPolicy):
         # eval) r is used; closed-loop sim supplies none → the null fallback (graceful degradation).
         images, img_masks = self._collect_images(batch)
         state = pad_vector(batch[OBS_STATE], self.config.max_state_dim)   # → state_proj's fixed width (pi0)
-        state_traj, skill_len = self._collect_state_traj(batch)          # Oracle inputs (None when absent)
+        # Oracle input (see forward): "action" mode needs a GT chunk — present only when teacher-forced /
+        # oracle-eval (batch[ACTION]); closed-loop sim has none → None → null r. "state" mode uses the traj.
+        if self.config.oracle_input_source == "action":
+            state_traj = pad_vector(batch[ACTION], self.config.max_action_dim) if ACTION in batch else None
+            skill_len = None
+        else:
+            state_traj, skill_len = self._collect_state_traj(batch)
         actions = self.model.sample_actions(
             images, img_masks, state, self._skill_code(batch),
             state_traj=state_traj, skill_len=skill_len, **kwargs)

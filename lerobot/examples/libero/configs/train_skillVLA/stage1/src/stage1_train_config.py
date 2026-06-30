@@ -69,6 +69,7 @@ def build_settings(cfg: dict) -> dict:
     # ── Oracle (Stage-1 residual r) hyperparameters + sweep knobs ──
     oracle_resample_n = int(get_value(cfg, "oracle_resample_n", 30))
     oracle_spline_degree = int(get_value(cfg, "oracle_spline_degree", 3))
+    oracle_input_source = (str(get_value(cfg, "oracle_input_source", "state")).strip() or "state")
     oracle_width = int(get_value(cfg, "oracle_width", 512))
     oracle_depth = int(get_value(cfg, "oracle_depth", 3))
     oracle_n_heads = int(get_value(cfg, "oracle_n_heads", 8))
@@ -80,7 +81,9 @@ def build_settings(cfg: dict) -> dict:
     r_ablation_every = int(get_value(cfg, "r_ablation_every", 0))
     # Oracle sweep tag → distinguishes 1-2 / single output folders across a sweep. n{tokens}r{dim} is
     # the latent SHAPE (total bottleneck = n_tokens × r_dim); kl/dp are the other swept knobs.
-    oracle_tag = f"n{oracle_n_tokens}r{oracle_r_dim}_kl{_fmt(oracle_kl_weight)}_dp{_fmt(oracle_dropout_p)}"
+    # Tag the Oracle input source (state | action) in the folder/run name so the two coexist distinctly.
+    oracle_tag = (f"n{oracle_n_tokens}r{oracle_r_dim}_kl{_fmt(oracle_kl_weight)}"
+                  f"_dp{_fmt(oracle_dropout_p)}_{oracle_input_source}")
 
     # Terminator inputs are build_data products under run_dir → AUTO-derived from run_tag.
     fsq_path_raw = str(get_value(cfg, "fsq_path", "")).strip()
@@ -130,7 +133,9 @@ def build_settings(cfg: dict) -> dict:
         ws_tag, ws_path = "last", staged_1_1_dir / "checkpoints" / "last" / "pretrained_model"
     elif ws.isdigit():
         ws_tag = f"step{int(ws)}"
-        ws_path = staged_1_1_dir / "checkpoints" / f"{int(ws):0{len(str(steps_total))}d}" / "pretrained_model"
+        # checkpoint dirs are zero-padded to max(6, len(str(total_steps))) digits (mirrors lerobot
+        # train_utils.get_step_checkpoint_dir) → e.g. step 15000 → "015000", NOT "15000".
+        ws_path = staged_1_1_dir / "checkpoints" / f"{int(ws):0{max(6, len(str(steps_total)))}d}" / "pretrained_model"
     else:
         _p = Path(ws)
         _name = _p.parent.name if _p.name == "pretrained_model" else _p.name
@@ -173,6 +178,7 @@ def build_settings(cfg: dict) -> dict:
         # ── Oracle (state-trajectory → 1-token VAE residual r) ──
         "oracle_resample_n": oracle_resample_n,
         "oracle_spline_degree": oracle_spline_degree,
+        "oracle_input_source": oracle_input_source,
         "oracle_width": oracle_width,
         "oracle_depth": oracle_depth,
         "oracle_n_heads": oracle_n_heads,
