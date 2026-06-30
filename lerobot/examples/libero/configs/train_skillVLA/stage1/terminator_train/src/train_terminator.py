@@ -359,7 +359,7 @@ def main() -> None:
             return save_ckpt(out_dir, step, fsq, fsq_cfg, optimizer)
 
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers,
-                        collate_fn=collate_fn, drop_last=True, pin_memory=True,
+                        collate_fn=collate_fn, drop_last=True, pin_memory=False,  # pinned-mem alloc under concurrent jobs → CUDA "unknown error"
                         persistent_workers=num_workers > 0)
     print(f"[terminator] dataset frames={len(dataset)} repo={repo_id} arch={arch} — starting train", flush=True)
 

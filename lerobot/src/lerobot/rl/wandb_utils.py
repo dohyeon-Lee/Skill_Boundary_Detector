@@ -92,6 +92,17 @@ class WandBLogger:
             if cfg.resume
             else None
         )
+        # Pin wandb's system-metrics GPU monitor to THIS job's GPU(s) so the panel shows only our device
+        # instead of every GPU on the shared node. We only READ the CUDA_VISIBLE_DEVICES that Slurm already
+        # set — never write it or any CUDA env (telemetry-only; cannot affect GPU allocation). On anything
+        # unexpected (unset, or GPU-UUID values rather than integer indices) we leave wandb's default.
+        gpu_settings = None
+        try:
+            ids = [int(x) for x in os.environ.get("CUDA_VISIBLE_DEVICES", "").split(",") if x.strip()]
+            if ids:
+                gpu_settings = wandb.Settings(x_stats_gpu_device_ids=ids)
+        except Exception:  # noqa: BLE001 — cosmetic monitor scoping must never break training
+            gpu_settings = None
         wandb.init(
             id=wandb_run_id,
             project=self.cfg.project,
@@ -107,6 +118,7 @@ class WandBLogger:
             job_type="train_eval",
             resume="must" if cfg.resume else None,
             mode=self.cfg.mode if self.cfg.mode in ["online", "offline", "disabled"] else "online",
+            settings=gpu_settings,
         )
         run_id = wandb.run.id
         # NOTE: We will override the cfg.wandb.run_id with the wandb run id.
