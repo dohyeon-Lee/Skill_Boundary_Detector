@@ -290,6 +290,11 @@ class SplineFSQAEConfig:
     progress_loss_weight: float = 1.0
     end_loss_weight: float = 1.0
     end_pos_weight: float = 1.0
+    weighted_loss: bool = False
+    """Per-frame end-weight the reconstructor (delta) loss: w=1+progress (skill END counts ~2× the
+    start). Steers the FSQ latent to spend more code resolution on the skill's latter/handoff part.
+    progress/termination losses stay uniform (their targets already carry the end emphasis; progress
+    must stay calibrated across the skill). See fsqae_loss."""
     end_threshold: float = 0.5
     lr: float = 3e-4
     batch_size: int = 64
@@ -971,8 +976,11 @@ def fsqae_loss(
     progress_loss_weight: float = 1.0,
     end_loss_weight: float = 1.0,
     end_pos_weight: float | torch.Tensor = 1.0,
+    weighted: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Returns (total, delta_loss, progress_loss, end_loss). No VQ loss term."""
+    """Returns (total, delta_loss, progress_loss, end_loss, delta_loss_weighted). delta_loss is the
+    PLAIN (uniform) comparison value; delta_loss_weighted is the objective's delta term (equals
+    delta_loss when weighted=False). No VQ loss term."""
     dev, dt = pred_delta.device, pred_delta.dtype
 
     # Action chunk loss (B, T, K, A): normalize to [-1,1], SmoothL1, valid-slot mean.
@@ -988,7 +996,19 @@ def fsqae_loss(
     per_step = (per_step_ka * cv).sum(dim=-1) / cv.sum(dim=-1).clamp_min(1.0)  # (B, T)
 
     m = mask.float()
+    # PLAIN (uniform) per-frame delta loss — always the comparison metric (logged as delta_loss), so
+    # weighted vs uniform runs stay directly comparable on the same axis.
     delta_loss = ((per_step * m).sum(dim=1) / m.sum(dim=1).clamp_min(1.0)).mean()
+    # Objective's delta term: optionally per-frame end-weighted by w[t]=1+progress[t] → the skill-END
+    # frames count up to 2× the start (progress 0→1). Uniform WITHIN a chunk (delta actions: endpoint
+    # = Σ deltas, so the K slots jointly determine the landing and share one weight). Steers the FSQ
+    # latent to spend more code resolution on the skill's latter/handoff part. progress/end losses
+    # below stay uniform (calibrated timing targets). When off, equals the plain delta_loss.
+    if weighted:
+        w = m * (1.0 + target_progress.to(dev, dt))
+        delta_loss_weighted = ((per_step * w).sum(dim=1) / w.sum(dim=1).clamp_min(1.0)).mean()
+    else:
+        delta_loss_weighted = delta_loss
 
     # Progress regression (per-step, masked).
     prog_per = F.smooth_l1_loss(pred_progress, target_progress.to(dev, dt), reduction="none")
@@ -1002,11 +1022,11 @@ def fsqae_loss(
     end_loss = (end_per * m).sum() / m.sum().clamp_min(1.0)
 
     total = (
-        delta_loss_weight * delta_loss
+        delta_loss_weight * delta_loss_weighted
         + progress_loss_weight * progress_loss
         + end_loss_weight * end_loss
     )
-    return total, delta_loss, progress_loss, end_loss
+    return total, delta_loss, progress_loss, end_loss, delta_loss_weighted
 
 
 # ── End-signal metrics ────────────────────────────────────────────────────────
@@ -1095,12 +1115,12 @@ def train_spline_fsqae(
     train_loader = DataLoader(
         train_ds, collate_fn=collate_fsq_batch,
         batch_sampler=LengthBucketBatchSampler(train_ds.lengths, cfg.batch_size, shuffle=True),
-        num_workers=cfg.num_workers, pin_memory=True, persistent_workers=cfg.num_workers > 0,
+        num_workers=cfg.num_workers, pin_memory=False, persistent_workers=cfg.num_workers > 0,
     )
     val_loader = DataLoader(
         val_ds, collate_fn=collate_fsq_batch,
         batch_sampler=LengthBucketBatchSampler(val_ds.lengths, cfg.batch_size, shuffle=False),
-        num_workers=cfg.num_workers, pin_memory=True, persistent_workers=cfg.num_workers > 0,
+        num_workers=cfg.num_workers, pin_memory=False, persistent_workers=cfg.num_workers > 0,
     )
 
     model = SplineFSQAE(
@@ -1174,10 +1194,11 @@ def train_spline_fsqae(
             pred_delta, pred_prog, pred_term, _ = model(
                 ctrl, lengths, states, dec_tok, dec_tok_wrist, frame_progress,
             )
-            total, d_l, p_l, e_l = fsqae_loss(
+            total, d_l, p_l, e_l, dw_l = fsqae_loss(
                 pred_delta, pred_prog, pred_term, tgt_delta, tgt_prog, tgt_term, mask,
                 model.delta_min, model.delta_max, cv,
                 cfg.delta_loss_weight, cfg.progress_loss_weight, cfg.end_loss_weight, cfg.end_pos_weight,
+                weighted=cfg.weighted_loss,
             )
         if train:
             optim.zero_grad()
@@ -1185,24 +1206,24 @@ def train_spline_fsqae(
             nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
             optim.step()
         em = end_signal_metrics(pred_term, tgt_term, mask, cfg.end_threshold)
-        return total.item(), d_l.item(), p_l.item(), e_l.item(), em
+        return total.item(), d_l.item(), p_l.item(), e_l.item(), dw_l.item(), em
 
     for epoch in range(start_epoch, cfg.epochs + 1):
         model.train()
-        t_tot = t_d = t_p = t_e = t_acc = t_rec = n_tr = 0.0
+        t_tot = t_d = t_p = t_e = t_dw = t_acc = t_rec = n_tr = 0.0
         for batch in train_loader:
-            tot, d, p, e, em = _step(batch, train=True)
-            t_tot += tot; t_d += d; t_p += p; t_e += e
+            tot, d, p, e, dw, em = _step(batch, train=True)
+            t_tot += tot; t_d += d; t_p += p; t_e += e; t_dw += dw
             t_acc += em["acc"]; t_rec += em["recall"]; n_tr += 1
 
         scheduler.step()
 
         model.eval()
-        v_tot = v_d = v_p = v_e = v_acc = v_rec = n_vl = 0.0
+        v_tot = v_d = v_p = v_e = v_dw = v_acc = v_rec = n_vl = 0.0
         with torch.no_grad():
             for batch in val_loader:
-                tot, d, p, e, em = _step(batch, train=False)
-                v_tot += tot; v_d += d; v_p += p; v_e += e
+                tot, d, p, e, dw, em = _step(batch, train=False)
+                v_tot += tot; v_d += d; v_p += p; v_e += e; v_dw += dw
                 v_acc += em["acc"]; v_rec += em["recall"]; n_vl += 1
 
         n_tr = max(1, n_tr); n_vl = max(1, n_vl)
@@ -1224,6 +1245,11 @@ def train_spline_fsqae(
             "lr": scheduler.get_last_lr()[0],
             "end_pos_weight": cfg.end_pos_weight,
         }
+        # Plain delta stays in */delta_loss (the cross-run comparison axis); the actual end-weighted
+        # delta that the objective backprops shows in a SEPARATE panel (only for weighted runs).
+        if cfg.weighted_loss:
+            log["train/delta_loss_weighted"] = t_dw / n_tr
+            log["val/delta_loss_weighted"]   = v_dw / n_vl
         if wandb_run is not None:
             wandb_run.log(log, step=epoch)
 

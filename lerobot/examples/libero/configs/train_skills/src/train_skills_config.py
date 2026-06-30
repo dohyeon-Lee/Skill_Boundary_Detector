@@ -243,6 +243,10 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
     fsq_image_token_dim = int(get_value(cfg, "fsq_image_token_dim", 256))
     fsq_exp = str(get_value(cfg, "fsq_exp", "")).strip()
     fsq_exp_suffix = f"_{fsq_exp}" if fsq_exp else ""
+    # weighted_loss probe: end-weight the FSQ reconstructor (delta) loss. Tags the run/folder name
+    # with "_weighted" (placed BEFORE the fsq_exp suffix) so weighted vs uniform runs never collide.
+    weighted_loss = as_bool(get_value(cfg, "weighted_loss", False))
+    weighted_suffix = "_weighted" if weighted_loss else ""
     # DP tag for the FSQ run name = the DP run with the dataset prefix stripped
     # (libero_90_full_full_state_obs20 → state_obs20), so the FSQ folder shows WHICH DP's skillset it
     # was trained on (state_obs20 vs dino8_obs10 …), not just the FSQ's own patch grid.
@@ -251,7 +255,7 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         get_value(
             cfg,
             "fsq_run_name",
-            "{target_dataset}_{dp_tag}_{fsq_tag}_dino{fsq_patch_grid}{fsq_exp_suffix}",
+            "{target_dataset}_{dp_tag}_{fsq_tag}_dino{fsq_patch_grid}{weighted_suffix}{fsq_exp_suffix}",
         )
     )
     fsq_run_name = fsq_run_template.format(
@@ -263,6 +267,7 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         fsq_image_token_dim=fsq_image_token_dim,
         fsq_exp=fsq_exp,
         fsq_exp_suffix=fsq_exp_suffix,
+        weighted_suffix=weighted_suffix,
     )
     # Slurm partition/qos/nodelist/exclude are canonical (read from global_config.yaml's train_*);
     # output keys below keep their per-job prefix so submit scripts read the same $..._PARTITION vars.
@@ -337,6 +342,8 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "fsq_tag": fsq_tag,
         "fsq_exp": fsq_exp,
         "fsq_exp_suffix": fsq_exp_suffix,
+        "fsq_weighted_loss": weighted_loss,
+        "weighted_suffix": weighted_suffix,
         "fsq_run_name": fsq_run_name,
         "fsq_output_dir": fsq_outputs_root / fsq_run_name,
         "fsq_dim": len(fsq_levels),

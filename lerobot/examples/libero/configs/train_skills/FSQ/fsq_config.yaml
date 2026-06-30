@@ -20,17 +20,17 @@ skillset_name: skillset
 # ── FSQ model / run ──
 # {dp_tag} = the DP run that produced the skillset (dataset prefix stripped, e.g. state_obs20 /
 # dino8_obs10) → the FSQ folder shows WHICH DP it was trained on, not just its own grid.
-fsq_run_name: "{target_dataset}_{dp_tag}_{fsq_tag}_dino{fsq_patch_grid}{fsq_exp_suffix}"
-fsq_exp: "wot"                # optional ablation suffix
-fsq_levels: [8, 8]                 # FSQ quantization levels
+fsq_run_name: "{target_dataset}_{dp_tag}_{fsq_tag}_dino{fsq_patch_grid}{weighted_suffix}{fsq_exp_suffix}"
+fsq_exp: "both"                # optional ablation suffix
+fsq_levels: [8, 8]  # [8, 8] | [5, 5, 5]  
 fsq_epoch: "1000"
 
 # Terminator cameras (must match build_data's fsq_terminator_use_wrist for token availability).
-fsq_terminator_use_third: false
+fsq_terminator_use_third: true
 fsq_terminator_use_wrist: true
 
 fsq_batch_size: 64
-fsq_num_workers: 8
+fsq_num_workers: 0
 fsq_num_epochs: 1000
 fsq_checkpoint_every: 100
 fsq_chunk_size: 10
@@ -40,6 +40,11 @@ fsq_delta_loss_weight: 1.0
 fsq_progress_loss_weight: 1.0
 fsq_end_loss_weight: 1.0
 fsq_end_target_sigma: 1.0
+
+# Probe: end-weight the reconstructor (delta) loss per-frame by w=1+progress (skill END ~2× the
+# start) → FSQ latent allocates more code resolution to the skill's latter/handoff part. progress &
+# termination losses stay uniform. true → run/folder name gets a "_weighted" tag (before fsq_exp).
+weighted_loss: false
 
 # ── Slurm (partition/qos/nodelist/exclude from configs/global_config.yaml) ──
 fsq_train_gres: gpu:1

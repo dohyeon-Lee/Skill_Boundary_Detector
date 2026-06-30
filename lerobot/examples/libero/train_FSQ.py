@@ -96,6 +96,9 @@ class Args:
     end_target_sigma: float = 0.0
     """Soft termination target std in frames (Gaussian bump at the skill end). 0 = hard 1-frame
     spike. σ≈2-3 curbs the val overfit a sharp spike causes and adds ±tolerance to recall/precision."""
+    weighted_loss: bool = False
+    """Per-frame end-weight the reconstructor delta loss (w=1+progress; skill END ~2× the start).
+    Steers the FSQ latent toward the skill's latter/handoff portion. progress/termination unchanged."""
 
     # ── training
     epochs: int = 5000
@@ -424,6 +427,7 @@ def main(args: Args) -> None:
         end_pos_weight=args.end_pos_weight,
         end_threshold=args.end_threshold,
         end_target_sigma=args.end_target_sigma,
+        weighted_loss=args.weighted_loss,
         lr=args.lr,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
