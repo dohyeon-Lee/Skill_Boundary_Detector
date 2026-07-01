@@ -52,9 +52,10 @@ SKILL_VLA_BATCH_KEYS = (
     "skill_decoder_state",
     "skill_decoder_image",
     "skill_decoder_wrist",
-    # FT terminator co-training (train only): current-frame DINO tokens + the TRUE current skill code
-    # and its in-skill offsets (ds/de) for the GT progress + soft-termination targets.
+    # FT terminator co-training (train only): current-frame DINO tokens (+ wrist for a dual FSQ) + the
+    # TRUE current skill code and its in-skill offsets (ds/de) for the GT progress + soft-term targets.
     "skill_decoder_dino",
+    "skill_decoder_dino_wrist",
     "skill_code_true",
     "skill_ds",
     "skill_de",

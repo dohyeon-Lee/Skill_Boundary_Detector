@@ -47,16 +47,54 @@ class SkillVLAConfig(PI05Config):
     skill_loss_weight: float = 0.5
     """λ_skill in ``total = BC + λ_skill * skill_CE``. < 1 keeps the action BC dominant (including the
     BC gradient that flows into the VLM via cross-attention)."""
-    cond_attend_language: bool = False
-    """VLM↔cond cross-attention: by default cond attends the VLM IMAGE tokens only (language excluded
-    → forces visual grounding). True lets cond ALSO attend the VLM language tokens (ablation). The
-    skill-query token is always excluded either way."""
-    action_attend_vlm: bool = False
-    """Give the ACTION tokens a DIRECT edge to the VLM IMAGE tokens (in addition to the cond cache).
-    Default False = the original one-directional chain (VLM → cond → action; action sees the VLM only via
-    cond). True = action tokens ALSO attend the VLM image tokens directly (lang + skill-query excluded; the
-    skill PREFIX still reads only itself; cond ⊥ action unchanged). Applies to BOTH the training joint mask
-    and the cached inference path — needs a Stage-2 retrain. Run-name tag: actvlm."""
+    # ── Inter-module attention connections (VLM, cond, action expert). Each is a directed edge in the
+    # VLM → cond → expert chain (+ the VLM → expert shortcut); toggling them is a design choice. All apply to
+    # BOTH the training joint mask AND the cached inference path (train/infer must match → a Stage-2 retrain).
+    attend_language: bool = False
+    """Whether the VLM's LANGUAGE tokens are attendable (by BOTH cond and the action expert). False = only
+    the VLM IMAGE tokens are read (language excluded → forces visual grounding); True = language ALSO
+    attendable (ablation). The skill-query read-out token is ALWAYS excluded. This is the language MASTER
+    switch: it gates the language subset for every VLM→X edge (vlm_cond and vlm_expert). Run-name tag: lang."""
+    vlm_cond: bool = True
+    """VLM → cond edge: cond attends the VLM tokens (images always, language iff attend_language). True =
+    the cond-encoder is grounded by the VLM's skill-start view (default). False = cond is a plain current-obs
+    scene encoder, VLM-blind. Run-name tag (when off): noVc."""
+    cond_expert: bool = True
+    """cond → expert edge: the action tokens attend the cond (scene) stream. True = the backbone path the
+    action expert reads the scene through (default). False = the expert ignores cond (acts on skill z + its
+    prefix + the VLM directly if vlm_expert). Run-name tag (when off): noCe."""
+    vlm_expert: bool = False
+    """VLM → expert (direct) edge: the action tokens attend the VLM tokens directly (images always, language
+    iff attend_language), in ADDITION to the cond path. False = the original one-directional chain
+    (VLM → cond → action; action sees the VLM only via cond). True = a direct VLM→action shortcut. The skill
+    PREFIX still reads only itself; cond ⊥ action unchanged. Run-name tag: ve. (Was: action_attend_vlm.)"""
+    vlm_dropout_p: float = 0.0
+    """CFG-style VLM dropout (TRAIN only). With this per-batch probability, SEVER the cond→VLM and
+    action→VLM attention edges for the whole batch, so the action expert acts on cond (current obs) +
+    the GT skill z (prefix/AdaRMS) ALONE — exactly the Stage-1 form — while the VLM stream still runs
+    (self-attn), so the skill head is still supervised every batch (no staleness). This teaches the expert
+    to not COLLAPSE onto the VLM grounding. p=0 → never dropped (bit-identical to no-dropout; the coin is
+    only flipped when p>0). Mask-only (RoPE/positions unchanged from a non-dropped batch — a pure ablation,
+    NOT token removal). Intended for cond_skill_source='gt' (the skill is GT-injected, VLM-independent).
+    Run-name tag: vdrop{p}."""
+
+    # ── Per-regime freeze for the CFG dropout (ONLY used when vlm_dropout_p > 0) ──
+    # A = VLM_VSA (VLM present) batches | B = VSA (VLM dropped = Stage-1 form) batches. True = FREEZE (no
+    # param update) that group on that regime's batches. Groups: expert = the action expert + its action/
+    # time/state/skill projections; cond = cond-encoder + image_proj; vlm = the VLM LLM + skill_query. A group
+    # is placed in the optimizer iff it trains in AT LEAST one regime; requires_grad is toggled per batch by
+    # the coin flip (Adam skips requires_grad=False params → clean freeze, no momentum leak). When
+    # vlm_dropout_p == 0 these are IGNORED and the static freeze_* flags below apply (backward-compatible).
+    # Vision backbones (freeze_vlm_vision / freeze_expert_vision) + skill_head (freeze_skill_head) stay static.
+    # ⚠ MULTI-GPU: with num_gpus>1 (DDP) AND a group trained in only ONE regime, ranks that pick different
+    #   drop_vlm coins freeze different params → the DDP reducer can desync/hang. Keep num_gpus=1 for
+    #   per-regime freeze, or broadcast one coin to all ranks. (num_gpus=1 — the default — is unaffected.)
+    freeze_vlm_vsa_expert: bool = False
+    freeze_vlm_vsa_cond: bool = False
+    freeze_vlm_vsa_vlm: bool = False
+    freeze_vsa_expert: bool = False
+    freeze_vsa_cond: bool = False
+    freeze_vsa_vlm: bool = False
 
     # ── Freeze toggles (all parts otherwise trained) ──
     freeze_vlm: bool = False
@@ -118,6 +156,13 @@ class SkillVLAConfig(PI05Config):
     """Optional mmap cache (.npy) for the token npz; None → next to the npz."""
     skill_decoder_dino_build_cache: bool = True
     """Build the mmap cache from the npz on first use (else require it to exist)."""
+    # Wrist-camera FSQ-grid DINO tokens — ONLY needed when the FSQ terminator is DUAL (terminator_use_wrist,
+    # e.g. a "both" FSQ). The factory attaches a 2nd SkillVLADinoTokenDataset under the wrist output key.
+    skill_decoder_dino_wrist_tokens_path: str | None = None
+    """Wrist-camera DINO token npz (build_data's ``dino_wrist.npz``). Required for a dual (use_wrist) FSQ
+    terminator; leave None for a 3rd-only ('wow') FSQ."""
+    skill_decoder_dino_wrist_output_key: str = "skill_decoder_dino_wrist"
+    skill_decoder_dino_wrist_cache_path: str | None = None
 
     # ── Inference: skill transitions via the frozen FSQ terminator ──
     fsq_path: str | None = None

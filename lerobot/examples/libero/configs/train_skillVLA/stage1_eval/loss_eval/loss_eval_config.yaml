@@ -1,0 +1,36 @@
+# Offline front-vs-back SKILL loss eval (NO sim). See loss_eval.py.
+#
+# For each model below, runs the flow-matching forward on its own dataset and breaks the per-chunk action
+# MSE down by the chunk's within-skill ENDPOINT progress (0-50 / 50-90 / 90-100) — recovering the
+# `action_loss_prog/*` breakdown for runs that finished before that wandb panel existed.
+#   ./run.sh                    # direct (needs a GPU in the current shell — e.g. inside salloc)
+#   ./submit.sh                 # Slurm job (or srun inside an existing allocation)
+#   ./submit.sh --n_batches 150 # CLI overrides the sampling knobs below
+# =========================================================================================
+
+# ── Paths (project_root/dataset_root/outputs_root come from the nearest global_config.yaml) ──
+skillvla_dataset_root: skillvla_dataset   # .../{skillvla_dataset_root}/{source_dataset}/{run_tag}/
+source_dataset: libero_90_full_full       # locates each model's run_dir/skillvla (its training data)
+
+# ── Models to compare (same folder-name format as sim eval; NO source prefix) ──
+# 1 entry → its own buckets; 2+ → a side-by-side table. Per entry: checkpoint omitted → top-level
+# `checkpoint`; label omitted → auto from the differing token(s).
+models:
+  - {model_dir: FSQ555_dino8_both_1000_siglip_batch256_state,          label: plain}
+  - {model_dir: FSQ555_dino8_both_1000_siglip_batch256_state_weighted, label: weighted}
+  # - {model_dir: FSQ555_dino8_weighted_wow_1000_siglip_batch256_state_weighted, label: weighted_wow}
+checkpoint: "015000"           # default step for entries that omit their own checkpoint ("last" or a number)
+
+# ── Sampling (the loss is stochastic in the flow-time; more chunks → tighter bucket estimate) ──
+# Chunks are drawn SHUFFLED (fixed seed) → a REPRESENTATIVE sample across all tasks/skills, NOT the whole
+# dataset (~569k chunks for libero_90). n_batches × batch_size = chunks/model (e.g. 150×64 ≈ 9.6k ≈ 1.7%);
+# a few thousand per bucket is plenty for the comparison. Set n_batches: 0 for a FULL pass (slow, ~exact).
+n_batches: 150                 # batches per model (0 = full dataset). Actual coverage % is printed at run time.
+batch_size: 64
+seed: 0                        # fixed → every model sees the SAME chunks + flow-times (paired, low-variance)
+
+# ── GPU / Slurm (partition/qos/nodelist/exclude come from global_config's train_*) ──
+eval_gres: gpu:1
+eval_cpus_per_task: 8
+eval_mem: 48G
+eval_time: "1:00:00"

@@ -79,6 +79,13 @@ if [ "${TRAIN_TERMINATOR}" = "true" ]; then
     --policy.skill_decoder_dino_tokens_path="${DINO_TOKENS_PATH}"
     --policy.skill_decoder_dino_output_key=skill_decoder_dino
   )
+  # Dual (terminator_use_wrist) FSQ → also attach the wrist DINO tokens (emitter sets this only if built).
+  if [ -n "${DINO_WRIST_TOKENS_PATH:-}" ]; then
+    TERM_ARGS+=(
+      --policy.skill_decoder_dino_wrist_tokens_path="${DINO_WRIST_TOKENS_PATH}"
+      --policy.skill_decoder_dino_wrist_output_key=skill_decoder_dino_wrist
+    )
+  fi
 fi
 
 # pretrained_path=pi05 warm-starts the VLM; stage1_checkpoint_path warm-starts the action/cond side
@@ -100,8 +107,17 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.stage1_checkpoint_path="${STAGE1_CHECKPOINT_PATH}" \
     --policy.skill_fsq_levels="${SKILL_FSQ_LEVELS}" \
     --policy.skill_loss_weight="${SKILL_LOSS_WEIGHT}" \
-    --policy.cond_attend_language="${COND_ATTEND_LANGUAGE}" \
-    --policy.action_attend_vlm="${ACTION_ATTEND_VLM}" \
+    --policy.attend_language="${ATTEND_LANGUAGE}" \
+    --policy.vlm_cond="${VLM_COND}" \
+    --policy.cond_expert="${COND_EXPERT}" \
+    --policy.vlm_expert="${VLM_EXPERT}" \
+    --policy.vlm_dropout_p="${VLM_DROPOUT_P}" \
+    --policy.freeze_vlm_vsa_expert="${FREEZE_VLM_VSA_EXPERT}" \
+    --policy.freeze_vlm_vsa_cond="${FREEZE_VLM_VSA_COND}" \
+    --policy.freeze_vlm_vsa_vlm="${FREEZE_VLM_VSA_VLM}" \
+    --policy.freeze_vsa_expert="${FREEZE_VSA_EXPERT}" \
+    --policy.freeze_vsa_cond="${FREEZE_VSA_COND}" \
+    --policy.freeze_vsa_vlm="${FREEZE_VSA_VLM}" \
     --policy.fsq_path="${FSQ_CKPT}" \
     --policy.freeze_vlm="${FREEZE_VLM}" \
     --policy.freeze_vlm_vision="${FREEZE_VLM_VISION}" \

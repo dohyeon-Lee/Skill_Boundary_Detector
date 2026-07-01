@@ -44,8 +44,8 @@ source_dataset: libero_90_full_full
 dino_base_dataset: libero_90_full_full   # base dataset name | "generate"
 DP_patch_grid:  8       # grid the DP segmentation consumes (3rd-person)
 FSQ_patch_grid: 8       # grid the FSQ terminator / skill DINO tokens consume
-dino_third: true        # terminator 3rd-person camera (observation.images.image)
-dino_wrist: false       # terminator wrist camera (observation.images.wrist_image). Produced/
+dino_third: false        # terminator 3rd-person camera (observation.images.image)
+dino_wrist: true       # terminator wrist camera (observation.images.wrist_image). Produced/
                         # validated as data, but the TRAINING terminator co-train forward
                         # consumes 3rd-person only today (eval encodes raw images live) → wrist
                         # is forward-compat.
@@ -77,7 +77,8 @@ skillset_max_sweeps: 2
 # name under {project_root}/outputs/FSQ/ + the checkpoint. Levels are parsed from
 # the fsq<levels> tag in the name (codebook size = prod(levels)); the rest of the
 # FSQ config lives in the checkpoint.
-fsq_run_name: "libero_90_full_full_state_obs20_fsq555_dino8_weighted_wow"   # folder under outputs/FSQ/
+# fsq_run_name: "libero_90_full_full_state_obs20_fsq555_dino8_weighted_wow"   # folder under outputs/FSQ/
+fsq_run_name: "libero_90_full_full_state_obs20_fsq555_dino8_wot"
 
 fsq_checkpoint: 1000                              # epoch number; 0 = best (FSQ.pt)
 

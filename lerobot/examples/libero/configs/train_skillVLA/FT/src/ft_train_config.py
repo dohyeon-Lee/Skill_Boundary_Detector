@@ -79,11 +79,14 @@ def build_settings(cfg: dict) -> dict:
     # Attention toggles: INHERIT from the forked Stage-2 checkpoint (must MATCH it — pretrained_path full-
     # loads the weights, and the action expert was trained with that attention mask). Blank yaml → inherit
     # from the Stage-2 config.json; set explicitly only to ablate.
-    def _inherit(key):
+    def _inherit(key, default=False):
         v = get_value(cfg, key, None)
-        return as_bool(s2_cfg.get(key, False)) if v in (None, "", "null") else as_bool(v)
-    action_attend_vlm = _inherit("action_attend_vlm")
-    cond_attend_language = _inherit("cond_attend_language")
+        return as_bool(s2_cfg.get(key, default)) if v in (None, "", "null") else as_bool(v)
+    # Inter-module attention connections — inherited from the forked Stage-2 ckpt (must match its weights).
+    attend_language = _inherit("attend_language", False)
+    vlm_cond = _inherit("vlm_cond", True)
+    cond_expert = _inherit("cond_expert", True)
+    vlm_expert = _inherit("vlm_expert", False)
 
     # run_name: new task + run_tag + ft{Stage-2 ckpt} + the Stage-2 SOURCE variant (so FT forks of DIFFERENT
     # Stage-2 models don't collide — backbone / state_cond_mode / cum) + action↔VLM + the FT variant tags.
@@ -94,8 +97,9 @@ def build_settings(cfg: dict) -> dict:
         m = re.search(pat, stage2_run_name)
         if m:
             s2tags.append(m.group(1))
-    if action_attend_vlm:                                # resolved value (not name-parse) → run-name matches config
-        s2tags.append("actvlm")
+    for _t, _on in (("ve", vlm_expert), ("noVc", not vlm_cond), ("noCe", not cond_expert), ("lang", attend_language)):
+        if _on:                                          # resolved values (not name-parse) → run-name matches config
+            s2tags.append(_t)
     tags = [cond_skill_source]          # skill source ALWAYS tagged: "pred" | "gt"
     if train_terminator:
         tags.append("term")
@@ -125,9 +129,11 @@ def build_settings(cfg: dict) -> dict:
         "stage2_checkpoint_path": stage2_ckpt,
         "stage1_checkpoint_path": stage1_checkpoint_path,
         "skill_fsq_levels": "[" + ",".join(str(x) for x in skill_fsq_levels) + "]",
-        # attention — inherited from the Stage-2 ckpt (must match the forked weights)
-        "action_attend_vlm": action_attend_vlm,
-        "cond_attend_language": cond_attend_language,
+        # attention connections — inherited from the Stage-2 ckpt (must match the forked weights)
+        "attend_language": attend_language,
+        "vlm_cond": vlm_cond,
+        "cond_expert": cond_expert,
+        "vlm_expert": vlm_expert,
         # FT behaviour
         "cond_skill_source": cond_skill_source,
         "train_terminator": train_terminator,

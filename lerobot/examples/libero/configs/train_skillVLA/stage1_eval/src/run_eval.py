@@ -16,6 +16,8 @@ Needs SyncVectorEnv (eval.use_async_envs=false). See eval_oracle.py for the data
 
 import json
 import logging
+import os
+import shutil
 import sys
 from collections import deque
 from contextlib import nullcontext
@@ -250,6 +252,137 @@ def _override_init_states(envs: dict, episode_data: dict[int, list[dict]]) -> di
     return forced
 
 
+def _reset_init_state_ids(envs: dict) -> None:
+    """Rewind every task env's init_state_id to its episode_index, so a REPEAT pass replays the SAME
+    per-episode scenes — used between models in a side-by-side so each model sees identical init states."""
+    for group in envs.values():
+        for vec in group.values():
+            for sub in getattr(vec, "envs", []):
+                base = sub.unwrapped
+                base.init_state_id = base.episode_index
+
+
+def _align_and_override_multi(envs: dict, episode_datas: list[dict]) -> list[dict]:
+    """MULTI-model episode alignment. Keep only tasks+episodes present in EVERY model's dataset (episodes
+    align by episode_index across FSQ runs — same filtered demos), override each task env's `_init_states`
+    with those common episodes' init states (FSQ-independent → identical across models), and return a
+    per-model forced-skill map keyed to that SAME common-episode order. Tasks/episodes not shared by all
+    models are dropped (closed)."""
+    forced_maps: list[dict] = [dict() for _ in episode_datas]
+    for task_group, group in envs.items():
+        for task_id in list(group.keys()):
+            per_model = [{r["episode_index"]: r for r in ed.get(int(task_id), [])} for ed in episode_datas]
+            common = sorted(set.intersection(*[set(d) for d in per_model])) if all(per_model) else []
+            if not common:
+                log.warning("task_id=%s not shared by all models — dropping it.", task_id)
+                group[task_id].close(); del group[task_id]; continue
+            subs = getattr(group[task_id], "envs", None)
+            if subs is None:
+                raise RuntimeError("Episode-exact eval needs SyncVectorEnv (set eval.use_async_envs=false).")
+            init_arr = np.stack([per_model[0][ep]["init_state"] for ep in common]).astype(np.float64)
+            for sub in subs:
+                base = sub.unwrapped
+                base.init_states = True
+                base._init_states = init_arr
+            for i, d in enumerate(per_model):
+                forced_maps[i][(task_group, int(task_id))] = [d[ep]["skills"] for ep in common]
+    return forced_maps
+
+
+def _merge(tagged: list) -> dict:
+    """[(task_id, per-task eval_info)] → one {overall: {pc_success}, per_task: [...]} (mirrors eval_policy_all)."""
+    per_task = [{"task_id": tid, **info.get("overall", {})} for tid, info in tagged]
+    succ = [d.get("pc_success") for d in per_task if isinstance(d.get("pc_success"), (int, float))]
+    return {"overall": {"pc_success": float(np.mean(succ)) if succ else 0.0}, "per_task": per_task}
+
+
+def _stitch_models(panels: list, out_dir: Path, height: int = 256) -> None:
+    """panels = [(videos_dir, label), ...]; for every task/episode present in ALL panels, glue the rollouts
+    HORIZONTALLY (N labelled panels) → out_dir/{task}/eval_episode_{ep}.mp4. Reuses video_compare/ helpers;
+    never fails the eval (skips if video libs are unavailable)."""
+    try:
+        sys.path.insert(0, str(_HERE.parent / "video_compare"))
+        from compare_videos import even, label_bar, load_font, make_panel, read_video  # noqa: PLC0415
+        import imageio.v2 as imageio  # noqa: PLC0415
+    except Exception as exc:  # noqa: BLE001 — stitching is a convenience; never fail the eval over it
+        log.warning("side-by-side stitch skipped (video libs unavailable): %s", exc)
+        return
+    H, bar_h = even(height), even(max(20, height // 9))
+    font = load_font(int(bar_h * 0.62))
+    dir0 = Path(panels[0][0])
+    n = 0
+    for taskdir0 in sorted(p for p in dir0.glob("*") if p.is_dir()):
+        for mp4_0 in sorted(taskdir0.glob("eval_episode_*.mp4")):
+            mp4s = [Path(d) / taskdir0.name / mp4_0.name for d, _ in panels]
+            if not all(p.exists() for p in mp4s):
+                continue
+            reads = [read_video(p) for p in mp4s]
+            frames_list, fps = [r[0] for r in reads], reads[0][1]
+            if any(not fr for fr in frames_list):
+                continue
+            bars = []
+            for (_, lbl), fr in zip(panels, frames_list):
+                h, w = fr[0].shape[:2]
+                bars.append(label_bar(even(max(2, round(w * H / h))), bar_h, lbl, font))
+            (out_dir / taskdir0.name).mkdir(parents=True, exist_ok=True)
+            writer = imageio.get_writer(str(out_dir / taskdir0.name / mp4_0.name), fps=fps,
+                                        codec="libx264", quality=8, macro_block_size=None)
+            for i in range(max(len(fr) for fr in frames_list)):
+                frame = np.hstack([make_panel(fr[min(i, len(fr) - 1)], H, bar)
+                                   for fr, bar in zip(frames_list, bars)])
+                writer.append_data(frame[:, :-1] if frame.shape[1] % 2 else frame)
+            writer.close()
+            n += 1
+    log.info("side-by-side: wrote %d stitched clips → %s", n, out_dir)
+
+
+def _build_context(pcfg, *, cfg, device, label):
+    """Build one model's eval context: policy + FSQ terminator (optionally the checkpoint's CO-TRAINED one)
+    + OracleSkillExpertPolicy wrapper + processors (PreserveRawState inserted before Normalizer) + the
+    episode-exact oracle data. pcfg carries the model ARCHITECTURE and the shared eval knobs (skill_end_*,
+    terminator paths, device). Returns {oracle, pre, post, ep, label}."""
+    policy = make_policy(cfg=pcfg, env_cfg=cfg.env, rename_map=cfg.rename_map)
+    policy.eval()
+    ft = pcfg.pretrained_path if pcfg.eval_use_trained_terminator else None
+    terminator = make_terminator(pcfg.fsq_path, device, dino_path=pcfg.terminator_dino_model_path,
+                                 libero_examples_dir=_LIBERO_EXAMPLES, finetuned_ckpt=ft)
+    log.info("[%s] terminator: %s", label or "model",
+             f"co-trained ({terminator.finetuned_loaded} tensors overridden)"
+             if getattr(terminator, "finetuned_loaded", 0) else f"raw FSQ.pt ({pcfg.fsq_path})")
+    oracle = OracleSkillExpertPolicy(
+        policy, terminator, end_threshold=pcfg.skill_end_threshold,
+        progress_threshold=pcfg.skill_end_progress_threshold, end_mode=pcfg.skill_end_mode,
+        advance_mode=pcfg.skill_advance_mode, max_skill_len=pcfg.inference_skill_max_length,
+        n_action_steps=pcfg.n_action_steps)
+    preprocessor, postprocessor = make_pre_post_processors(
+        policy_cfg=pcfg, pretrained_path=pcfg.pretrained_path,
+        preprocessor_overrides={"device_processor": {"device": str(device)},
+                                "rename_observations_processor": {"rename_map": cfg.rename_map}})
+    norm_idx = next(i for i, s in enumerate(preprocessor.steps) if isinstance(s, NormalizerProcessorStep))
+    preprocessor.steps.insert(norm_idx, SkillVLAPreserveRawStateProcessorStep())
+    episode_data = load_episode_oracle_data(pcfg.skill_label_dataset_dir, pcfg.eval_init_states_path, cfg.env.task)
+    return {"oracle": oracle, "pre": preprocessor, "post": postprocessor, "ep": episode_data, "label": label}
+
+
+def _model_cfg_from_spec(spec: dict, base):
+    """Load one model's ARCHITECTURE config from its checkpoint, then copy the SHARED eval knobs from `base`
+    (= cfg.policy, i.e. model 0's config with the CLI overrides): device, skill_end_*, terminator paths,
+    n_action_steps, ... — so every model is evaluated under the SAME skill-advance policy. fsq_path and
+    skill_label_dataset_dir come from the per-model spec."""
+    from lerobot.configs.policies import PreTrainedConfig  # noqa: PLC0415
+    mcfg = PreTrainedConfig.from_pretrained(spec["policy_path"])
+    mcfg.pretrained_path = spec["policy_path"]
+    for f in ("device", "use_amp", "terminator_dino_model_path", "eval_init_states_path",
+              "eval_use_trained_terminator", "skill_end_mode", "skill_end_threshold",
+              "skill_end_progress_threshold", "skill_advance_mode", "inference_skill_max_length",
+              "n_action_steps", "compile_model", "gradient_checkpointing"):
+        if hasattr(base, f) and hasattr(mcfg, f):
+            setattr(mcfg, f, getattr(base, f))
+    mcfg.fsq_path = spec["fsq_path"]
+    mcfg.skill_label_dataset_dir = spec["skill_label_dataset_dir"]
+    return mcfg
+
+
 @parser.wrap()
 def eval_main(cfg: EvalPipelineConfig):
     if cfg.policy is None or cfg.policy.type != "skill_expert":
@@ -261,86 +394,83 @@ def eval_main(cfg: EvalPipelineConfig):
 
     device = get_safe_torch_device(cfg.policy.device, log=True)
     set_seed(cfg.seed)
+    specs = json.loads(os.environ.get("MODELS_JSON", "") or "[]")   # >=2 entries → multi-model side-by-side
     logging.info("Making environment.")
     envs = make_env(cfg.env, n_envs=cfg.eval.batch_size, use_async_envs=cfg.eval.use_async_envs,
                     trust_remote_code=cfg.trust_remote_code)
-
-    logging.info("Making policy + FSQ terminator.")
-    policy = make_policy(cfg=cfg.policy, env_cfg=cfg.env, rename_map=cfg.rename_map)
-    policy.eval()
-    # FSQ terminator from fsq_path (an FSQ.pt) — exposes terminate(codes, state, image[, wrist]). When
-    # eval_use_trained_terminator, its terminator submodules are overridden with the CO-TRAINED (fine-tuned)
-    # terminator saved in THIS checkpoint (model.fsq_term_train.*); the DINO backbone stays from FSQ.pt.
-    finetuned_ckpt = cfg.policy.pretrained_path if cfg.policy.eval_use_trained_terminator else None
-    terminator = make_terminator(
-        cfg.policy.fsq_path, device, dino_path=cfg.policy.terminator_dino_model_path,
-        libero_examples_dir=_LIBERO_EXAMPLES, finetuned_ckpt=finetuned_ckpt)
-    logging.info("Terminator: %s (%s)",
-                 "co-trained (fine-tuned from checkpoint)" if getattr(terminator, "finetuned_loaded", 0)
-                 else "raw FSQ.pt (no co-trained terminator loaded)",
-                 f"{terminator.finetuned_loaded} tensors overridden" if getattr(terminator, "finetuned_loaded", 0)
-                 else str(cfg.policy.fsq_path))
-
-    # Episode-exact oracle data: join the skillvla dataset (GT skill sequence) with the init-state npz
-    # (episode -> MuJoCo init_state + scene), grouped by LIBERO task_id; then override each task env's
-    # init states so every rollout reproduces that episode's exact scene, paired with its GT skills.
-    episode_data = load_episode_oracle_data(
-        cfg.policy.skill_label_dataset_dir, cfg.policy.eval_init_states_path, cfg.env.task)
-    forced_by_task = _override_init_states(envs, episode_data)
-    logging.info("Episode-exact eval over %d tasks (n_episodes=%d per task).",
-                 len(forced_by_task), cfg.eval.n_episodes)
-
-    oracle = OracleSkillExpertPolicy(
-        policy, terminator,
-        end_threshold=cfg.policy.skill_end_threshold,
-        progress_threshold=cfg.policy.skill_end_progress_threshold,
-        end_mode=cfg.policy.skill_end_mode,
-        advance_mode=cfg.policy.skill_advance_mode,
-        max_skill_len=cfg.policy.inference_skill_max_length,
-        n_action_steps=cfg.policy.n_action_steps,
-    )
-
-    # Processors: load the checkpoint's, then insert PreserveRawState so the terminator
-    # sees the RAW observation.state (skill_decoder_state) before normalization.
-    preprocessor, postprocessor = make_pre_post_processors(
-        policy_cfg=cfg.policy,
-        pretrained_path=cfg.policy.pretrained_path,
-        preprocessor_overrides={"device_processor": {"device": str(device)}, "rename_observations_processor": {"rename_map": cfg.rename_map}},
-    )
-    norm_idx = next(i for i, s in enumerate(preprocessor.steps) if isinstance(s, NormalizerProcessorStep))
-    preprocessor.steps.insert(norm_idx, SkillVLAPreserveRawStateProcessorStep())
     env_preprocessor, env_postprocessor = make_env_pre_post_processors(env_cfg=cfg.env, policy_cfg=cfg.policy)
     task_id_to_desc = _libero_task_descriptions(cfg.env.task)
+    out = Path(cfg.output_dir)
+    common = dict(   # eval_policy_all kwargs shared by every rollout (single or per-model per-task)
+        env_preprocessor=env_preprocessor, env_postprocessor=env_postprocessor,
+        n_episodes=cfg.eval.n_episodes, max_episodes_rendered=cfg.eval.max_videos_per_task,
+        video_frame_stride=cfg.eval.video_frame_stride, video_fps=cfg.eval.video_fps,
+        start_seed=cfg.seed, max_parallel_tasks=cfg.env.max_parallel_tasks,
+        reference_skill_token_sequences_by_task=None,
+        skill_html_train_samples=cfg.eval.skill_html_train_samples,
+        skill_html_skill_latents_path=cfg.eval.skill_html_skill_latents_path,
+        skill_html_raw_dataset_dir=cfg.eval.skill_html_raw_dataset_dir,
+        skill_html_image_key=cfg.eval.skill_html_image_key, task_descriptions=task_id_to_desc,
+    )
 
-    skill_html_dir = (Path(cfg.output_dir) / "skill_html") if cfg.eval.skill_html else None
-    with torch.no_grad(), torch.autocast(device_type=device.type) if cfg.policy.use_amp else nullcontext():
-        info = eval_policy_all(
-            envs=envs, policy=oracle,
-            env_preprocessor=env_preprocessor, env_postprocessor=env_postprocessor,
-            preprocessor=preprocessor, postprocessor=postprocessor,
-            n_episodes=cfg.eval.n_episodes,
-            max_episodes_rendered=cfg.eval.max_videos_per_task,
-            video_frame_stride=cfg.eval.video_frame_stride, video_fps=cfg.eval.video_fps,
-            videos_dir=Path(cfg.output_dir) / "videos",
-            start_seed=cfg.seed, max_parallel_tasks=cfg.env.max_parallel_tasks,
-            forced_skill_token_sequences_by_task=forced_by_task,
-            reference_skill_token_sequences_by_task=None,
-            skill_html_dir=skill_html_dir,
-            skill_html_train_samples=cfg.eval.skill_html_train_samples,
-            skill_html_skill_latents_path=cfg.eval.skill_html_skill_latents_path,
-            skill_html_raw_dataset_dir=cfg.eval.skill_html_raw_dataset_dir,
-            skill_html_image_key=cfg.eval.skill_html_image_key,
-            task_descriptions=task_id_to_desc,
-        )
-    print("Overall:", info["overall"])
+    if len(specs) >= 2:
+        # ── MULTI-model side-by-side: build each model's context, align episodes across models, then PER
+        # TASK roll out every model over the SAME scenes (init_state_id rewound between models) and stitch
+        # horizontally → side_by_side/{task}/ (streams in task order; no per-model videos kept). ──
+        logging.info("Multi-model side-by-side over %d models: %s", len(specs), [s["label"] for s in specs])
+        contexts = [_build_context(_model_cfg_from_spec(s, cfg.policy), cfg=cfg, device=device, label=s["label"])
+                    for s in specs]
+        forced_maps = _align_and_override_multi(envs, [c["ep"] for c in contexts])
+        sbs_dir = out / "side_by_side"
+        tagged = [[] for _ in contexts]
+        for tg, grp in envs.items():
+            for tid in list(grp.keys()):
+                one_env = {tg: {tid: grp[tid]}}
+                panels = []
+                for i, ctx in enumerate(contexts):
+                    _reset_init_state_ids(one_env)                    # rewind → each model sees the same scenes
+                    vdir = out / "_tmp" / f"m{i}" / "videos"
+                    with torch.no_grad(), (torch.autocast(device_type=device.type) if cfg.policy.use_amp else nullcontext()):
+                        info_i = eval_policy_all(
+                            envs=one_env, policy=ctx["oracle"], preprocessor=ctx["pre"], postprocessor=ctx["post"],
+                            videos_dir=vdir, skill_html_dir=None,
+                            forced_skill_token_sequences_by_task={(tg, int(tid)): forced_maps[i][(tg, int(tid))]},
+                            **common)
+                    panels.append((vdir, ctx["label"]))
+                    tagged[i].append((tid, info_i))
+                _stitch_models(panels, sbs_dir)
+                shutil.rmtree(out / "_tmp", ignore_errors=True)       # drop raw per-model videos (keep combined)
+                log.info("task %s → side_by_side (%s)", tid,
+                         {c["label"]: t[-1][1].get("overall") for c, t in zip(contexts, tagged)})
+        info = {c["label"]: _merge(t) for c, t in zip(contexts, tagged)}
+        wandb_infos = {f"{c['label']}/": _merge(t) for c, t in zip(contexts, tagged)}
+        print("side_by_side done →", sbs_dir)
+    else:
+        # ── Single model: episode-exact eval over all tasks (env init states overridden once). ──
+        logging.info("Making policy + FSQ terminator.")
+        ctx = _build_context(cfg.policy, cfg=cfg, device=device, label="")
+        forced_by_task = _override_init_states(envs, ctx["ep"])
+        logging.info("Episode-exact eval over %d tasks (n_episodes=%d per task).",
+                     len(forced_by_task), cfg.eval.n_episodes)
+        skill_html_dir = (out / "skill_html") if cfg.eval.skill_html else None
+        with torch.no_grad(), (torch.autocast(device_type=device.type) if cfg.policy.use_amp else nullcontext()):
+            info = eval_policy_all(
+                envs=envs, policy=ctx["oracle"], preprocessor=ctx["pre"], postprocessor=ctx["post"],
+                videos_dir=out / "videos", skill_html_dir=skill_html_dir,
+                forced_skill_token_sequences_by_task=forced_by_task, **common)
+        print("Overall:", info["overall"])
+        wandb_infos = {"": info}
+
     close_envs(envs)
-    Path(cfg.output_dir).mkdir(parents=True, exist_ok=True)
-    with open(Path(cfg.output_dir) / "eval_info.json", "w") as f:
+    out.mkdir(parents=True, exist_ok=True)
+    with open(out / "eval_info.json", "w") as f:
         json.dump(info, f, indent=2)
-    _maybe_log_wandb(cfg, info)
+    _maybe_log_wandb(cfg, wandb_infos)
 
 
-def _maybe_log_wandb(cfg, info) -> None:
+def _maybe_log_wandb(cfg, infos: dict) -> None:
+    """infos: {prefix: eval_info}. Single model → {"": info}; multi-model → {"plain/":.., "weighted/":..}
+    (each model's metrics logged to ONE run under its label prefix)."""
     project = getattr(cfg, "wandb_project", None)
     if not project:
         return
@@ -349,11 +479,14 @@ def _maybe_log_wandb(cfg, info) -> None:
 
         wandb.init(project=project, name=cfg.job_name,
                    config={"policy_path": str(cfg.policy.pretrained_path), "n_episodes": cfg.eval.n_episodes})
-        payload = {f"overall/{k}": float(v) for k, v in info.get("overall", {}).items() if isinstance(v, (int, float))}
-        for ti in info.get("per_task", []):
-            tid, sr = ti.get("task_id"), ti.get("pc_success", ti.get("success_rate"))
-            if tid is not None and sr is not None:
-                payload[f"task_{int(tid):02d}/success"] = float(sr)
+        payload: dict[str, float] = {}
+        for pref, info in infos.items():
+            payload.update({f"{pref}overall/{k}": float(v)
+                            for k, v in info.get("overall", {}).items() if isinstance(v, (int, float))})
+            for ti in info.get("per_task", []):
+                tid, sr = ti.get("task_id"), ti.get("pc_success", ti.get("success_rate"))
+                if tid is not None and sr is not None:
+                    payload[f"{pref}task_{int(tid):02d}/success"] = float(sr)
         wandb.log(payload)
         wandb.finish()
     except Exception as exc:  # noqa: BLE001

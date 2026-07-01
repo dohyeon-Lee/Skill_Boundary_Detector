@@ -103,8 +103,10 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.stage1_checkpoint_path="${STAGE1_CHECKPOINT_PATH}" \
     --policy.skill_fsq_levels="${SKILL_FSQ_LEVELS}" \
     --policy.skill_loss_weight="${SKILL_LOSS_WEIGHT}" \
-    --policy.action_attend_vlm="${ACTION_ATTEND_VLM}" \
-    --policy.cond_attend_language="${COND_ATTEND_LANGUAGE}" \
+    --policy.attend_language="${ATTEND_LANGUAGE}" \
+    --policy.vlm_cond="${VLM_COND}" \
+    --policy.cond_expert="${COND_EXPERT}" \
+    --policy.vlm_expert="${VLM_EXPERT}" \
     --policy.fsq_path="${FSQ_CKPT}" \
     --policy.cond_skill_source="${COND_SKILL_SOURCE}" \
     --policy.freeze_vlm="${FREEZE_VLM}" \

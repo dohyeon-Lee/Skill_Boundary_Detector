@@ -23,17 +23,20 @@ skillvla_dataset_root: skillvla_dataset  # .../{skillvla_dataset_root}/{source_d
 # so source_dataset (which locates run_dir/skillvla, FSQ.pt, eval_init_states.npz) is read from HERE.
 source_dataset: libero_90_full_full
 
-# model_dir = the DP-branch training run folder name under {outputs_root}/skillVLA_stage1/
-#             ({run_tag}_{backbone}_batch{N}_{state_cond}[_weighted]). NO source prefix (see source_dataset above).
-# model_dir: FSQ555_dino8_both_1000_siglip_batch256_state              # plain (uniform) action MSE
-model_dir: FSQ555_dino8_both_1000_siglip_batch256_state_weighted     # action_weight=true
-# model_dir: FSQ555_dino8_weighted_wow_1000_siglip_batch256_state_weighted
+# ── Models ───────────────────────────────────────────────────────────────────────────────
+# `models` = the training run folder name(s) under {outputs_root}/skillVLA_stage1/
+#   ({run_tag}_{backbone}_batch{N}_{state_cond}[_weighted]; NO source prefix — see source_dataset above).
+# 1 entry → single eval → outputs/{model_dir}_{checkpoint}/. 2+ entries → PER-TASK side-by-side: each model
+# rolls out the SAME scenes, glued HORIZONTALLY into ONE labelled clip → outputs/compare_{labels}_{ckpt}/
+# side_by_side/ (streams in task order; no per-model videos kept).
+# Per entry: checkpoint omitted → the top-level `checkpoint`; label omitted → auto from the differing token(s).
+models:
+  - {model_dir: FSQ555_dino8_both_1000_siglip_batch256_state,          label: plain}
+  - {model_dir: FSQ555_dino8_both_1000_siglip_batch256_state_weighted, label: weighted}
+  - {model_dir: FSQ555_dino8_weighted_wow_1000_siglip_batch256_state_weighted, label: weighted_weighted}
 
-
-
-checkpoint: "015000"            # "last" or a step number
-# Output folder = outputs/{model_dir}_{checkpoint}_adv-{skill_advance_mode}[_{eval_exp}]
-eval_exp: ""                    # optional free-form tag for the eval output folder (e.g. ablation name)
+checkpoint: "015000"           # default step for entries that omit their own checkpoint ("last" or a number)
+eval_exp: ""                   # optional free-form tag appended to the output folder
 
 # FSQ TERMINATOR's raw-image DINO only. The policy's own vision backbone is NOT set here —
 # it comes from the checkpoint's saved config and must match the trained weights (vits/vitb/...).
