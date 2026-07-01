@@ -686,6 +686,25 @@ class SkillExpertPolicy(PreTrainedPolicy):
         if reduction == "none":
             return per_sample, loss_dict
 
+        # ── Diagnostic: plain per-chunk MSE bucketed by the chunk's ENDPOINT within-skill progress
+        # (skill start 0 → skill end 1). action_weight up-weights high-progress chunks, so its benefit is a
+        # LOWER loss in the TOP bucket — invisible in the aggregate `action_loss`. Display-only (not
+        # backpropped); logged for BOTH action_weight modes so true/false runs compare bucket-by-bucket.
+        # Grouped into the wandb `action_loss_prog/*` panel; NaN = no samples fell in that bucket this step. ──
+        with torch.no_grad():
+            if "skill_ds" in batch and "skill_de" in batch:
+                ds_e = batch["skill_ds"].to(dev).float().view(bsize)
+                de_e = batch["skill_de"].to(dev).float().view(bsize)
+                prog_end = ((ds_e + anchor.float()) / (ds_e + de_e).clamp(min=1.0)).clamp(0.0, 1.0)
+            else:
+                prog_end = (anchor.float() / max(K - 1, 1)).clamp(0.0, 1.0)
+            valid_s = last_valid >= 0                                    # samples with ≥1 within-skill step
+            for lo, hi in ((0.0, 0.5), (0.5, 0.9), (0.9, 1.01)):
+                m = valid_s & (prog_end >= lo) & (prog_end < hi)
+                key = f"action_loss_prog/{int(lo * 100):02d}-{int(min(hi, 1.0) * 100):02d}"
+                loss_dict[key] = per_sample[m].mean().item() if bool(m.any()) else float("nan")
+            loss_dict["prog_end_mean"] = prog_end[valid_s].mean().item() if bool(valid_s.any()) else float("nan")
+
         cfg = self.config
         r = float(cfg.skill_end_loss_weight)
 

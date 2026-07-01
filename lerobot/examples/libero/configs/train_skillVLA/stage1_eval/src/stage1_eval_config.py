@@ -37,7 +37,15 @@ def build_settings(cfg: dict) -> dict:
     if not _rt:
         raise ValueError(f"model_dir must embed a 'FSQ..._dino..._<ckpt>_batch<N>' run tag, got: {model_dir}")
     run_tag = _rt.group(1)
-    source_dataset = model_dir[: _rt.start()].rstrip("_")  # the part before the run tag
+    # source_dataset: the OLD naming embedded it as the model_dir prefix ({source}_{run_tag}_...); the
+    # DP-branch training emitter drops that prefix ({run_tag}_{backbone}_batch{N}_{state_cond}), so the
+    # prefix is empty. Prefer the prefix when present (back-compat), else fall back to the yaml field.
+    source_from_dir = model_dir[: _rt.start()].rstrip("_")
+    source_dataset = source_from_dir or str(get_value(cfg, "source_dataset", "")).strip()
+    if not source_dataset:
+        raise ValueError(
+            "Could not determine source_dataset: model_dir has no '{source}_' prefix and 'source_dataset' "
+            f"is not set in the eval yaml. Set source_dataset (e.g. libero_90_full_full). model_dir={model_dir}")
     run_dir = skillvla_root / source_dataset / run_tag
 
     # Single outputs root from yaml; the stage-1 subdir is fixed here (matches stage1 training).
@@ -54,7 +62,9 @@ def build_settings(cfg: dict) -> dict:
     # (code→z_q) is the same frozen FSQ, so any FSQ.pt drops straight in. Blank → the training run's own FSQ.pt.
     terminator_path = str(get_value(cfg, "terminator_path", "")).strip()
     fsq_ckpt = resolve_path(project_root, terminator_path) if terminator_path else run_dir / "FSQ.pt"
-    run_tag = f"{model_dir}_{checkpoint}_adv-{advance_mode}"
+    run_tag = f"{model_dir}_{checkpoint}"
+    if advance_mode != "terminator":   # terminator is the default → keep the folder name clean; tag only gt
+        run_tag = f"{run_tag}_adv-{advance_mode}"
     if eval_exp:
         run_tag = f"{run_tag}_{eval_exp}"
     if terminator_path:  # distinct folder so a refined-terminator run doesn't clobber the FSQ-term run
@@ -72,6 +82,10 @@ def build_settings(cfg: dict) -> dict:
         "policy_path": policy_path,
         "fsq_ckpt": fsq_ckpt,
         "skill_label_dataset_dir": run_dir / "skillvla",
+        # Episode-exact eval: per-episode MuJoCo init_state + scene (FSQ-independent → lives at the source
+        # parent, shared by every FSQ run). Built by stage1_eval/oracle_matching/run.sh {source}.
+        "eval_init_states_path": skillvla_root / source_dataset / "eval_init_states.npz",
+        "source_dataset": source_dataset,
         # FSQ terminator's raw-image DINO (the policy's own backbone comes from the checkpoint).
         "terminator_dino_model_path": resolve_path(
             project_root, get_value(cfg, "terminator_dino_model_path", "models/dinov3-vits16")),
@@ -98,7 +112,10 @@ def build_settings(cfg: dict) -> dict:
         "skill_advance_mode": advance_mode,
         "skill_end_mode": str(get_value(cfg, "skill_end_mode", "termination")),
         "skill_end_threshold": str(get_value(cfg, "skill_end_threshold", 0.5)),
+        "skill_end_progress_threshold": str(get_value(cfg, "skill_end_progress_threshold", 0.9)),
         "inference_skill_max_length": int(get_value(cfg, "inference_skill_max_length", 200)),
+        # Use the checkpoint's co-trained terminator; a terminator_path override forces the raw FSQ.pt.
+        "eval_use_trained_terminator": as_bool(get_value(cfg, "eval_use_trained_terminator", True)) and not terminator_path,
         # wandb
         "wandb_project": str(get_value(cfg, "wandb_project", "VLA_stage1_eval")),
         "wandb_run_name": f"S1eval_{run_tag}",

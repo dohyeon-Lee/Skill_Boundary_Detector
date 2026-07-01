@@ -138,13 +138,30 @@ class SkillExpertConfig(PI05Config):
                    action expert from terminator timing errors). The terminator still runs so
                    its curves are recorded for the HTML either way."""
     skill_end_mode: str = "termination"
-    """Which FSQ terminator signal ends the current skill (used when skill_advance_mode=terminator):
+    """Which FSQ terminator signal(s) end the current skill (used when skill_advance_mode=terminator):
     "termination" → termination probability >= skill_end_threshold (e.g. 0.5);
-    "progress"    → predicted progress >= skill_end_threshold (e.g. 0.9)."""
+    "progress"    → predicted progress >= skill_end_progress_threshold (e.g. 0.9);
+    "or"          → EITHER crosses (term >= skill_end_threshold OR progress >= skill_end_progress_threshold)
+                    — robust default: the two heads peak at different steps, so requiring only one to fire
+                    avoids over-running when one head is weak/misaligned;
+    "and"         → BOTH cross at the same step (stricter; rarely fires if the heads disagree in timing)."""
     skill_end_threshold: float = 0.5
-    """Threshold on the signal selected by skill_end_mode, above which the skill is finished."""
+    """Threshold on the TERMINATION-probability signal, above which the skill is finished (termination/or/and)."""
+    skill_end_progress_threshold: float = 0.9
+    """Threshold on the predicted-PROGRESS signal, above which the skill is finished (progress/or/and).
+    Kept separate from skill_end_threshold since the two heads live on different scales."""
     inference_skill_max_length: int = 200
     """Force-advance the skill after this many steps even if the terminator never fires (0 = off)."""
+    eval_use_trained_terminator: bool = True
+    """At eval, use the CO-TRAINED terminator saved IN the checkpoint (model.fsq_term_train.*, fine-tuned on
+    this dataset via train_terminator) instead of the raw FSQ.pt terminator — overriding only the terminator
+    submodules' weights (the DINO backbone still comes from terminator_dino_model_path). Falls back to FSQ.pt
+    if the checkpoint carries no co-trained terminator, or when a terminator_path override is given."""
+    eval_init_states_path: str | None = None
+    """eval_init_states.npz (built by stage1_eval/oracle_matching/) mapping each dataset episode →
+    its MuJoCo init_state + scene_file. Makes the closed-loop eval EPISODE-EXACT: every rollout resets
+    the sim to a specific dataset episode's scene and is fed THAT episode's GT skill sequence (vs the old
+    task-level eval that ran LIBERO's default init states matched only by language). Required by run_eval."""
 
     def __post_init__(self):
         super().__post_init__()

@@ -1,15 +1,17 @@
 #!/usr/bin/env python
-"""Stage-1 (skill_expert) closed-loop oracle eval on the LIBERO sim.
+"""Stage-1 (skill_expert) closed-loop oracle eval on the LIBERO sim — EPISODE-EXACT.
 
-The action expert has no skill predictor, so the GT skill sequence is supplied per task
-(oracle): env task <-> dataset task is matched by LANGUAGE instruction, and the FSQ
-terminator advances the skill each step ([z, current 3rd-person image, current state] ->
-termination > threshold). The clean SkillExpert policy is left untouched; all orchestration
-lives in OracleSkillExpertPolicy (below) and the verified lerobot eval harness is reused.
+The action expert has no skill predictor, so the GT skill sequence is supplied (oracle) and the
+FSQ terminator advances the skill each step ([z, current 3rd-person image, current state] ->
+termination > threshold). The clean SkillExpert policy is left untouched; all orchestration lives
+in OracleSkillExpertPolicy (below) and the verified lerobot eval harness is reused.
 
-Scene-level alignment is NOT available from the current dataset (no init-state link), so this
-is a TASK-level eval: env runs the task's LIBERO init states in order and is fed that task's
-GT skill sequences (index-paired). See eval_oracle.py for the data/FSQ helpers.
+Each rollout reproduces a SPECIFIC dataset episode: the env is reset to that episode's exact MuJoCo
+init_state (eval_init_states.npz, built by oracle_matching/) and fed THAT episode's GT skill sequence.
+Episode<->env alignment: per task the env's init_state_id and the forced-sequence index are BOTH the
+global episode index (batch_ix*num_envs + b), so overriding each task env's `_init_states` with the
+matched per-episode init states (ordered by episode_index) keeps every scene paired with its skills.
+Needs SyncVectorEnv (eval.use_async_envs=false). See eval_oracle.py for the data/FSQ helpers.
 """
 
 import json
@@ -19,6 +21,7 @@ from collections import deque
 from contextlib import nullcontext
 from pathlib import Path
 
+import numpy as np
 import torch
 from torch import nn
 
@@ -41,7 +44,7 @@ from lerobot.utils.random_utils import set_seed
 
 _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))  # local eval_oracle
-from eval_oracle import load_skill_sequences_by_language, make_terminator, map_env_tasks_to_skills  # noqa: E402
+from eval_oracle import load_episode_oracle_data, make_terminator  # noqa: E402
 
 # Path to examples/libero so eval_oracle can import the FSQ model definition.
 _LIBERO_EXAMPLES = _HERE.parents[3]  # .../examples/libero
@@ -64,15 +67,16 @@ class OracleSkillExpertPolicy(PreTrainedPolicy):
     config_class = SkillExpertConfig
     name = "skill_expert_oracle"
 
-    def __init__(self, policy, terminator, *, end_threshold: float,
+    def __init__(self, policy, terminator, *, end_threshold: float, progress_threshold: float,
                  end_mode: str, advance_mode: str, max_skill_len: int, n_action_steps: int):
         super().__init__(policy.config)
         self.policy = policy
         self.terminator = terminator
-        self.end_threshold = float(end_threshold)
-        self.end_mode = str(end_mode)        # "termination" (term prob) | "progress"
-        if self.end_mode not in ("termination", "progress"):
-            raise ValueError(f"skill_end_mode must be 'termination' or 'progress', got {end_mode!r}")
+        self.end_threshold = float(end_threshold)              # gate on the TERMINATION-prob signal
+        self.progress_threshold = float(progress_threshold)    # gate on the PROGRESS signal
+        self.end_mode = str(end_mode)  # "termination" | "progress" | "or" (either) | "and" (both)
+        if self.end_mode not in ("termination", "progress", "or", "and"):
+            raise ValueError(f"skill_end_mode must be termination|progress|or|and, got {end_mode!r}")
         self.advance_mode = str(advance_mode)  # "terminator" (FSQ gates) | "gt" (advance by GT duration)
         if self.advance_mode not in ("terminator", "gt"):
             raise ValueError(f"skill_advance_mode must be 'terminator' or 'gt', got {advance_mode!r}")
@@ -176,10 +180,17 @@ class OracleSkillExpertPolicy(PreTrainedPolicy):
                 gt_len = self._gt_lengths[b][min(self._cursors[b], len(self._gt_lengths[b]) - 1)]
                 fired = self._skill_step[b] >= max(1, int(gt_len))
             else:
-                signal = float(progress[b]) if self.end_mode == "progress" else float(term[b])
-                fired = signal >= self.end_threshold or (
-                    self.max_skill_len > 0 and self._skill_step[b] >= self.max_skill_len
-                )
+                term_hi = float(term[b]) >= self.end_threshold
+                prog_hi = float(progress[b]) >= self.progress_threshold
+                if self.end_mode == "or":
+                    sig = term_hi or prog_hi
+                elif self.end_mode == "and":
+                    sig = term_hi and prog_hi
+                elif self.end_mode == "progress":
+                    sig = prog_hi
+                else:  # "termination"
+                    sig = term_hi
+                fired = sig or (self.max_skill_len > 0 and self._skill_step[b] >= self.max_skill_len)
             if fired and self._cursors[b] < len(self._seqs[b]) - 1:
                 self._cursors[b] += 1
                 self._skill_step[b] = 0
@@ -210,17 +221,32 @@ class OracleSkillExpertPolicy(PreTrainedPolicy):
         return self.policy.predict_action_chunk(batch, **kwargs)
 
 
-def _build_forced_sequences(envs, env_task_to_seqs: dict[int, list[list[dict]]], n_episodes: int):
-    """{(task_group, task_id): [seq_ep0, ...][:n_episodes]} (index-paired, wrap-around).
-    Each seq is a per-episode list of {"token", "gt_length"} skills."""
+def _override_init_states(envs: dict, episode_data: dict[int, list[dict]]) -> dict:
+    """Replace each task env's LIBERO built-in init states with the matched per-episode init states
+    (ordered by episode_index), so each rollout reproduces a specific dataset episode's scene. Tasks
+    with no matched episode are dropped (closed). Returns the forced-sequence map
+    {(task_group, task_id): [skills_ep0, skills_ep1, ...]} (each entry the episode's GT skill list,
+    ordered the SAME as init states → both indexed by the global episode index → auto-paired)."""
     forced: dict[tuple[str, int], list[list[dict]]] = {}
-    for task_group, task_map in envs.items():
-        for task_id in task_map:
-            seqs = env_task_to_seqs.get(int(task_id))
-            if not seqs:
-                log.warning("No GT skills for env task_id=%s (language absent from dataset); skipping.", task_id)
+    for task_group, group in envs.items():
+        for task_id in list(group.keys()):
+            records = episode_data.get(int(task_id))
+            if not records:
+                log.warning("No matched episodes for task_id=%s — dropping it from the eval.", task_id)
+                group[task_id].close()
+                del group[task_id]
                 continue
-            forced[(task_group, int(task_id))] = [seqs[i % len(seqs)] for i in range(n_episodes)]
+            vec = group[task_id]
+            subs = getattr(vec, "envs", None)
+            if subs is None:
+                raise RuntimeError("Episode-exact eval needs SyncVectorEnv (set eval.use_async_envs=false).")
+            init_arr = np.stack([r["init_state"] for r in records]).astype(np.float64)  # (n_ep, state_dim)
+            for sub in subs:
+                base = sub.unwrapped
+                base.init_states = True             # ensure reset() takes the set_init_state path
+                base._init_states = init_arr         # env indexes by init_state_id (= global episode index)
+            # forced[(tg,tid)][i] pairs with init_arr[i] via the same global episode index (eval wraps both).
+            forced[(task_group, int(task_id))] = [r["skills"] for r in records]
     return forced
 
 
@@ -230,6 +256,8 @@ def eval_main(cfg: EvalPipelineConfig):
         raise ValueError(f"stage1 eval expects policy.type='skill_expert', got {getattr(cfg.policy,'type',None)!r}")
     if not cfg.policy.fsq_path or not cfg.policy.skill_label_dataset_dir:
         raise ValueError("--policy.fsq_path and --policy.skill_label_dataset_dir are required for oracle eval.")
+    if not cfg.policy.eval_init_states_path:
+        raise ValueError("--policy.eval_init_states_path (eval_init_states.npz) is required for episode-exact eval.")
 
     device = get_safe_torch_device(cfg.policy.device, log=True)
     set_seed(cfg.seed)
@@ -240,21 +268,32 @@ def eval_main(cfg: EvalPipelineConfig):
     logging.info("Making policy + FSQ terminator.")
     policy = make_policy(cfg=cfg.policy, env_cfg=cfg.env, rename_map=cfg.rename_map)
     policy.eval()
-    # FSQ terminator from fsq_path (an FSQ.pt). Exposes terminate(codes, state, image[, wrist]).
+    # FSQ terminator from fsq_path (an FSQ.pt) — exposes terminate(codes, state, image[, wrist]). When
+    # eval_use_trained_terminator, its terminator submodules are overridden with the CO-TRAINED (fine-tuned)
+    # terminator saved in THIS checkpoint (model.fsq_term_train.*); the DINO backbone stays from FSQ.pt.
+    finetuned_ckpt = cfg.policy.pretrained_path if cfg.policy.eval_use_trained_terminator else None
     terminator = make_terminator(
         cfg.policy.fsq_path, device, dino_path=cfg.policy.terminator_dino_model_path,
-        libero_examples_dir=_LIBERO_EXAMPLES)
+        libero_examples_dir=_LIBERO_EXAMPLES, finetuned_ckpt=finetuned_ckpt)
+    logging.info("Terminator: %s (%s)",
+                 "co-trained (fine-tuned from checkpoint)" if getattr(terminator, "finetuned_loaded", 0)
+                 else "raw FSQ.pt (no co-trained terminator loaded)",
+                 f"{terminator.finetuned_loaded} tensors overridden" if getattr(terminator, "finetuned_loaded", 0)
+                 else str(cfg.policy.fsq_path))
 
-    # Oracle GT skill sequences: dataset (by language) → env task_id.
-    seqs_by_lang = load_skill_sequences_by_language(cfg.policy.skill_label_dataset_dir)
-    env_langs = _libero_task_descriptions(cfg.env.task)  # {task_id: language}
-    env_task_to_seqs = map_env_tasks_to_skills(env_langs, seqs_by_lang)
-    forced_by_task = _build_forced_sequences(envs, env_task_to_seqs, cfg.eval.n_episodes)
-    logging.info("Oracle skills mapped for %d env tasks (n_episodes=%d).", len(forced_by_task), cfg.eval.n_episodes)
+    # Episode-exact oracle data: join the skillvla dataset (GT skill sequence) with the init-state npz
+    # (episode -> MuJoCo init_state + scene), grouped by LIBERO task_id; then override each task env's
+    # init states so every rollout reproduces that episode's exact scene, paired with its GT skills.
+    episode_data = load_episode_oracle_data(
+        cfg.policy.skill_label_dataset_dir, cfg.policy.eval_init_states_path, cfg.env.task)
+    forced_by_task = _override_init_states(envs, episode_data)
+    logging.info("Episode-exact eval over %d tasks (n_episodes=%d per task).",
+                 len(forced_by_task), cfg.eval.n_episodes)
 
     oracle = OracleSkillExpertPolicy(
         policy, terminator,
         end_threshold=cfg.policy.skill_end_threshold,
+        progress_threshold=cfg.policy.skill_end_progress_threshold,
         end_mode=cfg.policy.skill_end_mode,
         advance_mode=cfg.policy.skill_advance_mode,
         max_skill_len=cfg.policy.inference_skill_max_length,

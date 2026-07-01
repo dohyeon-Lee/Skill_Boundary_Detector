@@ -36,7 +36,7 @@ class FsqTerminator:
     """Frozen FSQ terminator used only at eval to advance the GT skill sequence."""
 
     def __init__(self, fsq_path: str | Path, device: torch.device, *, dino_path: str | None = None,
-                 libero_examples_dir: str | Path | None = None):
+                 libero_examples_dir: str | Path | None = None, finetuned_ckpt: str | Path | None = None):
         import dataclasses
 
         if libero_examples_dir is not None:
@@ -50,6 +50,9 @@ class FsqTerminator:
             cfg_dict["image_model_name"] = dino_path
         vae = SplineFSQAE(**{k: v for k, v in cfg_dict.items() if k in _FSQ_KEYS})
         vae.load_state_dict(ckpt["model_state"])
+        # Optionally override the terminator submodules with the CO-TRAINED (fine-tuned) terminator saved
+        # in a SkillExpert checkpoint — the DINO backbone above stays from dino_path.
+        self.finetuned_loaded = _load_finetuned_terminator(vae, finetuned_ckpt) if finetuned_ckpt else 0
         vae.eval()
         for p in vae.parameters():
             p.requires_grad_(False)
@@ -93,11 +96,109 @@ class FsqTerminator:
         return progress[:, 0], term[:, 0]
 
 
+def _load_finetuned_terminator(vae, ckpt_dir: str | Path) -> int:
+    """Override the terminator submodule weights of `vae` (an FSQ.pt-built SplineFSQAE) with the CO-TRAINED
+    terminator saved in a SkillExpert checkpoint (model.fsq_term_train.*, fine-tuned on the dataset via
+    train_terminator). Only the intersecting terminator/reconstructor keys are replaced — the DINO backbone
+    stays from dino_path (it isn't stored in the checkpoint). Returns the number of overridden tensors
+    (0 → the checkpoint has no co-trained terminator, so the caller keeps the raw FSQ.pt terminator)."""
+    from safetensors import safe_open  # noqa: PLC0415
+
+    st_path = Path(ckpt_dir) / "model.safetensors"
+    if not st_path.exists():
+        return 0
+    vsd = set(vae.state_dict().keys())
+    override = {}
+    with safe_open(str(st_path), framework="pt") as h:
+        for k in h.keys():
+            if "fsq_term_train." in k:
+                sub = k.split("fsq_term_train.", 1)[1]
+                if sub in vsd:
+                    override[sub] = h.get_tensor(k)
+    if override:
+        vae.load_state_dict(override, strict=False)  # strict=False: DINO backbone keys stay from FSQ.pt build
+    return len(override)
+
+
 def make_terminator(path: str | Path, device: torch.device, *, dino_path: str | None,
-                    libero_examples_dir: str | Path):
+                    libero_examples_dir: str | Path, finetuned_ckpt: str | Path | None = None):
     """The FSQ terminator (FSQ.pt). terminator_path (eval config) may point it at a DIFFERENT run's FSQ.pt
-    to compare terminators — the codebook (code→z_q) is the same frozen FSQ, so any FSQ.pt drops straight in."""
-    return FsqTerminator(path, device, dino_path=dino_path, libero_examples_dir=libero_examples_dir)
+    to compare terminators — the codebook (code→z_q) is the same frozen FSQ, so any FSQ.pt drops straight in.
+    When finetuned_ckpt is given, the terminator submodules are overridden with that checkpoint's CO-TRAINED
+    (fine-tuned) terminator; the number actually loaded is on the returned obj's `.finetuned_loaded`."""
+    return FsqTerminator(path, device, dino_path=dino_path, libero_examples_dir=libero_examples_dir,
+                         finetuned_ckpt=finetuned_ckpt)
+
+
+def build_task_name_to_id(suite_name: str) -> dict[str, int]:
+    """LIBERO suite task .name -> task_id. The task name (e.g. 'KITCHEN_SCENE10_close_the_top_drawer')
+    equals the original HDF5 ``scene_file`` with '_demo.hdf5' stripped, so it uniquely identifies the
+    env scene (disambiguating the ~12 languages shared across two scenes in LIBERO_90)."""
+    from libero.libero import benchmark  # noqa: PLC0415
+
+    suite = benchmark.get_benchmark_dict()[suite_name]()
+    return {str(t.name): i for i, t in enumerate(suite.tasks)}
+
+
+def load_episode_oracle_data(
+    skill_dataset_dir: str | Path,
+    init_states_path: str | Path,
+    suite_name: str,
+) -> dict[int, list[dict]]:
+    """Per-EPISODE eval data, grouped by LIBERO task_id and ordered by episode_index — for EPISODE-EXACT
+    closed-loop eval (each rollout reproduces a specific dataset episode's scene).
+
+    Joins the skillvla dataset (GT skill sequence per episode) with eval_init_states.npz (episode ->
+    MuJoCo init_state + scene_file). Each record::
+
+        {"episode_index": int,
+         "init_state": np.float64 (state_dim,),          — episode-exact env reset state (MuJoCo),
+         "skills": [{"token": fsq_code, "gt_length": frames}, ...]}   — the episode's GT skill sequence.
+
+    scene_file (minus '_demo.hdf5') == the LIBERO task .name → a unique task_id (build_task_name_to_id).
+    Special tokens (code >= skill_num_embeddings, i.e. BOS/EOS/PAD) are dropped. Only episodes present in
+    BOTH the dataset and the npz, with >=1 real skill, are kept."""
+    import json  # noqa: PLC0415
+
+    import pandas as pd  # noqa: PLC0415
+
+    skill_dataset_dir = Path(skill_dataset_dir)
+    info = json.loads((skill_dataset_dir / "meta" / "info.json").read_text())
+    num_emb = int(info["skill_num_embeddings"])  # real FSQ codes < num_emb; BOS/EOS/PAD >= it
+
+    npz = np.load(str(init_states_path), allow_pickle=True)
+    inits = {int(e): (st, str(sf)) for e, st, sf in
+             zip(npz["episode_index"], npz["init_states"], npz["scene_file"])}
+    name_to_id = build_task_name_to_id(suite_name)
+
+    cols = ["episode_index", "frame_index", "skill_sequence", "skill_length_sequence"]
+    data_files = sorted((skill_dataset_dir / "data").glob("**/*.parquet"))
+    if not data_files:
+        raise FileNotFoundError(f"No parquet under {skill_dataset_dir / 'data'}")
+    df = pd.concat([pd.read_parquet(p, columns=cols) for p in data_files], ignore_index=True)
+
+    by_task: dict[int, list[dict]] = defaultdict(list)
+    for ep, ep_df in df.groupby("episode_index"):
+        ep = int(ep)
+        if ep not in inits:
+            continue
+        init_state, scene_file = inits[ep]
+        task_name = scene_file[: -len("_demo.hdf5")] if scene_file.endswith("_demo.hdf5") else scene_file
+        task_id = name_to_id.get(task_name)
+        if task_id is None:
+            continue
+        row0 = ep_df.sort_values("frame_index").iloc[0]
+        seq = np.asarray(row0["skill_sequence"]).reshape(-1)
+        lens = np.asarray(row0["skill_length_sequence"]).reshape(-1)
+        skills = [{"token": int(seq[i]), "gt_length": int(lens[i])}
+                  for i in range(min(len(seq), len(lens))) if int(seq[i]) < num_emb]
+        if skills:
+            by_task[task_id].append({"episode_index": ep, "skills": skills,
+                                     "init_state": np.asarray(init_state, np.float64)})
+
+    for tid in by_task:
+        by_task[tid].sort(key=lambda r: r["episode_index"])
+    return dict(by_task)
 
 
 def load_skill_sequences_by_language(dataset_dir: str | Path) -> dict[str, list[list[dict]]]:

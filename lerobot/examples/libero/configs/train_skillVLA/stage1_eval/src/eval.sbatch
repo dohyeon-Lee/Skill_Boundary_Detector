@@ -58,9 +58,10 @@ echo "skills   : ${SKILL_LABEL_DATASET_DIR}"
 echo "target   : ${TARGET_TASK}  task_ids=${TASK_IDS}  episodes=${N_EPISODES}/task"
 nvidia-smi || true
 
-for p in "${POLICY_PATH}" "${FSQ_CKPT}" "${SKILL_LABEL_DATASET_DIR}"; do
+for p in "${POLICY_PATH}" "${FSQ_CKPT}" "${SKILL_LABEL_DATASET_DIR}" "${EVAL_INIT_STATES_PATH}"; do
   if [ ! -e "${p}" ]; then
     echo "Missing required artifact: ${p}" >&2
+    [ "${p}" = "${EVAL_INIT_STATES_PATH}" ] && echo "  → build it: stage1_eval/oracle_matching/run.sh ${SOURCE_DATASET:-<source>}" >&2
     exit 1
   fi
 done
@@ -85,10 +86,13 @@ PYTHONPATH="${LEROBOT_ROOT}/src:${LEROBOT_ROOT}/examples/libero:${LIBERO_REPO_RO
     --policy.path="${POLICY_PATH}" \
     --policy.fsq_path="${FSQ_CKPT}" \
     --policy.skill_label_dataset_dir="${SKILL_LABEL_DATASET_DIR}" \
+    --policy.eval_init_states_path="${EVAL_INIT_STATES_PATH}" \
     --policy.terminator_dino_model_path="${TERMINATOR_DINO_MODEL_PATH}" \
     --policy.skill_advance_mode="${SKILL_ADVANCE_MODE}" \
     --policy.skill_end_mode="${SKILL_END_MODE}" \
     --policy.skill_end_threshold="${SKILL_END_THRESHOLD}" \
+    --policy.skill_end_progress_threshold="${SKILL_END_PROGRESS_THRESHOLD}" \
+    --policy.eval_use_trained_terminator="${EVAL_USE_TRAINED_TERMINATOR}" \
     --policy.inference_skill_max_length="${INFERENCE_SKILL_MAX_LENGTH}" \
     --policy.n_action_steps="${N_ACTION_STEPS}" \
     --policy.device=cuda \
