@@ -10,8 +10,8 @@ skillvla_dataset_root: skillvla_dataset  # .../{skillvla_dataset_root}/{source_d
 source_dataset: libero_90_full_full
 # run_tag: FSQ555_dino8_both_1000   # sub-folder under {skillvla_dataset_root}/{source}/
 # run_tag: FSQ88_dino8_both_1000
-run_tag: FSQ555_dino8_weighted_wow_1000
 # run_tag: FSQ88_dino8_weighted_both_1000
+run_tag: FSQ555_dino8_weighted_both_1000
 
 # ── Conditioning architecture (joint only) ──
 #   state       → AdaRMS = time + state; skill (z_q) stays as an attended PREFIX token (image-dominant,
