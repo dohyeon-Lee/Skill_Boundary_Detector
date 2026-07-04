@@ -16,9 +16,9 @@ pi_base: models/pi05_base
 
 # ── PT (mirrors train_pi05 keys) ──────────────────────────────
 pt_dataset: libero_90_full_full
-pt_batch_size: 64 # 16
+pt_batch_size: 16 # 16
 pt_num_workers: 4
-pt_exp: "2"
+pt_exp: ""
 pt_lr_base: 2.5e-05
 pt_steps: 20000          # mini scale: g8 × p500 → 4k steps/cycle → 5 cycles
 pt_save_freq: 5000

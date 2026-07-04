@@ -112,7 +112,9 @@ manifold 위의 어느 점에 앉느냐**: iid는 배치 노이즈 implicit bias
 
 ### 조건 매트릭스 (PT 6조건 → 동일 FT → 기존 task 유지율)
 
-1. joint iid (기존 `train_pi05`) — baseline
+1. joint iid — **`cycle_iid_baseline=true`로 이 폴더 안에서 실행 (권장)**: 학습은 순수 iid
+   글로벌 셔플, probe/로깅 계측은 cyclic 런과 완전 동일 → 같은 자로 잰 비교가 됨 (run name
+   `PTiid_...`). Δ/Reptile 자동 무시.
 2. joint + SAM — flat-minima 경쟁자 (미구현)
 3. cyclic만 (`lam=0, b=1`)
 4. cyclic + Δ
@@ -147,25 +149,54 @@ FT 프로토콜 주의: 모든 조건에 FT 레시피 완전 동일, FT task는 
   `build_probe_batches`+`measure_probe`(fork_rng 고정 노이즈) / `update_policy_scaled`
   (Δ-계수는 detach scalar 곱, **로깅은 unscaled loss**) / `reptile_interpolate`
   (사이클 anchor, CPU 스트리밍) / `measure_probe_grad`+`grad_cosine`(회전각 진단, 옵션).
-- `cycle/cycle_config.yaml` — 토글: `cycle_phase_steps`(k) / `cycle_delta_lambda` /
-  `cycle_reptile_beta`. run name에 조건 자동 인코딩 (`PTcyc_..._g8p500_lam05_b05`).
-- wandb (`VLA_cycle`): phase 경계마다 `probe/g{j}_loss`, `probe/g{j}_forget`,
-  `cycle/active_group`, `cycle/w_active` → 간섭 행렬/복구 곡선 오프라인 복원 가능.
-  Reptile 보간 직후에도 probe 1회 (pull-back 효과 가시화).
+- `cycle/cycle_config.yaml` — 토글: `cycle_phase_steps`(k) / `cycle_n_cycles`(>0이면
+  phase_steps = steps//(groups×cycles) 자동, n_groups sweep 시 사이클 보존용) /
+  `cycle_delta_lambda` / `cycle_reptile_beta` / `cycle_iid_baseline`. 전부 env 오버라이드 가능
+  (CYCLE_*). run name에 조건 자동 인코딩 (`PTcyc_..._g8p500_lam05_b05`, `PTiid_...`, `g8c5`).
+- **파라미터화 원칙**: `pt_steps`(예산)는 고정 앵커 — 조건 간 동일 연산량 비교가 실험의 전제.
+  자유 변수는 groups + {phase XOR cycles}. steps를 바꾸는 실험(같은 k에 사이클 보충 등)은
+  k↕cycles 교란을 분리하는 의도적 대조군으로만, 수동으로. **bs도 조건 간 고정 필수.**
+- wandb (`VLA_cycle`) — 섹션 분리됨 (WandBLogger의 mode 화이트리스트를 우회해 raw run으로
+  로깅하는 `wandb_log_section` 헬퍼):
+  - `train/`: loss·grad_norm·lr·epochs(전역) — log_freq마다
+  - `probe/`: g{j}_loss, g{j}_forget, grad_cos_g{X} — phase 경계마다. active group의 forget은
+    "자기 직전 phase 끝 대비 순 drift"(복구 완성도) — own_last 갱신 전에 로깅하는 순서 때문
+  - `cycle/`: position(소수점 사이클 위치), index, active_group, w_active
+  - `epoch/`: g{j}(그룹별 데이터 소비 바퀴수, GroupCursor 기반 정확값), active_group
+  → 간섭 행렬/복구 곡선 오프라인 복원 가능. Reptile 보간 직후에도 probe 1회 (pull-back 가시화).
 
 ### 알려진 v1 한계 (의도된 설계)
 
-- 단일 GPU 전용(assert), resume 없음(output dir 삭제 후 fresh)
+- 단일 GPU 전용(assert), **resume 없음**(output dir 삭제 후 fresh — walltime 계산 필수:
+  스텝시간 × steps < pt_time 확인하고 제출할 것)
 - Adam 모멘트를 Reptile 보간 때 리셋 안 함 — ablation 후보
 - steps가 사이클 배수가 아니면 마지막 부분 사이클에도 보간 적용
 - 회전각 진단은 단일 지정 그룹만(`probe_grad_group`), CPU ~6GB
-- GPU 스모크 테스트 미실행 상태로 인계될 수 있음 — README의 smoke 커맨드 먼저 실행할 것
+- probe는 매 경계 × 전 그룹이라, 그룹 수를 크게(예: 73 task 단위) 하면 오버헤드 ~3× —
+  그 실험 전에 probe thinning(m경계마다 측정) 추가 필요
 
-## 7. 다음 단계
+## 7. 현재 상태 (2026-07-04, 서버 이전 시점)
 
-1. 스모크 테스트 (README 커맨드) → probe/Δ/Reptile 경로 확인
-2. 미니 sweep: k ∈ {1(=iid 대조), 200, 500, 2000} × {순수, +Δ, +Reptile, +둘다}, 20k스텝
-3. FT 프로토콜 연결 (기존 train_pi05 FT 재사용, libero_10 held-out) → U커브
-4. 결과 좋으면: joint+SAM baseline 추가, 본 스케일(100k), skillVLA 포팅
-5. 열린 질문: Adam 모멘트 처리, 옵션 A(phase-anchor) ablation, 그룹 수 sweep,
-   상대 Δ vs 절대 Δ, "본 task 무간섭 평형이 unseen task 섭동에도 강건한가"(핵심 도약)
+- **첫 런들 제출됨** (원 서버 SLURM): PTcyc 조건, bs64 / phase125 / 20k스텝 / exp "2",
+  wandb `VLA_cycle` (예: run ebajgaex). 2 RUNNING + 2 PENDING이었음.
+- ⚠️ **발견된 문제**: bs64는 스텝당 ~5.3s → 20k = ~30h > pt_time 24h. **resume이 없어서
+  walltime에 죽으면 통째로 날아감.** 조치: bs16으로 낮추거나(스텝 ~1.5s, 8~10h) pt_time을
+  48h로 올려 재제출. **bs는 모든 비교 조건에서 통일할 것.**
+- 로깅 정상 확인: probe@init(step 0) 즉시, 첫 train/ 포인트는 log_freq=200 × 스텝시간 후에
+  나타남 (bs64면 ~18분) — 처음에 probe/cycle/epoch 창만 보이는 건 정상.
+
+## 8. 다음 단계
+
+1. (필요시) 스모크: `PT_STEPS=24 CYCLE_PHASE_STEPS=3 CYCLE_DELTA_LAMBDA=0.5
+   CYCLE_REPTILE_BETA=0.5 PT_SAVE_FREQ=24 PT_EXP=smoke ./submit_cycle_PT.sh`
+2. **첫 비교쌍**: 동일 예산으로 `./submit_cycle_PT.sh`(PTcyc) + `CYCLE_IID_BASELINE=true
+   ./submit_cycle_PT.sh`(PTiid). FT 없이도 판단할 것: ① probe 톱니(phase 중 다른 그룹 loss
+   상승 = forgetting 발생 확인, 안 오르면 섭동 부족), ② **g{j}_forget 진폭이 사이클이 갈수록
+   감소하는지 = 무간섭 평형 이동의 첫 메커니즘 증거**, ③ 최종 loss가 iid에 크게 안 밀리는지.
+3. k-sweep: `CYCLE_PHASE_STEPS ∈ {50, 200, 500, 2000}` (+ Δ/Reptile 토글 조건들)
+4. FT 프로토콜 연결 (기존 train_pi05 FT 재사용, libero_10 held-out) → U커브
+5. 결과 좋으면: joint+SAM baseline 추가, 본 스케일(100k), skillVLA 포팅
+6. 열린 질문: Adam 모멘트 처리, 옵션 A(phase-anchor) ablation, 그룹 수 sweep(n_cycles 고정
+   모드 활용), 상대 Δ vs 절대 Δ, 73그룹(task 단위) 실험 시 probe thinning 구현 필요(현재는
+   경계마다 전 그룹 probe라 오버헤드 ~3×), "본 task 무간섭 평형이 unseen task 섭동에도
+   강건한가"(핵심 도약)
