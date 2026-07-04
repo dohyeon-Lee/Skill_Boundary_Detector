@@ -102,6 +102,13 @@ def build_settings(cfg: dict) -> dict:
                  + [("noCe" if not cond_expert else "")] + [("lang" if attend_language else "")])
     conn_tags = [t for t in conn_tags if t]
     vlm_dropout_p = float(get_value(cfg, "vlm_dropout_p", 0.0))               # CFG VLM dropout (0 = off)
+    # Skill reader (separate post-VLM joint concat-KV probe module) + SkillHead dead-zone.
+    skill_deadzone_frac = float(get_value(cfg, "skill_deadzone_frac", 0.0))   # 0 = plain MSE
+    num_reader_tokens = int(get_value(cfg, "num_reader_tokens", 4))
+    reader_depth = int(get_value(cfg, "reader_depth", 2))
+    reader_heads = int(get_value(cfg, "reader_heads", 8))
+    reader_tags = ([f"dz{skill_deadzone_frac:g}"] if skill_deadzone_frac > 0 else [])
+    reader_tags += ([f"rp{num_reader_tokens}d{reader_depth}"] if (num_reader_tokens != 4 or reader_depth != 2) else [])
     # Per-regime freeze (nested dicts freeze_vlm_vsa / freeze_vsa → flat config fields). Only used when p>0.
     _fa = get_value(cfg, "freeze_vlm_vsa", {}) or {}   # A = VLM_VSA batches
     _fb = get_value(cfg, "freeze_vsa", {}) or {}       # B = VSA batches
@@ -121,7 +128,7 @@ def build_settings(cfg: dict) -> dict:
             loss_tags.append(m.group(1))
     parts = ([source_dataset, run_tag] + ([s1_vis_tag] if s1_vis_tag else [])
              + [stage1_checkpoint, vis_tag] + ([mode_tag] if mode_tag else []) + loss_tags
-             + conn_tags
+             + conn_tags + reader_tags
              + ([f"vdrop{vlm_dropout_p:g}"] if vlm_dropout_p > 0 else [])
              + ([frz_tag] if (vlm_dropout_p > 0 and (_aF or _bF)) else []))
     run_name = "_".join(parts)
@@ -147,6 +154,11 @@ def build_settings(cfg: dict) -> dict:
         # skill head / FSQ codebook
         "skill_fsq_levels": "[" + ",".join(str(x) for x in skill_fsq_levels) + "]",
         "skill_loss_weight": str(get_value(cfg, "skill_loss_weight", 0.5)),
+        # skill reader (post-VLM probe module) + SkillHead regression dead-zone
+        "skill_deadzone_frac": skill_deadzone_frac,
+        "num_reader_tokens": num_reader_tokens,
+        "reader_depth": reader_depth,
+        "reader_heads": reader_heads,
         # inter-module attention connections (VLM/cond/expert edges + the language master switch)
         "attend_language": attend_language,
         "vlm_cond": vlm_cond,

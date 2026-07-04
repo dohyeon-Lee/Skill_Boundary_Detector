@@ -13,17 +13,26 @@ stage1_checkpoint: "015000"   # "last" or a step number of the Stage-1 run above
 # ── Skill head / FSQ ──────────────────────────────────────────
 skill_loss_weight: 0.1                # total = BC + λ·skill_CE (λ<1 keeps BC dominant)
 
+# ── Skill reader (SEPARATE post-VLM module; VLM stays pristine [imgs,lang]) ──────────────
+# N learned probe tokens read the VLM's FINAL-layer output via JOINT concat-KV attention (probes'
+# own K/V compete with the VLM K/V in one softmax; VLM read-only). Respects attend_language. The
+# pooled probe hidden → SkillHead. Freezing the skill decoder (freeze_skill_head) freezes reader+head.
+num_reader_tokens: 4                  # probe tokens (self-attend + read the VLM). run-name rp{n}d{depth}
+reader_depth: 2                       # joint concat-KV layers (shallow = forgetting-friendly)
+reader_heads: 8                       # attention heads (must divide the VLM width)
+# SkillHead regression dead-zone as a FRACTION of per-dim grid spacing: margin = frac/(levels-1).
+# Once |pred-target|<margin the code already rounds right → that dim's loss is zeroed (faster
+# convergence, no post-correct drift). frac=1 stops as soon as correct; <1 leaves a safety band.
+# 0 = plain MSE. Codebook-independent. run-name _dz{frac}.
+skill_deadzone_frac: 0.8
+
 # ── 모듈 간 attention 연결 (VLM, cond, action expert). VLM→cond→expert 체인 + VLM→expert 지름길의
 #    각 엣지를 토글. 학습/추론 마스크 둘 다에 적용(train/infer 일치). skill-query는 항상 제외. ──
 # attend_language: VLM '언어' 토큰을 attend할지 (cond·expert 공통 마스터 스위치). false=이미지만(visual
 #   grounding 강제) / true=언어도(ablation). run-name _lang.
 attend_language: false
-# vlm_cond: cond가 VLM을 attend (기본 true=VLM grounding / false=cond가 VLM-blind 순수 scene 인코더). off시 _noVc.
 vlm_cond: true
-# cond_expert: action expert가 cond(scene)를 attend (기본 true=backbone / false=expert가 cond 무시). off시 _noCe.
 cond_expert: true
-# vlm_expert: action expert가 VLM을 '직접' attend (기본 false=VLM→cond→expert 체인 / true=직접 지름길 추가). on시 _ve.
-#   (기존 action_attend_vlm 리네임. 일관성 위해 명시.)
 vlm_expert: true
 
 # CFG식 VLM dropout (학습 전용): 이 확률로 배치당 cond→VLM/action→VLM 어텐션을 끊어 action expert가

@@ -107,6 +107,10 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.stage1_checkpoint_path="${STAGE1_CHECKPOINT_PATH}" \
     --policy.skill_fsq_levels="${SKILL_FSQ_LEVELS}" \
     --policy.skill_loss_weight="${SKILL_LOSS_WEIGHT}" \
+    --policy.skill_deadzone_frac="${SKILL_DEADZONE_FRAC}" \
+    --policy.num_reader_tokens="${NUM_READER_TOKENS}" \
+    --policy.reader_depth="${READER_DEPTH}" \
+    --policy.reader_heads="${READER_HEADS}" \
     --policy.attend_language="${ATTEND_LANGUAGE}" \
     --policy.vlm_cond="${VLM_COND}" \
     --policy.cond_expert="${COND_EXPERT}" \

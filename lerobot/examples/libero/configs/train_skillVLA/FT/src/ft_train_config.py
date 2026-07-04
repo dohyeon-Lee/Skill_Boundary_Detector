@@ -88,6 +88,16 @@ def build_settings(cfg: dict) -> dict:
     cond_expert = _inherit("cond_expert", True)
     vlm_expert = _inherit("vlm_expert", False)
 
+    # Skill reader ARCHITECTURE — inherited from the Stage-2 ckpt (the reader weights are full-loaded and
+    # frozen in FT; its shape MUST match). skill_deadzone_frac is a loss param (head frozen → no grad); keep.
+    def _inherit_num(key, default, cast):
+        v = get_value(cfg, key, None)
+        return cast(s2_cfg.get(key, default)) if v in (None, "", "null") else cast(v)
+    num_reader_tokens = _inherit_num("num_reader_tokens", 4, int)
+    reader_depth = _inherit_num("reader_depth", 2, int)
+    reader_heads = _inherit_num("reader_heads", 8, int)
+    skill_deadzone_frac = _inherit_num("skill_deadzone_frac", 0.0, float)
+
     # run_name: new task + run_tag + ft{Stage-2 ckpt} + the Stage-2 SOURCE variant (so FT forks of DIFFERENT
     # Stage-2 models don't collide — backbone / state_cond_mode / cum) + action↔VLM + the FT variant tags.
     s2tags = []
@@ -134,6 +144,11 @@ def build_settings(cfg: dict) -> dict:
         "vlm_cond": vlm_cond,
         "cond_expert": cond_expert,
         "vlm_expert": vlm_expert,
+        # skill reader architecture (inherited from the Stage-2 ckpt — reader is loaded + frozen in FT)
+        "num_reader_tokens": num_reader_tokens,
+        "reader_depth": reader_depth,
+        "reader_heads": reader_heads,
+        "skill_deadzone_frac": skill_deadzone_frac,
         # FT behaviour
         "cond_skill_source": cond_skill_source,
         "train_terminator": train_terminator,

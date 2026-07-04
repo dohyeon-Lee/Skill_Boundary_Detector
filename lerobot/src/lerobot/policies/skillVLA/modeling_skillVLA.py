@@ -1,21 +1,23 @@
 """Stage-2 SkillVLA — VLM predicts the skill, an action expert flow-matches the chunk.
 
 A PaliGemma VLM (warm-started from pi05_base) reads the SKILL-START observation (3rd + wrist
-image + the start state discretized into the prompt, pi05-style + language) plus a learnable
-skill-query token, and predicts the current FSQ skill code (one categorical per FSQ dim, via
-``SkillHead``). An action expert — warm-started from a Stage-1 ``skill_expert`` checkpoint —
-generates the action chunk by flow matching from the CURRENT observation, reading the VLM via
-PI05-style joint block attention.
+image + the start state discretized into the prompt, pi05-style + language) and stays PRISTINE; a
+SEPARATE skill reader (learned probe tokens over the VLM's FINAL-layer output, joint concat-KV,
+VLM read-only) → ``SkillHead`` predicts the current FSQ skill code (regression over per-dim grid
+coords). An action expert — warm-started from a Stage-1 ``skill_expert`` checkpoint — generates the
+action chunk by flow matching from the CURRENT observation, reading the VLM via PI05-style joint
+block attention.
 
 Architecture (joint): three streams in a one-directional chain VLM → cond → action — a Stage-1
 cond-encoder over the CURRENT obs (images + per-dim discretized state), the VLM over the START obs,
 and the action expert (action tokens only). cond attends itself + the VLM's image hiddens (NOT its
-language/skill-query tokens — language reaches cond only indirectly via VLM image hiddens that
-attended it); the action attends cond + itself (no direct VLM edge). Nothing attends the action.
+language tokens unless attend_language — language otherwise reaches cond only indirectly via VLM
+image hiddens that attended it); the action attends cond + itself (VLM edge iff vlm_expert). Nothing
+attends the action.
 
 Skill flow: the skill (z_q) + progress are prepended to the ACTION stream (ae); the GT code is
-teacher-forced at train (cond_skill_source=gt) or the VLM's own prediction is fed back via STE
-(cond_skill_source=pred); the VLM's skill-query hidden is the categorical-prediction signal (skill CE).
+teacher-forced at train (cond_skill_source=gt) or the reader's own prediction is fed back via STE
+(cond_skill_source=pred); the skill reader's pooled hidden is the prediction signal (skill loss).
 
 loss = BC(flow-matching MSE) + skill_loss_weight · skill_CE.
 
@@ -74,6 +76,7 @@ from .dataset_skillVLA import (
     SKILL_START_WRIST_IMAGE,
 )
 from .skill_head import SkillHead
+from .skill_reader import SkillReader
 
 log = logging.getLogger(__name__)
 
@@ -145,7 +148,7 @@ class SkillVLAPytorch(PI05Pytorch):
     Inherited from ``PI05Pytorch``: ``paligemma_with_expert`` (``.paligemma`` = VLM, ``.gemma_expert``
     = action expert), ``action_in_proj`` / ``action_out_proj`` / ``time_mlp_*``, and the flow-matching
     noise/time samplers. Added here: the Stage-1 cond-side (vision encoder, image/state/skill
-    projections, and a joint-mode cond-encoder), a learnable skill-query token, and the ``SkillHead``.
+    projections, and a joint-mode cond-encoder), the ``SkillReader`` (probe tokens), and the ``SkillHead``.
     """
 
     def __init__(self, config: SkillVLAConfig, stage1_config, rtc_processor=None):
@@ -165,8 +168,14 @@ class SkillVLAPytorch(PI05Pytorch):
                 f"prod(skill_fsq_levels)={math.prod(config.skill_fsq_levels)} must equal the Stage-1 "
                 f"skill_vocab_size={stage1_config.skill_vocab_size}."
             )
-        self.skill_query = nn.Parameter(torch.randn(1, 1, vlm_width) * 0.02)
-        self.skill_head = SkillHead(vlm_width, config.skill_fsq_levels)
+        # Skill prediction lives OUTSIDE the VLM: a separate JOINT concat-KV reader (N learned probes read
+        # the VLM's FINAL-layer output, VLM read-only → pristine) → the FSQ regression head. Freezing the
+        # skill decoder for VLM-only finetuning freezes BOTH (see _apply_freezes).
+        self.skill_reader = SkillReader(
+            vlm_width, depth=config.reader_depth, heads=config.reader_heads,
+            num_probes=config.num_reader_tokens)
+        self.skill_head = SkillHead(vlm_width, config.skill_fsq_levels,
+                                    deadzone_frac=getattr(config, "skill_deadzone_frac", 0.0))
 
         # ── FSQ grid buffers (skill cond token + inference-only terminator) ──
         # Flat FSQ code → z_q uses the FSQ codebook's OWN (little-endian) convention
@@ -189,10 +198,9 @@ class SkillVLAPytorch(PI05Pytorch):
         # outputs are cast to the working dtype only at the attention boundary (_action_in/_action_out).
         if str(config.dtype) == "bfloat16":
             for m in (self.image_proj, self.state_proj, self.skill_proj,
-                      self.cond_encoder, self.skill_head):
+                      self.cond_encoder, self.skill_reader, self.skill_head):
                 if m is not None:
                     m.to(dtype=torch.bfloat16)
-            self.skill_query.data = self.skill_query.data.to(torch.bfloat16)
 
         # FT: a TRAINABLE terminator co-trained on GT signals (built last so the bf16 cast above skips
         # it — it stays float32). Disjoint from the SkillVLA params; warm-starts from config.fsq_path.
@@ -253,8 +261,8 @@ class SkillVLAPytorch(PI05Pytorch):
     def _regime_groups(self) -> dict:
         """Module groups the CFG dropout toggles per regime (A=VLM_VSA / B=VSA). EXACTLY the static
         freeze_action_expert / freeze_cond_encoder / freeze_vlm sets, so p=0 and p>0 stay consistent.
-        Vision backbones (vision_tower, dino/siglip) + skill_head are NOT here — they follow their static
-        freeze flags regardless of regime."""
+        Vision backbones (vision_tower, dino/siglip) + the skill decoder (skill_reader + skill_head) are
+        NOT here — they follow their static freeze flags regardless of regime (skill supervised every batch)."""
         return {
             "expert": [self._expert, self.action_in_proj, self.action_out_proj, self.time_mlp_in, self.time_mlp_out],
             "cond": [self.cond_encoder],
@@ -352,12 +360,12 @@ class SkillVLAPytorch(PI05Pytorch):
     def _vlm_tokens(
         self, start_images: list[Tensor], lang_tokens: Tensor, lang_masks: Tensor
     ) -> tuple[Tensor, Tensor, Tensor]:
-        """VLM prefix [start imgs, language, skill-query] → (embeds (B,nv,W), pad (B,nv), xattn_block (nv,)).
+        """VLM prefix [start imgs, language] → (embeds (B,nv,W), pad (B,nv), xattn_block (nv,)).
 
-        ``xattn_block`` marks VLM tokens the cond/expert stream must NOT attend: the skill-query
-        read-out token always, plus the language sub-block UNLESS attend_language=True. So by
-        default cond reads VLM IMAGE tokens only (visual grounding); the skill reaches the action via
-        the action-stream prefix (ae), never by attending the skill-query hidden."""
+        The VLM stays PRISTINE — no skill-query token is appended; skill prediction is a separate reader
+        over this prefix's FINAL-layer output (see SkillReader). ``xattn_block`` marks VLM tokens the
+        cond/expert/reader streams must NOT attend: the language sub-block UNLESS attend_language=True.
+        So by default they read VLM IMAGE tokens only (visual grounding)."""
         embs, pad, is_lang = [], [], []
         for img in start_images:
             emb = self.paligemma_with_expert.embed_image(img)
@@ -372,19 +380,13 @@ class SkillVLAPytorch(PI05Pytorch):
         pad.append(lang_masks.to(dtype=torch.bool))
         is_lang += [True] * lang_emb.shape[1]
 
-        bsize = lang_emb.shape[0]
-        embs.append(self.skill_query.expand(bsize, 1, -1))
-        pad.append(torch.ones(bsize, 1, dtype=torch.bool, device=lang_emb.device))
-        is_lang += [False]
-
         embeds = torch.cat([e.to(self._wdtype) for e in embs], dim=1)  # img feats are f32; unify to wdtype
         pad = torch.cat(pad, dim=1)
         is_lang = torch.tensor(is_lang, dtype=torch.bool, device=embeds.device)
-        # Tokens the cond/expert stream must NOT attend. Always exclude the skill-query (last) token.
-        # Language excluded by DEFAULT (cond reads VLM IMAGE tokens only → forces visual grounding);
-        # attend_language=True lets cond ALSO attend the VLM language tokens (ablation toggle).
+        # Tokens the cond/expert/reader streams must NOT attend. Language excluded by DEFAULT (they read
+        # VLM IMAGE tokens only → forces visual grounding); attend_language=True lets them ALSO attend the
+        # VLM language tokens (ablation toggle).
         xattn_block = torch.zeros_like(is_lang)
-        xattn_block[-1] = True
         if not bool(getattr(self.config, "attend_language", False)):
             xattn_block = xattn_block | is_lang
         return embeds, pad, xattn_block
@@ -411,12 +413,13 @@ class SkillVLAPytorch(PI05Pytorch):
     def _mask_branch_A(
         self, nc: int, vlm_pad: Tensor, vlm_xattn_block: Tensor, na: int, drop_vlm: bool = False
     ) -> tuple[Tensor, Tensor]:
-        """Branch-A (B,1,T,T) additive mask + the (B,T) validity/pad vector. Streams ordered
-        [cond, vlm, action], one-directional chain VLM → cond → action: the VLM reads only
+        """Branch-A (B,1,T,T) additive mask + the (B,T) validity/pad vector. PHYSICAL stream order is
+        [cond, vlm, action] (this mask's row/col layout); the RoPE POSITIONS, however, place the VLM
+        first — see _joint_positions. One-directional chain VLM → cond → action: the VLM reads only
         itself; cond reads itself + the VLM tokens it is allowed (~vlm_xattn_block): IMAGE tokens
-        ALWAYS, LANGUAGE tokens ONLY if attend_language; the skill-query read-out token is
-        ALWAYS excluded (skill reaches the action via the FSQ skill vector / AdaRMS, not by attending
-        the skill-query hidden). The action stream is prefix(n_prefix) + action×K, where n_prefix is
+        ALWAYS, LANGUAGE tokens ONLY if attend_language (the VLM is pristine — no skill-query token;
+        skill reaches the action via the FSQ skill vector / AdaRMS, and is read separately by the
+        post-VLM skill reader). The action stream is prefix(n_prefix) + action×K, where n_prefix is
         the [skill(, progress)] prefix in `state` mode or 0 in `state_skill` (skill/progress → AdaRMS):
         the conditioning PREFIX is read by the action tokens but reads NOTHING outside itself
         (prefix ⊥ cond, prefix ⊥ action). The ACTION tokens ALWAYS attend cond/scene; they ALSO get a
@@ -433,7 +436,7 @@ class SkillVLAPytorch(PI05Pytorch):
         allow = torch.zeros(bsize, total, total, dtype=torch.bool, device=device)
         allow[:, :nc, :nc] = True                                    # cond block
         if self.config.vlm_cond and not drop_vlm:                    # cond → VLM edge (severed on a CFG B batch)
-            allow[:, :nc, nc : nc + nv] = (~vlm_xattn_block)[None, None, :]  # cond → vlm tokens: images always, language iff attend_language (skill-query always excluded)
+            allow[:, :nc, nc : nc + nv] = (~vlm_xattn_block)[None, None, :]  # cond → vlm tokens: images always, language iff attend_language
         allow[:, nc : nc + nv, nc : nc + nv] = True                  # vlm block (self-attn kept even when dropped → skill head still supervised)
         allow[:, pa:pf1, pa:pf1] = True                              # prefix → prefix (skill self; ⊥ cond, ⊥ action)
         if self.config.cond_expert:                                  # cond → expert edge (action reads the scene)
@@ -468,11 +471,31 @@ class SkillVLAPytorch(PI05Pytorch):
                 hiddens = compute_layer_multi(layer_idx, hiddens, layers, att_4d, position_ids, adarms, rotary)
         return hiddens
 
+    def _joint_positions(self, vlm_pad: Tensor, nc: int, na: int) -> tuple[Tensor, Tensor, Tensor]:
+        """RoPE positions for the joint layout, with the VLM placed FIRST in position space — VLM at
+        [0..nv), then cond, then action — even though the PHYSICAL stream order stays [cond, vlm, action]
+        (attention is set-based, so column order is immaterial once each key carries its RoPE position).
+        Two payoffs:
+          (1) the VLM shares the SAME [0..) frame as the standalone skill encode (_vlm_prefix_out /
+              predict_skill_code) → the skill reader sees identical VLM hiddens at train & inference
+              (no RoPE-frame skew between the gt-mode joint read and the pred/inference standalone read);
+          (2) cond and action stay ADJACENT with the SAME cond→action relative positions as the Stage-1
+              skill_expert ([cond, action]) — so the warm-started (often frozen) action expert sees the
+              relative positions it was trained on (the +nv the VLM would otherwise inject cancels).
+        Returns (vlm_pos, cond_pos, action_pos), each (B, ·)."""
+        dev = vlm_pad.device
+        nv_valid = vlm_pad.sum(dim=1, keepdim=True)                    # (B,1) valid VLM length per sample
+        vlm_pos = torch.cumsum(vlm_pad, dim=1) - 1                     # [0..nv_valid-1] (padded repeats, masked out)
+        cond_pos = nv_valid + torch.arange(nc, device=dev)[None, :]    # cond right after the VLM
+        action_pos = nv_valid + nc + torch.arange(na, device=dev)[None, :]
+        return vlm_pos, cond_pos, action_pos
+
     def _joint_forward_A(self, cond_tokens, vlm_embeds, vlm_pad, vlm_xattn_block, action_tokens, expert_cond,
                          drop_vlm=False):
         nc, na = cond_tokens.shape[1], action_tokens.shape[1]
-        att_4d, pad = self._mask_branch_A(nc, vlm_pad, vlm_xattn_block, na, drop_vlm=drop_vlm)
-        position_ids = torch.cumsum(pad, dim=1) - 1
+        att_4d, _ = self._mask_branch_A(nc, vlm_pad, vlm_xattn_block, na, drop_vlm=drop_vlm)
+        vlm_pos, cond_pos, action_pos = self._joint_positions(vlm_pad, nc, na)
+        position_ids = torch.cat([cond_pos, vlm_pos, action_pos], dim=1)   # PHYSICAL order [cond, vlm, action]
         layers_per_stream = [self.cond_encoder.model.layers, self._vlm.layers, self._expert.layers]
         # cond/vlm: plain RMSNorm; action ← AdaRMS(expert_cond = time + state [+ skill + progress for
         # state_skill]). In `state` mode skill/progress ride the action prefix instead (see _action_prefix).
@@ -493,9 +516,12 @@ class SkillVLAPytorch(PI05Pytorch):
             cond_tokens, vlm_embeds, vlm_pad, vlm_xattn_block, action_tokens, expert_cond, drop_vlm=drop_vlm)
         return vlm_out, action_out[:, -self.config.chunk_size :]
 
-    def _skill_hidden(self, vlm_out: Tensor) -> Tensor:
-        """The skill-query hidden (last VLM token) → SkillHead input."""
-        return vlm_out[:, -1]
+    def _skill_hidden(self, vlm_out: Tensor, vlm_pad: Tensor, vlm_xattn_block: Tensor) -> Tensor:
+        """Pooled skill hidden from the JOINT concat-KV SkillReader over the VLM's FINAL-layer output
+        (``vlm_out`` (B,nv,W)). The reader attends the SAME VLM tokens as cond — images always, language
+        iff attend_language (~vlm_xattn_block) — minus padding → SkillHead input. VLM stays read-only."""
+        vlm_key_ignore = (~vlm_pad) | vlm_xattn_block[None, :]           # (B, nv) True = do not attend
+        return self.skill_reader(vlm_out, vlm_key_ignore)
 
     def _pred_skill_ste_z(self, skill_hidden: Tensor) -> Tensor:
         """cond_skill_source=pred: the VLM's predicted skill as a normalized z, with a straight-through
@@ -553,7 +579,8 @@ class SkillVLAPytorch(PI05Pytorch):
         vlm_embeds, vlm_pad, vlm_xattn_block = self._vlm_tokens(start_images, lang_tokens, lang_masks)
         pred_hidden = None
         if getattr(self.config, "cond_skill_source", "gt") == "pred":
-            pred_hidden = self._skill_hidden(self._vlm_prefix_out(vlm_embeds, vlm_pad))  # phase 1 (grad)
+            pred_hidden = self._skill_hidden(  # phase 1 (grad): reader over the VLM prefix output
+                self._vlm_prefix_out(vlm_embeds, vlm_pad), vlm_pad, vlm_xattn_block)
             skill_zq = self._pred_skill_ste_z(pred_hidden)
         else:
             skill_zq = self._code_to_z(skill_code) / self._fsq_half[None, :]
@@ -568,7 +595,7 @@ class SkillVLAPytorch(PI05Pytorch):
         vlm_out, action_out = self._joint_forward(
             cond_tokens, vlm_embeds, vlm_pad, vlm_xattn_block, action_tokens, expert_cond, drop_vlm=drop_vlm)
         v_t = self._action_out(action_out)
-        skill_hidden = pred_hidden if pred_hidden is not None else self._skill_hidden(vlm_out)
+        skill_hidden = pred_hidden if pred_hidden is not None else self._skill_hidden(vlm_out, vlm_pad, vlm_xattn_block)
         return F.mse_loss(u_t, v_t, reduction="none"), skill_hidden
 
     # ── inference ──
@@ -588,9 +615,10 @@ class SkillVLAPytorch(PI05Pytorch):
 
     @torch.no_grad()
     def predict_skill_code(self, start_images: list[Tensor], lang_tokens: Tensor, lang_masks: Tensor) -> Tensor:
-        """Run ONLY the VLM (bidirectional prefix) → argmax FSQ skill code (B,)."""
-        vlm_embeds, vlm_pad, _ = self._vlm_tokens(start_images, lang_tokens, lang_masks)
-        return self.skill_head.decode(self._skill_hidden(self._vlm_prefix_out(vlm_embeds, vlm_pad)))
+        """Run ONLY the VLM (bidirectional prefix) + skill reader → argmax FSQ skill code (B,)."""
+        vlm_embeds, vlm_pad, vlm_xattn_block = self._vlm_tokens(start_images, lang_tokens, lang_masks)
+        hidden = self._skill_hidden(self._vlm_prefix_out(vlm_embeds, vlm_pad), vlm_pad, vlm_xattn_block)
+        return self.skill_head.decode(hidden)
 
     # ── cached inference (branch A): VLM cached per skill, cond per call, action per denoise step ──
     def _encode_prefix_kv(self, layers, embeds, pad, position_ids, adarms=None,
@@ -681,19 +709,18 @@ class SkillVLAPytorch(PI05Pytorch):
         n_prefix = 0 if self._state_cond_mode == "state_skill" else 1
         na = n_prefix + n_chunk
 
-        # positions = single cumsum over [cond, vlm, action] (identical to the training joint forward)
-        full_pad = torch.cat([
-            torch.ones(bsize, nc, dtype=torch.bool, device=device), vlm_pad,
-            torch.ones(bsize, na, dtype=torch.bool, device=device)], dim=1)
-        full_pos = torch.cumsum(full_pad, dim=1) - 1
-        cond_pos, vlm_pos, action_pos = full_pos[:, :nc], full_pos[:, nc : nc + nv], full_pos[:, nc + nv :]
+        # RoPE positions: VLM placed FIRST ([0..nv)), then cond, then action — the SAME frame as the
+        # training joint forward (_joint_positions), so this cached denoise stays numerically identical.
+        # (The cached prefix K/V below is still concatenated as [cond, vlm]; column order is immaterial
+        # because each key already carries its RoPE position.)
+        vlm_pos, cond_pos, action_pos = self._joint_positions(vlm_pad, nc, na)
         cond_pad = torch.ones(bsize, nc, dtype=torch.bool, device=device)
 
         # VLM: encode once → skill prediction + cached K/V
         vlm_kv, vlm_h = self._encode_prefix_kv(self._vlm.layers, vlm_embeds, vlm_pad, vlm_pos, adarms=None)
         vlm_h, _ = layernorm_forward(self._vlm.norm, vlm_h, None)
         if skill_code is None:
-            skill_code = self.skill_head.decode(vlm_h[:, -1])
+            skill_code = self.skill_head.decode(self._skill_hidden(vlm_h, vlm_pad, vlm_xattn_block))
 
         # cond: SCENE only (plain RMSNorm, skill-blind); reads the cached VLM K/V IFF vlm_cond (else VLM-blind) → cache
         cond_kv, _ = self._encode_prefix_kv(
@@ -703,7 +730,7 @@ class SkillVLAPytorch(PI05Pytorch):
 
         # denoise: action stream = prefix (constant) + action×K; attends the cond cache iff cond_expert
         # (cond⊥action). With vlm_expert, the VLM K/V is ALSO injected so action reads the VLM directly —
-        # gated by the SAME ~vlm_xattn_block as cond (images always, language iff attend_language, skill-query never).
+        # gated by the SAME ~vlm_xattn_block as cond (images always, language iff attend_language).
         action_prefix = self._action_prefix(skill_code)  # None in state_skill mode
         attend_vlm = bool(self.config.vlm_expert)
         if attend_vlm:                                                  # action keys = [cond, VLM, action-stream]
@@ -1009,7 +1036,8 @@ class SkillVLAPolicy(PI05Policy):
         if c.freeze_expert_vision:
             freeze(m.dino if m.vision_backbone == "dino" else m.siglip)
         if getattr(c, "freeze_skill_head", False):
-            freeze(m.skill_head)   # pin the FSQ readout (skill_query stays trainable)
+            freeze(m.skill_reader)   # freeze the WHOLE skill decoder (reader probes + FSQ readout) for
+            freeze(m.skill_head)     # VLM-only finetuning — only the VLM re-grounds obs→skill.
 
     def get_optim_params(self):
         """Param groups with a differential LR (× optimizer_lr) for the warm-started action expert and
@@ -1366,7 +1394,7 @@ class SkillVLAPolicy(PI05Policy):
             log.warning("SkillVLA: no weights at %s; fresh init.", pretrained_name_or_path)
             return model
 
-        is_stage2 = any(("skill_query" in k) or (".skill_head." in k) for k in raw)
+        is_stage2 = any((".skill_reader." in k) or (".skill_head." in k) for k in raw)
         if is_stage2:
             state = {(k if k.startswith("model.") else f"model.{k}"): v.to(dtype) for k, v in raw.items()}
             missing, unexpected = model.load_state_dict(state, strict=False)
@@ -1384,7 +1412,7 @@ class SkillVLAPolicy(PI05Policy):
         n_term = sum(1 for k in expert_state if ".fsq_term_train." in k)
         log.info(
             "SkillVLA warm-start: VLM<-pi05 (%d keys), expert/cond<-stage1 (%d keys). Terminator: %s. "
-            "Fresh: skill_query + skill_head.", len(vlm_state), len(expert_state),
+            "Fresh: skill_reader + skill_head.", len(vlm_state), len(expert_state),
             f"co-trained from Stage-1 ({n_term} keys)" if n_term else "raw FSQ.pt (Stage-1 co-trained none)",
         )
         return model

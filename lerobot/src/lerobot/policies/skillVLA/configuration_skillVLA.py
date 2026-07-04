@@ -10,11 +10,12 @@ class SkillVLAConfig(PI05Config):
     """Stage-2 SkillVLA.
 
     A VLM (PaliGemma, warm-started from pi05_base) reads the SKILL-START observation
-    (3rd + wrist image + the start state discretized into the prompt, pi05-style + language) plus a
-    learnable skill-query token, and predicts the current skill (one categorical per FSQ dim). An
-    action expert — warm-started from a Stage-1 ``skill_expert`` checkpoint — generates the action
-    chunk by flow matching from the CURRENT observation, reading the VLM via PI05-style joint block
-    attention (action attends the VLM's image/skill tokens, NOT its language; the VLM never attends
+    (3rd + wrist image + the start state discretized into the prompt, pi05-style + language) and stays
+    PRISTINE; a SEPARATE skill reader (learned probe tokens over the VLM's FINAL-layer output, joint
+    concat-KV, VLM read-only) → the FSQ head predicts the current skill (regression over per-dim grid
+    coords). An action expert — warm-started from a Stage-1 ``skill_expert`` checkpoint — generates the
+    action chunk by flow matching from the CURRENT observation, reading the VLM via PI05-style joint block
+    attention (action attends the VLM's image tokens, language iff attend_language; the VLM never attends
     the action expert).
 
     Branch is taken from the loaded Stage-1 checkpoint's ``expert_arch``:
@@ -25,8 +26,8 @@ class SkillVLAConfig(PI05Config):
                  action), action attends cond + action.
 
     Skill flow: the discrete GT skill is teacher-forced into the cond-encoder (A) / expert (B) via the
-    Stage-1 skill embedding at train time (the VLM's prediction is used at inference); the VLM's
-    skill-query hidden additionally reaches the expert through cross-attention.
+    Stage-1 skill embedding at train time (the skill reader's prediction is used at inference); the skill
+    reader reads the VLM one-directionally (read-only) and never perturbs it.
 
     Inputs (per sample, from SkillVLADataset): current obs/actions/language + the (jittered) skill-start
     image/state and skill code. Inherits PI05's PaliGemma + Gemma-expert + flow-matching settings.
@@ -42,8 +43,26 @@ class SkillVLAConfig(PI05Config):
 
     # ── Skill (VLM head; FSQ codes shared with Stage-1 / FSQ) ──
     skill_fsq_levels: list[int] = field(default_factory=lambda: [5, 5, 5])
-    """FSQ levels per dim. The VLM skill head predicts ONE categorical per dim (sizes = levels);
-    skill vocab = prod(levels). Must match the Stage-1 / FSQ codebook the dataset was built with."""
+    """FSQ levels per dim. The skill decoder REGRESSES one normalized grid coord per dim (levels per dim)
+    and rounds; skill vocab = prod(levels). Must match the Stage-1 / FSQ codebook the dataset was built with."""
+    # ── Skill reader (SEPARATE post-VLM module; the VLM stays pristine [imgs, lang]) ──
+    # N learned probe tokens read the VLM's FINAL-layer output via JOINT concat-KV attention (the probes'
+    # own K/V compete with the VLM K/V in one softmax — same joint pattern as cond/action, but read-only
+    # so the VLM is never perturbed). Respects attend_language (images always, language iff True). The
+    # pooled probe hidden feeds the SkillHead. Freezing the skill decoder for VLM-only finetuning freezes
+    # BOTH this reader and the head (freeze_skill_head).
+    num_reader_tokens: int = 4
+    """Number of learned probe/reader tokens in the skill reader (they self-attend + read the VLM)."""
+    reader_depth: int = 2
+    """Number of JOINT concat-KV layers in the skill reader (keep shallow: catastrophic-forgetting-friendly)."""
+    reader_heads: int = 8
+    """Attention heads in the skill reader (must divide the VLM width)."""
+    skill_deadzone_frac: float = 0.0
+    """SkillHead regression dead-zone as a FRACTION of the per-dim grid spacing. Per-dim margin =
+    frac / (levels-1) in the normalized coord frame; once |pred - target| < margin (i.e. the rounded
+    code is already correct with a `frac` safety band) that dim's loss is zeroed → training stops nudging
+    a code that already decodes right (faster convergence, no post-correct drift). 0 = plain MSE (off).
+    Scales with the codebook automatically (spacing = 2/(levels-1)), so it is codebook-independent."""
     skill_loss_weight: float = 0.5
     """λ_skill in ``total = BC + λ_skill * skill_CE``. < 1 keeps the action BC dominant (including the
     BC gradient that flows into the VLM via cross-attention)."""
@@ -51,10 +70,10 @@ class SkillVLAConfig(PI05Config):
     # VLM → cond → expert chain (+ the VLM → expert shortcut); toggling them is a design choice. All apply to
     # BOTH the training joint mask AND the cached inference path (train/infer must match → a Stage-2 retrain).
     attend_language: bool = False
-    """Whether the VLM's LANGUAGE tokens are attendable (by BOTH cond and the action expert). False = only
-    the VLM IMAGE tokens are read (language excluded → forces visual grounding); True = language ALSO
-    attendable (ablation). The skill-query read-out token is ALWAYS excluded. This is the language MASTER
-    switch: it gates the language subset for every VLM→X edge (vlm_cond and vlm_expert). Run-name tag: lang."""
+    """Whether the VLM's LANGUAGE tokens are attendable (by cond, the action expert, AND the skill reader).
+    False = only the VLM IMAGE tokens are read (language excluded → forces visual grounding); True = language
+    ALSO attendable (ablation). This is the language MASTER switch: it gates the language subset for every
+    VLM→X edge (vlm_cond, vlm_expert, and the skill reader). Run-name tag: lang."""
     vlm_cond: bool = True
     """VLM → cond edge: cond attends the VLM tokens (images always, language iff attend_language). True =
     the cond-encoder is grounded by the VLM's skill-start view (default). False = cond is a plain current-obs
@@ -81,11 +100,12 @@ class SkillVLAConfig(PI05Config):
     # ── Per-regime freeze for the CFG dropout (ONLY used when vlm_dropout_p > 0) ──
     # A = VLM_VSA (VLM present) batches | B = VSA (VLM dropped = Stage-1 form) batches. True = FREEZE (no
     # param update) that group on that regime's batches. Groups: expert = the action expert + its action/
-    # time/state/skill projections; cond = cond-encoder + image_proj; vlm = the VLM LLM + skill_query. A group
+    # time/state/skill projections; cond = cond-encoder + image_proj; vlm = the VLM LLM. A group
     # is placed in the optimizer iff it trains in AT LEAST one regime; requires_grad is toggled per batch by
     # the coin flip (Adam skips requires_grad=False params → clean freeze, no momentum leak). When
     # vlm_dropout_p == 0 these are IGNORED and the static freeze_* flags below apply (backward-compatible).
-    # Vision backbones (freeze_vlm_vision / freeze_expert_vision) + skill_head (freeze_skill_head) stay static.
+    # Vision backbones (freeze_vlm_vision / freeze_expert_vision) + the skill decoder (freeze_skill_head =
+    # skill_reader + skill_head) stay static (the skill reader is post-VLM, supervised every batch).
     # ⚠ MULTI-GPU: with num_gpus>1 (DDP) AND a group trained in only ONE regime, ranks that pick different
     #   drop_vlm coins freeze different params → the DDP reducer can desync/hang. Keep num_gpus=1 for
     #   per-regime freeze, or broadcast one coin to all ranks. (num_gpus=1 — the default — is unaffected.)
@@ -108,11 +128,11 @@ class SkillVLAConfig(PI05Config):
     freeze_expert_vision: bool = False
     """Freeze the action-expert-side vision encoder (DINO/SigLIP) inherited from Stage-1."""
     freeze_skill_head: bool = False
-    """Freeze the VLM skill readout (SkillHead). Default False (Stage-2 trains it). Finetuning sets
-    True: the FSQ-coordinate readout stays pinned to the (unchanged) codebook the frozen action
-    expert / terminator expect, so all skill-prediction adaptation goes into the VLM trunk. The head
-    still conducts gradient to the trunk (incl. the cond_skill_source=pred path), it just isn't updated.
-    The skill-query token is NOT covered here, so it stays trainable."""
+    """Freeze the WHOLE skill decoder — the skill reader (probe tokens) AND the SkillHead readout. Default
+    False (Stage-2 trains them). Finetuning sets True: the reader + FSQ-coordinate readout stay pinned to
+    the (unchanged) codebook the frozen action expert / terminator expect, so ALL skill-prediction
+    adaptation goes into the VLM trunk. The frozen decoder still conducts gradient to the trunk (incl. the
+    cond_skill_source=pred STE path), it just isn't updated."""
 
     # ── Differential LR (relative to optimizer_lr) for the warm-started action/cond side ──
     expert_lr_scale: float = 1.0
