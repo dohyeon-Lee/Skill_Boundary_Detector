@@ -18,7 +18,7 @@ pi_base: models/pi05_base
 pt_dataset: libero_90_full_full
 pt_batch_size: 64 # 16
 pt_num_workers: 4
-pt_exp: ""
+pt_exp: "2"
 pt_lr_base: 2.5e-05
 pt_steps: 20000          # mini scale: g8 × p500 → 4k steps/cycle → 5 cycles
 pt_save_freq: 5000
@@ -27,7 +27,7 @@ pt_wandb_project: VLA_cycle
 
 # ── block-cyclic curriculum ───────────────────────────────────
 cycle_n_groups: 8        # 73 tasks → frame-balanced groups (greedy bin-packing, task는 통째로)
-cycle_phase_steps: 500   # k — THE sweep dial (perturbation size / cross-term gain)
+cycle_phase_steps: 125   # k — THE sweep dial (perturbation size / cross-term gain)
 cycle_n_cycles: 0        # >0: OVERRIDES phase_steps = steps // (n_groups × n_cycles)
                          #     (n_groups sweep 시 사이클 수 보존용; run name → g{G}c{N})
 cycle_group_seed: 0      # task→group split + per-cycle order shuffle
@@ -41,7 +41,7 @@ cycle_reptile_beta: 1.0
 
 # iid baseline (true = 학습은 순수 iid 글로벌 셔플, probe/로깅은 cyclic 런과 동일 → 공정 대조군.
 # phase_steps는 probe 측정 주기로만 쓰이고 Δ/Reptile은 무시됨)
-cycle_iid_baseline: true
+cycle_iid_baseline: false
 
 # probe (fixed batches + fixed flow-matching noise → deterministic forgetting measurement)
 cycle_probe_batches: 2   # per group, batch_size frames each
