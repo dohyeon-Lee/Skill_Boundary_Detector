@@ -1,0 +1,55 @@
+# Block-cyclic PT mini-experiments (configs/train_pi05_cycle).
+# project_root / dataset_root / outputs_root come from configs/global_config.yaml.
+#
+# Conditions via toggles (run name encodes them automatically):
+#   pure cyclic          : cycle_delta_lambda=0.0, cycle_reptile_beta=1.0
+#   cyclic + Δ           : cycle_delta_lambda>0
+#   cyclic + Reptile     : cycle_reptile_beta<1
+#   cyclic + Δ + Reptile : both
+#   iid baseline         : cycle_iid_baseline=true — PLAIN iid training with the SAME probe
+#                          instrumentation (권장 대조군; run name → PTiid_...)
+#
+# Output: {project_root}/{outputs_root}/pi05_cycle_PT/PTcyc_{dataset}_pi05_batch{bs}_g{G}p{K}[_lamX][_bY][_exp]
+
+pi05_cycle_outputs_root: pi05_cycle_PT
+pi_base: models/pi05_base
+
+# ── PT (mirrors train_pi05 keys) ──────────────────────────────
+pt_dataset: libero_90_full_full
+pt_batch_size: 64 # 16
+pt_num_workers: 4
+pt_exp: ""
+pt_lr_base: 2.5e-05
+pt_steps: 20000          # mini scale: g8 × p500 → 4k steps/cycle → 5 cycles
+pt_save_freq: 5000
+pt_log_freq: 200
+pt_wandb_project: VLA_cycle
+
+# ── block-cyclic curriculum ───────────────────────────────────
+cycle_n_groups: 8        # 73 tasks → frame-balanced groups (greedy bin-packing, task는 통째로)
+cycle_phase_steps: 500   # k — THE sweep dial (perturbation size / cross-term gain)
+cycle_n_cycles: 0        # >0: OVERRIDES phase_steps = steps // (n_groups × n_cycles)
+                         #     (n_groups sweep 시 사이클 수 보존용; run name → g{G}c{N})
+cycle_group_seed: 0      # task→group split + per-cycle order shuffle
+
+# Δ-feedback (0 = off): w_g = 1 + λ·max(0, rel_forget), capped at delta_max_weight
+cycle_delta_lambda: 0.0
+cycle_delta_max_weight: 3.0
+
+# Reptile (1.0 = off): cycle-level anchor, θ ← anchor + β(θ − anchor)
+cycle_reptile_beta: 1.0
+
+# iid baseline (true = 학습은 순수 iid 글로벌 셔플, probe/로깅은 cyclic 런과 동일 → 공정 대조군.
+# phase_steps는 probe 측정 주기로만 쓰이고 Δ/Reptile은 무시됨)
+cycle_iid_baseline: true
+
+# probe (fixed batches + fixed flow-matching noise → deterministic forgetting measurement)
+cycle_probe_batches: 2   # per group, batch_size frames each
+cycle_probe_seed: 12345
+cycle_probe_grad_group: 0  # ≥0: log probe-grad rotation for that group (+1 backward/boundary, ~6GB CPU)
+
+# ── Slurm (partition/qos/nodelist/exclude from global_config.yaml) ──
+pt_gres: gpu:1
+pt_cpus_per_task: 16
+pt_mem: 128G
+pt_time: "24:00:00"

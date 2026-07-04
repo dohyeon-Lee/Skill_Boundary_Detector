@@ -10,12 +10,12 @@ pi_base: models/pi05_base   # project_root(global_config) 기준 상대경로 �
 
 # ── pi05 PT ───────────────────────────────────────────────────
 pt_dataset: libero_90_full_full
-pt_batch_size: 16
+pt_batch_size: 64 #16
 pt_num_gpus: 1
 pt_num_workers: 4
 pt_exp: ""
 pt_lr_base: 2.5e-05
-pt_steps: 100000
+pt_steps: 20000
 pt_save_freq: 5000
 pt_wandb_project: VLA_posttrain
 
