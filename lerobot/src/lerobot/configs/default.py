@@ -80,6 +80,12 @@ class EvalConfig:
     skill_html_skill_latents_path: str | None = None
     skill_html_raw_dataset_dir: str | None = None
     skill_html_image_key: str | None = None
+    # EPISODE-EXACT eval (SkillVLA/LIBERO): path to eval_init_states.npz (built by
+    # stage1_eval/oracle_matching). When set, each task env's LIBERO init states are REPLACED by the
+    # matched dataset episodes' MuJoCo init states, so every rollout reproduces a specific dataset
+    # episode's scene; with use_gt_skill the injected GT sequences are aligned to those SAME episodes.
+    # "" / None = off (standard seed-based LIBERO resets). Needs use_async_envs=false.
+    init_states_path: str | None = None
 
     def __post_init__(self) -> None:
         if self.batch_size > self.n_episodes:

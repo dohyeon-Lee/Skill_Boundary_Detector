@@ -296,10 +296,12 @@ def _merge(tagged: list) -> dict:
     return {"overall": {"pc_success": float(np.mean(succ)) if succ else 0.0}, "per_task": per_task}
 
 
-def _stitch_models(panels: list, out_dir: Path, height: int = 256) -> None:
+def _stitch_models(panels: list, out_dir: Path, height: int = 256, per_row: int = 0) -> None:
     """panels = [(videos_dir, label), ...]; for every task/episode present in ALL panels, glue the rollouts
-    HORIZONTALLY (N labelled panels) → out_dir/{task}/eval_episode_{ep}.mp4. Reuses video_compare/ helpers;
-    never fails the eval (skips if video libs are unavailable)."""
+    into a GRID of labelled panels — ``per_row`` panels per row (0 = all in ONE row, the old behaviour;
+    e.g. 6 models @ per_row=3 → 2×3, 9 → 3×3; a short last row is right-padded black) →
+    out_dir/{task}/eval_episode_{ep}.mp4. Reuses video_compare/ helpers; never fails the eval (skips if
+    video libs are unavailable)."""
     try:
         sys.path.insert(0, str(_HERE.parent / "video_compare"))
         from compare_videos import even, label_bar, load_font, make_panel, read_video  # noqa: PLC0415
@@ -327,10 +329,18 @@ def _stitch_models(panels: list, out_dir: Path, height: int = 256) -> None:
             (out_dir / taskdir0.name).mkdir(parents=True, exist_ok=True)
             writer = imageio.get_writer(str(out_dir / taskdir0.name / mp4_0.name), fps=fps,
                                         codec="libx264", quality=8, macro_block_size=None)
+            ncols = per_row if per_row and per_row > 0 else len(panels)
             for i in range(max(len(fr) for fr in frames_list)):
-                frame = np.hstack([make_panel(fr[min(i, len(fr) - 1)], H, bar)
-                                   for fr, bar in zip(frames_list, bars)])
-                writer.append_data(frame[:, :-1] if frame.shape[1] % 2 else frame)
+                tiles = [make_panel(fr[min(i, len(fr) - 1)], H, bar)
+                         for fr, bar in zip(frames_list, bars)]
+                rows = [np.hstack(tiles[r : r + ncols]) for r in range(0, len(tiles), ncols)]
+                w_max = max(r.shape[1] for r in rows)                 # short last row → right-pad black
+                rows = [r if r.shape[1] == w_max else
+                        np.pad(r, ((0, 0), (0, w_max - r.shape[1]), (0, 0))) for r in rows]
+                frame = np.vstack(rows)
+                # libx264 needs even dims (crop a pixel if odd — width AND height once gridded)
+                frame = frame[: frame.shape[0] - frame.shape[0] % 2, : frame.shape[1] - frame.shape[1] % 2]
+                writer.append_data(frame)
             writer.close()
             n += 1
     log.info("side-by-side: wrote %d stitched clips → %s", n, out_dir)
@@ -395,6 +405,7 @@ def eval_main(cfg: EvalPipelineConfig):
     device = get_safe_torch_device(cfg.policy.device, log=True)
     set_seed(cfg.seed)
     specs = json.loads(os.environ.get("MODELS_JSON", "") or "[]")   # >=2 entries → multi-model side-by-side
+    models_per_row = int(os.environ.get("MODELS_PER_ROW", "0") or 0)  # 0 = one row; 3 → 6 models = 2×3 grid
     logging.info("Making environment.")
     envs = make_env(cfg.env, n_envs=cfg.eval.batch_size, use_async_envs=cfg.eval.use_async_envs,
                     trust_remote_code=cfg.trust_remote_code)
@@ -422,6 +433,9 @@ def eval_main(cfg: EvalPipelineConfig):
                     for s in specs]
         forced_maps = _align_and_override_multi(envs, [c["ep"] for c in contexts])
         sbs_dir = out / "side_by_side"
+        # Per-job scratch: task-split jobs (submit_eval.sh eval_num_gpus>1) share ONE out dir — a fixed
+        # "_tmp" would let concurrent jobs delete each other's in-flight videos.
+        tmp_root = out / f"_tmp_{os.environ.get('SLURM_JOB_ID') or os.getpid()}"
         tagged = [[] for _ in contexts]
         for tg, grp in envs.items():
             for tid in list(grp.keys()):
@@ -429,7 +443,7 @@ def eval_main(cfg: EvalPipelineConfig):
                 panels = []
                 for i, ctx in enumerate(contexts):
                     _reset_init_state_ids(one_env)                    # rewind → each model sees the same scenes
-                    vdir = out / "_tmp" / f"m{i}" / "videos"
+                    vdir = tmp_root / f"m{i}" / "videos"
                     with torch.no_grad(), (torch.autocast(device_type=device.type) if cfg.policy.use_amp else nullcontext()):
                         info_i = eval_policy_all(
                             envs=one_env, policy=ctx["oracle"], preprocessor=ctx["pre"], postprocessor=ctx["post"],
@@ -438,8 +452,8 @@ def eval_main(cfg: EvalPipelineConfig):
                             **common)
                     panels.append((vdir, ctx["label"]))
                     tagged[i].append((tid, info_i))
-                _stitch_models(panels, sbs_dir)
-                shutil.rmtree(out / "_tmp", ignore_errors=True)       # drop raw per-model videos (keep combined)
+                _stitch_models(panels, sbs_dir, per_row=models_per_row)
+                shutil.rmtree(tmp_root, ignore_errors=True)           # drop raw per-model videos (keep combined)
                 log.info("task %s → side_by_side (%s)", tid,
                          {c["label"]: t[-1][1].get("overall") for c, t in zip(contexts, tagged)})
         info = {c["label"]: _merge(t) for c, t in zip(contexts, tagged)}
@@ -463,7 +477,10 @@ def eval_main(cfg: EvalPipelineConfig):
 
     close_envs(envs)
     out.mkdir(parents=True, exist_ok=True)
-    with open(out / "eval_info.json", "w") as f:
+    # Task-split jobs share this out dir → suffix the summary per chunk (TASK_TAG, e.g. "t0-4") so
+    # concurrent jobs don't clobber each other's eval_info.json.
+    task_tag = os.environ.get("TASK_TAG", "").strip()
+    with open(out / (f"eval_info_{task_tag}.json" if task_tag else "eval_info.json"), "w") as f:
         json.dump(info, f, indent=2)
     _maybe_log_wandb(cfg, wandb_infos)
 

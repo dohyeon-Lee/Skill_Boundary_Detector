@@ -71,9 +71,16 @@ class SkillVLAConfig(PI05Config):
     # BOTH the training joint mask AND the cached inference path (train/infer must match → a Stage-2 retrain).
     attend_language: bool = False
     """Whether the VLM's LANGUAGE tokens are attendable (by cond, the action expert, AND the skill reader).
-    False = only the VLM IMAGE tokens are read (language excluded → forces visual grounding); True = language
-    ALSO attendable (ablation). This is the language MASTER switch: it gates the language subset for every
-    VLM→X edge (vlm_cond, vlm_expert, and the skill reader). Run-name tag: lang."""
+    This is the language MASTER switch, combined with attend_image below to pick WHICH VLM tokens every
+    VLM→X edge (vlm_cond, vlm_expert, and the skill reader) reads. Run-name tag: lang."""
+    attend_image: bool = True
+    """Whether the VLM's IMAGE tokens are attendable (companion to attend_language). Together they pick the
+    VLM read-set for cond/expert/reader:
+       attend_image=T, attend_language=F → IMAGE only  (default; forces visual grounding)
+       attend_image=T, attend_language=T → image + language
+       attend_image=F, attend_language=T → LANGUAGE only (read the VLM's language hiddens, not vision)
+       attend_image=F, attend_language=F → nothing (disallowed; use vlm_cond/vlm_expert=False to go VLM-blind).
+    Default True keeps existing checkpoints unchanged. Run-name tag (when off): noimg."""
     vlm_cond: bool = True
     """VLM → cond edge: cond attends the VLM tokens (images always, language iff attend_language). True =
     the cond-encoder is grounded by the VLM's skill-start view (default). False = cond is a plain current-obs
@@ -99,34 +106,34 @@ class SkillVLAConfig(PI05Config):
 
     # ── Per-regime freeze for the CFG dropout (ONLY used when vlm_dropout_p > 0) ──
     # A = VLM_VSA (VLM present) batches | B = VSA (VLM dropped = Stage-1 form) batches. True = FREEZE (no
-    # param update) that group on that regime's batches. Groups: expert = the action expert + its action/
-    # time/state/skill projections; cond = cond-encoder + image_proj; vlm = the VLM LLM. A group
-    # is placed in the optimizer iff it trains in AT LEAST one regime; requires_grad is toggled per batch by
-    # the coin flip (Adam skips requires_grad=False params → clean freeze, no momentum leak). When
-    # vlm_dropout_p == 0 these are IGNORED and the static freeze_* flags below apply (backward-compatible).
-    # Vision backbones (freeze_vlm_vision / freeze_expert_vision) + the skill decoder (freeze_skill_head =
-    # skill_reader + skill_head) stay static (the skill reader is post-VLM, supervised every batch).
+    # param update) that group on that regime's batches. Groups: expert = the action expert + action/time
+    # proj; cond = the WHOLE current-obs pipeline (DINO/SigLIP vision encoder → image_proj → cond-encoder);
+    # llm = the VLM's Gemma LLM trunk ONLY (renamed from "vlm" — it never covered the vision tower);
+    # vlm_vision = the PaliGemma SigLIP vision tower.
+    # A group is placed in the optimizer iff it trains in AT LEAST one regime; requires_grad is toggled per
+    # batch by the coin flip (Adam skips requires_grad=False params → clean freeze, no momentum leak).
+    # SINGLE SOURCE OF TRUTH: when vlm_dropout_p == 0 (no dropout) every batch is an A (VLM-present) batch,
+    # so freeze_vlm_vsa_* applies STATICALLY and freeze_vsa_* is ignored (the old separate freeze_vlm /
+    # freeze_cond_encoder / freeze_action_expert / freeze_vlm_vision flags were removed). Only the skill
+    # decoder (freeze_skill_head = skill_reader + skill_head) has its own static flag (post-VLM, supervised
+    # every batch).
+    # NOTE vlm_vision freeze gates only the VISION TOWER params; on a B batch with llm frozen but
+    # vlm_vision trainable, the skill loss still updates the tower THROUGH the frozen LLM.
     # ⚠ MULTI-GPU: with num_gpus>1 (DDP) AND a group trained in only ONE regime, ranks that pick different
     #   drop_vlm coins freeze different params → the DDP reducer can desync/hang. Keep num_gpus=1 for
     #   per-regime freeze, or broadcast one coin to all ranks. (num_gpus=1 — the default — is unaffected.)
     freeze_vlm_vsa_expert: bool = False
     freeze_vlm_vsa_cond: bool = False
-    freeze_vlm_vsa_vlm: bool = False
+    freeze_vlm_vsa_llm: bool = False
+    freeze_vlm_vsa_vlm_vision: bool = False
     freeze_vsa_expert: bool = False
     freeze_vsa_cond: bool = False
-    freeze_vsa_vlm: bool = False
+    freeze_vsa_llm: bool = False
+    freeze_vsa_vlm_vision: bool = False
 
-    # ── Freeze toggles (all parts otherwise trained) ──
-    freeze_vlm: bool = False
-    """Freeze the PaliGemma LLM (the VLM trunk)."""
-    freeze_vlm_vision: bool = False
-    """Freeze the PaliGemma SigLIP vision tower. Default False (train it for the new skill-start view)."""
-    freeze_cond_encoder: bool = True
-    """[A only] Freeze the Stage-1 cond-encoder (reuse its current-obs encoding)."""
-    freeze_action_expert: bool = False
-    """Freeze the warm-started Gemma action expert (default False = fine-tune)."""
-    freeze_expert_vision: bool = False
-    """Freeze the action-expert-side vision encoder (DINO/SigLIP) inherited from Stage-1."""
+    # ── Freeze toggles ──
+    # (expert / cond / vlm / vlm_vision freezing is ALL governed by freeze_vlm_vsa_* / freeze_vsa_* above —
+    #  at p=0 the A dict applies statically. Only the skill decoder keeps its own flag:)
     freeze_skill_head: bool = False
     """Freeze the WHOLE skill decoder — the skill reader (probe tokens) AND the SkillHead readout. Default
     False (Stage-2 trains them). Finetuning sets True: the reader + FSQ-coordinate readout stay pinned to
@@ -193,11 +200,13 @@ class SkillVLAConfig(PI05Config):
        "termination" → end_prob   >= skill_end_threshold
        "progress"    → progress   >= skill_end_threshold
        "and"         → end_prob >= skill_end_threshold AND progress >= skill_end_progress_threshold
-                       (both must hold — guards against early end-prob spikes before the skill is done)."""
+                       (both must hold — guards against early end-prob spikes before the skill is done)
+       "or"          → end_prob >= skill_end_threshold OR  progress >= skill_end_progress_threshold
+                       (either suffices — ends as soon as the terminator OR the progress gate fires)."""
     skill_end_threshold: float = 0.5
     skill_end_progress_threshold: float = 0.9
-    """Progress gate for skill_end_mode="and": the skill ends only once predicted progress also
-    reaches this (e.g. 0.9). Unused in "termination"/"progress" modes."""
+    """Progress gate for skill_end_mode="and"/"or": the progress-side threshold (e.g. 0.9). Combined with
+    end_prob >= skill_end_threshold via AND ("and") or OR ("or"). Unused in "termination"/"progress"."""
     inference_skill_max_length: int = 200
     """Force-advance the skill after this many steps even if the terminator never fires (0 = off)."""
 
@@ -212,3 +221,12 @@ class SkillVLAConfig(PI05Config):
     """How a skill ends during rollout: "terminator" (FSQ signal >= threshold) or "gt" (advance by
     the GT skill's demo duration; oracle only). The terminator still runs each step either way so
     its curves are recorded for skill_html."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        # attend_image + attend_language pick the VLM read-set; both False leaves cond/expert/reader with
+        # no VLM tokens to attend — that's a config mistake (go VLM-blind via vlm_cond/vlm_expert instead).
+        if not self.attend_image and not self.attend_language:
+            raise ValueError(
+                "attend_image=False AND attend_language=False → the VLM has no attendable tokens. "
+                "Use vlm_cond=False / vlm_expert=False to make a stream VLM-blind instead.")

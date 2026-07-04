@@ -54,77 +54,150 @@ if [ ! -d "${POLICY_PATH}" ]; then
   exit 1
 fi
 
-# Terminator (EVAL_TERMINATOR, resolved base|cotrained by the config): "base" = the ORIGINAL dataset
-# FSQ.pt (pre in-policy co-training); "cotrained" = the terminator co-trained INTO this checkpoint
-# (lazy-exported to checkpoints/<ckpt>/FSQ_ft.pt from the checkpoint if missing).
-FSQ_FOR_EVAL="${BASE_FSQ}"
-if [ "${EVAL_TERMINATOR}" = "cotrained" ]; then
-  if [ ! -f "${FT_FSQ_PATH}" ]; then
-    echo "Co-trained terminator missing for ${CHECKPOINT} → exporting from the checkpoint"
-    "${PROJECT_ROOT}/.venv/bin/python" "${SRC_DIR}/../../FT/src/export_ft_terminator.py" \
-      --ft_run_dir="${FT_RUN_DIR}" --checkpoint="${CHECKPOINT}" \
-      --base_fsq="${BASE_FSQ}" --out="${FT_FSQ_PATH}" --skip_if_no_terminator
+# ── helpers ─────────────────────────────────────────────────────────────────────────────────
+# resolve_fsq TERM BASE FT_PATH FT_RUN CKPT → echoes the FSQ to eval with ("cotrained" lazy-exports
+# checkpoints/<ckpt>/FSQ_ft.pt ATOMICALLY — task-split jobs may race: per-job tmp then mv -n).
+resolve_fsq() {
+  local term="$1" base="$2" ftp="$3" ftrun="$4" ckpt="$5"
+  if [ "${term}" = "cotrained" ]; then
+    if [ ! -f "${ftp}" ]; then
+      echo "Co-trained terminator missing for ${ckpt} → exporting from the checkpoint" >&2
+      local tmp="${ftp}.tmp.${SLURM_JOB_ID:-$$}"
+      "${PROJECT_ROOT}/.venv/bin/python" "${SRC_DIR}/../../FT/src/export_ft_terminator.py" \
+        --ft_run_dir="${ftrun}" --checkpoint="${ckpt}" \
+        --base_fsq="${base}" --out="${tmp}" --skip_if_no_terminator >&2
+      if [ -f "${tmp}" ]; then
+        mv -n "${tmp}" "${ftp}" 2>/dev/null || true
+        rm -f "${tmp}"
+      fi
+    fi
+    echo "${ftp}"
+  else
+    echo "${base}"
   fi
-  FSQ_FOR_EVAL="${FT_FSQ_PATH}"
-fi
+}
+
+# run_eval OUT JOB POLICY FSQ GT_DIR SKILL_HTML INIT_STATES — one lerobot_skillvla_eval rollout
+# (shared knobs come from the emitter env; per-model bits are the arguments; INIT_STATES ""=seed resets).
+run_eval() {
+  local out="$1" job="$2" ppath="$3" fsq="$4" gt="$5" shtml="$6" inits="${7:-}"
+  mkdir -p "${out}"
+  PYTORCH_ALLOC_CONF=expandable_segments:True \
+  PYTHONPATH="${LEROBOT_ROOT}/src:${LIBERO_REPO_ROOT}" \
+    "${PROJECT_ROOT}/.venv/bin/python" -m lerobot.scripts.lerobot_skillvla_eval \
+      --policy.path="${ppath}" \
+      --policy.fsq_path="${fsq}" \
+      --policy.train_terminator=false \
+      --env.type=libero \
+      --env.task="${TARGET_TASK}" \
+      --env.fps=20 \
+      --env.task_ids="${TASK_IDS}" \
+      --env.max_parallel_tasks="${MAX_PARALLEL_TASKS}" \
+      --eval.batch_size="${EVAL_BATCH_SIZE}" \
+      --eval.n_episodes="${N_EPISODES}" \
+      --eval.max_videos_per_task="${MAX_VIDEOS_PER_TASK}" \
+      --eval.video_frame_stride="${VIDEO_FRAME_STRIDE}" \
+      --eval.video_fps="${VIDEO_FPS}" \
+      --eval.skill_html="${shtml}" \
+      --eval.skill_html_train_samples="${SKILL_HTML_TRAIN_SAMPLES}" \
+      --eval.skill_html_skill_latents_path="${SKILL_LATENTS_PATH}" \
+      --eval.skill_html_raw_dataset_dir="${RAW_DATASET_DIR}" \
+      --eval.skill_html_image_key="${IMAGE_KEY}" \
+      --policy.n_action_steps="${N_ACTION_STEPS}" \
+      --policy.device=cuda \
+      --policy.compile_model=false \
+      --policy.gradient_checkpointing=false \
+      --policy.skill_end_mode="${SKILL_END_MODE}" \
+      --policy.skill_end_threshold="${SKILL_END_THRESHOLD}" \
+      --policy.skill_end_progress_threshold="${SKILL_END_PROGRESS_THRESHOLD}" \
+      --policy.inference_skill_max_length="${INFERENCE_SKILL_MAX_LENGTH}" \
+      --policy.use_gt_skill="${USE_GT_SKILL}" \
+      --policy.gt_skill_dataset_dir="${gt}" \
+      --policy.skill_advance_mode="${SKILL_ADVANCE_MODE}" \
+      --eval.init_states_path="${inits}" \
+      --wandb_project="${WANDB_PROJECT}" \
+      --job_name="${job}" \
+      --output_dir="${out}" \
+      --rename_map='{"observation.images.image2": "observation.images.wrist_image"}' \
+      ${EXTRA_ARGS:-}
+}
 
 echo "START SKILLVLA EVAL (PT)"
 echo "Node     : ${SLURMD_NODENAME:-local}"
-echo "policy   : ${POLICY_PATH}"
-echo "fsq      : ${FSQ_FOR_EVAL}  (terminator=${EVAL_TERMINATOR})"
 echo "target   : ${TARGET_TASK}  task_ids=${TASK_IDS}  episodes=${N_EPISODES}/task"
 nvidia-smi || true
-
-if [ ! -f "${FSQ_FOR_EVAL}" ]; then
-  echo "No terminator FSQ available (neither adapted nor base): ${FSQ_FOR_EVAL}" >&2
-  exit 1
-fi
-
-# skill_html needs skill_latents.npz; build_data may have cleaned it up → auto-disable.
-SKILL_HTML_EFFECTIVE="${SKILL_HTML}"
-if [ "${SKILL_HTML}" = "true" ] && [ ! -f "${SKILL_LATENTS_PATH}" ]; then
-  echo "[warn] skill_latents.npz missing (${SKILL_LATENTS_PATH}); disabling skill_html."
-  SKILL_HTML_EFFECTIVE=false
-fi
-
 mkdir -p "${EVAL_OUT_DIR}"
+BASE_RN="${WANDB_RUN_NAME}"
+[ -n "${TASK_TAG:-}" ] && BASE_RN="${WANDB_RUN_NAME%_${TASK_TAG}}"
 
-PYTORCH_ALLOC_CONF=expandable_segments:True \
-PYTHONPATH="${LEROBOT_ROOT}/src:${LIBERO_REPO_ROOT}" \
-  "${PROJECT_ROOT}/.venv/bin/python" -m lerobot.scripts.lerobot_skillvla_eval \
-    --policy.path="${POLICY_PATH}" \
-    --policy.fsq_path="${FSQ_FOR_EVAL}" \
-    --policy.train_terminator=false \
-    --env.type=libero \
-    --env.task="${TARGET_TASK}" \
-    --env.fps=20 \
-    --env.task_ids="${TASK_IDS}" \
-    --env.max_parallel_tasks="${MAX_PARALLEL_TASKS}" \
-    --eval.batch_size="${EVAL_BATCH_SIZE}" \
-    --eval.n_episodes="${N_EPISODES}" \
-    --eval.max_videos_per_task="${MAX_VIDEOS_PER_TASK}" \
-    --eval.video_frame_stride="${VIDEO_FRAME_STRIDE}" \
-    --eval.video_fps="${VIDEO_FPS}" \
-    --eval.skill_html="${SKILL_HTML_EFFECTIVE}" \
-    --eval.skill_html_train_samples="${SKILL_HTML_TRAIN_SAMPLES}" \
-    --eval.skill_html_skill_latents_path="${SKILL_LATENTS_PATH}" \
-    --eval.skill_html_raw_dataset_dir="${RAW_DATASET_DIR}" \
-    --eval.skill_html_image_key="${IMAGE_KEY}" \
-    --policy.n_action_steps="${N_ACTION_STEPS}" \
-    --policy.device=cuda \
-    --policy.compile_model=false \
-    --policy.gradient_checkpointing=false \
-    --policy.skill_end_mode="${SKILL_END_MODE}" \
-    --policy.skill_end_threshold="${SKILL_END_THRESHOLD}" \
-    --policy.skill_end_progress_threshold="${SKILL_END_PROGRESS_THRESHOLD}" \
-    --policy.inference_skill_max_length="${INFERENCE_SKILL_MAX_LENGTH}" \
-    --policy.use_gt_skill="${USE_GT_SKILL}" \
-    --policy.gt_skill_dataset_dir="${GT_SKILL_DATASET_DIR}" \
-    --policy.skill_advance_mode="${SKILL_ADVANCE_MODE}" \
-    --wandb_project="${WANDB_PROJECT}" \
-    --job_name="${WANDB_RUN_NAME}" \
-    --output_dir="${EVAL_OUT_DIR}" \
-    --rename_map='{"observation.images.image2": "observation.images.wrist_image"}' \
-    ${EXTRA_ARGS:-}
+if [ -z "${MODELS_JSON:-}" ]; then
+  # ── SINGLE model (original path) ──
+  FSQ_FOR_EVAL="$(resolve_fsq "${EVAL_TERMINATOR}" "${BASE_FSQ}" "${FT_FSQ_PATH}" "${FT_RUN_DIR}" "${CHECKPOINT}")"
+  echo "policy   : ${POLICY_PATH}"
+  echo "fsq      : ${FSQ_FOR_EVAL}  (terminator=${EVAL_TERMINATOR})"
+  if [ ! -f "${FSQ_FOR_EVAL}" ]; then
+    echo "No terminator FSQ available (neither adapted nor base): ${FSQ_FOR_EVAL}" >&2
+    exit 1
+  fi
+  # skill_html needs skill_latents.npz; build_data may have cleaned it up → auto-disable.
+  SKILL_HTML_EFFECTIVE="${SKILL_HTML}"
+  if [ "${SKILL_HTML}" = "true" ] && [ ! -f "${SKILL_LATENTS_PATH}" ]; then
+    echo "[warn] skill_latents.npz missing (${SKILL_LATENTS_PATH}); disabling skill_html."
+    SKILL_HTML_EFFECTIVE=false
+  fi
+  [ -n "${EVAL_INIT_STATES_PATH}" ] && echo "scenes   : EPISODE-EXACT (${EVAL_INIT_STATES_PATH})"
+  run_eval "${EVAL_OUT_DIR}" "${WANDB_RUN_NAME}" "${POLICY_PATH}" "${FSQ_FOR_EVAL}" \
+           "${GT_SKILL_DATASET_DIR}" "${SKILL_HTML_EFFECTIVE}" "${EVAL_INIT_STATES_PATH}"
+
+  if [ -n "${TASK_TAG:-}" ]; then
+    "${PROJECT_ROOT}/.venv/bin/python" "${SRC_DIR}/merge_eval_chunks.py" \
+      --out_dir="${EVAL_OUT_DIR}" --target_task="${TARGET_TASK}" --job_name="${BASE_RN}" \
+      --expected_tasks="${TASKS_TOTAL:-0}" --wandb_project="${WANDB_PROJECT}" \
+      || echo "chunk merge failed (non-fatal)"
+  fi
+else
+  # ── MULTI-model side-by-side: run each model over the SAME tasks/seeds into panels/{label}/,
+  # then stitch the per-task videos into ONE labelled grid → side_by_side/{task}/. ──
+  echo "multi    : $("${BOOTSTRAP_PYTHON}" -c 'import json,os; print(", ".join(m["label"] for m in json.loads(os.environ["MODELS_JSON"])))')"
+  SPECS="$("${BOOTSTRAP_PYTHON}" - <<'PY'
+import json, os
+for m in json.loads(os.environ["MODELS_JSON"]):
+    print("|".join([m["label"], m["policy_path"], m["base_fsq"], m["ft_fsq_path"],
+                    m["ft_run_dir"], m["checkpoint"], m["resolved_term"], m["gt_skill_dataset_dir"],
+                    m.get("eval_init_states_path", "")]))
+PY
+)"
+  while IFS='|' read -r LBL PPATH BFSQ FTFSQ FTRUN CKPT RTERM GTDIR INITS; do
+    [ -z "${LBL}" ] && continue
+    if [ ! -d "${PPATH}" ]; then
+      echo "[warn] panel '${LBL}': checkpoint missing (${PPATH}) — skipping this model" >&2
+      continue
+    fi
+    FSQ="$(resolve_fsq "${RTERM}" "${BFSQ}" "${FTFSQ}" "${FTRUN}" "${CKPT}")"
+    if [ ! -f "${FSQ}" ]; then
+      echo "[warn] panel '${LBL}': no terminator FSQ (${FSQ}) — skipping this model" >&2
+      continue
+    fi
+    echo "── panel '${LBL}': ${PPATH}  (fsq=${FSQ}, terminator=${RTERM}${INITS:+, scenes=EPISODE-EXACT})"
+    run_eval "${EVAL_OUT_DIR}/panels/${LBL}" "${BASE_RN}_${LBL}${TASK_TAG:+_${TASK_TAG}}" \
+             "${PPATH}" "${FSQ}" "${GTDIR}" false "${INITS}"
+  done <<< "${SPECS}"
+
+  "${PROJECT_ROOT}/.venv/bin/python" "${SRC_DIR}/stitch_panels.py" \
+    --panels_root="${EVAL_OUT_DIR}/panels" --out_dir="${EVAL_OUT_DIR}/side_by_side" \
+    --labels_json="${MODELS_LABELS}" --per_row="${MODELS_PER_ROW}" \
+    || echo "stitch failed (non-fatal)"
+
+  # Task-split: merge each panel's chunks (summary json + full chart/index per panel).
+  if [ -n "${TASK_TAG:-}" ]; then
+    for PDIR in "${EVAL_OUT_DIR}"/panels/*/; do
+      [ -d "${PDIR}" ] || continue
+      "${PROJECT_ROOT}/.venv/bin/python" "${SRC_DIR}/merge_eval_chunks.py" \
+        --out_dir="${PDIR%/}" --target_task="${TARGET_TASK}" --job_name="${BASE_RN}_$(basename "${PDIR}")" \
+        --expected_tasks="${TASKS_TOTAL:-0}" --wandb_project="${WANDB_PROJECT}" \
+        || echo "chunk merge failed for $(basename "${PDIR}") (non-fatal)"
+    done
+  fi
+fi
 
 echo "DONE → ${EVAL_OUT_DIR}"

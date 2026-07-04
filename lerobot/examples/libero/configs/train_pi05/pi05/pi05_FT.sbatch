@@ -42,7 +42,7 @@ echo "Node     : ${SLURMD_NODENAME:-local}"
 echo "dataset  : ${FT_DATASET_DIR}"
 echo "base     : ${FT_PRETRAINED_MODEL_PATH}"
 echo "output   : ${FT_OUTPUT_DIR}"
-echo "freeze/expert_only: ${FT_FREEZE_VISION_ENCODER}/${FT_TRAIN_EXPERT_ONLY}"
+echo "freeze   : vision=${FT_FREEZE_VISION_ENCODER} lang=${FT_FREEZE_LANGUAGE_MODEL}"
 nvidia-smi || true
 
 if [ ! -d "${FT_DATASET_DIR}" ]; then
@@ -74,7 +74,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True "${TRAIN_BIN}" \
   --wandb.project="${FT_WANDB_PROJECT}" \
   --policy.dtype=bfloat16 \
   --policy.freeze_vision_encoder="${FT_FREEZE_VISION_ENCODER}" \
-  --policy.train_expert_only="${FT_TRAIN_EXPERT_ONLY}" \
+  --policy.freeze_language_model="${FT_FREEZE_LANGUAGE_MODEL}" \
   --policy.push_to_hub=false \
   --save_freq="${FT_SAVE_FREQ}" \
   --steps="${FT_STEPS}" \

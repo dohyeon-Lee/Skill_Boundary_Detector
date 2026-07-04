@@ -13,7 +13,9 @@ source_dataset: libero_90_full_full
 # run_tag: FSQ555_dino8_wow_1000
 # run_tag: FSQ555_dino8_wot_1000
 # run_tag: FSQ555_dino8_weighted_wow_1000
-run_tag: FSQ555_dino8_weighted_both_1000
+# run_tag: FSQ555_dino8_weighted_both_1000
+run_tag: FSQ555_dino8_weighted_wot_1000
+
 
 # ── Conditioning architecture (joint only) ──
 #   state       → AdaRMS = time + state; skill (z_q) stays as an attended PREFIX token (image-dominant,

@@ -79,9 +79,12 @@ class PI05Config(PreTrainedConfig):
     compile_mode: str = "max-autotune"  # Torch compile mode
     device: str | None = None  # Device to use for the model (None = auto-detect)
 
-    # Finetuning settings
-    freeze_vision_encoder: bool = False  # Freeze only the vision encoder
-    train_expert_only: bool = False  # Freeze entire VLM, train only action expert and projections
+    # Finetuning settings — the action expert ALWAYS trains; pick the VLM freeze with the two probes:
+    #   freeze_vision_encoder × freeze_language_model → full_unfreeze / freeze-vision / freeze_LANG / ~freeze_VLM.
+    freeze_vision_encoder: bool = False  # Freeze only the SigLIP vision tower (projector stays trainable)
+    freeze_language_model: bool = False  # Freeze only the Gemma LLM backbone; vision tower + projector + expert train
+    train_expert_only: bool = False  # (legacy) freeze the ENTIRE VLM incl. projector; superseded by the two probes
+    probe_freeze: bool = True  # Log a per-component trainable/frozen param breakdown at model init (verification)
 
     # Optimizer settings: see openpi `AdamW`
     optimizer_lr: float = 2.5e-5  # see openpi `CosineDecaySchedule: peak_lr`

@@ -179,6 +179,9 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         "pt_wandb_project": str(get_value(cfg, "pt_wandb_project", "VLA_posttrain", env="PT_WANDB_PROJECT")),
         "pt_run_name": pt_run_name,
         "pt_output_dir": pi05_pt_root / pt_run_name,
+        # PT freeze probes (expert always trains): vision tower / Gemma LLM, independently.
+        "pt_freeze_vision_encoder": as_bool(get_value(cfg, "pt_freeze_vision_encoder", False, env="PI05_PT_FREEZE_VISION_ENCODER")),
+        "pt_freeze_language_model": as_bool(get_value(cfg, "pt_freeze_language_model", False, env="PI05_PT_FREEZE_LANGUAGE_MODEL")),
         # FT
         "ft_dataset": ft_dataset,
         "ft_dataset_root": ft_dataset_root,
@@ -195,8 +198,9 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         "ft_pretrained_run_name": ft_pre_run_name,
         "ft_pretrained_checkpoint": ft_pre_ckpt,
         "ft_pretrained_model_path": pi05_pt_root / ft_pre_run_name / "checkpoints" / ft_pre_ckpt / "pretrained_model",  # PT source ← pi05_PT
+        # FT freeze probes (expert always trains; ft_train_expert_only was dropped — use both probes for freeze_VLM)
         "ft_freeze_vision_encoder": as_bool(get_value(cfg, "ft_freeze_vision_encoder", False, env="PI05_FT_FREEZE_VISION_ENCODER")),
-        "ft_train_expert_only": as_bool(get_value(cfg, "ft_train_expert_only", False, env="PI05_FT_TRAIN_EXPERT_ONLY")),
+        "ft_freeze_language_model": as_bool(get_value(cfg, "ft_freeze_language_model", False, env="PI05_FT_FREEZE_LANGUAGE_MODEL")),
         # Eval
         "eval_target_task": eval_target_task,
         "eval_task_ids": str(get_value(cfg, "eval_task_ids", "[0,1,2,3,4,5,6,7,8,9]", env="TASK_IDS")),

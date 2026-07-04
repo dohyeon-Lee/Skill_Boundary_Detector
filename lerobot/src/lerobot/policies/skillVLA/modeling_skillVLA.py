@@ -259,14 +259,17 @@ class SkillVLAPytorch(PI05Pytorch):
 
     # ── CFG per-regime freeze (only active when config.vlm_dropout_p > 0) ──
     def _regime_groups(self) -> dict:
-        """Module groups the CFG dropout toggles per regime (A=VLM_VSA / B=VSA). EXACTLY the static
-        freeze_action_expert / freeze_cond_encoder / freeze_vlm sets, so p=0 and p>0 stay consistent.
-        Vision backbones (vision_tower, dino/siglip) + the skill decoder (skill_reader + skill_head) are
-        NOT here — they follow their static freeze flags regardless of regime (skill supervised every batch)."""
+        """Module groups governed by freeze_vlm_vsa_* / freeze_vsa_* — THE freeze unit for expert/cond/vlm/
+        vlm_vision (per-batch toggle when vlm_dropout_p>0; the A dict applies STATICALLY when p=0, since
+        every batch is then a VLM-present A batch). cond = the WHOLE current-obs pipeline (vision encoder →
+        image_proj → cond-encoder) as one unit. Only the skill decoder (skill_reader + skill_head) is NOT
+        here — it follows its own static flag regardless of regime (skill supervised every batch)."""
+        cond_vision = self.dino if self.vision_backbone == "dino" else self.siglip
         return {
             "expert": [self._expert, self.action_in_proj, self.action_out_proj, self.time_mlp_in, self.time_mlp_out],
-            "cond": [self.cond_encoder],
-            "vlm": [self._vlm],
+            "cond": [cond_vision, self.image_proj, self.cond_encoder],
+            "llm": [self._vlm],       # the VLM's Gemma LLM trunk ONLY (vision tower = vlm_vision below)
+            "vlm_vision": [self.paligemma_with_expert.paligemma.model.vision_tower],
         }
 
     @staticmethod
@@ -285,7 +288,10 @@ class SkillVLAPytorch(PI05Pytorch):
         g = self._regime_groups()
         self._set_requires_grad(g["expert"], not (c.freeze_vsa_expert if drop_vlm else c.freeze_vlm_vsa_expert))
         self._set_requires_grad(g["cond"], not (c.freeze_vsa_cond if drop_vlm else c.freeze_vlm_vsa_cond))
-        self._set_requires_grad(g["vlm"], not (c.freeze_vsa_vlm if drop_vlm else c.freeze_vlm_vsa_vlm))
+        self._set_requires_grad(g["llm"], not (c.freeze_vsa_llm if drop_vlm else c.freeze_vlm_vsa_llm))
+        self._set_requires_grad(
+            g["vlm_vision"],
+            not (c.freeze_vsa_vlm_vision if drop_vlm else c.freeze_vlm_vsa_vlm_vision))
 
     @property
     def _wdtype(self) -> torch.dtype:
@@ -383,12 +389,17 @@ class SkillVLAPytorch(PI05Pytorch):
         embeds = torch.cat([e.to(self._wdtype) for e in embs], dim=1)  # img feats are f32; unify to wdtype
         pad = torch.cat(pad, dim=1)
         is_lang = torch.tensor(is_lang, dtype=torch.bool, device=embeds.device)
-        # Tokens the cond/expert/reader streams must NOT attend. Language excluded by DEFAULT (they read
-        # VLM IMAGE tokens only → forces visual grounding); attend_language=True lets them ALSO attend the
-        # VLM language tokens (ablation toggle).
+        # VLM tokens the cond/expert/reader streams must NOT attend — the complement of the read-set picked
+        # by attend_image / attend_language. This gates only DOWNSTREAM readers; the VLM's OWN self-attention
+        # is unaffected (it always processes images+language), and positions are independent (_joint_positions).
+        #   image-only (default): exclude language → forces visual grounding
+        #   image+language:       exclude nothing
+        #   language-only:        exclude images → reader/cond/action read the VLM's language hiddens only
         xattn_block = torch.zeros_like(is_lang)
         if not bool(getattr(self.config, "attend_language", False)):
-            xattn_block = xattn_block | is_lang
+            xattn_block = xattn_block | is_lang        # exclude LANGUAGE tokens
+        if not bool(getattr(self.config, "attend_image", True)):
+            xattn_block = xattn_block | ~is_lang       # exclude IMAGE tokens (language-only)
         return embeds, pad, xattn_block
 
     def _time_cond(self, timestep: Tensor) -> Tensor:
@@ -416,15 +427,15 @@ class SkillVLAPytorch(PI05Pytorch):
         """Branch-A (B,1,T,T) additive mask + the (B,T) validity/pad vector. PHYSICAL stream order is
         [cond, vlm, action] (this mask's row/col layout); the RoPE POSITIONS, however, place the VLM
         first — see _joint_positions. One-directional chain VLM → cond → action: the VLM reads only
-        itself; cond reads itself + the VLM tokens it is allowed (~vlm_xattn_block): IMAGE tokens
-        ALWAYS, LANGUAGE tokens ONLY if attend_language (the VLM is pristine — no skill-query token;
+        itself; cond reads itself + the VLM tokens it is allowed (~vlm_xattn_block: the image/language
+        read-set picked by attend_image/attend_language) (the VLM is pristine — no skill-query token;
         skill reaches the action via the FSQ skill vector / AdaRMS, and is read separately by the
         post-VLM skill reader). The action stream is prefix(n_prefix) + action×K, where n_prefix is
         the [skill(, progress)] prefix in `state` mode or 0 in `state_skill` (skill/progress → AdaRMS):
         the conditioning PREFIX is read by the action tokens but reads NOTHING outside itself
         (prefix ⊥ cond, prefix ⊥ action). The ACTION tokens ALWAYS attend cond/scene; they ALSO get a
         DIRECT VLM edge iff vlm_expert — and that edge reuses the SAME ~vlm_xattn_block as cond
-        (so images always, language iff attend_language). Without vlm_expert there is no
+        (so per the attend_image/attend_language read-set). Without vlm_expert there is no
         VLM edge and the VLM reaches the action only via cond.
         With n_prefix=0 the prefix→prefix block is empty. Nothing attends the action tokens."""
         bsize, nv = vlm_pad.shape
@@ -436,7 +447,7 @@ class SkillVLAPytorch(PI05Pytorch):
         allow = torch.zeros(bsize, total, total, dtype=torch.bool, device=device)
         allow[:, :nc, :nc] = True                                    # cond block
         if self.config.vlm_cond and not drop_vlm:                    # cond → VLM edge (severed on a CFG B batch)
-            allow[:, :nc, nc : nc + nv] = (~vlm_xattn_block)[None, None, :]  # cond → vlm tokens: images always, language iff attend_language
+            allow[:, :nc, nc : nc + nv] = (~vlm_xattn_block)[None, None, :]  # cond → vlm tokens: per the attend_image/attend_language read-set
         allow[:, nc : nc + nv, nc : nc + nv] = True                  # vlm block (self-attn kept even when dropped → skill head still supervised)
         allow[:, pa:pf1, pa:pf1] = True                              # prefix → prefix (skill self; ⊥ cond, ⊥ action)
         if self.config.cond_expert:                                  # cond → expert edge (action reads the scene)
@@ -518,8 +529,8 @@ class SkillVLAPytorch(PI05Pytorch):
 
     def _skill_hidden(self, vlm_out: Tensor, vlm_pad: Tensor, vlm_xattn_block: Tensor) -> Tensor:
         """Pooled skill hidden from the JOINT concat-KV SkillReader over the VLM's FINAL-layer output
-        (``vlm_out`` (B,nv,W)). The reader attends the SAME VLM tokens as cond — images always, language
-        iff attend_language (~vlm_xattn_block) — minus padding → SkillHead input. VLM stays read-only."""
+        (``vlm_out`` (B,nv,W)). The reader attends the SAME VLM tokens as cond — the image/language read-set
+        picked by attend_image/attend_language (~vlm_xattn_block) — minus padding → SkillHead. Read-only."""
         vlm_key_ignore = (~vlm_pad) | vlm_xattn_block[None, :]           # (B, nv) True = do not attend
         return self.skill_reader(vlm_out, vlm_key_ignore)
 
@@ -573,6 +584,8 @@ class SkillVLAPytorch(PI05Pytorch):
         # is correct for this batch's backward (Adam skips requires_grad=False → clean freeze, no momentum leak).
         p = float(getattr(self.config, "vlm_dropout_p", 0.0))
         drop_vlm = bool(self.training and p > 0.0 and torch.rand(1).item() < p)
+        # This batch's regime for per-regime wandb logging (None = regimes inactive, p==0).
+        self._last_drop_vlm = drop_vlm if (self.training and p > 0.0) else None
         if self.training and p > 0.0:
             self._apply_regime_freeze(drop_vlm)
 
@@ -730,7 +743,7 @@ class SkillVLAPytorch(PI05Pytorch):
 
         # denoise: action stream = prefix (constant) + action×K; attends the cond cache iff cond_expert
         # (cond⊥action). With vlm_expert, the VLM K/V is ALSO injected so action reads the VLM directly —
-        # gated by the SAME ~vlm_xattn_block as cond (images always, language iff attend_language).
+        # gated by the SAME ~vlm_xattn_block as cond (per the attend_image/attend_language read-set).
         action_prefix = self._action_prefix(skill_code)  # None in state_skill mode
         attend_vlm = bool(self.config.vlm_expert)
         if attend_vlm:                                                  # action keys = [cond, VLM, action-stream]
@@ -743,14 +756,14 @@ class SkillVLAPytorch(PI05Pytorch):
             npre = nc
             cols = torch.cat([cond_pad, torch.ones(bsize, na, dtype=torch.bool, device=device)], dim=1)
         # prefix ⊥ cond & ⊥ action (reads only itself); action reads cond (+ VLM via ~vlm_xattn_block if
-        # attend_vlm: images always, language iff attend_language) + prefix + action.
+        # attend_vlm: per the attend_image/attend_language read-set) + prefix + action.
         # n_prefix=0 (state_skill) → the prefix→prefix block is empty.
         allow = torch.zeros(bsize, 1, na, npre + na, dtype=torch.bool, device=device)
         allow[:, :, :n_prefix, npre : npre + n_prefix] = True           # prefix → prefix
         if self.config.cond_expert:                                    # cond → expert edge (action reads the scene)
             allow[:, :, n_prefix:, :nc] = True
         if attend_vlm:
-            allow[:, :, n_prefix:, nc : nc + nv] = (~vlm_xattn_block)[None, None, None, :]  # action → VLM: images always, language iff attend_language
+            allow[:, :, n_prefix:, nc : nc + nv] = (~vlm_xattn_block)[None, None, None, :]  # action → VLM: per the attend_image/attend_language read-set
         allow[:, :, n_prefix:, npre:] = True                          # action → prefix + action
         att_4d = torch.where(allow & cols[:, None, None, :], 0.0, OPENPI_ATTENTION_MASK_VALUE)
 
@@ -1009,32 +1022,32 @@ class SkillVLAPolicy(PI05Policy):
                 for p in module.parameters():
                     p.requires_grad_(False)
         p = float(getattr(c, "vlm_dropout_p", 0.0))
+        g = m._regime_groups()
         if p > 0.0:
-            # CFG per-regime: statically freeze an expert/cond/vlm group ONLY if frozen in BOTH regimes
-            # (→ excluded from the optimizer). Otherwise leave it trainable (in the optimizer) for the
-            # per-batch toggle in SkillVLAPytorch._apply_regime_freeze. The static freeze_action_expert /
-            # freeze_cond_encoder / freeze_vlm flags are IGNORED here (per-regime governs these 3 groups).
-            g = m._regime_groups()
+            # CFG per-regime: statically freeze an expert/cond/vlm/vlm_vision group ONLY if frozen in BOTH
+            # regimes (→ excluded from the optimizer). Otherwise leave it trainable (in the optimizer) for
+            # the per-batch toggle in SkillVLAPytorch._apply_regime_freeze.
             if c.freeze_vlm_vsa_expert and c.freeze_vsa_expert:
                 m._set_requires_grad(g["expert"], False)
             if c.freeze_vlm_vsa_cond and c.freeze_vsa_cond:
                 m._set_requires_grad(g["cond"], False)
-            if c.freeze_vlm_vsa_vlm and c.freeze_vsa_vlm:
-                m._set_requires_grad(g["vlm"], False)
+            if c.freeze_vlm_vsa_llm and c.freeze_vsa_llm:
+                m._set_requires_grad(g["llm"], False)
+            if c.freeze_vlm_vsa_vlm_vision and c.freeze_vsa_vlm_vision:
+                m._set_requires_grad(g["vlm_vision"], False)
         else:
-            if c.freeze_vlm:
-                freeze(m._vlm)
-            if c.freeze_cond_encoder:
-                freeze(m.cond_encoder)
-            if c.freeze_action_expert:
-                freeze(m._expert)
-                for proj in (m.action_in_proj, m.action_out_proj, m.time_mlp_in, m.time_mlp_out):
-                    freeze(proj)
-        # Vision backbones + skill_head: static ALWAYS (independent of the CFG regime).
-        if c.freeze_vlm_vision:
-            freeze(m.paligemma_with_expert.paligemma.model.vision_tower)
-        if c.freeze_expert_vision:
-            freeze(m.dino if m.vision_backbone == "dino" else m.siglip)
+            # p == 0: NO dropout → every batch is an A (VLM_VSA, VLM-present) batch, so the A dict applies
+            # STATICALLY (single source of truth — the old separate freeze_vlm / freeze_cond_encoder /
+            # freeze_action_expert / freeze_vlm_vision flags are gone). freeze_vsa is meaningless here.
+            if c.freeze_vlm_vsa_expert:
+                m._set_requires_grad(g["expert"], False)
+            if c.freeze_vlm_vsa_cond:
+                m._set_requires_grad(g["cond"], False)
+            if c.freeze_vlm_vsa_llm:
+                m._set_requires_grad(g["llm"], False)
+            if c.freeze_vlm_vsa_vlm_vision:
+                m._set_requires_grad(g["vlm_vision"], False)
+        # Skill decoder: static ALWAYS (regime-independent; supervised every batch).
         if getattr(c, "freeze_skill_head", False):
             freeze(m.skill_reader)   # freeze the WHOLE skill decoder (reader probes + FSQ readout) for
             freeze(m.skill_head)     # VLM-only finetuning — only the VLM re-grounds obs→skill.
@@ -1167,7 +1180,8 @@ class SkillVLAPolicy(PI05Policy):
 
         # FT: co-train the terminator on GT signals. Disjoint graph (GT/precomputed inputs + its own params)
         # → added to the BACKPROPPED `total` (only the terminator gets gradient; SkillVLA untouched), but it
-        # is EXCLUDED from wandb `loss` (train/loss = the policy loss only) — logged separately as loss_terminator.
+        # is EXCLUDED from wandb `loss` (train/loss = the policy loss only) — logged to its own wandb
+        # section via "terminator/*" keys (→ train_terminator/*, mirrors Stage-1).
         term_loss = None
         if self.config.train_terminator and self.model.fsq_term_train is not None:
             for k in ("skill_code_true", "skill_decoder_dino", "skill_ds", "skill_de"):
@@ -1184,8 +1198,10 @@ class SkillVLAPolicy(PI05Policy):
             term_tgt = (torch.exp(-(de ** 2) / (2.0 * sigma ** 2)) if sigma > 0 else (de == 0).float())
             pos_w = torch.tensor(float(self.config.terminator_end_pos_weight),
                                  device=term_logits.device, dtype=term_logits.dtype)
-            term_loss = (F.smooth_l1_loss(prog_pred, prog_tgt.to(prog_pred.dtype))
-                         + F.binary_cross_entropy_with_logits(term_logits, term_tgt.to(term_logits.dtype), pos_weight=pos_w))
+            term_prog_l = F.smooth_l1_loss(prog_pred, prog_tgt.to(prog_pred.dtype))
+            term_end_l = F.binary_cross_entropy_with_logits(
+                term_logits, term_tgt.to(term_logits.dtype), pos_weight=pos_w)
+            term_loss = term_prog_l + term_end_l
             total = total + term_loss
 
         with torch.no_grad():
@@ -1196,9 +1212,24 @@ class SkillVLAPolicy(PI05Policy):
             "loss_skill": skill_loss.detach().item(),
             "skill_acc": skill_acc.item(),
         }
+        # Per-regime metrics (vlm_dropout_p > 0 only): the whole batch is A=VLM_VSA or B=VSA (per-batch
+        # coin), so each step contributes to exactly ONE regime's keys. "regime/*" keys are routed by
+        # lerobot_train to a SEPARATE wandb section (train_regime/*). is_vsa (0/1) smoothed ≈ empirical p.
+        # skill_* per regime should overlap (VLM stream is identical in both) — a live sanity check.
+        drop_vlm = getattr(self.model, "_last_drop_vlm", None)
+        if drop_vlm is not None:
+            tag = "vsa" if drop_vlm else "vlm_vsa"
+            loss_dict[f"regime/loss_{tag}"] = loss.detach().item()    # policy total (flow + λ·skill) per regime
+            loss_dict[f"regime/flow_{tag}"] = flow_loss.detach().item()
+            loss_dict[f"regime/skill_{tag}"] = skill_loss.detach().item()
+            loss_dict["regime/is_vsa"] = float(drop_vlm)
         if term_loss is not None:
-            loss_dict["loss_terminator"] = term_loss.detach().item()
-            loss_dict["loss_total"] = total.detach().item()   # the actual BACKPROPPED objective (policy + terminator)
+            # Separate wandb section (mirrors Stage-1): "terminator/*" keys are routed by lerobot_train to
+            # train_terminator/* — total (prog+end), progress SmoothL1, termination BCE. Kept OUT of train/*.
+            loss_dict["terminator/loss"] = term_loss.detach().item()
+            loss_dict["terminator/progress"] = term_prog_l.detach().item()
+            loss_dict["terminator/termination"] = term_end_l.detach().item()
+            loss_dict["loss_total"] = total.detach().item()   # the actual BACKPROPPED objective (policy + terminator; not logged)
         if reduction == "none":
             per_sample = (flow_losses * vf).sum(dim=(1, 2)) / (valid.float().sum(dim=1).clamp(min=1.0) * action_dim)
             return per_sample, loss_dict
@@ -1320,10 +1351,13 @@ class SkillVLAPolicy(PI05Policy):
                         })
                     mode = str(self.config.skill_end_mode)
                     thr = float(self.config.skill_end_threshold)
+                    pthr = float(getattr(self.config, "skill_end_progress_threshold", 0.9))
                     if mode == "and":
                         # both must hold: end-prob crosses threshold AND progress is far enough along
-                        pthr = float(getattr(self.config, "skill_end_progress_threshold", 0.9))
                         term_fired = bool(((end_prob >= thr) & (progress >= pthr)).any().item())
+                    elif mode == "or":
+                        # either suffices: end-prob crosses threshold OR progress is far enough along
+                        term_fired = bool(((end_prob >= thr) | (progress >= pthr)).any().item())
                     else:
                         signal = end_prob if mode == "termination" else progress
                         term_fired = bool((signal >= thr).any().item())

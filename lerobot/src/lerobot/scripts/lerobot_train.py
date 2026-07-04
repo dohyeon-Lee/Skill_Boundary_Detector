@@ -467,24 +467,30 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                     "loss_skill_decoder", "loss_flow", "loss_skill_predictor",
                     "loss_skill_decoder_action_loss", "loss_skill_decoder_end_loss",
                     "predicted_latent_prob",
-                    "loss_skill", "skill_acc",  # Stage-2 SkillVLA: VLM skill CE + skill-code accuracy
-                    "loss_terminator",          # FT SkillVLA: co-trained FSQ terminator (progress + termination)
+                    "loss_skill", "skill_acc",  # Stage-2 SkillVLA: skill regression loss + skill-code accuracy
+                    # (co-trained FSQ terminator logs via "terminator/*" → routed to train_terminator/* below)
                     "action_loss",              # Stage-1 skill_expert: PLAIN (unweighted) action MSE — always (comparison)
                     "action_weighted_loss",     # Stage-1 skill_expert: per-sample-weighted action MSE (action_weight only)
                 }
                 wandb_log_dict = {k: v for k, v in wandb_log_dict.items()
-                                  if k in _wandb_keep or k.startswith("terminator/")}
+                                  if k in _wandb_keep or k.startswith(("terminator/", "regime/"))}
                 # A policy that reports its own action_loss (Stage-1 skill_expert) replaces the generic
                 # backprop-scalar "loss" with it → drop the redundant generic "loss".
                 if "action_loss" in wandb_log_dict:
                     wandb_log_dict.pop("loss", None)
-                # Route "terminator/*" metrics to a SEPARATE wandb panel (train_terminator/*); rest → train/*.
+                # Route "terminator/*" → train_terminator/* and "regime/*" (CFG A/B per-regime losses)
+                # → train_regime/*, each a SEPARATE wandb panel; the rest → train/*.
                 term_metrics = {k[len("terminator/"):]: v for k, v in wandb_log_dict.items()
                                 if k.startswith("terminator/")}
-                main_metrics = {k: v for k, v in wandb_log_dict.items() if not k.startswith("terminator/")}
+                regime_metrics = {k[len("regime/"):]: v for k, v in wandb_log_dict.items()
+                                  if k.startswith("regime/")}
+                main_metrics = {k: v for k, v in wandb_log_dict.items()
+                                if not k.startswith(("terminator/", "regime/"))}
                 wandb_logger.log_dict(main_metrics, step)
                 if term_metrics:
                     wandb_logger.log_dict(term_metrics, step, mode="train_terminator")
+                if regime_metrics:
+                    wandb_logger.log_dict(regime_metrics, step, mode="train_regime")
             train_tracker.reset_averages()
 
         if cfg.save_checkpoint and is_saving_step:

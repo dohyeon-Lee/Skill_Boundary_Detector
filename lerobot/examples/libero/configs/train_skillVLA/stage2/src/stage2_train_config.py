@@ -75,49 +75,48 @@ def build_settings(cfg: dict) -> dict:
     num_gpus = int(get_value(cfg, "num_gpus", 1))
     lr_base = float(get_value(cfg, "lr_base", 2.5e-05))
     exp = str(get_value(cfg, "exp", "")).strip()
-    freeze_cond_encoder = as_bool(get_value(cfg, "freeze_cond_encoder", True))
-    freeze_expert_vision = as_bool(get_value(cfg, "freeze_expert_vision", False))
 
     # FSQ skill structure: auto-match the FSQ the dataset was built with (parsed from run_tag).
     skill_fsq_levels = list(as_levels(get_value(cfg, "skill_fsq_levels", build_fsq_levels)))
 
-    # run_name = {source}_{run_tag}_[{s1_vis_tag}_]{stage1_checkpoint}_{freeze|unfreeze}[_<loss tags>][_{exp}]:
-    #   s1_vis_tag             = Stage-1 vision the expert warm-started from (dino_unfreeze/siglip_freeze/…)
-    #   trailing {freeze|unfreeze} = Stage-2's own freeze_expert_vision choice.
-    #   mode tag               = Stage-1 state_cond_mode (state / state_skill) — KEPT so the two modes don't
-    #                            collide (their loss tags are otherwise identical).
-    #   loss tags              = the Stage-1 loss-recipe tags (cum_ep/cum_all + ac/ac_w/ac_x + weighted),
-    #                            KEPT so different Stage-1 loss recipes land in DISTINCT Stage-2 folders
-    #                            (e.g. DP "_state" vs "_state_weighted" must not collide).
-    #   connection tags       = inter-module attention edges (deviations from the default chain): ve
-    #                            (vlm_expert on), noVc (vlm_cond off), noCe (cond_expert off), lang (attend_language on).
+    # run_name = {STAGE-1 정보}__{conn}_{P}p_{A}[_{B}][_{exp}]
+    #   STAGE-1 정보 = {run_tag}_[{s1_vis_tag}_]{stage1_checkpoint}[_{mode}][_<loss tags>]
+    #     (source / reader / freeze·unfreeze 태그는 이름에서 제외 — config.json이 진실)
+    #   "__" 뒤 = Stage-2 구조+레짐:
+    #   conn = attention 연결 4개 t/f (attend_language, attend_image, vlm_cond, vlm_expert 순;
+    #          cond_expert는 항상 true라 제외);
+    #   {P}p = vlm_dropout_p 퍼센트 (0.5→50p, 0→0p);
+    #   A = freeze_vlm_vsa를 t/f로 (expert,cond,llm,vlm_vision 순, 예: tfff);
+    #   B = freeze_vsa 동일 표기 — p=0이면 B는 안 쓰이므로 생략 (…__tttt_0p_tfff).
     # batch{N}/c{N}/np are dropped (arch is re-read from the Stage-1 ckpt at load time); exp is last.
-    vis_tag = "freeze" if freeze_expert_vision else "unfreeze"
-    # Inter-module attention connections (defaults: vlm_cond=T, cond_expert=T, vlm_expert=F, attend_language=F).
+    # Inter-module attention connections (defaults: vlm_cond=T, cond_expert=T, vlm_expert=F, attend_language=F,
+    # attend_image=T). attend_image/attend_language pick the VLM read-set (image-only / +lang / language-only).
     attend_language = as_bool(get_value(cfg, "attend_language", False))
+    attend_image = as_bool(get_value(cfg, "attend_image", True))
     vlm_cond = as_bool(get_value(cfg, "vlm_cond", True))
     cond_expert = as_bool(get_value(cfg, "cond_expert", True))
     vlm_expert = as_bool(get_value(cfg, "vlm_expert", False))    # action ← VLM directly (was action_attend_vlm)
-    conn_tags = ([("ve" if vlm_expert else "")] + [("noVc" if not vlm_cond else "")]
-                 + [("noCe" if not cond_expert else "")] + [("lang" if attend_language else "")])
-    conn_tags = [t for t in conn_tags if t]
+    if not attend_image and not attend_language:
+        raise ValueError("attend_image=False AND attend_language=False leaves the VLM unreadable; "
+                         "use vlm_cond/vlm_expert=False to go VLM-blind instead.")
     vlm_dropout_p = float(get_value(cfg, "vlm_dropout_p", 0.0))               # CFG VLM dropout (0 = off)
     # Skill reader (separate post-VLM joint concat-KV probe module) + SkillHead dead-zone.
     skill_deadzone_frac = float(get_value(cfg, "skill_deadzone_frac", 0.0))   # 0 = plain MSE
     num_reader_tokens = int(get_value(cfg, "num_reader_tokens", 4))
     reader_depth = int(get_value(cfg, "reader_depth", 2))
     reader_heads = int(get_value(cfg, "reader_heads", 8))
-    reader_tags = ([f"dz{skill_deadzone_frac:g}"] if skill_deadzone_frac > 0 else [])
-    reader_tags += ([f"rp{num_reader_tokens}d{reader_depth}"] if (num_reader_tokens != 4 or reader_depth != 2) else [])
-    # Per-regime freeze (nested dicts freeze_vlm_vsa / freeze_vsa → flat config fields). Only used when p>0.
-    _fa = get_value(cfg, "freeze_vlm_vsa", {}) or {}   # A = VLM_VSA batches
-    _fb = get_value(cfg, "freeze_vsa", {}) or {}       # B = VSA batches
-    frz = {f"freeze_vlm_vsa_{k}": as_bool(_fa.get(k, False)) for k in ("expert", "cond", "vlm")}
-    frz.update({f"freeze_vsa_{k}": as_bool(_fb.get(k, False)) for k in ("expert", "cond", "vlm")})
-    # compact run-name tag so distinct freeze configs land in distinct folders (e.g. A freezes expert → frzAe)
-    _aF = "".join(k[0] for k in ("expert", "cond", "vlm") if frz[f"freeze_vlm_vsa_{k}"])
-    _bF = "".join(k[0] for k in ("expert", "cond", "vlm") if frz[f"freeze_vsa_{k}"])
-    frz_tag = "frz" + (f"A{_aF}" if _aF else "") + (f"B{_bF}" if _bF else "")
+    # Per-regime freeze (nested dicts freeze_vlm_vsa / freeze_vsa → flat config fields). SINGLE source of
+    # truth for expert/cond/llm/vlm_vision freezing: p>0 → per-batch A/B toggle; p=0 → the A dict applies
+    # statically (every batch is a VLM-present A batch; freeze_vsa is ignored).
+    # Group keys: llm = the VLM's Gemma LLM trunk ONLY (renamed from "vlm" — accepted as a legacy alias);
+    # vlm_vision = the PaliGemma SigLIP tower.
+    _REGIME_KEYS = ("expert", "cond", "llm", "vlm_vision")
+    _fa = get_value(cfg, "freeze_vlm_vsa", {}) or {}   # A = VLM_VSA batches (p=0: applies statically)
+    _fb = get_value(cfg, "freeze_vsa", {}) or {}       # B = VSA batches (p>0 only)
+    def _grp(d, k):
+        return d.get(k, d.get("vlm", False)) if k == "llm" else d.get(k, False)   # "vlm" = legacy alias for llm
+    frz = {f"freeze_vlm_vsa_{k}": as_bool(_grp(_fa, k)) for k in _REGIME_KEYS}
+    frz.update({f"freeze_vsa_{k}": as_bool(_grp(_fb, k)) for k in _REGIME_KEYS})
     # state_skill checked first (it contains the substring "_state"); else state; else "" (older naming).
     mode_tag = ("state_skill" if "_state_skill" in stage1_run_name
                 else "state" if "_state" in stage1_run_name else "")
@@ -126,12 +125,17 @@ def build_settings(cfg: dict) -> dict:
         m = re.search(pat, stage1_run_name)
         if m:
             loss_tags.append(m.group(1))
-    parts = ([source_dataset, run_tag] + ([s1_vis_tag] if s1_vis_tag else [])
-             + [stage1_checkpoint, vis_tag] + ([mode_tag] if mode_tag else []) + loss_tags
-             + conn_tags + reader_tags
-             + ([f"vdrop{vlm_dropout_p:g}"] if vlm_dropout_p > 0 else [])
-             + ([frz_tag] if (vlm_dropout_p > 0 and (_aF or _bF)) else []))
-    run_name = "_".join(parts)
+    # {STAGE-1 정보}__{conn}_{P}p_{A}[_{B}]:
+    #   conn = attention 연결 4개를 t/f로 (attend_language, attend_image, vlm_cond, vlm_expert 순);
+    #   A/B = freeze dicts as t/f in (expert, cond, llm, vlm_vision) order; B omitted at p=0 (unused).
+    # e.g. "..._state__tttt_50p_tfff_tftt" / "..._state__tttt_0p_tfff".
+    conn_tf = "".join("t" if b else "f" for b in (attend_language, attend_image, vlm_cond, vlm_expert))
+    _tf = lambda prefix: "".join("t" if frz[f"freeze_{prefix}_{k}"] else "f" for k in _REGIME_KEYS)
+    regime_tag = f"{conn_tf}_{int(round(vlm_dropout_p * 100))}p_{_tf('vlm_vsa')}" + (
+        f"_{_tf('vsa')}" if vlm_dropout_p > 0 else "")
+    parts = ([run_tag] + ([s1_vis_tag] if s1_vis_tag else [])
+             + [stage1_checkpoint] + ([mode_tag] if mode_tag else []) + loss_tags)
+    run_name = "_".join(parts) + "__" + regime_tag
     if exp:
         run_name = f"{run_name}_{exp}"
     output_dir = vla_root / run_name   # under skillVLA_stage2/, so no extra stage prefix
@@ -161,11 +165,12 @@ def build_settings(cfg: dict) -> dict:
         "reader_heads": reader_heads,
         # inter-module attention connections (VLM/cond/expert edges + the language master switch)
         "attend_language": attend_language,
+        "attend_image": attend_image,
         "vlm_cond": vlm_cond,
         "cond_expert": cond_expert,
         "vlm_expert": vlm_expert,                   # action tokens read the VLM directly (was action_attend_vlm)
         "vlm_dropout_p": vlm_dropout_p,            # CFG-style VLM dropout prob (train only; 0 = off)
-        **frz,                                      # per-regime freeze (freeze_{vlm_vsa,vsa}_{expert,cond,vlm})
+        **frz,                                      # freeze (freeze_{vlm_vsa,vsa}_{expert,cond,vlm,vlm_vision}; p=0 → A dict static)
         # terminator co-training (same as FT): adapt the FSQ terminator on this dataset's GT signals
         # (disjoint from the SkillVLA params). Warm-starts from fsq_ckpt; exported per-checkpoint for eval.
         "train_terminator": as_bool(get_value(cfg, "train_terminator", False)),
@@ -175,12 +180,7 @@ def build_settings(cfg: dict) -> dict:
         "dino_tokens_path": run_dir / "dino.npz",   # current-frame DINO tokens for the terminator
         # Wrist DINO tokens — attached ONLY for a dual (terminator_use_wrist) FSQ, and only if built ("" else).
         "dino_wrist_tokens_path": (run_dir / "dino_wrist.npz") if (run_dir / "dino_wrist.npz").exists() else "",
-        # freeze toggles (all parts otherwise trained)
-        "freeze_vlm": as_bool(get_value(cfg, "freeze_vlm", False)),
-        "freeze_vlm_vision": as_bool(get_value(cfg, "freeze_vlm_vision", False)),
-        "freeze_cond_encoder": freeze_cond_encoder,
-        "freeze_action_expert": as_bool(get_value(cfg, "freeze_action_expert", False)),
-        "freeze_expert_vision": freeze_expert_vision,
+        # freezing is fully governed by the per-regime dicts (**frz above; p=0 → A dict applies statically)
         # output
         "skillvla_outputs_root": vla_root,
         "pt_run_name": run_name,

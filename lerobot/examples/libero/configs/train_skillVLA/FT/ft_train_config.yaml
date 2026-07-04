@@ -32,16 +32,13 @@ terminator_end_target_sigma: 1.0     # soft termination target std in FRAMES (ex
 terminator_end_pos_weight: 1.0
 
 # ── Freeze toggles (FT default: VLM-only finetune) ────────────
-# VLM trunk + its vision + the skill-query token stay TRAINABLE (re-ground obs→skill for the new task);
-# the skill readout head and the whole motor side (cond-encoder, action expert, its vision) are FROZEN.
-freeze_vlm: false
-freeze_vlm_vision: false
+# FT는 vlm_dropout을 안 쓰므로(p=0) 모든 배치가 A(VLM 있음) → freeze_vlm_vsa 딕셔너리가 그대로 정적 적용
+# (Stage-2와 동일한 단일 소스; 구 freeze_vlm/freeze_cond_encoder/freeze_action_expert/freeze_vlm_vision 삭제).
+# 그룹: expert=action expert(+action/time proj), cond=현재obs 파이프라인 통째(vision인코더+image_proj+
+# cond-encoder), llm=VLM의 Gemma LLM 트렁크만(구 이름 vlm), vlm_vision=PaliGemma SigLIP tower.
+# 기본: VLM(트렁크+vision) 학습(새 task에 obs→skill 재접지), 모터 쪽(cond)은 동결, skill decoder 동결.
+freeze_vlm_vsa: {expert: false, cond: true, llm: false, vlm_vision: false}
 freeze_skill_head: true
-
-freeze_cond_encoder: true
-freeze_expert_vision: true
-
-freeze_action_expert: false
 
 
 exp: "ae_unfreeze"                              # optional EXTRA run-name suffix

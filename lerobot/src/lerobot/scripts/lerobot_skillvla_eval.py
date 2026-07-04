@@ -81,6 +81,7 @@ import concurrent.futures as cf
 import html
 import json
 import logging
+import os
 import threading
 import time
 from collections import defaultdict
@@ -1801,6 +1802,90 @@ def _load_gt_skill_sequences(
     return out
 
 
+def _episode_exact_override(
+    envs: dict,
+    init_states_path: str | Path,
+    suite_name: str,
+    *,
+    gt_skill_dataset_dir: str | Path | None = None,
+    n_episodes: int | None = None,
+) -> dict[tuple[str, int], list[list[dict]]] | None:
+    """EPISODE-EXACT eval (ported from stage1_eval): replace each task env's LIBERO built-in init
+    states with the matched DATASET episodes' MuJoCo init states (``eval_init_states.npz``, built by
+    stage1_eval/oracle_matching; ordered by episode_index), so every rollout reproduces a specific
+    dataset episode's scene. Tasks with no matched episode are dropped (closed). Needs SyncVectorEnv
+    (eval.use_async_envs=false).
+
+    With ``gt_skill_dataset_dir`` (use_gt_skill): joins the skillvla dataset's GT skill sequences and
+    returns {(task_group, task_id): [skills_ep0, ...]} aligned to the SAME episode order as the
+    injected init states (index i pairs with init state i) — i.e. each rollout gets THAT scene's own
+    GT sequence, not just a same-task one. Returns None when no GT dir is given (scene override only).
+    """
+    npz = np.load(str(init_states_path), allow_pickle=True)
+    # scene_file (minus '_demo.hdf5') == the LIBERO task .name → a unique task_id.
+    from libero.libero import benchmark  # noqa: PLC0415
+
+    suite = benchmark.get_benchmark_dict()[suite_name]()
+    name_to_id = {str(t.name): i for i, t in enumerate(suite.tasks)}
+    per_task: dict[int, list[dict]] = defaultdict(list)
+    for ep, st, sf in zip(npz["episode_index"], npz["init_states"], npz["scene_file"], strict=True):
+        sf = str(sf)
+        task_name = sf[: -len("_demo.hdf5")] if sf.endswith("_demo.hdf5") else sf
+        tid = name_to_id.get(task_name)
+        if tid is not None:
+            per_task[tid].append({"episode_index": int(ep), "init_state": np.asarray(st, np.float64)})
+    for tid in per_task:
+        per_task[tid].sort(key=lambda r: r["episode_index"])
+
+    # Per-EPISODE GT skills (value-filtered specials, mirroring stage1's eval_oracle loader).
+    skills_by_ep: dict[int, list[dict]] | None = None
+    if gt_skill_dataset_dir:
+        import pandas as pd  # noqa: PLC0415
+
+        gt_dir = Path(gt_skill_dataset_dir)
+        info_path = gt_dir / "meta" / "info.json"
+        num_emb = json.loads(info_path.read_text()).get("skill_num_embeddings") if info_path.is_file() else None
+        data_files = sorted((gt_dir / "data").glob("**/*.parquet"))
+        if not data_files:
+            raise FileNotFoundError(f"No parquet data files found under {gt_dir / 'data'}")
+        cols = ["episode_index", "frame_index", "skill_sequence", "skill_length_sequence"]
+        df = pd.concat([pd.read_parquet(p, columns=cols) for p in data_files], ignore_index=True)
+        skills_by_ep = {}
+        for episode_index, ep_df in df.groupby("episode_index", sort=True):
+            row = ep_df.sort_values("frame_index").iloc[0]
+            seq, lens = _as_int_list(row["skill_sequence"]), _as_int_list(row["skill_length_sequence"])
+            skills = [{"token": int(seq[i]), "gt_length": int(lens[i] if i < len(lens) else 0)}
+                      for i in range(len(seq)) if num_emb is None or seq[i] < int(num_emb)]
+            if skills:
+                skills_by_ep[int(episode_index)] = skills
+
+    forced: dict[tuple[str, int], list[list[dict]]] | None = {} if skills_by_ep is not None else None
+    for task_group, group in envs.items():
+        for task_id in list(group.keys()):
+            records = per_task.get(int(task_id), [])
+            if skills_by_ep is not None:  # keep only episodes that ALSO have a GT sequence (aligned pairing)
+                records = [r for r in records if r["episode_index"] in skills_by_ep]
+            if not records:
+                logging.warning("episode-exact: no matched episodes for task_id=%s — dropping it.", task_id)
+                group[task_id].close()
+                del group[task_id]
+                continue
+            if n_episodes is not None and len(records) < n_episodes:
+                logging.warning("episode-exact: task_id=%s has only %d matched episodes (< n_episodes=%d).",
+                                task_id, len(records), n_episodes)
+            subs = getattr(group[task_id], "envs", None)
+            if subs is None:
+                raise RuntimeError("Episode-exact eval needs SyncVectorEnv (set eval.use_async_envs=false).")
+            init_arr = np.stack([r["init_state"] for r in records]).astype(np.float64)
+            for sub in subs:
+                base = sub.unwrapped
+                base.init_states = True           # ensure reset() takes the set_init_state path
+                base._init_states = init_arr      # env indexes by init_state_id (= global episode index)
+            if forced is not None:
+                forced[(task_group, int(task_id))] = [skills_by_ep[r["episode_index"]] for r in records]
+    return forced
+
+
 @parser.wrap()
 def eval_main(cfg: EvalPipelineConfig):
     logging.info(pformat(asdict(cfg)))
@@ -1828,6 +1913,19 @@ def eval_main(cfg: EvalPipelineConfig):
         use_async_envs=cfg.eval.use_async_envs,
         trust_remote_code=cfg.trust_remote_code,
     )
+
+    # EPISODE-EXACT eval (opt-in): reset every rollout to a matched DATASET episode's MuJoCo init
+    # state; with use_gt_skill the GT sequences returned here are ALIGNED to those same episodes.
+    ep_exact_forced = None
+    episode_exact = bool(getattr(cfg.eval, "init_states_path", None))
+    if episode_exact:
+        ep_exact_forced = _episode_exact_override(
+            envs, cfg.eval.init_states_path, cfg.env.task,
+            gt_skill_dataset_dir=(getattr(cfg.policy, "gt_skill_dataset_dir", None)
+                                  if getattr(cfg.policy, "use_gt_skill", False) else None),
+            n_episodes=cfg.eval.n_episodes)
+        logging.info("EPISODE-EXACT eval: init states from %s (%d tasks kept).",
+                     cfg.eval.init_states_path, sum(len(g) for g in envs.values()))
 
     logging.info("Making policy.")
 
@@ -1890,23 +1988,42 @@ def eval_main(cfg: EvalPipelineConfig):
         gt_dir = getattr(cfg.policy, "gt_skill_dataset_dir", None)
         if not gt_dir:
             raise ValueError("--policy.gt_skill_dataset_dir is required when --policy.use_gt_skill=true")
-        eval_task_ids = {task_id for task_map in envs.values() for task_id in task_map}
-        gt_by_task = _load_gt_skill_sequences(gt_dir, n_episodes=cfg.eval.n_episodes, task_ids=eval_task_ids)
-        forced_skill_token_sequences_by_task = {}
-        for task_group, task_map in envs.items():
-            for task_id in task_map:
-                seqs = gt_by_task.get(task_id)
-                if not seqs or len(seqs) < cfg.eval.n_episodes:
-                    raise ValueError(
-                        f"Not enough GT skill episodes for task_id={task_id}: "
-                        f"found {0 if not seqs else len(seqs)}, need {cfg.eval.n_episodes} (dir={gt_dir})."
-                    )
-                forced_skill_token_sequences_by_task[(task_group, task_id)] = seqs[: cfg.eval.n_episodes]
-        logging.info(
-            "Oracle eval: GT skills from %s | advance_mode=%s | tasks=%d",
-            gt_dir, getattr(cfg.policy, "skill_advance_mode", "terminator"),
-            len(forced_skill_token_sequences_by_task),
-        )
+        if ep_exact_forced is not None:
+            # EPISODE-EXACT: sequences already aligned to the injected init states (index i ↔ scene i).
+            forced_skill_token_sequences_by_task = {}
+            for task_group, task_map in envs.items():
+                for task_id in task_map:
+                    seqs = ep_exact_forced.get((task_group, task_id))
+                    if not seqs or len(seqs) < cfg.eval.n_episodes:
+                        raise ValueError(
+                            f"Not enough EPISODE-EXACT GT episodes for task_id={task_id}: "
+                            f"found {0 if not seqs else len(seqs)}, need {cfg.eval.n_episodes} "
+                            f"(npz={cfg.eval.init_states_path}, dir={gt_dir})."
+                        )
+                    forced_skill_token_sequences_by_task[(task_group, task_id)] = seqs[: cfg.eval.n_episodes]
+            logging.info(
+                "Oracle eval: EPISODE-EXACT GT skills (scene-aligned) | advance_mode=%s | tasks=%d",
+                getattr(cfg.policy, "skill_advance_mode", "terminator"),
+                len(forced_skill_token_sequences_by_task),
+            )
+        else:
+            eval_task_ids = {task_id for task_map in envs.values() for task_id in task_map}
+            gt_by_task = _load_gt_skill_sequences(gt_dir, n_episodes=cfg.eval.n_episodes, task_ids=eval_task_ids)
+            forced_skill_token_sequences_by_task = {}
+            for task_group, task_map in envs.items():
+                for task_id in task_map:
+                    seqs = gt_by_task.get(task_id)
+                    if not seqs or len(seqs) < cfg.eval.n_episodes:
+                        raise ValueError(
+                            f"Not enough GT skill episodes for task_id={task_id}: "
+                            f"found {0 if not seqs else len(seqs)}, need {cfg.eval.n_episodes} (dir={gt_dir})."
+                        )
+                    forced_skill_token_sequences_by_task[(task_group, task_id)] = seqs[: cfg.eval.n_episodes]
+            logging.info(
+                "Oracle eval: GT skills from %s | advance_mode=%s | tasks=%d",
+                gt_dir, getattr(cfg.policy, "skill_advance_mode", "terminator"),
+                len(forced_skill_token_sequences_by_task),
+            )
 
     # The inference device is automatically set to match the detected hardware, overriding any previous device settings from training to ensure compatibility.
     preprocessor_overrides = {
@@ -1958,8 +2075,10 @@ def eval_main(cfg: EvalPipelineConfig):
     # Close all vec envs
     close_envs(envs)
 
-    # Save info
-    with open(Path(cfg.output_dir) / "eval_info.json", "w") as f:
+    # Save info. Task-split submissions (submit_eval.sh eval_num_gpus>1) share ONE output_dir — suffix
+    # the summary per chunk (TASK_TAG, e.g. "t0-4") so concurrent jobs don't clobber each other's json.
+    _tag = os.environ.get("TASK_TAG", "").strip()
+    with open(Path(cfg.output_dir) / (f"eval_info_{_tag}.json" if _tag else "eval_info.json"), "w") as f:
         json.dump(info, f, indent=2)
 
     # Generate index.html for Netlify / static hosting
@@ -2026,7 +2145,8 @@ def eval_main(cfg: EvalPipelineConfig):
                 for yi, value in zip(y, values, strict=False):
                     ax.text(min(value + 0.02, 0.98), yi, f"{value:.2f}", va="center", fontsize=8)
                 fig.tight_layout()
-                chart_path = Path(cfg.output_dir) / "task_success_rates.png"
+                # task-split chunks suffix their partial chart (the merge step regenerates the full one)
+                chart_path = Path(cfg.output_dir) / (f"task_success_rates_{_tag}.png" if _tag else "task_success_rates.png")
                 fig.savefig(chart_path, dpi=160)
                 plt.close(fig)
                 wandb.log({"charts/task_success_rate": wandb.Image(str(chart_path))})

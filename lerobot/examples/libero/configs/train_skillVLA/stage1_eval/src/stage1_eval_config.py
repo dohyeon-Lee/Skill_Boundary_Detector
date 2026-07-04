@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -141,6 +142,8 @@ def build_settings(cfg: dict) -> dict:
         # side-by-side, these are model 0's; the full per-model list is in models_json (env → run_eval).
         "policy_path": policy_path,
         "models_json": models_json,
+        # side-by-side grid: N panels per ROW (0 = one row; 3 → 6 models = 2×3, 9 = 3×3, ...)
+        "models_per_row": int(get_value(cfg, "models_per_row", 0) or 0),
         "fsq_ckpt": fsq_ckpt,
         "skill_label_dataset_dir": run_dir / "skillvla",
         # Episode-exact eval: per-episode MuJoCo init_state + scene (FSQ-independent → lives at the source
@@ -159,9 +162,11 @@ def build_settings(cfg: dict) -> dict:
         "image_key": "observation.images.image",
         # wandb
         "wandb_enable": as_bool(get_value(cfg, "wandb_enable", True)),
-        # env / rollout
+        # env / rollout — task_ids is env-overridable (TASK_IDS): submit_eval.sh splits it across
+        # eval_num_gpus Slurm jobs (1 GPU each), all writing into the SAME out dir (disjoint tasks).
         "target_task": str(get_value(cfg, "target_task", "libero_90")),
         "task_ids": str(get_value(cfg, "task_ids", "[0,1,2,3,4,5,6,7,8,9]")),
+        "eval_num_gpus": int(get_value(cfg, "eval_num_gpus", 1)),
         "n_episodes": int(get_value(cfg, "n_episodes", 5)),
         "eval_batch_size": int(get_value(cfg, "eval_batch_size", 1)),
         "max_parallel_tasks": int(get_value(cfg, "max_parallel_tasks", 1)),
@@ -179,7 +184,8 @@ def build_settings(cfg: dict) -> dict:
         "eval_use_trained_terminator": as_bool(get_value(cfg, "eval_use_trained_terminator", True)) and not terminator_path,
         # wandb
         "wandb_project": str(get_value(cfg, "wandb_project", "VLA_stage1_eval")),
-        "wandb_run_name": f"S1eval_{folder}",
+        # Chunked submission (TASK_TAG, e.g. "t0-4") → distinct wandb run per chunk.
+        "wandb_run_name": f"S1eval_{folder}" + (f"_{os.environ['TASK_TAG']}" if os.environ.get("TASK_TAG") else ""),
     }
 
     # Slurm partition/qos/nodelist/exclude are canonical (global_config.yaml train_*).

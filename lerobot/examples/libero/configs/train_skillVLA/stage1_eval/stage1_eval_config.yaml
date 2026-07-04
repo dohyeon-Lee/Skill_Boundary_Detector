@@ -27,14 +27,21 @@ source_dataset: libero_90_full_full
 # `models` = the training run folder name(s) under {outputs_root}/skillVLA_stage1/
 #   ({run_tag}_{backbone}_batch{N}_{state_cond}[_weighted]; NO source prefix — see source_dataset above).
 # 1 entry → single eval → outputs/{model_dir}_{checkpoint}/. 2+ entries → PER-TASK side-by-side: each model
-# rolls out the SAME scenes, glued HORIZONTALLY into ONE labelled clip → outputs/compare_{labels}_{ckpt}/
+# rolls out the SAME scenes, glued into ONE labelled clip → outputs/compare_{labels}_{ckpt}/
 # side_by_side/ (streams in task order; no per-model videos kept).
 # Per entry: checkpoint omitted → the top-level `checkpoint`; label omitted → auto from the differing token(s).
+# Layout: models_per_row = 한 행에 넣을 패널 수 (0 = 전부 한 행). 리스트 순서대로 행을 채움 —
+#   3이면 위 3개=1행, 다음 3개=2행 (6개=2×3, 9개=3×3, ...); 마지막 행이 모자라면 검은 패널로 패딩.
 models:
-  - {model_dir: FSQ555_dino8_both_1000_siglip_batch256_state,          label: plain}
-  - {model_dir: FSQ555_dino8_both_1000_siglip_batch256_state_weighted, label: weighted}
-  - {model_dir: FSQ555_dino8_weighted_wow_1000_siglip_batch256_state_weighted, label: weighted_weighted}
+  - {model_dir: FSQ555_dino8_both_1000_siglip_batch256_state,          label: both_plain}
+  - {model_dir: FSQ555_dino8_both_1000_siglip_batch256_state_weighted, label: both_weighted}
+  - {model_dir: FSQ555_dino8_weighted_both_1000_siglip_batch256_state_weighted, label: both_weightedx2}
 
+  - {model_dir: FSQ555_dino8_wow_1000_siglip_batch256_state,          label: wow_plain}
+  - {model_dir: FSQ555_dino8_wow_1000_siglip_batch256_state_weighted, label: wow_weighted}
+  - {model_dir: FSQ555_dino8_weighted_wow_1000_siglip_batch256_state_weighted, label: wow_weightedx2}
+
+models_per_row: 3              # side-by-side 그리드: 행당 패널 수 (0 = 한 행에 전부)
 checkpoint: "015000"           # default step for entries that omit their own checkpoint ("last" or a number)
 eval_exp: ""                   # optional free-form tag appended to the output folder
 
@@ -48,10 +55,14 @@ terminator_path: ""   # 예: outputs_filtered/skillVLA_stage1/{run_name}/checkpo
 # ── Eval rollout ──
 target_task: libero_90
 task_ids: "[0,1,2,3,4,5,6,7,8,9]"
-n_episodes: 5                 # episodes (init states) per task
+# GPU(=Slurm 잡) 개수: task_ids를 연속 청크로 N등분해 1-GPU 잡 N개 제출 (프로세스 분리라 안전).
+# 같은 out 폴더 공유(태스크별 하위폴더는 안 겹침); 요약은 eval_info_t{a}-{b}.json으로 잡별 저장,
+# wandb run도 _t{a}-{b} 서픽스로 분리. 1 = 기존처럼 잡 하나. (salloc 안에서 실행 시 무시됨.)
+eval_num_gpus: 10
+n_episodes: 3                 # episodes (init states) per task
 n_action_steps: 5
 eval_batch_size: 1
-max_parallel_tasks: 1
+max_parallel_tasks: 1         # 잡 내부 스레드 병렬(공유 policy state 오염 위험) — 1 고정 권장; 분할은 위 eval_num_gpus로
 
 # ── Skill transition ──
 # How to advance through the GT skill sequence:

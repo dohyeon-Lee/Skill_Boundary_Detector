@@ -346,12 +346,16 @@ class PaliGemmaWithExpertModel(
         image_size: int = DEFAULT_IMAGE_SIZE,
         freeze_vision_encoder: bool = False,
         train_expert_only: bool = False,
+        freeze_language_model: bool = False,
+        probe_freeze: bool = False,
     ):
         if use_adarms is None:
             use_adarms = [False, False]
         super().__init__()
         self.freeze_vision_encoder = freeze_vision_encoder
         self.train_expert_only = train_expert_only
+        self.freeze_language_model = freeze_language_model
+        self.probe_freeze = probe_freeze
 
         vlm_config_hf = CONFIG_MAPPING["paligemma"]()
         vlm_config_hf._vocab_size = 257152  # noqa: SLF001
@@ -393,6 +397,8 @@ class PaliGemmaWithExpertModel(
 
         self.to_bfloat16_for_selected_params(precision)
         self._set_requires_grad()
+        if self.probe_freeze:
+            self._log_param_groups()
 
     def to_bfloat16_for_selected_params(self, precision: Literal["bfloat16", "float32"] = "bfloat16"):
         if precision == "bfloat16":
@@ -426,6 +432,33 @@ class PaliGemmaWithExpertModel(
             self.paligemma.eval()
             for param in self.paligemma.parameters():
                 param.requires_grad = False
+        if self.freeze_language_model:
+            # Freeze only the LLM backbone; vision tower + multi_modal_projector stay trainable
+            # (visual grounding adapts while the language prior is pinned). Expert always trains.
+            self.paligemma.model.language_model.eval()
+            for param in self.paligemma.model.language_model.parameters():
+                param.requires_grad = False
+
+    def _log_param_groups(self):
+        """One-shot probe: report trainable vs total params per top-level component so the
+        actual freeze can be verified from the log (see PI05Config.probe_freeze)."""
+        groups = {
+            "vision_tower": self.paligemma.model.vision_tower,
+            "multi_modal_projector": self.paligemma.model.multi_modal_projector,
+            "language_model (VLM LLM)": self.paligemma.model.language_model,
+            "action_expert": self.gemma_expert,
+        }
+        logging.info("=== pi05 freeze probe (trainable / total per component) ===")
+        for name, module in groups.items():
+            total = sum(p.numel() for p in module.parameters())
+            trainable = sum(p.numel() for p in module.parameters() if p.requires_grad)
+            if trainable == 0:
+                state = "FROZEN"
+            elif trainable == total:
+                state = "TRAINABLE"
+            else:
+                state = "PARTIAL"
+            logging.info(f"  {name:26s}: {trainable / 1e6:8.1f}M / {total / 1e6:8.1f}M  [{state}]")
 
     def train(self, mode: bool = True):
         super().train(mode)
@@ -433,6 +466,8 @@ class PaliGemmaWithExpertModel(
             self.paligemma.model.vision_tower.eval()
         if self.train_expert_only:
             self.paligemma.eval()
+        if self.freeze_language_model:
+            self.paligemma.model.language_model.eval()
 
     def embed_image(self, image: torch.Tensor):
         # Vision tower and multi_modal_projector are kept in float32 (params_to_keep_float32).
@@ -571,6 +606,8 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
             image_size=config.image_resolution[0],
             freeze_vision_encoder=config.freeze_vision_encoder,
             train_expert_only=config.train_expert_only,
+            freeze_language_model=config.freeze_language_model,
+            probe_freeze=config.probe_freeze,
         )
 
         self.action_in_proj = nn.Linear(config.max_action_dim, action_expert_config.width)

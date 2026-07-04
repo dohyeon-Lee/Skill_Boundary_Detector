@@ -43,6 +43,7 @@ echo "dataset  : ${PT_DATASET_DIR}"
 echo "base     : ${PI_BASE}"
 echo "output   : ${PT_OUTPUT_DIR}"
 echo "lr/bs    : ${PT_LR} / ${PT_BATCH_SIZE}"
+echo "freeze   : vision=${PT_FREEZE_VISION_ENCODER} lang=${PT_FREEZE_LANGUAGE_MODEL}"
 nvidia-smi || true
 
 if [ ! -d "${PT_DATASET_DIR}" ]; then
@@ -84,8 +85,8 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
   --wandb.enable=true \
   --wandb.project="${PT_WANDB_PROJECT}" \
   --policy.dtype=bfloat16 \
-  --policy.freeze_vision_encoder=false \
-  --policy.train_expert_only=false \
+  --policy.freeze_vision_encoder="${PT_FREEZE_VISION_ENCODER}" \
+  --policy.freeze_language_model="${PT_FREEZE_LANGUAGE_MODEL}" \
   --policy.push_to_hub=false \
   --save_freq="${PT_SAVE_FREQ}" \
   --steps="${PT_STEPS}" \

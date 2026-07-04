@@ -9,8 +9,9 @@ architecture; no Stage-1 weights are reloaded). FT-specific behaviour:
 
   * cond_skill_source=pred : the action prefix is conditioned on the VLM's OWN predicted skill (STE),
                              matching inference; the flow loss backprops into the VLM trunk.
-  * freeze: VLM (trunk + vision + skill-query) UNFROZEN; skill_head + cond_encoder + action expert
-            (+ its vision) FROZEN — keep the motor repertoire, re-ground obs→skill for the new task.
+  * freeze: via the freeze_vlm_vsa dict (FT is always p=0 → it applies statically; same single source
+            as Stage-2). Default: VLM (trunk + vision) UNFROZEN, cond pipeline frozen, skill decoder
+            (reader + head) frozen — keep the motor repertoire, re-ground obs→skill for the new task.
   * train_terminator       : co-train the FSQ terminator on the new task's GT signals (disjoint graph)
                              and export an adapted FSQ checkpoint for eval.
 
@@ -84,6 +85,7 @@ def build_settings(cfg: dict) -> dict:
         return as_bool(s2_cfg.get(key, default)) if v in (None, "", "null") else as_bool(v)
     # Inter-module attention connections — inherited from the forked Stage-2 ckpt (must match its weights).
     attend_language = _inherit("attend_language", False)
+    attend_image = _inherit("attend_image", True)
     vlm_cond = _inherit("vlm_cond", True)
     cond_expert = _inherit("cond_expert", True)
     vlm_expert = _inherit("vlm_expert", False)
@@ -107,7 +109,8 @@ def build_settings(cfg: dict) -> dict:
         m = re.search(pat, stage2_run_name)
         if m:
             s2tags.append(m.group(1))
-    for _t, _on in (("ve", vlm_expert), ("noVc", not vlm_cond), ("noCe", not cond_expert), ("lang", attend_language)):
+    for _t, _on in (("ve", vlm_expert), ("noVc", not vlm_cond), ("noCe", not cond_expert),
+                    ("lang", attend_language), ("noimg", not attend_image)):
         if _on:                                          # resolved values (not name-parse) → run-name matches config
             s2tags.append(_t)
     tags = [cond_skill_source]          # skill source ALWAYS tagged: "pred" | "gt"
@@ -141,6 +144,7 @@ def build_settings(cfg: dict) -> dict:
         "skill_fsq_levels": "[" + ",".join(str(x) for x in skill_fsq_levels) + "]",
         # attention connections — inherited from the Stage-2 ckpt (must match the forked weights)
         "attend_language": attend_language,
+        "attend_image": attend_image,
         "vlm_cond": vlm_cond,
         "cond_expert": cond_expert,
         "vlm_expert": vlm_expert,
@@ -156,13 +160,12 @@ def build_settings(cfg: dict) -> dict:
         "terminator_end_target_sigma": float(get_value(cfg, "terminator_end_target_sigma", 2.0)),
         "terminator_end_pos_weight": float(get_value(cfg, "terminator_end_pos_weight", 1.0)),
         "skill_loss_weight": str(skill_loss_weight),
-        # freeze toggles (FT default: VLM-only finetune)
-        "freeze_vlm": as_bool(get_value(cfg, "freeze_vlm", False)),
-        "freeze_vlm_vision": as_bool(get_value(cfg, "freeze_vlm_vision", False)),
+        # freeze (FT is always p=0 → every batch is an A/VLM-present batch → the freeze_vlm_vsa dict
+        # applies STATICALLY; same single source as Stage-2). FT default: VLM trainable, motor side frozen.
+        **{f"freeze_vlm_vsa_{k}": as_bool((get_value(cfg, "freeze_vlm_vsa", {}) or {}).get(
+               k, (get_value(cfg, "freeze_vlm_vsa", {}) or {}).get("vlm", d) if k == "llm" else d))
+           for k, d in (("expert", True), ("cond", True), ("llm", False), ("vlm_vision", False))},
         "freeze_skill_head": as_bool(get_value(cfg, "freeze_skill_head", True)),
-        "freeze_cond_encoder": as_bool(get_value(cfg, "freeze_cond_encoder", True)),
-        "freeze_action_expert": as_bool(get_value(cfg, "freeze_action_expert", True)),
-        "freeze_expert_vision": as_bool(get_value(cfg, "freeze_expert_vision", True)),
         # output
         "skillvla_outputs_root": vla_root,
         "pt_run_name": run_name,

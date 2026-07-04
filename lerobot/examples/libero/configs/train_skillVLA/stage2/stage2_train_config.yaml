@@ -7,7 +7,11 @@ skillvla_dataset_root: skillvla_dataset
 pi_base: models/pi05_base  
 # stage1_run_name: FSQ555_dino8_both_1000_siglip_batch256_state
 # stage1_run_name: FSQ555_dino8_both_1000_siglip_batch256_state_weighted
-stage1_run_name: FSQ555_dino8_weighted_wow_1000_siglip_batch256_state_weighted
+
+stage1_run_name: FSQ555_dino8_both_1000_siglip_batch256_state
+# stage1_run_name: FSQ555_dino8_wow_1000_siglip_batch256_state
+# stage1_run_name: FSQ555_dino8_wow_1000_siglip_batch256_state_weighted
+# stage1_run_name: FSQ555_dino8_weighted_both_1000_siglip_batch256_state_weighted
 stage1_checkpoint: "015000"   # "last" or a step number of the Stage-1 run above
 
 # ── Skill head / FSQ ──────────────────────────────────────────
@@ -17,36 +21,50 @@ skill_loss_weight: 0.1                # total = BC + λ·skill_CE (λ<1 keeps BC
 # N learned probe tokens read the VLM's FINAL-layer output via JOINT concat-KV attention (probes'
 # own K/V compete with the VLM K/V in one softmax; VLM read-only). Respects attend_language. The
 # pooled probe hidden → SkillHead. Freezing the skill decoder (freeze_skill_head) freezes reader+head.
-num_reader_tokens: 4                  # probe tokens (self-attend + read the VLM). run-name rp{n}d{depth}
+num_reader_tokens: 4                  # probe tokens (self-attend + read the VLM)
 reader_depth: 2                       # joint concat-KV layers (shallow = forgetting-friendly)
 reader_heads: 8                       # attention heads (must divide the VLM width)
 # SkillHead regression dead-zone as a FRACTION of per-dim grid spacing: margin = frac/(levels-1).
 # Once |pred-target|<margin the code already rounds right → that dim's loss is zeroed (faster
 # convergence, no post-correct drift). frac=1 stops as soon as correct; <1 leaves a safety band.
-# 0 = plain MSE. Codebook-independent. run-name _dz{frac}.
+# 0 = plain MSE. Codebook-independent. (이름에는 안 들어감 — config.json이 진실)
 skill_deadzone_frac: 0.8
 
 # ── 모듈 간 attention 연결 (VLM, cond, action expert). VLM→cond→expert 체인 + VLM→expert 지름길의
 #    각 엣지를 토글. 학습/추론 마스크 둘 다에 적용(train/infer 일치). skill-query는 항상 제외. ──
-# attend_language: VLM '언어' 토큰을 attend할지 (cond·expert 공통 마스터 스위치). false=이미지만(visual
-#   grounding 강제) / true=언어도(ablation). run-name _lang.
-attend_language: false
+# attend_image / attend_language: VLM 토큰 read-set을 image/language 두 축으로 고름 (cond·expert·reader 공통).
+#   image=T,lang=F → 이미지만(visual grounding 강제, 기본) / image=T,lang=T → 이미지+언어
+#   image=F,lang=T → 언어만(VLM 언어 히든만 읽음) / image=F,lang=F → 금지(에러)
+#   VLM 내부 self-attn은 항상 전체 처리; 이건 downstream read만 게이팅(위치/prefix 구조 불변). (이름에는 안 들어감)
+attend_language: true
+attend_image: true
 vlm_cond: true
+vlm_expert: false
+
 cond_expert: true
-vlm_expert: true
 
 # CFG식 VLM dropout (학습 전용): 이 확률로 배치당 cond→VLM/action→VLM 어텐션을 끊어 action expert가
 # cond(현재obs)+GT skill z 만으로(=Stage-1 형태) 학습 → VLM에 collapse 안 하도록. VLM self-attn은 유지돼
 # skill head는 매 배치 지도됨(staleness 없음). 마스크만(RoPE/위치 불변, 순수 ablation). 0=off, p=0이면
-# 코인 안 던져서 dropout 없을 때와 완전 동치. run-name에 _vdrop{p}.
-vlm_dropout_p: 0.5
+# 코인 안 던져서 dropout 없을 때와 완전 동치. run-name의 "__{P}p" 자리 (0.5→50p, 0→0p).
+vlm_dropout_p: 0.5 # 0.5
 
-# Per-regime freeze (vlm_dropout_p>0에서만 적용; p=0이면 아래 정적 freeze_* 사용). A=VLM_VSA(VLM 있음),
-# B=VSA(VLM 드롭=Stage-1형태). true=그 regime 배치에서 해당 그룹 freeze(업데이트 안 함). 그룹:
-# expert=action expert(+action/time proj), cond=cond-encoder, vlm=VLM LLM. 둘 다 학습되는 모듈만 옵티마이저에
-# 넣고 배치마다 requires_grad 토글. vision 백본/skill_head는 정적 flag 유지. run-name에 _frzA{ecv}B{ecv}.
-freeze_vlm_vsa: {expert: true,  cond: false, vlm: false}   # A: expert 고정(Stage-1 base) + cond/VLM 학습
-freeze_vsa:     {expert: false, cond: false, vlm: false}   # B: 전부 학습(=Stage-1 형태로 expert 재학습)
+# Freeze 컨트롤의 단일 소스 (expert/cond/llm/vlm_vision 전부 여기서): p>0 → 배치마다 A/B 딕셔너리 토글,
+# p=0(dropout 끔) → 모든 배치가 A(VLM 있음)이므로 freeze_vlm_vsa가 그대로 정적 적용, freeze_vsa는 무시.
+# A=VLM_VSA(VLM 있음), B=VSA(VLM 드롭=Stage-1형태). true=그 regime 배치에서 해당 그룹 freeze. 그룹:
+# expert=action expert(+action/time proj), cond=현재obs 파이프라인 통째(dino/siglip vision인코더+image_proj+
+# cond-encoder), llm=VLM의 Gemma LLM 트렁크만(구 이름 vlm — vision tower는 별개!), vlm_vision=PaliGemma
+# SigLIP vision tower. skill decoder만 별도 정적 flag(freeze_skill_head, FT용).
+# run-name: {stage1정보}__{conn}_{P}p_{A:tfff}[_{B:tfff}][_{exp}] — conn=(attend_language,attend_image,
+#   vlm_cond,vlm_expert) t/f 4글자(cond_expert 제외), A/B=(expert,cond,llm,vlm_vision) 순, p=0이면 B 생략.
+freeze_vlm_vsa: {expert: true,  cond: false, llm: false, vlm_vision: false}
+                                                           # A(VLM있음): expert 업데이트 안 함 → expert는 B에서만 학습
+                                                           #   (VLM 보이는 채로는 절대 학습 X = co-adapt 차단); cond/LLM은 frozen expert에 맞춰 학습
+freeze_vsa:     {expert: false, cond: false, llm: true, vlm_vision: true}
+                                                           # B(VLM드롭): expert/cond는 flow로 학습(=Stage-1 형태 유지·계속 갱신).
+                                                           #   LLM은 edge 절단이라 flow grad 없음 → skill loss로만 학습.
+                                                           #   llm: true + vlm_vision: false면 skill loss가 frozen LLM을 '통과해'
+                                                           #   vision tower는 여전히 업데이트됨 — VLM 완전 동결은 둘 다 true.
 
 # ── FSQ terminator co-training (same as FT; disjoint from the SkillVLA params) ──
 # Adapt the FSQ terminator on this dataset's GT signals (z←true skill, current DINO + state →
@@ -60,14 +78,8 @@ terminator_end_pos_weight: 1.0
 # ── Run naming ────────────────────────────────────────────────
 exp: ""                                        # optional run-name suffix (blank = none)
 
-# ── Freeze toggles (all parts otherwise trained) ──────────────
-freeze_cond_encoder: false                    # reuse the Stage-1 current-obs cond-encoding (frozen)
-freeze_expert_vision: false
-
-freeze_vlm: false
-freeze_vlm_vision: false                     # train the SigLIP tower for the new skill-start view
-
-freeze_action_expert: true
+# (정적 freeze 블록은 삭제됨 — freeze는 위 freeze_vlm_vsa/freeze_vsa가 단일 소스. p=0이면 freeze_vlm_vsa가
+#  그대로 정적 적용. skill decoder만 FT에서 freeze_skill_head로 별도 제어.)
 
 
 # ── Optimization ──────────────────────────────────────────────
