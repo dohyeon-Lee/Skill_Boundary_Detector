@@ -100,26 +100,50 @@ def build_settings(cfg: dict) -> dict:
     reader_heads = _inherit_num("reader_heads", 8, int)
     skill_deadzone_frac = _inherit_num("skill_deadzone_frac", 0.0, float)
 
-    # run_name: new task + run_tag + ft{Stage-2 ckpt} + the Stage-2 SOURCE variant (so FT forks of DIFFERENT
-    # Stage-2 models don't collide — backbone / state_cond_mode / cum) + action↔VLM + the FT variant tags.
-    s2tags = []
-    for pat in (r"_(siglip|dino)_(?:freeze|unfreeze)",   # Stage-1 vision backbone of the forked Stage-2
-                r"_(state_skill|state)(?:_|$)",          # state_cond_mode
-                r"_(cum_(?:ep|all))(?:_|$)"):            # cumulative-loss variant
-        m = re.search(pat, stage2_run_name)
-        if m:
-            s2tags.append(m.group(1))
-    for _t, _on in (("ve", vlm_expert), ("noVc", not vlm_cond), ("noCe", not cond_expert),
-                    ("lang", attend_language), ("noimg", not attend_image)):
-        if _on:                                          # resolved values (not name-parse) → run-name matches config
-            s2tags.append(_t)
-    tags = [cond_skill_source]          # skill source ALWAYS tagged: "pred" | "gt"
-    if train_terminator:
-        tags.append("term")
-    run_name = f"{source_dataset}_{run_tag}_ft{stage2_checkpoint}"
-    parts = s2tags + tags
-    if parts:
-        run_name = run_name + "_" + "_".join(parts)
+    # SCRATCH-parent support: a Stage-2 trained WITHOUT Stage-1 has stage1_checkpoint_path="" in its
+    # config — the FT model then synthesizes the Stage-1-side architecture from these two knobs, which
+    # must therefore be inherited from the parent (they default to siglip/state if the parent predates them).
+    scratch_parent = not stage1_checkpoint_path
+    s1_vision_backbone = str(s2_cfg.get("s1_vision_backbone", "siglip"))
+    s1_state_cond_mode = str(s2_cfg.get("s1_state_cond_mode", "state"))
+
+    # Per-regime freeze (stage2와 동일한 단일 소스): FT도 vlm_dropout p>0이면 배치마다 A/B 토글,
+    # p=0이면 A 딕셔너리가 정적 적용. FT 기본 A = {expert:t, cond:t, llm:f, vlm_vision:f} (모터 동결,
+    # VLM 재접지). "vlm"은 llm의 레거시 별칭으로 허용.
+    _RKEYS = ("expert", "cond", "llm", "vlm_vision")
+    _FA_DEF = {"expert": True, "cond": True, "llm": False, "vlm_vision": False}
+    _fa = get_value(cfg, "freeze_vlm_vsa", {}) or {}
+    _fb = get_value(cfg, "freeze_vsa", {}) or {}
+    def _grp(d, k, dflt):
+        return as_bool(d.get(k, d.get("vlm", dflt) if k == "llm" else dflt))
+    frz = {f"freeze_vlm_vsa_{k}": _grp(_fa, k, _FA_DEF[k]) for k in _RKEYS}
+    frz.update({f"freeze_vsa_{k}": _grp(_fb, k, False) for k in _RKEYS})
+
+    # VLM dropout (+선형 스케줄) — stage2와 동일. FT에선 pred-skill 모드와 조합되어 B 배치 =
+    # "자기 예측 skill만으로 VLM 없이 실행" 훈련이 됨.
+    vlm_dropout_p = float(get_value(cfg, "vlm_dropout_p", 0.0))
+    _pe = get_value(cfg, "vlm_dropout_p_end", None)
+    vlm_dropout_p_end = None if str(_pe).lower() in ("none", "", "null", "~") else float(_pe)
+    vlm_dropout_decay_steps = int(get_value(cfg, "vlm_dropout_decay_steps", 0) or 0)
+    sched_on = vlm_dropout_p_end is not None and vlm_dropout_decay_steps > 0
+    regimes_ever = vlm_dropout_p > 0 or (sched_on and vlm_dropout_p_end > 0)
+
+    # run_name = {ft_source}_{ft_run_tag}_ft{ckpt}[_scratch]_{pred|gt}[_term][_{P}p_{A}_{B}]__{parent_regime}[_{exp}]
+    #   parent_regime = 부모 Stage-2 폴더명의 "__" 뒤 태그({conn}_{P}p_{A}[_{B}])를 그대로 승계.
+    #   FT 자신이 dropout을 쓰면({P}p 태그) 자기 p/freeze(A/B tf문자열)도 tags에 추가됨.
+    parent_regime = stage2_run_name.split("__", 1)[1] if "__" in stage2_run_name else ""
+    if sched_on:
+        p_tag = (f"{int(round(vlm_dropout_p * 100))}to{int(round(vlm_dropout_p_end * 100))}p"
+                 f"{vlm_dropout_decay_steps // 1000}k")
+    else:
+        p_tag = f"{int(round(vlm_dropout_p * 100))}p"
+    _tf = lambda pfx: "".join("t" if frz[f"freeze_{pfx}_{k}"] else "f" for k in _RKEYS)
+    tags = [cond_skill_source] + (["term"] if train_terminator else [])   # skill source ALWAYS tagged
+    if regimes_ever:
+        tags.append(f"{p_tag}_{_tf('vlm_vsa')}_{_tf('vsa')}")
+    parts = ([source_dataset, run_tag, f"ft{stage2_checkpoint}"]
+             + (["scratch"] if scratch_parent else []) + tags)
+    run_name = "_".join(parts) + (f"__{parent_regime}" if parent_regime else "")
     if exp:
         run_name = f"{run_name}_{exp}"
     vla_root = outputs_root / "skillVLA_FT"
@@ -140,7 +164,9 @@ def build_settings(cfg: dict) -> dict:
         "stage2_run_name": stage2_run_name,
         "stage2_checkpoint": stage2_checkpoint,
         "stage2_checkpoint_path": stage2_ckpt,
-        "stage1_checkpoint_path": stage1_checkpoint_path,
+        "stage1_checkpoint_path": stage1_checkpoint_path,   # "" = scratch-parent (arch from the s1_* knobs)
+        "s1_vision_backbone": s1_vision_backbone,
+        "s1_state_cond_mode": s1_state_cond_mode,
         "skill_fsq_levels": "[" + ",".join(str(x) for x in skill_fsq_levels) + "]",
         # attention connections — inherited from the Stage-2 ckpt (must match the forked weights)
         "attend_language": attend_language,
@@ -160,12 +186,13 @@ def build_settings(cfg: dict) -> dict:
         "terminator_end_target_sigma": float(get_value(cfg, "terminator_end_target_sigma", 2.0)),
         "terminator_end_pos_weight": float(get_value(cfg, "terminator_end_pos_weight", 1.0)),
         "skill_loss_weight": str(skill_loss_weight),
-        # freeze (FT is always p=0 → every batch is an A/VLM-present batch → the freeze_vlm_vsa dict
-        # applies STATICALLY; same single source as Stage-2). FT default: VLM trainable, motor side frozen.
-        **{f"freeze_vlm_vsa_{k}": as_bool((get_value(cfg, "freeze_vlm_vsa", {}) or {}).get(
-               k, (get_value(cfg, "freeze_vlm_vsa", {}) or {}).get("vlm", d) if k == "llm" else d))
-           for k, d in (("expert", True), ("cond", True), ("llm", False), ("vlm_vision", False))},
+        # freeze — stage2와 동일한 단일 소스 (p=0 → A 딕셔너리 정적; p>0 → 배치별 A/B 토글)
+        **frz,
         "freeze_skill_head": as_bool(get_value(cfg, "freeze_skill_head", True)),
+        # VLM dropout (+스케줄) — stage2와 동일
+        "vlm_dropout_p": vlm_dropout_p,
+        "vlm_dropout_p_end": "" if vlm_dropout_p_end is None else vlm_dropout_p_end,
+        "vlm_dropout_decay_steps": vlm_dropout_decay_steps,
         # output
         "skillvla_outputs_root": vla_root,
         "pt_run_name": run_name,

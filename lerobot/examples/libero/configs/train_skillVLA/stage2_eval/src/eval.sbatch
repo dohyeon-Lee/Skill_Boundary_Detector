@@ -20,6 +20,19 @@ if [ ! -x "${BOOTSTRAP_PYTHON}" ]; then
   BOOTSTRAP_PYTHON=python3
 fi
 
+# JOB-ARRAY fan-out (submit_eval.sh submits ONE --array job → tasks show as {ID}_0,{ID}_1,… and
+# `scancel {ID}` kills them all): each array task picks its own line from EVAL_FANOUT
+# ("PANEL_LABEL|TASK_IDS|TASK_TAG" per line, index = SLURM_ARRAY_TASK_ID) BEFORE the emitter runs,
+# so the TASK_IDS/TASK_TAG env overrides and the panel filter see this task's slice.
+if [ -n "${SLURM_ARRAY_TASK_ID:-}" ] && [ -n "${EVAL_FANOUT:-}" ]; then
+  _LINE="$(printf '%s\n' "${EVAL_FANOUT}" | sed -n "$((SLURM_ARRAY_TASK_ID + 1))p")"
+  IFS='|' read -r _PL _TI _TT <<< "${_LINE}"
+  [ -n "${_PL}" ] && export PANEL_LABEL="${_PL}"
+  [ -n "${_TI}" ] && export TASK_IDS="${_TI}"
+  [ -n "${_TT}" ] && export TASK_TAG="${_TT}"
+  echo "array task ${SLURM_ARRAY_TASK_ID}: panel='${_PL:-<all>}' task_ids=${_TI} tag='${_TT:-}'"
+fi
+
 eval "$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/stage2_eval_config.py" --config "${CONFIG_PATH}" --shell)"
 
 cd "${LEROBOT_ROOT}"
@@ -77,10 +90,11 @@ resolve_fsq() {
   fi
 }
 
-# run_eval OUT JOB POLICY FSQ GT_DIR SKILL_HTML INIT_STATES — one lerobot_skillvla_eval rollout
-# (shared knobs come from the emitter env; per-model bits are the arguments; INIT_STATES ""=seed resets).
+# run_eval OUT JOB POLICY FSQ GT_DIR SKILL_HTML INIT_STATES DROP_VLM — one lerobot_skillvla_eval
+# rollout (shared knobs from the emitter env; per-model bits are the arguments; INIT_STATES ""=seed
+# resets; DROP_VLM true = sever cond/action→VLM at inference, skill code only).
 run_eval() {
-  local out="$1" job="$2" ppath="$3" fsq="$4" gt="$5" shtml="$6" inits="${7:-}"
+  local out="$1" job="$2" ppath="$3" fsq="$4" gt="$5" shtml="$6" inits="${7:-}" dropvlm="${8:-false}"
   mkdir -p "${out}"
   PYTORCH_ALLOC_CONF=expandable_segments:True \
   PYTHONPATH="${LEROBOT_ROOT}/src:${LIBERO_REPO_ROOT}" \
@@ -114,6 +128,7 @@ run_eval() {
       --policy.use_gt_skill="${USE_GT_SKILL}" \
       --policy.gt_skill_dataset_dir="${gt}" \
       --policy.skill_advance_mode="${SKILL_ADVANCE_MODE}" \
+      --policy.eval_drop_vlm="${dropvlm}" \
       --eval.init_states_path="${inits}" \
       --wandb_project="${WANDB_PROJECT}" \
       --job_name="${job}" \
@@ -164,11 +179,16 @@ import json, os
 for m in json.loads(os.environ["MODELS_JSON"]):
     print("|".join([m["label"], m["policy_path"], m["base_fsq"], m["ft_fsq_path"],
                     m["ft_run_dir"], m["checkpoint"], m["resolved_term"], m["gt_skill_dataset_dir"],
-                    m.get("eval_init_states_path", "")]))
+                    m.get("eval_init_states_path", ""), str(m.get("drop_vlm", False)).lower()]))
 PY
 )"
-  while IFS='|' read -r LBL PPATH BFSQ FTFSQ FTRUN CKPT RTERM GTDIR INITS; do
+  # PANEL_LABEL set (submit's model×chunk fan-out) → this job runs ONLY that model; unset (srun /
+  # legacy) → all models sequentially.
+  while IFS='|' read -r LBL PPATH BFSQ FTFSQ FTRUN CKPT RTERM GTDIR INITS DROP; do
     [ -z "${LBL}" ] && continue
+    if [ -n "${PANEL_LABEL:-}" ] && [ "${LBL}" != "${PANEL_LABEL}" ]; then
+      continue
+    fi
     if [ ! -d "${PPATH}" ]; then
       echo "[warn] panel '${LBL}': checkpoint missing (${PPATH}) — skipping this model" >&2
       continue
@@ -178,20 +198,27 @@ PY
       echo "[warn] panel '${LBL}': no terminator FSQ (${FSQ}) — skipping this model" >&2
       continue
     fi
-    echo "── panel '${LBL}': ${PPATH}  (fsq=${FSQ}, terminator=${RTERM}${INITS:+, scenes=EPISODE-EXACT})"
+    echo "── panel '${LBL}': ${PPATH}  (fsq=${FSQ}, terminator=${RTERM}${INITS:+, scenes=EPISODE-EXACT}, drop_vlm=${DROP:-false})"
     run_eval "${EVAL_OUT_DIR}/panels/${LBL}" "${BASE_RN}_${LBL}${TASK_TAG:+_${TASK_TAG}}" \
-             "${PPATH}" "${FSQ}" "${GTDIR}" false "${INITS}"
+             "${PPATH}" "${FSQ}" "${GTDIR}" false "${INITS}" "${DROP:-false}"
   done <<< "${SPECS}"
 
+  # Stitch is IDEMPOTENT + ATOMIC + skips episodes not yet finished in every panel → run it at the end
+  # of EVERY job; whichever job finishes a task LAST completes that task's grid clip immediately
+  # (side_by_side fills in task by task, not all-at-the-end).
   "${PROJECT_ROOT}/.venv/bin/python" "${SRC_DIR}/stitch_panels.py" \
     --panels_root="${EVAL_OUT_DIR}/panels" --out_dir="${EVAL_OUT_DIR}/side_by_side" \
     --labels_json="${MODELS_LABELS}" --per_row="${MODELS_PER_ROW}" \
     || echo "stitch failed (non-fatal)"
 
-  # Task-split: merge each panel's chunks (summary json + full chart/index per panel).
+  # Task-split: merge each panel's chunks (summary json + full chart/index per panel). With
+  # PANEL_LABEL, only THIS job's panel is merged (its other chunks may still be running — idempotent).
   if [ -n "${TASK_TAG:-}" ]; then
     for PDIR in "${EVAL_OUT_DIR}"/panels/*/; do
       [ -d "${PDIR}" ] || continue
+      if [ -n "${PANEL_LABEL:-}" ] && [ "$(basename "${PDIR}")" != "${PANEL_LABEL}" ]; then
+        continue
+      fi
       "${PROJECT_ROOT}/.venv/bin/python" "${SRC_DIR}/merge_eval_chunks.py" \
         --out_dir="${PDIR%/}" --target_task="${TARGET_TASK}" --job_name="${BASE_RN}_$(basename "${PDIR}")" \
         --expected_tasks="${TASKS_TOTAL:-0}" --wandb_project="${WANDB_PROJECT}" \

@@ -29,7 +29,8 @@ if [ ! -e "${SKILLVLA_DATASET_DIR}" ]; then
   echo "Build it first: configs/train_skillVLA/build_data/submit_build_all.sh" >&2
   exit 1
 fi
-if [ ! -e "${STAGE1_CHECKPOINT_PATH}" ]; then
+# SCRATCH (stage1_run_name: none_*) → no Stage-1 checkpoint to check.
+if [ "${SCRATCH}" != "true" ] && [ ! -e "${STAGE1_CHECKPOINT_PATH}" ]; then
   echo "Missing Stage-1 checkpoint: ${STAGE1_CHECKPOINT_PATH}" >&2
   echo "Train Stage-1 first: configs/train_skillVLA/stage1/submit_train.sh (set stage1_run_name in the yaml)" >&2
   exit 1
@@ -56,7 +57,11 @@ mkdir -p logs
 echo "Submit SkillVLA Stage-2"
 echo "  run      : ${PT_RUN_NAME}  (arch=joint)"
 echo "  dataset  : ${SKILLVLA_DATASET_DIR}"
-echo "  expert   : ${STAGE1_CHECKPOINT_PATH}"
+if [ "${SCRATCH}" = "true" ]; then
+  echo "  expert   : SCRATCH (no Stage-1; ${S1_VISION_BACKBONE}/${S1_STATE_COND_MODE})"
+else
+  echo "  expert   : ${STAGE1_CHECKPOINT_PATH}"
+fi
 echo "  output   : ${PT_OUTPUT_DIR}"
 echo "  slurm    : partition=${TRAIN_PARTITION} qos=${TRAIN_QOS} gres=${TRAIN_GRES} mem=${TRAIN_MEM}"
 

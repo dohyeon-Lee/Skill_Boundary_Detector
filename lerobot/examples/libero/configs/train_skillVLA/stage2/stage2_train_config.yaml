@@ -4,15 +4,17 @@ skillvla_dataset_root: skillvla_dataset
 # `source_dataset:` line here only if the same run_tag exists under more than one source.
 
 # ── Warm-start (also selects the dataset: source + run_tag parsed from stage1_run_name) ──
-pi_base: models/pi05_base  
-# stage1_run_name: FSQ555_dino8_both_1000_siglip_batch256_state
-# stage1_run_name: FSQ555_dino8_both_1000_siglip_batch256_state_weighted
+# SCRATCH 모드 (한 줄): stage1_run_name: none_{run_tag}_{siglip|dino}_{state|state_skill}
+#   → Stage-1 없이 expert/cond fresh 초기화; run_tag(데이터셋)·vision·state_cond_mode를 이 한 줄에서
+#   파싱하고 stage1_checkpoint는 자동 무시. B(vdrop) 배치가 Stage-1 역할(VSA 조각)을 하므로
+#   vlm_dropout이 반드시 발화해야 함(p>0 또는 스케줄). 폴더명: {run_tag}_{vision}_scratch_{mode}__...
 
-stage1_run_name: FSQ555_dino8_both_1000_siglip_batch256_state
-# stage1_run_name: FSQ555_dino8_wow_1000_siglip_batch256_state
-# stage1_run_name: FSQ555_dino8_wow_1000_siglip_batch256_state_weighted
+pi_base: models/pi05_base
+
+stage1_run_name: none_FSQ555_dino8_both_1000_siglip_state
+# stage1_run_name: FSQ555_dino8_both_1000_siglip_batch256_state
 # stage1_run_name: FSQ555_dino8_weighted_both_1000_siglip_batch256_state_weighted
-stage1_checkpoint: "015000"   # "last" or a step number of the Stage-1 run above
+stage1_checkpoint: "015000"   # warm-start용 Stage-1 step ("last" 가능; scratch(none_*)면 자동 무시)
 
 # ── Skill head / FSQ ──────────────────────────────────────────
 skill_loss_weight: 0.1                # total = BC + λ·skill_CE (λ<1 keeps BC dominant)
@@ -47,7 +49,13 @@ cond_expert: true
 # cond(현재obs)+GT skill z 만으로(=Stage-1 형태) 학습 → VLM에 collapse 안 하도록. VLM self-attn은 유지돼
 # skill head는 매 배치 지도됨(staleness 없음). 마스크만(RoPE/위치 불변, 순수 ablation). 0=off, p=0이면
 # 코인 안 던져서 dropout 없을 때와 완전 동치. run-name의 "__{P}p" 자리 (0.5→50p, 0→0p).
-vlm_dropout_p: 0.5 # 0.5
+vlm_dropout_p: 0.8 # 0.5
+# 스케줄(선택): p를 vlm_dropout_p → vlm_dropout_p_end 로 decay_steps 동안 선형 annealing 후 유지.
+# 둘 다 비우면 고정 확률. scratch에 자연스러운 커리큘럼: 초반 B 위주(VSA 조각) → 후반 A 위주(VLM 접지),
+# 예: p 0.9 → p_end 0.2, 30000 steps. 스텝 카운터는 체크포인트에 저장돼 resume해도 이어짐.
+# run-name: "90to20p30k". wandb train_regime/p_effective로 현재 p 확인.
+vlm_dropout_p_end:            # 비움 = 고정 확률
+vlm_dropout_decay_steps: 
 
 # Freeze 컨트롤의 단일 소스 (expert/cond/llm/vlm_vision 전부 여기서): p>0 → 배치마다 A/B 딕셔너리 토글,
 # p=0(dropout 끔) → 모든 배치가 A(VLM 있음)이므로 freeze_vlm_vsa가 그대로 정적 적용, freeze_vsa는 무시.
@@ -57,10 +65,10 @@ vlm_dropout_p: 0.5 # 0.5
 # SigLIP vision tower. skill decoder만 별도 정적 flag(freeze_skill_head, FT용).
 # run-name: {stage1정보}__{conn}_{P}p_{A:tfff}[_{B:tfff}][_{exp}] — conn=(attend_language,attend_image,
 #   vlm_cond,vlm_expert) t/f 4글자(cond_expert 제외), A/B=(expert,cond,llm,vlm_vision) 순, p=0이면 B 생략.
-freeze_vlm_vsa: {expert: true,  cond: false, llm: false, vlm_vision: false}
+freeze_vlm_vsa: {expert: false,  cond: false, llm: false, vlm_vision: false}
                                                            # A(VLM있음): expert 업데이트 안 함 → expert는 B에서만 학습
                                                            #   (VLM 보이는 채로는 절대 학습 X = co-adapt 차단); cond/LLM은 frozen expert에 맞춰 학습
-freeze_vsa:     {expert: false, cond: false, llm: true, vlm_vision: true}
+freeze_vsa:     {expert: false, cond: false, llm: false, vlm_vision: false}
                                                            # B(VLM드롭): expert/cond는 flow로 학습(=Stage-1 형태 유지·계속 갱신).
                                                            #   LLM은 edge 절단이라 flow grad 없음 → skill loss로만 학습.
                                                            #   llm: true + vlm_vision: false면 skill loss가 frozen LLM을 '통과해'
@@ -89,8 +97,8 @@ num_gpus: 1
 lr_base: 2.5e-05                             # effective base lr = lr_base * num_gpus (VLM + vision use this)
 expert_lr_scale: 1.0                         # action expert(gemma_expert + action/time proj) LR 배수
 cond_lr_scale: 1.0                           # cond side(cond_encoder + image/state proj) LR 배수
-steps: 100000
-save_freq: 5000
+steps: 50000
+save_freq: 10000
 
 
 # ── wandb ─────────────────────────────────────────────────────

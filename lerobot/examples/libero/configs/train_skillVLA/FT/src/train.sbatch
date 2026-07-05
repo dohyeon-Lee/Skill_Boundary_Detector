@@ -37,7 +37,7 @@ echo "START SkillVLA FT (skill_vla)"
 echo "Node      : ${SLURMD_NODENAME:-local}"
 echo "dataset   : ${SKILLVLA_DATASET_DIR}"
 echo "warm-start: ${STAGE2_CHECKPOINT_PATH}"
-echo "stage1cfg : ${STAGE1_CHECKPOINT_PATH}"
+echo "stage1cfg : ${STAGE1_CHECKPOINT_PATH:-SCRATCH-parent (${S1_VISION_BACKBONE}/${S1_STATE_COND_MODE})}"
 echo "FSQ(term) : ${FSQ_CKPT}   dino: ${DINO_TOKENS_PATH}"
 echo "cond_skill: ${COND_SKILL_SOURCE}   train_terminator: ${TRAIN_TERMINATOR}"
 echo "output    : ${PT_OUTPUT_DIR}   lr/bs: ${LR}/${BATCH_SIZE}"
@@ -51,7 +51,9 @@ if [ ! -e "${STAGE2_CHECKPOINT_PATH}" ]; then
   echo "Missing Stage-2 checkpoint: ${STAGE2_CHECKPOINT_PATH}  (train Stage-2 first)" >&2
   exit 1
 fi
-if [ ! -e "${STAGE1_CHECKPOINT_PATH}" ]; then
+# SCRATCH-parent: the forked Stage-2 was trained without Stage-1 → empty path is fine (the model
+# synthesizes the Stage-1-side architecture from --policy.s1_vision_backbone/s1_state_cond_mode).
+if [ -n "${STAGE1_CHECKPOINT_PATH}" ] && [ ! -e "${STAGE1_CHECKPOINT_PATH}" ]; then
   echo "Missing Stage-1 checkpoint (architecture config): ${STAGE1_CHECKPOINT_PATH}" >&2
   exit 1
 fi
@@ -69,6 +71,16 @@ if [ -f "${CONFIG_JSON}" ]; then
 elif [ -d "${PT_OUTPUT_DIR}" ]; then
   echo "No checkpoint → removing stale ${PT_OUTPUT_DIR} and starting fresh."
   rm -rf "${PT_OUTPUT_DIR}"
+fi
+
+# Dropout schedule (optional): pass p_end/decay only when a schedule is configured, so a fixed-p or
+# p=0 run's train_config.json stays byte-identical to pre-schedule runs (resume-safe).
+SCHED_ARGS=()
+if [ -n "${VLM_DROPOUT_P_END}" ]; then
+  SCHED_ARGS=(
+    --policy.vlm_dropout_p_end="${VLM_DROPOUT_P_END}"
+    --policy.vlm_dropout_decay_steps="${VLM_DROPOUT_DECAY_STEPS}"
+  )
 fi
 
 # Terminator co-training inputs: attach current-frame DINO tokens only when train_terminator=true.
@@ -101,6 +113,8 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.push_to_hub=false \
     --policy.pretrained_path="${STAGE2_CHECKPOINT_PATH}" \
     --policy.stage1_checkpoint_path="${STAGE1_CHECKPOINT_PATH}" \
+    --policy.s1_vision_backbone="${S1_VISION_BACKBONE}" \
+    --policy.s1_state_cond_mode="${S1_STATE_COND_MODE}" \
     --policy.skill_fsq_levels="${SKILL_FSQ_LEVELS}" \
     --policy.skill_loss_weight="${SKILL_LOSS_WEIGHT}" \
     --policy.skill_deadzone_frac="${SKILL_DEADZONE_FRAC}" \
@@ -118,7 +132,12 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.freeze_vlm_vsa_cond="${FREEZE_VLM_VSA_COND}" \
     --policy.freeze_vlm_vsa_llm="${FREEZE_VLM_VSA_LLM}" \
     --policy.freeze_vlm_vsa_vlm_vision="${FREEZE_VLM_VSA_VLM_VISION}" \
+    --policy.freeze_vsa_expert="${FREEZE_VSA_EXPERT}" \
+    --policy.freeze_vsa_cond="${FREEZE_VSA_COND}" \
+    --policy.freeze_vsa_llm="${FREEZE_VSA_LLM}" \
+    --policy.freeze_vsa_vlm_vision="${FREEZE_VSA_VLM_VISION}" \
     --policy.freeze_skill_head="${FREEZE_SKILL_HEAD}" \
+    --policy.vlm_dropout_p="${VLM_DROPOUT_P}" \
     --batch_size="${BATCH_SIZE}" \
     --num_workers="${NUM_WORKERS}" \
     --steps="${STEPS}" \
@@ -126,6 +145,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.optimizer_lr="${LR}" \
     --wandb.enable="${WANDB_ENABLE}" \
     --wandb.project="${WANDB_PROJECT}" \
+    ${SCHED_ARGS[@]+"${SCHED_ARGS[@]}"} \
     ${TERM_ARGS[@]+"${TERM_ARGS[@]}"} \
     ${RESUME_ARGS[@]+"${RESUME_ARGS[@]}"}
 

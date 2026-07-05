@@ -189,6 +189,8 @@ class SkillVLAPytorch(PI05Pytorch):
         self.register_buffer("_fsq_levels", torch.tensor(levels, dtype=torch.long), persistent=False)
         self.register_buffer("_fsq_half", torch.tensor([(lv - 1) / 2.0 for lv in levels], dtype=torch.float32), persistent=False)
         self.fsq_term = None
+        # vlm_dropout schedule position (PERSISTENT → a resume continues the anneal where it left off)
+        self.register_buffer("_vdrop_step", torch.zeros((), dtype=torch.long), persistent=True)
 
         # Match pi05's working dtype for the trainable Stage-1-side tokenizers + skill head, so the
         # bf16 expert stream never sees float32 inputs (the vision encoders stay float32 like pi05's
@@ -582,11 +584,23 @@ class SkillVLAPytorch(PI05Pytorch):
         # cond/action → VLM (Stage-1 form). p=0 → coin NOT flipped (no torch.rand) → RNG untouched →
         # bit-identical to no-dropout. Toggle the per-regime freeze BEFORE any module runs, so requires_grad
         # is correct for this batch's backward (Adam skips requires_grad=False → clean freeze, no momentum leak).
-        p = float(getattr(self.config, "vlm_dropout_p", 0.0))
-        drop_vlm = bool(self.training and p > 0.0 and torch.rand(1).item() < p)
-        # This batch's regime for per-regime wandb logging (None = regimes inactive, p==0).
-        self._last_drop_vlm = drop_vlm if (self.training and p > 0.0) else None
-        if self.training and p > 0.0:
+        # Optional LINEAR SCHEDULE: p anneals vlm_dropout_p → vlm_dropout_p_end over
+        # vlm_dropout_decay_steps train steps (persistent counter → resume-safe), then holds.
+        p0 = float(getattr(self.config, "vlm_dropout_p", 0.0))
+        p_end = getattr(self.config, "vlm_dropout_p_end", None)
+        decay = int(getattr(self.config, "vlm_dropout_decay_steps", 0) or 0)
+        sched = self.training and decay > 0 and p_end is not None
+        regimes_on = self.training and (p0 > 0.0 or (sched and float(p_end) > 0.0))
+        p = p0
+        if sched:
+            frac = min(1.0, float(self._vdrop_step.item()) / float(decay))
+            p = p0 + (float(p_end) - p0) * frac
+            self._vdrop_step += 1
+        drop_vlm = bool(regimes_on and p > 0.0 and torch.rand(1).item() < p)
+        # This batch's regime for per-regime wandb logging (None = regimes inactive).
+        self._last_drop_vlm = drop_vlm if regimes_on else None
+        self._last_p_effective = p if regimes_on else None
+        if regimes_on:
             self._apply_regime_freeze(drop_vlm)
 
         vlm_embeds, vlm_pad, vlm_xattn_block = self._vlm_tokens(start_images, lang_tokens, lang_masks)
@@ -735,17 +749,23 @@ class SkillVLAPytorch(PI05Pytorch):
         if skill_code is None:
             skill_code = self.skill_head.decode(self._skill_hidden(vlm_h, vlm_pad, vlm_xattn_block))
 
+        # EVAL-time VLM dropout (eval_drop_vlm): sever cond→VLM and action→VLM exactly like a training
+        # VSA (B) batch — mask-only, positions unchanged. The VLM still runs standalone (skill code above
+        # / GT); ONLY the discrete skill crosses to the action side, no K/V.
+        drop_vlm = bool(getattr(self.config, "eval_drop_vlm", False))
+
         # cond: SCENE only (plain RMSNorm, skill-blind); reads the cached VLM K/V IFF vlm_cond (else VLM-blind) → cache
+        vlm_to_cond = self.config.vlm_cond and not drop_vlm
         cond_kv, _ = self._encode_prefix_kv(
             self.cond_encoder.model.layers, cond_tokens, cond_pad, cond_pos, adarms=None,
-            extra_kv=(vlm_kv if self.config.vlm_cond else None),
-            extra_valid=((vlm_pad & ~vlm_xattn_block[None, :]) if self.config.vlm_cond else None))
+            extra_kv=(vlm_kv if vlm_to_cond else None),
+            extra_valid=((vlm_pad & ~vlm_xattn_block[None, :]) if vlm_to_cond else None))
 
         # denoise: action stream = prefix (constant) + action×K; attends the cond cache iff cond_expert
         # (cond⊥action). With vlm_expert, the VLM K/V is ALSO injected so action reads the VLM directly —
         # gated by the SAME ~vlm_xattn_block as cond (per the attend_image/attend_language read-set).
         action_prefix = self._action_prefix(skill_code)  # None in state_skill mode
-        attend_vlm = bool(self.config.vlm_expert)
+        attend_vlm = bool(self.config.vlm_expert) and not drop_vlm
         if attend_vlm:                                                  # action keys = [cond, VLM, action-stream]
             prefix_kv = [(torch.cat([ck, vk], dim=2), torch.cat([cv, vv], dim=2))
                          for (ck, cv), (vk, vv) in zip(cond_kv, vlm_kv)]
@@ -1009,7 +1029,17 @@ class SkillVLAPolicy(PI05Policy):
     @staticmethod
     def _load_stage1_config(config: SkillVLAConfig):
         if not config.stage1_checkpoint_path:
-            raise ValueError("SkillVLAConfig.stage1_checkpoint_path is required (Stage-1 skill_expert ckpt).")
+            # SCRATCH mode: no Stage-1 run at all — build the Stage-1-side architecture config directly
+            # from the SkillVLA config (the expert/cond weights stay fresh; the VSA identity is carved by
+            # the vlm_dropout B batches instead of a Stage-1 pretrain).
+            from lerobot.policies.skill_expert.configuration_skill_expert import SkillExpertConfig  # noqa: PLC0415
+
+            return SkillExpertConfig(
+                vision_backbone=str(getattr(config, "s1_vision_backbone", "siglip")),
+                state_cond_mode=str(getattr(config, "s1_state_cond_mode", "state")),
+                skill_fsq_levels=list(config.skill_fsq_levels),
+                skill_vocab_size=int(math.prod(config.skill_fsq_levels)),
+            )
         return PreTrainedConfig.from_pretrained(config.stage1_checkpoint_path)
 
     def _torch_dtype(self) -> torch.dtype:
@@ -1022,8 +1052,12 @@ class SkillVLAPolicy(PI05Policy):
                 for p in module.parameters():
                     p.requires_grad_(False)
         p = float(getattr(c, "vlm_dropout_p", 0.0))
+        p_end = getattr(c, "vlm_dropout_p_end", None)
+        decay = int(getattr(c, "vlm_dropout_decay_steps", 0) or 0)
+        # regimes active if dropout can EVER fire during this run (constant p>0 or a schedule reaching >0)
+        regimes_on = p > 0.0 or (decay > 0 and p_end is not None and float(p_end) > 0.0)
         g = m._regime_groups()
-        if p > 0.0:
+        if regimes_on:
             # CFG per-regime: statically freeze an expert/cond/vlm/vlm_vision group ONLY if frozen in BOTH
             # regimes (→ excluded from the optimizer). Otherwise leave it trainable (in the optimizer) for
             # the per-batch toggle in SkillVLAPytorch._apply_regime_freeze.
@@ -1223,6 +1257,9 @@ class SkillVLAPolicy(PI05Policy):
             loss_dict[f"regime/flow_{tag}"] = flow_loss.detach().item()
             loss_dict[f"regime/skill_{tag}"] = skill_loss.detach().item()
             loss_dict["regime/is_vsa"] = float(drop_vlm)
+            p_eff = getattr(self.model, "_last_p_effective", None)
+            if p_eff is not None:                       # scheduled dropout → current annealed probability
+                loss_dict["regime/p_effective"] = float(p_eff)
         if term_loss is not None:
             # Separate wandb section (mirrors Stage-1): "terminator/*" keys are routed by lerobot_train to
             # train_terminator/* — total (prog+end), progress SmoothL1, termination BCE. Kept OUT of train/*.
@@ -1435,9 +1472,25 @@ class SkillVLAPolicy(PI05Policy):
             log.info("SkillVLA resume: %d loaded, %d missing, %d unexpected.", len(state), len(missing), len(unexpected))
             return model
 
-        # Fresh: pi05 → VLM, Stage-1 → expert/cond side.
+        # Fresh: pi05 → VLM, Stage-1 → expert/cond side. SCRATCH mode (no Stage-1): the action expert
+        # ALSO warm-starts from pi05's own gemma_expert (+action/time projections) — the same init
+        # Stage-1 itself used — while cond/reader/head stay fresh (mirroring Stage-1's fresh cond);
+        # the terminator warm-starts from config.fsq_path as usual.
         vlm_state = {k: v.to(dtype) for k, v in _remap_pi05_to_vlm(raw).items()}
         m1, _ = model.load_state_dict(vlm_state, strict=False)
+        if not config.stage1_checkpoint_path:
+            expert_state = {}
+            for k, v in raw.items():
+                key = k[len("model."):] if k.startswith("model.") else k
+                if key.startswith(("paligemma_with_expert.gemma_expert.", "action_in_proj.",
+                                   "action_out_proj.", "time_mlp_in.", "time_mlp_out.")):
+                    expert_state[f"model.{key}"] = v.to(dtype)
+            model.load_state_dict(expert_state, strict=False)
+            log.info("SkillVLA SCRATCH: VLM<-pi05 (%d keys), action expert<-pi05 (%d keys); "
+                     "cond/reader/head FRESH (no Stage-1). The VSA is carved by vlm_dropout B batches "
+                     "(p=%s→%s).", len(vlm_state), len(expert_state),
+                     getattr(config, "vlm_dropout_p", 0.0), getattr(config, "vlm_dropout_p_end", None))
+            return model
         s1_raw = _load_raw_state_dict(config.stage1_checkpoint_path, kwargs)
         if s1_raw is None:
             raise ValueError(f"Could not load Stage-1 weights at {config.stage1_checkpoint_path}.")

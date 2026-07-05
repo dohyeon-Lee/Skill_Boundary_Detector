@@ -111,6 +111,23 @@ def build_settings(cfg: dict) -> dict:
         while lbl in labels:                      # panel dirs are keyed by label → must be unique
             lbl += "x"
         labels.append(lbl)
+
+    # eval_dropout 프로브: 각 모델을 같은 체크포인트의 두 패널로 복제 — "{label}_vlm"(엣지 연결) vs
+    # "{label}_vlm_drop"(추론에서 cond/action→VLM 절단; 이산 skill 코드만 전달). 스킬 출처는 모든 패널이
+    # use_gt_skill을 따름(gt=GT 주입 / pred=VLM이 별도 실행해 skill만). 멀티모델 기계 전체 재사용 —
+    # 패널 순서는 모델별 [vlm, vlm_drop] 쌍이라 models_per_row: 2면 행당 한 모델의 쌍으로 정렬됨.
+    eval_dropout = as_bool(get_value(cfg, "eval_dropout", False))
+    drop_flags = [False] * len(resolved)
+    dropcmp_base = list(labels)
+    if eval_dropout:
+        paired_resolved, paired_labels, drop_flags = [], [], []
+        for lbl, r in zip(labels, resolved):
+            pfx = "" if len(resolved) == 1 else f"{lbl}_"   # 단일 모델이면 그냥 vlm / vlm_drop
+            paired_resolved += [r, dict(r)]
+            paired_labels += [f"{pfx}vlm", f"{pfx}vlm_drop"]
+            drop_flags += [False, True]
+        resolved, labels = paired_resolved, paired_labels
+
     m0 = resolved[0]
     multi = len(resolved) >= 2
 
@@ -141,14 +158,19 @@ def build_settings(cfg: dict) -> dict:
     eval_exp = str(get_value(cfg, "eval_exp", "")).strip()   # free-form folder tag (e.g. "and" / "baseterm")
     suffix = skill_src + (f"_{eval_exp}" if eval_exp else "")
     if multi:
-        run_name = "compare_" + "_vs_".join(labels) + f"_{checkpoint}_{target_task}_{suffix}"
+        if eval_dropout:   # self-compare per checkpoint → base model name(s) + _dropcmp
+            core = model_dir if len(dropcmp_base) == 1 else "compare_" + "_vs_".join(dropcmp_base)
+            run_name = f"{core}_{checkpoint}_{target_task}_{suffix}_dropcmp"
+        else:
+            run_name = "compare_" + "_vs_".join(labels) + f"_{checkpoint}_{target_task}_{suffix}"
         models_json = json.dumps([
             {"label": lbl, "policy_path": str(r["policy_path"]), "base_fsq": r["base_fsq"],
              "ft_fsq_path": str(r["ft_fsq_path"]), "ft_run_dir": str(r["ft_run_dir"]),
              "checkpoint": r["checkpoint"], "resolved_term": r["resolved_term"],
              "gt_skill_dataset_dir": r["gt_skill_dataset_dir"],
-             "eval_init_states_path": r["eval_init_states_path"]}
-            for lbl, r in zip(labels, resolved)])
+             "eval_init_states_path": r["eval_init_states_path"],
+             "drop_vlm": bool(d)}
+            for lbl, r, d in zip(labels, resolved, drop_flags)])
     else:
         run_name = f"{model_dir}_{checkpoint}_{target_task}_{suffix}"
         models_json = ""

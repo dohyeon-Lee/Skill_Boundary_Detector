@@ -38,7 +38,11 @@ echo "START STAGE-2 (skill_vla)"
 echo "Node     : ${SLURMD_NODENAME:-local}"
 echo "dataset  : ${SKILLVLA_DATASET_DIR}"
 echo "VLM init : ${PI_BASE}"
-echo "expert   : ${STAGE1_CHECKPOINT_PATH}  (arch=joint)"
+if [ "${SCRATCH}" = "true" ]; then
+  echo "expert   : SCRATCH (no Stage-1; ${S1_VISION_BACKBONE}/${S1_STATE_COND_MODE}, VSA carved by vdrop)"
+else
+  echo "expert   : ${STAGE1_CHECKPOINT_PATH}  (arch=joint)"
+fi
 echo "FSQ(eval): ${FSQ_CKPT}"
 echo "term     : train_terminator=${TRAIN_TERMINATOR}   dino: ${DINO_TOKENS_PATH}"
 echo "output   : ${PT_OUTPUT_DIR}   lr/bs: ${LR}/${BATCH_SIZE}"
@@ -48,7 +52,7 @@ if [ ! -e "${SKILLVLA_DATASET_DIR}" ]; then
   echo "Missing skillvla dataset: ${SKILLVLA_DATASET_DIR}  (run configs/train_skillVLA/build_data first)" >&2
   exit 1
 fi
-if [ ! -e "${STAGE1_CHECKPOINT_PATH}" ]; then
+if [ "${SCRATCH}" != "true" ] && [ ! -e "${STAGE1_CHECKPOINT_PATH}" ]; then
   echo "Missing Stage-1 checkpoint: ${STAGE1_CHECKPOINT_PATH}  (run configs/train_skillVLA/stage1 first)" >&2
   exit 1
 fi
@@ -88,8 +92,18 @@ if [ "${TRAIN_TERMINATOR}" = "true" ]; then
   fi
 fi
 
+# Dropout schedule args only when a schedule is set ("" p_end = constant p; draccus needs a real float).
+SCHED_ARGS=()
+if [ -n "${VLM_DROPOUT_P_END}" ]; then
+  SCHED_ARGS=(
+    --policy.vlm_dropout_p_end="${VLM_DROPOUT_P_END}"
+    --policy.vlm_dropout_decay_steps="${VLM_DROPOUT_DECAY_STEPS}"
+  )
+fi
+
 # pretrained_path=pi05 warm-starts the VLM; stage1_checkpoint_path warm-starts the action/cond side
 # (the policy's from_pretrained loads both). vision/skill_vocab/state_cond_mode are read from Stage-1.
+# SCRATCH ("" stage1 path): expert/cond fresh-init; arch from --policy.s1_vision_backbone/s1_state_cond_mode.
 PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="${NUM_GPUS}" \
   "${PROJECT_ROOT}/.venv/bin/lerobot-train" \
     --dataset.repo_id="${REPO_ID}" \
@@ -105,6 +119,8 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.push_to_hub=false \
     --policy.pretrained_path="${PI_BASE}" \
     --policy.stage1_checkpoint_path="${STAGE1_CHECKPOINT_PATH}" \
+    --policy.s1_vision_backbone="${S1_VISION_BACKBONE}" \
+    --policy.s1_state_cond_mode="${S1_STATE_COND_MODE}" \
     --policy.skill_fsq_levels="${SKILL_FSQ_LEVELS}" \
     --policy.skill_loss_weight="${SKILL_LOSS_WEIGHT}" \
     --policy.skill_deadzone_frac="${SKILL_DEADZONE_FRAC}" \
@@ -135,6 +151,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.cond_lr_scale="${COND_LR_SCALE}" \
     --wandb.enable="${WANDB_ENABLE}" \
     --wandb.project="${WANDB_PROJECT}" \
+    ${SCHED_ARGS[@]+"${SCHED_ARGS[@]}"} \
     ${TERM_ARGS[@]+"${TERM_ARGS[@]}"} \
     ${RESUME_ARGS[@]+"${RESUME_ARGS[@]}"}
 

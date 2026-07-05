@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -54,7 +55,10 @@ def main() -> None:
         for mp4_0 in sorted(taskdir0.glob("eval_episode_*.mp4")):
             mp4s = [d / taskdir0.name / mp4_0.name for d, _ in panels]
             if not all(p.exists() for p in mp4s):
-                continue
+                continue          # this task/episode not finished in every panel yet — a later job stitches it
+            out_mp4 = args.out_dir / taskdir0.name / mp4_0.name
+            if out_mp4.exists() and out_mp4.stat().st_mtime > max(p.stat().st_mtime for p in mp4s):
+                continue          # already stitched from these inputs (idempotent re-runs skip)
             reads = [read_video(p) for p in mp4s]
             frames_list, fps = [r[0] for r in reads], reads[0][1]
             if any(not fr for fr in frames_list):
@@ -63,8 +67,10 @@ def main() -> None:
             for (_, lbl), fr in zip(panels, frames_list):
                 h, w = fr[0].shape[:2]
                 bars.append(label_bar(even(max(2, round(w * H / h))), bar_h, lbl, font))
-            (args.out_dir / taskdir0.name).mkdir(parents=True, exist_ok=True)
-            writer = imageio.get_writer(str(args.out_dir / taskdir0.name / mp4_0.name), fps=fps,
+            out_mp4.parent.mkdir(parents=True, exist_ok=True)
+            # ATOMIC write (parallel per-model jobs may stitch concurrently): tmp → os.replace
+            tmp_mp4 = out_mp4.with_name(out_mp4.name + f".tmp{os.getpid()}.mp4")
+            writer = imageio.get_writer(str(tmp_mp4), fps=fps,
                                         codec="libx264", quality=8, macro_block_size=None)
             for i in range(max(len(fr) for fr in frames_list)):
                 tiles = [make_panel(fr[min(i, len(fr) - 1)], H, bar)
@@ -78,6 +84,7 @@ def main() -> None:
                 frame = frame[: frame.shape[0] - frame.shape[0] % 2, : frame.shape[1] - frame.shape[1] % 2]
                 writer.append_data(frame)
             writer.close()
+            os.replace(tmp_mp4, out_mp4)
             n += 1
     print(f"stitch: wrote {n} grid clips ({len(panels)} panels, {ncols}/row) → {args.out_dir}")
 

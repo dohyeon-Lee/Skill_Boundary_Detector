@@ -13,14 +13,24 @@
 # task별 영상을 라벨 달린 그리드 한 편으로 스티칭 → outputs/compare_{labels}_{ckpt}_.../side_by_side/.
 # per entry: checkpoint 생략 → 아래 top-level checkpoint; label 생략 → model_dir의 차이 토큰 자동.
 # 모델별 개별 산출물(eval_info/차트/videos)은 panels/{label}/ 아래. multi에선 skill_html 자동 off.
+eval_dropout: true
 models:
-  - {model_dir: FSQ555_dino8_weighted_both_1000_siglip_015000_state_weighted__tttt_0p_tfff, label: fully_connected}
-  - {model_dir: FSQ555_dino8_weighted_both_1000_siglip_015000_state_weighted__tttf_0p_tfff, label: connected}
-  - {model_dir: FSQ555_dino8_weighted_both_1000_siglip_015000_state_weighted__ttff_0p_tfff, label: disconnected}
-models_per_row: 0                 # 행당 패널 수 (0=한 행; 6개@3 → 2×3 그리드) — stage1_eval과 동일
+  # - {model_dir: FSQ555_dino8_weighted_both_1000_siglip_015000_state_weighted__tttt_0p_tfff, label: fully_connected}
+  # - {model_dir: FSQ555_dino8_weighted_both_1000_siglip_015000_state_weighted__tttf_0p_tfff, label: connected}
+  # - {model_dir: FSQ555_dino8_weighted_both_1000_siglip_015000_state_weighted__ttff_0p_tfff, label: disconnected}
+
+  # - {model_dir: FSQ555_dino8_both_1000_siglip_015000_state__tttf_50p_tfff_fftt, label: connected_50%}
+  # - {model_dir: FSQ555_dino8_both_1000_siglip_015000_state__tttt_0p_tfff, label: fully_connected_0%}
+
+  - {model_dir: FSQ555_dino8_both_1000_siglip_015000_state__tttf_0p_tfff, label: stage1_0%}
+  - {model_dir: FSQ555_dino8_both_1000_siglip_015000_state__tttf_50p_tfff_ffff, label: stage1_50%}
+  - {model_dir: FSQ555_dino8_both_1000_siglip_scratch_state__tttf_50p_tfff_ffff, label: scratch_50%}
+  - {model_dir: FSQ555_dino8_both_1000_siglip_scratch_state__tttf_90to20p50k_tfff_ffff, label: scratch_90to20%}
+
+models_per_row: 2                 # 행당 패널 수 (0=한 행; 6개@3 → 2×3 그리드) — stage1_eval과 동일
 # model_dir: libero_90_full_full_FSQ555_dino8_both_1000_siglip_015000_unfreeze_state_ve_lang_dz0.8_frzAe_connect
 
-checkpoint: "020000"              # "last" or a step number (these runs go up to 040000)
+checkpoint: "last"              # "last" or a step number (these runs go up to 040000)
 
 # ── Eval rollout ──
 target_task: libero_90    # LIBERO suite for the sim env
@@ -29,11 +39,12 @@ task_ids: "[0,1,2,3,4,5,6,7,8,9]"
 # sim scene이 데이터셋과 정확히 일치, multi 비교도 모든 모델이 같은 에피소드 scene). eval_init_states.npz
 # (source당 공유, stage1_eval/oracle_matching이 생성)가 없으면 seed-기반 리셋으로 자동 폴백+경고.
 # use_gt_skill이면 GT 시퀀스도 그 에피소드에 정렬 주입.
-# GPU(=Slurm 잡) 개수: task_ids를 연속 청크로 N등분해 1-GPU 잡 N개 제출 (프로세스 분리라 안전).
-# 같은 out 폴더 공유(태스크별 하위폴더는 안 겹침); 요약은 eval_info_t{a}-{b}.json으로 잡별 저장,
-# wandb run도 _t{a}-{b} 서픽스로 분리. 1 = 기존처럼 잡 하나. (salloc 안에서 실행 시 무시됨.)
+# 총 GPU(=1-GPU 잡) 예산. SINGLE: task_ids를 N등분해 잡 N개. MULTI: 모델×청크로 팬아웃하되
+# 청크수 = eval_num_gpus ÷ 모델수 (총 잡 ≤ 예산; 최소 모델당 1잡) — 세 모델이 동시에 돌고,
+# 각 task는 마지막 패널 잡이 끝나는 즉시 그리드 영상으로 스티칭됨 (stage1식 진행감).
+# 요약은 잡별 eval_info_*.json → 막판-완성자가 자동 머지. (salloc 안에서 실행 시 무시됨.)
 eval_num_gpus: 10
-n_episodes: 5             # episodes per task
+n_episodes: 3             # episodes per task
 n_action_steps: 5
 eval_batch_size: 1
 max_parallel_tasks: 1
@@ -57,7 +68,7 @@ skill_html_train_samples: 10
 #   or          → end_prob >= skill_end_threshold OR  progress >= skill_end_progress_threshold
 #                 (either suffices — ends as soon as termination OR the progress gate fires)
 skill_end_mode: or
-skill_end_threshold: 0.5 #0.5
+skill_end_threshold: 0.5 
 skill_end_progress_threshold: 0.9   # progress gate for skill_end_mode=and/or
 inference_skill_max_length: 200    # force a skill switch after this many steps (0 = off)
 
@@ -71,11 +82,12 @@ inference_skill_max_length: 200    # force a skill switch after this many steps 
 eval_terminator: auto
 
 # ── Oracle eval (isolate the action expert from the VLM's skill prediction) ──
-use_gt_skill: true        # true = teacher-force the dataset's GT skill sequence (per task) into the
+use_gt_skill: false        # true = teacher-force the dataset's GT skill sequence (per task) into the
                           # cond-encoder; the VLM still encodes the start obs but its predicted code
                           # is bypassed. GT skills come from the run's skillvla dataset (auto-derived).
 skill_advance_mode: terminator    # how a skill ends: "terminator" (FSQ signal) or "gt" (GT demo
                           # duration; oracle only). Terminator curves are recorded either way.
+
 
 eval_exp: ""              # 폴더명 끝에 붙는 자유 태그 (예: eval_terminator=base 비교 시 "baseterm")
 

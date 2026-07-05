@@ -39,7 +39,14 @@ class SkillVLAConfig(PI05Config):
     stage1_checkpoint_path: str | None = None
     """A Stage-1 ``skill_expert`` checkpoint. Its config supplies expert_arch (A/B), vision_backbone,
     action_expert_variant and skill_vocab_size; its weights warm-start the action expert (+ cond-encoder
-    for A). The VLM is warm-started separately from ``pretrained_path`` (pi05_base)."""
+    for A). The VLM is warm-started separately from ``pretrained_path`` (pi05_base).
+    None/"" = SCRATCH mode: the expert/cond side is FRESH-initialized (no Stage-1 training at all) and its
+    architecture comes from s1_vision_backbone / s1_state_cond_mode below — the VSA identity is then
+    carved purely by the vlm_dropout B batches (use vlm_dropout_p > 0, ideally with a decay schedule)."""
+    s1_vision_backbone: str = "siglip"
+    """SCRATCH mode only (stage1_checkpoint_path empty): the cond-side vision encoder ("dino"|"siglip")."""
+    s1_state_cond_mode: str = "state"
+    """SCRATCH mode only: the Stage-1-side state conditioning mode ("state"|"state_skill")."""
 
     # ── Skill (VLM head; FSQ codes shared with Stage-1 / FSQ) ──
     skill_fsq_levels: list[int] = field(default_factory=lambda: [5, 5, 5])
@@ -103,6 +110,14 @@ class SkillVLAConfig(PI05Config):
     only flipped when p>0). Mask-only (RoPE/positions unchanged from a non-dropped batch — a pure ablation,
     NOT token removal). Intended for cond_skill_source='gt' (the skill is GT-injected, VLM-independent).
     Run-name tag: vdrop{p}."""
+    vlm_dropout_p_end: float | None = None
+    """Dropout SCHEDULE: linearly anneal the per-batch prob from ``vlm_dropout_p`` to this value over
+    ``vlm_dropout_decay_steps`` steps, then hold. None = constant ``vlm_dropout_p``. E.g. 0.9→0.2:
+    early training is mostly VSA (B) batches — carving the standalone motor module (scratch mode) —
+    then the budget shifts to VLM grounding (A)."""
+    vlm_dropout_decay_steps: int = 0
+    """Steps over which vlm_dropout_p anneals to vlm_dropout_p_end (0 = no schedule). The step counter
+    is a persistent buffer → resume continues the schedule where it left off."""
 
     # ── Per-regime freeze for the CFG dropout (ONLY used when vlm_dropout_p > 0) ──
     # A = VLM_VSA (VLM present) batches | B = VSA (VLM dropped = Stage-1 form) batches. True = FREEZE (no
@@ -221,6 +236,12 @@ class SkillVLAConfig(PI05Config):
     """How a skill ends during rollout: "terminator" (FSQ signal >= threshold) or "gt" (advance by
     the GT skill's demo duration; oracle only). The terminator still runs each step either way so
     its curves are recorded for skill_html."""
+    eval_drop_vlm: bool = False
+    """EVAL-time VLM dropout: sever the cond→VLM and action→VLM attention edges during rollout —
+    exactly a training VSA (B) batch (mask-only, RoPE positions unchanged). The VLM still runs
+    standalone for the skill prediction (or GT is injected with use_gt_skill); ONLY the discrete
+    skill code crosses to the action side. Used by stage2_eval's eval_dropout probe (VLM-attached
+    vs VLM-severed side-by-side of the SAME checkpoint)."""
 
     def __post_init__(self):
         super().__post_init__()

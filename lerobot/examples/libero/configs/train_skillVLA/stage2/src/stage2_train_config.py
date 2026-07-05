@@ -35,27 +35,52 @@ def build_settings(cfg: dict) -> dict:
     stage1_vla_root = outputs_root / "skillVLA_stage1"
     vla_root = outputs_root / "skillVLA_stage2"
 
-    stage1_run_name = str(get_value(cfg, "stage1_run_name")).strip()
+    # SCRATCH mode: stage1_run_name이 "none"으로 시작하면 Stage-1 warm-start 없음 (fresh expert/cond;
+    # VSA는 vlm_dropout B 배치가 조각). 한 줄 포맷 none_{run_tag}_{siglip|dino}_{state|state_skill}에서
+    # 데이터셋(run_tag)과 Stage-1측 아키텍처를 전부 파싱하며, stage1_checkpoint는 자동 무시됨.
+    #   예: stage1_run_name: none_FSQ555_dino8_both_1000_siglip_state
+    stage1_run_name = str(get_value(cfg, "stage1_run_name") or "").strip()
+    scratch = stage1_run_name.lower().startswith("none") or stage1_run_name.lower() in ("", "false", "null", "~")
     stage1_checkpoint = str(get_value(cfg, "stage1_checkpoint", "last")).strip() or "last"
-    stage1_ckpt = stage1_vla_root / stage1_run_name / "checkpoints" / stage1_checkpoint / "pretrained_model"
 
-    # Everything is parsed from the stage1_run_name:
-    #   {source}_{run_tag}_[{dino|siglip}_{freeze|unfreeze}_]batch{N}[_exp][_c{N}]
-    # → the skillvla dataset (source + run_tag), the FSQ levels, and the Stage-1 policy vision tag
-    # (backbone + freeze, e.g. "dino_unfreeze"/"siglip_freeze") captured below so the Stage-2 run name
-    # records which vision encoder it warm-started from. (Arch is always joint now — no A/B tag.)
-    # Vision tag is {dino|siglip}[_{freeze|unfreeze}] — the DP-branch training emitter drops the
-    # freeze/unfreeze suffix (just "siglip"), so it is OPTIONAL inside the group.
-    _rt = re.search(
-        r"(FSQ\d+_dino\d+.*?)(?:_((?:dino|siglip)(?:_(?:freeze|unfreeze))?))?_batch\d+", stage1_run_name)
-    if not _rt:
-        raise ValueError(f"stage1_run_name must embed a 'FSQ..._dino..._batch<N>' run tag, got: {stage1_run_name}")
-    run_tag = _rt.group(1)
-    s1_vis_tag = _rt.group(2) or ""   # Stage-1 vision: dino_freeze / siglip_unfreeze / siglip / ... ("" if absent)
-    # source_dataset: OLD naming embedded it as the stage1_run_name prefix ({source}_{run_tag}_...); the
-    # DP-branch training emitter drops that prefix ({run_tag}_{backbone}_batch{N}_{state_cond}), so it's empty.
-    # Prefer the prefix when present (back-compat), else fall back to the yaml's source_dataset.
-    source_from_dir = stage1_run_name[: _rt.start()].rstrip("_")
+    _s1_vb = _s1_scm = None            # scratch 한 줄 포맷에서 파싱된 vision/state_cond_mode (없으면 yaml 키)
+    if scratch:
+        stage1_ckpt = ""
+        stage1_checkpoint = ""         # scratch: stage1_checkpoint는 무시 (있어도 의미 없음)
+        spec = re.sub(r"^none_?", "", stage1_run_name, flags=re.IGNORECASE)
+        if spec:                       # one-liner: none_{run_tag}_{vision}_{mode}
+            m = re.match(r"(FSQ\d+_dino\d+.*?)_(dino|siglip)_(state_skill|state)$", spec)
+            if not m:
+                raise ValueError(
+                    "SCRATCH one-liner must be none_{run_tag}_{siglip|dino}_{state|state_skill} "
+                    f"(e.g. none_FSQ555_dino8_both_1000_siglip_state), got: {stage1_run_name}")
+            run_tag, _s1_vb, _s1_scm = m.group(1), m.group(2), m.group(3)
+        else:                          # bare "none": legacy separate keys (run_tag + s1_* below)
+            run_tag = str(get_value(cfg, "run_tag", "")).strip()
+            if not run_tag:
+                raise ValueError("SCRATCH mode needs the one-liner (stage1_run_name: none_{run_tag}_"
+                                 "{vision}_{mode}) or an explicit `run_tag:` key.")
+        s1_vis_tag = ""
+        source_from_dir = ""
+    else:
+        stage1_ckpt = stage1_vla_root / stage1_run_name / "checkpoints" / stage1_checkpoint / "pretrained_model"
+        # Everything is parsed from the stage1_run_name:
+        #   {source}_{run_tag}_[{dino|siglip}_{freeze|unfreeze}_]batch{N}[_exp][_c{N}]
+        # → the skillvla dataset (source + run_tag), the FSQ levels, and the Stage-1 policy vision tag
+        # (backbone + freeze, e.g. "dino_unfreeze"/"siglip_freeze") captured below so the Stage-2 run name
+        # records which vision encoder it warm-started from. (Arch is always joint now — no A/B tag.)
+        # Vision tag is {dino|siglip}[_{freeze|unfreeze}] — the DP-branch training emitter drops the
+        # freeze/unfreeze suffix (just "siglip"), so it is OPTIONAL inside the group.
+        _rt = re.search(
+            r"(FSQ\d+_dino\d+.*?)(?:_((?:dino|siglip)(?:_(?:freeze|unfreeze))?))?_batch\d+", stage1_run_name)
+        if not _rt:
+            raise ValueError(f"stage1_run_name must embed a 'FSQ..._dino..._batch<N>' run tag, got: {stage1_run_name}")
+        run_tag = _rt.group(1)
+        s1_vis_tag = _rt.group(2) or ""   # Stage-1 vision: dino_freeze / siglip_unfreeze / siglip / ... ("" if absent)
+        # source_dataset: OLD naming embedded it as the stage1_run_name prefix ({source}_{run_tag}_...); the
+        # DP-branch training emitter drops that prefix ({run_tag}_{backbone}_batch{N}_{state_cond}), so it's empty.
+        # Prefer the prefix when present (back-compat), else fall back to the yaml's source_dataset.
+        source_from_dir = stage1_run_name[: _rt.start()].rstrip("_")
     source_dataset = source_from_dir or str(get_value(cfg, "source_dataset", "")).strip()
     if not source_dataset:
         # DP naming has no prefix (and source_dataset isn't set) → AUTO-DERIVE: the run_tag lives under exactly
@@ -117,24 +142,48 @@ def build_settings(cfg: dict) -> dict:
         return d.get(k, d.get("vlm", False)) if k == "llm" else d.get(k, False)   # "vlm" = legacy alias for llm
     frz = {f"freeze_vlm_vsa_{k}": as_bool(_grp(_fa, k)) for k in _REGIME_KEYS}
     frz.update({f"freeze_vsa_{k}": as_bool(_grp(_fb, k)) for k in _REGIME_KEYS})
+    # SCRATCH-side arch knobs (model uses them only when stage1_checkpoint_path is empty). The one-liner
+    # (none_{run_tag}_{vision}_{mode}) takes precedence over the separate yaml keys.
+    s1_vision_backbone = _s1_vb or str(get_value(cfg, "s1_vision_backbone", "siglip")).strip()
+    s1_state_cond_mode = _s1_scm or str(get_value(cfg, "s1_state_cond_mode", "state")).strip()
+    # Dropout SCHEDULE (linear p → p_end over decay steps; both unset = constant p).
+    _pe = get_value(cfg, "vlm_dropout_p_end", None)
+    vlm_dropout_p_end = None if str(_pe).lower() in ("none", "", "null", "~") else float(_pe)
+    vlm_dropout_decay_steps = int(get_value(cfg, "vlm_dropout_decay_steps", 0) or 0)
+    sched_on = vlm_dropout_p_end is not None and vlm_dropout_decay_steps > 0
+    if scratch and not (vlm_dropout_p > 0 or (sched_on and vlm_dropout_p_end > 0)):
+        raise ValueError("SCRATCH mode needs vlm_dropout to ever fire (vlm_dropout_p>0 or a schedule "
+                         "reaching >0) — the B batches are what train the VSA.")
     # state_skill checked first (it contains the substring "_state"); else state; else "" (older naming).
-    mode_tag = ("state_skill" if "_state_skill" in stage1_run_name
-                else "state" if "_state" in stage1_run_name else "")
-    loss_tags = []
-    for pat in (r"_(cum_(?:ep|all))(?:_|$)", r"_(ac_w|ac_x|ac)(?:_|$)", r"_(weighted)(?:_|$)"):
-        m = re.search(pat, stage1_run_name)
-        if m:
-            loss_tags.append(m.group(1))
+    if scratch:
+        mode_tag, loss_tags = s1_state_cond_mode, []
+    else:
+        mode_tag = ("state_skill" if "_state_skill" in stage1_run_name
+                    else "state" if "_state" in stage1_run_name else "")
+        loss_tags = []
+        for pat in (r"_(cum_(?:ep|all))(?:_|$)", r"_(ac_w|ac_x|ac)(?:_|$)", r"_(weighted)(?:_|$)"):
+            m = re.search(pat, stage1_run_name)
+            if m:
+                loss_tags.append(m.group(1))
     # {STAGE-1 정보}__{conn}_{P}p_{A}[_{B}]:
     #   conn = attention 연결 4개를 t/f로 (attend_language, attend_image, vlm_cond, vlm_expert 순);
-    #   A/B = freeze dicts as t/f in (expert, cond, llm, vlm_vision) order; B omitted at p=0 (unused).
-    # e.g. "..._state__tttt_50p_tfff_tftt" / "..._state__tttt_0p_tfff".
+    #   {P}p = 고정 확률("50p") 또는 스케줄("90to20p30k" = 0.9→0.2 over 30k steps);
+    #   A/B = freeze dicts as t/f in (expert, cond, llm, vlm_vision) order; B omitted if dropout never fires.
+    # SCRATCH: {run_tag}_{vision}_scratch_{state_cond_mode}__... (Stage-1 체크포인트 정보가 없으므로).
     conn_tf = "".join("t" if b else "f" for b in (attend_language, attend_image, vlm_cond, vlm_expert))
     _tf = lambda prefix: "".join("t" if frz[f"freeze_{prefix}_{k}"] else "f" for k in _REGIME_KEYS)
-    regime_tag = f"{conn_tf}_{int(round(vlm_dropout_p * 100))}p_{_tf('vlm_vsa')}" + (
-        f"_{_tf('vsa')}" if vlm_dropout_p > 0 else "")
-    parts = ([run_tag] + ([s1_vis_tag] if s1_vis_tag else [])
-             + [stage1_checkpoint] + ([mode_tag] if mode_tag else []) + loss_tags)
+    if sched_on:
+        p_tag = (f"{int(round(vlm_dropout_p * 100))}to{int(round(vlm_dropout_p_end * 100))}p"
+                 f"{vlm_dropout_decay_steps // 1000}k")
+    else:
+        p_tag = f"{int(round(vlm_dropout_p * 100))}p"
+    regimes_ever = vlm_dropout_p > 0 or (sched_on and vlm_dropout_p_end > 0)
+    regime_tag = f"{conn_tf}_{p_tag}_{_tf('vlm_vsa')}" + (f"_{_tf('vsa')}" if regimes_ever else "")
+    if scratch:
+        parts = [run_tag, s1_vision_backbone, "scratch", s1_state_cond_mode]
+    else:
+        parts = ([run_tag] + ([s1_vis_tag] if s1_vis_tag else [])
+                 + [stage1_checkpoint] + ([mode_tag] if mode_tag else []) + loss_tags)
     run_name = "_".join(parts) + "__" + regime_tag
     if exp:
         run_name = f"{run_name}_{exp}"
@@ -170,6 +219,12 @@ def build_settings(cfg: dict) -> dict:
         "cond_expert": cond_expert,
         "vlm_expert": vlm_expert,                   # action tokens read the VLM directly (was action_attend_vlm)
         "vlm_dropout_p": vlm_dropout_p,            # CFG-style VLM dropout prob (train only; 0 = off)
+        "vlm_dropout_p_end": "" if vlm_dropout_p_end is None else vlm_dropout_p_end,   # schedule end ("" = constant)
+        "vlm_dropout_decay_steps": vlm_dropout_decay_steps,
+        # scratch mode (no Stage-1): fresh expert/cond; arch from the two knobs below
+        "scratch": scratch,
+        "s1_vision_backbone": s1_vision_backbone,
+        "s1_state_cond_mode": s1_state_cond_mode,
         **frz,                                      # freeze (freeze_{vlm_vsa,vsa}_{expert,cond,vlm,vlm_vision}; p=0 → A dict static)
         # terminator co-training (same as FT): adapt the FSQ terminator on this dataset's GT signals
         # (disjoint from the SkillVLA params). Warm-starts from fsq_ckpt; exported per-checkpoint for eval.

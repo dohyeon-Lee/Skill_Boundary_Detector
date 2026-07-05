@@ -31,13 +31,24 @@ terminator_lr_scale: 1.0
 terminator_end_target_sigma: 1.0     # soft termination target std in FRAMES (exp(-de²/2σ²))
 terminator_end_pos_weight: 1.0
 
+# ── VLM dropout (stage2와 동일; FT 기본은 끔) ─────────────────
+# p>0이면 배치당 코인으로 cond→VLM/action→VLM 엣지 절단(B=VSA 배치) — FT에선 "VLM 없이 자기 skill만으로
+# 실행"을 새 task에서도 유지시키는 용도. VLM self-attn은 유지돼 skill head는 매 배치 지도됨.
+# 0(기본) = 코인 없음, freeze_vlm_vsa가 정적 적용 (기존 FT와 완전 동치).
+vlm_dropout_p: 0
+# 스케줄(선택): p → p_end 로 decay_steps 동안 선형 annealing 후 유지. 둘 다 비우면 고정 확률.
+# 스텝 카운터는 체크포인트에 저장돼 resume해도 이어짐. run-name: "90to20p30k".
+vlm_dropout_p_end:            # 비움 = 고정 확률
+vlm_dropout_decay_steps:
+
 # ── Freeze toggles (FT default: VLM-only finetune) ────────────
-# FT는 vlm_dropout을 안 쓰므로(p=0) 모든 배치가 A(VLM 있음) → freeze_vlm_vsa 딕셔너리가 그대로 정적 적용
-# (Stage-2와 동일한 단일 소스; 구 freeze_vlm/freeze_cond_encoder/freeze_action_expert/freeze_vlm_vision 삭제).
-# 그룹: expert=action expert(+action/time proj), cond=현재obs 파이프라인 통째(vision인코더+image_proj+
-# cond-encoder), llm=VLM의 Gemma LLM 트렁크만(구 이름 vlm), vlm_vision=PaliGemma SigLIP tower.
+# Stage-2와 동일한 단일 소스: p=0이면 모든 배치가 A(VLM 있음) → freeze_vlm_vsa가 그대로 정적 적용
+# (freeze_vsa 무시); p>0이면 배치마다 A/B 딕셔너리 토글. 그룹: expert=action expert(+action/time proj),
+# cond=현재obs 파이프라인 통째(vision인코더+image_proj+cond-encoder), llm=VLM의 Gemma LLM 트렁크만
+# (구 이름 vlm), vlm_vision=PaliGemma SigLIP tower.
 # 기본: VLM(트렁크+vision) 학습(새 task에 obs→skill 재접지), 모터 쪽(cond)은 동결, skill decoder 동결.
 freeze_vlm_vsa: {expert: false, cond: true, llm: false, vlm_vision: false}
+freeze_vsa:     {expert: false, cond: false, llm: false, vlm_vision: false}   # p>0일 때만 의미
 freeze_skill_head: true
 
 
