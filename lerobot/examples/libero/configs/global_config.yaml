@@ -74,4 +74,5 @@ train_exclude_nodes:
   - node05
   - node31
   - cs-gpu-01
+  # - node55   # 2026-07-06 /scratch 마운트 hang — 잡이 첫 echo도 못 찍고 멈춤 (복구 확인되면 해제)
   # - node57

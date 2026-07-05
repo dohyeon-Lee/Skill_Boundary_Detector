@@ -1,0 +1,66 @@
+# Cycle-PT closed-loop eval config (configs/train_pi05_cycle/cycle_eval).
+# project_root / dataset_root / outputs_root come from configs/global_config.yaml.
+#
+# 평가 대상은 {outputs_root}/pi05_cycle_PT/{eval_model}/checkpoints/{eval_checkpoint}.
+# eval_model을 비워두면 이 yaml의 cycle 토글들(아래)로 run name을 재구성해서 그걸 평가함 —
+# 학습 때 쓴 cycle_config.yaml 값들을 여기에 맞춰두면 편함. 명시가 더 안전.
+#
+# 결과: lerobot-eval 표준 출력 + 그룹별 success 집계 (group_success.json/png —
+# groups.json과 LIBERO task language를 조인해서 probe 곡선과 그룹 단위로 대응됨).
+# 참고: libero_90의 90 scene-task는 유일 지시문 74개(12개가 scene 간 중복)이고, PT 데이터셋의
+# "73 tasks"는 지시문 단위 = scene-task 89/90 커버. 그룹핑·조인 모두 지시문 키라 일관되고,
+# not_in_pt에는 task51("pick up the butter and put it in the basket") 하나만 들어감 (검증됨).
+
+pi05_cycle_outputs_root: pi05_cycle_FT
+
+# ── Which trained model to evaluate ──
+eval_checkpoint: "020000"
+eval_model: "PTcyc_libero_90_full_full_pi05_batch16_g8p250"
+# eval_model: ""   # 비우면 아래 토글로 run name 자동 구성
+# (자동 구성용 — eval_model 명시 시 무시됨)
+pt_batch_size: 16
+cycle_n_groups: 8
+cycle_phase_steps: 250
+cycle_delta_lambda: 0.0
+cycle_reptile_beta: 1.0
+cycle_iid_baseline: false
+pt_constant_lr: false
+pt_exp: ""
+
+# 출력 폴더/wandb run name에 붙는 추가 서픽스 (단일 eval·compare 둘 다 적용, 비우면 없음)
+eval_exp: "0-9"
+
+# ── Eval rollout ──
+eval_target_task: libero_90      # 전체 90 task (73 in-PT + 17 not-in-PT 분리 집계)
+eval_task_ids: "[0,1,2,3,4,5,6,7,8,9]"
+# eval_task_ids: "[2,16,17,29,33,38,39,52,62,77,86]"
+eval_n_episodes: 3
+eval_episode_offset: 25
+eval_n_action_steps: 5
+eval_batch_size: 1
+eval_max_parallel_tasks: 1
+eval_max_videos_per_task: 1
+eval_video_frame_stride: 2
+eval_video_fps: 10
+eval_wandb_project: VLA_eval
+
+# ── compare eval (2개 이상 모델을 같은 조건에서 나란히) ──
+# task 하나 평가 → 그 자리에서 side-by-side 영상 합성(라벨 배너, 초록=성공/빨강=실패) → 다음 task.
+# 결과: outputs_compare/<label_vs_label_ckpt>/videos/task{ID}_ep{E}.mp4 + compare_summary.json
+# (task 끝날 때마다 갱신되므로 도는 중에도 열어볼 수 있음). 실행: ./submit_compare.sh
+compare_models:
+  # - {model_dir: /scratch/mdorazi/Skill_Boundary_Detector/outputs_filtered/pi05_PT/PT_libero_90_full_full_pi05_batch16, label: ref15k, checkpoint: "015000"}
+  # - {model_dir: PTcyc_libero_90_full_full_pi05_batch16_g8p250, label: cyc250}
+  # - {model_dir: PTiid_libero_90_full_full_pi05_batch16_g8p250, label: iid250}
+  - {model_dir: FTcyc_cyc250_constlr_020000_libero_10_full_2_batch16, label: cyc250_constlr}
+  - {model_dir: FTcyc_cyc250_020000_libero_10_full_2_batch16, label: cyc250}
+  - {model_dir: FTcyc_iid250_020000_libero_10_full_2_batch16, label: iid250}
+compare_checkpoint: "005000"
+compare_n_shards: 5
+
+# Slurm (partition/nodelist/exclude from configs/global_config.yaml)
+eval_qos: base_qos
+eval_gres: gpu:1
+eval_cpus_per_task: 8
+eval_mem: 32G
+eval_time: "48:00:00"

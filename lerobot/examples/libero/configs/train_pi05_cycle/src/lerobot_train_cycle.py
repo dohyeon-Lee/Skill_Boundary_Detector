@@ -39,6 +39,7 @@ Example:
 
 import json
 import logging
+import math
 import time
 from dataclasses import dataclass
 from pprint import pformat
@@ -84,6 +85,10 @@ class CycleTrainPipelineConfig(TrainPipelineConfig):
     delta_max_weight: float = 3.0   # cap on w_g
     # ── Reptile (1.0 disables) ──────────────────────────────────────────────
     reptile_beta: float = 1.0       # θ ← anchor + β(θ − anchor) at cycle end
+    # β-schedule: ≥0 → β anneals reptile_beta → reptile_beta_end over cycles (cosine).
+    # "commit anneal": sensing stays at full inner-LR scale while the anchor settles —
+    # the CL-native alternative to LR decay. -1 disables (constant β).
+    reptile_beta_end: float = -1.0
     # ── probe (forgetting measurement) ──────────────────────────────────────
     probe_batches_per_group: int = 2   # fixed batches per group (batch_size each)
     probe_seed: int = 12345            # frame selection + flow-matching noise seed
@@ -360,6 +365,15 @@ def train(cfg: CycleTrainPipelineConfig):
             },
             "rename_observations_processor": {"rename_map": cfg.rename_map},
         }
+        # CRITICAL: without this the checkpoint keeps pi05_base's unnormalizer stats and
+        # eval de-normalizes actions with the WRONG scale → garbage motions (found 2026-07-05).
+        processor_kwargs["postprocessor_overrides"] = {
+            "unnormalizer_processor": {
+                "stats": dataset.meta.stats,
+                "features": policy.config.output_features,
+                "norm_map": policy.config.normalization_mapping,
+            },
+        }
     preprocessor, postprocessor = make_pre_post_processors(
         policy_cfg=cfg.policy, pretrained_path=cfg.policy.pretrained_path, **processor_kwargs
     )
@@ -409,6 +423,19 @@ def train(cfg: CycleTrainPipelineConfig):
             "revisits, so the whole cyclic mechanism (recovery/Δ/Reptile averaging) cannot act. "
             "Lower phase_steps or set n_cycles."
         )
+
+    total_cycles = max(1, math.ceil(cfg.steps / steps_per_cycle))
+
+    def beta_for(cycle_i: int) -> float:
+        """Constant β, or cosine anneal reptile_beta → reptile_beta_end across cycles."""
+        if cfg.reptile_beta_end < 0:
+            return cfg.reptile_beta
+        t = min(1.0, cycle_i / max(1, total_cycles - 1))
+        return cfg.reptile_beta_end + (cfg.reptile_beta - cfg.reptile_beta_end) * 0.5 * (1 + math.cos(math.pi * t))
+
+    if cfg.reptile_beta_end >= 0:
+        logging.info(f"Reptile β schedule: {cfg.reptile_beta} → {cfg.reptile_beta_end} over {total_cycles} cycles "
+                     f"(first cycles: {[round(beta_for(i), 3) for i in range(min(5, total_cycles))]})")
     num_learnable = sum(p.numel() for p in policy.parameters() if p.requires_grad)
     logging.info(f"num_learnable_params={format_big_number(num_learnable)}")
 
@@ -432,12 +459,13 @@ def train(cfg: CycleTrainPipelineConfig):
             wandb_logger._wandb.log({f"{section}/{k}": v for k, v in d.items()}, step=step)
 
     def log_probe(probe_vals, own_last, step, cycle_idx, active_group, w_active, tag=""):
-        probe_d = {f"g{j}_loss": v for j, v in probe_vals.items()}
-        probe_d.update({
-            f"g{j}_forget": (probe_vals[j] - own_last[j]) / max(own_last[j], 1e-8)
-            for j in probe_vals
-        })
-        wandb_log_section("probe", probe_d, step)
+        # separate sidebar sections: probe_loss/ vs probe_forget/
+        forgets = {j: (probe_vals[j] - own_last[j]) / max(own_last[j], 1e-8) for j in probe_vals}
+        wandb_log_section("probe_loss", {f"g{j}": v for j, v in probe_vals.items()}, step)
+        wandb_log_section("probe_forget", {f"g{j}": v for j, v in forgets.items()}, step)
+        # legacy duplicate under probe/ — keeps new runs overlayable with pre-split runs
+        wandb_log_section("probe", {f"g{j}_loss": v for j, v in probe_vals.items()}
+                          | {f"g{j}_forget": v for j, v in forgets.items()}, step)
         wandb_log_section("cycle", {"index": cycle_idx, "active_group": active_group, "w_active": w_active}, step)
         if cfg.iid_baseline:
             wandb_log_section("epoch", {"global": global_cursor.epochs}, step)
@@ -460,8 +488,9 @@ def train(cfg: CycleTrainPipelineConfig):
         order = order_rng.permutation(cfg.n_groups)  # fresh shuffle each cycle (symmetrizes cross terms)
         steps_in_cycle = 0
 
+        beta = beta_for(cycle_idx)
         anchor = None
-        if cfg.reptile_beta < 1.0 and not cfg.iid_baseline:
+        if beta < 1.0 and not cfg.iid_baseline:
             anchor = snapshot_params(accelerator.unwrap_model(policy))
 
         for gid in order.tolist():
@@ -537,13 +566,15 @@ def train(cfg: CycleTrainPipelineConfig):
                 )
                 if prev_probe_grad is not None:
                     cos = grad_cosine(prev_probe_grad, cur)
-                    wandb_log_section("probe", {f"grad_cos_g{cfg.probe_grad_group}": cos}, step)
+                    wandb_log_section("grad_cos", {f"g{cfg.probe_grad_group}": cos}, step)
+                    wandb_log_section("probe", {f"grad_cos_g{cfg.probe_grad_group}": cos}, step)  # legacy
                 prev_probe_grad = cur
 
         # ── cycle end: Reptile pull-back toward the anchor ──
         if anchor is not None:
-            reptile_interpolate(accelerator.unwrap_model(policy), anchor, cfg.reptile_beta, device)
+            reptile_interpolate(accelerator.unwrap_model(policy), anchor, beta, device)
             del anchor
+            wandb_log_section("cycle", {"reptile_beta": beta}, step)
             probe_vals = measure_probe(policy, preprocessor, probe_batches, accelerator, cfg.probe_seed)
             log_probe(probe_vals, own_last, step, cycle_idx, -2, 1.0, tag="@post-reptile")
         cycle_idx += 1

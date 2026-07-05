@@ -156,11 +156,21 @@ FT 프로토콜 주의: 모든 조건에 FT 레시피 완전 동일, FT task는 
 - **파라미터화 원칙**: `pt_steps`(예산)는 고정 앵커 — 조건 간 동일 연산량 비교가 실험의 전제.
   자유 변수는 groups + {phase XOR cycles}. steps를 바꾸는 실험(같은 k에 사이클 보충 등)은
   k↕cycles 교란을 분리하는 의도적 대조군으로만, 수동으로. **bs도 조건 간 고정 필수.**
+- `cycle_eval/` compare 모드 — `compare_models`(2+ 모델)로 동일 init state에서 task별 순차
+  rollout + **즉시 side-by-side 영상 합성**(`src/eval_compare.py`, 모델 1회 로드, task마다
+  summary 갱신 → 진행 중 열람 가능). 다른 서버의 stage1_eval/video_compare의 온라인 버전.
+- `cycle_eval/` — closed-loop LIBERO 평가 + **그룹별 success 집계**: lerobot-eval rollout 후
+  `src/aggregate_group_success.py`가 eval_info.json × groups.json × LIBERO task language를
+  조인해 `group_success.{json,png}` 생성 → probe/forget 곡선과 그룹 단위로 대응되는 실제
+  성공률. ⚠️ 데이터 사실: libero_90의 90 scene-task는 유일 지시문 74개(12개 중복)이고 PT
+  데이터셋 "73 tasks"는 지시문 단위(scene-task 89/90 커버, 결측=task51 butter/basket).
+  그룹핑·조인 모두 지시문 키라 일관 (매칭 89/90 검증됨).
 - wandb (`VLA_cycle`) — 섹션 분리됨 (WandBLogger의 mode 화이트리스트를 우회해 raw run으로
   로깅하는 `wandb_log_section` 헬퍼):
   - `train/`: loss·grad_norm·lr·epochs(전역) — log_freq마다
-  - `probe/`: g{j}_loss, g{j}_forget, grad_cos_g{X} — phase 경계마다. active group의 forget은
-    "자기 직전 phase 끝 대비 순 drift"(복구 완성도) — own_last 갱신 전에 로깅하는 순서 때문
+  - `probe_loss/` g{j}, `probe_forget/` g{j}, `grad_cos/` g{X} — 각각 별도 섹션, phase 경계마다.
+    active group의 forget은 "자기 직전 phase 끝 대비 순 drift"(복구 완성도) — own_last 갱신
+    전에 로깅하는 순서 때문. FT 스크립트도 동일 섹션명(probe_loss/probe_forget, 기준=FT step 0)
   - `cycle/`: position(소수점 사이클 위치), index, active_group, w_active
   - `epoch/`: g{j}(그룹별 데이터 소비 바퀴수, GroupCursor 기반 정확값), active_group
   → 간섭 행렬/복구 곡선 오프라인 복원 가능. Reptile 보간 직후에도 probe 1회 (pull-back 가시화).
@@ -177,13 +187,81 @@ FT 프로토콜 주의: 모든 조건에 FT 레시피 완전 동일, FT task는 
 
 ## 7. 현재 상태 (2026-07-04, 서버 이전 시점)
 
-- **첫 런들 제출됨** (원 서버 SLURM): PTcyc 조건, bs64 / phase125 / 20k스텝 / exp "2",
-  wandb `VLA_cycle` (예: run ebajgaex). 2 RUNNING + 2 PENDING이었음.
-- ⚠️ **발견된 문제**: bs64는 스텝당 ~5.3s → 20k = ~30h > pt_time 24h. **resume이 없어서
-  walltime에 죽으면 통째로 날아감.** 조치: bs16으로 낮추거나(스텝 ~1.5s, 8~10h) pt_time을
-  48h로 올려 재제출. **bs는 모든 비교 조건에서 통일할 것.**
-- 로깅 정상 확인: probe@init(step 0) 즉시, 첫 train/ 포인트는 log_freq=200 × 스텝시간 후에
-  나타남 (bs64면 ~18분) — 처음에 probe/cycle/epoch 창만 보이는 건 정상.
+**돌고 있는 런 3개** (bs16/20k, wandb `VLA_cycle`): PTcyc_g8p500, PTcyc_g8p250, PTiid_g8p250.
+중간 분석 결과 (wandb API, cyc500이 18.5k 시점):
+
+- ✅ 계측 검증: PTiid forget ≈ ±1% (노이즈), PTcyc forget 평균 +5~12%/최대 +50% →
+  cyclic의 forget 신호는 진짜 커리큘럼 유발 간섭
+- ✅ 섭동 발생: 경계 측정의 60~80%에서 >2% forget — "잊을 만큼 잊는" 상태
+- ✅ 복구 작동: active group net drift ≈ 0 이하 (p250은 가끔 +0.02~0.04 = 복구 약간 부족)
+- ✅ 안전망: train loss cyc500 0.091 / cyc250 0.095 / iid 0.096 (iid는 9.4k 시점) — 커리큘럼 비용 없음
+- ⚠️ **forget 진폭이 사이클마다 감소** (cyc500: c1 +11.8% → c4 +4.2%) — 원하는 "무간섭 평형
+  이동" 신호처럼 보이지만 **같은 구간 LR이 2.5e-5→3e-6으로 cosine decay 중이라 교란됨.**
+  단위 LR당 간섭으로 거칠게 정규화하면 감소가 사라짐 → 현재 데이터로는 구조 형성 주장 불가.
+
+**분리 실험 (배선 완료)**: `pt_constant_lr: true` (yaml) 또는 `PT_CONSTANT_LR=true` (env) —
+decay_lr을 peak과 같게 만들어 scheduler alpha=1 → warmup 후 **상수 LR**. run name에
+`_constlr` 자동 태그:
+```bash
+PT_CONSTANT_LR=true CYCLE_PHASE_STEPS=250 ./submit_cycle_PT.sh
+```
+판정: constant-LR cyclic에서도 진폭이 줄면 구조 형성 증거 확보, 안 줄면 기존 감소는 LR
+아티팩트 (가설 자체는 FT 유지율로 최종 판정되므로 죽지 않음).
+
+**constant-LR 최종 결과 (2026-07-05, 20k 완주): 구조 형성 신호가 두 교란 모두 생존 — 확보됨.**
+- cyc250-constlr 사이클별 forget mean: c1 +12.6% → c3 10.8% → c4-c8 ~5-7% → c9 +2.9%
+  (**~4× 감소, LR은 끝까지 2.5e-5 상수**)
+- grad_norm 정규화 후에도 감소 유지 (0.131 → 0.031). 후반 grad_norm은 오히려 상승(0.86→0.95)
+  하는데 forget은 감소 → "gradient가 작아져서"도 아님. **파라미터는 계속 같은 크기로 움직이되
+  다른 그룹을 점점 덜 해치는 방향으로** = 정렬/무간섭화의 직접 증거 (probe-loss 공간 한정).
+- decay 런은 같은 구간 c1 11.2% → c9 0.8% (더 가파름 = LR 효과가 추가로 얹힘). iid는 전 구간
+  ±0.4% 노이즈 바닥 (계측 대조 유지).
+- grad_cos(g0): 초기 사이클 0.08~0.4 (초기 급강하 구간은 전개 붕괴 — 초반 cross-term 정보는
+  노이즈였음), 이후 const 런은 0.6~0.8에서 유지 = **k=250@2.5e-5는 런 내내 유효 경계 근처**.
+  decay 런이 0.95+로 오르는 건 LR 축소 효과.
+- 최종 train loss: const 0.0907 / decay 0.0865 / iid 0.0856 — annealing 없는 만큼만 소폭 높음.
+
+**이전 중간 분석 기록 (10.25k 시점):**
+- 완주 3런 최종 train loss: cyc500 0.0849 / cyc250 0.0865 / iid 0.0856 — 동률.
+  **커리큘럼 성능 비용 없음 확정** (20k 기준).
+- const 런 사이클별 forget: c1 +12.6% → c2 10.1% → c3 10.8% → c4 5.4% —
+  **LR 고정에서도 진폭 감소 존재** → 구조 형성 신호가 순수 LR 아티팩트는 아님.
+  단 decay 런(c4 +2.7%)보다 완만 = 이전 감소의 일부는 LR 몫이었음. 둘 다 사실.
+- 남은 유보: ① 4사이클뿐(완주 후 c6~c9 확인이 결정타), ② loss 수렴→gradient 축소 교란
+  잔존 (train/grad_norm 로깅됨 → 완주 후 진폭/grad_norm 정규화로 사후 분리 가능).
+- 회전각 실측: const 런 grad_cos_g0 ≈ 0.75~0.83 (1회 0.52) → **k=250@2.5e-5는 유효 경계
+  근처.** k=500 constant는 경계 초과 가능성 높음. decay 런들이 0.95+인 건 LR 축소 효과일 뿐.
+
+기타: 이전에 bs64로 낸 런들은 스텝당 5.3s → 20k=30h > 24h walltime라 폐기했음 (resume 없음
+주의 — 스텝시간 × steps < pt_time 확인 후 제출). 첫 train/ wandb 포인트는 log_freq=200 ×
+스텝시간 후에야 나타남 — 초반에 probe/cycle/epoch 창만 보이는 건 정상.
+
+**⚠️ 치명 버그 발견·수정 (2026-07-05):** 초기 train 스크립트가 `make_pre_post_processors`에
+`postprocessor_overrides`(unnormalizer에 데이터셋 stats 주입)를 빠뜨림 → 체크포인트가
+**pi05_base의 unnormalizer stats를 그대로 상속** → eval에서 액션 역정규화 스케일이 틀려
+모션 붕괴/성공률 0 근처. **학습 자체(가중치)는 정상** (입력 normalizer는 제대로 오버라이드됨,
+loss 곡선 정상). 진단 근거: 3-way compare에서 ref(기존 pi05_PT@15k)만 정상 + iid 체크포인트의
+policy_postprocessor.json이 pi05_base와 바이트 동일. 조치: ① train 스크립트에
+postprocessor_overrides 추가(수정됨), ② `src/repair_postprocessor.py`로 기존 체크포인트
+전부 수리 완료(재학습 불필요). **주의: 수정 전에 시작돼 아직 돌고 있는 런(constlr 등)은 이후
+저장되는 체크포인트가 다시 오염되므로, 완주 후 repair 스크립트 재실행 필요.**
+이전에 관찰된 낮은 eval 성공률/이상 모션은 전부 이 버그 소산 — **수리 후 재평가 필수.**
+
+**FT 판정 파이프라인 구축 (2026-07-05):** `cycle_ft/` + `src/lerobot_train_ft_probe.py` —
+cycle-PT ckpt를 libero_10으로 replay-free FT하면서 PT 그룹 probe(같은 groups.json·probe_seed
+→ PT 때와 값 직접 비교 가능)를 probe_every=250마다 측정. `probe/g{j}_forget`(기준 = FT step 0)
+= FT 중 forgetting 실시간 곡선. 판정식: forgetting(PTcyc) < forgetting(PTiid) ⇔ 가설 성립.
+설계 결정: FT 레시피 전 조건 동일 고정(15k/2.5e-5/freeze 없음), **normalizer는 PT ckpt 유지**
+(FT dataset stats로 재정규화하면 그 자체가 old-task 파괴 → 파라미터 forgetting과 교란).
+FT 출력에 groups.json 자동 복사 → cycle_eval 그룹 집계 그대로 동작. ref(일반 PT) 소스도
+ft_source에 절대경로 + ft_groups_json(아무 cycle 런 것)으로 지원.
+
+**β-스케줄 구현 (2026-07-05):** `cycle_reptile_beta_end ≥ 0`이면 β를 사이클에 걸쳐
+`cycle_reptile_beta → beta_end`로 cosine anneal (per-cycle, run name `_b{s}to{e}`, wandb
+cycle/reptile_beta). 이론적 근거: LR decay는 감지·커밋을 같이 죽이지만 β decay는 **커밋만
+anneal** — 정찰·정렬·스트레스 선별은 풀 스케일 유지, anchor는 말기에 합의 지점에 안착
+(constant-LR endpoint의 orbit/recency 문제 해결). 의도된 조합 = `pt_constant_lr: true` +
+`β: 0.5→0.1`. 다음 3파전: {const+β스케줄, const+β고정, decay} → FT 판정.
 
 ## 8. 다음 단계
 

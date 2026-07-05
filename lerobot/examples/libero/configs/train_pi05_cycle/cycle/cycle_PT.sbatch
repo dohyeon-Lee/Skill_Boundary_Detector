@@ -92,6 +92,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes=1 
   --dataset.video_backend=pyav \
   --batch_size="${PT_BATCH_SIZE}" \
   --policy.optimizer_lr="${PT_LR}" \
+  --policy.scheduler_decay_lr="${PT_DECAY_LR}" \
   --num_workers="${PT_NUM_WORKERS}" \
   --n_groups="${CYCLE_N_GROUPS}" \
   --phase_steps="${CYCLE_PHASE_STEPS}" \
@@ -100,6 +101,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes=1 
   --delta_lambda="${CYCLE_DELTA_LAMBDA}" \
   --delta_max_weight="${CYCLE_DELTA_MAX_WEIGHT}" \
   --reptile_beta="${CYCLE_REPTILE_BETA}" \
+  --reptile_beta_end="${CYCLE_REPTILE_BETA_END}" \
   --probe_batches_per_group="${CYCLE_PROBE_BATCHES}" \
   --probe_seed="${CYCLE_PROBE_SEED}" \
   --probe_grad_group="${CYCLE_PROBE_GRAD_GROUP}" \
