@@ -97,7 +97,8 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
     n_cycles = int(get_value(cfg, "cycle_n_cycles", 0, env="CYCLE_N_CYCLES"))  # >0 overrides phase_steps
     delta_lambda = float(get_value(cfg, "cycle_delta_lambda", 0.0, env="CYCLE_DELTA_LAMBDA"))
     reptile_beta = float(get_value(cfg, "cycle_reptile_beta", 1.0, env="CYCLE_REPTILE_BETA"))
-    reptile_beta_end = float(get_value(cfg, "cycle_reptile_beta_end", -1.0, env="CYCLE_REPTILE_BETA_END"))
+    _bend = get_value(cfg, "cycle_reptile_beta_end", -1.0, env="CYCLE_REPTILE_BETA_END")
+    reptile_beta_end = float(_bend) if _bend not in (None, "") else -1.0  # 빈 값 = 스케줄 off
     iid_baseline = str(get_value(cfg, "cycle_iid_baseline", False, env="CYCLE_IID_BASELINE")).strip().lower() in {"1", "true", "yes", "on"}
     pt_lr = float(get_value(cfg, "pt_lr_base", 2.5e-05, env="PT_LR_BASE"))
     # constant-LR mode: decay_lr := peak lr → scheduler flat after warmup (LR-artifact control)
@@ -117,6 +118,8 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         run_name += f"_b{fmt_num(reptile_beta)}"
     if constant_lr:
         run_name += "_constlr"
+    if abs(pt_lr - 2.5e-05) > 1e-12:  # 기본 LR이 아니면 이름에 명시 (예: _lr5e-05)
+        run_name += f"_lr{pt_lr:g}"
     if pt_exp:
         run_name += f"_{pt_exp}"
 

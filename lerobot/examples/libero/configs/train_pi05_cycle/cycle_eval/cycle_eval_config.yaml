@@ -34,7 +34,7 @@ eval_exp: "0-9"
 eval_target_task: libero_90      # 전체 90 task (73 in-PT + 17 not-in-PT 분리 집계)
 eval_task_ids: "[0,1,2,3,4,5,6,7,8,9]"
 # eval_task_ids: "[2,16,17,29,33,38,39,52,62,77,86]"
-eval_n_episodes: 3
+eval_n_episodes: 5
 eval_episode_offset: 25
 eval_n_action_steps: 5
 eval_batch_size: 1
@@ -52,11 +52,12 @@ compare_models:
   # - {model_dir: /scratch/mdorazi/Skill_Boundary_Detector/outputs_filtered/pi05_PT/PT_libero_90_full_full_pi05_batch16, label: ref15k, checkpoint: "015000"}
   # - {model_dir: PTcyc_libero_90_full_full_pi05_batch16_g8p250, label: cyc250}
   # - {model_dir: PTiid_libero_90_full_full_pi05_batch16_g8p250, label: iid250}
-  - {model_dir: FTcyc_cyc250_constlr_020000_libero_10_full_2_batch16, label: cyc250_constlr}
-  - {model_dir: FTcyc_cyc250_020000_libero_10_full_2_batch16, label: cyc250}
-  - {model_dir: FTcyc_iid250_020000_libero_10_full_2_batch16, label: iid250}
+  - {model_dir: FTcyc_cyc250_constlr_b05_020000_libero_10_full_2_batch16, label: cycle_reptile}
+  - {model_dir: FTcyc_cyc250_constlr_020000_libero_10_full_2_batch16, label: cycle}
+  # - {model_dir: FTcyc_cyc250_020000_libero_10_full_2_batch16, label: cyc250}
+  - {model_dir: FTcyc_iid250_020000_libero_10_full_2_batch16, label: iid}
 compare_checkpoint: "005000"
-compare_n_shards: 5
+compare_n_shards: 10
 
 # Slurm (partition/nodelist/exclude from configs/global_config.yaml)
 eval_qos: base_qos
