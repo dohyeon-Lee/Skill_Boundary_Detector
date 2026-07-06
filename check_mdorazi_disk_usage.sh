@@ -63,7 +63,7 @@ _show_root() {
         path="${line#*$'\t'}"
 
         if (( bytes_min > 0 )); then
-            bytes_sz=$(du -sb "$path" 2>/dev/null | cut -f1)
+            bytes_sz=$(du -sb "$path" 2>/dev/null | cut -f1 || echo 0)
             (( bytes_sz < bytes_min )) && continue
         fi
 
@@ -74,7 +74,7 @@ _show_root() {
 
     echo
     printf "  합계: "
-    du -sh "$ROOT" 2>/dev/null | cut -f1
+    du -sh "$ROOT" 2>/dev/null | cut -f1 || true
     echo
 }
 
