@@ -15,7 +15,7 @@ set -euo pipefail
 MIN_SIZE="${MIN_SIZE:-0}"
 INCLUDE_HIDDEN="${INCLUDE_HIDDEN:-1}"
 
-ROOTS=(/scratch/mdorazi /scratch2/mdorazi)
+ROOTS=(/scratch2/mdorazi)
 
 bytes_min=0
 if [[ "$MIN_SIZE" != "0" ]]; then
