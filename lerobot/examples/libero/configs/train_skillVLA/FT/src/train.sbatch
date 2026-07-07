@@ -83,6 +83,26 @@ if [ -n "${VLM_DROPOUT_P_END}" ]; then
   )
 fi
 
+# VSA distillation global-sampler frequency npz — pass only when built (empty → model uses uniform).
+DISTILL_ARGS=()
+if [ -n "${VSA_DISTILL_FREQ_PATH}" ]; then
+  DISTILL_ARGS=(--policy.vsa_distill_freq_path="${VSA_DISTILL_FREQ_PATH}")
+fi
+
+# PT-forgetting probe: fixed parent-Stage-2-dataset batches re-measured every PROBE_EVERY steps
+# (forward-only, wandb probe/*). Empty PROBE_DATASET_ROOT = probe off.
+PROBE_ARGS=()
+if [ -n "${PROBE_DATASET_ROOT}" ]; then
+  PROBE_ARGS=(
+    --probe_dataset_root="${PROBE_DATASET_ROOT}"
+    --probe_dataset_repo_id="${PROBE_DATASET_REPO_ID}"
+    --probe_every="${PROBE_EVERY}"
+    --probe_batches="${PROBE_BATCHES}"
+    --probe_seed="${PROBE_SEED}"
+    --probe_vsa="${PROBE_VSA}"
+  )
+fi
+
 # Terminator co-training inputs: attach current-frame DINO tokens only when train_terminator=true.
 TERM_ARGS=()
 if [ "${TRAIN_TERMINATOR}" = "true" ]; then
@@ -94,6 +114,13 @@ if [ "${TRAIN_TERMINATOR}" = "true" ]; then
     --policy.skill_decoder_dino_tokens_path="${DINO_TOKENS_PATH}"
     --policy.skill_decoder_dino_output_key=skill_decoder_dino
   )
+  # Dual (terminator_use_wrist) FSQ → also attach the wrist DINO tokens (emitter sets this only if built).
+  if [ -n "${DINO_WRIST_TOKENS_PATH:-}" ]; then
+    TERM_ARGS+=(
+      --policy.skill_decoder_dino_wrist_tokens_path="${DINO_WRIST_TOKENS_PATH}"
+      --policy.skill_decoder_dino_wrist_output_key=skill_decoder_dino_wrist
+    )
+  fi
 fi
 
 # pretrained_path = Stage-2 checkpoint (full-loaded); stage1_checkpoint_path supplies the architecture
@@ -137,7 +164,14 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.freeze_vsa_llm="${FREEZE_VSA_LLM}" \
     --policy.freeze_vsa_vlm_vision="${FREEZE_VSA_VLM_VISION}" \
     --policy.freeze_skill_head="${FREEZE_SKILL_HEAD}" \
+    --policy.freeze_skill_reader="${FREEZE_SKILL_READER}" \
     --policy.vlm_dropout_p="${VLM_DROPOUT_P}" \
+    --track_param_drift="${TRACK_PARAM_DRIFT}" \
+    --policy.vsa_distill="${VSA_DISTILL}" \
+    --policy.vsa_distill_weight="${VSA_DISTILL_WEIGHT}" \
+    --policy.vsa_distill_n_local="${VSA_DISTILL_N_LOCAL}" \
+    --policy.vsa_distill_n_global="${VSA_DISTILL_N_GLOBAL}" \
+    --policy.vsa_distill_neighbor_radius="${VSA_DISTILL_NEIGHBOR_RADIUS}" \
     --batch_size="${BATCH_SIZE}" \
     --num_workers="${NUM_WORKERS}" \
     --steps="${STEPS}" \
@@ -146,6 +180,8 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --wandb.enable="${WANDB_ENABLE}" \
     --wandb.project="${WANDB_PROJECT}" \
     ${SCHED_ARGS[@]+"${SCHED_ARGS[@]}"} \
+    ${DISTILL_ARGS[@]+"${DISTILL_ARGS[@]}"} \
+    ${PROBE_ARGS[@]+"${PROBE_ARGS[@]}"} \
     ${TERM_ARGS[@]+"${TERM_ARGS[@]}"} \
     ${RESUME_ARGS[@]+"${RESUME_ARGS[@]}"}
 

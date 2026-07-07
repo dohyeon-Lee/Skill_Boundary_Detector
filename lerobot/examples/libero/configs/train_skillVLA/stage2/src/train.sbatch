@@ -133,6 +133,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.cond_expert="${COND_EXPERT}" \
     --policy.vlm_expert="${VLM_EXPERT}" \
     --policy.vlm_dropout_p="${VLM_DROPOUT_P}" \
+    --track_param_drift="${TRACK_PARAM_DRIFT}" \
     --policy.freeze_vlm_vsa_expert="${FREEZE_VLM_VSA_EXPERT}" \
     --policy.freeze_vlm_vsa_cond="${FREEZE_VLM_VSA_COND}" \
     --policy.freeze_vlm_vsa_llm="${FREEZE_VLM_VSA_LLM}" \

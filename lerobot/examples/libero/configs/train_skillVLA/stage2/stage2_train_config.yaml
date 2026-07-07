@@ -1,7 +1,8 @@
 # ── Paths (project_root/dataset_root come from configs/global_config.yaml) ──
 skillvla_dataset_root: skillvla_dataset
-# source_dataset is AUTO-DERIVED from where the run_tag lives ({skillvla_root}/*/{run_tag}); add a
-# `source_dataset:` line here only if the same run_tag exists under more than one source.
+# source_dataset AUTO-DERIVE: ① Stage-1 체크포인트의 train_config.json(dataset.root)에서 유도 — 같은
+# run_tag가 여러 source에 있어도(예: FT 데이터셋 빌드 후) 모호하지 않음. ② 그게 없으면(scratch 등)
+# {skillvla_root}/*/{run_tag} 글롭 — 이때만 run_tag가 여러 source에 있으면 `source_dataset:`을 직접 지정.
 
 # ── Warm-start (also selects the dataset: source + run_tag parsed from stage1_run_name) ──
 # SCRATCH 모드 (한 줄): stage1_run_name: none_{run_tag}_{siglip|dino}_{state|state_skill}
@@ -11,8 +12,8 @@ skillvla_dataset_root: skillvla_dataset
 
 pi_base: models/pi05_base
 
-stage1_run_name: none_FSQ555_dino8_both_1000_siglip_state
-# stage1_run_name: FSQ555_dino8_both_1000_siglip_batch256_state
+# stage1_run_name: none_FSQ555_dino8_both_1000_siglip_state
+stage1_run_name: FSQ555_dino8_both_1000_siglip_batch256_state
 # stage1_run_name: FSQ555_dino8_weighted_both_1000_siglip_batch256_state_weighted
 stage1_checkpoint: "015000"   # warm-start용 Stage-1 step ("last" 가능; scratch(none_*)면 자동 무시)
 
@@ -22,7 +23,7 @@ skill_loss_weight: 0.1                # total = BC + λ·skill_CE (λ<1 keeps BC
 # ── Skill reader (SEPARATE post-VLM module; VLM stays pristine [imgs,lang]) ──────────────
 # N learned probe tokens read the VLM's FINAL-layer output via JOINT concat-KV attention (probes'
 # own K/V compete with the VLM K/V in one softmax; VLM read-only). Respects attend_language. The
-# pooled probe hidden → SkillHead. Freezing the skill decoder (freeze_skill_head) freezes reader+head.
+# pooled probe hidden → SkillHead. FT에서 skill decoder는 freeze_skill_reader(리더)/freeze_skill_head(readout)로 분리 동결.
 num_reader_tokens: 4                  # probe tokens (self-attend + read the VLM)
 reader_depth: 2                       # joint concat-KV layers (shallow = forgetting-friendly)
 reader_heads: 8                       # attention heads (must divide the VLM width)
@@ -49,7 +50,7 @@ cond_expert: true
 # cond(현재obs)+GT skill z 만으로(=Stage-1 형태) 학습 → VLM에 collapse 안 하도록. VLM self-attn은 유지돼
 # skill head는 매 배치 지도됨(staleness 없음). 마스크만(RoPE/위치 불변, 순수 ablation). 0=off, p=0이면
 # 코인 안 던져서 dropout 없을 때와 완전 동치. run-name의 "__{P}p" 자리 (0.5→50p, 0→0p).
-vlm_dropout_p: 0.8 # 0.5
+vlm_dropout_p: 0.5 # 0.5
 # 스케줄(선택): p를 vlm_dropout_p → vlm_dropout_p_end 로 decay_steps 동안 선형 annealing 후 유지.
 # 둘 다 비우면 고정 확률. scratch에 자연스러운 커리큘럼: 초반 B 위주(VSA 조각) → 후반 A 위주(VLM 접지),
 # 예: p 0.9 → p_end 0.2, 30000 steps. 스텝 카운터는 체크포인트에 저장돼 resume해도 이어짐.
@@ -62,13 +63,13 @@ vlm_dropout_decay_steps:
 # A=VLM_VSA(VLM 있음), B=VSA(VLM 드롭=Stage-1형태). true=그 regime 배치에서 해당 그룹 freeze. 그룹:
 # expert=action expert(+action/time proj), cond=현재obs 파이프라인 통째(dino/siglip vision인코더+image_proj+
 # cond-encoder), llm=VLM의 Gemma LLM 트렁크만(구 이름 vlm — vision tower는 별개!), vlm_vision=PaliGemma
-# SigLIP vision tower. skill decoder만 별도 정적 flag(freeze_skill_head, FT용).
+# SigLIP vision tower. skill decoder만 별도 정적 flag(freeze_skill_reader/freeze_skill_head, FT용).
 # run-name: {stage1정보}__{conn}_{P}p_{A:tfff}[_{B:tfff}][_{exp}] — conn=(attend_language,attend_image,
 #   vlm_cond,vlm_expert) t/f 4글자(cond_expert 제외), A/B=(expert,cond,llm,vlm_vision) 순, p=0이면 B 생략.
 freeze_vlm_vsa: {expert: false,  cond: false, llm: false, vlm_vision: false}
                                                            # A(VLM있음): expert 업데이트 안 함 → expert는 B에서만 학습
                                                            #   (VLM 보이는 채로는 절대 학습 X = co-adapt 차단); cond/LLM은 frozen expert에 맞춰 학습
-freeze_vsa:     {expert: false, cond: false, llm: false, vlm_vision: false}
+freeze_vsa:     {expert: false, cond: false, llm: true, vlm_vision: true}
                                                            # B(VLM드롭): expert/cond는 flow로 학습(=Stage-1 형태 유지·계속 갱신).
                                                            #   LLM은 edge 절단이라 flow grad 없음 → skill loss로만 학습.
                                                            #   llm: true + vlm_vision: false면 skill loss가 frozen LLM을 '통과해'
@@ -82,6 +83,11 @@ train_terminator: true
 terminator_lr_scale: 1.0
 terminator_end_target_sigma: 1.0     # soft termination target std in FRAMES (exp(-de²/2σ²))
 terminator_end_pos_weight: 1.0
+
+# ── 컴포넌트별 업데이트 추적 (어느 부분이 집중 학습되나) ──
+# log_freq마다 5개 컴포넌트(llm/vlm_vision/cond/cond_vision_encoder/action_expert)의 시작 대비 이동량
+# ‖θ_now−θ_init‖ → wandb param_drift/*(절대) + param_drift_rel/*(÷‖θ_init‖, 5개 겹쳐 비교). 얼린 그룹은 ~0.
+track_param_drift: false
 
 # ── Run naming ────────────────────────────────────────────────
 exp: ""                                        # optional run-name suffix (blank = none)

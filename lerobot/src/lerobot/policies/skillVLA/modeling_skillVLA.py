@@ -37,6 +37,7 @@ import sys
 from collections import deque
 from pathlib import Path
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 import torch.utils.checkpoint
@@ -212,6 +213,19 @@ class SkillVLAPytorch(PI05Pytorch):
                 raise ValueError("train_terminator=True requires config.fsq_path (the FSQ checkpoint to adapt).")
             self._build_terminator_trainable(config.fsq_path)
 
+        # Continual-learning VSA distillation: per-code frequency for the global skill sampler ("" →
+        # uniform). Registered as a NON-persistent buffer (recomputed from the path, not checkpointed).
+        self._vsa_teacher = None            # lazily built frozen PT teacher (list-wrapped when set)
+        _fp = getattr(config, "vsa_distill_freq_path", None)
+        if getattr(config, "vsa_distill", False) and _fp and str(_fp).strip():
+            counts = np.load(str(_fp))["counts"].astype("float32")
+            vocab = int(stage1_config.skill_vocab_size)
+            if counts.shape[0] != vocab:
+                raise ValueError(f"vsa_distill_freq_path counts len {counts.shape[0]} != skill_vocab {vocab}")
+            self.register_buffer("_distill_freq", torch.from_numpy(counts), persistent=False)
+        else:
+            self._distill_freq = None
+
     # ── construction helpers ──
     def _build_cond_side(self, s1) -> None:
         """Stage-1 vision + projections (+ joint cond-encoder). Mirrors ``SkillExpertPytorch``
@@ -274,6 +288,32 @@ class SkillVLAPytorch(PI05Pytorch):
             "vlm_vision": [self.paligemma_with_expert.paligemma.model.vision_tower],
         }
 
+    def named_component_params(self) -> dict:
+        """The 5 trainable-component groups for per-component update tracking (train-time drift graph):
+        which part is being intensively updated. Finer than _regime_groups — the cond pipeline is split
+        into its Gemma cond-encoder+image_proj ("cond") and its DINO/SigLIP vision tower
+        ("cond_vision_encoder"). Returns {group: [(param_name, param), ...]} over ALL params (frozen
+        groups then simply show ~0 drift, which confirms the freeze)."""
+        cond_vision = self.dino if self.vision_backbone == "dino" else self.siglip
+        groups = {
+            "llm": [self._vlm],                                              # VLM Gemma trunk
+            "vlm_vision": [self.paligemma_with_expert.paligemma.model.vision_tower],
+            "cond": [self.cond_encoder, self.image_proj],                    # cond Gemma + image_proj
+            "cond_vision_encoder": [cond_vision],                           # DINO/SigLIP for cond
+            "action_expert": [self._expert, self.action_in_proj, self.action_out_proj,
+                              self.time_mlp_in, self.time_mlp_out, self.state_proj, self.skill_proj],
+        }
+        out: dict = {}
+        for name, mods in groups.items():
+            plist = []
+            for i, mod in enumerate(mods):
+                if mod is None:
+                    continue
+                for pn, p in mod.named_parameters():
+                    plist.append((f"{name}.{i}.{pn}", p))
+            out[name] = plist
+        return out
+
     @staticmethod
     def _set_requires_grad(modules, flag: bool) -> None:
         for mod in modules:
@@ -297,7 +337,11 @@ class SkillVLAPytorch(PI05Pytorch):
 
     @property
     def _wdtype(self) -> torch.dtype:
-        return self._vlm.layers[0].self_attn.q_proj.weight.dtype
+        # The VSA-distill teacher drops its (never-run) VLM layers → fall back to the cond encoder,
+        # which is cast to the same working dtype in __init__.
+        layers = self._vlm.layers
+        ref = layers[0] if len(layers) else self.cond_encoder.model.layers[0]
+        return ref.self_attn.q_proj.weight.dtype
 
     # ── tokenization ──
     def _image_features(self, image: Tensor) -> Tensor:
@@ -529,6 +573,155 @@ class SkillVLAPytorch(PI05Pytorch):
             cond_tokens, vlm_embeds, vlm_pad, vlm_xattn_block, action_tokens, expert_cond, drop_vlm=drop_vlm)
         return vlm_out, action_out[:, -self.config.chunk_size :]
 
+    def _vsa_action_hidden(self, cond_tokens: Tensor, action_tokens: Tensor, expert_cond: Tensor) -> Tensor:
+        """VSA-only (VLM-severed) action forward: cond + action streams ONLY, no VLM stream. In a
+        drop_vlm batch the action is VLM-independent (cond→VLM/action→VLM severed), and RoPE is relative
+        so dropping the per-sample VLM position offset is a no-op → this reproduces
+        _joint_forward(drop_vlm=True)'s action_hidden exactly, but WITHOUT running the VLM (cheap; the
+        teacher needs no VLM). Used for the continual-learning VSA distillation (sampled skills)."""
+        bsize, nc = cond_tokens.shape[0], cond_tokens.shape[1]
+        na = action_tokens.shape[1]
+        device = cond_tokens.device
+        n_prefix = na - self.config.chunk_size          # [skill(,progress)] prefix (state mode) or 0
+        total = nc + na
+        pf1 = nc + n_prefix                              # action-token start (prefix at [nc, pf1))
+        allow = torch.zeros(bsize, total, total, dtype=torch.bool, device=device)
+        allow[:, :nc, :nc] = True                        # cond self (cond→VLM severed = absent here)
+        if n_prefix:
+            allow[:, nc:pf1, nc:pf1] = True              # prefix self (⊥ cond, ⊥ action)
+        if self.config.cond_expert:
+            allow[:, pf1:, :nc] = True                   # action → cond (scene)
+        allow[:, pf1:, nc:] = True                       # action → prefix + action
+        att_4d = torch.where(allow[:, None], 0.0, OPENPI_ATTENTION_MASK_VALUE)
+        # cond [0..nc), action [nc..nc+na): the SAME cond→action relative offset (nc) as _joint_positions
+        # (which places them after the VLM); relative-RoPE makes the shared offset immaterial.
+        cond_pos = torch.arange(nc, device=device)[None, :].expand(bsize, -1)
+        action_pos = (nc + torch.arange(na, device=device))[None, :].expand(bsize, -1)
+        position_ids = torch.cat([cond_pos, action_pos], dim=1)
+        layers = [self.cond_encoder.model.layers, self._expert.layers]
+        cond_out, action_out = self._run_streams(
+            [cond_tokens, action_tokens], layers, [None, expert_cond], att_4d, position_ids)
+        action_out, _ = layernorm_forward(self._expert.norm, action_out, expert_cond)
+        return action_out[:, -self.config.chunk_size:]
+
+    def _vsa_velocity(self, cond_tokens: Tensor, x_t: Tensor, time: Tensor, state: Tensor,
+                      skill_zq: Tensor) -> Tensor:
+        """VSA (VLM-severed) predicted flow velocity for a given normalized skill z_q, reusing the batch's
+        cond_tokens/x_t/time/state. skill_zq is (B, D) in [-1,1] (already ÷ _fsq_half)."""
+        action_tokens = self._action_in(x_t)
+        prefix = self._action_prefix_from_z(skill_zq)
+        if prefix is not None:
+            action_tokens = torch.cat([prefix, action_tokens], dim=1)
+        expert_cond = self._expert_cond_from_z(time, state, skill_zq)
+        return self._action_out(self._vsa_action_hidden(cond_tokens, action_tokens, expert_cond))
+
+    # ── continual-learning VSA distillation (FT anti-forgetting) ──
+    def _code_multi_index(self, code: Tensor) -> Tensor:
+        """Flat FSQ code (N,) → per-dim grid index (N, D)."""
+        idx = code.view(-1, 1).long()
+        return torch.div(idx, self._fsq_strides[None, :], rounding_mode="floor") % self._fsq_levels[None, :]
+
+    def _multi_index_code(self, mi: Tensor) -> Tensor:
+        """Per-dim grid index (N, D) → flat FSQ code (N,)."""
+        return (mi * self._fsq_strides[None, :]).sum(dim=1)
+
+    def _sample_distill_codes(self, gt: Tensor) -> Tensor:
+        """Per-sample sampled skills for the distillation, (B, n_local + n_global):
+          - n_local : FSQ-grid neighbours of GT (±radius per dim), EXCLUDING GT — local geometry.
+          - n_global: drawn from the code-frequency dist, EXCLUDING GT + its neighbourhood — the
+                      cross-context repertoire (where forgetting concentrates).
+        """
+        c = self.config
+        B, dev = gt.shape[0], gt.device
+        vocab = int(self.stage1_config.skill_vocab_size)
+        r = int(c.vsa_distill_neighbor_radius)
+        D = self._fsq_levels.shape[0]
+        # neighbourhood: all (2r+1)^D offsets, clamped into each dim's grid → codes (B, G)
+        rng = torch.arange(-r, r + 1, device=dev)
+        offs = torch.stack(torch.meshgrid([rng] * D, indexing="ij"), dim=-1).reshape(-1, D)  # (G, D)
+        mi = self._code_multi_index(gt)                                    # (B, D)
+        neigh_mi = (mi[:, None, :] + offs[None, :, :]).clamp_min(0)
+        neigh_mi = torch.minimum(neigh_mi, (self._fsq_levels - 1).to(neigh_mi.dtype)[None, None, :])  # (B, G, D)
+        neigh_code = self._multi_index_code(neigh_mi.reshape(-1, D)).reshape(B, -1)  # (B, G)
+        nb = torch.zeros(B, vocab, device=dev)
+        nb.scatter_(1, neigh_code, 1.0)                                    # neighbourhood indicator (incl GT)
+        gtoh = torch.zeros(B, vocab, device=dev).scatter_(1, gt.view(-1, 1).long(), 1.0)
+        eps = 1e-8
+        local_p = nb * (1.0 - gtoh) + eps                                  # neighbours minus GT
+        local = torch.multinomial(local_p, c.vsa_distill_n_local, replacement=True) if c.vsa_distill_n_local > 0 \
+            else torch.empty(B, 0, dtype=torch.long, device=dev)
+        freq = self._distill_freq.to(dev) if getattr(self, "_distill_freq", None) is not None \
+            else torch.ones(vocab, device=dev)
+        global_p = freq[None, :] * (1.0 - nb) + eps                        # freq excluding GT + neighbourhood
+        glob = torch.multinomial(global_p, c.vsa_distill_n_global, replacement=True) if c.vsa_distill_n_global > 0 \
+            else torch.empty(B, 0, dtype=torch.long, device=dev)
+        return torch.cat([local, glob], dim=1)                            # (B, n_local + n_global)
+
+    def _ensure_vsa_teacher(self) -> None:
+        """Lazily build the FROZEN teacher = the PT/warm-start VSA. Deep-copies self, RESETS its weights
+        to the recorded warm-start checkpoint (config.pretrained_path → resume-correct: teacher stays at
+        PT even when the student resumes mid-FT), freezes it, and drops the VLM layers it never runs (the
+        lean VSA forward uses no VLM stream; only _vlm.rotary_emb is kept). Held in a 1-list so it is NOT
+        registered as a submodule (excluded from state_dict + optimizer)."""
+        if getattr(self, "_vsa_teacher", None):
+            return
+        import copy  # noqa: PLC0415
+        t = copy.deepcopy(self)
+        pp = getattr(self.config, "pretrained_path", None)
+        if pp:
+            raw = _load_raw_state_dict(str(pp), {})
+            if raw is not None:
+                tstate = {(k[len("model."):] if k.startswith("model.") else k): v for k, v in raw.items()}
+                t.load_state_dict(tstate, strict=False)
+        for p in t.parameters():
+            p.requires_grad_(False)
+        t.eval()
+        # reclaim memory: the lean VSA forward never runs the VLM LLM layers or the VLM vision tower
+        # (cond uses its OWN dino/siglip). Keep _vlm.rotary_emb (used by _run_streams).
+        try:
+            t.paligemma_with_expert.paligemma.model.language_model.layers = nn.ModuleList()
+            t.paligemma_with_expert.paligemma.model.vision_tower = None
+        except AttributeError:
+            pass
+        self._vsa_teacher = [t]
+
+    def _vsa_distill_loss(self, cond_tokens: Tensor, cond_images, x_t: Tensor, time: Tensor,
+                          state: Tensor, skill_code: Tensor) -> Tensor:
+        """MSE between student and FROZEN-teacher VSA velocities on SAMPLED skills, at the SAME
+        (obs, x_t, t) — the continual-learning anti-forgetting term (B batches only). Also stashes the
+        local(GT-neighbour)/global(frequency) split in self._last_vsa_distill_parts for wandb."""
+        self._ensure_vsa_teacher()
+        teacher = self._vsa_teacher[0]
+        codes = self._sample_distill_codes(skill_code)                    # (B, n) = [local | global]
+        n = codes.shape[1]
+        self._last_vsa_distill_parts = None
+        if n == 0:
+            return x_t.new_zeros(())
+        # append the GT code as a MONITOR-ONLY column: its teacher-drift (vsa_gt) is logged for a fair
+        # cross-run comparison (BC pushes drift exactly there) but EXCLUDED from the backpropped mean —
+        # distilling on GT would fight the BC loss head-on.
+        codes_all = torch.cat([codes, skill_code.view(-1, 1).long()], dim=1)      # (B, n+1)
+        n_all = codes_all.shape[1]
+        z = self._code_to_z(codes_all.reshape(-1)) / self._fsq_half[None, :]       # (B*(n+1), D)
+        ct = cond_tokens.repeat_interleave(n_all, dim=0)                   # student cond (adapting)
+        xt = x_t.repeat_interleave(n_all, dim=0)
+        tm = time.repeat_interleave(n_all, dim=0)
+        st = state.repeat_interleave(n_all, dim=0)
+        v_student = self._vsa_velocity(ct, xt, tm, st, z)
+        with torch.no_grad():
+            ct_t = teacher._cond_tokens(cond_images).repeat_interleave(n_all, dim=0)  # frozen-PT cond
+            v_teacher = teacher._vsa_velocity(ct_t, xt, tm, st, z)
+        # per-sample MSE (B, n+1): [local | global | gt] → backprop mean over the SAMPLED n only.
+        per = (v_student - v_teacher).pow(2).mean(dim=(1, 2)).view(-1, n_all)
+        n_local = min(int(self.config.vsa_distill_n_local), n)
+        parts = {"gt_drift": per[:, n:].mean().detach()}
+        if n_local > 0:
+            parts["local"] = per[:, :n_local].mean().detach()
+        if n - n_local > 0:
+            parts["global"] = per[:, n_local:n].mean().detach()
+        self._last_vsa_distill_parts = parts
+        return per[:, :n].mean()
+
     def _skill_hidden(self, vlm_out: Tensor, vlm_pad: Tensor, vlm_xattn_block: Tensor) -> Tensor:
         """Pooled skill hidden from the JOINT concat-KV SkillReader over the VLM's FINAL-layer output
         (``vlm_out`` (B,nv,W)). The reader attends the SAME VLM tokens as cond — the image/language read-set
@@ -596,7 +789,12 @@ class SkillVLAPytorch(PI05Pytorch):
             frac = min(1.0, float(self._vdrop_step.item()) / float(decay))
             p = p0 + (float(p_end) - p0) * frac
             self._vdrop_step += 1
-        drop_vlm = bool(regimes_on and p > 0.0 and torch.rand(1).item() < p)
+        # Probe hook: _probe_force_drop=True forces a B/VSA forward regardless of p/training —
+        # lerobot_train's PT-forgetting probe uses it to measure the VSA path in isolation (eval-time
+        # only; regimes_on stays False there, so freeze toggling and _last_* logging are untouched).
+        _force = getattr(self, "_probe_force_drop", None)
+        drop_vlm = (bool(_force) if _force is not None
+                    else bool(regimes_on and p > 0.0 and torch.rand(1).item() < p))
         # This batch's regime for per-regime wandb logging (None = regimes inactive).
         self._last_drop_vlm = drop_vlm if regimes_on else None
         self._last_p_effective = p if regimes_on else None
@@ -623,6 +821,21 @@ class SkillVLAPytorch(PI05Pytorch):
             cond_tokens, vlm_embeds, vlm_pad, vlm_xattn_block, action_tokens, expert_cond, drop_vlm=drop_vlm)
         v_t = self._action_out(action_out)
         skill_hidden = pred_hidden if pred_hidden is not None else self._skill_hidden(vlm_out, vlm_pad, vlm_xattn_block)
+
+        # Continual-learning VSA distillation: only on B (VSA-only) batches, where the skill→action map
+        # is being trained VLM-free — pin the sampled-skill actions to the frozen PT teacher. (Reuses
+        # this batch's cond_tokens/x_t/time/state — SAME "ruler" — so it only measures parameter drift.)
+        self._last_vsa_distill = None
+        if getattr(self.config, "vsa_distill", False) and self.training and drop_vlm:
+            if float(getattr(self.config, "vsa_distill_weight", 0.0)) > 0.0:
+                self._last_vsa_distill = self._vsa_distill_loss(
+                    cond_tokens, cond_images, x_t, time, state, skill_code)
+            else:
+                # weight=0 → MONITOR-ONLY: log the same train_distill/* keys with ZERO training effect
+                # (no grad graph) — the vsa_distill:false-equivalent baseline for drift comparison.
+                with torch.no_grad():
+                    self._last_vsa_distill = self._vsa_distill_loss(
+                        cond_tokens.detach(), cond_images, x_t, time, state, skill_code)
         return F.mse_loss(u_t, v_t, reduction="none"), skill_hidden
 
     # ── inference ──
@@ -1026,6 +1239,10 @@ class SkillVLAPolicy(PI05Policy):
         self.model.to(config.device)
         self.reset()
 
+    def named_component_params(self) -> dict:
+        """Delegate to the pytorch model — used by lerobot_train's per-component drift graph."""
+        return self.model.named_component_params()
+
     @staticmethod
     def _load_stage1_config(config: SkillVLAConfig):
         if not config.stage1_checkpoint_path:
@@ -1081,10 +1298,13 @@ class SkillVLAPolicy(PI05Policy):
                 m._set_requires_grad(g["llm"], False)
             if c.freeze_vlm_vsa_vlm_vision:
                 m._set_requires_grad(g["vlm_vision"], False)
-        # Skill decoder: static ALWAYS (regime-independent; supervised every batch).
+        # Skill decoder: static ALWAYS (regime-independent; supervised every batch). Split flags:
+        # the head's FSQ readout is codebook-pinned (frozen in FT), the reader may stay trainable to
+        # re-ground obs→skill through the probes too (not just the VLM trunk).
+        if getattr(c, "freeze_skill_reader", False):
+            freeze(m.skill_reader)
         if getattr(c, "freeze_skill_head", False):
-            freeze(m.skill_reader)   # freeze the WHOLE skill decoder (reader probes + FSQ readout) for
-            freeze(m.skill_head)     # VLM-only finetuning — only the VLM re-grounds obs→skill.
+            freeze(m.skill_head)
 
     def get_optim_params(self):
         """Param groups with a differential LR (× optimizer_lr) for the warm-started action expert and
@@ -1212,6 +1432,13 @@ class SkillVLAPolicy(PI05Policy):
         loss = flow_loss + self.config.skill_loss_weight * skill_loss   # SkillVLA policy objective (wandb train/loss)
         total = loss                                                    # backpropped objective (+ terminator below)
 
+        # Continual-learning VSA distillation (B batches only): weak MSE to the frozen PT teacher on
+        # sampled skills → added to the backpropped `total` but EXCLUDED from wandb `loss`; logged to its
+        # own section via "distill/*" keys. None on A batches / when disabled.
+        vsa_distill = getattr(self.model, "_last_vsa_distill", None)
+        if vsa_distill is not None and float(self.config.vsa_distill_weight) > 0.0:
+            total = total + self.config.vsa_distill_weight * vsa_distill
+
         # FT: co-train the terminator on GT signals. Disjoint graph (GT/precomputed inputs + its own params)
         # → added to the BACKPROPPED `total` (only the terminator gets gradient; SkillVLA untouched), but it
         # is EXCLUDED from wandb `loss` (train/loss = the policy loss only) — logged to its own wandb
@@ -1260,6 +1487,16 @@ class SkillVLAPolicy(PI05Policy):
             p_eff = getattr(self.model, "_last_p_effective", None)
             if p_eff is not None:                       # scheduled dropout → current annealed probability
                 loss_dict["regime/p_effective"] = float(p_eff)
+        # train_distill 섹션: B(VSA) 배치마다 vsa_gt = GT BC flow loss (== regime/flow_vsa 복사) —
+        # vsa_distill on/off 무관하게 찍혀서 on/off run을 같은 패널에서 공정 비교. distill이 켜지면
+        # 그 옆에 vsa_tot(backprop 총합)/vsa_local/vsa_global/vsa_gt_drift(teacher-대비 GT 드리프트, 모니터)가 추가됨.
+        if drop_vlm:                                     # B batch → the VSA's GT training loss
+            loss_dict["distill/vsa_gt"] = flow_loss.detach().item()
+        if vsa_distill is not None:                      # VSA anti-forgetting distillation
+            loss_dict["distill/vsa_tot"] = vsa_distill.detach().item()   # backpropped mean (sampled only)
+            _parts = getattr(self.model, "_last_vsa_distill_parts", None) or {}
+            for _pk, _pv in _parts.items():              # gt_drift(모니터) / local(GT-이웃) / global(전역 빈도)
+                loss_dict[f"distill/vsa_{_pk}"] = float(_pv)
         if term_loss is not None:
             # Separate wandb section (mirrors Stage-1): "terminator/*" keys are routed by lerobot_train to
             # train_terminator/* — total (prog+end), progress SmoothL1, termination BCE. Kept OUT of train/*.

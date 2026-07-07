@@ -77,6 +77,24 @@ class TrainPipelineConfig(HubMixin):
     rabc_epsilon: float = 1e-6  # Small constant for numerical stability
     rabc_head_mode: str | None = "sparse"  # For dual-head models: "sparse" or "dense"
 
+    # ── PT-forgetting probe (FT): fixed batches from the ORIGINAL PT dataset, measured forward-only
+    # every probe_every steps with pinned flow-matching noise (same-ruler; ~0.5% overhead) → wandb
+    # probe/* (absolute losses) + probe_forget/* (relative regression vs the step-0 baseline — its own
+    # panel section; baseline persisted in the output dir so resume keeps the same zero). Empty
+    # probe_dataset_root = off.
+    probe_dataset_repo_id: str = ""
+    probe_dataset_root: str = ""
+    probe_every: int = 250
+    probe_batches: int = 4       # fixed probe batches (batch_size each), drawn once with probe_seed
+    probe_seed: int = 12345      # frame selection + flow-matching noise seed
+    probe_vsa: bool = True       # skill_vla only: ALSO measure the VSA (B, VLM-severed) regime
+
+    # ── Per-component update tracking (skill_vla): drift of each component from its FT/PT start state,
+    # ‖θ_now − θ_init‖ per group, logged every log_freq → wandb param_drift/* (absolute) +
+    # param_drift_rel/* (÷‖θ_init‖, comparable across differently-sized components — overlay to see
+    # which part is being intensively trained). Needs the policy's named_component_params(); off = skip.
+    track_param_drift: bool = False
+
     # Rename map for the observation to override the image and state keys
     rename_map: dict[str, str] = field(default_factory=dict)
     checkpoint_path: Path | None = field(init=False, default=None)

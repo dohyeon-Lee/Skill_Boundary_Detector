@@ -13,7 +13,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import copy
 import dataclasses
+import json
 import logging
 import time
 from contextlib import nullcontext
@@ -148,6 +150,138 @@ def update_policy(
     train_metrics.lr = optimizer.param_groups[0]["lr"]
     train_metrics.update_s = time.perf_counter() - start_time
     return train_metrics, output_dict
+
+
+def build_pt_probe_batches(cfg: TrainPipelineConfig) -> list[dict]:
+    """PT-forgetting probe (FT): draw probe_batches fixed batches ONCE from the ORIGINAL PT dataset
+    (probe_dataset_root) and keep them as raw CPU batches for the whole run — re-measuring their loss
+    with pinned noise makes two measurements differ only through the parameters ("same ruler").
+
+    NOTE: probe batches run through the FT run's own preprocessor (FT-dataset normalizer stats) —
+    consistent within the run, which is all the forget curve needs; the values are NOT comparable to
+    the parent Stage-2 run's train/loss."""
+    import numpy as np
+
+    from lerobot.configs.default import DatasetConfig
+
+    probe_policy = copy.deepcopy(cfg.policy)
+    # The terminator's dino-token dataset wrapper is keyed to the FT dataset — drop it for the PT
+    # probe dataset (probes measure the policy loss only; the terminator is task-local anyway).
+    for attr in ("skill_decoder_dino_tokens_path", "skill_decoder_dino_wrist_tokens_path"):
+        if hasattr(probe_policy, attr):
+            setattr(probe_policy, attr, None)
+    probe_cfg = dataclasses.replace(
+        cfg,
+        dataset=DatasetConfig(
+            repo_id=cfg.probe_dataset_repo_id or cfg.dataset.repo_id, root=cfg.probe_dataset_root
+        ),
+        policy=probe_policy,
+    )
+    probe_ds = make_dataset(probe_cfg)
+    rng = np.random.default_rng(cfg.probe_seed)
+    n = min(cfg.probe_batches * cfg.batch_size, probe_ds.num_frames)
+    idxs = rng.choice(probe_ds.num_frames, size=n, replace=False)
+    loader = torch.utils.data.DataLoader(
+        torch.utils.data.Subset(probe_ds, [int(i) for i in idxs]),
+        batch_size=cfg.batch_size, num_workers=0, shuffle=False,
+    )
+    return list(loader)
+
+
+@torch.no_grad()
+def measure_pt_probe(policy, preprocessor, probe_batches, accelerator, cfg) -> dict[str, float]:
+    """Mean probe loss over the fixed PT batches. fork_rng + probe_seed pins the flow-matching
+    noise/timestep. For skill_vla with probe_vsa, a second pass forces the B/VSA regime
+    (cond/action→VLM severed via model._probe_force_drop) → *_vsa keys isolate the VSA path."""
+    unwrapped = accelerator.unwrap_model(policy, keep_fp32_wrapper=True)
+    was_training = policy.training
+    policy.eval()
+    # Probe batches carry no terminator inputs (dino tokens) — skip the terminator loss branch.
+    term_prev = getattr(unwrapped.config, "train_terminator", False)
+    if term_prev:
+        unwrapped.config.train_terminator = False
+
+    regimes = [("", None)]
+    if cfg.probe_vsa and getattr(cfg.policy, "type", None) == "skill_vla":
+        regimes.append(("_vsa", True))
+    devices = [accelerator.device] if accelerator.device.type == "cuda" else []
+    vals: dict[str, float] = {}
+    try:
+        for suffix, force in regimes:
+            if force is not None:
+                unwrapped.model._probe_force_drop = force
+            accum: dict[str, list[float]] = {}
+            with torch.random.fork_rng(devices=devices):
+                torch.manual_seed(cfg.probe_seed)
+                if accelerator.device.type == "cuda":
+                    torch.cuda.manual_seed_all(cfg.probe_seed)
+                for batch in probe_batches:
+                    # fresh copy — an in-place processor must never corrupt the stored originals
+                    b = {k: (v.clone() if torch.is_tensor(v) else v) for k, v in batch.items()}
+                    b = preprocessor(b)
+                    with accelerator.autocast():
+                        loss, out = policy.forward(b)
+                    accum.setdefault("loss", []).append(float(loss.item()))
+                    for src, dst in (("loss_flow", "flow"), ("loss_skill", "skill")):
+                        if out and src in out:
+                            accum.setdefault(dst, []).append(float(out[src]))
+            if force is not None:
+                unwrapped.model._probe_force_drop = None
+            for k, v in accum.items():
+                vals[f"{k}{suffix}"] = float(sum(v) / len(v))
+            # Policies that don't report a separate loss_flow (e.g. the pi05 baseline, whose total
+            # loss IS the flow/action loss) get `flow` aliased to `loss`, so probe/flow and
+            # probe_forget/flow overlay across pipelines in wandb.
+            if f"flow{suffix}" not in vals and f"loss{suffix}" in vals:
+                vals[f"flow{suffix}"] = vals[f"loss{suffix}"]
+    finally:
+        if hasattr(unwrapped, "model"):
+            unwrapped.model._probe_force_drop = None
+        if term_prev:
+            unwrapped.config.train_terminator = term_prev
+        if was_training:
+            policy.train()
+    return vals
+
+
+def snapshot_component_init(policy, accelerator) -> dict | None:
+    """Per-component drift baseline: CPU clones of each component's params at FT/PT start, keyed by name,
+    with the group's ‖θ_init‖ precomputed. Returns None if the policy has no named_component_params()."""
+    unwrapped = accelerator.unwrap_model(policy, keep_fp32_wrapper=True)
+    if not hasattr(unwrapped, "named_component_params"):
+        return None
+    groups = unwrapped.named_component_params()
+    init, init_norm_sq = {}, {}
+    for g, plist in groups.items():
+        s = 0.0
+        for pn, p in plist:
+            c = p.detach().to("cpu", copy=True)
+            init[pn] = c
+            s += float(c.float().pow(2).sum())
+        init_norm_sq[g] = s
+    return {"init": init, "init_norm_sq": init_norm_sq}
+
+
+@torch.no_grad()
+def measure_component_drift(policy, accelerator, snap: dict) -> tuple[dict, dict]:
+    """‖θ_now − θ_init‖ per component group (abs) and ÷‖θ_init‖ (rel). Iterates params once, moving the
+    CPU init to the param's device per-tensor (transient) → no extra GPU copy of the whole model."""
+    unwrapped = accelerator.unwrap_model(policy, keep_fp32_wrapper=True)
+    groups = unwrapped.named_component_params()
+    init, init_norm_sq = snap["init"], snap["init_norm_sq"]
+    abs_drift, rel_drift = {}, {}
+    for g, plist in groups.items():
+        s = 0.0
+        for pn, p in plist:
+            if pn not in init:
+                continue
+            d = p.detach().float() - init[pn].to(p.device, dtype=torch.float32)
+            s += float(d.pow(2).sum())
+        norm = s ** 0.5
+        abs_drift[g] = norm
+        denom = init_norm_sq[g] ** 0.5
+        rel_drift[g] = norm / denom if denom > 0 else 0.0
+    return abs_drift, rel_drift
 
 
 @parser.wrap()
@@ -384,7 +518,51 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
     )
     dl_iter = cycle(dataloader)
 
+    # ── PT-forgetting probe (FT): fixed PT-dataset batches re-measured every probe_every steps ──
+    probe_batches = None
+    probe_baseline: dict[str, float] = {}
+    if cfg.probe_dataset_root and is_main_process:
+        logging.info(f"Building PT-forgetting probe batches from {cfg.probe_dataset_root}")
+        probe_batches = build_pt_probe_batches(cfg)
+
+        def run_probe(at_step: int) -> dict[str, float]:
+            vals = measure_pt_probe(policy, preprocessor, probe_batches, accelerator, cfg)
+            # relative regression vs the step-0 baseline → its OWN wandb section (probe_forget/*):
+            # absolute losses and forget ratios have different scales/semantics — separate panels.
+            forgets = {k: (v - probe_baseline[k]) / max(abs(probe_baseline[k]), 1e-8)
+                       for k, v in vals.items() if k in probe_baseline}
+            logging.info(f"[probe] step={at_step} "
+                         + " ".join(f"{k}={v:.4f}" for k, v in sorted(vals.items()))
+                         + ("  | forget " + " ".join(f"{k}={v:+.3f}" for k, v in sorted(forgets.items()))
+                            if forgets else ""))
+            if wandb_logger:
+                wandb_logger.log_dict(vals, at_step, mode="probe")
+                if forgets:
+                    wandb_logger.log_dict(forgets, at_step, mode="probe_forget")
+            return vals
+
+        # Baseline = the warm-start state (step 0). Persisted so a resumed run keeps the SAME zero
+        # (re-baselining mid-run would flatten the forget curve).
+        baseline_path = cfg.output_dir / "probe_baseline.json"
+        if baseline_path.is_file():
+            probe_baseline = json.loads(baseline_path.read_text())
+        first_vals = run_probe(step)
+        if not probe_baseline:
+            probe_baseline = first_vals
+            baseline_path.parent.mkdir(parents=True, exist_ok=True)
+            baseline_path.write_text(json.dumps(probe_baseline, indent=1))
+
     policy.train()
+
+    # Per-component update tracking (skill_vla): snapshot the start state ONCE so drift is measured
+    # against the FT/PT warm-start (resume snapshots the resumed weights → drift resets; acceptable).
+    drift_snap = None
+    if cfg.track_param_drift and is_main_process:
+        drift_snap = snapshot_component_init(policy, accelerator)
+        if drift_snap is None:
+            logging.info("track_param_drift set but the policy has no named_component_params() — skipping.")
+        else:
+            logging.info(f"Tracking per-component drift for: {list(drift_snap['init_norm_sq'])}")
 
     train_metrics = {
         "loss": AverageMeter("loss", ":.3f"),
@@ -473,7 +651,7 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                     "action_weighted_loss",     # Stage-1 skill_expert: per-sample-weighted action MSE (action_weight only)
                 }
                 wandb_log_dict = {k: v for k, v in wandb_log_dict.items()
-                                  if k in _wandb_keep or k.startswith(("terminator/", "regime/"))}
+                                  if k in _wandb_keep or k.startswith(("terminator/", "regime/", "distill/"))}
                 # A policy that reports its own action_loss (Stage-1 skill_expert) replaces the generic
                 # backprop-scalar "loss" with it → drop the redundant generic "loss".
                 if "action_loss" in wandb_log_dict:
@@ -484,14 +662,26 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                                 if k.startswith("terminator/")}
                 regime_metrics = {k[len("regime/"):]: v for k, v in wandb_log_dict.items()
                                   if k.startswith("regime/")}
+                distill_metrics = {k[len("distill/"):]: v for k, v in wandb_log_dict.items()
+                                   if k.startswith("distill/")}
                 main_metrics = {k: v for k, v in wandb_log_dict.items()
-                                if not k.startswith(("terminator/", "regime/"))}
+                                if not k.startswith(("terminator/", "regime/", "distill/"))}
                 wandb_logger.log_dict(main_metrics, step)
                 if term_metrics:
                     wandb_logger.log_dict(term_metrics, step, mode="train_terminator")
                 if regime_metrics:
                     wandb_logger.log_dict(regime_metrics, step, mode="train_regime")
+                if distill_metrics:
+                    wandb_logger.log_dict(distill_metrics, step, mode="train_distill")
             train_tracker.reset_averages()
+
+            if drift_snap is not None and wandb_logger:
+                abs_d, rel_d = measure_component_drift(policy, accelerator, drift_snap)
+                wandb_logger.log_dict(abs_d, step, mode="param_drift")
+                wandb_logger.log_dict(rel_d, step, mode="param_drift_rel")
+
+        if probe_batches is not None and cfg.probe_every > 0 and step % cfg.probe_every == 0:
+            run_probe(step)
 
         if cfg.save_checkpoint and is_saving_step:
             if is_main_process:

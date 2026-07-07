@@ -56,12 +56,30 @@ def build_settings(cfg: dict) -> dict:
     skill_fsq_levels = list(as_levels(get_value(cfg, "skill_fsq_levels", s2_cfg.get("skill_fsq_levels", [5, 5, 5]))))
 
     # ── New-task skillvla dataset (built by configs/train_skillVLA/build_data with the SAME FSQ) ──
+    # run_tag는 입력받지 않는다 — FT 데이터셋은 부모 Stage-2와 같은 FSQ/파이프라인(run_tag)으로 빌드돼야
+    # 하므로, 부모 체크포인트의 train_config.json(dataset.root = .../{src}/{run_tag}/skillvla)에서 유도.
     source_dataset = str(get_value(cfg, "source_dataset")).strip()
-    run_tag = str(get_value(cfg, "run_tag")).strip()
+    s2_train_json = stage2_ckpt / "train_config.json"
+    s2_ds_root = ""
+    s2_ds_repo = ""
+    if s2_train_json.is_file():
+        _tc_ds = (json.loads(s2_train_json.read_text()).get("dataset") or {})
+        s2_ds_root = str(_tc_ds.get("root") or "")
+        s2_ds_repo = str(_tc_ds.get("repo_id") or "")
+    if not s2_ds_root:
+        raise ValueError(f"Cannot derive run_tag: missing dataset.root in {s2_train_json}")
+    # 이식 면역: 부모 Stage-2가 다른 서버에서 학습됐으면 그 서버의 절대경로가 박혀 있음 → 존재하지
+    # 않으면 이 서버의 skillvla_root/{source}/{run_tag}/skillvla로 재앵커 (경로 꼬리 3단은 서버 불문).
+    if not Path(s2_ds_root).is_dir():
+        _p = Path(s2_ds_root)
+        s2_ds_root = str(skillvla_root / _p.parent.parent.name / _p.parent.name / _p.name)
+    run_tag = Path(s2_ds_root).parent.name
     run_dir = skillvla_root / source_dataset / run_tag
     # FT terminator warm-start + current-frame DINO tokens live in the new task's run dir (same codebook).
     fsq_ckpt = run_dir / "FSQ.pt"
     dino_tokens_path = run_dir / "dino.npz"
+    # Wrist DINO tokens — dual(terminator_use_wrist) FSQ면 필수; 빌드돼 있을 때만 경로 전달 ("" else).
+    dino_wrist_tokens_path = (run_dir / "dino_wrist.npz") if (run_dir / "dino_wrist.npz").exists() else ""
 
     batch_size = int(get_value(cfg, "batch_size", 16))
     num_gpus = int(get_value(cfg, "num_gpus", 1))
@@ -128,22 +146,38 @@ def build_settings(cfg: dict) -> dict:
     sched_on = vlm_dropout_p_end is not None and vlm_dropout_decay_steps > 0
     regimes_ever = vlm_dropout_p > 0 or (sched_on and vlm_dropout_p_end > 0)
 
-    # run_name = {ft_source}_{ft_run_tag}_ft{ckpt}[_scratch]_{pred|gt}[_term][_{P}p_{A}_{B}]__{parent_regime}[_{exp}]
-    #   parent_regime = 부모 Stage-2 폴더명의 "__" 뒤 태그({conn}_{P}p_{A}[_{B}])를 그대로 승계.
-    #   FT 자신이 dropout을 쓰면({P}p 태그) 자기 p/freeze(A/B tf문자열)도 tags에 추가됨.
-    parent_regime = stage2_run_name.split("__", 1)[1] if "__" in stage2_run_name else ""
+    # ── PT-forgetting probe: 부모 Stage-2의 학습 데이터셋(위에서 유도)에서 고정 배치를 뽑아
+    # probe_every 스텝마다 forward-only로 loss를 재측정 (노이즈까지 seed 고정 = 같은 자) → wandb probe/*.
+    probe_pt_forgetting = as_bool(get_value(cfg, "probe_pt_forgetting", False))
+    probe_dataset_root = s2_ds_root if probe_pt_forgetting else ""
+    probe_repo_id = s2_ds_repo if probe_pt_forgetting else ""
+
+    # skill decoder freeze (이름의 마지막 __{H}{R} 두 글자: head, reader 순)
+    freeze_skill_head = as_bool(get_value(cfg, "freeze_skill_head", True))
+    freeze_skill_reader = as_bool(get_value(cfg, "freeze_skill_reader", True))
+
+    # run_name = {source}_{부모pre}_{s2ckpt}__{부모regime}__{gt|pred}_{P}p_{A}[_{B}]__{H}{R}[_{exp}]
+    #   부모pre/부모regime = 부모 Stage-2 폴더명을 "__" 기준으로 나눈 앞/뒤 (run_tag·s1정보·scratch는
+    #   부모pre에 이미 포함; 옛-스킴 부모면 regime 세그먼트 생략). FT 자신의 레짐은 {gt|pred} 뒤에
+    #   상시 표기: p 태그 + A(freeze_vlm_vsa) 4글자, p>0이면 B(freeze_vsa)도. term은 이름에서 제외.
+    parent_pre, _, parent_regime = stage2_run_name.partition("__")
     if sched_on:
         p_tag = (f"{int(round(vlm_dropout_p * 100))}to{int(round(vlm_dropout_p_end * 100))}p"
                  f"{vlm_dropout_decay_steps // 1000}k")
     else:
         p_tag = f"{int(round(vlm_dropout_p * 100))}p"
     _tf = lambda pfx: "".join("t" if frz[f"freeze_{pfx}_{k}"] else "f" for k in _RKEYS)
-    tags = [cond_skill_source] + (["term"] if train_terminator else [])   # skill source ALWAYS tagged
-    if regimes_ever:
-        tags.append(f"{p_tag}_{_tf('vlm_vsa')}_{_tf('vsa')}")
-    parts = ([source_dataset, run_tag, f"ft{stage2_checkpoint}"]
-             + (["scratch"] if scratch_parent else []) + tags)
-    run_name = "_".join(parts) + (f"__{parent_regime}" if parent_regime else "")
+    ft_regime = f"{cond_skill_source}_{p_tag}_{_tf('vlm_vsa')}" + (f"_{_tf('vsa')}" if regimes_ever else "")
+    hr = ("t" if freeze_skill_head else "f") + ("t" if freeze_skill_reader else "f")
+    # VSA distillation tag (on → distinct output dir so on/off ablations don't collide): distill{L}{G}w{λ}
+    distill_tag = ""
+    if as_bool(get_value(cfg, "vsa_distill", False)):
+        _dw = int(round(float(get_value(cfg, "vsa_distill_weight", 0.2)) * 100))
+        distill_tag = (f"_distill{int(get_value(cfg, 'vsa_distill_n_local', 2))}"
+                       f"{int(get_value(cfg, 'vsa_distill_n_global', 2))}w{_dw}")
+    run_name = (f"{source_dataset}_{parent_pre}_{stage2_checkpoint}"
+                + (f"__{parent_regime}" if parent_regime else "")
+                + f"__{ft_regime}__{hr}{distill_tag}")
     if exp:
         run_name = f"{run_name}_{exp}"
     vla_root = outputs_root / "skillVLA_FT"
@@ -159,6 +193,7 @@ def build_settings(cfg: dict) -> dict:
         "skillvla_dataset_dir": run_dir / "skillvla",
         "fsq_ckpt": fsq_ckpt,                       # terminator warm-start + (eval terminator base)
         "dino_tokens_path": dino_tokens_path,       # current-frame DINO tokens for terminator co-train
+        "dino_wrist_tokens_path": dino_wrist_tokens_path,   # dual FSQ용 wrist 토큰 ("" = 없음/불필요)
         "repo_id": f"dohyeon/{source_dataset}",
         # warm-start (full policy from Stage-2) + architecture config (from its config.json)
         "stage2_run_name": stage2_run_name,
@@ -188,11 +223,32 @@ def build_settings(cfg: dict) -> dict:
         "skill_loss_weight": str(skill_loss_weight),
         # freeze — stage2와 동일한 단일 소스 (p=0 → A 딕셔너리 정적; p>0 → 배치별 A/B 토글)
         **frz,
-        "freeze_skill_head": as_bool(get_value(cfg, "freeze_skill_head", True)),
+        "freeze_skill_head": freeze_skill_head,
+        "freeze_skill_reader": freeze_skill_reader,
         # VLM dropout (+스케줄) — stage2와 동일
         "vlm_dropout_p": vlm_dropout_p,
         "vlm_dropout_p_end": "" if vlm_dropout_p_end is None else vlm_dropout_p_end,
         "vlm_dropout_decay_steps": vlm_dropout_decay_steps,
+        # PT-forgetting probe ("" = off; root/repo_id는 부모 Stage-2 train_config.json에서 자동 유도)
+        "probe_dataset_root": probe_dataset_root,
+        "probe_dataset_repo_id": probe_repo_id,
+        "probe_every": int(get_value(cfg, "probe_every", 250)),
+        "probe_batches": int(get_value(cfg, "probe_batches", 4)),
+        "probe_seed": int(get_value(cfg, "probe_seed", 12345)),
+        "probe_vsa": as_bool(get_value(cfg, "probe_vsa", True)),
+        # per-component update tracking (wandb param_drift/* + param_drift_rel/*)
+        "track_param_drift": as_bool(get_value(cfg, "track_param_drift", False)),
+        # continual-learning VSA distillation (anti-forgetting; B batches only)
+        "vsa_distill": as_bool(get_value(cfg, "vsa_distill", False)),
+        "vsa_distill_weight": float(get_value(cfg, "vsa_distill_weight", 0.2)),
+        "vsa_distill_n_local": int(get_value(cfg, "vsa_distill_n_local", 2)),
+        "vsa_distill_n_global": int(get_value(cfg, "vsa_distill_n_global", 2)),
+        "vsa_distill_neighbor_radius": int(get_value(cfg, "vsa_distill_neighbor_radius", 1)),
+        # code-frequency npz for the global sampler ("" → uniform). The "cross-context repertoire" to
+        # preserve = the PARENT PT dataset's skill usage → histogram next to the parent skillvla dir
+        # (build once: FT/src/build_skill_code_freq.py). Blank if not built → uniform over the codebook.
+        "vsa_distill_freq_path": (str(_freq_npz) if (
+            _freq_npz := (Path(s2_ds_root).parent / "skill_code_freq.npz")).is_file() else ""),
         # output
         "skillvla_outputs_root": vla_root,
         "pt_run_name": run_name,

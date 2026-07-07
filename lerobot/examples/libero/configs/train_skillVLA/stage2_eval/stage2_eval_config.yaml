@@ -15,25 +15,34 @@
 # 모델별 개별 산출물(eval_info/차트/videos)은 panels/{label}/ 아래. multi에선 skill_html 자동 off.
 eval_dropout: true
 models:
-  # - {model_dir: FSQ555_dino8_weighted_both_1000_siglip_015000_state_weighted__tttt_0p_tfff, label: fully_connected}
-  # - {model_dir: FSQ555_dino8_weighted_both_1000_siglip_015000_state_weighted__tttf_0p_tfff, label: connected}
-  # - {model_dir: FSQ555_dino8_weighted_both_1000_siglip_015000_state_weighted__ttff_0p_tfff, label: disconnected}
+#   - {model_dir: FSQ555_dino8_weighted_both_1000_siglip_015000_state_weighted__tttt_0p_tfff, label: fully_connected}
+#   - {model_dir: FSQ555_dino8_weighted_both_1000_siglip_015000_state_weighted__tttf_0p_tfff, label: connected}
+#   - {model_dir: FSQ555_dino8_weighted_both_1000_siglip_015000_state_weighted__ttft_0p_tfff, label: connected}
+#   - {model_dir: FSQ555_dino8_weighted_both_1000_siglip_015000_state_weighted__ttff_0p_tfff, label: disconnected}
+# checkpoint: "030000"
 
   # - {model_dir: FSQ555_dino8_both_1000_siglip_015000_state__tttf_50p_tfff_fftt, label: connected_50%}
   # - {model_dir: FSQ555_dino8_both_1000_siglip_015000_state__tttt_0p_tfff, label: fully_connected_0%}
 
-  - {model_dir: FSQ555_dino8_both_1000_siglip_015000_state__tttf_0p_tfff, label: stage1_0%}
-  - {model_dir: FSQ555_dino8_both_1000_siglip_015000_state__tttf_50p_tfff_ffff, label: stage1_50%}
-  - {model_dir: FSQ555_dino8_both_1000_siglip_scratch_state__tttf_50p_tfff_ffff, label: scratch_50%}
-  - {model_dir: FSQ555_dino8_both_1000_siglip_scratch_state__tttf_90to20p50k_tfff_ffff, label: scratch_90to20%}
+  # - {model_dir: FSQ555_dino8_both_1000_siglip_015000_state__tttf_50p_ffff_ffff, label: stage1_50%}
+  # - {model_dir: FSQ555_dino8_both_1000_siglip_scratch_state__tttf_50p_ffff_ffff, label: scratch_50%}
+  # - {model_dir: FSQ555_dino8_both_1000_siglip_scratch_state__tttf_80p_ffff_ffff, label: scratch_80%}
+  # - {model_dir: FSQ555_dino8_both_1000_siglip_scratch_state__tttf_90to20p50k_ffff_ffff, label: scratch_90to20%}
+
+  - {model_dir: FSQ555_dino8_both_1000_siglip_015000_state__tttf_50p_ffff_ffff, label: unfreeze_expert} # best for in-distribution
+  - {model_dir: FSQ555_dino8_both_1000_siglip_015000_state__tttf_50p_ffff_fftt, label: unfreeze_expert_v2}
+  - {model_dir: FSQ555_dino8_both_1000_siglip_015000_state__tttf_50p_tfff_ffff, label: freeze_expert}
+
+  # - {model_dir: FSQ555_dino8_both_1000_siglip_015000_state__tttf_50p_tfff_ffff, label: skill-learning during dropout}
+  # - {model_dir: FSQ555_dino8_both_1000_siglip_015000_state__tttf_50p_tfff_fftt, label: skill-freeze during dropout}
 
 models_per_row: 2                 # 행당 패널 수 (0=한 행; 6개@3 → 2×3 그리드) — stage1_eval과 동일
 # model_dir: libero_90_full_full_FSQ555_dino8_both_1000_siglip_015000_unfreeze_state_ve_lang_dz0.8_frzAe_connect
 
-checkpoint: "last"              # "last" or a step number (these runs go up to 040000)
+checkpoint: "050000"              # "last" or a step number (these runs go up to 040000)
 
 # ── Eval rollout ──
-target_task: libero_90    # LIBERO suite for the sim env
+target_task: libero_goal    # LIBERO suite for the sim env
 task_ids: "[0,1,2,3,4,5,6,7,8,9]"
 # EPISODE-EXACT는 항상 ON (stage1 방식; 각 롤아웃 = 데이터셋 에피소드의 MuJoCo init_state로 리셋 →
 # sim scene이 데이터셋과 정확히 일치, multi 비교도 모든 모델이 같은 에피소드 scene). eval_init_states.npz
@@ -43,8 +52,8 @@ task_ids: "[0,1,2,3,4,5,6,7,8,9]"
 # 청크수 = eval_num_gpus ÷ 모델수 (총 잡 ≤ 예산; 최소 모델당 1잡) — 세 모델이 동시에 돌고,
 # 각 task는 마지막 패널 잡이 끝나는 즉시 그리드 영상으로 스티칭됨 (stage1식 진행감).
 # 요약은 잡별 eval_info_*.json → 막판-완성자가 자동 머지. (salloc 안에서 실행 시 무시됨.)
-eval_num_gpus: 10
-n_episodes: 3             # episodes per task
+eval_num_gpus: 5
+n_episodes: 5             # episodes per task
 n_action_steps: 5
 eval_batch_size: 1
 max_parallel_tasks: 1

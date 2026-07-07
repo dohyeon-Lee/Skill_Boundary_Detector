@@ -39,14 +39,27 @@ ft_exp: ""
 ft_lr: 2.5e-05
 ft_steps: 15000
 ft_save_freq: 5000
-ft_wandb_project: VLA_Finetune
-ft_pretrained_dataset: libero_90_full_full
-ft_pretrained_batch_size: 16
-ft_pretrained_exp: ""
+ft_wandb_project: VLA_FT      # skillVLA FT와 같은 프로젝트 → probe_forget/flow 곡선 겹쳐 비교
+# PT warm-start: pi05_PT/ 아래 폴더명 + 스텝만 지정 (제일 간단).
+ft_pretrained_run_name: PT_libero_90_full_full_pi05_batch16
 ft_pretrained_checkpoint: "015000"
+# (레거시 폴백: run_name을 비우면 아래 세 키로 PT_{dataset}_pi05_batch{bs}[_{exp}]를 재조립)
+# ft_pretrained_dataset: libero_90_full_full
+# ft_pretrained_batch_size: 16
+# ft_pretrained_exp: ""
 # FT freeze 프로브 (PT와 동일한 2×2; expert 항상 학습)
 ft_freeze_vision_encoder: false
 ft_freeze_language_model: false
+
+# PT-forgetting probe — skillVLA FT와 동일 조건/인프라(lerobot_train probe_*): FT 중 probe_every
+# 스텝마다 PT 데이터셋(ft_pretrained의 train_config.json에서 자동 유도) 고정 배치를 forward-only로
+# 재측정(프레임+flow 노이즈 seed 고정 = 같은 자) → wandb probe/loss + probe_forget/loss(step0 대비
+# 회귀율). baseline은 output_dir/probe_baseline.json에 저장 → resume에도 기준점 유지. 오버헤드 ~0.5%.
+# skillVLA FT와 비교하려면 probe_every/batches/seed를 동일하게 둘 것 (기본값이 이미 동일).
+ft_probe_pt_forgetting: true
+ft_probe_every: 250
+ft_probe_batches: 4
+ft_probe_seed: 12345
 
 # Slurm for pi05 FT (partition/qos/nodelist/exclude from configs/global_config.yaml).
 ft_gres: gpu:1

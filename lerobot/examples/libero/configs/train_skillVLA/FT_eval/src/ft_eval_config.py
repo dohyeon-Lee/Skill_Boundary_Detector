@@ -1,17 +1,23 @@
 #!/usr/bin/env python3
 """Config for SkillVLA FT closed-loop EVAL on LIBERO sim.
 
-Mirrors stage2_eval but points at a FINETUNED run under {outputs_root}/skillVLA_FT/ and swaps in the
-FT-adapted terminator: if an ``FSQ_ft.pt`` exists in the run dir (exported by FT training) it overrides
-the checkpoint's ``fsq_path`` so the closed loop gates skill transitions with the terminator that was
-co-trained on the new task. The model structure is otherwise restored from the checkpoint config.json;
-``train_terminator`` is forced false at eval (no co-training terminator is built). Emits shell exports.
+Mirrors stage2_eval (multi-model side-by-side, multi-GPU job-array fan-out, eval_dropout probe,
+episode-exact resets, chunk merge) but points at a FINETUNED run under {outputs_root}/skillVLA_FT/
+and keeps FT's THREE-way terminator choice:
+  ft     → the FT-adapted terminator co-trained INTO this checkpoint (checkpoints/<ckpt>/FSQ_ft.pt);
+           falls back to base if FT didn't co-train.
+  base   → the new task's ORIGINAL dataset FSQ.pt (before ANY in-policy co-training).
+  stage2 → the terminator FT INHERITED from its Stage-2 source checkpoint (<stage2_ckpt>/FSQ_ft.pt),
+           before FT adapted it — an ablation of FT's terminator adaptation.
+The model structure is otherwise restored from the checkpoint config.json; train_terminator is forced
+false at eval. Emits shell exports (--shell).
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -22,110 +28,214 @@ from train_skills_config import as_bool, as_list, get_value, load_config, print_
 DEFAULT_CONFIG_PATH = _HERE.parent.parent / "ft_eval_config.yaml"
 
 
-def build_settings(cfg: dict) -> dict:
-    project_root = Path(str(get_value(cfg, "project_root"))).expanduser()
-    outputs_root = project_root / str(get_value(cfg, "outputs_root", "outputs"))
-    vla_root = outputs_root / "skillVLA_FT"          # FT runs (matches FT training output)
-    model_dir = str(get_value(cfg, "model_dir"))
-    checkpoint = str(get_value(cfg, "checkpoint", "last"))
-    target_task = str(get_value(cfg, "target_task", "libero_10"))
-    image_key = str(get_value(cfg, "image_key", "observation.images.image"))
-
-    run_root = vla_root / model_dir
-    policy_path = run_root / "checkpoints" / checkpoint / "pretrained_model"
-
-    # The checkpoint config.json is the source of truth for the trained model. fsq_path (dataset FSQ)
-    # → derive the skill_latents + raw-dataset paths used for skill_html / oracle GT.
+def _resolve_model(vla_root: Path, model_dir: str, checkpoint: str, eval_terminator: str) -> dict:
+    """Resolve ONE FT run folder → checkpoint + terminator + dataset-derived artifact paths.
+    The checkpoint config.json is the single source of truth (fsq_path → skill_latents / raw-dataset /
+    gt_skill / eval_init_states; pretrained_path → the Stage-2 source terminator; train_terminator →
+    whether an FT-adapted terminator exists). eval_terminator (ft|base|stage2) is resolved PER MODEL to
+    a concrete `term_kind` the eval sbatch turns into an FSQ path."""
+    policy_path = vla_root / model_dir / "checkpoints" / checkpoint / "pretrained_model"
     pol: dict = {}
     cfg_json = policy_path / "config.json"
     if cfg_json.is_file():
         pol = json.loads(cfg_json.read_text())
     base_fsq = str(pol.get("fsq_path") or "")
     train_terminator_used = as_bool(pol.get("train_terminator", False))
-    skill_latents_path = ""
-    raw_dataset_dir = ""
-    gt_skill_dataset_dir = ""
+    skill_latents_path = raw_dataset_dir = gt_skill_dataset_dir = eval_init_states_path = ""
     if base_fsq:
         fp = Path(base_fsq)  # {root}/{dataset_root}/skillvla_dataset/{source}/{run_tag}/FSQ.pt
         skill_latents_path = str(fp.parent / "skill_latents.npz")
-        gt_skill_dataset_dir = str(fp.parent / "skillvla")
+        gt_skill_dataset_dir = str(fp.parent / "skillvla")  # skillvla dataset (skill_sequence) for oracle GT
+        # EPISODE-EXACT init states: FSQ-independent, shared per SOURCE (built by stage1_eval/oracle_matching)
+        eval_init_states_path = str(fp.parents[1] / "eval_init_states.npz")
         try:
-            raw_dataset_dir = str(fp.parents[3] / fp.parents[1].name)
+            raw_dataset_dir = str(fp.parents[3] / fp.parents[1].name)  # {dataset_root}/{source}
         except IndexError:
             raw_dataset_dir = ""
 
-    # FT-adapted terminator from the SAME checkpoint: checkpoints/<ckpt>/FSQ_ft.pt (exported at train
-    # time; the eval sbatch lazy-exports it from this checkpoint if missing). The closed loop uses it
-    # when present (train_terminator runs), else falls back to the base FSQ recorded in the config.
-    ft_fsq_path = policy_path.parent / "FSQ_ft.pt"
-
-    # Stage-2 terminator: FT warm-starts the WHOLE policy (incl. the co-trained terminator) from a
-    # Stage-2 checkpoint, recorded in the config as pretrained_path. eval_terminator=stage2 evaluates
-    # with THAT terminator — the one FT INHERITED, before FT's own co-training adapted it (an ablation
-    # of FT's terminator adaptation). Stage-2 training exports it per checkpoint to
-    # <stage2_ckpt>/FSQ_ft.pt; the eval sbatch lazy-exports from the Stage-2 checkpoint if missing.
+    # Stage-2 source terminator (FT warm-starts the WHOLE policy from a Stage-2 checkpoint, recorded as
+    # pretrained_path). eval_terminator=stage2 evaluates with THAT terminator — before FT adapted it.
     stage2_pretrained = str(pol.get("pretrained_path") or "")
     if stage2_pretrained:
         _s2 = Path(stage2_pretrained).parent          # …/skillVLA_stage2/<run>/checkpoints/<step>
-        stage2_fsq_path = _s2 / "FSQ_ft.pt"
-        stage2_run_dir = _s2.parents[1]                # …/skillVLA_stage2/<run>
+        stage2_fsq_path = str(_s2 / "FSQ_ft.pt")
+        stage2_run_dir = str(_s2.parents[1])           # …/skillVLA_stage2/<run>
         stage2_checkpoint = _s2.name                   # <step>
     else:
         stage2_fsq_path = stage2_run_dir = stage2_checkpoint = ""
 
-    # Which terminator decides skill transitions at eval (action chunk always from the expert):
-    #   ft     → the FT-adapted terminator co-trained INTO this checkpoint (FSQ_ft.pt); falls back to
-    #            base if FT didn't co-train. (default — matches the model you finetuned)
-    #   base   → the new task's ORIGINAL dataset FSQ.pt (terminator before ANY in-policy co-training)
-    #   stage2 → the terminator FT inherited from its Stage-2 source checkpoint (before FT adapted it)
+    if eval_terminator == "stage2":
+        if not stage2_pretrained:
+            raise ValueError(
+                f"eval_terminator='stage2' but {model_dir} config has no pretrained_path (the Stage-2 "
+                "source). Can't locate the Stage-2 terminator.")
+        term_kind, term_tag = "stage2", "s2"
+    elif eval_terminator == "base":
+        term_kind, term_tag = "base", "base"
+    else:  # ft → resolves to base when FT didn't co-train a terminator
+        term_kind, term_tag = ("ft", "ft") if train_terminator_used else ("base", "base")
+
+    return {
+        "model_dir": model_dir, "checkpoint": checkpoint, "policy_path": policy_path,
+        "base_fsq": base_fsq, "train_terminator_used": train_terminator_used,
+        "term_kind": term_kind, "term_tag": term_tag,
+        "ft_fsq_path": policy_path.parent / "FSQ_ft.pt", "ft_run_dir": vla_root / model_dir,
+        "stage2_fsq_path": stage2_fsq_path, "stage2_run_dir": stage2_run_dir,
+        "stage2_checkpoint": stage2_checkpoint,
+        "skill_latents_path": skill_latents_path, "raw_dataset_dir": raw_dataset_dir,
+        "gt_skill_dataset_dir": gt_skill_dataset_dir, "eval_init_states_path": eval_init_states_path,
+    }
+
+
+def _auto_labels(model_dirs: list[str]) -> list[str]:
+    """Distinguishing middle token(s) of each model_dir (strip the common leading + trailing _-tokens),
+    used as the side-by-side panel label when a model has no explicit label. (Same as stage2_eval.)"""
+    if len(model_dirs) <= 1:
+        return list(model_dirs)
+    toks = [d.split("_") for d in model_dirs]
+    short = min(len(t) for t in toks)
+    p = 0
+    while p < short and all(t[p] == toks[0][p] for t in toks):
+        p += 1
+    s = 0
+    while s < short - p and all(t[-1 - s] == toks[0][-1 - s] for t in toks):
+        s += 1
+    return ["_".join(t[p: len(t) - s]) or d for t, d in zip(toks, model_dirs)]
+
+
+def build_settings(cfg: dict) -> dict:
+    project_root = Path(str(get_value(cfg, "project_root"))).expanduser()
+    outputs_root = project_root / str(get_value(cfg, "outputs_root", "outputs"))
+    vla_root = outputs_root / "skillVLA_FT"          # FT runs (matches FT training output)
+    default_ckpt = str(get_value(cfg, "checkpoint", "last"))
+    target_task = str(get_value(cfg, "target_task", "libero_10"))
+    image_key = str(get_value(cfg, "image_key", "observation.images.image"))
     eval_terminator = str(get_value(cfg, "eval_terminator", "ft")).strip().lower()
     if eval_terminator not in ("ft", "base", "stage2"):
-        raise ValueError(f"eval_terminator must be 'ft', 'base', or 'stage2', got {eval_terminator!r}")
-    if eval_terminator == "stage2" and not stage2_pretrained:
-        raise ValueError("eval_terminator=stage2 but the FT checkpoint config has no pretrained_path "
-                         "(the Stage-2 source). Can't locate the Stage-2 terminator.")
+        raise ValueError(f"eval_terminator must be 'ft', 'base', or 'stage2' (got {eval_terminator!r}).")
+
+    # `models` (list of {model_dir, checkpoint?, label?}) → MULTI-model side-by-side (same scenes via the
+    # shared seed; per-task videos stitched into a labelled grid). Otherwise the single `model_dir`.
+    models_yaml = get_value(cfg, "models", None)
+    if isinstance(models_yaml, list) and models_yaml:
+        entries = [{"model_dir": str(get_value(e, "model_dir")),
+                    "checkpoint": str(get_value(e, "checkpoint", default_ckpt)),
+                    "label": str(get_value(e, "label", "")).strip()} for e in models_yaml]
+    else:  # back-compat: a single top-level model_dir (a 1-entry `models` list behaves identically)
+        md = get_value(cfg, "model_dir", None)
+        if not md:
+            raise ValueError("Set `models` (a list of {model_dir, checkpoint?, label?}) — or a single "
+                             "`model_dir` — in the eval yaml.")
+        entries = [{"model_dir": str(md), "checkpoint": default_ckpt, "label": ""}]
+
+    resolved = [_resolve_model(vla_root, e["model_dir"], e["checkpoint"], eval_terminator) for e in entries]
+    autos = _auto_labels([e["model_dir"] for e in entries])
+    labels: list[str] = []
+    for e, a in zip(entries, autos):
+        lbl = (e["label"] or a).replace("/", "_").replace(" ", "_")
+        while lbl in labels:                      # panel dirs are keyed by label → must be unique
+            lbl += "x"
+        labels.append(lbl)
+
+    # eval_dropout 프로브: 각 모델을 같은 체크포인트의 두 패널로 복제 — "{label}_vlm"(엣지 연결) vs
+    # "{label}_vlm_drop"(추론에서 cond/action→VLM 절단; 이산 skill 코드만 전달). 스킬 출처는 모든 패널이
+    # use_gt_skill을 따름(gt=GT 주입 / pred=VLM이 별도 실행해 skill만). 멀티모델 기계 전체 재사용.
+    eval_dropout = as_bool(get_value(cfg, "eval_dropout", False))
+    drop_flags = [False] * len(resolved)
+    dropcmp_base = list(labels)
+    if eval_dropout:
+        paired_resolved, paired_labels, drop_flags = [], [], []
+        for lbl, r in zip(labels, resolved):
+            pfx = "" if len(resolved) == 1 else f"{lbl}_"   # 단일 모델이면 그냥 vlm / vlm_drop
+            paired_resolved += [r, dict(r)]
+            paired_labels += [f"{pfx}vlm", f"{pfx}vlm_drop"]
+            drop_flags += [False, True]
+        resolved, labels = paired_resolved, paired_labels
+
+    m0 = resolved[0]
+    multi = len(resolved) >= 2
+
+    model_dir, checkpoint, policy_path = m0["model_dir"], m0["checkpoint"], m0["policy_path"]
+    base_fsq, train_terminator_used = m0["base_fsq"], m0["train_terminator_used"]
+    ft_fsq_path, skill_latents_path = m0["ft_fsq_path"], m0["skill_latents_path"]
+    raw_dataset_dir, gt_skill_dataset_dir = m0["raw_dataset_dir"], m0["gt_skill_dataset_dir"]
 
     use_gt_skill = as_bool(get_value(cfg, "use_gt_skill", False))
     advance_mode = str(get_value(cfg, "skill_advance_mode", "terminator"))
-    # Folder suffix = _{term}_{mode}: term is the RESOLVED terminator (ft / base / s2), mode is the
-    # skill_end_mode (and / pro / ter). Oracle runs get a gtskill prefix so they don't collide.
-    if eval_terminator == "stage2":
-        term_tag = "s2"
-    elif eval_terminator == "base":
-        term_tag = "base"
-    else:  # ft → resolves to base when FT didn't co-train a terminator
-        term_tag = "ft" if train_terminator_used else "base"
-    mode_tag = {"and": "and", "progress": "pro", "termination": "ter"}.get(
-        str(get_value(cfg, "skill_end_mode", "termination")), "ter")
-    suffix = f"{term_tag}_{mode_tag}"
-    if use_gt_skill:
-        suffix = f"gtskill-{advance_mode}_{suffix}"
-    run_name = f"{model_dir}_{checkpoint}_{target_task}_{suffix}"
+
+    # EPISODE-EXACT eval (stage1 방식, 항상 ON): 각 롤아웃을 데이터셋 에피소드의 MuJoCo init_state로 리셋.
+    # eval_init_states.npz(source당 공유; stage1_eval/oracle_matching이 생성)가 없으면 자동으로
+    # seed-기반 리셋으로 폴백(경고). use_gt_skill이면 GT 시퀀스도 그 에피소드에 정렬됨.
+    missing = [r["model_dir"] for r in resolved
+               if not (r["eval_init_states_path"] and Path(r["eval_init_states_path"]).is_file())]
+    if missing:
+        print(f"[ft_eval] eval_init_states.npz missing for {missing} — falling back to seed-based "
+              "resets. Build it: stage1_eval/oracle_matching/run.sh <source>", file=sys.stderr)
+        for r in resolved:
+            r["eval_init_states_path"] = ""
+
+    # Folder suffix = _{skill_src}_{term_tag}[_{eval_exp}]: skill_src = 스킬 출처 — "pred"(모델의 skill
+    # 예측) | "gt"(GT 시퀀스 주입; advance_mode≠terminator면 gt-{mode}). term_tag = 해석된 terminator
+    # (ft / base / s2) — FT의 1차 비교 축이라 폴더명에 유지. 그 외 표준값 벗어난 ablation은 eval_exp로.
+    skill_src = "gt" if use_gt_skill else "pred"
+    if use_gt_skill and advance_mode != "terminator":
+        skill_src = f"gt-{advance_mode}"
+    eval_exp = str(get_value(cfg, "eval_exp", "")).strip()   # free-form folder tag
+    term_suffix = m0["term_tag"] if not multi else eval_terminator.replace("stage2", "s2")
+    suffix = f"{skill_src}_{term_suffix}" + (f"_{eval_exp}" if eval_exp else "")
+    if multi:
+        if eval_dropout:   # self-compare per checkpoint → base model name(s) + _dropcmp
+            core = model_dir if len(dropcmp_base) == 1 else "compare_" + "_vs_".join(dropcmp_base)
+            run_name = f"{core}_{checkpoint}_{target_task}_{suffix}_dropcmp"
+        else:
+            run_name = "compare_" + "_vs_".join(labels) + f"_{checkpoint}_{target_task}_{suffix}"
+        models_json = json.dumps([
+            {"label": lbl, "policy_path": str(r["policy_path"]), "base_fsq": r["base_fsq"],
+             "ft_fsq_path": str(r["ft_fsq_path"]), "ft_run_dir": str(r["ft_run_dir"]),
+             "checkpoint": r["checkpoint"], "term_kind": r["term_kind"],
+             "stage2_fsq_path": r["stage2_fsq_path"], "stage2_run_dir": r["stage2_run_dir"],
+             "stage2_checkpoint": r["stage2_checkpoint"],
+             "gt_skill_dataset_dir": r["gt_skill_dataset_dir"],
+             "eval_init_states_path": r["eval_init_states_path"],
+             "drop_vlm": bool(d)}
+            for lbl, r, d in zip(labels, resolved, drop_flags)])
+    else:
+        run_name = f"{model_dir}_{checkpoint}_{target_task}_{suffix}"
+        models_json = ""
     eval_out_dir = _HERE.parent.parent / "outputs" / run_name
 
     settings: dict = {
         "project_root": project_root,
         "lerobot_root": project_root / "lerobot",
-        # model (structure restored from the checkpoint config on --policy.path)
+        # model-0 aliases (submit's artifact checks + the single-model path use these directly).
+        # MULTI: the full per-model list rides MODELS_JSON (read by eval.sbatch's panel loop).
+        "models_json": models_json,
+        "models_labels": json.dumps(labels) if multi else "",
+        "models_per_row": int(get_value(cfg, "models_per_row", 0) or 0),
         "policy_path": policy_path,
         "checkpoint": checkpoint,
-        # terminator: the eval sbatch resolves FSQ_FOR_EVAL = ft_fsq_path (lazy-exported from THIS
-        # checkpoint if missing) when train_terminator ran, else base_fsq.
-        "base_fsq": base_fsq,                 # always-present dataset FSQ (prereq check + fallback + export base)
+        # terminator: eval sbatch picks FSQ_FOR_EVAL by TERM_KIND — "ft" → ft_fsq_path (lazy-exported
+        # from THIS checkpoint if missing), "stage2" → stage2_fsq_path (lazy-exported from the Stage-2
+        # source), "base" → base_fsq.
+        "base_fsq": base_fsq,                 # dataset FSQ (pre co-train; existence check + export base)
         "ft_fsq_path": ft_fsq_path,           # per-checkpoint adapted terminator (checkpoints/<ckpt>/FSQ_ft.pt)
-        "ft_run_dir": run_root,               # for export_ft_terminator.py --ft_run_dir
+        "ft_run_dir": vla_root / model_dir,   # for export_ft_terminator.py --ft_run_dir
+        "term_kind": m0["term_kind"],         # resolved ft|base|stage2 → eval.sbatch FSQ pick
         "train_terminator_used": train_terminator_used,
-        # terminator choice (ft | base | stage2) + the Stage-2 source terminator paths
-        "eval_terminator": eval_terminator,
-        "stage2_fsq_path": str(stage2_fsq_path),     # Stage-2 ckpt's FSQ_ft.pt (eval_terminator=stage2)
-        "stage2_run_dir": str(stage2_run_dir),       # for lazy export_ft_terminator.py --ft_run_dir
-        "stage2_checkpoint": str(stage2_checkpoint), # Stage-2 ckpt step
+        # Stage-2 source terminator paths (term_kind=stage2)
+        "stage2_fsq_path": m0["stage2_fsq_path"],
+        "stage2_run_dir": m0["stage2_run_dir"],
+        "stage2_checkpoint": m0["stage2_checkpoint"],
         "skill_latents_path": skill_latents_path,
         "raw_dataset_dir": raw_dataset_dir,
+        # EPISODE-EXACT: dataset-episode MuJoCo init states ("" = seed-based resets; model-0 alias)
+        "eval_init_states_path": m0["eval_init_states_path"],
         "image_key": image_key,
-        # eval rollout
+        # eval rollout — task_ids is env-overridable (TASK_IDS): submit_eval.sh splits it across
+        # eval_num_gpus Slurm jobs (1 GPU each), all writing into the SAME out dir (disjoint tasks).
         "target_task": target_task,
         "task_ids": str(get_value(cfg, "task_ids", "[0,1,2,3,4,5,6,7,8,9]")),
+        "eval_num_gpus": int(get_value(cfg, "eval_num_gpus", 1)),
         "n_episodes": int(get_value(cfg, "n_episodes", 5)),
         "n_action_steps": int(get_value(cfg, "n_action_steps", 5)),
         "eval_batch_size": int(get_value(cfg, "eval_batch_size", 1)),
@@ -133,23 +243,25 @@ def build_settings(cfg: dict) -> dict:
         "max_videos_per_task": int(get_value(cfg, "max_videos_per_task", 5)),
         "video_frame_stride": int(get_value(cfg, "video_frame_stride", 2)),
         "video_fps": int(get_value(cfg, "video_fps", 10)),
-        "skill_html": as_bool(get_value(cfg, "skill_html", True)),
+        # multi-model compare → skill_html forced off (N× runtime; the compare product is the stitched grid)
+        "skill_html": as_bool(get_value(cfg, "skill_html", True)) and not multi,
         "skill_html_train_samples": int(get_value(cfg, "skill_html_train_samples", 10)),
-        # inference knobs (model structure comes from the checkpoint)
+        # inference knobs (eval-time tuning; model structure comes from the checkpoint)
         "skill_end_mode": str(get_value(cfg, "skill_end_mode", "termination")),
         "skill_end_threshold": str(get_value(cfg, "skill_end_threshold", 0.5)),
         "skill_end_progress_threshold": str(get_value(cfg, "skill_end_progress_threshold", 0.9)),
         "inference_skill_max_length": int(get_value(cfg, "inference_skill_max_length", 200)),
-        # oracle eval
+        # oracle eval: teacher-force GT skills + pick transition timing (gt vs terminator)
         "use_gt_skill": use_gt_skill,
         "gt_skill_dataset_dir": gt_skill_dataset_dir,
         "skill_advance_mode": advance_mode,
-        # output / wandb
+        # output / wandb — chunked submission (TASK_TAG, e.g. "t0-4") → distinct wandb run per chunk
         "wandb_project": str(get_value(cfg, "wandb_project", "VLA_eval")),
-        "wandb_run_name": run_name,
+        "wandb_run_name": run_name + (f"_{os.environ['TASK_TAG']}" if os.environ.get("TASK_TAG") else ""),
         "eval_out_dir": eval_out_dir,
     }
 
+    # Slurm partition/qos/nodelist/exclude are canonical (global_config.yaml train_*).
     part = ",".join(as_list(get_value(cfg, "train_partition", ["debug"]))) or "debug"
     excl = ",".join(as_list(get_value(cfg, "train_exclude_nodes", [])))
     settings.update({

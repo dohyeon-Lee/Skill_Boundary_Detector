@@ -12,6 +12,7 @@ terminator) lives in the run dir. Emits shell exports (--shell).
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import sys
 from pathlib import Path
@@ -82,10 +83,20 @@ def build_settings(cfg: dict) -> dict:
         # Prefer the prefix when present (back-compat), else fall back to the yaml's source_dataset.
         source_from_dir = stage1_run_name[: _rt.start()].rstrip("_")
     source_dataset = source_from_dir or str(get_value(cfg, "source_dataset", "")).strip()
+    if not source_dataset and not scratch:
+        # DISAMBIGUATION PROBE: the Stage-1 checkpoint's train_config.json records the dataset it
+        # trained on (dataset.root = .../{source}/{run_tag}/skillvla) → derive source from there.
+        # Robust even when the SAME run_tag exists under several sources (e.g. after building an FT
+        # dataset with the parent's run_tag). Same pattern as FT's run_tag derivation.
+        _s1_tc = stage1_ckpt / "train_config.json"
+        if _s1_tc.is_file():
+            _root = str(((json.loads(_s1_tc.read_text()).get("dataset") or {}).get("root")) or "")
+            if _root and Path(_root).name == "skillvla" and Path(_root).parent.name == run_tag:
+                source_dataset = Path(_root).parent.parent.name
     if not source_dataset:
-        # DP naming has no prefix (and source_dataset isn't set) → AUTO-DERIVE: the run_tag lives under exactly
-        # one source dir in the skillvla root. Set source_dataset in the yaml only if the SAME run_tag exists
-        # under more than one source.
+        # Last resort (scratch, or no readable Stage-1 train_config.json): the run_tag lives under
+        # exactly one source dir in the skillvla root. If it exists under several, set source_dataset
+        # in the yaml.
         cands = sorted({p.parent.name for p in skillvla_root.glob(f"*/{run_tag}") if p.is_dir()})
         if len(cands) == 1:
             source_dataset = cands[0]
@@ -221,6 +232,8 @@ def build_settings(cfg: dict) -> dict:
         "vlm_dropout_p": vlm_dropout_p,            # CFG-style VLM dropout prob (train only; 0 = off)
         "vlm_dropout_p_end": "" if vlm_dropout_p_end is None else vlm_dropout_p_end,   # schedule end ("" = constant)
         "vlm_dropout_decay_steps": vlm_dropout_decay_steps,
+        # per-component update tracking (wandb param_drift/* + param_drift_rel/*)
+        "track_param_drift": as_bool(get_value(cfg, "track_param_drift", False)),
         # scratch mode (no Stage-1): fresh expert/cond; arch from the two knobs below
         "scratch": scratch,
         "s1_vision_backbone": s1_vision_backbone,

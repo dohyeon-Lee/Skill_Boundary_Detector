@@ -61,6 +61,19 @@ if [ -f "${CONFIG_JSON}" ]; then
   RESUME_ARGS=(--resume=true --config_path="${CONFIG_JSON}")
 fi
 
+# PT-forgetting probe (skillVLA FT와 동일 인프라): 고정 PT-dataset 배치를 PROBE_EVERY 스텝마다
+# forward-only 재측정 → wandb probe/* + probe_forget/*. Empty root = probe off.
+PROBE_ARGS=()
+if [ -n "${FT_PROBE_DATASET_ROOT}" ]; then
+  PROBE_ARGS=(
+    --probe_dataset_root="${FT_PROBE_DATASET_ROOT}"
+    --probe_dataset_repo_id="${FT_PROBE_DATASET_REPO_ID}"
+    --probe_every="${FT_PROBE_EVERY}"
+    --probe_batches="${FT_PROBE_BATCHES}"
+    --probe_seed="${FT_PROBE_SEED}"
+  )
+fi
+
 PYTORCH_ALLOC_CONF=expandable_segments:True "${TRAIN_BIN}" \
   --dataset.repo_id="lerobot/${FT_DATASET}" \
   --dataset.root="${FT_DATASET_DIR}" \
@@ -83,6 +96,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True "${TRAIN_BIN}" \
   --batch_size="${FT_BATCH_SIZE}" \
   --policy.optimizer_lr="${FT_LR}" \
   --num_workers="${FT_NUM_WORKERS}" \
+  ${PROBE_ARGS[@]+"${PROBE_ARGS[@]}"} \
   ${RESUME_ARGS[@]+"${RESUME_ARGS[@]}"}
 
 echo "DONE -> ${FT_OUTPUT_DIR}"

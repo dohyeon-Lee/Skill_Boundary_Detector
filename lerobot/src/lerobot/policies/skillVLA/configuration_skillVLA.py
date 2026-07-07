@@ -56,8 +56,8 @@ class SkillVLAConfig(PI05Config):
     # N learned probe tokens read the VLM's FINAL-layer output via JOINT concat-KV attention (the probes'
     # own K/V compete with the VLM K/V in one softmax — same joint pattern as cond/action, but read-only
     # so the VLM is never perturbed). Respects attend_language (images always, language iff True). The
-    # pooled probe hidden feeds the SkillHead. Freezing the skill decoder for VLM-only finetuning freezes
-    # BOTH this reader and the head (freeze_skill_head).
+    # pooled probe hidden feeds the SkillHead. For finetuning the two are frozen SEPARATELY:
+    # freeze_skill_reader (this reader) and freeze_skill_head (the FSQ readout).
     num_reader_tokens: int = 4
     """Number of learned probe/reader tokens in the skill reader (they self-attend + read the VLM)."""
     reader_depth: int = 2
@@ -130,8 +130,8 @@ class SkillVLAConfig(PI05Config):
     # SINGLE SOURCE OF TRUTH: when vlm_dropout_p == 0 (no dropout) every batch is an A (VLM-present) batch,
     # so freeze_vlm_vsa_* applies STATICALLY and freeze_vsa_* is ignored (the old separate freeze_vlm /
     # freeze_cond_encoder / freeze_action_expert / freeze_vlm_vision flags were removed). Only the skill
-    # decoder (freeze_skill_head = skill_reader + skill_head) has its own static flag (post-VLM, supervised
-    # every batch).
+    # decoder has its own static flags (post-VLM, supervised every batch), split into freeze_skill_reader
+    # (probe reader) and freeze_skill_head (FSQ readout).
     # NOTE vlm_vision freeze gates only the VISION TOWER params; on a B batch with llm frozen but
     # vlm_vision trainable, the skill loss still updates the tower THROUGH the frozen LLM.
     # ⚠ MULTI-GPU: with num_gpus>1 (DDP) AND a group trained in only ONE regime, ranks that pick different
@@ -148,13 +148,40 @@ class SkillVLAConfig(PI05Config):
 
     # ── Freeze toggles ──
     # (expert / cond / vlm / vlm_vision freezing is ALL governed by freeze_vlm_vsa_* / freeze_vsa_* above —
-    #  at p=0 the A dict applies statically. Only the skill decoder keeps its own flag:)
+    #  at p=0 the A dict applies statically. Only the skill decoder keeps its own flags, split in two:)
     freeze_skill_head: bool = False
-    """Freeze the WHOLE skill decoder — the skill reader (probe tokens) AND the SkillHead readout. Default
-    False (Stage-2 trains them). Finetuning sets True: the reader + FSQ-coordinate readout stay pinned to
-    the (unchanged) codebook the frozen action expert / terminator expect, so ALL skill-prediction
-    adaptation goes into the VLM trunk. The frozen decoder still conducts gradient to the trunk (incl. the
-    cond_skill_source=pred STE path), it just isn't updated."""
+    """Freeze the SkillHead readout (pooled reader hidden → tanh FSQ-coordinate regression). Finetuning
+    sets True: the readout stays pinned to the (unchanged) codebook the frozen action expert / terminator
+    expect. The frozen head still conducts gradient to the reader/trunk (incl. the cond_skill_source=pred
+    STE path), it just isn't updated."""
+    freeze_skill_reader: bool = False
+    """Freeze the SkillReader (probe tokens + joint concat-KV layers reading the VLM's final layer).
+    Separate from freeze_skill_head: the head's code mapping is codebook-pinned (freeze in FT), while the
+    reader is an obs→skill feature extractor one may WANT to adapt to a new task — freeze_skill_head=true
+    + freeze_skill_reader=false re-grounds skill prediction through the reader too, not just the trunk."""
+
+    # ── Continual-learning VSA distillation (FT anti-forgetting) ──
+    # In B (VSA-only, VLM-severed) batches, besides the strong GT-skill action loss, feed the SAME
+    # (obs, x_t, t) with SAMPLED non-GT skills and match the student's action to a FROZEN teacher =
+    # the PT/warm-start VSA. This pins the skill→action function across the codebook (not just the GT
+    # skill the new task visits) → the reusable motor repertoire is preserved (LwF-style, replay-free).
+    # Off by default (pure ablation). Requires vlm_dropout to fire (needs B batches) and expert/cond
+    # unfrozen in B (a frozen VSA can't forget → distillation is moot).
+    vsa_distill: bool = False
+    """Enable the VSA teacher distillation on sampled skills in B batches."""
+    vsa_distill_weight: float = 0.2
+    """λ: distillation loss weight relative to the (strong) GT-skill BC loss. Weak (0.1–0.3)."""
+    vsa_distill_n_local: int = 2
+    """# sampled skills that are FSQ-grid NEIGHBORS of the GT code (obs-conditional; preserves the
+    local skill→action geometry so neighbours stay distinct under the new task's adaptation)."""
+    vsa_distill_n_global: int = 2
+    """# sampled skills drawn from the global code frequency, EXCLUDING the GT code + its neighbours
+    (the cross-context repertoire — the region the new task never visits, where forgetting concentrates)."""
+    vsa_distill_neighbor_radius: int = 1
+    """FSQ-grid radius (±r per dim) defining the GT neighbourhood for the local samples / exclusion set."""
+    vsa_distill_freq_path: str | None = None
+    """npz with per-code counts (key 'counts', len == skill_vocab_size) for the global sampler. Blank →
+    uniform over the codebook. Built from the PT skillvla dataset's GT skill_code histogram."""
 
     # ── Differential LR (relative to optimizer_lr) for the warm-started action/cond side ──
     expert_lr_scale: float = 1.0

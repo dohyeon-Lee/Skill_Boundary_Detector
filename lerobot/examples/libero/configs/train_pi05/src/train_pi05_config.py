@@ -96,6 +96,38 @@ def print_shell(settings: dict[str, Any]) -> None:
         print(f"export {key.upper()}={shell_value(value)}")
 
 
+def _ft_probe_settings(cfg: dict[str, Any], project_root: Path, ft_dataset_root: str,
+                       ft_pre_dataset: str, pt_ckpt: Path) -> dict[str, Any]:
+    """PT-forgetting probe knobs for pi05 FT — the SAME lerobot_train infra as skillVLA FT (fixed
+    PT-dataset batches, pinned noise, wandb probe/* + probe_forget/*). ft_probe_pt_forgetting=false
+    → empty root = probe off. PT dataset derived from the PT checkpoint's train_config.json;
+    falls back to {project_root}/{ft_dataset_root}/{ft_pretrained_dataset}."""
+    on = as_bool(get_value(cfg, "ft_probe_pt_forgetting", False, env="FT_PROBE_PT_FORGETTING"))
+    root, repo = "", ""
+    if on:
+        tc = pt_ckpt / "train_config.json"
+        if tc.is_file():
+            ds = json.loads(tc.read_text()).get("dataset") or {}
+            root, repo = str(ds.get("root") or ""), str(ds.get("repo_id") or "")
+        # 이식 면역: 다른 서버에서 학습된 PT는 그 서버의 절대경로가 박혀 있음 → 존재하지 않으면
+        # 이 서버의 {project_root}/{ft_dataset_root}/{데이터셋명}으로 재앵커 (FSQ/ISS와 같은 패턴).
+        if root and not Path(root).is_dir():
+            root = str(project_root / ft_dataset_root / Path(root).name)
+        if not root:
+            root = str(project_root / ft_dataset_root / ft_pre_dataset)
+        if not repo:
+            repo = f"lerobot/{Path(root).name}"
+        if not Path(root).is_dir():
+            raise ValueError(f"ft_probe_pt_forgetting=true but the PT dataset dir does not exist: {root}")
+    return {
+        "ft_probe_dataset_root": root,
+        "ft_probe_dataset_repo_id": repo,
+        "ft_probe_every": int(get_value(cfg, "ft_probe_every", 250, env="FT_PROBE_EVERY")),
+        "ft_probe_batches": int(get_value(cfg, "ft_probe_batches", 4, env="FT_PROBE_BATCHES")),
+        "ft_probe_seed": int(get_value(cfg, "ft_probe_seed", 12345, env="FT_PROBE_SEED")),
+    }
+
+
 def run_name(prefix: str, dataset: str, batch_size: int, exp: str) -> str:
     name = f"{prefix}_{dataset}_pi05_batch{batch_size}"
     if exp:
@@ -143,8 +175,15 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
     ft_pre_batch = int(get_value(cfg, "ft_pretrained_batch_size", pt_batch_size, env="FT_PRETRAINED_BATCH_SIZE"))
     ft_pre_exp = str(get_value(cfg, "ft_pretrained_exp", pt_exp, env="FT_PRETRAINED_EXP")).strip()
     ft_pre_ckpt = str(get_value(cfg, "ft_pretrained_checkpoint", "050000", env="FT_PRETRAINED_CHECKPOINT"))
-    ft_pre_run_name = run_name("PT", ft_pre_dataset, ft_pre_batch, ft_pre_exp)
-    ft_run_name = f"FT_{ft_pre_ckpt}PT_{ft_dataset}_pi05_batch{ft_batch_size}"
+    # PT warm-start 소스: ft_pretrained_run_name(폴더명 그대로)이 있으면 그걸 쓰고, 없으면 레거시
+    # 방식(dataset/batch/exp로 PT_{dataset}_pi05_batch{bs}[_{exp}] 재조립)으로 폴백.
+    ft_pre_run_name = (str(get_value(cfg, "ft_pretrained_run_name", "", env="FT_PRETRAINED_RUN_NAME") or "").strip()
+                       or run_name("PT", ft_pre_dataset, ft_pre_batch, ft_pre_exp))
+    # freeze 태그 = (freeze_vision_encoder, freeze_language_model) 순 t/f 두 글자 (예: _ff, _ft)
+    ft_freeze_vis = as_bool(get_value(cfg, "ft_freeze_vision_encoder", False, env="PI05_FT_FREEZE_VISION_ENCODER"))
+    ft_freeze_lang = as_bool(get_value(cfg, "ft_freeze_language_model", False, env="PI05_FT_FREEZE_LANGUAGE_MODEL"))
+    ft_frz_tag = ("t" if ft_freeze_vis else "f") + ("t" if ft_freeze_lang else "f")
+    ft_run_name = f"FT_{ft_pre_ckpt}PT_{ft_dataset}_pi05_batch{ft_batch_size}_{ft_frz_tag}"
     if ft_exp:
         ft_run_name = f"{ft_run_name}_{ft_exp}"
 
@@ -198,9 +237,14 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         "ft_pretrained_run_name": ft_pre_run_name,
         "ft_pretrained_checkpoint": ft_pre_ckpt,
         "ft_pretrained_model_path": pi05_pt_root / ft_pre_run_name / "checkpoints" / ft_pre_ckpt / "pretrained_model",  # PT source ← pi05_PT
-        # FT freeze probes (expert always trains; ft_train_expert_only was dropped — use both probes for freeze_VLM)
-        "ft_freeze_vision_encoder": as_bool(get_value(cfg, "ft_freeze_vision_encoder", False, env="PI05_FT_FREEZE_VISION_ENCODER")),
-        "ft_freeze_language_model": as_bool(get_value(cfg, "ft_freeze_language_model", False, env="PI05_FT_FREEZE_LANGUAGE_MODEL")),
+        # FT freeze probes (expert always trains; run name carries them as the _{vf}{lf} tag)
+        "ft_freeze_vision_encoder": ft_freeze_vis,
+        "ft_freeze_language_model": ft_freeze_lang,
+        # PT-forgetting probe (skillVLA FT와 동일 인프라/wandb 형식: probe/* + probe_forget/*):
+        # FT 중 probe_every 스텝마다 PT 데이터셋 고정 배치를 forward-only 재측정. PT 데이터셋은
+        # PT 체크포인트의 train_config.json(dataset.root/repo_id)에서 유도, 없으면 yaml 경로로 폴백.
+        **_ft_probe_settings(cfg, project_root, ft_dataset_root, ft_pre_dataset,
+                             pi05_pt_root / ft_pre_run_name / "checkpoints" / ft_pre_ckpt / "pretrained_model"),
         # Eval
         "eval_target_task": eval_target_task,
         "eval_task_ids": str(get_value(cfg, "eval_task_ids", "[0,1,2,3,4,5,6,7,8,9]", env="TASK_IDS")),
