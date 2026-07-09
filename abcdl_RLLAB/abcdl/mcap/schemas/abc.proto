@@ -1,0 +1,30 @@
+syntax = "proto3";
+
+import "google/protobuf/timestamp.proto";
+
+message RobotState {
+  google.protobuf.Timestamp timestamp = 1;
+  repeated double position = 2;
+  repeated double velocity = 3;
+  repeated double acceleration = 4;
+  repeated double torque = 5;
+  repeated double pose = 6;
+}
+
+message GripperState {
+  google.protobuf.Timestamp timestamp = 1;
+  repeated double position = 2;
+  repeated double velocity = 3;
+  repeated double acceleration = 4;
+  repeated double torque = 5;
+}
+
+message Instructions {
+  google.protobuf.Timestamp timestamp = 1;
+  string data = 2;
+}
+
+message Annotation {
+  google.protobuf.Timestamp timestamp = 1;
+  string data = 2;
+}
