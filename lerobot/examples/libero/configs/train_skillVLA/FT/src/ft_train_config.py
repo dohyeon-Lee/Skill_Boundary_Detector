@@ -125,26 +125,22 @@ def build_settings(cfg: dict) -> dict:
     s1_vision_backbone = str(s2_cfg.get("s1_vision_backbone", "siglip"))
     s1_state_cond_mode = str(s2_cfg.get("s1_state_cond_mode", "state"))
 
-    # Per-regime freeze (stage2와 동일한 단일 소스): FT도 vlm_dropout p>0이면 배치마다 A/B 토글,
-    # p=0이면 A 딕셔너리가 정적 적용. FT 기본 A = {expert:t, cond:t, llm:f, vlm_vision:f} (모터 동결,
-    # VLM 재접지). "vlm"은 llm의 레거시 별칭으로 허용.
+    # Per-regime freeze: 3-way A/B/C (mirror Stage-2). regime_probs REQUIRED. A=연결+freeze_A(perception),
+    # B=연결+freeze_B(연결 모터), C=절단+freeze_C(순수 VSA, 새 task 실행). "vlm"은 llm의 별칭.
     _RKEYS = ("expert", "cond", "llm", "vlm_vision")
-    _FA_DEF = {"expert": True, "cond": True, "llm": False, "vlm_vision": False}
-    _fa = get_value(cfg, "freeze_vlm_vsa", {}) or {}
-    _fb = get_value(cfg, "freeze_vsa", {}) or {}
-    def _grp(d, k, dflt):
-        return as_bool(d.get(k, d.get("vlm", dflt) if k == "llm" else dflt))
-    frz = {f"freeze_vlm_vsa_{k}": _grp(_fa, k, _FA_DEF[k]) for k in _RKEYS}
-    frz.update({f"freeze_vsa_{k}": _grp(_fb, k, False) for k in _RKEYS})
-
-    # VLM dropout (+선형 스케줄) — stage2와 동일. FT에선 pred-skill 모드와 조합되어 B 배치 =
-    # "자기 예측 skill만으로 VLM 없이 실행" 훈련이 됨.
-    vlm_dropout_p = float(get_value(cfg, "vlm_dropout_p", 0.0))
-    _pe = get_value(cfg, "vlm_dropout_p_end", None)
-    vlm_dropout_p_end = None if str(_pe).lower() in ("none", "", "null", "~") else float(_pe)
-    vlm_dropout_decay_steps = int(get_value(cfg, "vlm_dropout_decay_steps", 0) or 0)
-    sched_on = vlm_dropout_p_end is not None and vlm_dropout_decay_steps > 0
-    regimes_ever = vlm_dropout_p > 0 or (sched_on and vlm_dropout_p_end > 0)
+    def _grp(d, k):
+        return as_bool(d.get(k, d.get("vlm", False)) if k == "llm" else d.get(k, False))
+    _rp = get_value(cfg, "regime_probs", None)
+    if not (isinstance(_rp, (list, tuple)) and len(_rp) == 3):
+        raise ValueError("regime_probs must be a 3-element list [A, B, C] (합 1). 2-way vlm_dropout "
+                         "legacy가 제거됨 — regime_probs를 반드시 지정하세요.")
+    regime_probs = [float(x) for x in _rp]
+    _fa = get_value(cfg, "freeze_A", {}) or {}
+    _fb = get_value(cfg, "freeze_B", {}) or {}
+    _fc = get_value(cfg, "freeze_C", {}) or {}
+    frz = {f"freeze_vlm_vsa_{k}": _grp(_fa, k) for k in _RKEYS}
+    frz.update({f"freeze_vsa_{k}": _grp(_fb, k) for k in _RKEYS})
+    frz.update({f"freeze_c_{k}": _grp(_fc, k) for k in _RKEYS})
 
     # ── PT-forgetting probe: 부모 Stage-2의 학습 데이터셋(위에서 유도)에서 고정 배치를 뽑아
     # probe_every 스텝마다 forward-only로 loss를 재측정 (노이즈까지 seed 고정 = 같은 자) → wandb probe/*.
@@ -156,28 +152,27 @@ def build_settings(cfg: dict) -> dict:
     freeze_skill_head = as_bool(get_value(cfg, "freeze_skill_head", True))
     freeze_skill_reader = as_bool(get_value(cfg, "freeze_skill_reader", True))
 
-    # run_name = {source}_{부모pre}_{s2ckpt}__{부모regime}__{gt|pred}_{P}p_{A}[_{B}]__{H}{R}[_{exp}]
+    # run_name = {source}_{부모pre}_{s2ckpt}__{부모regime}__{gt|pred}_{pA}{A}_{pB}{B}_{pC}{C}__{H}{R}[_distill..][_nohold][_exp]
     #   부모pre/부모regime = 부모 Stage-2 폴더명을 "__" 기준으로 나눈 앞/뒤 (run_tag·s1정보·scratch는
-    #   부모pre에 이미 포함; 옛-스킴 부모면 regime 세그먼트 생략). FT 자신의 레짐은 {gt|pred} 뒤에
-    #   상시 표기: p 태그 + A(freeze_vlm_vsa) 4글자, p>0이면 B(freeze_vsa)도. term은 이름에서 제외.
+    #   부모pre에 이미 포함; 옛-스킴 부모면 regime 세그먼트 생략). FT 자신의 레짐은 {gt|pred} 뒤에 3-way
+    #   {pA}{A}_{pB}{B}_{pC}{C} (stage2와 동일 표기). term은 이름에서 제외.
     parent_pre, _, parent_regime = stage2_run_name.partition("__")
-    if sched_on:
-        p_tag = (f"{int(round(vlm_dropout_p * 100))}to{int(round(vlm_dropout_p_end * 100))}p"
-                 f"{vlm_dropout_decay_steps // 1000}k")
-    else:
-        p_tag = f"{int(round(vlm_dropout_p * 100))}p"
     _tf = lambda pfx: "".join("t" if frz[f"freeze_{pfx}_{k}"] else "f" for k in _RKEYS)
-    ft_regime = f"{cond_skill_source}_{p_tag}_{_tf('vlm_vsa')}" + (f"_{_tf('vsa')}" if regimes_ever else "")
+    pa, pb, pc = (int(round(x * 100)) for x in regime_probs)
+    ft_regime = f"{cond_skill_source}_{pa}{_tf('vlm_vsa')}_{pb}{_tf('vsa')}_{pc}{_tf('c')}"
     hr = ("t" if freeze_skill_head else "f") + ("t" if freeze_skill_reader else "f")
-    # VSA distillation tag (on → distinct output dir so on/off ablations don't collide): distill{L}{G}w{λ}
+    # Distinct output dir so ablations don't collide: distill{L}{G}w{λ} — VSA (frozen-PT) distillation on.
     distill_tag = ""
     if as_bool(get_value(cfg, "vsa_distill", False)):
         _dw = int(round(float(get_value(cfg, "vsa_distill_weight", 0.2)) * 100))
         distill_tag = (f"_distill{int(get_value(cfg, 'vsa_distill_n_local', 2))}"
                        f"{int(get_value(cfg, 'vsa_distill_n_global', 2))}w{_dw}")
+    severed_hold_target = as_bool(get_value(cfg, "severed_hold_target", True))
     run_name = (f"{source_dataset}_{parent_pre}_{stage2_checkpoint}"
                 + (f"__{parent_regime}" if parent_regime else "")
                 + f"__{ft_regime}__{hr}{distill_tag}")
+    if not severed_hold_target:
+        run_name = f"{run_name}_nohold"        # ablation: severed VSA keeps the real cross-skill tail
     if exp:
         run_name = f"{run_name}_{exp}"
     vla_root = outputs_root / "skillVLA_FT"
@@ -225,10 +220,8 @@ def build_settings(cfg: dict) -> dict:
         **frz,
         "freeze_skill_head": freeze_skill_head,
         "freeze_skill_reader": freeze_skill_reader,
-        # VLM dropout (+스케줄) — stage2와 동일
-        "vlm_dropout_p": vlm_dropout_p,
-        "vlm_dropout_p_end": "" if vlm_dropout_p_end is None else vlm_dropout_p_end,
-        "vlm_dropout_decay_steps": vlm_dropout_decay_steps,
+        # 3-way regime [A,B,C] probs (REQUIRED — governs A/B/C sampling; **frz above carries freeze_A/B/C)
+        "regime_probs": ",".join(str(x) for x in regime_probs),
         # PT-forgetting probe ("" = off; root/repo_id는 부모 Stage-2 train_config.json에서 자동 유도)
         "probe_dataset_root": probe_dataset_root,
         "probe_dataset_repo_id": probe_repo_id,
@@ -244,11 +237,20 @@ def build_settings(cfg: dict) -> dict:
         "vsa_distill_n_local": int(get_value(cfg, "vsa_distill_n_local", 2)),
         "vsa_distill_n_global": int(get_value(cfg, "vsa_distill_n_global", 2)),
         "vsa_distill_neighbor_radius": int(get_value(cfg, "vsa_distill_neighbor_radius", 1)),
-        # code-frequency npz for the global sampler ("" → uniform). The "cross-context repertoire" to
-        # preserve = the PARENT PT dataset's skill usage → histogram next to the parent skillvla dir
-        # (build once: FT/src/build_skill_code_freq.py). Blank if not built → uniform over the codebook.
-        "vsa_distill_freq_path": (str(_freq_npz) if (
-            _freq_npz := (Path(s2_ds_root).parent / "skill_code_freq.npz")).is_file() else ""),
+        "severed_hold_target": severed_hold_target,   # severed VSA BC → Stage-1 stop+hold past skill_de
+
+        # Motion-counter / global-sampler histograms (skill_code_freq.npz per dataset; the sbatch
+        # auto-builds them). vsa_distill_freq_path = PARENT PT dataset → the first-FT SEED + global weight
+        # base. vsa_ft_freq_path = THIS FT dataset → added to the cumulative counter + defines the codes
+        # excluded from distill (unless prior clears the pct). Emitted only when distill is on.
+        "vsa_distill_freq_path": (str(Path(s2_ds_root).parent / "skill_code_freq.npz")
+                                  if as_bool(get_value(cfg, "vsa_distill", False)) else ""),
+        "vsa_ft_freq_path": (str(run_dir / "skill_code_freq.npz")
+                             if as_bool(get_value(cfg, "vsa_distill", False)) else ""),
+        "vsa_distill_prior_pct": float(get_value(cfg, "vsa_distill_prior_pct", 20.0)),
+        # PT/FT skillvla dirs the sbatch builds the histograms from (build_skill_code_freq.py)
+        "vsa_pt_skillvla_dir": s2_ds_root,
+        "vsa_ft_skillvla_dir": str(run_dir / "skillvla"),
         # output
         "skillvla_outputs_root": vla_root,
         "pt_run_name": run_name,

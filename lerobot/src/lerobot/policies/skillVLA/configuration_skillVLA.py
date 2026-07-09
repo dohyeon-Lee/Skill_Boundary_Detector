@@ -145,6 +145,28 @@ class SkillVLAConfig(PI05Config):
     freeze_vsa_cond: bool = False
     freeze_vsa_llm: bool = False
     freeze_vsa_vlm_vision: bool = False
+    # 3-way regime C (VLM severed, VSA) freeze dict. A uses freeze_vlm_vsa, B uses freeze_vsa, C uses
+    # these — so all three regimes are independently settable. Unused in the 2-way (binary) mode.
+    freeze_c_expert: bool = False
+    freeze_c_cond: bool = False
+    freeze_c_llm: bool = False
+    freeze_c_vlm_vision: bool = False
+
+    # 3-WAY regime (overrides the binary vlm_dropout coin when set). Per-batch sample of [A, B, C] with
+    # these fixed probabilities (no schedule). A = VLM CONNECTED, freeze_vlm_vsa (perception adapts,
+    # motor frozen). B = VLM CONNECTED, freeze_vsa (motor/VSA adapts WITH the frozen-VLM context —
+    # matches inference). C = VLM SEVERED, freeze_vsa (pure VSA, Stage-1 form). A+B = alternating-freeze
+    # on the connected model (never co-adapt at once); C keeps the VSA runnable VLM-free. Blank → the
+    # 2-way vlm_dropout_p coin (+ vsa_distill_main_connected) is used instead.
+    regime_probs: list[float] | None = None
+
+    # C (severed VSA) batches decode a skill VLM-free, structurally identical to Stage-1. When True, the
+    # BC target in C mirrors Stage-1: steps past the CURRENT skill's end (skill_de) — the chunk tail that
+    # would otherwise be supervised with the NEXT skill's real actions the severed VSA cannot know — are
+    # REPLACED with a HOLD (arm deltas → 0, gripper → last within-skill value) and still supervised, so
+    # each skill learns to STOP + HOLD at its boundary (self-contained/reusable; anti-forgetting). A/B
+    # (VLM connected) keep the real cross-skill tail. No-op if skill_de is absent from the batch.
+    severed_hold_target: bool = True
 
     # ── Freeze toggles ──
     # (expert / cond / vlm / vlm_vision freezing is ALL governed by freeze_vlm_vsa_* / freeze_vsa_* above —
@@ -180,8 +202,53 @@ class SkillVLAConfig(PI05Config):
     vsa_distill_neighbor_radius: int = 1
     """FSQ-grid radius (±r per dim) defining the GT neighbourhood for the local samples / exclusion set."""
     vsa_distill_freq_path: str | None = None
-    """npz with per-code counts (key 'counts', len == skill_vocab_size) for the global sampler. Blank →
-    uniform over the codebook. Built from the PT skillvla dataset's GT skill_code histogram."""
+    """npz with per-code counts (keys 'counts' [frames] + 'motion_counts' [trajectories]) for the global
+    sampler / motion-counter SEED. Blank → uniform. Built from the PARENT PT skillvla dataset."""
+    vsa_ft_freq_path: str | None = None
+    """(FT training) npz with THIS FT dataset's per-code 'motion_counts' — added to the persistent
+    cumulative motion counter (skill_motion_counts) at save time, so the lineage accumulates across FT
+    stages. Its codes are EXCLUDED from distill sampling (they're directly trained via the GT BC) unless
+    their PRIOR (pre-this-FT) motion count clears vsa_distill_prior_pct. Blank → counter not updated."""
+    vsa_distill_prior_pct: float = 20.0
+    """Percentile (over the PRIOR motion counter's used codes) below which a THIS-FT code is excluded
+    from distill sampling. e.g. 20 → an FT-dataset code is distilled only if its accumulated prior
+    motion count is in the top 80% of previously-seen codes (enough old knowledge to be worth
+    preserving); nearly-empty prior → skip (nothing to preserve, GT BC handles it)."""
+    vsa_gt_severed_bc: bool = False
+    """(needs vsa_distill_main_connected) ALSO train the GT skill VLM-SEVERED (pure VSA) against the GT
+    ACTION — in addition to the VLM-connected main BC — so the VSA-only path also learns the new task's
+    GT execution (not just the connected path). This is a real BC loss (vs the GT action, NOT the
+    teacher). No-op unless main_connected is on (else the main BC is already the severed one)."""
+    vsa_gt_severed_weight: float = 1.0
+    """Weight of the severed GT BC relative to the connected main flow BC."""
+    vsa_distill_main_connected: bool = False
+    """In a B batch, run the MAIN GT BC forward with the VLM CONNECTED (frozen per freeze_vsa) instead
+    of VSA-only — the motor then adapts to the new task WITH the VLM context it has at inference
+    (removes the train/inference mismatch). Independent of vsa_distill: on its own it just makes B a
+    'train motor VLM-connected' regime (an alternating-freeze with A); with vsa_distill on, the
+    distillation still uses the pure VSA-only path to preserve the old repertoire. The VLM already runs
+    in B (for the skill head), so this only flips the main forward's attention mask — no extra VLM
+    forward."""
+
+    # ── EMA-self distillation (Stage-2 forgetting prep) ──
+    # On SEVERED (C) batches only — the standalone/pure-VSA regime where random-skill preservation belongs
+    # (connected B trains the VSA to cooperate WITH the VLM; random skills have no matching language) —
+    # pin sampled non-GT skills to the model's OWN weight-EMA teacher (a shadow copy updated
+    # θ_ema ← α·θ_ema + (1−α)·θ EVERY step, so it still absorbs B's drift). GT gets its sharp BC; other
+    # skills are held near their recent-self behaviour → the GT update stays local (anti-forgetting prep)
+    # WITHOUT a frozen Stage-1 teacher (the EMA tracks Stage-2's own gains, τ≈1/(1−α) steps behind) and
+    # WITHOUT cross-skill contamination (each skill is pinned to ITS own past, not to the GT). Reuses the
+    # VSA-distill sampler + velocity machinery; the teacher source is the only change.
+    ema_self_distill: bool = False
+    """Enable the Stage-2 EMA-self distillation term."""
+    ema_self_alpha: float = 0.999
+    """Weight-EMA decay α. Effective memory ≈ 1/(1−α) steps (0.999 → ~1k steps behind)."""
+    ema_self_weight: float = 0.5
+    """Weight of the EMA-self distill loss relative to the main BC (0 → MONITOR-ONLY: logged, no gradient)."""
+    ema_self_n_local: int = 2
+    """# sampled GT-neighbour skills pinned to the EMA teacher (local geometry preservation)."""
+    ema_self_n_global: int = 2
+    """# sampled global (frequency/uniform) skills pinned to the EMA teacher (broad repertoire)."""
 
     # ── Differential LR (relative to optimizer_lr) for the warm-started action/cond side ──
     expert_lr_scale: float = 1.0
@@ -269,6 +336,11 @@ class SkillVLAConfig(PI05Config):
     standalone for the skill prediction (or GT is injected with use_gt_skill); ONLY the discrete
     skill code crosses to the action side. Used by stage2_eval's eval_dropout probe (VLM-attached
     vs VLM-severed side-by-side of the SAME checkpoint)."""
+    eval_vlm_override_path: str | None = None
+    """EVAL-only ablation: a checkpoint whose VLM (the WHOLE PaliGemma tower) OVERWRITES this
+    checkpoint's VLM after load, keeping this checkpoint's cond + action-expert (+ skill decoder). FT
+    eval sets this to the run's Stage-2 source to run the FT'd motor under the ORIGINAL (un-adapted)
+    perception. Blank = keep the loaded VLM."""
 
     def __post_init__(self):
         super().__post_init__()

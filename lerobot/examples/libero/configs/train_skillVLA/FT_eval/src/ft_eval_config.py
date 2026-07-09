@@ -82,6 +82,7 @@ def _resolve_model(vla_root: Path, model_dir: str, checkpoint: str, eval_termina
         "ft_fsq_path": policy_path.parent / "FSQ_ft.pt", "ft_run_dir": vla_root / model_dir,
         "stage2_fsq_path": stage2_fsq_path, "stage2_run_dir": stage2_run_dir,
         "stage2_checkpoint": stage2_checkpoint,
+        "stage2_pretrained": stage2_pretrained,   # the Stage-2 ckpt's pretrained_model dir (VLM override)
         "skill_latents_path": skill_latents_path, "raw_dataset_dir": raw_dataset_dir,
         "gt_skill_dataset_dir": gt_skill_dataset_dir, "eval_init_states_path": eval_init_states_path,
     }
@@ -113,6 +114,12 @@ def build_settings(cfg: dict) -> dict:
     eval_terminator = str(get_value(cfg, "eval_terminator", "ft")).strip().lower()
     if eval_terminator not in ("ft", "base", "stage2"):
         raise ValueError(f"eval_terminator must be 'ft', 'base', or 'stage2' (got {eval_terminator!r}).")
+    # eval_vlm: which VLM (PaliGemma) tower to run — "ft" (the finetuned one) or "stage2" (the ORIGINAL
+    # pre-FT VLM from the run's Stage-2 source), while ALWAYS keeping FT's cond + action-expert. Isolates
+    # "did the motor adaptation transfer to the un-adapted perception?".
+    eval_vlm = str(get_value(cfg, "eval_vlm", "ft")).strip().lower()
+    if eval_vlm not in ("ft", "stage2"):
+        raise ValueError(f"eval_vlm must be 'ft' or 'stage2' (got {eval_vlm!r}).")
 
     # `models` (list of {model_dir, checkpoint?, label?}) → MULTI-model side-by-side (same scenes via the
     # shared seed; per-task videos stitched into a labelled grid). Otherwise the single `model_dir`.
@@ -129,6 +136,15 @@ def build_settings(cfg: dict) -> dict:
         entries = [{"model_dir": str(md), "checkpoint": default_ckpt, "label": ""}]
 
     resolved = [_resolve_model(vla_root, e["model_dir"], e["checkpoint"], eval_terminator) for e in entries]
+    # eval_vlm=stage2: run each model's FT motor under its ORIGINAL Stage-2 VLM (config.pretrained_path).
+    for r in resolved:
+        if eval_vlm == "stage2":
+            if not r["stage2_pretrained"]:
+                raise ValueError(f"eval_vlm='stage2' but {r['model_dir']} config has no pretrained_path "
+                                 "(the Stage-2 source VLM). Can't override the VLM.")
+            r["vlm_override_path"] = r["stage2_pretrained"]
+        else:
+            r["vlm_override_path"] = ""
     autos = _auto_labels([e["model_dir"] for e in entries])
     labels: list[str] = []
     for e, a in zip(entries, autos):
@@ -182,7 +198,8 @@ def build_settings(cfg: dict) -> dict:
         skill_src = f"gt-{advance_mode}"
     eval_exp = str(get_value(cfg, "eval_exp", "")).strip()   # free-form folder tag
     term_suffix = m0["term_tag"] if not multi else eval_terminator.replace("stage2", "s2")
-    suffix = f"{skill_src}_{term_suffix}" + (f"_{eval_exp}" if eval_exp else "")
+    vlm_tag = "_s2vlm" if eval_vlm == "stage2" else ""       # VLM override ablation
+    suffix = f"{skill_src}_{term_suffix}{vlm_tag}" + (f"_{eval_exp}" if eval_exp else "")
     if multi:
         if eval_dropout:   # self-compare per checkpoint → base model name(s) + _dropcmp
             core = model_dir if len(dropcmp_base) == 1 else "compare_" + "_vs_".join(dropcmp_base)
@@ -197,6 +214,7 @@ def build_settings(cfg: dict) -> dict:
              "stage2_checkpoint": r["stage2_checkpoint"],
              "gt_skill_dataset_dir": r["gt_skill_dataset_dir"],
              "eval_init_states_path": r["eval_init_states_path"],
+             "vlm_override_path": r["vlm_override_path"],
              "drop_vlm": bool(d)}
             for lbl, r, d in zip(labels, resolved, drop_flags)])
     else:
@@ -214,6 +232,8 @@ def build_settings(cfg: dict) -> dict:
         "models_per_row": int(get_value(cfg, "models_per_row", 0) or 0),
         "policy_path": policy_path,
         "checkpoint": checkpoint,
+        # eval_vlm=stage2: override the loaded VLM with the Stage-2 source's (model-0 alias; "" = keep FT VLM)
+        "vlm_override_path": m0["vlm_override_path"],
         # terminator: eval sbatch picks FSQ_FOR_EVAL by TERM_KIND — "ft" → ft_fsq_path (lazy-exported
         # from THIS checkpoint if missing), "stage2" → stage2_fsq_path (lazy-exported from the Stage-2
         # source), "base" → base_fsq.

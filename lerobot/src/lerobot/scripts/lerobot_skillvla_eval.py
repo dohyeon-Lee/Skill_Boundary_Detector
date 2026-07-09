@@ -82,6 +82,7 @@ import html
 import json
 import logging
 import os
+import subprocess
 import threading
 import time
 from collections import defaultdict
@@ -431,6 +432,56 @@ def _load_raw_dataset_meta(dataset_dir: Path):
     if not files:
         raise FileNotFoundError(f"No episode parquet files under {dataset_dir / 'meta' / 'episodes'}")
     return pd.concat([pd.read_parquet(path) for path in files], ignore_index=True)
+
+
+def _annotate_eval_video(frames: np.ndarray, success: bool, task_description: str | None) -> np.ndarray:
+    """Eval-video annotation: a TOP bar colored by the episode outcome (green SUCCESS / red FAIL) and,
+    when available, a BOTTOM bar with the task language prompt (word-wrapped). Both bars are static, so
+    they are rendered ONCE and broadcast over time. frames (t, H, W, 3) uint8 → taller frames."""
+    from PIL import Image, ImageDraw, ImageFont  # noqa: PLC0415
+
+    t, h, w = frames.shape[:3]
+
+    def _font(size: int):
+        try:
+            return ImageFont.truetype("DejaVuSans-Bold.ttf", size)
+        except Exception:  # noqa: BLE001  (bitmap fallback — size is then fixed/small)
+            return ImageFont.load_default()
+
+    # top outcome bar
+    top_h = max(18, h // 10)
+    top = Image.new("RGB", (w, top_h), (34, 139, 34) if success else (178, 34, 34))
+    draw = ImageDraw.Draw(top)
+    label = "SUCCESS" if success else "FAIL"
+    font = _font(max(10, int(top_h * 0.62)))
+    draw.text(((w - draw.textlength(label, font=font)) / 2, top_h * 0.14), label,
+              fill=(255, 255, 255), font=font)
+    parts = [np.broadcast_to(np.asarray(top, dtype=frames.dtype), (t, top_h, w, 3)), frames]
+
+    # bottom language-prompt bar (wrapped to the frame width)
+    if task_description:
+        fs = max(10, int(h * 0.055))
+        pfont = _font(fs)
+        lines, cur = [], ""
+        for word in str(task_description).split():
+            trial = f"{cur} {word}".strip()
+            if draw.textlength(trial, font=pfont) <= w - 8:
+                cur = trial
+            else:
+                if cur:
+                    lines.append(cur)
+                cur = word
+        if cur:
+            lines.append(cur)
+        line_h = fs + 4
+        bot_h = 6 + line_h * len(lines)
+        bot = Image.new("RGB", (w, bot_h), (20, 20, 20))
+        bdraw = ImageDraw.Draw(bot)
+        for i, ln in enumerate(lines):
+            bdraw.text(((w - bdraw.textlength(ln, font=pfont)) / 2, 3 + i * line_h), ln,
+                       fill=(240, 240, 240), font=pfont)
+        parts.append(np.broadcast_to(np.asarray(bot, dtype=frames.dtype), (t, bot_h, w, 3)))
+    return np.concatenate(parts, axis=1)
 
 
 def _raw_video_path(dataset_dir: Path, episodes_meta, episode_id: int, image_key: str) -> Path:
@@ -1003,12 +1054,15 @@ def eval_policy(
     forced_skill_token_sequences: list[list[int]] | None = None,
     reference_skill_token_sequences: list[list[int]] | None = None,
     collect_skill_html: bool = False,
+    task_description: str | None = None,
 ) -> dict:
     """
     Args:
         env: The batch of environments.
         policy: The policy.
         n_episodes: The number of episodes to evaluate.
+        task_description: The task's language prompt — rendered into a bottom bar of every episode
+            video (the top bar is colored green/red by that episode's success).
         max_episodes_rendered: Maximum number of episodes to render into videos.
         videos_dir: Where to save rendered videos.
         return_episode_data: Whether to return episode data for online training. Incorporates the data into
@@ -1172,8 +1226,9 @@ def eval_policy(
         # Maybe render video for visualization.
         if max_episodes_rendered > 0 and len(ep_frames) > 0:
             batch_stacked_frames = np.stack(ep_frames, axis=1)  # (b, t, *)
-            for stacked_frames, done_index in zip(
-                batch_stacked_frames, done_indices.flatten().tolist(), strict=False
+            for stacked_frames, done_index, ep_success in zip(
+                batch_stacked_frames, done_indices.flatten().tolist(),
+                batch_successes.flatten().tolist(), strict=False,
             ):
                 if n_episodes_rendered >= max_episodes_rendered:
                     break
@@ -1181,11 +1236,14 @@ def eval_policy(
                 videos_dir.mkdir(parents=True, exist_ok=True)
                 video_path = videos_dir / f"eval_episode_{n_episodes_rendered}.mp4"
                 video_paths.append(str(video_path))
+                clip = _annotate_eval_video(   # top bar: green/red outcome; bottom bar: language prompt
+                    stacked_frames[: done_index // video_frame_stride + 1],  # exclude auto-reset frame
+                    bool(ep_success), task_description)
                 thread = threading.Thread(
                     target=write_video,
                     args=(
                         str(video_path),
-                        stacked_frames[: done_index // video_frame_stride + 1],  # exclude auto-reset frame
+                        clip,
                         int(video_fps or max(1, env.unwrapped.metadata["render_fps"] // video_frame_stride)),
                     ),
                 )
@@ -1860,15 +1918,18 @@ def _episode_exact_override(
                 skills_by_ep[int(episode_index)] = skills
 
     forced: dict[tuple[str, int], list[list[dict]]] | None = {} if skills_by_ep is not None else None
+    matched = 0
     for task_group, group in envs.items():
         for task_id in list(group.keys()):
             records = per_task.get(int(task_id), [])
             if skills_by_ep is not None:  # keep only episodes that ALSO have a GT sequence (aligned pairing)
                 records = [r for r in records if r["episode_index"] in skills_by_ep]
             if not records:
-                logging.warning("episode-exact: no matched episodes for task_id=%s — dropping it.", task_id)
-                group[task_id].close()
-                del group[task_id]
+                # No matched dataset episode for this task (e.g. the npz is for a different suite —
+                # libero_goal / libero_10 have none): KEEP the task and let it run the ORIGINAL
+                # seed-based eval (default LIBERO init states) instead of dropping it.
+                logging.warning("episode-exact: no matched episodes for task_id=%s — "
+                                "falling back to seed-based reset for it.", task_id)
                 continue
             if n_episodes is not None and len(records) < n_episodes:
                 logging.warning("episode-exact: task_id=%s has only %d matched episodes (< n_episodes=%d).",
@@ -1883,6 +1944,16 @@ def _episode_exact_override(
                 base._init_states = init_arr      # env indexes by init_state_id (= global episode index)
             if forced is not None:
                 forced[(task_group, int(task_id))] = [skills_by_ep[r["episode_index"]] for r in records]
+            matched += 1
+    total = sum(len(g) for g in envs.values())
+    if matched == 0:
+        # No task matched (e.g. the npz is for another suite) → episode-exact is a no-op: no scene was
+        # overridden. Return None so the caller falls through to the ORIGINAL eval paths (seed-based
+        # reset; non-aligned GT loading under use_gt_skill), exactly as if init_states_path were unset.
+        logging.warning("episode-exact: 0/%d tasks matched %s — running the ORIGINAL eval.",
+                        total, str(init_states_path))
+        return None
+    logging.info("episode-exact: %d/%d tasks matched (unmatched → seed-based reset).", matched, total)
     return forced
 
 
@@ -1919,13 +1990,13 @@ def eval_main(cfg: EvalPipelineConfig):
     ep_exact_forced = None
     episode_exact = bool(getattr(cfg.eval, "init_states_path", None))
     if episode_exact:
+        # Unmatched tasks (e.g. a libero_goal/libero_10 suite the npz doesn't cover) are NOT dropped —
+        # they fall back to the original seed-based eval. _episode_exact_override logs the match count.
         ep_exact_forced = _episode_exact_override(
             envs, cfg.eval.init_states_path, cfg.env.task,
             gt_skill_dataset_dir=(getattr(cfg.policy, "gt_skill_dataset_dir", None)
                                   if getattr(cfg.policy, "use_gt_skill", False) else None),
             n_episodes=cfg.eval.n_episodes)
-        logging.info("EPISODE-EXACT eval: init states from %s (%d tasks kept).",
-                     cfg.eval.init_states_path, sum(len(g) for g in envs.values()))
 
     logging.info("Making policy.")
 
@@ -2064,6 +2135,7 @@ def eval_main(cfg: EvalPipelineConfig):
             skill_html_raw_dataset_dir=cfg.eval.skill_html_raw_dataset_dir,
             skill_html_image_key=cfg.eval.skill_html_image_key,
             task_descriptions=task_id_to_desc,
+            on_task_done_cmd=getattr(cfg.eval, "on_task_done_cmd", None),
         )
         print("Overall Aggregated Metrics:")
         print(info["overall"])
@@ -2217,6 +2289,7 @@ def eval_one(
     forced_skill_token_sequences: list[list[int]] | None = None,
     reference_skill_token_sequences: list[list[int]] | None = None,
     collect_skill_html: bool = False,
+    task_description: str | None = None,
 ) -> TaskMetrics:
     """Evaluates one task_id of one suite using the provided vec env."""
 
@@ -2239,6 +2312,7 @@ def eval_one(
         forced_skill_token_sequences=forced_skill_token_sequences,
         reference_skill_token_sequences=reference_skill_token_sequences,
         collect_skill_html=collect_skill_html,
+        task_description=task_description,
     )
 
     per_episode = task_result["per_episode"]
@@ -2317,6 +2391,7 @@ def run_one(
             else reference_skill_token_sequences_by_task.get((task_group, task_id))
         ),
         collect_skill_html=skill_html_dir is not None,
+        task_description=None if task_descriptions is None else task_descriptions.get(int(task_id)),
     )
     if skill_html_dir is not None:
         html_path = _write_task_skill_html(
@@ -2370,9 +2445,13 @@ def eval_policy_all(
     skill_html_raw_dataset_dir: str | None = None,
     skill_html_image_key: str | None = None,
     task_descriptions: dict[int, str] | None = None,
+    on_task_done_cmd: str | None = None,
 ) -> dict:
     """
     Evaluate a nested `envs` dict: {task_group: {task_id: vec_env}}.
+    on_task_done_cmd: shell command run (best-effort) AFTER EACH task's videos are written — used to
+    stitch the multi-model side-by-side grid task-by-task (progressive, like stage1) instead of once
+    at job end. "{task_id}"/"{task_group}" placeholders are substituted. Sequential path only.
     This implementation flattens tasks, runs them sequentially or via ThreadPoolExecutor,
     accumulates per-group and overall statistics, and returns the same aggregate metrics
     schema as the single-env evaluator (avg_sum_reward / avg_max_reward / pc_success / timings)
@@ -2460,6 +2539,12 @@ def eval_policy_all(
             tg, tid, metrics = task_runner(task_group, task_id, env)
             _accumulate_to(tg, metrics)
             per_task_infos.append({"task_group": tg, "task_id": tid, "metrics": metrics})
+            if on_task_done_cmd:   # progressive per-task stitch (best-effort; never fail the eval)
+                try:
+                    cmd = on_task_done_cmd.format(task_id=tid, task_group=tg)
+                    subprocess.run(cmd, shell=True, check=False)
+                except Exception as exc:  # noqa: BLE001
+                    logging.warning("on_task_done_cmd failed for task %s: %s", tid, exc)
     else:
         # threaded path: submit all tasks, consume completions on main thread and accumulate there
         with cf.ThreadPoolExecutor(max_workers=max_parallel_tasks) as executor:

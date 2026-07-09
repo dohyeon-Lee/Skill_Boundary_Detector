@@ -37,18 +37,27 @@ def build(pt_root: Path, vocab: int) -> np.ndarray:
     files = sorted(glob.glob(str(pt_root / "data" / "**" / "*.parquet"), recursive=True))
     if not files:
         raise FileNotFoundError(f"no parquet under {pt_root}/data/")
-    counts = np.zeros(vocab, dtype="float64")
+    counts = np.zeros(vocab, dtype="float64")          # FRAME-weighted (per frame, code = seq[idx])
+    motions = np.zeros(vocab, dtype="float64")         # MOTION/trajectory-weighted (per episode, each
+    seen_ep: set = set()                               #   segment in skill_sequence = one motion)
     for f in files:
-        t = pq.read_table(f, columns=["skill_index", "skill_sequence"])
+        t = pq.read_table(f, columns=["episode_index", "skill_index", "skill_sequence"])
+        ep = np.asarray(t.column("episode_index").to_pylist(), dtype="int64").reshape(-1)
         idx = np.asarray(t.column("skill_index").to_pylist(), dtype="int64").reshape(-1)
-        seq = t.column("skill_sequence").to_pylist()           # list of per-frame sequences
-        for i, s in zip(idx, seq):
+        seq = t.column("skill_sequence").to_pylist()           # list of per-frame sequences (full episode seq)
+        for e, i, s in zip(ep, idx, seq):
             s = np.asarray(s).reshape(-1)
             if 0 <= i < s.shape[0]:
                 c = int(s[i])
                 if 0 <= c < vocab:
                     counts[c] += 1.0
-    return counts.astype("float32")
+            if int(e) not in seen_ep:                  # once per episode: count each segment (motion)
+                seen_ep.add(int(e))
+                for c in s:
+                    c = int(c)
+                    if 0 <= c < vocab:
+                        motions[c] += 1.0
+    return counts.astype("float32"), motions.astype("float32")
 
 
 def main() -> None:
@@ -81,13 +90,14 @@ def main() -> None:
         levels = [int(d) for d in re.search(r"FSQ(\d+)", run_tag).group(1)]
     vocab = int(np.prod(levels))
 
-    counts = build(pt_root, vocab)
+    counts, motions = build(pt_root, vocab)
     out = pt_root.parent / "skill_code_freq.npz"
-    np.savez(out, counts=counts, levels=np.array(levels))
+    np.savez(out, counts=counts, motion_counts=motions, levels=np.array(levels))
     nz = int((counts > 0).sum())
-    print(f"wrote {out}\n  vocab={vocab}  used_codes={nz}/{vocab}  total_samples={int(counts.sum())}")
-    top = np.argsort(counts)[::-1][:8]
-    print("  top codes:", [(int(c), int(counts[c])) for c in top])
+    print(f"wrote {out}\n  vocab={vocab}  used_codes={nz}/{vocab}  "
+          f"total_frames={int(counts.sum())}  total_motions={int(motions.sum())}")
+    top = np.argsort(motions)[::-1][:8]
+    print("  top codes (by motions):", [(int(c), int(motions[c])) for c in top])
 
 
 if __name__ == "__main__":

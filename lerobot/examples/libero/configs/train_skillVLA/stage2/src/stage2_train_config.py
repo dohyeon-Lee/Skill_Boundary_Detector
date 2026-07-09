@@ -115,15 +115,12 @@ def build_settings(cfg: dict) -> dict:
     # FSQ skill structure: auto-match the FSQ the dataset was built with (parsed from run_tag).
     skill_fsq_levels = list(as_levels(get_value(cfg, "skill_fsq_levels", build_fsq_levels)))
 
-    # run_name = {STAGE-1 정보}__{conn}_{P}p_{A}[_{B}][_{exp}]
+    # run_name = {STAGE-1 정보}__{pA}{Afreeze}_{pB}{Bfreeze}_{pC}{Cfreeze}[_{exp}]
     #   STAGE-1 정보 = {run_tag}_[{s1_vis_tag}_]{stage1_checkpoint}[_{mode}][_<loss tags>]
     #     (source / reader / freeze·unfreeze 태그는 이름에서 제외 — config.json이 진실)
-    #   "__" 뒤 = Stage-2 구조+레짐:
-    #   conn = attention 연결 4개 t/f (attend_language, attend_image, vlm_cond, vlm_expert 순;
-    #          cond_expert는 항상 true라 제외);
-    #   {P}p = vlm_dropout_p 퍼센트 (0.5→50p, 0→0p);
-    #   A = freeze_vlm_vsa를 t/f로 (expert,cond,llm,vlm_vision 순, 예: tfff);
-    #   B = freeze_vsa 동일 표기 — p=0이면 B는 안 쓰이므로 생략 (…__tttt_0p_tfff).
+    #   "__" 뒤 = 3-way 레짐: A=연결+freeze_A, B=연결+freeze_B, C=절단+freeze_C.
+    #     각 블록 = {확률%}{freeze t/f: expert,cond,llm,vlm_vision 순}, 예: 30ttff_50fftt_20fftt.
+    #   연결 토폴로지(attend_*/vlm_*)는 모델이 소비하되 이름엔 넣지 않음 — config.json이 진실.
     # batch{N}/c{N}/np are dropped (arch is re-read from the Stage-1 ckpt at load time); exp is last.
     # Inter-module attention connections (defaults: vlm_cond=T, cond_expert=T, vlm_expert=F, attend_language=F,
     # attend_image=T). attend_image/attend_language pick the VLM read-set (image-only / +lang / language-only).
@@ -135,36 +132,46 @@ def build_settings(cfg: dict) -> dict:
     if not attend_image and not attend_language:
         raise ValueError("attend_image=False AND attend_language=False leaves the VLM unreadable; "
                          "use vlm_cond/vlm_expert=False to go VLM-blind instead.")
-    vlm_dropout_p = float(get_value(cfg, "vlm_dropout_p", 0.0))               # CFG VLM dropout (0 = off)
     # Skill reader (separate post-VLM joint concat-KV probe module) + SkillHead dead-zone.
     skill_deadzone_frac = float(get_value(cfg, "skill_deadzone_frac", 0.0))   # 0 = plain MSE
     num_reader_tokens = int(get_value(cfg, "num_reader_tokens", 4))
     reader_depth = int(get_value(cfg, "reader_depth", 2))
     reader_heads = int(get_value(cfg, "reader_heads", 8))
-    # Per-regime freeze (nested dicts freeze_vlm_vsa / freeze_vsa → flat config fields). SINGLE source of
-    # truth for expert/cond/llm/vlm_vision freezing: p>0 → per-batch A/B toggle; p=0 → the A dict applies
-    # statically (every batch is a VLM-present A batch; freeze_vsa is ignored).
-    # Group keys: llm = the VLM's Gemma LLM trunk ONLY (renamed from "vlm" — accepted as a legacy alias);
+    # Per-regime freeze: 3-way A/B/C from nested dicts freeze_A / freeze_B / freeze_C → flat config
+    # fields freeze_vlm_vsa_*(A) / freeze_vsa_*(B) / freeze_c_*(C). regime_probs is REQUIRED (2-way
+    # binary-dropout legacy removed).
+    # Group keys: llm = the VLM's Gemma LLM trunk ONLY (accepts "vlm" as an alias in the dict);
     # vlm_vision = the PaliGemma SigLIP tower.
     _REGIME_KEYS = ("expert", "cond", "llm", "vlm_vision")
-    _fa = get_value(cfg, "freeze_vlm_vsa", {}) or {}   # A = VLM_VSA batches (p=0: applies statically)
-    _fb = get_value(cfg, "freeze_vsa", {}) or {}       # B = VSA batches (p>0 only)
     def _grp(d, k):
-        return d.get(k, d.get("vlm", False)) if k == "llm" else d.get(k, False)   # "vlm" = legacy alias for llm
+        return d.get(k, d.get("vlm", False)) if k == "llm" else d.get(k, False)   # "vlm" = alias for llm
+    _rp = get_value(cfg, "regime_probs", None)
+    if not (isinstance(_rp, (list, tuple)) and len(_rp) == 3):
+        raise ValueError("regime_probs must be a 3-element list [A, B, C] (합 1). 2-way binary-dropout "
+                         "legacy가 제거됨 — regime_probs를 반드시 지정하세요.")
+    regime_probs = [float(x) for x in _rp]
+    _fa = get_value(cfg, "freeze_A", {}) or {}
+    _fb = get_value(cfg, "freeze_B", {}) or {}
+    _fc = get_value(cfg, "freeze_C", {}) or {}
     frz = {f"freeze_vlm_vsa_{k}": as_bool(_grp(_fa, k)) for k in _REGIME_KEYS}
     frz.update({f"freeze_vsa_{k}": as_bool(_grp(_fb, k)) for k in _REGIME_KEYS})
+    frz.update({f"freeze_c_{k}": as_bool(_grp(_fc, k)) for k in _REGIME_KEYS})
+    # C (severed) batches use the Stage-1 hold BC target (stop+hold past skill_de). Default on; the name
+    # gets a "_nohold" tag only when disabled (ablation).
+    severed_hold_target = as_bool(get_value(cfg, "severed_hold_target", True))
+    # EMA-self distillation (forgetting prep): pin sampled non-GT skills to the model's own weight-EMA.
+    ema_self_distill = as_bool(get_value(cfg, "ema_self_distill", False))
+    ema_self_alpha = float(get_value(cfg, "ema_self_alpha", 0.999))
+    ema_self_weight = float(get_value(cfg, "ema_self_weight", 0.5))
+    ema_self_n_local = int(get_value(cfg, "ema_self_n_local", 2))
+    ema_self_n_global = int(get_value(cfg, "ema_self_n_global", 2))
     # SCRATCH-side arch knobs (model uses them only when stage1_checkpoint_path is empty). The one-liner
     # (none_{run_tag}_{vision}_{mode}) takes precedence over the separate yaml keys.
     s1_vision_backbone = _s1_vb or str(get_value(cfg, "s1_vision_backbone", "siglip")).strip()
     s1_state_cond_mode = _s1_scm or str(get_value(cfg, "s1_state_cond_mode", "state")).strip()
-    # Dropout SCHEDULE (linear p → p_end over decay steps; both unset = constant p).
-    _pe = get_value(cfg, "vlm_dropout_p_end", None)
-    vlm_dropout_p_end = None if str(_pe).lower() in ("none", "", "null", "~") else float(_pe)
-    vlm_dropout_decay_steps = int(get_value(cfg, "vlm_dropout_decay_steps", 0) or 0)
-    sched_on = vlm_dropout_p_end is not None and vlm_dropout_decay_steps > 0
-    if scratch and not (vlm_dropout_p > 0 or (sched_on and vlm_dropout_p_end > 0)):
-        raise ValueError("SCRATCH mode needs vlm_dropout to ever fire (vlm_dropout_p>0 or a schedule "
-                         "reaching >0) — the B batches are what train the VSA.")
+    if scratch and not (regime_probs[1] > 0 or regime_probs[2] > 0):
+        raise ValueError("SCRATCH mode needs VSA training — regime_probs의 B 또는 C가 >0 이어야 함 "
+                         "(B/C 배치가 VSA를 학습).")
     # state_skill checked first (it contains the substring "_state"); else state; else "" (older naming).
     if scratch:
         mode_tag, loss_tags = s1_state_cond_mode, []
@@ -176,26 +183,25 @@ def build_settings(cfg: dict) -> dict:
             m = re.search(pat, stage1_run_name)
             if m:
                 loss_tags.append(m.group(1))
-    # {STAGE-1 정보}__{conn}_{P}p_{A}[_{B}]:
-    #   conn = attention 연결 4개를 t/f로 (attend_language, attend_image, vlm_cond, vlm_expert 순);
-    #   {P}p = 고정 확률("50p") 또는 스케줄("90to20p30k" = 0.9→0.2 over 30k steps);
-    #   A/B = freeze dicts as t/f in (expert, cond, llm, vlm_vision) order; B omitted if dropout never fires.
+    # {STAGE-1 정보}__{pA}{Afreeze}_{pB}{Bfreeze}_{pC}{Cfreeze}:
+    #   각 블록 = {확률%}{freeze t/f in (expert, cond, llm, vlm_vision) order}. 예: 30ttff_50fftt_20fftt.
+    #   A=연결+freeze_A, B=연결+freeze_B, C=절단+freeze_C.
     # SCRATCH: {run_tag}_{vision}_scratch_{state_cond_mode}__... (Stage-1 체크포인트 정보가 없으므로).
-    conn_tf = "".join("t" if b else "f" for b in (attend_language, attend_image, vlm_cond, vlm_expert))
     _tf = lambda prefix: "".join("t" if frz[f"freeze_{prefix}_{k}"] else "f" for k in _REGIME_KEYS)
-    if sched_on:
-        p_tag = (f"{int(round(vlm_dropout_p * 100))}to{int(round(vlm_dropout_p_end * 100))}p"
-                 f"{vlm_dropout_decay_steps // 1000}k")
-    else:
-        p_tag = f"{int(round(vlm_dropout_p * 100))}p"
-    regimes_ever = vlm_dropout_p > 0 or (sched_on and vlm_dropout_p_end > 0)
-    regime_tag = f"{conn_tf}_{p_tag}_{_tf('vlm_vsa')}" + (f"_{_tf('vsa')}" if regimes_ever else "")
+    pa, pb, pc = (int(round(x * 100)) for x in regime_probs)
+    regime_tag = f"{pa}{_tf('vlm_vsa')}_{pb}{_tf('vsa')}_{pc}{_tf('c')}"
     if scratch:
         parts = [run_tag, s1_vision_backbone, "scratch", s1_state_cond_mode]
     else:
         parts = ([run_tag] + ([s1_vis_tag] if s1_vis_tag else [])
                  + [stage1_checkpoint] + ([mode_tag] if mode_tag else []) + loss_tags)
     run_name = "_".join(parts) + "__" + regime_tag
+    if not severed_hold_target:
+        run_name = f"{run_name}_nohold"        # ablation: severed batches keep the real cross-skill tail
+    if ema_self_distill:
+        # EMA-self on → short suffix: α (decimals) + n_local/n_global + weight×100. off → name unchanged.
+        _a = str(ema_self_alpha).split(".")[-1] or "0"
+        run_name = f"{run_name}_ema{_a}_{ema_self_n_local}{ema_self_n_global}w{int(round(ema_self_weight * 100))}"
     if exp:
         run_name = f"{run_name}_{exp}"
     output_dir = vla_root / run_name   # under skillVLA_stage2/, so no extra stage prefix
@@ -229,9 +235,16 @@ def build_settings(cfg: dict) -> dict:
         "vlm_cond": vlm_cond,
         "cond_expert": cond_expert,
         "vlm_expert": vlm_expert,                   # action tokens read the VLM directly (was action_attend_vlm)
-        "vlm_dropout_p": vlm_dropout_p,            # CFG-style VLM dropout prob (train only; 0 = off)
-        "vlm_dropout_p_end": "" if vlm_dropout_p_end is None else vlm_dropout_p_end,   # schedule end ("" = constant)
-        "vlm_dropout_decay_steps": vlm_dropout_decay_steps,
+        # 3-way regime probs [A,B,C] as a comma string (REQUIRED — governs A/B/C sampling in the model).
+        "regime_probs": ",".join(str(x) for x in regime_probs),
+        "severed_hold_target": severed_hold_target,   # C (severed) BC → Stage-1 stop+hold past skill_de
+        # EMA-self distillation (Stage-2 forgetting prep)
+        "ema_self_distill": ema_self_distill,
+        "ema_self_alpha": ema_self_alpha,
+        "ema_self_weight": ema_self_weight,
+        "ema_self_n_local": ema_self_n_local,
+        "ema_self_n_global": ema_self_n_global,
+
         # per-component update tracking (wandb param_drift/* + param_drift_rel/*)
         "track_param_drift": as_bool(get_value(cfg, "track_param_drift", False)),
         # scratch mode (no Stage-1): fresh expert/cond; arch from the two knobs below

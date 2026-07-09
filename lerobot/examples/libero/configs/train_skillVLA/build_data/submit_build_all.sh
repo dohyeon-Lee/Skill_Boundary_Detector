@@ -77,10 +77,22 @@ DEP=""   # dependency clause (e.g. "afterok:123") carried to the next non-skippe
 #   <base>   → validate the base has them + slice on the login node (idempotent — skips existing)
 source "${SRC_DIR}/dino_prepare.sh"
 if [ "${DINO_GENERATE}" = "true" ]; then
+  NW="${DINO_GENERATE_WORKERS:-1}"
   echo "[1/4] Generate per-episode DINO on source frames (GPU prep)  → ${DINO_ROOT}"
-  echo "       required: ${DINO_REQUIRED}"
-  JID0=$(env "${ENV[@]}" sbatch --parsable "${SBATCH_ARGS[@]}" "${SRC_DIR}/dino_prep.sbatch")
-  echo "       dino-prep ${JID0}"
+  echo "       required: ${DINO_REQUIRED}   workers=${NW}"
+  if [ "${NW}" -gt 1 ]; then
+    # Precompute across NW GPUs (episode-sharded array), then a single dependent slice job. Slice must
+    # wait for the whole array (per-worker slice → dangling symlinks for not-yet-computed episodes).
+    JIDP=$(env "${ENV[@]}" DINO_PREP_PHASE=precompute \
+      sbatch --parsable --array="0-$(( NW - 1 ))" "${SBATCH_ARGS[@]}" "${SRC_DIR}/dino_prep.sbatch")
+    echo "       dino-prep precompute array ${JIDP}  (${NW} GPUs)"
+    JID0=$(env "${ENV[@]}" DINO_PREP_PHASE=slice \
+      sbatch --parsable --dependency=afterok:"${JIDP}" "${SBATCH_ARGS[@]}" "${SRC_DIR}/dino_prep.sbatch")
+    echo "       dino-prep slice     ${JID0}  (after array)"
+  else
+    JID0=$(env "${ENV[@]}" DINO_PREP_PHASE=all sbatch --parsable "${SBATCH_ARGS[@]}" "${SRC_DIR}/dino_prep.sbatch")
+    echo "       dino-prep ${JID0}"
+  fi
   DEP="afterok:${JID0}"
 else
   echo "[1/4] Validate + slice per-episode DINO  (base: ${DINO_BASE_ROOT})  → ${DINO_ROOT}"

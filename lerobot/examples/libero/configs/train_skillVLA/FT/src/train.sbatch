@@ -73,20 +73,30 @@ elif [ -d "${PT_OUTPUT_DIR}" ]; then
   rm -rf "${PT_OUTPUT_DIR}"
 fi
 
-# Dropout schedule (optional): pass p_end/decay only when a schedule is configured, so a fixed-p or
-# p=0 run's train_config.json stays byte-identical to pre-schedule runs (resume-safe).
-SCHED_ARGS=()
-if [ -n "${VLM_DROPOUT_P_END}" ]; then
-  SCHED_ARGS=(
-    --policy.vlm_dropout_p_end="${VLM_DROPOUT_P_END}"
-    --policy.vlm_dropout_decay_steps="${VLM_DROPOUT_DECAY_STEPS}"
-  )
+# VSA-distill motion-counter histograms: auto-build skill_code_freq.npz (frame + trajectory counts)
+# next to the PT (seed) and THIS-FT (contribution) skillvla dirs if missing — cheap, one-time.
+if [ -n "${VSA_FT_FREQ_PATH}" ]; then
+  for pair in "${VSA_PT_SKILLVLA_DIR}|${VSA_DISTILL_FREQ_PATH}" "${VSA_FT_SKILLVLA_DIR}|${VSA_FT_FREQ_PATH}"; do
+    ds="${pair%%|*}"; npz="${pair##*|}"
+    if [ -n "${ds}" ] && [ -d "${ds}" ] && [ ! -f "${npz}" ]; then
+      echo "Building skill_code_freq: ${ds} → ${npz}"
+      "${PROJECT_ROOT}/.venv/bin/python" "${SRC_DIR}/build_skill_code_freq.py" \
+        --pt_dataset_root="${ds}" || echo "  (freq build failed — falls back to uniform/no-counter)"
+    fi
+  done
 fi
+
+# 3-way regime (A/B/C fixed probs) — REQUIRED (2-way vlm_dropout legacy removed). draccus list syntax.
+REGIME_ARGS=(--policy.regime_probs="[${REGIME_PROBS}]")
 
 # VSA distillation global-sampler frequency npz — pass only when built (empty → model uses uniform).
 DISTILL_ARGS=()
 if [ -n "${VSA_DISTILL_FREQ_PATH}" ]; then
   DISTILL_ARGS=(--policy.vsa_distill_freq_path="${VSA_DISTILL_FREQ_PATH}")
+fi
+if [ -n "${VSA_FT_FREQ_PATH}" ]; then
+  DISTILL_ARGS+=(--policy.vsa_ft_freq_path="${VSA_FT_FREQ_PATH}"
+                --policy.vsa_distill_prior_pct="${VSA_DISTILL_PRIOR_PCT}")
 fi
 
 # PT-forgetting probe: fixed parent-Stage-2-dataset batches re-measured every PROBE_EVERY steps
@@ -163,15 +173,19 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.freeze_vsa_cond="${FREEZE_VSA_COND}" \
     --policy.freeze_vsa_llm="${FREEZE_VSA_LLM}" \
     --policy.freeze_vsa_vlm_vision="${FREEZE_VSA_VLM_VISION}" \
+    --policy.freeze_c_expert="${FREEZE_C_EXPERT}" \
+    --policy.freeze_c_cond="${FREEZE_C_COND}" \
+    --policy.freeze_c_llm="${FREEZE_C_LLM}" \
+    --policy.freeze_c_vlm_vision="${FREEZE_C_VLM_VISION}" \
     --policy.freeze_skill_head="${FREEZE_SKILL_HEAD}" \
     --policy.freeze_skill_reader="${FREEZE_SKILL_READER}" \
-    --policy.vlm_dropout_p="${VLM_DROPOUT_P}" \
     --track_param_drift="${TRACK_PARAM_DRIFT}" \
     --policy.vsa_distill="${VSA_DISTILL}" \
     --policy.vsa_distill_weight="${VSA_DISTILL_WEIGHT}" \
     --policy.vsa_distill_n_local="${VSA_DISTILL_N_LOCAL}" \
     --policy.vsa_distill_n_global="${VSA_DISTILL_N_GLOBAL}" \
     --policy.vsa_distill_neighbor_radius="${VSA_DISTILL_NEIGHBOR_RADIUS}" \
+    --policy.severed_hold_target="${SEVERED_HOLD_TARGET}" \
     --batch_size="${BATCH_SIZE}" \
     --num_workers="${NUM_WORKERS}" \
     --steps="${STEPS}" \
@@ -179,7 +193,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.optimizer_lr="${LR}" \
     --wandb.enable="${WANDB_ENABLE}" \
     --wandb.project="${WANDB_PROJECT}" \
-    ${SCHED_ARGS[@]+"${SCHED_ARGS[@]}"} \
+    ${REGIME_ARGS[@]+"${REGIME_ARGS[@]}"} \
     ${DISTILL_ARGS[@]+"${DISTILL_ARGS[@]}"} \
     ${PROBE_ARGS[@]+"${PROBE_ARGS[@]}"} \
     ${TERM_ARGS[@]+"${TERM_ARGS[@]}"} \

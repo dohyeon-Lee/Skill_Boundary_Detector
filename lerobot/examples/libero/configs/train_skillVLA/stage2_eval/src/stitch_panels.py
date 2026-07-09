@@ -59,7 +59,14 @@ def main() -> None:
             out_mp4 = args.out_dir / taskdir0.name / mp4_0.name
             if out_mp4.exists() and out_mp4.stat().st_mtime > max(p.stat().st_mtime for p in mp4s):
                 continue          # already stitched from these inputs (idempotent re-runs skip)
-            reads = [read_video(p) for p in mp4s]
+            try:
+                reads = [read_video(p) for p in mp4s]
+            except Exception as exc:  # noqa: BLE001
+                # A panel's mp4 EXISTS but is still being written by another (per-task, cross-job) call —
+                # write_video is not atomic, so an in-flight file has no moov atom yet. Skip for now;
+                # a later stitch (progressive per-task, or the end-of-job one) picks it up once complete.
+                print(f"stitch: skip {taskdir0.name}/{mp4_0.name} (a panel mp4 not readable yet: {exc})")
+                continue
             frames_list, fps = [r[0] for r in reads], reads[0][1]
             if any(not fr for fr in frames_list):
                 continue

@@ -15,7 +15,7 @@ build_allow_fewer: false  # false: fail if a task has fewer episodes than reques
 inspect_dataset: libero_90_full_full
 
 # Defaults for run_frame_dino_parallel.sh
-dino_target_dataset: libero_10_full_2
+dino_target_dataset: libero_object_full_2
 # Which camera(s) the frame-DINO precompute runs for. Ergonomic knob (CLI --camera overrides):
 #   image (3rd-person) | wrist | both | <raw comma-separated keys>
 # Run 3rd-person and wrist separately (image then wrist) or together (both); each writes a

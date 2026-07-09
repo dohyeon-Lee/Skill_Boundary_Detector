@@ -7,8 +7,8 @@ skillvla_dataset_root: skillvla_dataset
 # ── Warm-start (also selects the dataset: source + run_tag parsed from stage1_run_name) ──
 # SCRATCH 모드 (한 줄): stage1_run_name: none_{run_tag}_{siglip|dino}_{state|state_skill}
 #   → Stage-1 없이 expert/cond fresh 초기화; run_tag(데이터셋)·vision·state_cond_mode를 이 한 줄에서
-#   파싱하고 stage1_checkpoint는 자동 무시. B(vdrop) 배치가 Stage-1 역할(VSA 조각)을 하므로
-#   vlm_dropout이 반드시 발화해야 함(p>0 또는 스케줄). 폴더명: {run_tag}_{vision}_scratch_{mode}__...
+#   파싱하고 stage1_checkpoint는 자동 무시. VSA는 B/C 배치가 학습하므로 regime_probs의 B 또는 C가
+#   >0 이어야 함. 폴더명: {run_tag}_{vision}_scratch_{mode}__{pA}{A}_{pB}{B}_{pC}{C}
 
 pi_base: models/pi05_base
 
@@ -39,41 +39,47 @@ skill_deadzone_frac: 0.8
 #   image=T,lang=F → 이미지만(visual grounding 강제, 기본) / image=T,lang=T → 이미지+언어
 #   image=F,lang=T → 언어만(VLM 언어 히든만 읽음) / image=F,lang=F → 금지(에러)
 #   VLM 내부 self-attn은 항상 전체 처리; 이건 downstream read만 게이팅(위치/prefix 구조 불변). (이름에는 안 들어감)
-attend_language: true
-attend_image: true
-vlm_cond: true
-vlm_expert: false
+attend_language:  true
+attend_image:     true
+vlm_cond:         true
+vlm_expert:       false
 
-cond_expert: true
+cond_expert:      true
 
-# CFG식 VLM dropout (학습 전용): 이 확률로 배치당 cond→VLM/action→VLM 어텐션을 끊어 action expert가
-# cond(현재obs)+GT skill z 만으로(=Stage-1 형태) 학습 → VLM에 collapse 안 하도록. VLM self-attn은 유지돼
-# skill head는 매 배치 지도됨(staleness 없음). 마스크만(RoPE/위치 불변, 순수 ablation). 0=off, p=0이면
-# 코인 안 던져서 dropout 없을 때와 완전 동치. run-name의 "__{P}p" 자리 (0.5→50p, 0→0p).
-vlm_dropout_p: 0.5 # 0.5
-# 스케줄(선택): p를 vlm_dropout_p → vlm_dropout_p_end 로 decay_steps 동안 선형 annealing 후 유지.
-# 둘 다 비우면 고정 확률. scratch에 자연스러운 커리큘럼: 초반 B 위주(VSA 조각) → 후반 A 위주(VLM 접지),
-# 예: p 0.9 → p_end 0.2, 30000 steps. 스텝 카운터는 체크포인트에 저장돼 resume해도 이어짐.
-# run-name: "90to20p30k". wandb train_regime/p_effective로 현재 p 확인.
-vlm_dropout_p_end:            # 비움 = 고정 확률
-vlm_dropout_decay_steps: 
 
-# Freeze 컨트롤의 단일 소스 (expert/cond/llm/vlm_vision 전부 여기서): p>0 → 배치마다 A/B 딕셔너리 토글,
-# p=0(dropout 끔) → 모든 배치가 A(VLM 있음)이므로 freeze_vlm_vsa가 그대로 정적 적용, freeze_vsa는 무시.
-# A=VLM_VSA(VLM 있음), B=VSA(VLM 드롭=Stage-1형태). true=그 regime 배치에서 해당 그룹 freeze. 그룹:
-# expert=action expert(+action/time proj), cond=현재obs 파이프라인 통째(dino/siglip vision인코더+image_proj+
-# cond-encoder), llm=VLM의 Gemma LLM 트렁크만(구 이름 vlm — vision tower는 별개!), vlm_vision=PaliGemma
-# SigLIP vision tower. skill decoder만 별도 정적 flag(freeze_skill_reader/freeze_skill_head, FT용).
-# run-name: {stage1정보}__{conn}_{P}p_{A:tfff}[_{B:tfff}][_{exp}] — conn=(attend_language,attend_image,
-#   vlm_cond,vlm_expert) t/f 4글자(cond_expert 제외), A/B=(expert,cond,llm,vlm_vision) 순, p=0이면 B 생략.
-freeze_vlm_vsa: {expert: false,  cond: false, llm: false, vlm_vision: false}
-                                                           # A(VLM있음): expert 업데이트 안 함 → expert는 B에서만 학습
-                                                           #   (VLM 보이는 채로는 절대 학습 X = co-adapt 차단); cond/LLM은 frozen expert에 맞춰 학습
-freeze_vsa:     {expert: false, cond: false, llm: true, vlm_vision: true}
-                                                           # B(VLM드롭): expert/cond는 flow로 학습(=Stage-1 형태 유지·계속 갱신).
-                                                           #   LLM은 edge 절단이라 flow grad 없음 → skill loss로만 학습.
-                                                           #   llm: true + vlm_vision: false면 skill loss가 frozen LLM을 '통과해'
-                                                           #   vision tower는 여전히 업데이트됨 — VLM 완전 동결은 둘 다 true.
+# ═══ 학습 regime: 3-way (배치마다 A/B/C 고정확률로 뽑음) ═══════════════════════════════════════
+# 각 regime = (VLM mask 연결/절단) + (freeze 딕셔너리: t=동결, f=학습; 순서 expert,cond,llm,vlm_vision).
+#   A = VLM 연결 + freeze_A → perception 학습(VLM), 모터 동결.
+#   B = VLM 연결 + freeze_B → 모터(VSA) 학습, VLM은 연결됐지만 동결(추론과 같은 컨텍스트로 학습).
+#   C = VLM 절단 + freeze_C → 순수 VSA(Stage-1 형태), VLM 없이 실행.
+# A+B = 연결 모델 alternating-freeze(동시 co-adapt 없음), C = VSA 단독 접지. 순서 연결/연결/절단.
+# 폴더명: {STAGE-1 정보}__{pA}{A}_{pB}{B}_{pC}{C} (예: ...state__30ttff_50fftt_20fftt).
+regime_probs: [0.3, 0.5, 0.2]     # [A, B, C] 확률 (합 1) — 연결-perception / 연결-VSA / 절단-VSA. 필수.
+freeze_A: {expert: true,  cond: true,  llm: false, vlm_vision: false}   # 연결·perception: VLM 학습, 모터 동결
+freeze_B: {expert: false, cond: false, llm: true,  vlm_vision: true}    # 연결·VSA:       모터 학습, VLM 동결
+freeze_C: {expert: false, cond: false, llm: false, vlm_vision: false}   # 절단·VSA:       모터+VLM 학습(분리라 co-adapt 없음)
+# C는 severed라 VLM이 action 경로와 완전 분리 → VLM을 풀어도 flow_loss는 motor(expert/cond)에만, VLM은
+# skill_loss로만 학습(disjoint gradient). motor는 GT skill 사용이라 VLM 상태와 무관. 이로써 VLM/skill
+# predictor가 A(연결)뿐 아니라 C(절단)에서도 학습돼 skill_acc 회복. B(연결)에선 여전히 VLM 동결(co-adapt 방지).
+# 그룹: expert=action expert(+action/time proj), cond=현재obs 파이프라인 통째(vision인코더+image_proj+
+# cond-encoder), llm=VLM Gemma 트렁크만, vlm_vision=PaliGemma SigLIP tower. skill decoder는 별도(FT용).
+
+# C(절단 VSA) 배치의 BC target을 Stage-1처럼: 스킬 끝(skill_de) 이후 chunk는 hold(팔 delta→0, gripper는
+# 스킬 내 마지막 값 유지)로 눌러 supervise → 각 스킬이 자기완결적으로 STOP. severed VSA는 다음 스킬을
+# 못 보므로 다음 스킬 실제 action으로 supervise하면 안 됨. A/B(연결)는 real tail 유지. off면 폴더명 _nohold.
+severed_hold_target: true
+
+# ── EMA-self distillation (forgetting 대비) ──────────────────────
+# C(절단/순수 VSA) 배치에서만, 랜덤 non-GT 스킬을 "자기 자신의 weight-EMA"에 붙듦(약하게). GT는 실제
+# action에 sharp BC, 나머지 스킬은 자기 최근(τ≈1/(1−α) 스텝 전) 행동에서 안 벗어나게 → GT 업데이트가
+# 국소화되어 forgetting에 강건. B(연결)엔 안 걸음(거긴 VSA를 VLM과 협조하도록 학습하는 다른 목적 + 랜덤
+# 스킬은 매칭 language가 없음). EMA teacher는 매 스텝 갱신되어 B의 드리프트도 반영. frozen stage1 불필요
+# (EMA가 stage2 개선 따라옴), cross-skill 오염 없음. off면 폴더명 원래대로, on이면 _ema{α}_{nl}{ng}w{weight}.
+ema_self_distill: true           # 켜면 아래 knob 적용
+ema_self_alpha: 0.999             # weight-EMA decay. 유효 기억 ≈ 1/(1−α) 스텝 (0.999→~1k 전)
+ema_self_weight: 0.5              # distill loss 비율(메인 BC 대비). 0이면 모니터 전용(grad 없음)
+ema_self_n_local: 2              # GT 이웃에서 뽑는 스킬 수(국소 보존)
+ema_self_n_global: 2             # 전역에서 뽑는 스킬 수(넓은 레퍼토리 보존)
 
 # ── FSQ terminator co-training (same as FT; disjoint from the SkillVLA params) ──
 # Adapt the FSQ terminator on this dataset's GT signals (z←true skill, current DINO + state →
@@ -87,13 +93,10 @@ terminator_end_pos_weight: 1.0
 # ── 컴포넌트별 업데이트 추적 (어느 부분이 집중 학습되나) ──
 # log_freq마다 5개 컴포넌트(llm/vlm_vision/cond/cond_vision_encoder/action_expert)의 시작 대비 이동량
 # ‖θ_now−θ_init‖ → wandb param_drift/*(절대) + param_drift_rel/*(÷‖θ_init‖, 5개 겹쳐 비교). 얼린 그룹은 ~0.
-track_param_drift: false
+track_param_drift: true
 
 # ── Run naming ────────────────────────────────────────────────
 exp: ""                                        # optional run-name suffix (blank = none)
-
-# (정적 freeze 블록은 삭제됨 — freeze는 위 freeze_vlm_vsa/freeze_vsa가 단일 소스. p=0이면 freeze_vlm_vsa가
-#  그대로 정적 적용. skill decoder만 FT에서 freeze_skill_head로 별도 제어.)
 
 
 # ── Optimization ──────────────────────────────────────────────

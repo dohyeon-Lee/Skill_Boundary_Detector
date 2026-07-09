@@ -210,6 +210,22 @@ def remap_tasks(tasks_df: pd.DataFrame, task_ids: list[int]) -> tuple[pd.DataFra
     return new_tasks, task_map
 
 
+def _trim_episode_video(src_video: Path, dst_video: Path, from_ts: float, to_ts: float,
+                        length: int, fps: float) -> None:
+    """Extract ONLY this episode's [from_ts, to_ts] slice from the (multi-episode) source mp4 into a
+    fresh per-episode mp4. The new LeRobot format packs MANY episodes per source file, so copying the
+    whole file (the old bug) duplicated the entire source per episode → huge files + DINO decoding
+    the full source for a tiny slice. Trimming keeps each dst file = exactly this episode's frames."""
+    from torchvision.io import read_video, write_video  # noqa: PLC0415
+    # read a hair past to_ts so the last frame is captured, then keep exactly `length` frames.
+    frames, _, _ = read_video(str(src_video), start_pts=from_ts, end_pts=to_ts + 1.0 / fps,
+                              pts_unit="sec", output_format="THWC")
+    if frames.shape[0] < length:
+        raise ValueError(f"trim {src_video.name} @[{from_ts:.3f},{to_ts:.3f}]: got "
+                         f"{frames.shape[0]} frames < episode length {length}")
+    write_video(str(dst_video), frames[:length], fps=int(round(fps)))
+
+
 def build_subset(
     src: Path,
     dst: Path,
@@ -239,6 +255,7 @@ def build_subset(
     (dst / "data/chunk-000").mkdir(parents=True)
     subset_data.to_parquet(dst / "data/chunk-000/file-000.parquet", index=False)
 
+    fps = float(info.get("fps", 20.0))
     video_keys = [key for key, value in info["features"].items() if value.get("dtype") == "video"]
     for video_key in video_keys:
         (dst / "videos" / video_key / "chunk-000").mkdir(parents=True)
@@ -248,7 +265,11 @@ def build_subset(
             src_file = int(ep_row[f"videos/{video_key}/file_index"])
             src_video = src / "videos" / video_key / f"chunk-{src_chunk:03d}" / f"file-{src_file:03d}.mp4"
             dst_video = dst / "videos" / video_key / "chunk-000" / f"file-{new_ep:03d}.mp4"
-            shutil.copy2(src_video, dst_video)
+            # TRIM this episode's slice out of the packed source (NOT a whole-file copy — see helper).
+            _trim_episode_video(src_video, dst_video,
+                                float(ep_row[f"videos/{video_key}/from_timestamp"]),
+                                float(ep_row[f"videos/{video_key}/to_timestamp"]),
+                                int(ep_row["length"]), fps)
 
     subset_eps = episodes_df[episodes_df["episode_index"].isin(selected_eps)].copy()
     subset_eps["source_episode_index"] = subset_eps["episode_index"]
@@ -270,6 +291,10 @@ def build_subset(
     for video_key in video_keys:
         subset_eps[f"videos/{video_key}/chunk_index"] = 0
         subset_eps[f"videos/{video_key}/file_index"] = subset_eps["episode_index"]
+        # Videos are now TRIMMED per episode → each starts at t=0, spans length/fps (not the old
+        # offset into the packed source). Without this the reader would seek to a nonexistent offset.
+        subset_eps[f"videos/{video_key}/from_timestamp"] = 0.0
+        subset_eps[f"videos/{video_key}/to_timestamp"] = subset_eps["length"] / fps
 
     subset_eps["data/chunk_index"] = 0
     subset_eps["data/file_index"] = 0

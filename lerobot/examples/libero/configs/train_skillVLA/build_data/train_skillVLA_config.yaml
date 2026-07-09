@@ -27,7 +27,7 @@ skillvla_dataset_root: skillvla_dataset  # outputs under {dataset_root}/{skillvl
 # ── Source dataset (원본) ─────────────────────────────────────
 # Raw LeRobot dataset to convert into SkillVLA data (may differ from the
 # dataset the DP/FSQ were trained on).
-source_dataset: libero_90_full_full
+source_dataset: libero_object_full_2
 
 # ── DINO precompute (step 2) ──────────────────────────────────
 # The build declares EXACTLY which (grid × camera) DINO it needs and either VALIDATES a
@@ -41,15 +41,19 @@ source_dataset: libero_90_full_full
 #   generate → compute every required grid×camera directly from the source dataset's frames
 #              (one frozen DINOv3 pass, idempotent), keyed by the source episode index. No
 #              precomputed base needed (handles merged / mixed-provenance datasets).
-dino_base_dataset: libero_90_full_full   # base dataset name | "generate"
+dino_base_dataset: generate   # base dataset name | "generate"
 DP_patch_grid:  8       # grid the DP segmentation consumes (3rd-person)
 FSQ_patch_grid: 8       # grid the FSQ terminator / skill DINO tokens consume
-dino_third: false        # terminator 3rd-person camera (observation.images.image)
+dino_third: true        # terminator 3rd-person camera (observation.images.image)
 dino_wrist: true       # terminator wrist camera (observation.images.wrist_image). Produced/
                         # validated as data, but the TRAINING terminator co-train forward
                         # consumes 3rd-person only today (eval encodes raw images live) → wrist
                         # is forward-compat.
 dino_copy_mode: symlink                  # copy | hardlink | symlink (intermediate, so symlink is cheap)
+# generate-mode only: shard the DINO precompute across N GPUs (Slurm array over episodes), then one
+# dependent slice job. 1 = single GPU (fine for small sources like libero_10). Bump for big sources
+# (e.g. libero_90). No effect when dino_base_dataset points at a precomputed base (login-node slice).
+dino_generate_workers: 1
 
 # ── DP model for skill segmentation (step 3) ──────────────────
 # A trained Diffusion Policy from train_skills (under {project_root}/outputs/DP/).
@@ -78,7 +82,7 @@ skillset_max_sweeps: 2
 # the fsq<levels> tag in the name (codebook size = prod(levels)); the rest of the
 # FSQ config lives in the checkpoint.
 # fsq_run_name: "libero_90_full_full_state_obs20_fsq555_dino8_weighted_wow"   # folder under outputs/FSQ/
-fsq_run_name: "libero_90_full_full_state_obs20_fsq555_dino8_weighted_wot"
+fsq_run_name: "libero_90_full_full_state_obs20_fsq555_dino8_both"
 
 fsq_checkpoint: 1000                              # epoch number; 0 = best (FSQ.pt)
 

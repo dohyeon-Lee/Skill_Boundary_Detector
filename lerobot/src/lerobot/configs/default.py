@@ -86,6 +86,10 @@ class EvalConfig:
     # episode's scene; with use_gt_skill the injected GT sequences are aligned to those SAME episodes.
     # "" / None = off (standard seed-based LIBERO resets). Needs use_async_envs=false.
     init_states_path: str | None = None
+    # Shell command run after EACH task's videos are written (best-effort) — the multi-model eval uses
+    # it to stitch the side-by-side grid task-by-task (progressive, like stage1) instead of once at job
+    # end. "{task_id}"/"{task_group}" are substituted. "" / None = off (stitch once at the end).
+    on_task_done_cmd: str | None = None
 
     def __post_init__(self) -> None:
         if self.batch_size > self.n_episodes:

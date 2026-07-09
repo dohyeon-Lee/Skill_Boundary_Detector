@@ -92,14 +92,8 @@ if [ "${TRAIN_TERMINATOR}" = "true" ]; then
   fi
 fi
 
-# Dropout schedule args only when a schedule is set ("" p_end = constant p; draccus needs a real float).
-SCHED_ARGS=()
-if [ -n "${VLM_DROPOUT_P_END}" ]; then
-  SCHED_ARGS=(
-    --policy.vlm_dropout_p_end="${VLM_DROPOUT_P_END}"
-    --policy.vlm_dropout_decay_steps="${VLM_DROPOUT_DECAY_STEPS}"
-  )
-fi
+# 3-way regime (A/B/C fixed probs) — REQUIRED (2-way binary-dropout legacy removed). draccus list syntax.
+REGIME_ARGS=(--policy.regime_probs="[${REGIME_PROBS}]")
 
 # pretrained_path=pi05 warm-starts the VLM; stage1_checkpoint_path warm-starts the action/cond side
 # (the policy's from_pretrained loads both). vision/skill_vocab/state_cond_mode are read from Stage-1.
@@ -132,7 +126,6 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.vlm_cond="${VLM_COND}" \
     --policy.cond_expert="${COND_EXPERT}" \
     --policy.vlm_expert="${VLM_EXPERT}" \
-    --policy.vlm_dropout_p="${VLM_DROPOUT_P}" \
     --track_param_drift="${TRACK_PARAM_DRIFT}" \
     --policy.freeze_vlm_vsa_expert="${FREEZE_VLM_VSA_EXPERT}" \
     --policy.freeze_vlm_vsa_cond="${FREEZE_VLM_VSA_COND}" \
@@ -142,6 +135,16 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.freeze_vsa_cond="${FREEZE_VSA_COND}" \
     --policy.freeze_vsa_llm="${FREEZE_VSA_LLM}" \
     --policy.freeze_vsa_vlm_vision="${FREEZE_VSA_VLM_VISION}" \
+    --policy.freeze_c_expert="${FREEZE_C_EXPERT}" \
+    --policy.freeze_c_cond="${FREEZE_C_COND}" \
+    --policy.freeze_c_llm="${FREEZE_C_LLM}" \
+    --policy.freeze_c_vlm_vision="${FREEZE_C_VLM_VISION}" \
+    --policy.severed_hold_target="${SEVERED_HOLD_TARGET}" \
+    --policy.ema_self_distill="${EMA_SELF_DISTILL}" \
+    --policy.ema_self_alpha="${EMA_SELF_ALPHA}" \
+    --policy.ema_self_weight="${EMA_SELF_WEIGHT}" \
+    --policy.ema_self_n_local="${EMA_SELF_N_LOCAL}" \
+    --policy.ema_self_n_global="${EMA_SELF_N_GLOBAL}" \
     --policy.fsq_path="${FSQ_CKPT}" \
     --batch_size="${BATCH_SIZE}" \
     --num_workers="${NUM_WORKERS}" \
@@ -152,7 +155,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.cond_lr_scale="${COND_LR_SCALE}" \
     --wandb.enable="${WANDB_ENABLE}" \
     --wandb.project="${WANDB_PROJECT}" \
-    ${SCHED_ARGS[@]+"${SCHED_ARGS[@]}"} \
+    ${REGIME_ARGS[@]+"${REGIME_ARGS[@]}"} \
     ${TERM_ARGS[@]+"${TERM_ARGS[@]}"} \
     ${RESUME_ARGS[@]+"${RESUME_ARGS[@]}"}
 

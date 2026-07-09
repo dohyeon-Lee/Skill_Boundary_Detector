@@ -10,7 +10,8 @@
 skillvla_dataset_root: skillvla_dataset
 
 # ── Warm-start: the Stage-2 run + checkpoint to finetune from ──
-stage2_run_name: FSQ555_dino8_both_1000_siglip_015000_state__tttf_50p_tfff_ffff
+# stage2_run_name: FSQ555_dino8_both_1000_siglip_015000_state__tttf_50p_tfff_ffff
+stage2_run_name: FSQ555_dino8_both_1000_siglip_015000_state__tttf_50p_ffff_ffff
 stage2_checkpoint: "050000"          # "last" or a step number
 # stage1_checkpoint_path:            # blank → read from the Stage-2 checkpoint config.json
 # skill_fsq_levels:                  # blank → read from the Stage-2 checkpoint config.json
@@ -19,7 +20,7 @@ stage2_checkpoint: "050000"          # "last" or a step number
 # run_tag는 입력하지 않는다 — 부모 Stage-2가 학습한 데이터셋과 같은 run_tag(같은 FSQ/파이프라인)여야
 # 하므로 부모 체크포인트의 train_config.json에서 자동 유도. FT 데이터셋은
 # {skillvla_root}/{source_dataset}/{그 run_tag}/skillvla 에 미리 빌드돼 있어야 함.
-source_dataset: libero_10_full_2
+source_dataset: libero_object_full_2
 
 # ── FT behaviour ──────────────────────────────────────────────
 # cond_skill_source: gt = teacher-force GT skill (Stage-2 style); pred = condition the action prefix
@@ -33,39 +34,19 @@ terminator_lr_scale: 1.0
 terminator_end_target_sigma: 1.0     # soft termination target std in FRAMES (exp(-de²/2σ²))
 terminator_end_pos_weight: 1.0
 
-# ── VLM dropout (stage2와 동일; FT 기본은 끔) ─────────────────
-# p>0이면 배치당 코인으로 cond→VLM/action→VLM 엣지 절단(B=VSA 배치) — FT에선 "VLM 없이 자기 skill만으로
-# 실행"을 새 task에서도 유지시키는 용도. VLM self-attn은 유지돼 skill head는 매 배치 지도됨.
-# 0(기본) = 코인 없음, freeze_vlm_vsa가 정적 적용 (기존 FT와 완전 동치).
-vlm_dropout_p: 0.5
-# 스케줄(선택): p → p_end 로 decay_steps 동안 선형 annealing 후 유지. 둘 다 비우면 고정 확률.
-# 스텝 카운터는 체크포인트에 저장돼 resume해도 이어짐. run-name: "90to20p30k".
-vlm_dropout_p_end:            # 비움 = 고정 확률
-vlm_dropout_decay_steps:
-
-# ── Freeze toggles (FT default: VLM-only finetune) ────────────
-# Stage-2와 동일한 단일 소스: p=0이면 모든 배치가 A(VLM 있음) → freeze_vlm_vsa가 그대로 정적 적용
-# (freeze_vsa 무시); p>0이면 배치마다 A/B 딕셔너리 토글. 그룹: expert=action expert(+action/time proj),
-# cond=현재obs 파이프라인 통째(vision인코더+image_proj+cond-encoder), llm=VLM의 Gemma LLM 트렁크만
-# (구 이름 vlm), vlm_vision=PaliGemma SigLIP tower.
-# 기본: VLM(트렁크+vision) 학습(새 task에 obs→skill 재접지), 모터 쪽(cond)은 동결, skill decoder 동결.
-
-# Easiest
-# freeze_vlm_vsa: {expert: true, cond: false, llm: false, vlm_vision: false}
-# freeze_vsa:     {expert: false, cond: false, llm: false, vlm_vision: false}   
-
-# Freeze llm 
-# freeze_vlm_vsa: {expert: true, cond: false, llm: true, vlm_vision: false}
-# freeze_vsa:     {expert: false, cond: false, llm: true, vlm_vision: true}
-
-# freeze llm & cond
-# freeze_vlm_vsa: {expert: true, cond: true, llm: true, vlm_vision: false}
-# freeze_vsa:     {expert: false, cond: false, llm: true, vlm_vision: true} 
-
-# Freeze cond 
-freeze_vlm_vsa: {expert: true, cond: true, llm: false, vlm_vision: false}
-freeze_vsa:     {expert: false, cond: false, llm: true, vlm_vision: true}
-
+# ═══ 학습 regime: 3-way (배치마다 A/B/C 고정확률로 뽑음; stage2와 동일 구조) ══════════════════════
+# 각 regime = (VLM mask 연결/절단) + (freeze 딕셔너리: t=동결, f=학습; 순서 expert,cond,llm,vlm_vision).
+#   A = VLM 연결 + freeze_A → perception 학습(VLM), 모터 동결 (새 task에 obs→skill 재접지).
+#   B = VLM 연결 + freeze_B → 모터(VSA) 학습, VLM 연결됐지만 동결 (추론과 같은 컨텍스트로 적응).
+#   C = VLM 절단 + freeze_C → 순수 VSA(Stage-1 형태), 새 task GT 실행을 standalone으로 학습(+hold).
+# 옛 2-way의 main_connected(=B) / gt_severed_bc(=C)는 3-way가 흡수하여 은퇴됨.
+# 폴더명: ...__{gt|pred}_{pA}{A}_{pB}{B}_{pC}{C} (예: pred_30ttff_50fftt_20fftt).
+regime_probs: [0.3, 0.5, 0.2]     # [A, B, C] 확률 (합 1) — 연결-perception / 연결-VSA / 절단-VSA. 필수.
+freeze_A: {expert: true,  cond: true,  llm: false, vlm_vision: false}   # 연결·perception: VLM 학습, 모터 동결
+freeze_B: {expert: false, cond: false, llm: true,  vlm_vision: true}    # 연결·VSA:       모터 학습, VLM 동결
+freeze_C: {expert: false, cond: false, llm: true,  vlm_vision: true}    # 절단·VSA:       모터 학습, VLM 동결
+# 그룹: expert=action expert(+action/time proj), cond=현재obs 파이프라인 통째(vision인코더+image_proj+
+# cond-encoder), llm=VLM Gemma 트렁크만, vlm_vision=PaliGemma SigLIP tower. skill decoder는 아래서 별도 동결.
 
 # skill decoder는 둘로 분리: head(FSQ readout)는 codebook 고정이라 확실히 얼리고, reader(probe 토큰,
 # VLM 출력 읽는 concat-KV)는 새 task에 재접지시키고 싶으면 false로 열 수 있음.
@@ -99,12 +80,22 @@ track_param_drift: true
 # forgetting 영역). 전역 빈도표는 부모 PT 데이터셋 히스토그램(FT/src/build_skill_code_freq.py로 생성;
 # 없으면 uniform). vlm_dropout이 발화(B 배치 존재)하고 B에서 expert/cond가 unfrozen이어야 의미 있음.
 # wandb train_distill/vsa 로 감시, probe_forget/flow 로 효과 측정.
-vsa_distill: false
-vsa_distill_weight: 0.2          # λ (GT BC 대비 약하게, 0.1~0.3). 0 = 모니터 전용(loss 안 걸고
-                                 #   train_distill/* 만 기록 — off 베이스라인의 드리프트 곡선용)
+vsa_distill: true
+vsa_distill_weight: 1          # λ (GT BC 대비 약하게, 0.1~0.3). 0 = 모니터 전용(loss 안 걸고
 vsa_distill_n_local: 2           # GT FSQ 이웃 skill 수
 vsa_distill_n_global: 2          # 전역 빈도 skill 수 (GT·이웃 제외)
 vsa_distill_neighbor_radius: 1   # FSQ 격자 ±r (이웃/제외 집합 정의)
+# 모션 카운터: 코드별 trajectory(세그먼트) 수를 체크포인트에 누적 저장(FT 계보 따라 +). 학습 땐 이번
+# 데이터 반영 전(prior) 값에 접근. 이번 FT 데이터셋이 쓰는 코드는 GT BC로 직접 학습되니 distill 샘플에서
+# 제외 — 단 prior 모션수가 하위 pct를 넘으면(옛 지식 충분) 선택 가능. 히스토그램(skill_code_freq.npz)은
+# sbatch가 PT·FT 데이터셋 옆에 자동 생성. distill on일 때만 활성.
+vsa_distill_prior_pct: 20        # FT 코드는 prior 모션수가 이 퍼센타일 이상일 때만 distill 대상
+# (frozen-PT distill은 C(절단) 배치에서만 걸림 — 순수 VSA 레퍼토리 보존은 severed 맥락에 속함.
+#  옛 main_connected/gt_severed_bc는 B/C regime이 흡수하여 제거됨.)
+# 분리(severed) VSA의 GT BC target을 Stage-1처럼: 스킬 끝(skill_de) 이후 chunk는 hold(팔 delta→0,
+# gripper 마지막 값 유지)로 눌러 supervise → 스킬이 자기완결적으로 STOP. severed VSA는 다음 스킬을 못
+# 보므로 다음 스킬 action으로 학습하면 안 됨. vsa_gt_severed_bc(분리 GT BC)에 적용됨. off면 폴더명 _nohold.
+severed_hold_target: true
 
 
 exp: ""                              # optional EXTRA run-name suffix

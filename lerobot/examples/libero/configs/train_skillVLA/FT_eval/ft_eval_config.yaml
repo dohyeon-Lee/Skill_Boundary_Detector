@@ -16,21 +16,21 @@
 # model_dir의 차이 토큰 자동. multi에선 skill_html 자동 off.
 eval_dropout: true
 models:
-  - {model_dir: libero_10_full_2_FSQ555_dino8_both_1000_siglip_015000_state_050000__tttf_50p_tfff_ffff__gt_50p_tfff_ffff__tt, label: llm_unfreeze}
-  - {model_dir: libero_10_full_2_FSQ555_dino8_both_1000_siglip_015000_state_050000__tttf_50p_tfff_ffff__gt_50p_tftf_fftt__tt, label: llm_freeze}
+  - {model_dir: libero_10_full_2_FSQ555_dino8_both_1000_siglip_015000_state_050000__tttf_50p_tfff_ffff__gt_50p_ttff_fftt__tt, label: without_prevent_forgetting}
+  - {model_dir: libero_10_full_2_FSQ555_dino8_both_1000_siglip_015000_state_050000__tttf_50p_tfff_ffff__gt_50p_ttff_fftt__tt_distill22w100, label: prevent_forgetting}
 
 models_per_row: 2                 # 행당 패널 수 (0=한 행) — stage2_eval과 동일
 
-checkpoint: "030000"               # "last" or a step number (models 항목에서 개별 override 가능)
+checkpoint: "last"               # "last" or a step number (models 항목에서 개별 override 가능)
 
 # ── Eval rollout (libero_10 = the finetuned task suite) ──
-target_task: libero_10
+target_task: libero_90
 task_ids: "[0,1,2,3,4,5,6,7,8,9]"
 # EPISODE-EXACT는 항상 ON (stage1 방식; 각 롤아웃 = 데이터셋 에피소드의 MuJoCo init_state로 리셋). 없으면
 # seed-기반 리셋으로 자동 폴백+경고. use_gt_skill이면 GT 시퀀스도 그 에피소드에 정렬 주입.
 # 총 GPU(=1-GPU 잡) 예산. SINGLE: task_ids를 N등분해 잡 N개. MULTI: 모델×청크로 팬아웃(청크수 =
 # eval_num_gpus ÷ 모델수). 잡 array라 {ID}_0,{ID}_1,…로 뜨고 scancel {ID} 하나로 전체 취소.
-eval_num_gpus: 5
+eval_num_gpus: 10
 n_episodes: 5
 n_action_steps: 5
 eval_batch_size: 1
@@ -49,7 +49,7 @@ skill_html_train_samples: 10
 #   progress    → progress >= skill_end_threshold
 #   and         → end_prob >= skill_end_threshold AND progress >= skill_end_progress_threshold
 #   or          → end_prob >= skill_end_threshold OR  progress >= skill_end_progress_threshold
-skill_end_mode: and
+skill_end_mode: or
 skill_end_threshold: 0.5
 skill_end_progress_threshold: 0.9   # progress gate for skill_end_mode=and/or
 inference_skill_max_length: 200    # force a skill switch after this many steps (0 = off)
@@ -61,7 +61,14 @@ inference_skill_max_length: 200    # force a skill switch after this many steps 
 #   stage2 → the terminator FT INHERITED from its Stage-2 source checkpoint (before FT adapted it).
 #            Requires the Stage-2 run to have co-trained a terminator. Ablates FT's terminator adaptation.
 # 폴더명에 _{ft|base|s2}로 태깅돼 나란히 비교됨.
-eval_terminator: ft
+eval_terminator: stage2 # stage2
+
+# 어느 VLM(PaliGemma 타워)으로 평가할지 — cond + action-expert는 항상 FT 학습한 것 사용.
+#   ft     → FT가 적응한 VLM (기본).
+#   stage2 → FT의 Stage-2 소스 체크포인트의 원본(FT 적응 전) VLM으로 덮어씀. "새 task로 적응한 모터가
+#            옛 perception과도 작동하나 / 어느 쪽 적응이 성능을 좌우하나"를 isolate. Stage-2 소스는
+#            config.json의 pretrained_path에서 자동 유도. 폴더명에 _s2vlm 태그.
+eval_vlm: stage2 # stage2
 
 # ── Oracle eval (isolate the action expert from the VLM's skill prediction) ──
 use_gt_skill: false        # true = teacher-force the dataset's GT skill sequence (per task)

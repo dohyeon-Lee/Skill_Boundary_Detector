@@ -109,7 +109,7 @@ resolve_fsq() {
 # rollout (shared knobs from the emitter env; per-model bits are the arguments; INIT_STATES ""=seed
 # resets; DROP_VLM true = sever cond/action→VLM at inference, skill code only).
 run_eval() {
-  local out="$1" job="$2" ppath="$3" fsq="$4" gt="$5" shtml="$6" inits="${7:-}" dropvlm="${8:-false}"
+  local out="$1" job="$2" ppath="$3" fsq="$4" gt="$5" shtml="$6" inits="${7:-}" dropvlm="${8:-false}" ontask="${9:-}" vlmovr="${10:-}"
   mkdir -p "${out}"
   PYTORCH_ALLOC_CONF=expandable_segments:True \
   PYTHONPATH="${LEROBOT_ROOT}/src:${LIBERO_REPO_ROOT}" \
@@ -144,7 +144,9 @@ run_eval() {
       --policy.gt_skill_dataset_dir="${gt}" \
       --policy.skill_advance_mode="${SKILL_ADVANCE_MODE}" \
       --policy.eval_drop_vlm="${dropvlm}" \
+      --policy.eval_vlm_override_path="${vlmovr}" \
       --eval.init_states_path="${inits}" \
+      --eval.on_task_done_cmd="${ontask}" \
       --wandb_project="${WANDB_PROJECT}" \
       --job_name="${job}" \
       --output_dir="${out}" \
@@ -177,8 +179,10 @@ if [ -z "${MODELS_JSON:-}" ]; then
     SKILL_HTML_EFFECTIVE=false
   fi
   [ -n "${EVAL_INIT_STATES_PATH}" ] && echo "scenes   : EPISODE-EXACT (${EVAL_INIT_STATES_PATH})"
+  [ -n "${VLM_OVERRIDE_PATH}" ] && echo "vlm      : Stage-2 override (${VLM_OVERRIDE_PATH})"
   run_eval "${EVAL_OUT_DIR}" "${WANDB_RUN_NAME}" "${POLICY_PATH}" "${FSQ_FOR_EVAL}" \
-           "${GT_SKILL_DATASET_DIR}" "${SKILL_HTML_EFFECTIVE}" "${EVAL_INIT_STATES_PATH}"
+           "${GT_SKILL_DATASET_DIR}" "${SKILL_HTML_EFFECTIVE}" "${EVAL_INIT_STATES_PATH}" \
+           "false" "" "${VLM_OVERRIDE_PATH}"
 
   if [ -n "${TASK_TAG:-}" ]; then
     "${PROJECT_ROOT}/.venv/bin/python" "${S2_SRC_DIR}/merge_eval_chunks.py" \
@@ -197,12 +201,24 @@ for m in json.loads(os.environ["MODELS_JSON"]):
                     m["ft_run_dir"], m["checkpoint"], m["term_kind"], m["gt_skill_dataset_dir"],
                     m.get("eval_init_states_path", ""), str(m.get("drop_vlm", False)).lower(),
                     m.get("stage2_fsq_path", ""), m.get("stage2_run_dir", ""),
-                    m.get("stage2_checkpoint", "")]))
+                    m.get("stage2_checkpoint", ""), m.get("vlm_override_path", "")]))
 PY
 )"
+  # Progressive per-task stitch (like stage1): each panel eval runs this after EVERY task's videos are
+  # written, so a task's grid clip appears as soon as it's done in all panels — instead of all-at-job-end.
+  # A tiny helper script sidesteps nested shell quoting of the labels_json in --eval.on_task_done_cmd.
+  STITCH_SH="${EVAL_OUT_DIR}/.stitch_panels.sh"
+  mkdir -p "${EVAL_OUT_DIR}"
+  cat > "${STITCH_SH}" <<EOF
+#!/usr/bin/env bash
+"${PROJECT_ROOT}/.venv/bin/python" "${S2_SRC_DIR}/stitch_panels.py" \
+  --panels_root="${EVAL_OUT_DIR}/panels" --out_dir="${EVAL_OUT_DIR}/side_by_side" \
+  --labels_json='${MODELS_LABELS}' --per_row="${MODELS_PER_ROW}"
+EOF
+
   # PANEL_LABEL set (submit's model×chunk fan-out) → this job runs ONLY that model; unset (srun /
   # legacy) → all models sequentially.
-  while IFS='|' read -r LBL PPATH BFSQ FTFSQ FTRUN CKPT KIND GTDIR INITS DROP S2FSQ S2RUN S2CKPT; do
+  while IFS='|' read -r LBL PPATH BFSQ FTFSQ FTRUN CKPT KIND GTDIR INITS DROP S2FSQ S2RUN S2CKPT VLMOVR; do
     [ -z "${LBL}" ] && continue
     if [ -n "${PANEL_LABEL:-}" ] && [ "${LBL}" != "${PANEL_LABEL}" ]; then
       continue
@@ -216,9 +232,9 @@ PY
       echo "[warn] panel '${LBL}': no terminator FSQ (${FSQ}) — skipping this model" >&2
       continue
     fi
-    echo "── panel '${LBL}': ${PPATH}  (fsq=${FSQ}, terminator=${KIND}${INITS:+, scenes=EPISODE-EXACT}, drop_vlm=${DROP:-false})"
+    echo "── panel '${LBL}': ${PPATH}  (fsq=${FSQ}, terminator=${KIND}${INITS:+, scenes=EPISODE-EXACT}, drop_vlm=${DROP:-false}${VLMOVR:+, vlm=Stage-2})"
     run_eval "${EVAL_OUT_DIR}/panels/${LBL}" "${BASE_RN}_${LBL}${TASK_TAG:+_${TASK_TAG}}" \
-             "${PPATH}" "${FSQ}" "${GTDIR}" false "${INITS}" "${DROP:-false}"
+             "${PPATH}" "${FSQ}" "${GTDIR}" false "${INITS}" "${DROP:-false}" "bash ${STITCH_SH}" "${VLMOVR}"
   done <<< "${SPECS}"
 
   # Stitch is IDEMPOTENT + ATOMIC + skips episodes not yet finished in every panel → run it at the end
