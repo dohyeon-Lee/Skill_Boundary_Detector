@@ -263,6 +263,32 @@ anneal** — 정찰·정렬·스트레스 선별은 풀 스케일 유지, anchor
 (constant-LR endpoint의 orbit/recency 문제 해결). 의도된 조합 = `pt_constant_lr: true` +
 `β: 0.5→0.1`. 다음 3파전: {const+β스케줄, const+β고정, decay} → FT 판정.
 
+**메커니즘 확정 (2026-07-07): cyclic의 forgetting 이점 = 더 flat한 minima, 언어모델에 집중.**
+- 진단 도구: `src/measure_term2_blocks.py`(블록별 gradient 정렬) + `src/measure_flatness_blocks.py`
+  (블록별 filter-normalized 섭동 → 옛-task probe loss 상승 ΔL/L; forgetting-relevant sharpness).
+  둘 다 fork_rng 고정 노이즈, 사이클 probe와 동일 자. sbatch: cycle_eval/term2.sbatch, flatness.sbatch
+  (MODEL/CKPT env). 결과 outputs_term2/, outputs_flatness/.
+- **term2(블록 정렬): cyclic ≈ iid, 둘 다 랜덤(0.125) 근처 → 기각.** 블록별 "공유 몰아주기"
+  전략은 타겟 없음. (놀랍게도 action_expert가 vision보다 정렬 높음 — 매니퓰레이션 공유구조가
+  모터에 있을 수 있음, 근데 iid와 차이 없어 무의미.)
+- **flatness(basin 곡률): cyclic이 모든 블록에서 더 flat (CYC<IID, 두 eps 모두, 일관).** →
+  Mirzadeh 2020 "flat minima→덜 잊음" 실측. cyclic이 바꾼 건 gradient 방향관계가 아니라
+  앉은 자리의 곡률.
+- **핵심: 옛-task 지식은 압도적으로 language_model(VLM)에 있다.** language_model fragility
+  (ΔL/L@0.05 = cyc 0.173 / iid 0.262)가 나머지 블록(전부 <0.005)의 ~100배. 그리고 cyclic의
+  이득이 정확히 거기 집중 (34~50% 덜 fragile). vision/action/flow는 흔들어도 옛 loss 거의 불변.
+- 스토리: cyclic PT → flatter minima → 그 강건화가 옛 지식이 사는 언어모델에 집중 → FT 섭동에서
+  언어모델이 덜 밀림 → 덜 잊음. 기존 skillVLA의 VLM-freeze/언어 modulation 관찰과 정합.
+- ⚠️ 노이즈: 8그룹×2배치라 term2 블록차는 노이즈 수준. flatness는 3seed×2eps로 신호 명확.
+  더 굳히려면 probe 배치↑ 또는 seed↑. 측정은 cyc250_constlr@20k vs iid250(decay)@20k.
+- **FT 이동량 교차검증 (`src/measure_ft_delta_blocks.py`, forward-free CPU, FT010k vs PT020k):
+  cyclic과 iid가 VLM을 똑같은 양 민다 (rel_move 0.00279 vs 0.00285) → "cyclic이 VLM을 덜
+  건드려서"(가설 A) 기각, "같이 밀려도 flat해서 안 무너짐"(가설 B) 확정.** 게다가 VLM은 FT 때
+  전 블록 중 이동 최소(0.0028)인데 forgetting은 거기서 남 — 새 task는 모터쪽(action/flow,
+  rel 0.025~0.048)에 학습되고 VLM은 거의 안 건드리는데, VLM이 100배 취약해서 그 작은 이동이
+  유일한 forgetting 원천. **forgetting = 취약성 × 이동량, cyclic은 순수하게 취약성(flatness)
+  으로 이김.** flatness 그림 + 이동량 그림이 상호 검증 = 논문 핵심 2-figure.
+
 ## 8. 다음 단계
 
 1. (필요시) 스모크: `PT_STEPS=24 CYCLE_PHASE_STEPS=3 CYCLE_DELTA_LAMBDA=0.5
