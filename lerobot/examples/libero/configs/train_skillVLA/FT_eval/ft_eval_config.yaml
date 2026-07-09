@@ -16,8 +16,8 @@
 # model_dir의 차이 토큰 자동. multi에선 skill_html 자동 off.
 eval_dropout: true
 models:
-  - {model_dir: libero_10_full_2_FSQ555_dino8_both_1000_siglip_015000_state_050000__tttf_50p_tfff_ffff__gt_50p_ttff_fftt__tt, label: without_prevent_forgetting}
-  - {model_dir: libero_10_full_2_FSQ555_dino8_both_1000_siglip_015000_state_050000__tttf_50p_tfff_ffff__gt_50p_ttff_fftt__tt_distill22w100, label: prevent_forgetting}
+  - {model_dir: libero_10_full_2_FSQ555_dino8_both_1000_siglip_015000_state_050000__tttf_50p_tfff_ffff__gt_30ttff_50fftt_20fftt__tt_distill22w100, label: libero_10}
+  - {model_dir: libero_object_full_2_FSQ555_dino8_both_1000_siglip_015000_state_050000__tttf_50p_tfff_ffff__gt_30ttff_50fftt_20fftt__tt_distill22w100, label: libero_object}
 
 models_per_row: 2                 # 행당 패널 수 (0=한 행) — stage2_eval과 동일
 
@@ -61,14 +61,14 @@ inference_skill_max_length: 200    # force a skill switch after this many steps 
 #   stage2 → the terminator FT INHERITED from its Stage-2 source checkpoint (before FT adapted it).
 #            Requires the Stage-2 run to have co-trained a terminator. Ablates FT's terminator adaptation.
 # 폴더명에 _{ft|base|s2}로 태깅돼 나란히 비교됨.
-eval_terminator: stage2 # stage2
+eval_terminator: ft # stage2
 
 # 어느 VLM(PaliGemma 타워)으로 평가할지 — cond + action-expert는 항상 FT 학습한 것 사용.
 #   ft     → FT가 적응한 VLM (기본).
 #   stage2 → FT의 Stage-2 소스 체크포인트의 원본(FT 적응 전) VLM으로 덮어씀. "새 task로 적응한 모터가
 #            옛 perception과도 작동하나 / 어느 쪽 적응이 성능을 좌우하나"를 isolate. Stage-2 소스는
 #            config.json의 pretrained_path에서 자동 유도. 폴더명에 _s2vlm 태그.
-eval_vlm: stage2 # stage2
+eval_vlm: ft # stage2
 
 # ── Oracle eval (isolate the action expert from the VLM's skill prediction) ──
 use_gt_skill: false        # true = teacher-force the dataset's GT skill sequence (per task)

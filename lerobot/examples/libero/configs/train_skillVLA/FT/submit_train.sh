@@ -19,7 +19,13 @@ if [ ! -x "${BOOTSTRAP_PYTHON}" ]; then
   BOOTSTRAP_PYTHON=python3
 fi
 
-eval "$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/ft_train_config.py" --config "${CONFIG_PATH}" --shell)"
+# Resolve the config → FREEZE the resolved env to a per-submit snapshot the JOB sources verbatim, so the
+# job NEVER re-runs the emitter on a (possibly deleted/edited) yaml at start. Emitter failure surfaces
+# HERE at submit (set -e aborts), not as a confusing job-side traceback.
+mkdir -p "${SCRIPT_DIR}/logs"
+FT_ENV_SNAPSHOT="${SCRIPT_DIR}/logs/ft_env_$(date +%Y%m%d_%H%M%S)_$$.sh"
+"${BOOTSTRAP_PYTHON}" "${SRC_DIR}/ft_train_config.py" --config "${CONFIG_PATH}" --shell > "${FT_ENV_SNAPSHOT}"
+source "${FT_ENV_SNAPSHOT}"
 
 # ── prerequisite artifacts ──
 if [ ! -e "${SKILLVLA_DATASET_DIR}" ]; then
@@ -70,10 +76,10 @@ echo "  slurm    : partition=${TRAIN_PARTITION} qos=${TRAIN_QOS} gres=${TRAIN_GR
 if [ -n "${SLURM_JOB_ID:-}" ]; then
   # Inside an existing allocation (e.g. salloc) → reuse the held GPU as a job step.
   echo "  mode     : srun (reusing allocation ${SLURM_JOB_ID})"
-  FT_TRAIN_CONFIG="${CONFIG_PATH}" \
+  FT_TRAIN_CONFIG="${CONFIG_PATH}" FT_ENV_SNAPSHOT="${FT_ENV_SNAPSHOT}" \
     srun "${SRC_DIR}/train.sbatch"
 else
   echo "  mode     : sbatch (new job)"
-  FT_TRAIN_CONFIG="${CONFIG_PATH}" \
+  FT_TRAIN_CONFIG="${CONFIG_PATH}" FT_ENV_SNAPSHOT="${FT_ENV_SNAPSHOT}" \
     sbatch "${SBATCH_ARGS[@]}" "${SRC_DIR}/train.sbatch"
 fi

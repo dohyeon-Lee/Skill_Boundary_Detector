@@ -18,7 +18,14 @@ if [ ! -x "${BOOTSTRAP_PYTHON}" ]; then
   BOOTSTRAP_PYTHON=python3
 fi
 
-eval "$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/ft_eval_config.py" --config "${CONFIG_PATH}" --shell)"
+# Freeze the resolved env to a per-submit snapshot the JOB sources verbatim (no job-side emitter re-run
+# on a possibly deleted/edited yaml). Exported → carried to all srun/sbatch(-array) paths via --export=ALL.
+# Failure surfaces HERE at submit (set -e aborts), not as a confusing job-side traceback.
+mkdir -p "${SCRIPT_DIR}/logs"
+FT_EVAL_ENV_SNAPSHOT="${SCRIPT_DIR}/logs/ft_eval_env_$(date +%Y%m%d_%H%M%S)_$$.sh"
+"${BOOTSTRAP_PYTHON}" "${SRC_DIR}/ft_eval_config.py" --config "${CONFIG_PATH}" --shell > "${FT_EVAL_ENV_SNAPSHOT}"
+source "${FT_EVAL_ENV_SNAPSHOT}"
+export FT_EVAL_ENV_SNAPSHOT
 
 if [ ! -d "${POLICY_PATH}" ]; then
   echo "FT checkpoint not found: ${POLICY_PATH}" >&2

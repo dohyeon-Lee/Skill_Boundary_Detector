@@ -19,7 +19,13 @@ if [ ! -x "${BOOTSTRAP_PYTHON}" ]; then
   BOOTSTRAP_PYTHON=python3
 fi
 
-eval "$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/stage2_train_config.py" --config "${CONFIG_PATH}" --shell)"
+# Resolve the config → FREEZE the resolved env to a per-submit snapshot the JOB sources verbatim, so the
+# job NEVER re-runs the emitter on a (possibly deleted/edited) yaml at start. Emitter failure surfaces
+# HERE at submit (set -e aborts), not as a confusing job-side traceback.
+mkdir -p "${SCRIPT_DIR}/logs"
+STAGE2_ENV_SNAPSHOT="${SCRIPT_DIR}/logs/stage2_env_$(date +%Y%m%d_%H%M%S)_$$.sh"
+"${BOOTSTRAP_PYTHON}" "${SRC_DIR}/stage2_train_config.py" --config "${CONFIG_PATH}" --shell > "${STAGE2_ENV_SNAPSHOT}"
+source "${STAGE2_ENV_SNAPSHOT}"
 
 # ── prerequisite artifacts ──
 # skillvla dataset ← configs/train_skillVLA/build_data ; Stage-1 checkpoint ← configs/train_skillVLA/stage1.
@@ -71,10 +77,10 @@ if [ -n "${SLURM_JOB_ID:-}" ]; then
   # so SBATCH_ARGS are ignored here; the config snapshot still applies.
   # NB: training runs in the FOREGROUND of this shell until it finishes.
   echo "  mode     : srun (reusing allocation ${SLURM_JOB_ID})"
-  STAGE2_TRAIN_CONFIG="${CONFIG_PATH}" \
+  STAGE2_TRAIN_CONFIG="${CONFIG_PATH}" STAGE2_ENV_SNAPSHOT="${STAGE2_ENV_SNAPSHOT}" \
     srun "${SRC_DIR}/train.sbatch"
 else
   echo "  mode     : sbatch (new job)"
-  STAGE2_TRAIN_CONFIG="${CONFIG_PATH}" \
+  STAGE2_TRAIN_CONFIG="${CONFIG_PATH}" STAGE2_ENV_SNAPSHOT="${STAGE2_ENV_SNAPSHOT}" \
     sbatch "${SBATCH_ARGS[@]}" "${SRC_DIR}/train.sbatch"
 fi

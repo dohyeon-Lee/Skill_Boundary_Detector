@@ -64,6 +64,14 @@ class SkillVLAConfig(PI05Config):
     """Number of JOINT concat-KV layers in the skill reader (keep shallow: catastrophic-forgetting-friendly)."""
     reader_heads: int = 8
     """Attention heads in the skill reader (must divide the VLM width)."""
+    skill_reader_all_layers: bool = False
+    """Feed the skill reader ALL VLM layers' outputs (each normed by the VLM final norm, stacked as
+    K/V) instead of only the final layer. A FROZEN LLM's final rep is language-centric; the skill code
+    is a bespoke motion primitive whose features often sit in MID layers — giving the reader all layers
+    lets its attention softly pick the informative depth (cond already reads all layers). Read-only
+    (VLM unperturbed) → train (joint forward) and inference (predict_skill_code) capture the SAME layer
+    stack, so no train/infer skew. Cost: KV grows L× (few probes → attention still cheap) + keeps the
+    per-layer VLM hiddens for backward. False → final-layer only (byte-identical to before)."""
     skill_deadzone_frac: float = 0.0
     """SkillHead regression dead-zone as a FRACTION of the per-dim grid spacing. Per-dim margin =
     frac / (levels-1) in the normalized coord frame; once |pred - target| < margin (i.e. the rounded
@@ -137,18 +145,23 @@ class SkillVLAConfig(PI05Config):
     # ⚠ MULTI-GPU: with num_gpus>1 (DDP) AND a group trained in only ONE regime, ranks that pick different
     #   drop_vlm coins freeze different params → the DDP reducer can desync/hang. Keep num_gpus=1 for
     #   per-regime freeze, or broadcast one coin to all ranks. (num_gpus=1 — the default — is unaffected.)
+    # cond = the cond Gemma encoder + image_proj; cond_vision = the cond's OWN DINO/SigLIP vision tower,
+    # split out so it can be frozen/unfrozen independently of the rest of the cond pipeline.
     freeze_vlm_vsa_expert: bool = False
     freeze_vlm_vsa_cond: bool = False
+    freeze_vlm_vsa_cond_vision: bool = False
     freeze_vlm_vsa_llm: bool = False
     freeze_vlm_vsa_vlm_vision: bool = False
     freeze_vsa_expert: bool = False
     freeze_vsa_cond: bool = False
+    freeze_vsa_cond_vision: bool = False
     freeze_vsa_llm: bool = False
     freeze_vsa_vlm_vision: bool = False
     # 3-way regime C (VLM severed, VSA) freeze dict. A uses freeze_vlm_vsa, B uses freeze_vsa, C uses
     # these — so all three regimes are independently settable. Unused in the 2-way (binary) mode.
     freeze_c_expert: bool = False
     freeze_c_cond: bool = False
+    freeze_c_cond_vision: bool = False
     freeze_c_llm: bool = False
     freeze_c_vlm_vision: bool = False
 

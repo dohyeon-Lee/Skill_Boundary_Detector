@@ -295,7 +295,8 @@ class SkillVLAPytorch(PI05Pytorch):
         cond_vision = self.dino if self.vision_backbone == "dino" else self.siglip
         return {
             "expert": [self._expert, self.action_in_proj, self.action_out_proj, self.time_mlp_in, self.time_mlp_out],
-            "cond": [cond_vision, self.image_proj, self.cond_encoder],
+            "cond": [self.image_proj, self.cond_encoder],       # cond Gemma + image_proj (vision split out)
+            "cond_vision": [cond_vision],                       # DINO/SigLIP for cond — separately freezable
             "llm": [self._vlm],       # the VLM's Gemma LLM trunk ONLY (vision tower = vlm_vision below)
             "vlm_vision": [self.paligemma_with_expert.paligemma.model.vision_tower],
         }
@@ -339,7 +340,7 @@ class SkillVLAPytorch(PI05Pytorch):
         (prefix = 'vlm_vsa' [A], 'vsa' [B], or 'c' [C]). Groups frozen in ALL active regimes were already
         excluded from the optimizer (SkillVLAPolicy._apply_freezes); toggling them here is then a no-op."""
         c, g = self.config, self._regime_groups()
-        for key in ("expert", "cond", "llm", "vlm_vision"):
+        for key in ("expert", "cond", "cond_vision", "llm", "vlm_vision"):
             self._set_requires_grad(g[key], not getattr(c, f"freeze_{prefix}_{key}"))
 
     @property
@@ -516,14 +517,17 @@ class SkillVLAPytorch(PI05Pytorch):
         return att_4d, col_valid
 
     # ── joint stream runners ──
-    def _run_streams(self, hiddens, layers_per_stream, adarms, att_4d, position_ids):
+    def _run_streams(self, hiddens, layers_per_stream, adarms, att_4d, position_ids, collect_idx=None):
         """Run the shared transformer over the streams (pre-final-norm hiddens out). All streams
         share the VLM's RoPE and have equal depth (gemma_*: 18 layers). When gradient checkpointing
         is on (training), each layer is recomputed in backward instead of stored (memory↓, ~25% slower)
-        — the inference cache paths are @torch.no_grad so they are unaffected."""
+        — the inference cache paths are @torch.no_grad so they are unaffected.
+        collect_idx: if set, stash stream[collect_idx]'s per-layer (pre-final-norm) hidden into
+        self._collected_layers (list, len = depth) — used for skill_reader_all_layers."""
         hiddens = [h.to(self._wdtype) for h in hiddens]
         rotary = self._vlm.rotary_emb
         use_ckpt = getattr(self, "gradient_checkpointing_enabled", False) and self.training
+        collected = [] if collect_idx is not None else None
         for layer_idx in range(len(layers_per_stream[0])):
             layers = [ls[layer_idx] for ls in layers_per_stream]
             if use_ckpt:
@@ -533,6 +537,10 @@ class SkillVLAPytorch(PI05Pytorch):
                 )
             else:
                 hiddens = compute_layer_multi(layer_idx, hiddens, layers, att_4d, position_ids, adarms, rotary)
+            if collected is not None:
+                collected.append(hiddens[collect_idx])
+        if collected is not None:
+            self._collected_layers = collected
         return hiddens
 
     def _joint_positions(self, vlm_pad: Tensor, nc: int, na: int) -> tuple[Tensor, Tensor, Tensor]:
@@ -555,7 +563,7 @@ class SkillVLAPytorch(PI05Pytorch):
         return vlm_pos, cond_pos, action_pos
 
     def _joint_forward_A(self, cond_tokens, vlm_embeds, vlm_pad, vlm_xattn_block, action_tokens, expert_cond,
-                         drop_vlm=False):
+                         drop_vlm=False, collect_vlm_layers=False):
         nc, na = cond_tokens.shape[1], action_tokens.shape[1]
         att_4d, _ = self._mask_branch_A(nc, vlm_pad, vlm_xattn_block, na, drop_vlm=drop_vlm)
         vlm_pos, cond_pos, action_pos = self._joint_positions(vlm_pad, nc, na)
@@ -564,20 +572,26 @@ class SkillVLAPytorch(PI05Pytorch):
         # cond/vlm: plain RMSNorm; action ← AdaRMS(expert_cond = time + state [+ skill + progress for
         # state_skill]). In `state` mode skill/progress ride the action prefix instead (see _action_prefix).
         adarms = [None, None, expert_cond]
-        outs = self._run_streams([cond_tokens, vlm_embeds, action_tokens], layers_per_stream, adarms, att_4d, position_ids)
+        outs = self._run_streams([cond_tokens, vlm_embeds, action_tokens], layers_per_stream, adarms, att_4d,
+                                 position_ids, collect_idx=(1 if collect_vlm_layers else None))   # 1 = VLM stream
         cond_out, vlm_out, action_out = outs
         cond_out, _ = layernorm_forward(self.cond_encoder.model.norm, cond_out, None)
         vlm_out, _ = layernorm_forward(self._vlm.norm, vlm_out, None)
         action_out, _ = layernorm_forward(self._expert.norm, action_out, expert_cond)
+        if collect_vlm_layers:   # each captured layer normed by the VLM final norm → (B, L, nv, W)
+            self._vlm_all_layers = torch.stack(
+                [layernorm_forward(self._vlm.norm, h, None)[0] for h in self._collected_layers], dim=1)
         return vlm_out, action_out
 
     def _joint_forward(self, cond_tokens, vlm_embeds, vlm_pad, vlm_xattn_block, action_tokens, expert_cond,
-                       drop_vlm=False):
+                       drop_vlm=False, collect_vlm_layers=False):
         """Returns (vlm_out, action_hidden) where action_hidden is the action-CHUNK only — the
         skill/progress prefix (state mode) is dropped by the final slice (no-op in state_skill mode).
-        drop_vlm severs cond→VLM / action→VLM for a CFG dropout batch (Stage-1 form)."""
+        drop_vlm severs cond→VLM / action→VLM for a CFG dropout batch (Stage-1 form). collect_vlm_layers
+        stashes the per-layer VLM stack in self._vlm_all_layers (skill_reader_all_layers)."""
         vlm_out, action_out = self._joint_forward_A(
-            cond_tokens, vlm_embeds, vlm_pad, vlm_xattn_block, action_tokens, expert_cond, drop_vlm=drop_vlm)
+            cond_tokens, vlm_embeds, vlm_pad, vlm_xattn_block, action_tokens, expert_cond,
+            drop_vlm=drop_vlm, collect_vlm_layers=collect_vlm_layers)
         return vlm_out, action_out[:, -self.config.chunk_size :]
 
     def _vsa_action_hidden(self, cond_tokens: Tensor, action_tokens: Tensor, expert_cond: Tensor) -> Tensor:
@@ -707,8 +721,7 @@ class SkillVLAPytorch(PI05Pytorch):
         registered as a submodule (excluded from state_dict + optimizer)."""
         if getattr(self, "_vsa_teacher", None):
             return
-        import copy  # noqa: PLC0415
-        t = copy.deepcopy(self)
+        t = self._deepcopy_self_for_teacher()
         pp = getattr(self.config, "pretrained_path", None)
         if pp:
             raw = _load_raw_state_dict(str(pp), {})
@@ -782,6 +795,22 @@ class SkillVLAPytorch(PI05Pytorch):
         self._last_ema_distill_parts = parts
         return loss
 
+    def _deepcopy_self_for_teacher(self):
+        """deepcopy(self) for a frozen/EMA teacher WITHOUT the transient forward state. torch cannot
+        deepcopy non-leaf (graph-attached) tensors — this forward stashes several on self (_vlm_all_layers,
+        _collected_layers, _last_* losses) — and a teacher must not carry a nested teacher. Strip those
+        keys, copy, restore. Parameters/buffers live in _parameters/_buffers (deepcopied normally)."""
+        import copy  # noqa: PLC0415
+        strip = [k for k, v in self.__dict__.items()
+                 if (isinstance(v, torch.Tensor) and not v.is_leaf)
+                 or (isinstance(v, list) and any(isinstance(x, torch.Tensor) for x in v))]
+        strip += [k for k in ("_ema_teacher", "_vsa_teacher") if k in self.__dict__]
+        saved = {k: self.__dict__.pop(k) for k in dict.fromkeys(strip)}
+        try:
+            return copy.deepcopy(self)
+        finally:
+            self.__dict__.update(saved)
+
     def _ensure_ema_teacher(self) -> None:
         """Lazily build the EMA-self teacher = a frozen deep-copy of the CURRENT model (so it starts at
         the Stage-2 state, NOT the Stage-1 warm-start). Updated each step by _update_ema_teacher. Held in
@@ -789,8 +818,7 @@ class SkillVLAPytorch(PI05Pytorch):
         rebuilt from the resumed weights and the EMA history restarts (τ≈1/(1−α) steps to re-warm)."""
         if getattr(self, "_ema_teacher", None):
             return
-        import copy  # noqa: PLC0415
-        t = copy.deepcopy(self)
+        t = self._deepcopy_self_for_teacher()
         for p in t.parameters():
             p.requires_grad_(False)
         t.eval()
@@ -813,11 +841,17 @@ class SkillVLAPytorch(PI05Pytorch):
             if sp is not None:
                 tp.mul_(a).add_(sp.detach().to(tp.dtype), alpha=1.0 - a)
 
-    def _skill_hidden(self, vlm_out: Tensor, vlm_pad: Tensor, vlm_xattn_block: Tensor) -> Tensor:
+    def _skill_hidden(self, vlm_out: Tensor, vlm_pad: Tensor, vlm_xattn_block: Tensor,
+                      all_layers: Tensor | None = None) -> Tensor:
         """Pooled skill hidden from the JOINT concat-KV SkillReader over the VLM's FINAL-layer output
         (``vlm_out`` (B,nv,W)). The reader attends the SAME VLM tokens as cond — the image/language read-set
-        picked by attend_image/attend_language (~vlm_xattn_block) — minus padding → SkillHead. Read-only."""
+        picked by attend_image/attend_language (~vlm_xattn_block) — minus padding → SkillHead. Read-only.
+        all_layers (B,L,nv,W): skill_reader_all_layers → the reader's KV is EVERY layer's nv tokens
+        stacked (L·nv keys), so its attention can pick the informative depth; the ignore mask is tiled L×."""
         vlm_key_ignore = (~vlm_pad) | vlm_xattn_block[None, :]           # (B, nv) True = do not attend
+        if all_layers is not None:
+            B, L, nv, W = all_layers.shape
+            return self.skill_reader(all_layers.reshape(B, L * nv, W), vlm_key_ignore.repeat(1, L))
         return self.skill_reader(vlm_out, vlm_key_ignore)
 
     def _pred_skill_ste_z(self, skill_hidden: Tensor) -> Tensor:
@@ -926,10 +960,11 @@ class SkillVLAPytorch(PI05Pytorch):
         u_t = noise - actions
 
         vlm_embeds, vlm_pad, vlm_xattn_block = self._vlm_tokens(start_images, lang_tokens, lang_masks)
+        all_layers = getattr(self.config, "skill_reader_all_layers", False)
         pred_hidden = None
         if getattr(self.config, "cond_skill_source", "gt") == "pred":
-            pred_hidden = self._skill_hidden(  # phase 1 (grad): reader over the VLM prefix output
-                self._vlm_prefix_out(vlm_embeds, vlm_pad), vlm_pad, vlm_xattn_block)
+            pred_hidden = self._skill_hidden_standalone(  # phase 1 (grad): reader over the VLM prefix output
+                vlm_embeds, vlm_pad, vlm_xattn_block)
             skill_zq = self._pred_skill_ste_z(pred_hidden)
         else:
             skill_zq = self._code_to_z(skill_code) / self._fsq_half[None, :]
@@ -945,9 +980,11 @@ class SkillVLAPytorch(PI05Pytorch):
         # (only C severs) and the 2-way vsa_distill_main_connected flip. The freeze (requires_grad) is
         # governed separately by freeze_is_vsa — so B trains the motor with the VLM CONNECTED but FROZEN.
         vlm_out, action_out = self._joint_forward(
-            cond_tokens, vlm_embeds, vlm_pad, vlm_xattn_block, action_tokens, expert_cond, drop_vlm=mask_severed)
+            cond_tokens, vlm_embeds, vlm_pad, vlm_xattn_block, action_tokens, expert_cond, drop_vlm=mask_severed,
+            collect_vlm_layers=(all_layers and pred_hidden is None))   # gt-mode reader reads the joint stack
         v_t = self._action_out(action_out)
-        skill_hidden = pred_hidden if pred_hidden is not None else self._skill_hidden(vlm_out, vlm_pad, vlm_xattn_block)
+        skill_hidden = pred_hidden if pred_hidden is not None else self._skill_hidden(
+            vlm_out, vlm_pad, vlm_xattn_block, all_layers=(self._vlm_all_layers if all_layers else None))
 
         # Continual-learning VSA distillation: only on B (VSA-only) batches, where the skill→action map
         # is being trained VLM-free — pin the sampled-skill actions to the frozen PT teacher. (Reuses
@@ -1009,25 +1046,44 @@ class SkillVLAPytorch(PI05Pytorch):
         return F.mse_loss(u_t, v_t, reduction="none"), skill_hidden
 
     # ── inference ──
-    def _vlm_prefix_out(self, vlm_embeds: Tensor, vlm_pad: Tensor) -> Tensor:
+    def _vlm_prefix_out(self, vlm_embeds: Tensor, vlm_pad: Tensor, all_layers: bool = False):
         """VLM transformer over a PRECOMPUTED prefix (bidirectional within valid tokens) → hidden
         (B, nv, vlm_width). Grad-capable: the gemma language_model gradient-checkpoints internally
-        when training, so the cond_skill_source=pred path (which keeps the graph) stays memory-safe."""
+        when training, so the cond_skill_source=pred path (which keeps the graph) stays memory-safe.
+        all_layers → also return the per-layer stack (B, L, nv, W), each normed by the VLM final norm
+        (matching the joint forward's captured stack) for skill_reader_all_layers."""
         att_2d = vlm_pad[:, None, :] & vlm_pad[:, :, None]
         # SDPA (the VLM's default attn) requires the additive bias dtype to match the query's; the
         # python-float `torch.where` yields float32, so cast to the bf16 working dtype.
         att_4d = torch.where(att_2d[:, None], 0.0, OPENPI_ATTENTION_MASK_VALUE).to(vlm_embeds.dtype)
         position_ids = torch.cumsum(vlm_pad, dim=1) - 1
-        return self._vlm.forward(
+        out = self._vlm.forward(
             inputs_embeds=vlm_embeds, attention_mask=att_4d, position_ids=position_ids,
-            past_key_values=None, use_cache=False, adarms_cond=None,
-        ).last_hidden_state
+            past_key_values=None, use_cache=False, adarms_cond=None, output_hidden_states=all_layers,
+        )
+        if all_layers:
+            # all_hidden_states = (embeds, layer0_out .. layer(N-2)_out [PRE-final-norm], FINAL-NORMED
+            # layer(N-1)_out). Norm each pre-norm layer output; the last entry is ALREADY final-normed
+            # (== last_hidden_state) → append it directly (no double-norm). Matches the joint forward's
+            # per-layer capture (each of the N layer outputs normed by the VLM final norm).
+            normed = [layernorm_forward(self._vlm.norm, h, None)[0] for h in out.hidden_states[1:-1]]
+            normed.append(out.last_hidden_state)
+            return out.last_hidden_state, torch.stack(normed, dim=1)   # (B, N, nv, W)
+        return out.last_hidden_state
+
+    def _skill_hidden_standalone(self, vlm_embeds: Tensor, vlm_pad: Tensor, vlm_xattn_block: Tensor) -> Tensor:
+        """Skill hidden from a STANDALONE VLM prefix forward (pred phase-1 + inference). Honors
+        skill_reader_all_layers so the reader sees the SAME layer stack as the joint-forward training path."""
+        if getattr(self.config, "skill_reader_all_layers", False):
+            vlm_out, all_layers = self._vlm_prefix_out(vlm_embeds, vlm_pad, all_layers=True)
+            return self._skill_hidden(vlm_out, vlm_pad, vlm_xattn_block, all_layers=all_layers)
+        return self._skill_hidden(self._vlm_prefix_out(vlm_embeds, vlm_pad), vlm_pad, vlm_xattn_block)
 
     @torch.no_grad()
     def predict_skill_code(self, start_images: list[Tensor], lang_tokens: Tensor, lang_masks: Tensor) -> Tensor:
         """Run ONLY the VLM (bidirectional prefix) + skill reader → argmax FSQ skill code (B,)."""
         vlm_embeds, vlm_pad, vlm_xattn_block = self._vlm_tokens(start_images, lang_tokens, lang_masks)
-        hidden = self._skill_hidden(self._vlm_prefix_out(vlm_embeds, vlm_pad), vlm_pad, vlm_xattn_block)
+        hidden = self._skill_hidden_standalone(vlm_embeds, vlm_pad, vlm_xattn_block)
         return self.skill_head.decode(hidden)
 
     # ── cached inference (branch A): VLM cached per skill, cond per call, action per denoise step ──
@@ -1130,6 +1186,13 @@ class SkillVLAPytorch(PI05Pytorch):
         vlm_kv, vlm_h = self._encode_prefix_kv(self._vlm.layers, vlm_embeds, vlm_pad, vlm_pos, adarms=None)
         vlm_h, _ = layernorm_forward(self._vlm.norm, vlm_h, None)
         if skill_code is None:
+            # This cached path only keeps the FINAL layer, so it can't honor skill_reader_all_layers.
+            # Closed-loop select_action ALWAYS predicts the skill first (predict_skill_code, all-layer aware)
+            # and passes it in → this branch is a non-closed-loop fallback. Fail loud rather than skew.
+            if getattr(self.config, "skill_reader_all_layers", False):
+                raise RuntimeError("skill_reader_all_layers: predict the skill via predict_skill_code and "
+                                   "pass skill_code to sample_actions (the cached denoise keeps only the "
+                                   "final VLM layer).")
             skill_code = self.skill_head.decode(self._skill_hidden(vlm_h, vlm_pad, vlm_xattn_block))
 
         # EVAL-time VLM dropout (eval_drop_vlm): sever cond→VLM and action→VLM exactly like a training
@@ -1477,7 +1540,7 @@ class SkillVLAPolicy(PI05Policy):
             # CFG per-regime: statically freeze a group ONLY if frozen in EVERY active regime (→ excluded
             # from the optimizer). Otherwise leave it trainable for the per-batch toggle. 3-way checks all
             # of A(vlm_vsa)/B(vsa)/C(c); 2-way checks A(vlm_vsa)/B(vsa).
-            for key in ("expert", "cond", "llm", "vlm_vision"):
+            for key in ("expert", "cond", "cond_vision", "llm", "vlm_vision"):
                 frozen_all = getattr(c, f"freeze_vlm_vsa_{key}") and getattr(c, f"freeze_vsa_{key}")
                 if three_way:
                     frozen_all = frozen_all and getattr(c, f"freeze_c_{key}")
@@ -1491,6 +1554,8 @@ class SkillVLAPolicy(PI05Policy):
                 m._set_requires_grad(g["expert"], False)
             if c.freeze_vlm_vsa_cond:
                 m._set_requires_grad(g["cond"], False)
+            if c.freeze_vlm_vsa_cond_vision:
+                m._set_requires_grad(g["cond_vision"], False)
             if c.freeze_vlm_vsa_llm:
                 m._set_requires_grad(g["llm"], False)
             if c.freeze_vlm_vsa_vlm_vision:

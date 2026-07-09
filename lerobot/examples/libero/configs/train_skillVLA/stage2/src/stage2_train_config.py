@@ -137,14 +137,19 @@ def build_settings(cfg: dict) -> dict:
     num_reader_tokens = int(get_value(cfg, "num_reader_tokens", 4))
     reader_depth = int(get_value(cfg, "reader_depth", 2))
     reader_heads = int(get_value(cfg, "reader_heads", 8))
+    skill_reader_all_layers = as_bool(get_value(cfg, "skill_reader_all_layers", False))
     # Per-regime freeze: 3-way A/B/C from nested dicts freeze_A / freeze_B / freeze_C → flat config
     # fields freeze_vlm_vsa_*(A) / freeze_vsa_*(B) / freeze_c_*(C). regime_probs is REQUIRED (2-way
     # binary-dropout legacy removed).
     # Group keys: llm = the VLM's Gemma LLM trunk ONLY (accepts "vlm" as an alias in the dict);
     # vlm_vision = the PaliGemma SigLIP tower.
-    _REGIME_KEYS = ("expert", "cond", "llm", "vlm_vision")
+    _REGIME_KEYS = ("expert", "cond", "cond_vision", "llm", "vlm_vision")
     def _grp(d, k):
-        return d.get(k, d.get("vlm", False)) if k == "llm" else d.get(k, False)   # "vlm" = alias for llm
+        if k == "llm":
+            return d.get(k, d.get("vlm", False))                 # "vlm" = alias for llm
+        if k == "cond_vision":
+            return d.get(k, d.get("cond", False))                # inherit cond if unspecified (back-compat)
+        return d.get(k, False)
     _rp = get_value(cfg, "regime_probs", None)
     if not (isinstance(_rp, (list, tuple)) and len(_rp) == 3):
         raise ValueError("regime_probs must be a 3-element list [A, B, C] (합 1). 2-way binary-dropout "
@@ -229,6 +234,7 @@ def build_settings(cfg: dict) -> dict:
         "num_reader_tokens": num_reader_tokens,
         "reader_depth": reader_depth,
         "reader_heads": reader_heads,
+        "skill_reader_all_layers": skill_reader_all_layers,   # reader reads ALL VLM layers (vs final only)
         # inter-module attention connections (VLM/cond/expert edges + the language master switch)
         "attend_language": attend_language,
         "attend_image": attend_image,

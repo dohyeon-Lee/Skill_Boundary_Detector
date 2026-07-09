@@ -42,9 +42,10 @@ terminator_end_pos_weight: 1.0
 # 옛 2-way의 main_connected(=B) / gt_severed_bc(=C)는 3-way가 흡수하여 은퇴됨.
 # 폴더명: ...__{gt|pred}_{pA}{A}_{pB}{B}_{pC}{C} (예: pred_30ttff_50fftt_20fftt).
 regime_probs: [0.3, 0.5, 0.2]     # [A, B, C] 확률 (합 1) — 연결-perception / 연결-VSA / 절단-VSA. 필수.
-freeze_A: {expert: true,  cond: true,  llm: false, vlm_vision: false}   # 연결·perception: VLM 학습, 모터 동결
-freeze_B: {expert: false, cond: false, llm: true,  vlm_vision: true}    # 연결·VSA:       모터 학습, VLM 동결
-freeze_C: {expert: false, cond: false, llm: true,  vlm_vision: true}    # 절단·VSA:       모터 학습, VLM 동결
+freeze_A: {expert: true,  cond: true,  cond_vision: true,  llm: false, vlm_vision: false}   # 연결·perception: VLM 학습, 모터 동결
+freeze_B: {expert: false, cond: false, cond_vision: true, llm: true,  vlm_vision: true}    # 연결·VSA:       모터 학습, VLM 동결
+freeze_C: {expert: false, cond: false, cond_vision: false, llm: true,  vlm_vision: true}    # 절단·VSA:       모터 학습, VLM 동결
+# cond=cond Gemma 인코더+image_proj, cond_vision=cond의 DINO·SigLIP vision tower(분리 동결). 생략 시 cond 상속.
 # 그룹: expert=action expert(+action/time proj), cond=현재obs 파이프라인 통째(vision인코더+image_proj+
 # cond-encoder), llm=VLM Gemma 트렁크만, vlm_vision=PaliGemma SigLIP tower. skill decoder는 아래서 별도 동결.
 

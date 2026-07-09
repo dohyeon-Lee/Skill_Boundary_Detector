@@ -117,6 +117,9 @@ def build_settings(cfg: dict) -> dict:
     reader_depth = _inherit_num("reader_depth", 2, int)
     reader_heads = _inherit_num("reader_heads", 8, int)
     skill_deadzone_frac = _inherit_num("skill_deadzone_frac", 0.0, float)
+    # Reader read-set (final vs all VLM layers) — MUST match the parent (the loaded reader weights expect
+    # the same KV layout). Inherited from the Stage-2 ckpt; set explicitly only to ablate a matching parent.
+    skill_reader_all_layers = _inherit("skill_reader_all_layers", False)
 
     # SCRATCH-parent support: a Stage-2 trained WITHOUT Stage-1 has stage1_checkpoint_path="" in its
     # config — the FT model then synthesizes the Stage-1-side architecture from these two knobs, which
@@ -127,9 +130,13 @@ def build_settings(cfg: dict) -> dict:
 
     # Per-regime freeze: 3-way A/B/C (mirror Stage-2). regime_probs REQUIRED. A=연결+freeze_A(perception),
     # B=연결+freeze_B(연결 모터), C=절단+freeze_C(순수 VSA, 새 task 실행). "vlm"은 llm의 별칭.
-    _RKEYS = ("expert", "cond", "llm", "vlm_vision")
+    _RKEYS = ("expert", "cond", "cond_vision", "llm", "vlm_vision")
     def _grp(d, k):
-        return as_bool(d.get(k, d.get("vlm", False)) if k == "llm" else d.get(k, False))
+        if k == "llm":
+            return as_bool(d.get(k, d.get("vlm", False)))        # "vlm" = alias for llm
+        if k == "cond_vision":
+            return as_bool(d.get(k, d.get("cond", False)))       # inherit cond if unspecified (back-compat)
+        return as_bool(d.get(k, False))
     _rp = get_value(cfg, "regime_probs", None)
     if not (isinstance(_rp, (list, tuple)) and len(_rp) == 3):
         raise ValueError("regime_probs must be a 3-element list [A, B, C] (합 1). 2-way vlm_dropout "
@@ -208,6 +215,7 @@ def build_settings(cfg: dict) -> dict:
         "num_reader_tokens": num_reader_tokens,
         "reader_depth": reader_depth,
         "reader_heads": reader_heads,
+        "skill_reader_all_layers": skill_reader_all_layers,   # inherited: must match parent reader KV layout
         "skill_deadzone_frac": skill_deadzone_frac,
         # FT behaviour
         "cond_skill_source": cond_skill_source,

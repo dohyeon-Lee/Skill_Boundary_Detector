@@ -24,7 +24,13 @@ if [ ! -x "${BOOTSTRAP_PYTHON}" ]; then
   BOOTSTRAP_PYTHON=python3
 fi
 
-eval "$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/stage2_train_config.py" --config "${CONFIG_PATH}" --shell)"
+# Prefer the submit-time env snapshot (frozen resolved env) → the job never re-runs the emitter on a
+# live/edited/deleted yaml at start. Fallback to a fresh resolve only when run directly (no snapshot).
+if [ -n "${STAGE2_ENV_SNAPSHOT:-}" ] && [ -f "${STAGE2_ENV_SNAPSHOT}" ]; then
+  source "${STAGE2_ENV_SNAPSHOT}"
+else
+  eval "$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/stage2_train_config.py" --config "${CONFIG_PATH}" --shell)"
+fi
 
 cd "${LEROBOT_ROOT}"
 source "${PROJECT_ROOT}/.venv/bin/activate"
@@ -121,6 +127,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.num_reader_tokens="${NUM_READER_TOKENS}" \
     --policy.reader_depth="${READER_DEPTH}" \
     --policy.reader_heads="${READER_HEADS}" \
+    --policy.skill_reader_all_layers="${SKILL_READER_ALL_LAYERS}" \
     --policy.attend_language="${ATTEND_LANGUAGE}" \
     --policy.attend_image="${ATTEND_IMAGE}" \
     --policy.vlm_cond="${VLM_COND}" \
@@ -129,14 +136,17 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --track_param_drift="${TRACK_PARAM_DRIFT}" \
     --policy.freeze_vlm_vsa_expert="${FREEZE_VLM_VSA_EXPERT}" \
     --policy.freeze_vlm_vsa_cond="${FREEZE_VLM_VSA_COND}" \
+    --policy.freeze_vlm_vsa_cond_vision="${FREEZE_VLM_VSA_COND_VISION}" \
     --policy.freeze_vlm_vsa_llm="${FREEZE_VLM_VSA_LLM}" \
     --policy.freeze_vlm_vsa_vlm_vision="${FREEZE_VLM_VSA_VLM_VISION}" \
     --policy.freeze_vsa_expert="${FREEZE_VSA_EXPERT}" \
     --policy.freeze_vsa_cond="${FREEZE_VSA_COND}" \
+    --policy.freeze_vsa_cond_vision="${FREEZE_VSA_COND_VISION}" \
     --policy.freeze_vsa_llm="${FREEZE_VSA_LLM}" \
     --policy.freeze_vsa_vlm_vision="${FREEZE_VSA_VLM_VISION}" \
     --policy.freeze_c_expert="${FREEZE_C_EXPERT}" \
     --policy.freeze_c_cond="${FREEZE_C_COND}" \
+    --policy.freeze_c_cond_vision="${FREEZE_C_COND_VISION}" \
     --policy.freeze_c_llm="${FREEZE_C_LLM}" \
     --policy.freeze_c_vlm_vision="${FREEZE_C_VLM_VISION}" \
     --policy.severed_hold_target="${SEVERED_HOLD_TARGET}" \

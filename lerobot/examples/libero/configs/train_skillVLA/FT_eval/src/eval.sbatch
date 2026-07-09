@@ -36,7 +36,13 @@ if [ -n "${SLURM_ARRAY_TASK_ID:-}" ] && [ -n "${EVAL_FANOUT:-}" ]; then
   echo "array task ${SLURM_ARRAY_TASK_ID}: panel='${_PL:-<all>}' task_ids=${_TI} tag='${_TT:-}'"
 fi
 
-eval "$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/ft_eval_config.py" --config "${CONFIG_PATH}" --shell)"
+# Prefer the submit-time env snapshot (frozen resolved env) → the job never re-runs the emitter on a
+# live/edited/deleted yaml at start. Fallback to a fresh resolve only when run directly (no snapshot).
+if [ -n "${FT_EVAL_ENV_SNAPSHOT:-}" ] && [ -f "${FT_EVAL_ENV_SNAPSHOT}" ]; then
+  source "${FT_EVAL_ENV_SNAPSHOT}"
+else
+  eval "$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/ft_eval_config.py" --config "${CONFIG_PATH}" --shell)"
+fi
 
 cd "${LEROBOT_ROOT}"
 source "${PROJECT_ROOT}/.venv/bin/activate"

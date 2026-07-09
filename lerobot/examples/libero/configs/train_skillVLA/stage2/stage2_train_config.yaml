@@ -13,7 +13,8 @@ skillvla_dataset_root: skillvla_dataset
 pi_base: models/pi05_base
 
 # stage1_run_name: none_FSQ555_dino8_both_1000_siglip_state
-stage1_run_name: FSQ555_dino8_both_1000_siglip_batch256_state
+# stage1_run_name: FSQ555_dino8_both_1000_siglip_batch256_state
+stage1_run_name: FSQ88_dino8_both_1000_siglip_batch256_state
 # stage1_run_name: FSQ555_dino8_weighted_both_1000_siglip_batch256_state_weighted
 stage1_checkpoint: "015000"   # warm-start용 Stage-1 step ("last" 가능; scratch(none_*)면 자동 무시)
 
@@ -27,6 +28,10 @@ skill_loss_weight: 0.1                # total = BC + λ·skill_CE (λ<1 keeps BC
 num_reader_tokens: 4                  # probe tokens (self-attend + read the VLM)
 reader_depth: 2                       # joint concat-KV layers (shallow = forgetting-friendly)
 reader_heads: 8                       # attention heads (must divide the VLM width)
+# reader가 VLM 최종 레이어만 vs 전 18층을 읽음. frozen LLM의 최종 rep은 언어 중심이라, skill(기하/모션)
+# 정보가 있는 중간 층까지 KV로 줘서 attention이 유용한 깊이를 soft하게 고르게 함(cond는 이미 전 층 읽음).
+# read-only라 train(joint)·infer(predict_skill_code)가 같은 stack을 봄. off면 기존과 동일.
+skill_reader_all_layers: true        # false = 최종층만(기존), true = 전 18층 concat
 # SkillHead regression dead-zone as a FRACTION of per-dim grid spacing: margin = frac/(levels-1).
 # Once |pred-target|<margin the code already rounds right → that dim's loss is zeroed (faster
 # convergence, no post-correct drift). frac=1 stops as soon as correct; <1 leaves a safety band.
@@ -54,10 +59,12 @@ cond_expert:      true
 #   C = VLM 절단 + freeze_C → 순수 VSA(Stage-1 형태), VLM 없이 실행.
 # A+B = 연결 모델 alternating-freeze(동시 co-adapt 없음), C = VSA 단독 접지. 순서 연결/연결/절단.
 # 폴더명: {STAGE-1 정보}__{pA}{A}_{pB}{B}_{pC}{C} (예: ...state__30ttff_50fftt_20fftt).
-regime_probs: [0.3, 0.5, 0.2]     # [A, B, C] 확률 (합 1) — 연결-perception / 연결-VSA / 절단-VSA. 필수.
-freeze_A: {expert: true,  cond: true,  llm: false, vlm_vision: false}   # 연결·perception: VLM 학습, 모터 동결
-freeze_B: {expert: false, cond: false, llm: true,  vlm_vision: true}    # 연결·VSA:       모터 학습, VLM 동결
-freeze_C: {expert: false, cond: false, llm: false, vlm_vision: false}   # 절단·VSA:       모터+VLM 학습(분리라 co-adapt 없음)
+regime_probs: [0.2, 0.4, 0.4]  # [0.6, 0.2, 0.2]     # [A, B, C] 확률 (합 1) — 연결-perception / 연결-VSA / 절단-VSA. 필수.
+freeze_A: {expert: true,  cond: true,  cond_vision: true,  llm: false, vlm_vision: false}   # 연결·perception: VLM 학습, 모터 동결
+freeze_B: {expert: false, cond: false, cond_vision: true, llm: true,  vlm_vision: true}    # 연결·VSA:       모터 학습, VLM 동결
+freeze_C: {expert: false, cond: false, cond_vision: false, llm: true,  vlm_vision: true}    # 절단·VSA
+# cond=cond Gemma 인코더+image_proj, cond_vision=cond의 DINO·SigLIP vision tower(분리 동결). cond_vision
+# 생략 시 cond 값 상속(하위호환). 폴더명 t/f 순서: expert,cond,cond_vision,llm,vlm_vision.
 # C는 severed라 VLM이 action 경로와 완전 분리 → VLM을 풀어도 flow_loss는 motor(expert/cond)에만, VLM은
 # skill_loss로만 학습(disjoint gradient). motor는 GT skill 사용이라 VLM 상태와 무관. 이로써 VLM/skill
 # predictor가 A(연결)뿐 아니라 C(절단)에서도 학습돼 skill_acc 회복. B(연결)에선 여전히 VLM 동결(co-adapt 방지).
