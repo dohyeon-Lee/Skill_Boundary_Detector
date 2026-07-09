@@ -3,12 +3,13 @@
 #
 # 실행 위치에 따라 엔드포인트가 달라짐 (yonsei→rllab 방향 접속 불가):
 #   yonsei 클러스터에서 실행:  [1] /scratch  [2] /scratch2       (내부 전용)
-#   rllab  클러스터에서 실행:  [1] rllab(스크립트 위치)  [2] yonsei /scratch  [3] yonsei /scratch2
+#   rllab  클러스터에서 실행:  [1] rllab /data1(스크립트 위치)  [2] rllab /data2  [3] yonsei /scratch  [4] yonsei /scratch2
 #
 # Usage:
 #   ./sync_server.sh
 #   YONSEI_HOST=user@host RLLAB_BASE=/path/to/SBD ./sync_server.sh
 #   SYNC_MODE=rllab ./sync_server.sh   # hostname 감지 무시하고 모드 강제
+#   SYNC_JOBS=16 ./sync_server.sh      # 로컬↔로컬 병렬 복사 스트림 수 (기본 8)
 #
 # Flow:
 #   1. FROM 엔드포인트, TO 엔드포인트 선택.
@@ -24,6 +25,9 @@ YONSEI_HOST="${YONSEI_HOST:-mdorazi@165.132.142.207}"
 YONSEI_SCRATCH_BASE="${YONSEI_SCRATCH_BASE:-/scratch/mdorazi/Skill_Boundary_Detector}"
 YONSEI_SCRATCH2_BASE="${YONSEI_SCRATCH2_BASE:-/scratch2/mdorazi/Skill_Boundary_Detector}"
 RLLAB_BASE="${RLLAB_BASE:-${SCRIPT_DIR}}"
+RLLAB2_BASE="${RLLAB2_BASE:-/data2/dohyeon/SBD}"
+# 로컬↔로컬(둘 다 NFS)은 단일 rsync가 느려서 파일 리스트를 쪼개 병렬 전송한다.
+SYNC_JOBS="${SYNC_JOBS:-8}"
 
 if [ -z "${SYNC_MODE:-}" ]; then
     case "$(hostname)" in
@@ -38,9 +42,9 @@ if [ "${SYNC_MODE}" = "yonsei" ]; then
     EP_HOSTS=("" "")
     EP_BASES=("${YONSEI_SCRATCH_BASE}" "${YONSEI_SCRATCH2_BASE}")
 else
-    EP_NAMES=("rllab" "yonsei /scratch" "yonsei /scratch2")
-    EP_HOSTS=("" "${YONSEI_HOST}" "${YONSEI_HOST}")
-    EP_BASES=("${RLLAB_BASE}" "${YONSEI_SCRATCH_BASE}" "${YONSEI_SCRATCH2_BASE}")
+    EP_NAMES=("rllab /data1" "rllab /data2" "yonsei /scratch" "yonsei /scratch2")
+    EP_HOSTS=("" "" "${YONSEI_HOST}" "${YONSEI_HOST}")
+    EP_BASES=("${RLLAB_BASE}" "${RLLAB2_BASE}" "${YONSEI_SCRATCH_BASE}" "${YONSEI_SCRATCH2_BASE}")
 fi
 
 die() {
@@ -50,6 +54,45 @@ die() {
 
 remote_quote() {
     printf '%q' "$1"
+}
+
+# 로컬↔로컬 병렬 복사.
+# 양쪽 다 같은 NFS 서버라 단일 rsync는 서버 왕복 + per-file latency로 느리다
+# (실측: 작은 파일 20000개 단일 1MB/s vs 병렬x8 12MB/s ≈ 9배, 큰 파일 2.5배).
+# 파일/심링크 목록을 뽑아 jobs개로 나눠 동시에 rsync -aR 로 전송한다.
+parallel_local_copy() {
+    local src_abs="$1" dst_abs="$2" jobs="$3"
+    mkdir -p "${dst_abs}"
+    # 1) 디렉토리 트리(빈 폴더 포함)를 먼저 만들어 둔다 → 병렬 rsync는 파일만 채우고
+    #    같은 부모 폴더를 동시에 mkdir 하는 경쟁을 피한다.
+    rsync -a -f'+ */' -f'- *' "${src_abs}/" "${dst_abs}/"
+
+    # 전체 진행률 표시용 총 항목 수(파일+폴더+링크). 폴더는 위에서 이미 생성됨.
+    local total
+    total=$(cd "${src_abs}" && find . 2>/dev/null | wc -l)
+
+    # 2) 파일/심링크 목록을 null 구분으로 뽑아 jobs개 병렬 전송(백그라운드).
+    #    각 rsync도 src로 cd 후 실행해야 './sub/file'가 맞게 풀리고,
+    #    rsync -aR 의 '.' 앵커로 디렉토리 구조가 그대로 재현된다.
+    ( cd "${src_abs}" && find . \( -type f -o -type l \) -print0 ) \
+        | xargs -0 -r -P "${jobs}" -n 256 \
+            sh -c 'src=$1; dst=$2; shift 2; cd "$src" && rsync -aR "$@" "$dst"' \
+               sh "${src_abs}" "${dst_abs}/" &
+    local copy_pid=$!
+
+    # 3) 진행률 모니터: dst 항목 수를 세어 한 줄로 갱신 표시.
+    local cnt pct
+    while kill -0 "${copy_pid}" 2>/dev/null; do
+        cnt=$(find "${dst_abs}" 2>/dev/null | wc -l)
+        pct=$(( total > 0 ? cnt * 100 / total : 100 ))
+        printf '\r  진행: %d/%d (%d%%)   ' "${cnt}" "${total}" "${pct}"
+        sleep 3
+    done
+    local rc=0
+    wait "${copy_pid}" || rc=$?
+    cnt=$(find "${dst_abs}" 2>/dev/null | wc -l)
+    printf '\r  진행: %d/%d (100%%)   완료\n' "${cnt}" "${total}"
+    return "${rc}"
 }
 
 SYNC_ROOT_PATTERNS=(
@@ -247,19 +290,22 @@ sync_folder() {
         return
     fi
 
+    if [ -z "${SRC_HOST}" ] && [ -z "${DST_HOST}" ]; then
+        # 순수 로컬↔로컬 (예: rllab /data1 ↔ /data2, 둘 다 NFS) → 병렬 복사
+        echo "  로컬↔로컬 → 병렬 복사 (${SYNC_JOBS} jobs). 진행 중..."
+        echo ""
+        parallel_local_copy "${src_abs}" "${dst_abs}" "${SYNC_JOBS}"
+        return
+    fi
+
     if [ -z "${DST_HOST}" ]; then
         mkdir -p "${dst_abs}"
     else
         ssh "${DST_HOST}" "mkdir -p $(remote_quote "${dst_abs}")"
     fi
 
-    # 로컬↔로컬은 압축(-z) 불필요
-    local rsync_opts=(-avh --progress)
-    if [ -n "${SRC_HOST}" ] || [ -n "${DST_HOST}" ]; then
-        rsync_opts=(-avzh --progress)
-    fi
-
-    rsync "${rsync_opts[@]}" "${src}/" "${dst}/"
+    # 원격이 끼면 압축(-z) 사용
+    rsync -avzh --progress "${src}/" "${dst}/"
 }
 
 echo ""
