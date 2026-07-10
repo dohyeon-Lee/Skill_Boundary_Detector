@@ -1,0 +1,52 @@
+# pi05 FT (finetuning) config  — submit_pi05_FT.sh
+# PT lives in a SEPARATE yaml: pi05_PT_config.yaml.  Eval: pi05_eval/pi05_eval_config.yaml.
+# project_root / dataset_root / outputs_root come from configs/global_config.yaml.
+
+# Output subdir: FT → pi05_FT. The pretrained PT checkpoint is read from pi05_PT.
+pi05_outputs_root: pi05_PT        # where the pretrained PT lives (read)
+pi05_ft_outputs_root: pi05_FT     # where FT writes
+pi_base: models/pi05_base
+
+# ── pi05 FT (output → pi05_FT; pretrained PT read from pi05_PT) ─
+ft_dataset: libero_10_full_2
+ft_batch_size: 16
+ft_num_workers: 4
+ft_exp: ""
+ft_lr: 2.5e-05
+ft_steps: 15000
+ft_save_freq: 5000
+ft_wandb_project: VLA_FT      # skillVLA FT와 같은 프로젝트 → probe_forget/flow 곡선 겹쳐 비교
+# PT warm-start: pi05_PT/ 아래 폴더명 + 스텝만 지정 (제일 간단).
+ft_pretrained_run_name: PT_libero_90_full_full_pi05_batch16_ff_ff
+ft_pretrained_checkpoint: "015000"
+# (레거시 폴백: run_name을 비우면 아래 세 키 + PT freeze/lora 태그로 PT_{dataset}_pi05_batch{bs}_{tag}[_{exp}] 재조립)
+# ft_pretrained_dataset: libero_90_full_full
+# ft_pretrained_batch_size: 16
+# ft_pretrained_exp: ""
+# FT freeze 프로브 (PT와 동일한 2×2; expert 항상 학습)
+ft_freeze_vision_encoder: false
+ft_freeze_language_model: false
+# FT LoRA (PT와 동일 구조). 폴더명 태그: FT_..._{fv}{fl}_{lora_llm}{lora_vision}.
+ft_lora_enable: false
+ft_lora_rank: 8
+ft_lora_alpha: 16
+ft_lora_dropout: 0.0
+ft_lora_llm: true
+ft_lora_vision: false
+ft_lora_targets: "q,k,v,o"
+
+# PT-forgetting probe — skillVLA FT와 동일 조건/인프라(lerobot_train probe_*): FT 중 probe_every
+# 스텝마다 PT 데이터셋(ft_pretrained의 train_config.json에서 자동 유도) 고정 배치를 forward-only로
+# 재측정(프레임+flow 노이즈 seed 고정 = 같은 자) → wandb probe/loss + probe_forget/loss(step0 대비
+# 회귀율). baseline은 output_dir/probe_baseline.json에 저장 → resume에도 기준점 유지. 오버헤드 ~0.5%.
+# skillVLA FT와 비교하려면 probe_every/batches/seed를 동일하게 둘 것 (기본값이 이미 동일).
+ft_probe_pt_forgetting: true
+ft_probe_every: 250
+ft_probe_batches: 4
+ft_probe_seed: 12345
+
+# Slurm for pi05 FT (partition/qos/nodelist/exclude from configs/global_config.yaml).
+ft_gres: gpu:1
+ft_cpus_per_task: 16
+ft_mem: 128G
+ft_time: "48:00:00"

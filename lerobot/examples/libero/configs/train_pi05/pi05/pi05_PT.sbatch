@@ -51,18 +51,6 @@ if [ ! -d "${PT_DATASET_DIR}" ]; then
   exit 1
 fi
 
-GPU_FREE_THRESHOLD_MIB=500
-echo "Waiting for GPU to be free (threshold: ${GPU_FREE_THRESHOLD_MIB} MiB)..."
-while true; do
-  USED_MIB=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | awk '{s+=$1} END {print s}')
-  if [ "${USED_MIB}" -le "${GPU_FREE_THRESHOLD_MIB}" ]; then
-    echo "GPU is free (${USED_MIB} MiB used). Starting training."
-    break
-  fi
-  echo "  GPU in use: ${USED_MIB} MiB. Waiting 60s..."
-  sleep 60
-done
-
 CONFIG_JSON="${PT_OUTPUT_DIR}/checkpoints/last/pretrained_model/train_config.json"
 RESUME_ARGS=()
 if [ -f "${CONFIG_JSON}" ]; then
@@ -87,6 +75,13 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
   --policy.dtype=bfloat16 \
   --policy.freeze_vision_encoder="${PT_FREEZE_VISION_ENCODER}" \
   --policy.freeze_language_model="${PT_FREEZE_LANGUAGE_MODEL}" \
+  --policy.lora_enable="${PT_LORA_ENABLE}" \
+  --policy.lora_rank="${PT_LORA_RANK}" \
+  --policy.lora_alpha="${PT_LORA_ALPHA}" \
+  --policy.lora_dropout="${PT_LORA_DROPOUT}" \
+  --policy.lora_llm="${PT_LORA_LLM}" \
+  --policy.lora_vision="${PT_LORA_VISION}" \
+  --policy.lora_targets="${PT_LORA_TARGETS}" \
   --policy.push_to_hub=false \
   --save_freq="${PT_SAVE_FREQ}" \
   --steps="${PT_STEPS}" \

@@ -86,6 +86,19 @@ class PI05Config(PreTrainedConfig):
     train_expert_only: bool = False  # (legacy) freeze the ENTIRE VLM incl. projector; superseded by the two probes
     probe_freeze: bool = True  # Log a per-component trainable/frozen param breakdown at model init (verification)
 
+    # ── LoRA on the (frozen) VLM ──
+    # Inject trainable low-rank adapters into the VLM's attention Linears while its base weight stays
+    # frozen (set freeze_language_model/freeze_vision_encoder=True for the parts you LoRA). Tests whether
+    # a frozen backbone + LoRA keeps the backbone's original ability (LLM language grounding / SigLIP
+    # visual priors) better than full fine-tuning — measured by zero-shot transfer to unseen suites.
+    lora_enable: bool = False
+    lora_rank: int = 8               # bottleneck rank r (capacity of the update; small = strong preservation)
+    lora_alpha: float = 16.0         # scaling = alpha / r
+    lora_dropout: float = 0.0
+    lora_llm: bool = True            # apply LoRA to the Gemma LLM (needs freeze_language_model=True to matter)
+    lora_vision: bool = False        # apply LoRA to the SigLIP vision tower (needs freeze_vision_encoder=True)
+    lora_targets: str = "q,k,v,o"    # attention projections to adapt (q,k,v,o [+ gate,up,down / fc1,fc2])
+
     # Optimizer settings: see openpi `AdamW`
     optimizer_lr: float = 2.5e-5  # see openpi `CosineDecaySchedule: peak_lr`
     optimizer_betas: tuple[float, float] = (0.9, 0.95)

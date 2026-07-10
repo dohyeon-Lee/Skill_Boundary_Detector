@@ -348,6 +348,7 @@ class PaliGemmaWithExpertModel(
         train_expert_only: bool = False,
         freeze_language_model: bool = False,
         probe_freeze: bool = False,
+        lora_cfg: dict | None = None,
     ):
         if use_adarms is None:
             use_adarms = [False, False]
@@ -397,6 +398,21 @@ class PaliGemmaWithExpertModel(
 
         self.to_bfloat16_for_selected_params(precision)
         self._set_requires_grad()
+
+        # LoRA: inject trainable low-rank adapters into the VLM parts whose base was just frozen above.
+        # Base stays frozen (preserved); only the adapters (A,B) train. B=0 init → starts == base.
+        if lora_cfg and lora_cfg.get("enable"):
+            from .lora import inject_lora, target_names_from_spec  # noqa: PLC0415
+            names = target_names_from_spec(lora_cfg.get("targets", "q,k,v,o"))
+            r, alpha, drop = lora_cfg["rank"], lora_cfg["alpha"], lora_cfg.get("dropout", 0.0)
+            n = 0
+            if lora_cfg.get("llm", True):
+                n += inject_lora(self.paligemma.model.language_model, names, r, alpha, drop)
+            if lora_cfg.get("vision", False):
+                n += inject_lora(self.paligemma.model.vision_tower, names, r, alpha, drop)
+            print(f"[LoRA] r={r} alpha={alpha} → {n} Linears wrapped "
+                  f"(llm={lora_cfg.get('llm', True)}, vision={lora_cfg.get('vision', False)}, "
+                  f"targets={sorted(names)}). Base frozen; only adapters train.", flush=True)
         if self.probe_freeze:
             self._log_param_groups()
 
@@ -608,6 +624,15 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
             train_expert_only=config.train_expert_only,
             freeze_language_model=config.freeze_language_model,
             probe_freeze=config.probe_freeze,
+            lora_cfg={
+                "enable": getattr(config, "lora_enable", False),
+                "rank": getattr(config, "lora_rank", 8),
+                "alpha": getattr(config, "lora_alpha", 16.0),
+                "dropout": getattr(config, "lora_dropout", 0.0),
+                "llm": getattr(config, "lora_llm", True),
+                "vision": getattr(config, "lora_vision", False),
+                "targets": getattr(config, "lora_targets", "q,k,v,o"),
+            },
         )
 
         self.action_in_proj = nn.Linear(config.max_action_dim, action_expert_config.width)

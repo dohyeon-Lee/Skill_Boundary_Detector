@@ -128,11 +128,21 @@ def _ft_probe_settings(cfg: dict[str, Any], project_root: Path, ft_dataset_root:
     }
 
 
-def run_name(prefix: str, dataset: str, batch_size: int, exp: str) -> str:
+def run_name(prefix: str, dataset: str, batch_size: int, exp: str, tag: str = "") -> str:
     name = f"{prefix}_{dataset}_pi05_batch{batch_size}"
+    if tag:
+        name = f"{name}_{tag}"
     if exp:
         name = f"{name}_{exp}"
     return name
+
+
+def frz_lora_tag(fv: bool, fl: bool, lora_enable: bool, lora_llm: bool, lora_vision: bool) -> str:
+    """Run-name tag: '{freeze_vision}{freeze_language}_{lora_llm}{lora_vision}' as t/f, e.g. 'tt_ff'.
+    The LoRA half is EFFECTIVE (lora_enable AND the per-part flag) so it reads f when LoRA is off."""
+    frz = ("t" if fv else "f") + ("t" if fl else "f")
+    lo = ("t" if (lora_enable and lora_llm) else "f") + ("t" if (lora_enable and lora_vision) else "f")
+    return f"{frz}_{lo}"
 
 
 def slurm_settings(cfg: dict[str, Any], prefix: str, *, cpus: int, mem: str, time: str, qos: str) -> dict[str, Any]:
@@ -165,7 +175,14 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
     pt_batch_size = int(get_value(cfg, "pt_batch_size", 32, env="PT_BATCH_SIZE"))
     pt_num_gpus = int(get_value(cfg, "pt_num_gpus", 1, env="PT_NUM_GPUS"))
     pt_exp = str(get_value(cfg, "pt_exp", "exp1", env="PT_EXP")).strip()
-    pt_run_name = run_name("PT", pt_dataset, pt_batch_size, pt_exp)
+    # freeze + LoRA run-name tag: {freeze_vision}{freeze_language}_{lora_llm}{lora_vision}, e.g. tt_ff.
+    pt_freeze_vis = as_bool(get_value(cfg, "pt_freeze_vision_encoder", False, env="PI05_PT_FREEZE_VISION_ENCODER"))
+    pt_freeze_lang = as_bool(get_value(cfg, "pt_freeze_language_model", False, env="PI05_PT_FREEZE_LANGUAGE_MODEL"))
+    pt_lora_enable = as_bool(get_value(cfg, "pt_lora_enable", False, env="PI05_PT_LORA_ENABLE"))
+    pt_lora_llm = as_bool(get_value(cfg, "pt_lora_llm", True, env="PI05_PT_LORA_LLM"))
+    pt_lora_vision = as_bool(get_value(cfg, "pt_lora_vision", False, env="PI05_PT_LORA_VISION"))
+    pt_tag = frz_lora_tag(pt_freeze_vis, pt_freeze_lang, pt_lora_enable, pt_lora_llm, pt_lora_vision)
+    pt_run_name = run_name("PT", pt_dataset, pt_batch_size, pt_exp, tag=pt_tag)
 
     ft_dataset = str(get_value(cfg, "ft_dataset", "libero_10_op1_10", env="FT_DATASET"))
     ft_dataset_root = str(get_value(cfg, "ft_dataset_root", get_value(cfg, "dataset_root", "libero_dataset"), env="FT_DATASET_ROOT"))
@@ -178,11 +195,14 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
     # PT warm-start 소스: ft_pretrained_run_name(폴더명 그대로)이 있으면 그걸 쓰고, 없으면 레거시
     # 방식(dataset/batch/exp로 PT_{dataset}_pi05_batch{bs}[_{exp}] 재조립)으로 폴백.
     ft_pre_run_name = (str(get_value(cfg, "ft_pretrained_run_name", "", env="FT_PRETRAINED_RUN_NAME") or "").strip()
-                       or run_name("PT", ft_pre_dataset, ft_pre_batch, ft_pre_exp))
-    # freeze 태그 = (freeze_vision_encoder, freeze_language_model) 순 t/f 두 글자 (예: _ff, _ft)
+                       or run_name("PT", ft_pre_dataset, ft_pre_batch, ft_pre_exp, tag=pt_tag))
+    # freeze + LoRA 태그 = {freeze_vision}{freeze_language}_{lora_llm}{lora_vision} (예: tt_ff)
     ft_freeze_vis = as_bool(get_value(cfg, "ft_freeze_vision_encoder", False, env="PI05_FT_FREEZE_VISION_ENCODER"))
     ft_freeze_lang = as_bool(get_value(cfg, "ft_freeze_language_model", False, env="PI05_FT_FREEZE_LANGUAGE_MODEL"))
-    ft_frz_tag = ("t" if ft_freeze_vis else "f") + ("t" if ft_freeze_lang else "f")
+    ft_lora_enable = as_bool(get_value(cfg, "ft_lora_enable", False, env="PI05_FT_LORA_ENABLE"))
+    ft_lora_llm = as_bool(get_value(cfg, "ft_lora_llm", True, env="PI05_FT_LORA_LLM"))
+    ft_lora_vision = as_bool(get_value(cfg, "ft_lora_vision", False, env="PI05_FT_LORA_VISION"))
+    ft_frz_tag = frz_lora_tag(ft_freeze_vis, ft_freeze_lang, ft_lora_enable, ft_lora_llm, ft_lora_vision)
     ft_run_name = f"FT_{ft_pre_ckpt}PT_{ft_dataset}_pi05_batch{ft_batch_size}_{ft_frz_tag}"
     if ft_exp:
         ft_run_name = f"{ft_run_name}_{ft_exp}"
@@ -219,8 +239,16 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         "pt_run_name": pt_run_name,
         "pt_output_dir": pi05_pt_root / pt_run_name,
         # PT freeze probes (expert always trains): vision tower / Gemma LLM, independently.
-        "pt_freeze_vision_encoder": as_bool(get_value(cfg, "pt_freeze_vision_encoder", False, env="PI05_PT_FREEZE_VISION_ENCODER")),
-        "pt_freeze_language_model": as_bool(get_value(cfg, "pt_freeze_language_model", False, env="PI05_PT_FREEZE_LANGUAGE_MODEL")),
+        "pt_freeze_vision_encoder": pt_freeze_vis,
+        "pt_freeze_language_model": pt_freeze_lang,
+        # PT LoRA (trainable low-rank adapters on the FROZEN VLM parts). run-name tag: {frz}_{lora}.
+        "pt_lora_enable": pt_lora_enable,
+        "pt_lora_rank": int(get_value(cfg, "pt_lora_rank", 8, env="PI05_PT_LORA_RANK")),
+        "pt_lora_alpha": float(get_value(cfg, "pt_lora_alpha", 16.0, env="PI05_PT_LORA_ALPHA")),
+        "pt_lora_dropout": float(get_value(cfg, "pt_lora_dropout", 0.0, env="PI05_PT_LORA_DROPOUT")),
+        "pt_lora_llm": pt_lora_llm,
+        "pt_lora_vision": pt_lora_vision,
+        "pt_lora_targets": str(get_value(cfg, "pt_lora_targets", "q,k,v,o", env="PI05_PT_LORA_TARGETS")),
         # FT
         "ft_dataset": ft_dataset,
         "ft_dataset_root": ft_dataset_root,
@@ -237,9 +265,17 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         "ft_pretrained_run_name": ft_pre_run_name,
         "ft_pretrained_checkpoint": ft_pre_ckpt,
         "ft_pretrained_model_path": pi05_pt_root / ft_pre_run_name / "checkpoints" / ft_pre_ckpt / "pretrained_model",  # PT source ← pi05_PT
-        # FT freeze probes (expert always trains; run name carries them as the _{vf}{lf} tag)
+        # FT freeze probes (expert always trains; run name carries them as the _{frz}_{lora} tag)
         "ft_freeze_vision_encoder": ft_freeze_vis,
         "ft_freeze_language_model": ft_freeze_lang,
+        # FT LoRA
+        "ft_lora_enable": ft_lora_enable,
+        "ft_lora_rank": int(get_value(cfg, "ft_lora_rank", 8, env="PI05_FT_LORA_RANK")),
+        "ft_lora_alpha": float(get_value(cfg, "ft_lora_alpha", 16.0, env="PI05_FT_LORA_ALPHA")),
+        "ft_lora_dropout": float(get_value(cfg, "ft_lora_dropout", 0.0, env="PI05_FT_LORA_DROPOUT")),
+        "ft_lora_llm": ft_lora_llm,
+        "ft_lora_vision": ft_lora_vision,
+        "ft_lora_targets": str(get_value(cfg, "ft_lora_targets", "q,k,v,o", env="PI05_FT_LORA_TARGETS")),
         # PT-forgetting probe (skillVLA FT와 동일 인프라/wandb 형식: probe/* + probe_forget/*):
         # FT 중 probe_every 스텝마다 PT 데이터셋 고정 배치를 forward-only 재측정. PT 데이터셋은
         # PT 체크포인트의 train_config.json(dataset.root/repo_id)에서 유도, 없으면 yaml 경로로 폴백.
