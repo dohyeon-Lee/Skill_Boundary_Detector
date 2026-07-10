@@ -23,16 +23,14 @@ ft_pretrained_checkpoint: "015000"
 # ft_pretrained_dataset: libero_90_full_full
 # ft_pretrained_batch_size: 16
 # ft_pretrained_exp: ""
-# FT freeze 프로브 (PT와 동일한 2×2; expert 항상 학습)
-ft_freeze_vision_encoder: false
-ft_freeze_language_model: false
-# FT LoRA (PT와 동일 구조). 폴더명 태그: FT_..._{fv}{fl}_{lora_llm}{lora_vision}.
-ft_lora_enable: false
+# FT freeze + LoRA는 로드하는 PT(ft_pretrained_run_name)를 그대로 따라감 — PT 체크포인트의
+# train_config.json에서 freeze_*/lora_* 를 읽어와 FT에 적용(LoRA 모듈 일치 → state-dict 정상 로드,
+# FT 폴더 태그도 PT와 동일 예: ff_ff). 그래서 아래 값들은 보통 손댈 필요 없음.
+# 아래 ft_freeze_*/ft_lora_* 는 폴백일 뿐: PT config가 LoRA 이전(구 체크포인트)이라 lora_* 필드가
+# 없을 때 rank/alpha/dropout/targets 를 여기서 채움(구조엔 영향 없음, lora_enable=false면 무시).
 ft_lora_rank: 8
 ft_lora_alpha: 16
 ft_lora_dropout: 0.0
-ft_lora_llm: true
-ft_lora_vision: false
 ft_lora_targets: "q,k,v,o"
 
 # PT-forgetting probe — skillVLA FT와 동일 조건/인프라(lerobot_train probe_*): FT 중 probe_every

@@ -1802,8 +1802,12 @@ class SkillVLAPolicy(PI05Policy):
         # 그 옆에 vsa_tot(backprop 총합)/vsa_local/vsa_global/vsa_gt_drift(teacher-대비 GT 드리프트, 모니터)가 추가됨.
         # distill/* is an FT concept — suppress in 3-way (stage2 has no distillation; vsa_gt would just
         # duplicate regime/flow_B|C). Only the 2-way (FT) path logs the on/off-comparison vsa_gt.
-        if drop_vlm and regime3 is None:                 # B batch → the VSA's GT training loss (FT only)
-            loss_dict["distill/vsa_gt"] = flow_loss.detach().item()   # connected GT BC (main, if main_connected)
+        # vsa_gt = the pure-VSA GT flow on SEVERED (C) batches — the SAME batches the distill runs on
+        # (mask_severed), so the train_distill panel shows GT-execution vs distillation side by side. Value
+        # == regime/flow_C (duplicated here on purpose for the distill on/off comparison). Works in both
+        # 2-way (mask_severed==drop_vlm by default) and 3-way (C only).
+        if mask_severed:
+            loss_dict["distill/vsa_gt"] = flow_loss.detach().item()
         if gt_severed_loss is not None:                  # severed GT BC (VLM-severed pure-VSA on GT action)
             loss_dict["distill/vsa_gt_severed"] = gt_severed_loss.detach().item()
         if getattr(self.model, "_last_severed_hold", False):   # this severed batch used the Stage-1 hold target

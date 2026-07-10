@@ -13,8 +13,8 @@ skillvla_dataset_root: skillvla_dataset
 pi_base: models/pi05_base
 
 # stage1_run_name: none_FSQ555_dino8_both_1000_siglip_state
-# stage1_run_name: FSQ555_dino8_both_1000_siglip_batch256_state
-stage1_run_name: FSQ88_dino8_both_1000_siglip_batch256_state
+stage1_run_name: FSQ555_dino8_both_1000_siglip_batch256_state
+# stage1_run_name: FSQ88_dino8_both_1000_siglip_batch256_state
 # stage1_run_name: FSQ555_dino8_weighted_both_1000_siglip_batch256_state_weighted
 stage1_checkpoint: "015000"   # warm-start용 Stage-1 step ("last" 가능; scratch(none_*)면 자동 무시)
 
@@ -82,7 +82,7 @@ severed_hold_target: true
 # 국소화되어 forgetting에 강건. B(연결)엔 안 걸음(거긴 VSA를 VLM과 협조하도록 학습하는 다른 목적 + 랜덤
 # 스킬은 매칭 language가 없음). EMA teacher는 매 스텝 갱신되어 B의 드리프트도 반영. frozen stage1 불필요
 # (EMA가 stage2 개선 따라옴), cross-skill 오염 없음. off면 폴더명 원래대로, on이면 _ema{α}_{nl}{ng}w{weight}.
-ema_self_distill: false           # 켜면 아래 knob 적용
+ema_self_distill: true           # 켜면 아래 knob 적용
 ema_self_alpha: 0.999             # weight-EMA decay. 유효 기억 ≈ 1/(1−α) 스텝 (0.999→~1k 전)
 ema_self_weight: 0.5              # distill loss 비율(메인 BC 대비). 0이면 모니터 전용(grad 없음)
 ema_self_n_local: 2              # GT 이웃에서 뽑는 스킬 수(국소 보존)

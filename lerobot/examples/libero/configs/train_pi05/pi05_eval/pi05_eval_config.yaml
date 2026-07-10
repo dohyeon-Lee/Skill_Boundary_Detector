@@ -6,13 +6,24 @@
 pi05_outputs_root: pi05_PT
 pi05_ft_outputs_root: pi05_FT
 
-# ── Which trained model to evaluate ──
+# ── Which trained model(s) to evaluate ──
 eval_stage: PT                 # PT → load from pi05_PT ; FT → load from pi05_FT
-eval_checkpoint: "015000"
-# Exact output folder name under {outputs_root}/{pi05_PT|pi05_FT}/ (set explicitly — eval is standalone).
-eval_model: "PT_libero_90_full_full_pi05_batch128_freeze_LANG"
-# eval_model: "PT_libero_90_full_full_pi05_batch128_freeze_VLM"
-# eval_model: "PT_libero_90_full_full_pi05_batch128_full_unfreeze"
+eval_checkpoint: "last"      # default checkpoint (per-model `checkpoint:` overrides)
+
+# SINGLE: set `eval_model:` (one folder name under {pi05_PT|pi05_FT}/). MULTI compare: fill `models:` —
+# each model is rolled out on the SAME seeds/tasks and per-task videos are stitched into ONE labelled
+# grid clip, task-by-task (side_by_side/). pi05 is a plain VLA → no dropout/skill panels (unlike stage2).
+# per entry: checkpoint 생략 → 위 eval_checkpoint; label 생략 → model_dir 차이 토큰 자동. 개별 산출물은
+# panels/{label}/ 아래. `models:`가 비어있으면 `eval_model:` 단일 경로로 폴백.
+# eval_model: "PT_libero_90_full_full_pi05_batch128_freeze_LANG"
+models:
+  - {model_dir: PT_libero_90_full_full_pi05_batch16_ff_ff, label: full_unfreeze_lora_none}
+  - {model_dir: PT_libero_90_full_full_pi05_batch16_ft_ff, label: freeze_llm_lora_none}
+  - {model_dir: PT_libero_90_full_full_pi05_batch16_ft_ft, label: freeze_llm_lora_llm}
+  - {model_dir: PT_libero_90_full_full_pi05_batch16_tt_tf, label: freeze_all_lora_vis}
+  - {model_dir: PT_libero_90_full_full_pi05_batch16_tt_tt, label: freeze_all_lora_all}
+
+models_per_row: 0              # 행당 패널 수 (0 = 한 행)
 
 # ── Eval rollout ──
 eval_target_task: libero_90
@@ -26,6 +37,10 @@ eval_max_videos_per_task: 5
 eval_video_frame_stride: 2
 eval_video_fps: 10
 eval_wandb_project: VLA_eval
+# 총 1-GPU 잡 예산. SINGLE: task_ids를 N등분해 잡 N개(각 1 GPU). MULTI: 모델×청크로 팬아웃
+# (청크수 = eval_num_gpus ÷ 모델수, 최소 모델당 1) → 여러 모델이 동시에 돌고, 각 task는 마지막
+# 패널이 끝나는 즉시 그리드 영상으로 스티칭됨. (salloc 안에서 실행 시 1로 무시.)
+eval_num_gpus: 10
 
 # Slurm for pi05 eval (partition/qos/nodelist/exclude from configs/global_config.yaml).
 eval_gres: gpu:1

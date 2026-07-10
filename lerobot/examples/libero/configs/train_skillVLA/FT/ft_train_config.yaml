@@ -10,8 +10,8 @@
 skillvla_dataset_root: skillvla_dataset
 
 # ── Warm-start: the Stage-2 run + checkpoint to finetune from ──
-# stage2_run_name: FSQ555_dino8_both_1000_siglip_015000_state__tttf_50p_tfff_ffff
-stage2_run_name: FSQ555_dino8_both_1000_siglip_015000_state__tttf_50p_ffff_ffff
+# stage2_run_name: FSQ555_dino8_both_1000_siglip_015000_state__20tttff_40ffttt_40fffff
+stage2_run_name: FSQ88_dino8_both_1000_siglip_015000_state__20tttff_40ffttt_40fffff
 stage2_checkpoint: "050000"          # "last" or a step number
 # stage1_checkpoint_path:            # blank → read from the Stage-2 checkpoint config.json
 # skill_fsq_levels:                  # blank → read from the Stage-2 checkpoint config.json
@@ -41,7 +41,7 @@ terminator_end_pos_weight: 1.0
 #   C = VLM 절단 + freeze_C → 순수 VSA(Stage-1 형태), 새 task GT 실행을 standalone으로 학습(+hold).
 # 옛 2-way의 main_connected(=B) / gt_severed_bc(=C)는 3-way가 흡수하여 은퇴됨.
 # 폴더명: ...__{gt|pred}_{pA}{A}_{pB}{B}_{pC}{C} (예: pred_30ttff_50fftt_20fftt).
-regime_probs: [0.3, 0.5, 0.2]     # [A, B, C] 확률 (합 1) — 연결-perception / 연결-VSA / 절단-VSA. 필수.
+regime_probs: [0.2, 0.4, 0.4]     # [A, B, C] 확률 (합 1) — 연결-perception / 연결-VSA / 절단-VSA. 필수.
 freeze_A: {expert: true,  cond: true,  cond_vision: true,  llm: false, vlm_vision: false}   # 연결·perception: VLM 학습, 모터 동결
 freeze_B: {expert: false, cond: false, cond_vision: true, llm: true,  vlm_vision: true}    # 연결·VSA:       모터 학습, VLM 동결
 freeze_C: {expert: false, cond: false, cond_vision: false, llm: true,  vlm_vision: true}    # 절단·VSA:       모터 학습, VLM 동결

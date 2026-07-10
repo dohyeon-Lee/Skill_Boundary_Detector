@@ -24,9 +24,19 @@ if [ ! -x "${BOOTSTRAP_PYTHON}" ]; then
   BOOTSTRAP_PYTHON=python3
 fi
 
+# Prefer the submit-time env snapshot (frozen resolved env) → the job never re-runs the emitter on a
+# live/edited/deleted yaml at start. Fallback to a fresh resolve only when run directly (no snapshot).
+if [ -n "${FT_EVAL_ENV_SNAPSHOT:-}" ] && [ -f "${FT_EVAL_ENV_SNAPSHOT}" ]; then
+  source "${FT_EVAL_ENV_SNAPSHOT}"
+else
+  eval "$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/ft_eval_config.py" --config "${CONFIG_PATH}" --shell)"
+fi
+
 # JOB-ARRAY fan-out (submit_eval.sh submits ONE --array job → tasks show as {ID}_0,{ID}_1,… and
 # `scancel {ID}` kills them all): each array task picks its own line from EVAL_FANOUT
-# ("PANEL_LABEL|TASK_IDS|TASK_TAG" per line, index = SLURM_ARRAY_TASK_ID) BEFORE the emitter runs.
+# ("PANEL_LABEL|TASK_IDS|TASK_TAG" per line, index = SLURM_ARRAY_TASK_ID). Applied AFTER sourcing the
+# env snapshot so THIS chunk's TASK_IDS wins — the snapshot exports the FULL task_ids, so a pre-source
+# override would be clobbered (every array task would then run ALL tasks, not its chunk).
 if [ -n "${SLURM_ARRAY_TASK_ID:-}" ] && [ -n "${EVAL_FANOUT:-}" ]; then
   _LINE="$(printf '%s\n' "${EVAL_FANOUT}" | sed -n "$((SLURM_ARRAY_TASK_ID + 1))p")"
   IFS='|' read -r _PL _TI _TT <<< "${_LINE}"
@@ -34,14 +44,6 @@ if [ -n "${SLURM_ARRAY_TASK_ID:-}" ] && [ -n "${EVAL_FANOUT:-}" ]; then
   [ -n "${_TI}" ] && export TASK_IDS="${_TI}"
   [ -n "${_TT}" ] && export TASK_TAG="${_TT}"
   echo "array task ${SLURM_ARRAY_TASK_ID}: panel='${_PL:-<all>}' task_ids=${_TI} tag='${_TT:-}'"
-fi
-
-# Prefer the submit-time env snapshot (frozen resolved env) → the job never re-runs the emitter on a
-# live/edited/deleted yaml at start. Fallback to a fresh resolve only when run directly (no snapshot).
-if [ -n "${FT_EVAL_ENV_SNAPSHOT:-}" ] && [ -f "${FT_EVAL_ENV_SNAPSHOT}" ]; then
-  source "${FT_EVAL_ENV_SNAPSHOT}"
-else
-  eval "$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/ft_eval_config.py" --config "${CONFIG_PATH}" --shell)"
 fi
 
 cd "${LEROBOT_ROOT}"

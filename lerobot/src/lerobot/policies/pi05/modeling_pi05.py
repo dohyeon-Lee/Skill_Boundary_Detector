@@ -1082,6 +1082,35 @@ class PI05Policy(PreTrainedPolicy):
             if remap_count > 0:
                 print(f"Remapped {remap_count} state dict keys")
 
+            # LoRA-wrapped Linears hold their pretrained weight under `<name>.base.weight`, but a
+            # NON-LoRA checkpoint (e.g. pi05_base) stores it as the plain `<name>.weight`. Without
+            # this remap those weights land as "missing" → every LoRA-wrapped proj (q/k/v/o, vision)
+            # stays at RANDOM init and the adapters train on top of a broken backbone (catastrophic:
+            # the whole attention is random). Route plain weights into `.base.*` when — and only
+            # when — the model actually exposes the wrapped key. No-op for non-LoRA models and for
+            # LoRA→LoRA loads (the `.base.*` key already matches directly).
+            model_keys = set(model.state_dict().keys())
+            lora_routed = 0
+            routed_state_dict = {}
+            for key, value in remapped_state_dict.items():
+                if key in model_keys:
+                    routed_state_dict[key] = value
+                    continue
+                alt = None
+                if key.endswith(".weight"):
+                    alt = key[: -len(".weight")] + ".base.weight"
+                elif key.endswith(".bias"):
+                    alt = key[: -len(".bias")] + ".base.bias"
+                if alt is not None and alt in model_keys and alt not in remapped_state_dict:
+                    routed_state_dict[alt] = value
+                    lora_routed += 1
+                else:
+                    routed_state_dict[key] = value
+            remapped_state_dict = routed_state_dict
+            if lora_routed:
+                print(f"[LoRA] routed {lora_routed} plain proj weights into '.base.*' "
+                      f"(loaded a non-LoRA checkpoint into a LoRA-wrapped model)")
+
             # Load the remapped state dict into the model
             missing_keys, unexpected_keys = model.load_state_dict(remapped_state_dict, strict=strict)
 

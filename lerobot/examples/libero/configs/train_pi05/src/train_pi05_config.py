@@ -138,11 +138,55 @@ def run_name(prefix: str, dataset: str, batch_size: int, exp: str, tag: str = ""
 
 
 def frz_lora_tag(fv: bool, fl: bool, lora_enable: bool, lora_llm: bool, lora_vision: bool) -> str:
-    """Run-name tag: '{freeze_vision}{freeze_language}_{lora_llm}{lora_vision}' as t/f, e.g. 'tt_ff'.
-    The LoRA half is EFFECTIVE (lora_enable AND the per-part flag) so it reads f when LoRA is off."""
+    """Run-name tag: '{freeze_vision}{freeze_language}_{lora_vision}{lora_language}' as t/f, e.g. 'tt_ff'.
+    BOTH halves read vision-then-language (freeze half, then LoRA half) so the position of each char is
+    consistent across the tag. The LoRA half is EFFECTIVE (lora_enable AND the per-part flag) so it reads
+    f when LoRA is off. E.g. ft_ft = freeze language + LoRA on language; tt_tf = freeze both + LoRA vision."""
     frz = ("t" if fv else "f") + ("t" if fl else "f")
-    lo = ("t" if (lora_enable and lora_llm) else "f") + ("t" if (lora_enable and lora_vision) else "f")
+    lo = ("t" if (lora_enable and lora_vision) else "f") + ("t" if (lora_enable and lora_llm) else "f")
     return f"{frz}_{lo}"
+
+
+def _pt_freeze_lora(pt_ckpt: Path, cfg: dict[str, Any]) -> dict[str, Any]:
+    """FT inherits the freeze + LoRA structure from the PT checkpoint it loads — so the LoRA modules
+    match (state-dict loads cleanly) and the FT folder tag MIRRORS PT's (e.g. ff_ff / tt_tf). Source of
+    truth = the PT checkpoint's train_config.json (freeze_* always present; lora_* absent on pre-LoRA
+    checkpoints → treated as off). rank/alpha/dropout/targets fall back to the ft_* yaml only when the
+    PT config predates LoRA. train_config.json missing (PT not built yet) → ft_* yaml values."""
+    p: dict = {}
+    tc = pt_ckpt / "train_config.json"
+    if tc.is_file():
+        try:
+            p = json.loads(tc.read_text()).get("policy") or {}
+        except Exception:
+            p = {}
+    return {
+        "freeze_vis": as_bool(p.get("freeze_vision_encoder", get_value(cfg, "ft_freeze_vision_encoder", False))),
+        "freeze_lang": as_bool(p.get("freeze_language_model", get_value(cfg, "ft_freeze_language_model", False))),
+        "lora_enable": as_bool(p.get("lora_enable", False)),
+        "lora_llm": as_bool(p.get("lora_llm", False)),
+        "lora_vision": as_bool(p.get("lora_vision", False)),
+        "lora_rank": int(p.get("lora_rank", get_value(cfg, "ft_lora_rank", 8))),
+        "lora_alpha": float(p.get("lora_alpha", get_value(cfg, "ft_lora_alpha", 16.0))),
+        "lora_dropout": float(p.get("lora_dropout", get_value(cfg, "ft_lora_dropout", 0.0))),
+        "lora_targets": str(p.get("lora_targets", get_value(cfg, "ft_lora_targets", "q,k,v,o"))),
+    }
+
+
+def _auto_labels(model_dirs: list[str]) -> list[str]:
+    """Distinguishing middle token(s) of each model_dir (strip the common leading + trailing _-tokens),
+    used as the side-by-side panel label when a model has no explicit label. (Same as stage2_eval.)"""
+    if len(model_dirs) <= 1:
+        return list(model_dirs)
+    toks = [d.split("_") for d in model_dirs]
+    short = min(len(t) for t in toks)
+    p = 0
+    while p < short and all(t[p] == toks[0][p] for t in toks):
+        p += 1
+    s = 0
+    while s < short - p and all(t[-1 - s] == toks[0][-1 - s] for t in toks):
+        s += 1
+    return ["_".join(t[p: len(t) - s]) or d for t, d in zip(toks, model_dirs)]
 
 
 def slurm_settings(cfg: dict[str, Any], prefix: str, *, cpus: int, mem: str, time: str, qos: str) -> dict[str, Any]:
@@ -175,7 +219,7 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
     pt_batch_size = int(get_value(cfg, "pt_batch_size", 32, env="PT_BATCH_SIZE"))
     pt_num_gpus = int(get_value(cfg, "pt_num_gpus", 1, env="PT_NUM_GPUS"))
     pt_exp = str(get_value(cfg, "pt_exp", "exp1", env="PT_EXP")).strip()
-    # freeze + LoRA run-name tag: {freeze_vision}{freeze_language}_{lora_llm}{lora_vision}, e.g. tt_ff.
+    # freeze + LoRA run-name tag: {freeze_vision}{freeze_language}_{lora_vision}{lora_language}, e.g. tt_ff.
     pt_freeze_vis = as_bool(get_value(cfg, "pt_freeze_vision_encoder", False, env="PI05_PT_FREEZE_VISION_ENCODER"))
     pt_freeze_lang = as_bool(get_value(cfg, "pt_freeze_language_model", False, env="PI05_PT_FREEZE_LANGUAGE_MODEL"))
     pt_lora_enable = as_bool(get_value(cfg, "pt_lora_enable", False, env="PI05_PT_LORA_ENABLE"))
@@ -196,12 +240,12 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
     # 방식(dataset/batch/exp로 PT_{dataset}_pi05_batch{bs}[_{exp}] 재조립)으로 폴백.
     ft_pre_run_name = (str(get_value(cfg, "ft_pretrained_run_name", "", env="FT_PRETRAINED_RUN_NAME") or "").strip()
                        or run_name("PT", ft_pre_dataset, ft_pre_batch, ft_pre_exp, tag=pt_tag))
-    # freeze + LoRA 태그 = {freeze_vision}{freeze_language}_{lora_llm}{lora_vision} (예: tt_ff)
-    ft_freeze_vis = as_bool(get_value(cfg, "ft_freeze_vision_encoder", False, env="PI05_FT_FREEZE_VISION_ENCODER"))
-    ft_freeze_lang = as_bool(get_value(cfg, "ft_freeze_language_model", False, env="PI05_FT_FREEZE_LANGUAGE_MODEL"))
-    ft_lora_enable = as_bool(get_value(cfg, "ft_lora_enable", False, env="PI05_FT_LORA_ENABLE"))
-    ft_lora_llm = as_bool(get_value(cfg, "ft_lora_llm", True, env="PI05_FT_LORA_LLM"))
-    ft_lora_vision = as_bool(get_value(cfg, "ft_lora_vision", False, env="PI05_FT_LORA_VISION"))
+    # freeze + LoRA는 로드하는 PT를 그대로 따라감(train_config.json 우선) → LoRA 모듈 일치 + FT 폴더
+    # 태그가 PT와 동일(예: ff_ff). ft_freeze_*/ft_lora_* yaml은 PT config가 LoRA 이전일 때의 폴백만.
+    ft_pt_ckpt = pi05_pt_root / ft_pre_run_name / "checkpoints" / ft_pre_ckpt / "pretrained_model"
+    _pfl = _pt_freeze_lora(ft_pt_ckpt, cfg)
+    ft_freeze_vis, ft_freeze_lang = _pfl["freeze_vis"], _pfl["freeze_lang"]
+    ft_lora_enable, ft_lora_llm, ft_lora_vision = _pfl["lora_enable"], _pfl["lora_llm"], _pfl["lora_vision"]
     ft_frz_tag = frz_lora_tag(ft_freeze_vis, ft_freeze_lang, ft_lora_enable, ft_lora_llm, ft_lora_vision)
     ft_run_name = f"FT_{ft_pre_ckpt}PT_{ft_dataset}_pi05_batch{ft_batch_size}_{ft_frz_tag}"
     if ft_exp:
@@ -209,11 +253,47 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
 
     eval_stage = str(get_value(cfg, "eval_stage", "FT", env="EVAL_STAGE")).upper()
     eval_checkpoint = str(get_value(cfg, "eval_checkpoint", "001000", env="CHECKPOINT"))
-    eval_model = str(get_nonempty(cfg, "eval_model", "", env="MODEL")).strip()
-    if not eval_model:
-        eval_model = ft_run_name if eval_stage == "FT" else pt_run_name
     eval_target_task = str(get_value(cfg, "eval_target_task", "libero_90", env="TARGET_TASK"))
-    eval_wandb_run = str(os.environ.get("WANDB_RUN_NAME", f"{eval_model}_{eval_checkpoint}_{eval_target_task}"))
+    eval_offset = int(get_value(cfg, "eval_episode_offset", 25, env="EPISODE_OFFSET"))
+    eval_root = pi05_ft_root if eval_stage == "FT" else pi05_pt_root  # PT → pi05_PT, FT → pi05_FT
+
+    def _model_ppath(md: str, ckpt: str) -> Path:
+        return eval_root / md / "checkpoints" / ckpt / "pretrained_model"
+
+    # `models:` list (each {model_dir, checkpoint?, label?}) → MULTI-model side-by-side (same scenes via
+    # the shared seed; per-task videos stitched into a labelled grid, task-by-task). Otherwise the single
+    # `eval_model`. NB pi05 is a plain VLA — no dropout/skill panels (unlike stage2_eval).
+    models_yaml = get_value(cfg, "models", None)
+    if isinstance(models_yaml, list) and models_yaml:
+        entries = [{"model_dir": str(get_value(e, "model_dir")),
+                    "checkpoint": str(get_value(e, "checkpoint", eval_checkpoint)),
+                    "label": str(get_value(e, "label", "")).strip()} for e in models_yaml]
+    else:  # single eval_model (env MODEL override, else the resolved PT/FT run name)
+        _em = str(get_nonempty(cfg, "eval_model", "", env="MODEL")).strip()
+        if not _em:
+            _em = ft_run_name if eval_stage == "FT" else pt_run_name
+        entries = [{"model_dir": _em, "checkpoint": eval_checkpoint, "label": ""}]
+
+    autos = _auto_labels([e["model_dir"] for e in entries])
+    labels: list[str] = []
+    for e, a in zip(entries, autos):
+        lbl = (e["label"] or a).replace("/", "_").replace(" ", "_")
+        while lbl in labels:                      # panel dirs are keyed by label → must be unique
+            lbl += "x"
+        labels.append(lbl)
+
+    multi = len(entries) > 1
+    eval_model = entries[0]["model_dir"]          # single-path back-compat (EVAL_POLICY_PATH etc.)
+    eval_policy_path = Path(os.environ.get("POLICY_PATH", str(_model_ppath(eval_model, entries[0]["checkpoint"]))))
+    eval_out_root = Path(__file__).resolve().parents[1] / "pi05_eval" / "outputs"
+    if multi:
+        eval_wandb_run = "compare_" + "_vs_".join(labels) + f"_{eval_checkpoint}_{eval_target_task}"
+        models_json = json.dumps([{"label": lbl, "policy_path": str(_model_ppath(e["model_dir"], e["checkpoint"])),
+                                   "checkpoint": e["checkpoint"]} for lbl, e in zip(labels, entries)])
+    else:
+        eval_wandb_run = str(os.environ.get("WANDB_RUN_NAME", f"{eval_model}_{eval_checkpoint}_{eval_target_task}"))
+        models_json = ""
+    eval_out_dir = eval_out_root / f"{eval_wandb_run}_offset{eval_offset}"
 
     settings = {
         "project_root": project_root,
@@ -270,12 +350,12 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         "ft_freeze_language_model": ft_freeze_lang,
         # FT LoRA
         "ft_lora_enable": ft_lora_enable,
-        "ft_lora_rank": int(get_value(cfg, "ft_lora_rank", 8, env="PI05_FT_LORA_RANK")),
-        "ft_lora_alpha": float(get_value(cfg, "ft_lora_alpha", 16.0, env="PI05_FT_LORA_ALPHA")),
-        "ft_lora_dropout": float(get_value(cfg, "ft_lora_dropout", 0.0, env="PI05_FT_LORA_DROPOUT")),
+        "ft_lora_rank": _pfl["lora_rank"],
+        "ft_lora_alpha": _pfl["lora_alpha"],
+        "ft_lora_dropout": _pfl["lora_dropout"],
         "ft_lora_llm": ft_lora_llm,
         "ft_lora_vision": ft_lora_vision,
-        "ft_lora_targets": str(get_value(cfg, "ft_lora_targets", "q,k,v,o", env="PI05_FT_LORA_TARGETS")),
+        "ft_lora_targets": _pfl["lora_targets"],
         # PT-forgetting probe (skillVLA FT와 동일 인프라/wandb 형식: probe/* + probe_forget/*):
         # FT 중 probe_every 스텝마다 PT 데이터셋 고정 배치를 forward-only 재측정. PT 데이터셋은
         # PT 체크포인트의 train_config.json(dataset.root/repo_id)에서 유도, 없으면 yaml 경로로 폴백.
@@ -291,8 +371,15 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         "eval_stage": eval_stage,
         "eval_checkpoint": eval_checkpoint,
         "eval_model": eval_model,
-        "eval_policy_path": Path(os.environ.get("POLICY_PATH", str(
-            (pi05_ft_root if eval_stage == "FT" else pi05_pt_root) / eval_model / "checkpoints" / eval_checkpoint / "pretrained_model"))),
+        "eval_policy_path": eval_policy_path,
+        "eval_out_dir": eval_out_dir,
+        # MULTI-model fan-out (empty MODELS_JSON = single model → EVAL_POLICY_PATH path). MODELS_JSON is a
+        # JSON list of {label, policy_path, checkpoint}; the eval.sbatch panel loop reads it. eval_num_gpus
+        # = TOTAL 1-GPU job budget: submit splits task_ids into chunks (SINGLE) or models×chunks (MULTI).
+        "models_json": models_json,
+        "models_labels": json.dumps(labels) if multi else "",
+        "models_per_row": int(get_value(cfg, "models_per_row", 0) or 0),
+        "eval_num_gpus": int(get_value(cfg, "eval_num_gpus", 1, env="EVAL_NUM_GPUS")),
         "eval_max_parallel_tasks": int(get_value(cfg, "eval_max_parallel_tasks", 1, env="MAX_PARALLEL_TASKS")),
         "eval_max_videos_per_task": int(get_value(cfg, "eval_max_videos_per_task", 1, env="MAX_VIDEOS_PER_TASK")),
         "eval_video_frame_stride": int(get_value(cfg, "eval_video_frame_stride", 2, env="VIDEO_FRAME_STRIDE")),

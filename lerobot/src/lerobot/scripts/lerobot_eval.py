@@ -80,6 +80,8 @@ You can learn about the CLI options for this script in the `EvalPipelineConfig` 
 import concurrent.futures as cf
 import json
 import logging
+import os
+import subprocess
 import threading
 import time
 from collections import defaultdict
@@ -580,6 +582,18 @@ def eval_main(cfg: EvalPipelineConfig):
     # Create environment-specific preprocessor and postprocessor (e.g., for LIBERO environments)
     env_preprocessor, env_postprocessor = make_env_pre_post_processors(env_cfg=cfg.env, policy_cfg=cfg.policy)
 
+    # task_id → LIBERO language instruction, written per task as a video sidecar (language.txt) so the
+    # multi-model stitch can caption each grid clip with the task's prompt at the bottom.
+    task_descriptions: dict[int, str] = {}
+    try:
+        from libero.libero import benchmark
+
+        suite = benchmark.get_benchmark_dict()[cfg.env.task]()
+        for i, task in enumerate(suite.tasks):
+            task_descriptions[i] = task.language
+    except Exception:  # noqa: BLE001 — caption is cosmetic; eval proceeds without it
+        pass
+
     with torch.no_grad(), torch.autocast(device_type=device.type) if cfg.policy.use_amp else nullcontext():
         info = eval_policy_all(
             envs=envs,
@@ -589,10 +603,12 @@ def eval_main(cfg: EvalPipelineConfig):
             preprocessor=preprocessor,
             postprocessor=postprocessor,
             n_episodes=cfg.eval.n_episodes,
-            max_episodes_rendered=10,
+            max_episodes_rendered=int(getattr(cfg.eval, "max_videos_per_task", 10) or 0),
             videos_dir=Path(cfg.output_dir) / "videos",
             start_seed=cfg.seed,
             max_parallel_tasks=cfg.env.max_parallel_tasks,
+            on_task_done_cmd=getattr(cfg.eval, "on_task_done_cmd", None),
+            task_descriptions=task_descriptions,
         )
         print("Overall Aggregated Metrics:")
         print(info["overall"])
@@ -604,8 +620,11 @@ def eval_main(cfg: EvalPipelineConfig):
     # Close all vec envs
     close_envs(envs)
 
-    # Save info
-    with open(Path(cfg.output_dir) / "eval_info.json", "w") as f:
+    # Save info. Task-split chunk jobs (submit_eval.sh eval_num_gpus>1) share ONE out dir → suffix the
+    # summary per chunk (TASK_TAG, e.g. "t0-4") so concurrent jobs don't clobber; merge_eval_chunks.py
+    # (run at each chunk's end) globs eval_info_t*.json → one combined eval_info.json + chart.
+    _tag = os.environ.get("TASK_TAG", "").strip()
+    with open(Path(cfg.output_dir) / (f"eval_info_{_tag}.json" if _tag else "eval_info.json"), "w") as f:
         json.dump(info, f, indent=2)
 
     # Log to wandb if enabled
@@ -800,6 +819,7 @@ def run_one(
     videos_dir: Path | None,
     return_episode_data: bool,
     start_seed: int | None,
+    task_descriptions: dict | None = None,
 ):
     """
     Run eval_one for a single (task_group, task_id, env).
@@ -828,6 +848,17 @@ def run_one(
     # ensure we always provide video_paths key to simplify accumulation
     if max_episodes_rendered > 0:
         metrics.setdefault("video_paths", [])
+    # Sidecar per-episode success (in task video order) → the multi-model stitch reads it to color each
+    # panel's title bar green/red per episode (available now, at task-done; eval_info.json is end-of-job).
+    if task_videos_dir is not None:
+        try:
+            (task_videos_dir / "success.json").write_text(
+                json.dumps([bool(s) for s in metrics.get("successes", [])]))
+            lang = (task_descriptions or {}).get(task_id, "")
+            if lang:
+                (task_videos_dir / "language.txt").write_text(str(lang))
+        except Exception:  # noqa: BLE001 — cosmetic; never fail the eval
+            pass
     return task_group, task_id, metrics
 
 
@@ -845,6 +876,8 @@ def eval_policy_all(
     return_episode_data: bool = False,
     start_seed: int | None = None,
     max_parallel_tasks: int = 1,
+    on_task_done_cmd: str | None = None,
+    task_descriptions: dict | None = None,
 ) -> dict:
     """
     Evaluate a nested `envs` dict: {task_group: {task_id: vec_env}}.
@@ -900,7 +933,19 @@ def eval_policy_all(
         videos_dir=videos_dir,
         return_episode_data=return_episode_data,
         start_seed=start_seed,
+        task_descriptions=task_descriptions,
     )
+
+    # Best-effort hook fired AFTER each task's videos are written (progressive per-task stitch in the
+    # multi-model eval — same mechanism as lerobot_skillvla_eval). "{task_id}"/"{task_group}" substituted.
+    def _fire_task_done(tg: str, tid: int) -> None:
+        if not on_task_done_cmd:
+            return
+        try:
+            cmd = on_task_done_cmd.format(task_id=tid, task_group=tg)
+            subprocess.run(cmd, shell=True, check=False)
+        except Exception as exc:  # noqa: BLE001 — stitching is a convenience; never fail the eval over it
+            logging.warning("on_task_done_cmd failed for task %s: %s", tid, exc)
 
     if max_parallel_tasks <= 1:
         # sequential path (single accumulator path on the main thread)
@@ -909,6 +954,7 @@ def eval_policy_all(
             tg, tid, metrics = task_runner(task_group, task_id, env)
             _accumulate_to(tg, metrics)
             per_task_infos.append({"task_group": tg, "task_id": tid, "metrics": metrics})
+            _fire_task_done(tg, tid)
     else:
         # threaded path: submit all tasks, consume completions on main thread and accumulate there
         with cf.ThreadPoolExecutor(max_workers=max_parallel_tasks) as executor:
@@ -920,6 +966,7 @@ def eval_policy_all(
                 tg, tid, metrics = fut.result()
                 _accumulate_to(tg, metrics)
                 per_task_infos.append({"task_group": tg, "task_id": tid, "metrics": metrics})
+                _fire_task_done(tg, tid)
 
     # compute aggregated metrics helper (robust to lists/scalars)
     def _agg_from_list(xs):

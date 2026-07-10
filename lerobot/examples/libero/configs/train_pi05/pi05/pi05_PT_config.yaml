@@ -17,15 +17,16 @@ pt_exp: ""
 #   (F,F)=full_unfreeze | vision=F,lang=T=freeze_LANG(LM만 동결, vision+projector 학습)
 #   vision=T,lang=F=vision만 동결   | vision=T,lang=T≈freeze_VLM(projector만 학습으로 남음)
 # 실제 적용은 로그의 "pi05 freeze probe" 블록(컴포넌트별 trainable/total)으로 검증.
-pt_freeze_vision_encoder: false
+pt_freeze_vision_encoder: true
 pt_freeze_language_model: true
 # LoRA on the FROZEN VLM parts (adapter만 학습, base 동결). LLM 얼리고(pt_freeze_language_model: true)
 # pt_lora_llm: true 로 두면 "LLM 원능력 보존 + LoRA 적응". vision도 동일(pt_freeze_vision_encoder: true +
-# pt_lora_vision: true). 폴더명 태그: _{fv}{fl}_{lora_llm}{lora_vision} (예: tt_ff = vision·lang 동결, lora 없음).
-pt_lora_enable: false            # 켜면 아래 적용
+# pt_lora_vision: true). 폴더명 태그: _{fv}{fl}_{lora_vision}{lora_lang} (양쪽 절반 모두 vision→lang 순서로
+# 통일. 예: tt_ff = vision·lang 동결·lora 없음 / ft_ft = lang 동결+lang LoRA / tt_tf = 둘다 동결+vision LoRA).
+pt_lora_enable: true            # 켜면 아래 적용
 
-pt_lora_llm: false               # Gemma LLM에 LoRA (pt_freeze_language_model: true 여야 의미)
-pt_lora_vision: false            # SigLIP에 LoRA (pt_freeze_vision_encoder: true 여야 의미)
+pt_lora_vision: true            # SigLIP에 LoRA (pt_freeze_vision_encoder: true 여야 의미)
+pt_lora_llm: true               # Gemma LLM에 LoRA (pt_freeze_language_model: true 여야 의미)
 
 
 pt_lora_rank: 8                  # 병목 rank r (작을수록 보존↑)
