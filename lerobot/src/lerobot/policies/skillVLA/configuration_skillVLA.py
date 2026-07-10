@@ -81,6 +81,18 @@ class SkillVLAConfig(PI05Config):
     skill_loss_weight: float = 0.5
     """λ_skill in ``total = BC + λ_skill * skill_CE``. < 1 keeps the action BC dominant (including the
     BC gradient that flows into the VLM via cross-attention)."""
+    # ── Multi-adapter LoRA (continual learning; base VLM & cond FROZEN, only the adapters train) ──
+    # Three INDEPENDENT named low-rank adapters, each toggleable, sharing lora_rank/alpha/dropout/targets
+    # (inherited from PI05Config). Selected per-forward via lora.active_adapters():
+    #   ① lora_skill       @ VLM LLM       — the skill decoder's VLM view (vocabulary / skill-pred adapt).
+    #   ② lora_cond_vlm    @ VLM LLM       — the cond stream's VLM view (VLM residual the skill can't carry).
+    #   ③ lora_cond_bridge @ cond_encoder  — cond attention learns to INGEST that residual (frozen VSA).
+    # All base-frozen (B=0 init → no-op at step 0); FT trains ① (+replay) while ②③ stay frozen (see the
+    # continual-learning design). NB: keep the inherited pi05 ``lora_enable`` OFF — that is the pi05
+    # SINGLE-adapter path; skillVLA drives its VLM/cond adapters through these three flags instead.
+    lora_skill: bool = False
+    lora_cond_vlm: bool = False
+    lora_cond_bridge: bool = False
     # ── Inter-module attention connections (VLM, cond, action expert). Each is a directed edge in the
     # VLM → cond → expert chain (+ the VLM → expert shortcut); toggling them is a design choice. All apply to
     # BOTH the training joint mask AND the cached inference path (train/infer must match → a Stage-2 retrain).

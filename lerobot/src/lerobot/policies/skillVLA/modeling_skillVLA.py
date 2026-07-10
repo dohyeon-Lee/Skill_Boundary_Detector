@@ -178,6 +178,12 @@ class SkillVLAPytorch(PI05Pytorch):
         self.skill_head = SkillHead(vlm_width, config.skill_fsq_levels,
                                     deadzone_frac=getattr(config, "skill_deadzone_frac", 0.0))
 
+        # ── Multi-adapter LoRA (①②③): named low-rank adapters on the FROZEN VLM LLM / cond encoder. The
+        # base stays frozen (from_pretrained routes the pretrained plain weights into `.base`); each adapter
+        # is B=0 at init → no-op (model == base at step 0). Selected per-forward via lora.active_adapters().
+        # All off by default (the three flags False → this is a no-op, byte-identical to before).
+        self._inject_lora_adapters()
+
         # ── FSQ grid buffers (skill cond token + inference-only terminator) ──
         # Flat FSQ code → z_q uses the FSQ codebook's OWN (little-endian) convention
         # (strides[i]=prod(levels[:i]), z_q = level_id - half), independent of SkillHead's
@@ -284,6 +290,32 @@ class SkillVLAPytorch(PI05Pytorch):
     @property
     def _expert(self):
         return self.paligemma_with_expert.gemma_expert.model
+
+    def _inject_lora_adapters(self) -> None:
+        """Inject the three named LoRA adapters selected in the config. ① skill / ② cond on the VLM LLM
+        (self._vlm); ③ cond_bridge on the cond encoder (self.cond_encoder). rank/alpha/dropout/targets are
+        shared (inherited pi05 lora_* hyperparams). No-op if all three flags are off."""
+        c = self.config
+        if not (getattr(c, "lora_skill", False) or getattr(c, "lora_cond_vlm", False)
+                or getattr(c, "lora_cond_bridge", False)):
+            return
+        from lerobot.policies.pi05.lora import inject_named_lora, target_names_from_spec  # noqa: PLC0415
+        names = target_names_from_spec(getattr(c, "lora_targets", "q,k,v,o"))
+        r = int(getattr(c, "lora_rank", 8))
+        alpha = float(getattr(c, "lora_alpha", 16.0))
+        drop = float(getattr(c, "lora_dropout", 0.0))
+        parts = []
+        if getattr(c, "lora_skill", False):
+            n = inject_named_lora(self._vlm, names, "skill", r, alpha, drop)
+            parts.append(f"skill@VLM-LLM={n}")
+        if getattr(c, "lora_cond_vlm", False):
+            n = inject_named_lora(self._vlm, names, "cond", r, alpha, drop)
+            parts.append(f"cond@VLM-LLM={n}")
+        if getattr(c, "lora_cond_bridge", False):
+            n = inject_named_lora(self.cond_encoder, names, "cond_bridge", r, alpha, drop)
+            parts.append(f"cond_bridge@cond-enc={n}")
+        print(f"[skillVLA LoRA] r={r} alpha={alpha} dropout={drop} targets={sorted(names)} → "
+              + ", ".join(parts))
 
     # ── CFG per-regime freeze (only active when config.vlm_dropout_p > 0) ──
     def _regime_groups(self) -> dict:

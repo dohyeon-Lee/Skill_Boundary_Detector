@@ -13,6 +13,7 @@ transfer to unseen task suites.
 ``.out_features`` to the base, so custom forward code that reads ``proj.weight.dtype`` keeps working.
 """
 
+import contextlib
 import math
 
 import torch
@@ -85,3 +86,110 @@ def target_names_from_spec(spec: str) -> set[str]:
         if tok:
             names |= _TOKEN_TO_NAMES.get(tok, {f"{tok}_proj"})
     return names
+
+
+# ────────────────────────────────────────────────────────────────────────────────────────────────
+# Multi-adapter LoRA (skillVLA): ONE frozen base can carry SEVERAL named low-rank adapters, only a
+# selected subset ACTIVE per forward. skillVLA needs this because the SAME VLM LLM is read by the skill
+# decoder (adapter "skill") and by the cond stream (adapter "cond") in two separate forwards with
+# different adapters live — and one of them (skill) trains at FT while the other (cond) stays frozen.
+# The frozen base is stored as ``.base`` (same convention as LoRALinear) so from_pretrained's plain→.base
+# routing preserves the pretrained backbone here too. Adapters start B=0 → no-op (model == base at init).
+# ────────────────────────────────────────────────────────────────────────────────────────────────
+
+# Which adapter names are live in the CURRENT forward. None = ALL active (single-adapter/back-compat);
+# an empty set = base only. Forwards are sequential, so a module-global is safe. Set via active_adapters().
+_ACTIVE_ADAPTERS: set[str] | None = None
+
+
+@contextlib.contextmanager
+def active_adapters(names):
+    """Scope which named LoRA adapters contribute during the enclosed forward(s).
+    ``active_adapters({"skill"})`` → only the skill adapter; ``active_adapters(None)`` → all; a wrong/empty
+    set → base only. Restores the previous scope on exit (safe to nest)."""
+    global _ACTIVE_ADAPTERS
+    prev = _ACTIVE_ADAPTERS
+    _ACTIVE_ADAPTERS = None if names is None else set(names)
+    try:
+        yield
+    finally:
+        _ACTIVE_ADAPTERS = prev
+
+
+def _adapter_active(name: str) -> bool:
+    return _ACTIVE_ADAPTERS is None or name in _ACTIVE_ADAPTERS
+
+
+class _LoRAAdapter(nn.Module):
+    """One low-rank branch ΔW = (alpha/r)·B·A (B=0 init). No base — it's added onto a shared base."""
+
+    def __init__(self, in_f: int, out_f: int, r: int, alpha: float, dropout: float, dtype, device):
+        super().__init__()
+        self.lora_A = nn.Linear(in_f, r, bias=False).to(device=device, dtype=dtype)
+        self.lora_B = nn.Linear(r, out_f, bias=False).to(device=device, dtype=dtype)
+        nn.init.kaiming_uniform_(self.lora_A.weight, a=math.sqrt(5))
+        nn.init.zeros_(self.lora_B.weight)
+        self.scaling = alpha / r
+        self.drop = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.scaling * self.lora_B(self.lora_A(self.drop(x)))
+
+
+class NamedLoRALinear(nn.Module):
+    """A frozen nn.Linear carrying a dict of named adapters; the ACTIVE ones (per active_adapters()) are
+    summed onto the base. Drop-in for nn.Linear (delegates .weight/.bias/.in_features/.out_features)."""
+
+    def __init__(self, base: nn.Linear):
+        super().__init__()
+        self.base = base
+        for p in self.base.parameters():
+            p.requires_grad_(False)                        # base frozen (pretrained backbone preserved)
+        self.adapters = nn.ModuleDict()
+
+    def add_adapter(self, name: str, r: int, alpha: float, dropout: float = 0.0) -> None:
+        b = self.base
+        self.adapters[name] = _LoRAAdapter(
+            b.in_features, b.out_features, r, alpha, dropout, b.weight.dtype, b.weight.device)
+
+    @property
+    def weight(self):
+        return self.base.weight
+
+    @property
+    def bias(self):
+        return self.base.bias
+
+    @property
+    def in_features(self):
+        return self.base.in_features
+
+    @property
+    def out_features(self):
+        return self.base.out_features
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        out = self.base(x)
+        for name, ad in self.adapters.items():
+            if _adapter_active(name):
+                out = out + ad(x).to(out.dtype)
+        return out
+
+
+def inject_named_lora(root: nn.Module, target_names: set[str], adapter_name: str, r: int, alpha: float,
+                      dropout: float = 0.0) -> int:
+    """Add a NAMED adapter to every targeted nn.Linear under ``root``, wrapping it in a NamedLoRALinear the
+    first time (later injections of a different adapter name just append to the existing wrapper). Returns
+    the count of Linears carrying this adapter. Calling twice with different names → both adapters coexist,
+    switchable via active_adapters()."""
+    wrapped = 0
+    for name, child in list(root.named_children()):
+        if name in target_names and isinstance(child, (nn.Linear, NamedLoRALinear)):
+            if isinstance(child, nn.Linear):
+                child = NamedLoRALinear(child)
+                setattr(root, name, child)
+            child.add_adapter(adapter_name, r, alpha, dropout)
+            wrapped += 1
+        else:
+            wrapped += inject_named_lora(child, target_names, adapter_name, r, alpha, dropout)
+    return wrapped
