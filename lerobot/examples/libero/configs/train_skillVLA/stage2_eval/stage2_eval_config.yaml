@@ -40,8 +40,8 @@ models:
   # - {model_dir: FSQ555_dino8_both_1000_siglip_015000_state__20tttff_40ffttt_40ffftt, label: 2-4-4_freeze_cond_vision}
   # - {model_dir: FSQ555_dino8_both_1000_siglip_015000_state__20ttff_40fftt_40fftt, label: 2-4-4_unfreeze_cond_vision}
 
-  - {model_dir: FSQ555_dino8_both_1000_siglip_015000_state__20tttff_40ffttt_40ffftt, label: 2-4-4_freeze_vision_555}
-  - {model_dir: FSQ88_dino8_both_1000_siglip_015000_state__20tttff_40ffttt_40ffftt, label: 2-4-4_freeze_vision_88}
+  - {model_dir: FSQ555_dino8_both_1000_siglip_015000_state__20tttff_40ffttt_40fffff, label: 2-4-4_freeze_vision_555}
+  - {model_dir: FSQ88_dino8_both_1000_siglip_015000_state__20tttff_40ffttt_40fffff, label: 2-4-4_freeze_vision_88}
 
 models_per_row: 2                 # 행당 패널 수 (0=한 행; 6개@3 → 2×3 그리드) — stage1_eval과 동일
 # model_dir: libero_90_full_full_FSQ555_dino8_both_1000_siglip_015000_unfreeze_state_ve_lang_dz0.8_frzAe_connect
