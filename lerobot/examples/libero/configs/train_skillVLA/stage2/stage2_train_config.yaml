@@ -62,7 +62,7 @@ cond_expert:      true
 regime_probs: [0.2, 0.4, 0.4]  # [0.6, 0.2, 0.2]     # [A, B, C] 확률 (합 1) — 연결-perception / 연결-VSA / 절단-VSA. 필수.
 freeze_A: {expert: true,  cond: true,  cond_vision: true,  llm: false, vlm_vision: false}   # 연결·perception: VLM 학습, 모터 동결
 freeze_B: {expert: false, cond: false, cond_vision: true, llm: true,  vlm_vision: true}    # 연결·VSA:       모터 학습, VLM 동결
-freeze_C: {expert: false, cond: false, cond_vision: false, llm: true,  vlm_vision: true}    # 절단·VSA
+freeze_C: {expert: false, cond: false, cond_vision: false, llm: false,  vlm_vision: false}    # 절단·VSA
 # cond=cond Gemma 인코더+image_proj, cond_vision=cond의 DINO·SigLIP vision tower(분리 동결). cond_vision
 # 생략 시 cond 값 상속(하위호환). 폴더명 t/f 순서: expert,cond,cond_vision,llm,vlm_vision.
 # C는 severed라 VLM이 action 경로와 완전 분리 → VLM을 풀어도 flow_loss는 motor(expert/cond)에만, VLM은
@@ -82,7 +82,7 @@ severed_hold_target: true
 # 국소화되어 forgetting에 강건. B(연결)엔 안 걸음(거긴 VSA를 VLM과 협조하도록 학습하는 다른 목적 + 랜덤
 # 스킬은 매칭 language가 없음). EMA teacher는 매 스텝 갱신되어 B의 드리프트도 반영. frozen stage1 불필요
 # (EMA가 stage2 개선 따라옴), cross-skill 오염 없음. off면 폴더명 원래대로, on이면 _ema{α}_{nl}{ng}w{weight}.
-ema_self_distill: true           # 켜면 아래 knob 적용
+ema_self_distill: false           # 켜면 아래 knob 적용
 ema_self_alpha: 0.999             # weight-EMA decay. 유효 기억 ≈ 1/(1−α) 스텝 (0.999→~1k 전)
 ema_self_weight: 0.5              # distill loss 비율(메인 BC 대비). 0이면 모니터 전용(grad 없음)
 ema_self_n_local: 2              # GT 이웃에서 뽑는 스킬 수(국소 보존)

@@ -35,12 +35,18 @@ models:
 
   # - {model_dir: FSQ555_dino8_both_1000_siglip_015000_state__tttf_50p_tfff_ffff, label: skill-learning during dropout}
   # - {model_dir: FSQ555_dino8_both_1000_siglip_015000_state__tttf_50p_tfff_fftt, label: skill-freeze during dropout}
-  - {model_dir: FSQ555_dino8_both_1000_siglip_015000_state__30ttff_50fftt_20fftt, label: skill-learning during dropout}
+  # - {model_dir: FSQ555_dino8_both_1000_siglip_015000_state__60tttff_20ffttt_20ffftt, label: 6-2-2_freeze_cond_vision}
+  # - {model_dir: FSQ555_dino8_both_1000_siglip_015000_state__60ttff_20fftt_20fftt, label: 6-2-2_unfreeze_cond_vision}
+  # - {model_dir: FSQ555_dino8_both_1000_siglip_015000_state__20tttff_40ffttt_40ffftt, label: 2-4-4_freeze_cond_vision}
+  # - {model_dir: FSQ555_dino8_both_1000_siglip_015000_state__20ttff_40fftt_40fftt, label: 2-4-4_unfreeze_cond_vision}
+
+  - {model_dir: FSQ555_dino8_both_1000_siglip_015000_state__20tttff_40ffttt_40ffftt, label: 2-4-4_freeze_vision_555}
+  - {model_dir: FSQ88_dino8_both_1000_siglip_015000_state__20tttff_40ffttt_40ffftt, label: 2-4-4_freeze_vision_88}
 
 models_per_row: 2                 # 행당 패널 수 (0=한 행; 6개@3 → 2×3 그리드) — stage1_eval과 동일
 # model_dir: libero_90_full_full_FSQ555_dino8_both_1000_siglip_015000_unfreeze_state_ve_lang_dz0.8_frzAe_connect
 
-checkpoint: "last"              # "last" or a step number (these runs go up to 040000)
+checkpoint: "050000"              # "last" or a step number (these runs go up to 040000)
 
 # ── Eval rollout ──
 target_task: libero_90    # LIBERO suite for the sim env
