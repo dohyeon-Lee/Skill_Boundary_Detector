@@ -63,14 +63,17 @@ cond_expert:      true
 # expert는 PT 내내 동결(stage1 완성 전제) → severed/C regime 불필요(절단 VSA ≡ stage1 그대로).
 # vlm_vision(+projector)은 PT에서 full 학습(자연→로봇 도메인 적응; 확정 결정). cond_vision 동결.
 # 폴더명: {STAGE-1 정보}__pt{P_SKILL}{P_COND}_L{①②③ t/f}r{rank}[_{exp}] (예: ...state__pt5050_Ltttr8).
-regime_probs_pt: [0.5, 0.5]      # [SKILL, COND] 확률 (합 1). 필수.
+regime_probs_pt: [0, 1]      # [SKILL, COND] 확률 (합 1). 필수.
 lora_skill: true                  # ①
 lora_cond_vlm: true               # ②
 lora_cond_bridge: true            # ③
-lora_rank: 8                      # 공유 hyperparam (rank/alpha/dropout/targets — 세 어댑터 공통)
+lora_rank: 16                      # 공유 hyperparam (rank/alpha/dropout/targets — 세 어댑터 공통)
 lora_alpha: 16
 lora_dropout: 0.0
 lora_targets: "q,k,v,o"
+# 어댑터(①②③)만의 LR 배수 (base optimizer_lr ×). rank-r B=0 어댑터는 관례상 full-FT LR의 10~40배 —
+# lr_base를 올리면 full 학습인 vlm_vision까지 빨라지므로 이 배수로 어댑터만 올림. 폴더명엔 lr{scale}로.
+lora_lr_scale: 10.0
 
 # ── FSQ terminator co-training (same as FT; disjoint from the SkillVLA params) ──
 # Adapt the FSQ terminator on this dataset's GT signals (z←true skill, current DINO + state →

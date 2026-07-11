@@ -141,6 +141,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.lora_alpha="${LORA_ALPHA}" \
     --policy.lora_dropout="${LORA_DROPOUT}" \
     --policy.lora_targets="${LORA_TARGETS}" \
+    --policy.lora_lr_scale="${LORA_LR_SCALE}" \
     --policy.fsq_path="${FSQ_CKPT}" \
     --batch_size="${BATCH_SIZE}" \
     --num_workers="${NUM_WORKERS}" \

@@ -1609,10 +1609,14 @@ class SkillVLAPolicy(PI05Policy):
     def get_optim_params(self):
         """Param groups with a differential LR (× optimizer_lr) for the warm-started action expert and
         cond side; the VLM + vision backbones keep the base LR. Frozen params (requires_grad=False)
-        are excluded, so empty groups never reach the optimizer."""
+        are excluded, so empty groups never reach the optimizer. LoRA adapters get their OWN scale
+        (lora_lr_scale, collected FIRST so ③ inside cond_encoder doesn't fall into the cond group):
+        rank-r B=0 adapters conventionally want ~10-40× the full-finetune LR, and this keeps the
+        full-trained parts (e.g. vlm_vision at PT) at the base LR."""
         base = float(self.config.optimizer_lr)
         es = float(getattr(self.config, "expert_lr_scale", 1.0))
         cs = float(getattr(self.config, "cond_lr_scale", 1.0))
+        ls = float(getattr(self.config, "lora_lr_scale", 1.0))
         m = self.model
         # state/skill projections feed the action expert's AdaRMS (or its prefix) → expert side.
         expert_mods = [m.paligemma_with_expert.gemma_expert, m.action_in_proj, m.action_out_proj,
@@ -1632,6 +1636,7 @@ class SkillVLAPolicy(PI05Policy):
                         out.append(p)
             return out
 
+        lora_params = collect([mod.adapters for mod in m.modules() if isinstance(mod, NamedLoRALinear)])
         expert_params = collect(expert_mods)
         cond_params = collect(cond_mods)
         # FT: co-trained terminator (disjoint from the rest) gets its own LR scale.
@@ -1641,6 +1646,8 @@ class SkillVLAPolicy(PI05Policy):
         groups: list[dict] = []
         if rest:
             groups.append({"params": rest})                       # base optimizer_lr
+        if lora_params:
+            groups.append({"params": lora_params, "lr": base * ls})
         if expert_params:
             groups.append({"params": expert_params, "lr": base * es})
         if cond_params:

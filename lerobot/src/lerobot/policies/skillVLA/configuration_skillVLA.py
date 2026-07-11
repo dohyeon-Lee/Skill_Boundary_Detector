@@ -93,6 +93,10 @@ class SkillVLAConfig(PI05Config):
     lora_skill: bool = False
     lora_cond_vlm: bool = False
     lora_cond_bridge: bool = False
+    lora_lr_scale: float = 1.0
+    """Adapter-only LR multiplier (× optimizer_lr) for ALL named LoRA params (①②③). Rank-r B=0 adapters
+    conventionally want ~10-40× the full-finetune LR; this leaves the full-trained parts (vlm_vision at
+    PT, expert at FT) on the base LR instead of raising optimizer_lr globally."""
     # ── LoRA-continual training regimes (REPLACES the legacy A/B/C regime_probs / vlm_dropout_p system;
     # those fields remain below only so old checkpoints' config.json still deserializes). Per-batch
     # multinomial — the whole batch is ONE regime. Exactly one of the two may be set:

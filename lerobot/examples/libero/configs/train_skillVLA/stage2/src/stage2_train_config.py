@@ -153,6 +153,7 @@ def build_settings(cfg: dict) -> dict:
     lora_alpha = float(get_value(cfg, "lora_alpha", 16.0))
     lora_dropout = float(get_value(cfg, "lora_dropout", 0.0))
     lora_targets = str(get_value(cfg, "lora_targets", "q,k,v,o"))
+    lora_lr_scale = float(get_value(cfg, "lora_lr_scale", 1.0))   # adapter-only LR × (vlm_vision stays base)
     if regime_probs_pt[1] > 0 and not (lora_cond_vlm or lora_cond_bridge):
         raise ValueError("COND regime prob > 0 but both cond adapters (②lora_cond_vlm/③lora_cond_bridge) "
                          "are off — nothing would train on COND batches (expert/bases are frozen).")
@@ -182,6 +183,8 @@ def build_settings(cfg: dict) -> dict:
     ps, pc = (int(round(x * 100)) for x in regime_probs_pt)
     _l = "".join("t" if b else "f" for b in (lora_skill, lora_cond_vlm, lora_cond_bridge))
     regime_tag = f"pt{ps}{pc}_L{_l}r{lora_rank}"
+    if lora_lr_scale != 1.0:                     # adapter LR multiplier (e.g. lr10 = 10× base)
+        regime_tag += f"lr{int(lora_lr_scale) if lora_lr_scale == int(lora_lr_scale) else lora_lr_scale}"
     parts = ([run_tag] + ([s1_vis_tag] if s1_vis_tag else [])
              + [stage1_checkpoint] + ([mode_tag] if mode_tag else []) + loss_tags)
     run_name = "_".join(parts) + "__" + regime_tag
@@ -228,6 +231,7 @@ def build_settings(cfg: dict) -> dict:
         "lora_alpha": lora_alpha,
         "lora_dropout": lora_dropout,
         "lora_targets": lora_targets,
+        "lora_lr_scale": lora_lr_scale,
 
         # per-component update tracking (wandb param_drift/* + param_drift_rel/*)
         "track_param_drift": as_bool(get_value(cfg, "track_param_drift", False)),
