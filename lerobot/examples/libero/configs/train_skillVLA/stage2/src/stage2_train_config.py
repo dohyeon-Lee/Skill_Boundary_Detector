@@ -138,45 +138,34 @@ def build_settings(cfg: dict) -> dict:
     reader_depth = int(get_value(cfg, "reader_depth", 2))
     reader_heads = int(get_value(cfg, "reader_heads", 8))
     skill_reader_all_layers = as_bool(get_value(cfg, "skill_reader_all_layers", False))
-    # Per-regime freeze: 3-way A/B/C from nested dicts freeze_A / freeze_B / freeze_C → flat config
-    # fields freeze_vlm_vsa_*(A) / freeze_vsa_*(B) / freeze_c_*(C). regime_probs is REQUIRED (2-way
-    # binary-dropout legacy removed).
-    # Group keys: llm = the VLM's Gemma LLM trunk ONLY (accepts "vlm" as an alias in the dict);
-    # vlm_vision = the PaliGemma SigLIP tower.
-    _REGIME_KEYS = ("expert", "cond", "cond_vision", "llm", "vlm_vision")
-    def _grp(d, k):
-        if k == "llm":
-            return d.get(k, d.get("vlm", False))                 # "vlm" = alias for llm
-        if k == "cond_vision":
-            return d.get(k, d.get("cond", False))                # inherit cond if unspecified (back-compat)
-        return d.get(k, False)
-    _rp = get_value(cfg, "regime_probs", None)
-    if not (isinstance(_rp, (list, tuple)) and len(_rp) == 3):
-        raise ValueError("regime_probs must be a 3-element list [A, B, C] (합 1). 2-way binary-dropout "
-                         "legacy가 제거됨 — regime_probs를 반드시 지정하세요.")
-    regime_probs = [float(x) for x in _rp]
-    _fa = get_value(cfg, "freeze_A", {}) or {}
-    _fb = get_value(cfg, "freeze_B", {}) or {}
-    _fc = get_value(cfg, "freeze_C", {}) or {}
-    frz = {f"freeze_vlm_vsa_{k}": as_bool(_grp(_fa, k)) for k in _REGIME_KEYS}
-    frz.update({f"freeze_vsa_{k}": as_bool(_grp(_fb, k)) for k in _REGIME_KEYS})
-    frz.update({f"freeze_c_{k}": as_bool(_grp(_fc, k)) for k in _REGIME_KEYS})
-    # C (severed) batches use the Stage-1 hold BC target (stop+hold past skill_de). Default on; the name
-    # gets a "_nohold" tag only when disabled (ablation).
-    severed_hold_target = as_bool(get_value(cfg, "severed_hold_target", True))
-    # EMA-self distillation (forgetting prep): pin sampled non-GT skills to the model's own weight-EMA.
-    ema_self_distill = as_bool(get_value(cfg, "ema_self_distill", False))
-    ema_self_alpha = float(get_value(cfg, "ema_self_alpha", 0.999))
-    ema_self_weight = float(get_value(cfg, "ema_self_weight", 0.5))
-    ema_self_n_local = int(get_value(cfg, "ema_self_n_local", 2))
-    ema_self_n_global = int(get_value(cfg, "ema_self_n_global", 2))
+    # LoRA-continual PT regimes: [SKILL, COND] (REPLACES the legacy A/B/C freeze_A/B/C system —
+    # trainability is fixed by design: bases frozen, adapters ①②③ + reader/head + vlm_vision train,
+    # expert frozen; see SkillVLAPolicy._apply_continual_freezes).
+    _rp = get_value(cfg, "regime_probs_pt", None)
+    if not (isinstance(_rp, (list, tuple)) and len(_rp) == 2):
+        raise ValueError("regime_probs_pt must be a 2-element list [SKILL, COND] (합 1) — the A/B/C "
+                         "regime_probs/freeze_A/B/C legacy was replaced by the LoRA-continual system.")
+    regime_probs_pt = [float(x) for x in _rp]
+    lora_skill = as_bool(get_value(cfg, "lora_skill", True))
+    lora_cond_vlm = as_bool(get_value(cfg, "lora_cond_vlm", True))
+    lora_cond_bridge = as_bool(get_value(cfg, "lora_cond_bridge", True))
+    lora_rank = int(get_value(cfg, "lora_rank", 8))
+    lora_alpha = float(get_value(cfg, "lora_alpha", 16.0))
+    lora_dropout = float(get_value(cfg, "lora_dropout", 0.0))
+    lora_targets = str(get_value(cfg, "lora_targets", "q,k,v,o"))
+    if regime_probs_pt[1] > 0 and not (lora_cond_vlm or lora_cond_bridge):
+        raise ValueError("COND regime prob > 0 but both cond adapters (②lora_cond_vlm/③lora_cond_bridge) "
+                         "are off — nothing would train on COND batches (expert/bases are frozen).")
+    if regime_probs_pt[0] > 0 and not lora_skill:
+        print("[warn] SKILL prob > 0 with ①lora_skill off — only reader/head (+vlm_vision) adapt the skill path.")
     # SCRATCH-side arch knobs (model uses them only when stage1_checkpoint_path is empty). The one-liner
     # (none_{run_tag}_{vision}_{mode}) takes precedence over the separate yaml keys.
     s1_vision_backbone = _s1_vb or str(get_value(cfg, "s1_vision_backbone", "siglip")).strip()
     s1_state_cond_mode = _s1_scm or str(get_value(cfg, "s1_state_cond_mode", "state")).strip()
-    if scratch and not (regime_probs[1] > 0 or regime_probs[2] > 0):
-        raise ValueError("SCRATCH mode needs VSA training — regime_probs의 B 또는 C가 >0 이어야 함 "
-                         "(B/C 배치가 VSA를 학습).")
+    if scratch:
+        raise ValueError("SCRATCH mode is incompatible with the LoRA-continual PT: the expert/cond bases "
+                         "are FROZEN by design (stage-1 완성 전제) — a fresh-init VSA would never train. "
+                         "Warm-start from a Stage-1 checkpoint instead.")
     # state_skill checked first (it contains the substring "_state"); else state; else "" (older naming).
     if scratch:
         mode_tag, loss_tags = s1_state_cond_mode, []
@@ -188,25 +177,14 @@ def build_settings(cfg: dict) -> dict:
             m = re.search(pat, stage1_run_name)
             if m:
                 loss_tags.append(m.group(1))
-    # {STAGE-1 정보}__{pA}{Afreeze}_{pB}{Bfreeze}_{pC}{Cfreeze}:
-    #   각 블록 = {확률%}{freeze t/f in (expert, cond, llm, vlm_vision) order}. 예: 30ttff_50fftt_20fftt.
-    #   A=연결+freeze_A, B=연결+freeze_B, C=절단+freeze_C.
-    # SCRATCH: {run_tag}_{vision}_scratch_{state_cond_mode}__... (Stage-1 체크포인트 정보가 없으므로).
-    _tf = lambda prefix: "".join("t" if frz[f"freeze_{prefix}_{k}"] else "f" for k in _REGIME_KEYS)
-    pa, pb, pc = (int(round(x * 100)) for x in regime_probs)
-    regime_tag = f"{pa}{_tf('vlm_vsa')}_{pb}{_tf('vsa')}_{pc}{_tf('c')}"
-    if scratch:
-        parts = [run_tag, s1_vision_backbone, "scratch", s1_state_cond_mode]
-    else:
-        parts = ([run_tag] + ([s1_vis_tag] if s1_vis_tag else [])
-                 + [stage1_checkpoint] + ([mode_tag] if mode_tag else []) + loss_tags)
+    # {STAGE-1 정보}__pt{P_SKILL}{P_COND}_L{①②③ t/f}r{rank}[_{exp}] — 예: ...state__pt5050_Ltttr8.
+    #   pt5050 = SKILL 50% / COND 50%; Lttt = ①skill ②cond_vlm ③cond_bridge on/off; r8 = shared rank.
+    ps, pc = (int(round(x * 100)) for x in regime_probs_pt)
+    _l = "".join("t" if b else "f" for b in (lora_skill, lora_cond_vlm, lora_cond_bridge))
+    regime_tag = f"pt{ps}{pc}_L{_l}r{lora_rank}"
+    parts = ([run_tag] + ([s1_vis_tag] if s1_vis_tag else [])
+             + [stage1_checkpoint] + ([mode_tag] if mode_tag else []) + loss_tags)
     run_name = "_".join(parts) + "__" + regime_tag
-    if not severed_hold_target:
-        run_name = f"{run_name}_nohold"        # ablation: severed batches keep the real cross-skill tail
-    if ema_self_distill:
-        # EMA-self on → short suffix: α (decimals) + n_local/n_global + weight×100. off → name unchanged.
-        _a = str(ema_self_alpha).split(".")[-1] or "0"
-        run_name = f"{run_name}_ema{_a}_{ema_self_n_local}{ema_self_n_global}w{int(round(ema_self_weight * 100))}"
     if exp:
         run_name = f"{run_name}_{exp}"
     output_dir = vla_root / run_name   # under skillVLA_stage2/, so no extra stage prefix
@@ -241,15 +219,15 @@ def build_settings(cfg: dict) -> dict:
         "vlm_cond": vlm_cond,
         "cond_expert": cond_expert,
         "vlm_expert": vlm_expert,                   # action tokens read the VLM directly (was action_attend_vlm)
-        # 3-way regime probs [A,B,C] as a comma string (REQUIRED — governs A/B/C sampling in the model).
-        "regime_probs": ",".join(str(x) for x in regime_probs),
-        "severed_hold_target": severed_hold_target,   # C (severed) BC → Stage-1 stop+hold past skill_de
-        # EMA-self distillation (Stage-2 forgetting prep)
-        "ema_self_distill": ema_self_distill,
-        "ema_self_alpha": ema_self_alpha,
-        "ema_self_weight": ema_self_weight,
-        "ema_self_n_local": ema_self_n_local,
-        "ema_self_n_global": ema_self_n_global,
+        # LoRA-continual PT regime probs [SKILL, COND] as a comma string + the three named adapters.
+        "regime_probs_pt": ",".join(str(x) for x in regime_probs_pt),
+        "lora_skill": lora_skill,
+        "lora_cond_vlm": lora_cond_vlm,
+        "lora_cond_bridge": lora_cond_bridge,
+        "lora_rank": lora_rank,
+        "lora_alpha": lora_alpha,
+        "lora_dropout": lora_dropout,
+        "lora_targets": lora_targets,
 
         # per-component update tracking (wandb param_drift/* + param_drift_rel/*)
         "track_param_drift": as_bool(get_value(cfg, "track_param_drift", False)),
@@ -257,7 +235,7 @@ def build_settings(cfg: dict) -> dict:
         "scratch": scratch,
         "s1_vision_backbone": s1_vision_backbone,
         "s1_state_cond_mode": s1_state_cond_mode,
-        **frz,                                      # freeze (freeze_{vlm_vsa,vsa}_{expert,cond,vlm,vlm_vision}; p=0 → A dict static)
+        # (trainability is design-fixed by _apply_continual_freezes — no per-regime freeze flags emitted)
         # terminator co-training (same as FT): adapt the FSQ terminator on this dataset's GT signals
         # (disjoint from the SkillVLA params). Warm-starts from fsq_ckpt; exported per-checkpoint for eval.
         "train_terminator": as_bool(get_value(cfg, "train_terminator", False)),
@@ -267,7 +245,6 @@ def build_settings(cfg: dict) -> dict:
         "dino_tokens_path": run_dir / "dino.npz",   # current-frame DINO tokens for the terminator
         # Wrist DINO tokens — attached ONLY for a dual (terminator_use_wrist) FSQ, and only if built ("" else).
         "dino_wrist_tokens_path": (run_dir / "dino_wrist.npz") if (run_dir / "dino_wrist.npz").exists() else "",
-        # freezing is fully governed by the per-regime dicts (**frz above; p=0 → A dict applies statically)
         # output
         "skillvla_outputs_root": vla_root,
         "pt_run_name": run_name,

@@ -93,6 +93,23 @@ class SkillVLAConfig(PI05Config):
     lora_skill: bool = False
     lora_cond_vlm: bool = False
     lora_cond_bridge: bool = False
+    # ── LoRA-continual training regimes (REPLACES the legacy A/B/C regime_probs / vlm_dropout_p system;
+    # those fields remain below only so old checkpoints' config.json still deserializes). Per-batch
+    # multinomial — the whole batch is ONE regime. Exactly one of the two may be set:
+    regime_probs_pt: list[float] | None = None
+    """Stage-2 PT regimes [P(SKILL), P(COND)] (e.g. [0.5, 0.5]). SKILL = standalone VLM(+①"skill") →
+    reader → skill loss only. COND = joint flow through VLM(+②"cond") → cond(+③"cond_bridge") → FROZEN
+    expert, GT-teacher-forced skill z. Expert/bases frozen; see _apply_continual_freezes."""
+    regime_probs_ft: list[float] | None = None
+    """FT regimes [P(SKILL), P(MOTOR_connected), P(MOTOR_severed)] (e.g. [0.0, 0.5, 0.5]). SKILL trains
+    ①+reader+head only if ft_train_skill (else keep its prob 0 — nothing trainable there). MOTOR trains
+    the expert: connected = flow through frozen ②③ (VLM residual riding cond); severed = adapters OFF
+    (③ bypass → pure Stage-1 VSA, no VLM forward) + Stage-1 hold target + random-skill distillation to
+    the frozen-PT teacher (vsa_distill; teacher runs severed/adapter-free too)."""
+    ft_train_skill: bool = False
+    """FT: unfreeze the skill path (adapter ① + skill_reader + skill_head) so SKILL regime batches adapt
+    skill prediction to the new task (new vocabulary/objects) — pair with replay to preserve old-task
+    skill prediction. False = skill path fully frozen (set regime_probs_ft[0]=0; FT is then motor-only)."""
     # ── Inter-module attention connections (VLM, cond, action expert). Each is a directed edge in the
     # VLM → cond → expert chain (+ the VLM → expert shortcut); toggling them is a design choice. All apply to
     # BOTH the training joint mask AND the cached inference path (train/infer must match → a Stage-2 retrain).

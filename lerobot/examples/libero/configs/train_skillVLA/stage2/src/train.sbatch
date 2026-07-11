@@ -98,8 +98,8 @@ if [ "${TRAIN_TERMINATOR}" = "true" ]; then
   fi
 fi
 
-# 3-way regime (A/B/C fixed probs) — REQUIRED (2-way binary-dropout legacy removed). draccus list syntax.
-REGIME_ARGS=(--policy.regime_probs="[${REGIME_PROBS}]")
+# LoRA-continual PT regimes [SKILL, COND] (A/B/C legacy replaced). draccus list syntax.
+REGIME_ARGS=(--policy.regime_probs_pt="[${REGIME_PROBS_PT}]")
 
 # pretrained_path=pi05 warm-starts the VLM; stage1_checkpoint_path warm-starts the action/cond side
 # (the policy's from_pretrained loads both). vision/skill_vocab/state_cond_mode are read from Stage-1.
@@ -134,27 +134,13 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.cond_expert="${COND_EXPERT}" \
     --policy.vlm_expert="${VLM_EXPERT}" \
     --track_param_drift="${TRACK_PARAM_DRIFT}" \
-    --policy.freeze_vlm_vsa_expert="${FREEZE_VLM_VSA_EXPERT}" \
-    --policy.freeze_vlm_vsa_cond="${FREEZE_VLM_VSA_COND}" \
-    --policy.freeze_vlm_vsa_cond_vision="${FREEZE_VLM_VSA_COND_VISION}" \
-    --policy.freeze_vlm_vsa_llm="${FREEZE_VLM_VSA_LLM}" \
-    --policy.freeze_vlm_vsa_vlm_vision="${FREEZE_VLM_VSA_VLM_VISION}" \
-    --policy.freeze_vsa_expert="${FREEZE_VSA_EXPERT}" \
-    --policy.freeze_vsa_cond="${FREEZE_VSA_COND}" \
-    --policy.freeze_vsa_cond_vision="${FREEZE_VSA_COND_VISION}" \
-    --policy.freeze_vsa_llm="${FREEZE_VSA_LLM}" \
-    --policy.freeze_vsa_vlm_vision="${FREEZE_VSA_VLM_VISION}" \
-    --policy.freeze_c_expert="${FREEZE_C_EXPERT}" \
-    --policy.freeze_c_cond="${FREEZE_C_COND}" \
-    --policy.freeze_c_cond_vision="${FREEZE_C_COND_VISION}" \
-    --policy.freeze_c_llm="${FREEZE_C_LLM}" \
-    --policy.freeze_c_vlm_vision="${FREEZE_C_VLM_VISION}" \
-    --policy.severed_hold_target="${SEVERED_HOLD_TARGET}" \
-    --policy.ema_self_distill="${EMA_SELF_DISTILL}" \
-    --policy.ema_self_alpha="${EMA_SELF_ALPHA}" \
-    --policy.ema_self_weight="${EMA_SELF_WEIGHT}" \
-    --policy.ema_self_n_local="${EMA_SELF_N_LOCAL}" \
-    --policy.ema_self_n_global="${EMA_SELF_N_GLOBAL}" \
+    --policy.lora_skill="${LORA_SKILL}" \
+    --policy.lora_cond_vlm="${LORA_COND_VLM}" \
+    --policy.lora_cond_bridge="${LORA_COND_BRIDGE}" \
+    --policy.lora_rank="${LORA_RANK}" \
+    --policy.lora_alpha="${LORA_ALPHA}" \
+    --policy.lora_dropout="${LORA_DROPOUT}" \
+    --policy.lora_targets="${LORA_TARGETS}" \
     --policy.fsq_path="${FSQ_CKPT}" \
     --batch_size="${BATCH_SIZE}" \
     --num_workers="${NUM_WORKERS}" \

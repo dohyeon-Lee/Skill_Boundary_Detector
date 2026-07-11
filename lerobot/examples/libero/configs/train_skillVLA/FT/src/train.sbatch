@@ -92,8 +92,9 @@ if [ -n "${VSA_FT_FREQ_PATH}" ]; then
   done
 fi
 
-# 3-way regime (A/B/C fixed probs) — REQUIRED (2-way vlm_dropout legacy removed). draccus list syntax.
-REGIME_ARGS=(--policy.regime_probs="[${REGIME_PROBS}]")
+# LoRA-continual FT regimes [SKILL, MOTOR_conn, MOTOR_sev] (A/B/C legacy replaced). regime_probs_pt
+# rides in from the parent Stage-2 config.json — regime_probs_ft takes precedence in the model.
+REGIME_ARGS=(--policy.regime_probs_ft="[${REGIME_PROBS_FT}]" --policy.ft_train_skill="${FT_TRAIN_SKILL}")
 
 # VSA distillation global-sampler frequency npz — pass only when built (empty → model uses uniform).
 DISTILL_ARGS=()
@@ -172,23 +173,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.vlm_expert="${VLM_EXPERT}" \
     --policy.fsq_path="${FSQ_CKPT}" \
     --policy.cond_skill_source="${COND_SKILL_SOURCE}" \
-    --policy.freeze_vlm_vsa_expert="${FREEZE_VLM_VSA_EXPERT}" \
-    --policy.freeze_vlm_vsa_cond="${FREEZE_VLM_VSA_COND}" \
-    --policy.freeze_vlm_vsa_cond_vision="${FREEZE_VLM_VSA_COND_VISION}" \
-    --policy.freeze_vlm_vsa_llm="${FREEZE_VLM_VSA_LLM}" \
-    --policy.freeze_vlm_vsa_vlm_vision="${FREEZE_VLM_VSA_VLM_VISION}" \
-    --policy.freeze_vsa_expert="${FREEZE_VSA_EXPERT}" \
-    --policy.freeze_vsa_cond="${FREEZE_VSA_COND}" \
-    --policy.freeze_vsa_cond_vision="${FREEZE_VSA_COND_VISION}" \
-    --policy.freeze_vsa_llm="${FREEZE_VSA_LLM}" \
-    --policy.freeze_vsa_vlm_vision="${FREEZE_VSA_VLM_VISION}" \
-    --policy.freeze_c_expert="${FREEZE_C_EXPERT}" \
-    --policy.freeze_c_cond="${FREEZE_C_COND}" \
-    --policy.freeze_c_cond_vision="${FREEZE_C_COND_VISION}" \
-    --policy.freeze_c_llm="${FREEZE_C_LLM}" \
-    --policy.freeze_c_vlm_vision="${FREEZE_C_VLM_VISION}" \
-    --policy.freeze_skill_head="${FREEZE_SKILL_HEAD}" \
-    --policy.freeze_skill_reader="${FREEZE_SKILL_READER}" \
+    \
     --track_param_drift="${TRACK_PARAM_DRIFT}" \
     --policy.vsa_distill="${VSA_DISTILL}" \
     --policy.vsa_distill_weight="${VSA_DISTILL_WEIGHT}" \

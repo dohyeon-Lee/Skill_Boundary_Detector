@@ -29,7 +29,7 @@ outputs_root: outputs_filtered
 # blank, which would re-introduce divergence. Set the partition(s) you actually want here.
 train_partition: debug
 train_qos: base_qos
-train_nodelist: ""
+train_nodelist: "node200"
 train_exclude_nodes: [""]
 
 # ============================================================================

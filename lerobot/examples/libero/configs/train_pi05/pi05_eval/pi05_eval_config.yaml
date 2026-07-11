@@ -8,7 +8,7 @@ pi05_ft_outputs_root: pi05_FT
 
 # ── Which trained model(s) to evaluate ──
 eval_stage: PT                 # PT → load from pi05_PT ; FT → load from pi05_FT
-eval_checkpoint: "last"      # default checkpoint (per-model `checkpoint:` overrides)
+eval_checkpoint: "020000"      # default checkpoint (per-model `checkpoint:` overrides)
 
 # SINGLE: set `eval_model:` (one folder name under {pi05_PT|pi05_FT}/). MULTI compare: fill `models:` —
 # each model is rolled out on the SAME seeds/tasks and per-task videos are stitched into ONE labelled
@@ -21,12 +21,12 @@ models:
   - {model_dir: PT_libero_90_full_full_pi05_batch16_ft_ff, label: freeze_llm_lora_none}
   - {model_dir: PT_libero_90_full_full_pi05_batch16_ft_ft, label: freeze_llm_lora_llm}
   - {model_dir: PT_libero_90_full_full_pi05_batch16_tt_tf, label: freeze_all_lora_vis}
-  - {model_dir: PT_libero_90_full_full_pi05_batch16_tt_tt, label: freeze_all_lora_all}
+  # - {model_dir: PT_libero_90_full_full_pi05_batch16_tt_tt, label: freeze_all_lora_all}
 
 models_per_row: 0              # 행당 패널 수 (0 = 한 행)
 
 # ── Eval rollout ──
-eval_target_task: libero_90
+eval_target_task: libero_10
 eval_task_ids: "[0,1,2,3,4,5,6,7,8,9]"
 eval_n_episodes: 5
 eval_episode_offset: 25

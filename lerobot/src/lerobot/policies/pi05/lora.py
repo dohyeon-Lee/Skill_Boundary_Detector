@@ -102,11 +102,21 @@ def target_names_from_spec(spec: str) -> set[str]:
 _ACTIVE_ADAPTERS: set[str] | None = None
 
 
+def set_active_adapters(names) -> None:
+    """STICKY adapter selection (no restore) — REQUIRED for any forward that will be backpropped under
+    gradient checkpointing: the checkpoint RECOMPUTE runs later, inside loss.backward(), long after a
+    `with active_adapters(...)` scope has exited — a restored global would recompute the layers with a
+    DIFFERENT adapter set than the original forward (torch aborts on saved-vs-recomputed metadata
+    mismatch). A sticky set persists through the backward; the next forward simply overwrites it.
+    ``{"skill"}`` → only that adapter; ``set()`` → base only; ``None`` → all adapters."""
+    global _ACTIVE_ADAPTERS
+    _ACTIVE_ADAPTERS = None if names is None else set(names)
+
+
 @contextlib.contextmanager
 def active_adapters(names):
-    """Scope which named LoRA adapters contribute during the enclosed forward(s).
-    ``active_adapters({"skill"})`` → only the skill adapter; ``active_adapters(None)`` → all; a wrong/empty
-    set → base only. Restores the previous scope on exit (safe to nest)."""
+    """Scoped variant (RESTORES on exit) — safe ONLY for no-grad/inference forwards (no checkpoint
+    recompute). For training forwards use set_active_adapters (see its docstring)."""
     global _ACTIVE_ADAPTERS
     prev = _ACTIVE_ADAPTERS
     _ACTIVE_ADAPTERS = None if names is None else set(names)

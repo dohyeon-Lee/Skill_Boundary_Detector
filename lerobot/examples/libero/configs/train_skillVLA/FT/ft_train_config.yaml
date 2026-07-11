@@ -34,25 +34,17 @@ terminator_lr_scale: 1.0
 terminator_end_target_sigma: 1.0     # soft termination target std in FRAMES (exp(-de²/2σ²))
 terminator_end_pos_weight: 1.0
 
-# ═══ 학습 regime: 3-way (배치마다 A/B/C 고정확률로 뽑음; stage2와 동일 구조) ══════════════════════
-# 각 regime = (VLM mask 연결/절단) + (freeze 딕셔너리: t=동결, f=학습; 순서 expert,cond,llm,vlm_vision).
-#   A = VLM 연결 + freeze_A → perception 학습(VLM), 모터 동결 (새 task에 obs→skill 재접지).
-#   B = VLM 연결 + freeze_B → 모터(VSA) 학습, VLM 연결됐지만 동결 (추론과 같은 컨텍스트로 적응).
-#   C = VLM 절단 + freeze_C → 순수 VSA(Stage-1 형태), 새 task GT 실행을 standalone으로 학습(+hold).
-# 옛 2-way의 main_connected(=B) / gt_severed_bc(=C)는 3-way가 흡수하여 은퇴됨.
-# 폴더명: ...__{gt|pred}_{pA}{A}_{pB}{B}_{pC}{C} (예: pred_30ttff_50fftt_20fftt).
-regime_probs: [0.2, 0.4, 0.4]     # [A, B, C] 확률 (합 1) — 연결-perception / 연결-VSA / 절단-VSA. 필수.
-freeze_A: {expert: true,  cond: true,  cond_vision: true,  llm: false, vlm_vision: false}   # 연결·perception: VLM 학습, 모터 동결
-freeze_B: {expert: false, cond: false, cond_vision: true, llm: true,  vlm_vision: true}    # 연결·VSA:       모터 학습, VLM 동결
-freeze_C: {expert: false, cond: false, cond_vision: false, llm: true,  vlm_vision: true}    # 절단·VSA:       모터 학습, VLM 동결
-# cond=cond Gemma 인코더+image_proj, cond_vision=cond의 DINO·SigLIP vision tower(분리 동결). 생략 시 cond 상속.
-# 그룹: expert=action expert(+action/time proj), cond=현재obs 파이프라인 통째(vision인코더+image_proj+
-# cond-encoder), llm=VLM Gemma 트렁크만, vlm_vision=PaliGemma SigLIP tower. skill decoder는 아래서 별도 동결.
-
-# skill decoder는 둘로 분리: head(FSQ readout)는 codebook 고정이라 확실히 얼리고, reader(probe 토큰,
-# VLM 출력 읽는 concat-KV)는 새 task에 재접지시키고 싶으면 false로 열 수 있음.
-freeze_skill_head: true
-freeze_skill_reader: true
+# ═══ LoRA-continual FT regime (배치마다 뽑음 — A/B/C 3-way를 대체; 부모 stage2도 새 스킴이어야 함) ═══
+# LoRA 구조(①②③, rank 등)는 부모 Stage-2 체크포인트의 config.json에서 자동 상속 — 여기서 지정 안 함.
+# 고정 trainability: expert(+z/state proj) 학습, ②③·베이스·양쪽 vision 동결 (_apply_continual_freezes).
+#   SKILL      = standalone VLM(+①) → reader → skill loss만. ft_train_skill=true일 때만 의미(아니면 확률 0으로).
+#   MOTOR_conn = VLM(+②frozen) → cond(+③frozen) → expert 학습 (GT skill, real tail).
+#   MOTOR_sev  = 어댑터 전부 off(③ 바이패스 = 순수 Stage-1 VSA), VLM 안 돎; Stage-1 hold target;
+#                + random-skill distill → frozen-PT teacher (아래 vsa_distill; teacher도 severed).
+# 폴더명: ...__ft{P_SKILL}{P_conn}{P_sev}[_ts]{distill_tag} (예: __ft05050_distill22w100).
+regime_probs_ft: [0.0, 0.5, 0.5]  # [SKILL, MOTOR_conn, MOTOR_sev] 확률 (합 1). 필수.
+ft_train_skill: false             # true → ①+reader+head 학습(신규 어휘/물체 적응; replay와 함께 권장,
+                                  # SKILL 확률도 >0으로). false → skill 경로 완전 동결(motor-only FT).
 
 # ── PT-forgetting probe (부모 Stage-2 데이터셋에 대한 실시간 forgetting 곡선) ──
 # FT 중 probe_every 스텝마다 부모 PT 데이터셋의 고정 배치(프레임+flow 노이즈까지 seed 고정 = 같은 자)를

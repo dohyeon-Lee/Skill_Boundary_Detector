@@ -52,41 +52,25 @@ vlm_expert:       false
 cond_expert:      true
 
 
-# ═══ 학습 regime: 3-way (배치마다 A/B/C 고정확률로 뽑음) ═══════════════════════════════════════
-# 각 regime = (VLM mask 연결/절단) + (freeze 딕셔너리: t=동결, f=학습; 순서 expert,cond,llm,vlm_vision).
-#   A = VLM 연결 + freeze_A → perception 학습(VLM), 모터 동결.
-#   B = VLM 연결 + freeze_B → 모터(VSA) 학습, VLM은 연결됐지만 동결(추론과 같은 컨텍스트로 학습).
-#   C = VLM 절단 + freeze_C → 순수 VSA(Stage-1 형태), VLM 없이 실행.
-# A+B = 연결 모델 alternating-freeze(동시 co-adapt 없음), C = VSA 단독 접지. 순서 연결/연결/절단.
-# 폴더명: {STAGE-1 정보}__{pA}{A}_{pB}{B}_{pC}{C} (예: ...state__30ttff_50fftt_20fftt).
-regime_probs: [0.2, 0.4, 0.4]  # [0.6, 0.2, 0.2]     # [A, B, C] 확률 (합 1) — 연결-perception / 연결-VSA / 절단-VSA. 필수.
-freeze_A: {expert: true,  cond: true,  cond_vision: true,  llm: false, vlm_vision: false}   # 연결·perception: VLM 학습, 모터 동결
-freeze_B: {expert: false, cond: false, cond_vision: true, llm: true,  vlm_vision: true}    # 연결·VSA:       모터 학습, VLM 동결
-freeze_C: {expert: false, cond: false, cond_vision: false, llm: false,  vlm_vision: false}    # 절단·VSA
-# cond=cond Gemma 인코더+image_proj, cond_vision=cond의 DINO·SigLIP vision tower(분리 동결). cond_vision
-# 생략 시 cond 값 상속(하위호환). 폴더명 t/f 순서: expert,cond,cond_vision,llm,vlm_vision.
-# C는 severed라 VLM이 action 경로와 완전 분리 → VLM을 풀어도 flow_loss는 motor(expert/cond)에만, VLM은
-# skill_loss로만 학습(disjoint gradient). motor는 GT skill 사용이라 VLM 상태와 무관. 이로써 VLM/skill
-# predictor가 A(연결)뿐 아니라 C(절단)에서도 학습돼 skill_acc 회복. B(연결)에선 여전히 VLM 동결(co-adapt 방지).
-# 그룹: expert=action expert(+action/time proj), cond=현재obs 파이프라인 통째(vision인코더+image_proj+
-# cond-encoder), llm=VLM Gemma 트렁크만, vlm_vision=PaliGemma SigLIP tower. skill decoder는 별도(FT용).
-
-# C(절단 VSA) 배치의 BC target을 Stage-1처럼: 스킬 끝(skill_de) 이후 chunk는 hold(팔 delta→0, gripper는
-# 스킬 내 마지막 값 유지)로 눌러 supervise → 각 스킬이 자기완결적으로 STOP. severed VSA는 다음 스킬을
-# 못 보므로 다음 스킬 실제 action으로 supervise하면 안 됨. A/B(연결)는 real tail 유지. off면 폴더명 _nohold.
-severed_hold_target: true
-
-# ── EMA-self distillation (forgetting 대비) ──────────────────────
-# C(절단/순수 VSA) 배치에서만, 랜덤 non-GT 스킬을 "자기 자신의 weight-EMA"에 붙듦(약하게). GT는 실제
-# action에 sharp BC, 나머지 스킬은 자기 최근(τ≈1/(1−α) 스텝 전) 행동에서 안 벗어나게 → GT 업데이트가
-# 국소화되어 forgetting에 강건. B(연결)엔 안 걸음(거긴 VSA를 VLM과 협조하도록 학습하는 다른 목적 + 랜덤
-# 스킬은 매칭 language가 없음). EMA teacher는 매 스텝 갱신되어 B의 드리프트도 반영. frozen stage1 불필요
-# (EMA가 stage2 개선 따라옴), cross-skill 오염 없음. off면 폴더명 원래대로, on이면 _ema{α}_{nl}{ng}w{weight}.
-ema_self_distill: true           # 켜면 아래 knob 적용
-ema_self_alpha: 0.999             # weight-EMA decay. 유효 기억 ≈ 1/(1−α) 스텝 (0.999→~1k 전)
-ema_self_weight: 0.5              # distill loss 비율(메인 BC 대비). 0이면 모니터 전용(grad 없음)
-ema_self_n_local: 2              # GT 이웃에서 뽑는 스킬 수(국소 보존)
-ema_self_n_global: 2             # 전역에서 뽑는 스킬 수(넓은 레퍼토리 보존)
+# ═══ LoRA-continual PT regime (배치마다 SKILL/COND 뽑음 — A/B/C 3-way를 대체) ═══════════════════
+# 베이스(VLM LLM·cond 인코더·cond_vision)는 항상 동결 — 적응은 named LoRA 어댑터 3개가 담당:
+#   ① lora_skill       @ VLM LLM      — skill decoder의 VLM 뷰(어휘/skill 예측 적응). FT때 학습(+replay).
+#   ② lora_cond_vlm    @ VLM LLM      — cond의 VLM 뷰(skill이 못 담는 residual 추출). FT때 동결.
+#   ③ lora_cond_bridge @ cond encoder — frozen cond가 그 residual을 삼키는 통로. FT때 동결.
+# regime (배치 = 한 regime):
+#   SKILL = standalone VLM(+①) → reader → skill loss만 (flow 없음). 학습: ①+reader/head(+vlm_vision).
+#   COND  = VLM(+②) → cond(+③) → FROZEN expert flow (GT skill 주입). 학습: ②③(+vlm_vision).
+# expert는 PT 내내 동결(stage1 완성 전제) → severed/C regime 불필요(절단 VSA ≡ stage1 그대로).
+# vlm_vision(+projector)은 PT에서 full 학습(자연→로봇 도메인 적응; 확정 결정). cond_vision 동결.
+# 폴더명: {STAGE-1 정보}__pt{P_SKILL}{P_COND}_L{①②③ t/f}r{rank}[_{exp}] (예: ...state__pt5050_Ltttr8).
+regime_probs_pt: [0.5, 0.5]      # [SKILL, COND] 확률 (합 1). 필수.
+lora_skill: true                  # ①
+lora_cond_vlm: true               # ②
+lora_cond_bridge: true            # ③
+lora_rank: 8                      # 공유 hyperparam (rank/alpha/dropout/targets — 세 어댑터 공통)
+lora_alpha: 16
+lora_dropout: 0.0
+lora_targets: "q,k,v,o"
 
 # ── FSQ terminator co-training (same as FT; disjoint from the SkillVLA params) ──
 # Adapt the FSQ terminator on this dataset's GT signals (z←true skill, current DINO + state →

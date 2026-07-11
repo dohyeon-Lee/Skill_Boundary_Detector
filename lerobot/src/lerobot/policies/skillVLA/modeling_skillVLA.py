@@ -55,6 +55,7 @@ from lerobot.policies.pi05.modeling_pi05 import (
     pad_vector,
     resize_with_pad_torch,
 )
+from lerobot.policies.pi05.lora import NamedLoRALinear, set_active_adapters
 from lerobot.policies.pi_gemma import _gated_residual, layernorm_forward
 from lerobot.policies.skill_expert.modeling_skill_expert import (
     _build_gemma,
@@ -366,14 +367,6 @@ class SkillVLAPytorch(PI05Pytorch):
                 continue
             for p in mod.parameters():
                 p.requires_grad_(flag)
-
-    def _apply_regime_freeze(self, prefix: str) -> None:
-        """Per-batch CFG freeze: set requires_grad on expert/cond/llm/vlm_vision per config.freeze_{prefix}_*
-        (prefix = 'vlm_vsa' [A], 'vsa' [B], or 'c' [C]). Groups frozen in ALL active regimes were already
-        excluded from the optimizer (SkillVLAPolicy._apply_freezes); toggling them here is then a no-op."""
-        c, g = self.config, self._regime_groups()
-        for key in ("expert", "cond", "cond_vision", "llm", "vlm_vision"):
-            self._set_requires_grad(g[key], not getattr(c, f"freeze_{prefix}_{key}"))
 
     @property
     def _wdtype(self) -> torch.dtype:
@@ -897,6 +890,39 @@ class SkillVLAPytorch(PI05Pytorch):
         return z_hard + (z_pred - z_pred.detach())                                # STE: fwd=z_hard, grad=z_pred
 
     # ── training ──
+    def _skill_view(self, start_images, lang_tokens, lang_masks) -> Tensor:
+        """SKILL view: standalone VLM prefix forward under adapter ① ("skill") → reader → skill_hidden.
+        The only regime path that runs the reader; its graph never contains cond/expert, so training it
+        can only move ①/reader/head (whatever _apply_continual_freezes left trainable).
+        Adapter selection is STICKY (set_active_adapters, no restore): the gradient-checkpoint recompute
+        re-runs these layers inside loss.backward(), after any scoped `with` would have exited — the
+        global must still hold THIS view's set then, or the recompute diverges from the saved forward."""
+        set_active_adapters({"skill"})
+        vlm_embeds, vlm_pad, vlm_xattn_block = self._vlm_tokens(start_images, lang_tokens, lang_masks)
+        return self._skill_hidden_standalone(vlm_embeds, vlm_pad, vlm_xattn_block)
+
+    def _flow_view(self, cond_images, start_images, lang_tokens, lang_masks, state, skill_zq,
+                   x_t, time, severed: bool):
+        """FLOW view → (v_t, cond_tokens). Connected: joint forward with the VLM read under adapter ②
+        ("cond") and the cond encoder ingesting it through ③ ("cond_bridge"). Severed: EVERY adapter off
+        (③ bypass → the cond encoder degrades to its pure Stage-1 form) and the VLM never runs — the
+        expert acts on skill z + current obs alone (pure VSA). Sticky adapter set (see _skill_view)."""
+        cond_tokens = self._cond_tokens(cond_images)   # image-only (state→AdaRMS, skill by mode)
+        if severed:
+            set_active_adapters(set())
+            return self._vsa_velocity(cond_tokens, x_t, time, state, skill_zq), cond_tokens
+        set_active_adapters({"cond", "cond_bridge"})
+        vlm_embeds, vlm_pad, vlm_xattn_block = self._vlm_tokens(start_images, lang_tokens, lang_masks)
+        action_tokens = self._action_in(x_t)
+        prefix = self._action_prefix_from_z(skill_zq)   # None in state_skill mode
+        if prefix is not None:
+            action_tokens = torch.cat([prefix, action_tokens], dim=1)
+        expert_cond = self._expert_cond_from_z(time, state, skill_zq)
+        _, action_out = self._joint_forward(
+            cond_tokens, vlm_embeds, vlm_pad, vlm_xattn_block, action_tokens, expert_cond,
+            drop_vlm=False)
+        return self._action_out(action_out), cond_tokens
+
     def forward(
         self,
         cond_images: list[Tensor],
@@ -909,172 +935,107 @@ class SkillVLAPytorch(PI05Pytorch):
         noise: Tensor | None = None,
         time: Tensor | None = None,
         hold_actions: Tensor | None = None,
-    ) -> tuple[Tensor, Tensor]:
-        """Single joint forward → (flow_losses (B, chunk, max_action_dim), skill_hidden (B, vlm_width)).
+    ) -> tuple[Tensor | None, Tensor | None]:
+        """LoRA-continual regime router → (flow_losses (B, chunk, max_action_dim) | None,
+        skill_hidden (B, vlm_width) | None).
 
-        The skill z fed to the cond/action-prefix is GT teacher-forced (``cond_skill_source="gt"``,
-        Stage-2 default) or the VLM's OWN STE-rounded prediction (``"pred"``, FT: matches inference and
-        lets the flow loss backprop through SkillHead into the VLM trunk). The skill CE target is the GT
-        code either way. BC gradients flow into the action expert, the VLM (via the action's cross-
-        attention; plus the cond/prefix skill token in pred mode) and the cond-encoder.
-
-        pred mode runs the VLM once HERE (phase 1) to get the skill before the prefix exists; the joint
-        forward reruns it for cross-attention. The VLM stream is independent (self-attn only), so both
-        are numerically identical — phase-1's hidden is reused for the skill CE.
+        TRAIN — per-batch multinomial over the configured regimes (regime_probs_pt / regime_probs_ft;
+        the whole batch is ONE regime):
+          SKILL       standalone VLM(+① "skill") → reader → skill_hidden only (flow=None).
+          COND/MOTOR  joint flow: VLM(+② "cond") read by cond(+③ "cond_bridge") → expert; GT-teacher-
+                      forced z (the motor path never touches the skill predictor); real cross-skill tail.
+                      (PT "cond" trains ②③ against the FROZEN expert; FT "motor" trains the expert.)
+          MOTOR_SEV   adapters OFF (③ bypass → pure Stage-1 VSA), the VLM never runs; Stage-1 hold
+                      target; + random-skill distillation to the frozen-PT teacher (also severed).
+        EVAL / probes / no-regime training — BOTH views (skill standalone, then flow; z follows
+        cond_skill_source; _probe_force_drop severs the flow view), mirroring the 2-forward inference.
         """
         if time is None:
             time = self.sample_time(actions.shape[0], actions.device)
         if noise is None:
             noise = self.sample_noise(actions.shape, actions.device)
         noise = noise.to(dtype=actions.dtype)
-        # x_t / u_t are computed AFTER the regime is sampled below: on a C (severed) batch the BC TARGET is
-        # swapped to the Stage-1 hold (hold_actions), and the noised input + flow target must follow it.
-
-        # CFG-style VLM dropout (train only): with prob p this whole batch is a VSA (B) batch — sever
-        # cond/action → VLM (Stage-1 form). p=0 → coin NOT flipped (no torch.rand) → RNG untouched →
-        # bit-identical to no-dropout. Toggle the per-regime freeze BEFORE any module runs, so requires_grad
-        # is correct for this batch's backward (Adam skips requires_grad=False → clean freeze, no momentum leak).
-        # Optional LINEAR SCHEDULE: p anneals vlm_dropout_p → vlm_dropout_p_end over
-        # vlm_dropout_decay_steps train steps (persistent counter → resume-safe), then holds.
-        # Two knobs drive the regime: freeze_is_vsa (which freeze DICT — freeze_vsa vs freeze_vlm_vsa)
-        # and mask_severed (whether THIS forward's attention severs the VLM). 2-way: both = the coin
-        # (mask flipped back to connected by vsa_distill_main_connected). 3-way: A=(vlm_vsa freeze,
-        # connected), B=(vsa freeze, connected), C=(vsa freeze, severed).
-        regime_probs = getattr(self.config, "regime_probs", None)
-        three_way = self.training and regime_probs is not None and len(regime_probs) == 3
-        p0 = float(getattr(self.config, "vlm_dropout_p", 0.0))
-        p_end = getattr(self.config, "vlm_dropout_p_end", None)
-        decay = int(getattr(self.config, "vlm_dropout_decay_steps", 0) or 0)
-        sched = self.training and decay > 0 and p_end is not None and not three_way
-        p = p0
-        self._last_regime = None
-        if three_way:
-            regimes_on = True
-            probs = torch.tensor([float(x) for x in regime_probs], device=actions.device)
-            r = int(torch.multinomial(probs, 1).item())              # 0=A, 1=B, 2=C
-            freeze_prefix = ("vlm_vsa", "vsa", "c")[r]                # A→freeze_vlm_vsa, B→freeze_vsa, C→freeze_c
-            freeze_is_vsa = r != 0                                    # r0=A trains VLM; r1/2 train the VSA
-            mask_severed = r == 2                                     # only C severs the VLM
-            self._last_regime = ("A", "B", "C")[r]
-            self._last_p_effective = None
-        else:
-            regimes_on = self.training and (p0 > 0.0 or (sched and float(p_end) > 0.0))
-            if sched:
-                frac = min(1.0, float(self._vdrop_step.item()) / float(decay))
-                p = p0 + (float(p_end) - p0) * frac
-                self._vdrop_step += 1
-            # Probe hook: _probe_force_drop forces a B/VSA forward regardless of p/training (eval-only).
-            _force = getattr(self, "_probe_force_drop", None)
-            coin = (bool(_force) if _force is not None
-                    else bool(regimes_on and p > 0.0 and torch.rand(1).item() < p))
-            freeze_is_vsa = coin
-            freeze_prefix = "vsa" if coin else "vlm_vsa"
-            # vsa_distill_main_connected: keep the freeze (VSA) but run the mask CONNECTED (FT).
-            mask_severed = coin and not (coin and getattr(self.config, "vsa_distill_main_connected", False))
-            self._last_p_effective = p if regimes_on else None
-        drop_vlm = freeze_is_vsa                                      # "this batch trains the VSA" (freeze pick)
-        self._last_drop_vlm = drop_vlm if regimes_on else None
-        if regimes_on:
-            self._apply_regime_freeze(freeze_prefix)
-
-        # Severed (VLM-cut) batches — stage2 3-way C, or a 2-way B whose main forward severs the VLM — swap
-        # the BC target to the Stage-1 hold (stop+hold past skill_de) when enabled, so the pure VSA learns
-        # self-terminating skills instead of the next-skill tail it cannot see. Connected A/B keep the real
-        # tail (the VLM gives continuity). FT's main B is connected → its severed path is vsa_gt_severed_bc
-        # below, which applies the same hold there.
-        severed_hold = (mask_severed and hold_actions is not None
-                        and getattr(self.config, "severed_hold_target", True))
-        self._last_severed_hold = bool(severed_hold)
-        if severed_hold:
-            actions = hold_actions
-        t_exp = time[:, None, None]
-        x_t = t_exp * noise + (1 - t_exp) * actions
-        u_t = noise - actions
-
-        vlm_embeds, vlm_pad, vlm_xattn_block = self._vlm_tokens(start_images, lang_tokens, lang_masks)
-        all_layers = getattr(self.config, "skill_reader_all_layers", False)
-        pred_hidden = None
-        if getattr(self.config, "cond_skill_source", "gt") == "pred":
-            pred_hidden = self._skill_hidden_standalone(  # phase 1 (grad): reader over the VLM prefix output
-                vlm_embeds, vlm_pad, vlm_xattn_block)
-            skill_zq = self._pred_skill_ste_z(pred_hidden)
-        else:
-            skill_zq = self._code_to_z(skill_code) / self._fsq_half[None, :]
-
-        cond_tokens = self._cond_tokens(cond_images)   # image-only (state→AdaRMS, skill by mode)
-        action_tokens = self._action_in(x_t)
-        prefix = self._action_prefix_from_z(skill_zq)   # None in state_skill mode
-        if prefix is not None:
-            action_tokens = torch.cat([prefix, action_tokens], dim=1)
-        expert_cond = self._expert_cond_from_z(time, state, skill_zq)
-
-        # This forward's attention mask: mask_severed (computed above) already folds in the 3-way regime
-        # (only C severs) and the 2-way vsa_distill_main_connected flip. The freeze (requires_grad) is
-        # governed separately by freeze_is_vsa — so B trains the motor with the VLM CONNECTED but FROZEN.
-        vlm_out, action_out = self._joint_forward(
-            cond_tokens, vlm_embeds, vlm_pad, vlm_xattn_block, action_tokens, expert_cond, drop_vlm=mask_severed,
-            collect_vlm_layers=(all_layers and pred_hidden is None))   # gt-mode reader reads the joint stack
-        v_t = self._action_out(action_out)
-        skill_hidden = pred_hidden if pred_hidden is not None else self._skill_hidden(
-            vlm_out, vlm_pad, vlm_xattn_block, all_layers=(self._vlm_all_layers if all_layers else None))
-
-        # Continual-learning VSA distillation: only on B (VSA-only) batches, where the skill→action map
-        # is being trained VLM-free — pin the sampled-skill actions to the frozen PT teacher. (Reuses
-        # this batch's cond_tokens/x_t/time/state — SAME "ruler" — so it only measures parameter drift.)
         if self.training:                # lazily split/update the cumulative motion counter (once)
             self.finalize_motion_counter()
-        # EMA-self teacher tracks the model continuously → update every training step (all regimes), before
-        # the distill reads it. First step builds it (= current weights).
-        if self.training and getattr(self.config, "ema_self_distill", False):
-            self._update_ema_teacher()
-        # frozen-PT distill (FT anti-forgetting) on SEVERED (C) batches only — pure-VSA repertoire
-        # preservation belongs in the standalone regime (same rationale as ema_self; connected B trains
-        # the VSA to cooperate with the VLM). C's severed main forward learns the NEW task GT execution.
+
+        # ── LoRA-continual regime sampling: the whole batch is ONE regime. Trainability is STATIC
+        # (_apply_continual_freezes) — no per-batch requires_grad churn: each regime's graph only
+        # contains what it may train, and inactive adapters are simply not in the graph. ──
+        # FT takes precedence: a PT checkpoint's config.json carries its regime_probs_pt, so an FT run
+        # (loading that checkpoint + setting regime_probs_ft) naturally has BOTH — the ft key wins.
+        probs_pt = getattr(self.config, "regime_probs_pt", None)
+        probs_ft = getattr(self.config, "regime_probs_ft", None)
+        regime = None
+        if self.training and (probs_pt or probs_ft):
+            names = ("skill", "motor", "motor_sev") if probs_ft else ("skill", "cond")
+            probs = [float(x) for x in (probs_ft or probs_pt)]
+            if len(probs) != len(names):
+                raise ValueError(f"regime probs need {len(names)} entries {names}, got {probs}.")
+            r = int(torch.multinomial(torch.tensor(probs, device=actions.device), 1).item())
+            regime = names[r]
+        self._last_regime = regime
+        self._last_severed_hold = False
         self._last_vsa_distill = None
-        if getattr(self.config, "vsa_distill", False) and self.training and mask_severed:
+
+        # SKILL regime: skill prediction only — no flow/motor this batch.
+        if regime == "skill":
+            return None, self._skill_view(start_images, lang_tokens, lang_masks)
+
+        # Severed batches: the MOTOR_SEV regime, or the eval-side probe hook (_probe_force_drop → measure
+        # the pure-VSA loss). Severed swaps the BC target to the Stage-1 hold (stop+hold past skill_de) —
+        # the pure VSA cannot see the next skill; connected batches keep the real cross-skill tail.
+        severed = regime == "motor_sev" or (regime is None and bool(getattr(self, "_probe_force_drop", None)))
+        severed_hold = severed and hold_actions is not None and getattr(self.config, "severed_hold_target", True)
+        self._last_severed_hold = bool(severed_hold)
+        acts = hold_actions if severed_hold else actions
+        t_exp = time[:, None, None]
+        x_t = t_exp * noise + (1 - t_exp) * acts
+        u_t = noise - acts
+
+        skill_hidden = None
+        if regime is None:
+            # Measurement path (eval/probes/plain no-regime training): BOTH views — the standalone skill
+            # view here plus the flow view below — mirroring the 2-forward inference (predict skill →
+            # act). z follows cond_skill_source ("pred" = the reader's own STE-rounded code, as deployed).
+            # NB: TRAINING through this mixed-view path is impossible with adapters configured — the two
+            # views need different STICKY adapter sets in ONE backward graph, so the gradient-checkpoint
+            # recompute of the first view would run under the second's set. Regime training never mixes.
+            if self.training and torch.is_grad_enabled() and (
+                    getattr(self.config, "lora_skill", False) or getattr(self.config, "lora_cond_vlm", False)
+                    or getattr(self.config, "lora_cond_bridge", False)):
+                raise ValueError("LoRA adapters are configured but no regime_probs_pt/regime_probs_ft is "
+                                 "set — plain (no-regime) training cannot mix the skill/flow adapter views "
+                                 "under gradient checkpointing. Set the regime probs.")
+            skill_hidden = self._skill_view(start_images, lang_tokens, lang_masks)
+            if getattr(self.config, "cond_skill_source", "gt") == "pred":
+                skill_zq = self._pred_skill_ste_z(skill_hidden)
+            else:
+                skill_zq = self._code_to_z(skill_code) / self._fsq_half[None, :]
+        else:
+            # COND / MOTOR / MOTOR_SEV: GT teacher-forced z — the motor path never touches the skill
+            # predictor (motor ⊥ skill; the SKILL regime is the only place skill prediction trains).
+            skill_zq = self._code_to_z(skill_code) / self._fsq_half[None, :]
+
+        v_t, cond_tokens = self._flow_view(cond_images, start_images, lang_tokens, lang_masks,
+                                           state, skill_zq, x_t, time, severed=severed)
+
+        # Random-skill distillation to the FROZEN-PT teacher — MOTOR_SEV training batches only: pure-VSA
+        # repertoire preservation lives in the standalone regime. Runs adapter-free (the teacher included,
+        # via the same active_adapters scope) → student and teacher are compared in the SAME pure
+        # skill→motion space the design preserves. (Reuses this batch's cond_tokens/x_t/time/state —
+        # SAME "ruler" — so it only measures parameter drift.)
+        if regime == "motor_sev" and getattr(self.config, "vsa_distill", False):
+            # adapters already OFF (sticky, set by the severed _flow_view) → teacher + student both run
+            # in the pure adapter-free skill→motion space, and the backward recompute matches.
             if float(getattr(self.config, "vsa_distill_weight", 0.0)) > 0.0:
                 self._last_vsa_distill = self._vsa_distill_loss(
                     cond_tokens, cond_images, x_t, time, state, skill_code)
             else:
-                # weight=0 → MONITOR-ONLY: log the same train_distill/* keys with ZERO training effect
-                # (no grad graph) — the vsa_distill:false-equivalent baseline for drift comparison.
+                # weight=0 → MONITOR-ONLY: log the same train_distill/* keys with ZERO training
+                # effect (no grad graph) — the distill-off-equivalent baseline for drift comparison.
                 with torch.no_grad():
                     self._last_vsa_distill = self._vsa_distill_loss(
                         cond_tokens.detach(), cond_images, x_t, time, state, skill_code)
-
-        # Stage-2 EMA-self distillation: ONLY on SEVERED (C) batches — the standalone/pure-VSA regime where
-        # random-skill preservation belongs. On connected B the VSA is being trained to cooperate WITH the
-        # VLM (a different objective); injecting a standalone-consistency term there would fight it. Random
-        # skills also have no matching language, so they belong in the VLM-severed context. (EMA teacher
-        # still updates every step above, so it reflects B's drift too.)
-        self._last_ema_distill = None
-        if getattr(self.config, "ema_self_distill", False) and self.training and mask_severed:
-            if float(getattr(self.config, "ema_self_weight", 0.0)) > 0.0:
-                self._last_ema_distill = self._ema_self_distill_loss(
-                    cond_tokens, cond_images, x_t, time, state, skill_code)
-            else:
-                with torch.no_grad():        # weight=0 → MONITOR-ONLY (log the drift, no gradient)
-                    self._last_ema_distill = self._ema_self_distill_loss(
-                        cond_tokens.detach(), cond_images, x_t, time, state, skill_code)
-
-        # vsa_gt_severed_bc: on a B batch where the main BC is VLM-connected (main_connected), ALSO
-        # train the GT skill VLM-SEVERED (pure VSA) against the GT action — so the VSA-only path learns
-        # the new task's GT execution too. Real BC (vs u_t, the GT flow target), NOT teacher distillation.
-        # This IS a severed VSA forward, so it takes the SAME Stage-1 hold target as the C main forward
-        # (the severed VSA can't see the next skill) when severed_hold_target is on — this is how FT (main
-        # B connected) gets stop+hold, since its main forward is never severed.
-        self._last_gt_severed_flow = None
-        if (drop_vlm and self.training and getattr(self.config, "vsa_distill_main_connected", False)
-                and getattr(self.config, "vsa_gt_severed_bc", False)):
-            gt_z = self._code_to_z(skill_code) / self._fsq_half[None, :]
-            if hold_actions is not None and getattr(self.config, "severed_hold_target", True):
-                x_t_sev = t_exp * noise + (1 - t_exp) * hold_actions
-                u_t_sev = noise - hold_actions
-                self._last_severed_hold = True                # FT's severed path applied the hold target
-            else:
-                x_t_sev, u_t_sev = x_t, u_t
-            v_sev = self._vsa_velocity(cond_tokens, x_t_sev, time, state, gt_z)   # pure VSA, no VLM
-            self._last_gt_severed_flow = F.mse_loss(u_t_sev, v_sev, reduction="none")
         return F.mse_loss(u_t, v_t, reduction="none"), skill_hidden
 
     # ── inference ──
@@ -1113,7 +1074,10 @@ class SkillVLAPytorch(PI05Pytorch):
 
     @torch.no_grad()
     def predict_skill_code(self, start_images: list[Tensor], lang_tokens: Tensor, lang_masks: Tensor) -> Tensor:
-        """Run ONLY the VLM (bidirectional prefix) + skill reader → argmax FSQ skill code (B,)."""
+        """Run ONLY the VLM (bidirectional prefix) + skill reader → argmax FSQ skill code (B,).
+        SKILL view: adapter ① ("skill"), sticky — callers that need a different view afterwards
+        (sample_actions' flow scope) set their own AFTER resolving the skill (2-forward inference)."""
+        set_active_adapters({"skill"})
         vlm_embeds, vlm_pad, vlm_xattn_block = self._vlm_tokens(start_images, lang_tokens, lang_masks)
         hidden = self._skill_hidden_standalone(vlm_embeds, vlm_pad, vlm_xattn_block)
         return self.skill_head.decode(hidden)
@@ -1214,18 +1178,13 @@ class SkillVLAPytorch(PI05Pytorch):
         vlm_pos, cond_pos, action_pos = self._joint_positions(vlm_pad, nc, na)
         cond_pad = torch.ones(bsize, nc, dtype=torch.bool, device=device)
 
-        # VLM: encode once → skill prediction + cached K/V
-        vlm_kv, vlm_h = self._encode_prefix_kv(self._vlm.layers, vlm_embeds, vlm_pad, vlm_pos, adarms=None)
-        vlm_h, _ = layernorm_forward(self._vlm.norm, vlm_h, None)
+        # VLM: encode once under the CURRENT (flow) adapter scope → cached K/V for cond/action reads.
+        vlm_kv, _ = self._encode_prefix_kv(self._vlm.layers, vlm_embeds, vlm_pad, vlm_pos, adarms=None)
         if skill_code is None:
-            # This cached path only keeps the FINAL layer, so it can't honor skill_reader_all_layers.
-            # Closed-loop select_action ALWAYS predicts the skill first (predict_skill_code, all-layer aware)
-            # and passes it in → this branch is a non-closed-loop fallback. Fail loud rather than skew.
-            if getattr(self.config, "skill_reader_all_layers", False):
-                raise RuntimeError("skill_reader_all_layers: predict the skill via predict_skill_code and "
-                                   "pass skill_code to sample_actions (the cached denoise keeps only the "
-                                   "final VLM layer).")
-            skill_code = self.skill_head.decode(self._skill_hidden(vlm_h, vlm_pad, vlm_xattn_block))
+            # The skill must come from the SKILL view (adapter ①) BEFORE the flow scope is set —
+            # sample_actions resolves it (predict_skill_code) and always passes it in.
+            raise ValueError("skill_code is None — call via sample_actions (it resolves the skill under "
+                             "the SKILL adapter view before setting the flow scope).")
 
         # EVAL-time VLM dropout (eval_drop_vlm): sever cond→VLM and action→VLM exactly like a training
         # VSA (B) batch — mask-only, positions unchanged. The VLM still runs standalone (skill code above
@@ -1297,8 +1256,15 @@ class SkillVLAPytorch(PI05Pytorch):
         step runs only the action stream."""
         if num_steps is None:
             num_steps = self.config.num_inference_steps
-        return self._sample_actions_A(cond_images, start_images, lang_tokens, lang_masks, state, skill_code,
-                                      noise, num_steps)
+        # 2-forward inference, ORDERED for the sticky adapter global: resolve the skill FIRST (SKILL view,
+        # adapter ① inside predict_skill_code), THEN set the FLOW view — adapters ②③ (VLM residual riding
+        # cond), or none under severed inference (eval_drop_vlm → pure Stage-1 VSA, = MOTOR_SEV training).
+        if skill_code is None:
+            skill_code = self.predict_skill_code(start_images, lang_tokens, lang_masks)
+        _sever = bool(getattr(self.config, "eval_drop_vlm", False))
+        set_active_adapters(set() if _sever else {"cond", "cond_bridge"})
+        return self._sample_actions_A(cond_images, start_images, lang_tokens, lang_masks, state,
+                                      skill_code, noise, num_steps)
 
     # ── FSQ terminator (inference-only skill-transition gating) ──
     # Terminator-path submodules (the ones co-trained in FT; everything else — the FSQ encoder and the
@@ -1554,8 +1520,48 @@ class SkillVLAPolicy(PI05Policy):
     def _torch_dtype(self) -> torch.dtype:
         return torch.bfloat16 if str(self.config.dtype) == "bfloat16" else torch.float32
 
+    def _apply_continual_freezes(self) -> None:
+        """One-time trainability for the LoRA-continual regimes (regime_probs_pt / regime_probs_ft).
+        Bases NEVER train (VLM LLM, cond encoder, cond_vision — adaptation lives in the named adapters);
+        per-batch freeze toggling is unnecessary because each regime's graph only CONTAINS what it may
+        train (SKILL never runs cond/expert; COND/MOTOR never run the reader; inactive adapters are out
+        of the graph) — the optimizer skips grad-None params, so a single static setup suffices.
+          PT: adapters ①②③ + reader/head (+ vlm_vision+projector: robot-domain adaptation) train;
+              expert (incl. its stage-1 z/state projections) frozen.
+          FT: expert (+ z/state projections) trains; ②③ frozen (stable residual conduit); ①+reader+head
+              train iff ft_train_skill (pair with replay); both vision towers frozen (strategy TBD)."""
+        c, m = self.config, self.model
+        # FT wins when both are set (a PT checkpoint's config.json carries regime_probs_pt — see forward).
+        pt = bool(getattr(c, "regime_probs_pt", None)) and not bool(getattr(c, "regime_probs_ft", None))
+        g = m._regime_groups()
+        m._set_requires_grad(g["llm"], False)            # NB: these sweeps hit the injected adapters
+        m._set_requires_grad(g["cond"], False)           # too — re-enabled selectively below.
+        m._set_requires_grad(g["cond_vision"], False)
+        mm_proj = getattr(m.paligemma_with_expert.paligemma.model, "multi_modal_projector", None)
+        m._set_requires_grad(g["vlm_vision"] + [mm_proj], pt)   # PT: VLM vision domain-adapts; FT: frozen
+        m._set_requires_grad(g["expert"] + [m.state_proj, m.skill_proj], not pt)
+        train_skill = pt or bool(getattr(c, "ft_train_skill", False))
+        m._set_requires_grad([m.skill_reader, m.skill_head], train_skill)
+        adapter_flags = {"skill": train_skill, "cond": pt, "cond_bridge": pt}
+        n_train = 0
+        for mod in m.modules():
+            if isinstance(mod, NamedLoRALinear):
+                for name, ad in mod.adapters.items():
+                    t = bool(adapter_flags.get(name, False))
+                    for p in ad.parameters():
+                        p.requires_grad_(t)
+                    n_train += int(t)
+        print(f"[skillVLA continual] stage={'PT' if pt else 'FT'} — trainable adapters: "
+              f"{[k for k, v in adapter_flags.items() if v]} ({n_train} wrapped Linears), "
+              f"expert={'frozen' if pt else 'train'}, reader/head={'train' if train_skill else 'frozen'}, "
+              f"vlm_vision={'train' if pt else 'frozen'}")
+
     def _apply_freezes(self) -> None:
         c, m = self.config, self.model
+        # LoRA-continual regimes → their OWN static trainability (replaces the legacy freeze flags).
+        if getattr(c, "regime_probs_pt", None) or getattr(c, "regime_probs_ft", None):
+            self._apply_continual_freezes()
+            return
         def freeze(module):
             if module is not None:
                 for p in module.parameters():
@@ -1738,46 +1744,44 @@ class SkillVLAPolicy(PI05Policy):
         flow_losses, skill_hidden = self.model.forward(
             cond_images, start_images, lang_tokens, lang_masks, batch[OBS_STATE], skill_code, actions,
             hold_actions=hold_actions)
-        skill_loss = self.model.skill_head.loss(skill_hidden, skill_code)
+        regime = getattr(self.model, "_last_regime", None)   # "skill"|"cond"|"motor"|"motor_sev"|None(eval)
 
-        flow_losses = flow_losses[:, :, :action_dim]                  # (B, K, real_dim)
+        skill_loss = None
+        if skill_hidden is not None:                          # SKILL regime or the eval measurement path
+            skill_loss = self.model.skill_head.loss(skill_hidden, skill_code)
 
-        # Supervise valid chunk steps only: drop EPISODE-END padding (action_is_pad — clamped-last
-        # repeats, wrong for delta actions). The skill-TRANSITION boundary is deliberately NOT masked
-        # here — steps that spill past the current skill's end (into the next skill) are KEPT, so the
-        # chunk's cross-skill tail is still supervised. (cumulative-position loss is NOT ported.)
-        bsize, K = flow_losses.shape[:2]
-        valid = torch.ones(bsize, K, dtype=torch.bool, device=flow_losses.device)
-        pad = batch.get("action_is_pad")
-        if pad is not None:
-            valid &= ~pad.to(flow_losses.device).bool()
-        vf = valid.float().unsqueeze(-1)                              # (B, K, 1)
-        n_steps = valid.float().sum().clamp(min=1.0)
-        flow_loss = (flow_losses * vf).sum() / (n_steps * action_dim)
-        loss = flow_loss + self.config.skill_loss_weight * skill_loss   # SkillVLA policy objective (wandb train/loss)
-        total = loss                                                    # backpropped objective (+ terminator below)
+        flow_loss = None
+        vf = valid = None
+        if flow_losses is not None:                           # COND/MOTOR regimes or the eval path
+            flow_losses = flow_losses[:, :, :action_dim]                  # (B, K, real_dim)
+            # Supervise valid chunk steps only: drop EPISODE-END padding (action_is_pad — clamped-last
+            # repeats, wrong for delta actions). The skill-TRANSITION boundary is deliberately NOT masked
+            # here — steps that spill past the current skill's end (into the next skill) are KEPT, so the
+            # chunk's cross-skill tail is still supervised. (cumulative-position loss is NOT ported.)
+            bsize, K = flow_losses.shape[:2]
+            valid = torch.ones(bsize, K, dtype=torch.bool, device=flow_losses.device)
+            pad = batch.get("action_is_pad")
+            if pad is not None:
+                valid &= ~pad.to(flow_losses.device).bool()
+            vf = valid.float().unsqueeze(-1)                              # (B, K, 1)
+            n_steps = valid.float().sum().clamp(min=1.0)
+            flow_loss = (flow_losses * vf).sum() / (n_steps * action_dim)
 
-        # Continual-learning VSA distillation (B batches only): weak MSE to the frozen PT teacher on
-        # sampled skills → added to the backpropped `total` but EXCLUDED from wandb `loss`; logged to its
-        # own section via "distill/*" keys. None on A batches / when disabled.
+        # SkillVLA policy objective (wandb train/loss) = whatever THIS batch supervises: flow-only on
+        # COND/MOTOR batches, λ·skill-only on SKILL batches, both on the eval measurement path.
+        loss = None
+        if flow_loss is not None:
+            loss = flow_loss
+        if skill_loss is not None:
+            weighted = self.config.skill_loss_weight * skill_loss
+            loss = weighted if loss is None else loss + weighted
+        total = loss                                          # backpropped objective (+ distill/terminator below)
+
+        # Random-skill distillation to the frozen-PT teacher (MOTOR_SEV batches only): weak MSE on sampled
+        # skills → added to the backpropped `total` but EXCLUDED from wandb `loss`; logged via "distill/*".
         vsa_distill = getattr(self.model, "_last_vsa_distill", None)
         if vsa_distill is not None and float(self.config.vsa_distill_weight) > 0.0:
             total = total + self.config.vsa_distill_weight * vsa_distill
-
-        # Stage-2 EMA-self distillation (forgetting prep): weak MSE to the model's OWN weight-EMA on
-        # sampled non-GT skills → added to `total`, EXCLUDED from wandb `loss`, logged to distill/ema_*.
-        ema_distill = getattr(self.model, "_last_ema_distill", None)
-        if ema_distill is not None and float(self.config.ema_self_weight) > 0.0:
-            total = total + float(self.config.ema_self_weight) * ema_distill
-
-        # Severed GT BC (B batches, main_connected + vsa_gt_severed_bc): same GT flow target u_t as the
-        # main flow loss, but on the VLM-SEVERED (pure VSA) forward → added to total, logged separately.
-        gt_sev = getattr(self.model, "_last_gt_severed_flow", None)
-        gt_severed_loss = None
-        if gt_sev is not None:
-            gt_sev = gt_sev[:, :, :action_dim]
-            gt_severed_loss = (gt_sev * vf).sum() / (n_steps * action_dim)
-            total = total + float(self.config.vsa_gt_severed_weight) * gt_severed_loss
 
         # FT: co-train the terminator on GT signals. Disjoint graph (GT/precomputed inputs + its own params)
         # → added to the BACKPROPPED `total` (only the terminator gets gradient; SkillVLA untouched), but it
@@ -1805,55 +1809,34 @@ class SkillVLAPolicy(PI05Policy):
             term_loss = term_prog_l + term_end_l
             total = total + term_loss
 
-        with torch.no_grad():
-            skill_acc = (self.model.skill_head.decode(skill_hidden) == skill_code).float().mean()
-        loss_dict = {
-            "loss": loss.detach().item(),                  # wandb train/loss = policy loss (flow + λ·skill); NO terminator
-            "loss_flow": flow_loss.detach().item(),
-            "loss_skill": skill_loss.detach().item(),
-            "skill_acc": skill_acc.item(),
-        }
-        # Per-regime metrics (vlm_dropout_p > 0 only): the whole batch is A=VLM_VSA or B=VSA (per-batch
-        # coin), so each step contributes to exactly ONE regime's keys. "regime/*" keys are routed by
-        # lerobot_train to a SEPARATE wandb section (train_regime/*). is_vsa (0/1) smoothed ≈ empirical p.
-        # skill_* per regime should overlap (VLM stream is identical in both) — a live sanity check.
-        drop_vlm = getattr(self.model, "_last_drop_vlm", None)
-        regime3 = getattr(self.model, "_last_regime", None)   # "A"/"B"/"C" in 3-way, else None
-        if drop_vlm is not None:
-            # 3-way → per-regime keys tagged A/B/C (A=vlm_vsa, B=vsa_conn, C=vsa_sev); 2-way → vsa/vlm_vsa.
-            tag = regime3 if regime3 is not None else ("vsa" if drop_vlm else "vlm_vsa")
-            loss_dict[f"regime/loss_{tag}"] = loss.detach().item()    # policy total (flow + λ·skill) per regime
-            loss_dict[f"regime/flow_{tag}"] = flow_loss.detach().item()
-            loss_dict[f"regime/skill_{tag}"] = skill_loss.detach().item()
-            loss_dict["regime/is_vsa"] = float(drop_vlm)
-            p_eff = getattr(self.model, "_last_p_effective", None)
-            if p_eff is not None:                       # scheduled dropout → current annealed probability
-                loss_dict["regime/p_effective"] = float(p_eff)
-        # train_distill 섹션: B(VSA) 배치마다 vsa_gt = GT BC flow loss (== regime/flow_vsa 복사) —
-        # vsa_distill on/off 무관하게 찍혀서 on/off run을 같은 패널에서 공정 비교. distill이 켜지면
-        # 그 옆에 vsa_tot(backprop 총합)/vsa_local/vsa_global/vsa_gt_drift(teacher-대비 GT 드리프트, 모니터)가 추가됨.
-        # distill/* is an FT concept — suppress in 3-way (stage2 has no distillation; vsa_gt would just
-        # duplicate regime/flow_B|C). Only the 2-way (FT) path logs the on/off-comparison vsa_gt.
-        # vsa_gt = the pure-VSA GT flow on SEVERED (C) batches — the SAME batches the distill runs on
-        # (mask_severed), so the train_distill panel shows GT-execution vs distillation side by side. Value
-        # == regime/flow_C (duplicated here on purpose for the distill on/off comparison). Works in both
-        # 2-way (mask_severed==drop_vlm by default) and 3-way (C only).
-        if mask_severed:
-            loss_dict["distill/vsa_gt"] = flow_loss.detach().item()
-        if gt_severed_loss is not None:                  # severed GT BC (VLM-severed pure-VSA on GT action)
-            loss_dict["distill/vsa_gt_severed"] = gt_severed_loss.detach().item()
+        loss_dict = {"loss": loss.detach().item()}         # wandb train/loss = this batch's policy loss
+        if flow_loss is not None:
+            loss_dict["loss_flow"] = flow_loss.detach().item()
+        if skill_loss is not None:
+            loss_dict["loss_skill"] = skill_loss.detach().item()
+            with torch.no_grad():
+                skill_acc = (self.model.skill_head.decode(skill_hidden) == skill_code).float().mean()
+            loss_dict["skill_acc"] = skill_acc.item()
+        # Per-regime metrics: the whole batch is ONE regime, so each step contributes to exactly ONE
+        # regime's keys ("regime/*" is routed by lerobot_train to a separate wandb section train_regime/*).
+        if regime is not None:
+            loss_dict[f"regime/loss_{regime}"] = loss.detach().item()
+            if flow_loss is not None:
+                loss_dict[f"regime/flow_{regime}"] = flow_loss.detach().item()
+            if skill_loss is not None:
+                loss_dict[f"regime/skill_{regime}"] = skill_loss.detach().item()
         if getattr(self.model, "_last_severed_hold", False):   # this severed batch used the Stage-1 hold target
             loss_dict["regime/severed_hold"] = 1.0
+        # train_distill 섹션: motor_sev 배치마다 vsa_gt = severed GT BC flow (== regime/flow_motor_sev 복사)
+        # — distill on/off 무관하게 찍혀서 on/off run을 같은 패널에서 공정 비교. distill이 켜지면 그 옆에
+        # vsa_tot(backprop 총합)/vsa_local/vsa_global/vsa_gt_drift(teacher-대비 GT 드리프트, 모니터)가 추가됨.
+        if regime == "motor_sev" and flow_loss is not None:
+            loss_dict["distill/vsa_gt"] = flow_loss.detach().item()
         if vsa_distill is not None:                      # VSA anti-forgetting distillation
             loss_dict["distill/vsa_tot"] = vsa_distill.detach().item()   # backpropped mean (sampled only)
             _parts = getattr(self.model, "_last_vsa_distill_parts", None) or {}
             for _pk, _pv in _parts.items():              # gt_drift(모니터) / local(GT-이웃) / global(전역 빈도)
                 loss_dict[f"distill/vsa_{_pk}"] = float(_pv)
-        if ema_distill is not None:                      # Stage-2 EMA-self distillation
-            loss_dict["distill/ema_tot"] = ema_distill.detach().item()   # backpropped mean (sampled only)
-            _eparts = getattr(self.model, "_last_ema_distill_parts", None) or {}
-            for _pk, _pv in _eparts.items():             # gt_drift(모니터) / local / global (vs the EMA-self)
-                loss_dict[f"distill/ema_{_pk}"] = float(_pv)
         if term_loss is not None:
             # Separate wandb section (mirrors Stage-1): "terminator/*" keys are routed by lerobot_train to
             # train_terminator/* — total (prog+end), progress SmoothL1, termination BCE. Kept OUT of train/*.
@@ -1862,6 +1845,8 @@ class SkillVLAPolicy(PI05Policy):
             loss_dict["terminator/termination"] = term_end_l.detach().item()
             loss_dict["loss_total"] = total.detach().item()   # the actual BACKPROPPED objective (policy + terminator; not logged)
         if reduction == "none":
+            if flow_losses is None:                       # per-sample = flow only; needs a flow batch
+                raise ValueError("reduction='none' requires a flow batch (got a SKILL-regime forward).")
             per_sample = (flow_losses * vf).sum(dim=(1, 2)) / (valid.float().sum(dim=1).clamp(min=1.0) * action_dim)
             return per_sample, loss_dict
         return total, loss_dict

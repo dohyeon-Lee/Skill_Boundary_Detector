@@ -23,7 +23,7 @@ skillset_name: skillset
 fsq_run_name: "{target_dataset}_{dp_tag}_{fsq_tag}_dino{fsq_patch_grid}{weighted_suffix}{fsq_exp_suffix}"
 fsq_exp: "both"                # optional ablation suffix
 fsq_levels: [8, 8]  # [8, 8] | [5, 5, 5]  
-fsq_epoch: "1000"
+fsq_epoch: "5000"
 
 # Terminator cameras (must match build_data's fsq_terminator_use_wrist for token availability).
 fsq_terminator_use_third: true
@@ -31,8 +31,8 @@ fsq_terminator_use_wrist: true
 
 fsq_batch_size: 64
 fsq_num_workers: 0
-fsq_num_epochs: 1000
-fsq_checkpoint_every: 100
+fsq_num_epochs: 5000
+fsq_checkpoint_every: 500
 fsq_chunk_size: 10
 
 # ── FSQ loss weights ──

@@ -128,26 +128,21 @@ def build_settings(cfg: dict) -> dict:
     s1_vision_backbone = str(s2_cfg.get("s1_vision_backbone", "siglip"))
     s1_state_cond_mode = str(s2_cfg.get("s1_state_cond_mode", "state"))
 
-    # Per-regime freeze: 3-way A/B/C (mirror Stage-2). regime_probs REQUIRED. A=연결+freeze_A(perception),
-    # B=연결+freeze_B(연결 모터), C=절단+freeze_C(순수 VSA, 새 task 실행). "vlm"은 llm의 별칭.
-    _RKEYS = ("expert", "cond", "cond_vision", "llm", "vlm_vision")
-    def _grp(d, k):
-        if k == "llm":
-            return as_bool(d.get(k, d.get("vlm", False)))        # "vlm" = alias for llm
-        if k == "cond_vision":
-            return as_bool(d.get(k, d.get("cond", False)))       # inherit cond if unspecified (back-compat)
-        return as_bool(d.get(k, False))
-    _rp = get_value(cfg, "regime_probs", None)
+    # LoRA-continual FT regimes: [SKILL, MOTOR_conn, MOTOR_sev] (REPLACES the legacy A/B/C freeze
+    # system — trainability is design-fixed: expert trains, ②③/bases/vision frozen, skill path per
+    # ft_train_skill; see SkillVLAPolicy._apply_continual_freezes). The LoRA structure itself (①②③,
+    # rank/alpha/targets) is INHERITED from the parent Stage-2 checkpoint's config.json.
+    _rp = get_value(cfg, "regime_probs_ft", None)
     if not (isinstance(_rp, (list, tuple)) and len(_rp) == 3):
-        raise ValueError("regime_probs must be a 3-element list [A, B, C] (합 1). 2-way vlm_dropout "
-                         "legacy가 제거됨 — regime_probs를 반드시 지정하세요.")
-    regime_probs = [float(x) for x in _rp]
-    _fa = get_value(cfg, "freeze_A", {}) or {}
-    _fb = get_value(cfg, "freeze_B", {}) or {}
-    _fc = get_value(cfg, "freeze_C", {}) or {}
-    frz = {f"freeze_vlm_vsa_{k}": _grp(_fa, k) for k in _RKEYS}
-    frz.update({f"freeze_vsa_{k}": _grp(_fb, k) for k in _RKEYS})
-    frz.update({f"freeze_c_{k}": _grp(_fc, k) for k in _RKEYS})
+        raise ValueError("regime_probs_ft must be a 3-element list [SKILL, MOTOR_conn, MOTOR_sev] (합 1) "
+                         "— the A/B/C regime_probs/freeze_A/B/C legacy was replaced.")
+    regime_probs_ft = [float(x) for x in _rp]
+    ft_train_skill = as_bool(get_value(cfg, "ft_train_skill", False))
+    if regime_probs_ft[0] > 0 and not ft_train_skill:
+        raise ValueError("SKILL regime prob > 0 but ft_train_skill=false — nothing is trainable on SKILL "
+                         "batches (①/reader/head frozen). Set ft_train_skill=true or SKILL prob to 0.")
+    if ft_train_skill and regime_probs_ft[0] <= 0:
+        print("[warn] ft_train_skill=true but SKILL prob = 0 — the skill path is unfrozen yet never trained.")
 
     # ── PT-forgetting probe: 부모 Stage-2의 학습 데이터셋(위에서 유도)에서 고정 배치를 뽑아
     # probe_every 스텝마다 forward-only로 loss를 재측정 (노이즈까지 seed 고정 = 같은 자) → wandb probe/*.
@@ -155,19 +150,12 @@ def build_settings(cfg: dict) -> dict:
     probe_dataset_root = s2_ds_root if probe_pt_forgetting else ""
     probe_repo_id = s2_ds_repo if probe_pt_forgetting else ""
 
-    # skill decoder freeze (이름의 마지막 __{H}{R} 두 글자: head, reader 순)
-    freeze_skill_head = as_bool(get_value(cfg, "freeze_skill_head", True))
-    freeze_skill_reader = as_bool(get_value(cfg, "freeze_skill_reader", True))
-
-    # run_name = {source}_{부모pre}_{s2ckpt}__{부모regime}__{gt|pred}_{pA}{A}_{pB}{B}_{pC}{C}__{H}{R}[_distill..][_nohold][_exp]
-    #   부모pre/부모regime = 부모 Stage-2 폴더명을 "__" 기준으로 나눈 앞/뒤 (run_tag·s1정보·scratch는
-    #   부모pre에 이미 포함; 옛-스킴 부모면 regime 세그먼트 생략). FT 자신의 레짐은 {gt|pred} 뒤에 3-way
-    #   {pA}{A}_{pB}{B}_{pC}{C} (stage2와 동일 표기). term은 이름에서 제외.
+    # run_name = {source}_{부모pre}_{s2ckpt}__{부모regime}__ft{P_SKILL}{P_conn}{P_sev}[_ts]{distill_tag}[_nohold][_exp]
+    #   부모pre/부모regime = 부모 Stage-2 폴더명을 "__" 기준으로 나눈 앞/뒤 (예: 부모regime=pt5050_Ltttr8).
+    #   ft 세그먼트 = 확률%: SKILL/MOTOR_conn/MOTOR_sev; _ts = ft_train_skill(스킬 경로 학습). term 제외.
     parent_pre, _, parent_regime = stage2_run_name.partition("__")
-    _tf = lambda pfx: "".join("t" if frz[f"freeze_{pfx}_{k}"] else "f" for k in _RKEYS)
-    pa, pb, pc = (int(round(x * 100)) for x in regime_probs)
-    ft_regime = f"{cond_skill_source}_{pa}{_tf('vlm_vsa')}_{pb}{_tf('vsa')}_{pc}{_tf('c')}"
-    hr = ("t" if freeze_skill_head else "f") + ("t" if freeze_skill_reader else "f")
+    ps, pcn, psv = (int(round(x * 100)) for x in regime_probs_ft)
+    ft_regime = f"ft{ps}{pcn}{psv}" + ("_ts" if ft_train_skill else "")
     # Distinct output dir so ablations don't collide: distill{L}{G}w{λ} — VSA (frozen-PT) distillation on.
     distill_tag = ""
     if as_bool(get_value(cfg, "vsa_distill", False)):
@@ -177,7 +165,7 @@ def build_settings(cfg: dict) -> dict:
     severed_hold_target = as_bool(get_value(cfg, "severed_hold_target", True))
     run_name = (f"{source_dataset}_{parent_pre}_{stage2_checkpoint}"
                 + (f"__{parent_regime}" if parent_regime else "")
-                + f"__{ft_regime}__{hr}{distill_tag}")
+                + f"__{ft_regime}{distill_tag}")
     if not severed_hold_target:
         run_name = f"{run_name}_nohold"        # ablation: severed VSA keeps the real cross-skill tail
     if exp:
@@ -224,12 +212,10 @@ def build_settings(cfg: dict) -> dict:
         "terminator_end_target_sigma": float(get_value(cfg, "terminator_end_target_sigma", 2.0)),
         "terminator_end_pos_weight": float(get_value(cfg, "terminator_end_pos_weight", 1.0)),
         "skill_loss_weight": str(skill_loss_weight),
-        # freeze — stage2와 동일한 단일 소스 (p=0 → A 딕셔너리 정적; p>0 → 배치별 A/B 토글)
-        **frz,
-        "freeze_skill_head": freeze_skill_head,
-        "freeze_skill_reader": freeze_skill_reader,
-        # 3-way regime [A,B,C] probs (REQUIRED — governs A/B/C sampling; **frz above carries freeze_A/B/C)
-        "regime_probs": ",".join(str(x) for x in regime_probs),
+        # LoRA-continual FT regimes (trainability is design-fixed by _apply_continual_freezes;
+        # the LoRA structure/rank rides in from the parent Stage-2 config.json — not re-emitted here)
+        "regime_probs_ft": ",".join(str(x) for x in regime_probs_ft),
+        "ft_train_skill": ft_train_skill,
         # PT-forgetting probe ("" = off; root/repo_id는 부모 Stage-2 train_config.json에서 자동 유도)
         "probe_dataset_root": probe_dataset_root,
         "probe_dataset_repo_id": probe_repo_id,
