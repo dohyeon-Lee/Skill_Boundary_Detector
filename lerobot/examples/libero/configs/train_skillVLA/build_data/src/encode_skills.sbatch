@@ -74,7 +74,10 @@ if [ "${FSQ_SNAP_TO_SUPPORTED:-false}" = "true" ]; then
     echo "fsq_snap_to_supported=true 인데 fsq_snap_reference 가 비어있음 (원본 skill_code_freq.npz 경로 필요)" >&2
     exit 1
   fi
-  case "${SNAP_REF}" in /*) ;; *) SNAP_REF="${PROJECT_ROOT}/${SNAP_REF}" ;; esac
+  # "self" = 방금 인코딩한 raw 토큰 자체를 기준표로 (외부 파일 불필요) → 리터럴로 넘김; 그 외엔 경로 정규화.
+  if [ "${SNAP_REF}" != "self" ]; then
+    case "${SNAP_REF}" in /*) ;; *) SNAP_REF="${PROJECT_ROOT}/${SNAP_REF}" ;; esac
+  fi
   SNAP_ARGS=(--snap_to_supported --supported_freq_path "${SNAP_REF}" --min_code_freq "${FSQ_SNAP_MIN_CODE_FREQ:-1}")
 fi
 PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \

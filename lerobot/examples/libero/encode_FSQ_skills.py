@@ -97,6 +97,10 @@ def _grid_coords(model: SplineFSQAE) -> np.ndarray:
     return (lvl - half[None, :]).astype(np.float32)                                  # (C, D) integer coord
 
 
+def _supported_from_freq(freq: np.ndarray, n_codes: int, min_freq: int) -> np.ndarray:
+    return np.where(np.asarray(freq).ravel()[:n_codes] >= min_freq)[0]
+
+
 def _load_supported(ref_path: Path, n_codes: int, min_freq: int) -> np.ndarray:
     """Reference npz → indices of supported codes (freq >= min_freq). Accepts skill_code_freq.npz
     (motion_counts) or skill_latents.npz (tokens → bincount)."""
@@ -107,14 +111,20 @@ def _load_supported(ref_path: Path, n_codes: int, min_freq: int) -> np.ndarray:
         freq = np.bincount(raw["tokens"].astype(np.int64).ravel(), minlength=n_codes)
     else:
         raise KeyError(f"{ref_path}: need 'motion_counts' or 'tokens' key for supported-code reference.")
-    return np.where(np.asarray(freq).ravel()[:n_codes] >= min_freq)[0]
+    return _supported_from_freq(freq, n_codes, min_freq)
 
 
 def _snap_to_supported(latents: np.ndarray, tokens: np.ndarray, model: SplineFSQAE, args: Args):
     """Remap each skill whose raw code is unsupported → nearest supported code (grid distance in the
     integer cell-coord space, which is exactly what `latents` holds). Returns (latents, tokens)."""
     coords = _grid_coords(model)                                    # (C, D)
-    supported = _load_supported(Path(args.supported_freq_path), len(coords), args.min_code_freq)
+    if str(args.supported_freq_path).strip().lower() == "self":
+        # self-pruning: 방금 인코딩한 RAW 토큰 분포가 곧 기준표 (외부 파일 불필요 — 1-pass 자기완결).
+        # un-snap 빌드의 skill_code_freq.npz(motion_counts)를 참조하는 것과 수치적으로 동일.
+        freq = np.bincount(tokens.astype(np.int64).ravel(), minlength=len(coords))
+        supported = _supported_from_freq(freq, len(coords), args.min_code_freq)
+    else:
+        supported = _load_supported(Path(args.supported_freq_path), len(coords), args.min_code_freq)
     if len(supported) == 0:
         raise ValueError("no supported codes at this min_code_freq — lower --min_code_freq.")
     sup_coords = coords[supported]                                  # (S, D)

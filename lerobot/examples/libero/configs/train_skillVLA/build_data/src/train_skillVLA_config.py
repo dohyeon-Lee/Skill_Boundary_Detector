@@ -117,17 +117,18 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
             raise ValueError("fsq_snap_to_supported=true인데 fsq_snap_reference가 비어 있음 — 기준 빌드의 "
                              "skill_code_freq.npz 경로(전이 빌드) 또는 \"self\"(자기 데이터 어휘 정리)를 지정하세요.")
         if fsq_snap_reference.lower() == "self":
-            # self-build 어휘 정리(pruning): 기준표 = 같은 source/run_tag의 이전(un-snap) 빌드 산출물.
-            # (전이 빌드에서 reference를 깜빡한 실수와 구분하기 위해 빈값이 아니라 명시적 "self"만 허용 —
-            #  전이 빌드에 self를 쓰면 새 데이터의 코드가 곧 '지원'이 되어 snap이 no-op이 되므로 금지.)
-            _ref = skillvla_root / source_dataset / run_tag / "skill_code_freq.npz"
+            # self-build 어휘 정리(pruning): 이 빌드가 방금 인코딩한 RAW 토큰 분포 자체를 기준표로 씀
+            # (encode_FSQ_skills.py가 "self"를 그렇게 해석 — 외부 파일 불필요, 1-pass 자기완결).
+            # 빈값(깜빡한 실수)과 구분하기 위해 명시적 "self"만 허용. 전이 빌드에 self를 쓰면 새 데이터의
+            # 코드가 곧 '지원'이 되어 snap이 no-op이 되므로 의미 없음(그때는 원본 빌드 경로를 지정).
+            fsq_snap_reference = "self"
         else:
             _ref = Path(fsq_snap_reference)
             if not _ref.is_absolute():
                 _ref = root / fsq_snap_reference
-        if not _ref.is_file():
-            raise ValueError(f"fsq_snap_reference 파일이 존재하지 않음: {_ref}")
-        fsq_snap_reference = str(_ref)
+            if not _ref.is_file():
+                raise ValueError(f"fsq_snap_reference 파일이 존재하지 않음: {_ref}")
+            fsq_snap_reference = str(_ref)
         run_tag += f"_snap{int(get_value(cfg, 'fsq_snap_min_code_freq', 1))}"
     source_out_dir = skillvla_root / source_dataset
     run_dir = source_out_dir / run_tag

@@ -95,7 +95,7 @@ terminator_end_pos_weight: 1.0
 track_param_drift: true
 
 # ── Run naming ────────────────────────────────────────────────
-exp: "fixed"                                        # optional run-name suffix (blank = none)
+exp: ""                                        # optional run-name suffix (blank = none)
 
 
 # ── Optimization ──────────────────────────────────────────────
