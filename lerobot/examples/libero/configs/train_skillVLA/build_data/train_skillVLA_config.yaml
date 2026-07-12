@@ -27,7 +27,7 @@ skillvla_dataset_root: skillvla_dataset  # outputs under {dataset_root}/{skillvl
 # ── Source dataset (원본) ─────────────────────────────────────
 # Raw LeRobot dataset to convert into SkillVLA data (may differ from the
 # dataset the DP/FSQ were trained on).
-source_dataset: libero_object_full_2
+source_dataset: libero_90_full_full
 
 # ── DINO precompute (step 2) ──────────────────────────────────
 # The build declares EXACTLY which (grid × camera) DINO it needs and either VALIDATES a
@@ -83,9 +83,15 @@ skillset_max_sweeps: 2
 # FSQ config lives in the checkpoint.
 # fsq_run_name: "libero_90_full_full_state_obs20_fsq555_dino8_weighted_wow"   # folder under outputs/FSQ/
 # fsq_run_name: "libero_90_full_full_state_obs20_fsq555_dino8_both"
-fsq_run_name: "libero_90_full_full_state_obs20_fsq88_dino8_both"
+fsq_run_name: "libero_90_full_full_state_obs20_fsq555_dino8_both"
 
 fsq_checkpoint: 1000                              # epoch number; 0 = best (FSQ.pt)
+
+# ── transfer 안전망: 새 데이터셋 인코딩 시 FSQ가 "미지원(학습때 안 쓰인/희귀) 코드"를 뱉으면
+#    가장 가까운 지원 코드로 옮겨, 다운스트림 VLA가 학습 못한 코드로 스킬이 배정되는 걸 방지.
+fsq_snap_to_supported: false     # true면 fsq_snap_reference 필수
+fsq_snap_min_code_freq: 10        # 이 값 미만 빈도 코드를 '미지원'으로 간주 (1=완전 빈칸만; ↑면 희귀코드도 배제)
+fsq_snap_reference: ""           # 원본(training) 데이터셋 빌드의 skill_code_freq.npz 경로 (project_root 기준 상대경로 가능)
 
 # ── SkillVLA dataset build (step 5) ───────────────────────────
 max_order: 0                               # 0 : auto

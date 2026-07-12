@@ -66,11 +66,23 @@ else
 fi
 
 # ── (b) encode skills with FSQ → latent vectors (GPU) ──
+# transfer 안전망(B): fsq_snap_to_supported:true면 미지원 코드를 최근접 지원 코드로 snap.
+SNAP_ARGS=(--no-snap_to_supported)
+if [ "${FSQ_SNAP_TO_SUPPORTED:-false}" = "true" ]; then
+  SNAP_REF="${FSQ_SNAP_REFERENCE:-}"
+  if [ -z "${SNAP_REF}" ]; then
+    echo "fsq_snap_to_supported=true 인데 fsq_snap_reference 가 비어있음 (원본 skill_code_freq.npz 경로 필요)" >&2
+    exit 1
+  fi
+  case "${SNAP_REF}" in /*) ;; *) SNAP_REF="${PROJECT_ROOT}/${SNAP_REF}" ;; esac
+  SNAP_ARGS=(--snap_to_supported --supported_freq_path "${SNAP_REF}" --min_code_freq "${FSQ_SNAP_MIN_CODE_FREQ:-1}")
+fi
 PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
   python -u examples/libero/encode_FSQ_skills.py \
     --model_path    "${FSQ_MODEL_PATH}" \
     --skills_dir    "${SKILLSET_DIR}/skills" \
     --output_path   "${SKILL_LATENTS_PATH}" \
-    --device        cuda
+    --device        cuda \
+    "${SNAP_ARGS[@]}"
 
 echo "DONE → ${SKILL_LATENTS_PATH}"

@@ -112,7 +112,7 @@ def evaluate(name: str, spec: dict, cfg: dict, n_segments: int, n_swap: int, see
         def recon(zvec):
             z = torch.as_tensor(np.asarray(zvec, dtype=np.float32), device=device).unsqueeze(0)
             z_tok = fsq.dec_z_proj(z.unsqueeze(1).expand(1, T, -1))
-            return fsq._reconstruct_chunk(z_tok, states, start_tok, prog_tok)[0]  # noqa: SLF001
+            return fsq._reconstruct_chunk(z_tok, states, prog_tok)[0]  # noqa: SLF001  (image-free reconstructor)
 
         pred_true = recon(zmap[key])
         res["mse_true"].append(float((((pred_true - gt_t) ** 2) * mask_t).sum() / mask_t.sum() / A))

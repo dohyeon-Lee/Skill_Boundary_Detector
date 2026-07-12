@@ -97,19 +97,49 @@ class SkillVLAConfig(PI05Config):
     """Adapter-only LR multiplier (× optimizer_lr) for ALL named LoRA params (①②③). Rank-r B=0 adapters
     conventionally want ~10-40× the full-finetune LR; this leaves the full-trained parts (vlm_vision at
     PT, expert at FT) on the base LR instead of raising optimizer_lr globally."""
-    # ── LoRA-continual training regimes (REPLACES the legacy A/B/C regime_probs / vlm_dropout_p system;
-    # those fields remain below only so old checkpoints' config.json still deserializes). Per-batch
-    # multinomial — the whole batch is ONE regime. Exactly one of the two may be set:
+    # ── LoRA-continual training stages (REPLACES the legacy A/B/C regime_probs / vlm_dropout_p system;
+    # those fields remain below only so old checkpoints' config.json still deserializes). ──
+    pt_stage: str | None = None
+    """Sequential PT stage — interleaved [SKILL, COND] mixing was retired (once the VLM vision is
+    COND-owned the two paths share NO trainable params, so they train back-to-back instead):
+      "cond"  = STAGE 2: every batch is a COND/flow batch — trains ②③ + vlm_vision(+projector) against
+                the frozen expert with GT-teacher-forced z. No skill loss; reader/head untouched.
+      "skill" = STAGE 3: every batch is a SKILL batch — trains ①+reader+head on the skill loss;
+                EVERYTHING else (vision included) frozen. Warm-starts from a Stage-2 checkpoint;
+                structurally identical to FT's SKILL regime (its rehearsal).
+      None    = not a PT run (FT via regime_probs_ft, or eval)."""
+    cond_severed_prob: float = 0.0
+    """STAGE-2 severed 정규화 배치 확률 (conduit gating): pt_stage="cond"의 배치가 이 확률로 VLM 없이
+    (severed) ③("cond_bridge")만 활성인 채 flow 학습된다. ③은 cond attention에 붙어 이미지-단독 경로로도
+    PT prior를 흡수할 수 있는 유일한 학습 모듈 — severed 배치가 "VLM이 없으면 stage1 함수를 건드리지 마"
+    를 행동 수준에서 강제해 그 구멍을 닫는다(FT 때 ③은 frozen이므로 PT-overfit 방지 = OOD 강건성).
+    타겟은 MOTOR_SEV와 같은 Stage-1 hold. VSA base는 늘 frozen — 이 배치의 gradient는 ③에만 흐른다
+    (②/vlm_vision은 그래프 밖 → 그들의 유효 학습 스텝은 (1-p)배). 0 = off."""
     regime_probs_pt: list[float] | None = None
-    """Stage-2 PT regimes [P(SKILL), P(COND)] (e.g. [0.5, 0.5]). SKILL = standalone VLM(+①"skill") →
-    reader → skill loss only. COND = joint flow through VLM(+②"cond") → cond(+③"cond_bridge") → FROZEN
-    expert, GT-teacher-forced skill z. Expert/bases frozen; see _apply_continual_freezes."""
+    """DEPRECATED (kept so existing checkpoints' config.json still deserializes): the retired
+    interleaved [SKILL, COND] probabilities. COND-only values ([0,1]) auto-map to pt_stage="cond";
+    anything else errors — use pt_stage."""
     regime_probs_ft: list[float] | None = None
     """FT regimes [P(SKILL), P(MOTOR_connected), P(MOTOR_severed)] (e.g. [0.0, 0.5, 0.5]). SKILL trains
     ①+reader+head only if ft_train_skill (else keep its prob 0 — nothing trainable there). MOTOR trains
     the expert: connected = flow through frozen ②③ (VLM residual riding cond); severed = adapters OFF
     (③ bypass → pure Stage-1 VSA, no VLM forward) + Stage-1 hold target + random-skill distillation to
     the frozen-PT teacher (vsa_distill; teacher runs severed/adapter-free too)."""
+    skill_action_grounding: bool = False
+    """STAGE 3 mode b: ground the skill prediction through the FROZEN motor. Each batch runs the SKILL
+    view (① — grad), STE-rounds its prediction to z, then evaluates z through the frozen connected
+    motor (②-VLM → cond(+③) → expert, all no-grad cached constants; deployment-identical attention)
+    against the GT-action flow target — so the MAIN loss becomes "pick the skill the frozen motor can
+    execute", with the GT-code loss as the anchor (weight = skill_loss_weight). Needs the FULL
+    frame-level dataset (per-frame action supervision) — NOT the transition pack. Only meaningful with
+    pt_stage="skill" (everything but ①/reader/head frozen keeps the signal pure)."""
+    transition_packs: str | None = None
+    """Comma-separated transitions.npz paths (build_data/src/build_transition_pack.py). When set, the
+    dataset factory serves SEGMENT-level transition samples (skill-start±pmax images + language + code)
+    instead of frame-level video samples — the deployment distribution of the skill predictor (the VLM
+    only runs at transitions). Use for pt_stage="skill" (stage 3) and FT SKILL batches; the FT replay
+    buffer is simply the parent PT dataset's pack appended to this list. Empty/None = the regular
+    frame-level SkillVLADataset."""
     ft_train_skill: bool = False
     """FT: unfreeze the skill path (adapter ① + skill_reader + skill_head) so SKILL regime batches adapt
     skill prediction to the new task (new vocabulary/objects) — pair with replay to preserve old-task

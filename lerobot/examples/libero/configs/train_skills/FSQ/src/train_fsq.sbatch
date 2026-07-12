@@ -62,18 +62,19 @@ if [ ! -d "${SKILLSET_DIR}/skills" ]; then
   echo "Skillset not found: ${SKILLSET_DIR}/skills" >&2
   exit 1
 fi
-# Camera mode from fsq_terminator_use_third / use_wrist:
-#   third=T wrist=F → 3rd-only   (primary=3rd)
-#   third=T wrist=T → both       (primary=3rd, second=wrist)
-#   third=F wrist=T → wrist-only (primary=wrist)
-# LAZY: pass the per-frame DINO dir (NOT a materialized token npz). train_FSQ slices each skill's
-# window on the fly (mmap) — no 27GB/camera token file, no extract step. The primary camera is picked
-# by --image_key; in "both" mode the wrist is read from the SAME dir via --image_key_wrist.
-if [ "${FSQ_TERMINATOR_USE_THIRD}" = "true" ]; then
-  PRIMARY_IMAGE_KEY="observation.images.image"          # 3rd-person primary
-elif [ "${FSQ_TERMINATOR_USE_WRIST}" = "true" ]; then
-  PRIMARY_IMAGE_KEY="observation.images.wrist_image"     # wrist-only: wrist is the single (primary) camera
-else
+# Camera mode from fsq_terminator_use_third / use_wrist. The saved cfg flags are FAITHFUL to these, and
+# the camera→slot routing matches how EVERY downstream consumer feeds the terminator: 3rd-person →
+# primary slot (dec_tokens, terminator_use_third), wrist → wrist slot (dec_tokens_wrist, use_wrist).
+#   third=T wrist=F → 3rd-only  : primary=3rd (used)
+#   third=T wrist=T → both      : primary=3rd (used) + wrist slot=wrist
+#   third=F wrist=T → wrist-only: wrist slot=wrist (used); primary is loaded but the terminator IGNORES
+#                                 it (third=F) — so downstream, which always puts 3rd in the primary slot
+#                                 and gates wrist by use_wrist, feeds the CORRECT camera. (Historic bug:
+#                                 wrist-only used to be saved as third=T with wrist in the primary slot,
+#                                 so downstream fed it 3rd where it was trained on wrist.)
+# LAZY: pass the per-frame DINO dir (NOT a materialized token npz). train_FSQ slices each skill's window
+# on the fly (mmap). primary via --image_key; wrist slot via --image_key_wrist.
+if [ "${FSQ_TERMINATOR_USE_THIRD}" != "true" ] && [ "${FSQ_TERMINATOR_USE_WRIST}" != "true" ]; then
   echo "Both fsq_terminator_use_third and fsq_terminator_use_wrist are false — need ≥1 camera." >&2
   exit 1
 fi
@@ -82,12 +83,22 @@ if [ ! -d "${FSQ_DINO_FEATURE_DIR}" ]; then
   echo "Run build_data/submit_build_data.sh first (it prepares the per-frame DINO that lazy reads)." >&2
   exit 1
 fi
+# Primary slot camera: 3rd when the terminator uses it; for wrist-only set it to wrist (loaded but
+# unused by the terminator) so a wrist-only run does not require a 3rd-person DINO to exist.
+if [ "${FSQ_TERMINATOR_USE_THIRD}" = "true" ]; then
+  PRIMARY_IMAGE_KEY="observation.images.image"
+else
+  PRIMARY_IMAGE_KEY="observation.images.wrist_image"
+fi
 DINO_ARGS=(--dino_features "${FSQ_DINO_FEATURE_DIR}" --image_key "${PRIMARY_IMAGE_KEY}")
 
-# Terminator always uses the primary slot (--terminator_use_third = the dec_tokens camera); add the
-# wrist slot only in "both" mode (wrist sliced from the same dir via --image_key_wrist).
-TERM_ARGS=(--terminator_use_third)
-if [ "${FSQ_TERMINATOR_USE_THIRD}" = "true" ] && [ "${FSQ_TERMINATOR_USE_WRIST}" = "true" ]; then
+# Faithful flags: each --terminator_use_* reflects the REAL config (no more hardcoded --terminator_use_third).
+if [ "${FSQ_TERMINATOR_USE_THIRD}" = "true" ]; then
+  TERM_ARGS=(--terminator_use_third)
+else
+  TERM_ARGS=(--no-terminator_use_third)
+fi
+if [ "${FSQ_TERMINATOR_USE_WRIST}" = "true" ]; then
   TERM_ARGS+=(--terminator_use_wrist)
   DINO_ARGS+=(--image_key_wrist "observation.images.wrist_image")
 else
@@ -126,6 +137,13 @@ if [ "${FSQ_WEIGHTED_LOSS:-false}" = "true" ]; then
   WEIGHTED_ARG=(--weighted_loss)
 fi
 
+# best-val SELECTION override: pass each val_select weight only if set in config (empty → omit → the
+# trainer falls back to selecting FSQ.pt on the actual loss = delta+progress+end with their weights).
+VAL_SELECT_ARGS=()
+if [ -n "${FSQ_VAL_SELECT_DELTA_WEIGHT:-}" ];    then VAL_SELECT_ARGS+=(--val_select_delta_weight    "${FSQ_VAL_SELECT_DELTA_WEIGHT}"); fi
+if [ -n "${FSQ_VAL_SELECT_PROGRESS_WEIGHT:-}" ]; then VAL_SELECT_ARGS+=(--val_select_progress_weight "${FSQ_VAL_SELECT_PROGRESS_WEIGHT}"); fi
+if [ -n "${FSQ_VAL_SELECT_END_WEIGHT:-}" ];      then VAL_SELECT_ARGS+=(--val_select_end_weight      "${FSQ_VAL_SELECT_END_WEIGHT}"); fi
+
 PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
   python -u examples/libero/train_FSQ.py \
     --skills_dir              "${SKILLSET_DIR}/skills" \
@@ -151,6 +169,7 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     --delta_loss_weight       "${FSQ_DELTA_LOSS_WEIGHT}" \
     --progress_loss_weight    "${FSQ_PROGRESS_LOSS_WEIGHT}" \
     --end_loss_weight         "${FSQ_END_LOSS_WEIGHT}" \
+    "${VAL_SELECT_ARGS[@]}" \
     --end_target_sigma        "${FSQ_END_TARGET_SIGMA}" \
     "${WEIGHTED_ARG[@]}" \
     --checkpoint_every        "${FSQ_CHECKPOINT_EVERY}" \

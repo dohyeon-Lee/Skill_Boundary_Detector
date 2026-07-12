@@ -138,15 +138,9 @@ def build_settings(cfg: dict) -> dict:
     reader_depth = int(get_value(cfg, "reader_depth", 2))
     reader_heads = int(get_value(cfg, "reader_heads", 8))
     skill_reader_all_layers = as_bool(get_value(cfg, "skill_reader_all_layers", False))
-    # LoRA-continual PT regimes: [SKILL, COND] (REPLACES the legacy A/B/C freeze_A/B/C system —
-    # trainability is fixed by design: bases frozen, adapters ①②③ + reader/head + vlm_vision train,
-    # expert frozen; see SkillVLAPolicy._apply_continual_freezes).
-    _rp = get_value(cfg, "regime_probs_pt", None)
-    if not (isinstance(_rp, (list, tuple)) and len(_rp) == 2):
-        raise ValueError("regime_probs_pt must be a 2-element list [SKILL, COND] (합 1) — the A/B/C "
-                         "regime_probs/freeze_A/B/C legacy was replaced by the LoRA-continual system.")
-    regime_probs_pt = [float(x) for x in _rp]
-    lora_skill = as_bool(get_value(cfg, "lora_skill", True))
+    # STAGE 2 = cond-path PT: every batch is COND/flow (pt_stage="cond" — the interleaved [SKILL, COND]
+    # mixing was retired; the skill path trains in STAGE 3). Trainability is design-fixed: ②③ adapters +
+    # vlm_vision train, everything else frozen; see SkillVLAPolicy._apply_continual_freezes.
     lora_cond_vlm = as_bool(get_value(cfg, "lora_cond_vlm", True))
     lora_cond_bridge = as_bool(get_value(cfg, "lora_cond_bridge", True))
     lora_rank = int(get_value(cfg, "lora_rank", 8))
@@ -154,11 +148,9 @@ def build_settings(cfg: dict) -> dict:
     lora_dropout = float(get_value(cfg, "lora_dropout", 0.0))
     lora_targets = str(get_value(cfg, "lora_targets", "q,k,v,o"))
     lora_lr_scale = float(get_value(cfg, "lora_lr_scale", 1.0))   # adapter-only LR × (vlm_vision stays base)
-    if regime_probs_pt[1] > 0 and not (lora_cond_vlm or lora_cond_bridge):
-        raise ValueError("COND regime prob > 0 but both cond adapters (②lora_cond_vlm/③lora_cond_bridge) "
-                         "are off — nothing would train on COND batches (expert/bases are frozen).")
-    if regime_probs_pt[0] > 0 and not lora_skill:
-        print("[warn] SKILL prob > 0 with ①lora_skill off — only reader/head (+vlm_vision) adapt the skill path.")
+    if not (lora_cond_vlm or lora_cond_bridge):
+        raise ValueError("Both cond adapters (②lora_cond_vlm/③lora_cond_bridge) are off — nothing would "
+                         "train on stage-2 COND batches besides vlm_vision (expert/bases are frozen).")
     # SCRATCH-side arch knobs (model uses them only when stage1_checkpoint_path is empty). The one-liner
     # (none_{run_tag}_{vision}_{mode}) takes precedence over the separate yaml keys.
     s1_vision_backbone = _s1_vb or str(get_value(cfg, "s1_vision_backbone", "siglip")).strip()
@@ -178,13 +170,17 @@ def build_settings(cfg: dict) -> dict:
             m = re.search(pat, stage1_run_name)
             if m:
                 loss_tags.append(m.group(1))
-    # {STAGE-1 정보}__pt{P_SKILL}{P_COND}_L{①②③ t/f}r{rank}[_{exp}] — 예: ...state__pt5050_Ltttr8.
-    #   pt5050 = SKILL 50% / COND 50%; Lttt = ①skill ②cond_vlm ③cond_bridge on/off; r8 = shared rank.
-    ps, pc = (int(round(x * 100)) for x in regime_probs_pt)
-    _l = "".join("t" if b else "f" for b in (lora_skill, lora_cond_vlm, lora_cond_bridge))
-    regime_tag = f"pt{ps}{pc}_L{_l}r{lora_rank}"
+    # {STAGE-1 정보}__s2_L{②③ t/f}r{rank}[lr{scale}][_{exp}] — 예: ...state__s2_Lttr16lr10.
+    #   s2 = cond-path PT stage; Ltt = ②cond_vlm ③cond_bridge on/off; r = shared rank (stage3 inherits).
+    _l = "".join("t" if b else "f" for b in (lora_cond_vlm, lora_cond_bridge))
+    regime_tag = f"s2_L{_l}r{lora_rank}"
     if lora_lr_scale != 1.0:                     # adapter LR multiplier (e.g. lr10 = 10× base)
         regime_tag += f"lr{int(lora_lr_scale) if lora_lr_scale == int(lora_lr_scale) else lora_lr_scale}"
+    cond_severed_prob = float(get_value(cfg, "cond_severed_prob", 0.0) or 0.0)
+    if not 0.0 <= cond_severed_prob < 1.0:
+        raise ValueError(f"cond_severed_prob must be in [0, 1) — got {cond_severed_prob}")
+    if cond_severed_prob > 0.0:                  # severed 정규화 배치 (conduit gating) — sv50 = p 0.5
+        regime_tag += f"sv{int(round(cond_severed_prob * 100))}"
     parts = ([run_tag] + ([s1_vis_tag] if s1_vis_tag else [])
              + [stage1_checkpoint] + ([mode_tag] if mode_tag else []) + loss_tags)
     run_name = "_".join(parts) + "__" + regime_tag
@@ -222,9 +218,9 @@ def build_settings(cfg: dict) -> dict:
         "vlm_cond": vlm_cond,
         "cond_expert": cond_expert,
         "vlm_expert": vlm_expert,                   # action tokens read the VLM directly (was action_attend_vlm)
-        # LoRA-continual PT regime probs [SKILL, COND] as a comma string + the three named adapters.
-        "regime_probs_pt": ",".join(str(x) for x in regime_probs_pt),
-        "lora_skill": lora_skill,
+        # STAGE 2: pt_stage=cond (every batch COND/flow) + the two cond adapters (① lives in stage3).
+        "pt_stage": "cond",
+        "lora_skill": False,
         "lora_cond_vlm": lora_cond_vlm,
         "lora_cond_bridge": lora_cond_bridge,
         "lora_rank": lora_rank,
@@ -232,6 +228,7 @@ def build_settings(cfg: dict) -> dict:
         "lora_dropout": lora_dropout,
         "lora_targets": lora_targets,
         "lora_lr_scale": lora_lr_scale,
+        "cond_severed_prob": cond_severed_prob,   # severed 정규화 배치 확률 (③만 활성; conduit gating)
 
         # per-component update tracking (wandb param_drift/* + param_drift_rel/*)
         "track_param_drift": as_bool(get_value(cfg, "track_param_drift", False)),

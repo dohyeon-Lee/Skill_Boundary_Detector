@@ -41,7 +41,9 @@ def build_settings(cfg: dict) -> dict:
     outputs_root = project_root / str(get_value(cfg, "outputs_root", "outputs"))
 
     # ── Warm-start: a trained Stage-2 run + checkpoint (full-loaded by the policy) ──
-    stage2_vla_root = outputs_root / "skillVLA_stage2"
+    # Parent root: skillVLA_stage2 by default; set parent_outputs_subdir: skillVLA_stage3 in the yaml to
+    # FT from a STAGE-3 run (the full model with ① — the normal pipeline once stage 3 exists).
+    stage2_vla_root = outputs_root / str(get_value(cfg, "parent_outputs_subdir", "skillVLA_stage2"))
     stage2_run_name = str(get_value(cfg, "stage2_run_name")).strip()
     stage2_checkpoint = str(get_value(cfg, "stage2_checkpoint", "last")).strip() or "last"
     stage2_ckpt = stage2_vla_root / stage2_run_name / "checkpoints" / stage2_checkpoint / "pretrained_model"

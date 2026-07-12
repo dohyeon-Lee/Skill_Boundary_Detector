@@ -54,6 +54,8 @@ def _resolve_model(vla_root: Path, model_dir: str, checkpoint: str, eval_termina
     resolved_term = eval_terminator if eval_terminator != "auto" else ("cotrained" if train_terminator_used else "base")
     return {
         "model_dir": model_dir, "checkpoint": checkpoint, "policy_path": policy_path,
+        # warm-start 부모(stage1) ckpt 경로 — include_stage1 패널이 여기서 자동 유도 (scratch면 "")
+        "stage1_checkpoint_path": str(pol.get("stage1_checkpoint_path") or ""),
         "base_fsq": base_fsq, "train_terminator_used": train_terminator_used, "resolved_term": resolved_term,
         "ft_fsq_path": policy_path.parent / "FSQ_ft.pt", "ft_run_dir": vla_root / model_dir,
         "skill_latents_path": skill_latents_path, "raw_dataset_dir": raw_dataset_dir,
@@ -81,7 +83,9 @@ def build_settings(cfg: dict) -> dict:
     # Standalone: roots declared in this yaml (no build_data dependency).
     project_root = Path(str(get_value(cfg, "project_root"))).expanduser()
     outputs_root = project_root / str(get_value(cfg, "outputs_root", "outputs"))
-    vla_root = outputs_root / "skillVLA_stage2"   # fixed subdir (matches stage2 training)
+    # skillVLA_stage2 by default; set models_root: skillVLA_stage3 in the eval yaml to eval STAGE-3 runs
+    # (the full model with ①) — same folder layout, same checkpoint structure.
+    vla_root = outputs_root / str(get_value(cfg, "models_root", "skillVLA_stage2"))
     default_ckpt = str(get_value(cfg, "checkpoint", "last"))
     target_task = str(get_value(cfg, "target_task", "libero_90"))
     image_key = str(get_value(cfg, "image_key", "observation.images.image"))
@@ -128,6 +132,49 @@ def build_settings(cfg: dict) -> dict:
             drop_flags += [False, True]
         resolved, labels = paired_resolved, paired_labels
 
+    use_gt_skill = as_bool(get_value(cfg, "use_gt_skill", False))
+    advance_mode = str(get_value(cfg, "skill_advance_mode", "terminator"))
+
+    # ── include_stage1: 각 모델의 warm-start 부모(stage1)를 STAGE1 자신의 평가 경로(stage1_eval의
+    # run_eval.py)로 같은 scene(episode-exact)·같은 GT 스킬에서 평가해 격자의 추가 패널로 붙임 —
+    # "severed(vlm_drop) ≡ stage1" 주장의 시각 대조군. 부모는 ckpt config.json의 stage1_checkpoint_path
+    # 에서 자동. 패널 순서는 모델별 [vlm, vlm_drop, stage1] 그룹(models_per_row: 3 → 행당 한 모델);
+    # 같은 부모를 공유하는 뒤 모델의 stage1 패널은 alias(sbatch가 심볼릭 링크 — 재평가 없음).
+    # stage1은 GT 주입 전용이라 use_gt_skill=true 필수. terminator는 각자 것(stage1 = 자기 co-trained).
+    include_stage1 = as_bool(get_value(cfg, "include_stage1", False))
+    if include_stage1:
+        if not use_gt_skill:
+            raise ValueError("include_stage1=true requires use_gt_skill=true (stage1 has no skill predictor).")
+        group = 2 if eval_dropout else 1
+        seen_parent: dict[str, str] = {}          # stage1 ckpt path → 첫 패널 label (alias target)
+        new_r, new_l, new_d = [], [], []
+        for gi in range(0, len(resolved), group):
+            grp_r, grp_l, grp_d = resolved[gi:gi + group], labels[gi:gi + group], drop_flags[gi:gi + group]
+            new_r += grp_r; new_l += grp_l; new_d += grp_d
+            r0 = grp_r[0]
+            s1 = r0.get("stage1_checkpoint_path", "")
+            if not s1 or not Path(s1).is_dir():
+                raise ValueError(f"include_stage1: {r0['model_dir']} config.json에 stage1_checkpoint_path가 "
+                                 f"없거나 경로가 존재하지 않음({s1!r}) — scratch 학습이면 include_stage1을 끄세요.")
+            pfx = grp_l[0][:-len("vlm")] if eval_dropout else ("" if len(entries) == 1 else f"{grp_l[0]}_")
+            lbl = f"{pfx}stage1"
+            while lbl in new_l:
+                lbl += "x"
+            entry = dict(r0)
+            if s1 in seen_parent:
+                entry.update({"runner": "alias", "alias_target": seen_parent[s1]})
+            else:
+                s1cfg_p = Path(s1) / "config.json"
+                s1cfg = json.loads(s1cfg_p.read_text()) if s1cfg_p.is_file() else {}
+                entry.update({
+                    "runner": "stage1", "policy_path": Path(s1),
+                    "use_trained_terminator": as_bool(s1cfg.get("train_terminator", True)),
+                    "terminator_dino": str(project_root / "models" / "dinov3-vits16"),
+                })
+                seen_parent[s1] = lbl
+            new_r.append(entry); new_l.append(lbl); new_d.append(False)
+        resolved, labels, drop_flags = new_r, new_l, new_d
+
     m0 = resolved[0]
     multi = len(resolved) >= 2
 
@@ -135,9 +182,6 @@ def build_settings(cfg: dict) -> dict:
     base_fsq, train_terminator_used, resolved_term = m0["base_fsq"], m0["train_terminator_used"], m0["resolved_term"]
     ft_fsq_path, skill_latents_path = m0["ft_fsq_path"], m0["skill_latents_path"]
     raw_dataset_dir, gt_skill_dataset_dir = m0["raw_dataset_dir"], m0["gt_skill_dataset_dir"]
-
-    use_gt_skill = as_bool(get_value(cfg, "use_gt_skill", False))
-    advance_mode = str(get_value(cfg, "skill_advance_mode", "terminator"))
 
     # EPISODE-EXACT eval (stage1 방식, 항상 ON): 각 롤아웃을 데이터셋 에피소드의 MuJoCo init_state로 리셋.
     # eval_init_states.npz(source당 공유; stage1_eval/oracle_matching이 생성)가 없으면 자동으로
@@ -156,7 +200,7 @@ def build_settings(cfg: dict) -> dict:
     if use_gt_skill and advance_mode != "terminator":
         skill_src = f"gt-{advance_mode}"
     eval_exp = str(get_value(cfg, "eval_exp", "")).strip()   # free-form folder tag (e.g. "and" / "baseterm")
-    suffix = skill_src + (f"_{eval_exp}" if eval_exp else "")
+    suffix = skill_src + ("_s1" if include_stage1 else "") + (f"_{eval_exp}" if eval_exp else "")
     if multi:
         if eval_dropout:   # self-compare per checkpoint → base model name(s) + _dropcmp
             core = model_dir if len(dropcmp_base) == 1 else "compare_" + "_vs_".join(dropcmp_base)
@@ -169,7 +213,12 @@ def build_settings(cfg: dict) -> dict:
              "checkpoint": r["checkpoint"], "resolved_term": r["resolved_term"],
              "gt_skill_dataset_dir": r["gt_skill_dataset_dir"],
              "eval_init_states_path": r["eval_init_states_path"],
-             "drop_vlm": bool(d)}
+             "drop_vlm": bool(d),
+             # include_stage1 패널용: runner "s2"(기본) | "stage1"(부모를 stage1_eval 경로로 평가) |
+             # "alias"(같은 부모 공유 → alias_target 패널 디렉토리로 심볼릭 링크)
+             "runner": r.get("runner", "s2"), "alias_target": r.get("alias_target", ""),
+             "terminator_dino": r.get("terminator_dino", ""),
+             "use_trained_terminator": bool(r.get("use_trained_terminator", False))}
             for lbl, r, d in zip(labels, resolved, drop_flags)])
     else:
         run_name = f"{model_dir}_{checkpoint}_{target_task}_{suffix}"
@@ -210,8 +259,10 @@ def build_settings(cfg: dict) -> dict:
         "max_videos_per_task": int(get_value(cfg, "max_videos_per_task", 1)),
         "video_frame_stride": int(get_value(cfg, "video_frame_stride", 2)),
         "video_fps": int(get_value(cfg, "video_fps", 10)),
-        # multi-model compare → skill_html forced off (N× runtime; the compare product is the stitched grid)
-        "skill_html": as_bool(get_value(cfg, "skill_html", True)) and not multi,
+        # skill_html now honored in MULTI too (per-panel skill traces under panels/{label}/skill_html/;
+        # the sbatch auto-disables when skill_latents.npz is missing). Costs a bit per panel — set
+        # skill_html: false in the yaml to skip.
+        "skill_html": as_bool(get_value(cfg, "skill_html", True)),
         "skill_html_train_samples": int(get_value(cfg, "skill_html_train_samples", 10)),
         # inference knobs (eval-time tuning; model structure comes from the checkpoint)
         "skill_end_mode": str(get_value(cfg, "skill_end_mode", "termination")),

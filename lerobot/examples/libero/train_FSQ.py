@@ -107,6 +107,11 @@ class Args:
     num_workers: int = 8
     grad_clip: float = 1.0
     val_split: float = 0.1
+    # Best-val SELECTION metric weights. Unset (None) → follow the actual loss (total val). Set to
+    # override: FSQ.pt = argmin over epochs of wd*delta + wp*progress + we*end on val.
+    val_select_delta_weight: float | None = None
+    val_select_progress_weight: float | None = None
+    val_select_end_weight: float | None = None
     log_every: int = 10
     seed: int = 42
     device: str = "cuda"
@@ -389,12 +394,26 @@ def main(args: Args) -> None:
 
     wandb_run = None
     if args.wandb_project:
+        import os
+
         import wandb
+
+        # Pin wandb's system-metrics GPU monitor to THIS job's GPU(s) so the panel shows only our device
+        # instead of every GPU on the shared node (same fix as lerobot's WandBLogger — READ-only use of
+        # the CUDA_VISIBLE_DEVICES Slurm already set; telemetry scoping only, never affects allocation).
+        gpu_settings = None
+        try:
+            ids = [int(x) for x in os.environ.get("CUDA_VISIBLE_DEVICES", "").split(",") if x.strip()]
+            if ids:
+                gpu_settings = wandb.Settings(x_stats_gpu_device_ids=ids)
+        except Exception:  # noqa: BLE001 — cosmetic monitor scoping must never break training
+            gpu_settings = None
         wandb_run = wandb.init(
             project=args.wandb_project,
             name=args.wandb_run_name,
             config={**vars(args), "action_dim": action_dim, "enc_dim": enc_dim,
                     "state_dim": state_dim, "n_segments": len(segments)},
+            settings=gpu_settings,
         )
 
     cfg = SplineFSQAEConfig(
@@ -434,6 +453,9 @@ def main(args: Args) -> None:
         grad_clip=args.grad_clip,
         epochs=args.epochs,
         val_split=args.val_split,
+        val_select_delta_weight=args.val_select_delta_weight,
+        val_select_progress_weight=args.val_select_progress_weight,
+        val_select_end_weight=args.val_select_end_weight,
         log_every=args.log_every,
         device=device,
         save_path=str(output_dir / "FSQ.pt"),

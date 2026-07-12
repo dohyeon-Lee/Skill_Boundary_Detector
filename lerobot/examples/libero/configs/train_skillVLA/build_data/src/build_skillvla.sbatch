@@ -85,7 +85,16 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
 cp -f "${FSQ_MODEL_PATH}" "${FSQ_COPY_PATH}"
 echo "Copied FSQ checkpoint → ${FSQ_COPY_PATH}"
 
-# ── (d) cleanup intermediates ──
+# ── (d) transition pack — stage-3 / FT-replay training set (segment-level skill-start pairs).
+# Built here so every fresh dataset ships with it; stage3's sbatch also lazy-builds if missing.
+if [ ! -f "${SKILLVLA_RUN_DIR}/transitions.npz" ]; then
+  PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
+    "${PROJECT_ROOT}/.venv/bin/python" "${SRC_DIR}/build_transition_pack.py" \
+    --skillvla_dir="${SKILLVLA_RUN_DIR}/skillvla" \
+    || echo "transition-pack build failed (non-fatal — stage3 lazy-builds it)"
+fi
+
+# ── (e) cleanup intermediates ──
 # Only this DP's segmentation (skillset + skill_tokens) and this run's latents.
 # The shared dino/ stays so other DP/FSQ runs on the same source can reuse it.
 if [ "${CLEANUP_INTERMEDIATE}" = "true" ]; then

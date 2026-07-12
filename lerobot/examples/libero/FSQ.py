@@ -33,6 +33,7 @@ predict_termination → skillVLA path: (z_q, states, dino) → (progress, termin
 
 from __future__ import annotations
 
+import hashlib
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -303,6 +304,13 @@ class SplineFSQAEConfig:
     grad_clip: float = 1.0
     device: str = "cuda"
     val_split: float = 0.1
+    # Best-val checkpoint SELECTION metric. UNSET (None) → selection FOLLOWS the actual loss
+    # (total val = delta_loss_weight*delta + progress_loss_weight*progress + end_loss_weight*end).
+    # SET to OVERRIDE with a custom metric wd*delta + wp*progress + we*end on val (missing weight → 0).
+    # NOTE scale: end (~0.07) is ~3x delta (~0.025), so for recon to dominate the override use we<~0.35.
+    val_select_delta_weight: float | None = None
+    val_select_progress_weight: float | None = None
+    val_select_end_weight: float | None = None
     log_every: int = 10
     save_path: str | None = None
     checkpoint_every: int = 0
@@ -1092,8 +1100,30 @@ def train_spline_fsqae(
     )
 
     n_val = max(1, int(len(segments) * cfg.val_split))
-    perm = np.random.permutation(len(segments))
-    val_idx, train_idx = perm[:n_val], perm[n_val:]
+    # Deterministic identity-based val split. Assign each skill to val/train by a STABLE hash of its
+    # identity (episode_id, skill_index) — NOT np.random.permutation. A fresh random split every run
+    # silently reshuffles train<->val on resume, so skills the model already trained on leak into the
+    # new val set: val loss looks great but measures memorization, not generalization. Hashing on the
+    # skill's identity keeps the held-out set fixed across runs / resumes / dataset rebuilds. Use
+    # hashlib (process-stable) rather than built-in hash() (salted per-process by PYTHONHASHSEED).
+    if metadata is not None and len(metadata) == len(segments):
+        def _skill_hash(m: dict) -> int:
+            key = f"{m.get('episode_id', -1)}_{m.get('skill_index', -1)}"
+            return int(hashlib.sha1(key.encode()).hexdigest(), 16)
+        order = sorted(range(len(segments)), key=lambda i: _skill_hash(metadata[i]))
+        val_idx = np.array(order[:n_val], dtype=int)
+        train_idx = np.array(order[n_val:], dtype=int)
+        # Fingerprint the held-out set so a resumed/relaunched run can be eyeballed as identical.
+        val_fp = hashlib.sha1(
+            ",".join(sorted(f"{metadata[i].get('episode_id',-1)}_{metadata[i].get('skill_index',-1)}"
+                            for i in val_idx)).encode()
+        ).hexdigest()[:12]
+        print(f"[SplineFSQAE] val split: {n_val}/{len(segments)} skills (identity-hash, fp={val_fp})")
+    else:
+        # No metadata → deterministic fallback: fixed-seed generator, independent of global RNG state.
+        perm = np.random.default_rng(42).permutation(len(segments))
+        val_idx, train_idx = perm[:n_val], perm[n_val:]
+        print(f"[SplineFSQAE] val split: {n_val}/{len(segments)} skills (seeded fallback, no metadata)")
 
     def take(xs: list, ids) -> list:
         return [xs[i] for i in ids]
@@ -1160,17 +1190,18 @@ def train_spline_fsqae(
         if "optim_state" in ckpt:
             optim.load_state_dict(ckpt["optim_state"])
         start_epoch = ckpt.get("epoch", 0) + 1
-        best_val = ckpt.get("val_loss", math.inf)
+        best_val = ckpt.get("val_select", ckpt.get("val_loss", math.inf))
         print(f"[SplineFSQAE] resumed from {resume_from}, starting epoch {start_epoch}")
 
-    def _save(path: str, epoch: int, val_loss: float) -> None:
+    def _save(path: str, epoch: int, val_loss: float, val_select: float) -> None:
         torch.save(
             {
                 "model_state": model.state_dict(),
                 "optim_state": optim.state_dict(),
                 "cfg": cfg,
                 "epoch": epoch,
-                "val_loss": val_loss,
+                "val_loss": val_loss,       # total val (delta+prog+end) — kept for downstream display
+                "val_select": val_select,   # the metric FSQ.pt was actually selected on
             },
             path,
         )
@@ -1229,6 +1260,14 @@ def train_spline_fsqae(
         n_tr = max(1, n_tr); n_vl = max(1, n_vl)
         train_loss = t_tot / n_tr
         val_loss = v_tot / n_vl
+        # Checkpoint-SELECTION metric. Unset (None) → follow the actual loss (val_loss). Else override
+        # with wd*delta + wp*progress + we*end (val components; missing weight → 0). See cfg.val_select_*.
+        if cfg.val_select_delta_weight is None:
+            val_select = val_loss
+        else:
+            val_select = ((cfg.val_select_delta_weight or 0.0)     * (v_d / n_vl)
+                          + (cfg.val_select_progress_weight or 0.0) * (v_p / n_vl)
+                          + (cfg.val_select_end_weight or 0.0)      * (v_e / n_vl))
         log = {
             "train/loss": train_loss,
             "train/delta_loss": t_d / n_tr,
@@ -1237,6 +1276,7 @@ def train_spline_fsqae(
             "train/end_acc": t_acc / n_tr,
             "train/end_recall": t_rec / n_tr,
             "val/loss": val_loss,
+            "val/select": val_select,
             "val/delta_loss": v_d / n_vl,
             "val/progress_loss": v_p / n_vl,
             "val/end_loss": v_e / n_vl,
@@ -1256,22 +1296,22 @@ def train_spline_fsqae(
         if epoch % cfg.log_every == 0 or epoch == 1:
             print(
                 f"[SplineFSQAE] {epoch:4d}/{cfg.epochs}  "
-                f"train={train_loss:.4f}  val={val_loss:.4f}  "
+                f"train={train_loss:.4f}  val={val_loss:.4f}  sel={val_select:.4f}  "
                 f"delta={log['train/delta_loss']:.4f}  prog={log['train/progress_loss']:.4f}  "
                 f"end={log['train/end_loss']:.4f}  "
                 f"end_acc={log['train/end_acc']:.3f}  end_rec={log['train/end_recall']:.3f}"
             )
 
-        if cfg.save_path is not None and val_loss < best_val:
-            best_val = val_loss
-            _save(cfg.save_path, epoch, val_loss)
+        if cfg.save_path is not None and val_select < best_val:
+            best_val = val_select
+            _save(cfg.save_path, epoch, val_loss, val_select)
 
         if cfg.checkpoint_every > 0 and epoch % cfg.checkpoint_every == 0 and cfg.save_path is not None:
             ckpt_path = cfg.save_path.replace(".pt", f"_epoch{epoch:04d}.pt")
-            _save(ckpt_path, epoch, val_loss)
+            _save(ckpt_path, epoch, val_loss, val_select)
 
     if cfg.save_path is not None and best_val == math.inf:
-        _save(cfg.save_path, cfg.epochs, val_loss)
+        _save(cfg.save_path, cfg.epochs, val_loss, val_select)
 
-    print(f"[SplineFSQAE] done. best val loss: {best_val:.4f}")
+    print(f"[SplineFSQAE] done. best val-select: {best_val:.4f}")
     return model

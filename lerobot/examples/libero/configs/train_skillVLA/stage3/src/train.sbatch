@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# SkillVLA Stage-2 training: policy.type=skill_vla.
-# VLM (PaliGemma, warm-started from pi05_base) predicts the skill; an action expert warm-started
-# from a Stage-1 skill_expert checkpoint flow-matches the action chunk. expert_arch (A/B) /
-# vision_backbone / skill_vocab are read from the Stage-1 checkpoint config by the model. Resumes
-# from a Stage-2 checkpoint if one exists.
-#SBATCH --job-name=stage2
+# SkillVLA STAGE 3 training: policy.type=skill_vla, pt_stage="skill".
+# Warm-starts the WHOLE policy from a STAGE-2 checkpoint (pretrained_path → from_pretrained's is_stage2
+# full-load) and trains ONLY the skill path (adapter ① + skill_reader + skill_head) on the skill loss,
+# over the SAME dataset stage 2 trained on. Everything else frozen (vision included). Resumes from a
+# stage-3 checkpoint if one exists.
+#SBATCH --job-name=stage3
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=128G
@@ -14,10 +14,10 @@
 set -euo pipefail
 mkdir -p logs
 
-# Under Slurm the script runs from a spool copy → anchor on SLURM_SUBMIT_DIR (the stage2 dir).
+# Under Slurm the script runs from a spool copy → anchor on SLURM_SUBMIT_DIR (the stage3 dir).
 SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 SRC_DIR="${SUBMIT_DIR}/src"
-CONFIG_PATH="${STAGE2_TRAIN_CONFIG:-${SUBMIT_DIR}/stage2_train_config.yaml}"
+CONFIG_PATH="${STAGE3_TRAIN_CONFIG:-${SUBMIT_DIR}/stage3_train_config.yaml}"
 
 BOOTSTRAP_PYTHON="${SUBMIT_DIR}/../../../../../../.venv/bin/python"
 if [ ! -x "${BOOTSTRAP_PYTHON}" ]; then
@@ -26,10 +26,10 @@ fi
 
 # Prefer the submit-time env snapshot (frozen resolved env) → the job never re-runs the emitter on a
 # live/edited/deleted yaml at start. Fallback to a fresh resolve only when run directly (no snapshot).
-if [ -n "${STAGE2_ENV_SNAPSHOT:-}" ] && [ -f "${STAGE2_ENV_SNAPSHOT}" ]; then
-  source "${STAGE2_ENV_SNAPSHOT}"
+if [ -n "${STAGE3_ENV_SNAPSHOT:-}" ] && [ -f "${STAGE3_ENV_SNAPSHOT}" ]; then
+  source "${STAGE3_ENV_SNAPSHOT}"
 else
-  eval "$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/stage2_train_config.py" --config "${CONFIG_PATH}" --shell)"
+  eval "$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/stage3_train_config.py" --config "${CONFIG_PATH}" --shell)"
 fi
 
 cd "${LEROBOT_ROOT}"
@@ -40,34 +40,28 @@ export WANDB_DATA_DIR="${WANDB_DATA_DIR:-${HOME}/.wandb_data}"
 mkdir -p "${WANDB_CACHE_DIR}" "${WANDB_DATA_DIR}"
 export WANDB_DISABLE_SYMLINKS=true
 
-echo "START STAGE-2 (skill_vla)"
-echo "Node     : ${SLURMD_NODENAME:-local}"
-echo "dataset  : ${SKILLVLA_DATASET_DIR}"
-echo "VLM init : ${PI_BASE}"
-if [ "${SCRATCH}" = "true" ]; then
-  echo "expert   : SCRATCH (no Stage-1; ${S1_VISION_BACKBONE}/${S1_STATE_COND_MODE}, VSA carved by vdrop)"
-else
-  echo "expert   : ${STAGE1_CHECKPOINT_PATH}  (arch=joint)"
-fi
-echo "FSQ(eval): ${FSQ_CKPT}"
-echo "term     : train_terminator=${TRAIN_TERMINATOR}   dino: ${DINO_TOKENS_PATH}"
-echo "output   : ${PT_OUTPUT_DIR}   lr/bs: ${LR}/${BATCH_SIZE}"
+echo "START STAGE-3 (skill_vla, pt_stage=skill)"
+echo "Node      : ${SLURMD_NODENAME:-local}"
+echo "dataset   : ${SKILLVLA_DATASET_DIR}  (inherited from the stage-2 run)"
+echo "warm-start: ${STAGE2_CHECKPOINT_PATH}"
+echo "stage1cfg : ${STAGE1_CHECKPOINT_PATH:-<none>}"
+echo "output    : ${PT_OUTPUT_DIR}   lr/bs: ${LR}/${BATCH_SIZE}  (① lr ×${LORA_LR_SCALE})"
 nvidia-smi || true
 
 if [ ! -e "${SKILLVLA_DATASET_DIR}" ]; then
-  echo "Missing skillvla dataset: ${SKILLVLA_DATASET_DIR}  (run configs/train_skillVLA/build_data first)" >&2
+  echo "Missing skillvla dataset: ${SKILLVLA_DATASET_DIR}" >&2
   exit 1
 fi
-if [ "${SCRATCH}" != "true" ] && [ ! -e "${STAGE1_CHECKPOINT_PATH}" ]; then
-  echo "Missing Stage-1 checkpoint: ${STAGE1_CHECKPOINT_PATH}  (run configs/train_skillVLA/stage1 first)" >&2
+if [ ! -e "${STAGE2_CHECKPOINT_PATH}" ]; then
+  echo "Missing Stage-2 checkpoint: ${STAGE2_CHECKPOINT_PATH}  (train stage2 first)" >&2
   exit 1
 fi
 if [ "${TRAIN_TERMINATOR}" = "true" ] && [ ! -e "${DINO_TOKENS_PATH}" ]; then
-  echo "train_terminator=true but DINO tokens missing: ${DINO_TOKENS_PATH}  (rebuild dataset)" >&2
+  echo "train_terminator=true but DINO tokens missing: ${DINO_TOKENS_PATH}" >&2
   exit 1
 fi
 
-# Resume if a Stage-2 checkpoint exists; otherwise wipe a stale (incomplete) output dir.
+# Resume if a stage-3 checkpoint exists; otherwise wipe a stale (incomplete) output dir.
 CONFIG_JSON="${PT_OUTPUT_DIR}/checkpoints/last/pretrained_model/train_config.json"
 RESUME_ARGS=()
 if [ -f "${CONFIG_JSON}" ]; then
@@ -78,7 +72,22 @@ elif [ -d "${PT_OUTPUT_DIR}" ]; then
   rm -rf "${PT_OUTPUT_DIR}"
 fi
 
-# Terminator co-training inputs: attach current-frame DINO tokens only when train_terminator=true.
+# Transition pack — mode a's training set (segment-level skill-start pairs; the VLM's deployment
+# distribution) AND the future FT-replay buffer. Lazy-build if missing (cheap, one-time) — built even
+# in grounding mode (b trains on the FULL dataset, but FT replay still wants the pack).
+if [ ! -f "${TRANSITION_PACK}" ]; then
+  echo "Transition pack missing → building ${TRANSITION_PACK}"
+  PYTHONPATH="${LEROBOT_ROOT}/src" \
+    "${PROJECT_ROOT}/.venv/bin/python" "${SUBMIT_DIR}/../build_data/src/build_transition_pack.py" \
+    --skillvla_dir="${SKILLVLA_DATASET_DIR}" --out="${TRANSITION_PACK}"
+fi
+# mode a → segment-level pack dataset; mode b (grounding) → the full frame-level dataset.
+PACK_ARGS=()
+if [ "${SKILL_ACTION_GROUNDING}" != "true" ]; then
+  PACK_ARGS=(--policy.transition_packs="${TRANSITION_PACK}")
+fi
+
+# Terminator co-training inputs (usually off at stage 3 — stage 2 already adapted it on this dataset).
 TERM_ARGS=()
 if [ "${TRAIN_TERMINATOR}" = "true" ]; then
   TERM_ARGS=(
@@ -89,7 +98,6 @@ if [ "${TRAIN_TERMINATOR}" = "true" ]; then
     --policy.skill_decoder_dino_tokens_path="${DINO_TOKENS_PATH}"
     --policy.skill_decoder_dino_output_key=skill_decoder_dino
   )
-  # Dual (terminator_use_wrist) FSQ → also attach the wrist DINO tokens (emitter sets this only if built).
   if [ -n "${DINO_WRIST_TOKENS_PATH:-}" ]; then
     TERM_ARGS+=(
       --policy.skill_decoder_dino_wrist_tokens_path="${DINO_WRIST_TOKENS_PATH}"
@@ -98,13 +106,9 @@ if [ "${TRAIN_TERMINATOR}" = "true" ]; then
   fi
 fi
 
-# STAGE 2: every batch is a COND/flow batch (the interleaved regime_probs_pt legacy was retired;
-# the skill path trains in stage3).
-REGIME_ARGS=(--policy.pt_stage="${PT_STAGE}")
-
-# pretrained_path=pi05 warm-starts the VLM; stage1_checkpoint_path warm-starts the action/cond side
-# (the policy's from_pretrained loads both). vision/skill_vocab/state_cond_mode are read from Stage-1.
-# SCRATCH ("" stage1 path): expert/cond fresh-init; arch from --policy.s1_vision_backbone/s1_state_cond_mode.
+# pretrained_path = the STAGE-2 checkpoint (full-loaded); stage1_checkpoint_path supplies the
+# architecture config only (no weights reloaded). ① is injected fresh (no keys in the checkpoint →
+# B=0 no-op start); ②③ re-injected to match the checkpoint keys and stay frozen.
 PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="${NUM_GPUS}" \
   "${PROJECT_ROOT}/.venv/bin/lerobot-train" \
     --dataset.repo_id="${REPO_ID}" \
@@ -118,7 +122,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.dtype=bfloat16 \
     --policy.device=cuda \
     --policy.push_to_hub=false \
-    --policy.pretrained_path="${PI_BASE}" \
+    --policy.pretrained_path="${STAGE2_CHECKPOINT_PATH}" \
     --policy.stage1_checkpoint_path="${STAGE1_CHECKPOINT_PATH}" \
     --policy.s1_vision_backbone="${S1_VISION_BACKBONE}" \
     --policy.s1_state_cond_mode="${S1_STATE_COND_MODE}" \
@@ -135,6 +139,9 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.cond_expert="${COND_EXPERT}" \
     --policy.vlm_expert="${VLM_EXPERT}" \
     --track_param_drift="${TRACK_PARAM_DRIFT}" \
+    --policy.pt_stage="${PT_STAGE}" \
+    --policy.skill_action_grounding="${SKILL_ACTION_GROUNDING}" \
+    ${PACK_ARGS[@]+"${PACK_ARGS[@]}"} \
     --policy.lora_skill="${LORA_SKILL}" \
     --policy.lora_cond_vlm="${LORA_COND_VLM}" \
     --policy.lora_cond_bridge="${LORA_COND_BRIDGE}" \
@@ -143,33 +150,28 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.lora_dropout="${LORA_DROPOUT}" \
     --policy.lora_targets="${LORA_TARGETS}" \
     --policy.lora_lr_scale="${LORA_LR_SCALE}" \
-    --policy.cond_severed_prob="${COND_SEVERED_PROB:-0.0}" \
     --policy.fsq_path="${FSQ_CKPT}" \
     --batch_size="${BATCH_SIZE}" \
     --num_workers="${NUM_WORKERS}" \
     --steps="${STEPS}" \
     --save_freq="${SAVE_FREQ}" \
     --policy.optimizer_lr="${LR}" \
-    --policy.expert_lr_scale="${EXPERT_LR_SCALE}" \
-    --policy.cond_lr_scale="${COND_LR_SCALE}" \
     --wandb.enable="${WANDB_ENABLE}" \
     --wandb.project="${WANDB_PROJECT}" \
-    ${REGIME_ARGS[@]+"${REGIME_ARGS[@]}"} \
     ${TERM_ARGS[@]+"${TERM_ARGS[@]}"} \
     ${RESUME_ARGS[@]+"${RESUME_ARGS[@]}"}
 
-# Export the co-trained terminator per saved checkpoint (checkpoints/<step>/FSQ_ft.pt) for stage2_eval
-# (the terminator weights live in each checkpoint's model.safetensors; reuses the FT export script).
+# Export the co-trained terminator per saved checkpoint (only when co-trained at THIS stage).
 if [ "${TRAIN_TERMINATOR}" = "true" ]; then
   for CKPT_DIR in "${PT_OUTPUT_DIR}"/checkpoints/*/; do
     [ -d "${CKPT_DIR}pretrained_model" ] || continue
     STEP="$(basename "${CKPT_DIR}")"
-    OUT="${CKPT_DIR%/}/FSQ_ft.pt"
+    OUT="${CKPT_DIR}FSQ_ft.pt"
     [ -f "${OUT}" ] && continue
-    echo "Exporting terminator @ ${STEP} → ${OUT}"
-    "${PROJECT_ROOT}/.venv/bin/python" "${SRC_DIR}/../../FT/src/export_ft_terminator.py" \
+    "${PROJECT_ROOT}/.venv/bin/python" "${SUBMIT_DIR}/../FT/src/export_ft_terminator.py" \
       --ft_run_dir="${PT_OUTPUT_DIR}" --checkpoint="${STEP}" \
-      --base_fsq="${FSQ_CKPT}" --out="${OUT}" --skip_if_no_terminator
+      --base_fsq="${FSQ_CKPT}" --out="${OUT}" --skip_if_no_terminator \
+      || echo "terminator export failed for ${STEP} (non-fatal)"
   done
 fi
 

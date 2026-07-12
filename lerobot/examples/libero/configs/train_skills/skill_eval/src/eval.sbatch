@@ -143,9 +143,14 @@ PY
   if [ ! -d "${F_DINO_DIR}" ]; then
     echo "FSQ's per-frame DINO dir not found: ${F_DINO_DIR}" >&2; exit 1
   fi
+  # Camera→slot, matching train_fsq.sbatch + every downstream consumer: 3rd → primary slot (--image_key),
+  # wrist → wrist slot (--image_key_wrist, whenever the terminator uses wrist — not only "both"). For a
+  # wrist-only (third=F) FSQ the primary is loaded but the terminator ignores it; the wrist slot carries
+  # the camera. (Previously --image_key_wrist was gated on third&&wrist, so a wrist-only run's wrist slot
+  # relied on fsq_eval's default key — now it is explicit.)
   if [ "${F_USE_THIRD}" = "true" ]; then FSQ_PRIMARY_KEY="observation.images.image"; else FSQ_PRIMARY_KEY="observation.images.wrist_image"; fi
   FSQ_DINO_ARGS=(--dino_features "${F_DINO_DIR}" --image_key "${FSQ_PRIMARY_KEY}")
-  if [ "${F_USE_THIRD}" = "true" ] && [ "${F_USE_WRIST}" = "true" ]; then
+  if [ "${F_USE_WRIST}" = "true" ]; then
     FSQ_DINO_ARGS+=(--image_key_wrist "observation.images.wrist_image")
   fi
   PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \

@@ -14,39 +14,19 @@
 # per entry: checkpoint 생략 → 아래 top-level checkpoint; label 생략 → model_dir의 차이 토큰 자동.
 # 모델별 개별 산출물(eval_info/차트/videos)은 panels/{label}/ 아래. multi에선 skill_html 자동 off.
 eval_dropout: true
+# include_stage1: 각 모델의 warm-start 부모(stage1)를 STAGE1 자신의 평가 경로(stage1_eval run_eval.py)로
+# 같은 scene·같은 GT 스킬에서 평가해 격자에 3번째 패널로 추가 — "vlm_drop(순수 VSA) ≡ stage1" 시각 대조.
+# 부모는 ckpt config.json(stage1_checkpoint_path)에서 자동. 패널 = 모델별 [vlm, vlm_drop, stage1]
+# (models_per_row: 3 → 행당 한 모델의 세 영상). 같은 부모 공유 시 뒤 모델 것은 심볼릭 링크(재평가 없음).
+# use_gt_skill=true 필수(stage1은 oracle 전용). 출력 폴더에는 _s1 태그가 붙음.
+include_stage1: true
 models:
-#   - {model_dir: FSQ555_dino8_weighted_both_1000_siglip_015000_state_weighted__tttt_0p_tfff, label: fully_connected}
-#   - {model_dir: FSQ555_dino8_weighted_both_1000_siglip_015000_state_weighted__tttf_0p_tfff, label: connected}
-#   - {model_dir: FSQ555_dino8_weighted_both_1000_siglip_015000_state_weighted__ttft_0p_tfff, label: connected}
-#   - {model_dir: FSQ555_dino8_weighted_both_1000_siglip_015000_state_weighted__ttff_0p_tfff, label: disconnected}
-# checkpoint: "030000"
-
-  # - {model_dir: FSQ555_dino8_both_1000_siglip_015000_state__tttf_50p_tfff_fftt, label: connected_50%}
-  # - {model_dir: FSQ555_dino8_both_1000_siglip_015000_state__tttt_0p_tfff, label: fully_connected_0%}
-
-  # - {model_dir: FSQ555_dino8_both_1000_siglip_015000_state__tttf_50p_ffff_ffff, label: stage1_50%}
-  # - {model_dir: FSQ555_dino8_both_1000_siglip_scratch_state__tttf_50p_ffff_ffff, label: scratch_50%}
-  # - {model_dir: FSQ555_dino8_both_1000_siglip_scratch_state__tttf_80p_ffff_ffff, label: scratch_80%}
-  # - {model_dir: FSQ555_dino8_both_1000_siglip_scratch_state__tttf_90to20p50k_ffff_ffff, label: scratch_90to20%}
-
-  # - {model_dir: FSQ555_dino8_both_1000_siglip_015000_state__tttf_50p_ffff_ffff, label: unfreeze_expert} # best for in-distribution
-  # - {model_dir: FSQ555_dino8_both_1000_siglip_015000_state__tttf_50p_ffff_fftt, label: unfreeze_expert_v2}
-  # - {model_dir: FSQ555_dino8_both_1000_siglip_015000_state__tttf_50p_tfff_ffff, label: freeze_expert}
-
-  # - {model_dir: FSQ555_dino8_both_1000_siglip_015000_state__tttf_50p_tfff_ffff, label: skill-learning during dropout}
-  # - {model_dir: FSQ555_dino8_both_1000_siglip_015000_state__tttf_50p_tfff_fftt, label: skill-freeze during dropout}
-  # - {model_dir: FSQ555_dino8_both_1000_siglip_015000_state__60tttff_20ffttt_20ffftt, label: 6-2-2_freeze_cond_vision}
-  # - {model_dir: FSQ555_dino8_both_1000_siglip_015000_state__60ttff_20fftt_20fftt, label: 6-2-2_unfreeze_cond_vision}
-  # - {model_dir: FSQ555_dino8_both_1000_siglip_015000_state__20tttff_40ffttt_40ffftt, label: 2-4-4_freeze_cond_vision}
-  # - {model_dir: FSQ555_dino8_both_1000_siglip_015000_state__20ttff_40fftt_40fftt, label: 2-4-4_unfreeze_cond_vision}
-
-  - {model_dir: FSQ555_dino8_both_1000_siglip_015000_state__20tttff_40ffttt_40fffff, label: 2-4-4_freeze_vision_555}
-  - {model_dir: FSQ88_dino8_both_1000_siglip_015000_state__20tttff_40ffttt_40fffff, label: 2-4-4_freeze_vision_88}
-
-models_per_row: 2                 # 행당 패널 수 (0=한 행; 6개@3 → 2×3 그리드) — stage1_eval과 동일
+  - {model_dir: FSQ555_dino8_both_1000_siglip_015000_state__s2_Lttr8lr10, label: stage2_r8}
+  - {model_dir: FSQ555_dino8_both_1000_siglip_015000_state__s2_Lttr16lr10, label: stage2_r16}
+models_per_row: 3                 # 행당 패널 수 (0=한 행; 6개@3 → 2×3 그리드) — stage1_eval과 동일
 # model_dir: libero_90_full_full_FSQ555_dino8_both_1000_siglip_015000_unfreeze_state_ve_lang_dz0.8_frzAe_connect
 
-checkpoint: "050000"              # "last" or a step number (these runs go up to 040000)
+checkpoint: "last"              # "last" or a step number (these runs go up to 040000)
 
 # ── Eval rollout ──
 target_task: libero_90    # LIBERO suite for the sim env
@@ -98,7 +78,7 @@ inference_skill_max_length: 200    # force a skill switch after this many steps 
 eval_terminator: auto
 
 # ── Oracle eval (isolate the action expert from the VLM's skill prediction) ──
-use_gt_skill: false        # true = teacher-force the dataset's GT skill sequence (per task) into the
+use_gt_skill: true        # true = teacher-force the dataset's GT skill sequence (per task) into the
                           # cond-encoder; the VLM still encodes the start obs but its predicted code
                           # is bypassed. GT skills come from the run's skillvla dataset (auto-derived).
 skill_advance_mode: terminator    # how a skill ends: "terminator" (FSQ signal) or "gt" (GT demo

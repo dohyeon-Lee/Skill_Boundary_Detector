@@ -34,6 +34,17 @@ class Args:
 
     device: str = "cuda"
 
+    # ── 전이 안전망 (B): 새 데이터셋 인코딩 시 미지원 코드 → 최근접 지원 코드로 snap ──
+    snap_to_supported: bool = False
+    """raw FSQ code가 참조(training) 데이터셋에서 미지원(빈/희귀)이면 가장 가까운 지원 코드로 옮김.
+    다운스트림 VLA가 학습 못 한 코드로 스킬이 배정되는 것을 방지 (OOD graceful degradation)."""
+    supported_freq_path: str = ""
+    """지원 코드 참조 npz. training 빌드의 skill_code_freq.npz(motion_counts) 또는 skill_latents.npz(tokens)."""
+    min_code_freq: int = 1
+    """이 값 미만 빈도의 코드는 '미지원'으로 간주 → snap 대상. 1 = 완전 빈칸만; ↑ 하면 희귀코드도."""
+    snap_metric: str = "l1"
+    """격자 거리 (l1|l2)."""
+
 
 def load_model(model_path: Path, device: str) -> SplineFSQAE:
     ckpt = torch.load(str(model_path), map_location="cpu", weights_only=False)
@@ -74,6 +85,60 @@ def load_model(model_path: Path, device: str) -> SplineFSQAE:
     return model
 
 
+def _grid_coords(model: SplineFSQAE) -> np.ndarray:
+    """All C codes → their integer cell coords (C, D), matching FSQ.forward's index convention:
+    level_d = (code // stride_d) % L_d ; coord_d = level_d - half_width_d.  (== encode_numpy's z_q space)"""
+    fsq = model.fsq
+    L = np.array([int(round(2 * h + 1)) for h in fsq.levels_half.cpu().tolist()])   # levels_half=(L-1)/2
+    strides = fsq.strides.cpu().numpy()
+    half = fsq.half_width.cpu().numpy()
+    codes = np.arange(int(np.prod(L)))
+    lvl = (codes[:, None] // strides[None, :]) % L[None, :]                          # (C, D) level 0..L-1
+    return (lvl - half[None, :]).astype(np.float32)                                  # (C, D) integer coord
+
+
+def _load_supported(ref_path: Path, n_codes: int, min_freq: int) -> np.ndarray:
+    """Reference npz → indices of supported codes (freq >= min_freq). Accepts skill_code_freq.npz
+    (motion_counts) or skill_latents.npz (tokens → bincount)."""
+    raw = np.load(str(ref_path))
+    if "motion_counts" in raw:
+        freq = raw["motion_counts"]
+    elif "tokens" in raw:
+        freq = np.bincount(raw["tokens"].astype(np.int64).ravel(), minlength=n_codes)
+    else:
+        raise KeyError(f"{ref_path}: need 'motion_counts' or 'tokens' key for supported-code reference.")
+    return np.where(np.asarray(freq).ravel()[:n_codes] >= min_freq)[0]
+
+
+def _snap_to_supported(latents: np.ndarray, tokens: np.ndarray, model: SplineFSQAE, args: Args):
+    """Remap each skill whose raw code is unsupported → nearest supported code (grid distance in the
+    integer cell-coord space, which is exactly what `latents` holds). Returns (latents, tokens)."""
+    coords = _grid_coords(model)                                    # (C, D)
+    supported = _load_supported(Path(args.supported_freq_path), len(coords), args.min_code_freq)
+    if len(supported) == 0:
+        raise ValueError("no supported codes at this min_code_freq — lower --min_code_freq.")
+    sup_coords = coords[supported]                                  # (S, D)
+    is_sup = np.zeros(len(coords), dtype=bool)
+    is_sup[supported] = True
+
+    lat, tok = latents.copy(), tokens.copy()
+    dead = ~is_sup[tokens]
+    dists = []
+    for i in np.where(dead)[0]:
+        diff = sup_coords - latents[i][None, :]
+        d = np.abs(diff).sum(1) if args.snap_metric == "l1" else (diff ** 2).sum(1)
+        j = int(np.argmin(d))
+        tok[i] = supported[j]
+        lat[i] = sup_coords[j]
+        dists.append(float(d[j]))
+    n = len(dead)
+    print(f"[FSQ encode] snap: {int(dead.sum())}/{n} skills ({dead.mean()*100:.1f}%) landed on "
+          f"unsupported codes (freq<{args.min_code_freq}) → snapped to nearest of {len(supported)} "
+          f"supported codes | snap dist({args.snap_metric}) mean={np.mean(dists) if dists else 0:.2f} "
+          f"max={np.max(dists) if dists else 0:.0f}")
+    return lat, tok
+
+
 def main(args: Args) -> None:
     device = args.device if torch.cuda.is_available() and args.device == "cuda" else "cpu"
     skills_dir = Path(args.skills_dir)
@@ -92,9 +157,17 @@ def main(args: Args) -> None:
         latents.append(model.encode_numpy(seg, device=device))
         tokens.append(model.encode_index(seg, device=device))
 
+    latents_arr = np.stack(latents).astype(np.float32)
+    tokens_arr = np.array(tokens, dtype=np.int32)
+
+    if args.snap_to_supported:
+        if not args.supported_freq_path:
+            raise ValueError("--snap_to_supported requires --supported_freq_path (training code freq).")
+        latents_arr, tokens_arr = _snap_to_supported(latents_arr, tokens_arr, model, args)
+
     save_dict: dict[str, np.ndarray] = {
-        "latents": np.stack(latents).astype(np.float32),
-        "tokens": np.array(tokens, dtype=np.int32),
+        "latents": latents_arr,
+        "tokens": tokens_arr.astype(np.int32),
         "skill_order": np.array(_compute_skill_orders(metadata), dtype=np.float32),
     }
     for key in ("episode_id", "task_id", "skill_index", "frame_start", "frame_end", "length"):

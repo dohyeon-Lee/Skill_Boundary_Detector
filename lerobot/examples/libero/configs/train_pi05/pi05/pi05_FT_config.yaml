@@ -17,8 +17,16 @@ ft_steps: 15000
 ft_save_freq: 5000
 ft_wandb_project: VLA_FT      # skillVLA FT와 같은 프로젝트 → probe_forget/flow 곡선 겹쳐 비교
 # PT warm-start: pi05_PT/ 아래 폴더명 + 스텝만 지정 (제일 간단).
-ft_pretrained_run_name: PT_libero_90_full_full_pi05_batch16_ff_ff
-ft_pretrained_checkpoint: "015000"
+ft_pretrained_run_name: PT_libero_90_full_full_pi05_batch16_ft_ft
+
+  # - {model_dir: PT_libero_90_full_full_pi05_batch16_ff_ff, label: full_unfreeze_lora_none}
+  # - {model_dir: PT_libero_90_full_full_pi05_batch16_ft_ff, label: freeze_llm_lora_none}
+  # - {model_dir: PT_libero_90_full_full_pi05_batch16_tf_ff, label: freeze_vis_lora_none}
+  # - {model_dir: PT_libero_90_full_full_pi05_batch16_ft_ft, label: freeze_llm_lora_llm}
+  # - {model_dir: PT_libero_90_full_full_pi05_batch16_tt_tf, label: freeze_all_lora_vis}
+  # - {model_dir: PT_libero_90_full_full_pi05_batch16_tt_tt, label: freeze_all_lora_all}
+
+ft_pretrained_checkpoint: "020000"
 # (레거시 폴백: run_name을 비우면 아래 세 키 + PT freeze/lora 태그로 PT_{dataset}_pi05_batch{bs}_{tag}[_{exp}] 재조립)
 # ft_pretrained_dataset: libero_90_full_full
 # ft_pretrained_batch_size: 16

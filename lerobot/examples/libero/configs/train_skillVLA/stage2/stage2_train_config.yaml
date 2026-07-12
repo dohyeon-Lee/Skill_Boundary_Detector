@@ -52,28 +52,33 @@ vlm_expert:       false
 cond_expert:      true
 
 
-# ═══ LoRA-continual PT regime (배치마다 SKILL/COND 뽑음 — A/B/C 3-way를 대체) ═══════════════════
-# 베이스(VLM LLM·cond 인코더·cond_vision)는 항상 동결 — 적응은 named LoRA 어댑터 3개가 담당:
-#   ① lora_skill       @ VLM LLM      — skill decoder의 VLM 뷰(어휘/skill 예측 적응). FT때 학습(+replay).
-#   ② lora_cond_vlm    @ VLM LLM      — cond의 VLM 뷰(skill이 못 담는 residual 추출). FT때 동결.
-#   ③ lora_cond_bridge @ cond encoder — frozen cond가 그 residual을 삼키는 통로. FT때 동결.
-# regime (배치 = 한 regime):
-#   SKILL = standalone VLM(+①) → reader → skill loss만 (flow 없음). 학습: ①+reader/head(+vlm_vision).
-#   COND  = VLM(+②) → cond(+③) → FROZEN expert flow (GT skill 주입). 학습: ②③(+vlm_vision).
-# expert는 PT 내내 동결(stage1 완성 전제) → severed/C regime 불필요(절단 VSA ≡ stage1 그대로).
-# vlm_vision(+projector)은 PT에서 full 학습(자연→로봇 도메인 적응; 확정 결정). cond_vision 동결.
-# 폴더명: {STAGE-1 정보}__pt{P_SKILL}{P_COND}_L{①②③ t/f}r{rank}[_{exp}] (예: ...state__pt5050_Ltttr8).
-regime_probs_pt: [0, 1]      # [SKILL, COND] 확률 (합 1). 필수.
-lora_skill: true                  # ①
+# ═══ STAGE 2 = cond 통로 PT (모든 배치가 COND/flow — SKILL 혼합은 은퇴, skill 경로는 stage3에서) ═══
+# 파이프라인: stage1(VSA) → stage2(②③+vlm_vision, flow) → stage3(①+reader/head, skill) → FT.
+# 두 경로는 학습 파라미터를 전혀 공유하지 않으므로(vision은 COND 소유) 순차 학습이 interleave와 동치 —
+# 게다가 stage3의 ①이 "확정된 vision" 위에서 학습되어 moving-target이 없음.
+# 이 스테이지 학습 대상: ② lora_cond_vlm @ VLM LLM (skill이 못 담는 residual 추출)
+#                     ③ lora_cond_bridge @ cond encoder (frozen cond가 residual을 삼키는 통로)
+#                     + vlm_vision(+projector) full 학습 (자연→로봇 도메인 적응; COND 소유 확정)
+# 동결: VLM LLM base, cond base, cond_vision, expert(+z/state proj), skill reader/head, ①(stage3 소관).
+# 폴더명: {STAGE-1 정보}__s2_L{②③ t/f}r{rank}[lr{scale}][_{exp}] (예: ...state__s2_Lttr16lr10).
 lora_cond_vlm: true               # ②
 lora_cond_bridge: true            # ③
-lora_rank: 16                      # 공유 hyperparam (rank/alpha/dropout/targets — 세 어댑터 공통)
+lora_rank: 8                      # 공유 hyperparam (rank/alpha/dropout/targets — 어댑터 공통; stage3의 ①도 상속)
+                                  # (r16은 flow 정체 처방이었는데 진범이 .base 랜덤로드 버그로 판명 → 기본 8 복귀)
 lora_alpha: 16
 lora_dropout: 0.0
 lora_targets: "q,k,v,o"
-# 어댑터(①②③)만의 LR 배수 (base optimizer_lr ×). rank-r B=0 어댑터는 관례상 full-FT LR의 10~40배 —
+# 어댑터(②③)만의 LR 배수 (base optimizer_lr ×). rank-r B=0 어댑터는 관례상 full-FT LR의 10~40배 —
 # lr_base를 올리면 full 학습인 vlm_vision까지 빨라지므로 이 배수로 어댑터만 올림. 폴더명엔 lr{scale}로.
 lora_lr_scale: 10.0
+
+# ── Severed 정규화 배치 (conduit gating) ──
+# 이 확률로 배치를 VLM 없이(severed) ③(cond_bridge)만 활성인 채 flow 학습 (타겟 = stage1과 같은 hold).
+# 이유: ③은 cond attention에 붙어 이미지-단독 경로로도 PT prior를 흡수할 수 있는 유일한 학습 모듈
+# (②/vlm_vision은 구조적으로 VLM-gated) — severed 배치가 "VLM 없으면 stage1 함수 불변"을 행동 수준에서
+# 강제해 그 구멍을 닫음. FT 때 ③은 frozen이므로 PT-overfit 방지 = 새 태스크 OOD 강건성.
+# 대가: connected 학습 밀도·vlm_vision 업데이트가 (1-p)배. 폴더명엔 sv{p*100} (예: sv50). 0 = off.
+cond_severed_prob: 0.5
 
 # ── FSQ terminator co-training (same as FT; disjoint from the SkillVLA params) ──
 # Adapt the FSQ terminator on this dataset's GT signals (z←true skill, current DINO + state →
@@ -90,7 +95,7 @@ terminator_end_pos_weight: 1.0
 track_param_drift: true
 
 # ── Run naming ────────────────────────────────────────────────
-exp: ""                                        # optional run-name suffix (blank = none)
+exp: "fixed"                                        # optional run-name suffix (blank = none)
 
 
 # ── Optimization ──────────────────────────────────────────────

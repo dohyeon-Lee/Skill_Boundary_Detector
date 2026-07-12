@@ -189,6 +189,10 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
         "fsq_model_dir": fsq_model_dir,
         "fsq_model_path": fsq_model_path,
         "fsq_checkpoint": fsq_checkpoint,
+        # transfer 안전망(B): 인코딩 시 미지원(학습때 안 쓰인) 코드 → 최근접 지원 코드로 snap.
+        "fsq_snap_to_supported": as_bool(get_value(cfg, "fsq_snap_to_supported", False)),
+        "fsq_snap_min_code_freq": int(get_value(cfg, "fsq_snap_min_code_freq", 1)),
+        "fsq_snap_reference": str(get_value(cfg, "fsq_snap_reference", "")),
         "fsq_levels_str": " ".join(str(v) for v in fsq_levels),
         # SkillVLA build (step 5)
         "max_order": int(get_value(cfg, "max_order", 0)),

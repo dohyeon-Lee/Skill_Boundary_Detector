@@ -186,6 +186,31 @@ class NamedLoRALinear(nn.Module):
         return out
 
 
+def route_plain_to_base(state: dict, model_keys: set[str]) -> tuple[dict, int]:
+    """Route plain nn.Linear keys into their LoRA-wrapped `.base.*` slots. A wrapped Linear stores its
+    pretrained weight under `<name>.base.weight`, but a NON-LoRA checkpoint (pi05_base, a stage-1
+    skill_expert, …) has the plain `<name>.weight` — without this remap those land as "missing" and the
+    wrapped projections stay at RANDOM init (catastrophic: the whole attention is random; see the pi05
+    LoRA incident). Routes only when the model actually exposes the wrapped key; no-op for non-LoRA
+    models and for LoRA→LoRA loads. Returns (routed_state, n_routed)."""
+    routed, n = {}, 0
+    for key, value in state.items():
+        if key in model_keys:
+            routed[key] = value
+            continue
+        alt = None
+        if key.endswith(".weight"):
+            alt = key[: -len(".weight")] + ".base.weight"
+        elif key.endswith(".bias"):
+            alt = key[: -len(".bias")] + ".base.bias"
+        if alt is not None and alt in model_keys and alt not in state:
+            routed[alt] = value
+            n += 1
+        else:
+            routed[key] = value
+    return routed, n
+
+
 def inject_named_lora(root: nn.Module, target_names: set[str], adapter_name: str, r: int, alpha: float,
                       dropout: float = 0.0) -> int:
     """Add a NAMED adapter to every targeted nn.Linear under ``root``, wrapping it in a NamedLoRALinear the

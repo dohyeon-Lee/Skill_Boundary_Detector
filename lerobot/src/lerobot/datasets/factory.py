@@ -98,11 +98,23 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
         video_keys_to_load = [] if _no_video else None
         if not cfg.dataset.streaming:
             # Stage-2 SkillVLA adds the (jittered) skill-start image/state + skill code per item.
+            # transition_packs set (stage 3 / FT SKILL batches) → segment-level samples straight from
+            # the prebuilt transitions.npz (no episode-video seeks; per-transition uniform sampling).
             dataset_cls = LeRobotDataset
             if getattr(cfg.policy, "type", None) == "skill_vla":
-                from lerobot.policies.skillVLA.dataset_skillVLA import SkillVLADataset
+                _packs = getattr(cfg.policy, "transition_packs", None)
+                if _packs:
+                    from functools import partial
 
-                dataset_cls = SkillVLADataset
+                    from lerobot.policies.skillVLA.dataset_transitions import SkillTransitionDataset
+
+                    dataset_cls = partial(
+                        SkillTransitionDataset,
+                        transition_packs=[p.strip() for p in str(_packs).split(",") if p.strip()])
+                else:
+                    from lerobot.policies.skillVLA.dataset_skillVLA import SkillVLADataset
+
+                    dataset_cls = SkillVLADataset
             dataset = dataset_cls(
                 cfg.dataset.repo_id,
                 root=cfg.dataset.root,
