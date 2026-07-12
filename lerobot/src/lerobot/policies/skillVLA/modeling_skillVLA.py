@@ -502,6 +502,9 @@ class SkillVLAPytorch(PI05Pytorch):
             xattn_block = xattn_block | is_lang        # exclude LANGUAGE tokens
         if not bool(getattr(self.config, "attend_image", True)):
             xattn_block = xattn_block | ~is_lang       # exclude IMAGE tokens (language-only)
+        # 같은 forward 안에서 reader 전용 read-set(_reader_xattn_block)을 재계산할 수 있게 스냅샷 —
+        # cond conduit는 lang-only로 조여도 skill reader는 이미지를 계속 보게 분리(reader_attend_*).
+        self._vlm_is_lang = is_lang
         return embeds, pad, xattn_block
 
     def _time_cond(self, timestep: Tensor) -> Tensor:
@@ -894,13 +897,37 @@ class SkillVLAPytorch(PI05Pytorch):
             if sp is not None:
                 tp.mul_(a).add_(sp.detach().to(tp.dtype), alpha=1.0 - a)
 
+    def _reader_xattn_block(self, fallback: Tensor) -> Tensor:
+        """SKILL READER 전용 VLM read-set — reader_attend_image/language(None=attend_* 상속)로 cond/expert의
+        read-set과 분리. cond conduit를 lang-only로 조여도(attend_image=False) skill 예측기는 시작 obs
+        이미지를 계속 볼 수 있다. 둘 다 None(상속)이거나 is_lang 스냅샷이 없으면 전달된 블록 그대로
+        (기존 체크포인트 동작 불변)."""
+        c = self.config
+        rai = getattr(c, "reader_attend_image", None)
+        ral = getattr(c, "reader_attend_language", None)
+        if rai is None and ral is None:
+            return fallback                                   # 상속 → cond/expert와 동일 read-set
+        il = getattr(self, "_vlm_is_lang", None)
+        if il is None or il.shape[0] != fallback.shape[0]:
+            return fallback
+        ai = bool(getattr(c, "attend_image", True)) if rai is None else bool(rai)
+        al = bool(getattr(c, "attend_language", False)) if ral is None else bool(ral)
+        blk = torch.zeros_like(il)
+        if not al:
+            blk = blk | il                                    # exclude LANGUAGE tokens
+        if not ai:
+            blk = blk | ~il                                   # exclude IMAGE tokens
+        return blk
+
     def _skill_hidden(self, vlm_out: Tensor, vlm_pad: Tensor, vlm_xattn_block: Tensor,
                       all_layers: Tensor | None = None) -> Tensor:
         """Pooled skill hidden from the JOINT concat-KV SkillReader over the VLM's FINAL-layer output
-        (``vlm_out`` (B,nv,W)). The reader attends the SAME VLM tokens as cond — the image/language read-set
-        picked by attend_image/attend_language (~vlm_xattn_block) — minus padding → SkillHead. Read-only.
-        all_layers (B,L,nv,W): skill_reader_all_layers → the reader's KV is EVERY layer's nv tokens
-        stacked (L·nv keys), so its attention can pick the informative depth; the ignore mask is tiled L×."""
+        (``vlm_out`` (B,nv,W)). The reader attends the reader read-set — reader_attend_image/language,
+        None이면 cond와 같은 attend_image/attend_language(~vlm_xattn_block) 상속 — minus padding →
+        SkillHead. Read-only. all_layers (B,L,nv,W): skill_reader_all_layers → the reader's KV is EVERY
+        layer's nv tokens stacked (L·nv keys), so its attention can pick the informative depth; the
+        ignore mask is tiled L×."""
+        vlm_xattn_block = self._reader_xattn_block(vlm_xattn_block)      # reader 전용 read-set 적용
         vlm_key_ignore = (~vlm_pad) | vlm_xattn_block[None, :]           # (B, nv) True = do not attend
         if all_layers is not None:
             B, L, nv, W = all_layers.shape
@@ -934,8 +961,9 @@ class SkillVLAPytorch(PI05Pytorch):
         """FLOW view → (v_t, cond_tokens). Connected: joint forward with the VLM read under adapter ②
         ("cond") and the cond encoder ingesting it through ③ ("cond_bridge"). Severed: the VLM never
         runs — the expert acts on skill z + current obs alone (pure VSA); the active adapters follow
-        ``severed_adapters``: ∅ (기본 — MOTOR_SEV/probe: ③ bypass → 정확히 Stage-1) 또는 {"cond_bridge"}
-        (COND_SEV 정규화 배치: ③만 켠 채 severed → conduit gating 학습). Sticky adapter set
+        ``severed_adapters``: ∅ (기본 — MOTOR_SEV/probe: 어댑터 전부 bypass → 정확히 Stage-1) 또는
+        {"cond_bridge", "expert"} (COND_SEV 정규화 배치: ③④를 켠 채 severed → conduit gating 학습;
+        ④ 미주입 체크포인트에서 "expert"는 무해한 no-op). Sticky adapter set
         (see _skill_view)."""
         cond_tokens = self._cond_tokens(cond_images)   # image-only (state→AdaRMS, skill by mode)
         if severed:
@@ -1001,7 +1029,10 @@ class SkillVLAPytorch(PI05Pytorch):
             allow[:, :, n_prefix:, npre:] = True                        # action → prefix + action
             att_4d = torch.where(allow & cols[:, None, None, :], 0.0, OPENPI_ATTENTION_MASK_VALUE)
 
-        set_active_adapters({"skill"})                     # grad graph's sticky set (matches the skill view)
+        # sticky set for the grad graph: "skill" (VLM-module recompute와 일치) + "expert" (④는 expert
+        # 레이어 모듈에만 있어 skill-view recompute에 무영향; UNcheckpointed action-stream이 배포와 동일하게
+        # ④ 켜진 모터로 측정됨 — ④ 미주입이면 무해한 no-op).
+        set_active_adapters({"skill", "expert"})
         expert_cond = self._expert_cond_from_z(time, state, skill_zq)
         a_in = self._action_in(x_t)
         prefix = self._action_prefix_from_z(skill_zq)      # None in state_skill mode
@@ -1035,9 +1066,10 @@ class SkillVLAPytorch(PI05Pytorch):
                       forced z (the motor path never touches the skill predictor); real cross-skill tail.
                       (STAGE 2 [pt_stage="cond"] trains ②③+vision against the FROZEN expert; FT "motor"
                       trains the expert.)
-          COND_SEV    (Stage 2, 확률 cond_severed_prob) severed flow인데 ③만 활성: VLM 없음 + Stage-1
-                      hold 타겟 — "③은 VLM이 없으면 stage1 함수 불변"(conduit gating)을 강제하는 정규화
-                      배치. gradient는 ③에만 흐름 (②/vision은 그래프 밖). distill 없음.
+          COND_SEV    (Stage 2, 확률 cond_severed_prob) severed flow인데 ③(+④)만 활성: VLM 없음 +
+                      Stage-1 hold 타겟 — "③/④는 VLM이 없으면 stage1 함수 불변"(conduit gating)을
+                      강제하는 정규화 배치 (③=이미지-단독 흡수 구멍, ④=connected에서 항상 켜진 소비자
+                      적응의 VLM-무관 성분). gradient는 ③④에만 흐름 (②/vision은 그래프 밖). distill 없음.
           MOTOR_SEV   adapters OFF (③ bypass → pure Stage-1 VSA), the VLM never runs; Stage-1 hold
                       target; + random-skill distillation to the frozen-PT teacher (also severed).
         EVAL / probes / no-regime training — BOTH views (skill standalone, then flow; z follows
@@ -1133,7 +1165,9 @@ class SkillVLAPytorch(PI05Pytorch):
         v_t, cond_tokens = self._flow_view(
             cond_images, start_images, lang_tokens, lang_masks, state, skill_zq, x_t, time,
             severed=severed,
-            severed_adapters=(frozenset({"cond_bridge"}) if regime == "cond_sev" else frozenset()))
+            # COND_SEV: ③+④를 켠 채 severed + stage1 hold 타겟 — ③(이미지-단독 conduit)과 ④(항상-켜진
+            # 소비자 적응) 둘 다 "VLM 없으면 stage1 함수 불변"으로 고정 (④ 미주입이면 이름은 무해한 no-op).
+            severed_adapters=(frozenset({"cond_bridge", "expert"}) if regime == "cond_sev" else frozenset()))
 
         # Random-skill distillation to the FROZEN-PT teacher — MOTOR_SEV training batches only: pure-VSA
         # repertoire preservation lives in the standalone regime. Runs adapter-free (the teacher included,

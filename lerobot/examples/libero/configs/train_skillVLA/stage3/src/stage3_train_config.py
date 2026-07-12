@@ -62,6 +62,13 @@ def build_settings(cfg: dict) -> dict:
     # Attention topology + reader architecture: MUST match the loaded weights → always inherited.
     attend_language = _inh_bool("attend_language", False)
     attend_image = _inh_bool("attend_image", True)
+    # reader 전용 read-set (tri-state 상속): s2 config.json에 없거나 null(옛 ckpt) → ""(미전달, 상속 유지).
+    # 학습(①/reader)과 추론이 같은 read-set을 써야 하므로 반드시 s2 값을 따라감.
+    def _inh_tri(key):
+        v = s2_cfg.get(key, None)
+        return "" if v is None else ("true" if as_bool(v) else "false")
+    reader_attend_image = _inh_tri("reader_attend_image")
+    reader_attend_language = _inh_tri("reader_attend_language")
     vlm_cond = _inh_bool("vlm_cond", True)
     cond_expert = _inh_bool("cond_expert", True)
     vlm_expert = _inh_bool("vlm_expert", False)
@@ -69,9 +76,12 @@ def build_settings(cfg: dict) -> dict:
     reader_depth = _inh_num("reader_depth", 2, int)
     reader_heads = _inh_num("reader_heads", 8, int)
     skill_reader_all_layers = _inh_bool("skill_reader_all_layers", False)
-    # LoRA structure — inherited (② ③ must match the checkpoint; ① shares the same rank/alpha).
+    # LoRA structure — inherited (②③④ must match the checkpoint; ① shares the same rank/alpha).
+    # ④(lora_expert)를 상속 안 하면 stage3 로드에서 ④가 미주입 → s2 ckpt의 ④ 텐서가 unexpected로
+    # 조용히 버려져 최종 모델에서 사라짐 (②③은 ④와 공학습된 상태라 심각한 불일치).
     lora_cond_vlm = _inh_bool("lora_cond_vlm", True)
     lora_cond_bridge = _inh_bool("lora_cond_bridge", True)
+    lora_expert = _inh_bool("lora_expert", False)
     lora_rank = _inh_num("lora_rank", 8, int)
     lora_alpha = _inh_num("lora_alpha", 16.0, float)
     lora_dropout = _inh_num("lora_dropout", 0.0, float)
@@ -157,6 +167,8 @@ def build_settings(cfg: dict) -> dict:
         "skill_reader_all_layers": skill_reader_all_layers,
         "attend_language": attend_language,
         "attend_image": attend_image,
+        "reader_attend_image": reader_attend_image,       # ""=상속(미전달) | true/false — s2 ckpt에서 상속
+        "reader_attend_language": reader_attend_language,
         "vlm_cond": vlm_cond,
         "cond_expert": cond_expert,
         "vlm_expert": vlm_expert,
@@ -166,6 +178,7 @@ def build_settings(cfg: dict) -> dict:
         "lora_skill": True,
         "lora_cond_vlm": lora_cond_vlm,
         "lora_cond_bridge": lora_cond_bridge,
+        "lora_expert": lora_expert,               # ④ 상속 — 미전달 시 ckpt의 ④가 로드에서 소실됨
         "lora_rank": lora_rank,
         "lora_alpha": lora_alpha,
         "lora_dropout": lora_dropout,

@@ -9,7 +9,7 @@
 #   vf           = freeze_vlm_vision=true (vision 동결; ②③(④) 어댑터만 학습)
 #   exp          = 자유 suffix
 # 예: FSQ555_dino8_both_1000_siglip_015000_state__s2_Lttr8lr10sv50vf (④ 켜면 ..._s2_Ltttr8lr10sv50vf)
-# (attend_*/vlm_* 연결 토폴로지·deadzone은 이름에 안 들어감 — config.json이 진실)
+# (attend_*/reader_attend_*/vlm_* 연결 토폴로지·deadzone은 이름에 안 들어감 — config.json이 진실)
 #
 # ── Paths (project_root/dataset_root come from configs/global_config.yaml) ──
 skillvla_dataset_root: skillvla_dataset
@@ -53,12 +53,18 @@ skill_deadzone_frac: 0.8
 
 # ── 모듈 간 attention 연결 (VLM, cond, action expert). VLM→cond→expert 체인 + VLM→expert 지름길의
 #    각 엣지를 토글. 학습/추론 마스크 둘 다에 적용(train/infer 일치). skill-query는 항상 제외. ──
-# attend_image / attend_language: VLM 토큰 read-set을 image/language 두 축으로 고름 (cond·expert·reader 공통).
+# attend_image / attend_language: VLM 토큰 read-set을 image/language 두 축으로 고름 (cond·expert 기본,
+# reader는 아래 reader_attend_*로 분리 가능).
 #   image=T,lang=F → 이미지만(visual grounding 강제, 기본) / image=T,lang=T → 이미지+언어
 #   image=F,lang=T → 언어만(VLM 언어 히든만 읽음) / image=F,lang=F → 금지(에러)
 #   VLM 내부 self-attn은 항상 전체 처리; 이건 downstream read만 게이팅(위치/prefix 구조 불변). (이름에는 안 들어감)
 attend_language:  true
 attend_image:     false
+# reader(skill 예측기) 전용 read-set 오버라이드 — 빈칸/생략 = attend_* 상속(기존 동작).
+# cond conduit는 lang-only로 조여도(위 attend_image=false) skill 예측은 시작 obs "이미지"를 봐야 하므로
+# 분리: image+lang 둘 다 켜는 것을 권장. stage3/FT/eval은 체크포인트 config.json에서 자동 상속.
+reader_attend_image: true
+reader_attend_language: true
 vlm_cond:         true
 vlm_expert:       false
 
@@ -71,14 +77,17 @@ cond_expert:      true
 # 게다가 stage3의 ①이 "확정된 vision" 위에서 학습되어 moving-target이 없음.
 # 이 스테이지 학습 대상: ② lora_cond_vlm @ VLM LLM (skill이 못 담는 residual 추출)
 #                     ③ lora_cond_bridge @ cond encoder (frozen cond가 residual을 삼키는 통로)
+#                     ④ lora_expert @ action expert (connected 전용 소비자 적응; 아래 참고)
 #                     + vlm_vision(+projector) full 학습 (자연→로봇 도메인 적응; COND 소유 확정)
-#                       — 단 freeze_vlm_vision=true면 vision도 동결하고 ②③ 어댑터만 학습 (아래 참고)
-# 동결: VLM LLM base, cond base, cond_vision, expert(+z/state proj), skill reader/head, ①(stage3 소관).
-# 폴더명: {STAGE-1 정보}__s2_L{②③ t/f}r{rank}[lr{scale}][sv{p}][vf][_{exp}] (맨 위 네이밍 블록 참고).
+#                       — 단 freeze_vlm_vision=true면 vision도 동결하고 ②③④ 어댑터만 학습 (아래 참고)
+# 동결: VLM LLM base, cond base, cond_vision, expert base(+z/state proj), skill reader/head, ①(stage3 소관).
+# 폴더명: {STAGE-1 정보}__s2_L{②③[④] t/f}r{rank}[lr{scale}][sv{p}][vf][_{exp}] (맨 위 네이밍 블록 참고).
 lora_cond_vlm: true               # ②
 lora_cond_bridge: true            # ③
 # ④ action expert LoRA — CONNECTED 전용 소비자 적응: 얼린 expert가 ②③ 잔차를 "읽는 법"을 마중 나와 배움.
-# severed forward에서는 항상 OFF → VSA≡stage1 불변식에 구조적으로 무영향 (sv 정규화도 ④엔 불필요).
+# 배포 severed(VSA)에서는 항상 OFF → VSA≡stage1 불변식에 구조적으로 무영향. 단 sv(COND_SEV) 정규화
+# 배치에서는 ③과 함께 켜져 stage1 hold로 고정됨 — ④의 VLM-무관 성분(범용 모터 튜닝으로 PT prior 흡수)을
+# 닫아 학습 효과를 VLM 잔차 조건부로만 남김 (conduit gating의 ④ 확장).
 # 필요 이유: z(125코드)가 1000+모션을 커버하는 aliasing 하에서 잔차는 작은 정밀화가 아니라 큰 탈모호화 —
 # 얼린 expert의 반응 함수에 상류(②③)만으로 끼워 맞추는 것으로는 표현력 상한이 낮음. FT에서는 ②③과 함께
 # 동결(conduit 고정; expert base는 연결 배치가 얼린 ④를 통과하며 적응). run name엔 L 3번째 문자 (Lttt).
@@ -88,15 +97,16 @@ lora_rank: 8                      # 공유 hyperparam (rank/alpha/dropout/target
 lora_alpha: auto                  # auto = 2×rank (rank만 바꿔도 effective scale alpha/r=2 자동 유지); 숫자면 명시값
 lora_dropout: 0.0
 lora_targets: "q,k,v,o"
-# 어댑터(②③)만의 LR 배수 (base optimizer_lr ×). rank-r B=0 어댑터는 관례상 full-FT LR의 10~40배 —
-# lr_base를 올리면 full 학습인 vlm_vision까지 빨라지므로 이 배수로 어댑터만 올림. 폴더명엔 lr{scale}로.
+# 어댑터(②③④)만의 LR 배수 (base optimizer_lr ×). rank-r B=0 어댑터는 관례상 full-FT LR의 10~40배 —
+# lr_base를 올리면 (vf=false일 때) full 학습인 vlm_vision까지 빨라지므로 이 배수로 어댑터만 올림. 폴더명엔 lr{scale}로.
 lora_lr_scale: 10.0
 
 # ── Severed 정규화 배치 (conduit gating) ──
-# 이 확률로 배치를 VLM 없이(severed) ③(cond_bridge)만 활성인 채 flow 학습 (타겟 = stage1과 같은 hold).
-# 이유: ③은 cond attention에 붙어 이미지-단독 경로로도 PT prior를 흡수할 수 있는 유일한 학습 모듈
-# (②/vlm_vision은 구조적으로 VLM-gated) — severed 배치가 "VLM 없으면 stage1 함수 불변"을 행동 수준에서
-# 강제해 그 구멍을 닫음. FT 때 ③은 frozen이므로 PT-overfit 방지 = 새 태스크 OOD 강건성.
+# 이 확률로 배치를 VLM 없이(severed) ③(cond_bridge)+④(lora_expert, 켰다면)만 활성인 채 flow 학습
+# (타겟 = stage1과 같은 hold). 이유: ③은 이미지-단독 경로로, ④는 connected에서 항상 켜진 소비자 적응의
+# VLM-무관 성분으로 — 둘 다 PT prior를 흡수할 수 있는 구멍 (②/vlm_vision은 구조적으로 VLM-gated).
+# severed 배치가 "VLM 없으면 stage1 함수 불변"을 행동 수준에서 강제해 그 구멍을 닫음 → ③④의 학습 효과가
+# VLM 잔차 조건부로만 남음. FT 때 ③④는 frozen이므로 PT-overfit 방지 = 새 태스크 OOD 강건성.
 # 대가: connected 학습 밀도·vlm_vision 업데이트가 (1-p)배. 폴더명엔 sv{p*100} (예: sv50). 0 = off.
 cond_severed_prob: 0.5
 

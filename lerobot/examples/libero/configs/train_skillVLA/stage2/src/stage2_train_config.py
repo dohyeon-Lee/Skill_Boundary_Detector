@@ -126,6 +126,13 @@ def build_settings(cfg: dict) -> dict:
     # attend_image=T). attend_image/attend_language pick the VLM read-set (image-only / +lang / language-only).
     attend_language = as_bool(get_value(cfg, "attend_language", False))
     attend_image = as_bool(get_value(cfg, "attend_image", True))
+    # reader 전용 read-set (tri-state): 빈칸/None → 상속(attend_*와 동일; 플래그 미전달), true/false → 명시.
+    # cond conduit를 lang-only로 조여도 skill reader는 이미지를 보게 분리하는 스위치.
+    def _tri(key):
+        v = get_value(cfg, key, None)
+        return "" if v in (None, "", "null") else ("true" if as_bool(v) else "false")
+    reader_attend_image = _tri("reader_attend_image")
+    reader_attend_language = _tri("reader_attend_language")
     vlm_cond = as_bool(get_value(cfg, "vlm_cond", True))
     cond_expert = as_bool(get_value(cfg, "cond_expert", True))
     vlm_expert = as_bool(get_value(cfg, "vlm_expert", False))    # action ← VLM directly (was action_attend_vlm)
@@ -240,6 +247,8 @@ def build_settings(cfg: dict) -> dict:
         # inter-module attention connections (VLM/cond/expert edges + the language master switch)
         "attend_language": attend_language,
         "attend_image": attend_image,
+        "reader_attend_image": reader_attend_image,       # ""=상속(미전달) | true/false (reader 전용 read-set)
+        "reader_attend_language": reader_attend_language,
         "vlm_cond": vlm_cond,
         "cond_expert": cond_expert,
         "vlm_expert": vlm_expert,                   # action tokens read the VLM directly (was action_attend_vlm)

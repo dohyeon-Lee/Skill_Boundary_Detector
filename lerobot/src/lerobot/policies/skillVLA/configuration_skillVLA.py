@@ -115,11 +115,12 @@ class SkillVLAConfig(PI05Config):
       None    = not a PT run (FT via regime_probs_ft, or eval)."""
     cond_severed_prob: float = 0.0
     """STAGE-2 severed 정규화 배치 확률 (conduit gating): pt_stage="cond"의 배치가 이 확률로 VLM 없이
-    (severed) ③("cond_bridge")만 활성인 채 flow 학습된다. ③은 cond attention에 붙어 이미지-단독 경로로도
-    PT prior를 흡수할 수 있는 유일한 학습 모듈 — severed 배치가 "VLM이 없으면 stage1 함수를 건드리지 마"
-    를 행동 수준에서 강제해 그 구멍을 닫는다(FT 때 ③은 frozen이므로 PT-overfit 방지 = OOD 강건성).
-    타겟은 MOTOR_SEV와 같은 Stage-1 hold. VSA base는 늘 frozen — 이 배치의 gradient는 ③에만 흐른다
-    (②/vlm_vision은 그래프 밖 → 그들의 유효 학습 스텝은 (1-p)배). 0 = off."""
+    (severed) ③("cond_bridge")+④("expert", 주입 시)만 활성인 채 flow 학습된다. ③은 이미지-단독 경로로,
+    ④는 connected에서 항상 켜진 소비자 적응의 VLM-무관 성분으로 — 둘 다 PT prior를 흡수할 수 있는 구멍.
+    severed 배치가 "VLM이 없으면 stage1 함수를 건드리지 마"를 행동 수준에서 강제해 그 구멍을 닫는다
+    (FT 때 ③④는 frozen이므로 PT-overfit 방지 = OOD 강건성). 타겟은 MOTOR_SEV와 같은 Stage-1 hold.
+    VSA base는 늘 frozen — 이 배치의 gradient는 ③④에만 흐른다 (②/vlm_vision은 그래프 밖 → 그들의
+    유효 학습 스텝은 (1-p)배). 0 = off."""
     regime_probs_pt: list[float] | None = None
     """DEPRECATED (kept so existing checkpoints' config.json still deserializes): the retired
     interleaved [SKILL, COND] probabilities. COND-only values ([0,1]) auto-map to pt_stage="cond";
@@ -164,6 +165,14 @@ class SkillVLAConfig(PI05Config):
        attend_image=F, attend_language=T → LANGUAGE only (read the VLM's language hiddens, not vision)
        attend_image=F, attend_language=F → nothing (disallowed; use vlm_cond/vlm_expert=False to go VLM-blind).
     Default True keeps existing checkpoints unchanged. Run-name tag (when off): noimg."""
+    reader_attend_image: bool | None = None
+    """SKILL READER 전용 read-set 오버라이드 (None = attend_image 상속 → 기존 체크포인트 동작 불변).
+    cond conduit를 lang-only로 조여도(attend_image=False) skill 예측기는 시작 obs 이미지를 계속 봐야
+    하므로 분리 — reader_attend_image=true면 reader만 이미지 위치 히든을 읽음. 학습(stage3 ①)과 추론
+    (predict_skill_code)이 같은 값을 써야 하므로 stage3/FT는 체크포인트 config.json에서 상속."""
+    reader_attend_language: bool | None = None
+    """reader_attend_image의 language 축 (None = attend_language 상속). skill 예측은 보통 image+lang
+    둘 다 유용: reader_attend_image=true + reader_attend_language=true."""
     vlm_cond: bool = True
     """VLM → cond edge: cond attends the VLM tokens (images always, language iff attend_language). True =
     the cond-encoder is grounded by the VLM's skill-start view (default). False = cond is a plain current-obs
@@ -447,3 +456,10 @@ class SkillVLAConfig(PI05Config):
             raise ValueError(
                 "attend_image=False AND attend_language=False → the VLM has no attendable tokens. "
                 "Use vlm_cond=False / vlm_expert=False to make a stream VLM-blind instead.")
+        # reader read-set (None = attend_* 상속) 도 비어 있으면 안 됨 — skill 예측기가 읽을 토큰이 없음.
+        _rai = self.attend_image if self.reader_attend_image is None else self.reader_attend_image
+        _ral = self.attend_language if self.reader_attend_language is None else self.reader_attend_language
+        if not _rai and not _ral:
+            raise ValueError(
+                "reader read-set is empty: reader_attend_image/reader_attend_language (or the inherited "
+                "attend_*) are both False — the skill reader would have no VLM tokens to attend.")

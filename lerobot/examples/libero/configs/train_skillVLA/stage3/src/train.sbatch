@@ -108,7 +108,11 @@ fi
 
 # pretrained_path = the STAGE-2 checkpoint (full-loaded); stage1_checkpoint_path supplies the
 # architecture config only (no weights reloaded). ① is injected fresh (no keys in the checkpoint →
-# B=0 no-op start); ②③ re-injected to match the checkpoint keys and stay frozen.
+# B=0 no-op start); ②③④ re-injected to match the checkpoint keys and stay frozen.
+# reader 전용 read-set (tri-state 상속): 빈 env = s2 ckpt에 값 없음 → 플래그 미전달 (config None 유지).
+READER_ARGS=()
+[ -n "${READER_ATTEND_IMAGE:-}" ] && READER_ARGS+=(--policy.reader_attend_image="${READER_ATTEND_IMAGE}")
+[ -n "${READER_ATTEND_LANGUAGE:-}" ] && READER_ARGS+=(--policy.reader_attend_language="${READER_ATTEND_LANGUAGE}")
 PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="${NUM_GPUS}" \
   "${PROJECT_ROOT}/.venv/bin/lerobot-train" \
     --dataset.repo_id="${REPO_ID}" \
@@ -135,6 +139,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.skill_reader_all_layers="${SKILL_READER_ALL_LAYERS}" \
     --policy.attend_language="${ATTEND_LANGUAGE}" \
     --policy.attend_image="${ATTEND_IMAGE}" \
+    ${READER_ARGS[@]+"${READER_ARGS[@]}"} \
     --policy.vlm_cond="${VLM_COND}" \
     --policy.cond_expert="${COND_EXPERT}" \
     --policy.vlm_expert="${VLM_EXPERT}" \
@@ -145,6 +150,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.lora_skill="${LORA_SKILL}" \
     --policy.lora_cond_vlm="${LORA_COND_VLM}" \
     --policy.lora_cond_bridge="${LORA_COND_BRIDGE}" \
+    --policy.lora_expert="${LORA_EXPERT:-false}" \
     --policy.lora_rank="${LORA_RANK}" \
     --policy.lora_alpha="${LORA_ALPHA}" \
     --policy.lora_dropout="${LORA_DROPOUT}" \

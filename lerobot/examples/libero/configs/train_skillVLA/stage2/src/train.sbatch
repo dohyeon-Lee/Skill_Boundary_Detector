@@ -102,6 +102,11 @@ fi
 # the skill path trains in stage3).
 REGIME_ARGS=(--policy.pt_stage="${PT_STAGE}")
 
+# reader 전용 read-set (tri-state): 빈 env = 상속(attend_*와 동일) → 플래그 자체를 안 넘김 (config None 유지).
+READER_ARGS=()
+[ -n "${READER_ATTEND_IMAGE:-}" ] && READER_ARGS+=(--policy.reader_attend_image="${READER_ATTEND_IMAGE}")
+[ -n "${READER_ATTEND_LANGUAGE:-}" ] && READER_ARGS+=(--policy.reader_attend_language="${READER_ATTEND_LANGUAGE}")
+
 # pretrained_path=pi05 warm-starts the VLM; stage1_checkpoint_path warm-starts the action/cond side
 # (the policy's from_pretrained loads both). vision/skill_vocab/state_cond_mode are read from Stage-1.
 # SCRATCH ("" stage1 path): expert/cond fresh-init; arch from --policy.s1_vision_backbone/s1_state_cond_mode.
@@ -131,6 +136,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.skill_reader_all_layers="${SKILL_READER_ALL_LAYERS}" \
     --policy.attend_language="${ATTEND_LANGUAGE}" \
     --policy.attend_image="${ATTEND_IMAGE}" \
+    ${READER_ARGS[@]+"${READER_ARGS[@]}"} \
     --policy.vlm_cond="${VLM_COND}" \
     --policy.cond_expert="${COND_EXPERT}" \
     --policy.vlm_expert="${VLM_EXPERT}" \
