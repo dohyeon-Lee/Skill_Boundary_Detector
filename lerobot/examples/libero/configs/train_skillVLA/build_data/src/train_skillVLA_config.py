@@ -105,6 +105,11 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
     #       dino/pg{grid}/            (per-grid; DP uses pg{DP_grid}, FSQ side uses pg{FSQ_grid})
     #       seg_{dp}_ck{ckpt}/        (DP-dependent: skillset + skill_tokens; shared across FSQ)
     run_tag = f"FSQ{fsq_digits}_dino{fsq_name_grid}{fsq_exp_suffix}_{ckpt_tag}"
+    # transfer 빌드(snap): 미지원 코드를 최근접 지원 코드로 snap한 빌드는 산출물(skill_latents/skillvla)이
+    # 다르므로 폴더 분리 — run_tag에 _snap{min_freq} 부착 (downstream 파서들의 run_tag 정규식은
+    # `FSQ\d+_dino\d+.*?` 꼴이라 그대로 통과). _work 중간물은 snap 무관(dino/segmentation)이라 공유 유지.
+    if as_bool(get_value(cfg, "fsq_snap_to_supported", False)):
+        run_tag += f"_snap{int(get_value(cfg, 'fsq_snap_min_code_freq', 1))}"
     source_out_dir = skillvla_root / source_dataset
     run_dir = source_out_dir / run_tag
     work_dir = source_out_dir / "_work"
