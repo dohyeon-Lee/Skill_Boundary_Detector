@@ -311,12 +311,14 @@ class SkillVLAPytorch(PI05Pytorch):
         return None
 
     def _inject_lora_adapters(self) -> None:
-        """Inject the three named LoRA adapters selected in the config. ① skill / ② cond on the VLM LLM
-        (self._vlm); ③ cond_bridge on the cond encoder (self.cond_encoder). rank/alpha/dropout/targets are
-        shared (inherited pi05 lora_* hyperparams). No-op if all three flags are off."""
+        """Inject the named LoRA adapters selected in the config. ① skill / ② cond on the VLM LLM
+        (self._vlm); ③ cond_bridge on the cond encoder (self.cond_encoder); ④ expert on the action
+        expert (self._expert — CONNECTED-only consumer adaptation; severed runs with ④ off keep the
+        pure Stage-1 VSA). rank/alpha/dropout/targets are shared (inherited pi05 lora_* hyperparams).
+        No-op if all flags are off."""
         c = self.config
         if not (getattr(c, "lora_skill", False) or getattr(c, "lora_cond_vlm", False)
-                or getattr(c, "lora_cond_bridge", False)):
+                or getattr(c, "lora_cond_bridge", False) or getattr(c, "lora_expert", False)):
             return
         from lerobot.policies.pi05.lora import inject_named_lora, target_names_from_spec  # noqa: PLC0415
         names = target_names_from_spec(getattr(c, "lora_targets", "q,k,v,o"))
@@ -333,6 +335,9 @@ class SkillVLAPytorch(PI05Pytorch):
         if getattr(c, "lora_cond_bridge", False):
             n = inject_named_lora(self.cond_encoder, names, "cond_bridge", r, alpha, drop)
             parts.append(f"cond_bridge@cond-enc={n}")
+        if getattr(c, "lora_expert", False):
+            n = inject_named_lora(self._expert, names, "expert", r, alpha, drop)
+            parts.append(f"expert@action-expert={n}")
         print(f"[skillVLA LoRA] r={r} alpha={alpha} dropout={drop} targets={sorted(names)} → "
               + ", ".join(parts))
 
@@ -936,7 +941,7 @@ class SkillVLAPytorch(PI05Pytorch):
         if severed:
             set_active_adapters(set(severed_adapters))
             return self._vsa_velocity(cond_tokens, x_t, time, state, skill_zq), cond_tokens
-        set_active_adapters({"cond", "cond_bridge"})
+        set_active_adapters({"cond", "cond_bridge", "expert"})   # ④ = connected-only consumer adaptation
         vlm_embeds, vlm_pad, vlm_xattn_block = self._vlm_tokens(start_images, lang_tokens, lang_masks)
         action_tokens = self._action_in(x_t)
         prefix = self._action_prefix_from_z(skill_zq)   # None in state_skill mode
@@ -963,7 +968,7 @@ class SkillVLAPytorch(PI05Pytorch):
         n_prefix = 0 if self._state_cond_mode == "state_skill" else 1
         na = n_prefix + n_chunk
 
-        set_active_adapters({"cond", "cond_bridge"})       # frozen flow-path values, deployment-identical
+        set_active_adapters({"cond", "cond_bridge", "expert"})   # frozen flow-path values, deployment-identical
         with torch.no_grad():
             vlm_embeds, vlm_pad, vlm_xattn_block = self._vlm_tokens(start_images, lang_tokens, lang_masks)
             cond_tokens = self._cond_tokens(cond_images)
@@ -1374,7 +1379,11 @@ class SkillVLAPytorch(PI05Pytorch):
         if skill_code is None:
             skill_code = self.predict_skill_code(start_images, lang_tokens, lang_masks)
         _sever = bool(getattr(self.config, "eval_drop_vlm", False))
-        set_active_adapters(set() if _sever else {"cond", "cond_bridge"})
+        _keep = bool(getattr(self.config, "eval_drop_vlm_keep_adapters", False))
+        # Connected (full) → {cond, cond_bridge, expert}. Severed + keep_adapters → drop only the real
+        # VLM but keep the flow-path LoRA (② cond is a no-op once the VLM is severed → the ③ conduit +
+        # ④ expert adaptation are what this isolates). Severed + !keep → adapters OFF → pure Stage-1 VSA.
+        set_active_adapters({"cond", "cond_bridge", "expert"} if (not _sever or _keep) else set())
         return self._sample_actions_A(cond_images, start_images, lang_tokens, lang_masks, state,
                                       skill_code, noise, num_steps)
 
@@ -1651,11 +1660,17 @@ class SkillVLAPolicy(PI05Policy):
         m._set_requires_grad(g["cond"], False)           # too — re-enabled selectively below.
         m._set_requires_grad(g["cond_vision"], False)
         mm_proj = getattr(m.paligemma_with_expert.paligemma.model, "multi_modal_projector", None)
-        m._set_requires_grad(g["vlm_vision"] + [mm_proj], stage == "cond")   # vision is COND-owned
+        # vision is COND-owned; freeze_vlm_vision keeps it pinned even in stage 2 (LLM-freeze rationale:
+        # pretrained perception is general — only the ②③ routing adapters train).
+        train_vis = stage == "cond" and not bool(getattr(c, "freeze_vlm_vision", False))
+        m._set_requires_grad(g["vlm_vision"] + [mm_proj], train_vis)
         m._set_requires_grad(g["expert"] + [m.state_proj, m.skill_proj], ft)
         train_skill = stage == "skill" or (ft and bool(getattr(c, "ft_train_skill", False)))
         m._set_requires_grad([m.skill_reader, m.skill_head], train_skill)
-        adapter_flags = {"skill": train_skill, "cond": stage == "cond", "cond_bridge": stage == "cond"}
+        # ④ "expert"는 stage2에서만 학습 (connected-only 소비자 적응); FT에서는 ②③과 함께 동결 —
+        # expert BASE는 FT에서 움직이지만(연결 배치가 얼린 ④를 통과하며 적응) delta는 고정.
+        adapter_flags = {"skill": train_skill, "cond": stage == "cond", "cond_bridge": stage == "cond",
+                         "expert": stage == "cond"}
         n_train = 0
         for mod in m.modules():
             if isinstance(mod, NamedLoRALinear):
@@ -1668,7 +1683,7 @@ class SkillVLAPolicy(PI05Policy):
         print(f"[skillVLA continual] {tag} — trainable adapters: "
               f"{[k for k, v in adapter_flags.items() if v]} ({n_train} wrapped Linears), "
               f"expert={'train' if ft else 'frozen'}, reader/head={'train' if train_skill else 'frozen'}, "
-              f"vlm_vision={'train' if stage == 'cond' else 'frozen'}")
+              f"vlm_vision={'train' if train_vis else 'frozen'}")
 
     def _apply_freezes(self) -> None:
         c, m = self.config, self.model

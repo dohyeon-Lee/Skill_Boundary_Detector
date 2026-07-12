@@ -138,12 +138,14 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.lora_skill="${LORA_SKILL}" \
     --policy.lora_cond_vlm="${LORA_COND_VLM}" \
     --policy.lora_cond_bridge="${LORA_COND_BRIDGE}" \
+    --policy.lora_expert="${LORA_EXPERT:-false}" \
     --policy.lora_rank="${LORA_RANK}" \
     --policy.lora_alpha="${LORA_ALPHA}" \
     --policy.lora_dropout="${LORA_DROPOUT}" \
     --policy.lora_targets="${LORA_TARGETS}" \
     --policy.lora_lr_scale="${LORA_LR_SCALE}" \
     --policy.cond_severed_prob="${COND_SEVERED_PROB:-0.0}" \
+    --policy.freeze_vlm_vision="${FREEZE_VLM_VISION:-false}" \
     --policy.fsq_path="${FSQ_CKPT}" \
     --batch_size="${BATCH_SIZE}" \
     --num_workers="${NUM_WORKERS}" \

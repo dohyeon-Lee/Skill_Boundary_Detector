@@ -81,20 +81,25 @@ class SkillVLAConfig(PI05Config):
     skill_loss_weight: float = 0.5
     """λ_skill in ``total = BC + λ_skill * skill_CE``. < 1 keeps the action BC dominant (including the
     BC gradient that flows into the VLM via cross-attention)."""
-    # ── Multi-adapter LoRA (continual learning; base VLM & cond FROZEN, only the adapters train) ──
-    # Three INDEPENDENT named low-rank adapters, each toggleable, sharing lora_rank/alpha/dropout/targets
+    # ── Multi-adapter LoRA (continual learning; base VLM & cond & expert FROZEN, only the adapters train) ──
+    # Four INDEPENDENT named low-rank adapters, each toggleable, sharing lora_rank/alpha/dropout/targets
     # (inherited from PI05Config). Selected per-forward via lora.active_adapters():
     #   ① lora_skill       @ VLM LLM       — the skill decoder's VLM view (vocabulary / skill-pred adapt).
     #   ② lora_cond_vlm    @ VLM LLM       — the cond stream's VLM view (VLM residual the skill can't carry).
     #   ③ lora_cond_bridge @ cond_encoder  — cond attention learns to INGEST that residual (frozen VSA).
-    # All base-frozen (B=0 init → no-op at step 0); FT trains ① (+replay) while ②③ stay frozen (see the
+    #   ④ lora_expert      @ action expert — CONNECTED-ONLY consumer adaptation: the frozen expert learns
+    #       to READ the ②③ residual (severed forwards run with ④ off → pure Stage-1 VSA unchanged).
+    #       Raises the connected ceiling: without it the residual must be expressible as "cond shifts the
+    #       frozen expert happens to respond well to".
+    # All base-frozen (B=0 init → no-op at step 0); FT trains ① (+replay) while ②③④ stay frozen (see the
     # continual-learning design). NB: keep the inherited pi05 ``lora_enable`` OFF — that is the pi05
-    # SINGLE-adapter path; skillVLA drives its VLM/cond adapters through these three flags instead.
+    # SINGLE-adapter path; skillVLA drives its VLM/cond/expert adapters through these flags instead.
     lora_skill: bool = False
     lora_cond_vlm: bool = False
     lora_cond_bridge: bool = False
+    lora_expert: bool = False
     lora_lr_scale: float = 1.0
-    """Adapter-only LR multiplier (× optimizer_lr) for ALL named LoRA params (①②③). Rank-r B=0 adapters
+    """Adapter-only LR multiplier (× optimizer_lr) for ALL named LoRA params (①②③④). Rank-r B=0 adapters
     conventionally want ~10-40× the full-finetune LR; this leaves the full-trained parts (vlm_vision at
     PT, expert at FT) on the base LR instead of raising optimizer_lr globally."""
     # ── LoRA-continual training stages (REPLACES the legacy A/B/C regime_probs / vlm_dropout_p system;
@@ -257,6 +262,13 @@ class SkillVLAConfig(PI05Config):
     Separate from freeze_skill_head: the head's code mapping is codebook-pinned (freeze in FT), while the
     reader is an obs→skill feature extractor one may WANT to adapt to a new task — freeze_skill_head=true
     + freeze_skill_reader=false re-grounds skill prediction through the reader too, not just the trunk."""
+    freeze_vlm_vision: bool = False
+    """STAGE-2 (pt_stage="cond") only: keep the VLM vision tower (+ multimodal projector) FROZEN instead
+    of full-training it. Same rationale as freezing the LLM base — the pretrained SigLIP perception is
+    already general; training it opens a high-capacity task-specific (scene-shortcut) leak into the cond
+    conduit. With this on, ONLY the ②③ LoRA adapters train in stage 2 — the residual extractor learns to
+    ROUTE frozen perception/language, not to re-learn it. No effect in other stages (vision is frozen
+    there regardless)."""
 
     # ── Continual-learning VSA distillation (FT anti-forgetting) ──
     # In B (VSA-only, VLM-severed) batches, besides the strong GT-skill action loss, feed the SAME
@@ -412,6 +424,15 @@ class SkillVLAConfig(PI05Config):
     standalone for the skill prediction (or GT is injected with use_gt_skill); ONLY the discrete
     skill code crosses to the action side. Used by stage2_eval's eval_dropout probe (VLM-attached
     vs VLM-severed side-by-side of the SAME checkpoint)."""
+    eval_drop_vlm_keep_adapters: bool = False
+    """EVAL-time, ONLY meaningful with eval_drop_vlm=True: KEEP the flow-path LoRA adapters
+    {cond, cond_bridge, expert} active while the real VLM is severed, instead of turning them off.
+    Isolates whether the VLM-independent adapter paths (③ cond_bridge image-only conduit + ④ expert
+    consumer adaptation) change the action output vs pure Stage-1 VSA:
+      eval_drop_vlm=True, keep_adapters=True  → drop only the real VLM, keep LoRA (the "drop_vlm" panel;
+                                                ② cond is a no-op since the VLM is severed).
+      eval_drop_vlm=True, keep_adapters=False → adapters OFF → pure Stage-1 VSA (the "VSA" panel).
+    No effect when eval_drop_vlm=False (full model always runs {cond, cond_bridge, expert})."""
     eval_vlm_override_path: str | None = None
     """EVAL-only ablation: a checkpoint whose VLM (the WHOLE PaliGemma tower) OVERWRITES this
     checkpoint's VLM after load, keeping this checkpoint's cond + action-expert (+ skill decoder). FT

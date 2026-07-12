@@ -116,47 +116,53 @@ def build_settings(cfg: dict) -> dict:
             lbl += "x"
         labels.append(lbl)
 
-    # eval_dropout 프로브: 각 모델을 같은 체크포인트의 두 패널로 복제 — "{label}_vlm"(엣지 연결) vs
-    # "{label}_vlm_drop"(추론에서 cond/action→VLM 절단; 이산 skill 코드만 전달). 스킬 출처는 모든 패널이
-    # use_gt_skill을 따름(gt=GT 주입 / pred=VLM이 별도 실행해 skill만). 멀티모델 기계 전체 재사용 —
-    # 패널 순서는 모델별 [vlm, vlm_drop] 쌍이라 models_per_row: 2면 행당 한 모델의 쌍으로 정렬됨.
+    # eval_dropout 프로브: 각 모델을 같은 체크포인트의 세 패널로 복제 —
+    #   "{label}_full"     : VLM 엣지 + LoRA(②③) 다 켜짐 (온전한 모델)
+    #   "{label}_drop_vlm" : 진짜 VLM만 절단, LoRA(②③)는 그대로 (③ cond_bridge의 이미지-단독 conduit 격리)
+    #   "{label}_VSA"      : VLM 절단 + 어댑터도 OFF → pure Stage-1 VSA
+    # 스킬 출처는 모든 패널이 use_gt_skill을 따름(gt=GT 주입 / pred=VLM이 별도 실행해 skill만). 멀티모델
+    # 기계 전체 재사용 — 패널 순서는 모델별 [full, drop_vlm, VSA] 3연이라 models_per_row: 3이면 행당 한 모델.
+    # (drop_vlm은 eval_drop_vlm=true + keep_adapters=true, VSA는 eval_drop_vlm=true + keep_adapters=false.)
     eval_dropout = as_bool(get_value(cfg, "eval_dropout", False))
     drop_flags = [False] * len(resolved)
+    keepad_flags = [False] * len(resolved)
     dropcmp_base = list(labels)
     if eval_dropout:
-        paired_resolved, paired_labels, drop_flags = [], [], []
+        trip_resolved, trip_labels, drop_flags, keepad_flags = [], [], [], []
         for lbl, r in zip(labels, resolved):
-            pfx = "" if len(resolved) == 1 else f"{lbl}_"   # 단일 모델이면 그냥 vlm / vlm_drop
-            paired_resolved += [r, dict(r)]
-            paired_labels += [f"{pfx}vlm", f"{pfx}vlm_drop"]
-            drop_flags += [False, True]
-        resolved, labels = paired_resolved, paired_labels
+            pfx = "" if len(resolved) == 1 else f"{lbl}_"   # 단일 모델이면 그냥 full / drop_vlm / VSA
+            trip_resolved += [r, dict(r), dict(r)]
+            trip_labels += [f"{pfx}full", f"{pfx}drop_vlm", f"{pfx}VSA"]
+            drop_flags += [False, True, True]
+            keepad_flags += [False, True, False]
+        resolved, labels = trip_resolved, trip_labels
 
     use_gt_skill = as_bool(get_value(cfg, "use_gt_skill", False))
     advance_mode = str(get_value(cfg, "skill_advance_mode", "terminator"))
 
     # ── include_stage1: 각 모델의 warm-start 부모(stage1)를 STAGE1 자신의 평가 경로(stage1_eval의
     # run_eval.py)로 같은 scene(episode-exact)·같은 GT 스킬에서 평가해 격자의 추가 패널로 붙임 —
-    # "severed(vlm_drop) ≡ stage1" 주장의 시각 대조군. 부모는 ckpt config.json의 stage1_checkpoint_path
-    # 에서 자동. 패널 순서는 모델별 [vlm, vlm_drop, stage1] 그룹(models_per_row: 3 → 행당 한 모델);
+    # "VSA(순수 severed) ≡ stage1" 주장의 시각 대조군. 부모는 ckpt config.json의 stage1_checkpoint_path
+    # 에서 자동. 패널 순서는 모델별 [full, drop_vlm, VSA, stage1] 그룹(models_per_row: 4 → 행당 한 모델);
     # 같은 부모를 공유하는 뒤 모델의 stage1 패널은 alias(sbatch가 심볼릭 링크 — 재평가 없음).
-    # stage1은 GT 주입 전용이라 use_gt_skill=true 필수. terminator는 각자 것(stage1 = 자기 co-trained).
+    # stage1은 GT 주입 전용이라 use_gt_skill=true 필수. terminator는 s2 패널과 동일 파일(위 참고).
     include_stage1 = as_bool(get_value(cfg, "include_stage1", False))
     if include_stage1:
         if not use_gt_skill:
             raise ValueError("include_stage1=true requires use_gt_skill=true (stage1 has no skill predictor).")
-        group = 2 if eval_dropout else 1
+        group = 3 if eval_dropout else 1          # [full, drop_vlm, VSA] per model (+ stage1 appended)
         seen_parent: dict[str, str] = {}          # stage1 ckpt path → 첫 패널 label (alias target)
-        new_r, new_l, new_d = [], [], []
+        new_r, new_l, new_d, new_k = [], [], [], []
         for gi in range(0, len(resolved), group):
-            grp_r, grp_l, grp_d = resolved[gi:gi + group], labels[gi:gi + group], drop_flags[gi:gi + group]
-            new_r += grp_r; new_l += grp_l; new_d += grp_d
+            grp_r, grp_l = resolved[gi:gi + group], labels[gi:gi + group]
+            grp_d, grp_k = drop_flags[gi:gi + group], keepad_flags[gi:gi + group]
+            new_r += grp_r; new_l += grp_l; new_d += grp_d; new_k += grp_k
             r0 = grp_r[0]
             s1 = r0.get("stage1_checkpoint_path", "")
             if not s1 or not Path(s1).is_dir():
                 raise ValueError(f"include_stage1: {r0['model_dir']} config.json에 stage1_checkpoint_path가 "
                                  f"없거나 경로가 존재하지 않음({s1!r}) — scratch 학습이면 include_stage1을 끄세요.")
-            pfx = grp_l[0][:-len("vlm")] if eval_dropout else ("" if len(entries) == 1 else f"{grp_l[0]}_")
+            pfx = grp_l[0][:-len("full")] if eval_dropout else ("" if len(entries) == 1 else f"{grp_l[0]}_")
             lbl = f"{pfx}stage1"
             while lbl in new_l:
                 lbl += "x"
@@ -164,16 +170,22 @@ def build_settings(cfg: dict) -> dict:
             if s1 in seen_parent:
                 entry.update({"runner": "alias", "alias_target": seen_parent[s1]})
             else:
-                s1cfg_p = Path(s1) / "config.json"
-                s1cfg = json.loads(s1cfg_p.read_text()) if s1cfg_p.is_file() else {}
+                # stage1 패널은 s2 패널과 "똑같은 터미네이터 파일"을 씀 — 터미네이터는 STAGE-2 체크포인트
+                # 기준 eval_terminator로 resolve(cotrained → s2 co-trained FSQ_ft.pt, base → 원본 데이터셋
+                # FSQ.pt). entry가 r0(dict)를 복사하므로 resolved_term/ft_fsq_path/ft_run_dir/base_fsq/
+                # checkpoint가 그대로 실려 sbatch의 resolve_fsq가 s2와 동일 FSQ를 골라 --policy.fsq_path로
+                # 넘긴다. stage1 자기 co-trained은 쓰지 않으므로 use_trained_terminator=False(전달된 파일을
+                # 그대로 터미네이터로 로드) → stage1 ↔ vlm_drop이 항상 동일 터미네이터 → 스킬 경계 일치,
+                # severed VSA(=stage1 파라미터) 대조가 터미네이터 변수 없이 성립. (cotrained에서 s2가
+                # train_terminator=false면 _resolve_model이 이미 에러.)
                 entry.update({
                     "runner": "stage1", "policy_path": Path(s1),
-                    "use_trained_terminator": as_bool(s1cfg.get("train_terminator", True)),
+                    "use_trained_terminator": False,
                     "terminator_dino": str(project_root / "models" / "dinov3-vits16"),
                 })
                 seen_parent[s1] = lbl
-            new_r.append(entry); new_l.append(lbl); new_d.append(False)
-        resolved, labels, drop_flags = new_r, new_l, new_d
+            new_r.append(entry); new_l.append(lbl); new_d.append(False); new_k.append(False)
+        resolved, labels, drop_flags, keepad_flags = new_r, new_l, new_d, new_k
 
     m0 = resolved[0]
     multi = len(resolved) >= 2
@@ -213,13 +225,13 @@ def build_settings(cfg: dict) -> dict:
              "checkpoint": r["checkpoint"], "resolved_term": r["resolved_term"],
              "gt_skill_dataset_dir": r["gt_skill_dataset_dir"],
              "eval_init_states_path": r["eval_init_states_path"],
-             "drop_vlm": bool(d),
+             "drop_vlm": bool(d), "keep_adapters": bool(k),   # keep_adapters: severed인데 LoRA(②③) 유지 (drop_vlm 패널)
              # include_stage1 패널용: runner "s2"(기본) | "stage1"(부모를 stage1_eval 경로로 평가) |
              # "alias"(같은 부모 공유 → alias_target 패널 디렉토리로 심볼릭 링크)
              "runner": r.get("runner", "s2"), "alias_target": r.get("alias_target", ""),
              "terminator_dino": r.get("terminator_dino", ""),
              "use_trained_terminator": bool(r.get("use_trained_terminator", False))}
-            for lbl, r, d in zip(labels, resolved, drop_flags)])
+            for lbl, r, d, k in zip(labels, resolved, drop_flags, keepad_flags)])
     else:
         run_name = f"{model_dir}_{checkpoint}_{target_task}_{suffix}"
         models_json = ""

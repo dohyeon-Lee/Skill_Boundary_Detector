@@ -1,3 +1,16 @@
+# ═══ OUTPUT 폴더 네이밍 (outputs_filtered/skillVLA_stage2/ 아래) ═══
+# {run_tag}[_{s1_vision}]_{stage1_ckpt}[_{mode}][_{loss_tags}]__s2_L{②③[④] t/f}r{rank}[lr{scale}][sv{p}][vf][_{exp}]
+#   run_tag      = stage1_run_name에서 파싱된 FSQ 런 (예: FSQ555_dino8_both_1000)
+#   s1_vision    = stage1 vision 태그 (예: siglip) / stage1_ckpt = warm-start step (예: 015000)
+#   mode         = state | state_skill (stage1의 state_cond_mode)
+#   L{tt}r{rank} = ②lora_cond_vlm ③lora_cond_bridge on/off + 공유 rank / lr{scale} = lora_lr_scale≠1
+#                  ④lora_expert는 켰을 때만 3번째 문자 t (예: Lttt) — ④-off면 기존 이름 그대로
+#   sv{p}        = cond_severed_prob×100 (예: sv50) — 0이면 생략
+#   vf           = freeze_vlm_vision=true (vision 동결; ②③(④) 어댑터만 학습)
+#   exp          = 자유 suffix
+# 예: FSQ555_dino8_both_1000_siglip_015000_state__s2_Lttr8lr10sv50vf (④ 켜면 ..._s2_Ltttr8lr10sv50vf)
+# (attend_*/vlm_* 연결 토폴로지·deadzone은 이름에 안 들어감 — config.json이 진실)
+#
 # ── Paths (project_root/dataset_root come from configs/global_config.yaml) ──
 skillvla_dataset_root: skillvla_dataset
 # source_dataset AUTO-DERIVE: ① Stage-1 체크포인트의 train_config.json(dataset.root)에서 유도 — 같은
@@ -45,7 +58,7 @@ skill_deadzone_frac: 0.8
 #   image=F,lang=T → 언어만(VLM 언어 히든만 읽음) / image=F,lang=F → 금지(에러)
 #   VLM 내부 self-attn은 항상 전체 처리; 이건 downstream read만 게이팅(위치/prefix 구조 불변). (이름에는 안 들어감)
 attend_language:  true
-attend_image:     true
+attend_image:     false
 vlm_cond:         true
 vlm_expert:       false
 
@@ -59,13 +72,20 @@ cond_expert:      true
 # 이 스테이지 학습 대상: ② lora_cond_vlm @ VLM LLM (skill이 못 담는 residual 추출)
 #                     ③ lora_cond_bridge @ cond encoder (frozen cond가 residual을 삼키는 통로)
 #                     + vlm_vision(+projector) full 학습 (자연→로봇 도메인 적응; COND 소유 확정)
+#                       — 단 freeze_vlm_vision=true면 vision도 동결하고 ②③ 어댑터만 학습 (아래 참고)
 # 동결: VLM LLM base, cond base, cond_vision, expert(+z/state proj), skill reader/head, ①(stage3 소관).
-# 폴더명: {STAGE-1 정보}__s2_L{②③ t/f}r{rank}[lr{scale}][_{exp}] (예: ...state__s2_Lttr16lr10).
+# 폴더명: {STAGE-1 정보}__s2_L{②③ t/f}r{rank}[lr{scale}][sv{p}][vf][_{exp}] (맨 위 네이밍 블록 참고).
 lora_cond_vlm: true               # ②
 lora_cond_bridge: true            # ③
+# ④ action expert LoRA — CONNECTED 전용 소비자 적응: 얼린 expert가 ②③ 잔차를 "읽는 법"을 마중 나와 배움.
+# severed forward에서는 항상 OFF → VSA≡stage1 불변식에 구조적으로 무영향 (sv 정규화도 ④엔 불필요).
+# 필요 이유: z(125코드)가 1000+모션을 커버하는 aliasing 하에서 잔차는 작은 정밀화가 아니라 큰 탈모호화 —
+# 얼린 expert의 반응 함수에 상류(②③)만으로 끼워 맞추는 것으로는 표현력 상한이 낮음. FT에서는 ②③과 함께
+# 동결(conduit 고정; expert base는 연결 배치가 얼린 ④를 통과하며 적응). run name엔 L 3번째 문자 (Lttt).
+lora_expert: true
 lora_rank: 8                      # 공유 hyperparam (rank/alpha/dropout/targets — 어댑터 공통; stage3의 ①도 상속)
                                   # (r16은 flow 정체 처방이었는데 진범이 .base 랜덤로드 버그로 판명 → 기본 8 복귀)
-lora_alpha: 16
+lora_alpha: auto                  # auto = 2×rank (rank만 바꿔도 effective scale alpha/r=2 자동 유지); 숫자면 명시값
 lora_dropout: 0.0
 lora_targets: "q,k,v,o"
 # 어댑터(②③)만의 LR 배수 (base optimizer_lr ×). rank-r B=0 어댑터는 관례상 full-FT LR의 10~40배 —
@@ -79,6 +99,14 @@ lora_lr_scale: 10.0
 # 강제해 그 구멍을 닫음. FT 때 ③은 frozen이므로 PT-overfit 방지 = 새 태스크 OOD 강건성.
 # 대가: connected 학습 밀도·vlm_vision 업데이트가 (1-p)배. 폴더명엔 sv{p*100} (예: sv50). 0 = off.
 cond_severed_prob: 0.5
+
+# ── VLM vision 동결 (LLM freeze와 같은 논리) ──
+# true → stage2에서도 vlm_vision(+projector)을 동결하고 ②③ LoRA만 학습. 사전학습 SigLIP 지각은 이미
+# 일반적이라는 전제 — vision full 학습은 task-특정(scene 지름길) 정보가 cond conduit로 새는 최대 용량
+# 통로이므로, "lang이 skill을 보완하는 task-독립 잔차"만 배우게 학습 파라미터를 라우팅(②③)으로 제한.
+# attend_image=false와 조합하면 cond가 읽는 건 lang 히든뿐이고 그 생성 경로(vision→LLM)도 전부 frozen.
+# 폴더명엔 vf. false = 기존 동작 (vision full 학습).
+freeze_vlm_vision: true
 
 # ── FSQ terminator co-training (same as FT; disjoint from the SkillVLA params) ──
 # Adapt the FSQ terminator on this dataset's GT signals (z←true skill, current DINO + state →

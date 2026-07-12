@@ -8,13 +8,10 @@ skillvla_dataset_root: skillvla_dataset  # .../{skillvla_dataset_root}/{source_d
 
 # ── Which skillvla dataset to train on (built by configs/train_skillVLA/build_data) ──
 source_dataset: libero_90_full_full
-# run_tag: FSQ555_dino8_both_1000   # sub-folder under {skillvla_dataset_root}/{source}/
-run_tag: FSQ88_dino8_both_1000
-# run_tag: FSQ555_dino8_wow_1000
-# run_tag: FSQ555_dino8_wot_1000
-# run_tag: FSQ555_dino8_weighted_wow_1000
-# run_tag: FSQ555_dino8_weighted_both_1000
-# run_tag: FSQ555_dino8_weighted_wot_1000
+# run_tag: FSQ555_dino8_both_1000   
+# run_tag: FSQ555_dino8_both_1000_snap10
+run_tag: FSQ555_dino8_both_1000_snap20
+
 
 
 # ── Conditioning architecture (joint only) ──
@@ -27,8 +24,8 @@ state_cond_mode: state
 pi_base: models/pi05_base   # project_root(global_config) 기준 상대경로 → 서버마다 자동. 절대경로도 허용.
 
 # ── Vision encoder (shared across the 2 cameras) ──
-vision_backbone: siglip           # dino | siglip (params separate from the Stage-2 VLM. Needs init_from_pi05: true for the warm-start.)
-freeze_vision_encoder: false    # freeze the SELECTED backbone (dino→false: train own DINOv3; siglip→usually true: reuse pi05 prior)
+vision_backbone: dino           # dino | siglip (params separate from the Stage-2 VLM. Needs init_from_pi05: true for the warm-start.)
+freeze_vision_encoder: true    # freeze the SELECTED backbone (dino→false: train own DINOv3; siglip→usually true: reuse pi05 prior)
 dino_model_path: models/dinov3-vitl16   # (dino) project_root 기준 상대경로. ViT-B/16 86M (vits16=21M, vitl16=300M)
 
 # ── Action chunk horizon ──
@@ -52,7 +49,7 @@ num_workers: 8
 num_gpus: 1
 lr_base: 2.5e-05                # effective LR = lr_base * num_gpus
 steps: 15000
-save_freq: 2500
+save_freq: 5000
 
 exp: ""         # optional EXTRA run-name suffix (variant tag _ae/_cond is now auto from skill_inject)
 

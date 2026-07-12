@@ -98,11 +98,12 @@ resolve_fsq() {
   fi
 }
 
-# run_eval OUT JOB POLICY FSQ GT_DIR SKILL_HTML INIT_STATES DROP_VLM — one lerobot_skillvla_eval
-# rollout (shared knobs from the emitter env; per-model bits are the arguments; INIT_STATES ""=seed
-# resets; DROP_VLM true = sever cond/action→VLM at inference, skill code only).
+# run_eval OUT JOB POLICY FSQ GT_DIR SKILL_HTML INIT_STATES DROP_VLM KEEP_ADAPTERS ONTASK — one
+# lerobot_skillvla_eval rollout (shared knobs from the emitter env; per-model bits are the arguments;
+# INIT_STATES ""=seed resets; DROP_VLM true = sever cond/action→VLM at inference, skill code only;
+# KEEP_ADAPTERS true = severed지만 LoRA(②③) 유지 = drop_vlm 패널, false = 어댑터 OFF = VSA/full 패널).
 run_eval() {
-  local out="$1" job="$2" ppath="$3" fsq="$4" gt="$5" shtml="$6" inits="${7:-}" dropvlm="${8:-false}" ontask="${9:-}"
+  local out="$1" job="$2" ppath="$3" fsq="$4" gt="$5" shtml="$6" inits="${7:-}" dropvlm="${8:-false}" keepad="${9:-false}" ontask="${10:-}"
   mkdir -p "${out}"
   PYTORCH_ALLOC_CONF=expandable_segments:True \
   PYTHONPATH="${LEROBOT_ROOT}/src:${LIBERO_REPO_ROOT}" \
@@ -137,6 +138,7 @@ run_eval() {
       --policy.gt_skill_dataset_dir="${gt}" \
       --policy.skill_advance_mode="${SKILL_ADVANCE_MODE}" \
       --policy.eval_drop_vlm="${dropvlm}" \
+      --policy.eval_drop_vlm_keep_adapters="${keepad}" \
       --eval.init_states_path="${inits}" \
       --eval.on_task_done_cmd="${ontask}" \
       --wandb_project="${WANDB_PROJECT}" \
@@ -149,8 +151,9 @@ run_eval() {
 # run_eval_stage1 OUT JOB POLICY FSQ GT_DIR SKILL_HTML INIT_STATES DINO USE_TRAINED_TERM —
 # include_stage1 패널: warm-start 부모(STAGE-1)를 STAGE1 자신의 평가 경로(stage1_eval/run_eval.py)로
 # 같은 scene(episode-exact)·같은 task_ids에서 롤아웃. GT 스킬은 stage1에선 항상 주입
-# (skill_label_dataset_dir = s2의 gt_skill_dataset_dir와 같은 skillvla 디렉토리). terminator는
-# stage1 ckpt의 co-trained 것(eval_use_trained_terminator) — s2 패널의 FSQ_ft와는 별개(각자 검증된 것).
+# (skill_label_dataset_dir = s2의 gt_skill_dataset_dir와 같은 skillvla 디렉토리). terminator는 s2 패널과
+# 동일 — STAGE-2 기준 eval_terminator로 resolve한 FSQ를 fsq_path로 받고 USE_TRAINED_TERM=false로 그대로 로드
+# (cotrained → s2 FSQ_ft.pt, base → 원본 FSQ.pt). stage1 자기 co-trained은 쓰지 않음.
 run_eval_stage1() {
   local out="$1" job="$2" ppath="$3" fsq="$4" gt="$5" shtml="$6" inits="${7:-}" dino="$8" utt="$9"
   mkdir -p "${out}"
@@ -240,7 +243,8 @@ for m in json.loads(os.environ["MODELS_JSON"]):
                     m["ft_run_dir"], m["checkpoint"], m["resolved_term"], m["gt_skill_dataset_dir"],
                     m.get("eval_init_states_path", ""), str(m.get("drop_vlm", False)).lower(),
                     m.get("runner", "s2"), m.get("alias_target", ""),
-                    m.get("terminator_dino", ""), str(m.get("use_trained_terminator", False)).lower()]))
+                    m.get("terminator_dino", ""), str(m.get("use_trained_terminator", False)).lower(),
+                    str(m.get("keep_adapters", False)).lower()]))
 PY
 )"
   # Progressive per-task stitch (like stage1): each panel eval runs this after EVERY task's videos are
@@ -265,7 +269,7 @@ EOF
 
   # PANEL_LABEL set (submit's model×chunk fan-out) → this job runs ONLY that model; unset (srun /
   # legacy) → all models sequentially.
-  while IFS='|' read -r LBL PPATH BFSQ FTFSQ FTRUN CKPT RTERM GTDIR INITS DROP RUNNER ALIAS DINO UTT; do
+  while IFS='|' read -r LBL PPATH BFSQ FTFSQ FTRUN CKPT RTERM GTDIR INITS DROP RUNNER ALIAS DINO UTT KEEPAD; do
     [ -z "${LBL}" ] && continue
     if [ -n "${PANEL_LABEL:-}" ] && [ "${LBL}" != "${PANEL_LABEL}" ]; then
       continue
@@ -282,13 +286,18 @@ EOF
       continue
     fi
     if [ "${RUNNER:-s2}" = "stage1" ]; then
-      if [ ! -f "${BFSQ}" ]; then
-        echo "[warn] panel '${LBL}': FSQ missing (${BFSQ}) — skipping the stage1 panel" >&2
+      # stage1 패널도 s2 패널과 똑같이 STAGE-2 체크포인트 기준으로 resolve한 터미네이터 FSQ를 그대로 사용
+      # (cotrained → s2 co-trained FSQ_ft.pt[없으면 lazy-export], base → 원본 데이터셋 FSQ.pt). stage1 자기
+      # co-trained은 쓰지 않으므로 eval_use_trained_terminator=false(전달된 fsq_path를 그대로 터미네이터로
+      # 로드) → stage1 ↔ vlm_drop이 동일 터미네이터 → 스킬 경계 일치.
+      S1FSQ="$(resolve_fsq "${RTERM}" "${BFSQ}" "${FTFSQ}" "${FTRUN}" "${CKPT}")"
+      if [ ! -f "${S1FSQ}" ]; then
+        echo "[warn] panel '${LBL}': no terminator FSQ (${S1FSQ}) — skipping the stage1 panel" >&2
         continue
       fi
-      echo "── panel '${LBL}': STAGE-1 parent ${PPATH}  (own eval path, GT skills, trained-term=${UTT}${INITS:+, scenes=EPISODE-EXACT})"
+      echo "── panel '${LBL}': STAGE-1 parent ${PPATH}  (own eval path, GT skills, terminator=${RTERM} → ${S1FSQ}${INITS:+, scenes=EPISODE-EXACT})"
       run_eval_stage1 "${EVAL_OUT_DIR}/panels/${LBL}" "${BASE_RN}_${LBL}${TASK_TAG:+_${TASK_TAG}}" \
-                      "${PPATH}" "${BFSQ}" "${GTDIR}" "${SKILL_HTML_EFFECTIVE}" "${INITS}" "${DINO}" "${UTT}"
+                      "${PPATH}" "${S1FSQ}" "${GTDIR}" "${SKILL_HTML_EFFECTIVE}" "${INITS}" "${DINO}" "false"
       bash "${STITCH_SH}" || true    # stage1 runner에는 on_task_done 훅이 없음 → 끝나고 한 번 스티칭
       continue
     fi
@@ -297,9 +306,9 @@ EOF
       echo "[warn] panel '${LBL}': no terminator FSQ (${FSQ}) — skipping this model" >&2
       continue
     fi
-    echo "── panel '${LBL}': ${PPATH}  (fsq=${FSQ}, terminator=${RTERM}${INITS:+, scenes=EPISODE-EXACT}, drop_vlm=${DROP:-false})"
+    echo "── panel '${LBL}': ${PPATH}  (fsq=${FSQ}, terminator=${RTERM}${INITS:+, scenes=EPISODE-EXACT}, drop_vlm=${DROP:-false}, keep_adapters=${KEEPAD:-false})"
     run_eval "${EVAL_OUT_DIR}/panels/${LBL}" "${BASE_RN}_${LBL}${TASK_TAG:+_${TASK_TAG}}" \
-             "${PPATH}" "${FSQ}" "${GTDIR}" "${SKILL_HTML_EFFECTIVE}" "${INITS}" "${DROP:-false}" "bash ${STITCH_SH}"
+             "${PPATH}" "${FSQ}" "${GTDIR}" "${SKILL_HTML_EFFECTIVE}" "${INITS}" "${DROP:-false}" "${KEEPAD:-false}" "bash ${STITCH_SH}"
   done <<< "${SPECS}"
 
   # Stitch is IDEMPOTENT + ATOMIC + skips episodes not yet finished in every panel → run it at the end

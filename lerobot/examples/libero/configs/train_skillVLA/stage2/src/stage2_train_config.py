@@ -143,8 +143,14 @@ def build_settings(cfg: dict) -> dict:
     # vlm_vision train, everything else frozen; see SkillVLAPolicy._apply_continual_freezes.
     lora_cond_vlm = as_bool(get_value(cfg, "lora_cond_vlm", True))
     lora_cond_bridge = as_bool(get_value(cfg, "lora_cond_bridge", True))
+    lora_expert = as_bool(get_value(cfg, "lora_expert", False))   # ④ connected-only 소비자 적응 (run name 3번째 문자)
     lora_rank = int(get_value(cfg, "lora_rank", 8))
-    lora_alpha = float(get_value(cfg, "lora_alpha", 16.0))
+    # lora_alpha: "auto"(또는 빈칸) → 2×rank — rank만 바꿔도 effective scale(alpha/r)이 2로 유지되어
+    # rank 효과와 scale 효과가 섞이지 않음. 숫자를 쓰면 그대로 (명시 오버라이드).
+    # stage3/FT는 이 resolve된 숫자를 체크포인트 config.json에서 상속하므로 여기 한 곳만 처리하면 됨.
+    _alpha_raw = get_value(cfg, "lora_alpha", "auto")
+    lora_alpha = (2.0 * lora_rank if _alpha_raw is None or str(_alpha_raw).strip().lower() in ("", "auto")
+                  else float(_alpha_raw))
     lora_dropout = float(get_value(cfg, "lora_dropout", 0.0))
     lora_targets = str(get_value(cfg, "lora_targets", "q,k,v,o"))
     lora_lr_scale = float(get_value(cfg, "lora_lr_scale", 1.0))   # adapter-only LR × (vlm_vision stays base)
@@ -170,9 +176,12 @@ def build_settings(cfg: dict) -> dict:
             m = re.search(pat, stage1_run_name)
             if m:
                 loss_tags.append(m.group(1))
-    # {STAGE-1 정보}__s2_L{②③ t/f}r{rank}[lr{scale}][_{exp}] — 예: ...state__s2_Lttr16lr10.
+    # {STAGE-1 정보}__s2_L{②③[④] t/f}r{rank}[lr{scale}][_{exp}] — 예: ...state__s2_Lttr16lr10.
     #   s2 = cond-path PT stage; Ltt = ②cond_vlm ③cond_bridge on/off; r = shared rank (stage3 inherits).
+    #   ④ lora_expert는 켰을 때만 3번째 문자 t가 붙음 (Lttt...) — 기존 ④-off 런 이름과 호환.
     _l = "".join("t" if b else "f" for b in (lora_cond_vlm, lora_cond_bridge))
+    if lora_expert:
+        _l += "t"
     regime_tag = f"s2_L{_l}r{lora_rank}"
     if lora_lr_scale != 1.0:                     # adapter LR multiplier (e.g. lr10 = 10× base)
         regime_tag += f"lr{int(lora_lr_scale) if lora_lr_scale == int(lora_lr_scale) else lora_lr_scale}"
@@ -181,6 +190,11 @@ def build_settings(cfg: dict) -> dict:
         raise ValueError(f"cond_severed_prob must be in [0, 1) — got {cond_severed_prob}")
     if cond_severed_prob > 0.0:                  # severed 정규화 배치 (conduit gating) — sv50 = p 0.5
         regime_tag += f"sv{int(round(cond_severed_prob * 100))}"
+    # vf = vlm_vision(+projector) FROZEN in stage 2 (LLM freeze와 같은 논리 — 사전학습 지각은 이미
+    # 일반적; ②③ 라우팅 어댑터만 학습). 학습 파라미터 스코프가 바뀌므로 run name에 태그.
+    freeze_vlm_vision = as_bool(get_value(cfg, "freeze_vlm_vision", False))
+    if freeze_vlm_vision:
+        regime_tag += "vf"
     # 제출-시점 fail-fast: dual FSQ("both" — terminator가 wrist DINO도 씀) + train_terminator인데
     # dino_wrist.npz가 없으면, 모델 로딩(~5분) 후 첫 배치 런타임에서야 터짐 — 여기서 미리 차단.
     # (다른 클러스터로 옮길 때 28GB짜리 dino_wrist.npz 복사가 누락되는 케이스.)
@@ -234,12 +248,14 @@ def build_settings(cfg: dict) -> dict:
         "lora_skill": False,
         "lora_cond_vlm": lora_cond_vlm,
         "lora_cond_bridge": lora_cond_bridge,
+        "lora_expert": lora_expert,               # ④ connected-only 소비자 적응 (severed에는 구조적 무영향)
         "lora_rank": lora_rank,
         "lora_alpha": lora_alpha,
         "lora_dropout": lora_dropout,
         "lora_targets": lora_targets,
         "lora_lr_scale": lora_lr_scale,
         "cond_severed_prob": cond_severed_prob,   # severed 정규화 배치 확률 (③만 활성; conduit gating)
+        "freeze_vlm_vision": freeze_vlm_vision,   # stage2에서도 vision 동결 (②③ 어댑터만 학습; run name "vf")
 
         # per-component update tracking (wandb param_drift/* + param_drift_rel/*)
         "track_param_drift": as_bool(get_value(cfg, "track_param_drift", False)),

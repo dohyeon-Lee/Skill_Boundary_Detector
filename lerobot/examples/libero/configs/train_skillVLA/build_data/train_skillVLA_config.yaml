@@ -90,12 +90,12 @@ fsq_checkpoint: 1000                              # epoch number; 0 = best (FSQ.
 # ── transfer 안전망: 새 데이터셋 인코딩 시 FSQ가 "미지원(학습때 안 쓰인/희귀) 코드"를 뱉으면
 #    가장 가까운 지원 코드로 옮겨, 다운스트림 VLA가 학습 못한 코드로 스킬이 배정되는 걸 방지.
 #    true면 산출물 폴더가 {run_tag}_snap{min_freq}로 분리됨. 검증은 제출 시점(emitter)에서 fail-fast.
-fsq_snap_to_supported: false     # true면 fsq_snap_reference 필수
-fsq_snap_min_code_freq: 10        # 이 값 미만 빈도 코드를 '미지원'으로 간주 (1=완전 빈칸만; ↑면 희귀코드도 배제)
+fsq_snap_to_supported: true     # true면 fsq_snap_reference 필수
+fsq_snap_min_code_freq: 20        # 이 값 미만 빈도 코드를 '미지원'으로 간주 (1=완전 빈칸만; ↑면 희귀코드도 배제)
 # 전이/FT 빌드 = 원본(PT) 빌드의 skill_code_freq.npz 경로 (project_root 기준 상대경로 가능).
 # "self" = 같은 데이터의 이전(un-snap) 빌드를 기준표로 자동 지정 — PT 데이터 어휘 정리(pruning) 용
 # (이때는 min_freq를 높게; 전이 빌드에 self를 쓰면 snap이 no-op이라 의미 없음).
-fsq_snap_reference: ""
+fsq_snap_reference: "self"
 
 # ── SkillVLA dataset build (step 5) ───────────────────────────
 max_order: 0                               # 0 : auto

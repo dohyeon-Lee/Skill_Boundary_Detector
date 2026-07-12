@@ -13,17 +13,23 @@
 # task별 영상을 라벨 달린 그리드 한 편으로 스티칭 → outputs/compare_{labels}_{ckpt}_.../side_by_side/.
 # per entry: checkpoint 생략 → 아래 top-level checkpoint; label 생략 → model_dir의 차이 토큰 자동.
 # 모델별 개별 산출물(eval_info/차트/videos)은 panels/{label}/ 아래. multi에선 skill_html 자동 off.
+# eval_dropout=true → 모델당 3패널: full(VLM+LoRA) / drop_vlm(진짜 VLM만 절단, LoRA ②③ 유지) / VSA(VLM
+# 절단+어댑터 OFF=pure Stage-1). drop_vlm은 ③ cond_bridge의 이미지-단독 conduit이 VSA와 갈리는지 격리.
 eval_dropout: true
 # include_stage1: 각 모델의 warm-start 부모(stage1)를 STAGE1 자신의 평가 경로(stage1_eval run_eval.py)로
-# 같은 scene·같은 GT 스킬에서 평가해 격자에 3번째 패널로 추가 — "vlm_drop(순수 VSA) ≡ stage1" 시각 대조.
-# 부모는 ckpt config.json(stage1_checkpoint_path)에서 자동. 패널 = 모델별 [vlm, vlm_drop, stage1]
-# (models_per_row: 3 → 행당 한 모델의 세 영상). 같은 부모 공유 시 뒤 모델 것은 심볼릭 링크(재평가 없음).
+# 같은 scene·같은 GT 스킬에서 평가해 격자에 패널로 추가 — "VSA(순수 severed) ≡ stage1" 시각 대조.
+# 부모는 ckpt config.json(stage1_checkpoint_path)에서 자동. 패널 = 모델별 [full, drop_vlm, VSA, stage1]
+# (models_per_row: 4 → 행당 한 모델의 네 영상). 같은 부모 공유 시 뒤 모델 것은 심볼릭 링크(재평가 없음).
 # use_gt_skill=true 필수(stage1은 oracle 전용). 출력 폴더에는 _s1 태그가 붙음.
+# 터미네이터: stage1 패널도 s2 패널과 "같은 터미네이터 파일"을 씀 (STAGE-2 기준 eval_terminator로 resolve):
+# cotrained → stage1도 s2의 co-trained FSQ_ft.pt, base → 둘 다 원본 데이터셋 FSQ.pt. 어느 값이든 stage1과
+# VSA/drop_vlm이 동일 터미네이터를 써서 스킬 경계가 일치 → severed VSA(=stage1 파라미터) 대조가 터미네이터
+# 변수 없이 성립. (stage1 자기 co-trained 터미네이터는 쓰지 않음.)
 include_stage1: true
 models:
-  - {model_dir: FSQ555_dino8_both_1000_siglip_015000_state__s2_Lttr8lr10, label: stage2_r8}
-  - {model_dir: FSQ555_dino8_both_1000_siglip_015000_state__s2_Lttr16lr10, label: stage2_r16}
-models_per_row: 3                 # 행당 패널 수 (0=한 행; 6개@3 → 2×3 그리드) — stage1_eval과 동일
+  # - {model_dir: FSQ555_dino8_both_1000_siglip_015000_state__s2_Lttr8lr10, label: Lttr8lr10}
+  - {model_dir: FSQ555_dino8_both_1000_siglip_015000_state__s2_Lttr8lr10sv50, label: Lttr8lr10sv50}
+models_per_row: 4                 # 행당 패널 수 (eval_dropout+include_stage1 → 모델당 [full,drop_vlm,VSA,stage1] 4패널)
 # model_dir: libero_90_full_full_FSQ555_dino8_both_1000_siglip_015000_unfreeze_state_ve_lang_dz0.8_frzAe_connect
 
 checkpoint: "last"              # "last" or a step number (these runs go up to 040000)
@@ -39,7 +45,7 @@ task_ids: "[0,1,2,3,4,5,6,7,8,9]"
 # 청크수 = eval_num_gpus ÷ 모델수 (총 잡 ≤ 예산; 최소 모델당 1잡) — 세 모델이 동시에 돌고,
 # 각 task는 마지막 패널 잡이 끝나는 즉시 그리드 영상으로 스티칭됨 (stage1식 진행감).
 # 요약은 잡별 eval_info_*.json → 막판-완성자가 자동 머지. (salloc 안에서 실행 시 무시됨.)
-eval_num_gpus: 10
+eval_num_gpus: 5
 n_episodes: 5             # episodes per task
 n_action_steps: 5
 eval_batch_size: 1
@@ -75,6 +81,8 @@ inference_skill_max_length: 200    # force a skill switch after this many steps 
 #               errors if this checkpoint was trained with train_terminator=false.
 #   base      → FORCE the ORIGINAL dataset FSQ.pt (the terminator BEFORE in-policy co-training).
 # (폴더 태그에는 반영 안 됨 — base vs cotrained를 나란히 비교하려면 eval_exp 등으로 구분할 것.)
+# include_stage1의 stage1 패널도 이 값을 따르되 항상 STAGE-2 체크포인트 기준으로 resolve해 s2 패널과 같은
+# 터미네이터 파일을 씀 (cotrained→s2 FSQ_ft.pt, base→원본 FSQ.pt).
 eval_terminator: auto
 
 # ── Oracle eval (isolate the action expert from the VLM's skill prediction) ──

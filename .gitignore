@@ -80,3 +80,7 @@ Thumbs.db
 /lerobot/examples/libero/configs/**/logs_train/
 /lerobot/examples/libero/configs/**/*.out
 /lerobot/examples/libero/configs/**/*.err
+
+# ──────────────────────────────────────────────────────────────
+abcdl_RLLAB/abc_subset
+abcdl_RLLAB/abc_viz

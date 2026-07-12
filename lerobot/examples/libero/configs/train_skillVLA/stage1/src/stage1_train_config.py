@@ -66,12 +66,14 @@ def build_settings(cfg: dict) -> dict:
     siglip_lr_str = "" if siglip_lr in (None, "", "null") else str(siglip_lr)
 
     vision_backbone = (str(get_value(cfg, "vision_backbone", "dino")).strip().lower() or "dino")
-    freeze_vision_encoder = as_bool(get_value(cfg, "freeze_vision_encoder", False))  # SELECTED backbone (NOT in run-name)
+    freeze_vision_encoder = as_bool(get_value(cfg, "freeze_vision_encoder", False))  # SELECTED backbone; frozen → "_freeze" suffix
 
-    # run-name: run_tag + backbone + batch + state-cond [+ weighted] [+ exp]. source_dataset /
-    # freeze_vision_encoder / chunk_size are OMITTED (fixed — never swept). action_weight → "_weighted" ONLY
-    # when true (plain = no tag).
-    run_name = f"{run_tag}_{vision_backbone}_batch{batch_size}_{state_cond_mode}"
+    # run-name: run_tag + backbone[_freeze] + batch + state-cond [+ weighted] [+ exp]. source_dataset /
+    # chunk_size are OMITTED (fixed — never swept). freeze_vision_encoder → "_freeze" ONLY when frozen
+    # (trainable = plain backbone → back-compat with existing "..._siglip_batch..." runs). The Stage-2
+    # parser already recognizes the "_freeze" suffix. action_weight → "_weighted" ONLY when true.
+    backbone_tag = f"{vision_backbone}_freeze" if freeze_vision_encoder else vision_backbone
+    run_name = f"{run_tag}_{backbone_tag}_batch{batch_size}_{state_cond_mode}"
     if action_weight:
         run_name = f"{run_name}_weighted"
     if exp:
