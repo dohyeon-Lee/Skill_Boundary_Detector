@@ -108,7 +108,26 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
     # transfer 빌드(snap): 미지원 코드를 최근접 지원 코드로 snap한 빌드는 산출물(skill_latents/skillvla)이
     # 다르므로 폴더 분리 — run_tag에 _snap{min_freq} 부착 (downstream 파서들의 run_tag 정규식은
     # `FSQ\d+_dino\d+.*?` 꼴이라 그대로 통과). _work 중간물은 snap 무관(dino/segmentation)이라 공유 유지.
-    if as_bool(get_value(cfg, "fsq_snap_to_supported", False)):
+    fsq_snap = as_bool(get_value(cfg, "fsq_snap_to_supported", False))
+    fsq_snap_reference = str(get_value(cfg, "fsq_snap_reference", "") or "").strip()
+    if fsq_snap:
+        # 제출 시점 fail-fast: 예전엔 encode 잡 런타임에야 터져서 뒤의 build 잡이
+        # DependencyNeverSatisfied 좀비로 남았음 — 여기서 막으면 체인 자체가 제출되지 않음.
+        if not fsq_snap_reference:
+            raise ValueError("fsq_snap_to_supported=true인데 fsq_snap_reference가 비어 있음 — 기준 빌드의 "
+                             "skill_code_freq.npz 경로(전이 빌드) 또는 \"self\"(자기 데이터 어휘 정리)를 지정하세요.")
+        if fsq_snap_reference.lower() == "self":
+            # self-build 어휘 정리(pruning): 기준표 = 같은 source/run_tag의 이전(un-snap) 빌드 산출물.
+            # (전이 빌드에서 reference를 깜빡한 실수와 구분하기 위해 빈값이 아니라 명시적 "self"만 허용 —
+            #  전이 빌드에 self를 쓰면 새 데이터의 코드가 곧 '지원'이 되어 snap이 no-op이 되므로 금지.)
+            _ref = skillvla_root / source_dataset / run_tag / "skill_code_freq.npz"
+        else:
+            _ref = Path(fsq_snap_reference)
+            if not _ref.is_absolute():
+                _ref = root / fsq_snap_reference
+        if not _ref.is_file():
+            raise ValueError(f"fsq_snap_reference 파일이 존재하지 않음: {_ref}")
+        fsq_snap_reference = str(_ref)
         run_tag += f"_snap{int(get_value(cfg, 'fsq_snap_min_code_freq', 1))}"
     source_out_dir = skillvla_root / source_dataset
     run_dir = source_out_dir / run_tag
@@ -195,9 +214,10 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
         "fsq_model_path": fsq_model_path,
         "fsq_checkpoint": fsq_checkpoint,
         # transfer 안전망(B): 인코딩 시 미지원(학습때 안 쓰인) 코드 → 최근접 지원 코드로 snap.
-        "fsq_snap_to_supported": as_bool(get_value(cfg, "fsq_snap_to_supported", False)),
+        # (snap=true인데 reference가 없/틀리면 아래에서 이미 제출 전에 raise — 런타임 좀비 체인 방지)
+        "fsq_snap_to_supported": fsq_snap,
         "fsq_snap_min_code_freq": int(get_value(cfg, "fsq_snap_min_code_freq", 1)),
-        "fsq_snap_reference": str(get_value(cfg, "fsq_snap_reference", "")),
+        "fsq_snap_reference": fsq_snap_reference,
         "fsq_levels_str": " ".join(str(v) for v in fsq_levels),
         # SkillVLA build (step 5)
         "max_order": int(get_value(cfg, "max_order", 0)),

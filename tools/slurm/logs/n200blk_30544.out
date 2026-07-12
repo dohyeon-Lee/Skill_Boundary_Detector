@@ -1,0 +1,8 @@
+node=node200  CUDA_VISIBLE_DEVICES=5
+/data2/dohyeon/SBD/.venv/lib/python3.12/site-packages/torch/cuda/__init__.py:184: UserWarning: CUDA initialization: CUDA unknown error - this may be due to an incorrectly set up environment, e.g. changing env variable CUDA_VISIBLE_DEVICES after program start. Setting the available devices to be zero. (Triggered internally at /pytorch/c10/cuda/CUDAFunctions.cpp:119.)
+  return torch._C._cuda_getDeviceCount() > 0
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+AssertionError: no cuda
+DEAD GPU slot (CVD=5) → walltime까지 점유 (진짜 잡이 이 슬롯을 안 받게)
+slurmstepd: error: *** JOB 30544 ON node200 CANCELLED AT 2026-07-12T02:23:45 ***

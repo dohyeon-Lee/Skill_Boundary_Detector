@@ -87,7 +87,7 @@ if [ "${DINO_GENERATE}" = "true" ]; then
       sbatch --parsable --array="0-$(( NW - 1 ))" "${SBATCH_ARGS[@]}" "${SRC_DIR}/dino_prep.sbatch")
     echo "       dino-prep precompute array ${JIDP}  (${NW} GPUs)"
     JID0=$(env "${ENV[@]}" DINO_PREP_PHASE=slice \
-      sbatch --parsable --dependency=afterok:"${JIDP}" "${SBATCH_ARGS[@]}" "${SRC_DIR}/dino_prep.sbatch")
+      sbatch --parsable --dependency=afterok:"${JIDP}" --kill-on-invalid-dep=yes "${SBATCH_ARGS[@]}" "${SRC_DIR}/dino_prep.sbatch")
     echo "       dino-prep slice     ${JID0}  (after array)"
   else
     JID0=$(env "${ENV[@]}" DINO_PREP_PHASE=all sbatch --parsable "${SBATCH_ARGS[@]}" "${SRC_DIR}/dino_prep.sbatch")
@@ -118,13 +118,13 @@ PY
 
   echo "[2/4] Submit DP skill segmentation  (array=${ARRAY_SPEC}: ${N_TASKS} tasks / ${TPJ} per job = ${NUM_SHARDS} GPUs)"
   # In generate mode DEP=afterok:<dino-prep> — the segmentation must wait for the DINO to exist.
-  DEP_ARG=(); [ -n "${DEP}" ] && DEP_ARG=(--dependency="${DEP}")
+  DEP_ARG=(); [ -n "${DEP}" ] && DEP_ARG=(--dependency="${DEP}" --kill-on-invalid-dep=yes)
   JID1=$(env "${ENV[@]}" ALL_TASK_IDS="${ALL_TASK_IDS}" \
     sbatch --parsable --array="${ARRAY_SPEC}" ${DEP_ARG[@]+"${DEP_ARG[@]}"} "${SBATCH_ARGS[@]}" "${SRC_DIR}/build_skillset.sbatch")
   echo "       skillset ${JID1}"
   # afterany → verify runs even if some array elements died on a bad GPU
   JIDV=$(env "${ENV[@]}" \
-    sbatch --parsable --dependency=afterany:"${JID1}" "${SBATCH_ARGS[@]}" "${SRC_DIR}/verify_skillset.sbatch")
+    sbatch --parsable --dependency=afterany:"${JID1}" --kill-on-invalid-dep=yes "${SBATCH_ARGS[@]}" "${SRC_DIR}/verify_skillset.sbatch")
   echo "       verify   ${JIDV}  (re-runs missing tasks up to ${SKILLSET_MAX_SWEEPS}×)"
   DEP="afterok:${JIDV}"
 fi
@@ -133,7 +133,7 @@ fi
 if encode_complete; then
   echo "[3/4] Skill tokens + latents already exist → skip"
 else
-  DEP_ARG=(); [ -n "${DEP}" ] && DEP_ARG=(--dependency="${DEP}")
+  DEP_ARG=(); [ -n "${DEP}" ] && DEP_ARG=(--dependency="${DEP}" --kill-on-invalid-dep=yes)
   echo "[3/4] Submit FSQ encode${DEP:+  (after ${DEP#afterok:})}"
   JID2=$(env "${ENV[@]}" \
     sbatch --parsable ${DEP_ARG[@]+"${DEP_ARG[@]}"} "${SBATCH_ARGS[@]}" "${SRC_DIR}/encode_skills.sbatch")
@@ -142,7 +142,7 @@ else
 fi
 
 # ── stage 5: SkillVLA build (always — would have exited above if already done) ──
-DEP_ARG=(); [ -n "${DEP}" ] && DEP_ARG=(--dependency="${DEP}")
+DEP_ARG=(); [ -n "${DEP}" ] && DEP_ARG=(--dependency="${DEP}" --kill-on-invalid-dep=yes)
 echo "[4/4] Submit SkillVLA build${DEP:+  (after ${DEP#afterok:})}"
 JID3=$(env "${ENV[@]}" \
   sbatch --parsable ${DEP_ARG[@]+"${DEP_ARG[@]}"} "${SBATCH_ARGS[@]}" "${SRC_DIR}/build_skillvla.sbatch")

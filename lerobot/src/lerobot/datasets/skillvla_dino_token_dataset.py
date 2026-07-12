@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import numpy as np
@@ -79,7 +80,15 @@ class SkillVLADinoTokenDataset(torch.utils.data.Dataset):
 
     def _open_or_build_feature_cache(self, *, build_cache: bool) -> np.ndarray:
         if self.cache_path.is_file():
-            return np.load(str(self.cache_path), mmap_mode="r")
+            try:
+                return np.load(str(self.cache_path), mmap_mode="r")
+            except ValueError as e:
+                # "mmap length is greater than file size" = 잘린 캐시 — 과거 비원자적 빌드가 도중에
+                # 죽었거나, 옛 코드가 지금 쓰는 중인 파일. 지우고 아래에서 원자적으로 재빌드.
+                if not build_cache:
+                    raise
+                print(f"[SkillVLA DINO] truncated cache ({e}) → rebuilding: {self.cache_path}")
+                self.cache_path.unlink(missing_ok=True)
 
         if not build_cache:
             raise FileNotFoundError(
@@ -90,13 +99,19 @@ class SkillVLADinoTokenDataset(torch.utils.data.Dataset):
         self.cache_path.parent.mkdir(parents=True, exist_ok=True)
         print(f"[SkillVLA DINO] Building mmap cache: {self.cache_path}")
         print("[SkillVLA DINO] This reads the large .npz once; later workers use the .npy mmap.")
+        # ATOMIC build (per-pid tmp → os.replace): 동시 제출된 잡이 "쓰다 만" 캐시를 mmap하다 죽는
+        # 경합 방지. 두 잡이 동시에 빌드하면 중복 작업일 뿐 결과는 안전. (tmp 이름이 .npy로 끝나야
+        # np.save가 확장자를 덧붙이지 않음.)
+        tmp = self.cache_path.with_name(f".tmp{os.getpid()}.{self.cache_path.name}")
         raw = np.load(str(self.tokens_path), mmap_mode="r", allow_pickle=False)
         try:
             features = raw["features"]
-            np.save(str(self.cache_path), features)
+            np.save(str(tmp), features)
             del features
+            os.replace(str(tmp), str(self.cache_path))
         finally:
             raw.close()
+            tmp.unlink(missing_ok=True)
         return np.load(str(self.cache_path), mmap_mode="r")
 
     @staticmethod

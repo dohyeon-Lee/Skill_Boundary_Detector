@@ -18,7 +18,7 @@
 #   • a full path (absolute, or relative-to-project with a "/") → used as-is
 # (also overridable per-run via env: EVAL_RUN_DIR=... ./submit_eval.sh)
 # eval_run_dir: "FSQ555_dino8_wow_imgX_500"
-eval_run_dir: "FSQ555_dino8_weighted_wow_1000"
+eval_run_dir: "FSQ555_dino8_both_1000"
 # Source dataset = the LIBERO suite the run was built from (raw video at {dataset_root}/{source};
 # also the {source} in the bare-name expansion above). Empty → "libero_90_full_full" for a bare
 # name, or derived from the parent folder for a full path.
@@ -38,7 +38,7 @@ eval_n_episodes: 10        # episodes shown per visual eval (dino/skillset/fsq_p
 # fsq_recon is unaffected (it aggregates over all skills/codebook entries).
 eval_task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]          # e.g. [1, 2, 3, 4, 5]
 eval_n_samples: 10         # sample skills per codebook entry (fsq_recon)
-eval_max_entries: 50 # 0        # 0 = render sample plots for every active entry (fsq_recon)
+eval_max_entries: 30 # 0        # 0 = render sample plots for every active entry (fsq_recon)
 eval_n_action_steps: 5     # chunk plot stride (fsq_recon)
 eval_end_threshold: 0.5
 eval_thumb_size: 160
