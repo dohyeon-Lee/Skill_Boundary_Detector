@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Export the FT-co-trained terminator into a standalone FSQ checkpoint for FT_eval.
 
-During FT the terminator lives in the policy as ``model.fsq_term_train.*`` (a full SplineFSQAE whose
-terminator-path submodules were adapted; the rest stayed frozen = identical to the base FSQ). This
+During FT the v2 terminator lives in the policy as ``model.fsq_term_train.*``. This
 takes those weights out of the FT checkpoint and merges them onto the base FSQ.pt's ``model_state``,
 writing an ``FSQ_ft.pt`` in the SAME format ({"cfg", "model_state"}) that the policy's
 ``load_terminator`` consumes. FT_eval then points ``fsq_path`` at this file.
@@ -71,12 +70,18 @@ def main() -> None:
     if "model_state" not in base or "cfg" not in base:
         raise ValueError(f"{args.base_fsq} is not an FSQ checkpoint ({{cfg, model_state}}).")
     merged = dict(base["model_state"])
-    applied = [k for k in ft_state if k in merged]
-    extra = [k for k in ft_state if k not in merged]
-    merged.update({k: v for k, v in ft_state.items() if k in merged})  # only known FSQ keys
+    prefixed = {f"terminator.{k}": v for k, v in ft_state.items()}
+    applied = [k for k in prefixed if k in merged]
+    extra = [k for k in prefixed if k not in merged]
+    merged.update({k: v for k, v in prefixed.items() if k in merged})
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    torch.save({"cfg": base["cfg"], "model_state": merged}, str(args.out))
+    exported = dict(base)
+    exported["model_state"] = merged
+    # Optimizer state is irrelevant and can be enormous (the v2 expert is ~300M params).
+    exported.pop("optim_state", None)
+    exported.pop("scheduler_state", None)
+    torch.save(exported, str(args.out))
     print(f"[export] FSQ_ft.pt written: {args.out}")
     print(f"[export]   merged {len(applied)} terminator/decoder tensors from {pretrained_model}")
     if extra:

@@ -10,7 +10,7 @@ skillvla_dataset_root: skillvla_dataset  # .../{skillvla_dataset_root}/{source_d
 source_dataset: libero_90_full_full
 # run_tag: FSQ555_dino8_both_1000   
 # run_tag: FSQ555_dino8_both_1000_snap10
-run_tag: FSQ555_dino8_both_1000_snap20
+run_tag: FSQ555_dino_frozen_small_v3_vsa_state_m2_best_snap20
 
 
 
@@ -37,7 +37,7 @@ skill_end_loss_weight: 2.0        # R — sw=1+(R-1)·progress; 스킬 END을 �
 action_weight: false               # true=가중 / false=균등
 
 # ── Terminator co-train (skill-end timing head, gradient-disjoint from 본체; eval skill 전환용) ──
-# fsq_path + dino tokens는 run_tag에서 AUTO 유도 (run_dir/FSQ.pt, run_dir/dino.npz, dino_wrist.npz는 있을 때만) — 비워둠.
+# fsq_path는 run_tag에서 AUTO 유도 (run_dir/FSQ.pt). Terminator는 raw image를 직접 읽음.
 train_terminator: true            # false면 terminator 미학습 (DINO 토큰 데이터셋도 안 붙음)
 terminator_end_target_sigma: 1.0  # termination 타깃 = exp(-de²/2σ²) (스킬 끝에서 peak)
 terminator_end_pos_weight: 1.0    # BCE pos_weight (skill-end 프레임은 희소 positive)

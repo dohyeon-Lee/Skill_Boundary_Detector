@@ -50,7 +50,7 @@ def build_settings(cfg: dict) -> dict:
         stage1_checkpoint = ""         # scratch: stage1_checkpoint는 무시 (있어도 의미 없음)
         spec = re.sub(r"^none_?", "", stage1_run_name, flags=re.IGNORECASE)
         if spec:                       # one-liner: none_{run_tag}_{vision}_{mode}
-            m = re.match(r"(FSQ\d+_dino\d+.*?)_(dino|siglip)_(state_skill|state)$", spec)
+            m = re.match(r"(FSQ\d+_.+)_(dino|siglip)_(state_skill|state)$", spec)
             if not m:
                 raise ValueError(
                     "SCRATCH one-liner must be none_{run_tag}_{siglip|dino}_{state|state_skill} "
@@ -73,9 +73,9 @@ def build_settings(cfg: dict) -> dict:
         # Vision tag is {dino|siglip}[_{freeze|unfreeze}] — the DP-branch training emitter drops the
         # freeze/unfreeze suffix (just "siglip"), so it is OPTIONAL inside the group.
         _rt = re.search(
-            r"(FSQ\d+_dino\d+.*?)(?:_((?:dino|siglip)(?:_(?:freeze|unfreeze))?))?_batch\d+", stage1_run_name)
+            r"(FSQ\d+_.+)_((?:dino|siglip)(?:_(?:freeze|unfreeze))?)_batch\d+", stage1_run_name)
         if not _rt:
-            raise ValueError(f"stage1_run_name must embed a 'FSQ..._dino..._batch<N>' run tag, got: {stage1_run_name}")
+            raise ValueError(f"stage1_run_name must embed an 'FSQ..._<vision>_batch<N>' run tag, got: {stage1_run_name}")
         run_tag = _rt.group(1)
         s1_vis_tag = _rt.group(2) or ""   # Stage-1 vision: dino_freeze / siglip_unfreeze / siglip / ... ("" if absent)
         # source_dataset: OLD naming embedded it as the stage1_run_name prefix ({source}_{run_tag}_...); the

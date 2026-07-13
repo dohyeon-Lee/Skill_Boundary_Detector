@@ -2,7 +2,7 @@
 
 These support closed-loop sim eval of the SkillExpert with a GT skill sequence per task:
   - FsqTerminator: the frozen FSQ terminator (skill code -> z_q, and per-step
-    progress/termination from [z, current 3rd-person image, current state]).
+    progress/termination from [z, state, current third-person+wrist images]).
   - skill-sequence loading per task, keyed by LANGUAGE instruction.
   - env(task_id) <-> dataset(task_index) mapping by language (LIBERO_90 languages are
     NOT unique per task: ~12 are shared by 2 scenes, so this mapping is by language only).
@@ -23,40 +23,27 @@ def _norm_lang(s: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", str(s).lower()).strip()
 
 
-# FSQ keys SplineFSQAE accepts (mirrors modeling_skillVLA.load_vae_decoder).
-_FSQ_KEYS = {
-    "action_dim", "enc_dim", "state_dim", "n_control", "spline_degree", "hidden_dim", "fsq_levels",
-    "num_layers", "dropout", "length_min", "length_max", "action_min", "action_max", "delta_min", "delta_max", "state_min", "state_max",
-    "feat_dim", "n_tokens", "image_encoder_layers", "image_encoder_heads", "terminator_use_third", "terminator_use_wrist",
-    "image_model_name", "image_size", "patch_grid", "n_patch_raw", "image_token_dim", "chunk_size",
-}
-
-
 class FsqTerminator:
     """Frozen FSQ terminator used only at eval to advance the GT skill sequence."""
 
     def __init__(self, fsq_path: str | Path, device: torch.device, *, dino_path: str | None = None,
                  libero_examples_dir: str | Path | None = None, finetuned_ckpt: str | Path | None = None):
-        import dataclasses
-
         if libero_examples_dir is not None:
             sys.path.insert(0, str(libero_examples_dir))
-        from FSQ import SplineFSQAE  # noqa: PLC0415
+        from FSQ import load_fsq_terminator  # noqa: PLC0415
 
-        ckpt = torch.load(str(fsq_path), map_location="cpu", weights_only=False)
-        cfg = ckpt["cfg"]
-        cfg_dict = dataclasses.asdict(cfg)
-        if dino_path:
-            cfg_dict["image_model_name"] = dino_path
-        vae = SplineFSQAE(**{k: v for k, v in cfg_dict.items() if k in _FSQ_KEYS})
-        vae.load_state_dict(ckpt["model_state"])
+        terminator, cfg = load_fsq_terminator(
+            fsq_path, device="cpu", dino_model_path=dino_path
+        )
         # Optionally override the terminator submodules with the CO-TRAINED (fine-tuned) terminator saved
         # in a SkillExpert checkpoint — the DINO backbone above stays from dino_path.
-        self.finetuned_loaded = _load_finetuned_terminator(vae, finetuned_ckpt) if finetuned_ckpt else 0
-        vae.eval()
-        for p in vae.parameters():
+        self.finetuned_loaded = (
+            _load_finetuned_terminator(terminator, finetuned_ckpt) if finetuned_ckpt else 0
+        )
+        terminator.eval()
+        for p in terminator.parameters():
             p.requires_grad_(False)
-        self.vae = vae.to(device)
+        self.terminator = terminator.to(device)
         self.device = device
         self.state_dim = int(cfg.state_dim)
 
@@ -71,43 +58,41 @@ class FsqTerminator:
         self.num_codes = int(np.prod(levels))
 
     def code_to_z(self, codes: torch.Tensor) -> torch.Tensor:
-        """(B,) FSQ code -> (B, D) z_q grid vector."""
+        """(B,) FSQ code -> (B, D) centered, normalized z_q in [-1,1]."""
         idx = codes.view(-1, 1).long().cpu()
         level_ids = torch.div(idx, self._strides[None, :], rounding_mode="floor") % self._levels[None, :]
-        z = level_ids.to(torch.float32) - self._half[None, :]
+        z = (level_ids.to(torch.float32) - self._half[None, :]) / self._half[None, :]
         return z.to(self.device)
 
     @property
     def use_wrist(self) -> bool:
-        return bool(getattr(self.vae, "terminator_use_wrist", False))
+        return True
 
     @torch.no_grad()
     def terminate(self, codes: torch.Tensor, state: torch.Tensor, image: torch.Tensor,
                   wrist_image: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
         """codes (B,), state (B, state_dim) raw, image / wrist_image (B,C,H,W) raw current frames.
-        wrist_image is used only by a dual-camera terminator (ignored / may be None for single).
         Returns (progress (B,), termination_prob (B,))."""
         z = self.code_to_z(codes)
-        state = state.to(self.device, torch.float32)[:, : self.state_dim].unsqueeze(1)  # (B,1,state_dim)
+        state = state.to(self.device, torch.float32)[:, : self.state_dim]
         image = image.to(self.device)
-        if wrist_image is not None:
-            wrist_image = wrist_image.to(self.device)
-        progress, term = self.vae.predict_termination(z, state, image, wrist_image, quantize=True)
-        return progress[:, 0], term[:, 0]
+        if wrist_image is None:
+            raise ValueError("FSQ terminator requires the current wrist image.")
+        wrist_image = wrist_image.to(self.device)
+        return self.terminator.predict_termination(z, state, image, wrist_image)
 
 
-def _load_finetuned_terminator(vae, ckpt_dir: str | Path) -> int:
-    """Override the terminator submodule weights of `vae` (an FSQ.pt-built SplineFSQAE) with the CO-TRAINED
+def _load_finetuned_terminator(terminator, ckpt_dir: str | Path) -> int:
+    """Override a v2 FSQ terminator with the co-trained terminator from a policy checkpoint.
     terminator saved in a SkillExpert checkpoint (model.fsq_term_train.*, fine-tuned on the dataset via
-    train_terminator). Only the intersecting terminator/reconstructor keys are replaced — the DINO backbone
-    stays from dino_path (it isn't stored in the checkpoint). Returns the number of overridden tensors
+    train_terminator). Only intersecting v2 terminator keys are replaced. Returns the number of overridden tensors
     (0 → the checkpoint has no co-trained terminator, so the caller keeps the raw FSQ.pt terminator)."""
     from safetensors import safe_open  # noqa: PLC0415
 
     st_path = Path(ckpt_dir) / "model.safetensors"
     if not st_path.exists():
         return 0
-    vsd = set(vae.state_dict().keys())
+    vsd = set(terminator.state_dict().keys())
     override = {}
     with safe_open(str(st_path), framework="pt") as h:
         for k in h.keys():
@@ -116,7 +101,7 @@ def _load_finetuned_terminator(vae, ckpt_dir: str | Path) -> int:
                 if sub in vsd:
                     override[sub] = h.get_tensor(k)
     if override:
-        vae.load_state_dict(override, strict=False)  # strict=False: DINO backbone keys stay from FSQ.pt build
+        terminator.load_state_dict(override, strict=False)
     return len(override)
 
 

@@ -1,5 +1,4 @@
-"""
-FSQ-AE Decoder evaluation.
+"""FSQ v2 VSA-expert and terminator evaluation.
 
 Metrics per skill and per FSQ codebook index (0..124):
   - Action MSE (first-step): immediate action prediction accuracy
@@ -23,48 +22,14 @@ import torch
 from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).parent))
-from FSQ import SplineFSQAE, SplineFSQAEConfig
-from train_FSQ import load_skill_files, load_dino_tokens_online
+from FSQ import SplineFSQAE, SplineFSQAEConfig, load_fsq_model
+from train_FSQ import attach_episode_offsets, load_skill_files
 
 
 # ── model loading ─────────────────────────────────────────────────────────────
 
 def load_model(model_path: str, device: str) -> tuple[SplineFSQAE, SplineFSQAEConfig]:
-    ckpt = torch.load(model_path, map_location="cpu", weights_only=False)
-    cfg: SplineFSQAEConfig = ckpt["cfg"]
-    model = SplineFSQAE(
-        action_dim           = cfg.action_dim,
-        enc_dim              = getattr(cfg, "enc_dim", 8),
-        state_dim            = cfg.state_dim,
-        n_control            = cfg.n_control,
-        spline_degree        = cfg.spline_degree,
-        hidden_dim           = cfg.hidden_dim,
-        fsq_levels           = cfg.fsq_levels,
-        num_layers           = cfg.num_layers,
-        dropout              = 0.0,
-        feat_dim             = cfg.feat_dim,
-        n_tokens             = cfg.n_tokens,
-        image_model_name     = getattr(cfg, "image_model_name", "/data2/dohyeon/SBD/models/dinov3-vits16"),
-        image_size           = getattr(cfg, "image_size", 224),
-        patch_grid           = getattr(cfg, "patch_grid", 8),
-        n_patch_raw          = getattr(cfg, "n_patch_raw", 196),
-        image_token_dim      = getattr(cfg, "image_token_dim", 128),
-        image_encoder_layers = getattr(cfg, "image_encoder_layers", 1),
-        image_encoder_heads  = getattr(cfg, "image_encoder_heads", 4),
-        chunk_size           = cfg.chunk_size,
-        length_min           = getattr(cfg, "length_min", 0.0),
-        length_max           = getattr(cfg, "length_max", 200.0),
-        action_min           = cfg.action_min,
-        action_max           = cfg.action_max,
-        delta_min            = cfg.delta_min,
-        delta_max            = cfg.delta_max,
-        state_min            = getattr(cfg, "state_min", None),
-        state_max            = getattr(cfg, "state_max", None),
-        terminator_use_third = getattr(cfg, "terminator_use_third", True),
-        terminator_use_wrist = getattr(cfg, "terminator_use_wrist", False),
-    )
-    model.load_state_dict(ckpt["model_state"])
-    model.to(device).eval()
+    model, cfg = load_fsq_model(model_path, device)
     codebook_size = model.fsq.codebook_size
     print(f"[EVAL] Loaded FSQ model  fsq_levels={cfg.fsq_levels}  "
           f"codebook={codebook_size}  K={cfg.chunk_size}")
@@ -78,8 +43,8 @@ def run_decode_single(
     model: SplineFSQAE,
     z_q: np.ndarray,              # (D,)  FSQ latent vector
     states: np.ndarray,          # (T, state_dim)
-    dec_tokens: np.ndarray,      # (T, n_tokens, feat_dim) 3rd-person
-    dec_tokens_wrist: np.ndarray,  # (T, n_tokens, feat_dim) wrist
+    third_images: torch.Tensor,  # (T,3,H,W)
+    wrist_images: torch.Tensor,  # (T,3,H,W)
     device: str,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Returns (pred_actions, pred_end_probs).
@@ -88,13 +53,13 @@ def run_decode_single(
     chunk mode:       pred_actions (T, K, A)
     pred_end_probs:   (T,) per-step termination probability after sigmoid.
     GT per-skill progress (0→1) is fed as the motion input, matching training.
-    The terminator reads both cameras (dec_tokens = 3rd-person, dec_tokens_wrist = wrist).
+    The terminator reads both raw camera streams.
     """
     T = len(states)
     z_t  = torch.from_numpy(z_q.astype(np.float32)).unsqueeze(0).to(device)
     s_t  = torch.from_numpy(states.astype(np.float32)).unsqueeze(0).to(device)
-    d_t  = torch.from_numpy(dec_tokens[:T].astype(np.float32)).unsqueeze(0).to(device)
-    dw_t = torch.from_numpy(dec_tokens_wrist[:T].astype(np.float32)).unsqueeze(0).to(device)
+    d_t = third_images[:T].float().unsqueeze(0).to(device)
+    dw_t = wrist_images[:T].float().unsqueeze(0).to(device)
     progress = (torch.arange(T, dtype=torch.float32) / max(T - 1, 1)).unsqueeze(0).to(device)
 
     pred_d, _pred_prog, pred_term = model.decode(z_t, s_t, d_t, dw_t, progress)
@@ -251,7 +216,7 @@ _HTML = """\
 </style>
 </head>
 <body>
-<h2>FSQ-AE Decoder Evaluation</h2>
+<h2>FSQ v2 Expert / Terminator Evaluation</h2>
 <div class="summary">{summary}</div>
 <div class="chart-box">
   <h4>Action MSE per Codebook Entry &nbsp;<span style="font-weight:normal;font-size:11px;color:#888">(first-step, lower=better)</span></h4>
@@ -457,12 +422,8 @@ def parse_args():
                    help="skill_latents.npz (provides latents + tokens + metadata)")
     p.add_argument("--skills_dir",      required=True,
                    help="Directory of per-skill npz files")
-    p.add_argument("--raw_dataset_dir", default="",
-                   help="LeRobot dataset dir (videos + meta) — ONLINE DINO warm-pass의 원천 "
-                        "(디스크 precompute 제거됨). 비우면 zero 토큰 폴백 (기존 동작 유지).")
-    p.add_argument("--image_key", default="observation.images.image")
-    p.add_argument("--image_key_wrist", default="observation.images.wrist_image")
-    p.add_argument("--dino_batch_size", type=int, default=256)
+    p.add_argument("--raw_dataset_dir", required=True,
+                   help="LeRobot dataset dir; both camera streams are decoded live")
     p.add_argument("--device",          default="cuda")
     p.add_argument("--max_plot_samples", type=int, default=20)
     p.add_argument("--max_plot_entries", type=int, default=20,
@@ -493,26 +454,13 @@ def main():
     dim_labels = [f"a{i}" for i in range(A - 1)] + ["grip"]
     chunk_plot_stride = max(1, int(args.n_action_steps or cfg.chunk_size))
 
-    print("[EVAL] Loading DINO tokens (3rd-person + wrist) …")
-    n_tok, F = cfg.n_tokens, cfg.feat_dim
-    if args.raw_dataset_dir:
-        # ONLINE DINO warm-pass (디스크 precompute 제거) — train_FSQ와 동일 경로/계약.
-        from lerobot.utils.online_dino import OnlineDino  # noqa: PLC0415
-        _dino = OnlineDino(cfg.image_model_name, image_size=cfg.image_size,
-                           patch_grid=cfg.patch_grid, n_patch_raw=cfg.n_patch_raw).to(device)
-        dec_tokens_list = load_dino_tokens_online(args.raw_dataset_dir, metadata, args.image_key,
-                                                  _dino, batch_size=args.dino_batch_size)
-        dec_tokens_wrist_list = (dec_tokens_list if args.image_key_wrist == args.image_key
-                                 else load_dino_tokens_online(args.raw_dataset_dir, metadata,
-                                                              args.image_key_wrist, _dino,
-                                                              batch_size=args.dino_batch_size))
-        del _dino
-        if str(device).startswith("cuda"):
-            torch.cuda.empty_cache()
-    else:
-        print("[EVAL] WARNING: no --raw_dataset_dir given — using zero tokens (both cameras)")
-        dec_tokens_list = [np.zeros((m["length"], n_tok, F), np.float32) for m in metadata]
-        dec_tokens_wrist_list = [np.zeros((m["length"], n_tok, F), np.float32) for m in metadata]
+    print("[EVAL] Opening live third-person + wrist frame reader …")
+    attach_episode_offsets(args.raw_dataset_dir, metadata)
+    from lerobot.datasets.lerobot_dataset import LeRobotDataset  # noqa: PLC0415
+    raw_dataset = LeRobotDataset(
+        repo_id=f"local/{Path(args.raw_dataset_dir).name}", root=args.raw_dataset_dir,
+        video_keys_to_load=["observation.images.image", "observation.images.wrist_image"],
+    )
 
     lat    = np.load(args.latents_path)
     latents = lat["latents"].astype(np.float32)  # (N, D) — z_q vectors
@@ -528,10 +476,12 @@ def main():
         states_i = dec_states[i][:T]
         gt_i     = dec_targets[i]
         z_q_i    = latents[i]                          # (D,)
-        dtok_i   = dec_tokens_list[i][:T]              # (T, n_tok, F) 3rd-person
-        dtok_w_i = dec_tokens_wrist_list[i][:T]        # (T, n_tok, F) wrist
+        abs_start = int(metadata[i]["dataset_from_index"]) + int(metadata[i]["frame_start"])
+        frames = [raw_dataset[abs_start + t] for t in range(T)]
+        image_i = torch.stack([frame["observation.images.image"] for frame in frames])
+        wrist_i = torch.stack([frame["observation.images.wrist_image"] for frame in frames])
 
-        pred_d, pred_p = run_decode_single(model, z_q_i, states_i, dtok_i, dtok_w_i, device)
+        pred_d, pred_p = run_decode_single(model, z_q_i, states_i, image_i, wrist_i, device)
 
         # trim to T (padding safeguard)
         pred_d = pred_d[:T]

@@ -3,7 +3,6 @@
 #   dataset name : TRAIN_DATA or target_dataset in ../train_skills_config.yaml
 #   FSQ inputs   : {project_root}/{dataset_root}/FSQ_dataset/{target_dataset}/FSQ_inputs
 #   skillset     : {project_root}/{dataset_root}/FSQ_dataset/{target_dataset}/FSQ_inputs/seg_{dp}_ck{ckpt}/skillset/skills
-#   DINO tokens  : {.../FSQ_inputs/dino_tokens_pg{grid}.npz, dino_tokens_wrist_pg{grid}.npz}
 # Reference models:
 #   DINO model   : {project_root}/models/dinov3-vits16
 # Outputs:
@@ -42,10 +41,10 @@ if [ ! -d "${SKILLSET_DIR}/skills" ]; then
   echo "Run build_data/submit_build_data.sh first." >&2
   exit 1
 fi
-# ONLINE: DINO 토큰은 train_FSQ가 raw mp4에서 warm-pass로 직접 인코딩 (per-frame DINO dir 불필요 —
+# FSQ terminator images are decoded live at the sampled timesteps (no feature warm-pass or cache —
 # dino-prep 빌드 단계 제거). raw dataset의 videos/만 있으면 됨.
 if [ ! -d "${RAW_DATASET_DIR}/videos" ]; then
-  echo "Raw dataset videos not found: ${RAW_DATASET_DIR}/videos (online DINO warm-pass의 원천)" >&2
+  echo "Raw dataset videos not found: ${RAW_DATASET_DIR}/videos" >&2
   exit 1
 fi
 

@@ -2,7 +2,7 @@
 # Inputs:
 #   FSQ inputs   : {project_root}/{dataset_root}/FSQ_dataset/{target_dataset}/FSQ_inputs
 #   skillset     : {project_root}/{dataset_root}/FSQ_dataset/{target_dataset}/FSQ_inputs/seg_{dp}_ck{ckpt}/skillset/skills
-#   DINO tokens  : (ONLINE — raw dataset의 mp4에서 학습 시작 시 warm-pass 인코딩; 디스크 산출물 없음)
+#   Images       : selected raw third+wrist frames, decoded live per batch
 # Reference models:
 #   DINO model   : {project_root}/models/dinov3-vits16
 # Outputs:
@@ -61,51 +61,17 @@ if [ ! -d "${SKILLSET_DIR}/skills" ]; then
   echo "Skillset not found: ${SKILLSET_DIR}/skills" >&2
   exit 1
 fi
-# Camera mode from fsq_terminator_use_third / use_wrist. The saved cfg flags are FAITHFUL to these, and
-# the camera→slot routing matches how EVERY downstream consumer feeds the terminator: 3rd-person →
-# primary slot (dec_tokens, terminator_use_third), wrist → wrist slot (dec_tokens_wrist, use_wrist).
-#   third=T wrist=F → 3rd-only  : primary=3rd (used)
-#   third=T wrist=T → both      : primary=3rd (used) + wrist slot=wrist
-#   third=F wrist=T → wrist-only: wrist slot=wrist (used); primary is loaded but the terminator IGNORES
-#                                 it (third=F) — so downstream, which always puts 3rd in the primary slot
-#                                 and gates wrist by use_wrist, feeds the CORRECT camera. (Historic bug:
-#                                 wrist-only used to be saved as third=T with wrist in the primary slot,
-#                                 so downstream fed it 3rd where it was trained on wrist.)
-# ONLINE: DINO 토큰은 train_FSQ가 학습 시작 시 raw mp4에서 직접 warm-pass 인코딩
-# (디스크 precompute 완전 제거 — per-frame DINO dir/토큰 npz 불필요, dino-prep 빌드 단계 없음).
-# primary via --image_key; wrist slot via --image_key_wrist (두 키가 같으면 train_FSQ가 클립 공유).
-if [ "${FSQ_TERMINATOR_USE_THIRD}" != "true" ] && [ "${FSQ_TERMINATOR_USE_WRIST}" != "true" ]; then
-  echo "Both fsq_terminator_use_third and fsq_terminator_use_wrist are false — need ≥1 camera." >&2
-  exit 1
-fi
 if [ ! -d "${RAW_DATASET_DIR}/videos" ]; then
-  echo "Raw dataset videos not found: ${RAW_DATASET_DIR}/videos (online DINO warm-pass의 원천)" >&2
+  echo "Raw dataset videos not found: ${RAW_DATASET_DIR}/videos" >&2
   exit 1
 fi
-# Primary slot camera: 3rd when the terminator uses it; for wrist-only set it to wrist (loaded but
-# unused by the terminator) so a wrist-only run does not require a 3rd-person camera to exist.
-if [ "${FSQ_TERMINATOR_USE_THIRD}" = "true" ]; then
-  PRIMARY_IMAGE_KEY="observation.images.image"
+if [ "${FSQ_FREEZE_VISION_ENCODER}" = "true" ]; then
+  VISION_FREEZE_ARG=(--freeze_vision_encoder)
 else
-  PRIMARY_IMAGE_KEY="observation.images.wrist_image"
-fi
-DINO_ARGS=(--raw_dataset_dir "${RAW_DATASET_DIR}" --image_key "${PRIMARY_IMAGE_KEY}")
-
-# Faithful flags: each --terminator_use_* reflects the REAL config (no more hardcoded --terminator_use_third).
-if [ "${FSQ_TERMINATOR_USE_THIRD}" = "true" ]; then
-  TERM_ARGS=(--terminator_use_third)
-else
-  TERM_ARGS=(--no-terminator_use_third)
-fi
-if [ "${FSQ_TERMINATOR_USE_WRIST}" = "true" ]; then
-  TERM_ARGS+=(--terminator_use_wrist)
-  DINO_ARGS+=(--image_key_wrist "observation.images.wrist_image")
-else
-  TERM_ARGS+=(--no-terminator_use_wrist)
+  VISION_FREEZE_ARG=(--no-freeze_vision_encoder)
 fi
 
 read -r -a FSQ_LEVELS <<< "${FSQ_LEVELS_STR}"
-N_TOKENS=$(( FSQ_PATCH_GRID * FSQ_PATCH_GRID + 1 ))
 
 mkdir -p "${FSQ_OUTPUT_DIR}"
 
@@ -115,9 +81,10 @@ cat > "${FSQ_OUTPUT_DIR}/fsq_meta.json" <<JSON
 {
   "dp_run_name": "${DP_POLICY}",
   "dp_checkpoint": "${DP_CHECKPOINT}",
-  "fsq_patch_grid": ${FSQ_PATCH_GRID},
-  "fsq_terminator_use_third": ${FSQ_TERMINATOR_USE_THIRD},
-  "fsq_terminator_use_wrist": ${FSQ_TERMINATOR_USE_WRIST}
+  "terminator_arch": "${FSQ_TERMINATOR_ARCH}",
+  "vision_backbone": "${FSQ_VISION_BACKBONE}",
+  "freeze_vision_encoder": ${FSQ_FREEZE_VISION_ENCODER},
+  "encoder_input_mode": "${FSQ_ENCODER_INPUT_MODE}"
 }
 JSON
 
@@ -130,42 +97,49 @@ else
   echo "No checkpoint found, training from scratch"
 fi
 
-# weighted_loss probe (tyro bool flag): end-weight the reconstructor delta loss.
+# weighted_loss probe (tyro bool flag): end-weight the sampled flow loss.
 WEIGHTED_ARG=(--no-weighted_loss)
 if [ "${FSQ_WEIGHTED_LOSS:-false}" = "true" ]; then
   WEIGHTED_ARG=(--weighted_loss)
 fi
 
 # best-val SELECTION override: pass each val_select weight only if set in config (empty → omit → the
-# trainer falls back to selecting FSQ.pt on the actual loss = delta+progress+end with their weights).
+# trainer falls back to selecting FSQ.pt on action+progress+end with their weights).
 VAL_SELECT_ARGS=()
-if [ -n "${FSQ_VAL_SELECT_DELTA_WEIGHT:-}" ];    then VAL_SELECT_ARGS+=(--val_select_delta_weight    "${FSQ_VAL_SELECT_DELTA_WEIGHT}"); fi
+if [ -n "${FSQ_VAL_SELECT_ACTION_WEIGHT:-}" ];   then VAL_SELECT_ARGS+=(--val_select_action_weight   "${FSQ_VAL_SELECT_ACTION_WEIGHT}"); fi
 if [ -n "${FSQ_VAL_SELECT_PROGRESS_WEIGHT:-}" ]; then VAL_SELECT_ARGS+=(--val_select_progress_weight "${FSQ_VAL_SELECT_PROGRESS_WEIGHT}"); fi
 if [ -n "${FSQ_VAL_SELECT_END_WEIGHT:-}" ];      then VAL_SELECT_ARGS+=(--val_select_end_weight      "${FSQ_VAL_SELECT_END_WEIGHT}"); fi
 
 PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
   python -u examples/libero/train_FSQ.py \
     --skills_dir              "${SKILLSET_DIR}/skills" \
-    "${DINO_ARGS[@]}" \
-    "${TERM_ARGS[@]}" \
+    --raw_dataset_dir         "${RAW_DATASET_DIR}" \
     --output_dir              "${FSQ_OUTPUT_DIR}" \
     --fsq_levels              "${FSQ_LEVELS[@]}" \
     --chunk_size              "${FSQ_CHUNK_SIZE}" \
+    --samples_per_skill       "${FSQ_SAMPLES_PER_SKILL}" \
+    --action_expert_variant   "${FSQ_ACTION_EXPERT_VARIANT}" \
+    --state_cond_mode         "${FSQ_STATE_COND_MODE}" \
+    --pi_base                 "${PI_BASE_MODEL_PATH}" \
+    --expert_dtype            "${FSQ_EXPERT_DTYPE}" \
     --hidden_dim              "${FSQ_HIDDEN_DIM}" \
     --num_layers              "${FSQ_NUM_LAYERS}" \
     --n_control               "${FSQ_N_CONTROL}" \
-    --image_token_dim         "${FSQ_IMAGE_TOKEN_DIM}" \
-    --feat_dim                "${DINO_FEATURE_DIM}" \
-    --n_tokens                "${N_TOKENS}" \
-    --image_model_name        "${DINO_IMAGE_MODEL_PATH}" \
-    --image_size              "${DINO_IMAGE_SIZE}" \
-    --patch_grid              "${FSQ_PATCH_GRID}" \
-    --n_patch_raw             196 \
+    --encoder_input_mode      "${FSQ_ENCODER_INPUT_MODE}" \
+    --terminator_arch         "${FSQ_TERMINATOR_ARCH}" \
+    --vision_backbone         "${FSQ_VISION_BACKBONE}" \
+    "${VISION_FREEZE_ARG[@]}" \
+    --dino_model_path         "${FSQ_DINO_MODEL_PATH}" \
+    --dino_image_size         "${FSQ_DINO_IMAGE_SIZE}" \
+    --siglip_image_size       "${FSQ_SIGLIP_IMAGE_SIZE}" \
+    --cond_encoder_variant    "${FSQ_COND_ENCODER_VARIANT}" \
     --epochs                  "${FSQ_NUM_EPOCHS}" \
-    --lr                      "${FSQ_LR}" \
+    --encoder_lr              "${FSQ_ENCODER_LR}" \
+    --terminator_lr           "${FSQ_TERMINATOR_LR}" \
+    --expert_lr               "${FSQ_EXPERT_LR}" \
     --batch_size              "${FSQ_BATCH_SIZE}" \
     --num_workers             "${FSQ_NUM_WORKERS}" \
-    --delta_loss_weight       "${FSQ_DELTA_LOSS_WEIGHT}" \
+    --action_loss_weight      "${FSQ_ACTION_LOSS_WEIGHT}" \
     --progress_loss_weight    "${FSQ_PROGRESS_LOSS_WEIGHT}" \
     --end_loss_weight         "${FSQ_END_LOSS_WEIGHT}" \
     "${VAL_SELECT_ARGS[@]}" \

@@ -14,7 +14,7 @@ Produces:
 The skill_latents.npz used here is (re)generated from the evaluated checkpoint
 and written next to the HTML (FSQ_eval/outputs).
 
-Usage (DINO는 --dataset_dir의 mp4에서 ONLINE warm-pass — 디스크 precompute 없음):
+Usage (both cameras are decoded live from ``--dataset_dir``):
     python examples/libero/fsq_eval.py \
       --model_path   .../FSQ.pt \
       --skills_dir   .../skillset/skills \
@@ -48,7 +48,7 @@ from codebook_visualizer import (  # noqa: E402
 )
 from decoder_eval import load_model  # noqa: E402
 from FSQ import spline_encode  # noqa: E402
-from train_FSQ import load_dino_tokens_online, load_skill_files  # noqa: E402
+from train_FSQ import attach_episode_offsets, load_skill_files  # noqa: E402
 
 
 # ── latent saving ──────────────────────────────────────────────────────────────
@@ -118,12 +118,17 @@ def batched_encode(model, segments, lengths, device, batch_size):
     N = len(segments)
     A = segments[0].shape[-1]
     nctrl, deg = model.n_control, model.spline_degree
-    amin = model.action_min.cpu().numpy()
-    amax = model.action_max.cpu().numpy()
+    amin = model.encoder.encoder_min.cpu().numpy()
+    amax = model.encoder.encoder_max.cpu().numpy()
 
     ctrl_norm = []
     for seg in segments:
-        cp, _ = spline_encode(seg.astype(np.float32), nctrl, deg)
+        cp, _ = spline_encode(
+            seg.astype(np.float32),
+            nctrl,
+            deg,
+            input_mode=model.encoder.encoder_input_mode,
+        )
         cp = (cp - amin) / (amax - amin + 1e-8) * 2.0 - 1.0
         ctrl_norm.append(cp.astype(np.float32))
 
@@ -148,48 +153,45 @@ def batched_encode(model, segments, lengths, device, batch_size):
 
 
 @torch.no_grad()
-def batched_decode(model, latents, states, clips, clips_wrist, lengths, device, batch_size):
-    """Decode all skills in length-bucketed batches.
+def batched_decode(model, latents, states, metadata, raw_dataset, lengths, device, batch_size):
+    """Decode all valid frames in bounded frame microbatches.
 
     Returns per-skill lists sliced to T: deltas[i] (T,K,A), progresses[i] (T,),
     term_probs[i] (T,). GT progress is fed as the motion input (matches training).
-    clips = 3rd-person tokens; clips_wrist = wrist tokens (None for single-camera models,
-    where the terminator reads 3rd-person only).
+    Only the current third-person and wrist frames are decoded for each item.
+
+    ``batch_size`` is a frame count here. The v2 decoder is a 300M-class Gemma
+    expert, so padding 64 whole trajectories to max(T) would create thousands of
+    expert samples and OOM despite most of them being padding.
     """
     N = len(latents)
-    n_tokens, feat = model.n_tokens, model.feat_dim
-    state_dim = model.state_dim
-    D = int(model.fsq.latent_dim)
-    deltas: list = [None] * N
-    progs: list = [None] * N
-    terms: list = [None] * N
-    order = sorted(range(N), key=lambda i: lengths[i])
-    for s in tqdm(range(0, N, batch_size), desc="Decoding (batched)"):
-        idxs = order[s:s + batch_size]
-        B = len(idxs)
-        maxT = max(lengths[i] for i in idxs)
-        z = torch.zeros(B, D)
-        st = torch.zeros(B, maxT, state_dim)
-        dec = torch.zeros(B, maxT, n_tokens, feat)
-        dec_w = torch.zeros(B, maxT, n_tokens, feat) if clips_wrist is not None else None
-        fp = torch.zeros(B, maxT)
-        for b, i in enumerate(idxs):
-            T = lengths[i]
-            z[b] = torch.from_numpy(latents[i].astype(np.float32))
-            st[b, :T] = torch.from_numpy(states[i][:T].astype(np.float32))
-            dec[b, :T] = torch.from_numpy(clips[i][:T].astype(np.float32))
-            if dec_w is not None:
-                dec_w[b, :T] = torch.from_numpy(clips_wrist[i][:T].astype(np.float32))
-            fp[b, :T] = torch.arange(T, dtype=torch.float32) / max(T - 1, 1)
+    K, A = model.chunk_size, model.action_dim
+    deltas = [np.empty((lengths[i], K, A), np.float32) for i in range(N)]
+    progs = [np.empty(lengths[i], np.float32) for i in range(N)]
+    terms = [np.empty(lengths[i], np.float32) for i in range(N)]
+    refs = [(i, t) for i, length in enumerate(lengths) for t in range(length)]
+    for start in tqdm(range(0, len(refs), batch_size), desc="Decoding (frame microbatches)"):
+        part = refs[start : start + batch_size]
+        z = torch.from_numpy(np.stack([latents[i] for i, _ in part]).astype(np.float32)).to(device)
+        st = torch.from_numpy(np.stack([states[i][t] for i, t in part]).astype(np.float32)).to(device)
+        frames = [
+            raw_dataset[
+                int(metadata[i]["dataset_from_index"]) + int(metadata[i]["frame_start"]) + int(t)
+            ]
+            for i, t in part
+        ]
+        dec = torch.stack([frame["observation.images.image"] for frame in frames]).to(device)
+        dec_w = torch.stack([frame["observation.images.wrist_image"] for frame in frames]).to(device)
         delta, prog, term_logits = model.decode(
-            z.to(device), st.to(device), dec.to(device),
-            dec_w.to(device) if dec_w is not None else None, fp.to(device))
-        term = torch.sigmoid(term_logits)
-        for b, i in enumerate(idxs):
-            T = lengths[i]
-            deltas[i] = delta[b, :T].cpu().numpy()
-            progs[i] = prog[b, :T].cpu().numpy()
-            terms[i] = term[b, :T].cpu().numpy()
+            z, st[:, None], dec[:, None], dec_w[:, None]
+        )
+        delta = delta[:, 0].cpu().numpy()
+        prog = prog[:, 0].cpu().numpy()
+        term = torch.sigmoid(term_logits[:, 0]).cpu().numpy()
+        for row, (i, t) in enumerate(part):
+            deltas[i][t] = delta[row]
+            progs[i][t] = prog[row]
+            terms[i][t] = term[row]
     return deltas, progs, terms
 
 
@@ -492,14 +494,7 @@ def parse_args():
     p.add_argument("--model_path", required=True)
     p.add_argument("--skills_dir", required=True)
     p.add_argument("--dataset_dir", required=True,
-                   help="LeRobot dataset dir (videos + meta) — 썸네일 프레임 + ONLINE DINO warm-pass의 "
-                        "공동 원천 (디스크 DINO precompute 제거됨; train_FSQ와 동일 계약)")
-    p.add_argument("--image_key", default="observation.images.image",
-                   help="primary-camera video key (wrist-only FSQ면 wrist_image)")
-    p.add_argument("--image_key_wrist", default="observation.images.wrist_image",
-                   help="dual-camera terminator의 wrist video key")
-    p.add_argument("--dino_batch_size", type=int, default=256,
-                   help="online DINO warm-pass의 GPU 프레임 배치 크기")
+                   help="LeRobot dataset dir (videos + meta); both cameras are read live")
     p.add_argument("--output_dir", required=True, help="where the HTML is written (FSQ_eval/outputs/<run>/<epoch>)")
     p.add_argument("--latents_path", default="",
                    help="where to save/load skill_latents.npz (default: <output_dir>/skill_latents.npz). "
@@ -508,7 +503,8 @@ def parse_args():
     p.add_argument("--max_plot_samples", type=int, default=5, help="sample skills per entry")
     p.add_argument("--max_plot_entries", type=int, default=0, help="0 = render all active entries")
     p.add_argument("--thumb_size", type=int, default=160)
-    p.add_argument("--batch_size", type=int, default=64, help="batch size for encode/decode inference")
+    p.add_argument("--batch_size", type=int, default=64,
+                   help="trajectory batch for encoding; frame microbatch for v2 expert/terminator inference")
     p.add_argument("--seed", type=int, default=42, help="seed for random sample selection per codebook entry")
     p.add_argument("--end_threshold", type=float, default=0.5)
     p.add_argument("--force_encode", action="store_true",
@@ -530,25 +526,15 @@ def main():
     levels = list(cfg.fsq_levels)
     codebook_size = int(model.fsq.codebook_size)
 
-    use_wrist = bool(getattr(model, "terminator_use_wrist", False))
-    print(f"[fsq_eval] loading skills / DINO (3rd-person{' + wrist' if use_wrist else ''}) ...")
+    print("[fsq_eval] loading skills and live third+wrist frame reader ...")
     segments, dec_states, dec_targets, metadata = load_skill_files(Path(args.skills_dir))
-    # ONLINE DINO (디스크 precompute 제거): --dataset_dir(raw)의 mp4에서 warm-pass 인코딩 —
-    # train_FSQ와 동일 경로/계약이라 학습과 평가가 같은 토큰을 봄.
-    from lerobot.utils.online_dino import OnlineDino  # noqa: PLC0415
-    _dino = OnlineDino(model.image_model_name, image_size=model.image_size,
-                       patch_grid=model.patch_grid, n_patch_raw=model.n_patch_raw).to(device)
-    dec_tokens = load_dino_tokens_online(args.dataset_dir, metadata, args.image_key,
-                                         _dino, batch_size=args.dino_batch_size)
-    # Wrist is the dual terminator's 2nd camera — encode it only when the model actually reads it.
-    dec_tokens_wrist = None
-    if use_wrist:
-        dec_tokens_wrist = (dec_tokens if args.image_key_wrist == args.image_key
-                            else load_dino_tokens_online(args.dataset_dir, metadata, args.image_key_wrist,
-                                                         _dino, batch_size=args.dino_batch_size))
-    del _dino
-    if device == "cuda":
-        torch.cuda.empty_cache()
+    attach_episode_offsets(args.dataset_dir, metadata)
+    from lerobot.datasets.lerobot_dataset import LeRobotDataset  # noqa: PLC0415
+    raw_dataset = LeRobotDataset(
+        repo_id=f"local/{Path(args.dataset_dir).name}",
+        root=args.dataset_dir,
+        video_keys_to_load=["observation.images.image", "observation.images.wrist_image"],
+    )
 
     # ── encoder: reuse latents if already present for this run, else encode ──
     latents_path = Path(args.latents_path) if args.latents_path else out_dir / "skill_latents.npz"
@@ -587,7 +573,7 @@ def main():
     groups = _dim_groups(action_dim)
     dim_labels = [f"d{i}" for i in range(action_dim - 1)] + ["grip"]
     deltas, progresses, term_probs = batched_decode(
-        model, latents, dec_states, dec_tokens, dec_tokens_wrist, lengths, device, args.batch_size)
+        model, latents, dec_states, metadata, raw_dataset, lengths, device, args.batch_size)
     per_skill = [
         skill_metrics(deltas[i], progresses[i], term_probs[i], dec_targets[i], lengths[i],
                       args.end_threshold, groups)

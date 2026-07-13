@@ -4,18 +4,14 @@
 #
 # Pipeline:
 #   1. source dataset 지정
-#   2. source 데이터셋의 DINO precompute npz 생성            → dino.npz
-#   3. 지정한 DP 모델로 원본을 skill 단위로 분할 (skillset)  → (중간물)
-#   4. 지정한 FSQ 인코더로 각 skill → latent vector 매핑      → skill_latents.npz (중간물)
-#   5. vector + skillset 으로 SkillVLA 최종 데이터 생성       → skillvla/
-#
-# No SAM2 here: encoding only uses the pure-DINO encoder, which ignores flags.
+#   2. 지정한 DP 모델로 원본을 skill 단위로 분할 (skillset)  → (중간물)
+#   3. 지정한 FSQ 인코더로 각 skill → latent vector 매핑      → skill_latents.npz (중간물)
+#   4. vector + skillset 으로 SkillVLA 최종 데이터 생성       → skillvla/
 #
 # Final outputs land under:
 #   {project_root}/{dataset_root}/{skillvla_dataset_root}/{source_dataset}/{run_tag}/
-#     ├─ dino.npz       (step 2)
-#     ├─ FSQ.pt         (copied FSQ checkpoint used for encoding, step 4)
-#     └─ skillvla/      (final LeRobot SkillVLA dataset, step 5)
+#     ├─ FSQ.pt         (copied FSQ checkpoint used for encoding)
+#     └─ skillvla/      (final LeRobot SkillVLA dataset)
 # Intermediate artifacts (skillset/, skill_latents.npz, ...) are removed at the end.
 
 # ── Paths (project_root/dataset_root come from configs/global_config.yaml) ──
@@ -30,30 +26,7 @@ skillvla_dataset_root: skillvla_dataset  # outputs under {dataset_root}/{skillvl
 source_dataset: libero_90_full_full
 
 # ── DINO precompute (step 2) ──────────────────────────────────
-# The build declares EXACTLY which (grid × camera) DINO it needs and either VALIDATES a
-# precomputed base has them, or GENERATEs them on the source frames. Two consumers, each
-# its own grid:  DP segmentation → pg{DP_patch_grid} (3rd);  FSQ terminator / skill DINO
-# tokens / dino.npz → pg{FSQ_patch_grid} (dino_third / dino_wrist).
-#
-# dino_base_dataset:
-#   <name>   → slice from {dataset_root}/{name}_DINO/pg{grid}/{camera}/. EVERY required
-#              grid×camera must EXIST there, else the build errors (no silent fallback).
-#   generate → compute every required grid×camera directly from the source dataset's frames
-#              (one frozen DINOv3 pass, idempotent), keyed by the source episode index. No
-#              precomputed base needed (handles merged / mixed-provenance datasets).
-dino_base_dataset: generate   # base dataset name | "generate"
-DP_patch_grid:  8       # grid the DP segmentation consumes (3rd-person)
-FSQ_patch_grid: 8       # grid the FSQ terminator / skill DINO tokens consume
-dino_third: true        # terminator 3rd-person camera (observation.images.image)
-dino_wrist: true       # terminator wrist camera (observation.images.wrist_image). Produced/
-                        # validated as data, but the TRAINING terminator co-train forward
-                        # consumes 3rd-person only today (eval encodes raw images live) → wrist
-                        # is forward-compat.
-dino_copy_mode: symlink                  # copy | hardlink | symlink (intermediate, so symlink is cheap)
-# generate-mode only: shard the DINO precompute across N GPUs (Slurm array over episodes), then one
-# dependent slice job. 1 = single GPU (fine for small sources like libero_10). Bump for big sources
-# (e.g. libero_90). No effect when dino_base_dataset points at a precomputed base (login-node slice).
-dino_generate_workers: 1
+# FSQ visual features are never materialized here; its terminator reads raw frames live.
 
 # ── DP model for skill segmentation (step 3) ──────────────────
 # A trained Diffusion Policy from train_skills (under {project_root}/outputs/DP/).
@@ -83,9 +56,9 @@ skillset_max_sweeps: 2
 # FSQ config lives in the checkpoint.
 # fsq_run_name: "libero_90_full_full_state_obs20_fsq555_dino8_weighted_wow"   # folder under outputs/FSQ/
 # fsq_run_name: "libero_90_full_full_state_obs20_fsq555_dino8_both"
-fsq_run_name: "libero_90_full_full_state_obs20_fsq555_dino8_both"
+fsq_run_name: "libero_90_full_full_state_obs20_fsq555_dino_frozen_small_v3_vsa_state_m2"
 
-fsq_checkpoint: 1000                              # epoch number; 0 = best (FSQ.pt)
+fsq_checkpoint: 0                                 # epoch number; 0 = best (FSQ.pt)
 
 # ── transfer 안전망: 새 데이터셋 인코딩 시 FSQ가 "미지원(학습때 안 쓰인/희귀) 코드"를 뱉으면
 #    가장 가까운 지원 코드로 옮겨, 다운스트림 VLA가 학습 못한 코드로 스킬이 배정되는 걸 방지.

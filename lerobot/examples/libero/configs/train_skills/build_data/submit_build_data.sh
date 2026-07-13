@@ -9,11 +9,8 @@
 #   DP policy    : {project_root}/outputs/DP/{dp_policy_name}/checkpoints/{dp_checkpoint}/pretrained_model
 # Outputs:
 #   skillset     : {project_root}/{dataset_root}/FSQ_dataset/{target_dataset}/FSQ_inputs/seg_{dp}_ck{ckpt}/skillset
-#   DINO tokens  : {.../FSQ_inputs/dino_tokens_pg{grid}.npz, dino_tokens_wrist_pg{grid}.npz}
 #
-# Prepare FSQ inputs from skillset + prepared frame DINO.
-# Produces skill-level DINO tokens for BOTH cameras (3rd-person + wrist) — the FSQ
-# terminator reads both via separate DINO-token encoders.
+# Prepare the DP-segmented skillset used by FSQ.
 
 set -euo pipefail
 
@@ -158,7 +155,7 @@ PY
 fi
 
 # Final job a caller (e.g. submit_eval.sh auto-build) should depend on: the skillset marker
-# (DINO 토큰 extract 단계는 은퇴 — FSQ 학습/평가가 online warm-pass로 직접 인코딩).
+# (FSQ visual-token extraction is retired; training/eval decode selected raw frames live.)
 LAST_JOB="${MARK_JOB:-}"
 [ -n "${LAST_JOB}" ] && echo "  eval can depend on skillset marker job ${LAST_JOB}"
 # Final job id on a parseable line so callers can depend on it (omitted when nothing to wait on).

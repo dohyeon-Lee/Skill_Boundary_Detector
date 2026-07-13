@@ -18,16 +18,16 @@
 #   • a full path (absolute, or relative-to-project with a "/") → used as-is
 # (also overridable per-run via env: EVAL_RUN_DIR=... ./submit_eval.sh)
 # eval_run_dir: "FSQ555_dino8_wow_imgX_500"
-eval_run_dir: "FSQ555_dino8_both_1000"
+eval_run_dir: "FSQ555_dino_frozen_small_v3_vsa_state_m2_best_snap20"
 # Source dataset = the LIBERO suite the run was built from (raw video at {dataset_root}/{source};
 # also the {source} in the bare-name expansion above). Empty → "libero_90_full_full" for a bare
 # name, or derived from the parent folder for a full path.
 eval_source_dataset: "libero_90_full_full"
 
 # Which evals to run
-eval_run_dino: true
+eval_run_dino: false             # legacy standalone visualization only; never a model input
 eval_run_skillset: true
-eval_run_fsq_patch: true
+eval_run_fsq_patch: false        # legacy pooled-patch visualization only
 eval_run_fsq_recon: true
 
 # Visualization sampling

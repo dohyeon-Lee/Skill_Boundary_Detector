@@ -9,7 +9,6 @@
 
 # ── Roots (used to locate the skillset/tokens to evaluate) ──
 target_dataset: libero_90_full_full
-fsq_patch_grid: 8
 fsq_dataset_root: FSQ_dataset
 fsq_inputs_name: FSQ_inputs
 skillset_name: skillset
@@ -34,11 +33,10 @@ eval_run_fsq: true
 # fsq_eval_run_name: libero_90_full_full_dino8_obs10_fsq555_dino8_wow
 # fsq_eval_run_name: libero_90_full_full_dino8_obs10_fsq555_dino8_wot
 # fsq_eval_run_name: libero_90_full_full_dino8_obs10_fsq88_dino8_wow
-fsq_eval_run_name: libero_90_full_full_state_obs20_fsq555_dino8_both
+fsq_eval_run_name: libero_90_full_full_state_obs20_fsq555_dino_frozen_small_v3_vsa_state_m2
 
-fsq_eval_checkpoint: 500
-# Camera mode (3rd / wrist) is read automatically from the FSQ's fsq_meta.json (written at train time),
-# so it isn't configured here. (Falls back to the shared resolver default only if that meta is missing.)
+fsq_eval_checkpoint: 0
+# The terminator always consumes both cameras; architecture/backbone live in the checkpoint.
 
 # Evaluation / HTML knobs
 fsq_eval_n_action_steps: 5       # chunk plot stride (draw a predicted chunk every N steps)

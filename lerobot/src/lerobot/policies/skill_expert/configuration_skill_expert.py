@@ -111,14 +111,17 @@ class SkillExpertConfig(PI05Config):
 
     # ── Eval-only (oracle closed-loop sim). Ignored during training. ──
     fsq_path: str | None = None
-    """Frozen FSQ checkpoint ({run_dir}/FSQ.pt): provides the terminator (skill end signal)
-    + code->z_q mapping for eval. Unused in training (skill code comes from the dataset)."""
+    """v3 FSQ checkpoint ({run_dir}/FSQ.pt). It always warm-starts the exact action expert.
+    A terminator_arch=cond checkpoint additionally warm-starts Stage-1's vision tower,
+    image projection, and condition Gemma; terminator_arch=small does not. The checkpoint
+    also supplies the isolated terminator for co-training/eval. The trajectory encoder is
+    never instantiated here (skill codes come from the dataset)."""
     skill_label_dataset_dir: str | None = None
     """skillvla dataset dir whose skill_sequence columns give the GT skill sequence per task
     (matched to the env task by language) for the oracle eval."""
     terminator_dino_model_path: str | None = None
-    """DINO weights for the FSQ terminator's raw-image encoder at eval. None → the FSQ
-    checkpoint's own image_model_name (auto-resolved to this repo's models/ if absent).
+    """Optional local override for the FSQ terminator's DINO model path. None → the FSQ
+    checkpoint's own dino_model_path (auto-resolved to this repo's models/ if absent).
     Kept SEPARATE from dino_model_path, which is the policy's OWN vision backbone and must
     match the checkpoint being loaded — never override that one at eval."""
     skill_advance_mode: str = "terminator"

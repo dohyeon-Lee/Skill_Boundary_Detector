@@ -41,49 +41,20 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
     source_dataset = dataset or str(get_value(cfg, "source_dataset", env="SOURCE_DATA"))
 
     # ── FSQ reference (declared like dp_policy_name: folder name + checkpoint) ──
-    # The FSQ folder name encodes both the patch grid (dino<grid>) and the codebook
-    # levels (fsq<levels>); parse both from it so they can't drift from the model you
-    # reference. FSQ levels are single-digit (quantization bins, e.g. 5/8), so each
-    # digit is one level; the build only needs num_embeddings = prod(levels).
+    # Parse codebook levels from the FSQ folder. The remaining suffix identifies
+    # its live vision backbone / freeze mode / terminator architecture.
     fsq_run_name = str(get_value(cfg, "fsq_run_name"))
     fsq_checkpoint = str(get_value(cfg, "fsq_checkpoint", "1000"))
     lv_match = re.search(r"fsq(\d+)", fsq_run_name)
-    pg_match = re.search(r"_dino(\d+)", fsq_run_name)
-    if not lv_match or not pg_match:
+    if not lv_match:
         raise ValueError(
-            f"fsq_run_name must contain 'fsq<levels>' and 'dino<grid>' tags "
-            f"(e.g. ..._fsq88_dino8), got: {fsq_run_name}"
+            f"fsq_run_name must contain an 'fsq<levels>' tag, got: {fsq_run_name}"
         )
     fsq_digits = lv_match.group(1)
     fsq_levels = [int(d) for d in fsq_digits]
-    fsq_name_grid = int(pg_match.group(1))   # grid tag in the FSQ NAME → run_tag label only
-    fsq_exp_suffix = fsq_run_name.split(f"_dino{fsq_name_grid}", 1)[1]   # e.g. "_eqloss" or ""
-    fsq_exp = fsq_exp_suffix.lstrip("_")
-
-    # ── DINO (step 2) ── the build declares WHICH (grid × camera) DINO it needs (yaml), and
-    # either VALIDATES a precomputed base has them or GENERATEs them on the source frames.
-    # Two consumers, possibly different grids: DP segmentation (DP_patch_grid, 3rd-person) and
-    # the FSQ terminator / skill DINO tokens / dino.npz (FSQ_patch_grid, dino_third/dino_wrist).
-    THIRD_KEY, WRIST_KEY = "observation.images.image", "observation.images.wrist_image"
-    dino_base_dataset = str(get_value(cfg, "dino_base_dataset", "libero_90")).strip()
-    dino_generate = dino_base_dataset.lower() == "generate"
-    dp_patch_grid = int(get_value(cfg, "DP_patch_grid", fsq_name_grid))
-    fsq_patch_grid = int(get_value(cfg, "FSQ_patch_grid", fsq_name_grid))
-    dino_third = as_bool(get_value(cfg, "dino_third", True))
-    dino_wrist = as_bool(get_value(cfg, "dino_wrist", False))
-    fsq_cameras = ([THIRD_KEY] if dino_third else []) + ([WRIST_KEY] if dino_wrist else [])
-    if not fsq_cameras:
-        raise ValueError("At least one of dino_third / dino_wrist must be true.")
-    # Required (grid, camera) set: DP needs its grid+3rd; the FSQ side needs its grid×cameras.
-    # de-dup while preserving order (DP and FSQ may share grid/camera).
-    required = []
-    for g, cam in [(dp_patch_grid, THIRD_KEY)] + [(fsq_patch_grid, c) for c in fsq_cameras]:
-        if (g, cam) not in required:
-            required.append((g, cam))
-    # base DINO dir per grid (explicit base mode); generate writes into {source}_DINO instead.
-    gen_base_name = f"{source_dataset}_DINO"            # generate target (source's own DINO)
-    base_name = gen_base_name if dino_generate else f"{dino_base_dataset}_DINO"
-    image_keys = fsq_cameras   # primary image_keys = FSQ cameras (extract/merge); DINO_IMAGE_KEY = 3rd
+    fsq_variant = fsq_run_name[lv_match.end() :].strip("_") or "default"
+    fsq_exp_suffix = f"_{fsq_variant}"
+    fsq_exp = fsq_variant
 
     # ── DP (step 3) ──
     dp_policy_name = str(get_value(cfg, "dp_policy_name"))
@@ -100,11 +71,10 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
         ckpt_tag = str(fsq_checkpoint)
 
     # ── output layout ──
-    #   {skillvla_root}/{source_dataset}/{run_tag}/   ← final outputs (dino.npz, FSQ.pt, skillvla/)
+    #   {skillvla_root}/{source_dataset}/{run_tag}/   ← final outputs (FSQ.pt, skillvla/)
     #   {skillvla_root}/{source_dataset}/_work/        ← intermediates, keyed by dependency:
-    #       dino/pg{grid}/            (per-grid; DP uses pg{DP_grid}, FSQ side uses pg{FSQ_grid})
     #       seg_{dp}_ck{ckpt}/        (DP-dependent: skillset + skill_tokens; shared across FSQ)
-    run_tag = f"FSQ{fsq_digits}_dino{fsq_name_grid}{fsq_exp_suffix}_{ckpt_tag}"
+    run_tag = f"FSQ{fsq_digits}_{fsq_variant}_{ckpt_tag}"
     # transfer 빌드(snap): 미지원 코드를 최근접 지원 코드로 snap한 빌드는 산출물(skill_latents/skillvla)이
     # 다르므로 폴더 분리 — run_tag에 _snap{min_freq} 부착 (downstream 파서들의 run_tag 정규식은
     # `FSQ\d+_dino\d+.*?` 꼴이라 그대로 통과). _work 중간물은 snap 무관(dino/segmentation)이라 공유 유지.
@@ -133,9 +103,6 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
     source_out_dir = skillvla_root / source_dataset
     run_dir = source_out_dir / run_tag
     work_dir = source_out_dir / "_work"
-    dino_root = work_dir / "dino"                         # per-grid subdirs: dino/pg{grid}/{camera}/
-    dp_dino_dir = dino_root / f"pg{dp_patch_grid}"        # DP segmentation reads here (3rd)
-    fsq_dino_dir = dino_root / f"pg{fsq_patch_grid}"      # extract/merge read here (3rd [+ wrist])
     # skillset + skill_tokens depend on the DP model (not FSQ), so key them by DP so a
     # different DP/checkpoint never reuses or clobbers another's segmentation.
     seg_dir = work_dir / f"seg_{dp_policy_name}_ck{dp_checkpoint}"
@@ -172,9 +139,6 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
         "dp_checkpoint": dp_checkpoint,
         "dp_policy_path": dp_policy_path,
         "skillset_dir": skillset_dir,
-        # skill-level DINO tokens: FSQ-independent but DP-dependent → live in the DP-keyed
-        # seg dir (shared across FSQ variants). FSQ vectors stay run-specific.
-        "skill_tokens_path": seg_dir / "skill_tokens.npz",
         "skill_latents_path": run_dir / "skill_latents.npz",
         "skillset_dn_step": int(get_value(cfg, "skillset_dn_step", 7)),
         "skillset_n_gmm": int(get_value(cfg, "skillset_n_gmm", 5)),
@@ -212,10 +176,6 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
         "skillvla_work_dir": work_dir,
         "skillvla_seg_dir": seg_dir,   # DP-keyed intermediates (skillset + skill_tokens)
         "iss_npz_path": run_dir / "skill_initial_state.npz",   # Stage-2 skill-initial-state (ISS)
-        # Stage-1 terminator wrist tokens: only when dino_wrist:true (FSQ trained terminator_use_wrist).
-        # Same merge as dino.npz but the wrist camera → a second per-skill DINO token cache. Empty = none.
-        "dino_wrist_npz_path": (run_dir / "dino_wrist.npz") if dino_wrist else "",
-        "wrist_image_key": WRIST_KEY if dino_wrist else "",    # merge --image_key for dino_wrist.npz
         "fsq_copy_path": run_dir / "FSQ.pt",
         "skillvla_dataset_dir": run_dir / "skillvla",
         # eval outputs (build_data_eval runs off: raw video + skillvla/ + dino.npz + FSQ.pt)

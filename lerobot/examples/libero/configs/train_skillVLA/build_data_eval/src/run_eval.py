@@ -259,44 +259,43 @@ def eval_fsq_patch(df, dino: DinoNpz, frames_src, out_dir: Path, n_episodes: int
 
 # ── eval 4: FSQ reconstruction (reuse fsq_eval HTML) ─────────────────────────────
 
-def eval_fsq_recon(df, dino: DinoNpz, frames_src, fsq_model_path: Path, out_dir: Path,
+def eval_fsq_recon(df, frames_src, fsq_model_path: Path, out_dir: Path,
                    image_key: str, dataset_dir: Path, *,
                    n_action_steps, n_samples, max_entries, end_threshold, thumb, seed, batch_size, device):
     import torch  # noqa: F401
     import fsq_eval as FE
     from decoder_eval import load_model
-    from train_FSQ import _make_episode_future_targets
+    from train_FSQ import attach_episode_offsets
 
     model, cfg = load_model(str(fsq_model_path), device)
     levels = list(cfg.fsq_levels)
     codebook_size = int(model.fsq.codebook_size)
 
-    # reconstruct per-skill inputs from skillvla columns + dino.npz
-    # NOTE: this diagnostic only has the 3rd-person dino.npz, so the same clip stands in for the
-    # wrist camera. Action reconstruction (3rd-person only) is exact; the terminator's
-    # progress/termination curves are approximate (real wrist tokens not loaded here).
-    segments, dec_states, dec_targets_cur, dec_tokens, metadata = [], [], [], [], []
+    # Reconstruct per-skill motion inputs. Camera frames are read live below.
+    segments, dec_states, dec_targets, metadata = [], [], [], []
     for ep in sorted(df["episode_index"].unique()):
         ep_df = df[df["episode_index"] == ep].sort_values("frame_index").reset_index(drop=True)
         skills = reconstruct_skills(ep_df)
         states = np.stack(ep_df["observation.state"].to_numpy()).astype(np.float32)
         actions = np.stack(ep_df["action"].to_numpy()).astype(np.float32)
         dstate = np.stack(ep_df["skill_decoder_state"].to_numpy()).astype(np.float32)
-        clip = dino.episode_clip(int(ep))
         for fs, fe, _tok in skills:
             segments.append(states[fs:fe].astype(np.float32))         # encoder traj = full state (8D)
             dec_states.append(dstate[fs:fe])
-            dec_targets_cur.append(actions[fs:fe].astype(np.float32))
-            dec_tokens.append(clip[fs:fe])
+            dec_targets.append(actions[fs:fe].astype(np.float32))
             metadata.append({"episode_id": int(ep), "task_id": -1, "skill_index": len(metadata),
                              "frame_start": int(fs), "frame_end": int(fe), "length": int(fe - fs)})
-    dec_targets = _make_episode_future_targets(dec_targets_cur, metadata)
     lengths = [m["length"] for m in metadata]
+    attach_episode_offsets(str(dataset_dir), metadata)
+    from lerobot.datasets.lerobot_dataset import LeRobotDataset
+    raw_dataset = LeRobotDataset(
+        repo_id=f"local/{dataset_dir.name}", root=dataset_dir,
+        video_keys_to_load=["observation.images.image", "observation.images.wrist_image"],
+    )
 
     latents, tokens = FE.batched_encode(model, segments, lengths, device, batch_size)  # action-only encoder
-    # dec_tokens stands in for the wrist camera here (see NOTE above).
     deltas, progresses, term_probs = FE.batched_decode(
-        model, latents, dec_states, dec_tokens, dec_tokens, lengths, device, batch_size)
+        model, latents, dec_states, metadata, raw_dataset, lengths, device, batch_size)
 
     action_dim = dec_targets[0].shape[-1]
     groups = FE._dim_groups(action_dim)
@@ -422,7 +421,7 @@ def main():
     df = load_skillvla_episodes(Path(args.skillvla_dir))
     frames_src = make_frames_loader(Path(args.dataset_dir), args.image_key)
     dino = None
-    if args.run_dino or args.run_fsq_patch or args.run_fsq_recon:
+    if args.run_dino or args.run_fsq_patch:
         dino = DinoNpz(Path(args.dataset_dir), args.image_key, args.dino_model_path)
 
     if args.run_dino:
@@ -436,7 +435,7 @@ def main():
     if args.run_fsq_recon:
         import torch
         device = args.device if torch.cuda.is_available() and args.device == "cuda" else "cpu"
-        eval_fsq_recon(df, dino, frames_src, Path(args.fsq_model), out / "fsq_recon",
+        eval_fsq_recon(df, frames_src, Path(args.fsq_model), out / "fsq_recon",
                        args.image_key, Path(args.dataset_dir),
                        n_action_steps=args.n_action_steps,
                        n_samples=args.n_samples, max_entries=args.max_entries,

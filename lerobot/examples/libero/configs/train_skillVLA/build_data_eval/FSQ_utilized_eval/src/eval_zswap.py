@@ -8,8 +8,7 @@
                         (stage1 teacher-forced win_rate의 사실상 상한 = '천장')
 
 소스: GT action/state = skillvla parquet에서 세그먼트 재구성, z = skill_latents.npz,
-시작 프레임 = skillvla 비디오 디코딩 → DINO 즉석 추론 (체크포인트의 image_model_name,
-경로는 FSQ.resolve_image_model_path로 로컬 해석). fsq_ckpt override 시 encoder(z)-decoder
+이 v2 실험의 action expert는 이미지를 받지 않으므로 state+z만 교체한다. fsq_ckpt override 시 encoder(z)-decoder
 epoch 불일치 경고.
 """
 
@@ -25,7 +24,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from fsq_utilized_eval_config import (  # noqa: E402
-    DEFAULT_CONFIG_PATH, load_config, load_fsq, load_targets, merge_metrics, project_root, section_cached,
+    DEFAULT_CONFIG_PATH, load_config, load_fsq, load_targets, merge_metrics, section_cached,
 )
 
 SECTION = "zswap"
@@ -56,7 +55,7 @@ def build_segments(run_dir: Path, K: int) -> tuple[list[dict], dict]:
             T = int(m.sum())
             segments.append({
                 "episode_id": int(ep), "frame_start": int(ifs[k]) if k < len(ifs) else t0,
-                "states": states[m], "future": acts[t0:],   # 시작부터 에피소드 끝까지 (chunk 타겟)
+                "states": states[m], "future": acts[m],
                 "start_global_index": int(gidx[t0]),
             })
     return segments, {"root": root}
@@ -67,6 +66,10 @@ def evaluate(name: str, spec: dict, cfg: dict, n_segments: int, n_swap: int, see
     fsq, fsq_cfg = load_fsq(spec["run_dir"], spec["fsq_ckpt"], cfg)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     fsq = fsq.to(device)
+    if device.type == "cuda" and str(fsq.cfg.expert_dtype) == "bfloat16":
+        fsq.action_expert.to(dtype=torch.bfloat16)
+    elif device.type == "cuda" and str(fsq.cfg.expert_dtype) == "float16":
+        fsq.action_expert.to(dtype=torch.float16)
     if spec["fsq_ckpt"] is not None:
         print(f"[warn] {name}: fsq_ckpt override — skill_latents.npz의 z(인코더)와 다른 epoch 디코더의 교차 실험입니다.")
 
@@ -77,11 +80,6 @@ def evaluate(name: str, spec: dict, cfg: dict, n_segments: int, n_swap: int, see
     lat = np.load(spec["run_dir"] / "skill_latents.npz")
     zmap = {(int(e), int(s)): lat["latents"][i]
             for i, (e, s) in enumerate(zip(lat["episode_id"], lat["frame_start"]))}
-
-    # 시작 프레임 이미지 (skillvla 비디오) → DINO 토큰 즉석 계산
-    sys.path.insert(0, str(project_root(cfg) / "lerobot" / "src"))
-    from lerobot.datasets.lerobot_dataset import LeRobotDataset  # noqa: PLC0415
-    ds = LeRobotDataset(repo_id=f"local/{name}", root=spec["run_dir"] / "skillvla")
 
     rng = np.random.default_rng(seed)
     idxs = rng.choice(len(segments), size=min(n_segments, len(segments)), replace=False)
@@ -95,10 +93,6 @@ def evaluate(name: str, spec: dict, cfg: dict, n_segments: int, n_swap: int, see
             continue
         T = len(s["states"])
         states = torch.from_numpy(s["states"][:T]).unsqueeze(0).to(device)
-        img = ds[s["start_global_index"]]["observation.images.image"]      # (C,H,W) [0,1]
-        img5 = img.unsqueeze(0).unsqueeze(0).to(device)                    # (1,1,C,H,W)
-        start_tok = fsq._raw_images_to_tokens(img5, target_t=1, device=device, dtype=states.dtype)  # noqa: SLF001
-
         fut = s["future"]
         gt = np.zeros((T, K_chunk, A), dtype=np.float32)
         mask = np.zeros((T, K_chunk), dtype=bool)
@@ -107,12 +101,14 @@ def evaluate(name: str, spec: dict, cfg: dict, n_segments: int, n_swap: int, see
             gt[t, :n], mask[t, :n] = fut[t:t + n], True
         gt_t = torch.from_numpy(gt).to(device)
         mask_t = torch.from_numpy(mask)[..., None].float().to(device)
-        prog_tok = fsq.motion_prog_proj(torch.linspace(0, 1, T, device=device).view(1, T, 1))
+        noise = torch.randn(
+            T, K_chunk, fsq.cfg.max_action_dim, device=device,
+            generator=torch.Generator(device=device).manual_seed(seed + int(i)),
+        )
 
         def recon(zvec):
             z = torch.as_tensor(np.asarray(zvec, dtype=np.float32), device=device).unsqueeze(0)
-            z_tok = fsq.dec_z_proj(z.unsqueeze(1).expand(1, T, -1))
-            return fsq._reconstruct_chunk(z_tok, states, prog_tok)[0]  # noqa: SLF001  (image-free reconstructor)
+            return fsq.sample_action_chunks(z, states, noise=noise)[0]
 
         pred_true = recon(zmap[key])
         res["mse_true"].append(float((((pred_true - gt_t) ** 2) * mask_t).sum() / mask_t.sum() / A))

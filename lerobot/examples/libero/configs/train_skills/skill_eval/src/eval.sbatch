@@ -114,44 +114,29 @@ if [ "${EVAL_RUN_FSQ}" = "true" ]; then
     echo "Check fsq_eval_run_name / checkpoint in ${EVAL_CONFIG}" >&2
     exit 1
   fi
-  # Evaluate THIS FSQ on the skillset/cameras it was TRAINED on — read from fsq_meta.json (written by
-  # train_fsq). Independent of eval_dp_run_name (that only steers the DP eval). The FSQ's skillset/
-  # tokens already exist (training required them). Fall back to eval_config if no meta (older runs).
+  # Evaluate this FSQ on the skillset it was trained on, recorded in fsq_meta.json.
   FSQ_META="${MODEL_DIR}/fsq_meta.json"
   F_SKILLSET="${SKILLSET_DIR}"
-  F_USE_THIRD="${FSQ_TERMINATOR_USE_THIRD}"; F_USE_WRIST="${FSQ_TERMINATOR_USE_WRIST}"
   if [ -f "${FSQ_META}" ]; then
-    read -r F_DP F_CKPT F_GRID F_USE_THIRD F_USE_WRIST < <("${BOOTSTRAP_PYTHON}" - "${FSQ_META}" <<'PY'
+    read -r F_DP F_CKPT < <("${BOOTSTRAP_PYTHON}" - "${FSQ_META}" <<'PY'
 import json, sys
 m = json.load(open(sys.argv[1]))
-print(m["dp_run_name"], m["dp_checkpoint"], m["fsq_patch_grid"],
-      str(m["fsq_terminator_use_third"]).lower(), str(m["fsq_terminator_use_wrist"]).lower())
+print(m["dp_run_name"], m["dp_checkpoint"])
 PY
 )
-    # Re-resolve the FSQ's own skillset for its recorded DP/grid (subshell, no leak).
-    eval "$(DP_RUN_NAME="${F_DP}" DP_CHECKPOINT="${F_CKPT}" FSQ_PATCH_GRID="${F_GRID}" \
+    eval "$(DP_RUN_NAME="${F_DP}" DP_CHECKPOINT="${F_CKPT}" \
       "${BOOTSTRAP_PYTHON}" "${COMMON_SRC_DIR}/train_skills_config.py" --config "${TRAIN_CONFIG}" --shell 2>/dev/null \
       | grep -E '^export SKILLSET_DIR=')"
     F_SKILLSET="${SKILLSET_DIR}"
-    echo "  FSQ source DP    : ${F_DP} (ck${F_CKPT}, pg${F_GRID}, third=${F_USE_THIRD} wrist=${F_USE_WRIST})"
+    echo "  FSQ source DP    : ${F_DP} (ck${F_CKPT})"
   fi
   if [ ! -d "${F_SKILLSET}/skills" ]; then
     echo "FSQ's training skillset not found: ${F_SKILLSET}/skills" >&2; exit 1
-  fi
-  # ONLINE: fsq_eval이 --dataset_dir(raw mp4)에서 DINO를 직접 warm-pass 인코딩 — per-frame DINO dir
-  # 불필요 (dino-prep 빌드 단계 제거; train_FSQ와 동일 계약이라 학습·평가가 같은 토큰을 봄).
-  # Camera→slot 규약은 기존 그대로: 3rd → primary slot (--image_key), wrist → wrist slot
-  # (--image_key_wrist, terminator가 wrist를 쓸 때 항상 — wrist-only는 primary도 wrist).
-  if [ "${F_USE_THIRD}" = "true" ]; then FSQ_PRIMARY_KEY="observation.images.image"; else FSQ_PRIMARY_KEY="observation.images.wrist_image"; fi
-  FSQ_DINO_ARGS=(--image_key "${FSQ_PRIMARY_KEY}")
-  if [ "${F_USE_WRIST}" = "true" ]; then
-    FSQ_DINO_ARGS+=(--image_key_wrist "observation.images.wrist_image")
   fi
   PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     python -u examples/libero/fsq_eval.py \
       --model_path          "${MODEL_PATH}" \
       --skills_dir          "${F_SKILLSET}/skills" \
-      "${FSQ_DINO_ARGS[@]}" \
       --dataset_dir      "${DATASET_VIDEO_DIR}" \
       --output_dir       "${OUTPUT_DIR}" \
       --latents_path     "${LATENTS_PATH}" \

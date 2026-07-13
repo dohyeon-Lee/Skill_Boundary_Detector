@@ -173,10 +173,6 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
     backbone = DINO_VISUAL_BACKBONE
     dino_feature_tag = DINO_FEATURE_TAG
     dino_patch_grid = int(get_value(cfg, "dino_patch_grid", 8, env="DINO_PATCH_GRID"))
-    # DP segments/trains on pg{dino_patch_grid}. FSQ may use a DIFFERENT grid for its skill
-    # DINO tokens (e.g. DP on pg8, FSQ on pg14). fsq_patch_grid defaults to dino_patch_grid,
-    # so existing single-grid configs are unchanged; set it to decouple the FSQ side.
-    fsq_patch_grid = int(get_value(cfg, "fsq_patch_grid", dino_patch_grid, env="FSQ_PATCH_GRID"))
     dino_feature_dataset = str(get_value(cfg, "dino_feature_dataset", "{target_dataset}")).format(
         target_dataset=target_dataset
     )
@@ -240,13 +236,25 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
 
     fsq_levels = as_levels(get_value(cfg, "fsq_levels", [5, 5, 5]))
     fsq_tag = "fsq" + "".join(str(v) for v in fsq_levels)
-    fsq_image_token_dim = int(get_value(cfg, "fsq_image_token_dim", 256))
     fsq_exp = str(get_value(cfg, "fsq_exp", "")).strip()
     fsq_exp_suffix = f"_{fsq_exp}" if fsq_exp else ""
-    # weighted_loss probe: end-weight the FSQ reconstructor (delta) loss. Tags the run/folder name
+    # weighted_loss probe: end-weight the sampled FSQ VSA flow loss. Tags the run/folder name
     # with "_weighted" (placed BEFORE the fsq_exp suffix) so weighted vs uniform runs never collide.
     weighted_loss = as_bool(get_value(cfg, "weighted_loss", False))
     weighted_suffix = "_weighted" if weighted_loss else ""
+    fsq_terminator_arch = str(get_value(cfg, "fsq_terminator_arch", "small"))
+    fsq_vision_backbone = str(get_value(cfg, "fsq_vision_backbone", "dino"))
+    fsq_freeze_vision_encoder = as_bool(get_value(cfg, "fsq_freeze_vision_encoder", True))
+    fsq_vision_tag = fsq_vision_backbone + ("_frozen" if fsq_freeze_vision_encoder else "_tuned")
+    fsq_encoder_input_mode = str(get_value(cfg, "fsq_encoder_input_mode", "zero_grounded"))
+    if fsq_encoder_input_mode not in {"zero_grounded", "raw_state"}:
+        raise ValueError(
+            "fsq_encoder_input_mode must be zero_grounded|raw_state, "
+            f"got {fsq_encoder_input_mode!r}."
+        )
+    # Preserve the historical zero-grounded name; raw-state runs get an explicit suffix so they can
+    # never auto-resume from a checkpoint trained with the other encoder input convention.
+    fsq_encoder_input_suffix = "_rawstate" if fsq_encoder_input_mode == "raw_state" else ""
     # DP tag for the FSQ run name = the DP run with the dataset prefix stripped
     # (libero_90_full_full_state_obs20 → state_obs20), so the FSQ folder shows WHICH DP's skillset it
     # was trained on (state_obs20 vs dino8_obs10 …), not just the FSQ's own patch grid.
@@ -255,7 +263,8 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         get_value(
             cfg,
             "fsq_run_name",
-            "{target_dataset}_{dp_tag}_{fsq_tag}_dino{fsq_patch_grid}{weighted_suffix}{fsq_exp_suffix}",
+            "{target_dataset}_{dp_tag}_{fsq_tag}_{fsq_vision_tag}_{fsq_terminator_arch}"
+            "{fsq_encoder_input_suffix}{weighted_suffix}{fsq_exp_suffix}",
         )
     )
     fsq_run_name = fsq_run_template.format(
@@ -263,11 +272,13 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         dp_tag=dp_tag,
         fsq_tag=fsq_tag,
         dino_patch_grid=dino_patch_grid,
-        fsq_patch_grid=fsq_patch_grid,
-        fsq_image_token_dim=fsq_image_token_dim,
         fsq_exp=fsq_exp,
         fsq_exp_suffix=fsq_exp_suffix,
         weighted_suffix=weighted_suffix,
+        fsq_vision_tag=fsq_vision_tag,
+        fsq_terminator_arch=fsq_terminator_arch,
+        fsq_encoder_input_mode=fsq_encoder_input_mode,
+        fsq_encoder_input_suffix=fsq_encoder_input_suffix,
     )
     # Slurm partition/qos/nodelist/exclude are canonical (read from global_config.yaml's train_*);
     # output keys below keep their per-job prefix so submit scripts read the same $..._PARTITION vars.
@@ -294,14 +305,10 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "dino_feature_dataset": dino_feature_dataset,
         "base_dino_feature_dir": dataset_root / f"{dino_source_dataset}_DINO" / f"pg{dino_patch_grid}",
         "dino_feature_dir": fsq_dataset_root / target_dataset / "DINO" / f"pg{dino_patch_grid}",
-        # FSQ-side DINO at its own grid (= DP grid unless fsq_patch_grid is set). The skill-token
-        # extractor and FSQ training read these; DP/skillset keep using the dino_* dirs above.
-        "fsq_patch_grid": fsq_patch_grid,
-        "base_fsq_dino_feature_dir": dataset_root / f"{dino_source_dataset}_DINO" / f"pg{fsq_patch_grid}",
-        "fsq_dino_feature_dir": fsq_dataset_root / target_dataset / "DINO" / f"pg{fsq_patch_grid}",
         "dino_visual_backbone": backbone,
         "dino_image_model_dir": DINO_IMAGE_MODEL_DIR,
         "dino_image_model_path": root / "models" / DINO_IMAGE_MODEL_DIR,
+        "pi_base_model_path": root / "models" / "pi05_base",
         "dino_feature_tag": dino_feature_tag,
         "dino_image_keys": as_list(get_value(cfg, "dino_image_keys", ["observation.images.image"])),
         "dino_patch_grid": dino_patch_grid,
@@ -344,6 +351,7 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "fsq_exp_suffix": fsq_exp_suffix,
         "fsq_weighted_loss": weighted_loss,
         "weighted_suffix": weighted_suffix,
+        "fsq_encoder_input_suffix": fsq_encoder_input_suffix,
         "fsq_run_name": fsq_run_name,
         "fsq_output_dir": fsq_outputs_root / fsq_run_name,
         "fsq_dim": len(fsq_levels),
@@ -353,19 +361,32 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "fsq_num_workers": int(get_value(cfg, "fsq_num_workers", 8)),
         "fsq_num_epochs": int(get_value(cfg, "fsq_num_epochs", 1000)),
         "fsq_checkpoint_every": int(get_value(cfg, "fsq_checkpoint_every", 500)),
-        "fsq_lr": str(get_value(cfg, "fsq_lr", "3e-4")),
+        "fsq_encoder_lr": str(get_value(cfg, "fsq_encoder_lr", "3e-4")),
+        "fsq_terminator_lr": str(get_value(cfg, "fsq_terminator_lr", "3e-4")),
+        "fsq_expert_lr": str(get_value(cfg, "fsq_expert_lr", "2.5e-5")),
+        "fsq_samples_per_skill": int(get_value(cfg, "fsq_samples_per_skill", 2)),
+        "fsq_action_expert_variant": str(get_value(cfg, "fsq_action_expert_variant", "gemma_300m")),
+        "fsq_encoder_input_mode": fsq_encoder_input_mode,
+        "fsq_state_cond_mode": str(get_value(cfg, "fsq_state_cond_mode", "state")),
+        "fsq_expert_dtype": str(get_value(cfg, "fsq_expert_dtype", "bfloat16")),
         "fsq_hidden_dim": int(get_value(cfg, "fsq_hidden_dim", 256)),
         "fsq_num_layers": int(get_value(cfg, "fsq_num_layers", 2)),
         "fsq_n_control": int(get_value(cfg, "fsq_n_control", 30)),
-        "fsq_image_token_dim": int(get_value(cfg, "fsq_image_token_dim", 256)),
-        "fsq_terminator_use_third": as_bool(get_value(cfg, "fsq_terminator_use_third", True)),
-        "fsq_terminator_use_wrist": as_bool(get_value(cfg, "fsq_terminator_use_wrist", True)),
+        "fsq_terminator_arch": fsq_terminator_arch,
+        "fsq_vision_backbone": fsq_vision_backbone,
+        "fsq_freeze_vision_encoder": fsq_freeze_vision_encoder,
+        "fsq_dino_model_path": str(
+            get_value(cfg, "fsq_dino_model_path", root / "models" / DINO_IMAGE_MODEL_DIR)
+        ),
+        "fsq_dino_image_size": int(get_value(cfg, "fsq_dino_image_size", 224)),
+        "fsq_siglip_image_size": int(get_value(cfg, "fsq_siglip_image_size", 224)),
+        "fsq_cond_encoder_variant": str(get_value(cfg, "fsq_cond_encoder_variant", "gemma_300m")),
         "fsq_chunk_size": int(get_value(cfg, "fsq_chunk_size", 10)),
-        "fsq_delta_loss_weight": str(get_value(cfg, "fsq_delta_loss_weight", 1.0)),
+        "fsq_action_loss_weight": str(get_value(cfg, "fsq_action_loss_weight", 1.0)),
         "fsq_progress_loss_weight": str(get_value(cfg, "fsq_progress_loss_weight", 1.0)),
         "fsq_end_loss_weight": str(get_value(cfg, "fsq_end_loss_weight", 1.0)),
         # best-val SELECTION metric weights — empty → "" (sbatch omits the flag → selection follows loss)
-        "fsq_val_select_delta_weight": str(get_value(cfg, "fsq_val_select_delta_weight", "") or ""),
+        "fsq_val_select_action_weight": str(get_value(cfg, "fsq_val_select_action_weight", "") or ""),
         "fsq_val_select_progress_weight": str(get_value(cfg, "fsq_val_select_progress_weight", "") or ""),
         "fsq_val_select_end_weight": str(get_value(cfg, "fsq_val_select_end_weight", "") or ""),
         "fsq_end_target_sigma": str(get_value(cfg, "fsq_end_target_sigma", 0.0)),
@@ -393,15 +414,7 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "skillset_time": str(get_value(cfg, "skillset_time", "4:00:00")),
         "fsq_inputs_name": fsq_inputs_name,
         "fsq_inputs_dir": fsq_inputs_dir,
-        "fsq_seg_dir": fsq_seg_dir,   # DP-keyed: skillset + per-skill dino_tokens live here
-        "dino_tokens_path": (
-            fsq_seg_dir
-            / f"dino_tokens_pg{fsq_patch_grid}.npz"
-        ),
-        "dino_tokens_wrist_path": (
-            fsq_seg_dir
-            / f"dino_tokens_wrist_pg{fsq_patch_grid}.npz"
-        ),
+        "fsq_seg_dir": fsq_seg_dir,
         "slurm_partitions": slurm_partitions,
         "slurm_partition": slurm_partition,
         "slurm_nodelist": str(get_value(cfg, "train_nodelist", "")),

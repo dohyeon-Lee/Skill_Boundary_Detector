@@ -1423,101 +1423,59 @@ class SkillVLAPytorch(PI05Pytorch):
                                       skill_code, noise, num_steps)
 
     # ── FSQ terminator (inference-only skill-transition gating) ──
-    # Terminator-path submodules (the ones co-trained in FT; everything else — the FSQ encoder and the
-    # reconstructor — stays frozen). dec_z_proj feeds both, but is on the terminator's input path.
-    _TERM_TRAIN_MODULES = ("dec_z_proj", "term_state_proj", "dec_image_encoder_term",
-                           "dec_image_encoder_term_wrist", "term_pool", "progress_head", "termination_head")
-
     @staticmethod
     def _construct_fsq(path: str, dino_model_path: str | None = None):
-        """Build a SplineFSQAE from an FSQ checkpoint + load its weights (terminator + reconstructor;
-        the unused encoder weights are dropped). Returns the model on CPU (caller places/casts it).
-        dino_model_path: FSQ ckpt cfg에 기록된 image_model_name(학습 머신의 절대경로일 수 있음)을
-        로컬 DINO 경로로 오버라이드 — ONLINE DINO(raw 분기)가 학습/추론 중 이 경로에서 lazy 로드하므로
-        서버 이식 시 필수 (terminator_dino_model_path)."""
+        """Instantiate and load only ``terminator.*`` from a v2 FSQ checkpoint.
+
+        Neither the trajectory encoder nor the 300M FSQ action expert is allocated here.
+        ``dino_model_path`` overrides a checkpoint-local DINO path after moving servers."""
         sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "examples" / "libero"))
-        import dataclasses  # noqa: PLC0415
+        from FSQ import load_fsq_terminator  # noqa: PLC0415
 
-        from FSQ import SplineFSQAE  # noqa: PLC0415
-
-        ckpt = torch.load(path, map_location="cpu", weights_only=False)
-        cfg_dict = dataclasses.asdict(ckpt["cfg"])
-        if dino_model_path:
-            cfg_dict["image_model_name"] = str(dino_model_path)
-        keys = {"action_dim", "enc_dim", "state_dim", "n_control", "spline_degree", "hidden_dim", "fsq_levels",
-                "num_layers", "dropout", "length_min", "length_max", "action_min", "action_max", "delta_min", "delta_max", "state_min", "state_max",
-                "feat_dim", "n_tokens", "image_encoder_layers", "terminator_use_third", "terminator_use_wrist", "image_encoder_heads",
-                "image_model_name", "image_size", "patch_grid", "n_patch_raw", "image_token_dim", "chunk_size",
-                "reconstructor_mode"}
-        fsq = SplineFSQAE(**{k: v for k, v in cfg_dict.items() if k in keys})
-        # The terminator only runs the decoder path; the FSQ encoder is never used here. Drop encoder
-        # weights the current model no longer has, keep strictness on terminator/reconstructor weights.
-        model_keys = set(fsq.state_dict().keys())
-        state = {k: v for k, v in ckpt["model_state"].items() if k in model_keys}
-        dropped = [k for k in ckpt["model_state"] if k not in model_keys]
-        missing, _ = fsq.load_state_dict(state, strict=False)
-        if missing:
-            raise RuntimeError(f"FSQ terminator checkpoint missing required weights: {sorted(missing)}")
-        if dropped:
-            log.info("Ignored %d non-terminator FSQ key(s) when loading FSQ (e.g. %s).", len(dropped), dropped[0])
-        return fsq
+        terminator, _ = load_fsq_terminator(path, device="cpu", dino_model_path=dino_model_path)
+        return terminator
 
     def load_terminator(self, path: str) -> None:
         """Load the frozen FSQ checkpoint's terminator (decides skill transitions in closed loop).
         Only ``predict_termination`` is used (the action chunk comes from the flow-matching expert)."""
-        fsq = self._construct_fsq(path, getattr(self.config, "terminator_dino_model_path", None))
-        for p in fsq.parameters():
+        terminator = self._construct_fsq(path, getattr(self.config, "terminator_dino_model_path", None))
+        for p in terminator.parameters():
             p.requires_grad_(False)
-        fsq.eval()
-        self.fsq_term = fsq.to(device=next(self.parameters()).device)
-        log.info("Loaded FSQ terminator from %s (state_dim=%s, use_wrist=%s).",
-                 path, getattr(fsq, "state_dim", None), getattr(fsq, "terminator_use_wrist", False))
+        terminator.eval()
+        self.fsq_term = terminator.to(device=next(self.parameters()).device)
+        log.info("Loaded FSQ terminator from %s (state_dim=%s, vision=%s, arch=%s).",
+                 path, getattr(terminator, "state_dim", None),
+                 getattr(terminator, "vision_backbone", None), getattr(terminator, "arch", None))
 
     def _build_terminator_trainable(self, path: str) -> None:
         """FT: a TRAINABLE terminator co-trained on this dataset's GT signals. Warm-starts from the
-        FSQ checkpoint; only the terminator-path submodules (_TERM_TRAIN_MODULES) get gradients — the
-        FSQ encoder + reconstructor stay frozen. Registered as a submodule so it joins the optimizer
+        FSQ checkpoint. The component loader instantiates only the terminator. It is registered as a
+        submodule so it joins the optimizer
         and is checkpointed; its loss runs on a disjoint graph (GT inputs only) → no SkillVLA effect."""
-        fsq = self._construct_fsq(path, getattr(self.config, "terminator_dino_model_path", None))
-        trainable = {n for n in self._TERM_TRAIN_MODULES if getattr(fsq, n, None) is not None}
-        for name, mod in fsq.named_children():
-            req = name in trainable
-            for p in mod.parameters():
-                p.requires_grad_(req)
-        fsq.train()
+        terminator = self._construct_fsq(path, getattr(self.config, "terminator_dino_model_path", None))
+        terminator.requires_grad_(True).train()
+        if terminator.freeze_vision_encoder:
+            terminator.vision_encoder.requires_grad_(False).eval()
         # float32 throughout (the FSQ was trained in fp32; terminator inputs state/dino are fp32).
-        self.fsq_term_train = fsq.to(device=next(self.parameters()).device, dtype=torch.float32)
-        n_tr = sum(p.numel() for p in fsq.parameters() if p.requires_grad)
-        log.info("Built TRAINABLE FSQ terminator from %s (%d trainable params, modules=%s).",
-                 path, n_tr, sorted(trainable))
+        self.fsq_term_train = terminator.to(device=next(self.parameters()).device, dtype=torch.float32)
+        n_tr = sum(p.numel() for p in terminator.parameters())
+        log.info("Built TRAINABLE v2 FSQ terminator from %s (%d params).", path, n_tr)
 
-    def terminator_predict(self, true_code: Tensor, state: Tensor, dino_tokens: Tensor,
-                           dino_tokens_wrist: Tensor | None = None) -> tuple[Tensor, Tensor]:
-        """FT co-training forward (grad ON, logits out): GT skill code + current state + current DINO
-        tokens (+ wrist tokens for a DUAL terminator) → (progress (B,), term_logits (B,)). Inputs are all
-        GT/precomputed, so the graph never touches the SkillVLA params (disjoint co-training)."""
-        fsq = self.fsq_term_train
-        dev = next(fsq.parameters()).device
-        st = state.to(device=dev, dtype=torch.float32)
-        if st.ndim == 2:
-            st = st.unsqueeze(1)                                       # (B, 1, state_dim)
-        st = st[..., : int(fsq.state_dim)]
-        z = self._code_to_z(true_code.to(self._fsq_strides.device)).to(device=dev, dtype=st.dtype)  # (B, D) unnormalized z_q
-        dec = fsq._prepare_decoder_tokens(dino_tokens, states=st)      # (B, 1, N, F)
-        # Dual terminator (terminator_use_wrist=True): prepare the wrist tokens the same way.
-        dec_wrist = None
-        if bool(getattr(fsq, "terminator_use_wrist", False)):
-            if dino_tokens_wrist is None:
-                raise ValueError(
-                    "FSQ terminator_use_wrist=True but no wrist image in the batch — 배치에 "
-                    "observation.images.wrist_image가 필요합니다 (ONLINE DINO), or use a 3rd-only ('wow') FSQ.")
-            dec_wrist = fsq._prepare_decoder_tokens(dino_tokens_wrist, states=st)
-        B, T = dec.shape[:2]
-        lh = fsq.fsq.levels_half.to(z.device, z.dtype)
-        zq = torch.maximum(torch.minimum(torch.round(z), lh), -lh)
-        z_tok = fsq.dec_z_proj(zq.unsqueeze(1).expand(B, T, -1).to(st.dtype))
-        progress, term_logits = fsq._terminate(z_tok, st, dec, dec_wrist)   # (B, 1), (B, 1)
-        return progress[:, 0], term_logits[:, 0]
+    def terminator_predict(self, true_code: Tensor, state: Tensor, image: Tensor,
+                           wrist_image: Tensor | None = None) -> tuple[Tensor, Tensor]:
+        """FT co-training on current raw third-person and wrist frames."""
+        terminator = self.fsq_term_train
+        dev = next(terminator.parameters()).device
+        dtype = next(terminator.parameters()).dtype
+        st = state.to(device=dev, dtype=dtype)[..., : int(terminator.state_dim)]
+        z_norm = (
+            self._code_to_z(true_code.to(self._fsq_strides.device)) / self._fsq_half[None, :]
+        ).to(device=dev, dtype=dtype)
+        if wrist_image is None:
+            raise ValueError("FSQ terminator requires observation.images.wrist_image.")
+        third = image.to(device=dev, dtype=dtype)
+        wrist = wrist_image.to(device=dev, dtype=dtype)
+        return terminator(z_norm, st, third, wrist)
 
     def _code_to_z(self, code: Tensor) -> Tensor:
         """Flat FSQ code (B,) → z_q (B, D) in the FSQ codebook's coordinate frame."""
@@ -1528,43 +1486,34 @@ class SkillVLAPytorch(PI05Pytorch):
 
     def _prepare_term_state(self, state: Tensor) -> Tensor:
         s = state.to(device=next(self.parameters()).device, dtype=torch.float32)
-        if s.ndim == 2:
-            s = s.unsqueeze(1)  # (B, 1, dim)
+        if s.ndim == 3 and s.shape[1] == 1:
+            s = s[:, 0]
+        if s.ndim != 2:
+            raise ValueError(f"Current terminator state must be (B,D), got {tuple(s.shape)}.")
         sd = int(getattr(self.fsq_term, "state_dim", s.shape[-1]))
         if s.shape[-1] < sd:
             raise ValueError(f"FSQ terminator expects state_dim={sd}, got {s.shape[-1]}-dim raw state.")
         return s[..., :sd]
 
-    def _prepare_term_image(self, img: Tensor | None, steps: int) -> Tensor | None:
-        """Accept precomputed FSQ tokens (B,N,F)/(B,T,N,F) or raw RGB; shape to (B,T,…)."""
+    def _prepare_term_image(self, img: Tensor | None) -> Tensor | None:
+        """Prepare one current raw RGB frame."""
         if img is None:
             return None
         x = img.to(device=next(self.parameters()).device, dtype=torch.float32)
-        n_tok, feat = int(getattr(self.fsq_term, "n_tokens", 0)), int(getattr(self.fsq_term, "feat_dim", 0))
-        is_tok_frame = x.ndim == 3 and n_tok and feat and x.shape[-2] == n_tok and x.shape[-1] == feat
-        is_tok_seq = x.ndim == 4 and n_tok and feat and x.shape[-2] == n_tok and x.shape[-1] == feat
-        if is_tok_frame:
-            x = x.unsqueeze(1)
-        elif is_tok_seq and x.shape[1] != steps:
-            x = x.expand(-1, steps, -1, -1) if x.shape[1] == 1 else x
         return x
 
     @torch.no_grad()
     def terminator_step(self, code, state, image, wrist=None):
         """Run the FSQ terminator on the CURRENT obs for the active skill → (progress, end_prob), each (B,)."""
-        z = self._code_to_z(code)
+        z_norm = self._code_to_z(code) / self._fsq_half[None, :]
         st = self._prepare_term_state(state)
-        img = self._prepare_term_image(image, st.shape[1])
+        img = self._prepare_term_image(image)
         if img is None:
             return None
-        use_wrist = bool(getattr(self.fsq_term, "terminator_use_wrist", False))
-        w = self._prepare_term_image(wrist, st.shape[1]) if use_wrist else None
-        if use_wrist and w is None:
-            raise ValueError("FSQ terminator_use_wrist=True but no wrist image supplied (skill_decoder_wrist).")
-        progress, end_prob = self.fsq_term.predict_termination(z, st, img, w, quantize=True)
-        progress = progress[:, 0] if progress.ndim == 2 else progress
-        end_prob = end_prob[:, 0] if end_prob.ndim == 2 else end_prob
-        return progress, end_prob
+        w = self._prepare_term_image(wrist)
+        if w is None:
+            raise ValueError("FSQ terminator requires a current wrist image (skill_decoder_wrist).")
+        return self.fsq_term.predict_termination(z_norm, st, img, w)
 
 
 # ── Warm-start key remapping ────────────────────────────────────────────────────────────────
@@ -1979,9 +1928,8 @@ class SkillVLAPolicy(PI05Policy):
         # is EXCLUDED from wandb `loss` (train/loss = the policy loss only) — logged to its own wandb
         # section via "terminator/*" keys (→ train_terminator/*, mirrors Stage-1).
         term_loss = None
-        # ONLINE DINO: terminator는 배치의 "현재 프레임" 이미지를 직접 조건으로 씀 — terminator_predict
-        # → fsq._prepare_decoder_tokens의 raw 분기가 (B,3,H,W) [0,1]을 자동 감지해 frozen DINO로 토큰화
-        # (디스크 skill_decoder_dino precompute 제거; 추론(terminator_step raw 스냅샷)과 동일 경로/분포).
+        # The terminator consumes the batch's current raw third+wrist frames through
+        # its own Stage-1-compatible live vision frontend (no feature cache).
         # 게이트: transition-pack SKILL 배치(stage3)는 skill_ds/de가 없고 이미지 슬롯이 '현재'가 아니라
         # 스킬-START 프레임 → terminator 학습을 건너뜀 (안 건너뛰면 잘못된 프레임으로 조용히 학습됨).
         if (self.config.train_terminator and self.model.fsq_term_train is not None
@@ -1989,19 +1937,10 @@ class SkillVLAPolicy(PI05Policy):
             for k in ("skill_code_true", "skill_de"):
                 if k not in batch:
                     raise ValueError(f"train_terminator=True needs '{k}' in the batch (SkillVLADataset).")
-            # 카메라 슬롯 규약(fsq-terminator): 3rd→primary(observation.images.image), wrist→wrist 슬롯.
-            # _terminate는 dec(primary)를 use_third일 때만, dec_wrist를 use_wrist일 때만 읽으므로 primary는
-            # 터미네이터가 실제 읽는 슬롯에 맞춰 use_third 기준으로 고름 (wot=wrist-only는 primary=wrist —
-            # 3rd 카메라 없는 데이터셋도 안전; 낭비 DINO forward도 없음).
-            _term = self.model.fsq_term_train
-            use_third = bool(getattr(_term, "terminator_use_third", True))
-            use_wrist = bool(getattr(_term, "terminator_use_wrist", False))
             img_3rd = batch.get(f"{OBS_IMAGES}.image")
             img_wrist = batch.get(f"{OBS_IMAGES}.wrist_image")
-            primary = img_3rd if use_third else img_wrist
-            if primary is None:
-                raise ValueError("train_terminator=True needs the camera image in the batch "
-                                 f"({OBS_IMAGES}.image for use_third, else {OBS_IMAGES}.wrist_image).")
+            if img_3rd is None or img_wrist is None:
+                raise ValueError("train_terminator=True needs both third-person and wrist images.")
             true_code = batch["skill_code_true"].view(-1).long().clamp(0, self.stage1_config.skill_vocab_size - 1)
             # RAW state (skill_decoder_state, snapshotted pre-normalization by the processor) — the FSQ
             # terminator normalizes internally with its own min/max; feeding the already quantile-
@@ -2017,8 +1956,7 @@ class SkillVLAPolicy(PI05Policy):
                     "resuming with an OLD pre-processor from before that step existed. Rebuild the "
                     "pre-processor; feeding normalized observation.state would double-normalize the FSQ input.")
             prog_pred, term_logits = self.model.terminator_predict(
-                true_code, raw_state, primary,
-                dino_tokens_wrist=(img_wrist if use_wrist else None))  # None unless a dual (use_wrist) FSQ
+                true_code, raw_state, img_3rd, wrist_image=img_wrist)
             ds = batch["skill_ds"].float().view(-1).to(prog_pred.device)
             de = batch["skill_de"].float().view(-1).to(prog_pred.device)
             prog_tgt = (ds / (ds + de).clamp_min(1.0)).clamp(0.0, 1.0)        # = ds/(length-1)

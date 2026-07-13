@@ -83,26 +83,18 @@ def section_cached(name: str, section: str) -> bool:
 
 
 def load_fsq(run_dir: Path, fsq_ckpt: Path | None, cfg: dict[str, Any]):
-    """Load the SplineFSQAE from {run_dir}/FSQ.pt (or the override) → (model, cfg_dict).
+    """Load the v2 SplineFSQAE from {run_dir}/FSQ.pt (or the override) → (model, cfg_dict).
     Adds examples/libero to sys.path for the checkpoint's FSQ classes."""
     import dataclasses
 
     import torch
 
     sys.path.insert(0, str(project_root(cfg) / "lerobot" / "examples" / "libero"))
-    from FSQ import SplineFSQAE  # noqa: PLC0415
+    from FSQ import load_fsq_model  # noqa: PLC0415
 
-    keys = {"action_dim", "enc_dim", "state_dim", "n_control", "spline_degree", "hidden_dim", "fsq_levels",
-            "num_layers", "dropout", "length_min", "length_max", "action_min", "action_max", "delta_min", "delta_max", "state_min", "state_max",
-            "feat_dim", "n_tokens", "image_encoder_layers", "image_encoder_heads", "terminator_use_third", "terminator_use_wrist",
-            "image_model_name", "image_size", "patch_grid", "n_patch_raw", "image_token_dim", "chunk_size",
-            "reconstructor_mode"}
     path = fsq_ckpt or (run_dir / "FSQ.pt")
-    ckpt = torch.load(path, map_location="cpu", weights_only=False)
-    cfg_dict = dataclasses.asdict(ckpt["cfg"])
-    fsq = SplineFSQAE(**{k: v for k, v in cfg_dict.items() if k in keys})
-    fsq.load_state_dict(ckpt["model_state"])
-    fsq.eval()
+    fsq, fsq_cfg = load_fsq_model(path, device="cpu")
+    cfg_dict = dataclasses.asdict(fsq_cfg)
     for p in fsq.parameters():
         p.requires_grad_(False)
     return fsq, cfg_dict

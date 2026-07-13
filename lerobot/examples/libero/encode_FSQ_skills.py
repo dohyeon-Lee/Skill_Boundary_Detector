@@ -1,8 +1,8 @@
 """Encode skillset trajectories with a trained FSQ checkpoint.
 
-This produces the skill_latents*.npz file consumed by codebook_visualizer.py
-and decoder_eval.py. The FSQ encoder uses spline control points, skill length,
-and start/end DINO tokens (encoding uses only the pure-DINO encoder).
+This produces the skill_latents*.npz consumed by the SkillVLA data builders.
+Only ``encoder.*`` is instantiated and loaded; the 300M action expert and image
+terminator are deliberately absent from this build step.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ import tyro
 from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).parent))
-from FSQ import SplineFSQAE, SplineFSQAEConfig
+from FSQ import SplineFSQEncoder, load_fsq_encoder
 from train_FSQ import _compute_skill_orders, load_skill_files
 
 
@@ -46,46 +46,12 @@ class Args:
     """격자 거리 (l1|l2)."""
 
 
-def load_model(model_path: Path, device: str) -> SplineFSQAE:
-    ckpt = torch.load(str(model_path), map_location="cpu", weights_only=False)
-    cfg: SplineFSQAEConfig = ckpt["cfg"]
-    model = SplineFSQAE(
-        action_dim=cfg.action_dim,
-        enc_dim=getattr(cfg, "enc_dim", 8),
-        state_dim=cfg.state_dim,
-        n_control=cfg.n_control,
-        spline_degree=cfg.spline_degree,
-        hidden_dim=cfg.hidden_dim,
-        fsq_levels=cfg.fsq_levels,
-        num_layers=cfg.num_layers,
-        dropout=0.0,
-        feat_dim=cfg.feat_dim,
-        n_tokens=cfg.n_tokens,
-        image_model_name=getattr(cfg, "image_model_name", "/data2/dohyeon/SBD/models/dinov3-vits16"),
-        image_size=getattr(cfg, "image_size", 224),
-        patch_grid=getattr(cfg, "patch_grid", 8),
-        n_patch_raw=getattr(cfg, "n_patch_raw", 196),
-        image_token_dim=getattr(cfg, "image_token_dim", 128),
-        image_encoder_layers=getattr(cfg, "image_encoder_layers", 1),
-        image_encoder_heads=getattr(cfg, "image_encoder_heads", 4),
-        chunk_size=cfg.chunk_size,
-        length_min=getattr(cfg, "length_min", 0.0),
-        length_max=getattr(cfg, "length_max", 200.0),
-        action_min=cfg.action_min,
-        action_max=cfg.action_max,
-        delta_min=cfg.delta_min,
-        delta_max=cfg.delta_max,
-        state_min=getattr(cfg, "state_min", None),
-        state_max=getattr(cfg, "state_max", None),
-        terminator_use_third=getattr(cfg, "terminator_use_third", True),
-        terminator_use_wrist=getattr(cfg, "terminator_use_wrist", False),
-    )
-    model.load_state_dict(ckpt["model_state"])
-    model.to(device).eval()
+def load_model(model_path: Path, device: str) -> SplineFSQEncoder:
+    model, _ = load_fsq_encoder(model_path, device)
     return model
 
 
-def _grid_coords(model: SplineFSQAE) -> np.ndarray:
+def _grid_coords(model: SplineFSQEncoder) -> np.ndarray:
     """All C codes → their integer cell coords (C, D), matching FSQ.forward's index convention:
     level_d = (code // stride_d) % L_d ; coord_d = level_d - half_width_d.  (== encode_numpy's z_q space)"""
     fsq = model.fsq
@@ -114,7 +80,7 @@ def _load_supported(ref_path: Path, n_codes: int, min_freq: int) -> np.ndarray:
     return _supported_from_freq(freq, n_codes, min_freq)
 
 
-def _snap_to_supported(latents: np.ndarray, tokens: np.ndarray, model: SplineFSQAE, args: Args):
+def _snap_to_supported(latents: np.ndarray, tokens: np.ndarray, model: SplineFSQEncoder, args: Args):
     """Remap each skill whose raw code is unsupported → nearest supported code (grid distance in the
     integer cell-coord space, which is exactly what `latents` holds). Returns (latents, tokens)."""
     coords = _grid_coords(model)                                    # (C, D)
