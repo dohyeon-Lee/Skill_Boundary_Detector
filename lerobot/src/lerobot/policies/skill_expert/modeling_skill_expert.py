@@ -755,8 +755,16 @@ class SkillExpertPolicy(PreTrainedPolicy):
                                  f"({OBS_IMAGES}.image for use_third, else {OBS_IMAGES}.wrist_image).")
             # RAW state (skill_decoder_state, snapshotted pre-normalization) — the FSQ terminator
             # normalizes internally; feeding the already-normalized OBS_STATE would double-normalize
-            # and diverge from closed-loop eval (which uses raw skill_decoder_state).
-            raw_state = batch.get("skill_decoder_state", batch[OBS_STATE])
+            # and diverge from closed-loop eval (which uses raw skill_decoder_state). FAIL-FAST (no
+            # OBS_STATE fallback): resuming with an OLD saved processor lacking the preserve step would
+            # silently re-introduce the double-normalization bug — surface it loudly instead.
+            raw_state = batch.get("skill_decoder_state")
+            if raw_state is None:
+                raise ValueError(
+                    "train_terminator=True needs RAW 'skill_decoder_state' in the batch (snapshotted "
+                    "pre-normalization by SkillExpertPreserveRawStateProcessorStep). It is missing — likely "
+                    "resuming with an OLD pre-processor from before that step existed. Rebuild the "
+                    "pre-processor; feeding normalized observation.state would double-normalize the FSQ input.")
             prog_pred, term_logits = self.model.terminator_predict(
                 self._skill_code(batch), raw_state, primary,
                 dino_tokens_wrist=(img_wrist if use_wrist else None))  # None unless a dual (use_wrist) FSQ

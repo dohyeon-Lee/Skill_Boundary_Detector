@@ -2007,7 +2007,15 @@ class SkillVLAPolicy(PI05Policy):
             # terminator normalizes internally with its own min/max; feeding the already quantile-
             # normalized OBS_STATE would double-normalize and diverge from closed-loop eval (which uses
             # raw skill_decoder_state). Images are IDENTITY-normalized so `primary` needs no raw snapshot.
-            raw_state = batch.get("skill_decoder_state", batch[OBS_STATE])
+            # FAIL-FAST (no OBS_STATE fallback): resuming with an OLD saved processor lacking the preserve
+            # step would silently re-introduce the double-normalization bug — surface it loudly instead.
+            raw_state = batch.get("skill_decoder_state")
+            if raw_state is None:
+                raise ValueError(
+                    "train_terminator=True needs RAW 'skill_decoder_state' in the batch (snapshotted "
+                    "pre-normalization by SkillVLAPreserveRawStateProcessorStep). It is missing — likely "
+                    "resuming with an OLD pre-processor from before that step existed. Rebuild the "
+                    "pre-processor; feeding normalized observation.state would double-normalize the FSQ input.")
             prog_pred, term_logits = self.model.terminator_predict(
                 true_code, raw_state, primary,
                 dino_tokens_wrist=(img_wrist if use_wrist else None))  # None unless a dual (use_wrist) FSQ

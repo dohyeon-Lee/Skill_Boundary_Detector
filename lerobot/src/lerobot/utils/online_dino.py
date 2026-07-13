@@ -171,12 +171,16 @@ def encode_episode_dino(dataset_dir, episode_ids, image_key: str, dino: OnlineDi
                 print(f"{log_prefix} [WARN] {path.name}: ep{ep_id} slice [{fs}:{fs+length}] > "
                       f"{len(frames)} frames — truncating (consumer pads by repeat)", flush=True)
             ep_frames = frames[fs: min(fs + length, len(frames))]
+            n_ep = len(ep_frames)                              # ACTUAL frames after truncation (≤ length)
+            if n_ep == 0:                                       # start beyond file → nothing to encode
+                raise ValueError(f"{log_prefix} {path.name}: ep{ep_id} slice [{fs}:{fs+length}] yielded "
+                                 f"0 frames (file has {len(frames)}) — cannot encode this episode.")
             toks = []
-            for s in range(0, length, batch_size):
-                x = torch.from_numpy(ep_frames[s: s + batch_size].copy())
+            for s in range(0, n_ep, batch_size):               # iterate ACTUAL length, not metadata `length`
+                x = torch.from_numpy(ep_frames[s: s + batch_size].copy())  # (else a trailing empty slice → DINO)
                 toks.append(dino(x).cpu().numpy().astype(np_dtype))
             out[ep_id] = np.concatenate(toks, axis=0)          # (T, n_tokens, F)
-            done_frames += length
+            done_frames += n_ep                                # count what was actually encoded
         if n_file % 10 == 0 or n_file == len(file_map):
             dt = time.perf_counter() - t0
             print(f"{log_prefix} {image_key}: files {n_file}/{len(file_map)}  "
