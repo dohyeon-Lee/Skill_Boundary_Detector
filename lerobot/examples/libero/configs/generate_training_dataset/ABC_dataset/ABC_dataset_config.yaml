@@ -1,0 +1,59 @@
+# Shared config for ABC (XDOF/ABC-130k) dataset download/convert utilities.
+# project_root comes from configs/global_config.yaml.
+#
+# ABC = bimanual(YAM) 실로봇 teleop 데이터. HF에는 풀해상도 MCAP 원본(data/{split}/**)으로
+# 배포되므로 그대로는 못 쓰고, 여기서:
+#   download (mcap subset) → mcap→abcdl (30Hz 고정클록 리샘플 + 정방 다운스케일, abcdl_RLLAB 패키지)
+#   → abcdl→LeRobot v3 (per-camera mp4 + parquet, pyav 기반 — torchcodec 불필요) → quantile stats
+# 최종 산출물은 LIBERO와 동일한 v3 레이아웃이라 하류 파이프라인(DP/SBD/FSQ/skillvla)이 무수정 소비.
+#
+# state/action: 14D bimanual [L_arm(6), L_grip(1), R_arm(6), R_grip(1)], fps 30 고정.
+# 카메라: 스테이션 따라 top(+left_wrist,right_wrist) 등 — mcap 메타에서 자동 발견,
+# v3 feature 키는 observation.images.{cam} 로 생성됨 (하류 3-슬롯 매핑은 별도 작업).
+
+# ── Output root ───────────────────────────────────────────────
+# Final datasets land at {project_root}/{abc_dataset_root}/{name};
+# staging: mcap 원본 → {abc_dataset_root}/_mcap/{name}/, abcdl 캐시 → {abc_dataset_root}/_abcdl/{name}/.
+# abcdl 캐시는 지우지 말 것 — 재변환 소스이자, 추후 AbcdlDataset 직결(스트리밍/memmap)용.
+
+# ABC_ONLY="abc_toy" ./submit_build_ABC.sh
+
+abc_dataset_root: dataset_ABC
+
+# ── Sources ───────────────────────────────────────────────────
+abc_hf_repo: XDOF/ABC-130k
+# abcdl 패키지 저장소 (PYTHONPATH 주입; pip 설치 불필요). 상대경로면 project_root 기준
+# → 클러스터 무관하게 {project_root}/abcdl_RLLAB (절대경로도 허용).
+abcdl_repo: abcdl_RLLAB
+
+# ── Subsets: local name -> 선택 규칙 ──────────────────────────
+# 로컬 이름이 곧 하류 source_dataset 이름 ({abc_dataset_root}/{name}) — LIBERO의
+# libero_90_full_full 자리에 그대로 들어감. 이름은 파일시스템-safe하게(소문자+underscore).
+#   split                 : data/{split}/ (train | val)
+#   tasks                 : 명시 태스크 폴더명 리스트. 비우면 발견된 것 중 앞에서 max_tasks개.
+#   max_tasks             : tasks 비었을 때 고르는 태스크 수 (0/생략 = 전체)
+#   max_episodes_per_task : 태스크당 에피소드 상한 (0/생략 = 전체)
+#   include_annotations   : annotation.mcap 도 받기 (subtask 라벨; 기본 false)
+# 태스크 폴더명은 다운로드 전 DRY_RUN=1 ./download_ABC.sh 로 확인 가능.
+abc_subsets:
+  abc_toy:
+    split: train
+    tasks: []
+    max_tasks: 2
+    max_episodes_per_task: 25
+    include_annotations: false
+
+# ── abcdl 캐시 인코딩 ─────────────────────────────────────────
+# 정방 해상도(픽셀): 카메라별 AR 보존 스케일+패드. LIBERO(256)와 정합 위해 256.
+# (ABC 논문 캐시 컨벤션은 abcdl_224 — 바꾸면 _abcdl 캐시 이름에도 반영됨)
+abc_image_size: 256
+abc_fps: 30            # mcap→abcdl 고정클록 리샘플 결과 (abcdl 규약; 바꿀 일 없음)
+
+# ── 변환 병렬도 ───────────────────────────────────────────────
+# step A(mcap→abcdl)는 에피소드 단위 프로세스 병렬 (ffmpeg 디코드/인코드가 무거움).
+convert_workers: 4
+
+# ── Stats 계산 범위 (filtered_dataset과 동일 의미) ────────────
+# false (기본/fast): quantile(q01..q99)은 비-비디오 feature만 parquet에서 계산 — 몇 분.
+# true (full): 비디오 포함 전 feature 재계산 — 수 시간. (하류는 이미지 quantile 안 씀)
+stats_include_videos: false
