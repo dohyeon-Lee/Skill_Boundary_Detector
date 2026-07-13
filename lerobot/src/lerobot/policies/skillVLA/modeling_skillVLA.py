@@ -64,6 +64,7 @@ from lerobot.policies.skill_expert.modeling_skill_expert import (
 )
 from lerobot.utils.constants import (
     ACTION,
+    OBS_IMAGES,
     OBS_LANGUAGE_ATTENTION_MASK,
     OBS_LANGUAGE_TOKENS,
     OBS_STATE,
@@ -1428,9 +1429,12 @@ class SkillVLAPytorch(PI05Pytorch):
                            "dec_image_encoder_term_wrist", "term_pool", "progress_head", "termination_head")
 
     @staticmethod
-    def _construct_fsq(path: str):
+    def _construct_fsq(path: str, dino_model_path: str | None = None):
         """Build a SplineFSQAE from an FSQ checkpoint + load its weights (terminator + reconstructor;
-        the unused encoder weights are dropped). Returns the model on CPU (caller places/casts it)."""
+        the unused encoder weights are dropped). Returns the model on CPU (caller places/casts it).
+        dino_model_path: FSQ ckpt cfg에 기록된 image_model_name(학습 머신의 절대경로일 수 있음)을
+        로컬 DINO 경로로 오버라이드 — ONLINE DINO(raw 분기)가 학습/추론 중 이 경로에서 lazy 로드하므로
+        서버 이식 시 필수 (terminator_dino_model_path)."""
         sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "examples" / "libero"))
         import dataclasses  # noqa: PLC0415
 
@@ -1438,6 +1442,8 @@ class SkillVLAPytorch(PI05Pytorch):
 
         ckpt = torch.load(path, map_location="cpu", weights_only=False)
         cfg_dict = dataclasses.asdict(ckpt["cfg"])
+        if dino_model_path:
+            cfg_dict["image_model_name"] = str(dino_model_path)
         keys = {"action_dim", "enc_dim", "state_dim", "n_control", "spline_degree", "hidden_dim", "fsq_levels",
                 "num_layers", "dropout", "length_min", "length_max", "action_min", "action_max", "delta_min", "delta_max", "state_min", "state_max",
                 "feat_dim", "n_tokens", "image_encoder_layers", "terminator_use_third", "terminator_use_wrist", "image_encoder_heads",
@@ -1459,7 +1465,7 @@ class SkillVLAPytorch(PI05Pytorch):
     def load_terminator(self, path: str) -> None:
         """Load the frozen FSQ checkpoint's terminator (decides skill transitions in closed loop).
         Only ``predict_termination`` is used (the action chunk comes from the flow-matching expert)."""
-        fsq = self._construct_fsq(path)
+        fsq = self._construct_fsq(path, getattr(self.config, "terminator_dino_model_path", None))
         for p in fsq.parameters():
             p.requires_grad_(False)
         fsq.eval()
@@ -1472,7 +1478,7 @@ class SkillVLAPytorch(PI05Pytorch):
         FSQ checkpoint; only the terminator-path submodules (_TERM_TRAIN_MODULES) get gradients — the
         FSQ encoder + reconstructor stay frozen. Registered as a submodule so it joins the optimizer
         and is checkpointed; its loss runs on a disjoint graph (GT inputs only) → no SkillVLA effect."""
-        fsq = self._construct_fsq(path)
+        fsq = self._construct_fsq(path, getattr(self.config, "terminator_dino_model_path", None))
         trainable = {n for n in self._TERM_TRAIN_MODULES if getattr(fsq, n, None) is not None}
         for name, mod in fsq.named_children():
             req = name in trainable
@@ -1503,8 +1509,8 @@ class SkillVLAPytorch(PI05Pytorch):
         if bool(getattr(fsq, "terminator_use_wrist", False)):
             if dino_tokens_wrist is None:
                 raise ValueError(
-                    "FSQ terminator_use_wrist=True but no wrist tokens in the batch. Build dino_wrist.npz "
-                    "and set skill_decoder_dino_wrist_tokens_path, or use a 3rd-only ('wow') FSQ.")
+                    "FSQ terminator_use_wrist=True but no wrist image in the batch — 배치에 "
+                    "observation.images.wrist_image가 필요합니다 (ONLINE DINO), or use a 3rd-only ('wow') FSQ.")
             dec_wrist = fsq._prepare_decoder_tokens(dino_tokens_wrist, states=st)
         B, T = dec.shape[:2]
         lh = fsq.fsq.levels_half.to(z.device, z.dtype)
@@ -1973,14 +1979,33 @@ class SkillVLAPolicy(PI05Policy):
         # is EXCLUDED from wandb `loss` (train/loss = the policy loss only) — logged to its own wandb
         # section via "terminator/*" keys (→ train_terminator/*, mirrors Stage-1).
         term_loss = None
-        if self.config.train_terminator and self.model.fsq_term_train is not None:
-            for k in ("skill_code_true", "skill_decoder_dino", "skill_ds", "skill_de"):
+        # ONLINE DINO: terminator는 배치의 "현재 프레임" 이미지를 직접 조건으로 씀 — terminator_predict
+        # → fsq._prepare_decoder_tokens의 raw 분기가 (B,3,H,W) [0,1]을 자동 감지해 frozen DINO로 토큰화
+        # (디스크 skill_decoder_dino precompute 제거; 추론(terminator_step raw 스냅샷)과 동일 경로/분포).
+        # 게이트: transition-pack SKILL 배치(stage3)는 skill_ds/de가 없고 이미지 슬롯이 '현재'가 아니라
+        # 스킬-START 프레임 → terminator 학습을 건너뜀 (안 건너뛰면 잘못된 프레임으로 조용히 학습됨).
+        if (self.config.train_terminator and self.model.fsq_term_train is not None
+                and "skill_ds" in batch):
+            for k in ("skill_code_true", "skill_de"):
                 if k not in batch:
                     raise ValueError(f"train_terminator=True needs '{k}' in the batch (SkillVLADataset).")
+            # 카메라 슬롯 규약(fsq-terminator): 3rd→primary(observation.images.image), wrist→wrist 슬롯.
+            # _terminate는 dec(primary)를 use_third일 때만, dec_wrist를 use_wrist일 때만 읽으므로 primary는
+            # 터미네이터가 실제 읽는 슬롯에 맞춰 use_third 기준으로 고름 (wot=wrist-only는 primary=wrist —
+            # 3rd 카메라 없는 데이터셋도 안전; 낭비 DINO forward도 없음).
+            _term = self.model.fsq_term_train
+            use_third = bool(getattr(_term, "terminator_use_third", True))
+            use_wrist = bool(getattr(_term, "terminator_use_wrist", False))
+            img_3rd = batch.get(f"{OBS_IMAGES}.image")
+            img_wrist = batch.get(f"{OBS_IMAGES}.wrist_image")
+            primary = img_3rd if use_third else img_wrist
+            if primary is None:
+                raise ValueError("train_terminator=True needs the camera image in the batch "
+                                 f"({OBS_IMAGES}.image for use_third, else {OBS_IMAGES}.wrist_image).")
             true_code = batch["skill_code_true"].view(-1).long().clamp(0, self.stage1_config.skill_vocab_size - 1)
             prog_pred, term_logits = self.model.terminator_predict(
-                true_code, batch[OBS_STATE], batch["skill_decoder_dino"],
-                dino_tokens_wrist=batch.get("skill_decoder_dino_wrist"))  # None unless a dual (use_wrist) FSQ
+                true_code, batch[OBS_STATE], primary,
+                dino_tokens_wrist=(img_wrist if use_wrist else None))  # None unless a dual (use_wrist) FSQ
             ds = batch["skill_ds"].float().view(-1).to(prog_pred.device)
             de = batch["skill_de"].float().view(-1).to(prog_pred.device)
             prog_tgt = (ds / (ds + de).clamp_min(1.0)).clamp(0.0, 1.0)        # = ds/(length-1)

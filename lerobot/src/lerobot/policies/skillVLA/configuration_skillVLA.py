@@ -364,11 +364,16 @@ class SkillVLAConfig(PI05Config):
     loss backprops through SkillHead into the VLM trunk. The skill CE loss vs the GT code is kept
     either way. (progress stays GT-jittered in both.)"""
     train_terminator: bool = False
-    """FT: also co-train the FSQ terminator on this dataset's GT signals (z←GT code, current DINO +
-    state → progress + termination), so the terminator adapts to the new task before it gates skill
-    transitions at inference. Trained on a DISJOINT graph (GT/precomputed inputs only) → zero effect
+    """FT: also co-train the FSQ terminator on this dataset's GT signals (z←GT code, current-frame
+    ONLINE DINO + state → progress + termination), so the terminator adapts to the new task before it
+    gates skill transitions at inference. Trained on a DISJOINT graph (GT inputs only) → zero effect
     on the SkillVLA params; only shares the dataloader. Warm-starts from ``fsq_path`` and is exported
-    back to an FSQ checkpoint for eval. Needs the dataset to supply current-frame DINO tokens."""
+    back to an FSQ checkpoint for eval. DINO 토큰은 배치의 현재 프레임 이미지에서 라이브로 계산
+    (디스크 precompute 없음; 추론과 동일 경로)."""
+    terminator_dino_model_path: str | None = None
+    """ONLINE DINO의 로컬 모델 경로 오버라이드 (예: {project_root}/models/dinov3-vits16). FSQ ckpt의
+    cfg에는 FSQ를 학습한 머신의 절대경로가 기록되어 있어 서버 이식 시 깨질 수 있음 — 설정하면
+    terminator 빌드(fsq_term/fsq_term_train)가 이 경로로 DINO를 lazy 로드한다. None = ckpt 기록 사용."""
     terminator_lr_scale: float = 1.0
     """LR multiplier (× optimizer_lr) for the co-trained terminator params (train_terminator only)."""
     terminator_end_target_sigma: float = 2.0
@@ -377,25 +382,8 @@ class SkillVLAConfig(PI05Config):
     terminator_end_pos_weight: float = 1.0
     """BCE positive-class weight for the co-trained terminator's termination head."""
 
-    # ── Current-frame DINO tokens for the co-trained terminator (data factory wraps the dataset) ──
-    skill_decoder_dino_tokens_path: str | None = None
-    """Frame-level DINO token npz (build_data's ``dino.npz``). When set, the data factory wraps the
-    SkillVLADataset with SkillVLADinoTokenDataset to attach the current frame's 3rd-person DINO tokens
-    under ``skill_decoder_dino_output_key`` — the terminator co-training's image input. Train only."""
-    skill_decoder_dino_output_key: str = "skill_decoder_dino"
-    """Batch key for the attached current-frame DINO tokens (kept distinct from the inference-time
-    ``skill_decoder_image`` so the raw-obs processor step can't clobber it during training)."""
-    skill_decoder_dino_cache_path: str | None = None
-    """Optional mmap cache (.npy) for the token npz; None → next to the npz."""
-    skill_decoder_dino_build_cache: bool = True
-    """Build the mmap cache from the npz on first use (else require it to exist)."""
-    # Wrist-camera FSQ-grid DINO tokens — ONLY needed when the FSQ terminator is DUAL (terminator_use_wrist,
-    # e.g. a "both" FSQ). The factory attaches a 2nd SkillVLADinoTokenDataset under the wrist output key.
-    skill_decoder_dino_wrist_tokens_path: str | None = None
-    """Wrist-camera DINO token npz (build_data's ``dino_wrist.npz``). Required for a dual (use_wrist) FSQ
-    terminator; leave None for a 3rd-only ('wow') FSQ."""
-    skill_decoder_dino_wrist_output_key: str = "skill_decoder_dino_wrist"
-    skill_decoder_dino_wrist_cache_path: str | None = None
+    # (skill_decoder_dino_* precompute 토큰 필드 은퇴 — terminator co-training은 배치의 현재 프레임
+    #  이미지를 ONLINE DINO로 직접 토큰화. 디스크 dino.npz/캐시/래퍼 전부 제거.)
 
     # ── Inference: skill transitions via the frozen FSQ terminator ──
     fsq_path: str | None = None

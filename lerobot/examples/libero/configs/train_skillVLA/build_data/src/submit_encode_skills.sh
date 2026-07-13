@@ -7,7 +7,6 @@
 #   per-episode DINO : {skillvla_dataset}/{source}/_work/dino/pg{grid}/ (manifest + episode npz)
 #   FSQ model        : {project_root}/FSQ_outputs/{fsq_run_name}/FSQ_epoch{ckpt:04d}.pt (or FSQ.pt)
 # Outputs (intermediate, merged into skillvla later):
-#   skill DINO tokens: {skillvla_dataset}/{source}/_work/seg_{dp}_ck{ckpt}/skill_tokens.npz
 #   skill latents    : {skillvla_dataset}/{source}/{run_tag}/skill_latents.npz
 
 set -euo pipefail
@@ -36,8 +35,7 @@ if [ ! -d "${SKILLSET_DIR}/skills" ]; then
   echo "Run submit_build_skillset.sh first." >&2
   exit 1
 fi
-if [ ! -d "${FSQ_DINO_DIR}" ]; then
-  echo "Per-episode DINO not found: ${FSQ_DINO_DIR}" >&2
+if false; then  # (per-episode DINO 검사 은퇴 — ONLINE)
   echo "Run submit_build_skillset.sh first (it slices the DINO)." >&2
   exit 1
 fi
@@ -48,9 +46,8 @@ if [ ! -f "${FSQ_MODEL_PATH}" ]; then
 fi
 
 # ── skip if the encode outputs already exist ──
-if [ -f "${SKILL_TOKENS_PATH}" ] && [ -f "${SKILL_LATENTS_PATH}" ]; then
+if [ -f "${SKILL_LATENTS_PATH}" ]; then
   echo "Skill tokens + latents already exist → nothing to do."
-  echo "  ${SKILL_TOKENS_PATH}"
   echo "  ${SKILL_LATENTS_PATH}"
   exit 0
 fi
@@ -76,9 +73,7 @@ mkdir -p logs
 echo "Submit FSQ skill encoding"
 echo "  source    : ${SOURCE_DATASET}"
 echo "  skillset  : ${SKILLSET_DIR}/skills"
-echo "  dino dir  : ${FSQ_DINO_DIR}"
 echo "  FSQ model : ${FSQ_MODEL_PATH}"
-echo "  tokens    : ${SKILL_TOKENS_PATH}"
 echo "  latents   : ${SKILL_LATENTS_PATH}"
 
 TRAIN_SKILLVLA_CONFIG="${CONFIG_PATH}" SOURCE_DATA="${SOURCE_DATASET}" SKILLVLA_ENV_SNAPSHOT="${SNAPSHOT_ENV}" \

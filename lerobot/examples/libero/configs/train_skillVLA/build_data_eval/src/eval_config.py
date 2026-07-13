@@ -67,7 +67,7 @@ def build_settings(config_path: str | None = None) -> dict:
             rd = dataset_root / skillvla_root / source_dataset / run_dir
         settings.update({
             "skillvla_dataset_dir": rd / "skillvla",
-            "dino_npz_path":        rd / "dino.npz",
+            "dino_model_path":      project_root / "models" / "dinov3-vits16",  # ONLINE DINO
             "fsq_copy_path":        rd / "FSQ.pt",
             "raw_dataset_dir":      dataset_root / source_dataset,   # raw video at {dataset_root}/{source}
             "eval_dir":             rd / "eval",

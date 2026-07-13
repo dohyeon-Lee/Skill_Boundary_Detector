@@ -41,9 +41,7 @@ export LD_LIBRARY_PATH=""
 echo "START SKILLVLA ENCODE"
 echo "Node     : ${SLURMD_NODENAME:-local}"
 echo "Skillset : ${SKILLSET_DIR}/skills"
-echo "DINO dir : ${FSQ_DINO_DIR}"
 echo "FSQ      : ${FSQ_MODEL_PATH}"
-echo "Tokens   : ${SKILL_TOKENS_PATH}"
 echo "Latents  : ${SKILL_LATENTS_PATH}"
 nvidia-smi || true
 
@@ -52,20 +50,10 @@ if [ ! -f "${FSQ_MODEL_PATH}" ]; then
   exit 1
 fi
 
-# ── (a) extract skill-level DINO tokens (CPU). FSQ-independent → reuse if it already exists
-#        (the same skillset/pg8 DINO tokens are shared across FSQ epochs; set FORCE_EXTRACT=1 to rebuild).
-if [ "${FORCE_EXTRACT:-0}" != "1" ] && [ -f "${SKILL_TOKENS_PATH}" ]; then
-  echo "skill_tokens.npz exists → reuse (FSQ-independent): ${SKILL_TOKENS_PATH}"
-else
-  PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
-    python -u examples/libero/extract_skill_dino_tokens.py \
-      --frame_dino_dir "${FSQ_DINO_DIR}" \
-      --skills_dir     "${SKILLSET_DIR}/skills" \
-      --output_path    "${SKILL_TOKENS_PATH}" \
-      --image_key      "${DINO_IMAGE_KEY}"
-fi
+# (구 step (a) skill DINO 토큰 추출 은퇴 — FSQ 인코더는 action-only, skill_tokens.npz 소비자 없음.
+#  DINO는 어디서도 precompute 안 함.)
 
-# ── (b) encode skills with FSQ → latent vectors (GPU) ──
+# ── encode skills with FSQ → latent vectors (GPU) ──
 # transfer 안전망(B): fsq_snap_to_supported:true면 미지원 코드를 최근접 지원 코드로 snap.
 SNAP_ARGS=(--no-snap_to_supported)
 if [ "${FSQ_SNAP_TO_SUPPORTED:-false}" = "true" ]; then

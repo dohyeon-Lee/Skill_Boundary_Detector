@@ -54,12 +54,6 @@ if [ ! -d "${DP_POLICY_PATH}" ]; then
   echo "DP policy checkpoint not found: ${DP_POLICY_PATH}" >&2
   exit 1
 fi
-# Only a DINO DP needs prepared DINO features to segment; resnet/state DPs run on raw frames/state.
-if [ "${DP_VISION}" = "dino" ] && [ ! -d "${DINO_FEATURE_DIR}" ]; then
-  echo "Prepared DINO feature dir not found: ${DINO_FEATURE_DIR}" >&2
-  echo "Run DP/submit_train_dp_dino.sh first, or DP/src/prepare_dino_for_training_dataset.py." >&2
-  exit 1
-fi
 
 TASKS_PER_JOB=${SKILLSET_TASKS_PER_JOB}
 TOTAL_TASKS=${TOTAL_TASKS:-}
@@ -100,7 +94,6 @@ echo "Build skillset"
 echo "  dataset    : ${TARGET_DATASET}"
 echo "  raw data   : ${RAW_DATASET_DIR}"
 echo "  policy     : ${DP_POLICY_PATH}"
-echo "  dino dir   : ${DINO_FEATURE_DIR}"
 echo "  output     : ${SKILLSET_DIR}"
 echo "  task ids   :${TASK_IDS}"
 
@@ -128,7 +121,6 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     --n_gmm_components "${SKILLSET_N_GMM}" \
     --smooth_window "${SKILLSET_SMOOTH_WINDOW}" \
     --savgol_polyorder "${SKILLSET_SAVGOL_POLYORDER}" \
-    --dino_feature_dir "${DINO_FEATURE_DIR}" \
     --resume \
     --wandb_project "${SKILLSET_WANDB_PROJECT}" \
     --wandb_run_name "${WANDB_RUN_NAME}"

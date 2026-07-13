@@ -165,11 +165,8 @@ def build_pt_probe_batches(cfg: TrainPipelineConfig) -> list[dict]:
     from lerobot.configs.default import DatasetConfig
 
     probe_policy = copy.deepcopy(cfg.policy)
-    # The terminator's dino-token dataset wrapper is keyed to the FT dataset — drop it for the PT
-    # probe dataset (probes measure the policy loss only; the terminator is task-local anyway).
-    for attr in ("skill_decoder_dino_tokens_path", "skill_decoder_dino_wrist_tokens_path"):
-        if hasattr(probe_policy, attr):
-            setattr(probe_policy, attr, None)
+    # (dino-token 래퍼 억제 코드 은퇴 — terminator는 배치 이미지를 ONLINE 토큰화하므로 probe 데이터셋
+    #  래핑 자체가 없음. probe의 terminator loss는 measure_pt_probe의 train_terminator 토글이 차단.)
     probe_cfg = dataclasses.replace(
         cfg,
         dataset=DatasetConfig(
@@ -196,7 +193,8 @@ def measure_pt_probe(policy, preprocessor, probe_batches, accelerator, cfg) -> d
     unwrapped = accelerator.unwrap_model(policy, keep_fp32_wrapper=True)
     was_training = policy.training
     policy.eval()
-    # Probe batches carry no terminator inputs (dino tokens) — skip the terminator loss branch.
+    # Probes measure the policy loss only — force-skip the terminator branch. ONLINE DINO 전환 후
+    # probe 배치에도 이미지+skill_ds/de가 있어 terminator가 돌 수 있으므로 이 토글이 유일한 가드.
     term_prev = getattr(unwrapped.config, "train_terminator", False)
     if term_prev:
         unwrapped.config.train_terminator = False

@@ -2,8 +2,7 @@
 # Inputs:
 #   FSQ inputs   : {project_root}/{dataset_root}/FSQ_dataset/{target_dataset}/FSQ_inputs
 #   skillset     : {project_root}/{dataset_root}/FSQ_dataset/{target_dataset}/FSQ_inputs/seg_{dp}_ck{ckpt}/skillset/skills
-#   DINO tokens  : {project_root}/{dataset_root}/FSQ_dataset/{target_dataset}/FSQ_inputs/dino_tokens_pg{dino_patch_grid}.npz
-#   wrist tokens : {project_root}/{dataset_root}/FSQ_dataset/{target_dataset}/FSQ_inputs/dino_tokens_wrist_pg{dino_patch_grid}.npz
+#   DINO tokens  : (ONLINE — raw dataset의 mp4에서 학습 시작 시 warm-pass 인코딩; 디스크 산출물 없음)
 # Reference models:
 #   DINO model   : {project_root}/models/dinov3-vits16
 # Outputs:
@@ -72,25 +71,25 @@ fi
 #                                 and gates wrist by use_wrist, feeds the CORRECT camera. (Historic bug:
 #                                 wrist-only used to be saved as third=T with wrist in the primary slot,
 #                                 so downstream fed it 3rd where it was trained on wrist.)
-# LAZY: pass the per-frame DINO dir (NOT a materialized token npz). train_FSQ slices each skill's window
-# on the fly (mmap). primary via --image_key; wrist slot via --image_key_wrist.
+# ONLINE: DINO 토큰은 train_FSQ가 학습 시작 시 raw mp4에서 직접 warm-pass 인코딩
+# (디스크 precompute 완전 제거 — per-frame DINO dir/토큰 npz 불필요, dino-prep 빌드 단계 없음).
+# primary via --image_key; wrist slot via --image_key_wrist (두 키가 같으면 train_FSQ가 클립 공유).
 if [ "${FSQ_TERMINATOR_USE_THIRD}" != "true" ] && [ "${FSQ_TERMINATOR_USE_WRIST}" != "true" ]; then
   echo "Both fsq_terminator_use_third and fsq_terminator_use_wrist are false — need ≥1 camera." >&2
   exit 1
 fi
-if [ ! -d "${FSQ_DINO_FEATURE_DIR}" ]; then
-  echo "Per-frame DINO dir not found: ${FSQ_DINO_FEATURE_DIR}" >&2
-  echo "Run build_data/submit_build_data.sh first (it prepares the per-frame DINO that lazy reads)." >&2
+if [ ! -d "${RAW_DATASET_DIR}/videos" ]; then
+  echo "Raw dataset videos not found: ${RAW_DATASET_DIR}/videos (online DINO warm-pass의 원천)" >&2
   exit 1
 fi
 # Primary slot camera: 3rd when the terminator uses it; for wrist-only set it to wrist (loaded but
-# unused by the terminator) so a wrist-only run does not require a 3rd-person DINO to exist.
+# unused by the terminator) so a wrist-only run does not require a 3rd-person camera to exist.
 if [ "${FSQ_TERMINATOR_USE_THIRD}" = "true" ]; then
   PRIMARY_IMAGE_KEY="observation.images.image"
 else
   PRIMARY_IMAGE_KEY="observation.images.wrist_image"
 fi
-DINO_ARGS=(--dino_features "${FSQ_DINO_FEATURE_DIR}" --image_key "${PRIMARY_IMAGE_KEY}")
+DINO_ARGS=(--raw_dataset_dir "${RAW_DATASET_DIR}" --image_key "${PRIMARY_IMAGE_KEY}")
 
 # Faithful flags: each --terminator_use_* reflects the REAL config (no more hardcoded --terminator_use_third).
 if [ "${FSQ_TERMINATOR_USE_THIRD}" = "true" ]; then

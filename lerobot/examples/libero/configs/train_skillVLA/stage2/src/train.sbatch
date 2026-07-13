@@ -50,7 +50,7 @@ else
   echo "expert   : ${STAGE1_CHECKPOINT_PATH}  (arch=joint)"
 fi
 echo "FSQ(eval): ${FSQ_CKPT}"
-echo "term     : train_terminator=${TRAIN_TERMINATOR}   dino: ${DINO_TOKENS_PATH}"
+echo "term     : train_terminator=${TRAIN_TERMINATOR}   dino=ONLINE(${TERMINATOR_DINO_MODEL_PATH})"
 echo "output   : ${PT_OUTPUT_DIR}   lr/bs: ${LR}/${BATCH_SIZE}"
 nvidia-smi || true
 
@@ -62,11 +62,6 @@ if [ "${SCRATCH}" != "true" ] && [ ! -e "${STAGE1_CHECKPOINT_PATH}" ]; then
   echo "Missing Stage-1 checkpoint: ${STAGE1_CHECKPOINT_PATH}  (run configs/train_skillVLA/stage1 first)" >&2
   exit 1
 fi
-if [ "${TRAIN_TERMINATOR}" = "true" ] && [ ! -e "${DINO_TOKENS_PATH}" ]; then
-  echo "train_terminator=true but DINO tokens missing: ${DINO_TOKENS_PATH}  (rebuild dataset)" >&2
-  exit 1
-fi
-
 # Resume if a Stage-2 checkpoint exists; otherwise wipe a stale (incomplete) output dir.
 CONFIG_JSON="${PT_OUTPUT_DIR}/checkpoints/last/pretrained_model/train_config.json"
 RESUME_ARGS=()
@@ -86,16 +81,8 @@ if [ "${TRAIN_TERMINATOR}" = "true" ]; then
     --policy.terminator_lr_scale="${TERMINATOR_LR_SCALE}"
     --policy.terminator_end_target_sigma="${TERMINATOR_END_TARGET_SIGMA}"
     --policy.terminator_end_pos_weight="${TERMINATOR_END_POS_WEIGHT}"
-    --policy.skill_decoder_dino_tokens_path="${DINO_TOKENS_PATH}"
-    --policy.skill_decoder_dino_output_key=skill_decoder_dino
+    --policy.terminator_dino_model_path="${TERMINATOR_DINO_MODEL_PATH}"
   )
-  # Dual (terminator_use_wrist) FSQ → also attach the wrist DINO tokens (emitter sets this only if built).
-  if [ -n "${DINO_WRIST_TOKENS_PATH:-}" ]; then
-    TERM_ARGS+=(
-      --policy.skill_decoder_dino_wrist_tokens_path="${DINO_WRIST_TOKENS_PATH}"
-      --policy.skill_decoder_dino_wrist_output_key=skill_decoder_dino_wrist
-    )
-  fi
 fi
 
 # STAGE 2: every batch is a COND/flow batch (the interleaved regime_probs_pt legacy was retired;

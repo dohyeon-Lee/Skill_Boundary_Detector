@@ -1,29 +1,28 @@
 """
 Train SplineFSQAE: Finite Scalar Quantization skill tokenizer with DINO-token-conditioned decoder.
 
-The terminator reads BOTH cameras (3rd-person + wrist) via separate DINO-token encoders, so
-two skill-token npz files are required (one per camera, same skill order).
+DINO 토큰은 ONLINE으로 계산한다 (디스크 precompute 완전 제거): 학습 시작 시 raw 데이터셋의 mp4를
+파일당 1회 순차 디코드하며 frozen DINO(OnlineDino — FSQ 인퍼런스의 raw-이미지 경로와 동일 구현)로
+warm-pass 인코딩해 per-skill 토큰을 RAM에 올린다. FSQ 학습은 스킬 전체 프레임을 수백 에폭 반복
+소비하므로 per-batch 라이브는 같은 프레임을 수백 번 재계산하는 낭비 — warm-pass(시작 ~10-20분,
+fp16 ~27GB/카메라 RAM)가 기존 precompute와 학습속도 동일 + 빌드단계/디스크 산출물 0 을 준다.
+terminator가 dual(3rd+wrist)이면 두 카메라 모두 인코딩한다.
 
 Usage:
     python examples/libero/train_FSQ.py \
-      --skills_dir          /path/to/skillset/skills \
-      --dino_features       /path/to/dino_tokens.npz \
-      --dino_features_wrist /path/to/dino_tokens_wrist.npz \
-      --output_dir          /path/to/output
+      --skills_dir      /path/to/skillset/skills \
+      --raw_dataset_dir /path/to/lerobot_dataset   (videos/ + meta/ 포함) \
+      --output_dir      /path/to/output
 
 Data requirements:
-  skills_dir/*.npz       — per-skill npz with keys: actions, states, episode_id, skill_index,
-                            frame_start, frame_end, task_id (optional)
-  dino_features.npz       — precomputed 3rd-person DINO tokens (extract_skill_dino_tokens.py),
-                            keys: features (N_total, n_tokens, feat_dim), offsets, episode_id,
-                            frame_start, frame_end, length
-  dino_features_wrist.npz — the same, extracted from the wrist camera (same skill order).
+  skills_dir/*.npz  — per-skill npz with keys: actions, states, episode_id, skill_index,
+                       frame_start, frame_end, task_id (optional)
+  raw_dataset_dir   — LeRobot v3 dataset (videos/{image_key}/chunk-*/file-*.mp4 + meta/)
 """
 
 from __future__ import annotations
 
 import sys
-from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -32,8 +31,10 @@ import torch
 import tyro
 
 sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))   # lerobot (OnlineDino)
 
-from precompute_dino_features import fit_feature_length  # noqa: E402  (lazy per-skill DINO slicing)
+from lerobot.utils.online_dino import fit_feature_length  # noqa: E402  (per-skill 길이 맞춤)
+from lerobot.utils.online_dino import OnlineDino, encode_episode_dino  # noqa: E402
 
 
 # ── Args ───────────────────────────────────────────────────────────────────────
@@ -43,18 +44,15 @@ class Args:
     # ── data
     skills_dir: str = ""
     """Directory (recursively searched) for per-skill .npz files."""
-    dino_features: str = ""
-    """3rd-person DINO source. EITHER a per-frame DINO dir (precompute_frame_dino_features.py output)
-    → tokens sliced lazily on the fly (no materialized file, saves ~27GB/camera/skillset); OR a
-    precomputed token npz (extract_skill_dino_tokens.py). Both give identical per-skill clips."""
-    dino_features_wrist: str = ""
-    """Wrist DINO token npz (same skill order). Required iff terminator_use_wrist AND dino_features is a
-    materialized npz. In lazy mode (dino_features is a dir) wrist is read from the SAME dir."""
+    raw_dataset_dir: str = ""
+    """Raw LeRobot dataset (videos/ + meta/) — DINO 토큰의 원천. 학습 시작 시 online warm-pass로
+    mp4를 디코드해 frozen DINO로 인코딩한다 (디스크 precompute 없음)."""
     image_key: str = "observation.images.image"
-    """Lazy mode only: primary-camera subdir of the per-frame DINO dir. For wrist-only FSQ set this to
-    observation.images.wrist_image. Ignored when dino_features is a materialized npz."""
+    """Primary 카메라 video key. wrist-only(wot) FSQ면 observation.images.wrist_image로 설정."""
     image_key_wrist: str = "observation.images.wrist_image"
-    """Lazy mode only: wrist-camera subdir for the dual-camera terminator. Ignored otherwise."""
+    """Dual(both) terminator의 wrist 카메라 video key (terminator_use_wrist=True일 때만 사용)."""
+    dino_batch_size: int = 256
+    """Warm-pass DINO 인코딩의 GPU 프레임 배치 크기."""
     terminator_use_third: bool = True
     """Terminator 3rd-person camera. With terminator_use_wrist → 3 modes: 3rd-only / both / wrist-only."""
     terminator_use_wrist: bool = True
@@ -220,119 +218,28 @@ def load_skill_files(
     return segments, dec_states, dec_targets, metadata
 
 
-def _image_key_norm(image_key: str) -> str:
-    """Per-frame DINO camera subdir name (matches extract_skill_dino_tokens.py / precompute)."""
-    return image_key.replace(".", "_").replace("/", "_")
+def load_dino_tokens_online(raw_dataset_dir: str, metadata: list[dict], image_key: str,
+                            dino: OnlineDino, batch_size: int) -> list[np.ndarray]:
+    """Per-skill DINO token clips (T, n_tokens, feat_dim) — ONLINE warm-pass (디스크 precompute 없음).
 
-
-class _LazyDinoClips:
-    """Per-skill DINO token sequences sliced ON-DEMAND from per-frame DINO npz — no materialized token
-    file (saves ~27GB/camera/skillset + the extract step). Indexable like list[np.ndarray]; clip i ==
-    fit_feature_length(episode_features[frame_start:frame_end], length), byte-identical to
-    extract_skill_dino_tokens.py. A small LRU of episode memmaps keeps grouped/sequential access to one
-    open file per episode; mmap means only the sliced frames are paged in.
-
-    Consumed in the MAIN process (SplineFSQDataset copies it into a plain list before any DataLoader
-    fork), so the open memmap handles never need to be pickled to workers.
-    """
-
-    _CACHE_MAX = 8
-
-    def __init__(self, frame_dino_dir: Path, metadata: list[dict], image_key: str):
-        frame_dino_dir = Path(frame_dino_dir)
-        self._ep_dir = frame_dino_dir / _image_key_norm(image_key)
-        if not self._ep_dir.is_dir():
-            avail = [p.name for p in frame_dino_dir.iterdir() if p.is_dir()] if frame_dino_dir.is_dir() else []
-            raise FileNotFoundError(
-                f"Per-frame DINO camera dir not found: {self._ep_dir}\n"
-                f"  frame_dino_dir={frame_dino_dir}  image_key={image_key}\n  available cameras: {avail}")
-        self._meta = metadata
-        self._cache: "OrderedDict[int, np.ndarray]" = OrderedDict()
-
-    def __len__(self) -> int:
-        return len(self._meta)
-
-    def _episode_features(self, ep_id: int) -> np.ndarray:
-        c = self._cache
-        feats = c.get(ep_id)
-        if feats is not None:
-            c.move_to_end(ep_id)
-            return feats
-        f = self._ep_dir / f"episode_{ep_id:07d}.npz"
-        if not f.exists():
-            raise FileNotFoundError(f"Per-frame DINO episode file missing: {f}")
-        feats = np.load(str(f), mmap_mode="r")["features"]   # (T, n_tokens, F) memmap
-        c[ep_id] = feats
-        if len(c) > self._CACHE_MAX:
-            c.popitem(last=False)
-        return feats
-
-    def __getitem__(self, i):
-        if isinstance(i, slice):
-            return [self[j] for j in range(*i.indices(len(self)))]
-        if i < 0:
-            i += len(self._meta)
-        m = self._meta[i]
-        feats = self._episode_features(int(m["episode_id"]))
-        fs, fe = int(m["frame_start"]), int(m["frame_end"])
-        clip = np.ascontiguousarray(feats[fs:min(fe, len(feats))])   # copy the small slice into RAM
-        if clip.ndim == 2:                       # legacy CLS-only (T, F) → (T, 1, F)
-            clip = clip[:, None, :]
-        return fit_feature_length(clip, int(m["length"]))
-
-    def __iter__(self):
-        for i in range(len(self._meta)):
-            yield self[i]
-
-
-def load_dino_tokens(
-    source: Path,
-    metadata: list[dict],
-    image_key: str = "observation.images.image",
-) -> list[np.ndarray]:
-    """Per-skill DINO token sequences (T, n_tokens, feat_dim).
-
-    `source` is EITHER a per-frame DINO **directory** (sliced lazily on access — no materialized file,
-    saves ~27GB/camera/skillset; `image_key` selects the camera subdir) OR a materialized token
-    **npz** (extract_skill_dino_tokens.py; `image_key` ignored). Both yield identical clips.
-
-    A materialized npz must contain:
-      features  : (N_total, n_tokens, feat_dim) float16/float32
-      offsets   : (N_skills + 1,) int64
-      episode_id, frame_start, frame_end, length : (N_skills,)
-    """
-    source = Path(source)
-    if source.is_dir():
-        clips = _LazyDinoClips(source, metadata, image_key)
-        print(f"[FSQ] Lazy DINO tokens ← {source} (key={image_key}, {len(clips)} skills) — clip0 {clips[0].shape}")
-        return clips
-
-    # mmap_mode='r': file is memory-mapped — initial open is instant and only accessed
-    # pages are read from disk. Critical for 30+ GB npz files where a full upfront
-    # np.load would block for >1h on a cold page cache.
-    d = np.load(str(source), allow_pickle=False, mmap_mode='r')
-    # Keep the native dtype (usually float16); downstream consumers convert per
-    # clip, so a full float32 copy here would just waste memory/time and risk swapping.
-    features = d["features"]                         # (N_total, n_tokens, F)
-    offsets  = d["offsets"].astype(np.int64)        # (N+1,)
-
-    if features.ndim == 2:
-        # Old format: (N_total, F) — CLS only. Expand with dummy patches so
-        # the model sees (N_total, 1, F). n_tokens must be set to 1.
-        features = features[:, None, :]
-
-    if len(offsets) != len(metadata) + 1:
-        raise ValueError(f"Offset count {len(offsets)-1} != skill count {len(metadata)}")
-
+    encode_episode_dino가 mp4를 파일당 1회 디코드해 에피소드별 (T,65,384) fp16을 RAM에 만들고,
+    여기서 skill의 frame_start/frame_end로 슬라이스한다. 슬라이스는 axis0 연속이라 **뷰(no-copy)** —
+    SplineFSQDataset의 ascontiguousarray도 이미 연속이면 복사하지 않으므로 총 메모리는 에피소드
+    배열(~27GB/카메라, fp16)이 전부다. 결과 클립은 기존 precompute 경로(_LazyDinoClips /
+    extract_skill_dino_tokens)와 수치 동일 (verify_online_dino.py: max|Δ|≈3e-3 = fp16 저장 반올림)."""
+    ep_ids = sorted({int(m["episode_id"]) for m in metadata})
+    ep_tok = encode_episode_dino(raw_dataset_dir, ep_ids, image_key, dino,
+                                 batch_size=batch_size, log_prefix="[FSQ][OnlineDino]")
     clips = []
-    for i, m in enumerate(metadata):
-        expected = (int(m["episode_id"]), int(m["frame_start"]), int(m["frame_end"]), int(m["length"]))
-        got = (int(d["episode_id"][i]), int(d["frame_start"][i]), int(d["frame_end"][i]), int(d["length"][i]))
-        if got != expected:
-            raise ValueError(f"DINO metadata mismatch at index {i}: got {got}, expected {expected}")
-        clips.append(features[offsets[i]:offsets[i + 1]])
-
-    print(f"[FSQ] Loaded DINO tokens from {source} — shape per clip: {clips[0].shape}")
+    for m in metadata:
+        feats = ep_tok[int(m["episode_id"])]
+        fs, fe = int(m["frame_start"]), int(m["frame_end"])
+        clip = feats[fs:min(fe, len(feats))]          # 뷰 (에피소드 배열이 실소유)
+        if clip.ndim == 2:                            # 방어: CLS-only (T,F) → (T,1,F)
+            clip = clip[:, None, :]
+        clips.append(fit_feature_length(clip, int(m["length"])))
+    print(f"[FSQ] Online DINO tokens ← {raw_dataset_dir} (key={image_key}, {len(clips)} skills) "
+          f"— clip0 {clips[0].shape}")
     return clips
 
 
@@ -350,18 +257,28 @@ def main(args: Args) -> None:
 
     segments, dec_states, dec_targets, metadata = load_skill_files(skills_dir)
 
-    dec_tokens = load_dino_tokens(Path(args.dino_features), metadata, image_key=args.image_key)
+    # ── DINO warm-pass (ONLINE — 디스크 precompute 완전 제거) ──
+    # mp4 → frozen DINO(OnlineDino; FSQ 인퍼런스 raw-이미지 경로와 동일 구현) → per-skill 토큰 (RAM).
+    # dual(both) terminator면 wrist 카메라도 같은 방식으로 인코딩. warm-pass 후 DINO는 GPU에서 내림.
+    if not args.raw_dataset_dir:
+        raise ValueError("--raw_dataset_dir is required (LeRobot dataset with videos/ + meta/) — "
+                         "DINO tokens are computed ONLINE from the raw videos now.")
+    _dino_dev = "cuda" if torch.cuda.is_available() else "cpu"
+    dino = OnlineDino(args.image_model_name, image_size=args.image_size,
+                      patch_grid=args.patch_grid, n_patch_raw=args.n_patch_raw).to(_dino_dev)
+    dec_tokens = load_dino_tokens_online(args.raw_dataset_dir, metadata, args.image_key,
+                                         dino, args.dino_batch_size)
     if args.terminator_use_wrist:
-        # Lazy mode: wrist comes from the SAME per-frame DINO dir via its wrist subdir (image_key_wrist).
-        # Materialized mode: wrist is a separate token npz (dino_features_wrist).
-        if Path(args.dino_features).is_dir():
-            dec_tokens_wrist = load_dino_tokens(Path(args.dino_features), metadata, image_key=args.image_key_wrist)
-        else:
-            if not args.dino_features_wrist:
-                raise ValueError("--dino_features_wrist is required when terminator_use_wrist=True (materialized mode).")
-            dec_tokens_wrist = load_dino_tokens(Path(args.dino_features_wrist), metadata)
+        # wrist-only(wot) 모드는 primary=wrist라 두 키가 같음 — 같은 카메라를 두 번 인코딩하지 않고
+        # 클립 리스트를 공유 (기존 lazy 모드의 mmap 공유와 동일한 의미; RAM/GPU 2배 낭비 방지).
+        dec_tokens_wrist = (dec_tokens if args.image_key_wrist == args.image_key
+                            else load_dino_tokens_online(args.raw_dataset_dir, metadata,
+                                                         args.image_key_wrist, dino, args.dino_batch_size))
     else:
-        dec_tokens_wrist = None  # single-camera terminator
+        dec_tokens_wrist = None                   # single-camera terminator
+    del dino
+    if _dino_dev == "cuda":
+        torch.cuda.empty_cache()                  # FSQ 학습이 쓸 GPU 메모리 반환
 
     # Encoder stats on ZERO-GROUNDED trajectories — must match what the encoder normalizes
     # (grounded control points). Length stats are data-driven min/max over skill lengths, used for

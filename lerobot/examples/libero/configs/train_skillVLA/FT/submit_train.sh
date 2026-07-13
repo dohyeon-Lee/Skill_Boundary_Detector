@@ -42,10 +42,7 @@ if [ ! -e "${STAGE1_CHECKPOINT_PATH}" ]; then
   echo "Missing Stage-1 checkpoint (architecture config): ${STAGE1_CHECKPOINT_PATH}" >&2
   exit 1
 fi
-if [ "${TRAIN_TERMINATOR}" = "true" ] && [ ! -e "${DINO_TOKENS_PATH}" ]; then
-  echo "train_terminator=true but DINO tokens missing: ${DINO_TOKENS_PATH}" >&2
-  exit 1
-fi
+# (train_terminator DINO 토큰 존재 검사 은퇴 — terminator는 배치 현재 프레임을 ONLINE 토큰화.)
 
 SBATCH_ARGS=(
   --partition="${TRAIN_PARTITION}"

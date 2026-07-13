@@ -32,7 +32,7 @@ else
 fi
 eval "$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/eval_config.py" --config "${EVAL_CONFIG_PATH}" --shell)"
 
-for path in "${SKILLVLA_DATASET_DIR}" "${DINO_NPZ_PATH}" "${FSQ_COPY_PATH}" "${RAW_DATASET_DIR}"; do
+for path in "${SKILLVLA_DATASET_DIR}" "${FSQ_COPY_PATH}" "${RAW_DATASET_DIR}"; do
   if [ ! -e "${path}" ]; then
     echo "Final artifact missing: ${path}" >&2
     echo "Run submit_build_skillvla.sh first (and keep cleanup off if you removed intermediates needed elsewhere)." >&2
@@ -60,7 +60,6 @@ mkdir -p logs
 
 echo "Submit SkillVLA eval"
 echo "  skillvla : ${SKILLVLA_DATASET_DIR}"
-echo "  dino.npz : ${DINO_NPZ_PATH}"
 echo "  FSQ.pt   : ${FSQ_COPY_PATH}"
 echo "  out      : ${EVAL_DIR}"
 echo "  run      : dino=${EVAL_RUN_DINO} skillset=${EVAL_RUN_SKILLSET} fsq_patch=${EVAL_RUN_FSQ_PATCH} fsq_recon=${EVAL_RUN_FSQ_RECON}"

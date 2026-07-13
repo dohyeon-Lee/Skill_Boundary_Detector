@@ -106,18 +106,8 @@ class SkillExpertConfig(PI05Config):
     """BCE pos_weight for the termination head (skill-end frames are rare positives)."""
     terminator_lr_scale: float = 1.0
     """LR scale (× optimizer_lr) for the co-trained terminator's own param group."""
-    # Current-frame FSQ-grid DINO tokens for the terminator (precomputed at build_data; attached by
-    # SkillVLADinoTokenDataset — the SAME generic wrapper Stage-2 uses). Required when train_terminator.
-    skill_decoder_dino_tokens_path: str | None = None
-    skill_decoder_dino_output_key: str = "skill_decoder_dino"
-    skill_decoder_dino_cache_path: str | None = None
-    skill_decoder_dino_build_cache: bool = True
-    # Wrist-camera FSQ-grid DINO tokens — ONLY needed when the FSQ terminator was trained with
-    # terminator_use_wrist=True (build_data dino_wrist:true → dino_wrist.npz). Leave blank for
-    # 3rd-only ("wow") FSQs. Attached by a SECOND SkillVLADinoTokenDataset wrapper.
-    skill_decoder_dino_wrist_tokens_path: str | None = None
-    skill_decoder_dino_wrist_output_key: str = "skill_decoder_dino_wrist"
-    skill_decoder_dino_wrist_cache_path: str | None = None
+    # (skill_decoder_dino_* precompute 토큰 필드 은퇴 — terminator는 배치의 observation.images.*를
+    #  ONLINE DINO로 직접 토큰화; terminator_dino_model_path가 DINO 경로 오버라이드를 겸함.)
 
     # ── Eval-only (oracle closed-loop sim). Ignored during training. ──
     fsq_path: str | None = None
@@ -171,8 +161,3 @@ class SkillExpertConfig(PI05Config):
             )
         if self.train_terminator and not self.fsq_path:
             raise ValueError("train_terminator=True needs fsq_path (the FSQ checkpoint to warm-start).")
-        if self.train_terminator and not self.skill_decoder_dino_tokens_path:
-            raise ValueError(
-                "train_terminator=True needs skill_decoder_dino_tokens_path (FSQ-grid current-frame DINO "
-                "tokens, precomputed at build_data; attached by SkillVLADinoTokenDataset)."
-            )

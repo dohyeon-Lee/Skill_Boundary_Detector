@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Run the full SkillVLA data-generation pipeline in one submission:
-#   (login)  slice per-episode DINO from the base full DINO
+# Run the full SkillVLA data-generation pipeline in one submission (DINO는 어디서도 precompute
+# 안 함 — DP는 state/raw-frames, FSQ 학습·terminator는 ONLINE):
 #   job 1    build_skillset.sbatch  — DP skill segmentation (Slurm array over tasks)
 #   job 1b   verify_skillset.sbatch — verify + re-run tasks a dead GPU missed (afterany:1)
-#   job 2    encode_skills.sbatch   — extract skill DINO tokens + FSQ encode   (after 1b)
-#   job 3    build_skillvla.sbatch  — dino.npz + skillvla/ + skill_initial_state.npz + FSQ.pt  (after 2)
+#   job 2    encode_skills.sbatch   — FSQ encode → skill_latents.npz            (after 1b)
+#   job 3    build_skillvla.sbatch  — skillvla/ + skill_initial_state.npz + FSQ.pt  (after 2)
 #
 # Stages whose outputs already exist are skipped and the --dependency chain is
 # rewired around them. Final outputs land in {skillvla_dataset}/{source}/{run_tag}/.
@@ -57,7 +57,7 @@ skillset_complete () {
   "${BOOTSTRAP_PYTHON}" "${SRC_DIR}/verify_skillset.py" \
     --dataset_dir "${RAW_DATASET_DIR}" --skillset_dir "${SKILLSET_DIR}" --check >/dev/null 2>&1
 }
-encode_complete () { [ -f "${SKILL_TOKENS_PATH}" ] && [ -f "${SKILL_LATENTS_PATH}" ]; }
+encode_complete () { [ -f "${SKILL_LATENTS_PATH}" ]; }   # skill_tokens.npz 은퇴 (소비자 없음)
 
 cd "${SCRIPT_DIR}"
 mkdir -p logs
@@ -72,36 +72,12 @@ SBATCH_ARGS=(
 ENV=(TRAIN_SKILLVLA_CONFIG="${CONFIG_PATH}" SOURCE_DATA="${SOURCE_DATASET}" SKILLVLA_ENV_SNAPSHOT="${SNAPSHOT_ENV}")
 DEP=""   # dependency clause (e.g. "afterok:123") carried to the next non-skipped stage
 
-# ── step 2: per-episode DINO for every required (grid × camera) ──
-#   generate → compute on the source frames (GPU prep job; the rest of the chain waits on it)
-#   <base>   → validate the base has them + slice on the login node (idempotent — skips existing)
-source "${SRC_DIR}/dino_prepare.sh"
-if [ "${DINO_GENERATE}" = "true" ]; then
-  NW="${DINO_GENERATE_WORKERS:-1}"
-  echo "[1/4] Generate per-episode DINO on source frames (GPU prep)  → ${DINO_ROOT}"
-  echo "       required: ${DINO_REQUIRED}   workers=${NW}"
-  if [ "${NW}" -gt 1 ]; then
-    # Precompute across NW GPUs (episode-sharded array), then a single dependent slice job. Slice must
-    # wait for the whole array (per-worker slice → dangling symlinks for not-yet-computed episodes).
-    JIDP=$(env "${ENV[@]}" DINO_PREP_PHASE=precompute \
-      sbatch --parsable --array="0-$(( NW - 1 ))" "${SBATCH_ARGS[@]}" "${SRC_DIR}/dino_prep.sbatch")
-    echo "       dino-prep precompute array ${JIDP}  (${NW} GPUs)"
-    JID0=$(env "${ENV[@]}" DINO_PREP_PHASE=slice \
-      sbatch --parsable --dependency=afterok:"${JIDP}" --kill-on-invalid-dep=yes "${SBATCH_ARGS[@]}" "${SRC_DIR}/dino_prep.sbatch")
-    echo "       dino-prep slice     ${JID0}  (after array)"
-  else
-    JID0=$(env "${ENV[@]}" DINO_PREP_PHASE=all sbatch --parsable "${SBATCH_ARGS[@]}" "${SRC_DIR}/dino_prep.sbatch")
-    echo "       dino-prep ${JID0}"
-  fi
-  DEP="afterok:${JID0}"
-else
-  echo "[1/4] Validate + slice per-episode DINO  (base: ${DINO_BASE_ROOT})  → ${DINO_ROOT}"
-  dino_prepare_slice
-fi
+# (구 step 2: per-episode DINO precompute 은퇴 — DINO는 어디서도 precompute 안 함. DP segmentation은
+#  state/raw-frames, FSQ 학습·terminator는 ONLINE. 세그먼테이션이 곧 첫 스테이지.)
 
-# ── stage 3: skillset (GPU array over tasks) + verify/re-run ──
+# ── stage: skillset (GPU array over tasks) + verify/re-run ──
 if skillset_complete; then
-  echo "[2/4] Skillset already complete → skip"
+  echo "[1/3] Skillset already complete → skip"
 else
   ALL_TASK_IDS="$("${BOOTSTRAP_PYTHON}" - "${RAW_DATASET_DIR}/meta/tasks.parquet" <<'PY'
 import sys, pandas as pd
@@ -116,8 +92,7 @@ PY
   ARRAY_SPEC="0-$(( NUM_SHARDS - 1 ))"
   [ "${SKILLSET_ARRAY_THROTTLE:-0}" -gt 0 ] && ARRAY_SPEC="${ARRAY_SPEC}%${SKILLSET_ARRAY_THROTTLE}"
 
-  echo "[2/4] Submit DP skill segmentation  (array=${ARRAY_SPEC}: ${N_TASKS} tasks / ${TPJ} per job = ${NUM_SHARDS} GPUs)"
-  # In generate mode DEP=afterok:<dino-prep> — the segmentation must wait for the DINO to exist.
+  echo "[1/3] Submit DP skill segmentation  (array=${ARRAY_SPEC}: ${N_TASKS} tasks / ${TPJ} per job = ${NUM_SHARDS} GPUs)"
   DEP_ARG=(); [ -n "${DEP}" ] && DEP_ARG=(--dependency="${DEP}" --kill-on-invalid-dep=yes)
   JID1=$(env "${ENV[@]}" ALL_TASK_IDS="${ALL_TASK_IDS}" \
     sbatch --parsable --array="${ARRAY_SPEC}" ${DEP_ARG[@]+"${DEP_ARG[@]}"} "${SBATCH_ARGS[@]}" "${SRC_DIR}/build_skillset.sbatch")
@@ -131,10 +106,10 @@ fi
 
 # ── stage 4: FSQ encode ──
 if encode_complete; then
-  echo "[3/4] Skill tokens + latents already exist → skip"
+  echo "[2/3] Skill latents already exist → skip"
 else
   DEP_ARG=(); [ -n "${DEP}" ] && DEP_ARG=(--dependency="${DEP}" --kill-on-invalid-dep=yes)
-  echo "[3/4] Submit FSQ encode${DEP:+  (after ${DEP#afterok:})}"
+  echo "[2/3] Submit FSQ encode${DEP:+  (after ${DEP#afterok:})}"
   JID2=$(env "${ENV[@]}" \
     sbatch --parsable ${DEP_ARG[@]+"${DEP_ARG[@]}"} "${SBATCH_ARGS[@]}" "${SRC_DIR}/encode_skills.sbatch")
   echo "       encode ${JID2}"
@@ -143,9 +118,9 @@ fi
 
 # ── stage 5: SkillVLA build (always — would have exited above if already done) ──
 DEP_ARG=(); [ -n "${DEP}" ] && DEP_ARG=(--dependency="${DEP}" --kill-on-invalid-dep=yes)
-echo "[4/4] Submit SkillVLA build${DEP:+  (after ${DEP#afterok:})}"
+echo "[3/3] Submit SkillVLA build${DEP:+  (after ${DEP#afterok:})}"
 JID3=$(env "${ENV[@]}" \
   sbatch --parsable ${DEP_ARG[@]+"${DEP_ARG[@]}"} "${SBATCH_ARGS[@]}" "${SRC_DIR}/build_skillvla.sbatch")
 echo "       build ${JID3}"
 
-echo "Submitted. Final outputs → ${SKILLVLA_RUN_DIR}  (skillvla/, skill_initial_state.npz, dino.npz, FSQ.pt)"
+echo "Submitted. Final outputs → ${SKILLVLA_RUN_DIR}  (skillvla/, skill_initial_state.npz, FSQ.pt)"

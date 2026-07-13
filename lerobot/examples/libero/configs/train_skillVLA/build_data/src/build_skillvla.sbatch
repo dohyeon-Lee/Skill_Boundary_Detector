@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 # Step 5 (final): assemble the SkillVLA dataset and final outputs.
-#   (a) merge per-episode DINO → dino.npz        (for build_data_eval viz only; merge/copy, cheap)
 #   (b) add_skill_latents_to_dataset → skillvla/ (skill columns) + skill_initial_state.npz (ISS)
 #   (c) copy FSQ checkpoint → FSQ.pt
 #   (d) optional cleanup of intermediates (_work, skill_latents.npz)
-# Note: Stage-2 training does NOT use dino.npz (VLM/expert encode raw images on the fly); it is
+# Note: DINO precompute 완전 제거 — terminator co-training은 배치 현재 프레임을 ONLINE 토큰화. 이전엔
 # kept only for build_data_eval. The per-frame observation.dino.image train cache is removed.
 #SBATCH --job-name=skillVLA_build
 #SBATCH --gres=gpu:1
@@ -42,30 +41,13 @@ echo "START SKILLVLA BUILD"
 echo "Node     : ${SLURMD_NODENAME:-local}"
 echo "Source   : ${RAW_DATASET_DIR}"
 echo "Latents  : ${SKILL_LATENTS_PATH}"
-echo "dino.npz : ${DINO_NPZ_PATH}   (eval-only)"
 echo "ISS npz  : ${ISS_NPZ_PATH}   (pmax=${SKILL_PMAX})"
 echo "FSQ.pt   : ${FSQ_COPY_PATH}"
 echo "skillvla : ${SKILLVLA_DATASET_DIR}"
 
 mkdir -p "${SKILLVLA_RUN_DIR}"
 
-# ── (a) merge per-episode DINO → dino.npz (build_data_eval viz only; not used by training) ──
-PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
-  "${BOOTSTRAP_PYTHON}" "${SRC_DIR}/merge_frame_dino.py" \
-    --frame_dino_dir "${FSQ_DINO_DIR}" \
-    --image_key      "${DINO_IMAGE_KEY}" \
-    --output_path    "${DINO_NPZ_PATH}"
-
-# ── (a') wrist DINO → dino_wrist.npz (only when dino_wrist:true; Stage-1 terminator_use_wrist tokens).
-# Same merge, wrist camera. Reuses the already-precomputed wrist features in FSQ_DINO_DIR (no GPU). ──
-if [ -n "${DINO_WRIST_NPZ_PATH:-}" ]; then
-  echo "dino_wrist : ${DINO_WRIST_NPZ_PATH}   (terminator wrist tokens)"
-  PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
-    "${BOOTSTRAP_PYTHON}" "${SRC_DIR}/merge_frame_dino.py" \
-      --frame_dino_dir "${FSQ_DINO_DIR}" \
-      --image_key      "${WRIST_IMAGE_KEY}" \
-      --output_path    "${DINO_WRIST_NPZ_PATH}"
-fi
+# (DINO precompute 단계 (a)/(a') 은퇴 — dino.npz/dino_wrist.npz 산출물 없음.)
 
 # ── (b) add skill columns → SkillVLA LeRobot dataset + skill_initial_state.npz ──
 read -r -a FSQ_LEVELS <<< "${FSQ_LEVELS_STR}"
@@ -104,4 +86,4 @@ if [ "${CLEANUP_INTERMEDIATE}" = "true" ]; then
   echo "  removed ${SKILLVLA_SEG_DIR} and ${SKILL_LATENTS_PATH}"
 fi
 
-echo "DONE → ${SKILLVLA_RUN_DIR}  (skillvla/, skill_initial_state.npz, dino.npz, FSQ.pt)"
+echo "DONE → ${SKILLVLA_RUN_DIR}  (skillvla/, skill_initial_state.npz, FSQ.pt)"

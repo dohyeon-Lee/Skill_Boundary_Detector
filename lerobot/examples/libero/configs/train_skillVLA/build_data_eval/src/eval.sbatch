@@ -51,7 +51,7 @@ TASK_ARGS=()
 PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
   python -u "${SRC_DIR}/run_eval.py" \
     --skillvla_dir   "${SKILLVLA_DATASET_DIR}" \
-    --dino_npz       "${DINO_NPZ_PATH}" \
+    --dino_model_path "${DINO_MODEL_PATH}" \
     --fsq_model      "${FSQ_COPY_PATH}" \
     --dataset_dir    "${RAW_DATASET_DIR}" \
     --image_key      "${DINO_IMAGE_KEY}" \

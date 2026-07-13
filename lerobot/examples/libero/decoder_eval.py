@@ -24,7 +24,7 @@ from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).parent))
 from FSQ import SplineFSQAE, SplineFSQAEConfig
-from train_FSQ import load_skill_files, load_dino_tokens
+from train_FSQ import load_skill_files, load_dino_tokens_online
 
 
 # ── model loading ─────────────────────────────────────────────────────────────
@@ -457,10 +457,12 @@ def parse_args():
                    help="skill_latents.npz (provides latents + tokens + metadata)")
     p.add_argument("--skills_dir",      required=True,
                    help="Directory of per-skill npz files")
-    p.add_argument("--dino_features",   default="",
-                   help="Precomputed 3rd-person DINO token npz (N_total × n_tokens × feat_dim)")
-    p.add_argument("--dino_features_wrist", default="",
-                   help="Precomputed wrist DINO token npz (terminator's 2nd camera)")
+    p.add_argument("--raw_dataset_dir", default="",
+                   help="LeRobot dataset dir (videos + meta) — ONLINE DINO warm-pass의 원천 "
+                        "(디스크 precompute 제거됨). 비우면 zero 토큰 폴백 (기존 동작 유지).")
+    p.add_argument("--image_key", default="observation.images.image")
+    p.add_argument("--image_key_wrist", default="observation.images.wrist_image")
+    p.add_argument("--dino_batch_size", type=int, default=256)
     p.add_argument("--device",          default="cuda")
     p.add_argument("--max_plot_samples", type=int, default=20)
     p.add_argument("--max_plot_entries", type=int, default=20,
@@ -493,16 +495,23 @@ def main():
 
     print("[EVAL] Loading DINO tokens (3rd-person + wrist) …")
     n_tok, F = cfg.n_tokens, cfg.feat_dim
-    if args.dino_features:
-        dec_tokens_list = load_dino_tokens(Path(args.dino_features), metadata)
+    if args.raw_dataset_dir:
+        # ONLINE DINO warm-pass (디스크 precompute 제거) — train_FSQ와 동일 경로/계약.
+        from lerobot.utils.online_dino import OnlineDino  # noqa: PLC0415
+        _dino = OnlineDino(cfg.image_model_name, image_size=cfg.image_size,
+                           patch_grid=cfg.patch_grid, n_patch_raw=cfg.n_patch_raw).to(device)
+        dec_tokens_list = load_dino_tokens_online(args.raw_dataset_dir, metadata, args.image_key,
+                                                  _dino, batch_size=args.dino_batch_size)
+        dec_tokens_wrist_list = (dec_tokens_list if args.image_key_wrist == args.image_key
+                                 else load_dino_tokens_online(args.raw_dataset_dir, metadata,
+                                                              args.image_key_wrist, _dino,
+                                                              batch_size=args.dino_batch_size))
+        del _dino
+        if str(device).startswith("cuda"):
+            torch.cuda.empty_cache()
     else:
-        print("[EVAL] WARNING: no --dino_features given — using zero tokens")
+        print("[EVAL] WARNING: no --raw_dataset_dir given — using zero tokens (both cameras)")
         dec_tokens_list = [np.zeros((m["length"], n_tok, F), np.float32) for m in metadata]
-
-    if args.dino_features_wrist:
-        dec_tokens_wrist_list = load_dino_tokens(Path(args.dino_features_wrist), metadata)
-    else:
-        print("[EVAL] WARNING: no --dino_features_wrist given — using zero wrist tokens")
         dec_tokens_wrist_list = [np.zeros((m["length"], n_tok, F), np.float32) for m in metadata]
 
     lat    = np.load(args.latents_path)

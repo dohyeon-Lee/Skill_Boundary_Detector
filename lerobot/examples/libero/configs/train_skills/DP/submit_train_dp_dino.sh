@@ -16,7 +16,6 @@
 # DINO copy only, without submitting DP training:
 #   cd {project_root}/lerobot/examples/libero/configs/train_skills/DP
 #   DINO_SOURCE_DATASET=libero_90_full_full \
-#     {project_root}/.venv/bin/python src/prepare_dino_for_training_dataset.py \
 #       --config ../train_skills_config.yaml
 #   Use DINO_SOURCE_DATASET only when the source DINO directory should be
 #   {dataset_root}/{DINO_SOURCE_DATASET}_DINO instead of the inferred base name.
@@ -66,24 +65,11 @@ mkdir -p logs
 echo "Submit DP train (vision=${DP_VISION})"
 echo "  dataset : ${TARGET_DATASET}"
 echo "  output  : ${DP_OUTPUT_DIR}"
-[ "${DP_VISION}" = "dino" ] && echo "  dino    : ${DINO_FEATURE_DIR}"
 echo "  slurm   : partition=${DP_PARTITION} qos=${DP_QOS} gres=${DP_GRES}"
-
-# ResNet (original DP) trains on raw frames → no DINO features to prepare.
-if [ "${DP_VISION}" = "dino" ]; then
-  echo ""
-  echo "Prepare target DINO features"
-  PREPARE_ARGS=(--config "${CONFIG_PATH}")
-  if [ -n "${TARGET_DATASET}" ]; then
-    PREPARE_ARGS+=(--dataset "${TARGET_DATASET}")
-  fi
-  "${BOOTSTRAP_PYTHON}" "${DP_SRC_DIR}/prepare_dino_for_training_dataset.py" "${PREPARE_ARGS[@]}"
-fi
 
 if [ "${TRAIN_DP}" != "true" ]; then
   echo ""
   echo "Skip DP training because train_DP=false"
-  echo "  prepared DINO: ${DINO_FEATURE_DIR}"
   exit 0
 fi
 
@@ -91,7 +77,6 @@ if [ -e "${DP_POLICY_PATH}" ]; then
   echo ""
   echo "Skip DP training because checkpoint already exists"
   echo "  checkpoint   : ${DP_POLICY_PATH}"
-  echo "  prepared DINO: ${DINO_FEATURE_DIR}"
   exit 0
 fi
 

@@ -165,28 +165,8 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
         # source dataset
         "source_dataset": source_dataset,
         "raw_dataset_dir": dataset_root / source_dataset,
-        # DINO (step 2) — explicit grids/cameras; validate a base or generate from source.
-        "dino_generate": "true" if dino_generate else "false",
-        "dino_base_dataset": dino_base_dataset,
-        "dino_base_root": dataset_root / base_name,            # {base|source}_DINO (slice-from / generate-into)
-        "dp_patch_grid": dp_patch_grid,
-        "fsq_patch_grid": fsq_patch_grid,
-        "dino_third": "true" if dino_third else "false",
-        "dino_wrist": "true" if dino_wrist else "false",
-        "dino_required": ";".join(f"{g}:{cam}" for g, cam in required),  # grid:camera to validate/generate
-        "dino_fsq_image_keys": ",".join(fsq_cameras),          # extract/merge cameras (3rd [+ wrist])
-        "dino_image_key": THIRD_KEY,                           # 3rd-person (DP + primary dino.npz)
-        "dino_copy_mode": str(get_value(cfg, "dino_copy_mode", "symlink")),
-        "dino_root": dino_root,
-        "dp_dino_dir": dp_dino_dir,                            # work dir the DP segmentation reads (pg{DP_grid})
-        "fsq_dino_dir": fsq_dino_dir,                          # work dir extract/merge read (pg{FSQ_grid})
-        # generate-mode precompute params (frozen DINOv3 on source frames; idempotent)
-        "dino_model_path": root / "models" / "dinov3-vits16",
-        "dino_image_size": int(get_value(cfg, "dino_image_size", 224)),
-        "dino_n_patch_raw": int(get_value(cfg, "dino_n_patch_raw", 196)),
-        "dino_dtype": str(get_value(cfg, "dino_dtype", "float16")),
-        "dino_batch_size": int(get_value(cfg, "dino_batch_size", 1024)),
-        "dino_generate_workers": int(get_value(cfg, "dino_generate_workers", 1)),
+        # (DINO precompute emit 은퇴 — DINO는 어디서도 precompute 안 함. DP=state/raw-frames,
+        #  FSQ 학습·terminator=ONLINE. dino_root/required/generate/base 등 소비자 0.)
         # DP (step 3)
         "dp_policy_name": dp_policy_name,
         "dp_checkpoint": dp_checkpoint,
@@ -232,7 +212,6 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
         "skillvla_work_dir": work_dir,
         "skillvla_seg_dir": seg_dir,   # DP-keyed intermediates (skillset + skill_tokens)
         "iss_npz_path": run_dir / "skill_initial_state.npz",   # Stage-2 skill-initial-state (ISS)
-        "dino_npz_path": run_dir / "dino.npz",                 # build_data_eval viz only (not used by training)
         # Stage-1 terminator wrist tokens: only when dino_wrist:true (FSQ trained terminator_use_wrist).
         # Same merge as dino.npz but the wrist camera → a second per-skill DINO token cache. Empty = none.
         "dino_wrist_npz_path": (run_dir / "dino_wrist.npz") if dino_wrist else "",

@@ -77,11 +77,10 @@ def build_settings(cfg: dict) -> dict:
         s2_ds_root = str(skillvla_root / _p.parent.parent.name / _p.parent.name / _p.name)
     run_tag = Path(s2_ds_root).parent.name
     run_dir = skillvla_root / source_dataset / run_tag
-    # FT terminator warm-start + current-frame DINO tokens live in the new task's run dir (same codebook).
+    # FT terminator warm-start; DINO 토큰은 ONLINE (배치 현재 프레임 라이브 토큰화 — dino.npz 불필요).
     fsq_ckpt = run_dir / "FSQ.pt"
-    dino_tokens_path = run_dir / "dino.npz"
-    # Wrist DINO tokens — dual(terminator_use_wrist) FSQ면 필수; 빌드돼 있을 때만 경로 전달 ("" else).
-    dino_wrist_tokens_path = (run_dir / "dino_wrist.npz") if (run_dir / "dino_wrist.npz").exists() else ""
+    terminator_dino_model_path = resolve_path(
+        project_root, get_value(cfg, "terminator_dino_model_path", "models/dinov3-vits16"))
 
     batch_size = int(get_value(cfg, "batch_size", 16))
     num_gpus = int(get_value(cfg, "num_gpus", 1))
@@ -184,8 +183,7 @@ def build_settings(cfg: dict) -> dict:
         "run_tag": run_tag,
         "skillvla_dataset_dir": run_dir / "skillvla",
         "fsq_ckpt": fsq_ckpt,                       # terminator warm-start + (eval terminator base)
-        "dino_tokens_path": dino_tokens_path,       # current-frame DINO tokens for terminator co-train
-        "dino_wrist_tokens_path": dino_wrist_tokens_path,   # dual FSQ용 wrist 토큰 ("" = 없음/불필요)
+        "terminator_dino_model_path": terminator_dino_model_path,   # ONLINE DINO의 로컬 모델 경로 (이식성)
         "repo_id": f"dohyeon/{source_dataset}",
         # warm-start (full policy from Stage-2) + architecture config (from its config.json)
         "stage2_run_name": stage2_run_name,

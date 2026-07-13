@@ -202,16 +202,9 @@ def build_settings(cfg: dict) -> dict:
     freeze_vlm_vision = as_bool(get_value(cfg, "freeze_vlm_vision", False))
     if freeze_vlm_vision:
         regime_tag += "vf"
-    # 제출-시점 fail-fast: dual FSQ("both" — terminator가 wrist DINO도 씀) + train_terminator인데
-    # dino_wrist.npz가 없으면, 모델 로딩(~5분) 후 첫 배치 런타임에서야 터짐 — 여기서 미리 차단.
-    # (다른 클러스터로 옮길 때 28GB짜리 dino_wrist.npz 복사가 누락되는 케이스.)
+    # terminator co-training은 ONLINE DINO (배치 현재 프레임 라이브 토큰화) — dino.npz/dino_wrist.npz
+    # 산출물이 필요 없으므로 wrist 존재 fail-fast 가드도 은퇴.
     train_terminator = as_bool(get_value(cfg, "train_terminator", False))
-    dino_wrist = run_dir / "dino_wrist.npz"
-    if train_terminator and "both" in run_tag and not dino_wrist.exists():
-        raise ValueError(
-            f"train_terminator=true + dual FSQ('both')인데 wrist DINO 토큰이 없음: {dino_wrist} — "
-            "원본 빌드에서 dino_wrist.npz(가능하면 dino_wrist.features.npy도)를 복사하거나, "
-            "train_terminator: false로 두세요.")
 
     parts = ([run_tag] + ([s1_vis_tag] if s1_vis_tag else [])
              + [stage1_checkpoint] + ([mode_tag] if mode_tag else []) + loss_tags)
@@ -279,9 +272,8 @@ def build_settings(cfg: dict) -> dict:
         "terminator_lr_scale": float(get_value(cfg, "terminator_lr_scale", 1.0)),
         "terminator_end_target_sigma": float(get_value(cfg, "terminator_end_target_sigma", 2.0)),
         "terminator_end_pos_weight": float(get_value(cfg, "terminator_end_pos_weight", 1.0)),
-        "dino_tokens_path": run_dir / "dino.npz",   # current-frame DINO tokens for the terminator
-        # Wrist DINO tokens — attached ONLY for a dual (terminator_use_wrist) FSQ, and only if built ("" else).
-        "dino_wrist_tokens_path": dino_wrist if dino_wrist.exists() else "",
+        "terminator_dino_model_path": resolve_path(
+            project_root, get_value(cfg, "terminator_dino_model_path", "models/dinov3-vits16")),
         # output
         "skillvla_outputs_root": vla_root,
         "pt_run_name": run_name,

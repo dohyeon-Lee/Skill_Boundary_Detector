@@ -46,12 +46,6 @@ if "${BOOTSTRAP_PYTHON}" "${SRC_DIR}/verify_skillset.py" \
   exit 0
 fi
 
-# ── step 2: per-episode DINO for every required (grid × camera) — validate base + slice (login).
-# generate mode: slices an already-computed source DINO; if it isn't computed yet, use
-# submit_build_all.sh (it submits the GPU dino-prep job + dependency chain).
-source "${SRC_DIR}/dino_prepare.sh"
-dino_prepare_slice
-
 # ── compute the task-shard array (one shard = SKILLSET_TASKS_PER_JOB tasks → 1 GPU) ──
 ALL_TASK_IDS="$("${BOOTSTRAP_PYTHON}" - "${RAW_DATASET_DIR}/meta/tasks.parquet" <<'PY'
 import sys, pandas as pd

@@ -4,7 +4,6 @@
 Inputs (no skillset / per-episode DINO needed):
   raw video    : {dataset_root}/{source_dataset}      (LeRobot videos + meta)
   skillvla/    : {run_dir}/skillvla                    (skill columns: ds, boundary, sequence, ...)
-  dino.npz     : {run_dir}/dino.npz                    (merged frame DINO tokens)
   FSQ.pt       : {run_dir}/FSQ.pt                       (only for fsq_recon)
 
 Evals (toggle via flags), each writing under {out_dir}/{name}/:
@@ -79,23 +78,50 @@ def reconstruct_skills(ep_df: pd.DataFrame) -> list[tuple[int, int, int]]:
 
 
 class DinoNpz:
-    """Frame DINO from the merged dino.npz, indexed by (episode_id, frame)."""
+    """Frame DINO computed ONLINE from the raw dataset (디스크 dino.npz 제거) — 동일 인터페이스
+    (episode_clip). 첫 접근 시 frozen DINO(OnlineDino)를 로드하고, 에피소드별로 mp4를 디코드해
+    토큰을 계산·캐시한다 (train_FSQ의 warm-pass와 같은 계약)."""
 
-    def __init__(self, npz_path: Path):
-        raw = np.load(str(npz_path), mmap_mode="r", allow_pickle=False)
-        self.features = raw["features"]                       # (N_total, n_tokens, F) mmap
-        self.offsets = raw["offsets"].astype(np.int64)
-        self.episode_id = raw["episode_id"].astype(np.int64)
-        self.frame_start = raw["frame_start"].astype(np.int64)
-        self.length = raw["length"].astype(np.int64)
-        self.n_tokens = int(np.asarray(raw["n_tokens"]).reshape(-1)[0])
-        self.feat_dim = int(np.asarray(raw["feat_dim"]).reshape(-1)[0])
-        self._ep_to_i = {int(e): i for i, e in enumerate(self.episode_id)}
+    def __init__(self, dataset_dir: Path, image_key: str, model_path: str):
+        sys.path.insert(0, str(LIBERO_DIR.parent / "src"))  # lerobot (OnlineDino)
+        from lerobot.utils.online_dino import OnlineDino, _read_video_frames  # noqa: PLC0415
+        import torch  # noqa: PLC0415
+
+        self._dataset_dir = Path(dataset_dir)
+        self._image_key = image_key
+        self._torch = torch
+        self._read_frames = _read_video_frames
+        self._dino = OnlineDino(model_path)
+        if torch.cuda.is_available():
+            self._dino = self._dino.to("cuda")
+        self.n_tokens = int(self._dino.n_tokens)
+        self.feat_dim = int(self._dino.feat_dim)
+        meta_files = sorted((self._dataset_dir / "meta" / "episodes").rglob("file-*.parquet"))
+        self._meta = pd.concat([pd.read_parquet(f) for f in meta_files], ignore_index=True).set_index(
+            "episode_index")
+        self._fps = float(json.loads((self._dataset_dir / "meta" / "info.json").read_text()).get("fps", 20.0))
+        self._cache: dict[int, np.ndarray] = {}
 
     def episode_clip(self, ep_id: int) -> np.ndarray:
-        """(T_ep, n_tokens, feat_dim) for one episode (float32)."""
-        i = self._ep_to_i[int(ep_id)]
-        return np.asarray(self.features[int(self.offsets[i]):int(self.offsets[i + 1])]).astype(np.float32)
+        """(T_ep, n_tokens, feat_dim) for one episode (float32) — ONLINE 계산 + 캐시."""
+        ep_id = int(ep_id)
+        if ep_id in self._cache:
+            return self._cache[ep_id]
+        row = self._meta.loc[ep_id]
+        ck = int(row[f"videos/{self._image_key}/chunk_index"])
+        fi = int(row[f"videos/{self._image_key}/file_index"])
+        fs = round(float(row[f"videos/{self._image_key}/from_timestamp"]) * self._fps)
+        length = int(row["length"])
+        path = self._dataset_dir / "videos" / self._image_key / f"chunk-{ck:03d}" / f"file-{fi:03d}.mp4"
+        frames = self._read_frames(path)[fs: fs + length]     # (T,H,W,3) uint8
+        toks = []
+        with self._torch.no_grad():
+            for s in range(0, len(frames), 256):
+                x = self._torch.from_numpy(frames[s: s + 256].copy())
+                toks.append(self._dino(x).cpu().numpy().astype(np.float32))
+        clip = np.concatenate(toks, axis=0)
+        self._cache[ep_id] = clip
+        return clip
 
 
 def patch_pca_rgb_clip(clip_patches: np.ndarray, grid: int, size: int = 96) -> np.ndarray:
@@ -361,7 +387,8 @@ def make_frames_loader(dataset_dir: Path, image_key: str):
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--skillvla_dir", required=True)
-    p.add_argument("--dino_npz", required=True)
+    p.add_argument("--dino_model_path", default="models/dinov3-vits16",
+                   help="ONLINE DINO 모델 경로 (dino.npz 제거 — raw mp4에서 라이브 인코딩)")
     p.add_argument("--fsq_model", required=True)
     p.add_argument("--dataset_dir", required=True, help="raw LeRobot dataset (videos + meta)")
     p.add_argument("--image_key", default="observation.images.image")
@@ -396,7 +423,7 @@ def main():
     frames_src = make_frames_loader(Path(args.dataset_dir), args.image_key)
     dino = None
     if args.run_dino or args.run_fsq_patch or args.run_fsq_recon:
-        dino = DinoNpz(Path(args.dino_npz))
+        dino = DinoNpz(Path(args.dataset_dir), args.image_key, args.dino_model_path)
 
     if args.run_dino:
         eval_dino(df, dino, frames_src, out / "dino", args.n_episodes, task_ids=args.task_ids)

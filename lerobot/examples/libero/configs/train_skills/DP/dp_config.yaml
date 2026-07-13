@@ -7,18 +7,12 @@
 
 target_dataset: libero_90_full_full
 
-# DINO features the DP trains on (only used when dp_vision: dino).
-dino_source_dataset: libero_90_full_full   # "" | base dataset whose DINO to copy from
-dino_image_keys: ["observation.images.image"]
-dino_patch_grid: 8                          # DP DINO grid (folder tag dino{grid})
-dino_copy_mode: hardlink                    # copy | hardlink | symlink (prepare step only)
-dino_overwrite_prepared: false              # true = re-create prepared DINO (else skip existing)
 
 # ── DP encoder / temporal ──
-# dp_vision: dino   = precomputed DINO-token encoder (needs prepared DINO).
-#            resnet = ORIGINAL lerobot Diffusion Policy on raw frames (no DINO).
+# dp_vision: resnet = ORIGINAL lerobot Diffusion Policy on raw frames (base encoder).
 #            state  = proprioceptive-only: observation.state history, NO vision.
-dp_vision: state   # dino | resnet | state
+# (DINO-token encoder 옵션은 은퇴 — DINO precompute 완전 제거.)
+dp_vision: state   # resnet | state
 dp_n_obs_steps: 20                          # observation history length
 dp_horizon: 24                              # UNet horizon (multiple of 2^len(down_dims)=8; > n_obs)
 # dp_n_action_steps: auto = horizon - n_obs_steps + 1 (override only if needed)

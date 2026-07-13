@@ -56,10 +56,6 @@ if [ ! -e "${STAGE2_CHECKPOINT_PATH}" ]; then
   echo "Missing Stage-2 checkpoint: ${STAGE2_CHECKPOINT_PATH}  (train stage2 first)" >&2
   exit 1
 fi
-if [ "${TRAIN_TERMINATOR}" = "true" ] && [ ! -e "${DINO_TOKENS_PATH}" ]; then
-  echo "train_terminator=true but DINO tokens missing: ${DINO_TOKENS_PATH}" >&2
-  exit 1
-fi
 
 # Resume if a stage-3 checkpoint exists; otherwise wipe a stale (incomplete) output dir.
 CONFIG_JSON="${PT_OUTPUT_DIR}/checkpoints/last/pretrained_model/train_config.json"
@@ -95,15 +91,8 @@ if [ "${TRAIN_TERMINATOR}" = "true" ]; then
     --policy.terminator_lr_scale="${TERMINATOR_LR_SCALE}"
     --policy.terminator_end_target_sigma="${TERMINATOR_END_TARGET_SIGMA}"
     --policy.terminator_end_pos_weight="${TERMINATOR_END_POS_WEIGHT}"
-    --policy.skill_decoder_dino_tokens_path="${DINO_TOKENS_PATH}"
-    --policy.skill_decoder_dino_output_key=skill_decoder_dino
+    --policy.terminator_dino_model_path="${TERMINATOR_DINO_MODEL_PATH}"
   )
-  if [ -n "${DINO_WRIST_TOKENS_PATH:-}" ]; then
-    TERM_ARGS+=(
-      --policy.skill_decoder_dino_wrist_tokens_path="${DINO_WRIST_TOKENS_PATH}"
-      --policy.skill_decoder_dino_wrist_output_key=skill_decoder_dino_wrist
-    )
-  fi
 fi
 
 # pretrained_path = the STAGE-2 checkpoint (full-loaded); stage1_checkpoint_path supplies the

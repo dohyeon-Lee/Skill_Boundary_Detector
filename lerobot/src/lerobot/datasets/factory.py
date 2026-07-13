@@ -24,7 +24,6 @@ from lerobot.datasets.dataset_metadata import LeRobotDatasetMetadata
 from lerobot.datasets.dino_feature_dataset import DinoFrameFeatureDataset
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.datasets.multi_dataset import MultiLeRobotDataset
-from lerobot.datasets.skillvla_dino_token_dataset import SkillVLADinoTokenDataset
 from lerobot.datasets.streaming_dataset import StreamingLeRobotDataset
 from lerobot.datasets.transforms import ImageTransforms
 from lerobot.utils.constants import ACTION, OBS_PREFIX, OBS_STATE, REWARD
@@ -168,23 +167,7 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
             cache_size=cfg.policy.dino_cache_size,
         )
 
-    if getattr(cfg.policy, "skill_decoder_dino_tokens_path", None):
-        dataset = SkillVLADinoTokenDataset(
-            dataset,
-            tokens_path=cfg.policy.skill_decoder_dino_tokens_path,
-            output_key=cfg.policy.skill_decoder_dino_output_key,
-            cache_path=cfg.policy.skill_decoder_dino_cache_path,
-            build_cache=cfg.policy.skill_decoder_dino_build_cache,
-        )
-
-    # Wrist-camera FSQ-grid DINO tokens (second wrapper) — only for a dual (terminator_use_wrist) FSQ.
-    if getattr(cfg.policy, "skill_decoder_dino_wrist_tokens_path", None):
-        dataset = SkillVLADinoTokenDataset(
-            dataset,
-            tokens_path=cfg.policy.skill_decoder_dino_wrist_tokens_path,
-            output_key=cfg.policy.skill_decoder_dino_wrist_output_key,
-            cache_path=cfg.policy.skill_decoder_dino_wrist_cache_path,
-            build_cache=getattr(cfg.policy, "skill_decoder_dino_build_cache", True),
-        )
+    # (skill_decoder_dino 토큰 래퍼 은퇴 — terminator co-training은 배치의 현재 프레임 이미지를
+    #  fsq._prepare_decoder_tokens의 raw 분기로 ONLINE 토큰화한다. 디스크 DINO precompute 제거.)
 
     return dataset

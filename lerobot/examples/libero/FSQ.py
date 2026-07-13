@@ -494,26 +494,23 @@ class SplineFSQAE(nn.Module):
     # ── decode ────────────────────────────────────────────────────────────────
 
     def _load_raw_image_model(self, device: torch.device):
-        model = getattr(self, "_raw_image_model", None)
-        if model is not None:
-            return model
-        from transformers import AutoImageProcessor, AutoModel  # noqa: PLC0415
-
-        model = AutoModel.from_pretrained(self.image_model_name)
-        for p in model.parameters():
-            p.requires_grad_(False)
-        model.eval().to(device)
-        try:
-            proc = AutoImageProcessor.from_pretrained(self.image_model_name)
-            mean = getattr(proc, "image_mean", [0.485, 0.456, 0.406])
-            std = getattr(proc, "image_std", [0.229, 0.224, 0.225])
-        except Exception:
-            mean = [0.485, 0.456, 0.406]
-            std = [0.229, 0.224, 0.225]
-        object.__setattr__(self, "_raw_image_model", model)
-        object.__setattr__(self, "_raw_image_mean", torch.tensor(mean, dtype=torch.float32, device=device).view(1, 3, 1, 1))
-        object.__setattr__(self, "_raw_image_std", torch.tensor(std, dtype=torch.float32, device=device).view(1, 3, 1, 1))
-        return model
+        """Lazy frozen OnlineDino — raw 이미지→토큰의 SINGLE SOURCE (인퍼런스·FSQ 학습 warm-pass·
+        검증도구가 같은 구현을 공유; lerobot/src/lerobot/utils/online_dino.py). nn.Module 레지스트리
+        밖에 보관(object.__setattr__)해 state_dict/체크포인트에 섞이지 않음 (기존 계약 유지)."""
+        dino = getattr(self, "_raw_image_model", None)
+        if dino is None:
+            try:
+                from lerobot.utils.online_dino import OnlineDino  # noqa: PLC0415
+            except ImportError:      # examples 단독 실행 등 lerobot/src가 경로에 없을 때
+                import sys  # noqa: PLC0415
+                sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+                from lerobot.utils.online_dino import OnlineDino  # noqa: PLC0415
+            dino = OnlineDino(self.image_model_name, image_size=self.image_size,
+                              patch_grid=self.patch_grid, n_patch_raw=self.n_patch_raw)
+            object.__setattr__(self, "_raw_image_model", dino)
+        if next(dino.model.parameters()).device != device:
+            dino.to(device)
+        return dino
 
     @torch.no_grad()
     def _raw_images_to_tokens(self, images: torch.Tensor, *, target_t: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
@@ -540,28 +537,16 @@ class SplineFSQAE(nn.Module):
         B, T, C, H, W = x.shape
         x = x.reshape(B * T, C, H, W).float()
         if x.numel() and float(x.detach().amin()) < -0.05:
-            x = (x + 1.0) / 2.0
+            x = (x + 1.0) / 2.0                       # [-1,1] → [0,1]
         if x.numel() and float(x.detach().amax()) > 2.0:
-            x = x / 255.0
+            x = x / 255.0                             # [0,255] → [0,1]
         x = x.clamp(0.0, 1.0)
-        x = F.interpolate(x, size=(self.image_size, self.image_size), mode="bilinear", align_corners=False)
 
-        model = self._load_raw_image_model(device)
-        mean = getattr(self, "_raw_image_mean").to(device=device)
-        std = getattr(self, "_raw_image_std").to(device=device)
-        x = (x - mean) / std
-        device_type = device.type
-        with torch.autocast(device_type=device_type, dtype=torch.float16, enabled=(device_type == "cuda")):
-            out = model(pixel_values=x)
-        last_hidden = out.last_hidden_state.float()
-        b_frames, _, feat_dim = last_hidden.shape
-        cls_tok = last_hidden[:, :1, :]
-        patch_tok = last_hidden[:, -self.n_patch_raw:, :]
-        sqrt_raw = int(math.sqrt(self.n_patch_raw))
-        patch_spatial = patch_tok.reshape(b_frames, sqrt_raw, sqrt_raw, feat_dim).permute(0, 3, 1, 2)
-        patch_pooled = F.adaptive_avg_pool2d(patch_spatial, (self.patch_grid, self.patch_grid))
-        patch_pooled = patch_pooled.permute(0, 2, 3, 1).reshape(b_frames, self.patch_grid * self.patch_grid, feat_dim)
-        tokens = torch.cat([cls_tok, patch_pooled], dim=1).view(B, T, 1 + self.patch_grid * self.patch_grid, feat_dim)
+        # 리사이즈·정규화·fp16 autocast·CLS+풀링은 전부 OnlineDino가 수행 (공용 단일 구현 —
+        # 여기 있던 동일 코드를 위임으로 대체; 수치 계약은 verify_online_dino.py로 검증됨).
+        dino = self._load_raw_image_model(device)
+        tokens = dino(x)                              # (B·T, 1+grid², F) float32
+        tokens = tokens.view(B, T, 1 + self.patch_grid * self.patch_grid, tokens.shape[-1])
         return tokens.to(dtype=dtype)
 
     def _prepare_decoder_tokens(self, image_input: torch.Tensor, *, states: torch.Tensor) -> torch.Tensor:

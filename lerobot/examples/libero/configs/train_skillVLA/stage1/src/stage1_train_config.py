@@ -92,25 +92,14 @@ def build_settings(cfg: dict) -> dict:
         vocab_default *= _lvl
     skill_vocab_size = int(get_value(cfg, "skill_vocab_size", vocab_default))
 
-    # ── Co-trained terminator inputs (build_data products under run_dir → AUTO-derived from run_tag).
-    # DINO token paths are attached ONLY when train_terminator (else "" → factory skips the wrappers). ──
+    # ── Co-trained terminator (ONLINE DINO): 배치의 현재 프레임 이미지를 라이브 토큰화하므로
+    # dino.npz 경로 유도가 필요 없음 — DINO 모델 경로만 로컬로 고정해 이식성 확보. ──
     train_terminator = as_bool(get_value(cfg, "train_terminator", False))
     fsq_path_raw = str(get_value(cfg, "fsq_path", "")).strip()
     fsq_path = (resolve_path(project_root, fsq_path_raw)
                 if fsq_path_raw and fsq_path_raw.lower() not in ("null", "none") else run_dir / "FSQ.pt")
-    skill_decoder_dino_tokens_path = ""
-    skill_decoder_dino_wrist_tokens_path = ""
-    if train_terminator:
-        sdd_raw = str(get_value(cfg, "skill_decoder_dino_tokens_path", "")).strip()
-        skill_decoder_dino_tokens_path = (resolve_path(project_root, sdd_raw)
-            if sdd_raw and sdd_raw.lower() not in ("null", "none") else run_dir / "dino.npz")
-        # Wrist tokens: only a "both" FSQ build produces dino_wrist.npz → AUTO-attach when it EXISTS.
-        sddw_raw = str(get_value(cfg, "skill_decoder_dino_wrist_tokens_path", "")).strip()
-        if sddw_raw and sddw_raw.lower() not in ("null", "none"):
-            skill_decoder_dino_wrist_tokens_path = resolve_path(project_root, sddw_raw)
-        else:
-            _wrist_cand = run_dir / "dino_wrist.npz"
-            skill_decoder_dino_wrist_tokens_path = _wrist_cand if _wrist_cand.exists() else ""
+    terminator_dino_model_path = resolve_path(
+        project_root, get_value(cfg, "terminator_dino_model_path", "models/dinov3-vits16"))
 
     settings: dict = {
         # roots
@@ -151,8 +140,7 @@ def build_settings(cfg: dict) -> dict:
         "terminator_end_target_sigma": float(get_value(cfg, "terminator_end_target_sigma", 1.0)),
         "terminator_end_pos_weight": float(get_value(cfg, "terminator_end_pos_weight", 1.0)),
         "terminator_lr_scale": float(get_value(cfg, "terminator_lr_scale", 1.0)),
-        "skill_decoder_dino_tokens_path": skill_decoder_dino_tokens_path,        # "" unless train_terminator
-        "skill_decoder_dino_wrist_tokens_path": skill_decoder_dino_wrist_tokens_path,  # "" unless dino_wrist.npz exists
+        "terminator_dino_model_path": terminator_dino_model_path,   # ONLINE DINO의 로컬 모델 경로 (이식성)
         # optimization
         "batch_size": batch_size,
         "num_workers": int(get_value(cfg, "num_workers", 8)),

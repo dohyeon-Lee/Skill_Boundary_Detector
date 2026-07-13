@@ -44,7 +44,7 @@ echo "Node      : ${SLURMD_NODENAME:-local}"
 echo "dataset   : ${SKILLVLA_DATASET_DIR}"
 echo "warm-start: ${STAGE2_CHECKPOINT_PATH}"
 echo "stage1cfg : ${STAGE1_CHECKPOINT_PATH:-SCRATCH-parent (${S1_VISION_BACKBONE}/${S1_STATE_COND_MODE})}"
-echo "FSQ(term) : ${FSQ_CKPT}   dino: ${DINO_TOKENS_PATH}"
+echo "FSQ(term) : ${FSQ_CKPT}   dino=ONLINE(${TERMINATOR_DINO_MODEL_PATH})"
 echo "cond_skill: ${COND_SKILL_SOURCE}   train_terminator: ${TRAIN_TERMINATOR}"
 echo "output    : ${PT_OUTPUT_DIR}   lr/bs: ${LR}/${BATCH_SIZE}"
 nvidia-smi || true
@@ -61,10 +61,6 @@ fi
 # synthesizes the Stage-1-side architecture from --policy.s1_vision_backbone/s1_state_cond_mode).
 if [ -n "${STAGE1_CHECKPOINT_PATH}" ] && [ ! -e "${STAGE1_CHECKPOINT_PATH}" ]; then
   echo "Missing Stage-1 checkpoint (architecture config): ${STAGE1_CHECKPOINT_PATH}" >&2
-  exit 1
-fi
-if [ "${TRAIN_TERMINATOR}" = "true" ] && [ ! -e "${DINO_TOKENS_PATH}" ]; then
-  echo "train_terminator=true but DINO tokens missing: ${DINO_TOKENS_PATH}  (rebuild dataset)" >&2
   exit 1
 fi
 
@@ -128,16 +124,8 @@ if [ "${TRAIN_TERMINATOR}" = "true" ]; then
     --policy.terminator_lr_scale="${TERMINATOR_LR_SCALE}"
     --policy.terminator_end_target_sigma="${TERMINATOR_END_TARGET_SIGMA}"
     --policy.terminator_end_pos_weight="${TERMINATOR_END_POS_WEIGHT}"
-    --policy.skill_decoder_dino_tokens_path="${DINO_TOKENS_PATH}"
-    --policy.skill_decoder_dino_output_key=skill_decoder_dino
+    --policy.terminator_dino_model_path="${TERMINATOR_DINO_MODEL_PATH}"
   )
-  # Dual (terminator_use_wrist) FSQ → also attach the wrist DINO tokens (emitter sets this only if built).
-  if [ -n "${DINO_WRIST_TOKENS_PATH:-}" ]; then
-    TERM_ARGS+=(
-      --policy.skill_decoder_dino_wrist_tokens_path="${DINO_WRIST_TOKENS_PATH}"
-      --policy.skill_decoder_dino_wrist_output_key=skill_decoder_dino_wrist
-    )
-  fi
 fi
 
 # pretrained_path = Stage-2 checkpoint (full-loaded); stage1_checkpoint_path supplies the architecture

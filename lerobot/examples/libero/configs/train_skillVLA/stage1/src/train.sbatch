@@ -58,12 +58,10 @@ fi
 if [ -n "${COND_ENCODER_VARIANT}" ]; then
   EXTRA_ARGS+=(--policy.cond_encoder_variant="${COND_ENCODER_VARIANT}")
 fi
-# Co-trained terminator DINO tokens (empty → omitted; only set when train_terminator).
-if [ -n "${SKILL_DECODER_DINO_TOKENS_PATH}" ]; then
-  EXTRA_ARGS+=(--policy.skill_decoder_dino_tokens_path="${SKILL_DECODER_DINO_TOKENS_PATH}")
-fi
-if [ -n "${SKILL_DECODER_DINO_WRIST_TOKENS_PATH}" ]; then
-  EXTRA_ARGS+=(--policy.skill_decoder_dino_wrist_tokens_path="${SKILL_DECODER_DINO_WRIST_TOKENS_PATH}")
+# Co-trained terminator: ONLINE DINO (배치의 현재 프레임 이미지를 라이브 토큰화 — dino.npz 인자 은퇴).
+# DINO 모델 경로만 로컬로 오버라이드 (FSQ ckpt에 박힌 원 학습 머신 절대경로 방어).
+if [ "${TRAIN_TERMINATOR:-false}" = "true" ] && [ -n "${TERMINATOR_DINO_MODEL_PATH:-}" ]; then
+  EXTRA_ARGS+=(--policy.terminator_dino_model_path="${TERMINATOR_DINO_MODEL_PATH}")
 fi
 
 # Resume if a checkpoint exists; otherwise wipe a stale (incomplete) output dir.

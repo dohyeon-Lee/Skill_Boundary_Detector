@@ -42,11 +42,10 @@ if [ ! -d "${SKILLSET_DIR}/skills" ]; then
   echo "Run build_data/submit_build_data.sh first." >&2
   exit 1
 fi
-# LAZY: FSQ slices per-frame DINO on the fly (train_fsq.sbatch passes the dir, not a token npz), so we
-# only need the per-frame DINO dir — no materialized dino_tokens_*.npz. Both cameras live under it.
-if [ ! -d "${FSQ_DINO_FEATURE_DIR}" ]; then
-  echo "Per-frame DINO dir not found: ${FSQ_DINO_FEATURE_DIR}" >&2
-  echo "Run build_data/submit_build_data.sh first (it prepares the per-frame DINO that lazy reads)." >&2
+# ONLINE: DINO 토큰은 train_FSQ가 raw mp4에서 warm-pass로 직접 인코딩 (per-frame DINO dir 불필요 —
+# dino-prep 빌드 단계 제거). raw dataset의 videos/만 있으면 됨.
+if [ ! -d "${RAW_DATASET_DIR}/videos" ]; then
+  echo "Raw dataset videos not found: ${RAW_DATASET_DIR}/videos (online DINO warm-pass의 원천)" >&2
   exit 1
 fi
 
@@ -73,7 +72,7 @@ echo "Submit FSQ train"
 echo "  dataset     : ${TARGET_DATASET}"
 echo "  FSQ inputs  : ${FSQ_INPUTS_DIR}"
 echo "  skillset    : ${SKILLSET_DIR}/skills"
-echo "  DINO (lazy) : ${FSQ_DINO_FEATURE_DIR}"
+echo "  DINO (online): raw ← ${RAW_DATASET_DIR}/videos (warm-pass at train start)"
 echo "  output      : ${FSQ_OUTPUT_DIR}"
 echo "  slurm       : partition=${FSQ_TRAIN_PARTITION} qos=${FSQ_TRAIN_QOS} gres=${FSQ_TRAIN_GRES}"
 

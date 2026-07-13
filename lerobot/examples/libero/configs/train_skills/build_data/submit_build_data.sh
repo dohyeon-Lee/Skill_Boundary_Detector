@@ -39,43 +39,13 @@ else
   eval "$("${BOOTSTRAP_PYTHON}" "${COMMON_SRC_DIR}/train_skills_config.py" --config "${CONFIG_PATH}" --shell)"
 fi
 
-# FSQ now slices per-frame DINO LAZILY at train/eval time (train_FSQ load_dino_tokens reads the dir
-# directly), so the materialized dino_tokens_*.npz are no longer needed. By default we build only the
-# skillset and ensure the per-frame DINO exists (the lazy source); we do NOT extract tokens.
-#   MATERIALIZE_TOKENS=true → ALSO emit the legacy dino_tokens_*.npz (idempotent; cameras follow
-#     fsq_terminator_use_third / use_wrist).
-#   BUILD_SKILLSET_ONLY=true → skillset only (DP skill-boundary eval: no per-frame DINO, no tokens).
-NEED_EXTRACT=false
-if [ "${BUILD_SKILLSET_ONLY:-false}" = "true" ]; then
-  echo "BUILD_SKILLSET_ONLY=true → skillset only (no per-frame DINO prep, no token extraction)."
-elif [ "${MATERIALIZE_TOKENS:-false}" = "true" ]; then
-  NEED_EXTRACT=true
-  _tok_missing=false
-  if [ "${FSQ_TERMINATOR_USE_THIRD}" = "true" ] && [ ! -f "${DINO_TOKENS_PATH}" ];       then _tok_missing=true; fi
-  if [ "${FSQ_TERMINATOR_USE_WRIST}" = "true" ] && [ ! -f "${DINO_TOKENS_WRIST_PATH}" ]; then _tok_missing=true; fi
-  if [ "${_tok_missing}" = "false" ]; then
-    NEED_EXTRACT=false
-    echo "MATERIALIZE_TOKENS=true but required tokens already present → skipping extraction."
-  fi
-fi
+# FSQ 학습/평가는 이제 DINO를 ONLINE으로 계산한다 (train_FSQ/fsq_eval이 raw mp4에서 warm-pass —
+# 디스크 precompute 완전 제거). 따라서 이 빌드는 FSQ용 per-frame DINO 스테이징도, 토큰 materialize도
+# 하지 않는다 — skillset만 만들면 끝. (구 MATERIALIZE_TOKENS/extract_skill_tokens 단계 은퇴.)
+#   BUILD_SKILLSET_ONLY=true → 의미 유지 (skillset만; 어차피 그 외 산출물이 없어졌으므로 사실상 동일).
 
-# Ensure prepared frame DINO exists for BOTH grids: dp (skillset build) and fsq (lazy slicing source /
-# token extraction). When fsq_patch_grid == dino_patch_grid the two dirs are identical → 2nd is a no-op.
-ensure_dino() {  # $1 = variant (dp|fsq), $2 = expected dir
-  local variant="$1" dir="$2"
-  [ -d "${dir}" ] && return 0
-  echo "Prepared frame DINO (${variant}) not found → 자동 준비 (DINO 배치만, DP 학습 없음): ${dir}"
-  local args=(--config "${CONFIG_PATH}" --variant "${variant}")
-  [ -n "${TARGET_DATASET}" ] && args+=(--dataset "${TARGET_DATASET}")
-  "${BOOTSTRAP_PYTHON}" "${SCRIPT_DIR}/../DP/src/prepare_dino_for_training_dataset.py" "${args[@]}"
-  [ -d "${dir}" ] || { echo "DINO 준비 실패: ${dir}" >&2; exit 1; }
-}
-# DP DINO only for a DINO DP (resnet/state segment on raw frames/state — no DP DINO needed).
-if [ "${DP_VISION}" = "dino" ]; then ensure_dino dp "${DINO_FEATURE_DIR}"; fi
-# Per-frame DINO is the lazy-slicing SOURCE (FSQ train/eval reads it directly), so ensure it for every
-# FSQ-input build — not just when materializing tokens. Skipped only for BUILD_SKILLSET_ONLY (the DP
-# skill-boundary eval needs no DINO at all).
-if [ "${BUILD_SKILLSET_ONLY:-false}" != "true" ]; then ensure_dino fsq "${FSQ_DINO_FEATURE_DIR}"; fi
+# (DP DINO 스테이징 은퇴 — DP는 resnet(raw frames) / state(proprioceptive)만. dino 인코더 옵션 제거.
+#  skill segmentation은 state DP에서 observation.state만 소비 → per-frame DINO 준비가 불필요.)
 
 cd "${SCRIPT_DIR}"
 mkdir -p logs "${FSQ_INPUTS_DIR}"
@@ -187,29 +157,9 @@ PY
   SKILLSET_DEPENDENCY="--dependency=afterok:${MARK_JOB}"
 fi
 
-# Final job a caller (e.g. submit_eval.sh auto-build) should depend on: the extract job when we run
-# it, else the skillset marker (skillset-only / tokens-already-present), else nothing at all
-# (skillset already complete AND no extraction needed → empty, caller adds no dependency).
+# Final job a caller (e.g. submit_eval.sh auto-build) should depend on: the skillset marker
+# (DINO 토큰 extract 단계는 은퇴 — FSQ 학습/평가가 online warm-pass로 직접 인코딩).
 LAST_JOB="${MARK_JOB:-}"
-if [ "${NEED_EXTRACT}" = "true" ]; then
-  echo "Prepare FSQ inputs"
-  echo "  dataset      : ${TARGET_DATASET}"
-  echo "  skillset     : ${SKILLSET_DIR}/skills"
-  echo "  frame DINO   : ${FSQ_DINO_FEATURE_DIR}"
-  echo "  tokens 3rd   : ${DINO_TOKENS_PATH}"
-  echo "  tokens wrist : ${DINO_TOKENS_WRIST_PATH}"
-  EXTRACT_JOB=$(sbatch --parsable \
-    --partition="${FIRST_PART}" \
-    --qos="${SLURM_QOS}" \
-    ${EXCLUDE_STR:+--exclude="${EXCLUDE_STR}"} \
-    ${SKILLSET_DEPENDENCY:+${SKILLSET_DEPENDENCY}} \
-    --export="${COMMON_EXPORT}" \
-    "${BUILD_SRC_DIR}/extract_skill_tokens.sbatch")
-  echo "Skill token extraction job: ${EXTRACT_JOB}"
-  LAST_JOB="${EXTRACT_JOB}"
-else
-  echo "Skipping FSQ-input token extraction (skillset only / tokens already present)."
-  [ -n "${LAST_JOB}" ] && echo "  eval can depend on skillset marker job ${LAST_JOB}"
-fi
+[ -n "${LAST_JOB}" ] && echo "  eval can depend on skillset marker job ${LAST_JOB}"
 # Final job id on a parseable line so callers can depend on it (omitted when nothing to wait on).
 [ -n "${PRINT_LAST_JOB:-}" ] && [ -n "${LAST_JOB}" ] && echo "LAST_JOB=${LAST_JOB}"

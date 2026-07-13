@@ -116,8 +116,9 @@ def build_settings(cfg: dict) -> dict:
     if not ds_repo:
         ds_repo = f"dohyeon/{source_dataset}"
     fsq_ckpt = run_dir / "FSQ.pt"
-    dino_tokens_path = run_dir / "dino.npz"
-    dino_wrist_tokens_path = (run_dir / "dino_wrist.npz") if (run_dir / "dino_wrist.npz").exists() else ""
+    # terminator co-training은 ONLINE DINO (배치 현재 프레임 라이브 토큰화) — dino.npz 불필요.
+    terminator_dino_model_path = get_value(cfg, "terminator_dino_model_path", None) or str(
+        project_root / "models" / "dinov3-vits16")
     # Transition pack = stage 3's actual training set (segment-level; the sbatch lazy-builds it if
     # missing — same pattern as FT's skill_code_freq.npz). Also the future FT-replay buffer.
     transition_pack = run_dir / "transitions.npz"
@@ -148,8 +149,7 @@ def build_settings(cfg: dict) -> dict:
         "skillvla_dataset_dir": ds_root,
         "repo_id": ds_repo,
         "fsq_ckpt": fsq_ckpt,
-        "dino_tokens_path": dino_tokens_path,
-        "dino_wrist_tokens_path": dino_wrist_tokens_path,
+        "terminator_dino_model_path": terminator_dino_model_path,
         "transition_pack": transition_pack,
         # warm-start (full policy from stage 2) + architecture config (from its config.json)
         "stage2_run_name": stage2_run_name,

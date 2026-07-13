@@ -14,12 +14,10 @@ Produces:
 The skill_latents.npz used here is (re)generated from the evaluated checkpoint
 and written next to the HTML (FSQ_eval/outputs).
 
-Usage:
+Usage (DINO는 --dataset_dir의 mp4에서 ONLINE warm-pass — 디스크 precompute 없음):
     python examples/libero/fsq_eval.py \
       --model_path   .../FSQ.pt \
       --skills_dir   .../skillset/skills \
-      --dino_features .../dino_tokens.npz \
-      --dino_features_wrist .../dino_tokens_wrist.npz \
       --dataset_dir  .../libero_90 \
       --output_dir   FSQ_eval/outputs/<run>/<epoch>
 """
@@ -50,7 +48,7 @@ from codebook_visualizer import (  # noqa: E402
 )
 from decoder_eval import load_model  # noqa: E402
 from FSQ import spline_encode  # noqa: E402
-from train_FSQ import load_dino_tokens, load_skill_files  # noqa: E402
+from train_FSQ import load_dino_tokens_online, load_skill_files  # noqa: E402
 
 
 # ── latent saving ──────────────────────────────────────────────────────────────
@@ -493,18 +491,15 @@ def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--model_path", required=True)
     p.add_argument("--skills_dir", required=True)
-    p.add_argument("--dino_features", required=True,
-                   help="EITHER a per-frame DINO dir (tokens sliced lazily on the fly — no materialized "
-                        "file) OR a precomputed token npz (extract_skill_dino_tokens.py). Both identical.")
-    p.add_argument("--dino_features_wrist", default=None,
-                   help="wrist DINO tokens npz (terminator's 2nd camera); only needed for dual-camera "
-                        "models in materialized mode. In lazy mode (dino_features is a dir) wrist is read "
-                        "from the SAME dir via --image_key_wrist.")
-    p.add_argument("--dataset_dir", required=True, help="LeRobot dataset dir (videos + meta) for frames")
+    p.add_argument("--dataset_dir", required=True,
+                   help="LeRobot dataset dir (videos + meta) — 썸네일 프레임 + ONLINE DINO warm-pass의 "
+                        "공동 원천 (디스크 DINO precompute 제거됨; train_FSQ와 동일 계약)")
     p.add_argument("--image_key", default="observation.images.image",
-                   help="primary-camera key; also picks the camera subdir in lazy mode")
+                   help="primary-camera video key (wrist-only FSQ면 wrist_image)")
     p.add_argument("--image_key_wrist", default="observation.images.wrist_image",
-                   help="lazy mode: wrist-camera subdir for dual-camera terminator")
+                   help="dual-camera terminator의 wrist video key")
+    p.add_argument("--dino_batch_size", type=int, default=256,
+                   help="online DINO warm-pass의 GPU 프레임 배치 크기")
     p.add_argument("--output_dir", required=True, help="where the HTML is written (FSQ_eval/outputs/<run>/<epoch>)")
     p.add_argument("--latents_path", default="",
                    help="where to save/load skill_latents.npz (default: <output_dir>/skill_latents.npz). "
@@ -538,17 +533,22 @@ def main():
     use_wrist = bool(getattr(model, "terminator_use_wrist", False))
     print(f"[fsq_eval] loading skills / DINO (3rd-person{' + wrist' if use_wrist else ''}) ...")
     segments, dec_states, dec_targets, metadata = load_skill_files(Path(args.skills_dir))
-    dec_tokens = load_dino_tokens(Path(args.dino_features), metadata, image_key=args.image_key)
-    # Wrist is the dual terminator's 2nd camera — load it only when the model actually reads it.
+    # ONLINE DINO (디스크 precompute 제거): --dataset_dir(raw)의 mp4에서 warm-pass 인코딩 —
+    # train_FSQ와 동일 경로/계약이라 학습과 평가가 같은 토큰을 봄.
+    from lerobot.utils.online_dino import OnlineDino  # noqa: PLC0415
+    _dino = OnlineDino(model.image_model_name, image_size=model.image_size,
+                       patch_grid=model.patch_grid, n_patch_raw=model.n_patch_raw).to(device)
+    dec_tokens = load_dino_tokens_online(args.dataset_dir, metadata, args.image_key,
+                                         _dino, batch_size=args.dino_batch_size)
+    # Wrist is the dual terminator's 2nd camera — encode it only when the model actually reads it.
     dec_tokens_wrist = None
     if use_wrist:
-        # Lazy mode: wrist from the SAME per-frame DINO dir (wrist subdir). Materialized: separate npz.
-        if Path(args.dino_features).is_dir():
-            dec_tokens_wrist = load_dino_tokens(Path(args.dino_features), metadata, image_key=args.image_key_wrist)
-        else:
-            if not args.dino_features_wrist:
-                raise ValueError("Model has terminator_use_wrist=True but --dino_features_wrist was not given.")
-            dec_tokens_wrist = load_dino_tokens(Path(args.dino_features_wrist), metadata)
+        dec_tokens_wrist = (dec_tokens if args.image_key_wrist == args.image_key
+                            else load_dino_tokens_online(args.dataset_dir, metadata, args.image_key_wrist,
+                                                         _dino, batch_size=args.dino_batch_size))
+    del _dino
+    if device == "cuda":
+        torch.cuda.empty_cache()
 
     # ── encoder: reuse latents if already present for this run, else encode ──
     latents_path = Path(args.latents_path) if args.latents_path else out_dir / "skill_latents.npz"
