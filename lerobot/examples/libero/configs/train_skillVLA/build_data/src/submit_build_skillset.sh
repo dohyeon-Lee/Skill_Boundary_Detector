@@ -84,7 +84,6 @@ mkdir -p logs
 echo "Submit DP skill segmentation"
 echo "  source    : ${SOURCE_DATASET}"
 echo "  DP policy : ${DP_POLICY_PATH}"
-echo "  dino dir  : ${DP_DINO_DIR}"
 echo "  skillset  : ${SKILLSET_DIR}"
 echo "  slurm     : partition=${SKILLVLA_PARTITION} qos=${SKILLVLA_QOS} gres=${SKILLVLA_GRES}"
 echo "  array     : ${ARRAY_SPEC}  (${N_TASKS} tasks / ${TPJ} per job = ${NUM_SHARDS} GPUs)"

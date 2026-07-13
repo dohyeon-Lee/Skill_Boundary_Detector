@@ -47,12 +47,6 @@ if [ ! -d "${DP_POLICY_PATH}" ]; then
   echo "DP policy checkpoint not found: ${DP_POLICY_PATH}" >&2
   exit 1
 fi
-if [ ! -d "${DP_DINO_DIR}" ]; then
-  echo "Per-episode DINO not found: ${DP_DINO_DIR}" >&2
-  echo "The run's _work/dino intermediates were removed; re-run submit_build_skillset.sh" >&2
-  echo "(it re-slices DINO) before backfilling curves." >&2
-  exit 1
-fi
 
 # ── task-shard array (one shard = SKILLSET_TASKS_PER_JOB tasks → 1 GPU) ──
 ALL_TASK_IDS="$("${BOOTSTRAP_PYTHON}" - "${RAW_DATASET_DIR}/meta/tasks.parquet" <<'PY'
@@ -93,7 +87,6 @@ mkdir -p logs
 echo "Backfill multimodality curves (CURVES_ONLY)"
 echo "  source    : ${SOURCE_DATASET:-<default>}"
 echo "  DP policy : ${DP_POLICY_PATH}"
-echo "  dino dir  : ${DP_DINO_DIR}"
 echo "  curves    : ${SKILLSET_DIR}/curves"
 echo "  slurm     : partition=${SKILLVLA_PARTITION} qos=${SKILLVLA_QOS} gres=${SKILLVLA_GRES}"
 echo "  array     : ${ARRAY_SPEC}  (${N_TASKS} tasks / ${TPJ} per job = ${NUM_SHARDS} GPUs)"
