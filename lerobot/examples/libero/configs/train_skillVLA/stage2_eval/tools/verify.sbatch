@@ -16,6 +16,11 @@ EXTRA=(--source "${SOURCE:-synthetic}")
 if [ "${SOURCE:-synthetic}" = "dataset" ] && [ -n "${RAW_DATASET_DIR:-}" ]; then
   EXTRA+=(--raw_dataset_dir "${RAW_DATASET_DIR}")
 fi
+if [ "${ADAPTER_PROBES:-true}" = "true" ]; then
+  EXTRA+=(--adapter_probes)
+else
+  EXTRA+=(--no-adapter-probes)
+fi
 
 mkdir -p "${RESULT_DIR:?RESULT_DIR not set}"
 PYTORCH_ALLOC_CONF=expandable_segments:True \

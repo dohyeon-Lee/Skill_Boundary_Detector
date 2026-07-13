@@ -82,7 +82,7 @@ cond_expert:      true
 #                       — 단 freeze_vlm_vision=true면 vision도 동결하고 ②③④ 어댑터만 학습 (아래 참고)
 # 동결: VLM LLM base, cond base, cond_vision, expert base(+z/state proj), skill reader/head, ①(stage3 소관).
 # 폴더명: {STAGE-1 정보}__s2_L{②③[④] t/f}r{rank}[lr{scale}][sv{p}][vf][_{exp}] (맨 위 네이밍 블록 참고).
-lora_cond_vlm: true               # ②
+lora_cond_vlm: false               # ②
 lora_cond_bridge: true            # ③
 # ④ action expert LoRA — CONNECTED 전용 소비자 적응: 얼린 expert가 ②③ 잔차를 "읽는 법"을 마중 나와 배움.
 # 배포 severed(VSA)에서는 항상 OFF → VSA≡stage1 불변식에 구조적으로 무영향. 단 sv(COND_SEV) 정규화
@@ -133,18 +133,18 @@ terminator_end_pos_weight: 1.0
 track_param_drift: true
 
 # ── Run naming ────────────────────────────────────────────────
-exp: ""                                        # optional run-name suffix (blank = none)
+exp: "batch384" # 384                                       # optional run-name suffix (blank = none)
 
 
 # ── Optimization ──────────────────────────────────────────────
-batch_size: 16
-num_workers: 4
-num_gpus: 1
+batch_size: 192 # 64 # 16
+num_workers: 2 # 4
+num_gpus: 2 # 1
 lr_base: 2.5e-05                             # effective base lr = lr_base * num_gpus (VLM + vision use this)
 expert_lr_scale: 1.0                         # action expert(gemma_expert + action/time proj) LR 배수
 cond_lr_scale: 1.0                           # cond side(cond_encoder + image/state proj) LR 배수
 steps: 50000
-save_freq: 10000
+save_freq: 2500
 
 
 # ── wandb ─────────────────────────────────────────────────────
@@ -152,7 +152,7 @@ wandb_enable: true
 wandb_project: VLA_stage2
 
 # ── Slurm (partition/qos/nodelist/exclude_nodes come from configs/global_config.yaml) ──
-train_gres: gpu:1
+train_gres: gpu:2 # gpu:1
 train_cpus_per_task: 16
-train_mem: 128G
+train_mem: 256G # 128G
 train_time: "48:00:00"

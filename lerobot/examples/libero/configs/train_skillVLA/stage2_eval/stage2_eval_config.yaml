@@ -25,14 +25,14 @@ eval_dropout: true
 # cotrained → stage1도 s2의 co-trained FSQ_ft.pt, base → 둘 다 원본 데이터셋 FSQ.pt. 어느 값이든 stage1과
 # VSA/drop_vlm이 동일 터미네이터를 써서 스킬 경계가 일치 → severed VSA(=stage1 파라미터) 대조가 터미네이터
 # 변수 없이 성립. (stage1 자기 co-trained 터미네이터는 쓰지 않음.)
-include_stage1: true
+include_stage1: false
 models:
-  # - {model_dir: FSQ555_dino8_both_1000_siglip_015000_state__s2_Lttr8lr10, label: Lttr8lr10}
-  - {model_dir: FSQ555_dino8_both_1000_siglip_015000_state__s2_Lttr8lr10sv50, label: Lttr8lr10sv50}
-models_per_row: 4                 # 행당 패널 수 (eval_dropout+include_stage1 → 모델당 [full,drop_vlm,VSA,stage1] 4패널)
+  - {model_dir: FSQ555_dino8_both_1000_siglip_015000_state__s2_Ltttr8lr10sv50vf_batch128, label: batch128_expert_lora}
+  # - {model_dir: FSQ555_dino8_both_1000_siglip_015000_state__s2_Lttr8lr10sv50vf_batch128, label: batch128_expert_loraX}
+models_per_row: 3                 # 행당 패널 수 (eval_dropout+include_stage1 → 모델당 [full,drop_vlm,VSA,stage1] 4패널)
 # model_dir: libero_90_full_full_FSQ555_dino8_both_1000_siglip_015000_unfreeze_state_ve_lang_dz0.8_frzAe_connect
 
-checkpoint: "last"              # "last" or a step number (these runs go up to 040000)
+checkpoint: "002500"              # "last" or a step number (these runs go up to 040000)
 
 # ── Eval rollout ──
 target_task: libero_90    # LIBERO suite for the sim env
@@ -45,7 +45,7 @@ task_ids: "[0,1,2,3,4,5,6,7,8,9]"
 # 청크수 = eval_num_gpus ÷ 모델수 (총 잡 ≤ 예산; 최소 모델당 1잡) — 세 모델이 동시에 돌고,
 # 각 task는 마지막 패널 잡이 끝나는 즉시 그리드 영상으로 스티칭됨 (stage1식 진행감).
 # 요약은 잡별 eval_info_*.json → 막판-완성자가 자동 머지. (salloc 안에서 실행 시 무시됨.)
-eval_num_gpus: 5
+eval_num_gpus: 10
 n_episodes: 5             # episodes per task
 n_action_steps: 5
 eval_batch_size: 1

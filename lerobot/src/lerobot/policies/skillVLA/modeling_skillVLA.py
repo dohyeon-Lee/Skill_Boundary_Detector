@@ -2136,12 +2136,22 @@ class SkillVLAPolicy(PI05Policy):
         }
 
     def _should_end_skill(self, batch: dict) -> bool:
-        """Whether the current skill ends this step. The FSQ terminator runs whenever available (to
-        record the skill_html curves and to gate in "terminator" mode); ``skill_advance_mode="gt"``
-        (oracle only) instead ends by the GT demo duration. A safety cap force-advances either way."""
+        """Whether the CURRENT observation closes the active skill, before its next action is chosen.
+
+        ``self._skill_steps`` is the number of actions already emitted under the current skill.  This
+        call observes its next boundary frame, records that frame at the current offset, and decides
+        whether the counter would reach its limit *at this frame*.  ``select_action`` then increments
+        the counter and, if needed, swaps skill/clears the action queue BEFORE sampling an action.  This
+        matches the Stage-1 oracle evaluator: a terminator firing on ``obs_t`` makes ``obs_t`` the start
+        observation of the next skill, rather than executing one stale old-skill action first.
+
+        The FSQ terminator always runs when available (including at the safety cap) so skill-html traces
+        retain its final progress/end prediction. ``skill_advance_mode="gt"`` (oracle only) gates on the
+        same prospective counter instead of the terminator signal.
+        """
+        next_steps = self._skill_steps + 1
         cap = int(self.config.inference_skill_max_length)
-        if cap > 0 and self._skill_steps >= cap:
-            return True
+        cap_fired = cap > 0 and next_steps >= cap
         term_fired = False
         if self.model.fsq_term is not None:
             state, image = batch.get("skill_decoder_state"), batch.get("skill_decoder_image")
@@ -2169,8 +2179,8 @@ class SkillVLAPolicy(PI05Policy):
                         signal = end_prob if mode == "termination" else progress
                         term_fired = bool((signal >= thr).any().item())
         if self._oracle_active() and str(self.config.skill_advance_mode) == "gt":
-            return self._skill_steps >= max(1, self._oracle_gt_length())
-        return term_fired
+            return next_steps >= max(1, self._oracle_gt_length())
+        return term_fired or cap_fired
 
     @torch.no_grad()
     def select_action(self, batch: dict[str, Tensor], **kwargs) -> Tensor:
@@ -2184,6 +2194,28 @@ class SkillVLAPolicy(PI05Policy):
         if self._skill_code is None:
             self._begin_skill(batch, lang_tokens, lang_masks)
 
+        # Check the terminator on the CURRENT env frame before selecting an action.  If it says the
+        # active skill ended at obs_t, obs_t is also the start image/state for the NEXT skill and no
+        # queued old-skill action may leak into the environment.  Stage-1's OracleSkillExpertPolicy
+        # follows this exact order; keeping it here makes VSA≡Stage-1 a closed-loop invariant, not only
+        # an open-loop-forward property.
+        ends_current_skill = self._should_end_skill(batch)
+        self._skill_steps += 1
+        # Oracle at its last GT skill: keep running it to episode end (same Stage-1 behavior).
+        if ends_current_skill and not self._oracle_at_last():
+            if self._cur_skill is not None:         # close the old skill at this boundary frame
+                self._cur_skill["length"] = int(self._skill_steps)
+                self._skill_trace.append(self._cur_skill)
+                self._cur_skill = None
+            if self._oracle_active():
+                self._oracle_cursor += 1
+            self._action_queue.clear()
+            # Begin immediately from THIS current frame.  In the full model this also snapshots the
+            # correct VLM skill-start image/prompt; delaying to obs_{t+1} would condition the next skill
+            # on a stale old-skill action's aftermath.
+            self._skill_code, self._start_images = None, None
+            self._begin_skill(batch, lang_tokens, lang_masks)
+
         if len(self._action_queue) == 0:
             start_lang, start_masks = self._start_lang  # frozen skill-start prompt
             actions = self.model.sample_actions(
@@ -2194,17 +2226,6 @@ class SkillVLAPolicy(PI05Policy):
             self._action_queue.extend(actions.transpose(0, 1))
 
         action = self._action_queue.popleft()
-        self._skill_steps += 1
-        # Oracle at its last GT skill: keep running it to episode end (don't re-begin) — mirrors stage1.
-        if self._should_end_skill(batch) and not self._oracle_at_last():
-            if self._cur_skill is not None:         # close the skill_html record
-                self._cur_skill["length"] = int(self._skill_steps)
-                self._skill_trace.append(self._cur_skill)
-                self._cur_skill = None
-            if self._oracle_active():               # advance the GT skill cursor
-                self._oracle_cursor += 1
-            self._skill_code, self._start_images = None, None
-            self._action_queue.clear()
         self._episode_step += 1
         return action
 

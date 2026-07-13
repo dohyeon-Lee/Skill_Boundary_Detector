@@ -58,7 +58,7 @@ train_partition:
   # - big_suma_rtx3090
 
 
-train_qos: base_qos # pro6000_qos | base_qos
+train_qos: pro6000_qos # pro6000_qos | base_qos
 train_nodelist: ""
 train_exclude_nodes:
   - node19

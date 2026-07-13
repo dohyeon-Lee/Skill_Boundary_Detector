@@ -7,7 +7,7 @@ math from env / preprocessing / RNG / closed-loop chaos — the only clean way t
 stage2 "VSA" panel (skill_vla with eval_drop_vlm + adapters OFF) implements the SAME function as the
 stage1 "skill_expert" checkpoint. (Their action-side weights were already verified bit-identical.)
 
-Three comparisons per trial:
+Three base comparisons per trial:
   (1) SELF        : s2(VSA) vs s2(VSA), same inputs + SAME noise      → determinism sanity (~0)
   (2) NOISE-SENS  : s2(VSA) vs s2(VSA), same inputs + DIFFERENT noise → how much noise alone moves
                     the action (this is the scale that closed-loop MuJoCo chaos amplifies into
@@ -18,14 +18,20 @@ Interpretation: if CROSS ≈ SELF (both ~1e-3 or a bf16 noise floor) and CROSS <
 two forwards are the same function; the videos differ purely because of independent noise sampling +
 closed-loop chaos, NOT weights/inputs/forward code.
 
+When ``--adapter_probes`` is enabled, the same VLM-severed forward additionally runs with
+``cond_bridge`` (③) only, ``expert`` (④) only, and both active.  Those probes are measured against
+the VSA/base output using the *same* inputs and noise.  They do not test language usefulness; they
+isolate whether either adapter can perturb the Stage-1 motor even after the real VLM is cut.
+
 Run on a GPU node, e.g.:
   PROJECT=/scratch/mdorazi/Skill_Boundary_Detector
   PYTHONPATH=$PROJECT/lerobot/src:$PROJECT/lerobot/examples/libero \
     $PROJECT/.venv/bin/python tools/verify_vsa_stage1_equiv.py \
-      --stage2 $PROJECT/outputs_filtered/skillVLA_stage2/FSQ555_dino8_both_1000_siglip_015000_state__s2_Lttr8lr10/checkpoints/020000/pretrained_model \
+  --stage2 $PROJECT/outputs_filtered/skillVLA_stage2/FSQ555_dino8_both_1000_siglip_015000_state__s2_Ltttr8lr10sv50vf/checkpoints/010000/pretrained_model \
       --stage1 $PROJECT/outputs_filtered/skillVLA_stage1/FSQ555_dino8_both_1000_siglip_batch256_state/checkpoints/015000/pretrained_model
 """
 import argparse
+from pathlib import Path
 
 import torch
 
@@ -68,9 +74,13 @@ def load_policies(s2_path, s1_path, device, dtype=None):
 
 
 def build_inputs(s2, device, source, seed, raw_dataset_dir):
-    """Return (cond_images: list[Tensor], state: Tensor[B, max_state_dim]). Identical tensors are fed
-    to BOTH forwards, so the only thing that must match is the SHAPE each expects (same image set,
-    state padded to max_state_dim)."""
+    """Return ``(current_images, skill_start_images, state)`` for the two policy branches.
+
+    The Stage-1 expert and SkillVLA's VSA/cond side both consume the SAME *current* observation.
+    The SkillVLA VLM branch instead consumes a distinct frame captured at the (jittered) skill start.
+    Keeping those inputs separate matters even for VSA verification: VLM K/V is structurally built to
+    preserve the deployed RoPE layout, although eval_drop_vlm prevents it from affecting the motor.
+    """
     cfg = s2.config
     B = 1
     n_img = len(list(cfg.image_features))
@@ -81,38 +91,79 @@ def build_inputs(s2, device, source, seed, raw_dataset_dir):
     g = torch.Generator(device="cpu").manual_seed(seed)
     if source == "dataset":
         try:
-            from lerobot.datasets.lerobot_dataset import LeRobotDataset  # noqa: PLC0415
-            ds = LeRobotDataset(repo_id="local", root=raw_dataset_dir)
+            from lerobot.policies.skillVLA.dataset_skillVLA import (  # noqa: PLC0415
+                CAM_3RD, CAM_WRIST, SKILL_START_IMAGE, SKILL_START_WRIST_IMAGE, SkillVLADataset,
+            )
+
+            # ``fsq_path`` = .../{run_tag}/FSQ.pt, so its sibling ``skillvla/`` is the augmented
+            # Stage-2 dataset that owns skill_start_image/wrist_image.  Do NOT use the raw dataset here:
+            # its item has only the current observation and would silently collapse the two branches.
+            fsq_raw = str(getattr(s2.config, "fsq_path", "") or "")
+            if not fsq_raw:
+                raise ValueError("Stage-2 checkpoint has no fsq_path to derive its skillvla dataset")
+            fsq_path = Path(fsq_raw)
+            skillvla_root = fsq_path.parent / "skillvla"
+            if not skillvla_root.is_dir():
+                raise FileNotFoundError(f"SkillVLA dataset not found next to fsq_path={fsq_path!s}")
+            ds = SkillVLADataset(repo_id="local", root=skillvla_root)
             item = ds[0]
             img_keys = [k for k in cfg.image_features if k in item]
-            imgs = []
+            current, starts = [], []
+            start_key = {CAM_3RD: SKILL_START_IMAGE, CAM_WRIST: SKILL_START_WRIST_IMAGE}
             for k in img_keys:
                 im = item[k].float()
                 if im.ndim == 3:
                     im = im.unsqueeze(0)
-                imgs.append(im.to(device))
+                current.append(im.to(device))
+                if k not in start_key or start_key[k] not in item:
+                    raise KeyError(f"No skill-start image paired with current key {k!r}")
+                sim = item[start_key[k]].float()
+                if sim.ndim == 3:
+                    sim = sim.unsqueeze(0)
+                starts.append(sim.to(device))
             st = item["observation.state"].float().reshape(1, -1).to(device)
             if st.shape[1] < state_dim:
                 st = torch.cat([st, torch.zeros(1, state_dim - st.shape[1], device=device)], dim=1)
-            print(f"[input] source=dataset  images={[tuple(i.shape) for i in imgs]}  state={tuple(st.shape)}")
-            return imgs, st
+            print("[input] source=dataset  "
+                  f"current={[tuple(i.shape) for i in current]}  "
+                  f"skill_start={[tuple(i.shape) for i in starts]}  state={tuple(st.shape)}")
+            return current, starts, st
         except Exception as e:  # noqa: BLE001
             print(f"[input] dataset load failed ({e!r}) → falling back to synthetic")
 
-    imgs = [torch.rand(B, 3, H, W, generator=g).to(device) for _ in range(n_img)]
+    current = [torch.rand(B, 3, H, W, generator=g).to(device) for _ in range(n_img)]
+    starts = [torch.rand(B, 3, H, W, generator=g).to(device) for _ in range(n_img)]
     state = torch.randn(B, state_dim, generator=g).to(device)
-    print(f"[input] source=synthetic  images={n_img}×(1,3,{H},{W})  state=(1,{state_dim})")
-    return imgs, state
+    print(f"[input] source=synthetic  current/start={n_img}×(1,3,{H},{W})  state=(1,{state_dim})")
+    return current, starts, state
 
 
 @torch.no_grad()
-def s2_action(s2, imgs, state, code, noise, num_steps):
-    """skill_vla VSA forward (eval_drop_vlm + adapters OFF already set on the config)."""
+def s2_action(s2, current_images, skill_start_images, state, code, noise, num_steps, adapters=None):
+    """skill_vla VSA forward (eval_drop_vlm + adapters OFF already set on the config).
+
+    ``current_images`` are raw [0,1] Stage-1-side camera frames, deliberately shared with ``s1_action``.
+    ``skill_start_images`` are distinct raw frames sampled at a skill start. The SkillVLA action-side
+    cond encoder consumes the former, while its PaliGemma start-image branch
+    (still constructed to preserve the deployed RoPE layout even when VLM reads are severed) expects the
+    policy's 224px / [-1,1] preprocessing.  Closed-loop ``_snapshot_vlm_images`` performs this split;
+    reproduce it here so a real 256px dataset frame is a valid verifier input.
+    """
+    from lerobot.policies.pi05.lora import set_active_adapters  # noqa: PLC0415
+
     B = state.shape[0]
     L = int(_cfg(s2.config, "tokenizer_max_length", "max_lang_tokens", default=48))
     lang_tokens = torch.zeros(B, L, dtype=torch.long, device=state.device)   # VLM is severed → discarded
     lang_masks = torch.ones(B, L, dtype=torch.bool, device=state.device)
-    return s2.model.sample_actions(imgs, imgs, lang_tokens, lang_masks, state,
+    start_images = [s2._preprocess_vlm_tensor(img) for img in skill_start_images]
+    if adapters is not None:
+        # sample_actions() normally selects ∅ for this VSA config.  Probe a precise subset by
+        # calling its sampling core after setting the sticky adapter scope ourselves.  The core still
+        # honors eval_drop_vlm=True, so no VLM K/V crosses into cond/action.
+        set_active_adapters(adapters)
+        return s2.model._sample_actions_A(current_images, start_images, lang_tokens, lang_masks, state,
+                                           code, noise, num_steps)
+    return s2.model.sample_actions(current_images, start_images, lang_tokens, lang_masks, state,
                                    skill_code=code, noise=noise, num_steps=num_steps)
 
 
@@ -144,6 +195,9 @@ def main():
     ap.add_argument("--dtype", choices=["asis", "fp32"], default="asis",
                     help="fp32 forces both forwards to float32 (removes bf16 rounding → isolates whether "
                          "the CROSS delta is pure rounding or a structural difference)")
+    ap.add_argument("--adapter_probes", action=argparse.BooleanOptionalAction, default=True,
+                    help="also measure ③ bridge-only, ④ expert-only, and ③+④ VLM-severed deltas "
+                         "relative to the adapter-off VSA base")
     args = ap.parse_args()
 
     force_dtype = torch.float32 if args.dtype == "fp32" else None
@@ -155,7 +209,8 @@ def main():
 
     device = torch.device(args.device)
     s2, s1 = load_policies(args.stage2, args.stage1, device, dtype=force_dtype)
-    imgs, state = build_inputs(s2, device, args.source, args.input_seed, args.raw_dataset_dir)
+    current_images, skill_start_images, state = build_inputs(
+        s2, device, args.source, args.input_seed, args.raw_dataset_dir)
 
     chunk = int(_cfg(s2.config, "chunk_size", default=10))
     adim = int(_cfg(s2.config, "max_action_dim", default=32))
@@ -168,6 +223,18 @@ def main():
         real_dim = adim
     P(f"[dims] max_action_dim={adim}  real_action_dim={real_dim}  (comparing first {real_dim})")
     codes = [int(c) for c in args.codes.split(",") if c.strip() != ""]
+
+    # In VLM-severed inference, adapter "cond" lives only in the VLM LLM and cannot affect the motor.
+    # These are exactly the two adapter paths that can alter a drop_vlm rollout.
+    adapter_probes = (("bridge", frozenset({"cond_bridge"})),
+                      ("expert", frozenset({"expert"})),
+                      ("bridge_expert", frozenset({"cond_bridge", "expert"})))
+    present_adapters = set()
+    for mod in s2.modules():
+        if hasattr(mod, "adapters"):
+            present_adapters.update(mod.adapters.keys())
+    P(f"[adapters] checkpoint contains {sorted(present_adapters) or 'none'}; "
+      f"probes={'on' if args.adapter_probes else 'off'}")
 
     def rd(a):
         return a[:, :, :real_dim]
@@ -182,13 +249,14 @@ def main():
     P(f"{'code':>5} | {'SELF max|Δ|':>14} | {'NOISE-SENS max|Δ|':>18} | {'CROSS max|Δ|':>14} | {'CROSS cos':>9}")
     P("-" * 78)
     agg = {"self": 0.0, "sens": 0.0, "cross": 0.0, "cross_cos": 1.0}
-    per_code = []
+    per_code, probe_rows = [], []
+    probe_worst = {name: 0.0 for name, _ in adapter_probes}
     for code in codes:
         c = torch.tensor([code], dtype=torch.long, device=device)
-        a_s2 = s2_action(s2, imgs, state, c, noiseA, args.num_steps)
-        a_s2_same = s2_action(s2, imgs, state, c, noiseA, args.num_steps)   # (1) determinism
-        a_s2_diff = s2_action(s2, imgs, state, c, noiseB, args.num_steps)   # (2) noise sensitivity
-        a_s1 = s1_action(s1, imgs, state, c, noiseA, args.num_steps)        # (3) cross, SAME noise
+        a_s2 = s2_action(s2, current_images, skill_start_images, state, c, noiseA, args.num_steps)
+        a_s2_same = s2_action(s2, current_images, skill_start_images, state, c, noiseA, args.num_steps)  # (1)
+        a_s2_diff = s2_action(s2, current_images, skill_start_images, state, c, noiseB, args.num_steps)  # (2)
+        a_s1 = s1_action(s1, current_images, state, c, noiseA, args.num_steps)  # (3) cross, SAME noise
 
         self_mx, _, _ = stats(rd(a_s2), rd(a_s2_same))
         sens_mx, _, _ = stats(rd(a_s2), rd(a_s2_diff))
@@ -200,6 +268,18 @@ def main():
         agg["sens"] = max(agg["sens"], sens_mx)
         agg["cross"] = max(agg["cross"], cross_mx)
         agg["cross_cos"] = min(agg["cross_cos"], cross_cos)
+
+        if args.adapter_probes:
+            row = {"code": code}
+            for name, adapters in adapter_probes:
+                a_probe = s2_action(s2, current_images, skill_start_images, state, c, noiseA,
+                                    args.num_steps, adapters=adapters)
+                mx, mean, cos = stats(rd(a_s2), rd(a_probe))
+                row[name] = {"max": mx, "mean": mean, "cos": cos,
+                             "active": sorted(adapters),
+                             "in_checkpoint": sorted(set(adapters) & present_adapters)}
+                probe_worst[name] = max(probe_worst[name], mx)
+            probe_rows.append(row)
 
     P("=" * 78)
     P(f"worst-case over codes: SELF={agg['self']:.3e}  NOISE-SENS={agg['sens']:.3e}  "
@@ -221,6 +301,15 @@ def main():
       f"(CROSS={agg['cross']:.2e}, NOISE-SENS={agg['sens']:.2e})")
     P("  note: closed-loop video divergence is driven by noise-sensitivity + chaos, not by CROSS.")
 
+    if args.adapter_probes:
+        P("\nAdapter drift probes (VLM severed; SAME input/noise; Δ vs adapter-off VSA):")
+        P(f"{'code':>5} | {'③ bridge max|Δ|':>18} | {'④ expert max|Δ|':>18} | {'③+④ max|Δ|':>18}")
+        P("-" * 78)
+        for row in probe_rows:
+            P(f"{row['code']:>5} | {row['bridge']['max']:>18.3e} | "
+              f"{row['expert']['max']:>18.3e} | {row['bridge_expert']['max']:>18.3e}")
+        P("worst-case: " + ", ".join(f"{name}={mx:.3e}" for name, mx in probe_worst.items()))
+
     if args.out:
         import json
         import os
@@ -230,7 +319,8 @@ def main():
         with open(os.path.splitext(args.out)[0] + ".json", "w") as f:
             json.dump({"stage2": args.stage2, "stage1": args.stage1, "source": args.source,
                        "num_steps": args.num_steps, "verdict": verdict, "worst": agg,
-                       "per_code": per_code}, f, indent=2)
+                       "checkpoint_adapters": sorted(present_adapters), "per_code": per_code,
+                       "adapter_probes": probe_rows, "adapter_probe_worst": probe_worst}, f, indent=2)
         P(f"\n[saved] {args.out}\n[saved] {os.path.splitext(args.out)[0] + '.json'}")
 
 
