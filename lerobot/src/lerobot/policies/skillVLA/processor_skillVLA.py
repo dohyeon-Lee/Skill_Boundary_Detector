@@ -102,9 +102,12 @@ def skill_vla_transition_to_batch(transition: EnvTransition) -> dict[str, Any]:
 @dataclass
 @ProcessorStepRegistry.register(name="skill_vla_preserve_raw_state_processor_step")
 class SkillVLAPreserveRawStateProcessorStep(ProcessorStep):
-    """Snapshot the RAW current obs (pre-normalization) for the FSQ terminator used by closed-loop
-    select_action: raw state + raw 3rd-person + wrist (DINO tokens if present, else RGB; the
-    terminator auto-detects). Unused during training (the terminator only runs at inference)."""
+    """Snapshot the RAW current obs (pre-normalization) for the FSQ terminator: raw state + raw
+    3rd-person + wrist (DINO tokens if present, else RGB; the terminator auto-detects). Used at BOTH
+    (a) closed-loop select_action, and (b) TRAINING — terminator co-training reads the raw current-frame
+    state via skill_decoder_state (the FSQ normalizes it internally with its own min/max; feeding the
+    quantile-normalized observation.state would double-normalize and desync train from eval). Runs
+    before NormalizerProcessorStep so the snapshot is genuinely pre-normalization."""
 
     def __call__(self, transition: EnvTransition) -> EnvTransition:
         transition = transition.copy()

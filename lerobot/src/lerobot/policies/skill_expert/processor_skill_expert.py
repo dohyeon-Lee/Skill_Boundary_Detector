@@ -7,6 +7,7 @@ IDENTITY visual mode and are DINO-normalized inside the model) and preserve the 
 columns the policy needs (skill_sequence, skill_index).
 """
 
+from dataclasses import dataclass
 from typing import Any
 
 import torch
@@ -16,6 +17,7 @@ from lerobot.processor import (
     AddBatchDimensionProcessorStep,
     DeviceProcessorStep,
     NormalizerProcessorStep,
+    ProcessorStepRegistry,
     PolicyAction,
     PolicyProcessorPipeline,
     ProcessorStep,
@@ -29,6 +31,7 @@ from lerobot.utils.constants import (
     DONE,
     INFO,
     OBS_PREFIX,
+    OBS_STATE,
     POLICY_POSTPROCESSOR_DEFAULT_NAME,
     POLICY_PREPROCESSOR_DEFAULT_NAME,
     REWARD,
@@ -43,6 +46,36 @@ SKILL_EXPERT_BATCH_KEYS = ("skill_index", "skill_sequence", "skill_ds", "skill_d
 # (skill_decoder_dino 토큰 키 은퇴 — terminator는 배치의 observation.images.*를 ONLINE DINO로 직접
 #  토큰화. skill_state_traj kept for forward-compat with a state-traj Oracle wrapper; absent = harmless.)
 ORACLE_TERMINATOR_KEYS = ("skill_state_traj",)
+
+
+@dataclass
+@ProcessorStepRegistry.register(name="skill_expert_preserve_raw_state_processor_step")
+class SkillExpertPreserveRawStateProcessorStep(ProcessorStep):
+    """Snapshot the RAW ``observation.state`` (pre-normalization) into ``skill_decoder_state`` so the
+    co-trained FSQ terminator receives raw proprioception — the FSQ decoder normalizes it internally
+    with its OWN min/max (trained on raw states). Placed BEFORE the NormalizerProcessorStep; without
+    it, terminator co-training would feed the quantile-normalized state and the FSQ would normalize a
+    second time (double-normalization → out-of-range garbage), and train/eval would disagree (closed-
+    loop eval already feeds raw skill_decoder_state). Images are IDENTITY-normalized so need no snapshot.
+    (Mirrors SkillVLAPreserveRawStateProcessorStep, state-only.)"""
+
+    def __call__(self, transition: EnvTransition) -> EnvTransition:
+        transition = transition.copy()
+        observation = transition.get(TransitionKey.OBSERVATION, {}) or {}
+        state = observation.get(OBS_STATE)
+        if state is not None:
+            comp = dict(transition.get(TransitionKey.COMPLEMENTARY_DATA, {}) or {})
+            comp["skill_decoder_state"] = state.clone() if isinstance(state, torch.Tensor) else state
+            transition[TransitionKey.COMPLEMENTARY_DATA] = comp
+        return transition
+
+    def transform_features(
+        self, features: dict[Any, dict[str, Any]]
+    ) -> dict[Any, dict[str, Any]]:
+        return features
+
+    def get_config(self) -> dict[str, Any]:
+        return {}
 
 
 def skill_expert_batch_to_transition(batch: dict[str, Any]) -> EnvTransition:
@@ -89,6 +122,9 @@ def make_skill_expert_pre_post_processors(
     input_steps: list[ProcessorStep] = [
         RenameObservationsProcessorStep(rename_map={}),
         AddBatchDimensionProcessorStep(),
+        # Snapshot raw observation.state → skill_decoder_state BEFORE normalization (FSQ terminator
+        # wants raw; it normalizes internally). Prevents the double-normalization bug in co-training.
+        SkillExpertPreserveRawStateProcessorStep(),
         NormalizerProcessorStep(
             features={**config.input_features, **config.output_features},
             norm_map=config.normalization_mapping,  # VISUAL=IDENTITY ([0,1]), STATE/ACTION=QUANTILES

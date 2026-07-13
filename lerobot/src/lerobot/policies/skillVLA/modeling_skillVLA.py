@@ -2003,8 +2003,13 @@ class SkillVLAPolicy(PI05Policy):
                 raise ValueError("train_terminator=True needs the camera image in the batch "
                                  f"({OBS_IMAGES}.image for use_third, else {OBS_IMAGES}.wrist_image).")
             true_code = batch["skill_code_true"].view(-1).long().clamp(0, self.stage1_config.skill_vocab_size - 1)
+            # RAW state (skill_decoder_state, snapshotted pre-normalization by the processor) — the FSQ
+            # terminator normalizes internally with its own min/max; feeding the already quantile-
+            # normalized OBS_STATE would double-normalize and diverge from closed-loop eval (which uses
+            # raw skill_decoder_state). Images are IDENTITY-normalized so `primary` needs no raw snapshot.
+            raw_state = batch.get("skill_decoder_state", batch[OBS_STATE])
             prog_pred, term_logits = self.model.terminator_predict(
-                true_code, batch[OBS_STATE], primary,
+                true_code, raw_state, primary,
                 dino_tokens_wrist=(img_wrist if use_wrist else None))  # None unless a dual (use_wrist) FSQ
             ds = batch["skill_ds"].float().view(-1).to(prog_pred.device)
             de = batch["skill_de"].float().view(-1).to(prog_pred.device)
