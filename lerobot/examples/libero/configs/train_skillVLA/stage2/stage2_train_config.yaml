@@ -91,7 +91,7 @@ lora_cond_bridge: true            # ③
 # 필요 이유: z(125코드)가 1000+모션을 커버하는 aliasing 하에서 잔차는 작은 정밀화가 아니라 큰 탈모호화 —
 # 얼린 expert의 반응 함수에 상류(②③)만으로 끼워 맞추는 것으로는 표현력 상한이 낮음. FT에서는 ②③과 함께
 # 동결(conduit 고정; expert base는 연결 배치가 얼린 ④를 통과하며 적응). run name엔 L 3번째 문자 (Lttt).
-lora_expert: true
+lora_expert: false
 lora_rank: 8                      # 공유 hyperparam (rank/alpha/dropout/targets — 어댑터 공통; stage3의 ①도 상속)
                                   # (r16은 flow 정체 처방이었는데 진범이 .base 랜덤로드 버그로 판명 → 기본 8 복귀)
 lora_alpha: auto                  # auto = 2×rank (rank만 바꿔도 effective scale alpha/r=2 자동 유지); 숫자면 명시값
@@ -133,18 +133,18 @@ terminator_end_pos_weight: 1.0
 track_param_drift: true
 
 # ── Run naming ────────────────────────────────────────────────
-exp: ""                                        # optional run-name suffix (blank = none)
+exp: "batch384"                                # optional run-name suffix (blank = none)
 
 
 # ── Optimization ──────────────────────────────────────────────
-batch_size: 16
-num_workers: 4
-num_gpus: 1
+batch_size: 192 # 64 # 16
+num_workers: 2 # 4
+num_gpus: 2 # 1
 lr_base: 2.5e-05                             # effective base lr = lr_base * num_gpus (VLM + vision use this)
 expert_lr_scale: 1.0                         # action expert(gemma_expert + action/time proj) LR 배수
 cond_lr_scale: 1.0                           # cond side(cond_encoder + image/state proj) LR 배수
 steps: 50000
-save_freq: 10000
+save_freq: 2500
 
 
 # ── wandb ─────────────────────────────────────────────────────
@@ -152,7 +152,7 @@ wandb_enable: true
 wandb_project: VLA_stage2
 
 # ── Slurm (partition/qos/nodelist/exclude_nodes come from configs/global_config.yaml) ──
-train_gres: gpu:1
+train_gres: gpu:2 # gpu:1
 train_cpus_per_task: 16
-train_mem: 128G
+train_mem: 256G # 128G
 train_time: "48:00:00"

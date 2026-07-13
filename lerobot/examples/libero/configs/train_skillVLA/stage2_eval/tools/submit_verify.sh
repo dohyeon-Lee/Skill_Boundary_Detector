@@ -41,6 +41,7 @@ out = {
     "MODEL_TAG": f"{model_dir}_{ckpt}",
     "SOURCE": cfg.get("source", "synthetic"), "CODES": cfg.get("codes", "0,31,62,93,124"),
     "NUM_STEPS": cfg.get("num_steps", 10), "DTYPE": cfg.get("dtype", "asis"),
+    "ADAPTER_PROBES": str(bool(cfg.get("adapter_probes", True))).lower(),
     "V_GRES": cfg.get("verify_gres", "gpu:1"), "V_CPUS": cfg.get("verify_cpus_per_task", 8),
     "V_MEM": cfg.get("verify_mem", "32G"), "V_TIME": cfg.get("verify_time", "0:20:00"),
     "V_PARTITION": part, "V_QOS": str(gc.get("train_qos", "base_qos")).strip(),
@@ -76,7 +77,7 @@ SBATCH_ARGS=(
 
 # env carried to the job via --export=ALL (slurm default).
 STAGE2_PATH="${STAGE2_PATH}" STAGE1_PATH="${STAGE1_PATH}" RAW_DATASET_DIR="${RAW_DATASET_DIR}" \
-SOURCE="${SOURCE}" CODES="${CODES}" NUM_STEPS="${NUM_STEPS}" DTYPE="${DTYPE}" PROJECT_ROOT="${PROJECT_ROOT}" \
+SOURCE="${SOURCE}" CODES="${CODES}" NUM_STEPS="${NUM_STEPS}" DTYPE="${DTYPE}" ADAPTER_PROBES="${ADAPTER_PROBES}" PROJECT_ROOT="${PROJECT_ROOT}" \
 TOOLS_DIR="${HERE}" RESULT_DIR="${RESULT_DIR}" \
   sbatch --job-name="VSAeq" \
          --output="${HERE}/logs/%x_%j.out" --error="${HERE}/logs/%x_%j.err" \

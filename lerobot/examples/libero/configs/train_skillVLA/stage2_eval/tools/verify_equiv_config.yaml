@@ -6,15 +6,16 @@
 # 제출: ./submit_verify.sh   (stage1 부모는 아래 체크포인트 config.json의 stage1_checkpoint_path에서 자동)
 
 # ── 평가할 stage2 모델 (skillVLA_stage2 아래 폴더명) ──
-model_dir: FSQ555_dino8_both_1000_siglip_015000_state__s2_Lttr8lr10sv50
-checkpoint: "020000"
+model_dir: FSQ555_dino8_both_1000_siglip_015000_state__s2_Ltttr8lr10sv50vf
+checkpoint: "010000"
 
 # ── 테스트 입력 ──
-source: synthetic          # synthetic(권장; 동일 랜덤텐서 → 순수 forward 동치) | dataset(실제 obs)
+source: dataset            # dataset(실제 Stage-2 관측; raw_dataset_dir는 아래 빈칸이면 ckpt에서 자동 유도)
 raw_dataset_dir: ""        # source=dataset일 때 LeRobotDataset root (빈칸 → ckpt config에서 자동 유도)
 codes: "0,31,62,93,124"    # 스윕할 skill 코드 (양쪽에 동일 주입)
 num_steps: 10              # flow-matching 적분 스텝 (양쪽 강제 동일)
-dtype: fp32 # asis                # asis(체크포인트 dtype) | fp32(양쪽 float32 강제 → bf16 반올림 제거해 구조적 차이 격리)
+dtype: asis                # asis(실제 eval dtype) | fp32(반올림 제거한 구조적 동치 확인)
+adapter_probes: true       # VLM-severed 상태에서 ③ only / ④ only / ③+④가 VSA base를 움직이는 양 측정
 
 # ── Slurm (partition/qos/nodelist/exclude는 configs/global_config.yaml에서 자동) ──
 verify_gres: gpu:1

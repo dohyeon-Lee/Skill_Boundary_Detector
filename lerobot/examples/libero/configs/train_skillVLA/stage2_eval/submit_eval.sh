@@ -121,10 +121,15 @@ elif [ -n "${MODELS_JSON:-}" ]; then
       i=$((i + 1))
     done <<< "${LABELS}"
   done <<< "${CHUNKS}"
-  echo "  mode     : sbatch --array 0-$((i - 1)) (models=${N_MODELS} × chunks=${CHUNK_N}, chunk-major, ≤${EVAL_NUM_GPUS} GPUs)"
+  # `%N` is Slurm's actual array concurrency limiter.  The chunk calculation normally
+  # keeps i ≤ EVAL_NUM_GPUS, but when there are more panels/models than the GPU budget
+  # CHUNK_N is clamped to one and i can exceed it; without this suffix all array tasks
+  # start at once and over-allocate GPUs.
+  ARRAY_SPEC="0-$((i - 1))%${EVAL_NUM_GPUS:-1}"
+  echo "  mode     : sbatch --array ${ARRAY_SPEC} (models=${N_MODELS} × chunks=${CHUNK_N}, chunk-major, ≤${EVAL_NUM_GPUS} GPUs)"
   STAGE2_EVAL_DIR="${SCRIPT_DIR}" STAGE2_EVAL_CONFIG="${CONFIG_PATH}" \
     EVAL_FANOUT="${EVAL_FANOUT}" TASKS_TOTAL="${TASKS_TOTAL}" \
-    sbatch --job-name="S2eval" --array="0-$((i - 1))" \
+    sbatch --job-name="S2eval" --array="${ARRAY_SPEC}" \
            --output=logs/%x_%A_%a.out --error=logs/%x_%A_%a.err \
            "${SBATCH_ARGS[@]}" "${SRC_DIR}/eval.sbatch"
 elif [ "${EVAL_NUM_GPUS:-1}" -le 1 ]; then
@@ -146,10 +151,12 @@ else
     echo "    [_$i] ${TAG}: task_ids=${CHUNK}"
     i=$((i + 1))
   done <<< "${CHUNKS}"
-  echo "  mode     : sbatch --array 0-$((i - 1)) (task-split, 1 GPU each)"
+  # Keep the GPU budget an enforced Slurm limit, rather than only a chunking hint.
+  ARRAY_SPEC="0-$((i - 1))%${EVAL_NUM_GPUS:-1}"
+  echo "  mode     : sbatch --array ${ARRAY_SPEC} (task-split, 1 GPU each, ≤${EVAL_NUM_GPUS} GPUs)"
   STAGE2_EVAL_DIR="${SCRIPT_DIR}" STAGE2_EVAL_CONFIG="${CONFIG_PATH}" \
     EVAL_FANOUT="${EVAL_FANOUT}" TASKS_TOTAL="${TASKS_TOTAL}" \
-    sbatch --job-name="S2eval" --array="0-$((i - 1))" \
+    sbatch --job-name="S2eval" --array="${ARRAY_SPEC}" \
            --output=logs/%x_%A_%a.out --error=logs/%x_%A_%a.err \
            "${SBATCH_ARGS[@]}" "${SRC_DIR}/eval.sbatch"
 fi
