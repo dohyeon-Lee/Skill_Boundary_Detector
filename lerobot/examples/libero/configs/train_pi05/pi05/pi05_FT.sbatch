@@ -31,11 +31,8 @@ eval "$("${BOOTSTRAP_PYTHON}" "${CONFIG_PY}" --config "${CONFIG_PATH}" --shell)"
 
 cd "${LEROBOT_ROOT}"
 source "${PROJECT_ROOT}/.venv/bin/activate"
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/runtime_env.sh"
 
-export WANDB_CACHE_DIR="${WANDB_CACHE_DIR:-${HOME}/.wandb_cache}"
-export WANDB_DATA_DIR="${WANDB_DATA_DIR:-${HOME}/.wandb_data}"
-mkdir -p "${WANDB_CACHE_DIR}" "${WANDB_DATA_DIR}"
-export WANDB_DISABLE_SYMLINKS=true
 
 echo "START pi05 FT"
 echo "Node     : ${SLURMD_NODENAME:-local}"

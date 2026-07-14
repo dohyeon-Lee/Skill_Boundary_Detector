@@ -24,6 +24,7 @@ eval "$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/attn_viz_config.py" --config "${CONFIG
 
 cd "${LEROBOT_ROOT}"
 source "${PROJECT_ROOT}/.venv/bin/activate"
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/runtime_env.sh"
 unset LD_LIBRARY_PATH
 
 echo "START Stage-2 VLM attn_viz"

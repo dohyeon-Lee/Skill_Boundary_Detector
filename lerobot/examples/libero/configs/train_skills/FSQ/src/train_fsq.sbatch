@@ -42,19 +42,16 @@ fi
 
 cd "${LEROBOT_ROOT}"
 source "${PROJECT_ROOT}/.venv/bin/activate"
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/runtime_env.sh"
 export LD_LIBRARY_PATH=""
 # Reduce CUDA fragmentation: activation tensor sizes vary per batch (max skill length).
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-
-export WANDB_CACHE_DIR=${WANDB_CACHE_DIR:-${PROJECT_ROOT}/../.wandb_cache}
-export WANDB_DATA_DIR=${WANDB_DATA_DIR:-${PROJECT_ROOT}/../.wandb_data}
-mkdir -p "${WANDB_CACHE_DIR}" "${WANDB_DATA_DIR}"
-export WANDB_DISABLE_SYMLINKS=true
 
 echo "START FSQ TRAIN"
 echo "Node       : ${SLURMD_NODENAME:-local}"
 echo "Inputs     : ${FSQ_INPUTS_DIR}"
 echo "Output     : ${FSQ_OUTPUT_DIR}"
+echo "HF cache   : ${HF_HOME}"
 nvidia-smi
 
 if [ ! -d "${SKILLSET_DIR}/skills" ]; then
@@ -81,7 +78,11 @@ cat > "${FSQ_OUTPUT_DIR}/fsq_meta.json" <<JSON
 {
   "dp_run_name": "${DP_POLICY}",
   "dp_checkpoint": "${DP_CHECKPOINT}",
+  "skillset_boundary_threshold_mode": "${SKILLSET_BOUNDARY_THRESHOLD_MODE}",
   "terminator_arch": "${FSQ_TERMINATOR_ARCH}",
+  "terminator_layers": ${FSQ_TERMINATOR_LAYERS},
+  "terminator_heads": ${FSQ_TERMINATOR_HEADS},
+  "state_cond_mode": "${FSQ_STATE_COND_MODE}",
   "vision_backbone": "${FSQ_VISION_BACKBONE}",
   "freeze_vision_encoder": ${FSQ_FREEZE_VISION_ENCODER},
   "encoder_input_mode": "${FSQ_ENCODER_INPUT_MODE}"
@@ -127,6 +128,8 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     --n_control               "${FSQ_N_CONTROL}" \
     --encoder_input_mode      "${FSQ_ENCODER_INPUT_MODE}" \
     --terminator_arch         "${FSQ_TERMINATOR_ARCH}" \
+    --image_encoder_layers    "${FSQ_TERMINATOR_LAYERS}" \
+    --image_encoder_heads     "${FSQ_TERMINATOR_HEADS}" \
     --vision_backbone         "${FSQ_VISION_BACKBONE}" \
     "${VISION_FREEZE_ARG[@]}" \
     --dino_model_path         "${FSQ_DINO_MODEL_PATH}" \

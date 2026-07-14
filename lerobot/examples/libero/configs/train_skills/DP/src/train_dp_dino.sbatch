@@ -8,7 +8,7 @@
 #   DP policy    : {project_root}/outputs/DP/{dp_policy_name}
 #   checkpoint   : {project_root}/outputs/DP/{dp_policy_name}/checkpoints/{dp_checkpoint}/pretrained_model
 #
-# Train Diffusion Policy (resnet: raw frames | state: proprioceptive-only).
+# Train state-history Diffusion Policy (proprioceptive-only; no image input).
 #
 # Submit through ../submit_train_dp_dino.sh so yaml Slurm settings resolve first.
 #
@@ -16,7 +16,7 @@
 #   TRAIN_DATA=libero_90_full_10 sbatch train_dp_dino.sbatch
 #   TRAIN_SKILLS_CONFIG=/path/to/train_skills_config.yaml sbatch train_dp_dino.sbatch
 #
-#SBATCH --job-name=DP_DINO_train
+#SBATCH --job-name=DP_train
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
@@ -43,13 +43,10 @@ fi
 
 cd "${LEROBOT_ROOT}"
 source "${PROJECT_ROOT}/.venv/bin/activate"
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/runtime_env.sh"
 
-export WANDB_CACHE_DIR=${WANDB_CACHE_DIR:-${PROJECT_ROOT}/../.wandb_cache}
-export WANDB_DATA_DIR=${WANDB_DATA_DIR:-${PROJECT_ROOT}/../.wandb_data}
-mkdir -p "${WANDB_CACHE_DIR}" "${WANDB_DATA_DIR}"
-export WANDB_DISABLE_SYMLINKS=true
 
-echo "START DP DINO TRAIN"
+echo "START DP TRAIN"
 echo "Node       : ${SLURMD_NODENAME:-local}"
 nvidia-smi
 
@@ -83,28 +80,13 @@ fi
 
 WANDB_ENABLE=${DP_WANDB_ENABLE}
 
-# Vision encoder branch: "resnet" = original lerobot Diffusion Policy (ResNet on raw frames;
-# image_features come from the dataset's camera keys). "state" = proprioceptive-only (no vision).
 POLICY_ARGS=(
   --policy.n_obs_steps="${DP_N_OBS_STEPS}"
   --policy.n_action_steps="${DP_N_ACTION_STEPS}"
   --policy.horizon="${DP_HORIZON}"
+  --policy.state_only=true
 )
-if [ "${DP_VISION}" = "resnet" ]; then
-  echo "DP train (vision=resnet, ORIGINAL Diffusion Policy — no DINO)"
-  echo "  backbone     : ${DP_VISION_BACKBONE}"
-  POLICY_ARGS+=(
-    --policy.vision_backbone="${DP_VISION_BACKBONE}"
-  )
-elif [ "${DP_VISION}" = "state" ]; then
-  echo "DP train (vision=state, proprioceptive-only — no image/DINO input)"
-  POLICY_ARGS+=(
-    --policy.state_only=true
-  )
-else
-  echo "dp_vision must be 'resnet' or 'state' (got '${DP_VISION}') — DINO encoder 옵션은 은퇴함." >&2
-  exit 1
-fi
+echo "DP train (state-history, proprioceptive-only)"
 echo "  dataset      : ${TARGET_DATASET}"
 echo "  output       : ${DP_OUTPUT_DIR}"
 echo "  config       : ${TRAIN_CONFIG_PATH}"

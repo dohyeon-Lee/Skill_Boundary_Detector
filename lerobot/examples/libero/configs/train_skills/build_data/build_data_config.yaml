@@ -9,24 +9,24 @@
 target_dataset: libero_90_full_full
 
 # Which trained DP to segment with — folder name under outputs/DP/ (ls there for choices).
-# The DP-DINO grid below must match this DP (dino{grid}); for resnet/state DPs the grid is unused.
 dp_run_name: libero_90_full_full_state_obs20
 dp_checkpoint: "100000"
-
-# DINO grid below belongs only to a DINO-based DP segmenter.
-dino_source_dataset: libero_90_full_full
-dino_patch_grid: 8                  # DP grid (matches dp_run_name)
-dino_copy_mode: hardlink
-dino_overwrite_prepared: false
 
 # Skillset output roots.
 fsq_dataset_root: FSQ_dataset
 fsq_inputs_name: FSQ_inputs
 skillset_name: skillset
 
+# Boundary threshold: episode_mean uses each episode's own smoothed-divergence
+# mean (legacy). global_mean first collects every episode's curve, computes one
+# replan-point-weighted global mean, then segments every episode against it.
+# Global output is isolated under a `_globalmean` segment directory so it never
+# resumes from or overwrites a legacy skillset.
+skillset_boundary_threshold_mode: global_mean   # episode_mean | global_mean
+
 # ── Slurm for skillset generation (partition/qos from global_config) ──
 slurm_gres: gpu:1
-skillset_wandb_project: Skill_dataset
+skillset_wandb_project: ""
 skillset_tasks_per_job: 5
 skillset_cpus_per_task: 4
 skillset_mem: 32G

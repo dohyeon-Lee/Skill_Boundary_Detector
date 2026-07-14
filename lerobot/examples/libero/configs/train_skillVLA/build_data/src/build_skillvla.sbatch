@@ -35,6 +35,7 @@ fi
 
 cd "${LEROBOT_ROOT}"
 source "${PROJECT_ROOT}/.venv/bin/activate"
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/runtime_env.sh"
 export LD_LIBRARY_PATH=""
 
 echo "START SKILLVLA BUILD"

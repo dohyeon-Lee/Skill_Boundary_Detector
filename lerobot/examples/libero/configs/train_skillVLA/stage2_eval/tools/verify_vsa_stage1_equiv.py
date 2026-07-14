@@ -24,7 +24,7 @@ the VSA/base output using the *same* inputs and noise.  They do not test languag
 isolate whether either adapter can perturb the Stage-1 motor even after the real VLM is cut.
 
 Run on a GPU node, e.g.:
-  PROJECT=/scratch/mdorazi/Skill_Boundary_Detector
+  PROJECT=/path/to/Skill_Boundary_Detector
   PYTHONPATH=$PROJECT/lerobot/src:$PROJECT/lerobot/examples/libero \
     $PROJECT/.venv/bin/python tools/verify_vsa_stage1_equiv.py \
   --stage2 $PROJECT/outputs_filtered/skillVLA_stage2/FSQ555_dino8_both_1000_siglip_015000_state__s2_Ltttr8lr10sv50vf/checkpoints/010000/pretrained_model \

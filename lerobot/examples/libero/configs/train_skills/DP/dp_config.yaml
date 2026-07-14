@@ -8,20 +8,17 @@
 target_dataset: libero_90_full_full
 
 
-# ── DP encoder / temporal ──
-# dp_vision: resnet = ORIGINAL lerobot Diffusion Policy on raw frames (base encoder).
-#            state  = proprioceptive-only: observation.state history, NO vision.
-# (DINO-token encoder 옵션은 은퇴 — DINO precompute 완전 제거.)
-dp_vision: state   # resnet | state
+# ── State-history DP temporal settings ──
+# Skill-boundary DP input is always proprioceptive `observation.state` history; no image input.
 dp_n_obs_steps: 20                          # observation history length
 dp_horizon: 24                              # UNet horizon (multiple of 2^len(down_dims)=8; > n_obs)
 # dp_n_action_steps: auto = horizon - n_obs_steps + 1 (override only if needed)
 
-# Folder name (also keys the skillset's seg_ dir). {dp_vision_tag}="dino{grid}"/"resnet"/"state".
-dp_policy_name: "{target_dataset}_{dp_vision_tag}_obs{dp_n_obs_steps}"
+# Folder name (also keys the skillset's seg_ dir).
+dp_policy_name: "{target_dataset}_state_obs{dp_n_obs_steps}"
 dp_checkpoint: "100000"
 
-train_DP: false   # false: only prepare target DINO; skip submitting DP training
+train_DP: false   # false: skip submitting DP training
 dp_base_config: examples/libero/configs/train_skills/DP/src/train_dp_libero_90.yaml
 dp_steps: 100000
 dp_save_freq: 25000

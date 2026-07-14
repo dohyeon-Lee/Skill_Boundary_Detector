@@ -2,23 +2,13 @@
 # Inputs:
 #   dataset name : TRAIN_DATA or target_dataset in ../train_skills_config.yaml
 #   dataset path : {project_root}/{dataset_root}/{target_dataset}
-#   frame DINO   : {project_root}/{dataset_root}/FSQ_dataset/{target_dataset}/DINO/pg{dino_patch_grid}
 # Reference models/configs:
 #   base DP cfg  : {project_root}/lerobot/{dp_base_config}
-#   DINO source  : {project_root}/{dataset_root}/{dino_source_dataset}_DINO/pg{dino_patch_grid}
 # Outputs:
-#   prepared DINO: {project_root}/{dataset_root}/FSQ_dataset/{target_dataset}/DINO/pg{dino_patch_grid}
 #   DP policy    : {project_root}/outputs/DP/{dp_policy_name}
 #   checkpoint   : {project_root}/outputs/DP/{dp_policy_name}/checkpoints/{dp_checkpoint}/pretrained_model
 # Skip DP train:
 #   train_DP: false, or checkpoint already exists at the checkpoint path above
-#
-# DINO copy only, without submitting DP training:
-#   cd {project_root}/lerobot/examples/libero/configs/train_skills/DP
-#   DINO_SOURCE_DATASET=libero_90_full_full \
-#       --config ../train_skills_config.yaml
-#   Use DINO_SOURCE_DATASET only when the source DINO directory should be
-#   {dataset_root}/{DINO_SOURCE_DATASET}_DINO instead of the inferred base name.
 #
 # Submit train_dp_dino.sbatch using Slurm values from train_skills_config.yaml.
 
@@ -62,7 +52,7 @@ fi
 cd "${SCRIPT_DIR}"
 mkdir -p logs
 
-echo "Submit DP train (vision=${DP_VISION})"
+echo "Submit state-history DP train"
 echo "  dataset : ${TARGET_DATASET}"
 echo "  output  : ${DP_OUTPUT_DIR}"
 echo "  slurm   : partition=${DP_PARTITION} qos=${DP_QOS} gres=${DP_GRES}"

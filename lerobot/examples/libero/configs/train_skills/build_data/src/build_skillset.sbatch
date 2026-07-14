@@ -2,13 +2,12 @@
 # Inputs:
 #   dataset name : TRAIN_DATA or target_dataset in train_skills_config.yaml
 #   dataset path : {project_root}/{dataset_root}/{target_dataset}
-#   frame DINO   : {project_root}/{dataset_root}/FSQ_dataset/{target_dataset}/DINO/pg{dino_patch_grid}
 # Reference models:
 #   DP policy    : {project_root}/outputs/DP/{dp_policy_name}/checkpoints/{dp_checkpoint}/pretrained_model
 # Outputs:
 #   skillset     : {project_root}/{dataset_root}/FSQ_dataset/{target_dataset}/FSQ_inputs/seg_{dp}_ck{ckpt}/skillset
 #
-# Build skillset data by segmenting demonstrations with a trained DINO-DP.
+# Build skillset data by segmenting demonstrations with a trained DP.
 #SBATCH --job-name=DP_skill
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
@@ -36,10 +35,8 @@ fi
 
 cd "${LEROBOT_ROOT}"
 source "${PROJECT_ROOT}/.venv/bin/activate"
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/runtime_env.sh"
 
-export WANDB_CACHE_DIR=${WANDB_CACHE_DIR:-${PROJECT_ROOT}/../.wandb_cache}
-export WANDB_DATA_DIR=${WANDB_DATA_DIR:-${PROJECT_ROOT}/../.wandb_data}
-mkdir -p "${WANDB_CACHE_DIR}" "${WANDB_DATA_DIR}"
 
 echo "START SKILLSET JOB"
 echo "Node          : ${SLURMD_NODENAME:-local}"
@@ -96,6 +93,7 @@ echo "  raw data   : ${RAW_DATASET_DIR}"
 echo "  policy     : ${DP_POLICY_PATH}"
 echo "  output     : ${SKILLSET_DIR}"
 echo "  task ids   :${TASK_IDS}"
+echo "  threshold  : ${SKILLSET_BOUNDARY_THRESHOLD_MODE}"
 
 # Curves-only backfill (CURVES_ONLY=true from submit_build_data.sh): regenerate per-episode
 # multimodality curves for an EXISTING skillset; build_skill_dataset leaves skills untouched and only
@@ -104,6 +102,12 @@ CURVES_ARG=()
 if [ "${CURVES_ONLY:-false}" = "true" ]; then
   CURVES_ARG=(--curves_only)
   echo "  mode       : CURVES_ONLY (skills unchanged, dumping curves only)"
+fi
+
+CACHED_CURVES_ARG=()
+if [ "${USE_CACHED_CURVES:-false}" = "true" ]; then
+  CACHED_CURVES_ARG=(--use_cached_curves)
+  echo "  source     : cached curves (no DP/VF inference)"
 fi
 
 PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
@@ -121,7 +125,10 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     --n_gmm_components "${SKILLSET_N_GMM}" \
     --smooth_window "${SKILLSET_SMOOTH_WINDOW}" \
     --savgol_polyorder "${SKILLSET_SAVGOL_POLYORDER}" \
+    --boundary_threshold_mode "${SKILLSET_BOUNDARY_THRESHOLD_MODE}" \
+    --global_threshold_path "${SKILLSET_GLOBAL_THRESHOLD_PATH}" \
     --resume \
+    ${CACHED_CURVES_ARG[@]+"${CACHED_CURVES_ARG[@]}"} \
     --wandb_project "${SKILLSET_WANDB_PROJECT}" \
     --wandb_run_name "${WANDB_RUN_NAME}"
 

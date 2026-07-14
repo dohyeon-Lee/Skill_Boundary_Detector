@@ -34,11 +34,11 @@ eval "$("${BOOTSTRAP_PYTHON}" "${EVAL_SRC_DIR}/eval_config.py" --config "${EVAL_
 # Optionally evaluate a DIFFERENT DP than the shared config points at (give the DP folder name).
 [ -n "${EVAL_DP_RUN_NAME}" ]   && export DP_RUN_NAME="${EVAL_DP_RUN_NAME}"
 [ -n "${EVAL_DP_CHECKPOINT}" ] && export DP_CHECKPOINT="${EVAL_DP_CHECKPOINT}"
-# ── Auto-build (sbatch mode): if the skillset / DINO tokens this eval needs aren't built yet, submit
-# build_data first (for the eval's chosen DP) and make the eval wait on it. CRITICAL: we resolve ONLY
+# ── Auto-build (sbatch mode): if the skillset this eval needs is not built yet, submit build_data
+# first (for the eval's chosen DP) and make the eval wait on it. CRITICAL: we resolve ONLY
 # the few paths checked here (in a subshell) and do NOT export the eval's full config before calling
-# build_data — otherwise eval-side values (e.g. an inferred dino_source_dataset) would leak via env and
-# override build_data's OWN yaml (get_value prefers env over yaml).
+# build_data, so evaluation-only overrides cannot leak through the environment and replace the
+# build-data configuration (get_value prefers env over yaml).
 DEP_ARG=()
 # DP eval needs eval_dp_run_name's skillset; FSQ eval reads its OWN skillset (recorded in fsq_meta.json),
 # which already exists since the FSQ trained on it. So only the DP eval can require an auto-build.
@@ -58,11 +58,11 @@ if [ "${NEED_BUILD}" = "true" ]; then
   echo "DP eval skillset not built yet → submitting build_data first (skillset only)"
   echo "  DP   : ${EVAL_DP_RUN_NAME:-<build_data_config default>}  (skillset MISSING)"
   # Strip eval-side config vars so build_data reads its own build_data_config.yaml; pass only the DP
-  # target. BUILD_SKILLSET_ONLY=true: the DP skill-boundary eval reads skills + curves only and NO
-  # DINO tokens, so skip the (slow, CPU/IO-bound) token extraction. The FSQ eval's own tokens are not
-  # built here at all — they already exist from FSQ training and eval.sbatch reads them via fsq_meta.
-  BUILD_OUT=$(env -u DINO_SOURCE_DATASET -u TARGET_DATASET \
+  # target. BUILD_SKILLSET_ONLY=true preserves the caller's intent; current build_data produces only
+  # the skillset. FSQ evaluation decodes selected raw frames live from its recorded skillset.
+  BUILD_OUT=$(env -u TARGET_DATASET \
                   DP_RUN_NAME="${EVAL_DP_RUN_NAME}" DP_CHECKPOINT="${EVAL_DP_CHECKPOINT}" \
+                  SKILLSET_BOUNDARY_THRESHOLD_MODE="${SKILLSET_BOUNDARY_THRESHOLD_MODE}" \
                   BUILD_SKILLSET_ONLY=true PRINT_LAST_JOB=1 \
     bash "${SCRIPT_DIR}/../build_data/submit_build_data.sh") || { echo "build_data submission failed" >&2; exit 1; }
   echo "${BUILD_OUT}"

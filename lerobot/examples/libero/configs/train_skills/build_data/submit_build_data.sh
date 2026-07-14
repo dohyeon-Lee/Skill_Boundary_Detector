@@ -2,8 +2,6 @@
 # Inputs:
 #   dataset name : TRAIN_DATA or target_dataset in ../train_skills_config.yaml
 #   dataset path : {project_root}/{dataset_root}/{target_dataset}
-#   frame DINO   : {project_root}/{dataset_root}/FSQ_dataset/{target_dataset}/DINO/pg{dino_patch_grid}
-#                  (없으면 {dataset_root}/{dataset}_DINO/pg*에서 자동 준비 — DP 학습 불필요)
 #   skillset     : {project_root}/{dataset_root}/FSQ_dataset/{target_dataset}/FSQ_inputs/seg_{dp}_ck{ckpt}/skillset
 # Reference models:
 #   DP policy    : {project_root}/outputs/DP/{dp_policy_name}/checkpoints/{dp_checkpoint}/pretrained_model
@@ -36,13 +34,8 @@ else
   eval "$("${BOOTSTRAP_PYTHON}" "${COMMON_SRC_DIR}/train_skills_config.py" --config "${CONFIG_PATH}" --shell)"
 fi
 
-# FSQ 학습/평가는 이제 DINO를 ONLINE으로 계산한다 (train_FSQ/fsq_eval이 raw mp4에서 warm-pass —
-# 디스크 precompute 완전 제거). 따라서 이 빌드는 FSQ용 per-frame DINO 스테이징도, 토큰 materialize도
-# 하지 않는다 — skillset만 만들면 끝. (구 MATERIALIZE_TOKENS/extract_skill_tokens 단계 은퇴.)
-#   BUILD_SKILLSET_ONLY=true → 의미 유지 (skillset만; 어차피 그 외 산출물이 없어졌으므로 사실상 동일).
-
-# (DP DINO 스테이징 은퇴 — DP는 resnet(raw frames) / state(proprioceptive)만. dino 인코더 옵션 제거.
-#  skill segmentation은 state DP에서 observation.state만 소비 → per-frame DINO 준비가 불필요.)
+# This build produces only the state-DP skillset. It neither stages visual features nor decodes
+# episode videos; FSQ handles its own raw-frame vision inputs later during FSQ training/evaluation.
 
 cd "${SCRIPT_DIR}"
 mkdir -p logs "${FSQ_INPUTS_DIR}"
@@ -86,7 +79,7 @@ PY
   [ -n "${SLURM_NODELIST}" ]      && CURVES_ARGS+=(--nodelist="${SLURM_NODELIST}")
   [ -n "${SLURM_EXCLUDE_NODES}" ] && CURVES_ARGS+=(--exclude="${SLURM_EXCLUDE_NODES}")
   echo "CURVES_ONLY backfill (skills unchanged) → ${SKILLSET_DIR}/curves"
-  echo "  DP    : ${DP_POLICY} ck${DP_CHECKPOINT}  (vision=${DP_VISION})"
+  echo "  DP    : ${DP_POLICY} ck${DP_CHECKPOINT}  (state-history)"
   echo "  array : 0-${ARRAY_END}  (${TOTAL_TASKS} tasks)"
   CURVES_JOB=$(CURVES_ONLY=true TRAIN_SKILLS_CONFIG="${CONFIG_PATH}" TRAIN_DATA="${TARGET_DATASET}" TOTAL_TASKS="${TOTAL_TASKS}" \
     sbatch --parsable "${CURVES_ARGS[@]}" "${BUILD_SRC_DIR}/build_skillset.sbatch")
@@ -95,9 +88,77 @@ PY
   exit 0
 fi
 
-SKILLSET_DEPENDENCY=""
 if [ -f "${SKILLSET_DONE_PATH}" ] && [ -d "${SKILLSET_DIR}/skills" ]; then
   echo "Skillset already complete: ${SKILLSET_DONE_PATH}"
+elif [ "${SKILLSET_BOUNDARY_THRESHOLD_MODE}" = "global_mean" ]; then
+  # A global threshold cannot be computed independently by each task-array shard.
+  # First collect all curves, reduce them to one threshold, then segment the same
+  # task shards from those cached curves without a second DP/VF pass.
+  read -r TOTAL_TASKS EXPECTED_EPISODES < <("${BOOTSTRAP_PYTHON}" - <<PY
+from pathlib import Path
+import pandas as pd
+root = Path("${RAW_DATASET_DIR}") / "meta"
+tasks = pd.read_parquet(root / "tasks.parquet")
+episode_parts = sorted((root / "episodes").rglob("file-*.parquet"))
+episodes = pd.concat([pd.read_parquet(path) for path in episode_parts], ignore_index=True)
+print(int(tasks["task_index"].nunique()), len(episodes))
+PY
+)
+  ARRAY_END=$(( (TOTAL_TASKS + SKILLSET_TASKS_PER_JOB - 1) / SKILLSET_TASKS_PER_JOB - 1 ))
+  ARRAY_ARGS=(
+    --partition="${SLURM_PARTITION}"
+    --qos="${SLURM_QOS}"
+    --gres="${SLURM_GRES}"
+    --cpus-per-task="${SKILLSET_CPUS_PER_TASK}"
+    --mem="${SKILLSET_MEM}"
+    --time="${SKILLSET_TIME}"
+    --array="0-${ARRAY_END}"
+  )
+  [ -n "${SLURM_NODELIST}" ] && ARRAY_ARGS+=(--nodelist="${SLURM_NODELIST}")
+  [ -n "${SLURM_EXCLUDE_NODES}" ] && ARRAY_ARGS+=(--exclude="${SLURM_EXCLUDE_NODES}")
+
+  echo "Global-mean skillset build (two pass)"
+  echo "  skillset      : ${SKILLSET_DIR}"
+  echo "  total episodes: ${EXPECTED_EPISODES}"
+  echo "  array         : 0-${ARRAY_END}"
+  CURVES_JOB=$(CURVES_ONLY=true TRAIN_SKILLS_CONFIG="${CONFIG_PATH}" TRAIN_DATA="${TARGET_DATASET}" TOTAL_TASKS="${TOTAL_TASKS}" \
+    sbatch --parsable "${ARRAY_ARGS[@]}" "${BUILD_SRC_DIR}/build_skillset.sbatch")
+  echo "Curve collection array job: ${CURVES_JOB}"
+
+  REDUCE_ARGS=(
+    --partition="${SLURM_PARTITION}"
+    --qos="${SLURM_QOS}"
+    --gres="${SLURM_GRES}"
+    --cpus-per-task=1
+    --mem=2G
+    --time=00:10:00
+    --dependency="afterok:${CURVES_JOB}"
+  )
+  [ -n "${SLURM_NODELIST}" ] && REDUCE_ARGS+=(--nodelist="${SLURM_NODELIST}")
+  [ -n "${SLURM_EXCLUDE_NODES}" ] && REDUCE_ARGS+=(--exclude="${SLURM_EXCLUDE_NODES}")
+  THRESHOLD_JOB=$(EXPECTED_EPISODES="${EXPECTED_EPISODES}" TRAIN_SKILLS_CONFIG="${CONFIG_PATH}" TRAIN_DATA="${TARGET_DATASET}" \
+    sbatch --parsable "${REDUCE_ARGS[@]}" "${BUILD_SRC_DIR}/compute_global_boundary_threshold.sbatch")
+  echo "Global threshold job: ${THRESHOLD_JOB}"
+
+  SEGMENT_ARGS=("${ARRAY_ARGS[@]}" --dependency="afterok:${THRESHOLD_JOB}")
+  SKILLSET_JOB=$(USE_CACHED_CURVES=true TRAIN_SKILLS_CONFIG="${CONFIG_PATH}" TRAIN_DATA="${TARGET_DATASET}" TOTAL_TASKS="${TOTAL_TASKS}" \
+    sbatch --parsable "${SEGMENT_ARGS[@]}" "${BUILD_SRC_DIR}/build_skillset.sbatch")
+  echo "Cached-curve segmentation array job: ${SKILLSET_JOB}"
+
+  MARK_ARGS=(
+    --partition="${SLURM_PARTITION}"
+    --qos="${SLURM_QOS}"
+    --gres="${SLURM_GRES}"
+    --cpus-per-task=1
+    --mem=2G
+    --time=00:10:00
+    --dependency="afterok:${SKILLSET_JOB}"
+  )
+  [ -n "${SLURM_NODELIST}" ] && MARK_ARGS+=(--nodelist="${SLURM_NODELIST}")
+  [ -n "${SLURM_EXCLUDE_NODES}" ] && MARK_ARGS+=(--exclude="${SLURM_EXCLUDE_NODES}")
+  MARK_JOB=$(TRAIN_SKILLS_CONFIG="${CONFIG_PATH}" TRAIN_DATA="${TARGET_DATASET}" \
+    sbatch --parsable "${MARK_ARGS[@]}" "${BUILD_SRC_DIR}/mark_skillset_complete.sbatch")
+  echo "Skillset marker job: ${MARK_JOB}"
 else
   TOTAL_TASKS=$("${BOOTSTRAP_PYTHON}" - <<PY
 from pathlib import Path
@@ -151,7 +212,6 @@ PY
   MARK_JOB=$(TRAIN_SKILLS_CONFIG="${CONFIG_PATH}" TRAIN_DATA="${TARGET_DATASET}" \
     sbatch --parsable "${MARK_ARGS[@]}" "${BUILD_SRC_DIR}/mark_skillset_complete.sbatch")
   echo "Skillset marker job: ${MARK_JOB}"
-  SKILLSET_DEPENDENCY="--dependency=afterok:${MARK_JOB}"
 fi
 
 # Final job a caller (e.g. submit_eval.sh auto-build) should depend on: the skillset marker

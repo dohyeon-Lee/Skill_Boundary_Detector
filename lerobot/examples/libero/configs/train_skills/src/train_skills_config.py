@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import ast
-import json
 import math
 import os
 import shlex
@@ -113,6 +112,24 @@ def resolve_path(project_root: "Path | str", value: Any, default: str = "") -> s
     return str(p if p.is_absolute() else (Path(project_root) / p))
 
 
+def resolve_skillset_threshold_mode(cfg: dict[str, Any], project_root: Path) -> str:
+    """Read the mode from this module, or inherit build_data's selection.
+
+    The build config is the user-facing source of truth.  FSQ/eval configs omit
+    this key deliberately, so changing only build_data_config.yaml also makes
+    their resolver point at the matching `seg_*` directory.
+    """
+    value = get_value(cfg, "skillset_boundary_threshold_mode", None)
+    if value is None:
+        build_cfg = (
+            project_root / "lerobot" / "examples" / "libero" / "configs"
+            / "train_skills" / "build_data" / "build_data_config.yaml"
+        )
+        if build_cfg.is_file():
+            value = get_value(load_config(build_cfg), "skillset_boundary_threshold_mode", "episode_mean")
+    return str(value if value is not None else "episode_mean").strip().lower()
+
+
 def as_bool(value: Any) -> bool:
     if isinstance(value, bool):
         return value
@@ -137,23 +154,7 @@ def as_levels(value: Any) -> tuple[int, ...]:
     return tuple(int(v) for v in cleaned.split())
 
 
-DINO_VISUAL_BACKBONE = "dinov3_vits16"
 DINO_IMAGE_MODEL_DIR = "dinov3-vits16"
-DINO_FEATURE_TAG = "dinov3_vits16"
-DINO_FEATURE_DIM = 384
-
-
-def infer_source_dataset_name(target_dataset: str) -> str:
-    for base in (
-        "libero_90",
-        "libero_10",
-        "libero_spatial_object",
-        "libero_spatial",
-        "libero_object",
-    ):
-        if target_dataset == base or target_dataset.startswith(base + "_"):
-            return base
-    return target_dataset
 
 
 def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str, Any]:
@@ -170,46 +171,22 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
     fsq_inputs_name = str(get_value(cfg, "fsq_inputs_name", "FSQ_inputs"))
     fsq_inputs_dir = fsq_dataset_root / target_dataset / fsq_inputs_name
 
-    backbone = DINO_VISUAL_BACKBONE
-    dino_feature_tag = DINO_FEATURE_TAG
-    dino_patch_grid = int(get_value(cfg, "dino_patch_grid", 8, env="DINO_PATCH_GRID"))
-    dino_feature_dataset = str(get_value(cfg, "dino_feature_dataset", "{target_dataset}")).format(
-        target_dataset=target_dataset
-    )
-    configured_source_dataset = str(get_value(cfg, "dino_source_dataset", ""))
     raw_dataset_dir = dataset_root / target_dataset
-    inferred_source_dataset = infer_source_dataset_name(target_dataset)
-    info_path = raw_dataset_dir / "meta" / "info.json"
-    if info_path.exists():
-        try:
-            with open(info_path) as f:
-                inferred_source_dataset = str(json.load(f).get("source_dataset", inferred_source_dataset))
-        except Exception:
-            inferred_source_dataset = infer_source_dataset_name(target_dataset)
-    dino_source_dataset = configured_source_dataset or inferred_source_dataset
 
     dp_n_obs_steps = int(get_value(cfg, "dp_n_obs_steps", 10))
     dp_horizon = int(get_value(cfg, "dp_horizon", 16))
     train_dp = as_bool(get_value(cfg, "train_DP", get_value(cfg, "train_dp", True), env="TRAIN_DP"))
-    # Vision encoder: "dino" (default) or "resnet" (original DP). dp_vision_tag is the name tag —
-    # "dino{grid}" for dino (keeps the existing name), bare "resnet" for resnet (which has no DINO
-    # grid). dp_policy_name uses {dp_vision_tag} so a resnet DP never clobbers a dino DP.
-    dp_vision = str(get_value(cfg, "dp_vision", "dino"))
-    dp_vision_tag = f"dino{dino_patch_grid}" if dp_vision == "dino" else dp_vision
+    # DP boundary construction is intentionally state-only. Keeping one input contract prevents
+    # a visual checkpoint from silently reintroducing raw-frame decoding or feature-cache coupling.
     dp_policy_template = str(
         get_value(
             cfg,
             "dp_policy_name",
-            "dp_{target_dataset}_{dp_vision_tag}_obs{dp_n_obs_steps}_horizon{dp_horizon}",
+            "dp_{target_dataset}_state_obs{dp_n_obs_steps}_horizon{dp_horizon}",
         )
     )
     dp_policy = dp_policy_template.format(
         target_dataset=target_dataset,
-        dino_feature_dataset=dino_feature_dataset,
-        dino_feature_tag=dino_feature_tag,
-        dino_patch_grid=dino_patch_grid,
-        dp_vision=dp_vision,
-        dp_vision_tag=dp_vision_tag,
         dp_n_obs_steps=dp_n_obs_steps,
         dp_horizon=dp_horizon,
     )
@@ -219,20 +196,25 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
     _dp_run_name = str(get_value(cfg, "dp_run_name", "")).strip()
     if _dp_run_name:
         dp_policy = _dp_run_name
-        # Infer the DP's vision from its name tag so downstream gates (DINO prepare/check) are
-        # correct even when the DP is referenced only by folder name. A state/resnet DP uses no
-        # DINO, so build_data must not require it.
-        if "_state" in _dp_run_name:
-            dp_vision = "state"
-        elif "_resnet" in _dp_run_name:
-            dp_vision = "resnet"
-        elif "_dino" in _dp_run_name:
-            dp_vision = "dino"
+        if "_state" not in _dp_run_name:
+            raise ValueError(
+                "dp_run_name must identify a state-only checkpoint (expected '_state' in its name), "
+                f"got {_dp_run_name!r}."
+            )
     dp_checkpoint = str(get_value(cfg, "dp_checkpoint", "100000"))
-    # skillset + per-skill DINO tokens are DP-dependent (the boundaries come from the DP),
-    # so key them by DP/checkpoint — a different DP/checkpoint never reuses or clobbers
-    # another's segmentation. Mirrors train_skillVLA's _work/seg_{dp}_ck{ckpt}/.
-    fsq_seg_dir = fsq_inputs_dir / f"seg_{dp_policy}_ck{dp_checkpoint}"
+    # Boundaries are DP/checkpoint-dependent, so different runs never reuse or clobber a skillset.
+    skillset_boundary_threshold_mode = resolve_skillset_threshold_mode(cfg, root)
+    if skillset_boundary_threshold_mode not in {"episode_mean", "global_mean"}:
+        raise ValueError(
+            "skillset_boundary_threshold_mode must be 'episode_mean' or 'global_mean', "
+            f"got {skillset_boundary_threshold_mode!r}."
+        )
+    # Keep the legacy directory for episode_mean. A global threshold produces different
+    # labels, so isolate it instead of allowing --resume to mix both segmentations.
+    skillset_threshold_suffix = (
+        "" if skillset_boundary_threshold_mode == "episode_mean" else "_globalmean"
+    )
+    fsq_seg_dir = fsq_inputs_dir / f"seg_{dp_policy}_ck{dp_checkpoint}{skillset_threshold_suffix}"
 
     fsq_levels = as_levels(get_value(cfg, "fsq_levels", [5, 5, 5]))
     fsq_tag = "fsq" + "".join(str(v) for v in fsq_levels)
@@ -243,6 +225,16 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
     weighted_loss = as_bool(get_value(cfg, "weighted_loss", False))
     weighted_suffix = "_weighted" if weighted_loss else ""
     fsq_terminator_arch = str(get_value(cfg, "fsq_terminator_arch", "small"))
+    if fsq_terminator_arch not in {"small", "cond"}:
+        raise ValueError(f"fsq_terminator_arch must be small|cond, got {fsq_terminator_arch!r}.")
+    fsq_terminator_layers = int(get_value(cfg, "fsq_terminator_layers", 2))
+    fsq_terminator_heads = int(get_value(cfg, "fsq_terminator_heads", 4))
+    if fsq_terminator_layers < 1 or fsq_terminator_heads < 1:
+        raise ValueError("fsq_terminator_layers and fsq_terminator_heads must both be >= 1.")
+    fsq_cond_encoder_variant = str(get_value(cfg, "fsq_cond_encoder_variant", "gemma_300m"))
+    # Depth/head settings are recorded in fsq_meta.json and the checkpoint config, but architecture
+    # alone keeps the user-facing run name concise.
+    fsq_terminator_tag = fsq_terminator_arch
     fsq_vision_backbone = str(get_value(cfg, "fsq_vision_backbone", "dino"))
     fsq_freeze_vision_encoder = as_bool(get_value(cfg, "fsq_freeze_vision_encoder", True))
     fsq_vision_tag = fsq_vision_backbone + ("_frozen" if fsq_freeze_vision_encoder else "_tuned")
@@ -255,30 +247,45 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
     # Preserve the historical zero-grounded name; raw-state runs get an explicit suffix so they can
     # never auto-resume from a checkpoint trained with the other encoder input convention.
     fsq_encoder_input_suffix = "_rawstate" if fsq_encoder_input_mode == "raw_state" else ""
+    fsq_state_cond_mode = str(get_value(cfg, "fsq_state_cond_mode", "state"))
+    if fsq_state_cond_mode not in {"state", "state_skill"}:
+        raise ValueError(
+            "fsq_state_cond_mode must be state|state_skill, "
+            f"got {fsq_state_cond_mode!r}."
+        )
+    # This affects only the VSA action expert; the terminator always receives both state and z_q.
+    # Keep it in every run name so modes cannot accidentally resume from one another.
+    fsq_state_cond_suffix = f"_vsa_{fsq_state_cond_mode}"
     # DP tag for the FSQ run name = the DP run with the dataset prefix stripped
     # (libero_90_full_full_state_obs20 → state_obs20), so the FSQ folder shows WHICH DP's skillset it
-    # was trained on (state_obs20 vs dino8_obs10 …), not just the FSQ's own patch grid.
+    # was trained on (for example state_obs20), not just the FSQ architecture.
     dp_tag = dp_policy[len(target_dataset) + 1:] if dp_policy.startswith(f"{target_dataset}_") else dp_policy
+    if skillset_boundary_threshold_mode == "global_mean":
+        dp_tag += "_global"
     fsq_run_template = str(
         get_value(
             cfg,
             "fsq_run_name",
-            "{target_dataset}_{dp_tag}_{fsq_tag}_{fsq_vision_tag}_{fsq_terminator_arch}"
-            "{fsq_encoder_input_suffix}{weighted_suffix}{fsq_exp_suffix}",
+            "{target_dataset}_{dp_tag}_{fsq_tag}_{fsq_vision_tag}_{fsq_terminator_tag}"
+            "{fsq_encoder_input_suffix}{fsq_state_cond_suffix}{weighted_suffix}{fsq_exp_suffix}",
         )
     )
     fsq_run_name = fsq_run_template.format(
         target_dataset=target_dataset,
         dp_tag=dp_tag,
         fsq_tag=fsq_tag,
-        dino_patch_grid=dino_patch_grid,
         fsq_exp=fsq_exp,
         fsq_exp_suffix=fsq_exp_suffix,
         weighted_suffix=weighted_suffix,
         fsq_vision_tag=fsq_vision_tag,
         fsq_terminator_arch=fsq_terminator_arch,
+        fsq_terminator_tag=fsq_terminator_tag,
+        fsq_terminator_layers=fsq_terminator_layers,
+        fsq_terminator_heads=fsq_terminator_heads,
         fsq_encoder_input_mode=fsq_encoder_input_mode,
         fsq_encoder_input_suffix=fsq_encoder_input_suffix,
+        fsq_state_cond_mode=fsq_state_cond_mode,
+        fsq_state_cond_suffix=fsq_state_cond_suffix,
     )
     # Slurm partition/qos/nodelist/exclude are canonical (read from global_config.yaml's train_*);
     # output keys below keep their per-job prefix so submit scripts read the same $..._PARTITION vars.
@@ -301,34 +308,12 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "outputs_root": outputs_root,
         "dp_outputs_root": dp_outputs_root,
         "fsq_outputs_root": fsq_outputs_root,
-        "dino_source_dataset": dino_source_dataset,
-        "dino_feature_dataset": dino_feature_dataset,
-        "base_dino_feature_dir": dataset_root / f"{dino_source_dataset}_DINO" / f"pg{dino_patch_grid}",
-        "dino_feature_dir": fsq_dataset_root / target_dataset / "DINO" / f"pg{dino_patch_grid}",
-        "dino_visual_backbone": backbone,
-        "dino_image_model_dir": DINO_IMAGE_MODEL_DIR,
-        "dino_image_model_path": root / "models" / DINO_IMAGE_MODEL_DIR,
         "pi_base_model_path": root / "models" / "pi05_base",
-        "dino_feature_tag": dino_feature_tag,
-        "dino_image_keys": as_list(get_value(cfg, "dino_image_keys", ["observation.images.image"])),
-        "dino_patch_grid": dino_patch_grid,
-        "dino_image_size": 224,
-        "dino_feature_dim": int(get_value(cfg, "dino_feature_dim", DINO_FEATURE_DIM)),
-        "dino_visual_feature_dim": int(get_value(cfg, "dino_visual_feature_dim", 256)),
-        "dino_transformer_n_layers": int(get_value(cfg, "dino_transformer_n_layers", 1)),
-        "dino_transformer_n_heads": int(get_value(cfg, "dino_transformer_n_heads", 4)),
-        "dino_cache_size": int(get_value(cfg, "dino_cache_size", 8)),
-        "dino_copy_mode": str(get_value(cfg, "dino_copy_mode", "copy")),
-        "dino_overwrite_prepared": as_bool(get_value(cfg, "dino_overwrite_prepared", False)),
         "dp_base_config": root / "lerobot" / str(get_value(cfg, "dp_base_config")),
         "dp_policy": dp_policy,
         "dp_output_dir": dp_outputs_root / dp_policy,
         "dp_policy_path": dp_outputs_root / dp_policy / "checkpoints" / dp_checkpoint / "pretrained_model",
         "dp_checkpoint": dp_checkpoint,
-        # DP vision encoder: "dino" = precomputed DINO tokens (this project's default);
-        # "resnet" = original lerobot Diffusion Policy (ResNet on raw frames, use_dino_features=false).
-        "dp_vision": dp_vision,
-        "dp_vision_backbone": str(get_value(cfg, "dp_vision_backbone", "resnet18")),
         "train_DP": train_dp,
         "dp_n_obs_steps": dp_n_obs_steps,
         # Default = max valid chunk (horizon - n_obs + 1); stays consistent if n_obs/horizon change.
@@ -367,20 +352,24 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "fsq_samples_per_skill": int(get_value(cfg, "fsq_samples_per_skill", 2)),
         "fsq_action_expert_variant": str(get_value(cfg, "fsq_action_expert_variant", "gemma_300m")),
         "fsq_encoder_input_mode": fsq_encoder_input_mode,
-        "fsq_state_cond_mode": str(get_value(cfg, "fsq_state_cond_mode", "state")),
+        "fsq_state_cond_mode": fsq_state_cond_mode,
         "fsq_expert_dtype": str(get_value(cfg, "fsq_expert_dtype", "bfloat16")),
         "fsq_hidden_dim": int(get_value(cfg, "fsq_hidden_dim", 256)),
         "fsq_num_layers": int(get_value(cfg, "fsq_num_layers", 2)),
         "fsq_n_control": int(get_value(cfg, "fsq_n_control", 30)),
         "fsq_terminator_arch": fsq_terminator_arch,
+        "fsq_terminator_layers": fsq_terminator_layers,
+        "fsq_terminator_heads": fsq_terminator_heads,
         "fsq_vision_backbone": fsq_vision_backbone,
         "fsq_freeze_vision_encoder": fsq_freeze_vision_encoder,
-        "fsq_dino_model_path": str(
-            get_value(cfg, "fsq_dino_model_path", root / "models" / DINO_IMAGE_MODEL_DIR)
+        # Accept a portable project-relative path in YAML (e.g. models/dinov3-vits16), while
+        # passing an absolute path to the Slurm job and checkpoint metadata.
+        "fsq_dino_model_path": resolve_path(
+            root, get_value(cfg, "fsq_dino_model_path", f"models/{DINO_IMAGE_MODEL_DIR}")
         ),
         "fsq_dino_image_size": int(get_value(cfg, "fsq_dino_image_size", 224)),
         "fsq_siglip_image_size": int(get_value(cfg, "fsq_siglip_image_size", 224)),
-        "fsq_cond_encoder_variant": str(get_value(cfg, "fsq_cond_encoder_variant", "gemma_300m")),
+        "fsq_cond_encoder_variant": fsq_cond_encoder_variant,
         "fsq_chunk_size": int(get_value(cfg, "fsq_chunk_size", 10)),
         "fsq_action_loss_weight": str(get_value(cfg, "fsq_action_loss_weight", 1.0)),
         "fsq_progress_loss_weight": str(get_value(cfg, "fsq_progress_loss_weight", 1.0)),
@@ -409,6 +398,11 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "skillset_savgol_polyorder": int(get_value(cfg, "skillset_savgol_polyorder", 4)),
         "skillset_replan_interval": int(get_value(cfg, "skillset_replan_interval", 3)),
         "skillset_nms_dist": int(get_value(cfg, "skillset_nms_dist", 25)),
+        "skillset_boundary_threshold_mode": skillset_boundary_threshold_mode,
+        "skillset_global_threshold_path": (
+            fsq_seg_dir / str(get_value(cfg, "skillset_name", "skillset"))
+            / "global_boundary_threshold.json"
+        ),
         "skillset_cpus_per_task": int(get_value(cfg, "skillset_cpus_per_task", 4)),
         "skillset_mem": str(get_value(cfg, "skillset_mem", "32G")),
         "skillset_time": str(get_value(cfg, "skillset_time", "4:00:00")),

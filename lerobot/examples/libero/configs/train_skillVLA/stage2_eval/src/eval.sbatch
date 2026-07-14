@@ -45,6 +45,7 @@ fi
 
 cd "${LEROBOT_ROOT}"
 source "${PROJECT_ROOT}/.venv/bin/activate"
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/runtime_env.sh"
 unset LD_LIBRARY_PATH          # avoid system cuDNN shadowing the bundled one
 
 LIBERO_REPO_ROOT="${PROJECT_ROOT}/tools/lerobot-libero"
@@ -65,10 +66,6 @@ assets: ${LIBERO_BENCHMARK_ROOT}/assets
 EOF
 export LIBERO_CONFIG_PATH="${LIBERO_LOCAL_CONFIG_DIR}"
 
-export WANDB_CACHE_DIR="${WANDB_CACHE_DIR:-${HOME}/.wandb_cache}"
-export WANDB_DATA_DIR="${WANDB_DATA_DIR:-${HOME}/.wandb_data}"
-mkdir -p "${WANDB_CACHE_DIR}" "${WANDB_DATA_DIR}"
-export WANDB_DISABLE_SYMLINKS=true
 
 if [ ! -d "${POLICY_PATH}" ]; then
   echo "Policy checkpoint not found: ${POLICY_PATH}  (train Stage-2 first)" >&2

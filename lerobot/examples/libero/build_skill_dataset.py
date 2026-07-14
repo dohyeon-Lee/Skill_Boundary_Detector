@@ -19,11 +19,12 @@ Usage:
     --output_dir .../outputs/skill_dataset
 """
 
+import json
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 import pandas as pd
@@ -31,17 +32,12 @@ import tyro
 
 sys.path.insert(0, str(Path(__file__).parent))
 from skill_divider import (
-    _find_peaks_above_mean,
     _savgol_smooth,
-    get_episode_timestamps,
-    get_video_path,
     load_data,
-    load_dino_episode,
     load_episodes_meta,
     load_policy,
     run_vf_analysis,
 )
-from SBD_visualize import SkillVisualizer
 
 
 # ── Args ──────────────────────────────────────────────────────────────────────
@@ -67,14 +63,18 @@ class Args:
     peak_nms: bool = True
     nms_dist: int | None = None
     """NMS 거리. None이면 replan_interval * 2 사용."""
+    boundary_threshold_mode: Literal["episode_mean", "global_mean"] = "episode_mean"
+    """episode_mean(legacy) 또는 전체 episode의 단일 global_mean threshold."""
+    global_threshold_path: str = ""
+    """global_mean에서 사용하는 global_boundary_threshold.json 경로."""
+    use_cached_curves: bool = False
+    """True면 VF를 다시 계산하지 않고 curves/ep*.npz의 SG curve로 skill을 자른다 (global 2-pass용)."""
     # ── Dataset filtering ─────────────────────────────────────────────────────
     min_skill_len: int = 2
     """스킬 세그먼트 최소 프레임 수 (미만이면 해당 세그먼트 제외)."""
     min_skills: int = 2
     """유효 스킬 수가 이 값 미만이면 episode 전체 skip."""
     # ── Misc ─────────────────────────────────────────────────────────────────
-    dino_feature_dir: str = ""
-    """Per-episode DINO feature dir (e.g. .../libero_90_DINO/dinov3_vits16_pg8). Required when policy uses DINO features."""
     seed: int | None = 42
     resume: bool = True
     """True면 이미 저장된 episode skip."""
@@ -92,21 +92,31 @@ class Args:
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+def _threshold_for_episode(sg_vals: np.ndarray, args: Args,
+                           global_threshold: float | None) -> float:
+    if args.boundary_threshold_mode == "global_mean" and global_threshold is not None:
+        return float(global_threshold)
+    return float(np.mean(sg_vals)) if len(sg_vals) else 0.0
+
+
 def _detect_boundaries(replan_ts: list, div_cos: np.ndarray,
-                        n_frames: int, args: Args) -> list[int]:
+                        n_frames: int, args: Args,
+                        global_threshold: float | None = None) -> list[int]:
     nms_dist = (args.nms_dist if args.nms_dist is not None
                 else args.replan_interval * 2) if args.peak_nms else 0
     sg_vals = _savgol_smooth(list(div_cos), args.smooth_window, polyorder=args.savgol_polyorder)
-    peak_ts, _ = _find_peaks_above_mean(sg_vals, replan_ts,
-                                         min_distance=nms_dist, margin=nms_dist)
+    threshold = _threshold_for_episode(sg_vals, args, global_threshold)
+    peak_ts, _ = _find_peaks_above_threshold(
+        sg_vals, replan_ts, threshold=threshold, min_distance=nms_dist, margin=nms_dist
+    )
     return sorted(set([0] + [int(p) for p in peak_ts] + [n_frames]))
 
 
 def _save_boundary_curve(curves_dir: Path, ep_id: int, task_id: int, replan_ts,
                          div_cos: np.ndarray, boundaries: list[int], n_frames: int,
-                         args: "Args") -> None:
+                         args: "Args", global_threshold: float | None = None) -> None:
     """Persist the per-episode multimodality (VF cos-divergence) curve so the eval
-    HTML can overlay it. Stores raw + SG-smoothed values, the mean threshold, the
+    HTML can overlay it. Stores raw + SG-smoothed values, the selected threshold, the
     detected peaks and the final boundaries — everything the plot needs, so eval
     needs neither scipy nor the detection params (mirrors _detect_boundaries)."""
     replan_ts = np.asarray(replan_ts, dtype=np.int64)
@@ -115,22 +125,76 @@ def _save_boundary_curve(curves_dir: Path, ep_id: int, task_id: int, replan_ts,
         _savgol_smooth(list(div_cos), args.smooth_window, polyorder=args.savgol_polyorder),
         dtype=np.float32,
     )
-    mean_val = float(np.mean(sg_vals)) if len(sg_vals) else 0.0
+    threshold = _threshold_for_episode(sg_vals, args, global_threshold)
     nms_dist = (args.nms_dist if args.nms_dist is not None
                 else args.replan_interval * 2) if args.peak_nms else 0
-    peak_ts, peak_vals = _find_peaks_above_mean(
-        sg_vals, replan_ts.tolist(), min_distance=nms_dist, margin=nms_dist)
+    peak_ts, peak_vals = _find_peaks_above_threshold(
+        sg_vals, replan_ts.tolist(), threshold=threshold,
+        min_distance=nms_dist, margin=nms_dist,
+    )
     curves_dir.mkdir(parents=True, exist_ok=True)
     np.savez(
         str(curves_dir / f"ep{ep_id:07d}.npz"),
         episode_id=np.array(ep_id), task_id=np.array(task_id),
         replan_ts=replan_ts, div_cos=div_cos, sg_vals=sg_vals,
-        mean_val=np.array(mean_val, dtype=np.float32),
+        mean_val=np.array(threshold, dtype=np.float32),
+        threshold_mode=np.array(
+            "episode_mean_staging"
+            if args.curves_only and args.boundary_threshold_mode == "global_mean"
+            else args.boundary_threshold_mode
+        ),
         peak_ts=np.asarray(peak_ts, dtype=np.int64),
         peak_vals=np.asarray(peak_vals, dtype=np.float32),
         boundaries=np.asarray(boundaries, dtype=np.int64),
         n_frames=np.array(n_frames),
     )
+
+
+def _find_peaks_above_threshold(vals: np.ndarray, ts: list, *, threshold: float,
+                                min_distance: int = 0, margin: int = 0) -> tuple[list, list]:
+    """Same peak/NMS policy as skill_divider, with an explicit threshold."""
+    from scipy.signal import find_peaks
+
+    peak_idxs, _ = find_peaks(vals)
+    above = [i for i in peak_idxs if vals[i] > threshold]
+
+    if margin > 0 and len(ts) >= 2:
+        t_min, t_max = ts[0], ts[-1]
+        above = [i for i in above if ts[i] - t_min > margin and t_max - ts[i] > margin]
+
+    if min_distance > 0 and len(above) > 1:
+        # Greedy NMS by peak height (not scan order), matching _find_peaks_above_mean.
+        by_height = sorted(above, key=lambda i: vals[i], reverse=True)
+        kept, suppressed = [], set()
+        for idx in by_height:
+            if idx in suppressed:
+                continue
+            kept.append(idx)
+            for other in by_height:
+                if other != idx and abs(ts[other] - ts[idx]) <= min_distance:
+                    suppressed.add(other)
+        above = kept
+
+    return [ts[i] for i in above], [float(vals[i]) for i in above]
+
+
+def _load_global_threshold(path: str) -> float:
+    if not path:
+        raise ValueError("global_mean requires --global_threshold_path")
+    threshold_path = Path(path)
+    if not threshold_path.is_file():
+        raise FileNotFoundError(
+            f"global_mean threshold file is missing: {threshold_path}. "
+            "Run the curves collection/global-threshold pass first."
+        )
+    with threshold_path.open() as f:
+        payload = json.load(f)
+    if payload.get("boundary_threshold_mode") != "global_mean":
+        raise ValueError(f"Not a global_mean threshold file: {threshold_path}")
+    value = float(payload["global_mean"])
+    if not np.isfinite(value):
+        raise ValueError(f"Invalid global mean in {threshold_path}: {value}")
+    return value
 
 
 def _save_skills(skills_dir: Path, ep_id: int, task_id: int,
@@ -185,8 +249,15 @@ def main(args: Args) -> None:
     skills_dir = output_dir / "skills"
     skills_dir.mkdir(parents=True, exist_ok=True)
     curves_dir = output_dir / "curves"
-    if args.dump_curves or args.curves_only:
+    if args.dump_curves or args.curves_only or args.use_cached_curves:
         curves_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.curves_only and args.use_cached_curves:
+        raise ValueError("--curves_only and --use_cached_curves are mutually exclusive")
+    global_threshold = None
+    if args.boundary_threshold_mode == "global_mean" and not args.curves_only:
+        global_threshold = _load_global_threshold(args.global_threshold_path)
+        print(f"Global boundary threshold: {global_threshold:.8f} ({args.global_threshold_path})")
 
     if args.seed is not None:
         import random, torch
@@ -212,11 +283,6 @@ def main(args: Args) -> None:
     def _episodes_for_task(tid: int) -> list[int]:
         return sorted(ep for ep, ti in _ep_task.items() if ti == tid)
 
-    video_cols = [c for c in episodes_meta.columns
-                  if c.startswith("videos/") and c.endswith("/chunk_index")]
-    camera_keys = [c.split("/")[1] for c in video_cols]
-    print(f"Cameras: {camera_keys}")
-
     task_ids = args.task_ids if args.task_ids is not None else sorted(tasks_meta["task_index"].tolist())
     print(f"Tasks to process: {len(task_ids)}")
 
@@ -227,20 +293,16 @@ def main(args: Args) -> None:
     n_total_eps_global = len(all_episode_ids)
     print(f"Total episodes: {n_total_eps_global}")
 
-    print(f"Loading policy from {args.policy_path} ...")
-    t0 = time.time()
-    policy, preprocessor = load_policy(
-        args.policy_path, args.device, args.noise_scheduler_type, args.num_inference_steps
-    )
-    print(f"  [time] policy load: {time.time()-t0:.1f}s")
-
-    use_dino = policy.config.use_dino_features
-    dino_feature_dir = Path(args.dino_feature_dir) if args.dino_feature_dir else None
-    if use_dino and dino_feature_dir is None:
-        raise ValueError("--dino_feature_dir is required when policy uses DINO features.")
-    dino_image_key = policy.config.dino_image_keys[0] if use_dino else None
-
-    viz = SkillVisualizer(output_dir)
+    policy = preprocessor = None
+    if args.use_cached_curves:
+        print(f"Using cached curves from {curves_dir}; skipping DP/VF inference.")
+    else:
+        print(f"Loading policy from {args.policy_path} ...")
+        t0 = time.time()
+        policy, preprocessor = load_policy(
+            args.policy_path, args.device, args.noise_scheduler_type, args.num_inference_steps
+        )
+        print(f"  [time] policy load: {time.time()-t0:.1f}s")
 
     # ── WandB init ────────────────────────────────────────────────────────────
     wandb_run = None
@@ -260,6 +322,9 @@ def main(args: Args) -> None:
                 "smooth_window": args.smooth_window,
                 "savgol_polyorder": args.savgol_polyorder,
                 "nms_dist": args.nms_dist,
+                "boundary_threshold_mode": args.boundary_threshold_mode,
+                "global_threshold": global_threshold,
+                "use_cached_curves": args.use_cached_curves,
                 "min_skill_len": args.min_skill_len,
                 "min_skills": args.min_skills,
             },
@@ -323,26 +388,22 @@ def main(args: Args) -> None:
             print(f"  ep{ep_id:05d} ...", end="", flush=True)
             t_ep = time.time()
 
-            if use_dino:
-                cam_frames = {}
-                ep_dino_tokens = load_dino_episode(dino_feature_dir, dino_image_key, ep_id)
-            else:
-                def _load_cam(cam_key):
-                    src = get_video_path(dataset_dir, ep_id, cam_key, episodes_meta).resolve()
-                    start_sec, end_sec = get_episode_timestamps(dataset_dir, ep_id, episodes_meta, cam_key)
-                    return cam_key, viz.load_episode_frames(src, start_sec, end_sec)
-
-                with ThreadPoolExecutor(max_workers=len(camera_keys)) as pool:
-                    cam_frames = dict(pool.map(_load_cam, camera_keys))
-                ep_dino_tokens = None
-
             try:
-                vf_replan_ts, _, _, div_cos, _, _, _ = run_vf_analysis(
-                    policy, preprocessor, ep_df, cam_frames, camera_keys,
-                    args.eval_at_step, args.replan_interval,
-                    n_gmm_components=args.n_gmm_components,
-                    dino_tokens=ep_dino_tokens,
-                )
+                if args.use_cached_curves:
+                    if not curve_path.is_file():
+                        raise FileNotFoundError(
+                            f"Cached curve missing for ep{ep_id:05d}: {curve_path}"
+                        )
+                    with np.load(curve_path) as curve:
+                        vf_replan_ts = curve["replan_ts"].astype(np.int64).tolist()
+                        div_cos = curve["div_cos"].astype(np.float32)
+                else:
+                    assert policy is not None and preprocessor is not None
+                    vf_replan_ts, _, _, div_cos, _, _, _ = run_vf_analysis(
+                        policy, preprocessor, ep_df,
+                        args.eval_at_step, args.replan_interval,
+                        n_gmm_components=args.n_gmm_components,
+                    )
             except Exception as e:
                 import traceback
                 print(f" [ERROR] {e}")
@@ -352,11 +413,13 @@ def main(args: Args) -> None:
                 continue
 
             n_frames = len(ep_df)
-            boundaries = _detect_boundaries(vf_replan_ts, div_cos, n_frames, args)
+            boundaries = _detect_boundaries(
+                vf_replan_ts, div_cos, n_frames, args, global_threshold=global_threshold
+            )
 
-            if args.dump_curves or args.curves_only:
+            if args.dump_curves or args.curves_only or args.use_cached_curves:
                 _save_boundary_curve(curves_dir, ep_id, task_id, vf_replan_ts, div_cos,
-                                     boundaries, n_frames, args)
+                                     boundaries, n_frames, args, global_threshold=global_threshold)
 
             if args.curves_only:
                 n_processed += 1

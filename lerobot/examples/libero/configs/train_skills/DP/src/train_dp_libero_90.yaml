@@ -1,4 +1,4 @@
-# Base config for Diffusion Policy + DINO pretraining (no language conditioning).
+# Base config for state-history Diffusion Policy training (no language conditioning).
 # Used as dp_base_config (--config_path) by ../train_dp_dino.sbatch.
 #
 # IMPORTANT: dataset (repo_id/root), output_dir, training (steps/freqs/seed/
@@ -19,6 +19,7 @@ policy:
   type: diffusion
   device: cuda
   push_to_hub: false
+  state_only: true
 
   # Temporal settings (overridden by dp_n_obs_steps / dp_n_action_steps / dp_horizon)
   n_obs_steps: 10      # 10 frames @ 20fps = 500ms history
@@ -38,7 +39,7 @@ save_freq: 20000
 eval_freq: 0
 
 # overridden: ${DP_OUTPUT_DIR} (= {project_root}/{dp_outputs_root}/{dp_policy_name})
-output_dir: /data2/dohyeon/SBD/outputs_DP/dp_libero_90_full_full_dino8_obs10_horizon16
+output_dir: /data2/dohyeon/SBD/outputs_DP/dp_libero_90_full_full_state_obs20
 
 wandb:
   enable: true

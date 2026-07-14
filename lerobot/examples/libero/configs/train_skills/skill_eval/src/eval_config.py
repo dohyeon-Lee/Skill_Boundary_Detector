@@ -30,6 +30,9 @@ def build_settings(config_path: str | None = None) -> dict:
         # DP selection: blank = follow train_skills_config; else the DP folder name (+ checkpoint) to eval.
         "eval_dp_run_name":        str(get_value(cfg, "eval_dp_run_name", "")),
         "eval_dp_checkpoint":      str(get_value(cfg, "eval_dp_checkpoint", "")),
+        "skillset_boundary_threshold_mode": str(
+            get_value(cfg, "skillset_boundary_threshold_mode", "episode_mean")
+        ),
         # DP skill-boundary eval knobs
         "dp_eval_n_episodes":      int(get_value(cfg, "dp_eval_n_episodes", 10)),
         "dp_eval_task_ids":        " ".join(as_list(get_value(cfg, "dp_eval_task_ids", []))),
@@ -38,6 +41,7 @@ def build_settings(config_path: str | None = None) -> dict:
         "fsq_eval_n_action_steps": int(get_value(cfg, "fsq_eval_n_action_steps", 5)),
         "fsq_eval_n_samples":      int(get_value(cfg, "fsq_eval_n_samples", 5)),
         "fsq_eval_max_entries":    int(get_value(cfg, "fsq_eval_max_entries", 0)),
+        "fsq_eval_decoder_scope":  str(get_value(cfg, "fsq_eval_decoder_scope", "samples")),
         "fsq_eval_end_threshold":  str(get_value(cfg, "fsq_eval_end_threshold", 0.5)),
         "fsq_eval_thumb_size":     int(get_value(cfg, "fsq_eval_thumb_size", 160)),
         "fsq_eval_image_key":      str(get_value(cfg, "fsq_eval_image_key", "observation.images.image")),

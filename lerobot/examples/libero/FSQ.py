@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -1337,14 +1338,51 @@ class FSQTrajectoryDataset(Dataset):
         return self._raw_dataset
 
     def _sample_images(self, index: int, sample: np.ndarray) -> tuple[Tensor, Tensor]:
+        """Decode all M frames for each camera in one batched video request.
+
+        Calling ``LeRobotDataset.__getitem__`` once per selected timestep forces
+        PyAV/TorchCodec to seek/decode separately for every frame.  The M
+        timesteps belong to one skill/episode and are sorted, so one request per
+        camera can share the seek and sequential decode work.
+        """
         dataset = self._get_raw_dataset()
         start = int(self.metadata[index]["dataset_from_index"]) + int(self.metadata[index]["frame_start"])
-        third, wrist = [], []
-        for timestep in sample.tolist():
-            frame = dataset[start + int(timestep)]
-            third.append(frame["observation.images.image"])
-            wrist.append(frame["observation.images.wrist_image"])
-        return torch.stack(third), torch.stack(wrist)
+        indices = [start + int(timestep) for timestep in sample.tolist()]
+
+        # LeRobotDataset exposes single-frame access publicly.  Its worker-local
+        # reader owns the same metadata/decoder contract and lets us batch the
+        # timestamps without re-opening/seeking the same MP4 M times.
+        reader = dataset._ensure_reader()  # noqa: SLF001
+        if reader.hf_dataset is None:
+            reader.load_and_activate()
+        rows = reader.hf_dataset[indices]
+
+        def as_int(value: Any) -> int:
+            return int(value.item()) if isinstance(value, Tensor) else int(value)
+
+        def as_float(value: Any) -> float:
+            return float(value.item()) if isinstance(value, Tensor) else float(value)
+
+        episode_ids = [as_int(value) for value in rows["episode_index"]]
+        if len(set(episode_ids)) != 1:
+            raise RuntimeError(f"A skill must stay within one episode, got {episode_ids}.")
+        episode_id = episode_ids[0]
+        timestamps = [as_float(value) for value in rows["timestamp"]]
+        episode = reader._meta.episodes[episode_id]  # noqa: SLF001
+
+        from lerobot.datasets.video_utils import decode_video_frames
+
+        def decode(camera_key: str) -> Tensor:
+            video_path = reader.root / reader._meta.get_video_file_path(episode_id, camera_key)  # noqa: SLF001
+            from_timestamp = float(episode[f"videos/{camera_key}/from_timestamp"])
+            return decode_video_frames(
+                video_path,
+                [from_timestamp + timestamp for timestamp in timestamps],
+                reader._tolerance_s,  # noqa: SLF001
+                reader._video_backend,  # noqa: SLF001
+            )
+
+        return decode("observation.images.image"), decode("observation.images.wrist_image")
 
     def __getitem__(self, index: int) -> dict[str, Tensor]:
         length = self.lengths[index]
@@ -1502,12 +1540,17 @@ def train_spline_fsqae(
         )
 
     train_ds, val_ds = dataset(train_ids, True), dataset(val_ids, False)
+    device = torch.device(cfg.device)
+    # ``step`` moves tensors with non_blocking=True below; pinning makes that transfer genuinely
+    # asynchronous instead of synchronizing the GPU after the worker has decoded the next batch.
+    pin_memory = device.type == "cuda"
     train_loader = DataLoader(
         train_ds,
         batch_size=cfg.batch_size,
         shuffle=True,
         num_workers=cfg.num_workers,
         collate_fn=collate_fsq_batch,
+        pin_memory=pin_memory,
         persistent_workers=cfg.num_workers > 0,
         prefetch_factor=1 if cfg.num_workers > 0 else None,
     )
@@ -1518,11 +1561,11 @@ def train_spline_fsqae(
         shuffle=False,
         num_workers=val_workers,
         collate_fn=collate_fsq_batch,
+        pin_memory=pin_memory,
         persistent_workers=False,
         prefetch_factor=1 if val_workers > 0 else None,
     )
 
-    device = torch.device(cfg.device)
     model = SplineFSQAE(cfg).to(device)
     if cfg.expert_dtype == "bfloat16" and device.type == "cuda":
         model.action_expert.to(dtype=torch.bfloat16)
@@ -1572,6 +1615,17 @@ def train_spline_fsqae(
         loaded_vision = initialize_terminator_vision_from_pi05(model.terminator, cfg.pi_base)
         if loaded_vision:
             print(f"[FSQ-v3] initialized {loaded_vision} SigLIP tensors from {cfg.pi_base}")
+
+    if wandb_run is not None:
+        # The same epoch aggregate is reported twice: train/val use optimizer_step as x, while
+        # train_epoch/val_epoch use epoch as x.  Keeping train and val at the top-level avoids
+        # collapsing every curve into one "epoch" workspace section.
+        wandb_run.define_metric("epoch")
+        wandb_run.define_metric("optimizer_step")
+        for name in ("train/*", "val/*", "perf/*", "lr/*"):
+            wandb_run.define_metric(name, step_metric="optimizer_step")
+        for name in ("train_epoch/*", "val_epoch/*", "perf_epoch/*", "lr_epoch/*"):
+            wandb_run.define_metric(name, step_metric="epoch")
 
     def save(path: str | Path, epoch: int, val: float, select: float, *, resumable: bool) -> None:
         payload = {
@@ -1631,17 +1685,27 @@ def train_spline_fsqae(
             moved["termination"].reshape(-1),
             cfg.end_threshold,
         )
-        return {k: float(v) for k, v in metrics.items()}, end_metrics, bsize
+        # One FSQ index per input skill is already produced by the encoder. Keep
+        # it on-device so epoch-level codebook coverage costs only a boolean
+        # scatter, not an additional encode pass or per-batch CPU synchronization.
+        return {k: float(v) for k, v in metrics.items()}, end_metrics, bsize, output["indices"].detach()
 
     save_path = Path(cfg.save_path) if cfg.save_path else Path("FSQ.pt")
+    # W&B previously received ``step=epoch``, which made one full FSQ epoch look like one
+    # optimizer step and therefore incomparable with VLA training dashboards.
+    global_step = (start_epoch - 1) * len(train_loader)
     for epoch in range(start_epoch, cfg.epochs + 1):
+        epoch_start = time.perf_counter()
         model.train()
         train_sum: dict[str, float] = {}
         train_end: dict[str, float] = {}
         train_count = 0
+        train_codes_seen = torch.zeros(model.fsq.codebook_size, dtype=torch.bool, device=device)
         for batch_index, batch in enumerate(train_loader):
-            metrics, end_metrics, count = step(batch, True, batch_index)
+            metrics, end_metrics, count, code_indices = step(batch, True, batch_index)
+            global_step += 1
             train_count += count
+            train_codes_seen[code_indices.reshape(-1).long()] = True
             for key, value in metrics.items():
                 train_sum[key] = train_sum.get(key, 0.0) + value * count
             for key, value in end_metrics.items():
@@ -1652,10 +1716,12 @@ def train_spline_fsqae(
         val_sum: dict[str, float] = {}
         val_end: dict[str, float] = {}
         val_count = 0
+        val_codes_seen = torch.zeros(model.fsq.codebook_size, dtype=torch.bool, device=device)
         with torch.no_grad():
             for batch_index, batch in enumerate(val_loader):
-                metrics, end_metrics, count = step(batch, False, batch_index)
+                metrics, end_metrics, count, code_indices = step(batch, False, batch_index)
                 val_count += count
+                val_codes_seen[code_indices.reshape(-1).long()] = True
                 for key, value in metrics.items():
                     val_sum[key] = val_sum.get(key, 0.0) + value * count
                 for key, value in end_metrics.items():
@@ -1665,6 +1731,9 @@ def train_spline_fsqae(
         val_avg = {k: v / max(val_count, 1) for k, v in val_sum.items()}
         train_end_avg = {k: v / max(train_count, 1) for k, v in train_end.items()}
         val_end_avg = {k: v / max(val_count, 1) for k, v in val_end.items()}
+        train_active_codes = int(train_codes_seen.count_nonzero().item())
+        val_active_codes = int(val_codes_seen.count_nonzero().item())
+        codebook_size = model.fsq.codebook_size
         select = (
             (cfg.val_select_action_weight if cfg.val_select_action_weight is not None else cfg.action_loss_weight)
             * val_avg["action"]
@@ -1687,17 +1756,40 @@ def train_spline_fsqae(
 
         log = {
             "epoch": epoch,
+            "optimizer_step": global_step,
+            "perf/seconds": time.perf_counter() - epoch_start,
+            "perf/updates_per_sec": len(train_loader) / max(time.perf_counter() - epoch_start, 1e-8),
             **{f"train/{k}": v for k, v in train_avg.items()},
             **{f"val/{k}": v for k, v in val_avg.items()},
             **{f"train/end_{k}": v for k, v in train_end_avg.items()},
             **{f"val/end_{k}": v for k, v in val_end_avg.items()},
+            "train/codebook_utilization_pct": 100.0 * train_active_codes / codebook_size,
+            "train/codebook_active_entries": train_active_codes,
+            "val/codebook_utilization_pct": 100.0 * val_active_codes / codebook_size,
+            "val/codebook_active_entries": val_active_codes,
             "val/select": select,
             "lr/encoder": optimizer.param_groups[0]["lr"],
             "lr/expert": optimizer.param_groups[1]["lr"],
             "lr/terminator": optimizer.param_groups[2]["lr"],
         }
+        log.update({f"train_epoch/{k}": v for k, v in train_avg.items()})
+        log.update({f"val_epoch/{k}": v for k, v in val_avg.items()})
+        log.update({f"train_epoch/end_{k}": v for k, v in train_end_avg.items()})
+        log.update({f"val_epoch/end_{k}": v for k, v in val_end_avg.items()})
+        log.update({
+            "train_epoch/codebook_utilization_pct": log["train/codebook_utilization_pct"],
+            "train_epoch/codebook_active_entries": train_active_codes,
+            "val_epoch/codebook_utilization_pct": log["val/codebook_utilization_pct"],
+            "val_epoch/codebook_active_entries": val_active_codes,
+            "val_epoch/select": select,
+            "perf_epoch/seconds": log["perf/seconds"],
+            "perf_epoch/updates_per_sec": log["perf/updates_per_sec"],
+            "lr_epoch/encoder": log["lr/encoder"],
+            "lr_epoch/expert": log["lr/expert"],
+            "lr_epoch/terminator": log["lr/terminator"],
+        })
         if wandb_run is not None:
-            wandb_run.log(log, step=epoch)
+            wandb_run.log(log, step=global_step)
         if epoch == 1 or epoch % cfg.log_every == 0:
             print(
                 f"[FSQ-v3] {epoch:4d}/{cfg.epochs} "

@@ -24,6 +24,7 @@ eval "$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/input_probe_config.py" --config "${CON
 
 cd "${LEROBOT_ROOT}"
 source "${PROJECT_ROOT}/.venv/bin/activate"
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/runtime_env.sh"
 unset LD_LIBRARY_PATH          # avoid system cuDNN shadowing the bundled one
 
 echo "START INPUT PROBE"

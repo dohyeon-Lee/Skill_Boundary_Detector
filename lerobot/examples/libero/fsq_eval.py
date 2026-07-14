@@ -465,24 +465,29 @@ def load_sample_frames(metadata, sample_ids, dataset_dir: Path, image_key: str, 
 
 # ── wandb ───────────────────────────────────────────────────────────────────────
 
-def log_wandb(args, enc_stats, dec_means, html_path):
+def log_wandb(args, enc_stats, dec_means, decoded_skill_count, html_path):
     import wandb
     wandb.init(project=args.wandb_project, name=args.wandb_run_name or Path(args.model_path).parent.name,
                config=vars(args), resume="allow")
-    wandb.log({
+    decoder_prefix = "decoder" if args.decoder_scope == "all" else "decoder_sample"
+    values = {
         "codebook/utilization_pct":       enc_stats["utilization_pct"],
         "codebook/skills_per_entry_mean": enc_stats["skills_per_entry_mean"],
         "codebook/skills_per_entry_std":  enc_stats["skills_per_entry_std"],
         "codebook/skills_per_entry_max":  enc_stats["skills_per_entry_max"],
-        "decoder/chunk_action_mse_mean":  dec_means["chunk_mse"],
-        "decoder/recon_mse_xyz":          dec_means["mse_xyz"],
-        "decoder/recon_mse_rpy":          dec_means["mse_rpy"],
-        "decoder/recon_mse_gripper":      dec_means["mse_grip"],
-        "decoder/termination_err_mean":   dec_means["timing_abs"],
-        "decoder/early_rate":             dec_means["early_rate"],
-        "decoder/late_rate":              dec_means["late_rate"],
-        "decoder/progress_err_mean":      dec_means["prog_err"],
+        "decoder/evaluated_skills":       decoded_skill_count,
+    }
+    values.update({
+        f"{decoder_prefix}/chunk_action_mse_mean": dec_means["chunk_mse"],
+        f"{decoder_prefix}/recon_mse_xyz":         dec_means["mse_xyz"],
+        f"{decoder_prefix}/recon_mse_rpy":         dec_means["mse_rpy"],
+        f"{decoder_prefix}/recon_mse_gripper":     dec_means["mse_grip"],
+        f"{decoder_prefix}/termination_err_mean":  dec_means["timing_abs"],
+        f"{decoder_prefix}/early_rate":            dec_means["early_rate"],
+        f"{decoder_prefix}/late_rate":             dec_means["late_rate"],
+        f"{decoder_prefix}/progress_err_mean":     dec_means["prog_err"],
     })
+    wandb.log(values)
     wandb.finish()
     print(f"[wandb] logged scalars to project '{args.wandb_project}' (HTML saved locally: {html_path})")
 
@@ -502,6 +507,10 @@ def parse_args():
     p.add_argument("--n_action_steps", type=int, default=5, help="chunk plot stride")
     p.add_argument("--max_plot_samples", type=int, default=5, help="sample skills per entry")
     p.add_argument("--max_plot_entries", type=int, default=0, help="0 = render all active entries")
+    p.add_argument("--decoder_scope", choices=["samples", "all"], default="samples",
+                   help="samples: decode only rendered entry samples (fast); all: decode every skill (full metrics).")
+    p.add_argument("--image_key", default="observation.images.image",
+                   help="Dataset camera key used for the start/end HTML thumbnails.")
     p.add_argument("--thumb_size", type=int, default=160)
     p.add_argument("--batch_size", type=int, default=64,
                    help="trajectory batch for encoding; frame microbatch for v2 expert/terminator inference")
@@ -568,44 +577,13 @@ def main():
     print(f"[fsq_eval] codebook {len(active)}/{codebook_size} used "
           f"({enc_stats['utilization_pct']:.1f}%)  mean={enc_stats['skills_per_entry_mean']:.1f}")
 
-    # ── decoder: batched inference, then per-skill metrics ──
-    action_dim = dec_targets[0].shape[-1]
-    groups = _dim_groups(action_dim)
-    dim_labels = [f"d{i}" for i in range(action_dim - 1)] + ["grip"]
-    deltas, progresses, term_probs = batched_decode(
-        model, latents, dec_states, metadata, raw_dataset, lengths, device, args.batch_size)
-    per_skill = [
-        skill_metrics(deltas[i], progresses[i], term_probs[i], dec_targets[i], lengths[i],
-                      args.end_threshold, groups)
-        for i in range(len(metadata))
-    ]
-
-    keys = ["chunk_mse", "mse_xyz", "mse_rpy", "mse_grip", "timing_abs", "prog_err"]
-    dec_means = {k: float(np.mean([s[k] for s in per_skill])) for k in keys}
-    dec_means["early_rate"] = float(np.mean([s["timing"] < 0 for s in per_skill]))
-    dec_means["late_rate"]  = float(np.mean([s["timing"] > 0 for s in per_skill]))
-    print(f"[fsq_eval] chunk_mse={dec_means['chunk_mse']:.4e}  term|err|={dec_means['timing_abs']:.2f}  "
-          f"early={dec_means['early_rate']:.1%} late={dec_means['late_rate']:.1%}  "
-          f"prog_err={dec_means['prog_err']:.4f}")
-
-    # ── aggregate per codebook entry ──
+    # ── choose entries/samples before decoding ────────────────────────────────
+    # Tokenization is action-only and cheap, so it always covers every skill. This
+    # keeps utilization and the "top entries" selection exact. Live image decode
+    # and the 300M decoder then run only on those visualized samples by default.
     by_entry: dict[int, list[int]] = defaultdict(list)
     for i, t in enumerate(tokens):
         by_entry[int(t)].append(i)
-    entry_data: dict[int, dict] = {}
-    for tok, ids in by_entry.items():
-        entry_data[tok] = {
-            "chunk_mse":  float(np.mean([per_skill[i]["chunk_mse"] for i in ids])),
-            "mse_xyz":    float(np.mean([per_skill[i]["mse_xyz"] for i in ids])),
-            "mse_rpy":    float(np.mean([per_skill[i]["mse_rpy"] for i in ids])),
-            "mse_grip":   float(np.mean([per_skill[i]["mse_grip"] for i in ids])),
-            "timing_abs": float(np.mean([per_skill[i]["timing_abs"] for i in ids])),
-            "timing":     float(np.mean([per_skill[i]["timing"] for i in ids])),
-            "prog_err":   float(np.mean([per_skill[i]["prog_err"] for i in ids])),
-            "length":     float(np.mean([per_skill[i]["length"] for i in ids])),
-        }
-
-    # ── choose entries/samples to render ──
     active_tokens = sorted(by_entry)
     if args.max_plot_entries > 0:
         plot_tokens = set(sorted(active_tokens, key=lambda t: (-counts[t], t))[: args.max_plot_entries])
@@ -614,12 +592,68 @@ def main():
     rng = np.random.default_rng(args.seed)
     sample_ids: list[int] = []
     sample_by_tok: dict[int, list[int]] = {}
-    for tok in plot_tokens:
+    for tok in sorted(plot_tokens):
         pool = by_entry[tok]
         n = min(args.max_plot_samples, len(pool))
         chosen = [pool[j] for j in rng.choice(len(pool), size=n, replace=False)] if n > 0 else []
         sample_by_tok[tok] = chosen
         sample_ids.extend(chosen)
+
+    decode_ids = list(range(len(metadata))) if args.decoder_scope == "all" else sample_ids
+    if not decode_ids:
+        raise ValueError("decoder_scope=samples requires --max_plot_samples > 0 and at least one active entry")
+
+    # ── decoder: live-frame inference only for the requested scope ────────────
+    action_dim = dec_targets[0].shape[-1]
+    groups = _dim_groups(action_dim)
+    dim_labels = [f"d{i}" for i in range(action_dim - 1)] + ["grip"]
+    decode_latents = latents[decode_ids]
+    decode_states = [dec_states[i] for i in decode_ids]
+    decode_metadata = [metadata[i] for i in decode_ids]
+    decode_lengths = [lengths[i] for i in decode_ids]
+    decode_targets = [dec_targets[i] for i in decode_ids]
+    print(f"[fsq_eval] decoder_scope={args.decoder_scope}: decoding {len(decode_ids)}/{len(metadata)} skills")
+    decoded_delta, decoded_progress, decoded_term = batched_decode(
+        model, decode_latents, decode_states, decode_metadata, raw_dataset,
+        decode_lengths, device, args.batch_size,
+    )
+    decoded: dict[int, tuple[np.ndarray, np.ndarray, np.ndarray]] = {
+        original_id: (decoded_delta[j], decoded_progress[j], decoded_term[j])
+        for j, original_id in enumerate(decode_ids)
+    }
+    per_skill = {
+        original_id: skill_metrics(
+            decoded_delta[j], decoded_progress[j], decoded_term[j], decode_targets[j],
+            decode_lengths[j], args.end_threshold, groups,
+        )
+        for j, original_id in enumerate(decode_ids)
+    }
+    keys = ["chunk_mse", "mse_xyz", "mse_rpy", "mse_grip", "timing_abs", "prog_err"]
+    dec_means = {k: float(np.mean([s[k] for s in per_skill.values()])) for k in keys}
+    dec_means["early_rate"] = float(np.mean([s["timing"] < 0 for s in per_skill.values()]))
+    dec_means["late_rate"]  = float(np.mean([s["timing"] > 0 for s in per_skill.values()]))
+    print(f"[fsq_eval] [{args.decoder_scope}, n={len(decode_ids)}] "
+          f"chunk_mse={dec_means['chunk_mse']:.4e}  term|err|={dec_means['timing_abs']:.2f}  "
+          f"early={dec_means['early_rate']:.1%} late={dec_means['late_rate']:.1%}  "
+          f"prog_err={dec_means['prog_err']:.4f}")
+
+    # Per-entry values are exact in decoder_scope=all; in samples mode they are
+    # the rendered random samples only (entries outside the top set have no bar).
+    entry_data: dict[int, dict] = {}
+    for tok, ids in by_entry.items():
+        metric_ids = [i for i in ids if i in per_skill]
+        if not metric_ids:
+            continue
+        entry_data[tok] = {
+            "chunk_mse":  float(np.mean([per_skill[i]["chunk_mse"] for i in metric_ids])),
+            "mse_xyz":    float(np.mean([per_skill[i]["mse_xyz"] for i in metric_ids])),
+            "mse_rpy":    float(np.mean([per_skill[i]["mse_rpy"] for i in metric_ids])),
+            "mse_grip":   float(np.mean([per_skill[i]["mse_grip"] for i in metric_ids])),
+            "timing_abs": float(np.mean([per_skill[i]["timing_abs"] for i in metric_ids])),
+            "timing":     float(np.mean([per_skill[i]["timing"] for i in metric_ids])),
+            "prog_err":   float(np.mean([per_skill[i]["prog_err"] for i in metric_ids])),
+            "length":     float(np.mean([lengths[i] for i in ids])),
+        }
 
     frames = ({} if args.max_plot_samples <= 0 else
               load_sample_frames(metadata, sample_ids, Path(args.dataset_dir), args.image_key, args.thumb_size))
@@ -631,13 +665,15 @@ def main():
             T = lengths[i]
             blank = np.full((args.thumb_size,) * 2 + (3,), 80, np.uint8)
             s_img, e_img = frames.get(i, (blank, blank))
-            imgs.append(make_sample_plot(s_img, e_img, deltas[i], progresses[i], term_probs[i],
+            delta, progress, term_prob = decoded[i]
+            imgs.append(make_sample_plot(s_img, e_img, delta, progress, term_prob,
                                          dec_targets[i], T, dim_labels, args.n_action_steps, args.end_threshold))
         samples[tok] = imgs
 
     summary = (
         f"codebook {len(active)}/{codebook_size} ({enc_stats['utilization_pct']:.1f}%) | "
         f"skills/entry mean={enc_stats['skills_per_entry_mean']:.1f} max={enc_stats['skills_per_entry_max']} | "
+        f"decoder={args.decoder_scope} n={len(decode_ids)}/{len(metadata)} | "
         f"chunk MSE={dec_means['chunk_mse']:.3e} (xyz={dec_means['mse_xyz']:.2e} rpy={dec_means['mse_rpy']:.2e} "
         f"grip={dec_means['mse_grip']:.2e}) | term|err|={dec_means['timing_abs']:.2f} "
         f"early={dec_means['early_rate']:.0%} late={dec_means['late_rate']:.0%} | progress|err|={dec_means['prog_err']:.3f}"
@@ -649,7 +685,7 @@ def main():
     print(f"[fsq_eval] HTML → {html_path}")
 
     if not args.no_wandb:
-        log_wandb(args, enc_stats, dec_means, html_path)
+        log_wandb(args, enc_stats, dec_means, len(decode_ids), html_path)
 
 
 if __name__ == "__main__":

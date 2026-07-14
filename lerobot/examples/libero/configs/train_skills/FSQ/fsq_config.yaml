@@ -8,48 +8,58 @@
 target_dataset: libero_90_full_full
 
 # Which DP's skillset/tokens to train on — must match the build_data run.
-# dp_run_name: libero_90_full_full_dino8_obs10
 dp_run_name: libero_90_full_full_state_obs20
 
 dp_checkpoint: "100000"
 fsq_dataset_root: FSQ_dataset
 fsq_inputs_name: FSQ_inputs
 skillset_name: skillset
+# Which segmentation to train on. Must match build_data_config.yaml when building
+# a new skillset: episode_mean → seg_*_ck*/ ; global_mean → seg_*_ck*_globalmean/.
+skillset_boundary_threshold_mode: episode_mean   # episode_mean | global_mean
 
 # ── FSQ model / run ──
 # {dp_tag} = the DP run that produced the skillset (dataset prefix stripped, e.g. state_obs20 /
 # dino8_obs10) → the FSQ folder shows WHICH DP it was trained on, not just its own grid.
-fsq_run_name: "{target_dataset}_{dp_tag}_{fsq_tag}_{fsq_vision_tag}_{fsq_terminator_arch}{fsq_encoder_input_suffix}{weighted_suffix}{fsq_exp_suffix}"
+fsq_run_name: "{target_dataset}_{dp_tag}_{fsq_tag}_{fsq_vision_tag}_{fsq_terminator_tag}{fsq_encoder_input_suffix}{fsq_state_cond_suffix}{weighted_suffix}{fsq_exp_suffix}"
 fsq_exp: ""                 # v3 suffix prevents incompatible checkpoint auto-resume
 fsq_levels: [5, 5, 5]    # [8, 8] | [5, 5, 5]  
 
 # FSQ trajectory encoder input. zero_grounded subtracts the skill-start pose (gripper state remains
 # absolute); raw_state retains the original absolute observation.state. raw_state adds `_rawstate`
 # to the run name so it cannot collide with/resume the zero-grounded run.
-fsq_encoder_input_mode: zero_grounded       # zero_grounded | raw_state
+fsq_encoder_input_mode: zero_grounded       # zero_grounded | raw_state 2
 
 # Terminator: both third-person + wrist images are always consumed live.
 # small = lightweight query transformer; cond = Gemma backbone reusable as Stage-1 cond.
 fsq_terminator_arch: small              # small | cond
+fsq_terminator_layers: 2                # small only: state+skill AdaRMS on query tokens in every layer
+fsq_terminator_heads: 4                 # small only
 fsq_vision_backbone: dino               # dino | siglip
-fsq_freeze_vision_encoder: true         # false enables end-to-end visual fine-tuning
-fsq_dino_model_path: /scratch/mdorazi/Skill_Boundary_Detector/models/dinov3-vits16
+fsq_freeze_vision_encoder: true         # false enables end-to-end visual fine-tuning 3
+# Relative paths are resolved from project_root, so this works on every scratch mount.
+fsq_dino_model_path: models/dinov3-vitl16
 fsq_dino_image_size: 224
 fsq_siglip_image_size: 224
 fsq_cond_encoder_variant: gemma_300m
 
+
 fsq_batch_size: 64
-fsq_num_workers: 8
-fsq_num_epochs: 300
-fsq_checkpoint_every: 50
-fsq_chunk_size: 10
+fsq_num_epochs: 500
+fsq_checkpoint_every: 25
 fsq_samples_per_skill: 5
 fsq_action_expert_variant: gemma_300m
-fsq_state_cond_mode: state                 # state | state_skill
+fsq_state_cond_mode: state                 # state | state_skill 1
+
+
+fsq_chunk_size: 10
+fsq_num_workers: 8
 fsq_expert_dtype: bfloat16
 fsq_encoder_lr: 3.0e-4
 fsq_terminator_lr: 3.0e-4
 fsq_expert_lr: 2.5e-5
+
+
 
 # ── FSQ loss weights ──
 fsq_action_loss_weight: 1.0
@@ -61,9 +71,9 @@ fsq_end_target_sigma: 1.0
 # 학습은 end까지 걸어 코드를 termination-coherent하게 만들되, total val은 end가 지배(~67%)라 그대로
 # 고르면 recon-suboptimal 지점이 잡힘 → 여기서 recon 우선으로 재선택. (비우면 loss 비율 그대로 따라감.)
 # FSQ.pt = argmin( 1*delta + 0.1*progress + 0.1*end ) on val → delta ~76% 지배 (end~0.07*0.1 < delta~0.025).
-fsq_val_select_action_weight: 1.0
-fsq_val_select_progress_weight: 0.1
-fsq_val_select_end_weight: 0.1
+fsq_val_select_action_weight:
+fsq_val_select_progress_weight:
+fsq_val_select_end_weight:
 
 # Probe: end-weight the sampled VSA flow loss by w=1+progress (skill END ~2× the
 # start) → FSQ latent allocates more code resolution to the skill's latter/handoff part. progress &

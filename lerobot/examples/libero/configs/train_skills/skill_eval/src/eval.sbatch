@@ -43,11 +43,8 @@ fi
 
 cd "${LEROBOT_ROOT}"
 source "${PROJECT_ROOT}/.venv/bin/activate"
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/runtime_env.sh"
 export LD_LIBRARY_PATH=""
-export WANDB_CACHE_DIR=${WANDB_CACHE_DIR:-${PROJECT_ROOT}/../.wandb_cache}
-export WANDB_DATA_DIR=${WANDB_DATA_DIR:-${PROJECT_ROOT}/../.wandb_data}
-mkdir -p "${WANDB_CACHE_DIR}" "${WANDB_DATA_DIR}"
-export WANDB_DISABLE_SYMLINKS=true
 
 DATASET_VIDEO_DIR="${DATASET_ROOT}/${TARGET_DATASET}"
 
@@ -68,8 +65,9 @@ if [ "${EVAL_RUN_DP}" = "true" ]; then
   # Shallow folder + DP-named HTML so different DPs don't overwrite each other (no deep nesting).
   # Strip the redundant dataset prefix from the run name (libero_90_full_full_state_obs10 → state_obs10).
   DP_TAG="${DP_POLICY#${TARGET_DATASET}_}"
+  [ "${SKILLSET_BOUNDARY_THRESHOLD_MODE}" = "global_mean" ] && DP_TAG+="_global"
   DP_OUT_DIR="${EVAL_DIR}/outputs/dp_skillset/${TARGET_DATASET}"
-  DP_OUT_HTML="${DP_TAG}_ck${DP_CHECKPOINT}.html"   # e.g. state_obs10_ck100000.html
+  DP_OUT_HTML="${DP_TAG}_ck${DP_CHECKPOINT}.html"   # e.g. state_obs20_global_ck100000.html
   DP_TASK_ARGS=()
   [ -n "${DP_EVAL_TASK_IDS}" ] && DP_TASK_ARGS=(--task_ids ${DP_EVAL_TASK_IDS})
   echo ""
@@ -118,17 +116,17 @@ if [ "${EVAL_RUN_FSQ}" = "true" ]; then
   FSQ_META="${MODEL_DIR}/fsq_meta.json"
   F_SKILLSET="${SKILLSET_DIR}"
   if [ -f "${FSQ_META}" ]; then
-    read -r F_DP F_CKPT < <("${BOOTSTRAP_PYTHON}" - "${FSQ_META}" <<'PY'
+    read -r F_DP F_CKPT F_THRESHOLD_MODE < <("${BOOTSTRAP_PYTHON}" - "${FSQ_META}" <<'PY'
 import json, sys
 m = json.load(open(sys.argv[1]))
-print(m["dp_run_name"], m["dp_checkpoint"])
+print(m["dp_run_name"], m["dp_checkpoint"], m.get("skillset_boundary_threshold_mode", "episode_mean"))
 PY
 )
-    eval "$(DP_RUN_NAME="${F_DP}" DP_CHECKPOINT="${F_CKPT}" \
+    eval "$(DP_RUN_NAME="${F_DP}" DP_CHECKPOINT="${F_CKPT}" SKILLSET_BOUNDARY_THRESHOLD_MODE="${F_THRESHOLD_MODE}" \
       "${BOOTSTRAP_PYTHON}" "${COMMON_SRC_DIR}/train_skills_config.py" --config "${TRAIN_CONFIG}" --shell 2>/dev/null \
       | grep -E '^export SKILLSET_DIR=')"
     F_SKILLSET="${SKILLSET_DIR}"
-    echo "  FSQ source DP    : ${F_DP} (ck${F_CKPT})"
+    echo "  FSQ source DP    : ${F_DP} (ck${F_CKPT}, ${F_THRESHOLD_MODE})"
   fi
   if [ ! -d "${F_SKILLSET}/skills" ]; then
     echo "FSQ's training skillset not found: ${F_SKILLSET}/skills" >&2; exit 1
@@ -143,6 +141,7 @@ PY
       --n_action_steps   "${FSQ_EVAL_N_ACTION_STEPS}" \
       --max_plot_samples "${FSQ_EVAL_N_SAMPLES}" \
       --max_plot_entries "${FSQ_EVAL_MAX_ENTRIES}" \
+      --decoder_scope    "${FSQ_EVAL_DECODER_SCOPE}" \
       --thumb_size       "${FSQ_EVAL_THUMB_SIZE}" \
       --end_threshold    "${FSQ_EVAL_END_THRESHOLD}" \
       --wandb_project    "${FSQ_EVAL_WANDB_PROJECT}" \
