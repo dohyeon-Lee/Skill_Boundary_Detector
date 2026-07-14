@@ -9,9 +9,10 @@ now `/scratch2/mdorazi`.
 ## 0. 2026-07-14 continuation — read this first
 
 The code and config are authoritative. The current branch is
-`splitVLA_lora_ABC`, HEAD was `7262265` when this section was updated, and the
-worktree was clean. Do not assume those facts remain true; run the checks in
-section 1 before editing.
+`splitVLA_lora_ABC`, HEAD was `7262265` before the uncommitted 2026-07-14
+changes described below. The worktree is intentionally dirty with those changes;
+preserve them. Do not assume these facts remain true; run the checks in section
+1 before editing.
 
 ### 0.1 Path/cache portability is fixed at Slurm entry points
 
@@ -113,19 +114,29 @@ local skillset.
 
 ### 0.4 Current running-job snapshot (ephemeral)
 
-At the above timestamp, six FSQ jobs were running. All used batch size 64;
+Latest local-W&B snapshot: 2026-07-14 16:20 KST. Six FSQ jobs were running. All used batch size 64;
 local skillsets have 148 train updates/epoch (10,497 skills) and global
 skillsets 143 (10,157 skills). This is only a status snapshot; inspect Slurm and
 logs again on a new server/session.
 
-| Job | Run | Last observed progress | FSQ.pt best epoch |
+| Job | Run | Latest observed progress | FSQ.pt best epoch |
 |---|---|---:|---:|
-| 1802357 | local zero-grounded `state_skill` | e125–129 | 124 |
-| 1802358 | local raw-state `state_skill` | e240–249 | 167 |
-| 1802359 | local raw-state `state` | e62–74 | 62 |
-| 1802766 | global raw-state `state_skill` | e110–124 | 105 |
-| 1802768 | global zero-grounded `state_skill` | e110–124 | 107 |
-| 1803656 | local zero-grounded `state` | e14–24 | 14 |
+| 1802357 | local zero-grounded `state_skill` | e125 / step 18,500 | 124 |
+| 1802358 | local raw-state `state_skill` | e242 / step 35,816 | 167 |
+| 1802359 | local raw-state `state` | e63 / step 9,324 | 62 |
+| 1802766 | global raw-state `state_skill` | e143 / step 20,449 | 105 |
+| 1802768 | global zero-grounded `state_skill` | e143 / step 20,449 | 107 |
+| 1803656 | local zero-grounded `state` | e77 / step 11,396 | 70 |
+
+For the currently queried global zero-grounded `state_skill` run
+`libero_90_full_full_state_obs20_global_fsq555_dino_frozen_small_vsa_state_skill`
+(job `1802768`): `FSQ.pt` is epoch 107, with best `val/select=0.140005`.
+At epoch 143 its selection score is `0.140693`. Its best-checkpoint full
+encoding (`outputs_filtered/FSQ/<run>/skill_latents.npz`) covers 10,157 skills:
+98/125 codes used, 27 empty, and 20 nonempty codes occur only 1–19 times.
+`fsq_snap_min_code_freq: 20` therefore retains 78 codes and treats 47 as
+unsupported (27 empty + 20 rare). Support sizes at thresholds 1/5/10/20 are
+98/90/86/78 respectively; use 10 as the less-aggressive ablation.
 
 ## 1. Repository state to start from
 
@@ -664,6 +675,14 @@ finds the one matching PT build's `skill_latents.npz` (same FSQ checkpoint and
 snap threshold). The same PT-code reference applies to `ft_own`. FT modes fail
 before submission if that PT reference or (for `ft`) PT threshold is absent or
 ambiguous, rather than silently making snapping a no-op.
+
+The SkillVLA build now really executes those threshold semantics in both
+`build_data/submit_build_all.sh` and `build_data/src/submit_build_skillset.sh`:
+curve-only array → reducer or PT-reference dependency → cached-curve segment
+array → verification. The VLA-local reducer wrapper is
+`build_data/src/compute_global_boundary_threshold.sbatch`; it invokes the shared
+Python reducer with VLA-resolved paths. Do not restore the old one-pass,
+episode-mean invocation in `build_skillset.sbatch` / `verify_skillset.sbatch`.
 
 Stage 1 / Stage 2 / FT:
 
