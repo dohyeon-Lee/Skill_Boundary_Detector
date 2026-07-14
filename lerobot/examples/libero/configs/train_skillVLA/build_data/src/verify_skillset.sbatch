@@ -83,6 +83,9 @@ while ! is_complete; do
       --n_gmm_components     "${SKILLSET_N_GMM}" \
       --smooth_window        "${SKILLSET_SMOOTH_WINDOW}" \
       --savgol_polyorder     "${SKILLSET_SAVGOL_POLYORDER}" \
+      --boundary_threshold_mode "${SKILLSET_BOUNDARY_THRESHOLD_MODE}" \
+      --global_threshold_path "${SKILLSET_GLOBAL_THRESHOLD_SOURCE:-${SKILLSET_GLOBAL_THRESHOLD_PATH}}" \
+      --use_cached_curves \
       --resume \
       --write_done_markers \
       --task_ids ${MISSING}

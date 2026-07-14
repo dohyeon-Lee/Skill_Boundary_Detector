@@ -55,12 +55,13 @@ fi
 #  DINO는 어디서도 precompute 안 함.)
 
 # ── encode skills with FSQ → latent vectors (GPU) ──
-# transfer 안전망(B): fsq_snap_to_supported:true면 미지원 코드를 최근접 지원 코드로 snap.
+# transfer 안전망(B): PT는 self-pruning, FT는 config resolver가 자동 탐색한
+# PT skill_latents.npz를 기준으로 미지원 코드를 최근접 지원 코드로 snap한다.
 SNAP_ARGS=(--no-snap_to_supported)
 if [ "${FSQ_SNAP_TO_SUPPORTED:-false}" = "true" ]; then
   SNAP_REF="${FSQ_SNAP_REFERENCE:-}"
   if [ -z "${SNAP_REF}" ]; then
-    echo "fsq_snap_to_supported=true 인데 fsq_snap_reference 가 비어있음 (원본 skill_code_freq.npz 경로 필요)" >&2
+    echo "fsq_snap_to_supported=true 인데 자동으로 결정된 PT/FT code reference가 비어있음" >&2
     exit 1
   fi
   # "self" = 방금 인코딩한 raw 토큰 자체를 기준표로 (외부 파일 불필요) → 리터럴로 넘김; 그 외엔 경로 정규화.

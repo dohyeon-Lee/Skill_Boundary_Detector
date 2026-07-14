@@ -36,8 +36,9 @@ if [ ! -d "${SKILLSET_DIR}/skills" ]; then
   exit 1
 fi
 
-if [ "${SKILLSET_BOUNDARY_THRESHOLD_MODE}" = "global_mean" ] && [ ! -f "${SKILLSET_GLOBAL_THRESHOLD_PATH}" ]; then
-  echo "Global threshold file missing: ${SKILLSET_GLOBAL_THRESHOLD_PATH}" >&2
+EFFECTIVE_GLOBAL_THRESHOLD_PATH="${SKILLSET_GLOBAL_THRESHOLD_SOURCE:-${SKILLSET_GLOBAL_THRESHOLD_PATH}}"
+if [ "${SKILLSET_BOUNDARY_THRESHOLD_MODE}" = "global_mean" ] && [ ! -f "${EFFECTIVE_GLOBAL_THRESHOLD_PATH}" ]; then
+  echo "Global threshold file missing: ${EFFECTIVE_GLOBAL_THRESHOLD_PATH}" >&2
   exit 1
 fi
 
@@ -53,7 +54,9 @@ mkdir -p "${SKILLSET_DIR}"
   echo "skills=${N_SKILLS}"
   echo "boundary_threshold_mode=${SKILLSET_BOUNDARY_THRESHOLD_MODE}"
   [ "${SKILLSET_BOUNDARY_THRESHOLD_MODE}" = "global_mean" ] && \
-    echo "global_threshold_path=${SKILLSET_GLOBAL_THRESHOLD_PATH}"
+    echo "global_threshold_path=${EFFECTIVE_GLOBAL_THRESHOLD_PATH}"
+  [ -n "${SKILLSET_GLOBAL_THRESHOLD_SOURCE:-}" ] && \
+    echo "global_threshold_source=${SKILLSET_GLOBAL_THRESHOLD_SOURCE}"
   echo "completed_at=$(date -Iseconds)"
 } > "${SKILLSET_DONE_PATH}"
 

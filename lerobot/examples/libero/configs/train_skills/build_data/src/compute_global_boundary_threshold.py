@@ -23,6 +23,13 @@ def parse_args() -> argparse.Namespace:
         "--expected_episodes", type=int, required=True,
         help="Fail if the curve array did not produce exactly this many episode curves.",
     )
+    parser.add_argument("--dp_run_name", default="")
+    parser.add_argument("--dp_checkpoint", default="")
+    parser.add_argument("--eval_at_step", default="")
+    parser.add_argument("--n_gmm_components", default="")
+    parser.add_argument("--replan_interval", default="")
+    parser.add_argument("--smooth_window", default="")
+    parser.add_argument("--savgol_polyorder", default="")
     return parser.parse_args()
 
 
@@ -62,6 +69,15 @@ def main() -> None:
         "n_episodes": len(episode_ids),
         "n_replan_points": count,
         "aggregation": "mean_over_all_episode_sg_replan_points",
+        "provenance": {
+            "dp_run_name": args.dp_run_name,
+            "dp_checkpoint": args.dp_checkpoint,
+            "eval_at_step": args.eval_at_step,
+            "n_gmm_components": args.n_gmm_components,
+            "replan_interval": args.replan_interval,
+            "smooth_window": args.smooth_window,
+            "savgol_polyorder": args.savgol_polyorder,
+        },
     }
     temp_path = output_path.with_suffix(output_path.suffix + ".tmp")
     with temp_path.open("w") as f:

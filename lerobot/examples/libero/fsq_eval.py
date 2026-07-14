@@ -47,7 +47,7 @@ from codebook_visualizer import (  # noqa: E402
     _video_path,
 )
 from decoder_eval import load_model  # noqa: E402
-from FSQ import spline_encode  # noqa: E402
+from FSQ import encoder_start_eef_pose, spline_encode  # noqa: E402
 from train_FSQ import attach_episode_offsets, load_skill_files  # noqa: E402
 
 
@@ -120,8 +120,13 @@ def batched_encode(model, segments, lengths, device, batch_size):
     nctrl, deg = model.n_control, model.spline_degree
     amin = model.encoder.encoder_min.cpu().numpy()
     amax = model.encoder.encoder_max.cpu().numpy()
+    optimal = model.encoder.encoder_input_mode == "optimal"
+    if optimal:
+        smin = model.encoder.encoder_start_min.cpu().numpy()
+        smax = model.encoder.encoder_start_max.cpu().numpy()
 
     ctrl_norm = []
+    start_norm = []
     for seg in segments:
         cp, _ = spline_encode(
             seg.astype(np.float32),
@@ -131,6 +136,9 @@ def batched_encode(model, segments, lengths, device, batch_size):
         )
         cp = (cp - amin) / (amax - amin + 1e-8) * 2.0 - 1.0
         ctrl_norm.append(cp.astype(np.float32))
+        if optimal:
+            pose = encoder_start_eef_pose(seg)
+            start_norm.append(((pose - smin) / (smax - smin + 1e-8) * 2.0 - 1.0).astype(np.float32))
 
     latents = np.zeros((N, int(model.fsq.latent_dim)), np.float32)
     tokens = np.zeros(N, np.int32)
@@ -140,10 +148,13 @@ def batched_encode(model, segments, lengths, device, batch_size):
         B = len(idxs)
         ctrl = torch.zeros(B, nctrl, A)
         lens = torch.zeros(B, dtype=torch.long)
+        start = torch.zeros(B, len(start_norm[0])) if optimal else None
         for b, i in enumerate(idxs):
             ctrl[b] = torch.from_numpy(ctrl_norm[i])
             lens[b] = lengths[i]
-        z_q, idx = model.encode(ctrl.to(device), lens.to(device))
+            if start is not None:
+                start[b] = torch.from_numpy(start_norm[i])
+        z_q, idx = model.encode(ctrl.to(device), lens.to(device), None if start is None else start.to(device))
         z_q = z_q.cpu().numpy()
         idx = idx.cpu().numpy()
         for b, i in enumerate(idxs):

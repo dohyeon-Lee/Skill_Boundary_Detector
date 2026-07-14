@@ -130,6 +130,24 @@ def resolve_skillset_threshold_mode(cfg: dict[str, Any], project_root: Path) -> 
     return str(value if value is not None else "episode_mean").strip().lower()
 
 
+def resolve_skillset_global_threshold_source(cfg: dict[str, Any], project_root: Path) -> str:
+    """Resolve an optional fixed global-threshold JSON, inheriting build_data.
+
+    A source is intentionally separate from ``global_mean``: the latter normally
+    recomputes a mean for the dataset being built, while a non-empty source
+    freezes a previously established cross-task threshold.
+    """
+    value = get_value(cfg, "skillset_global_threshold_source", None)
+    if value is None:
+        build_cfg = (
+            project_root / "lerobot" / "examples" / "libero" / "configs"
+            / "train_skills" / "build_data" / "build_data_config.yaml"
+        )
+        if build_cfg.is_file():
+            value = get_value(load_config(build_cfg), "skillset_global_threshold_source", "")
+    return resolve_path(project_root, value)
+
+
 def as_bool(value: Any) -> bool:
     if isinstance(value, bool):
         return value
@@ -209,11 +227,16 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
             "skillset_boundary_threshold_mode must be 'episode_mean' or 'global_mean', "
             f"got {skillset_boundary_threshold_mode!r}."
         )
+    skillset_global_threshold_source = resolve_skillset_global_threshold_source(cfg, root)
+    if skillset_global_threshold_source and skillset_boundary_threshold_mode != "global_mean":
+        raise ValueError(
+            "skillset_global_threshold_source requires skillset_boundary_threshold_mode=global_mean."
+        )
     # Keep the legacy directory for episode_mean. A global threshold produces different
     # labels, so isolate it instead of allowing --resume to mix both segmentations.
-    skillset_threshold_suffix = (
-        "" if skillset_boundary_threshold_mode == "episode_mean" else "_globalmean"
-    )
+    skillset_threshold_suffix = ""
+    if skillset_boundary_threshold_mode == "global_mean":
+        skillset_threshold_suffix = "_globalref" if skillset_global_threshold_source else "_globalmean"
     fsq_seg_dir = fsq_inputs_dir / f"seg_{dp_policy}_ck{dp_checkpoint}{skillset_threshold_suffix}"
 
     fsq_levels = as_levels(get_value(cfg, "fsq_levels", [5, 5, 5]))
@@ -238,15 +261,19 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
     fsq_vision_backbone = str(get_value(cfg, "fsq_vision_backbone", "dino"))
     fsq_freeze_vision_encoder = as_bool(get_value(cfg, "fsq_freeze_vision_encoder", True))
     fsq_vision_tag = fsq_vision_backbone + ("_frozen" if fsq_freeze_vision_encoder else "_tuned")
-    fsq_encoder_input_mode = str(get_value(cfg, "fsq_encoder_input_mode", "zero_grounded"))
-    if fsq_encoder_input_mode not in {"zero_grounded", "raw_state"}:
+    fsq_encoder_input_mode = str(get_value(cfg, "fsq_encoder_input_mode", "zero_grounded")).strip().lower()
+    if fsq_encoder_input_mode not in {"zero_grounded", "raw_state", "optimal"}:
         raise ValueError(
-            "fsq_encoder_input_mode must be zero_grounded|raw_state, "
+            "fsq_encoder_input_mode must be zero_grounded|raw_state|optimal, "
             f"got {fsq_encoder_input_mode!r}."
         )
-    # Preserve the historical zero-grounded name; raw-state runs get an explicit suffix so they can
-    # never auto-resume from a checkpoint trained with the other encoder input convention.
-    fsq_encoder_input_suffix = "_rawstate" if fsq_encoder_input_mode == "raw_state" else ""
+    # Preserve the historical zero-grounded name; the other conventions get explicit suffixes so
+    # they can never auto-resume from an incompatible encoder checkpoint.
+    fsq_encoder_input_suffix = {
+        "zero_grounded": "",
+        "raw_state": "_rawstate",
+        "optimal": "_optimal",
+    }[fsq_encoder_input_mode]
     fsq_state_cond_mode = str(get_value(cfg, "fsq_state_cond_mode", "state"))
     if fsq_state_cond_mode not in {"state", "state_skill"}:
         raise ValueError(
@@ -399,6 +426,7 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "skillset_replan_interval": int(get_value(cfg, "skillset_replan_interval", 3)),
         "skillset_nms_dist": int(get_value(cfg, "skillset_nms_dist", 25)),
         "skillset_boundary_threshold_mode": skillset_boundary_threshold_mode,
+        "skillset_global_threshold_source": skillset_global_threshold_source,
         "skillset_global_threshold_path": (
             fsq_seg_dir / str(get_value(cfg, "skillset_name", "skillset"))
             / "global_boundary_threshold.json"

@@ -33,4 +33,11 @@ EXPECTED_EPISODES=${EXPECTED_EPISODES:?EXPECTED_EPISODES must be supplied by sub
 python "${SCRIPT_DIR}/compute_global_boundary_threshold.py" \
   --curves_dir "${SKILLSET_DIR}/curves" \
   --output_path "${SKILLSET_GLOBAL_THRESHOLD_PATH}" \
-  --expected_episodes "${EXPECTED_EPISODES}"
+  --expected_episodes "${EXPECTED_EPISODES}" \
+  --dp_run_name "${DP_POLICY}" \
+  --dp_checkpoint "${DP_CHECKPOINT}" \
+  --eval_at_step "${SKILLSET_DN_STEP}" \
+  --n_gmm_components "${SKILLSET_N_GMM}" \
+  --replan_interval "${SKILLSET_REPLAN_INTERVAL}" \
+  --smooth_window "${SKILLSET_SMOOTH_WINDOW}" \
+  --savgol_polyorder "${SKILLSET_SAVGOL_POLYORDER}"

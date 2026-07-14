@@ -117,7 +117,16 @@ PY
   [ -n "${SLURM_NODELIST}" ] && ARRAY_ARGS+=(--nodelist="${SLURM_NODELIST}")
   [ -n "${SLURM_EXCLUDE_NODES}" ] && ARRAY_ARGS+=(--exclude="${SLURM_EXCLUDE_NODES}")
 
-  echo "Global-mean skillset build (two pass)"
+  if [ -n "${SKILLSET_GLOBAL_THRESHOLD_SOURCE:-}" ]; then
+    echo "Fixed-global-reference skillset build (curves + cached segmentation)"
+    echo "  threshold src : ${SKILLSET_GLOBAL_THRESHOLD_SOURCE}"
+    if [ ! -f "${SKILLSET_GLOBAL_THRESHOLD_SOURCE}" ]; then
+      echo "skillset_global_threshold_source not found: ${SKILLSET_GLOBAL_THRESHOLD_SOURCE}" >&2
+      exit 1
+    fi
+  else
+    echo "Global-mean skillset build (two pass)"
+  fi
   echo "  skillset      : ${SKILLSET_DIR}"
   echo "  total episodes: ${EXPECTED_EPISODES}"
   echo "  array         : 0-${ARRAY_END}"
@@ -125,22 +134,29 @@ PY
     sbatch --parsable "${ARRAY_ARGS[@]}" "${BUILD_SRC_DIR}/build_skillset.sbatch")
   echo "Curve collection array job: ${CURVES_JOB}"
 
-  REDUCE_ARGS=(
-    --partition="${SLURM_PARTITION}"
-    --qos="${SLURM_QOS}"
-    --gres="${SLURM_GRES}"
-    --cpus-per-task=1
-    --mem=2G
-    --time=00:10:00
-    --dependency="afterok:${CURVES_JOB}"
-  )
-  [ -n "${SLURM_NODELIST}" ] && REDUCE_ARGS+=(--nodelist="${SLURM_NODELIST}")
-  [ -n "${SLURM_EXCLUDE_NODES}" ] && REDUCE_ARGS+=(--exclude="${SLURM_EXCLUDE_NODES}")
-  THRESHOLD_JOB=$(EXPECTED_EPISODES="${EXPECTED_EPISODES}" TRAIN_SKILLS_CONFIG="${CONFIG_PATH}" TRAIN_DATA="${TARGET_DATASET}" \
-    sbatch --parsable "${REDUCE_ARGS[@]}" "${BUILD_SRC_DIR}/compute_global_boundary_threshold.sbatch")
-  echo "Global threshold job: ${THRESHOLD_JOB}"
+  if [ -n "${SKILLSET_GLOBAL_THRESHOLD_SOURCE:-}" ]; then
+    # The source has already been checked above.  Curves are still collected for
+    # the target dataset, but segmentation uses the frozen reference threshold.
+    THRESHOLD_DEPENDENCY="afterok:${CURVES_JOB}"
+  else
+    REDUCE_ARGS=(
+      --partition="${SLURM_PARTITION}"
+      --qos="${SLURM_QOS}"
+      --gres="${SLURM_GRES}"
+      --cpus-per-task=1
+      --mem=2G
+      --time=00:10:00
+      --dependency="afterok:${CURVES_JOB}"
+    )
+    [ -n "${SLURM_NODELIST}" ] && REDUCE_ARGS+=(--nodelist="${SLURM_NODELIST}")
+    [ -n "${SLURM_EXCLUDE_NODES}" ] && REDUCE_ARGS+=(--exclude="${SLURM_EXCLUDE_NODES}")
+    THRESHOLD_JOB=$(EXPECTED_EPISODES="${EXPECTED_EPISODES}" TRAIN_SKILLS_CONFIG="${CONFIG_PATH}" TRAIN_DATA="${TARGET_DATASET}" \
+      sbatch --parsable "${REDUCE_ARGS[@]}" "${BUILD_SRC_DIR}/compute_global_boundary_threshold.sbatch")
+    echo "Global threshold job: ${THRESHOLD_JOB}"
+    THRESHOLD_DEPENDENCY="afterok:${THRESHOLD_JOB}"
+  fi
 
-  SEGMENT_ARGS=("${ARRAY_ARGS[@]}" --dependency="afterok:${THRESHOLD_JOB}")
+  SEGMENT_ARGS=("${ARRAY_ARGS[@]}" --dependency="${THRESHOLD_DEPENDENCY}")
   SKILLSET_JOB=$(USE_CACHED_CURVES=true TRAIN_SKILLS_CONFIG="${CONFIG_PATH}" TRAIN_DATA="${TARGET_DATASET}" TOTAL_TASKS="${TOTAL_TASKS}" \
     sbatch --parsable "${SEGMENT_ARGS[@]}" "${BUILD_SRC_DIR}/build_skillset.sbatch")
   echo "Cached-curve segmentation array job: ${SKILLSET_JOB}"

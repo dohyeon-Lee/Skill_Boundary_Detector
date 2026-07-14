@@ -66,22 +66,41 @@ def zero_ground_trajectory(trajectory: np.ndarray) -> np.ndarray:
     traj = np.asarray(trajectory, dtype=np.float32).copy()
     if len(traj) == 0:
         raise ValueError("Cannot encode an empty skill trajectory.")
+    if N_GRIPPER_DIMS >= traj.shape[-1]:
+        raise ValueError(
+            f"Expected more than {N_GRIPPER_DIMS} state dimensions, got {traj.shape[-1]}."
+        )
     offset = traj[0].copy()
     offset[-N_GRIPPER_DIMS:] = 0.0
     return traj - offset
 
 
-def prepare_encoder_trajectory(trajectory: np.ndarray, input_mode: str) -> np.ndarray:
+def encoder_start_eef_pose(trajectory: np.ndarray) -> np.ndarray:
+    """Absolute skill-start EEF pose(s), excluding trailing gripper-state dimensions."""
+    traj = np.asarray(trajectory, dtype=np.float32)
+    if len(traj) == 0:
+        raise ValueError("Cannot encode an empty skill trajectory.")
+    if N_GRIPPER_DIMS >= traj.shape[-1]:
+        raise ValueError(
+            f"Expected more than {N_GRIPPER_DIMS} state dimensions, got {traj.shape[-1]}."
+        )
+    return traj[0, :-N_GRIPPER_DIMS].copy()
+
+
+def prepare_encoder_trajectory(
+    trajectory: np.ndarray,
+    input_mode: str,
+) -> np.ndarray:
     """Apply the checkpointed FSQ-encoder input convention before spline fitting."""
     traj = np.asarray(trajectory, dtype=np.float32)
     if len(traj) == 0:
         raise ValueError("Cannot encode an empty skill trajectory.")
-    if input_mode == "zero_grounded":
+    if input_mode in {"zero_grounded", "optimal"}:
         return zero_ground_trajectory(traj)
     if input_mode == "raw_state":
         return traj.copy()
     raise ValueError(
-        f"encoder_input_mode must be zero_grounded|raw_state, got {input_mode!r}."
+        f"encoder_input_mode must be zero_grounded|raw_state|optimal, got {input_mode!r}."
     )
 
 
@@ -203,23 +222,38 @@ class SplineFSQEncoder(nn.Module):
         encoder_min: np.ndarray,
         encoder_max: np.ndarray,
         encoder_input_mode: str = "zero_grounded",
+        encoder_start_min: np.ndarray | None = None,
+        encoder_start_max: np.ndarray | None = None,
     ):
         super().__init__()
-        if encoder_input_mode not in {"zero_grounded", "raw_state"}:
+        if encoder_input_mode not in {"zero_grounded", "raw_state", "optimal"}:
             raise ValueError(
-                "encoder_input_mode must be zero_grounded|raw_state, "
+                "encoder_input_mode must be zero_grounded|raw_state|optimal, "
                 f"got {encoder_input_mode!r}."
             )
         self.enc_dim = int(enc_dim)
         self.n_control = int(n_control)
         self.spline_degree = int(spline_degree)
         self.encoder_input_mode = encoder_input_mode
+        if N_GRIPPER_DIMS >= self.enc_dim:
+            raise ValueError(
+                f"Expected encoder dim > {N_GRIPPER_DIMS}, got {self.enc_dim}."
+            )
         self.length_min = float(length_min)
         self.length_max = float(length_max)
         self.enc_ctrl_proj = nn.Linear(enc_dim, hidden_dim)
         self.enc_len_proj = nn.Linear(1, hidden_dim)
+        self.enc_start_proj: nn.Linear | None = None
+        if encoder_input_mode == "optimal":
+            if encoder_start_min is None or encoder_start_max is None:
+                raise ValueError("optimal encoder mode requires encoder_start_min/max.")
+            start_dim = enc_dim - N_GRIPPER_DIMS
+            self.enc_start_proj = nn.Linear(start_dim, hidden_dim)
+            self.register_buffer("encoder_start_min", torch.as_tensor(encoder_start_min, dtype=torch.float32))
+            self.register_buffer("encoder_start_max", torch.as_tensor(encoder_start_max, dtype=torch.float32))
         self.enc_traj_pool = TokenTransformerPool(
-            hidden_dim, n_control + 1, n_layers=n_layers, n_heads=n_heads, dropout=dropout
+            hidden_dim, n_control + 1 + int(encoder_input_mode == "optimal"),
+            n_layers=n_layers, n_heads=n_heads, dropout=dropout,
         )
         self.z_head = nn.Linear(hidden_dim, len(fsq_levels))
         self.fsq = FSQ(fsq_levels)
@@ -231,16 +265,38 @@ class SplineFSQEncoder(nn.Module):
         hi = self.encoder_max.to(ctrl.device, ctrl.dtype)
         return 2.0 * (ctrl - lo) / (hi - lo + 1e-8) - 1.0
 
-    def forward(self, ctrl: Tensor, lengths: Tensor, *, normalized: bool = True) -> tuple[Tensor, Tensor]:
+    def normalize_start_pose(self, start_pose: Tensor) -> Tensor:
+        if self.enc_start_proj is None:
+            raise ValueError("Only optimal encoder mode accepts a start EEF pose.")
+        lo = self.encoder_start_min.to(start_pose.device, start_pose.dtype)
+        hi = self.encoder_start_max.to(start_pose.device, start_pose.dtype)
+        return 2.0 * (start_pose - lo) / (hi - lo + 1e-8) - 1.0
+
+    def forward(
+        self,
+        ctrl: Tensor,
+        lengths: Tensor,
+        start_pose: Tensor | None = None,
+        *,
+        normalized: bool = True,
+    ) -> tuple[Tensor, Tensor]:
         if not normalized:
             ctrl = self.normalize_control_points(ctrl)
+            if start_pose is not None:
+                start_pose = self.normalize_start_pose(start_pose)
         bsize = ctrl.shape[0]
         ctrl_tok = self.enc_ctrl_proj(ctrl)
         length_norm = (
             2.0 * (lengths.float() - self.length_min) / (self.length_max - self.length_min + 1e-8) - 1.0
         ).view(bsize, 1, 1).to(ctrl_tok.dtype)
         length_tok = self.enc_len_proj(length_norm)
-        z_e = self.z_head(self.enc_traj_pool(torch.cat([ctrl_tok, length_tok], dim=1)))
+        tokens = [ctrl_tok]
+        if self.enc_start_proj is not None:
+            if start_pose is None:
+                raise ValueError("optimal encoder mode requires start_pose on every forward pass.")
+            tokens.append(self.enc_start_proj(start_pose).unsqueeze(1))
+        tokens.append(length_tok)
+        z_e = self.z_head(self.enc_traj_pool(torch.cat(tokens, dim=1)))
         return self.fsq(z_e)
 
     @torch.no_grad()
@@ -253,7 +309,12 @@ class SplineFSQEncoder(nn.Module):
         )
         ctrl_t = torch.from_numpy(ctrl).float().unsqueeze(0).to(device)
         length_t = torch.tensor([length], dtype=torch.long, device=device)
-        z_q, _ = self(ctrl_t, length_t, normalized=False)
+        start_t = None
+        if self.enc_start_proj is not None:
+            start_t = torch.from_numpy(
+                encoder_start_eef_pose(trajectory)
+            ).float().unsqueeze(0).to(device)
+        z_q, _ = self(ctrl_t, length_t, start_t, normalized=False)
         return z_q[0].cpu().numpy()
 
     @torch.no_grad()
@@ -266,7 +327,12 @@ class SplineFSQEncoder(nn.Module):
         )
         ctrl_t = torch.from_numpy(ctrl).float().unsqueeze(0).to(device)
         length_t = torch.tensor([length], dtype=torch.long, device=device)
-        _, index = self(ctrl_t, length_t, normalized=False)
+        start_t = None
+        if self.enc_start_proj is not None:
+            start_t = torch.from_numpy(
+                encoder_start_eef_pose(trajectory)
+            ).float().unsqueeze(0).to(device)
+        _, index = self(ctrl_t, length_t, start_t, normalized=False)
         return int(index.item())
 
 
@@ -876,6 +942,8 @@ class SplineFSQAEConfig:
 
     encoder_min: np.ndarray | None = None
     encoder_max: np.ndarray | None = None
+    encoder_start_min: np.ndarray | None = None
+    encoder_start_max: np.ndarray | None = None
     state_min: np.ndarray | None = None
     state_max: np.ndarray | None = None
     state_q01: np.ndarray | None = None
@@ -900,9 +968,9 @@ class SplineFSQAE(nn.Module):
             raise ValueError(f"expert_dtype must be float32|bfloat16|float16, got {cfg.expert_dtype!r}.")
         if cfg.samples_per_skill < 1 or cfg.chunk_size < 1:
             raise ValueError("samples_per_skill and chunk_size must both be >=1.")
-        if cfg.encoder_input_mode not in {"zero_grounded", "raw_state"}:
+        if cfg.encoder_input_mode not in {"zero_grounded", "raw_state", "optimal"}:
             raise ValueError(
-                "encoder_input_mode must be zero_grounded|raw_state, "
+                "encoder_input_mode must be zero_grounded|raw_state|optimal, "
                 f"got {cfg.encoder_input_mode!r}."
             )
         if cfg.terminator_arch not in {"small", "cond"}:
@@ -915,6 +983,10 @@ class SplineFSQAE(nn.Module):
         ):
             if getattr(cfg, name) is None:
                 raise ValueError(f"FSQ config is missing required normalization statistic: {name}")
+        if cfg.encoder_input_mode == "optimal":
+            for name in ("encoder_start_min", "encoder_start_max"):
+                if getattr(cfg, name) is None:
+                    raise ValueError(f"Optimal FSQ config is missing required statistic: {name}")
         self.cfg = cfg
         self.encoder = SplineFSQEncoder(
             enc_dim=cfg.enc_dim,
@@ -930,6 +1002,8 @@ class SplineFSQAE(nn.Module):
             encoder_min=cfg.encoder_min,
             encoder_max=cfg.encoder_max,
             encoder_input_mode=cfg.encoder_input_mode,
+            encoder_start_min=cfg.encoder_start_min,
+            encoder_start_max=cfg.encoder_start_max,
         )
         self.action_expert = VSAFlowExpert(
             variant=cfg.action_expert_variant,
@@ -989,8 +1063,10 @@ class SplineFSQAE(nn.Module):
     def chunk_size(self) -> int:
         return self.cfg.chunk_size
 
-    def encode(self, ctrl: Tensor, lengths: Tensor) -> tuple[Tensor, Tensor]:
-        return self.encoder(ctrl, lengths, normalized=True)
+    def encode(
+        self, ctrl: Tensor, lengths: Tensor, start_pose: Tensor | None = None
+    ) -> tuple[Tensor, Tensor]:
+        return self.encoder(ctrl, lengths, start_pose, normalized=True)
 
     def encode_numpy(self, trajectory: np.ndarray, device: str | torch.device = "cpu") -> np.ndarray:
         return self.encoder.encode_numpy(trajectory, device)
@@ -1074,6 +1150,7 @@ class SplineFSQAE(nn.Module):
         *,
         ctrl: Tensor,
         lengths: Tensor,
+        start_pose: Tensor | None = None,
         expert_state: Tensor,
         raw_state: Tensor,
         actions: Tensor,
@@ -1083,7 +1160,7 @@ class SplineFSQAE(nn.Module):
         noise: Tensor | None = None,
         time: Tensor | None = None,
     ) -> dict[str, Tensor]:
-        z_q, indices = self.encoder(ctrl, lengths, normalized=True)
+        z_q, indices = self.encoder(ctrl, lengths, start_pose, normalized=True)
         z_norm = self.fsq.normalized(z_q)
         z_sample = z_norm.repeat_interleave(samples_per_skill, dim=0)
         residual = self.action_expert.flow_residual(
@@ -1139,6 +1216,8 @@ def load_fsq_encoder(path: str | Path, device: str | torch.device = "cpu") -> tu
         encoder_min=cfg.encoder_min,
         encoder_max=cfg.encoder_max,
         encoder_input_mode=getattr(cfg, "encoder_input_mode", "zero_grounded"),
+        encoder_start_min=getattr(cfg, "encoder_start_min", None),
+        encoder_start_max=getattr(cfg, "encoder_start_max", None),
     )
     _load_prefixed(encoder, checkpoint["model_state"], "encoder.")
     encoder.to(device).eval()
@@ -1262,6 +1341,7 @@ class FSQTrajectoryDataset(Dataset):
         if self.samples_per_skill < 1:
             raise ValueError("samples_per_skill must be >=1.")
         self.ctrl: list[np.ndarray] = []
+        self.start_poses: list[np.ndarray] | None = [] if cfg.encoder_input_mode == "optimal" else None
         self.lengths: list[int] = []
         self.states = [np.asarray(x, dtype=np.float32) for x in states]
         self.actions = [np.asarray(x, dtype=np.float32) for x in actions]
@@ -1271,6 +1351,10 @@ class FSQTrajectoryDataset(Dataset):
 
         enc_min = np.asarray(cfg.encoder_min, dtype=np.float32)
         enc_max = np.asarray(cfg.encoder_max, dtype=np.float32)
+        start_min = start_max = None
+        if self.start_poses is not None:
+            start_min = np.asarray(cfg.encoder_start_min, dtype=np.float32)
+            start_max = np.asarray(cfg.encoder_start_max, dtype=np.float32)
         for i, segment in enumerate(segments):
             ctrl, length = spline_encode(
                 segment,
@@ -1286,6 +1370,11 @@ class FSQTrajectoryDataset(Dataset):
             if "dataset_from_index" not in metadata[i]:
                 raise ValueError(f"Skill {i} metadata has no dataset_from_index.")
             self.ctrl.append((2.0 * (ctrl - enc_min) / (enc_max - enc_min + 1e-8) - 1.0).astype(np.float32))
+            if self.start_poses is not None:
+                start_pose = encoder_start_eef_pose(segment)
+                self.start_poses.append(
+                    (2.0 * (start_pose - start_min) / (start_max - start_min + 1e-8) - 1.0).astype(np.float32)
+                )
             self.lengths.append(length)
 
         self.state_q01 = np.asarray(cfg.state_q01, dtype=np.float32)
@@ -1400,7 +1489,7 @@ class FSQTrajectoryDataset(Dataset):
         else:
             termination = (distance_to_end == 0).astype(np.float32)
         third, wrist = self._sample_images(index, sample)
-        return {
+        item = {
             "ctrl": torch.from_numpy(self.ctrl[index]),
             "length": torch.tensor(length, dtype=torch.long),
             "expert_state": torch.from_numpy(expert_state),
@@ -1413,6 +1502,9 @@ class FSQTrajectoryDataset(Dataset):
             "sample_index": torch.from_numpy(sample),
             "trajectory_index": torch.tensor(index, dtype=torch.long),
         }
+        if self.start_poses is not None:
+            item["start_pose"] = torch.from_numpy(self.start_poses[index])
+        return item
 
 
 def collate_fsq_batch(batch: list[dict[str, Tensor]]) -> dict[str, Tensor | None]:
@@ -1665,6 +1757,7 @@ def train_spline_fsqae(
             output = model(
                 ctrl=moved["ctrl"],
                 lengths=moved["length"],
+                start_pose=moved.get("start_pose"),
                 expert_state=expert_state,
                 raw_state=raw_state,
                 actions=actions,

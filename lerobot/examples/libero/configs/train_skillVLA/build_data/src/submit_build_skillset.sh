@@ -54,6 +54,14 @@ print(" ".join(str(int(t)) for t in sorted(df["task_index"].unique())))
 PY
 )"
 N_TASKS=$(wc -w <<< "${ALL_TASK_IDS}")
+EXPECTED_EPISODES=$("${BOOTSTRAP_PYTHON}" - "${RAW_DATASET_DIR}/meta/episodes" <<'PY'
+import sys
+from pathlib import Path
+import pandas as pd
+parts = sorted(Path(sys.argv[1]).rglob("file-*.parquet"))
+print(sum(len(pd.read_parquet(p)) for p in parts))
+PY
+)
 TPJ="${SKILLSET_TASKS_PER_JOB:-5}"
 NUM_SHARDS=$(( (N_TASKS + TPJ - 1) / TPJ ))
 [ "${NUM_SHARDS}" -lt 1 ] && NUM_SHARDS=1
@@ -62,7 +70,7 @@ if [ "${SKILLSET_ARRAY_THROTTLE:-0}" -gt 0 ]; then
   ARRAY_SPEC="${ARRAY_SPEC}%${SKILLSET_ARRAY_THROTTLE}"
 fi
 
-# ── step 3: submit DP skill segmentation (GPU array) ──
+# ── global boundary: curves → fresh/reference threshold → cached segmentation ──
 SBATCH_ARGS=(
   --partition="${SKILLVLA_PARTITION}"
   --qos="${SKILLVLA_QOS}"
@@ -81,19 +89,32 @@ fi
 cd "${SCRIPT_DIR}/.."
 mkdir -p logs
 
-echo "Submit DP skill segmentation"
+echo "Submit global-boundary DP skillset"
 echo "  source    : ${SOURCE_DATASET}"
 echo "  DP policy : ${DP_POLICY_PATH}"
 echo "  skillset  : ${SKILLSET_DIR}"
 echo "  slurm     : partition=${SKILLVLA_PARTITION} qos=${SKILLVLA_QOS} gres=${SKILLVLA_GRES}"
 echo "  array     : ${ARRAY_SPEC}  (${N_TASKS} tasks / ${TPJ} per job = ${NUM_SHARDS} GPUs)"
 
-JID1=$(TRAIN_SKILLVLA_CONFIG="${CONFIG_PATH}" SOURCE_DATA="${SOURCE_DATASET}" ALL_TASK_IDS="${ALL_TASK_IDS}" \
+JID_CURVES=$(TRAIN_SKILLVLA_CONFIG="${CONFIG_PATH}" SOURCE_DATA="${SOURCE_DATASET}" ALL_TASK_IDS="${ALL_TASK_IDS}" CURVES_ONLY=true \
   sbatch --parsable --array="${ARRAY_SPEC}" "${SBATCH_ARGS[@]}" "${SRC_DIR}/build_skillset.sbatch")
-echo "  skillset job : ${JID1}"
+echo "  curve job    : ${JID_CURVES}"
+
+if [ -n "${SKILLSET_GLOBAL_THRESHOLD_SOURCE:-}" ]; then
+  echo "  threshold    : PT reference ${SKILLSET_GLOBAL_THRESHOLD_SOURCE}"
+  JID_SEG=$(TRAIN_SKILLVLA_CONFIG="${CONFIG_PATH}" SOURCE_DATA="${SOURCE_DATASET}" ALL_TASK_IDS="${ALL_TASK_IDS}" USE_CACHED_CURVES=true \
+    sbatch --parsable --array="${ARRAY_SPEC}" --dependency="afterok:${JID_CURVES}" "${SBATCH_ARGS[@]}" "${SRC_DIR}/build_skillset.sbatch")
+else
+  JID_REDUCE=$(TRAIN_SKILLVLA_CONFIG="${CONFIG_PATH}" SOURCE_DATA="${SOURCE_DATASET}" EXPECTED_EPISODES="${EXPECTED_EPISODES}" \
+    sbatch --parsable --dependency="afterok:${JID_CURVES}" "${SBATCH_ARGS[@]}" "${SRC_DIR}/compute_global_boundary_threshold.sbatch")
+  echo "  threshold job: ${JID_REDUCE}  (${EXPECTED_EPISODES} episodes)"
+  JID_SEG=$(TRAIN_SKILLVLA_CONFIG="${CONFIG_PATH}" SOURCE_DATA="${SOURCE_DATASET}" ALL_TASK_IDS="${ALL_TASK_IDS}" USE_CACHED_CURVES=true \
+    sbatch --parsable --array="${ARRAY_SPEC}" --dependency="afterok:${JID_REDUCE}" "${SBATCH_ARGS[@]}" "${SRC_DIR}/build_skillset.sbatch")
+fi
+echo "  segment job  : ${JID_SEG}"
 
 # verify + re-run any tasks left incomplete (e.g. a dead GPU); afterany → runs even
 # if some array elements failed.
 JIDV=$(TRAIN_SKILLVLA_CONFIG="${CONFIG_PATH}" SOURCE_DATA="${SOURCE_DATASET}" \
-  sbatch --parsable --dependency=afterany:"${JID1}" "${SBATCH_ARGS[@]}" "${SRC_DIR}/verify_skillset.sbatch")
-echo "  verify job   : ${JIDV}  (after ${JID1}; re-runs missing tasks up to ${SKILLSET_MAX_SWEEPS}×)"
+  sbatch --parsable --dependency=afterany:"${JID_SEG}" "${SBATCH_ARGS[@]}" "${SRC_DIR}/verify_skillset.sbatch")
+echo "  verify job   : ${JIDV}  (after ${JID_SEG}; re-runs missing tasks up to ${SKILLSET_MAX_SWEEPS}×)"

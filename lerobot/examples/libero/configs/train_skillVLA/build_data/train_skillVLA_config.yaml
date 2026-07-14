@@ -24,6 +24,13 @@ skillvla_dataset_root: skillvla_dataset  # outputs under {dataset_root}/{skillvl
 # Raw LeRobot dataset to convert into SkillVLA data (may differ from the
 # dataset the DP/FSQ were trained on).
 source_dataset: libero_90_full_full
+# This source's role in the eventual SkillVLA training mix.  It is part of the
+# final output name so the same raw dataset cannot silently reuse PT and FT
+# artifacts. All three use global skill boundaries:
+#   pt     = this PT corpus computes its own global mean
+#   ft     = new task reuses the matching PT global mean (shared taxonomy)
+#   ft_own = new task computes its own global mean (ablation; other FT behavior unchanged)
+skillvla_data_mode: pt  # pt | ft | ft_own
 
 # ── DINO precompute (step 2) ──────────────────────────────────
 # FSQ visual features are never materialized here; its terminator reads raw frames live.
@@ -56,19 +63,18 @@ skillset_max_sweeps: 2
 # FSQ config lives in the checkpoint.
 # fsq_run_name: "libero_90_full_full_state_obs20_fsq555_dino8_weighted_wow"   # folder under outputs/FSQ/
 # fsq_run_name: "libero_90_full_full_state_obs20_fsq555_dino8_both"
-fsq_run_name: "libero_90_full_full_state_obs20_fsq555_dino_frozen_small_v3_vsa_state_m2"
+fsq_run_name: "libero_90_full_full_state_obs20_global_fsq555_dino_frozen_small_vsa_state_skill"
 
-fsq_checkpoint: 0                                 # epoch number; 0 = best (FSQ.pt)
+fsq_checkpoint: 125                                 # epoch number; 0 = best (FSQ.pt)
 
 # ── transfer 안전망: 새 데이터셋 인코딩 시 FSQ가 "미지원(학습때 안 쓰인/희귀) 코드"를 뱉으면
 #    가장 가까운 지원 코드로 옮겨, 다운스트림 VLA가 학습 못한 코드로 스킬이 배정되는 걸 방지.
 #    true면 산출물 폴더가 {run_tag}_snap{min_freq}로 분리됨. 검증은 제출 시점(emitter)에서 fail-fast.
-fsq_snap_to_supported: true     # true면 fsq_snap_reference 필수
-fsq_snap_min_code_freq: 20        # 이 값 미만 빈도 코드를 '미지원'으로 간주 (1=완전 빈칸만; ↑면 희귀코드도 배제)
-# 전이/FT 빌드 = 원본(PT) 빌드의 skill_code_freq.npz 경로 (project_root 기준 상대경로 가능).
-# "self" = 같은 데이터의 이전(un-snap) 빌드를 기준표로 자동 지정 — PT 데이터 어휘 정리(pruning) 용
-# (이때는 min_freq를 높게; 전이 빌드에 self를 쓰면 snap이 no-op이라 의미 없음).
-fsq_snap_reference: "self"
+fsq_snap_to_supported: true
+fsq_snap_min_code_freq: 10        # 이 값 미만 빈도 코드를 '미지원'으로 간주 (1=완전 빈칸만; ↑면 희귀코드도 배제)
+# 지원 코드 기준은 skillvla_data_mode로 자동 선택한다:
+#   pt → 현재 PT 데이터의 raw code 분포(self)로 pruning
+#   ft → 같은 FSQ의 PT 빌드 skill_latents.npz를 자동 탐색해 그 어휘로 snap
 
 # ── SkillVLA dataset build (step 5) ───────────────────────────
 max_order: 0                               # 0 : auto

@@ -23,6 +23,12 @@ skillset_name: skillset
 # Global output is isolated under a `_globalmean` segment directory so it never
 # resumes from or overwrites a legacy skillset.
 skillset_boundary_threshold_mode: global_mean   # episode_mean | global_mean
+# Empty = compute a fresh global mean from this target dataset. To freeze the
+# taxonomy for a new task, set a project-relative or absolute JSON source, e.g.
+# dataset_filtered/FSQ_dataset/libero_90_full_full/FSQ_inputs/seg_libero_90_full_full_state_obs20_ck100000_globalmean/skillset/global_boundary_threshold.json
+# A non-empty source produces a separate seg_*_globalref output and reuses its
+# global_mean after this target's curves have been computed.
+skillset_global_threshold_source: ""
 
 # ── Slurm for skillset generation (partition/qos from global_config) ──
 slurm_gres: gpu:1

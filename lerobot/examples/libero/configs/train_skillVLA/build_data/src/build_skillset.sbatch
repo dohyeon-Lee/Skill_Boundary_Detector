@@ -81,6 +81,15 @@ fi
 # run without rewriting skills: submit with CURVES_ONLY=true (resume keyed by curve file).
 EXTRA_ARGS=()
 [ "${CURVES_ONLY:-false}" = "true" ] && EXTRA_ARGS+=(--curves_only)
+[ "${USE_CACHED_CURVES:-false}" = "true" ] && EXTRA_ARGS+=(--use_cached_curves)
+
+# Global threshold selection is resolved from skillvla_data_mode by the config
+# emitter. Curves-only jobs deliberately do not read the threshold yet.
+EFFECTIVE_GLOBAL_THRESHOLD_PATH="${SKILLSET_GLOBAL_THRESHOLD_SOURCE:-${SKILLSET_GLOBAL_THRESHOLD_PATH}}"
+THRESHOLD_ARGS=(
+  --boundary_threshold_mode "${SKILLSET_BOUNDARY_THRESHOLD_MODE}"
+  --global_threshold_path "${EFFECTIVE_GLOBAL_THRESHOLD_PATH}"
+)
 
 PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
   python -u examples/libero/build_skill_dataset.py \
@@ -95,6 +104,7 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     --n_gmm_components     "${SKILLSET_N_GMM}" \
     --smooth_window        "${SKILLSET_SMOOTH_WINDOW}" \
     --savgol_polyorder     "${SKILLSET_SAVGOL_POLYORDER}" \
+    "${THRESHOLD_ARGS[@]}" \
     --resume \
     --write_done_markers \
     ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \

@@ -43,6 +43,15 @@ global_mean   # one mean over every SG-smoothed replanning point in all episodes
 - A global skillset is isolated as
   `seg_{dp}_ck{checkpoint}_globalmean/skillset`; legacy episode-local data stays
   in `seg_{dp}_ck{checkpoint}/skillset`. Never mix or resume across them.
+- `skillset_global_threshold_source: ""` means compute a fresh target-dataset
+  global mean. Set it to a prior `global_boundary_threshold.json` to hold one
+  taxonomy across a new task: the output is instead isolated as
+  `seg_{dp}_ck{checkpoint}_globalref/skillset`, target curves are still
+  collected, and cached-curve segmentation uses the referenced `global_mean`.
+  The reference file is checked before Slurm submission and is recorded in the
+  resulting `.complete` marker. Do not copy the JSON into the new output: its
+  path is intentional provenance. Newly reduced JSONs also record DP and curve
+  parameter provenance; older schema-v1 JSONs remain valid sources.
 - `global_mean` is a 2-pass Slurm pipeline: (1) curve-only DP/VF array,
   (2) `compute_global_boundary_threshold.sbatch`, which writes
   `skillset/global_boundary_threshold.json`, and (3) cached-curve segmentation
@@ -423,6 +432,14 @@ Tags:
 - `fsq_vision_tag`: e.g. `dino_frozen`, `dino_tuned`, `siglip_frozen`, or
   `siglip_tuned`.
 - `fsq_encoder_input_suffix`: empty for zero-grounded; `_rawstate` for raw state.
+- `fsq_encoder_input_mode` additionally supports `optimal`: it keeps the
+  zero-grounded spline trajectory but adds exactly one learned encoder token
+  projected from the absolute EEF pose at the skill start. Its run-name suffix
+  is `_optimal`; it is a new encoder architecture and cannot resume a
+  zero-grounded/raw checkpoint. The current implementation is intentionally
+  single-arm: it excludes LIBERO's trailing two gripper-state dimensions from
+  the start-pose token. This same preprocessing is used by train,
+  `encode_FSQ_skills.py`, and `fsq_eval.py`.
 - `fsq_state_cond_suffix`: `_vsa_state` or `_vsa_state_skill`.
 - `weighted_suffix`: empty when `weighted_loss: false`; `_weighted` when true.
 - `dp_tag`: adds `_global` immediately after the DP tag for a global-mean
@@ -633,6 +650,20 @@ SkillVLA data construction:
 
 - `lerobot/examples/libero/configs/train_skillVLA/build_data/`
 - `lerobot/examples/libero/configs/train_skillVLA/build_data_eval/`
+
+`build_data/train_skillVLA_config.yaml` has an explicit
+`skillvla_data_mode: pt | ft | ft_own`. It is added to the final `run_tag`, so
+PT and FT data builds cannot silently share final artifacts. All three construct
+global-boundary skillsets: `pt` reduces the PT curves; `ft` reuses the one
+matching PT `global_boundary_threshold.json` and writes an isolated
+`seg_*_globalref`; `ft_own` reduces the FT source curves into its own
+`seg_*_globalmean` for the new-motion ablation. There is no user-facing
+`fsq_snap_reference`: with snapping enabled, `pt` automatically uses its own
+raw code distribution (`self`) for vocabulary pruning, while `ft` automatically
+finds the one matching PT build's `skill_latents.npz` (same FSQ checkpoint and
+snap threshold). The same PT-code reference applies to `ft_own`. FT modes fail
+before submission if that PT reference or (for `ft`) PT threshold is absent or
+ambiguous, rather than silently making snapping a no-op.
 
 Stage 1 / Stage 2 / FT:
 

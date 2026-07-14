@@ -39,6 +39,12 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
     skillvla_root = dataset_root / str(get_value(cfg, "skillvla_dataset_root", "skillvla_dataset"))
 
     source_dataset = dataset or str(get_value(cfg, "source_dataset", env="SOURCE_DATA"))
+    skillvla_data_mode = str(get_value(cfg, "skillvla_data_mode", "pt")).strip().lower()
+    if skillvla_data_mode not in {"pt", "ft", "ft_own"}:
+        raise ValueError(
+            "skillvla_data_mode must be pt|ft|ft_own, "
+            f"got {skillvla_data_mode!r}."
+        )
 
     # ── FSQ reference (declared like dp_policy_name: folder name + checkpoint) ──
     # Parse codebook levels from the FSQ folder. The remaining suffix identifies
@@ -74,38 +80,56 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
     #   {skillvla_root}/{source_dataset}/{run_tag}/   ← final outputs (FSQ.pt, skillvla/)
     #   {skillvla_root}/{source_dataset}/_work/        ← intermediates, keyed by dependency:
     #       seg_{dp}_ck{ckpt}/        (DP-dependent: skillset + skill_tokens; shared across FSQ)
-    run_tag = f"FSQ{fsq_digits}_{fsq_variant}_{ckpt_tag}"
+    base_run_tag = f"FSQ{fsq_digits}_{fsq_variant}_{ckpt_tag}"
+    run_tag = f"{base_run_tag}_{skillvla_data_mode}"
     # transfer 빌드(snap): 미지원 코드를 최근접 지원 코드로 snap한 빌드는 산출물(skill_latents/skillvla)이
     # 다르므로 폴더 분리 — run_tag에 _snap{min_freq} 부착 (downstream 파서들의 run_tag 정규식은
     # `FSQ\d+_dino\d+.*?` 꼴이라 그대로 통과). _work 중간물은 snap 무관(dino/segmentation)이라 공유 유지.
     fsq_snap = as_bool(get_value(cfg, "fsq_snap_to_supported", False))
-    fsq_snap_reference = str(get_value(cfg, "fsq_snap_reference", "") or "").strip()
+    fsq_snap_reference = ""
     if fsq_snap:
-        # 제출 시점 fail-fast: 예전엔 encode 잡 런타임에야 터져서 뒤의 build 잡이
-        # DependencyNeverSatisfied 좀비로 남았음 — 여기서 막으면 체인 자체가 제출되지 않음.
-        if not fsq_snap_reference:
-            raise ValueError("fsq_snap_to_supported=true인데 fsq_snap_reference가 비어 있음 — 기준 빌드의 "
-                             "skill_code_freq.npz 경로(전이 빌드) 또는 \"self\"(자기 데이터 어휘 정리)를 지정하세요.")
-        if fsq_snap_reference.lower() == "self":
-            # self-build 어휘 정리(pruning): 이 빌드가 방금 인코딩한 RAW 토큰 분포 자체를 기준표로 씀
-            # (encode_FSQ_skills.py가 "self"를 그렇게 해석 — 외부 파일 불필요, 1-pass 자기완결).
-            # 빈값(깜빡한 실수)과 구분하기 위해 명시적 "self"만 허용. 전이 빌드에 self를 쓰면 새 데이터의
-            # 코드가 곧 '지원'이 되어 snap이 no-op이 되므로 의미 없음(그때는 원본 빌드 경로를 지정).
+        snap_suffix = f"_snap{int(get_value(cfg, 'fsq_snap_min_code_freq', 1))}"
+        if skillvla_data_mode == "pt":
+            # PT vocabulary pruning: the just-encoded raw distribution is the
+            # reference, so no user-maintained path is needed.
             fsq_snap_reference = "self"
         else:
-            _ref = Path(fsq_snap_reference)
-            if not _ref.is_absolute():
-                _ref = root / fsq_snap_reference
-            if not _ref.is_file():
-                raise ValueError(f"fsq_snap_reference 파일이 존재하지 않음: {_ref}")
-            fsq_snap_reference = str(_ref)
-        run_tag += f"_snap{int(get_value(cfg, 'fsq_snap_min_code_freq', 1))}"
+            # FT must use the PT vocabulary for this exact FSQ/checkpoint and
+            # pruning threshold. Search source-dataset directories so the FT
+            # config needs no duplicated PT dataset/path field.
+            pt_run_tag = f"{base_run_tag}_pt{snap_suffix}"
+            pt_refs = sorted(skillvla_root.glob(f"*/{pt_run_tag}/skill_latents.npz"))
+            if len(pt_refs) != 1:
+                found = "\n  ".join(str(p) for p in pt_refs) or "(none)"
+                raise ValueError(
+                    f"skillvla_data_mode={skillvla_data_mode} requires exactly one completed PT reference "
+                    f"at */{pt_run_tag}/skill_latents.npz; found:\n  {found}\n"
+                    "Build the matching PT data first (same FSQ checkpoint and "
+                    "fsq_snap_min_code_freq)."
+                )
+            fsq_snap_reference = str(pt_refs[0])
+        run_tag += snap_suffix
     source_out_dir = skillvla_root / source_dataset
     run_dir = source_out_dir / run_tag
     work_dir = source_out_dir / "_work"
-    # skillset + skill_tokens depend on the DP model (not FSQ), so key them by DP so a
-    # different DP/checkpoint never reuses or clobbers another's segmentation.
-    seg_dir = work_dir / f"seg_{dp_policy_name}_ck{dp_checkpoint}"
+    # All SkillVLA builds use global boundaries. pt and ft_own reduce this
+    # source's curves; ft reuses the one matching PT global threshold.
+    seg_base = f"seg_{dp_policy_name}_ck{dp_checkpoint}"
+    skillset_global_threshold_source = ""
+    if skillvla_data_mode == "ft":
+        pt_thresholds = sorted(
+            skillvla_root.glob(f"*/_work/{seg_base}_globalmean/skillset/global_boundary_threshold.json")
+        )
+        if len(pt_thresholds) != 1:
+            found = "\n  ".join(str(p) for p in pt_thresholds) or "(none)"
+            raise ValueError(
+                "skillvla_data_mode=ft requires exactly one completed PT global threshold "
+                f"at */_work/{seg_base}_globalmean/skillset/global_boundary_threshold.json; "
+                f"found:\n  {found}\nBuild the matching PT data first."
+            )
+        skillset_global_threshold_source = str(pt_thresholds[0])
+    seg_suffix = "_globalref" if skillset_global_threshold_source else "_globalmean"
+    seg_dir = work_dir / f"{seg_base}{seg_suffix}"
     skillset_dir = seg_dir / "skillset"
 
     def slurm(prefix: str, *, cpus: int, mem: str, time: str) -> dict:
@@ -131,6 +155,7 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
         "dataset_root": dataset_root,
         # source dataset
         "source_dataset": source_dataset,
+        "skillvla_data_mode": skillvla_data_mode,
         "raw_dataset_dir": dataset_root / source_dataset,
         # (DINO precompute emit 은퇴 — DINO는 어디서도 precompute 안 함. DP=state/raw-frames,
         #  FSQ 학습·terminator=ONLINE. dino_root/required/generate/base 등 소비자 0.)
@@ -146,6 +171,9 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
         "skillset_savgol_polyorder": int(get_value(cfg, "skillset_savgol_polyorder", 4)),
         "skillset_replan_interval": int(get_value(cfg, "skillset_replan_interval", 3)),
         "skillset_nms_dist": int(get_value(cfg, "skillset_nms_dist", 25)),
+        "skillset_boundary_threshold_mode": "global_mean",
+        "skillset_global_threshold_source": skillset_global_threshold_source,
+        "skillset_global_threshold_path": skillset_dir / "global_boundary_threshold.json",
         # parallelism: split tasks into shards of this size, one shard per Slurm array job (1 GPU each)
         "skillset_tasks_per_job": int(get_value(cfg, "skillset_tasks_per_job", 5)),
         "skillset_array_throttle": int(get_value(cfg, "skillset_array_throttle", 0)),

@@ -86,21 +86,41 @@ print(" ".join(str(int(t)) for t in sorted(df["task_index"].unique())))
 PY
 )"
   N_TASKS=$(wc -w <<< "${ALL_TASK_IDS}")
+  EXPECTED_EPISODES=$("${BOOTSTRAP_PYTHON}" - "${RAW_DATASET_DIR}/meta/episodes" <<'PY'
+import sys
+from pathlib import Path
+import pandas as pd
+parts = sorted(Path(sys.argv[1]).rglob("file-*.parquet"))
+print(sum(len(pd.read_parquet(p)) for p in parts))
+PY
+)
   TPJ="${SKILLSET_TASKS_PER_JOB:-5}"
   NUM_SHARDS=$(( (N_TASKS + TPJ - 1) / TPJ ))
   [ "${NUM_SHARDS}" -lt 1 ] && NUM_SHARDS=1
   ARRAY_SPEC="0-$(( NUM_SHARDS - 1 ))"
   [ "${SKILLSET_ARRAY_THROTTLE:-0}" -gt 0 ] && ARRAY_SPEC="${ARRAY_SPEC}%${SKILLSET_ARRAY_THROTTLE}"
 
-  echo "[1/3] Submit DP skill segmentation  (array=${ARRAY_SPEC}: ${N_TASKS} tasks / ${TPJ} per job = ${NUM_SHARDS} GPUs)"
+  echo "[1/3] Submit global-boundary curve collection  (array=${ARRAY_SPEC}: ${N_TASKS} tasks / ${TPJ} per job = ${NUM_SHARDS} GPUs)"
   DEP_ARG=(); [ -n "${DEP}" ] && DEP_ARG=(--dependency="${DEP}" --kill-on-invalid-dep=yes)
-  JID1=$(env "${ENV[@]}" ALL_TASK_IDS="${ALL_TASK_IDS}" \
+  JID_CURVES=$(env "${ENV[@]}" ALL_TASK_IDS="${ALL_TASK_IDS}" CURVES_ONLY=true \
     sbatch --parsable --array="${ARRAY_SPEC}" ${DEP_ARG[@]+"${DEP_ARG[@]}"} "${SBATCH_ARGS[@]}" "${SRC_DIR}/build_skillset.sbatch")
-  echo "       skillset ${JID1}"
+  echo "       curves ${JID_CURVES}"
+  if [ -n "${SKILLSET_GLOBAL_THRESHOLD_SOURCE:-}" ]; then
+    echo "       threshold: PT reference ${SKILLSET_GLOBAL_THRESHOLD_SOURCE}"
+    JID_SEG=$(env "${ENV[@]}" ALL_TASK_IDS="${ALL_TASK_IDS}" USE_CACHED_CURVES=true \
+      sbatch --parsable --array="${ARRAY_SPEC}" --dependency="afterok:${JID_CURVES}" --kill-on-invalid-dep=yes "${SBATCH_ARGS[@]}" "${SRC_DIR}/build_skillset.sbatch")
+  else
+    JID_REDUCE=$(env "${ENV[@]}" EXPECTED_EPISODES="${EXPECTED_EPISODES}" \
+      sbatch --parsable --dependency="afterok:${JID_CURVES}" --kill-on-invalid-dep=yes "${SBATCH_ARGS[@]}" "${SRC_DIR}/compute_global_boundary_threshold.sbatch")
+    echo "       threshold ${JID_REDUCE}  (${EXPECTED_EPISODES} episodes)"
+    JID_SEG=$(env "${ENV[@]}" ALL_TASK_IDS="${ALL_TASK_IDS}" USE_CACHED_CURVES=true \
+      sbatch --parsable --array="${ARRAY_SPEC}" --dependency="afterok:${JID_REDUCE}" --kill-on-invalid-dep=yes "${SBATCH_ARGS[@]}" "${SRC_DIR}/build_skillset.sbatch")
+  fi
+  echo "       segment ${JID_SEG}"
   # afterany → verify runs even if some array elements died on a bad GPU
   JIDV=$(env "${ENV[@]}" \
-    sbatch --parsable --dependency=afterany:"${JID1}" --kill-on-invalid-dep=yes "${SBATCH_ARGS[@]}" "${SRC_DIR}/verify_skillset.sbatch")
-  echo "       verify   ${JIDV}  (re-runs missing tasks up to ${SKILLSET_MAX_SWEEPS}×)"
+    sbatch --parsable --dependency=afterany:"${JID_SEG}" --kill-on-invalid-dep=yes "${SBATCH_ARGS[@]}" "${SRC_DIR}/verify_skillset.sbatch")
+  echo "       verify   ${JIDV}  (re-runs cached-curve segmentation gaps up to ${SKILLSET_MAX_SWEEPS}×)"
   DEP="afterok:${JIDV}"
 fi
 

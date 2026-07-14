@@ -94,6 +94,9 @@ echo "  policy     : ${DP_POLICY_PATH}"
 echo "  output     : ${SKILLSET_DIR}"
 echo "  task ids   :${TASK_IDS}"
 echo "  threshold  : ${SKILLSET_BOUNDARY_THRESHOLD_MODE}"
+if [ -n "${SKILLSET_GLOBAL_THRESHOLD_SOURCE:-}" ]; then
+  echo "  threshold source: ${SKILLSET_GLOBAL_THRESHOLD_SOURCE}"
+fi
 
 # Curves-only backfill (CURVES_ONLY=true from submit_build_data.sh): regenerate per-episode
 # multimodality curves for an EXISTING skillset; build_skill_dataset leaves skills untouched and only
@@ -109,6 +112,10 @@ if [ "${USE_CACHED_CURVES:-false}" = "true" ]; then
   CACHED_CURVES_ARG=(--use_cached_curves)
   echo "  source     : cached curves (no DP/VF inference)"
 fi
+
+# For a fixed cross-task reference, segmentation reads the source JSON directly.
+# Otherwise the global reducer created this skillset's own threshold JSON.
+EFFECTIVE_GLOBAL_THRESHOLD_PATH="${SKILLSET_GLOBAL_THRESHOLD_SOURCE:-${SKILLSET_GLOBAL_THRESHOLD_PATH}}"
 
 PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
   python examples/libero/build_skill_dataset.py \
@@ -126,7 +133,7 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     --smooth_window "${SKILLSET_SMOOTH_WINDOW}" \
     --savgol_polyorder "${SKILLSET_SAVGOL_POLYORDER}" \
     --boundary_threshold_mode "${SKILLSET_BOUNDARY_THRESHOLD_MODE}" \
-    --global_threshold_path "${SKILLSET_GLOBAL_THRESHOLD_PATH}" \
+    --global_threshold_path "${EFFECTIVE_GLOBAL_THRESHOLD_PATH}" \
     --resume \
     ${CACHED_CURVES_ARG[@]+"${CACHED_CURVES_ARG[@]}"} \
     --wandb_project "${SKILLSET_WANDB_PROJECT}" \

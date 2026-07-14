@@ -52,7 +52,7 @@ class Args:
     n_control: int = 30
     spline_degree: int = 3
     encoder_input_mode: str = "zero_grounded"
-    """zero_grounded: subtract skill-start pose; raw_state: retain the original absolute state."""
+    """zero_grounded | raw_state | optimal (zero-grounded + one absolute start-EEF token)."""
     terminator_arch: str = "small"
     """small: lightweight query transformer; cond: Stage-1-cond-compatible Gemma."""
     vision_backbone: str = "dino"
@@ -215,18 +215,27 @@ def main(args: Args) -> None:
         raise ValueError("--raw_dataset_dir is required (LeRobot videos + metadata).")
     attach_episode_offsets(args.raw_dataset_dir, metadata)
 
-    if args.encoder_input_mode not in {"zero_grounded", "raw_state"}:
+    if args.encoder_input_mode not in {"zero_grounded", "raw_state", "optimal"}:
         raise ValueError(
-            "--encoder_input_mode must be zero_grounded|raw_state, "
+            "--encoder_input_mode must be zero_grounded|raw_state|optimal, "
             f"got {args.encoder_input_mode!r}."
         )
 
     # Encoder normalization stats must follow the exact checkpointed input convention used before
     # spline fitting. Length stats are data-driven min/max over skill lengths.
-    encoder_trajectories = np.concatenate(
-        [prepare_encoder_trajectory(s, args.encoder_input_mode) for s in segments]
-    )
+    encoder_trajectories = np.concatenate([
+        prepare_encoder_trajectory(s, args.encoder_input_mode)
+        for s in segments
+    ])
     encoder_min, encoder_max = encoder_trajectories.min(0), encoder_trajectories.max(0)
+    encoder_start_min = encoder_start_max = None
+    if args.encoder_input_mode == "optimal":
+        from FSQ import encoder_start_eef_pose
+
+        start_poses = np.stack([
+            encoder_start_eef_pose(s) for s in segments
+        ])
+        encoder_start_min, encoder_start_max = start_poses.min(0), start_poses.max(0)
     all_state = np.concatenate(dec_states)   # decoder/terminator proprioception (raw, all timesteps)
     state_min,  state_max  = all_state.min(0), all_state.max(0)
     _lens = [int(m["length"]) for m in metadata]
@@ -250,16 +259,23 @@ def main(args: Args) -> None:
             f"Dataset stats dimensionality mismatch: state {len(state_q01)}!={state_dim}, "
             f"action {len(action_q01)}!={action_dim}."
         )
-    np.savez(str(output_dir / "action_stats.npz"),
-             encoder_min=encoder_min, encoder_max=encoder_max,
-             encoder_input_mode=np.asarray(args.encoder_input_mode),
-             state_q01=state_q01, state_q99=state_q99,
-             action_q01=action_q01, action_q99=action_q99,
-             state_min=state_min,   state_max=state_max,
-             length_min=np.float32(length_min), length_max=np.float32(length_max))
+    stats = dict(
+        encoder_min=encoder_min, encoder_max=encoder_max,
+        encoder_input_mode=np.asarray(args.encoder_input_mode),
+        state_q01=state_q01, state_q99=state_q99,
+        action_q01=action_q01, action_q99=action_q99,
+        state_min=state_min, state_max=state_max,
+        length_min=np.float32(length_min), length_max=np.float32(length_max),
+    )
+    if encoder_start_min is not None:
+        stats.update(encoder_start_min=encoder_start_min, encoder_start_max=encoder_start_max)
+    np.savez(str(output_dir / "action_stats.npz"), **stats)
     print(f"[FSQ] encoder input mode: {args.encoder_input_mode}")
     print(f"[FSQ] encoder_min: {np.round(encoder_min, 4)}")
     print(f"[FSQ] encoder_max: {np.round(encoder_max, 4)}")
+    if encoder_start_min is not None:
+        print(f"[FSQ] optimal start-EEF min/max: {np.round(encoder_start_min, 4)} / "
+              f"{np.round(encoder_start_max, 4)}")
     print(f"[FSQ] state q01/q99: {np.round(state_q01, 4)} / {np.round(state_q99, 4)}")
     print(f"[FSQ] action q01/q99: {np.round(action_q01, 4)} / {np.round(action_q99, 4)}")
     print(f"[FSQ] state_min:  {np.round(state_min,  4)}")
@@ -347,6 +363,8 @@ def main(args: Args) -> None:
         checkpoint_every=args.checkpoint_every,
         encoder_min=encoder_min,
         encoder_max=encoder_max,
+        encoder_start_min=encoder_start_min,
+        encoder_start_max=encoder_start_max,
         state_min=state_min,
         state_max=state_max,
         state_q01=state_q01,

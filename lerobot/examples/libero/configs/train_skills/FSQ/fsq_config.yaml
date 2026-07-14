@@ -16,7 +16,7 @@ fsq_inputs_name: FSQ_inputs
 skillset_name: skillset
 # Which segmentation to train on. Must match build_data_config.yaml when building
 # a new skillset: episode_mean → seg_*_ck*/ ; global_mean → seg_*_ck*_globalmean/.
-skillset_boundary_threshold_mode: episode_mean   # episode_mean | global_mean
+skillset_boundary_threshold_mode: global_mean   # episode_mean | global_mean
 
 # ── FSQ model / run ──
 # {dp_tag} = the DP run that produced the skillset (dataset prefix stripped, e.g. state_obs20 /
@@ -25,10 +25,9 @@ fsq_run_name: "{target_dataset}_{dp_tag}_{fsq_tag}_{fsq_vision_tag}_{fsq_termina
 fsq_exp: ""                 # v3 suffix prevents incompatible checkpoint auto-resume
 fsq_levels: [5, 5, 5]    # [8, 8] | [5, 5, 5]  
 
-# FSQ trajectory encoder input. zero_grounded subtracts the skill-start pose (gripper state remains
-# absolute); raw_state retains the original absolute observation.state. raw_state adds `_rawstate`
-# to the run name so it cannot collide with/resume the zero-grounded run.
-fsq_encoder_input_mode: zero_grounded       # zero_grounded | raw_state 2
+# FSQ trajectory encoder input. optimal = zero-grounded trajectory plus ONE extra learned token
+# containing the absolute skill-start EEF pose (not gripper state). It adds `_optimal` to run names.
+fsq_encoder_input_mode: optimal       # zero_grounded | raw_state | optimal
 
 # Terminator: both third-person + wrist images are always consumed live.
 # small = lightweight query transformer; cond = Gemma backbone reusable as Stage-1 cond.
@@ -49,7 +48,7 @@ fsq_num_epochs: 500
 fsq_checkpoint_every: 25
 fsq_samples_per_skill: 5
 fsq_action_expert_variant: gemma_300m
-fsq_state_cond_mode: state                 # state | state_skill 1
+fsq_state_cond_mode: state_skill                 # state | state_skill 1
 
 
 fsq_chunk_size: 10
