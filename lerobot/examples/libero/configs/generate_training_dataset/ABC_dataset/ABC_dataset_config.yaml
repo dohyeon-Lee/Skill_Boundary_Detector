@@ -26,22 +26,39 @@ abc_hf_repo: XDOF/ABC-130k
 # → 클러스터 무관하게 {project_root}/abcdl_RLLAB (절대경로도 허용).
 abcdl_repo: abcdl_RLLAB
 
-# ── Subsets: local name -> 선택 규칙 ──────────────────────────
+# ── Subsets: local name -> 다운로드 선택 (abcdl_RLLAB/download 툴 스키마) ──
 # 로컬 이름이 곧 하류 source_dataset 이름 ({abc_dataset_root}/{name}) — LIBERO의
 # libero_90_full_full 자리에 그대로 들어감. 이름은 파일시스템-safe하게(소문자+underscore).
-#   split                 : data/{split}/ (train | val)
-#   tasks                 : 명시 태스크 폴더명 리스트. 비우면 발견된 것 중 앞에서 max_tasks개.
-#   max_tasks             : tasks 비었을 때 고르는 태스크 수 (0/생략 = 전체)
-#   max_episodes_per_task : 태스크당 에피소드 상한 (0/생략 = 전체)
-#   include_annotations   : annotation.mcap 도 받기 (subtask 라벨; 기본 false)
-# 태스크 폴더명은 다운로드 전 DRY_RUN=1 ./download_ABC.sh 로 확인 가능.
+#
+# 다운로드 엔진 = {abcdl_repo}/download/src/download_abc.py (그룹/태스크/에피소드 선택형).
+# 논문 공식 7개 primitive 카테고리 → 197개 태스크 매핑(groups)은
+# {abcdl_repo}/download/config.yaml 을 단일 소스로 읽어옴:
+#   pick_and_place / fine_pick_and_place / folding / insertion_ejection /
+#   tool_use / sorting / tying_untying
+#
+# subset 키:
+#   split     : data/{split}/ 기본값 (train | val; entry별 split: 으로 오버라이드 가능)
+#   downloads : entry 리스트. entry = {group | task | tasks:[...]} + episodes
+#       episodes: N                  -> 태스크당 앞에서 N개 (uuid 정렬, 결정적)
+#       episodes: all                -> 전부
+#       episodes: [0,1,2]            -> 해당 인덱스
+#       episodes: ["<uuid부분문자열>"] -> uuid 매칭
+# 태스크명 확인: ./download_ABC.sh --list-tasks (--counts 붙이면 에피소드 수까지, 느림)
+# 계획만 보기:  ./download_ABC.sh --dry-run
 abc_subsets:
   abc_toy:
     split: train
-    tasks: []
-    max_tasks: 2
-    max_episodes_per_task: 25
-    include_annotations: false
+    downloads:
+      - group: tool_use
+        episodes: 2
+      # - task: arrange_the_flowers_into_the_vase
+      #   episodes: 10
+      # - tasks: [tie_the_shoes, open_the_umbrella]
+      #   episodes: all
+
+# groups 확장/오버라이드 (선택): download/config.yaml 의 공식 7그룹에 병합됨.
+# extra_groups:
+#   my_pilot: [open_the_umbrella, tie_the_shoes]
 
 # ── abcdl 캐시 인코딩 ─────────────────────────────────────────
 # 정방 해상도(픽셀): 카메라별 AR 보존 스케일+패드. LIBERO(256)와 정합 위해 256.
@@ -49,9 +66,9 @@ abc_subsets:
 abc_image_size: 256
 abc_fps: 30            # mcap→abcdl 고정클록 리샘플 결과 (abcdl 규약; 바꿀 일 없음)
 
-# ── 변환 병렬도 ───────────────────────────────────────────────
-# step A(mcap→abcdl)는 에피소드 단위 프로세스 병렬 (ffmpeg 디코드/인코드가 무거움).
-convert_workers: 4
+# ── 병렬도 ────────────────────────────────────────────────────
+download_workers: 8    # ①: 동시 파일 다운로드 + 에피소드 listing 수 (엔진 max_workers)
+convert_workers: 4     # ②(mcap→abcdl): 에피소드 단위 프로세스 병렬 (ffmpeg가 무거움)
 
 # ── Stats 계산 범위 (filtered_dataset과 동일 의미) ────────────
 # false (기본/fast): quantile(q01..q99)은 비-비디오 feature만 parquet에서 계산 — 몇 분.

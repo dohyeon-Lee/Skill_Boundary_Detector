@@ -103,6 +103,7 @@ SYNC_ROOT_PATTERNS=(
     "libero_10_old"
     "libero_original_dataset"
     "libero_dataset_prev"
+    "abcdl_RLLAB"
     "models"
     "outputs"
     "outputs_*"

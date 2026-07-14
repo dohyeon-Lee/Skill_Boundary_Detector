@@ -15,15 +15,14 @@ BOOTSTRAP_PYTHON="${SCRIPT_DIR}/../../../../../../.venv/bin/python"
 [ -x "${BOOTSTRAP_PYTHON}" ] || BOOTSTRAP_PYTHON=python3
 eval "$("${BOOTSTRAP_PYTHON}" "${SCRIPT_DIR}/src/ABC_dataset_config.py" --shell)"
 
-# ── fail-fast dep checks (정확한 처방 출력) ──────────────────────────────────
+# ── dep 사전 경고 (강제는 convert_abc_dataset.py가 진입점별로 — mcap 스테이징이 있을 때만
+#    abcdl+mcap 계열이 필요; _abcdl 진입점(② 스킵)은 pyav+lerobot만 쓰므로 여기선 경고만) ──
 "${BOOTSTRAP_PYTHON}" -c "import mcap, mcap_protobuf, foxglove_schemas_protobuf" 2>/dev/null || {
-  echo "[deps] mcap 계열 미설치 — 아래 한 줄 실행 후 재시도:" >&2
+  echo "[deps] (경고) mcap 계열 미설치 — mcap→abcdl 단계가 필요하면 실행 전:" >&2
   echo '  uv pip install mcap "mcap-protobuf-support>=0.5,<0.6" foxglove-schemas-protobuf' >&2
-  exit 1
 }
 "${BOOTSTRAP_PYTHON}" -c "import sys; sys.path.insert(0, '${ABCDL_REPO}'); import abcdl" 2>/dev/null || {
-  echo "[deps] abcdl import 실패 — yaml의 abcdl_repo(${ABCDL_REPO}) 확인" >&2
-  exit 1
+  echo "[deps] (경고) abcdl import 실패 (${ABCDL_REPO}) — mcap→abcdl 단계가 필요하면 yaml의 abcdl_repo 확인" >&2
 }
 
 ARGS=()

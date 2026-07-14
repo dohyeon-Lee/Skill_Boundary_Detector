@@ -7,7 +7,7 @@
 
 | 단계 | 무엇 | 코드 |
 |---|---|---|
-| ① download | mcap subset → `_mcap/{name}/` | `src/download_abc_subset.py` (레벨 단위 listing — 풀트리 열거 안 함) |
+| ① download | mcap subset → `_mcap/{name}/` | **`{abcdl_repo}/download` 선택형 다운로더** (그룹/태스크/에피소드 지정; `src/download_abc_subset.py`는 subset별 config를 생성해 위임) |
 | ② mcap→abcdl | 30Hz 고정클록 리샘플 + 정방 다운스케일(256) + 스택 mp4 캐시 → `_abcdl/{name}/` | `abcdl_RLLAB` 패키지 (`mcap_to_abcdl`, 에피소드 병렬) |
 | ③ abcdl→v3 | per-camera mp4 + parquet **진짜 v3** → `dataset_ABC/{name}/` | `src/convert_abc_dataset.py` (pyav 기반 — **torchcodec 불필요**) |
 | ④ stats | quantile(q01..q99) 보장 | `../filtered_dataset/ensure_quantile_stats.py` 재사용 |
@@ -19,32 +19,45 @@ v3 feature 키는 `observation.images.{top,left_wrist,right_wrist}` 로 생성�
 `_abcdl/` 캐시는 지우지 마세요 — v3 재빌드 소스이자, 추후 `AbcdlDataset` 직결
 (memmap/스트리밍 고속로더)을 쓰게 되면 그때의 데이터 소스입니다.
 
-## Subset 정의
+## Subset 정의 (그룹/태스크/에피소드 지정)
 
-`ABC_dataset_config.yaml`의 `abc_subsets`에서 로컬 이름 → 선택 규칙:
+다운로드 엔진은 `{abcdl_repo}/download/src/download_abc.py` — **논문 Appendix A의 7개
+primitive 카테고리 → 197개 태스크 매핑**(`{abcdl_repo}/download/config.yaml`의 `groups:`)을
+단일 소스로 씁니다: `pick_and_place / fine_pick_and_place / folding / insertion_ejection /
+tool_use / sorting / tying_untying`.
+
+`ABC_dataset_config.yaml`의 `abc_subsets`에서 로컬 이름 → 엔진 스키마 그대로:
 
 ```yaml
 abc_subsets:
   abc_toy:                       # {project_root}/dataset_ABC/abc_toy 로 생성됨
-    split: train                 # data/train | data/val
-    tasks: []                    # 명시 태스크 폴더명; 비우면 앞에서 max_tasks개
-    max_tasks: 2
-    max_episodes_per_task: 25
+    split: train                 # 기본 split (entry별 split: 오버라이드 가능)
+    downloads:
+      - group: tool_use          # 카테고리 단위
+        episodes: 2              #   태스크당 앞에서 2개 (uuid 정렬, 결정적)
+      - task: tie_the_shoes      # 단일 태스크
+        episodes: all            #   전부  ([0,1,2] 인덱스, ["uuid부분"] 매칭도 가능)
+
+# extra_groups:                  # 공식 7그룹에 병합되는 커스텀 버킷 (선택)
+#   my_pilot: [open_the_umbrella, tie_the_shoes]
 ```
 
 로컬 이름이 곧 하류 `source_dataset` 이름입니다 (LIBERO의 `libero_90_full_full` 자리).
-태스크 폴더명이 궁금하면 먼저 `DRY_RUN=1 ./download_ABC.sh` 로 구조만 출력해보세요.
+태스크 폴더명 확인: `./download_ABC.sh --list-tasks` (`--counts`로 에피소드 수까지, 느림).
 
 ## Run
 
 ```bash
 cd lerobot/examples/libero/configs/generate_training_dataset/ABC_dataset
 
-# 0) (1회) mcap 읽기용 의존성 — 순수 파이썬 3개:
+# 0) (1회) gated 데이터셋 접근 + mcap 읽기용 의존성:
+#    https://huggingface.co/datasets/XDOF/ABC-130k 에서 라이선스 수락 후
+huggingface-cli login
 uv pip install mcap "mcap-protobuf-support>=0.5,<0.6" foxglove-schemas-protobuf
 
-# 1) 구조 확인 (다운로드 없음)
-DRY_RUN=1 ./download_ABC.sh
+# 1) 태스크 목록/계획 확인 (다운로드 없음)
+./download_ABC.sh --list-tasks
+./download_ABC.sh --dry-run
 
 # 권장 (원샷): 다운로드는 현재 노드(로그인)에서, 변환은 CPU Slurm 잡으로
 ./submit_build_ABC.sh
@@ -54,6 +67,11 @@ ABC_ONLY="abc_toy" ./submit_build_ABC.sh             # 일부만
 ./download_ABC.sh && ./build_ABC_dataset.sh
 FORCE=1 ./build_ABC_dataset.sh                       # 최종 v3 재빌드 (abcdl 캐시 재사용)
 ```
+
+**별도 파이프라인으로 이미 받은 데이터 진입점**: mcap이면 `dataset_ABC/_mcap/{name}/` 아래
+(하위 구조 무관, `**/episode.mcap` 글롭), 이미 abcdl 에피소드 디렉토리면
+`dataset_ABC/_abcdl/{name}/<ep>/` 에 놓고 `./build_ABC_dataset.sh` — mcap 스테이징이 없으면
+②를 자동 스킵하고 ③(v3 변환)부터 진행합니다.
 
 ffmpeg CLI가 노드에 없어도 됩니다 — `.venv`의 `imageio_ffmpeg` 번들 바이너리를
 `dataset_ABC/_tools/ffmpeg` 로 자동 shim 합니다. torchcodec도 불필요합니다

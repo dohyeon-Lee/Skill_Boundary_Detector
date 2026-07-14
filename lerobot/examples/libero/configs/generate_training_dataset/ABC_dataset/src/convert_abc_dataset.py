@@ -70,7 +70,10 @@ def _ensure_ffmpeg(tools_dir: Path) -> None:
 
 
 def _setup_paths(cfg: dict) -> tuple[Path, Path]:
-    """sys.path + PYTHONPATH for abcdl repo and lerobot/src (also for child procs)."""
+    """sys.path + PYTHONPATH for abcdl repo and lerobot/src (also for child procs).
+
+    Import/dep enforcement lives in stage_mcap_to_abcdl — the abcdl-entry path (pre-built
+    abcdl episodes, ② skipped) needs neither abcdl nor the mcap deps nor ffmpeg."""
     abcdl_repo = _abcdl_repo(cfg)  # relative → resolved against project_root
     lerobot_src = project_root(cfg) / "lerobot" / "src"
     for p in (abcdl_repo, lerobot_src):
@@ -79,6 +82,11 @@ def _setup_paths(cfg: dict) -> tuple[Path, Path]:
     os.environ["PYTHONPATH"] = ":".join(
         [str(lerobot_src), str(abcdl_repo)]
         + ([os.environ["PYTHONPATH"]] if os.environ.get("PYTHONPATH") else []))
+    return abcdl_repo, lerobot_src
+
+
+def _require_stage_a_deps(abcdl_repo: Path) -> None:
+    """Fail fast with exact prescriptions — only the mcap→abcdl stage needs these."""
     try:
         import abcdl  # noqa: F401
     except ImportError as e:
@@ -91,7 +99,6 @@ def _setup_paths(cfg: dict) -> tuple[Path, Path]:
         raise SystemExit(
             f"missing dep ({e.name}) — run:\n"
             '  uv pip install mcap "mcap-protobuf-support>=0.5,<0.6" foxglove-schemas-protobuf') from e
-    return abcdl_repo, lerobot_src
 
 
 # ── ② mcap → abcdl (episode-parallel) ─────────────────────────────────────────
@@ -123,7 +130,10 @@ def _ep_dir_name(rel: Path) -> str:
     return "__".join(parts) if parts else rel.stem
 
 
-def stage_mcap_to_abcdl(name: str, mcap_root: Path, abcdl_out: Path, size: int, workers: int) -> None:
+def stage_mcap_to_abcdl(name: str, mcap_root: Path, abcdl_out: Path, size: int, workers: int,
+                        abcdl_repo: Path, tools_dir: Path) -> None:
+    _require_stage_a_deps(abcdl_repo)
+    _ensure_ffmpeg(tools_dir)  # abcdl decode/encode shells out to `ffmpeg`
     mcaps = sorted(mcap_root.rglob("episode.mcap")) or sorted(
         p for p in mcap_root.rglob("*.mcap") if p.name != "annotation.mcap")
     if not mcaps:
@@ -142,6 +152,17 @@ def stage_mcap_to_abcdl(name: str, mcap_root: Path, abcdl_out: Path, size: int, 
 
 
 # ── ③ abcdl → LeRobot v3 (pyav, no torchcodec) ────────────────────────────────
+
+
+def _abcdl_episode_dirs(abcdl_dir: Path) -> list[Path]:
+    """COMPLETE abcdl episode dirs, sorted: states_actions.bin + episode_metadata.json both
+    present (partial copies / crashed writes excluded), .tmp staging dirs excluded."""
+    if not abcdl_dir.is_dir():
+        return []
+    return sorted(d for d in abcdl_dir.iterdir()
+                  if d.is_dir() and not d.name.endswith(".tmp")
+                  and (d / "states_actions.bin").exists()
+                  and (d / "episode_metadata.json").exists())
 
 
 def _load_ep_meta(ep_dir: Path) -> dict:
@@ -172,9 +193,7 @@ def stage_abcdl_to_v3(name: str, abcdl_dir: Path, final_dir: Path, fps: int, for
     import av
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
-    ep_dirs = sorted(d for d in abcdl_dir.iterdir()
-                     if d.is_dir() and not d.name.endswith(".tmp")
-                     and (d / "states_actions.bin").exists())
+    ep_dirs = _abcdl_episode_dirs(abcdl_dir)
     if not ep_dirs:
         raise SystemExit(f"[{name}] no abcdl episodes under {abcdl_dir}")
 
@@ -275,12 +294,24 @@ def main() -> None:
 
     abcdl_repo, _ = _setup_paths(cfg)
     sys.path.insert(0, str(abcdl_repo))  # sys.path[0] handed to workers
-    _ensure_ffmpeg(root / "_tools")
 
     for name in specs:
         print(f"\n════ subset {name} ════")
-        stage_mcap_to_abcdl(name, root / "_mcap" / name, root / "_abcdl" / name, size, workers)
-        stage_abcdl_to_v3(name, root / "_abcdl" / name, root / name, fps, args.force)
+        mcap_root, abcdl_dir = root / "_mcap" / name, root / "_abcdl" / name
+        # 진입점 2개: (a) mcap 스테이징 있음 → ②부터. (b) mcap 없이 abcdl 에피소드가 이미
+        # 준비됨(예: 별도 다운로드 파이프라인 산출물을 _abcdl/{name}/에 배치) → ② 스킵, ③부터.
+        if mcap_root.is_dir() and any(mcap_root.rglob("*.mcap")):
+            stage_mcap_to_abcdl(name, mcap_root, abcdl_dir, size, workers,
+                                abcdl_repo, root / "_tools")
+        else:
+            n_ready = len(_abcdl_episode_dirs(abcdl_dir))
+            if n_ready == 0:
+                raise SystemExit(
+                    f"[{name}] neither mcap staging ({mcap_root}) nor abcdl episodes ({abcdl_dir}) "
+                    "found — run download_ABC.sh, or place pre-built abcdl episode dirs under "
+                    f"{abcdl_dir}/")
+            print(f"[{name}] ② skip: no mcap staging — using {n_ready} existing abcdl episodes")
+        stage_abcdl_to_v3(name, abcdl_dir, root / name, fps, args.force)
         if not args.skip_stats:
             stage_stats(name, root, args.config)
 
