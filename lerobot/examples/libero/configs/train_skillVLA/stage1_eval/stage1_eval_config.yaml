@@ -24,8 +24,11 @@ skillvla_dataset_root: skillvla_dataset  # .../{skillvla_dataset_root}/{source_d
 source_dataset: libero_90_full_full
 
 # ── Models ───────────────────────────────────────────────────────────────────────────────
-# `models` = the training run folder name(s) under {outputs_root}/skillVLA_stage1/
-#   ({run_tag}_{backbone}_batch{N}_{state_cond}[_weighted]; NO source prefix — see source_dataset above).
+# `models[].kind`:
+#   fsq_expert = load ONLY action_expert.* from the SkillVLA data run's FSQ.pt (no image/cond model).
+#                Identify it by run_tag under skillvla_dataset/{source_dataset}/.
+#   stage1     = normal trained Stage-1 checkpoint under {outputs_root}/skillVLA_stage1/.
+# `advance_mode` may be gt or terminator per panel; omit it to inherit top-level skill_advance_mode.
 # 1 entry → single eval → outputs/{model_dir}_{checkpoint}/. 2+ entries → PER-TASK side-by-side: each model
 # rolls out the SAME scenes, glued into ONE labelled clip → outputs/compare_{labels}_{ckpt}/
 # side_by_side/ (streams in task order; no per-model videos kept).
@@ -33,21 +36,23 @@ source_dataset: libero_90_full_full
 # Layout: models_per_row = 한 행에 넣을 패널 수 (0 = 전부 한 행). 리스트 순서대로 행을 채움 —
 #   3이면 위 3개=1행, 다음 3개=2행 (6개=2×3, 9개=3×3, ...); 마지막 행이 모자라면 검은 패널로 패딩.
 models:
-  - {model_dir: FSQ555_dino8_both_1000_siglip_batch256_state,          label: both_plain}
-  - {model_dir: FSQ555_dino8_both_1000_siglip_batch256_state_weighted, label: both_weighted}
-  - {model_dir: FSQ555_dino8_weighted_both_1000_siglip_batch256_state_weighted, label: both_weightedx2}
+  - {kind: fsq_expert, run_tag: FSQ555_dino_frozen_small_vsa_state_skill_125_pt_snap10,
+     advance_mode: gt, label: FSQ-expert_GT}
+  - {kind: fsq_expert, run_tag: FSQ555_dino_frozen_small_vsa_state_skill_125_pt_snap10,
+     advance_mode: terminator, label: FSQ-expert_TERM}
+  # Later, add trained Stage-1 panels to the same list:
+  # - {kind: stage1, model_dir: <stage1_run>, checkpoint: "015000",
+  #    advance_mode: gt, label: Stage1_GT}
+  # - {kind: stage1, model_dir: <stage1_run>, checkpoint: "015000",
+  #    advance_mode: terminator, label: Stage1_TERM}
 
-  - {model_dir: FSQ555_dino8_wow_1000_siglip_batch256_state,          label: wow_plain}
-  - {model_dir: FSQ555_dino8_wow_1000_siglip_batch256_state_weighted, label: wow_weighted}
-  - {model_dir: FSQ555_dino8_weighted_wow_1000_siglip_batch256_state_weighted, label: wow_weightedx2}
-
-models_per_row: 3              # side-by-side 그리드: 행당 패널 수 (0 = 한 행에 전부)
+models_per_row: 2              # side-by-side 그리드: 행당 패널 수 (0 = 한 행에 전부)
 checkpoint: "015000"           # default step for entries that omit their own checkpoint ("last" or a number)
 eval_exp: ""                   # optional free-form tag appended to the output folder
 
 # FSQ TERMINATOR's raw-image DINO only. The policy's own vision backbone is NOT set here —
 # it comes from the checkpoint's saved config and must match the trained weights (vits/vitb/...).
-terminator_dino_model_path: models/dinov3-vits16   # project_root 기준 상대경로 → 서버마다 자동
+terminator_dino_model_path: models/dinov3-vitl16   # project_root 기준 상대경로 → 서버마다 자동
 # Terminator 체크포인트 오버라이드: 비우면 = 학습 run의 FSQ.pt(기본); 채우면 다른 run의 FSQ.pt를 로드해
 # 비교 (code→z_q는 같은 frozen 코드북이라 drop-in). 출력 폴더에 _refterm{step} 태그가 붙어 안 섞임.
 terminator_path: ""   # 예: outputs_filtered/skillVLA_stage1/{run_name}/checkpoints/010000/FSQ.pt

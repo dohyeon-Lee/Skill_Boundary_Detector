@@ -18,7 +18,9 @@ fi
 
 eval "$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/stage1_eval_config.py" --config "${CONFIG_PATH}" --shell)"
 
-for p in "${POLICY_PATH}" "${FSQ_CKPT}" "${SKILL_LABEL_DATASET_DIR}"; do
+REQUIRED_ARTIFACTS=("${FSQ_CKPT}" "${SKILL_LABEL_DATASET_DIR}")
+[ "${PRIMARY_MODEL_KIND}" = "stage1" ] && REQUIRED_ARTIFACTS=("${POLICY_PATH}" "${REQUIRED_ARTIFACTS[@]}")
+for p in "${REQUIRED_ARTIFACTS[@]}"; do
   if [ ! -e "${p}" ]; then
     echo "Missing artifact: ${p}" >&2
     exit 1
@@ -44,7 +46,8 @@ cd "${SCRIPT_DIR}"
 mkdir -p logs
 
 echo "Submit Stage-1 oracle eval"
-echo "  policy : ${POLICY_PATH}"
+echo "  backend: ${PRIMARY_MODEL_KIND}"
+echo "  policy : ${POLICY_PATH:-<FSQ expert-only>}"
 echo "  fsq    : ${FSQ_CKPT}"
 echo "  out    : ${EVAL_OUT_DIR}"
 
@@ -62,10 +65,8 @@ elif [ "${EVAL_NUM_GPUS:-1}" -le 1 ]; then
   STAGE1_EVAL_DIR="${SCRIPT_DIR}" STAGE1_EVAL_CONFIG="${CONFIG_PATH}" \
     sbatch "${SBATCH_ARGS[@]}" "${SRC_DIR}/eval.sbatch"
 else
-  # eval_num_gpus > 1 → split task_ids into N contiguous chunks, ONE 1-GPU job per chunk.
-  # All jobs share EVAL_OUT_DIR (task subdirs are disjoint); per-job scratch (_tmp_{jobid}),
-  # per-chunk eval_info_{tag}.json and a wandb-run suffix keep them from clobbering each other.
-  echo "  mode   : sbatch ×${EVAL_NUM_GPUS} (task-split, 1 GPU each)"
+  # eval_num_gpus > 1 → ONE Slurm job array (JOBID_0, JOBID_1, ...), one task chunk/GPU.
+  # All elements share EVAL_OUT_DIR but write disjoint task folders and tagged summaries.
   CHUNKS="$("${BOOTSTRAP_PYTHON}" - "${TASK_IDS}" "${EVAL_NUM_GPUS}" <<'PY'
 import json, sys
 ids, n = json.loads(sys.argv[1]), max(1, int(sys.argv[2]))
@@ -78,11 +79,19 @@ for i in range(n):
     print(f"t{chunk[0]}-{chunk[-1]}|{json.dumps(chunk, separators=(',', ':'))}")
 PY
 )"
+  EVAL_FANOUT=""
+  i=0
   while IFS='|' read -r TAG CHUNK; do
     [ -z "${CHUNK}" ] && continue
-    echo "    job ${TAG}: task_ids=${CHUNK}"
-    STAGE1_EVAL_DIR="${SCRIPT_DIR}" STAGE1_EVAL_CONFIG="${CONFIG_PATH}" \
-      TASK_IDS="${CHUNK}" TASK_TAG="${TAG}" \
-      sbatch --job-name="S1eval_${TAG}" "${SBATCH_ARGS[@]}" "${SRC_DIR}/eval.sbatch"
+    EVAL_FANOUT+="${CHUNK}|${TAG}"$'\n'
+    echo "    [_${i}] ${TAG}: task_ids=${CHUNK}"
+    i=$((i + 1))
   done <<< "${CHUNKS}"
+  ARRAY_SPEC="0-$((i - 1))%${EVAL_NUM_GPUS}"
+  echo "  mode   : sbatch --array ${ARRAY_SPEC} (task-split, 1 GPU each, ≤${EVAL_NUM_GPUS} GPUs)"
+  STAGE1_EVAL_DIR="${SCRIPT_DIR}" STAGE1_EVAL_CONFIG="${CONFIG_PATH}" \
+    EVAL_FANOUT="${EVAL_FANOUT}" \
+    sbatch --job-name="S1eval" --array="${ARRAY_SPEC}" \
+           --output=logs/%x_%A_%a.out --error=logs/%x_%A_%a.err \
+           "${SBATCH_ARGS[@]}" "${SRC_DIR}/eval.sbatch"
 fi

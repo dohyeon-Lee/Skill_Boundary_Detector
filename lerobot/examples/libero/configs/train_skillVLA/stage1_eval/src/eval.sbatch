@@ -22,6 +22,20 @@ fi
 
 eval "$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/stage1_eval_config.py" --config "${CONFIG_PATH}" --shell)"
 
+# One multi-GPU submission is a single Slurm array. Each element selects its
+# own "TASK_IDS|TASK_TAG" line after the frozen config has exported the full
+# task list, so the array override wins deterministically.
+if [ -n "${SLURM_ARRAY_TASK_ID:-}" ] && [ -n "${EVAL_FANOUT:-}" ]; then
+  _LINE="$(printf '%s\n' "${EVAL_FANOUT}" | sed -n "$((SLURM_ARRAY_TASK_ID + 1))p")"
+  IFS='|' read -r _TI _TT <<< "${_LINE}"
+  [ -n "${_TI}" ] && export TASK_IDS="${_TI}"
+  if [ -n "${_TT}" ]; then
+    export TASK_TAG="${_TT}"
+    WANDB_RUN_NAME="${WANDB_RUN_NAME}_${TASK_TAG}"
+  fi
+  echo "array task ${SLURM_ARRAY_TASK_ID}: task_ids=${TASK_IDS} tag='${TASK_TAG:-}'"
+fi
+
 cd "${LEROBOT_ROOT}"
 source "${PROJECT_ROOT}/.venv/bin/activate"
 source "${PROJECT_ROOT}/lerobot/examples/libero/configs/runtime_env.sh"
@@ -49,13 +63,16 @@ export LIBERO_CONFIG_PATH="${LIBERO_LOCAL_CONFIG_DIR}"
 
 echo "START STAGE-1 ORACLE EVAL (skill_expert)"
 echo "Node     : ${SLURMD_NODENAME:-local}"
-echo "policy   : ${POLICY_PATH}"
+echo "backend  : ${PRIMARY_MODEL_KIND}"
+echo "policy   : ${POLICY_PATH:-<FSQ expert-only>}"
 echo "fsq      : ${FSQ_CKPT}"
 echo "skills   : ${SKILL_LABEL_DATASET_DIR}"
 echo "target   : ${TARGET_TASK}  task_ids=${TASK_IDS}  episodes=${N_EPISODES}/task"
 nvidia-smi || true
 
-for p in "${POLICY_PATH}" "${FSQ_CKPT}" "${SKILL_LABEL_DATASET_DIR}" "${EVAL_INIT_STATES_PATH}"; do
+REQUIRED_ARTIFACTS=("${FSQ_CKPT}" "${SKILL_LABEL_DATASET_DIR}" "${EVAL_INIT_STATES_PATH}")
+[ "${PRIMARY_MODEL_KIND}" = "stage1" ] && REQUIRED_ARTIFACTS=("${POLICY_PATH}" "${REQUIRED_ARTIFACTS[@]}")
+for p in "${REQUIRED_ARTIFACTS[@]}"; do
   if [ ! -e "${p}" ]; then
     echo "Missing required artifact: ${p}" >&2
     [ "${p}" = "${EVAL_INIT_STATES_PATH}" ] && echo "  → build it: stage1_eval/oracle_matching/run.sh ${SOURCE_DATASET:-<source>}" >&2
@@ -77,10 +94,15 @@ if [ "${WANDB_ENABLE}" = "true" ]; then
   EXTRA_ARGS+=(--wandb_project="${WANDB_PROJECT}")
 fi
 
+POLICY_LOAD_ARGS=(--policy.type=skill_expert)
+if [ "${PRIMARY_MODEL_KIND}" = "stage1" ]; then
+  POLICY_LOAD_ARGS=(--policy.path="${POLICY_PATH}")
+fi
+
 PYTORCH_ALLOC_CONF=expandable_segments:True \
 PYTHONPATH="${LEROBOT_ROOT}/src:${LEROBOT_ROOT}/examples/libero:${LIBERO_REPO_ROOT}" \
   "${PROJECT_ROOT}/.venv/bin/python" "${SRC_DIR}/run_eval.py" \
-    --policy.path="${POLICY_PATH}" \
+    "${POLICY_LOAD_ARGS[@]}" \
     --policy.fsq_path="${FSQ_CKPT}" \
     --policy.skill_label_dataset_dir="${SKILL_LABEL_DATASET_DIR}" \
     --policy.eval_init_states_path="${EVAL_INIT_STATES_PATH}" \

@@ -73,6 +73,11 @@ Thumbs.db
 # ── 생성된 HTML 리포트 (대용량) ──────────────────────────────────────
 *.html
 
+# LIBERO's bundled MuJoCo assets are required at runtime on every server.
+# Keep them in Git even when their extensions match the global data-file rules above.
+!tools/lerobot-libero/libero/libero/assets/
+!tools/lerobot-libero/libero/libero/assets/**
+
 # Per-submit frozen config copies (snapshot_config.sh)
 .config_snapshots/
 

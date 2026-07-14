@@ -34,6 +34,7 @@ from lerobot.policies.factory import make_policy, make_pre_post_processors
 from lerobot.policies.pretrained import PreTrainedPolicy
 from lerobot.policies.skill_expert.configuration_skill_expert import SkillExpertConfig
 from lerobot.processor import NormalizerProcessorStep
+from lerobot.processor import RenameObservationsProcessorStep
 from lerobot.policies.skillVLA.processor_skillVLA import SkillVLAPreserveRawStateProcessorStep
 from lerobot.scripts.lerobot_skillvla_eval import (
     _libero_task_descriptions,
@@ -47,6 +48,7 @@ from lerobot.utils.random_utils import set_seed
 _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))  # local eval_oracle
 from eval_oracle import load_episode_oracle_data, make_terminator  # noqa: E402
+from fsq_expert_policy import FSQExpertOnlyPolicy  # noqa: E402
 
 # Path to examples/libero so eval_oracle can import the FSQ model definition.
 _LIBERO_EXAMPLES = _HERE.parents[3]  # .../examples/libero
@@ -374,6 +376,56 @@ def _build_context(pcfg, *, cfg, device, label):
     return {"oracle": oracle, "pre": preprocessor, "post": postprocessor, "ep": episode_data, "label": label}
 
 
+def _build_fsq_expert_context(spec: dict, *, cfg, device):
+    """Build an image/cond-free FSQ action panel plus the optional FSQ terminator."""
+    from lerobot.policies.skill_expert.processor_skill_expert import (  # noqa: PLC0415
+        make_skill_expert_pre_post_processors,
+    )
+
+    expert_fsq = spec.get("expert_fsq_path", spec["fsq_path"])
+    policy = FSQExpertOnlyPolicy(
+        expert_fsq, device, n_action_steps=int(cfg.policy.n_action_steps)
+    )
+    pcfg = policy.config
+    for field in (
+        "terminator_dino_model_path", "skill_end_mode", "skill_end_threshold",
+        "skill_end_progress_threshold", "inference_skill_max_length", "n_action_steps",
+    ):
+        if hasattr(cfg.policy, field):
+            setattr(pcfg, field, getattr(cfg.policy, field))
+    pcfg.skill_advance_mode = spec.get("advance_mode", cfg.policy.skill_advance_mode)
+    pcfg.skill_label_dataset_dir = spec["skill_label_dataset_dir"]
+    pcfg.eval_init_states_path = cfg.policy.eval_init_states_path
+    terminator = make_terminator(
+        spec["fsq_path"], device, dino_path=pcfg.terminator_dino_model_path,
+        libero_examples_dir=_LIBERO_EXAMPLES, finetuned_ckpt=None,
+    )
+    oracle = OracleSkillExpertPolicy(
+        policy, terminator, end_threshold=pcfg.skill_end_threshold,
+        progress_threshold=pcfg.skill_end_progress_threshold, end_mode=pcfg.skill_end_mode,
+        advance_mode=pcfg.skill_advance_mode, max_skill_len=pcfg.inference_skill_max_length,
+        n_action_steps=pcfg.n_action_steps,
+    )
+    preprocessor, postprocessor = make_skill_expert_pre_post_processors(
+        pcfg, dataset_stats=policy.dataset_stats()
+    )
+    for step in preprocessor.steps:
+        if isinstance(step, RenameObservationsProcessorStep):
+            step.rename_map = cfg.rename_map
+            break
+    episode_data = load_episode_oracle_data(
+        spec["skill_label_dataset_dir"], pcfg.eval_init_states_path, cfg.env.task
+    )
+    log.info(
+        "[%s] FSQ expert-only: expert=%s terminator=%s (advance=%s; no policy image/cond modules)",
+        spec.get("label", "fsq_expert"), expert_fsq, spec["fsq_path"], pcfg.skill_advance_mode,
+    )
+    return {
+        "oracle": oracle, "pre": preprocessor, "post": postprocessor,
+        "ep": episode_data, "label": spec.get("label", "fsq_expert"),
+    }
+
+
 def _model_cfg_from_spec(spec: dict, base):
     """Load one model's ARCHITECTURE config from its checkpoint, then copy the SHARED eval knobs from `base`
     (= cfg.policy, i.e. model 0's config with the CLI overrides): device, skill_end_*, terminator paths,
@@ -390,7 +442,16 @@ def _model_cfg_from_spec(spec: dict, base):
             setattr(mcfg, f, getattr(base, f))
     mcfg.fsq_path = spec["fsq_path"]
     mcfg.skill_label_dataset_dir = spec["skill_label_dataset_dir"]
+    mcfg.skill_advance_mode = spec.get("advance_mode", mcfg.skill_advance_mode)
     return mcfg
+
+
+def _build_context_from_spec(spec: dict, *, cfg, device):
+    if spec.get("kind", "stage1") == "fsq_expert":
+        return _build_fsq_expert_context(spec, cfg=cfg, device=device)
+    return _build_context(
+        _model_cfg_from_spec(spec, cfg.policy), cfg=cfg, device=device, label=spec["label"]
+    )
 
 
 @parser.wrap()
@@ -429,8 +490,7 @@ def eval_main(cfg: EvalPipelineConfig):
         # TASK roll out every model over the SAME scenes (init_state_id rewound between models) and stitch
         # horizontally → side_by_side/{task}/ (streams in task order; no per-model videos kept). ──
         logging.info("Multi-model side-by-side over %d models: %s", len(specs), [s["label"] for s in specs])
-        contexts = [_build_context(_model_cfg_from_spec(s, cfg.policy), cfg=cfg, device=device, label=s["label"])
-                    for s in specs]
+        contexts = [_build_context_from_spec(s, cfg=cfg, device=device) for s in specs]
         forced_maps = _align_and_override_multi(envs, [c["ep"] for c in contexts])
         sbs_dir = out / "side_by_side"
         # Per-job scratch: task-split jobs (submit_eval.sh eval_num_gpus>1) share ONE out dir — a fixed
@@ -462,7 +522,8 @@ def eval_main(cfg: EvalPipelineConfig):
     else:
         # ── Single model: episode-exact eval over all tasks (env init states overridden once). ──
         logging.info("Making policy + FSQ terminator.")
-        ctx = _build_context(cfg.policy, cfg=cfg, device=device, label="")
+        ctx = (_build_context_from_spec(specs[0], cfg=cfg, device=device)
+               if specs else _build_context(cfg.policy, cfg=cfg, device=device, label=""))
         forced_by_task = _override_init_states(envs, ctx["ep"])
         logging.info("Episode-exact eval over %d tasks (n_episodes=%d per task).",
                      len(forced_by_task), cfg.eval.n_episodes)

@@ -48,7 +48,7 @@ fsq_num_epochs: 500
 fsq_checkpoint_every: 25
 fsq_samples_per_skill: 5
 fsq_action_expert_variant: gemma_300m
-fsq_state_cond_mode: state_skill                 # state | state_skill 1
+fsq_state_cond_mode: state                 # state | state_skill 1
 
 
 fsq_chunk_size: 10
