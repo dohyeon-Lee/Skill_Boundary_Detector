@@ -63,7 +63,7 @@ skillset_max_sweeps: 2
 # FSQ config lives in the checkpoint.
 # fsq_run_name: "libero_90_full_full_state_obs20_fsq555_dino8_weighted_wow"   # folder under outputs/FSQ/
 # fsq_run_name: "libero_90_full_full_state_obs20_fsq555_dino8_both"
-fsq_run_name: "libero_90_full_full_state_obs20_global_fsq555_dino_frozen_small_vsa_state_skill"
+fsq_run_name: "libero_90_full_full_state_obs20_global_fsq333_dino_frozen_small_optimal_vsa_state_skill"
 
 fsq_checkpoint: 125                                 # epoch number; 0 = best (FSQ.pt)
 

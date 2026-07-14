@@ -23,7 +23,7 @@ skillset_boundary_threshold_mode: global_mean   # episode_mean | global_mean
 # dino8_obs10) → the FSQ folder shows WHICH DP it was trained on, not just its own grid.
 fsq_run_name: "{target_dataset}_{dp_tag}_{fsq_tag}_{fsq_vision_tag}_{fsq_terminator_tag}{fsq_encoder_input_suffix}{fsq_state_cond_suffix}{weighted_suffix}{fsq_exp_suffix}"
 fsq_exp: ""                 # v3 suffix prevents incompatible checkpoint auto-resume
-fsq_levels: [5, 5, 5]    # [8, 8] | [5, 5, 5]  
+fsq_levels: [5, 4, 3] # [5, 5, 5]    # [8, 8] | [5, 5, 5]  
 
 # FSQ trajectory encoder input. optimal = zero-grounded trajectory plus ONE extra learned token
 # containing the absolute skill-start EEF pose (not gripper state). It adds `_optimal` to run names.
@@ -48,7 +48,7 @@ fsq_num_epochs: 500
 fsq_checkpoint_every: 25
 fsq_samples_per_skill: 5
 fsq_action_expert_variant: gemma_300m
-fsq_state_cond_mode: state                 # state | state_skill 1
+fsq_state_cond_mode: state_skill                 # state | state_skill 1
 
 
 fsq_chunk_size: 10

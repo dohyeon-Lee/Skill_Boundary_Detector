@@ -27,6 +27,7 @@ lerobot/wandb/
 .cache/
 
 # ── Python 가상환경 ───────────────────────────────────────────────
+.venv
 .venv/
 venv/
 env/

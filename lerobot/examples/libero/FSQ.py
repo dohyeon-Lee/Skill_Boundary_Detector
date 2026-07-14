@@ -170,7 +170,11 @@ class FSQ(nn.Module):
         lv = torch.tensor(levels, dtype=torch.float32)
         levels_half = (lv - 1.0) / 2.0
         offset = torch.where(lv % 2 == 0, torch.full_like(lv, 0.5), torch.zeros_like(lv))
-        shift = torch.atanh(offset / levels_half)
+        is_binary = lv == 2
+        # The even-level offset needs atanh(1) for L=2.  A zero shift keeps
+        # both raw grid values {-1, 0} reachable without a singularity.
+        shift_arg = torch.where(is_binary, torch.zeros_like(lv), offset / levels_half)
+        shift = torch.atanh(shift_arg)
         half_width = torch.div(lv, 2, rounding_mode="floor")
         strides = torch.ones(len(levels), dtype=torch.long)
         for i in range(1, len(levels)):

@@ -82,6 +82,23 @@ class SkillExpertConfig(PI05Config):
     token, constant within a skill — neighboring codes stay neighboring. (The skill-progress token
     was removed — the action expert conditions on the skill code only.)"""
 
+    # ── Frozen FSQ expert + LoRA steering ──
+    # ``lora_rank`` / ``lora_alpha`` / ``lora_dropout`` / ``lora_targets`` are inherited from PI05Config.
+    # This uses the same named-adapter implementation as SkillVLA Stage 2, but only on the frozen action
+    # expert. The condition side remains a normal trainable scene encoder on A batches.
+    lora_expert: bool = False
+    """Inject the named ``expert`` LoRA adapter into the action expert's target projections. When enabled,
+    every FSQ action-side base parameter (Gemma, action/time/state/skill projections) is frozen; only this
+    adapter and the image condition side may train."""
+    lora_lr_scale: float = 1.0
+    """LR multiplier for LoRA parameters relative to optimizer_lr."""
+    image_free_lora_prob: float = 0.0
+    """Probability of a B batch during training. B skips image/cond entirely and anchors the active LoRA
+    action velocity to the same frozen expert with its adapter disabled, so the adapter cannot create a
+    state+skill-only motion residual. A = 1 - this probability uses normal image-conditioned action loss."""
+    image_free_lora_anchor_weight: float = 1.0
+    """Multiplier on the B adapter-to-base velocity anchor loss."""
+
     # ── Loss = action MSE (flow matching). Boundary handling: at the skill end (k>skill_de) and episode-end
     #    pad, the action TARGET is a HOLD (arm deltas→0, gripper→last valid value) and supervised — NOT masked.
     #    action_weight selects plain vs per-sample end-weighted MSE. ──
@@ -164,3 +181,23 @@ class SkillExpertConfig(PI05Config):
             )
         if self.train_terminator and not self.fsq_path:
             raise ValueError("train_terminator=True needs fsq_path (the FSQ checkpoint to warm-start).")
+        if self.lora_expert and self.lora_rank <= 0:
+            raise ValueError(f"lora_expert=True needs lora_rank > 0 (got {self.lora_rank}).")
+        if self.lora_expert and self.lora_alpha <= 0:
+            raise ValueError(f"lora_expert=True needs lora_alpha > 0 (got {self.lora_alpha}).")
+        if self.lora_lr_scale <= 0.0:
+            raise ValueError(f"lora_lr_scale must be > 0 (got {self.lora_lr_scale}).")
+        if not 0.0 <= self.lora_dropout < 1.0:
+            raise ValueError(f"lora_dropout must be in [0, 1), got {self.lora_dropout}.")
+        if not 0.0 <= self.image_free_lora_prob < 1.0:
+            raise ValueError(
+                "image_free_lora_prob must be in [0, 1); keep some A batches to train the image condition "
+                f"side (got {self.image_free_lora_prob})."
+            )
+        if self.image_free_lora_prob > 0.0 and not self.lora_expert:
+            raise ValueError("image_free_lora_prob > 0 needs lora_expert=True.")
+        if self.image_free_lora_anchor_weight <= 0.0:
+            raise ValueError(
+                "image_free_lora_anchor_weight must be > 0 "
+                f"(got {self.image_free_lora_anchor_weight})."
+            )

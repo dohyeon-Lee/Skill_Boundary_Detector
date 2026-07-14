@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # SkillVLA Stage-1 training: policy.type=skill_expert (standalone action expert).
 # Trains the action expert by flow matching on the build_data skillvla dataset (raw images +
-# skill code + actions). Warm-starts from pi05_base (or scratch). Resumes if a checkpoint exists.
+# skill code + actions). Warm-starts the action expert from the data run's FSQ.pt
+# (with pi05_base localized from that checkpoint). Resumes if a checkpoint exists.
 #SBATCH --job-name=stage1
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=16
@@ -27,6 +28,8 @@ eval "$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/stage1_train_config.py" --config "${CO
 cd "${LEROBOT_ROOT}"
 source "${PROJECT_ROOT}/.venv/bin/activate"
 source "${PROJECT_ROOT}/lerobot/examples/libero/configs/runtime_env.sh"
+# Keep this worktree's policy/config sources ahead of any externally supplied Python paths.
+export PYTHONPATH="${LEROBOT_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
 unset LD_LIBRARY_PATH          # avoid system cuDNN shadowing the bundled one
 
 echo "START STAGE-1 (skill_expert)"
@@ -85,6 +88,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.dtype=bfloat16 \
     --policy.device=cuda \
     --policy.push_to_hub=false \
+    --policy.action_expert_variant="${ACTION_EXPERT_VARIANT}" \
     --policy.state_cond_mode="${STATE_COND_MODE}" \
     --policy.vision_backbone="${VISION_BACKBONE}" \
     --policy.dino_model_path="${DINO_MODEL_PATH}" \
@@ -92,8 +96,24 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.siglip_image_size="${SIGLIP_IMAGE_SIZE}" \
     --policy.skill_vocab_size="${SKILL_VOCAB_SIZE}" \
     --policy.skill_fsq_levels="${SKILL_FSQ_LEVELS}" \
+    --policy.max_state_dim="${MAX_STATE_DIM}" \
+    --policy.max_action_dim="${MAX_ACTION_DIM}" \
     --policy.chunk_size="${CHUNK_SIZE}" \
     --policy.n_action_steps="${N_ACTION_STEPS}" \
+    --policy.min_period="${MIN_PERIOD}" \
+    --policy.max_period="${MAX_PERIOD}" \
+    --policy.time_sampling_beta_alpha="${TIME_SAMPLING_BETA_ALPHA}" \
+    --policy.time_sampling_beta_beta="${TIME_SAMPLING_BETA_BETA}" \
+    --policy.time_sampling_scale="${TIME_SAMPLING_SCALE}" \
+    --policy.time_sampling_offset="${TIME_SAMPLING_OFFSET}" \
+    --policy.lora_expert="${LORA_EXPERT}" \
+    --policy.lora_rank="${LORA_RANK}" \
+    --policy.lora_alpha="${LORA_ALPHA}" \
+    --policy.lora_dropout="${LORA_DROPOUT}" \
+    --policy.lora_targets="${LORA_TARGETS}" \
+    --policy.lora_lr_scale="${LORA_LR_SCALE}" \
+    --policy.image_free_lora_prob="${IMAGE_FREE_LORA_PROB}" \
+    --policy.image_free_lora_anchor_weight="${IMAGE_FREE_LORA_ANCHOR_WEIGHT}" \
     --policy.skill_end_loss_weight="${SKILL_END_LOSS_WEIGHT}" \
     --policy.action_weight="${ACTION_WEIGHT}" \
     --policy.train_terminator="${TRAIN_TERMINATOR}" \
@@ -104,6 +124,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --batch_size="${BATCH_SIZE}" \
     --num_workers="${NUM_WORKERS}" \
     --steps="${STEPS}" \
+    --log_freq="${LOG_FREQ}" \
     --save_freq="${SAVE_FREQ}" \
     --policy.optimizer_lr="${LR}" \
     --wandb.enable="${WANDB_ENABLE}" \

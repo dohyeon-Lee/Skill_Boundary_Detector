@@ -34,6 +34,13 @@ from lerobot.policies.pi05.modeling_pi05 import (
     pad_vector,
     sample_beta,
 )
+from lerobot.policies.pi05.lora import (
+    NamedLoRALinear,
+    inject_named_lora,
+    route_plain_to_base,
+    set_active_adapters,
+    target_names_from_spec,
+)
 from lerobot.policies.pi_gemma import PiGemmaForCausalLM
 from lerobot.policies.pretrained import PreTrainedPolicy
 from lerobot.utils.constants import ACTION, OBS_IMAGES, OBS_STATE
@@ -142,6 +149,7 @@ class SkillExpertPytorch(nn.Module):
 
         # ── Action expert transformer (Gemma, AdaRMS conditioned on the flow timestep) ──
         self.gemma_expert = _build_gemma(config.action_expert_variant, use_adarms=True)
+        self._inject_expert_lora()
 
         # ── Conditioning (joint): a SEPARATE cond-encoder encodes the scene; the action expert takes
         # [skill, progress, action] and reads the cond stream via PI05-style block attention (cond⊥action).
@@ -161,6 +169,38 @@ class SkillExpertPytorch(nn.Module):
     def _wdtype(self) -> torch.dtype:
         """Working dtype of the expert stream (drives the cast at every token boundary)."""
         return self.action_in_proj.weight.dtype
+
+    def _inject_expert_lora(self) -> None:
+        """Stage-1's single named adapter follows Stage-2's action-expert ``expert`` adapter exactly.
+
+        The adapter is intentionally confined to the frozen FSQ action Gemma's selected attention
+        projections. Its active set is switched per A/B forward below; the condition encoder itself is
+        never wrapped and stays the trainable image route on A batches.
+        """
+        if not self.config.lora_expert:
+            return
+        names = target_names_from_spec(self.config.lora_targets)
+        count = inject_named_lora(
+            self.gemma_expert, names, "expert", self.config.lora_rank,
+            self.config.lora_alpha, self.config.lora_dropout,
+        )
+        if count == 0:
+            raise ValueError(
+                f"No action-expert Linears matched lora_targets={self.config.lora_targets!r}."
+            )
+        print(
+            "[skill_expert LoRA] "
+            f"expert@action-expert={count} r={self.config.lora_rank} "
+            f"alpha={self.config.lora_alpha} dropout={self.config.lora_dropout} "
+            f"targets={sorted(names)}"
+        )
+
+    def _set_expert_lora_active(self, active: bool) -> None:
+        """Keep Stage-1's named adapter choice explicit across checkpoint recomputation and inference."""
+        if self.config.lora_expert:
+            set_active_adapters({"expert"} if active else set())
+        else:
+            set_active_adapters(None)
 
     def gradient_checkpointing_enable(self) -> None:
         self._grad_ckpt = True  # _run_joint checkpoints its layer loop
@@ -342,6 +382,40 @@ class SkillExpertPytorch(nn.Module):
         action_hidden, _ = layernorm_forward(self.gemma_expert.model.norm, embeds[1], time_cond)
         return self.action_out_proj(action_hidden[:, -n_chunk:].to(self._wdtype)).float()  # action positions only
 
+    def _run_expert_only(self, x_t: Tensor, expert_cond: Tensor,
+                         action_prefix: Tensor | None = None) -> Tensor:
+        """Image-free action-expert forward for B batches.
+
+        There is deliberately no dummy image or zero cond token here: the condition encoder is not invoked
+        and the action Gemma receives only its skill prefix (state mode) plus noisy-action tokens. The
+        resulting adapter-on vs adapter-off velocity difference is therefore a direct measure of a
+        state/skill-only LoRA shortcut.
+        """
+        action_tokens = self.action_in_proj(x_t.to(self._wdtype))
+        n_chunk = action_tokens.shape[1]
+        n_prefix = action_prefix.shape[1] if action_prefix is not None else 0
+        if action_prefix is not None:
+            action_tokens = torch.cat([action_prefix, action_tokens], dim=1)
+        bsize, n_act = action_tokens.shape[:2]
+        device = action_tokens.device
+
+        # Same prefix/action causality as _run_joint, with the cond block removed entirely.
+        ar_list = ([1] + [0] * (n_prefix - 1)) if n_prefix else []
+        ar_list += [1] + [0] * (n_chunk - 1)
+        att = torch.tensor(ar_list, dtype=torch.bool, device=device)[None, :].expand(bsize, n_act)
+        pad = torch.ones(bsize, n_act, dtype=torch.bool, device=device)
+        att_4d = torch.where(make_att_2d_masks(pad, att)[:, None], 0.0, OPENPI_ATTENTION_MASK_VALUE)
+        pos = torch.cumsum(pad, dim=1) - 1
+        action_hidden = self.gemma_expert.model.forward(
+            inputs_embeds=action_tokens,
+            attention_mask=att_4d,
+            position_ids=pos,
+            past_key_values=None,
+            use_cache=False,
+            adarms_cond=expert_cond,
+        ).last_hidden_state
+        return self.action_out_proj(action_hidden[:, -n_chunk:].to(self._wdtype)).float()
+
     # ── Training / inference ──
     def forward(
         self,
@@ -357,6 +431,7 @@ class SkillExpertPytorch(nn.Module):
         Its square is the per-(b,t,dim) flow MSE; it ALSO equals the implied per-step action error
         (â - a = (source - v_t) - (source - u_t) = u_t - v_t), so cumsum over the chunk gives the
         cumulative-position error used by the policy's optional cumulative-position loss."""
+        self._set_expert_lora_active(True)
         cond = self._cond_tokens(images)
         action_prefix = self._action_prefix(skill_code, state)
         if time is None:
@@ -369,6 +444,37 @@ class SkillExpertPytorch(nn.Module):
         expert_cond = self._expert_cond(time, state, skill_code)
         v_t = self._run_joint(cond, x_t, expert_cond, action_prefix, None)  # cond stream: plain RMSNorm
         return u_t - v_t
+
+    def image_free_lora_anchor(
+        self,
+        state: Tensor,
+        skill_code: Tensor,
+        actions: Tensor,
+        noise: Tensor | None = None,
+        time: Tensor | None = None,
+    ) -> tuple[Tensor, Tensor]:
+        """B batch: penalize only the image-free LoRA delta, never train it on GT actions.
+
+        Returns ``(adapter_minus_base, action_residual_for_logging)``. Both paths receive identical
+        ``(x_t, time, state, skill)``; the base teacher is run with the adapter disabled under no_grad.
+        Thus gradients can only make the LoRA update vanish when no condition stream exists.
+        """
+        if not self.config.lora_expert:
+            raise RuntimeError("image_free_lora_anchor requires lora_expert=True.")
+        if time is None:
+            time = self.sample_time(actions.shape[0], actions.device)
+        source = self.sample_noise(actions.shape, actions.device) if noise is None else noise
+        source = source.to(dtype=actions.dtype)
+        x_t = time[:, None, None] * source + (1 - time[:, None, None]) * actions
+        action_prefix = self._action_prefix(skill_code, state)
+        expert_cond = self._expert_cond(time, state, skill_code)
+
+        self._set_expert_lora_active(False)
+        with torch.no_grad():
+            base_v = self._run_expert_only(x_t, expert_cond, action_prefix)
+        self._set_expert_lora_active(True)
+        lora_v = self._run_expert_only(x_t, expert_cond, action_prefix)
+        return lora_v - base_v, source - lora_v
 
     @torch.no_grad()
     def sample_actions(
@@ -385,6 +491,7 @@ class SkillExpertPytorch(nn.Module):
         bsize, device = state.shape[0], state.device
         if noise is None:
             noise = self.sample_noise((bsize, self.config.chunk_size, self.config.max_action_dim), device)
+        self._set_expert_lora_active(True)
         # cond⊥action, so the cond stream (image-only) is identical every step → encode it once, cache
         # its per-layer K/V, and run only the action stream ([prefix, action]) against the cache.
         cond = self._cond_tokens(images)
@@ -531,6 +638,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
         config.validate_features()
         self.config = config
         self.model = SkillExpertPytorch(config)
+        self._apply_frozen_expert_lora_regime()
         if config.gradient_checkpointing:
             self.model.gradient_checkpointing_enable()
         self.model.to(device=config.device, dtype=self._torch_dtype())
@@ -541,6 +649,39 @@ class SkillExpertPolicy(PreTrainedPolicy):
 
     def reset(self):
         self._action_queue = deque(maxlen=self.config.n_action_steps)
+
+    def _apply_frozen_expert_lora_regime(self) -> None:
+        """Freeze the complete FSQ action side and re-enable only named expert LoRA parameters.
+
+        ``NamedLoRALinear`` already freezes each wrapped base projection, but the rest of Gemma plus the
+        action/time/state/skill projections also belong to the FSQ reconstructor contract and must remain
+        immutable. The cond side is intentionally not included: it is the trainable image route on A.
+        """
+        if not self.config.lora_expert:
+            return
+        frozen_modules = (
+            self.model.gemma_expert,
+            self.model.action_in_proj,
+            self.model.action_out_proj,
+            self.model.time_mlp_in,
+            self.model.time_mlp_out,
+            self.model.state_proj,
+            self.model.skill_proj,
+        )
+        for module in frozen_modules:
+            for param in module.parameters():
+                param.requires_grad_(False)
+
+        adapter_params = []
+        for module in self.model.gemma_expert.modules():
+            if isinstance(module, NamedLoRALinear) and "expert" in module.adapters:
+                for param in module.adapters["expert"].parameters():
+                    param.requires_grad_(True)
+                    adapter_params.append(param)
+        if not adapter_params:
+            raise RuntimeError("lora_expert=True but no named 'expert' adapter was injected.")
+        n = sum(param.numel() for param in adapter_params)
+        log.info("Stage-1 frozen FSQ expert: trainable expert-LoRA parameters=%d.", n)
 
     def _load_fsq_action_expert(self, path: str) -> None:
         """Warm-start Stage-1 from the jointly trained v3 FSQ components.
@@ -585,8 +726,12 @@ class SkillExpertPolicy(PreTrainedPolicy):
             "gemma_expert.", "state_proj.", "skill_proj.", "action_in_proj.",
             "action_out_proj.", "time_mlp_in.", "time_mlp_out.",
         )
+        # LoRA wraps targeted action projections as ``<proj>.base.*`` and adds ``.adapters.expert.*``.
+        # FSQ is intentionally adapter-free, so compare its contract with the base-key canonicalization.
         expected_keys = {
-            key for key in self.model.state_dict() if key.startswith(expert_prefixes)
+            key.replace(".base.", ".")
+            for key in self.model.state_dict()
+            if key.startswith(expert_prefixes) and ".adapters." not in key
         }
         if set(state) != expected_keys:
             raise RuntimeError(
@@ -595,10 +740,14 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 f"extra={sorted(set(state) - expected_keys)}"
             )
         routed = {f"model.{key}": value.to(self._torch_dtype()) for key, value in state.items()}
+        routed, n_routed = route_plain_to_base(routed, set(self.state_dict().keys()))
         _, unexpected = self.load_state_dict(routed, strict=False)
         if unexpected:
             raise RuntimeError(f"Unexpected v3 FSQ action-expert keys: {sorted(unexpected)}")
-        log.info("Stage-1 action expert <- v3 FSQ %s (%d tensors).", path, len(routed))
+        log.info(
+            "Stage-1 action expert <- v3 FSQ %s (%d tensors, %d routed into LoRA bases).",
+            path, len(routed), n_routed,
+        )
 
         cond_state, cond_cfg = load_fsq_cond_warmstart_state(path)
         if cond_state is None:
@@ -633,24 +782,36 @@ class SkillExpertPolicy(PreTrainedPolicy):
         log.info("Stage-1 cond/vision <- v3 FSQ %s (%d tensors).", path, len(routed_cond))
 
     def get_optim_params(self):
-        # Optional separate LRs for: the vision encoder (dino_lr/siglip_lr) and the co-trained
-        # terminator (terminator_lr_scale). Everything else uses the base optimizer_lr.
+        # Optional separate LRs for: LoRA (lora_lr_scale), vision (dino_lr/siglip_lr), and the
+        # co-trained terminator (terminator_lr_scale). Everything else uses the base optimizer_lr.
         base = float(self.config.optimizer_lr)
         term = ([p for p in self.model.fsq_term_train.parameters() if p.requires_grad]
                 if getattr(self.model, "fsq_term_train", None) is not None else [])
         term_ids = {id(p) for p in term}
 
+        lora = []
+        lora_ids = set()
+        for module in self.model.modules():
+            if isinstance(module, NamedLoRALinear):
+                for param in module.adapters.parameters():
+                    if param.requires_grad and id(param) not in lora_ids:
+                        lora_ids.add(id(param))
+                        lora.append(param)
+
         vis_module = self.model.dino if self.model.vision_backbone == "dino" else self.model.siglip
         vis_lr = self.config.dino_lr if self.model.vision_backbone == "dino" else self.config.siglip_lr
         groups: list[dict] = []
-        excluded = set(term_ids)
+        excluded = set(term_ids) | lora_ids
         if vis_lr is not None:
             vis = [p for p in vis_module.parameters() if p.requires_grad]
             if vis:
                 groups.append({"params": vis, "lr": vis_lr})
                 excluded |= {id(p) for p in vis_module.parameters()}
         others = [p for p in self.parameters() if p.requires_grad and id(p) not in excluded]
-        groups.insert(0, {"params": others})
+        if others:
+            groups.insert(0, {"params": others})
+        if lora:
+            groups.append({"params": lora, "lr": base * float(self.config.lora_lr_scale)})
         if term:
             groups.append({"params": term, "lr": base * float(self.config.terminator_lr_scale)})
         return groups
@@ -681,8 +842,21 @@ class SkillExpertPolicy(PreTrainedPolicy):
         code = seq.gather(1, idx).squeeze(1)
         return code.clamp(0, self.config.skill_vocab_size - 1)
 
+    def _use_image_free_lora_batch(self, device: torch.device) -> bool:
+        """Sample one A/B regime for the WHOLE distributed batch.
+
+        Every DDP rank must take the same branch: A touches cond parameters while B deliberately leaves
+        them out of the graph. Rank zero's coin is broadcast to avoid an unused-parameter reducer mismatch.
+        """
+        prob = float(self.config.image_free_lora_prob)
+        if not self.training or not self.config.lora_expert or prob <= 0.0:
+            return False
+        coin = torch.rand((), device=device)
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            torch.distributed.broadcast(coin, src=0)
+        return bool(coin < prob)
+
     def forward(self, batch: dict, reduction: str = "mean"):
-        images, img_masks = self._collect_images(batch)
         actions = pad_vector(batch[ACTION], self.config.max_action_dim)
         real_dim = self.config.output_features[ACTION].shape[0]
         bsize, K = actions.shape[:2]
@@ -709,22 +883,53 @@ class SkillExpertPolicy(PreTrainedPolicy):
         actions = torch.where(valid.unsqueeze(-1), actions, hold.unsqueeze(1))   # boundary steps → hold target
 
         state = pad_vector(batch[OBS_STATE], self.config.max_state_dim)   # → state_proj's fixed width (pi0)
-        resid = self.model.forward(                                      # signed flow residual (u_t - v_t)
-            images, img_masks, state, self._skill_code(batch), actions)
-        resid = resid[:, :, :real_dim]                                   # (B, K, real_dim)
-        losses = resid ** 2                                              # per-(b,k,dim) flow MSE = action MSE
+        skill_code = self._skill_code(batch)
+        time = self.model.sample_time(bsize, dev)
+        noise = self.model.sample_noise(actions.shape, dev)
+        image_free_lora = self._use_image_free_lora_batch(dev)
+        if image_free_lora:
+            # B: no image collection, DINO/SigLIP, image projection, or cond Gemma. The objective is ONLY
+            # the adapter-on -> frozen-adapter-off velocity anchor; GT actions merely define the same x_t.
+            objective_resid, diagnostic_resid = self.model.image_free_lora_anchor(
+                state, skill_code, actions, noise=noise, time=time)
+        else:
+            # A: normal image-conditioned flow matching. Cond and LoRA are the only trainable main path.
+            images, img_masks = self._collect_images(batch)
+            diagnostic_resid = self.model.forward(
+                images, img_masks, state, skill_code, actions, noise=noise, time=time)
+            objective_resid = diagnostic_resid
+
+        diagnostic_resid = diagnostic_resid[:, :, :real_dim]
+        objective_resid = objective_resid[:, :, :real_dim]
+        losses = diagnostic_resid ** 2                                  # diagnostic GT action flow MSE
+        objective_losses = objective_resid ** 2                         # A=action loss, B=LoRA-to-base anchor
 
         # ALL K steps are supervised (boundary steps carry the hold target) — no masking. wandb `loss` = the
         # plain uniform action MSE (comparison metric; overrides the trainer's backpropped scalar via
         # output_dict — see lerobot_train). NEVER (necessarily) the optimized objective.
         plain_action = losses.mean()
         per_sample = losses.mean(dim=(1, 2))                            # (B,) per-CHUNK action loss
+        objective_per_sample = objective_losses.mean(dim=(1, 2))
         # action_loss = the PLAIN (uniform) action MSE — ALWAYS computed & logged (display-only when
         # action_weight; never the backpropped value in weighted mode). The cross-run comparison axis.
         loss_dict = {"loss_per_dim": losses.mean(dim=(0, 1)).detach().cpu().numpy().tolist(),
                      "action_loss": plain_action.detach().item()}
+        if image_free_lora:
+            loss_dict["lora_anchor_loss"] = objective_losses.mean().detach().item()
+            loss_dict["lora_regime/image_free"] = 1.0
+            # ``regime/`` is routed by lerobot_train into its own WandB ``train_regime`` panel. Do not
+            # emit an A loss here: sparse curves make each point unambiguously belong to its sampled regime.
+            loss_dict["regime/B_anchor_loss"] = objective_losses.mean().detach().item()
+            loss_dict["regime/B_image_free_action_loss"] = plain_action.detach().item()
+            loss_dict["regime/A_active"] = 0.0
+            loss_dict["regime/B_active"] = 1.0
+        else:
+            loss_dict["lora_regime/image_free"] = 0.0
+            loss_dict["regime/A_flow_loss"] = plain_action.detach().item()
+            loss_dict["regime/A_active"] = 1.0
+            loss_dict["regime/B_active"] = 0.0
         if reduction == "none":
-            return per_sample, loss_dict
+            return objective_per_sample, loss_dict
 
         # ── Diagnostic: plain per-chunk MSE bucketed by the chunk's ENDPOINT within-skill progress
         # (skill start 0 → skill end 1). action_weight up-weights high-progress chunks, so its benefit is a
@@ -748,11 +953,15 @@ class SkillExpertPolicy(PreTrainedPolicy):
         cfg = self.config
         r = float(cfg.skill_end_loss_weight)
 
-        # ── Objective = action MSE. action_weight=False → plain (uniform) MSE. action_weight=True → per-SAMPLE
+        # ── A objective = action MSE. action_weight=False → plain (uniform) MSE. action_weight=True → per-SAMPLE
         # endpoint-weighted MSE: sw = 1 + (R-1)·prog_at_endpoint (anchor = the chunk's last valid step = skill
-        # end), so chunks landing near a skill's END count up to R×. UNIFORM within a chunk (the K steps share
-        # one weight). The plain unweighted MSE is always logged as wandb `loss` (comparison). ──
-        if cfg.action_weight:
+        # end), so chunks landing near a skill's END count up to R×. B never consumes this GT-action
+        # objective: it only zeros the image-free LoRA delta against the frozen FSQ base. ──
+        if image_free_lora:
+            loss = objective_per_sample.mean() * float(cfg.image_free_lora_anchor_weight)
+            loss_dict["lora_anchor_weighted_loss"] = loss.detach().item()
+            loss_dict["regime/B_objective_loss"] = loss.detach().item()
+        elif cfg.action_weight:
             # Per-step within-skill progress (0 at skill start → 1 at last frame); endpoint anchor → sw.
             # Falls back to a linear position if ds/de absent.
             if "skill_ds" in batch and "skill_de" in batch:
@@ -765,15 +974,17 @@ class SkillExpertPolicy(PreTrainedPolicy):
             sw = (1.0 + (r - 1.0) * prog[rows, anchor]) * (last_valid >= 0).float()  # per-sample; 0 if no valid step
             loss = (per_sample * sw).sum() / sw.sum().clamp(min=1.0)
             loss_dict["action_weighted_loss"] = loss.detach().item()   # the weighted objective (weighted mode only)
+            loss_dict["regime/A_objective_loss"] = loss.detach().item()
         else:
             loss = plain_action
-        # Objective = action_weighted_loss (weighted) or action_loss (plain) — no separate loss_total. The
-        # terminator below is an INDEPENDENT (gradient-disjoint) head; summed into the backpropped scalar only
-        # so it trains inside lerobot's single-backward loop, kept OUT of the action metrics (own terminator/*).
+            loss_dict["regime/A_objective_loss"] = loss.detach().item()
+        # The terminator below is an INDEPENDENT (gradient-disjoint) head. B intentionally skips it as well:
+        # the image-free regime must not move image inputs or any non-LoRA parameter.
 
         # ── Co-trained FSQ terminator (skill-end timing for eval). DISJOINT graph (GT/precomputed
         # inputs + its own params) → summed into the backpropped scalar; main-model grads untouched. ──
-        if self.training and cfg.train_terminator and self.model.fsq_term_train is not None:
+        if (self.training and not image_free_lora and cfg.train_terminator
+                and self.model.fsq_term_train is not None):
             for k in ("skill_ds", "skill_de"):
                 if k not in batch:
                     raise ValueError(f"train_terminator=True needs '{k}' in the batch.")
@@ -846,10 +1057,11 @@ class SkillExpertPolicy(PreTrainedPolicy):
             return model
         is_pi05 = any("paligemma_with_expert" in key for key in raw)
         state_dict = {k: v.to(model._torch_dtype()) for k, v in _build_state_dict(raw, config.vision_backbone).items()}
+        state_dict, n_routed = route_plain_to_base(state_dict, set(model.state_dict().keys()))
         missing, unexpected = model.load_state_dict(state_dict, strict=False)
         log.info(
-            "SkillExpert weights: %d mapped & loaded, %d missing (fresh init), %d unexpected.",
-            len(state_dict), len(missing), len(unexpected),
+            "SkillExpert weights: %d mapped & loaded, %d missing (fresh init), %d unexpected, %d routed into LoRA bases.",
+            len(state_dict), len(missing), len(unexpected), n_routed,
         )
         # Ordering is intentional: PI05 establishes the generic motion prior first;
         # FSQ then replaces exactly that expert with its skill-conditioned motion prior.

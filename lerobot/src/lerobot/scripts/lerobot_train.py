@@ -17,6 +17,8 @@ import copy
 import dataclasses
 import json
 import logging
+import math
+import numbers
 import time
 from contextlib import nullcontext
 from pprint import pformat
@@ -150,6 +152,45 @@ def update_policy(
     train_metrics.lr = optimizer.param_groups[0]["lr"]
     train_metrics.update_s = time.perf_counter() - start_time
     return train_metrics, output_dict
+
+
+_WINDOWED_POLICY_METRIC_KEYS = {"action_loss", "action_weighted_loss"}
+_WINDOWED_POLICY_METRIC_PREFIXES = ("regime/", "terminator/")
+
+
+class _WindowedPolicyMetrics:
+    """Mean selected scalar policy diagnostics over one WandB logging window.
+
+    Regime losses are emitted only on their matching batches, so each key keeps
+    its own count instead of treating the other regime as a zero-loss update.
+    """
+
+    def __init__(self) -> None:
+        self._sums: dict[str, float] = {}
+        self._counts: dict[str, int] = {}
+
+    @staticmethod
+    def _tracks(key: str) -> bool:
+        return key in _WINDOWED_POLICY_METRIC_KEYS or key.startswith(_WINDOWED_POLICY_METRIC_PREFIXES)
+
+    def update(self, metrics: dict | None) -> None:
+        if not metrics:
+            return
+        for key, value in metrics.items():
+            if not self._tracks(key) or not isinstance(value, numbers.Real):
+                continue
+            value = float(value)
+            if not math.isfinite(value):
+                continue
+            self._sums[key] = self._sums.get(key, 0.0) + value
+            self._counts[key] = self._counts.get(key, 0) + 1
+
+    def averages(self) -> dict[str, float]:
+        return {key: total / self._counts[key] for key, total in self._sums.items()}
+
+    def reset(self) -> None:
+        self._sums.clear()
+        self._counts.clear()
 
 
 def build_pt_probe_batches(cfg: TrainPipelineConfig) -> list[dict]:
@@ -580,6 +621,11 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
         initial_step=step,
         accelerator=accelerator,
     )
+    # Stage-1's A/B losses are stochastic per batch. Keep other policies' existing final-batch
+    # logging semantics unchanged.
+    windowed_policy_metrics = (
+        _WindowedPolicyMetrics() if getattr(cfg.policy, "model_type", None) == "skill_expert" else None
+    )
 
     if is_main_process:
         progbar = tqdm(
@@ -610,6 +656,8 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
             lr_scheduler=lr_scheduler,
             rabc_weights_provider=rabc_weights,
         )
+        if is_main_process and windowed_policy_metrics is not None:
+            windowed_policy_metrics.update(output_dict)
 
         # Note: eval and checkpoint happens *after* the `step`th training update has completed, so we
         # increment `step` here.
@@ -627,6 +675,11 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                 wandb_log_dict = train_tracker.to_dict()
                 if output_dict:
                     wandb_log_dict.update(output_dict)
+                if windowed_policy_metrics is not None:
+                    # Stage-1 action/regime diagnostics are per-forward values. Replace the final batch's
+                    # value with its average over this full log window; A/B-only keys divide by their own
+                    # observed count, never by all batches in the window.
+                    wandb_log_dict.update(windowed_policy_metrics.averages())
                 # Log RA-BC statistics if enabled
                 if rabc_weights is not None:
                     rabc_stats = rabc_weights.get_stats()
@@ -672,6 +725,8 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                 if distill_metrics:
                     wandb_logger.log_dict(distill_metrics, step, mode="train_distill")
             train_tracker.reset_averages()
+            if windowed_policy_metrics is not None:
+                windowed_policy_metrics.reset()
 
             if drift_snap is not None and wandb_logger:
                 abs_d, rel_d = measure_component_drift(policy, accelerator, drift_snap)

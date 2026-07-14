@@ -2,24 +2,74 @@
 """Config for SkillVLA Stage-1 training (standalone action expert, policy.type=skill_expert).
 
 Trains the action expert by flow matching on the build_data skillvla dataset (raw images +
-skill_sequence/skill_index + actions). No FSQ / DINO-token / VLM artifacts are needed here:
-the expert encodes raw images with its OWN trainable DINOv3 and reads the GT skill code from
-the dataset. Weights can warm-start from pi05_base (action-expert motion prior) or train from
-scratch. All roots are declared in this yaml (standalone). Emits shell exports (--shell).
+skill_sequence/skill_index + actions). The data run's FSQ.pt supplies the exact action-expert
+contract and warm-start weights; no DINO-token / VLM artifacts are needed here. The expert
+encodes raw images with its own DINOv3 and reads the GT skill code from the dataset. Emits
+shell exports (--shell).
 """
 
 from __future__ import annotations
 
 import argparse
-import re
 import sys
 from pathlib import Path
+from typing import Any
 
 _HERE = Path(__file__).resolve()
 sys.path.insert(0, str(_HERE.parent.parent.parent.parent / "train_skills" / "src"))
 from train_skills_config import as_bool, as_levels, as_list, get_value, load_config, print_shell, resolve_path  # noqa: E402
 
 DEFAULT_CONFIG_PATH = _HERE.parent.parent / "stage1_train_config.yaml"
+
+
+def _blank(value: Any) -> bool:
+    return value is None or str(value).strip().lower() in ("", "null", "none")
+
+
+def _localize_model_path(project_root: Path, value: Any, default: str) -> Path:
+    raw = str(value if not _blank(value) else default).strip()
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        return resolve_path(project_root, raw)
+    if path.exists():
+        return path
+    parts = path.parts
+    if "models" in parts:
+        idx = parts.index("models")
+        return project_root.joinpath(*parts[idx:])
+    return path
+
+
+def _load_fsq_config(fsq_path: Path):
+    fsq_path = Path(fsq_path).expanduser()
+    if not fsq_path.exists():
+        raise FileNotFoundError(
+            f"FSQ checkpoint not found: {fsq_path}. "
+            "Stage-1 derives its action-expert contract from this checkpoint; build/copy the "
+            "SkillVLA data run first or set fsq_path explicitly."
+        )
+    import torch  # noqa: PLC0415
+
+    libero_dir = _HERE.parents[4]
+    if str(libero_dir) not in sys.path:
+        sys.path.insert(0, str(libero_dir))
+    from FSQ import _checkpoint_config  # noqa: PLC0415
+
+    checkpoint = torch.load(str(fsq_path), map_location="cpu", weights_only=False)
+    return _checkpoint_config(checkpoint)
+
+
+def _from_fsq_or_override(cfg: dict, name: str, fsq_value, *, cast=None):
+    value = get_value(cfg, name, None)
+    if _blank(value):
+        return fsq_value
+    parsed = cast(value) if cast is not None else value
+    if parsed != fsq_value:
+        raise ValueError(
+            f"{name} is derived from FSQ.pt and must match it. "
+            f"YAML={parsed!r}, FSQ={fsq_value!r}."
+        )
+    return parsed
 
 
 def build_settings(cfg: dict) -> dict:
@@ -32,33 +82,68 @@ def build_settings(cfg: dict) -> dict:
     source_dataset = str(get_value(cfg, "source_dataset"))
     run_tag = str(get_value(cfg, "run_tag"))
     run_dir = skillvla_root / source_dataset / run_tag
-    # FSQ codebook structure is encoded in run_tag's FSQ<levels> tag (e.g. FSQ88 → [8,8]).
-    _m = re.search(r"FSQ(\d+)", run_tag)
-    build_fsq_levels = [int(d) for d in _m.group(1)] if _m else [5, 5, 5]
+    fsq_path_raw = str(get_value(cfg, "fsq_path", "")).strip()
+    fsq_path = (resolve_path(project_root, fsq_path_raw)
+                if fsq_path_raw and fsq_path_raw.lower() not in ("null", "none") else run_dir / "FSQ.pt")
+    fsq_cfg = _load_fsq_config(fsq_path)
 
     batch_size = int(get_value(cfg, "batch_size", 32))
     num_gpus = int(get_value(cfg, "num_gpus", 1))
     lr_base = float(get_value(cfg, "lr_base", 2.5e-05))
     exp = str(get_value(cfg, "exp", "")).strip()
 
-    # Action chunk horizon. Longer chunks make the far future under-determined by the current
-    # obs alone, pushing the flow-matching loss to actually use the skill (z_q) condition.
-    # Weights are chunk-length agnostic (per-step projections + RoPE), so Stage-2 may
-    # warm-start from a Stage-1 checkpoint trained with a different chunk_size.
-    chunk_size = int(get_value(cfg, "chunk_size", 10))
+    # FSQ action reconstructor -> Stage-1 action expert is an exact warm start, so the expert
+    # tensor contract is derived from the checkpoint. YAML may only restate the same value.
+    action_expert_variant = str(_from_fsq_or_override(
+        cfg, "action_expert_variant", fsq_cfg.action_expert_variant))
+    state_cond_mode = str(_from_fsq_or_override(
+        cfg, "state_cond_mode", fsq_cfg.state_cond_mode)).strip().lower()
+    chunk_size = int(_from_fsq_or_override(cfg, "chunk_size", int(fsq_cfg.chunk_size), cast=int))
+    max_state_dim = int(_from_fsq_or_override(cfg, "max_state_dim", int(fsq_cfg.max_state_dim), cast=int))
+    max_action_dim = int(_from_fsq_or_override(cfg, "max_action_dim", int(fsq_cfg.max_action_dim), cast=int))
+    min_period = float(_from_fsq_or_override(cfg, "min_period", float(fsq_cfg.min_period), cast=float))
+    max_period = float(_from_fsq_or_override(cfg, "max_period", float(fsq_cfg.max_period), cast=float))
+    time_sampling_beta_alpha = float(_from_fsq_or_override(
+        cfg, "time_sampling_beta_alpha", float(fsq_cfg.time_sampling_beta_alpha), cast=float))
+    time_sampling_beta_beta = float(_from_fsq_or_override(
+        cfg, "time_sampling_beta_beta", float(fsq_cfg.time_sampling_beta_beta), cast=float))
+    time_sampling_scale = float(_from_fsq_or_override(
+        cfg, "time_sampling_scale", float(fsq_cfg.time_sampling_scale), cast=float))
+    time_sampling_offset = float(_from_fsq_or_override(
+        cfg, "time_sampling_offset", float(fsq_cfg.time_sampling_offset), cast=float))
     n_action_steps = get_value(cfg, "n_action_steps", None)
     n_action_steps = chunk_size if n_action_steps in (None, "", "null") else int(n_action_steps)
 
-    # Conditioning: joint (cond-encoder ⊥ action expert); skill+progress ride the action-stream prefix.
     cond_encoder_variant = str(get_value(cfg, "cond_encoder_variant", "")).strip()
     if cond_encoder_variant.lower() in ("none", "null"):  # blank yaml → omit (use action expert's variant)
         cond_encoder_variant = ""
-    state_cond_mode = str(get_value(cfg, "state_cond_mode", "state_skill")).strip().lower()  # state | state_skill
     skill_end_w = float(get_value(cfg, "skill_end_loss_weight", 1.0))      # R end weighting (action_weight only)
     action_weight = as_bool(get_value(cfg, "action_weight", False))        # per-sample sw-weight the action MSE
 
+    # Stage-1 LoRA steering: the FSQ action expert stays frozen; A batches train image cond + LoRA against
+    # actions, while B batches have NO image/cond and only anchor LoRA back to the frozen base expert.
+    lora_expert = as_bool(get_value(cfg, "lora_expert", False))
+    lora_rank = int(get_value(cfg, "lora_rank", 8))
+    lora_alpha_raw = get_value(cfg, "lora_alpha", "auto")
+    lora_alpha = (2.0 * lora_rank if _blank(lora_alpha_raw) or str(lora_alpha_raw).strip().lower() == "auto"
+                  else float(lora_alpha_raw))
+    lora_dropout = float(get_value(cfg, "lora_dropout", 0.0))
+    lora_targets = str(get_value(cfg, "lora_targets", "q,k,v,o"))
+    lora_lr_scale = float(get_value(cfg, "lora_lr_scale", 1.0))
+    image_free_lora_prob = float(get_value(cfg, "image_free_lora_prob", 0.0) or 0.0)
+    image_free_lora_anchor_weight = float(get_value(cfg, "image_free_lora_anchor_weight", 1.0))
+    if image_free_lora_prob > 0.0 and not lora_expert:
+        raise ValueError("image_free_lora_prob > 0 needs lora_expert: true.")
+    if not 0.0 <= image_free_lora_prob < 1.0:
+        raise ValueError(f"image_free_lora_prob must be in [0, 1), got {image_free_lora_prob}.")
+    if image_free_lora_anchor_weight <= 0.0:
+        raise ValueError("image_free_lora_anchor_weight must be > 0.")
+
     init_from_pi05 = as_bool(get_value(cfg, "init_from_pi05", True))
-    pi_base = resolve_path(project_root, get_value(cfg, "pi_base", "models/pi05_base")) if init_from_pi05 else ""
+    pi_base_source = get_value(cfg, "pi_base", None)
+    if _blank(pi_base_source):
+        pi_base_source = getattr(fsq_cfg, "pi_base", "models/pi05_base")
+    pi_base = _localize_model_path(project_root, pi_base_source, "models/pi05_base") if init_from_pi05 else ""
 
     dino_lr = get_value(cfg, "dino_lr", None)
     dino_lr_str = "" if dino_lr in (None, "", "null") else str(dino_lr)
@@ -68,12 +153,16 @@ def build_settings(cfg: dict) -> dict:
     vision_backbone = (str(get_value(cfg, "vision_backbone", "dino")).strip().lower() or "dino")
     freeze_vision_encoder = as_bool(get_value(cfg, "freeze_vision_encoder", False))  # SELECTED backbone; frozen → "_freeze" suffix
 
-    # run-name: run_tag + backbone[_freeze] + batch + state-cond [+ weighted] [+ exp]. source_dataset /
+    # run-name: run_tag + backbone[_freeze] + batch + state-cond [+ LoRA regime] [+ weighted] [+ exp]. source_dataset /
     # chunk_size are OMITTED (fixed — never swept). freeze_vision_encoder → "_freeze" ONLY when frozen
     # (trainable = plain backbone → back-compat with existing "..._siglip_batch..." runs). The Stage-2
     # parser already recognizes the "_freeze" suffix. action_weight → "_weighted" ONLY when true.
     backbone_tag = f"{vision_backbone}_freeze" if freeze_vision_encoder else vision_backbone
     run_name = f"{run_tag}_{backbone_tag}_batch{batch_size}_{state_cond_mode}"
+    if lora_expert:
+        run_name = f"{run_name}_lorae{lora_rank}"
+        if image_free_lora_prob > 0.0:
+            run_name = f"{run_name}_if{int(round(image_free_lora_prob * 100))}"
     if action_weight:
         run_name = f"{run_name}_weighted"
     if exp:
@@ -83,23 +172,22 @@ def build_settings(cfg: dict) -> dict:
     vla_root = outputs_root / "skillVLA_stage1"
     output_dir = vla_root / run_name   # under skillVLA_stage1/, so no extra stage prefix
 
-    # FSQ skill structure: auto-match the FSQ the dataset was built with (parsed from run_tag's FSQ<levels> tag).
-    # The expert only needs the codebook size (= prod(levels)) for its skill embedding; levels are
-    # kept for the eval cube viz. Either may be overridden in the stage1 yaml.
-    skill_fsq_levels = list(as_levels(get_value(cfg, "skill_fsq_levels", build_fsq_levels)))
+    skill_fsq_levels = list(_from_fsq_or_override(
+        cfg, "skill_fsq_levels", list(fsq_cfg.fsq_levels), cast=lambda v: list(as_levels(v))))
     vocab_default = 1
     for _lvl in skill_fsq_levels:
         vocab_default *= _lvl
     skill_vocab_size = int(get_value(cfg, "skill_vocab_size", vocab_default))
 
-    # ── Co-trained terminator (ONLINE DINO): 배치의 현재 프레임 이미지를 라이브 토큰화하므로
-    # dino.npz 경로 유도가 필요 없음 — DINO 모델 경로만 로컬로 고정해 이식성 확보. ──
+    # ── Co-trained terminator (ONLINE DINO): use the DINO backbone recorded by THIS FSQ checkpoint.
+    # A yaml override is allowed, but defaulting to a different DINO size silently makes checkpoint
+    # weights incompatible (and may point at a config-only local model directory).
     train_terminator = as_bool(get_value(cfg, "train_terminator", False))
-    fsq_path_raw = str(get_value(cfg, "fsq_path", "")).strip()
-    fsq_path = (resolve_path(project_root, fsq_path_raw)
-                if fsq_path_raw and fsq_path_raw.lower() not in ("null", "none") else run_dir / "FSQ.pt")
-    terminator_dino_model_path = resolve_path(
-        project_root, get_value(cfg, "terminator_dino_model_path", "models/dinov3-vits16"))
+    term_dino_source = get_value(cfg, "terminator_dino_model_path", None)
+    if _blank(term_dino_source):
+        term_dino_source = getattr(fsq_cfg, "dino_model_path", "models/dinov3-vits16")
+    terminator_dino_model_path = _localize_model_path(
+        project_root, term_dino_source, "models/dinov3-vits16")
 
     settings: dict = {
         # roots
@@ -113,6 +201,7 @@ def build_settings(cfg: dict) -> dict:
         # conditioning (joint only; skill+progress on the action prefix)
         "cond_encoder_variant": cond_encoder_variant,  # "" → same as action_expert_variant
         "state_cond_mode": state_cond_mode,       # state (skill=prefix token) | state_skill (skill→AdaRMS too)
+        "action_expert_variant": action_expert_variant,
         # model init
         "pi_base": pi_base,                       # "" → train the expert from scratch
         # vision encoder: "dino" or "siglip" (siglip warm-starts from pi_base's vision_tower)
@@ -124,6 +213,23 @@ def build_settings(cfg: dict) -> dict:
         "siglip_image_size": int(get_value(cfg, "siglip_image_size", 224)),
         "skill_vocab_size": skill_vocab_size,
         "skill_fsq_levels": "[" + ",".join(str(x) for x in skill_fsq_levels) + "]",
+        "max_state_dim": max_state_dim,
+        "max_action_dim": max_action_dim,
+        "min_period": min_period,
+        "max_period": max_period,
+        "time_sampling_beta_alpha": time_sampling_beta_alpha,
+        "time_sampling_beta_beta": time_sampling_beta_beta,
+        "time_sampling_scale": time_sampling_scale,
+        "time_sampling_offset": time_sampling_offset,
+        # frozen FSQ expert + image-steering LoRA
+        "lora_expert": lora_expert,
+        "lora_rank": lora_rank,
+        "lora_alpha": lora_alpha,
+        "lora_dropout": lora_dropout,
+        "lora_targets": lora_targets,
+        "lora_lr_scale": lora_lr_scale,
+        "image_free_lora_prob": image_free_lora_prob,
+        "image_free_lora_anchor_weight": image_free_lora_anchor_weight,
         # output
         "skillvla_outputs_root": vla_root,
         "pt_run_name": run_name,
@@ -147,6 +253,7 @@ def build_settings(cfg: dict) -> dict:
         "num_gpus": num_gpus,
         "lr": lr_base * num_gpus,
         "steps": int(get_value(cfg, "steps", 100000)),
+        "log_freq": int(get_value(cfg, "log_freq", 200)),
         "save_freq": int(get_value(cfg, "save_freq", 5000)),
         # wandb
         "wandb_enable": as_bool(get_value(cfg, "wandb_enable", True)),

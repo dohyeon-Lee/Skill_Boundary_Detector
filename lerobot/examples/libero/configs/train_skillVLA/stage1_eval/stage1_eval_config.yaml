@@ -36,10 +36,14 @@ source_dataset: libero_90_full_full
 # Layout: models_per_row = 한 행에 넣을 패널 수 (0 = 전부 한 행). 리스트 순서대로 행을 채움 —
 #   3이면 위 3개=1행, 다음 3개=2행 (6개=2×3, 9개=3×3, ...); 마지막 행이 모자라면 검은 패널로 패딩.
 models:
-  - {kind: fsq_expert, run_tag: FSQ555_dino_frozen_small_vsa_state_skill_125_pt_snap10,
-     advance_mode: gt, label: FSQ-expert_GT}
-  - {kind: fsq_expert, run_tag: FSQ555_dino_frozen_small_vsa_state_skill_125_pt_snap10,
-     advance_mode: terminator, label: FSQ-expert_TERM}
+  - {kind: fsq_expert, run_tag: FSQ555_dino_frozen_small_optimal_vsa_state_skill_125_pt_snap10,
+     advance_mode: gt, label: FSQopt-expert_GT}
+  - {kind: fsq_expert, run_tag: FSQ555_dino_frozen_small_optimal_vsa_state_skill_125_pt_snap10,
+     advance_mode: terminator, label: FSQopt-expert_TERM}
+#   - {kind: fsq_expert, run_tag: FSQ555_dino_frozen_small_vsa_state_skill_125_pt_snap10,
+#      advance_mode: gt, label: FSQ-expert_GT}
+#   - {kind: fsq_expert, run_tag: FSQ555_dino_frozen_small_vsa_state_skill_125_pt_snap10,
+#      advance_mode: terminator, label: FSQ-expert_TERM}
   # Later, add trained Stage-1 panels to the same list:
   # - {kind: stage1, model_dir: <stage1_run>, checkpoint: "015000",
   #    advance_mode: gt, label: Stage1_GT}

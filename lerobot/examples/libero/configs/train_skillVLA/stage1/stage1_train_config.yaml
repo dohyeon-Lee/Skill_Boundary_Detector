@@ -1,7 +1,7 @@
 # SkillVLA Stage-1 training — standalone action expert (policy.type=skill_expert).
 # Trains the action expert by flow matching on the build_data skillvla dataset
-# (raw images + skill code + actions). No VLM, no language, no FSQ/DINO-token artifacts.
-# The expert encodes raw images with its own trainable DINOv3.
+# (raw images + skill code + actions). No VLM/language; the data run's FSQ.pt supplies
+# the exact action-expert warm start, while no FSQ DINO-token artifacts are needed.
 
 # ── Paths (project_root/dataset_root come from configs/global_config.yaml) ──
 skillvla_dataset_root: skillvla_dataset  # .../{skillvla_dataset_root}/{source_dataset}/{run_tag}/
@@ -10,45 +10,60 @@ skillvla_dataset_root: skillvla_dataset  # .../{skillvla_dataset_root}/{source_d
 source_dataset: libero_90_full_full
 # run_tag: FSQ555_dino8_both_1000   
 # run_tag: FSQ555_dino8_both_1000_snap10
-run_tag: FSQ555_dino_frozen_small_v3_vsa_state_m2_best_snap20
+run_tag: FSQ555_dino_frozen_small_optimal_vsa_state_skill_125_pt_snap10
 
 
-
-# ── Conditioning architecture (joint only) ──
-#   state       → AdaRMS = time + state; skill (z_q) stays as an attended PREFIX token (image-dominant,
-#                 leaves room for Stage-2 language to modulate — lighter skill influence).
-#   state_skill → AdaRMS = time + state + skill(z_q); NO prefix tokens (strongest skill influence).
-state_cond_mode: state
-
-# ── Model init ──
-pi_base: models/pi05_base   # project_root(global_config) 기준 상대경로 → 서버마다 자동. 절대경로도 허용.
+# ── FSQ-derived expert contract ──
+# The action expert is warm-started from {run_tag}/FSQ.pt. Stage-1 derives the
+# matching state_cond_mode, chunk_size, FSQ levels, action_expert_variant, and
+# flow-time knobs from that checkpoint. Optional overrides may restate the same
+# value, but mismatches fail before Slurm submission.
+# fsq_path:
+# state_cond_mode:
+# chunk_size:
+# pi_base:
 
 # ── Vision encoder (shared across the 2 cameras) ──
 vision_backbone: dino           # dino | siglip (params separate from the Stage-2 VLM. Needs init_from_pi05: true for the warm-start.)
 freeze_vision_encoder: true    # freeze the SELECTED backbone (dino→false: train own DINOv3; siglip→usually true: reuse pi05 prior)
 dino_model_path: models/dinov3-vitl16   # (dino) project_root 기준 상대경로. ViT-B/16 86M (vits16=21M, vitl16=300M)
 
-# ── Action chunk horizon ──
-chunk_size: 10 
-n_action_steps:                 # blank = chunk_size (must be <= chunk_size)
+# ── Frozen FSQ expert + image-steering LoRA ──
+# The FSQ action expert base stays frozen. LoRA is injected into its q/k/v/o projections using the
+# same named-adapter mechanism as Stage 2. A batches train image cond + LoRA on action flow; B batches
+# skip image/cond entirely and force LoRA-on to equal the frozen LoRA-off expert for the same state+skill.
+lora_expert: true
+lora_rank: 8 # 8
+lora_alpha: auto                 # auto = 2 * rank (effective alpha/r = 2)
+lora_dropout: 0.0                # adapter-internal dropout; distinct from the A/B regime coin below
+lora_targets: "q,k,v,o"
+lora_lr_scale: 10.0
+image_free_lora_prob: 0.3   # 0.3      # B probability: no image / no cond / LoRA delta -> frozen base delta
+image_free_lora_anchor_weight: 0.5 # 0.5
+
+# ── Action execution horizon ──
+n_action_steps:                 # blank = FSQ chunk_size (must be <= chunk_size)
 
 # ── Loss = action MSE (flow matching). action_weight로 per-sample 가중 여부만 선택. ──
 skill_end_loss_weight: 2.0        # R — sw=1+(R-1)·progress; 스킬 END을 더 강조 (1=uniform). action_weight=true일 때만 사용
 action_weight: false               # true=가중 / false=균등
 
 # ── Terminator co-train (skill-end timing head, gradient-disjoint from 본체; eval skill 전환용) ──
-# fsq_path는 run_tag에서 AUTO 유도 (run_dir/FSQ.pt). Terminator는 raw image를 직접 읽음.
+# fsq_path는 run_tag에서 AUTO 유도 (run_dir/FSQ.pt). Terminator DINO도 해당 FSQ.pt 설정을 자동 상속한다.
+# Terminator는 raw image를 직접 읽으며, image-free B에서는 완전히 이미지를 배제하기 위해 건너뛴다 (A만 update).
+# terminator_dino_model_path:   # optional explicit override; must match the FSQ terminator architecture
 train_terminator: true            # false면 terminator 미학습 (DINO 토큰 데이터셋도 안 붙음)
 terminator_end_target_sigma: 1.0  # termination 타깃 = exp(-de²/2σ²) (스킬 끝에서 peak)
 terminator_end_pos_weight: 1.0    # BCE pos_weight (skill-end 프레임은 희소 positive)
 terminator_lr_scale: 1.0          # terminator 전용 param group의 LR 배수 (× optimizer_lr)
 
 # ── Optimization ──
-batch_size: 256
+batch_size: 128
 num_workers: 8
 num_gpus: 1
 lr_base: 2.5e-05                # effective LR = lr_base * num_gpus
-steps: 15000
+steps: 20000
+log_freq: 100
 save_freq: 5000
 
 exp: ""         # optional EXTRA run-name suffix (variant tag _ae/_cond is now auto from skill_inject)

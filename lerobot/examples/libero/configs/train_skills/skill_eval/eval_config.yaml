@@ -14,7 +14,7 @@ fsq_inputs_name: FSQ_inputs
 skillset_name: skillset
 # DP boundary HTML uses this explicitly selected skillset. global_mean selects
 # seg_{dp}_ck{ckpt}_globalmean; episode_mean selects the legacy seg_{dp}_ck{ckpt}.
-skillset_boundary_threshold_mode: episode_mean   # episode_mean | global_mean
+skillset_boundary_threshold_mode: global_mean   # episode_mean | global_mean
 
 eval_run_dp: false
 
@@ -36,8 +36,8 @@ eval_run_fsq: true
 # fsq_eval_run_name: libero_90_full_full_state_obs20_fsq555_dino_frozen_small_vsa_state
 # fsq_eval_run_name: libero_90_full_full_state_obs20_fsq555_dino_frozen_small_vsa_state_skill
 # fsq_eval_run_name: libero_90_full_full_state_obs20_global_fsq555_dino_frozen_small_rawstate_vsa_state_skill
-fsq_eval_run_name: libero_90_full_full_state_obs20_global_fsq555_dino_frozen_small_vsa_state_skill
-fsq_eval_checkpoint: 0
+fsq_eval_run_name: libero_90_full_full_state_obs20_global_fsq555_dino_frozen_small_optimal_vsa_state_skill
+fsq_eval_checkpoint: 200
 # The terminator always consumes both cameras; architecture/backbone live in the checkpoint.
 
 # Evaluation / HTML knobs
