@@ -1,19 +1,130 @@
 # Codex handoff: SkillVLA / FSQ redesign
 
-Updated: 2026-07-13 (Asia/Seoul)
+Updated: 2026-07-14 (Asia/Seoul)
 
 This document transfers the design context from the long Codex thread that was
-run in `/scratch/mdorazi`. The next workspace is expected to be
-`/scratch2/mdorazi`.
+run across `/scratch/mdorazi` and `/scratch2/mdorazi`. The active workspace is
+now `/scratch2/mdorazi`.
+
+## 0. 2026-07-14 continuation — read this first
+
+The code and config are authoritative. The current branch is
+`splitVLA_lora_ABC`, HEAD was `7262265` when this section was updated, and the
+worktree was clean. Do not assume those facts remain true; run the checks in
+section 1 before editing.
+
+### 0.1 Path/cache portability is fixed at Slurm entry points
+
+`lerobot/examples/libero/configs/runtime_env.sh` is sourced by the active
+train/eval/build sbatch scripts. It forces all transient storage below the
+configured `${PROJECT_ROOT}` (currently `/scratch2/...`):
+
+- Hugging Face: `${PROJECT_ROOT}/.cache/huggingface/{datasets,hub}`
+- W&B cache/data: `${PROJECT_ROOT}/.cache/wandb/{cache,data}`
+- Matplotlib: `${PROJECT_ROOT}/.cache/matplotlib`
+
+This was necessary because FSQ job `1800407` crashed while `datasets` tried to
+create a parquet lock under the old default
+`/scratch/mdorazi/.cache/huggingface/datasets` (`Errno 28: No space left on
+device`). Do not remove the runtime-env source lines or revert to `$HOME` cache
+fallbacks. `.cache/` is deliberately gitignored.
+
+### 0.2 Boundary construction has two selectable modes
+
+`skillset_boundary_threshold_mode` selects the segmentation threshold:
+
+```yaml
+episode_mean  # legacy: each episode's SG-smoothed divergence mean
+global_mean   # one mean over every SG-smoothed replanning point in all episodes
+```
+
+- Set it in `train_skills/build_data/build_data_config.yaml` to choose what
+  `submit_build_data.sh` builds. At this update it is `global_mean`.
+- A global skillset is isolated as
+  `seg_{dp}_ck{checkpoint}_globalmean/skillset`; legacy episode-local data stays
+  in `seg_{dp}_ck{checkpoint}/skillset`. Never mix or resume across them.
+- `global_mean` is a 2-pass Slurm pipeline: (1) curve-only DP/VF array,
+  (2) `compute_global_boundary_threshold.sbatch`, which writes
+  `skillset/global_boundary_threshold.json`, and (3) cached-curve segmentation
+  array. Stage 3 does **not** rerun DP/VF inference.
+- `compute_global_boundary_threshold.py` verifies that it received one valid
+  curve for every episode and computes a replanning-point-weighted mean of
+  `sg_vals`, not an average of array/task means.
+- Initial reducer job `1802399` failed because it used the Slurm spool path;
+  `compute_global_boundary_threshold.sbatch` now anchors on `SLURM_SUBMIT_DIR`.
+  The first global curve pass completed all 3921 curves successfully.
+
+FSQ and DP-eval selection is now explicit too:
+
+- `FSQ/fsq_config.yaml`: `skillset_boundary_threshold_mode`
+- `skill_eval/eval_config.yaml`: `skillset_boundary_threshold_mode`
+
+Those module values override the build-config fallback, intentionally allowing
+an old/local and a new/global skillset to coexist. At this update both FSQ and
+skill-eval configs are set to `episode_mean`, while build-data is set to
+`global_mean`; change the module config intentionally before consuming a global
+skillset. FSQ metadata records the mode used for training, and FSQ reconstruction
+eval reuses that metadata so it cannot accidentally evaluate a global FSQ on a
+local skillset.
+
+### 0.3 Naming, W&B, checkpoints, and eval behavior
+
+- A global FSQ run has `_global` immediately after `dp_tag`, e.g.
+  `..._state_obs20_global_fsq555_...`. Local runs omit it. DP boundary-eval HTML
+  similarly becomes `state_obs20_global_ck100000.html`.
+- `FSQ.pt` is overwritten whenever `val/select` reaches a new minimum, not at a
+  fixed cadence. `FSQ_epochNNNN.pt` is the exact-resume checkpoint and is saved
+  every `fsq_checkpoint_every` epochs (currently 25).
+- `val/select` defaults to the same weights as the train loss:
+  `1.0*action + 0.1*progress + 0.1*termination`. It selects `FSQ.pt`; it does
+  not affect the gradient.
+- Standard W&B `train/*` and `val/*` use `optimizer_step` as x; duplicated
+  `train_epoch/*` and `val_epoch/*` curves use epoch as x. `action_objective`
+  equals `action` while `weighted_loss: false` (current default).
+- New FSQ jobs log `train/` and `val/` codebook utilization and active-entry
+  count per epoch. This is an on-device boolean accumulation of the already
+  computed encoder indices; it has no extra encode/decode pass. Train coverage
+  is approximate because weights change during the epoch; validation coverage
+  is for the fixed validation split/current model.
+- `end_recall` is a termination classification metric, not a model parameter:
+  prediction is sigmoid(logit) >= `end_threshold` (0.5); target is >= 0.5. With
+  current `end_target_sigma: 1.0`, the end and roughly one preceding frame are
+  positive under that threshold.
+- `fsq_eval.py` defaults to `decoder_scope: samples`, configured through
+  `fsq_eval_decoder_scope`. It encodes all skills (exact codebook counts/top
+  entries) but only live-decodes the plotted samples. `decoder_scope: all`
+  restores full-skill metrics. In sample mode W&B metrics are under
+  `decoder_sample/*`, with `decoder/evaluated_skills`; do not compare them as
+  full-dataset metrics. The current eval YAML has max 10 entries × 10 samples.
+- FSQ action reconstruction in eval uses 10 Euler flow/denoising steps per
+  frame microbatch (`model.decode(..., num_steps=10)`). The image terminator is
+  evaluated once after that action integration. The eval CLI must retain its
+  `--image_key` argument; it was fixed after sample-mode first exposed the
+  thumbnail path.
+
+### 0.4 Current running-job snapshot (ephemeral)
+
+At the above timestamp, six FSQ jobs were running. All used batch size 64;
+local skillsets have 148 train updates/epoch (10,497 skills) and global
+skillsets 143 (10,157 skills). This is only a status snapshot; inspect Slurm and
+logs again on a new server/session.
+
+| Job | Run | Last observed progress | FSQ.pt best epoch |
+|---|---|---:|---:|
+| 1802357 | local zero-grounded `state_skill` | e125–129 | 124 |
+| 1802358 | local raw-state `state_skill` | e240–249 | 167 |
+| 1802359 | local raw-state `state` | e62–74 | 62 |
+| 1802766 | global raw-state `state_skill` | e110–124 | 105 |
+| 1802768 | global zero-grounded `state_skill` | e110–124 | 107 |
+| 1803656 | local zero-grounded `state` | e14–24 | 14 |
 
 ## 1. Repository state to start from
 
-- Old repository root: `/scratch/mdorazi/Skill_Boundary_Detector`
-- Main code directory: `/scratch/mdorazi/Skill_Boundary_Detector/lerobot`
+- Active repository root: `/scratch2/mdorazi/Skill_Boundary_Detector`
+- Main code directory: `/scratch2/mdorazi/Skill_Boundary_Detector/lerobot`
 - Branch: `splitVLA_lora_ABC`
-- Authoritative commit: `6f966c9b45201b8dc553b1b227f7e18d09e22ebe`
-- Commit subject: `save`
-- The worktree was clean immediately before this handoff file was added.
+- HEAD at this update: `7262265` (do not rely on this after transfer)
+- The worktree was clean when section 0 was updated.
 
 On the new filesystem, first verify:
 
@@ -67,6 +178,15 @@ DP / boundary construction
 
 The new FSQ format is version 3. Legacy decoder/fallback code was deliberately
 removed rather than preserved.
+
+Boundary construction is intentionally **state-only**:
+
+- DP boundary checkpoints must have `_state` in their run name and assert
+  `state_only` when loaded.
+- The old DINO feature staging/precompute, visual-DP mode, and associated build
+  config fields were removed from the active `train_skills` path.
+- Standalone divider/eval code may still decode frames for visualizations, but
+  images are not a DP/boundary-policy input.
 
 ## 4. FSQ v3 architecture
 
@@ -228,6 +348,20 @@ Current loader choices:
 - train workers: configured `fsq_num_workers`, persistent, prefetch factor 1.
 - validation workers: at most 2 and non-persistent, to avoid simultaneously
   retaining a second large worker pool.
+- `_sample_images` now batches the M requested timestamps into one
+  `decode_video_frames` call per camera (two calls per skill), rather than
+  issuing 2*M random decoder requests. It intentionally uses the worker-local
+  LeRobot reader's private metadata/video helpers; a raw-dataset smoke test
+  confirmed batched decode matches individual-frame decode exactly.
+- CUDA DataLoaders use pinned memory and the existing non-blocking transfer.
+  These changes reduce CPU/video starvation but do not eliminate it; PyAV
+  random decode remains the dominant source of GPU-utilization/power sawtooth.
+- TorchCodec was tested but could not load on this server because its FFmpeg
+  shared libraries/PyTorch build were incompatible. Do not enable it without a
+  working decoder smoke test.
+- Episode-aware sampling/LRU raw-frame cache is not implemented. It could
+  reduce repeated decoding further but trades off batch diversity and can add
+  task/episode correlation. The batched-M decode above is the safe baseline.
 
 ## 5. Current FSQ config and naming
 
@@ -240,19 +374,20 @@ At handoff time the important values are:
 ```yaml
 fsq_levels: [5, 5, 5]
 fsq_encoder_input_mode: zero_grounded
+skillset_boundary_threshold_mode: episode_mean  # explicit local/global selector
 
 fsq_terminator_arch: small
 fsq_vision_backbone: dino
 fsq_freeze_vision_encoder: true
-fsq_dino_model_path: /scratch/mdorazi/Skill_Boundary_Detector/models/dinov3-vits16
+fsq_dino_model_path: models/dinov3-vitl16  # resolved relative to project_root
 fsq_dino_image_size: 224
 fsq_siglip_image_size: 224
 fsq_cond_encoder_variant: gemma_300m  # only used for arch=cond
 
 fsq_batch_size: 64
 fsq_num_workers: 8
-fsq_num_epochs: 300
-fsq_checkpoint_every: 50
+fsq_num_epochs: 500
+fsq_checkpoint_every: 25
 fsq_chunk_size: 10
 fsq_samples_per_skill: 5
 fsq_action_expert_variant: gemma_300m
@@ -273,14 +408,14 @@ weighted_loss: false
 The run-name template is:
 
 ```text
-{target_dataset}_{dp_tag}_{fsq_tag}_{fsq_vision_tag}_{fsq_terminator_arch}
-{fsq_encoder_input_suffix}{weighted_suffix}{fsq_exp_suffix}
+{target_dataset}_{dp_tag}_{fsq_tag}_{fsq_vision_tag}_{fsq_terminator_tag}
+{fsq_encoder_input_suffix}{fsq_state_cond_suffix}{weighted_suffix}{fsq_exp_suffix}
 ```
 
 Without the visual line break, the current default resolves to approximately:
 
 ```text
-libero_90_full_full_state_obs20_fsq555_dino_frozen_small_v3_vsa_state_m2
+libero_90_full_full_state_obs20_fsq555_dino_frozen_small_vsa_state
 ```
 
 Tags:
@@ -288,13 +423,16 @@ Tags:
 - `fsq_vision_tag`: e.g. `dino_frozen`, `dino_tuned`, `siglip_frozen`, or
   `siglip_tuned`.
 - `fsq_encoder_input_suffix`: empty for zero-grounded; `_rawstate` for raw state.
+- `fsq_state_cond_suffix`: `_vsa_state` or `_vsa_state_skill`.
 - `weighted_suffix`: empty when `weighted_loss: false`; `_weighted` when true.
+- `dp_tag`: adds `_global` immediately after the DP tag for a global-mean
+  skillset, so local and global FSQ outputs cannot collide.
 
-The Slurm script records architecture, vision, freeze state, and encoder input
-mode in `fsq_meta.json`.
+The Slurm script records architecture, vision, freeze state, encoder input mode,
+and `skillset_boundary_threshold_mode` in `fsq_meta.json`.
 
-Server paths in YAML must be updated for `/scratch2/mdorazi`; do not assume the
-old absolute DINO/PI paths exist unchanged.
+Project-relative model paths are resolved in `train_skills_config.py`; use those
+instead of server-specific absolute `/scratch*` paths.
 
 ## 6. Stage-1 warm start from FSQ
 
@@ -420,6 +558,19 @@ Before the handoff, the following checks passed on the old workspace:
 - Zero-grounded output naming stayed backward compatible.
 - Raw-state config emitted `_rawstate` in the output folder.
 
+Continuation checks completed on `/scratch2`:
+
+- Python compile and shell syntax checks for the state-only build, global
+  threshold reducer, FSQ training/eval config emitters, and runtime-env script.
+- `global_mean` resolver output was checked for both global and local paths.
+- The global reducer verified all 3921 staged curves before writing its mean.
+- Legacy `episode_mean` peak selection was compared against the explicit
+  threshold implementation across randomized signals and matched exactly.
+- FSQ eval sample scope was smoke-tested through the decoder progress bar:
+  sample mode decoded 9 microbatches in about 19 seconds instead of the old
+  full-eval ~8700 microbatches. The subsequent missing `--image_key` parser
+  argument was fixed.
+
 A local multi-worker DataLoader smoke test could not run in the previous sandbox
 because multiprocessing resource-sharing sockets were denied. This was a
 sandbox restriction, not a demonstrated code failure. A short Slurm smoke run
@@ -467,6 +618,17 @@ FSQ config/Slurm:
 - `lerobot/examples/libero/configs/train_skills/FSQ/submit_train_fsq.sh`
 - `lerobot/examples/libero/configs/train_skills/src/train_skills_config.py`
 
+State-only boundary build / global-threshold implementation:
+
+- `lerobot/examples/libero/build_skill_dataset.py`
+- `lerobot/examples/libero/skill_divider.py`
+- `lerobot/examples/libero/configs/train_skills/build_data/build_data_config.yaml`
+- `lerobot/examples/libero/configs/train_skills/build_data/submit_build_data.sh`
+- `lerobot/examples/libero/configs/train_skills/build_data/src/build_skillset.sbatch`
+- `lerobot/examples/libero/configs/train_skills/build_data/src/compute_global_boundary_threshold.py`
+- `lerobot/examples/libero/configs/train_skills/build_data/src/compute_global_boundary_threshold.sbatch`
+- `lerobot/examples/libero/configs/runtime_env.sh`
+
 SkillVLA data construction:
 
 - `lerobot/examples/libero/configs/train_skillVLA/build_data/`
@@ -503,4 +665,3 @@ files and report any mismatch between the handoff and the actual code before
 making changes. Preserve unrelated user edits and do not restore deleted legacy
 fallbacks.
 ```
-
