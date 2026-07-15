@@ -75,12 +75,16 @@ def inject_lora(root: nn.Module, target_names: set[str], r: int, alpha: float,
 # "q,k,v,o" → the actual Linear attribute names (o covers both Gemma o_proj and SigLIP out_proj).
 _TOKEN_TO_NAMES = {
     "q": {"q_proj"}, "k": {"k_proj"}, "v": {"v_proj"}, "o": {"o_proj", "out_proj"},
-    "gate": {"gate_proj"}, "up": {"up_proj"}, "down": {"down_proj"}, "fc1": {"fc1"}, "fc2": {"fc2"},
+    "attn": {"q_proj", "k_proj", "v_proj", "o_proj", "out_proj"},
+    "gate": {"gate_proj"}, "up": {"up_proj"}, "down": {"down_proj"},
+    "mlp": {"gate_proj", "up_proj", "down_proj"},
+    "fc1": {"fc1"}, "fc2": {"fc2"},
+    "action_in": {"action_in_proj"}, "action_out": {"action_out_proj"},
 }
 
 
 def target_names_from_spec(spec: str) -> set[str]:
-    """'q,k,v,o' → {'q_proj','k_proj','v_proj','o_proj','out_proj'}."""
+    """Expand compact target aliases, e.g. ``q,k,v,o,mlp,action_out``."""
     names: set[str] = set()
     for tok in (t.strip() for t in spec.split(",")):
         if tok:

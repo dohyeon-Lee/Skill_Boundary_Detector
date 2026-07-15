@@ -25,21 +25,28 @@ run_tag: FSQ555_dino_frozen_small_optimal_vsa_state_skill_125_pt_snap10
 
 # ── Vision encoder (shared across the 2 cameras) ──
 vision_backbone: dino           # dino | siglip (params separate from the Stage-2 VLM. Needs init_from_pi05: true for the warm-start.)
-freeze_vision_encoder: true    # freeze the SELECTED backbone (dino→false: train own DINOv3; siglip→usually true: reuse pi05 prior)
+freeze_vision_encoder: false    # freeze the SELECTED backbone (dino→false: train own DINOv3; siglip→usually true: reuse pi05 prior)
 dino_model_path: models/dinov3-vitl16   # (dino) project_root 기준 상대경로. ViT-B/16 86M (vits16=21M, vitl16=300M)
 
-# ── Frozen FSQ expert + image-steering LoRA ──
-# The FSQ action expert base stays frozen. LoRA is injected into its q/k/v/o projections using the
-# same named-adapter mechanism as Stage 2. A batches train image cond + LoRA on action flow; B batches
-# skip image/cond entirely and force LoRA-on to equal the frozen LoRA-off expert for the same state+skill.
-lora_expert: true
+# ── FSQ expert adaptation + image steering ──
+# `lora_expert: true` freezes the FSQ action base and trains only its selected LoRA residual.
+# `lora_expert: false` injects no LoRA and fine-tunes the complete FSQ action expert at the base LR.
+# `lora_targets` only applies in the LoRA regime:
+#   q,k,v,o                    = attention-only baseline (same target family as Stage 2)
+#   q,k,v,o,mlp,action_out     = wider steering: attention + gate/up/down MLP + flow velocity output
+# `action_in` is available too, but is intentionally omitted from the first wider mode because it can
+# strengthen state/skill-only motion. A batches train image cond + the selected action adaptation on flow;
+# B batches skip image/cond entirely and anchor it to frozen FSQ for the same state+skill. In full-FT mode,
+# that target is a non-checkpointed frozen copy of the FSQ action tensors.
+lora_expert: false
 lora_rank: 8 # 8
 lora_alpha: auto                 # auto = 2 * rank (effective alpha/r = 2)
 lora_dropout: 0.0                # adapter-internal dropout; distinct from the A/B regime coin below
-lora_targets: "q,k,v,o"
+lora_targets: "q,k,v,o" #,mlp,action_out"
 lora_lr_scale: 10.0
-image_free_lora_prob: 0.3   # 0.3      # B probability: no image / no cond / LoRA delta -> frozen base delta
-image_free_lora_anchor_weight: 0.5 # 0.5
+
+image_free_lora_prob: 0 # 0.5   # 0.3      # B probability: no image / no cond / LoRA delta -> frozen base delta
+image_free_lora_anchor_weight: 1 # non-1 values automatically add `_aw...` to the run name
 
 # ── Action execution horizon ──
 n_action_steps:                 # blank = FSQ chunk_size (must be <= chunk_size)

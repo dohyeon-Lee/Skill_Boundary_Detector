@@ -10,6 +10,7 @@ model was trained on (source_dataset + run_tag). All roots are declared in this 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -99,6 +100,60 @@ def _auto_labels(model_dirs: list[str]) -> list[str]:
     return ["_".join(t[p: len(t) - s]) or d for t, d in zip(toks, model_dirs)]
 
 
+def _stage1_modes(raw: str) -> tuple[str, ...]:
+    """Parse an optional compact stage-1 panel list; default is the full A/B/base triplet."""
+    aliases = {
+        "a": "a", "image": "a", "image_cond": "a",
+        "b": "b", "image_free": "b", "image_free_lora": "b",
+        "expert": "expert", "fsq": "expert", "frozen": "expert", "frozen_expert": "expert",
+    }
+    items = [s.strip().lower() for s in str(raw or "a,b,expert").split(",") if s.strip()]
+    modes = tuple(aliases.get(s, "") for s in items)
+    if not modes or any(not s for s in modes) or len(set(modes)) != len(modes):
+        raise ValueError(
+            "stage1 models[].modes must be a comma list without duplicates from "
+            "a,b,expert (aliases: image, image_free, fsq), got " + repr(raw)
+        )
+    return modes
+
+
+def _expand_stage1_panels(models: list[dict]) -> list[dict]:
+    """One trained Stage-1 checkpoint becomes its A, B, and frozen-FSQ action panels."""
+    panels: list[dict] = []
+    mode_labels = {"a": "A", "b": "B", "expert": "Frozen-FSQ"}
+    for model in models:
+        if model["kind"] == "fsq_expert":
+            panel = dict(model)
+            panel["eval_mode"] = "fsq_only"
+            panels.append(panel)
+            continue
+        for mode in _stage1_modes(model.get("modes", "")):
+            panel = dict(model)
+            panel["label"] = f"{model['label']} [{mode_labels[mode]}]"
+            if mode == "a":
+                panel["eval_mode"] = "a"
+            elif mode == "b":
+                panel["eval_mode"] = "b"
+            else:
+                # Preserve the Stage-1 run's co-trained terminator for a fair action-side comparison.
+                panel["kind"] = "fsq_expert"
+                panel["eval_mode"] = "frozen_expert"
+                panel["expert_fsq_path"] = model["fsq_path"]
+                panel["terminator_policy_path"] = model["policy_path"]
+            panels.append(panel)
+    return panels
+
+
+def _compare_folder(labels: list[str]) -> str:
+    """Keep auto-generated multi-panel output paths below common filesystem name limits."""
+    raw = "compare_" + "_vs_".join(labels)
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "-", raw).strip("-_") or "compare"
+    if len(safe) <= 180:
+        return safe
+    digest = hashlib.sha1(safe.encode("utf-8")).hexdigest()[:10]
+    return f"compare_{len(labels)}panels_{digest}"
+
+
 def build_settings(cfg: dict) -> dict:
     # Standalone: every root is declared in this yaml (no build_data dependency).
     project_root = Path(str(get_value(cfg, "project_root"))).expanduser()
@@ -122,6 +177,7 @@ def build_settings(cfg: dict) -> dict:
             "source_dataset": str(get_value(e, "source_dataset", "") or ""),
             "checkpoint": str(get_value(e, "checkpoint", default_ckpt)),
             "advance_mode": str(get_value(e, "advance_mode", "") or "").strip(),
+            "modes": str(get_value(e, "modes", "") or "").strip(),
             "label": str(get_value(e, "label", "")).strip(),
         } for e in models_yaml]
     else:  # back-compat: a single top-level model_dir (a 1-entry `models` list behaves identically)
@@ -130,11 +186,11 @@ def build_settings(cfg: dict) -> dict:
             raise ValueError("Set `models` (a list of {model_dir, checkpoint?, label?}) — or a single "
                              "`model_dir` — in the eval yaml.")
         entries = [{"kind": "stage1", "model_dir": str(md), "checkpoint": default_ckpt,
-                    "advance_mode": "", "label": ""}]
+                    "advance_mode": "", "modes": "", "label": ""}]
 
-    resolved = [_resolve_model(e, skillvla_root=skillvla_root, vla_root=vla_root,
-                               source_yaml=source_yaml) for e in entries]
-    for r in resolved:
+    resolved_models = [_resolve_model(e, skillvla_root=skillvla_root, vla_root=vla_root,
+                                      source_yaml=source_yaml) for e in entries]
+    for r in resolved_models:
         required = [Path(r["fsq_path"]), Path(r["skill_label_dataset_dir"])]
         if r["kind"] == "stage1":
             required.insert(0, Path(r["policy_path"]))
@@ -143,34 +199,49 @@ def build_settings(cfg: dict) -> dict:
             raise FileNotFoundError(
                 f"Missing artifacts for {r['model_dir']}: " + ", ".join(missing)
             )
-    display_names = [r["model_dir"] for r in resolved]
-    for r, e, a in zip(resolved, entries, _auto_labels(display_names)):
+    display_names = [r["model_dir"] for r in resolved_models]
+    for r, e, a in zip(resolved_models, entries, _auto_labels(display_names)):
         r["label"] = e["label"] or a
-    m0 = resolved[0]
-    multi = len(resolved) >= 2
+        r["modes"] = e["modes"]
 
     advance_mode = str(get_value(cfg, "skill_advance_mode", "terminator"))
     if advance_mode not in {"gt", "terminator"}:
         raise ValueError(f"skill_advance_mode must be gt|terminator, got {advance_mode!r}.")
-    for r, e in zip(resolved, entries):
+    for r, e in zip(resolved_models, entries):
         r["advance_mode"] = e.get("advance_mode") or advance_mode
         if r["advance_mode"] not in {"gt", "terminator"}:
             raise ValueError(
                 f"models[] advance_mode must be gt|terminator, got {r['advance_mode']!r}."
             )
+    resolved = _expand_stage1_panels(resolved_models)
+    m0 = resolved[0]
+    multi = len(resolved) >= 2
     eval_exp = str(get_value(cfg, "eval_exp", "")).strip()
-    # Optional terminator override: load the terminator from a DIFFERENT run's FSQ.pt (single-model only).
+    # Optional terminator override: load the terminator from a DIFFERENT run's FSQ.pt for every panel.
     terminator_path = str(get_value(cfg, "terminator_path", "")).strip()
 
     if multi:
+        if terminator_path:
+            # A/B/Frozen-FSQ should share the override. Preserve each panel's original FSQ action expert
+            # separately, especially the frozen panel whose action route must stay tied to its parent run.
+            term_override = resolve_path(project_root, terminator_path)
+            for r in resolved:
+                r["expert_fsq_path"] = r.get("expert_fsq_path", r["fsq_path"])
+                r["fsq_path"] = term_override
         # MULTI: env-side artifacts (POLICY_PATH etc.) point at model 0 so cfg.policy + the sbatch's artifact
         # checks are valid; the FULL per-model list rides MODELS_JSON (read by run_eval). Combined folder.
-        folder = "compare_" + "_vs_".join(r["label"] for r in resolved)
+        folder = _compare_folder([r["label"] for r in resolved])
         if eval_exp:
             folder = f"{folder}_{eval_exp}"
+        if terminator_path:
+            _ts = re.search(r"checkpoints/([^/]+)/", terminator_path)
+            folder = f"{folder}_refterm{_ts.group(1) if _ts else ''}"
         models_json = json.dumps([
             {"kind": r["kind"], "policy_path": str(r["policy_path"]),
-             "fsq_path": str(r["fsq_path"]), "expert_fsq_path": str(r["fsq_path"]),
+             "fsq_path": str(r["fsq_path"]),
+             "expert_fsq_path": str(r.get("expert_fsq_path", r["fsq_path"])),
+             "terminator_policy_path": str(r.get("terminator_policy_path", "")),
+             "eval_mode": r.get("eval_mode", "a"),
              "run_tag": r["run_tag"],
              "skill_label_dataset_dir": str(r["skill_label_dataset_dir"]),
              "advance_mode": r["advance_mode"], "label": r["label"]}
@@ -189,7 +260,10 @@ def build_settings(cfg: dict) -> dict:
         fsq_ckpt = resolve_path(project_root, terminator_path) if terminator_path else m0["fsq_path"]
         models_json = json.dumps([{
             "kind": m0["kind"], "policy_path": str(m0["policy_path"]),
-            "fsq_path": str(fsq_ckpt), "expert_fsq_path": str(m0["fsq_path"]),
+            "fsq_path": str(fsq_ckpt),
+            "expert_fsq_path": str(m0.get("expert_fsq_path", m0["fsq_path"])),
+            "terminator_policy_path": str(m0.get("terminator_policy_path", "")),
+            "eval_mode": m0.get("eval_mode", "a"),
             "run_tag": m0["run_tag"],
             "skill_label_dataset_dir": str(m0["skill_label_dataset_dir"]),
             "advance_mode": m0["advance_mode"], "label": m0["label"],
@@ -210,8 +284,11 @@ def build_settings(cfg: dict) -> dict:
         "policy_path": policy_path,
         "primary_model_kind": m0["kind"],
         "models_json": models_json,
-        # side-by-side grid: N panels per ROW (0 = one row; 3 → 6 models = 2×3, 9 = 3×3, ...)
-        "models_per_row": int(get_value(cfg, "models_per_row", 0) or 0),
+        # side-by-side grid: Stage-1 triplets default to three columns, so two checkpoints naturally form
+        # a 2×3 grid. Explicit YAML values still override this (0 = one row).
+        "models_per_row": int(get_value(
+            cfg, "models_per_row", 3 if any(r["kind"] == "stage1" for r in resolved_models) else 0
+        ) or 0),
         "fsq_ckpt": fsq_ckpt,
         "skill_label_dataset_dir": run_dir / "skillvla",
         # Episode-exact eval: per-episode MuJoCo init_state + scene (FSQ-independent → lives at the source

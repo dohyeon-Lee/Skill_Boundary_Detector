@@ -19,6 +19,7 @@ import logging
 import os
 import shutil
 import sys
+import gc
 from collections import deque
 from contextlib import nullcontext
 from pathlib import Path
@@ -377,7 +378,7 @@ def _build_context(pcfg, *, cfg, device, label):
 
 
 def _build_fsq_expert_context(spec: dict, *, cfg, device):
-    """Build an image/cond-free FSQ action panel plus the optional FSQ terminator."""
+    """Build an image/cond-free FSQ action panel plus its matching terminator."""
     from lerobot.policies.skill_expert.processor_skill_expert import (  # noqa: PLC0415
         make_skill_expert_pre_post_processors,
     )
@@ -396,9 +397,12 @@ def _build_fsq_expert_context(spec: dict, *, cfg, device):
     pcfg.skill_advance_mode = spec.get("advance_mode", cfg.policy.skill_advance_mode)
     pcfg.skill_label_dataset_dir = spec["skill_label_dataset_dir"]
     pcfg.eval_init_states_path = cfg.policy.eval_init_states_path
+    term_ckpt = spec.get("terminator_policy_path") or None
+    if not pcfg.eval_use_trained_terminator:
+        term_ckpt = None
     terminator = make_terminator(
         spec["fsq_path"], device, dino_path=pcfg.terminator_dino_model_path,
-        libero_examples_dir=_LIBERO_EXAMPLES, finetuned_ckpt=None,
+        libero_examples_dir=_LIBERO_EXAMPLES, finetuned_ckpt=term_ckpt,
     )
     oracle = OracleSkillExpertPolicy(
         policy, terminator, end_threshold=pcfg.skill_end_threshold,
@@ -416,10 +420,11 @@ def _build_fsq_expert_context(spec: dict, *, cfg, device):
     episode_data = load_episode_oracle_data(
         spec["skill_label_dataset_dir"], pcfg.eval_init_states_path, cfg.env.task
     )
-    log.info(
-        "[%s] FSQ expert-only: expert=%s terminator=%s (advance=%s; no policy image/cond modules)",
-        spec.get("label", "fsq_expert"), expert_fsq, spec["fsq_path"], pcfg.skill_advance_mode,
-    )
+    term_tag = f"co-trained ({terminator.finetuned_loaded} tensors overridden)" if getattr(
+        terminator, "finetuned_loaded", 0
+    ) else f"raw FSQ.pt ({spec['fsq_path']})"
+    log.info("[%s] FSQ expert-only: expert=%s terminator=%s (advance=%s; no policy image/cond modules)",
+             spec.get("label", "fsq_expert"), expert_fsq, term_tag, pcfg.skill_advance_mode)
     return {
         "oracle": oracle, "pre": preprocessor, "post": postprocessor,
         "ep": episode_data, "label": spec.get("label", "fsq_expert"),
@@ -443,6 +448,10 @@ def _model_cfg_from_spec(spec: dict, base):
     mcfg.fsq_path = spec["fsq_path"]
     mcfg.skill_label_dataset_dir = spec["skill_label_dataset_dir"]
     mcfg.skill_advance_mode = spec.get("advance_mode", mcfg.skill_advance_mode)
+    eval_mode = str(spec.get("eval_mode", "a")).lower()
+    if eval_mode not in {"a", "b"}:
+        raise ValueError(f"stage1 eval_mode must be a|b, got {eval_mode!r}")
+    mcfg.eval_image_free_expert = eval_mode == "b"
     return mcfg
 
 
@@ -451,6 +460,13 @@ def _build_context_from_spec(spec: dict, *, cfg, device):
         return _build_fsq_expert_context(spec, cfg=cfg, device=device)
     return _build_context(
         _model_cfg_from_spec(spec, cfg.policy), cfg=cfg, device=device, label=spec["label"]
+    )
+
+
+def _episode_data_from_spec(spec: dict, *, cfg) -> dict:
+    """Read just the shared episode/skill metadata before streaming model panels on one GPU."""
+    return load_episode_oracle_data(
+        spec["skill_label_dataset_dir"], cfg.policy.eval_init_states_path, cfg.env.task
     )
 
 
@@ -486,38 +502,45 @@ def eval_main(cfg: EvalPipelineConfig):
     )
 
     if len(specs) >= 2:
-        # ── MULTI-model side-by-side: build each model's context, align episodes across models, then PER
-        # TASK roll out every model over the SAME scenes (init_state_id rewound between models) and stitch
-        # horizontally → side_by_side/{task}/ (streams in task order; no per-model videos kept). ──
+        # ── MULTI-panel side-by-side: align episodes first, then stream one panel at a time through the GPU.
+        # A Stage-1 checkpoint expands to A/B/frozen-FSQ, so keeping every panel resident would exhaust VRAM.
+        # Raw videos are temporary; once all panels finish they are stitched into the requested grid. ──
         logging.info("Multi-model side-by-side over %d models: %s", len(specs), [s["label"] for s in specs])
-        contexts = [_build_context_from_spec(s, cfg=cfg, device=device) for s in specs]
-        forced_maps = _align_and_override_multi(envs, [c["ep"] for c in contexts])
+        forced_maps = _align_and_override_multi(
+            envs, [_episode_data_from_spec(s, cfg=cfg) for s in specs]
+        )
         sbs_dir = out / "side_by_side"
         # Per-job scratch: task-split jobs (submit_eval.sh eval_num_gpus>1) share ONE out dir — a fixed
         # "_tmp" would let concurrent jobs delete each other's in-flight videos.
         tmp_root = out / f"_tmp_{os.environ.get('SLURM_JOB_ID') or os.getpid()}"
-        tagged = [[] for _ in contexts]
-        for tg, grp in envs.items():
-            for tid in list(grp.keys()):
-                one_env = {tg: {tid: grp[tid]}}
-                panels = []
-                for i, ctx in enumerate(contexts):
-                    _reset_init_state_ids(one_env)                    # rewind → each model sees the same scenes
-                    vdir = tmp_root / f"m{i}" / "videos"
-                    with torch.no_grad(), (torch.autocast(device_type=device.type) if cfg.policy.use_amp else nullcontext()):
-                        info_i = eval_policy_all(
-                            envs=one_env, policy=ctx["oracle"], preprocessor=ctx["pre"], postprocessor=ctx["post"],
-                            videos_dir=vdir, skill_html_dir=None,
-                            forced_skill_token_sequences_by_task={(tg, int(tid)): forced_maps[i][(tg, int(tid))]},
-                            **common)
-                    panels.append((vdir, ctx["label"]))
-                    tagged[i].append((tid, info_i))
-                _stitch_models(panels, sbs_dir, per_row=models_per_row)
-                shutil.rmtree(tmp_root, ignore_errors=True)           # drop raw per-model videos (keep combined)
-                log.info("task %s → side_by_side (%s)", tid,
-                         {c["label"]: t[-1][1].get("overall") for c, t in zip(contexts, tagged)})
-        info = {c["label"]: _merge(t) for c, t in zip(contexts, tagged)}
-        wandb_infos = {f"{c['label']}/": _merge(t) for c, t in zip(contexts, tagged)}
+        tagged = [[] for _ in specs]
+        for i, spec in enumerate(specs):
+            ctx = _build_context_from_spec(spec, cfg=cfg, device=device)
+            try:
+                for tg, grp in envs.items():
+                    for tid in list(grp.keys()):
+                        one_env = {tg: {tid: grp[tid]}}
+                        _reset_init_state_ids(one_env)                # every panel sees the same scenes
+                        vdir = tmp_root / f"m{i}" / "videos"
+                        with torch.no_grad(), (torch.autocast(device_type=device.type)
+                                                if cfg.policy.use_amp else nullcontext()):
+                            info_i = eval_policy_all(
+                                envs=one_env, policy=ctx["oracle"], preprocessor=ctx["pre"], postprocessor=ctx["post"],
+                                videos_dir=vdir, skill_html_dir=None,
+                                forced_skill_token_sequences_by_task={(tg, int(tid)): forced_maps[i][(tg, int(tid))]},
+                                **common)
+                        tagged[i].append((tid, info_i))
+                        log.info("[%s] task %s → %s", ctx["label"], tid, info_i.get("overall"))
+            finally:
+                del ctx
+                gc.collect()
+                if device.type == "cuda":
+                    torch.cuda.empty_cache()
+        _stitch_models([(tmp_root / f"m{i}" / "videos", s["label"]) for i, s in enumerate(specs)],
+                       sbs_dir, per_row=models_per_row)
+        shutil.rmtree(tmp_root, ignore_errors=True)                     # keep only the labelled combined clips
+        info = {s["label"]: _merge(t) for s, t in zip(specs, tagged)}
+        wandb_infos = {f"{s['label']}/": _merge(t) for s, t in zip(specs, tagged)}
         print("side_by_side done →", sbs_dir)
     else:
         # ── Single model: episode-exact eval over all tasks (env init states overridden once). ──

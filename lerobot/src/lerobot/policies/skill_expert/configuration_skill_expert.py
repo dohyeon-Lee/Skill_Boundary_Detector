@@ -82,22 +82,28 @@ class SkillExpertConfig(PI05Config):
     token, constant within a skill — neighboring codes stay neighboring. (The skill-progress token
     was removed — the action expert conditions on the skill code only.)"""
 
-    # ── Frozen FSQ expert + LoRA steering ──
+    # ── FSQ expert adaptation ──
     # ``lora_rank`` / ``lora_alpha`` / ``lora_dropout`` / ``lora_targets`` are inherited from PI05Config.
-    # This uses the same named-adapter implementation as SkillVLA Stage 2, but only on the frozen action
-    # expert. The condition side remains a normal trainable scene encoder on A batches.
+    # ``lora_targets`` accepts q/k/v/o attention aliases, gate/up/down (or ``mlp``), and Stage-1-only
+    # ``action_in`` / ``action_out`` flow-head aliases. This uses the same named-adapter implementation as
+    # SkillVLA Stage 2, but only on the frozen FSQ action side when LoRA is enabled. The condition side
+    # remains a normal trainable scene encoder on A batches.
     lora_expert: bool = False
-    """Inject the named ``expert`` LoRA adapter into the action expert's target projections. When enabled,
-    every FSQ action-side base parameter (Gemma, action/time/state/skill projections) is frozen; only this
-    adapter and the image condition side may train."""
+    """True → inject the named ``expert`` LoRA adapter and freeze every FSQ action-side base parameter.
+    False → inject no adapter and fine-tune the complete FSQ action side (Gemma plus
+    action/time/state/skill projections) together with the image condition side."""
     lora_lr_scale: float = 1.0
     """LR multiplier for LoRA parameters relative to optimizer_lr."""
     image_free_lora_prob: float = 0.0
-    """Probability of a B batch during training. B skips image/cond entirely and anchors the active LoRA
-    action velocity to the same frozen expert with its adapter disabled, so the adapter cannot create a
-    state+skill-only motion residual. A = 1 - this probability uses normal image-conditioned action loss."""
+    """Probability of a B batch during training. B skips image/cond entirely and anchors the current
+    image-free action velocity to frozen FSQ: LoRA uses its adapter-disabled base; full fine-tuning uses a
+    non-persistent copy of the original FSQ action tensors. A = 1 - this probability uses normal
+    image-conditioned action loss."""
     image_free_lora_anchor_weight: float = 1.0
     """Multiplier on the B adapter-to-base velocity anchor loss."""
+    eval_image_free_expert: bool = False
+    """Eval-only B route: keep the expert LoRA active while removing every image/condition-stream token.
+    This is set by the Stage-1 oracle evaluator and is never used during training."""
 
     # ── Loss = action MSE (flow matching). Boundary handling: at the skill end (k>skill_de) and episode-end
     #    pad, the action TARGET is a HOLD (arm deltas→0, gripper→last valid value) and supervised — NOT masked.
@@ -194,8 +200,8 @@ class SkillExpertConfig(PI05Config):
                 "image_free_lora_prob must be in [0, 1); keep some A batches to train the image condition "
                 f"side (got {self.image_free_lora_prob})."
             )
-        if self.image_free_lora_prob > 0.0 and not self.lora_expert:
-            raise ValueError("image_free_lora_prob > 0 needs lora_expert=True.")
+        if self.image_free_lora_prob > 0.0 and not self.lora_expert and not self.fsq_path:
+            raise ValueError("Full-FT image-free B batches need fsq_path for their frozen FSQ teacher.")
         if self.image_free_lora_anchor_weight <= 0.0:
             raise ValueError(
                 "image_free_lora_anchor_weight must be > 0 "

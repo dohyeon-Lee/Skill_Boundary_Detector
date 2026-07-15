@@ -26,33 +26,38 @@ source_dataset: libero_90_full_full
 # ── Models ───────────────────────────────────────────────────────────────────────────────
 # `models[].kind`:
 #   fsq_expert = load ONLY action_expert.* from the SkillVLA data run's FSQ.pt (no image/cond model).
-#                Identify it by run_tag under skillvla_dataset/{source_dataset}/.
-#   stage1     = normal trained Stage-1 checkpoint under {outputs_root}/skillVLA_stage1/.
-# `advance_mode` may be gt or terminator per panel; omit it to inherit top-level skill_advance_mode.
-# 1 entry → single eval → outputs/{model_dir}_{checkpoint}/. 2+ entries → PER-TASK side-by-side: each model
-# rolls out the SAME scenes, glued into ONE labelled clip → outputs/compare_{labels}_{ckpt}/
-# side_by_side/ (streams in task order; no per-model videos kept).
-# Per entry: checkpoint omitted → the top-level `checkpoint`; label omitted → auto from the differing token(s).
+#                This remains the standalone pre-Stage-1 FSQ-only evaluation path. Identify it by
+#                run_tag under skillvla_dataset/{source_dataset}/.
+#   stage1     = ONE trained Stage-1 checkpoint under {outputs_root}/skillVLA_stage1/. It automatically
+#                expands into three side-by-side panels:
+#                  A          = image cond + active expert LoRA (normal inference)
+#                  B          = active expert LoRA, but image/cond stream and its attention are absent
+#                  Frozen-FSQ = raw frozen FSQ action expert (the same Stage-1 run's FSQ.pt)
+#                The three panels share that Stage-1 checkpoint's co-trained terminator so they differ
+#                only in the action route. `modes: a,b,expert` is the default; use e.g. `modes: a` only
+#                for a legacy single-panel debug run.
+# Each entry declares its own `checkpoint` and `advance_mode` (gt | terminator).
+# 1 stage1 entry → 1×3 grid. 2 stage1 entries → 2×3 grid (each row: A / B / Frozen-FSQ). Every panel
+# rolls out the SAME scenes, then is glued into ONE labelled clip under outputs/.../side_by_side/.
+# Set `checkpoint: last` for the newest saved model, or a numeric step for an explicit training-progress
+# comparison. Label is optional but should stay short because it becomes the video panel title.
 # Layout: models_per_row = 한 행에 넣을 패널 수 (0 = 전부 한 행). 리스트 순서대로 행을 채움 —
 #   3이면 위 3개=1행, 다음 3개=2행 (6개=2×3, 9개=3×3, ...); 마지막 행이 모자라면 검은 패널로 패딩.
 models:
-  - {kind: fsq_expert, run_tag: FSQ555_dino_frozen_small_optimal_vsa_state_skill_125_pt_snap10,
-     advance_mode: gt, label: FSQopt-expert_GT}
-  - {kind: fsq_expert, run_tag: FSQ555_dino_frozen_small_optimal_vsa_state_skill_125_pt_snap10,
-     advance_mode: terminator, label: FSQopt-expert_TERM}
-#   - {kind: fsq_expert, run_tag: FSQ555_dino_frozen_small_vsa_state_skill_125_pt_snap10,
-#      advance_mode: gt, label: FSQ-expert_GT}
-#   - {kind: fsq_expert, run_tag: FSQ555_dino_frozen_small_vsa_state_skill_125_pt_snap10,
-#      advance_mode: terminator, label: FSQ-expert_TERM}
-  # Later, add trained Stage-1 panels to the same list:
-  # - {kind: stage1, model_dir: <stage1_run>, checkpoint: "015000",
-  #    advance_mode: gt, label: Stage1_GT}
-  # - {kind: stage1, model_dir: <stage1_run>, checkpoint: "015000",
-  #    advance_mode: terminator, label: Stage1_TERM}
+#   - {kind: fsq_expert, run_tag: FSQ555_dino_frozen_small_optimal_vsa_state_skill_125_pt_snap10,
+#      advance_mode: gt, label: FSQopt-expert_GT}
+#   - {kind: fsq_expert, run_tag: FSQ555_dino_frozen_small_optimal_vsa_state_skill_125_pt_snap10,
+#      advance_mode: terminator, label: FSQopt-expert_TERM}
 
-models_per_row: 2              # side-by-side 그리드: 행당 패널 수 (0 = 한 행에 전부)
-checkpoint: "015000"           # default step for entries that omit their own checkpoint ("last" or a number)
-eval_exp: ""                   # optional free-form tag appended to the output folder
+#   Two trained Stage-1 entries produce a 2×3 grid. Keep labels short: they are video panel titles.
+  - {kind: stage1, model_dir: FSQ555_dino_frozen_small_optimal_vsa_state_skill_125_pt_snap10_dino_freeze_batch128_state_skill_lorae8_if50, checkpoint: "020000", advance_mode: gt, label: visfreeze_half_lora}
+  - {kind: stage1, model_dir: FSQ555_dino_frozen_small_optimal_vsa_state_skill_125_pt_snap10_dino_batch128_state_skill_lorae8_if50, checkpoint: "010000", advance_mode: gt, label: visunfreeze_half_lora}
+#   - {kind: stage1, model_dir: FSQ555_dino_frozen_small_optimal_vsa_state_skill_125_pt_snap10_dino_freeze_batch128_state_skill_lorae8_ltq-k-v-o-mlp-actionout_if50, checkpoint: "010000", advance_mode: terminator, label: visfreeze_full_lora}
+#   - {kind: stage1, model_dir: FSQ555_dino_frozen_small_optimal_vsa_state_skill_125_pt_snap10_dino_batch128_state_skill_lorae8_ltq-k-v-o-mlp-actionout_if50, checkpoint: "010000", advance_mode: terminator, label: visunfreeze_full_lora}
+  - {kind: stage1, model_dir: FSQ555_dino_frozen_small_optimal_vsa_state_skill_125_pt_snap10_dino_batch128_state_skill_expertft_if50, checkpoint: "010000", advance_mode: gt, label: visunfreeze_expertft}
+
+models_per_row: 3              # stage1 triplet = A / B / Frozen-FSQ; two checkpoints → 2 rows × 3 columns
+eval_exp: "mix"                   # optional free-form tag appended to the output folder
 
 # FSQ TERMINATOR's raw-image DINO only. The policy's own vision backbone is NOT set here —
 # it comes from the checkpoint's saved config and must match the trained weights (vits/vitb/...).
@@ -73,12 +78,7 @@ n_action_steps: 5
 eval_batch_size: 1
 max_parallel_tasks: 1         # 잡 내부 스레드 병렬(공유 policy state 오염 위험) — 1 고정 권장; 분할은 위 eval_num_gpus로
 
-# ── Skill transition ──
-# How to advance through the GT skill sequence:
-#   terminator = FSQ terminator decides each transition (uses skill_end_mode/thresholds below)
-#   gt         = advance by each skill's GT demo duration (ideal timing; isolates the action
-#                expert from terminator errors). Terminator still runs → its curves still recorded.
-skill_advance_mode: terminator    # terminator | gt
+# ── Terminator settings (used by entries with advance_mode: terminator) ──
 # Which terminator signal(s) end a skill:
 #   termination = term-prob >= skill_end_threshold | progress = progress >= skill_end_progress_threshold
 #   or          = EITHER crosses (robust: the two heads peak at different steps) | and = BOTH at same step

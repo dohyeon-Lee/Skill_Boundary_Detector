@@ -26,6 +26,22 @@ def _blank(value: Any) -> bool:
     return value is None or str(value).strip().lower() in ("", "null", "none")
 
 
+def _lora_targets_run_suffix(spec: str) -> str:
+    """Keep attention-only run paths stable while target-expanded runs cannot overwrite them."""
+    tokens = [token.strip().lower() for token in spec.split(",") if token.strip()]
+    if tokens == ["q", "k", "v", "o"]:
+        return ""
+    tag = "-".join(token.replace("_", "") for token in tokens)
+    return f"_lt{tag}" if tag else ""
+
+
+def _anchor_weight_run_suffix(weight: float) -> str:
+    """Keep the historical weight=1 run path while separating relaxed B-anchor sweeps."""
+    if weight == 1.0:
+        return ""
+    return f"_aw{weight:g}".replace(".", "p")
+
+
 def _localize_model_path(project_root: Path, value: Any, default: str) -> Path:
     raw = str(value if not _blank(value) else default).strip()
     path = Path(raw).expanduser()
@@ -120,8 +136,8 @@ def build_settings(cfg: dict) -> dict:
     skill_end_w = float(get_value(cfg, "skill_end_loss_weight", 1.0))      # R end weighting (action_weight only)
     action_weight = as_bool(get_value(cfg, "action_weight", False))        # per-sample sw-weight the action MSE
 
-    # Stage-1 LoRA steering: the FSQ action expert stays frozen; A batches train image cond + LoRA against
-    # actions, while B batches have NO image/cond and only anchor LoRA back to the frozen base expert.
+    # Stage-1 adapts the FSQ action expert either through LoRA (frozen base) or full fine-tuning. A batches
+    # train against actions; B batches have NO image/cond and anchor the image-free expert to frozen FSQ.
     lora_expert = as_bool(get_value(cfg, "lora_expert", False))
     lora_rank = int(get_value(cfg, "lora_rank", 8))
     lora_alpha_raw = get_value(cfg, "lora_alpha", "auto")
@@ -132,8 +148,6 @@ def build_settings(cfg: dict) -> dict:
     lora_lr_scale = float(get_value(cfg, "lora_lr_scale", 1.0))
     image_free_lora_prob = float(get_value(cfg, "image_free_lora_prob", 0.0) or 0.0)
     image_free_lora_anchor_weight = float(get_value(cfg, "image_free_lora_anchor_weight", 1.0))
-    if image_free_lora_prob > 0.0 and not lora_expert:
-        raise ValueError("image_free_lora_prob > 0 needs lora_expert: true.")
     if not 0.0 <= image_free_lora_prob < 1.0:
         raise ValueError(f"image_free_lora_prob must be in [0, 1), got {image_free_lora_prob}.")
     if image_free_lora_anchor_weight <= 0.0:
@@ -160,9 +174,15 @@ def build_settings(cfg: dict) -> dict:
     backbone_tag = f"{vision_backbone}_freeze" if freeze_vision_encoder else vision_backbone
     run_name = f"{run_tag}_{backbone_tag}_batch{batch_size}_{state_cond_mode}"
     if lora_expert:
-        run_name = f"{run_name}_lorae{lora_rank}"
+        run_name = f"{run_name}_lorae{lora_rank}{_lora_targets_run_suffix(lora_targets)}"
         if image_free_lora_prob > 0.0:
             run_name = f"{run_name}_if{int(round(image_free_lora_prob * 100))}"
+            run_name = f"{run_name}{_anchor_weight_run_suffix(image_free_lora_anchor_weight)}"
+    else:
+        run_name = f"{run_name}_expertft"
+        if image_free_lora_prob > 0.0:
+            run_name = f"{run_name}_if{int(round(image_free_lora_prob * 100))}"
+            run_name = f"{run_name}{_anchor_weight_run_suffix(image_free_lora_anchor_weight)}"
     if action_weight:
         run_name = f"{run_name}_weighted"
     if exp:
