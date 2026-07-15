@@ -30,6 +30,7 @@ import argparse
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import yaml
@@ -88,14 +89,22 @@ def main() -> None:
     root = abc_root(cfg)
     repo = abcdl_repo(cfg)
     tool, taxonomy = _engine_paths(cfg)
-    dl_workers = int(cfg.get("download_workers", 8))
+    dl_workers = int(cfg.get("download_workers", 4))
+    # 검증된 filtered_dataset 패턴(download_filtered_libero.sh)의 결론을 따른다: 순정 파이썬
+    # 백엔드는 read timeout이 없어 죽은 소켓에 "영원히" 매달리고, hf_transfer(Rust)+read timeout이
+    # 죽은 소켓을 끊고 자동 재시도한다 → hf_transfer가 hang을 '고치는' 쪽. 기본 True.
+    # (프로세스가 timeout도 못 넘기고 wedge되는 병적 케이스는 download_ABC.sh의 워치독이 재시작으로 커버.)
+    hf_transfer = bool(cfg.get("download_hf_transfer", True))
 
     if args.list_tasks:
         gen = {"repo_id": repo_id, "split": args.split or "train", "downloads": []}
-        tmp = root / "_mcap" / ".list_tasks_config.yaml"
-        tmp.parent.mkdir(parents=True, exist_ok=True)
-        tmp.write_text(yaml.safe_dump(gen, sort_keys=False, allow_unicode=True))
-        _run_engine(tool, tmp, repo, ["--list-tasks"] + (["--counts"] if args.counts else []))
+        with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
+            f.write(yaml.safe_dump(gen, sort_keys=False, allow_unicode=True))
+        try:
+            _run_engine(tool, Path(f.name), repo,
+                        ["--list-tasks"] + (["--counts"] if args.counts else []))
+        finally:
+            os.unlink(f.name)
         return
 
     specs = subsets(cfg)
@@ -125,16 +134,25 @@ def main() -> None:
             "group_subdirs": False,   # converter-friendly repo mirror: data/{split}/{task}/{ep}
             "include_meta": False,
             "max_workers": dl_workers,
-            "hf_transfer": True,
+            "hf_transfer": hf_transfer,
             "convert_to_abcdl": False,  # ②③④는 build_ABC_dataset.sh가 idempotent하게 수행
             "downloads": entries,
             "groups": groups,
         }
+        print(f"\n════ subset {name} → {dest} ════")
+        if args.dry_run:
+            # dry-run은 디스크에 흔적을 남기지 않는다 — 생성 config도 임시파일로.
+            with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
+                f.write(yaml.safe_dump(gen, sort_keys=False, allow_unicode=True))
+            try:
+                _run_engine(tool, Path(f.name), repo, ["--dry-run"])
+            finally:
+                os.unlink(f.name)
+            continue
         dest.mkdir(parents=True, exist_ok=True)
         gen_path = dest / ".download_config.yaml"  # provenance: 정확히 뭘 요청했는지 기록
         gen_path.write_text(yaml.safe_dump(gen, sort_keys=False, allow_unicode=True))
-        print(f"\n════ subset {name} → {dest} ════")
-        _run_engine(tool, gen_path, repo, ["--dry-run"] if args.dry_run else [])
+        _run_engine(tool, gen_path, repo, [])
 
 
 if __name__ == "__main__":

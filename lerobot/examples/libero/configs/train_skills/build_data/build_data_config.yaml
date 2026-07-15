@@ -30,6 +30,23 @@ fsq_dataset_root: FSQ_dataset
 fsq_inputs_name: FSQ_inputs
 skillset_name: skillset
 
+# ── Skill-boundary probe ──────────────────────────────────────────────────────
+# spherical_xyz: legacy LIBERO delta-EEF XYZ spherical probes.
+# pca_action: normalized full-action PCA probes (position/rotation/gripper together).
+skillset_probe_type: pca_action
+skillset_probe_count: 24             # + one untouched GT chunk = 25 VF queries
+skillset_probe_alpha: 0.10           # normalized per-dimension RMS probe radius
+skillset_pca_variance: 0.95          # retained action-plan PCA explained variance
+skillset_pca_stride: 3               # anchors sampled while fitting the shared PCA artifact
+skillset_action_mode: dataset        # LIBERO: dataset; ABC DP: anchor_relative
+skillset_relative_exclude_joints: [gripper]
+# LIBERO gripper is binary but stays in full-action PCA; probe values are projected to valid modes.
+# ABC uses continuous here and ignores indices/values/threshold.
+skillset_gripper_mode: discrete      # continuous | discrete
+skillset_gripper_indices: [-1]
+skillset_gripper_values: [-1.0, 1.0]
+skillset_gripper_threshold: 0.0
+
 # ── Slurm for skillset generation + token extraction (partition/qos from global_config) ──
 slurm_gres: gpu:1
 skillset_wandb_project: Skill_dataset

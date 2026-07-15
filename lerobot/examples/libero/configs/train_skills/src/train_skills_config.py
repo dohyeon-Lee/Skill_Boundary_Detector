@@ -137,6 +137,48 @@ def as_levels(value: Any) -> tuple[int, ...]:
     return tuple(int(v) for v in cleaned.split())
 
 
+def _tag_scalar(value: Any) -> str:
+    return format(float(value), "g").replace("-", "m").replace(".", "p")
+
+
+def skillset_probe_settings(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Resolve the shared SBD probe configuration and its output-isolation tag."""
+    probe_type = str(get_value(cfg, "skillset_probe_type", "spherical_xyz"))
+    if probe_type not in {"spherical_xyz", "pca_action"}:
+        raise ValueError(f"skillset_probe_type must be spherical_xyz or pca_action, got {probe_type}")
+    probe_count = int(get_value(cfg, "skillset_probe_count", 24))
+    probe_alpha = float(get_value(cfg, "skillset_probe_alpha", 0.1))
+    pca_variance = float(get_value(cfg, "skillset_pca_variance", 0.95))
+    pca_stride = int(get_value(cfg, "skillset_pca_stride", 3))
+    action_mode = str(get_value(cfg, "skillset_action_mode", "dataset"))
+    gripper_mode = str(get_value(cfg, "skillset_gripper_mode", "continuous"))
+    relative_exclude = ",".join(as_list(get_value(cfg, "skillset_relative_exclude_joints", ["gripper"])))
+    gripper_indices = ",".join(as_list(get_value(cfg, "skillset_gripper_indices", [-1])))
+    gripper_values = ",".join(as_list(get_value(cfg, "skillset_gripper_values", [-1.0, 1.0])))
+    gripper_threshold = float(get_value(cfg, "skillset_gripper_threshold", 0.0))
+
+    suffix = ""
+    if probe_type == "pca_action":
+        suffix = (
+            f"_probe-pca_a{_tag_scalar(probe_alpha)}_v{_tag_scalar(pca_variance)}"
+            f"_s{pca_stride}_n{probe_count}_{action_mode}_g{gripper_mode}"
+        )
+    return {
+        "skillset_probe_type": probe_type,
+        "skillset_probe_count": probe_count,
+        "skillset_probe_alpha": probe_alpha,
+        "skillset_pca_variance": pca_variance,
+        "skillset_pca_stride": pca_stride,
+        "skillset_action_mode": action_mode,
+        "skillset_relative_exclude_joints": relative_exclude,
+        "skillset_gripper_mode": gripper_mode,
+        "skillset_gripper_indices": gripper_indices,
+        "skillset_gripper_values": gripper_values,
+        "skillset_gripper_threshold": gripper_threshold,
+        "skillset_probe_suffix": suffix,
+    }
+
+
 DINO_VISUAL_BACKBONE = "dinov3_vits16"
 DINO_IMAGE_MODEL_DIR = "dinov3-vits16"
 DINO_FEATURE_TAG = "dinov3_vits16"
@@ -233,10 +275,13 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         elif "_dino" in _dp_run_name:
             dp_vision = "dino"
     dp_checkpoint = str(get_value(cfg, "dp_checkpoint", "100000"))
+    probe_settings = skillset_probe_settings(cfg)
     # skillset + per-skill DINO tokens are DP-dependent (the boundaries come from the DP),
     # so key them by DP/checkpoint — a different DP/checkpoint never reuses or clobbers
     # another's segmentation. Mirrors train_skillVLA's _work/seg_{dp}_ck{ckpt}/.
-    fsq_seg_dir = fsq_inputs_dir / f"seg_{dp_policy}_ck{dp_checkpoint}"
+    fsq_seg_dir = fsq_inputs_dir / (
+        f"seg_{dp_policy}_ck{dp_checkpoint}{probe_settings['skillset_probe_suffix']}"
+    )
 
     fsq_levels = as_levels(get_value(cfg, "fsq_levels", [5, 5, 5]))
     fsq_tag = "fsq" + "".join(str(v) for v in fsq_levels)
@@ -251,6 +296,7 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
     # (libero_90_full_full_state_obs20 → state_obs20), so the FSQ folder shows WHICH DP's skillset it
     # was trained on (state_obs20 vs dino8_obs10 …), not just the FSQ's own patch grid.
     dp_tag = dp_policy[len(target_dataset) + 1:] if dp_policy.startswith(f"{target_dataset}_") else dp_policy
+    dp_tag += probe_settings["skillset_probe_suffix"]
     fsq_run_template = str(
         get_value(
             cfg,
@@ -388,6 +434,7 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "skillset_savgol_polyorder": int(get_value(cfg, "skillset_savgol_polyorder", 4)),
         "skillset_replan_interval": int(get_value(cfg, "skillset_replan_interval", 3)),
         "skillset_nms_dist": int(get_value(cfg, "skillset_nms_dist", 25)),
+        **probe_settings,
         "skillset_cpus_per_task": int(get_value(cfg, "skillset_cpus_per_task", 4)),
         "skillset_mem": str(get_value(cfg, "skillset_mem", "32G")),
         "skillset_time": str(get_value(cfg, "skillset_time", "4:00:00")),

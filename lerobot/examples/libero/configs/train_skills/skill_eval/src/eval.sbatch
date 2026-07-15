@@ -69,7 +69,9 @@ if [ "${EVAL_RUN_DP}" = "true" ]; then
   # Strip the redundant dataset prefix from the run name (libero_90_full_full_state_obs10 → state_obs10).
   DP_TAG="${DP_POLICY#${TARGET_DATASET}_}"
   DP_OUT_DIR="${EVAL_DIR}/outputs/dp_skillset/${TARGET_DATASET}"
-  DP_OUT_HTML="${DP_TAG}_ck${DP_CHECKPOINT}.html"   # e.g. state_obs10_ck100000.html
+  # Probe suffix is empty for legacy spherical_xyz and tagged for pca_action, so
+  # side-by-side evaluations of the same DP/checkpoint never overwrite each other.
+  DP_OUT_HTML="${DP_TAG}_ck${DP_CHECKPOINT}${SKILLSET_PROBE_SUFFIX}.html"
   DP_TASK_ARGS=()
   [ -n "${DP_EVAL_TASK_IDS}" ] && DP_TASK_ARGS=(--task_ids ${DP_EVAL_TASK_IDS})
   echo ""

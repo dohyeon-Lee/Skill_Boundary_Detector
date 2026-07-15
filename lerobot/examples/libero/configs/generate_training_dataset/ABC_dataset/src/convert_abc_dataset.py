@@ -169,6 +169,18 @@ def _load_ep_meta(ep_dir: Path) -> dict:
     return json.loads((ep_dir / "episode_metadata.json").read_text())
 
 
+def _joint_names(dim: int) -> list[str] | None:
+    """Per-dim names for state/action features. YAM bimanual 14D → arm joints + gripper per
+    side; the 'gripper' token is what lerobot's RelativeActionsProcessorStep matches for
+    exclude_joints=["gripper"] (relative 학습에서 gripper만 absolute 유지). Unknown dims → None."""
+    if dim == 14:
+        names: list[str] = []
+        for side in ("left", "right"):
+            names += [f"{side}_joint_{i}" for i in range(6)] + [f"{side}_gripper"]
+        return names
+    return None
+
+
 def _camera_row_slices(meta: dict) -> list[tuple[str, int, int]]:
     """[(cam, row_lo, row_hi)] of the vertically stacked combined mp4, in stack order."""
     slices, off = [], 0
@@ -177,6 +189,23 @@ def _camera_row_slices(meta: dict) -> list[tuple[str, int, int]]:
         slices.append((cam, off, off + int(h)))
         off += int(h)
     return slices
+
+
+def _ee_pose_features(meta: dict) -> dict[str, list[int]]:
+    """abcdl frame-features named ee_pose_* → {name: shape}. (flat 16 = EE 4x4 row-major,
+    preserved from mcap RobotState.pose by mcap_to_abcdl; absent on stations without pose.)"""
+    spec = meta.get("frame_features") or {}
+    return {n: list(s.get("shape") or []) for n, s in spec.items() if n.startswith("ee_pose_")}
+
+
+def _load_ee_poses(ep_dir: Path, meta: dict, T: int) -> dict[str, np.ndarray]:
+    """{name: (T, 16) float32} from the ff_<name>.bin memmap files."""
+    out: dict[str, np.ndarray] = {}
+    for name, shape in _ee_pose_features(meta).items():
+        spec = meta["frame_features"][name]
+        arr = np.fromfile(ep_dir / f"ff_{name}.bin", dtype=np.dtype(spec["dtype"]))
+        out[name] = arr.reshape(T, *shape).astype(np.float32)
+    return out
 
 
 def stage_abcdl_to_v3(name: str, abcdl_dir: Path, final_dir: Path, fps: int, force: bool) -> None:
@@ -203,28 +232,38 @@ def stage_abcdl_to_v3(name: str, abcdl_dir: Path, final_dir: Path, fps: int, for
     if int(round(float(first.get("fps", fps)))) != fps:
         raise SystemExit(f"[{name}] abcdl fps {first.get('fps')} != configured abc_fps {fps}")
 
-    # Mirrors abcdl.convert.lerobot.abcdl_to_lerobot features exactly (video=HWC).
+    # Mirrors abcdl.convert.lerobot.abcdl_to_lerobot features (video=HWC) + per-dim NAMES —
+    # lerobot의 RelativeActionsProcessorStep이 exclude_joints를 이름으로 매칭하므로 필수.
     features: dict = {
-        "observation.state": {"dtype": "float32", "shape": (state_dim,), "names": None},
-        "action": {"dtype": "float32", "shape": (action_dim,), "names": None},
+        "observation.state": {"dtype": "float32", "shape": (state_dim,), "names": _joint_names(state_dim)},
+        "action": {"dtype": "float32", "shape": (action_dim,), "names": _joint_names(action_dim)},
     }
     for cam in cams:
         w, h = first["camera_resolutions"][cam]
         features[f"observation.images.{cam}"] = {
             "dtype": "video", "shape": (int(h), int(w), 3), "names": ["height", "width", "channel"],
         }
+    # EE poses (mcap RobotState.pose 보존분) → LIBERO의 observation.states.* 위상의 부가 컬럼.
+    # 학습 입력은 아니고 SBD probe 등 오프라인 소비용. 없는 캐시(구버전/포즈 없는 스테이션)면 생략.
+    ee_specs = _ee_pose_features(first)
+    for ff_name, shape in ee_specs.items():
+        features[f"observation.states.{ff_name}"] = {
+            "dtype": "float32", "shape": tuple(int(s) for s in shape), "names": None,
+        }
     print(f"[{name}] ③ abcdl→v3: {len(ep_dirs)} episodes, state/action {state_dim}/{action_dim}D, "
-          f"cams {cams} → {final_dir}")
+          f"cams {cams}, ee_pose {sorted(ee_specs) or '—'} → {final_dir}")
 
     ds = LeRobotDataset.create(f"dohyeon/{name}", fps=fps, features=features,
                                root=str(final_dir), vcodec="h264")
     for n_ep, ep_dir in enumerate(ep_dirs, 1):
         meta = _load_ep_meta(ep_dir)
-        if list(meta["cameras"]) != cams or int(meta["state_dim"]) != state_dim:
-            raise SystemExit(f"[{name}] heterogeneous episode {ep_dir.name}: cams/dims differ from "
-                             f"{ep_dirs[0].name} — split into separate subsets")
+        if (list(meta["cameras"]) != cams or int(meta["state_dim"]) != state_dim
+                or _ee_pose_features(meta).keys() != ee_specs.keys()):
+            raise SystemExit(f"[{name}] heterogeneous episode {ep_dir.name}: cams/dims/ee_pose differ "
+                             f"from {ep_dirs[0].name} — split into separate subsets")
         T = int(meta["num_steps"])
         sa = np.fromfile(ep_dir / "states_actions.bin", dtype="<f8").reshape(T, state_dim + action_dim)
+        ee = _load_ee_poses(ep_dir, meta, T)
         task = meta.get("task_name") or ""
         rows = _camera_row_slices(meta)
         n_frames = 0
@@ -236,6 +275,8 @@ def stage_abcdl_to_v3(name: str, abcdl_dir: Path, final_dir: Path, fps: int, for
                     "action": sa[n_frames, state_dim:].astype(np.float32),
                     "task": task,
                 }
+                for ff_name, vals in ee.items():
+                    item[f"observation.states.{ff_name}"] = vals[n_frames]
                 for cam, lo, hi in rows:
                     item[f"observation.images.{cam}"] = np.ascontiguousarray(arr[lo:hi])
                 ds.add_frame(item)
@@ -253,11 +294,21 @@ def stage_abcdl_to_v3(name: str, abcdl_dir: Path, final_dir: Path, fps: int, for
 # ── ④ quantile stats (reuse filtered_dataset tool) ────────────────────────────
 
 
-def stage_stats(name: str, root: Path, config_path: Path) -> None:
+def stage_stats(name: str, root: Path, config_path: Path, cfg: dict) -> None:
+    # ④-a: absolute quantile 보장 (DP 등 absolute 소비자용) — filtered_dataset 도구 재사용
     script = SRC_DIR.parent.parent / "filtered_dataset" / "ensure_quantile_stats.py"
     cmd = [sys.executable, str(script), "--config", str(config_path),
            "--dataset", name, "--root", str(root)]
-    print(f"[{name}] ④ stats: {' '.join(cmd)}")
+    print(f"[{name}] ④-a stats: {' '.join(cmd)}")
+    subprocess.run(cmd, check=True)
+    # ④-b: RELATIVE action stats (pi 계열 relative 학습용; 별도 파일이라 stats.json 무접촉,
+    # 데이터도 무변형 — relative는 학습 시 on-the-fly 변환이고 여기선 그 분포의 통계만 선계산)
+    rel_script = SRC_DIR / "compute_relative_action_stats.py"
+    exclude = ",".join(str(t) for t in (cfg.get("relative_exclude_joints") or []))
+    cmd = [sys.executable, str(rel_script), "--root", str(root), "--dataset", name,
+           "--chunk-size", str(int(cfg.get("relative_chunk_size", 50))),
+           "--exclude-joints", exclude]
+    print(f"[{name}] ④-b relative stats: {' '.join(cmd)}")
     subprocess.run(cmd, check=True)
 
 
@@ -313,7 +364,7 @@ def main() -> None:
             print(f"[{name}] ② skip: no mcap staging — using {n_ready} existing abcdl episodes")
         stage_abcdl_to_v3(name, abcdl_dir, root / name, fps, args.force)
         if not args.skip_stats:
-            stage_stats(name, root, args.config)
+            stage_stats(name, root, args.config, cfg)
 
         from lerobot.datasets.dataset_metadata import LeRobotDatasetMetadata
         m = LeRobotDatasetMetadata(f"dohyeon/{name}", root=str(root / name))

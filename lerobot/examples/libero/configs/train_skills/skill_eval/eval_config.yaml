@@ -14,12 +14,26 @@ fsq_dataset_root: FSQ_dataset
 fsq_inputs_name: FSQ_inputs
 skillset_name: skillset
 
-eval_run_dp: false
+eval_run_dp: true
 
 # eval_dp_run_name: libero_90_full_full_dino8_obs10        
 # eval_dp_run_name: libero_90_full_full_state_obs10        
 eval_dp_run_name: libero_90_full_full_state_obs20        
 eval_dp_checkpoint: 100000     
+
+# Must match the skillset build probe settings. These keys steer the shared resolver to
+# the probe-tagged skillset directory; spherical_xyz keeps the historical untagged path.
+skillset_probe_type: pca_action
+skillset_probe_count: 24
+skillset_probe_alpha: 0.10
+skillset_pca_variance: 0.95
+skillset_pca_stride: 3
+skillset_action_mode: dataset
+skillset_relative_exclude_joints: [gripper]
+skillset_gripper_mode: discrete
+skillset_gripper_indices: [-1]
+skillset_gripper_values: [-1.0, 1.0]
+skillset_gripper_threshold: 0.0
 
 # DP eval (skill-boundary split) knobs.
 dp_eval_n_episodes: 10           # episodes shown (per task when dp_eval_task_ids is set)
@@ -28,7 +42,7 @@ dp_eval_task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]   # empty [] = first dp_eval_n_
 # ===============================================================================================================
 # ===============================================================================================================
 
-eval_run_fsq: true
+eval_run_fsq: false
 
 # Folder names now embed the DP run (dp_tag) that produced the skillset. Renamed runs (all dino8_obs10):
 # fsq_eval_run_name: libero_90_full_full_dino8_obs10_fsq555_dino8_wow

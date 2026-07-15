@@ -1,9 +1,9 @@
 """
-build_skill_dataset.py — libero_90 전체 데모를 VF cosine divergence로 스킬 분할 후 .npz 저장.
+build_skill_dataset.py — demos를 VF cosine divergence로 스킬 분할 후 .npz 저장.
 
 Pipeline:
   1. 모든 task의 모든 episode 순회
-  2. VF analysis (skill_divider.py 로직 재사용)
+  2. VF analysis (legacy spherical_xyz or generic pca_action probes)
   3. SG smooth + peak detection → skill boundaries
   4. actions / states를 boundary 단위로 잘라 .npz 저장
   5. 이미 처리된 episode는 skip (resume)
@@ -42,6 +42,19 @@ from skill_divider import (
     run_vf_analysis,
 )
 from SBD_visualize import SkillVisualizer
+from action_manifold import (
+    ACTION_MODE_ANCHOR_RELATIVE,
+    ACTION_MODE_DATASET,
+    GRIPPER_CONTINUOUS,
+    PROBE_PCA_ACTION,
+    PROBE_SPHERICAL_XYZ,
+    ActionPCA,
+    NumpyActionNormalizer,
+    RunningCovariance,
+    get_or_fit_action_pca,
+    relative_action_mask,
+    resolve_indices,
+)
 
 
 # ── Args ──────────────────────────────────────────────────────────────────────
@@ -61,6 +74,27 @@ class Args:
     # ── VF analysis ──────────────────────────────────────────────────────────
     replan_interval: int = 3
     n_gmm_components: int = 5
+    probe_type: str = PROBE_SPHERICAL_XYZ
+    """spherical_xyz (legacy) or pca_action (generic full-action probes)."""
+    probe_count: int = 24
+    """Number of PCA probes; GT is added separately."""
+    probe_alpha: float = 0.1
+    """Per-action-dimension RMS radius in normalized policy coordinates."""
+    pca_variance: float = 0.95
+    """Cumulative explained variance retained by action-plan PCA."""
+    pca_stride: int = 3
+    """Anchor stride used while fitting the dataset action PCA."""
+    action_mode: str = ACTION_MODE_DATASET
+    """dataset or anchor_relative."""
+    relative_exclude_joints: str = "gripper"
+    """Comma-separated action-name tokens left absolute in anchor_relative mode."""
+    gripper_mode: str = GRIPPER_CONTINUOUS
+    """continuous or discrete."""
+    gripper_indices: str = "-1"
+    """Comma-separated full-action indices used when gripper_mode=discrete."""
+    gripper_values: str = "-1,1"
+    """Raw valid low/high gripper commands for discrete projection."""
+    gripper_threshold: float = 0.0
     # ── Peak detection ────────────────────────────────────────────────────────
     smooth_window: int = 7
     savgol_polyorder: int = 4
@@ -91,6 +125,104 @@ class Args:
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+
+def _csv_values(value: str, cast) -> list:
+    return [cast(token.strip()) for token in str(value).split(",") if token.strip()]
+
+
+def _action_names(dataset_dir: Path) -> list[str] | None:
+    import json
+
+    info = json.loads((dataset_dir / "meta" / "info.json").read_text())
+    names = (info.get("features", {}).get("action") or {}).get("names")
+    return [str(name) for name in names] if names else None
+
+
+def _iter_state_action_episodes(dataset_dir: Path):
+    """Stream complete episodes from ordered LeRobot parquet shards."""
+    files = sorted((dataset_dir / "data").rglob("file-*.parquet")) or sorted(
+        (dataset_dir / "data").rglob("episode_*.parquet")
+    )
+    if not files:
+        raise FileNotFoundError(f"No parquet data found under {dataset_dir / 'data'}")
+
+    pending_id = None
+    pending_actions: list[np.ndarray] = []
+    pending_states: list[np.ndarray] = []
+
+    def _flush():
+        if pending_id is None:
+            return None
+        return (
+            int(pending_id),
+            np.concatenate(pending_actions, axis=0),
+            np.concatenate(pending_states, axis=0),
+        )
+
+    for path in files:
+        frame = pd.read_parquet(
+            path, columns=["episode_index", "frame_index", "observation.state", "action"]
+        )
+        frame = frame.sort_values(["episode_index", "frame_index"], kind="stable")
+        for episode_id, group in frame.groupby("episode_index", sort=False):
+            actions = np.stack(group["action"].to_numpy()).astype(np.float32)
+            states = np.stack(group["observation.state"].to_numpy()).astype(np.float32)
+            episode_id = int(episode_id)
+            if pending_id is not None and episode_id != pending_id:
+                completed = _flush()
+                if completed is not None:
+                    yield completed
+                pending_actions = []
+                pending_states = []
+            pending_id = episode_id
+            pending_actions.append(actions)
+            pending_states.append(states)
+
+    completed = _flush()
+    if completed is not None:
+        yield completed
+
+
+def _fit_dataset_action_pca(
+    dataset_dir: Path,
+    horizon: int,
+    stride: int,
+    action_dim: int,
+    action_mode: str,
+    rel_mask: np.ndarray | None,
+    normalizer: NumpyActionNormalizer,
+    variance_threshold: float,
+    metadata: dict,
+) -> ActionPCA:
+    if stride < 1:
+        raise ValueError(f"pca_stride must be positive, got {stride}.")
+    accumulator = RunningCovariance(action_dim)
+    anchor_batch_size = 4096
+    n_episodes = 0
+    for _, actions, states in _iter_state_action_episodes(dataset_dir):
+        if actions.shape[1] != action_dim:
+            raise ValueError(f"Dataset action dim {actions.shape[1]} != policy action dim {action_dim}.")
+        anchors = np.arange(0, len(actions), stride, dtype=np.int64)
+        offsets = np.arange(horizon, dtype=np.int64)
+        for start in range(0, len(anchors), anchor_batch_size):
+            selected = anchors[start:start + anchor_batch_size]
+            indices = np.minimum(selected[:, None] + offsets[None], len(actions) - 1)
+            chunks = actions[indices].copy()
+            if action_mode == ACTION_MODE_ANCHOR_RELATIVE:
+                if rel_mask is None:
+                    raise ValueError("anchor_relative PCA fitting requires a relative-action mask.")
+                dims = len(rel_mask)
+                chunks[..., :dims] -= (
+                    states[selected, None, :dims] * rel_mask.astype(np.float32)[None, None]
+                )
+            elif action_mode != ACTION_MODE_DATASET:
+                raise ValueError(f"Unsupported action mode: {action_mode}")
+            normalized = normalizer.normalize(chunks)
+            accumulator.update_batch(normalized.mean(axis=1))
+        n_episodes += 1
+    print(f"  [PCA] fitted from {accumulator.count:,} anchors across {n_episodes:,} episodes")
+    return ActionPCA.from_covariance(accumulator, variance_threshold, metadata=metadata)
 
 def _detect_boundaries(replan_ts: list, div_cos: np.ndarray,
                         n_frames: int, args: Args) -> list[int]:
@@ -130,6 +262,8 @@ def _save_boundary_curve(curves_dir: Path, ep_id: int, task_id: int, replan_ts,
         peak_vals=np.asarray(peak_vals, dtype=np.float32),
         boundaries=np.asarray(boundaries, dtype=np.int64),
         n_frames=np.array(n_frames),
+        probe_type=np.array(args.probe_type),
+        probe_alpha=np.array(args.probe_alpha, dtype=np.float32),
     )
 
 
@@ -234,6 +368,70 @@ def main(args: Args) -> None:
     )
     print(f"  [time] policy load: {time.time()-t0:.1f}s")
 
+    action_pca = None
+    action_normalizer = None
+    probe_directions = None
+    rel_mask = None
+    gripper_indices: tuple[int, ...] = ()
+    gripper_values = tuple(_csv_values(args.gripper_values, float))
+    if len(gripper_values) != 2:
+        raise ValueError(f"--gripper_values needs exactly two comma-separated values, got {gripper_values}.")
+
+    if args.probe_type == PROBE_PCA_ACTION:
+        import hashlib
+
+        action_dim = int(policy.config.action_feature.shape[0])
+        action_normalizer = NumpyActionNormalizer.from_preprocessor(preprocessor)
+        names = _action_names(dataset_dir)
+        exclude_tokens = _csv_values(args.relative_exclude_joints, str)
+        if args.action_mode == ACTION_MODE_ANCHOR_RELATIVE:
+            rel_mask = relative_action_mask(action_dim, names, exclude_tokens)
+        elif args.action_mode != ACTION_MODE_DATASET:
+            raise ValueError(f"Unsupported --action_mode: {args.action_mode}")
+        gripper_indices = resolve_indices(_csv_values(args.gripper_indices, int), action_dim)
+
+        stats_hash = hashlib.sha256()
+        for name in sorted(action_normalizer.stats):
+            stats_hash.update(name.encode("utf-8"))
+            stats_hash.update(np.asarray(action_normalizer.stats[name]).tobytes())
+        pca_metadata = {
+            "version": 1,
+            "dataset": dataset_dir.name,
+            "action_dim": action_dim,
+            "horizon": int(policy.config.horizon),
+            "stride": int(args.pca_stride),
+            "variance_threshold": float(args.pca_variance),
+            "action_mode": args.action_mode,
+            "relative_exclude_joints": exclude_tokens,
+            "normalizer_mode": action_normalizer.mode,
+            "normalizer_stats_sha256": stats_hash.hexdigest(),
+        }
+        pca_path = output_dir / "action_probe_pca.npz"
+        print(f"Loading/fitting action-plan PCA: {pca_path}")
+        action_pca = get_or_fit_action_pca(
+            pca_path,
+            pca_metadata,
+            lambda: _fit_dataset_action_pca(
+                dataset_dir=dataset_dir,
+                horizon=int(policy.config.horizon),
+                stride=args.pca_stride,
+                action_dim=action_dim,
+                action_mode=args.action_mode,
+                rel_mask=rel_mask,
+                normalizer=action_normalizer,
+                variance_threshold=args.pca_variance,
+                metadata=pca_metadata,
+            ),
+        )
+        probe_directions = action_pca.sample_directions(args.probe_count, seed=args.seed or 0)
+        print(
+            f"  [PCA] {action_pca.n_components}/{action_dim} components, "
+            f"explained={action_pca.explained_variance_ratio.sum():.4f}, "
+            f"probes={args.probe_count}+GT, alpha={args.probe_alpha}"
+        )
+    elif args.probe_type != PROBE_SPHERICAL_XYZ:
+        raise ValueError(f"Unsupported --probe_type: {args.probe_type}")
+
     use_dino = policy.config.use_dino_features
     dino_feature_dir = Path(args.dino_feature_dir) if args.dino_feature_dir else None
     if use_dino and dino_feature_dir is None:
@@ -254,6 +452,11 @@ def main(args: Args) -> None:
                 "dataset_dir": args.dataset_dir,
                 "n_tasks": len(task_ids),
                 "n_total_episodes": n_total_eps_global,
+                "probe_type": args.probe_type,
+                "probe_count": args.probe_count,
+                "probe_alpha": args.probe_alpha,
+                "pca_variance": args.pca_variance,
+                "pca_components": action_pca.n_components if action_pca is not None else None,
                 "replan_interval": args.replan_interval,
                 "eval_at_step": args.eval_at_step,
                 "n_gmm_components": args.n_gmm_components,
@@ -342,6 +545,17 @@ def main(args: Args) -> None:
                     args.eval_at_step, args.replan_interval,
                     n_gmm_components=args.n_gmm_components,
                     dino_tokens=ep_dino_tokens,
+                    probe_type=args.probe_type,
+                    action_pca=action_pca,
+                    probe_directions=probe_directions,
+                    probe_alpha=args.probe_alpha,
+                    action_normalizer=action_normalizer,
+                    action_mode=args.action_mode,
+                    relative_mask=rel_mask,
+                    gripper_mode=args.gripper_mode,
+                    gripper_indices=gripper_indices,
+                    gripper_values=gripper_values,
+                    gripper_threshold=args.gripper_threshold,
                 )
             except Exception as e:
                 import traceback

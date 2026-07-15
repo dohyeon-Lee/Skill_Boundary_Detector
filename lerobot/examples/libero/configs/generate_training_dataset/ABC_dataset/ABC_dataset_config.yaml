@@ -49,8 +49,8 @@ abc_subsets:
   abc_toy:
     split: train
     downloads:
-      - group: tool_use
-        episodes: 2
+      - group: pick_and_place
+        episodes: 20
       # - task: arrange_the_flowers_into_the_vase
       #   episodes: 10
       # - tasks: [tie_the_shoes, open_the_umbrella]
@@ -66,11 +66,23 @@ abc_subsets:
 abc_image_size: 256
 abc_fps: 30            # mcap→abcdl 고정클록 리샘플 결과 (abcdl 규약; 바꿀 일 없음)
 
-# ── 병렬도 ────────────────────────────────────────────────────
-download_workers: 8    # ①: 동시 파일 다운로드 + 에피소드 listing 수 (엔진 max_workers)
+# ── 병렬도 / 다운로드 안정성 ──────────────────────────────────
+# 대용량 mcap이 HF Xet 경로로 자주 스톨 → download_ABC.sh가 HF_HUB_DISABLE_XET=1로 재래식 LFS 전환
+# (original_dataset 검증 레시피). 그 경로에선 hf_transfer 없이 workers 낮추고 타임아웃 길게가 안정적.
+download_workers: 4    # ①: 동시 다운로드 수. Xet-off 재래식 경로. 2=원본 검증값(안전), 4=실측 실험중.
+                       #     8은 Xet-on 시절 100초 하드스톨 확인됨 → 상한으로 쓰지 말 것.
+download_hf_transfer: false  # Xet-off + 순정 백엔드 + 타임아웃(60s, 래퍼)이 original_dataset의 검증 조합.
+                       #     회선 안정적이면 true(hf_transfer 가속)로 실험 가능 — 단 워치독이 백스톱.
 convert_workers: 4     # ②(mcap→abcdl): 에피소드 단위 프로세스 병렬 (ffmpeg가 무거움)
 
 # ── Stats 계산 범위 (filtered_dataset과 동일 의미) ────────────
 # false (기본/fast): quantile(q01..q99)은 비-비디오 feature만 parquet에서 계산 — 몇 분.
 # true (full): 비디오 포함 전 feature 재계산 — 수 시간. (하류는 이미지 quantile 안 씀)
 stats_include_videos: false
+
+# ── ④-b: relative action stats (pi 계열 relative 학습용) ─────
+# 데이터/stats.json 무변형 — meta/relative_action_stats.json 별도 파일로.
+# 공식 to_relative_actions + 이름기반 exclude(RelativeActionsProcessorStep 규약) 그대로 사용.
+# chunk_size는 relative 학습의 action horizon과 정합 (pi05 기본 50).
+relative_chunk_size: 50
+relative_exclude_joints: [gripper]   # 이름 토큰 매칭 → left_gripper/right_gripper absolute 유지

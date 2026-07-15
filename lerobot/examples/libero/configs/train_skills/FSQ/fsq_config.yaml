@@ -16,6 +16,18 @@ fsq_patch_grid: 8                  # FSQ token grid (matches build_data)
 fsq_dataset_root: FSQ_dataset
 fsq_inputs_name: FSQ_inputs
 skillset_name: skillset
+# Must match build_data/build_data_config.yaml so FSQ consumes the intended segmentation.
+skillset_probe_type: pca_action
+skillset_probe_count: 24
+skillset_probe_alpha: 0.10
+skillset_pca_variance: 0.95
+skillset_pca_stride: 3
+skillset_action_mode: dataset
+skillset_relative_exclude_joints: [gripper]
+skillset_gripper_mode: discrete
+skillset_gripper_indices: [-1]
+skillset_gripper_values: [-1.0, 1.0]
+skillset_gripper_threshold: 0.0
 
 # ── FSQ model / run ──
 # {dp_tag} = the DP run that produced the skillset (dataset prefix stripped, e.g. state_obs20 /

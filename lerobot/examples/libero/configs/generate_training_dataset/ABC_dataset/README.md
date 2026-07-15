@@ -10,11 +10,26 @@
 | ① download | mcap subset → `_mcap/{name}/` | **`{abcdl_repo}/download` 선택형 다운로더** (그룹/태스크/에피소드 지정; `src/download_abc_subset.py`는 subset별 config를 생성해 위임) |
 | ② mcap→abcdl | 30Hz 고정클록 리샘플 + 정방 다운스케일(256) + 스택 mp4 캐시 → `_abcdl/{name}/` | `abcdl_RLLAB` 패키지 (`mcap_to_abcdl`, 에피소드 병렬) |
 | ③ abcdl→v3 | per-camera mp4 + parquet **진짜 v3** → `dataset_ABC/{name}/` | `src/convert_abc_dataset.py` (pyav 기반 — **torchcodec 불필요**) |
-| ④ stats | quantile(q01..q99) 보장 | `../filtered_dataset/ensure_quantile_stats.py` 재사용 |
+| ④-a stats | absolute quantile(q01..q99) 보장 (DP 등 absolute 소비자용) | `../filtered_dataset/ensure_quantile_stats.py` 재사용 |
+| ④-b relative stats | **relative action 분포 통계** (pi 계열 relative 학습용) → `meta/relative_action_stats.json` | `src/compute_relative_action_stats.py` — 공식 `to_relative_actions`+이름기반 exclude 그대로 사용 |
 
 최종 산출물은 LIBERO와 동일한 v3 레이아웃 → 하류 파이프라인(DP/SBD/FSQ/skillvla)이 **무수정 소비**.
 v3 feature 키는 `observation.images.{top,left_wrist,right_wrist}` 로 생성됩니다
 (하류 3-카메라 슬롯 매핑은 별도 작업 항목).
+
+**EE pose 보존**: mcap `RobotState.pose`(팔별 EE 4×4)를 ②가 `ff_ee_pose_{left,right}.bin`
+frame-feature로 싣고 ③이 `observation.states.ee_pose_{left,right}` (float32 (16,), row-major —
+`.reshape(4,4)`) parquet 컬럼으로 방출합니다. 학습 입력이 아니라 SBD probe 등 오프라인 소비용
+(LIBERO의 `observation.states.ee_state` 위상). 포즈 없는 스테이션/구버전 캐시면 자동 생략.
+
+**Relative action 지원 (④-b)**: ABC action은 absolute joint인데 pi 계열은 relative
+(`action − state(anchor)`, 청크당 anchor 1개)로 학습하는 게 표준. relative는 **학습 시
+on-the-fly 변환**이라 데이터/stats.json은 무변형이고, 다만 파이프라인이 `relative → normalize`
+순서라 normalizer용 relative 분포 통계를 ④-b가 선계산해 `meta/relative_action_stats.json`에
+저장합니다 (yaml: `relative_chunk_size`, `relative_exclude_joints: [gripper]`). 계산은 학습이
+실제 쓸 공식 함수(`lerobot.processor.to_relative_actions`)+이름기반 exclude 마스크를 그대로
+사용 — 이를 위해 ③이 action/state에 per-dim `names`(…, `left_gripper`@6, `right_gripper`@13)를
+심습니다. 이미 구운 데이터셋엔 이 스크립트만 단독 재실행하면 소급 적용.
 
 `_abcdl/` 캐시는 지우지 마세요 — v3 재빌드 소스이자, 추후 `AbcdlDataset` 직결
 (memmap/스트리밍 고속로더)을 쓰게 되면 그때의 데이터 소스입니다.

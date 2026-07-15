@@ -1,12 +1,16 @@
 """
 Skill Divider — skill boundary detection via VF cosine divergence.
 
-Pipeline:
+Legacy spherical_xyz pipeline:
   1. Load demonstration episodes for a given task.
   2. Run VF divergence analysis using spherical action probes at a fixed denoising step.
   3. Fit GMM on probe VF outputs → compute pairwise cosine divergence per replanning step.
   4. Apply Savitzky-Golay smoothing → detect peaks above mean → skill boundaries.
   5. Output: cos divergence plot, full demo video, per-skill videos, GMM 3D HTML.
+
+The batch builder also supports a generic pca_action probe: fit PCA to normalized
+full-action chunk means, translate the full chunk along fixed PCA directions, and
+compute GMM cosine divergence from denoised action-plan descriptors.
 
 Usage:
   python examples/libero/skill_divider.py \
@@ -32,6 +36,18 @@ import tyro
 
 sys.path.insert(0, str(Path(__file__).parent))
 from SBD_visualize import SkillVisualizer
+from action_manifold import (
+    ACTION_MODE_DATASET,
+    GRIPPER_CONTINUOUS,
+    PROBE_PCA_ACTION,
+    PROBE_SPHERICAL_XYZ,
+    ActionPCA,
+    NumpyActionNormalizer,
+    action_plan_descriptors,
+    compute_action_divergence,
+    make_pca_action_probes,
+    to_model_action_chunk,
+)
 
 
 # ── Args ──────────────────────────────────────────────────────────────────────
@@ -160,8 +176,8 @@ def _make_probe_chunks(gt_chunk_np, polar_degs=(30, 60), azimuth_step_deg=30):
 
 # ── VF query ──────────────────────────────────────────────────────────────────
 
-def _query_vf_error(policy, global_cond, chunks_batch, eval_at_step: int):
-    """One deterministic DDIM step at eval_at_step → (B, action_dim) total displacement."""
+def _query_vf_chunks(policy, global_cond, chunks_batch, eval_at_step: int):
+    """One deterministic DDIM step at eval_at_step → (B, H, action_dim)."""
     import torch
     with torch.no_grad():
         scheduler = policy.diffusion.noise_scheduler
@@ -171,7 +187,12 @@ def _query_vf_error(policy, global_cond, chunks_batch, eval_at_step: int):
         gc = global_cond.expand(B, -1)
         eps_pred = policy.diffusion.unet(chunks_batch, t_batch, global_cond=gc)
         denoised = scheduler.step(eps_pred, t, chunks_batch).prev_sample
-        return denoised.sum(dim=1).cpu().numpy()
+        return denoised.cpu().numpy()
+
+
+def _query_vf_error(policy, global_cond, chunks_batch, eval_at_step: int):
+    """Legacy XYZ probe output: total denoised displacement per action dimension."""
+    return _query_vf_chunks(policy, global_cond, chunks_batch, eval_at_step).sum(axis=1)
 
 
 # ── GMM divergence ────────────────────────────────────────────────────────────
@@ -238,6 +259,17 @@ def run_vf_analysis(
     compute_pred_mse: bool = False,
     mse_window: int = 4,
     dino_tokens: np.ndarray | None = None,
+    probe_type: str = PROBE_SPHERICAL_XYZ,
+    action_pca: ActionPCA | None = None,
+    probe_directions: np.ndarray | None = None,
+    probe_alpha: float = 0.1,
+    action_normalizer: NumpyActionNormalizer | None = None,
+    action_mode: str = ACTION_MODE_DATASET,
+    relative_mask: np.ndarray | None = None,
+    gripper_mode: str = GRIPPER_CONTINUOUS,
+    gripper_indices: tuple[int, ...] = (),
+    gripper_values: tuple[float, float] = (-1.0, 1.0),
+    gripper_threshold: float = 0.0,
 ) -> tuple:
     """Returns (replan_ts, vf_values, gt_orig, divergences).
 
@@ -278,6 +310,15 @@ def run_vf_analysis(
     replan_ts, vf_values, gt_orig, div_cos_list, div_l2_list, gmm_means_list = [], [], [], [], [], []
     pred_mse_list = [] if compute_pred_mse else None
     action_dim = gt_actions.shape[1]
+    if probe_type == PROBE_PCA_ACTION:
+        if action_pca is None or probe_directions is None or action_normalizer is None:
+            raise ValueError("pca_action requires action_pca, probe_directions, and action_normalizer.")
+        if action_pca.action_dim != action_dim:
+            raise ValueError(f"PCA action dim {action_pca.action_dim} != episode action dim {action_dim}.")
+        if compute_pred_mse:
+            raise ValueError("plot_pred_mse is not implemented for normalized pca_action probes.")
+    elif probe_type != PROBE_SPHERICAL_XYZ:
+        raise ValueError(f"Unsupported probe type: {probe_type}")
 
     def _build_obs_batch(t: int) -> dict:
         """replan step t에서 쓸 (1, n_obs_steps, ...) 배치 구성.
@@ -322,14 +363,42 @@ def run_vf_analysis(
             if len(chunk) < horizon:
                 chunk = np.concatenate([chunk, np.tile(chunk[-1:], (horizon - len(chunk), 1))], axis=0)
 
-            # Build GT + probe batch
-            chunks_np = _make_probe_chunks(chunk, polar_degs, azimuth_step_deg)  # (N, H, action_dim)
-            chunks_t = torch.from_numpy(chunks_np).float().to(device)            # (N, H, action_dim)
-            vf_batch = _query_vf_error(policy, global_cond, chunks_t, eval_at_step)  # (N, action_dim)
-            div_cos, div_l2, means = compute_vf_divergence(vf_batch, n_components=n_gmm_components)
+            # Build GT + probe batch. The legacy path stays in raw LIBERO delta-EEF
+            # coordinates; the generic path operates in the exact normalized action
+            # representation learned by the policy.
+            if probe_type == PROBE_SPHERICAL_XYZ:
+                chunks_np = _make_probe_chunks(chunk, polar_degs, azimuth_step_deg)
+                chunks_t = torch.from_numpy(chunks_np).float().to(device)
+                vf_batch = _query_vf_error(policy, global_cond, chunks_t, eval_at_step)
+                div_cos, div_l2, means = compute_vf_divergence(
+                    vf_batch, n_components=n_gmm_components
+                )
+                gt_summary = chunk.sum(axis=0)
+            else:
+                model_chunk = to_model_action_chunk(
+                    chunk, states[t], action_mode=action_mode, relative_mask=relative_mask
+                )
+                normalized_chunk = action_normalizer.normalize(model_chunk)
+                chunks_np = make_pca_action_probes(
+                    normalized_chunk,
+                    probe_directions,
+                    alpha=probe_alpha,
+                    normalizer=action_normalizer,
+                    gripper_mode=gripper_mode,
+                    gripper_indices=gripper_indices,
+                    gripper_values=gripper_values,
+                    gripper_threshold=gripper_threshold,
+                )
+                chunks_t = torch.from_numpy(chunks_np).float().to(device)
+                denoised_chunks = _query_vf_chunks(policy, global_cond, chunks_t, eval_at_step)
+                vf_batch = action_plan_descriptors(denoised_chunks, action_pca)
+                div_cos, div_l2, means = compute_action_divergence(
+                    vf_batch, n_components=n_gmm_components
+                )
+                gt_summary = normalized_chunk.mean(axis=0)
             replan_ts.append(t)
             vf_values.append(vf_batch)
-            gt_orig.append(chunk.sum(axis=0))
+            gt_orig.append(gt_summary)
             div_cos_list.append(div_cos)
             div_l2_list.append(div_l2)
             gmm_means_list.append(means)  # (n_components, action_dim)
@@ -607,7 +676,11 @@ def load_policy(policy_path: str, device: str,
     policy.diffusion.num_inference_steps = num_inference_steps
     print(f"  [scheduler] {noise_scheduler_type}, steps={num_inference_steps}")
 
-    preprocessor, _ = make_pre_post_processors(cfg, pretrained_path=policy_path)
+    preprocessor, _ = make_pre_post_processors(
+        cfg,
+        pretrained_path=policy_path,
+        preprocessor_overrides={"device_processor": {"device": device}},
+    )
     return policy, preprocessor
 
 

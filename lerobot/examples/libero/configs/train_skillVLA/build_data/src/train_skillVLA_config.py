@@ -17,7 +17,14 @@ from typing import Any
 
 # reuse the train_skills yaml-load + shell-emit helpers
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent.parent / "train_skills" / "src"))
-from train_skills_config import as_bool, as_list, get_value, load_config, print_shell  # noqa: E402
+from train_skills_config import (  # noqa: E402
+    as_bool,
+    as_list,
+    get_value,
+    load_config,
+    print_shell,
+    skillset_probe_settings,
+)
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "train_skillVLA_config.yaml"
 
@@ -89,6 +96,7 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
     dp_policy_name = str(get_value(cfg, "dp_policy_name"))
     dp_checkpoint = str(get_value(cfg, "dp_checkpoint", "100000"))
     dp_policy_path = dp_outputs_root / dp_policy_name / "checkpoints" / dp_checkpoint / "pretrained_model"
+    probe_settings = skillset_probe_settings(cfg)
 
     # ── FSQ (step 4) — model path from the parsed run name + checkpoint ──
     fsq_model_dir = fsq_outputs_root / fsq_run_name
@@ -138,7 +146,9 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
     fsq_dino_dir = dino_root / f"pg{fsq_patch_grid}"      # extract/merge read here (3rd [+ wrist])
     # skillset + skill_tokens depend on the DP model (not FSQ), so key them by DP so a
     # different DP/checkpoint never reuses or clobbers another's segmentation.
-    seg_dir = work_dir / f"seg_{dp_policy_name}_ck{dp_checkpoint}"
+    seg_dir = work_dir / (
+        f"seg_{dp_policy_name}_ck{dp_checkpoint}{probe_settings['skillset_probe_suffix']}"
+    )
     skillset_dir = seg_dir / "skillset"
 
     def slurm(prefix: str, *, cpus: int, mem: str, time: str) -> dict:
@@ -182,6 +192,7 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
         "skillset_savgol_polyorder": int(get_value(cfg, "skillset_savgol_polyorder", 4)),
         "skillset_replan_interval": int(get_value(cfg, "skillset_replan_interval", 3)),
         "skillset_nms_dist": int(get_value(cfg, "skillset_nms_dist", 25)),
+        **probe_settings,
         # parallelism: split tasks into shards of this size, one shard per Slurm array job (1 GPU each)
         "skillset_tasks_per_job": int(get_value(cfg, "skillset_tasks_per_job", 5)),
         "skillset_array_throttle": int(get_value(cfg, "skillset_array_throttle", 0)),
