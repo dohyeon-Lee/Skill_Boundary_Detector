@@ -172,6 +172,88 @@ def as_levels(value: Any) -> tuple[int, ...]:
     return tuple(int(v) for v in cleaned.split())
 
 
+SKILLSET_MODES = ("spherical", "full", "without_gripper", "std")
+
+
+def skillset_probe_settings(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Resolve one user-facing SBD mode into the internal action-manifold arguments."""
+    probe_count = int(get_value(cfg, "skillset_probe_count", 24))
+    probe_alpha = float(get_value(cfg, "skillset_probe_alpha", 0.1))
+    pca_variance = float(get_value(cfg, "skillset_pca_variance", 0.95))
+    pca_stride = int(get_value(cfg, "skillset_pca_stride", 3))
+    action_mode = str(get_value(cfg, "skillset_action_mode", "dataset"))
+    gripper_mode = str(get_value(cfg, "skillset_gripper_mode", "continuous"))
+    relative_exclude = ",".join(
+        as_list(get_value(cfg, "skillset_relative_exclude_joints", ["gripper"]))
+    )
+    gripper_indices = ",".join(
+        as_list(get_value(cfg, "skillset_gripper_indices", [-1]))
+    )
+    gripper_values = ",".join(
+        as_list(get_value(cfg, "skillset_gripper_values", [-1.0, 1.0]))
+    )
+    gripper_threshold = float(get_value(cfg, "skillset_gripper_threshold", 0.0))
+
+    mode_value = get_value(cfg, "skillset_mode", None)
+    if mode_value in (None, ""):
+        # FSQ/eval configs do not need to duplicate the build choice. Inherit the
+        # canonical mode when this resolver is called from another train_skills module.
+        project_root = get_value(cfg, "project_root", None)
+        if project_root:
+            build_cfg = (
+                Path(str(project_root)).expanduser()
+                / "lerobot/examples/libero/configs/train_skills/build_data/build_data_config.yaml"
+            )
+            if build_cfg.is_file():
+                mode_value = get_value(load_config(build_cfg), "skillset_mode", None)
+    if mode_value in (None, ""):
+        # Backward compatibility for detailed pre-mode configs and snapshots.
+        old_type = str(get_value(cfg, "skillset_probe_type", "spherical_xyz"))
+        old_scale = str(get_value(cfg, "skillset_pca_scale_mode", "none")).lower()
+        old_exclude = ",".join(
+            as_list(get_value(cfg, "skillset_probe_exclude_indices", []))
+        )
+        if old_type == "spherical_xyz":
+            mode_value = "spherical"
+        elif old_type == "pca_action" and old_scale == "std":
+            mode_value = "std"
+        elif old_type == "pca_action" and old_exclude:
+            mode_value = "without_gripper"
+        else:
+            mode_value = "full"
+    mode = str(mode_value).strip().lower()
+    if mode not in SKILLSET_MODES:
+        raise ValueError(f"skillset_mode must be one of {SKILLSET_MODES}, got {mode}")
+
+    if mode == "spherical":
+        probe_type, pca_scale_mode, probe_exclude_indices = "spherical_xyz", "none", ""
+    elif mode == "full":
+        probe_type, pca_scale_mode, probe_exclude_indices = "pca_action", "none", ""
+    elif mode == "without_gripper":
+        probe_type, pca_scale_mode = "pca_action", "none"
+        probe_exclude_indices = gripper_indices
+    else:
+        probe_type, pca_scale_mode, probe_exclude_indices = "pca_action", "std", ""
+
+    return {
+        "skillset_mode": mode,
+        "skillset_probe_type": probe_type,
+        "skillset_probe_count": probe_count,
+        "skillset_probe_alpha": probe_alpha,
+        "skillset_pca_variance": pca_variance,
+        "skillset_pca_stride": pca_stride,
+        "skillset_pca_scale_mode": pca_scale_mode,
+        "skillset_probe_exclude_indices": probe_exclude_indices,
+        "skillset_action_mode": action_mode,
+        "skillset_relative_exclude_joints": relative_exclude,
+        "skillset_gripper_mode": gripper_mode,
+        "skillset_gripper_indices": gripper_indices,
+        "skillset_gripper_values": gripper_values,
+        "skillset_gripper_threshold": gripper_threshold,
+        "skillset_probe_suffix": f"_{mode}",
+    }
+
+
 DINO_IMAGE_MODEL_DIR = "dinov3-vits16"
 
 
@@ -194,8 +276,7 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
     dp_n_obs_steps = int(get_value(cfg, "dp_n_obs_steps", 10))
     dp_horizon = int(get_value(cfg, "dp_horizon", 16))
     train_dp = as_bool(get_value(cfg, "train_DP", get_value(cfg, "train_dp", True), env="TRAIN_DP"))
-    # DP boundary construction is intentionally state-only. Keeping one input contract prevents
-    # a visual checkpoint from silently reintroducing raw-frame decoding or feature-cache coupling.
+    dp_vision = str(get_value(cfg, "dp_vision", "state")).strip().lower()
     dp_policy_template = str(
         get_value(
             cfg,
@@ -214,12 +295,16 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
     _dp_run_name = str(get_value(cfg, "dp_run_name", "")).strip()
     if _dp_run_name:
         dp_policy = _dp_run_name
-        if "_state" not in _dp_run_name:
-            raise ValueError(
-                "dp_run_name must identify a state-only checkpoint (expected '_state' in its name), "
-                f"got {_dp_run_name!r}."
-            )
+        if "_state" in _dp_run_name:
+            dp_vision = "state"
+        elif "_resnet" in _dp_run_name:
+            dp_vision = "resnet"
+        elif "_dino" in _dp_run_name:
+            dp_vision = "dino"
+    if dp_vision not in {"state", "resnet", "dino"}:
+        raise ValueError(f"dp_vision must be state|resnet|dino, got {dp_vision!r}.")
     dp_checkpoint = str(get_value(cfg, "dp_checkpoint", "100000"))
+    probe_settings = skillset_probe_settings(cfg)
     # Boundaries are DP/checkpoint-dependent, so different runs never reuse or clobber a skillset.
     skillset_boundary_threshold_mode = resolve_skillset_threshold_mode(cfg, root)
     if skillset_boundary_threshold_mode not in {"episode_mean", "global_mean"}:
@@ -237,7 +322,8 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
     skillset_threshold_suffix = ""
     if skillset_boundary_threshold_mode == "global_mean":
         skillset_threshold_suffix = "_globalref" if skillset_global_threshold_source else "_globalmean"
-    fsq_seg_dir = fsq_inputs_dir / f"seg_{dp_policy}_ck{dp_checkpoint}{skillset_threshold_suffix}"
+    skillset_suffix = probe_settings["skillset_probe_suffix"] + skillset_threshold_suffix
+    fsq_seg_dir = fsq_inputs_dir / f"seg_{dp_policy}_ck{dp_checkpoint}{skillset_suffix}"
 
     fsq_levels = as_levels(get_value(cfg, "fsq_levels", [5, 5, 5]))
     fsq_tag = "fsq" + "".join(str(v) for v in fsq_levels)
@@ -287,6 +373,7 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
     # (libero_90_full_full_state_obs20 → state_obs20), so the FSQ folder shows WHICH DP's skillset it
     # was trained on (for example state_obs20), not just the FSQ architecture.
     dp_tag = dp_policy[len(target_dataset) + 1:] if dp_policy.startswith(f"{target_dataset}_") else dp_policy
+    dp_tag += probe_settings["skillset_probe_suffix"]
     if skillset_boundary_threshold_mode == "global_mean":
         dp_tag += "_global"
     fsq_run_template = str(
@@ -341,6 +428,7 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "dp_output_dir": dp_outputs_root / dp_policy,
         "dp_policy_path": dp_outputs_root / dp_policy / "checkpoints" / dp_checkpoint / "pretrained_model",
         "dp_checkpoint": dp_checkpoint,
+        "dp_vision": dp_vision,
         "train_DP": train_dp,
         "dp_n_obs_steps": dp_n_obs_steps,
         # Default = max valid chunk (horizon - n_obs + 1); stays consistent if n_obs/horizon change.
@@ -425,11 +513,15 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "skillset_savgol_polyorder": int(get_value(cfg, "skillset_savgol_polyorder", 4)),
         "skillset_replan_interval": int(get_value(cfg, "skillset_replan_interval", 3)),
         "skillset_nms_dist": int(get_value(cfg, "skillset_nms_dist", 25)),
+        **probe_settings,
         "skillset_boundary_threshold_mode": skillset_boundary_threshold_mode,
         "skillset_global_threshold_source": skillset_global_threshold_source,
         "skillset_global_threshold_path": (
             fsq_seg_dir / str(get_value(cfg, "skillset_name", "skillset"))
             / "global_boundary_threshold.json"
+        ),
+        "skillset_dino_feature_dir": resolve_path(
+            root, get_value(cfg, "skillset_dino_feature_dir", "")
         ),
         "skillset_cpus_per_task": int(get_value(cfg, "skillset_cpus_per_task", 4)),
         "skillset_mem": str(get_value(cfg, "skillset_mem", "32G")),

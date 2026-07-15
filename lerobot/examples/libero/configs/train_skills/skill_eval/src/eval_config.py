@@ -30,6 +30,7 @@ def build_settings(config_path: str | None = None) -> dict:
         # DP selection: blank = follow train_skills_config; else the DP folder name (+ checkpoint) to eval.
         "eval_dp_run_name":        str(get_value(cfg, "eval_dp_run_name", "")),
         "eval_dp_checkpoint":      str(get_value(cfg, "eval_dp_checkpoint", "")),
+        "dp_eval_skillset_dir":    str(get_value(cfg, "dp_eval_skillset_dir", "")),
         "skillset_boundary_threshold_mode": str(
             get_value(cfg, "skillset_boundary_threshold_mode", "episode_mean")
         ),

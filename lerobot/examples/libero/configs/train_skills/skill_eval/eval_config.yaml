@@ -20,6 +20,9 @@ eval_run_dp: false
 
 eval_dp_run_name: libero_90_full_full_state_obs20        
 eval_dp_checkpoint: 100000     
+# Optional skillset root containing skillset_manifest.json. Empty uses the
+# resolver-derived {mode}_{globalmean|globalref} path above.
+dp_eval_skillset_dir: ""
 
 # DP eval (skill-boundary split) knobs.
 dp_eval_n_episodes: 10           # episodes shown (per task when dp_eval_task_ids is set)

@@ -35,6 +35,10 @@ if [ ! -d "${SKILLSET_DIR}/skills" ]; then
   echo "Skillset skills dir missing: ${SKILLSET_DIR}/skills" >&2
   exit 1
 fi
+if [ ! -f "${SKILLSET_DIR}/skillset_manifest.json" ]; then
+  echo "Skillset manifest missing: ${SKILLSET_DIR}/skillset_manifest.json" >&2
+  exit 1
+fi
 
 EFFECTIVE_GLOBAL_THRESHOLD_PATH="${SKILLSET_GLOBAL_THRESHOLD_SOURCE:-${SKILLSET_GLOBAL_THRESHOLD_PATH}}"
 if [ "${SKILLSET_BOUNDARY_THRESHOLD_MODE}" = "global_mean" ] && [ ! -f "${EFFECTIVE_GLOBAL_THRESHOLD_PATH}" ]; then
@@ -52,6 +56,8 @@ mkdir -p "${SKILLSET_DIR}"
 {
   echo "dataset=${TARGET_DATASET}"
   echo "skills=${N_SKILLS}"
+  echo "skillset_mode=${SKILLSET_MODE}"
+  echo "manifest=${SKILLSET_DIR}/skillset_manifest.json"
   echo "boundary_threshold_mode=${SKILLSET_BOUNDARY_THRESHOLD_MODE}"
   [ "${SKILLSET_BOUNDARY_THRESHOLD_MODE}" = "global_mean" ] && \
     echo "global_threshold_path=${EFFECTIVE_GLOBAL_THRESHOLD_PATH}"

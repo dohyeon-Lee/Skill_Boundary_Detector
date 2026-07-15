@@ -1,9 +1,9 @@
 """
-build_skill_dataset.py — libero_90 전체 데모를 VF cosine divergence로 스킬 분할 후 .npz 저장.
+build_skill_dataset.py — demos를 VF cosine divergence로 스킬 분할 후 .npz 저장.
 
 Pipeline:
   1. 모든 task의 모든 episode 순회
-  2. VF analysis (skill_divider.py 로직 재사용)
+  2. VF analysis (legacy spherical_xyz or generic pca_action probes)
   3. SG smooth + peak detection → skill boundaries
   4. actions / states를 boundary 단위로 잘라 .npz 저장
   5. 이미 처리된 episode는 skip (resume)
@@ -22,6 +22,7 @@ Usage:
 import json
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -33,19 +34,40 @@ import tyro
 sys.path.insert(0, str(Path(__file__).parent))
 from skill_divider import (
     _savgol_smooth,
+    get_episode_timestamps,
+    get_video_path,
     load_data,
+    load_dino_episode,
     load_episodes_meta,
     load_policy,
     run_vf_analysis,
 )
+from SBD_visualize import SkillVisualizer
+from action_manifold import (
+    ACTION_MODE_ANCHOR_RELATIVE,
+    ACTION_MODE_DATASET,
+    GRIPPER_CONTINUOUS,
+    PCA_SCALE_NONE,
+    PROBE_PCA_ACTION,
+    PROBE_SPHERICAL_XYZ,
+    SUPPORTED_PCA_SCALE_MODES,
+    ActionPCA,
+    NumpyActionNormalizer,
+    RunningCovariance,
+    get_or_fit_action_pca,
+    relative_action_mask,
+    resolve_indices,
+)
+
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
 # ── Args ──────────────────────────────────────────────────────────────────────
 
 @dataclass
 class Args:
-    dataset_dir: str = "/data2/dohyeon/SBD/libero_dataset/libero_90"
-    output_dir: str = "/data2/dohyeon/SBD/outputs/skill_dataset"
+    dataset_dir: str = str(PROJECT_ROOT / "dataset_filtered" / "libero_90_full_full")
+    output_dir: str = str(PROJECT_ROOT / "outputs_filtered" / "skill_dataset")
     policy_path: str = ""
     device: str = "cuda"
     task_ids: list[int] | None = None
@@ -57,6 +79,33 @@ class Args:
     # ── VF analysis ──────────────────────────────────────────────────────────
     replan_interval: int = 3
     n_gmm_components: int = 5
+    probe_mode: str = ""
+    """User-facing mode: spherical, full, without_gripper, or std."""
+    probe_type: str = PROBE_SPHERICAL_XYZ
+    """spherical_xyz (legacy) or pca_action (generic selected-action probes)."""
+    probe_count: int = 24
+    """Number of PCA probes; GT is added separately."""
+    probe_alpha: float = 0.1
+    """Per-dimension RMS radius in PCA input coordinates."""
+    pca_variance: float = 0.95
+    """Cumulative explained variance retained by action-plan PCA."""
+    pca_stride: int = 3
+    """Anchor stride used while fitting the dataset action PCA."""
+    pca_scale_mode: str = PCA_SCALE_NONE
+    """none or std; std fits correlation PCA after per-dimension standardization."""
+    probe_exclude_indices: str = ""
+    """Comma-separated full-action dimensions excluded from PCA probes and scoring."""
+    action_mode: str = ACTION_MODE_DATASET
+    """dataset or anchor_relative."""
+    relative_exclude_joints: str = "gripper"
+    """Comma-separated action-name tokens left absolute in anchor_relative mode."""
+    gripper_mode: str = GRIPPER_CONTINUOUS
+    """continuous or discrete."""
+    gripper_indices: str = "-1"
+    """Comma-separated full-action indices used when gripper_mode=discrete."""
+    gripper_values: str = "-1,1"
+    """Raw valid low/high gripper commands for discrete projection."""
+    gripper_threshold: float = 0.0
     # ── Peak detection ────────────────────────────────────────────────────────
     smooth_window: int = 7
     savgol_polyorder: int = 4
@@ -64,17 +113,19 @@ class Args:
     nms_dist: int | None = None
     """NMS 거리. None이면 replan_interval * 2 사용."""
     boundary_threshold_mode: Literal["episode_mean", "global_mean"] = "episode_mean"
-    """episode_mean(legacy) 또는 전체 episode의 단일 global_mean threshold."""
+    """episode_mean(legacy) or one global_mean threshold shared by every episode."""
     global_threshold_path: str = ""
-    """global_mean에서 사용하는 global_boundary_threshold.json 경로."""
+    """Path to global_boundary_threshold.json when boundary_threshold_mode=global_mean."""
     use_cached_curves: bool = False
-    """True면 VF를 다시 계산하지 않고 curves/ep*.npz의 SG curve로 skill을 자른다 (global 2-pass용)."""
+    """Re-segment from curves/ep*.npz without rerunning DP/VF inference (global 2-pass)."""
     # ── Dataset filtering ─────────────────────────────────────────────────────
     min_skill_len: int = 2
     """스킬 세그먼트 최소 프레임 수 (미만이면 해당 세그먼트 제외)."""
     min_skills: int = 2
     """유효 스킬 수가 이 값 미만이면 episode 전체 skip."""
     # ── Misc ─────────────────────────────────────────────────────────────────
+    dino_feature_dir: str = ""
+    """Per-episode DINO feature dir (e.g. .../libero_90_DINO/dinov3_vits16_pg8). Required when policy uses DINO features."""
     seed: int | None = 42
     resume: bool = True
     """True면 이미 저장된 episode skip."""
@@ -92,16 +143,220 @@ class Args:
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _threshold_for_episode(sg_vals: np.ndarray, args: Args,
-                           global_threshold: float | None) -> float:
+
+def _csv_values(value: str, cast) -> list:
+    return [cast(token.strip()) for token in str(value).split(",") if token.strip()]
+
+
+def _threshold_for_episode(
+    sg_vals: np.ndarray, args: Args, global_threshold: float | None
+) -> float:
     if args.boundary_threshold_mode == "global_mean" and global_threshold is not None:
         return float(global_threshold)
     return float(np.mean(sg_vals)) if len(sg_vals) else 0.0
 
 
-def _detect_boundaries(replan_ts: list, div_cos: np.ndarray,
-                        n_frames: int, args: Args,
-                        global_threshold: float | None = None) -> list[int]:
+def _infer_probe_mode(args: Args) -> str:
+    if args.probe_mode:
+        mode = args.probe_mode.strip().lower()
+        if mode not in {"spherical", "full", "without_gripper", "std"}:
+            raise ValueError(f"--probe_mode must be spherical, full, without_gripper, or std; got {mode}")
+        return mode
+    if args.probe_type == PROBE_SPHERICAL_XYZ:
+        return "spherical"
+    if args.pca_scale_mode == "std":
+        return "std"
+    return "without_gripper" if args.probe_exclude_indices else "full"
+
+
+def _skillset_manifest(
+    args: Args,
+    dataset_dir: Path,
+    policy_path: str,
+    image_key: str,
+    mode: str,
+    action_dim: int,
+    action_pca: ActionPCA | None,
+) -> dict:
+    return {
+        "schema_version": 1,
+        "mode": mode,
+        "dataset_name": dataset_dir.name,
+        "dataset_dir": str(dataset_dir.resolve()),
+        "policy_path": str(Path(policy_path).resolve()),
+        "image_key": image_key,
+        "action": {
+            "dim": action_dim,
+            "mode": args.action_mode,
+            "relative_exclude_joints": _csv_values(args.relative_exclude_joints, str),
+            "gripper_mode": args.gripper_mode,
+            "gripper_indices": _csv_values(args.gripper_indices, int),
+            "gripper_values": _csv_values(args.gripper_values, float),
+            "gripper_threshold": args.gripper_threshold,
+        },
+        "probe": {
+            "type": args.probe_type,
+            "count": args.probe_count,
+            "alpha": args.probe_alpha,
+            "pca_variance": args.pca_variance,
+            "pca_stride": args.pca_stride,
+            "pca_scale_mode": args.pca_scale_mode,
+            "exclude_indices": _csv_values(args.probe_exclude_indices, int),
+            "seed": args.seed,
+            "pca_components": action_pca.n_components if action_pca is not None else None,
+            "pca_artifact": "action_probe_pca.npz" if action_pca is not None else None,
+        },
+        "detector": {
+            "noise_scheduler_type": args.noise_scheduler_type,
+            "num_inference_steps": args.num_inference_steps,
+            "eval_at_step": args.eval_at_step,
+            "replan_interval": args.replan_interval,
+            "n_gmm_components": args.n_gmm_components,
+            "smooth_window": args.smooth_window,
+            "savgol_polyorder": args.savgol_polyorder,
+            "peak_nms": args.peak_nms,
+            "nms_dist": args.nms_dist if args.nms_dist is not None else args.replan_interval * 2,
+            "boundary_threshold_mode": args.boundary_threshold_mode,
+            "global_threshold_path": (
+                str(Path(args.global_threshold_path).expanduser().resolve())
+                if args.global_threshold_path else ""
+            ),
+            "min_skill_len": args.min_skill_len,
+            "min_skills": args.min_skills,
+        },
+    }
+
+
+def _write_skillset_manifest(path: Path, payload: dict) -> None:
+    """Write or validate the immutable configuration for a mode-keyed skillset."""
+    import fcntl
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    with open(lock_path, "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if path.exists():
+            existing = json.loads(path.read_text())
+            if existing != payload:
+                raise ValueError(
+                    f"Skillset manifest mismatch: {path}\n"
+                    f"existing={json.dumps(existing, sort_keys=True)}\n"
+                    f"requested={json.dumps(payload, sort_keys=True)}"
+                )
+            return
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+        tmp.replace(path)
+
+
+def _action_names(dataset_dir: Path) -> list[str] | None:
+    import json
+
+    info = json.loads((dataset_dir / "meta" / "info.json").read_text())
+    names = (info.get("features", {}).get("action") or {}).get("names")
+    return [str(name) for name in names] if names else None
+
+
+def _iter_state_action_episodes(dataset_dir: Path):
+    """Stream complete episodes from ordered LeRobot parquet shards."""
+    files = sorted((dataset_dir / "data").rglob("file-*.parquet")) or sorted(
+        (dataset_dir / "data").rglob("episode_*.parquet")
+    )
+    if not files:
+        raise FileNotFoundError(f"No parquet data found under {dataset_dir / 'data'}")
+
+    pending_id = None
+    pending_actions: list[np.ndarray] = []
+    pending_states: list[np.ndarray] = []
+
+    def _flush():
+        if pending_id is None:
+            return None
+        return (
+            int(pending_id),
+            np.concatenate(pending_actions, axis=0),
+            np.concatenate(pending_states, axis=0),
+        )
+
+    for path in files:
+        frame = pd.read_parquet(
+            path, columns=["episode_index", "frame_index", "observation.state", "action"]
+        )
+        frame = frame.sort_values(["episode_index", "frame_index"], kind="stable")
+        for episode_id, group in frame.groupby("episode_index", sort=False):
+            actions = np.stack(group["action"].to_numpy()).astype(np.float32)
+            states = np.stack(group["observation.state"].to_numpy()).astype(np.float32)
+            episode_id = int(episode_id)
+            if pending_id is not None and episode_id != pending_id:
+                completed = _flush()
+                if completed is not None:
+                    yield completed
+                pending_actions = []
+                pending_states = []
+            pending_id = episode_id
+            pending_actions.append(actions)
+            pending_states.append(states)
+
+    completed = _flush()
+    if completed is not None:
+        yield completed
+
+
+def _fit_dataset_action_pca(
+    dataset_dir: Path,
+    horizon: int,
+    stride: int,
+    action_dim: int,
+    action_indices: tuple[int, ...],
+    action_mode: str,
+    rel_mask: np.ndarray | None,
+    normalizer: NumpyActionNormalizer,
+    variance_threshold: float,
+    scale_mode: str,
+    metadata: dict,
+) -> ActionPCA:
+    if stride < 1:
+        raise ValueError(f"pca_stride must be positive, got {stride}.")
+    accumulator = RunningCovariance(len(action_indices))
+    anchor_batch_size = 4096
+    n_episodes = 0
+    for _, actions, states in _iter_state_action_episodes(dataset_dir):
+        if actions.shape[1] != action_dim:
+            raise ValueError(f"Dataset action dim {actions.shape[1]} != policy action dim {action_dim}.")
+        anchors = np.arange(0, len(actions), stride, dtype=np.int64)
+        offsets = np.arange(horizon, dtype=np.int64)
+        for start in range(0, len(anchors), anchor_batch_size):
+            selected = anchors[start:start + anchor_batch_size]
+            indices = np.minimum(selected[:, None] + offsets[None], len(actions) - 1)
+            chunks = actions[indices].copy()
+            if action_mode == ACTION_MODE_ANCHOR_RELATIVE:
+                if rel_mask is None:
+                    raise ValueError("anchor_relative PCA fitting requires a relative-action mask.")
+                dims = len(rel_mask)
+                chunks[..., :dims] -= (
+                    states[selected, None, :dims] * rel_mask.astype(np.float32)[None, None]
+                )
+            elif action_mode != ACTION_MODE_DATASET:
+                raise ValueError(f"Unsupported action mode: {action_mode}")
+            normalized = normalizer.normalize(chunks)
+            accumulator.update_batch(normalized.mean(axis=1)[:, list(action_indices)])
+        n_episodes += 1
+    print(f"  [PCA] fitted from {accumulator.count:,} anchors across {n_episodes:,} episodes")
+    return ActionPCA.from_covariance(
+        accumulator,
+        variance_threshold,
+        metadata=metadata,
+        scale_mode=scale_mode,
+    )
+
+
+def _detect_boundaries(
+    replan_ts: list,
+    div_cos: np.ndarray,
+    n_frames: int,
+    args: Args,
+    global_threshold: float | None = None,
+) -> list[int]:
     nms_dist = (args.nms_dist if args.nms_dist is not None
                 else args.replan_interval * 2) if args.peak_nms else 0
     sg_vals = _savgol_smooth(list(div_cos), args.smooth_window, polyorder=args.savgol_polyorder)
@@ -116,7 +371,7 @@ def _save_boundary_curve(curves_dir: Path, ep_id: int, task_id: int, replan_ts,
                          div_cos: np.ndarray, boundaries: list[int], n_frames: int,
                          args: "Args", global_threshold: float | None = None) -> None:
     """Persist the per-episode multimodality (VF cos-divergence) curve so the eval
-    HTML can overlay it. Stores raw + SG-smoothed values, the selected threshold, the
+    HTML can overlay it. Stores raw + SG-smoothed values, the mean threshold, the
     detected peaks and the final boundaries — everything the plot needs, so eval
     needs neither scipy nor the detection params (mirrors _detect_boundaries)."""
     replan_ts = np.asarray(replan_ts, dtype=np.int64)
@@ -129,8 +384,11 @@ def _save_boundary_curve(curves_dir: Path, ep_id: int, task_id: int, replan_ts,
     nms_dist = (args.nms_dist if args.nms_dist is not None
                 else args.replan_interval * 2) if args.peak_nms else 0
     peak_ts, peak_vals = _find_peaks_above_threshold(
-        sg_vals, replan_ts.tolist(), threshold=threshold,
-        min_distance=nms_dist, margin=nms_dist,
+        sg_vals,
+        replan_ts.tolist(),
+        threshold=threshold,
+        min_distance=nms_dist,
+        margin=nms_dist,
     )
     curves_dir.mkdir(parents=True, exist_ok=True)
     np.savez(
@@ -147,11 +405,22 @@ def _save_boundary_curve(curves_dir: Path, ep_id: int, task_id: int, replan_ts,
         peak_vals=np.asarray(peak_vals, dtype=np.float32),
         boundaries=np.asarray(boundaries, dtype=np.int64),
         n_frames=np.array(n_frames),
+        probe_mode=np.array(_infer_probe_mode(args)),
+        probe_type=np.array(args.probe_type),
+        probe_alpha=np.array(args.probe_alpha, dtype=np.float32),
+        pca_scale_mode=np.array(args.pca_scale_mode),
+        probe_exclude_indices=np.array(args.probe_exclude_indices),
     )
 
 
-def _find_peaks_above_threshold(vals: np.ndarray, ts: list, *, threshold: float,
-                                min_distance: int = 0, margin: int = 0) -> tuple[list, list]:
+def _find_peaks_above_threshold(
+    vals: np.ndarray,
+    ts: list,
+    *,
+    threshold: float,
+    min_distance: int = 0,
+    margin: int = 0,
+) -> tuple[list, list]:
     """Same peak/NMS policy as skill_divider, with an explicit threshold."""
     from scipy.signal import find_peaks
 
@@ -163,7 +432,6 @@ def _find_peaks_above_threshold(vals: np.ndarray, ts: list, *, threshold: float,
         above = [i for i in above if ts[i] - t_min > margin and t_max - ts[i] > margin]
 
     if min_distance > 0 and len(above) > 1:
-        # Greedy NMS by peak height (not scan order), matching _find_peaks_above_mean.
         by_height = sorted(above, key=lambda i: vals[i], reverse=True)
         kept, suppressed = [], set()
         for idx in by_height:
@@ -187,8 +455,7 @@ def _load_global_threshold(path: str) -> float:
             f"global_mean threshold file is missing: {threshold_path}. "
             "Run the curves collection/global-threshold pass first."
         )
-    with threshold_path.open() as f:
-        payload = json.load(f)
+    payload = json.loads(threshold_path.read_text())
     if payload.get("boundary_threshold_mode") != "global_mean":
         raise ValueError(f"Not a global_mean threshold file: {threshold_path}")
     value = float(payload["global_mean"])
@@ -246,6 +513,7 @@ def _touch_done(skills_dir: Path, ep_id: int, task_id: int) -> None:
 def main(args: Args) -> None:
     dataset_dir = Path(args.dataset_dir)
     output_dir = Path(args.output_dir)
+    probe_mode = _infer_probe_mode(args)
     skills_dir = output_dir / "skills"
     skills_dir.mkdir(parents=True, exist_ok=True)
     curves_dir = output_dir / "curves"
@@ -283,6 +551,11 @@ def main(args: Args) -> None:
     def _episodes_for_task(tid: int) -> list[int]:
         return sorted(ep for ep, ti in _ep_task.items() if ti == tid)
 
+    video_cols = [c for c in episodes_meta.columns
+                  if c.startswith("videos/") and c.endswith("/chunk_index")]
+    camera_keys = [c.split("/")[1] for c in video_cols]
+    print(f"Cameras: {camera_keys}")
+
     task_ids = args.task_ids if args.task_ids is not None else sorted(tasks_meta["task_index"].tolist())
     print(f"Tasks to process: {len(task_ids)}")
 
@@ -293,16 +566,118 @@ def main(args: Args) -> None:
     n_total_eps_global = len(all_episode_ids)
     print(f"Total episodes: {n_total_eps_global}")
 
-    policy = preprocessor = None
-    if args.use_cached_curves:
-        print(f"Using cached curves from {curves_dir}; skipping DP/VF inference.")
-    else:
-        print(f"Loading policy from {args.policy_path} ...")
-        t0 = time.time()
-        policy, preprocessor = load_policy(
-            args.policy_path, args.device, args.noise_scheduler_type, args.num_inference_steps
+    print(f"Loading policy from {args.policy_path} ...")
+    t0 = time.time()
+    policy, preprocessor = load_policy(
+        args.policy_path, args.device, args.noise_scheduler_type, args.num_inference_steps
+    )
+    print(f"  [time] policy load: {time.time()-t0:.1f}s")
+
+    action_pca = None
+    action_normalizer = None
+    probe_directions = None
+    rel_mask = None
+    gripper_indices: tuple[int, ...] = ()
+    probe_action_indices = None
+    gripper_values = tuple(_csv_values(args.gripper_values, float))
+    if len(gripper_values) != 2:
+        raise ValueError(f"--gripper_values needs exactly two comma-separated values, got {gripper_values}.")
+
+    if args.probe_type == PROBE_PCA_ACTION:
+        import hashlib
+
+        if args.pca_scale_mode not in SUPPORTED_PCA_SCALE_MODES:
+            raise ValueError(
+                f"--pca_scale_mode must be one of {SUPPORTED_PCA_SCALE_MODES}, got {args.pca_scale_mode}."
+            )
+        action_dim = int(policy.config.action_feature.shape[0])
+        excluded_indices = resolve_indices(_csv_values(args.probe_exclude_indices, int), action_dim)
+        probe_action_indices = tuple(i for i in range(action_dim) if i not in excluded_indices)
+        if not probe_action_indices:
+            raise ValueError("--probe_exclude_indices removed every action dimension.")
+        action_normalizer = NumpyActionNormalizer.from_preprocessor(preprocessor)
+        names = _action_names(dataset_dir)
+        exclude_tokens = _csv_values(args.relative_exclude_joints, str)
+        if args.action_mode == ACTION_MODE_ANCHOR_RELATIVE:
+            rel_mask = relative_action_mask(action_dim, names, exclude_tokens)
+        elif args.action_mode != ACTION_MODE_DATASET:
+            raise ValueError(f"Unsupported --action_mode: {args.action_mode}")
+        gripper_indices = resolve_indices(_csv_values(args.gripper_indices, int), action_dim)
+
+        stats_hash = hashlib.sha256()
+        for name in sorted(action_normalizer.stats):
+            stats_hash.update(name.encode("utf-8"))
+            stats_hash.update(np.asarray(action_normalizer.stats[name]).tobytes())
+        pca_metadata = {
+            "version": 1,
+            "dataset": dataset_dir.name,
+            "action_dim": action_dim,
+            "probe_action_indices": list(probe_action_indices),
+            "horizon": int(policy.config.horizon),
+            "stride": int(args.pca_stride),
+            "variance_threshold": float(args.pca_variance),
+            "action_mode": args.action_mode,
+            "relative_exclude_joints": exclude_tokens,
+            "normalizer_mode": action_normalizer.mode,
+            "normalizer_stats_sha256": stats_hash.hexdigest(),
+        }
+        if args.pca_scale_mode != PCA_SCALE_NONE:
+            pca_metadata["pca_scale_mode"] = args.pca_scale_mode
+        pca_path = output_dir / "action_probe_pca.npz"
+        print(f"Loading/fitting action-plan PCA: {pca_path}")
+        action_pca = get_or_fit_action_pca(
+            pca_path,
+            pca_metadata,
+            lambda: _fit_dataset_action_pca(
+                dataset_dir=dataset_dir,
+                horizon=int(policy.config.horizon),
+                stride=args.pca_stride,
+                action_dim=action_dim,
+                action_indices=probe_action_indices,
+                action_mode=args.action_mode,
+                rel_mask=rel_mask,
+                normalizer=action_normalizer,
+                variance_threshold=args.pca_variance,
+                scale_mode=args.pca_scale_mode,
+                metadata=pca_metadata,
+            ),
         )
-        print(f"  [time] policy load: {time.time()-t0:.1f}s")
+        probe_directions = action_pca.sample_directions(args.probe_count, seed=args.seed or 0)
+        print(
+            f"  [PCA] {action_pca.n_components}/{len(probe_action_indices)} components "
+            f"from action indices {probe_action_indices}, "
+            f"scale={args.pca_scale_mode}, "
+            f"explained={action_pca.explained_variance_ratio.sum():.4f}, "
+            f"probes={args.probe_count}+GT, alpha={args.probe_alpha}"
+        )
+    elif args.probe_type != PROBE_SPHERICAL_XYZ:
+        raise ValueError(f"Unsupported --probe_type: {args.probe_type}")
+
+    manifest = _skillset_manifest(
+        args=args,
+        dataset_dir=dataset_dir,
+        policy_path=args.policy_path,
+        image_key=next(
+            (
+                key
+                for key in ("observation.images.image", "observation.images.top")
+                if key in camera_keys
+            ),
+            camera_keys[0] if camera_keys else "observation.images.image",
+        ),
+        mode=probe_mode,
+        action_dim=int(policy.config.action_feature.shape[0]),
+        action_pca=action_pca,
+    )
+    _write_skillset_manifest(output_dir / "skillset_manifest.json", manifest)
+
+    use_dino = policy.config.use_dino_features
+    dino_feature_dir = Path(args.dino_feature_dir) if args.dino_feature_dir else None
+    if use_dino and dino_feature_dir is None:
+        raise ValueError("--dino_feature_dir is required when policy uses DINO features.")
+    dino_image_key = policy.config.dino_image_keys[0] if use_dino else None
+
+    viz = SkillVisualizer(output_dir)
 
     # ── WandB init ────────────────────────────────────────────────────────────
     wandb_run = None
@@ -316,6 +691,14 @@ def main(args: Args) -> None:
                 "dataset_dir": args.dataset_dir,
                 "n_tasks": len(task_ids),
                 "n_total_episodes": n_total_eps_global,
+                "probe_mode": probe_mode,
+                "probe_type": args.probe_type,
+                "probe_count": args.probe_count,
+                "probe_alpha": args.probe_alpha,
+                "pca_variance": args.pca_variance,
+                "pca_scale_mode": args.pca_scale_mode,
+                "pca_components": action_pca.n_components if action_pca is not None else None,
+                "probe_exclude_indices": args.probe_exclude_indices,
                 "replan_interval": args.replan_interval,
                 "eval_at_step": args.eval_at_step,
                 "n_gmm_components": args.n_gmm_components,
@@ -398,11 +781,42 @@ def main(args: Args) -> None:
                         vf_replan_ts = curve["replan_ts"].astype(np.int64).tolist()
                         div_cos = curve["div_cos"].astype(np.float32)
                 else:
-                    assert policy is not None and preprocessor is not None
+                    if use_dino:
+                        cam_frames = {}
+                        ep_dino_tokens = load_dino_episode(
+                            dino_feature_dir, dino_image_key, ep_id
+                        )
+                    else:
+                        def _load_cam(cam_key):
+                            src = get_video_path(
+                                dataset_dir, ep_id, cam_key, episodes_meta
+                            ).resolve()
+                            start_sec, end_sec = get_episode_timestamps(
+                                dataset_dir, ep_id, episodes_meta, cam_key
+                            )
+                            return cam_key, viz.load_episode_frames(src, start_sec, end_sec)
+
+                        with ThreadPoolExecutor(max_workers=len(camera_keys)) as pool:
+                            cam_frames = dict(pool.map(_load_cam, camera_keys))
+                        ep_dino_tokens = None
+
                     vf_replan_ts, _, _, div_cos, _, _, _ = run_vf_analysis(
-                        policy, preprocessor, ep_df,
+                        policy, preprocessor, ep_df, cam_frames, camera_keys,
                         args.eval_at_step, args.replan_interval,
                         n_gmm_components=args.n_gmm_components,
+                        dino_tokens=ep_dino_tokens,
+                        probe_type=args.probe_type,
+                        action_pca=action_pca,
+                        probe_directions=probe_directions,
+                        probe_alpha=args.probe_alpha,
+                        action_normalizer=action_normalizer,
+                        action_mode=args.action_mode,
+                        relative_mask=rel_mask,
+                        gripper_mode=args.gripper_mode,
+                        gripper_indices=gripper_indices,
+                        gripper_values=gripper_values,
+                        gripper_threshold=args.gripper_threshold,
+                        probe_action_indices=probe_action_indices,
                     )
             except Exception as e:
                 import traceback
@@ -419,7 +833,8 @@ def main(args: Args) -> None:
 
             if args.dump_curves or args.curves_only or args.use_cached_curves:
                 _save_boundary_curve(curves_dir, ep_id, task_id, vf_replan_ts, div_cos,
-                                     boundaries, n_frames, args, global_threshold=global_threshold)
+                                     boundaries, n_frames, args,
+                                     global_threshold=global_threshold)
 
             if args.curves_only:
                 n_processed += 1

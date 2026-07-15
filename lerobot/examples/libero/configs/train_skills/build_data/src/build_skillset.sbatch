@@ -92,6 +92,7 @@ echo "  dataset    : ${TARGET_DATASET}"
 echo "  raw data   : ${RAW_DATASET_DIR}"
 echo "  policy     : ${DP_POLICY_PATH}"
 echo "  output     : ${SKILLSET_DIR}"
+echo "  probe mode : ${SKILLSET_MODE} (n=${SKILLSET_PROBE_COUNT}, alpha=${SKILLSET_PROBE_ALPHA})"
 echo "  task ids   :${TASK_IDS}"
 echo "  threshold  : ${SKILLSET_BOUNDARY_THRESHOLD_MODE}"
 if [ -n "${SKILLSET_GLOBAL_THRESHOLD_SOURCE:-}" ]; then
@@ -117,6 +118,12 @@ fi
 # Otherwise the global reducer created this skillset's own threshold JSON.
 EFFECTIVE_GLOBAL_THRESHOLD_PATH="${SKILLSET_GLOBAL_THRESHOLD_SOURCE:-${SKILLSET_GLOBAL_THRESHOLD_PATH}}"
 
+DINO_FEATURE_ARGS=()
+if [ -n "${SKILLSET_DINO_FEATURE_DIR:-}" ]; then
+  DINO_FEATURE_ARGS=(--dino_feature_dir "${SKILLSET_DINO_FEATURE_DIR}")
+  echo "  DINO features: ${SKILLSET_DINO_FEATURE_DIR}"
+fi
+
 PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
   python examples/libero/build_skill_dataset.py \
     --dataset_dir "${RAW_DATASET_DIR}" \
@@ -130,10 +137,25 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     --num_inference_steps 10 \
     --eval_at_step "${SKILLSET_DN_STEP}" \
     --n_gmm_components "${SKILLSET_N_GMM}" \
+    --probe_mode "${SKILLSET_MODE}" \
+    --probe_type "${SKILLSET_PROBE_TYPE}" \
+    --probe_count "${SKILLSET_PROBE_COUNT}" \
+    --probe_alpha "${SKILLSET_PROBE_ALPHA}" \
+    --pca_variance "${SKILLSET_PCA_VARIANCE}" \
+    --pca_stride "${SKILLSET_PCA_STRIDE}" \
+    --pca_scale_mode "${SKILLSET_PCA_SCALE_MODE}" \
+    --probe_exclude_indices "${SKILLSET_PROBE_EXCLUDE_INDICES}" \
+    --action_mode "${SKILLSET_ACTION_MODE}" \
+    --relative_exclude_joints "${SKILLSET_RELATIVE_EXCLUDE_JOINTS}" \
+    --gripper_mode "${SKILLSET_GRIPPER_MODE}" \
+    --gripper_indices "${SKILLSET_GRIPPER_INDICES}" \
+    --gripper_values "${SKILLSET_GRIPPER_VALUES}" \
+    --gripper_threshold "${SKILLSET_GRIPPER_THRESHOLD}" \
     --smooth_window "${SKILLSET_SMOOTH_WINDOW}" \
     --savgol_polyorder "${SKILLSET_SAVGOL_POLYORDER}" \
     --boundary_threshold_mode "${SKILLSET_BOUNDARY_THRESHOLD_MODE}" \
     --global_threshold_path "${EFFECTIVE_GLOBAL_THRESHOLD_PATH}" \
+    ${DINO_FEATURE_ARGS[@]+"${DINO_FEATURE_ARGS[@]}"} \
     --resume \
     ${CACHED_CURVES_ARG[@]+"${CACHED_CURVES_ARG[@]}"} \
     --wandb_project "${SKILLSET_WANDB_PROJECT}" \

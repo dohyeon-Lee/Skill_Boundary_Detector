@@ -1,0 +1,30 @@
+[project]
+name = "abcdl"
+version = "0.1.0"
+description = "A Behavior Cloning Dataloader — ABC MP4+binary and MCAP data layer"
+requires-python = ">=3.10,<3.13"
+dependencies = [
+    "numpy",
+    "torch",
+    "torchcodec",
+    "mcap",
+    "mcap-protobuf-support>=0.5,<0.6",
+    "protobuf",
+    "foxglove-schemas-protobuf",
+    "fsspec",
+    "huggingface_hub",
+]
+
+[project.optional-dependencies]
+lerobot = ["lerobot"]
+dev = ["pytest", "grpcio-tools"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["abcdl*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

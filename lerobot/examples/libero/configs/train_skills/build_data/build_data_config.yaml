@@ -17,6 +17,12 @@ fsq_dataset_root: FSQ_dataset
 fsq_inputs_name: FSQ_inputs
 skillset_name: skillset
 
+# Skill-boundary action-manifold mode. The mode is part of the skillset path.
+skillset_mode: std                   # spherical | full | without_gripper | std
+skillset_action_mode: dataset        # LIBERO: dataset; ABC DP/VLA: anchor_relative
+skillset_gripper_mode: discrete      # LIBERO: discrete; ABC: continuous
+skillset_gripper_indices: [-1]       # ABC bimanual layout: [6, 13]
+
 # Boundary threshold: episode_mean uses each episode's own smoothed-divergence
 # mean (legacy). global_mean first collects every episode's curve, computes one
 # replan-point-weighted global mean, then segments every episode against it.
@@ -25,7 +31,7 @@ skillset_name: skillset
 skillset_boundary_threshold_mode: global_mean   # episode_mean | global_mean
 # Empty = compute a fresh global mean from this target dataset. To freeze the
 # taxonomy for a new task, set a project-relative or absolute JSON source, e.g.
-# dataset_filtered/FSQ_dataset/libero_90_full_full/FSQ_inputs/seg_libero_90_full_full_state_obs20_ck100000_globalmean/skillset/global_boundary_threshold.json
+# dataset_filtered/FSQ_dataset/libero_90_full_full/FSQ_inputs/seg_libero_90_full_full_state_obs20_ck100000_std_globalmean/skillset/global_boundary_threshold.json
 # A non-empty source produces a separate seg_*_globalref output and reuses its
 # global_mean after this target's curves have been computed.
 skillset_global_threshold_source: ""

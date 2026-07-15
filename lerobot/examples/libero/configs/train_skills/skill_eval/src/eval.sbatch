@@ -62,26 +62,55 @@ fi
 
 # ── DP skill-boundary eval (FSQ-independent; off the FSQ_dataset skillset npz + curves) ──
 if [ "${EVAL_RUN_DP}" = "true" ]; then
+  DP_SKILLSET_DIR="${SKILLSET_DIR}"
+  DP_DATASET_VIDEO_DIR="${DATASET_VIDEO_DIR}"
+  DP_IMAGE_KEY="${FSQ_EVAL_IMAGE_KEY}"
+  DP_SUFFIX="${SKILLSET_PROBE_SUFFIX}"
+  DP_OUTPUT_DATASET="${TARGET_DATASET}"
+  DP_OUTPUT_POLICY="${DP_POLICY}"
+  DP_OUTPUT_CHECKPOINT="${DP_CHECKPOINT}"
+  [ "${SKILLSET_BOUNDARY_THRESHOLD_MODE}" = "global_mean" ] && DP_SUFFIX+="_global"
+  if [ -n "${DP_EVAL_SKILLSET_DIR:-}" ]; then
+    if [[ "${DP_EVAL_SKILLSET_DIR}" = /* ]]; then
+      DP_SKILLSET_DIR="${DP_EVAL_SKILLSET_DIR}"
+    else
+      DP_SKILLSET_DIR="${PROJECT_ROOT}/${DP_EVAL_SKILLSET_DIR}"
+    fi
+    DP_MANIFEST="${DP_SKILLSET_DIR}/skillset_manifest.json"
+    if [ ! -f "${DP_MANIFEST}" ]; then
+      echo "Skillset manifest not found: ${DP_MANIFEST}" >&2
+      exit 1
+    fi
+    DP_DATASET_VIDEO_DIR=$("${BOOTSTRAP_PYTHON}" -c 'import json,sys; print(json.load(open(sys.argv[1]))["dataset_dir"])' "${DP_MANIFEST}")
+    DP_IMAGE_KEY=$("${BOOTSTRAP_PYTHON}" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("image_key", "observation.images.image"))' "${DP_MANIFEST}")
+    DP_MODE=$("${BOOTSTRAP_PYTHON}" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("mode", "custom"))' "${DP_MANIFEST}")
+    DP_THRESHOLD_MODE=$("${BOOTSTRAP_PYTHON}" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("detector", {}).get("boundary_threshold_mode", "episode_mean"))' "${DP_MANIFEST}")
+    DP_OUTPUT_DATASET=$("${BOOTSTRAP_PYTHON}" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("dataset_name", "dataset"))' "${DP_MANIFEST}")
+    DP_MANIFEST_POLICY=$("${BOOTSTRAP_PYTHON}" -c 'import json,sys; print(json.load(open(sys.argv[1]))["policy_path"])' "${DP_MANIFEST}")
+    DP_OUTPUT_POLICY=$("${BOOTSTRAP_PYTHON}" -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).parents[2].name)' "${DP_MANIFEST_POLICY}")
+    DP_OUTPUT_CHECKPOINT=$("${BOOTSTRAP_PYTHON}" -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).parent.name)' "${DP_MANIFEST_POLICY}")
+    DP_SUFFIX="_${DP_MODE}"
+    [ "${DP_THRESHOLD_MODE}" = "global_mean" ] && DP_SUFFIX+="_global"
+  fi
   # Shallow folder + DP-named HTML so different DPs don't overwrite each other (no deep nesting).
   # Strip the redundant dataset prefix from the run name (libero_90_full_full_state_obs10 → state_obs10).
-  DP_TAG="${DP_POLICY#${TARGET_DATASET}_}"
-  [ "${SKILLSET_BOUNDARY_THRESHOLD_MODE}" = "global_mean" ] && DP_TAG+="_global"
-  DP_OUT_DIR="${EVAL_DIR}/outputs/dp_skillset/${TARGET_DATASET}"
-  DP_OUT_HTML="${DP_TAG}_ck${DP_CHECKPOINT}.html"   # e.g. state_obs20_global_ck100000.html
+  DP_TAG="${DP_OUTPUT_POLICY#${DP_OUTPUT_DATASET}_}"
+  DP_OUT_DIR="${EVAL_DIR}/outputs/dp_skillset/${DP_OUTPUT_DATASET}"
+  DP_OUT_HTML="${DP_TAG}_ck${DP_OUTPUT_CHECKPOINT}${DP_SUFFIX}.html"
   DP_TASK_ARGS=()
   [ -n "${DP_EVAL_TASK_IDS}" ] && DP_TASK_ARGS=(--task_ids ${DP_EVAL_TASK_IDS})
   echo ""
   echo "DP skill-boundary eval → ${DP_OUT_DIR}"
-  if [ ! -d "${SKILLSET_DIR}/curves" ]; then
-    echo "  [note] no ${SKILLSET_DIR}/curves — rendering frames only (no multimodality graph)."
+  if [ ! -d "${DP_SKILLSET_DIR}/curves" ]; then
+    echo "  [note] no ${DP_SKILLSET_DIR}/curves — rendering frames only (no multimodality graph)."
     echo "         Rebuild the skillset (build_skill_dataset now writes curves) to get the graph."
   fi
   PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     python -u examples/libero/dp_skillset_eval.py \
-      --skills_dir  "${SKILLSET_DIR}/skills" \
-      --curves_dir  "${SKILLSET_DIR}/curves" \
-      --dataset_dir "${DATASET_VIDEO_DIR}" \
-      --image_key   "${FSQ_EVAL_IMAGE_KEY}" \
+      --skills_dir  "${DP_SKILLSET_DIR}/skills" \
+      --curves_dir  "${DP_SKILLSET_DIR}/curves" \
+      --dataset_dir "${DP_DATASET_VIDEO_DIR}" \
+      --image_key   "${DP_IMAGE_KEY}" \
       --out_dir     "${DP_OUT_DIR}" \
       --out_html    "${DP_OUT_HTML}" \
       --n_episodes  "${DP_EVAL_N_EPISODES}" \
@@ -116,17 +145,27 @@ if [ "${EVAL_RUN_FSQ}" = "true" ]; then
   FSQ_META="${MODEL_DIR}/fsq_meta.json"
   F_SKILLSET="${SKILLSET_DIR}"
   if [ -f "${FSQ_META}" ]; then
-    read -r F_DP F_CKPT F_THRESHOLD_MODE < <("${BOOTSTRAP_PYTHON}" - "${FSQ_META}" <<'PY'
+    read -r F_DP F_CKPT F_THRESHOLD_MODE F_SKILLSET_MODE F_GLOBAL_SOURCE < <("${BOOTSTRAP_PYTHON}" - "${FSQ_META}" <<'PY'
 import json, sys
 m = json.load(open(sys.argv[1]))
-print(m["dp_run_name"], m["dp_checkpoint"], m.get("skillset_boundary_threshold_mode", "episode_mean"))
+print(
+    m["dp_run_name"],
+    m["dp_checkpoint"],
+    m.get("skillset_boundary_threshold_mode", "episode_mean"),
+    m.get("skillset_mode") or "__none__",
+    m.get("skillset_global_threshold_source") or "__none__",
+)
 PY
 )
-    eval "$(DP_RUN_NAME="${F_DP}" DP_CHECKPOINT="${F_CKPT}" SKILLSET_BOUNDARY_THRESHOLD_MODE="${F_THRESHOLD_MODE}" \
+    [ "${F_SKILLSET_MODE}" = "__none__" ] && F_SKILLSET_MODE=""
+    [ "${F_GLOBAL_SOURCE}" = "__none__" ] && F_GLOBAL_SOURCE=""
+    eval "$(DP_RUN_NAME="${F_DP}" DP_CHECKPOINT="${F_CKPT}" \
+      SKILLSET_BOUNDARY_THRESHOLD_MODE="${F_THRESHOLD_MODE}" SKILLSET_MODE="${F_SKILLSET_MODE}" \
+      SKILLSET_GLOBAL_THRESHOLD_SOURCE="${F_GLOBAL_SOURCE}" \
       "${BOOTSTRAP_PYTHON}" "${COMMON_SRC_DIR}/train_skills_config.py" --config "${TRAIN_CONFIG}" --shell 2>/dev/null \
       | grep -E '^export SKILLSET_DIR=')"
     F_SKILLSET="${SKILLSET_DIR}"
-    echo "  FSQ source DP    : ${F_DP} (ck${F_CKPT}, ${F_THRESHOLD_MODE})"
+    echo "  FSQ source DP    : ${F_DP} (ck${F_CKPT}, ${F_SKILLSET_MODE:-legacy}, ${F_THRESHOLD_MODE})"
   fi
   if [ ! -d "${F_SKILLSET}/skills" ]; then
     echo "FSQ's training skillset not found: ${F_SKILLSET}/skills" >&2; exit 1

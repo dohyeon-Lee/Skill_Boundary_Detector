@@ -78,6 +78,7 @@ cat > "${FSQ_OUTPUT_DIR}/fsq_meta.json" <<JSON
 {
   "dp_run_name": "${DP_POLICY}",
   "dp_checkpoint": "${DP_CHECKPOINT}",
+  "skillset_mode": "${SKILLSET_MODE}",
   "skillset_boundary_threshold_mode": "${SKILLSET_BOUNDARY_THRESHOLD_MODE}",
   "skillset_global_threshold_source": "${SKILLSET_GLOBAL_THRESHOLD_SOURCE}",
   "terminator_arch": "${FSQ_TERMINATOR_ARCH}",

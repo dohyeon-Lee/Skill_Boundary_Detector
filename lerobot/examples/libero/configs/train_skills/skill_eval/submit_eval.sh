@@ -48,7 +48,10 @@ eval "${_probe}"
 NEED_BUILD=false
 # Use the .complete marker, not just the skills dir — a PARTIAL skillset (some array shards failed) has
 # a skills dir but no marker, so we still (re)build to finish it (build_data --resume skips done shards).
-if [ "${EVAL_RUN_DP}" = "true" ] && [ ! -f "${SKILLSET_DONE_PATH}" ]; then NEED_BUILD=true; fi
+if [ "${EVAL_RUN_DP}" = "true" ] && [ -z "${DP_EVAL_SKILLSET_DIR:-}" ] && \
+   [ ! -f "${SKILLSET_DONE_PATH}" ]; then
+  NEED_BUILD=true
+fi
 if [ "${NEED_BUILD}" = "true" ]; then
   if [ -n "${SLURM_JOB_ID:-}" ]; then
     echo "DP eval skillset missing, but running under an existing allocation (srun) — cannot chain a" >&2

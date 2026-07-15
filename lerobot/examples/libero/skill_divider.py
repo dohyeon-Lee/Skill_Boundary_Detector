@@ -1,12 +1,16 @@
 """
 Skill Divider — skill boundary detection via VF cosine divergence.
 
-Pipeline:
+Legacy spherical_xyz pipeline:
   1. Load demonstration episodes for a given task.
   2. Run VF divergence analysis using spherical action probes at a fixed denoising step.
   3. Fit GMM on probe VF outputs → compute pairwise cosine divergence per replanning step.
   4. Apply Savitzky-Golay smoothing → detect peaks above mean → skill boundaries.
   5. Output: cos divergence plot, full demo video, per-skill videos, GMM 3D HTML.
+
+The batch builder also supports a generic pca_action probe: fit PCA to normalized
+full-action chunk means, translate the full chunk along fixed PCA directions, and
+compute GMM cosine divergence from denoised action-plan descriptors.
 
 Usage:
   python examples/libero/skill_divider.py \
@@ -32,18 +36,32 @@ import tyro
 
 sys.path.insert(0, str(Path(__file__).parent))
 from SBD_visualize import SkillVisualizer
+from action_manifold import (
+    ACTION_MODE_DATASET,
+    GRIPPER_CONTINUOUS,
+    PROBE_PCA_ACTION,
+    PROBE_SPHERICAL_XYZ,
+    ActionPCA,
+    NumpyActionNormalizer,
+    action_plan_descriptors,
+    compute_action_divergence,
+    make_pca_action_probes,
+    to_model_action_chunk,
+)
+
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
 # ── Args ──────────────────────────────────────────────────────────────────────
 
 @dataclass
 class Args:
-    dataset_dir: str = "/data2/dohyeon/SBD/libero_dataset/libero_90"
+    dataset_dir: str = str(PROJECT_ROOT / "dataset_filtered" / "libero_90_full_full")
     task_id: int = 0
     """Task index (0-based)."""
     n_episodes: int = 5
     """Number of episodes to process for the task."""
-    output_dir: str = "/data2/dohyeon/SBD/outputs/skill_divider"
+    output_dir: str = str(PROJECT_ROOT / "outputs_filtered" / "skill_divider")
     policy_path: str = ""
     """Path to pretrained_model dir (e.g. .../checkpoints/080000/pretrained_model)."""
     device: str = "cuda"
@@ -75,6 +93,8 @@ class Args:
     mse_window: int = 4
     """Number of action steps used to compute pred-demo MSE (first N steps of each chunk)."""
     fps: int = 20
+    dino_feature_dir: str = ""
+    """Per-episode DINO feature dir (e.g. .../libero_90_DINO/dinov3_vits16_pg8). Required when policy uses DINO features."""
     wandb_project: str | None = None
     wandb_run_name: str | None = None
 
@@ -158,8 +178,8 @@ def _make_probe_chunks(gt_chunk_np, polar_degs=(30, 60), azimuth_step_deg=30):
 
 # ── VF query ──────────────────────────────────────────────────────────────────
 
-def _query_vf_error(policy, global_cond, chunks_batch, eval_at_step: int):
-    """One deterministic DDIM step at eval_at_step → (B, action_dim) total displacement."""
+def _query_vf_chunks(policy, global_cond, chunks_batch, eval_at_step: int):
+    """One deterministic DDIM step at eval_at_step → (B, H, action_dim)."""
     import torch
     with torch.no_grad():
         scheduler = policy.diffusion.noise_scheduler
@@ -169,7 +189,12 @@ def _query_vf_error(policy, global_cond, chunks_batch, eval_at_step: int):
         gc = global_cond.expand(B, -1)
         eps_pred = policy.diffusion.unet(chunks_batch, t_batch, global_cond=gc)
         denoised = scheduler.step(eps_pred, t, chunks_batch).prev_sample
-        return denoised.sum(dim=1).cpu().numpy()
+        return denoised.cpu().numpy()
+
+
+def _query_vf_error(policy, global_cond, chunks_batch, eval_at_step: int):
+    """Legacy XYZ probe output: total denoised displacement per action dimension."""
+    return _query_vf_chunks(policy, global_cond, chunks_batch, eval_at_step).sum(axis=1)
 
 
 # ── GMM divergence ────────────────────────────────────────────────────────────
@@ -229,12 +254,25 @@ def compute_vf_divergence(vf_batch, n_components=3):
 # ── VF analysis (per episode) ─────────────────────────────────────────────────
 
 def run_vf_analysis(
-    policy, preprocessor, ep_df,
+    policy, preprocessor, ep_df, cam_frames: dict, camera_keys,
     eval_at_step: int, replan_interval: int,
     polar_degs=(30, 60), azimuth_step_deg=30,
     n_gmm_components=3,
     compute_pred_mse: bool = False,
     mse_window: int = 4,
+    dino_tokens: np.ndarray | None = None,
+    probe_type: str = PROBE_SPHERICAL_XYZ,
+    action_pca: ActionPCA | None = None,
+    probe_directions: np.ndarray | None = None,
+    probe_alpha: float = 0.1,
+    action_normalizer: NumpyActionNormalizer | None = None,
+    action_mode: str = ACTION_MODE_DATASET,
+    relative_mask: np.ndarray | None = None,
+    gripper_mode: str = GRIPPER_CONTINUOUS,
+    gripper_indices: tuple[int, ...] = (),
+    gripper_values: tuple[float, float] = (-1.0, 1.0),
+    gripper_threshold: float = 0.0,
+    probe_action_indices: tuple[int, ...] | None = None,
 ) -> tuple:
     """Returns (replan_ts, vf_values, gt_orig, divergences).
 
@@ -242,11 +280,13 @@ def run_vf_analysis(
     gt_orig:     (N_replan, action_dim) — original GT total displacement.
     divergences: (N_replan,) — GMM divergence scalar per replan step.
 
-    The only policy input is state history.  It constructs the history directly at each replan
-    point and runs one selected-time-step UNet VF query for the GT/probe action batch.
+    cam_frames: {camera_key: (T, H, W, C) uint8 numpy array} — 호출 전에 미리 로드.
+    select_action 대신 obs queue를 직접 관리해 replan 시점에만
+    _prepare_global_conditioning (CNN encoder)을 호출한다.
+    UNet diffusion은 전혀 실행하지 않으므로 대폭 빠르다.
     """
     import torch
-    from lerobot.utils.constants import OBS_STATE
+    from lerobot.utils.constants import OBS_IMAGES, OBS_STATE
 
     policy.diffusion.noise_scheduler.set_timesteps(policy.diffusion.num_inference_steps)
 
@@ -254,14 +294,35 @@ def run_vf_analysis(
     horizon = policy.config.horizon
     eff_interval = replan_interval if replan_interval > 0 else policy.config.n_action_steps
     device = next(policy.parameters()).device
+    image_keys = list(policy.config.image_features.keys())
+    _use_dino = (dino_tokens is not None) and policy.config.use_dino_features
+    _dino_key = policy.config.dino_token_key  # "observation.dino.tokens"
+    _state_only = getattr(policy.config, "state_only", False)  # proprioceptive-only DP: no vision
+    _load_imgs = (not _use_dino) and (not _state_only)         # raw-frame (resnet/original) DP only
+
     states = np.stack(ep_df["observation.state"].values)
-    T = len(ep_df)
+
+    T = min(len(ep_df), *(len(v) for v in cam_frames.values())) if cam_frames else len(ep_df)
+    if _use_dino:
+        T = min(T, len(dino_tokens))
     states = states[:T]
     gt_actions = np.stack(ep_df["action"].values[:T])
+    for k in cam_frames:
+        cam_frames[k] = cam_frames[k][:T]
 
     replan_ts, vf_values, gt_orig, div_cos_list, div_l2_list, gmm_means_list = [], [], [], [], [], []
     pred_mse_list = [] if compute_pred_mse else None
     action_dim = gt_actions.shape[1]
+    if probe_type == PROBE_PCA_ACTION:
+        if action_pca is None or probe_directions is None or action_normalizer is None:
+            raise ValueError("pca_action requires action_pca, probe_directions, and action_normalizer.")
+        selected_dim = action_dim if probe_action_indices is None else len(probe_action_indices)
+        if action_pca.action_dim != selected_dim:
+            raise ValueError(f"PCA action dim {action_pca.action_dim} != selected action dim {selected_dim}.")
+        if compute_pred_mse:
+            raise ValueError("plot_pred_mse is not implemented for normalized pca_action probes.")
+    elif probe_type != PROBE_SPHERICAL_XYZ:
+        raise ValueError(f"Unsupported probe type: {probe_type}")
 
     def _build_obs_batch(t: int) -> dict:
         """replan step t에서 쓸 (1, n_obs_steps, ...) 배치 구성.
@@ -272,12 +333,27 @@ def run_vf_analysis(
         indices = [indices[0]] * pad + indices  # 앞쪽 패딩
 
         obs_states = []
+        obs_imgs = [] if _load_imgs else None
         for fi in indices:
             obs = {OBS_STATE: torch.from_numpy(states[fi]).float()}
+            if _load_imgs:
+                obs.update({k: torch.from_numpy(cam_frames[k][fi]).float().div(255.0).permute(2, 0, 1)
+                             for k in camera_keys})
             obs = preprocessor(obs)
             obs_states.append(obs[OBS_STATE])
+            if _load_imgs:
+                obs_imgs.append(torch.stack([obs[k] for k in image_keys], dim=-4))
 
         batch = {OBS_STATE: torch.stack(obs_states, dim=1).to(device)}  # (1, n_obs, state_dim)
+        if _use_dino:
+            # (n_obs, n_tokens, feat_dim) → (1, n_obs, 1, n_tokens, feat_dim)
+            tok = torch.from_numpy(
+                np.stack([dino_tokens[i] for i in indices]).astype(np.float32)
+            ).unsqueeze(0).unsqueeze(2).to(device)
+            batch[_dino_key] = tok
+        elif _load_imgs:
+            batch[OBS_IMAGES] = torch.stack(obs_imgs, dim=1).to(device)  # (1, n_obs, n_cam, C, H, W)
+        # state_only: batch holds OBS_STATE only (vision pathway absent in the policy).
         return batch
 
     # replan step에서만 순회 (T회 → T/eff_interval회)
@@ -291,14 +367,45 @@ def run_vf_analysis(
             if len(chunk) < horizon:
                 chunk = np.concatenate([chunk, np.tile(chunk[-1:], (horizon - len(chunk), 1))], axis=0)
 
-            # Build GT + probe batch
-            chunks_np = _make_probe_chunks(chunk, polar_degs, azimuth_step_deg)  # (N, H, action_dim)
-            chunks_t = torch.from_numpy(chunks_np).float().to(device)            # (N, H, action_dim)
-            vf_batch = _query_vf_error(policy, global_cond, chunks_t, eval_at_step)  # (N, action_dim)
-            div_cos, div_l2, means = compute_vf_divergence(vf_batch, n_components=n_gmm_components)
+            # Build GT + probe batch. The legacy path stays in raw LIBERO delta-EEF
+            # coordinates; the generic path operates in the exact normalized action
+            # representation learned by the policy.
+            if probe_type == PROBE_SPHERICAL_XYZ:
+                chunks_np = _make_probe_chunks(chunk, polar_degs, azimuth_step_deg)
+                chunks_t = torch.from_numpy(chunks_np).float().to(device)
+                vf_batch = _query_vf_error(policy, global_cond, chunks_t, eval_at_step)
+                div_cos, div_l2, means = compute_vf_divergence(
+                    vf_batch, n_components=n_gmm_components
+                )
+                gt_summary = chunk.sum(axis=0)
+            else:
+                model_chunk = to_model_action_chunk(
+                    chunk, states[t], action_mode=action_mode, relative_mask=relative_mask
+                )
+                normalized_chunk = action_normalizer.normalize(model_chunk)
+                chunks_np = make_pca_action_probes(
+                    normalized_chunk,
+                    probe_directions,
+                    alpha=probe_alpha,
+                    normalizer=action_normalizer,
+                    gripper_mode=gripper_mode,
+                    gripper_indices=gripper_indices,
+                    gripper_values=gripper_values,
+                    gripper_threshold=gripper_threshold,
+                    action_indices=probe_action_indices,
+                )
+                chunks_t = torch.from_numpy(chunks_np).float().to(device)
+                denoised_chunks = _query_vf_chunks(policy, global_cond, chunks_t, eval_at_step)
+                vf_batch = action_plan_descriptors(
+                    denoised_chunks, action_pca, action_indices=probe_action_indices
+                )
+                div_cos, div_l2, means = compute_action_divergence(
+                    vf_batch, n_components=n_gmm_components
+                )
+                gt_summary = normalized_chunk.mean(axis=0)
             replan_ts.append(t)
             vf_values.append(vf_batch)
-            gt_orig.append(chunk.sum(axis=0))
+            gt_orig.append(gt_summary)
             div_cos_list.append(div_cos)
             div_l2_list.append(div_l2)
             gmm_means_list.append(means)  # (n_components, action_dim)
@@ -505,6 +612,16 @@ def plot_gmm_3d_interactive(replan_ts, vf_values, gmm_means,
     return path
 
 
+# ── DINO episode loader ───────────────────────────────────────────────────────
+
+def load_dino_episode(dino_feature_dir: Path, image_key: str, episode_id: int) -> np.ndarray:
+    """Load per-episode DINO tokens. Returns (T, n_tokens, feat_dim) float16."""
+    npz_path = dino_feature_dir / image_key.replace(".", "_") / f"episode_{episode_id:07d}.npz"
+    if not npz_path.exists():
+        raise FileNotFoundError(f"DINO episode file not found: {npz_path}")
+    return np.load(str(npz_path))["features"]  # (T, 65, 384) float16
+
+
 # ── Data loading ──────────────────────────────────────────────────────────────
 
 def load_data(dataset_dir: Path, episode_ids: list[int] | None = None) -> pd.DataFrame:
@@ -555,11 +672,6 @@ def load_policy(policy_path: str, device: str,
     policy = policy.to(device).eval()
 
     cfg = policy.config
-    if not getattr(cfg, "state_only", False):
-        raise ValueError(
-            "Skill-boundary construction only supports state-only DP checkpoints. "
-            f"Checkpoint {policy_path!r} has state_only={getattr(cfg, 'state_only', None)!r}."
-        )
     policy.diffusion.noise_scheduler = _make_noise_scheduler(
         noise_scheduler_type,
         num_train_timesteps=cfg.num_train_timesteps,
@@ -571,29 +683,63 @@ def load_policy(policy_path: str, device: str,
     policy.diffusion.num_inference_steps = num_inference_steps
     print(f"  [scheduler] {noise_scheduler_type}, steps={num_inference_steps}")
 
-    preprocessor, _ = make_pre_post_processors(cfg, pretrained_path=policy_path)
+    preprocessor, _ = make_pre_post_processors(
+        cfg,
+        pretrained_path=policy_path,
+        preprocessor_overrides={"device_processor": {"device": device}},
+    )
     return policy, preprocessor
+
+
+# ── wandb logging ─────────────────────────────────────────────────────────────
+
+def _dino_pca_episode(dino_tokens: np.ndarray, patch_grid: int = 8, out_size: int = 128) -> np.ndarray:
+    """(T, 65, feat) → (T, out_size, out_size, 3) uint8 PCA visualization."""
+    from PIL import Image as _PIL
+    patches = dino_tokens[:, 1:, :].astype(np.float32)  # (T, P, feat), skip CLS
+    T, P, F = patches.shape
+    flat = patches.reshape(-1, F)
+    flat_c = flat - flat.mean(0)
+    cov = flat_c.T @ flat_c  # (F, F)
+    _, eigvecs = np.linalg.eigh(cov)
+    components = eigvecs[:, -3:][:, ::-1].T  # (3, F), top-3 PCs
+    projected = flat_c @ components.T  # (T*P, 3)
+    lo, hi = projected.min(0), projected.max(0)
+    projected = (projected - lo) / (hi - lo + 1e-8)
+    spatial = (projected.reshape(T, patch_grid, patch_grid, 3) * 255).astype(np.uint8)
+    return np.stack([
+        np.array(_PIL.fromarray(spatial[t]).resize((out_size, out_size), _PIL.NEAREST))
+        for t in range(T)
+    ])  # (T, out_size, out_size, 3)
 
 
 def _make_wandb_episode_row(
     frames: np.ndarray,
     boundaries: list[int],
+    dino_pca: np.ndarray | None,
     episode_id: int,
     image_size: int = 128,
     separator_width: int = 6,
 ) -> "Image.Image":
-    """Create one RGB start/end pair for every detected skill."""
+    """eval.py 포맷과 동일한 row 이미지. 스킬마다 [start|end|dino_start|dino_end] 구성."""
     from PIL import Image, ImageDraw
 
     T = len(frames)
     skills = list(zip(boundaries[:-1], boundaries[1:]))
+    has_dino = dino_pca is not None
+    imgs_per_skill = 4 if has_dino else 2
+
     def get_frame(idx: int) -> Image.Image:
         return Image.fromarray(frames[max(0, min(idx, T - 1))]).resize((image_size, image_size), Image.BILINEAR)
 
-    # Layout: [sep | start | end | sep | start | end | ...] per skill.
+    def get_dino(idx: int) -> Image.Image:
+        return Image.fromarray(dino_pca[max(0, min(idx, len(dino_pca) - 1))]).resize((image_size, image_size), Image.NEAREST)
+
+    # Layout: [sep | start | end | sep | start | end | ...] per skill
+    # Height: image_size (RGB only) or image_size*2 (RGB top + DINO bottom)
     width_per_skill = image_size * 2 + separator_width
     total_w = separator_width + width_per_skill * len(skills)
-    total_h = image_size
+    total_h = image_size * 2 if has_dino else image_size
     canvas = Image.new("RGB", (total_w, total_h), (20, 20, 20))
     draw = ImageDraw.Draw(canvas)
 
@@ -602,8 +748,14 @@ def _make_wandb_episode_row(
         fs_c = max(0, min(fs, T - 1))
         fe_c = max(0, min(fe - 1, T - 1))
 
+        # Top row: RGB
         canvas.paste(get_frame(fs_c), (x, 0))
         canvas.paste(get_frame(fe_c), (x + image_size, 0))
+
+        # Bottom row: DINO PCA
+        if has_dino:
+            canvas.paste(get_dino(fs_c), (x, image_size))
+            canvas.paste(get_dino(fe_c), (x + image_size, image_size))
 
         # Separator + label
         draw.rectangle([x - separator_width, 0, x - 1, total_h], fill=(10, 10, 10))
@@ -678,6 +830,12 @@ def main(args: Args) -> None:
     )
     print(f"  [time] policy load: {time.time()-t0:.1f}s")
 
+    use_dino = policy.config.use_dino_features
+    dino_feature_dir = Path(args.dino_feature_dir) if args.dino_feature_dir else None
+    if use_dino and dino_feature_dir is None:
+        raise ValueError("--dino_feature_dir is required when policy uses DINO features.")
+    dino_image_key = policy.config.dino_image_keys[0] if use_dino else None
+
     nms_dist = (args.nms_dist if args.nms_dist is not None else args.replan_interval * 2) if args.peak_nms else 0
     results = []
 
@@ -714,16 +872,22 @@ def main(args: Args) -> None:
         viz.write_single_video(cam_frames[main_cam_key], combined_path, ep_id=ep_id)
         print(f"    [time] video write: {time.time()-t1b:.1f}s")
 
+        # ── DINO token 로드 ────────────────────────────────────────────────────
+        ep_dino_tokens = None
+        if use_dino:
+            ep_dino_tokens = load_dino_episode(dino_feature_dir, dino_image_key, ep_id)
+
         # ── VF divergence analysis ─────────────────────────────────────────────
         t2 = time.time()
         try:
             print(f"    Running VF analysis (eval_at_step={args.eval_at_step}) ...")
             vf_replan_ts, vf_values, gt_orig, div_cos, div_l2, gmm_means, pred_mse = run_vf_analysis(
-                policy, preprocessor, ep_df,
+                policy, preprocessor, ep_df, cam_frames, camera_keys,
                 args.eval_at_step, args.replan_interval,
                 n_gmm_components=args.n_gmm_components,
                 compute_pred_mse=args.plot_pred_mse,
                 mse_window=args.mse_window,
+                dino_tokens=ep_dino_tokens,
             )
         except Exception as e:
             import traceback
@@ -762,8 +926,10 @@ def main(args: Args) -> None:
         # ── wandb per-episode logging ──────────────────────────────────────────
         if wb_run is not None:
             import wandb as _wandb
+            patch_grid = policy.config.dino_patch_grid if use_dino else 8
+            dino_pca = _dino_pca_episode(ep_dino_tokens, patch_grid) if ep_dino_tokens is not None else None
             row_img = _make_wandb_episode_row(
-                cam_frames[main_cam_key], boundaries, ep_id,
+                cam_frames[main_cam_key], boundaries, dino_pca, ep_id,
             )
             log_dict: dict = {f"skills/ep{ep_id:05d}": _wandb.Image(row_img, caption=lang)}
             if cos_div_plot and Path(cos_div_plot).exists():

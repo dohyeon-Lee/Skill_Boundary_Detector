@@ -17,7 +17,15 @@ from typing import Any
 
 # reuse the train_skills yaml-load + shell-emit helpers
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent.parent / "train_skills" / "src"))
-from train_skills_config import as_bool, as_list, get_value, load_config, print_shell  # noqa: E402
+from train_skills_config import (  # noqa: E402
+    as_bool,
+    as_list,
+    get_value,
+    load_config,
+    print_shell,
+    resolve_path,
+    skillset_probe_settings,
+)
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "train_skillVLA_config.yaml"
 
@@ -66,6 +74,7 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
     dp_policy_name = str(get_value(cfg, "dp_policy_name"))
     dp_checkpoint = str(get_value(cfg, "dp_checkpoint", "100000"))
     dp_policy_path = dp_outputs_root / dp_policy_name / "checkpoints" / dp_checkpoint / "pretrained_model"
+    probe_settings = skillset_probe_settings(cfg)
 
     # ── FSQ (step 4) — model path from the parsed run name + checkpoint ──
     fsq_model_dir = fsq_outputs_root / fsq_run_name
@@ -114,7 +123,10 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
     work_dir = source_out_dir / "_work"
     # All SkillVLA builds use global boundaries. pt and ft_own reduce this
     # source's curves; ft reuses the one matching PT global threshold.
-    seg_base = f"seg_{dp_policy_name}_ck{dp_checkpoint}"
+    seg_base = (
+        f"seg_{dp_policy_name}_ck{dp_checkpoint}"
+        f"{probe_settings['skillset_probe_suffix']}"
+    )
     skillset_global_threshold_source = ""
     if skillvla_data_mode == "ft":
         pt_thresholds = sorted(
@@ -171,9 +183,13 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
         "skillset_savgol_polyorder": int(get_value(cfg, "skillset_savgol_polyorder", 4)),
         "skillset_replan_interval": int(get_value(cfg, "skillset_replan_interval", 3)),
         "skillset_nms_dist": int(get_value(cfg, "skillset_nms_dist", 25)),
+        **probe_settings,
         "skillset_boundary_threshold_mode": "global_mean",
         "skillset_global_threshold_source": skillset_global_threshold_source,
         "skillset_global_threshold_path": skillset_dir / "global_boundary_threshold.json",
+        "skillset_dino_feature_dir": resolve_path(
+            root, get_value(cfg, "skillset_dino_feature_dir", "")
+        ),
         # parallelism: split tasks into shards of this size, one shard per Slurm array job (1 GPU each)
         "skillset_tasks_per_job": int(get_value(cfg, "skillset_tasks_per_job", 5)),
         "skillset_array_throttle": int(get_value(cfg, "skillset_array_throttle", 0)),

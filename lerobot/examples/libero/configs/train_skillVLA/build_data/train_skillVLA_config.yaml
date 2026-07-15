@@ -42,6 +42,11 @@ skillvla_data_mode: pt  # pt | ft | ft_own
 # config at load time, so they are not specified here.
 dp_policy_name: "libero_90_full_full_state_obs20"   # folder under outputs/DP/
 dp_checkpoint: "100000"
+# Keep this aligned with train_skills/build_data for comparable segmentation.
+skillset_mode: std                   # spherical | full | without_gripper | std
+skillset_action_mode: dataset        # LIBERO: dataset; ABC DP/VLA: anchor_relative
+skillset_gripper_mode: discrete      # LIBERO: discrete; ABC: continuous
+skillset_gripper_indices: [-1]       # ABC bimanual layout: [6, 13]
 # Fixed skill-boundary detection params (dn_step, n_gmm, smooth_window, savgol_polyorder,
 # replan_interval, nms_dist; same meaning as train_skills) live as defaults in
 # src/train_skillVLA_config.py — change them there if ever needed.
