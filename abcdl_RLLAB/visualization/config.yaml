@@ -1,0 +1,28 @@
+# ABC-130k visualizer config  (edit this, then run ./run.sh)
+#
+# Run:
+#   ./run.sh --dry-run       # list episodes that would be rendered
+#   ./run.sh                 # render index.html + assets/
+# (cap how many episodes render with `max_episodes:` below — 0 = all)
+# --------------------------------------------------------------------------
+# Reads downloaded raw episode.mcap files and builds a readable HTML gallery,
+# grouped by task, each episode shown as a short looping animation of ONLY the
+# 3rd-person (top) camera + its language prompt. Minimal footprint by design.
+# --------------------------------------------------------------------------
+
+in_dir: ../abc_subset        # where the downloaded episode.mcap live (download's out_dir)
+split: train                 # look under data/<split>/ first; "all" = search everything
+out_dir: ../abc_viz          # writes ../abc_viz/index.html + ../abc_viz/assets/
+
+# --- 3rd-person view (minimal size = one camera only) ---
+view_priority: [top, top_left, top_right]   # first present camera wins (RealSense=top, ZED-X=top_left)
+
+# --- animation ---
+anim_format: webp            # webp (smaller) | gif
+target_frames: 48            # frames sampled per episode (bounds size for long clips)
+playback_fps: 12             # loop playback speed
+width: 256                   # downscale width in px (height keeps aspect, even)
+
+# --- scope ---
+max_episodes: 2              # PER TASK: up to N episodes of EACH task (fewer if the task has fewer); 0 = all
+title: "ABC-130k preview (top view)"
