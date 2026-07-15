@@ -25,8 +25,9 @@ SBATCH_ARGS=(
   --partition="${BUILD_PARTITION}"
   --qos="${BUILD_QOS}"
   --gres=gpu:1            # CPU/IO 작업이지만 base_qos가 GPU>=1을 강제 (QOSMinGRES)
-  --cpus-per-task=16      # ffmpeg 디코드/인코드 병렬 (convert_workers × ffmpeg threads)
-  --mem=64G
+  --cpus-per-task=32      # ffmpeg 디코드/인코드 병렬 (convert_workers 16 × ~2 threads). 노드가
+                          # 256코어라 여유. 스케줄 안 되면(qos cpu 상한) 16으로 낮출 것.
+  --mem=96G
   --time=24:00:00
   --output=logs/%x_%j.out
   --error=logs/%x_%j.err

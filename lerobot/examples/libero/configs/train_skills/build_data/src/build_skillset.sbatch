@@ -6,7 +6,7 @@
 # Reference models:
 #   DP policy    : {project_root}/outputs/DP/{dp_policy_name}/checkpoints/{dp_checkpoint}/pretrained_model
 # Outputs:
-#   skillset     : {project_root}/{dataset_root}/FSQ_dataset/{target_dataset}/FSQ_inputs/seg_{dp}_ck{ckpt}/skillset
+#   skillset     : {project_root}/{dataset_root}/FSQ_dataset/{target_dataset}/FSQ_inputs/seg_{dp}_ck{ckpt}_{mode}/skillset
 #
 # Build skillset data by segmenting demonstrations with a trained DINO-DP.
 #SBATCH --job-name=DP_skill
@@ -95,7 +95,7 @@ echo "  dataset    : ${TARGET_DATASET}"
 echo "  raw data   : ${RAW_DATASET_DIR}"
 echo "  policy     : ${DP_POLICY_PATH}"
 echo "  output     : ${SKILLSET_DIR}"
-echo "  probe      : ${SKILLSET_PROBE_TYPE} (n=${SKILLSET_PROBE_COUNT}, alpha=${SKILLSET_PROBE_ALPHA})"
+echo "  probe mode : ${SKILLSET_MODE} (n=${SKILLSET_PROBE_COUNT}, alpha=${SKILLSET_PROBE_ALPHA})"
 echo "  task ids   :${TASK_IDS}"
 
 # Curves-only backfill (CURVES_ONLY=true from submit_build_data.sh): regenerate per-episode
@@ -120,11 +120,14 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     --num_inference_steps 10 \
     --eval_at_step "${SKILLSET_DN_STEP}" \
     --n_gmm_components "${SKILLSET_N_GMM}" \
+    --probe_mode "${SKILLSET_MODE}" \
     --probe_type "${SKILLSET_PROBE_TYPE}" \
     --probe_count "${SKILLSET_PROBE_COUNT}" \
     --probe_alpha "${SKILLSET_PROBE_ALPHA}" \
     --pca_variance "${SKILLSET_PCA_VARIANCE}" \
     --pca_stride "${SKILLSET_PCA_STRIDE}" \
+    --pca_scale_mode "${SKILLSET_PCA_SCALE_MODE}" \
+    --probe_exclude_indices "${SKILLSET_PROBE_EXCLUDE_INDICES}" \
     --action_mode "${SKILLSET_ACTION_MODE}" \
     --relative_exclude_joints "${SKILLSET_RELATIVE_EXCLUDE_JOINTS}" \
     --gripper_mode "${SKILLSET_GRIPPER_MODE}" \

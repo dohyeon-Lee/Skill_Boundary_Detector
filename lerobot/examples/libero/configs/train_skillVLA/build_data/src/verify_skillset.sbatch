@@ -80,11 +80,14 @@ while ! is_complete; do
       --num_inference_steps  10 \
       --eval_at_step         "${SKILLSET_DN_STEP}" \
       --n_gmm_components     "${SKILLSET_N_GMM}" \
+      --probe_mode           "${SKILLSET_MODE}" \
       --probe_type           "${SKILLSET_PROBE_TYPE}" \
       --probe_count          "${SKILLSET_PROBE_COUNT}" \
       --probe_alpha          "${SKILLSET_PROBE_ALPHA}" \
       --pca_variance         "${SKILLSET_PCA_VARIANCE}" \
       --pca_stride           "${SKILLSET_PCA_STRIDE}" \
+      --pca_scale_mode       "${SKILLSET_PCA_SCALE_MODE}" \
+      --probe_exclude_indices "${SKILLSET_PROBE_EXCLUDE_INDICES}" \
       --action_mode          "${SKILLSET_ACTION_MODE}" \
       --relative_exclude_joints "${SKILLSET_RELATIVE_EXCLUDE_JOINTS}" \
       --gripper_mode         "${SKILLSET_GRIPPER_MODE}" \

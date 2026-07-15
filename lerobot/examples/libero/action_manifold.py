@@ -1,7 +1,8 @@
 """Generic action-manifold probes for diffusion-policy skill segmentation.
 
 The legacy SBD probe rotates the first three action dimensions as delta EEF XYZ.
-This module instead works in the policy's normalized full-action space:
+This module instead works in a configurable subset of the policy's normalized
+action space:
 
 1. Fit PCA to the temporal mean of normalized demonstration action chunks.
 2. Sample fixed unit directions in the retained PCA subspace.
@@ -31,6 +32,10 @@ SUPPORTED_ACTION_MODES = (ACTION_MODE_DATASET, ACTION_MODE_ANCHOR_RELATIVE)
 GRIPPER_CONTINUOUS = "continuous"
 GRIPPER_DISCRETE = "discrete"
 SUPPORTED_GRIPPER_MODES = (GRIPPER_CONTINUOUS, GRIPPER_DISCRETE)
+
+PCA_SCALE_NONE = "none"
+PCA_SCALE_STD = "std"
+SUPPORTED_PCA_SCALE_MODES = (PCA_SCALE_NONE, PCA_SCALE_STD)
 
 
 @dataclass(frozen=True)
@@ -186,6 +191,7 @@ class RunningCovariance:
 @dataclass(frozen=True)
 class ActionPCA:
     mean: np.ndarray
+    scale: np.ndarray
     components: np.ndarray
     explained_variance: np.ndarray
     explained_variance_ratio: np.ndarray
@@ -206,10 +212,24 @@ class ActionPCA:
         accumulator: RunningCovariance,
         variance_threshold: float,
         metadata: dict | None = None,
+        scale_mode: str = PCA_SCALE_NONE,
     ) -> "ActionPCA":
         if not 0.0 < variance_threshold <= 1.0:
             raise ValueError(f"PCA variance threshold must be in (0, 1], got {variance_threshold}.")
-        eigenvalues, eigenvectors = np.linalg.eigh(accumulator.covariance)
+        if scale_mode not in SUPPORTED_PCA_SCALE_MODES:
+            raise ValueError(f"Unsupported PCA scale mode: {scale_mode}.")
+
+        covariance = accumulator.covariance
+        if scale_mode == PCA_SCALE_STD:
+            empirical_std = np.sqrt(np.maximum(np.diag(covariance), 0.0))
+            scale = np.where(empirical_std > 1e-6, empirical_std, 1.0)
+            fit_covariance = covariance / np.outer(scale, scale)
+        else:
+            scale = np.ones_like(accumulator.mean)
+            fit_covariance = covariance
+        fit_covariance = (fit_covariance + fit_covariance.T) / 2.0
+
+        eigenvalues, eigenvectors = np.linalg.eigh(fit_covariance)
         order = np.argsort(eigenvalues)[::-1]
         eigenvalues = np.maximum(eigenvalues[order], 0.0)
         eigenvectors = eigenvectors[:, order]
@@ -223,6 +243,7 @@ class ActionPCA:
         )
         return cls(
             mean=accumulator.mean.astype(np.float32),
+            scale=scale.astype(np.float32),
             components=eigenvectors[:, :n_components].T.astype(np.float32),
             explained_variance=eigenvalues[:n_components].astype(np.float32),
             explained_variance_ratio=ratios[:n_components].astype(np.float32),
@@ -232,7 +253,7 @@ class ActionPCA:
 
     def transform(self, values: np.ndarray) -> np.ndarray:
         x = np.asarray(values, dtype=np.float32)
-        return (x - self.mean) @ self.components.T
+        return ((x - self.mean) / self.scale) @ self.components.T
 
     def sample_directions(self, count: int, seed: int) -> np.ndarray:
         if count < 1:
@@ -241,9 +262,11 @@ class ActionPCA:
         coefficients = rng.standard_normal((count, self.n_components))
         coefficient_norms = np.linalg.norm(coefficients, axis=1, keepdims=True)
         coefficients /= np.maximum(coefficient_norms, 1e-12)
-        directions = coefficients @ self.components
-        directions /= np.maximum(np.linalg.norm(directions, axis=1, keepdims=True), 1e-12)
-        return directions.astype(np.float32)
+        standardized_directions = coefficients @ self.components
+        standardized_directions /= np.maximum(
+            np.linalg.norm(standardized_directions, axis=1, keepdims=True), 1e-12
+        )
+        return (standardized_directions * self.scale).astype(np.float32)
 
     def save(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -252,6 +275,7 @@ class ActionPCA:
         np.savez(
             tmp_path,
             mean=self.mean,
+            scale=self.scale,
             components=self.components,
             explained_variance=self.explained_variance,
             explained_variance_ratio=self.explained_variance_ratio,
@@ -263,9 +287,16 @@ class ActionPCA:
     @classmethod
     def load(cls, path: Path) -> "ActionPCA":
         with np.load(path, allow_pickle=False) as data:
+            components = data["components"]
+            scale = (
+                data["scale"]
+                if "scale" in data.files
+                else np.ones(components.shape[1], dtype=np.float32)
+            )
             return cls(
                 mean=data["mean"],
-                components=data["components"],
+                scale=scale,
+                components=components,
                 explained_variance=data["explained_variance"],
                 explained_variance_ratio=data["explained_variance_ratio"],
                 sample_count=int(data["sample_count"]),
@@ -309,38 +340,67 @@ def make_pca_action_probes(
     gripper_indices: Iterable[int] = (),
     gripper_values: tuple[float, float] = (-1.0, 1.0),
     gripper_threshold: float = 0.0,
+    action_indices: Iterable[int] | None = None,
 ) -> np.ndarray:
     """Return GT + local PCA probes as `(1 + N, H, D)` normalized chunks."""
     demo = np.asarray(normalized_demo_chunk, dtype=np.float32)
     directions = np.asarray(directions, dtype=np.float32)
-    if demo.ndim != 2 or directions.ndim != 2 or directions.shape[1] != demo.shape[1]:
+    if demo.ndim != 2 or directions.ndim != 2:
         raise ValueError(f"Probe shape mismatch: demo={demo.shape}, directions={directions.shape}.")
     if alpha <= 0:
         raise ValueError(f"Probe alpha must be positive, got {alpha}.")
     action_dim = demo.shape[1]
-    offsets = alpha * np.sqrt(action_dim) * directions
+    selected = (
+        tuple(range(action_dim))
+        if action_indices is None
+        else resolve_indices(action_indices, action_dim)
+    )
+    if not selected:
+        raise ValueError("At least one action dimension is required for PCA probes.")
+    if directions.shape[1] != len(selected):
+        raise ValueError(
+            f"Probe direction dim {directions.shape[1]} != selected action dims {len(selected)}."
+        )
+    selected_offsets = alpha * np.sqrt(len(selected)) * directions
+    offsets = np.zeros((len(directions), action_dim), dtype=np.float32)
+    offsets[:, list(selected)] = selected_offsets
     probes = demo[None] + offsets[:, None, :]
 
     if gripper_mode == GRIPPER_DISCRETE:
         indices = resolve_indices(gripper_indices, action_dim)
         if not indices:
             raise ValueError("Discrete gripper mode requires at least one gripper action index.")
-        low, high = sorted(float(v) for v in gripper_values)
-        raw = normalizer.denormalize(probes)
-        raw[..., list(indices)] = np.where(raw[..., list(indices)] < gripper_threshold, low, high)
-        probes = normalizer.normalize(raw)
+        active_indices = tuple(index for index in indices if index in selected)
+        if active_indices:
+            low, high = sorted(float(v) for v in gripper_values)
+            raw = normalizer.denormalize(probes)
+            raw[..., list(active_indices)] = np.where(
+                raw[..., list(active_indices)] < gripper_threshold, low, high
+            )
+            probes = normalizer.normalize(raw)
     elif gripper_mode != GRIPPER_CONTINUOUS:
         raise ValueError(f"Unsupported gripper mode: {gripper_mode}")
 
     return np.concatenate([demo[None], probes.astype(np.float32)], axis=0)
 
 
-def action_plan_descriptors(denoised_chunks: np.ndarray, pca: ActionPCA) -> np.ndarray:
+def action_plan_descriptors(
+    denoised_chunks: np.ndarray,
+    pca: ActionPCA,
+    action_indices: Iterable[int] | None = None,
+) -> np.ndarray:
     """Temporal-mean normalized action plans expressed in the fitted PCA coordinates."""
     chunks = np.asarray(denoised_chunks, dtype=np.float32)
-    if chunks.ndim != 3 or chunks.shape[-1] != pca.action_dim:
-        raise ValueError(f"Expected denoised chunks (N,H,{pca.action_dim}), got {chunks.shape}.")
-    return pca.transform(chunks.mean(axis=1))
+    if chunks.ndim != 3:
+        raise ValueError(f"Expected denoised chunks (N,H,D), got {chunks.shape}.")
+    selected = (
+        tuple(range(chunks.shape[-1]))
+        if action_indices is None
+        else resolve_indices(action_indices, chunks.shape[-1])
+    )
+    if len(selected) != pca.action_dim:
+        raise ValueError(f"Selected action dims {len(selected)} != PCA dim {pca.action_dim}.")
+    return pca.transform(chunks.mean(axis=1)[:, list(selected)])
 
 
 def compute_action_divergence(descriptors: np.ndarray, n_components: int) -> tuple[float, float, np.ndarray]:

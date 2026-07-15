@@ -51,22 +51,52 @@ from ABC_dataset_config import (  # noqa: E402
 
 
 def _ensure_ffmpeg(tools_dir: Path) -> None:
-    """abcdl shells out to `ffmpeg`; if absent from PATH, shim the imageio_ffmpeg binary."""
-    if shutil.which("ffmpeg"):
-        return
-    try:
-        import imageio_ffmpeg
-        exe = imageio_ffmpeg.get_ffmpeg_exe()
-    except Exception as e:  # noqa: BLE001
-        raise SystemExit(
-            "ffmpeg not in PATH and imageio_ffmpeg unavailable — install ffmpeg or "
-            "`uv pip install imageio-ffmpeg`") from e
+    """abcdl shells out to BOTH `ffmpeg` (encode) and `ffprobe` (frame-count validation in
+    encode.probe_frame_count). Ensure both are on PATH:
+      - ffmpeg : system if present, else the imageio_ffmpeg bundled binary.
+      - ffprobe: system if present, else a wrapper that emulates the exact frame-count query
+                 using our ffmpeg (the imageio bundle ships ffmpeg but NOT ffprobe — a missing
+                 ffprobe silently fails every episode right after the mp4 is written, which is
+                 how the first run produced hundreds of mp4-only .tmp dirs and 0 completions).
+    """
     tools_dir.mkdir(parents=True, exist_ok=True)
-    shim = tools_dir / "ffmpeg"
-    if not shim.exists():
-        shim.symlink_to(exe)
-    os.environ["PATH"] = f"{tools_dir}:{os.environ.get('PATH', '')}"
-    print(f"[env] ffmpeg shim: {shim} → {exe}")
+
+    # ── ffmpeg ──
+    ffmpeg_bin = shutil.which("ffmpeg")
+    if ffmpeg_bin is None:
+        try:
+            import imageio_ffmpeg
+            ffmpeg_bin = imageio_ffmpeg.get_ffmpeg_exe()
+        except Exception as e:  # noqa: BLE001
+            raise SystemExit(
+                "ffmpeg not in PATH and imageio_ffmpeg unavailable — install ffmpeg or "
+                "`uv pip install imageio-ffmpeg`") from e
+        shim = tools_dir / "ffmpeg"
+        if shim.exists() or shim.is_symlink():
+            shim.unlink()
+        shim.symlink_to(ffmpeg_bin)
+        ffmpeg_bin = str(shim)
+        os.environ["PATH"] = f"{tools_dir}:{os.environ.get('PATH', '')}"
+        print(f"[env] ffmpeg shim: {shim} → {os.readlink(shim)}")
+
+    # ── ffprobe ──
+    if shutil.which("ffprobe") is None:
+        # probe_frame_count runs: ffprobe -v error -select_streams v:0 -count_frames
+        #   -show_entries stream=nb_read_frames -of csv=p=0 <path>  → prints the frame count.
+        # Emulate with ffmpeg decoding to null and parsing its last "frame=N" progress line.
+        wrapper = tools_dir / "ffprobe"
+        wrapper.write_text(
+            "#!/usr/bin/env bash\n"
+            "# ffprobe shim (imageio ffmpeg has no ffprobe): emulate the -count_frames query\n"
+            "# via ffmpeg decode-to-null. Path is the last argument (abcdl.probe_frame_count).\n"
+            'path="${@: -1}"\n'
+            f'out=$("{ffmpeg_bin}" -nostdin -i "$path" -map 0:v:0 -f null - 2>&1)\n'
+            "echo \"$out\" | grep -oE 'frame=[ ]*[0-9]+' | tail -1 | grep -oE '[0-9]+$'\n"
+        )
+        wrapper.chmod(0o755)
+        if str(tools_dir) not in os.environ.get("PATH", ""):
+            os.environ["PATH"] = f"{tools_dir}:{os.environ.get('PATH', '')}"
+        print(f"[env] ffprobe shim (ffmpeg-based): {wrapper}")
 
 
 def _setup_paths(cfg: dict) -> tuple[Path, Path]:

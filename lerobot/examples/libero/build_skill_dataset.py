@@ -19,6 +19,7 @@ Usage:
     --output_dir .../outputs/skill_dataset
 """
 
+import json
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -46,8 +47,10 @@ from action_manifold import (
     ACTION_MODE_ANCHOR_RELATIVE,
     ACTION_MODE_DATASET,
     GRIPPER_CONTINUOUS,
+    PCA_SCALE_NONE,
     PROBE_PCA_ACTION,
     PROBE_SPHERICAL_XYZ,
+    SUPPORTED_PCA_SCALE_MODES,
     ActionPCA,
     NumpyActionNormalizer,
     RunningCovariance,
@@ -74,16 +77,22 @@ class Args:
     # ── VF analysis ──────────────────────────────────────────────────────────
     replan_interval: int = 3
     n_gmm_components: int = 5
+    probe_mode: str = ""
+    """User-facing mode: spherical, full, without_gripper, or std."""
     probe_type: str = PROBE_SPHERICAL_XYZ
-    """spherical_xyz (legacy) or pca_action (generic full-action probes)."""
+    """spherical_xyz (legacy) or pca_action (generic selected-action probes)."""
     probe_count: int = 24
     """Number of PCA probes; GT is added separately."""
     probe_alpha: float = 0.1
-    """Per-action-dimension RMS radius in normalized policy coordinates."""
+    """Per-dimension RMS radius in PCA input coordinates."""
     pca_variance: float = 0.95
     """Cumulative explained variance retained by action-plan PCA."""
     pca_stride: int = 3
     """Anchor stride used while fitting the dataset action PCA."""
+    pca_scale_mode: str = PCA_SCALE_NONE
+    """none or std; std fits correlation PCA after per-dimension standardization."""
+    probe_exclude_indices: str = ""
+    """Comma-separated full-action dimensions excluded from PCA probes and scoring."""
     action_mode: str = ACTION_MODE_DATASET
     """dataset or anchor_relative."""
     relative_exclude_joints: str = "gripper"
@@ -129,6 +138,87 @@ class Args:
 
 def _csv_values(value: str, cast) -> list:
     return [cast(token.strip()) for token in str(value).split(",") if token.strip()]
+
+
+def _infer_probe_mode(args: Args) -> str:
+    if args.probe_mode:
+        mode = args.probe_mode.strip().lower()
+        if mode not in {"spherical", "full", "without_gripper", "std"}:
+            raise ValueError(f"--probe_mode must be spherical, full, without_gripper, or std; got {mode}")
+        return mode
+    if args.probe_type == PROBE_SPHERICAL_XYZ:
+        return "spherical"
+    if args.pca_scale_mode == "std":
+        return "std"
+    return "without_gripper" if args.probe_exclude_indices else "full"
+
+
+def _skillset_manifest(
+    args: Args,
+    dataset_dir: Path,
+    policy_path: str,
+    mode: str,
+    action_dim: int,
+    action_pca: ActionPCA | None,
+) -> dict:
+    return {
+        "schema_version": 1,
+        "mode": mode,
+        "dataset_name": dataset_dir.name,
+        "dataset_dir": str(dataset_dir.resolve()),
+        "policy_path": str(Path(policy_path).resolve()),
+        "image_key": "observation.images.image",
+        "action": {
+            "dim": action_dim,
+            "mode": args.action_mode,
+            "relative_exclude_joints": _csv_values(args.relative_exclude_joints, str),
+            "gripper_mode": args.gripper_mode,
+            "gripper_indices": _csv_values(args.gripper_indices, int),
+            "gripper_values": _csv_values(args.gripper_values, float),
+            "gripper_threshold": args.gripper_threshold,
+        },
+        "probe": {
+            "type": args.probe_type,
+            "count": args.probe_count,
+            "alpha": args.probe_alpha,
+            "pca_variance": args.pca_variance,
+            "pca_stride": args.pca_stride,
+            "pca_scale_mode": args.pca_scale_mode,
+            "exclude_indices": _csv_values(args.probe_exclude_indices, int),
+            "seed": args.seed,
+            "pca_components": action_pca.n_components if action_pca is not None else None,
+            "pca_artifact": "action_probe_pca.npz" if action_pca is not None else None,
+        },
+        "detector": {
+            "noise_scheduler_type": args.noise_scheduler_type,
+            "num_inference_steps": args.num_inference_steps,
+            "eval_at_step": args.eval_at_step,
+            "replan_interval": args.replan_interval,
+            "n_gmm_components": args.n_gmm_components,
+            "smooth_window": args.smooth_window,
+            "savgol_polyorder": args.savgol_polyorder,
+            "peak_nms": args.peak_nms,
+            "nms_dist": args.nms_dist if args.nms_dist is not None else args.replan_interval * 2,
+            "min_skill_len": args.min_skill_len,
+            "min_skills": args.min_skills,
+        },
+    }
+
+
+def _write_skillset_manifest(path: Path, payload: dict) -> None:
+    """Write or validate the immutable configuration for a mode-keyed skillset."""
+    if path.exists():
+        existing = json.loads(path.read_text())
+        if existing != payload:
+            raise ValueError(
+                f"Skillset manifest mismatch: {path}\n"
+                f"existing={json.dumps(existing, sort_keys=True)}\n"
+                f"requested={json.dumps(payload, sort_keys=True)}"
+            )
+        return
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    tmp.replace(path)
 
 
 def _action_names(dataset_dir: Path) -> list[str] | None:
@@ -189,15 +279,17 @@ def _fit_dataset_action_pca(
     horizon: int,
     stride: int,
     action_dim: int,
+    action_indices: tuple[int, ...],
     action_mode: str,
     rel_mask: np.ndarray | None,
     normalizer: NumpyActionNormalizer,
     variance_threshold: float,
+    scale_mode: str,
     metadata: dict,
 ) -> ActionPCA:
     if stride < 1:
         raise ValueError(f"pca_stride must be positive, got {stride}.")
-    accumulator = RunningCovariance(action_dim)
+    accumulator = RunningCovariance(len(action_indices))
     anchor_batch_size = 4096
     n_episodes = 0
     for _, actions, states in _iter_state_action_episodes(dataset_dir):
@@ -219,10 +311,16 @@ def _fit_dataset_action_pca(
             elif action_mode != ACTION_MODE_DATASET:
                 raise ValueError(f"Unsupported action mode: {action_mode}")
             normalized = normalizer.normalize(chunks)
-            accumulator.update_batch(normalized.mean(axis=1))
+            accumulator.update_batch(normalized.mean(axis=1)[:, list(action_indices)])
         n_episodes += 1
     print(f"  [PCA] fitted from {accumulator.count:,} anchors across {n_episodes:,} episodes")
-    return ActionPCA.from_covariance(accumulator, variance_threshold, metadata=metadata)
+    return ActionPCA.from_covariance(
+        accumulator,
+        variance_threshold,
+        metadata=metadata,
+        scale_mode=scale_mode,
+    )
+
 
 def _detect_boundaries(replan_ts: list, div_cos: np.ndarray,
                         n_frames: int, args: Args) -> list[int]:
@@ -262,8 +360,11 @@ def _save_boundary_curve(curves_dir: Path, ep_id: int, task_id: int, replan_ts,
         peak_vals=np.asarray(peak_vals, dtype=np.float32),
         boundaries=np.asarray(boundaries, dtype=np.int64),
         n_frames=np.array(n_frames),
+        probe_mode=np.array(_infer_probe_mode(args)),
         probe_type=np.array(args.probe_type),
         probe_alpha=np.array(args.probe_alpha, dtype=np.float32),
+        pca_scale_mode=np.array(args.pca_scale_mode),
+        probe_exclude_indices=np.array(args.probe_exclude_indices),
     )
 
 
@@ -316,6 +417,7 @@ def _touch_done(skills_dir: Path, ep_id: int, task_id: int) -> None:
 def main(args: Args) -> None:
     dataset_dir = Path(args.dataset_dir)
     output_dir = Path(args.output_dir)
+    probe_mode = _infer_probe_mode(args)
     skills_dir = output_dir / "skills"
     skills_dir.mkdir(parents=True, exist_ok=True)
     curves_dir = output_dir / "curves"
@@ -373,6 +475,7 @@ def main(args: Args) -> None:
     probe_directions = None
     rel_mask = None
     gripper_indices: tuple[int, ...] = ()
+    probe_action_indices = None
     gripper_values = tuple(_csv_values(args.gripper_values, float))
     if len(gripper_values) != 2:
         raise ValueError(f"--gripper_values needs exactly two comma-separated values, got {gripper_values}.")
@@ -380,7 +483,15 @@ def main(args: Args) -> None:
     if args.probe_type == PROBE_PCA_ACTION:
         import hashlib
 
+        if args.pca_scale_mode not in SUPPORTED_PCA_SCALE_MODES:
+            raise ValueError(
+                f"--pca_scale_mode must be one of {SUPPORTED_PCA_SCALE_MODES}, got {args.pca_scale_mode}."
+            )
         action_dim = int(policy.config.action_feature.shape[0])
+        excluded_indices = resolve_indices(_csv_values(args.probe_exclude_indices, int), action_dim)
+        probe_action_indices = tuple(i for i in range(action_dim) if i not in excluded_indices)
+        if not probe_action_indices:
+            raise ValueError("--probe_exclude_indices removed every action dimension.")
         action_normalizer = NumpyActionNormalizer.from_preprocessor(preprocessor)
         names = _action_names(dataset_dir)
         exclude_tokens = _csv_values(args.relative_exclude_joints, str)
@@ -398,6 +509,7 @@ def main(args: Args) -> None:
             "version": 1,
             "dataset": dataset_dir.name,
             "action_dim": action_dim,
+            "probe_action_indices": list(probe_action_indices),
             "horizon": int(policy.config.horizon),
             "stride": int(args.pca_stride),
             "variance_threshold": float(args.pca_variance),
@@ -406,6 +518,8 @@ def main(args: Args) -> None:
             "normalizer_mode": action_normalizer.mode,
             "normalizer_stats_sha256": stats_hash.hexdigest(),
         }
+        if args.pca_scale_mode != PCA_SCALE_NONE:
+            pca_metadata["pca_scale_mode"] = args.pca_scale_mode
         pca_path = output_dir / "action_probe_pca.npz"
         print(f"Loading/fitting action-plan PCA: {pca_path}")
         action_pca = get_or_fit_action_pca(
@@ -416,21 +530,35 @@ def main(args: Args) -> None:
                 horizon=int(policy.config.horizon),
                 stride=args.pca_stride,
                 action_dim=action_dim,
+                action_indices=probe_action_indices,
                 action_mode=args.action_mode,
                 rel_mask=rel_mask,
                 normalizer=action_normalizer,
                 variance_threshold=args.pca_variance,
+                scale_mode=args.pca_scale_mode,
                 metadata=pca_metadata,
             ),
         )
         probe_directions = action_pca.sample_directions(args.probe_count, seed=args.seed or 0)
         print(
-            f"  [PCA] {action_pca.n_components}/{action_dim} components, "
+            f"  [PCA] {action_pca.n_components}/{len(probe_action_indices)} components "
+            f"from action indices {probe_action_indices}, "
+            f"scale={args.pca_scale_mode}, "
             f"explained={action_pca.explained_variance_ratio.sum():.4f}, "
             f"probes={args.probe_count}+GT, alpha={args.probe_alpha}"
         )
     elif args.probe_type != PROBE_SPHERICAL_XYZ:
         raise ValueError(f"Unsupported --probe_type: {args.probe_type}")
+
+    manifest = _skillset_manifest(
+        args=args,
+        dataset_dir=dataset_dir,
+        policy_path=args.policy_path,
+        mode=probe_mode,
+        action_dim=int(policy.config.action_feature.shape[0]),
+        action_pca=action_pca,
+    )
+    _write_skillset_manifest(output_dir / "skillset_manifest.json", manifest)
 
     use_dino = policy.config.use_dino_features
     dino_feature_dir = Path(args.dino_feature_dir) if args.dino_feature_dir else None
@@ -452,11 +580,14 @@ def main(args: Args) -> None:
                 "dataset_dir": args.dataset_dir,
                 "n_tasks": len(task_ids),
                 "n_total_episodes": n_total_eps_global,
+                "probe_mode": probe_mode,
                 "probe_type": args.probe_type,
                 "probe_count": args.probe_count,
                 "probe_alpha": args.probe_alpha,
                 "pca_variance": args.pca_variance,
+                "pca_scale_mode": args.pca_scale_mode,
                 "pca_components": action_pca.n_components if action_pca is not None else None,
+                "probe_exclude_indices": args.probe_exclude_indices,
                 "replan_interval": args.replan_interval,
                 "eval_at_step": args.eval_at_step,
                 "n_gmm_components": args.n_gmm_components,
@@ -556,6 +687,7 @@ def main(args: Args) -> None:
                     gripper_indices=gripper_indices,
                     gripper_values=gripper_values,
                     gripper_threshold=args.gripper_threshold,
+                    probe_action_indices=probe_action_indices,
                 )
             except Exception as e:
                 import traceback

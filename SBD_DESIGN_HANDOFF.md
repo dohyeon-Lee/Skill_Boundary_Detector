@@ -14,12 +14,16 @@ unchanged `spherical_xyz` path.
 lerobot/examples/libero/action_manifold.py
   - checkpoint action-normalizer adapter
   - streaming covariance/PCA and shared artifact cache
+  - optional chunk-mean per-dimension standardization (`pca_scale_mode=std`)
   - fixed PCA-subspace direction sampling
-  - full-action probes and discrete gripper projection
+  - configurable selected-action probes and discrete gripper projection
+  - optional excluded dimensions copied unchanged and omitted from scoring
   - temporal-mean PCA descriptors and GMM divergence
 
 lerobot/examples/libero/build_skill_dataset.py
   - new probe/action/gripper CLI options
+  - `--pca_scale_mode none|std` for covariance PCA vs correlation PCA
+  - `--probe_exclude_indices` for pose-only and other ablations
   - one shared action_probe_pca.npz per output skillset
   - dataset and anchor_relative action modes
 
@@ -31,15 +35,32 @@ lerobot/examples/libero/skill_divider.py
 
 Both `train_skills/build_data/build_data_config.yaml` and
 `train_skillVLA/build_data/train_skillVLA_config.yaml` select the probe mode and
-forward the same settings through their resolvers/Slurm scripts. A readable
-probe tag is included in new PCA skillset paths, while `spherical_xyz` keeps the
-old path exactly.
+forward the same settings through their resolvers/Slurm scripts. The user-facing
+setting is now one of four modes:
+
+```text
+skillset_mode: spherical | full | without_gripper | std
+```
+
+The resolver expands this into the internal probe type, PCA scaling, and action
+dimension mask. Skillset and evaluation paths use only the selected mode suffix
+(`_spherical`, `_full`, `_without_gripper`, or `_std`). Older detailed-suffix
+artifacts remain untouched but are not the default paths for new mode configs.
+
+The current final LIBERO ablation configs set `skillset_mode: std`. All seven action dimensions are
+included, but each normalized chunk-mean dimension is divided by its empirical
+dataset standard deviation before PCA and descriptor scoring. Probe directions
+are mapped back to policy-normalized action coordinates by multiplying by the
+same standard deviations. New mode-keyed output paths use only the mode suffix,
+for example `seg_<dp>_ck100000_std/`; older detailed-suffix artifacts remain
+untouched but are no longer the canonical paths for new runs.
 
 The implemented first-version descriptor is:
 
 ```text
 normalized denoised chunk (H,D)
   -> temporal mean (D)
+  -> optional per-dimension z-score selected by mode (D)
   -> fitted PCA coordinates (r)
   -> GMM cluster-mean cosine divergence
 ```
@@ -48,6 +69,136 @@ LIBERO smoke validation used the existing 100k state-DP checkpoint. PCA fit on
 191,059 anchors from 3,921 episodes retained 5/7 components at the 0.95 target
 (0.9765 cumulative explained variance). Both `pca_action` and legacy
 `spherical_xyz` completed a real CPU one-step denoising/GMM query.
+
+The full-action LIBERO evaluation showed that the retained PCA variance was
+strongly gripper-dominated: the gripper contributed about 69.3%, and PC1 had a
+gripper loading of about 0.985. With `alpha=0.1`, probes did not directly flip
+the binary gripper; the dependence came from PCA/descriptors and the temporal
+chunk mean. About 91.6% of detected peaks occurred 9--15 frames before the
+nearest gripper transition, consistent with anticipation from averaging a
+24-step horizon. This motivated the pose-only ablation.
+
+The pose-only smoke fit on the same 191,059 anchors retained 5/6 components and
+96.55% cumulative variance. It generated `(25, 24, 7)` probes with exactly zero
+change in the gripper dimension. Unit tests also verify that changing only the
+denoised gripper output cannot change the pose-only descriptor.
+
+The pose-only and full-action segmentations had very similar counts: 96.4% of
+episodes differed by at most one boundary, and boundary F1 was 0.751 within
+nine frames. However, in episodes with a gripper transition, 99.2% of
+full-action boundaries were within 15 frames of it with a median offset of -11
+frames. Pose-only was less locked to the gripper (81.9%, median -5 frames).
+This supports retaining gripper information only after scale equalization.
+
+The final standardized full-action smoke fit measured chunk-mean standard
+deviations from 0.119 to 0.899 across the seven LIBERO action dimensions. After
+standardization, the largest PCA component explained only 21.7% rather than
+the gripper-dominated 69.5%. The 0.95 threshold retained all 7/7 components,
+so this LIBERO ablation effectively measures cosine/GMM geometry in the full
+z-scored action space. A real CPU one-step DP query produced finite `(25, 7)`
+probe descriptors and GMM divergence.
+
+## 0. Latest Mode/Manifest Interface (2026-07-16)
+
+The YAML-facing probe API was simplified to one canonical mode:
+
+```yaml
+skillset_mode: spherical | full | without_gripper | std
+```
+
+The resolver in
+`lerobot/examples/libero/configs/train_skills/src/train_skills_config.py`
+expands that mode into the internal CLI arguments:
+
+```text
+spherical       -> probe_type=spherical_xyz, pca_scale_mode=none, no mask
+full            -> probe_type=pca_action,    pca_scale_mode=none, no mask
+without_gripper -> probe_type=pca_action,    pca_scale_mode=none,
+                   probe_exclude_indices=gripper_indices
+std             -> probe_type=pca_action,    pca_scale_mode=std, no mask
+```
+
+The accepted mode is validated and the output suffix is exactly one of
+`_spherical`, `_full`, `_without_gripper`, or `_std`. The resolver still accepts
+the older detailed keys as a backward-compatible fallback, but new configs
+should use `skillset_mode`.
+
+The action-schema settings remain in build configs because they affect actual
+segmentation:
+
+```yaml
+skillset_mode: std
+skillset_action_mode: dataset        # ABC: anchor_relative
+skillset_gripper_mode: discrete      # ABC: continuous
+skillset_gripper_indices: [-1]       # ABC may use [6, 13], after schema check
+```
+
+`skillset_gripper_indices` is intentionally explicit. `without_gripper` needs
+to know which full-action dimensions to remove, and discrete gripper projection
+also needs the indices. `-1` is only the LIBERO default, not an ABC assumption.
+The train_skills and train_skillVLA build configs keep these fields. Eval and FSQ
+configs only need `skillset_mode` for normal mode-based path resolution; their
+duplicated action/gripper fields were removed.
+
+Mode-keyed skillset layouts are:
+
+```text
+train_skills:
+  {dataset_root}/FSQ_dataset/{dataset}/FSQ_inputs/
+    seg_{dp_policy}_ck{checkpoint}_{mode}/skillset/
+
+train_skillVLA:
+  {dataset_root}/skillvla_dataset/{dataset}/_work/
+    seg_{dp_policy}_ck{checkpoint}_{mode}/skillset/
+```
+
+### Skillset Manifest
+
+Every new build writes `skillset_manifest.json` at the skillset root and
+validates it on resume. It records:
+
+- mode, dataset name/path, policy path, and image key;
+- action dimension, action mode, gripper mode/indices/values/threshold;
+- probe type/count/alpha/PCA variance/stride/scale/excluded dimensions/seed;
+- PCA component count and artifact name;
+- scheduler, denoising step, replanning, GMM, smoothing, NMS, and skill filters.
+
+The PCA arrays/statistics remain in `action_probe_pca.npz`. Per-episode curve
+files also store the probe mode/type/alpha/scale/exclusion metadata. The
+completed LIBERO std result from the earlier detailed path was manually given a
+manifest so it can be evaluated immediately; older full/pose/legacy results
+created before this change do not automatically have manifests.
+
+### Folder-Only DP Eval
+
+`lerobot/examples/libero/dp_skillset_eval.py` now supports:
+
+```bash
+PYTHONPATH=lerobot/src:lerobot/examples/libero \
+  .venv/bin/python examples/libero/dp_skillset_eval.py \
+  --skillset_dir /path/to/skillset
+```
+
+With `--skillset_dir`, it reads the manifest and infers `skills/`, `curves/`,
+raw `dataset_dir`, and `image_key`. The default HTML is written to
+`skillset/eval/index.html`. Explicit `--skills_dir`, `--curves_dir`,
+`--dataset_dir`, and `--out_dir` remain supported.
+
+The Slurm DP eval also accepts `dp_eval_skillset_dir` in
+`skill_eval/eval_config.yaml`. When set, `eval.sbatch` reads the manifest and
+uses that skillset/dataset/image key for DP eval only; FSQ eval continues to
+resolve its own training skillset. When the override is empty, existing
+resolver-based behavior remains.
+
+### Validation After This Change
+
+- `lerobot/tests/examples/test_action_manifold.py`: `7 passed`.
+- Python compilation passed for the modified builders, evaluators, and config resolvers.
+- Bash syntax checks passed for train_skills build, train_skillVLA build/verify,
+  and skill eval sbatch scripts.
+- `git diff --check` passed.
+- Folder-only eval was smoke-tested against the completed LIBERO std skillset
+  and produced an HTML successfully.
 
 ## 1. Current SBD Implementation
 

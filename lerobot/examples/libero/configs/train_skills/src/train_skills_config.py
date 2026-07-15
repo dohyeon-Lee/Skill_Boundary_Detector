@@ -137,15 +137,11 @@ def as_levels(value: Any) -> tuple[int, ...]:
     return tuple(int(v) for v in cleaned.split())
 
 
-def _tag_scalar(value: Any) -> str:
-    return format(float(value), "g").replace("-", "m").replace(".", "p")
+SKILLSET_MODES = ("spherical", "full", "without_gripper", "std")
 
 
 def skillset_probe_settings(cfg: dict[str, Any]) -> dict[str, Any]:
-    """Resolve the shared SBD probe configuration and its output-isolation tag."""
-    probe_type = str(get_value(cfg, "skillset_probe_type", "spherical_xyz"))
-    if probe_type not in {"spherical_xyz", "pca_action"}:
-        raise ValueError(f"skillset_probe_type must be spherical_xyz or pca_action, got {probe_type}")
+    """Resolve one user-facing SBD mode into the internal probe arguments."""
     probe_count = int(get_value(cfg, "skillset_probe_count", 24))
     probe_alpha = float(get_value(cfg, "skillset_probe_alpha", 0.1))
     pca_variance = float(get_value(cfg, "skillset_pca_variance", 0.95))
@@ -157,18 +153,53 @@ def skillset_probe_settings(cfg: dict[str, Any]) -> dict[str, Any]:
     gripper_values = ",".join(as_list(get_value(cfg, "skillset_gripper_values", [-1.0, 1.0])))
     gripper_threshold = float(get_value(cfg, "skillset_gripper_threshold", 0.0))
 
-    suffix = ""
-    if probe_type == "pca_action":
-        suffix = (
-            f"_probe-pca_a{_tag_scalar(probe_alpha)}_v{_tag_scalar(pca_variance)}"
-            f"_s{pca_stride}_n{probe_count}_{action_mode}_g{gripper_mode}"
-        )
+    mode_value = get_value(cfg, "skillset_mode", None)
+    if mode_value in (None, ""):
+        # Backward-compatible migration for older configs/environment snapshots.
+        old_type = str(get_value(cfg, "skillset_probe_type", "spherical_xyz"))
+        old_scale = str(get_value(cfg, "skillset_pca_scale_mode", "none")).lower()
+        old_exclude = ",".join(as_list(get_value(cfg, "skillset_probe_exclude_indices", [])))
+        if old_type == "spherical_xyz":
+            mode_value = "spherical"
+        elif old_type == "pca_action" and old_scale == "std":
+            mode_value = "std"
+        elif old_type == "pca_action" and old_exclude:
+            mode_value = "without_gripper"
+        else:
+            mode_value = "full"
+    mode = str(mode_value).strip().lower()
+    if mode not in SKILLSET_MODES:
+        raise ValueError(f"skillset_mode must be one of {SKILLSET_MODES}, got {mode}")
+
+    if mode == "spherical":
+        probe_type = "spherical_xyz"
+        pca_scale_mode = "none"
+        probe_exclude_indices = ""
+    elif mode == "full":
+        probe_type = "pca_action"
+        pca_scale_mode = "none"
+        probe_exclude_indices = ""
+    elif mode == "without_gripper":
+        probe_type = "pca_action"
+        pca_scale_mode = "none"
+        probe_exclude_indices = gripper_indices
+    else:  # std
+        probe_type = "pca_action"
+        pca_scale_mode = "std"
+        probe_exclude_indices = ""
+
+    # The mode is the only output tag. Other parameters are intentionally fixed by
+    # defaults; the generated PCA metadata/W&B config still records their values.
+    suffix = f"_{mode}"
     return {
+        "skillset_mode": mode,
         "skillset_probe_type": probe_type,
         "skillset_probe_count": probe_count,
         "skillset_probe_alpha": probe_alpha,
         "skillset_pca_variance": pca_variance,
         "skillset_pca_stride": pca_stride,
+        "skillset_pca_scale_mode": pca_scale_mode,
+        "skillset_probe_exclude_indices": probe_exclude_indices,
         "skillset_action_mode": action_mode,
         "skillset_relative_exclude_joints": relative_exclude,
         "skillset_gripper_mode": gripper_mode,

@@ -65,27 +65,47 @@ fi
 
 # ── DP skill-boundary eval (FSQ-independent; off the FSQ_dataset skillset npz + curves) ──
 if [ "${EVAL_RUN_DP}" = "true" ]; then
+  DP_SKILLSET_DIR="${SKILLSET_DIR}"
+  DP_DATASET_VIDEO_DIR="${DATASET_VIDEO_DIR}"
+  DP_IMAGE_KEY="${FSQ_EVAL_IMAGE_KEY}"
+  DP_PROBE_SUFFIX="${SKILLSET_PROBE_SUFFIX}"
+  if [ -n "${DP_EVAL_SKILLSET_DIR:-}" ]; then
+    if [[ "${DP_EVAL_SKILLSET_DIR}" = /* ]]; then
+      DP_SKILLSET_DIR="${DP_EVAL_SKILLSET_DIR}"
+    else
+      DP_SKILLSET_DIR="${PROJECT_ROOT}/${DP_EVAL_SKILLSET_DIR}"
+    fi
+    DP_MANIFEST="${DP_SKILLSET_DIR}/skillset_manifest.json"
+    if [ ! -f "${DP_MANIFEST}" ]; then
+      echo "Skillset manifest not found: ${DP_MANIFEST}" >&2
+      exit 1
+    fi
+    DP_DATASET_VIDEO_DIR=$("${BOOTSTRAP_PYTHON}" -c 'import json,sys; print(json.load(open(sys.argv[1]))["dataset_dir"])' "${DP_MANIFEST}")
+    DP_IMAGE_KEY=$("${BOOTSTRAP_PYTHON}" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("image_key", "observation.images.image"))' "${DP_MANIFEST}")
+    DP_MODE=$("${BOOTSTRAP_PYTHON}" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("mode", "custom"))' "${DP_MANIFEST}")
+    DP_PROBE_SUFFIX="_${DP_MODE}"
+  fi
   # Shallow folder + DP-named HTML so different DPs don't overwrite each other (no deep nesting).
   # Strip the redundant dataset prefix from the run name (libero_90_full_full_state_obs10 → state_obs10).
   DP_TAG="${DP_POLICY#${TARGET_DATASET}_}"
   DP_OUT_DIR="${EVAL_DIR}/outputs/dp_skillset/${TARGET_DATASET}"
   # Probe suffix is empty for legacy spherical_xyz and tagged for pca_action, so
   # side-by-side evaluations of the same DP/checkpoint never overwrite each other.
-  DP_OUT_HTML="${DP_TAG}_ck${DP_CHECKPOINT}${SKILLSET_PROBE_SUFFIX}.html"
+  DP_OUT_HTML="${DP_TAG}_ck${DP_CHECKPOINT}${DP_PROBE_SUFFIX}.html"
   DP_TASK_ARGS=()
   [ -n "${DP_EVAL_TASK_IDS}" ] && DP_TASK_ARGS=(--task_ids ${DP_EVAL_TASK_IDS})
   echo ""
   echo "DP skill-boundary eval → ${DP_OUT_DIR}"
-  if [ ! -d "${SKILLSET_DIR}/curves" ]; then
-    echo "  [note] no ${SKILLSET_DIR}/curves — rendering frames only (no multimodality graph)."
+  if [ ! -d "${DP_SKILLSET_DIR}/curves" ]; then
+    echo "  [note] no ${DP_SKILLSET_DIR}/curves — rendering frames only (no multimodality graph)."
     echo "         Rebuild the skillset (build_skill_dataset now writes curves) to get the graph."
   fi
   PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     python -u examples/libero/dp_skillset_eval.py \
-      --skills_dir  "${SKILLSET_DIR}/skills" \
-      --curves_dir  "${SKILLSET_DIR}/curves" \
-      --dataset_dir "${DATASET_VIDEO_DIR}" \
-      --image_key   "${FSQ_EVAL_IMAGE_KEY}" \
+      --skills_dir  "${DP_SKILLSET_DIR}/skills" \
+      --curves_dir  "${DP_SKILLSET_DIR}/curves" \
+      --dataset_dir "${DP_DATASET_VIDEO_DIR}" \
+      --image_key   "${DP_IMAGE_KEY}" \
       --out_dir     "${DP_OUT_DIR}" \
       --out_html    "${DP_OUT_HTML}" \
       --n_episodes  "${DP_EVAL_N_EPISODES}" \

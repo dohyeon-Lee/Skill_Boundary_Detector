@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Inputs:
-#   skillset     : {project_root}/{dataset_root}/FSQ_dataset/{target_dataset}/FSQ_inputs/seg_{dp}_ck{ckpt}/skillset/skills
+#   skillset     : {project_root}/{dataset_root}/FSQ_dataset/{target_dataset}/FSQ_inputs/seg_{dp}_ck{ckpt}_{mode}/skillset/skills
 # Reference model:
 #   none
 # Outputs:
-#   completion   : {project_root}/{dataset_root}/FSQ_dataset/{target_dataset}/FSQ_inputs/seg_{dp}_ck{ckpt}/skillset/.complete
+#   completion   : {project_root}/{dataset_root}/FSQ_dataset/{target_dataset}/FSQ_inputs/seg_{dp}_ck{ckpt}_{mode}/skillset/.complete
 #
 # Mark skillset generation complete after the array succeeds.
 #SBATCH --job-name=mark_skillset

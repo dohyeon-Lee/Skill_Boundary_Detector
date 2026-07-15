@@ -73,7 +73,9 @@ download_workers: 4    # ①: 동시 다운로드 수. Xet-off 재래식 경로.
                        #     8은 Xet-on 시절 100초 하드스톨 확인됨 → 상한으로 쓰지 말 것.
 download_hf_transfer: false  # Xet-off + 순정 백엔드 + 타임아웃(60s, 래퍼)이 original_dataset의 검증 조합.
                        #     회선 안정적이면 true(hf_transfer 가속)로 실험 가능 — 단 워치독이 백스톱.
-convert_workers: 4     # ②(mcap→abcdl): 에피소드 단위 프로세스 병렬 (ffmpeg가 무거움)
+convert_workers: 16    # ②(mcap→abcdl): 에피소드 단위 프로세스 병렬 (ffmpeg가 무거움).
+                       #     노드 코어 많으면 올려라 (submit의 --cpus-per-task도 함께). 워커당 ffmpeg가
+                       #     디코드에 2~3스레드 쓰므로 cpus-per-task ≈ workers×2 권장.
 
 # ── Stats 계산 범위 (filtered_dataset과 동일 의미) ────────────
 # false (기본/fast): quantile(q01..q99)은 비-비디오 feature만 parquet에서 계산 — 몇 분.

@@ -30,6 +30,8 @@ def build_settings(config_path: str | None = None) -> dict:
         # DP selection: blank = follow train_skills_config; else the DP folder name (+ checkpoint) to eval.
         "eval_dp_run_name":        str(get_value(cfg, "eval_dp_run_name", "")),
         "eval_dp_checkpoint":      str(get_value(cfg, "eval_dp_checkpoint", "")),
+        # Optional skillset root override; its manifest supplies raw dataset/image metadata.
+        "dp_eval_skillset_dir":    str(get_value(cfg, "dp_eval_skillset_dir", "")),
         # DP skill-boundary eval knobs
         "dp_eval_n_episodes":      int(get_value(cfg, "dp_eval_n_episodes", 10)),
         "dp_eval_task_ids":        " ".join(as_list(get_value(cfg, "dp_eval_task_ids", []))),

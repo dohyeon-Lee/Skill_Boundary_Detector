@@ -270,6 +270,7 @@ def run_vf_analysis(
     gripper_indices: tuple[int, ...] = (),
     gripper_values: tuple[float, float] = (-1.0, 1.0),
     gripper_threshold: float = 0.0,
+    probe_action_indices: tuple[int, ...] | None = None,
 ) -> tuple:
     """Returns (replan_ts, vf_values, gt_orig, divergences).
 
@@ -313,8 +314,9 @@ def run_vf_analysis(
     if probe_type == PROBE_PCA_ACTION:
         if action_pca is None or probe_directions is None or action_normalizer is None:
             raise ValueError("pca_action requires action_pca, probe_directions, and action_normalizer.")
-        if action_pca.action_dim != action_dim:
-            raise ValueError(f"PCA action dim {action_pca.action_dim} != episode action dim {action_dim}.")
+        selected_dim = action_dim if probe_action_indices is None else len(probe_action_indices)
+        if action_pca.action_dim != selected_dim:
+            raise ValueError(f"PCA action dim {action_pca.action_dim} != selected action dim {selected_dim}.")
         if compute_pred_mse:
             raise ValueError("plot_pred_mse is not implemented for normalized pca_action probes.")
     elif probe_type != PROBE_SPHERICAL_XYZ:
@@ -388,10 +390,13 @@ def run_vf_analysis(
                     gripper_indices=gripper_indices,
                     gripper_values=gripper_values,
                     gripper_threshold=gripper_threshold,
+                    action_indices=probe_action_indices,
                 )
                 chunks_t = torch.from_numpy(chunks_np).float().to(device)
                 denoised_chunks = _query_vf_chunks(policy, global_cond, chunks_t, eval_at_step)
-                vf_batch = action_plan_descriptors(denoised_chunks, action_pca)
+                vf_batch = action_plan_descriptors(
+                    denoised_chunks, action_pca, action_indices=probe_action_indices
+                )
                 div_cos, div_l2, means = compute_action_divergence(
                     vf_batch, n_components=n_gmm_components
                 )

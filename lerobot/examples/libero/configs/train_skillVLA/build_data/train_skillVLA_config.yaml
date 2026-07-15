@@ -62,19 +62,12 @@ dino_generate_workers: 1
 # config at load time, so they are not specified here.
 dp_policy_name: "libero_90_full_full_state_obs20"   # folder under outputs/DP/
 dp_checkpoint: "100000"
-# Skill-boundary probe. Keep these aligned with train_skills/build_data when comparing or
-# rebuilding the same DP segmentation. pca_action uses the DP's normalized full action space.
-skillset_probe_type: pca_action      # spherical_xyz (legacy) | pca_action
-skillset_probe_count: 24             # + GT = 25
-skillset_probe_alpha: 0.10           # normalized per-dimension RMS radius
-skillset_pca_variance: 0.95
-skillset_pca_stride: 3
+# Skill-boundary probe. Keep this mode aligned with train_skills/build_data when comparing
+# or rebuilding the same DP segmentation: spherical | full | without_gripper | std.
+skillset_mode: std
 skillset_action_mode: dataset        # LIBERO: dataset; ABC DP: anchor_relative
-skillset_relative_exclude_joints: [gripper]
 skillset_gripper_mode: discrete      # LIBERO: discrete; ABC: continuous
-skillset_gripper_indices: [-1]
-skillset_gripper_values: [-1.0, 1.0]
-skillset_gripper_threshold: 0.0
+skillset_gripper_indices: [-1]       # ABC may use e.g. [6, 13]
 # Fixed skill-boundary detection params (dn_step, n_gmm, smooth_window, savgol_polyorder,
 # replan_interval, nms_dist; same meaning as train_skills) live as defaults in
 # src/train_skillVLA_config.py — change them there if ever needed.

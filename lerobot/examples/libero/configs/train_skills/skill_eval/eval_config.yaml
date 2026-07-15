@@ -20,20 +20,12 @@ eval_run_dp: true
 # eval_dp_run_name: libero_90_full_full_state_obs10        
 eval_dp_run_name: libero_90_full_full_state_obs20        
 eval_dp_checkpoint: 100000     
+# Optional skillset root containing skillset_manifest.json. Empty uses the resolver-derived path.
+dp_eval_skillset_dir: ""
 
-# Must match the skillset build probe settings. These keys steer the shared resolver to
-# the probe-tagged skillset directory; spherical_xyz keeps the historical untagged path.
-skillset_probe_type: pca_action
-skillset_probe_count: 24
-skillset_probe_alpha: 0.10
-skillset_pca_variance: 0.95
-skillset_pca_stride: 3
-skillset_action_mode: dataset
-skillset_relative_exclude_joints: [gripper]
-skillset_gripper_mode: discrete
-skillset_gripper_indices: [-1]
-skillset_gripper_values: [-1.0, 1.0]
-skillset_gripper_threshold: 0.0
+# Used only when dp_eval_skillset_dir is empty; the resolver uses the mode to locate
+# the mode-tagged skillset directory. A manifest override makes even this optional.
+skillset_mode: std
 
 # DP eval (skill-boundary split) knobs.
 dp_eval_n_episodes: 10           # episodes shown (per task when dp_eval_task_ids is set)

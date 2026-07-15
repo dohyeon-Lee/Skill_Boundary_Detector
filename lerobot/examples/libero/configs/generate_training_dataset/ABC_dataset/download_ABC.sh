@@ -37,14 +37,28 @@ export HF_HUB_DISABLE_XET="${HF_HUB_DISABLE_XET:-1}"
 export HF_HUB_DOWNLOAD_TIMEOUT="${HF_HUB_DOWNLOAD_TIMEOUT:-60}"
 export HF_HUB_ETAG_TIMEOUT="${HF_HUB_ETAG_TIMEOUT:-60}"
 
+# hf가 다운로드 중이면 .incomplete/.lock 을 남기고, 완료 시 지운다(filtered_dataset의 완료 기준).
+# 이게 "진짜 hang(받을 게 남아 무증가)"과 "완료(받을 게 없어 무증가)"를 가르는 핵심 신호다.
+_has_pending() {
+  find "$1" \( -name '*.incomplete' -o -name '*.lock' \) 2>/dev/null | grep -q .
+}
+
 # Run the download engine under a stall-watchdog, restarting on hang until it exits cleanly.
-# watch_dir 의 총 바이트가 늘면 진행 중, STALL_TIMEOUT 동안 안 늘면 hang → 그룹만 kill 후 재시작.
+# watch_dir 의 총 바이트가 늘면 진행 중. 무증가 시: .incomplete 있으면 hang→재시작, 없으면 완료로 판정.
 run_with_watchdog() {
   local watch_dir="$1"; shift
   local stall="${STALL_TIMEOUT:-180}" interval="${CHECK_INTERVAL:-20}"
   local listing_grace="${LISTING_GRACE:-600}" max_retries="${DL_MAX_RETRIES:-1000}"
-  local backoff="${DL_RETRY_BACKOFF:-10}"
+  local backoff="${DL_RETRY_BACKOFF:-10}" complete_confirm="${COMPLETE_CONFIRM:-45}"
   mkdir -p "${watch_dir}"
+
+  # 이미 다 받았으면(데이터 존재 + pending 없음) 엔진을 아예 띄우지 않고 즉시 통과 —
+  # 완료된 데이터셋에 대한 불필요한 재검증/재시작 루프를 원천 차단.
+  if ! _has_pending "${watch_dir}" \
+     && [ -n "$(find "${watch_dir}" -name 'episode.mcap' 2>/dev/null | head -1)" ]; then
+    echo "[watchdog] ✅ 이미 완료 (.incomplete/.lock 없음) → 다운로드 스킵"
+    return 0
+  fi
 
   local attempt=0
   while :; do
@@ -70,11 +84,23 @@ run_with_watchdog() {
       [ -z "${size}" ] && continue                      # du 실패 → 판단 보류
       if [ "${size}" -gt "${last_size}" ]; then
         last_size=${size}; last_progress=${SECONDS}; started=1
+      elif ! _has_pending "${watch_dir}"; then
+        # 용량 무증가 + 받을 것 없음(.incomplete/.lock 0) = 완료. 엔진이 최종 검증으로
+        # 무증가일 뿐이니 hang이 아니다. 짧게 확인(complete_confirm) 후 완료로 판정.
+        local idle=$((SECONDS - last_progress))
+        if [ "${idle}" -ge "${complete_confirm}" ]; then
+          echo "[watchdog] 완료 감지: .incomplete/.lock 없음 + ${idle}s 무증가 → 다운로드 완료"
+          kill -TERM -- "-${pgid}" 2>/dev/null || true   # 검증만 돌던 엔진 정리
+          sleep 3; kill -KILL -- "-${pgid}" 2>/dev/null || true
+          wait "${pid}" 2>/dev/null || true
+          outcome="complete"; break
+        fi
       else
+        # 용량 무증가 + 받을 것 남음(.incomplete 존재) = 진짜 hang → 그룹 kill 후 재시작.
         local idle=$((SECONDS - last_progress))
         local limit=${stall}; [ "${started}" -eq 0 ] && limit=${listing_grace}
         if [ "${idle}" -ge "${limit}" ]; then
-          echo "[watchdog] STALL: ${idle}s 동안 용량 무증가 ($(numfmt --to=iec ${last_size} 2>/dev/null || echo ${last_size})) → 그룹 ${pgid} 종료 후 재시작"
+          echo "[watchdog] STALL: ${idle}s 무증가 + 미완료 파일 존재 ($(numfmt --to=iec ${last_size} 2>/dev/null || echo ${last_size})) → 그룹 ${pgid} 종료 후 재시작"
           kill -TERM -- "-${pgid}" 2>/dev/null || true
           sleep 5
           kill -KILL -- "-${pgid}" 2>/dev/null || true
@@ -84,8 +110,8 @@ run_with_watchdog() {
       fi
     done
 
-    if [ "${outcome}" = "exit:0" ]; then
-      echo "[watchdog] ✅ 다운로드 정상 완료"
+    if [ "${outcome}" = "exit:0" ] || [ "${outcome}" = "complete" ]; then
+      echo "[watchdog] ✅ 다운로드 완료"
       return 0
     fi
     if [ "${attempt}" -ge "${max_retries}" ]; then

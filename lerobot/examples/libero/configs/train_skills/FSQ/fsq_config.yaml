@@ -2,7 +2,7 @@
 # Self-contained: trains the FSQ skill autoencoder on the skillset + DINO tokens that
 # build_data produced. Read by submit_train_fsq.sh. Project paths/slurm from global_config.
 #
-# Consumes the skillset under FSQ_inputs/seg_{dp_run_name}_ck{dp_checkpoint}/ — so it points
+# Consumes the skillset under FSQ_inputs/seg_{dp_run_name}_ck{dp_checkpoint}_{mode}/ — so it points
 # at the SAME DP build_data used.
 
 target_dataset: libero_90_full_full
@@ -17,17 +17,7 @@ fsq_dataset_root: FSQ_dataset
 fsq_inputs_name: FSQ_inputs
 skillset_name: skillset
 # Must match build_data/build_data_config.yaml so FSQ consumes the intended segmentation.
-skillset_probe_type: pca_action
-skillset_probe_count: 24
-skillset_probe_alpha: 0.10
-skillset_pca_variance: 0.95
-skillset_pca_stride: 3
-skillset_action_mode: dataset
-skillset_relative_exclude_joints: [gripper]
-skillset_gripper_mode: discrete
-skillset_gripper_indices: [-1]
-skillset_gripper_values: [-1.0, 1.0]
-skillset_gripper_threshold: 0.0
+skillset_mode: std
 
 # ── FSQ model / run ──
 # {dp_tag} = the DP run that produced the skillset (dataset prefix stripped, e.g. state_obs20 /
