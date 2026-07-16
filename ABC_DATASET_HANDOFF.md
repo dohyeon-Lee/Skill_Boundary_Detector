@@ -54,7 +54,7 @@
 | `src/ABC_dataset_config.py` | config 리졸버(`--shell`로 bash export). global_config 병합. `abcdl_repo`는 상대경로→project_root 기준 |
 | `src/download_abc_subset.py` | 다운로드 래퍼 — subset별 config 생성해 **abcdl_RLLAB/download 엔진**에 위임 |
 | `download_ABC.sh` | ① 다운로드 (hang 워치독 포함, §4) |
-| `src/convert_abc_dataset.py` | ② mcap→abcdl → ③ abcdl→v3 (pyav) → ④ stats. 핵심 변환 로직 |
+| `src/convert_abc_dataset.py` | ② mcap→abcdl(에피소드 병렬) → ③ abcdl→v3(**16샤드 병렬+aggregate**, 카메라 정규화) → ④ stats. 핵심 변환 로직 |
 | `src/compute_relative_action_stats.py` | ④-b relative action 통계 (§5) |
 | `build_ABC_dataset.sh` | ②③④ 직접 실행 (로그인 노드) |
 | `submit_build_ABC.sh` | ① download + ②③④를 Slurm 잡으로 (권장) |
@@ -65,6 +65,9 @@
 ① download : HF mcap subset      → dataset_ABC/_mcap/{name}/data/{split}/<task>/<ep>/episode.mcap
 ② mcap→abcdl: 30Hz 리샘플+256px   → dataset_ABC/_abcdl/{name}/<task>__<ep>/  (abcdl_RLLAB 패키지, 에피소드 병렬)
 ③ abcdl→v3 : per-camera mp4+parquet → dataset_ABC/{name}/  (pyav 직접구현 — torchcodec 불필요)
+              ⚡ 16샤드 병렬 + lerobot aggregate_datasets 병합 (v3 writer가 single-writer라
+              에피소드 병렬 불가 → 샤드별 독립 writer 후 병합; 완성 샤드 재사용=재개 가능;
+              streaming_encoding+encoder_threads로 인코딩 가속. _v3_shards/는 병합검증 후 자동삭제)
 ④ stats    : ④-a absolute quantile(ensure_quantile_stats 재사용) + ④-b relative action stats
 ```
 
@@ -163,11 +166,15 @@ LIBERO는 primary(`observation.images.image`)+wrist(`wrist_image`) 2슬롯. ABC�
 2. **빌드 속도 오판**: 4워커 초반 측정(오염)으로 19시간 추정했으나, 단일 에피소드 프로파일 = ~14초(병목=단일스레드 인코딩 ~10s, ffprobe 아님). 실측 16워커 = **23 ep/분 → ②단계 ~1시간**. `-threads 1`+다중워커가 처리량 정답.
 3. **워치독 완료 오판**: 초기 워치독이 "다 받아서 무증가"를 hang으로 오판→무한 재시작. `.incomplete` 유무로 완료/hang 구분하게 수정(§4).
 4. **submit이 로그인 노드에서**: `build_ABC_dataset.sh`(직접)와 `submit_build_ABC.sh`(Slurm) 혼동. submit은 ① download를 먼저 로그인노드에서 실행 후 sbatch. 다운로드 완료면 즉시 스킵.
+5. **③ 순차 20시간 사건**: ③이 single-writer 순차 루프라 1워커 0.5ep/분 → ~52h(>walltime)로 잡 2회 낭비. 원인=②의 16워커 처리량을 ③ 추정에 잘못 적용(프레임당 비용은 ②≈③ ~11-13ms/f, 병렬도만 16배 차이). 1차 완화=streaming_encoding+encoder_threads(4×), 근본 해결=**16샤드 병렬+aggregate**(13.6배, 17.7ep/분, 총 ~2.5h 완주). 교훈: (a) 순차/병렬 구조 확인 없이 처리량 외삽 금지, (b) v3 writer 병렬화의 정석=샤드+aggregate_datasets, (c) 재개 불가 장시간 작업엔 walltime 여유(48h) 필수.
 
 ---
 
 ## 8. 성능/리소스 설정 (현재)
-- `convert_workers: 16`, submit `--cpus-per-task=32` (node100=256코어), `--mem=96G`. GPU는 base_qos가 gpu:1 강제하지만 **실제 미사용**(CPU/ffmpeg 작업). 32코어 스케줄 안 되면 16으로.
+- ②: `convert_workers: 16` (에피소드 프로세스 병렬, ffmpeg CLI).
+- ③: `v3_shards: 16` + `v3_encoder_threads: 2` (16 독립 writer × h264 2스레드; `KEEP_SHARDS=1`로 샤드 보존 가능). 실측 17.7 ep/분.
+- submit: `--cpus-per-task=32`, `--mem=96G`, `--time=48:00:00`. GPU는 base_qos가 gpu:1 강제하지만 **실제 미사용**(CPU/ffmpeg; nvenc은 pyav 빌드에서 hang이라 배제).
+- 실측 총 소요: 다운로드 ~9h(11MB/s 서버상한) + ② ~1.5h + ③ ~2.2h + aggregate/④ ~15분.
 
 ---
 
@@ -186,6 +193,8 @@ LIBERO는 primary(`observation.images.image`)+wrist(`wrist_image`) 2슬롯. ABC�
 - `abcdl_RLLAB/abcdl/format/encode.py:28` `probe_frame_count` (ffprobe 사용처)
 - `ABC_dataset/src/convert_abc_dataset.py:53` `_ensure_ffmpeg` (ffmpeg+ffprobe shim)
 - `ABC_dataset/src/convert_abc_dataset.py` `stage_mcap_to_abcdl`/`stage_abcdl_to_v3`/`stage_stats`
+- `ABC_dataset/src/convert_abc_dataset.py:_build_v3_shard`/`_build_v3_dataset` — ③ 샤드 워커 (single-writer 코어 루프)
+- `lerobot/src/lerobot/datasets/aggregate.py:aggregate_datasets` — 샤드 병합 (episode/task 인덱스 재매핑 + stats 병합)
 - `ABC_dataset/src/compute_relative_action_stats.py` — relative stats
 - `ABC_dataset/download_ABC.sh:run_with_watchdog` — hang 복구
 - `lerobot/src/lerobot/processor/relative_action_processor.py` — relative 변환 스텝(미배선)
