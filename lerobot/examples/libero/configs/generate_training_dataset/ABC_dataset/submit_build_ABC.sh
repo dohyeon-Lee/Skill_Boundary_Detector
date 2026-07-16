@@ -28,7 +28,7 @@ SBATCH_ARGS=(
   --cpus-per-task=32      # ffmpeg 디코드/인코드 병렬 (convert_workers 16 × ~2 threads). 노드가
                           # 256코어라 여유. 스케줄 안 되면(qos cpu 상한) 16으로 낮출 것.
   --mem=96G
-  --time=24:00:00
+  --time=48:00:00         # ③(abcdl→v3)이 ~18-20h 실측 — v3는 재개 불가라 walltime 여유 필수
   --output=logs/%x_%j.out
   --error=logs/%x_%j.err
 )

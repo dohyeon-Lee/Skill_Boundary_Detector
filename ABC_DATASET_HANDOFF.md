@@ -9,7 +9,8 @@
 ## 0. TL;DR — 지금 상태 / 다음 할 일
 
 - **데이터 다운로드 완료**: `XDOF/ABC-130k` 중 `abc_toy` subset (pick_and_place 81태스크 × 20ep = 1620 에피소드, ~270GB mcap). `dataset_ABC/_mcap/abc_toy/` 에 있음.
-- **v3 빌드 진행중**: Slurm 잡으로 mcap→abcdl→LeRobot v3 변환 중 (②단계, ~1시간). 완료되면 `dataset_ABC/abc_toy/` 에 LIBERO와 동일한 **v3 데이터셋** 생성.
+- **✅ v3 빌드 완료** (2026-07-17): `dataset_ABC/abc_toy/` = **1620 에피소드 / 4,973,747 프레임, fps 30, 3캠(top/left_wrist/right_wrist), 20GB**. ZED-X는 정규화(top_left→top, top_right 드롭)로 통합. stats 2종(absolute quantile + `relative_action_stats.json` chunk50/gripper 제외) 완비, per-dim names(left_gripper@6, right_gripper@13) 포함. ee_pose는 설계 제외. **바로 DP 학습 가능 상태.**
+- ③은 **16샤드 병렬 + aggregate 병합**으로 재구현됨(1샤드 순차 ~20h → ~2.5h; 등가성 비트단위 검증, 완성 샤드 재사용으로 재개 가능). `_mcap/`(266G)은 이제 지워도 됨(재변환 소스는 `_abcdl/` 28G로 충분).
 - **다음 코드 작업(본론, 아직 미착수)**: 카메라 3슬롯 일반화 → FSQ bimanual → SBD probe 재설계. (§6)
 - **파이프라인 전환**: `configs/global_config.yaml` 의 `dataset_root: dataset_ABC` / `outputs_root: outputs_ABC` 두 줄로 전환 (LIBERO와 동일 컨벤션). DP 학습은 코드 수정 0, config만 연결.
 
@@ -28,8 +29,14 @@
 
 ### 카메라 / state 차원
 - state/action 14D: `[L_arm(6), L_grip(1), R_arm(6), R_grip(1)]`. `max_*_dim=32` 패딩 무수정 통과.
-- 카메라 3개: `observation.images.{top, left_wrist, right_wrist}` (RealSense 스테이션 기준). LIBERO는 2슬롯(`image`/`wrist_image`) → **3슬롯 확장이 남은 본론**(§6).
+- **⚠️ ABC는 스테이션이 섞여 있다** (③에서 발견): **RealSense 1380개(3캠: top, left_wrist, right_wrist)** + **ZED-X 240개(4캠 스테레오: top_left, top_right, left_wrist, right_wrist)**. state/action은 둘 다 14D 동일, 카메라만 다름. **해상도는 ②에서 전부 256×256으로 통일**됨.
+- **결정(user): 전체 1620개 사용 (정규화)** — ZED-X는 스테레오 오른쪽 눈(top_right) 버리고 top_left→top rename → RealSense와 동일 `{top, left_wrist, right_wrist}` 3캠 스키마. (depth는 어차피 mono만 써서 손실 무의미. RealSense-only 1380도 가능했으나 15% 더 확보 위해 통합.) 픽셀 레벨 검증 완료(v3 top = 원본 top_left).
+  - yaml: `v3_cameras: [top, left_wrist, right_wrist]`, `camera_rename: {top_left: top}`, `camera_drop: [top_right]`.
+- LIBERO는 2슬롯(`image`/`wrist_image`) → **3슬롯 확장이 남은 본론**(§6).
 - fps 30 (LIBERO 20).
+
+### ee_pose — 설계에서 제외 (user 결정)
+- 초기엔 mcap `RobotState.pose`(팔별 EE 4×4)를 v3에 보존하려 했으나, **849/1620(52%)만 존재**해 스키마 일관성이 깨지고 SBD probe도 미확정이라 **설계에서 완전히 뺐다**(안 받음). `mcap_abcdl.py`의 보존 코드도 되돌림(커밋 `a8c1847`). 이미 만들어진 abcdl 캐시엔 849개에 `ff_ee_pose_*.bin`이 남아있지만 ③이 무시(무해). SBD probe(§6-C)를 EEF-space로 갈 거면 그때 재도입.
 
 ### eval
 - ABC는 실로봇 데이터 → LIBERO식 sim closed-loop eval **불가**. **실로봇 배포 eval**(별도 인프라). 오프라인 HTML eval(build_data_eval)은 그대로 동작.
@@ -87,7 +94,7 @@ uv pip install mcap "mcap-protobuf-support>=0.5,<0.6" foxglove-schemas-protobuf
 
 - 위치: `{project_root}/abcdl_RLLAB/` (구 `/data2/dohyeon/abcdl_RLLAB`에서 SBD 안으로 복사, 2026-07-13). `ABC_dataset_config.yaml`의 `abcdl_repo: abcdl_RLLAB` (상대경로).
 - **ABC 데이터 레이어 패키지** (변환기 아님): mcap I/O, abcdl 포맷 I/O, LeRobot 변환, HF pull. `download/` 서브폴더에 **선택형 다운로더**(논문 7개 primitive 카테고리→197태스크 taxonomy 내장) — 우리 다운로드가 이걸 씀.
-- **abcdl_RLLAB은 SBD에 vendoring됨** (2026-07-16, 커밋 `a29be99`): 원래 bare gitlink(submodule)였으나 자기 `.git`이 없어 내부 파일이 SBD git에 안 잡히던 문제 → gitlink 풀고 일반 파일 50개로 편입. **EE pose 수정(`abcdl/convert/mcap_abcdl.py`, §5)도 이 커밋에 포함** → 다른 서버는 `git pull`만으로 받음 (별도 동기화 불필요).
+- **abcdl_RLLAB은 SBD에 vendoring됨** (2026-07-16, 커밋 `a29be99`): 원래 bare gitlink(submodule)였으나 자기 `.git`이 없어 내부 파일이 SBD git에 안 잡히던 문제 → gitlink 풀고 일반 파일 50개로 편입 → 다른 서버는 `git pull`만으로 받음 (별도 동기화 불필요). (a29be99에 들어갔던 EE pose 보존은 이후 `a8c1847`에서 설계 제외로 **되돌림** — 현재 mcap_abcdl.py는 ee_pose 코드 없음.)
 
 ---
 
@@ -105,10 +112,13 @@ ABC mcap은 큰 파일(190~320MB)이라 HF 전송이 자주 끊긴다. 3중 방�
 
 ## 5. 데이터 표현 관련 수정 (v3 스키마)
 
-### EE pose 보존 (`abcdl/convert/mcap_abcdl.py` + `convert_abc_dataset.py`)
-- mcap `RobotState.pose`(팔별 EE 4×4, state 토픽) → ②가 `ff_ee_pose_{left,right}.bin` frame-feature로 싣고 → ③이 `observation.states.ee_pose_{left,right}` (float32 (16,), row-major, `.reshape(4,4)`) parquet 컬럼으로 방출.
-- **용도**: 학습 입력 아님. SBD probe를 팔별 EEF-space로 유지하는 옵션(§6-C)의 전제. LIBERO `observation.states.ee_state` 위상.
-- 포즈 없는 스테이션/구캐시면 자동 생략. subset 내 카메라/차원/ee_pose 불일치는 명시적 실패.
+### 카메라 정규화/필터 (`convert_abc_dataset.py:stage_abcdl_to_v3`, `_canon_map`)
+- 스테이션 혼재 통합: `camera_rename`(raw→canonical) + `camera_drop`(버릴 raw)으로 각 에피소드 카메라를 정규화 → `v3_cameras`와 일치하는 것만 담음. 현재 ZED-X top_left→top rename, top_right drop → 전체 1620개가 3캠으로 통일.
+- 프레임 emit 시 drop된 raw(top_right)는 스킵, rename된 건 canonical 키로 방출. 해상도는 canonical별로 첫 에피소드에서.
+- `v3_cameras: []`(빈 값)이면 첫 에피소드 카메라 사용(구 동작; 혼재 시 heterogeneous 에러).
+
+### ee_pose — 제거됨 (설계에서 안 받음)
+- 위 "ee_pose 설계에서 제외" 참조. `mcap_abcdl.py`(②)의 보존 코드와 `convert_abc_dataset.py`(③)의 emission 모두 제거(`a8c1847`). v3에 ee_pose 컬럼 없음.
 
 ### per-dim names (`convert_abc_dataset.py:_joint_names`)
 - ③이 state/action feature에 `names`(…, `left_gripper`@6, `right_gripper`@13) 심음. `RelativeActionsProcessorStep`이 exclude_joints를 **이름으로** 매칭하기 때문.
@@ -138,7 +148,7 @@ LIBERO는 primary(`observation.images.image`)+wrist(`wrist_image`) 2슬롯. ABC�
 
 ### C. SBD 구면 probe (`skill_divider.py`, 최난·연구항목)
 - `skill_divider.py:_generate_spherical_samples`가 `gt_chunk[:,:3]`을 **단일 EEF xyz 변위**로 가정하고 구면 회전. ABC는 `[:3]`이 왼팔 관절 3개일 뿐 → 물리적 의미 없음.
-- 선택지: (a) EEF-space 유지 — v3에 보존한 `observation.states.ee_pose`에서 팔별 EEF xyz 뽑아 팔당 구면 probe (단, joint chunk로 되돌리려면 IK 필요) / (b) joint-space 재정의(IK 불필요, 구면 직관 재정의) / (c) relative-joint 관점. **abc_toy 실데이터로 관절/EEF 궤적 보고 결정.**
+- 선택지: (a) EEF-space 유지 — 단 **ee_pose를 v3에서 뺐으므로**(설계 제외) 다시 도입하거나 FK로 관절→EEF 계산 필요 + probe를 joint로 되돌리는 IK 필요 / (b) joint-space 재정의(IK 불필요, 구면 직관 재정의) / (c) relative-joint 관점. **abc_toy 실데이터로 관절 궤적 보고 결정.** ee_pose가 필요하면 그때 재도입(abcdl 캐시 849개엔 남아있고, mcap_abcdl.py 보존코드 되살리면 됨).
 - ⚠️ DP action space는 어느 선택이든 **joint 유지** — 바뀌는 건 SBD probe 좌표계뿐. (next-state를 action으로 쓰는 것 아님)
 
 ### 기타
@@ -163,7 +173,7 @@ LIBERO는 primary(`observation.images.image`)+wrist(`wrist_image`) 2슬롯. ABC�
 
 ## 9. 다른 서버 동기화 체크리스트
 1. 코드: 브랜치 `splitVLA_ABC_dinoX` 커밋/푸시 (ABC_dataset 폴더 + `global_config.yaml`).
-2. **abcdl_RLLAB**: 이제 SBD에 vendoring되어 커밋됨(`a29be99`) → 코드는 `git pull`로 따라옴 (EE pose 수정 포함). 별도 동기화 불필요. `abcdl_repo`는 상대경로라 `{project_root}/abcdl_RLLAB`면 자동.
+2. **abcdl_RLLAB**: 이제 SBD에 vendoring되어 커밋됨(`a29be99`, ee_pose는 `a8c1847`에서 제거) → 코드는 `git pull`로 따라옴. 별도 동기화 불필요. `abcdl_repo`는 상대경로라 `{project_root}/abcdl_RLLAB`면 자동.
 3. 데이터: `dataset_ABC/`(대용량)는 재다운로드하거나 `sync_server.sh`로 전송. 재다운로드가 안전(idempotent, 워치독).
 4. 의존성: `uv pip install mcap "mcap-protobuf-support>=0.5,<0.6" foxglove-schemas-protobuf` + gated `huggingface-cli login`.
 5. ffprobe: 시스템에 없어도 됨(imageio ffmpeg 기반 wrapper 자동 생성). 단 `imageio-ffmpeg` 설치 필요.
@@ -171,7 +181,8 @@ LIBERO는 primary(`observation.images.image`)+wrist(`wrist_image`) 2슬롯. ABC�
 ---
 
 ## 10. 핵심 참조 (file:line)
-- `abcdl_RLLAB/abcdl/convert/mcap_abcdl.py` — mcap→abcdl + EE pose 보존
+- `abcdl_RLLAB/abcdl/convert/mcap_abcdl.py` — mcap→abcdl (30Hz 리샘플·다운스케일; ee_pose 없음)
+- `ABC_dataset/src/convert_abc_dataset.py:_canon_map` — 카메라 정규화 (ZED top_left→top, top_right 드롭)
 - `abcdl_RLLAB/abcdl/format/encode.py:28` `probe_frame_count` (ffprobe 사용처)
 - `ABC_dataset/src/convert_abc_dataset.py:53` `_ensure_ffmpeg` (ffmpeg+ffprobe shim)
 - `ABC_dataset/src/convert_abc_dataset.py` `stage_mcap_to_abcdl`/`stage_abcdl_to_v3`/`stage_stats`
