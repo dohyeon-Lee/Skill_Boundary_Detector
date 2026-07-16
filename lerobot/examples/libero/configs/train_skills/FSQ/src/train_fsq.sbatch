@@ -81,6 +81,8 @@ cat > "${FSQ_OUTPUT_DIR}/fsq_meta.json" <<JSON
   "skillset_mode": "${SKILLSET_MODE}",
   "skillset_boundary_threshold_mode": "${SKILLSET_BOUNDARY_THRESHOLD_MODE}",
   "skillset_global_threshold_source": "${SKILLSET_GLOBAL_THRESHOLD_SOURCE}",
+  "weighted_loss": ${FSQ_WEIGHTED_LOSS},
+  "weighted_loss_end_weight": ${FSQ_WEIGHTED_LOSS_END_WEIGHT},
   "terminator_arch": "${FSQ_TERMINATOR_ARCH}",
   "terminator_layers": ${FSQ_TERMINATOR_LAYERS},
   "terminator_heads": ${FSQ_TERMINATOR_HEADS},
@@ -150,6 +152,7 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     "${VAL_SELECT_ARGS[@]}" \
     --end_target_sigma        "${FSQ_END_TARGET_SIGMA}" \
     "${WEIGHTED_ARG[@]}" \
+    --weighted_loss_end_weight "${FSQ_WEIGHTED_LOSS_END_WEIGHT}" \
     --checkpoint_every        "${FSQ_CHECKPOINT_EVERY}" \
     --wandb_project           "${FSQ_WANDB_PROJECT}" \
     --wandb_run_name          "${FSQ_RUN_NAME}" \

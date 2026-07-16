@@ -329,10 +329,22 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
     fsq_tag = "fsq" + "".join(str(v) for v in fsq_levels)
     fsq_exp = str(get_value(cfg, "fsq_exp", "")).strip()
     fsq_exp_suffix = f"_{fsq_exp}" if fsq_exp else ""
-    # weighted_loss probe: end-weight the sampled FSQ VSA flow loss. Tags the run/folder name
-    # with "_weighted" (placed BEFORE the fsq_exp suffix) so weighted vs uniform runs never collide.
+    # End-weight the sampled FSQ VSA flow loss. The endpoint multiplier is explicit so different
+    # curricula cannot auto-resume from one another. Keep the historical `_weighted` tag for 2x.
     weighted_loss = as_bool(get_value(cfg, "weighted_loss", False))
-    weighted_suffix = "_weighted" if weighted_loss else ""
+    weighted_loss_end_weight = float(get_value(cfg, "weighted_loss_end_weight", 2.0))
+    if weighted_loss_end_weight <= 0:
+        raise ValueError(
+            "weighted_loss_end_weight must be positive, "
+            f"got {weighted_loss_end_weight}."
+        )
+    if not weighted_loss:
+        weighted_suffix = ""
+    elif math.isclose(weighted_loss_end_weight, 2.0):
+        weighted_suffix = "_weighted"
+    else:
+        weight_tag = f"{weighted_loss_end_weight:g}".replace("-", "m").replace(".", "p")
+        weighted_suffix = f"_weighted{weight_tag}"
     fsq_terminator_arch = str(get_value(cfg, "fsq_terminator_arch", "small"))
     if fsq_terminator_arch not in {"small", "cond"}:
         raise ValueError(f"fsq_terminator_arch must be small|cond, got {fsq_terminator_arch!r}.")
@@ -450,6 +462,7 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "fsq_exp": fsq_exp,
         "fsq_exp_suffix": fsq_exp_suffix,
         "fsq_weighted_loss": weighted_loss,
+        "fsq_weighted_loss_end_weight": weighted_loss_end_weight,
         "weighted_suffix": weighted_suffix,
         "fsq_encoder_input_suffix": fsq_encoder_input_suffix,
         "fsq_run_name": fsq_run_name,

@@ -10,7 +10,7 @@ skillvla_dataset_root: skillvla_dataset  # .../{skillvla_dataset_root}/{source_d
 source_dataset: libero_90_full_full
 # run_tag: FSQ555_dino8_both_1000   
 # run_tag: FSQ555_dino8_both_1000_snap10
-run_tag: FSQ555_dino_frozen_small_optimal_vsa_state_skill_125_pt_snap10
+run_tag: FSQ333_dino_frozen_small_optimal_vsa_state_skill_125_pt_snap10
 
 
 # ── FSQ-derived expert contract ──
@@ -38,11 +38,11 @@ dino_model_path: models/dinov3-vitl16   # (dino) project_root 기준 상대경�
 # strengthen state/skill-only motion. A batches train image cond + the selected action adaptation on flow;
 # B batches skip image/cond entirely and anchor it to frozen FSQ for the same state+skill. In full-FT mode,
 # that target is a non-checkpointed frozen copy of the FSQ action tensors.
-lora_expert: false
+lora_expert: true
 lora_rank: 8 # 8
 lora_alpha: auto                 # auto = 2 * rank (effective alpha/r = 2)
 lora_dropout: 0.0                # adapter-internal dropout; distinct from the A/B regime coin below
-lora_targets: "q,k,v,o" #,mlp,action_out"
+lora_targets: "q,k,v,o,mlp,action_out"
 lora_lr_scale: 10.0
 
 image_free_lora_prob: 0 # 0.5   # 0.3      # B probability: no image / no cond / LoRA delta -> frozen base delta
@@ -52,8 +52,8 @@ image_free_lora_anchor_weight: 1 # non-1 values automatically add `_aw...` to th
 n_action_steps:                 # blank = FSQ chunk_size (must be <= chunk_size)
 
 # ── Loss = action MSE (flow matching). action_weight로 per-sample 가중 여부만 선택. ──
-skill_end_loss_weight: 2.0        # R — sw=1+(R-1)·progress; 스킬 END을 더 강조 (1=uniform). action_weight=true일 때만 사용
-action_weight: false               # true=가중 / false=균등
+skill_end_loss_weight: 3.0        # R — sw=1+(R-1)·progress; 스킬 END을 더 강조 (1=uniform). action_weight=true일 때만 사용
+action_weight: true               # true=가중 / false=균등
 
 # ── Terminator co-train (skill-end timing head, gradient-disjoint from 본체; eval skill 전환용) ──
 # fsq_path는 run_tag에서 AUTO 유도 (run_dir/FSQ.pt). Terminator DINO도 해당 FSQ.pt 설정을 자동 상속한다.

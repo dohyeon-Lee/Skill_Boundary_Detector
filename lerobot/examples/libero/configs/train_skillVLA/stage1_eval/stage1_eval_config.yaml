@@ -50,14 +50,14 @@ models:
 #      advance_mode: terminator, label: FSQopt-expert_TERM}
 
 #   Two trained Stage-1 entries produce a 2×3 grid. Keep labels short: they are video panel titles.
-  - {kind: stage1, model_dir: FSQ555_dino_frozen_small_optimal_vsa_state_skill_125_pt_snap10_dino_freeze_batch128_state_skill_lorae8_if50, checkpoint: "020000", advance_mode: gt, label: visfreeze_half_lora}
-  - {kind: stage1, model_dir: FSQ555_dino_frozen_small_optimal_vsa_state_skill_125_pt_snap10_dino_batch128_state_skill_lorae8_if50, checkpoint: "010000", advance_mode: gt, label: visunfreeze_half_lora}
+  # - {kind: stage1, model_dir: FSQ555_dino_frozen_small_optimal_vsa_state_skill_125_pt_snap10_dino_freeze_batch128_state_skill_lorae8_if50, checkpoint: "020000", advance_mode: terminator, label: visfreeze_half_lora}
+  - {kind: stage1, model_dir: FSQ555_dino_frozen_small_optimal_vsa_state_skill_125_pt_snap10_dino_batch128_state_skill_lorae8_if50, checkpoint: "020000", advance_mode: terminator, label: visunfreeze_half_lora}
 #   - {kind: stage1, model_dir: FSQ555_dino_frozen_small_optimal_vsa_state_skill_125_pt_snap10_dino_freeze_batch128_state_skill_lorae8_ltq-k-v-o-mlp-actionout_if50, checkpoint: "010000", advance_mode: terminator, label: visfreeze_full_lora}
 #   - {kind: stage1, model_dir: FSQ555_dino_frozen_small_optimal_vsa_state_skill_125_pt_snap10_dino_batch128_state_skill_lorae8_ltq-k-v-o-mlp-actionout_if50, checkpoint: "010000", advance_mode: terminator, label: visunfreeze_full_lora}
-  - {kind: stage1, model_dir: FSQ555_dino_frozen_small_optimal_vsa_state_skill_125_pt_snap10_dino_batch128_state_skill_expertft_if50, checkpoint: "010000", advance_mode: gt, label: visunfreeze_expertft}
-
+  - {kind: stage1, model_dir: FSQ555_dino_frozen_small_optimal_vsa_state_skill_125_pt_snap10_dino_batch128_state_skill_expertft_if50, checkpoint: "020000", advance_mode: terminator, label: visunfreeze_expertft}
+  - {kind: stage1, model_dir: FSQ555_dino_frozen_small_optimal_vsa_state_skill_125_pt_snap10_dino_batch128_state_skill_expertft, checkpoint: "020000", advance_mode: terminator, label: visunfreeze_expertft_dropX}
 models_per_row: 3              # stage1 triplet = A / B / Frozen-FSQ; two checkpoints → 2 rows × 3 columns
-eval_exp: "mix"                   # optional free-form tag appended to the output folder
+eval_exp: "20k"                   # optional free-form tag appended to the output folder
 
 # FSQ TERMINATOR's raw-image DINO only. The policy's own vision backbone is NOT set here —
 # it comes from the checkpoint's saved config and must match the trained weights (vits/vitb/...).

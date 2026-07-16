@@ -88,7 +88,9 @@ class Args:
     """Soft termination target std in frames (Gaussian bump at the skill end). 0 = hard 1-frame
     spike. σ≈2-3 curbs the val overfit a sharp spike causes and adds ±tolerance to recall/precision."""
     weighted_loss: bool = False
-    """End-weight the per-sampled-timestep flow loss (w=1+progress)."""
+    """End-weight the per-sampled-timestep flow loss."""
+    weighted_loss_end_weight: float = 2.0
+    """Flow-loss weight at progress=1; progress=0 always has weight 1."""
 
     # ── training
     epochs: int = 300
@@ -346,6 +348,7 @@ def main(args: Args) -> None:
         end_threshold=args.end_threshold,
         end_target_sigma=args.end_target_sigma,
         weighted_loss=args.weighted_loss,
+        weighted_loss_end_weight=args.weighted_loss_end_weight,
         encoder_lr=args.encoder_lr,
         terminator_lr=args.terminator_lr,
         expert_lr=args.expert_lr,

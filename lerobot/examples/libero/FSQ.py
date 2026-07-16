@@ -925,6 +925,7 @@ class SplineFSQAEConfig:
     end_loss_weight: float = 0.1
     end_pos_weight: float = 1.0
     weighted_loss: bool = False
+    weighted_loss_end_weight: float = 2.0
     end_threshold: float = 0.5
 
     encoder_lr: float = 3e-4
@@ -1533,7 +1534,13 @@ def fsq_vsa_loss(
     per_sample_action = residual.square().mean(dim=(1, 2))
     action_plain = _per_trajectory_mean(per_sample_action, bsize, m)
     if cfg.weighted_loss:
-        weight = 1.0 + batch["progress"].reshape(-1).to(per_sample_action)
+        if cfg.weighted_loss_end_weight <= 0:
+            raise ValueError(
+                "weighted_loss_end_weight must be positive, "
+                f"got {cfg.weighted_loss_end_weight}."
+            )
+        progress = batch["progress"].reshape(-1).to(per_sample_action)
+        weight = 1.0 + (cfg.weighted_loss_end_weight - 1.0) * progress
         weighted = (per_sample_action * weight).view(bsize, m).sum(dim=1) / weight.view(bsize, m).sum(dim=1)
         action_objective = weighted.mean()
     else:
