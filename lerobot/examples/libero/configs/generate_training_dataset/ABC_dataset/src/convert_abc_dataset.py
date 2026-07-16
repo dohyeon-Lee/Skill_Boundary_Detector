@@ -221,12 +221,37 @@ def _camera_row_slices(meta: dict) -> list[tuple[str, int, int]]:
     return slices
 
 
+def _canon_map(raw_cams: list[str], rename: dict, drop: set) -> dict[str, str]:
+    """raw 카메라명 → canonical 명 (drop된 건 제외). 스테이션 정규화용:
+    ZED-X의 top_left→top, top_right는 drop → RealSense와 동일 {top,left_wrist,right_wrist} 스키마.
+    RealSense는 rename/drop 대상 없어 그대로. canonical 명이 겹치면(잘못된 rename) 에러."""
+    out: dict[str, str] = {}
+    seen: dict[str, str] = {}
+    for c in raw_cams:
+        if c in drop:
+            continue
+        canon = rename.get(c, c)
+        if canon in seen:
+            raise SystemExit(f"카메라 정규화 충돌: '{c}'와 '{seen[canon]}' 둘 다 '{canon}'으로 매핑 "
+                             "(camera_rename/camera_drop 확인)")
+        seen[canon] = c
+        out[c] = canon
+    return out
+
+
 def stage_abcdl_to_v3(name: str, abcdl_dir: Path, final_dir: Path, fps: int, force: bool,
-                      target_cams: list[str] | None = None) -> None:
-    """abcdl 에피소드 → LeRobot v3. target_cams가 주어지면 그 카메라 집합과 정확히 일치하는
-    에피소드만 포함(나머지 스테이션은 스킵) — ABC는 RealSense(top,left_wrist,right_wrist 3캠)와
-    ZED-X(top_left,top_right,left_wrist,right_wrist 4캠)가 섞여 있어 단일 v3 스키마로는 한 종류만
-    담을 수 있다. None이면 첫 에피소드 카메라를 그대로 사용(구 동작)."""
+                      target_cams: list[str] | None = None,
+                      camera_rename: dict | None = None, camera_drop: list | None = None) -> None:
+    """abcdl 에피소드 → LeRobot v3.
+
+    스테이션 혼재(ABC: RealSense 3캠 vs ZED-X 4캠 스테레오) 처리:
+    - camera_rename/camera_drop로 각 에피소드 카메라를 canonical 명으로 정규화
+      (ZED-X: top_left→top rename, top_right drop → RealSense와 동일 {top,left_wrist,right_wrist}).
+      해상도는 ②에서 이미 전부 size×size로 통일돼 있어 스테레오 depth만 버리면 포맷 동일.
+    - 정규화 후 카메라 집합이 target_cams와 일치하는 에피소드만 포함(나머지는 스킵).
+    target_cams=None이면 첫 에피소드 카메라 그대로(구 동작)."""
+    rename = dict(camera_rename or {})
+    drop = set(camera_drop or [])
     if (final_dir / "meta" / "info.json").exists():
         if not force:
             print(f"[{name}] ③ v3 already built → {final_dir}  (FORCE=1 to rebuild)")
@@ -244,26 +269,29 @@ def stage_abcdl_to_v3(name: str, abcdl_dir: Path, final_dir: Path, fps: int, for
     if not all_dirs:
         raise SystemExit(f"[{name}] no abcdl episodes under {abcdl_dir}")
 
-    # 카메라 집합으로 에피소드 필터 — 스테이션이 섞인 경우(ABC: RealSense 3캠 vs ZED-X 4캠) 한
-    # 종류만 담는다. target_cams=None이면 첫 에피소드 카메라를 기준으로 사용(구 동작).
+    # 카메라 정규화 후 target 집합과 일치하는 에피소드만 담는다 (스테이션 혼재 통합).
     want = set(target_cams) if target_cams else None
     ep_dirs, skipped = [], {}
     for d in all_dirs:
-        cset = tuple(sorted(_load_ep_meta(d)["cameras"]))
-        if want is None or set(cset) == want:
+        raw = _load_ep_meta(d)["cameras"]
+        canon = set(_canon_map(raw, rename, drop).values())
+        if want is None or canon == want:
             ep_dirs.append(d)
         else:
-            skipped[cset] = skipped.get(cset, 0) + 1
+            skipped[tuple(sorted(raw))] = skipped.get(tuple(sorted(raw)), 0) + 1
     if not ep_dirs:
-        raise SystemExit(f"[{name}] target_cams {sorted(want or [])}와 일치하는 에피소드 없음 "
-                         f"(발견된 카메라 구성: {dict(skipped)})")
+        raise SystemExit(f"[{name}] 정규화 후 target_cams {sorted(want or [])}와 일치하는 에피소드 없음 "
+                         f"(발견: {dict(skipped)}, rename={rename}, drop={sorted(drop)})")
     if skipped:
         print(f"[{name}] ③ 카메라 필터: {len(ep_dirs)}개 유지, 스킵 {sum(skipped.values())}개 "
-              f"(다른 스테이션 {dict(skipped)})")
+              f"(정규화로도 target 불일치: {dict(skipped)})")
 
     first = _load_ep_meta(ep_dirs[0])
     state_dim, action_dim = int(first["state_dim"]), int(first["action_dim"])
-    cams = list(target_cams) if target_cams else list(first["cameras"])
+    first_canon = _canon_map(first["cameras"], rename, drop)   # raw→canonical (첫 에피소드)
+    cams = list(target_cams) if target_cams else list(first_canon.values())
+    # canonical 카메라 → 해상도 (첫 에피소드에서; ②가 전부 size×size로 통일)
+    canon_res = {first_canon[r]: first["camera_resolutions"][r] for r in first_canon}
     if int(round(float(first.get("fps", fps)))) != fps:
         raise SystemExit(f"[{name}] abcdl fps {first.get('fps')} != configured abc_fps {fps}")
 
@@ -274,24 +302,26 @@ def stage_abcdl_to_v3(name: str, abcdl_dir: Path, final_dir: Path, fps: int, for
         "action": {"dtype": "float32", "shape": (action_dim,), "names": _joint_names(action_dim)},
     }
     for cam in cams:
-        w, h = first["camera_resolutions"][cam]
+        h, w = int(canon_res[cam][1]), int(canon_res[cam][0])   # camera_resolutions = [w, h]
         features[f"observation.images.{cam}"] = {
-            "dtype": "video", "shape": (int(h), int(w), 3), "names": ["height", "width", "channel"],
+            "dtype": "video", "shape": (h, w, 3), "names": ["height", "width", "channel"],
         }
+    _rename_note = f", 정규화 rename={rename} drop={sorted(drop)}" if (rename or drop) else ""
     print(f"[{name}] ③ abcdl→v3: {len(ep_dirs)} episodes, state/action {state_dim}/{action_dim}D, "
-          f"cams {cams} → {final_dir}")
+          f"cams {cams}{_rename_note} → {final_dir}")
 
     ds = LeRobotDataset.create(f"dohyeon/{name}", fps=fps, features=features,
                                root=str(final_dir), vcodec="h264")
     for n_ep, ep_dir in enumerate(ep_dirs, 1):
         meta = _load_ep_meta(ep_dir)
-        if set(meta["cameras"]) != set(cams) or int(meta["state_dim"]) != state_dim:
-            raise SystemExit(f"[{name}] heterogeneous episode {ep_dir.name}: cams/dims differ from "
-                             f"{ep_dirs[0].name} — 카메라 필터(target_cams) 확인")
+        cmap = _canon_map(meta["cameras"], rename, drop)   # raw→canonical (이 에피소드)
+        if set(cmap.values()) != set(cams) or int(meta["state_dim"]) != state_dim:
+            raise SystemExit(f"[{name}] heterogeneous episode {ep_dir.name}: 정규화 후 cams/dims 불일치 "
+                             f"({sorted(set(cmap.values()))} vs {sorted(cams)}) — 카메라 설정 확인")
         T = int(meta["num_steps"])
         sa = np.fromfile(ep_dir / "states_actions.bin", dtype="<f8").reshape(T, state_dim + action_dim)
         task = meta.get("task_name") or ""
-        rows = _camera_row_slices(meta)
+        rows = _camera_row_slices(meta)   # (raw_cam, lo, hi) — drop된 raw는 emit 안 함
         n_frames = 0
         with av.open(str(ep_dir / "combined_camera-images-rgb.mp4")) as container:
             for frame in container.decode(video=0):  # stream: never holds the full episode in RAM
@@ -301,8 +331,10 @@ def stage_abcdl_to_v3(name: str, abcdl_dir: Path, final_dir: Path, fps: int, for
                     "action": sa[n_frames, state_dim:].astype(np.float32),
                     "task": task,
                 }
-                for cam, lo, hi in rows:
-                    item[f"observation.images.{cam}"] = np.ascontiguousarray(arr[lo:hi])
+                for raw_cam, lo, hi in rows:
+                    if raw_cam not in cmap:   # drop된 카메라(예: ZED top_right)는 스킵
+                        continue
+                    item[f"observation.images.{cmap[raw_cam]}"] = np.ascontiguousarray(arr[lo:hi])
                 ds.add_frame(item)
                 n_frames += 1
         if n_frames != T:
@@ -357,6 +389,8 @@ def main() -> None:
     fps = int(cfg.get("abc_fps", 30))
     workers = args.workers or int(cfg.get("convert_workers", 4))
     target_cams = list(cfg.get("v3_cameras") or []) or None  # None이면 첫 에피소드 카메라 사용
+    camera_rename = dict(cfg.get("camera_rename") or {})      # raw→canonical (스테이션 통합)
+    camera_drop = list(cfg.get("camera_drop") or [])          # drop할 raw 카메라 (예: ZED top_right)
 
     specs = subsets(cfg)
     only = {s for s in args.only.replace(",", " ").split() if s}
@@ -387,7 +421,8 @@ def main() -> None:
                     "found — run download_ABC.sh, or place pre-built abcdl episode dirs under "
                     f"{abcdl_dir}/")
             print(f"[{name}] ② skip: no mcap staging — using {n_ready} existing abcdl episodes")
-        stage_abcdl_to_v3(name, abcdl_dir, root / name, fps, args.force, target_cams)
+        stage_abcdl_to_v3(name, abcdl_dir, root / name, fps, args.force, target_cams,
+                          camera_rename, camera_drop)
         if not args.skip_stats:
             stage_stats(name, root, args.config, cfg)
 
