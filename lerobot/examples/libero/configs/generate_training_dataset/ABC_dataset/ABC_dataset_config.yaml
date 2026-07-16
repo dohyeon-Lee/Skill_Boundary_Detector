@@ -66,6 +66,13 @@ abc_subsets:
 abc_image_size: 256
 abc_fps: 30            # mcap→abcdl 고정클록 리샘플 결과 (abcdl 규약; 바꿀 일 없음)
 
+# ── ③ v3 카메라 필터 (스테이션 혼재 대응) ────────────────────
+# ABC는 RealSense(top,left_wrist,right_wrist 3캠)와 ZED-X(top_left,top_right,left_wrist,
+# right_wrist 4캠 스테레오)가 섞여 있다. v3는 단일 스키마여야 하므로 이 카메라 집합과 정확히
+# 일치하는 에피소드만 담고 나머지 스테이션은 스킵한다. 비우면([]) 첫 에피소드 카메라 사용(혼재 시 실패).
+# 현재: RealSense만 사용 (ZED-X 제외). ee_pose는 설계에서 제외됨(받지 않음).
+v3_cameras: [top, left_wrist, right_wrist]
+
 # ── 병렬도 / 다운로드 안정성 ──────────────────────────────────
 # 대용량 mcap이 HF Xet 경로로 자주 스톨 → download_ABC.sh가 HF_HUB_DISABLE_XET=1로 재래식 LFS 전환
 # (original_dataset 검증 레시피). 그 경로에선 hf_transfer 없이 workers 낮추고 타임아웃 길게가 안정적.

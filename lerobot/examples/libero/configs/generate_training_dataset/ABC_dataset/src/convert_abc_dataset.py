@@ -221,24 +221,12 @@ def _camera_row_slices(meta: dict) -> list[tuple[str, int, int]]:
     return slices
 
 
-def _ee_pose_features(meta: dict) -> dict[str, list[int]]:
-    """abcdl frame-features named ee_pose_* → {name: shape}. (flat 16 = EE 4x4 row-major,
-    preserved from mcap RobotState.pose by mcap_to_abcdl; absent on stations without pose.)"""
-    spec = meta.get("frame_features") or {}
-    return {n: list(s.get("shape") or []) for n, s in spec.items() if n.startswith("ee_pose_")}
-
-
-def _load_ee_poses(ep_dir: Path, meta: dict, T: int) -> dict[str, np.ndarray]:
-    """{name: (T, 16) float32} from the ff_<name>.bin memmap files."""
-    out: dict[str, np.ndarray] = {}
-    for name, shape in _ee_pose_features(meta).items():
-        spec = meta["frame_features"][name]
-        arr = np.fromfile(ep_dir / f"ff_{name}.bin", dtype=np.dtype(spec["dtype"]))
-        out[name] = arr.reshape(T, *shape).astype(np.float32)
-    return out
-
-
-def stage_abcdl_to_v3(name: str, abcdl_dir: Path, final_dir: Path, fps: int, force: bool) -> None:
+def stage_abcdl_to_v3(name: str, abcdl_dir: Path, final_dir: Path, fps: int, force: bool,
+                      target_cams: list[str] | None = None) -> None:
+    """abcdl 에피소드 → LeRobot v3. target_cams가 주어지면 그 카메라 집합과 정확히 일치하는
+    에피소드만 포함(나머지 스테이션은 스킵) — ABC는 RealSense(top,left_wrist,right_wrist 3캠)와
+    ZED-X(top_left,top_right,left_wrist,right_wrist 4캠)가 섞여 있어 단일 v3 스키마로는 한 종류만
+    담을 수 있다. None이면 첫 에피소드 카메라를 그대로 사용(구 동작)."""
     if (final_dir / "meta" / "info.json").exists():
         if not force:
             print(f"[{name}] ③ v3 already built → {final_dir}  (FORCE=1 to rebuild)")
@@ -252,13 +240,30 @@ def stage_abcdl_to_v3(name: str, abcdl_dir: Path, final_dir: Path, fps: int, for
     import av
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
-    ep_dirs = _abcdl_episode_dirs(abcdl_dir)
-    if not ep_dirs:
+    all_dirs = _abcdl_episode_dirs(abcdl_dir)
+    if not all_dirs:
         raise SystemExit(f"[{name}] no abcdl episodes under {abcdl_dir}")
+
+    # 카메라 집합으로 에피소드 필터 — 스테이션이 섞인 경우(ABC: RealSense 3캠 vs ZED-X 4캠) 한
+    # 종류만 담는다. target_cams=None이면 첫 에피소드 카메라를 기준으로 사용(구 동작).
+    want = set(target_cams) if target_cams else None
+    ep_dirs, skipped = [], {}
+    for d in all_dirs:
+        cset = tuple(sorted(_load_ep_meta(d)["cameras"]))
+        if want is None or set(cset) == want:
+            ep_dirs.append(d)
+        else:
+            skipped[cset] = skipped.get(cset, 0) + 1
+    if not ep_dirs:
+        raise SystemExit(f"[{name}] target_cams {sorted(want or [])}와 일치하는 에피소드 없음 "
+                         f"(발견된 카메라 구성: {dict(skipped)})")
+    if skipped:
+        print(f"[{name}] ③ 카메라 필터: {len(ep_dirs)}개 유지, 스킵 {sum(skipped.values())}개 "
+              f"(다른 스테이션 {dict(skipped)})")
 
     first = _load_ep_meta(ep_dirs[0])
     state_dim, action_dim = int(first["state_dim"]), int(first["action_dim"])
-    cams = list(first["cameras"])
+    cams = list(target_cams) if target_cams else list(first["cameras"])
     if int(round(float(first.get("fps", fps)))) != fps:
         raise SystemExit(f"[{name}] abcdl fps {first.get('fps')} != configured abc_fps {fps}")
 
@@ -273,27 +278,18 @@ def stage_abcdl_to_v3(name: str, abcdl_dir: Path, final_dir: Path, fps: int, for
         features[f"observation.images.{cam}"] = {
             "dtype": "video", "shape": (int(h), int(w), 3), "names": ["height", "width", "channel"],
         }
-    # EE poses (mcap RobotState.pose 보존분) → LIBERO의 observation.states.* 위상의 부가 컬럼.
-    # 학습 입력은 아니고 SBD probe 등 오프라인 소비용. 없는 캐시(구버전/포즈 없는 스테이션)면 생략.
-    ee_specs = _ee_pose_features(first)
-    for ff_name, shape in ee_specs.items():
-        features[f"observation.states.{ff_name}"] = {
-            "dtype": "float32", "shape": tuple(int(s) for s in shape), "names": None,
-        }
     print(f"[{name}] ③ abcdl→v3: {len(ep_dirs)} episodes, state/action {state_dim}/{action_dim}D, "
-          f"cams {cams}, ee_pose {sorted(ee_specs) or '—'} → {final_dir}")
+          f"cams {cams} → {final_dir}")
 
     ds = LeRobotDataset.create(f"dohyeon/{name}", fps=fps, features=features,
                                root=str(final_dir), vcodec="h264")
     for n_ep, ep_dir in enumerate(ep_dirs, 1):
         meta = _load_ep_meta(ep_dir)
-        if (list(meta["cameras"]) != cams or int(meta["state_dim"]) != state_dim
-                or _ee_pose_features(meta).keys() != ee_specs.keys()):
-            raise SystemExit(f"[{name}] heterogeneous episode {ep_dir.name}: cams/dims/ee_pose differ "
-                             f"from {ep_dirs[0].name} — split into separate subsets")
+        if set(meta["cameras"]) != set(cams) or int(meta["state_dim"]) != state_dim:
+            raise SystemExit(f"[{name}] heterogeneous episode {ep_dir.name}: cams/dims differ from "
+                             f"{ep_dirs[0].name} — 카메라 필터(target_cams) 확인")
         T = int(meta["num_steps"])
         sa = np.fromfile(ep_dir / "states_actions.bin", dtype="<f8").reshape(T, state_dim + action_dim)
-        ee = _load_ee_poses(ep_dir, meta, T)
         task = meta.get("task_name") or ""
         rows = _camera_row_slices(meta)
         n_frames = 0
@@ -305,8 +301,6 @@ def stage_abcdl_to_v3(name: str, abcdl_dir: Path, final_dir: Path, fps: int, for
                     "action": sa[n_frames, state_dim:].astype(np.float32),
                     "task": task,
                 }
-                for ff_name, vals in ee.items():
-                    item[f"observation.states.{ff_name}"] = vals[n_frames]
                 for cam, lo, hi in rows:
                     item[f"observation.images.{cam}"] = np.ascontiguousarray(arr[lo:hi])
                 ds.add_frame(item)
@@ -362,6 +356,7 @@ def main() -> None:
     size = int(cfg.get("abc_image_size", 256))
     fps = int(cfg.get("abc_fps", 30))
     workers = args.workers or int(cfg.get("convert_workers", 4))
+    target_cams = list(cfg.get("v3_cameras") or []) or None  # None이면 첫 에피소드 카메라 사용
 
     specs = subsets(cfg)
     only = {s for s in args.only.replace(",", " ").split() if s}
@@ -392,7 +387,7 @@ def main() -> None:
                     "found — run download_ABC.sh, or place pre-built abcdl episode dirs under "
                     f"{abcdl_dir}/")
             print(f"[{name}] ② skip: no mcap staging — using {n_ready} existing abcdl episodes")
-        stage_abcdl_to_v3(name, abcdl_dir, root / name, fps, args.force)
+        stage_abcdl_to_v3(name, abcdl_dir, root / name, fps, args.force, target_cams)
         if not args.skip_stats:
             stage_stats(name, root, args.config, cfg)
 

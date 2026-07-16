@@ -109,17 +109,6 @@ def mcap_to_abcdl(src_mcap: str, out_dir: str, size: int = DEFAULT_SIZE) -> None
     states = ep.states[si]
     actions = ep.actions[si]
 
-    # --- EE poses (RobotState.pose, state topics only) → per-frame features ---
-    # ee_poses is already on the left-state clock (same T as ep.timestamps), so the same
-    # floor-sample index applies. Stored flat (T, 16) float32 as ff_ee_pose_<side>.bin —
-    # memmap-able, and consumers (e.g. the LeRobot-v3 exporter / SBD EEF-space probes)
-    # get the 4x4 back with .reshape(-1, 4, 4). Dropped silently when a station's mcap
-    # has no pose fields (nothing to preserve).
-    frame_features: dict = {}
-    for side, p in (ep.ee_poses or {}).items():
-        frame_features[f"ee_pose_{side}"] = (
-            np.asarray(p, np.float64)[si].reshape(len(ticks), 16).astype(np.float32))
-
     # --- decode and resample cameras ---
     cams: dict[str, CameraStream] = {}
     res: dict[str, tuple[int, int]] = {}
@@ -163,7 +152,6 @@ def mcap_to_abcdl(src_mcap: str, out_dir: str, size: int = DEFAULT_SIZE) -> None
         timestamps=ticks,
         cameras=cams,
         meta=meta,
-        frame_features=frame_features or None,
     )
     write_abcdl(out_ep, out_dir)
 
