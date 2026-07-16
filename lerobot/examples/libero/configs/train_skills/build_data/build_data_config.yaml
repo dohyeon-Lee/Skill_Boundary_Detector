@@ -27,7 +27,7 @@ skillset_gripper_indices: [-1]       # ABC bimanual layout: [6, 13]
 skillset_nms_dist: 20
 # Optional manual tag for a separate skillset artifact. Example: `trialA` becomes
 # `seg_*_std_globalmean_trialA/`. Empty keeps the canonical output name.
-skillset_output_suffix: "min20"
+skillset_output_suffix: ""
 
 # Boundary threshold: episode_mean uses each episode's own smoothed-divergence
 # mean (legacy). global_mean first collects every episode's curve, computes one

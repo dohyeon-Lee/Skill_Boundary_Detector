@@ -6,6 +6,20 @@
 
 ---
 
+## 빌드 업데이트 (2026-07-17)
+
+- ③ v3 export는 스테이션 혼재를 정규화한다. RealSense의
+  `{top,left_wrist,right_wrist}`는 유지하고, ZED-X는 `top_left -> top`으로
+  바꾸며 `top_right`는 버린다. `ABC_dataset_config.yaml`의
+  `v3_cameras`, `camera_rename`, `camera_drop`이 이 규약을 정한다.
+- 기존에 완성한 `{abc_root}/{subset}` v3 데이터셋에 이 규약을 적용하려면
+  `FORCE=1 ./build_ABC_dataset.sh`로 ③을 다시 실행한다. `_mcap`과 `_abcdl`
+  캐시는 재생성할 필요가 없다.
+- EE pose frame-feature는 최종 v3 스키마에서 제외한다. 아래 §5의 EE pose
+  보존 설명은 이전 구현 기록이며, 최신 builder에는 적용되지 않는다.
+
+---
+
 ## 0. TL;DR — 지금 상태 / 다음 할 일
 
 - **데이터 다운로드 완료**: `XDOF/ABC-130k` 중 `abc_toy` subset (pick_and_place 81태스크 × 20ep = 1620 에피소드, ~270GB mcap). `dataset_ABC/_mcap/abc_toy/` 에 있음.
