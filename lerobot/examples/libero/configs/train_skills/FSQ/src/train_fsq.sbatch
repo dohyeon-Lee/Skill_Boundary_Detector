@@ -81,6 +81,7 @@ cat > "${FSQ_OUTPUT_DIR}/fsq_meta.json" <<JSON
   "skillset_mode": "${SKILLSET_MODE}",
   "skillset_boundary_threshold_mode": "${SKILLSET_BOUNDARY_THRESHOLD_MODE}",
   "skillset_global_threshold_source": "${SKILLSET_GLOBAL_THRESHOLD_SOURCE}",
+  "skillset_output_suffix": "${SKILLSET_OUTPUT_SUFFIX}",
   "weighted_loss": ${FSQ_WEIGHTED_LOSS},
   "weighted_loss_end_weight": ${FSQ_WEIGHTED_LOSS_END_WEIGHT},
   "terminator_arch": "${FSQ_TERMINATOR_ARCH}",

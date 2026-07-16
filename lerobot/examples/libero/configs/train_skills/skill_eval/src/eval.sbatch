@@ -145,7 +145,7 @@ if [ "${EVAL_RUN_FSQ}" = "true" ]; then
   FSQ_META="${MODEL_DIR}/fsq_meta.json"
   F_SKILLSET="${SKILLSET_DIR}"
   if [ -f "${FSQ_META}" ]; then
-    read -r F_DP F_CKPT F_THRESHOLD_MODE F_SKILLSET_MODE F_GLOBAL_SOURCE < <("${BOOTSTRAP_PYTHON}" - "${FSQ_META}" <<'PY'
+    read -r F_DP F_CKPT F_THRESHOLD_MODE F_SKILLSET_MODE F_GLOBAL_SOURCE F_OUTPUT_SUFFIX < <("${BOOTSTRAP_PYTHON}" - "${FSQ_META}" <<'PY'
 import json, sys
 m = json.load(open(sys.argv[1]))
 print(
@@ -154,14 +154,16 @@ print(
     m.get("skillset_boundary_threshold_mode", "episode_mean"),
     m.get("skillset_mode") or "__none__",
     m.get("skillset_global_threshold_source") or "__none__",
+    m.get("skillset_output_suffix") or "__none__",
 )
 PY
 )
     [ "${F_SKILLSET_MODE}" = "__none__" ] && F_SKILLSET_MODE=""
     [ "${F_GLOBAL_SOURCE}" = "__none__" ] && F_GLOBAL_SOURCE=""
+    [ "${F_OUTPUT_SUFFIX}" = "__none__" ] && F_OUTPUT_SUFFIX=""
     eval "$(DP_RUN_NAME="${F_DP}" DP_CHECKPOINT="${F_CKPT}" \
       SKILLSET_BOUNDARY_THRESHOLD_MODE="${F_THRESHOLD_MODE}" SKILLSET_MODE="${F_SKILLSET_MODE}" \
-      SKILLSET_GLOBAL_THRESHOLD_SOURCE="${F_GLOBAL_SOURCE}" \
+      SKILLSET_GLOBAL_THRESHOLD_SOURCE="${F_GLOBAL_SOURCE}" SKILLSET_OUTPUT_SUFFIX="${F_OUTPUT_SUFFIX}" \
       "${BOOTSTRAP_PYTHON}" "${COMMON_SRC_DIR}/train_skills_config.py" --config "${TRAIN_CONFIG}" --shell 2>/dev/null \
       | grep -E '^export SKILLSET_DIR=')"
     F_SKILLSET="${SKILLSET_DIR}"

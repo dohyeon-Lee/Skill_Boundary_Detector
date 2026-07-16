@@ -47,9 +47,11 @@ skillset_mode: std                   # spherical | full | without_gripper | std
 skillset_action_mode: dataset        # LIBERO: dataset; ABC DP/VLA: anchor_relative
 skillset_gripper_mode: discrete      # LIBERO: discrete; ABC: continuous
 skillset_gripper_indices: [-1]       # ABC bimanual layout: [6, 13]
-# Fixed skill-boundary detection params (dn_step, n_gmm, smooth_window, savgol_polyorder,
-# replan_interval, nms_dist; same meaning as train_skills) live as defaults in
-# src/train_skillVLA_config.py — change them there if ever needed.
+# Boundaries must be farther apart than this many frames; the same distance excludes
+# peaks at the start/end edge of each episode.
+skillset_nms_dist: 20
+# Other detection parameters (dn_step, n_gmm, smooth_window, savgol_polyorder,
+# replan_interval) retain the shared defaults in src/train_skillVLA_config.py.
 # Parallelism: step-3 (DP segmentation) is the slow stage, so it is split across
 # GPUs as a Slurm array. Each array job handles `skillset_tasks_per_job` tasks on
 # one GPU; the array size is computed automatically from the source task count.

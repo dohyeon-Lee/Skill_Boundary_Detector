@@ -148,6 +148,28 @@ def resolve_skillset_global_threshold_source(cfg: dict[str, Any], project_root: 
     return resolve_path(project_root, value)
 
 
+def resolve_skillset_output_suffix(cfg: dict[str, Any], project_root: Path) -> str:
+    """Resolve an optional, manually chosen experiment suffix for a skillset."""
+    value = get_value(cfg, "skillset_output_suffix", None)
+    if value is None:
+        build_cfg = (
+            project_root / "lerobot" / "examples" / "libero" / "configs"
+            / "train_skills" / "build_data" / "build_data_config.yaml"
+        )
+        if build_cfg.is_file():
+            value = get_value(load_config(build_cfg), "skillset_output_suffix", "")
+    raw = str(value if value is not None else "").strip()
+    if not raw:
+        return ""
+    tag = raw[1:] if raw.startswith("_") else raw
+    if not tag or not all(char.isalnum() or char in "._-" for char in tag):
+        raise ValueError(
+            "skillset_output_suffix may contain only letters, digits, '.', '_' and '-', "
+            f"got {raw!r}."
+        )
+    return f"_{tag}"
+
+
 def as_bool(value: Any) -> bool:
     if isinstance(value, bool):
         return value
@@ -322,7 +344,12 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
     skillset_threshold_suffix = ""
     if skillset_boundary_threshold_mode == "global_mean":
         skillset_threshold_suffix = "_globalref" if skillset_global_threshold_source else "_globalmean"
-    skillset_suffix = probe_settings["skillset_probe_suffix"] + skillset_threshold_suffix
+    skillset_output_suffix = resolve_skillset_output_suffix(cfg, root)
+    skillset_suffix = (
+        probe_settings["skillset_probe_suffix"]
+        + skillset_threshold_suffix
+        + skillset_output_suffix
+    )
     fsq_seg_dir = fsq_inputs_dir / f"seg_{dp_policy}_ck{dp_checkpoint}{skillset_suffix}"
 
     fsq_levels = as_levels(get_value(cfg, "fsq_levels", [5, 5, 5]))
@@ -388,6 +415,7 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
     dp_tag += probe_settings["skillset_probe_suffix"]
     if skillset_boundary_threshold_mode == "global_mean":
         dp_tag += "_global"
+    dp_tag += skillset_output_suffix
     fsq_run_template = str(
         get_value(
             cfg,
@@ -529,6 +557,7 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         **probe_settings,
         "skillset_boundary_threshold_mode": skillset_boundary_threshold_mode,
         "skillset_global_threshold_source": skillset_global_threshold_source,
+        "skillset_output_suffix": skillset_output_suffix,
         "skillset_global_threshold_path": (
             fsq_seg_dir / str(get_value(cfg, "skillset_name", "skillset"))
             / "global_boundary_threshold.json"

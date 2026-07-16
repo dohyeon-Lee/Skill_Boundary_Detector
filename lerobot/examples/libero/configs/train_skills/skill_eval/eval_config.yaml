@@ -12,11 +12,13 @@ target_dataset: libero_90_full_full
 fsq_dataset_root: FSQ_dataset
 fsq_inputs_name: FSQ_inputs
 skillset_name: skillset
-# DP boundary HTML uses this explicitly selected skillset. global_mean selects
-# seg_{dp}_ck{ckpt}_globalmean; episode_mean selects the legacy seg_{dp}_ck{ckpt}.
+# DP boundary HTML uses this explicitly selected action-manifold skillset.
+skillset_mode: std                   # spherical | full | without_gripper | std
+# global_mean selects seg_{dp}_ck{ckpt}_{mode}_globalmean; episode_mean omits
+# only the threshold suffix.
 skillset_boundary_threshold_mode: global_mean   # episode_mean | global_mean
 
-eval_run_dp: false
+eval_run_dp: true
 
 eval_dp_run_name: libero_90_full_full_state_obs20        
 eval_dp_checkpoint: 100000     
@@ -31,7 +33,7 @@ dp_eval_task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]   # empty [] = first dp_eval_n_
 # ===============================================================================================================
 # ===============================================================================================================
 
-eval_run_fsq: true
+eval_run_fsq: false
 
 # Folder names now embed the DP run (dp_tag) that produced the skillset. Renamed runs (all dino8_obs10):
 # fsq_eval_run_name: libero_90_full_full_state_obs20_fsq555_dino_frozen_small_rawstate_vsa_state
