@@ -14,6 +14,9 @@ fsq_inputs_name: FSQ_inputs
 skillset_name: skillset
 # DP boundary HTML uses this explicitly selected action-manifold skillset.
 skillset_mode: std                   # spherical | full | without_gripper | std
+# Exact manual artifact tag. Empty selects the canonical no-suffix skillset;
+# set `trialA` to evaluate `..._std_globalmean_trialA/skillset`.
+skillset_output_suffix: "min20"
 # global_mean selects seg_{dp}_ck{ckpt}_{mode}_globalmean; episode_mean omits
 # only the threshold suffix.
 skillset_boundary_threshold_mode: global_mean   # episode_mean | global_mean
