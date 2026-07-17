@@ -155,8 +155,8 @@ LIBERO는 primary(`observation.images.image`)+wrist(`wrist_image`) 2슬롯. ABC�
 - ⚠️ DP action space는 어느 선택이든 **joint 유지** — 바뀌는 건 SBD probe 좌표계뿐. (next-state를 action으로 쓰는 것 아님)
 
 ### 기타
-- relative action **배선**: fork에 `RelativeActionsProcessorStep`은 있지만 pi05/skillVLA/skill_expert 커스텀 프로세서 체인에 미연결. enable + ④-b stats 연결 필요 (학습 단계 진입 시).
-- DP config: `dp_config.yaml` `target_dataset: abc_toy`, `train_DP: true`, `dp_batch_size: 256` 권장. 시간창 `n_obs/horizon`은 프레임수라 30Hz에서 시간 짧아짐 — 프레임수 유지(20/24)로 1차 (SBD 경계 이상하면 1순위 튜닝). **DP는 state-only라 카메라 무관, 코드 수정 0.**
+- relative action **배선**: **DP는 완료(2026-07-17)** — user 결정("probe를 VLA와 같은 relative 공간에서")에 따라 DP도 relative로 학습. 구현: `DiffusionConfig.use_relative_actions`/`relative_stats_path` + `processor_diffusion.py`의 `DiffusionRelativeActionsProcessorStep`(공식 스텝 서브클래스 — **DP는 state가 히스토리 윈도우 (B,n_obs,D)라 anchor=윈도우 마지막(현재) state로 축약** 후 위임) + normalizer action stats를 ④-b relative stats로 스왑 + 짝 `AbsoluteActionsProcessorStep`(역변환) + horizon>chunk 가드. 수치검증: 변환·gripper-absolute·round-trip 전부 0오차. 배선: `dp_config.yaml dp_relative: true` → resolver `DP_RELATIVE` → sbatch가 `--policy.use_relative_actions` + stats 경로(fail-fast). **pi05/skillVLA/skill_expert 배선은 아직** (stage1 진입 시; 같은 ④-b stats 사용, chunk50=pi05 호환).
+- DP config: `dp_config.yaml` `target_dataset: abc_toy`, `train_DP: true`, `dp_relative: true`(신설, 기본 on — LIBERO 돌릴 땐 false로), `dp_batch_size: 256` 권장. 시간창 `n_obs/horizon`은 프레임수라 30Hz에서 시간 짧아짐 — 프레임수 유지(20/24)로 1차 (SBD 경계 이상하면 1순위 튜닝). **DP는 state-only라 카메라 무관.**
 
 ---
 

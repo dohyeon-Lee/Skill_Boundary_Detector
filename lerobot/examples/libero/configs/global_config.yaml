@@ -20,9 +20,9 @@
 
 project_root: /data2/dohyeon/SBD
 #dataset | dataset_filtered | dataset_ABC
-dataset_root: dataset_filtered
+dataset_root: dataset_ABC
 #outputs | outputs_filtered | outputs_ABC
-outputs_root: outputs_filtered
+outputs_root: outputs_ABC
 # --- Slurm common defaults (canonical; every module reads these) ---
 # train_partition: accepts one or more (comma/list); blank -> Slurm picks first available.
 # NOTE: leave non-empty — resolvers fall back to per-module defaults (big/debug) when this is

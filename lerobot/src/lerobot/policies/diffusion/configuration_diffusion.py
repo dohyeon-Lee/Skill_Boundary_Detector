@@ -145,6 +145,15 @@ class DiffusionConfig(PreTrainedConfig):
     # diffusion on observation.state history alone. Forces image_features to {} and relaxes the
     # "need an image/env_state" input checks.
     state_only: bool = False
+    # RELATIVE actions (ABC/bimanual): train on `action − state(anchor)` instead of absolute
+    # targets, anchored at the CURRENT state (= last obs-window step) — the same convention the
+    # pi-family VLA and the SBD VF probe use, so the probe geometry matches this DP's action space.
+    # Requires `relative_stats_path` pointing at the dataset's meta/relative_action_stats.json
+    # (produced by ABC_dataset build ④-b): it carries the RELATIVE distribution stats the
+    # normalizer must use (pipeline order is relative → normalize), plus action_names and the
+    # exclude list (e.g. grippers stay absolute). Absolute meta/stats.json is NOT touched.
+    use_relative_actions: bool = False
+    relative_stats_path: str | None = None
     # Unet.
     down_dims: tuple[int, ...] = (512, 1024, 2048)
     kernel_size: int = 5

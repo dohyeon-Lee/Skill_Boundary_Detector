@@ -141,9 +141,7 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
     source_out_dir = skillvla_root / source_dataset
     run_dir = source_out_dir / run_tag
     work_dir = source_out_dir / "_work"
-    dino_root = work_dir / "dino"                         # per-grid subdirs: dino/pg{grid}/{camera}/
-    dp_dino_dir = dino_root / f"pg{dp_patch_grid}"        # DP segmentation reads here (3rd)
-    fsq_dino_dir = dino_root / f"pg{fsq_patch_grid}"      # extract/merge read here (3rd [+ wrist])
+    # (dino_root/dp_dino_dir/fsq_dino_dir 선언 제거 — DINO precompute 은퇴로 소비자 0, line ~179 주석 참조)
     # skillset + skill_tokens depend on the DP model (not FSQ), so key them by DP so a
     # different DP/checkpoint never reuses or clobbers another's segmentation.
     seg_dir = work_dir / (

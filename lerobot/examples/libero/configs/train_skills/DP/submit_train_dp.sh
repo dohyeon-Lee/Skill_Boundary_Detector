@@ -1,26 +1,21 @@
 #!/usr/bin/env bash
+# Submit DP (Diffusion Policy) training as a Slurm job — SBD 파이프라인의 Stage 0.
+# (구명 submit_train_dp_dino.sh — DINO 인코더/precompute 은퇴로 rename. dp_vision: resnet|state.)
+#
 # Inputs:
-#   dataset name : TRAIN_DATA or target_dataset in ../train_skills_config.yaml
-#   dataset path : {project_root}/{dataset_root}/{target_dataset}
-#   frame DINO   : {project_root}/{dataset_root}/FSQ_dataset/{target_dataset}/DINO/pg{dino_patch_grid}
-# Reference models/configs:
-#   base DP cfg  : {project_root}/lerobot/{dp_base_config}
-#   DINO source  : {project_root}/{dataset_root}/{dino_source_dataset}_DINO/pg{dino_patch_grid}
+#   dataset name : TRAIN_DATA env or target_dataset in dp_config.yaml
+#   dataset path : {project_root}/{dataset_root}/{target_dataset}   (LeRobot v3)
+#   base DP cfg  : {project_root}/lerobot/{dp_base_config} (아키텍처만; 나머지는 런타임 오버라이드)
+#   relative     : dp_relative=true면 dataset의 meta/relative_action_stats.json 필요 (ABC build ④-b)
 # Outputs:
-#   prepared DINO: {project_root}/{dataset_root}/FSQ_dataset/{target_dataset}/DINO/pg{dino_patch_grid}
-#   DP policy    : {project_root}/outputs/DP/{dp_policy_name}
-#   checkpoint   : {project_root}/outputs/DP/{dp_policy_name}/checkpoints/{dp_checkpoint}/pretrained_model
+#   DP policy    : {project_root}/{outputs_root}/DP/{dp_policy_name}
+#   checkpoint   : …/DP/{dp_policy_name}/checkpoints/{dp_checkpoint}/pretrained_model
 # Skip DP train:
 #   train_DP: false, or checkpoint already exists at the checkpoint path above
 #
-# DINO copy only, without submitting DP training:
-#   cd {project_root}/lerobot/examples/libero/configs/train_skills/DP
-#   DINO_SOURCE_DATASET=libero_90_full_full \
-#       --config ../train_skills_config.yaml
-#   Use DINO_SOURCE_DATASET only when the source DINO directory should be
-#   {dataset_root}/{DINO_SOURCE_DATASET}_DINO instead of the inferred base name.
-#
-# Submit train_dp_dino.sbatch using Slurm values from train_skills_config.yaml.
+# Usage (from this folder):
+#   ./submit_train_dp.sh
+#   TRAIN_DATA=abc_toy ./submit_train_dp.sh      # dataset 오버라이드
 
 set -euo pipefail
 
@@ -81,4 +76,4 @@ if [ -e "${DP_POLICY_PATH}" ]; then
 fi
 
 TRAIN_SKILLS_CONFIG="${CONFIG_PATH}" TRAIN_DATA="${TARGET_DATASET}" \
-  sbatch "${SBATCH_ARGS[@]}" "${DP_SRC_DIR}/train_dp_dino.sbatch"
+  sbatch "${SBATCH_ARGS[@]}" "${DP_SRC_DIR}/train_dp.sbatch"

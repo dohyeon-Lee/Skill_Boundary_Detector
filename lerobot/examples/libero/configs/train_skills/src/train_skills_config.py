@@ -405,6 +405,10 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "dp_n_action_steps": int(get_value(cfg, "dp_n_action_steps", dp_horizon - dp_n_obs_steps + 1)),
         "dp_horizon": dp_horizon,
         "dp_batch_size": int(get_value(cfg, "dp_batch_size", 64)),
+        # RELATIVE action 학습 (ABC/bimanual): action−state(anchor)로 학습 — VLA/SBD probe와 동일
+        # 공간. true면 sbatch가 --policy.use_relative_actions + relative_stats_path(dataset
+        # meta/relative_action_stats.json, build ④-b 산출물)를 붙임. LIBERO(delta EEF)에선 false.
+        "dp_relative": as_bool(get_value(cfg, "dp_relative", False)),
         "dp_steps": int(get_value(cfg, "dp_steps", 100000)),
         "dp_num_workers": int(get_value(cfg, "dp_num_workers", 4)),
         "dp_save_freq": int(get_value(cfg, "dp_save_freq", 50000)),

@@ -10,13 +10,13 @@
 #
 # Train Diffusion Policy (resnet: raw frames | state: proprioceptive-only).
 #
-# Submit through ../submit_train_dp_dino.sh so yaml Slurm settings resolve first.
+# Submit through ../submit_train_dp.sh so yaml Slurm settings resolve first.
 #
 # Override dataset/config when needed:
-#   TRAIN_DATA=libero_90_full_10 sbatch train_dp_dino.sbatch
-#   TRAIN_SKILLS_CONFIG=/path/to/train_skills_config.yaml sbatch train_dp_dino.sbatch
+#   TRAIN_DATA=libero_90_full_10 sbatch train_dp.sbatch
+#   TRAIN_SKILLS_CONFIG=/path/to/train_skills_config.yaml sbatch train_dp.sbatch
 #
-#SBATCH --job-name=DP_DINO_train
+#SBATCH --job-name=DP_train
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
@@ -26,19 +26,25 @@
 set -euo pipefail
 mkdir -p logs
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-COMMON_SRC_DIR="${SCRIPT_DIR}/../../src"
-CONFIG_PATH=${TRAIN_SKILLS_CONFIG:-${SCRIPT_DIR}/../dp_config.yaml}
-
-BOOTSTRAP_PYTHON="${SCRIPT_DIR}/../../../../../../../.venv/bin/python"
-if [ ! -x "${BOOTSTRAP_PYTHON}" ]; then
-  BOOTSTRAP_PYTHON=python3
-fi
-
-if [ -n "${TRAIN_DATA:-}" ]; then
-  eval "$("${BOOTSTRAP_PYTHON}" "${COMMON_SRC_DIR}/train_skills_config.py" --config "${CONFIG_PATH}" --dataset "${TRAIN_DATA}" --shell)"
+# Slurm은 이 스크립트를 /var/spool/slurmd/<job>/ 로 복사해 실행하므로 BASH_SOURCE 기준
+# 상대경로가 깨진다. 정상 경로는 submit_train_dp.sh가 전부 resolve+export한 env 상속 —
+# 그 경우 재해석을 스킵. sbatch 단독 제출 폴백은 SLURM_SUBMIT_DIR(제출 cwd) 기준으로 복원.
+if [ -n "${PROJECT_ROOT:-}" ] && [ -n "${RAW_DATASET_DIR:-}" ] && [ -n "${DP_OUTPUT_DIR:-}" ]; then
+  echo "config resolved by submit wrapper (env inherited) — skip re-resolve"
 else
-  eval "$("${BOOTSTRAP_PYTHON}" "${COMMON_SRC_DIR}/train_skills_config.py" --config "${CONFIG_PATH}" --shell)"
+  BASE_DIR="${SLURM_SUBMIT_DIR:-$(pwd)}"
+  CONFIG_PATH=${TRAIN_SKILLS_CONFIG:-${BASE_DIR}/dp_config.yaml}        # DP/ 에서 제출한 경우
+  [ -f "${CONFIG_PATH}" ] || CONFIG_PATH="${BASE_DIR}/../dp_config.yaml"  # DP/src 에서 제출한 경우
+  [ -f "${CONFIG_PATH}" ] || { echo "dp_config.yaml을 찾을 수 없음 (SLURM_SUBMIT_DIR=${BASE_DIR}; TRAIN_SKILLS_CONFIG로 절대경로 지정)" >&2; exit 1; }
+  CONFIG_DIR="$(cd "$(dirname "${CONFIG_PATH}")" && pwd)"
+  COMMON_SRC_DIR="${CONFIG_DIR}/../src"                                  # configs/train_skills/src
+  BOOTSTRAP_PYTHON="$(cd "${CONFIG_DIR}/../../../../../.." && pwd)/.venv/bin/python"
+  [ -x "${BOOTSTRAP_PYTHON}" ] || BOOTSTRAP_PYTHON=python3
+  if [ -n "${TRAIN_DATA:-}" ]; then
+    eval "$("${BOOTSTRAP_PYTHON}" "${COMMON_SRC_DIR}/train_skills_config.py" --config "${CONFIG_PATH}" --dataset "${TRAIN_DATA}" --shell)"
+  else
+    eval "$("${BOOTSTRAP_PYTHON}" "${COMMON_SRC_DIR}/train_skills_config.py" --config "${CONFIG_PATH}" --shell)"
+  fi
 fi
 
 cd "${LEROBOT_ROOT}"
@@ -49,7 +55,7 @@ export WANDB_DATA_DIR=${WANDB_DATA_DIR:-${PROJECT_ROOT}/../.wandb_data}
 mkdir -p "${WANDB_CACHE_DIR}" "${WANDB_DATA_DIR}"
 export WANDB_DISABLE_SYMLINKS=true
 
-echo "START DP DINO TRAIN"
+echo "START DP TRAIN"
 echo "Node       : ${SLURMD_NODENAME:-local}"
 nvidia-smi
 
@@ -104,6 +110,22 @@ elif [ "${DP_VISION}" = "state" ]; then
 else
   echo "dp_vision must be 'resnet' or 'state' (got '${DP_VISION}') — DINO encoder 옵션은 은퇴함." >&2
   exit 1
+fi
+
+# RELATIVE actions (ABC/bimanual): action−state(anchor) 학습 — VLA/SBD probe와 동일 공간.
+# 정규화는 relative 분포 stats(meta/relative_action_stats.json, build ④-b)를 사용.
+if [ "${DP_RELATIVE:-false}" = "true" ]; then
+  REL_STATS="${RAW_DATASET_DIR}/meta/relative_action_stats.json"
+  if [ ! -f "${REL_STATS}" ]; then
+    echo "dp_relative=true인데 relative stats 없음: ${REL_STATS}" >&2
+    echo "  → ABC_dataset build ④-b(compute_relative_action_stats.py)를 먼저 실행하세요." >&2
+    exit 1
+  fi
+  echo "  relative     : ON (stats: ${REL_STATS})"
+  POLICY_ARGS+=(
+    --policy.use_relative_actions=true
+    --policy.relative_stats_path="${REL_STATS}"
+  )
 fi
 echo "  dataset      : ${TARGET_DATASET}"
 echo "  output       : ${DP_OUTPUT_DIR}"
