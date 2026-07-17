@@ -155,7 +155,7 @@ def update_policy(
 
 
 _WINDOWED_POLICY_METRIC_KEYS = {"action_loss", "action_weighted_loss"}
-_WINDOWED_POLICY_METRIC_PREFIXES = ("regime/", "terminator/")
+_WINDOWED_POLICY_METRIC_PREFIXES = ("regime/", "terminator/", "wrong_language/")
 
 
 class _WindowedPolicyMetrics:
@@ -709,7 +709,8 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                     "action_weighted_loss",     # Stage-1 skill_expert: per-sample-weighted action MSE (action_weight only)
                 }
                 wandb_log_dict = {k: v for k, v in wandb_log_dict.items()
-                                  if k in _wandb_keep or k.startswith(("terminator/", "regime/", "distill/"))}
+                                  if k in _wandb_keep or k.startswith(
+                                      ("terminator/", "regime/", "distill/", "wrong_language/"))}
                 # A policy that reports its own action_loss (Stage-1 skill_expert) replaces the generic
                 # backprop-scalar "loss" with it → drop the redundant generic "loss".
                 if "action_loss" in wandb_log_dict:
@@ -722,8 +723,13 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                                   if k.startswith("regime/")}
                 distill_metrics = {k[len("distill/"):]: v for k, v in wandb_log_dict.items()
                                    if k.startswith("distill/")}
+                wrong_language_metrics = {
+                    k[len("wrong_language/"):]: v for k, v in wandb_log_dict.items()
+                    if k.startswith("wrong_language/")
+                }
                 main_metrics = {k: v for k, v in wandb_log_dict.items()
-                                if not k.startswith(("terminator/", "regime/", "distill/"))}
+                                if not k.startswith(
+                                    ("terminator/", "regime/", "distill/", "wrong_language/"))}
                 wandb_logger.log_dict(main_metrics, step)
                 if term_metrics:
                     wandb_logger.log_dict(term_metrics, step, mode="train_terminator")
@@ -731,6 +737,9 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                     wandb_logger.log_dict(regime_metrics, step, mode="train_regime")
                 if distill_metrics:
                     wandb_logger.log_dict(distill_metrics, step, mode="train_distill")
+                if wrong_language_metrics:
+                    wandb_logger.log_dict(
+                        wrong_language_metrics, step, mode="train_wrong_language")
             train_tracker.reset_averages()
             if windowed_policy_metrics is not None:
                 windowed_policy_metrics.reset()

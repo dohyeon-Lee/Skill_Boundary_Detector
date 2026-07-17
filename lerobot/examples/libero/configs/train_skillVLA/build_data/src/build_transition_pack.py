@@ -11,6 +11,7 @@ Output: {skillvla_dir}/../transitions.npz  (next to FSQ.pt / ISS / dino.npz — 
   jpeg_3rd,  off_3rd   : one flat uint8 buffer of JPEG bytes + offsets (N*(2p+1)+1) — 3rd-person cam
   jpeg_wrist, off_wrist: same for the wrist cam
   skill_code (N)       : the segment's FSQ code
+  start_state (N,2p+1,D): raw observation.state at the SAME jitter window as the JPEGs
   task_index (N), tasks (unique strings)  : language (tokenize at load time → packs merge freely)
   episode_id (N), seg_rank (N), frame_start (N), frame_end (N)  : provenance — future terminator-replay
                          extension joins these against dino.npz / ds,de without re-building
@@ -60,7 +61,8 @@ def build(skillvla_dir: Path, out: Path, quality: int, limit_segments: int = 0) 
         if e not in ep_first_row:
             ep_first_row[e] = i
 
-    segs: list[tuple[int, int, int, int, int, int]] = []   # (ep, rank, start_f, end_f, code, task_idx)
+    segs: list[tuple[int, int, int, int, int, int, int]] = []
+    # (ep, rank, start_f, end_f, code, task_idx, ISS flat index)
     for ep, ranks in sorted(iss.by_ep.items()):
         row = hf[ep_first_row[ep]]
         ss = np.asarray(row["skill_sequence"]).reshape(-1)
@@ -71,14 +73,15 @@ def build(skillvla_dir: Path, out: Path, quality: int, limit_segments: int = 0) 
             start_f = int(iss.frame_start[flat])
             if start_f != int(ifs[rank]):
                 raise ValueError(f"ISS/IFS mismatch ep={ep} rank={rank}: {start_f} != {int(ifs[rank])}")
-            segs.append((ep, rank, start_f, start_f + int(lens[rank]) - 1, int(ss[rank]), task_idx))
+            segs.append((ep, rank, start_f, start_f + int(lens[rank]) - 1,
+                         int(ss[rank]), task_idx, int(flat)))
 
     if limit_segments > 0:
         segs = segs[:limit_segments]                     # debug/smoke builds only
     print(f"[transition-pack] {len(segs)} segments × window {win} (±{pmax}) × 2 cams — building …")
     j3, o3, jw, ow = bytearray(), [0], bytearray(), [0]
-    code_a, task_a, ep_a, rank_a, fs_a, fe_a = [], [], [], [], [], []
-    for n, (ep, rank, start_f, end_f, code, task_idx) in enumerate(segs):
+    code_a, task_a, ep_a, rank_a, fs_a, fe_a, state_a = [], [], [], [], [], [], []
+    for n, (ep, rank, start_f, end_f, code, task_idx, flat) in enumerate(segs):
         ep_len = int(ds.meta.episodes[ep]["length"])
         ts = [int(np.clip(start_f + o, 0, ep_len - 1)) / fps for o in range(-pmax, pmax + 1)]
         imgs = reader._query_videos({CAM_3RD: ts, CAM_WRIST: ts}, ep)  # noqa: SLF001
@@ -89,6 +92,7 @@ def build(skillvla_dir: Path, out: Path, quality: int, limit_segments: int = 0) 
                 offs.append(len(buf))
         code_a.append(code); task_a.append(task_idx); ep_a.append(ep)
         rank_a.append(rank); fs_a.append(start_f); fe_a.append(end_f)
+        state_a.append(np.asarray(iss.windows[flat], dtype=np.float32))
         if (n + 1) % 2000 == 0:
             print(f"  {n + 1}/{len(segs)}  (buffers: {len(j3) / 1e9:.2f} + {len(jw) / 1e9:.2f} GB)")
 
@@ -96,14 +100,18 @@ def build(skillvla_dir: Path, out: Path, quality: int, limit_segments: int = 0) 
              for i in range(len(ds.meta.tasks))]
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_suffix(".npz.tmp.npz")
+    state_array = (np.stack(state_a) if state_a else
+                   np.zeros((0, win, int(iss.windows.shape[-1])), dtype=np.float32))
     np.savez_compressed(
         tmp,
         jpeg_3rd=np.frombuffer(bytes(j3), dtype=np.uint8), off_3rd=np.asarray(o3, dtype=np.int64),
         jpeg_wrist=np.frombuffer(bytes(jw), dtype=np.uint8), off_wrist=np.asarray(ow, dtype=np.int64),
         skill_code=np.asarray(code_a, dtype=np.int64), task_index=np.asarray(task_a, dtype=np.int64),
+        start_state=state_array,
         episode_id=np.asarray(ep_a, dtype=np.int64), seg_rank=np.asarray(rank_a, dtype=np.int64),
         frame_start=np.asarray(fs_a, dtype=np.int64), frame_end=np.asarray(fe_a, dtype=np.int64),
         tasks=np.asarray(tasks, dtype=np.str_), pmax=np.int64(pmax), fps=np.float64(fps),
+        schema_version=np.int64(2),
     )
     tmp.rename(out)
     print(f"[transition-pack] wrote {out}  ({out.stat().st_size / 1e9:.2f} GB, {len(segs)} segments)")

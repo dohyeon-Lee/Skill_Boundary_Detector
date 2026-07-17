@@ -69,8 +69,13 @@ cp -f "${FSQ_MODEL_PATH}" "${FSQ_COPY_PATH}"
 echo "Copied FSQ checkpoint → ${FSQ_COPY_PATH}"
 
 # ── (d) transition pack — stage-3 / FT-replay training set (segment-level skill-start pairs).
-# Built here so every fresh dataset ships with it; stage3's sbatch also lazy-builds if missing.
-if [ ! -f "${SKILLVLA_RUN_DIR}/transitions.npz" ]; then
+# Built here so every fresh dataset ships with it; rebuild old packs that lack the raw start-state window.
+TRANSITION_PACK="${SKILLVLA_RUN_DIR}/transitions.npz"
+if [ -f "${TRANSITION_PACK}" ] && "${PROJECT_ROOT}/.venv/bin/python" -c \
+    'import numpy as np,sys; z=np.load(sys.argv[1]); assert "start_state" in z and int(z["schema_version"]) >= 2' \
+    "${TRANSITION_PACK}"; then
+  echo "Transition pack schema OK: ${TRANSITION_PACK}"
+else
   PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     "${PROJECT_ROOT}/.venv/bin/python" "${SRC_DIR}/build_transition_pack.py" \
     --skillvla_dir="${SKILLVLA_RUN_DIR}/skillvla" \

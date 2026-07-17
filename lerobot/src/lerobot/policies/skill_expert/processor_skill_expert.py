@@ -41,7 +41,9 @@ from lerobot.utils.constants import (
 # Skill columns the SkillExpert needs from the dataset: current skill = skill_sequence[skill_index];
 # skill_ds/skill_de give the within-skill offsets (boundary/cum/terminator targets). (The skill-progress
 # token was removed — the action expert conditions on the skill code only.)
-SKILL_EXPERT_BATCH_KEYS = ("skill_index", "skill_sequence", "skill_ds", "skill_de")
+SKILL_EXPERT_BATCH_KEYS = (
+    "skill_index", "skill_sequence", "skill_sequence_len", "skill_ds", "skill_de",
+)
 # Read by the model in forward — must SURVIVE the processor (NOT observation.* prefixed).
 # (skill_decoder_dino 토큰 키 은퇴 — terminator는 배치의 observation.images.*를 ONLINE DINO로 직접
 #  토큰화. skill_state_traj kept for forward-compat with a state-traj Oracle wrapper; absent = harmless.)

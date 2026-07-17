@@ -1,7 +1,7 @@
 """STAGE-3 / FT-replay transition dataset — segment-level samples from a prebuilt transitions.npz.
 
 The VLM only runs at skill TRANSITIONS at deployment (predict once per segment, then cached), so the
-skill-prediction stages need exactly one training pair per segment: (jittered skill-start images,
+skill-prediction stages need exactly one training pair per segment: (jittered skill-start images/state,
 language) → FSQ code. This dataset serves those pairs straight from the transition pack
 (build_data/src/build_transition_pack.py) — no episode-video seeks, segment-uniform sampling (= the
 per-transition deployment distribution, instead of frame-uniform's skill-length weighting).
@@ -34,6 +34,7 @@ from lerobot.policies.skillVLA.dataset_skillVLA import (
     SKILL_START_WRIST_IMAGE,
     SkillVLADataset,
 )
+from lerobot.policies.skillVLA.skill_jitter import sample_offset
 
 
 class _Pack:
@@ -44,19 +45,26 @@ class _Pack:
         self.jpeg = {CAM_3RD: np.asarray(z["jpeg_3rd"]), CAM_WRIST: np.asarray(z["jpeg_wrist"])}
         self.off = {CAM_3RD: np.asarray(z["off_3rd"]), CAM_WRIST: np.asarray(z["off_wrist"])}
         self.skill_code = np.asarray(z["skill_code"])
+        if "start_state" not in z or int(z.get("schema_version", 0)) < 2:
+            raise ValueError(
+                f"Transition pack {path} predates jittered start-state support. Rebuild it with "
+                "build_data/src/build_transition_pack.py."
+            )
+        self.start_state = np.asarray(z["start_state"], dtype=np.float32)
         self.task_index = np.asarray(z["task_index"])
         self.tasks = [str(t) for t in np.asarray(z["tasks"])]
         self.pmax = int(z["pmax"])
         self.n = int(self.skill_code.shape[0])
         self.win = 2 * self.pmax + 1
         assert self.off[CAM_3RD].shape[0] == self.n * self.win + 1, f"corrupt pack: {path}"
+        assert self.start_state.shape[:2] == (self.n, self.win), f"corrupt start_state: {path}"
 
     def image(self, cam: str, seg: int, win_idx: int) -> torch.Tensor:
         from PIL import Image  # noqa: PLC0415
 
         flat = seg * self.win + win_idx
         raw = self.jpeg[cam][self.off[cam][flat]: self.off[cam][flat + 1]]
-        arr = np.asarray(Image.open(io.BytesIO(raw.tobytes())).convert("RGB"))
+        arr = np.asarray(Image.open(io.BytesIO(raw.tobytes())).convert("RGB")).copy()
         return torch.from_numpy(arr).permute(2, 0, 1).float() / 255.0     # CHW float [0,1], native res
 
 
@@ -64,7 +72,7 @@ class SkillTransitionDataset(SkillVLADataset):
     """Segment-level (transition) samples for pt_stage="skill" / FT SKILL batches.
 
     ``transition_packs``: one or more transitions.npz paths — index = concatenation. Each __getitem__
-    picks a uniform offset in [-pmax, +pmax] (the deployment-timing jitter) and decodes the two
+    picks a signed half-normal offset in [-pmax, +pmax] (the deployment-timing jitter) and decodes the two
     skill-start JPEGs for that offset; everything motor-side is a dummy."""
 
     def __init__(self, *args, transition_packs: list[str] | None = None, **kwargs):
@@ -90,16 +98,17 @@ class SkillTransitionDataset(SkillVLADataset):
         pack = self._packs[pi]
         seg = idx - (int(self._cum[pi - 1]) if pi > 0 else 0)
 
-        offset = int(np.random.randint(-pack.pmax, pack.pmax + 1))   # deployment-timing jitter
+        offset = sample_offset(pack.pmax)                            # same half-normal law as Stage-2
         win_idx = pack.pmax + offset
         img3 = pack.image(CAM_3RD, seg, win_idx)
         imgw = pack.image(CAM_WRIST, seg, win_idx)
+        start_state = torch.from_numpy(pack.start_state[seg, win_idx].copy())
         code = int(pack.skill_code[seg])
 
         item: dict = {
             SKILL_START_IMAGE: img3,
             SKILL_START_WRIST_IMAGE: imgw,
-            SKILL_START_STATE: torch.zeros(self._state_dim),          # unused by the SKILL path
+            SKILL_START_STATE: start_state,                            # prompt state at the SAME offset
             SKILL_CODE: torch.tensor(code, dtype=torch.long),
             SKILL_CODE_TRUE: torch.tensor(code, dtype=torch.long),
             SKILL_PROGRESS: torch.tensor(0.0),

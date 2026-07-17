@@ -1028,11 +1028,31 @@ class SkillExpertPolicy(PreTrainedPolicy):
             masks.append(torch.ones(img.shape[0], dtype=torch.bool, device=device))
         return images, masks
 
-    def _skill_code(self, batch: dict) -> Tensor:
-        """Current GT FSQ skill code = skill_sequence[skill_index]."""
+    def _true_skill_code(self, batch: dict) -> Tensor:
+        """Unjittered current GT code, used by the terminator's ds/de targets."""
         seq = batch["skill_sequence"].long()
         idx = batch["skill_index"].long().view(-1, 1).clamp(0, seq.shape[1] - 1)
         code = seq.gather(1, idx).squeeze(1)
+        return code.clamp(0, self.config.skill_vocab_size - 1)
+
+    def _skill_code(self, batch: dict) -> Tensor:
+        """Training action code with half-normal early/late transition jitter; exact GT at eval."""
+        seq = batch["skill_sequence"].long()
+        idx = batch["skill_index"].long().view(-1).clamp(0, seq.shape[1] - 1)
+        pmax = int(getattr(self.config, "transition_jitter_pmax", 0))
+        if self.training and pmax > 0:
+            from lerobot.policies.skillVLA.skill_jitter import choose_jitter_torch  # noqa: PLC0415
+
+            idx, _ = choose_jitter_torch(
+                idx,
+                batch["skill_ds"].long().view(-1),
+                batch["skill_de"].long().view(-1),
+                batch["skill_sequence_len"].long().view(-1),
+                pmax,
+            )
+            idx = idx.clamp(0, seq.shape[1] - 1)
+        code = seq.gather(1, idx[:, None]).squeeze(1)
+        self._last_transition_jitter_fraction = (idx != batch["skill_index"].long().view(-1)).float().mean()
         return code.clamp(0, self.config.skill_vocab_size - 1)
 
     def _use_image_free_lora_batch(self, device: torch.device) -> bool:
@@ -1107,6 +1127,9 @@ class SkillExpertPolicy(PreTrainedPolicy):
         # action_weight; never the backpropped value in weighted mode). The cross-run comparison axis.
         loss_dict = {"loss_per_dim": losses.mean(dim=(0, 1)).detach().cpu().numpy().tolist(),
                      "action_loss": plain_action.detach().item()}
+        jitter_fraction = getattr(self, "_last_transition_jitter_fraction", None)
+        if jitter_fraction is not None:
+            loss_dict["regime/transition_jitter_fraction"] = jitter_fraction.detach().item()
         if image_free_lora:
             loss_dict["lora_anchor_loss"] = objective_losses.mean().detach().item()
             loss_dict["lora_regime/image_free"] = 1.0
@@ -1198,7 +1221,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
                     "resuming with an OLD pre-processor from before that step existed. Rebuild the "
                     "pre-processor; feeding normalized observation.state would double-normalize the FSQ input.")
             prog_pred, term_logits = self.model.terminator_predict(
-                self._skill_code(batch), raw_state, img_3rd, wrist_image=img_wrist)
+                self._true_skill_code(batch), raw_state, img_3rd, wrist_image=img_wrist)
             ds = batch["skill_ds"].float().view(-1).to(prog_pred.device)
             de = batch["skill_de"].float().view(-1).to(prog_pred.device)
             prog_tgt = (ds / (ds + de).clamp_min(1.0)).clamp(0.0, 1.0)                 # within-skill progress

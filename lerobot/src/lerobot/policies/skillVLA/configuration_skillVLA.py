@@ -95,8 +95,9 @@ class SkillVLAConfig(PI05Config):
     #   ① lora_skill @ VLM LLM      — Stage-3 skill-prediction view.
     #   ② vlm_lora   @ VLM LLM      — Stage-2 residual extraction from frozen vision/language features.
     #   ③ cond_lora  @ cond encoder — Stage-2 ingestion of that residual by the frozen VSA cond path.
-    # A Stage-1 expert LoRA, when present, is restored separately as the permanently frozen
-    # ``expert_lora`` component of the VSA. SkillVLA never creates a new trainable expert adapter.
+    # A Stage-1 expert LoRA, when present, is restored separately as the normally frozen
+    # ``expert_lora`` component of the VSA. Direct-FSQ Stage-0 creates that same named adapter and
+    # trains it according to its explicit A/B component matrices.
     # All newly-created adapters start B=0 (model == base at init); FT trains ① while ②③ remain frozen.
     # Keep inherited pi05 ``lora_enable`` OFF: this policy owns these named adapters.
     lora_skill: bool = False
@@ -106,17 +107,55 @@ class SkillVLAConfig(PI05Config):
     """Adapter-only LR multiplier (× optimizer_lr) for all newly trainable LoRA params (①②③). Rank-r B=0 adapters
     conventionally want ~10-40× the full-finetune LR; this leaves the full-trained parts (vlm_vision at
     PT, expert at FT) on the base LR instead of raising optimizer_lr globally."""
+    lang_bridge: bool = False
+    """Stage-0 edge adapter. Adds a zero-initialized low-rank residual only to the VLM-language K/V
+    copy read by cond queries. VLM self-attention and the expert's K/V remain unchanged."""
+    lang_bridge_rank: int = 64
+    lang_bridge_lr_scale: float = 10.0
+    """LR multiplier for the language-edge bridge relative to optimizer_lr."""
     # ── LoRA-continual training stages (REPLACES the legacy A/B/C regime_probs / vlm_dropout_p system;
     # those fields remain below only so old checkpoints' config.json still deserializes). ──
     pt_stage: str | None = None
     """Sequential PT stage — interleaved [SKILL, COND] mixing was retired (once the VLM vision is
     COND-owned the two paths share NO trainable params, so they train back-to-back instead):
+      "stage0" = direct FSQ route: branch-local component matrices control gradients. Default A trains
+                 vlm_lora+language bridge+cond+expert_lora; VLM-severed B trains cond+cond vision+
+                 expert_lora. Both receive GT skill and GT action-flow supervision.
       "cond"  = STAGE 2: every batch is a COND/flow batch — trains ②③ + vlm_vision(+projector) against
                 the frozen expert with GT-teacher-forced z. No skill loss; reader/head untouched.
       "skill" = STAGE 3: every batch is a SKILL batch — trains ①+reader+head on the skill loss;
                 EVERYTHING else (vision included) frozen. Warm-starts from a Stage-2 checkpoint;
                 structurally identical to FT's SKILL regime (its rehearsal).
       None    = not a PT run (FT via regime_probs_ft, or eval)."""
+    stage0_vlm_severed_prob: float = 0.3
+    """Stage-0 probability of a B batch. The branch-local drop/train component fields below define
+    the exact topology and gradient scope; both branches use the same GT flow target."""
+    stage0_a_drop_vlm: bool = False
+    stage0_b_drop_vlm: bool = True
+    stage0_a_train_components: str = "vlm_lora,lang_bridge,cond,expert_lora"
+    stage0_b_train_components: str = "cond,cond_vision,expert_lora"
+    """Branch-local Stage-0 gradient matrix. Component names are validated and stored in checkpoints;
+    the optimizer contains their union, while each forward enables only its branch's listed components."""
+    stage0_wrong_language_weight: float = 0.0
+    """Optional A-only ranking loss weight. The same image/state/GT skill is paired with another
+    task's language; correct language must produce a lower GT flow error by the configured margin."""
+    stage0_wrong_language_margin: float = 0.02
+    stage0_expert_lora: bool = True
+    stage0_a_skill_start_loss_weight: float = 1.0
+    stage0_a_skill_end_loss_weight: float = 1.0
+    stage0_b_skill_start_loss_weight: float = 1.0
+    stage0_b_skill_end_loss_weight: float = 1.0
+    """Stage-0 flow-loss weights at skill progress 0 and 1, independently for A and B. Each branch
+    linearly interpolates between its endpoints; (1, 1) is exactly the original uniform objective."""
+    stage0_expert_lora_targets: str = "q,k,v,o,mlp,action_out"
+    stage0_expert_lora_rank: int = 8
+    stage0_expert_lora_alpha: float = 16.0
+    stage0_expert_lora_dropout: float = 0.0
+    stage0_expert_lora_lr_scale: float = 10.0
+    s1_cond_encoder_variant: str | None = None
+    s1_dino_model_path: str = "models/dinov3-vits16"
+    s1_dino_image_size: int = 224
+    s1_siglip_image_size: int = 224
     cond_severed_prob: float = 0.0
     """STAGE-2 severed anchor probability. The batch constructs x_t from the same boundary-aware hold
     action as Stage-1, then compares two VLM-free forwards: frozen VSA with cond_lora OFF (teacher) versus
@@ -284,6 +323,7 @@ class SkillVLAConfig(PI05Config):
     freeze_vlm_lora: bool = False
     freeze_cond_lora: bool = False
     freeze_expert_lora: bool = True
+    freeze_lang_bridge: bool = False
     freeze_vlm_vision: bool = False
     freeze_cond_vision: bool = True
 
@@ -378,6 +418,9 @@ class SkillVLAConfig(PI05Config):
     on the SkillVLA params; only shares the dataloader. Warm-starts from ``fsq_path`` and is exported
     back to an FSQ checkpoint for eval. DINO 토큰은 배치의 현재 프레임 이미지에서 라이브로 계산
     (디스크 precompute 없음; 추론과 동일 경로)."""
+    terminator_freeze_vision_encoder: bool | None = None
+    """Co-trained terminator vision override. True freezes only its vision encoder; False trains the
+    vision encoder with the rest of the terminator. None preserves the freeze mode stored in FSQ.pt."""
     terminator_dino_model_path: str | None = None
     """ONLINE DINO의 로컬 모델 경로 오버라이드 (예: {project_root}/models/dinov3-vits16). FSQ ckpt의
     cfg에는 FSQ를 학습한 머신의 절대경로가 기록되어 있어 서버 이식 시 깨질 수 있음 — 설정하면
@@ -396,7 +439,7 @@ class SkillVLAConfig(PI05Config):
     # ── Inference: skill transitions via the frozen FSQ terminator ──
     fsq_path: str | None = None
     """Frozen FSQ checkpoint whose terminator decides skill transitions during closed-loop rollout.
-    Unused at training (skill boundaries come from the dataset)."""
+    Stage-0 also loads its frozen action expert directly from this checkpoint."""
     skill_end_mode: str = "termination"
     """Which FSQ signal ends the current skill:
        "termination" → end_prob   >= skill_end_threshold
@@ -443,6 +486,58 @@ class SkillVLAConfig(PI05Config):
 
     def __post_init__(self):
         super().__post_init__()
+        if self.pt_stage not in (None, "cond", "skill", "stage0"):
+            raise ValueError(f"pt_stage must be None|cond|skill|stage0, got {self.pt_stage!r}.")
+        if self.lang_bridge and self.lang_bridge_rank <= 0:
+            raise ValueError("lang_bridge=True needs lang_bridge_rank > 0.")
+        if self.lang_bridge_lr_scale <= 0.0:
+            raise ValueError("lang_bridge_lr_scale must be > 0.")
+        if not 0.0 <= self.stage0_vlm_severed_prob < 1.0:
+            raise ValueError("stage0_vlm_severed_prob must be in [0, 1).")
+        allowed_stage0_components = {
+            "vlm", "vlm_vision", "vlm_lora", "lang_bridge",
+            "cond", "cond_vision", "cond_lora",
+            "expert", "expert_lora", "skill_reader", "skill_head",
+        }
+        for branch, spec in (
+            ("A", self.stage0_a_train_components),
+            ("B", self.stage0_b_train_components),
+        ):
+            components = {part.strip() for part in str(spec).split(",") if part.strip()}
+            unknown = components - allowed_stage0_components
+            if unknown:
+                raise ValueError(f"Unknown Stage-0 {branch} train components: {sorted(unknown)}.")
+        if self.pt_stage == "stage0":
+            if self.stage0_a_drop_vlm or not self.stage0_b_drop_vlm:
+                raise ValueError("Stage-0 requires A_drop_vlm=False and B_drop_vlm=True.")
+            all_components = {
+                part.strip()
+                for spec in (self.stage0_a_train_components, self.stage0_b_train_components)
+                for part in str(spec).split(",") if part.strip()
+            }
+            fixed = all_components & {
+                "vlm", "expert", "skill_reader", "skill_head"
+            }
+            if fixed:
+                raise ValueError(f"Stage-0 fixed bases/unused modules cannot train: {sorted(fixed)}.")
+            if "vlm_lora" in all_components and not self.vlm_lora:
+                raise ValueError("Stage-0 matrix trains vlm_lora but vlm_lora=False.")
+            if "lang_bridge" in all_components and not self.lang_bridge:
+                raise ValueError("Stage-0 matrix trains lang_bridge but lang_bridge=False.")
+            if "expert_lora" in all_components and not self.stage0_expert_lora:
+                raise ValueError("Stage-0 matrix trains expert_lora but stage0_expert_lora=False.")
+        if self.stage0_wrong_language_weight < 0.0 or self.stage0_wrong_language_margin < 0.0:
+            raise ValueError("Stage-0 wrong-language weight and margin must be >= 0.")
+        stage0_weights = (
+            self.stage0_a_skill_start_loss_weight,
+            self.stage0_a_skill_end_loss_weight,
+            self.stage0_b_skill_start_loss_weight,
+            self.stage0_b_skill_end_loss_weight,
+        )
+        if any(weight <= 0.0 for weight in stage0_weights):
+            raise ValueError(f"All Stage-0 A/B skill loss weights must be > 0, got {stage0_weights}.")
+        if self.stage0_expert_lora_lr_scale <= 0.0:
+            raise ValueError("stage0_expert_lora_lr_scale must be > 0.")
         # attend_image + attend_language pick the VLM read-set; both False leaves cond/expert/reader with
         # no VLM tokens to attend — that's a config mistake (go VLM-blind via vlm_cond/vlm_expert instead).
         if not self.attend_image and not self.attend_language:

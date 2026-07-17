@@ -11,6 +11,7 @@ shell exports (--shell).
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -47,6 +48,7 @@ def _normalize_config(cfg: dict) -> dict:
         "image_free_lora_prob": ("regime", "image_free", "probability"),
         "image_free_lora_anchor_weight": ("regime", "image_free", "anchor_weight"),
         "n_action_steps": ("execution", "action_steps"),
+        "transition_jitter_enabled": ("transition_randomization", "enabled"),
         "skill_start_loss_weight": ("loss", "skill_start_weight"),
         "skill_end_loss_weight": ("loss", "skill_end_weight"),
         "action_weight": ("loss", "weighted"),
@@ -180,6 +182,17 @@ def build_settings(cfg: dict) -> dict:
     fsq_path = (resolve_path(project_root, fsq_path_raw)
                 if fsq_path_raw and fsq_path_raw.lower() not in ("null", "none") else run_dir / "FSQ.pt")
     fsq_cfg = _load_fsq_config(fsq_path)
+    transition_jitter_enabled = as_bool(get_value(cfg, "transition_jitter_enabled", True))
+    dataset_info_path = run_dir / "skillvla" / "meta" / "info.json"
+    if transition_jitter_enabled:
+        if not dataset_info_path.is_file():
+            raise FileNotFoundError(
+                f"Transition randomization needs the built dataset metadata: {dataset_info_path}")
+        transition_jitter_pmax = int(json.loads(dataset_info_path.read_text()).get("skill_pmax", -1))
+        if transition_jitter_pmax < 0:
+            raise ValueError(f"Dataset metadata has no valid skill_pmax: {dataset_info_path}")
+    else:
+        transition_jitter_pmax = 0
 
     batch_size = int(get_value(cfg, "batch_size", 32))
     num_gpus = int(get_value(cfg, "num_gpus", 1))
@@ -278,6 +291,8 @@ def build_settings(cfg: dict) -> dict:
         run_name = f"{run_name}_weighted{_action_weight_run_suffix(skill_start_w, skill_end_w)}"
     if train_terminator and not terminator_freeze_vision_encoder:
         run_name = f"{run_name}_termvis_tuned"
+    if transition_jitter_pmax > 0:
+        run_name = f"{run_name}_tj{transition_jitter_pmax}"
     if exp:
         run_name = f"{run_name}_{exp}"
     # Single outputs root from yaml; the per-stage subdir is fixed here (not in yaml).
@@ -325,6 +340,7 @@ def build_settings(cfg: dict) -> dict:
         "siglip_image_size": int(get_value(cfg, "siglip_image_size", 224)),
         "skill_vocab_size": skill_vocab_size,
         "skill_fsq_levels": "[" + ",".join(str(x) for x in skill_fsq_levels) + "]",
+        "transition_jitter_pmax": transition_jitter_pmax,
         "max_state_dim": max_state_dim,
         "max_action_dim": max_action_dim,
         "min_period": min_period,

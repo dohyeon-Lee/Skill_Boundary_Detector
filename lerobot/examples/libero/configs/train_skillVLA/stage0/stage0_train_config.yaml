@@ -1,0 +1,78 @@
+dataset:
+  skillvla_root: skillvla_dataset
+  source: libero_90_full_full
+  run: FSQ333_dino_frozen_small_optimal_vsa_state_skill_125_std_pt_snap10
+  # run: FSQ333_dino_frozen_small_optimal_vsa_state_skill_weighted3_125_std_pt_snap10
+
+warm_start:
+  pi_base: models/pi05_base
+  tokenizer: models/paligemma-3b-pt-224-tokenizer
+  fsq: ""
+
+cond:
+  dino_model: models/dinov3-vitl16
+
+connections: {vlm_to_cond: true, cond_to_expert: true, vlm_to_expert: false}
+token_access: {image: false, language: true}
+
+
+
+skill_reader:
+  architecture: {tokens: 4, depth: 2, heads: 8, all_layers: true}
+  token_access: {image: true, language: true}
+
+vlm_lora:
+  targets: [q, k, v, o]
+  rank: 8
+  alpha: auto
+  dropout: 0.0
+  lr_scale: 10.0
+
+expert_lora:
+  targets: [q, k, v, o, mlp, action_out]
+  rank: 8
+  alpha: auto
+  dropout: 0.0
+  lr_scale: 10.0
+
+language_bridge: {rank: 64, lr_scale: 10.0}
+
+components:
+  adapters: {vlm_lora: true, cond_lora: false, expert_lora: true, language_bridge: true}
+
+regime:
+  A:
+    probability: 1.0 # 0.7
+    drop_vlm: false
+    freeze:
+      base:    {vlm: true, cond: false, expert: true}
+      adapter: {vlm_lora: false, cond_lora: true, expert_lora: false, language_bridge: false}
+      vision:  {vlm_vision: false, cond_vision: false} # {vlm_vision: true, cond_vision: true}
+      skill:   {skill_reader: true, skill_head: true}
+  B:
+    probability: 0.0 #0.3
+    drop_vlm: true
+    freeze:
+      base:    {vlm: true, cond: false, expert: true}
+      adapter: {vlm_lora: true, cond_lora: true, expert_lora: false, language_bridge: true}
+      vision:  {vlm_vision: true, cond_vision: false}
+      skill:   {skill_reader: true, skill_head: true}
+  wrong_language: {weight: 0.0, margin: 0.02}
+
+loss:
+  A: {skill_start_weight: 1.0, skill_end_weight: 1.0}
+  B: {skill_start_weight: 1.0, skill_end_weight: 3.0}
+
+terminator: {train: true, freeze_vision: true}
+run: {suffix: "A10B0_unfreezeall_contrastiveX"}
+
+training:
+  dataloader: {batch_size: 32, workers: 2, gpus: 1}
+  optimizer: {base_lr: 2.5e-05, cond_lr_scale: 1.0}
+  schedule: {steps: 50000, save_every: 2500}
+
+logging:
+  param_drift: true
+  wandb: {enable: true, project: VLA_stage0}
+
+slurm: {gres: "gpu:1", cpus: 16, memory: 256G, time: "48:00:00"}

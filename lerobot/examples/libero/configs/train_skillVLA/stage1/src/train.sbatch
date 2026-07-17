@@ -96,6 +96,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.siglip_image_size="${SIGLIP_IMAGE_SIZE}" \
     --policy.skill_vocab_size="${SKILL_VOCAB_SIZE}" \
     --policy.skill_fsq_levels="${SKILL_FSQ_LEVELS}" \
+    --policy.transition_jitter_pmax="${TRANSITION_JITTER_PMAX}" \
     --policy.max_state_dim="${MAX_STATE_DIM}" \
     --policy.max_action_dim="${MAX_ACTION_DIM}" \
     --policy.chunk_size="${CHUNK_SIZE}" \

@@ -12,9 +12,9 @@ Inputs per frame (all from build_data columns):
   pmax     : jitter half-window (ISS window = 2*pmax+1; offset stays in [-pmax, +pmax])
 
 Three cases (mirrors the previous skill_boundary_random_p logic, but as a frame-index offset):
-  early (near end,  de<=p, k<last_real): pretend the NEXT skill already started p frames early
+  early (near end,  de<p, k<last_real) : pretend the NEXT skill already started p frames early
                                           → k'=k+1, offset=-p
-  late  (near start, ds<=p, k>0)        : pretend the PREVIOUS skill is still running (late fire)
+  late  (near start, ds<p, k>0)         : pretend the PREVIOUS skill is still running (late fire)
                                           → k'=k-1, offset=±p  (prev skill's own start, jittered)
   else                                   : jitter THIS skill's start by ±p
                                           → k'=k,   offset=±p
@@ -39,6 +39,15 @@ def sample_p(pmax: int, rng: np.random.Generator | None = None) -> int:
     return int(min(pmax, round(abs(r.normal(0.0, pmax / 2.0)))))
 
 
+def sample_offset(pmax: int, rng: np.random.Generator | None = None) -> int:
+    """Signed half-normal offset in [-pmax, pmax], shared by frame and transition-pack datasets."""
+    r = np.random if rng is None else rng
+    p = sample_p(pmax, rng)
+    if p == 0:
+        return 0
+    return p if r.random() < 0.5 else -p
+
+
 def choose_jitter(
     k: int,
     ds: int,
@@ -52,8 +61,11 @@ def choose_jitter(
     last_real = seq_len - 2  # 0-based index of the last real skill (seq_len = N + EOS)
     p = sample_p(pmax, rng)
 
-    can_early = ds != 0 and de != 0 and de <= p and k < last_real
-    can_late = ds != 0 and de != 0 and ds <= p and k > 0
+    # Skills use [start, end) frames. A p-frame early boundary includes de=0..p-1; a p-frame
+    # late boundary leaves the previous skill active for ds=0..p-1. This also includes the exact
+    # boundary frames, which the old ds/de!=0 guard accidentally excluded and shifted by one frame.
+    can_early = p > 0 and de < p and k < last_real
+    can_late = p > 0 and ds < p and k > 0
     if can_early and can_late:  # both eligible → coin flip
         if r.random() < 0.5:
             can_late = False
@@ -66,3 +78,28 @@ def choose_jitter(
     if can_late:
         return k - 1, sign * p    # still in prev skill; jitter its own start ±p
     return k, sign * p            # this skill, ±p jitter
+
+
+def choose_jitter_torch(k, ds, de, seq_len, pmax: int):
+    """Vectorized torch equivalent used by Stage-1 inside the training forward."""
+    import torch  # local import keeps the NumPy dataset helper lightweight
+
+    if pmax <= 0:
+        return k, torch.zeros_like(k)
+    p = torch.round(torch.abs(torch.randn(k.shape, device=k.device) * (pmax / 2.0))).long()
+    p = p.clamp(max=pmax)
+    last_real = seq_len - 2
+    can_early = (p > 0) & (de < p) & (k < last_real)
+    can_late = (p > 0) & (ds < p) & (k > 0)
+    both = can_early & can_late
+    choose_early = torch.rand(k.shape, device=k.device) < 0.5
+    can_early = can_early & (~both | choose_early)
+    can_late = can_late & (~both | ~choose_early)
+    k_prime = torch.where(can_early, k + 1, torch.where(can_late, k - 1, k))
+    sign = torch.where(
+        torch.rand(k.shape, device=k.device) < 0.5,
+        torch.ones_like(p),
+        -torch.ones_like(p),
+    )
+    offset = torch.where(can_early, -p, sign * p)
+    return k_prime, offset

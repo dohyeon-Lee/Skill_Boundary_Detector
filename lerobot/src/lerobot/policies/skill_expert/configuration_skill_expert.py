@@ -81,6 +81,9 @@ class SkillExpertConfig(PI05Config):
     consumes), normalized per dim to [-1, 1], and fed through a Linear(D → width) as ONE skill
     token, constant within a skill — neighboring codes stay neighboring. (The skill-progress token
     was removed — the action expert conditions on the skill code only.)"""
+    transition_jitter_pmax: int = 0
+    """Training-only skill-boundary jitter half-window in frames. A half-normal timing shift may use
+    the previous/next skill code near a boundary, matching terminator early/late firing. Zero disables."""
 
     # ── FSQ expert adaptation ──
     # ``lora_rank`` / ``lora_alpha`` / ``lora_dropout`` / ``lora_targets`` are inherited from PI05Config.
@@ -214,3 +217,5 @@ class SkillExpertConfig(PI05Config):
                 "skill_start_loss_weight and skill_end_loss_weight must both be > 0 "
                 f"(got {self.skill_start_loss_weight} and {self.skill_end_loss_weight})."
             )
+        if self.transition_jitter_pmax < 0:
+            raise ValueError("transition_jitter_pmax must be >= 0.")
