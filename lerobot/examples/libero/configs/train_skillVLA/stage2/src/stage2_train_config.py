@@ -24,12 +24,148 @@ from train_skills_config import as_bool, as_levels, as_list, get_value, load_con
 DEFAULT_CONFIG_PATH = _HERE.parent.parent / "stage2_train_config.yaml"
 
 
+def _blank(value: object) -> bool:
+    return value is None or str(value).strip().lower() in ("", "none", "null", "~")
+
+
+def _localize_model_path(project_root: Path, value: object) -> Path:
+    """Re-anchor a model path copied from another server at this checkout's models directory."""
+    path = Path(str(value).strip()).expanduser()
+    if not path.is_absolute():
+        return Path(resolve_path(project_root, path))
+    if path.exists():
+        return path
+    if "models" in path.parts:
+        return project_root.joinpath(*path.parts[path.parts.index("models") :])
+    return path
+
+
+def _stage1_terminator_dino_path(stage1_ckpt: Path) -> str | None:
+    """Read the exact DINO backbone used to construct Stage-1's co-trained terminator."""
+    config_path = stage1_ckpt / "config.json"
+    if not config_path.is_file():
+        return None
+    value = json.loads(config_path.read_text()).get("terminator_dino_model_path")
+    return None if _blank(value) else str(value)
+
+
+def _validate_transformers_model(path: Path, *, source: str) -> None:
+    weight_files = (
+        "model.safetensors",
+        "model.safetensors.index.json",
+        "pytorch_model.bin",
+        "pytorch_model.bin.index.json",
+    )
+    if not path.is_dir() or not any((path / name).is_file() for name in weight_files):
+        raise FileNotFoundError(
+            f"Terminator DINO inherited from {source} has no Transformers model weights: {path}. "
+            f"Expected one of {weight_files}."
+        )
+
+
+def _normalize_config(cfg: dict) -> dict:
+    """Accept the compact grouped YAML while retaining flat-key checkpoint/config compatibility."""
+    out = dict(cfg)
+    nested_keys = {
+        "skillvla_dataset_root": ("dataset", "skillvla_root"),
+        "source_dataset": ("dataset", "source"),
+        "pi_base": ("warm_start", "pi_base"),
+        "tokenizer_path": ("warm_start", "tokenizer"),
+        "stage1_run_name": ("warm_start", "stage1_run"),
+        "stage1_checkpoint": ("warm_start", "checkpoint"),
+        "run_tag": ("warm_start", "scratch_run_tag"),
+        "s1_vision_backbone": ("warm_start", "scratch_vision"),
+        "s1_state_cond_mode": ("warm_start", "scratch_state_mode"),
+        "skill_loss_weight": ("skill", "loss_weight"),
+        "skill_deadzone_frac": ("skill", "deadzone"),
+        "num_reader_tokens": ("skill", "reader", "tokens"),
+        "reader_depth": ("skill", "reader", "depth"),
+        "reader_heads": ("skill", "reader", "heads"),
+        "skill_reader_all_layers": ("skill", "reader", "all_layers"),
+        "action_weight": ("loss", "weighted"),
+        "skill_start_loss_weight": ("loss", "skill_start_weight"),
+        "attend_image": ("vlm_token_access", "cond", "image"),
+        "attend_language": ("vlm_token_access", "cond", "language"),
+        "reader_attend_image": ("vlm_token_access", "skill_reader", "image"),
+        "reader_attend_language": ("vlm_token_access", "skill_reader", "language"),
+        "vlm_cond": ("connections", "vlm_to_cond"),
+        "cond_expert": ("connections", "cond_to_expert"),
+        "vlm_expert": ("connections", "vlm_to_expert"),
+        "vlm_lora": ("lora", "train", "vlm"),
+        "cond_lora": ("lora", "train", "cond"),
+        "lora_targets": ("lora", "targets"),
+        "lora_rank": ("lora", "rank"),
+        "lora_alpha": ("lora", "alpha"),
+        "lora_dropout": ("lora", "dropout"),
+        "lora_lr_scale": ("lora", "lr_scale"),
+        "cond_severed_prob": ("regime", "vlm_severed", "probability"),
+        "cond_severed_anchor_weight": ("regime", "vlm_severed", "anchor_weight"),
+        "freeze_vlm": ("freeze", "vlm"),
+        "freeze_cond": ("freeze", "cond"),
+        "freeze_expert": ("freeze", "expert"),
+        "freeze_vlm_lora": ("freeze", "vlm_lora"),
+        "freeze_cond_lora": ("freeze", "cond_lora"),
+        "freeze_expert_lora": ("freeze", "expert_lora"),
+        "freeze_vlm_vision": ("freeze", "vlm_vision"),
+        "freeze_cond_vision": ("freeze", "cond_vision"),
+        "train_terminator": ("terminator", "train"),
+        "terminator_lr_scale": ("terminator", "lr_scale"),
+        "terminator_end_target_sigma": ("terminator", "target_sigma"),
+        "terminator_end_pos_weight": ("terminator", "end_weight"),
+        "terminator_dino_model_path": ("terminator", "dino_model"),
+        "track_param_drift": ("logging", "param_drift"),
+        "wandb_enable": ("logging", "wandb", "enable"),
+        "wandb_project": ("logging", "wandb", "project"),
+        "exp": ("run", "suffix"),
+        "batch_size": ("training", "dataloader", "batch_size"),
+        "num_workers": ("training", "dataloader", "workers"),
+        "num_gpus": ("training", "dataloader", "gpus"),
+        "lr_base": ("training", "optimizer", "base_lr"),
+        "expert_lr_scale": ("training", "optimizer", "expert_lr_scale"),
+        "cond_lr_scale": ("training", "optimizer", "cond_lr_scale"),
+        "steps": ("training", "schedule", "steps"),
+        "save_freq": ("training", "schedule", "save_every"),
+        "train_partition": ("slurm", "partition"),
+        "train_qos": ("slurm", "qos"),
+        "train_gres": ("slurm", "gres"),
+        "train_cpus_per_task": ("slurm", "cpus"),
+        "train_mem": ("slurm", "memory"),
+        "train_time": ("slurm", "time"),
+        "train_nodelist": ("slurm", "nodes"),
+        "train_exclude_nodes": ("slurm", "exclude_nodes"),
+    }
+    for flat_key, path in nested_keys.items():
+        if flat_key in out:
+            continue
+        value = cfg
+        for part in path:
+            if not isinstance(value, dict) or part not in value:
+                break
+            value = value[part]
+        else:
+            out[flat_key] = value
+    if isinstance(out.get("lora_targets"), (list, tuple)):
+        out["lora_targets"] = ",".join(str(v) for v in out["lora_targets"])
+    return out
+
+
 def build_settings(cfg: dict) -> dict:
+    cfg = _normalize_config(cfg)
     # Standalone: every root is declared in this yaml (no build_data dependency).
     project_root = Path(str(get_value(cfg, "project_root"))).expanduser()
     dataset_root = project_root / str(get_value(cfg, "dataset_root", "dataset"))
     skillvla_root = dataset_root / str(get_value(cfg, "skillvla_dataset_root", "skillvla_dataset"))
     lerobot_root = project_root / "lerobot"
+    tokenizer_path = _localize_model_path(
+        project_root,
+        get_value(cfg, "tokenizer_path", "models/paligemma-3b-pt-224-tokenizer"),
+    )
+    required_tokenizer_files = ("config.json", "tokenizer_config.json", "tokenizer.json")
+    missing_tokenizer_files = [name for name in required_tokenizer_files if not (tokenizer_path / name).is_file()]
+    if missing_tokenizer_files:
+        raise FileNotFoundError(
+            f"Local PaliGemma tokenizer is incomplete at {tokenizer_path}: missing {missing_tokenizer_files}."
+        )
 
     # Single outputs root from yaml; per-stage subdirs fixed here. Warm-start lives in stage1's.
     outputs_root = project_root / str(get_value(cfg, "outputs_root", "outputs"))
@@ -145,12 +281,13 @@ def build_settings(cfg: dict) -> dict:
     reader_depth = int(get_value(cfg, "reader_depth", 2))
     reader_heads = int(get_value(cfg, "reader_heads", 8))
     skill_reader_all_layers = as_bool(get_value(cfg, "skill_reader_all_layers", False))
-    # STAGE 2 = cond-path PT: every batch is COND/flow (pt_stage="cond" — the interleaved [SKILL, COND]
-    # mixing was retired; the skill path trains in STAGE 3). Trainability is design-fixed: ②③ adapters +
-    # vlm_vision train, everything else frozen; see SkillVLAPolicy._apply_continual_freezes.
-    lora_cond_vlm = as_bool(get_value(cfg, "lora_cond_vlm", True))
-    lora_cond_bridge = as_bool(get_value(cfg, "lora_cond_bridge", True))
-    lora_expert = as_bool(get_value(cfg, "lora_expert", False))   # ④ connected-only 소비자 적응 (run name 3번째 문자)
+    action_weight = as_bool(get_value(cfg, "action_weight", False))
+    skill_start_loss_weight = float(get_value(cfg, "skill_start_loss_weight", 1.0))
+    if skill_start_loss_weight <= 0.0:
+        raise ValueError(f"skill_start_loss_weight must be > 0 — got {skill_start_loss_weight}")
+    # STAGE 2 = cond-path PT: every batch is COND/flow; its complete trainability matrix comes from freeze.*.
+    vlm_lora = as_bool(get_value(cfg, "vlm_lora", True))
+    cond_lora = as_bool(get_value(cfg, "cond_lora", True))
     lora_rank = int(get_value(cfg, "lora_rank", 8))
     # lora_alpha: "auto"(또는 빈칸) → 2×rank — rank만 바꿔도 effective scale(alpha/r)이 2로 유지되어
     # rank 효과와 scale 효과가 섞이지 않음. 숫자를 쓰면 그대로 (명시 오버라이드).
@@ -161,8 +298,8 @@ def build_settings(cfg: dict) -> dict:
     lora_dropout = float(get_value(cfg, "lora_dropout", 0.0))
     lora_targets = str(get_value(cfg, "lora_targets", "q,k,v,o"))
     lora_lr_scale = float(get_value(cfg, "lora_lr_scale", 1.0))   # adapter-only LR × (vlm_vision stays base)
-    if not (lora_cond_vlm or lora_cond_bridge):
-        raise ValueError("Both cond adapters (②lora_cond_vlm/③lora_cond_bridge) are off — nothing would "
+    if not (vlm_lora or cond_lora):
+        raise ValueError("Both Stage-2 adapters (vlm_lora/cond_lora) are off — nothing would "
                          "train on stage-2 COND batches besides vlm_vision (expert/bases are frozen).")
     # SCRATCH-side arch knobs (model uses them only when stage1_checkpoint_path is empty). The one-liner
     # (none_{run_tag}_{vision}_{mode}) takes precedence over the separate yaml keys.
@@ -183,28 +320,42 @@ def build_settings(cfg: dict) -> dict:
             m = re.search(pat, stage1_run_name)
             if m:
                 loss_tags.append(m.group(1))
-    # {STAGE-1 정보}__s2_L{②③[④] t/f}r{rank}[lr{scale}][_{exp}] — 예: ...state__s2_Lttr16lr10.
-    #   s2 = cond-path PT stage; Ltt = ②cond_vlm ③cond_bridge on/off; r = shared rank (stage3 inherits).
-    #   ④ lora_expert는 켰을 때만 3번째 문자 t가 붙음 (Lttt...) — 기존 ④-off 런 이름과 호환.
-    _l = "".join("t" if b else "f" for b in (lora_cond_vlm, lora_cond_bridge))
-    if lora_expert:
-        _l += "t"
-    regime_tag = f"s2_L{_l}r{lora_rank}"
-    if lora_lr_scale != 1.0:                     # adapter LR multiplier (e.g. lr10 = 10× base)
-        regime_tag += f"lr{int(lora_lr_scale) if lora_lr_scale == int(lora_lr_scale) else lora_lr_scale}"
+    # Stage-2 root + its always-on adapters/LR are implicit; name only experiment-varying knobs.
+    regime_tag = f"r{lora_rank}"
     cond_severed_prob = float(get_value(cfg, "cond_severed_prob", 0.0) or 0.0)
+    cond_severed_anchor_weight = float(get_value(cfg, "cond_severed_anchor_weight", 1.0))
     if not 0.0 <= cond_severed_prob < 1.0:
         raise ValueError(f"cond_severed_prob must be in [0, 1) — got {cond_severed_prob}")
+    if cond_severed_anchor_weight <= 0.0:
+        raise ValueError(f"cond_severed_anchor_weight must be > 0 — got {cond_severed_anchor_weight}")
     if cond_severed_prob > 0.0:                  # severed 정규화 배치 (conduit gating) — sv50 = p 0.5
         regime_tag += f"sv{int(round(cond_severed_prob * 100))}"
-    # vf = vlm_vision(+projector) FROZEN in stage 2 (LLM freeze와 같은 논리 — 사전학습 지각은 이미
-    # 일반적; ②③ 라우팅 어댑터만 학습). 학습 파라미터 스코프가 바뀌므로 run name에 태그.
+    freeze_vlm = as_bool(get_value(cfg, "freeze_vlm", True))
+    freeze_cond = as_bool(get_value(cfg, "freeze_cond", True))
+    freeze_expert = as_bool(get_value(cfg, "freeze_expert", True))
+    freeze_vlm_lora = as_bool(get_value(cfg, "freeze_vlm_lora", False))
+    freeze_cond_lora = as_bool(get_value(cfg, "freeze_cond_lora", False))
+    freeze_expert_lora = as_bool(get_value(cfg, "freeze_expert_lora", True))
     freeze_vlm_vision = as_bool(get_value(cfg, "freeze_vlm_vision", False))
+    freeze_cond_vision = as_bool(get_value(cfg, "freeze_cond_vision", True))
     if freeze_vlm_vision:
         regime_tag += "vf"
     # terminator co-training은 ONLINE DINO (배치 현재 프레임 라이브 토큰화) — dino.npz/dino_wrist.npz
     # 산출물이 필요 없으므로 wrist 존재 fail-fast 가드도 은퇴.
     train_terminator = as_bool(get_value(cfg, "train_terminator", False))
+    # Preserve Stage-1's terminator architecture. A YAML value is an intentional override; otherwise
+    # inherit the path recorded beside the Stage-1 weights. Very old checkpoints without that field leave
+    # this blank so load_fsq_terminator falls back to the dino_model_path embedded in FSQ.pt.
+    term_dino_source = get_value(cfg, "terminator_dino_model_path", None)
+    term_dino_origin = "terminator.dino_model"
+    if _blank(term_dino_source):
+        term_dino_source = _stage1_terminator_dino_path(Path(stage1_ckpt))
+        term_dino_origin = f"Stage-1 checkpoint {stage1_ckpt}/config.json"
+    terminator_dino_model_path = (
+        "" if _blank(term_dino_source) else _localize_model_path(project_root, term_dino_source)
+    )
+    if train_terminator and terminator_dino_model_path:
+        _validate_transformers_model(Path(terminator_dino_model_path), source=term_dino_origin)
 
     parts = ([run_tag] + ([s1_vis_tag] if s1_vis_tag else [])
              + [stage1_checkpoint] + ([mode_tag] if mode_tag else []) + loss_tags)
@@ -225,6 +376,7 @@ def build_settings(cfg: dict) -> dict:
         "repo_id": f"dohyeon/{source_dataset}",
         # warm-start: pi05 → VLM, Stage-1 skill_expert → action expert / cond side
         "pi_base": resolve_path(project_root, get_value(cfg, "pi_base", "models/pi05_base")),
+        "tokenizer_path": tokenizer_path,
         "stage1_run_name": stage1_run_name,
         "stage1_checkpoint": stage1_checkpoint,
         "stage1_checkpoint_path": stage1_ckpt,
@@ -237,6 +389,8 @@ def build_settings(cfg: dict) -> dict:
         "reader_depth": reader_depth,
         "reader_heads": reader_heads,
         "skill_reader_all_layers": skill_reader_all_layers,   # reader reads ALL VLM layers (vs final only)
+        "action_weight": action_weight,
+        "skill_start_loss_weight": skill_start_loss_weight,
         # inter-module attention connections (VLM/cond/expert edges + the language master switch)
         "attend_language": attend_language,
         "attend_image": attend_image,
@@ -245,19 +399,26 @@ def build_settings(cfg: dict) -> dict:
         "vlm_cond": vlm_cond,
         "cond_expert": cond_expert,
         "vlm_expert": vlm_expert,                   # action tokens read the VLM directly (was action_attend_vlm)
-        # STAGE 2: pt_stage=cond (every batch COND/flow) + the two cond adapters (① lives in stage3).
+        # STAGE 2: pt_stage=cond (every batch COND/flow) + the two Stage-2 adapters (① lives in stage3).
         "pt_stage": "cond",
         "lora_skill": False,
-        "lora_cond_vlm": lora_cond_vlm,
-        "lora_cond_bridge": lora_cond_bridge,
-        "lora_expert": lora_expert,               # ④ connected-only 소비자 적응 (severed에는 구조적 무영향)
+        "vlm_lora": vlm_lora,
+        "cond_lora": cond_lora,
         "lora_rank": lora_rank,
         "lora_alpha": lora_alpha,
         "lora_dropout": lora_dropout,
         "lora_targets": lora_targets,
         "lora_lr_scale": lora_lr_scale,
         "cond_severed_prob": cond_severed_prob,   # severed 정규화 배치 확률 (③만 활성; conduit gating)
-        "freeze_vlm_vision": freeze_vlm_vision,   # stage2에서도 vision 동결 (②③ 어댑터만 학습; run name "vf")
+        "cond_severed_anchor_weight": cond_severed_anchor_weight,
+        "freeze_vlm": freeze_vlm,
+        "freeze_cond": freeze_cond,
+        "freeze_expert": freeze_expert,
+        "freeze_vlm_lora": freeze_vlm_lora,
+        "freeze_cond_lora": freeze_cond_lora,
+        "freeze_expert_lora": freeze_expert_lora,
+        "freeze_vlm_vision": freeze_vlm_vision,
+        "freeze_cond_vision": freeze_cond_vision,
 
         # per-component update tracking (wandb param_drift/* + param_drift_rel/*)
         "track_param_drift": as_bool(get_value(cfg, "track_param_drift", False)),
@@ -265,15 +426,15 @@ def build_settings(cfg: dict) -> dict:
         "scratch": scratch,
         "s1_vision_backbone": s1_vision_backbone,
         "s1_state_cond_mode": s1_state_cond_mode,
-        # (trainability is design-fixed by _apply_continual_freezes — no per-regime freeze flags emitted)
+        # Stage-2 trainability is explicitly emitted above; Stage-3/FT keep their own fixed scopes.
         # terminator co-training (same as FT): adapt the FSQ terminator on this dataset's GT signals
-        # (disjoint from the SkillVLA params). Warm-starts from fsq_ckpt; exported per-checkpoint for eval.
+        # (disjoint from the SkillVLA params). Its architecture is first built from fsq_ckpt, then the
+        # Stage-1 co-trained terminator weights replace that initialization during warm-start.
         "train_terminator": train_terminator,
         "terminator_lr_scale": float(get_value(cfg, "terminator_lr_scale", 1.0)),
         "terminator_end_target_sigma": float(get_value(cfg, "terminator_end_target_sigma", 2.0)),
         "terminator_end_pos_weight": float(get_value(cfg, "terminator_end_pos_weight", 1.0)),
-        "terminator_dino_model_path": resolve_path(
-            project_root, get_value(cfg, "terminator_dino_model_path", "models/dinov3-vits16")),
+        "terminator_dino_model_path": terminator_dino_model_path,
         # output
         "skillvla_outputs_root": vla_root,
         "pt_run_name": run_name,

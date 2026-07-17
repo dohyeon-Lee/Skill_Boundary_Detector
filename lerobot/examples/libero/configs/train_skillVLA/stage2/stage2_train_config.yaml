@@ -1,158 +1,58 @@
-# ═══ OUTPUT 폴더 네이밍 (outputs_filtered/skillVLA_stage2/ 아래) ═══
-# {run_tag}[_{s1_vision}]_{stage1_ckpt}[_{mode}][_{loss_tags}]__s2_L{②③[④] t/f}r{rank}[lr{scale}][sv{p}][vf][_{exp}]
-#   run_tag      = stage1_run_name에서 파싱된 FSQ 런 (예: FSQ555_dino8_both_1000)
-#   s1_vision    = stage1 vision 태그 (예: siglip) / stage1_ckpt = warm-start step (예: 015000)
-#   mode         = state | state_skill (stage1의 state_cond_mode)
-#   L{tt}r{rank} = ②lora_cond_vlm ③lora_cond_bridge on/off + 공유 rank / lr{scale} = lora_lr_scale≠1
-#                  ④lora_expert는 켰을 때만 3번째 문자 t (예: Lttt) — ④-off면 기존 이름 그대로
-#   sv{p}        = cond_severed_prob×100 (예: sv50) — 0이면 생략
-#   vf           = freeze_vlm_vision=true (vision 동결; ②③(④) 어댑터만 학습)
-#   exp          = 자유 suffix
-# 예: FSQ555_dino8_both_1000_siglip_015000_state__s2_Lttr8lr10sv50vf (④ 켜면 ..._s2_Ltttr8lr10sv50vf)
-# (attend_*/reader_attend_*/vlm_* 연결 토폴로지·deadzone은 이름에 안 들어감 — config.json이 진실)
-#
-# ── Paths (project_root/dataset_root come from configs/global_config.yaml) ──
-skillvla_dataset_root: skillvla_dataset
-# source_dataset AUTO-DERIVE: ① Stage-1 체크포인트의 train_config.json(dataset.root)에서 유도 — 같은
-# run_tag가 여러 source에 있어도(예: FT 데이터셋 빌드 후) 모호하지 않음. ② 그게 없으면(scratch 등)
-# {skillvla_root}/*/{run_tag} 글롭 — 이때만 run_tag가 여러 source에 있으면 `source_dataset:`을 직접 지정.
+# Dataset source and FSQ settings are inferred from the Stage-1 run.
+dataset: {skillvla_root: skillvla_dataset}
 
-# ── Warm-start (also selects the dataset: source + run_tag parsed from stage1_run_name) ──
-# SCRATCH 모드 (한 줄): stage1_run_name: none_{run_tag}_{siglip|dino}_{state|state_skill}
-#   → Stage-1 없이 expert/cond fresh 초기화; run_tag(데이터셋)·vision·state_cond_mode를 이 한 줄에서
-#   파싱하고 stage1_checkpoint는 자동 무시. VSA는 B/C 배치가 학습하므로 regime_probs의 B 또는 C가
-#   >0 이어야 함. 폴더명: {run_tag}_{vision}_scratch_{mode}__{pA}{A}_{pB}{B}_{pC}{C}
+warm_start:
+  pi_base: models/pi05_base
+  tokenizer: models/paligemma-3b-pt-224-tokenizer
+  stage1_run: FSQ333_dino_frozen_small_optimal_vsa_state_skill_125_pt_snap10_dino_batch128_state_skill_lorae8_ltq-k-v-o-mlp-actionout_weighted
+  checkpoint: "020000"
 
-pi_base: models/pi05_base
+skill:
+  loss_weight: 0.1
+  deadzone: 0.8
+  reader: {tokens: 4, depth: 2, heads: 8, all_layers: true}
 
-# stage1_run_name: none_FSQ555_dino8_both_1000_siglip_state
-stage1_run_name: FSQ555_dino8_both_1000_siglip_batch256_state
-# stage1_run_name: FSQ88_dino8_both_1000_siglip_batch256_state
-# stage1_run_name: FSQ555_dino8_weighted_both_1000_siglip_batch256_state_weighted
-stage1_checkpoint: "015000"   # warm-start용 Stage-1 step ("last" 가능; scratch(none_*)면 자동 무시)
+loss: {weighted: true, skill_start_weight: 3.0}
 
-# ── Skill head / FSQ ──────────────────────────────────────────
-skill_loss_weight: 0.1                # total = BC + λ·skill_CE (λ<1 keeps BC dominant)
+vlm_token_access:
+  cond:         {image: false, language: true}
+  skill_reader: {image: true,  language: true}
 
-# ── Skill reader (SEPARATE post-VLM module; VLM stays pristine [imgs,lang]) ──────────────
-# N learned probe tokens read the VLM's FINAL-layer output via JOINT concat-KV attention (probes'
-# own K/V compete with the VLM K/V in one softmax; VLM read-only). Respects attend_language. The
-# pooled probe hidden → SkillHead. FT에서 skill decoder는 freeze_skill_reader(리더)/freeze_skill_head(readout)로 분리 동결.
-num_reader_tokens: 4                  # probe tokens (self-attend + read the VLM)
-reader_depth: 2                       # joint concat-KV layers (shallow = forgetting-friendly)
-reader_heads: 8                       # attention heads (must divide the VLM width)
-# reader가 VLM 최종 레이어만 vs 전 18층을 읽음. frozen LLM의 최종 rep은 언어 중심이라, skill(기하/모션)
-# 정보가 있는 중간 층까지 KV로 줘서 attention이 유용한 깊이를 soft하게 고르게 함(cond는 이미 전 층 읽음).
-# read-only라 train(joint)·infer(predict_skill_code)가 같은 stack을 봄. off면 기존과 동일.
-skill_reader_all_layers: true        # false = 최종층만(기존), true = 전 18층 concat
-# SkillHead regression dead-zone as a FRACTION of per-dim grid spacing: margin = frac/(levels-1).
-# Once |pred-target|<margin the code already rounds right → that dim's loss is zeroed (faster
-# convergence, no post-correct drift). frac=1 stops as soon as correct; <1 leaves a safety band.
-# 0 = plain MSE. Codebook-independent. (이름에는 안 들어감 — config.json이 진실)
-skill_deadzone_frac: 0.8
+connections: {vlm_to_cond: true, cond_to_expert: true, vlm_to_expert: false}
 
-# ── 모듈 간 attention 연결 (VLM, cond, action expert). VLM→cond→expert 체인 + VLM→expert 지름길의
-#    각 엣지를 토글. 학습/추론 마스크 둘 다에 적용(train/infer 일치). skill-query는 항상 제외. ──
-# attend_image / attend_language: VLM 토큰 read-set을 image/language 두 축으로 고름 (cond·expert 기본,
-# reader는 아래 reader_attend_*로 분리 가능).
-#   image=T,lang=F → 이미지만(visual grounding 강제, 기본) / image=T,lang=T → 이미지+언어
-#   image=F,lang=T → 언어만(VLM 언어 히든만 읽음) / image=F,lang=F → 금지(에러)
-#   VLM 내부 self-attn은 항상 전체 처리; 이건 downstream read만 게이팅(위치/prefix 구조 불변). (이름에는 안 들어감)
-attend_language:  true
-attend_image:     false
-# reader(skill 예측기) 전용 read-set 오버라이드 — 빈칸/생략 = attend_* 상속(기존 동작).
-# cond conduit는 lang-only로 조여도(위 attend_image=false) skill 예측은 시작 obs "이미지"를 봐야 하므로
-# 분리: image+lang 둘 다 켜는 것을 권장. stage3/FT/eval은 체크포인트 config.json에서 자동 상속.
-reader_attend_image: true
-reader_attend_language: true
-vlm_cond:         true
-vlm_expert:       false
+lora:
+  train: {vlm: true, cond: true}
+  targets: [q, k, v, o]
+  rank: 8
+  alpha: auto
+  dropout: 0.0
+  lr_scale: 10.0
 
-cond_expert:      true
+regime:
+  vlm_severed: {probability: 0, anchor_weight: 1.0}
 
+freeze:
+  vlm: true
+  cond: true
+  expert: true
+  vlm_lora: false
+  cond_lora: false
+  expert_lora: true
+  vlm_vision: true
+  cond_vision: true
 
-# ═══ STAGE 2 = cond 통로 PT (모든 배치가 COND/flow — SKILL 혼합은 은퇴, skill 경로는 stage3에서) ═══
-# 파이프라인: stage1(VSA) → stage2(②③+vlm_vision, flow) → stage3(①+reader/head, skill) → FT.
-# 두 경로는 학습 파라미터를 전혀 공유하지 않으므로(vision은 COND 소유) 순차 학습이 interleave와 동치 —
-# 게다가 stage3의 ①이 "확정된 vision" 위에서 학습되어 moving-target이 없음.
-# 이 스테이지 학습 대상: ② lora_cond_vlm @ VLM LLM (skill이 못 담는 residual 추출)
-#                     ③ lora_cond_bridge @ cond encoder (frozen cond가 residual을 삼키는 통로)
-#                     ④ lora_expert @ action expert (connected 전용 소비자 적응; 아래 참고)
-#                     + vlm_vision(+projector) full 학습 (자연→로봇 도메인 적응; COND 소유 확정)
-#                       — 단 freeze_vlm_vision=true면 vision도 동결하고 ②③④ 어댑터만 학습 (아래 참고)
-# 동결: VLM LLM base, cond base, cond_vision, expert base(+z/state proj), skill reader/head, ①(stage3 소관).
-# 폴더명: {STAGE-1 정보}__s2_L{②③[④] t/f}r{rank}[lr{scale}][sv{p}][vf][_{exp}] (맨 위 네이밍 블록 참고).
-lora_cond_vlm: true               # ②
-lora_cond_bridge: true            # ③
-# ④ action expert LoRA — CONNECTED 전용 소비자 적응: 얼린 expert가 ②③ 잔차를 "읽는 법"을 마중 나와 배움.
-# 배포 severed(VSA)에서는 항상 OFF → VSA≡stage1 불변식에 구조적으로 무영향. 단 sv(COND_SEV) 정규화
-# 배치에서는 ③과 함께 켜져 stage1 hold로 고정됨 — ④의 VLM-무관 성분(범용 모터 튜닝으로 PT prior 흡수)을
-# 닫아 학습 효과를 VLM 잔차 조건부로만 남김 (conduit gating의 ④ 확장).
-# 필요 이유: z(125코드)가 1000+모션을 커버하는 aliasing 하에서 잔차는 작은 정밀화가 아니라 큰 탈모호화 —
-# 얼린 expert의 반응 함수에 상류(②③)만으로 끼워 맞추는 것으로는 표현력 상한이 낮음. FT에서는 ②③과 함께
-# 동결(conduit 고정; expert base는 연결 배치가 얼린 ④를 통과하며 적응). run name엔 L 3번째 문자 (Lttt).
-lora_expert: false
-lora_rank: 8                      # 공유 hyperparam (rank/alpha/dropout/targets — 어댑터 공통; stage3의 ①도 상속)
-                                  # (r16은 flow 정체 처방이었는데 진범이 .base 랜덤로드 버그로 판명 → 기본 8 복귀)
-lora_alpha: auto                  # auto = 2×rank (rank만 바꿔도 effective scale alpha/r=2 자동 유지); 숫자면 명시값
-lora_dropout: 0.0
-lora_targets: "q,k,v,o"
-# 어댑터(②③④)만의 LR 배수 (base optimizer_lr ×). rank-r B=0 어댑터는 관례상 full-FT LR의 10~40배 —
-# lr_base를 올리면 (vf=false일 때) full 학습인 vlm_vision까지 빨라지므로 이 배수로 어댑터만 올림. 폴더명엔 lr{scale}로.
-lora_lr_scale: 10.0
+# This is a separate FSQ module; set train=false for strictly LoRA-only training.
+terminator: {train: true, lr_scale: 1.0, target_sigma: 1.0, end_weight: 1.0}
 
-# ── Severed 정규화 배치 (conduit gating) ──
-# 이 확률로 배치를 VLM 없이(severed) ③(cond_bridge)+④(lora_expert, 켰다면)만 활성인 채 flow 학습
-# (타겟 = stage1과 같은 hold). 이유: ③은 이미지-단독 경로로, ④는 connected에서 항상 켜진 소비자 적응의
-# VLM-무관 성분으로 — 둘 다 PT prior를 흡수할 수 있는 구멍 (②/vlm_vision은 구조적으로 VLM-gated).
-# severed 배치가 "VLM 없으면 stage1 함수 불변"을 행동 수준에서 강제해 그 구멍을 닫음 → ③④의 학습 효과가
-# VLM 잔차 조건부로만 남음. FT 때 ③④는 frozen이므로 PT-overfit 방지 = 새 태스크 OOD 강건성.
-# 대가: connected 학습 밀도·vlm_vision 업데이트가 (1-p)배. 폴더명엔 sv{p*100} (예: sv50). 0 = off.
-cond_severed_prob: 0.5
+run: {suffix: ""}
 
-# ── VLM vision 동결 (LLM freeze와 같은 논리) ──
-# true → stage2에서도 vlm_vision(+projector)을 동결하고 ②③ LoRA만 학습. 사전학습 SigLIP 지각은 이미
-# 일반적이라는 전제 — vision full 학습은 task-특정(scene 지름길) 정보가 cond conduit로 새는 최대 용량
-# 통로이므로, "lang이 skill을 보완하는 task-독립 잔차"만 배우게 학습 파라미터를 라우팅(②③)으로 제한.
-# attend_image=false와 조합하면 cond가 읽는 건 lang 히든뿐이고 그 생성 경로(vision→LLM)도 전부 frozen.
-# 폴더명엔 vf. false = 기존 동작 (vision full 학습).
-freeze_vlm_vision: true
+training:
+  dataloader: {batch_size: 128, workers: 2, gpus: 1}
+  optimizer: {base_lr: 2.5e-05}
+  schedule: {steps: 50000, save_every: 2500}
 
-# ── FSQ terminator co-training (same as FT; disjoint from the SkillVLA params) ──
-# Adapt the FSQ terminator on this dataset's GT signals (z←true skill, current DINO + state →
-# progress + soft termination) alongside Stage-2. Warm-starts from the run's FSQ.pt and is exported
-# per-checkpoint (checkpoints/<step>/FSQ_ft.pt) for stage2_eval. Needs the dataset's dino.npz.
-train_terminator: true
-terminator_lr_scale: 1.0
-terminator_end_target_sigma: 1.0     # soft termination target std in FRAMES (exp(-de²/2σ²))
-terminator_end_pos_weight: 1.0
+logging:
+  param_drift: true
+  wandb: {enable: true, project: VLA_stage2}
 
-# ── 컴포넌트별 업데이트 추적 (어느 부분이 집중 학습되나) ──
-# log_freq마다 5개 컴포넌트(llm/vlm_vision/cond/cond_vision_encoder/action_expert)의 시작 대비 이동량
-# ‖θ_now−θ_init‖ → wandb param_drift/*(절대) + param_drift_rel/*(÷‖θ_init‖, 5개 겹쳐 비교). 얼린 그룹은 ~0.
-track_param_drift: true
-
-# ── Run naming ────────────────────────────────────────────────
-exp: "batch384"                                # optional run-name suffix (blank = none)
-
-
-# ── Optimization ──────────────────────────────────────────────
-batch_size: 192 # 64 # 16
-num_workers: 2 # 4
-num_gpus: 2 # 1
-lr_base: 2.5e-05                             # effective base lr = lr_base * num_gpus (VLM + vision use this)
-expert_lr_scale: 1.0                         # action expert(gemma_expert + action/time proj) LR 배수
-cond_lr_scale: 1.0                           # cond side(cond_encoder + image/state proj) LR 배수
-steps: 50000
-save_freq: 2500
-
-
-# ── wandb ─────────────────────────────────────────────────────
-wandb_enable: true
-wandb_project: VLA_stage2
-
-# ── Slurm (partition/qos/nodelist/exclude_nodes come from configs/global_config.yaml) ──
-train_gres: gpu:2 # gpu:1
-train_cpus_per_task: 16
-train_mem: 256G # 128G
-train_time: "48:00:00"
+slurm: {gres: "gpu:1", cpus: 16, memory: 256G, time: "48:00:00"}

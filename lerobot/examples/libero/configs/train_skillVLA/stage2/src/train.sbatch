@@ -78,8 +78,10 @@ if [ "${TRAIN_TERMINATOR}" = "true" ]; then
     --policy.terminator_lr_scale="${TERMINATOR_LR_SCALE}"
     --policy.terminator_end_target_sigma="${TERMINATOR_END_TARGET_SIGMA}"
     --policy.terminator_end_pos_weight="${TERMINATOR_END_POS_WEIGHT}"
-    --policy.terminator_dino_model_path="${TERMINATOR_DINO_MODEL_PATH}"
   )
+  # Empty means an old Stage-1 checkpoint had no recorded override; FSQ.pt then supplies its own DINO path.
+  [ -n "${TERMINATOR_DINO_MODEL_PATH:-}" ] && \
+    TERM_ARGS+=(--policy.terminator_dino_model_path="${TERMINATOR_DINO_MODEL_PATH}")
 fi
 
 # STAGE 2: every batch is a COND/flow batch (the interleaved regime_probs_pt legacy was retired;
@@ -108,6 +110,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.device=cuda \
     --policy.push_to_hub=false \
     --policy.pretrained_path="${PI_BASE}" \
+    --policy.tokenizer_path="${TOKENIZER_PATH}" \
     --policy.stage1_checkpoint_path="${STAGE1_CHECKPOINT_PATH}" \
     --policy.s1_vision_backbone="${S1_VISION_BACKBONE}" \
     --policy.s1_state_cond_mode="${S1_STATE_COND_MODE}" \
@@ -118,6 +121,8 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.reader_depth="${READER_DEPTH}" \
     --policy.reader_heads="${READER_HEADS}" \
     --policy.skill_reader_all_layers="${SKILL_READER_ALL_LAYERS}" \
+    --policy.action_weight="${ACTION_WEIGHT}" \
+    --policy.skill_start_loss_weight="${SKILL_START_LOSS_WEIGHT}" \
     --policy.attend_language="${ATTEND_LANGUAGE}" \
     --policy.attend_image="${ATTEND_IMAGE}" \
     ${READER_ARGS[@]+"${READER_ARGS[@]}"} \
@@ -126,16 +131,23 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.vlm_expert="${VLM_EXPERT}" \
     --track_param_drift="${TRACK_PARAM_DRIFT}" \
     --policy.lora_skill="${LORA_SKILL}" \
-    --policy.lora_cond_vlm="${LORA_COND_VLM}" \
-    --policy.lora_cond_bridge="${LORA_COND_BRIDGE}" \
-    --policy.lora_expert="${LORA_EXPERT:-false}" \
+    --policy.vlm_lora="${VLM_LORA}" \
+    --policy.cond_lora="${COND_LORA}" \
     --policy.lora_rank="${LORA_RANK}" \
     --policy.lora_alpha="${LORA_ALPHA}" \
     --policy.lora_dropout="${LORA_DROPOUT}" \
     --policy.lora_targets="${LORA_TARGETS}" \
     --policy.lora_lr_scale="${LORA_LR_SCALE}" \
     --policy.cond_severed_prob="${COND_SEVERED_PROB:-0.0}" \
+    --policy.cond_severed_anchor_weight="${COND_SEVERED_ANCHOR_WEIGHT:-1.0}" \
+    --policy.freeze_vlm="${FREEZE_VLM}" \
+    --policy.freeze_cond="${FREEZE_COND}" \
+    --policy.freeze_expert="${FREEZE_EXPERT}" \
+    --policy.freeze_vlm_lora="${FREEZE_VLM_LORA}" \
+    --policy.freeze_cond_lora="${FREEZE_COND_LORA}" \
+    --policy.freeze_expert_lora="${FREEZE_EXPERT_LORA}" \
     --policy.freeze_vlm_vision="${FREEZE_VLM_VISION:-false}" \
+    --policy.freeze_cond_vision="${FREEZE_COND_VISION}" \
     --policy.fsq_path="${FSQ_CKPT}" \
     --batch_size="${BATCH_SIZE}" \
     --num_workers="${NUM_WORKERS}" \

@@ -1,86 +1,41 @@
-# SkillVLA Stage-1 training — standalone action expert (policy.type=skill_expert).
-# Trains the action expert by flow matching on the build_data skillvla dataset
-# (raw images + skill code + actions). No VLM/language; the data run's FSQ.pt supplies
-# the exact action-expert warm start, while no FSQ DINO-token artifacts are needed.
+dataset:
+  skillvla_root: skillvla_dataset
+  source: libero_90_full_full
+  run: FSQ333_dino_frozen_small_optimal_vsa_state_skill_125_pt_snap10
 
-# ── Paths (project_root/dataset_root come from configs/global_config.yaml) ──
-skillvla_dataset_root: skillvla_dataset  # .../{skillvla_dataset_root}/{source_dataset}/{run_tag}/
+# Expert architecture, chunk size, state mode, and flow-time settings come from this run's FSQ.pt.
+initialization: {pi05: true}
 
-# ── Which skillvla dataset to train on (built by configs/train_skillVLA/build_data) ──
-source_dataset: libero_90_full_full
-# run_tag: FSQ555_dino8_both_1000   
-# run_tag: FSQ555_dino8_both_1000_snap10
-run_tag: FSQ333_dino_frozen_small_optimal_vsa_state_skill_125_pt_snap10
+vision:
+  backbone: dino
+  freeze: false
+  dino_model: models/dinov3-vitl16
 
+expert:
+  lora:
+    enabled: true
+    targets: [q, k, v, o, mlp, action_out]
+    rank: 8
+    alpha: auto
+    dropout: 0.0
+    lr_scale: 10.0
 
-# ── FSQ-derived expert contract ──
-# The action expert is warm-started from {run_tag}/FSQ.pt. Stage-1 derives the
-# matching state_cond_mode, chunk_size, FSQ levels, action_expert_variant, and
-# flow-time knobs from that checkpoint. Optional overrides may restate the same
-# value, but mismatches fail before Slurm submission.
-# fsq_path:
-# state_cond_mode:
-# chunk_size:
-# pi_base:
+regime:
+  image_free: {probability: 0, anchor_weight: 1.0}
 
-# ── Vision encoder (shared across the 2 cameras) ──
-vision_backbone: dino           # dino | siglip (params separate from the Stage-2 VLM. Needs init_from_pi05: true for the warm-start.)
-freeze_vision_encoder: false    # freeze the SELECTED backbone (dino→false: train own DINOv3; siglip→usually true: reuse pi05 prior)
-dino_model_path: models/dinov3-vitl16   # (dino) project_root 기준 상대경로. ViT-B/16 86M (vits16=21M, vitl16=300M)
+execution: {action_steps: auto}
+loss: {weighted: true, skill_start_weight: 0.5, skill_end_weight: 5.0}
 
-# ── FSQ expert adaptation + image steering ──
-# `lora_expert: true` freezes the FSQ action base and trains only its selected LoRA residual.
-# `lora_expert: false` injects no LoRA and fine-tunes the complete FSQ action expert at the base LR.
-# `lora_targets` only applies in the LoRA regime:
-#   q,k,v,o                    = attention-only baseline (same target family as Stage 2)
-#   q,k,v,o,mlp,action_out     = wider steering: attention + gate/up/down MLP + flow velocity output
-# `action_in` is available too, but is intentionally omitted from the first wider mode because it can
-# strengthen state/skill-only motion. A batches train image cond + the selected action adaptation on flow;
-# B batches skip image/cond entirely and anchor it to frozen FSQ for the same state+skill. In full-FT mode,
-# that target is a non-checkpointed frozen copy of the FSQ action tensors.
-lora_expert: true
-lora_rank: 8 # 8
-lora_alpha: auto                 # auto = 2 * rank (effective alpha/r = 2)
-lora_dropout: 0.0                # adapter-internal dropout; distinct from the A/B regime coin below
-lora_targets: "q,k,v,o,mlp,action_out"
-lora_lr_scale: 10.0
+terminator: {train: true, freeze_vision: false, target_sigma: 1.0, end_weight: 1.0, lr_scale: 1.0}
 
-image_free_lora_prob: 0 # 0.5   # 0.3      # B probability: no image / no cond / LoRA delta -> frozen base delta
-image_free_lora_anchor_weight: 1 # non-1 values automatically add `_aw...` to the run name
+run: {suffix: ""}
 
-# ── Action execution horizon ──
-n_action_steps:                 # blank = FSQ chunk_size (must be <= chunk_size)
+training:
+  dataloader: {batch_size: 128, workers: 8, gpus: 1}
+  optimizer: {base_lr: 2.5e-05}
+  schedule: {steps: 20000, log_every: 100, save_every: 5000}
 
-# ── Loss = action MSE (flow matching). action_weight로 per-sample 가중 여부만 선택. ──
-skill_end_loss_weight: 3.0        # R — sw=1+(R-1)·progress; 스킬 END을 더 강조 (1=uniform). action_weight=true일 때만 사용
-action_weight: true               # true=가중 / false=균등
+logging:
+  wandb: {enable: true, project: VLA_stage1}
 
-# ── Terminator co-train (skill-end timing head, gradient-disjoint from 본체; eval skill 전환용) ──
-# fsq_path는 run_tag에서 AUTO 유도 (run_dir/FSQ.pt). Terminator DINO도 해당 FSQ.pt 설정을 자동 상속한다.
-# Terminator는 raw image를 직접 읽으며, image-free B에서는 완전히 이미지를 배제하기 위해 건너뛴다 (A만 update).
-# terminator_dino_model_path:   # optional explicit override; must match the FSQ terminator architecture
-train_terminator: true            # false면 terminator 미학습 (DINO 토큰 데이터셋도 안 붙음)
-terminator_end_target_sigma: 1.0  # termination 타깃 = exp(-de²/2σ²) (스킬 끝에서 peak)
-terminator_end_pos_weight: 1.0    # BCE pos_weight (skill-end 프레임은 희소 positive)
-terminator_lr_scale: 1.0          # terminator 전용 param group의 LR 배수 (× optimizer_lr)
-
-# ── Optimization ──
-batch_size: 128
-num_workers: 8
-num_gpus: 1
-lr_base: 2.5e-05                # effective LR = lr_base * num_gpus
-steps: 20000
-log_freq: 100
-save_freq: 5000
-
-exp: ""         # optional EXTRA run-name suffix (variant tag _ae/_cond is now auto from skill_inject)
-
-# ── wandb ──
-wandb_enable: true
-wandb_project: VLA_stage1
-
-# ── Slurm (partition/qos/nodelist/exclude_nodes come from configs/global_config.yaml) ──
-train_gres: gpu:1
-train_cpus_per_task: 16
-train_mem: 128G
-train_time: "48:00:00"
+slurm: {gres: "gpu:1", cpus: 16, memory: 128G, time: "48:00:00"}

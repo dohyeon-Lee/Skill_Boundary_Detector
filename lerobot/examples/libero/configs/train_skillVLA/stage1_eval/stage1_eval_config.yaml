@@ -50,12 +50,10 @@ models:
 #      advance_mode: terminator, label: FSQopt-expert_TERM}
 
 #   Two trained Stage-1 entries produce a 2×3 grid. Keep labels short: they are video panel titles.
-  # - {kind: stage1, model_dir: FSQ555_dino_frozen_small_optimal_vsa_state_skill_125_pt_snap10_dino_freeze_batch128_state_skill_lorae8_if50, checkpoint: "020000", advance_mode: terminator, label: visfreeze_half_lora}
-  - {kind: stage1, model_dir: FSQ555_dino_frozen_small_optimal_vsa_state_skill_125_pt_snap10_dino_batch128_state_skill_lorae8_if50, checkpoint: "020000", advance_mode: terminator, label: visunfreeze_half_lora}
-#   - {kind: stage1, model_dir: FSQ555_dino_frozen_small_optimal_vsa_state_skill_125_pt_snap10_dino_freeze_batch128_state_skill_lorae8_ltq-k-v-o-mlp-actionout_if50, checkpoint: "010000", advance_mode: terminator, label: visfreeze_full_lora}
-#   - {kind: stage1, model_dir: FSQ555_dino_frozen_small_optimal_vsa_state_skill_125_pt_snap10_dino_batch128_state_skill_lorae8_ltq-k-v-o-mlp-actionout_if50, checkpoint: "010000", advance_mode: terminator, label: visunfreeze_full_lora}
-  - {kind: stage1, model_dir: FSQ555_dino_frozen_small_optimal_vsa_state_skill_125_pt_snap10_dino_batch128_state_skill_expertft_if50, checkpoint: "020000", advance_mode: terminator, label: visunfreeze_expertft}
-  - {kind: stage1, model_dir: FSQ555_dino_frozen_small_optimal_vsa_state_skill_125_pt_snap10_dino_batch128_state_skill_expertft, checkpoint: "020000", advance_mode: terminator, label: visunfreeze_expertft_dropX}
+  - {kind: stage1, model_dir: FSQ333_dino_frozen_small_optimal_vsa_state_skill_125_pt_snap10_dino_batch128_state_skill_lorae8_ltq-k-v-o-mlp-actionout_weighted_sw0p5_ew5_termvis_tuned, checkpoint: "005000", advance_mode: terminator, label: 0.5to5_termvis_tuned}
+  # - {kind: stage1, model_dir: FSQ333_dino_frozen_small_optimal_vsa_state_skill_125_pt_snap10_dino_freeze_batch128_state_skill_lorae8_if50, checkpoint: "020000", advance_mode: terminator, label: 333_freeze_if50}
+  # - {kind: stage1, model_dir: FSQ333_dino_frozen_small_optimal_vsa_state_skill_125_pt_snap10_dino_batch128_state_skill_lorae8_ltq-k-v-o-mlp-actionout_if50_weighted, checkpoint: "020000", advance_mode: terminator, label: 333_unfreeze_if50_weighted}
+  # - {kind: stage1, model_dir: FSQ333_dino_frozen_small_optimal_vsa_state_skill_125_pt_snap10_dino_batch128_state_skill_lorae8_ltq-k-v-o-mlp-actionout_weighted, checkpoint: "020000", advance_mode: terminator, label: 333_unfreeze_if0_weighted}
 models_per_row: 3              # stage1 triplet = A / B / Frozen-FSQ; two checkpoints → 2 rows × 3 columns
 eval_exp: "20k"                   # optional free-form tag appended to the output folder
 
@@ -84,7 +82,7 @@ max_parallel_tasks: 1         # 잡 내부 스레드 병렬(공유 policy state 
 #   or          = EITHER crosses (robust: the two heads peak at different steps) | and = BOTH at same step
 skill_end_mode: or
 skill_end_threshold: 0.5            # termination-prob threshold (termination/or/and)
-skill_end_progress_threshold: 0.9   # progress threshold (progress/or/and)
+skill_end_progress_threshold: 0.95   # progress threshold (progress/or/and)
 inference_skill_max_length: 150    # force-advance skill after N steps (0 = off; terminator mode)
 # Use the checkpoint's CO-TRAINED terminator (fine-tuned via train_terminator) instead of raw FSQ.pt.
 # Auto-falls back to FSQ.pt if the ckpt has none, or if terminator_path (above) is set.

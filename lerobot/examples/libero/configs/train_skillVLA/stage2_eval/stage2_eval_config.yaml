@@ -1,104 +1,41 @@
-# SkillVLA Stage-2 closed-loop EVAL on LIBERO sim via lerobot_skillvla_eval.
-#
-# Point at a trained Stage-2 run by its OUTPUT FOLDER NAME + checkpoint. The model
-# (vision_backbone, skill_vocab, state_cond_mode, fsq_path) is restored from the
-# checkpoint's config.json on --policy.path, so it is not re-specified here. The FSQ
-# (terminator) + raw-dataset paths are derived from that config.
-
-# ── Paths (project_root comes from configs/global_config.yaml) ──
-# outputs_root comes from configs/global_config.yaml: trained S2 under {project_root}/{outputs_root}/skillVLA_stage2/.
-
-# ── Which trained model(s) to evaluate ──
-# SINGLE: `model_dir:` 하나만. MULTI 비교: `models:` 리스트 — 각 모델을 같은 seed/task로 롤아웃하고
-# task별 영상을 라벨 달린 그리드 한 편으로 스티칭 → outputs/compare_{labels}_{ckpt}_.../side_by_side/.
-# per entry: checkpoint 생략 → 아래 top-level checkpoint; label 생략 → model_dir의 차이 토큰 자동.
-# 모델별 개별 산출물(eval_info/차트/videos)은 panels/{label}/ 아래. multi에선 skill_html 자동 off.
-# eval_dropout=true → 모델당 3패널: full(VLM+LoRA) / drop_vlm(진짜 VLM만 절단, LoRA ②③ 유지) / VSA(VLM
-# 절단+어댑터 OFF=pure Stage-1). drop_vlm은 ③ cond_bridge의 이미지-단독 conduit이 VSA와 갈리는지 격리.
-eval_dropout: true
-# include_stage1: 각 모델의 warm-start 부모(stage1)를 STAGE1 자신의 평가 경로(stage1_eval run_eval.py)로
-# 같은 scene·같은 GT 스킬에서 평가해 격자에 패널로 추가 — "VSA(순수 severed) ≡ stage1" 시각 대조.
-# 부모는 ckpt config.json(stage1_checkpoint_path)에서 자동. 패널 = 모델별 [full, drop_vlm, VSA, stage1]
-# (models_per_row: 4 → 행당 한 모델의 네 영상). 같은 부모 공유 시 뒤 모델 것은 심볼릭 링크(재평가 없음).
-# use_gt_skill=true 필수(stage1은 oracle 전용). 출력 폴더에는 _s1 태그가 붙음.
-# 터미네이터: stage1 패널도 s2 패널과 "같은 터미네이터 파일"을 씀 (STAGE-2 기준 eval_terminator로 resolve):
-# cotrained → stage1도 s2의 co-trained FSQ_ft.pt, base → 둘 다 원본 데이터셋 FSQ.pt. 어느 값이든 stage1과
-# VSA/drop_vlm이 동일 터미네이터를 써서 스킬 경계가 일치 → severed VSA(=stage1 파라미터) 대조가 터미네이터
-# 변수 없이 성립. (stage1 자기 co-trained 터미네이터는 쓰지 않음.)
-include_stage1: false
+# Each Stage-2 model expands to one row: A / B / Pure-VSA / Frozen-FSQ.
+# A = VLM connected with vlm_lora+cond_lora; B = VLM severed with cond_lora kept;
+# Pure-VSA = VLM severed and Stage-2 LoRA disabled (the frozen Stage-1 VSA remains).
+# Frozen-FSQ = only action_expert.* learned during FSQ training, with no Stage-1/2 action modules.
+# Keep only the desired values in global `modes`; their order becomes the video column order for every model.
 models:
-  - {model_dir: FSQ555_dino8_both_1000_siglip_015000_state__s2_Ltttr8lr10sv50vf_batch128, label: batch128_expert_lora}
-  # - {model_dir: FSQ555_dino8_both_1000_siglip_015000_state__s2_Lttr8lr10sv50vf_batch128, label: batch128_expert_loraX}
-models_per_row: 3                 # 행당 패널 수 (eval_dropout+include_stage1 → 모델당 [full,drop_vlm,VSA,stage1] 4패널)
-# model_dir: libero_90_full_full_FSQ555_dino8_both_1000_siglip_015000_unfreeze_state_ve_lang_dz0.8_frzAe_connect
+  - {model_dir: FSQ333_dino_frozen_small_optimal_vsa_state_skill_125_pt_snap10_dino_020000_state_skill_weighted__r8vf,
+     checkpoint: "last", advance_mode: terminator, terminator_source: auto,
+     label: S2}
+#  - {model_dir: <another_stage2_run>, checkpoint: "005000", advance_mode: terminator,
+#     terminator_source: auto, label: S2-B}
 
-checkpoint: "002500"              # "last" or a step number (these runs go up to 040000)
+modes: "a" # ,b,vsa,fsq"
+models_per_row: 4
+skill_source: gt                  # gt | pred
+eval_exp: ""
 
-# ── Eval rollout ──
-target_task: libero_90    # LIBERO suite for the sim env
+target_task: libero_90
 task_ids: "[0,1,2,3,4,5,6,7,8,9]"
-# EPISODE-EXACT는 항상 ON (stage1 방식; 각 롤아웃 = 데이터셋 에피소드의 MuJoCo init_state로 리셋 →
-# sim scene이 데이터셋과 정확히 일치, multi 비교도 모든 모델이 같은 에피소드 scene). eval_init_states.npz
-# (source당 공유, stage1_eval/oracle_matching이 생성)가 없으면 seed-기반 리셋으로 자동 폴백+경고.
-# use_gt_skill이면 GT 시퀀스도 그 에피소드에 정렬 주입.
-# 총 GPU(=1-GPU 잡) 예산. SINGLE: task_ids를 N등분해 잡 N개. MULTI: 모델×청크로 팬아웃하되
-# 청크수 = eval_num_gpus ÷ 모델수 (총 잡 ≤ 예산; 최소 모델당 1잡) — 세 모델이 동시에 돌고,
-# 각 task는 마지막 패널 잡이 끝나는 즉시 그리드 영상으로 스티칭됨 (stage1식 진행감).
-# 요약은 잡별 eval_info_*.json → 막판-완성자가 자동 머지. (salloc 안에서 실행 시 무시됨.)
 eval_num_gpus: 10
-n_episodes: 5             # episodes per task
+n_episodes: 5
 n_action_steps: 5
 eval_batch_size: 1
 max_parallel_tasks: 1
 
-# ── Video / skill HTML ──
+skill_end_mode: or
+skill_end_threshold: 0.5
+skill_end_progress_threshold: 0.8
+inference_skill_max_length: 200
+
 max_videos_per_task: 5
 video_frame_stride: 2
 video_fps: 10
-skill_html: true          # per-skill viz: VLM-predicted FSQ code, start/end frame, and the FSQ
-                          # terminator end-probability curve per skill (policy.get_skill_trace()).
-                          # Needs skill_latents.npz for the per-token training-example panel;
-                          # the sbatch auto-disables if that npz is missing.
+skill_html: true
 skill_html_train_samples: 10
 
-# ── Inference (eval-time tuning; the model STRUCTURE comes from the checkpoint) ──
-# How a skill ends from the FSQ terminator signals:
-#   termination → end_prob >= skill_end_threshold
-#   progress    → progress >= skill_end_threshold
-#   and         → end_prob >= skill_end_threshold AND progress >= skill_end_progress_threshold
-#                 (both must hold — avoids ending on an early end-prob spike before the skill is done)
-#   or          → end_prob >= skill_end_threshold OR  progress >= skill_end_progress_threshold
-#                 (either suffices — ends as soon as termination OR the progress gate fires)
-skill_end_mode: or
-skill_end_threshold: 0.5 
-skill_end_progress_threshold: 0.9   # progress gate for skill_end_mode=and/or
-inference_skill_max_length: 200    # force a skill switch after this many steps (0 = off)
-
-# Which terminator decides skill transitions at eval (the action chunk always comes from the expert):
-#   auto      → the terminator co-trained INTO this checkpoint if it was trained with train_terminator,
-#               else the base dataset FSQ.pt (historical default).
-#   cotrained → FORCE the co-trained terminator (lazy-exported to checkpoints/<ckpt>/FSQ_ft.pt);
-#               errors if this checkpoint was trained with train_terminator=false.
-#   base      → FORCE the ORIGINAL dataset FSQ.pt (the terminator BEFORE in-policy co-training).
-# (폴더 태그에는 반영 안 됨 — base vs cotrained를 나란히 비교하려면 eval_exp 등으로 구분할 것.)
-# include_stage1의 stage1 패널도 이 값을 따르되 항상 STAGE-2 체크포인트 기준으로 resolve해 s2 패널과 같은
-# 터미네이터 파일을 씀 (cotrained→s2 FSQ_ft.pt, base→원본 FSQ.pt).
-eval_terminator: auto
-
-# ── Oracle eval (isolate the action expert from the VLM's skill prediction) ──
-use_gt_skill: true        # true = teacher-force the dataset's GT skill sequence (per task) into the
-                          # cond-encoder; the VLM still encodes the start obs but its predicted code
-                          # is bypassed. GT skills come from the run's skillvla dataset (auto-derived).
-skill_advance_mode: terminator    # how a skill ends: "terminator" (FSQ signal) or "gt" (GT demo
-                          # duration; oracle only). Terminator curves are recorded either way.
-
-
-eval_exp: ""              # 폴더명 끝에 붙는 자유 태그 (예: eval_terminator=base 비교 시 "baseterm")
-
-# ── wandb ──
 wandb_project: VLA_eval
 
-# ── Slurm (partition/qos/nodelist/exclude_nodes come from configs/global_config.yaml) ──
 eval_gres: gpu:1
 eval_cpus_per_task: 8
 eval_mem: 32G

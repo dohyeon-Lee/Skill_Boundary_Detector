@@ -114,9 +114,11 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.lora_lr_scale="${LORA_LR_SCALE}" \
     --policy.image_free_lora_prob="${IMAGE_FREE_LORA_PROB}" \
     --policy.image_free_lora_anchor_weight="${IMAGE_FREE_LORA_ANCHOR_WEIGHT}" \
+    --policy.skill_start_loss_weight="${SKILL_START_LOSS_WEIGHT}" \
     --policy.skill_end_loss_weight="${SKILL_END_LOSS_WEIGHT}" \
     --policy.action_weight="${ACTION_WEIGHT}" \
     --policy.train_terminator="${TRAIN_TERMINATOR}" \
+    --policy.terminator_freeze_vision_encoder="${TERMINATOR_FREEZE_VISION_ENCODER}" \
     --policy.fsq_path="${FSQ_PATH}" \
     --policy.terminator_end_target_sigma="${TERMINATOR_END_TARGET_SIGMA}" \
     --policy.terminator_end_pos_weight="${TERMINATOR_END_POS_WEIGHT}" \

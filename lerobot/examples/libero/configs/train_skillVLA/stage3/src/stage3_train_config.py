@@ -76,12 +76,10 @@ def build_settings(cfg: dict) -> dict:
     reader_depth = _inh_num("reader_depth", 2, int)
     reader_heads = _inh_num("reader_heads", 8, int)
     skill_reader_all_layers = _inh_bool("skill_reader_all_layers", False)
-    # LoRA structure — inherited (②③④ must match the checkpoint; ① shares the same rank/alpha).
-    # ④(lora_expert)를 상속 안 하면 stage3 로드에서 ④가 미주입 → s2 ckpt의 ④ 텐서가 unexpected로
-    # 조용히 버려져 최종 모델에서 사라짐 (②③은 ④와 공학습된 상태라 심각한 불일치).
-    lora_cond_vlm = _inh_bool("lora_cond_vlm", True)
-    lora_cond_bridge = _inh_bool("lora_cond_bridge", True)
-    lora_expert = _inh_bool("lora_expert", False)
+    # LoRA structure — inherited so Stage-2 vlm_lora/cond_lora tensors have matching wrappers when the
+    # parent checkpoint is loaded. The frozen Stage-1 expert_lora is rebuilt from its Stage-1 config.
+    vlm_lora = _inh_bool("vlm_lora", _inh_bool("lora_cond_vlm", True))
+    cond_lora = _inh_bool("cond_lora", _inh_bool("lora_cond_bridge", True))
     lora_rank = _inh_num("lora_rank", 8, int)
     lora_alpha = _inh_num("lora_alpha", 16.0, float)
     lora_dropout = _inh_num("lora_dropout", 0.0, float)
@@ -172,13 +170,12 @@ def build_settings(cfg: dict) -> dict:
         "vlm_cond": vlm_cond,
         "cond_expert": cond_expert,
         "vlm_expert": vlm_expert,
-        # STAGE 3: every batch is a SKILL batch; ① trains (fresh B=0 inject), ②③ frozen (key-matched).
+        # STAGE 3: every batch is a SKILL batch; ① trains (fresh B=0 inject), vlm_lora/cond_lora frozen.
         "pt_stage": "skill",
         "skill_action_grounding": skill_action_grounding,
         "lora_skill": True,
-        "lora_cond_vlm": lora_cond_vlm,
-        "lora_cond_bridge": lora_cond_bridge,
-        "lora_expert": lora_expert,               # ④ 상속 — 미전달 시 ckpt의 ④가 로드에서 소실됨
+        "vlm_lora": vlm_lora,
+        "cond_lora": cond_lora,
         "lora_rank": lora_rank,
         "lora_alpha": lora_alpha,
         "lora_dropout": lora_dropout,

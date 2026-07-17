@@ -107,22 +107,24 @@ class SkillExpertConfig(PI05Config):
 
     # ── Loss = action MSE (flow matching). Boundary handling: at the skill end (k>skill_de) and episode-end
     #    pad, the action TARGET is a HOLD (arm deltas→0, gripper→last valid value) and supervised — NOT masked.
-    #    action_weight selects plain vs per-sample end-weighted MSE. ──
+    #    action_weight selects plain vs per-sample skill-progress-weighted MSE. ──
+    skill_start_loss_weight: float = 1.0
+    """Action-loss weight at skill progress 0 (only used when action_weight=True)."""
     skill_end_loss_weight: float = 1.0
-    """R for the end weighting (only used when action_weight=True): sw = 1 + (R-1)·progress, where progress is
-    the within-skill position of the chunk's ENDPOINT (0 at skill start → 1 at skill end). R=1 → uniform; R>1
-    → chunks landing near the skill END (the handoff) count up to R×."""
+    """Action-loss weight at skill progress 1 (only used when action_weight=True). The per-chunk weight is
+    linearly interpolated between skill_start_loss_weight and this value using the chunk ENDPOINT progress."""
     action_weight: bool = False
-    """Weight the action MSE PER-SAMPLE (per-chunk) by sw=1+(R-1)·prog_end — chunks ending nearer the skill
-    end count more; UNIFORM within a chunk (the K steps share one weight). False → plain (uniform) action MSE.
-    The weighted value is logged to wandb `loss_weighted` (SEPARATE panel); wandb `loss` stays the plain
-    unweighted comparison value. Run-name tag: ac_w (weighted) / ac (plain)."""
+    """Weight action MSE PER-SAMPLE by start+(end-start)·prog_end. The K steps within a chunk share one
+    weight. False gives plain action MSE. B image-free anchor batches never use this weighting."""
 
     # ── Co-trained FSQ terminator (skill-end timing for eval; gradient-disjoint from the main model) ──
     train_terminator: bool = False
     """Co-train the isolated FSQ terminator (skill-end timing) alongside Stage-1 — gradient-disjoint
     from the main model (mirrors stage2/FT), warm-started from fsq_path. Lets a checkpoint be evaled
     (skill transitions). Always-on (its own optimizer group)."""
+    terminator_freeze_vision_encoder: bool | None = None
+    """Freeze the co-trained terminator's DINO/SigLIP encoder. None inherits the FSQ checkpoint setting;
+    false fine-tunes it in the terminator optimizer group at terminator_lr_scale × optimizer_lr."""
     terminator_end_target_sigma: float = 1.0
     """Termination target = Gaussian bump exp(-de²/2σ²) peaking at the skill end (σ>0); σ≤0 → hard (de==0)."""
     terminator_end_pos_weight: float = 1.0
@@ -206,4 +208,9 @@ class SkillExpertConfig(PI05Config):
             raise ValueError(
                 "image_free_lora_anchor_weight must be > 0 "
                 f"(got {self.image_free_lora_anchor_weight})."
+            )
+        if self.skill_start_loss_weight <= 0.0 or self.skill_end_loss_weight <= 0.0:
+            raise ValueError(
+                "skill_start_loss_weight and skill_end_loss_weight must both be > 0 "
+                f"(got {self.skill_start_loss_weight} and {self.skill_end_loss_weight})."
             )

@@ -4,7 +4,7 @@
 Feeds IDENTICAL internal inputs (cond images, state, skill code) and the SAME flow-matching noise
 to both action forwards, then compares the predicted action chunk. This isolates the pure forward
 math from env / preprocessing / RNG / closed-loop chaos — the only clean way to confirm that the
-stage2 "VSA" panel (skill_vla with eval_drop_vlm + adapters OFF) implements the SAME function as the
+stage2 "VSA" panel (skill_vla with eval_drop_vlm + new adapters OFF) implements the SAME function as the
 stage1 "skill_expert" checkpoint. (Their action-side weights were already verified bit-identical.)
 
 Three base comparisons per trial:
@@ -19,15 +19,14 @@ two forwards are the same function; the videos differ purely because of independ
 closed-loop chaos, NOT weights/inputs/forward code.
 
 When ``--adapter_probes`` is enabled, the same VLM-severed forward additionally runs with
-``cond_bridge`` (③) only, ``expert`` (④) only, and both active.  Those probes are measured against
-the VSA/base output using the *same* inputs and noise.  They do not test language usefulness; they
-isolate whether either adapter can perturb the Stage-1 motor even after the real VLM is cut.
+``cond_lora`` active. It is measured against the VSA/base output using the *same* inputs and noise.
+The permanently frozen ``expert_lora`` remains active in both paths as part of the Stage-1 VSA.
 
 Run on a GPU node, e.g.:
   PROJECT=/path/to/Skill_Boundary_Detector
   PYTHONPATH=$PROJECT/lerobot/src:$PROJECT/lerobot/examples/libero \
     $PROJECT/.venv/bin/python tools/verify_vsa_stage1_equiv.py \
-  --stage2 $PROJECT/outputs_filtered/skillVLA_stage2/FSQ555_dino8_both_1000_siglip_015000_state__s2_Ltttr8lr10sv50vf/checkpoints/010000/pretrained_model \
+  --stage2 $PROJECT/outputs_filtered/skillVLA_stage2/FSQ555_dino8_both_1000_siglip_015000_state__s2_VtCtr8lr10sv50vf/checkpoints/010000/pretrained_model \
       --stage1 $PROJECT/outputs_filtered/skillVLA_stage1/FSQ555_dino8_both_1000_siglip_batch256_state/checkpoints/015000/pretrained_model
 """
 import argparse
@@ -157,10 +156,10 @@ def s2_action(s2, current_images, skill_start_images, state, code, noise, num_st
     lang_masks = torch.ones(B, L, dtype=torch.bool, device=state.device)
     start_images = [s2._preprocess_vlm_tensor(img) for img in skill_start_images]
     if adapters is not None:
-        # sample_actions() normally selects ∅ for this VSA config.  Probe a precise subset by
+        # sample_actions() normally disables all *new* adapters for this VSA config. Probe a precise subset by
         # calling its sampling core after setting the sticky adapter scope ourselves.  The core still
         # honors eval_drop_vlm=True, so no VLM K/V crosses into cond/action.
-        set_active_adapters(adapters)
+        set_active_adapters(s2.model._active_adapters(adapters))
         return s2.model._sample_actions_A(current_images, start_images, lang_tokens, lang_masks, state,
                                            code, noise, num_steps)
     return s2.model.sample_actions(current_images, start_images, lang_tokens, lang_masks, state,
@@ -196,8 +195,7 @@ def main():
                     help="fp32 forces both forwards to float32 (removes bf16 rounding → isolates whether "
                          "the CROSS delta is pure rounding or a structural difference)")
     ap.add_argument("--adapter_probes", action=argparse.BooleanOptionalAction, default=True,
-                    help="also measure ③ bridge-only, ④ expert-only, and ③+④ VLM-severed deltas "
-                         "relative to the adapter-off VSA base")
+                    help="also measure the cond_lora VLM-severed delta relative to the frozen Stage-1 VSA")
     args = ap.parse_args()
 
     force_dtype = torch.float32 if args.dtype == "fp32" else None
@@ -224,11 +222,9 @@ def main():
     P(f"[dims] max_action_dim={adim}  real_action_dim={real_dim}  (comparing first {real_dim})")
     codes = [int(c) for c in args.codes.split(",") if c.strip() != ""]
 
-    # In VLM-severed inference, adapter "cond" lives only in the VLM LLM and cannot affect the motor.
-    # These are exactly the two adapter paths that can alter a drop_vlm rollout.
-    adapter_probes = (("bridge", frozenset({"cond_bridge"})),
-                      ("expert", frozenset({"expert"})),
-                      ("bridge_expert", frozenset({"cond_bridge", "expert"})))
+    # In VLM-severed inference vlm_lora cannot affect the motor. The only new path that can is cond_lora;
+    # expert_lora is deliberately not a probe because it is the frozen Stage-1 VSA itself.
+    adapter_probes = (("cond_lora", frozenset({"cond_lora"})),)
     present_adapters = set()
     for mod in s2.modules():
         if hasattr(mod, "adapters"):
@@ -302,12 +298,11 @@ def main():
     P("  note: closed-loop video divergence is driven by noise-sensitivity + chaos, not by CROSS.")
 
     if args.adapter_probes:
-        P("\nAdapter drift probes (VLM severed; SAME input/noise; Δ vs adapter-off VSA):")
-        P(f"{'code':>5} | {'③ bridge max|Δ|':>18} | {'④ expert max|Δ|':>18} | {'③+④ max|Δ|':>18}")
+        P("\nAdapter drift probe (VLM severed; SAME input/noise; Δ vs frozen Stage-1 VSA):")
+        P(f"{'code':>5} | {'cond_lora max|Δ|':>20}")
         P("-" * 78)
         for row in probe_rows:
-            P(f"{row['code']:>5} | {row['bridge']['max']:>18.3e} | "
-              f"{row['expert']['max']:>18.3e} | {row['bridge_expert']['max']:>18.3e}")
+            P(f"{row['code']:>5} | {row['cond_lora']['max']:>20.3e}")
         P("worst-case: " + ", ".join(f"{name}={mx:.3e}" for name, mx in probe_worst.items()))
 
     if args.out:

@@ -234,7 +234,7 @@ def make_skill_vla_pre_post_processors(
             state_q99=state_stats.get("q99"),
         ),
         TokenizerProcessorStep(
-            tokenizer_name="google/paligemma-3b-pt-224",
+            tokenizer_name=config.tokenizer_path or "google/paligemma-3b-pt-224",
             max_length=config.tokenizer_max_length,
             padding_side="right",
             padding="max_length",

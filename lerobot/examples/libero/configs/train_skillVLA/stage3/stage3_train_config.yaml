@@ -5,7 +5,7 @@
 #   ① lora_skill @ VLM LLM (새로 주입, B=0 no-op 시작) + skill_reader + skill_head — skill loss.
 # 나머지 전부 동결(vlm_vision 포함 — stage2에서 확정된 vision 위에서 ①이 학습됨, moving target 없음).
 # 데이터셋은 stage2가 학습한 것과 동일 (부모 train_config.json에서 자동 유도 — 여기서 지정 안 함).
-# LoRA 구조(rank/alpha/targets, ②③)와 attention/reader arch도 부모 config.json에서 상속.
+# LoRA 구조(rank/alpha/targets, vlm_lora/cond_lora)와 attention/reader arch도 부모 config.json에서 상속.
 # FT의 SKILL regime과 구조적으로 동일 → FT 리허설.
 # Output: {project_root}/{outputs_root}/skillVLA_stage3/{stage2_run_name}_{ckpt}__s3[lr{s}][_{exp}]/
 

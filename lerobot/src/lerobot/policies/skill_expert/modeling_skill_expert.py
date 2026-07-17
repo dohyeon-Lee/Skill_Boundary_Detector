@@ -301,6 +301,8 @@ class SkillExpertPytorch(nn.Module):
         enc = self.dino if self.vision_backbone == "dino" else self.siglip
         if not self.config.freeze_vision_encoder and hasattr(enc, "gradient_checkpointing_enable"):
             enc.gradient_checkpointing_enable()
+        if self.fsq_term_train is not None:
+            self.fsq_term_train.gradient_checkpointing_enable()
 
     # ── Flow-matching samplers (copied from PI05Pytorch) ──
     def sample_noise(self, shape, device) -> Tensor:
@@ -356,12 +358,21 @@ class SkillExpertPytorch(nn.Module):
         Registered as a submodule (joins the optimizer, checkpointed); its loss runs on a disjoint
         graph (GT/precomputed inputs only) → no SkillExpert effect."""
         terminator = self._construct_fsq(path, getattr(self.config, "terminator_dino_model_path", None))
+        freeze_override = getattr(self.config, "terminator_freeze_vision_encoder", None)
+        if freeze_override is not None:
+            terminator.freeze_vision_encoder = bool(freeze_override)
         terminator.requires_grad_(True).train()
         if terminator.freeze_vision_encoder:
             terminator.vision_encoder.requires_grad_(False).eval()
+        else:
+            terminator.vision_encoder.requires_grad_(True).train()
         self.fsq_term_train = terminator.to(device=next(self.parameters()).device, dtype=torch.float32)
-        n_tr = sum(p.numel() for p in terminator.parameters())
-        log.info("Built TRAINABLE v2 FSQ terminator from %s (%d params).", path, n_tr)
+        n_tr = sum(p.numel() for p in terminator.parameters() if p.requires_grad)
+        n_vis = sum(p.numel() for p in terminator.vision_encoder.parameters() if p.requires_grad)
+        log.info(
+            "Built TRAINABLE v2 FSQ terminator from %s (%d trainable params; vision=%s, %d params).",
+            path, n_tr, "frozen" if terminator.freeze_vision_encoder else "trainable", n_vis,
+        )
 
     def terminator_predict(self, true_code: Tensor, state: Tensor, image: Tensor,
                            wrist_image: Tensor | None = None) -> tuple[Tensor, Tensor]:
@@ -1133,11 +1144,11 @@ class SkillExpertPolicy(PreTrainedPolicy):
             loss_dict["prog_end_mean"] = prog_end[valid_s].mean().item() if bool(valid_s.any()) else float("nan")
 
         cfg = self.config
-        r = float(cfg.skill_end_loss_weight)
+        start_w = float(cfg.skill_start_loss_weight)
+        end_w = float(cfg.skill_end_loss_weight)
 
         # ── A objective = action MSE. action_weight=False → plain (uniform) MSE. action_weight=True → per-SAMPLE
-        # endpoint-weighted MSE: sw = 1 + (R-1)·prog_at_endpoint (anchor = the chunk's last valid step = skill
-        # end), so chunks landing near a skill's END count up to R×. B never consumes this GT-action
+        # endpoint-weighted MSE: sw = start + (end-start)·prog_at_endpoint. B never consumes this GT-action
         # objective: it only anchors image-free expert velocity to frozen FSQ. ──
         if image_free_lora:
             loss = objective_per_sample.mean() * float(cfg.image_free_lora_anchor_weight)
@@ -1153,7 +1164,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 prog = ((ds + kk) / (ds + de_f).clamp(min=1.0)).clamp(0.0, 1.0)
             else:
                 prog = (torch.arange(K, device=dev).float().view(1, K) / max(K - 1, 1)).expand(bsize, K)
-            sw = (1.0 + (r - 1.0) * prog[rows, anchor]) * (last_valid >= 0).float()  # per-sample; 0 if no valid step
+            sw = (start_w + (end_w - start_w) * prog[rows, anchor]) * (last_valid >= 0).float()
             loss = (per_sample * sw).sum() / sw.sum().clamp(min=1.0)
             loss_dict["action_weighted_loss"] = loss.detach().item()   # the weighted objective (weighted mode only)
             loss_dict["regime/A_objective_loss"] = loss.detach().item()

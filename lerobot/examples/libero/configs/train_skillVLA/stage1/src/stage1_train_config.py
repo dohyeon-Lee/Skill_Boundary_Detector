@@ -22,6 +22,76 @@ from train_skills_config import as_bool, as_levels, as_list, get_value, load_con
 DEFAULT_CONFIG_PATH = _HERE.parent.parent / "stage1_train_config.yaml"
 
 
+def _normalize_config(cfg: dict) -> dict:
+    """Accept the compact grouped YAML while retaining flat-key config compatibility."""
+    out = dict(cfg)
+    nested_keys = {
+        "skillvla_dataset_root": ("dataset", "skillvla_root"),
+        "source_dataset": ("dataset", "source"),
+        "run_tag": ("dataset", "run"),
+        "fsq_path": ("initialization", "fsq_path"),
+        "init_from_pi05": ("initialization", "pi05"),
+        "pi_base": ("initialization", "pi_base"),
+        "vision_backbone": ("vision", "backbone"),
+        "freeze_vision_encoder": ("vision", "freeze"),
+        "dino_model_path": ("vision", "dino_model"),
+        "dino_lr": ("vision", "dino_lr"),
+        "siglip_lr": ("vision", "siglip_lr"),
+        "siglip_image_size": ("vision", "siglip_size"),
+        "lora_expert": ("expert", "lora", "enabled"),
+        "lora_targets": ("expert", "lora", "targets"),
+        "lora_rank": ("expert", "lora", "rank"),
+        "lora_alpha": ("expert", "lora", "alpha"),
+        "lora_dropout": ("expert", "lora", "dropout"),
+        "lora_lr_scale": ("expert", "lora", "lr_scale"),
+        "image_free_lora_prob": ("regime", "image_free", "probability"),
+        "image_free_lora_anchor_weight": ("regime", "image_free", "anchor_weight"),
+        "n_action_steps": ("execution", "action_steps"),
+        "skill_start_loss_weight": ("loss", "skill_start_weight"),
+        "skill_end_loss_weight": ("loss", "skill_end_weight"),
+        "action_weight": ("loss", "weighted"),
+        "train_terminator": ("terminator", "train"),
+        "terminator_freeze_vision_encoder": ("terminator", "freeze_vision"),
+        "terminator_end_target_sigma": ("terminator", "target_sigma"),
+        "terminator_end_pos_weight": ("terminator", "end_weight"),
+        "terminator_lr_scale": ("terminator", "lr_scale"),
+        "terminator_dino_model_path": ("terminator", "dino_model"),
+        "exp": ("run", "suffix"),
+        "batch_size": ("training", "dataloader", "batch_size"),
+        "num_workers": ("training", "dataloader", "workers"),
+        "num_gpus": ("training", "dataloader", "gpus"),
+        "lr_base": ("training", "optimizer", "base_lr"),
+        "steps": ("training", "schedule", "steps"),
+        "log_freq": ("training", "schedule", "log_every"),
+        "save_freq": ("training", "schedule", "save_every"),
+        "wandb_enable": ("logging", "wandb", "enable"),
+        "wandb_project": ("logging", "wandb", "project"),
+        "train_partition": ("slurm", "partition"),
+        "train_qos": ("slurm", "qos"),
+        "train_gres": ("slurm", "gres"),
+        "train_cpus_per_task": ("slurm", "cpus"),
+        "train_mem": ("slurm", "memory"),
+        "train_time": ("slurm", "time"),
+        "train_nodelist": ("slurm", "nodes"),
+        "train_exclude_nodes": ("slurm", "exclude_nodes"),
+    }
+    for flat_key, path in nested_keys.items():
+        if flat_key in out:
+            continue
+        value = cfg
+        for part in path:
+            if not isinstance(value, dict) or part not in value:
+                break
+            value = value[part]
+        else:
+            out[flat_key] = value
+    if isinstance(out.get("lora_targets"), (list, tuple)):
+        out["lora_targets"] = ",".join(str(v) for v in out["lora_targets"])
+    if str(out.get("n_action_steps", "")).strip().lower() in ("auto", "fsq"):
+        out["n_action_steps"] = None
+    return out
+
+
 def _blank(value: Any) -> bool:
     return value is None or str(value).strip().lower() in ("", "null", "none")
 
@@ -40,6 +110,13 @@ def _anchor_weight_run_suffix(weight: float) -> str:
     if weight == 1.0:
         return ""
     return f"_aw{weight:g}".replace(".", "p")
+
+
+def _action_weight_run_suffix(start: float, end: float) -> str:
+    """Preserve historical 1→3 run names while separating every other weighting range."""
+    if start == 1.0 and end == 3.0:
+        return ""
+    return f"_sw{start:g}_ew{end:g}".replace(".", "p")
 
 
 def _localize_model_path(project_root: Path, value: Any, default: str) -> Path:
@@ -89,6 +166,7 @@ def _from_fsq_or_override(cfg: dict, name: str, fsq_value, *, cast=None):
 
 
 def build_settings(cfg: dict) -> dict:
+    cfg = _normalize_config(cfg)
     # Standalone: every root is declared in this yaml (no build_data dependency).
     project_root = Path(str(get_value(cfg, "project_root"))).expanduser()
     dataset_root = project_root / str(get_value(cfg, "dataset_root", "dataset"))
@@ -133,8 +211,21 @@ def build_settings(cfg: dict) -> dict:
     cond_encoder_variant = str(get_value(cfg, "cond_encoder_variant", "")).strip()
     if cond_encoder_variant.lower() in ("none", "null"):  # blank yaml → omit (use action expert's variant)
         cond_encoder_variant = ""
-    skill_end_w = float(get_value(cfg, "skill_end_loss_weight", 1.0))      # R end weighting (action_weight only)
+    skill_start_w = float(get_value(cfg, "skill_start_loss_weight", 1.0))  # start weighting (action_weight only)
+    skill_end_w = float(get_value(cfg, "skill_end_loss_weight", 1.0))      # end weighting (action_weight only)
     action_weight = as_bool(get_value(cfg, "action_weight", False))        # per-sample sw-weight the action MSE
+    if skill_start_w <= 0.0 or skill_end_w <= 0.0:
+        raise ValueError(
+            "skill_start_loss_weight and skill_end_loss_weight must both be > 0 "
+            f"(got {skill_start_w} and {skill_end_w})."
+        )
+    train_terminator = as_bool(get_value(cfg, "train_terminator", False))
+    term_freeze_source = get_value(cfg, "terminator_freeze_vision_encoder", None)
+    terminator_freeze_vision_encoder = (
+        bool(getattr(fsq_cfg, "freeze_vision_encoder", True))
+        if _blank(term_freeze_source)
+        else as_bool(term_freeze_source)
+    )
 
     # Stage-1 adapts the FSQ action expert either through LoRA (frozen base) or full fine-tuning. A batches
     # train against actions; B batches have NO image/cond and anchor the image-free expert to frozen FSQ.
@@ -184,7 +275,9 @@ def build_settings(cfg: dict) -> dict:
             run_name = f"{run_name}_if{int(round(image_free_lora_prob * 100))}"
             run_name = f"{run_name}{_anchor_weight_run_suffix(image_free_lora_anchor_weight)}"
     if action_weight:
-        run_name = f"{run_name}_weighted"
+        run_name = f"{run_name}_weighted{_action_weight_run_suffix(skill_start_w, skill_end_w)}"
+    if train_terminator and not terminator_freeze_vision_encoder:
+        run_name = f"{run_name}_termvis_tuned"
     if exp:
         run_name = f"{run_name}_{exp}"
     # Single outputs root from yaml; the per-stage subdir is fixed here (not in yaml).
@@ -202,7 +295,6 @@ def build_settings(cfg: dict) -> dict:
     # ── Co-trained terminator (ONLINE DINO): use the DINO backbone recorded by THIS FSQ checkpoint.
     # A yaml override is allowed, but defaulting to a different DINO size silently makes checkpoint
     # weights incompatible (and may point at a config-only local model directory).
-    train_terminator = as_bool(get_value(cfg, "train_terminator", False))
     term_dino_source = get_value(cfg, "terminator_dino_model_path", None)
     if _blank(term_dino_source):
         term_dino_source = getattr(fsq_cfg, "dino_model_path", "models/dinov3-vits16")
@@ -257,11 +349,13 @@ def build_settings(cfg: dict) -> dict:
         # action chunk horizon
         "chunk_size": chunk_size,
         "n_action_steps": n_action_steps,
-        # loss: optional cumulative-position term (λ) + end weighting (R) + aggregation mode. λ=0 → off.
-        "skill_end_loss_weight": skill_end_w,    # R — end weighting (action_weight only)
+        # loss: A-only linear endpoint weighting from skill start to skill end. B remains uniform.
+        "skill_start_loss_weight": skill_start_w,
+        "skill_end_loss_weight": skill_end_w,
         "action_weight": action_weight,          # per-sample sw-weight the action MSE → wandb loss_weighted
         # co-trained FSQ terminator (gradient-disjoint; AUTO-derived from run_tag)
         "train_terminator": train_terminator,
+        "terminator_freeze_vision_encoder": terminator_freeze_vision_encoder,
         "fsq_path": fsq_path,                     # {run_dir}/FSQ.pt (warm-start the terminator)
         "terminator_end_target_sigma": float(get_value(cfg, "terminator_end_target_sigma", 1.0)),
         "terminator_end_pos_weight": float(get_value(cfg, "terminator_end_pos_weight", 1.0)),

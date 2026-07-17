@@ -94,7 +94,7 @@ fi
 
 # pretrained_path = the STAGE-2 checkpoint (full-loaded); stage1_checkpoint_path supplies the
 # architecture config only (no weights reloaded). ① is injected fresh (no keys in the checkpoint →
-# B=0 no-op start); ②③④ re-injected to match the checkpoint keys and stay frozen.
+# B=0 no-op start); vlm_lora/cond_lora are re-injected to match the checkpoint keys and stay frozen.
 # reader 전용 read-set (tri-state 상속): 빈 env = s2 ckpt에 값 없음 → 플래그 미전달 (config None 유지).
 READER_ARGS=()
 [ -n "${READER_ATTEND_IMAGE:-}" ] && READER_ARGS+=(--policy.reader_attend_image="${READER_ATTEND_IMAGE}")
@@ -134,9 +134,8 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.skill_action_grounding="${SKILL_ACTION_GROUNDING}" \
     ${PACK_ARGS[@]+"${PACK_ARGS[@]}"} \
     --policy.lora_skill="${LORA_SKILL}" \
-    --policy.lora_cond_vlm="${LORA_COND_VLM}" \
-    --policy.lora_cond_bridge="${LORA_COND_BRIDGE}" \
-    --policy.lora_expert="${LORA_EXPERT:-false}" \
+    --policy.vlm_lora="${VLM_LORA}" \
+    --policy.cond_lora="${COND_LORA}" \
     --policy.lora_rank="${LORA_RANK}" \
     --policy.lora_alpha="${LORA_ALPHA}" \
     --policy.lora_dropout="${LORA_DROPOUT}" \

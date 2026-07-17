@@ -55,7 +55,13 @@ from lerobot.policies.pi05.modeling_pi05 import (
     pad_vector,
     resize_with_pad_torch,
 )
-from lerobot.policies.pi05.lora import NamedLoRALinear, route_plain_to_base, set_active_adapters
+from lerobot.policies.pi05.lora import (
+    NamedLoRALinear,
+    inject_named_lora,
+    route_plain_to_base,
+    set_active_adapters,
+    target_names_from_spec,
+)
 from lerobot.policies.pi_gemma import _gated_residual, layernorm_forward
 from lerobot.policies.skill_expert.modeling_skill_expert import (
     _build_gemma,
@@ -179,6 +185,10 @@ class SkillVLAPytorch(PI05Pytorch):
             num_probes=config.num_reader_tokens)
         self.skill_head = SkillHead(vlm_width, config.skill_fsq_levels,
                                     deadzone_frac=getattr(config, "skill_deadzone_frac", 0.0))
+
+        # ── Stage-1 VSA LoRA: restore its adapter as part of the frozen VSA before adding Stage-2/3 adapters.
+        self._has_stage1_expert_lora = False
+        self._inject_stage1_expert_lora(stage1_config)
 
         # ── Multi-adapter LoRA (①②③): named low-rank adapters on the FROZEN VLM LLM / cond encoder. The
         # base stays frozen (from_pretrained routes the pretrained plain weights into `.base`); each adapter
@@ -311,17 +321,58 @@ class SkillVLAPytorch(PI05Pytorch):
                              "set pt_stage='cond' or 'skill' instead.")
         return None
 
-    def _inject_lora_adapters(self) -> None:
-        """Inject the named LoRA adapters selected in the config. ① skill / ② cond on the VLM LLM
-        (self._vlm); ③ cond_bridge on the cond encoder (self.cond_encoder); ④ expert on the action
-        expert (self._expert — CONNECTED-only consumer adaptation; severed runs with ④ off keep the
-        pure Stage-1 VSA). rank/alpha/dropout/targets are shared (inherited pi05 lora_* hyperparams).
-        No-op if all flags are off."""
-        c = self.config
-        if not (getattr(c, "lora_skill", False) or getattr(c, "lora_cond_vlm", False)
-                or getattr(c, "lora_cond_bridge", False) or getattr(c, "lora_expert", False)):
+    def _inject_stage1_expert_lora(self, stage1_config) -> None:
+        """Recreate Stage-1's expert adapter under ``expert_lora`` so it can be loaded and frozen intact.
+
+        Stage-1 LoRA is part of the VSA checkpoint, not a Stage-2 adaptation knob. Its target set and
+        rank therefore come from the Stage-1 config, including optional action_in/action_out projections.
+        """
+        if not bool(getattr(stage1_config, "lora_expert", False)):
             return
-        from lerobot.policies.pi05.lora import inject_named_lora, target_names_from_spec  # noqa: PLC0415
+        names = target_names_from_spec(str(getattr(stage1_config, "lora_targets", "q,k,v,o")))
+        action_names = names & {"action_in_proj", "action_out_proj"}
+        gemma_names = names - action_names
+        rank = int(getattr(stage1_config, "lora_rank", 8))
+        alpha_raw = getattr(stage1_config, "lora_alpha", 2 * rank)
+        alpha = 2.0 * rank if str(alpha_raw).strip().lower() in ("", "auto") else float(alpha_raw)
+        dropout = float(getattr(stage1_config, "lora_dropout", 0.0))
+        count = 0
+        if gemma_names:
+            count += inject_named_lora(self._expert, gemma_names, "expert_lora", rank, alpha, dropout)
+        if action_names:
+            count += inject_named_lora(self, action_names, "expert_lora", rank, alpha, dropout)
+        if count == 0:
+            raise ValueError(
+                "Stage-1 lora_expert=True but no expert Linears matched "
+                f"lora_targets={getattr(stage1_config, 'lora_targets', None)!r}."
+            )
+        self._has_stage1_expert_lora = True
+        print(
+            "[skillVLA Stage-1 LoRA] "
+            f"expert_lora@frozen-VSA={count} r={rank} alpha={alpha} "
+            f"dropout={dropout} targets={sorted(names)}"
+        )
+
+    def _active_adapters(self, adapters=()) -> set[str]:
+        """Always retain the Stage-1 VSA adapter; add the view-specific Stage-2/3 adapters."""
+        active = set(adapters)
+        if self._has_stage1_expert_lora:
+            active.add("expert_lora")
+        return active
+
+    def _inject_lora_adapters(self) -> None:
+        """Inject the new Stage-2/3 LoRAs: skill on VLM, vlm_lora on VLM, cond_lora on cond encoder.
+
+        The expert is deliberately absent here: a Stage-1 expert_lora is restored above as an immutable
+        VSA component, and SkillVLA does not create a new trainable expert adapter.
+        """
+        c = self.config
+        # The two legacy flag names are read only to load pre-rename Stage-2 checkpoints. New configs use
+        # vlm_lora / cond_lora exclusively.
+        use_vlm_lora = bool(getattr(c, "vlm_lora", False) or getattr(c, "lora_cond_vlm", False))
+        use_cond_lora = bool(getattr(c, "cond_lora", False) or getattr(c, "lora_cond_bridge", False))
+        if not (getattr(c, "lora_skill", False) or use_vlm_lora or use_cond_lora):
+            return
         names = target_names_from_spec(getattr(c, "lora_targets", "q,k,v,o"))
         r = int(getattr(c, "lora_rank", 8))
         alpha = float(getattr(c, "lora_alpha", 16.0))
@@ -330,15 +381,12 @@ class SkillVLAPytorch(PI05Pytorch):
         if getattr(c, "lora_skill", False):
             n = inject_named_lora(self._vlm, names, "skill", r, alpha, drop)
             parts.append(f"skill@VLM-LLM={n}")
-        if getattr(c, "lora_cond_vlm", False):
-            n = inject_named_lora(self._vlm, names, "cond", r, alpha, drop)
-            parts.append(f"cond@VLM-LLM={n}")
-        if getattr(c, "lora_cond_bridge", False):
-            n = inject_named_lora(self.cond_encoder, names, "cond_bridge", r, alpha, drop)
-            parts.append(f"cond_bridge@cond-enc={n}")
-        if getattr(c, "lora_expert", False):
-            n = inject_named_lora(self._expert, names, "expert", r, alpha, drop)
-            parts.append(f"expert@action-expert={n}")
+        if use_vlm_lora:
+            n = inject_named_lora(self._vlm, names, "vlm_lora", r, alpha, drop)
+            parts.append(f"vlm_lora@VLM-LLM={n}")
+        if use_cond_lora:
+            n = inject_named_lora(self.cond_encoder, names, "cond_lora", r, alpha, drop)
+            parts.append(f"cond_lora@cond-enc={n}")
         print(f"[skillVLA LoRA] r={r} alpha={alpha} dropout={drop} targets={sorted(names)} → "
               + ", ".join(parts))
 
@@ -953,24 +1001,22 @@ class SkillVLAPytorch(PI05Pytorch):
         Adapter selection is STICKY (set_active_adapters, no restore): the gradient-checkpoint recompute
         re-runs these layers inside loss.backward(), after any scoped `with` would have exited — the
         global must still hold THIS view's set then, or the recompute diverges from the saved forward."""
-        set_active_adapters({"skill"})
+        set_active_adapters(self._active_adapters({"skill"}))
         vlm_embeds, vlm_pad, vlm_xattn_block = self._vlm_tokens(start_images, lang_tokens, lang_masks)
         return self._skill_hidden_standalone(vlm_embeds, vlm_pad, vlm_xattn_block)
 
     def _flow_view(self, cond_images, start_images, lang_tokens, lang_masks, state, skill_zq,
                    x_t, time, severed: bool, severed_adapters: frozenset = frozenset()):
-        """FLOW view → (v_t, cond_tokens). Connected: joint forward with the VLM read under adapter ②
-        ("cond") and the cond encoder ingesting it through ③ ("cond_bridge"). Severed: the VLM never
-        runs — the expert acts on skill z + current obs alone (pure VSA); the active adapters follow
-        ``severed_adapters``: ∅ (기본 — MOTOR_SEV/probe: 어댑터 전부 bypass → 정확히 Stage-1) 또는
-        {"cond_bridge", "expert"} (COND_SEV 정규화 배치: ③④를 켠 채 severed → conduit gating 학습;
-        ④ 미주입 체크포인트에서 "expert"는 무해한 no-op). Sticky adapter set
-        (see _skill_view)."""
-        cond_tokens = self._cond_tokens(cond_images)   # image-only (state→AdaRMS, skill by mode)
+        """FLOW view → (v_t, cond_tokens). Connected reads the VLM under ``vlm_lora`` and ingests it
+        through ``cond_lora``. Severed skips the VLM and keeps the complete frozen Stage-1 VSA, including
+        ``expert_lora``. ``severed_adapters`` is normally empty (pure VSA) or {"cond_lora"} for the
+        Stage-2 conduit-gating batch. Adapter selection is sticky; see _skill_view."""
         if severed:
-            set_active_adapters(set(severed_adapters))
+            set_active_adapters(self._active_adapters(severed_adapters))
+            cond_tokens = self._cond_tokens(cond_images)
             return self._vsa_velocity(cond_tokens, x_t, time, state, skill_zq), cond_tokens
-        set_active_adapters({"cond", "cond_bridge", "expert"})   # ④ = connected-only consumer adaptation
+        set_active_adapters(self._active_adapters({"vlm_lora", "cond_lora"}))
+        cond_tokens = self._cond_tokens(cond_images)
         vlm_embeds, vlm_pad, vlm_xattn_block = self._vlm_tokens(start_images, lang_tokens, lang_masks)
         action_tokens = self._action_in(x_t)
         prefix = self._action_prefix_from_z(skill_zq)   # None in state_skill mode
@@ -997,7 +1043,7 @@ class SkillVLAPytorch(PI05Pytorch):
         n_prefix = 0 if self._state_cond_mode == "state_skill" else 1
         na = n_prefix + n_chunk
 
-        set_active_adapters({"cond", "cond_bridge", "expert"})   # frozen flow-path values, deployment-identical
+        set_active_adapters(self._active_adapters({"vlm_lora", "cond_lora"}))
         with torch.no_grad():
             vlm_embeds, vlm_pad, vlm_xattn_block = self._vlm_tokens(start_images, lang_tokens, lang_masks)
             cond_tokens = self._cond_tokens(cond_images)
@@ -1030,10 +1076,9 @@ class SkillVLAPytorch(PI05Pytorch):
             allow[:, :, n_prefix:, npre:] = True                        # action → prefix + action
             att_4d = torch.where(allow & cols[:, None, None, :], 0.0, OPENPI_ATTENTION_MASK_VALUE)
 
-        # sticky set for the grad graph: "skill" (VLM-module recompute와 일치) + "expert" (④는 expert
-        # 레이어 모듈에만 있어 skill-view recompute에 무영향; UNcheckpointed action-stream이 배포와 동일하게
-        # ④ 켜진 모터로 측정됨 — ④ 미주입이면 무해한 no-op).
-        set_active_adapters({"skill", "expert"})
+        # Keep the Stage-1 VSA adapter live for the action stream while matching the skill-view adapter
+        # set used by checkpoint recomputation.
+        set_active_adapters(self._active_adapters({"skill"}))
         expert_cond = self._expert_cond_from_z(time, state, skill_zq)
         a_in = self._action_in(x_t)
         prefix = self._action_prefix_from_z(skill_zq)      # None in state_skill mode
@@ -1063,15 +1108,14 @@ class SkillVLAPytorch(PI05Pytorch):
         (regime_probs_ft; the whole batch is ONE regime):
           SKILL       standalone VLM(+① "skill") → reader → skill_hidden only (flow=None).
                       (= STAGE 3 [pt_stage="skill"], and FT's SKILL regime.)
-          COND/MOTOR  joint flow: VLM(+② "cond") read by cond(+③ "cond_bridge") → expert; GT-teacher-
+          COND/MOTOR  joint flow: VLM(+② "vlm_lora") read by cond(+③ "cond_lora") → frozen VSA; GT-teacher-
                       forced z (the motor path never touches the skill predictor); real cross-skill tail.
                       (STAGE 2 [pt_stage="cond"] trains ②③+vision against the FROZEN expert; FT "motor"
                       trains the expert.)
-          COND_SEV    (Stage 2, 확률 cond_severed_prob) severed flow인데 ③(+④)만 활성: VLM 없음 +
-                      Stage-1 hold 타겟 — "③/④는 VLM이 없으면 stage1 함수 불변"(conduit gating)을
-                      강제하는 정규화 배치 (③=이미지-단독 흡수 구멍, ④=connected에서 항상 켜진 소비자
-                      적응의 VLM-무관 성분). gradient는 ③④에만 흐름 (②/vision은 그래프 밖). distill 없음.
-          MOTOR_SEV   adapters OFF (③ bypass → pure Stage-1 VSA), the VLM never runs; Stage-1 hold
+          COND_SEV    (Stage 2, 확률 cond_severed_prob) VLM 없이 ③만 활성. 같은 hold-derived x_t에서
+                      ③ OFF frozen Stage-1 VSA 출력을 teacher로 삼아 ③ ON student를 anchor한다.
+                      gradient는 ③에만 흐름 (②/vision은 그래프 밖). distill 없음.
+          MOTOR_SEV   new adapters OFF (③ bypass → complete Stage-1 VSA), the VLM never runs; Stage-1 hold
                       target; + random-skill distillation to the frozen-PT teacher (also severed).
         EVAL / probes / no-regime training — BOTH views (skill standalone, then flow; z follows
         cond_skill_source; _probe_force_drop severs the flow view), mirroring the 2-forward inference.
@@ -1108,6 +1152,7 @@ class SkillVLAPytorch(PI05Pytorch):
                 regime = "cond_sev"
         self._last_regime = regime
         self._last_severed_hold = False
+        self._last_cond_anchor_raw = None
         self._last_vsa_distill = None
 
         # SKILL regime — mode a (default): skill prediction only, no flow this batch.
@@ -1127,9 +1172,9 @@ class SkillVLAPytorch(PI05Pytorch):
             self._last_regime = regime = "skill_ground"                 # wandb: regime/*_skill_ground
             return F.mse_loss(u_t, v_t, reduction="none"), skill_hidden
 
-        # Severed batches: the MOTOR_SEV regime, or the eval-side probe hook (_probe_force_drop → measure
-        # the pure-VSA loss). Severed swaps the BC target to the Stage-1 hold (stop+hold past skill_de) —
-        # the pure VSA cannot see the next skill; connected batches keep the real cross-skill tail.
+        # Severed batches use the Stage-1 hold action to construct x_t (stop+hold past skill_de). MOTOR_SEV
+        # and probes retain its GT flow target; COND_SEV instead anchors cond_lora to the frozen VSA at
+        # that same x_t, so no image-only shortcut is learned.
         severed = regime in ("motor_sev", "cond_sev") or (
             regime is None and bool(getattr(self, "_probe_force_drop", None)))
         severed_hold = severed and hold_actions is not None and getattr(self.config, "severed_hold_target", True)
@@ -1148,8 +1193,8 @@ class SkillVLAPytorch(PI05Pytorch):
             # views need different STICKY adapter sets in ONE backward graph, so the gradient-checkpoint
             # recompute of the first view would run under the second's set. Regime training never mixes.
             if self.training and torch.is_grad_enabled() and (
-                    getattr(self.config, "lora_skill", False) or getattr(self.config, "lora_cond_vlm", False)
-                    or getattr(self.config, "lora_cond_bridge", False)):
+                    getattr(self.config, "lora_skill", False) or getattr(self.config, "vlm_lora", False)
+                    or getattr(self.config, "cond_lora", False)):
                 raise ValueError("LoRA adapters are configured but neither pt_stage nor regime_probs_ft "
                                  "is set — plain (no-stage) training cannot mix the skill/flow adapter "
                                  "views under gradient checkpointing. Set pt_stage or regime_probs_ft.")
@@ -1163,12 +1208,25 @@ class SkillVLAPytorch(PI05Pytorch):
             # predictor (motor ⊥ skill; the SKILL regime is the only place skill prediction trains).
             skill_zq = self._code_to_z(skill_code) / self._fsq_half[None, :]
 
-        v_t, cond_tokens = self._flow_view(
-            cond_images, start_images, lang_tokens, lang_masks, state, skill_zq, x_t, time,
-            severed=severed,
-            # COND_SEV: ③+④를 켠 채 severed + stage1 hold 타겟 — ③(이미지-단독 conduit)과 ④(항상-켜진
-            # 소비자 적응) 둘 다 "VLM 없으면 stage1 함수 불변"으로 고정 (④ 미주입이면 이름은 무해한 no-op).
-            severed_adapters=(frozenset({"cond_bridge", "expert"}) if regime == "cond_sev" else frozenset()))
+        if regime == "cond_sev":
+            # Same hold-derived x_t on both sides. Teacher = exact frozen Stage-1 VSA (expert_lora stays
+            # active, all new adapters off); student = VLM severed + cond_lora. This is a function anchor,
+            # not GT action supervision, so cond_lora cannot learn an image-only motion shortcut.
+            with torch.no_grad():
+                teacher_v, _ = self._flow_view(
+                    cond_images, start_images, lang_tokens, lang_masks, state, skill_zq, x_t, time,
+                    severed=True, severed_adapters=frozenset())
+            v_t, cond_tokens = self._flow_view(
+                cond_images, start_images, lang_tokens, lang_masks, state, skill_zq, x_t, time,
+                severed=True, severed_adapters=frozenset({"cond_lora"}))
+            anchor_losses = F.mse_loss(teacher_v, v_t, reduction="none")
+            self._last_cond_anchor_raw = anchor_losses.detach()
+            flow_losses = float(getattr(self.config, "cond_severed_anchor_weight", 1.0)) * anchor_losses
+        else:
+            v_t, cond_tokens = self._flow_view(
+                cond_images, start_images, lang_tokens, lang_masks, state, skill_zq, x_t, time,
+                severed=severed, severed_adapters=frozenset())
+            flow_losses = F.mse_loss(u_t, v_t, reduction="none")
 
         # Random-skill distillation to the FROZEN-PT teacher — MOTOR_SEV training batches only: pure-VSA
         # repertoire preservation lives in the standalone regime. Runs adapter-free (the teacher included,
@@ -1187,7 +1245,7 @@ class SkillVLAPytorch(PI05Pytorch):
                 with torch.no_grad():
                     self._last_vsa_distill = self._vsa_distill_loss(
                         cond_tokens.detach(), cond_images, x_t, time, state, skill_code)
-        return F.mse_loss(u_t, v_t, reduction="none"), skill_hidden
+        return flow_losses, skill_hidden
 
     # ── inference ──
     def _vlm_prefix_out(self, vlm_embeds: Tensor, vlm_pad: Tensor, all_layers: bool = False):
@@ -1228,7 +1286,7 @@ class SkillVLAPytorch(PI05Pytorch):
         """Run ONLY the VLM (bidirectional prefix) + skill reader → argmax FSQ skill code (B,).
         SKILL view: adapter ① ("skill"), sticky — callers that need a different view afterwards
         (sample_actions' flow scope) set their own AFTER resolving the skill (2-forward inference)."""
-        set_active_adapters({"skill"})
+        set_active_adapters(self._active_adapters({"skill"}))
         vlm_embeds, vlm_pad, vlm_xattn_block = self._vlm_tokens(start_images, lang_tokens, lang_masks)
         hidden = self._skill_hidden_standalone(vlm_embeds, vlm_pad, vlm_xattn_block)
         return self.skill_head.decode(hidden)
@@ -1415,10 +1473,10 @@ class SkillVLAPytorch(PI05Pytorch):
             skill_code = self.predict_skill_code(start_images, lang_tokens, lang_masks)
         _sever = bool(getattr(self.config, "eval_drop_vlm", False))
         _keep = bool(getattr(self.config, "eval_drop_vlm_keep_adapters", False))
-        # Connected (full) → {cond, cond_bridge, expert}. Severed + keep_adapters → drop only the real
-        # VLM but keep the flow-path LoRA (② cond is a no-op once the VLM is severed → the ③ conduit +
-        # ④ expert adaptation are what this isolates). Severed + !keep → adapters OFF → pure Stage-1 VSA.
-        set_active_adapters({"cond", "cond_bridge", "expert"} if (not _sever or _keep) else set())
+        # Connected → vlm_lora + cond_lora. Severed + keep_adapters isolates cond_lora; severed without
+        # it disables all new adapters while expert_lora remains on as part of the Stage-1 VSA.
+        flow_adapters = {"vlm_lora", "cond_lora"} if not _sever else ({"cond_lora"} if _keep else set())
+        set_active_adapters(self._active_adapters(flow_adapters))
         return self._sample_actions_A(cond_images, start_images, lang_tokens, lang_masks, state,
                                       skill_code, noise, num_steps)
 
@@ -1448,10 +1506,12 @@ class SkillVLAPytorch(PI05Pytorch):
                  getattr(terminator, "vision_backbone", None), getattr(terminator, "arch", None))
 
     def _build_terminator_trainable(self, path: str) -> None:
-        """FT: a TRAINABLE terminator co-trained on this dataset's GT signals. Warm-starts from the
-        FSQ checkpoint. The component loader instantiates only the terminator. It is registered as a
-        submodule so it joins the optimizer
-        and is checkpointed; its loss runs on a disjoint graph (GT inputs only) → no SkillVLA effect."""
+        """Build the trainable terminator architecture from FSQ.pt.
+
+        On a fresh Stage-2 warm-start, ``from_pretrained`` subsequently replaces this initialization with
+        Stage-1's co-trained ``fsq_term_train.*`` tensors when they exist. The raw FSQ weights remain the
+        fallback for older Stage-1 checkpoints without a co-trained terminator.
+        """
         terminator = self._construct_fsq(path, getattr(self.config, "terminator_dino_model_path", None))
         terminator.requires_grad_(True).train()
         if terminator.freeze_vision_encoder:
@@ -1564,13 +1624,15 @@ def _remap_stage1_to_expert(raw: dict) -> dict:
     gemma_expert → paligemma_with_expert.gemma_expert; action/time projections + cond-side
     (cond_encoder, dino/siglip, image_proj, state_proj, skill_proj) keep their names under ``model.``.
     ``fsq_term_train.*`` (the CO-TRAINED terminator, if Stage-1 was trained with train_terminator) is passed
-    through too, so it OVERRIDES the raw-FSQ.pt terminator that __init__ built — inheriting Stage-1's
-    dataset-adapted terminator. If the Stage-1 ckpt has no such keys (terminator not co-trained), nothing is
-    remapped and the FSQ.pt init stays (strict=False load). The DINO backbone isn't in the ckpt → stays from
-    FSQ.pt either way."""
+    through too, so it OVERRIDES the raw-FSQ.pt terminator that __init__ built — including its registered
+    DINO backbone tensors. If the Stage-1 ckpt has no such keys, the FSQ.pt initialization remains.
+    """
     out = {}
     for k, v in raw.items():
         key = k[len("model.") :] if k.startswith("model.") else k
+        # Stage-1 checkpoint adapters were historically named ``expert``. Stage-2 treats that LoRA as
+        # a permanently frozen VSA component, so route it into the explicit ``expert_lora`` slot.
+        key = key.replace(".adapters.expert.", ".adapters.expert_lora.")
         if key.startswith("gemma_expert."):
             out[f"model.paligemma_with_expert.{key}"] = v
         elif key.startswith((
@@ -1580,6 +1642,23 @@ def _remap_stage1_to_expert(raw: dict) -> dict:
         )):
             out[f"model.{key}"] = v
     return out
+
+
+def _reverse_skill_endpoint_weights(valid: Tensor, batch: dict, max_weight: float) -> Tensor:
+    """Per-sample Stage-2 A weight: max_weight at skill start, linearly decaying to 1 at skill end."""
+    bsize, chunk = valid.shape
+    device = valid.device
+    idx = torch.arange(chunk, device=device).view(1, chunk).expand(bsize, chunk)
+    last_valid = torch.where(valid, idx, torch.full_like(idx, -1)).max(dim=1).values
+    anchor = last_valid.clamp(min=0)
+    if "skill_ds" in batch and "skill_de" in batch:
+        ds = batch["skill_ds"].to(device).float().view(bsize)
+        de = batch["skill_de"].to(device).float().view(bsize)
+        progress = ((ds + anchor.float()) / (ds + de).clamp(min=1.0)).clamp(0.0, 1.0)
+    else:
+        progress = anchor.float() / max(chunk - 1, 1)
+    weights = 1.0 + (float(max_weight) - 1.0) * (1.0 - progress)
+    return weights * (last_valid >= 0).float()
 
 
 # ── Policy ───────────────────────────────────────────────────────────────────────────────────
@@ -1625,18 +1704,37 @@ class SkillVLAPolicy(PI05Policy):
                 skill_fsq_levels=list(config.skill_fsq_levels),
                 skill_vocab_size=int(math.prod(config.skill_fsq_levels)),
             )
-        return PreTrainedConfig.from_pretrained(config.stage1_checkpoint_path)
+        try:
+            return PreTrainedConfig.from_pretrained(config.stage1_checkpoint_path)
+        except Exception as exc:  # noqa: BLE001
+            # A few early Stage-1 checkpoints carry retired skill_decoder_dino_* fields. They are not
+            # used by the VSA architecture, but modern strict config decoding rejects them before the
+            # warm-start can begin. Keep the checkpoint usable by filtering only unknown legacy fields.
+            import json  # noqa: PLC0415
+            from dataclasses import fields  # noqa: PLC0415
+            from lerobot.policies.skill_expert.configuration_skill_expert import SkillExpertConfig  # noqa: PLC0415
+
+            path = Path(config.stage1_checkpoint_path) / "config.json"
+            if not path.is_file():
+                raise
+            raw = json.loads(path.read_text())
+            allowed = {f.name for f in fields(SkillExpertConfig)}
+            dropped = sorted(set(raw) - allowed)
+            if not dropped:
+                raise
+            log.warning("Stage-1 config has retired fields; ignoring %s while loading %s (%s)",
+                        dropped, path, exc)
+            return SkillExpertConfig(**{k: v for k, v in raw.items() if k in allowed})
 
     def _torch_dtype(self) -> torch.dtype:
         return torch.bfloat16 if str(self.config.dtype) == "bfloat16" else torch.float32
 
     def _apply_continual_freezes(self) -> None:
         """One-time trainability for the sequential LoRA-continual stages (pt_stage / regime_probs_ft).
-        Bases NEVER train (VLM LLM, cond encoder, cond_vision — adaptation lives in the named adapters);
-        per-batch freeze toggling is unnecessary because each stage's graph only CONTAINS what it may
-        train — the optimizer skips grad-None params, so a single static setup suffices.
-          STAGE 2 (pt_stage="cond"):  ②③ adapters + vlm_vision(+projector) train (robot-domain vision
-              adaptation is COND-owned); ①/reader/head untouched; expert (+ z/state projections) frozen.
+        Per-batch freeze toggling is unnecessary because each stage's graph only contains what it may
+        train. Stage 2 uses its explicit freeze matrix; Stage 3 and FT retain their fixed scopes.
+          STAGE 2 (pt_stage="cond"): defaults to vlm_lora + cond_lora only; all bases, vision towers,
+              Stage-1 expert_lora, and skill reader/head are frozen.
           STAGE 3 (pt_stage="skill"): ① adapter + reader/head train; EVERYTHING else frozen — vision
               included (settled in Stage 2), so ① learns on the FINAL vision (no moving target).
           FT (regime_probs_ft): expert (+ z/state projections) trains; ②③ frozen (stable residual
@@ -1645,21 +1743,28 @@ class SkillVLAPolicy(PI05Policy):
         ft = bool(getattr(c, "regime_probs_ft", None))    # FT wins (parent config.json carries pt_stage)
         stage = None if ft else m._resolved_pt_stage()
         g = m._regime_groups()
-        m._set_requires_grad(g["llm"], False)            # NB: these sweeps hit the injected adapters
-        m._set_requires_grad(g["cond"], False)           # too — re-enabled selectively below.
-        m._set_requires_grad(g["cond_vision"], False)
+        stage2 = stage == "cond"
+        train_vlm = stage2 and not bool(getattr(c, "freeze_vlm", True))
+        train_cond = stage2 and not bool(getattr(c, "freeze_cond", True))
+        train_expert = ft or (stage2 and not bool(getattr(c, "freeze_expert", True)))
+        train_cond_vision = stage2 and not bool(getattr(c, "freeze_cond_vision", True))
+        train_vlm_vision = stage2 and not bool(getattr(c, "freeze_vlm_vision", False))
+
+        # These module sweeps include injected adapters; the adapter loop below applies their own flags.
+        m._set_requires_grad(g["llm"], train_vlm)
+        m._set_requires_grad(g["cond"], train_cond)
+        m._set_requires_grad(g["cond_vision"], train_cond_vision)
         mm_proj = getattr(m.paligemma_with_expert.paligemma.model, "multi_modal_projector", None)
-        # vision is COND-owned; freeze_vlm_vision keeps it pinned even in stage 2 (LLM-freeze rationale:
-        # pretrained perception is general — only the ②③ routing adapters train).
-        train_vis = stage == "cond" and not bool(getattr(c, "freeze_vlm_vision", False))
-        m._set_requires_grad(g["vlm_vision"] + [mm_proj], train_vis)
-        m._set_requires_grad(g["expert"] + [m.state_proj, m.skill_proj], ft)
+        m._set_requires_grad(g["vlm_vision"] + [mm_proj], train_vlm_vision)
+        m._set_requires_grad(g["expert"] + [m.state_proj, m.skill_proj], train_expert)
         train_skill = stage == "skill" or (ft and bool(getattr(c, "ft_train_skill", False)))
         m._set_requires_grad([m.skill_reader, m.skill_head], train_skill)
-        # ④ "expert"는 stage2에서만 학습 (connected-only 소비자 적응); FT에서는 ②③과 함께 동결 —
-        # expert BASE는 FT에서 움직이지만(연결 배치가 얼린 ④를 통과하며 적응) delta는 고정.
-        adapter_flags = {"skill": train_skill, "cond": stage == "cond", "cond_bridge": stage == "cond",
-                         "expert": stage == "cond"}
+        adapter_flags = {
+            "skill": train_skill,
+            "vlm_lora": stage2 and not bool(getattr(c, "freeze_vlm_lora", False)),
+            "cond_lora": stage2 and not bool(getattr(c, "freeze_cond_lora", False)),
+            "expert_lora": stage2 and not bool(getattr(c, "freeze_expert_lora", True)),
+        }
         n_train = 0
         for mod in m.modules():
             if isinstance(mod, NamedLoRALinear):
@@ -1671,8 +1776,9 @@ class SkillVLAPolicy(PI05Policy):
         tag = "FT" if ft else f"STAGE{'2' if stage == 'cond' else '3'}({stage})"
         print(f"[skillVLA continual] {tag} — trainable adapters: "
               f"{[k for k, v in adapter_flags.items() if v]} ({n_train} wrapped Linears), "
-              f"expert={'train' if ft else 'frozen'}, reader/head={'train' if train_skill else 'frozen'}, "
-              f"vlm_vision={'train' if train_vis else 'frozen'}")
+              f"bases(vlm/cond/expert)={train_vlm}/{train_cond}/{train_expert}, "
+              f"vision(vlm/cond)={train_vlm_vision}/{train_cond_vision}, "
+              f"reader/head={'train' if train_skill else 'frozen'}")
 
     def _apply_freezes(self) -> None:
         c, m = self.config, self.model
@@ -1860,10 +1966,9 @@ class SkillVLAPolicy(PI05Policy):
         skill_code = self._dataset_skill_code(batch)
         action_dim = self.config.output_features[ACTION].shape[0]
 
-        # Stage-1-style hold target for C (severed) batches (the model swaps to it only when it samples C
-        # and severed_hold_target is on). Boundary = steps past the CURRENT skill's end (skill_de) OR
-        # episode-end pad → arm deltas 0, gripper held at the last within-skill value. Mirrors
-        # modeling_skill_expert.forward. None (→ no swap) when skill_de is absent.
+        # Stage-1-style hold action for severed batches. MOTOR_SEV/probes use it as the GT flow target;
+        # COND_SEV uses it only to construct the shared teacher/student x_t for its function anchor.
+        # Boundary = past current skill end or episode padding; None when skill_de is unavailable.
         hold_actions = self._build_severed_hold_target(actions, batch, action_dim)
 
         flow_losses, skill_hidden = self.model.forward(
@@ -1875,7 +1980,8 @@ class SkillVLAPolicy(PI05Policy):
         if skill_hidden is not None:                          # SKILL regime or the eval measurement path
             skill_loss = self.model.skill_head.loss(skill_hidden, skill_code)
 
-        flow_loss = flow_within = flow_tail = None
+        flow_loss = plain_flow_loss = flow_within = flow_tail = None
+        reverse_weights = None
         vf = valid = None
         if flow_losses is not None:                           # COND/MOTOR regimes or the eval path
             flow_losses = flow_losses[:, :, :action_dim]                  # (B, K, real_dim)
@@ -1890,12 +1996,19 @@ class SkillVLAPolicy(PI05Policy):
                 valid &= ~pad.to(flow_losses.device).bool()
             vf = valid.float().unsqueeze(-1)                              # (B, K, 1)
             n_steps = valid.float().sum().clamp(min=1.0)
-            flow_loss = (flow_losses * vf).sum() / (n_steps * action_dim)
-            # ── 로깅 전용 within/tail 분해 (모델 업데이트에는 무영향; 학습 loss는 위 flow_loss 그대로) ──
-            # within = 현재 스킬 범위 안의 스텝(<= skill_de): 두 레짐(cond/cond_sev)의 타겟이 동일한
-            # 구간 → regime/flow_within_cond vs _cond_sev가 "언어의 스킬-실행-중 기여"의 직접 비교.
-            # tail = 스킬 끝을 넘어간 스텝: 타겟이 레짐별로 다름(connected=real cross-skill, severed=hold)
-            # → 절대값 비교 불가, connected의 tail 예측력(다음 서브골) 추이 관찰용.
+            plain_flow_loss = (flow_losses * vf).sum() / (n_steps * action_dim)
+            flow_loss = plain_flow_loss
+            # Stage-2 connected A only: emphasize early-skill chunks. B remains a uniform frozen-VSA
+            # function anchor controlled solely by cond_severed_anchor_weight.
+            if regime == "cond" and bool(getattr(self.config, "action_weight", False)):
+                per_sample = ((flow_losses * vf).sum(dim=(1, 2))
+                              / (valid.float().sum(dim=1).clamp(min=1.0) * action_dim))
+                reverse_weights = _reverse_skill_endpoint_weights(
+                    valid, batch, float(getattr(self.config, "skill_start_loss_weight", 1.0)))
+                flow_loss = ((per_sample * reverse_weights).sum()
+                             / reverse_weights.sum().clamp(min=1.0))
+            # Logging-only within/tail split. COND is GT flow error; COND_SEV is teacher-anchor error,
+            # so their absolute values are not directly comparable even within the current skill.
             if "skill_de" in batch:
                 with torch.no_grad():
                     de_b = batch["skill_de"].to(flow_losses.device).long().view(bsize, 1)
@@ -1973,6 +2086,12 @@ class SkillVLAPolicy(PI05Policy):
         loss_dict = {"loss": loss.detach().item()}         # wandb train/loss = this batch's policy loss
         if flow_loss is not None:
             loss_dict["loss_flow"] = flow_loss.detach().item()
+            if regime == "cond":
+                loss_dict["action_loss"] = plain_flow_loss.detach().item()
+                loss_dict["regime/A_flow_loss"] = plain_flow_loss.detach().item()
+                loss_dict["regime/A_objective_loss"] = flow_loss.detach().item()
+                if reverse_weights is not None:
+                    loss_dict["regime/A_weight_mean"] = reverse_weights.detach().mean().item()
         if skill_loss is not None:
             loss_dict["loss_skill"] = skill_loss.detach().item()
             with torch.no_grad():
@@ -1984,15 +2103,22 @@ class SkillVLAPolicy(PI05Policy):
             loss_dict[f"regime/loss_{regime}"] = loss.detach().item()
             if flow_loss is not None:
                 loss_dict[f"regime/flow_{regime}"] = flow_loss.detach().item()
-            # within(스킬-내; 두 레짐 동일 타겟 → cond vs cond_sev 직접 비교 가능) / tail(스킬-후;
-            # 타겟 상이 — connected=real, severed=hold — 추이만). 로깅 전용, 학습 loss 무영향.
+                if regime == "cond_sev":
+                    anchor_raw = getattr(self.model, "_last_cond_anchor_raw", None)
+                    if anchor_raw is not None:
+                        anchor_raw = anchor_raw[:, :, :action_dim]
+                        anchor_mean = (anchor_raw * vf).sum() / (valid.float().sum().clamp(min=1.0) * action_dim)
+                        loss_dict["regime/anchor_cond_sev"] = anchor_mean.item()
+                    loss_dict["regime/anchor_objective_cond_sev"] = flow_loss.detach().item()
+                    loss_dict["regime/B_objective_loss"] = flow_loss.detach().item()
+            # For cond_sev these are anchor-within/anchor-tail; for connected cond they are GT flow metrics.
             if flow_within is not None:
                 loss_dict[f"regime/flow_within_{regime}"] = flow_within.item()
             if flow_tail is not None:
                 loss_dict[f"regime/flow_tail_{regime}"] = flow_tail.item()
             if skill_loss is not None:
                 loss_dict[f"regime/skill_{regime}"] = skill_loss.detach().item()
-        if getattr(self.model, "_last_severed_hold", False):   # this severed batch used the Stage-1 hold target
+        if getattr(self.model, "_last_severed_hold", False):   # hold action was used to construct severed x_t
             loss_dict["regime/severed_hold"] = 1.0
         # train_distill 섹션: motor_sev 배치마다 vsa_gt = severed GT BC flow (== regime/flow_motor_sev 복사)
         # — distill on/off 무관하게 찍혀서 on/off run을 같은 패널에서 공정 비교. distill이 켜지면 그 옆에
@@ -2246,6 +2372,13 @@ class SkillVLAPolicy(PI05Policy):
         is_stage2 = any((".skill_reader." in k) or (".skill_head." in k) for k in raw)
         if is_stage2:
             state = {(k if k.startswith("model.") else f"model.{k}"): v.to(dtype) for k, v in raw.items()}
+            # Pre-rename Stage-2 checkpoints used ``cond`` and ``cond_bridge`` for these exact adapters.
+            # Preserve their evaluation/resume path while all newly written checkpoints use the clear names.
+            state = {
+                k.replace(".adapters.cond_bridge.", ".adapters.cond_lora.")
+                 .replace(".adapters.cond.", ".adapters.vlm_lora."): v
+                for k, v in state.items()
+            }
             missing, unexpected = _routed_load(state, "resume")
             log.info("SkillVLA resume: %d loaded, %d missing, %d unexpected.", len(state), len(missing), len(unexpected))
             _apply_vlm_override(model, config, dtype, kwargs)   # eval-only: swap the VLM (PaliGemma) tower
@@ -2274,8 +2407,26 @@ class SkillVLAPolicy(PI05Policy):
         if s1_raw is None:
             raise ValueError(f"Could not load Stage-1 weights at {config.stage1_checkpoint_path}.")
         expert_state = {k: v.to(dtype) for k, v in _remap_stage1_to_expert(s1_raw).items()}
-        _routed_load(expert_state, "expert/cond<-stage1")      # ③ wraps the cond q/k/v/o → route to .base
+        missing, unexpected = _routed_load(expert_state, "expert/cond<-stage1")
+        if model.model._has_stage1_expert_lora:
+            missing_lora = [k for k in missing if ".adapters.expert_lora." in k]
+            unexpected_lora = [k for k in unexpected if ".adapters.expert_lora." in k]
+            if missing_lora or unexpected_lora:
+                raise RuntimeError(
+                    "Stage-1 expert_lora failed to restore exactly: "
+                    f"missing={len(missing_lora)}, unexpected={len(unexpected_lora)}. "
+                    "Check that the Stage-1 checkpoint config and its lora_targets/rank match its weights."
+                )
         n_term = sum(1 for k in expert_state if ".fsq_term_train." in k)
+        if config.train_terminator and n_term:
+            missing_term = [k for k in missing if ".fsq_term_train." in k]
+            unexpected_term = [k for k in unexpected if ".fsq_term_train." in k]
+            if missing_term or unexpected_term:
+                raise RuntimeError(
+                    "Stage-1 co-trained terminator failed to restore exactly: "
+                    f"missing={len(missing_term)}, unexpected={len(unexpected_term)}. "
+                    "Check terminator_dino_model_path and the Stage-1/FSQ terminator architecture."
+                )
         log.info(
             "SkillVLA warm-start: VLM<-pi05 (%d keys), expert/cond<-stage1 (%d keys). Terminator: %s. "
             "Fresh: skill_reader + skill_head.", len(vlm_state), len(expert_state),
