@@ -99,6 +99,12 @@ if [ "${EVAL_RUN_DP}" = "true" ]; then
   DP_OUT_HTML="${DP_TAG}_ck${DP_OUTPUT_CHECKPOINT}${DP_SUFFIX}.html"
   DP_TASK_ARGS=()
   [ -n "${DP_EVAL_TASK_IDS}" ] && DP_TASK_ARGS=(--task_ids ${DP_EVAL_TASK_IDS})
+  DP_VIDEO_ARGS=()
+  [ "${DP_EVAL_SKILL_VIDEO}" = "true" ] && DP_VIDEO_ARGS=(--skill_video)
+  DP_DISPLAY_ARGS=()
+  [ "${DP_EVAL_SHOW_START_END_FRAMES}" != "true" ] && DP_DISPLAY_ARGS+=(--hide_start_end_frames)
+  [ "${DP_EVAL_SHOW_COS_GRAPH}" != "true" ] && DP_DISPLAY_ARGS+=(--hide_cos_graph)
+  [ "${DP_EVAL_SHOW_GRIPPER_GRAPH}" != "true" ] && DP_DISPLAY_ARGS+=(--hide_gripper_graph)
   echo ""
   echo "DP skill-boundary eval → ${DP_OUT_DIR}"
   if [ ! -d "${DP_SKILLSET_DIR}/curves" ]; then
@@ -115,6 +121,8 @@ if [ "${EVAL_RUN_DP}" = "true" ]; then
       --out_html    "${DP_OUT_HTML}" \
       --n_episodes  "${DP_EVAL_N_EPISODES}" \
       --thumb_size  "${FSQ_EVAL_THUMB_SIZE}" \
+      ${DP_VIDEO_ARGS[@]+"${DP_VIDEO_ARGS[@]}"} \
+      ${DP_DISPLAY_ARGS[@]+"${DP_DISPLAY_ARGS[@]}"} \
       ${DP_TASK_ARGS[@]+"${DP_TASK_ARGS[@]}"}
   echo "DONE DP → ${DP_OUT_DIR}/${DP_OUT_HTML}"
 fi

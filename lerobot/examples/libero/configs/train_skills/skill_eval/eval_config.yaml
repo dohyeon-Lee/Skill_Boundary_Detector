@@ -8,7 +8,8 @@
 #                  FSQ_dataset skillset (skills npz + curves) only; FSQ-independent.
 
 # ── Roots (used to locate the skillset/tokens to evaluate) ──
-target_dataset: libero_90_full_full
+# libero_90_full_full | abc_toy
+target_dataset: abc_toy
 fsq_dataset_root: FSQ_dataset
 fsq_inputs_name: FSQ_inputs
 skillset_name: skillset
@@ -22,21 +23,28 @@ skillset_output_suffix: ""
 skillset_boundary_threshold_mode: global_mean   # episode_mean | global_mean
 
 eval_run_dp: true
-
-eval_dp_run_name: libero_90_full_full_state_obs20        
+# libero_90_full_full_state_obs20 | abc_toy_state_obs20
+eval_dp_run_name: abc_toy_state_obs20
 eval_dp_checkpoint: 100000     
 # Optional skillset root containing skillset_manifest.json. Empty uses the
 # resolver-derived {mode}_{globalmean|globalref} path above.
 dp_eval_skillset_dir: ""
 
 # DP eval (skill-boundary split) knobs.
-dp_eval_n_episodes: 10           # episodes shown (per task when dp_eval_task_ids is set)
-dp_eval_task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]   # empty [] = first dp_eval_n_episodes overall
+dp_eval_n_episodes: 3           # episodes shown (per task when dp_eval_task_ids is set)
+dp_eval_task_ids: [56, 41, 31, 64, 73, 09] # [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]   # empty [] = first dp_eval_n_episodes overall
+# true: each skill becomes start image | lazy-loaded looping source-video clip | end image.
+# Clips reuse the original dataset MP4 and are loaded only when clicked; no GIF/clip files are created.
+dp_eval_skill_video: true
+# Independent display toggles. false removes that section from the generated HTML.
+dp_eval_show_start_end_frames: true
+dp_eval_show_cos_graph: true
+dp_eval_show_gripper_graph: true
 
 # ===============================================================================================================
 # ===============================================================================================================
 
-eval_run_fsq: true
+eval_run_fsq: false
 
 # Folder names now embed the DP run (dp_tag) that produced the skillset. Renamed runs (all dino8_obs10):
 # fsq_eval_run_name: libero_90_full_full_state_obs20_fsq555_dino_frozen_small_rawstate_vsa_state

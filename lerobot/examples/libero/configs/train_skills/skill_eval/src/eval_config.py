@@ -37,6 +37,14 @@ def build_settings(config_path: str | None = None) -> dict:
         # DP skill-boundary eval knobs
         "dp_eval_n_episodes":      int(get_value(cfg, "dp_eval_n_episodes", 10)),
         "dp_eval_task_ids":        " ".join(as_list(get_value(cfg, "dp_eval_task_ids", []))),
+        "dp_eval_skill_video":     str(as_bool(get_value(cfg, "dp_eval_skill_video", False))).lower(),
+        "dp_eval_show_start_end_frames": str(
+            as_bool(get_value(cfg, "dp_eval_show_start_end_frames", True))
+        ).lower(),
+        "dp_eval_show_cos_graph":  str(as_bool(get_value(cfg, "dp_eval_show_cos_graph", True))).lower(),
+        "dp_eval_show_gripper_graph": str(
+            as_bool(get_value(cfg, "dp_eval_show_gripper_graph", True))
+        ).lower(),
         "fsq_eval_run_name":       str(get_value(cfg, "fsq_eval_run_name", "")),
         "fsq_eval_checkpoint":     str(get_value(cfg, "fsq_eval_checkpoint", 0)),
         "fsq_eval_n_action_steps": int(get_value(cfg, "fsq_eval_n_action_steps", 5)),
