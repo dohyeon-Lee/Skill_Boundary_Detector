@@ -1,26 +1,36 @@
 # ── DP training config (Stage 1) ───────────────────────────────────────────────
 # Self-contained: owns everything the DP stage needs. Project paths + slurm come from
-# configs/global_config.yaml. Read by submit_train_dp_dino.sh.
+# configs/global_config.yaml. Read by submit_train_dp.sh.
 #
 # Pipeline order: DP (this) → build_data (skillset) → FSQ → DP_FSQ_eval.
 # The DP folder name produced here is what build_data / FSQ / eval reference as dp_run_name.
 
-target_dataset: libero_90_full_full
+target_dataset: abc_toy
 
 
-# ── State-history DP temporal settings ──
-# Skill-boundary DP input is always proprioceptive `observation.state` history; no image input.
+# ── DP encoder / temporal ──
+# dp_vision: resnet = ORIGINAL lerobot Diffusion Policy on raw frames (base encoder).
+#            state  = proprioceptive-only: observation.state history, NO vision.
+# (DINO-token encoder 옵션은 은퇴 — DINO precompute 완전 제거.)
+dp_vision: state   # resnet | state
+# RELATIVE action 학습 (ABC/bimanual): action−state(현재 state anchor)로 학습 — VLA(pi 계열)와
+# SBD probe가 도는 relative 공간과 정합. gripper dims는 absolute 유지(stats 파일의 exclude 규약).
+# 데이터셋에 meta/relative_action_stats.json(ABC_dataset build ④-b) 필요. LIBERO(delta EEF)면 false.
+dp_relative: true
 dp_n_obs_steps: 20                          # observation history length
 dp_horizon: 24                              # UNet horizon (multiple of 2^len(down_dims)=8; > n_obs)
 # dp_n_action_steps: auto = horizon - n_obs_steps + 1 (override only if needed)
 
-# Folder name (also keys the skillset's seg_ dir).
-dp_policy_name: "{target_dataset}_state_obs{dp_n_obs_steps}"
+# Folder name (also keys the skillset's seg_ dir). {dp_vision_tag}="resnet" or "state".
+dp_policy_name: "{target_dataset}_{dp_vision_tag}_obs{dp_n_obs_steps}"
 dp_checkpoint: "100000"
 
-train_DP: false   # false: skip submitting DP training
-dp_base_config: examples/libero/configs/train_skills/DP/src/train_dp_libero_90.yaml
+train_DP: true   # false: skip submitting DP training (dry resolve only)
+dp_base_config: examples/libero/configs/train_skills/DP/src/train_dp_base.yaml
 dp_steps: 100000
+# state-only DP는 초경량이라 배치를 키우는 게 공짜 — abc_toy(4.9M frames) 기준 256이면
+# 100k step ≈ 5 epoch (64면 ~1.3 epoch). 미지정 시 리졸버 기본 64.
+dp_batch_size: 384 #256
 dp_save_freq: 25000
 dp_log_freq: 200
 

@@ -24,7 +24,7 @@ regime:
   image_free: {probability: 0, anchor_weight: 1.0}
 
 execution: {action_steps: auto}
-loss: {weighted: true, skill_start_weight: 0.5, skill_end_weight: 5.0}
+loss: {weighted: true, skill_start_weight: 1.0, skill_end_weight: 3.0}
 
 terminator: {train: true, freeze_vision: false, target_sigma: 1.0, end_weight: 1.0, lr_scale: 1.0}
 

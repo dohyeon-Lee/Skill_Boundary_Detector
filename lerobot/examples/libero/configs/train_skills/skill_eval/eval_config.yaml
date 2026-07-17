@@ -21,7 +21,7 @@ skillset_output_suffix: ""
 # only the threshold suffix.
 skillset_boundary_threshold_mode: global_mean   # episode_mean | global_mean
 
-eval_run_dp: true
+eval_run_dp: false
 
 eval_dp_run_name: libero_90_full_full_state_obs20        
 eval_dp_checkpoint: 100000     
@@ -36,16 +36,16 @@ dp_eval_task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]   # empty [] = first dp_eval_n_
 # ===============================================================================================================
 # ===============================================================================================================
 
-eval_run_fsq: false
+eval_run_fsq: true
 
 # Folder names now embed the DP run (dp_tag) that produced the skillset. Renamed runs (all dino8_obs10):
 # fsq_eval_run_name: libero_90_full_full_state_obs20_fsq555_dino_frozen_small_rawstate_vsa_state
 # fsq_eval_run_name: libero_90_full_full_state_obs20_fsq555_dino_frozen_small_rawstate_vsa_state_skill
 # fsq_eval_run_name: libero_90_full_full_state_obs20_fsq555_dino_frozen_small_vsa_state
 # fsq_eval_run_name: libero_90_full_full_state_obs20_fsq555_dino_frozen_small_vsa_state_skill
-# fsq_eval_run_name: libero_90_full_full_state_obs20_global_fsq555_dino_frozen_small_rawstate_vsa_state_skill
-fsq_eval_run_name: libero_90_full_full_state_obs20_global_fsq555_dino_frozen_small_optimal_vsa_state_skill
-fsq_eval_checkpoint: 200
+fsq_eval_run_name: libero_90_full_full_state_obs20_std_global_fsq333_dino_frozen_small_optimal_vsa_state_skill
+# fsq_eval_run_name: libero_90_full_full_state_obs20_std_global_fsq333_dino_frozen_small_optimal_vsa_state_skill_weighted3
+fsq_eval_checkpoint: 125
 # The terminator always consumes both cameras; architecture/backbone live in the checkpoint.
 
 # Evaluation / HTML knobs

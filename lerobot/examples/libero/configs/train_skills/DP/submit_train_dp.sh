@@ -1,16 +1,21 @@
 #!/usr/bin/env bash
+# Submit DP (Diffusion Policy) training as a Slurm job — SBD 파이프라인의 Stage 0.
+# (구명 submit_train_dp_dino.sh — DINO 인코더/precompute 은퇴로 rename. dp_vision: resnet|state.)
+#
 # Inputs:
-#   dataset name : TRAIN_DATA or target_dataset in ../train_skills_config.yaml
-#   dataset path : {project_root}/{dataset_root}/{target_dataset}
-# Reference models/configs:
-#   base DP cfg  : {project_root}/lerobot/{dp_base_config}
+#   dataset name : TRAIN_DATA env or target_dataset in dp_config.yaml
+#   dataset path : {project_root}/{dataset_root}/{target_dataset}   (LeRobot v3)
+#   base DP cfg  : {project_root}/lerobot/{dp_base_config} (아키텍처만; 나머지는 런타임 오버라이드)
+#   relative     : dp_relative=true면 dataset의 meta/relative_action_stats.json 필요 (ABC build ④-b)
 # Outputs:
-#   DP policy    : {project_root}/outputs/DP/{dp_policy_name}
-#   checkpoint   : {project_root}/outputs/DP/{dp_policy_name}/checkpoints/{dp_checkpoint}/pretrained_model
+#   DP policy    : {project_root}/{outputs_root}/DP/{dp_policy_name}
+#   checkpoint   : …/DP/{dp_policy_name}/checkpoints/{dp_checkpoint}/pretrained_model
 # Skip DP train:
 #   train_DP: false, or checkpoint already exists at the checkpoint path above
 #
-# Submit train_dp_dino.sbatch using Slurm values from train_skills_config.yaml.
+# Usage (from this folder):
+#   ./submit_train_dp.sh
+#   TRAIN_DATA=abc_toy ./submit_train_dp.sh      # dataset 오버라이드
 
 set -euo pipefail
 
@@ -48,11 +53,14 @@ SBATCH_ARGS=(
 if [ -n "${DP_NODELIST}" ]; then
   SBATCH_ARGS+=(--nodelist="${DP_NODELIST}")
 fi
+if [ -n "${DP_EXCLUDE_NODES}" ]; then
+  SBATCH_ARGS+=(--exclude="${DP_EXCLUDE_NODES}")
+fi
 
 cd "${SCRIPT_DIR}"
 mkdir -p logs
 
-echo "Submit state-history DP train"
+echo "Submit DP train (vision=${DP_VISION})"
 echo "  dataset : ${TARGET_DATASET}"
 echo "  output  : ${DP_OUTPUT_DIR}"
 echo "  slurm   : partition=${DP_PARTITION} qos=${DP_QOS} gres=${DP_GRES}"
@@ -71,4 +79,4 @@ if [ -e "${DP_POLICY_PATH}" ]; then
 fi
 
 TRAIN_SKILLS_CONFIG="${CONFIG_PATH}" TRAIN_DATA="${TARGET_DATASET}" \
-  sbatch "${SBATCH_ARGS[@]}" "${DP_SRC_DIR}/train_dp_dino.sbatch"
+  sbatch "${SBATCH_ARGS[@]}" "${DP_SRC_DIR}/train_dp.sbatch"

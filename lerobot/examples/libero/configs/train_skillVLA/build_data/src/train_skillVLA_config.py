@@ -89,7 +89,12 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
     #   {skillvla_root}/{source_dataset}/{run_tag}/   ← final outputs (FSQ.pt, skillvla/)
     #   {skillvla_root}/{source_dataset}/_work/        ← intermediates, keyed by dependency:
     #       seg_{dp}_ck{ckpt}/        (DP-dependent: skillset + skill_tokens; shared across FSQ)
-    base_run_tag = f"FSQ{fsq_digits}_{fsq_variant}_{ckpt_tag}"
+    # Segmentation mode changes both skill boundaries and the latent sequence. Keep it in the
+    # final dataset identity as well as the intermediate seg_dir so a completed dataset built with
+    # another mode can never short-circuit this build. It also makes FT snap references resolve only
+    # against a PT vocabulary produced with the same segmentation mode.
+    skillset_mode_suffix = probe_settings["skillset_probe_suffix"]
+    base_run_tag = f"FSQ{fsq_digits}_{fsq_variant}_{ckpt_tag}{skillset_mode_suffix}"
     run_tag = f"{base_run_tag}_{skillvla_data_mode}"
     # transfer 빌드(snap): 미지원 코드를 최근접 지원 코드로 snap한 빌드는 산출물(skill_latents/skillvla)이
     # 다르므로 폴더 분리 — run_tag에 _snap{min_freq} 부착 (downstream 파서들의 run_tag 정규식은

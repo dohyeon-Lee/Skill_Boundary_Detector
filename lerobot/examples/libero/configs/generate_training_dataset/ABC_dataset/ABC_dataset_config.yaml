@@ -77,6 +77,14 @@ v3_cameras: [top, left_wrist, right_wrist]
 camera_rename: {top_left: top}
 camera_drop: [top_right]
 
+# ── ③ 병렬화 (샤드 빌드 + aggregate 병합) ────────────────────
+# LeRobot v3 writer는 single-writer라 에피소드 병렬 불가 → n샤드로 나눠 병렬 빌드 후
+# lerobot 공식 aggregate_datasets로 병합(인덱스 재매핑·stats 병합). 완성 샤드는 재실행 시
+# 재사용(재개 가능). 샤드 위치 {abc_dataset_root}/_v3_shards/{name}/ (병합 검증 후 자동삭제,
+# KEEP_SHARDS=1로 보존). 실측: 1워커 순차 ~20h → 16샤드 ~1.5-2h.
+v3_shards: 16            # 병렬 샤드 수 (≈ 동시 writer 수)
+v3_encoder_threads: 2    # 샤드당 h264 인코더 스레드 (16샤드×(3캠×2) ≈ cpus-per-task 32에 맞춤)
+
 # ── 병렬도 / 다운로드 안정성 ──────────────────────────────────
 # 대용량 mcap이 HF Xet 경로로 자주 스톨 → download_ABC.sh가 HF_HUB_DISABLE_XET=1로 재래식 LFS 전환
 # (original_dataset 검증 레시피). 그 경로에선 hf_transfer 없이 workers 낮추고 타임아웃 길게가 안정적.

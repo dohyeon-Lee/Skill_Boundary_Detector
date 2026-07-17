@@ -1,13 +1,14 @@
-# Base config for state-history Diffusion Policy training (no language conditioning).
-# Used as dp_base_config (--config_path) by ../train_dp_dino.sbatch.
+# Base config for Diffusion Policy training (no language conditioning).
+# Used as dp_base_config (--config_path) by ../train_dp.sbatch.
+# (구명 train_dp_libero_90.yaml — 데이터셋 무관 base라 rename. LIBERO/ABC 공용.)
 #
 # IMPORTANT: dataset (repo_id/root), output_dir, training (steps/freqs/seed/
 # batch/workers), wandb, and policy temporal settings (n_obs_steps/n_action_steps/
-# horizon) are ALL OVERRIDDEN AT RUNTIME by train_dp_dino.sbatch using
-# train_skills_config.yaml. To change the dataset / root / output / etc., edit
-# train_skills_config.yaml (target_dataset, dataset_root, dp_*), NOT this file.
+# horizon) are ALL OVERRIDDEN AT RUNTIME by train_dp.sbatch using dp_config.yaml.
+# To change the dataset / root / output / etc., edit dp_config.yaml
+# (target_dataset, dp_*) + configs/global_config.yaml (dataset_root), NOT this file.
 # The literals below are only fallbacks for standalone `lerobot-train --config_path`
-# use; they are kept consistent with the current train_skills_config for that case.
+# use (LIBERO 시절 값 그대로 — inert).
 # Only the policy ARCHITECTURE here (type, down_dims) is not overridden.
 
 dataset:
@@ -19,7 +20,6 @@ policy:
   type: diffusion
   device: cuda
   push_to_hub: false
-  state_only: true
 
   # Temporal settings (overridden by dp_n_obs_steps / dp_n_action_steps / dp_horizon)
   n_obs_steps: 10      # 10 frames @ 20fps = 500ms history
@@ -39,7 +39,7 @@ save_freq: 20000
 eval_freq: 0
 
 # overridden: ${DP_OUTPUT_DIR} (= {project_root}/{dp_outputs_root}/{dp_policy_name})
-output_dir: /data2/dohyeon/SBD/outputs_DP/dp_libero_90_full_full_state_obs20
+output_dir: /data2/dohyeon/SBD/outputs_DP/dp_libero_90_full_full_dino8_obs10_horizon16
 
 wandb:
   enable: true

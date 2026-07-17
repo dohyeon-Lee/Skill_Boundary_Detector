@@ -239,17 +239,91 @@ def _canon_map(raw_cams: list[str], rename: dict, drop: set) -> dict[str, str]:
     return out
 
 
+def _build_v3_dataset(repo_id: str, out_dir: str, ep_dirs: list[str], fps: int,
+                      cams: list[str], features: dict, rename: dict, drop: set,
+                      state_dim: int, action_dim: int, encoder_threads: int,
+                      log_prefix: str = "") -> tuple[int, int]:
+    """에피소드 목록 하나 → LeRobot v3 데이터셋 하나 (single-writer 코어 루프).
+
+    ProcessPool 워커에서 샤드별로 호출됨(top-level = picklable). streaming_encoding으로
+    디코드와 인코딩이 겹치고, encoder_threads가 h264 인코더당 스레드 수.
+    Returns (episodes, frames) — 샤드 검증용."""
+    import av
+    from lerobot.datasets.lerobot_dataset import LeRobotDataset
+
+    ds = LeRobotDataset.create(repo_id, fps=fps, features=features,
+                               root=out_dir, vcodec="h264",
+                               streaming_encoding=True, encoder_threads=encoder_threads)
+    total_frames = 0
+    for n_ep, ep_dir_s in enumerate(ep_dirs, 1):
+        ep_dir = Path(ep_dir_s)
+        meta = _load_ep_meta(ep_dir)
+        cmap = _canon_map(meta["cameras"], rename, drop)   # raw→canonical (이 에피소드)
+        if set(cmap.values()) != set(cams) or int(meta["state_dim"]) != state_dim:
+            raise RuntimeError(f"{log_prefix}heterogeneous episode {ep_dir.name}: 정규화 후 cams/dims "
+                               f"불일치 ({sorted(set(cmap.values()))} vs {sorted(cams)})")
+        T = int(meta["num_steps"])
+        sa = np.fromfile(ep_dir / "states_actions.bin", dtype="<f8").reshape(T, state_dim + action_dim)
+        task = meta.get("task_name") or ""
+        rows = _camera_row_slices(meta)   # (raw_cam, lo, hi) — drop된 raw는 emit 안 함
+        n_frames = 0
+        with av.open(str(ep_dir / "combined_camera-images-rgb.mp4")) as container:
+            for frame in container.decode(video=0):  # stream: never holds the full episode in RAM
+                arr = frame.to_ndarray(format="rgb24")
+                item = {
+                    "observation.state": sa[n_frames, :state_dim].astype(np.float32),
+                    "action": sa[n_frames, state_dim:].astype(np.float32),
+                    "task": task,
+                }
+                for raw_cam, lo, hi in rows:
+                    if raw_cam not in cmap:   # drop된 카메라(예: ZED top_right)는 스킵
+                        continue
+                    item[f"observation.images.{cmap[raw_cam]}"] = np.ascontiguousarray(arr[lo:hi])
+                ds.add_frame(item)
+                n_frames += 1
+        if n_frames != T:
+            raise RuntimeError(f"{log_prefix}{ep_dir.name}: decoded {n_frames} frames != num_steps {T} "
+                               "(corrupt abcdl episode — delete its dir and rerun ②)")
+        ds.save_episode()
+        total_frames += T
+        print(f"  {log_prefix}[{n_ep}/{len(ep_dirs)}] {ep_dir.name}: {T} frames", flush=True)
+    ds.finalize()
+    return len(ep_dirs), total_frames
+
+
+def _build_v3_shard(k: int, ep_dirs: list[str], shard_root: str, base_repo: str, fps: int,
+                    cams: list[str], features: dict, rename: dict, drop_l: list[str],
+                    state_dim: int, action_dim: int, encoder_threads: int) -> tuple[int, int, int]:
+    """워커 엔트리: 샤드 k 빌드 (이미 완성돼 있으면 스킵). Returns (k, episodes, frames)."""
+    out = Path(shard_root)
+    if (out / "meta" / "info.json").exists():   # resume: 완성 샤드 재사용
+        info = json.loads((out / "meta" / "info.json").read_text())
+        print(f"  [shard {k:02d}] skip (이미 완성: {info['total_episodes']} eps)", flush=True)
+        return k, int(info["total_episodes"]), int(info["total_frames"])
+    if out.exists():                             # 크래시 잔재 → 재빌드
+        shutil.rmtree(out)
+    eps, frames = _build_v3_dataset(f"{base_repo}_s{k:02d}", str(out), ep_dirs, fps, cams,
+                                    features, rename, set(drop_l), state_dim, action_dim,
+                                    encoder_threads, log_prefix=f"[shard {k:02d}] ")
+    return k, eps, frames
+
+
 def stage_abcdl_to_v3(name: str, abcdl_dir: Path, final_dir: Path, fps: int, force: bool,
                       target_cams: list[str] | None = None,
-                      camera_rename: dict | None = None, camera_drop: list | None = None) -> None:
-    """abcdl 에피소드 → LeRobot v3.
+                      camera_rename: dict | None = None, camera_drop: list | None = None,
+                      n_shards: int = 16, encoder_threads: int = 2) -> None:
+    """abcdl 에피소드 → LeRobot v3 (샤드 병렬 + aggregate 병합).
 
     스테이션 혼재(ABC: RealSense 3캠 vs ZED-X 4캠 스테레오) 처리:
     - camera_rename/camera_drop로 각 에피소드 카메라를 canonical 명으로 정규화
       (ZED-X: top_left→top rename, top_right drop → RealSense와 동일 {top,left_wrist,right_wrist}).
       해상도는 ②에서 이미 전부 size×size로 통일돼 있어 스테레오 depth만 버리면 포맷 동일.
     - 정규화 후 카메라 집합이 target_cams와 일치하는 에피소드만 포함(나머지는 스킵).
-    target_cams=None이면 첫 에피소드 카메라 그대로(구 동작)."""
+
+    병렬화: LeRobot v3 writer는 single-writer 설계라 에피소드 단위 병렬이 불가 → 에피소드를
+    n_shards 조각으로 나눠 각자 독립 v3 샤드를 병렬 빌드한 뒤 lerobot의 공식
+    aggregate_datasets(episode/task 인덱스 재매핑 + 비디오 재청킹 + stats 병합)로 하나로 합친다.
+    샤드는 {root}/_v3_shards/{name}/shard_XX — 완성 샤드는 재실행 시 재사용(재개 가능)."""
     rename = dict(camera_rename or {})
     drop = set(camera_drop or [])
     if (final_dir / "meta" / "info.json").exists():
@@ -261,9 +335,6 @@ def stage_abcdl_to_v3(name: str, abcdl_dir: Path, final_dir: Path, fps: int, for
     elif final_dir.exists():
         raise SystemExit(f"[{name}] {final_dir} exists but has no meta/info.json (crashed build?) — "
                          "remove it or rerun with FORCE=1")
-
-    import av
-    from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
     all_dirs = _abcdl_episode_dirs(abcdl_dir)
     if not all_dirs:
@@ -306,45 +377,58 @@ def stage_abcdl_to_v3(name: str, abcdl_dir: Path, final_dir: Path, fps: int, for
         features[f"observation.images.{cam}"] = {
             "dtype": "video", "shape": (h, w, 3), "names": ["height", "width", "channel"],
         }
+    n_shards = max(1, min(int(n_shards), len(ep_dirs)))
     _rename_note = f", 정규화 rename={rename} drop={sorted(drop)}" if (rename or drop) else ""
     print(f"[{name}] ③ abcdl→v3: {len(ep_dirs)} episodes, state/action {state_dim}/{action_dim}D, "
-          f"cams {cams}{_rename_note} → {final_dir}")
+          f"cams {cams}{_rename_note}, {n_shards}샤드×enc{encoder_threads}스레드 → {final_dir}")
 
-    ds = LeRobotDataset.create(f"dohyeon/{name}", fps=fps, features=features,
-                               root=str(final_dir), vcodec="h264")
-    for n_ep, ep_dir in enumerate(ep_dirs, 1):
-        meta = _load_ep_meta(ep_dir)
-        cmap = _canon_map(meta["cameras"], rename, drop)   # raw→canonical (이 에피소드)
-        if set(cmap.values()) != set(cams) or int(meta["state_dim"]) != state_dim:
-            raise SystemExit(f"[{name}] heterogeneous episode {ep_dir.name}: 정규화 후 cams/dims 불일치 "
-                             f"({sorted(set(cmap.values()))} vs {sorted(cams)}) — 카메라 설정 확인")
-        T = int(meta["num_steps"])
-        sa = np.fromfile(ep_dir / "states_actions.bin", dtype="<f8").reshape(T, state_dim + action_dim)
-        task = meta.get("task_name") or ""
-        rows = _camera_row_slices(meta)   # (raw_cam, lo, hi) — drop된 raw는 emit 안 함
-        n_frames = 0
-        with av.open(str(ep_dir / "combined_camera-images-rgb.mp4")) as container:
-            for frame in container.decode(video=0):  # stream: never holds the full episode in RAM
-                arr = frame.to_ndarray(format="rgb24")
-                item = {
-                    "observation.state": sa[n_frames, :state_dim].astype(np.float32),
-                    "action": sa[n_frames, state_dim:].astype(np.float32),
-                    "task": task,
-                }
-                for raw_cam, lo, hi in rows:
-                    if raw_cam not in cmap:   # drop된 카메라(예: ZED top_right)는 스킵
-                        continue
-                    item[f"observation.images.{cmap[raw_cam]}"] = np.ascontiguousarray(arr[lo:hi])
-                ds.add_frame(item)
-                n_frames += 1
-        if n_frames != T:
-            raise SystemExit(f"[{name}] {ep_dir.name}: decoded {n_frames} frames != num_steps {T} "
-                             "(corrupt abcdl episode — delete its dir and rerun ②)")
-        ds.save_episode()
-        print(f"  [{n_ep}/{len(ep_dirs)}] {ep_dir.name}: {T} frames  task={task!r}", flush=True)
-    ds.finalize()
+    # ── 샤드 분할 (연속 청크: 결정적 → 재실행 시 완성 샤드 재사용 안전) ──
+    ep_strs = [str(d) for d in ep_dirs]
+    bounds = np.linspace(0, len(ep_strs), n_shards + 1, dtype=int)
+    shard_lists = [ep_strs[bounds[i]:bounds[i + 1]] for i in range(n_shards)]
+    shards_root = final_dir.parent / "_v3_shards" / name
+    shards_root.mkdir(parents=True, exist_ok=True)
+
+    # ── 병렬 빌드 (single-writer 제약 → 샤드당 독립 writer) ──
+    results: dict[int, tuple[int, int]] = {}
+    with ProcessPoolExecutor(max_workers=n_shards) as pool:
+        futs = [pool.submit(_build_v3_shard, k, shard_lists[k], str(shards_root / f"shard_{k:02d}"),
+                            f"dohyeon/{name}", fps, cams, features, rename, sorted(drop),
+                            state_dim, action_dim, encoder_threads)
+                for k in range(n_shards) if shard_lists[k]]
+        for fut in as_completed(futs):
+            k, eps, frames = fut.result()   # 워커 예외는 여기서 전파 (fail loud)
+            results[k] = (eps, frames)
+            print(f"[{name}] ③ shard {k:02d} 완료: {eps} eps / {frames} frames "
+                  f"({len(results)}/{len(futs)} shards)", flush=True)
+
+    # ── 샤드 검증 → aggregate 병합 ──
+    exp_eps = sum(len(s) for s in shard_lists)
+    got_eps = sum(e for e, _ in results.values())
+    if got_eps != exp_eps:
+        raise SystemExit(f"[{name}] 샤드 에피소드 합 {got_eps} != 기대 {exp_eps}")
+    ordered = [k for k in range(n_shards) if shard_lists[k]]
+    print(f"[{name}] ③ aggregate: {len(ordered)}개 샤드 → {final_dir}")
+    from lerobot.datasets.aggregate import aggregate_datasets
+    aggregate_datasets(
+        repo_ids=[f"dohyeon/{name}_s{k:02d}" for k in ordered],
+        aggr_repo_id=f"dohyeon/{name}",
+        roots=[shards_root / f"shard_{k:02d}" for k in ordered],
+        aggr_root=final_dir,
+    )
+    # 최종 검증: 병합본 totals == 샤드 합
+    final_info = json.loads((final_dir / "meta" / "info.json").read_text())
+    got_frames = sum(f for _, f in results.values())
+    if (final_info["total_episodes"], final_info["total_frames"]) != (exp_eps, got_frames):
+        raise SystemExit(f"[{name}] aggregate 검증 실패: 최종 {final_info['total_episodes']}eps/"
+                         f"{final_info['total_frames']}f != 샤드 합 {exp_eps}eps/{got_frames}f")
+    print(f"[{name}] ③ ✅ aggregate 검증: {exp_eps} eps / {got_frames} frames")
     # Sidecar so abcdl.convert.lerobot.lerobot_to_abcdl can round-trip this dataset if ever needed.
     (final_dir / ".abcdl_meta.json").write_text(json.dumps({"repo_id": f"dohyeon/{name}"}))
+    # 샤드 정리 (KEEP_SHARDS=1이면 보존) — 병합 검증 후에만 삭제
+    if os.environ.get("KEEP_SHARDS", "") in ("", "0"):
+        shutil.rmtree(shards_root, ignore_errors=True)
+        print(f"[{name}] ③ 샤드 정리됨 ({shards_root})")
 
 
 # ── ④ quantile stats (reuse filtered_dataset tool) ────────────────────────────
@@ -422,7 +506,9 @@ def main() -> None:
                     f"{abcdl_dir}/")
             print(f"[{name}] ② skip: no mcap staging — using {n_ready} existing abcdl episodes")
         stage_abcdl_to_v3(name, abcdl_dir, root / name, fps, args.force, target_cams,
-                          camera_rename, camera_drop)
+                          camera_rename, camera_drop,
+                          n_shards=int(cfg.get("v3_shards", 16)),
+                          encoder_threads=int(cfg.get("v3_encoder_threads", 2)))
         if not args.skip_stats:
             stage_stats(name, root, args.config, cfg)
 

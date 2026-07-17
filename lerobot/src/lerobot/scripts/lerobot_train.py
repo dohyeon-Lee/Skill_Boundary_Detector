@@ -428,9 +428,16 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
     # Create processors - only provide dataset_stats if not resuming from saved processors
     processor_kwargs = {}
     postprocessor_kwargs = {}
+    processor_dataset_stats = dataset.meta.stats
+    if cfg.policy.pretrained_path is not None and getattr(policy.config, "use_relative_actions", False):
+        from lerobot.policies.diffusion.processor_diffusion import with_diffusion_relative_action_stats
+
+        processor_dataset_stats = with_diffusion_relative_action_stats(
+            policy.config, processor_dataset_stats
+        )
     if (cfg.policy.pretrained_path and not cfg.resume) or not cfg.policy.pretrained_path:
         # Only provide dataset_stats when not resuming from saved processor state
-        processor_kwargs["dataset_stats"] = dataset.meta.stats
+        processor_kwargs["dataset_stats"] = processor_dataset_stats
 
     # For SARM, always provide dataset_meta for progress normalization
     if cfg.policy.type == "sarm":
@@ -440,7 +447,7 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
         processor_kwargs["preprocessor_overrides"] = {
             "device_processor": {"device": device.type},
             "normalizer_processor": {
-                "stats": dataset.meta.stats,
+                "stats": processor_dataset_stats,
                 "features": {**policy.config.input_features, **policy.config.output_features},
                 "norm_map": policy.config.normalization_mapping,
             },
@@ -460,7 +467,7 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
             }
         postprocessor_kwargs["postprocessor_overrides"] = {
             "unnormalizer_processor": {
-                "stats": dataset.meta.stats,
+                "stats": processor_dataset_stats,
                 "features": policy.config.output_features,
                 "norm_map": policy.config.normalization_mapping,
             },

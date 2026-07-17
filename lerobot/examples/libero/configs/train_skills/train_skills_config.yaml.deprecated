@@ -66,7 +66,7 @@ dp_vision: dino   # dino | resnet | state
 # horizon - n_obs_steps + 1 (max valid, stays consistent) — add `dp_n_action_steps:` to override.
 dp_n_obs_steps: 10 # 10 | 20
 dp_horizon: 16 # 16 | 24
-dp_base_config: examples/libero/configs/train_skills/DP/src/train_dp_libero_90.yaml
+dp_base_config: examples/libero/configs/train_skills/DP/src/train_dp_base.yaml
 # Names the DP checkpoint AND keys the skillset's seg_ dir. {dp_vision_tag}="dino{grid}"/"resnet"/"state"
 # and {dp_n_obs_steps}=history → switching vision OR history auto-distinguishes the name so different
 # DPs never clobber each other's checkpoint/skillset.

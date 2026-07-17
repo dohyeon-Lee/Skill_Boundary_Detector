@@ -299,15 +299,18 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
     dp_horizon = int(get_value(cfg, "dp_horizon", 16))
     train_dp = as_bool(get_value(cfg, "train_DP", get_value(cfg, "train_dp", True), env="TRAIN_DP"))
     dp_vision = str(get_value(cfg, "dp_vision", "state")).strip().lower()
+    dp_vision_tag = dp_vision
     dp_policy_template = str(
         get_value(
             cfg,
             "dp_policy_name",
-            "dp_{target_dataset}_state_obs{dp_n_obs_steps}_horizon{dp_horizon}",
+            "dp_{target_dataset}_{dp_vision_tag}_obs{dp_n_obs_steps}_horizon{dp_horizon}",
         )
     )
     dp_policy = dp_policy_template.format(
         target_dataset=target_dataset,
+        dp_vision=dp_vision,
+        dp_vision_tag=dp_vision_tag,
         dp_n_obs_steps=dp_n_obs_steps,
         dp_horizon=dp_horizon,
     )
@@ -469,12 +472,14 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "dp_policy_path": dp_outputs_root / dp_policy / "checkpoints" / dp_checkpoint / "pretrained_model",
         "dp_checkpoint": dp_checkpoint,
         "dp_vision": dp_vision,
+        "dp_vision_backbone": str(get_value(cfg, "dp_vision_backbone", "resnet18")),
         "train_DP": train_dp,
         "dp_n_obs_steps": dp_n_obs_steps,
         # Default = max valid chunk (horizon - n_obs + 1); stays consistent if n_obs/horizon change.
         "dp_n_action_steps": int(get_value(cfg, "dp_n_action_steps", dp_horizon - dp_n_obs_steps + 1)),
         "dp_horizon": dp_horizon,
         "dp_batch_size": int(get_value(cfg, "dp_batch_size", 64)),
+        "dp_relative": as_bool(get_value(cfg, "dp_relative", False)),
         "dp_steps": int(get_value(cfg, "dp_steps", 100000)),
         "dp_num_workers": int(get_value(cfg, "dp_num_workers", 4)),
         "dp_save_freq": int(get_value(cfg, "dp_save_freq", 50000)),
@@ -538,6 +543,7 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "fsq_wandb_project": str(get_value(cfg, "fsq_wandb_project", "VAE_train")),
         "dp_partition": slurm_partition,
         "dp_nodelist": str(get_value(cfg, "train_nodelist", "")),
+        "dp_exclude_nodes": as_list(get_value(cfg, "train_exclude_nodes", [])),
         "dp_qos": str(get_value(cfg, "train_qos", "base_qos")),
         "dp_gres": str(get_value(cfg, "dp_gres", "gpu:1")),
         "dp_cpus_per_task": int(get_value(cfg, "dp_cpus_per_task", 8)),

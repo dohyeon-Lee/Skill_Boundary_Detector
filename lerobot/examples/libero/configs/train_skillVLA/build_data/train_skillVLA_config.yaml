@@ -8,7 +8,7 @@
 #   3. 지정한 FSQ 인코더로 각 skill → latent vector 매핑      → skill_latents.npz (중간물)
 #   4. vector + skillset 으로 SkillVLA 최종 데이터 생성       → skillvla/
 #
-# Final outputs land under:
+# Final outputs land under (run_tag includes the segmentation mode):
 #   {project_root}/{dataset_root}/{skillvla_dataset_root}/{source_dataset}/{run_tag}/
 #     ├─ FSQ.pt         (copied FSQ checkpoint used for encoding)
 #     └─ skillvla/      (final LeRobot SkillVLA dataset)
@@ -70,8 +70,8 @@ skillset_max_sweeps: 2
 # FSQ config lives in the checkpoint.
 # fsq_run_name: "libero_90_full_full_state_obs20_fsq555_dino8_weighted_wow"   # folder under outputs/FSQ/
 # fsq_run_name: "libero_90_full_full_state_obs20_fsq555_dino8_both"
-fsq_run_name: "libero_90_full_full_state_obs20_global_fsq333_dino_frozen_small_optimal_vsa_state_skill"
-
+# fsq_run_name: "libero_90_full_full_state_obs20_std_global_fsq333_dino_frozen_small_optimal_vsa_state_skill"
+fsq_run_name: "libero_90_full_full_state_obs20_std_global_fsq333_dino_frozen_small_optimal_vsa_state_skill_weighted3"
 fsq_checkpoint: 125                                 # epoch number; 0 = best (FSQ.pt)
 
 # ── transfer 안전망: 새 데이터셋 인코딩 시 FSQ가 "미지원(학습때 안 쓰인/희귀) 코드"를 뱉으면

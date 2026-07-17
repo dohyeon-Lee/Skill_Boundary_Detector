@@ -15,6 +15,7 @@
 # limitations under the License.
 """Tests for Diffusion policy processor."""
 
+import json
 import tempfile
 
 import pytest
@@ -23,6 +24,7 @@ import torch
 from lerobot.configs.types import FeatureType, NormalizationMode, PolicyFeature
 from lerobot.policies.diffusion.configuration_diffusion import DiffusionConfig
 from lerobot.policies.diffusion.processor_diffusion import make_diffusion_pre_post_processors
+from lerobot.policies.factory import make_pre_post_processors
 from lerobot.processor import (
     AddBatchDimensionProcessorStep,
     DataProcessorPipeline,
@@ -86,6 +88,51 @@ def test_make_diffusion_processor_basic():
     assert len(postprocessor.steps) == 2
     assert isinstance(postprocessor.steps[0], UnnormalizerProcessorStep)
     assert isinstance(postprocessor.steps[1], DeviceProcessorStep)
+
+
+def test_diffusion_relative_actions_use_current_state_and_round_trip(tmp_path):
+    config = create_default_config()
+    config.horizon = 3
+    config.use_relative_actions = True
+    config.relative_stats_path = str(tmp_path / "relative_action_stats.json")
+    relative_stats = {
+        "chunk_size": 3,
+        "exclude_joints": ["gripper"],
+        "action_names": ["j0", "j1", "j2", "j3", "j4", "gripper"],
+        "action": {
+            "min": [-100.0] * 6,
+            "max": [100.0] * 6,
+            "mean": [0.0] * 6,
+            "std": [1.0] * 6,
+        },
+    }
+    (tmp_path / "relative_action_stats.json").write_text(json.dumps(relative_stats))
+
+    preprocessor, postprocessor = make_diffusion_pre_post_processors(config, create_default_stats())
+    state_window = torch.tensor(
+        [[[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 0.0], [10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 0.0]]]
+    )
+    actions = torch.tensor(
+        [[[11.0, 22.0, 33.0, 44.0, 55.0, 0.25], [12.0, 23.0, 34.0, 45.0, 56.0, -0.5]]]
+    )
+    batch = transition_to_batch(create_transition({OBS_STATE: state_window}, actions))
+
+    processed = preprocessor(batch)
+    restored = postprocessor(processed[ACTION])
+
+    expected_relative = actions.clone()
+    expected_relative[..., :5] -= state_window[:, -1:, :5]
+    assert torch.allclose(processed[ACTION], expected_relative / 100.0, atol=1e-6)
+    assert torch.allclose(restored, actions[0], atol=1e-5)
+
+    preprocessor.save_pretrained(tmp_path)
+    postprocessor.save_pretrained(tmp_path)
+    loaded_preprocessor, loaded_postprocessor = make_pre_post_processors(
+        policy_cfg=config, pretrained_path=str(tmp_path)
+    )
+    loaded_processed = loaded_preprocessor(batch)
+    loaded_restored = loaded_postprocessor(loaded_processed[ACTION])
+    assert torch.allclose(loaded_restored, actions[0], atol=1e-5)
 
 
 def test_diffusion_processor_with_images():
