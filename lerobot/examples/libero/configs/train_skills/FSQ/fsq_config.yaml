@@ -65,7 +65,11 @@ fsq_expert_lr: 2.5e-5
 
 # ── FSQ loss weights ──
 fsq_action_loss_weight: 1.0
+<<<<<<< HEAD
 fsq_progress_loss_weight: 1.0     # 학습은 (1,1,1) — end까지 다 걸어 코드를 termination-coherent하게 형성
+=======
+fsq_progress_loss_weight: 1.0    # 학습은 (1,1,1) — end까지 다 걸어 코드를 termination-coherent하게 형성
+>>>>>>> 242f68c (save)
 fsq_end_loss_weight: 1.0          #   (종료 다른 스킬 분리). FSQ.pt "선택"만 아래 val_select로 recon 우선.
 fsq_end_target_sigma: 1.0
 
@@ -80,8 +84,13 @@ fsq_val_select_end_weight:
 # End-weight the sampled VSA flow loss. The start weight is always 1; the end weight below
 # applies at progress=1. Progress and termination losses stay uniform. `2.0` keeps the historical
 # w=1+progress behavior and `_weighted` run tag; other values get `_weighted<value>`.
+<<<<<<< HEAD
 weighted_loss: true
 weighted_loss_end_weight: 2.0
+=======
+weighted_loss: false
+weighted_loss_end_weight: 3.0
+>>>>>>> 242f68c (save)
 
 # ── Slurm (partition/qos/nodelist/exclude from configs/global_config.yaml) ──
 fsq_train_gres: gpu:1
