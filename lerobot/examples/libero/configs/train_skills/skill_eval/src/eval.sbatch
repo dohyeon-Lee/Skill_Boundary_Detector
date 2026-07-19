@@ -96,7 +96,9 @@ if [ "${EVAL_RUN_DP}" = "true" ]; then
   # Strip the redundant dataset prefix from the run name (libero_90_full_full_state_obs10 → state_obs10).
   DP_TAG="${DP_OUTPUT_POLICY#${DP_OUTPUT_DATASET}_}"
   DP_OUT_DIR="${EVAL_DIR}/outputs/dp_skillset/${DP_OUTPUT_DATASET}"
-  DP_OUT_HTML="${DP_TAG}_ck${DP_OUTPUT_CHECKPOINT}${DP_SUFFIX}.html"
+  DP_EVAL_FILE_SUFFIX=""
+  [ -n "${DP_EVAL_OUTPUT_SUFFIX}" ] && DP_EVAL_FILE_SUFFIX="_${DP_EVAL_OUTPUT_SUFFIX}"
+  DP_OUT_HTML="${DP_TAG}_ck${DP_OUTPUT_CHECKPOINT}${DP_SUFFIX}${DP_EVAL_FILE_SUFFIX}.html"
   DP_TASK_ARGS=()
   [ -n "${DP_EVAL_TASK_IDS}" ] && DP_TASK_ARGS=(--task_ids ${DP_EVAL_TASK_IDS})
   DP_VIDEO_ARGS=()

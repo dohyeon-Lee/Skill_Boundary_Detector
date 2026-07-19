@@ -9,6 +9,7 @@ the FSQ-eval knobs.
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
@@ -23,6 +24,12 @@ def build_settings(config_path: str | None = None) -> dict:
     cfg = load_config(config_path or DEFAULT_CONFIG_PATH)
     # Slurm partition/qos/nodelist/exclude are canonical (global_config.yaml train_*).
     exclude = as_list(get_value(cfg, "train_exclude_nodes", []))
+    output_suffix = str(get_value(cfg, "dp_eval_output_suffix", "")).strip()
+    if output_suffix and not re.fullmatch(r"[A-Za-z0-9._-]+", output_suffix):
+        raise ValueError(
+            "dp_eval_output_suffix may contain only letters, digits, '.', '_' and '-', "
+            f"got {output_suffix!r}"
+        )
     return {
         # which eval(s) to run
         "eval_run_fsq":            str(as_bool(get_value(cfg, "eval_run_fsq", True))).lower(),
@@ -31,6 +38,7 @@ def build_settings(config_path: str | None = None) -> dict:
         "eval_dp_run_name":        str(get_value(cfg, "eval_dp_run_name", "")),
         "eval_dp_checkpoint":      str(get_value(cfg, "eval_dp_checkpoint", "")),
         "dp_eval_skillset_dir":    str(get_value(cfg, "dp_eval_skillset_dir", "")),
+        "dp_eval_output_suffix":   output_suffix,
         "skillset_boundary_threshold_mode": str(
             get_value(cfg, "skillset_boundary_threshold_mode", "episode_mean")
         ),

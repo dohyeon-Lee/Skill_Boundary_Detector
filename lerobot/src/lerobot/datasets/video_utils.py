@@ -132,6 +132,8 @@ def decode_video_frames(
     timestamps: list[float],
     tolerance_s: float,
     backend: str | None = None,
+    *,
+    decoder_num_threads: int | None = None,
 ) -> torch.Tensor:
     """
     Decodes video frames using the specified backend.
@@ -152,7 +154,13 @@ def decode_video_frames(
     if backend == "torchcodec":
         return decode_video_frames_torchcodec(video_path, timestamps, tolerance_s)
     elif backend in ["pyav", "video_reader"]:
-        return decode_video_frames_torchvision(video_path, timestamps, tolerance_s, backend)
+        return decode_video_frames_torchvision(
+            video_path,
+            timestamps,
+            tolerance_s,
+            backend,
+            decoder_num_threads=decoder_num_threads,
+        )
     else:
         raise ValueError(f"Unsupported video backend: {backend}")
 
@@ -163,6 +171,8 @@ def decode_video_frames_torchvision(
     tolerance_s: float,
     backend: str = "pyav",
     log_loaded_timestamps: bool = False,
+    *,
+    decoder_num_threads: int | None = None,
 ) -> torch.Tensor:
     """Loads frames associated to the requested timestamps of a video
 
@@ -193,7 +203,19 @@ def decode_video_frames_torchvision(
 
     # set a video stream reader
     # TODO(rcadene): also load audio stream at the same time
-    reader = torchvision.io.VideoReader(video_path, "video")
+    reader = torchvision.io.VideoReader(
+        video_path,
+        "video",
+        num_threads=decoder_num_threads or 0,
+    )
+    if backend == "pyav" and decoder_num_threads is not None:
+        # Torchvision's PyAV backend ignores VideoReader(num_threads=...).  Set
+        # the underlying codec context explicitly before the first frame is
+        # decoded.  In particular, dav1d's automatic AV1 thread pool can
+        # deadlock inside a forked persistent DataLoader worker; one decoder
+        # thread avoids that failure mode for long-running training jobs.
+        stream = reader.container.streams.get(video=0)[0]
+        stream.thread_count = decoder_num_threads
 
     # set the first and last requested timestamps
     # Note: previous timestamps are usually loaded, since we need to access the previous key frame

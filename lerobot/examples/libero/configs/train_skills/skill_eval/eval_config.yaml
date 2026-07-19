@@ -14,7 +14,7 @@ fsq_dataset_root: FSQ_dataset
 fsq_inputs_name: FSQ_inputs
 skillset_name: skillset
 # DP boundary HTML uses this explicitly selected action-manifold skillset.
-skillset_mode: std                   # spherical | full | without_gripper | std
+skillset_mode: without_gripper                   # spherical | full | without_gripper | std
 # Exact manual artifact tag. Empty selects the canonical no-suffix skillset;
 # set `trialA` to evaluate `..._std_globalmean_trialA/skillset`.
 skillset_output_suffix: ""
@@ -29,6 +29,9 @@ eval_dp_checkpoint: 100000
 # Optional skillset root containing skillset_manifest.json. Empty uses the
 # resolver-derived {mode}_{globalmean|globalref} path above.
 dp_eval_skillset_dir: ""
+# Optional HTML filename tag. Example: video_only → ..._global_video_only.html
+# Empty keeps the canonical filename and may overwrite a previous eval of the same DP.
+dp_eval_output_suffix: ""
 
 # DP eval (skill-boundary split) knobs.
 dp_eval_n_episodes: 3           # episodes shown (per task when dp_eval_task_ids is set)

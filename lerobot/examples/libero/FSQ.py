@@ -1483,6 +1483,10 @@ class FSQTrajectoryDataset(Dataset):
                 [from_timestamp + timestamp for timestamp in timestamps],
                 reader._tolerance_s,  # noqa: SLF001
                 reader._video_backend,  # noqa: SLF001
+                # The dataset is AV1.  dav1d's automatic thread pool has been
+                # observed deadlocking in a persistent DataLoader worker after
+                # many epochs, which blocks the ordered loader indefinitely.
+                decoder_num_threads=1,
             )
 
         return decode("observation.images.image"), decode("observation.images.wrist_image")
@@ -1665,6 +1669,9 @@ def train_spline_fsqae(
         pin_memory=pin_memory,
         persistent_workers=cfg.num_workers > 0,
         prefetch_factor=1 if cfg.num_workers > 0 else None,
+        # Surface a stuck decoder as a failed job instead of silently holding a
+        # GPU allocation forever.  Normal batches complete far below 5 minutes.
+        timeout=300 if cfg.num_workers > 0 else 0,
     )
     val_workers = min(2, cfg.num_workers)
     val_loader = DataLoader(
@@ -1676,6 +1683,7 @@ def train_spline_fsqae(
         pin_memory=pin_memory,
         persistent_workers=False,
         prefetch_factor=1 if val_workers > 0 else None,
+        timeout=300 if val_workers > 0 else 0,
     )
 
     model = SplineFSQAE(cfg).to(device)

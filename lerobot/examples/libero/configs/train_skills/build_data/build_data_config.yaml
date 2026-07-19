@@ -21,7 +21,7 @@ fsq_inputs_name: FSQ_inputs
 skillset_name: skillset
 
 # Skill-boundary action-manifold mode. The mode is part of the skillset path.
-skillset_mode: std                   # spherical | full | without_gripper | std
+skillset_mode: without_gripper                   # spherical | full | without_gripper | std
 skillset_action_mode: anchor_relative        # LIBERO: dataset; ABC DP/VLA: anchor_relative
 skillset_gripper_mode: continuous      # LIBERO: discrete; ABC: continuous
 skillset_gripper_indices: [6, 13] # [-1]       # ABC bimanual layout: [6, 13]
