@@ -38,6 +38,7 @@ echo "START pi05 FT"
 echo "Node     : ${SLURMD_NODENAME:-local}"
 echo "dataset  : ${FT_DATASET_DIR}"
 echo "base     : ${FT_PRETRAINED_MODEL_PATH}"
+echo "tokenizer: ${PI05_TOKENIZER_PATH}"
 echo "output   : ${FT_OUTPUT_DIR}"
 echo "freeze   : vision=${FT_FREEZE_VISION_ENCODER} lang=${FT_FREEZE_LANGUAGE_MODEL}"
 nvidia-smi || true
@@ -78,6 +79,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True "${TRAIN_BIN}" \
   --output_dir="${FT_OUTPUT_DIR}" \
   --job_name="${FT_RUN_NAME}" \
   --policy.pretrained_path="${FT_PRETRAINED_MODEL_PATH}" \
+  --policy.tokenizer_path="${PI05_TOKENIZER_PATH}" \
   --policy.compile_model=false \
   --policy.gradient_checkpointing=true \
   --wandb.enable=true \

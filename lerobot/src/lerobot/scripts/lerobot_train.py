@@ -455,6 +455,14 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
         processor_kwargs["preprocessor_overrides"]["rename_observations_processor"] = {
             "rename_map": cfg.rename_map
         }
+        tokenizer_path = getattr(policy.config, "tokenizer_path", None)
+        if cfg.policy.type == "pi05" and tokenizer_path:
+            # PI05 warm-starts from a saved processor whose tokenizer entry may
+            # still name the gated Hub repo. Always reconnect it to the local
+            # tokenizer selected by the current policy config.
+            processor_kwargs["preprocessor_overrides"]["tokenizer_processor"] = {
+                "tokenizer_name": tokenizer_path,
+            }
         if cfg.policy.type == "skill_vla":
             # SkillVLA's state-tokenizer step needs observation.state q01/q99 to discretize the
             # skill-start state. These aren't carried by the saved processor, so (like the normalizer

@@ -5,6 +5,7 @@
 # Output subdirs the model is loaded FROM (by eval_stage): PT → pi05_PT, FT → pi05_FT.
 pi05_outputs_root: pi05_PT
 pi05_ft_outputs_root: pi05_FT
+pi05_tokenizer: models/paligemma-3b-pt-224-tokenizer
 
 # ── Which trained model(s) to evaluate ──
 eval_stage: PT                 # PT → load from pi05_PT ; FT → load from pi05_FT
@@ -18,22 +19,25 @@ eval_checkpoint: "020000"      # default checkpoint (per-model `checkpoint:` ove
 # eval_model: "PT_libero_90_full_full_pi05_batch128_freeze_LANG"
 models:
   - {model_dir: PT_libero_90_full_full_pi05_batch16_ff_ff, label: full_unfreeze_lora_none}
-  - {model_dir: PT_libero_90_full_full_pi05_batch16_ft_ff, label: freeze_llm_lora_none}
-  - {model_dir: PT_libero_90_full_full_pi05_batch16_tf_ff, label: freeze_vis_lora_none}
-  - {model_dir: PT_libero_90_full_full_pi05_batch16_ft_ft, label: freeze_llm_lora_llm}
-  - {model_dir: PT_libero_90_full_full_pi05_batch16_tt_tf, label: freeze_all_lora_vis}
-  - {model_dir: PT_libero_90_full_full_pi05_batch16_tt_tt, label: freeze_all_lora_all}
+  # - {model_dir: PT_libero_90_full_full_pi05_batch16_ft_ff, label: freeze_llm_lora_none}
+  # - {model_dir: PT_libero_90_full_full_pi05_batch16_tf_ff, label: freeze_vis_lora_none}
+  # - {model_dir: PT_libero_90_full_full_pi05_batch16_ft_ft, label: freeze_llm_lora_llm}
+  # - {model_dir: PT_libero_90_full_full_pi05_batch16_tt_tf, label: freeze_all_lora_vis}
+  # - {model_dir: PT_libero_90_full_full_pi05_batch16_tt_tt, label: freeze_all_lora_all}
 
 models_per_row: 0              # 행당 패널 수 (0 = 한 행)
 
 # ── Eval rollout ──
-eval_target_task: libero_10
-eval_task_ids: "[0,1,2,3,4,5,6,7,8,9]"
-eval_n_episodes: 5
+eval_target_task: libero_90
+eval_task_ids: "[1,2,3,4,5,6,7,8,9,10]"
+eval_n_episodes: 10
 eval_episode_offset: 25
 eval_n_action_steps: 5
 eval_batch_size: 1
 eval_max_parallel_tasks: 1
+# true: run the same closed-loop episodes but skip all rollout videos and
+# multi-model video stitching; emit eval_info.json + task_success_rates.png only.
+eval_graph_only: true
 eval_max_videos_per_task: 5
 eval_video_frame_stride: 2
 eval_video_fps: 10

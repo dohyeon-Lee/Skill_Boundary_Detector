@@ -9,12 +9,15 @@
 
 # ── Roots (used to locate the skillset/tokens to evaluate) ──
 # libero_90_full_full | abc_toy
-target_dataset: abc_toy
+target_dataset: libero_90_full_full
 fsq_dataset_root: FSQ_dataset
 fsq_inputs_name: FSQ_inputs
 skillset_name: skillset
 # DP boundary HTML uses this explicitly selected action-manifold skillset.
-skillset_mode: without_gripper                   # spherical | full | without_gripper | std
+skillset_mode: std                   # spherical | full | without_gripper | std
+# Select the exact build_data artifact: 1 -> `_ms1`; the historical default 2
+# keeps the suffix-free path. Must match the value used to build the skillset.
+skillset_min_skills: 2
 # Exact manual artifact tag. Empty selects the canonical no-suffix skillset;
 # set `trialA` to evaluate `..._std_globalmean_trialA/skillset`.
 skillset_output_suffix: ""
@@ -22,7 +25,7 @@ skillset_output_suffix: ""
 # only the threshold suffix.
 skillset_boundary_threshold_mode: global_mean   # episode_mean | global_mean
 
-eval_run_dp: true
+eval_run_dp: false
 # libero_90_full_full_state_obs20 | abc_toy_state_obs20
 eval_dp_run_name: abc_toy_state_obs20
 eval_dp_checkpoint: 100000     
@@ -47,14 +50,14 @@ dp_eval_show_gripper_graph: true
 # ===============================================================================================================
 # ===============================================================================================================
 
-eval_run_fsq: false
+eval_run_fsq: true
 
 # Folder names now embed the DP run (dp_tag) that produced the skillset. Renamed runs (all dino8_obs10):
 # fsq_eval_run_name: libero_90_full_full_state_obs20_fsq555_dino_frozen_small_rawstate_vsa_state
 # fsq_eval_run_name: libero_90_full_full_state_obs20_fsq555_dino_frozen_small_rawstate_vsa_state_skill
 # fsq_eval_run_name: libero_90_full_full_state_obs20_fsq555_dino_frozen_small_vsa_state
 # fsq_eval_run_name: libero_90_full_full_state_obs20_fsq555_dino_frozen_small_vsa_state_skill
-fsq_eval_run_name: libero_90_full_full_state_obs20_std_global_fsq333_dino_frozen_small_optimal_vsa_state_skill
+fsq_eval_run_name: libero_90_full_full_state_obs20_std_global_fsq333_dino_frozen_small_optimal_vsa_broadcast
 # fsq_eval_run_name: libero_90_full_full_state_obs20_std_global_fsq333_dino_frozen_small_optimal_vsa_state_skill_weighted3
 fsq_eval_checkpoint: 125
 # The terminator always consumes both cameras; architecture/backbone live in the checkpoint.

@@ -6,6 +6,7 @@
 pi05_outputs_root: pi05_PT        # where the pretrained PT lives (read)
 pi05_ft_outputs_root: pi05_FT     # where FT writes
 pi_base: models/pi05_base
+pi05_tokenizer: models/paligemma-3b-pt-224-tokenizer
 
 # ── pi05 FT (output → pi05_FT; pretrained PT read from pi05_PT) ─
 ft_dataset: libero_10_full_2

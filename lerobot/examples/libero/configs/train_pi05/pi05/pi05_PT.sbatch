@@ -38,6 +38,7 @@ echo "START pi05 PT"
 echo "Node     : ${SLURMD_NODENAME:-local}"
 echo "dataset  : ${PT_DATASET_DIR}"
 echo "base     : ${PI_BASE}"
+echo "tokenizer: ${PI05_TOKENIZER_PATH}"
 echo "output   : ${PT_OUTPUT_DIR}"
 echo "lr/bs    : ${PT_LR} / ${PT_BATCH_SIZE}"
 echo "freeze   : vision=${PT_FREEZE_VISION_ENCODER} lang=${PT_FREEZE_LANGUAGE_MODEL}"
@@ -65,6 +66,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
   --output_dir="${PT_OUTPUT_DIR}" \
   --job_name="${PT_RUN_NAME}" \
   --policy.pretrained_path="${PI_BASE}" \
+  --policy.tokenizer_path="${PI05_TOKENIZER_PATH}" \
   --policy.compile_model=false \
   --policy.gradient_checkpointing=true \
   --wandb.enable=true \

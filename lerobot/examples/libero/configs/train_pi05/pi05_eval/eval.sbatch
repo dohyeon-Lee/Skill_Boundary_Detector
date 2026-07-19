@@ -74,6 +74,7 @@ export LIBERO_CONFIG_PATH="${LIBERO_LOCAL_CONFIG_DIR}"
 echo "START pi05 eval"
 echo "Node      : ${SLURMD_NODENAME:-local}"
 echo "target    : ${EVAL_TARGET_TASK}  task_ids=${EVAL_TASK_IDS}  episodes=${EVAL_N_EPISODES}/task"
+echo "mode      : $([ "${EVAL_GRAPH_ONLY}" = "true" ] && echo 'graph-only (no videos)' || echo 'full')"
 nvidia-smi || true
 mkdir -p "${EVAL_OUT_DIR}"
 BASE_RN="${EVAL_WANDB_RUN_NAME}"
@@ -87,6 +88,7 @@ run_eval() {
   PYTORCH_ALLOC_CONF=expandable_segments:True \
   PYTHONPATH="${LEROBOT_ROOT}/src:${LIBERO_REPO_ROOT}" "${EVAL_BIN}" \
     --policy.path="${ppath}" \
+    --policy.tokenizer_path="${PI05_TOKENIZER_PATH}" \
     --env.type=libero \
     --env.task="${EVAL_TARGET_TASK}" \
     --env.task_ids="${EVAL_TASK_IDS}" \
@@ -169,17 +171,20 @@ for m in json.loads(os.environ["MODELS_JSON"]):
     print("|".join([m["label"], m["policy_path"], m.get("checkpoint", "")]))
 PY
 )"
-  # Progressive per-task stitch (like stage1): each panel eval runs this after EVERY task's videos are
-  # written, so a task's grid clip appears as soon as it's done in all panels — not once at job end.
-  # A tiny helper script sidesteps nested shell quoting of labels_json in --eval.on_task_done_cmd.
+  # Progressive per-task stitch for full eval only. Graph-only deliberately
+  # avoids even launching the stitch helper because no videos are produced.
   STITCH_SH="${EVAL_OUT_DIR}/.stitch_panels.sh"
+  STITCH_CALLBACK=""
   mkdir -p "${EVAL_OUT_DIR}"
-  cat > "${STITCH_SH}" <<EOF
+  if [ "${EVAL_GRAPH_ONLY}" != "true" ]; then
+    cat > "${STITCH_SH}" <<EOF
 #!/usr/bin/env bash
 "${PYTHON_BIN}" "${SRC_DIR}/stitch_panels.py" \
   --panels_root="${EVAL_OUT_DIR}/panels" --out_dir="${EVAL_OUT_DIR}/side_by_side" \
   --labels_json='${MODELS_LABELS}' --per_row="${MODELS_PER_ROW}"
 EOF
+    STITCH_CALLBACK="bash ${STITCH_SH}"
+  fi
 
   # PANEL_LABEL set (submit's model×chunk fan-out) → this job runs ONLY that model; unset (srun / no
   # fan-out) → all models sequentially.
@@ -194,15 +199,17 @@ EOF
     fi
     echo "── panel '${LBL}': ${PPATH}"
     run_eval "${EVAL_OUT_DIR}/panels/${LBL}" "${BASE_RN}_${LBL}${TASK_TAG:+_${TASK_TAG}}" \
-             "${PPATH}" "bash ${STITCH_SH}"
+             "${PPATH}" "${STITCH_CALLBACK}"
   done <<< "${SPECS}"
 
   # Stitch is IDEMPOTENT + ATOMIC + skips episodes not yet finished in every panel → run it at the end
   # of EVERY job; whichever job finishes a task LAST completes that task's grid clip immediately.
-  "${PYTHON_BIN}" "${SRC_DIR}/stitch_panels.py" \
-    --panels_root="${EVAL_OUT_DIR}/panels" --out_dir="${EVAL_OUT_DIR}/side_by_side" \
-    --labels_json="${MODELS_LABELS}" --per_row="${MODELS_PER_ROW}" \
-    || echo "stitch failed (non-fatal)"
+  if [ "${EVAL_GRAPH_ONLY}" != "true" ]; then
+    "${PYTHON_BIN}" "${SRC_DIR}/stitch_panels.py" \
+      --panels_root="${EVAL_OUT_DIR}/panels" --out_dir="${EVAL_OUT_DIR}/side_by_side" \
+      --labels_json="${MODELS_LABELS}" --per_row="${MODELS_PER_ROW}" \
+      || echo "stitch failed (non-fatal)"
+  fi
 
   # Per-panel summary + success-rate chart for EVERY model (chunked → combine eval_info_t*.json;
   # non-chunked → from that panel's eval_info.json). With PANEL_LABEL only THIS job's panel is merged

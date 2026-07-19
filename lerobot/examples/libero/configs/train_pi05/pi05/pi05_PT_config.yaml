@@ -6,6 +6,7 @@
 pi05_outputs_root: pi05_PT
 pi05_ft_outputs_root: pi05_FT
 pi_base: models/pi05_base   # project_root(global_config) 기준 상대경로 → 서버마다 자동. 절대경로도 허용.
+pi05_tokenizer: models/paligemma-3b-pt-224-tokenizer
 
 # ── pi05 PT ───────────────────────────────────────────────────
 pt_dataset: libero_90_full_full
@@ -17,16 +18,16 @@ pt_exp: ""
 #   (F,F)=full_unfreeze | vision=F,lang=T=freeze_LANG(LM만 동결, vision+projector 학습)
 #   vision=T,lang=F=vision만 동결   | vision=T,lang=T≈freeze_VLM(projector만 학습으로 남음)
 # 실제 적용은 로그의 "pi05 freeze probe" 블록(컴포넌트별 trainable/total)으로 검증.
-pt_freeze_vision_encoder: true
-pt_freeze_language_model: true
+pt_freeze_vision_encoder: false
+pt_freeze_language_model: false
 # LoRA on the FROZEN VLM parts (adapter만 학습, base 동결). LLM 얼리고(pt_freeze_language_model: true)
 # pt_lora_llm: true 로 두면 "LLM 원능력 보존 + LoRA 적응". vision도 동일(pt_freeze_vision_encoder: true +
 # pt_lora_vision: true). 폴더명 태그: _{fv}{fl}_{lora_vision}{lora_lang} (양쪽 절반 모두 vision→lang 순서로
 # 통일. 예: tt_ff = vision·lang 동결·lora 없음 / ft_ft = lang 동결+lang LoRA / tt_tf = 둘다 동결+vision LoRA).
-pt_lora_enable: true            # 켜면 아래 적용
+pt_lora_enable: false            # 켜면 아래 적용
 
-pt_lora_vision: true            # SigLIP에 LoRA (pt_freeze_vision_encoder: true 여야 의미)
-pt_lora_llm: true               # Gemma LLM에 LoRA (pt_freeze_language_model: true 여야 의미)
+pt_lora_vision: false            # SigLIP에 LoRA (pt_freeze_vision_encoder: true 여야 의미)
+pt_lora_llm: false               # Gemma LLM에 LoRA (pt_freeze_language_model: true 여야 의미)
 
 
 pt_lora_rank: 8                  # 병목 rank r (작을수록 보존↑)
@@ -35,7 +36,7 @@ pt_lora_dropout: 0.0
 
 pt_lora_targets: "q,k,v,o"       # 어텐션 투영 (q,k,v,o [+ gate,up,down / fc1,fc2])
 pt_lr_base: 2.5e-05
-pt_steps: 20000
+pt_steps: 30000
 pt_save_freq: 5000
 pt_wandb_project: VLA_posttrain
 

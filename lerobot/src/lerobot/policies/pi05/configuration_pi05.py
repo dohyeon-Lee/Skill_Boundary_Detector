@@ -64,6 +64,9 @@ class PI05Config(PreTrainedConfig):
     empty_cameras: int = 0
 
     tokenizer_max_length: int = 200  # see openpi `__post_init__`
+    # Prefer a project-local PaliGemma tokenizer so gated Hub access is never
+    # required on compute nodes. None retains the upstream Hub fallback.
+    tokenizer_path: str | None = None
 
     normalization_mapping: dict[str, NormalizationMode] = field(
         default_factory=lambda: {

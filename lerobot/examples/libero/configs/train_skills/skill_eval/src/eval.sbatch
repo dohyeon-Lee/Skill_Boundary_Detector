@@ -155,7 +155,7 @@ if [ "${EVAL_RUN_FSQ}" = "true" ]; then
   FSQ_META="${MODEL_DIR}/fsq_meta.json"
   F_SKILLSET="${SKILLSET_DIR}"
   if [ -f "${FSQ_META}" ]; then
-    read -r F_DP F_CKPT F_THRESHOLD_MODE F_SKILLSET_MODE F_GLOBAL_SOURCE F_OUTPUT_SUFFIX < <("${BOOTSTRAP_PYTHON}" - "${FSQ_META}" <<'PY'
+    read -r F_DP F_CKPT F_THRESHOLD_MODE F_SKILLSET_MODE F_MIN_SKILLS F_GLOBAL_SOURCE F_OUTPUT_SUFFIX < <("${BOOTSTRAP_PYTHON}" - "${FSQ_META}" <<'PY'
 import json, sys
 m = json.load(open(sys.argv[1]))
 print(
@@ -163,21 +163,26 @@ print(
     m["dp_checkpoint"],
     m.get("skillset_boundary_threshold_mode", "episode_mean"),
     m.get("skillset_mode") or "__none__",
+    m.get("skillset_min_skills") or "__none__",
     m.get("skillset_global_threshold_source") or "__none__",
     m.get("skillset_output_suffix") or "__none__",
 )
 PY
 )
     [ "${F_SKILLSET_MODE}" = "__none__" ] && F_SKILLSET_MODE=""
+    # Legacy metadata omitted this field; retain the resolver's build-config
+    # value in that case so existing FSQ runs keep their historical behavior.
+    [ "${F_MIN_SKILLS}" = "__none__" ] && F_MIN_SKILLS="${SKILLSET_MIN_SKILLS}"
     [ "${F_GLOBAL_SOURCE}" = "__none__" ] && F_GLOBAL_SOURCE=""
     [ "${F_OUTPUT_SUFFIX}" = "__none__" ] && F_OUTPUT_SUFFIX=""
     eval "$(DP_RUN_NAME="${F_DP}" DP_CHECKPOINT="${F_CKPT}" \
       SKILLSET_BOUNDARY_THRESHOLD_MODE="${F_THRESHOLD_MODE}" SKILLSET_MODE="${F_SKILLSET_MODE}" \
+      SKILLSET_MIN_SKILLS="${F_MIN_SKILLS}" \
       SKILLSET_GLOBAL_THRESHOLD_SOURCE="${F_GLOBAL_SOURCE}" SKILLSET_OUTPUT_SUFFIX="${F_OUTPUT_SUFFIX}" \
       "${BOOTSTRAP_PYTHON}" "${COMMON_SRC_DIR}/train_skills_config.py" --config "${TRAIN_CONFIG}" --shell 2>/dev/null \
       | grep -E '^export SKILLSET_DIR=')"
     F_SKILLSET="${SKILLSET_DIR}"
-    echo "  FSQ source DP    : ${F_DP} (ck${F_CKPT}, ${F_SKILLSET_MODE:-legacy}, ${F_THRESHOLD_MODE})"
+    echo "  FSQ source DP    : ${F_DP} (ck${F_CKPT}, ${F_SKILLSET_MODE:-legacy}, ${F_THRESHOLD_MODE}, ms${F_MIN_SKILLS})"
   fi
   if [ ! -d "${F_SKILLSET}/skills" ]; then
     echo "FSQ's training skillset not found: ${F_SKILLSET}/skills" >&2; exit 1

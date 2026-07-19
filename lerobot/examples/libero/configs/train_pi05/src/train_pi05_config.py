@@ -207,6 +207,19 @@ def slurm_settings(cfg: dict[str, Any], prefix: str, *, cpus: int, mem: str, tim
 def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
     project_root = Path(str(get_value(cfg, "project_root"))).expanduser()
     lerobot_root = project_root / "lerobot"
+    pi05_tokenizer_path = Path(resolve_path(
+        project_root,
+        get_value(cfg, "pi05_tokenizer", "models/paligemma-3b-pt-224-tokenizer"),
+    ))
+    required_tokenizer_files = ("config.json", "tokenizer_config.json", "tokenizer.json")
+    missing_tokenizer_files = [
+        name for name in required_tokenizer_files if not (pi05_tokenizer_path / name).is_file()
+    ]
+    if missing_tokenizer_files:
+        raise FileNotFoundError(
+            f"Local PaliGemma tokenizer is incomplete at {pi05_tokenizer_path}: "
+            f"missing {missing_tokenizer_files}."
+        )
     # {project_root}/{outputs_root}/{pi05_PT|pi05_FT}: outputs_root comes from global_config.yaml
     # (switchable to outputs_filtered). PT and FT write to SEPARATE subdirs; FT still reads its
     # pretrained PT checkpoint from the PT subdir.
@@ -293,6 +306,11 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
     else:
         eval_wandb_run = str(os.environ.get("WANDB_RUN_NAME", f"{eval_model}_{eval_checkpoint}_{eval_target_task}"))
         models_json = ""
+    eval_graph_only = as_bool(get_value(cfg, "eval_graph_only", False, env="EVAL_GRAPH_ONLY"))
+    # Keep summary-only runs separate from full video evals even when every
+    # model/checkpoint/task knob is otherwise identical.
+    if eval_graph_only:
+        eval_wandb_run = f"{eval_wandb_run}_graph"
     eval_out_dir = eval_out_root / f"{eval_wandb_run}_offset{eval_offset}"
 
     settings = {
@@ -304,6 +322,7 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         "pi05_pt_outputs_root": pi05_pt_root,
         "pi05_ft_outputs_root": pi05_ft_root,
         "pi_base": resolve_path(project_root, get_value(cfg, "pi_base", "models/pi05_base")),
+        "pi05_tokenizer_path": pi05_tokenizer_path,
         # PT
         "pt_dataset": pt_dataset,
         "pt_dataset_root": pt_dataset_root,
@@ -381,7 +400,12 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         "models_per_row": int(get_value(cfg, "models_per_row", 0) or 0),
         "eval_num_gpus": int(get_value(cfg, "eval_num_gpus", 1, env="EVAL_NUM_GPUS")),
         "eval_max_parallel_tasks": int(get_value(cfg, "eval_max_parallel_tasks", 1, env="MAX_PARALLEL_TASKS")),
-        "eval_max_videos_per_task": int(get_value(cfg, "eval_max_videos_per_task", 1, env="MAX_VIDEOS_PER_TASK")),
+        "eval_graph_only": eval_graph_only,
+        # lerobot-eval interprets zero as no rendered episodes while still
+        # writing per-task success metrics used by task_success_rates.png.
+        "eval_max_videos_per_task": 0 if eval_graph_only else int(
+            get_value(cfg, "eval_max_videos_per_task", 1, env="MAX_VIDEOS_PER_TASK")
+        ),
         "eval_video_frame_stride": int(get_value(cfg, "eval_video_frame_stride", 2, env="VIDEO_FRAME_STRIDE")),
         "eval_video_fps": int(get_value(cfg, "eval_video_fps", 10, env="VIDEO_FPS")),
         "eval_wandb_project": str(get_value(cfg, "eval_wandb_project", "VLA_eval", env="WANDB_PROJECT")),

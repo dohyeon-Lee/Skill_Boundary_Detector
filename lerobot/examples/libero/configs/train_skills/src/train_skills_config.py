@@ -170,6 +170,26 @@ def resolve_skillset_output_suffix(cfg: dict[str, Any], project_root: Path) -> s
     return f"_{tag}"
 
 
+def resolve_skillset_min_skills(cfg: dict[str, Any], project_root: Path) -> int:
+    """Read the minimum segment count, inheriting build_data's selection.
+
+    This setting changes which episodes enter the skillset, so downstream FSQ
+    and eval configs must resolve the same artifact even when they omit the key.
+    """
+    value = get_value(cfg, "skillset_min_skills", None)
+    if value is None:
+        build_cfg = (
+            project_root / "lerobot" / "examples" / "libero" / "configs"
+            / "train_skills" / "build_data" / "build_data_config.yaml"
+        )
+        if build_cfg.is_file():
+            value = get_value(load_config(build_cfg), "skillset_min_skills", 2)
+    min_skills = int(value if value is not None else 2)
+    if min_skills < 1:
+        raise ValueError(f"skillset_min_skills must be >= 1, got {min_skills}.")
+    return min_skills
+
+
 def as_bool(value: Any) -> bool:
     if isinstance(value, bool):
         return value
@@ -330,9 +350,7 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         raise ValueError(f"dp_vision must be state|resnet|dino, got {dp_vision!r}.")
     dp_checkpoint = str(get_value(cfg, "dp_checkpoint", "100000"))
     probe_settings = skillset_probe_settings(cfg)
-    skillset_min_skills = int(get_value(cfg, "skillset_min_skills", 2))
-    if skillset_min_skills < 1:
-        raise ValueError(f"skillset_min_skills must be >= 1, got {skillset_min_skills}.")
+    skillset_min_skills = resolve_skillset_min_skills(cfg, root)
     # Boundaries are DP/checkpoint-dependent, so different runs never reuse or clobber a skillset.
     skillset_boundary_threshold_mode = resolve_skillset_threshold_mode(cfg, root)
     if skillset_boundary_threshold_mode not in {"episode_mean", "global_mean"}:
@@ -351,9 +369,14 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
     if skillset_boundary_threshold_mode == "global_mean":
         skillset_threshold_suffix = "_globalref" if skillset_global_threshold_source else "_globalmean"
     skillset_output_suffix = resolve_skillset_output_suffix(cfg, root)
+    # Preserve the historical default (2) name, while isolating any setting
+    # that changes episode inclusion.  This follows the existing `_msN`
+    # convention used by the SkillVLA data builder.
+    skillset_min_skills_suffix = "" if skillset_min_skills == 2 else f"_ms{skillset_min_skills}"
     skillset_suffix = (
         probe_settings["skillset_probe_suffix"]
         + skillset_threshold_suffix
+        + skillset_min_skills_suffix
         + skillset_output_suffix
     )
     fsq_seg_dir = fsq_inputs_dir / f"seg_{dp_policy}_ck{dp_checkpoint}{skillset_suffix}"
@@ -421,6 +444,7 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
     dp_tag += probe_settings["skillset_probe_suffix"]
     if skillset_boundary_threshold_mode == "global_mean":
         dp_tag += "_global"
+    dp_tag += skillset_min_skills_suffix
     dp_tag += skillset_output_suffix
     fsq_run_template = str(
         get_value(
@@ -564,6 +588,7 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "skillset_replan_interval": int(get_value(cfg, "skillset_replan_interval", 3)),
         "skillset_nms_dist": int(get_value(cfg, "skillset_nms_dist", 25)),
         "skillset_min_skills": skillset_min_skills,
+        "skillset_min_skills_suffix": skillset_min_skills_suffix,
         **probe_settings,
         "skillset_boundary_threshold_mode": skillset_boundary_threshold_mode,
         "skillset_global_threshold_source": skillset_global_threshold_source,

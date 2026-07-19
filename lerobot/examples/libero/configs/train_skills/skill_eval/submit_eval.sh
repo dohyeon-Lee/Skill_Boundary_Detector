@@ -43,7 +43,7 @@ DEP_ARG=()
 # DP eval needs eval_dp_run_name's skillset; FSQ eval reads its OWN skillset (recorded in fsq_meta.json),
 # which already exists since the FSQ trained on it. So only the DP eval can require an auto-build.
 _probe="$("${BOOTSTRAP_PYTHON}" "${COMMON_SRC_DIR}/train_skills_config.py" --config "${TRAIN_CONFIG}" ${TARGET_DATASET:+--dataset "${TARGET_DATASET}"} --shell 2>/dev/null \
-  | grep -E '^export (SKILLSET_DIR|SKILLSET_DONE_PATH)=')"
+  | grep -E '^export (SKILLSET_DIR|SKILLSET_DONE_PATH|SKILLSET_MODE|SKILLSET_MIN_SKILLS)=')"
 eval "${_probe}"
 NEED_BUILD=false
 # Use the .complete marker, not just the skills dir — a PARTIAL skillset (some array shards failed) has
@@ -65,6 +65,7 @@ if [ "${NEED_BUILD}" = "true" ]; then
   # the skillset. FSQ evaluation decodes selected raw frames live from its recorded skillset.
   BUILD_OUT=$(env -u TARGET_DATASET \
                   DP_RUN_NAME="${EVAL_DP_RUN_NAME}" DP_CHECKPOINT="${EVAL_DP_CHECKPOINT}" \
+                  SKILLSET_MODE="${SKILLSET_MODE}" SKILLSET_MIN_SKILLS="${SKILLSET_MIN_SKILLS}" \
                   SKILLSET_BOUNDARY_THRESHOLD_MODE="${SKILLSET_BOUNDARY_THRESHOLD_MODE}" \
                   BUILD_SKILLSET_ONLY=true PRINT_LAST_JOB=1 \
     bash "${SCRIPT_DIR}/../build_data/submit_build_data.sh") || { echo "build_data submission failed" >&2; exit 1; }

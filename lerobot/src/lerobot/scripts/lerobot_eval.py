@@ -572,6 +572,9 @@ def eval_main(cfg: EvalPipelineConfig):
         "device_processor": {"device": str(policy.config.device)},
         "rename_observations_processor": {"rename_map": cfg.rename_map},
     }
+    tokenizer_path = getattr(policy.config, "tokenizer_path", None)
+    if cfg.policy.type == "pi05" and tokenizer_path:
+        preprocessor_overrides["tokenizer_processor"] = {"tokenizer_name": tokenizer_path}
 
     preprocessor, postprocessor = make_pre_post_processors(
         policy_cfg=cfg.policy,

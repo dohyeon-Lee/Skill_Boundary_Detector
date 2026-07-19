@@ -49,6 +49,7 @@ cd "${SCRIPT_DIR}"
 
 echo "Submit pi05 eval"
 echo "  target  : ${EVAL_TARGET_TASK}  task_ids=${EVAL_TASK_IDS}"
+echo "  mode    : $([ "${EVAL_GRAPH_ONLY}" = "true" ] && echo 'graph-only (no videos)' || echo 'full')"
 echo "  out     : ${EVAL_OUT_DIR}"
 echo "  slurm   : partition=${EVAL_PARTITION} nodelist=${EVAL_NODELIST:-<none>} exclude=${EVAL_EXCLUDE_NODES:-<none>}"
 
