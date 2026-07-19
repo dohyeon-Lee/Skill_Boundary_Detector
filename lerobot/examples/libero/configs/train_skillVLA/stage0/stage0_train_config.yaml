@@ -1,8 +1,9 @@
 dataset:
   skillvla_root: skillvla_dataset
   source: libero_90_full_full
-  run: FSQ333_dino_frozen_small_optimal_vsa_state_skill_125_std_pt_snap10
+  # run: FSQ333_dino_frozen_small_optimal_vsa_state_skill_125_std_pt_snap10
   # run: FSQ333_dino_frozen_small_optimal_vsa_state_skill_weighted3_125_std_pt_snap10
+  run: FSQ333_dino_frozen_small_optimal_vsa_state_skill_125_std_pt_snap10_ms1_pmax15_uniform
 
 warm_start:
   pi_base: models/pi05_base
@@ -11,9 +12,13 @@ warm_start:
 
 cond:
   dino_model: models/dinov3-vitl16
+  state_adarms: true
 
-connections: {vlm_to_cond: true, cond_to_expert: true, vlm_to_expert: false}
-token_access: {image: false, language: true}
+expert:
+  source: fsq # fsq | pi05_base
+
+connections: {vlm_to_cond: true, cond_to_expert: true, vlm_to_expert: true} # {vlm_to_cond: true, cond_to_expert: true, vlm_to_expert: false}
+token_access: {image: true, language: true}
 
 
 
@@ -38,14 +43,14 @@ expert_lora:
 language_bridge: {rank: 64, lr_scale: 10.0}
 
 components:
-  adapters: {vlm_lora: true, cond_lora: false, expert_lora: true, language_bridge: true}
+  adapters: {vlm_lora: false, cond_lora: false, expert_lora: false, language_bridge: false}
 
 regime:
   A:
     probability: 1.0 # 0.7
     drop_vlm: false
     freeze:
-      base:    {vlm: true, cond: false, expert: true}
+      base:    {vlm: false, cond: false, expert: false} # {vlm: true, cond: false, expert: true}
       adapter: {vlm_lora: false, cond_lora: true, expert_lora: false, language_bridge: false}
       vision:  {vlm_vision: false, cond_vision: false} # {vlm_vision: true, cond_vision: true}
       skill:   {skill_reader: true, skill_head: true}
@@ -64,10 +69,10 @@ loss:
   B: {skill_start_weight: 1.0, skill_end_weight: 3.0}
 
 terminator: {train: true, freeze_vision: true}
-run: {suffix: "A10B0_unfreezeall_contrastiveX"}
+run: {suffix: "exp0_FSQ_statecond"}
 
 training:
-  dataloader: {batch_size: 32, workers: 2, gpus: 1}
+  dataloader: {batch_size: 16, workers: 2, gpus: 1}
   optimizer: {base_lr: 2.5e-05, cond_lr_scale: 1.0}
   schedule: {steps: 50000, save_every: 2500}
 

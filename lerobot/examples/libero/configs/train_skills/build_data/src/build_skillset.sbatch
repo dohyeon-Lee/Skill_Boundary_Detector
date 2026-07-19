@@ -133,6 +133,7 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     ${CURVES_ARG[@]+"${CURVES_ARG[@]}"} \
     --replan_interval "${SKILLSET_REPLAN_INTERVAL}" \
     --nms_dist "${SKILLSET_NMS_DIST}" \
+    --min_skills "${SKILLSET_MIN_SKILLS}" \
     --noise_scheduler_type DDIM \
     --num_inference_steps 10 \
     --eval_at_step "${SKILLSET_DN_STEP}" \

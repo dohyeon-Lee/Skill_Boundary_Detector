@@ -330,6 +330,9 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         raise ValueError(f"dp_vision must be state|resnet|dino, got {dp_vision!r}.")
     dp_checkpoint = str(get_value(cfg, "dp_checkpoint", "100000"))
     probe_settings = skillset_probe_settings(cfg)
+    skillset_min_skills = int(get_value(cfg, "skillset_min_skills", 2))
+    if skillset_min_skills < 1:
+        raise ValueError(f"skillset_min_skills must be >= 1, got {skillset_min_skills}.")
     # Boundaries are DP/checkpoint-dependent, so different runs never reuse or clobber a skillset.
     skillset_boundary_threshold_mode = resolve_skillset_threshold_mode(cfg, root)
     if skillset_boundary_threshold_mode not in {"episode_mean", "global_mean"}:
@@ -403,9 +406,9 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "optimal": "_optimal",
     }[fsq_encoder_input_mode]
     fsq_state_cond_mode = str(get_value(cfg, "fsq_state_cond_mode", "state"))
-    if fsq_state_cond_mode not in {"state", "state_skill"}:
+    if fsq_state_cond_mode not in {"state", "state_skill", "broadcast"}:
         raise ValueError(
-            "fsq_state_cond_mode must be state|state_skill, "
+            "fsq_state_cond_mode must be state|state_skill|broadcast, "
             f"got {fsq_state_cond_mode!r}."
         )
     # This affects only the VSA action expert; the terminator always receives both state and z_q.
@@ -560,6 +563,7 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "skillset_savgol_polyorder": int(get_value(cfg, "skillset_savgol_polyorder", 4)),
         "skillset_replan_interval": int(get_value(cfg, "skillset_replan_interval", 3)),
         "skillset_nms_dist": int(get_value(cfg, "skillset_nms_dist", 25)),
+        "skillset_min_skills": skillset_min_skills,
         **probe_settings,
         "skillset_boundary_threshold_mode": skillset_boundary_threshold_mode,
         "skillset_global_threshold_source": skillset_global_threshold_source,

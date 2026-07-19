@@ -23,7 +23,10 @@ class _ImageFreeSamplerStub:
     def _expert_cond(self, time, state, skill_code):
         return time
 
-    def _run_expert_only(self, x_t, expert_cond, action_prefix):
+    def _skill_broadcast(self, skill_code):
+        return None
+
+    def _run_expert_only(self, x_t, expert_cond, action_prefix, skill_broadcast):
         self.expert_calls += 1
         return torch.ones_like(x_t)
 

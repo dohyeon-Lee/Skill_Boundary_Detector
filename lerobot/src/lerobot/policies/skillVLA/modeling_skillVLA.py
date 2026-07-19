@@ -62,7 +62,7 @@ from lerobot.policies.pi05.lora import (
     set_active_adapters,
     target_names_from_spec,
 )
-from lerobot.policies.pi_gemma import _gated_residual, layernorm_forward
+from lerobot.policies.pi_gemma import _gated_residual, add_broadcast_condition, layernorm_forward
 from lerobot.policies.skill_expert.modeling_skill_expert import (
     _build_gemma,
     _build_siglip_vision_tower,
@@ -102,6 +102,7 @@ def compute_layer_multi(
     rotary_emb,
     language_bridges=None,
     bridge_token_mask=None,
+    broadcast_cond=None,
 ):
     """One transformer layer shared across N streams (generalizes pi05's ``compute_layer_complete``).
 
@@ -112,8 +113,10 @@ def compute_layer_multi(
     concatenated ``position_ids``.
     """
     query_states, key_states, value_states, gates, normed = [], [], [], [], []
-    for hidden, layer, cond in zip(hiddens, layers, adarms, strict=True):
+    for stream_idx, (hidden, layer, cond) in enumerate(zip(hiddens, layers, adarms, strict=True)):
         h, gate = layernorm_forward(layer.input_layernorm, hidden, cond)
+        if broadcast_cond is not None:
+            h = add_broadcast_condition(h, broadcast_cond[stream_idx])
         normed.append(h)
         gates.append(gate)
         shape = (*h.shape[:-1], -1, layer.self_attn.head_dim)
@@ -368,19 +371,29 @@ class SkillVLAPytorch(PI05Pytorch):
         self.register_buffer("_img_std", torch.tensor(std).view(1, 3, 1, 1), persistent=False)
 
         self.image_proj = nn.Linear(vis_dim, self.expert_width)
-        # State: QUANTILE-normalized CONTINUOUS vector → Linear → rides the action expert's flow-time
-        # AdaRMS (mirrors Stage-1's state_cond_mode). State is NOT a cond-stream token anymore — buried
-        # among image tokens it was starved (see Stage-1 input_probe). cond stays image-ONLY.
+        # State: QUANTILE-normalized CONTINUOUS vector → Linear. The FSQ expert consumes it through
+        # expert AdaRMS; the pi05 expert ablation can instead route it through cond AdaRMS.
         self.state_proj = nn.Linear(s1.max_state_dim, self.expert_width)
         # Skill cond token mirrors Stage-1: flat code → normalized z_q → Linear (constant within a
         # skill) — see _skill_token_from_z. (The skill-progress token was removed.)
         self.skill_proj = nn.Linear(len(s1.skill_fsq_levels), self.expert_width)
 
-        # ae: the cond-encoder encodes the SCENE ONLY (no skill, no adaLN); the skill is injected as a
-        # prefix token in the action-expert stream (see _action_prefix). cond stays skill-blind → a
-        # clean obs / VLM-grounded channel. use_adarms=False matches the Stage-1 ae cond-encoder.
+        # The cond stream stays skill-blind. Stage-0 can optionally inject CURRENT state through AdaRMS;
+        # this is the state route for the pi05-base expert ablation, whose expert remains time-only.
         variant = s1.cond_encoder_variant or s1.action_expert_variant
-        self.cond_encoder = _build_gemma(variant, use_adarms=False)
+        self.cond_encoder = _build_gemma(
+            variant, use_adarms=bool(getattr(self.config, "stage0_cond_state_adarms", False)))
+        if bool(getattr(self.config, "stage0_cond_state_adarms", False)):
+            # AdaRMS emits (scale, shift, residual_gate). Initialize to the exact plain-RMS residual
+            # behavior: scale=0, shift=0, gate=1; state-dependent modulation then grows from zero.
+            for module in self.cond_encoder.modules():
+                dense = getattr(module, "dense", None)
+                dim = int(getattr(module, "dim", 0))
+                if isinstance(dense, nn.Linear) and dim > 0 and dense.out_features == 3 * dim:
+                    nn.init.zeros_(dense.weight)
+                    nn.init.zeros_(dense.bias)
+                    with torch.no_grad():
+                        dense.bias[2 * dim:].fill_(1.0)
 
     # ── module shortcuts ──
     @property
@@ -489,7 +502,7 @@ class SkillVLAPytorch(PI05Pytorch):
         cond_vision = self.dino if self.vision_backbone == "dino" else self.siglip
         return {
             "expert": [self._expert, self.action_in_proj, self.action_out_proj, self.time_mlp_in, self.time_mlp_out],
-            "cond": [self.image_proj, self.cond_encoder],       # cond Gemma + image_proj (vision split out)
+            "cond": [self.image_proj, self.cond_encoder],       # state_proj ownership handled explicitly
             "cond_vision": [cond_vision],                       # DINO/SigLIP for cond — separately freezable
             "llm": [self._vlm],       # the VLM's Gemma LLM trunk ONLY (vision tower = vlm_vision below)
             "vlm_vision": [self.paligemma_with_expert.paligemma.model.vision_tower],
@@ -505,10 +518,13 @@ class SkillVLAPytorch(PI05Pytorch):
         groups = {
             "llm": [self._vlm],                                              # VLM Gemma trunk
             "vlm_vision": [self.paligemma_with_expert.paligemma.model.vision_tower],
-            "cond": [self.cond_encoder, self.image_proj],                    # cond Gemma + image_proj
+            "cond": [self.cond_encoder, self.image_proj,
+                     self.state_proj if self._cond_uses_state_adarms else None],
             "cond_vision_encoder": [cond_vision],                           # DINO/SigLIP for cond
             "action_expert": [self._expert, self.action_in_proj, self.action_out_proj,
-                              self.time_mlp_in, self.time_mlp_out, self.state_proj, self.skill_proj],
+                              self.time_mlp_in, self.time_mlp_out,
+                              self.state_proj if not self._cond_uses_state_adarms and not self._stage0_pi05_expert else None,
+                              self.skill_proj if not self._stage0_pi05_expert else None],
             "lang_bridge": [self.lang_bridges],
         }
         out: dict = {}
@@ -548,9 +564,12 @@ class SkillVLAPytorch(PI05Pytorch):
         self._set_requires_grad(groups["llm"], "vlm" in train)
         mm_proj = getattr(self.paligemma_with_expert.paligemma.model, "multi_modal_projector", None)
         self._set_requires_grad(groups["vlm_vision"] + [mm_proj], "vlm_vision" in train)
-        self._set_requires_grad(
-            groups["expert"] + [self.state_proj, self.skill_proj], "expert" in train)
+        self._set_requires_grad(groups["expert"], "expert" in train)
         self._set_requires_grad(groups["cond"], "cond" in train)
+        state_train = ((self._cond_uses_state_adarms and "cond" in train)
+                       or (not self._stage0_pi05_expert and "expert" in train))
+        self._set_requires_grad([self.state_proj], state_train)
+        self._set_requires_grad([self.skill_proj], not self._stage0_pi05_expert and "expert" in train)
         self._set_requires_grad(groups["cond_vision"], "cond_vision" in train)
         self._set_requires_grad([self.skill_reader], "skill_reader" in train)
         self._set_requires_grad([self.skill_head], "skill_head" in train)
@@ -593,20 +612,40 @@ class SkillVLAPytorch(PI05Pytorch):
     def _state_cond_mode(self) -> str:
         return getattr(self.stage1_config, "state_cond_mode", "state_skill")
 
+    @property
+    def _stage0_pi05_expert(self) -> bool:
+        return str(getattr(self.config, "stage0_expert_source", "fsq")) == "pi05_base"
+
+    @property
+    def _cond_uses_state_adarms(self) -> bool:
+        return bool(getattr(self.config, "stage0_cond_state_adarms", False))
+
+    @property
+    def _n_action_prefix_tokens(self) -> int:
+        return 0 if self._stage0_pi05_expert or self._state_cond_mode != "state" else 1
+
     def _cond_tokens(self, images: list[Tensor]) -> Tensor:
-        """Scene cond tokens → (B, M, expert_width): [img1 patches, img2 patches]. IMAGE-ONLY — state
-        moved to the AdaRMS (_state_cond) and the skill rides the action prefix / AdaRMS by mode."""
+        """Scene cond tokens → (B, M, expert_width): [img1 patches, img2 patches].
+
+        The token sequence remains image-only. State may separately modulate the cond stream through
+        AdaRMS, while skill stays on the FSQ expert route.
+        """
         tokens = [self.image_proj(self._image_features(img).to(self._wdtype)) for img in images]
         return torch.cat(tokens, dim=1)
 
     def _state_cond(self, state: Tensor) -> Tensor:
         """(B, state_dim) QUANTILE-normalized state → (B, expert_width) AdaRMS conditioning vector.
-        Continuous Linear (padded to max_state_dim), always on — state is un-droppable (mirrors Stage-1)."""
+        Continuous Linear (padded to max_state_dim); its destination is selected by the Stage-0 expert
+        source and cond-state flag."""
         d = self.stage1_config.max_state_dim
         s = state.to(torch.float32)
         if s.shape[-1] < d:
             s = F.pad(s, (0, d - s.shape[-1]))
         return self.state_proj(s[..., :d].to(self._wdtype))
+
+    def _cond_adarms(self, state: Tensor) -> Tensor | None:
+        """Optional current-state conditioning for the cond stream."""
+        return self._state_cond(state) if self._cond_uses_state_adarms else None
 
     def _skill_token_from_z(self, zq: Tensor) -> Tensor:
         """Normalized z_q ∈ [-1, 1]^D → Linear → (B, 1, expert_width) skill token. The z may be the
@@ -615,21 +654,38 @@ class SkillVLAPytorch(PI05Pytorch):
 
     def _action_prefix_from_z(self, zq: Tensor) -> Tensor | None:
         """Action-stream prefix from a normalized skill z (GT grid coord or the VLM's STE-rounded
-        prediction). state mode → the skill token; state_skill mode → None (the skill rides the AdaRMS
-        instead). See ``_expert_cond`` / ``_action_prefix``."""
-        if self._state_cond_mode == "state_skill":
+        prediction). The pi05 expert is skill-blind; for an FSQ expert, state mode uses a skill token and
+        state_skill mode injects skill through AdaRMS; broadcast mode has no prefix either."""
+        if self._stage0_pi05_expert or self._state_cond_mode != "state":
             return None
         return self._skill_token_from_z(zq)                              # (B, 1, expert_width)
 
     def _action_prefix(self, skill_code: Tensor) -> Tensor | None:
-        """The skill token prepended to the action-expert stream (state mode) or None (state_skill).
+        """The skill token prepended to the action-expert stream (state mode) or None otherwise.
         ae injects the skill on the action stream so cond stays skill-blind (Stage-1)."""
         return self._action_prefix_from_z(self._code_to_z(skill_code) / self._fsq_half[None, :])
 
+    def _skill_broadcast_from_z(self, zq: Tensor) -> Tensor | None:
+        """FSQ skill vector broadcast before expert attention, only for the ``broadcast`` mode."""
+        if self._stage0_pi05_expert or self._state_cond_mode != "broadcast":
+            return None
+        return self.skill_proj(zq.to(self._wdtype))
+
+    def _skill_broadcast(self, skill_code: Tensor) -> Tensor | None:
+        return self._skill_broadcast_from_z(
+            self._code_to_z(skill_code) / self._fsq_half[None, :]
+        )
+
     def _expert_cond_from_z(self, time: Tensor, state: Tensor, zq: Tensor) -> Tensor:
-        """The action expert's AdaRMS conditioning → (B, expert_width). time + state ALWAYS; for
-        state_skill ALSO + skill (so the skill modulates via AdaRMS, not a prefix). Mirrors Stage-1."""
-        c = self._time_cond(time) + self._state_cond(state)
+        """Action-expert AdaRMS condition.
+
+        A pi05-base expert keeps its original time-only contract. An FSQ expert receives time+state and,
+        in state_skill mode, also skill.
+        """
+        c = self._time_cond(time)
+        if self._stage0_pi05_expert:
+            return c
+        c = c + self._state_cond(state)
         if self._state_cond_mode == "state_skill":
             c = c + self.skill_proj(zq.to(self._wdtype))
         return c
@@ -752,6 +808,7 @@ class SkillVLAPytorch(PI05Pytorch):
         position_ids,
         collect_idx=None,
         bridge_token_mask=None,
+        broadcast_cond=None,
     ):
         """Run the shared transformer over the streams (pre-final-norm hiddens out). All streams
         share the VLM's RoPE and have equal depth (gemma_*: 18 layers). When gradient checkpointing
@@ -769,13 +826,13 @@ class SkillVLAPytorch(PI05Pytorch):
             if use_ckpt:
                 hiddens = torch.utils.checkpoint.checkpoint(
                     compute_layer_multi, layer_idx, hiddens, layers, att_4d, position_ids, adarms, rotary,
-                    bridges, bridge_token_mask,
+                    bridges, bridge_token_mask, broadcast_cond,
                     use_reentrant=False, preserve_rng_state=False,
                 )
             else:
                 hiddens = compute_layer_multi(
                     layer_idx, hiddens, layers, att_4d, position_ids, adarms, rotary,
-                    bridges, bridge_token_mask)
+                    bridges, bridge_token_mask, broadcast_cond)
             if collected is not None:
                 collected.append(hiddens[collect_idx])
         if collected is not None:
@@ -802,15 +859,14 @@ class SkillVLAPytorch(PI05Pytorch):
         return vlm_pos, cond_pos, action_pos
 
     def _joint_forward_A(self, cond_tokens, vlm_embeds, vlm_pad, vlm_xattn_block, action_tokens, expert_cond,
-                         drop_vlm=False, collect_vlm_layers=False):
+                         cond_adarms=None, drop_vlm=False, collect_vlm_layers=False,
+                         skill_broadcast=None):
         nc, na = cond_tokens.shape[1], action_tokens.shape[1]
         att_4d, _ = self._mask_branch_A(nc, vlm_pad, vlm_xattn_block, na, drop_vlm=drop_vlm)
         vlm_pos, cond_pos, action_pos = self._joint_positions(vlm_pad, nc, na)
         position_ids = torch.cat([cond_pos, vlm_pos, action_pos], dim=1)   # PHYSICAL order [cond, vlm, action]
         layers_per_stream = [self.cond_encoder.model.layers, self._vlm.layers, self._expert.layers]
-        # cond/vlm: plain RMSNorm; action ← AdaRMS(expert_cond = time + state [+ skill + progress for
-        # state_skill]). In `state` mode skill/progress ride the action prefix instead (see _action_prefix).
-        adarms = [None, None, expert_cond]
+        adarms = [cond_adarms, None, expert_cond]
         bridge_mask = None
         if self.lang_bridges is not None and not drop_vlm:
             # The bridge is language-edge-specific even when the general cond read-set also includes images.
@@ -818,9 +874,10 @@ class SkillVLAPytorch(PI05Pytorch):
         outs = self._run_streams(
             [cond_tokens, vlm_embeds, action_tokens], layers_per_stream, adarms, att_4d,
             position_ids, collect_idx=(1 if collect_vlm_layers else None),
-            bridge_token_mask=bridge_mask)   # stream 1 = VLM
+            bridge_token_mask=bridge_mask,
+            broadcast_cond=[None, None, skill_broadcast])   # stream 1 = VLM
         cond_out, vlm_out, action_out = outs
-        cond_out, _ = layernorm_forward(self.cond_encoder.model.norm, cond_out, None)
+        cond_out, _ = layernorm_forward(self.cond_encoder.model.norm, cond_out, cond_adarms)
         vlm_out, _ = layernorm_forward(self._vlm.norm, vlm_out, None)
         action_out, _ = layernorm_forward(self._expert.norm, action_out, expert_cond)
         if collect_vlm_layers:   # each captured layer normed by the VLM final norm → (B, L, nv, W)
@@ -829,17 +886,22 @@ class SkillVLAPytorch(PI05Pytorch):
         return vlm_out, action_out
 
     def _joint_forward(self, cond_tokens, vlm_embeds, vlm_pad, vlm_xattn_block, action_tokens, expert_cond,
-                       drop_vlm=False, collect_vlm_layers=False):
+                       cond_adarms=None, drop_vlm=False, collect_vlm_layers=False,
+                       skill_broadcast=None):
         """Returns (vlm_out, action_hidden) where action_hidden is the action-CHUNK only — the
-        skill/progress prefix (state mode) is dropped by the final slice (no-op in state_skill mode).
+        skill prefix (state mode) is dropped by the final slice (no-op in the other modes).
         drop_vlm severs cond→VLM / action→VLM for a CFG dropout batch (Stage-1 form). collect_vlm_layers
         stashes the per-layer VLM stack in self._vlm_all_layers (skill_reader_all_layers)."""
         vlm_out, action_out = self._joint_forward_A(
             cond_tokens, vlm_embeds, vlm_pad, vlm_xattn_block, action_tokens, expert_cond,
-            drop_vlm=drop_vlm, collect_vlm_layers=collect_vlm_layers)
+            cond_adarms=cond_adarms, drop_vlm=drop_vlm,
+            collect_vlm_layers=collect_vlm_layers, skill_broadcast=skill_broadcast)
         return vlm_out, action_out[:, -self.config.chunk_size :]
 
-    def _vsa_action_hidden(self, cond_tokens: Tensor, action_tokens: Tensor, expert_cond: Tensor) -> Tensor:
+    def _vsa_action_hidden(
+        self, cond_tokens: Tensor, action_tokens: Tensor, expert_cond: Tensor, cond_adarms=None,
+        skill_broadcast=None,
+    ) -> Tensor:
         """VSA-only (VLM-severed) action forward: cond + action streams ONLY, no VLM stream. In a
         drop_vlm batch the action is VLM-independent (cond→VLM/action→VLM severed), and RoPE is relative
         so dropping the per-sample VLM position offset is a no-op → this reproduces
@@ -868,7 +930,8 @@ class SkillVLAPytorch(PI05Pytorch):
         position_ids = torch.cat([cond_pos, action_pos], dim=1)
         layers = [self.cond_encoder.model.layers, self._expert.layers]
         cond_out, action_out = self._run_streams(
-            [cond_tokens, action_tokens], layers, [None, expert_cond], att_4d, position_ids)
+            [cond_tokens, action_tokens], layers, [cond_adarms, expert_cond], att_4d, position_ids,
+            broadcast_cond=[None, skill_broadcast])
         action_out, _ = layernorm_forward(self._expert.norm, action_out, expert_cond)
         return action_out[:, -self.config.chunk_size:]
 
@@ -881,7 +944,9 @@ class SkillVLAPytorch(PI05Pytorch):
         if prefix is not None:
             action_tokens = torch.cat([prefix, action_tokens], dim=1)
         expert_cond = self._expert_cond_from_z(time, state, skill_zq)
-        return self._action_out(self._vsa_action_hidden(cond_tokens, action_tokens, expert_cond))
+        return self._action_out(self._vsa_action_hidden(
+            cond_tokens, action_tokens, expert_cond, self._cond_adarms(state),
+            self._skill_broadcast_from_z(skill_zq)))
 
     # ── continual-learning VSA distillation (FT anti-forgetting) ──
     def _code_multi_index(self, code: Tensor) -> Tensor:
@@ -1161,13 +1226,14 @@ class SkillVLAPytorch(PI05Pytorch):
         cond_tokens = self._cond_tokens(cond_images)
         vlm_embeds, vlm_pad, vlm_xattn_block = self._vlm_tokens(start_images, lang_tokens, lang_masks)
         action_tokens = self._action_in(x_t)
-        prefix = self._action_prefix_from_z(skill_zq)   # None in state_skill mode
+        prefix = self._action_prefix_from_z(skill_zq)   # None in state_skill/broadcast modes
         if prefix is not None:
             action_tokens = torch.cat([prefix, action_tokens], dim=1)
         expert_cond = self._expert_cond_from_z(time, state, skill_zq)
         _, action_out = self._joint_forward(
             cond_tokens, vlm_embeds, vlm_pad, vlm_xattn_block, action_tokens, expert_cond,
-            drop_vlm=False)
+            cond_adarms=self._cond_adarms(state), drop_vlm=False,
+            skill_broadcast=self._skill_broadcast_from_z(skill_zq))
         return self._action_out(action_out), cond_tokens
 
     def _grounded_flow_view(self, cond_images, start_images, lang_tokens, lang_masks, state,
@@ -1175,20 +1241,21 @@ class SkillVLAPytorch(PI05Pytorch):
         """STAGE-3b grounding: evaluate a (STE-predicted) skill z through the FROZEN connected motor →
         v_t, with gradient flowing ONLY into z (→ ①/reader/head). The frozen prefix (②-view VLM + cond
         with ③) is encoded under no_grad into cached K/V constants — z's gradient never traverses those
-        weights (z enters via the action prefix/AdaRMS), and constants keep the checkpoint-recompute
+        weights (z enters via the action prefix/AdaRMS/broadcast route), and constants keep the checkpoint-recompute
         adapter set unambiguous: the sticky set returns to {"skill"} for the grad graph (skill view +
         this UNcheckpointed action-stream), matching the backward recompute of the skill view.
         Attention topology = the deployment/cached inference path (numerically identical to the joint
         forward; vlm_expert honored) → the grounding measures exactly the deployed configuration."""
         bsize, device = state.shape[0], state.device
         n_chunk = self.config.chunk_size
-        n_prefix = 0 if self._state_cond_mode == "state_skill" else 1
+        n_prefix = self._n_action_prefix_tokens
         na = n_prefix + n_chunk
 
         set_active_adapters(self._active_adapters({"vlm_lora", "cond_lora"}))
         with torch.no_grad():
             vlm_embeds, vlm_pad, vlm_xattn_block = self._vlm_tokens(start_images, lang_tokens, lang_masks)
             cond_tokens = self._cond_tokens(cond_images)
+            cond_adarms = self._cond_adarms(state)
             nc, nv = cond_tokens.shape[1], vlm_embeds.shape[1]
             vlm_pos, cond_pos, action_pos = self._joint_positions(vlm_pad, nc, na)
             cond_pad = torch.ones(bsize, nc, dtype=torch.bool, device=device)
@@ -1203,7 +1270,7 @@ class SkillVLAPytorch(PI05Pytorch):
                     export_bridges=self.lang_bridges, export_bridge_mask=bridge_mask)
             vlm_to_cond = self.config.vlm_cond
             cond_kv, _ = self._encode_prefix_kv(
-                self.cond_encoder.model.layers, cond_tokens, cond_pad, cond_pos, adarms=None,
+                self.cond_encoder.model.layers, cond_tokens, cond_pad, cond_pos, adarms=cond_adarms,
                 extra_kv=(cond_vlm_kv if vlm_to_cond else None),
                 extra_valid=((vlm_pad & ~vlm_xattn_block[None, :]) if vlm_to_cond else None))
             attend_vlm = bool(self.config.vlm_expert)
@@ -1230,11 +1297,14 @@ class SkillVLAPytorch(PI05Pytorch):
         # set used by checkpoint recomputation.
         set_active_adapters(self._active_adapters({"skill"}))
         expert_cond = self._expert_cond_from_z(time, state, skill_zq)
+        skill_broadcast = self._skill_broadcast_from_z(skill_zq)
         a_in = self._action_in(x_t)
-        prefix = self._action_prefix_from_z(skill_zq)      # None in state_skill mode
+        prefix = self._action_prefix_from_z(skill_zq)      # None in state_skill/broadcast modes
         h = a_in if prefix is None else torch.cat([prefix, a_in], dim=1)
         for i in range(len(prefix_kv)):
-            h = self._action_layer_cached(i, h, prefix_kv, att_4d, action_pos, expert_cond)
+            h = self._action_layer_cached(
+                i, h, prefix_kv, att_4d, action_pos, expert_cond, skill_broadcast
+            )
         h, _ = layernorm_forward(self._expert.norm, h, expert_cond)
         return self._action_out(h[:, -n_chunk:])
 
@@ -1331,14 +1401,15 @@ class SkillVLAPytorch(PI05Pytorch):
             self._last_regime = regime = "skill_ground"                 # wandb: regime/*_skill_ground
             return F.mse_loss(u_t, v_t, reduction="none"), skill_hidden
 
-        # Severed batches use the Stage-1 hold action to construct x_t (stop+hold past skill_de). MOTOR_SEV
-        # and probes retain its GT flow target; COND_SEV instead anchors cond_lora to the frozen VSA at
-        # that same x_t, so no image-only shortcut is learned.
+        # Severed batches use the Stage-1 hold action to construct x_t (stop+hold past skill_de).
+        # Connected Stage-0 A keeps the real cross-skill GT tail; severed Stage-0 B uses hold. MOTOR_SEV
+        # and probes retain the hold GT flow target; COND_SEV instead anchors cond_lora to the frozen VSA
+        # at that same x_t, so no image-only shortcut is learned.
         stage0 = regime in ("stage0_a", "stage0_b")
         stage0_severed = stage0 and self._stage0_drops_vlm(regime)
         severed = regime in ("motor_sev", "cond_sev") or stage0_severed or (
             regime is None and bool(getattr(self, "_probe_force_drop", None)))
-        severed_hold = (severed or stage0) and hold_actions is not None and getattr(
+        severed_hold = severed and hold_actions is not None and getattr(
             self.config, "severed_hold_target", True)
         self._last_severed_hold = bool(severed_hold)
         acts = hold_actions if severed_hold else actions
@@ -1522,10 +1593,13 @@ class SkillVLAPytorch(PI05Pytorch):
             return kv, h, exported_kv
         return kv, h
 
-    def _action_layer_cached(self, layer_idx, h, prefix_kv, att_4d, position_ids, adarms):
+    def _action_layer_cached(
+        self, layer_idx, h, prefix_kv, att_4d, position_ids, adarms, broadcast_cond=None
+    ):
         """One action-expert layer attending the FIXED combined prefix K/V + its own (RoPE'd) tokens."""
         layer = self._expert.layers[layer_idx]
         hn, gate = layernorm_forward(layer.input_layernorm, h, adarms)
+        hn = add_broadcast_condition(hn, broadcast_cond)
         shape = (*hn.shape[:-1], -1, layer.self_attn.head_dim)
         q = layer.self_attn.q_proj(hn).view(shape).transpose(1, 2)
         k = layer.self_attn.k_proj(hn).view(shape).transpose(1, 2)
@@ -1556,13 +1630,13 @@ class SkillVLAPytorch(PI05Pytorch):
         the skill token in `state` mode or empty in `state_skill` mode (skill → AdaRMS)."""
         bsize, device = state.shape[0], state.device
         n_chunk = self.config.chunk_size
-        cond_tokens = self._cond_tokens(cond_images)                    # image-only (state→AdaRMS)
+        cond_tokens = self._cond_tokens(cond_images)                    # image tokens; state is optional AdaRMS
         nc = cond_tokens.shape[1]
         vlm_embeds, vlm_pad, vlm_xattn_block = self._vlm_tokens(start_images, lang_tokens, lang_masks)
         nv = vlm_embeds.shape[1]
         # action stream = prefix(n_prefix) + action(n_chunk). state mode → [skill] prefix (1 token);
-        # state_skill → no prefix (the skill rides the AdaRMS).
-        n_prefix = 0 if self._state_cond_mode == "state_skill" else 1
+        # state_skill/broadcast → no prefix (skill rides AdaRMS/attention input respectively).
+        n_prefix = self._n_action_prefix_tokens
         na = n_prefix + n_chunk
 
         # RoPE positions: VLM placed FIRST ([0..nv)), then cond, then action — the SAME frame as the
@@ -1593,17 +1667,19 @@ class SkillVLAPytorch(PI05Pytorch):
         # / GT); ONLY the discrete skill crosses to the action side, no K/V.
         drop_vlm = bool(getattr(self.config, "eval_drop_vlm", False))
 
-        # cond: SCENE only (plain RMSNorm, skill-blind); reads the cached VLM K/V IFF vlm_cond (else VLM-blind) → cache
+        # cond: skill-blind scene stream, optionally state-AdaRMS conditioned; reads cached VLM K/V iff enabled.
         vlm_to_cond = self.config.vlm_cond and not drop_vlm
+        cond_adarms = self._cond_adarms(state)
         cond_kv, _ = self._encode_prefix_kv(
-            self.cond_encoder.model.layers, cond_tokens, cond_pad, cond_pos, adarms=None,
+            self.cond_encoder.model.layers, cond_tokens, cond_pad, cond_pos, adarms=cond_adarms,
             extra_kv=(cond_vlm_kv if vlm_to_cond else None),
             extra_valid=((vlm_pad & ~vlm_xattn_block[None, :]) if vlm_to_cond else None))
 
         # denoise: action stream = prefix (constant) + action×K; attends the cond cache iff cond_expert
         # (cond⊥action). With vlm_expert, the VLM K/V is ALSO injected so action reads the VLM directly —
         # gated by the SAME ~vlm_xattn_block as cond (per the attend_image/attend_language read-set).
-        action_prefix = self._action_prefix(skill_code)  # None in state_skill mode
+        action_prefix = self._action_prefix(skill_code)  # None in state_skill/broadcast modes
+        skill_broadcast = self._skill_broadcast(skill_code)
         attend_vlm = bool(self.config.vlm_expert) and not drop_vlm
         if attend_vlm:                                                  # action keys = [cond, VLM, action-stream]
             prefix_kv = [(torch.cat([ck, vk], dim=2), torch.cat([cv, vv], dim=2))
@@ -1616,7 +1692,7 @@ class SkillVLAPytorch(PI05Pytorch):
             cols = torch.cat([cond_pad, torch.ones(bsize, na, dtype=torch.bool, device=device)], dim=1)
         # prefix는 cond(장면)+자기 자신을 읽음(= Stage-1; ⊥ VLM, ⊥ action); action은 cond (+ VLM via
         # ~vlm_xattn_block if attend_vlm: per the attend_image/attend_language read-set) + prefix + action.
-        # n_prefix=0 (state_skill) → the prefix→prefix block is empty.
+        # n_prefix=0 (state_skill/broadcast) → the prefix→prefix block is empty.
         allow = torch.zeros(bsize, 1, na, npre + na, dtype=torch.bool, device=device)
         allow[:, :, :n_prefix, npre : npre + n_prefix] = True           # prefix → prefix
         if self.config.cond_expert:                                    # cond → expert edge (action reads the scene)
@@ -1632,11 +1708,13 @@ class SkillVLAPytorch(PI05Pytorch):
         dt, x_t = -1.0 / num_steps, noise
         for step in range(num_steps):
             t = torch.full((bsize,), 1.0 + step * dt, dtype=torch.float32, device=device)
-            expert_cond = self._expert_cond(t, state, skill_code)  # time + state [+ skill for state_skill]
+            expert_cond = self._expert_cond(t, state, skill_code)  # pi05: time; FSQ: time + state [+ skill]
             a_in = self._action_in(x_t)
             h = a_in if action_prefix is None else torch.cat([action_prefix, a_in], dim=1)
             for i in range(len(prefix_kv)):
-                h = self._action_layer_cached(i, h, prefix_kv, att_4d, action_pos, expert_cond)
+                h = self._action_layer_cached(
+                    i, h, prefix_kv, att_4d, action_pos, expert_cond, skill_broadcast
+                )
             h, _ = layernorm_forward(self._expert.norm, h, expert_cond)
             v_t = self._action_out(h[:, -n_chunk:])                     # decode action positions only
             x_t = x_t + dt * v_t
@@ -1998,7 +2076,13 @@ class SkillVLAPolicy(PI05Policy):
         m._set_requires_grad(g["cond_vision"], train_cond_vision)
         mm_proj = getattr(m.paligemma_with_expert.paligemma.model, "multi_modal_projector", None)
         m._set_requires_grad(g["vlm_vision"] + [mm_proj], train_vlm_vision)
-        m._set_requires_grad(g["expert"] + [m.state_proj, m.skill_proj], train_expert)
+        m._set_requires_grad(g["expert"], train_expert)
+        m._set_requires_grad(
+            [m.state_proj],
+            (m._cond_uses_state_adarms and train_cond)
+            or (not m._stage0_pi05_expert and train_expert),
+        )
+        m._set_requires_grad([m.skill_proj], not m._stage0_pi05_expert and train_expert)
         train_skill = stage == "skill" or (ft and bool(getattr(c, "ft_train_skill", False)))
         train_reader = train_skill or (stage0 and "skill_reader" in stage0_train)
         train_head = train_skill or (stage0 and "skill_head" in stage0_train)
@@ -2097,10 +2181,13 @@ class SkillVLAPolicy(PI05Policy):
         bs = float(getattr(self.config, "lang_bridge_lr_scale", 1.0))
         els = float(getattr(self.config, "stage0_expert_lora_lr_scale", ls))
         m = self.model
-        # state/skill projections feed the action expert's AdaRMS (or its prefix) → expert side.
+        # state_proj belongs to cond when cond-state AdaRMS is active; otherwise it stays on the FSQ expert.
         expert_mods = [m.paligemma_with_expert.gemma_expert, m.action_in_proj, m.action_out_proj,
-                       m.time_mlp_in, m.time_mlp_out, m.state_proj, m.skill_proj]
-        cond_mods = [m.cond_encoder, m.image_proj]  # scene stream only (state moved to the expert AdaRMS)
+                       m.time_mlp_in, m.time_mlp_out,
+                       m.state_proj if not m._cond_uses_state_adarms and not m._stage0_pi05_expert else None,
+                       m.skill_proj if not m._stage0_pi05_expert else None]
+        cond_mods = [m.cond_encoder, m.image_proj,
+                     m.state_proj if m._cond_uses_state_adarms else None]
 
         chosen: set[int] = set()
 
@@ -2472,8 +2559,10 @@ class SkillVLAPolicy(PI05Policy):
                 loss_dict[f"regime/flow_tail_{regime}"] = flow_tail.item()
             if skill_loss is not None:
                 loss_dict[f"regime/skill_{regime}"] = skill_loss.detach().item()
-        if getattr(self.model, "_last_severed_hold", False):   # hold action was used to construct severed x_t
-            loss_dict["regime/severed_hold"] = 1.0
+        if flow_loss is not None:
+            # Emit both states so W&B shows A=0 / severed B=1 instead of a sparse constant-one series.
+            loss_dict["regime/severed_hold"] = float(
+                bool(getattr(self.model, "_last_severed_hold", False)))
         # train_distill 섹션: motor_sev 배치마다 vsa_gt = severed GT BC flow (== regime/flow_motor_sev 복사)
         # — distill on/off 무관하게 찍혀서 on/off run을 같은 패널에서 공정 비교. distill이 켜지면 그 옆에
         # vsa_tot(backprop 총합)/vsa_local/vsa_global/vsa_gt_drift(teacher-대비 GT 드리프트, 모니터)가 추가됨.
@@ -2747,7 +2836,51 @@ class SkillVLAPolicy(PI05Policy):
             stage0 = getattr(config, "pt_stage", None) == "stage0"
             if stage0:
                 if not getattr(config, "fsq_path", None):
-                    raise ValueError("Stage-0 direct FSQ warm-start requires policy.fsq_path.")
+                    raise ValueError("Stage-0 requires policy.fsq_path for its skill geometry/terminator.")
+                expert_source = str(getattr(config, "stage0_expert_source", "fsq"))
+                if expert_source == "pi05_base":
+                    expert_state = {}
+                    for key_raw, value in raw.items():
+                        key = key_raw[len("model."):] if key_raw.startswith("model.") else key_raw
+                        if key.startswith((
+                            "paligemma_with_expert.gemma_expert.", "action_in_proj.",
+                            "action_out_proj.", "time_mlp_in.", "time_mlp_out.",
+                        )):
+                            expert_state[f"model.{key}"] = value.to(dtype)
+                    if not expert_state:
+                        raise RuntimeError("No pi05 action-expert tensors found in pretrained_path.")
+                    expert_prefixes = (
+                        "model.paligemma_with_expert.gemma_expert.",
+                        "model.action_in_proj.",
+                        "model.action_out_proj.",
+                        "model.time_mlp_in.",
+                        "model.time_mlp_out.",
+                    )
+                    expected_expert = {
+                        key.replace(".base.", ".")
+                        for key in model_keys
+                        if key.startswith(expert_prefixes) and ".adapters." not in key
+                    }
+                    missing_expert = expected_expert - set(expert_state)
+                    if missing_expert:
+                        raise RuntimeError(
+                            "Stage-0 pi05 expert checkpoint is incomplete; missing keys: "
+                            f"{sorted(missing_expert)}"
+                        )
+                    _, unexpected = _routed_load(expert_state, "expert<-pi05")
+                    if unexpected:
+                        raise RuntimeError(f"Unexpected Stage-0 pi05 expert keys: {sorted(unexpected)}")
+                    log.info(
+                        "SkillVLA STAGE0: VLM<-pi05 (%d keys), action expert<-pi05 (%d keys); "
+                        "cond FRESH (state_adarms=%s), expert direct state/skill disabled; "
+                        "trainability follows the A/B matrix.",
+                        len(vlm_state), len(expert_state),
+                        bool(getattr(config, "stage0_cond_state_adarms", False)),
+                    )
+                    return model
+                if expert_source != "fsq":
+                    raise ValueError(
+                        f"stage0_expert_source must be fsq|pi05_base, got {expert_source!r}.")
                 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "examples" / "libero"))
                 from FSQ import load_fsq_action_expert_state  # noqa: PLC0415
 
@@ -2807,7 +2940,7 @@ class SkillVLAPolicy(PI05Policy):
                     raise RuntimeError(f"Unexpected Stage-0 FSQ keys: {sorted(unexpected)}")
                 log.info(
                     "SkillVLA STAGE0: VLM<-pi05 (%d keys), action expert<-FSQ (%d keys); "
-                    "cond FRESH, expert base frozen, expert_lora zero-initialized.",
+                    "cond FRESH, expert_lora zero-initialized; trainability follows the A/B matrix.",
                     len(vlm_state), len(routed),
                 )
                 return model

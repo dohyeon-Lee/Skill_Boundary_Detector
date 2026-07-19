@@ -387,8 +387,11 @@ class VSAFlowExpert(nn.Module):
         time_sampling_offset: float,
     ):
         super().__init__()
-        if state_cond_mode not in {"state", "state_skill"}:
-            raise ValueError(f"state_cond_mode must be state|state_skill, got {state_cond_mode!r}.")
+        if state_cond_mode not in {"state", "state_skill", "broadcast"}:
+            raise ValueError(
+                "state_cond_mode must be state|state_skill|broadcast, "
+                f"got {state_cond_mode!r}."
+            )
         self.variant = variant
         self.state_cond_mode = state_cond_mode
         self.max_state_dim = int(max_state_dim)
@@ -439,9 +442,14 @@ class VSAFlowExpert(nn.Module):
         return cond
 
     def _action_prefix(self, z_norm: Tensor) -> Tensor | None:
-        if self.state_cond_mode == "state_skill":
+        if self.state_cond_mode != "state":
             return None
         return self.skill_proj(z_norm.to(self.working_dtype)).unsqueeze(1)
+
+    def _skill_broadcast(self, z_norm: Tensor) -> Tensor | None:
+        if self.state_cond_mode != "broadcast":
+            return None
+        return self.skill_proj(z_norm.to(self.working_dtype))
 
     def velocity(self, x_t: Tensor, time: Tensor, state: Tensor, z_norm: Tensor) -> Tensor:
         action = self.action_in_proj(x_t.to(self.working_dtype))
@@ -465,6 +473,7 @@ class VSAFlowExpert(nn.Module):
             position_ids=positions,
             use_cache=False,
             adarms_cond=self._expert_cond(time, state, z_norm),
+            broadcast_cond=self._skill_broadcast(z_norm),
         ).last_hidden_state
         return self.action_out_proj(hidden[:, -self.chunk_size :].to(self.working_dtype)).float()
 

@@ -26,7 +26,7 @@ import torch
 
 from lerobot.datasets.dataset_metadata import LeRobotDatasetMetadata
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
-from lerobot.policies.skillVLA.skill_jitter import choose_jitter
+from lerobot.policies.skillVLA.skill_jitter import choose_jitter, normalize_jitter_distribution
 
 # Batch keys this dataset adds (the model + processor consume these).
 SKILL_START_IMAGE = "skill_start_image"
@@ -88,6 +88,8 @@ class SkillVLADataset(LeRobotDataset):
         iss_path = self._resolve_iss_path(info.get("skill_initial_state_path"), self.root)
         self._iss = _ISSStore(iss_path)
         self._pmax = int(info.get("skill_pmax", self._iss.pmax))
+        self._jitter_distribution = normalize_jitter_distribution(
+            info.get("skill_jitter_distribution", "half_normal"))
 
     @staticmethod
     def _resolve_iss_path(iss_path: str | None, root) -> str:
@@ -132,7 +134,8 @@ class SkillVLADataset(LeRobotDataset):
         ifs = np.asarray(item["skill_initial_frame"]).reshape(-1)
 
         # 1) pick the (possibly jittered) skill + start-frame offset
-        kp, offset = choose_jitter(k, ds, de, seq_len, self._pmax)
+        kp, offset = choose_jitter(
+            k, ds, de, seq_len, self._pmax, distribution=self._jitter_distribution)
         skill_code = int(ss[kp])
         gt_start = int(ifs[kp])
 

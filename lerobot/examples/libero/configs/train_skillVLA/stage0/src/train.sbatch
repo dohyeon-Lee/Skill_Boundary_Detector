@@ -32,9 +32,9 @@ unset LD_LIBRARY_PATH
 echo "START STAGE-0 (direct FSQ -> SkillVLA)"
 echo "Node      : ${SLURMD_NODENAME:-local}"
 echo "dataset   : ${SKILLVLA_DATASET_DIR}"
-echo "VLM       : ${PI_BASE} (base/vision frozen, vlm_lora trainable in A)"
-echo "expert    : ${FSQ_CKPT} (base frozen, expert_lora trainable in A/B)"
-echo "cond      : encoder trainable in A/B, vision in B only (${VISION_BACKBONE}/${COND_ENCODER_VARIANT})"
+echo "VLM       : ${PI_BASE} (trainability follows the A/B scopes below)"
+echo "expert    : ${FSQ_CKPT} (trainability follows the A/B scopes below)"
+echo "cond      : ${VISION_BACKBONE}/${COND_ENCODER_VARIANT} (trainability follows the A/B scopes below)"
 echo "A/B       : B=${STAGE0_VLM_SEVERED_PROB}, wrong-language=${WRONG_LANGUAGE_WEIGHT}"
 echo "A scope   : drop_vlm=${STAGE0_A_DROP_VLM}, train=${STAGE0_A_TRAIN_COMPONENTS}"
 echo "B scope   : drop_vlm=${STAGE0_B_DROP_VLM}, train=${STAGE0_B_TRAIN_COMPONENTS}"
@@ -72,6 +72,8 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.tokenizer_path="${TOKENIZER_PATH}" \
     --policy.stage1_checkpoint_path="" \
     --policy.pt_stage=stage0 \
+    --policy.stage0_expert_source="${EXPERT_SOURCE}" \
+    --policy.stage0_cond_state_adarms="${COND_STATE_ADARMS}" \
     --policy.cond_skill_source=gt \
     --policy.s1_vision_backbone="${VISION_BACKBONE}" \
     --policy.s1_cond_encoder_variant="${COND_ENCODER_VARIANT}" \

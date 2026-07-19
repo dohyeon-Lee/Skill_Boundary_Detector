@@ -13,11 +13,10 @@ Emits shell exports (--shell). All roots are declared in this yaml (standalone).
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
-import re
 import sys
+from datetime import datetime
 from pathlib import Path
 
 _HERE = Path(__file__).resolve()
@@ -119,13 +118,17 @@ def _expand_stage0_panels(models: list[dict]) -> list[dict]:
     return panels
 
 
-def _compare_folder(labels: list[str]) -> str:
-    clean = [re.sub(r"[^A-Za-z0-9._-]+", "-", label).strip("-_") for label in labels]
-    safe = "compare_" + "_vs_".join(clean)
-    if len(safe) <= 180:
-        return safe
-    digest = hashlib.sha1(safe.encode("utf-8")).hexdigest()[:10]
-    return f"compare_{len(labels)}panels_{digest}"
+def _resolve_output_name(cfg: dict) -> str:
+    """Use the requested output folder verbatim, or the config resolution time when blank."""
+    output_name = str(get_value(cfg, "output_name", "") or "").strip()
+    if not output_name:
+        output_name = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    if output_name in {".", ".."} or "/" in output_name or "\0" in output_name:
+        raise ValueError(
+            "output_name must be a single folder name, not a path "
+            f"(got {output_name!r})."
+        )
+    return output_name
 
 
 def build_settings(cfg: dict) -> dict:
@@ -229,17 +232,8 @@ def build_settings(cfg: dict) -> dict:
               "resets. Build it: stage1_eval/oracle_matching/run.sh <source>", file=sys.stderr)
         for r in resolved:
             r["eval_init_states_path"] = ""
-    # Folder suffix = _{skill_src}[_{eval_exp}]: skill_src = 스킬 출처 — "pred"(모델의 skill 예측) |
-    # "gt"(GT 시퀀스 주입; advance_mode≠terminator면 gt-{mode}). terminator ft/base·episode-exact ee·
-    # skill_end_mode(항상 or) 태그는 모두 제거 — 표준값에서 벗어난 ablation은 eval_exp로 구분.
-    advance_modes = {r["advance_mode"] for r in resolved}
-    skill_src = skill_source
-    if use_gt_skill and advance_modes != {"terminator"}:
-        skill_src = "gt-" + (next(iter(advance_modes)) if len(advance_modes) == 1 else "mixed")
-    eval_exp = str(get_value(cfg, "eval_exp", "")).strip()   # free-form folder tag (e.g. "and" / "baseterm")
-    suffix = skill_src + (f"_{eval_exp}" if eval_exp else "")
+    run_name = _resolve_output_name(cfg)
     if multi:
-        run_name = f"{_compare_folder(labels)}_{target_task}_{suffix}"
         models_json = json.dumps([
             {"label": lbl, "policy_path": str(r["policy_path"]), "base_fsq": r["base_fsq"],
              "ft_fsq_path": str(r["ft_fsq_path"]), "ft_run_dir": str(r["ft_run_dir"]),
@@ -253,7 +247,6 @@ def build_settings(cfg: dict) -> dict:
              "use_trained_terminator": bool(r.get("use_trained_terminator", False))}
             for lbl, r, d, k in zip(labels, resolved, drop_flags, keepad_flags)])
     else:
-        run_name = f"{model_dir}_{checkpoint}_{target_task}_{suffix}"
         models_json = ""
     eval_out_dir = _HERE.parent.parent / "outputs" / run_name
 
@@ -306,6 +299,7 @@ def build_settings(cfg: dict) -> dict:
         "gt_skill_dataset_dir": gt_skill_dataset_dir,
         "skill_advance_mode": m0["advance_mode"],
         # output / wandb — chunked submission (TASK_TAG, e.g. "t0-4") → distinct wandb run per chunk
+        "output_name": run_name,
         "wandb_project": str(get_value(cfg, "wandb_project", "VLA_eval")),
         "wandb_run_name": run_name + (f"_{os.environ['TASK_TAG']}" if os.environ.get("TASK_TAG") else ""),
         "eval_out_dir": eval_out_dir,

@@ -21,6 +21,17 @@ class _FixedRng:
         return next(self.random_values)
 
 
+class _UniformRng(_FixedRng):
+    def __init__(self, p: int, random_values=(0.0,)) -> None:
+        super().__init__(float(p), random_values)
+        self.uniform_p = p
+
+    def integers(self, low: int, high: int) -> int:
+        assert low == 0
+        assert self.uniform_p < high
+        return self.uniform_p
+
+
 def test_frame_jitter_uses_exact_early_and_late_boundary_frames() -> None:
     # p=1 early: previous skill's final frame (de=0) is the first early-transition frame.
     assert skill_jitter.choose_jitter(
@@ -48,10 +59,35 @@ def test_torch_jitter_matches_boundary_convention(monkeypatch) -> None:
     torch.testing.assert_close(offset, torch.tensor([-1, 1]))
 
 
+def test_uniform_jitter_uses_full_configured_magnitude() -> None:
+    assert skill_jitter.sample_p(
+        pmax=20, rng=_UniformRng(20), distribution="uniform") == 20
+    assert skill_jitter.choose_jitter(
+        k=0, ds=4, de=19, seq_len=3, pmax=20,
+        rng=_UniformRng(20), distribution="uniform",
+    ) == (1, -20)
+
+
+def test_uniform_torch_jitter_uses_randint(monkeypatch) -> None:
+    monkeypatch.setattr(
+        torch, "randint", lambda low, high, shape, device=None: torch.full(shape, high - 1, device=device))
+    monkeypatch.setattr(torch, "rand", lambda shape, device=None: torch.zeros(shape, device=device))
+    k_prime, offset = skill_jitter.choose_jitter_torch(
+        torch.tensor([0]), torch.tensor([4]), torch.tensor([19]), torch.tensor([3]),
+        pmax=20, distribution="uniform",
+    )
+    torch.testing.assert_close(k_prime, torch.tensor([1]))
+    torch.testing.assert_close(offset, torch.tensor([-20]))
+
+
 def test_stage1_jitters_action_code_but_keeps_terminator_true_code(monkeypatch) -> None:
     stub = SimpleNamespace(
         training=True,
-        config=SimpleNamespace(transition_jitter_pmax=10, skill_vocab_size=8),
+        config=SimpleNamespace(
+            transition_jitter_pmax=10,
+            transition_jitter_distribution="uniform",
+            skill_vocab_size=8,
+        ),
     )
     stub._true_skill_code = lambda batch: SkillExpertPolicy._true_skill_code(stub, batch)
     batch = {
@@ -64,7 +100,8 @@ def test_stage1_jitters_action_code_but_keeps_terminator_true_code(monkeypatch) 
     monkeypatch.setattr(
         skill_jitter,
         "choose_jitter_torch",
-        lambda k, ds, de, seq_len, pmax: (k + 1, torch.full_like(k, -1)),
+        lambda k, ds, de, seq_len, pmax, distribution: (
+            k + 1, torch.full_like(k, -1)) if distribution == "uniform" else None,
     )
 
     jittered = SkillExpertPolicy._skill_code(stub, batch)
@@ -77,6 +114,7 @@ def test_stage1_jitters_action_code_but_keeps_terminator_true_code(monkeypatch) 
 def test_transition_dataset_uses_state_from_same_half_normal_offset(monkeypatch) -> None:
     pack = SimpleNamespace(
         pmax=1,
+        jitter_distribution="half_normal",
         skill_code=np.array([4]),
         task_index=np.array([0]),
         tasks=["move object"],
@@ -88,7 +126,11 @@ def test_transition_dataset_uses_state_from_same_half_normal_offset(monkeypatch)
     ds._cum = np.array([1])
     ds._state_dim = 2
     ds._act_shape = (1, 2)
-    monkeypatch.setattr(dataset_transitions, "sample_offset", lambda pmax: 1)
+    monkeypatch.setattr(
+        dataset_transitions,
+        "sample_offset",
+        lambda pmax, distribution: 1 if distribution == "half_normal" else 0,
+    )
 
     item = SkillTransitionDataset.__getitem__(ds, 0)
 

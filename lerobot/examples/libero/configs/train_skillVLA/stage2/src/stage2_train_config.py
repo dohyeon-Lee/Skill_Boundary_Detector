@@ -173,7 +173,7 @@ def build_settings(cfg: dict) -> dict:
     vla_root = outputs_root / "skillVLA_stage2"
 
     # SCRATCH mode: stage1_run_name이 "none"으로 시작하면 Stage-1 warm-start 없음 (fresh expert/cond;
-    # VSA는 vlm_dropout B 배치가 조각). 한 줄 포맷 none_{run_tag}_{siglip|dino}_{state|state_skill}에서
+    # VSA는 vlm_dropout B 배치가 조각). 한 줄 포맷 none_{run_tag}_{siglip|dino}_{state|state_skill|broadcast}에서
     # 데이터셋(run_tag)과 Stage-1측 아키텍처를 전부 파싱하며, stage1_checkpoint는 자동 무시됨.
     #   예: stage1_run_name: none_FSQ555_dino8_both_1000_siglip_state
     stage1_run_name = str(get_value(cfg, "stage1_run_name") or "").strip()
@@ -186,10 +186,10 @@ def build_settings(cfg: dict) -> dict:
         stage1_checkpoint = ""         # scratch: stage1_checkpoint는 무시 (있어도 의미 없음)
         spec = re.sub(r"^none_?", "", stage1_run_name, flags=re.IGNORECASE)
         if spec:                       # one-liner: none_{run_tag}_{vision}_{mode}
-            m = re.match(r"(FSQ\d+_.+)_(dino|siglip)_(state_skill|state)$", spec)
+            m = re.match(r"(FSQ\d+_.+)_(dino|siglip)_(state_skill|broadcast|state)$", spec)
             if not m:
                 raise ValueError(
-                    "SCRATCH one-liner must be none_{run_tag}_{siglip|dino}_{state|state_skill} "
+                    "SCRATCH one-liner must be none_{run_tag}_{siglip|dino}_{state|state_skill|broadcast} "
                     f"(e.g. none_FSQ555_dino8_both_1000_siglip_state), got: {stage1_run_name}")
             run_tag, _s1_vb, _s1_scm = m.group(1), m.group(2), m.group(3)
         else:                          # bare "none": legacy separate keys (run_tag + s1_* below)

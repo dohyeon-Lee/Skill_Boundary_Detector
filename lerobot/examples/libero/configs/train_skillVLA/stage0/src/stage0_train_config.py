@@ -118,6 +118,10 @@ def build_settings(cfg: dict) -> dict:
     ))
     dino_value = _at(cfg, "cond", "dino_model", default=getattr(fsq_cfg, "dino_model_path", ""))
     dino_model = _local_model(project_root, dino_value)
+    expert_source = str(_at(cfg, "expert", "source", default="fsq")).strip().lower()
+    if expert_source not in {"fsq", "pi05_base"}:
+        raise ValueError(f"expert.source must be fsq|pi05_base, got {expert_source!r}.")
+    cond_state_adarms = as_bool(_at(cfg, "cond", "state_adarms", default=False))
 
     vlm_rank = int(_at(cfg, "vlm_lora", "rank", default=8))
     expert_rank = int(_at(cfg, "expert_lora", "rank", default=8))
@@ -153,12 +157,6 @@ def build_settings(cfg: dict) -> dict:
         raise ValueError(f"Stage-0 A/B probabilities must be in [0,1] and sum to 1, got A={p_a}, B={p_b}.")
     if a_drop_vlm or not b_drop_vlm:
         raise ValueError("Stage-0 topology requires A.drop_vlm=false and B.drop_vlm=true.")
-    forbidden_train = {"vlm", "expert", "skill_reader", "skill_head"}
-    for branch, spec in (("A", a_train_components), ("B", b_train_components)):
-        invalid = set(spec.split(",")) & forbidden_train
-        if invalid:
-            raise ValueError(
-                f"Stage-0 {branch} must keep fixed bases/unused modules frozen, but trains {sorted(invalid)}.")
     if wrong_weight < 0.0 or wrong_margin < 0.0:
         raise ValueError("wrong-language weight and margin must be non-negative.")
     loss_weights = (a_start_weight, a_end_weight, b_start_weight, b_end_weight)
@@ -180,6 +178,8 @@ def build_settings(cfg: dict) -> dict:
         "pi_base": pi_base,
         "tokenizer_path": tokenizer,
         "fsq_ckpt": fsq_path,
+        "expert_source": expert_source,
+        "cond_state_adarms": cond_state_adarms,
         "dino_model_path": dino_model,
         "vision_backbone": str(fsq_cfg.vision_backbone),
         "cond_encoder_variant": str(fsq_cfg.cond_encoder_variant or fsq_cfg.action_expert_variant),

@@ -21,7 +21,7 @@ skillset_output_suffix: ""
 # only the threshold suffix.
 skillset_boundary_threshold_mode: global_mean   # episode_mean | global_mean
 
-eval_run_dp: false
+eval_run_dp: true
 
 eval_dp_run_name: libero_90_full_full_state_obs20        
 eval_dp_checkpoint: 100000     

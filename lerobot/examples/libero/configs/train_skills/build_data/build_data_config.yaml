@@ -25,6 +25,8 @@ skillset_gripper_indices: [-1]       # ABC bimanual layout: [6, 13]
 # One SBD spacing rule: boundaries must be farther apart than this many frames,
 # and peaks within this distance from either episode edge are excluded.
 skillset_nms_dist: 20
+# Keep episodes that contain only one valid segment (for example, a single drawer-close skill).
+skillset_min_skills: 1
 # Optional manual tag for a separate skillset artifact. Example: `trialA` becomes
 # `seg_*_std_globalmean_trialA/`. Empty keeps the canonical output name.
 skillset_output_suffix: ""

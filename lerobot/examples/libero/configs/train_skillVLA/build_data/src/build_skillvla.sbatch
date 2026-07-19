@@ -42,7 +42,7 @@ echo "START SKILLVLA BUILD"
 echo "Node     : ${SLURMD_NODENAME:-local}"
 echo "Source   : ${RAW_DATASET_DIR}"
 echo "Latents  : ${SKILL_LATENTS_PATH}"
-echo "ISS npz  : ${ISS_NPZ_PATH}   (pmax=${SKILL_PMAX})"
+echo "ISS npz  : ${ISS_NPZ_PATH}   (pmax=${SKILL_PMAX}, distribution=${SKILL_JITTER_DISTRIBUTION})"
 echo "FSQ.pt   : ${FSQ_COPY_PATH}"
 echo "skillvla : ${SKILLVLA_DATASET_DIR}"
 
@@ -60,6 +60,7 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     --latents_path    "${SKILL_LATENTS_PATH}" \
     --iss_npz_path    "${ISS_NPZ_PATH}" \
     --pmax            "${SKILL_PMAX}" \
+    --jitter_distribution "${SKILL_JITTER_DISTRIBUTION}" \
     --fsq_levels      "${FSQ_LEVELS[@]}" \
     --max_order       "${MAX_ORDER}" \
     --max_length      "${MAX_LENGTH}"
@@ -72,7 +73,7 @@ echo "Copied FSQ checkpoint → ${FSQ_COPY_PATH}"
 # Built here so every fresh dataset ships with it; rebuild old packs that lack the raw start-state window.
 TRANSITION_PACK="${SKILLVLA_RUN_DIR}/transitions.npz"
 if [ -f "${TRANSITION_PACK}" ] && "${PROJECT_ROOT}/.venv/bin/python" -c \
-    'import numpy as np,sys; z=np.load(sys.argv[1]); assert "start_state" in z and int(z["schema_version"]) >= 2' \
+    'import numpy as np,sys; z=np.load(sys.argv[1]); assert "start_state" in z and "jitter_distribution" in z and int(z["schema_version"]) >= 3' \
     "${TRANSITION_PACK}"; then
   echo "Transition pack schema OK: ${TRANSITION_PACK}"
 else

@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -74,3 +75,29 @@ def test_stage0_eval_keeps_single_b_on_the_severed_route(tmp_path: Path) -> None
 
     assert panel["drop_vlm"] is True
     assert panel["keep_adapters"] is True
+
+
+def test_stage0_eval_uses_explicit_output_name_verbatim(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    cfg["output_name"] = "my_stage0_eval"
+
+    settings = stage0_eval_config.build_settings(cfg)
+
+    assert settings["output_name"] == "my_stage0_eval"
+    assert Path(settings["eval_out_dir"]).name == "my_stage0_eval"
+    assert settings["wandb_run_name"] == "my_stage0_eval"
+
+
+def test_stage0_eval_uses_resolution_time_when_output_name_is_blank(tmp_path: Path) -> None:
+    settings = stage0_eval_config.build_settings(_config(tmp_path))
+
+    assert re.fullmatch(r"\d{8}_\d{6}_\d{6}", settings["output_name"])
+    assert Path(settings["eval_out_dir"]).name == settings["output_name"]
+
+
+def test_stage0_eval_rejects_output_paths(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    cfg["output_name"] = "nested/eval"
+
+    with pytest.raises(ValueError, match="single folder name"):
+        stage0_eval_config.build_settings(cfg)

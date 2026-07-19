@@ -4,6 +4,7 @@ import torch
 from torch import nn
 
 from lerobot.policies.pi05.lora import NamedLoRALinear
+from lerobot.policies.pi_gemma import add_broadcast_condition
 from lerobot.policies.skillVLA.modeling_skillVLA import (
     LanguageKVBridge,
     SkillVLAPytorch,
@@ -64,6 +65,79 @@ def test_stage0_endpoint_weights_support_both_directions_and_uniform() -> None:
     torch.testing.assert_close(uniform, torch.ones(2))
 
 
+class _Stage0FlowStub:
+    training = True
+
+    def __init__(self, b_probability: float) -> None:
+        self.config = SimpleNamespace(
+            regime_probs_ft=None,
+            stage0_vlm_severed_prob=b_probability,
+            stage0_a_drop_vlm=False,
+            stage0_b_drop_vlm=True,
+            cond_severed_prob=0.0,
+            severed_hold_target=True,
+            cond_skill_source="gt",
+            stage0_wrong_language_weight=0.0,
+            vsa_distill=False,
+        )
+        self._fsq_half = torch.ones(3)
+        self.flow_calls = []
+
+    def finalize_motion_counter(self) -> None:
+        pass
+
+    def _resolved_pt_stage(self):
+        return "stage0"
+
+    def _set_stage0_trainability(self, regime: str) -> None:
+        pass
+
+    def _stage0_drops_vlm(self, regime: str) -> bool:
+        return regime == "stage0_b"
+
+    def _code_to_z(self, skill_code):
+        return torch.zeros(skill_code.shape[0], 3)
+
+    def _flow_view(
+        self, cond_images, start_images, lang_tokens, lang_masks, state, skill_zq,
+        x_t, time, severed, severed_adapters=frozenset(),
+    ):
+        self.flow_calls.append((severed, x_t.detach().clone()))
+        return torch.zeros_like(x_t), torch.zeros(1)
+
+
+def test_stage0_hold_target_is_b_only() -> None:
+    actions = torch.full((1, 2, 3), 0.8)
+    hold_actions = torch.full_like(actions, 0.2)
+    noise = torch.ones_like(actions)
+    time = torch.tensor([0.25])
+    expected_a_xt = time[:, None, None] * noise + (1 - time[:, None, None]) * actions
+    expected_b_xt = time[:, None, None] * noise + (1 - time[:, None, None]) * hold_actions
+
+    for b_probability, expected_severed, expected_xt in (
+        (0.0, False, expected_a_xt),
+        (1.0, True, expected_b_xt),
+    ):
+        model = _Stage0FlowStub(b_probability)
+        SkillVLAPytorch.forward(
+            model,
+            cond_images=[],
+            start_images=[],
+            lang_tokens=torch.zeros(1, 1, dtype=torch.long),
+            lang_masks=torch.ones(1, 1, dtype=torch.bool),
+            state=torch.zeros(1, 4),
+            skill_code=torch.zeros(1, dtype=torch.long),
+            actions=actions,
+            noise=noise,
+            time=time,
+            hold_actions=hold_actions,
+        )
+
+        assert model.flow_calls[0][0] is expected_severed
+        torch.testing.assert_close(model.flow_calls[0][1], expected_xt)
+        assert model._last_severed_hold is expected_severed
+
+
 class _Stage0TrainabilityStub(nn.Module):
     def __init__(self) -> None:
         super().__init__()
@@ -72,6 +146,8 @@ class _Stage0TrainabilityStub(nn.Module):
             stage0_b_train_components="cond,cond_vision,expert_lora",
             stage0_a_drop_vlm=False,
             stage0_b_drop_vlm=True,
+            stage0_expert_source="fsq",
+            stage0_cond_state_adarms=False,
         )
         self.vlm = NamedLoRALinear(nn.Linear(4, 4))
         self.vlm.add_adapter("vlm_lora", 2, 4)
@@ -91,6 +167,8 @@ class _Stage0TrainabilityStub(nn.Module):
     _set_requires_grad = staticmethod(SkillVLAPytorch._set_requires_grad)
     _stage0_components = SkillVLAPytorch._stage0_components
     _stage0_drops_vlm = SkillVLAPytorch._stage0_drops_vlm
+    _stage0_pi05_expert = SkillVLAPytorch._stage0_pi05_expert
+    _cond_uses_state_adarms = SkillVLAPytorch._cond_uses_state_adarms
 
     def _regime_groups(self):
         return {
@@ -137,6 +215,134 @@ def test_stage0_can_unfreeze_vlm_vision_without_unfreezing_vlm() -> None:
     assert all(param.requires_grad for param in model.vlm_vision.parameters())
     assert all(param.requires_grad for param in projector.parameters())
     assert not any(param.requires_grad for param in model.vlm.base.parameters())
+
+
+def test_stage0_can_unfreeze_vlm_base_from_branch_matrix() -> None:
+    model = _Stage0TrainabilityStub()
+    model.config.stage0_a_train_components += ",vlm"
+
+    SkillVLAPytorch._set_stage0_trainability(model, "stage0_a")
+
+    assert all(param.requires_grad for param in model.vlm.base.parameters())
+    assert _adapter_trainable(model.vlm, "vlm_lora")
+
+
+def test_stage0_matrix_can_unfreeze_every_component() -> None:
+    model = _Stage0TrainabilityStub()
+    model.config.stage0_a_train_components = (
+        "vlm,cond,expert,vlm_lora,expert_lora,lang_bridge,"
+        "vlm_vision,cond_vision,skill_reader,skill_head"
+    )
+
+    SkillVLAPytorch._set_stage0_trainability(model, "stage0_a")
+
+    for module in (
+        model.vlm.base,
+        model.cond,
+        model.expert.base,
+        model.vlm_vision,
+        model.cond_vision,
+        model.state_proj,
+        model.skill_proj,
+        model.skill_reader,
+        model.skill_head,
+        model.lang_bridges,
+    ):
+        assert all(param.requires_grad for param in module.parameters())
+    assert _adapter_trainable(model.vlm, "vlm_lora")
+    assert _adapter_trainable(model.expert, "expert_lora")
+
+
+def test_stage0_pi05_state_projection_belongs_to_cond() -> None:
+    model = _Stage0TrainabilityStub()
+    model.config.stage0_expert_source = "pi05_base"
+    model.config.stage0_cond_state_adarms = True
+    model.config.stage0_a_train_components = "cond"
+
+    SkillVLAPytorch._set_stage0_trainability(model, "stage0_a")
+
+    assert all(param.requires_grad for param in model.cond.parameters())
+    assert all(param.requires_grad for param in model.state_proj.parameters())
+    assert not any(param.requires_grad for param in model.skill_proj.parameters())
+    assert not any(param.requires_grad for param in model.expert.base.parameters())
+
+
+def test_stage0_pi05_expert_is_time_only_and_has_no_skill_prefix() -> None:
+    class Stub:
+        config = SimpleNamespace(stage0_expert_source="pi05_base")
+        stage1_config = SimpleNamespace(state_cond_mode="state")
+        _stage0_pi05_expert = SkillVLAPytorch._stage0_pi05_expert
+        _state_cond_mode = SkillVLAPytorch._state_cond_mode
+
+        @staticmethod
+        def _time_cond(time):
+            return torch.full((time.shape[0], 4), 2.0)
+
+        @staticmethod
+        def _state_cond(state):
+            raise AssertionError("pi05 expert must not consume state directly")
+
+    model = Stub()
+    time = torch.tensor([0.25, 0.75])
+    state = torch.randn(2, 6)
+    skill_zq = torch.randn(2, 3)
+
+    cond = SkillVLAPytorch._expert_cond_from_z(model, time, state, skill_zq)
+    prefix = SkillVLAPytorch._action_prefix_from_z(model, skill_zq)
+
+    torch.testing.assert_close(cond, torch.full((2, 4), 2.0))
+    assert prefix is None
+
+
+def test_broadcast_mode_keeps_skill_out_of_prefix_and_adarms() -> None:
+    class Stub:
+        config = SimpleNamespace(stage0_expert_source="fsq")
+        stage1_config = SimpleNamespace(state_cond_mode="broadcast")
+        skill_proj = nn.Linear(3, 4, bias=False)
+        _stage0_pi05_expert = SkillVLAPytorch._stage0_pi05_expert
+        _state_cond_mode = SkillVLAPytorch._state_cond_mode
+
+        @property
+        def _wdtype(self):
+            return self.skill_proj.weight.dtype
+
+        @staticmethod
+        def _time_cond(time):
+            return torch.full((time.shape[0], 4), 2.0)
+
+        @staticmethod
+        def _state_cond(state):
+            return torch.full((state.shape[0], 4), 3.0)
+
+    model = Stub()
+    with torch.no_grad():
+        model.skill_proj.weight.copy_(torch.tensor([
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0],
+        ]))
+    time = torch.tensor([0.25])
+    state = torch.randn(1, 6)
+    skill_zq = torch.tensor([[0.2, 0.4, 0.6]])
+
+    expert_cond = SkillVLAPytorch._expert_cond_from_z(model, time, state, skill_zq)
+    prefix = SkillVLAPytorch._action_prefix_from_z(model, skill_zq)
+    broadcast = SkillVLAPytorch._skill_broadcast_from_z(model, skill_zq)
+
+    torch.testing.assert_close(expert_cond, torch.full((1, 4), 5.0))
+    assert prefix is None
+    torch.testing.assert_close(broadcast, torch.tensor([[0.2, 0.4, 0.6, 1.2]]))
+
+
+def test_broadcast_condition_is_added_to_every_token_without_mutating_input() -> None:
+    hidden = torch.zeros(2, 3, 4)
+    condition = torch.tensor([[1.0, 2.0, 3.0, 4.0], [5.0, 6.0, 7.0, 8.0]])
+
+    result = add_broadcast_condition(hidden, condition)
+
+    torch.testing.assert_close(result, condition[:, None, :].expand(-1, 3, -1))
+    torch.testing.assert_close(hidden, torch.zeros_like(hidden))
 
 
 def test_stage0_terminator_vision_freeze_override() -> None:

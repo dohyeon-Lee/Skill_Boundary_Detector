@@ -132,11 +132,14 @@ def test_full_finetune_image_free_batch_anchors_to_frozen_fsq_teacher() -> None:
         def _expert_cond(self, time, state, skill_code):
             return torch.zeros(state.shape[0], 1, device=state.device)
 
+        def _skill_broadcast(self, skill_code):
+            return None
+
         def _run_fsq_reference_expert_only(self, x_t, time, state, skill_code):
             self.teacher_calls += 1
             return torch.zeros_like(x_t)
 
-        def _run_expert_only(self, x_t, expert_cond, action_prefix):
+        def _run_expert_only(self, x_t, expert_cond, action_prefix, skill_broadcast):
             return torch.full_like(x_t, 2.0)
 
     model = _FullFtAnchorStub()

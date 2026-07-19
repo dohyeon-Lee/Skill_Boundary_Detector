@@ -49,7 +49,7 @@ class SkillVLAConfig(PI05Config):
     s1_vision_backbone: str = "siglip"
     """SCRATCH mode only (stage1_checkpoint_path empty): the cond-side vision encoder ("dino"|"siglip")."""
     s1_state_cond_mode: str = "state"
-    """SCRATCH mode only: the Stage-1-side state conditioning mode ("state"|"state_skill")."""
+    """SCRATCH mode only: Stage-1 conditioning mode ("state"|"state_skill"|"broadcast")."""
 
     # ── Skill (VLM head; FSQ codes shared with Stage-1 / FSQ) ──
     skill_fsq_levels: list[int] = field(default_factory=lambda: [5, 5, 5])
@@ -132,6 +132,12 @@ class SkillVLAConfig(PI05Config):
     the exact topology and gradient scope; both branches use the same GT flow target."""
     stage0_a_drop_vlm: bool = False
     stage0_b_drop_vlm: bool = True
+    stage0_expert_source: str = "fsq"
+    """Stage-0 action-expert initialization and conditioning contract. ``fsq`` restores the FSQ
+    reconstructor and keeps direct state/skill conditioning. ``pi05_base`` restores pi05's expert and
+    keeps it time-only; skill then controls only terminator/VLM-refresh timing."""
+    stage0_cond_state_adarms: bool = False
+    """Inject the current normalized robot state into every cond-encoder layer through AdaRMS."""
     stage0_a_train_components: str = "vlm_lora,lang_bridge,cond,expert_lora"
     stage0_b_train_components: str = "cond,cond_vision,expert_lora"
     """Branch-local Stage-0 gradient matrix. Component names are validated and stored in checkpoints;
@@ -508,6 +514,11 @@ class SkillVLAConfig(PI05Config):
             if unknown:
                 raise ValueError(f"Unknown Stage-0 {branch} train components: {sorted(unknown)}.")
         if self.pt_stage == "stage0":
+            if self.stage0_expert_source not in {"fsq", "pi05_base"}:
+                raise ValueError(
+                    "stage0_expert_source must be fsq|pi05_base, "
+                    f"got {self.stage0_expert_source!r}."
+                )
             if self.stage0_a_drop_vlm or not self.stage0_b_drop_vlm:
                 raise ValueError("Stage-0 requires A_drop_vlm=False and B_drop_vlm=True.")
             all_components = {
@@ -515,11 +526,6 @@ class SkillVLAConfig(PI05Config):
                 for spec in (self.stage0_a_train_components, self.stage0_b_train_components)
                 for part in str(spec).split(",") if part.strip()
             }
-            fixed = all_components & {
-                "vlm", "expert", "skill_reader", "skill_head"
-            }
-            if fixed:
-                raise ValueError(f"Stage-0 fixed bases/unused modules cannot train: {sorted(fixed)}.")
             if "vlm_lora" in all_components and not self.vlm_lora:
                 raise ValueError("Stage-0 matrix trains vlm_lora but vlm_lora=False.")
             if "lang_bridge" in all_components and not self.lang_bridge:

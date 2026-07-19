@@ -188,11 +188,21 @@ def build_settings(cfg: dict) -> dict:
         if not dataset_info_path.is_file():
             raise FileNotFoundError(
                 f"Transition randomization needs the built dataset metadata: {dataset_info_path}")
-        transition_jitter_pmax = int(json.loads(dataset_info_path.read_text()).get("skill_pmax", -1))
+        dataset_info = json.loads(dataset_info_path.read_text())
+        transition_jitter_pmax = int(dataset_info.get("skill_pmax", -1))
         if transition_jitter_pmax < 0:
             raise ValueError(f"Dataset metadata has no valid skill_pmax: {dataset_info_path}")
+        transition_jitter_distribution = str(
+            dataset_info.get("skill_jitter_distribution", "half_normal")
+        ).strip().lower().replace("-", "_").replace(" ", "_")
+        if transition_jitter_distribution not in {"half_normal", "uniform"}:
+            raise ValueError(
+                f"Dataset metadata has invalid skill_jitter_distribution: {dataset_info_path} "
+                f"({transition_jitter_distribution!r})"
+            )
     else:
         transition_jitter_pmax = 0
+        transition_jitter_distribution = "half_normal"
 
     batch_size = int(get_value(cfg, "batch_size", 32))
     num_gpus = int(get_value(cfg, "num_gpus", 1))
@@ -293,6 +303,8 @@ def build_settings(cfg: dict) -> dict:
         run_name = f"{run_name}_termvis_tuned"
     if transition_jitter_pmax > 0:
         run_name = f"{run_name}_tj{transition_jitter_pmax}"
+        if transition_jitter_distribution != "half_normal":
+            run_name = f"{run_name}_{transition_jitter_distribution}"
     if exp:
         run_name = f"{run_name}_{exp}"
     # Single outputs root from yaml; the per-stage subdir is fixed here (not in yaml).
@@ -325,9 +337,9 @@ def build_settings(cfg: dict) -> dict:
         "run_tag": run_tag,
         "skillvla_dataset_dir": run_dir / "skillvla",
         "repo_id": f"dohyeon/{source_dataset}",
-        # conditioning (joint only; skill+progress on the action prefix)
+        # conditioning (joint only; the FSQ checkpoint fixes the skill route)
         "cond_encoder_variant": cond_encoder_variant,  # "" → same as action_expert_variant
-        "state_cond_mode": state_cond_mode,       # state (skill=prefix token) | state_skill (skill→AdaRMS too)
+        "state_cond_mode": state_cond_mode,       # state (prefix) | state_skill (AdaRMS) | broadcast
         "action_expert_variant": action_expert_variant,
         # model init
         "pi_base": pi_base,                       # "" → train the expert from scratch
@@ -341,6 +353,7 @@ def build_settings(cfg: dict) -> dict:
         "skill_vocab_size": skill_vocab_size,
         "skill_fsq_levels": "[" + ",".join(str(x) for x in skill_fsq_levels) + "]",
         "transition_jitter_pmax": transition_jitter_pmax,
+        "transition_jitter_distribution": transition_jitter_distribution,
         "max_state_dim": max_state_dim,
         "max_action_dim": max_action_dim,
         "min_period": min_period,

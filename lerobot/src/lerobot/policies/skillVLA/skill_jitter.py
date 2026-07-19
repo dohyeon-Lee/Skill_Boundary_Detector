@@ -10,6 +10,7 @@ Inputs per frame (all from build_data columns):
   ds, de   : distance-from-start / distance-to-end within the current skill (ds=0 at start, de=0 at last frame)
   seq_len  : skill_sequence_len = (#real skills N) + 1 (EOS).  last real skill index = seq_len-2
   pmax     : jitter half-window (ISS window = 2*pmax+1; offset stays in [-pmax, +pmax])
+  distribution: half_normal (small shifts favored) or uniform (all magnitudes equally likely)
 
 Three cases (mirrors the previous skill_boundary_random_p logic, but as a frame-index offset):
   early (near end,  de<p, k<last_real) : pretend the NEXT skill already started p frames early
@@ -18,7 +19,7 @@ Three cases (mirrors the previous skill_boundary_random_p logic, but as a frame-
                                           → k'=k-1, offset=±p  (prev skill's own start, jittered)
   else                                   : jitter THIS skill's start by ±p
                                           → k'=k,   offset=±p
-Both early & late eligible → coin flip. p ~ half-normal truncated at pmax (0 most likely).
+Both early & late eligible → coin flip. ``p`` follows the configured distribution on [0, pmax].
 
 Returns (k_prime, offset):
   start_frame  = IFS[k_prime] + offset      (clamp to the episode)
@@ -31,18 +32,44 @@ from __future__ import annotations
 import numpy as np
 
 
-def sample_p(pmax: int, rng: np.random.Generator | None = None) -> int:
-    """p ~ half-normal(std=pmax/2) truncated to [0, pmax], rounded to int (0 most likely)."""
+JITTER_DISTRIBUTIONS = frozenset({"half_normal", "uniform"})
+
+
+def normalize_jitter_distribution(value: str) -> str:
+    distribution = str(value).strip().lower().replace("-", "_").replace(" ", "_")
+    if distribution not in JITTER_DISTRIBUTIONS:
+        raise ValueError(
+            f"transition jitter distribution must be one of {sorted(JITTER_DISTRIBUTIONS)}, "
+            f"got {value!r}."
+        )
+    return distribution
+
+
+def sample_p(
+    pmax: int,
+    rng: np.random.Generator | None = None,
+    distribution: str = "half_normal",
+) -> int:
+    """Sample an integer magnitude in [0, pmax] from half-normal or uniform."""
     if pmax <= 0:
         return 0
+    distribution = normalize_jitter_distribution(distribution)
     r = np.random if rng is None else rng
+    if distribution == "uniform":
+        if hasattr(r, "integers"):
+            return int(r.integers(0, pmax + 1))
+        return int(r.randint(0, pmax + 1))
     return int(min(pmax, round(abs(r.normal(0.0, pmax / 2.0)))))
 
 
-def sample_offset(pmax: int, rng: np.random.Generator | None = None) -> int:
-    """Signed half-normal offset in [-pmax, pmax], shared by frame and transition-pack datasets."""
+def sample_offset(
+    pmax: int,
+    rng: np.random.Generator | None = None,
+    distribution: str = "half_normal",
+) -> int:
+    """Signed offset in [-pmax, pmax], shared by frame and transition-pack datasets."""
     r = np.random if rng is None else rng
-    p = sample_p(pmax, rng)
+    p = sample_p(pmax, rng, distribution)
     if p == 0:
         return 0
     return p if r.random() < 0.5 else -p
@@ -55,11 +82,12 @@ def choose_jitter(
     seq_len: int,
     pmax: int,
     rng: np.random.Generator | None = None,
+    distribution: str = "half_normal",
 ) -> tuple[int, int]:
     """Pick (k_prime, offset) for the skill-start jitter. See module docstring."""
     r = np.random if rng is None else rng
     last_real = seq_len - 2  # 0-based index of the last real skill (seq_len = N + EOS)
-    p = sample_p(pmax, rng)
+    p = sample_p(pmax, rng, distribution)
 
     # Skills use [start, end) frames. A p-frame early boundary includes de=0..p-1; a p-frame
     # late boundary leaves the previous skill active for ds=0..p-1. This also includes the exact
@@ -80,14 +108,18 @@ def choose_jitter(
     return k, sign * p            # this skill, ±p jitter
 
 
-def choose_jitter_torch(k, ds, de, seq_len, pmax: int):
+def choose_jitter_torch(k, ds, de, seq_len, pmax: int, distribution: str = "half_normal"):
     """Vectorized torch equivalent used by Stage-1 inside the training forward."""
     import torch  # local import keeps the NumPy dataset helper lightweight
 
     if pmax <= 0:
         return k, torch.zeros_like(k)
-    p = torch.round(torch.abs(torch.randn(k.shape, device=k.device) * (pmax / 2.0))).long()
-    p = p.clamp(max=pmax)
+    distribution = normalize_jitter_distribution(distribution)
+    if distribution == "uniform":
+        p = torch.randint(0, pmax + 1, k.shape, device=k.device)
+    else:
+        p = torch.round(torch.abs(torch.randn(k.shape, device=k.device) * (pmax / 2.0))).long()
+        p = p.clamp(max=pmax)
     last_real = seq_len - 2
     can_early = (p > 0) & (de < p) & (k < last_real)
     can_late = (p > 0) & (ds < p) & (k > 0)

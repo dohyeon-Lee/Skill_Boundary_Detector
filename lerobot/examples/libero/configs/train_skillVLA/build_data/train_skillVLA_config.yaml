@@ -50,6 +50,8 @@ skillset_gripper_indices: [-1]       # ABC bimanual layout: [6, 13]
 # Boundaries must be farther apart than this many frames; the same distance excludes
 # peaks at the start/end edge of each episode.
 skillset_nms_dist: 20
+# Keep episodes that contain only one valid segment (for example, a single drawer-close skill).
+skillset_min_skills: 1
 # Other detection parameters (dn_step, n_gmm, smooth_window, savgol_polyorder,
 # replan_interval) retain the shared defaults in src/train_skillVLA_config.py.
 # Parallelism: step-3 (DP segmentation) is the slow stage, so it is split across
@@ -87,7 +89,8 @@ fsq_snap_min_code_freq: 10        # 이 값 미만 빈도 코드를 '미지원'�
 max_order: 0                               # 0 : auto
 # Must cover the longest segmented skill. Current std/global split has max=231 frames.
 max_length: 500
-pmax: 10                                   # 전체 Stage0/1/2/3 transition randomization 반폭. ISS window=2*pmax+1
+pmax: 15 # 10                                   # 전체 Stage0/1/2/3 transition randomization 반폭. ISS window=2*pmax+1
+transition_jitter_distribution: uniform # half_normal # half_normal | uniform
 skill_decoder_state_indices: "[0,1,2,3,4,5,6,7]"   # full observation.state (ee6 + gripper_state2)
 cleanup_intermediate: false               # remove skillset/, skill_latents.npz after skillvla is built
 

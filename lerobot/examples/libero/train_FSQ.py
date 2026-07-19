@@ -70,7 +70,7 @@ class Args:
     """M: random decoder timesteps sampled from each of the B skill trajectories per update."""
     action_expert_variant: str = "gemma_300m"
     state_cond_mode: str = "state"
-    """state: z_q prefix; state_skill: z_q joins state/time in expert AdaRMS."""
+    """state: z_q prefix; state_skill: z_q in AdaRMS; broadcast: z_q before every attention layer."""
     max_state_dim: int = 32
     max_action_dim: int = 32
     pi_base: str = "../models/pi05_base"

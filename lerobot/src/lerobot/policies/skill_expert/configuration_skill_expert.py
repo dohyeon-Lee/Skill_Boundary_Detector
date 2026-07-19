@@ -11,11 +11,10 @@ class SkillExpertConfig(PI05Config):
 
     Predicts an action chunk by flow matching from the current 3rd-person + wrist images
     (each encoded by a trainable DINOv3, shared weights), the robot state, and the GT FSQ
-    skill code. A fresh cond-encoder (own Gemma) encodes the scene — images + the per-dim
-    DISCRETIZED state — and the action expert reads it via PI05-style block attention (action
-    sees cond + action; cond ⊥ action), with the skill (z_q) prepended to the action
-    stream. The VLM is added in Stage 2 (the `skill_vla` policy), which can be initialized from
-    a Stage-1 `skill_expert` checkpoint.
+    skill code. A fresh cond-encoder (own Gemma) encodes the image scene, and the action expert
+    reads it via PI05-style block attention (action sees cond + action; cond ⊥ action). State rides
+    expert AdaRMS; skill is routed by ``state_cond_mode``. The VLM is added in Stage 2 (the
+    `skill_vla` policy), which can be initialized from a Stage-1 `skill_expert` checkpoint.
 
     Inherits the PI05 action-expert / flow-matching knobs (chunk_size, max_action_dim,
     action_expert_variant, time sampling, num_inference_steps, normalization, ...). The
@@ -61,7 +60,7 @@ class SkillExpertConfig(PI05Config):
     attention). The cond-encoder is image-ONLY and plain-RMSNorm in both modes; state never rides the
     (image-dominated) cond stream — the input_probe diagnostic showed a state token buried among ~400
     image tokens is starved (Δ≈0), so state is always summed into the expert AdaRMS instead. The two
-    modes differ only in whether SKILL also goes global vs stays as an attended prefix token:
+    modes differ only in how SKILL reaches the action transformer:
       "state"       → AdaRMS conditioning = time + state_proj(state). Skill (z_q) is a PREFIX token on the
                       action stream (pi0 prefix⊥action: read by the action tokens, does not attend back).
                       Image stays the dominant motion driver; skill is a lighter, attended signal — leaves
@@ -69,6 +68,9 @@ class SkillExpertConfig(PI05Config):
       "state_skill" → AdaRMS conditioning = time + state_proj(state) + skill_proj(z_q) (each its own
                       projection, summed — DiT ⊕ pattern). NO prefix tokens at all; skill is a strong global
                       signal (heaviest skill influence).
+      "broadcast"   → AdaRMS conditioning = time + state_proj(state). NO prefix token; skill_proj(z_q) is
+                      broadcast to every action token after input AdaRMS and before attention in every layer.
+                      The residual stream does not accumulate it, and skill does not control AdaRMS gates.
     state_proj / skill_proj are allocated in both modes (only the destination differs), so "state" and
     "state_skill" checkpoints stay structurally comparable."""
 
@@ -82,8 +84,9 @@ class SkillExpertConfig(PI05Config):
     token, constant within a skill — neighboring codes stay neighboring. (The skill-progress token
     was removed — the action expert conditions on the skill code only.)"""
     transition_jitter_pmax: int = 0
-    """Training-only skill-boundary jitter half-window in frames. A half-normal timing shift may use
-    the previous/next skill code near a boundary, matching terminator early/late firing. Zero disables."""
+    """Training-only skill-boundary jitter half-window in frames. Zero disables."""
+    transition_jitter_distribution: str = "half_normal"
+    """Timing-shift distribution: half_normal favors small errors; uniform samples every magnitude."""
 
     # ── FSQ expert adaptation ──
     # ``lora_rank`` / ``lora_alpha`` / ``lora_dropout`` / ``lora_targets`` are inherited from PI05Config.
@@ -186,9 +189,10 @@ class SkillExpertConfig(PI05Config):
 
     def __post_init__(self):
         super().__post_init__()
-        if self.state_cond_mode not in ("state", "state_skill"):
+        if self.state_cond_mode not in ("state", "state_skill", "broadcast"):
             raise ValueError(
-                f"state_cond_mode must be 'state' or 'state_skill' (got {self.state_cond_mode!r})."
+                "state_cond_mode must be 'state', 'state_skill', or 'broadcast' "
+                f"(got {self.state_cond_mode!r})."
             )
         if self.train_terminator and not self.fsq_path:
             raise ValueError("train_terminator=True needs fsq_path (the FSQ checkpoint to warm-start).")
@@ -219,3 +223,8 @@ class SkillExpertConfig(PI05Config):
             )
         if self.transition_jitter_pmax < 0:
             raise ValueError("transition_jitter_pmax must be >= 0.")
+        if self.transition_jitter_distribution not in {"half_normal", "uniform"}:
+            raise ValueError(
+                "transition_jitter_distribution must be half_normal|uniform, "
+                f"got {self.transition_jitter_distribution!r}."
+            )

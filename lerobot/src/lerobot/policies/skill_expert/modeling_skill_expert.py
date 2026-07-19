@@ -135,7 +135,7 @@ class SkillExpertPytorch(nn.Module):
         self.image_proj = nn.Linear(vis_dim, self.width)                # image token → expert token
         # State: QUANTILE-normalized [-1,1] state vector → width (pi0-style continuous projection). It
         # rides the ACTION expert's flow-time AdaRMS (NOT the image-dominated cond stream, where it was
-        # starved) in BOTH modes (state / state_skill); see _expert_cond.
+        # starved) in every conditioning mode; see _expert_cond.
         self.state_proj = nn.Linear(config.max_state_dim, self.width)
         # Skill: flat code → FSQ grid coordinate z_q (codebook's little-endian frame, the same
         # value the FSQ decoder consumes), normalized per dim to [-1, 1] → ONE token, constant
@@ -273,10 +273,16 @@ class SkillExpertPytorch(nn.Module):
         )
 
     def _fsq_reference_action_prefix(self, skill_code: Tensor) -> Tensor | None:
-        if self.config.state_cond_mode == "state_skill":
+        if self.config.state_cond_mode != "state":
             return None
         z_q = self._code_to_zq(skill_code).to(self._wdtype)
         return self._fsq_reference_linear(self.skill_proj, "skill_proj.", z_q).unsqueeze(1)
+
+    def _fsq_reference_skill_broadcast(self, skill_code: Tensor) -> Tensor | None:
+        if self.config.state_cond_mode != "broadcast":
+            return None
+        z_q = self._code_to_zq(skill_code).to(self._wdtype)
+        return self._fsq_reference_linear(self.skill_proj, "skill_proj.", z_q)
 
     def _fsq_reference_expert_cond(
         self, timestep: Tensor, state: Tensor, skill_code: Tensor
@@ -402,11 +408,17 @@ class SkillExpertPytorch(nn.Module):
     def _action_prefix(self, skill_code: Tensor, state: Tensor) -> Tensor | None:
         """The skill token prepended to the action stream (read by action tokens; prefix ⊥ action).
         state_cond_mode="state" → the skill (z_q) is a prefix token (state itself rides the expert AdaRMS,
-        not a token); "state_skill" → NO prefix at all (state + skill ride the action AdaRMS). (state is
-        unused here — it never becomes a token in either mode; kept for call-site symmetry.)"""
-        if self.config.state_cond_mode == "state_skill":
+        not a token); the other modes have no prefix. (state is unused here — it never becomes a token;
+        kept for call-site symmetry.)"""
+        if self.config.state_cond_mode != "state":
             return None
         return self.skill_proj(self._code_to_zq(skill_code).to(self._wdtype)).unsqueeze(1)   # (B, 1, width)
+
+    def _skill_broadcast(self, skill_code: Tensor) -> Tensor | None:
+        """Skill vector added to every action token before attention in ``broadcast`` mode."""
+        if self.config.state_cond_mode != "broadcast":
+            return None
+        return self.skill_proj(self._code_to_zq(skill_code).to(self._wdtype))
 
     def _time_cond(self, timestep: Tensor) -> Tensor:
         t = create_sinusoidal_pos_embedding(
@@ -431,7 +443,8 @@ class SkillExpertPytorch(nn.Module):
         return c
 
     def _run_joint(self, cond_tokens: Tensor, x_t: Tensor, expert_cond: Tensor,
-                   action_prefix: Tensor | None = None, cond_cond: Tensor | None = None) -> Tensor:
+                   action_prefix: Tensor | None = None, cond_cond: Tensor | None = None,
+                   skill_broadcast: Tensor | None = None) -> Tensor:
         """Joint block attention over two streams (PI05 VLM↔expert pattern, cond-encoder as prefix).
         Three blocks: cond (scene, image-only) ⊥ everything; the conditioning prefix ([skill, progress?],
         present only in mode "state") reads cond + itself but NOT the action tokens (pi0 prefix⊥action);
@@ -474,17 +487,20 @@ class SkillExpertPytorch(nn.Module):
                     compute_layer_complete, layer_idx, embeds, att_2d_4d, position_ids, adarms_cond,
                     use_reentrant=False, preserve_rng_state=False,
                     paligemma=shim, gemma_expert=self.gemma_expert,
+                    broadcast_cond=[None, skill_broadcast],
                 )
             else:
                 embeds = compute_layer_complete(
                     layer_idx, embeds, att_2d_4d, position_ids, adarms_cond,
                     paligemma=shim, gemma_expert=self.gemma_expert,
+                    broadcast_cond=[None, skill_broadcast],
                 )
         action_hidden, _ = layernorm_forward(self.gemma_expert.model.norm, embeds[1], time_cond)
         return self.action_out_proj(action_hidden[:, -n_chunk:].to(self._wdtype)).float()  # action positions only
 
     def _run_expert_only(self, x_t: Tensor, expert_cond: Tensor,
-                         action_prefix: Tensor | None = None) -> Tensor:
+                         action_prefix: Tensor | None = None,
+                         skill_broadcast: Tensor | None = None) -> Tensor:
         """Image-free action-expert forward for B batches.
 
         There is deliberately no dummy image or zero cond token here: the condition encoder is not invoked
@@ -514,6 +530,7 @@ class SkillExpertPytorch(nn.Module):
             past_key_values=None,
             use_cache=False,
             adarms_cond=expert_cond,
+            broadcast_cond=skill_broadcast,
         ).last_hidden_state
         return self.action_out_proj(action_hidden[:, -n_chunk:].to(self._wdtype)).float()
 
@@ -525,6 +542,7 @@ class SkillExpertPytorch(nn.Module):
             self.action_in_proj, "action_in_proj.", x_t.to(self._wdtype)
         )
         action_prefix = self._fsq_reference_action_prefix(skill_code)
+        skill_broadcast = self._fsq_reference_skill_broadcast(skill_code)
         n_chunk = action_tokens.shape[1]
         n_prefix = action_prefix.shape[1] if action_prefix is not None else 0
         if action_prefix is not None:
@@ -549,6 +567,7 @@ class SkillExpertPytorch(nn.Module):
                 "past_key_values": None,
                 "use_cache": False,
                 "adarms_cond": self._fsq_reference_expert_cond(timestep, state, skill_code),
+                "broadcast_cond": skill_broadcast,
             },
             strict=False,
         ).last_hidden_state
@@ -582,7 +601,9 @@ class SkillExpertPytorch(nn.Module):
         x_t = time_exp * source + (1 - time_exp) * actions
         u_t = source - actions
         expert_cond = self._expert_cond(time, state, skill_code)
-        v_t = self._run_joint(cond, x_t, expert_cond, action_prefix, None)  # cond stream: plain RMSNorm
+        v_t = self._run_joint(
+            cond, x_t, expert_cond, action_prefix, None, self._skill_broadcast(skill_code)
+        )  # cond stream: plain RMSNorm
         return u_t - v_t
 
     def image_free_lora_anchor(
@@ -605,16 +626,17 @@ class SkillExpertPytorch(nn.Module):
         source = source.to(dtype=actions.dtype)
         x_t = time[:, None, None] * source + (1 - time[:, None, None]) * actions
         action_prefix = self._action_prefix(skill_code, state)
+        skill_broadcast = self._skill_broadcast(skill_code)
         expert_cond = self._expert_cond(time, state, skill_code)
         if self.config.lora_expert:
             self._set_expert_lora_active(False)
             with torch.no_grad():
-                base_v = self._run_expert_only(x_t, expert_cond, action_prefix)
+                base_v = self._run_expert_only(x_t, expert_cond, action_prefix, skill_broadcast)
             self._set_expert_lora_active(True)
         else:
             with torch.no_grad():
                 base_v = self._run_fsq_reference_expert_only(x_t, time, state, skill_code)
-        expert_v = self._run_expert_only(x_t, expert_cond, action_prefix)
+        expert_v = self._run_expert_only(x_t, expert_cond, action_prefix, skill_broadcast)
         # Diagnostic only: (source - expert_v) is the image-free action prediction, so subtract the
         # GT action to obtain the same flow-MSE residual used by A. The optimized B objective above
         # remains exclusively the current-to-frozen-FSQ velocity anchor.
@@ -662,12 +684,13 @@ class SkillExpertPytorch(nn.Module):
             noise = self.sample_noise((bsize, self.config.chunk_size, self.config.max_action_dim), device)
         self._set_expert_lora_active(True)
         action_prefix = self._action_prefix(skill_code, state)
+        skill_broadcast = self._skill_broadcast(skill_code)
         dt = -1.0 / num_steps
         x_t = noise
         for step in range(num_steps):
             time = torch.full((bsize,), 1.0 + step * dt, dtype=torch.float32, device=device)
             velocity = self._run_expert_only(
-                x_t, self._expert_cond(time, state, skill_code), action_prefix
+                x_t, self._expert_cond(time, state, skill_code), action_prefix, skill_broadcast
             )
             x_t = x_t + dt * velocity
         return x_t
@@ -709,6 +732,7 @@ class SkillExpertPytorch(nn.Module):
 
         dt = -1.0 / num_steps
         x_t = noise
+        skill_broadcast = self._skill_broadcast(skill_code)
         for step in range(num_steps):
             t = torch.full((bsize,), 1.0 + step * dt, dtype=torch.float32, device=device)
             action_tokens = self.action_in_proj(x_t.to(self._wdtype))
@@ -718,6 +742,7 @@ class SkillExpertPytorch(nn.Module):
                 inputs_embeds=action_tokens, attention_mask=full_4d, position_ids=suffix_pos,
                 past_key_values=copy.deepcopy(past_key_values), use_cache=False,
                 adarms_cond=self._expert_cond(t, state, skill_code),
+                broadcast_cond=skill_broadcast,
             ).last_hidden_state
             v_t = self.action_out_proj(action_hidden[:, -n_chunk:].to(self._wdtype)).float()  # action positions only
             x_t = x_t + dt * v_t
@@ -1036,7 +1061,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
         return code.clamp(0, self.config.skill_vocab_size - 1)
 
     def _skill_code(self, batch: dict) -> Tensor:
-        """Training action code with half-normal early/late transition jitter; exact GT at eval."""
+        """Training action code with configured early/late transition jitter; exact GT at eval."""
         seq = batch["skill_sequence"].long()
         idx = batch["skill_index"].long().view(-1).clamp(0, seq.shape[1] - 1)
         pmax = int(getattr(self.config, "transition_jitter_pmax", 0))
@@ -1049,6 +1074,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 batch["skill_de"].long().view(-1),
                 batch["skill_sequence_len"].long().view(-1),
                 pmax,
+                distribution=getattr(self.config, "transition_jitter_distribution", "half_normal"),
             )
             idx = idx.clamp(0, seq.shape[1] - 1)
         code = seq.gather(1, idx[:, None]).squeeze(1)

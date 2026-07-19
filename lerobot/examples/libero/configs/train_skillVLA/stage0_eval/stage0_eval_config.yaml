@@ -1,30 +1,38 @@
 # Each Stage-0 model expands to the globally selected A / B / Frozen-FSQ panels.
 models:
-  - {model_dir: FSQ333_dino_frozen_small_optimal_vsa_state_skill_125_std_pt_snap10_A10B0_unfreezeall_contrastiveX,
-     checkpoint: "last", advance_mode: terminator, terminator_source: auto, label: S0}
+  - {model_dir: FSQ333_dino_frozen_small_optimal_vsa_state_skill_125_std_pt_snap10_ms1_pmax15_uniform_exp1_FSQ_expert,
+     checkpoint: "030000", advance_mode: terminator, terminator_source: auto, label: exp1}
+  - {model_dir: FSQ333_dino_frozen_small_optimal_vsa_state_skill_125_std_pt_snap10_ms1_pmax15_uniform_exp1_2_FSQ_expert_condstate,
+     checkpoint: "030000", advance_mode: terminator, terminator_source: auto, label: exp2}
+  - {model_dir: FSQ333_dino_frozen_small_optimal_vsa_state_skill_125_std_pt_snap10_ms1_pmax15_uniform_exp2_vlm_to_expertX,
+     checkpoint: "030000", advance_mode: terminator, terminator_source: auto, label: exp3}
+  - {model_dir: FSQ333_dino_frozen_small_optimal_vsa_state_skill_125_std_pt_snap10_ms1_pmax15_uniform_full_connectfull_full,
+     checkpoint: "030000", advance_mode: terminator, terminator_source: auto, label: exp4}
 
-modes: "a,b,fsq"
-models_per_row: 3
+
+modes: "a" # "a,b,fsq"
+models_per_row: 4
 skill_source: gt
-eval_exp: ""
+output_name: "ablation-1_30k" # blank: config resolution time
 
 target_task: libero_90
-task_ids: "[0,1,2,3,4,5,6,7,8,9]"
+task_ids: "[1,2,3,4,5,6,7,8,9,10]"
 eval_num_gpus: 10
-n_episodes: 3
+n_episodes: 10
 n_action_steps: 5
 eval_batch_size: 1
 max_parallel_tasks: 1
 
 skill_end_mode: or
 skill_end_threshold: 0.5
-skill_end_progress_threshold: 0.8
+skill_end_progress_threshold: 0.9
 inference_skill_max_length: 200
 
-max_videos_per_task: 5
+max_videos_per_task: 0
+skill_html: false
+
 video_frame_stride: 2
 video_fps: 10
-skill_html: true
 skill_html_train_samples: 10
 
 wandb_project: VLA_stage0_eval

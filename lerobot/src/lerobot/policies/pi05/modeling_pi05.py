@@ -37,6 +37,7 @@ if TYPE_CHECKING or _transformers_available:
         PaliGemmaForConditionalGenerationWithPiGemma,
         PiGemmaForCausalLM,
         _gated_residual,
+        add_broadcast_condition,
         layernorm_forward,
     )
 else:
@@ -44,6 +45,7 @@ else:
     modeling_gemma = None
     PiGemmaForCausalLM = None
     _gated_residual = None
+    add_broadcast_condition = None
     layernorm_forward = None
     PaliGemmaForConditionalGenerationWithPiGemma = None
 from lerobot.configs.policies import PreTrainedConfig
@@ -224,7 +226,8 @@ def resize_with_pad_torch(  # see openpi `resize_with_pad_torch` (exact copy)
 
 # Define the complete layer computation function for gradient checkpointing
 def compute_layer_complete(
-    layer_idx, inputs_embeds, attention_mask, position_ids, adarms_cond, paligemma, gemma_expert
+    layer_idx, inputs_embeds, attention_mask, position_ids, adarms_cond, paligemma, gemma_expert,
+    broadcast_cond=None,
 ):
     models = [paligemma.model.language_model, gemma_expert.model]
     query_states = []
@@ -234,6 +237,8 @@ def compute_layer_complete(
     for i, hidden_states in enumerate(inputs_embeds):
         layer = models[i].layers[layer_idx]
         hidden_states, gate = layernorm_forward(layer.input_layernorm, hidden_states, adarms_cond[i])
+        if broadcast_cond is not None:
+            hidden_states = add_broadcast_condition(hidden_states, broadcast_cond[i])
         gates.append(gate)
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, layer.self_attn.head_dim)

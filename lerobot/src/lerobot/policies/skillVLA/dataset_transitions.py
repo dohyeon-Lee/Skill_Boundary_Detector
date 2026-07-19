@@ -35,6 +35,7 @@ from lerobot.policies.skillVLA.dataset_skillVLA import (
     SkillVLADataset,
 )
 from lerobot.policies.skillVLA.skill_jitter import sample_offset
+from lerobot.policies.skillVLA.skill_jitter import normalize_jitter_distribution
 
 
 class _Pack:
@@ -45,15 +46,17 @@ class _Pack:
         self.jpeg = {CAM_3RD: np.asarray(z["jpeg_3rd"]), CAM_WRIST: np.asarray(z["jpeg_wrist"])}
         self.off = {CAM_3RD: np.asarray(z["off_3rd"]), CAM_WRIST: np.asarray(z["off_wrist"])}
         self.skill_code = np.asarray(z["skill_code"])
-        if "start_state" not in z or int(z.get("schema_version", 0)) < 2:
+        if ("start_state" not in z or "jitter_distribution" not in z
+                or int(z.get("schema_version", 0)) < 3):
             raise ValueError(
-                f"Transition pack {path} predates jittered start-state support. Rebuild it with "
+                f"Transition pack {path} predates configurable jitter support. Rebuild it with "
                 "build_data/src/build_transition_pack.py."
             )
         self.start_state = np.asarray(z["start_state"], dtype=np.float32)
         self.task_index = np.asarray(z["task_index"])
         self.tasks = [str(t) for t in np.asarray(z["tasks"])]
         self.pmax = int(z["pmax"])
+        self.jitter_distribution = normalize_jitter_distribution(str(z["jitter_distribution"]))
         self.n = int(self.skill_code.shape[0])
         self.win = 2 * self.pmax + 1
         assert self.off[CAM_3RD].shape[0] == self.n * self.win + 1, f"corrupt pack: {path}"
@@ -72,7 +75,7 @@ class SkillTransitionDataset(SkillVLADataset):
     """Segment-level (transition) samples for pt_stage="skill" / FT SKILL batches.
 
     ``transition_packs``: one or more transitions.npz paths — index = concatenation. Each __getitem__
-    picks a signed half-normal offset in [-pmax, +pmax] (the deployment-timing jitter) and decodes the two
+    picks an offset in [-pmax, +pmax] from the pack's configured distribution and decodes the two
     skill-start JPEGs for that offset; everything motor-side is a dummy."""
 
     def __init__(self, *args, transition_packs: list[str] | None = None, **kwargs):
@@ -98,7 +101,7 @@ class SkillTransitionDataset(SkillVLADataset):
         pack = self._packs[pi]
         seg = idx - (int(self._cum[pi - 1]) if pi > 0 else 0)
 
-        offset = sample_offset(pack.pmax)                            # same half-normal law as Stage-2
+        offset = sample_offset(pack.pmax, distribution=pack.jitter_distribution)
         win_idx = pack.pmax + offset
         img3 = pack.image(CAM_3RD, seg, win_idx)
         imgw = pack.image(CAM_WRIST, seg, win_idx)

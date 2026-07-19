@@ -75,6 +75,22 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
     dp_checkpoint = str(get_value(cfg, "dp_checkpoint", "100000"))
     dp_policy_path = dp_outputs_root / dp_policy_name / "checkpoints" / dp_checkpoint / "pretrained_model"
     probe_settings = skillset_probe_settings(cfg)
+    skillset_min_skills = int(get_value(cfg, "skillset_min_skills", 2))
+    if skillset_min_skills < 1:
+        raise ValueError(f"skillset_min_skills must be >= 1, got {skillset_min_skills}.")
+    jitter_distribution = str(
+        get_value(cfg, "transition_jitter_distribution", "half_normal")
+    ).strip().lower().replace("-", "_").replace(" ", "_")
+    if jitter_distribution not in {"half_normal", "uniform"}:
+        raise ValueError(
+            "transition_jitter_distribution must be half_normal|uniform, "
+            f"got {jitter_distribution!r}."
+        )
+    skill_pmax = int(get_value(cfg, "pmax", 10))
+    if skill_pmax < 0:
+        raise ValueError(f"pmax must be >= 0, got {skill_pmax}.")
+    jitter_tag = "halfnormal" if jitter_distribution == "half_normal" else "uniform"
+    data_identity_suffix = f"_ms{skillset_min_skills}_pmax{skill_pmax}_{jitter_tag}"
 
     # ── FSQ (step 4) — model path from the parsed run name + checkpoint ──
     fsq_model_dir = fsq_outputs_root / fsq_run_name
@@ -111,7 +127,7 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
             # FT must use the PT vocabulary for this exact FSQ/checkpoint and
             # pruning threshold. Search source-dataset directories so the FT
             # config needs no duplicated PT dataset/path field.
-            pt_run_tag = f"{base_run_tag}_pt{snap_suffix}"
+            pt_run_tag = f"{base_run_tag}_pt{snap_suffix}{data_identity_suffix}"
             pt_refs = sorted(skillvla_root.glob(f"*/{pt_run_tag}/skill_latents.npz"))
             if len(pt_refs) != 1:
                 found = "\n  ".join(str(p) for p in pt_refs) or "(none)"
@@ -123,6 +139,9 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
                 )
             fsq_snap_reference = str(pt_refs[0])
         run_tag += snap_suffix
+    # Final SkillVLA artifacts depend on episode filtering and jitter sampling. Keep those values in
+    # the identity so changing either cannot short-circuit against an older completed dataset.
+    run_tag += data_identity_suffix
     source_out_dir = skillvla_root / source_dataset
     run_dir = source_out_dir / run_tag
     work_dir = source_out_dir / "_work"
@@ -131,6 +150,7 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
     seg_base = (
         f"seg_{dp_policy_name}_ck{dp_checkpoint}"
         f"{probe_settings['skillset_probe_suffix']}"
+        f"_ms{skillset_min_skills}"
     )
     skillset_global_threshold_source = ""
     if skillvla_data_mode == "ft":
@@ -188,6 +208,7 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
         "skillset_savgol_polyorder": int(get_value(cfg, "skillset_savgol_polyorder", 4)),
         "skillset_replan_interval": int(get_value(cfg, "skillset_replan_interval", 3)),
         "skillset_nms_dist": int(get_value(cfg, "skillset_nms_dist", 25)),
+        "skillset_min_skills": skillset_min_skills,
         **probe_settings,
         "skillset_boundary_threshold_mode": "global_mean",
         "skillset_global_threshold_source": skillset_global_threshold_source,
@@ -216,7 +237,8 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
         # SkillVLA build (step 5)
         "max_order": int(get_value(cfg, "max_order", 0)),
         "max_length": int(get_value(cfg, "max_length", 200)),
-        "skill_pmax": int(get_value(cfg, "pmax", 10)),   # Stage-2 transition randomization 반폭 (ISS window)
+        "skill_pmax": skill_pmax,   # Stage-2 transition randomization 반폭 (ISS window)
+        "skill_jitter_distribution": jitter_distribution,
         "skill_decoder_state_indices": str(get_value(cfg, "skill_decoder_state_indices", "[0,1,2,3,4,5,6,7]")),
         "cleanup_intermediate": str(get_value(cfg, "cleanup_intermediate", True)).lower(),
         # output layout

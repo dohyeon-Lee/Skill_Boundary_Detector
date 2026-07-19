@@ -82,6 +82,32 @@ def layernorm_forward(
         return layernorm(x)
 
 
+def add_broadcast_condition(
+    hidden_states: torch.Tensor,
+    cond: torch.Tensor | None,
+) -> torch.Tensor:
+    """Add one global conditioning vector to every token without changing the residual stream."""
+    if cond is None:
+        return hidden_states
+    if cond.ndim == 2:
+        cond = cond.unsqueeze(1)
+    if (
+        cond.ndim != 3
+        or cond.shape[0] != hidden_states.shape[0]
+        or cond.shape[-1] != hidden_states.shape[-1]
+    ):
+        raise ValueError(
+            "broadcast condition must have shape (B, D) or (B, 1|T, D), got "
+            f"{tuple(cond.shape)} for hidden states {tuple(hidden_states.shape)}."
+        )
+    if cond.shape[1] not in (1, hidden_states.shape[1]):
+        raise ValueError(
+            "broadcast condition token dimension must be 1 or match hidden states, got "
+            f"{cond.shape[1]} and {hidden_states.shape[1]}."
+        )
+    return hidden_states + cond.to(device=hidden_states.device, dtype=hidden_states.dtype)
+
+
 class PiGemmaRMSNorm(nn.Module):
     """
     Adaptive RMSNorm for PI Gemma (AdaRMS).
@@ -164,10 +190,12 @@ def _get_pi_gemma_decoder_layer_base():
             cache_position: torch.LongTensor | None = None,
             position_embeddings: tuple[torch.Tensor, torch.Tensor] | None = None,
             adarms_cond: torch.Tensor | None = None,
+            broadcast_cond: torch.Tensor | None = None,
             **kwargs,
         ) -> torch.Tensor:
             residual = hidden_states
             hidden_states, gate = self.input_layernorm(hidden_states, cond=adarms_cond)
+            hidden_states = add_broadcast_condition(hidden_states, broadcast_cond)
             hidden_states, _ = self.self_attn(
                 hidden_states,
                 attention_mask=attention_mask,
@@ -218,11 +246,14 @@ class PiGemmaModel(GemmaModel):  # type: ignore[misc]
         output_hidden_states: bool | None = None,
         cache_position: torch.LongTensor | None = None,
         adarms_cond: torch.Tensor | None = None,
+        broadcast_cond: torch.Tensor | None = None,
         **kwargs,
     ) -> BaseModelOutputWithPast:
         """
         adarms_cond (`torch.Tensor` of shape `(batch_size, cond_dim)`, *optional*):
             Condition for ADARMS.
+        broadcast_cond (`torch.Tensor` of shape `(batch_size, hidden_size)`, *optional*):
+            Global vector added to every token after input AdaRMS and before attention in every layer.
         """
         output_attentions = (
             output_attentions if output_attentions is not None else self.config.output_attentions
@@ -298,6 +329,7 @@ class PiGemmaModel(GemmaModel):  # type: ignore[misc]
                 cache_position=cache_position,
                 position_embeddings=position_embeddings,
                 adarms_cond=adarms_cond,
+                broadcast_cond=broadcast_cond,
                 **kwargs,
             )
 
@@ -357,6 +389,7 @@ __all__ = [
     "PiGemmaForCausalLM",
     "PiGemmaRMSNorm",
     "_gated_residual",
+    "add_broadcast_condition",
     "layernorm_forward",
     "PaliGemmaModelWithPiGemma",
     "PaliGemmaForConditionalGenerationWithPiGemma",

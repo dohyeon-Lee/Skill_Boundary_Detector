@@ -15,7 +15,7 @@ Output: {skillvla_dir}/../transitions.npz  (next to FSQ.pt / ISS / dino.npz — 
   task_index (N), tasks (unique strings)  : language (tokenize at load time → packs merge freely)
   episode_id (N), seg_rank (N), frame_start (N), frame_end (N)  : provenance — future terminator-replay
                          extension joins these against dino.npz / ds,de without re-building
-  pmax, fps            : window half-size (inherited from the ISS npz) + dataset fps
+  pmax, jitter_distribution, fps: jitter definition inherited from the built dataset + dataset fps
 
 Images are stored at the dataset's native resolution (decode → JPEG re-encode); the loader returns
 float [0,1] CHW exactly like SkillVLADataset, so the policy preprocessing path is unchanged.
@@ -48,6 +48,7 @@ def build(skillvla_dir: Path, out: Path, quality: int, limit_segments: int = 0) 
     ds = SkillVLADataset(f"local/{skillvla_dir.parent.parent.name}", root=str(skillvla_dir))
     reader = ds._ensure_reader()  # noqa: SLF001
     pmax = ds._pmax  # noqa: SLF001
+    jitter_distribution = ds._jitter_distribution  # noqa: SLF001
     fps = ds.fps
     iss = ds._iss  # noqa: SLF001
     win = 2 * pmax + 1
@@ -110,8 +111,9 @@ def build(skillvla_dir: Path, out: Path, quality: int, limit_segments: int = 0) 
         start_state=state_array,
         episode_id=np.asarray(ep_a, dtype=np.int64), seg_rank=np.asarray(rank_a, dtype=np.int64),
         frame_start=np.asarray(fs_a, dtype=np.int64), frame_end=np.asarray(fe_a, dtype=np.int64),
-        tasks=np.asarray(tasks, dtype=np.str_), pmax=np.int64(pmax), fps=np.float64(fps),
-        schema_version=np.int64(2),
+        tasks=np.asarray(tasks, dtype=np.str_), pmax=np.int64(pmax),
+        jitter_distribution=np.str_(jitter_distribution), fps=np.float64(fps),
+        schema_version=np.int64(3),
     )
     tmp.rename(out)
     print(f"[transition-pack] wrote {out}  ({out.stat().st_size / 1e9:.2f} GB, {len(segs)} segments)")

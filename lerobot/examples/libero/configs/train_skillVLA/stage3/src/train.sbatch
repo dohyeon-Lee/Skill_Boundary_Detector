@@ -67,14 +67,14 @@ fi
 
 # Transition pack — mode a's training set (segment-level skill-start pairs; the VLM's deployment
 # distribution) AND the future FT-replay buffer. Lazy-build if missing (cheap, one-time) — built even
-# in grounding mode (b trains on the FULL dataset, but FT replay still wants the pack). Schema v2 stores
-# the raw start-state window; older packs silently used a zero prompt state, so rebuild them in place.
+# in grounding mode (b trains on the FULL dataset, but FT replay still wants the pack). Schema v3 stores
+# the raw start-state window and jitter distribution; older packs are rebuilt in place.
 if [ -f "${TRANSITION_PACK}" ] && "${PROJECT_ROOT}/.venv/bin/python" -c \
-    'import numpy as np,sys; z=np.load(sys.argv[1]); assert "start_state" in z and int(z["schema_version"]) >= 2' \
+    'import numpy as np,sys; z=np.load(sys.argv[1]); assert "start_state" in z and "jitter_distribution" in z and int(z["schema_version"]) >= 3' \
     "${TRANSITION_PACK}"; then
   echo "Transition pack schema OK: ${TRANSITION_PACK}"
 else
-  echo "Transition pack missing/old → building schema v2 ${TRANSITION_PACK}"
+  echo "Transition pack missing/old → building schema v3 ${TRANSITION_PACK}"
   PYTHONPATH="${LEROBOT_ROOT}/src" \
     "${PROJECT_ROOT}/.venv/bin/python" "${SUBMIT_DIR}/../build_data/src/build_transition_pack.py" \
     --skillvla_dir="${SKILLVLA_DATASET_DIR}" --out="${TRANSITION_PACK}"

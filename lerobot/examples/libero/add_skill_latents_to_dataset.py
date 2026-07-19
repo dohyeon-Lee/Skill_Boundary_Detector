@@ -36,7 +36,7 @@ skill_sequence 토큰 = FSQ scalar code(0 ~ prod(fsq_levels)-1). 특수 토큰�
                 스킬 시작 ±pmax 프레임의 observation.state 윈도우 (에피 경계 clamp).
                 중앙 index [pmax] = 실제 시작 프레임의 state.
 
-학습 로더는 매 스텝 p~half-normal[0,pmax]를 뽑아 스킬 시작을 jitter한다(early/late/else):
+학습 로더는 설정된 half-normal/uniform 분포에서 p를 뽑아 스킬 시작을 jitter한다(early/late/else):
   이미지 = IFS[k'] ± p 프레임을 video에서 디코딩,  state = iss_windows[k'][pmax ± p].
   (이 스크립트는 데이터만 준비하고, jitter/디코딩은 로더가 수행.)
 
@@ -86,6 +86,8 @@ class Args:
     """FSQ codebook size = prod(fsq_levels). EOS=K, PAD=K+1 (no BOS). fsq_levels 미지정 시 직접 입력."""
     pmax: int = 10
     """Stage-2 transition randomization half-window (steps). ISS는 스킬 시작 ±pmax state를 저장."""
+    jitter_distribution: str = "half_normal"
+    """Transition jitter distribution: half_normal or uniform."""
     iss_npz_path: str = ""
     """skill-initial-state npz 출력 경로. 비우면 dst_dataset_dir 옆 skill_initial_state.npz."""
     state_column: str = "observation.state"
@@ -239,6 +241,7 @@ def build_skill_initial_state_npz(
     pmax: int,
     state_dim: int,
     out_path: Path,
+    jitter_distribution: str,
 ) -> int:
     """각 스킬의 시작 ±pmax 프레임 observation.state 윈도우를 flat npz로 저장.
 
@@ -269,6 +272,7 @@ def build_skill_initial_state_npz(
         frame_start=np.asarray(frame_starts, dtype=np.int32),
         iss_windows=iss,
         pmax=np.int32(pmax),
+        jitter_distribution=np.str_(jitter_distribution),
         state_dim=np.int32(state_dim),
     )
     return len(windows)
@@ -321,10 +325,19 @@ def main(args: Args) -> None:
         f"skill_vocab_size={skill_vocab_size}, skill_output_vocab_size={skill_output_vocab_size}"
     )
     pmax = int(args.pmax)
+    jitter_distribution = str(args.jitter_distribution).strip().lower().replace("-", "_").replace(" ", "_")
+    if jitter_distribution not in {"half_normal", "uniform"}:
+        raise ValueError(
+            "--jitter_distribution must be half_normal|uniform, "
+            f"got {args.jitter_distribution!r}."
+        )
     iss_npz_path = Path(args.iss_npz_path) if args.iss_npz_path else dst_dir.parent / "skill_initial_state.npz"
     ep_states_map: dict[int, np.ndarray] = {}   # episode_index → (ep_len, state_dim), ISS 윈도우용
     state_dim: int | None = None
-    print(f"  pmax={pmax}  →  ISS window={2 * pmax + 1}, npz={iss_npz_path}")
+    print(
+        f"  pmax={pmax}, jitter_distribution={jitter_distribution}  "
+        f"→  ISS window={2 * pmax + 1}, npz={iss_npz_path}"
+    )
 
     if dst_dir.exists():
         print(f"Removing existing {dst_dir} ...")
@@ -394,7 +407,8 @@ def main(args: Args) -> None:
     # ── skill-initial-state npz (Stage-2 randomization) ──
     if state_dim is None:
         state_dim = 0
-    n_iss = build_skill_initial_state_npz(skill_map, ep_states_map, pmax, state_dim, iss_npz_path)
+    n_iss = build_skill_initial_state_npz(
+        skill_map, ep_states_map, pmax, state_dim, iss_npz_path, jitter_distribution)
     print(f"  Wrote ISS npz: {iss_npz_path}  (skills={n_iss}, window={2 * pmax + 1}, state_dim={state_dim})")
 
     # ── Update info.json ──────────────────────────────────────────────────────
@@ -413,6 +427,7 @@ def main(args: Args) -> None:
     info["skill_observed_max_length"] = observed_max_length
     info["skill_sequence_size"] = max_seq_len
     info["skill_pmax"] = pmax                          # ISS window 반폭 (= transition randomization)
+    info["skill_jitter_distribution"] = jitter_distribution
     info["skill_initial_state_path"] = str(iss_npz_path)
     info["skill_initial_state_window"] = 2 * pmax + 1
 
