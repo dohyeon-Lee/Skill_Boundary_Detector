@@ -1,0 +1,32 @@
+models:
+  - {model_dir: "", checkpoint: last, advance_mode: terminator, terminator_source: auto, label: S0-pretrain}
+
+modes: "a,b"
+models_per_row: 2
+skill_source: predicted
+output_name: "" # blank: config resolution time
+
+target_task: libero_90
+task_ids: "[0,1,2,3,4,5,6,7,8,9]"
+eval_num_gpus: 10
+n_episodes: 10
+n_action_steps: 5
+eval_batch_size: 1
+max_parallel_tasks: 1
+
+skill_end_mode: or
+skill_end_threshold: 0.5
+skill_end_progress_threshold: 0.9
+inference_skill_max_length: 200
+
+max_videos_per_task: 0
+skill_html: true
+video_frame_stride: 2
+video_fps: 10
+skill_html_train_samples: 10
+
+wandb_project: VLA_stage0_pretrain_eval
+eval_gres: gpu:1
+eval_cpus_per_task: 8
+eval_mem: 32G
+eval_time: "1:00:00"

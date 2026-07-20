@@ -24,7 +24,7 @@ run: {name: "", suffix: ""} # blank name = automatic
 training:
   dataloader: {batch_size: 16, workers: 4, gpus: 1}
   optimizer: {base_lr: 2.5e-05}
-  schedule: {steps: 10000, save_every: 5000}
+  schedule: {steps: 30000, save_every: 5000}
 
 logging:
   param_drift: true

@@ -1961,11 +1961,12 @@ def _episode_exact_override(
 def eval_main(cfg: EvalPipelineConfig):
     logging.info(pformat(asdict(cfg)))
 
-    if cfg.policy is None or cfg.policy.type != "skill_vla":
+    supported = {"skill_vla", "skill_vla_stage0_pretrain"}
+    if cfg.policy is None or cfg.policy.type not in supported:
         policy_type = None if cfg.policy is None else cfg.policy.type
         raise ValueError(
             "lerobot_skillvla_eval is reserved for SkillVLA checkpoints "
-            f"(expected policy.type='skill_vla', got {policy_type!r})."
+            f"(expected one of {sorted(supported)}, got {policy_type!r})."
         )
 
     # Check device is available

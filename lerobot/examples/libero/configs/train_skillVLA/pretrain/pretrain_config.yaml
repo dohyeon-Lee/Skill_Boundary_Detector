@@ -2,7 +2,7 @@ dataset:
   skillvla_root: skillvla_dataset
   source: libero_90_full_full
   run: FSQ333_dino_frozen_small_optimal_vsa_broadcast_150_std_pt_snap10_ms1_pmax15_halfnormal
-  transition_randomization: true # false: exact GT skill-start image/state
+  transition_randomization: false # false: exact GT skill-start image/state
 
 warm_start:
   pi_base: models/pi05_base
@@ -31,4 +31,4 @@ training:
 logging:
   wandb: {enable: true, project: VLA_pretrain}
 
-slurm: {partition: debug, qos: base_qos, gres: "gpu:1", cpus: 16, memory: 192G, time: "48:00:00"}
+slurm: {gres: "gpu:1", cpus: 16, memory: 192G, time: "48:00:00"}

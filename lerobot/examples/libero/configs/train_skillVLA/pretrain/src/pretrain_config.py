@@ -123,8 +123,10 @@ def build_settings(cfg: dict) -> dict:
         run_name = f"{run_name}_{suffix}"
 
     gpus = int(_at(cfg, "training", "dataloader", "gpus", default=1))
-    partition = ",".join(as_list(_at(cfg, "slurm", "partition", default=["debug"]))) or "debug"
-    exclude = ",".join(as_list(_at(cfg, "slurm", "exclude_nodes", default=[])))
+    # Cluster-wide scheduling follows global_config.yaml's canonical train_* keys. Resource size
+    # remains module-local because it depends on this pretraining architecture.
+    partition = ",".join(as_list(cfg.get("train_partition", ["debug"]))) or "debug"
+    exclude = ",".join(as_list(cfg.get("train_exclude_nodes", [])))
     settings = {
         "project_root": project_root,
         "lerobot_root": project_root / "lerobot",
@@ -172,12 +174,12 @@ def build_settings(cfg: dict) -> dict:
         "wandb_enable": as_bool(_at(cfg, "logging", "wandb", "enable", default=True)),
         "wandb_project": str(_at(cfg, "logging", "wandb", "project", default="VLA_pretrain")),
         "train_partition": partition,
-        "train_qos": str(_at(cfg, "slurm", "qos", default="base_qos")),
+        "train_qos": str(cfg.get("train_qos", "base_qos")),
         "train_gres": str(_at(cfg, "slurm", "gres", default="gpu:1")),
         "train_cpus_per_task": int(_at(cfg, "slurm", "cpus", default=16)),
         "train_mem": str(_at(cfg, "slurm", "memory", default="192G")),
         "train_time": str(_at(cfg, "slurm", "time", default="48:00:00")),
-        "train_nodelist": str(_at(cfg, "slurm", "nodelist", default="")),
+        "train_nodelist": str(cfg.get("train_nodelist", "")),
         "train_exclude_nodes": exclude,
     }
     return settings

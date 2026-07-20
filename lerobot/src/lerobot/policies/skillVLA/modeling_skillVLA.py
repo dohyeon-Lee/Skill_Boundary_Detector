@@ -1583,6 +1583,14 @@ class SkillVLAPytorch(PI05Pytorch):
         return self.skill_head.decode(hidden)
 
     # ── cached inference (branch A): VLM cached per skill, cond per call, action per denoise step ──
+    def _prefix_self_attention_mask(self, layers, pad: Tensor) -> Tensor:
+        """Prefix self-attention used by the cached encoder.
+
+        The base SkillVLA prefix is fully bidirectional. Specialized descendants can override this
+        without duplicating the cached K/V implementation (Stage0-pretrain uses a causal skill suffix).
+        """
+        return make_att_2d_masks(pad, torch.zeros_like(pad))
+
     def _encode_prefix_kv(self, layers, embeds, pad, position_ids, adarms=None,
                           extra_kv=None, extra_valid=None, export_bridges=None,
                           export_bridge_mask=None):
@@ -1593,7 +1601,7 @@ class SkillVLAPytorch(PI05Pytorch):
         this reproduces the joint forward's per-layer K/V for the stream exactly, so the cached
         denoise below is numerically identical to a full joint forward."""
         embeds = embeds.to(self._wdtype)
-        att_2d = make_att_2d_masks(pad, torch.zeros_like(pad))                     # (B, n, n) own block
+        att_2d = self._prefix_self_attention_mask(layers, pad)                    # (B, n, n) own block
         if extra_kv is not None:
             ne = extra_valid.shape[1]
             extra_cols = extra_valid[:, None, :].expand(-1, pad.shape[1], -1)      # (B, n, ne)

@@ -70,6 +70,9 @@ def skill_vla_batch_to_transition(batch: dict[str, Any]) -> EnvTransition:
     for key in ("task", "subtask", "index", "task_index", "episode_index", *SKILL_VLA_BATCH_KEYS):
         if key in batch:
             complementary_data[key] = batch[key]
+    complementary_data.update(
+        {key: value for key, value in batch.items() if key.startswith("stage0_pretrain_")}
+    )
     complementary_data.update({k: v for k, v in batch.items() if "_is_pad" in k})
 
     return {
