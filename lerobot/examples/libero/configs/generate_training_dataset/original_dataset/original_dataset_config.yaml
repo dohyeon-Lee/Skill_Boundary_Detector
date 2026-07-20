@@ -1,5 +1,11 @@
 # Shared config for original LIBERO download/convert utilities.
-# project_root comes from configs/global_config.yaml.
+# project_root / dataset_root come from configs/global_config.yaml.
+
+# Relative paths are resolved under global project_root. Environment variables
+# LIBERO_ORIGINAL_DATASET_DIR / LIBERO_DOWNLOAD_TOOLS_DIR still override these.
+original_dataset_root: libero_original_dataset
+original_dataset_tools_root: tools
+original_datasets: libero_100
 
 # ── Convert original HDF5 -> LeRobot v3 ───────────────────────
 # Input:
@@ -7,12 +13,14 @@
 # Output:
 #   {convert_output_root}/{convert_output_name}
 convert_suite: libero_90
-convert_source_root: /data2/dohyeon/SBD/dataset
-convert_output_root: /data2/dohyeon/SBD/dataset
+# Blank source -> {project_root}/{original_dataset_root}
+# Blank output -> {project_root}/{dataset_root} from global_config.yaml
+convert_source_root: ""
+convert_output_root: ""
 convert_output_name: libero_90_full_full
 convert_overwrite: false
 
-# match-current mirrors the video-backed schema under {project_root}/libero_dataset/{suite}.
+# match-current mirrors the video-backed schema under global dataset_root/{suite}.
 # Use rich only when you explicitly want all helper state columns and do not need exact schema parity.
 convert_schema: match-current
 convert_image_size: 256

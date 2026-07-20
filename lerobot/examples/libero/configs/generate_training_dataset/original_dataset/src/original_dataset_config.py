@@ -79,21 +79,46 @@ def optional_string(value: Any) -> str:
     return str(value).strip()
 
 
+def resolve_path(project_root: Path, value: Any, default: Path | str) -> Path:
+    """Resolve module paths relative to the project selected by global_config.yaml."""
+    raw = value if value not in (None, "", "null") else default
+    path = Path(str(raw)).expanduser()
+    return path if path.is_absolute() else project_root / path
+
+
 def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
-    project_root = Path(str(get_value(cfg, "project_root"))).expanduser()
+    project_root = Path(str(get_value(cfg, "project_root", env="PROJECT_ROOT"))).expanduser()
+    dataset_root = resolve_path(
+        project_root,
+        get_value(cfg, "dataset_root", "dataset"),
+        "dataset",
+    )
+    original_dataset_root = resolve_path(
+        project_root,
+        get_value(
+            cfg,
+            "original_dataset_root",
+            "libero_original_dataset",
+            env="LIBERO_ORIGINAL_DATASET_DIR",
+        ),
+        "libero_original_dataset",
+    )
+    download_tools_root = resolve_path(
+        project_root,
+        get_value(cfg, "original_dataset_tools_root", "tools", env="LIBERO_DOWNLOAD_TOOLS_DIR"),
+        "tools",
+    )
     suite = str(get_value(cfg, "convert_suite", "libero_90", env="CONVERT_SUITE"))
-    source_root = Path(str(get_value(
-        cfg,
-        "convert_source_root",
-        project_root / "libero_original_dataset",
-        env="CONVERT_SOURCE_ROOT",
-    ))).expanduser()
-    output_root = Path(str(get_value(
-        cfg,
-        "convert_output_root",
-        project_root / "libero_original_dataset",
-        env="CONVERT_OUTPUT_ROOT",
-    ))).expanduser()
+    source_root = resolve_path(
+        project_root,
+        get_value(cfg, "convert_source_root", "", env="CONVERT_SOURCE_ROOT"),
+        original_dataset_root,
+    )
+    output_root = resolve_path(
+        project_root,
+        get_value(cfg, "convert_output_root", "", env="CONVERT_OUTPUT_ROOT"),
+        dataset_root,
+    )
     output_name = str(get_value(cfg, "convert_output_name", f"{suite}_full_full", env="CONVERT_OUTPUT_NAME"))
 
     # Slurm partition/qos/nodelist/exclude are canonical (global_config.yaml train_*); env vars still override.
@@ -102,9 +127,22 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
 
     return {
         "project_root": project_root,
-        "python_bin": project_root / ".venv" / "bin" / "python",
+        "python_bin": get_value(
+            cfg,
+            "python_bin",
+            project_root / ".venv" / "bin" / "python",
+            env="PYTHON_BIN",
+        ),
         "config_path": DEFAULT_CONFIG_PATH,
         "convert_script": DEFAULT_CONFIG_PATH.parent / "convert_original_libero_to_lerobot.py",
+        "original_dataset_root": original_dataset_root,
+        "original_dataset_tools_root": download_tools_root,
+        "original_datasets": str(get_value(
+            cfg,
+            "original_datasets",
+            "libero_100",
+            env="LIBERO_ORIGINAL_DATASETS",
+        )),
         "convert_suite": suite,
         "convert_source_root": source_root,
         "convert_output_root": output_root,
@@ -162,4 +200,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

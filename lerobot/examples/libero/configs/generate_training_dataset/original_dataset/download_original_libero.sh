@@ -17,11 +17,20 @@
 
 set -euo pipefail
 
-PROJECT_ROOT="${PROJECT_ROOT:-/data2/dohyeon/SBD}"
-DOWNLOAD_DIR="${LIBERO_ORIGINAL_DATASET_DIR:-${PROJECT_ROOT}/libero_original_dataset}"
-TOOLS_DIR="${LIBERO_DOWNLOAD_TOOLS_DIR:-${PROJECT_ROOT}/tools}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONFIG_PATH="${ORIGINAL_DATASET_CONFIG:-${SCRIPT_DIR}/original_dataset_config.yaml}"
+CONFIG_PY="${SCRIPT_DIR}/src/original_dataset_config.py"
+
+# Resolve project/data roots from configs/global_config.yaml. Environment variables
+# (PROJECT_ROOT, LIBERO_ORIGINAL_DATASET_DIR, LIBERO_DOWNLOAD_TOOLS_DIR, etc.) still win.
+BOOTSTRAP_PYTHON="${SCRIPT_DIR}/../../../../../../.venv/bin/python"
+[ -x "${BOOTSTRAP_PYTHON}" ] || BOOTSTRAP_PYTHON=python3
+eval "$("${BOOTSTRAP_PYTHON}" "${CONFIG_PY}" --config "${CONFIG_PATH}" --shell)"
+
+DOWNLOAD_DIR="${ORIGINAL_DATASET_ROOT}"
+TOOLS_DIR="${ORIGINAL_DATASET_TOOLS_ROOT}"
 REPO_DIR="${LIBERO_LIBERO_REPO_DIR:-${TOOLS_DIR}/lerobot-libero}"
-DATASETS="${LIBERO_ORIGINAL_DATASETS:-libero_100}"
+DATASETS="${ORIGINAL_DATASETS}"
 USE_HUGGINGFACE="${LIBERO_USE_HUGGINGFACE:-1}"
 UPDATE_REPO="${LIBERO_UPDATE_REPO:-0}"
 INSTALL_REPO="${LIBERO_INSTALL_REPO:-1}"
@@ -35,7 +44,6 @@ export HF_HUB_DISABLE_XET="${HF_HUB_DISABLE_XET:-1}"
 export HF_HUB_DOWNLOAD_TIMEOUT="${HF_HUB_DOWNLOAD_TIMEOUT:-60}"
 export HF_HUB_ETAG_TIMEOUT="${HF_HUB_ETAG_TIMEOUT:-60}"
 
-PYTHON_BIN="${PYTHON_BIN:-${PROJECT_ROOT}/.venv/bin/python}"
 if [ ! -x "${PYTHON_BIN}" ]; then
   PYTHON_BIN=python3
 fi
@@ -53,14 +61,27 @@ echo "  hf retries   : ${HF_RETRIES}"
 echo "  hf xet off   : ${HF_HUB_DISABLE_XET}"
 echo "  hf timeout   : download=${HF_HUB_DOWNLOAD_TIMEOUT}s etag=${HF_HUB_ETAG_TIMEOUT}s"
 
-if [ ! -d "${REPO_DIR}/.git" ]; then
+if [ -e "${REPO_DIR}/.git" ]; then
+  if [ "${UPDATE_REPO}" = "1" ]; then
+    echo "[1/3] Update downloader repo"
+    git -C "${REPO_DIR}" pull --ff-only
+  else
+    echo "[1/3] Downloader git repo already exists -> skip clone"
+  fi
+elif [ -f "${REPO_DIR}/pyproject.toml" ] \
+  && [ -f "${REPO_DIR}/benchmark_scripts/download_libero_datasets.py" ] \
+  && [ -d "${REPO_DIR}/libero/libero" ]; then
+  echo "[1/3] Downloader source already exists without .git -> reuse existing files"
+  if [ "${UPDATE_REPO}" = "1" ]; then
+    echo "      LIBERO_UPDATE_REPO=1 ignored because this source copy has no .git metadata."
+  fi
+elif [ -e "${REPO_DIR}" ]; then
+  echo "Downloader path exists but is not a complete lerobot-libero source tree: ${REPO_DIR}" >&2
+  echo "Move it aside, or set LIBERO_LIBERO_REPO_DIR to another empty path." >&2
+  exit 1
+else
   echo "[1/3] Clone downloader repo"
   git clone https://github.com/huggingface/lerobot-libero "${REPO_DIR}"
-elif [ "${UPDATE_REPO}" = "1" ]; then
-  echo "[1/3] Update downloader repo"
-  git -C "${REPO_DIR}" pull --ff-only
-else
-  echo "[1/3] Downloader repo already exists -> skip clone"
 fi
 
 if [ "${INSTALL_REPO}" = "1" ]; then

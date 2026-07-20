@@ -24,7 +24,7 @@ SRC_DIR="${SUBMIT_DIR}/src"
 CONFIG_PATH="${ORIGINAL_DATASET_CONFIG:-${SUBMIT_DIR}/original_dataset_config.yaml}"
 CONFIG_PY="${SRC_DIR}/original_dataset_config.py"
 
-BOOTSTRAP_PYTHON="${SUBMIT_DIR}/../../../../../.venv/bin/python"
+BOOTSTRAP_PYTHON="${SUBMIT_DIR}/../../../../../../.venv/bin/python"
 [ -x "${BOOTSTRAP_PYTHON}" ] || BOOTSTRAP_PYTHON=python3
 eval "$("${BOOTSTRAP_PYTHON}" "${CONFIG_PY}" --config "${CONFIG_PATH}" --shell)"
 
@@ -68,4 +68,3 @@ nvidia-smi || true
 "${PYTHON_BIN}" "${CONVERT_SCRIPT}" "${ARGS[@]}"
 
 echo "DONE -> ${CONVERT_OUTPUT_ROOT}/${CONVERT_OUTPUT_NAME}"
-

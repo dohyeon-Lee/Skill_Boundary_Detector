@@ -22,7 +22,7 @@ source "${_lib}/snapshot_config.sh"
 CONFIG_PATH="$(snapshot_config "${CONFIG_PATH}")"
 CONFIG_PY="${SRC_DIR}/original_dataset_config.py"
 
-BOOTSTRAP_PYTHON="${SCRIPT_DIR}/../../../../../.venv/bin/python"
+BOOTSTRAP_PYTHON="${SCRIPT_DIR}/../../../../../../.venv/bin/python"
 [ -x "${BOOTSTRAP_PYTHON}" ] || BOOTSTRAP_PYTHON=python3
 eval "$("${BOOTSTRAP_PYTHON}" "${CONFIG_PY}" --config "${CONFIG_PATH}" --shell)"
 
@@ -57,4 +57,3 @@ echo "  codec  : ${CONVERT_VCODEC}"
 echo "  slurm  : partition=${CONVERT_PARTITION} nodelist=${CONVERT_NODELIST:-<none>} exclude=${CONVERT_EXCLUDE_NODES:-<none>}"
 
 ORIGINAL_DATASET_CONFIG="${CONFIG_PATH}" sbatch "${SBATCH_ARGS[@]}" "${SRC_DIR}/convert_original_libero.sbatch"
-

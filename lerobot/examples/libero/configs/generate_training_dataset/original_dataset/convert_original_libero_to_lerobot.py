@@ -5,7 +5,7 @@
 # Reference model:
 #   none
 # Outputs:
-#   LeRobot data  : {project_root}/libero_original_dataset/{output_name}
+#   LeRobot data  : {project_root}/{dataset_root}/{output_name}
 """Convert original LIBERO HDF5 demos into the local LeRobot dataset format.
 
 The converter keeps the current SBD conventions:
@@ -42,7 +42,7 @@ from PIL import Image
 
 THIS_DIR = Path(__file__).resolve().parent
 GENERATE_DIR = THIS_DIR.parent
-PROJECT_ROOT_FALLBACK = Path("/data2/dohyeon/SBD")
+PROJECT_ROOT_FALLBACK = THIS_DIR.parents[5]
 CONFIG_PATH = GENERATE_DIR / "training_dataset_config.yaml"
 
 sys.path.insert(0, str(GENERATE_DIR / "src"))
@@ -136,7 +136,7 @@ def parse_args() -> argparse.Namespace:
         "--output-root",
         type=Path,
         default=None,
-        help="Root where converted LeRobot datasets are written. Default: {project_root}/libero_original_dataset",
+        help="Root where converted LeRobot datasets are written. Default: global dataset_root",
     )
     parser.add_argument(
         "--output-name",
@@ -335,8 +335,8 @@ def main() -> None:
     args = parse_args()
     project_dir, configured_output_root = load_paths(args.config)
     source_root = args.source_root or (project_dir / "libero_original_dataset")
-    output_root = args.output_root or source_root
-    schema_root = project_dir / "libero_dataset"
+    output_root = args.output_root or configured_output_root
+    schema_root = configured_output_root
     source_dir = source_root / args.suite
     output_name = args.output_name or f"{args.suite}_full_full"
     output_dir = output_root / output_name

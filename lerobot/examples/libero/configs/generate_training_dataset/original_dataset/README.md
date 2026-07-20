@@ -1,9 +1,10 @@
 # Original LIBERO Download
 
-This folder downloads the original LIBERO data into a separate directory:
+This folder downloads the original LIBERO data into a separate directory under
+the `project_root` selected in `configs/global_config.yaml`:
 
 ```text
-/data2/dohyeon/SBD/libero_original_dataset
+{project_root}/libero_original_dataset
 ```
 
 It intentionally does not write into `libero_dataset/`. The downloaded files are
@@ -15,12 +16,10 @@ format used by the current `libero_dataset/libero_90` and `libero_dataset/libero
 From this folder, use the stable Hugging Face path:
 
 ```bash
-cd /data2/dohyeon/SBD/lerobot/examples/libero/configs/generate_training_dataset/original_dataset
+cd {project_root}/lerobot/examples/libero/configs/generate_training_dataset/original_dataset
 
 LIBERO_HF_MAX_WORKERS=2 \
-PROJECT_ROOT=/data2/dohyeon/SBD \
 LIBERO_ORIGINAL_DATASETS=libero_100 \
-LIBERO_ORIGINAL_DATASET_DIR=/data2/dohyeon/SBD/libero_original_dataset \
 ./download_original_libero.sh
 ```
 
@@ -35,7 +34,7 @@ HF_HUB_DISABLE_XET=1 HF_HUB_DOWNLOAD_TIMEOUT=60 HF_HUB_ETAG_TIMEOUT=60 LIBERO_HF
 Default output root:
 
 ```text
-/data2/dohyeon/SBD/libero_original_dataset
+{project_root}/libero_original_dataset
 ```
 
 For `LIBERO_ORIGINAL_DATASETS=libero_100`, the Hugging Face mirror stores
@@ -43,8 +42,8 @@ LIBERO-100 as the two folders below, so the local downloader maps
 `libero_100 -> libero_90 + libero_10`:
 
 ```text
-/data2/dohyeon/SBD/libero_original_dataset/libero_90/
-/data2/dohyeon/SBD/libero_original_dataset/libero_10/
+{project_root}/libero_original_dataset/libero_90/
+{project_root}/libero_original_dataset/libero_10/
 ```
 
 with `.hdf5` or `.h5` demonstration files inside.
@@ -52,7 +51,7 @@ with `.hdf5` or `.h5` demonstration files inside.
 The downloader repository is cloned to:
 
 ```text
-/data2/dohyeon/SBD/tools/lerobot-libero
+{project_root}/tools/lerobot-libero
 ```
 
 ## Options
@@ -95,9 +94,9 @@ LIBERO_ORIGINAL_DATASETS=all
 ## Convert To LeRobot
 
 After download, convert the original HDF5 files into the LeRobot dataset format
-used by the current training pipeline. The converted LeRobot datasets are stored
-under `libero_original_dataset/` as well, so they stay separate from the current
-training datasets under `libero_dataset/`.
+used by the current training pipeline. By default, raw HDF5 files are read from
+`{project_root}/libero_original_dataset`, and converted datasets are written to
+the `dataset_root` selected in `configs/global_config.yaml`.
 
 Edit:
 
@@ -108,7 +107,7 @@ original_dataset_config.yaml
 Then submit:
 
 ```bash
-cd /data2/dohyeon/SBD/lerobot/examples/libero/configs/generate_training_dataset/original_dataset
+cd {project_root}/lerobot/examples/libero/configs/generate_training_dataset/original_dataset
 ./submit_convert_original_libero.sh
 ```
 
@@ -129,9 +128,9 @@ ordinary LeRobot video frames for DP/FSQ/VLA training.
 Smoke test:
 
 ```bash
-cd /data2/dohyeon/SBD/lerobot/examples/libero/configs/generate_training_dataset/original_dataset
+cd {project_root}/lerobot/examples/libero/configs/generate_training_dataset/original_dataset
 
-/data2/dohyeon/SBD/.venv/bin/python ./convert_original_libero_to_lerobot.py \
+{project_root}/.venv/bin/python ./convert_original_libero_to_lerobot.py \
   --suite libero_10 \
   --output-name libero_10_smoke \
   --max-tasks 1 \
@@ -141,33 +140,33 @@ cd /data2/dohyeon/SBD/lerobot/examples/libero/configs/generate_training_dataset/
 Full conversion:
 
 ```bash
-cd /data2/dohyeon/SBD/lerobot/examples/libero/configs/generate_training_dataset/original_dataset
+cd {project_root}/lerobot/examples/libero/configs/generate_training_dataset/original_dataset
 
-/data2/dohyeon/SBD/.venv/bin/python ./convert_original_libero_to_lerobot.py \
+{project_root}/.venv/bin/python ./convert_original_libero_to_lerobot.py \
   --suite libero_90
 
-/data2/dohyeon/SBD/.venv/bin/python ./convert_original_libero_to_lerobot.py \
+{project_root}/.venv/bin/python ./convert_original_libero_to_lerobot.py \
   --suite libero_10
 ```
 
 Outputs:
 
 ```text
-/data2/dohyeon/SBD/libero_original_dataset/libero_90_full_full
-/data2/dohyeon/SBD/libero_original_dataset/libero_10_full_full
+{project_root}/{dataset_root}/libero_90_full_full
+{project_root}/{dataset_root}/libero_10_full_full
 ```
 
 Validate:
 
 ```bash
-cd /data2/dohyeon/SBD/lerobot/examples/libero/configs/generate_training_dataset
+cd {project_root}/lerobot/examples/libero/configs/generate_training_dataset
 
-/data2/dohyeon/SBD/.venv/bin/python ./inspect_training_dataset.py \
-  --root /data2/dohyeon/SBD/libero_original_dataset \
+{project_root}/.venv/bin/python ./inspect_training_dataset.py \
+  --root {project_root}/{dataset_root} \
   --dataset libero_90_full_full
 
-/data2/dohyeon/SBD/.venv/bin/python ./inspect_training_dataset.py \
-  --root /data2/dohyeon/SBD/libero_original_dataset \
+{project_root}/.venv/bin/python ./inspect_training_dataset.py \
+  --root {project_root}/{dataset_root} \
   --dataset libero_10_full_full
 ```
 
@@ -190,19 +189,19 @@ So normally no extra stats step is needed after
 without pushing anything to Hugging Face, run:
 
 ```bash
-cd /data2/dohyeon/SBD/lerobot/examples/libero/configs/generate_training_dataset/original_dataset
+cd {project_root}/lerobot/examples/libero/configs/generate_training_dataset/original_dataset
 
-/data2/dohyeon/SBD/.venv/bin/python ./ensure_quantile_stats.py \
+{project_root}/.venv/bin/python ./ensure_quantile_stats.py \
   --dataset libero_90_full_full
 
-/data2/dohyeon/SBD/.venv/bin/python ./ensure_quantile_stats.py \
+{project_root}/.venv/bin/python ./ensure_quantile_stats.py \
   --dataset libero_10_full_full
 ```
 
 Force recompute:
 
 ```bash
-/data2/dohyeon/SBD/.venv/bin/python ./ensure_quantile_stats.py \
+{project_root}/.venv/bin/python ./ensure_quantile_stats.py \
   --dataset libero_90_full_full \
   --overwrite
 ```
@@ -210,9 +209,9 @@ Force recompute:
 Once `*_full_full` is validated, it can be copied or renamed to:
 
 ```text
-/data2/dohyeon/SBD/libero_dataset/libero_90
-/data2/dohyeon/SBD/libero_dataset/libero_10
+{project_root}/{dataset_root}/libero_90
+{project_root}/{dataset_root}/libero_10
 ```
 
-or used directly as `libero_90_full_full` / `libero_10_full_full` with
-`--root /data2/dohyeon/SBD/libero_original_dataset` when inspecting.
+or used directly as `libero_90_full_full` / `libero_10_full_full` from the
+currently selected global `dataset_root`.

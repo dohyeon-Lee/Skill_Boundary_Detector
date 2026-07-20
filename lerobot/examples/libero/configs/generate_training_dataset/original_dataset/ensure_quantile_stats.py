@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # Inputs:
-#   LeRobot data : {project_root}/libero_original_dataset/{dataset}
+#   LeRobot data : {project_root}/{dataset_root}/{dataset}
 #   config       : ../training_dataset_config.yaml
 # Reference model:
 #   none
 # Outputs:
-#   stats file   : {project_root}/libero_original_dataset/{dataset}/meta/stats.json
+#   stats file   : {project_root}/{dataset_root}/{dataset}/meta/stats.json
 """Check or recompute local LeRobot quantile stats for converted LIBERO data.
 
 Converted datasets created by the current local LeRobot v3 writer already
@@ -31,7 +31,7 @@ GENERATE_DIR = THIS_DIR.parent
 CONFIG_PATH = GENERATE_DIR / "training_dataset_config.yaml"
 
 sys.path.insert(0, str(GENERATE_DIR / "src"))
-from training_dataset_config import load_config, project_root
+from training_dataset_config import dataset_root_path, load_config
 
 
 QUANTILE_KEYS = ["q01", "q10", "q50", "q90", "q99"]
@@ -41,12 +41,12 @@ QUANTILE_Q = [0.01, 0.10, 0.50, 0.90, 0.99]
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--config", type=Path, default=CONFIG_PATH)
-    parser.add_argument("--dataset", required=True, help="Dataset folder name under libero_original_dataset/")
+    parser.add_argument("--dataset", required=True, help="Dataset folder name under global dataset_root")
     parser.add_argument(
         "--root",
         type=Path,
         default=None,
-        help="Converted dataset root. Default: {project_root}/libero_original_dataset",
+        help="Converted dataset root. Default: global dataset_root",
     )
     parser.add_argument(
         "--repo-id",
@@ -118,7 +118,7 @@ def recompute_global_stats(dataset_dir: Path, stats_path: Path, stats: dict) -> 
 def main() -> None:
     args = parse_args()
     cfg = load_config(args.config)
-    root = args.root or (project_root(cfg) / "libero_original_dataset")
+    root = args.root or dataset_root_path(cfg)
     dataset_dir = root / args.dataset
     stats_path = dataset_dir / "meta" / "stats.json"
 
