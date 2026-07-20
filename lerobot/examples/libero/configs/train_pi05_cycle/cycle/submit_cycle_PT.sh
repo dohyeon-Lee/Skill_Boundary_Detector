@@ -33,7 +33,7 @@ mkdir -p logs
 echo "Submit pi05 cyclic PT"
 echo "  dataset : ${PT_DATASET_DIR}"
 echo "  output  : ${PT_OUTPUT_DIR}"
-echo "  cycle   : groups=${CYCLE_N_GROUPS} phase=${CYCLE_PHASE_STEPS} lambda=${CYCLE_DELTA_LAMBDA} beta=${CYCLE_REPTILE_BETA}"
+echo "  cycle   : groups=${CYCLE_N_GROUPS} phase=${CYCLE_PHASE_STEPS} beta=${CYCLE_REPTILE_BETA}"
 echo "  slurm   : partition=${PT_PARTITION} nodelist=${PT_NODELIST:-<none>} exclude=${PT_EXCLUDE_NODES:-<none>}"
 
 TRAIN_PI05_CYCLE_CONFIG="${CONFIG_PATH}" sbatch "${SBATCH_ARGS[@]}" "${SCRIPT_DIR}/cycle_PT.sbatch"

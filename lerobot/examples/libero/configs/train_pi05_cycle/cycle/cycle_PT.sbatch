@@ -47,7 +47,7 @@ echo "base     : ${PI_BASE}"
 echo "tokenizer: ${PI05_TOKENIZER_PATH}"
 echo "output   : ${PT_OUTPUT_DIR}"
 echo "lr/bs    : ${PT_LR} / ${PT_BATCH_SIZE}"
-echo "cycle    : groups=${CYCLE_N_GROUPS} phase=${CYCLE_PHASE_STEPS} lambda=${CYCLE_DELTA_LAMBDA} beta=${CYCLE_REPTILE_BETA}"
+echo "cycle    : groups=${CYCLE_N_GROUPS} phase=${CYCLE_PHASE_STEPS} beta=${CYCLE_REPTILE_BETA}"
 nvidia-smi || true
 
 if [ ! -d "${PT_DATASET_DIR}" ]; then
@@ -101,8 +101,6 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes=1 
   --phase_steps="${CYCLE_PHASE_STEPS}" \
   --n_cycles="${CYCLE_N_CYCLES}" \
   --group_seed="${CYCLE_GROUP_SEED}" \
-  --delta_lambda="${CYCLE_DELTA_LAMBDA}" \
-  --delta_max_weight="${CYCLE_DELTA_MAX_WEIGHT}" \
   --reptile_beta="${CYCLE_REPTILE_BETA}" \
   --reptile_beta_end="${CYCLE_REPTILE_BETA_END}" \
   --probe_batches_per_group="${CYCLE_PROBE_BATCHES}" \

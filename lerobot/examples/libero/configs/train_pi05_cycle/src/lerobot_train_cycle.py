@@ -7,22 +7,18 @@ trains in a *block-cyclic task curriculum*:
   - The dataset's tasks are split into `n_groups` fixed groups (seeded, saved to groups.json).
   - Training proceeds in *phases*: `phase_steps` optimizer steps on ONE group's data only,
     then the next group, ... Group order is reshuffled every cycle.
-  - (optional) Δ-feedback  — `delta_lambda` > 0: when revisiting group g, its loss is scaled by
-        w_g = 1 + delta_lambda * max(0, (probe_g_now − probe_g_own_last) / probe_g_own_last)
-    where probe losses are measured on FIXED per-group probe batches with FIXED flow-matching
-    noise (fork_rng), so the delta measures parameter change only, not sampling noise.
   - (optional) Reptile — `reptile_beta` < 1: parameters are snapshotted at cycle start (anchor,
     CPU) and after the full cycle interpolated:  θ ← anchor + β·(θ − anchor).
     Cycle-level anchor (not per-phase) so inter-group cross terms live inside one inner loop.
 
-  With delta_lambda=0 and reptile_beta=1 this is pure block-cyclic training; the iid baseline
-  is the regular configs/train_pi05 pipeline.
+  With reptile_beta=1 this is pure block-cyclic training. The iid baseline uses global shuffle
+  with the same probe instrumentation for a fair comparison.
 
 Diagnostics logged to wandb at every phase boundary (probe forward passes only, cheap):
   - probe/g{j}_loss     : fixed-probe loss of every group j  → interference matrix / recovery
                           curves are reconstructable offline from these + cycle/active_group.
   - probe/g{j}_forget   : relative loss regression of j vs. the end of j's own last phase.
-  - cycle/*             : cycle index, active group, active Δ-weight.
+  - cycle/*             : cycle index and active group.
   - probe/grad_cos_g{X} : (optional, `probe_grad_group` ≥ 0) cosine of group X's probe gradient
                           between consecutive boundaries — Taylor-validity ("rotation") signal.
                           Costs one probe backward per boundary + ~6 GB CPU for the stored grad.
@@ -34,7 +30,7 @@ Example:
       --dataset.repo_id=lerobot/libero_90_full_full --dataset.root=... \
       --policy.type=pi05 --policy.pretrained_path=... --output_dir=... \
       --steps=20000 --batch_size=16 \
-      --n_groups=8 --phase_steps=500 --delta_lambda=0.5 --reptile_beta=0.5
+      --n_groups=8 --phase_steps=500 --reptile_beta=0.5
 """
 
 import json
@@ -80,9 +76,6 @@ class CycleTrainPipelineConfig(TrainPipelineConfig):
     phase_steps: int = 500     # optimizer steps per group phase (the "k" dial)
     n_cycles: int = 0          # >0: OVERRIDES phase_steps = steps // (n_groups × n_cycles)
     group_seed: int = 0        # seeds task→group split AND per-cycle order shuffle
-    # ── Δ-feedback (0 disables) ─────────────────────────────────────────────
-    delta_lambda: float = 0.0
-    delta_max_weight: float = 3.0   # cap on w_g
     # ── Reptile (1.0 disables) ──────────────────────────────────────────────
     reptile_beta: float = 1.0       # θ ← anchor + β(θ − anchor) at cycle end
     # β-schedule: ≥0 → β anneals reptile_beta → reptile_beta_end over cycles (cosine).
@@ -97,7 +90,7 @@ class CycleTrainPipelineConfig(TrainPipelineConfig):
     # ── iid baseline mode ───────────────────────────────────────────────────
     iid_baseline: bool = False  # true: PLAIN iid training (global shuffle) with the SAME probe/
                                 # logging instrumentation — the fair comparison baseline.
-                                # phase_steps then only sets the probe cadence; Δ/Reptile ignored.
+                                # phase_steps then only sets the probe cadence; Reptile ignored.
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -296,18 +289,16 @@ def reptile_interpolate(policy, anchor: dict[str, torch.Tensor], beta: float, de
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# One optimizer step (lerobot's update_policy minus RA-BC, plus loss scaling)
+# One optimizer step (lerobot's update_policy minus RA-BC)
 # ════════════════════════════════════════════════════════════════════════════
 
 
-def update_policy_scaled(
-    train_metrics, policy, batch, optimizer, grad_clip_norm, accelerator, lr_scheduler, loss_scale: float
-):
+def update_policy(train_metrics, policy, batch, optimizer, grad_clip_norm, accelerator, lr_scheduler):
     start_time = time.perf_counter()
     policy.train()
     with accelerator.autocast():
         loss, output_dict = policy.forward(batch)
-    accelerator.backward(loss * loss_scale)  # Δ-feedback enters ONLY as a detached scalar gain
+    accelerator.backward(loss)
     if grad_clip_norm > 0:
         grad_norm = accelerator.clip_grad_norm_(policy.parameters(), grad_clip_norm)
     else:
@@ -316,7 +307,7 @@ def update_policy_scaled(
     optimizer.zero_grad()
     if lr_scheduler is not None:
         lr_scheduler.step()
-    train_metrics.loss = loss.item()  # log the UNscaled loss (comparable across conditions)
+    train_metrics.loss = loss.item()
     train_metrics.grad_norm = grad_norm.item()
     train_metrics.lr = optimizer.param_groups[0]["lr"]
     train_metrics.update_s = time.perf_counter() - start_time
@@ -410,8 +401,8 @@ def train(cfg: CycleTrainPipelineConfig):
     if cfg.iid_baseline:
         all_frames = np.concatenate([g["frame_indices"] for g in groups])
         global_cursor = GroupCursor(all_frames, seed=(cfg.group_seed, 999))
-        if cfg.delta_lambda > 0 or cfg.reptile_beta < 1.0:
-            logging.warning("iid_baseline=true → delta_lambda / reptile_beta are IGNORED (plain training).")
+        if cfg.reptile_beta < 1.0:
+            logging.warning("iid_baseline=true → reptile_beta is ignored (plain training).")
 
     if cfg.n_cycles > 0:
         cfg.phase_steps = max(1, cfg.steps // (cfg.n_groups * cfg.n_cycles))
@@ -419,13 +410,12 @@ def train(cfg: CycleTrainPipelineConfig):
     steps_per_cycle = cfg.n_groups * cfg.phase_steps
     logging.info(
         f"{cfg.steps=} | {cfg.n_groups=} × {cfg.phase_steps=} → {steps_per_cycle} steps/cycle "
-        f"→ ~{cfg.steps / steps_per_cycle:.1f} cycles | delta_lambda={cfg.delta_lambda} "
-        f"reptile_beta={cfg.reptile_beta}"
+        f"→ ~{cfg.steps / steps_per_cycle:.1f} cycles | reptile_beta={cfg.reptile_beta}"
     )
     if cfg.steps / steps_per_cycle < 2:
         logging.warning(
             f"Fewer than 2 cycles ({cfg.steps / steps_per_cycle:.2f}) — groups get (almost) no "
-            "revisits, so the whole cyclic mechanism (recovery/Δ/Reptile averaging) cannot act. "
+            "revisits, so recovery and Reptile averaging cannot act. "
             "Lower phase_steps or set n_cycles."
         )
 
@@ -463,7 +453,7 @@ def train(cfg: CycleTrainPipelineConfig):
         if wandb_logger:
             wandb_logger._wandb.log({f"{section}/{k}": v for k, v in d.items()}, step=step)
 
-    def log_probe(probe_vals, own_last, step, cycle_idx, active_group, w_active, tag=""):
+    def log_probe(probe_vals, own_last, step, cycle_idx, active_group, tag=""):
         # separate sidebar sections: probe_loss/ vs probe_forget/
         forgets = {j: (probe_vals[j] - own_last[j]) / max(own_last[j], 1e-8) for j in probe_vals}
         wandb_log_section("probe_loss", {f"g{j}": v for j, v in probe_vals.items()}, step)
@@ -471,13 +461,13 @@ def train(cfg: CycleTrainPipelineConfig):
         # legacy duplicate under probe/ — keeps new runs overlayable with pre-split runs
         wandb_log_section("probe", {f"g{j}_loss": v for j, v in probe_vals.items()}
                           | {f"g{j}_forget": v for j, v in forgets.items()}, step)
-        wandb_log_section("cycle", {"index": cycle_idx, "active_group": active_group, "w_active": w_active}, step)
+        wandb_log_section("cycle", {"index": cycle_idx, "active_group": active_group}, step)
         if cfg.iid_baseline:
             wandb_log_section("epoch", {"global": global_cursor.epochs}, step)
         else:
             wandb_log_section("epoch", {f"g{j}": cursors[j].epochs for j in probe_vals}, step)
         logging.info(
-            f"[probe{tag}] step={step} cyc={cycle_idx} g={active_group} w={w_active:.3f} "
+            f"[probe{tag}] step={step} cyc={cycle_idx} g={active_group} "
             + " ".join(f"g{j}={v:.4f}" for j, v in sorted(probe_vals.items()))
         )
 
@@ -485,7 +475,7 @@ def train(cfg: CycleTrainPipelineConfig):
     probe_vals = measure_probe(policy, preprocessor, probe_batches, accelerator, cfg.probe_seed)
     own_last = dict(probe_vals)  # probe loss at the end of each group's own last phase
     prev_probe_grad = None
-    log_probe(probe_vals, own_last, 0, 0, -1, 1.0, tag="@init")
+    log_probe(probe_vals, own_last, 0, 0, -1, tag="@init")
 
     step, cycle_idx = 0, 0
     while step < cfg.steps:
@@ -503,12 +493,6 @@ def train(cfg: CycleTrainPipelineConfig):
                 break
             g = groups[gid]
 
-            # Δ-feedback weight for this phase (detached scalar; 1.0 when disabled or improved)
-            w = 1.0
-            if cfg.delta_lambda > 0 and not cfg.iid_baseline:
-                rel_forget = (probe_vals[gid] - own_last[gid]) / max(own_last[gid], 1e-8)
-                w = min(1.0 + cfg.delta_lambda * max(0.0, rel_forget), cfg.delta_max_weight)
-
             n_phase = min(cfg.phase_steps, cfg.steps - step)
             cursor = global_cursor if cfg.iid_baseline else cursors[gid]
             idxs = cursor.take(n_phase * cfg.batch_size)
@@ -519,9 +503,9 @@ def train(cfg: CycleTrainPipelineConfig):
                 batch = next(dl_iter)
                 batch = preprocessor(batch)
                 train_tracker.dataloading_s = time.perf_counter() - t0
-                train_tracker, _ = update_policy_scaled(
+                train_tracker, _ = update_policy(
                     train_tracker, policy, batch, optimizer,
-                    cfg.optimizer.grad_clip_norm, accelerator, lr_scheduler, loss_scale=w,
+                    cfg.optimizer.grad_clip_norm, accelerator, lr_scheduler,
                 )
                 step += 1
                 steps_in_cycle += 1
@@ -559,7 +543,7 @@ def train(cfg: CycleTrainPipelineConfig):
             # (logging first makes the active group's "forget" = net drift since its own previous
             # phase end — i.e. recovery completeness — instead of a trivial 0)
             probe_vals = measure_probe(policy, preprocessor, probe_batches, accelerator, cfg.probe_seed)
-            log_probe(probe_vals, own_last, step, cycle_idx, -1 if cfg.iid_baseline else gid, w)
+            log_probe(probe_vals, own_last, step, cycle_idx, -1 if cfg.iid_baseline else gid)
             if cfg.iid_baseline:
                 own_last = dict(probe_vals)  # iid: every boundary "visits" all groups equally
             else:
@@ -581,7 +565,7 @@ def train(cfg: CycleTrainPipelineConfig):
             del anchor
             wandb_log_section("cycle", {"reptile_beta": beta}, step)
             probe_vals = measure_probe(policy, preprocessor, probe_batches, accelerator, cfg.probe_seed)
-            log_probe(probe_vals, own_last, step, cycle_idx, -2, 1.0, tag="@post-reptile")
+            log_probe(probe_vals, own_last, step, cycle_idx, -2, tag="@post-reptile")
         cycle_idx += 1
 
     progbar.close()

@@ -45,10 +45,8 @@ task 하나 끝날 때마다 그 자리에서 side-by-side 영상 합성(라벨 
 | 조건 | 설정 | run name 예 |
 |---|---|---|
 | iid baseline | `cycle_iid_baseline=true` (권장: 동일 probe 계측) | `PTiid_..._g8p500` |
-| pure cyclic | `delta_lambda=0, reptile_beta=1` | `PTcyc_..._g8p500` |
-| cyclic + Δ | `delta_lambda=0.5` | `PTcyc_..._g8p500_lam05` |
+| pure cyclic | `reptile_beta=1` | `PTcyc_..._g8p500` |
 | cyclic + Reptile | `reptile_beta=0.5` | `PTcyc_..._g8p500_b05` |
-| 전부 | 둘 다 | `PTcyc_..._g8p500_lam05_b05` |
 
 핵심 다이얼: `cycle_phase_steps` (k) — 섭동 크기/cross-term 이득. sweep 대상.
 `cycle_n_cycles > 0`이면 phase_steps 대신 사이클 수를 지정 (`phase = steps//(groups×cycles)`
@@ -61,17 +59,16 @@ phase 경계가 촘촘해져 probe 오버헤드가 커짐(경계마다 전 그�
 ```bash
 cd cycle && ./submit_cycle_PT.sh                      # yaml 기본값으로 제출
 CYCLE_PHASE_STEPS=1000 PT_EXP=p1k ./submit_cycle_PT.sh  # env 오버라이드 sweep
-# 스모크 테스트 (1사이클 = 24스텝, Δ+Reptile 경로까지 전부 통과 확인):
-PT_STEPS=24 CYCLE_PHASE_STEPS=3 CYCLE_DELTA_LAMBDA=0.5 CYCLE_REPTILE_BETA=0.5 \
+# 스모크 테스트 (1사이클 = 24스텝, Reptile 경로까지 통과 확인):
+PT_STEPS=24 CYCLE_PHASE_STEPS=3 CYCLE_REPTILE_BETA=0.5 \
   PT_SAVE_FREQ=24 PT_EXP=smoke ./submit_cycle_PT.sh
 ```
 
 ## wandb 지표 (phase 경계마다)
 
 - `probe/g{j}_loss` — 그룹별 고정 probe loss (고정 배치 + 고정 flow-matching 노이즈 →
-  파라미터 변화만 측정). `cycle/active_group`과 조합하면 간섭 행렬 Δ_ij·복구 곡선 복원 가능
-- `probe/g{j}_forget` — 자기 phase 마지막 대비 상대 악화량 (Δ-feedback의 입력)
-- `cycle/w_active` — 현재 phase의 Δ-가중치
+  파라미터 변화만 측정). `cycle/active_group`과 조합하면 간섭 행렬·복구 곡선 복원 가능
+- `probe/g{j}_forget` — 자기 phase 마지막 대비 상대 악화량
 - `probe/grad_cos_g{X}` — (옵션 `cycle_probe_grad_group≥0`) probe gradient 회전각,
   k-상한(테일러 유효성) 진단. boundary당 backward 1회 + CPU ~6GB
 

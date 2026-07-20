@@ -5,8 +5,8 @@
 
 ## 0. 한 줄 요약
 
-**pi05(VLA)의 pretraining을 iid 셔플 대신 "task 그룹 block-cyclic 커리큘럼(+Δ-feedback,
-+Reptile)"으로 돌리면, 이후 새 task를 replay 없이 FT할 때 기존 task를 덜 잊는 파라미터
+**pi05(VLA)의 pretraining을 iid 셔플 대신 "task 그룹 block-cyclic 커리큘럼(+Reptile)"로
+돌리면, 이후 새 task를 replay 없이 FT할 때 기존 task를 덜 잊는 파라미터
 구조가 미리 형성된다** — 는 가설의 검증 실험 (PT 전용 미니실험, pi05에서 먼저; 최종 목표는
 skillVLA 적용).
 
@@ -60,34 +60,22 @@ manifold 위의 어느 점에 앉느냐**: iid는 배치 노이즈 implicit bias
 
 ### 3.3 Reptile (β 보간)의 정확한 역할
 
-- Reptile = "phase/사이클 변위 Δ를 gradient처럼 쓰는 outer SGD". `θ ← anchor + β(θ−anchor)`.
-- **β는 증폭기가 아님** (Δ의 두 성분에 똑같이 곱해짐). 증폭기는 k.
+- Reptile = "phase/사이클 변위를 gradient처럼 쓰는 outer SGD". `θ ← anchor + β(θ−anchor)`.
+- **β는 증폭기가 아님** (변위의 두 성분에 똑같이 곱해짐). 증폭기는 k.
 - β<1의 실제 역할: ① 큰 k의 정찰 정보를 수집하되 이사는 일부만 커밋(진동/recency 제거),
   ② anchor가 거의 제자리 → 같은 지점 근방에서 셔플 샘플 N개 확보 → 체계적 정렬신호(∝N)만
   남고 노이즈(∝√N)는 상쇄. **k=증폭기, β=안정기** 세트.
 - 작은 LR과의 차이: LR은 감지와 커밋을 같이 줄여 정렬신호가 **제곱**으로 죽음(α²). Reptile은
   감지는 α 그대로, 커밋만 β배 → 같은 진행속도 기준 정렬신호 1/β배.
-- **anchor는 사이클 단위** (옵션 B): 그룹 간 cross term이 Δ 안에 담기려면 여러 그룹이 같은
+- **anchor는 사이클 단위** (옵션 B): 그룹 간 cross term이 변위에 담기려면 여러 그룹이 같은
   inner 궤적 안에 있어야 함. phase 단위 anchor(옵션 A)는 그룹 내 정렬만 직접 담김 —
   ablation 변형으로 보류. Sequential Reptile(ICLR'22)도 B 구조.
 
-### 3.4 Δ-feedback의 정확한 형태와 이유
+### 3.4 k(phase 길이)의 자체 상한
 
-- 원안 `loss + (loss − loss_last)`는 **무효**: 저장된 스칼라는 상수라 미분에서 소멸,
-  gradient는 잊은 양과 무관하게 2·∇loss. 
-- 올바른 형태: **detach된 곱셈 계수** `w = 1 + λ·max(0, Δ_rel)`. 양수 상수 곱은 최솟값
-  위치/방향 불변, effective LR만 조절 → "같은 목표, 잊은 만큼 더 급하게". detach 안 하면
-  loss² 항이 생겨 목적함수가 변형됨(잊은 양이 아니라 loss 절대값이 증폭됨).
-- 역할: alternating projection 수렴의 그룹별 gain 균형 (feedback controller). 층위 2를
-  직접 만드는 항이 아님.
-- 측정은 **고정 probe 배치 + 고정 flow-matching 노이즈**(fork_rng)로: 같은 자로 재기.
-  pi05는 forward마다 노이즈/t를 샘플링하므로 노이즈 고정 없이는 Δ가 샘플링 잡음에 오염됨.
-
-### 3.5 k(phase 길이)의 자체 상한
-
-테일러 유효성: k가 크면 정찰 자체가 anchor 근방을 벗어나 Δ 안의 정보가 왜곡됨 — β로 구제
-불가(β는 Δ가 만들어진 후에 곱해짐). 선험 계산은 불가(3B 비볼록), 학습 중 진단으로 조작적
-정의: ① probe gradient 회전각(cos, ~0.7 안전/0.5 위험), ② 1차 예측 `ΔL≈⟨g,Δ⟩` 대비 실측
+테일러 유효성: k가 크면 정찰 자체가 anchor 근방을 벗어나 변위 안의 정보가 왜곡됨 — β로 구제
+불가(β는 변위가 만들어진 후에 곱해짐). 선험 계산은 불가(3B 비볼록), 학습 중 진단으로 조작적
+정의: ① probe gradient 회전각(cos, ~0.7 안전/0.5 위험), ② 1차 예측 대비 실측
 편차, ③ 복구 속도(revisit 초반 몇 %에 이전 수준 복귀). 전부 probe에서 나옴.
 
 ## 4. 선행연구 지도
@@ -102,26 +90,22 @@ manifold 위의 어느 점에 앉느냐**: iid는 배치 노이즈 implicit bias
 | OML (NeurIPS'19) | 같은 목적의 2차 구현 = 이상적 upper bound (스케일 불가) |
 | GPM (ICLR'21) | 직교 투영(하드) 경쟁자. plasticity 단조감소가 약점. FT 병용 가능 부품이기도 |
 | Mirzadeh et al. 2020 | training regime/flat minima가 forgetting 결정 → joint+SAM baseline 근거 |
-| DWA (2019) | Δ-계수의 MTL 선행 (loss 변화율 기반 task weight) |
 
 **Novelty 위치** (2026-07 웹서치 기준): "VLA에서 PT 커리큘럼으로 이후 replay-free FT
-강건성을 심는다"는 조합은 빈칸. Δ-feedback 부품도 이 계열에 없음. 차별화 축: 그룹-phase
-단위 굵은 궤적 + PT→FT 전이 목적 + Δ-controller.
+강건성을 심는다"는 조합은 빈칸. 차별화 축: 그룹-phase 단위 굵은 궤적 + PT→FT 전이 목적.
 
 ## 5. 실험 계획
 
-### 조건 매트릭스 (PT 6조건 → 동일 FT → 기존 task 유지율)
+### 조건 매트릭스 (PT 조건 → 동일 FT → 기존 task 유지율)
 
 1. joint iid — **`cycle_iid_baseline=true`로 이 폴더 안에서 실행 (권장)**: 학습은 순수 iid
    글로벌 셔플, probe/로깅 계측은 cyclic 런과 완전 동일 → 같은 자로 잰 비교가 됨 (run name
-   `PTiid_...`). Δ/Reptile 자동 무시.
+   `PTiid_...`). Reptile 자동 무시.
 2. joint + SAM — flat-minima 경쟁자 (미구현)
-3. cyclic만 (`lam=0, b=1`)
-4. cyclic + Δ
-5. cyclic + Reptile
-6. cyclic + Δ + Reptile
+3. cyclic만 (`b=1`)
+4. cyclic + Reptile
 
-판정: 3≈4면 Δ 기여 없음, 2≥6이면 커리큘럼 불필요, 5/6>3이면 정렬 증폭이 유효.
+판정: 2≥4이면 커리큘럼 불필요, 4>3이면 Reptile 정렬 증폭이 유효.
 
 ### 핵심 figure: phase 길이(k) sweep → 역U 커브
 
@@ -133,7 +117,7 @@ k=1(=iid)부터 극단까지 sweep → 동일 FT → 유지율. 중간 봉우리
 | 층 | 시점 | 내용 |
 |---|---|---|
 | 진단 | PT 중 | 회전각·예측편차·복구속도 (k 유효범위) |
-| 구조 | PT 중 | 간섭 행렬 Δ_ij, 그룹 간 grad cosine — 사이클 지날수록 개선되는지 (메커니즘 증거) |
+| 구조 | PT 중 | 그룹 간 간섭 행렬·grad cosine — 사이클 지날수록 개선되는지 (메커니즘 증거) |
 | 최종 | FT 후 | held-out task FT 후 기존 task 유지율 (가설 판정) |
 
 프록시에서 3층을 다 찍어 대응관계 확보 → 본 스케일에선 싼 지표만으로 k·β 세팅.
@@ -146,13 +130,13 @@ FT 프로토콜 주의: 모든 조건에 FT 레시피 완전 동일, FT task는 
   핵심 함수: `build_groups`(frame-balanced greedy bin-packing, task 통째 배정, groups.json 저장 —
   고정 k와 데이터 공정성을 동시에 만족) / `GroupCursor`(그룹별 epoch 커서 — revisit이 미완
   epoch을 이어받아 frame 소비가 정확히 균등, iid의 epoch 순열과 동일한 hygiene) /
-  `build_probe_batches`+`measure_probe`(fork_rng 고정 노이즈) / `update_policy_scaled`
-  (Δ-계수는 detach scalar 곱, **로깅은 unscaled loss**) / `reptile_interpolate`
+  `build_probe_batches`+`measure_probe`(fork_rng 고정 노이즈) / `update_policy` /
+  `reptile_interpolate`
   (사이클 anchor, CPU 스트리밍) / `measure_probe_grad`+`grad_cosine`(회전각 진단, 옵션).
 - `cycle/cycle_config.yaml` — 토글: `cycle_phase_steps`(k) / `cycle_n_cycles`(>0이면
   phase_steps = steps//(groups×cycles) 자동, n_groups sweep 시 사이클 보존용) /
-  `cycle_delta_lambda` / `cycle_reptile_beta` / `cycle_iid_baseline`. 전부 env 오버라이드 가능
-  (CYCLE_*). run name에 조건 자동 인코딩 (`PTcyc_..._g8p500_lam05_b05`, `PTiid_...`, `g8c5`).
+  `cycle_reptile_beta` / `cycle_iid_baseline`. 전부 env 오버라이드 가능
+  (CYCLE_*). run name에 조건 자동 인코딩 (`PTcyc_..._g8p500_b05`, `PTiid_...`, `g8c5`).
 - **파라미터화 원칙**: `pt_steps`(예산)는 고정 앵커 — 조건 간 동일 연산량 비교가 실험의 전제.
   자유 변수는 groups + {phase XOR cycles}. steps를 바꾸는 실험(같은 k에 사이클 보충 등)은
   k↕cycles 교란을 분리하는 의도적 대조군으로만, 수동으로. **bs도 조건 간 고정 필수.**
@@ -171,7 +155,7 @@ FT 프로토콜 주의: 모든 조건에 FT 레시피 완전 동일, FT task는 
   - `probe_loss/` g{j}, `probe_forget/` g{j}, `grad_cos/` g{X} — 각각 별도 섹션, phase 경계마다.
     active group의 forget은 "자기 직전 phase 끝 대비 순 drift"(복구 완성도) — own_last 갱신
     전에 로깅하는 순서 때문. FT 스크립트도 동일 섹션명(probe_loss/probe_forget, 기준=FT step 0)
-  - `cycle/`: position(소수점 사이클 위치), index, active_group, w_active
+  - `cycle/`: position(소수점 사이클 위치), index, active_group
   - `epoch/`: g{j}(그룹별 데이터 소비 바퀴수, GroupCursor 기반 정확값), active_group
   → 간섭 행렬/복구 곡선 오프라인 복원 가능. Reptile 보간 직후에도 probe 1회 (pull-back 가시화).
 
@@ -265,7 +249,7 @@ anneal** — 정찰·정렬·스트레스 선별은 풀 스케일 유지, anchor
 
 **메커니즘 확정 (2026-07-07): cyclic의 forgetting 이점 = 더 flat한 minima, 언어모델에 집중.**
 - 진단 도구: `src/measure_term2_blocks.py`(블록별 gradient 정렬) + `src/measure_flatness_blocks.py`
-  (블록별 filter-normalized 섭동 → 옛-task probe loss 상승 ΔL/L; forgetting-relevant sharpness).
+  (블록별 filter-normalized 섭동 → 옛-task probe loss 상대 상승; forgetting-relevant sharpness).
   둘 다 fork_rng 고정 노이즈, 사이클 probe와 동일 자. sbatch: cycle_eval/term2.sbatch, flatness.sbatch
   (MODEL/CKPT env). 결과 outputs_term2/, outputs_flatness/.
 - **term2(블록 정렬): cyclic ≈ iid, 둘 다 랜덤(0.125) 근처 → 기각.** 블록별 "공유 몰아주기"
@@ -275,7 +259,7 @@ anneal** — 정찰·정렬·스트레스 선별은 풀 스케일 유지, anchor
   Mirzadeh 2020 "flat minima→덜 잊음" 실측. cyclic이 바꾼 건 gradient 방향관계가 아니라
   앉은 자리의 곡률.
 - **핵심: 옛-task 지식은 압도적으로 language_model(VLM)에 있다.** language_model fragility
-  (ΔL/L@0.05 = cyc 0.173 / iid 0.262)가 나머지 블록(전부 <0.005)의 ~100배. 그리고 cyclic의
+  (상대 상승@0.05 = cyc 0.173 / iid 0.262)가 나머지 블록(전부 <0.005)의 ~100배. 그리고 cyclic의
   이득이 정확히 거기 집중 (34~50% 덜 fragile). vision/action/flow는 흔들어도 옛 loss 거의 불변.
 - 스토리: cyclic PT → flatter minima → 그 강건화가 옛 지식이 사는 언어모델에 집중 → FT 섭동에서
   언어모델이 덜 밀림 → 덜 잊음. 기존 skillVLA의 VLM-freeze/언어 modulation 관찰과 정합.
@@ -291,16 +275,16 @@ anneal** — 정찰·정렬·스트레스 선별은 풀 스케일 유지, anchor
 
 ## 8. 다음 단계
 
-1. (필요시) 스모크: `PT_STEPS=24 CYCLE_PHASE_STEPS=3 CYCLE_DELTA_LAMBDA=0.5
-   CYCLE_REPTILE_BETA=0.5 PT_SAVE_FREQ=24 PT_EXP=smoke ./submit_cycle_PT.sh`
+1. (필요시) 스모크: `PT_STEPS=24 CYCLE_PHASE_STEPS=3 CYCLE_REPTILE_BETA=0.5
+   PT_SAVE_FREQ=24 PT_EXP=smoke ./submit_cycle_PT.sh`
 2. **첫 비교쌍**: 동일 예산으로 `./submit_cycle_PT.sh`(PTcyc) + `CYCLE_IID_BASELINE=true
    ./submit_cycle_PT.sh`(PTiid). FT 없이도 판단할 것: ① probe 톱니(phase 중 다른 그룹 loss
    상승 = forgetting 발생 확인, 안 오르면 섭동 부족), ② **g{j}_forget 진폭이 사이클이 갈수록
    감소하는지 = 무간섭 평형 이동의 첫 메커니즘 증거**, ③ 최종 loss가 iid에 크게 안 밀리는지.
-3. k-sweep: `CYCLE_PHASE_STEPS ∈ {50, 200, 500, 2000}` (+ Δ/Reptile 토글 조건들)
+3. k-sweep: `CYCLE_PHASE_STEPS ∈ {50, 200, 500, 2000}` (+ Reptile 토글 조건)
 4. FT 프로토콜 연결 (기존 train_pi05 FT 재사용, libero_10 held-out) → U커브
 5. 결과 좋으면: joint+SAM baseline 추가, 본 스케일(100k), skillVLA 포팅
 6. 열린 질문: Adam 모멘트 처리, 옵션 A(phase-anchor) ablation, 그룹 수 sweep(n_cycles 고정
-   모드 활용), 상대 Δ vs 절대 Δ, 73그룹(task 단위) 실험 시 probe thinning 구현 필요(현재는
+   모드 활용), 73그룹(task 단위) 실험 시 probe thinning 구현 필요(현재는
    경계마다 전 그룹 probe라 오버헤드 ~3×), "본 task 무간섭 평형이 unseen task 섭동에도
    강건한가"(핵심 도약)

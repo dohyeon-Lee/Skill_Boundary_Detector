@@ -4,8 +4,7 @@
 #
 # ── 조건 프리셋 치트시트 (바꿀 키만 표시, 나머지는 그대로) ──────────────────
 #  iid baseline          : cycle_iid_baseline=true                        → PTiid_..._constlr
-#  순수 cyclic           : iid=false, lambda=0, beta=1, beta_end=-1       → PTcyc_...
-#  cyclic + Δ            : iid=false, cycle_delta_lambda=0.5              → ..._lam05
+#  순수 cyclic           : iid=false, beta=1, beta_end=-1                 → PTcyc_...
 #  cyclic + Reptile 고정 : iid=false, cycle_reptile_beta=0.5              → ..._b05
 #  cyclic + β스케줄(주력): iid=false, beta=0.5, beta_end=0.1              → ..._b05to01
 #  decay LR 비교군       : pt_constant_lr=false                          → (constlr 태그 없음)
@@ -39,10 +38,6 @@ cycle_n_cycles: 0        # >0: OVERRIDES phase_steps = steps // (n_groups × n_c
                          #     (n_groups sweep 시 사이클 수 보존용; run name → g{G}c{N})
 cycle_group_seed: 0      # task→group split + per-cycle order shuffle
 
-# Δ-feedback (0 = off): w_g = 1 + λ·max(0, rel_forget), capped at delta_max_weight
-cycle_delta_lambda: 0.0
-cycle_delta_max_weight: 3.0
-
 # Reptile (1.0 = off): cycle-level anchor, θ ← anchor + β(θ − anchor)
 cycle_reptile_beta: 1.0 # 0.5 # 1.0
 # β-스케줄 (≥0이면 켜짐): β를 사이클에 걸쳐 cycle_reptile_beta → 이 값으로 cosine anneal.
@@ -52,7 +47,7 @@ cycle_reptile_beta: 1.0 # 0.5 # 1.0
 cycle_reptile_beta_end: # 0.1
 
 # iid baseline (true = 학습은 순수 iid 글로벌 셔플, probe/로깅은 cyclic 런과 동일 → 공정 대조군.
-# phase_steps는 probe 측정 주기로만 쓰이고 Δ/Reptile은 무시됨)
+# phase_steps는 probe 측정 주기로만 쓰이고 Reptile은 무시됨)
 cycle_iid_baseline: true
 
 # probe (fixed batches + fixed flow-matching noise → deterministic forgetting measurement)

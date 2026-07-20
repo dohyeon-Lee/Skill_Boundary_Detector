@@ -50,7 +50,7 @@ from lerobot_train_cycle import (  # noqa: E402  (same src/ dir)
     build_probe_batches,
     clone_batch,
     measure_probe,
-    update_policy_scaled,
+    update_policy,
 )
 
 
@@ -203,9 +203,9 @@ def train(cfg: FTProbeTrainPipelineConfig):
             batch = next(dl_iter)
             batch = preprocessor(batch)
             train_tracker.dataloading_s = time.perf_counter() - t0
-            train_tracker, _ = update_policy_scaled(
+            train_tracker, _ = update_policy(
                 train_tracker, policy, batch, optimizer,
-                cfg.optimizer.grad_clip_norm, accelerator, lr_scheduler, loss_scale=1.0,
+                cfg.optimizer.grad_clip_norm, accelerator, lr_scheduler,
             )
             step += 1
             progbar.update(1)

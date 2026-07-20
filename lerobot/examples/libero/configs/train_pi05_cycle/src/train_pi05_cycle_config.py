@@ -108,7 +108,6 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
     n_groups = int(get_value(cfg, "cycle_n_groups", 8, env="CYCLE_N_GROUPS"))
     phase_steps = int(get_value(cfg, "cycle_phase_steps", 500, env="CYCLE_PHASE_STEPS"))
     n_cycles = int(get_value(cfg, "cycle_n_cycles", 0, env="CYCLE_N_CYCLES"))  # >0 overrides phase_steps
-    delta_lambda = float(get_value(cfg, "cycle_delta_lambda", 0.0, env="CYCLE_DELTA_LAMBDA"))
     reptile_beta = float(get_value(cfg, "cycle_reptile_beta", 1.0, env="CYCLE_REPTILE_BETA"))
     _bend = get_value(cfg, "cycle_reptile_beta_end", -1.0, env="CYCLE_REPTILE_BETA_END")
     reptile_beta_end = float(_bend) if _bend not in (None, "") else -1.0  # 빈 값 = 스케줄 off
@@ -123,8 +122,6 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
     sched_tag = f"c{n_cycles}" if n_cycles > 0 else f"p{phase_steps}"
     prefix = "PTiid" if iid_baseline else "PTcyc"
     run_name = f"{prefix}_{pt_dataset}_pi05_batch{pt_batch_size}_g{n_groups}{sched_tag}"
-    if not iid_baseline and delta_lambda > 0:
-        run_name += f"_lam{fmt_num(delta_lambda)}"
     if not iid_baseline and reptile_beta_end >= 0:
         run_name += f"_b{fmt_num(reptile_beta)}to{fmt_num(reptile_beta_end)}"
     elif not iid_baseline and reptile_beta < 1.0:
@@ -165,8 +162,6 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         "cycle_phase_steps": phase_steps,
         "cycle_n_cycles": n_cycles,
         "cycle_group_seed": int(get_value(cfg, "cycle_group_seed", 0, env="CYCLE_GROUP_SEED")),
-        "cycle_delta_lambda": delta_lambda,
-        "cycle_delta_max_weight": float(get_value(cfg, "cycle_delta_max_weight", 3.0, env="CYCLE_DELTA_MAX_WEIGHT")),
         "cycle_reptile_beta": reptile_beta,
         "cycle_reptile_beta_end": reptile_beta_end,
         "cycle_probe_batches": int(get_value(cfg, "cycle_probe_batches", 2, env="CYCLE_PROBE_BATCHES")),
@@ -177,7 +172,7 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
     # ── eval (cycle_eval): closed-loop LIBERO success on a cycle-PT checkpoint ──
     eval_model = str(get_value(cfg, "eval_model", "", env="EVAL_MODEL")).strip()
     if not eval_model:
-        # default: the run described by the cycle/Δ/Reptile toggles in this very yaml
+        # default: the run described by the cycle/Reptile toggles in this yaml
         eval_model = run_name
     eval_checkpoint = str(get_value(cfg, "eval_checkpoint", "020000", env="CHECKPOINT"))
     eval_target_task = str(get_value(cfg, "eval_target_task", "libero_90", env="TARGET_TASK"))

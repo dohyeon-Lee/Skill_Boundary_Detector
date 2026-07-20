@@ -22,7 +22,6 @@ eval_model: "PTcyc_libero_90_full_full_pi05_batch16_g8p250"
 pt_batch_size: 16
 cycle_n_groups: 8
 cycle_phase_steps: 250
-cycle_delta_lambda: 0.0
 cycle_reptile_beta: 1.0
 cycle_iid_baseline: false
 pt_constant_lr: false
