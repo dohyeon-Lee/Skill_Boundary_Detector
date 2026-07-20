@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
 # SkillVLA STAGE 3 training: policy.type=skill_vla, pt_stage="skill".
-# Warm-starts the WHOLE policy from a STAGE-2 checkpoint (pretrained_path → from_pretrained's is_stage2
-# full-load) and trains ONLY the skill path (adapter ① + skill_reader + skill_head) on the skill loss,
-# over the SAME dataset stage 2 trained on. Everything else frozen (vision included). Resumes from a
-# stage-3 checkpoint if one exists.
+# Full-loads a Stage-0 or Stage-2 policy and trains only the skill path
+# (skill adapter + skill_reader + skill_head). Every inherited component stays frozen.
 #SBATCH --job-name=stage3
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=16
@@ -39,8 +37,10 @@ unset LD_LIBRARY_PATH          # avoid system cuDNN shadowing the bundled one
 
 echo "START STAGE-3 (skill_vla, pt_stage=skill)"
 echo "Node      : ${SLURMD_NODENAME:-local}"
-echo "dataset   : ${SKILLVLA_DATASET_DIR}  (inherited from the stage-2 run)"
-echo "warm-start: ${STAGE2_CHECKPOINT_PATH}"
+echo "parent    : ${PARENT_STAGE} / ${PARENT_RUN_NAME} / ${PARENT_CHECKPOINT}"
+echo "dataset   : ${SKILLVLA_DATASET_DIR}  (inherited from parent)"
+echo "warm-start: ${PARENT_CHECKPOINT_PATH}"
+echo "FSQ       : ${FSQ_CKPT} (${FSQ_SOURCE})"
 echo "stage1cfg : ${STAGE1_CHECKPOINT_PATH:-<none>}"
 echo "output    : ${PT_OUTPUT_DIR}   lr/bs: ${LR}/${BATCH_SIZE}  (① lr ×${LORA_LR_SCALE})"
 nvidia-smi || true
@@ -49,8 +49,8 @@ if [ ! -e "${SKILLVLA_DATASET_DIR}" ]; then
   echo "Missing skillvla dataset: ${SKILLVLA_DATASET_DIR}" >&2
   exit 1
 fi
-if [ ! -e "${STAGE2_CHECKPOINT_PATH}" ]; then
-  echo "Missing Stage-2 checkpoint: ${STAGE2_CHECKPOINT_PATH}  (train stage2 first)" >&2
+if [ ! -e "${PARENT_CHECKPOINT_PATH}" ]; then
+  echo "Missing ${PARENT_STAGE} checkpoint: ${PARENT_CHECKPOINT_PATH}" >&2
   exit 1
 fi
 
@@ -85,7 +85,7 @@ if [ "${SKILL_ACTION_GROUNDING}" != "true" ]; then
   PACK_ARGS=(--policy.transition_packs="${TRANSITION_PACK}")
 fi
 
-# Terminator co-training inputs (usually off at stage 3 — stage 2 already adapted it on this dataset).
+# Terminator co-training inputs. FSQ_CKPT already prefers the parent's exported co-trained terminator.
 TERM_ARGS=()
 if [ "${TRAIN_TERMINATOR}" = "true" ]; then
   TERM_ARGS=(
@@ -93,14 +93,11 @@ if [ "${TRAIN_TERMINATOR}" = "true" ]; then
     --policy.terminator_lr_scale="${TERMINATOR_LR_SCALE}"
     --policy.terminator_end_target_sigma="${TERMINATOR_END_TARGET_SIGMA}"
     --policy.terminator_end_pos_weight="${TERMINATOR_END_POS_WEIGHT}"
-    --policy.terminator_dino_model_path="${TERMINATOR_DINO_MODEL_PATH}"
   )
 fi
 
-# pretrained_path = the STAGE-2 checkpoint (full-loaded); stage1_checkpoint_path supplies the
-# architecture config only (no weights reloaded). ① is injected fresh (no keys in the checkpoint →
-# B=0 no-op start); vlm_lora/cond_lora are re-injected to match the checkpoint keys and stay frozen.
-# reader 전용 read-set (tri-state 상속): 빈 env = s2 ckpt에 값 없음 → 플래그 미전달 (config None 유지).
+# pretrained_path full-loads the parent. Its topology and inherited adapters are reconstructed from the
+# parent config; the fresh skill adapter starts as a zero-output no-op and is the only trained adapter.
 READER_ARGS=()
 [ -n "${READER_ATTEND_IMAGE:-}" ] && READER_ARGS+=(--policy.reader_attend_image="${READER_ATTEND_IMAGE}")
 [ -n "${READER_ATTEND_LANGUAGE:-}" ] && READER_ARGS+=(--policy.reader_attend_language="${READER_ATTEND_LANGUAGE}")
@@ -117,10 +114,27 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.dtype=bfloat16 \
     --policy.device=cuda \
     --policy.push_to_hub=false \
-    --policy.pretrained_path="${STAGE2_CHECKPOINT_PATH}" \
+    --policy.pretrained_path="${PARENT_CHECKPOINT_PATH}" \
+    --policy.stage3_parent_stage="${STAGE3_PARENT_STAGE}" \
+    --policy.tokenizer_path="${TOKENIZER_PATH}" \
     --policy.stage1_checkpoint_path="${STAGE1_CHECKPOINT_PATH}" \
+    --policy.paligemma_variant="${PALIGEMMA_VARIANT}" \
+    --policy.action_expert_variant="${ACTION_EXPERT_VARIANT}" \
     --policy.s1_vision_backbone="${S1_VISION_BACKBONE}" \
     --policy.s1_state_cond_mode="${S1_STATE_COND_MODE}" \
+    --policy.s1_cond_encoder_variant="${S1_COND_ENCODER_VARIANT}" \
+    --policy.s1_dino_model_path="${S1_DINO_MODEL_PATH}" \
+    --policy.s1_dino_image_size="${S1_DINO_IMAGE_SIZE}" \
+    --policy.s1_siglip_image_size="${S1_SIGLIP_IMAGE_SIZE}" \
+    --policy.max_state_dim="${MAX_STATE_DIM}" \
+    --policy.max_action_dim="${MAX_ACTION_DIM}" \
+    --policy.chunk_size="${CHUNK_SIZE}" \
+    --policy.min_period="${MIN_PERIOD}" \
+    --policy.max_period="${MAX_PERIOD}" \
+    --policy.time_sampling_beta_alpha="${TIME_SAMPLING_BETA_ALPHA}" \
+    --policy.time_sampling_beta_beta="${TIME_SAMPLING_BETA_BETA}" \
+    --policy.time_sampling_scale="${TIME_SAMPLING_SCALE}" \
+    --policy.time_sampling_offset="${TIME_SAMPLING_OFFSET}" \
     --policy.skill_fsq_levels="${SKILL_FSQ_LEVELS}" \
     --policy.skill_loss_weight="${SKILL_LOSS_WEIGHT}" \
     --policy.skill_deadzone_frac="${SKILL_DEADZONE_FRAC}" \
@@ -146,7 +160,19 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.lora_dropout="${LORA_DROPOUT}" \
     --policy.lora_targets="${LORA_TARGETS}" \
     --policy.lora_lr_scale="${LORA_LR_SCALE}" \
+    --policy.lang_bridge="${LANG_BRIDGE}" \
+    --policy.lang_bridge_rank="${LANG_BRIDGE_RANK}" \
+    --policy.lang_bridge_lr_scale="${LANG_BRIDGE_LR_SCALE}" \
+    --policy.stage0_expert_source="${STAGE0_EXPERT_SOURCE}" \
+    --policy.stage0_cond_state_adarms="${STAGE0_COND_STATE_ADARMS}" \
+    --policy.stage0_expert_lora="${STAGE0_EXPERT_LORA}" \
+    --policy.stage0_expert_lora_targets="${STAGE0_EXPERT_LORA_TARGETS}" \
+    --policy.stage0_expert_lora_rank="${STAGE0_EXPERT_LORA_RANK}" \
+    --policy.stage0_expert_lora_alpha="${STAGE0_EXPERT_LORA_ALPHA}" \
+    --policy.stage0_expert_lora_dropout="${STAGE0_EXPERT_LORA_DROPOUT}" \
+    --policy.stage0_expert_lora_lr_scale="${STAGE0_EXPERT_LORA_LR_SCALE}" \
     --policy.fsq_path="${FSQ_CKPT}" \
+    --policy.terminator_dino_model_path="${TERMINATOR_DINO_MODEL_PATH}" \
     --batch_size="${BATCH_SIZE}" \
     --num_workers="${NUM_WORKERS}" \
     --steps="${STEPS}" \

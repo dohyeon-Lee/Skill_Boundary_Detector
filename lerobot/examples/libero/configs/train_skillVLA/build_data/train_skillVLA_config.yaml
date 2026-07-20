@@ -73,8 +73,8 @@ skillset_max_sweeps: 2
 # fsq_run_name: "libero_90_full_full_state_obs20_fsq555_dino8_weighted_wow"   # folder under outputs/FSQ/
 # fsq_run_name: "libero_90_full_full_state_obs20_fsq555_dino8_both"
 # fsq_run_name: "libero_90_full_full_state_obs20_std_global_fsq333_dino_frozen_small_optimal_vsa_state_skill"
-fsq_run_name: "libero_90_full_full_state_obs20_std_global_fsq333_dino_frozen_small_optimal_vsa_broadcast"
-fsq_checkpoint: 125                                 # epoch number; 0 = best (FSQ.pt)
+fsq_run_name: "libero_90_full_full_state_obs20_std_global_fsq865_dino_frozen_small_optimal_vsa_broadcast"
+fsq_checkpoint: 150                                 # epoch number; 0 = best (FSQ.pt)
 
 # ── transfer 안전망: 새 데이터셋 인코딩 시 FSQ가 "미지원(학습때 안 쓰인/희귀) 코드"를 뱉으면
 #    가장 가까운 지원 코드로 옮겨, 다운스트림 VLA가 학습 못한 코드로 스킬이 배정되는 걸 방지.
@@ -90,7 +90,7 @@ max_order: 0                               # 0 : auto
 # Must cover the longest segmented skill. Current std/global split has max=231 frames.
 max_length: 500
 pmax: 15 # 10                                   # 전체 Stage0/1/2/3 transition randomization 반폭. ISS window=2*pmax+1
-transition_jitter_distribution: uniform # half_normal # half_normal | uniform
+transition_jitter_distribution: half_normal # half_normal # half_normal | uniform
 skill_decoder_state_indices: "[0,1,2,3,4,5,6,7]"   # full observation.state (ee6 + gripper_state2)
 cleanup_intermediate: false               # remove skillset/, skill_latents.npz after skillvla is built
 

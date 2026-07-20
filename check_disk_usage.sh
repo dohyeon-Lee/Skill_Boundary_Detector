@@ -14,7 +14,7 @@
 
 set -euo pipefail
 
-ROOT="${ROOT:-/scratch/mdorazi/Skill_Boundary_Detector}"
+ROOT="${ROOT:-/data1/dohyeon/Skill_Boundary_Detector}"
 DEPTH="${DEPTH:-1}"
 DIR="${DIR:-}"
 MIN_SIZE="${MIN_SIZE:-0}"
@@ -36,7 +36,7 @@ fi
 
 # ── 전체 디스크 현황 ─────────────────────────────────────────────────────────
 echo "============================  디스크 현황  ============================"
-df -h /scratch/mdorazi | sed -n '1,2p'
+df -h /data1/dohyeon | sed -n '1,2p'
 echo
 
 # ── 상위 폴더 du 한 번만 계산 후 용량순 정렬 ─────────────────────────────────

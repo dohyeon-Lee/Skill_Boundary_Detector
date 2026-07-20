@@ -124,9 +124,13 @@ class SkillVLAConfig(PI05Config):
       "cond"  = STAGE 2: every batch is a COND/flow batch — trains ②③ + vlm_vision(+projector) against
                 the frozen expert with GT-teacher-forced z. No skill loss; reader/head untouched.
       "skill" = STAGE 3: every batch is a SKILL batch — trains ①+reader+head on the skill loss;
-                EVERYTHING else (vision included) frozen. Warm-starts from a Stage-2 checkpoint;
+                EVERYTHING else (vision included) frozen. Warm-starts from a Stage-0 or Stage-2 checkpoint;
                 structurally identical to FT's SKILL regime (its rehearsal).
       None    = not a PT run (FT via regime_probs_ft, or eval)."""
+    stage3_parent_stage: str = "stage2"
+    """Stage-3 full-checkpoint source (``stage0`` or ``stage2``). A Stage-0 parent has no Stage-1
+    config, so this flag tells model construction to recreate its direct expert and expert-LoRA wrappers
+    before loading the frozen parent weights."""
     stage0_vlm_severed_prob: float = 0.3
     """Stage-0 probability of a B batch. The branch-local drop/train component fields below define
     the exact topology and gradient scope; both branches use the same GT flow target."""
@@ -494,6 +498,10 @@ class SkillVLAConfig(PI05Config):
         super().__post_init__()
         if self.pt_stage not in (None, "cond", "skill", "stage0"):
             raise ValueError(f"pt_stage must be None|cond|skill|stage0, got {self.pt_stage!r}.")
+        if self.stage3_parent_stage not in {"stage0", "stage2"}:
+            raise ValueError(
+                f"stage3_parent_stage must be stage0|stage2, got {self.stage3_parent_stage!r}."
+            )
         if self.lang_bridge and self.lang_bridge_rank <= 0:
             raise ValueError("lang_bridge=True needs lang_bridge_rank > 0.")
         if self.lang_bridge_lr_scale <= 0.0:

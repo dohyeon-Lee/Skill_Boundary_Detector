@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Submit SkillVLA STAGE-3 training (skill path over a frozen stage-2 model).
+# Submit SkillVLA Stage-3 training over a frozen Stage-0 or Stage-2 model.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # stage3
@@ -24,9 +24,8 @@ STAGE3_ENV_SNAPSHOT="${SCRIPT_DIR}/logs/stage3_env_$(date +%Y%m%d_%H%M%S)_$$.sh"
 source "${STAGE3_ENV_SNAPSHOT}"
 export STAGE3_ENV_SNAPSHOT
 
-if [ ! -e "${STAGE2_CHECKPOINT_PATH}" ]; then
-  echo "Stage-2 checkpoint not found: ${STAGE2_CHECKPOINT_PATH}" >&2
-  echo "Train it first: configs/train_skillVLA/stage2/submit_train.sh" >&2
+if [ ! -e "${PARENT_CHECKPOINT_PATH}" ]; then
+  echo "${PARENT_STAGE} checkpoint not found: ${PARENT_CHECKPOINT_PATH}" >&2
   exit 1
 fi
 
@@ -45,7 +44,9 @@ cd "${SCRIPT_DIR}"
 mkdir -p logs
 
 echo "Submit SkillVLA STAGE-3"
-echo "  warm-start: ${STAGE2_CHECKPOINT_PATH}"
+echo "  parent    : ${PARENT_STAGE} / ${PARENT_RUN_NAME} / ${PARENT_CHECKPOINT}"
+echo "  warm-start: ${PARENT_CHECKPOINT_PATH}"
+echo "  FSQ       : ${FSQ_CKPT} (${FSQ_SOURCE})"
 echo "  dataset   : ${SKILLVLA_DATASET_DIR}"
 echo "  output    : ${PT_OUTPUT_DIR}"
 echo "  slurm     : partition=${TRAIN_PARTITION} qos=${TRAIN_QOS} nodelist=${TRAIN_NODELIST:-<none>} exclude=${TRAIN_EXCLUDE_NODES:-<none>}"

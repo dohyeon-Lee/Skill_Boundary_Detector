@@ -1986,6 +1986,13 @@ class SkillVLAPolicy(PI05Policy):
             # the vlm_dropout B batches instead of a Stage-1 pretrain).
             from lerobot.policies.skill_expert.configuration_skill_expert import SkillExpertConfig  # noqa: PLC0415
 
+            direct_stage0 = (
+                getattr(config, "pt_stage", None) == "stage0"
+                or (
+                    getattr(config, "pt_stage", None) == "skill"
+                    and str(getattr(config, "stage3_parent_stage", "stage2")) == "stage0"
+                )
+            )
             return SkillExpertConfig(
                 vision_backbone=str(getattr(config, "s1_vision_backbone", "siglip")),
                 dino_model_path=str(getattr(config, "s1_dino_model_path", "models/dinov3-vits16")),
@@ -1995,8 +2002,7 @@ class SkillVLAPolicy(PI05Policy):
                 state_cond_mode=str(getattr(config, "s1_state_cond_mode", "state")),
                 skill_fsq_levels=list(config.skill_fsq_levels),
                 skill_vocab_size=int(math.prod(config.skill_fsq_levels)),
-                lora_expert=(getattr(config, "pt_stage", None) == "stage0"
-                             and bool(getattr(config, "stage0_expert_lora", True))),
+                lora_expert=(direct_stage0 and bool(getattr(config, "stage0_expert_lora", True))),
                 lora_targets=str(getattr(config, "stage0_expert_lora_targets", "q,k,v,o,mlp,action_out")),
                 lora_rank=int(getattr(config, "stage0_expert_lora_rank", 8)),
                 lora_alpha=float(getattr(config, "stage0_expert_lora_alpha", 16.0)),
@@ -2811,8 +2817,8 @@ class SkillVLAPolicy(PI05Policy):
                 log.info("SkillVLA %s: routed %d plain proj weights into '.base.*' (LoRA-wrapped).", what, n_routed)
             return model.load_state_dict(state, strict=False)
 
-        is_stage2 = any((".skill_reader." in k) or (".skill_head." in k) for k in raw)
-        if is_stage2:
+        is_skillvla_checkpoint = any((".skill_reader." in k) or (".skill_head." in k) for k in raw)
+        if is_skillvla_checkpoint:
             state = {(k if k.startswith("model.") else f"model.{k}"): v.to(dtype) for k, v in raw.items()}
             # Pre-rename Stage-2 checkpoints used ``cond`` and ``cond_bridge`` for these exact adapters.
             # Preserve their evaluation/resume path while all newly written checkpoints use the clear names.

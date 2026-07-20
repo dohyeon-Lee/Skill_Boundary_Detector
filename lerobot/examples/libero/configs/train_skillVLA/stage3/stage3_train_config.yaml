@@ -1,64 +1,31 @@
-# SkillVLA STAGE 3 — skill-path PT (pt_stage="skill").
-#
-# 파이프라인: stage1(VSA) → stage2(②③+vlm_vision, flow) → STAGE 3(이것) → FT.
-# STAGE-2 체크포인트에서 전체 policy를 warm-start한 뒤, **skill 경로만** 학습:
-#   ① lora_skill @ VLM LLM (새로 주입, B=0 no-op 시작) + skill_reader + skill_head — skill loss.
-# 나머지 전부 동결(vlm_vision 포함 — stage2에서 확정된 vision 위에서 ①이 학습됨, moving target 없음).
-# 데이터셋은 stage2가 학습한 것과 동일 (부모 train_config.json에서 자동 유도 — 여기서 지정 안 함).
-# LoRA 구조(rank/alpha/targets, vlm_lora/cond_lora)와 attention/reader arch도 부모 config.json에서 상속.
-# FT의 SKILL regime과 구조적으로 동일 → FT 리허설.
-# Output: {project_root}/{outputs_root}/skillVLA_stage3/{stage2_run_name}_{ckpt}__s3[lr{s}][_{exp}]/
+# Stage-3 trains only: skill_lora + skill_reader + skill_head.
+# Every component inherited from the parent checkpoint stays frozen.
 
-# ── Paths (project_root/dataset_root/outputs_root come from configs/global_config.yaml) ──
-skillvla_dataset_root: skillvla_dataset
+warm_start:
+  stage: stage0 # stage0 | stage2
+  run: FSQ333_dino_frozen_small_optimal_vsa_broadcast_150_std_pt_snap10_ms1_pmax15_uniform_exp0_FSQ_statecond
+  # run: FSQ865_dino_frozen_small_optimal_vsa_broadcast_150_std_pt_snap10_ms1_pmax15_uniform_exp0_FSQ_statecond
+  # run: FSQ333_dino_frozen_small_optimal_vsa_state_skill_125_std_pt_snap10_ms1_pmax15_uniform_exp0_FSQ_statecond
+  checkpoint: "030000" # last | step
 
-# ── Warm-start: the trained STAGE-2 run + checkpoint ──
-stage2_run_name: FSQ555_dino8_both_1000_siglip_015000_state__pt0100_Ltttr16lr10
-stage2_checkpoint: "last"            # "last" or a step number
+dataset: {skillvla_root: skillvla_dataset}
 
-# ── Mode: a(기본) vs b(action-grounding) ──────────────────────
-# a (false): transition pack 학습 — (jitter된 skill-start, lang) → GT code 회귀. 싸고 빠름(세그먼트 단위,
-#            비디오 seek 없음). loss = skill only.
-# b (true) : FULL 데이터셋 학습 — SKILL 뷰의 STE 예측 z를 FROZEN connected 모터(②VLM→cond+③→expert,
-#            전부 no-grad 상수; 배포와 동일 attention)로 실행해 GT-action flow loss(메인)를 얻고, 그
-#            gradient가 ①/reader/head로만 흘러감 = "frozen 모터가 실행할 수 있는 skill을 골라라"는
-#            action-grounded 감독. GT-code loss는 anchor(서브, 가중치 = skill_loss_weight).
-#            프레임 단위 감독이라 full 데이터 필요(pack 아님) + forward 3회로 더 비쌈.
-skill_action_grounding: false
+objective:
+  action_grounding: false # false: skill regression | true: frozen-motor grounding
+  skill_loss: {weight: 1, deadzone_frac: 0.8} # null = inherit from parent
 
-# ── Skill-path knobs (①+reader+head가 학습하는 유일한 것들) ──
-# skill_loss_weight: blank → 부모 상속. mode a에선 유일 loss라 스케일 의미만; mode b에선 GT-code
-# anchor의 가중치(flow 메인 대비 — 예측이 라벨에서 너무 벗어나면 올릴 것).
-skill_loss_weight:
-skill_deadzone_frac:
-# ①(skill adapter)만의 LR 배수 (base optimizer_lr ×; reader/head는 base LR). 미지정 → 부모 값 상속.
-lora_lr_scale: 10.0
+skill_path: {lora_lr_scale: 10.0}
 
-# ── FSQ terminator co-training (보통 stage2에서 같은 데이터로 이미 적응 → 기본 off) ──
-train_terminator: false
-terminator_lr_scale: 1.0
-terminator_end_target_sigma: 1.0
-terminator_end_pos_weight: 1.0
+terminator: {train: false, lr_scale: 1.0, target_sigma: 1.0, end_weight: 1.0}
+run: {name: "", suffix: ""} # blank name = automatic
 
-# ── 컴포넌트별 업데이트 추적 (llm drift = ①이 일하는 양; 나머지는 ~0이어야 = freeze 검증) ──
-track_param_drift: true
+training:
+  dataloader: {batch_size: 16, workers: 4, gpus: 1}
+  optimizer: {base_lr: 2.5e-05}
+  schedule: {steps: 30000, save_every: 5000}
 
-exp: ""                              # optional run-name suffix
+logging:
+  param_drift: true
+  wandb: {enable: true, project: VLA_stage3}
 
-# ── Optimization ──────────────────────────────────────────────
-batch_size: 16
-num_workers: 4
-num_gpus: 1
-lr_base: 2.5e-05                     # reader/head가 이 LR; ①은 ×lora_lr_scale
-steps: 30000
-save_freq: 5000
-
-# ── wandb ─────────────────────────────────────────────────────
-wandb_enable: true
-wandb_project: VLA_stage3
-
-# ── Slurm (partition/qos/nodelist/exclude_nodes come from configs/global_config.yaml) ──
-train_gres: gpu:1
-train_cpus_per_task: 16
-train_mem: 128G
-train_time: "48:00:00"
+slurm: {gres: "gpu:1", cpus: 16, memory: 128G, time: "48:00:00"}
