@@ -59,7 +59,7 @@ eval_run_fsq: true
 # fsq_eval_run_name: libero_90_full_full_state_obs20_fsq555_dino_frozen_small_vsa_state_skill
 fsq_eval_run_name: libero_90_full_full_state_obs20_std_global_fsq865_dino_frozen_small_optimal_vsa_broadcast
 # fsq_eval_run_name: libero_90_full_full_state_obs20_std_global_fsq333_dino_frozen_small_optimal_vsa_state_skill_weighted3
-fsq_eval_checkpoint: 125
+fsq_eval_checkpoint: 25
 # The terminator always consumes both cameras; architecture/backbone live in the checkpoint.
 
 # Evaluation / HTML knobs

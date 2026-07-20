@@ -3,11 +3,9 @@ dataset:
   source: libero_90_full_full
   # run: FSQ333_dino_frozen_small_optimal_vsa_state_skill_125_std_pt_snap10
   # run: FSQ333_dino_frozen_small_optimal_vsa_state_skill_weighted3_125_std_pt_snap10
-  # run: FSQ333_dino_frozen_small_optimal_vsa_state_skill_125_std_pt_snap10_ms1_pmax15_uniform
-  # run: FSQ865_dino_frozen_small_optimal_vsa_broadcast_150_std_pt_snap10_ms1_pmax15_halfnormal
-  # run: FSQ865_dino_frozen_small_optimal_vsa_broadcast_150_std_pt_snap10_ms1_pmax15_uniform
   # run: FSQ333_dino_frozen_small_optimal_vsa_broadcast_150_std_pt_snap10_ms1_pmax15_halfnormal
-  run: FSQ333_dino_frozen_small_optimal_vsa_broadcast_150_std_pt_snap10_ms1_pmax15_uniform
+  run: FSQ865_dino_frozen_small_optimal_vsa_broadcast_150_std_pt_snap10_ms1_pmax15_halfnormal
+
 warm_start:
   pi_base: models/pi05_base
   tokenizer: models/paligemma-3b-pt-224-tokenizer

@@ -58,20 +58,20 @@ train_exclude_nodes: [""]
 #   - big_suma_rtx3090
 
 
-# train_qos: base_qos # pro6000_qos | base_qos
-# train_nodelist: ""
-# train_exclude_nodes:
-#   - node19
-#   - node13
-#   - node26   # GPU present in nvidia-smi but torch "No CUDA GPUs available" — packs jobs, GPU unusable
-#   - node18
-#   - node16
-#   - node08
-#   - node10
-#   - node21
-#   - node14
-#   - node04
-#   - node05
-#   - node31
-#   - cs-gpu-01
-#   # - node57
+train_qos: base_qos # pro6000_qos | base_qos
+train_nodelist: ""
+train_exclude_nodes:
+  - node19
+  - node13
+  - node26   # GPU present in nvidia-smi but torch "No CUDA GPUs available" — packs jobs, GPU unusable
+  - node18
+  - node16
+  - node08
+  - node10
+  - node21
+  - node14
+  - node04
+  - node05
+  - node31
+  - cs-gpu-01
+  # - node57
