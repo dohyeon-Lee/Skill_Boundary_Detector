@@ -1,0 +1,55 @@
+# Replay-free FT + live forgetting probes (configs/train_pi05_cycle/cycle_ft).
+# project_root / dataset_root / outputs_root come from configs/global_config.yaml.
+#
+# 가설의 최종 판정 단계: cycle-PT 체크포인트를 새 task(libero_10)로 FT하면서,
+# PT 그룹 probe(같은 배치+같은 노이즈 = PT 때와 직접 비교 가능)를 probe_every마다 측정
+# → wandb probe/g{j}_forget = "FT 중 잊혀지는 실시간 곡선" (조건 간 비교가 핵심 figure).
+#
+# 주의(의도된 설계):
+#  - FT 레시피는 모든 PT 조건에 동일하게 유지할 것 (steps/lr/freeze 바꾸면 비교 오염)
+#  - normalizer는 PT ckpt 것 유지 (libero_10 stats로 재정규화하면 그 자체가 forgetting 교란)
+#  - 소스가 groups.json 없는 일반 PT(ref)면 ft_groups_json으로 아무 cycle 런 것 지정
+#    (그룹 분할은 dataset+seed 고정이라 전 런 동일)
+#
+# Output: {outputs_root}/pi05_cycle_FT/FTcyc_{label}_{ckpt}_{ft_dataset}_batch{bs}[_exp]
+# 조건별로 ft_source만 바꿔 제출: cyc250 / iid250 / (ref는 model_dir 절대경로)
+
+pi05_cycle_outputs_root: pi05_cycle_PT
+pi05_cycle_ft_outputs_root: pi05_cycle_FT
+pi_base: models/pi05_base
+pi05_tokenizer: models/paligemma-3b-pt-224-tokenizer
+
+# ── FT 소스 (어느 PT 조건에서 시작하나) ──
+# ft_source: {model_dir: PTcyc_libero_90_full_full_pi05_batch16_g8p250, label: cyc250}
+# ft_source: {model_dir: PTiid_libero_90_full_full_pi05_batch16_g8p250, label: iid250}
+# ft_source: {model_dir: PTcyc_libero_90_full_full_pi05_batch16_g8p500, label: cyc500}
+# ft_source: {model_dir: PTcyc_libero_90_full_full_pi05_batch16_g8p250_constlr, label: cyc250_constlr}
+ft_source: {model_dir: PTcyc_libero_90_full_full_pi05_batch16_g8p125_b05_constlr_lr5e-05, label: cyc125_constlr_b05_lr5e-05}
+# ft_source: {model_dir: PTcyc_libero_90_full_full_pi05_batch16_g8p250_b1to01_constlr, label: cyc250_constlr_b1to01}
+ft_source_checkpoint: "020000"
+# ft_groups_json: ""   # 소스에 groups.json 없을 때만 (ref 등)
+
+# ── FT 학습 (모든 조건 동일 고정!) ──
+ft_dataset: libero_10_full_2
+ft_batch_size: 16
+ft_num_workers: 4
+ft_exp: ""
+ft_lr: 2.5e-05
+ft_steps: 15000
+ft_save_freq: 5000
+ft_log_freq: 200
+ft_wandb_project: VLA_cycle_FT
+ft_freeze_vision_encoder: false
+ft_train_expert_only: false
+
+# ── PT 그룹 probe (PT 때와 동일 세팅 유지 — 값 직접 비교 가능) ──
+pt_dataset: libero_90_full_full
+cycle_probe_batches: 2
+cycle_probe_seed: 12345
+ft_probe_every: 250
+
+# ── Slurm ──
+ft_gres: gpu:1
+ft_cpus_per_task: 16
+ft_mem: 128G
+ft_time: "24:00:00"
