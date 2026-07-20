@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SkillVLA STAGE 3 training: policy.type=skill_vla, pt_stage="skill".
-# Full-loads a Stage-0 or Stage-2 policy and trains only the skill path
-# (skill adapter + skill_reader + skill_head). Every inherited component stays frozen.
+# Full-loads a frozen Stage-0/2 motor and trains only the skill path
+# (skill adapter + skill_reader + skill_head). pi05_base swaps only the predictor VLM.
 #SBATCH --job-name=stage3
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=16
@@ -38,8 +38,9 @@ unset LD_LIBRARY_PATH          # avoid system cuDNN shadowing the bundled one
 echo "START STAGE-3 (skill_vla, pt_stage=skill)"
 echo "Node      : ${SLURMD_NODENAME:-local}"
 echo "parent    : ${PARENT_STAGE} / ${PARENT_RUN_NAME} / ${PARENT_CHECKPOINT}"
-echo "dataset   : ${SKILLVLA_DATASET_DIR}  (inherited from parent)"
+echo "dataset   : ${SKILLVLA_DATASET_DIR}"
 echo "warm-start: ${PARENT_CHECKPOINT_PATH}"
+echo "predictor : ${SKILL_PREDICTOR_VLM_PATH:-<parent VLM>}"
 echo "FSQ       : ${FSQ_CKPT} (${FSQ_SOURCE})"
 echo "stage1cfg : ${STAGE1_CHECKPOINT_PATH:-<none>}"
 echo "output    : ${PT_OUTPUT_DIR}   lr/bs: ${LR}/${BATCH_SIZE}  (① lr ×${LORA_LR_SCALE})"
@@ -51,6 +52,10 @@ if [ ! -e "${SKILLVLA_DATASET_DIR}" ]; then
 fi
 if [ ! -e "${PARENT_CHECKPOINT_PATH}" ]; then
   echo "Missing ${PARENT_STAGE} checkpoint: ${PARENT_CHECKPOINT_PATH}" >&2
+  exit 1
+fi
+if [ -n "${SKILL_PREDICTOR_VLM_PATH}" ] && [ ! -e "${SKILL_PREDICTOR_VLM_PATH}" ]; then
+  echo "Missing predictor VLM checkpoint: ${SKILL_PREDICTOR_VLM_PATH}" >&2
   exit 1
 fi
 
@@ -96,8 +101,8 @@ if [ "${TRAIN_TERMINATOR}" = "true" ]; then
   )
 fi
 
-# pretrained_path full-loads the parent. Its topology and inherited adapters are reconstructed from the
-# parent config; the fresh skill adapter starts as a zero-output no-op and is the only trained adapter.
+# pretrained_path always full-loads the frozen motor parent. The optional predictor-only VLM is loaded
+# separately; its fresh skill adapter starts as a zero-output no-op and is the only trained adapter.
 READER_ARGS=()
 [ -n "${READER_ATTEND_IMAGE:-}" ] && READER_ARGS+=(--policy.reader_attend_image="${READER_ATTEND_IMAGE}")
 [ -n "${READER_ATTEND_LANGUAGE:-}" ] && READER_ARGS+=(--policy.reader_attend_language="${READER_ATTEND_LANGUAGE}")
@@ -116,6 +121,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.push_to_hub=false \
     --policy.pretrained_path="${PARENT_CHECKPOINT_PATH}" \
     --policy.stage3_parent_stage="${STAGE3_PARENT_STAGE}" \
+    --policy.skill_predictor_vlm_path="${SKILL_PREDICTOR_VLM_PATH}" \
     --policy.tokenizer_path="${TOKENIZER_PATH}" \
     --policy.stage1_checkpoint_path="${STAGE1_CHECKPOINT_PATH}" \
     --policy.paligemma_variant="${PALIGEMMA_VARIANT}" \

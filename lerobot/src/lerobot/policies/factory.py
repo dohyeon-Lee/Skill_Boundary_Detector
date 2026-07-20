@@ -35,6 +35,7 @@ from lerobot.policies.multi_task_dit.configuration_multi_task_dit import MultiTa
 from lerobot.policies.pi0.configuration_pi0 import PI0Config
 from lerobot.policies.pi05.configuration_pi05 import PI05Config
 from lerobot.policies.skillVLA.configuration_skillVLA import SkillVLAConfig
+from lerobot.policies.skillVLA_pretrain.configuration_skillVLA_pretrain import SkillVLAPretrainConfig
 from lerobot.policies.skill_expert.configuration_skill_expert import SkillExpertConfig
 from lerobot.policies.pretrained import PreTrainedPolicy
 from lerobot.policies.sac.configuration_sac import SACConfig
@@ -114,6 +115,10 @@ def get_policy_class(name: str) -> type[PreTrainedPolicy]:
         from lerobot.policies.skillVLA.modeling_skillVLA import SkillVLAPolicy
 
         return SkillVLAPolicy
+    elif name == "skill_vla_pretrain":
+        from lerobot.policies.skillVLA_pretrain.modeling_skillVLA_pretrain import SkillVLAPretrainPolicy
+
+        return SkillVLAPretrainPolicy
     elif name == "skill_expert":
         from lerobot.policies.skill_expert.modeling_skill_expert import SkillExpertPolicy
 
@@ -188,6 +193,8 @@ def make_policy_config(policy_type: str, **kwargs) -> PreTrainedConfig:
         return PI05Config(**kwargs)
     elif policy_type == "skill_vla":
         return SkillVLAConfig(**kwargs)
+    elif policy_type == "skill_vla_pretrain":
+        return SkillVLAPretrainConfig(**kwargs)
     elif policy_type == "skill_expert":
         return SkillExpertConfig(**kwargs)
     elif policy_type == "sac":
@@ -262,6 +269,41 @@ def make_pre_post_processors(
         NotImplementedError: If a processor factory is not implemented for the given
             policy configuration type.
     """
+    if isinstance(policy_cfg, SkillVLAPretrainConfig):
+        from lerobot.policies.skillVLA.processor_skillVLA import (
+            skill_vla_batch_to_transition,
+            skill_vla_transition_to_batch,
+        )
+        from lerobot.policies.skillVLA_pretrain.processor_skillVLA_pretrain import (
+            make_skill_vla_pretrain_pre_post_processors,
+        )
+
+        if pretrained_path and kwargs.get("dataset_stats") is None:
+            return (
+                PolicyProcessorPipeline.from_pretrained(
+                    pretrained_model_name_or_path=pretrained_path,
+                    config_filename=kwargs.get(
+                        "preprocessor_config_filename", f"{POLICY_PREPROCESSOR_DEFAULT_NAME}.json"
+                    ),
+                    overrides=kwargs.get("preprocessor_overrides", {}),
+                    to_transition=skill_vla_batch_to_transition,
+                    to_output=skill_vla_transition_to_batch,
+                ),
+                PolicyProcessorPipeline.from_pretrained(
+                    pretrained_model_name_or_path=pretrained_path,
+                    config_filename=kwargs.get(
+                        "postprocessor_config_filename", f"{POLICY_POSTPROCESSOR_DEFAULT_NAME}.json"
+                    ),
+                    overrides=kwargs.get("postprocessor_overrides", {}),
+                    to_transition=policy_action_to_transition,
+                    to_output=transition_to_policy_action,
+                ),
+            )
+        return make_skill_vla_pretrain_pre_post_processors(
+            config=policy_cfg,
+            dataset_stats=kwargs.get("dataset_stats"),
+        )
+
     if isinstance(policy_cfg, SkillVLAConfig):
         from lerobot.policies.skillVLA.processor_skillVLA import (
             make_skill_vla_pre_post_processors,

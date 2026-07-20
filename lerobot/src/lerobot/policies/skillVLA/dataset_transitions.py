@@ -55,6 +55,9 @@ class _Pack:
         self.start_state = np.asarray(z["start_state"], dtype=np.float32)
         self.task_index = np.asarray(z["task_index"])
         self.tasks = [str(t) for t in np.asarray(z["tasks"])]
+        self.episode_id = np.asarray(z["episode_id"], dtype=np.int64)
+        self.frame_start = np.asarray(z["frame_start"], dtype=np.int64)
+        self.frame_end = np.asarray(z["frame_end"], dtype=np.int64)
         self.pmax = int(z["pmax"])
         self.jitter_distribution = normalize_jitter_distribution(str(z["jitter_distribution"]))
         self.n = int(self.skill_code.shape[0])
@@ -78,13 +81,20 @@ class SkillTransitionDataset(SkillVLADataset):
     picks an offset in [-pmax, +pmax] from the pack's configured distribution and decodes the two
     skill-start JPEGs for that offset; everything motor-side is a dummy."""
 
-    def __init__(self, *args, transition_packs: list[str] | None = None, **kwargs):
+    def __init__(
+        self,
+        *args,
+        transition_packs: list[str] | None = None,
+        transition_randomization: bool = True,
+        **kwargs,
+    ):
         super().__init__(*args, **kwargs)                    # full meta/ISS plumbing of the base dataset
         paths = [p for p in (transition_packs or []) if str(p).strip()]
         if not paths:
             raise ValueError("SkillTransitionDataset needs at least one transitions.npz path.")
         self._packs = [_Pack(p) for p in paths]
         self._cum = np.cumsum([p.n for p in self._packs])
+        self._transition_randomization = bool(transition_randomization)
         # dummy shapes from the base dataset's features / the action delta window
         self._state_dim = int(np.prod(self.meta.features["observation.state"]["shape"]))
         n_act = len(self.delta_timestamps["action"]) if self.delta_timestamps and "action" in self.delta_timestamps else 1
@@ -101,7 +111,11 @@ class SkillTransitionDataset(SkillVLADataset):
         pack = self._packs[pi]
         seg = idx - (int(self._cum[pi - 1]) if pi > 0 else 0)
 
-        offset = sample_offset(pack.pmax, distribution=pack.jitter_distribution)
+        offset = (
+            sample_offset(pack.pmax, distribution=pack.jitter_distribution)
+            if self._transition_randomization
+            else 0
+        )
         win_idx = pack.pmax + offset
         img3 = pack.image(CAM_3RD, seg, win_idx)
         imgw = pack.image(CAM_WRIST, seg, win_idx)

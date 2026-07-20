@@ -28,9 +28,10 @@ DEFAULT_CONFIG_PATH = _HERE.parent.parent / "stage2_eval_config.yaml"
 
 
 def _resolve_model(vla_root: Path, model_dir: str, checkpoint: str, eval_terminator: str) -> dict:
-    """Resolve ONE Stage-2 run folder → its checkpoint + terminator + dataset-derived artifact paths.
-    The checkpoint config.json is the single source of truth (FSQ path → skill_latents / raw-dataset /
-    gt_skill dirs; train_terminator → the auto terminator resolution)."""
+    """Resolve one Stage-2/3 checkpoint, its terminator, and dataset-derived artifacts.
+
+    config.json selects the terminator; train_config.json identifies the training dataset.
+    """
     policy_path = vla_root / model_dir / "checkpoints" / checkpoint / "pretrained_model"
     pol: dict = {}
     cfg_json = policy_path / "config.json"
@@ -39,16 +40,36 @@ def _resolve_model(vla_root: Path, model_dir: str, checkpoint: str, eval_termina
     base_fsq = str(pol.get("fsq_path") or "")
     train_terminator_used = as_bool(pol.get("train_terminator", False))
     skill_latents_path = raw_dataset_dir = gt_skill_dataset_dir = eval_init_states_path = ""
-    if base_fsq:
-        fp = Path(base_fsq)  # {root}/{dataset_root}/skillvla_dataset/{source}/{run_tag}/FSQ.pt
-        skill_latents_path = str(fp.parent / "skill_latents.npz")
-        gt_skill_dataset_dir = str(fp.parent / "skillvla")  # skillvla dataset (skill_sequence) for oracle GT
-        # EPISODE-EXACT init states: FSQ-independent, shared per SOURCE (built by stage1_eval/oracle_matching)
-        eval_init_states_path = str(fp.parents[1] / "eval_init_states.npz")
+
+    # Stage-3 may inherit ``fsq_path`` from a Stage-0/2 checkpoint (FSQ_ft.pt), so that path is no
+    # longer necessarily inside the dataset run directory. Dataset artifacts must come from the
+    # checkpoint's training dataset metadata; retain the old FSQ-derived fallback for old snapshots.
+    dataset_dir: Path | None = None
+    train_json = policy_path / "train_config.json"
+    if train_json.is_file():
+        train_cfg = json.loads(train_json.read_text())
+        dataset_root = str((train_cfg.get("dataset") or {}).get("root") or "")
+        if dataset_root:
+            dataset_dir = Path(dataset_root).expanduser()
+    if dataset_dir is not None:
+        run_dir = dataset_dir.parent
+        source_dir = run_dir.parent
+        skill_latents_path = str(run_dir / "skill_latents.npz")
+        gt_skill_dataset_dir = str(dataset_dir)
+        eval_init_states_path = str(source_dir / "eval_init_states.npz")
         try:
-            raw_dataset_dir = str(fp.parents[3] / fp.parents[1].name)  # {dataset_root}/{source}
+            raw_dataset_dir = str(source_dir.parents[1] / source_dir.name)
         except IndexError:
             raw_dataset_dir = ""
+    elif base_fsq:
+        fp = Path(base_fsq)  # {dataset_root}/skillvla_dataset/{source}/{run_tag}/FSQ.pt
+        skill_latents_path = str(fp.parent / "skill_latents.npz")
+        gt_skill_dataset_dir = str(fp.parent / "skillvla")
+        try:
+            eval_init_states_path = str(fp.parents[1] / "eval_init_states.npz")
+            raw_dataset_dir = str(fp.parents[3] / fp.parents[1].name)
+        except IndexError:
+            eval_init_states_path = raw_dataset_dir = ""
     if eval_terminator == "cotrained" and not train_terminator_used:
         raise ValueError(
             f"eval_terminator='cotrained' but {model_dir} was trained with train_terminator=false "
@@ -274,7 +295,9 @@ def build_settings(cfg: dict) -> dict:
         resolved, labels, drop_flags, keepad_flags = new_r, new_l, new_d, new_k
 
     m0 = resolved[0]
-    multi = len(resolved) >= 2
+    # The legacy single-panel path has no route arguments and therefore represents A only.
+    # A lone B/VSA/FSQ panel still needs MODELS_JSON so its requested topology is honored.
+    multi = len(resolved) >= 2 or m0.get("eval_mode") != "a"
 
     model_dir, checkpoint, policy_path = m0["model_dir"], m0["checkpoint"], m0["policy_path"]
     base_fsq, train_terminator_used, resolved_term = m0["base_fsq"], m0["train_terminator_used"], m0["resolved_term"]
@@ -308,6 +331,8 @@ def build_settings(cfg: dict) -> dict:
              "checkpoint": r["checkpoint"], "resolved_term": r["resolved_term"],
              "gt_skill_dataset_dir": r["gt_skill_dataset_dir"],
              "eval_init_states_path": r["eval_init_states_path"],
+             "skill_latents_path": r["skill_latents_path"],
+             "raw_dataset_dir": r["raw_dataset_dir"],
              "advance_mode": r["advance_mode"],
              "drop_vlm": bool(d), "keep_adapters": bool(k),   # keep_adapters: severed인데 LoRA(②③) 유지 (drop_vlm 패널)
              # include_stage1 패널용: runner "s2"(기본) | "stage1"(부모를 stage1_eval 경로로 평가) |
@@ -333,7 +358,7 @@ def build_settings(cfg: dict) -> dict:
         "checkpoint": checkpoint,
         # terminator: eval sbatch picks FSQ_FOR_EVAL by EVAL_TERMINATOR — "cotrained" → ft_fsq_path
         # (lazy-exported from THIS checkpoint if missing), "base" → base_fsq.
-        "base_fsq": base_fsq,                 # dataset FSQ (pre co-train; existence check + export base)
+        "base_fsq": base_fsq,                 # incoming base/inherited terminator (export base)
         "ft_fsq_path": ft_fsq_path,           # per-checkpoint adapted terminator (checkpoints/<ckpt>/FSQ_ft.pt)
         "ft_run_dir": vla_root / model_dir,   # for export_ft_terminator.py --ft_run_dir
         "eval_terminator": resolved_term,     # resolved base|cotrained → eval.sbatch FSQ pick + folder tag

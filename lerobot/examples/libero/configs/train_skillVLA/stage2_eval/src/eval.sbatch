@@ -257,7 +257,8 @@ for m in json.loads(os.environ["MODELS_JSON"]):
                     m.get("eval_init_states_path", ""), str(m.get("drop_vlm", False)).lower(),
                     m.get("runner", "s2"), m.get("alias_target", ""),
                     m.get("terminator_dino", ""), str(m.get("use_trained_terminator", False)).lower(),
-                    str(m.get("keep_adapters", False)).lower(), m.get("advance_mode", "terminator")]))
+                    str(m.get("keep_adapters", False)).lower(), m.get("advance_mode", "terminator"),
+                    m.get("skill_latents_path", ""), m.get("raw_dataset_dir", "")]))
 PY
 )"
   # Progressive per-task stitch (like stage1): each panel eval runs this after EVERY task's videos are
@@ -272,17 +273,11 @@ PY
   --labels_json='${MODELS_LABELS}' --per_row="${MODELS_PER_ROW}"
 EOF
 
-  # Per-panel skill_html (per-episode skill trace: predicted code, start/end frames, terminator
-  # curves) — same auto-disable as the single path when skill_latents.npz is missing.
-  SKILL_HTML_EFFECTIVE="${SKILL_HTML}"
-  if [ "${SKILL_HTML}" = "true" ] && [ ! -f "${SKILL_LATENTS_PATH}" ]; then
-    echo "[warn] skill_latents.npz missing (${SKILL_LATENTS_PATH}); disabling skill_html."
-    SKILL_HTML_EFFECTIVE=false
-  fi
-
   # PANEL_LABEL set (submit's model×chunk fan-out) → this job runs ONLY that model; unset (srun /
   # legacy) → all models sequentially.
-  while IFS='|' read -r LBL PPATH BFSQ FTFSQ FTRUN CKPT RTERM GTDIR INITS DROP RUNNER ALIAS DINO UTT KEEPAD ADVANCE; do
+  DEFAULT_SKILL_LATENTS_PATH="${SKILL_LATENTS_PATH}"
+  DEFAULT_RAW_DATASET_DIR="${RAW_DATASET_DIR}"
+  while IFS='|' read -r LBL PPATH BFSQ FTFSQ FTRUN CKPT RTERM GTDIR INITS DROP RUNNER ALIAS DINO UTT KEEPAD ADVANCE SLATENTS RAWDATA; do
     [ -z "${LBL}" ] && continue
     if [ -n "${PANEL_LABEL:-}" ] && [ "${LBL}" != "${PANEL_LABEL}" ]; then
       continue
@@ -297,6 +292,14 @@ EOF
     if [ ! -d "${PPATH}" ]; then
       echo "[warn] panel '${LBL}': checkpoint missing (${PPATH}) — skipping this model" >&2
       continue
+    fi
+    # Models may use different FSQ codebooks/datasets. Keep skill HTML metadata panel-local.
+    SKILL_LATENTS_PATH="${SLATENTS:-${DEFAULT_SKILL_LATENTS_PATH}}"
+    RAW_DATASET_DIR="${RAWDATA:-${DEFAULT_RAW_DATASET_DIR}}"
+    SKILL_HTML_EFFECTIVE="${SKILL_HTML}"
+    if [ "${SKILL_HTML}" = "true" ] && [ ! -f "${SKILL_LATENTS_PATH}" ]; then
+      echo "[warn] panel '${LBL}': skill_latents.npz missing (${SKILL_LATENTS_PATH}); disabling skill_html."
+      SKILL_HTML_EFFECTIVE=false
     fi
     if [ "${RUNNER:-s2}" = "stage1" ] || [ "${RUNNER:-s2}" = "fsq" ]; then
       # stage1 패널도 s2 패널과 똑같이 STAGE-2 체크포인트 기준으로 resolve한 터미네이터 FSQ를 그대로 사용

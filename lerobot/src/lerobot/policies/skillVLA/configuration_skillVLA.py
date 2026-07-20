@@ -131,6 +131,10 @@ class SkillVLAConfig(PI05Config):
     """Stage-3 full-checkpoint source (``stage0`` or ``stage2``). A Stage-0 parent has no Stage-1
     config, so this flag tells model construction to recreate its direct expert and expert-LoRA wrappers
     before loading the frozen parent weights."""
+    skill_predictor_vlm_path: str | None = None
+    """Optional Stage-3 predictor-only PaliGemma source. The main checkpoint still supplies the complete
+    frozen motor (its VLM + cond + expert); only the standalone skill-prediction view uses this separate
+    VLM. Blank keeps the parent's VLM shared by both views."""
     stage0_vlm_severed_prob: float = 0.3
     """Stage-0 probability of a B batch. The branch-local drop/train component fields below define
     the exact topology and gradient scope; both branches use the same GT flow target."""

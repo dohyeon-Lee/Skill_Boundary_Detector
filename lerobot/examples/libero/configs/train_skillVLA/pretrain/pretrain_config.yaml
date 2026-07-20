@@ -1,0 +1,34 @@
+dataset:
+  skillvla_root: skillvla_dataset
+  source: libero_90_full_full
+  run: FSQ333_dino_frozen_small_optimal_vsa_broadcast_150_std_pt_snap10_ms1_pmax15_halfnormal
+  transition_randomization: true # false: exact GT skill-start image/state
+
+warm_start:
+  pi_base: models/pi05_base
+
+tokenizers:
+  text: models/paligemma-3b-pt-224-tokenizer
+  fast: models/fast-action-tokenizer-libero-skill-v1024
+  fast_vocab_size: 1024
+  fast_skip_tokens: 128
+  max_fast_tokens: 384 # hard cap; preparation/training fail instead of truncating
+  train: {scale: 10.0, encoded_dims: "0:7"}
+
+model:
+  mode: lora # lora | full
+
+lora: {targets: [q, k, v, o], rank: 16, alpha: auto, dropout: 0.0}
+loss: {skill: 1.0, fast: 1.0, structure: 0.1}
+
+run: {name: "", suffix: ""}
+
+training:
+  dataloader: {batch_size: 8, workers: 4, gpus: 1}
+  optimizer: {full_lr: 5.0e-06, lora_lr: 1.0e-04}
+  schedule: {steps: 30000, warmup: 1000, save_every: 5000, log_every: 100}
+
+logging:
+  wandb: {enable: true, project: VLA_pretrain}
+
+slurm: {partition: debug, qos: base_qos, gres: "gpu:1", cpus: 16, memory: 192G, time: "48:00:00"}

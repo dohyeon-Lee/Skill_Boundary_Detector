@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Submit SkillVLA Stage-3 training over a frozen Stage-0 or Stage-2 model.
+# Submit SkillVLA Stage-3 training over pi05_base+FSQ or a frozen Stage-0/2 model.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # stage3

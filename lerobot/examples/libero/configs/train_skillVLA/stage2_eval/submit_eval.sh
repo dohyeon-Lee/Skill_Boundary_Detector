@@ -3,9 +3,13 @@
 #   (login) resolve config + check the PT checkpoint → sbatch eval.sbatch
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # stage2_eval
-SRC_DIR="${SCRIPT_DIR}/src"
-CONFIG_PATH="${STAGE2_EVAL_CONFIG:-${SCRIPT_DIR}/stage2_eval_config.yaml}"
+SCRIPT_DIR="${SKILLVLA_EVAL_FRONTEND_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+RUNNER_DIR="${SKILLVLA_EVAL_RUNNER_DIR:-${SCRIPT_DIR}}"
+SRC_DIR="${RUNNER_DIR}/src"
+CONFIG_EMITTER="${SKILLVLA_EVAL_CONFIG_EMITTER:-${SRC_DIR}/stage2_eval_config.py}"
+CONFIG_PATH="${SKILLVLA_EVAL_CONFIG:-${STAGE2_EVAL_CONFIG:-${SCRIPT_DIR}/stage2_eval_config.yaml}}"
+EVAL_JOB_NAME="${SKILLVLA_EVAL_JOB_NAME:-S2eval}"
+TRAIN_STAGE="${SKILLVLA_EVAL_TRAIN_STAGE:-stage2}"
 
 # Freeze the config so this job ignores later edits to the repo yaml (see configs/snapshot_config.sh).
 _lib="$(dirname "${CONFIG_PATH}")"; while [ ! -f "${_lib}/snapshot_config.sh" ]; do _lib="$(dirname "${_lib}")"; done
@@ -22,17 +26,17 @@ fi
 # Failure surfaces HERE at submit (set -e aborts), not as a confusing job-side traceback.
 mkdir -p "${SCRIPT_DIR}/logs"
 STAGE2_EVAL_ENV_SNAPSHOT="${SCRIPT_DIR}/logs/stage2_eval_env_$(date +%Y%m%d_%H%M%S)_$$.sh"
-"${BOOTSTRAP_PYTHON}" "${SRC_DIR}/stage2_eval_config.py" --config "${CONFIG_PATH}" --shell > "${STAGE2_EVAL_ENV_SNAPSHOT}"
+"${BOOTSTRAP_PYTHON}" "${CONFIG_EMITTER}" --config "${CONFIG_PATH}" --shell > "${STAGE2_EVAL_ENV_SNAPSHOT}"
 source "${STAGE2_EVAL_ENV_SNAPSHOT}"
 export STAGE2_EVAL_ENV_SNAPSHOT
 
 if [ ! -d "${POLICY_PATH}" ]; then
   echo "PT checkpoint not found: ${POLICY_PATH}" >&2
-  echo "Train it first: configs/train_skillVLA/stage2/submit_train.sh" >&2
+  echo "Train it first: configs/train_skillVLA/${TRAIN_STAGE}/submit_train.sh" >&2
   exit 1
 fi
 if [ ! -f "${BASE_FSQ}" ]; then
-  echo "Base FSQ not found: ${BASE_FSQ}  (the dataset's FSQ.pt the model was trained with)" >&2
+  echo "Base/inherited terminator FSQ not found: ${BASE_FSQ}" >&2
   exit 1
 fi
 
@@ -94,7 +98,7 @@ if [ -n "${SLURM_JOB_ID:-}" ]; then
   # (eval_num_gpus / model fan-out are ignored here — one allocation = one sequential run.)
   [ "${EVAL_NUM_GPUS:-1}" -gt 1 ] && echo "  note     : eval_num_gpus=${EVAL_NUM_GPUS} ignored under srun (single allocation)"
   echo "  mode     : srun (reusing allocation ${SLURM_JOB_ID})"
-  STAGE2_EVAL_DIR="${SCRIPT_DIR}" STAGE2_EVAL_CONFIG="${CONFIG_PATH}" \
+  STAGE2_EVAL_DIR="${RUNNER_DIR}" STAGE2_EVAL_CONFIG="${CONFIG_PATH}" \
     srun "${SRC_DIR}/eval.sbatch"
 elif [ -n "${MODELS_JSON:-}" ]; then
   # ── MULTI-model: ONE job ARRAY ({ID}_0,{ID}_1,… — `scancel {ID}` kills the whole eval) with
@@ -127,15 +131,15 @@ elif [ -n "${MODELS_JSON:-}" ]; then
   # start at once and over-allocate GPUs.
   ARRAY_SPEC="0-$((i - 1))%${EVAL_NUM_GPUS:-1}"
   echo "  mode     : sbatch --array ${ARRAY_SPEC} (models=${N_MODELS} × chunks=${CHUNK_N}, chunk-major, ≤${EVAL_NUM_GPUS} GPUs)"
-  STAGE2_EVAL_DIR="${SCRIPT_DIR}" STAGE2_EVAL_CONFIG="${CONFIG_PATH}" \
+  STAGE2_EVAL_DIR="${RUNNER_DIR}" STAGE2_EVAL_CONFIG="${CONFIG_PATH}" \
     EVAL_FANOUT="${EVAL_FANOUT}" TASKS_TOTAL="${TASKS_TOTAL}" \
-    sbatch --job-name="S2eval" --array="${ARRAY_SPEC}" \
+    sbatch --job-name="${EVAL_JOB_NAME}" --array="${ARRAY_SPEC}" \
            --output=logs/%x_%A_%a.out --error=logs/%x_%A_%a.err \
            "${SBATCH_ARGS[@]}" "${SRC_DIR}/eval.sbatch"
 elif [ "${EVAL_NUM_GPUS:-1}" -le 1 ]; then
   echo "  mode     : sbatch (new job)"
-  STAGE2_EVAL_DIR="${SCRIPT_DIR}" STAGE2_EVAL_CONFIG="${CONFIG_PATH}" \
-    sbatch "${SBATCH_ARGS[@]}" "${SRC_DIR}/eval.sbatch"
+  STAGE2_EVAL_DIR="${RUNNER_DIR}" STAGE2_EVAL_CONFIG="${CONFIG_PATH}" \
+    sbatch --job-name="${EVAL_JOB_NAME}" "${SBATCH_ARGS[@]}" "${SRC_DIR}/eval.sbatch"
 else
   # SINGLE model, eval_num_gpus > 1 → ONE job ARRAY over task chunks (each task = 1-GPU job).
   # All tasks share EVAL_OUT_DIR (task subdirs are disjoint); per-chunk eval_info_{tag}.json, a
@@ -154,9 +158,9 @@ else
   # Keep the GPU budget an enforced Slurm limit, rather than only a chunking hint.
   ARRAY_SPEC="0-$((i - 1))%${EVAL_NUM_GPUS:-1}"
   echo "  mode     : sbatch --array ${ARRAY_SPEC} (task-split, 1 GPU each, ≤${EVAL_NUM_GPUS} GPUs)"
-  STAGE2_EVAL_DIR="${SCRIPT_DIR}" STAGE2_EVAL_CONFIG="${CONFIG_PATH}" \
+  STAGE2_EVAL_DIR="${RUNNER_DIR}" STAGE2_EVAL_CONFIG="${CONFIG_PATH}" \
     EVAL_FANOUT="${EVAL_FANOUT}" TASKS_TOTAL="${TASKS_TOTAL}" \
-    sbatch --job-name="S2eval" --array="${ARRAY_SPEC}" \
+    sbatch --job-name="${EVAL_JOB_NAME}" --array="${ARRAY_SPEC}" \
            --output=logs/%x_%A_%a.out --error=logs/%x_%A_%a.err \
            "${SBATCH_ARGS[@]}" "${SRC_DIR}/eval.sbatch"
 fi

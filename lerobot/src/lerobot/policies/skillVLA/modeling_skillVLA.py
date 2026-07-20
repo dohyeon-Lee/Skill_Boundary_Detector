@@ -31,6 +31,7 @@ dataset eval where the skill-start inputs are supplied in the batch.
 
 from __future__ import annotations
 
+import copy
 import logging
 import math
 import sys
@@ -234,6 +235,15 @@ class SkillVLAPytorch(PI05Pytorch):
         self.config = config
         self.stage1_config = stage1_config
 
+        # Stage-3 pi05-predictor ablation: the loaded parent remains the complete frozen action motor,
+        # including its Stage-0 VLM. A second PaliGemma *model* (no unused LM head) is reserved solely
+        # for skill prediction and later overwritten from skill_predictor_vlm_path.
+        self.skill_predictor_vlm_model = None
+        if str(getattr(config, "skill_predictor_vlm_path", "") or "").strip():
+            self.skill_predictor_vlm_model = copy.deepcopy(
+                self.paligemma_with_expert.paligemma.model
+            )
+
         vlm_width = get_gemma_config(config.paligemma_variant).width
         self.expert_width = get_gemma_config(config.action_expert_variant).width
 
@@ -401,8 +411,30 @@ class SkillVLAPytorch(PI05Pytorch):
         return self.paligemma_with_expert.paligemma.model.language_model
 
     @property
+    def _predictor_vlm_model(self):
+        if self.skill_predictor_vlm_model is not None:
+            return self.skill_predictor_vlm_model
+        return self.paligemma_with_expert.paligemma.model
+
+    @property
+    def _predictor_vlm(self):
+        return self._predictor_vlm_model.language_model
+
+    @property
     def _expert(self):
         return self.paligemma_with_expert.gemma_expert.model
+
+    def gradient_checkpointing_enable(self):
+        super().gradient_checkpointing_enable()
+        if self.skill_predictor_vlm_model is not None:
+            self.skill_predictor_vlm_model.language_model.gradient_checkpointing = True
+            self.skill_predictor_vlm_model.vision_tower.gradient_checkpointing = True
+
+    def gradient_checkpointing_disable(self):
+        super().gradient_checkpointing_disable()
+        if self.skill_predictor_vlm_model is not None:
+            self.skill_predictor_vlm_model.language_model.gradient_checkpointing = False
+            self.skill_predictor_vlm_model.vision_tower.gradient_checkpointing = False
 
     def _resolved_pt_stage(self) -> str | None:
         """config.pt_stage, with the retired regime_probs_pt auto-mapped for old checkpoints/snapshots:
@@ -481,8 +513,9 @@ class SkillVLAPytorch(PI05Pytorch):
         drop = float(getattr(c, "lora_dropout", 0.0))
         parts = []
         if getattr(c, "lora_skill", False):
-            n = inject_named_lora(self._vlm, names, "skill", r, alpha, drop)
-            parts.append(f"skill@VLM-LLM={n}")
+            n = inject_named_lora(self._predictor_vlm, names, "skill", r, alpha, drop)
+            tower = "predictor-VLM" if self.skill_predictor_vlm_model is not None else "VLM"
+            parts.append(f"skill@{tower}-LLM={n}")
         if use_vlm_lora:
             n = inject_named_lora(self._vlm, names, "vlm_lora", r, alpha, drop)
             parts.append(f"vlm_lora@VLM-LLM={n}")
@@ -515,9 +548,10 @@ class SkillVLAPytorch(PI05Pytorch):
         ("cond_vision_encoder"). Returns {group: [(param_name, param), ...]} over ALL params (frozen
         groups then simply show ~0 drift, which confirms the freeze)."""
         cond_vision = self.dino if self.vision_backbone == "dino" else self.siglip
+        tracked_vlm = self._predictor_vlm_model
         groups = {
-            "llm": [self._vlm],                                              # VLM Gemma trunk
-            "vlm_vision": [self.paligemma_with_expert.paligemma.model.vision_tower],
+            "llm": [tracked_vlm.language_model],                            # skill-predictor VLM trunk
+            "vlm_vision": [tracked_vlm.vision_tower],
             "cond": [self.cond_encoder, self.image_proj,
                      self.state_proj if self._cond_uses_state_adarms else None],
             "cond_vision_encoder": [cond_vision],                           # DINO/SigLIP for cond
@@ -694,7 +728,12 @@ class SkillVLAPytorch(PI05Pytorch):
         return self._expert_cond_from_z(time, state, self._code_to_z(skill_code) / self._fsq_half[None, :])
 
     def _vlm_tokens(
-        self, start_images: list[Tensor], lang_tokens: Tensor, lang_masks: Tensor
+        self,
+        start_images: list[Tensor],
+        lang_tokens: Tensor,
+        lang_masks: Tensor,
+        *,
+        predictor: bool = False,
     ) -> tuple[Tensor, Tensor, Tensor]:
         """VLM prefix [start imgs, language] → (embeds (B,nv,W), pad (B,nv), xattn_block (nv,)).
 
@@ -702,15 +741,21 @@ class SkillVLAPytorch(PI05Pytorch):
         over this prefix's FINAL-layer output (see SkillReader). ``xattn_block`` marks VLM tokens the
         cond/expert/reader streams must NOT attend: the language sub-block UNLESS attend_language=True.
         So by default they read VLM IMAGE tokens only (visual grounding)."""
+        vlm_model = self._predictor_vlm_model if predictor else self.paligemma_with_expert.paligemma.model
         embs, pad, is_lang = [], [], []
         for img in start_images:
-            emb = self.paligemma_with_expert.embed_image(img)
+            out_dtype = img.dtype
+            img_in = img.to(torch.float32) if img.dtype != torch.float32 else img
+            image_out = vlm_model.get_image_features(img_in)
+            emb = image_out.pooler_output * math.sqrt(image_out.pooler_output.shape[-1])
+            if emb.dtype != out_dtype:
+                emb = emb.to(out_dtype)
             n = emb.shape[1]
             embs.append(emb)
             pad.append(torch.ones(emb.shape[0], n, dtype=torch.bool, device=emb.device))
             is_lang += [False] * n
 
-        lang_emb = self.paligemma_with_expert.embed_language_tokens(lang_tokens)
+        lang_emb = vlm_model.language_model.embed_tokens(lang_tokens)
         lang_emb = lang_emb * math.sqrt(lang_emb.shape[-1])
         embs.append(lang_emb)
         pad.append(lang_masks.to(dtype=torch.bool))
@@ -1209,7 +1254,9 @@ class SkillVLAPytorch(PI05Pytorch):
         re-runs these layers inside loss.backward(), after any scoped `with` would have exited — the
         global must still hold THIS view's set then, or the recompute diverges from the saved forward."""
         set_active_adapters(self._active_adapters({"skill"}))
-        vlm_embeds, vlm_pad, vlm_xattn_block = self._vlm_tokens(start_images, lang_tokens, lang_masks)
+        vlm_embeds, vlm_pad, vlm_xattn_block = self._vlm_tokens(
+            start_images, lang_tokens, lang_masks, predictor=True
+        )
         return self._skill_hidden_standalone(vlm_embeds, vlm_pad, vlm_xattn_block)
 
     def _flow_view(self, cond_images, start_images, lang_tokens, lang_masks, state, skill_zq,
@@ -1500,7 +1547,8 @@ class SkillVLAPytorch(PI05Pytorch):
         # python-float `torch.where` yields float32, so cast to the bf16 working dtype.
         att_4d = torch.where(att_2d[:, None], 0.0, OPENPI_ATTENTION_MASK_VALUE).to(vlm_embeds.dtype)
         position_ids = torch.cumsum(vlm_pad, dim=1) - 1
-        out = self._vlm.forward(
+        predictor_vlm = self._predictor_vlm
+        out = predictor_vlm.forward(
             inputs_embeds=vlm_embeds, attention_mask=att_4d, position_ids=position_ids,
             past_key_values=None, use_cache=False, adarms_cond=None, output_hidden_states=all_layers,
         )
@@ -1509,7 +1557,7 @@ class SkillVLAPytorch(PI05Pytorch):
             # layer(N-1)_out). Norm each pre-norm layer output; the last entry is ALREADY final-normed
             # (== last_hidden_state) → append it directly (no double-norm). Matches the joint forward's
             # per-layer capture (each of the N layer outputs normed by the VLM final norm).
-            normed = [layernorm_forward(self._vlm.norm, h, None)[0] for h in out.hidden_states[1:-1]]
+            normed = [layernorm_forward(predictor_vlm.norm, h, None)[0] for h in out.hidden_states[1:-1]]
             normed.append(out.last_hidden_state)
             return out.last_hidden_state, torch.stack(normed, dim=1)   # (B, N, nv, W)
         return out.last_hidden_state
@@ -1528,7 +1576,9 @@ class SkillVLAPytorch(PI05Pytorch):
         SKILL view: adapter ① ("skill"), sticky — callers that need a different view afterwards
         (sample_actions' flow scope) set their own AFTER resolving the skill (2-forward inference)."""
         set_active_adapters(self._active_adapters({"skill"}))
-        vlm_embeds, vlm_pad, vlm_xattn_block = self._vlm_tokens(start_images, lang_tokens, lang_masks)
+        vlm_embeds, vlm_pad, vlm_xattn_block = self._vlm_tokens(
+            start_images, lang_tokens, lang_masks, predictor=True
+        )
         hidden = self._skill_hidden_standalone(vlm_embeds, vlm_pad, vlm_xattn_block)
         return self.skill_head.decode(hidden)
 
@@ -1852,6 +1902,63 @@ class SkillVLAPytorch(PI05Pytorch):
 
 # ── Warm-start key remapping ────────────────────────────────────────────────────────────────
 
+def _remap_pi05_to_predictor_vlm(raw: dict) -> dict:
+    """pi05 checkpoint → the separate Stage-3 skill-predictor PaliGemma model."""
+    source = "paligemma_with_expert.paligemma.model."
+    target = "model.skill_predictor_vlm_model."
+    out = {}
+    lm_head = None
+    for key_raw, value in raw.items():
+        key = key_raw[len("model."):] if key_raw.startswith("model.") else key_raw
+        if key.startswith(source):
+            out[target + key[len(source):]] = value
+        elif key == "paligemma_with_expert.paligemma.lm_head.weight":
+            lm_head = value
+    embed_key = target + "language_model.embed_tokens.weight"
+    if embed_key not in out and lm_head is not None:
+        out[embed_key] = lm_head.clone()
+    return out
+
+
+def _load_skill_predictor_vlm(model, config, dtype, kwargs, parent_raw: dict) -> None:
+    """Initialize a missing predictor-only tower from pi05 while retaining the loaded parent motor."""
+    path = str(getattr(config, "skill_predictor_vlm_path", "") or "").strip()
+    if not path:
+        return
+    if model.model.skill_predictor_vlm_model is None:
+        raise RuntimeError("skill_predictor_vlm_path is set but the predictor tower was not constructed.")
+    if any("skill_predictor_vlm_model." in key for key in parent_raw):
+        return  # A Stage-3 checkpoint already carries the trained predictor tower and its skill adapter.
+
+    raw = _load_raw_state_dict(path, kwargs)
+    if raw is None:
+        raise FileNotFoundError(f"Could not load predictor VLM checkpoint: {path}")
+    mapped = {key: value.to(dtype) for key, value in _remap_pi05_to_predictor_vlm(raw).items()}
+    model_keys = set(model.state_dict())
+    prefix = "model.skill_predictor_vlm_model."
+    expected = {
+        key.replace(".base.", ".")
+        for key in model_keys
+        if key.startswith(prefix) and ".adapters." not in key
+    }
+    missing = expected - set(mapped)
+    if missing:
+        raise RuntimeError(
+            "pi05 predictor checkpoint is incomplete; missing predictor tensors: "
+            f"{sorted(missing)[:20]}{' ...' if len(missing) > 20 else ''}"
+        )
+    mapped = {key: value for key, value in mapped.items() if key in expected}
+    mapped, n_routed = route_plain_to_base(mapped, model_keys)
+    _, unexpected = model.load_state_dict(mapped, strict=False)
+    if unexpected:
+        raise RuntimeError(f"Unexpected pi05 predictor tensors: {sorted(unexpected)}")
+    log.info(
+        "SkillVLA Stage-3 predictor VLM<-pi05: loaded %d tensors from %s (%d routed into LoRA bases); "
+        "the frozen motor VLM remains from the parent checkpoint.",
+        len(mapped), path, n_routed,
+    )
+
+
 def _apply_vlm_override(model, config, dtype, kwargs) -> None:
     """EVAL-ONLY ablation (config.eval_vlm_override_path): overwrite the loaded VLM (the WHOLE PaliGemma
     tower — vision_tower + multi_modal_projector + language_model) with another checkpoint's VLM, while
@@ -2059,6 +2166,10 @@ class SkillVLAPolicy(PI05Policy):
         g = m._regime_groups()
         stage2 = stage == "cond"
         stage0 = stage == "stage0"
+        # A predictor-only VLM is never part of the motor optimizer. Freeze its complete base first;
+        # the adapter loop below re-enables only the named ``skill`` LoRA parameters in Stage 3.
+        if m.skill_predictor_vlm_model is not None:
+            m._set_requires_grad([m.skill_predictor_vlm_model], False)
         stage0_train = (
             m._stage0_components("stage0_a") | m._stage0_components("stage0_b")
             if stage0 else set()
@@ -2829,6 +2940,7 @@ class SkillVLAPolicy(PI05Policy):
             }
             missing, unexpected = _routed_load(state, "resume")
             log.info("SkillVLA resume: %d loaded, %d missing, %d unexpected.", len(state), len(missing), len(unexpected))
+            _load_skill_predictor_vlm(model, config, dtype, kwargs, raw)
             _apply_vlm_override(model, config, dtype, kwargs)   # eval-only: swap the VLM (PaliGemma) tower
             return model
 
@@ -2839,8 +2951,14 @@ class SkillVLAPolicy(PI05Policy):
         vlm_state = {k: v.to(dtype) for k, v in _remap_pi05_to_vlm(raw).items()}
         m1, _ = _routed_load(vlm_state, "VLM<-pi05")           # ①② wrap the VLM q/k/v/o → route to .base
         if not config.stage1_checkpoint_path:
-            stage0 = getattr(config, "pt_stage", None) == "stage0"
-            if stage0:
+            direct_stage0 = (
+                getattr(config, "pt_stage", None) == "stage0"
+                or (
+                    getattr(config, "pt_stage", None) == "skill"
+                    and str(getattr(config, "stage3_parent_stage", "stage2")) == "stage0"
+                )
+            )
+            if direct_stage0:
                 if not getattr(config, "fsq_path", None):
                     raise ValueError("Stage-0 requires policy.fsq_path for its skill geometry/terminator.")
                 expert_source = str(getattr(config, "stage0_expert_source", "fsq"))

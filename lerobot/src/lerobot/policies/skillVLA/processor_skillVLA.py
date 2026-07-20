@@ -57,6 +57,10 @@ SKILL_VLA_BATCH_KEYS = (
     "skill_code_true",
     "skill_ds",
     "skill_de",
+    # Variable-length full-skill FAST targets used only by skill_vla_pretrain.
+    "pretrain_fast_tokens",
+    "pretrain_fast_token_mask",
+    "pretrain_trajectory_length",
 )
 
 

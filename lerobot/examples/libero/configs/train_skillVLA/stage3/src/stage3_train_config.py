@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Resolve SkillVLA Stage-3 training from a frozen Stage-0 or Stage-2 parent."""
+"""Resolve Stage-3 from a frozen Stage-0/2 motor and an optional pi05 predictor-only VLM."""
 
 from __future__ import annotations
 
@@ -50,32 +50,45 @@ def build_settings(cfg: dict) -> dict:
     parent_stage_value = _at(cfg, "warm_start", "stage", default=None)
     if parent_stage_value in (None, ""):
         parent_stage_value = "stage0" if get_value(cfg, "stage0_run_name", None) else "stage2"
-    parent_stage = str(parent_stage_value).strip().lower()
-    if parent_stage not in {"stage0", "stage2"}:
-        raise ValueError(f"warm_start.stage must be stage0|stage2, got {parent_stage!r}.")
+    parent_stage = str(parent_stage_value).strip().lower().replace("-", "_")
+    if parent_stage not in {"pi05_base", "stage0", "stage2"}:
+        raise ValueError(
+            f"warm_start.stage must be pi05_base|stage0|stage2, got {parent_stage!r}.")
 
-    legacy_run_key = f"{parent_stage}_run_name"
+    direct_pi05 = parent_stage == "pi05_base"
+    metadata_stage = "stage0" if direct_pi05 else parent_stage
+    legacy_run_key = f"{metadata_stage}_run_name"
     parent_run = str(
         _at(cfg, "warm_start", "run", default=get_value(cfg, legacy_run_key, "")) or ""
     ).strip()
     if not parent_run:
-        raise ValueError("warm_start.run must name a trained Stage-0 or Stage-2 run.")
-    legacy_checkpoint_key = f"{parent_stage}_checkpoint"
+        raise ValueError(
+            "warm_start.run must name the Stage-0 recipe run for pi05_base, or the trained parent run."
+        )
+    legacy_checkpoint_key = f"{metadata_stage}_checkpoint"
     parent_checkpoint = str(
-        _at(cfg, "warm_start", "checkpoint", default=get_value(cfg, legacy_checkpoint_key, "last")) or "last"
+        _at(cfg, "warm_start", "checkpoint", default=get_value(cfg, legacy_checkpoint_key, "last"))
+        or "last"
     ).strip()
 
-    parent_root = outputs_root / f"skillVLA_{parent_stage}"
-    parent_ckpt = parent_root / parent_run / "checkpoints" / parent_checkpoint / "pretrained_model"
-    parent_cfg_json = parent_ckpt / "config.json"
-    parent_train_json = parent_ckpt / "train_config.json"
+    metadata_root = outputs_root / f"skillVLA_{metadata_stage}"
+    metadata_ckpt = metadata_root / parent_run / "checkpoints" / parent_checkpoint / "pretrained_model"
+    parent_cfg_json = metadata_ckpt / "config.json"
+    parent_train_json = metadata_ckpt / "train_config.json"
     if not parent_cfg_json.is_file():
-        raise FileNotFoundError(f"Stage-3 parent config not found: {parent_cfg_json}")
+        raise FileNotFoundError(f"Stage-3 parent/recipe config not found: {parent_cfg_json}")
     if not parent_train_json.is_file():
-        raise FileNotFoundError(f"Stage-3 parent train config not found: {parent_train_json}")
+        raise FileNotFoundError(f"Stage-3 parent/recipe train config not found: {parent_train_json}")
 
     parent_cfg = json.loads(parent_cfg_json.read_text())
     parent_train_cfg = json.loads(parent_train_json.read_text())
+    # The motor always comes from the selected trained parent. ``pi05_base`` changes only the
+    # skill-prediction VLM; the frozen action view must remain byte-identical to the Stage-0 parent.
+    parent_ckpt = metadata_ckpt
+    skill_predictor_vlm_path = (
+        _local_model_path(project_root, parent_cfg.get("pretrained_path", "models/pi05_base"))
+        if direct_pi05 else ""
+    )
 
     def _inh_bool(key: str, default=False) -> bool:
         return as_bool(parent_cfg.get(key, default))
@@ -87,7 +100,7 @@ def build_settings(cfg: dict) -> dict:
         value = parent_cfg.get(key, None)
         return "" if value is None else ("true" if as_bool(value) else "false")
 
-    # Dataset and FSQ geometry always follow the parent checkpoint.
+    # Dataset and FSQ geometry follow the trained parent or the selected Stage-0 recipe checkpoint.
     parent_dataset = parent_train_cfg.get("dataset") or {}
     ds_root = str(parent_dataset.get("root") or "")
     ds_repo = str(parent_dataset.get("repo_id") or "")
@@ -105,7 +118,7 @@ def build_settings(cfg: dict) -> dict:
 
     # Prefer the parent's exported co-trained terminator. Fall back to its configured FSQ, then the
     # dataset-embedded FSQ.pt. This preserves Stage-0/2 terminator work while Stage-3 freezes it.
-    parent_ft_fsq = parent_ckpt.parent / "FSQ_ft.pt"
+    parent_ft_fsq = metadata_ckpt.parent / "FSQ_ft.pt"
     parent_cfg_fsq = Path(str(parent_cfg.get("fsq_path") or "")).expanduser()
     if parent_ft_fsq.is_file():
         fsq_ckpt = parent_ft_fsq
@@ -176,7 +189,10 @@ def build_settings(cfg: dict) -> dict:
         "lang_bridge_lr_scale": _inh_num("lang_bridge_lr_scale", 10.0, float),
         "stage0_expert_source": str(parent_cfg.get("stage0_expert_source", "fsq")),
         "stage0_cond_state_adarms": _inh_bool("stage0_cond_state_adarms", False),
-        "stage0_expert_lora": _inh_bool("stage0_expert_lora", False) if parent_stage == "stage0" else False,
+        "stage0_expert_lora": (
+            _inh_bool("stage0_expert_lora", False)
+            if parent_stage in {"pi05_base", "stage0"} else False
+        ),
         "stage0_expert_lora_targets": str(
             parent_cfg.get("stage0_expert_lora_targets", "q,k,v,o,mlp,action_out")
         ),
@@ -228,7 +244,8 @@ def build_settings(cfg: dict) -> dict:
     manual_name = str(_at(cfg, "run", "name", default="") or "").strip()
     suffix = str(_at(cfg, "run", "suffix", default=get_value(cfg, "exp", "")) or "").strip().strip("_")
     mode = "b" if skill_action_grounding else "a"
-    run_name = manual_name or f"{parent_run}_{parent_checkpoint}__s3{mode}_{'s0' if parent_stage == 'stage0' else 's2'}"
+    parent_tag = {"pi05_base": "p05pred", "stage0": "s0", "stage2": "s2"}[parent_stage]
+    run_name = manual_name or f"{parent_run}_{parent_checkpoint}__s3{mode}_{parent_tag}"
     if suffix:
         run_name = f"{run_name}_{suffix}"
     vla_root = outputs_root / "skillVLA_stage3"
@@ -247,6 +264,7 @@ def build_settings(cfg: dict) -> dict:
         "parent_run_name": parent_run,
         "parent_checkpoint": parent_checkpoint,
         "parent_checkpoint_path": parent_ckpt,
+        "skill_predictor_vlm_path": skill_predictor_vlm_path,
         "stage1_checkpoint_path": stage1_checkpoint_path,
         "tokenizer_path": tokenizer_path,
         "s1_vision_backbone": s1_vision_backbone,
@@ -256,7 +274,8 @@ def build_settings(cfg: dict) -> dict:
         **topology,
         **adapters,
         "pt_stage": "skill",
-        "stage3_parent_stage": parent_stage,
+        # pi05_base still full-loads the Stage-0 motor; only its separate predictor tower is replaced.
+        "stage3_parent_stage": "stage0" if direct_pi05 else parent_stage,
         "skill_action_grounding": skill_action_grounding,
         "skill_loss_weight": str(skill_loss_weight),
         "skill_deadzone_frac": float(deadzone or 0.0),

@@ -154,7 +154,11 @@ def update_policy(
     return train_metrics, output_dict
 
 
-_WINDOWED_POLICY_METRIC_KEYS = {"action_loss", "action_weighted_loss"}
+_WINDOWED_POLICY_METRIC_KEYS = {
+    "action_loss", "action_weighted_loss",
+    "skill_ce", "fast_ce", "structure_ce",
+    "skill_token_acc", "skill_exact_acc", "fast_token_acc",
+}
 _WINDOWED_POLICY_METRIC_PREFIXES = ("regime/", "terminator/", "wrong_language/")
 
 
@@ -715,6 +719,9 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                     # (co-trained FSQ terminator logs via "terminator/*" → routed to train_terminator/* below)
                     "action_loss",              # Stage-1 skill_expert: PLAIN (unweighted) action MSE — always (comparison)
                     "action_weighted_loss",     # Stage-1 skill_expert: per-sample-weighted action MSE (action_weight only)
+                    # SkillVLA FAST pretraining: interval-averaged token objectives and constrained accuracy.
+                    "skill_ce", "fast_ce", "structure_ce",
+                    "skill_token_acc", "skill_exact_acc", "fast_token_acc",
                 }
                 wandb_log_dict = {k: v for k, v in wandb_log_dict.items()
                                   if k in _wandb_keep or k.startswith(
