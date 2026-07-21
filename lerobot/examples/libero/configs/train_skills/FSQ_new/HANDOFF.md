@@ -594,6 +594,11 @@ CLI construction:
   train_FSQ_new.py --help
 ```
 
+The first cross-server launch then exposed and fixed one warm-start validation
+issue: `context_gates` is FSQ_new-only and absent from pi05_base by design, so it
+is now an explicitly allowed missing key. All other unexpected pi05 mapping
+gaps still fail fast.
+
 These checks do not validate tensor shapes, memory use, numerical behavior, or
 Slurm execution with real data.
 

@@ -781,7 +781,12 @@ def initialize_action_expert_from_pi05(expert: VSAFlowExpert, pretrained: str | 
 
     missing, unexpected = expert.load_state_dict(mapped, strict=False)
     allowed_missing = {
-        "state_proj.weight", "state_proj.bias", "skill_proj.weight", "skill_proj.bias"
+        "state_proj.weight",
+        "state_proj.bias",
+        "skill_proj.weight",
+        "skill_proj.bias",
+        # FSQ_new-only, deliberately zero-initialized per-layer context gates.
+        "context_gates",
     }
     bad_missing = sorted(k for k in missing if k not in allowed_missing)
     if bad_missing or unexpected:
