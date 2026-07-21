@@ -543,6 +543,13 @@ class VSAFlowExpert(nn.Module):
         v = layer.self_attn.v_proj(hidden).view(shape).transpose(1, 2)
         return q, k, v
 
+    @staticmethod
+    def _normalize_context(layer: nn.Module, context: Tensor) -> Tensor:
+        """Apply the expert norm's RMS operation without action AdaRMS modulation."""
+        eps = float(getattr(layer.input_layernorm, "eps", 1e-6))
+        variance = context.float().square().mean(dim=-1, keepdim=True)
+        return (context.float() * torch.rsqrt(variance + eps)).to(context.dtype)
+
     def _expert_layer_with_context(
         self,
         layer_idx: int,
@@ -591,7 +598,7 @@ class VSAFlowExpert(nn.Module):
             if context is None or scale == 0.0:
                 continue
             context = context.to(device=hidden.device, dtype=hidden.dtype)
-            context_norm, _ = layernorm_forward(layer.input_layernorm, context, None)
+            context_norm = self._normalize_context(layer, context)
             _, context_k, context_v = self._project_qkv(layer, context_norm)
             update, _ = modeling_gemma.eager_attention_forward(
                 layer.self_attn,

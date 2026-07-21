@@ -592,6 +592,11 @@ Config resolution:
 
 CLI construction:
   train_FSQ_new.py --help
+
+Real 300M expert CPU tensor smoke:
+  A forward: finite [1, 10, 32]
+  image+goal context forward: finite [1, 10, 32]
+  context backward: finite context-gate and context-token gradients
 ```
 
 The first cross-server launch then exposed and fixed one warm-start validation
@@ -599,8 +604,14 @@ issue: `context_gates` is FSQ_new-only and absent from pi05_base by design, so i
 is now an explicitly allowed missing key. All other unexpected pi05 mapping
 gaps still fail fast.
 
-These checks do not validate tensor shapes, memory use, numerical behavior, or
-Slurm execution with real data.
+A subsequent CPU A/B/C expert smoke test exposed and fixed context
+normalization incorrectly calling the action AdaRMS layer with `cond=None`.
+Context K/V now receives parameter-free RMS normalization; action hidden states
+continue to use the original state/time AdaRMS path.
+
+These checks validate the custom expert attention tensor shapes and basic
+autograd, but not the complete DINO + resampler + FSQ + terminator batch, GPU
+memory use, numerical learning behavior, or Slurm execution with real data.
 
 ## 14. Related Stage0-pretrain Logging Fix
 
