@@ -159,7 +159,13 @@ _WINDOWED_POLICY_METRIC_KEYS = {
     "skill_ce", "fast_ce", "structure_ce",
     "skill_token_acc", "skill_exact_acc", "fast_token_acc",
 }
-_WINDOWED_POLICY_METRIC_PREFIXES = ("regime/", "terminator/", "wrong_language/")
+_WINDOWED_POLICY_METRIC_PREFIXES = (
+    "regime/",
+    "terminator/",
+    "wrong_language/",
+    "ar/",
+    "fast_context/",
+)
 
 
 class _WindowedPolicyMetrics:
@@ -649,10 +655,13 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
         initial_step=step,
         accelerator=accelerator,
     )
-    # Stage-1's A/B losses are stochastic per batch. Keep other policies' existing final-batch
-    # logging semantics unchanged.
+    # Stage-1 regimes and Stage-0-pretrain AR objectives need interval means;
+    # otherwise logging exposes only the final batch in each window.
+    windowed_model_types = {"skill_expert", "skill_vla_stage0_pretrain"}
     windowed_policy_metrics = (
-        _WindowedPolicyMetrics() if getattr(cfg.policy, "model_type", None) == "skill_expert" else None
+        _WindowedPolicyMetrics()
+        if getattr(cfg.policy, "model_type", None) in windowed_model_types
+        else None
     )
 
     if is_main_process:
@@ -734,7 +743,14 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                 }
                 wandb_log_dict = {k: v for k, v in wandb_log_dict.items()
                                   if k in _wandb_keep or k.startswith(
-                                      ("terminator/", "regime/", "distill/", "wrong_language/"))}
+                                      (
+                                          "terminator/",
+                                          "regime/",
+                                          "distill/",
+                                          "wrong_language/",
+                                          "ar/",
+                                          "fast_context/",
+                                      ))}
                 # A policy that reports its own action_loss (Stage-1 skill_expert) replaces the generic
                 # backprop-scalar "loss" with it → drop the redundant generic "loss".
                 if "action_loss" in wandb_log_dict:
@@ -751,9 +767,24 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                     k[len("wrong_language/"):]: v for k, v in wandb_log_dict.items()
                     if k.startswith("wrong_language/")
                 }
+                autoregressive_metrics = {
+                    k[len("ar/"):]: v for k, v in wandb_log_dict.items()
+                    if k.startswith("ar/")
+                }
+                fast_context_metrics = {
+                    k[len("fast_context/"):]: v for k, v in wandb_log_dict.items()
+                    if k.startswith("fast_context/")
+                }
                 main_metrics = {k: v for k, v in wandb_log_dict.items()
                                 if not k.startswith(
-                                    ("terminator/", "regime/", "distill/", "wrong_language/"))}
+                                    (
+                                        "terminator/",
+                                        "regime/",
+                                        "distill/",
+                                        "wrong_language/",
+                                        "ar/",
+                                        "fast_context/",
+                                    ))}
                 wandb_logger.log_dict(main_metrics, step)
                 if term_metrics:
                     wandb_logger.log_dict(term_metrics, step, mode="train_terminator")
@@ -764,6 +795,12 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                 if wrong_language_metrics:
                     wandb_logger.log_dict(
                         wrong_language_metrics, step, mode="train_wrong_language")
+                if autoregressive_metrics:
+                    wandb_logger.log_dict(
+                        autoregressive_metrics, step, mode="train_autoregressive")
+                if fast_context_metrics:
+                    wandb_logger.log_dict(
+                        fast_context_metrics, step, mode="train_fast_context")
             train_tracker.reset_averages()
             if windowed_policy_metrics is not None:
                 windowed_policy_metrics.reset()
