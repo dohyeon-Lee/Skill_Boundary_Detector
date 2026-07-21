@@ -240,13 +240,6 @@ cycle-PT ckpt를 libero_10으로 replay-free FT하면서 PT 그룹 probe(같은 
 FT 출력에 groups.json 자동 복사 → cycle_eval 그룹 집계 그대로 동작. ref(일반 PT) 소스도
 ft_source에 절대경로 + ft_groups_json(아무 cycle 런 것)으로 지원.
 
-**β-스케줄 구현 (2026-07-05):** `cycle_reptile_beta_end ≥ 0`이면 β를 사이클에 걸쳐
-`cycle_reptile_beta → beta_end`로 cosine anneal (per-cycle, run name `_b{s}to{e}`, wandb
-cycle/reptile_beta). 이론적 근거: LR decay는 감지·커밋을 같이 죽이지만 β decay는 **커밋만
-anneal** — 정찰·정렬·스트레스 선별은 풀 스케일 유지, anchor는 말기에 합의 지점에 안착
-(constant-LR endpoint의 orbit/recency 문제 해결). 의도된 조합 = `pt_constant_lr: true` +
-`β: 0.5→0.1`. 다음 3파전: {const+β스케줄, const+β고정, decay} → FT 판정.
-
 **메커니즘 확정 (2026-07-07): cyclic의 forgetting 이점 = 더 flat한 minima, 언어모델에 집중.**
 - 진단 도구: `src/measure_term2_blocks.py`(블록별 gradient 정렬) + `src/measure_flatness_blocks.py`
   (블록별 filter-normalized 섭동 → 옛-task probe loss 상대 상승; forgetting-relevant sharpness).

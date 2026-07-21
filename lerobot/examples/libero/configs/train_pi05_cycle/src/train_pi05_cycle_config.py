@@ -109,8 +109,6 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
     phase_steps = int(get_value(cfg, "cycle_phase_steps", 500, env="CYCLE_PHASE_STEPS"))
     n_cycles = int(get_value(cfg, "cycle_n_cycles", 0, env="CYCLE_N_CYCLES"))  # >0 overrides phase_steps
     reptile_beta = float(get_value(cfg, "cycle_reptile_beta", 1.0, env="CYCLE_REPTILE_BETA"))
-    _bend = get_value(cfg, "cycle_reptile_beta_end", -1.0, env="CYCLE_REPTILE_BETA_END")
-    reptile_beta_end = float(_bend) if _bend not in (None, "") else -1.0  # 빈 값 = 스케줄 off
     iid_baseline = str(get_value(cfg, "cycle_iid_baseline", False, env="CYCLE_IID_BASELINE")).strip().lower() in {"1", "true", "yes", "on"}
     pt_lr = float(get_value(cfg, "pt_lr_base", 2.5e-05, env="PT_LR_BASE"))
     # constant-LR mode: decay_lr := peak lr → scheduler flat after warmup (LR-artifact control)
@@ -122,9 +120,7 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
     sched_tag = f"c{n_cycles}" if n_cycles > 0 else f"p{phase_steps}"
     prefix = "PTiid" if iid_baseline else "PTcyc"
     run_name = f"{prefix}_{pt_dataset}_pi05_batch{pt_batch_size}_g{n_groups}{sched_tag}"
-    if not iid_baseline and reptile_beta_end >= 0:
-        run_name += f"_b{fmt_num(reptile_beta)}to{fmt_num(reptile_beta_end)}"
-    elif not iid_baseline and reptile_beta < 1.0:
+    if not iid_baseline and reptile_beta < 1.0:
         run_name += f"_b{fmt_num(reptile_beta)}"
     if constant_lr:
         run_name += "_constlr"
@@ -163,7 +159,6 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         "cycle_n_cycles": n_cycles,
         "cycle_group_seed": int(get_value(cfg, "cycle_group_seed", 0, env="CYCLE_GROUP_SEED")),
         "cycle_reptile_beta": reptile_beta,
-        "cycle_reptile_beta_end": reptile_beta_end,
         "cycle_probe_batches": int(get_value(cfg, "cycle_probe_batches", 2, env="CYCLE_PROBE_BATCHES")),
         "cycle_probe_seed": int(get_value(cfg, "cycle_probe_seed", 12345, env="CYCLE_PROBE_SEED")),
         "cycle_probe_grad_group": int(get_value(cfg, "cycle_probe_grad_group", -1, env="CYCLE_PROBE_GRAD_GROUP")),

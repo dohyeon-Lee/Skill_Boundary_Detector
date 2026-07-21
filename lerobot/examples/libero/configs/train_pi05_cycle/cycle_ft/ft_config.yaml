@@ -25,7 +25,6 @@ pi05_tokenizer: models/paligemma-3b-pt-224-tokenizer
 # ft_source: {model_dir: PTcyc_libero_90_full_full_pi05_batch16_g8p500, label: cyc500}
 # ft_source: {model_dir: PTcyc_libero_90_full_full_pi05_batch16_g8p250_constlr, label: cyc250_constlr}
 ft_source: {model_dir: PTcyc_libero_90_full_full_pi05_batch16_g8p125_b05_constlr_lr5e-05, label: cyc125_constlr_b05_lr5e-05}
-# ft_source: {model_dir: PTcyc_libero_90_full_full_pi05_batch16_g8p250_b1to01_constlr, label: cyc250_constlr_b1to01}
 ft_source_checkpoint: "020000"
 # ft_groups_json: ""   # 소스에 groups.json 없을 때만 (ref 등)
 

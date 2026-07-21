@@ -40,10 +40,11 @@ train_exclude_nodes: [""]
 # # Switch BOTH to *_filtered to run the whole pipeline on the filtered LIBERO data
 # # (see generate_training_dataset/filtered_dataset/): dataset_filtered / outputs_filtered.
 
-# # dataset | dataset_filtered | dataset_ABC
-# dataset_root: dataset_filtered
-# # outputs | outputs_filtered | outputs_ABC
-# outputs_root: outputs_filtered
+
+# dataset | dataset_filtered | dataset_ABC
+dataset_root: dataset
+# outputs | outputs_filtered | outputs_ABC
+outputs_root: outputs
 
 # train_partition:
 #   - suma_a6000

@@ -102,7 +102,6 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes=1 
   --n_cycles="${CYCLE_N_CYCLES}" \
   --group_seed="${CYCLE_GROUP_SEED}" \
   --reptile_beta="${CYCLE_REPTILE_BETA}" \
-  --reptile_beta_end="${CYCLE_REPTILE_BETA_END}" \
   --probe_batches_per_group="${CYCLE_PROBE_BATCHES}" \
   --probe_seed="${CYCLE_PROBE_SEED}" \
   --probe_grad_group="${CYCLE_PROBE_GRAD_GROUP}" \

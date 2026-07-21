@@ -35,7 +35,6 @@ Example:
 
 import json
 import logging
-import math
 import time
 from dataclasses import dataclass
 from pprint import pformat
@@ -78,10 +77,6 @@ class CycleTrainPipelineConfig(TrainPipelineConfig):
     group_seed: int = 0        # seeds task→group split AND per-cycle order shuffle
     # ── Reptile (1.0 disables) ──────────────────────────────────────────────
     reptile_beta: float = 1.0       # θ ← anchor + β(θ − anchor) at cycle end
-    # β-schedule: ≥0 → β anneals reptile_beta → reptile_beta_end over cycles (cosine).
-    # "commit anneal": sensing stays at full inner-LR scale while the anchor settles —
-    # the CL-native alternative to LR decay. -1 disables (constant β).
-    reptile_beta_end: float = -1.0
     # ── probe (forgetting measurement) ──────────────────────────────────────
     probe_batches_per_group: int = 2   # fixed batches per group (batch_size each)
     probe_seed: int = 12345            # frame selection + flow-matching noise seed
@@ -419,18 +414,6 @@ def train(cfg: CycleTrainPipelineConfig):
             "Lower phase_steps or set n_cycles."
         )
 
-    total_cycles = max(1, math.ceil(cfg.steps / steps_per_cycle))
-
-    def beta_for(cycle_i: int) -> float:
-        """Constant β, or cosine anneal reptile_beta → reptile_beta_end across cycles."""
-        if cfg.reptile_beta_end < 0:
-            return cfg.reptile_beta
-        t = min(1.0, cycle_i / max(1, total_cycles - 1))
-        return cfg.reptile_beta_end + (cfg.reptile_beta - cfg.reptile_beta_end) * 0.5 * (1 + math.cos(math.pi * t))
-
-    if cfg.reptile_beta_end >= 0:
-        logging.info(f"Reptile β schedule: {cfg.reptile_beta} → {cfg.reptile_beta_end} over {total_cycles} cycles "
-                     f"(first cycles: {[round(beta_for(i), 3) for i in range(min(5, total_cycles))]})")
     num_learnable = sum(p.numel() for p in policy.parameters() if p.requires_grad)
     logging.info(f"num_learnable_params={format_big_number(num_learnable)}")
 
@@ -483,7 +466,7 @@ def train(cfg: CycleTrainPipelineConfig):
         order = order_rng.permutation(cfg.n_groups)  # fresh shuffle each cycle (symmetrizes cross terms)
         steps_in_cycle = 0
 
-        beta = beta_for(cycle_idx)
+        beta = cfg.reptile_beta
         anchor = None
         if beta < 1.0 and not cfg.iid_baseline:
             anchor = snapshot_params(accelerator.unwrap_model(policy))
