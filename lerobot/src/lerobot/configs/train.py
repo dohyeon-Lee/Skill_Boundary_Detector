@@ -55,6 +55,10 @@ class TrainPipelineConfig(HubMixin):
     cudnn_deterministic: bool = False
     # Number of workers for the dataloader.
     num_workers: int = 4
+    # Maximum time to wait for a batch from worker processes. A finite timeout
+    # prevents a stuck video decoder from holding a GPU allocation forever.
+    # Ignored when num_workers=0.
+    dataloader_timeout_s: float = 300.0
     batch_size: int = 8
     steps: int = 100_000
     eval_freq: int = 20_000
@@ -158,6 +162,11 @@ class TrainPipelineConfig(HubMixin):
 
         if isinstance(self.dataset.repo_id, list):
             raise NotImplementedError("LeRobotMultiDataset is not currently implemented.")
+
+        if self.dataloader_timeout_s < 0:
+            raise ValueError(
+                f"dataloader_timeout_s must be non-negative, got {self.dataloader_timeout_s}."
+            )
 
         if not self.use_policy_training_preset and (self.optimizer is None or self.scheduler is None):
             raise ValueError("Optimizer and Scheduler must be set when the policy presets are not used.")

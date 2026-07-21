@@ -127,6 +127,9 @@ def build_settings(cfg: dict) -> dict:
             ),
             "warmup_steps": int(_at(cfg, "training", "schedule", "warmup", default=1000)),
             "log_freq": int(_at(cfg, "training", "schedule", "log_every", default=100)),
+            "dataloader_timeout_s": float(
+                _at(cfg, "training", "dataloader", "timeout_s", default=300)
+            ),
             "pt_output_dir": outputs_root / "skillVLA_stage0_pretrain" / settings["pt_run_name"],
         }
     )
@@ -134,6 +137,8 @@ def build_settings(cfg: dict) -> dict:
         raise ValueError(
             "loss.autoregressive.batch_size must be between 1 and training batch_size."
         )
+    if settings["dataloader_timeout_s"] < 0:
+        raise ValueError("training.dataloader.timeout_s must be non-negative.")
     return settings
 
 

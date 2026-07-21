@@ -40,6 +40,7 @@ echo "A scope   : drop_vlm=${STAGE0_A_DROP_VLM}, train=${STAGE0_A_TRAIN_COMPONEN
 echo "B scope   : drop_vlm=${STAGE0_B_DROP_VLM}, train=${STAGE0_B_TRAIN_COMPONENTS}"
 echo "token read: image=${ATTEND_IMAGE}, language=${ATTEND_LANGUAGE}, skill=${ATTEND_SKILL}, fast=${ATTEND_FAST}"
 echo "AR        : transition randomization=${TRANSITION_RANDOMIZATION}, FAST=${AR_FAST_LOSS}"
+echo "loader    : workers=${NUM_WORKERS}, timeout=${DATALOADER_TIMEOUT_S}s, AV1 threads=1"
 echo "output    : ${PT_OUTPUT_DIR}"
 nvidia-smi || true
 
@@ -167,6 +168,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.scheduler_decay_lr="$(${BOOTSTRAP_PYTHON} -c "print(${LR} * 0.1)")" \
     --batch_size="${BATCH_SIZE}" \
     --num_workers="${NUM_WORKERS}" \
+    --dataloader_timeout_s="${DATALOADER_TIMEOUT_S}" \
     --steps="${STEPS}" \
     --save_freq="${SAVE_FREQ}" \
     --log_freq="${LOG_FREQ}" \

@@ -56,7 +56,7 @@ terminator: {train: true, freeze_vision: true}
 run: {suffix: "pt20k_full_FASTX_term"}
 
 training:
-  dataloader: {batch_size: 16, workers: 4, gpus: 1}
+  dataloader: {batch_size: 16, workers: 4, timeout_s: 300, gpus: 1}
   optimizer: {base_lr: 2.5e-05, cond_lr_scale: 1.0}
   schedule: {steps: 50000, warmup: 1000, save_every: 10000, log_every: 100}
 

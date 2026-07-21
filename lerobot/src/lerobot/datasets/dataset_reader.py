@@ -244,7 +244,18 @@ class DatasetReader:
             shifted_query_ts = [from_timestamp + ts for ts in query_ts]
 
             video_path = self.root / self._meta.get_video_file_path(ep_idx, vid_key)
-            frames = decode_video_frames(video_path, shifted_query_ts, self._tolerance_s, self._video_backend)
+            frames = decode_video_frames(
+                video_path,
+                shifted_query_ts,
+                self._tolerance_s,
+                self._video_backend,
+                # AV1 is decoded by dav1d through Torchvision/PyAV. Its automatic
+                # thread pool can deadlock in a long-lived forked DataLoader
+                # worker, blocking the ordered loader indefinitely. FSQ training
+                # already avoids this failure mode by using one decoder thread;
+                # keep the generic LeRobotDataset path equally safe.
+                decoder_num_threads=1 if self._video_backend == "pyav" else None,
+            )
             item[vid_key] = frames.squeeze(0)
 
         return item

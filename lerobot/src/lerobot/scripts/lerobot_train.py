@@ -582,7 +582,14 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
         pin_memory=False,  # disabled: pinned-memory alloc under concurrent jobs triggered CUDA "unknown error"; ~free for compute-bound VLA training
         drop_last=False,
         prefetch_factor=4 if cfg.num_workers > 0 else None,  # deeper buffer hides per-batch video-decode latency
+        # Surface a wedged PyAV/dav1d worker as a clear failure instead of
+        # silently holding the GPU allocation forever. Single-process loading
+        # cannot use DataLoader's timeout option.
+        timeout=cfg.dataloader_timeout_s if cfg.num_workers > 0 else 0,
     )
+
+    if is_main_process and cfg.num_workers > 0:
+        logging.info(f"DataLoader worker timeout: {cfg.dataloader_timeout_s:g}s")
 
     # Prepare everything with accelerator
     accelerator.wait_for_everyone()
