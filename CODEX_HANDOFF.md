@@ -1,5 +1,18 @@
 # Codex handoff: SkillVLA / FSQ redesign
 
+## Latest FSQ_new handoff (2026-07-21)
+
+The independent context-aware FSQ experiment now has a dedicated handoff:
+
+```text
+lerobot/examples/libero/configs/train_skills/FSQ_new/HANDOFF.md
+```
+
+Read that document first when continuing `FSQ_new`. It records the finalized
+A/B/C architecture and losses, exact implementation paths, gradient routing,
+current YAML, known unverified areas, and the required first GPU smoke tests.
+The older FSQ implementation remains intentionally untouched.
+
 Updated: 2026-07-14 (Asia/Seoul)
 
 This document transfers the design context from the long Codex thread that was
