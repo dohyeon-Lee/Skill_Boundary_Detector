@@ -46,7 +46,7 @@ ARGS=(
   --vcodec "${CONVERT_VCODEC}"
   --batch-encoding-size "${CONVERT_BATCH_ENCODING_SIZE}"
   --encoder-queue-maxsize "${CONVERT_ENCODER_QUEUE_MAXSIZE}"
-  --schema "${CONVERT_SCHEMA}"
+  --schema-reference "${CONVERT_SCHEMA_REFERENCE}"
 )
 
 [ "${CONVERT_OVERWRITE}" = "true" ] && ARGS+=(--overwrite)
@@ -60,11 +60,19 @@ echo "Node       : ${SLURMD_NODENAME:-local}"
 echo "Suite      : ${CONVERT_SUITE}"
 echo "Source     : ${CONVERT_SOURCE_ROOT}/${CONVERT_SUITE}"
 echo "Output     : ${CONVERT_OUTPUT_ROOT}/${CONVERT_OUTPUT_NAME}"
-echo "Schema     : ${CONVERT_SCHEMA}"
+echo "Schema ref : ${CONVERT_SCHEMA_REFERENCE}"
 echo "Codec      : ${CONVERT_VCODEC}"
 echo "Overwrite  : ${CONVERT_OVERWRITE}"
 nvidia-smi || true
 
 "${PYTHON_BIN}" "${CONVERT_SCRIPT}" "${ARGS[@]}"
+
+# The v3 writer computes stats while saving episodes. Recompute global exact
+# non-video quantiles once after conversion so PI normalization uses exact dataset-wide values.
+"${PYTHON_BIN}" "${ENSURE_STATS_SCRIPT}" \
+  --config "${CONFIG_PATH}" \
+  --root "${CONVERT_OUTPUT_ROOT}" \
+  --dataset "${CONVERT_OUTPUT_NAME}" \
+  --overwrite
 
 echo "DONE -> ${CONVERT_OUTPUT_ROOT}/${CONVERT_OUTPUT_NAME}"

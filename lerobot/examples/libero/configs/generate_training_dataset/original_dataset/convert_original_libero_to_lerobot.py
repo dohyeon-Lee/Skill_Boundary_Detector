@@ -43,7 +43,7 @@ from PIL import Image
 THIS_DIR = Path(__file__).resolve().parent
 GENERATE_DIR = THIS_DIR.parent
 PROJECT_ROOT_FALLBACK = THIS_DIR.parents[5]
-CONFIG_PATH = GENERATE_DIR / "training_dataset_config.yaml"
+CONFIG_PATH = THIS_DIR / "original_dataset_config.yaml"
 
 sys.path.insert(0, str(GENERATE_DIR / "src"))
 try:
@@ -170,13 +170,10 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--encoder-queue-maxsize", type=int, default=30)
     parser.add_argument(
-        "--schema",
-        choices=["match-current", "rich"],
-        default="match-current",
-        help=(
-            "match-current mirrors the feature schema of an existing libero_dataset/{suite} "
-            "when present; rich always includes observation.states.* helper columns."
-        ),
+        "--schema-reference",
+        type=Path,
+        default=None,
+        help="Existing canonical LeRobot dataset whose meta/info.json feature schema must be copied.",
     )
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--max-tasks", type=int, default=None, help="Debug limit.")
@@ -184,13 +181,13 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def load_paths(config_path: Path) -> tuple[Path, Path]:
+def load_paths(config_path: Path) -> tuple[Path, Path, dict[str, Any]]:
     if load_config is None or project_root is None or dataset_root_path is None:
         root = PROJECT_ROOT_FALLBACK
-        return root, root / "libero_dataset"
+        return root, root / "dataset", {}
     cfg = load_config(config_path)
     root = project_root(cfg)
-    return root, dataset_root_path(cfg)
+    return root, dataset_root_path(cfg), cfg
 
 
 def import_lerobot(project_dir: Path) -> None:
@@ -278,17 +275,31 @@ def task_files(source_dir: Path, project_dir: Path, suite: str) -> list[Path]:
     return [files_by_stem[name] for name in official]
 
 
-def current_feature_specs(output_root: Path, suite: str) -> dict[str, Any] | None:
-    info_path = output_root / suite / "meta" / "info.json"
+def reference_feature_specs(reference_root: Path) -> dict[str, Any]:
+    """Load the exact feature contract from an explicit canonical LeRobot dataset."""
+    info_path = reference_root / "meta" / "info.json"
     if not info_path.exists():
-        return None
+        raise FileNotFoundError(
+            f"Schema reference is missing meta/info.json: {info_path}. "
+            "Set convert_schema_reference to an existing canonical LeRobot dataset."
+        )
     with open(info_path) as f:
         info = json.load(f)
     features = info.get("features")
     if not isinstance(features, dict):
-        return None
+        raise ValueError(f"Schema reference has no valid features mapping: {info_path}")
     allowed = set(FEATURES)
-    return {key: value for key, value in features.items() if key in allowed}
+    selected = {key: value for key, value in features.items() if key in allowed}
+    missing = allowed - set(selected)
+    if missing:
+        raise ValueError(f"Schema reference is missing required features: {sorted(missing)}")
+    for key in ("observation.images.image", "observation.images.wrist_image"):
+        if selected[key].get("dtype") != "video":
+            raise ValueError(
+                f"Schema reference must be video-backed, but {key} has "
+                f"dtype={selected[key].get('dtype')!r}: {info_path}"
+            )
+    return selected
 
 
 def normalize_feature_spec(spec: dict[str, Any]) -> dict[str, Any]:
@@ -310,33 +321,76 @@ def codec_metadata_name(vcodec: str) -> str:
     return vcodec
 
 
-def update_feature_shapes(
-    image_size: int,
-    base_features: dict[str, Any] | None = None,
-    resolved_vcodec: str = "libsvtav1",
+def validated_reference_features(
+    base_features: dict[str, Any], image_size: int, resolved_vcodec: str
 ) -> dict[str, Any]:
-    features = {key: dict(value) for key, value in FEATURES.items()}
-    if base_features is not None:
-        features = {key: normalize_feature_spec(value) for key, value in base_features.items()}
+    """Normalize the reference schema and reject config values that would break exact parity."""
+    features = {key: normalize_feature_spec(value) for key, value in base_features.items()}
+    expected_codec = codec_metadata_name(resolved_vcodec)
     for key in ("observation.images.image", "observation.images.wrist_image"):
-        if key in features:
-            features[key] = dict(features[key])
-            features[key]["shape"] = (image_size, image_size, 3)
-            if "info" in features[key]:
-                features[key]["info"] = dict(features[key]["info"])
-                features[key]["info"]["video.height"] = image_size
-                features[key]["info"]["video.width"] = image_size
-                features[key]["info"]["video.fps"] = FPS
-                features[key]["info"]["video.codec"] = codec_metadata_name(resolved_vcodec)
+        feature = features[key]
+        shape = tuple(feature.get("shape", ()))
+        info = feature.get("info") or {}
+        actual_codec = info.get("video.codec")
+        actual_fps = info.get("video.fps")
+        if shape != (image_size, image_size, 3):
+            raise ValueError(
+                f"Configured image size {image_size} does not match {key} reference shape {shape}."
+            )
+        if actual_codec != expected_codec:
+            raise ValueError(
+                f"Configured codec {expected_codec!r} does not match {key} reference codec "
+                f"{actual_codec!r}."
+            )
+        if actual_fps != FPS:
+            raise ValueError(f"Reference {key} fps={actual_fps!r}, expected {FPS}.")
     return features
+
+
+def validate_written_dataset(output_dir: Path, expected_features: dict[str, Any]) -> None:
+    """Fail if the writer did not produce a complete LeRobot v3 dataset with the reference contract."""
+    info_path = output_dir / "meta" / "info.json"
+    stats_path = output_dir / "meta" / "stats.json"
+    if not info_path.is_file() or not stats_path.is_file():
+        raise RuntimeError(f"Converted dataset is missing v3 metadata under {output_dir / 'meta'}")
+    info = json.loads(info_path.read_text())
+    if info.get("codebase_version") != "v3.0":
+        raise RuntimeError(
+            f"Expected LeRobot codebase_version='v3.0', got {info.get('codebase_version')!r}"
+        )
+    actual_features = info.get("features", {})
+    for key, expected in expected_features.items():
+        if key not in actual_features:
+            raise RuntimeError(f"Converted v3 metadata is missing feature {key!r}")
+        actual = normalize_feature_spec(actual_features[key])
+        for field in ("dtype", "shape", "names", "info"):
+            if actual.get(field) != expected.get(field):
+                raise RuntimeError(
+                    f"Converted feature {key!r} field {field!r} does not match schema reference: "
+                    f"actual={actual.get(field)!r}, expected={expected.get(field)!r}"
+                )
+    stats = json.loads(stats_path.read_text())
+    required_stats = {"min", "max", "mean", "std", "count", "q01", "q10", "q50", "q90", "q99"}
+    for key in ("observation.state", "action"):
+        missing = required_stats - set(stats.get(key, {}))
+        if missing:
+            raise RuntimeError(f"Converted stats for {key!r} are missing {sorted(missing)}")
 
 
 def main() -> None:
     args = parse_args()
-    project_dir, configured_output_root = load_paths(args.config)
+    project_dir, configured_output_root, cfg = load_paths(args.config)
     source_root = args.source_root or (project_dir / "libero_original_dataset")
     output_root = args.output_root or configured_output_root
-    schema_root = configured_output_root
+    reference_value = args.schema_reference or cfg.get("convert_schema_reference")
+    if not reference_value:
+        raise ValueError(
+            "convert_schema_reference is required; point it to the canonical LeRobot dataset "
+            "whose feature schema this conversion must match."
+        )
+    schema_reference = Path(reference_value).expanduser()
+    if not schema_reference.is_absolute():
+        schema_reference = project_dir / schema_reference
     source_dir = source_root / args.suite
     output_name = args.output_name or f"{args.suite}_full_full"
     output_dir = output_root / output_name
@@ -365,22 +419,11 @@ def main() -> None:
     print(f"  task files   : {len(files)}")
     print(f"  image size   : {args.image_size}")
 
-    base_features = None
-    if args.schema == "match-current":
-        base_features = current_feature_specs(schema_root, args.suite)
-        if base_features is not None:
-            print(f"  schema       : match-current ({schema_root / args.suite})")
-        else:
-            print("  schema       : match-current requested, no current dataset found; using rich schema")
-    else:
-        print("  schema       : rich")
+    base_features = reference_feature_specs(schema_reference)
+    print(f"  schema ref   : {schema_reference}")
     resolved_vcodec = resolve_vcodec(args.vcodec)
     print(f"  codec        : requested={args.vcodec} resolved={resolved_vcodec}")
-    features = update_feature_shapes(
-        args.image_size,
-        base_features=base_features,
-        resolved_vcodec=resolved_vcodec,
-    )
+    features = validated_reference_features(base_features, args.image_size, resolved_vcodec)
 
     dataset = LeRobotDataset.create(
         repo_id=f"{REPO_PREFIX}/{output_name}",
@@ -446,8 +489,11 @@ def main() -> None:
                     print(f"    saved episodes={total_episodes} frames={total_frames}")
 
     dataset.finalize()
+    validate_written_dataset(output_dir, features)
     print("")
     print("DONE")
+    print("  LeRobot       : v3.0 (schema reference verified)")
+    print("  stats         : writer stats present (state/action quantiles verified)")
     print(f"  output         : {output_dir}")
     print(f"  total tasks    : {len(files)}")
     print(f"  total episodes : {total_episodes}")

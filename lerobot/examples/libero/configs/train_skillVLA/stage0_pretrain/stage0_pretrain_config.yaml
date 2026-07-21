@@ -52,8 +52,8 @@ loss:
     structure_weight: 0.1
     batch_size: 4
 
-terminator: {train: false, freeze_vision: true}
-run: {suffix: "pt20k_full_FASTX"}
+terminator: {train: true, freeze_vision: true}
+run: {suffix: "pt20k_full_FASTX_term"}
 
 training:
   dataloader: {batch_size: 16, workers: 4, gpus: 1}

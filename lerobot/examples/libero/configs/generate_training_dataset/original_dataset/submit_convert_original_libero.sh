@@ -53,6 +53,7 @@ mkdir -p logs
 echo "Submit original LIBERO conversion"
 echo "  source : ${CONVERT_SOURCE_ROOT}/${CONVERT_SUITE}"
 echo "  output : ${CONVERT_OUTPUT_ROOT}/${CONVERT_OUTPUT_NAME}"
+echo "  schema : ${CONVERT_SCHEMA_REFERENCE}"
 echo "  codec  : ${CONVERT_VCODEC}"
 echo "  slurm  : partition=${CONVERT_PARTITION} nodelist=${CONVERT_NODELIST:-<none>} exclude=${CONVERT_EXCLUDE_NODES:-<none>}"
 

@@ -119,6 +119,11 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         get_value(cfg, "convert_output_root", "", env="CONVERT_OUTPUT_ROOT"),
         dataset_root,
     )
+    schema_reference = resolve_path(
+        project_root,
+        get_value(cfg, "convert_schema_reference", "", env="CONVERT_SCHEMA_REFERENCE"),
+        "dataset_filtered/libero_90_full_full",
+    )
     output_name = str(get_value(cfg, "convert_output_name", f"{suite}_full_full", env="CONVERT_OUTPUT_NAME"))
 
     # Slurm partition/qos/nodelist/exclude are canonical (global_config.yaml train_*); env vars still override.
@@ -135,6 +140,7 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         ),
         "config_path": DEFAULT_CONFIG_PATH,
         "convert_script": DEFAULT_CONFIG_PATH.parent / "convert_original_libero_to_lerobot.py",
+        "ensure_stats_script": DEFAULT_CONFIG_PATH.parent / "ensure_quantile_stats.py",
         "original_dataset_root": original_dataset_root,
         "original_dataset_tools_root": download_tools_root,
         "original_datasets": str(get_value(
@@ -148,7 +154,7 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         "convert_output_root": output_root,
         "convert_output_name": output_name,
         "convert_overwrite": as_bool(get_value(cfg, "convert_overwrite", False, env="CONVERT_OVERWRITE")),
-        "convert_schema": str(get_value(cfg, "convert_schema", "match-current", env="CONVERT_SCHEMA")),
+        "convert_schema_reference": schema_reference,
         "convert_image_size": int(get_value(cfg, "convert_image_size", 256, env="CONVERT_IMAGE_SIZE")),
         "convert_vcodec": str(get_value(cfg, "convert_vcodec", "libsvtav1", env="CONVERT_VCODEC")),
         "convert_encoder_threads": optional_string(get_value(

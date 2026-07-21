@@ -20,21 +20,16 @@ convert_output_root: ""
 convert_output_name: libero_90_full_full
 convert_overwrite: false
 
-# match-current mirrors the video-backed schema under global dataset_root/{suite}.
-# Use rich only when you explicitly want all helper state columns and do not need exact schema parity.
-convert_schema: match-current
+# Canonical LeRobot dataset whose meta/info.json feature contract is copied exactly.
+# This is schema-only: no frames/actions are read from this dataset. Missing/non-video refs fail loudly.
+convert_schema_reference: dataset_filtered/libero_90_full_full
 convert_image_size: 256
 
 # Exact parity with current local datasets uses libsvtav1/AV1.
-# Keep this default unless the node's NVIDIA driver supports the selected NVENC API.
+# This must match convert_schema_reference; a mismatch fails before conversion.
 convert_vcodec: libsvtav1
 convert_streaming_encoding: false
 convert_encoder_queue_maxsize: 30
-
-# Faster GPU encoding option. Enable only if FFmpeg/NVENC works on the target node.
-# convert_vcodec: auto
-# convert_streaming_encoding: true
-# convert_encoder_queue_maxsize: 120
 
 convert_encoder_threads: ""       # blank = let FFmpeg/LeRobot choose
 convert_batch_encoding_size: 1

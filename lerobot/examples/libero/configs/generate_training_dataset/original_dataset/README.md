@@ -104,6 +104,12 @@ Edit:
 original_dataset_config.yaml
 ```
 
+`convert_schema_reference` must point to the canonical existing LeRobot dataset whose
+`meta/info.json` feature contract the conversion must reproduce. Only schema metadata is
+read from this reference; all frames, states, and actions still come from the original HDF5.
+Missing references or non-video image features fail before conversion instead of silently
+falling back to another storage format.
+
 Then submit:
 
 ```bash
@@ -111,19 +117,9 @@ cd {project_root}/lerobot/examples/libero/configs/generate_training_dataset/orig
 ./submit_convert_original_libero.sh
 ```
 
-The default conversion uses `convert_vcodec: libsvtav1`, matching the current
-local datasets' AV1 video-backed LeRobot format. If conversion speed matters
-more than codec parity, run on a GPU node and set:
-
-```yaml
-convert_vcodec: auto
-convert_streaming_encoding: true
-convert_encoder_queue_maxsize: 120
-```
-
-`auto` may select NVIDIA NVENC (`h264_nvenc`/`hevc_nvenc`) when available.
-This changes the compression codec metadata, but decoded RGB frames remain
-ordinary LeRobot video frames for DP/FSQ/VLA training.
+The default conversion uses `convert_vcodec: libsvtav1`, matching the canonical
+reference's AV1 video-backed LeRobot format. Image size, FPS, and codec must match
+the reference exactly; mismatches fail before any output is written.
 
 Smoke test:
 
@@ -177,16 +173,17 @@ to match the current local LeRobot datasets.
 
 ## Stats
 
-The current local LeRobot v3 writer creates `meta/stats.json` during conversion,
-including quantile keys:
+The current local LeRobot v3 writer creates `meta/stats.json` during conversion.
+`submit_convert_original_libero.sh` then automatically recomputes exact global
+non-video quantiles, including:
 
 ```text
 q01, q10, q50, q90, q99
 ```
 
-So normally no extra stats step is needed after
-`convert_original_libero_to_lerobot.py`. To verify, or to recompute local stats
-without pushing anything to Hugging Face, run:
+No extra stats command is needed after the Slurm submit workflow. When running
+`convert_original_libero_to_lerobot.py` directly, the writer stats are already
+usable; to reproduce the submit workflow's exact global quantiles, run:
 
 ```bash
 cd {project_root}/lerobot/examples/libero/configs/generate_training_dataset/original_dataset
