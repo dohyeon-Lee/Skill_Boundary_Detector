@@ -38,7 +38,7 @@ echo "cond      : ${VISION_BACKBONE}/${COND_ENCODER_VARIANT} (trainability follo
 echo "A/B       : B=${STAGE0_VLM_SEVERED_PROB}, wrong-language=${WRONG_LANGUAGE_WEIGHT}"
 echo "A scope   : drop_vlm=${STAGE0_A_DROP_VLM}, train=${STAGE0_A_TRAIN_COMPONENTS}"
 echo "B scope   : drop_vlm=${STAGE0_B_DROP_VLM}, train=${STAGE0_B_TRAIN_COMPONENTS}"
-echo "token read: image=${ATTEND_IMAGE}, language=${ATTEND_LANGUAGE}, skill=${ATTEND_SKILL}"
+echo "token read: image=${ATTEND_IMAGE}, language=${ATTEND_LANGUAGE}, skill=${ATTEND_SKILL}, fast=${ATTEND_FAST}"
 echo "AR        : transition randomization=${TRANSITION_RANDOMIZATION}, FAST=${AR_FAST_LOSS}"
 echo "output    : ${PT_OUTPUT_DIR}"
 nvidia-smi || true
@@ -86,6 +86,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.pretrain_target_packs="${PRETRAIN_TARGET_PACK}" \
     --policy.transition_randomization="${TRANSITION_RANDOMIZATION}" \
     --policy.attend_skill="${ATTEND_SKILL}" \
+    --policy.attend_fast="${ATTEND_FAST}" \
     --policy.ar_fast_loss="${AR_FAST_LOSS}" \
     --policy.ar_batch_size="${AR_BATCH_SIZE}" \
     --policy.ar_skill_loss_weight="${AR_SKILL_LOSS_WEIGHT}" \

@@ -556,12 +556,16 @@ class SkillVLAConfig(PI05Config):
             raise ValueError(f"All Stage-0 A/B skill loss weights must be > 0, got {stage0_weights}.")
         if self.stage0_expert_lora_lr_scale <= 0.0:
             raise ValueError("stage0_expert_lora_lr_scale must be > 0.")
-        # attend_image + attend_language pick the VLM read-set; both False leaves cond/expert/reader with
-        # no VLM tokens to attend — that's a config mistake (go VLM-blind via vlm_cond/vlm_expert instead).
-        if not self.attend_image and not self.attend_language:
+        # Specialized policies may append additional VLM-stream tokens (for example Stage0-pretrain's
+        # predicted skill/FAST sequence). In the base policy, image/language remain the only read-set.
+        extra_read_set = bool(getattr(self, "attend_skill", False)) or bool(
+            getattr(self, "attend_fast", False)
+        )
+        if not self.attend_image and not self.attend_language and not extra_read_set:
             raise ValueError(
-                "attend_image=False AND attend_language=False → the VLM has no attendable tokens. "
-                "Use vlm_cond=False / vlm_expert=False to make a stream VLM-blind instead.")
+                "The VLM read-set is empty: image/language and all policy-specific token access "
+                "flags are disabled. Use vlm_cond=False / vlm_expert=False for a VLM-blind stream."
+            )
         # reader read-set (None = attend_* 상속) 도 비어 있으면 안 됨 — skill 예측기가 읽을 토큰이 없음.
         _rai = self.attend_image if self.reader_attend_image is None else self.reader_attend_image
         _ral = self.attend_language if self.reader_attend_language is None else self.reader_attend_language

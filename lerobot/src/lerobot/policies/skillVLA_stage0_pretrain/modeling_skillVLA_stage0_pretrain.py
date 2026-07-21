@@ -139,6 +139,23 @@ class SkillVLAStage0PretrainPytorch(SkillVLAPytorch):
         self.register_buffer("_fast_token_ids", torch.tensor(fast_ids), persistent=True)
         self.register_buffer("_token_to_slot", token_to_slot, persistent=False)
         self.register_buffer("_token_to_skill_dim", token_to_skill_dim, persistent=False)
+        action_prefix = tokenizer.encode("Action: ", add_special_tokens=False)
+        action_stop = tokenizer.encode("|", add_special_tokens=False)
+        if not action_prefix:
+            raise ValueError("Tokenizer produced an empty 'Action: ' prefix.")
+        if len(action_stop) != 1:
+            raise ValueError(
+                "Predicted FAST context requires '|' to be exactly one tokenizer token; "
+                f"got {action_stop}."
+            )
+        if int(action_stop[0]) in set(fast_ids):
+            raise ValueError("FAST token range overlaps the action stop token '|'.")
+        self.register_buffer(
+            "_action_prefix_ids", torch.tensor(action_prefix, dtype=torch.long), persistent=False
+        )
+        self.register_buffer(
+            "_action_stop_id", torch.tensor(int(action_stop[0]), dtype=torch.long), persistent=False
+        )
 
     def _skill_tokens(self, flat_code: Tensor) -> Tensor:
         code = flat_code.long().reshape(-1, 1)
@@ -197,6 +214,123 @@ class SkillVLAStage0PretrainPytorch(SkillVLAPytorch):
         if delta_logits is not None:
             scores = scores + delta_logits.index_select(-1, self._token_to_slot[ids])
         return scores
+
+    def _next_fast_context_token(self, hidden: Tensor, *, allow_stop: bool) -> Tensor:
+        """Greedy FAST-or-stop choice, including pretrained selected-row output deltas."""
+        base_logits = self.paligemma_with_expert.paligemma.lm_head(hidden[:, None])[:, 0]
+        delta = self._output_delta_logits(hidden[:, None])
+        delta = None if delta is None else delta[:, 0]
+        scores = self._selected_scores(base_logits, delta, self._fast_token_ids)
+        candidates = self._fast_token_ids
+        if allow_stop:
+            stop_id = self._action_stop_id.reshape(1)
+            scores = torch.cat([scores, base_logits.index_select(-1, stop_id).float()], dim=-1)
+            candidates = torch.cat([candidates, stop_id])
+        return candidates[scores.argmax(dim=-1)]
+
+    @torch.no_grad()
+    def _predict_fast_context(
+        self,
+        prefix_embeds: Tensor,
+        prefix_pad: Tensor,
+        skill_tokens: Tensor,
+    ) -> tuple[Tensor, Tensor, Tensor]:
+        """Generate FAST IDs from the current VLM without ever exposing GT action tokens."""
+        batch_size = prefix_embeds.shape[0]
+        bos = torch.full_like(skill_tokens[:, :1], int(self._paligemma_tokenizer.bos_token_id))
+        action_prefix = self._action_prefix_ids[None].expand(batch_size, -1)
+        seed_ids = torch.cat([bos, skill_tokens, action_prefix], dim=1)
+        seed_embeds = self._vlm.embed_tokens(seed_ids) * math.sqrt(prefix_embeds.shape[-1])
+        seed_embeds = self._add_input_delta(seed_embeds, seed_ids).to(prefix_embeds.dtype)
+        embeddings = torch.cat([prefix_embeds.detach(), seed_embeds], dim=1)
+        seed_pad = torch.ones_like(seed_ids, dtype=torch.bool)
+        current_pad = torch.cat([prefix_pad, seed_pad], dim=1)
+
+        prefix_len, seed_len = prefix_embeds.shape[1], seed_ids.shape[1]
+        allow = torch.zeros(
+            batch_size,
+            prefix_len + seed_len,
+            prefix_len + seed_len,
+            dtype=torch.bool,
+            device=embeddings.device,
+        )
+        allow[:, :prefix_len, :prefix_len] = True
+        allow[:, prefix_len:, :prefix_len] = True
+        allow[:, prefix_len:, prefix_len:] = torch.tril(
+            torch.ones(seed_len, seed_len, dtype=torch.bool, device=embeddings.device)
+        )
+        allow &= current_pad[:, None, :] & current_pad[:, :, None]
+        attention = torch.where(
+            allow[:, None], 0.0, OPENPI_ATTENTION_MASK_VALUE
+        ).to(embeddings.dtype)
+        positions = torch.cumsum(current_pad, dim=1) - 1
+
+        gradient_checkpointing = getattr(self._vlm, "gradient_checkpointing", None)
+        if gradient_checkpointing is not None:
+            self._vlm.gradient_checkpointing = False
+        try:
+            output = self._vlm.forward(
+                inputs_embeds=embeddings,
+                attention_mask=attention,
+                position_ids=positions,
+                past_key_values=None,
+                use_cache=True,
+                adarms_cond=None,
+            )
+            cache = output.past_key_values
+            if cache is None:
+                raise RuntimeError("VLM returned no KV cache while generating predicted FAST context.")
+            hidden = output.last_hidden_state[:, -1]
+            active = torch.ones(batch_size, dtype=torch.bool, device=embeddings.device)
+            generated, generated_masks = [], []
+            max_tokens = int(self.config.max_action_tokens)
+
+            for step in range(max_tokens):
+                was_active = active
+                next_token = self._next_fast_context_token(hidden, allow_stop=step > 0)
+                next_token = torch.where(was_active, next_token, self._action_stop_id)
+                stopped = was_active & (next_token == self._action_stop_id)
+                fast_valid = was_active & ~stopped
+                if bool(fast_valid.any()):
+                    context_token = torch.where(
+                        fast_valid, next_token, self._fast_token_ids[0]
+                    )
+                    generated.append(context_token)
+                    generated_masks.append(fast_valid)
+                active = was_active & ~stopped
+                if not bool(active.any()) or step + 1 == max_tokens:
+                    break
+
+                next_embeds = self._vlm.embed_tokens(next_token[:, None])
+                next_embeds = next_embeds * math.sqrt(next_embeds.shape[-1])
+                next_embeds = self._add_input_delta(next_embeds, next_token[:, None]).to(
+                    embeddings.dtype
+                )
+                current_pad = torch.cat([current_pad, was_active[:, None]], dim=1)
+                step_attention = torch.where(
+                    current_pad[:, None, None, :], 0.0, OPENPI_ATTENTION_MASK_VALUE
+                ).to(next_embeds.dtype)
+                step_positions = current_pad.sum(dim=1, keepdim=True).long() - 1
+                output = self._vlm.forward(
+                    inputs_embeds=next_embeds,
+                    attention_mask=step_attention,
+                    position_ids=step_positions,
+                    past_key_values=cache,
+                    use_cache=True,
+                    adarms_cond=None,
+                )
+                cache = output.past_key_values
+                hidden = output.last_hidden_state[:, -1]
+        finally:
+            if gradient_checkpointing is not None:
+                self._vlm.gradient_checkpointing = gradient_checkpointing
+
+        if not generated:
+            raise RuntimeError("Predicted FAST context produced no FAST tokens.")
+        tokens = torch.stack(generated, dim=1)
+        masks = torch.stack(generated_masks, dim=1)
+        terminated = ~active
+        return tokens, masks, terminated
 
     def _combined_targets(
         self,
@@ -340,16 +474,46 @@ class SkillVLAStage0PretrainPytorch(SkillVLAPytorch):
             self._vlm_is_skill = torch.zeros(
                 embeds.shape[1], dtype=torch.bool, device=embeds.device
             )
+            self._vlm_is_fast = torch.zeros_like(self._vlm_is_skill)
+            self._vlm_is_causal = torch.zeros_like(self._vlm_is_skill)
             return embeds, pad, xattn_block
         skill = self._skill_tokens(self._motor_skill_code)
         bos = torch.full_like(skill[:, :1], int(self._paligemma_tokenizer.bos_token_id))
-        token_ids = torch.cat([bos, skill], dim=1)
+        skill_ids = torch.cat([bos, skill], dim=1)
+        token_ids = skill_ids
+        token_pad = torch.ones_like(skill_ids, dtype=torch.bool)
+        skill_width = skill_ids.shape[1]
+        action_prefix_width = 0
+        fast_width = 0
+        if bool(self.config.attend_fast):
+            fast_ids, fast_pad, terminated = self._predict_fast_context(
+                embeds.detach(), pad, skill
+            )
+            action_prefix = self._action_prefix_ids[None].expand(skill.shape[0], -1)
+            token_ids = torch.cat([skill_ids, action_prefix, fast_ids], dim=1)
+            token_pad = torch.cat(
+                [
+                    torch.ones_like(skill_ids, dtype=torch.bool),
+                    torch.ones_like(action_prefix, dtype=torch.bool),
+                    fast_pad,
+                ],
+                dim=1,
+            )
+            action_prefix_width = action_prefix.shape[1]
+            fast_width = fast_ids.shape[1]
+            self._last_fast_context_lengths = fast_pad.sum(dim=1)
+            self._last_fast_context_terminated = terminated
         token_embeds = self._vlm.embed_tokens(token_ids) * math.sqrt(embeds.shape[-1])
         token_embeds = self._add_input_delta(token_embeds, token_ids).to(embeds.dtype)
-        skill_mask = torch.ones(token_ids.shape[1], dtype=torch.bool, device=embeds.device)
+        skill_mask = torch.zeros(token_ids.shape[1], dtype=torch.bool, device=embeds.device)
+        skill_mask[:skill_width] = True
+        fast_mask = torch.zeros_like(skill_mask)
+        if fast_width:
+            fast_mask[skill_width + action_prefix_width :] = True
+        causal_mask = torch.ones_like(skill_mask)
         embeds = torch.cat([embeds, token_embeds], dim=1)
         pad = torch.cat(
-            [pad, torch.ones_like(token_ids, dtype=torch.bool, device=pad.device)], dim=1
+            [pad, token_pad.to(device=pad.device)], dim=1
         )
         self._vlm_is_lang = torch.cat(
             [self._vlm_is_lang, torch.zeros_like(skill_mask)], dim=0
@@ -357,27 +521,35 @@ class SkillVLAStage0PretrainPytorch(SkillVLAPytorch):
         self._vlm_is_skill = torch.cat(
             [torch.zeros(xattn_block.shape[0], dtype=torch.bool, device=embeds.device), skill_mask]
         )
-        skill_block = torch.full_like(skill_mask, not bool(self.config.attend_skill))
-        return embeds, pad, torch.cat([xattn_block, skill_block], dim=0)
+        self._vlm_is_fast = torch.cat(
+            [torch.zeros(xattn_block.shape[0], dtype=torch.bool, device=embeds.device), fast_mask]
+        )
+        self._vlm_is_causal = torch.cat(
+            [torch.zeros(xattn_block.shape[0], dtype=torch.bool, device=embeds.device), causal_mask]
+        )
+        token_block = torch.ones_like(skill_mask)
+        token_block[skill_mask] = not bool(self.config.attend_skill)
+        token_block[fast_mask] = not bool(self.config.attend_fast)
+        return embeds, pad, torch.cat([xattn_block, token_block], dim=0)
 
     def _motor_vlm_self_mask(self, pad: Tensor) -> Tensor:
-        skill = self._vlm_is_skill
-        prefix = ~skill
+        causal = self._vlm_is_causal
+        prefix = ~causal
         allow = prefix[None, :, None] & prefix[None, None, :]
         allow = allow.expand(pad.shape[0], -1, -1).clone()
-        allow |= skill[None, :, None] & prefix[None, None, :]
-        positions = torch.arange(skill.shape[0], device=skill.device)
-        causal_skill = (
-            skill[:, None] & skill[None, :] & (positions[:, None] >= positions[None, :])
+        allow |= causal[None, :, None] & prefix[None, None, :]
+        positions = torch.arange(causal.shape[0], device=causal.device)
+        causal_target = (
+            causal[:, None] & causal[None, :] & (positions[:, None] >= positions[None, :])
         )
-        allow |= causal_skill[None]
+        allow |= causal_target[None]
         return allow & pad[:, None, :] & pad[:, :, None]
 
     def _mask_branch_A(self, nc, vlm_pad, vlm_xattn_block, na, drop_vlm=False):
         attention, valid = super()._mask_branch_A(
             nc, vlm_pad, vlm_xattn_block, na, drop_vlm=drop_vlm
         )
-        if getattr(self, "_vlm_is_skill", None) is not None and bool(self._vlm_is_skill.any()):
+        if getattr(self, "_vlm_is_causal", None) is not None and bool(self._vlm_is_causal.any()):
             block = self._motor_vlm_self_mask(vlm_pad)
             attention[:, 0, nc : nc + vlm_pad.shape[1], nc : nc + vlm_pad.shape[1]] = torch.where(
                 block, 0.0, OPENPI_ATTENTION_MASK_VALUE
@@ -387,14 +559,16 @@ class SkillVLAStage0PretrainPytorch(SkillVLAPytorch):
     def _prefix_self_attention_mask(self, layers, pad: Tensor) -> Tensor:
         if (
             layers is self._vlm.layers
-            and getattr(self, "_vlm_is_skill", None) is not None
-            and self._vlm_is_skill.shape[0] == pad.shape[1]
-            and bool(self._vlm_is_skill.any())
+            and getattr(self, "_vlm_is_causal", None) is not None
+            and self._vlm_is_causal.shape[0] == pad.shape[1]
+            and bool(self._vlm_is_causal.any())
         ):
             return self._motor_vlm_self_mask(pad)
         return super()._prefix_self_attention_mask(layers, pad)
 
     def forward(self, *args, **kwargs):
+        self._last_fast_context_lengths = None
+        self._last_fast_context_terminated = None
         self._motor_skill_code = args[5] if len(args) > 5 else kwargs.get("skill_code")
         try:
             return super().forward(*args, **kwargs)
@@ -503,6 +677,12 @@ class SkillVLAStage0PretrainPolicy(SkillVLAPolicy):
         if reduction != "mean":
             raise ValueError("Stage0-pretrain joint objective supports reduction='mean' only.")
         motor_loss, metrics = super().forward(batch, reduction=reduction)
+        fast_lengths = self.model._last_fast_context_lengths
+        fast_terminated = self.model._last_fast_context_terminated
+        if fast_lengths is not None:
+            metrics["fast_context/length_mean"] = fast_lengths.float().mean().item()
+            metrics["fast_context/length_max"] = fast_lengths.max().item()
+            metrics["fast_context/terminated_frac"] = fast_terminated.float().mean().item()
         regime = getattr(self.model, "_last_regime", None)
         # Preserve the adapter set used by the checkpointed motor graph. B has no VLM graph, so the
         # VLM-only adapter can safely be active for its AR auxiliary without changing B recomputation.

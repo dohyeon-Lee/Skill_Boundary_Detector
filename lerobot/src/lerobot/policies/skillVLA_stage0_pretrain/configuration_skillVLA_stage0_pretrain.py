@@ -28,6 +28,7 @@ class SkillVLAStage0PretrainConfig(SkillVLAConfig):
     transition_randomization: bool = True
 
     attend_skill: bool = True
+    attend_fast: bool = False
     ar_fast_loss: bool = False
     ar_batch_size: int = 2
     ar_skill_loss_weight: float = 1.0

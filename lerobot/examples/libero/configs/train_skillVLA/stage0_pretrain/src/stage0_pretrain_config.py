@@ -111,6 +111,7 @@ def build_settings(cfg: dict) -> dict:
                 _at(cfg, "dataset", "transition_randomization", default=True)
             ),
             "attend_skill": as_bool(_at(cfg, "token_access", "skill", default=True)),
+            "attend_fast": as_bool(_at(cfg, "token_access", "fast", default=False)),
             "ar_fast_loss": as_bool(
                 _at(cfg, "loss", "autoregressive", "fast", default=False)
             ),

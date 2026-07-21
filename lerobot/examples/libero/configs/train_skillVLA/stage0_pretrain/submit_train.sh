@@ -46,7 +46,7 @@ echo "  run     : ${PT_RUN_NAME}"
 echo "  dataset : ${SKILLVLA_DATASET_DIR}"
 echo "  FSQ     : ${FSQ_CKPT}"
 echo "  VLM     : ${PRETRAIN_CHECKPOINT_PATH} (${PRETRAIN_TRAINING_MODE})"
-echo "  AR      : skill=on FAST=${AR_FAST_LOSS} batch=${AR_BATCH_SIZE}"
+echo "  AR      : skill=on FAST-loss=${AR_FAST_LOSS} FAST-context=${ATTEND_FAST} batch=${AR_BATCH_SIZE}"
 echo "  output  : ${PT_OUTPUT_DIR}"
 
 if [ -n "${SLURM_JOB_ID:-}" ]; then

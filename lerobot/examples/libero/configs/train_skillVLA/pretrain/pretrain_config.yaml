@@ -2,7 +2,7 @@ dataset:
   skillvla_root: skillvla_dataset
   source: libero_90_full_full
   run: FSQ333_dino_frozen_small_optimal_vsa_broadcast_150_std_pt_snap10_ms1_pmax15_halfnormal
-  transition_randomization: false # false: exact GT skill-start image/state
+  transition_randomization: true # false: exact GT skill-start image/state
 
 warm_start:
   pi_base: models/pi05_base
@@ -16,7 +16,7 @@ tokenizers:
   train: {scale: 10.0, encoded_dims: "0:7"}
 
 model:
-  mode: lora # lora | full
+  mode: full # lora | full
 
 lora: {targets: [q, k, v, o], rank: 16, alpha: auto, dropout: 0.0}
 loss: {skill: 1.0, fast: 1.0, structure: 0.1}
@@ -25,7 +25,7 @@ run: {name: "", suffix: ""}
 
 training:
   dataloader: {batch_size: 8, workers: 4, gpus: 1}
-  optimizer: {full_lr: 5.0e-06, lora_lr: 1.0e-04}
+  optimizer: {full_lr: 2.5e-5, lora_lr: 1.0e-04}
   schedule: {steps: 30000, warmup: 1000, save_every: 5000, log_every: 100}
 
 logging:
