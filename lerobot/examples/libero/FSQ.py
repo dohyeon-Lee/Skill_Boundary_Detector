@@ -446,12 +446,22 @@ class VSAFlowExpert(nn.Module):
             return None
         return self.skill_proj(z_norm.to(self.working_dtype)).unsqueeze(1)
 
-    def _skill_broadcast(self, z_norm: Tensor) -> Tensor | None:
+    def _skill_broadcast(
+        self, z_norm: Tensor, broadcast_scale: float = 1.0
+    ) -> Tensor | None:
         if self.state_cond_mode != "broadcast":
             return None
-        return self.skill_proj(z_norm.to(self.working_dtype))
+        return self.skill_proj(z_norm.to(self.working_dtype)) * float(broadcast_scale)
 
-    def velocity(self, x_t: Tensor, time: Tensor, state: Tensor, z_norm: Tensor) -> Tensor:
+    def velocity(
+        self,
+        x_t: Tensor,
+        time: Tensor,
+        state: Tensor,
+        z_norm: Tensor,
+        *,
+        broadcast_scale: float = 1.0,
+    ) -> Tensor:
         action = self.action_in_proj(x_t.to(self.working_dtype))
         prefix = self._action_prefix(z_norm)
         n_prefix = 0 if prefix is None else prefix.shape[1]
@@ -473,7 +483,7 @@ class VSAFlowExpert(nn.Module):
             position_ids=positions,
             use_cache=False,
             adarms_cond=self._expert_cond(time, state, z_norm),
-            broadcast_cond=self._skill_broadcast(z_norm),
+            broadcast_cond=self._skill_broadcast(z_norm, broadcast_scale),
         ).last_hidden_state
         return self.action_out_proj(hidden[:, -self.chunk_size :].to(self.working_dtype)).float()
 
@@ -504,6 +514,7 @@ class VSAFlowExpert(nn.Module):
         *,
         noise: Tensor | None = None,
         num_steps: int = 10,
+        broadcast_scale: float = 1.0,
     ) -> Tensor:
         bsize = state.shape[0]
         if noise is None:
@@ -514,7 +525,13 @@ class VSAFlowExpert(nn.Module):
         dt = -1.0 / num_steps
         for step in range(num_steps):
             time = torch.full((bsize,), 1.0 + step * dt, device=state.device)
-            x_t = x_t + dt * self.velocity(x_t, time, state, z_norm)
+            x_t = x_t + dt * self.velocity(
+                x_t,
+                time,
+                state,
+                z_norm,
+                broadcast_scale=broadcast_scale,
+            )
         return x_t
 
 
@@ -1096,6 +1113,7 @@ class SplineFSQAE(nn.Module):
         *,
         noise: Tensor | None = None,
         num_steps: int = 10,
+        broadcast_scale: float = 1.0,
     ) -> Tensor:
         """Image-free VSA action chunks for every ``(B,T)`` state, in dataset units."""
         bsize, steps = raw_states.shape[:2]
@@ -1109,7 +1127,11 @@ class SplineFSQAE(nn.Module):
         expert_state[:, : self.cfg.state_dim] = norm
         z_norm = self.fsq.normalized(z_q).repeat_interleave(steps, dim=0)
         action_norm = self.action_expert.sample_actions(
-            expert_state, z_norm, noise=noise, num_steps=num_steps
+            expert_state,
+            z_norm,
+            noise=noise,
+            num_steps=num_steps,
+            broadcast_scale=broadcast_scale,
         )[..., : self.cfg.action_dim]
         action_lo = torch.as_tensor(
             self.cfg.action_q01, device=action_norm.device, dtype=action_norm.dtype
@@ -1130,6 +1152,8 @@ class SplineFSQAE(nn.Module):
         _progress_hint: Tensor | None = None,
         *,
         num_steps: int = 10,
+        noise: Tensor | None = None,
+        broadcast_scale: float = 1.0,
     ) -> tuple[Tensor, Tensor, Tensor]:
         """Evaluate every trajectory timestep with the v3 expert and terminator.
 
@@ -1140,7 +1164,13 @@ class SplineFSQAE(nn.Module):
         bsize, steps = raw_states.shape[:2]
         flat_state = raw_states.reshape(bsize * steps, -1)[..., : self.cfg.state_dim]
         z_norm = self.fsq.normalized(z_q).repeat_interleave(steps, dim=0)
-        actions = self.sample_action_chunks(z_q, raw_states, num_steps=num_steps)
+        actions = self.sample_action_chunks(
+            z_q,
+            raw_states,
+            noise=noise,
+            num_steps=num_steps,
+            broadcast_scale=broadcast_scale,
+        )
 
         def flatten_camera(value: Tensor | None) -> Tensor | None:
             if value is None:
@@ -1309,10 +1339,13 @@ def load_fsq_cond_warmstart_state(
 def load_fsq_model(
     path: str | Path,
     device: str | torch.device = "cpu",
+    dino_model_path: str | None = None,
 ) -> tuple[SplineFSQAE, SplineFSQAEConfig]:
     """Load all v3 components. Reserved for joint FSQ evaluation/training tools."""
     checkpoint = torch.load(str(path), map_location="cpu", weights_only=False)
     cfg = _checkpoint_config(checkpoint)
+    if dino_model_path and cfg.vision_backbone == "dino":
+        cfg.dino_model_path = str(dino_model_path)
     model = SplineFSQAE(cfg)
     model.load_state_dict(checkpoint["model_state"], strict=True)
     dev = torch.device(device)

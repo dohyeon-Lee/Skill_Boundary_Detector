@@ -131,7 +131,12 @@ fi
 
 # ── FSQ reconstruction eval (encoder + decoder → wandb scalars + interactive HTML) ──
 if [ "${EVAL_RUN_FSQ}" = "true" ]; then
-  FSQ_OUTPUTS_ROOT="$(dirname "${FSQ_OUTPUT_DIR}")"
+  OUTPUTS_ROOT="$(dirname "$(dirname "${FSQ_OUTPUT_DIR}")")"
+  if [ "${FSQ_EVAL_FAMILY}" = "fsq_new" ]; then
+    FSQ_OUTPUTS_ROOT="${OUTPUTS_ROOT}/FSQ_new"
+  else
+    FSQ_OUTPUTS_ROOT="${OUTPUTS_ROOT}/FSQ"
+  fi
   MODEL_DIR="${FSQ_OUTPUTS_ROOT}/${FSQ_EVAL_RUN_NAME}"
   if [ "${FSQ_EVAL_CHECKPOINT}" = "0" ]; then
     MODEL_PATH="${MODEL_DIR}/FSQ.pt"
@@ -187,9 +192,18 @@ PY
   if [ ! -d "${F_SKILLSET}/skills" ]; then
     echo "FSQ's training skillset not found: ${F_SKILLSET}/skills" >&2; exit 1
   fi
+  FSQ_RANDOM_SKILL_ARGS=()
+  if [ "${FSQ_EVAL_RANDOM_FAR_SKILL}" = "true" ]; then
+    FSQ_RANDOM_SKILL_ARGS=(
+      --random_far_skill
+      --random_far_fraction "${FSQ_EVAL_RANDOM_FAR_FRACTION}"
+    )
+  fi
   PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     python -u examples/libero/fsq_eval.py \
+      --model_family        "${FSQ_EVAL_FAMILY}" \
       --model_path          "${MODEL_PATH}" \
+      --dino_model_path     "${FSQ_DINO_MODEL_PATH}" \
       --skills_dir          "${F_SKILLSET}/skills" \
       --dataset_dir      "${DATASET_VIDEO_DIR}" \
       --output_dir       "${OUTPUT_DIR}" \
@@ -200,6 +214,8 @@ PY
       --decoder_scope    "${FSQ_EVAL_DECODER_SCOPE}" \
       --thumb_size       "${FSQ_EVAL_THUMB_SIZE}" \
       --end_threshold    "${FSQ_EVAL_END_THRESHOLD}" \
+      --broadcast_compare_scale "${FSQ_EVAL_BROADCAST_COMPARE_SCALE}" \
+      ${FSQ_RANDOM_SKILL_ARGS[@]+"${FSQ_RANDOM_SKILL_ARGS[@]}"} \
       --wandb_project    "${FSQ_EVAL_WANDB_PROJECT}" \
       --wandb_run_name   "${FSQ_EVAL_RUN_NAME}_${EPOCH_TAG}"
   echo "DONE FSQ → ${OUTPUT_DIR}/fsq_eval.html"

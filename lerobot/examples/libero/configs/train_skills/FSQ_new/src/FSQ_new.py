@@ -746,6 +746,11 @@ class VSAFlowExpert(nn.Module):
         *,
         noise: Tensor | None = None,
         num_steps: int = 10,
+        skill_scale: float = 1.0,
+        image_context: Tensor | None = None,
+        goal_context: Tensor | None = None,
+        image_scale: float = 0.0,
+        goal_scale: float = 0.0,
     ) -> Tensor:
         bsize = state.shape[0]
         if noise is None:
@@ -756,7 +761,17 @@ class VSAFlowExpert(nn.Module):
         dt = -1.0 / num_steps
         for step in range(num_steps):
             time = torch.full((bsize,), 1.0 + step * dt, device=state.device)
-            x_t = x_t + dt * self.velocity(x_t, time, state, z_norm)
+            x_t = x_t + dt * self.velocity(
+                x_t,
+                time,
+                state,
+                z_norm,
+                skill_scale=skill_scale,
+                image_context=image_context,
+                goal_context=goal_context,
+                image_scale=image_scale,
+                goal_scale=goal_scale,
+            )
         return x_t
 
 
@@ -1423,6 +1438,11 @@ class SplineFSQAE(nn.Module):
         *,
         noise: Tensor | None = None,
         num_steps: int = 10,
+        skill_scale: float | None = None,
+        image_context: Tensor | None = None,
+        goal_context: Tensor | None = None,
+        image_scale: float = 0.0,
+        goal_scale: float = 0.0,
     ) -> Tensor:
         """Image-free VSA action chunks for every ``(B,T)`` state, in dataset units."""
         bsize, steps = raw_states.shape[:2]
@@ -1435,8 +1455,28 @@ class SplineFSQAE(nn.Module):
         )
         expert_state[:, : self.cfg.state_dim] = norm
         z_norm = self.fsq.normalized(z_q).repeat_interleave(steps, dim=0)
+
+        def flatten_context(context: Tensor | None) -> Tensor | None:
+            if context is None:
+                return None
+            if context.shape[0] == bsize:
+                return context.repeat_interleave(steps, dim=0)
+            if context.shape[0] != bsize * steps:
+                raise ValueError(
+                    f"Context batch {context.shape[0]} must match B={bsize} or B*T={bsize * steps}."
+                )
+            return context
+
         action_norm = self.action_expert.sample_actions(
-            expert_state, z_norm, noise=noise, num_steps=num_steps
+            expert_state,
+            z_norm,
+            noise=noise,
+            num_steps=num_steps,
+            skill_scale=self.cfg.a_skill_scale if skill_scale is None else float(skill_scale),
+            image_context=flatten_context(image_context),
+            goal_context=flatten_context(goal_context),
+            image_scale=float(image_scale),
+            goal_scale=float(goal_scale),
         )[..., : self.cfg.action_dim]
         action_lo = torch.as_tensor(
             self.cfg.action_q01, device=action_norm.device, dtype=action_norm.dtype
@@ -1703,10 +1743,13 @@ def load_fsq_cond_warmstart_state(
 def load_fsq_model(
     path: str | Path,
     device: str | torch.device = "cpu",
+    dino_model_path: str | None = None,
 ) -> tuple[SplineFSQAE, SplineFSQAEConfig]:
     """Load all v3 components. Reserved for joint FSQ evaluation/training tools."""
     checkpoint = torch.load(str(path), map_location="cpu", weights_only=False)
     cfg = _checkpoint_config(checkpoint)
+    if dino_model_path and cfg.vision_backbone == "dino":
+        cfg.dino_model_path = str(dino_model_path)
     model = SplineFSQAE(cfg)
     model.load_state_dict(checkpoint["model_state"], strict=True)
     dev = torch.device(device)

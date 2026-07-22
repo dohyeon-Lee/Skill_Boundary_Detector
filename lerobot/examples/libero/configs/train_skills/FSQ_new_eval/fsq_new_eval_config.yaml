@@ -1,0 +1,44 @@
+# FSQ_new closed-loop LIBERO eval. No SkillVLA training dataset is used.
+
+source_dataset: libero_90_full_full
+
+# Every model expands into its selected A/B/C panels. `best` = FSQ.pt,
+# `last` = newest FSQ_epoch*.pt, and an integer selects FSQ_epochNNNN.pt.
+models:
+  - {run: libero_90_full_full_state_obs20_std_global_ms1_fsq333_dino_frozen_small_optimal_vsa_broadcast_AB1_BC2,
+     checkpoint: "0125", modes: "a,b,c", advance_mode: terminator, label: FSQ333-new}
+
+models_per_row: 3
+output_name: "" # blank -> submit timestamp
+
+# Empty uses dataset_filtered/FSQ_dataset/<source>/eval_init_states.npz.
+# submit_eval.sh copies the source-only legacy cache or builds it from original HDF5s when absent.
+eval_init_states_path: ""
+dino_model_path: models/dinov3-vitl16
+
+target_task: libero_90
+task_ids: "[1,2,3,4,5,6,7,8,9,10]"
+eval_num_gpus: 9
+n_episodes: 5
+eval_batch_size: 1
+max_parallel_tasks: 1
+n_action_steps: 5
+
+skill_end_mode: or
+skill_end_threshold: 0.5
+skill_end_progress_threshold: 0.95
+inference_skill_max_length: 150
+
+max_videos_per_task: 5
+video_frame_stride: 2
+video_fps: 10
+skill_html: true
+skill_html_train_samples: 5
+
+wandb_enable: true
+wandb_project: FSQ_new_eval
+
+eval_gres: gpu:1
+eval_cpus_per_task: 8
+eval_mem: 64G
+eval_time: "2:00:00"

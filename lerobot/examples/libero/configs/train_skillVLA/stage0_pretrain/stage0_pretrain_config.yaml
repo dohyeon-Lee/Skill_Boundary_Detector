@@ -8,7 +8,7 @@ warm_start:
   pi_base: models/pi05_base
   tokenizer: models/paligemma-3b-pt-224-tokenizer
   fsq: ""
-  pretrain: {run: FSQ333_dino_frozen_small_optimal_vsa_broadcast_150_std_pt_snap10_ms1_pmax15_halfnormal_pretrain_full_rand, checkpoint: "020000"}
+  pretrain: {run: FSQ333_dino_frozen_small_optimal_vsa_broadcast_150_std_pt_snap10_ms1_pmax15_halfnormal_pretrain_lora_gt, checkpoint: "020000"}
 
 cond: {dino_model: models/dinov3-vitl16, state_adarms: true}
 expert: {source: fsq} # fsq | pi05_base
@@ -53,7 +53,7 @@ loss:
     batch_size: 4
 
 terminator: {train: true, freeze_vision: true}
-run: {suffix: "pt20k_full_FASTX_term"}
+run: {suffix: "pt20k_full_FASTX_term_lora"}
 
 training:
   dataloader: {batch_size: 16, workers: 4, timeout_s: 300, gpus: 1}

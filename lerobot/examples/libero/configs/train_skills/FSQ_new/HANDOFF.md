@@ -538,7 +538,76 @@ duplicates: `loss`, `action`, `action_objective`, `action_A/B/C`,
 `progress`, `termination`, `end_*`, and the flat `codebook_*` keys. New analysis
 should prefer the canonical tree because its weight semantics are explicit.
 
-## 11. Stage-0 Integration Contract (Not Implemented Yet)
+## 11. Standalone Closed-Loop Evaluation
+
+`train_skills/FSQ_new_eval/` now evaluates an FSQ_new checkpoint directly in
+LIBERO without building or reading a SkillVLA training dataset. It expands each
+configured checkpoint into any requested subset of these panels:
+
+```text
+A: state + GT skill
+B: A + current third/wrist image context
+C: B + GT demonstration endpoint third/wrist image context
+```
+
+C is an oracle visual-goal diagnostic: the endpoint image comes from the exact
+matched demonstration skill, not from information available to a deployed
+policy. All modes use the GT FSQ skill sequence. `advance_mode: terminator`
+uses the checkpoint's learned terminator, while `advance_mode: gt` advances by
+the demonstration skill duration and still records terminator curves.
+
+The eval preparation step encodes the original FSQ skill NPZs with the selected
+checkpoint and writes this source cache next to the run:
+
+```text
+outputs_filtered/FSQ_new/<run>/skill_latents_eval_<checkpoint>.npz
+```
+
+Exact simulator reset additionally needs a source-level episode-to-MuJoCo-state
+map. `submit_eval.sh` keeps the canonical copy at:
+
+```text
+dataset_filtered/FSQ_dataset/<source>/eval_init_states.npz
+```
+
+If absent, it copies the legacy source-only cache when available or rebuilds it
+from the raw LeRobot dataset and original LIBERO HDF5 demos. Jobs only consume
+the FSQ-local copy. The raw LeRobot dataset remains necessary for episode
+metadata and C-mode goal frames; the SkillVLA parquet dataset is not used.
+
+Run:
+
+```bash
+cd lerobot/examples/libero/configs/train_skills/FSQ_new_eval
+./submit_eval.sh
+```
+
+The YAML supports multiple checkpoints, per-checkpoint A/B/C mode selection,
+GT or terminator advancement, task/GPU fanout, and video/HTML controls. Outputs
+include per-panel `eval_info.json`, task-success PNGs, side-by-side panel videos,
+and a top-level `task_success_comparison.png`.
+
+The older skill-level reconstruction report under `train_skills/skill_eval`
+also supports this checkpoint family. Set `fsq_eval_family: fsq_new`; each
+sample action-dimension plot overlays A/B/C using identical flow noise. Current
+and endpoint goal DINO features are computed once per frame batch, while the
+checkpoint terminator supplies one shared progress/termination curve. W&B logs
+the action metrics under `decoder[_sample]/a|b|c/*`.
+
+Both original-FSQ and FSQ_new skill reports also add a far-skill action curve by
+default. The replacement is sampled reproducibly from the farthest 10% of
+active (therefore trained) codebook entries in normalized FSQ-grid distance.
+Original FSQ applies the far code at full conditioning strength. FSQ_new keeps
+the C current-image/goal context fixed and changes only the skill code
+(`C + far skill`). Every action variant shares the same initial flow noise;
+progress/termination remains the current-skill terminator result.
+
+Dataset note: the current `libero_90_full_full` init-state cache contains all
+3,921 source episodes but only 89 unique scene files; LIBERO task 51
+(`LIVING_ROOM_SCENE2_pick_up_the_butter_and_put_it_in_the_basket`) is absent
+from that source cache and is dropped with a warning if requested.
+
+## 12. Stage-0 Integration Contract (Not Implemented Yet)
 
 The agreed future design is source-specific context models with a fixed expert
 interface:
@@ -567,13 +636,14 @@ interface compatibility, not equality of DINO endpoint and language content.
 Current gaps:
 
 - `sample_action_chunks()` and `decode()` still expose only the image-free A
-  inference path.
-- Original FSQ eval has no B/C context modes for this checkpoint.
+  inference path. Standalone B/C eval uses the full-model loader and the
+  context-aware `sample_actions()` path instead.
+- Original FSQ eval has no B/C context modes; use `FSQ_new_eval` for this
+  checkpoint family.
 - Stage-0 loaders currently target the original FSQ implementation/checkpoint
   contract and need explicit `FSQ_new` loading support.
-- There is no dedicated FSQ_new eval config/folder yet.
 
-## 12. Required Validation and Known Issues
+## 13. Required Validation and Known Issues
 
 Do these in order before a long experiment:
 
@@ -601,8 +671,9 @@ Known cleanup items:
 - `fsq_meta.json` records base FSQ provenance but not all context scales/loss
   fields. The full config is present in the checkpoint; metadata should still
   be expanded for easier artifact inspection.
-- No unit test currently covers the custom expert attention path or the new
-  loss formulas.
+- The standalone eval tests context forwarding through every denoising step and
+  exact episode/skill/goal-frame joins. The full training ranking/wrong-goal
+  loss formulas still need dedicated unit coverage.
 - Wrong-goal is random in-batch, not same-code hard negative.
 
 Operational note: job 1853737 on node58 failed in validation because online
@@ -613,7 +684,7 @@ stable 230-242s. This points to node58 storage/decode stalls, not weighted-loss
 compute. The timeout remains YAML-configurable but is kept at 300s as a guard
 against genuinely wedged decoder workers.
 
-## 13. Validation Already Performed
+## 14. Validation Already Performed
 
 The following checks passed on 2026-07-21:
 
@@ -654,7 +725,26 @@ These checks validate the custom expert attention tensor shapes and basic
 autograd, but not the complete DINO + resampler + FSQ + terminator batch, GPU
 memory use, numerical learning behavior, or Slurm execution with real data.
 
-## 14. Related Stage0-pretrain Logging Fix
+Standalone eval validation on 2026-07-22:
+
+```text
+FSQ cache preparation:
+  9,620 source skills encoded with the real FSQ_new checkpoint
+
+Episode-exact join:
+  3,921 episodes, 9,620 ordered skills, 89 source scenes
+
+C-mode frame lookup:
+  endpoint third/wrist frames decoded as float32 [1, 3, 256, 256]
+
+Focused tests:
+  test_fsq_new_eval.py
+```
+
+This validates data preparation and adapter interfaces. A complete GPU LIBERO
+rollout and Slurm fanout still need to be launched from a compute allocation.
+
+## 15. Related Stage0-pretrain Logging Fix
 
 During the same work session, a separate W&B bug was fixed for
 `skill_vla_stage0_pretrain`:
