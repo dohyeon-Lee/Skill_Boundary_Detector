@@ -63,6 +63,9 @@ def build_settings(config_path: str | None = None) -> dict:
         ).lower(),
         "fsq_eval_run_name":       str(get_value(cfg, "fsq_eval_run_name", "")),
         "fsq_eval_family":         fsq_family,
+        "fsq_eval_dino_model_path": str(
+            get_value(cfg, "fsq_eval_dino_model_path", "models/dinov3-vitl16")
+        ),
         "fsq_eval_checkpoint":     str(get_value(cfg, "fsq_eval_checkpoint", 0)),
         "fsq_eval_n_action_steps": int(get_value(cfg, "fsq_eval_n_action_steps", 5)),
         "fsq_eval_n_samples":      int(get_value(cfg, "fsq_eval_n_samples", 5)),

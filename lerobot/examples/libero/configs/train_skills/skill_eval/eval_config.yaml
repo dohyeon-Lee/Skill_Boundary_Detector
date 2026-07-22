@@ -55,6 +55,7 @@ eval_run_fsq: true
 # fsq: original FSQ with 100%/scaled-broadcast action overlays.
 # fsq_new: FSQ_new with A/B/C action overlays and one shared progress/termination curve.
 fsq_eval_family: fsq # fsq | fsq_new
+fsq_eval_dino_model_path: models/dinov3-vitl16
 
 # Folder names now embed the DP run (dp_tag) that produced the skillset. Renamed runs (all dino8_obs10):
 

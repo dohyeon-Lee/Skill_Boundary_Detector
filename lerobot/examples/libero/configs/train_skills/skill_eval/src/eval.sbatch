@@ -137,6 +137,15 @@ if [ "${EVAL_RUN_FSQ}" = "true" ]; then
   else
     FSQ_OUTPUTS_ROOT="${OUTPUTS_ROOT}/FSQ"
   fi
+  if [[ "${FSQ_EVAL_DINO_MODEL_PATH}" = /* ]]; then
+    EVAL_DINO_MODEL_PATH="${FSQ_EVAL_DINO_MODEL_PATH}"
+  else
+    EVAL_DINO_MODEL_PATH="${PROJECT_ROOT}/${FSQ_EVAL_DINO_MODEL_PATH}"
+  fi
+  if [ ! -d "${EVAL_DINO_MODEL_PATH}" ]; then
+    echo "FSQ eval DINO model not found: ${EVAL_DINO_MODEL_PATH}" >&2
+    exit 1
+  fi
   MODEL_DIR="${FSQ_OUTPUTS_ROOT}/${FSQ_EVAL_RUN_NAME}"
   if [ "${FSQ_EVAL_CHECKPOINT}" = "0" ]; then
     MODEL_PATH="${MODEL_DIR}/FSQ.pt"
@@ -203,7 +212,7 @@ PY
     python -u examples/libero/fsq_eval.py \
       --model_family        "${FSQ_EVAL_FAMILY}" \
       --model_path          "${MODEL_PATH}" \
-      --dino_model_path     "${FSQ_DINO_MODEL_PATH}" \
+      --dino_model_path     "${EVAL_DINO_MODEL_PATH}" \
       --skills_dir          "${F_SKILLSET}/skills" \
       --dataset_dir      "${DATASET_VIDEO_DIR}" \
       --output_dir       "${OUTPUT_DIR}" \
