@@ -117,7 +117,13 @@ class Stage0PretrainARProcessorStep(ProcessorStep):
         states = comp.get(AR_STATE)
         raw_tokens = comp.get(AR_FAST_TOKENS)
         raw_masks = comp.get(AR_FAST_TOKEN_MASK)
-        if tasks is None or states is None or raw_tokens is None or raw_masks is None:
+        ar_fields = (tasks, states, raw_tokens, raw_masks)
+        # Closed-loop inference has only the live observation. The transition
+        # AR sample is a training-only auxiliary and must not be required by
+        # the policy preprocessor used for evaluation.
+        if all(value is None for value in ar_fields):
+            return transition
+        if any(value is None for value in ar_fields):
             raise ValueError("Stage0-pretrain transition AR fields are missing from the batch.")
         if isinstance(tasks, str):
             tasks = [tasks]

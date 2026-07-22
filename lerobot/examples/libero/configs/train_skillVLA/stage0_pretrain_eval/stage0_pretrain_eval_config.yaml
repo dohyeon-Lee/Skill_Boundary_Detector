@@ -1,13 +1,13 @@
 models:
-  - {model_dir: "", checkpoint: last, advance_mode: terminator, terminator_source: auto, label: S0-pretrain}
+  - {model_dir: "FSQ333_dino_frozen_small_optimal_vsa_broadcast_150_std_pt_snap10_ms1_pmax15_halfnormal_pt20k_full_FASTX_term", checkpoint: last, advance_mode: terminator, terminator_source: auto, label: S0-pretrain}
 
-modes: "a,b"
-models_per_row: 2
+modes: "a"
+models_per_row: 1
 skill_source: predicted
-output_name: "" # blank: config resolution time
+output_name: "pretrained" # blank: config resolution time
 
 target_task: libero_90
-task_ids: "[0,1,2,3,4,5,6,7,8,9]"
+task_ids: "[1,2,3,4,5,6,7,8,9,10]"
 eval_num_gpus: 10
 n_episodes: 10
 n_action_steps: 5

@@ -1,12 +1,37 @@
 from types import MethodType, SimpleNamespace
 
+import pytest
 import torch
 from transformers import GemmaConfig
 
 from lerobot.policies.pi_gemma import PiGemmaModel
+from lerobot.policies.skillVLA_stage0_pretrain.dataset_skillVLA_stage0_pretrain import (
+    AR_TASK,
+)
 from lerobot.policies.skillVLA_stage0_pretrain.modeling_skillVLA_stage0_pretrain import (
     SkillVLAStage0PretrainPytorch,
 )
+from lerobot.policies.skillVLA_stage0_pretrain.processor_skillVLA_stage0_pretrain import (
+    Stage0PretrainARProcessorStep,
+)
+from lerobot.types import TransitionKey
+
+
+def test_ar_processor_is_noop_for_live_eval_observation() -> None:
+    step = object.__new__(Stage0PretrainARProcessorStep)
+    transition = {TransitionKey.COMPLEMENTARY_DATA: {"task": ["pick up the cup"]}}
+
+    result = step(transition)
+
+    assert result == transition
+
+
+def test_ar_processor_still_rejects_partial_training_fields() -> None:
+    step = object.__new__(Stage0PretrainARProcessorStep)
+    transition = {TransitionKey.COMPLEMENTARY_DATA: {AR_TASK: ["pick up the cup"]}}
+
+    with pytest.raises(ValueError, match="transition AR fields are missing"):
+        step(transition)
 
 
 def test_motor_vlm_mask_keeps_predicted_target_sequence_causal() -> None:
