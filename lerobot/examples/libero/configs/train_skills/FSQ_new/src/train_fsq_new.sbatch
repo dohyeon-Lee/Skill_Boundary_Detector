@@ -93,7 +93,14 @@ cat > "${FSQ_OUTPUT_DIR}/fsq_meta.json" <<JSON
   "state_cond_mode": "${FSQ_STATE_COND_MODE}",
   "vision_backbone": "${FSQ_VISION_BACKBONE}",
   "freeze_vision_encoder": ${FSQ_FREEZE_VISION_ENCODER},
-  "encoder_input_mode": "${FSQ_ENCODER_INPUT_MODE}"
+  "encoder_input_mode": "${FSQ_ENCODER_INPUT_MODE}",
+  "ranking_ab_weight": ${FSQ_NEW_RANKING_AB_WEIGHT},
+  "ranking_bc_weight": ${FSQ_NEW_RANKING_BC_WEIGHT},
+  "ranking_relative_margin": ${FSQ_NEW_RANKING_MARGIN},
+  "wrong_goal_weight": ${FSQ_NEW_WRONG_GOAL_WEIGHT},
+  "wrong_goal_relative_margin": ${FSQ_NEW_WRONG_GOAL_MARGIN},
+  "gradient_checkpointing": ${FSQ_NEW_GRADIENT_CHECKPOINTING},
+  "dataloader_timeout_s": ${FSQ_NEW_DATALOADER_TIMEOUT_S}
 }
 JSON
 
@@ -115,6 +122,11 @@ fi
 WRONG_GOAL_ARG=(--no-wrong_goal_enabled)
 if [ "${FSQ_NEW_WRONG_GOAL_ENABLED}" = "true" ]; then
   WRONG_GOAL_ARG=(--wrong_goal_enabled)
+fi
+
+GRADIENT_CHECKPOINTING_ARG=(--no-gradient_checkpointing)
+if [ "${FSQ_NEW_GRADIENT_CHECKPOINTING}" = "true" ]; then
+  GRADIENT_CHECKPOINTING_ARG=(--gradient_checkpointing)
 fi
 
 # best-val SELECTION override: pass each val_select weight only if set in config (empty → omit → the
@@ -164,15 +176,18 @@ PYTHONPATH="${FSQ_NEW_SRC_DIR}:${PROJECT_ROOT}/lerobot/src" \
     --terminator_lr           "${FSQ_TERMINATOR_LR}" \
     --expert_lr               "${FSQ_EXPERT_LR}" \
     --context_lr              "${FSQ_NEW_CONTEXT_LR}" \
+    "${GRADIENT_CHECKPOINTING_ARG[@]}" \
     --batch_size              "${FSQ_BATCH_SIZE}" \
     --num_workers             "${FSQ_NUM_WORKERS}" \
+    --dataloader_timeout_s    "${FSQ_NEW_DATALOADER_TIMEOUT_S}" \
     --action_loss_weight      "${FSQ_ACTION_LOSS_WEIGHT}" \
     --progress_loss_weight    "${FSQ_PROGRESS_LOSS_WEIGHT}" \
     --end_loss_weight         "${FSQ_END_LOSS_WEIGHT}" \
     --regime_a_weight         "${FSQ_NEW_A_WEIGHT}" \
     --regime_b_weight         "${FSQ_NEW_B_WEIGHT}" \
     --regime_c_weight         "${FSQ_NEW_C_WEIGHT}" \
-    --ranking_weight          "${FSQ_NEW_RANKING_WEIGHT}" \
+    --ranking_ab_weight       "${FSQ_NEW_RANKING_AB_WEIGHT}" \
+    --ranking_bc_weight       "${FSQ_NEW_RANKING_BC_WEIGHT}" \
     --ranking_relative_margin "${FSQ_NEW_RANKING_MARGIN}" \
     "${WRONG_GOAL_ARG[@]}" \
     --wrong_goal_weight       "${FSQ_NEW_WRONG_GOAL_WEIGHT}" \

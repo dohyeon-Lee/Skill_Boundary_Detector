@@ -1208,7 +1208,11 @@ class SplineFSQAEConfig:
     regime_a_weight: float = 1.0
     regime_b_weight: float = 1.0
     regime_c_weight: float = 1.0
+    # `ranking_weight` is retained so older checkpoints/config dicts still load.
+    # New runs set the two edge-specific weights below.
     ranking_weight: float = 0.1
+    ranking_ab_weight: float | None = None
+    ranking_bc_weight: float | None = None
     ranking_relative_margin: float = 0.05
     wrong_goal_enabled: bool = True
     wrong_goal_weight: float = 0.1
@@ -1219,8 +1223,10 @@ class SplineFSQAEConfig:
     terminator_lr: float = 3e-4
     expert_lr: float = 2.5e-5
     context_lr: float = 3e-4
+    gradient_checkpointing: bool = True
     batch_size: int = 64
     num_workers: int = 0
+    dataloader_timeout_s: float = 300.0
     epochs: int = 300
     grad_clip: float = 1.0
     val_split: float = 0.1
@@ -1245,6 +1251,16 @@ class SplineFSQAEConfig:
     action_q99: np.ndarray | None = None
 
 
+def _resolved_ranking_weights(cfg: SplineFSQAEConfig) -> tuple[float, float]:
+    legacy = float(getattr(cfg, "ranking_weight", 0.1))
+    ab = getattr(cfg, "ranking_ab_weight", None)
+    bc = getattr(cfg, "ranking_bc_weight", None)
+    return (
+        legacy if ab is None else float(ab),
+        legacy if bc is None else float(bc),
+    )
+
+
 class SplineFSQAE(nn.Module):
     """Joint FSQ encoder, image-free flow expert, and query terminator."""
 
@@ -1261,16 +1277,24 @@ class SplineFSQAE(nn.Module):
             raise ValueError(f"expert_dtype must be float32|bfloat16|float16, got {cfg.expert_dtype!r}.")
         if cfg.samples_per_skill < 1 or cfg.chunk_size < 1:
             raise ValueError("samples_per_skill and chunk_size must both be >=1.")
+        if cfg.dataloader_timeout_s < 0.0:
+            raise ValueError("dataloader_timeout_s must be >=0.")
         if min(cfg.context_queries, cfg.context_layers, cfg.context_heads) < 1:
             raise ValueError("context_queries, context_layers, and context_heads must be >=1.")
+        ranking_ab_weight, ranking_bc_weight = _resolved_ranking_weights(cfg)
         for name in (
             "a_skill_scale", "b_skill_scale", "c_skill_scale",
             "b_image_scale", "c_image_scale", "c_goal_scale",
             "regime_a_weight", "regime_b_weight", "regime_c_weight",
-            "ranking_weight", "wrong_goal_weight",
+            "wrong_goal_weight",
         ):
             if float(getattr(cfg, name)) < 0.0:
                 raise ValueError(f"{name} must be >=0, got {getattr(cfg, name)}.")
+        if ranking_ab_weight < 0.0 or ranking_bc_weight < 0.0:
+            raise ValueError(
+                "ranking weights must be >=0, got "
+                f"AB={ranking_ab_weight}, BC={ranking_bc_weight}."
+            )
         if not 0.0 <= cfg.ranking_relative_margin < 1.0:
             raise ValueError("ranking_relative_margin must be in [0,1).")
         if cfg.wrong_goal_relative_margin < 0.0:
@@ -1913,6 +1937,25 @@ def _per_trajectory_mean(value: Tensor, bsize: int, samples_per_skill: int) -> T
     return value.view(bsize, samples_per_skill).mean(dim=1).mean()
 
 
+def _add_action_loss_ratios(averages: dict[str, float]) -> None:
+    """Add ratios that exactly match the epoch-aggregated W&B action losses."""
+
+    def safe_ratio(numerator: float, denominator: float) -> float:
+        if not math.isfinite(numerator) or not math.isfinite(denominator) or denominator <= 0.0:
+            return float("nan")
+        return numerator / denominator
+
+    averages["action/ratios/B_over_A"] = safe_ratio(
+        averages["action/raw/B"], averages["action/raw/A"]
+    )
+    averages["action/ratios/C_over_B"] = safe_ratio(
+        averages["action/raw/C"], averages["action/raw/B"]
+    )
+    averages["action/ratios/wrong_over_C"] = safe_ratio(
+        averages["action/raw/wrong_goal"], averages["action/raw/C"]
+    )
+
+
 def fsq_vsa_loss(
     output: dict[str, Tensor],
     batch: dict[str, Tensor | None],
@@ -1970,7 +2013,6 @@ def fsq_vsa_loss(
     rank_bc = _per_trajectory_mean(
         F.relu(per_sample["C"] - retain * per_sample["B"].detach()), bsize, m
     )
-    ranking = rank_ab + rank_bc
 
     wrong_goal = torch.zeros((), device=direct.device, dtype=direct.dtype)
     wrong_plain = torch.full((), float("nan"), device=direct.device, dtype=direct.dtype)
@@ -1986,9 +2028,11 @@ def fsq_vsa_loss(
             m,
         )
 
+    ranking_ab_weight, ranking_bc_weight = _resolved_ranking_weights(cfg)
     action_objective = (
         direct
-        + float(cfg.ranking_weight) * ranking
+        + ranking_ab_weight * rank_ab
+        + ranking_bc_weight * rank_bc
         + float(cfg.wrong_goal_weight) * wrong_goal
     )
 
@@ -2009,9 +2053,33 @@ def fsq_vsa_loss(
         + cfg.progress_loss_weight * progress_loss
         + cfg.end_loss_weight * end_loss
     )
+    ranking_ab_component = ranking_ab_weight * rank_ab
+    ranking_bc_component = ranking_bc_weight * rank_bc
+    wrong_goal_component = float(cfg.wrong_goal_weight) * wrong_goal
     metrics = {
+        # `raw` values never include configurable loss weights.
+        "action/raw/A": plain["A"].detach(),
+        "action/raw/B": plain["B"].detach(),
+        "action/raw/C": plain["C"].detach(),
+        "action/raw/wrong_goal": wrong_plain.detach(),
+        "action/raw/ranking_AB": rank_ab.detach(),
+        "action/raw/ranking_BC": rank_bc.detach(),
+        "action/raw/wrong_goal_hinge": wrong_goal.detach(),
+        "aux/raw/progress": progress_loss.detach(),
+        "aux/raw/termination": end_loss.detach(),
+        # Action components include their internal weights and sum to action/objective.
+        "action/components/direct": direct.detach(),
+        "action/components/ranking_AB": ranking_ab_component.detach(),
+        "action/components/ranking_BC": ranking_bc_component.detach(),
+        "action/components/wrong_goal": wrong_goal_component.detach(),
+        "action/objective": action_objective.detach(),
+        # Loss components include the outer weights and sum exactly to loss/total.
+        "loss/components/action": (cfg.action_loss_weight * action_objective).detach(),
+        "loss/components/progress": (cfg.progress_loss_weight * progress_loss).detach(),
+        "loss/components/termination": (cfg.end_loss_weight * end_loss).detach(),
+        "loss/total": total.detach(),
+        # Legacy aliases retained for direct overlays with earlier FSQ runs.
         "loss": total.detach(),
-        # Keep legacy `action` as pure A reconstruction for checkpoint selection.
         "action": plain["A"].detach(),
         "action_objective": action_objective.detach(),
         "action_A": plain["A"].detach(),
@@ -2104,6 +2172,7 @@ def train_spline_fsqae(
     # ``step`` moves tensors with non_blocking=True below; pinning makes that transfer genuinely
     # asynchronous instead of synchronizing the GPU after the worker has decoded the next batch.
     pin_memory = device.type == "cuda"
+    loader_timeout = float(cfg.dataloader_timeout_s) if cfg.num_workers > 0 else 0.0
     train_loader = DataLoader(
         train_ds,
         batch_size=cfg.batch_size,
@@ -2115,7 +2184,7 @@ def train_spline_fsqae(
         prefetch_factor=1 if cfg.num_workers > 0 else None,
         # Surface a stuck decoder as a failed job instead of silently holding a
         # GPU allocation forever.  Normal batches complete far below 5 minutes.
-        timeout=300 if cfg.num_workers > 0 else 0,
+        timeout=loader_timeout,
     )
     val_workers = min(2, cfg.num_workers)
     val_loader = DataLoader(
@@ -2127,7 +2196,12 @@ def train_spline_fsqae(
         pin_memory=pin_memory,
         persistent_workers=False,
         prefetch_factor=1 if val_workers > 0 else None,
-        timeout=300 if val_workers > 0 else 0,
+        timeout=float(cfg.dataloader_timeout_s) if val_workers > 0 else 0.0,
+    )
+    print(
+        "[FSQ-v3] DataLoader timeout: "
+        f"{cfg.dataloader_timeout_s:g}s"
+        + (" (disabled)" if cfg.dataloader_timeout_s == 0 else "")
     )
 
     model = SplineFSQAE(cfg).to(device)
@@ -2135,8 +2209,10 @@ def train_spline_fsqae(
         model.action_expert.to(dtype=torch.bfloat16)
     elif cfg.expert_dtype == "float16" and device.type == "cuda":
         model.action_expert.to(dtype=torch.float16)
-    model.action_expert.gradient_checkpointing_enable()
-    model.terminator.gradient_checkpointing_enable()
+    if cfg.gradient_checkpointing:
+        model.action_expert.gradient_checkpointing_enable()
+        model.terminator.gradient_checkpointing_enable()
+    print(f"[FSQ-v3] gradient checkpointing: {cfg.gradient_checkpointing}")
 
     optimizer = torch.optim.AdamW(
         [
@@ -2186,9 +2262,8 @@ def train_spline_fsqae(
             print(f"[FSQ-v3] initialized {loaded_vision} SigLIP tensors from {cfg.pi_base}")
 
     if wandb_run is not None:
-        # The same epoch aggregate is reported twice: train/val use optimizer_step as x, while
-        # train_epoch/val_epoch use epoch as x.  Keeping train and val at the top-level avoids
-        # collapsing every curve into one "epoch" workspace section.
+        # Keep both historical x-axis namespaces for direct overlays with older
+        # FSQ runs. The values are the same epoch aggregates in both trees.
         wandb_run.define_metric("epoch")
         wandb_run.define_metric("optimizer_step")
         for name in ("train/*", "val/*", "perf/*", "lr/*"):
@@ -2303,6 +2378,10 @@ def train_spline_fsqae(
 
         train_avg = {k: v / max(train_count, 1) for k, v in train_sum.items()}
         val_avg = {k: v / max(val_count, 1) for k, v in val_sum.items()}
+        # Compute these after epoch aggregation so each ratio exactly matches
+        # the corresponding action losses displayed alongside it in W&B.
+        _add_action_loss_ratios(train_avg)
+        _add_action_loss_ratios(val_avg)
         train_end_avg = {k: v / max(train_count, 1) for k, v in train_end.items()}
         val_end_avg = {k: v / max(val_count, 1) for k, v in val_end.items()}
         train_active_codes = int(train_codes_seen.count_nonzero().item())
@@ -2310,33 +2389,42 @@ def train_spline_fsqae(
         codebook_size = model.fsq.codebook_size
         select = (
             (cfg.val_select_action_weight if cfg.val_select_action_weight is not None else cfg.action_loss_weight)
-            * val_avg["action"]
+            * val_avg["action/raw/A"]
             + (cfg.val_select_progress_weight if cfg.val_select_progress_weight is not None else cfg.progress_loss_weight)
-            * val_avg["progress"]
+            * val_avg["aux/raw/progress"]
             + (cfg.val_select_end_weight if cfg.val_select_end_weight is not None else cfg.end_loss_weight)
-            * val_avg["termination"]
+            * val_avg["aux/raw/termination"]
         )
         if select < best_val:
             best_val = select
-            save(save_path, epoch, val_avg["loss"], select, resumable=False)
+            save(save_path, epoch, val_avg["loss/total"], select, resumable=False)
         if cfg.checkpoint_every and epoch % cfg.checkpoint_every == 0:
             save(
                 save_path.with_name(f"FSQ_epoch{epoch:04d}.pt"),
                 epoch,
-                val_avg["loss"],
+                val_avg["loss/total"],
                 select,
                 resumable=True,
             )
 
+        epoch_seconds = time.perf_counter() - epoch_start
         log = {
             "epoch": epoch,
             "optimizer_step": global_step,
-            "perf/seconds": time.perf_counter() - epoch_start,
-            "perf/updates_per_sec": len(train_loader) / max(time.perf_counter() - epoch_start, 1e-8),
+            "perf/epoch_seconds": epoch_seconds,
+            "perf/seconds": epoch_seconds,
+            "perf/updates_per_sec": len(train_loader) / max(epoch_seconds, 1e-8),
+            "perf/trajectories_per_sec": train_count / max(epoch_seconds, 1e-8),
             **{f"train/{k}": v for k, v in train_avg.items()},
             **{f"val/{k}": v for k, v in val_avg.items()},
+            **{f"train/termination_metrics/{k}": v for k, v in train_end_avg.items()},
+            **{f"val/termination_metrics/{k}": v for k, v in val_end_avg.items()},
             **{f"train/end_{k}": v for k, v in train_end_avg.items()},
             **{f"val/end_{k}": v for k, v in val_end_avg.items()},
+            "train/codebook/utilization_pct": 100.0 * train_active_codes / codebook_size,
+            "train/codebook/active_entries": train_active_codes,
+            "val/codebook/utilization_pct": 100.0 * val_active_codes / codebook_size,
+            "val/codebook/active_entries": val_active_codes,
             "train/codebook_utilization_pct": 100.0 * train_active_codes / codebook_size,
             "train/codebook_active_entries": train_active_codes,
             "val/codebook_utilization_pct": 100.0 * val_active_codes / codebook_size,
@@ -2349,16 +2437,24 @@ def train_spline_fsqae(
         }
         log.update({f"train_epoch/{k}": v for k, v in train_avg.items()})
         log.update({f"val_epoch/{k}": v for k, v in val_avg.items()})
+        log.update({f"train_epoch/termination_metrics/{k}": v for k, v in train_end_avg.items()})
+        log.update({f"val_epoch/termination_metrics/{k}": v for k, v in val_end_avg.items()})
         log.update({f"train_epoch/end_{k}": v for k, v in train_end_avg.items()})
         log.update({f"val_epoch/end_{k}": v for k, v in val_end_avg.items()})
         log.update({
+            "train_epoch/codebook/utilization_pct": log["train/codebook/utilization_pct"],
+            "train_epoch/codebook/active_entries": train_active_codes,
+            "val_epoch/codebook/utilization_pct": log["val/codebook/utilization_pct"],
+            "val_epoch/codebook/active_entries": val_active_codes,
             "train_epoch/codebook_utilization_pct": log["train/codebook_utilization_pct"],
             "train_epoch/codebook_active_entries": train_active_codes,
             "val_epoch/codebook_utilization_pct": log["val/codebook_utilization_pct"],
             "val_epoch/codebook_active_entries": val_active_codes,
             "val_epoch/select": select,
+            "perf_epoch/epoch_seconds": log["perf/epoch_seconds"],
             "perf_epoch/seconds": log["perf/seconds"],
             "perf_epoch/updates_per_sec": log["perf/updates_per_sec"],
+            "perf_epoch/trajectories_per_sec": log["perf/trajectories_per_sec"],
             "lr_epoch/encoder": log["lr/encoder"],
             "lr_epoch/expert": log["lr/expert"],
             "lr_epoch/context": log["lr/context"],
@@ -2369,9 +2465,10 @@ def train_spline_fsqae(
         if epoch == 1 or epoch % cfg.log_every == 0:
             print(
                 f"[FSQ-v3] {epoch:4d}/{cfg.epochs} "
-                f"train={train_avg['loss']:.4f} val={val_avg['loss']:.4f} "
-                f"action={val_avg['action']:.4f} prog={val_avg['progress']:.4f} "
-                f"end={val_avg['termination']:.4f} select={select:.4f}"
+                f"train={train_avg['loss/total']:.4f} val={val_avg['loss/total']:.4f} "
+                f"action={val_avg['action/raw/A']:.4f} "
+                f"prog={val_avg['aux/raw/progress']:.4f} "
+                f"end={val_avg['aux/raw/termination']:.4f} select={select:.4f}"
             )
 
     print(f"[FSQ-v3] done; best val-select={best_val:.6f} -> {save_path}")

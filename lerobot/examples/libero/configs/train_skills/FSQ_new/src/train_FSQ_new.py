@@ -106,7 +106,10 @@ class Args:
     regime_a_weight: float = 1.0
     regime_b_weight: float = 1.0
     regime_c_weight: float = 1.0
-    ranking_weight: float = 0.1
+    ranking_weight: float | None = None
+    """Deprecated compatibility flag: when set, applies the same weight to AB and BC."""
+    ranking_ab_weight: float = 0.1
+    ranking_bc_weight: float = 0.1
     ranking_relative_margin: float = 0.05
     wrong_goal_enabled: bool = True
     wrong_goal_weight: float = 0.1
@@ -118,8 +121,11 @@ class Args:
     terminator_lr: float = 3e-4
     expert_lr: float = 2.5e-5
     context_lr: float = 3e-4
+    gradient_checkpointing: bool = True
     batch_size: int = 64
     num_workers: int = 8
+    dataloader_timeout_s: float = 300.0
+    """Worker batch timeout in seconds. 0 disables timeout enforcement."""
     grad_clip: float = 1.0
     val_split: float = 0.1
     # Best-val SELECTION metric weights. Unset (None) → follow the actual loss (total val). Set to
@@ -308,6 +314,15 @@ def main(args: Args) -> None:
     device = args.device if torch.cuda.is_available() else "cpu"
     enc_dim    = segments[0].shape[-1]
 
+    if args.ranking_weight is not None:
+        args.ranking_ab_weight = args.ranking_weight
+        args.ranking_bc_weight = args.ranking_weight
+    print(
+        "[FSQ] ranking weights: "
+        f"AB={args.ranking_ab_weight:g} BC={args.ranking_bc_weight:g} "
+        f"margin={args.ranking_relative_margin:g}"
+    )
+
     wandb_run = None
     if args.wandb_project:
         import os
@@ -383,7 +398,8 @@ def main(args: Args) -> None:
         regime_a_weight=args.regime_a_weight,
         regime_b_weight=args.regime_b_weight,
         regime_c_weight=args.regime_c_weight,
-        ranking_weight=args.ranking_weight,
+        ranking_ab_weight=args.ranking_ab_weight,
+        ranking_bc_weight=args.ranking_bc_weight,
         ranking_relative_margin=args.ranking_relative_margin,
         wrong_goal_enabled=args.wrong_goal_enabled,
         wrong_goal_weight=args.wrong_goal_weight,
@@ -392,8 +408,10 @@ def main(args: Args) -> None:
         terminator_lr=args.terminator_lr,
         expert_lr=args.expert_lr,
         context_lr=args.context_lr,
+        gradient_checkpointing=args.gradient_checkpointing,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
+        dataloader_timeout_s=args.dataloader_timeout_s,
         grad_clip=args.grad_clip,
         epochs=args.epochs,
         val_split=args.val_split,

@@ -1,6 +1,6 @@
 # FSQ_new Design and Implementation Handoff
 
-Updated: 2026-07-21 (Asia/Seoul)
+Updated: 2026-07-22 (Asia/Seoul)
 
 This document transfers the current `FSQ_new` design and implementation state.
 It is deliberately separate from the older repository-wide `CODEX_HANDOFF.md`.
@@ -329,15 +329,17 @@ weighted A objective.
 ```text
 R_AB = relu(LB - (1-rank_margin) * stopgrad(LA))
 R_BC = relu(LC - (1-rank_margin) * stopgrad(LB))
-R = R_AB + R_BC
+R = wAB*R_AB + wBC*R_BC
 ```
 
 With `relative_margin: 0.05`, B is asked to beat A by 5%, and C to beat B by
 5%. The predecessor is detached in each ranking term so ranking does not
 directly raise the baseline loss.
 
-`ranking.weight: 0.1` multiplies `R` in the final action objective. It controls
-gradient strength, not the required percentage.
+The follow-up config uses `ab_weight: 0.1` and `bc_weight: 0.2`, targeting the
+weaker observed B-to-C improvement without strengthening A-to-B. These weights
+control gradient strength, not the required percentage. Legacy configs with a
+single `ranking.weight` still apply it to both terms.
 
 ### 6.4 Wrong-goal negative
 
@@ -376,7 +378,8 @@ Progress uses Smooth L1 and termination uses BCE-with-logits. They are computed
 once, not once per A/B/C regime.
 
 ```text
-Laction = Ldirect + ranking_weight*R + wrong_goal_weight*R_wrong
+Laction = Ldirect + ab_weight*R_AB + bc_weight*R_BC
+                  + wrong_goal_weight*R_wrong
 
 Ltotal = action_loss_weight*Laction
        + progress_loss_weight*Lprogress
@@ -389,20 +392,22 @@ the canonical codebook checkpoint.
 
 ## 7. Batch Size
 
-Current YAML uses `fsq_batch_size: 16`, not the original FSQ value 64.
+The first running experiment used `fsq_batch_size: 16`. The current follow-up
+YAML uses batch 64 on PRO 6000 hardware.
 
-Batch 16 is not split among A/B/C. Every one of the 16 trajectories runs all
-three regimes. With `samples_per_skill: 5` and wrong-goal enabled, one update
+The batch is not split among A/B/C. Every trajectory runs all three regimes.
+With `samples_per_skill: 5` and wrong-goal enabled, one batch-64 update
 roughly evaluates:
 
 ```text
-16 trajectories * 5 timesteps * (A + B + C + wrong-goal C)
+64 trajectories * 5 timesteps * (A + B + C + wrong-goal C)
 ```
 
-The expert therefore retains up to four forward graphs before one backward.
-`16 * 4` was chosen as a conservative activation load analogous to the old
-single-branch batch 64. On B200, test 16 first and then 32. Batch 64 is an
-aggressive setting in this implementation.
+The expert retains up to four forward graphs before one backward. The follow-up
+also sets `fsq_gradient_checkpointing: false`, trading additional activation
+memory for less backward recomputation. Measure both peak VRAM and
+`perf/trajectories_per_sec`; large-batch `updates_per_sec` is not comparable to
+the batch-16 run.
 
 Larger batches help in-batch negatives. If same-code hard negatives become
 mandatory, a cross-batch queue is likely more efficient than increasing batch
@@ -416,9 +421,11 @@ Important current values:
 fsq_levels: [3, 3, 3]
 fsq_encoder_input_mode: optimal
 fsq_state_cond_mode: broadcast
-fsq_batch_size: 16
+fsq_batch_size: 64
 fsq_samples_per_skill: 5
 fsq_num_epochs: 500
+fsq_gradient_checkpointing: false
+fsq_dataloader_timeout_s: 300
 
 context: {queries: 16, layers: 4, heads: 8, dropout: 0.0}
 
@@ -427,12 +434,12 @@ conditioning:
   B: {skill: 0.5, image: 1.0, goal: 0.0}
   C: {skill: 0.5, image: 0.5, goal: 1.0}
 
-weighted_loss: false
+weighted_loss: true
 weighted_loss_end_weight: 2.0
 
 context_loss:
   direct: {A: 1.0, B: 1.0, C: 1.0}
-  ranking: {weight: 0.1, relative_margin: 0.05}
+  ranking: {ab_weight: 0.1, bc_weight: 0.2, relative_margin: 0.05}
   wrong_goal: {enabled: true, weight: 0.1, relative_margin: 0.05}
 
 fsq_encoder_lr: 3.0e-4
@@ -483,27 +490,53 @@ assume every original v3 consumer can strict-load it.
 
 ## 10. W&B Metrics
 
-Epoch metrics are written under both optimizer-step and epoch x-axes:
+Metrics are logged once per epoch under both historical x-axis namespaces for
+direct overlays with older FSQ runs. `train/*` / `val/*` use optimizer step,
+while the duplicate `train_epoch/*` / `val_epoch/*` values use epoch. Both
+contain the canonical metric tree and the legacy flat-name aliases below.
+
+Naming rules:
 
 ```text
-train/*, val/*
-train_epoch/*, val_epoch/*
+raw/         no configurable loss weight has been applied
+components/  weighted terms that sum to the enclosing objective
+objective    sum of the components immediately below it
+loss/total   exact scalar passed to backward()
+ratios/      diagnostic ratios, never optimized directly
 ```
 
-Important action keys:
+The same tree appears below both `train/` and `val/`:
 
 ```text
-action                 plain A MSE; legacy checkpoint-selection metric
-action_objective       direct + weighted ranking/wrong-goal auxiliaries
-action_A/B/C           plain regime MSE
-objective_A/B/C        direct objectives; A may be progress-weighted
-ranking_AB/BC          active ranking violation
-wrong_goal             active hinge violation
-action_wrong_goal      plain wrong-goal action MSE
+action/raw/A, B, C              plain regime MSE
+action/raw/wrong_goal           plain wrong-goal action MSE
+action/raw/ranking_AB, BC       unweighted active ranking violations
+action/raw/wrong_goal_hinge     unweighted wrong-goal violation
+action/ratios/B_over_A          epoch B MSE / A MSE; target below 0.95
+action/ratios/C_over_B          epoch C MSE / B MSE; target below 0.95
+action/ratios/wrong_over_C      epoch wrong-goal MSE / C MSE; target above 1.05
+action/components/direct        regime-weighted direct objective
+action/components/ranking_AB    ab_weight * raw/ranking_AB
+action/components/ranking_BC    bc_weight * raw/ranking_BC
+action/components/wrong_goal    wrong_goal_weight * raw/wrong_goal_hinge
+action/objective                sum of all four action components
+aux/raw/progress                unweighted Smooth L1 progress loss
+aux/raw/termination             unweighted termination BCE
+loss/components/action          action_loss_weight * action/objective
+loss/components/progress        progress_loss_weight * aux/raw/progress
+loss/components/termination     end_loss_weight * aux/raw/termination
+loss/total                      sum of the three loss components
 ```
 
-Progress/termination, codebook utilization, per-group LR, and end classification
-metrics are also logged.
+Codebook metrics live below `codebook/*`, and thresholded termination metrics
+below `termination_metrics/*`. Per-group LR and performance metrics remain under
+the top-level `lr/*` and `perf/*` namespaces.
+
+For direct overlays with earlier FSQ runs, the legacy aliases are emitted as
+duplicates: `loss`, `action`, `action_objective`, `action_A/B/C`,
+`action_wrong_goal`, `objective_A/B/C`, `ranking_AB/BC`, `wrong_goal`,
+`progress`, `termination`, `end_*`, and the flat `codebook_*` keys. New analysis
+should prefer the canonical tree because its weight semantics are explicit.
 
 ## 11. Stage-0 Integration Contract (Not Implemented Yet)
 
@@ -571,6 +604,14 @@ Known cleanup items:
 - No unit test currently covers the custom expert attention path or the new
   loss formulas.
 - Wrong-goal is random in-batch, not same-code hard negative.
+
+Operational note: job 1853737 on node58 failed in validation because online
+video decode exceeded the 300-second DataLoader timeout. The same configuration
+without A weighting ran stably on node57, while node58 was already about 15x
+slower during pre-GPU NPZ loading and produced 356s/574s epochs versus node57's
+stable 230-242s. This points to node58 storage/decode stalls, not weighted-loss
+compute. The timeout remains YAML-configurable but is kept at 300s as a guard
+against genuinely wedged decoder workers.
 
 ## 13. Validation Already Performed
 
