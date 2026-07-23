@@ -66,13 +66,6 @@ fsq_eval_n_samples: 10            # sample skills shown per codebook entry
 fsq_eval_max_entries: 10 #0          # 0 = render sample plots for every active entry
 fsq_eval_decoder_scope: samples    # samples = decode only 50×10 displayed skills; all = full-skill decoder metric
 fsq_eval_end_threshold: 0.5      # termination probability threshold for timing
-# Broadcast checkpoints only: overlay this scaled action prediction with the
-# original 100% prediction using the exact same flow noise. Negative disables.
-fsq_eval_broadcast_compare_scale: 0.5
-# Add one conflicting-skill action curve in both FSQ families. The replacement
-# is sampled from the farthest active-code fraction, so it is trained but distant.
-fsq_eval_random_far_skill: true
-fsq_eval_random_far_fraction: 0.1
 fsq_eval_thumb_size: 160
 fsq_eval_image_key: observation.images.image
 fsq_eval_wandb_project: VAE_eval

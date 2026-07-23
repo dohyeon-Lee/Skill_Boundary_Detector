@@ -1,180 +1,147 @@
-"""
-Spline FSQ-AE — Finite Scalar Quantization skill encoder with observation-conditioned decoder.
+"""Trajectory FSQ with a transformer reconstructor and query terminator.
 
-Architecture
-------------
-  Encoder (action-only, fully Transformer-based):
-    enc_ctrl_proj/enc_len_proj (Linear A→H, 1→H): per-control-point + length tokens
-    enc_traj_pool (Transformer + query pool): control-point/length tokens → pooled latent (H)
-    z_head (Linear H→D): produce pre-quantization latent
-    FSQ: levels=[5,5,5], codebook_size=125, D=3, no learnable params
-  The encoder sees ONLY the (zero-grounded) action trajectory — no images. z therefore
-  encodes the task-agnostic motion ("what motion", translation-invariant); scene grounding
-  ("where/what object") is supplied to the decoder via its start-frame inputs instead.
+The training unit is a skill trajectory, not a frame:
 
-  Decoder (3 Transformer sub-networks, per timestep):
-    dec_image_encoder_term[_wrist] (DINO) → termination image feature (B,T,H)
-    (1) skill_decoder: [z token, state token] → TokenTransformerPool → latent (H)
-    (2) motion_reconstructor: [z, start_state, progress] tokens (token mode) or
-            [start_state, progress] with z broadcast into the Transformer block input
-            → TokenTransformerPool → delta_head → dataset action chunk (K*A);
-            the historical "delta" name is kept for the action target.
-    (3) skill_termination_predictor: [latent, img_feat(no flags)] tokens
-            → TokenTransformerPool → progress_head (1, sigmoid→[0,1])
-                                   + termination_head (1, end logit).
-    progress is normalized per skill: 0 at the start, 1 at the skill end.
-    In training the GT progress feeds the motion tokens; the termination
-    network learns to predict it.
+    B complete skill trajectories -> spline encoder once -> z_q (B, D)
+    M sampled timesteps / trajectory -> reconstructor + terminator (B*M)
 
-encode_numpy        → latent vector z_q (numpy, shape D)
-encode_index        → scalar codebook index (int)
-predict_termination → skillVLA path: (z_q, states, dino) → (progress, termination),
-                      runs only skill_decoder + skill_termination_predictor.
+The action branch is deliberately image-free here. It predicts an action chunk
+from the skill code, skill-start state, and per-sample progress. The terminator
+keeps the skillVLA visual contract: its two learned queries read unpooled DINO or
+SigLIP tokens from both cameras, while image tokens never read either query. Raw
+state and normalized z_q modulate only the query branch.
+
+Checkpoint format v3 has three explicit, independently loadable components:
+
+    encoder.*        trajectory -> FSQ code
+    reconstructor.*  (start_state, progress, z_q) -> action chunk
+    terminator.*     (image, raw state, z_q) -> progress/end
+
+There is intentionally no PI05/Gemma action expert in this FSQ variant.
 """
 
 from __future__ import annotations
 
 import hashlib
 import math
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from scipy.interpolate import make_interp_spline
-from torch.utils.data import DataLoader, Dataset, Sampler
+from torch import Tensor
+from torch.utils.data import DataLoader, Dataset
+from transformers import AutoModel
+from transformers.models.auto import CONFIG_MAPPING
+
+from lerobot.policies.pi05.modeling_pi05 import (
+    OPENPI_ATTENTION_MASK_VALUE,
+    get_gemma_config,
+)
+from lerobot.policies.pi_gemma import PiGemmaForCausalLM
 
 
-# ── Spline codec ──────────────────────────────────────────────────────────────
-
-# The encoder trajectory is the full observation.state: EEF pose dims followed by the trailing
-# gripper-STATE dims (LIBERO = 2 finger positions). Gripper dims stay ABSOLUTE (not zero-grounded)
-# and use a low-degree spline (near-step signal → avoids cubic overshoot at open/close transitions).
+FORMAT_VERSION = 3
 N_GRIPPER_DIMS = 2
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_DEFAULT_IMAGE_MODEL = str(_REPO_ROOT / "models" / "dinov3-vits16")
+_DEFAULT_PI_BASE = str(_REPO_ROOT / "models" / "pi05_base")
+
+
+# -----------------------------------------------------------------------------
+# Spline trajectory encoder
+# -----------------------------------------------------------------------------
 
 
 def zero_ground_trajectory(trajectory: np.ndarray) -> np.ndarray:
-    """Make the pose trajectory relative to its skill-start frame; the gripper dims stay absolute.
-
-    Translation-invariant encoder input: the same motion gets the same code regardless of where in
-    the workspace it starts (kills the start-position jitter and the scene-layout leak that absolute
-    coordinates carry). Spline interpolation passes through the start point, so subtracting here is
-    equivalent to subtracting on the control points."""
+    """Ground pose dimensions at the skill start; retain absolute gripper state."""
     traj = np.asarray(trajectory, dtype=np.float32).copy()
+    if len(traj) == 0:
+        raise ValueError("Cannot encode an empty skill trajectory.")
+    if N_GRIPPER_DIMS >= traj.shape[-1]:
+        raise ValueError(
+            f"Expected more than {N_GRIPPER_DIMS} state dimensions, got {traj.shape[-1]}."
+        )
     offset = traj[0].copy()
-    offset[-N_GRIPPER_DIMS:] = 0.0  # keep gripper-STATE dims absolute (they are not a pose)
+    offset[-N_GRIPPER_DIMS:] = 0.0
     return traj - offset
 
 
+def encoder_start_eef_pose(trajectory: np.ndarray) -> np.ndarray:
+    """Absolute skill-start EEF pose(s), excluding trailing gripper-state dimensions."""
+    traj = np.asarray(trajectory, dtype=np.float32)
+    if len(traj) == 0:
+        raise ValueError("Cannot encode an empty skill trajectory.")
+    if N_GRIPPER_DIMS >= traj.shape[-1]:
+        raise ValueError(
+            f"Expected more than {N_GRIPPER_DIMS} state dimensions, got {traj.shape[-1]}."
+        )
+    return traj[0, :-N_GRIPPER_DIMS].copy()
+
+
+def prepare_encoder_trajectory(
+    trajectory: np.ndarray,
+    input_mode: str,
+) -> np.ndarray:
+    """Apply the checkpointed FSQ-encoder input convention before spline fitting."""
+    traj = np.asarray(trajectory, dtype=np.float32)
+    if len(traj) == 0:
+        raise ValueError("Cannot encode an empty skill trajectory.")
+    if input_mode in {"zero_grounded", "optimal"}:
+        return zero_ground_trajectory(traj)
+    if input_mode == "raw_state":
+        return traj.copy()
+    raise ValueError(
+        f"encoder_input_mode must be zero_grounded|raw_state|optimal, got {input_mode!r}."
+    )
+
+
 def spline_encode(
-    trajectory: np.ndarray,  # (T, action_dim)
+    trajectory: np.ndarray,
     n_control: int,
     degree: int,
+    *,
+    input_mode: str = "zero_grounded",
 ) -> tuple[np.ndarray, int]:
-    """trajectory → zero-grounded control points (n_control, action_dim) + original length T."""
-    trajectory = zero_ground_trajectory(trajectory)
-    T, D = trajectory.shape
-    t_orig = np.linspace(0.0, 1.0, T)
+    """Trajectory -> fixed control points and original skill length."""
+    trajectory = prepare_encoder_trajectory(trajectory, input_mode)
+    length, dim = trajectory.shape
+    if length == 1:
+        return np.repeat(trajectory, n_control, axis=0).astype(np.float32), length
+    t_orig = np.linspace(0.0, 1.0, length)
     t_ctrl = np.linspace(0.0, 1.0, n_control)
-    ctrl_pts = np.zeros((n_control, D), dtype=np.float32)
-    for d in range(D):
-        # trailing gripper-state dims: low-degree (near-step, no overshoot); pose dims: full degree
-        k = 1 if d >= D - N_GRIPPER_DIMS else degree
-        k = min(k, T - 1)
-        spl = make_interp_spline(t_orig, trajectory[:, d], k=k)
-        ctrl_pts[:, d] = spl(t_ctrl)
-    return ctrl_pts, T
-
-
-class ImageTokenEncoder(nn.Module):
-    """Turn DINO CLS+patch tokens into one image feature.
-
-    Patches are first projected to an internal token dimension N (token_dim),
-    mixed by a Transformer at that dimension, pooled by a learned query, and only
-    then lifted to hidden_dim. This decouples the per-patch processing width from
-    the model-wide hidden_dim.
-    """
-
-    def __init__(
-        self,
-        feat_dim: int,
-        n_tokens: int,
-        hidden_dim: int,
-        token_dim: int,
-        n_layers: int = 1,
-        n_heads: int = 4,
-        dropout: float = 0.0,
-    ) -> None:
-        super().__init__()
-        assert n_tokens >= 1, "n_tokens must include at least the CLS token"
-        assert token_dim % n_heads == 0, "token_dim must be divisible by n_heads"
-        self.n_tokens = n_tokens
-        self.token_dim = token_dim
-        self.token_proj = nn.Linear(feat_dim, token_dim)
-        self.pos_embed = nn.Parameter(torch.zeros(1, n_tokens, token_dim))
-        enc_layer = nn.TransformerEncoderLayer(
-            d_model=token_dim,
-            nhead=n_heads,
-            dim_feedforward=token_dim * 4,
-            dropout=dropout,
-            activation="gelu",
-            batch_first=True,
-        )
-        self.encoder = nn.TransformerEncoder(enc_layer, num_layers=n_layers)
-        self.query = nn.Parameter(torch.zeros(1, 1, token_dim))
-        self.pool = nn.MultiheadAttention(token_dim, n_heads, dropout=dropout, batch_first=True)
-        self.out_proj = nn.Linear(token_dim, hidden_dim)
-        self.out_norm = nn.LayerNorm(hidden_dim)
-        nn.init.trunc_normal_(self.pos_embed, std=0.02)
-        nn.init.trunc_normal_(self.query, std=0.02)
-
-    def forward(self, tokens: torch.Tensor) -> torch.Tensor:
-        """
-        tokens:  (B, T, N, F), token 0 is CLS and tokens 1..N-1 are patches.
-        returns: (B, T, hidden_dim)
-        """
-        B, T, N, _ = tokens.shape
-        assert N == self.n_tokens, f"expected {self.n_tokens} image tokens, got {N}"
-        x = self.token_proj(tokens.reshape(B * T, N, -1))   # (B*T, N, token_dim)
-        x = x + self.pos_embed.to(dtype=x.dtype)
-        x = self.encoder(x)
-        q = self.query.to(dtype=x.dtype).expand(B * T, -1, -1)
-        pooled, _ = self.pool(q, x, x, need_weights=False)
-        return self.out_norm(self.out_proj(pooled.squeeze(1))).view(B, T, -1)
+    ctrl = np.zeros((n_control, dim), dtype=np.float32)
+    for d in range(dim):
+        k = 1 if d >= dim - N_GRIPPER_DIMS else degree
+        k = min(k, length - 1)
+        ctrl[:, d] = make_interp_spline(t_orig, trajectory[:, d], k=k)(t_ctrl)
+    return ctrl, length
 
 
 class TokenTransformerPool(nn.Module):
-    """Mix a set of H-dim tokens with a Transformer, then pool to one vector.
+    """Transformer over an ordered token set followed by learned-query pooling."""
 
-    Input  : (B, N, H) tokens already projected to hidden_dim.
-    Output : (B, H) — a learned query cross-attends over the encoded tokens.
-    A learnable positional embedding distinguishes token slots (e.g. control-point
-    order, or the start/traj/end roles in the fusion stage).
-    """
-
-    def __init__(
-        self,
-        hidden_dim: int,
-        n_tokens: int,
-        n_layers: int = 1,
-        n_heads: int = 4,
-        dropout: float = 0.0,
-    ) -> None:
+    def __init__(self, hidden_dim: int, n_tokens: int, n_layers: int, n_heads: int, dropout: float):
         super().__init__()
-        assert hidden_dim % n_heads == 0, "hidden_dim must be divisible by n_heads"
-        self.n_tokens = n_tokens
+        if hidden_dim % n_heads:
+            raise ValueError(f"hidden_dim={hidden_dim} must be divisible by n_heads={n_heads}.")
+        self.n_tokens = int(n_tokens)
         self.pos_embed = nn.Parameter(torch.zeros(1, n_tokens, hidden_dim))
-        enc_layer = nn.TransformerEncoderLayer(
+        layer = nn.TransformerEncoderLayer(
             d_model=hidden_dim,
             nhead=n_heads,
             dim_feedforward=hidden_dim * 4,
             dropout=dropout,
             activation="gelu",
             batch_first=True,
+            norm_first=True,
         )
-        self.encoder = nn.TransformerEncoder(enc_layer, num_layers=n_layers)
+        self.encoder = nn.TransformerEncoder(layer, num_layers=n_layers)
         self.query = nn.Parameter(torch.zeros(1, 1, hidden_dim))
         self.pool = nn.MultiheadAttention(hidden_dim, n_heads, dropout=dropout, batch_first=True)
         self.out_norm = nn.LayerNorm(hidden_dim)
@@ -182,12 +149,12 @@ class TokenTransformerPool(nn.Module):
         nn.init.trunc_normal_(self.query, std=0.02)
 
     @staticmethod
-    def _broadcast_like(cond: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+    def _broadcast_like(cond: Tensor, x: Tensor) -> Tensor:
         if cond.ndim == 2:
             cond = cond.unsqueeze(1)
         if cond.ndim != 3 or cond.shape[0] != x.shape[0] or cond.shape[-1] != x.shape[-1]:
             raise ValueError(
-                "broadcast_cond must have shape (B, H) or (B, 1|N, H), got "
+                "broadcast_cond must have shape (B,H) or (B,1|N,H), got "
                 f"{tuple(cond.shape)} for hidden states {tuple(x.shape)}."
             )
         if cond.shape[1] not in (1, x.shape[1]):
@@ -197,7 +164,7 @@ class TokenTransformerPool(nn.Module):
             )
         return cond.to(device=x.device, dtype=x.dtype)
 
-    def _encoder_with_broadcast(self, x: torch.Tensor, cond: torch.Tensor) -> torch.Tensor:
+    def _encoder_with_broadcast(self, x: Tensor, cond: Tensor) -> Tensor:
         """Condition each self-attention calculation without accumulating cond in the residual stream."""
         cond = self._broadcast_like(cond, x)
         for layer in self.encoder.layers:
@@ -217,1139 +184,1714 @@ class TokenTransformerPool(nn.Module):
             x = self.encoder.norm(x)
         return x
 
-    def forward(self, tokens: torch.Tensor, broadcast_cond: torch.Tensor | None = None) -> torch.Tensor:
-        """tokens: (B, N, H) → (B, H). broadcast_cond conditions block inputs, not residual state."""
-        B, N, _ = tokens.shape
-        assert N == self.n_tokens, f"expected {self.n_tokens} tokens, got {N}"
-        x = tokens + self.pos_embed.to(dtype=tokens.dtype)
+    def forward(self, tokens: Tensor, broadcast_cond: Tensor | None = None) -> Tensor:
+        if tokens.shape[1] != self.n_tokens:
+            raise ValueError(f"Expected {self.n_tokens} tokens, got {tokens.shape[1]}.")
+        x = tokens + self.pos_embed.to(tokens.dtype)
         x = self.encoder(x) if broadcast_cond is None else self._encoder_with_broadcast(x, broadcast_cond)
-        q = self.query.to(dtype=x.dtype).expand(B, -1, -1)
-        pooled, _ = self.pool(q, x, x, need_weights=False)
-        return self.out_norm(pooled.squeeze(1))
+        query = self.query.to(x.dtype).expand(x.shape[0], -1, -1)
+        pooled, _ = self.pool(query, x, x, need_weights=False)
+        return self.out_norm(pooled[:, 0])
 
-
-# ── Finite Scalar Quantization ────────────────────────────────────────────────
 
 class FSQ(nn.Module):
-    """FSQ: each dim quantized via tanh-scaling + rounding. No learnable params.
+    """Finite Scalar Quantizer with a straight-through rounded grid."""
 
-    Odd levels=[5,5,5] → half=[2,2,2], strides=[1,5,25], codebook_size=125 (all levels reached).
-    Even levels get a 0.5 offset (Mentzer 2023): plain symmetric tanh-rounding only reaches L-1
-    levels for even L (tanh never hits ±1, so the extreme level rounds short and dies, e.g. [8,8]
-    collapses to a 7×7=49 grid); the offset shifts the grid so all L levels are reachable.
-    Straight-through estimator preserves encoder gradients through rounding.
-    """
-
-    def __init__(self, levels: list[int]) -> None:
+    def __init__(self, levels: list[int]):
         super().__init__()
-        D = len(levels)
+        if not levels or any(int(x) < 2 for x in levels):
+            raise ValueError(f"FSQ levels must all be >=2, got {levels}.")
         lv = torch.tensor(levels, dtype=torch.float32)
-        levels_half = (lv - 1) / 2.0
-        self.register_buffer("levels_half", levels_half)
-        # Even L → 0.5 shift so round() reaches all L levels; odd L → offset 0 (identical to before).
+        levels_half = (lv - 1.0) / 2.0
         offset = torch.where(lv % 2 == 0, torch.full_like(lv, 0.5), torch.zeros_like(lv))
-        shift = torch.atanh(offset / levels_half)
-        half_width = torch.div(lv, 2, rounding_mode="floor")              # code/index offset = L//2
-        self.register_buffer("offset",     offset,                persistent=False)
-        self.register_buffer("shift",      shift,                 persistent=False)
-        self.register_buffer("half_width", half_width,            persistent=False)
-        self.register_buffer("level_min",  -half_width,           persistent=False)  # min integer code
-        self.register_buffer("level_max",  (lv - 1) - half_width, persistent=False)  # max integer code
-        strides = torch.ones(D, dtype=torch.long)
-        for i in range(1, D):
-            strides[i] = strides[i - 1] * levels[i - 1]
+        is_binary = lv == 2
+        # The even-level offset needs atanh(1) for L=2.  A zero shift keeps
+        # both raw grid values {-1, 0} reachable without a singularity.
+        shift_arg = torch.where(is_binary, torch.zeros_like(lv), offset / levels_half)
+        shift = torch.atanh(shift_arg)
+        half_width = torch.div(lv, 2, rounding_mode="floor")
+        strides = torch.ones(len(levels), dtype=torch.long)
+        for i in range(1, len(levels)):
+            strides[i] = strides[i - 1] * int(levels[i - 1])
+        self.register_buffer("levels", lv, persistent=False)
+        self.register_buffer("levels_half", levels_half)
+        self.register_buffer("offset", offset, persistent=False)
+        self.register_buffer("shift", shift, persistent=False)
+        self.register_buffer("half_width", half_width, persistent=False)
+        self.register_buffer("level_min", -half_width, persistent=False)
+        self.register_buffer("level_max", (lv - 1) - half_width, persistent=False)
         self.register_buffer("strides", strides)
         self.codebook_size = int(np.prod(levels))
-        self.latent_dim = D
+        self.latent_dim = len(levels)
 
-    def forward(self, z: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """z (*, D) → z_q (*, D), indices (*,)."""
-        lh = self.levels_half.to(z.dtype)
-        z_bounded = torch.tanh(z + self.shift.to(z.dtype)) * lh - self.offset.to(z.dtype)
-        z_int = torch.round(z_bounded)
-        z_q = z_bounded + (z_int - z_bounded).detach()  # straight-through
-        indices = ((z_int + self.half_width.to(z.dtype)).long() * self.strides).sum(dim=-1)
-        return z_q, indices
+    def forward(self, z: Tensor) -> tuple[Tensor, Tensor]:
+        half = self.levels_half.to(z.dtype)
+        bounded = torch.tanh(z + self.shift.to(z.dtype)) * half - self.offset.to(z.dtype)
+        z_int = torch.round(bounded)
+        z_q = bounded + (z_int - bounded).detach()
+        index = ((z_int + self.half_width.to(z.dtype)).long() * self.strides).sum(dim=-1)
+        return z_q, index
+
+    def normalized(self, z_q: Tensor) -> Tensor:
+        """Raw FSQ coordinate -> Stage-1 centered grid coordinate in [-1,1]."""
+        return (z_q + self.offset.to(z_q.dtype)) / self.levels_half.to(z_q.dtype)
+
+    def code_to_normalized(self, code: Tensor) -> Tensor:
+        idx = code.view(-1, 1).long()
+        level_ids = torch.div(idx, self.strides[None], rounding_mode="floor") % self.levels[None].long()
+        return (level_ids.float() - self.levels_half[None]) / self.levels_half[None]
 
 
-# ── Config ────────────────────────────────────────────────────────────────────
+class SplineFSQEncoder(nn.Module):
+    """Full-trajectory spline encoder. It runs once for each trajectory in B."""
 
-_REPO_ROOT = Path(__file__).resolve().parents[3]
-_DEFAULT_IMAGE_MODEL = str(_REPO_ROOT / "models" / "dinov3-vits16")
+    def __init__(
+        self,
+        enc_dim: int,
+        n_control: int,
+        spline_degree: int,
+        hidden_dim: int,
+        fsq_levels: list[int],
+        n_layers: int,
+        n_heads: int,
+        dropout: float,
+        length_min: float,
+        length_max: float,
+        encoder_min: np.ndarray,
+        encoder_max: np.ndarray,
+        encoder_input_mode: str = "zero_grounded",
+        encoder_start_min: np.ndarray | None = None,
+        encoder_start_max: np.ndarray | None = None,
+    ):
+        super().__init__()
+        if encoder_input_mode not in {"zero_grounded", "raw_state", "optimal"}:
+            raise ValueError(
+                "encoder_input_mode must be zero_grounded|raw_state|optimal, "
+                f"got {encoder_input_mode!r}."
+            )
+        self.enc_dim = int(enc_dim)
+        self.n_control = int(n_control)
+        self.spline_degree = int(spline_degree)
+        self.encoder_input_mode = encoder_input_mode
+        if N_GRIPPER_DIMS >= self.enc_dim:
+            raise ValueError(
+                f"Expected encoder dim > {N_GRIPPER_DIMS}, got {self.enc_dim}."
+            )
+        self.length_min = float(length_min)
+        self.length_max = float(length_max)
+        self.enc_ctrl_proj = nn.Linear(enc_dim, hidden_dim)
+        self.enc_len_proj = nn.Linear(1, hidden_dim)
+        self.enc_start_proj: nn.Linear | None = None
+        if encoder_input_mode == "optimal":
+            if encoder_start_min is None or encoder_start_max is None:
+                raise ValueError("optimal encoder mode requires encoder_start_min/max.")
+            start_dim = enc_dim - N_GRIPPER_DIMS
+            self.enc_start_proj = nn.Linear(start_dim, hidden_dim)
+            self.register_buffer("encoder_start_min", torch.as_tensor(encoder_start_min, dtype=torch.float32))
+            self.register_buffer("encoder_start_max", torch.as_tensor(encoder_start_max, dtype=torch.float32))
+        self.enc_traj_pool = TokenTransformerPool(
+            hidden_dim, n_control + 1 + int(encoder_input_mode == "optimal"),
+            n_layers=n_layers, n_heads=n_heads, dropout=dropout,
+        )
+        self.z_head = nn.Linear(hidden_dim, len(fsq_levels))
+        self.fsq = FSQ(fsq_levels)
+        self.register_buffer("encoder_min", torch.as_tensor(encoder_min, dtype=torch.float32))
+        self.register_buffer("encoder_max", torch.as_tensor(encoder_max, dtype=torch.float32))
+
+    def normalize_control_points(self, ctrl: Tensor) -> Tensor:
+        lo = self.encoder_min.to(ctrl.device, ctrl.dtype)
+        hi = self.encoder_max.to(ctrl.device, ctrl.dtype)
+        return 2.0 * (ctrl - lo) / (hi - lo + 1e-8) - 1.0
+
+    def normalize_start_pose(self, start_pose: Tensor) -> Tensor:
+        if self.enc_start_proj is None:
+            raise ValueError("Only optimal encoder mode accepts a start EEF pose.")
+        lo = self.encoder_start_min.to(start_pose.device, start_pose.dtype)
+        hi = self.encoder_start_max.to(start_pose.device, start_pose.dtype)
+        return 2.0 * (start_pose - lo) / (hi - lo + 1e-8) - 1.0
+
+    def forward(
+        self,
+        ctrl: Tensor,
+        lengths: Tensor,
+        start_pose: Tensor | None = None,
+        *,
+        normalized: bool = True,
+    ) -> tuple[Tensor, Tensor]:
+        if not normalized:
+            ctrl = self.normalize_control_points(ctrl)
+            if start_pose is not None:
+                start_pose = self.normalize_start_pose(start_pose)
+        bsize = ctrl.shape[0]
+        ctrl_tok = self.enc_ctrl_proj(ctrl)
+        length_norm = (
+            2.0 * (lengths.float() - self.length_min) / (self.length_max - self.length_min + 1e-8) - 1.0
+        ).view(bsize, 1, 1).to(ctrl_tok.dtype)
+        length_tok = self.enc_len_proj(length_norm)
+        tokens = [ctrl_tok]
+        if self.enc_start_proj is not None:
+            if start_pose is None:
+                raise ValueError("optimal encoder mode requires start_pose on every forward pass.")
+            tokens.append(self.enc_start_proj(start_pose).unsqueeze(1))
+        tokens.append(length_tok)
+        z_e = self.z_head(self.enc_traj_pool(torch.cat(tokens, dim=1)))
+        return self.fsq(z_e)
+
+    @torch.no_grad()
+    def encode_numpy(self, trajectory: np.ndarray, device: str | torch.device = "cpu") -> np.ndarray:
+        ctrl, length = spline_encode(
+            trajectory,
+            self.n_control,
+            self.spline_degree,
+            input_mode=self.encoder_input_mode,
+        )
+        ctrl_t = torch.from_numpy(ctrl).float().unsqueeze(0).to(device)
+        length_t = torch.tensor([length], dtype=torch.long, device=device)
+        start_t = None
+        if self.enc_start_proj is not None:
+            start_t = torch.from_numpy(
+                encoder_start_eef_pose(trajectory)
+            ).float().unsqueeze(0).to(device)
+        z_q, _ = self(ctrl_t, length_t, start_t, normalized=False)
+        return z_q[0].cpu().numpy()
+
+    @torch.no_grad()
+    def encode_index(self, trajectory: np.ndarray, device: str | torch.device = "cpu") -> int:
+        ctrl, length = spline_encode(
+            trajectory,
+            self.n_control,
+            self.spline_degree,
+            input_mode=self.encoder_input_mode,
+        )
+        ctrl_t = torch.from_numpy(ctrl).float().unsqueeze(0).to(device)
+        length_t = torch.tensor([length], dtype=torch.long, device=device)
+        start_t = None
+        if self.enc_start_proj is not None:
+            start_t = torch.from_numpy(
+                encoder_start_eef_pose(trajectory)
+            ).float().unsqueeze(0).to(device)
+        _, index = self(ctrl_t, length_t, start_t, normalized=False)
+        return int(index.item())
+
+
+# -----------------------------------------------------------------------------
+# Gemma helper for the optional cond-style terminator
+# -----------------------------------------------------------------------------
+
+
+def _build_gemma(variant: str, *, use_adarms: bool = True) -> PiGemmaForCausalLM:
+    cfg = get_gemma_config(variant)
+    hf = CONFIG_MAPPING["gemma"](
+        head_dim=cfg.head_dim,
+        hidden_size=cfg.width,
+        intermediate_size=cfg.mlp_dim,
+        num_attention_heads=cfg.num_heads,
+        num_hidden_layers=cfg.depth,
+        num_key_value_heads=cfg.num_kv_heads,
+        vocab_size=257152,
+        hidden_activation="gelu_pytorch_tanh",
+        dtype="float32",
+        use_adarms=use_adarms,
+        adarms_cond_dim=cfg.width if use_adarms else None,
+    )
+    model = PiGemmaForCausalLM(config=hf)
+    model.model.embed_tokens = None
+    model.lm_head = None
+    model.model.config._attn_implementation = "eager"  # noqa: SLF001
+    return model
+
+
+class MotionChunkReconstructor(nn.Module):
+    """Image-free transformer decoder for normalized action chunks.
+
+    Inputs are the normalized skill code, normalized skill-start state, and GT/predicted
+    progress. ``skill_cond_mode=token`` uses z as an explicit token; ``broadcast`` uses
+    z to condition every pool block input without appending or repeatedly accumulating
+    a residual skill vector.
+    """
+
+    def __init__(
+        self,
+        *,
+        fsq_levels: list[int],
+        hidden_dim: int,
+        n_layers: int,
+        n_heads: int,
+        dropout: float,
+        skill_cond_mode: str,
+        max_state_dim: int,
+        max_action_dim: int,
+        chunk_size: int,
+    ):
+        super().__init__()
+        if skill_cond_mode not in {"token", "broadcast"}:
+            raise ValueError(f"skill_cond_mode must be token|broadcast, got {skill_cond_mode!r}.")
+        self.skill_cond_mode = skill_cond_mode
+        self.max_state_dim = int(max_state_dim)
+        self.max_action_dim = int(max_action_dim)
+        self.chunk_size = int(chunk_size)
+        self.state_proj = nn.Linear(max_state_dim, hidden_dim)
+        self.skill_proj = nn.Linear(len(fsq_levels), hidden_dim)
+        self.progress_proj = nn.Linear(1, hidden_dim)
+        n_tokens = 3 if skill_cond_mode == "token" else 2
+        self.pool = TokenTransformerPool(
+            hidden_dim=hidden_dim,
+            n_tokens=n_tokens,
+            n_layers=n_layers,
+            n_heads=n_heads,
+            dropout=dropout,
+        )
+        self.action_head = nn.Linear(hidden_dim, chunk_size * max_action_dim)
+
+    @property
+    def working_dtype(self) -> torch.dtype:
+        return self.action_head.weight.dtype
+
+    def forward(
+        self,
+        start_state: Tensor,
+        z_norm: Tensor,
+        progress: Tensor,
+    ) -> Tensor:
+        bsize = start_state.shape[0]
+        state_tok = self.state_proj(start_state.to(self.working_dtype))
+        skill_tok = self.skill_proj(z_norm.to(self.working_dtype))
+        progress_tok = self.progress_proj(progress.reshape(bsize, 1).to(self.working_dtype))
+        if self.skill_cond_mode == "token":
+            tokens = torch.stack([skill_tok, state_tok, progress_tok], dim=1)
+            cond = None
+        else:
+            tokens = torch.stack([state_tok, progress_tok], dim=1)
+            cond = skill_tok
+        hidden = self.pool(tokens, broadcast_cond=cond)
+        action = self.action_head(hidden).view(bsize, self.chunk_size, self.max_action_dim)
+        return torch.tanh(action).float()
+
+
+def initialize_terminator_vision_from_pi05(
+    terminator: "FSQQueryTerminator", pretrained: str | Path
+) -> int:
+    """Warm-start SigLIP from the same PI05 vision tower used by Stage-1.
+
+    DINO already initializes itself from ``dino_model_path`` and therefore has
+    no PI05 mapping. The projection remains task-specific and is learned by FSQ.
+    """
+    if terminator.vision_backbone != "siglip":
+        return 0
+    from safetensors import safe_open
+
+    path = Path(pretrained)
+    if path.is_dir():
+        path = path / "model.safetensors"
+    if not path.is_file():
+        raise FileNotFoundError(f"PI05 model.safetensors not found: {path}")
+    prefix = "paligemma_with_expert.paligemma.model.vision_tower."
+    mapped: dict[str, Tensor] = {}
+    with safe_open(str(path), framework="pt", device="cpu") as handle:
+        for key in handle.keys():
+            plain = key[len("model.") :] if key.startswith("model.") else key
+            if plain.startswith(prefix):
+                mapped[plain[len(prefix) :]] = handle.get_tensor(key)
+    missing, unexpected = terminator.siglip.load_state_dict(mapped, strict=True)
+    if missing or unexpected:
+        raise RuntimeError(
+            f"PI05 SigLIP initialization mismatch: missing={missing}, unexpected={unexpected}"
+        )
+    return len(mapped)
+
+
+# -----------------------------------------------------------------------------
+# One-way query terminator
+# -----------------------------------------------------------------------------
+
+
+class ConditionalRMSNorm(nn.Module):
+    """RMSNorm whose scale/shift are produced from state+skill conditioning."""
+
+    def __init__(self, dim: int, cond_dim: int):
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(dim))
+        self.modulation = nn.Linear(cond_dim, dim * 2)
+        nn.init.zeros_(self.modulation.weight)
+        nn.init.zeros_(self.modulation.bias)
+
+    def forward(self, x: Tensor, cond: Tensor) -> Tensor:
+        norm = x * torch.rsqrt(x.float().square().mean(dim=-1, keepdim=True) + 1e-6)
+        scale, shift = self.modulation(cond).chunk(2, dim=-1)
+        while scale.ndim < x.ndim:
+            scale, shift = scale.unsqueeze(1), shift.unsqueeze(1)
+        return (norm * self.weight.float() * (1.0 + scale.float()) + shift.float()).to(x.dtype)
+
+
+class QueryTerminatorLayer(nn.Module):
+    """Images self-attend; each output query reads images+self, never the other query."""
+
+    def __init__(self, hidden_dim: int, n_heads: int, dropout: float):
+        super().__init__()
+        self.image_norm1 = nn.RMSNorm(hidden_dim)
+        self.query_norm1 = ConditionalRMSNorm(hidden_dim, hidden_dim)
+        self.attention = nn.MultiheadAttention(hidden_dim, n_heads, dropout=dropout, batch_first=True)
+        self.image_norm2 = nn.RMSNorm(hidden_dim)
+        self.query_norm2 = ConditionalRMSNorm(hidden_dim, hidden_dim)
+        self.ffn = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim * 4),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim * 4, hidden_dim),
+        )
+        self.dropout = nn.Dropout(dropout)
+
+    def _norm(self, x: Tensor, n_image: int, cond: Tensor, second: bool) -> Tensor:
+        image_norm = self.image_norm2 if second else self.image_norm1
+        query_norm = self.query_norm2 if second else self.query_norm1
+        return torch.cat([image_norm(x[:, :n_image]), query_norm(x[:, n_image:], cond)], dim=1)
+
+    @staticmethod
+    def _add_query_broadcast(x: Tensor, n_image: int, cond: Tensor | None) -> Tensor:
+        if cond is None:
+            return x
+        query_count = x.shape[1] - n_image
+        if cond.ndim == 2:
+            cond = cond.unsqueeze(1)
+        if cond.ndim != 3 or cond.shape[0] != x.shape[0] or cond.shape[-1] != x.shape[-1]:
+            raise ValueError(
+                "query broadcast condition must have shape (B,H) or (B,1|Q,H), got "
+                f"{tuple(cond.shape)} for hidden states {tuple(x.shape)}."
+            )
+        if cond.shape[1] == 1:
+            cond = cond.expand(-1, query_count, -1)
+        elif cond.shape[1] != query_count:
+            raise ValueError(
+                "query broadcast token dimension must be 1 or match query count, got "
+                f"{cond.shape[1]} and {query_count}."
+            )
+        return torch.cat(
+            [x[:, :n_image], x[:, n_image:] + cond.to(device=x.device, dtype=x.dtype)],
+            dim=1,
+        )
+
+    def forward(
+        self,
+        x: Tensor,
+        n_image: int,
+        cond: Tensor,
+        disallow: Tensor,
+        skill_broadcast: Tensor | None = None,
+    ) -> Tensor:
+        normed = self._norm(x, n_image, cond, second=False)
+        normed = self._add_query_broadcast(normed, n_image, skill_broadcast)
+        attn, _ = self.attention(normed, normed, normed, attn_mask=disallow, need_weights=False)
+        x = x + self.dropout(attn)
+        x = x + self.dropout(self.ffn(self._norm(x, n_image, cond, second=True)))
+        return x
 
 
 def resolve_image_model_path(name: str) -> str:
-    """Map an absolute model path from another machine (e.g. stored in a checkpoint cfg)
-    to this repo's ``models/<basename>`` if the original path does not exist here.
-    HF hub repo ids and existing paths pass through unchanged."""
-    p = Path(name)
-    if not p.is_absolute() or p.exists():
+    path = Path(name)
+    if not path.is_absolute() or path.exists():
         return name
-    local = _REPO_ROOT / "models" / p.name
+    local = _REPO_ROOT / "models" / path.name
     return str(local) if local.exists() else name
+
+
+def _build_siglip_vision_tower(image_size: int) -> nn.Module:
+    """Build the exact SigLIP tower used by Stage-1's condition stream."""
+    from transformers import SiglipVisionModel
+
+    vlm_cfg = CONFIG_MAPPING["paligemma"]()
+    vision_cfg = vlm_cfg.vision_config
+    vision_cfg.image_size = int(image_size)
+    vision_cfg.intermediate_size = 4304
+    vision_cfg.projection_dim = 2048
+    vision_cfg.projector_hidden_act = "gelu_fast"
+    return SiglipVisionModel(vision_cfg)
+
+
+class FSQQueryTerminator(nn.Module):
+    """Live third+wrist images + state/skill conditioning -> progress and termination.
+
+    The visual frontend and token contract intentionally match Stage-1 cond:
+    one shared DINO or SigLIP tower is applied to both cameras, no spatial
+    pooling is performed, and both token sequences share one ``image_proj``.
+
+    ``arch='small'`` uses a lightweight query transformer. ``arch='cond'``
+    uses an AdaRMS Gemma whose module name is ``cond_encoder`` so its backbone
+    remains directly identifiable for a later Stage-1 cond warm start.
+
+    ``skill_cond_mode='token'`` keeps the historical terminator behavior:
+    state+skill modulate the query tokens through AdaRMS. ``broadcast`` keeps
+    state AdaRMS but adds the projected skill vector to the query hidden states
+    used by every attention layer.
+    """
+
+    def __init__(
+        self,
+        *,
+        state_dim: int,
+        fsq_levels: list[int],
+        hidden_dim: int,
+        n_layers: int,
+        n_heads: int,
+        dropout: float,
+        arch: str,
+        vision_backbone: str,
+        freeze_vision_encoder: bool,
+        dino_model_path: str,
+        dino_image_size: int,
+        siglip_image_size: int,
+        cond_encoder_variant: str,
+        skill_cond_mode: str,
+        state_min: np.ndarray,
+        state_max: np.ndarray,
+    ):
+        super().__init__()
+        if arch not in {"small", "cond"}:
+            raise ValueError(f"terminator_arch must be small|cond, got {arch!r}.")
+        if vision_backbone not in {"dino", "siglip"}:
+            raise ValueError(f"vision_backbone must be dino|siglip, got {vision_backbone!r}.")
+        if arch == "small" and hidden_dim % n_heads:
+            raise ValueError(f"hidden_dim={hidden_dim} must be divisible by n_heads={n_heads}.")
+        if skill_cond_mode not in {"token", "broadcast"}:
+            raise ValueError(f"skill_cond_mode must be token|broadcast, got {skill_cond_mode!r}.")
+        self.state_dim = int(state_dim)
+        self.fsq_levels = [int(x) for x in fsq_levels]
+        self.arch = arch
+        self.skill_cond_mode = skill_cond_mode
+        self.vision_backbone = vision_backbone
+        self.freeze_vision_encoder = bool(freeze_vision_encoder)
+        self.dino_model_path = resolve_image_model_path(dino_model_path)
+        self.dino_image_size = int(dino_image_size)
+        self.siglip_image_size = int(siglip_image_size)
+        self.cond_encoder_variant = cond_encoder_variant
+
+        self.dino = None
+        self.siglip = None
+        self.n_register = 0
+        if vision_backbone == "dino":
+            self.dino = AutoModel.from_pretrained(self.dino_model_path)
+            visual_dim = int(self.dino.config.hidden_size)
+            self.n_register = int(getattr(self.dino.config, "num_register_tokens", 0))
+            self.vision_image_size = self.dino_image_size
+            mean, std = [0.485, 0.456, 0.406], [0.229, 0.224, 0.225]
+        else:
+            self.siglip = _build_siglip_vision_tower(self.siglip_image_size)
+            visual_dim = int(self.siglip.config.hidden_size)
+            self.vision_image_size = self.siglip_image_size
+            mean, std = [0.5, 0.5, 0.5], [0.5, 0.5, 0.5]
+        if self.freeze_vision_encoder:
+            for parameter in self.vision_encoder.parameters():
+                parameter.requires_grad_(False)
+        self.register_buffer("_img_mean", torch.tensor(mean).view(1, 3, 1, 1), persistent=False)
+        self.register_buffer("_img_std", torch.tensor(std).view(1, 3, 1, 1), persistent=False)
+
+        width = int(hidden_dim) if arch == "small" else int(get_gemma_config(cond_encoder_variant).width)
+        self.hidden_dim = width
+        self.image_proj = nn.Linear(visual_dim, width)
+        self.progress_query = nn.Parameter(torch.zeros(1, 1, width))
+        self.termination_query = nn.Parameter(torch.zeros(1, 1, width))
+        self.state_proj = nn.Linear(state_dim, width)
+        self.skill_proj = nn.Linear(len(fsq_levels), width)
+        if arch == "small":
+            self.layers = nn.ModuleList(
+                [QueryTerminatorLayer(width, n_heads, dropout) for _ in range(n_layers)]
+            )
+            self.cond_encoder = None
+            self.query_in_norm = None
+            self.query_out_norm = ConditionalRMSNorm(width, width)
+        else:
+            self.layers = nn.ModuleList()
+            # Keep the Gemma itself byte-for-byte compatible with Stage-1 cond
+            # (plain RMSNorm). State+skill AdaRMS lives only on the two query
+            # tokens, before and after Gemma, so image tokens remain image-only.
+            self.cond_encoder = _build_gemma(cond_encoder_variant, use_adarms=False)
+            self.query_in_norm = ConditionalRMSNorm(width, width)
+            self.query_out_norm = ConditionalRMSNorm(width, width)
+        self.progress_head = nn.Linear(width, 1)
+        self.termination_head = nn.Linear(width, 1)
+        self.register_buffer("state_min", torch.as_tensor(state_min, dtype=torch.float32))
+        self.register_buffer("state_max", torch.as_tensor(state_max, dtype=torch.float32))
+        nn.init.trunc_normal_(self.progress_query, std=0.02)
+        nn.init.trunc_normal_(self.termination_query, std=0.02)
+
+    @property
+    def vision_encoder(self) -> nn.Module:
+        return self.dino if self.dino is not None else self.siglip
+
+    def train(self, mode: bool = True):
+        super().train(mode)
+        if self.freeze_vision_encoder:
+            self.vision_encoder.eval()
+        return self
+
+    def gradient_checkpointing_enable(self) -> None:
+        if self.cond_encoder is not None:
+            self.cond_encoder.gradient_checkpointing_enable()
+        if not self.freeze_vision_encoder and hasattr(self.vision_encoder, "gradient_checkpointing_enable"):
+            self.vision_encoder.gradient_checkpointing_enable()
+
+    def _normalize_state(self, state: Tensor) -> Tensor:
+        lo = self.state_min.to(state.device, state.dtype)
+        hi = self.state_max.to(state.device, state.dtype)
+        return 2.0 * (state[..., : self.state_dim] - lo) / (hi - lo + 1e-8) - 1.0
+
+    def _image_features(self, image: Tensor | None) -> Tensor:
+        if image is None:
+            raise ValueError("FSQ terminator always requires both third-person and wrist images.")
+        if image.ndim != 4:
+            raise ValueError(f"Terminator image must be (B,C,H,W) or (B,H,W,C), got {tuple(image.shape)}")
+        if image.shape[-1] in (1, 3):
+            image = image.permute(0, 3, 1, 2)
+        if image.shape[1] == 1:
+            image = image.expand(-1, 3, -1, -1)
+        x = image.float()
+        if x.numel() and float(x.detach().amin()) < -0.05:
+            x = (x + 1.0) / 2.0
+        if x.numel() and float(x.detach().amax()) > 2.0:
+            x = x / 255.0
+        x = F.interpolate(
+            x.clamp(0.0, 1.0),
+            size=(self.vision_image_size, self.vision_image_size),
+            mode="bilinear",
+            align_corners=False,
+        )
+        x = (x - self._img_mean.float()) / self._img_std.float()
+        if self.vision_backbone == "dino":
+            x = x.to(dtype=next(self.dino.parameters()).dtype)
+            output = self.dino(x).last_hidden_state
+            cls = output[:, :1]
+            patches = output[:, 1 + self.n_register :]
+            return torch.cat([cls, patches], dim=1)
+        x = x.to(dtype=next(self.siglip.parameters()).dtype)
+        return self.siglip(pixel_values=x).last_hidden_state
+
+    def _prepare_image_tokens(self, third: Tensor | None, wrist: Tensor | None) -> Tensor:
+        # Exactly Stage-1 cond's visual contract: shared backbone, shared projection, concatenation.
+        tokens = [self._image_features(third), self._image_features(wrist)]
+        return torch.cat(
+            [self.image_proj(value.to(self.image_proj.weight.dtype)) for value in tokens], dim=1
+        )
+
+    @staticmethod
+    def _allow_mask(n_image: int, device: torch.device) -> Tensor:
+        total = n_image + 2
+        allow = torch.zeros(total, total, dtype=torch.bool, device=device)
+        allow[:n_image, :n_image] = True
+        allow[n_image, :n_image] = True
+        allow[n_image, n_image] = True
+        allow[n_image + 1, :n_image] = True
+        allow[n_image + 1, n_image + 1] = True
+        return allow
+
+    def forward(
+        self,
+        z_norm: Tensor,
+        raw_state: Tensor,
+        third: Tensor | None,
+        wrist: Tensor | None = None,
+    ) -> tuple[Tensor, Tensor]:
+        image_tokens = self._prepare_image_tokens(third, wrist)
+        bsize, n_image = image_tokens.shape[:2]
+        queries = torch.cat(
+            [self.progress_query.expand(bsize, -1, -1), self.termination_query.expand(bsize, -1, -1)],
+            dim=1,
+        ).to(image_tokens.dtype)
+        state_cond = self.state_proj(self._normalize_state(raw_state).to(self.state_proj.weight.dtype))
+        skill_cond = self.skill_proj(z_norm.to(self.skill_proj.weight.dtype))
+        if self.skill_cond_mode == "broadcast":
+            norm_cond = state_cond
+            skill_broadcast = skill_cond
+        else:
+            norm_cond = state_cond + skill_cond
+            skill_broadcast = None
+        if self.arch == "cond":
+            queries = self.query_in_norm(queries, norm_cond)
+        x = torch.cat([image_tokens, queries], dim=1)
+        allow = self._allow_mask(n_image, x.device)
+        if self.arch == "small":
+            for layer in self.layers:
+                x = layer(x, n_image, norm_cond, ~allow, skill_broadcast)
+            query_out = self.query_out_norm(x[:, n_image:], norm_cond)
+        else:
+            attention = torch.where(
+                allow[None, None],
+                torch.tensor(0.0, device=x.device, dtype=x.dtype),
+                torch.tensor(OPENPI_ATTENTION_MASK_VALUE, device=x.device, dtype=x.dtype),
+            ).expand(bsize, 1, -1, -1)
+            broadcast = None
+            if skill_broadcast is not None:
+                broadcast = torch.zeros_like(x)
+                broadcast[:, n_image:] = skill_broadcast.to(device=x.device, dtype=x.dtype).unsqueeze(1)
+            positions = torch.arange(x.shape[1], device=x.device)[None].expand(bsize, -1)
+            hidden = self.cond_encoder.model(
+                inputs_embeds=x,
+                attention_mask=attention,
+                position_ids=positions,
+                use_cache=False,
+                adarms_cond=None,
+                broadcast_cond=broadcast,
+            ).last_hidden_state
+            query_out = self.query_out_norm(hidden[:, n_image:], norm_cond)
+        progress = torch.sigmoid(self.progress_head(query_out[:, 0])).squeeze(-1)
+        termination = self.termination_head(query_out[:, 1]).squeeze(-1)
+        return progress, termination
+
+    @torch.no_grad()
+    def predict_termination(
+        self,
+        z_norm: Tensor,
+        raw_state: Tensor,
+        third: Tensor | None,
+        wrist: Tensor | None = None,
+    ) -> tuple[Tensor, Tensor]:
+        progress, logits = self(z_norm, raw_state, third, wrist)
+        return progress, torch.sigmoid(logits)
+
+
+# -----------------------------------------------------------------------------
+# Full model/config and component checkpoint loaders
+# -----------------------------------------------------------------------------
 
 
 @dataclass
 class SplineFSQAEConfig:
-    action_dim: int = 7          # decoder output / action-chunk target dim
-    enc_dim: int = 8             # encoder trajectory dim = full state (EEF pose + gripper-state)
-    state_dim: int = 7
+    format_version: int = FORMAT_VERSION
+    action_dim: int = 7
+    enc_dim: int = 8
+    state_dim: int = 8
     n_control: int = 30
     spline_degree: int = 3
+    encoder_input_mode: str = "zero_grounded"
     hidden_dim: int = 256
     fsq_levels: list[int] = field(default_factory=lambda: [5, 5, 5])
-    num_layers: int = 3
+    num_layers: int = 2
     dropout: float = 0.1
-    feat_dim: int = 384       # DINO token feature dimension
-    n_tokens: int = 65        # 1 CLS + 64 patch tokens (8×8 grid)
-    image_model_name: str = _DEFAULT_IMAGE_MODEL
-    image_size: int = 224
-    patch_grid: int = 8
-    n_patch_raw: int = 196
-    terminator_use_third: bool = True
-    """Terminator 3rd-person camera. With terminator_use_wrist → 3 modes (third,wrist):
-    (T,F)=3rd-only, (T,T)=both, (F,T)=wrist-only; (F,F) invalid. Default T = backward-compatible."""
-    terminator_use_wrist: bool = False
-    """Terminator camera inputs: False = 3rd-person only ([z, img, state], original single-camera
-    FSQ — keeps old checkpoints loadable); True = 3rd-person + wrist ([z, img, wrist, state], two
-    separate DINO-token encoders)."""
-    image_token_dim: int = 128  # internal per-patch width N in the image encoders
-    image_encoder_layers: int = 1
-    image_encoder_heads: int = 4
-    skill_cond_mode: str = "token"
-    """token: use z as its own decoder token; broadcast: add projected z to each pool block input."""
-    chunk_size: int = 10  # motion always predicts a K-step action chunk
-    length_min: float = 0.0     # skill-length min-max stats for [-1,1] length-token normalization
+    length_min: float = 1.0
     length_max: float = 200.0
-    end_target_sigma: float = 0.0
-    """Soft termination target: Gaussian bump (std in FRAMES) peaking at the skill's last frame
-    instead of a 1-frame spike. DP skill boundaries are fuzzy, so a spike makes the head memorize
-    exact end frames (val overfit). σ≈2-3 encodes that ±tolerance and gives dense gradients; the
-    bump's ≥0.5 region also makes the recall/precision metric window-tolerant for free. 0 = hard."""
-    delta_loss_weight: float = 1.0
-    progress_loss_weight: float = 1.0
-    end_loss_weight: float = 1.0
+
+    max_state_dim: int = 32
+    max_action_dim: int = 32
+    chunk_size: int = 10
+    skill_cond_mode: str = "token"
+    pi_base: str = _DEFAULT_PI_BASE
+
+    terminator_arch: str = "small"
+    vision_backbone: str = "dino"
+    freeze_vision_encoder: bool = True
+    dino_model_path: str = _DEFAULT_IMAGE_MODEL
+    dino_image_size: int = 224
+    siglip_image_size: int = 224
+    cond_encoder_variant: str = "gemma_300m"
+    image_encoder_layers: int = 2
+    image_encoder_heads: int = 4
+
+    samples_per_skill: int = 2
+    end_target_sigma: float = 1.0
+    action_loss_weight: float = 1.0
+    progress_loss_weight: float = 0.1
+    end_loss_weight: float = 0.1
     end_pos_weight: float = 1.0
     weighted_loss: bool = False
-    """Per-frame end-weight the reconstructor (delta) loss: w=1+progress (skill END counts ~2× the
-    start). Steers the FSQ latent to spend more code resolution on the skill's latter/handoff part.
-    progress/termination losses stay uniform (their targets already carry the end emphasis; progress
-    must stay calibrated across the skill). See fsqae_loss."""
+    weighted_loss_end_weight: float = 2.0
     end_threshold: float = 0.5
-    lr: float = 3e-4
+
+    encoder_lr: float = 3e-4
+    terminator_lr: float = 3e-4
+    reconstructor_lr: float = 3e-4
     batch_size: int = 64
-    num_workers: int = 8
-    epochs: int = 100
+    num_workers: int = 0
+    epochs: int = 300
     grad_clip: float = 1.0
-    device: str = "cuda"
     val_split: float = 0.1
-    # Best-val checkpoint SELECTION metric. UNSET (None) → selection FOLLOWS the actual loss
-    # (total val = delta_loss_weight*delta + progress_loss_weight*progress + end_loss_weight*end).
-    # SET to OVERRIDE with a custom metric wd*delta + wp*progress + we*end on val (missing weight → 0).
-    # NOTE scale: end (~0.07) is ~3x delta (~0.025), so for recon to dominate the override use we<~0.35.
-    val_select_delta_weight: float | None = None
+    val_select_action_weight: float | None = None
     val_select_progress_weight: float | None = None
     val_select_end_weight: float | None = None
     log_every: int = 10
     save_path: str | None = None
     checkpoint_every: int = 0
-    action_min: np.ndarray | None = None
-    action_max: np.ndarray | None = None
-    delta_min: np.ndarray | None = None
-    delta_max: np.ndarray | None = None
-    state_min: np.ndarray | None = None   # decoder/terminator proprioception min-max ([-1,1] norm)
+    device: str = "cuda"
+
+    encoder_min: np.ndarray | None = None
+    encoder_max: np.ndarray | None = None
+    encoder_start_min: np.ndarray | None = None
+    encoder_start_max: np.ndarray | None = None
+    state_min: np.ndarray | None = None
     state_max: np.ndarray | None = None
+    state_q01: np.ndarray | None = None
+    state_q99: np.ndarray | None = None
+    action_q01: np.ndarray | None = None
+    action_q99: np.ndarray | None = None
 
-
-# ── Model ─────────────────────────────────────────────────────────────────────
 
 class SplineFSQAE(nn.Module):
-    """Spline-encoded FSQ autoencoder with DINO-token-conditioned decoder."""
+    """Joint FSQ encoder, image-free transformer reconstructor, and query terminator."""
 
-    def __init__(
-        self,
-        action_dim: int,
-        state_dim: int,
-        enc_dim: int = 8,
-        n_control: int = 30,
-        spline_degree: int = 3,
-        hidden_dim: int = 256,
-        fsq_levels: list[int] | None = None,
-        num_layers: int = 3,
-        dropout: float = 0.1,
-        feat_dim: int = 384,
-        n_tokens: int = 65,
-        image_model_name: str = _DEFAULT_IMAGE_MODEL,
-        image_size: int = 224,
-        patch_grid: int = 8,
-        n_patch_raw: int = 196,
-        terminator_use_third: bool = True,
-        terminator_use_wrist: bool = False,
-        image_token_dim: int = 128,
-        image_encoder_layers: int = 1,
-        image_encoder_heads: int = 4,
-        skill_cond_mode: str = "token",
-        chunk_size: int = 10,
-        length_min: float = 0.0,
-        length_max: float = 200.0,
-        action_min: np.ndarray | None = None,
-        action_max: np.ndarray | None = None,
-        delta_min: np.ndarray | None = None,
-        delta_max: np.ndarray | None = None,
-        state_min: np.ndarray | None = None,
-        state_max: np.ndarray | None = None,
-    ) -> None:
+    def __init__(self, cfg: SplineFSQAEConfig):
         super().__init__()
-        if fsq_levels is None:
-            fsq_levels = [5, 5, 5]
-
-        self.action_dim = action_dim
-        self.enc_dim = enc_dim
-        self.state_dim = state_dim
-        self.n_control = n_control
-        self.spline_degree = spline_degree
-        self.length_min = length_min
-        self.length_max = length_max
-        self.chunk_size = chunk_size
-        self.feat_dim = feat_dim
-        self.n_tokens = n_tokens
-        self.image_model_name = resolve_image_model_path(image_model_name)
-        self.image_size = image_size
-        self.patch_grid = patch_grid
-        self.n_patch_raw = n_patch_raw
-        self.terminator_use_third = bool(terminator_use_third)
-        self.terminator_use_wrist = terminator_use_wrist
-        if skill_cond_mode not in {"token", "broadcast"}:
-            raise ValueError(f"skill_cond_mode must be token|broadcast, got {skill_cond_mode!r}.")
-        self.skill_cond_mode = skill_cond_mode
-
-        self.fsq = FSQ(fsq_levels)
-        D = self.fsq.latent_dim
-        H = hidden_dim
-
-        # ── Encoder (action trajectory only — no images) ──────────────────────
-        # Each (zero-grounded) control point + the length scalar becomes one H-dim token,
-        # a Transformer mixes them, and a learned query pools them into the latent.
-        self.enc_ctrl_proj = nn.Linear(enc_dim, H)
-        self.enc_len_proj = nn.Linear(1, H)
-        self.enc_traj_pool = TokenTransformerPool(
-            hidden_dim=H,
-            n_tokens=n_control + 1,
-            n_layers=image_encoder_layers,
-            n_heads=image_encoder_heads,
-            dropout=dropout,
-        )
-        self.z_head = nn.Linear(H, D)
-
-        # ── Decoder (2 sub-networks: terminator + reconstructor; no skill_decoder) ──
-        self.n_patches = n_tokens - 1  # token 0 = CLS, tokens 1.. = patches
-
-        def _plain_image_encoder() -> "ImageTokenEncoder":
-            return ImageTokenEncoder(
-                feat_dim=feat_dim, n_tokens=n_tokens, hidden_dim=H, token_dim=image_token_dim,
-                n_layers=image_encoder_layers, n_heads=image_encoder_heads, dropout=dropout,
+        if int(cfg.format_version) != FORMAT_VERSION:
+            raise ValueError(f"Only FSQ format v{FORMAT_VERSION} is supported, got {cfg.format_version}.")
+        if cfg.action_dim > cfg.max_action_dim or cfg.state_dim > cfg.max_state_dim:
+            raise ValueError(
+                f"Real dimensions must fit PI05 padding: action {cfg.action_dim}/{cfg.max_action_dim}, "
+                f"state {cfg.state_dim}/{cfg.max_state_dim}."
             )
-
-        # z (skill code) → token, shared by both sub-networks.
-        self.dec_z_proj = nn.Linear(D, H)
-
-        # (A) terminator → progress + termination.
-        #   single (terminator_use_wrist=False): [z, current 3rd img, current state]            (3)
-        #   dual   (terminator_use_wrist=True):  [z, current 3rd img, current wrist img, state]  (4)
-        # Cameras use separate DINO-token encoders. single keeps the original (1-camera) FSQ so
-        # old checkpoints stay loadable.
-        if not (terminator_use_third or terminator_use_wrist):
-            raise ValueError("terminator needs ≥1 camera: set terminator_use_third and/or terminator_use_wrist.")
-        self.dec_image_encoder_term = (
-            _plain_image_encoder() if terminator_use_third else None  # 3rd-person, separate params
+        if cfg.samples_per_skill < 1 or cfg.chunk_size < 1:
+            raise ValueError("samples_per_skill and chunk_size must both be >=1.")
+        if cfg.encoder_input_mode not in {"zero_grounded", "raw_state", "optimal"}:
+            raise ValueError(
+                "encoder_input_mode must be zero_grounded|raw_state|optimal, "
+                f"got {cfg.encoder_input_mode!r}."
+            )
+        if cfg.terminator_arch not in {"small", "cond"}:
+            raise ValueError(f"terminator_arch must be small|cond, got {cfg.terminator_arch!r}.")
+        if cfg.vision_backbone not in {"dino", "siglip"}:
+            raise ValueError(f"vision_backbone must be dino|siglip, got {cfg.vision_backbone!r}.")
+        if cfg.skill_cond_mode not in {"token", "broadcast"}:
+            raise ValueError(f"skill_cond_mode must be token|broadcast, got {cfg.skill_cond_mode!r}.")
+        for name in (
+            "encoder_min", "encoder_max", "state_min", "state_max",
+            "state_q01", "state_q99", "action_q01", "action_q99",
+        ):
+            if getattr(cfg, name) is None:
+                raise ValueError(f"FSQ config is missing required normalization statistic: {name}")
+        if cfg.encoder_input_mode == "optimal":
+            for name in ("encoder_start_min", "encoder_start_max"):
+                if getattr(cfg, name) is None:
+                    raise ValueError(f"Optimal FSQ config is missing required statistic: {name}")
+        self.cfg = cfg
+        self.encoder = SplineFSQEncoder(
+            enc_dim=cfg.enc_dim,
+            n_control=cfg.n_control,
+            spline_degree=cfg.spline_degree,
+            hidden_dim=cfg.hidden_dim,
+            fsq_levels=cfg.fsq_levels,
+            n_layers=cfg.num_layers,
+            n_heads=cfg.image_encoder_heads,
+            dropout=cfg.dropout,
+            length_min=cfg.length_min,
+            length_max=cfg.length_max,
+            encoder_min=cfg.encoder_min,
+            encoder_max=cfg.encoder_max,
+            encoder_input_mode=cfg.encoder_input_mode,
+            encoder_start_min=cfg.encoder_start_min,
+            encoder_start_max=cfg.encoder_start_max,
         )
-        self.dec_image_encoder_term_wrist = (
-            _plain_image_encoder() if terminator_use_wrist else None  # wrist, separate params
+        self.reconstructor = MotionChunkReconstructor(
+            fsq_levels=cfg.fsq_levels,
+            hidden_dim=cfg.hidden_dim,
+            n_layers=cfg.num_layers,
+            n_heads=cfg.image_encoder_heads,
+            dropout=cfg.dropout,
+            skill_cond_mode=cfg.skill_cond_mode,
+            max_state_dim=cfg.max_state_dim,
+            max_action_dim=cfg.max_action_dim,
+            chunk_size=cfg.chunk_size,
         )
-        self.term_state_proj = nn.Linear(state_dim, H)              # separate params
-        # terminator tokens: token mode uses z as a token; broadcast mode conditions the pool blocks with z.
-        n_term_tokens = int(skill_cond_mode == "token") + int(terminator_use_third) + int(terminator_use_wrist) + 1
-        self.term_pool = TokenTransformerPool(
-            hidden_dim=H, n_tokens=n_term_tokens,
-            n_layers=image_encoder_layers, n_heads=image_encoder_heads, dropout=dropout,
+        self.terminator = FSQQueryTerminator(
+            state_dim=cfg.state_dim,
+            fsq_levels=cfg.fsq_levels,
+            hidden_dim=cfg.hidden_dim,
+            n_layers=cfg.image_encoder_layers,
+            n_heads=cfg.image_encoder_heads,
+            dropout=cfg.dropout,
+            arch=cfg.terminator_arch,
+            vision_backbone=cfg.vision_backbone,
+            freeze_vision_encoder=cfg.freeze_vision_encoder,
+            dino_model_path=cfg.dino_model_path,
+            dino_image_size=cfg.dino_image_size,
+            siglip_image_size=cfg.siglip_image_size,
+            cond_encoder_variant=cfg.cond_encoder_variant,
+            skill_cond_mode=cfg.skill_cond_mode,
+            state_min=cfg.state_min,
+            state_max=cfg.state_max,
         )
-        self.progress_head = nn.Linear(H, 1)
-        self.termination_head = nn.Linear(H, 1)
 
-        # (B) reconstructor → action chunk: [z, start_state, progress] (image-free).
-        # Everything except progress is fixed at the skill start; z is the sole motion source.
-        self.recon_state_proj = nn.Linear(state_dim, H)             # separate params (start state)
-        self.motion_prog_proj = nn.Linear(1, H)
-        n_motion_tokens = 3 if skill_cond_mode == "token" else 2
-        self.motion_pool = TokenTransformerPool(
-            hidden_dim=H, n_tokens=n_motion_tokens,
-            n_layers=image_encoder_layers, n_heads=image_encoder_heads, dropout=dropout,
-        )
-        self.delta_head = nn.Linear(H, chunk_size * action_dim)
+    @property
+    def fsq(self) -> FSQ:
+        return self.encoder.fsq
 
-        _amin = action_min if action_min is not None else np.zeros(enc_dim, dtype=np.float32)
-        _amax = action_max if action_max is not None else np.ones(enc_dim, dtype=np.float32)
-        _dmin = delta_min if delta_min is not None else -np.ones(action_dim, dtype=np.float32)
-        _dmax = delta_max if delta_max is not None else np.ones(action_dim, dtype=np.float32)
-        _smin = state_min if state_min is not None else np.zeros(state_dim, dtype=np.float32)
-        _smax = state_max if state_max is not None else np.ones(state_dim, dtype=np.float32)
-        self.register_buffer("action_min", torch.tensor(_amin, dtype=torch.float32))
-        self.register_buffer("action_max", torch.tensor(_amax, dtype=torch.float32))
-        self.register_buffer("delta_min",  torch.tensor(_dmin, dtype=torch.float32))
-        self.register_buffer("delta_max",  torch.tensor(_dmax, dtype=torch.float32))
-        self.register_buffer("state_min",  torch.tensor(_smin, dtype=torch.float32))
-        self.register_buffer("state_max",  torch.tensor(_smax, dtype=torch.float32))
-        object.__setattr__(self, "_raw_image_model", None)
-        object.__setattr__(self, "_raw_image_mean", None)
-        object.__setattr__(self, "_raw_image_std", None)
+    # Small read-only surface used by evaluation scripts. Action predictions go
+    # through the transformer reconstructor, not a PI05/Gemma action expert.
+    @property
+    def action_dim(self) -> int:
+        return self.cfg.action_dim
 
-    # ── helpers ───────────────────────────────────────────────────────────────
+    @property
+    def n_control(self) -> int:
+        return self.cfg.n_control
 
-    def _np_norm_actions(self, ctrl_pts: np.ndarray) -> np.ndarray:
-        lo = self.action_min.cpu().numpy()
-        hi = self.action_max.cpu().numpy()
-        return (ctrl_pts - lo) / (hi - lo + 1e-8) * 2.0 - 1.0
+    @property
+    def spline_degree(self) -> int:
+        return self.cfg.spline_degree
 
-    def _norm_state(self, s: torch.Tensor) -> torch.Tensor:
-        """Min-max normalize raw proprioception to [-1,1]. Absolute (not grounded) — same basis for
-        the terminator's current state and the reconstructor's start state."""
-        lo = self.state_min.to(s.device, s.dtype)
-        hi = self.state_max.to(s.device, s.dtype)
-        return (s - lo) / (hi - lo + 1e-8) * 2.0 - 1.0
+    @property
+    def state_dim(self) -> int:
+        return self.cfg.state_dim
 
-    # ── encode ────────────────────────────────────────────────────────────────
+    @property
+    def chunk_size(self) -> int:
+        return self.cfg.chunk_size
 
     def encode(
-        self,
-        ctrl_pts: torch.Tensor,      # (B, n_control, enc_dim) — zero-grounded, normalized
-        lengths: torch.Tensor,       # (B,)
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Action-only encode. Returns (z_q, indices)."""
-        B = ctrl_pts.size(0)
-        # Tokens: per control point + one length token → Transformer pool → latent.
-        ctrl_tok = self.enc_ctrl_proj(ctrl_pts)                                    # (B, n_control, H)
-        # length token: min-max normalized to [-1,1] (same scheme as the control points)
-        l_norm = (((lengths.float() - self.length_min) / (self.length_max - self.length_min + 1e-8))
-                  * 2.0 - 1.0).view(B, 1, 1).to(ctrl_pts.dtype)
-        len_tok = self.enc_len_proj(l_norm)                                        # (B, 1, H)
-        h = self.enc_traj_pool(torch.cat([ctrl_tok, len_tok], dim=1))             # (B, H)
-        z_e = self.z_head(h)
-        return self.fsq(z_e)
+        self, ctrl: Tensor, lengths: Tensor, start_pose: Tensor | None = None
+    ) -> tuple[Tensor, Tensor]:
+        return self.encoder(ctrl, lengths, start_pose, normalized=True)
 
-    # ── decode ────────────────────────────────────────────────────────────────
+    def encode_numpy(self, trajectory: np.ndarray, device: str | torch.device = "cpu") -> np.ndarray:
+        return self.encoder.encode_numpy(trajectory, device)
 
-    def _load_raw_image_model(self, device: torch.device):
-        """Lazy frozen OnlineDino — raw 이미지→토큰의 SINGLE SOURCE (인퍼런스·FSQ 학습 warm-pass·
-        검증도구가 같은 구현을 공유; lerobot/src/lerobot/utils/online_dino.py). nn.Module 레지스트리
-        밖에 보관(object.__setattr__)해 state_dict/체크포인트에 섞이지 않음 (기존 계약 유지)."""
-        dino = getattr(self, "_raw_image_model", None)
-        if dino is None:
-            try:
-                from lerobot.utils.online_dino import OnlineDino  # noqa: PLC0415
-            except ImportError:      # examples 단독 실행 등 lerobot/src가 경로에 없을 때
-                import sys  # noqa: PLC0415
-                sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
-                from lerobot.utils.online_dino import OnlineDino  # noqa: PLC0415
-            dino = OnlineDino(self.image_model_name, image_size=self.image_size,
-                              patch_grid=self.patch_grid, n_patch_raw=self.n_patch_raw)
-            object.__setattr__(self, "_raw_image_model", dino)
-        if next(dino.model.parameters()).device != device:
-            dino.to(device)
-        return dino
+    def encode_index(self, trajectory: np.ndarray, device: str | torch.device = "cpu") -> int:
+        return self.encoder.encode_index(trajectory, device)
 
     @torch.no_grad()
-    def _raw_images_to_tokens(self, images: torch.Tensor, *, target_t: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
-        """Raw RGB images → DINO CLS + pooled patch tokens, shape (B,T,N,F)."""
-        x = images.to(device=device)
-        if x.ndim == 4:
-            x = x.unsqueeze(1)  # (B,1,C,H,W) or (B,1,H,W,C)
-        if x.ndim != 5:
-            raise ValueError(
-                "Raw FSQ decoder images must have shape (B,C,H,W), (B,H,W,C), "
-                "(B,T,C,H,W), or (B,T,H,W,C)."
-            )
-        if x.shape[-1] in (1, 3):
-            x = x.permute(0, 1, 4, 2, 3)  # channels-last → channels-first
-        if x.shape[2] == 1:
-            x = x.expand(-1, -1, 3, -1, -1)
-        if x.shape[2] != 3:
-            raise ValueError(f"Raw FSQ decoder images must have 3 channels, got shape {tuple(images.shape)}.")
-        if x.shape[1] == 1 and target_t > 1:
-            x = x.expand(x.shape[0], target_t, x.shape[2], x.shape[3], x.shape[4])
-        if x.shape[1] != target_t:
-            raise ValueError(f"Raw FSQ decoder image time mismatch: got {x.shape[1]}, expected {target_t}.")
+    def sample_action_chunks(
+        self,
+        z_q: Tensor,
+        raw_states: Tensor,
+        progress: Tensor | None = None,
+        *,
+        noise: Tensor | None = None,
+        num_steps: int = 10,
+    ) -> Tensor:
+        """Image-free reconstructor action chunks for every ``(B,T)`` progress value, in dataset units."""
+        bsize, steps = raw_states.shape[:2]
+        _ = noise, num_steps  # kept for API compatibility with older eval callers
+        start_raw = raw_states[:, :1, : self.cfg.state_dim].expand(bsize, steps, -1)
+        flat_start = start_raw.reshape(bsize * steps, -1)
+        lo = torch.as_tensor(self.cfg.state_q01, device=flat_start.device, dtype=flat_start.dtype)
+        hi = torch.as_tensor(self.cfg.state_q99, device=flat_start.device, dtype=flat_start.dtype)
+        norm = 2.0 * (flat_start - lo) / (hi - lo + 1e-8) - 1.0
+        start_state = torch.zeros(
+            bsize * steps, self.cfg.max_state_dim, device=flat_start.device, dtype=flat_start.dtype
+        )
+        start_state[:, : self.cfg.state_dim] = norm
+        if progress is None:
+            progress = torch.arange(steps, device=raw_states.device, dtype=raw_states.dtype)[None].expand(bsize, -1)
+            progress = progress / max(steps - 1, 1)
+        progress = progress.to(device=raw_states.device, dtype=raw_states.dtype).reshape(bsize * steps)
+        z_norm = self.fsq.normalized(z_q).repeat_interleave(steps, dim=0)
+        action_norm = self.reconstructor(
+            start_state,
+            z_norm,
+            progress,
+        )[..., : self.cfg.action_dim]
+        action_lo = torch.as_tensor(
+            self.cfg.action_q01, device=action_norm.device, dtype=action_norm.dtype
+        )
+        action_hi = torch.as_tensor(
+            self.cfg.action_q99, device=action_norm.device, dtype=action_norm.dtype
+        )
+        actions = (action_norm + 1.0) * 0.5 * (action_hi - action_lo) + action_lo
+        return actions.view(bsize, steps, self.cfg.chunk_size, self.cfg.action_dim)
 
-        B, T, C, H, W = x.shape
-        x = x.reshape(B * T, C, H, W).float()
-        if x.numel() and float(x.detach().amin()) < -0.05:
-            x = (x + 1.0) / 2.0                       # [-1,1] → [0,1]
-        if x.numel() and float(x.detach().amax()) > 2.0:
-            x = x / 255.0                             # [0,255] → [0,1]
-        x = x.clamp(0.0, 1.0)
-
-        # 리사이즈·정규화·fp16 autocast·CLS+풀링은 전부 OnlineDino가 수행 (공용 단일 구현 —
-        # 여기 있던 동일 코드를 위임으로 대체; 수치 계약은 verify_online_dino.py로 검증됨).
-        dino = self._load_raw_image_model(device)
-        tokens = dino(x)                              # (B·T, 1+grid², F) float32
-        tokens = tokens.view(B, T, 1 + self.patch_grid * self.patch_grid, tokens.shape[-1])
-        return tokens.to(dtype=dtype)
-
-    def _prepare_decoder_tokens(self, image_input: torch.Tensor, *, states: torch.Tensor) -> torch.Tensor:
-        """Accept precomputed DINO tokens or raw RGB images and return (B,T,N,F) tokens."""
-        if image_input.ndim == 4 and image_input.shape[-2] == self.n_tokens and image_input.shape[-1] == self.feat_dim:
-            return image_input.to(device=states.device, dtype=states.dtype)
-        if image_input.ndim == 3 and image_input.shape[-2] == self.n_tokens and image_input.shape[-1] == self.feat_dim:
-            tokens = image_input.unsqueeze(1).to(device=states.device, dtype=states.dtype)
-            if states.shape[1] > 1:
-                tokens = tokens.expand(tokens.shape[0], states.shape[1], tokens.shape[2], tokens.shape[3])
-            return tokens
-        return self._raw_images_to_tokens(image_input, target_t=states.shape[1], device=states.device, dtype=states.dtype)
-
+    @torch.no_grad()
     def decode(
         self,
-        z: torch.Tensor,                  # (B, D)
-        states: torch.Tensor,             # (B, T, state_dim)
-        dec_tokens: torch.Tensor,         # 3rd-person DINO tokens (B,T,N,F)/(B,N,F) or raw images
-        dec_tokens_wrist: torch.Tensor | None = None,  # wrist tokens/images (dual terminator only)
-        frame_progress: torch.Tensor | None = None,  # (B, T), per-skill progress in [0,1]
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        z_q: Tensor,
+        raw_states: Tensor,
+        third: Tensor,
+        wrist: Tensor | None = None,
+        _progress_hint: Tensor | None = None,
+        *,
+        num_steps: int = 10,
+        noise: Tensor | None = None,
+    ) -> tuple[Tensor, Tensor, Tensor]:
+        """Evaluate every trajectory timestep with the transformer reconstructor and terminator.
+
+        This convenience method vectorizes inference over ``(B,T,...)``; training
+        still uses the B-trajectory x M-sampled-timestep path. Returned actions are
+        de-normalized to dataset units.
         """
-        Returns:
-          delta          (B, T, K, A) — dataset action chunk
-          progress_pred  (B, T) — predicted per-skill progress in [0, 1]
-          term_logits    (B, T) — skill-termination logits
-        """
-        dec_tokens = self._prepare_decoder_tokens(dec_tokens, states=states)
-        if self.terminator_use_wrist:
-            dec_tokens_wrist = self._prepare_decoder_tokens(dec_tokens_wrist, states=states)
-        B, T = dec_tokens.shape[:2]
+        bsize, steps = raw_states.shape[:2]
+        flat_state = raw_states.reshape(bsize * steps, -1)[..., : self.cfg.state_dim]
+        z_norm = self.fsq.normalized(z_q).repeat_interleave(steps, dim=0)
+        actions = self.sample_action_chunks(
+            z_q,
+            raw_states,
+            _progress_hint,
+            noise=noise,
+            num_steps=num_steps,
+        )
 
-        if frame_progress is None:
-            fi = torch.arange(T, device=states.device, dtype=states.dtype).view(1, T)
-            fi = fi.expand(B, T) / max(T - 1, 1)
-        else:
-            fi = frame_progress.to(device=states.device, dtype=states.dtype)
-        prog_tok = self.motion_prog_proj(fi.unsqueeze(-1))           # (B, T, H)
+        def flatten_camera(value: Tensor | None) -> Tensor | None:
+            if value is None:
+                return None
+            return value.reshape(bsize * steps, *value.shape[2:])
 
-        z_seq = z.unsqueeze(1).expand(B, T, -1).to(states.dtype)     # (B, T, D)
-        z_tok = self.dec_z_proj(z_seq)                               # (B, T, H) skill code, shared
-
-        # ── (A) terminator: [z, current 3rd img, current wrist img, current state] (per step) ──
-        progress_pred, term_logits = self._terminate(z_tok, states, dec_tokens, dec_tokens_wrist)
-
-        # ── (B) reconstructor: start-frame state fixed, only progress varies per step ──
-        delta = self._reconstruct_chunk(z_tok, states, prog_tok)
-
-        return delta, progress_pred, term_logits
-
-    def _terminate(
-        self,
-        z_tok: torch.Tensor,                     # (B, T, H) projected skill code
-        states: torch.Tensor,                    # (B, T, state_dim) current proprioception
-        dec_tokens: torch.Tensor,                # (B, T, N, F) current 3rd-person tokens
-        dec_tokens_wrist: torch.Tensor | None,   # (B, T, N, F) current wrist tokens (dual mode only)
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Terminator head → (progress, term_logits).
-          single: [z, current 3rd img, current state]
-          dual:   [z, current 3rd img, current wrist img, current state]
-        progress (B, T) in [0, 1] (sigmoid); term_logits (B, T) raw logits. Shared by decode()
-        (FSQ training) and predict_termination() (skillVLA inference, which sigmoids the logits)."""
-        B, T = z_tok.shape[:2]
-        s_term = self.term_state_proj(self._norm_state(states))       # (B, T, H)
-        toks = [z_tok] if self.skill_cond_mode == "token" else []
-        if self.terminator_use_third:
-            toks.append(self.dec_image_encoder_term(dec_tokens))               # (B, T, H) 3rd-person
-        if self.terminator_use_wrist:
-            if dec_tokens_wrist is None:
-                raise ValueError("terminator_use_wrist=True requires wrist tokens.")
-            toks.append(self.dec_image_encoder_term_wrist(dec_tokens_wrist))   # (B, T, H) wrist
-        toks.append(s_term)
-        tm_tokens = torch.stack(toks, dim=2).reshape(B * T, len(toks), -1)
-        tm_cond = z_tok.reshape(B * T, -1) if self.skill_cond_mode == "broadcast" else None
-        tm = self.term_pool(tm_tokens, broadcast_cond=tm_cond).view(B, T, -1)  # (B, T, H)
-        progress = torch.sigmoid(self.progress_head(tm)).squeeze(-1)  # (B, T) in [0, 1]
-        term_logits = self.termination_head(tm).squeeze(-1)           # (B, T)
-        return progress, term_logits
-
-    def _reconstruct_chunk(
-        self,
-        z_tok: torch.Tensor,        # (B, T, H) projected skill code
-        states: torch.Tensor,       # (B, T, state_dim) — only states[:, :1] (skill start) is used
-        prog_tok: torch.Tensor,     # (B, T, H) projected per-step progress
-    ) -> torch.Tensor:
-        """Reconstructor motion branch → action chunk (B, T, K, A), denormalized.
-
-        Image-free: inputs except progress are fixed at the skill start:
-          token mode:     [z, start_state, progress]
-          broadcast mode: [start_state, progress], with z added to the pool block inputs
-        Shared by decode() (FSQ training, GT progress) and predict_action_chunk()
-        (skillVLA inference, terminator progress).
-        """
-        B, T = z_tok.shape[:2]
-        start_state = self.recon_state_proj(self._norm_state(states[:, :1])).expand(B, T, -1)   # (B, T, H)
-        if self.skill_cond_mode == "token":
-            recon_tokens = [z_tok, start_state, prog_tok]
-            mo_cond = None
-        else:
-            recon_tokens = [start_state, prog_tok]
-            mo_cond = z_tok.reshape(B * T, -1)
-        mo = self.motion_pool(
-            torch.stack(recon_tokens, dim=2).reshape(B * T, len(recon_tokens), -1),
-            broadcast_cond=mo_cond,
-        ).view(B, T, -1)                                                                # (B, T, H)
-        dmin = self.delta_min.to(mo.device, mo.dtype).view(1, 1, 1, -1)
-        dmax = self.delta_max.to(mo.device, mo.dtype).view(1, 1, 1, -1)
-        d_tanh = torch.tanh(self.delta_head(mo)).view(B, T, self.chunk_size, self.action_dim)
-        return (d_tanh + 1.0) / 2.0 * (dmax - dmin) + dmin                              # (B, T, K, A)
-
-    # ── forward ───────────────────────────────────────────────────────────────
+        progress, term_logits = self.terminator(
+            z_norm,
+            flat_state,
+            flatten_camera(third),
+            flatten_camera(wrist),
+        )
+        return (
+            actions,
+            progress.view(bsize, steps),
+            term_logits.view(bsize, steps),
+        )
 
     def forward(
         self,
-        ctrl_pts: torch.Tensor,      # (B, n_control, action_dim)
-        lengths: torch.Tensor,       # (B,)
-        states: torch.Tensor,             # (B, T, state_dim)
-        dec_tokens: torch.Tensor,         # 3rd-person (B, T, n_tokens, feat_dim)
-        dec_tokens_wrist: torch.Tensor | None = None,  # wrist (dual terminator only)
-        frame_progress: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Returns (delta, progress_pred, term_logits, indices)."""
-        z_q, indices = self.encode(ctrl_pts, lengths)
-        delta, progress_pred, term_logits = self.decode(
-            z_q, states, dec_tokens, dec_tokens_wrist, frame_progress,
+        *,
+        ctrl: Tensor,
+        lengths: Tensor,
+        start_pose: Tensor | None = None,
+        start_state: Tensor,
+        raw_state: Tensor,
+        progress_target: Tensor,
+        third: Tensor | None,
+        wrist: Tensor | None,
+        samples_per_skill: int,
+        noise: Tensor | None = None,
+        time: Tensor | None = None,
+    ) -> dict[str, Tensor]:
+        z_q, indices = self.encoder(ctrl, lengths, start_pose, normalized=True)
+        z_norm = self.fsq.normalized(z_q)
+        z_sample = z_norm.repeat_interleave(samples_per_skill, dim=0)
+        _ = noise, time  # older validation path passes these; the reconstructor is deterministic.
+        actions = self.reconstructor(
+            start_state,
+            z_sample,
+            progress_target,
         )
-        return delta, progress_pred, term_logits, indices
-
-    # ── skillVLA-facing path (terminator + reconstructor) ─────────────────────
-
-    @torch.no_grad()
-    def predict_termination(
-        self,
-        z: torch.Tensor,                  # (B, D) skill code in z_q space (e.g. predicted by skillVLA)
-        states: torch.Tensor,             # (B, T, state_dim) current proprioception
-        dec_tokens: torch.Tensor,         # current 3rd-person tokens (B,T,N,F)/(B,N,F) or raw images
-        dec_tokens_wrist: torch.Tensor | None = None,  # current wrist tokens (dual terminator only)
-        quantize: bool = True,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Run only the terminator (single: [z, 3rd img, state]; dual: + wrist img) →
-        progress, termination.
-
-        skillVLA's per-step path. z is snapped to the FSQ grid when quantize=True.
-        Returns: progress (B, T) in [0, 1], termination (B, T) probability (sigmoid).
-        """
-        dec_tokens = self._prepare_decoder_tokens(dec_tokens, states=states)
-        if self.terminator_use_wrist:
-            dec_tokens_wrist = self._prepare_decoder_tokens(dec_tokens_wrist, states=states)
-        B, T = dec_tokens.shape[:2]
-        if quantize:
-            lo = self.fsq.level_min.to(z.device, z.dtype)
-            hi = self.fsq.level_max.to(z.device, z.dtype)
-            z = torch.maximum(torch.minimum(torch.round(z), hi), lo)
-        z_tok = self.dec_z_proj(z.unsqueeze(1).expand(B, T, -1).to(states.dtype))
-        progress, term_logits = self._terminate(z_tok, states, dec_tokens, dec_tokens_wrist)
-        return progress, torch.sigmoid(term_logits)
-
-    @torch.no_grad()
-    def predict_action_chunk(
-        self,
-        z: torch.Tensor,            # (B, D) skill code (e.g. predicted by skillVLA)
-        states: torch.Tensor,       # (B, T, state_dim) skill-START proprioception (only [:, :1] used)
-        progress: torch.Tensor,     # (B,) or (B, T) per-step progress (e.g. terminator output)
-        quantize: bool = True,
-    ) -> torch.Tensor:
-        """Run only the reconstructor: [z, start_state, progress] → action chunk (image-free).
-
-        skillVLA's branch-2 path: states is the skill-START proprioception (fixed) and progress is
-        the terminator's output. Returns delta (B, T, K, A) — denormalized actions.
-        """
-        B, T = states.shape[:2]
-        if quantize:
-            lo = self.fsq.level_min.to(z.device, z.dtype)
-            hi = self.fsq.level_max.to(z.device, z.dtype)
-            z = torch.maximum(torch.minimum(torch.round(z), hi), lo)
-        z_tok = self.dec_z_proj(z.unsqueeze(1).expand(B, T, -1).to(states.dtype))
-        prog = progress.to(device=states.device, dtype=states.dtype)
-        prog = prog.view(B, 1).expand(B, T) if prog.ndim == 1 else prog
-        prog_tok = self.motion_prog_proj(prog.unsqueeze(-1))
-        return self._reconstruct_chunk(z_tok, states, prog_tok)
-
-    # ── inference helpers ─────────────────────────────────────────────────────
-
-    @torch.no_grad()
-    def encode_numpy(
-        self,
-        trajectory: np.ndarray,      # (T, enc_dim) — full state trajectory
-        device: str = "cpu",
-    ) -> np.ndarray:
-        """Returns latent vector z_q as numpy array, shape (D,)."""
-        ctrl_pts, T = spline_encode(trajectory, self.n_control, self.spline_degree)
-        cp_norm = self._np_norm_actions(ctrl_pts)
-        cp_t = torch.from_numpy(cp_norm).float().unsqueeze(0).to(device)
-        l_t  = torch.tensor([T], dtype=torch.long, device=device)
-        z_q, _ = self.encode(cp_t, l_t)
-        return z_q.squeeze(0).cpu().numpy()
-
-    @torch.no_grad()
-    def encode_index(
-        self,
-        trajectory: np.ndarray,
-        device: str = "cpu",
-    ) -> int:
-        """Returns scalar FSQ codebook index."""
-        ctrl_pts, T = spline_encode(trajectory, self.n_control, self.spline_degree)
-        cp_norm = self._np_norm_actions(ctrl_pts)
-        cp_t = torch.from_numpy(cp_norm).float().unsqueeze(0).to(device)
-        l_t  = torch.tensor([T], dtype=torch.long, device=device)
-        _, idx = self.encode(cp_t, l_t)
-        return int(idx[0].item())
+        progress, term_logits = self.terminator(z_sample, raw_state, third, wrist)
+        return {
+            "z_q": z_q,
+            "indices": indices,
+            "actions": actions,
+            "progress": progress,
+            "term_logits": term_logits,
+        }
 
 
-# ── Dataset ───────────────────────────────────────────────────────────────────
+def _checkpoint_config(checkpoint: dict[str, Any]) -> SplineFSQAEConfig:
+    cfg = checkpoint.get("cfg")
+    if cfg is None:
+        raise ValueError("FSQ checkpoint has no cfg.")
+    if isinstance(cfg, dict):
+        cfg = SplineFSQAEConfig(**cfg)
+    if int(getattr(cfg, "format_version", 0)) != FORMAT_VERSION:
+        raise ValueError(
+            f"Legacy FSQ checkpoint is unsupported: expected format_version={FORMAT_VERSION}, "
+            f"got {getattr(cfg, 'format_version', 0)}. Retrain with the transformer-reconstructor FSQ."
+        )
+    return cfg
 
-class SplineFSQDataset(Dataset):
-    """Dataset for SplineFSQAE.
 
-    dec_tokens       : list of (T, n_tokens, feat_dim) float32 arrays — 3rd-person camera.
-                       Token 0 = CLS; tokens 1..n_tokens-1 = patch tokens.
-    dec_tokens_wrist : list of (T, n_tokens, feat_dim) wrist-camera arrays, or None for the
-                       single-camera terminator (then no wrist tokens are emitted).
-    states           : list of (T, 7) arrays (proprioception including gripper).
-    deltas           : list of arrays with shape at least (T, action_dim).
-                       Values are dataset actions. In chunk mode each array may extend
-                       past the current skill to the end of the episode so chunks can
-                       be supervised across skill boundaries.
+def _load_prefixed(module: nn.Module, state: dict[str, Tensor], prefix: str) -> None:
+    selected = {k[len(prefix) :]: v for k, v in state.items() if k.startswith(prefix)}
+    if not selected:
+        raise ValueError(f"FSQ checkpoint contains no '{prefix}*' tensors.")
+    missing, unexpected = module.load_state_dict(selected, strict=True)
+    if missing or unexpected:
+        raise RuntimeError(f"Component load failed for {prefix}: missing={missing}, unexpected={unexpected}")
+
+
+def load_fsq_encoder(path: str | Path, device: str | torch.device = "cpu") -> tuple[SplineFSQEncoder, SplineFSQAEConfig]:
+    checkpoint = torch.load(str(path), map_location="cpu", weights_only=False)
+    cfg = _checkpoint_config(checkpoint)
+    encoder = SplineFSQEncoder(
+        enc_dim=cfg.enc_dim,
+        n_control=cfg.n_control,
+        spline_degree=cfg.spline_degree,
+        hidden_dim=cfg.hidden_dim,
+        fsq_levels=cfg.fsq_levels,
+        n_layers=cfg.num_layers,
+        n_heads=cfg.image_encoder_heads,
+        dropout=0.0,
+        length_min=cfg.length_min,
+        length_max=cfg.length_max,
+        encoder_min=cfg.encoder_min,
+        encoder_max=cfg.encoder_max,
+        encoder_input_mode=getattr(cfg, "encoder_input_mode", "zero_grounded"),
+        encoder_start_min=getattr(cfg, "encoder_start_min", None),
+        encoder_start_max=getattr(cfg, "encoder_start_max", None),
+    )
+    _load_prefixed(encoder, checkpoint["model_state"], "encoder.")
+    encoder.to(device).eval()
+    return encoder, cfg
+
+
+def load_fsq_terminator(
+    path: str | Path,
+    device: str | torch.device = "cpu",
+    dino_model_path: str | None = None,
+) -> tuple[FSQQueryTerminator, SplineFSQAEConfig]:
+    checkpoint = torch.load(str(path), map_location="cpu", weights_only=False)
+    cfg = _checkpoint_config(checkpoint)
+    terminator = FSQQueryTerminator(
+        state_dim=cfg.state_dim,
+        fsq_levels=cfg.fsq_levels,
+        hidden_dim=cfg.hidden_dim,
+        n_layers=cfg.image_encoder_layers,
+        n_heads=cfg.image_encoder_heads,
+        dropout=0.0,
+        arch=cfg.terminator_arch,
+        vision_backbone=cfg.vision_backbone,
+        freeze_vision_encoder=cfg.freeze_vision_encoder,
+        dino_model_path=dino_model_path or cfg.dino_model_path,
+        dino_image_size=cfg.dino_image_size,
+        siglip_image_size=cfg.siglip_image_size,
+        cond_encoder_variant=cfg.cond_encoder_variant,
+        skill_cond_mode=cfg.skill_cond_mode,
+        state_min=cfg.state_min,
+        state_max=cfg.state_max,
+    )
+    _load_prefixed(terminator, checkpoint["model_state"], "terminator.")
+    terminator.to(device).eval()
+    return terminator, cfg
+
+
+def load_fsq_reconstructor_state(path: str | Path) -> tuple[dict[str, Tensor], SplineFSQAEConfig]:
+    checkpoint = torch.load(str(path), map_location="cpu", weights_only=False)
+    cfg = _checkpoint_config(checkpoint)
+    state = {
+        k[len("reconstructor.") :]: v
+        for k, v in checkpoint["model_state"].items()
+        if k.startswith("reconstructor.")
+    }
+    if not state:
+        raise ValueError("FSQ checkpoint has no reconstructor tensors.")
+    return state, cfg
+
+
+def load_fsq_cond_warmstart_state(
+    path: str | Path,
+) -> tuple[dict[str, Tensor] | None, SplineFSQAEConfig]:
+    """Return the Stage-1-cond-compatible part of a ``cond`` terminator.
+
+    Learned progress/termination queries, their heads, and state/skill query
+    modulation are deliberately excluded. A ``small`` checkpoint returns None.
+    """
+    checkpoint = torch.load(str(path), map_location="cpu", weights_only=False)
+    cfg = _checkpoint_config(checkpoint)
+    if cfg.terminator_arch != "cond":
+        return None, cfg
+    component_prefixes = (
+        "terminator.cond_encoder.",
+        "terminator.image_proj.",
+        f"terminator.{cfg.vision_backbone}.",
+    )
+    state = {}
+    for key, value in checkpoint["model_state"].items():
+        if key.startswith(component_prefixes):
+            state[key[len("terminator.") :]] = value
+    if not state:
+        raise ValueError("FSQ cond terminator has no reusable cond/vision tensors.")
+    return state, cfg
+
+
+def load_fsq_model(
+    path: str | Path,
+    device: str | torch.device = "cpu",
+    dino_model_path: str | None = None,
+) -> tuple[SplineFSQAE, SplineFSQAEConfig]:
+    """Load all v3 components. Reserved for joint FSQ evaluation/training tools."""
+    checkpoint = torch.load(str(path), map_location="cpu", weights_only=False)
+    cfg = _checkpoint_config(checkpoint)
+    if dino_model_path and cfg.vision_backbone == "dino":
+        cfg.dino_model_path = str(dino_model_path)
+    model = SplineFSQAE(cfg)
+    model.load_state_dict(checkpoint["model_state"], strict=True)
+    dev = torch.device(device)
+    model.to(dev).eval()
+    return model, cfg
+
+
+# -----------------------------------------------------------------------------
+# B trajectories x M sampled timesteps dataset
+# -----------------------------------------------------------------------------
+
+
+class FSQTrajectoryDataset(Dataset):
+    """One trajectory plus M sampled timesteps with live raw camera frames.
+
+    Video decoding is lazy and worker-local. Only the selected M timesteps are
+    read; there is no episode-wide DINO warm pass or in-RAM feature cache.
     """
 
     def __init__(
         self,
         segments: list[np.ndarray],
-        dec_tokens: list[np.ndarray],
-        dec_tokens_wrist: list[np.ndarray] | None,
         states: list[np.ndarray],
-        deltas: list[np.ndarray],
-        n_control: int,
-        spline_degree: int,
-        action_min: np.ndarray,
-        action_max: np.ndarray,
-        delta_min: np.ndarray,
-        delta_max: np.ndarray,
-        chunk_size: int = 10,
-        end_target_sigma: float = 0.0,
-    ) -> None:
-        self.chunk_size = chunk_size
-        self.end_target_sigma = float(end_target_sigma)
-        self.action_min = action_min.astype(np.float32)
-        self.action_max = action_max.astype(np.float32)
-
-        self.ctrl_pts: list[np.ndarray] = []
+        actions: list[np.ndarray],
+        metadata: list[dict[str, Any]],
+        raw_dataset_dir: str | Path,
+        cfg: SplineFSQAEConfig,
+        *,
+        training: bool,
+    ):
+        if not (len(segments) == len(states) == len(actions) == len(metadata)):
+            raise ValueError("FSQ dataset component lengths do not match.")
+        self.cfg = cfg
+        self.training = bool(training)
+        self.samples_per_skill = int(cfg.samples_per_skill)
+        if self.samples_per_skill < 1:
+            raise ValueError("samples_per_skill must be >=1.")
+        self.ctrl: list[np.ndarray] = []
+        self.start_poses: list[np.ndarray] | None = [] if cfg.encoder_input_mode == "optimal" else None
         self.lengths: list[int] = []
-        # Keep DINO tokens in their on-disk dtype (float16): upcasting to float32 here doubled RAM
-        # (e.g. pg14 = 86GB → 172GB) and OOM'd a 128G node. The collate buffer is float32 and upcasts
-        # each batch on assignment, so the model still trains in float32 (identical inputs, half the RAM).
-        self.dec_tokens       = [np.ascontiguousarray(t) for t in dec_tokens]
-        self.dec_tokens_wrist = (
-            None if dec_tokens_wrist is None else [np.ascontiguousarray(t) for t in dec_tokens_wrist]
-        )
-        self.states  = [s.astype(np.float32) for s in states]
-        self.deltas  = [d.astype(np.float32) for d in deltas]
+        self.states = [np.asarray(x, dtype=np.float32) for x in states]
+        self.actions = [np.asarray(x, dtype=np.float32) for x in actions]
+        self.metadata = metadata
+        self.raw_dataset_dir = str(raw_dataset_dir)
+        self._raw_dataset = None
 
-        for i, seg in enumerate(segments):
-            cp, T = spline_encode(seg.astype(np.float32), n_control, spline_degree)
-            if self.dec_tokens[i].shape[0] < T:
-                raise ValueError(f"dec_tokens[{i}] length {self.dec_tokens[i].shape[0]} < skill length {T}")
-            if self.dec_tokens_wrist is not None and self.dec_tokens_wrist[i].shape[0] < T:
-                raise ValueError(f"dec_tokens_wrist[{i}] length {self.dec_tokens_wrist[i].shape[0]} < skill length {T}")
-            if self.deltas[i].shape[0] < T:
-                raise ValueError(f"deltas[{i}] length {self.deltas[i].shape[0]} < skill length {T}")
-            cp_norm = (cp - self.action_min) / (self.action_max - self.action_min + 1e-8) * 2.0 - 1.0
-            self.ctrl_pts.append(cp_norm)
-            self.lengths.append(T)
+        enc_min = np.asarray(cfg.encoder_min, dtype=np.float32)
+        enc_max = np.asarray(cfg.encoder_max, dtype=np.float32)
+        start_min = start_max = None
+        if self.start_poses is not None:
+            start_min = np.asarray(cfg.encoder_start_min, dtype=np.float32)
+            start_max = np.asarray(cfg.encoder_start_max, dtype=np.float32)
+        for i, segment in enumerate(segments):
+            ctrl, length = spline_encode(
+                segment,
+                cfg.n_control,
+                cfg.spline_degree,
+                input_mode=cfg.encoder_input_mode,
+            )
+            if len(self.states[i]) < length or len(self.actions[i]) < length:
+                raise ValueError(
+                    f"Skill {i} is shorter than metadata length {length}: "
+                    f"states={len(self.states[i])}, actions={len(self.actions[i])}"
+                )
+            if "dataset_from_index" not in metadata[i]:
+                raise ValueError(f"Skill {i} metadata has no dataset_from_index.")
+            self.ctrl.append((2.0 * (ctrl - enc_min) / (enc_max - enc_min + 1e-8) - 1.0).astype(np.float32))
+            if self.start_poses is not None:
+                start_pose = encoder_start_eef_pose(segment)
+                self.start_poses.append(
+                    (2.0 * (start_pose - start_min) / (start_max - start_min + 1e-8) - 1.0).astype(np.float32)
+                )
+            self.lengths.append(length)
+
+        self.state_q01 = np.asarray(cfg.state_q01, dtype=np.float32)
+        self.state_q99 = np.asarray(cfg.state_q99, dtype=np.float32)
+        self.action_q01 = np.asarray(cfg.action_q01, dtype=np.float32)
+        self.action_q99 = np.asarray(cfg.action_q99, dtype=np.float32)
 
     def __len__(self) -> int:
-        return len(self.ctrl_pts)
+        return len(self.ctrl)
 
-    def __getitem__(self, idx: int) -> dict:
-        T = self.lengths[idx]
-        delta = self.deltas[idx]   # (T_future, A), dataset actions
-        tokens = self.dec_tokens[idx]              # (T, n_tokens, F) 3rd-person
-        T_future = len(delta)
+    @staticmethod
+    def _quantile_norm(x: np.ndarray, lo: np.ndarray, hi: np.ndarray) -> np.ndarray:
+        return (2.0 * (x - lo) / (hi - lo + 1e-8) - 1.0).astype(np.float32)
 
-        # Per-skill progress: 0 at the first step, 1 at the last step.
-        progress = torch.arange(T, dtype=torch.float32) / max(T - 1, 1)  # (T,)
-        # Termination target: hard 1-frame spike, or (end_target_sigma>0) a soft Gaussian bump that
-        # rises to 1.0 at the last frame (a half-bump, since no frames exist past the end). The soft
-        # form matches the fuzzy DP boundary and curbs the val overfit a sharp spike causes.
-        if self.end_target_sigma > 0.0:
-            t = torch.arange(T, dtype=torch.float32)
-            termination = torch.exp(-((t - (T - 1)) ** 2) / (2.0 * self.end_target_sigma ** 2))
+    def _sample_indices(self, length: int) -> np.ndarray:
+        m = self.samples_per_skill
+        if self.training:
+            if length >= m:
+                return np.sort(np.random.choice(length, size=m, replace=False)).astype(np.int64)
+            return np.sort(np.random.choice(length, size=m, replace=True)).astype(np.int64)
+        return np.rint(np.linspace(0, length - 1, m)).astype(np.int64)
+
+    def _action_chunks(self, action: np.ndarray, indices: np.ndarray) -> np.ndarray:
+        """Stage-1 target: normalize first, then hold beyond the current skill boundary."""
+        normalized = self._quantile_norm(action, self.action_q01, self.action_q99)
+        m, k, max_dim = len(indices), self.cfg.chunk_size, self.cfg.max_action_dim
+        out = np.zeros((m, k, max_dim), dtype=np.float32)
+        real_dim = self.cfg.action_dim
+        gripper = real_dim - 1
+        for row, start in enumerate(indices.tolist()):
+            valid = min(k, len(normalized) - start)
+            out[row, :valid, :real_dim] = normalized[start : start + valid, :real_dim]
+            if valid < k:
+                out[row, valid:, gripper] = out[row, valid - 1, gripper]
+        return out
+
+    def _get_raw_dataset(self):
+        if self._raw_dataset is None:
+            from lerobot.datasets.lerobot_dataset import LeRobotDataset
+
+            root = Path(self.raw_dataset_dir)
+            self._raw_dataset = LeRobotDataset(
+                repo_id=f"local/{root.name}",
+                root=root,
+                video_keys_to_load=[
+                    "observation.images.image",
+                    "observation.images.wrist_image",
+                ],
+            )
+        return self._raw_dataset
+
+    def _sample_images(self, index: int, sample: np.ndarray) -> tuple[Tensor, Tensor]:
+        """Decode all M frames for each camera in one batched video request.
+
+        Calling ``LeRobotDataset.__getitem__`` once per selected timestep forces
+        PyAV/TorchCodec to seek/decode separately for every frame.  The M
+        timesteps belong to one skill/episode and are sorted, so one request per
+        camera can share the seek and sequential decode work.
+        """
+        dataset = self._get_raw_dataset()
+        start = int(self.metadata[index]["dataset_from_index"]) + int(self.metadata[index]["frame_start"])
+        indices = [start + int(timestep) for timestep in sample.tolist()]
+
+        # LeRobotDataset exposes single-frame access publicly.  Its worker-local
+        # reader owns the same metadata/decoder contract and lets us batch the
+        # timestamps without re-opening/seeking the same MP4 M times.
+        reader = dataset._ensure_reader()  # noqa: SLF001
+        if reader.hf_dataset is None:
+            reader.load_and_activate()
+        rows = reader.hf_dataset[indices]
+
+        def as_int(value: Any) -> int:
+            return int(value.item()) if isinstance(value, Tensor) else int(value)
+
+        def as_float(value: Any) -> float:
+            return float(value.item()) if isinstance(value, Tensor) else float(value)
+
+        episode_ids = [as_int(value) for value in rows["episode_index"]]
+        if len(set(episode_ids)) != 1:
+            raise RuntimeError(f"A skill must stay within one episode, got {episode_ids}.")
+        episode_id = episode_ids[0]
+        timestamps = [as_float(value) for value in rows["timestamp"]]
+        episode = reader._meta.episodes[episode_id]  # noqa: SLF001
+
+        from lerobot.datasets.video_utils import decode_video_frames
+
+        def decode(camera_key: str) -> Tensor:
+            video_path = reader.root / reader._meta.get_video_file_path(episode_id, camera_key)  # noqa: SLF001
+            from_timestamp = float(episode[f"videos/{camera_key}/from_timestamp"])
+            return decode_video_frames(
+                video_path,
+                [from_timestamp + timestamp for timestamp in timestamps],
+                reader._tolerance_s,  # noqa: SLF001
+                reader._video_backend,  # noqa: SLF001
+                # The dataset is AV1.  dav1d's automatic thread pool has been
+                # observed deadlocking in a persistent DataLoader worker after
+                # many epochs, which blocks the ordered loader indefinitely.
+                decoder_num_threads=1,
+            )
+
+        return decode("observation.images.image"), decode("observation.images.wrist_image")
+
+    def __getitem__(self, index: int) -> dict[str, Tensor]:
+        length = self.lengths[index]
+        sample = self._sample_indices(length)
+        raw_state = self.states[index][sample, : self.cfg.state_dim]
+        start_norm = self._quantile_norm(
+            self.states[index][0:1, : self.cfg.state_dim], self.state_q01, self.state_q99
+        )[0]
+        start_state = np.zeros((len(sample), self.cfg.max_state_dim), dtype=np.float32)
+        start_state[:, : self.cfg.state_dim] = start_norm
+        progress = sample.astype(np.float32) / max(length - 1, 1)
+        distance_to_end = (length - 1 - sample).astype(np.float32)
+        if self.cfg.end_target_sigma > 0:
+            termination = np.exp(
+                -(distance_to_end ** 2) / (2.0 * self.cfg.end_target_sigma ** 2)
+            ).astype(np.float32)
         else:
-            termination = torch.zeros(T)
-            termination[T - 1] = 1.0
-
-        item: dict = {
-            "ctrl":         torch.from_numpy(self.ctrl_pts[idx]),      # (n_control, A)
-            "length":       torch.tensor(T, dtype=torch.long),
-            "dec_tokens":       torch.from_numpy(tokens[:T]),         # (T, n_tokens, F) 3rd-person
-            "state":        torch.from_numpy(self.states[idx][:T]),    # (T, 7)
-            "frame_progress": progress,    # (T,) GT progress: motion input + termination-head target
-            "termination":   termination,  # (T,) per-step end flag
+            termination = (distance_to_end == 0).astype(np.float32)
+        third, wrist = self._sample_images(index, sample)
+        item = {
+            "ctrl": torch.from_numpy(self.ctrl[index]),
+            "length": torch.tensor(length, dtype=torch.long),
+            "start_state": torch.from_numpy(start_state),
+            "raw_state": torch.from_numpy(raw_state.copy()),
+            "actions": torch.from_numpy(self._action_chunks(self.actions[index], sample)),
+            "third": third,
+            "wrist": wrist,
+            "progress": torch.from_numpy(progress),
+            "termination": torch.from_numpy(termination),
+            "sample_index": torch.from_numpy(sample),
+            "trajectory_index": torch.tensor(index, dtype=torch.long),
         }
-        if self.dec_tokens_wrist is not None:  # dual terminator only
-            item["dec_tokens_wrist"] = torch.from_numpy(self.dec_tokens_wrist[idx][:T])
-
-        # Chunk targets: pred[t,k] supervised by action[t+k]; slots may cross the
-        # skill boundary into the next skill (same episode), only episode-end slots invalid.
-        K = self.chunk_size
-        t_idx = np.arange(T).reshape(-1, 1) + np.arange(K).reshape(1, -1)  # (T, K)
-        valid = (t_idx < T_future)                                          # (T, K) bool
-        t_clamped = np.minimum(t_idx, T_future - 1)
-        chunk_target = delta[t_clamped]          # (T, K, A)
-        chunk_target[~valid] = 0.0
-        item["delta"]       = torch.from_numpy(chunk_target)              # (T, K, A)
-        item["chunk_valid"] = torch.from_numpy(valid.astype(np.float32))  # (T, K)
-
+        if self.start_poses is not None:
+            item["start_pose"] = torch.from_numpy(self.start_poses[index])
         return item
 
 
-# ── Collate ───────────────────────────────────────────────────────────────────
-
-def collate_fsq_batch(batch: list[dict]) -> dict:
-    lengths = torch.stack([b["length"] for b in batch])
-    max_T = int(lengths.max().item())
-    B = len(batch)
-
-    ctrl         = torch.stack([b["ctrl"]         for b in batch])  # (B, n_ctrl, A)
-    n_tokens = batch[0]["dec_tokens"].shape[1]
-    feat_dim = batch[0]["dec_tokens"].shape[2]
-    state_dim = batch[0]["state"].shape[-1]
-
-    has_wrist = "dec_tokens_wrist" in batch[0]
-    dec_tokens       = torch.zeros(B, max_T, n_tokens, feat_dim)
-    dec_tokens_wrist = torch.zeros(B, max_T, n_tokens, feat_dim) if has_wrist else None
-    state      = torch.zeros(B, max_T, state_dim)
-    frame_progress = torch.zeros(B, max_T)
-    termination = torch.zeros(B, max_T)
-    mask       = torch.zeros(B, max_T, dtype=torch.bool)
-
-    K, A = batch[0]["delta"].shape[1], batch[0]["delta"].shape[2]
-    delta       = torch.zeros(B, max_T, K, A)
-    chunk_valid = torch.zeros(B, max_T, K)
-
-    for i, b in enumerate(batch):
-        T = int(b["length"].item())
-        dec_tokens[i, :T] = b["dec_tokens"]
-        if has_wrist:
-            dec_tokens_wrist[i, :T] = b["dec_tokens_wrist"]
-        state[i, :T]      = b["state"]
-        frame_progress[i, :T] = b["frame_progress"]
-        termination[i, :T] = b["termination"]
-        delta[i, :T]      = b["delta"]
-        chunk_valid[i, :T] = b["chunk_valid"]
-        mask[i, :T]       = True
-
-    return {
-        "ctrl":         ctrl,
-        "lengths":      lengths,
-        "dec_tokens":       dec_tokens,
-        "dec_tokens_wrist": dec_tokens_wrist,
-        "state":        state,
-        "frame_progress": frame_progress,
-        "delta":        delta,
-        "termination":  termination,   # (B, max_T) per-step end flag
-        "mask":         mask,
-        "chunk_valid":  chunk_valid,   # (B, max_T, K)
-    }
+def collate_fsq_batch(batch: list[dict[str, Tensor]]) -> dict[str, Tensor | None]:
+    out: dict[str, Tensor | None] = {}
+    for key in batch[0]:
+        out[key] = torch.stack([item[key] for item in batch])
+    return out
 
 
-# ── Length-bucketed batching ──────────────────────────────────────────────────
+def _per_trajectory_mean(value: Tensor, bsize: int, samples_per_skill: int) -> Tensor:
+    return value.view(bsize, samples_per_skill).mean(dim=1).mean()
 
 
-class LengthBucketBatchSampler(Sampler):
-    """Group similar-length skills into the same batch to cut padding waste, while keeping
-    randomness. Per epoch (shuffle=True): permute all indices → cut into mega-buckets of
-    batch_size*bucket_mult → sort within each bucket by length → form batches → shuffle batch order.
-
-    Every skill appears exactly once per epoch, so epoch-level gradient coverage is unchanged; only
-    mini-batch composition differs (a standard, low-impact technique). The decoder processes
-    (B, max_T) tensors, so a batch's cost scales with its longest skill — homogeneous batches mean
-    far fewer padding frames decoded. shuffle=False gives a deterministic global length sort (val)."""
-
-    def __init__(self, lengths, batch_size: int, shuffle: bool = True, bucket_mult: int = 40, seed: int = 0):
-        self.lengths = np.asarray(lengths)
-        self.batch_size = int(batch_size)
-        self.shuffle = shuffle
-        self.bucket_size = max(self.batch_size * bucket_mult, self.batch_size)
-        self.seed = seed
-        self.epoch = 0
-
-    def __len__(self) -> int:
-        return (len(self.lengths) + self.batch_size - 1) // self.batch_size
-
-    def __iter__(self):
-        n = len(self.lengths)
-        if self.shuffle:
-            rng = np.random.default_rng(self.seed + self.epoch)
-            idx = rng.permutation(n)
-        else:
-            idx = np.argsort(self.lengths, kind="stable")  # deterministic global sort
-        batches = []
-        for s in range(0, n, self.bucket_size):
-            bucket = idx[s:s + self.bucket_size]
-            bucket = bucket[np.argsort(self.lengths[bucket], kind="stable")]
-            for b in range(0, len(bucket), self.batch_size):
-                batches.append(bucket[b:b + self.batch_size].tolist())
-        if self.shuffle:
-            rng.shuffle(batches)
-        self.epoch += 1
-        return iter(batches)
-
-
-# ── Loss ──────────────────────────────────────────────────────────────────────
-
-def fsqae_loss(
-    pred_delta: torch.Tensor,       # (B, T, K, A)
-    pred_progress: torch.Tensor,    # (B, T) in [0, 1]
-    pred_term_logits: torch.Tensor, # (B, T)
-    target_delta: torch.Tensor,
-    target_progress: torch.Tensor,  # (B, T) in [0, 1]
-    target_term: torch.Tensor,      # (B, T)
-    mask: torch.Tensor,             # (B, T) bool
-    delta_min: torch.Tensor,        # (A,)
-    delta_max: torch.Tensor,        # (A,)
-    chunk_valid: torch.Tensor,      # (B, T, K)
-    delta_loss_weight: float = 1.0,
-    progress_loss_weight: float = 1.0,
-    end_loss_weight: float = 1.0,
-    end_pos_weight: float | torch.Tensor = 1.0,
-    weighted: bool = False,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Returns (total, delta_loss, progress_loss, end_loss, delta_loss_weighted). delta_loss is the
-    PLAIN (uniform) comparison value; delta_loss_weighted is the objective's delta term (equals
-    delta_loss when weighted=False). No VQ loss term."""
-    dev, dt = pred_delta.device, pred_delta.dtype
-
-    # Action chunk loss (B, T, K, A): normalize to [-1,1], SmoothL1, valid-slot mean.
-    dmin  = delta_min.to(dev, dt).view(1, 1, 1, -1)
-    dmax  = delta_max.to(dev, dt).view(1, 1, 1, -1)
-    scale = (dmax - dmin).clamp_min(1e-8)
-    per_step_ka = F.smooth_l1_loss(
-        (pred_delta   - dmin) / scale * 2.0 - 1.0,
-        (target_delta - dmin) / scale * 2.0 - 1.0,
-        reduction="none",
-    ).mean(dim=-1)  # (B, T, K)
-    cv = chunk_valid.to(dev, dt)
-    per_step = (per_step_ka * cv).sum(dim=-1) / cv.sum(dim=-1).clamp_min(1.0)  # (B, T)
-
-    m = mask.float()
-    # PLAIN (uniform) per-frame delta loss — always the comparison metric (logged as delta_loss), so
-    # weighted vs uniform runs stay directly comparable on the same axis.
-    delta_loss = ((per_step * m).sum(dim=1) / m.sum(dim=1).clamp_min(1.0)).mean()
-    # Objective's delta term: optionally per-frame end-weighted by w[t]=1+progress[t] → the skill-END
-    # frames count up to 2× the start (progress 0→1). Uniform WITHIN a chunk (delta actions: endpoint
-    # = Σ deltas, so the K slots jointly determine the landing and share one weight). Steers the FSQ
-    # latent to spend more code resolution on the skill's latter/handoff part. progress/end losses
-    # below stay uniform (calibrated timing targets). When off, equals the plain delta_loss.
-    if weighted:
-        w = m * (1.0 + target_progress.to(dev, dt))
-        delta_loss_weighted = ((per_step * w).sum(dim=1) / w.sum(dim=1).clamp_min(1.0)).mean()
+def fsq_reconstruction_loss(
+    output: dict[str, Tensor],
+    batch: dict[str, Tensor | None],
+    cfg: SplineFSQAEConfig,
+) -> tuple[Tensor, dict[str, Tensor]]:
+    bsize = int(batch["ctrl"].shape[0])
+    m = cfg.samples_per_skill
+    pred = output["actions"][..., : cfg.action_dim]
+    target = batch["actions"].reshape(bsize * m, cfg.chunk_size, cfg.max_action_dim)
+    target = target[..., : cfg.action_dim].to(pred)
+    per_sample_action = (pred - target).square().mean(dim=(1, 2))
+    action_plain = _per_trajectory_mean(per_sample_action, bsize, m)
+    if cfg.weighted_loss:
+        if cfg.weighted_loss_end_weight <= 0:
+            raise ValueError(
+                "weighted_loss_end_weight must be positive, "
+                f"got {cfg.weighted_loss_end_weight}."
+            )
+        progress = batch["progress"].reshape(-1).to(per_sample_action)
+        weight = 1.0 + (cfg.weighted_loss_end_weight - 1.0) * progress
+        weighted = (per_sample_action * weight).view(bsize, m).sum(dim=1) / weight.view(bsize, m).sum(dim=1)
+        action_objective = weighted.mean()
     else:
-        delta_loss_weighted = delta_loss
+        action_objective = action_plain
 
-    # Progress regression (per-step, masked).
-    prog_per = F.smooth_l1_loss(pred_progress, target_progress.to(dev, dt), reduction="none")
-    progress_loss = ((prog_per * m).sum(dim=1) / m.sum(dim=1).clamp_min(1.0)).mean()
-
-    # Termination classification (per-step, masked).
-    pos_w = torch.as_tensor(end_pos_weight, device=dev, dtype=dt)
+    progress_per = F.smooth_l1_loss(
+        output["progress"], batch["progress"].reshape(-1).to(output["progress"]), reduction="none"
+    )
+    progress_loss = _per_trajectory_mean(progress_per, bsize, m)
+    pos_weight = torch.as_tensor(cfg.end_pos_weight, device=output["term_logits"].device)
     end_per = F.binary_cross_entropy_with_logits(
-        pred_term_logits, target_term.to(dev, dt), reduction="none", pos_weight=pos_w
+        output["term_logits"],
+        batch["termination"].reshape(-1).to(output["term_logits"]),
+        reduction="none",
+        pos_weight=pos_weight,
     )
-    end_loss = (end_per * m).sum() / m.sum().clamp_min(1.0)
-
+    end_loss = _per_trajectory_mean(end_per, bsize, m)
     total = (
-        delta_loss_weight * delta_loss_weighted
-        + progress_loss_weight * progress_loss
-        + end_loss_weight * end_loss
+        cfg.action_loss_weight * action_objective
+        + cfg.progress_loss_weight * progress_loss
+        + cfg.end_loss_weight * end_loss
     )
-    return total, delta_loss, progress_loss, end_loss, delta_loss_weighted
+    metrics = {
+        "loss": total.detach(),
+        "action": action_plain.detach(),
+        "action_objective": action_objective.detach(),
+        "progress": progress_loss.detach(),
+        "termination": end_loss.detach(),
+    }
+    return total, metrics
 
-
-# ── End-signal metrics ────────────────────────────────────────────────────────
 
 @torch.no_grad()
-def end_signal_metrics(
-    pred_end_logits: torch.Tensor,   # (B, T)
-    target_end: torch.Tensor,        # (B, T)
-    mask: torch.Tensor,              # (B, T)
-    threshold: float = 0.5,
-) -> dict[str, float]:
-    valid = mask.bool()
-    if valid.sum().item() == 0:
-        return {"acc": 0.0, "precision": 0.0, "recall": 0.0, "positive_rate": 0.0}
-    pred     = torch.sigmoid(pred_end_logits) >= threshold
-    target   = target_end >= 0.5
-    pred_v   = pred[valid]
-    target_v = target[valid]
-    tp = (pred_v & target_v).sum().float()
-    fp = (pred_v & ~target_v).sum().float()
-    fn = (~pred_v & target_v).sum().float()
+def end_signal_metrics(logits: Tensor, target: Tensor, threshold: float) -> dict[str, float]:
+    pred = torch.sigmoid(logits) >= threshold
+    truth = target >= 0.5
+    tp = (pred & truth).sum().float()
+    fp = (pred & ~truth).sum().float()
+    fn = (~pred & truth).sum().float()
     return {
-        "acc":           float((pred_v == target_v).float().mean()),
-        "precision":     float(tp / (tp + fp).clamp_min(1.0)),
-        "recall":        float(tp / (tp + fn).clamp_min(1.0)),
-        "positive_rate": float(pred_v.float().mean()),
+        "acc": float((pred == truth).float().mean()),
+        "precision": float(tp / (tp + fp).clamp_min(1.0)),
+        "recall": float(tp / (tp + fn).clamp_min(1.0)),
+        "positive_rate": float(pred.float().mean()),
     }
 
 
-# ── Training ──────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
+# Training
+# -----------------------------------------------------------------------------
+
 
 def train_spline_fsqae(
+    *,
     segments: list[np.ndarray],
-    dec_tokens: list[np.ndarray],
-    dec_tokens_wrist: list[np.ndarray] | None,
     decoder_states: list[np.ndarray],
     decoder_targets: list[np.ndarray],
+    raw_dataset_dir: str | Path,
     cfg: SplineFSQAEConfig,
     wandb_run=None,
-    metadata: list[dict] | None = None,
+    metadata: list[dict[str, Any]],
     resume_from: str | None = None,
 ) -> SplineFSQAE:
     if not segments:
-        raise ValueError("No skill segments provided.")
-
-    enc_dim = cfg.enc_dim if cfg.enc_dim > 0 else segments[0].shape[-1]
-    action_dim = cfg.action_dim if cfg.action_dim > 0 else decoder_targets[0].shape[-1]
-    # Encoder normalization stats must match what the encoder actually sees: zero-grounded control
-    # points (spline_encode grounds internally). Computing min/max on grounded segments keeps the
-    # normalization centered on the relative-pose distribution.
-    grounded = np.concatenate([zero_ground_trajectory(s) for s in segments])
-    a_min = cfg.action_min if cfg.action_min is not None else grounded.min(axis=0)
-    a_max = cfg.action_max if cfg.action_max is not None else grounded.max(axis=0)
-    d_min = cfg.delta_min  if cfg.delta_min  is not None else np.concatenate(decoder_targets).min(axis=0)
-    d_max = cfg.delta_max  if cfg.delta_max  is not None else np.concatenate(decoder_targets).max(axis=0)
-    s_min = cfg.state_min  if cfg.state_min  is not None else np.concatenate(decoder_states).min(axis=0)
-    s_max = cfg.state_max  if cfg.state_max  is not None else np.concatenate(decoder_states).max(axis=0)
-
-    print(
-        f"[SplineFSQAE] {len(segments)} segments | "
-        f"n_control={cfg.n_control} fsq={cfg.fsq_levels} "
-        f"hidden={cfg.hidden_dim} K={cfg.chunk_size}"
-    )
-
+        raise ValueError("No skill trajectories were provided.")
     n_val = max(1, int(len(segments) * cfg.val_split))
-    # Deterministic identity-based val split. Assign each skill to val/train by a STABLE hash of its
-    # identity (episode_id, skill_index) — NOT np.random.permutation. A fresh random split every run
-    # silently reshuffles train<->val on resume, so skills the model already trained on leak into the
-    # new val set: val loss looks great but measures memorization, not generalization. Hashing on the
-    # skill's identity keeps the held-out set fixed across runs / resumes / dataset rebuilds. Use
-    # hashlib (process-stable) rather than built-in hash() (salted per-process by PYTHONHASHSEED).
-    if metadata is not None and len(metadata) == len(segments):
-        def _skill_hash(m: dict) -> int:
-            key = f"{m.get('episode_id', -1)}_{m.get('skill_index', -1)}"
-            return int(hashlib.sha1(key.encode()).hexdigest(), 16)
-        order = sorted(range(len(segments)), key=lambda i: _skill_hash(metadata[i]))
-        val_idx = np.array(order[:n_val], dtype=int)
-        train_idx = np.array(order[n_val:], dtype=int)
-        # Fingerprint the held-out set so a resumed/relaunched run can be eyeballed as identical.
-        val_fp = hashlib.sha1(
-            ",".join(sorted(f"{metadata[i].get('episode_id',-1)}_{metadata[i].get('skill_index',-1)}"
-                            for i in val_idx)).encode()
+    if len(metadata) == len(segments):
+        def identity_hash(i: int) -> int:
+            item = metadata[i]
+            identity = f"{item.get('episode_id', -1)}_{item.get('skill_index', -1)}"
+            return int(hashlib.sha1(identity.encode()).hexdigest(), 16)
+
+        order = sorted(range(len(segments)), key=identity_hash)
+        fingerprint = hashlib.sha1(
+            ",".join(
+                sorted(
+                    f"{metadata[i].get('episode_id', -1)}_{metadata[i].get('skill_index', -1)}"
+                    for i in order[:n_val]
+                )
+            ).encode()
         ).hexdigest()[:12]
-        print(f"[SplineFSQAE] val split: {n_val}/{len(segments)} skills (identity-hash, fp={val_fp})")
     else:
-        # No metadata → deterministic fallback: fixed-seed generator, independent of global RNG state.
-        perm = np.random.default_rng(42).permutation(len(segments))
-        val_idx, train_idx = perm[:n_val], perm[n_val:]
-        print(f"[SplineFSQAE] val split: {n_val}/{len(segments)} skills (seeded fallback, no metadata)")
+        order = np.random.default_rng(42).permutation(len(segments)).tolist()
+        fingerprint = "seed42"
+    val_ids, train_ids = order[:n_val], order[n_val:]
+    print(f"[FSQ-v3] trajectories={len(segments)} train={len(train_ids)} val={len(val_ids)} fp={fingerprint}")
 
-    def take(xs: list, ids) -> list:
-        return [xs[i] for i in ids]
+    def take(items: list[Any] | None, ids: list[int]):
+        return None if items is None else [items[i] for i in ids]
 
-    def mk_ds(ids) -> SplineFSQDataset:
-        return SplineFSQDataset(
+    def dataset(ids: list[int], training: bool) -> FSQTrajectoryDataset:
+        return FSQTrajectoryDataset(
             take(segments, ids),
-            take(dec_tokens, ids),
-            take(dec_tokens_wrist, ids) if dec_tokens_wrist is not None else None,
             take(decoder_states, ids),
             take(decoder_targets, ids),
-            cfg.n_control, cfg.spline_degree,
-            a_min, a_max, d_min, d_max,
-            cfg.chunk_size,
-            cfg.end_target_sigma,
+            take(metadata, ids),
+            raw_dataset_dir,
+            cfg,
+            training=training,
         )
 
-    train_ds, val_ds = mk_ds(train_idx), mk_ds(val_idx)
+    train_ds, val_ds = dataset(train_ids, True), dataset(val_ids, False)
+    device = torch.device(cfg.device)
+    # ``step`` moves tensors with non_blocking=True below; pinning makes that transfer genuinely
+    # asynchronous instead of synchronizing the GPU after the worker has decoded the next batch.
+    pin_memory = device.type == "cuda"
     train_loader = DataLoader(
-        train_ds, collate_fn=collate_fsq_batch,
-        batch_sampler=LengthBucketBatchSampler(train_ds.lengths, cfg.batch_size, shuffle=True),
-        num_workers=cfg.num_workers, pin_memory=False, persistent_workers=cfg.num_workers > 0,
+        train_ds,
+        batch_size=cfg.batch_size,
+        shuffle=True,
+        num_workers=cfg.num_workers,
+        collate_fn=collate_fsq_batch,
+        pin_memory=pin_memory,
+        persistent_workers=cfg.num_workers > 0,
+        prefetch_factor=1 if cfg.num_workers > 0 else None,
+        # Surface a stuck decoder as a failed job instead of silently holding a
+        # GPU allocation forever.  Normal batches complete far below 5 minutes.
+        timeout=300 if cfg.num_workers > 0 else 0,
     )
+    val_workers = min(2, cfg.num_workers)
     val_loader = DataLoader(
-        val_ds, collate_fn=collate_fsq_batch,
-        batch_sampler=LengthBucketBatchSampler(val_ds.lengths, cfg.batch_size, shuffle=False),
-        num_workers=cfg.num_workers, pin_memory=False, persistent_workers=cfg.num_workers > 0,
+        val_ds,
+        batch_size=cfg.batch_size,
+        shuffle=False,
+        num_workers=val_workers,
+        collate_fn=collate_fsq_batch,
+        pin_memory=pin_memory,
+        persistent_workers=False,
+        prefetch_factor=1 if val_workers > 0 else None,
+        timeout=300 if val_workers > 0 else 0,
     )
 
-    model = SplineFSQAE(
-        action_dim=action_dim,
-        enc_dim=enc_dim,
-        state_dim=cfg.state_dim,
-        n_control=cfg.n_control,
-        spline_degree=cfg.spline_degree,
-        hidden_dim=cfg.hidden_dim,
-        fsq_levels=cfg.fsq_levels,
-        num_layers=cfg.num_layers,
-        dropout=cfg.dropout,
-        feat_dim=cfg.feat_dim,
-        n_tokens=cfg.n_tokens,
-        patch_grid=cfg.patch_grid,
-        terminator_use_third=cfg.terminator_use_third,
-        terminator_use_wrist=cfg.terminator_use_wrist,
-        image_token_dim=cfg.image_token_dim,
-        image_encoder_layers=cfg.image_encoder_layers,
-        image_encoder_heads=cfg.image_encoder_heads,
-        skill_cond_mode=cfg.skill_cond_mode,
-        chunk_size=cfg.chunk_size,
-        length_min=cfg.length_min, length_max=cfg.length_max,
-        action_min=a_min, action_max=a_max,
-        delta_min=d_min,  delta_max=d_max,
-        state_min=s_min,  state_max=s_max,
-    ).to(cfg.device)
+    model = SplineFSQAE(cfg).to(device)
+    model.terminator.gradient_checkpointing_enable()
 
-    print(f"[SplineFSQAE] trainable params: {sum(p.numel() for p in model.parameters() if p.requires_grad):,}")
-    optim = torch.optim.Adam(model.parameters(), lr=cfg.lr)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optim, T_max=cfg.epochs, eta_min=cfg.lr * 0.01)
-    start_epoch = 1
-    best_val = math.inf
+    optimizer = torch.optim.AdamW(
+        [
+            {"params": model.encoder.parameters(), "lr": cfg.encoder_lr, "name": "encoder"},
+            {"params": model.reconstructor.parameters(), "lr": cfg.reconstructor_lr, "name": "reconstructor"},
+            {"params": model.terminator.parameters(), "lr": cfg.terminator_lr, "name": "terminator"},
+        ],
+        betas=(0.9, 0.95),
+        eps=1e-8,
+        weight_decay=0.01,
+    )
 
-    if resume_from is not None:
-        ckpt = torch.load(resume_from, map_location=cfg.device, weights_only=False)
-        model.load_state_dict(ckpt["model_state"])
-        if "optim_state" in ckpt:
-            optim.load_state_dict(ckpt["optim_state"])
-        start_epoch = ckpt.get("epoch", 0) + 1
-        best_val = ckpt.get("val_select", ckpt.get("val_loss", math.inf))
-        print(f"[SplineFSQAE] resumed from {resume_from}, starting epoch {start_epoch}")
+    def lr_factor(epoch: int) -> float:
+        if cfg.epochs <= 1:
+            return 0.01
+        progress = min(max(epoch / (cfg.epochs - 1), 0.0), 1.0)
+        return 0.01 + 0.99 * 0.5 * (1.0 + math.cos(math.pi * progress))
 
-    def _save(path: str, epoch: int, val_loss: float, val_select: float) -> None:
-        torch.save(
-            {
-                "model_state": model.state_dict(),
-                "optim_state": optim.state_dict(),
-                "cfg": cfg,
-                "epoch": epoch,
-                "val_loss": val_loss,       # total val (delta+prog+end) — kept for downstream display
-                "val_select": val_select,   # the metric FSQ.pt was actually selected on
-            },
-            path,
-        )
-
-    def _step(batch: dict, train: bool):
-        dev = cfg.device
-        ctrl      = batch["ctrl"].to(dev)
-        lengths   = batch["lengths"].to(dev)
-        dec_tok   = batch["dec_tokens"].to(dev)
-        dec_tok_wrist = batch["dec_tokens_wrist"]
-        dec_tok_wrist = dec_tok_wrist.to(dev) if dec_tok_wrist is not None else None
-        states    = batch["state"].to(dev)
-        frame_progress = batch["frame_progress"].to(dev)
-        tgt_delta = batch["delta"].to(dev)
-        tgt_prog  = batch["frame_progress"].to(dev)   # GT progress is the termination-head target
-        tgt_term  = batch["termination"].to(dev)
-        mask      = batch["mask"].to(dev)
-        cv        = batch["chunk_valid"].to(dev) if batch["chunk_valid"] is not None else None
-
-        with torch.autocast(device_type=("cuda" if torch.cuda.is_available() else "cpu"), dtype=torch.bfloat16):
-            pred_delta, pred_prog, pred_term, _ = model(
-                ctrl, lengths, states, dec_tok, dec_tok_wrist, frame_progress,
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_factor)
+    start_epoch, best_val = 1, math.inf
+    if resume_from:
+        checkpoint = torch.load(resume_from, map_location="cpu", weights_only=False)
+        resume_cfg = _checkpoint_config(checkpoint)
+        resume_input_mode = getattr(resume_cfg, "encoder_input_mode", "zero_grounded")
+        if resume_input_mode != cfg.encoder_input_mode:
+            raise ValueError(
+                "Cannot resume FSQ with a different encoder input convention: "
+                f"checkpoint={resume_input_mode!r}, current={cfg.encoder_input_mode!r}."
             )
-            total, d_l, p_l, e_l, dw_l = fsqae_loss(
-                pred_delta, pred_prog, pred_term, tgt_delta, tgt_prog, tgt_term, mask,
-                model.delta_min, model.delta_max, cv,
-                cfg.delta_loss_weight, cfg.progress_loss_weight, cfg.end_loss_weight, cfg.end_pos_weight,
-                weighted=cfg.weighted_loss,
+        model.load_state_dict(checkpoint["model_state"], strict=True)
+        optimizer.load_state_dict(checkpoint["optim_state"])
+        if "scheduler_state" in checkpoint:
+            scheduler.load_state_dict(checkpoint["scheduler_state"])
+        start_epoch = int(checkpoint.get("epoch", 0)) + 1
+        best_val = float(checkpoint.get("val_select", math.inf))
+        print(f"[FSQ-v3] resumed {resume_from} at epoch {start_epoch}")
+    else:
+        loaded_vision = initialize_terminator_vision_from_pi05(model.terminator, cfg.pi_base)
+        if loaded_vision:
+            print(f"[FSQ-v3] initialized {loaded_vision} SigLIP tensors from {cfg.pi_base}")
+
+    if wandb_run is not None:
+        # The same epoch aggregate is reported twice: train/val use optimizer_step as x, while
+        # train_epoch/val_epoch use epoch as x.  Keeping train and val at the top-level avoids
+        # collapsing every curve into one "epoch" workspace section.
+        wandb_run.define_metric("epoch")
+        wandb_run.define_metric("optimizer_step")
+        for name in ("train/*", "val/*", "perf/*", "lr/*"):
+            wandb_run.define_metric(name, step_metric="optimizer_step")
+        for name in ("train_epoch/*", "val_epoch/*", "perf_epoch/*", "lr_epoch/*"):
+            wandb_run.define_metric(name, step_metric="epoch")
+
+    def save(path: str | Path, epoch: int, val: float, select: float, *, resumable: bool) -> None:
+        payload = {
+            "format_version": FORMAT_VERSION,
+            "cfg": cfg,
+            "model_state": model.state_dict(),
+            "epoch": epoch,
+            "val_loss": val,
+            "val_select": select,
+        }
+        # FSQ.pt is copied into every SkillVLA data run and only needs component weights.
+        # Periodic checkpoints retain optimizer/scheduler state for exact resume.
+        if resumable:
+            payload["optim_state"] = optimizer.state_dict()
+            payload["scheduler_state"] = scheduler.state_dict()
+        torch.save(payload, str(path))
+
+    def step(batch: dict[str, Tensor | None], training: bool, batch_index: int):
+        moved = {k: (v.to(device, non_blocking=True) if isinstance(v, Tensor) else v) for k, v in batch.items()}
+        bsize = moved["ctrl"].shape[0]
+        m = cfg.samples_per_skill
+        start_state = moved["start_state"].reshape(bsize * m, cfg.max_state_dim)
+        raw_state = moved["raw_state"].reshape(bsize * m, cfg.state_dim)
+        third = moved["third"].reshape(bsize * m, *moved["third"].shape[2:])
+        wrist = moved["wrist"].reshape(bsize * m, *moved["wrist"].shape[2:])
+        noise = time = None
+        if not training:
+            generator = torch.Generator(device=device).manual_seed(10_000 + batch_index)
+            noise = torch.randn(
+                (bsize * m, cfg.chunk_size, cfg.max_action_dim),
+                generator=generator,
+                device=device,
+                dtype=moved["actions"].dtype,
             )
-        if train:
-            optim.zero_grad()
-            total.backward()
+            time = torch.full((bsize * m,), 0.5, device=device)
+        with torch.autocast(
+            device_type=device.type,
+            dtype=torch.bfloat16,
+            enabled=device.type == "cuda",
+        ):
+            output = model(
+                ctrl=moved["ctrl"],
+                lengths=moved["length"],
+                start_pose=moved.get("start_pose"),
+                start_state=start_state,
+                raw_state=raw_state,
+                progress_target=moved["progress"].reshape(bsize * m),
+                third=third,
+                wrist=wrist,
+                samples_per_skill=m,
+                noise=noise,
+                time=time,
+            )
+            loss, metrics = fsq_reconstruction_loss(output, moved, cfg)
+        if training:
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
-            optim.step()
-        em = end_signal_metrics(pred_term, tgt_term, mask, cfg.end_threshold)
-        return total.item(), d_l.item(), p_l.item(), e_l.item(), dw_l.item(), em
+            optimizer.step()
+        end_metrics = end_signal_metrics(
+            output["term_logits"].detach(),
+            moved["termination"].reshape(-1),
+            cfg.end_threshold,
+        )
+        # One FSQ index per input skill is already produced by the encoder. Keep
+        # it on-device so epoch-level codebook coverage costs only a boolean
+        # scatter, not an additional encode pass or per-batch CPU synchronization.
+        return {k: float(v) for k, v in metrics.items()}, end_metrics, bsize, output["indices"].detach()
 
+    save_path = Path(cfg.save_path) if cfg.save_path else Path("FSQ.pt")
+    # W&B previously received ``step=epoch``, which made one full FSQ epoch look like one
+    # optimizer step and therefore incomparable with VLA training dashboards.
+    global_step = (start_epoch - 1) * len(train_loader)
     for epoch in range(start_epoch, cfg.epochs + 1):
+        epoch_start = time.perf_counter()
         model.train()
-        t_tot = t_d = t_p = t_e = t_dw = t_acc = t_rec = n_tr = 0.0
-        for batch in train_loader:
-            tot, d, p, e, dw, em = _step(batch, train=True)
-            t_tot += tot; t_d += d; t_p += p; t_e += e; t_dw += dw
-            t_acc += em["acc"]; t_rec += em["recall"]; n_tr += 1
-
+        train_sum: dict[str, float] = {}
+        train_end: dict[str, float] = {}
+        train_count = 0
+        train_codes_seen = torch.zeros(model.fsq.codebook_size, dtype=torch.bool, device=device)
+        for batch_index, batch in enumerate(train_loader):
+            metrics, end_metrics, count, code_indices = step(batch, True, batch_index)
+            global_step += 1
+            train_count += count
+            train_codes_seen[code_indices.reshape(-1).long()] = True
+            for key, value in metrics.items():
+                train_sum[key] = train_sum.get(key, 0.0) + value * count
+            for key, value in end_metrics.items():
+                train_end[key] = train_end.get(key, 0.0) + value * count
         scheduler.step()
 
         model.eval()
-        v_tot = v_d = v_p = v_e = v_dw = v_acc = v_rec = n_vl = 0.0
+        val_sum: dict[str, float] = {}
+        val_end: dict[str, float] = {}
+        val_count = 0
+        val_codes_seen = torch.zeros(model.fsq.codebook_size, dtype=torch.bool, device=device)
         with torch.no_grad():
-            for batch in val_loader:
-                tot, d, p, e, dw, em = _step(batch, train=False)
-                v_tot += tot; v_d += d; v_p += p; v_e += e; v_dw += dw
-                v_acc += em["acc"]; v_rec += em["recall"]; n_vl += 1
+            for batch_index, batch in enumerate(val_loader):
+                metrics, end_metrics, count, code_indices = step(batch, False, batch_index)
+                val_count += count
+                val_codes_seen[code_indices.reshape(-1).long()] = True
+                for key, value in metrics.items():
+                    val_sum[key] = val_sum.get(key, 0.0) + value * count
+                for key, value in end_metrics.items():
+                    val_end[key] = val_end.get(key, 0.0) + value * count
 
-        n_tr = max(1, n_tr); n_vl = max(1, n_vl)
-        train_loss = t_tot / n_tr
-        val_loss = v_tot / n_vl
-        # Checkpoint-SELECTION metric. Unset (None) → follow the actual loss (val_loss). Else override
-        # with wd*delta + wp*progress + we*end (val components; missing weight → 0). See cfg.val_select_*.
-        if cfg.val_select_delta_weight is None:
-            val_select = val_loss
-        else:
-            val_select = ((cfg.val_select_delta_weight or 0.0)     * (v_d / n_vl)
-                          + (cfg.val_select_progress_weight or 0.0) * (v_p / n_vl)
-                          + (cfg.val_select_end_weight or 0.0)      * (v_e / n_vl))
-        log = {
-            "train/loss": train_loss,
-            "train/delta_loss": t_d / n_tr,
-            "train/progress_loss": t_p / n_tr,
-            "train/end_loss": t_e / n_tr,
-            "train/end_acc": t_acc / n_tr,
-            "train/end_recall": t_rec / n_tr,
-            "val/loss": val_loss,
-            "val/select": val_select,
-            "val/delta_loss": v_d / n_vl,
-            "val/progress_loss": v_p / n_vl,
-            "val/end_loss": v_e / n_vl,
-            "val/end_acc": v_acc / n_vl,
-            "val/end_recall": v_rec / n_vl,
-            "lr": scheduler.get_last_lr()[0],
-            "end_pos_weight": cfg.end_pos_weight,
-        }
-        # Plain delta stays in */delta_loss (the cross-run comparison axis); the actual end-weighted
-        # delta that the objective backprops shows in a SEPARATE panel (only for weighted runs).
-        if cfg.weighted_loss:
-            log["train/delta_loss_weighted"] = t_dw / n_tr
-            log["val/delta_loss_weighted"]   = v_dw / n_vl
-        if wandb_run is not None:
-            wandb_run.log(log, step=epoch)
-
-        if epoch % cfg.log_every == 0 or epoch == 1:
-            print(
-                f"[SplineFSQAE] {epoch:4d}/{cfg.epochs}  "
-                f"train={train_loss:.4f}  val={val_loss:.4f}  sel={val_select:.4f}  "
-                f"delta={log['train/delta_loss']:.4f}  prog={log['train/progress_loss']:.4f}  "
-                f"end={log['train/end_loss']:.4f}  "
-                f"end_acc={log['train/end_acc']:.3f}  end_rec={log['train/end_recall']:.3f}"
+        train_avg = {k: v / max(train_count, 1) for k, v in train_sum.items()}
+        val_avg = {k: v / max(val_count, 1) for k, v in val_sum.items()}
+        train_end_avg = {k: v / max(train_count, 1) for k, v in train_end.items()}
+        val_end_avg = {k: v / max(val_count, 1) for k, v in val_end.items()}
+        train_active_codes = int(train_codes_seen.count_nonzero().item())
+        val_active_codes = int(val_codes_seen.count_nonzero().item())
+        codebook_size = model.fsq.codebook_size
+        select = (
+            (cfg.val_select_action_weight if cfg.val_select_action_weight is not None else cfg.action_loss_weight)
+            * val_avg["action"]
+            + (cfg.val_select_progress_weight if cfg.val_select_progress_weight is not None else cfg.progress_loss_weight)
+            * val_avg["progress"]
+            + (cfg.val_select_end_weight if cfg.val_select_end_weight is not None else cfg.end_loss_weight)
+            * val_avg["termination"]
+        )
+        if select < best_val:
+            best_val = select
+            save(save_path, epoch, val_avg["loss"], select, resumable=False)
+        if cfg.checkpoint_every and epoch % cfg.checkpoint_every == 0:
+            save(
+                save_path.with_name(f"FSQ_epoch{epoch:04d}.pt"),
+                epoch,
+                val_avg["loss"],
+                select,
+                resumable=True,
             )
 
-        if cfg.save_path is not None and val_select < best_val:
-            best_val = val_select
-            _save(cfg.save_path, epoch, val_loss, val_select)
+        log = {
+            "epoch": epoch,
+            "optimizer_step": global_step,
+            "perf/seconds": time.perf_counter() - epoch_start,
+            "perf/updates_per_sec": len(train_loader) / max(time.perf_counter() - epoch_start, 1e-8),
+            **{f"train/{k}": v for k, v in train_avg.items()},
+            **{f"val/{k}": v for k, v in val_avg.items()},
+            **{f"train/end_{k}": v for k, v in train_end_avg.items()},
+            **{f"val/end_{k}": v for k, v in val_end_avg.items()},
+            "train/codebook_utilization_pct": 100.0 * train_active_codes / codebook_size,
+            "train/codebook_active_entries": train_active_codes,
+            "val/codebook_utilization_pct": 100.0 * val_active_codes / codebook_size,
+            "val/codebook_active_entries": val_active_codes,
+            "val/select": select,
+            "lr/encoder": optimizer.param_groups[0]["lr"],
+            "lr/reconstructor": optimizer.param_groups[1]["lr"],
+            "lr/terminator": optimizer.param_groups[2]["lr"],
+        }
+        log.update({f"train_epoch/{k}": v for k, v in train_avg.items()})
+        log.update({f"val_epoch/{k}": v for k, v in val_avg.items()})
+        log.update({f"train_epoch/end_{k}": v for k, v in train_end_avg.items()})
+        log.update({f"val_epoch/end_{k}": v for k, v in val_end_avg.items()})
+        log.update({
+            "train_epoch/codebook_utilization_pct": log["train/codebook_utilization_pct"],
+            "train_epoch/codebook_active_entries": train_active_codes,
+            "val_epoch/codebook_utilization_pct": log["val/codebook_utilization_pct"],
+            "val_epoch/codebook_active_entries": val_active_codes,
+            "val_epoch/select": select,
+            "perf_epoch/seconds": log["perf/seconds"],
+            "perf_epoch/updates_per_sec": log["perf/updates_per_sec"],
+            "lr_epoch/encoder": log["lr/encoder"],
+            "lr_epoch/reconstructor": log["lr/reconstructor"],
+            "lr_epoch/terminator": log["lr/terminator"],
+        })
+        if wandb_run is not None:
+            wandb_run.log(log, step=global_step)
+        if epoch == 1 or epoch % cfg.log_every == 0:
+            print(
+                f"[FSQ-v3] {epoch:4d}/{cfg.epochs} "
+                f"train={train_avg['loss']:.4f} val={val_avg['loss']:.4f} "
+                f"action={val_avg['action']:.4f} prog={val_avg['progress']:.4f} "
+                f"end={val_avg['termination']:.4f} select={select:.4f}"
+            )
 
-        if cfg.checkpoint_every > 0 and epoch % cfg.checkpoint_every == 0 and cfg.save_path is not None:
-            ckpt_path = cfg.save_path.replace(".pt", f"_epoch{epoch:04d}.pt")
-            _save(ckpt_path, epoch, val_loss, val_select)
-
-    if cfg.save_path is not None and best_val == math.inf:
-        _save(cfg.save_path, cfg.epochs, val_loss, val_select)
-
-    print(f"[SplineFSQAE] done. best val-select: {best_val:.4f}")
+    print(f"[FSQ-v3] done; best val-select={best_val:.6f} -> {save_path}")
     return model

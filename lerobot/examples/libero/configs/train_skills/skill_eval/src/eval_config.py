@@ -30,11 +30,6 @@ def build_settings(config_path: str | None = None) -> dict:
             "dp_eval_output_suffix may contain only letters, digits, '.', '_' and '-', "
             f"got {output_suffix!r}"
         )
-    random_far_fraction = float(get_value(cfg, "fsq_eval_random_far_fraction", 0.1))
-    if not 0.0 < random_far_fraction <= 1.0:
-        raise ValueError(
-            f"fsq_eval_random_far_fraction must be in (0,1], got {random_far_fraction}."
-        )
     return {
         # which eval(s) to run
         "eval_run_fsq":            str(as_bool(get_value(cfg, "eval_run_fsq", True))).lower(),
@@ -68,13 +63,6 @@ def build_settings(config_path: str | None = None) -> dict:
         "fsq_eval_max_entries":    int(get_value(cfg, "fsq_eval_max_entries", 0)),
         "fsq_eval_decoder_scope":  str(get_value(cfg, "fsq_eval_decoder_scope", "samples")),
         "fsq_eval_end_threshold":  str(get_value(cfg, "fsq_eval_end_threshold", 0.5)),
-        "fsq_eval_broadcast_compare_scale": str(
-            get_value(cfg, "fsq_eval_broadcast_compare_scale", 0.5)
-        ),
-        "fsq_eval_random_far_skill": str(
-            as_bool(get_value(cfg, "fsq_eval_random_far_skill", True))
-        ).lower(),
-        "fsq_eval_random_far_fraction": str(random_far_fraction),
         "fsq_eval_thumb_size":     int(get_value(cfg, "fsq_eval_thumb_size", 160)),
         "fsq_eval_image_key":      str(get_value(cfg, "fsq_eval_image_key", "observation.images.image")),
         "fsq_eval_wandb_project":  str(get_value(cfg, "fsq_eval_wandb_project", "VAE_eval")),

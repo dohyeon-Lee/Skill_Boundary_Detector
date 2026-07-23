@@ -401,6 +401,20 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
     else:
         weight_tag = f"{weighted_loss_end_weight:g}".replace("-", "m").replace(".", "p")
         weighted_suffix = f"_weighted{weight_tag}"
+    fsq_terminator_arch = str(get_value(cfg, "fsq_terminator_arch", "small"))
+    if fsq_terminator_arch not in {"small", "cond"}:
+        raise ValueError(f"fsq_terminator_arch must be small|cond, got {fsq_terminator_arch!r}.")
+    fsq_terminator_layers = int(get_value(cfg, "fsq_terminator_layers", 2))
+    fsq_terminator_heads = int(get_value(cfg, "fsq_terminator_heads", 4))
+    if fsq_terminator_layers < 1 or fsq_terminator_heads < 1:
+        raise ValueError("fsq_terminator_layers and fsq_terminator_heads must both be >= 1.")
+    fsq_cond_encoder_variant = str(get_value(cfg, "fsq_cond_encoder_variant", "gemma_300m"))
+    fsq_terminator_tag = fsq_terminator_arch
+    fsq_vision_backbone = str(get_value(cfg, "fsq_vision_backbone", "dino"))
+    if fsq_vision_backbone not in {"dino", "siglip"}:
+        raise ValueError(f"fsq_vision_backbone must be dino|siglip, got {fsq_vision_backbone!r}.")
+    fsq_freeze_vision_encoder = as_bool(get_value(cfg, "fsq_freeze_vision_encoder", True))
+    fsq_vision_tag = fsq_vision_backbone + ("_frozen" if fsq_freeze_vision_encoder else "_tuned")
     fsq_encoder_input_mode = str(get_value(cfg, "fsq_encoder_input_mode", "zero_grounded")).strip().lower()
     if fsq_encoder_input_mode not in {"zero_grounded", "raw_state", "optimal"}:
         raise ValueError(
@@ -434,7 +448,7 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         get_value(
             cfg,
             "fsq_run_name",
-            "{target_dataset}_{dp_tag}_{fsq_tag}_dino{fsq_patch_grid}"
+            "{target_dataset}_{dp_tag}_{fsq_tag}_{fsq_vision_tag}_{fsq_terminator_tag}"
             "{fsq_encoder_input_suffix}{fsq_skill_cond_suffix}{weighted_suffix}{fsq_exp_suffix}",
         )
     )
@@ -444,8 +458,13 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         fsq_tag=fsq_tag,
         fsq_exp=fsq_exp,
         fsq_exp_suffix=fsq_exp_suffix,
-        fsq_patch_grid=int(get_value(cfg, "fsq_patch_grid", 8)),
         weighted_suffix=weighted_suffix,
+        fsq_vision_tag=fsq_vision_tag,
+        fsq_terminator_arch=fsq_terminator_arch,
+        fsq_terminator_tag=fsq_terminator_tag,
+        fsq_terminator_layers=fsq_terminator_layers,
+        fsq_terminator_heads=fsq_terminator_heads,
+        fsq_patch_grid=int(get_value(cfg, "fsq_patch_grid", 8)),
         fsq_skill_cond_mode=fsq_skill_cond_mode,
         fsq_skill_cond_suffix=fsq_skill_cond_suffix,
         fsq_encoder_input_mode=fsq_encoder_input_mode,
@@ -472,6 +491,7 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "outputs_root": outputs_root,
         "dp_outputs_root": dp_outputs_root,
         "fsq_outputs_root": fsq_outputs_root,
+        "pi_base_model_path": root / "models" / "pi05_base",
         "dp_base_config": root / "lerobot" / str(get_value(cfg, "dp_base_config")),
         "dp_policy": dp_policy,
         "dp_output_dir": dp_outputs_root / dp_policy,
@@ -518,8 +538,15 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "fsq_checkpoint_every": int(get_value(cfg, "fsq_checkpoint_every", 500)),
         "fsq_encoder_lr": str(get_value(cfg, "fsq_encoder_lr", "3e-4")),
         "fsq_terminator_lr": str(get_value(cfg, "fsq_terminator_lr", "3e-4")),
+        "fsq_reconstructor_lr": str(get_value(cfg, "fsq_reconstructor_lr", get_value(cfg, "fsq_encoder_lr", "3e-4"))),
         "fsq_lr": str(get_value(cfg, "fsq_lr", get_value(cfg, "fsq_encoder_lr", "3e-4"))),
+        "fsq_samples_per_skill": int(get_value(cfg, "fsq_samples_per_skill", 2)),
         "fsq_encoder_input_mode": fsq_encoder_input_mode,
+        "fsq_terminator_arch": fsq_terminator_arch,
+        "fsq_terminator_layers": fsq_terminator_layers,
+        "fsq_terminator_heads": fsq_terminator_heads,
+        "fsq_vision_backbone": fsq_vision_backbone,
+        "fsq_freeze_vision_encoder": fsq_freeze_vision_encoder,
         "fsq_hidden_dim": int(get_value(cfg, "fsq_hidden_dim", 256)),
         "fsq_num_layers": int(get_value(cfg, "fsq_num_layers", 2)),
         "fsq_n_control": int(get_value(cfg, "fsq_n_control", 30)),
@@ -537,6 +564,8 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "dino_feature_dim": int(get_value(cfg, "dino_feature_dim", get_value(cfg, "fsq_dino_feature_dim", 384))),
         "dino_image_size": int(get_value(cfg, "dino_image_size", get_value(cfg, "fsq_dino_image_size", 224))),
         "fsq_dino_image_size": int(get_value(cfg, "fsq_dino_image_size", 224)),
+        "fsq_siglip_image_size": int(get_value(cfg, "fsq_siglip_image_size", 224)),
+        "fsq_cond_encoder_variant": fsq_cond_encoder_variant,
         "fsq_chunk_size": int(get_value(cfg, "fsq_chunk_size", 10)),
         "fsq_action_loss_weight": str(get_value(cfg, "fsq_action_loss_weight", 1.0)),
         "fsq_delta_loss_weight": str(

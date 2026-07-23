@@ -1,60 +1,87 @@
 # ── FSQ training config (Stage 3) ──────────────────────────────────────────────
-# Self-contained: trains the FSQ skill autoencoder on the skillset + DINO tokens that
-# build_data produced. Read by submit_train_fsq.sh. Project paths/slurm from global_config.
+# Self-contained: trains FSQ on the DP-segmented skillset plus live raw images.
+# Read by submit_train_fsq.sh. Project paths/slurm come from global_config.
 #
-# Consumes the skillset under FSQ_inputs/seg_{dp_run_name}_ck{dp_checkpoint}_{mode}/ — so it points
-# at the SAME DP build_data used.
+# Consumes the skillset under
+# FSQ_inputs/seg_{dp_run_name}_ck{dp_checkpoint}_{skillset_mode}_{threshold}/.
 
 target_dataset: libero_90_full_full
-
 # Which DP's skillset/tokens to train on — must match the build_data run.
-# dp_run_name: libero_90_full_full_dino8_obs10
 dp_run_name: libero_90_full_full_state_obs20
-
 dp_checkpoint: "100000"
-fsq_patch_grid: 8                  # FSQ token grid (matches build_data)
+skillset_mode: std                   # spherical | full | without_gripper | std
+# Select the exact build_data artifact: 1 -> `_ms1`; the historical default 2
+# keeps the suffix-free path. Must match the value used to build the skillset.
+skillset_min_skills: 1
+# Exact manual artifact tag. Empty selects the canonical no-suffix skillset;
+# set `trialA` to train on `..._std_globalmean_trialA/skillset`.
+skillset_output_suffix: ""
+skillset_boundary_threshold_mode: global_mean   # episode_mean | global_mean
+
 fsq_dataset_root: FSQ_dataset
 fsq_inputs_name: FSQ_inputs
 skillset_name: skillset
-# Must match build_data/build_data_config.yaml so FSQ consumes the intended segmentation.
-skillset_mode: std
-
 # ── FSQ model / run ──
 # {dp_tag} = the DP run that produced the skillset (dataset prefix stripped, e.g. state_obs20 /
 # dino8_obs10) → the FSQ folder shows WHICH DP it was trained on, not just its own grid.
-fsq_run_name: "{target_dataset}_{dp_tag}_{fsq_tag}_dino{fsq_patch_grid}{fsq_skill_cond_suffix}{weighted_suffix}{fsq_exp_suffix}"
-fsq_exp: "both_best_ratio"                # optional ablation suffix
-fsq_levels: [5, 5, 5]    # [8, 8] | [5, 5, 5]  
-fsq_skill_cond_mode: token # token | broadcast
+fsq_run_name: "{target_dataset}_{dp_tag}_{fsq_tag}_{fsq_vision_tag}_{fsq_terminator_tag}{fsq_encoder_input_suffix}{fsq_skill_cond_suffix}{fsq_exp_suffix}"
+fsq_exp: ""                 # v3 suffix prevents incompatible checkpoint auto-resume
+fsq_levels: [3, 3, 3] # [5, 5, 5]    # [8, 8] | [5, 5, 5]  
 
-# Terminator cameras (must match build_data's fsq_terminator_use_wrist for token availability).
-fsq_terminator_use_third: true
-fsq_terminator_use_wrist: true
+# FSQ trajectory encoder input. optimal = zero-grounded trajectory plus ONE extra learned token
+# containing the absolute skill-start EEF pose (not gripper state). It adds `_optimal` to run names.
+fsq_encoder_input_mode: optimal       # zero_grounded | raw_state | optimal
+
+# Terminator: both third-person + wrist images are always consumed live.
+# small = lightweight query transformer; cond = Gemma backbone reusable as Stage-1 cond.
+fsq_terminator_arch: small              # small | cond
+fsq_terminator_layers: 3                # small only: query-transformer layers
+fsq_terminator_heads: 4                 # small only
+fsq_vision_backbone: dino               # dino | siglip
+fsq_freeze_vision_encoder: true         # false enables end-to-end visual fine-tuning 3
+# Relative paths are resolved from project_root, so this works on every scratch mount.
+fsq_dino_model_path: models/dinov3-vitl16
+fsq_dino_image_size: 224
+fsq_siglip_image_size: 224
+fsq_cond_encoder_variant: gemma_300m
+
 
 fsq_batch_size: 64
-fsq_num_workers: 0
-fsq_num_epochs: 5000
-fsq_checkpoint_every: 500
+fsq_num_epochs: 500
+fsq_checkpoint_every: 25
+fsq_samples_per_skill: 5
+# token: reconstructor uses z as a token; terminator uses state+z AdaRMS.
+# broadcast: both modules use hidden-state skill broadcast.
+fsq_skill_cond_mode: token
+
+
 fsq_chunk_size: 10
+fsq_num_workers: 8
+fsq_encoder_lr: 3.0e-4
+fsq_terminator_lr: 3.0e-4
+fsq_reconstructor_lr: 3.0e-4
+
+
 
 # ── FSQ loss weights ──
-fsq_delta_loss_weight: 1.0
-fsq_progress_loss_weight: 0.1     # 학습은 (1,1,1) — end까지 다 걸어 코드를 termination-coherent하게 형성
-fsq_end_loss_weight: 0.1          #   (종료 다른 스킬 분리). FSQ.pt "선택"만 아래 val_select로 recon 우선.
+fsq_action_loss_weight: 1.0
+fsq_progress_loss_weight: 1.0    # 학습은 (1,1,1) — end까지 다 걸어 코드를 termination-coherent하게 형성
+fsq_end_loss_weight: 1.0          #   (종료 다른 스킬 분리). FSQ.pt "선택"만 아래 val_select로 recon 우선.
 fsq_end_target_sigma: 1.0
 
 # ── best-val 선택 기준 (override) ──  학습 loss(1/1/1)와 별개로 FSQ.pt를 고르는 metric.
 # 학습은 end까지 걸어 코드를 termination-coherent하게 만들되, total val은 end가 지배(~67%)라 그대로
 # 고르면 recon-suboptimal 지점이 잡힘 → 여기서 recon 우선으로 재선택. (비우면 loss 비율 그대로 따라감.)
 # FSQ.pt = argmin( 1*delta + 0.1*progress + 0.1*end ) on val → delta ~76% 지배 (end~0.07*0.1 < delta~0.025).
-fsq_val_select_delta_weight: 1.0
-fsq_val_select_progress_weight: 0.1
-fsq_val_select_end_weight: 0.1
+fsq_val_select_action_weight:
+fsq_val_select_progress_weight:
+fsq_val_select_end_weight:
 
-# Probe: end-weight the reconstructor (delta) loss per-frame by w=1+progress (skill END ~2× the
-# start) → FSQ latent allocates more code resolution to the skill's latter/handoff part. progress &
-# termination losses stay uniform. true → run/folder name gets a "_weighted" tag (before fsq_exp).
-weighted_loss: false
+# End-weight the sampled reconstructor loss. The start weight is always 1; the end weight below
+# applies at progress=1. Progress and termination losses stay uniform. `2.0` keeps the historical
+# w=1+progress behavior and `_weighted` run tag; other values get `_weighted<value>`.
+weighted_loss: true
+weighted_loss_end_weight: 2.0
 
 # ── Slurm (partition/qos/nodelist/exclude from configs/global_config.yaml) ──
 fsq_train_gres: gpu:1
