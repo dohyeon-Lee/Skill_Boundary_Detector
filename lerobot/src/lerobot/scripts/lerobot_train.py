@@ -473,25 +473,16 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
             processor_kwargs["preprocessor_overrides"]["tokenizer_processor"] = {
                 "tokenizer_name": tokenizer_path,
             }
-        if cfg.policy.type in {"skill_vla", "skill_vla_stage0_pretrain"}:
+        if cfg.policy.type == "skill_vla":
             # SkillVLA's state-tokenizer step needs observation.state q01/q99 to discretize the
             # skill-start state. These aren't carried by the saved processor, so (like the normalizer
             # above) re-inject them from the dataset on resume — otherwise the step gets None and
             # crashes. Salvages pre-fix checkpoints too (whose saved step config is empty).
             state_stats = dataset.meta.stats.get("observation.state", {}) or {}
-            step_names = (
-                ("skill_vla_prepare_state_tokenizer_processor_step",)
-                if cfg.policy.type == "skill_vla"
-                else (
-                    "skill_vla_stage0_pretrain_prompt_processor_step",
-                    "skill_vla_stage0_pretrain_ar_processor_step",
-                )
-            )
-            for step_name in step_names:
-                processor_kwargs["preprocessor_overrides"][step_name] = {
-                    "state_q01": state_stats.get("q01"),
-                    "state_q99": state_stats.get("q99"),
-                }
+            processor_kwargs["preprocessor_overrides"]["skill_vla_prepare_state_tokenizer_processor_step"] = {
+                "state_q01": state_stats.get("q01"),
+                "state_q99": state_stats.get("q99"),
+            }
         postprocessor_kwargs["postprocessor_overrides"] = {
             "unnormalizer_processor": {
                 "stats": processor_dataset_stats,
@@ -662,9 +653,8 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
         initial_step=step,
         accelerator=accelerator,
     )
-    # Stage-1 regimes and Stage-0-pretrain AR objectives need interval means;
-    # otherwise logging exposes only the final batch in each window.
-    windowed_model_types = {"skill_expert", "skill_vla_stage0_pretrain"}
+    # Stage-1 regimes need interval means; otherwise logging exposes only the final batch in each window.
+    windowed_model_types = {"skill_expert"}
     windowed_policy_metrics = (
         _WindowedPolicyMetrics()
         if getattr(cfg.policy, "model_type", None) in windowed_model_types
@@ -744,9 +734,6 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                     # (co-trained FSQ terminator logs via "terminator/*" → routed to train_terminator/* below)
                     "action_loss",              # Stage-1 skill_expert: PLAIN (unweighted) action MSE — always (comparison)
                     "action_weighted_loss",     # Stage-1 skill_expert: per-sample-weighted action MSE (action_weight only)
-                    # SkillVLA FAST pretraining: interval-averaged token objectives and constrained accuracy.
-                    "skill_ce", "fast_ce", "structure_ce",
-                    "skill_token_acc", "skill_exact_acc", "fast_token_acc",
                 }
                 wandb_log_dict = {k: v for k, v in wandb_log_dict.items()
                                   if k in _wandb_keep or k.startswith(
@@ -755,8 +742,6 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                                           "regime/",
                                           "distill/",
                                           "wrong_language/",
-                                          "ar/",
-                                          "fast_context/",
                                       ))}
                 # A policy that reports its own action_loss (Stage-1 skill_expert) replaces the generic
                 # backprop-scalar "loss" with it → drop the redundant generic "loss".
@@ -774,14 +759,6 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                     k[len("wrong_language/"):]: v for k, v in wandb_log_dict.items()
                     if k.startswith("wrong_language/")
                 }
-                autoregressive_metrics = {
-                    k[len("ar/"):]: v for k, v in wandb_log_dict.items()
-                    if k.startswith("ar/")
-                }
-                fast_context_metrics = {
-                    k[len("fast_context/"):]: v for k, v in wandb_log_dict.items()
-                    if k.startswith("fast_context/")
-                }
                 main_metrics = {k: v for k, v in wandb_log_dict.items()
                                 if not k.startswith(
                                     (
@@ -789,8 +766,6 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                                         "regime/",
                                         "distill/",
                                         "wrong_language/",
-                                        "ar/",
-                                        "fast_context/",
                                     ))}
                 wandb_logger.log_dict(main_metrics, step)
                 if term_metrics:
@@ -802,12 +777,6 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                 if wrong_language_metrics:
                     wandb_logger.log_dict(
                         wrong_language_metrics, step, mode="train_wrong_language")
-                if autoregressive_metrics:
-                    wandb_logger.log_dict(
-                        autoregressive_metrics, step, mode="train_autoregressive")
-                if fast_context_metrics:
-                    wandb_logger.log_dict(
-                        fast_context_metrics, step, mode="train_fast_context")
             train_tracker.reset_averages()
             if windowed_policy_metrics is not None:
                 windowed_policy_metrics.reset()

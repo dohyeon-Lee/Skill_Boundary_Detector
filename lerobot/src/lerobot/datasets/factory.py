@@ -100,58 +100,9 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
             # transition_packs set (stage 3 / FT SKILL batches) → segment-level samples straight from
             # the prebuilt transitions.npz (no episode-video seeks; per-transition uniform sampling).
             dataset_cls = LeRobotDataset
-            if getattr(cfg.policy, "type", None) in {
-                "skill_vla", "skill_vla_pretrain", "skill_vla_stage0_pretrain"
-            }:
+            if getattr(cfg.policy, "type", None) == "skill_vla":
                 _packs = getattr(cfg.policy, "transition_packs", None)
-                if getattr(cfg.policy, "type", None) == "skill_vla_stage0_pretrain":
-                    from functools import partial
-
-                    from lerobot.policies.skillVLA_stage0_pretrain.dataset_skillVLA_stage0_pretrain import (
-                        SkillVLAStage0PretrainDataset,
-                    )
-
-                    _targets = getattr(cfg.policy, "pretrain_target_packs", None)
-                    if not _packs or not _targets:
-                        raise ValueError(
-                            "skill_vla_stage0_pretrain requires transition_packs and "
-                            "pretrain_target_packs."
-                        )
-                    dataset_cls = partial(
-                        SkillVLAStage0PretrainDataset,
-                        transition_packs=[p.strip() for p in str(_packs).split(",") if p.strip()],
-                        pretrain_target_packs=[
-                            p.strip() for p in str(_targets).split(",") if p.strip()
-                        ],
-                        max_fast_tokens=int(getattr(cfg.policy, "max_action_tokens", 384)),
-                        transition_randomization=bool(
-                            getattr(cfg.policy, "transition_randomization", True)
-                        ),
-                    )
-                elif getattr(cfg.policy, "type", None) == "skill_vla_pretrain":
-                    from functools import partial
-
-                    from lerobot.policies.skillVLA_pretrain.dataset_skillVLA_pretrain import (
-                        SkillVLAPretrainDataset,
-                    )
-
-                    _targets = getattr(cfg.policy, "pretrain_target_packs", None)
-                    if not _packs or not _targets:
-                        raise ValueError(
-                            "skill_vla_pretrain requires transition_packs and pretrain_target_packs."
-                        )
-                    dataset_cls = partial(
-                        SkillVLAPretrainDataset,
-                        transition_packs=[p.strip() for p in str(_packs).split(",") if p.strip()],
-                        pretrain_target_packs=[
-                            p.strip() for p in str(_targets).split(",") if p.strip()
-                        ],
-                        max_fast_tokens=int(getattr(cfg.policy, "max_action_tokens", 384)),
-                        transition_randomization=bool(
-                            getattr(cfg.policy, "transition_randomization", True)
-                        ),
-                    )
-                elif _packs:
+                if _packs:
                     from functools import partial
 
                     from lerobot.policies.skillVLA.dataset_transitions import SkillTransitionDataset

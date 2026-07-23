@@ -14,7 +14,7 @@ Produces:
 The skill_latents.npz used here is (re)generated from the evaluated checkpoint
 and written next to the HTML (FSQ_eval/outputs).
 
-Usage (both cameras are decoded live from ``--dataset_dir``):
+Usage (DINO는 --dataset_dir의 mp4에서 ONLINE warm-pass — 디스크 precompute 없음):
     python examples/libero/fsq_eval.py \
       --model_path   .../FSQ.pt \
       --skills_dir   .../skillset/skills \
@@ -46,34 +46,9 @@ from codebook_visualizer import (  # noqa: E402
     _resolve_image_key,
     _video_path,
 )
-from FSQ import (  # noqa: E402
-    encoder_start_eef_pose,
-    load_fsq_model as load_original_fsq_model,
-    spline_encode,
-)
-from train_FSQ import attach_episode_offsets, load_skill_files  # noqa: E402
-
-
-def load_model(model_path: str, device: str, model_family: str, dino_model_path: str | None):
-    if model_family == "fsq":
-        model, cfg = load_original_fsq_model(
-            model_path, device, dino_model_path=dino_model_path or None
-        )
-    elif model_family == "fsq_new":
-        fsq_new_src = Path(__file__).parent / "configs" / "train_skills" / "FSQ_new" / "src"
-        sys.path.insert(0, str(fsq_new_src))
-        from FSQ_new import load_fsq_model as load_fsq_new_model  # noqa: PLC0415
-
-        model, cfg = load_fsq_new_model(
-            model_path, device, dino_model_path=dino_model_path or None
-        )
-    else:
-        raise ValueError(f"model_family must be fsq|fsq_new, got {model_family!r}.")
-    print(
-        f"[EVAL] Loaded {model_family} model fsq_levels={cfg.fsq_levels} "
-        f"codebook={model.fsq.codebook_size} K={cfg.chunk_size}"
-    )
-    return model, cfg
+from decoder_eval import load_model  # noqa: E402
+from FSQ import spline_encode  # noqa: E402
+from train_FSQ import load_dino_tokens_online, load_skill_files  # noqa: E402
 
 
 # ── latent saving ──────────────────────────────────────────────────────────────
@@ -85,57 +60,6 @@ def save_latents(path: Path, latents, tokens, metadata):
     path.parent.mkdir(parents=True, exist_ok=True)
     np.savez(str(path), **save)
     print(f"[fsq_eval] saved latents → {path}")
-
-
-def select_far_active_skill_latents(
-    latents: np.ndarray,
-    tokens: np.ndarray,
-    selected_ids: list[int],
-    fsq_levels: list[int],
-    seed: int,
-    far_fraction: float,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Pick a random code from the farthest active-code fraction for each skill."""
-    if not 0.0 < far_fraction <= 1.0:
-        raise ValueError(f"random_far_fraction must be in (0,1], got {far_fraction}.")
-    active_tokens = np.unique(tokens.astype(np.int64))
-    if len(active_tokens) < 2:
-        raise ValueError("Random far-skill comparison needs at least two active FSQ codes.")
-
-    representatives = {
-        int(token): latents[int(np.flatnonzero(tokens == token)[0])].astype(np.float32)
-        for token in active_tokens
-    }
-    levels = np.asarray(fsq_levels, dtype=np.float32)
-    half = (levels - 1.0) / 2.0
-    offset = np.where(levels % 2 == 0, 0.5, 0.0).astype(np.float32)
-
-    def normalized(value: np.ndarray) -> np.ndarray:
-        return (value + offset) / half
-
-    rep_coords = {token: normalized(value) for token, value in representatives.items()}
-    rng = np.random.default_rng(seed)
-    chosen_latents, chosen_tokens, chosen_distances = [], [], []
-    for original_id in selected_ids:
-        current_token = int(tokens[original_id])
-        current_coord = normalized(latents[original_id])
-        candidates = [int(token) for token in active_tokens if int(token) != current_token]
-        ranked = sorted(
-            candidates,
-            key=lambda token: float(np.linalg.norm(rep_coords[token] - current_coord)),
-            reverse=True,
-        )
-        pool_size = max(1, int(np.ceil(len(ranked) * far_fraction)))
-        far_pool = ranked[:pool_size]
-        chosen = int(far_pool[int(rng.integers(0, len(far_pool)))])
-        chosen_latents.append(representatives[chosen])
-        chosen_tokens.append(chosen)
-        chosen_distances.append(float(np.linalg.norm(rep_coords[chosen] - current_coord)))
-    return (
-        np.stack(chosen_latents).astype(np.float32),
-        np.asarray(chosen_tokens, dtype=np.int32),
-        np.asarray(chosen_distances, dtype=np.float32),
-    )
 
 
 # ── decode + metrics ───────────────────────────────────────────────────────────
@@ -194,27 +118,14 @@ def batched_encode(model, segments, lengths, device, batch_size):
     N = len(segments)
     A = segments[0].shape[-1]
     nctrl, deg = model.n_control, model.spline_degree
-    amin = model.encoder.encoder_min.cpu().numpy()
-    amax = model.encoder.encoder_max.cpu().numpy()
-    optimal = model.encoder.encoder_input_mode == "optimal"
-    if optimal:
-        smin = model.encoder.encoder_start_min.cpu().numpy()
-        smax = model.encoder.encoder_start_max.cpu().numpy()
+    amin = model.action_min.cpu().numpy()
+    amax = model.action_max.cpu().numpy()
 
     ctrl_norm = []
-    start_norm = []
     for seg in segments:
-        cp, _ = spline_encode(
-            seg.astype(np.float32),
-            nctrl,
-            deg,
-            input_mode=model.encoder.encoder_input_mode,
-        )
+        cp, _ = spline_encode(seg.astype(np.float32), nctrl, deg)
         cp = (cp - amin) / (amax - amin + 1e-8) * 2.0 - 1.0
         ctrl_norm.append(cp.astype(np.float32))
-        if optimal:
-            pose = encoder_start_eef_pose(seg)
-            start_norm.append(((pose - smin) / (smax - smin + 1e-8) * 2.0 - 1.0).astype(np.float32))
 
     latents = np.zeros((N, int(model.fsq.latent_dim)), np.float32)
     tokens = np.zeros(N, np.int32)
@@ -224,13 +135,10 @@ def batched_encode(model, segments, lengths, device, batch_size):
         B = len(idxs)
         ctrl = torch.zeros(B, nctrl, A)
         lens = torch.zeros(B, dtype=torch.long)
-        start = torch.zeros(B, len(start_norm[0])) if optimal else None
         for b, i in enumerate(idxs):
             ctrl[b] = torch.from_numpy(ctrl_norm[i])
             lens[b] = lengths[i]
-            if start is not None:
-                start[b] = torch.from_numpy(start_norm[i])
-        z_q, idx = model.encode(ctrl.to(device), lens.to(device), None if start is None else start.to(device))
+        z_q, idx = model.encode(ctrl.to(device), lens.to(device))
         z_q = z_q.cpu().numpy()
         idx = idx.cpu().numpy()
         for b, i in enumerate(idxs):
@@ -240,279 +148,55 @@ def batched_encode(model, segments, lengths, device, batch_size):
 
 
 @torch.no_grad()
-def _batched_decode_impl(
-    model,
-    latents,
-    states,
-    metadata,
-    raw_dataset,
-    lengths,
-    device,
-    batch_size,
-    broadcast_compare_scale=None,
-    random_skill_latents=None,
-):
-    """Decode all valid frames in bounded frame microbatches.
+def batched_decode(model, latents, states, clips, clips_wrist, lengths, device, batch_size):
+    """Decode all skills in length-bucketed batches.
 
     Returns per-skill lists sliced to T: deltas[i] (T,K,A), progresses[i] (T,),
     term_probs[i] (T,). GT progress is fed as the motion input (matches training).
-    Only the current third-person and wrist frames are decoded for each item.
-
-    ``batch_size`` is a frame count here. The v2 decoder is a 300M-class Gemma
-    expert, so padding 64 whole trajectories to max(T) would create thousands of
-    expert samples and OOM despite most of them being padding.
+    clips = 3rd-person tokens; clips_wrist = wrist tokens (None for single-camera models,
+    where the terminator reads 3rd-person only).
     """
     N = len(latents)
-    K, A = model.chunk_size, model.action_dim
-    deltas = [np.empty((lengths[i], K, A), np.float32) for i in range(N)]
-    progs = [np.empty(lengths[i], np.float32) for i in range(N)]
-    terms = [np.empty(lengths[i], np.float32) for i in range(N)]
-    compare_deltas = (
-        None
-        if broadcast_compare_scale is None
-        else [np.empty((lengths[i], K, A), np.float32) for i in range(N)]
-    )
-    random_deltas = (
-        None
-        if random_skill_latents is None
-        else [np.empty((lengths[i], K, A), np.float32) for i in range(N)]
-    )
-    refs = [(i, t) for i, length in enumerate(lengths) for t in range(length)]
-    for start in tqdm(range(0, len(refs), batch_size), desc="Decoding (frame microbatches)"):
-        part = refs[start : start + batch_size]
-        z = torch.from_numpy(np.stack([latents[i] for i, _ in part]).astype(np.float32)).to(device)
-        random_z = (
-            None
-            if random_skill_latents is None
-            else torch.from_numpy(
-                np.stack([random_skill_latents[i] for i, _ in part]).astype(np.float32)
-            ).to(device)
-        )
-        st = torch.from_numpy(np.stack([states[i][t] for i, t in part]).astype(np.float32)).to(device)
-        frames = [
-            raw_dataset[
-                int(metadata[i]["dataset_from_index"]) + int(metadata[i]["frame_start"]) + int(t)
-            ]
-            for i, t in part
-        ]
-        dec = torch.stack([frame["observation.images.image"] for frame in frames]).to(device)
-        dec_w = torch.stack([frame["observation.images.wrist_image"] for frame in frames]).to(device)
-        # Both action variants start from exactly the same flow noise, so their
-        # difference isolates broadcast strength rather than sampling variance.
-        noise = model.action_expert.sample_noise(
-            (len(part), model.chunk_size, model.cfg.max_action_dim), z.device
-        )
+    n_tokens, feat = model.n_tokens, model.feat_dim
+    state_dim = model.state_dim
+    D = int(model.fsq.latent_dim)
+    deltas: list = [None] * N
+    progs: list = [None] * N
+    terms: list = [None] * N
+    order = sorted(range(N), key=lambda i: lengths[i])
+    for s in tqdm(range(0, N, batch_size), desc="Decoding (batched)"):
+        idxs = order[s:s + batch_size]
+        B = len(idxs)
+        maxT = max(lengths[i] for i in idxs)
+        z = torch.zeros(B, D)
+        st = torch.zeros(B, maxT, state_dim)
+        dec = torch.zeros(B, maxT, n_tokens, feat)
+        dec_w = torch.zeros(B, maxT, n_tokens, feat) if clips_wrist is not None else None
+        fp = torch.zeros(B, maxT)
+        for b, i in enumerate(idxs):
+            T = lengths[i]
+            z[b] = torch.from_numpy(latents[i].astype(np.float32))
+            st[b, :T] = torch.from_numpy(states[i][:T].astype(np.float32))
+            dec[b, :T] = torch.from_numpy(clips[i][:T].astype(np.float32))
+            if dec_w is not None:
+                dec_w[b, :T] = torch.from_numpy(clips_wrist[i][:T].astype(np.float32))
+            fp[b, :T] = torch.arange(T, dtype=torch.float32) / max(T - 1, 1)
         delta, prog, term_logits = model.decode(
-            z, st[:, None], dec[:, None], dec_w[:, None], noise=noise
-        )
-        delta = delta[:, 0].cpu().numpy()
-        prog = prog[:, 0].cpu().numpy()
-        term = torch.sigmoid(term_logits[:, 0]).cpu().numpy()
-        compare = None
-        if broadcast_compare_scale is not None:
-            compare = model.sample_action_chunks(
-                z,
-                st[:, None],
-                noise=noise,
-                broadcast_scale=float(broadcast_compare_scale),
-            )[:, 0].cpu().numpy()
-        random_action = None
-        if random_z is not None:
-            random_action = model.sample_action_chunks(
-                random_z,
-                st[:, None],
-                noise=noise,
-                broadcast_scale=1.0,
-            )[:, 0].cpu().numpy()
-        for row, (i, t) in enumerate(part):
-            deltas[i][t] = delta[row]
-            progs[i][t] = prog[row]
-            terms[i][t] = term[row]
-            if compare_deltas is not None:
-                compare_deltas[i][t] = compare[row]
-            if random_deltas is not None:
-                random_deltas[i][t] = random_action[row]
-    return deltas, progs, terms, compare_deltas, random_deltas
-
-
-def batched_decode(model, latents, states, metadata, raw_dataset, lengths, device, batch_size):
-    """Historical decode API: full-strength actions plus one progress/termination pass."""
-    deltas, progs, terms, _, _ = _batched_decode_impl(
-        model, latents, states, metadata, raw_dataset, lengths, device, batch_size
-    )
+            z.to(device), st.to(device), dec.to(device),
+            dec_w.to(device) if dec_w is not None else None, fp.to(device))
+        term = torch.sigmoid(term_logits)
+        for b, i in enumerate(idxs):
+            T = lengths[i]
+            deltas[i] = delta[b, :T].cpu().numpy()
+            progs[i] = prog[b, :T].cpu().numpy()
+            terms[i] = term[b, :T].cpu().numpy()
     return deltas, progs, terms
-
-
-def batched_decode_with_broadcast_compare(
-    model,
-    latents,
-    states,
-    metadata,
-    raw_dataset,
-    lengths,
-    device,
-    batch_size,
-    broadcast_compare_scale,
-):
-    """Decode 100% and scaled broadcast actions with shared noise and shared aux outputs."""
-    deltas, progs, terms, compare, _ = _batched_decode_impl(
-        model,
-        latents,
-        states,
-        metadata,
-        raw_dataset,
-        lengths,
-        device,
-        batch_size,
-        broadcast_compare_scale=float(broadcast_compare_scale),
-    )
-    return deltas, progs, terms, compare
-
-
-@torch.no_grad()
-def batched_decode_fsq_new_abc(
-    model,
-    latents,
-    states,
-    metadata,
-    raw_dataset,
-    lengths,
-    device,
-    batch_size,
-    random_skill_latents=None,
-):
-    """Decode FSQ_new A/B/C actions with shared noise and one terminator pass."""
-    count = len(latents)
-    chunk_size, action_dim = model.chunk_size, model.action_dim
-    action_modes = ["A", "B", "C"]
-    if random_skill_latents is not None:
-        action_modes.append("C + far skill")
-    actions = {
-        mode: [np.empty((lengths[i], chunk_size, action_dim), np.float32) for i in range(count)]
-        for mode in action_modes
-    }
-    progresses = [np.empty(lengths[i], np.float32) for i in range(count)]
-    term_probs = [np.empty(lengths[i], np.float32) for i in range(count)]
-    refs = [(i, step) for i, length in enumerate(lengths) for step in range(length)]
-
-    for start in tqdm(
-        range(0, len(refs), batch_size), desc="Decoding FSQ_new A/B/C (frame microbatches)"
-    ):
-        part = refs[start : start + batch_size]
-        z_q = torch.from_numpy(
-            np.stack([latents[i] for i, _ in part]).astype(np.float32)
-        ).to(device)
-        random_z_q = (
-            None
-            if random_skill_latents is None
-            else torch.from_numpy(
-                np.stack([random_skill_latents[i] for i, _ in part]).astype(np.float32)
-            ).to(device)
-        )
-        state = torch.from_numpy(
-            np.stack([states[i][step] for i, step in part]).astype(np.float32)
-        ).to(device)
-        current_frames = [
-            raw_dataset[
-                int(metadata[i]["dataset_from_index"])
-                + int(metadata[i]["frame_start"])
-                + int(step)
-            ]
-            for i, step in part
-        ]
-        goal_frames = [
-            raw_dataset[
-                int(metadata[i]["dataset_from_index"])
-                + max(0, int(metadata[i]["frame_end"]) - 1)
-            ]
-            for i, _ in part
-        ]
-        third = torch.stack(
-            [frame["observation.images.image"] for frame in current_frames]
-        ).to(device)
-        wrist = torch.stack(
-            [frame["observation.images.wrist_image"] for frame in current_frames]
-        ).to(device)
-        goal_third = torch.stack(
-            [frame["observation.images.image"] for frame in goal_frames]
-        ).to(device)
-        goal_wrist = torch.stack(
-            [frame["observation.images.wrist_image"] for frame in goal_frames]
-        ).to(device)
-
-        current_features = model.terminator.image_features(third, wrist)
-        goal_features = model.terminator.image_features(goal_third, goal_wrist)
-        image_context = model.image_context(*current_features)
-        goal_context = model.goal_context(*goal_features)
-        noise = model.action_expert.sample_noise(
-            (len(part), model.chunk_size, model.cfg.max_action_dim), z_q.device
-        )
-        shared = {"noise": noise, "num_steps": 10}
-        predicted = {
-            "A": model.sample_action_chunks(
-                z_q,
-                state[:, None],
-                skill_scale=model.cfg.a_skill_scale,
-                **shared,
-            ),
-            "B": model.sample_action_chunks(
-                z_q,
-                state[:, None],
-                skill_scale=model.cfg.b_skill_scale,
-                image_context=image_context,
-                image_scale=model.cfg.b_image_scale,
-                **shared,
-            ),
-            "C": model.sample_action_chunks(
-                z_q,
-                state[:, None],
-                skill_scale=model.cfg.c_skill_scale,
-                image_context=image_context,
-                goal_context=goal_context,
-                image_scale=model.cfg.c_image_scale,
-                goal_scale=model.cfg.c_goal_scale,
-                **shared,
-            ),
-        }
-        if random_z_q is not None:
-            predicted["C + far skill"] = model.sample_action_chunks(
-                random_z_q,
-                state[:, None],
-                skill_scale=model.cfg.c_skill_scale,
-                image_context=image_context,
-                goal_context=goal_context,
-                image_scale=model.cfg.c_image_scale,
-                goal_scale=model.cfg.c_goal_scale,
-                **shared,
-            )
-        z_norm = model.fsq.normalized(z_q)
-        progress, term_logits = model.terminator(
-            z_norm,
-            state,
-            third,
-            wrist,
-            image_features=current_features,
-        )
-        progress = progress.cpu().numpy()
-        term = torch.sigmoid(term_logits).cpu().numpy()
-        predicted_np = {
-            mode: value[:, 0].cpu().numpy() for mode, value in predicted.items()
-        }
-        for row, (skill_index, step) in enumerate(part):
-            for mode in action_modes:
-                actions[mode][skill_index][step] = predicted_np[mode][row]
-            progresses[skill_index][step] = progress[row]
-            term_probs[skill_index][step] = term[row]
-
-    return actions, progresses, term_probs
 
 
 # ── per-sample composite plot (start/end frame + recon/termination/progress) ────
 
 def make_sample_plot(start_img, end_img, delta, progress, term_prob, gt_actions, T,
-                     dim_labels, n_action_steps, end_threshold,
-                     delta_compare=None, compare_label="broadcast 50%",
-                     action_variants=None) -> str:
+                     dim_labels, n_action_steps, end_threshold) -> str:
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -536,17 +220,6 @@ def make_sample_plot(start_img, end_img, delta, progress, term_prob, gt_actions,
     base = n_img_rows
     t_full = np.arange(T)
     chunk_starts = np.arange(0, T, max(1, n_action_steps))
-    if action_variants is None:
-        action_variants = [
-            (
-                "pred 100%" if delta_compare is not None else "pred chunk",
-                delta,
-                "#B71C1C",
-                "--",
-            )
-        ]
-        if delta_compare is not None:
-            action_variants.append((compare_label, delta_compare, "#00897B", ":"))
 
     # per-dim reconstruction (GT vs predicted chunks)
     for d in range(A):
@@ -557,19 +230,9 @@ def make_sample_plot(start_img, end_img, delta, progress, term_prob, gt_actions,
             m = x < len(gt_actions)
             if not np.any(m):
                 continue
-            for variant_index, (variant_label, variant_delta, color, linestyle) in enumerate(
-                action_variants
-            ):
-                ax.plot(
-                    x[m],
-                    variant_delta[start, : int(m.sum()), d],
-                    color=color,
-                    linewidth=1.4 if variant_index == 0 else 1.3,
-                    alpha=0.92,
-                    linestyle=linestyle,
-                    label=variant_label if j == 0 else None,
-                    zorder=4 + variant_index,
-                )
+            ax.plot(x[m], delta[start, : int(m.sum()), d], color="#B71C1C",
+                    linewidth=1.4, alpha=0.9, linestyle="--",
+                    label="pred chunk" if j == 0 else None, zorder=4)
         ax.set_ylabel(dim_labels[d], fontsize=8, rotation=0, labelpad=26)
         ax.tick_params(labelsize=7); ax.grid(True, color="#eee", linewidth=0.6)
         ax.set_xticks([])
@@ -714,30 +377,17 @@ function selectEntry(i){SEL=i;drawCube(SEL);drawAllCharts();showPanel(i);}
 function showPanel(tok){
   const d=ENTRY[tok];if(!d)return;
   document.getElementById('panel-title').textContent='Entry '+tok+' — '+COUNTS[tok]+' skills';
-  const baseLabel=d.base_action_label||'base';
   const rows=[
     ['# skills',COUNTS[tok]],
-    ['Recon '+baseLabel+' chunk MSE',d.chunk_mse.toExponential(3)],
-    ['Recon '+baseLabel+' MSE xyz',d.mse_xyz.toExponential(3)],
-    ['Recon '+baseLabel+' MSE rpy',d.mse_rpy.toExponential(3)],
-    ['Recon '+baseLabel+' MSE gripper',d.mse_grip.toExponential(3)],
+    ['Recon chunk MSE',d.chunk_mse.toExponential(3)],
+    ['Recon MSE xyz',d.mse_xyz.toExponential(3)],
+    ['Recon MSE rpy',d.mse_rpy.toExponential(3)],
+    ['Recon MSE gripper',d.mse_grip.toExponential(3)],
     ['Termination |err| (steps)',d.timing_abs.toFixed(2)],
     ['Termination err (signed)',d.timing.toFixed(2)],
     ['Progress |err|',d.prog_err.toFixed(4)],
     ['Mean skill length',d.length.toFixed(1)],
   ];
-  if(d.variant_metrics){
-    const variantRows=[];
-    Object.entries(d.variant_metrics).forEach(([label,m])=>{
-      variantRows.push(
-        ['Recon '+label+' chunk MSE',m.chunk_mse.toExponential(3)],
-        ['Recon '+label+' MSE xyz',m.mse_xyz.toExponential(3)],
-        ['Recon '+label+' MSE rpy',m.mse_rpy.toExponential(3)],
-        ['Recon '+label+' MSE gripper',m.mse_grip.toExponential(3)]
-      );
-    });
-    rows.splice(5,0,...variantRows);
-  }
   document.getElementById('panel-table').innerHTML='<tr><th>Metric</th><th>Value</th></tr>'+
     rows.map(r=>'<tr><td>'+r[0]+'</td><td>'+r[1]+'</td></tr>').join('');
   const imgs=SAMPLES[tok]||[];
@@ -813,47 +463,24 @@ def load_sample_frames(metadata, sample_ids, dataset_dir: Path, image_key: str, 
 
 # ── wandb ───────────────────────────────────────────────────────────────────────
 
-def log_wandb(
-    args,
-    enc_stats,
-    dec_means,
-    decoded_skill_count,
-    html_path,
-    action_variant_means=None,
-):
+def log_wandb(args, enc_stats, dec_means, html_path):
     import wandb
     wandb.init(project=args.wandb_project, name=args.wandb_run_name or Path(args.model_path).parent.name,
                config=vars(args), resume="allow")
-    decoder_prefix = "decoder" if args.decoder_scope == "all" else "decoder_sample"
-    values = {
+    wandb.log({
         "codebook/utilization_pct":       enc_stats["utilization_pct"],
         "codebook/skills_per_entry_mean": enc_stats["skills_per_entry_mean"],
         "codebook/skills_per_entry_std":  enc_stats["skills_per_entry_std"],
         "codebook/skills_per_entry_max":  enc_stats["skills_per_entry_max"],
-        "decoder/evaluated_skills":       decoded_skill_count,
-    }
-    values.update({
-        f"{decoder_prefix}/chunk_action_mse_mean": dec_means["chunk_mse"],
-        f"{decoder_prefix}/recon_mse_xyz":         dec_means["mse_xyz"],
-        f"{decoder_prefix}/recon_mse_rpy":         dec_means["mse_rpy"],
-        f"{decoder_prefix}/recon_mse_gripper":     dec_means["mse_grip"],
-        f"{decoder_prefix}/termination_err_mean":  dec_means["timing_abs"],
-        f"{decoder_prefix}/early_rate":            dec_means["early_rate"],
-        f"{decoder_prefix}/late_rate":             dec_means["late_rate"],
-        f"{decoder_prefix}/progress_err_mean":     dec_means["prog_err"],
+        "decoder/chunk_action_mse_mean":  dec_means["chunk_mse"],
+        "decoder/recon_mse_xyz":          dec_means["mse_xyz"],
+        "decoder/recon_mse_rpy":          dec_means["mse_rpy"],
+        "decoder/recon_mse_gripper":      dec_means["mse_grip"],
+        "decoder/termination_err_mean":   dec_means["timing_abs"],
+        "decoder/early_rate":             dec_means["early_rate"],
+        "decoder/late_rate":              dec_means["late_rate"],
+        "decoder/progress_err_mean":      dec_means["prog_err"],
     })
-    for label, means in (action_variant_means or {}).items():
-        metric_label = label.replace("%", "pct")
-        tag = "".join(
-            char.lower() if char.isalnum() else "_" for char in metric_label
-        ).strip("_")
-        values.update({
-            f"{decoder_prefix}/{tag}/chunk_action_mse_mean": means["chunk_mse"],
-            f"{decoder_prefix}/{tag}/recon_mse_xyz": means["mse_xyz"],
-            f"{decoder_prefix}/{tag}/recon_mse_rpy": means["mse_rpy"],
-            f"{decoder_prefix}/{tag}/recon_mse_gripper": means["mse_grip"],
-        })
-    wandb.log(values)
     wandb.finish()
     print(f"[wandb] logged scalars to project '{args.wandb_project}' (HTML saved locally: {html_path})")
 
@@ -862,12 +489,17 @@ def log_wandb(
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--model_family", choices=["fsq", "fsq_new"], default="fsq")
     p.add_argument("--model_path", required=True)
-    p.add_argument("--dino_model_path", default="")
     p.add_argument("--skills_dir", required=True)
     p.add_argument("--dataset_dir", required=True,
-                   help="LeRobot dataset dir (videos + meta); both cameras are read live")
+                   help="LeRobot dataset dir (videos + meta) — 썸네일 프레임 + ONLINE DINO warm-pass의 "
+                        "공동 원천 (디스크 DINO precompute 제거됨; train_FSQ와 동일 계약)")
+    p.add_argument("--image_key", default="observation.images.image",
+                   help="primary-camera video key (wrist-only FSQ면 wrist_image)")
+    p.add_argument("--image_key_wrist", default="observation.images.wrist_image",
+                   help="dual-camera terminator의 wrist video key")
+    p.add_argument("--dino_batch_size", type=int, default=256,
+                   help="online DINO warm-pass의 GPU 프레임 배치 크기")
     p.add_argument("--output_dir", required=True, help="where the HTML is written (FSQ_eval/outputs/<run>/<epoch>)")
     p.add_argument("--latents_path", default="",
                    help="where to save/load skill_latents.npz (default: <output_dir>/skill_latents.npz). "
@@ -875,32 +507,10 @@ def parse_args():
     p.add_argument("--n_action_steps", type=int, default=5, help="chunk plot stride")
     p.add_argument("--max_plot_samples", type=int, default=5, help="sample skills per entry")
     p.add_argument("--max_plot_entries", type=int, default=0, help="0 = render all active entries")
-    p.add_argument("--decoder_scope", choices=["samples", "all"], default="samples",
-                   help="samples: decode only rendered entry samples (fast); all: decode every skill (full metrics).")
-    p.add_argument("--image_key", default="observation.images.image",
-                   help="Dataset camera key used for the start/end HTML thumbnails.")
     p.add_argument("--thumb_size", type=int, default=160)
-    p.add_argument("--batch_size", type=int, default=64,
-                   help="trajectory batch for encoding; frame microbatch for v2 expert/terminator inference")
+    p.add_argument("--batch_size", type=int, default=64, help="batch size for encode/decode inference")
     p.add_argument("--seed", type=int, default=42, help="seed for random sample selection per codebook entry")
     p.add_argument("--end_threshold", type=float, default=0.5)
-    p.add_argument(
-        "--broadcast_compare_scale",
-        type=float,
-        default=0.5,
-        help="For broadcast checkpoints, overlay this action scale using identical flow noise; <0 disables.",
-    )
-    p.add_argument(
-        "--random_far_skill",
-        action="store_true",
-        help="Overlay a different active skill sampled from the farthest codebook candidates.",
-    )
-    p.add_argument(
-        "--random_far_fraction",
-        type=float,
-        default=0.1,
-        help="Randomly sample within this farthest fraction of active non-current codes.",
-    )
     p.add_argument("--force_encode", action="store_true",
                    help="Re-encode latents even if skill_latents.npz already exists in output_dir.")
     p.add_argument("--device", default="cuda")
@@ -916,40 +526,29 @@ def main():
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    model, cfg = load_model(
-        args.model_path, device, args.model_family, args.dino_model_path
-    )
+    model, cfg = load_model(args.model_path, device)
     levels = list(cfg.fsq_levels)
     codebook_size = int(model.fsq.codebook_size)
-    broadcast_compare_scale = None
-    if (
-        args.model_family == "fsq"
-        and cfg.state_cond_mode == "broadcast"
-        and args.broadcast_compare_scale >= 0.0
-    ):
-        if not np.isfinite(args.broadcast_compare_scale):
-            raise ValueError("broadcast_compare_scale must be finite or negative to disable it.")
-        if args.broadcast_compare_scale != 1.0:
-            broadcast_compare_scale = float(args.broadcast_compare_scale)
-    elif (
-        args.model_family == "fsq"
-        and cfg.state_cond_mode != "broadcast"
-        and args.broadcast_compare_scale >= 0.0
-    ):
-        print(
-            f"[fsq_eval] state_cond_mode={cfg.state_cond_mode}: "
-            "broadcast comparison is not applicable and will be skipped."
-        )
 
-    print("[fsq_eval] loading skills and live third+wrist frame reader ...")
+    use_wrist = bool(getattr(model, "terminator_use_wrist", False))
+    print(f"[fsq_eval] loading skills / DINO (3rd-person{' + wrist' if use_wrist else ''}) ...")
     segments, dec_states, dec_targets, metadata = load_skill_files(Path(args.skills_dir))
-    attach_episode_offsets(args.dataset_dir, metadata)
-    from lerobot.datasets.lerobot_dataset import LeRobotDataset  # noqa: PLC0415
-    raw_dataset = LeRobotDataset(
-        repo_id=f"local/{Path(args.dataset_dir).name}",
-        root=args.dataset_dir,
-        video_keys_to_load=["observation.images.image", "observation.images.wrist_image"],
-    )
+    # ONLINE DINO (디스크 precompute 제거): --dataset_dir(raw)의 mp4에서 warm-pass 인코딩 —
+    # train_FSQ와 동일 경로/계약이라 학습과 평가가 같은 토큰을 봄.
+    from lerobot.utils.online_dino import OnlineDino  # noqa: PLC0415
+    _dino = OnlineDino(model.image_model_name, image_size=model.image_size,
+                       patch_grid=model.patch_grid, n_patch_raw=model.n_patch_raw).to(device)
+    dec_tokens = load_dino_tokens_online(args.dataset_dir, metadata, args.image_key,
+                                         _dino, batch_size=args.dino_batch_size)
+    # Wrist is the dual terminator's 2nd camera — encode it only when the model actually reads it.
+    dec_tokens_wrist = None
+    if use_wrist:
+        dec_tokens_wrist = (dec_tokens if args.image_key_wrist == args.image_key
+                            else load_dino_tokens_online(args.dataset_dir, metadata, args.image_key_wrist,
+                                                         _dino, batch_size=args.dino_batch_size))
+    del _dino
+    if device == "cuda":
+        torch.cuda.empty_cache()
 
     # ── encoder: reuse latents if already present for this run, else encode ──
     latents_path = Path(args.latents_path) if args.latents_path else out_dir / "skill_latents.npz"
@@ -983,13 +582,44 @@ def main():
     print(f"[fsq_eval] codebook {len(active)}/{codebook_size} used "
           f"({enc_stats['utilization_pct']:.1f}%)  mean={enc_stats['skills_per_entry_mean']:.1f}")
 
-    # ── choose entries/samples before decoding ────────────────────────────────
-    # Tokenization is action-only and cheap, so it always covers every skill. This
-    # keeps utilization and the "top entries" selection exact. Live image decode
-    # and the 300M decoder then run only on those visualized samples by default.
+    # ── decoder: batched inference, then per-skill metrics ──
+    action_dim = dec_targets[0].shape[-1]
+    groups = _dim_groups(action_dim)
+    dim_labels = [f"d{i}" for i in range(action_dim - 1)] + ["grip"]
+    deltas, progresses, term_probs = batched_decode(
+        model, latents, dec_states, dec_tokens, dec_tokens_wrist, lengths, device, args.batch_size)
+    per_skill = [
+        skill_metrics(deltas[i], progresses[i], term_probs[i], dec_targets[i], lengths[i],
+                      args.end_threshold, groups)
+        for i in range(len(metadata))
+    ]
+
+    keys = ["chunk_mse", "mse_xyz", "mse_rpy", "mse_grip", "timing_abs", "prog_err"]
+    dec_means = {k: float(np.mean([s[k] for s in per_skill])) for k in keys}
+    dec_means["early_rate"] = float(np.mean([s["timing"] < 0 for s in per_skill]))
+    dec_means["late_rate"]  = float(np.mean([s["timing"] > 0 for s in per_skill]))
+    print(f"[fsq_eval] chunk_mse={dec_means['chunk_mse']:.4e}  term|err|={dec_means['timing_abs']:.2f}  "
+          f"early={dec_means['early_rate']:.1%} late={dec_means['late_rate']:.1%}  "
+          f"prog_err={dec_means['prog_err']:.4f}")
+
+    # ── aggregate per codebook entry ──
     by_entry: dict[int, list[int]] = defaultdict(list)
     for i, t in enumerate(tokens):
         by_entry[int(t)].append(i)
+    entry_data: dict[int, dict] = {}
+    for tok, ids in by_entry.items():
+        entry_data[tok] = {
+            "chunk_mse":  float(np.mean([per_skill[i]["chunk_mse"] for i in ids])),
+            "mse_xyz":    float(np.mean([per_skill[i]["mse_xyz"] for i in ids])),
+            "mse_rpy":    float(np.mean([per_skill[i]["mse_rpy"] for i in ids])),
+            "mse_grip":   float(np.mean([per_skill[i]["mse_grip"] for i in ids])),
+            "timing_abs": float(np.mean([per_skill[i]["timing_abs"] for i in ids])),
+            "timing":     float(np.mean([per_skill[i]["timing"] for i in ids])),
+            "prog_err":   float(np.mean([per_skill[i]["prog_err"] for i in ids])),
+            "length":     float(np.mean([per_skill[i]["length"] for i in ids])),
+        }
+
+    # ── choose entries/samples to render ──
     active_tokens = sorted(by_entry)
     if args.max_plot_entries > 0:
         plot_tokens = set(sorted(active_tokens, key=lambda t: (-counts[t], t))[: args.max_plot_entries])
@@ -998,153 +628,12 @@ def main():
     rng = np.random.default_rng(args.seed)
     sample_ids: list[int] = []
     sample_by_tok: dict[int, list[int]] = {}
-    for tok in sorted(plot_tokens):
+    for tok in plot_tokens:
         pool = by_entry[tok]
         n = min(args.max_plot_samples, len(pool))
         chosen = [pool[j] for j in rng.choice(len(pool), size=n, replace=False)] if n > 0 else []
         sample_by_tok[tok] = chosen
         sample_ids.extend(chosen)
-
-    decode_ids = list(range(len(metadata))) if args.decoder_scope == "all" else sample_ids
-    if not decode_ids:
-        raise ValueError("decoder_scope=samples requires --max_plot_samples > 0 and at least one active entry")
-
-    decode_random_latents = None
-    random_skill_tokens_by_id: dict[int, int] = {}
-    if args.random_far_skill:
-        decode_random_latents, random_tokens, random_distances = select_far_active_skill_latents(
-            latents,
-            tokens,
-            decode_ids,
-            levels,
-            args.seed + 10_003,
-            args.random_far_fraction,
-        )
-        random_skill_tokens_by_id = {
-            original_id: int(random_tokens[index])
-            for index, original_id in enumerate(decode_ids)
-        }
-        print(
-            f"[fsq_eval] far-skill comparison: top {args.random_far_fraction:.0%} active-code pool, "
-            f"mean normalized distance={float(np.mean(random_distances)):.3f}"
-        )
-
-    # ── decoder: live-frame inference only for the requested scope ────────────
-    action_dim = dec_targets[0].shape[-1]
-    groups = _dim_groups(action_dim)
-    dim_labels = [f"d{i}" for i in range(action_dim - 1)] + ["grip"]
-    decode_latents = latents[decode_ids]
-    decode_states = [dec_states[i] for i in decode_ids]
-    decode_metadata = [metadata[i] for i in decode_ids]
-    decode_lengths = [lengths[i] for i in decode_ids]
-    decode_targets = [dec_targets[i] for i in decode_ids]
-    print(f"[fsq_eval] decoder_scope={args.decoder_scope}: decoding {len(decode_ids)}/{len(metadata)} skills")
-    decoded_variant_deltas: dict[str, list[np.ndarray]] = {}
-    base_action_label = "pred chunk"
-    if args.model_family == "fsq_new":
-        abc_actions, decoded_progress, decoded_term = batched_decode_fsq_new_abc(
-            model, decode_latents, decode_states, decode_metadata, raw_dataset,
-            decode_lengths, device, args.batch_size,
-            random_skill_latents=decode_random_latents,
-        )
-        decoded_delta = abc_actions["A"]
-        decoded_variant_deltas = {"B": abc_actions["B"], "C": abc_actions["C"]}
-        if decode_random_latents is not None:
-            decoded_variant_deltas["C + far skill"] = abc_actions["C + far skill"]
-        base_action_label = "A"
-    else:
-        decoded_delta, decoded_progress, decoded_term, compare_delta, random_delta = (
-            _batched_decode_impl(
-            model, decode_latents, decode_states, decode_metadata, raw_dataset,
-                decode_lengths, device, args.batch_size,
-                broadcast_compare_scale=broadcast_compare_scale,
-                random_skill_latents=decode_random_latents,
-            )
-        )
-        if compare_delta is not None:
-            compare_label = f"broadcast {broadcast_compare_scale * 100:g}%"
-            decoded_variant_deltas[compare_label] = compare_delta
-            base_action_label = "broadcast 100%"
-        elif random_delta is not None:
-            base_action_label = "current skill"
-        if random_delta is not None:
-            decoded_variant_deltas["far active skill"] = random_delta
-    decoded: dict[int, tuple[np.ndarray, np.ndarray, np.ndarray]] = {
-        original_id: (decoded_delta[j], decoded_progress[j], decoded_term[j])
-        for j, original_id in enumerate(decode_ids)
-    }
-    decoded_variants = {
-        label: {
-            original_id: values[j] for j, original_id in enumerate(decode_ids)
-        }
-        for label, values in decoded_variant_deltas.items()
-    }
-    per_skill = {
-        original_id: skill_metrics(
-            decoded_delta[j], decoded_progress[j], decoded_term[j], decode_targets[j],
-            decode_lengths[j], args.end_threshold, groups,
-        )
-        for j, original_id in enumerate(decode_ids)
-    }
-    keys = ["chunk_mse", "mse_xyz", "mse_rpy", "mse_grip", "timing_abs", "prog_err"]
-    dec_means = {k: float(np.mean([s[k] for s in per_skill.values()])) for k in keys}
-    dec_means["early_rate"] = float(np.mean([s["timing"] < 0 for s in per_skill.values()]))
-    dec_means["late_rate"]  = float(np.mean([s["timing"] > 0 for s in per_skill.values()]))
-    action_keys = ["chunk_mse", "mse_xyz", "mse_rpy", "mse_grip"]
-    per_skill_variants = {
-        label: {
-            original_id: skill_metrics(
-                values[j], decoded_progress[j], decoded_term[j], decode_targets[j],
-                decode_lengths[j], args.end_threshold, groups,
-            )
-            for j, original_id in enumerate(decode_ids)
-        }
-        for label, values in decoded_variant_deltas.items()
-    }
-    dec_means_variants = {
-        label: {
-            key: float(np.mean([skill[key] for skill in metrics.values()]))
-            for key in action_keys
-        }
-        for label, metrics in per_skill_variants.items()
-    }
-    base_metric_name = f"{base_action_label} chunk_mse" if decoded_variant_deltas else "chunk_mse"
-    print(f"[fsq_eval] [{args.decoder_scope}, n={len(decode_ids)}] "
-          f"{base_metric_name}={dec_means['chunk_mse']:.4e}  term|err|={dec_means['timing_abs']:.2f}  "
-          f"early={dec_means['early_rate']:.1%} late={dec_means['late_rate']:.1%}  "
-          f"prog_err={dec_means['prog_err']:.4f}")
-    for label, means in dec_means_variants.items():
-        print(f"[fsq_eval] action variant {label}: chunk_mse={means['chunk_mse']:.4e}")
-
-    # Per-entry values are exact in decoder_scope=all; in samples mode they are
-    # the rendered random samples only (entries outside the top set have no bar).
-    entry_data: dict[int, dict] = {}
-    for tok, ids in by_entry.items():
-        metric_ids = [i for i in ids if i in per_skill]
-        if not metric_ids:
-            continue
-        entry_data[tok] = {
-            "chunk_mse":  float(np.mean([per_skill[i]["chunk_mse"] for i in metric_ids])),
-            "mse_xyz":    float(np.mean([per_skill[i]["mse_xyz"] for i in metric_ids])),
-            "mse_rpy":    float(np.mean([per_skill[i]["mse_rpy"] for i in metric_ids])),
-            "mse_grip":   float(np.mean([per_skill[i]["mse_grip"] for i in metric_ids])),
-            "timing_abs": float(np.mean([per_skill[i]["timing_abs"] for i in metric_ids])),
-            "timing":     float(np.mean([per_skill[i]["timing"] for i in metric_ids])),
-            "prog_err":   float(np.mean([per_skill[i]["prog_err"] for i in metric_ids])),
-            "length":     float(np.mean([lengths[i] for i in ids])),
-        }
-        entry_data[tok]["base_action_label"] = base_action_label
-        entry_data[tok]["variant_metrics"] = {
-            label: {
-                "chunk_mse": float(np.mean([
-                    metrics[i]["chunk_mse"] for i in metric_ids
-                ])),
-                "mse_xyz": float(np.mean([metrics[i]["mse_xyz"] for i in metric_ids])),
-                "mse_rpy": float(np.mean([metrics[i]["mse_rpy"] for i in metric_ids])),
-                "mse_grip": float(np.mean([metrics[i]["mse_grip"] for i in metric_ids])),
-            }
-            for label, metrics in per_skill_variants.items()
-        }
 
     frames = ({} if args.max_plot_samples <= 0 else
               load_sample_frames(metadata, sample_ids, Path(args.dataset_dir), args.image_key, args.thumb_size))
@@ -1156,44 +645,17 @@ def main():
             T = lengths[i]
             blank = np.full((args.thumb_size,) * 2 + (3,), 80, np.uint8)
             s_img, e_img = frames.get(i, (blank, blank))
-            delta, progress, term_prob = decoded[i]
-            action_variants = None
-            if decoded_variants:
-                palette = [
-                    ("#B71C1C", "--"),
-                    ("#00897B", ":"),
-                    ("#7B1FA2", "-."),
-                    ("#EF6C00", "-"),
-                ]
-                variant_items = []
-                for index, (label, values) in enumerate(decoded_variants.items()):
-                    display_label = label
-                    if "far" in label.lower() and i in random_skill_tokens_by_id:
-                        display_label = f"{label} #{random_skill_tokens_by_id[i]}"
-                    variant_items.append(
-                        (display_label, values[i], *palette[(index + 1) % len(palette)])
-                    )
-                action_variants = [
-                    (base_action_label, delta, *palette[0]),
-                    *variant_items,
-                ]
-            imgs.append(make_sample_plot(s_img, e_img, delta, progress, term_prob,
-                                         dec_targets[i], T, dim_labels, args.n_action_steps,
-                                         args.end_threshold, action_variants=action_variants))
+            imgs.append(make_sample_plot(s_img, e_img, deltas[i], progresses[i], term_probs[i],
+                                         dec_targets[i], T, dim_labels, args.n_action_steps, args.end_threshold))
         samples[tok] = imgs
 
     summary = (
         f"codebook {len(active)}/{codebook_size} ({enc_stats['utilization_pct']:.1f}%) | "
         f"skills/entry mean={enc_stats['skills_per_entry_mean']:.1f} max={enc_stats['skills_per_entry_max']} | "
-        f"decoder={args.decoder_scope} n={len(decode_ids)}/{len(metadata)} | "
         f"chunk MSE={dec_means['chunk_mse']:.3e} (xyz={dec_means['mse_xyz']:.2e} rpy={dec_means['mse_rpy']:.2e} "
         f"grip={dec_means['mse_grip']:.2e}) | term|err|={dec_means['timing_abs']:.2f} "
         f"early={dec_means['early_rate']:.0%} late={dec_means['late_rate']:.0%} | progress|err|={dec_means['prog_err']:.3f}"
     )
-    if args.model_family == "fsq_new":
-        summary = summary.replace("chunk MSE=", "A chunk MSE=", 1)
-    for label, means in dec_means_variants.items():
-        summary += f" | {label} chunk MSE={means['chunk_mse']:.3e}"
     title = f"{Path(args.model_path).parent.name} ({Path(args.model_path).stem})"
     html = build_html(title, summary, levels, counts, entry_data, samples, codebook_size)
     html_path = out_dir / "fsq_eval.html"
@@ -1201,21 +663,7 @@ def main():
     print(f"[fsq_eval] HTML → {html_path}")
 
     if not args.no_wandb:
-        log_wandb(
-            args,
-            enc_stats,
-            dec_means,
-            len(decode_ids),
-            html_path,
-            action_variant_means={
-                **(
-                    {"A": {key: dec_means[key] for key in action_keys}}
-                    if args.model_family == "fsq_new"
-                    else {}
-                ),
-                **dec_means_variants,
-            },
-        )
+        log_wandb(args, enc_stats, dec_means, html_path)
 
 
 if __name__ == "__main__":

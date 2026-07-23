@@ -560,11 +560,7 @@ class SkillVLAConfig(PI05Config):
             raise ValueError(f"All Stage-0 A/B skill loss weights must be > 0, got {stage0_weights}.")
         if self.stage0_expert_lora_lr_scale <= 0.0:
             raise ValueError("stage0_expert_lora_lr_scale must be > 0.")
-        # Specialized policies may append additional VLM-stream tokens (for example Stage0-pretrain's
-        # predicted skill/FAST sequence). In the base policy, image/language remain the only read-set.
-        extra_read_set = bool(getattr(self, "attend_skill", False)) or bool(
-            getattr(self, "attend_fast", False)
-        )
+        extra_read_set = bool(getattr(self, "attend_skill", False))
         if not self.attend_image and not self.attend_language and not extra_read_set:
             raise ValueError(
                 "The VLM read-set is empty: image/language and all policy-specific token access "

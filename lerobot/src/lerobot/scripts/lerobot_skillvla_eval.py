@@ -1961,7 +1961,7 @@ def _episode_exact_override(
 def eval_main(cfg: EvalPipelineConfig):
     logging.info(pformat(asdict(cfg)))
 
-    supported = {"skill_vla", "skill_vla_stage0_pretrain"}
+    supported = {"skill_vla"}
     if cfg.policy is None or cfg.policy.type not in supported:
         policy_type = None if cfg.policy is None else cfg.policy.type
         raise ValueError(

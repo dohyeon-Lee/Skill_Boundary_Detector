@@ -1616,7 +1616,7 @@ class SkillVLAPytorch(PI05Pytorch):
         """Prefix self-attention used by the cached encoder.
 
         The base SkillVLA prefix is fully bidirectional. Specialized descendants can override this
-        without duplicating the cached K/V implementation (Stage0-pretrain uses a causal skill suffix).
+        without duplicating the cached K/V implementation.
         """
         return make_att_2d_masks(pad, torch.zeros_like(pad))
 

@@ -132,11 +132,7 @@ fi
 # ── FSQ reconstruction eval (encoder + decoder → wandb scalars + interactive HTML) ──
 if [ "${EVAL_RUN_FSQ}" = "true" ]; then
   OUTPUTS_ROOT="$(dirname "$(dirname "${FSQ_OUTPUT_DIR}")")"
-  if [ "${FSQ_EVAL_FAMILY}" = "fsq_new" ]; then
-    FSQ_OUTPUTS_ROOT="${OUTPUTS_ROOT}/FSQ_new"
-  else
-    FSQ_OUTPUTS_ROOT="${OUTPUTS_ROOT}/FSQ"
-  fi
+  FSQ_OUTPUTS_ROOT="${OUTPUTS_ROOT}/FSQ"
   if [[ "${FSQ_EVAL_DINO_MODEL_PATH}" = /* ]]; then
     EVAL_DINO_MODEL_PATH="${FSQ_EVAL_DINO_MODEL_PATH}"
   else
@@ -210,7 +206,6 @@ PY
   fi
   PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     python -u examples/libero/fsq_eval.py \
-      --model_family        "${FSQ_EVAL_FAMILY}" \
       --model_path          "${MODEL_PATH}" \
       --dino_model_path     "${EVAL_DINO_MODEL_PATH}" \
       --skills_dir          "${F_SKILLSET}/skills" \

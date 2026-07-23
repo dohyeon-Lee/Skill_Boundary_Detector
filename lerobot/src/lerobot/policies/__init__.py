@@ -20,10 +20,6 @@ from .pi0.configuration_pi0 import PI0Config as PI0Config
 from .pi0_fast.configuration_pi0_fast import PI0FastConfig as PI0FastConfig
 from .pi05.configuration_pi05 import PI05Config as PI05Config
 from .skillVLA.configuration_skillVLA import SkillVLAConfig as SkillVLAConfig
-from .skillVLA_pretrain.configuration_skillVLA_pretrain import SkillVLAPretrainConfig as SkillVLAPretrainConfig
-from .skillVLA_stage0_pretrain.configuration_skillVLA_stage0_pretrain import (
-    SkillVLAStage0PretrainConfig as SkillVLAStage0PretrainConfig,
-)
 from .skill_expert.configuration_skill_expert import SkillExpertConfig as SkillExpertConfig
 from .smolvla.configuration_smolvla import SmolVLAConfig as SmolVLAConfig
 from .smolvla.processor_smolvla import SmolVLANewLineProcessor
@@ -39,8 +35,7 @@ __all__ = [
     "PI0Config",
     "PI05Config",
     "PI0FastConfig",
-    "SkillVLAPretrainConfig",
-    "SkillVLAStage0PretrainConfig",
+    "SkillVLAConfig",
     "SmolVLAConfig",
     "SARMConfig",
     "TDMPCConfig",

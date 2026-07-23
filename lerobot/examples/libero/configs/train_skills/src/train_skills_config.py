@@ -385,7 +385,7 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
     fsq_tag = "fsq" + "".join(str(v) for v in fsq_levels)
     fsq_exp = str(get_value(cfg, "fsq_exp", "")).strip()
     fsq_exp_suffix = f"_{fsq_exp}" if fsq_exp else ""
-    # End-weight the sampled FSQ VSA flow loss. The endpoint multiplier is explicit so different
+    # End-weight the FSQ reconstructor loss. The endpoint multiplier is explicit so different
     # curricula cannot auto-resume from one another. Keep the historical `_weighted` tag for 2x.
     weighted_loss = as_bool(get_value(cfg, "weighted_loss", False))
     weighted_loss_end_weight = float(get_value(cfg, "weighted_loss_end_weight", 2.0))
@@ -401,20 +401,6 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
     else:
         weight_tag = f"{weighted_loss_end_weight:g}".replace("-", "m").replace(".", "p")
         weighted_suffix = f"_weighted{weight_tag}"
-    fsq_terminator_arch = str(get_value(cfg, "fsq_terminator_arch", "small"))
-    if fsq_terminator_arch not in {"small", "cond"}:
-        raise ValueError(f"fsq_terminator_arch must be small|cond, got {fsq_terminator_arch!r}.")
-    fsq_terminator_layers = int(get_value(cfg, "fsq_terminator_layers", 2))
-    fsq_terminator_heads = int(get_value(cfg, "fsq_terminator_heads", 4))
-    if fsq_terminator_layers < 1 or fsq_terminator_heads < 1:
-        raise ValueError("fsq_terminator_layers and fsq_terminator_heads must both be >= 1.")
-    fsq_cond_encoder_variant = str(get_value(cfg, "fsq_cond_encoder_variant", "gemma_300m"))
-    # Depth/head settings are recorded in fsq_meta.json and the checkpoint config, but architecture
-    # alone keeps the user-facing run name concise.
-    fsq_terminator_tag = fsq_terminator_arch
-    fsq_vision_backbone = str(get_value(cfg, "fsq_vision_backbone", "dino"))
-    fsq_freeze_vision_encoder = as_bool(get_value(cfg, "fsq_freeze_vision_encoder", True))
-    fsq_vision_tag = fsq_vision_backbone + ("_frozen" if fsq_freeze_vision_encoder else "_tuned")
     fsq_encoder_input_mode = str(get_value(cfg, "fsq_encoder_input_mode", "zero_grounded")).strip().lower()
     if fsq_encoder_input_mode not in {"zero_grounded", "raw_state", "optimal"}:
         raise ValueError(
@@ -428,15 +414,13 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "raw_state": "_rawstate",
         "optimal": "_optimal",
     }[fsq_encoder_input_mode]
-    fsq_state_cond_mode = str(get_value(cfg, "fsq_state_cond_mode", "state"))
-    if fsq_state_cond_mode not in {"state", "state_skill", "broadcast"}:
+    fsq_skill_cond_mode = str(get_value(cfg, "fsq_skill_cond_mode", "token")).strip().lower()
+    if fsq_skill_cond_mode not in {"token", "broadcast"}:
         raise ValueError(
-            "fsq_state_cond_mode must be state|state_skill|broadcast, "
-            f"got {fsq_state_cond_mode!r}."
+            "fsq_skill_cond_mode must be token|broadcast, "
+            f"got {fsq_skill_cond_mode!r}."
         )
-    # This affects only the VSA action expert; the terminator always receives both state and z_q.
-    # Keep it in every run name so modes cannot accidentally resume from one another.
-    fsq_state_cond_suffix = f"_vsa_{fsq_state_cond_mode}"
+    fsq_skill_cond_suffix = "" if fsq_skill_cond_mode == "token" else "_broadcast"
     # DP tag for the FSQ run name = the DP run with the dataset prefix stripped
     # (libero_90_full_full_state_obs20 → state_obs20), so the FSQ folder shows WHICH DP's skillset it
     # was trained on (for example state_obs20), not just the FSQ architecture.
@@ -450,8 +434,8 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         get_value(
             cfg,
             "fsq_run_name",
-            "{target_dataset}_{dp_tag}_{fsq_tag}_{fsq_vision_tag}_{fsq_terminator_tag}"
-            "{fsq_encoder_input_suffix}{fsq_state_cond_suffix}{weighted_suffix}{fsq_exp_suffix}",
+            "{target_dataset}_{dp_tag}_{fsq_tag}_dino{fsq_patch_grid}"
+            "{fsq_encoder_input_suffix}{fsq_skill_cond_suffix}{weighted_suffix}{fsq_exp_suffix}",
         )
     )
     fsq_run_name = fsq_run_template.format(
@@ -460,16 +444,12 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         fsq_tag=fsq_tag,
         fsq_exp=fsq_exp,
         fsq_exp_suffix=fsq_exp_suffix,
+        fsq_patch_grid=int(get_value(cfg, "fsq_patch_grid", 8)),
         weighted_suffix=weighted_suffix,
-        fsq_vision_tag=fsq_vision_tag,
-        fsq_terminator_arch=fsq_terminator_arch,
-        fsq_terminator_tag=fsq_terminator_tag,
-        fsq_terminator_layers=fsq_terminator_layers,
-        fsq_terminator_heads=fsq_terminator_heads,
+        fsq_skill_cond_mode=fsq_skill_cond_mode,
+        fsq_skill_cond_suffix=fsq_skill_cond_suffix,
         fsq_encoder_input_mode=fsq_encoder_input_mode,
         fsq_encoder_input_suffix=fsq_encoder_input_suffix,
-        fsq_state_cond_mode=fsq_state_cond_mode,
-        fsq_state_cond_suffix=fsq_state_cond_suffix,
     )
     # Slurm partition/qos/nodelist/exclude are canonical (read from global_config.yaml's train_*);
     # output keys below keep their per-job prefix so submit scripts read the same $..._PARTITION vars.
@@ -492,7 +472,6 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "outputs_root": outputs_root,
         "dp_outputs_root": dp_outputs_root,
         "fsq_outputs_root": fsq_outputs_root,
-        "pi_base_model_path": root / "models" / "pi05_base",
         "dp_base_config": root / "lerobot" / str(get_value(cfg, "dp_base_config")),
         "dp_policy": dp_policy,
         "dp_output_dir": dp_outputs_root / dp_policy,
@@ -525,45 +504,51 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "fsq_weighted_loss_end_weight": weighted_loss_end_weight,
         "weighted_suffix": weighted_suffix,
         "fsq_encoder_input_suffix": fsq_encoder_input_suffix,
+        "fsq_skill_cond_mode": fsq_skill_cond_mode,
+        "fsq_skill_cond_suffix": fsq_skill_cond_suffix,
         "fsq_run_name": fsq_run_name,
         "fsq_output_dir": fsq_outputs_root / fsq_run_name,
         "fsq_dim": len(fsq_levels),
         "fsq_num_embeddings": math.prod(fsq_levels),
         "fsq_epoch": str(get_value(cfg, "fsq_epoch", "1000")),
+        "fsq_patch_grid": int(get_value(cfg, "fsq_patch_grid", 8)),
         "fsq_batch_size": int(get_value(cfg, "fsq_batch_size", 256)),
         "fsq_num_workers": int(get_value(cfg, "fsq_num_workers", 8)),
         "fsq_num_epochs": int(get_value(cfg, "fsq_num_epochs", 1000)),
         "fsq_checkpoint_every": int(get_value(cfg, "fsq_checkpoint_every", 500)),
         "fsq_encoder_lr": str(get_value(cfg, "fsq_encoder_lr", "3e-4")),
         "fsq_terminator_lr": str(get_value(cfg, "fsq_terminator_lr", "3e-4")),
-        "fsq_expert_lr": str(get_value(cfg, "fsq_expert_lr", "2.5e-5")),
-        "fsq_samples_per_skill": int(get_value(cfg, "fsq_samples_per_skill", 2)),
-        "fsq_action_expert_variant": str(get_value(cfg, "fsq_action_expert_variant", "gemma_300m")),
+        "fsq_lr": str(get_value(cfg, "fsq_lr", get_value(cfg, "fsq_encoder_lr", "3e-4"))),
         "fsq_encoder_input_mode": fsq_encoder_input_mode,
-        "fsq_state_cond_mode": fsq_state_cond_mode,
-        "fsq_expert_dtype": str(get_value(cfg, "fsq_expert_dtype", "bfloat16")),
         "fsq_hidden_dim": int(get_value(cfg, "fsq_hidden_dim", 256)),
         "fsq_num_layers": int(get_value(cfg, "fsq_num_layers", 2)),
         "fsq_n_control": int(get_value(cfg, "fsq_n_control", 30)),
-        "fsq_terminator_arch": fsq_terminator_arch,
-        "fsq_terminator_layers": fsq_terminator_layers,
-        "fsq_terminator_heads": fsq_terminator_heads,
-        "fsq_vision_backbone": fsq_vision_backbone,
-        "fsq_freeze_vision_encoder": fsq_freeze_vision_encoder,
+        "fsq_image_token_dim": int(get_value(cfg, "fsq_image_token_dim", 128)),
+        "fsq_terminator_use_third": as_bool(get_value(cfg, "fsq_terminator_use_third", True)),
+        "fsq_terminator_use_wrist": as_bool(get_value(cfg, "fsq_terminator_use_wrist", False)),
         # Accept a portable project-relative path in YAML (e.g. models/dinov3-vits16), while
         # passing an absolute path to the Slurm job and checkpoint metadata.
         "fsq_dino_model_path": resolve_path(
             root, get_value(cfg, "fsq_dino_model_path", f"models/{DINO_IMAGE_MODEL_DIR}")
         ),
+        "dino_image_model_path": resolve_path(
+            root, get_value(cfg, "fsq_dino_model_path", f"models/{DINO_IMAGE_MODEL_DIR}")
+        ),
+        "dino_feature_dim": int(get_value(cfg, "dino_feature_dim", get_value(cfg, "fsq_dino_feature_dim", 384))),
+        "dino_image_size": int(get_value(cfg, "dino_image_size", get_value(cfg, "fsq_dino_image_size", 224))),
         "fsq_dino_image_size": int(get_value(cfg, "fsq_dino_image_size", 224)),
-        "fsq_siglip_image_size": int(get_value(cfg, "fsq_siglip_image_size", 224)),
-        "fsq_cond_encoder_variant": fsq_cond_encoder_variant,
         "fsq_chunk_size": int(get_value(cfg, "fsq_chunk_size", 10)),
         "fsq_action_loss_weight": str(get_value(cfg, "fsq_action_loss_weight", 1.0)),
+        "fsq_delta_loss_weight": str(
+            get_value(cfg, "fsq_delta_loss_weight", get_value(cfg, "fsq_action_loss_weight", 1.0))
+        ),
         "fsq_progress_loss_weight": str(get_value(cfg, "fsq_progress_loss_weight", 1.0)),
         "fsq_end_loss_weight": str(get_value(cfg, "fsq_end_loss_weight", 1.0)),
         # best-val SELECTION metric weights — empty → "" (sbatch omits the flag → selection follows loss)
         "fsq_val_select_action_weight": str(get_value(cfg, "fsq_val_select_action_weight", "") or ""),
+        "fsq_val_select_delta_weight": str(
+            get_value(cfg, "fsq_val_select_delta_weight", get_value(cfg, "fsq_val_select_action_weight", "")) or ""
+        ),
         "fsq_val_select_progress_weight": str(get_value(cfg, "fsq_val_select_progress_weight", "") or ""),
         "fsq_val_select_end_weight": str(get_value(cfg, "fsq_val_select_end_weight", "") or ""),
         "fsq_end_target_sigma": str(get_value(cfg, "fsq_end_target_sigma", 0.0)),

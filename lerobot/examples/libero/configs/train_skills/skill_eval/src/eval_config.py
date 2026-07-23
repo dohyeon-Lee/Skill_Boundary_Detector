@@ -30,9 +30,6 @@ def build_settings(config_path: str | None = None) -> dict:
             "dp_eval_output_suffix may contain only letters, digits, '.', '_' and '-', "
             f"got {output_suffix!r}"
         )
-    fsq_family = str(get_value(cfg, "fsq_eval_family", "fsq")).strip().lower()
-    if fsq_family not in {"fsq", "fsq_new"}:
-        raise ValueError(f"fsq_eval_family must be fsq|fsq_new, got {fsq_family!r}.")
     random_far_fraction = float(get_value(cfg, "fsq_eval_random_far_fraction", 0.1))
     if not 0.0 < random_far_fraction <= 1.0:
         raise ValueError(
@@ -62,7 +59,6 @@ def build_settings(config_path: str | None = None) -> dict:
             as_bool(get_value(cfg, "dp_eval_show_gripper_graph", True))
         ).lower(),
         "fsq_eval_run_name":       str(get_value(cfg, "fsq_eval_run_name", "")),
-        "fsq_eval_family":         fsq_family,
         "fsq_eval_dino_model_path": str(
             get_value(cfg, "fsq_eval_dino_model_path", "models/dinov3-vitl16")
         ),
