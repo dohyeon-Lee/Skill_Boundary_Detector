@@ -618,11 +618,40 @@ class SkillVLAPytorch(PI05Pytorch):
 
     @property
     def _wdtype(self) -> torch.dtype:
-        # The VSA-distill teacher drops its (never-run) VLM layers → fall back to the cond encoder,
-        # which is cast to the same working dtype in __init__.
-        layers = self._vlm.layers
+        # The external Stage-3 eval predictor can retain only its predictor VLM and drop the motor VLM.
+        # All normal policies use the same dtype for both towers, so this is unchanged outside that path.
+        layers = self._predictor_vlm.layers
         ref = layers[0] if len(layers) else self.cond_encoder.model.layers[0]
         return ref.self_attn.q_proj.weight.dtype
+
+    def _retain_skill_predictor_only(self) -> None:
+        """Drop modules unused by an external Stage-3 skill-only eval tower.
+
+        The checkpoint is first restored exactly on CPU. This method then keeps the predictor VLM,
+        skill adapter, reader, and head so only those weights move to the rollout GPU.
+        """
+        if self.skill_predictor_vlm_model is None:
+            self.paligemma_with_expert.gemma_expert = None
+            self.paligemma_with_expert.paligemma.lm_head = None
+        else:
+            self.paligemma_with_expert = None
+        for name in (
+            "dino",
+            "siglip",
+            "image_proj",
+            "state_proj",
+            "skill_proj",
+            "cond_encoder",
+            "lang_bridges",
+            "action_in_proj",
+            "action_out_proj",
+            "time_mlp_in",
+            "time_mlp_out",
+            "fsq_term",
+            "fsq_term_train",
+            "_vsa_teacher",
+        ):
+            setattr(self, name, None)
 
     # ── tokenization ──
     def _image_features(self, image: Tensor) -> Tensor:
@@ -2792,8 +2821,13 @@ class SkillVLAPolicy(PI05Policy):
             self._skill_code = self._oracle_code(batch)
             source = "oracle"
         else:
-            self._skill_code = self.model.predict_skill_code(self._start_images, lang_tokens, lang_masks)
-            source = "pred"
+            self._skill_code = self._predict_runtime_skill_code(
+                self._start_images, lang_tokens, lang_masks
+            )
+            external_path = str(
+                getattr(self.config, "eval_skill_predictor_path", "") or ""
+            ).strip()
+            source = "stage3" if external_path else "pred"
         self._skill_steps = 0
         # open a skill_html trace record for this skill (env 0; eval runs single-env per task)
         self._cur_skill = {
@@ -2804,6 +2838,98 @@ class SkillVLAPolicy(PI05Policy):
             "end_probs": [],
             "skill_source": source,
         }
+
+    def _load_eval_skill_predictor(self):
+        """Lazily load a frozen Stage-3 policy and expose only its skill prediction call.
+
+        Lazy loading keeps ordinary training/eval byte-identical and avoids allocating a second VLM
+        unless the eval config explicitly requests skill_source=stage3.
+        """
+        path = str(getattr(self.config, "eval_skill_predictor_path", "") or "").strip()
+        if not path:
+            return None
+        cached = getattr(self, "_eval_skill_predictor", None)
+        if cached is not None:
+            return cached
+
+        predictor_cfg = PreTrainedConfig.from_pretrained(path)
+        if getattr(predictor_cfg, "model_type", None) != "skill_vla" or getattr(
+            predictor_cfg, "pt_stage", None
+        ) != "skill":
+            raise ValueError(
+                "eval_skill_predictor_path must point to a Stage-3 skill_vla checkpoint "
+                f"(pt_stage='skill'), got model_type={getattr(predictor_cfg, 'model_type', None)!r}, "
+                f"pt_stage={getattr(predictor_cfg, 'pt_stage', None)!r}: {path}"
+            )
+        if list(predictor_cfg.skill_fsq_levels) != list(self.config.skill_fsq_levels):
+            raise ValueError(
+                "Stage-3 predictor and action policy use different FSQ grids: "
+                f"{predictor_cfg.skill_fsq_levels} vs {self.config.skill_fsq_levels}."
+            )
+        if tuple(predictor_cfg.image_resolution) != tuple(self.config.image_resolution):
+            raise ValueError(
+                "Stage-3 predictor and action policy require different VLM image resolutions: "
+                f"{predictor_cfg.image_resolution} vs {self.config.image_resolution}."
+            )
+        predictor_images = tuple(predictor_cfg.image_features)
+        action_images = tuple(self.config.image_features)
+        if predictor_images != action_images:
+            raise ValueError(
+                "Stage-3 predictor and action policy use different ordered image inputs: "
+                f"{predictor_images} vs {action_images}."
+            )
+
+        # Restore on CPU, discard the motor/cond side, then move only the predictor tower to the
+        # rollout device. This avoids holding a second complete SkillVLA policy in eval VRAM.
+        predictor_cfg.device = "cpu"
+        predictor_cfg.gradient_checkpointing = False
+        predictor_cfg.compile_model = False
+        predictor_cfg.train_terminator = False
+        predictor_cfg.eval_skill_predictor_path = None
+
+        # Stage-3 checkpoints can be copied between servers with an absolute DINO path saved in
+        # their config.  The cond tower needs that path while the policy is being constructed even
+        # though it is discarded immediately below.  Reuse the action policy's local DINO only when
+        # the saved path is stale; this does not change the retained predictor/VLM weights.
+        saved_dino = str(getattr(predictor_cfg, "s1_dino_model_path", "") or "").strip()
+        local_dino = str(getattr(self.config, "s1_dino_model_path", "") or "").strip()
+        if saved_dino and not Path(saved_dino).is_dir():
+            if not local_dino or not Path(local_dino).is_dir():
+                raise FileNotFoundError(
+                    "The external Stage-3 predictor contains a stale s1_dino_model_path and the "
+                    "current action policy has no usable local replacement: "
+                    f"saved={saved_dino!r}, local={local_dino!r}."
+                )
+            log.warning(
+                "External Stage-3 predictor DINO path does not exist; using the current policy's "
+                "local build-time path instead: %s -> %s",
+                saved_dino,
+                local_dino,
+            )
+            predictor_cfg.s1_dino_model_path = local_dino
+        predictor = SkillVLAPolicy.from_pretrained(path, config=predictor_cfg)
+        predictor.requires_grad_(False).eval()
+        main_vocab = int(self.model._vlm.embed_tokens.weight.shape[0])
+        predictor_vocab = int(predictor.model._predictor_vlm.embed_tokens.weight.shape[0])
+        if predictor_vocab != main_vocab:
+            raise ValueError(
+                "Stage-3 predictor and action policy token vocabularies differ: "
+                f"{predictor_vocab} vs {main_vocab}."
+            )
+        predictor_model = predictor.model
+        predictor_model._retain_skill_predictor_only()
+        predictor_model.to(self.config.device).eval()
+        self._eval_skill_predictor = predictor_model
+        log.info("Loaded external Stage-3 skill predictor from %s; action/terminator remain local.", path)
+        return predictor_model
+
+    @torch.no_grad()
+    def _predict_runtime_skill_code(
+        self, start_images: list[Tensor], lang_tokens: Tensor, lang_masks: Tensor
+    ) -> Tensor:
+        predictor = self._load_eval_skill_predictor()
+        model = self.model if predictor is None else predictor
+        return model.predict_skill_code(start_images, lang_tokens, lang_masks)
 
     def _should_end_skill(self, batch: dict) -> bool:
         """Whether the CURRENT observation closes the active skill, before its next action is chosen.

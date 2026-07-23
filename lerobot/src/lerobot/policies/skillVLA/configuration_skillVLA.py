@@ -497,6 +497,10 @@ class SkillVLAConfig(PI05Config):
     checkpoint's VLM after load, keeping this checkpoint's cond + action-expert (+ skill decoder). FT
     eval sets this to the run's Stage-2 source to run the FT'd motor under the ORIGINAL (un-adapted)
     perception. Blank = keep the loaded VLM."""
+    eval_skill_predictor_path: str | None = None
+    """EVAL-only external skill source. When set to a Stage-3 checkpoint, its frozen VLM + skill
+    adapter/reader/head predict each new discrete skill code. The current policy still owns the action
+    route and FSQ terminator; only the code returned at a skill boundary is replaced."""
 
     def __post_init__(self):
         super().__post_init__()

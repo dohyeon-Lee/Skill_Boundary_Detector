@@ -134,6 +134,7 @@ run_eval() {
       --policy.use_gt_skill="${USE_GT_SKILL}" \
       --policy.gt_skill_dataset_dir="${gt}" \
       --policy.skill_advance_mode="${advance}" \
+      --policy.eval_skill_predictor_path="${EVAL_SKILL_PREDICTOR_PATH}" \
       --policy.eval_drop_vlm="${dropvlm}" \
       --policy.eval_drop_vlm_keep_adapters="${keepad}" \
       --eval.init_states_path="${inits}" \
@@ -209,6 +210,7 @@ PY
 echo "START SKILLVLA EVAL (PT)"
 echo "Node     : ${SLURMD_NODENAME:-local}"
 echo "target   : ${TARGET_TASK}  task_ids=${TASK_IDS}  episodes=${N_EPISODES}/task"
+[ -n "${EVAL_SKILL_PREDICTOR_PATH:-}" ] && echo "skill src: Stage-3 (${EVAL_SKILL_PREDICTOR_PATH})"
 nvidia-smi || true
 mkdir -p "${EVAL_OUT_DIR}"
 BASE_RN="${WANDB_RUN_NAME}"

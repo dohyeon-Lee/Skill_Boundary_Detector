@@ -2,7 +2,7 @@
 # and/or B (motor-side VLM severed; the predictor still reads image + language).
 models:
   - {model_dir: FSQ333_dino_frozen_small_optimal_vsa_broadcast_150_std_pt_snap10_ms1_pmax15_halfnormal_exp0_FSQ_statecond_030000__s3b_s0,
-     checkpoint: "last", terminator_source: auto, label: S3}
+     checkpoint: "030000", terminator_source: auto, label: S3}
 
 modes: "a" # "a,b"
 models_per_row: 1

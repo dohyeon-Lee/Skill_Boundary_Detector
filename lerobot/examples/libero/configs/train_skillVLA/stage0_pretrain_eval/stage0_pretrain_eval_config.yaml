@@ -3,8 +3,9 @@ models:
 
 modes: "a"
 models_per_row: 1
-skill_source: predicted
-output_name: "pretrained" # blank: config resolution time
+skill_source: stage3 # predicted | stage3
+stage3_eval_config: ../stage3_eval/stage3_eval_config.yaml
+output_name: "pretrained_predictor" # blank: config resolution time
 
 target_task: libero_90
 task_ids: "[1,2,3,4,5,6,7,8,9,10]"
@@ -20,7 +21,7 @@ skill_end_progress_threshold: 0.9
 inference_skill_max_length: 200
 
 max_videos_per_task: 0
-skill_html: true
+skill_html: false
 video_frame_stride: 2
 video_fps: 10
 skill_html_train_samples: 10

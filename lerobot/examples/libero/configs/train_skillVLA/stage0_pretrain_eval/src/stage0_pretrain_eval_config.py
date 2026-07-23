@@ -24,6 +24,71 @@ sys.path.insert(0, str(_HERE.parent.parent.parent.parent / "train_skills" / "src
 from train_skills_config import as_bool, as_list, get_value, load_config, print_shell  # noqa: E402
 
 DEFAULT_CONFIG_PATH = _HERE.parent.parent / "stage0_pretrain_eval_config.yaml"
+DEFAULT_STAGE3_EVAL_CONFIG_PATH = _HERE.parent.parent.parent / "stage3_eval" / "stage3_eval_config.yaml"
+
+
+def _resolve_stage3_predictor_path(cfg: dict, project_root: Path) -> Path:
+    """Resolve the one Stage-3 checkpoint selected by stage3_eval_config.yaml.
+
+    Repeated A/B panels of the same checkpoint are fine. Distinct checkpoints are
+    rejected because a single Stage0-pretrain rollout can have only one skill source.
+    """
+    raw_path = str(get_value(cfg, "stage3_eval_config", "") or "").strip()
+    config_path = Path(raw_path).expanduser() if raw_path else DEFAULT_STAGE3_EVAL_CONFIG_PATH
+    if not config_path.is_absolute():
+        config_path = (_HERE.parent.parent / config_path).resolve()
+    if not config_path.is_file():
+        raise FileNotFoundError(f"Stage-3 eval config not found: {config_path}")
+
+    stage3_cfg = load_config(config_path)
+    stage3_project = Path(str(get_value(stage3_cfg, "project_root", project_root))).expanduser()
+    stage3_outputs = stage3_project / str(get_value(stage3_cfg, "outputs_root", "outputs"))
+    stage3_root = stage3_outputs / str(get_value(stage3_cfg, "models_root", "skillVLA_stage3"))
+    default_checkpoint = str(get_value(stage3_cfg, "checkpoint", "last"))
+    models = get_value(stage3_cfg, "models", None)
+    if isinstance(models, list) and models:
+        specs = [
+            (
+                str(get_value(model, "model_dir", "") or "").strip(),
+                str(get_value(model, "checkpoint", default_checkpoint) or default_checkpoint).strip(),
+            )
+            for model in models
+        ]
+    else:
+        specs = [
+            (
+                str(get_value(stage3_cfg, "model_dir", "") or "").strip(),
+                default_checkpoint,
+            )
+        ]
+    if any(not model_dir for model_dir, _ in specs):
+        raise ValueError(f"Stage-3 eval config must select a model_dir: {config_path}")
+
+    candidates = [
+        stage3_root / model_dir / "checkpoints" / checkpoint / "pretrained_model"
+        for model_dir, checkpoint in specs
+    ]
+    unique: dict[Path, Path] = {}
+    for candidate in candidates:
+        unique[candidate.resolve()] = candidate
+    if len(unique) != 1:
+        selected = ", ".join(str(path) for path in unique.values())
+        raise ValueError(
+            "skill_source=stage3 requires stage3_eval_config.yaml to select exactly one "
+            f"distinct Stage-3 checkpoint; got: {selected}"
+        )
+
+    policy_path = next(iter(unique.values()))
+    config_json = policy_path / "config.json"
+    if not config_json.is_file():
+        raise FileNotFoundError(f"Stage-3 predictor checkpoint not found: {config_json}")
+    policy_cfg = json.loads(config_json.read_text())
+    if policy_cfg.get("pt_stage") != "skill":
+        raise ValueError(
+            "skill_source=stage3 requires a Stage-3 checkpoint with pt_stage='skill', "
+            f"got {policy_cfg.get('pt_stage')!r}: {config_json}"
+        )
+    return policy_path
 
 
 def _resolve_model(vla_root: Path, model_dir: str, checkpoint: str, eval_terminator: str) -> dict:
@@ -145,8 +210,11 @@ def build_settings(cfg: dict) -> dict:
     if default_advance not in {"gt", "terminator"}:
         raise ValueError(f"skill_advance_mode must be gt|terminator, got {default_advance!r}.")
     skill_source = str(get_value(cfg, "skill_source", "predicted")).strip().lower()
-    if skill_source not in {"pred", "predicted", "autoregressive"}:
-        raise ValueError("Stage0-pretrain eval requires skill_source=predicted.")
+    if skill_source not in {"pred", "predicted", "autoregressive", "stage3"}:
+        raise ValueError("Stage0-pretrain eval skill_source must be predicted|stage3.")
+    stage3_predictor_path = (
+        _resolve_stage3_predictor_path(cfg, project_root) if skill_source == "stage3" else None
+    )
     use_gt_skill = False
 
     # Every model owns checkpoint/advance_mode and expands to the selected A/B/Frozen-FSQ panels. The old top-level
@@ -296,6 +364,9 @@ def build_settings(cfg: dict) -> dict:
         "use_gt_skill": use_gt_skill,
         "gt_skill_dataset_dir": gt_skill_dataset_dir,
         "skill_advance_mode": m0["advance_mode"],
+        # Blank keeps the Stage0-pretrain autoregressive predictor. A Stage-3 path swaps only the
+        # skill-code producer; the evaluated checkpoint still owns action generation and termination.
+        "eval_skill_predictor_path": stage3_predictor_path or "",
         # output / wandb — chunked submission (TASK_TAG, e.g. "t0-4") → distinct wandb run per chunk
         "output_name": run_name,
         "wandb_project": str(get_value(cfg, "wandb_project", "VLA_eval")),
