@@ -80,6 +80,23 @@ def test_uniform_torch_jitter_uses_randint(monkeypatch) -> None:
     torch.testing.assert_close(offset, torch.tensor([-20]))
 
 
+def test_reusable_jitter_draw_resolves_against_each_samples_metadata() -> None:
+    draw = (2, True, -1)
+
+    assert skill_jitter.apply_jitter_draw(k=0, ds=8, de=1, seq_len=3, draw=draw) == (1, -2)
+    assert skill_jitter.apply_jitter_draw(k=0, ds=4, de=5, seq_len=3, draw=draw) == (0, -2)
+
+
+def test_sample_jitter_draw_uses_configured_distribution() -> None:
+    draw = skill_jitter.sample_jitter_draw(
+        pmax=20,
+        rng=_UniformRng(20, random_values=(0.0, 0.9)),
+        distribution="uniform",
+    )
+
+    assert draw == (20, True, -1)
+
+
 def test_stage1_jitters_action_code_but_keeps_terminator_true_code(monkeypatch) -> None:
     stub = SimpleNamespace(
         training=True,
@@ -126,6 +143,7 @@ def test_transition_dataset_uses_state_from_same_half_normal_offset(monkeypatch)
     ds._cum = np.array([1])
     ds._state_dim = 2
     ds._act_shape = (1, 2)
+    ds._transition_randomization = True
     monkeypatch.setattr(
         dataset_transitions,
         "sample_offset",

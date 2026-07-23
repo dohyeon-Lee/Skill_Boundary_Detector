@@ -7,10 +7,39 @@ from lerobot.policies.pi05.lora import NamedLoRALinear
 from lerobot.policies.pi_gemma import add_broadcast_condition
 from lerobot.policies.skillVLA.modeling_skillVLA import (
     LanguageKVBridge,
+    Stage0VLMResidual,
     SkillVLAPytorch,
     SkillVLAPolicy,
     _skill_endpoint_weights,
 )
+
+
+def test_stage0_vlm_residual_starts_as_fp32_zero_correction_with_open_gate() -> None:
+    residual = Stage0VLMResidual(
+        expert_dim=16,
+        vlm_dim=16,
+        n_heads=4,
+        dropout=0.0,
+        alpha_min=0.1,
+        alpha_max=0.2,
+        init_alpha=0.15,
+        zero_init_output=True,
+    ).to(dtype=torch.bfloat16)
+
+    query = torch.randn(2, 3, 16, dtype=torch.bfloat16)
+    vlm = torch.randn(2, 5, 16, dtype=torch.bfloat16)
+    valid = torch.ones(2, 5, dtype=torch.bool)
+    blocked = torch.zeros(5, dtype=torch.bool)
+    correction = residual(query, vlm, valid, blocked)
+
+    assert residual.gate_logit.dtype == torch.float32
+    torch.testing.assert_close(residual.alpha(), torch.tensor(0.15))
+    assert correction.dtype == torch.float32
+    assert torch.count_nonzero(correction) == 0
+
+    (correction - 1.0).square().mean().backward()
+    assert residual.attn.out_proj.weight.grad is not None
+    assert torch.count_nonzero(residual.attn.out_proj.weight.grad) > 0
 
 
 def test_language_bridge_is_zero_initialized_with_kv_head_shape() -> None:
@@ -168,6 +197,7 @@ class _Stage0TrainabilityStub(nn.Module):
     _stage0_components = SkillVLAPytorch._stage0_components
     _stage0_drops_vlm = SkillVLAPytorch._stage0_drops_vlm
     _stage0_pi05_expert = SkillVLAPytorch._stage0_pi05_expert
+    _direct_expert_conditioning = SkillVLAPytorch._direct_expert_conditioning
     _cond_uses_state_adarms = SkillVLAPytorch._cond_uses_state_adarms
 
     def _regime_groups(self):
@@ -272,6 +302,7 @@ def test_stage0_pi05_expert_is_time_only_and_has_no_skill_prefix() -> None:
         config = SimpleNamespace(stage0_expert_source="pi05_base")
         stage1_config = SimpleNamespace(state_cond_mode="state")
         _stage0_pi05_expert = SkillVLAPytorch._stage0_pi05_expert
+        _direct_expert_conditioning = SkillVLAPytorch._direct_expert_conditioning
         _state_cond_mode = SkillVLAPytorch._state_cond_mode
 
         @staticmethod
@@ -300,6 +331,7 @@ def test_broadcast_mode_keeps_skill_out_of_prefix_and_adarms() -> None:
         stage1_config = SimpleNamespace(state_cond_mode="broadcast")
         skill_proj = nn.Linear(3, 4, bias=False)
         _stage0_pi05_expert = SkillVLAPytorch._stage0_pi05_expert
+        _direct_expert_conditioning = SkillVLAPytorch._direct_expert_conditioning
         _state_cond_mode = SkillVLAPytorch._state_cond_mode
 
         @property

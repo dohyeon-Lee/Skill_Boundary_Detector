@@ -197,6 +197,13 @@ PY
   if [ ! -d "${F_SKILLSET}/skills" ]; then
     echo "FSQ's training skillset not found: ${F_SKILLSET}/skills" >&2; exit 1
   fi
+  FSQ_RANDOM_SKILL_ARGS=()
+  if [ "${FSQ_EVAL_RANDOM_FAR_SKILL}" = "true" ]; then
+    FSQ_RANDOM_SKILL_ARGS=(
+      --random_far_skill
+      --random_far_fraction "${FSQ_EVAL_RANDOM_FAR_FRACTION}"
+    )
+  fi
   PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     python -u examples/libero/fsq_eval.py \
       --model_path          "${MODEL_PATH}" \
@@ -212,6 +219,7 @@ PY
       --thumb_size       "${FSQ_EVAL_THUMB_SIZE}" \
       --end_threshold    "${FSQ_EVAL_END_THRESHOLD}" \
       --wandb_project    "${FSQ_EVAL_WANDB_PROJECT}" \
-      --wandb_run_name   "${FSQ_EVAL_RUN_NAME}_${EPOCH_TAG}"
+      --wandb_run_name   "${FSQ_EVAL_RUN_NAME}_${EPOCH_TAG}" \
+      ${FSQ_RANDOM_SKILL_ARGS[@]+"${FSQ_RANDOM_SKILL_ARGS[@]}"}
   echo "DONE FSQ → ${OUTPUT_DIR}/fsq_eval.html"
 fi

@@ -141,11 +141,55 @@ class SkillVLAConfig(PI05Config):
     stage0_a_drop_vlm: bool = False
     stage0_b_drop_vlm: bool = True
     stage0_expert_source: str = "fsq"
-    """Stage-0 action-expert initialization and conditioning contract. ``fsq`` restores the FSQ
-    reconstructor and keeps direct state/skill conditioning. ``pi05_base`` restores pi05's expert and
-    keeps it time-only; skill then controls only terminator/VLM-refresh timing."""
+    """Legacy Stage-0 action-expert initialization switch. Renewed residual Stage-0 requires
+    ``pi05_base``: the action expert warm-starts from pi05, while FSQ supplies the skill grid and
+    terminator checkpoint."""
     stage0_cond_state_adarms: bool = False
     """Inject the current normalized robot state into every cond-encoder layer through AdaRMS."""
+    stage0_vlm_residual: bool = False
+    """Renewed Stage-0 motor objective. The base VSA path runs VLM-severed; a single bounded
+    cross-attention residual then lets final-normalized VLM tokens correct the raw action-token hidden
+    immediately before the expert final norm/action head."""
+    stage0_vlm_residual_heads: str = "auto"
+    """Cross-attention heads for the VLM residual. ``auto`` reuses the action expert attention head count."""
+    stage0_vlm_residual_dropout: float = 0.0
+    stage0_vlm_residual_alpha_min: float = 0.1
+    stage0_vlm_residual_alpha_max: float = 0.2
+    stage0_vlm_residual_init_alpha: float = 0.15
+    stage0_vlm_residual_zero_init_output: bool = True
+    """Bounded scalar gate: alpha_min + (alpha_max-alpha_min)*sigmoid(gate_logit). The attention
+    output projection starts at zero by default, so the residual is initially an exact no-op while
+    still receiving a healthy gradient through the nonzero alpha floor."""
+    stage0_conditional_loss_weight: float = 1.0
+    stage0_unconditional_loss_weight: float = 0.5
+    stage0_uncond_skill_start_loss_weight: float = 1.0
+    stage0_uncond_skill_end_loss_weight: float = 1.0
+    """Renewed Stage-0 loss:
+       λ_cond * GT flow loss with VLM residual + λ_uncond * GT flow loss without the residual.
+       The unconditional term can be skill-progress weighted from start_weight to end_weight."""
+    same_skill_batch_enabled: bool = False
+    same_skill_batch_fraction: float = 0.5
+    same_skill_progress_temperature: float = 0.1
+    """Renewed Stage-0 mixed batch sampler. A fraction of each batch is arranged as adjacent
+    same-post-jitter-skill/different-task pairs; partner post-jitter progress is a soft nearest-neighbor
+    preference. Pair slots share one draw from the configured jitter law and pass the resolved result
+    to the dataset, while ordinary random slots retain independent dataset-side jitter."""
+    stage0_freeze_vlm_llm: bool = True
+    stage0_freeze_vlm_vision: bool = True
+    stage0_freeze_cond: bool = False
+    stage0_freeze_cond_vision: bool = False
+    stage0_freeze_expert: bool = False
+    stage0_freeze_skill_reader: bool = True
+    stage0_freeze_skill_head: bool = True
+    """Static trainability for renewed Stage-0. By default VLM is frozen, while cond + action expert train."""
+    stage0_train_skill_predictor: bool = False
+    """Renewed Stage-0 auxiliary skill predictor. Trains only skill_reader + skill_head in an isolated
+    optimizer step over no-grad frozen VLM hidden, so it cannot change the action/cond/expert/VLM path."""
+    stage0_skill_predictor_weight: float = 0.5
+    stage0_skill_predictor_lr_scale: float = 1.0
+    stage0_skill_predictor_all_layers: bool = False
+    stage0_skill_predictor_detach_vlm: bool = True
+    """Predictor auxiliary knobs. detach_vlm must stay True for the isolated no-backflow contract."""
     stage0_a_train_components: str = "vlm_lora,lang_bridge,cond,expert_lora"
     stage0_b_train_components: str = "cond,cond_vision,expert_lora"
     """Branch-local Stage-0 gradient matrix. Component names are validated and stored in checkpoints;
@@ -535,18 +579,59 @@ class SkillVLAConfig(PI05Config):
                     "stage0_expert_source must be fsq|pi05_base, "
                     f"got {self.stage0_expert_source!r}."
                 )
-            if self.stage0_a_drop_vlm or not self.stage0_b_drop_vlm:
+            stage0_residual = bool(getattr(self, "stage0_vlm_residual", False))
+            if stage0_residual:
+                if self.stage0_expert_source != "pi05_base":
+                    raise ValueError(
+                        "Renewed Stage-0 VLM residual uses the pi05 action expert. "
+                        "Set stage0_expert_source='pi05_base'."
+                    )
+                alpha_min = float(getattr(self, "stage0_vlm_residual_alpha_min", 0.1))
+                alpha_max = float(getattr(self, "stage0_vlm_residual_alpha_max", 0.2))
+                init_alpha = float(getattr(self, "stage0_vlm_residual_init_alpha", 0.15))
+                if alpha_max <= 0.0:
+                    raise ValueError("stage0_vlm_residual_alpha_max must be > 0.")
+                if not 0.0 <= alpha_min < init_alpha < alpha_max:
+                    raise ValueError(
+                        "Stage-0 residual alpha must satisfy 0 <= alpha_min < init_alpha < alpha_max, "
+                        f"got {alpha_min}, {init_alpha}, and {alpha_max}."
+                    )
+                if float(getattr(self, "stage0_vlm_residual_dropout", 0.0)) < 0.0:
+                    raise ValueError("stage0_vlm_residual_dropout must be >= 0.")
+                if float(getattr(self, "stage0_conditional_loss_weight", 1.0)) < 0.0:
+                    raise ValueError("stage0_conditional_loss_weight must be >= 0.")
+                if float(getattr(self, "stage0_unconditional_loss_weight", 0.5)) < 0.0:
+                    raise ValueError("stage0_unconditional_loss_weight must be >= 0.")
+                if float(getattr(self, "stage0_uncond_skill_start_loss_weight", 1.0)) <= 0.0:
+                    raise ValueError("stage0_uncond_skill_start_loss_weight must be > 0.")
+                if float(getattr(self, "stage0_uncond_skill_end_loss_weight", 1.0)) <= 0.0:
+                    raise ValueError("stage0_uncond_skill_end_loss_weight must be > 0.")
+                if not 0.0 <= float(getattr(self, "same_skill_batch_fraction", 0.5)) <= 1.0:
+                    raise ValueError("same_skill_batch_fraction must be in [0, 1].")
+                if float(getattr(self, "same_skill_progress_temperature", 0.1)) <= 0.0:
+                    raise ValueError("same_skill_progress_temperature must be > 0.")
+                if bool(getattr(self, "stage0_train_skill_predictor", False)):
+                    if not bool(getattr(self, "stage0_skill_predictor_detach_vlm", True)):
+                        raise ValueError(
+                            "stage0_skill_predictor_detach_vlm must remain True so the predictor "
+                            "auxiliary cannot backprop into the action VLM."
+                        )
+                    if float(getattr(self, "stage0_skill_predictor_weight", 0.5)) <= 0.0:
+                        raise ValueError("stage0_skill_predictor_weight must be > 0.")
+                    if float(getattr(self, "stage0_skill_predictor_lr_scale", 1.0)) <= 0.0:
+                        raise ValueError("stage0_skill_predictor_lr_scale must be > 0.")
+            if (not stage0_residual) and (self.stage0_a_drop_vlm or not self.stage0_b_drop_vlm):
                 raise ValueError("Stage-0 requires A_drop_vlm=False and B_drop_vlm=True.")
             all_components = {
                 part.strip()
                 for spec in (self.stage0_a_train_components, self.stage0_b_train_components)
                 for part in str(spec).split(",") if part.strip()
             }
-            if "vlm_lora" in all_components and not self.vlm_lora:
+            if (not stage0_residual) and "vlm_lora" in all_components and not self.vlm_lora:
                 raise ValueError("Stage-0 matrix trains vlm_lora but vlm_lora=False.")
-            if "lang_bridge" in all_components and not self.lang_bridge:
+            if (not stage0_residual) and "lang_bridge" in all_components and not self.lang_bridge:
                 raise ValueError("Stage-0 matrix trains lang_bridge but lang_bridge=False.")
-            if "expert_lora" in all_components and not self.stage0_expert_lora:
+            if (not stage0_residual) and "expert_lora" in all_components and not self.stage0_expert_lora:
                 raise ValueError("Stage-0 matrix trains expert_lora but stage0_expert_lora=False.")
         if self.stage0_wrong_language_weight < 0.0 or self.stage0_wrong_language_margin < 0.0:
             raise ValueError("Stage-0 wrong-language weight and margin must be >= 0.")

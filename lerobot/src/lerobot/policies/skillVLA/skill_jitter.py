@@ -33,6 +33,7 @@ import numpy as np
 
 
 JITTER_DISTRIBUTIONS = frozenset({"half_normal", "uniform"})
+JitterDraw = tuple[int, bool, int]  # magnitude, choose-early tie break, non-early sign
 
 
 def normalize_jitter_distribution(value: str) -> str:
@@ -73,6 +74,45 @@ def sample_offset(
     if p == 0:
         return 0
     return p if r.random() < 0.5 else -p
+
+
+def sample_jitter_draw(
+    pmax: int,
+    rng: np.random.Generator | None = None,
+    distribution: str = "half_normal",
+) -> JitterDraw:
+    """Draw reusable jitter randomness for a paired sample without inspecting episode metadata."""
+    r = np.random if rng is None else rng
+    p = sample_p(pmax, r, distribution)
+    if p == 0:
+        return 0, True, 1
+    choose_early = bool(r.random() < 0.5)
+    sign = 1 if r.random() < 0.5 else -1
+    return p, choose_early, sign
+
+
+def apply_jitter_draw(
+    k: int,
+    ds: int,
+    de: int,
+    seq_len: int,
+    draw: JitterDraw,
+) -> tuple[int, int]:
+    """Resolve a pre-sampled jitter draw against one frame's boundary metadata."""
+    p, choose_early, sign = draw
+    if p < 0 or sign not in (-1, 1):
+        raise ValueError(f"Invalid jitter draw: {draw!r}.")
+    last_real = seq_len - 2
+    can_early = p > 0 and de < p and k < last_real
+    can_late = p > 0 and ds < p and k > 0
+    if can_early and can_late:
+        if choose_early:
+            can_late = False
+        else:
+            can_early = False
+    if can_early:
+        return k + 1, -p
+    return (k - 1 if can_late else k), sign * p
 
 
 def choose_jitter(

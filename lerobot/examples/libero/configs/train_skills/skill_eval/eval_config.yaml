@@ -56,8 +56,9 @@ fsq_eval_dino_model_path: models/dinov3-vitl16
 
 # Folder names now embed the DP run (dp_tag) that produced the skillset. Renamed runs (all dino8_obs10):
 
-fsq_eval_run_name: libero_90_full_full_state_obs20_std_global_fsq333_dino_frozen_small_optimal_vsa_broadcast
-fsq_eval_checkpoint: 150
+# fsq_eval_run_name: libero_90_full_full_state_obs20_std_global_ms1_fsq333_dino_frozen_small_optimal
+fsq_eval_run_name: libero_90_full_full_state_obs20_std_global_ms1_fsq333_dino_frozen_small_optimal_broadcast
+fsq_eval_checkpoint: 200
 # The terminator always consumes both cameras; architecture/backbone live in the checkpoint.
 
 # Evaluation / HTML knobs
@@ -66,6 +67,9 @@ fsq_eval_n_samples: 10            # sample skills shown per codebook entry
 fsq_eval_max_entries: 10 #0          # 0 = render sample plots for every active entry
 fsq_eval_decoder_scope: samples    # samples = decode only 50×10 displayed skills; all = full-skill decoder metric
 fsq_eval_end_threshold: 0.5      # termination probability threshold for timing
+# Overlay actions from a different trained code sampled from the farthest active-code fraction.
+fsq_eval_random_far_skill: true
+fsq_eval_random_far_fraction: 0.1
 fsq_eval_thumb_size: 160
 fsq_eval_image_key: observation.images.image
 fsq_eval_wandb_project: VAE_eval

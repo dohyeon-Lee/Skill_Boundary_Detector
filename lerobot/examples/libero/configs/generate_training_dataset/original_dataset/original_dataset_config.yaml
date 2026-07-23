@@ -12,12 +12,12 @@ original_datasets: libero_100
 #   {convert_source_root}/{convert_suite}/*.hdf5
 # Output:
 #   {convert_output_root}/{convert_output_name}
-convert_suite: libero_90
+convert_suite: libero_10 # libero_90
 # Blank source -> {project_root}/{original_dataset_root}
 # Blank output -> {project_root}/{dataset_root} from global_config.yaml
 convert_source_root: ""
 convert_output_root: ""
-convert_output_name: libero_90_full_full
+convert_output_name: libero_10_full_1 # libero_90_full_full
 convert_overwrite: false
 
 # Canonical LeRobot dataset whose meta/info.json feature contract is copied exactly.
@@ -38,7 +38,7 @@ convert_image_writer_processes: 5
 
 # Debug limits. Blank = full.
 convert_max_tasks: ""
-convert_max_episodes_per_task: ""
+convert_max_episodes_per_task: 1
 
 # ── Slurm for conversion (partition/qos/nodelist/exclude from configs/global_config.yaml) ──
 convert_gres: gpu:1

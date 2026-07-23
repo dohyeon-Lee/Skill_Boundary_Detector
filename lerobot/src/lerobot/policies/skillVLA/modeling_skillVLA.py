@@ -80,7 +80,11 @@ from lerobot.utils.constants import (
 
 from .configuration_skillVLA import SkillVLAConfig
 from .dataset_skillVLA import (
+    SAME_SKILL_PAIR_FALLBACK,
+    SAME_SKILL_PAIR_ID,
     SKILL_CODE,
+    SKILL_CODE_TRUE,
+    SKILL_PROGRESS,
     SKILL_START_IMAGE,
     SKILL_START_STATE,
     SKILL_START_WRIST_IMAGE,
@@ -219,6 +223,83 @@ class LanguageKVBridge(nn.Module):
         return delta_k, delta_v
 
 
+class Stage0VLMResidual(nn.Module):
+    """Bounded VLM residual applied to raw action-token hidden after the base VSA forward."""
+
+    def __init__(
+        self,
+        expert_dim: int,
+        vlm_dim: int,
+        n_heads: int,
+        dropout: float,
+        alpha_min: float,
+        alpha_max: float,
+        init_alpha: float,
+        zero_init_output: bool,
+    ):
+        super().__init__()
+        if expert_dim % n_heads:
+            raise ValueError(f"expert_dim={expert_dim} must be divisible by n_heads={n_heads}.")
+        if not 0.0 <= alpha_min < init_alpha < alpha_max:
+            raise ValueError(
+                "Need 0 <= alpha_min < init_alpha < alpha_max, got "
+                f"{alpha_min}, {init_alpha}, and {alpha_max}."
+            )
+        self.kv_proj = nn.Identity() if vlm_dim == expert_dim else nn.Linear(vlm_dim, expert_dim, bias=False)
+        self.attn = nn.MultiheadAttention(
+            embed_dim=expert_dim,
+            num_heads=n_heads,
+            dropout=float(dropout),
+            batch_first=True,
+        )
+        if zero_init_output:
+            nn.init.zeros_(self.attn.out_proj.weight)
+            if self.attn.out_proj.bias is not None:
+                nn.init.zeros_(self.attn.out_proj.bias)
+        self.alpha_min = float(alpha_min)
+        self.alpha_max = float(alpha_max)
+        p = (float(init_alpha) - self.alpha_min) / (self.alpha_max - self.alpha_min)
+        self.gate_logit = nn.Parameter(torch.tensor(math.log(p / (1.0 - p)), dtype=torch.float32))
+
+    def _apply(self, fn, recurse: bool = True):
+        result = super()._apply(fn, recurse=recurse)
+        self.gate_logit.data = self.gate_logit.data.float()
+        if self.gate_logit.grad is not None:
+            self.gate_logit.grad.data = self.gate_logit.grad.data.float()
+        return result
+
+    def alpha(self) -> Tensor:
+        return self.alpha_min + (self.alpha_max - self.alpha_min) * torch.sigmoid(self.gate_logit.float())
+
+    def forward(
+        self,
+        query: Tensor,
+        vlm_hidden: Tensor,
+        vlm_valid: Tensor,
+        vlm_xattn_block: Tensor,
+    ) -> Tensor:
+        read_valid = vlm_valid & ~vlm_xattn_block[None, :]
+        if not bool(read_valid.any(dim=1).all()):
+            raise ValueError("Stage-0 VLM residual has a sample with no readable VLM tokens.")
+        attn_dtype = self.attn.in_proj_weight.dtype
+        q = query.to(dtype=attn_dtype)
+        kv = self.kv_proj(vlm_hidden).to(dtype=attn_dtype)
+        delta, _ = self.attn(
+            q,
+            kv,
+            kv,
+            key_padding_mask=~read_valid,
+            need_weights=False,
+        )
+        # Keep the gate and scaled correction in fp32. In bf16, the original 0.01-scale correction
+        # frequently rounded away when added to an O(1) residual stream.
+        alpha = self.alpha().to(device=delta.device)
+        scaled = delta.float() * alpha
+        self._last_raw_delta_rms = delta.detach().float().square().mean().sqrt()
+        self._last_scaled_delta_rms = scaled.detach().square().mean().sqrt()
+        return scaled
+
+
 # ── Core model ───────────────────────────────────────────────────────────────────────────────
 
 class SkillVLAPytorch(PI05Pytorch):
@@ -264,6 +345,31 @@ class SkillVLAPytorch(PI05Pytorch):
             num_probes=config.num_reader_tokens)
         self.skill_head = SkillHead(vlm_width, config.skill_fsq_levels,
                                     deadzone_frac=getattr(config, "skill_deadzone_frac", 0.0))
+        self.stage0_vlm_residual = None
+        if bool(getattr(config, "stage0_vlm_residual", False)):
+            heads_raw = str(getattr(config, "stage0_vlm_residual_heads", "auto")).strip().lower()
+            if heads_raw == "auto":
+                attn0 = self._expert.layers[0].self_attn
+                n_heads = int(getattr(attn0, "num_heads", 0) or (self.expert_width // int(attn0.head_dim)))
+            else:
+                n_heads = int(heads_raw)
+            self.stage0_vlm_residual = Stage0VLMResidual(
+                expert_dim=self.expert_width,
+                vlm_dim=vlm_width,
+                n_heads=n_heads,
+                dropout=float(getattr(config, "stage0_vlm_residual_dropout", 0.0)),
+                alpha_min=float(getattr(config, "stage0_vlm_residual_alpha_min", 0.1)),
+                alpha_max=float(getattr(config, "stage0_vlm_residual_alpha_max", 0.2)),
+                init_alpha=float(getattr(config, "stage0_vlm_residual_init_alpha", 0.15)),
+                zero_init_output=bool(getattr(config, "stage0_vlm_residual_zero_init_output", True)),
+            )
+            print(
+                "[skillVLA Stage-0 residual] "
+                f"VLM->action cross-attn heads={n_heads} "
+                f"alpha_init={float(self.stage0_vlm_residual.alpha().detach()):.4f} "
+                f"alpha_range=[{self.stage0_vlm_residual.alpha_min}, "
+                f"{self.stage0_vlm_residual.alpha_max}]"
+            )
 
         # ── Stage-1 VSA LoRA: restore its adapter as part of the frozen VSA before adding Stage-2/3 adapters.
         self._has_stage1_expert_lora = False
@@ -320,9 +426,13 @@ class SkillVLAPytorch(PI05Pytorch):
         # outputs are cast to the working dtype only at the attention boundary (_action_in/_action_out).
         if str(config.dtype) == "bfloat16":
             for m in (self.image_proj, self.state_proj, self.skill_proj,
-                      self.cond_encoder, self.skill_reader, self.skill_head, self.lang_bridges):
+                      self.cond_encoder, self.skill_reader, self.skill_head, self.lang_bridges,
+                      self.stage0_vlm_residual):
                 if m is not None:
                     m.to(dtype=torch.bfloat16)
+        if self.stage0_vlm_residual is not None:
+            # Scalar control parameters should not inherit the bf16 attention working dtype.
+            self.stage0_vlm_residual.gate_logit.data = self.stage0_vlm_residual.gate_logit.data.float()
 
         # FT: a TRAINABLE terminator co-trained on GT signals (built last so the bf16 cast above skips
         # it — it stays float32). Disjoint from the SkillVLA params; warm-starts from config.fsq_path.
@@ -539,6 +649,7 @@ class SkillVLAPytorch(PI05Pytorch):
             "cond_vision": [cond_vision],                       # DINO/SigLIP for cond — separately freezable
             "llm": [self._vlm],       # the VLM's Gemma LLM trunk ONLY (vision tower = vlm_vision below)
             "vlm_vision": [self.paligemma_with_expert.paligemma.model.vision_tower],
+            "vlm_residual": [self.stage0_vlm_residual],
         }
 
     def named_component_params(self) -> dict:
@@ -557,8 +668,9 @@ class SkillVLAPytorch(PI05Pytorch):
             "cond_vision_encoder": [cond_vision],                           # DINO/SigLIP for cond
             "action_expert": [self._expert, self.action_in_proj, self.action_out_proj,
                               self.time_mlp_in, self.time_mlp_out,
-                              self.state_proj if not self._cond_uses_state_adarms and not self._stage0_pi05_expert else None,
-                              self.skill_proj if not self._stage0_pi05_expert else None],
+                              self.state_proj if not self._cond_uses_state_adarms and self._direct_expert_conditioning else None,
+                              self.skill_proj if self._direct_expert_conditioning else None],
+            "vlm_residual": [self.stage0_vlm_residual],
             "lang_bridge": [self.lang_bridges],
         }
         out: dict = {}
@@ -601,9 +713,9 @@ class SkillVLAPytorch(PI05Pytorch):
         self._set_requires_grad(groups["expert"], "expert" in train)
         self._set_requires_grad(groups["cond"], "cond" in train)
         state_train = ((self._cond_uses_state_adarms and "cond" in train)
-                       or (not self._stage0_pi05_expert and "expert" in train))
+                       or (self._direct_expert_conditioning and "expert" in train))
         self._set_requires_grad([self.state_proj], state_train)
-        self._set_requires_grad([self.skill_proj], not self._stage0_pi05_expert and "expert" in train)
+        self._set_requires_grad([self.skill_proj], self._direct_expert_conditioning and "expert" in train)
         self._set_requires_grad(groups["cond_vision"], "cond_vision" in train)
         self._set_requires_grad([self.skill_reader], "skill_reader" in train)
         self._set_requires_grad([self.skill_head], "skill_head" in train)
@@ -647,6 +759,7 @@ class SkillVLAPytorch(PI05Pytorch):
             "action_out_proj",
             "time_mlp_in",
             "time_mlp_out",
+            "stage0_vlm_residual",
             "fsq_term",
             "fsq_term_train",
             "_vsa_teacher",
@@ -680,12 +793,17 @@ class SkillVLAPytorch(PI05Pytorch):
         return str(getattr(self.config, "stage0_expert_source", "fsq")) == "pi05_base"
 
     @property
+    def _direct_expert_conditioning(self) -> bool:
+        renewed_stage0_motor = self._stage0_pi05_expert and bool(getattr(self.config, "stage0_vlm_residual", False))
+        return (not self._stage0_pi05_expert) or renewed_stage0_motor
+
+    @property
     def _cond_uses_state_adarms(self) -> bool:
         return bool(getattr(self.config, "stage0_cond_state_adarms", False))
 
     @property
     def _n_action_prefix_tokens(self) -> int:
-        return 0 if self._stage0_pi05_expert or self._state_cond_mode != "state" else 1
+        return 0 if (not self._direct_expert_conditioning or self._state_cond_mode != "state") else 1
 
     def _cond_tokens(self, images: list[Tensor]) -> Tensor:
         """Scene cond tokens → (B, M, expert_width): [img1 patches, img2 patches].
@@ -719,7 +837,7 @@ class SkillVLAPytorch(PI05Pytorch):
         """Action-stream prefix from a normalized skill z (GT grid coord or the VLM's STE-rounded
         prediction). The pi05 expert is skill-blind; for an FSQ expert, state mode uses a skill token and
         state_skill mode injects skill through AdaRMS; broadcast mode has no prefix either."""
-        if self._stage0_pi05_expert or self._state_cond_mode != "state":
+        if not self._direct_expert_conditioning or self._state_cond_mode != "state":
             return None
         return self._skill_token_from_z(zq)                              # (B, 1, expert_width)
 
@@ -730,7 +848,7 @@ class SkillVLAPytorch(PI05Pytorch):
 
     def _skill_broadcast_from_z(self, zq: Tensor) -> Tensor | None:
         """FSQ skill vector broadcast before expert attention, only for the ``broadcast`` mode."""
-        if self._stage0_pi05_expert or self._state_cond_mode != "broadcast":
+        if not self._direct_expert_conditioning or self._state_cond_mode != "broadcast":
             return None
         return self.skill_proj(zq.to(self._wdtype))
 
@@ -742,11 +860,11 @@ class SkillVLAPytorch(PI05Pytorch):
     def _expert_cond_from_z(self, time: Tensor, state: Tensor, zq: Tensor) -> Tensor:
         """Action-expert AdaRMS condition.
 
-        A pi05-base expert keeps its original time-only contract. An FSQ expert receives time+state and,
-        in state_skill mode, also skill.
+        Renewed Stage-0 starts from pi05 weights but still trains the expert under the FSQ-style
+        direct state/skill contract. Legacy pi05-expert ablations without the residual remain time-only.
         """
         c = self._time_cond(time)
-        if self._stage0_pi05_expert:
+        if not self._direct_expert_conditioning:
             return c
         c = c + self._state_cond(state)
         if self._state_cond_mode == "state_skill":
@@ -826,6 +944,10 @@ class SkillVLAPytorch(PI05Pytorch):
     def _action_out(self, action_hidden: Tensor) -> Tensor:
         """pi05: float32 action_out_proj on a float32 hidden → float32 flow velocity."""
         return self.action_out_proj(action_hidden.to(torch.float32))
+
+    def _expert_final_norm(self, suffix_raw: Tensor, expert_cond: Tensor) -> Tensor:
+        hidden, _ = layernorm_forward(self._expert.norm, suffix_raw, expert_cond)
+        return hidden
 
     # ── attention masks ──
     def _mask_branch_A(
@@ -934,7 +1056,7 @@ class SkillVLAPytorch(PI05Pytorch):
 
     def _joint_forward_A(self, cond_tokens, vlm_embeds, vlm_pad, vlm_xattn_block, action_tokens, expert_cond,
                          cond_adarms=None, drop_vlm=False, collect_vlm_layers=False,
-                         skill_broadcast=None):
+                         skill_broadcast=None, return_suffix_raw: bool = False):
         nc, na = cond_tokens.shape[1], action_tokens.shape[1]
         att_4d, _ = self._mask_branch_A(nc, vlm_pad, vlm_xattn_block, na, drop_vlm=drop_vlm)
         vlm_pos, cond_pos, action_pos = self._joint_positions(vlm_pad, nc, na)
@@ -950,26 +1072,33 @@ class SkillVLAPytorch(PI05Pytorch):
             position_ids, collect_idx=(1 if collect_vlm_layers else None),
             bridge_token_mask=bridge_mask,
             broadcast_cond=[None, None, skill_broadcast])   # stream 1 = VLM
-        cond_out, vlm_out, action_out = outs
+        cond_out, vlm_out, suffix_raw = outs
         cond_out, _ = layernorm_forward(self.cond_encoder.model.norm, cond_out, cond_adarms)
         vlm_out, _ = layernorm_forward(self._vlm.norm, vlm_out, None)
-        action_out, _ = layernorm_forward(self._expert.norm, action_out, expert_cond)
+        action_out, _ = layernorm_forward(self._expert.norm, suffix_raw, expert_cond)
         if collect_vlm_layers:   # each captured layer normed by the VLM final norm → (B, L, nv, W)
             self._vlm_all_layers = torch.stack(
                 [layernorm_forward(self._vlm.norm, h, None)[0] for h in self._collected_layers], dim=1)
+        if return_suffix_raw:
+            return vlm_out, action_out, suffix_raw
         return vlm_out, action_out
 
     def _joint_forward(self, cond_tokens, vlm_embeds, vlm_pad, vlm_xattn_block, action_tokens, expert_cond,
                        cond_adarms=None, drop_vlm=False, collect_vlm_layers=False,
-                       skill_broadcast=None):
+                       skill_broadcast=None, return_suffix_raw: bool = False):
         """Returns (vlm_out, action_hidden) where action_hidden is the action-CHUNK only — the
         skill prefix (state mode) is dropped by the final slice (no-op in the other modes).
         drop_vlm severs cond→VLM / action→VLM for a CFG dropout batch (Stage-1 form). collect_vlm_layers
         stashes the per-layer VLM stack in self._vlm_all_layers (skill_reader_all_layers)."""
-        vlm_out, action_out = self._joint_forward_A(
+        out = self._joint_forward_A(
             cond_tokens, vlm_embeds, vlm_pad, vlm_xattn_block, action_tokens, expert_cond,
             cond_adarms=cond_adarms, drop_vlm=drop_vlm,
-            collect_vlm_layers=collect_vlm_layers, skill_broadcast=skill_broadcast)
+            collect_vlm_layers=collect_vlm_layers, skill_broadcast=skill_broadcast,
+            return_suffix_raw=return_suffix_raw)
+        if return_suffix_raw:
+            vlm_out, action_out, suffix_raw = out
+            return vlm_out, action_out[:, -self.config.chunk_size :], suffix_raw[:, -self.config.chunk_size :]
+        vlm_out, action_out = out
         return vlm_out, action_out[:, -self.config.chunk_size :]
 
     def _vsa_action_hidden(
@@ -1312,6 +1441,64 @@ class SkillVLAPytorch(PI05Pytorch):
             skill_broadcast=self._skill_broadcast_from_z(skill_zq))
         return self._action_out(action_out), cond_tokens
 
+    def _stage0_dual_flow_view(
+        self,
+        cond_images,
+        start_images,
+        lang_tokens,
+        lang_masks,
+        state,
+        skill_zq: Tensor,
+        x_t: Tensor,
+        time: Tensor,
+    ) -> tuple[Tensor, Tensor]:
+        """Renewed Stage-0: shared base VSA plus a final VLM residual correction.
+
+        ``suffix_raw`` is the action chunk hidden after every expert layer and before the expert final
+        norm. It is deliberately returned without detach so both conditional and unconditional losses
+        update the shared base action pathway.
+        """
+        if self.stage0_vlm_residual is None:
+            raise ValueError("pt_stage='stage0' requires stage0_vlm_residual=True for the renewed objective.")
+        set_active_adapters(self._active_adapters(frozenset()))
+        cond_tokens = self._cond_tokens(cond_images)
+        vlm_embeds, vlm_pad, vlm_xattn_block = self._vlm_tokens(start_images, lang_tokens, lang_masks)
+        action_tokens = self._action_in(x_t)
+        prefix = self._action_prefix_from_z(skill_zq)
+        if prefix is not None:
+            action_tokens = torch.cat([prefix, action_tokens], dim=1)
+        expert_cond = self._expert_cond_from_z(time, state, skill_zq)
+        skill_broadcast = self._skill_broadcast_from_z(skill_zq)
+        vlm_out, _, suffix_raw = self._joint_forward(
+            cond_tokens,
+            vlm_embeds,
+            vlm_pad,
+            vlm_xattn_block,
+            action_tokens,
+            expert_cond,
+            cond_adarms=self._cond_adarms(state),
+            drop_vlm=True,
+            skill_broadcast=skill_broadcast,
+            return_suffix_raw=True,
+        )
+        suffix_raw_fp32 = suffix_raw.float()
+        suffix_norm = self._expert_final_norm(suffix_raw_fp32, expert_cond)
+        v_uncond = self._action_out(suffix_norm)
+        delta = self.stage0_vlm_residual(suffix_norm, vlm_out, vlm_pad, vlm_xattn_block)
+        v_cond = self._action_out(self._expert_final_norm(suffix_raw_fp32 + delta, expert_cond))
+        self._last_stage0_alpha = self.stage0_vlm_residual.alpha().detach()
+        base_rms = suffix_raw_fp32.detach().square().mean().sqrt()
+        scaled_rms = self.stage0_vlm_residual._last_scaled_delta_rms
+        self._last_stage0_residual_stats = {
+            "gate_logit": self.stage0_vlm_residual.gate_logit.detach().float(),
+            "raw_delta_rms": self.stage0_vlm_residual._last_raw_delta_rms,
+            "scaled_delta_rms": scaled_rms,
+            "base_hidden_rms": base_rms,
+            "scaled_to_base_ratio": scaled_rms / base_rms.clamp_min(1e-12),
+            "velocity_delta_rms": (v_cond.detach() - v_uncond.detach()).square().mean().sqrt(),
+        }
+        return v_cond, v_uncond
+
     def _grounded_flow_view(self, cond_images, start_images, lang_tokens, lang_masks, state,
                             skill_zq: Tensor, x_t: Tensor, time: Tensor) -> Tensor:
         """STAGE-3b grounding: evaluate a (STE-predicted) skill z through the FROZEN connected motor →
@@ -1443,7 +1630,9 @@ class SkillVLAPytorch(PI05Pytorch):
             regime = names[r]
         elif self.training and pt_stage:
             regime = pt_stage                # "cond" (Stage 2) / "skill" (Stage 3) — every batch, no coin
-            if regime == "stage0":
+            if regime == "stage0" and bool(getattr(self.config, "stage0_vlm_residual", False)):
+                pass
+            elif regime == "stage0":
                 coin = torch.rand((), device=actions.device)
                 if torch.distributed.is_available() and torch.distributed.is_initialized():
                     torch.distributed.broadcast(coin, src=0)
@@ -1459,6 +1648,8 @@ class SkillVLAPytorch(PI05Pytorch):
         self._last_severed_hold = False
         self._last_cond_anchor_raw = None
         self._last_vsa_distill = None
+        self._last_stage0_dual_losses = None
+        self._last_stage0_alpha = None
 
         # SKILL regime — mode a (default): skill prediction only, no flow this batch.
         # mode b (skill_action_grounding, STAGE 3 only): the SKILL view's STE prediction is ALSO
@@ -1517,7 +1708,15 @@ class SkillVLAPytorch(PI05Pytorch):
             # predictor (motor ⊥ skill; the SKILL regime is the only place skill prediction trains).
             skill_zq = self._code_to_z(skill_code) / self._fsq_half[None, :]
 
-        if regime == "cond_sev":
+        if regime == "stage0":
+            v_cond, v_uncond = self._stage0_dual_flow_view(
+                cond_images, start_images, lang_tokens, lang_masks, state, skill_zq, x_t, time)
+            cond_losses = F.mse_loss(u_t, v_cond, reduction="none")
+            uncond_losses = F.mse_loss(u_t, v_uncond, reduction="none")
+            self._last_stage0_dual_losses = (cond_losses, uncond_losses)
+            flow_losses = cond_losses
+            cond_tokens = None
+        elif regime == "cond_sev":
             # Same hold-derived x_t on both sides. Teacher = exact frozen Stage-1 VSA (expert_lora stays
             # active, all new adapters off); student = VLM severed + cond_lora. This is a function anchor,
             # not GT action supervision, so cond_lora cannot learn an image-only motion shortcut.
@@ -1736,13 +1935,14 @@ class SkillVLAPytorch(PI05Pytorch):
         # VLM: encode once under the CURRENT (flow) adapter scope → cached K/V for cond/action reads.
         bridge_mask = self._vlm_is_lang & ~vlm_xattn_block if self.lang_bridges is not None else None
         if bridge_mask is None:
-            vlm_kv, _ = self._encode_prefix_kv(
+            vlm_kv, vlm_raw = self._encode_prefix_kv(
                 self._vlm.layers, vlm_embeds, vlm_pad, vlm_pos, adarms=None)
             cond_vlm_kv = vlm_kv
         else:
-            vlm_kv, _, cond_vlm_kv = self._encode_prefix_kv(
+            vlm_kv, vlm_raw, cond_vlm_kv = self._encode_prefix_kv(
                 self._vlm.layers, vlm_embeds, vlm_pad, vlm_pos, adarms=None,
                 export_bridges=self.lang_bridges, export_bridge_mask=bridge_mask)
+        vlm_out, _ = layernorm_forward(self._vlm.norm, vlm_raw, None)
         if skill_code is None:
             # The skill must come from the SKILL view (adapter ①) BEFORE the flow scope is set —
             # sample_actions resolves it (predict_skill_code) and always passes it in.
@@ -1802,8 +2002,15 @@ class SkillVLAPytorch(PI05Pytorch):
                 h = self._action_layer_cached(
                     i, h, prefix_kv, att_4d, action_pos, expert_cond, skill_broadcast
                 )
-            h, _ = layernorm_forward(self._expert.norm, h, expert_cond)
-            v_t = self._action_out(h[:, -n_chunk:])                     # decode action positions only
+            suffix_raw = h[:, -n_chunk:]
+            if self.stage0_vlm_residual is not None and not drop_vlm:
+                suffix_raw_fp32 = suffix_raw.float()
+                suffix_norm = self._expert_final_norm(suffix_raw_fp32, expert_cond)
+                delta = self.stage0_vlm_residual(suffix_norm, vlm_out, vlm_pad, vlm_xattn_block)
+                suffix_norm = self._expert_final_norm(suffix_raw_fp32 + delta, expert_cond)
+            else:
+                suffix_norm = self._expert_final_norm(suffix_raw, expert_cond)
+            v_t = self._action_out(suffix_norm)                         # decode action positions only
             x_t = x_t + dt * v_t
         return x_t
 
@@ -1824,9 +2031,9 @@ class SkillVLAPytorch(PI05Pytorch):
         step runs only the action stream."""
         if num_steps is None:
             num_steps = self.config.num_inference_steps
-        # 2-forward inference, ORDERED for the sticky adapter global: resolve the skill FIRST (SKILL view,
-        # adapter ① inside predict_skill_code), THEN set the FLOW view — adapters ②③ (VLM residual riding
-        # cond), or none under severed inference (eval_drop_vlm → pure Stage-1 VSA, = MOTOR_SEV training).
+        # 2-forward inference, ORDERED for the sticky adapter global: resolve the skill FIRST, then run
+        # the flow view. Renewed Stage-0 has no LoRA adapters; the VLM influence is the residual module
+        # inside _sample_actions_A and is disabled by eval_drop_vlm.
         if skill_code is None:
             skill_code = self.predict_skill_code(start_images, lang_tokens, lang_masks)
         _sever = bool(getattr(self.config, "eval_drop_vlm", False))
@@ -2079,6 +2286,21 @@ def _skill_endpoint_weights(valid: Tensor, batch: dict, start_weight: float, end
     return weights * (last_valid >= 0).float()
 
 
+def _skill_timestep_weights(valid: Tensor, batch: dict, start_weight: float, end_weight: float) -> Tensor:
+    """Per-timestep weights over the action chunk, interpolated by each step's skill progress."""
+    bsize, chunk = valid.shape
+    device = valid.device
+    idx = torch.arange(chunk, device=device).view(1, chunk).expand(bsize, chunk).float()
+    if "skill_ds" in batch and "skill_de" in batch:
+        ds = batch["skill_ds"].to(device).float().view(bsize, 1)
+        de = batch["skill_de"].to(device).float().view(bsize, 1)
+        progress = ((ds + idx) / (ds + de).clamp(min=1.0)).clamp(0.0, 1.0)
+    else:
+        progress = idx / max(chunk - 1, 1)
+    weights = float(start_weight) + (float(end_weight) - float(start_weight)) * progress
+    return weights * valid.float()
+
+
 def _reverse_skill_endpoint_weights(valid: Tensor, batch: dict, max_weight: float) -> Tensor:
     """Backward-compatible Stage-2 helper: max_weight at skill start, 1 at skill end."""
     return _skill_endpoint_weights(valid, batch, max_weight, 1.0)
@@ -2203,25 +2425,33 @@ class SkillVLAPolicy(PI05Policy):
         g = m._regime_groups()
         stage2 = stage == "cond"
         stage0 = stage == "stage0"
+        stage0_residual = stage0 and bool(getattr(c, "stage0_vlm_residual", False))
+        stage0_aux_skill = stage0_residual and bool(getattr(c, "stage0_train_skill_predictor", False))
         # A predictor-only VLM is never part of the motor optimizer. Freeze its complete base first;
         # the adapter loop below re-enables only the named ``skill`` LoRA parameters in Stage 3.
         if m.skill_predictor_vlm_model is not None:
             m._set_requires_grad([m.skill_predictor_vlm_model], False)
         stage0_train = (
             m._stage0_components("stage0_a") | m._stage0_components("stage0_b")
-            if stage0 else set()
+            if stage0 and not stage0_residual else set()
         )
-        train_vlm = ((stage0 and "vlm" in stage0_train)
+        train_vlm = ((stage0_residual and not bool(getattr(c, "stage0_freeze_vlm_llm", True)))
+                     or (stage0 and "vlm" in stage0_train)
                      or (stage2 and not bool(getattr(c, "freeze_vlm", True))))
         # Stage-0 starts with the UNION of A/B trainable params so every group enters the optimizer;
         # _set_stage0_trainability narrows it to the sampled branch before each forward.
-        train_cond = ((stage0 and "cond" in stage0_train)
+        train_cond = ((stage0_residual and not bool(getattr(c, "stage0_freeze_cond", False)))
+                      or (stage0 and "cond" in stage0_train)
                       or (stage2 and not bool(getattr(c, "freeze_cond", True))))
-        train_expert = (ft or (stage0 and "expert" in stage0_train)
+        train_expert = (ft
+                        or (stage0_residual and not bool(getattr(c, "stage0_freeze_expert", False)))
+                        or (stage0 and "expert" in stage0_train)
                         or (stage2 and not bool(getattr(c, "freeze_expert", True))))
-        train_cond_vision = ((stage0 and "cond_vision" in stage0_train)
+        train_cond_vision = ((stage0_residual and not bool(getattr(c, "stage0_freeze_cond_vision", False)))
+                             or (stage0 and "cond_vision" in stage0_train)
                              or (stage2 and not bool(getattr(c, "freeze_cond_vision", True))))
-        train_vlm_vision = ((stage0 and "vlm_vision" in stage0_train)
+        train_vlm_vision = ((stage0_residual and not bool(getattr(c, "stage0_freeze_vlm_vision", True)))
+                            or (stage0 and "vlm_vision" in stage0_train)
                             or (stage2 and not bool(getattr(c, "freeze_vlm_vision", False))))
 
         # These module sweeps include injected adapters; the adapter loop below applies their own flags.
@@ -2231,24 +2461,41 @@ class SkillVLAPolicy(PI05Policy):
         mm_proj = getattr(m.paligemma_with_expert.paligemma.model, "multi_modal_projector", None)
         m._set_requires_grad(g["vlm_vision"] + [mm_proj], train_vlm_vision)
         m._set_requires_grad(g["expert"], train_expert)
+        m._set_requires_grad(g["vlm_residual"], stage0_residual)
         m._set_requires_grad(
             [m.state_proj],
             (m._cond_uses_state_adarms and train_cond)
-            or (not m._stage0_pi05_expert and train_expert),
+            or (m._direct_expert_conditioning and train_expert),
         )
-        m._set_requires_grad([m.skill_proj], not m._stage0_pi05_expert and train_expert)
+        m._set_requires_grad([m.skill_proj], m._direct_expert_conditioning and train_expert)
         train_skill = stage == "skill" or (ft and bool(getattr(c, "ft_train_skill", False)))
-        train_reader = train_skill or (stage0 and "skill_reader" in stage0_train)
-        train_head = train_skill or (stage0 and "skill_head" in stage0_train)
+        train_reader = (
+            train_skill
+            or (
+                stage0_residual
+                and not stage0_aux_skill
+                and not bool(getattr(c, "stage0_freeze_skill_reader", True))
+            )
+            or (stage0 and "skill_reader" in stage0_train)
+        )
+        train_head = (
+            train_skill
+            or (
+                stage0_residual
+                and not stage0_aux_skill
+                and not bool(getattr(c, "stage0_freeze_skill_head", True))
+            )
+            or (stage0 and "skill_head" in stage0_train)
+        )
         m._set_requires_grad([m.skill_reader], train_reader)
         m._set_requires_grad([m.skill_head], train_head)
         adapter_flags = {
             "skill": train_skill,
-            "vlm_lora": ((stage0 and "vlm_lora" in stage0_train)
+            "vlm_lora": ((stage0 and not stage0_residual and "vlm_lora" in stage0_train)
                          or (stage2 and not bool(getattr(c, "freeze_vlm_lora", False)))),
-            "cond_lora": ((stage0 and "cond_lora" in stage0_train)
+            "cond_lora": ((stage0 and not stage0_residual and "cond_lora" in stage0_train)
                           or (stage2 and not bool(getattr(c, "freeze_cond_lora", False)))),
-            "expert_lora": ((stage0 and "expert_lora" in stage0_train)
+            "expert_lora": ((stage0 and not stage0_residual and "expert_lora" in stage0_train)
                             or (stage2 and not bool(getattr(c, "freeze_expert_lora", True)))),
         }
         n_train = 0
@@ -2261,7 +2508,7 @@ class SkillVLAPolicy(PI05Policy):
                     n_train += int(t)
         m._set_requires_grad(
             [m.lang_bridges],
-            stage0 and m.lang_bridges is not None and "lang_bridge" in stage0_train,
+            stage0 and not stage0_residual and m.lang_bridges is not None and "lang_bridge" in stage0_train,
         )
         tag = "FT" if ft else ("STAGE0" if stage0 else f"STAGE{'2' if stage == 'cond' else '3'}({stage})")
         print(f"[skillVLA continual] {tag} — trainable adapters: "
@@ -2338,8 +2585,8 @@ class SkillVLAPolicy(PI05Policy):
         # state_proj belongs to cond when cond-state AdaRMS is active; otherwise it stays on the FSQ expert.
         expert_mods = [m.paligemma_with_expert.gemma_expert, m.action_in_proj, m.action_out_proj,
                        m.time_mlp_in, m.time_mlp_out,
-                       m.state_proj if not m._cond_uses_state_adarms and not m._stage0_pi05_expert else None,
-                       m.skill_proj if not m._stage0_pi05_expert else None]
+                       m.state_proj if not m._cond_uses_state_adarms and m._direct_expert_conditioning else None,
+                       m.skill_proj if m._direct_expert_conditioning else None]
         cond_mods = [m.cond_encoder, m.image_proj,
                      m.state_proj if m._cond_uses_state_adarms else None]
 
@@ -2366,6 +2613,17 @@ class SkillVLAPolicy(PI05Policy):
         bridge_params = collect([m.lang_bridges])
         expert_params = collect(expert_mods)
         cond_params = collect(cond_mods)
+        residual_params: list[nn.Parameter] = []
+        residual_gate_params: list[nn.Parameter] = []
+        if m.stage0_vlm_residual is not None:
+            for name, param in m.stage0_vlm_residual.named_parameters():
+                if not param.requires_grad or id(param) in chosen:
+                    continue
+                chosen.add(id(param))
+                if name == "gate_logit":
+                    residual_gate_params.append(param)
+                else:
+                    residual_params.append(param)
         # FT: co-trained terminator (disjoint from the rest) gets its own LR scale.
         term_params = collect([m.fsq_term_train]) if getattr(m, "fsq_term_train", None) is not None else []
         rest = [p for p in self.parameters() if p.requires_grad and id(p) not in chosen]
@@ -2383,10 +2641,142 @@ class SkillVLAPolicy(PI05Policy):
             groups.append({"params": expert_params, "lr": base * es})
         if cond_params:
             groups.append({"params": cond_params, "lr": base * cs})
+        if residual_params:
+            groups.append({"params": residual_params})
+        if residual_gate_params:
+            # Decaying a scalar logit toward zero imposes an arbitrary midpoint-alpha prior and does
+            # not regularize the effective residual because out_proj can rescale inversely.
+            groups.append({"params": residual_gate_params, "weight_decay": 0.0})
         if term_params:
             ts = float(getattr(self.config, "terminator_lr_scale", 1.0))
             groups.append({"params": term_params, "lr": base * ts})
         return groups
+
+    def isolated_main_optimizer_grad_groups(self) -> dict[str, list[nn.Parameter]]:
+        """Parameter-disjoint auxiliaries that need their own gradient clipping.
+
+        Renewed Stage-0 computes all losses in one backward pass. The VLM residual branch and
+        terminator remain parameter-disjoint from the base VSA, so clipping them separately prevents
+        the much larger base gradient norm from rescaling their updates while preserving one shared
+        optimizer and scheduler.
+        """
+        renewed_stage0 = (
+            self.model._resolved_pt_stage() == "stage0"
+            and bool(getattr(self.config, "stage0_vlm_residual", False))
+        )
+        if not renewed_stage0:
+            return {}
+        groups: dict[str, list[nn.Parameter]] = {}
+        residual = getattr(self.model, "stage0_vlm_residual", None)
+        if residual is not None:
+            params = [param for param in residual.parameters() if param.requires_grad]
+            if params:
+                groups["stage0/residual"] = params
+        terminator = getattr(self.model, "fsq_term_train", None)
+        if bool(getattr(self.config, "train_terminator", False)) and terminator is not None:
+            params = [param for param in terminator.parameters() if param.requires_grad]
+            if params:
+                groups["terminator"] = params
+        return groups
+
+    def _stage0_skill_predictor_params(self) -> list[nn.Parameter]:
+        params: list[nn.Parameter] = []
+        for module in (self.model.skill_reader, self.model.skill_head):
+            params.extend(list(module.parameters()))
+        return params
+
+    def _stage0_skill_predictor_loss(self, batch: dict[str, Tensor]) -> tuple[Tensor, float]:
+        start_images = self._dataset_start_images(batch)
+        lang_tokens, lang_masks = batch[OBS_LANGUAGE_TOKENS], batch[OBS_LANGUAGE_ATTENTION_MASK]
+        skill_code = self._dataset_skill_code(batch)
+        all_layers = bool(getattr(self.config, "stage0_skill_predictor_all_layers", False))
+
+        set_active_adapters(self.model._active_adapters(frozenset()))
+        with torch.no_grad():
+            vlm_embeds, vlm_pad, vlm_xattn_block = self.model._vlm_tokens(
+                start_images, lang_tokens, lang_masks, predictor=True)
+            if all_layers:
+                vlm_out, layer_stack = self.model._vlm_prefix_out(vlm_embeds, vlm_pad, all_layers=True)
+                vlm_out = vlm_out.detach()
+                layer_stack = layer_stack.detach()
+            else:
+                vlm_out = self.model._vlm_prefix_out(vlm_embeds, vlm_pad, all_layers=False).detach()
+                layer_stack = None
+
+        skill_hidden = self.model._skill_hidden(vlm_out, vlm_pad, vlm_xattn_block, all_layers=layer_stack)
+        loss = self.model.skill_head.loss(skill_hidden, skill_code)
+        with torch.no_grad():
+            acc = (self.model.skill_head.decode(skill_hidden) == skill_code).float().mean().item()
+        return loss, acc
+
+    def isolated_auxiliary_step(
+        self,
+        batch: dict[str, Tensor],
+        accelerator,
+        grad_clip_norm: float,
+        current_lr: float | None = None,
+    ) -> dict:
+        """Stage-0 skill predictor auxiliary with its own optimizer and grad clip.
+
+        The VLM hidden is produced under no_grad and detached before the SkillReader, so this step can
+        update only skill_reader/head. It runs after the main action optimizer has stepped/zeroed, keeping
+        action and predictor grad norms independent.
+        """
+        if not (
+            getattr(self.config, "pt_stage", None) == "stage0"
+            and bool(getattr(self.config, "stage0_vlm_residual", False))
+            and bool(getattr(self.config, "stage0_train_skill_predictor", False))
+        ):
+            return {}
+        params = self._stage0_skill_predictor_params()
+        if not params:
+            return {}
+        if not hasattr(self, "_stage0_skill_predictor_optimizer"):
+            base = float(self.config.optimizer_lr)
+            scale = float(getattr(self.config, "stage0_skill_predictor_lr_scale", 1.0))
+            self._stage0_skill_predictor_optimizer = torch.optim.AdamW(
+                params,
+                lr=base * scale,
+                betas=self.config.optimizer_betas,
+                eps=self.config.optimizer_eps,
+                weight_decay=self.config.optimizer_weight_decay,
+            )
+        opt = self._stage0_skill_predictor_optimizer
+        if current_lr is not None:
+            scale = float(getattr(self.config, "stage0_skill_predictor_lr_scale", 1.0))
+            for group in opt.param_groups:
+                group["lr"] = float(current_lr) * scale
+        old_requires_grad = [p.requires_grad for p in params]
+        for p in params:
+            p.requires_grad_(True)
+        opt.zero_grad(set_to_none=True)
+        try:
+            with accelerator.autocast():
+                raw_loss, acc = self._stage0_skill_predictor_loss(batch)
+                weight = float(getattr(self.config, "stage0_skill_predictor_weight", 0.5))
+                objective = weight * raw_loss
+            accelerator.backward(objective)
+            if grad_clip_norm > 0:
+                grad_norm = accelerator.clip_grad_norm_(params, grad_clip_norm)
+            else:
+                grad_norm = torch.nn.utils.clip_grad_norm_(
+                    params, float("inf"), error_if_nonfinite=False)
+            opt.step()
+            metrics = {
+                "skill_predictor/loss": raw_loss.detach().item(),
+                "skill_predictor/objective_loss": objective.detach().item(),
+                "skill_predictor/skill_acc": float(acc),
+                "skill_predictor/weight": weight,
+                "skill_predictor/grad_norm": float(grad_norm.detach().item() if torch.is_tensor(grad_norm) else grad_norm),
+                "skill_predictor/lr": opt.param_groups[0]["lr"],
+                "skill_predictor/all_layers": float(bool(getattr(
+                    self.config, "stage0_skill_predictor_all_layers", False))),
+            }
+        finally:
+            opt.zero_grad(set_to_none=True)
+            for p, old in zip(params, old_requires_grad, strict=True):
+                p.requires_grad_(old)
+        return metrics
 
     # ── batch → model inputs ──
     def _cond_images(self, batch: dict) -> list[Tensor]:
@@ -2513,6 +2903,71 @@ class SkillVLAPolicy(PI05Policy):
         skill_code = self._dataset_skill_code(batch)
         action_dim = self.config.output_features[ACTION].shape[0]
 
+        batch_sampling_metrics: dict[str, float] = {}
+        if bool(getattr(self.config, "same_skill_batch_enabled", False)):
+            if SAME_SKILL_PAIR_ID not in batch or SAME_SKILL_PAIR_FALLBACK not in batch:
+                raise ValueError(
+                    "same_skill_batch_enabled=True but grouped sampler metadata is missing from the batch."
+                )
+            pair_ids = batch[SAME_SKILL_PAIR_ID].to(skill_code.device).view(-1).long()
+            fallback = batch[SAME_SKILL_PAIR_FALLBACK].to(skill_code.device).view(-1).bool()
+            requested = (pair_ids >= 0) | fallback
+            constructed = pair_ids >= 0
+            task_index = batch.get("task_index")
+            task_index = None if task_index is None else task_index.to(skill_code.device).view(-1)
+            jittered_progress = batch.get(SKILL_PROGRESS)
+            if jittered_progress is not None:
+                jittered_progress = jittered_progress.to(skill_code.device).view(-1).float()
+            ds_all = batch.get("skill_ds")
+            de_all = batch.get("skill_de")
+            original_progress = None
+            if ds_all is not None and de_all is not None:
+                ds_all = ds_all.to(skill_code.device).view(-1).float()
+                de_all = de_all.to(skill_code.device).view(-1).float()
+                original_progress = ds_all / (ds_all + de_all).clamp_min(1.0)
+
+            paired_positions = torch.nonzero(constructed, as_tuple=False).view(-1)
+            if paired_positions.numel() % 2:
+                raise ValueError("Grouped sampler produced an odd number of constructed pair samples.")
+            pair_positions = paired_positions.view(-1, 2)
+            pair_is_valid = torch.ones(
+                pair_positions.shape[0], dtype=torch.bool, device=skill_code.device)
+            if pair_positions.numel() > 0:
+                pair_is_valid &= (
+                    pair_ids[pair_positions[:, 0]] == pair_ids[pair_positions[:, 1]])
+                pair_is_valid &= (
+                    skill_code[pair_positions[:, 0]] == skill_code[pair_positions[:, 1]])
+                if task_index is not None:
+                    pair_is_valid &= (
+                        task_index[pair_positions[:, 0]] != task_index[pair_positions[:, 1]])
+            effective_samples = 2.0 * pair_is_valid.float().sum()
+
+            bsize_sampling = max(pair_ids.numel(), 1)
+            requested_count = requested.float().sum().clamp_min(1.0)
+            batch_sampling_metrics = {
+                "batch_sampling/requested_fraction": requested.float().mean().item(),
+                "batch_sampling/constructed_fraction": constructed.float().mean().item(),
+                "batch_sampling/effective_after_jitter_fraction": (
+                    effective_samples / bsize_sampling).item(),
+                "batch_sampling/effective_of_requested": (
+                    effective_samples / requested_count).item(),
+                "batch_sampling/fallback_fraction": fallback.float().mean().item(),
+                "batch_sampling/unique_jittered_skills": float(torch.unique(skill_code).numel()),
+            }
+            if pair_positions.numel() > 0 and original_progress is not None:
+                batch_sampling_metrics["batch_sampling/original_progress_gap"] = (
+                    original_progress[pair_positions[:, 0]]
+                    - original_progress[pair_positions[:, 1]]).abs().mean().item()
+            if pair_positions.numel() > 0 and jittered_progress is not None:
+                batch_sampling_metrics["batch_sampling/jittered_progress_gap"] = (
+                    jittered_progress[pair_positions[:, 0]]
+                    - jittered_progress[pair_positions[:, 1]]).abs().mean().item()
+                if bool(pair_is_valid.any()):
+                    valid_pairs = pair_positions[pair_is_valid]
+                    batch_sampling_metrics["batch_sampling/jittered_progress_gap_valid"] = (
+                        jittered_progress[valid_pairs[:, 0]]
+                        - jittered_progress[valid_pairs[:, 1]]).abs().mean().item()
+
         # Stage-1-style hold action for severed batches. MOTOR_SEV/probes use it as the GT flow target;
         # COND_SEV uses it only to construct the shared teacher/student x_t for its function anchor.
         # Boundary = past current skill end or episode padding; None when skill_de is unavailable.
@@ -2533,6 +2988,7 @@ class SkillVLAPolicy(PI05Policy):
             skill_loss = self.model.skill_head.loss(skill_hidden, skill_code)
 
         flow_loss = plain_flow_loss = flow_within = flow_tail = None
+        stage0_cond_loss = stage0_uncond_loss = stage0_uncond_weight_mean = None
         flow_weights = None
         vf = valid = None
         if flow_losses is not None:                           # COND/MOTOR regimes or the eval path
@@ -2549,7 +3005,31 @@ class SkillVLAPolicy(PI05Policy):
             vf = valid.float().unsqueeze(-1)                              # (B, K, 1)
             n_steps = valid.float().sum().clamp(min=1.0)
             plain_flow_loss = (flow_losses * vf).sum() / (n_steps * action_dim)
-            flow_loss = plain_flow_loss
+            if regime == "stage0":
+                dual = getattr(self.model, "_last_stage0_dual_losses", None)
+                if dual is None:
+                    raise RuntimeError("Stage-0 dual forward did not report conditional/unconditional losses.")
+                cond_losses, uncond_losses = dual
+                cond_losses = cond_losses[:, :, :action_dim]
+                uncond_losses = uncond_losses[:, :, :action_dim]
+                stage0_cond_loss = (cond_losses * vf).sum() / (n_steps * action_dim)
+                start_weight = float(getattr(self.config, "stage0_uncond_skill_start_loss_weight", 1.0))
+                end_weight = float(getattr(self.config, "stage0_uncond_skill_end_loss_weight", 1.0))
+                flow_weights = _skill_timestep_weights(
+                    valid, batch, start_weight=start_weight, end_weight=end_weight)
+                stage0_uncond_loss = (
+                    (uncond_losses * flow_weights.unsqueeze(-1)).sum()
+                    / (flow_weights.sum().clamp(min=1.0) * action_dim)
+                )
+                stage0_uncond_weight_mean = (
+                    flow_weights.detach().sum() / valid.float().sum().clamp(min=1.0)
+                )
+                cond_w = float(getattr(self.config, "stage0_conditional_loss_weight", 1.0))
+                uncond_w = float(getattr(self.config, "stage0_unconditional_loss_weight", 0.5))
+                flow_loss = cond_w * stage0_cond_loss + uncond_w * stage0_uncond_loss
+                plain_flow_loss = stage0_cond_loss
+            else:
+                flow_loss = plain_flow_loss
             # Stage-2 connected A only: emphasize early-skill chunks. B remains a uniform frozen-VSA
             # function anchor controlled solely by cond_severed_anchor_weight.
             if regime == "cond" and bool(getattr(self.config, "action_weight", False)):
@@ -2632,11 +3112,24 @@ class SkillVLAPolicy(PI05Policy):
             for k in ("skill_code_true", "skill_de"):
                 if k not in batch:
                     raise ValueError(f"train_terminator=True needs '{k}' in the batch (SkillVLADataset).")
+            term_sample_mask = None
+            if bool(getattr(self.config, "same_skill_batch_enabled", False)):
+                term_sample_mask = batch[SAME_SKILL_PAIR_ID].view(-1) < 0
+                if not bool(term_sample_mask.any()):
+                    raise ValueError(
+                        "same-skill batching left no random samples for terminator co-training."
+                    )
             img_3rd = batch.get(f"{OBS_IMAGES}.image")
             img_wrist = batch.get(f"{OBS_IMAGES}.wrist_image")
             if img_3rd is None or img_wrist is None:
                 raise ValueError("train_terminator=True needs both third-person and wrist images.")
-            true_code = batch["skill_code_true"].view(-1).long().clamp(0, self.stage1_config.skill_vocab_size - 1)
+            if term_sample_mask is not None:
+                img_3rd = img_3rd[term_sample_mask]
+                img_wrist = img_wrist[term_sample_mask]
+            true_code = batch[SKILL_CODE_TRUE].view(-1).long()
+            if term_sample_mask is not None:
+                true_code = true_code[term_sample_mask]
+            true_code = true_code.clamp(0, self.stage1_config.skill_vocab_size - 1)
             # RAW state (skill_decoder_state, snapshotted pre-normalization by the processor) — the FSQ
             # terminator normalizes internally with its own min/max; feeding the already quantile-
             # normalized OBS_STATE would double-normalize and diverge from closed-loop eval (which uses
@@ -2650,10 +3143,16 @@ class SkillVLAPolicy(PI05Policy):
                     "pre-normalization by SkillVLAPreserveRawStateProcessorStep). It is missing — likely "
                     "resuming with an OLD pre-processor from before that step existed. Rebuild the "
                     "pre-processor; feeding normalized observation.state would double-normalize the FSQ input.")
+            if term_sample_mask is not None:
+                raw_state = raw_state[term_sample_mask]
             prog_pred, term_logits = self.model.terminator_predict(
                 true_code, raw_state, img_3rd, wrist_image=img_wrist)
             ds = batch["skill_ds"].float().view(-1).to(prog_pred.device)
             de = batch["skill_de"].float().view(-1).to(prog_pred.device)
+            if term_sample_mask is not None:
+                term_sample_mask = term_sample_mask.to(prog_pred.device)
+                ds = ds[term_sample_mask]
+                de = de[term_sample_mask]
             prog_tgt = (ds / (ds + de).clamp_min(1.0)).clamp(0.0, 1.0)        # = ds/(length-1)
             sigma = float(self.config.terminator_end_target_sigma)
             term_tgt = (torch.exp(-(de ** 2) / (2.0 * sigma ** 2)) if sigma > 0 else (de == 0).float())
@@ -2666,19 +3165,41 @@ class SkillVLAPolicy(PI05Policy):
             total = total + term_loss
 
         loss_dict = {"loss": loss.detach().item()}         # wandb train/loss = this batch's policy loss
+        loss_dict.update(batch_sampling_metrics)
         if regime in ("stage0_a", "stage0_b"):
             loss_dict["regime/A_active"] = float(regime == "stage0_a")
             loss_dict["regime/B_active"] = float(regime == "stage0_b")
+        if regime == "stage0":
+            alpha = getattr(self.model, "_last_stage0_alpha", None)
+            loss_dict["stage0/cond_action_loss"] = stage0_cond_loss.detach().item()
+            loss_dict["stage0/uncond_action_loss"] = stage0_uncond_loss.detach().item()
+            loss_dict["stage0/objective_loss"] = flow_loss.detach().item()
+            loss_dict["stage0/cond_weight"] = float(getattr(self.config, "stage0_conditional_loss_weight", 1.0))
+            loss_dict["stage0/uncond_weight"] = float(getattr(self.config, "stage0_unconditional_loss_weight", 0.5))
+            if stage0_uncond_weight_mean is not None:
+                loss_dict["stage0/uncond_timestep_weight_mean"] = stage0_uncond_weight_mean.item()
+            if alpha is not None:
+                loss_dict["stage0/alpha"] = alpha.float().item()
+            residual_stats = getattr(self.model, "_last_stage0_residual_stats", None) or {}
+            for name, value in residual_stats.items():
+                loss_dict[f"stage0/{name}"] = float(value.item() if torch.is_tensor(value) else value)
         if flow_loss is not None:
             loss_dict["loss_flow"] = flow_loss.detach().item()
-            if regime in ("cond", "stage0_a", "stage0_b"):
+            if regime in ("cond", "stage0_a", "stage0_b", "stage0"):
                 loss_dict["action_loss"] = plain_flow_loss.detach().item()
-                branch = "A" if regime in ("cond", "stage0_a") else "B"
-                loss_dict[f"regime/{branch}_active"] = 1.0
-                loss_dict[f"regime/{branch}_flow_loss"] = plain_flow_loss.detach().item()
-                loss_dict[f"regime/{branch}_objective_loss"] = loss.detach().item()
-                if flow_weights is not None:
-                    loss_dict[f"regime/{branch}_weight_mean"] = flow_weights.detach().mean().item()
+                if regime == "stage0":
+                    loss_dict["regime/conditional_active"] = 1.0
+                    loss_dict["regime/unconditional_active"] = 1.0
+                    loss_dict["regime/conditional_flow_loss"] = stage0_cond_loss.detach().item()
+                    loss_dict["regime/unconditional_flow_loss"] = stage0_uncond_loss.detach().item()
+                    loss_dict["regime/dual_objective_loss"] = flow_loss.detach().item()
+                else:
+                    branch = "A" if regime in ("cond", "stage0_a") else "B"
+                    loss_dict[f"regime/{branch}_active"] = 1.0
+                    loss_dict[f"regime/{branch}_flow_loss"] = plain_flow_loss.detach().item()
+                    loss_dict[f"regime/{branch}_objective_loss"] = loss.detach().item()
+                    if flow_weights is not None:
+                        loss_dict[f"regime/{branch}_weight_mean"] = flow_weights.detach().mean().item()
         if wrong_rank_loss is not None:
             loss_dict["wrong_language/rank_loss"] = wrong_rank_loss.detach().item()
             loss_dict["wrong_language/correct_error"] = wrong_correct.detach().item()
@@ -2733,6 +3254,9 @@ class SkillVLAPolicy(PI05Policy):
             loss_dict["terminator/loss"] = term_loss.detach().item()
             loss_dict["terminator/progress"] = term_prog_l.detach().item()
             loss_dict["terminator/termination"] = term_end_l.detach().item()
+            if bool(getattr(self.config, "same_skill_batch_enabled", False)):
+                loss_dict["terminator/sample_fraction"] = (
+                    batch[SAME_SKILL_PAIR_ID].view(-1) < 0).float().mean().item()
             loss_dict["loss_total"] = total.detach().item()   # the actual BACKPROPPED objective (policy + terminator; not logged)
         if reduction == "none":
             if flow_losses is None:                       # per-sample = flow only; needs a flow batch
@@ -3130,10 +3654,11 @@ class SkillVLAPolicy(PI05Policy):
                         raise RuntimeError(f"Unexpected Stage-0 pi05 expert keys: {sorted(unexpected)}")
                     log.info(
                         "SkillVLA STAGE0: VLM<-pi05 (%d keys), action expert<-pi05 (%d keys); "
-                        "cond FRESH (state_adarms=%s), expert direct state/skill disabled; "
-                        "trainability follows the A/B matrix.",
+                        "cond FRESH (cond_state_adarms=%s), expert direct conditioning=%s; "
+                        "trainability follows the Stage-0 residual freeze config.",
                         len(vlm_state), len(expert_state),
                         bool(getattr(config, "stage0_cond_state_adarms", False)),
+                        bool(getattr(config, "stage0_vlm_residual", False)),
                     )
                     return model
                 if expert_source != "fsq":

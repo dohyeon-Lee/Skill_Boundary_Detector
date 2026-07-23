@@ -35,6 +35,8 @@ SKILL_START_STATE = "skill_start_state"
 SKILL_CODE = "skill_code"
 SKILL_CODE_TRUE = "skill_code_true"
 SKILL_PROGRESS = "skill_progress"
+SAME_SKILL_PAIR_ID = "same_skill_pair_id"
+SAME_SKILL_PAIR_FALLBACK = "same_skill_pair_fallback"
 
 CAM_3RD = "observation.images.image"
 CAM_WRIST = "observation.images.wrist_image"
@@ -91,6 +93,14 @@ class SkillVLADataset(LeRobotDataset):
         self._jitter_distribution = normalize_jitter_distribution(
             info.get("skill_jitter_distribution", "half_normal"))
 
+    @property
+    def jitter_pmax(self) -> int:
+        return self._pmax
+
+    @property
+    def jitter_distribution(self) -> str:
+        return self._jitter_distribution
+
     @staticmethod
     def _resolve_iss_path(iss_path: str | None, root) -> str:
         """info.json의 ``skill_initial_state_path`` 해석. 다른 서버에서 빌드된 데이터셋은 그
@@ -122,7 +132,21 @@ class SkillVLADataset(LeRobotDataset):
             return {int(e) for e in np.unique(np.asarray(z["episode_id"]))}
 
     def __getitem__(self, idx) -> dict:
-        item = super().__getitem__(idx)
+        pair_id = -1
+        pair_fallback = False
+        jitter_override = None
+        if isinstance(idx, tuple):
+            if len(idx) == 3:
+                idx, pair_id, pair_fallback = idx
+            elif len(idx) == 5:
+                idx, pair_id, pair_fallback, kp_override, offset_override = idx
+                jitter_override = (int(kp_override), int(offset_override))
+            else:
+                raise ValueError(
+                    "Expected grouped sample index (index, pair_id, fallback[, k_prime, offset]), "
+                    f"got {idx!r}."
+                )
+        item = super().__getitem__(int(idx))
         reader = self._ensure_reader()
 
         ep_idx = _scalar(item["episode_index"])
@@ -134,8 +158,16 @@ class SkillVLADataset(LeRobotDataset):
         ifs = np.asarray(item["skill_initial_frame"]).reshape(-1)
 
         # 1) pick the (possibly jittered) skill + start-frame offset
-        kp, offset = choose_jitter(
-            k, ds, de, seq_len, self._pmax, distribution=self._jitter_distribution)
+        if jitter_override is None:
+            kp, offset = choose_jitter(
+                k, ds, de, seq_len, self._pmax, distribution=self._jitter_distribution)
+        else:
+            kp, offset = jitter_override
+            if not 0 <= kp < seq_len - 1 or not -self._pmax <= offset <= self._pmax:
+                raise ValueError(
+                    f"Invalid sampler-provided jitter (k'={kp}, offset={offset}) for "
+                    f"seq_len={seq_len}, pmax={self._pmax}."
+                )
         skill_code = int(ss[kp])
         gt_start = int(ifs[kp])
 
@@ -166,4 +198,6 @@ class SkillVLADataset(LeRobotDataset):
         t = int(ifs[k]) + int(ds)
         prog = (t - int(ifs[kp])) / max(int(lens[kp]) - 1, 1)
         item[SKILL_PROGRESS] = torch.tensor(float(np.clip(prog, 0.0, 1.0)), dtype=torch.float32)
+        item[SAME_SKILL_PAIR_ID] = torch.tensor(int(pair_id), dtype=torch.long)
+        item[SAME_SKILL_PAIR_FALLBACK] = torch.tensor(bool(pair_fallback), dtype=torch.bool)
         return item

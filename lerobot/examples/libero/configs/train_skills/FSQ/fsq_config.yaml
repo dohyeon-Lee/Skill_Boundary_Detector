@@ -52,11 +52,12 @@ fsq_checkpoint_every: 25
 fsq_samples_per_skill: 5
 # token: reconstructor uses z as a token; terminator uses state+z AdaRMS.
 # broadcast: both modules use hidden-state skill broadcast.
-fsq_skill_cond_mode: token
+fsq_skill_cond_mode: broadcast
 
 
 fsq_chunk_size: 10
 fsq_num_workers: 8
+fsq_gradient_checkpointing: false
 fsq_encoder_lr: 3.0e-4
 fsq_terminator_lr: 3.0e-4
 fsq_reconstructor_lr: 3.0e-4
@@ -80,7 +81,7 @@ fsq_val_select_end_weight:
 # End-weight the sampled reconstructor loss. The start weight is always 1; the end weight below
 # applies at progress=1. Progress and termination losses stay uniform. `2.0` keeps the historical
 # w=1+progress behavior and `_weighted` run tag; other values get `_weighted<value>`.
-weighted_loss: true
+weighted_loss: false
 weighted_loss_end_weight: 2.0
 
 # ── Slurm (partition/qos/nodelist/exclude from configs/global_config.yaml) ──

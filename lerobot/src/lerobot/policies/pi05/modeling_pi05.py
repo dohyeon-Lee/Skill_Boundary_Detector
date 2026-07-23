@@ -512,6 +512,7 @@ class PaliGemmaWithExpertModel(
         inputs_embeds: list[torch.FloatTensor] | None = None,
         use_cache: bool | None = None,
         adarms_cond: list[torch.Tensor] | None = None,
+        return_suffix_raw: bool = False,
     ):
         if adarms_cond is None:
             adarms_cond = [None, None]
@@ -576,6 +577,8 @@ class PaliGemmaWithExpertModel(
                         gemma_expert=self.gemma_expert,
                     )
 
+            suffix_raw = inputs_embeds[1]
+
             # final norm
             def compute_final_norms(inputs_embeds, adarms_cond):
                 outputs_embeds = []
@@ -600,6 +603,10 @@ class PaliGemmaWithExpertModel(
             suffix_output = outputs_embeds[1]
             prefix_past_key_values = None
 
+        if return_suffix_raw:
+            if inputs_embeds[0] is None or inputs_embeds[1] is None:
+                raise ValueError("return_suffix_raw=True is only supported for joint prefix+suffix forwards.")
+            return [prefix_output, suffix_output], prefix_past_key_values, suffix_raw
         return [prefix_output, suffix_output], prefix_past_key_values
 
 

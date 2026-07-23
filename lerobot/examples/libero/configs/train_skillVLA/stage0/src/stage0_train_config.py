@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Resolve the compact SkillVLA Stage-0 YAML into shell exports."""
+"""Resolve the compact renewed SkillVLA Stage-0 YAML into shell exports."""
 
 from __future__ import annotations
 
@@ -8,6 +8,8 @@ import math
 import re
 import sys
 from pathlib import Path
+
+import torch
 
 _HERE = Path(__file__).resolve()
 sys.path.insert(0, str(_HERE.parent.parent.parent.parent / "train_skills" / "src"))
@@ -25,14 +27,6 @@ def _at(cfg: dict, *path: str, default=None):
     return value
 
 
-def _csv(value) -> str:
-    return ",".join(as_list(value))
-
-
-def _alpha(value, rank: int) -> float:
-    return float(2 * rank if str(value).strip().lower() in ("", "auto", "none") else value)
-
-
 def _local_model(project_root: Path, value) -> Path:
     path = Path(str(value)).expanduser()
     if not path.is_absolute():
@@ -42,50 +36,22 @@ def _local_model(project_root: Path, value) -> Path:
     return project_root.joinpath(*path.parts[path.parts.index("models"):])
 
 
-_BRANCH_COMPONENTS = (
-    ("vlm", "vlm"),
-    ("cond", "cond"),
-    ("expert", "expert"),
-    ("vlm_lora", "vlm_lora"),
-    ("cond_lora", "cond_lora"),
-    ("expert_lora", "expert_lora"),
-    ("language_bridge", "lang_bridge"),
-    ("vlm_vision", "vlm_vision"),
-    ("cond_vision", "cond_vision"),
-    ("skill_reader", "skill_reader"),
-    ("skill_head", "skill_head"),
-)
+def _load_fsq_config(project_root: Path, fsq_path: Path):
+    sys.path.insert(0, str(project_root / "lerobot" / "examples" / "libero"))
+    from FSQ import FORMAT_VERSION, SplineFSQAEConfig  # noqa: PLC0415
 
-
-def _branch_settings(
-    cfg: dict, branch: str, enabled_components: dict[str, bool],
-) -> tuple[float, bool, str]:
-    freeze_groups = _at(cfg, "regime", branch, "freeze")
-    if not isinstance(freeze_groups, dict):
-        raise ValueError(f"regime.{branch}.freeze must explicitly list every Stage-0 component.")
-    freeze = {}
-    for group, entries in freeze_groups.items():
-        if not isinstance(entries, dict):
-            raise ValueError(f"regime.{branch}.freeze.{group} must be a mapping.")
-        duplicates = set(freeze) & set(entries)
-        if duplicates:
-            raise ValueError(
-                f"regime.{branch}.freeze contains duplicate components: {sorted(duplicates)}.")
-        freeze.update(entries)
-    required = {yaml_name for yaml_name, _ in _BRANCH_COMPONENTS}
-    missing = sorted(required - set(freeze))
-    extra = sorted(set(freeze) - required)
-    if missing or extra:
+    checkpoint = torch.load(str(fsq_path), map_location="cpu", weights_only=False)
+    fsq_cfg = checkpoint.get("cfg")
+    if fsq_cfg is None:
+        raise ValueError(f"FSQ checkpoint has no cfg: {fsq_path}")
+    if isinstance(fsq_cfg, dict):
+        fsq_cfg = SplineFSQAEConfig(**fsq_cfg)
+    if int(getattr(fsq_cfg, "format_version", 0)) != int(FORMAT_VERSION):
         raise ValueError(
-            f"regime.{branch}.freeze matrix mismatch: missing={missing}, extra={extra}.")
-    train = [
-        internal
-        for yaml_name, internal in _BRANCH_COMPONENTS
-        if enabled_components.get(yaml_name, True) and not as_bool(freeze[yaml_name])
-    ]
-    probability = float(_at(cfg, "regime", branch, "probability"))
-    drop_vlm = as_bool(_at(cfg, "regime", branch, "drop_vlm"))
-    return probability, drop_vlm, ",".join(train)
+            f"Stage-0 expects the current FSQ format v{FORMAT_VERSION}, got "
+            f"{getattr(fsq_cfg, 'format_version', None)} from {fsq_path}."
+        )
+    return fsq_cfg
 
 
 def build_settings(cfg: dict) -> dict:
@@ -101,11 +67,8 @@ def build_settings(cfg: dict) -> dict:
     fsq_path = Path(resolve_path(project_root, fsq_value)) if str(fsq_value).strip() else run_dir / "FSQ.pt"
     if not fsq_path.is_file():
         raise FileNotFoundError(f"Stage-0 FSQ checkpoint not found: {fsq_path}")
+    fsq_cfg = _load_fsq_config(project_root, fsq_path)
 
-    sys.path.insert(0, str(project_root / "lerobot" / "examples" / "libero"))
-    from FSQ import load_fsq_action_expert_state  # noqa: PLC0415
-
-    _, fsq_cfg = load_fsq_action_expert_state(fsq_path)
     levels = [int(x) for x in fsq_cfg.fsq_levels]
     match = re.search(r"FSQ(\d+)", run_tag)
     if match and [int(x) for x in match.group(1)] != levels:
@@ -116,55 +79,58 @@ def build_settings(cfg: dict) -> dict:
         project_root,
         _at(cfg, "warm_start", "tokenizer", default="models/paligemma-3b-pt-224-tokenizer"),
     ))
-    dino_value = _at(cfg, "cond", "dino_model", default=getattr(fsq_cfg, "dino_model_path", ""))
-    dino_model = _local_model(project_root, dino_value)
-    expert_source = str(_at(cfg, "expert", "source", default="fsq")).strip().lower()
-    if expert_source not in {"fsq", "pi05_base"}:
-        raise ValueError(f"expert.source must be fsq|pi05_base, got {expert_source!r}.")
-    cond_state_adarms = as_bool(_at(cfg, "cond", "state_adarms", default=False))
+    dino_model = _local_model(project_root, _at(cfg, "cond", "dino_model", default=fsq_cfg.dino_model_path))
+    state_cond_mode = str(_at(cfg, "expert", "skill_cond_mode", default=getattr(fsq_cfg, "skill_cond_mode", "broadcast")))
+    if state_cond_mode not in {"state", "state_skill", "broadcast"}:
+        raise ValueError(f"expert.skill_cond_mode must be state|state_skill|broadcast, got {state_cond_mode!r}.")
 
-    vlm_rank = int(_at(cfg, "vlm_lora", "rank", default=8))
-    expert_rank = int(_at(cfg, "expert_lora", "rank", default=8))
-    bridge_rank = int(_at(cfg, "language_bridge", "rank", default=64))
-    reader_tokens = int(_at(cfg, "skill_reader", "architecture", "tokens", default=4))
-    reader_depth = int(_at(cfg, "skill_reader", "architecture", "depth", default=2))
-    reader_heads = int(_at(cfg, "skill_reader", "architecture", "heads", default=8))
-    if min(reader_tokens, reader_depth, reader_heads) <= 0:
+    cond_weight = float(_at(cfg, "loss", "conditional", "weight", default=1.0))
+    uncond_weight = float(_at(cfg, "loss", "unconditional", "weight", default=0.5))
+    uncond_start = float(_at(cfg, "loss", "unconditional", "skill_start_weight", default=1.0))
+    uncond_end = float(_at(cfg, "loss", "unconditional", "skill_end_weight", default=1.0))
+    if min(cond_weight, uncond_weight) < 0.0 or min(uncond_start, uncond_end) <= 0.0:
+        raise ValueError("Stage-0 loss weights must satisfy cond/uncond >= 0 and timestep weights > 0.")
+
+    alpha_min = float(_at(cfg, "vlm_residual", "alpha_min", default=0.1))
+    alpha_max = float(_at(cfg, "vlm_residual", "alpha_max", default=0.2))
+    init_alpha = float(_at(cfg, "vlm_residual", "init_alpha", default=0.15))
+    if not 0.0 <= alpha_min < init_alpha < alpha_max:
         raise ValueError(
-            "SkillReader tokens, depth, and heads must all be positive, got "
-            f"{(reader_tokens, reader_depth, reader_heads)}.")
-    vlm_targets = _csv(_at(cfg, "vlm_lora", "targets", default=["q", "k", "v", "o"]))
-    expert_targets = _csv(_at(
-        cfg, "expert_lora", "targets", default=["q", "k", "v", "o", "mlp", "action_out"]))
-    adapter_enabled = {
-        name: as_bool(_at(cfg, "components", "adapters", name, default=default))
-        for name, default in (
-            ("vlm_lora", True),
-            ("cond_lora", False),
-            ("expert_lora", True),
-            ("language_bridge", True),
+            "Need 0 <= vlm_residual.alpha_min < init_alpha < alpha_max, got "
+            f"{alpha_min}, {init_alpha}, and {alpha_max}."
         )
-    }
-    p_a, a_drop_vlm, a_train_components = _branch_settings(cfg, "A", adapter_enabled)
-    p_b, b_drop_vlm, b_train_components = _branch_settings(cfg, "B", adapter_enabled)
-    wrong_weight = float(_at(cfg, "regime", "wrong_language", "weight", default=0.0))
-    wrong_margin = float(_at(cfg, "regime", "wrong_language", "margin", default=0.02))
-    a_start_weight = float(_at(cfg, "loss", "A", "skill_start_weight", default=1.0))
-    a_end_weight = float(_at(cfg, "loss", "A", "skill_end_weight", default=1.0))
-    b_start_weight = float(_at(cfg, "loss", "B", "skill_start_weight", default=1.0))
-    b_end_weight = float(_at(cfg, "loss", "B", "skill_end_weight", default=1.0))
-    if not 0.0 <= p_a <= 1.0 or not 0.0 <= p_b <= 1.0 or abs(p_a + p_b - 1.0) > 1e-8:
-        raise ValueError(f"Stage-0 A/B probabilities must be in [0,1] and sum to 1, got A={p_a}, B={p_b}.")
-    if a_drop_vlm or not b_drop_vlm:
-        raise ValueError("Stage-0 topology requires A.drop_vlm=false and B.drop_vlm=true.")
-    if wrong_weight < 0.0 or wrong_margin < 0.0:
-        raise ValueError("wrong-language weight and margin must be non-negative.")
-    loss_weights = (a_start_weight, a_end_weight, b_start_weight, b_end_weight)
-    if any(weight <= 0.0 for weight in loss_weights):
-        raise ValueError(f"All Stage-0 A/B loss weights must be > 0, got {loss_weights}.")
+    vlm_residual_enabled = as_bool(_at(cfg, "vlm_residual", "enabled", default=True))
 
-    batch_size = int(_at(cfg, "training", "dataloader", "batch_size", default=128))
+    train_skill_predictor = as_bool(_at(cfg, "skill_predictor", "train", default=False))
+    skill_predictor_weight = float(_at(cfg, "skill_predictor", "weight", default=0.5))
+    skill_predictor_lr_scale = float(_at(cfg, "skill_predictor", "lr_scale", default=1.0))
+    skill_predictor_all_layers = as_bool(_at(cfg, "skill_predictor", "all_layers", default=False))
+    if train_skill_predictor and not vlm_residual_enabled:
+        raise ValueError("skill_predictor.train=true requires vlm_residual.enabled=true in renewed Stage-0.")
+    if train_skill_predictor and min(skill_predictor_weight, skill_predictor_lr_scale) <= 0.0:
+        raise ValueError("skill_predictor.weight and skill_predictor.lr_scale must be > 0 when enabled.")
+
+    batch_size = int(_at(cfg, "training", "dataloader", "batch_size", default=16))
     num_gpus = int(_at(cfg, "training", "dataloader", "gpus", default=1))
+    same_skill_batch_enabled = as_bool(_at(
+        cfg, "training", "dataloader", "same_skill_different_task", "enabled", default=False))
+    same_skill_batch_fraction = float(_at(
+        cfg, "training", "dataloader", "same_skill_different_task", "grouped_fraction", default=0.5))
+    same_skill_progress_temperature = float(_at(
+        cfg, "training", "dataloader", "same_skill_different_task", "progress_temperature", default=0.1))
+    if not 0.0 <= same_skill_batch_fraction <= 1.0:
+        raise ValueError("same_skill_different_task.grouped_fraction must be in [0, 1].")
+    if same_skill_progress_temperature <= 0.0:
+        raise ValueError("same_skill_different_task.progress_temperature must be > 0.")
+    if same_skill_batch_enabled and batch_size < 4:
+        raise ValueError("same_skill_different_task needs dataloader.batch_size >= 4.")
+    if (same_skill_batch_enabled
+            and as_bool(_at(cfg, "terminator", "train", default=False))
+            and int(batch_size * same_skill_batch_fraction) // 2 * 2 >= batch_size):
+        raise ValueError(
+            "terminator.train=true needs at least one random dataloader slot; lower "
+            "same_skill_different_task.grouped_fraction."
+        )
     suffix = str(_at(cfg, "run", "suffix", default="")).strip().strip("_")
     run_name = f"{run_tag}_{suffix}" if suffix else run_tag
 
@@ -178,66 +144,54 @@ def build_settings(cfg: dict) -> dict:
         "pi_base": pi_base,
         "tokenizer_path": tokenizer,
         "fsq_ckpt": fsq_path,
-        "expert_source": expert_source,
-        "cond_state_adarms": cond_state_adarms,
         "dino_model_path": dino_model,
         "vision_backbone": str(fsq_cfg.vision_backbone),
-        "cond_encoder_variant": str(fsq_cfg.cond_encoder_variant or fsq_cfg.action_expert_variant),
-        "state_cond_mode": str(fsq_cfg.state_cond_mode),
-        "action_expert_variant": str(fsq_cfg.action_expert_variant),
+        "cond_encoder_variant": str(fsq_cfg.cond_encoder_variant),
+        "state_cond_mode": state_cond_mode,
+        "cond_state_adarms": as_bool(_at(cfg, "cond", "state_adarms", default=False)),
+        "action_expert_variant": str(_at(cfg, "expert", "variant", default="gemma_300m")),
         "max_state_dim": int(fsq_cfg.max_state_dim),
         "max_action_dim": int(fsq_cfg.max_action_dim),
         "chunk_size": int(fsq_cfg.chunk_size),
-        "min_period": float(fsq_cfg.min_period),
-        "max_period": float(fsq_cfg.max_period),
-        "time_sampling_beta_alpha": float(fsq_cfg.time_sampling_beta_alpha),
-        "time_sampling_beta_beta": float(fsq_cfg.time_sampling_beta_beta),
-        "time_sampling_scale": float(fsq_cfg.time_sampling_scale),
-        "time_sampling_offset": float(fsq_cfg.time_sampling_offset),
+        "min_period": 4e-3,
+        "max_period": 4.0,
+        "time_sampling_beta_alpha": 1.5,
+        "time_sampling_beta_beta": 1.0,
+        "time_sampling_scale": 0.999,
+        "time_sampling_offset": 0.001,
         "skill_fsq_levels": "[" + ",".join(str(x) for x in levels) + "]",
         "dino_image_size": int(fsq_cfg.dino_image_size),
         "siglip_image_size": int(fsq_cfg.siglip_image_size),
-        "attend_image": as_bool(_at(cfg, "token_access", "image", default=False)),
+        "attend_image": as_bool(_at(cfg, "token_access", "image", default=True)),
         "attend_language": as_bool(_at(cfg, "token_access", "language", default=True)),
-        "num_reader_tokens": reader_tokens,
-        "reader_depth": reader_depth,
-        "reader_heads": reader_heads,
-        "skill_reader_all_layers": as_bool(_at(
-            cfg, "skill_reader", "architecture", "all_layers", default=True)),
-        "reader_attend_image": as_bool(_at(
-            cfg, "skill_reader", "token_access", "image", default=True)),
-        "reader_attend_language": as_bool(_at(
-            cfg, "skill_reader", "token_access", "language", default=True)),
-        "vlm_cond": as_bool(_at(cfg, "connections", "vlm_to_cond", default=True)),
+        "vlm_cond": as_bool(_at(cfg, "connections", "vlm_to_cond", default=False)),
         "cond_expert": as_bool(_at(cfg, "connections", "cond_to_expert", default=True)),
-        "vlm_expert": as_bool(_at(cfg, "connections", "vlm_to_expert", default=False)),
-        "vlm_lora": adapter_enabled["vlm_lora"],
-        "cond_lora": adapter_enabled["cond_lora"],
-        "stage0_expert_lora": adapter_enabled["expert_lora"],
-        "vlm_lora_targets": vlm_targets,
-        "vlm_lora_rank": vlm_rank,
-        "vlm_lora_alpha": _alpha(_at(cfg, "vlm_lora", "alpha", default="auto"), vlm_rank),
-        "vlm_lora_dropout": float(_at(cfg, "vlm_lora", "dropout", default=0.0)),
-        "vlm_lora_lr_scale": float(_at(cfg, "vlm_lora", "lr_scale", default=10.0)),
-        "expert_lora_targets": expert_targets,
-        "expert_lora_rank": expert_rank,
-        "expert_lora_alpha": _alpha(_at(cfg, "expert_lora", "alpha", default="auto"), expert_rank),
-        "expert_lora_dropout": float(_at(cfg, "expert_lora", "dropout", default=0.0)),
-        "expert_lora_lr_scale": float(_at(cfg, "expert_lora", "lr_scale", default=10.0)),
-        "lang_bridge": adapter_enabled["language_bridge"],
-        "lang_bridge_rank": bridge_rank,
-        "lang_bridge_lr_scale": float(_at(cfg, "language_bridge", "lr_scale", default=10.0)),
-        "stage0_vlm_severed_prob": p_b,
-        "stage0_a_drop_vlm": a_drop_vlm,
-        "stage0_b_drop_vlm": b_drop_vlm,
-        "stage0_a_train_components": a_train_components,
-        "stage0_b_train_components": b_train_components,
-        "wrong_language_weight": wrong_weight,
-        "wrong_language_margin": wrong_margin,
-        "a_skill_start_loss_weight": a_start_weight,
-        "a_skill_end_loss_weight": a_end_weight,
-        "b_skill_start_loss_weight": b_start_weight,
-        "b_skill_end_loss_weight": b_end_weight,
+        "vlm_expert": False,
+        "stage0_vlm_residual": vlm_residual_enabled,
+        "stage0_vlm_residual_heads": str(_at(cfg, "vlm_residual", "heads", default="auto")),
+        "stage0_vlm_residual_dropout": float(_at(cfg, "vlm_residual", "dropout", default=0.0)),
+        "stage0_vlm_residual_alpha_min": alpha_min,
+        "stage0_vlm_residual_alpha_max": alpha_max,
+        "stage0_vlm_residual_init_alpha": init_alpha,
+        "stage0_vlm_residual_zero_init_output": as_bool(
+            _at(cfg, "vlm_residual", "zero_init_output", default=True)),
+        "stage0_train_skill_predictor": train_skill_predictor,
+        "stage0_skill_predictor_weight": skill_predictor_weight,
+        "stage0_skill_predictor_lr_scale": skill_predictor_lr_scale,
+        "stage0_skill_predictor_all_layers": skill_predictor_all_layers,
+        "stage0_skill_predictor_detach_vlm": True,
+        "skill_reader_all_layers": skill_predictor_all_layers,
+        "stage0_conditional_loss_weight": cond_weight,
+        "stage0_unconditional_loss_weight": uncond_weight,
+        "stage0_uncond_skill_start_loss_weight": uncond_start,
+        "stage0_uncond_skill_end_loss_weight": uncond_end,
+        "stage0_freeze_vlm_llm": as_bool(_at(cfg, "freeze", "vlm_llm", default=True)),
+        "stage0_freeze_vlm_vision": as_bool(_at(cfg, "freeze", "vlm_vision", default=True)),
+        "stage0_freeze_cond": as_bool(_at(cfg, "freeze", "cond", default=False)),
+        "stage0_freeze_cond_vision": as_bool(_at(cfg, "freeze", "cond_vision", default=False)),
+        "stage0_freeze_expert": as_bool(_at(cfg, "freeze", "expert", default=False)),
+        "stage0_freeze_skill_reader": as_bool(_at(cfg, "freeze", "skill_reader", default=True)),
+        "stage0_freeze_skill_head": as_bool(_at(cfg, "freeze", "skill_head", default=True)),
         "train_terminator": as_bool(_at(cfg, "terminator", "train", default=False)),
         "terminator_freeze_vision_encoder": as_bool(
             _at(cfg, "terminator", "freeze_vision", default=False)),
@@ -247,8 +201,14 @@ def build_settings(cfg: dict) -> dict:
         "batch_size": batch_size,
         "num_workers": int(_at(cfg, "training", "dataloader", "workers", default=2)),
         "num_gpus": num_gpus,
+        "same_skill_batch_enabled": same_skill_batch_enabled,
+        "same_skill_batch_fraction": same_skill_batch_fraction,
+        "same_skill_progress_temperature": same_skill_progress_temperature,
         "lr": float(_at(cfg, "training", "optimizer", "base_lr", default=2.5e-5)) * num_gpus,
         "cond_lr_scale": float(_at(cfg, "training", "optimizer", "cond_lr_scale", default=1.0)),
+        "expert_lr_scale": float(_at(cfg, "training", "optimizer", "expert_lr_scale", default=1.0)),
+        "terminator_lr_scale": float(_at(cfg, "training", "optimizer", "terminator_lr_scale", default=1.0)),
+        "gradient_checkpointing": as_bool(_at(cfg, "training", "gradient_checkpointing", default=True)),
         "steps": int(_at(cfg, "training", "schedule", "steps", default=50000)),
         "save_freq": int(_at(cfg, "training", "schedule", "save_every", default=2500)),
         "wandb_enable": as_bool(_at(cfg, "logging", "wandb", "enable", default=True)),

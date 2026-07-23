@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SkillVLA Stage-0: direct FSQ expert + trainable cond/expert-LoRA and frozen VLM+VLM-LoRA bridge.
+# SkillVLA Stage-0: pi05 expert + VSA base path + bounded VLM residual.
 #SBATCH --job-name=stage0
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=16
@@ -29,15 +29,17 @@ source "${PROJECT_ROOT}/.venv/bin/activate"
 source "${PROJECT_ROOT}/lerobot/examples/libero/configs/runtime_env.sh"
 unset LD_LIBRARY_PATH
 
-echo "START STAGE-0 (direct FSQ -> SkillVLA)"
+echo "START STAGE-0 (VSA base + VLM residual)"
 echo "Node      : ${SLURMD_NODENAME:-local}"
 echo "dataset   : ${SKILLVLA_DATASET_DIR}"
-echo "VLM       : ${PI_BASE} (trainability follows the A/B scopes below)"
-echo "expert    : ${FSQ_CKPT} (trainability follows the A/B scopes below)"
-echo "cond      : ${VISION_BACKBONE}/${COND_ENCODER_VARIANT} (trainability follows the A/B scopes below)"
-echo "A/B       : B=${STAGE0_VLM_SEVERED_PROB}, wrong-language=${WRONG_LANGUAGE_WEIGHT}"
-echo "A scope   : drop_vlm=${STAGE0_A_DROP_VLM}, train=${STAGE0_A_TRAIN_COMPONENTS}"
-echo "B scope   : drop_vlm=${STAGE0_B_DROP_VLM}, train=${STAGE0_B_TRAIN_COMPONENTS}"
+echo "VLM       : ${PI_BASE} (freeze llm=${STAGE0_FREEZE_VLM_LLM}, vision=${STAGE0_FREEZE_VLM_VISION})"
+echo "expert    : pi05_base + state/skill conditioning (${STATE_COND_MODE})"
+echo "cond      : ${VISION_BACKBONE}/${COND_ENCODER_VARIANT}"
+echo "residual  : heads=${STAGE0_VLM_RESIDUAL_HEADS}, alpha=${STAGE0_VLM_RESIDUAL_INIT_ALPHA} in [${STAGE0_VLM_RESIDUAL_ALPHA_MIN},${STAGE0_VLM_RESIDUAL_ALPHA_MAX}], zero_out=${STAGE0_VLM_RESIDUAL_ZERO_INIT_OUTPUT}"
+echo "skill pred: train=${STAGE0_TRAIN_SKILL_PREDICTOR}, weight=${STAGE0_SKILL_PREDICTOR_WEIGHT}, all_layers=${STAGE0_SKILL_PREDICTOR_ALL_LAYERS}"
+echo "loss      : cond=${STAGE0_CONDITIONAL_LOSS_WEIGHT}, uncond=${STAGE0_UNCONDITIONAL_LOSS_WEIGHT}"
+echo "batching  : batch=${BATCH_SIZE}, same-skill=${SAME_SKILL_BATCH_ENABLED}, grouped=${SAME_SKILL_BATCH_FRACTION}, progress-temp=${SAME_SKILL_PROGRESS_TEMPERATURE}"
+echo "grad ckpt : ${GRADIENT_CHECKPOINTING}"
 echo "output    : ${PT_OUTPUT_DIR}"
 nvidia-smi || true
 
@@ -64,7 +66,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --output_dir="${PT_OUTPUT_DIR}" \
     --job_name="${PT_RUN_NAME}" \
     --policy.compile_model=false \
-    --policy.gradient_checkpointing=true \
+    --policy.gradient_checkpointing="${GRADIENT_CHECKPOINTING}" \
     --policy.dtype=bfloat16 \
     --policy.device=cuda \
     --policy.push_to_hub=false \
@@ -72,8 +74,35 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.tokenizer_path="${TOKENIZER_PATH}" \
     --policy.stage1_checkpoint_path="" \
     --policy.pt_stage=stage0 \
-    --policy.stage0_expert_source="${EXPERT_SOURCE}" \
+    --policy.stage0_expert_source=pi05_base \
     --policy.stage0_cond_state_adarms="${COND_STATE_ADARMS}" \
+    --policy.stage0_vlm_residual="${STAGE0_VLM_RESIDUAL}" \
+    --policy.stage0_vlm_residual_heads="${STAGE0_VLM_RESIDUAL_HEADS}" \
+    --policy.stage0_vlm_residual_dropout="${STAGE0_VLM_RESIDUAL_DROPOUT}" \
+    --policy.stage0_vlm_residual_alpha_min="${STAGE0_VLM_RESIDUAL_ALPHA_MIN}" \
+    --policy.stage0_vlm_residual_alpha_max="${STAGE0_VLM_RESIDUAL_ALPHA_MAX}" \
+    --policy.stage0_vlm_residual_init_alpha="${STAGE0_VLM_RESIDUAL_INIT_ALPHA}" \
+    --policy.stage0_vlm_residual_zero_init_output="${STAGE0_VLM_RESIDUAL_ZERO_INIT_OUTPUT}" \
+    --policy.stage0_train_skill_predictor="${STAGE0_TRAIN_SKILL_PREDICTOR}" \
+    --policy.stage0_skill_predictor_weight="${STAGE0_SKILL_PREDICTOR_WEIGHT}" \
+    --policy.stage0_skill_predictor_lr_scale="${STAGE0_SKILL_PREDICTOR_LR_SCALE}" \
+    --policy.stage0_skill_predictor_all_layers="${STAGE0_SKILL_PREDICTOR_ALL_LAYERS}" \
+    --policy.stage0_skill_predictor_detach_vlm="${STAGE0_SKILL_PREDICTOR_DETACH_VLM}" \
+    --policy.skill_reader_all_layers="${SKILL_READER_ALL_LAYERS}" \
+    --policy.stage0_conditional_loss_weight="${STAGE0_CONDITIONAL_LOSS_WEIGHT}" \
+    --policy.stage0_unconditional_loss_weight="${STAGE0_UNCONDITIONAL_LOSS_WEIGHT}" \
+    --policy.stage0_uncond_skill_start_loss_weight="${STAGE0_UNCOND_SKILL_START_LOSS_WEIGHT}" \
+    --policy.stage0_uncond_skill_end_loss_weight="${STAGE0_UNCOND_SKILL_END_LOSS_WEIGHT}" \
+    --policy.same_skill_batch_enabled="${SAME_SKILL_BATCH_ENABLED}" \
+    --policy.same_skill_batch_fraction="${SAME_SKILL_BATCH_FRACTION}" \
+    --policy.same_skill_progress_temperature="${SAME_SKILL_PROGRESS_TEMPERATURE}" \
+    --policy.stage0_freeze_vlm_llm="${STAGE0_FREEZE_VLM_LLM}" \
+    --policy.stage0_freeze_vlm_vision="${STAGE0_FREEZE_VLM_VISION}" \
+    --policy.stage0_freeze_cond="${STAGE0_FREEZE_COND}" \
+    --policy.stage0_freeze_cond_vision="${STAGE0_FREEZE_COND_VISION}" \
+    --policy.stage0_freeze_expert="${STAGE0_FREEZE_EXPERT}" \
+    --policy.stage0_freeze_skill_reader="${STAGE0_FREEZE_SKILL_READER}" \
+    --policy.stage0_freeze_skill_head="${STAGE0_FREEZE_SKILL_HEAD}" \
     --policy.cond_skill_source=gt \
     --policy.s1_vision_backbone="${VISION_BACKBONE}" \
     --policy.s1_cond_encoder_variant="${COND_ENCODER_VARIANT}" \
@@ -95,50 +124,22 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.skill_fsq_levels="${SKILL_FSQ_LEVELS}" \
     --policy.attend_image="${ATTEND_IMAGE}" \
     --policy.attend_language="${ATTEND_LANGUAGE}" \
-    --policy.num_reader_tokens="${NUM_READER_TOKENS}" \
-    --policy.reader_depth="${READER_DEPTH}" \
-    --policy.reader_heads="${READER_HEADS}" \
-    --policy.skill_reader_all_layers="${SKILL_READER_ALL_LAYERS}" \
-    --policy.reader_attend_image="${READER_ATTEND_IMAGE}" \
-    --policy.reader_attend_language="${READER_ATTEND_LANGUAGE}" \
     --policy.vlm_cond="${VLM_COND}" \
     --policy.cond_expert="${COND_EXPERT}" \
     --policy.vlm_expert="${VLM_EXPERT}" \
     --policy.lora_skill=false \
-    --policy.vlm_lora="${VLM_LORA}" \
-    --policy.cond_lora="${COND_LORA}" \
-    --policy.lora_targets="${VLM_LORA_TARGETS}" \
-    --policy.lora_rank="${VLM_LORA_RANK}" \
-    --policy.lora_alpha="${VLM_LORA_ALPHA}" \
-    --policy.lora_dropout="${VLM_LORA_DROPOUT}" \
-    --policy.lora_lr_scale="${VLM_LORA_LR_SCALE}" \
-    --policy.stage0_expert_lora="${STAGE0_EXPERT_LORA}" \
-    --policy.stage0_expert_lora_targets="${EXPERT_LORA_TARGETS}" \
-    --policy.stage0_expert_lora_rank="${EXPERT_LORA_RANK}" \
-    --policy.stage0_expert_lora_alpha="${EXPERT_LORA_ALPHA}" \
-    --policy.stage0_expert_lora_dropout="${EXPERT_LORA_DROPOUT}" \
-    --policy.stage0_expert_lora_lr_scale="${EXPERT_LORA_LR_SCALE}" \
-    --policy.lang_bridge="${LANG_BRIDGE}" \
-    --policy.lang_bridge_rank="${LANG_BRIDGE_RANK}" \
-    --policy.lang_bridge_lr_scale="${LANG_BRIDGE_LR_SCALE}" \
-    --policy.stage0_vlm_severed_prob="${STAGE0_VLM_SEVERED_PROB}" \
-    --policy.stage0_a_drop_vlm="${STAGE0_A_DROP_VLM}" \
-    --policy.stage0_b_drop_vlm="${STAGE0_B_DROP_VLM}" \
-    --policy.stage0_a_train_components="${STAGE0_A_TRAIN_COMPONENTS}" \
-    --policy.stage0_b_train_components="${STAGE0_B_TRAIN_COMPONENTS}" \
-    --policy.stage0_wrong_language_weight="${WRONG_LANGUAGE_WEIGHT}" \
-    --policy.stage0_wrong_language_margin="${WRONG_LANGUAGE_MARGIN}" \
-    --policy.stage0_a_skill_start_loss_weight="${A_SKILL_START_LOSS_WEIGHT}" \
-    --policy.stage0_a_skill_end_loss_weight="${A_SKILL_END_LOSS_WEIGHT}" \
-    --policy.stage0_b_skill_start_loss_weight="${B_SKILL_START_LOSS_WEIGHT}" \
-    --policy.stage0_b_skill_end_loss_weight="${B_SKILL_END_LOSS_WEIGHT}" \
-    --policy.severed_hold_target=true \
+    --policy.vlm_lora=false \
+    --policy.cond_lora=false \
+    --policy.stage0_expert_lora=false \
+    --policy.lang_bridge=false \
     --policy.fsq_path="${FSQ_CKPT}" \
     --policy.train_terminator="${TRAIN_TERMINATOR}" \
     --policy.terminator_freeze_vision_encoder="${TERMINATOR_FREEZE_VISION_ENCODER}" \
     --policy.terminator_dino_model_path="${DINO_MODEL_PATH}" \
     --policy.optimizer_lr="${LR}" \
     --policy.cond_lr_scale="${COND_LR_SCALE}" \
+    --policy.expert_lr_scale="${EXPERT_LR_SCALE}" \
+    --policy.terminator_lr_scale="${TERMINATOR_LR_SCALE}" \
     --batch_size="${BATCH_SIZE}" \
     --num_workers="${NUM_WORKERS}" \
     --steps="${STEPS}" \

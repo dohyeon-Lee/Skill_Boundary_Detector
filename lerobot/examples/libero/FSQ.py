@@ -33,6 +33,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.utils.checkpoint
 from scipy.interpolate import make_interp_spline
 from torch import Tensor
 from torch.utils.data import DataLoader, Dataset
@@ -145,8 +146,15 @@ class TokenTransformerPool(nn.Module):
         self.query = nn.Parameter(torch.zeros(1, 1, hidden_dim))
         self.pool = nn.MultiheadAttention(hidden_dim, n_heads, dropout=dropout, batch_first=True)
         self.out_norm = nn.LayerNorm(hidden_dim)
+        self.gradient_checkpointing = False
         nn.init.trunc_normal_(self.pos_embed, std=0.02)
         nn.init.trunc_normal_(self.query, std=0.02)
+
+    def gradient_checkpointing_enable(self) -> None:
+        self.gradient_checkpointing = True
+
+    def gradient_checkpointing_disable(self) -> None:
+        self.gradient_checkpointing = False
 
     @staticmethod
     def _broadcast_like(cond: Tensor, x: Tensor) -> Tensor:
@@ -164,22 +172,46 @@ class TokenTransformerPool(nn.Module):
             )
         return cond.to(device=x.device, dtype=x.dtype)
 
+    @staticmethod
+    def _broadcast_layer(layer: nn.TransformerEncoderLayer, x: Tensor, cond: Tensor) -> Tensor:
+        if layer.norm_first:
+            attn_in = layer.norm1(x) + cond
+            attn, _ = layer.self_attn(attn_in, attn_in, attn_in, need_weights=False)
+            x = x + layer.dropout1(attn)
+            ff = layer.linear2(layer.dropout(layer.activation(layer.linear1(layer.norm2(x)))))
+            return x + layer.dropout2(ff)
+        attn_in = x + cond
+        attn, _ = layer.self_attn(attn_in, attn_in, attn_in, need_weights=False)
+        x = layer.norm1(x + layer.dropout1(attn))
+        ff = layer.linear2(layer.dropout(layer.activation(layer.linear1(x))))
+        return layer.norm2(x + layer.dropout2(ff))
+
+    def _checkpoint_enabled(self) -> bool:
+        return bool(self.gradient_checkpointing and self.training)
+
+    def _encoder_plain(self, x: Tensor) -> Tensor:
+        if not self._checkpoint_enabled():
+            return self.encoder(x)
+        for layer in self.encoder.layers:
+            x = torch.utils.checkpoint.checkpoint(
+                layer, x, use_reentrant=False, preserve_rng_state=False)
+        if self.encoder.norm is not None:
+            x = self.encoder.norm(x)
+        return x
+
     def _encoder_with_broadcast(self, x: Tensor, cond: Tensor) -> Tensor:
         """Condition each self-attention calculation without accumulating cond in the residual stream."""
         cond = self._broadcast_like(cond, x)
         for layer in self.encoder.layers:
-            if layer.norm_first:
-                attn_in = layer.norm1(x) + cond
-                attn, _ = layer.self_attn(attn_in, attn_in, attn_in, need_weights=False)
-                x = x + layer.dropout1(attn)
-                ff = layer.linear2(layer.dropout(layer.activation(layer.linear1(layer.norm2(x)))))
-                x = x + layer.dropout2(ff)
+            if self._checkpoint_enabled():
+                x = torch.utils.checkpoint.checkpoint(
+                    lambda hidden, layer=layer: self._broadcast_layer(layer, hidden, cond),
+                    x,
+                    use_reentrant=False,
+                    preserve_rng_state=False,
+                )
             else:
-                attn_in = x + cond
-                attn, _ = layer.self_attn(attn_in, attn_in, attn_in, need_weights=False)
-                x = layer.norm1(x + layer.dropout1(attn))
-                ff = layer.linear2(layer.dropout(layer.activation(layer.linear1(x))))
-                x = layer.norm2(x + layer.dropout2(ff))
+                x = self._broadcast_layer(layer, x, cond)
         if self.encoder.norm is not None:
             x = self.encoder.norm(x)
         return x
@@ -188,7 +220,7 @@ class TokenTransformerPool(nn.Module):
         if tokens.shape[1] != self.n_tokens:
             raise ValueError(f"Expected {self.n_tokens} tokens, got {tokens.shape[1]}.")
         x = tokens + self.pos_embed.to(tokens.dtype)
-        x = self.encoder(x) if broadcast_cond is None else self._encoder_with_broadcast(x, broadcast_cond)
+        x = self._encoder_plain(x) if broadcast_cond is None else self._encoder_with_broadcast(x, broadcast_cond)
         query = self.query.to(x.dtype).expand(x.shape[0], -1, -1)
         pooled, _ = self.pool(query, x, x, need_weights=False)
         return self.out_norm(pooled[:, 0])
@@ -708,6 +740,7 @@ class FSQQueryTerminator(nn.Module):
             self.query_out_norm = ConditionalRMSNorm(width, width)
         self.progress_head = nn.Linear(width, 1)
         self.termination_head = nn.Linear(width, 1)
+        self.gradient_checkpointing = False
         self.register_buffer("state_min", torch.as_tensor(state_min, dtype=torch.float32))
         self.register_buffer("state_max", torch.as_tensor(state_max, dtype=torch.float32))
         nn.init.trunc_normal_(self.progress_query, std=0.02)
@@ -724,10 +757,18 @@ class FSQQueryTerminator(nn.Module):
         return self
 
     def gradient_checkpointing_enable(self) -> None:
+        self.gradient_checkpointing = True
         if self.cond_encoder is not None:
             self.cond_encoder.gradient_checkpointing_enable()
         if not self.freeze_vision_encoder and hasattr(self.vision_encoder, "gradient_checkpointing_enable"):
             self.vision_encoder.gradient_checkpointing_enable()
+
+    def gradient_checkpointing_disable(self) -> None:
+        self.gradient_checkpointing = False
+        if self.cond_encoder is not None:
+            self.cond_encoder.gradient_checkpointing_disable()
+        if not self.freeze_vision_encoder and hasattr(self.vision_encoder, "gradient_checkpointing_disable"):
+            self.vision_encoder.gradient_checkpointing_disable()
 
     def _normalize_state(self, state: Tensor) -> Tensor:
         lo = self.state_min.to(state.device, state.dtype)
@@ -809,7 +850,16 @@ class FSQQueryTerminator(nn.Module):
         allow = self._allow_mask(n_image, x.device)
         if self.arch == "small":
             for layer in self.layers:
-                x = layer(x, n_image, norm_cond, ~allow, skill_broadcast)
+                if self.gradient_checkpointing and self.training:
+                    x = torch.utils.checkpoint.checkpoint(
+                        lambda hidden, layer=layer: layer(
+                            hidden, n_image, norm_cond, ~allow, skill_broadcast),
+                        x,
+                        use_reentrant=False,
+                        preserve_rng_state=False,
+                    )
+                else:
+                    x = layer(x, n_image, norm_cond, ~allow, skill_broadcast)
             query_out = self.query_out_norm(x[:, n_image:], norm_cond)
         else:
             attention = torch.where(
@@ -901,6 +951,7 @@ class SplineFSQAEConfig:
     num_workers: int = 0
     epochs: int = 300
     grad_clip: float = 1.0
+    gradient_checkpointing: bool = False
     val_split: float = 0.1
     val_select_action_weight: float | None = None
     val_select_progress_weight: float | None = None
@@ -1004,6 +1055,16 @@ class SplineFSQAE(nn.Module):
             state_min=cfg.state_min,
             state_max=cfg.state_max,
         )
+
+    def gradient_checkpointing_enable(self) -> None:
+        self.encoder.enc_traj_pool.gradient_checkpointing_enable()
+        self.reconstructor.pool.gradient_checkpointing_enable()
+        self.terminator.gradient_checkpointing_enable()
+
+    def gradient_checkpointing_disable(self) -> None:
+        self.encoder.enc_traj_pool.gradient_checkpointing_disable()
+        self.reconstructor.pool.gradient_checkpointing_disable()
+        self.terminator.gradient_checkpointing_disable()
 
     @property
     def fsq(self) -> FSQ:
@@ -1664,7 +1725,12 @@ def train_spline_fsqae(
     )
 
     model = SplineFSQAE(cfg).to(device)
-    model.terminator.gradient_checkpointing_enable()
+    if cfg.gradient_checkpointing:
+        model.gradient_checkpointing_enable()
+        print("[FSQ-v3] gradient checkpointing: enabled")
+    else:
+        model.gradient_checkpointing_disable()
+        print("[FSQ-v3] gradient checkpointing: disabled")
 
     optimizer = torch.optim.AdamW(
         [
@@ -1684,6 +1750,7 @@ def train_spline_fsqae(
         return 0.01 + 0.99 * 0.5 * (1.0 + math.cos(math.pi * progress))
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_factor)
+    save_path = Path(cfg.save_path) if cfg.save_path else Path("FSQ.pt")
     start_epoch, best_val = 1, math.inf
     if resume_from:
         checkpoint = torch.load(resume_from, map_location="cpu", weights_only=False)
@@ -1699,8 +1766,15 @@ def train_spline_fsqae(
         if "scheduler_state" in checkpoint:
             scheduler.load_state_dict(checkpoint["scheduler_state"])
         start_epoch = int(checkpoint.get("epoch", 0)) + 1
-        best_val = float(checkpoint.get("val_select", math.inf))
-        print(f"[FSQ-v3] resumed {resume_from} at epoch {start_epoch}")
+        best_val = float(checkpoint.get("best_val", checkpoint.get("val_select", math.inf)))
+        # Legacy periodic checkpoints only stored their own score. Keep the historical best in
+        # FSQ.pt so resume cannot overwrite it with a model that merely beats the periodic snapshot.
+        if save_path.is_file():
+            best_checkpoint = torch.load(
+                str(save_path), map_location="cpu", weights_only=False, mmap=True)
+            best_val = min(best_val, float(best_checkpoint.get("val_select", math.inf)))
+            del best_checkpoint
+        print(f"[FSQ-v3] resumed {resume_from} at epoch {start_epoch} (best select={best_val:.6f})")
     else:
         loaded_vision = initialize_terminator_vision_from_pi05(model.terminator, cfg.pi_base)
         if loaded_vision:
@@ -1725,6 +1799,7 @@ def train_spline_fsqae(
             "epoch": epoch,
             "val_loss": val,
             "val_select": select,
+            "best_val": best_val,
         }
         # FSQ.pt is copied into every SkillVLA data run and only needs component weights.
         # Periodic checkpoints retain optimizer/scheduler state for exact resume.
@@ -1785,7 +1860,6 @@ def train_spline_fsqae(
         # scatter, not an additional encode pass or per-batch CPU synchronization.
         return {k: float(v) for k, v in metrics.items()}, end_metrics, bsize, output["indices"].detach()
 
-    save_path = Path(cfg.save_path) if cfg.save_path else Path("FSQ.pt")
     # W&B previously received ``step=epoch``, which made one full FSQ epoch look like one
     # optimizer step and therefore incomparable with VLA training dashboards.
     global_step = (start_epoch - 1) * len(train_loader)

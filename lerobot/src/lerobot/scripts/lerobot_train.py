@@ -125,8 +125,37 @@ def update_policy(
     # Use accelerator's backward method
     accelerator.backward(loss)
 
-    # Clip gradients if specified
-    if grad_clip_norm > 0:
+    # Some policies train parameter-disjoint auxiliaries in the same backward/optimizer step. Their
+    # Adam states are already independent per parameter; clip them separately so a large auxiliary
+    # gradient cannot rescale the main policy gradient (or vice versa).
+    unwrapped_policy = accelerator.unwrap_model(policy, keep_fp32_wrapper=True)
+    isolated_grad_groups = {}
+    if has_method(unwrapped_policy, "isolated_main_optimizer_grad_groups"):
+        isolated_grad_groups = unwrapped_policy.isolated_main_optimizer_grad_groups()
+
+    if isolated_grad_groups:
+        accelerator.unscale_gradients(optimizer)
+        isolated_ids = {
+            id(param)
+            for params in isolated_grad_groups.values()
+            for param in params
+        }
+        main_params = [
+            param for param in policy.parameters()
+            if param.requires_grad and id(param) not in isolated_ids
+        ]
+        max_norm = grad_clip_norm if grad_clip_norm > 0 else float("inf")
+        grad_norm = torch.nn.utils.clip_grad_norm_(
+            main_params, max_norm, error_if_nonfinite=False
+        )
+        for group_name, params in isolated_grad_groups.items():
+            group_norm = torch.nn.utils.clip_grad_norm_(
+                params, max_norm, error_if_nonfinite=False
+            )
+            output_dict[f"{group_name}/grad_norm"] = float(
+                group_norm.detach().item() if torch.is_tensor(group_norm) else group_norm
+            )
+    elif grad_clip_norm > 0:
         grad_norm = accelerator.clip_grad_norm_(policy.parameters(), grad_clip_norm)
     else:
         grad_norm = torch.nn.utils.clip_grad_norm_(
@@ -139,13 +168,20 @@ def update_policy(
 
     optimizer.zero_grad()
 
+    auxiliary_output_dict = {}
+    if has_method(unwrapped_policy, "isolated_auxiliary_step"):
+        auxiliary_output_dict = unwrapped_policy.isolated_auxiliary_step(
+            batch, accelerator, grad_clip_norm, current_lr=optimizer.param_groups[0]["lr"])
+        if auxiliary_output_dict:
+            output_dict.update(auxiliary_output_dict)
+
     # Step through pytorch scheduler at every batch instead of epoch
     if lr_scheduler is not None:
         lr_scheduler.step()
 
     # Update internal buffers if policy has update method
-    if has_method(accelerator.unwrap_model(policy, keep_fp32_wrapper=True), "update"):
-        accelerator.unwrap_model(policy, keep_fp32_wrapper=True).update()
+    if has_method(unwrapped_policy, "update"):
+        unwrapped_policy.update()
 
     train_metrics.loss = loss.item()
     train_metrics.grad_norm = grad_norm.item()
@@ -155,17 +191,21 @@ def update_policy(
 
 
 _WINDOWED_POLICY_METRIC_KEYS = {
-    "action_loss", "action_weighted_loss",
+    "action_loss", "action_weighted_loss", "loss_flow", "loss_skill", "skill_acc",
     "skill_ce", "fast_ce", "structure_ce",
     "skill_token_acc", "skill_exact_acc", "fast_token_acc",
 }
 _WINDOWED_POLICY_METRIC_PREFIXES = (
     "regime/",
     "terminator/",
+    "stage0/",
+    "skill_predictor/",
+    "batch_sampling/",
     "wrong_language/",
     "ar/",
     "fast_context/",
 )
+_WINDOWED_POLICY_MODEL_TYPES = frozenset({"skill_expert", "skill_vla"})
 
 
 class _WindowedPolicyMetrics:
@@ -551,7 +591,25 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
         logging.info(f"{num_total_params=} ({format_big_number(num_total_params)})")
 
     # create dataloader for offline training
-    if hasattr(cfg.policy, "drop_n_last_frames"):
+    grouped_batch_sampler = None
+    if bool(getattr(cfg.policy, "same_skill_batch_enabled", False)):
+        if cfg.dataset.streaming:
+            raise ValueError("same_skill_batch_enabled is not supported for streaming datasets.")
+        from lerobot.policies.skillVLA.dataset_skillVLA import SkillVLADataset
+        from lerobot.policies.skillVLA.same_skill_batch_sampler import SameSkillDifferentTaskBatchSampler
+
+        if not isinstance(dataset, SkillVLADataset):
+            raise ValueError("same_skill_batch_enabled requires a frame-level SkillVLADataset.")
+        grouped_batch_sampler = SameSkillDifferentTaskBatchSampler(
+            dataset,
+            batch_size=cfg.batch_size,
+            grouped_fraction=float(getattr(cfg.policy, "same_skill_batch_fraction", 0.5)),
+            progress_temperature=float(getattr(cfg.policy, "same_skill_progress_temperature", 0.1)),
+            seed=int(cfg.seed or 0),
+        )
+        shuffle = False
+        sampler = None
+    elif hasattr(cfg.policy, "drop_n_last_frames"):
         shuffle = False
         sampler = EpisodeAwareSampler(
             dataset.meta.episodes["dataset_from_index"],
@@ -564,20 +622,26 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
         shuffle = True
         sampler = None
 
-    dataloader = torch.utils.data.DataLoader(
-        dataset,
-        num_workers=cfg.num_workers,
-        batch_size=cfg.batch_size,
-        shuffle=shuffle and not cfg.dataset.streaming,
-        sampler=sampler,
-        pin_memory=False,  # disabled: pinned-memory alloc under concurrent jobs triggered CUDA "unknown error"; ~free for compute-bound VLA training
-        drop_last=False,
-        prefetch_factor=4 if cfg.num_workers > 0 else None,  # deeper buffer hides per-batch video-decode latency
-        # Surface a wedged PyAV/dav1d worker as a clear failure instead of
-        # silently holding the GPU allocation forever. Single-process loading
-        # cannot use DataLoader's timeout option.
-        timeout=cfg.dataloader_timeout_s if cfg.num_workers > 0 else 0,
-    )
+    dataloader_common = {
+        "dataset": dataset,
+        "num_workers": cfg.num_workers,
+        "pin_memory": False,
+        "prefetch_factor": 4 if cfg.num_workers > 0 else None,
+        "timeout": cfg.dataloader_timeout_s if cfg.num_workers > 0 else 0,
+    }
+    if grouped_batch_sampler is not None:
+        dataloader = torch.utils.data.DataLoader(
+            **dataloader_common,
+            batch_sampler=grouped_batch_sampler,
+        )
+    else:
+        dataloader = torch.utils.data.DataLoader(
+            **dataloader_common,
+            batch_size=cfg.batch_size,
+            shuffle=shuffle and not cfg.dataset.streaming,
+            sampler=sampler,
+            drop_last=False,
+        )
 
     if is_main_process and cfg.num_workers > 0:
         logging.info(f"DataLoader worker timeout: {cfg.dataloader_timeout_s:g}s")
@@ -653,11 +717,11 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
         initial_step=step,
         accelerator=accelerator,
     )
-    # Stage-1 regimes need interval means; otherwise logging exposes only the final batch in each window.
-    windowed_model_types = {"skill_expert"}
+    # SkillExpert and SkillVLA emit per-forward branch/auxiliary diagnostics. Average each key over the
+    # logging window so W&B does not expose a noisy final-batch sample every log_freq steps.
     windowed_policy_metrics = (
         _WindowedPolicyMetrics()
-        if getattr(cfg.policy, "model_type", None) in windowed_model_types
+        if getattr(cfg.policy, "model_type", None) in _WINDOWED_POLICY_MODEL_TYPES
         else None
     )
 
@@ -739,6 +803,9 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                                   if k in _wandb_keep or k.startswith(
                                       (
                                           "terminator/",
+                                          "stage0/",
+                                          "skill_predictor/",
+                                          "batch_sampling/",
                                           "regime/",
                                           "distill/",
                                           "wrong_language/",
@@ -759,10 +826,20 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                     k[len("wrong_language/"):]: v for k, v in wandb_log_dict.items()
                     if k.startswith("wrong_language/")
                 }
+                skill_predictor_metrics = {
+                    k[len("skill_predictor/"):]: v for k, v in wandb_log_dict.items()
+                    if k.startswith("skill_predictor/")
+                }
+                batch_sampling_metrics = {
+                    k[len("batch_sampling/"):]: v for k, v in wandb_log_dict.items()
+                    if k.startswith("batch_sampling/")
+                }
                 main_metrics = {k: v for k, v in wandb_log_dict.items()
                                 if not k.startswith(
                                     (
                                         "terminator/",
+                                        "skill_predictor/",
+                                        "batch_sampling/",
                                         "regime/",
                                         "distill/",
                                         "wrong_language/",
@@ -777,6 +854,12 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                 if wrong_language_metrics:
                     wandb_logger.log_dict(
                         wrong_language_metrics, step, mode="train_wrong_language")
+                if skill_predictor_metrics:
+                    wandb_logger.log_dict(
+                        skill_predictor_metrics, step, mode="train_skill_predictor")
+                if batch_sampling_metrics:
+                    wandb_logger.log_dict(
+                        batch_sampling_metrics, step, mode="train_batch_sampling")
             train_tracker.reset_averages()
             if windowed_policy_metrics is not None:
                 windowed_policy_metrics.reset()

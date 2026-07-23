@@ -43,6 +43,9 @@ SKILL_START_IMAGE = "skill_start_image"
 SKILL_START_WRIST_IMAGE = "skill_start_wrist_image"
 SKILL_START_STATE = "skill_start_state"
 SKILL_CODE = "skill_code"
+SKILL_PROGRESS = "skill_progress"
+SAME_SKILL_PAIR_ID = "same_skill_pair_id"
+SAME_SKILL_PAIR_FALLBACK = "same_skill_pair_fallback"
 
 SKILL_VLA_BATCH_KEYS = (
     SKILL_START_IMAGE,
@@ -55,6 +58,9 @@ SKILL_VLA_BATCH_KEYS = (
     # FT terminator co-training (train only): TRUE current skill code + in-skill offsets (ds/de) for
     # the GT progress + soft-term targets. (DINO 토큰 키 은퇴 — 현재 프레임 이미지를 ONLINE 토큰화.)
     "skill_code_true",
+    SKILL_PROGRESS,
+    SAME_SKILL_PAIR_ID,
+    SAME_SKILL_PAIR_FALLBACK,
     "skill_ds",
     "skill_de",
 )

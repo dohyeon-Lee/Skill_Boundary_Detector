@@ -52,6 +52,7 @@ echo "Node       : ${SLURMD_NODENAME:-local}"
 echo "Inputs     : ${FSQ_INPUTS_DIR}"
 echo "Output     : ${FSQ_OUTPUT_DIR}"
 echo "HF cache   : ${HF_HOME}"
+echo "Grad ckpt  : ${FSQ_GRADIENT_CHECKPOINTING}"
 nvidia-smi
 
 if [ ! -d "${SKILLSET_DIR}/skills" ]; then
@@ -89,6 +90,7 @@ cat > "${FSQ_OUTPUT_DIR}/fsq_meta.json" <<JSON
   "terminator_layers": ${FSQ_TERMINATOR_LAYERS},
   "terminator_heads": ${FSQ_TERMINATOR_HEADS},
   "skill_cond_mode": "${FSQ_SKILL_COND_MODE}",
+  "gradient_checkpointing": ${FSQ_GRADIENT_CHECKPOINTING},
   "vision_backbone": "${FSQ_VISION_BACKBONE}",
   "freeze_vision_encoder": ${FSQ_FREEZE_VISION_ENCODER},
   "encoder_input_mode": "${FSQ_ENCODER_INPUT_MODE}"
@@ -108,6 +110,11 @@ fi
 WEIGHTED_ARG=(--no-weighted_loss)
 if [ "${FSQ_WEIGHTED_LOSS:-false}" = "true" ]; then
   WEIGHTED_ARG=(--weighted_loss)
+fi
+
+GRADIENT_CKPT_ARG=(--no-gradient_checkpointing)
+if [ "${FSQ_GRADIENT_CHECKPOINTING:-false}" = "true" ]; then
+  GRADIENT_CKPT_ARG=(--gradient_checkpointing)
 fi
 
 # best-val SELECTION override: pass each val_select weight only if set in config (empty → omit → the
@@ -146,6 +153,7 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     --reconstructor_lr        "${FSQ_RECONSTRUCTOR_LR}" \
     --batch_size              "${FSQ_BATCH_SIZE}" \
     --num_workers             "${FSQ_NUM_WORKERS}" \
+    "${GRADIENT_CKPT_ARG[@]}" \
     --action_loss_weight      "${FSQ_ACTION_LOSS_WEIGHT}" \
     --progress_loss_weight    "${FSQ_PROGRESS_LOSS_WEIGHT}" \
     --end_loss_weight         "${FSQ_END_LOSS_WEIGHT}" \

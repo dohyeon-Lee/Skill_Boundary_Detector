@@ -98,6 +98,8 @@ class Args:
     batch_size: int = 64
     num_workers: int = 8
     grad_clip: float = 1.0
+    gradient_checkpointing: bool = False
+    """Enable activation checkpointing. Saves VRAM at the cost of extra recompute; false is faster."""
     val_split: float = 0.1
     # Best-val SELECTION metric weights. Unset (None) → follow the actual loss (total val). Set to
     # override: FSQ.pt = argmin over epochs of wa*action + wp*progress + we*end on val.
@@ -351,6 +353,7 @@ def main(args: Args) -> None:
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         grad_clip=args.grad_clip,
+        gradient_checkpointing=args.gradient_checkpointing,
         epochs=args.epochs,
         val_split=args.val_split,
         val_select_action_weight=args.val_select_action_weight,
