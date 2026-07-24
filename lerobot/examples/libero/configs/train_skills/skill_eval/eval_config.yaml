@@ -56,8 +56,8 @@ fsq_eval_dino_model_path: models/dinov3-vitl16
 
 # Folder names now embed the DP run (dp_tag) that produced the skillset. Renamed runs (all dino8_obs10):
 
-# fsq_eval_run_name: libero_90_full_full_state_obs20_std_global_ms1_fsq333_dino_frozen_small_optimal
-fsq_eval_run_name: libero_90_full_full_state_obs20_std_global_ms1_fsq333_dino_frozen_small_optimal_broadcast
+fsq_eval_run_name: libero_90_full_full_state_obs20_std_global_ms1_fsq333_dino_frozen_small_optimal
+# fsq_eval_run_name: libero_90_full_full_state_obs20_std_global_ms1_fsq333_dino_frozen_small_optimal_broadcast
 fsq_eval_checkpoint: 200
 # The terminator always consumes both cameras; architecture/backbone live in the checkpoint.
 

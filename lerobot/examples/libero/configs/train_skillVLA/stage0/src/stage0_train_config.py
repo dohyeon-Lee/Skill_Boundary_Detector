@@ -86,10 +86,25 @@ def build_settings(cfg: dict) -> dict:
 
     cond_weight = float(_at(cfg, "loss", "conditional", "weight", default=1.0))
     uncond_weight = float(_at(cfg, "loss", "unconditional", "weight", default=0.5))
+    gradient_routing = str(_at(cfg, "loss", "gradient_routing", default="split")).strip().lower()
     uncond_start = float(_at(cfg, "loss", "unconditional", "skill_start_weight", default=1.0))
     uncond_end = float(_at(cfg, "loss", "unconditional", "skill_end_weight", default=1.0))
     if min(cond_weight, uncond_weight) < 0.0 or min(uncond_start, uncond_end) <= 0.0:
         raise ValueError("Stage-0 loss weights must satisfy cond/uncond >= 0 and timestep weights > 0.")
+    if gradient_routing not in {"shared", "split"}:
+        raise ValueError(f"loss.gradient_routing must be shared|split, got {gradient_routing!r}.")
+    language_ranking_enabled = as_bool(_at(
+        cfg, "loss", "language_ranking", "enabled", default=False))
+    language_ranking_weight = float(_at(
+        cfg, "loss", "language_ranking", "weight", default=0.1))
+    language_ranking_relative_margin = float(_at(
+        cfg, "loss", "language_ranking", "relative_margin", default=0.01))
+    if language_ranking_enabled and language_ranking_weight <= 0.0:
+        raise ValueError("loss.language_ranking.weight must be > 0 when enabled.")
+    if language_ranking_relative_margin < 0.0:
+        raise ValueError("loss.language_ranking.relative_margin must be >= 0.")
+    if language_ranking_enabled and not as_bool(_at(cfg, "token_access", "language", default=True)):
+        raise ValueError("loss.language_ranking.enabled=true requires token_access.language=true.")
 
     alpha_min = float(_at(cfg, "vlm_residual", "alpha_min", default=0.1))
     alpha_max = float(_at(cfg, "vlm_residual", "alpha_max", default=0.2))
@@ -105,10 +120,16 @@ def build_settings(cfg: dict) -> dict:
     skill_predictor_weight = float(_at(cfg, "skill_predictor", "weight", default=0.5))
     skill_predictor_lr_scale = float(_at(cfg, "skill_predictor", "lr_scale", default=1.0))
     skill_predictor_all_layers = as_bool(_at(cfg, "skill_predictor", "all_layers", default=False))
+    skill_predictor_attend_image = as_bool(
+        _at(cfg, "skill_predictor", "token_access", "image", default=True))
+    skill_predictor_attend_language = as_bool(
+        _at(cfg, "skill_predictor", "token_access", "language", default=True))
     if train_skill_predictor and not vlm_residual_enabled:
         raise ValueError("skill_predictor.train=true requires vlm_residual.enabled=true in renewed Stage-0.")
     if train_skill_predictor and min(skill_predictor_weight, skill_predictor_lr_scale) <= 0.0:
         raise ValueError("skill_predictor.weight and skill_predictor.lr_scale must be > 0 when enabled.")
+    if train_skill_predictor and not (skill_predictor_attend_image or skill_predictor_attend_language):
+        raise ValueError("skill_predictor.token_access must enable image and/or language when training.")
 
     batch_size = int(_at(cfg, "training", "dataloader", "batch_size", default=16))
     num_gpus = int(_at(cfg, "training", "dataloader", "gpus", default=1))
@@ -181,10 +202,16 @@ def build_settings(cfg: dict) -> dict:
         "stage0_skill_predictor_all_layers": skill_predictor_all_layers,
         "stage0_skill_predictor_detach_vlm": True,
         "skill_reader_all_layers": skill_predictor_all_layers,
+        "reader_attend_image": skill_predictor_attend_image,
+        "reader_attend_language": skill_predictor_attend_language,
         "stage0_conditional_loss_weight": cond_weight,
         "stage0_unconditional_loss_weight": uncond_weight,
+        "stage0_gradient_routing": gradient_routing,
         "stage0_uncond_skill_start_loss_weight": uncond_start,
         "stage0_uncond_skill_end_loss_weight": uncond_end,
+        "stage0_language_ranking_enabled": language_ranking_enabled,
+        "stage0_language_ranking_weight": language_ranking_weight,
+        "stage0_language_ranking_relative_margin": language_ranking_relative_margin,
         "stage0_freeze_vlm_llm": as_bool(_at(cfg, "freeze", "vlm_llm", default=True)),
         "stage0_freeze_vlm_vision": as_bool(_at(cfg, "freeze", "vlm_vision", default=True)),
         "stage0_freeze_cond": as_bool(_at(cfg, "freeze", "cond", default=False)),

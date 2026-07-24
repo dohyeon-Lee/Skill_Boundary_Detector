@@ -36,8 +36,9 @@ echo "VLM       : ${PI_BASE} (freeze llm=${STAGE0_FREEZE_VLM_LLM}, vision=${STAG
 echo "expert    : pi05_base + state/skill conditioning (${STATE_COND_MODE})"
 echo "cond      : ${VISION_BACKBONE}/${COND_ENCODER_VARIANT}"
 echo "residual  : heads=${STAGE0_VLM_RESIDUAL_HEADS}, alpha=${STAGE0_VLM_RESIDUAL_INIT_ALPHA} in [${STAGE0_VLM_RESIDUAL_ALPHA_MIN},${STAGE0_VLM_RESIDUAL_ALPHA_MAX}], zero_out=${STAGE0_VLM_RESIDUAL_ZERO_INIT_OUTPUT}"
-echo "skill pred: train=${STAGE0_TRAIN_SKILL_PREDICTOR}, weight=${STAGE0_SKILL_PREDICTOR_WEIGHT}, all_layers=${STAGE0_SKILL_PREDICTOR_ALL_LAYERS}"
-echo "loss      : cond=${STAGE0_CONDITIONAL_LOSS_WEIGHT}, uncond=${STAGE0_UNCONDITIONAL_LOSS_WEIGHT}"
+echo "skill pred: train=${STAGE0_TRAIN_SKILL_PREDICTOR}, weight=${STAGE0_SKILL_PREDICTOR_WEIGHT}, all_layers=${STAGE0_SKILL_PREDICTOR_ALL_LAYERS}, tokens=image:${READER_ATTEND_IMAGE}/language:${READER_ATTEND_LANGUAGE}"
+echo "loss      : cond=${STAGE0_CONDITIONAL_LOSS_WEIGHT}, uncond=${STAGE0_UNCONDITIONAL_LOSS_WEIGHT}, routing=${STAGE0_GRADIENT_ROUTING}"
+echo "lang rank : enabled=${STAGE0_LANGUAGE_RANKING_ENABLED}, weight=${STAGE0_LANGUAGE_RANKING_WEIGHT}, relative-margin=${STAGE0_LANGUAGE_RANKING_RELATIVE_MARGIN}"
 echo "batching  : batch=${BATCH_SIZE}, same-skill=${SAME_SKILL_BATCH_ENABLED}, grouped=${SAME_SKILL_BATCH_FRACTION}, progress-temp=${SAME_SKILL_PROGRESS_TEMPERATURE}"
 echo "grad ckpt : ${GRADIENT_CHECKPOINTING}"
 echo "output    : ${PT_OUTPUT_DIR}"
@@ -89,10 +90,16 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.stage0_skill_predictor_all_layers="${STAGE0_SKILL_PREDICTOR_ALL_LAYERS}" \
     --policy.stage0_skill_predictor_detach_vlm="${STAGE0_SKILL_PREDICTOR_DETACH_VLM}" \
     --policy.skill_reader_all_layers="${SKILL_READER_ALL_LAYERS}" \
+    --policy.reader_attend_image="${READER_ATTEND_IMAGE}" \
+    --policy.reader_attend_language="${READER_ATTEND_LANGUAGE}" \
     --policy.stage0_conditional_loss_weight="${STAGE0_CONDITIONAL_LOSS_WEIGHT}" \
     --policy.stage0_unconditional_loss_weight="${STAGE0_UNCONDITIONAL_LOSS_WEIGHT}" \
+    --policy.stage0_gradient_routing="${STAGE0_GRADIENT_ROUTING}" \
     --policy.stage0_uncond_skill_start_loss_weight="${STAGE0_UNCOND_SKILL_START_LOSS_WEIGHT}" \
     --policy.stage0_uncond_skill_end_loss_weight="${STAGE0_UNCOND_SKILL_END_LOSS_WEIGHT}" \
+    --policy.stage0_language_ranking_enabled="${STAGE0_LANGUAGE_RANKING_ENABLED}" \
+    --policy.stage0_language_ranking_weight="${STAGE0_LANGUAGE_RANKING_WEIGHT}" \
+    --policy.stage0_language_ranking_relative_margin="${STAGE0_LANGUAGE_RANKING_RELATIVE_MARGIN}" \
     --policy.same_skill_batch_enabled="${SAME_SKILL_BATCH_ENABLED}" \
     --policy.same_skill_batch_fraction="${SAME_SKILL_BATCH_FRACTION}" \
     --policy.same_skill_progress_temperature="${SAME_SKILL_PROGRESS_TEMPERATURE}" \

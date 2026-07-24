@@ -1,10 +1,27 @@
+
+
+# Exp0: 초기 구조. Expert 마지막에 cross-attention 1회, shared gradient, cond:uncond=1:0.5. Alpha 0.01에서 시작했지만 계속 고정. Terminator 동시 학습.
+
+# Exp1: Exp0의 residual 최적화 개선. Wo zero-init, alpha 0.15 시작 및 0.1~0.2 bounded gate, gate weight decay 제외, residual 별도 clipping. Shared gradient, 1:0.5.
+
+# Exp2: Exp1 구조에서 gradient routing만 분리. Conditional은 residual만, unconditional은 base VSA만 업데이트. 가중치는 1:1.
+
+# Exp3: Exp2 설정에서 VLM residual은 language token만 읽고, skill predictor는 image+language를 유지. Same-skill batch 사용.
+
+# Exp4: Exp3 설정에 다른 task language negative를 추가. Current-skill 구간의 correct/wrong conditional error에 relative hinge ranking 적용.
+
+# Exp5: Exp2 설정에서 VLM의 LLM과 vision tower를 모두 unfreeze. Skill predictor는 VLM을 read-only로 사용하고 reader/head만 업데이트.
+
+
+
 dataset_root: dataset_filtered
 outputs_root: outputs_filtered
 
 dataset:
   skillvla_root: skillvla_dataset
   source: libero_90_full_full
-  run: FSQ333_dino_frozen_small_optimal_vsa_broadcast_150_std_pt_snap10_ms1_pmax15_halfnormal
+  # run: FSQ333_dino_frozen_small_optimal_vsa_broadcast_150_std_pt_snap10_ms1_pmax15_halfnormal
+  run: FSQ333_dino_frozen_small_optimal_broadcast_175_std_pt_snap10_ms1_pmax15_halfnormal
 
 warm_start:
   pi_base: models/pi05_base
@@ -20,18 +37,20 @@ expert:
   skill_cond_mode: broadcast
 
 connections: {vlm_to_cond: false, cond_to_expert: true}
-token_access: {image: true, language: true}
+token_access: {image: false, language: true}
 
 vlm_residual: {enabled: true, heads: auto, alpha_min: 0.1, alpha_max: 0.2, init_alpha: 0.15, zero_init_output: true, dropout: 0.0}
-skill_predictor: {train: true, weight: 0.5, lr_scale: 1.0, all_layers: false}
+skill_predictor: {train: true, weight: 0.5, lr_scale: 1.0, all_layers: false, token_access: {image: true, language: true}}
 freeze: {vlm_llm: true, vlm_vision: true, cond: false, cond_vision: false, expert: false, skill_reader: true, skill_head: true}
 
 loss:
+  gradient_routing: split # split | shared
   conditional: {weight: 1.0}
-  unconditional: {weight: 0.5, skill_start_weight: 1.0, skill_end_weight: 1.0}
+  unconditional: {weight: 1.0, skill_start_weight: 1.0, skill_end_weight: 1.0}
+  language_ranking: {enabled: false, weight: 0.1, relative_margin: 0.01}
 
 terminator: {train: false, freeze_vision: true}
-run: {suffix: "exp1_batchon"}
+run: {suffix: "exp3_split_langonly_batchon_newdata"}
 
 training:
   dataloader:
@@ -41,7 +60,7 @@ training:
     same_skill_different_task: {enabled: true, grouped_fraction: 0.5, progress_temperature: 0.1}
   optimizer: {base_lr: 2.5e-05, cond_lr_scale: 1.0, expert_lr_scale: 1.0, terminator_lr_scale: 1.0}
   gradient_checkpointing: true # false
-  schedule: {steps: 50000, save_every: 10000}
+  schedule: {steps: 50000, save_every: 5000}
 
 logging:
   param_drift: true

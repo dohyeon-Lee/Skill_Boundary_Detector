@@ -4,12 +4,13 @@ import torch
 from torch import nn
 
 from lerobot.policies.pi05.lora import NamedLoRALinear
-from lerobot.policies.pi_gemma import add_broadcast_condition
+from lerobot.policies.pi_gemma import PiGemmaRMSNorm, add_broadcast_condition
 from lerobot.policies.skillVLA.modeling_skillVLA import (
     LanguageKVBridge,
     Stage0VLMResidual,
     SkillVLAPytorch,
     SkillVLAPolicy,
+    _relative_language_ranking,
     _skill_endpoint_weights,
 )
 
@@ -40,6 +41,165 @@ def test_stage0_vlm_residual_starts_as_fp32_zero_correction_with_open_gate() -> 
     (correction - 1.0).square().mean().backward()
     assert residual.attn.out_proj.weight.grad is not None
     assert torch.count_nonzero(residual.attn.out_proj.weight.grad) > 0
+
+
+def test_stage0_detached_base_call_keeps_input_gradient_only() -> None:
+    class Stub:
+        _call_with_detached_parameters = staticmethod(SkillVLAPytorch._call_with_detached_parameters)
+        _action_out = SkillVLAPytorch._action_out
+        _expert_final_norm = SkillVLAPytorch._expert_final_norm
+
+        def __init__(self) -> None:
+            self._expert = SimpleNamespace(norm=PiGemmaRMSNorm(8, cond_dim=8))
+            self.action_out_proj = nn.Linear(8, 3)
+
+    model = Stub()
+    hidden = torch.randn(2, 4, 8, requires_grad=True)
+    condition = torch.randn(2, 8, requires_grad=True)
+    normalized = model._expert_final_norm(hidden, condition, detach_parameters=True)
+    output = model._action_out(normalized, detach_parameters=True)
+
+    output.square().mean().backward()
+
+    assert hidden.grad is not None
+    assert torch.count_nonzero(hidden.grad) > 0
+    assert condition.grad is None
+    assert all(param.grad is None for param in model._expert.norm.parameters())
+    assert all(param.grad is None for param in model.action_out_proj.parameters())
+
+
+class _SplitRouteStub(nn.Module):
+    _call_with_detached_parameters = staticmethod(SkillVLAPytorch._call_with_detached_parameters)
+    _action_out = SkillVLAPytorch._action_out
+    _expert_final_norm = SkillVLAPytorch._expert_final_norm
+    _stage0_dual_flow_view = SkillVLAPytorch._stage0_dual_flow_view
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.config = SimpleNamespace(stage0_gradient_routing="split")
+        self.joint_calls = 0
+        self.base = nn.Linear(8, 8)
+        self.vlm = nn.Linear(8, 8)
+        self._expert = SimpleNamespace(norm=PiGemmaRMSNorm(8))
+        self.action_out_proj = nn.Linear(8, 3)
+        self.stage0_vlm_residual = Stage0VLMResidual(
+            expert_dim=8,
+            vlm_dim=8,
+            n_heads=2,
+            dropout=0.0,
+            alpha_min=0.1,
+            alpha_max=0.2,
+            init_alpha=0.15,
+            zero_init_output=False,
+        )
+
+    @staticmethod
+    def _active_adapters(_names):
+        return frozenset()
+
+    @staticmethod
+    def _cond_tokens(cond_images):
+        return torch.zeros(cond_images[0].shape[0], 1, 8)
+
+    def _vlm_tokens(self, start_images, _lang_tokens, _lang_masks):
+        hidden = self.vlm(start_images[0])
+        valid = torch.ones(hidden.shape[:2], dtype=torch.bool)
+        blocked = torch.zeros(hidden.shape[1], dtype=torch.bool)
+        return hidden, valid, blocked
+
+    @staticmethod
+    def _action_in(x_t):
+        return x_t
+
+    @staticmethod
+    def _action_prefix_from_z(_skill_zq):
+        return None
+
+    @staticmethod
+    def _expert_cond_from_z(_time, _state, _skill_zq):
+        return None
+
+    @staticmethod
+    def _skill_broadcast_from_z(_skill_zq):
+        return None
+
+    @staticmethod
+    def _cond_adarms(_state):
+        return None
+
+    def _joint_forward(
+        self, _cond_tokens, vlm_embeds, _vlm_pad, _vlm_xattn_block, action_tokens,
+        _expert_cond, **_kwargs,
+    ):
+        self.joint_calls += 1
+        return vlm_embeds, None, self.base(action_tokens)
+
+    @staticmethod
+    def _vlm_prefix_out(vlm_embeds, _vlm_pad, all_layers=False, *, predictor=True):
+        assert not all_layers
+        assert predictor is False
+        return vlm_embeds
+
+
+def _stage0_split_route_outputs(model: _SplitRouteStub) -> tuple[torch.Tensor, torch.Tensor]:
+    batch_size = 2
+    return model._stage0_dual_flow_view(
+        cond_images=[torch.randn(batch_size, 1, 8)],
+        start_images=[torch.randn(batch_size, 3, 8)],
+        lang_tokens=torch.zeros(batch_size, 1, dtype=torch.long),
+        lang_masks=torch.ones(batch_size, 1, dtype=torch.bool),
+        state=torch.randn(batch_size, 4),
+        skill_zq=torch.randn(batch_size, 3),
+        x_t=torch.randn(batch_size, 5, 8),
+        time=torch.rand(batch_size),
+    )
+
+
+def test_stage0_split_route_sends_conditional_gradient_only_to_vlm_residual() -> None:
+    model = _SplitRouteStub()
+    conditional, _ = _stage0_split_route_outputs(model)
+
+    conditional.square().mean().backward()
+
+    assert any(param.grad is not None for param in model.vlm.parameters())
+    assert any(param.grad is not None for param in model.stage0_vlm_residual.parameters())
+    assert all(param.grad is None for param in model.base.parameters())
+    assert all(param.grad is None for param in model._expert.norm.parameters())
+    assert all(param.grad is None for param in model.action_out_proj.parameters())
+
+
+def test_stage0_split_route_sends_unconditional_gradient_only_to_base() -> None:
+    model = _SplitRouteStub()
+    _, unconditional = _stage0_split_route_outputs(model)
+
+    unconditional.square().mean().backward()
+
+    assert any(param.grad is not None for param in model.base.parameters())
+    assert any(param.grad is not None for param in model._expert.norm.parameters())
+    assert any(param.grad is not None for param in model.action_out_proj.parameters())
+    assert all(param.grad is None for param in model.vlm.parameters())
+    assert all(param.grad is None for param in model.stage0_vlm_residual.parameters())
+
+
+def test_stage0_wrong_language_reuses_one_base_forward() -> None:
+    model = _SplitRouteStub()
+    batch_size = 2
+    model._stage0_dual_flow_view(
+        cond_images=[torch.randn(batch_size, 1, 8)],
+        start_images=[torch.randn(batch_size, 3, 8)],
+        lang_tokens=torch.zeros(batch_size, 1, dtype=torch.long),
+        lang_masks=torch.ones(batch_size, 1, dtype=torch.bool),
+        state=torch.randn(batch_size, 4),
+        skill_zq=torch.randn(batch_size, 3),
+        x_t=torch.randn(batch_size, 5, 8),
+        time=torch.rand(batch_size),
+        wrong_lang_tokens=torch.ones(batch_size, 1, dtype=torch.long),
+        wrong_lang_masks=torch.ones(batch_size, 1, dtype=torch.bool),
+    )
+
+    assert model.joint_calls == 1
+    assert model._last_stage0_wrong_velocity is not None
+    assert model._last_stage0_wrong_velocity.shape == (batch_size, 5, 3)
 
 
 def test_language_bridge_is_zero_initialized_with_kv_head_shape() -> None:
@@ -76,6 +236,47 @@ def test_wrong_language_skips_batch_without_a_distinct_prompt() -> None:
         tokens, masks, torch.tensor([0, 0]), torch.tensor([4, 4]))
 
     assert result == (None, None, None, None)
+
+
+def test_relative_language_ranking_uses_current_skill_steps_per_sample() -> None:
+    correct = torch.tensor([
+        [[1.0], [1.0], [100.0]],
+        [[2.0], [2.0], [2.0]],
+    ])
+    wrong = torch.tensor([
+        [[1.02], [1.02], [0.0]],
+        [[2.0], [2.0], [2.0]],
+    ])
+    within_skill = torch.tensor([
+        [True, True, False],
+        [True, True, True],
+    ])
+
+    result = _relative_language_ranking(
+        correct, wrong, within_skill, torch.tensor([True, False]), relative_margin=0.01)
+
+    assert result is not None
+    torch.testing.assert_close(result["relative_gap"], torch.tensor(0.02))
+    torch.testing.assert_close(result["loss"], torch.tensor(0.0))
+    torch.testing.assert_close(result["satisfied_fraction"], torch.tensor(1.0))
+    torch.testing.assert_close(result["active_fraction"], torch.tensor(0.0))
+
+
+def test_relative_language_ranking_hinge_is_samplewise() -> None:
+    correct = torch.ones(2, 1, 1)
+    wrong = torch.tensor([[[1.02]], [[1.0]]])
+    result = _relative_language_ranking(
+        correct,
+        wrong,
+        torch.ones(2, 1, dtype=torch.bool),
+        torch.ones(2, dtype=torch.bool),
+        relative_margin=0.01,
+    )
+
+    assert result is not None
+    torch.testing.assert_close(result["loss"], torch.tensor(0.005))
+    torch.testing.assert_close(result["active_fraction"], torch.tensor(0.5))
+    torch.testing.assert_close(result["satisfied_fraction"], torch.tensor(0.5))
 
 
 def test_stage0_endpoint_weights_support_both_directions_and_uniform() -> None:

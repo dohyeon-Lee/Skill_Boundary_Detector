@@ -941,11 +941,32 @@ class SkillVLAPytorch(PI05Pytorch):
         """pi05: float32 action_in_proj → cast to the working dtype for the (bf16) attention stream."""
         return self.action_in_proj(x_t.to(torch.float32)).to(self._wdtype)
 
-    def _action_out(self, action_hidden: Tensor) -> Tensor:
-        """pi05: float32 action_out_proj on a float32 hidden → float32 flow velocity."""
-        return self.action_out_proj(action_hidden.to(torch.float32))
+    @staticmethod
+    def _call_with_detached_parameters(module: nn.Module, *args, **kwargs):
+        """Run a module with frozen parameter values while retaining input gradients."""
+        params = {name: param.detach() for name, param in module.named_parameters()}
+        buffers = {name: buffer for name, buffer in module.named_buffers()}
+        return torch.func.functional_call(module, (params, buffers), args, kwargs, strict=True)
 
-    def _expert_final_norm(self, suffix_raw: Tensor, expert_cond: Tensor) -> Tensor:
+    def _action_out(self, action_hidden: Tensor, *, detach_parameters: bool = False) -> Tensor:
+        """pi05: float32 action_out_proj on a float32 hidden → float32 flow velocity."""
+        action_hidden = action_hidden.to(torch.float32)
+        if detach_parameters:
+            return self._call_with_detached_parameters(self.action_out_proj, action_hidden)
+        return self.action_out_proj(action_hidden)
+
+    def _expert_final_norm(
+        self,
+        suffix_raw: Tensor,
+        expert_cond: Tensor | None,
+        *,
+        detach_parameters: bool = False,
+    ) -> Tensor:
+        if detach_parameters:
+            detached_cond = expert_cond.detach() if expert_cond is not None else None
+            hidden, _ = self._call_with_detached_parameters(
+                self._expert.norm, suffix_raw, cond=detached_cond)
+            return hidden
         hidden, _ = layernorm_forward(self._expert.norm, suffix_raw, expert_cond)
         return hidden
 
@@ -1451,6 +1472,8 @@ class SkillVLAPytorch(PI05Pytorch):
         skill_zq: Tensor,
         x_t: Tensor,
         time: Tensor,
+        wrong_lang_tokens: Tensor | None = None,
+        wrong_lang_masks: Tensor | None = None,
     ) -> tuple[Tensor, Tensor]:
         """Renewed Stage-0: shared base VSA plus a final VLM residual correction.
 
@@ -1484,8 +1507,26 @@ class SkillVLAPytorch(PI05Pytorch):
         suffix_raw_fp32 = suffix_raw.float()
         suffix_norm = self._expert_final_norm(suffix_raw_fp32, expert_cond)
         v_uncond = self._action_out(suffix_norm)
-        delta = self.stage0_vlm_residual(suffix_norm, vlm_out, vlm_pad, vlm_xattn_block)
-        v_cond = self._action_out(self._expert_final_norm(suffix_raw_fp32 + delta, expert_cond))
+
+        routing = str(getattr(self.config, "stage0_gradient_routing", "shared")).strip().lower()
+        split_routing = routing == "split"
+        if split_routing:
+            # Conditional loss may read the base value, but only VLM/residual parameters may move.
+            # Detached functional calls keep d(loss)/d(delta) while excluding final norm/action-head
+            # parameters and the earlier VSA graph from the conditional gradient.
+            cond_raw = suffix_raw_fp32.detach()
+            cond_query = self._expert_final_norm(
+                cond_raw, expert_cond, detach_parameters=True)
+        else:
+            cond_raw = suffix_raw_fp32
+            cond_query = suffix_norm
+        delta = self.stage0_vlm_residual(cond_query, vlm_out, vlm_pad, vlm_xattn_block)
+        cond_hidden = self._expert_final_norm(
+            cond_raw + delta,
+            expert_cond,
+            detach_parameters=split_routing,
+        )
+        v_cond = self._action_out(cond_hidden, detach_parameters=split_routing)
         self._last_stage0_alpha = self.stage0_vlm_residual.alpha().detach()
         base_rms = suffix_raw_fp32.detach().square().mean().sqrt()
         scaled_rms = self.stage0_vlm_residual._last_scaled_delta_rms
@@ -1497,6 +1538,20 @@ class SkillVLAPytorch(PI05Pytorch):
             "scaled_to_base_ratio": scaled_rms / base_rms.clamp_min(1e-12),
             "velocity_delta_rms": (v_cond.detach() - v_uncond.detach()).square().mean().sqrt(),
         }
+        self._last_stage0_wrong_velocity = None
+        if wrong_lang_tokens is not None and wrong_lang_masks is not None:
+            wrong_embeds, wrong_pad, wrong_xattn_block = self._vlm_tokens(
+                start_images, wrong_lang_tokens, wrong_lang_masks)
+            wrong_vlm_out = self._vlm_prefix_out(wrong_embeds, wrong_pad, predictor=False)
+            wrong_delta = self.stage0_vlm_residual(
+                cond_query, wrong_vlm_out, wrong_pad, wrong_xattn_block)
+            wrong_hidden = self._expert_final_norm(
+                cond_raw + wrong_delta,
+                expert_cond,
+                detach_parameters=split_routing,
+            )
+            self._last_stage0_wrong_velocity = self._action_out(
+                wrong_hidden, detach_parameters=split_routing)
         return v_cond, v_uncond
 
     def _grounded_flow_view(self, cond_images, start_images, lang_tokens, lang_masks, state,
@@ -1650,6 +1705,8 @@ class SkillVLAPytorch(PI05Pytorch):
         self._last_vsa_distill = None
         self._last_stage0_dual_losses = None
         self._last_stage0_alpha = None
+        self._last_stage0_wrong_velocity = None
+        self._last_wrong_flow_losses = None
 
         # SKILL regime — mode a (default): skill prediction only, no flow this batch.
         # mode b (skill_action_grounding, STAGE 3 only): the SKILL view's STE prediction is ALSO
@@ -1710,10 +1767,14 @@ class SkillVLAPytorch(PI05Pytorch):
 
         if regime == "stage0":
             v_cond, v_uncond = self._stage0_dual_flow_view(
-                cond_images, start_images, lang_tokens, lang_masks, state, skill_zq, x_t, time)
+                cond_images, start_images, lang_tokens, lang_masks, state, skill_zq, x_t, time,
+                wrong_lang_tokens=wrong_lang_tokens, wrong_lang_masks=wrong_lang_masks)
             cond_losses = F.mse_loss(u_t, v_cond, reduction="none")
             uncond_losses = F.mse_loss(u_t, v_uncond, reduction="none")
             self._last_stage0_dual_losses = (cond_losses, uncond_losses)
+            if self._last_stage0_wrong_velocity is not None:
+                self._last_wrong_flow_losses = F.mse_loss(
+                    u_t, self._last_stage0_wrong_velocity, reduction="none")
             flow_losses = cond_losses
             cond_tokens = None
         elif regime == "cond_sev":
@@ -1736,7 +1797,6 @@ class SkillVLAPytorch(PI05Pytorch):
                 severed=severed, severed_adapters=frozenset())
             flow_losses = F.mse_loss(u_t, v_t, reduction="none")
 
-        self._last_wrong_flow_losses = None
         if (regime == "stage0_a" and wrong_lang_tokens is not None and wrong_lang_masks is not None
                 and float(getattr(self.config, "stage0_wrong_language_weight", 0.0)) > 0.0):
             wrong_v, _ = self._flow_view(
@@ -1764,7 +1824,14 @@ class SkillVLAPytorch(PI05Pytorch):
         return flow_losses, skill_hidden
 
     # ── inference ──
-    def _vlm_prefix_out(self, vlm_embeds: Tensor, vlm_pad: Tensor, all_layers: bool = False):
+    def _vlm_prefix_out(
+        self,
+        vlm_embeds: Tensor,
+        vlm_pad: Tensor,
+        all_layers: bool = False,
+        *,
+        predictor: bool = True,
+    ):
         """VLM transformer over a PRECOMPUTED prefix (bidirectional within valid tokens) → hidden
         (B, nv, vlm_width). Grad-capable: the gemma language_model gradient-checkpoints internally
         when training, so the cond_skill_source=pred path (which keeps the graph) stays memory-safe.
@@ -1775,8 +1842,8 @@ class SkillVLAPytorch(PI05Pytorch):
         # python-float `torch.where` yields float32, so cast to the bf16 working dtype.
         att_4d = torch.where(att_2d[:, None], 0.0, OPENPI_ATTENTION_MASK_VALUE).to(vlm_embeds.dtype)
         position_ids = torch.cumsum(vlm_pad, dim=1) - 1
-        predictor_vlm = self._predictor_vlm
-        out = predictor_vlm.forward(
+        vlm = self._predictor_vlm if predictor else self._vlm
+        out = vlm.forward(
             inputs_embeds=vlm_embeds, attention_mask=att_4d, position_ids=position_ids,
             past_key_values=None, use_cache=False, adarms_cond=None, output_hidden_states=all_layers,
         )
@@ -1785,7 +1852,7 @@ class SkillVLAPytorch(PI05Pytorch):
             # layer(N-1)_out). Norm each pre-norm layer output; the last entry is ALREADY final-normed
             # (== last_hidden_state) → append it directly (no double-norm). Matches the joint forward's
             # per-layer capture (each of the N layer outputs normed by the VLM final norm).
-            normed = [layernorm_forward(predictor_vlm.norm, h, None)[0] for h in out.hidden_states[1:-1]]
+            normed = [layernorm_forward(vlm.norm, h, None)[0] for h in out.hidden_states[1:-1]]
             normed.append(out.last_hidden_state)
             return out.last_hidden_state, torch.stack(normed, dim=1)   # (B, N, nv, W)
         return out.last_hidden_state
@@ -2299,6 +2366,45 @@ def _skill_timestep_weights(valid: Tensor, batch: dict, start_weight: float, end
         progress = idx / max(chunk - 1, 1)
     weights = float(start_weight) + (float(end_weight) - float(start_weight)) * progress
     return weights * valid.float()
+
+
+def _relative_language_ranking(
+    correct_losses: Tensor,
+    wrong_losses: Tensor,
+    step_mask: Tensor,
+    eligible: Tensor,
+    relative_margin: float,
+    eps: float = 1e-6,
+) -> dict[str, Tensor] | None:
+    """Per-sample relative hinge for correct vs different-task language flow errors."""
+    action_dim = correct_losses.shape[-1]
+    valid_negative = eligible.to(step_mask.device).bool() & step_mask.any(dim=1)
+    if not bool(valid_negative.any()):
+        return None
+
+    weights = step_mask.float().unsqueeze(-1)
+    denom_per = step_mask.float().sum(dim=1).clamp(min=1.0) * action_dim
+    correct_per = (correct_losses * weights).sum(dim=(1, 2)) / denom_per
+    wrong_per = (wrong_losses * weights).sum(dim=(1, 2)) / denom_per
+    relative_gap_per = (
+        (wrong_per - correct_per) / correct_per.detach().clamp_min(float(eps))
+    )
+    hinge_per = F.relu(float(relative_margin) - relative_gap_per)
+    select = valid_negative.float()
+    denom = select.sum().clamp(min=1.0)
+    return {
+        "loss": (hinge_per * select).sum() / denom,
+        "correct_error": (correct_per.detach() * select).sum() / denom,
+        "wrong_error": (wrong_per.detach() * select).sum() / denom,
+        "relative_gap": (relative_gap_per.detach() * select).sum() / denom,
+        "active_fraction": (
+            ((relative_gap_per.detach() < float(relative_margin)) & valid_negative).float().sum() / denom
+        ),
+        "satisfied_fraction": (
+            ((relative_gap_per.detach() >= float(relative_margin)) & valid_negative).float().sum() / denom
+        ),
+        "valid_negative": valid_negative,
+    }
 
 
 def _reverse_skill_endpoint_weights(valid: Tensor, batch: dict, max_weight: float) -> Tensor:
@@ -2974,7 +3080,15 @@ class SkillVLAPolicy(PI05Policy):
         hold_actions = self._build_severed_hold_target(actions, batch, action_dim)
 
         wrong_tokens = wrong_masks = wrong_valid = wrong_same_skill = None
-        if float(getattr(self.config, "stage0_wrong_language_weight", 0.0)) > 0.0:
+        renewed_language_ranking = bool(
+            getattr(self.config, "stage0_language_ranking_enabled", False))
+        legacy_language_ranking = float(
+            getattr(self.config, "stage0_wrong_language_weight", 0.0)) > 0.0
+        if renewed_language_ranking and batch.get("task_index") is None:
+            raise ValueError(
+                "Stage-0 language ranking needs task_index to guarantee a different-task negative."
+            )
+        if renewed_language_ranking or legacy_language_ranking:
             wrong_tokens, wrong_masks, wrong_valid, wrong_same_skill = self._wrong_language_batch(
                 lang_tokens, lang_masks, skill_code, batch.get("task_index"))
 
@@ -3074,23 +3188,54 @@ class SkillVLAPolicy(PI05Policy):
         total = loss                                          # backpropped objective (+ auxiliaries below)
 
         wrong_rank_loss = wrong_correct = wrong_error = wrong_gap = None
+        wrong_relative_gap = wrong_active = wrong_satisfied = None
         wrong_flow_losses = getattr(self.model, "_last_wrong_flow_losses", None)
         if wrong_flow_losses is not None and wrong_valid is not None:
             wrong_flow_losses = wrong_flow_losses[:, :, :action_dim]
-            correct_per = ((flow_losses * vf).sum(dim=(1, 2))
-                           / (valid.float().sum(dim=1).clamp(min=1.0) * action_dim))
-            wrong_per = ((wrong_flow_losses * vf).sum(dim=(1, 2))
-                         / (valid.float().sum(dim=1).clamp(min=1.0) * action_dim))
-            neg_mask = wrong_valid.to(wrong_per.device).float()
-            denom = neg_mask.sum().clamp(min=1.0)
-            margin = float(getattr(self.config, "stage0_wrong_language_margin", 0.02))
-            wrong_rank_loss = (F.relu(margin + correct_per - wrong_per) * neg_mask).sum() / denom
-            wrong_correct = (correct_per * neg_mask).sum() / denom
-            wrong_error = (wrong_per.detach() * neg_mask).sum() / denom
-            wrong_gap = wrong_error - wrong_correct
-            weighted_rank = float(self.config.stage0_wrong_language_weight) * wrong_rank_loss
-            loss = loss + weighted_rank
-            total = total + weighted_rank
+            if regime == "stage0" and renewed_language_ranking:
+                if "skill_de" not in batch:
+                    raise ValueError(
+                        "Stage-0 language ranking needs skill_de to restrict ranking to the current skill."
+                    )
+                de = batch["skill_de"].to(valid.device).long().view(bsize, 1)
+                within_skill = valid & (
+                    torch.arange(K, device=valid.device).view(1, K) <= de)
+                ranking = _relative_language_ranking(
+                    cond_losses,
+                    wrong_flow_losses,
+                    within_skill,
+                    wrong_valid,
+                    float(getattr(
+                        self.config, "stage0_language_ranking_relative_margin", 0.01)),
+                )
+                if ranking is not None:
+                    wrong_rank_loss = ranking["loss"]
+                    wrong_correct = ranking["correct_error"]
+                    wrong_error = ranking["wrong_error"]
+                    wrong_gap = wrong_error - wrong_correct
+                    wrong_relative_gap = ranking["relative_gap"]
+                    wrong_active = ranking["active_fraction"]
+                    wrong_satisfied = ranking["satisfied_fraction"]
+                    weighted_rank = float(
+                        getattr(self.config, "stage0_language_ranking_weight", 0.1)
+                    ) * wrong_rank_loss
+                    loss = loss + weighted_rank
+                    total = total + weighted_rank
+            else:
+                correct_per = ((flow_losses * vf).sum(dim=(1, 2))
+                               / (valid.float().sum(dim=1).clamp(min=1.0) * action_dim))
+                wrong_per = ((wrong_flow_losses * vf).sum(dim=(1, 2))
+                             / (valid.float().sum(dim=1).clamp(min=1.0) * action_dim))
+                neg_mask = wrong_valid.to(wrong_per.device).float()
+                denom = neg_mask.sum().clamp(min=1.0)
+                margin = float(getattr(self.config, "stage0_wrong_language_margin", 0.02))
+                wrong_rank_loss = (F.relu(margin + correct_per - wrong_per) * neg_mask).sum() / denom
+                wrong_correct = (correct_per * neg_mask).sum() / denom
+                wrong_error = (wrong_per.detach() * neg_mask).sum() / denom
+                wrong_gap = wrong_error - wrong_correct
+                weighted_rank = float(self.config.stage0_wrong_language_weight) * wrong_rank_loss
+                loss = loss + weighted_rank
+                total = total + weighted_rank
 
         # Random-skill distillation to the frozen-PT teacher (MOTOR_SEV batches only): weak MSE on sampled
         # skills → added to the backpropped `total` but EXCLUDED from wandb `loss`; logged via "distill/*".
@@ -3176,6 +3321,8 @@ class SkillVLAPolicy(PI05Policy):
             loss_dict["stage0/objective_loss"] = flow_loss.detach().item()
             loss_dict["stage0/cond_weight"] = float(getattr(self.config, "stage0_conditional_loss_weight", 1.0))
             loss_dict["stage0/uncond_weight"] = float(getattr(self.config, "stage0_unconditional_loss_weight", 0.5))
+            loss_dict["stage0/split_gradient_routing"] = float(
+                str(getattr(self.config, "stage0_gradient_routing", "shared")).strip().lower() == "split")
             if stage0_uncond_weight_mean is not None:
                 loss_dict["stage0/uncond_timestep_weight_mean"] = stage0_uncond_weight_mean.item()
             if alpha is not None:
@@ -3208,6 +3355,14 @@ class SkillVLAPolicy(PI05Policy):
             loss_dict["wrong_language/eligible_fraction"] = wrong_valid.float().mean().item()
             loss_dict["wrong_language/same_skill_fraction"] = (
                 wrong_same_skill.float().sum() / wrong_valid.float().sum().clamp(min=1.0)).item()
+            if wrong_relative_gap is not None:
+                loss_dict["wrong_language/relative_gap"] = wrong_relative_gap.item()
+                loss_dict["wrong_language/hinge_active_fraction"] = wrong_active.item()
+                loss_dict["wrong_language/margin_satisfied_fraction"] = wrong_satisfied.item()
+                loss_dict["wrong_language/relative_margin"] = float(getattr(
+                    self.config, "stage0_language_ranking_relative_margin", 0.01))
+                loss_dict["wrong_language/weight"] = float(getattr(
+                    self.config, "stage0_language_ranking_weight", 0.1))
         if skill_loss is not None:
             loss_dict["loss_skill"] = skill_loss.detach().item()
             with torch.no_grad():

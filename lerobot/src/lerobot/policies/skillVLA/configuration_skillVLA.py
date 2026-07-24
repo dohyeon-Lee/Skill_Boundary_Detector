@@ -162,11 +162,20 @@ class SkillVLAConfig(PI05Config):
     still receiving a healthy gradient through the nonzero alpha floor."""
     stage0_conditional_loss_weight: float = 1.0
     stage0_unconditional_loss_weight: float = 0.5
+    stage0_gradient_routing: str = "shared"
     stage0_uncond_skill_start_loss_weight: float = 1.0
     stage0_uncond_skill_end_loss_weight: float = 1.0
     """Renewed Stage-0 loss:
        λ_cond * GT flow loss with VLM residual + λ_uncond * GT flow loss without the residual.
-       The unconditional term can be skill-progress weighted from start_weight to end_weight."""
+       The unconditional term can be skill-progress weighted from start_weight to end_weight.
+       ``split`` routing lets conditional loss update only the VLM/residual path while unconditional
+       loss owns the shared base VSA; ``shared`` preserves the original both-losses-update-base behavior."""
+    stage0_language_ranking_enabled: bool = False
+    stage0_language_ranking_weight: float = 0.1
+    stage0_language_ranking_relative_margin: float = 0.01
+    """Optional renewed Stage-0 Exp4 objective. The correct-language conditional flow must beat a
+    different-task-language conditional flow by a relative margin, measured only within the current
+    skill. Disabled means no negative sampling or extra VLM forward, preserving Exp0-3 exactly."""
     same_skill_batch_enabled: bool = False
     same_skill_batch_fraction: float = 0.5
     same_skill_progress_temperature: float = 0.1
@@ -602,10 +611,27 @@ class SkillVLAConfig(PI05Config):
                     raise ValueError("stage0_conditional_loss_weight must be >= 0.")
                 if float(getattr(self, "stage0_unconditional_loss_weight", 0.5)) < 0.0:
                     raise ValueError("stage0_unconditional_loss_weight must be >= 0.")
+                routing = str(getattr(self, "stage0_gradient_routing", "shared")).strip().lower()
+                if routing not in {"shared", "split"}:
+                    raise ValueError(
+                        "stage0_gradient_routing must be shared|split, "
+                        f"got {self.stage0_gradient_routing!r}."
+                    )
                 if float(getattr(self, "stage0_uncond_skill_start_loss_weight", 1.0)) <= 0.0:
                     raise ValueError("stage0_uncond_skill_start_loss_weight must be > 0.")
                 if float(getattr(self, "stage0_uncond_skill_end_loss_weight", 1.0)) <= 0.0:
                     raise ValueError("stage0_uncond_skill_end_loss_weight must be > 0.")
+                if bool(getattr(self, "stage0_language_ranking_enabled", False)):
+                    if not bool(getattr(self, "attend_language", False)):
+                        raise ValueError(
+                            "stage0_language_ranking_enabled=True requires attend_language=True."
+                        )
+                    if float(getattr(self, "stage0_language_ranking_weight", 0.1)) <= 0.0:
+                        raise ValueError("stage0_language_ranking_weight must be > 0 when enabled.")
+                    if float(getattr(self, "stage0_language_ranking_relative_margin", 0.01)) < 0.0:
+                        raise ValueError(
+                            "stage0_language_ranking_relative_margin must be >= 0."
+                        )
                 if not 0.0 <= float(getattr(self, "same_skill_batch_fraction", 0.5)) <= 1.0:
                     raise ValueError("same_skill_batch_fraction must be in [0, 1].")
                 if float(getattr(self, "same_skill_progress_temperature", 0.1)) <= 0.0:
