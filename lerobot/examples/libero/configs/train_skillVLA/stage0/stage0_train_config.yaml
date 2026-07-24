@@ -30,8 +30,8 @@ outputs_root: outputs_filtered
 dataset:
   skillvla_root: skillvla_dataset
   source: libero_90_full_full
-  run: FSQ333_dino_frozen_small_optimal_vsa_broadcast_150_std_pt_snap10_ms1_pmax15_halfnormal
-  # run: FSQ333_dino_frozen_small_optimal_broadcast_175_std_pt_snap10_ms1_pmax15_halfnormal
+  # run: FSQ333_dino_frozen_small_optimal_vsa_broadcast_150_std_pt_snap10_ms1_pmax15_halfnormal
+  run: FSQ333_dino_frozen_small_optimal_broadcast_175_std_pt_snap10_ms1_pmax15_halfnormal
 
 warm_start:
   pi_base: models/pi05_base
@@ -51,23 +51,23 @@ token_access: {image: true, language: true}
 
 vlm_residual: {enabled: true, heads: auto, alpha_min: 0.1, alpha_max: 0.2, init_alpha: 0.15, zero_init_output: true, dropout: 0.0}
 skill_predictor: {train: true, weight: 0.5, lr_scale: 1.0, all_layers: false, token_access: {image: true, language: true}}
-freeze: {vlm_llm: false, vlm_vision: false, cond: false, cond_vision: false, expert: false, skill_reader: true, skill_head: true}
+freeze: {vlm_llm: true, vlm_vision: true, cond: false, cond_vision: false, expert: false, skill_reader: true, skill_head: true}
 
 # Exp4-1: shared base, conditional XYZ endpoint steering, unconditional flow regularization.
-loss:
-  gradient_routing: shared
-  conditional: {weight: 1.0, objective: endpoint_xyz}
-  unconditional: {weight: 0.5, skill_start_weight: 1.0, skill_end_weight: 1.0}
-  language_ranking: {enabled: false, weight: 0.1, relative_margin: 0.01}
-
 # loss:
-#   gradient_routing: split # split | shared
-#   conditional: {weight: 1.0, objective: endpoint_xyz} # flow | endpoint_xyz
-#   unconditional: {weight: 1.0, skill_start_weight: 1.0, skill_end_weight: 1.0}
+#   gradient_routing: shared
+#   conditional: {weight: 1.0, objective: endpoint_xyz}
+#   unconditional: {weight: 0.5, skill_start_weight: 1.0, skill_end_weight: 1.0}
 #   language_ranking: {enabled: false, weight: 0.1, relative_margin: 0.01}
 
+loss:
+  gradient_routing: split # split | shared
+  conditional: {weight: 1.0, objective: endpoint_xyz} # flow | endpoint_xyz
+  unconditional: {weight: 1.0, skill_start_weight: 1.0, skill_end_weight: 1.0}
+  language_ranking: {enabled: false, weight: 0.1, relative_margin: 0.01}
+
 terminator: {train: false, freeze_vision: true}
-run: {suffix: "exp4_shared_langonly_batchon_newdata"}
+run: {suffix: "exp4_split_batchon_newdata"}
 
 training:
   dataloader:
