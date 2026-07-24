@@ -1,27 +1,20 @@
-# Each Stage-0 model expands to the globally selected A / B / Frozen-FSQ panels.
+# Each Stage-0 checkpoint expands to Conditional / Unconditional panels.
 models:
-#   - {model_dir: FSQ333_dino_frozen_small_optimal_vsa_state_skill_125_std_pt_snap10_ms1_pmax15_uniform_exp1_FSQ_expert,
-#      checkpoint: "030000", advance_mode: terminator, terminator_source: auto, label: exp1}
-#   - {model_dir: FSQ333_dino_frozen_small_optimal_vsa_state_skill_125_std_pt_snap10_ms1_pmax15_uniform_exp1_2_FSQ_expert_condstate,
-#      checkpoint: "030000", advance_mode: terminator, terminator_source: auto, label: exp2}
-#   - {model_dir: FSQ333_dino_frozen_small_optimal_vsa_state_skill_125_std_pt_snap10_ms1_pmax15_uniform_exp2_vlm_to_expertX,
-#      checkpoint: "030000", advance_mode: terminator, terminator_source: auto, label: exp3}
-#   - {model_dir: FSQ333_dino_frozen_small_optimal_vsa_state_skill_125_std_pt_snap10_ms1_pmax15_uniform_full_connectfull_full,
-#      checkpoint: "030000", advance_mode: terminator, terminator_source: auto, label: exp4}
-  - {model_dir: FSQ333_dino_frozen_small_optimal_vsa_broadcast_150_std_pt_snap10_ms1_pmax15_halfnormal_exp0_FSQ_statecond,
-     checkpoint: "030000", advance_mode: terminator, terminator_source: auto, label: halfnoraml333}
-  - {model_dir: FSQ865_dino_frozen_small_optimal_vsa_broadcast_150_std_pt_snap10_ms1_pmax15_halfnormal_exp0_FSQ_statecond,
-     checkpoint: "030000", advance_mode: terminator, terminator_source: auto, label: halfnoraml865}
+  - {model_dir: FSQ333_dino_frozen_small_optimal_vsa_broadcast_150_std_pt_snap10_ms1_pmax15_halfnormal_exp2_split_batchon,
+     checkpoint: "last", advance_mode: terminator, terminator_source: auto, label: Exp2}
+#   - {model_dir: FSQ333_dino_frozen_small_optimal_broadcast_175_std_pt_snap10_ms1_pmax15_halfnormal_exp3_split_langonly_batchon_newdata,
+#      checkpoint: "005000", advance_mode: terminator, terminator_source: auto, label: Exp3}
 
-modes: "a" # "a,b,fsq"
+modes: "conditional,unconditional"
 models_per_row: 2
-skill_source: gt
-output_name: "ablation-0_30k" # blank: config resolution time
+skill_source: gt # gt | predicted | stage3
+stage3_eval_config: ../stage3_eval/stage3_eval_config.yaml # used only by skill_source: stage3
+output_name: "" # blank: config resolution time
 
 target_task: libero_90
 task_ids: "[1,2,3,4,5,6,7,8,9,10]"
-eval_num_gpus: 10
-n_episodes: 10
+eval_num_gpus: 1
+n_episodes: 5
 n_action_steps: 5
 eval_batch_size: 1
 max_parallel_tasks: 1
@@ -31,8 +24,8 @@ skill_end_threshold: 0.5
 skill_end_progress_threshold: 0.9
 inference_skill_max_length: 200
 
-max_videos_per_task: 0
-skill_html: false
+max_videos_per_task: 5
+skill_html: true
 
 video_frame_stride: 2
 video_fps: 10

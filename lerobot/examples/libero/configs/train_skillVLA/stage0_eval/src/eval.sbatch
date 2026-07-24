@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# SkillVLA closed-loop EVAL (PT) on LIBERO sim via lerobot_skillvla_eval.
-# Rolls out the PT policy; the frozen FSQ decoder runs its own DINO internally.
+# Renewed Stage-0 closed-loop eval on LIBERO sim via lerobot_skillvla_eval.
+# Every checkpoint is rolled out with and without its final VLM residual.
 #SBATCH --job-name=S0eval
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
@@ -13,7 +13,6 @@ mkdir -p logs
 
 SUBMIT_DIR="${STAGE0_EVAL_DIR:-${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}}"
 SRC_DIR="${SUBMIT_DIR}/src"
-STAGE1_EVAL_SRC="${SUBMIT_DIR}/../stage1_eval/src"   # shared Frozen-FSQ oracle runner
 CONFIG_PATH="${STAGE0_EVAL_CONFIG:-${SUBMIT_DIR}/stage0_eval_config.yaml}"
 
 BOOTSTRAP_PYTHON="${SUBMIT_DIR}/../../../../../../.venv/bin/python"
@@ -95,12 +94,11 @@ resolve_fsq() {
   fi
 }
 
-# run_eval OUT JOB POLICY FSQ GT_DIR SKILL_HTML INIT_STATES DROP_VLM KEEP_ADAPTERS ONTASK ADVANCE — one
-# lerobot_skillvla_eval rollout (shared knobs from the emitter env; per-model bits are the arguments;
-# INIT_STATES ""=seed resets; DROP_VLM true = sever cond/action→VLM at inference, skill code only;
-# KEEP_ADAPTERS true = Stage-0 B: VLM severed while enabled non-VLM adapters remain active.
+# run_eval OUT JOB POLICY FSQ GT_DIR SKILL_HTML INIT_STATES UNCONDITIONAL ONTASK ADVANCE — one
+# rollout. UNCONDITIONAL=true disables the final VLM residual; every other input, model weight,
+# initial state, skill sequence, and terminator setting stays identical.
 run_eval() {
-  local out="$1" job="$2" ppath="$3" fsq="$4" gt="$5" shtml="$6" inits="${7:-}" dropvlm="${8:-false}" keepad="${9:-false}" ontask="${10:-}" advance="${11:-${SKILL_ADVANCE_MODE}}"
+  local out="$1" job="$2" ppath="$3" fsq="$4" gt="$5" shtml="$6" inits="${7:-}" unconditional="${8:-false}" ontask="${9:-}" advance="${10:-${SKILL_ADVANCE_MODE}}"
   mkdir -p "${out}"
   PYTORCH_ALLOC_CONF=expandable_segments:True \
   PYTHONPATH="${LEROBOT_ROOT}/src:${LIBERO_REPO_ROOT}" \
@@ -134,8 +132,9 @@ run_eval() {
       --policy.use_gt_skill="${USE_GT_SKILL}" \
       --policy.gt_skill_dataset_dir="${gt}" \
       --policy.skill_advance_mode="${advance}" \
-      --policy.eval_drop_vlm="${dropvlm}" \
-      --policy.eval_drop_vlm_keep_adapters="${keepad}" \
+      --policy.eval_skill_predictor_path="${EVAL_SKILL_PREDICTOR_PATH}" \
+      --policy.eval_drop_vlm="${unconditional}" \
+      --policy.eval_drop_vlm_keep_adapters=false \
       --eval.init_states_path="${inits}" \
       --eval.on_task_done_cmd="${ontask}" \
       --wandb_project="${WANDB_PROJECT}" \
@@ -143,67 +142,6 @@ run_eval() {
       --output_dir="${out}" \
       --rename_map='{"observation.images.image2": "observation.images.wrist_image"}' \
       ${EXTRA_ARGS:-}
-}
-
-# Frozen-FSQ runs through the verified Stage-1 oracle runner on the same episode-exact scenes and GT skills.
-run_eval_oracle() {
-  local out="$1" job="$2" ppath="$3" fsq="$4" gt="$5" shtml="$6" inits="${7:-}" dino="$8" utt="$9" advance="${10:-${SKILL_ADVANCE_MODE}}" backend="${11:-fsq}"
-  mkdir -p "${out}"
-  local model_spec=""
-  local policy_args=(--policy.path="${ppath}")
-  if [ "${backend}" = "fsq" ]; then
-    policy_args=(--policy.type=skill_expert)
-    # One spec makes run_eval.py choose its verified FSQExpertOnlyPolicy path while retaining the common
-    # EvalPipelineConfig for environment and terminator controls.
-    model_spec="$("${BOOTSTRAP_PYTHON}" - "${fsq}" "${gt}" "${advance}" "${job}" <<'PY'
-import json, sys
-fsq, gt, advance, label = sys.argv[1:]
-print(json.dumps([{
-    "kind": "fsq_expert", "fsq_path": fsq, "expert_fsq_path": fsq,
-    "terminator_policy_path": "", "skill_label_dataset_dir": gt,
-    "advance_mode": advance, "label": label,
-}]))
-PY
-)"
-  fi
-  MODELS_JSON="${model_spec}" MODELS_PER_ROW= \
-  PYTORCH_ALLOC_CONF=expandable_segments:True \
-  PYTHONPATH="${LEROBOT_ROOT}/src:${LEROBOT_ROOT}/examples/libero:${LIBERO_REPO_ROOT}" \
-    "${PROJECT_ROOT}/.venv/bin/python" "${STAGE1_EVAL_SRC}/run_eval.py" \
-      "${policy_args[@]}" \
-      --policy.fsq_path="${fsq}" \
-      --policy.skill_label_dataset_dir="${gt}" \
-      --policy.eval_init_states_path="${inits}" \
-      --policy.terminator_dino_model_path="${dino}" \
-      --policy.skill_advance_mode="${advance}" \
-      --policy.skill_end_mode="${SKILL_END_MODE}" \
-      --policy.skill_end_threshold="${SKILL_END_THRESHOLD}" \
-      --policy.skill_end_progress_threshold="${SKILL_END_PROGRESS_THRESHOLD}" \
-      --policy.eval_use_trained_terminator="${utt}" \
-      --policy.inference_skill_max_length="${INFERENCE_SKILL_MAX_LENGTH}" \
-      --policy.n_action_steps="${N_ACTION_STEPS}" \
-      --policy.device=cuda \
-      --policy.compile_model=false \
-      --policy.gradient_checkpointing=false \
-      --env.type=libero \
-      --env.task="${TARGET_TASK}" \
-      --env.fps=20 \
-      --env.task_ids="${TASK_IDS}" \
-      --env.max_parallel_tasks="${MAX_PARALLEL_TASKS}" \
-      --eval.batch_size="${EVAL_BATCH_SIZE}" \
-      --eval.n_episodes="${N_EPISODES}" \
-      --eval.max_videos_per_task="${MAX_VIDEOS_PER_TASK}" \
-      --eval.video_frame_stride="${VIDEO_FRAME_STRIDE}" \
-      --eval.video_fps="${VIDEO_FPS}" \
-      --eval.skill_html="${shtml}" \
-      --eval.skill_html_train_samples="${SKILL_HTML_TRAIN_SAMPLES}" \
-      --eval.skill_html_skill_latents_path="${SKILL_LATENTS_PATH}" \
-      --eval.skill_html_raw_dataset_dir="${RAW_DATASET_DIR}" \
-      --eval.skill_html_image_key="${IMAGE_KEY}" \
-      --output_dir="${out}" \
-      --job_name="${job}" \
-      --wandb_project="${WANDB_PROJECT}" \
-      --rename_map='{"observation.images.image2": "observation.images.wrist_image"}'
 }
 
 echo "START SKILLVLA EVAL (PT)"
@@ -240,8 +178,8 @@ if [ -z "${MODELS_JSON:-}" ]; then
       || echo "chunk merge failed (non-fatal)"
   fi
 else
-  # ── MULTI-model side-by-side: run each model over the SAME tasks/seeds into panels/{label}/,
-  # then stitch the per-task videos into ONE labelled grid → side_by_side/{task}/. ──
+  # ── Conditional/Unconditional side-by-side: run every panel over the SAME tasks/seeds into
+  # panels/{label}/, then stitch model rows into side_by_side/{task}/. ──
   echo "multi    : $("${BOOTSTRAP_PYTHON}" -c 'import json,os; print(", ".join(m["label"] for m in json.loads(os.environ["MODELS_JSON"])))')"
   SPECS="$("${BOOTSTRAP_PYTHON}" - <<'PY'
 import json, os
@@ -249,9 +187,7 @@ for m in json.loads(os.environ["MODELS_JSON"]):
     print("|".join([m["label"], m["policy_path"], m["base_fsq"], m["ft_fsq_path"],
                     m["ft_run_dir"], m["checkpoint"], m["resolved_term"], m["gt_skill_dataset_dir"],
                     m.get("eval_init_states_path", ""), str(m.get("drop_vlm", False)).lower(),
-                    m.get("runner", "stage0"), m.get("alias_target", ""),
-                    m.get("terminator_dino", ""), str(m.get("use_trained_terminator", False)).lower(),
-                    str(m.get("keep_adapters", False)).lower(), m.get("advance_mode", "terminator")]))
+                    m.get("advance_mode", "terminator")]))
 PY
 )"
   # Progressive per-task stitch (like stage1): each panel eval runs this after EVERY task's videos are
@@ -276,7 +212,7 @@ EOF
 
   # PANEL_LABEL set (submit's model×chunk fan-out) → this job runs ONLY that model; unset (srun /
   # legacy) → all models sequentially.
-  while IFS='|' read -r LBL PPATH BFSQ FTFSQ FTRUN CKPT RTERM GTDIR INITS DROP RUNNER ALIAS DINO UTT KEEPAD ADVANCE; do
+  while IFS='|' read -r LBL PPATH BFSQ FTFSQ FTRUN CKPT RTERM GTDIR INITS UNCONDITIONAL ADVANCE; do
     [ -z "${LBL}" ] && continue
     if [ -n "${PANEL_LABEL:-}" ] && [ "${LBL}" != "${PANEL_LABEL}" ]; then
       continue
@@ -285,27 +221,14 @@ EOF
       echo "[warn] panel '${LBL}': checkpoint missing (${PPATH}) — skipping this model" >&2
       continue
     fi
-    if [ "${RUNNER:-stage0}" = "fsq" ]; then
-      # The raw FSQ panel uses the same resolved base/co-trained terminator as the Stage-0 panels.
-      S1FSQ="$(resolve_fsq "${RTERM}" "${BFSQ}" "${FTFSQ}" "${FTRUN}" "${CKPT}")"
-      if [ ! -f "${S1FSQ}" ]; then
-        echo "[warn] panel '${LBL}': no terminator FSQ (${S1FSQ}) — skipping the ${RUNNER} panel" >&2
-        continue
-      fi
-      echo "── panel '${LBL}': ${RUNNER} oracle route (GT skills, terminator=${RTERM} → ${S1FSQ}, advance=${ADVANCE}${INITS:+, scenes=EPISODE-EXACT})"
-      run_eval_oracle "${EVAL_OUT_DIR}/panels/${LBL}" "${BASE_RN}_${LBL}${TASK_TAG:+_${TASK_TAG}}" \
-                      "${PPATH}" "${S1FSQ}" "${GTDIR}" "${SKILL_HTML_EFFECTIVE}" "${INITS}" "${DINO}" "false" "${ADVANCE}" "${RUNNER}"
-      bash "${STITCH_SH}" || true    # oracle runner has no on_task_done hook → stitch once at completion
-      continue
-    fi
     FSQ="$(resolve_fsq "${RTERM}" "${BFSQ}" "${FTFSQ}" "${FTRUN}" "${CKPT}")"
     if [ ! -f "${FSQ}" ]; then
       echo "[warn] panel '${LBL}': no terminator FSQ (${FSQ}) — skipping this model" >&2
       continue
     fi
-    echo "── panel '${LBL}': ${PPATH}  (fsq=${FSQ}, terminator=${RTERM}, advance=${ADVANCE}${INITS:+, scenes=EPISODE-EXACT}, drop_vlm=${DROP:-false}, keep_adapters=${KEEPAD:-false})"
+    echo "── panel '${LBL}': ${PPATH}  (fsq=${FSQ}, terminator=${RTERM}, advance=${ADVANCE}${INITS:+, scenes=EPISODE-EXACT}, unconditional=${UNCONDITIONAL:-false})"
     run_eval "${EVAL_OUT_DIR}/panels/${LBL}" "${BASE_RN}_${LBL}${TASK_TAG:+_${TASK_TAG}}" \
-             "${PPATH}" "${FSQ}" "${GTDIR}" "${SKILL_HTML_EFFECTIVE}" "${INITS}" "${DROP:-false}" "${KEEPAD:-false}" "bash ${STITCH_SH}" "${ADVANCE}"
+             "${PPATH}" "${FSQ}" "${GTDIR}" "${SKILL_HTML_EFFECTIVE}" "${INITS}" "${UNCONDITIONAL:-false}" "bash ${STITCH_SH}" "${ADVANCE}"
   done <<< "${SPECS}"
 
   # Stitch is IDEMPOTENT + ATOMIC + skips episodes not yet finished in every panel → run it at the end

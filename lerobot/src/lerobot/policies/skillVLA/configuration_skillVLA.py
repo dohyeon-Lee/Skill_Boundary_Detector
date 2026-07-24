@@ -537,11 +537,10 @@ class SkillVLAConfig(PI05Config):
     the GT skill's demo duration; oracle only). The terminator still runs each step either way so
     its curves are recorded for skill_html."""
     eval_drop_vlm: bool = False
-    """EVAL-time VLM dropout: sever the cond→VLM and action→VLM attention edges during rollout —
-    exactly a training VSA (B) batch (mask-only, RoPE positions unchanged). The VLM still runs
-    standalone for the skill prediction (or GT is injected with use_gt_skill); ONLY the discrete
-    skill code crosses to the action side. Used by stage2_eval's eval_dropout probe (VLM-attached
-    vs VLM-severed side-by-side of the SAME checkpoint)."""
+    """EVAL-time VLM dropout. For renewed Stage-0 this disables its final VLM residual, producing
+    the exact unconditional base-action route. For older connected policies it also severs the
+    cond→VLM and action→VLM attention edges. The VLM may still run standalone for skill prediction;
+    oracle eval can instead inject the GT skill code."""
     eval_drop_vlm_keep_adapters: bool = False
     """EVAL-time, ONLY meaningful with eval_drop_vlm=True: keep ``cond_lora`` active while the real
     VLM is severed. ``expert_lora`` remains active in either case because it is part of the Stage-1 VSA.

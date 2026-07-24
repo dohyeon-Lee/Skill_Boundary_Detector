@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Config for direct-FSQ Stage-0 SkillVLA closed-loop eval on LIBERO sim.
+"""Config for Conditional/Unconditional Stage-0 SkillVLA closed-loop eval on LIBERO sim.
 
 Pick the model to evaluate by its OUTPUT FOLDER NAME + checkpoint (under
 {project_root}/{outputs_root}/skillVLA_stage0/). The trained policy's params (FSQ path,
@@ -24,6 +24,65 @@ sys.path.insert(0, str(_HERE.parent.parent.parent.parent / "train_skills" / "src
 from train_skills_config import as_bool, as_list, get_value, load_config, print_shell  # noqa: E402
 
 DEFAULT_CONFIG_PATH = _HERE.parent.parent / "stage0_eval_config.yaml"
+DEFAULT_STAGE3_EVAL_CONFIG_PATH = _HERE.parent.parent.parent / "stage3_eval" / "stage3_eval_config.yaml"
+
+
+def _resolve_stage3_predictor_path(cfg: dict, project_root: Path) -> Path:
+    """Resolve the single Stage-3 checkpoint selected by stage3_eval_config.yaml."""
+    raw_path = str(get_value(cfg, "stage3_eval_config", "") or "").strip()
+    config_path = Path(raw_path).expanduser() if raw_path else DEFAULT_STAGE3_EVAL_CONFIG_PATH
+    if not config_path.is_absolute():
+        config_path = (_HERE.parent.parent / config_path).resolve()
+    if not config_path.is_file():
+        raise FileNotFoundError(f"Stage-3 eval config not found: {config_path}")
+
+    stage3_cfg = load_config(config_path)
+    stage3_project = Path(str(get_value(stage3_cfg, "project_root", project_root))).expanduser()
+    stage3_outputs = stage3_project / str(get_value(stage3_cfg, "outputs_root", "outputs"))
+    stage3_root = stage3_outputs / str(get_value(stage3_cfg, "models_root", "skillVLA_stage3"))
+    default_checkpoint = str(get_value(stage3_cfg, "checkpoint", "last"))
+    models = get_value(stage3_cfg, "models", None)
+    if isinstance(models, list) and models:
+        specs = [
+            (
+                str(get_value(model, "model_dir", "") or "").strip(),
+                str(get_value(model, "checkpoint", default_checkpoint) or default_checkpoint).strip(),
+            )
+            for model in models
+        ]
+    else:
+        specs = [
+            (
+                str(get_value(stage3_cfg, "model_dir", "") or "").strip(),
+                default_checkpoint,
+            )
+        ]
+    if any(not model_dir for model_dir, _ in specs):
+        raise ValueError(f"Stage-3 eval config must select a model_dir: {config_path}")
+
+    candidates = [
+        stage3_root / model_dir / "checkpoints" / checkpoint / "pretrained_model"
+        for model_dir, checkpoint in specs
+    ]
+    unique = {candidate.resolve(): candidate for candidate in candidates}
+    if len(unique) != 1:
+        selected = ", ".join(str(path) for path in unique.values())
+        raise ValueError(
+            "skill_source=stage3 requires stage3_eval_config.yaml to select exactly one "
+            f"distinct Stage-3 checkpoint; got: {selected}"
+        )
+
+    policy_path = next(iter(unique.values()))
+    config_json = policy_path / "config.json"
+    if not config_json.is_file():
+        raise FileNotFoundError(f"Stage-3 predictor checkpoint not found: {config_json}")
+    policy_cfg = json.loads(config_json.read_text())
+    if policy_cfg.get("pt_stage") != "skill":
+        raise ValueError(
+            "skill_source=stage3 requires a Stage-3 checkpoint with pt_stage='skill', "
+            f"got {policy_cfg.get('pt_stage')!r}: {config_json}"
+        )
+    return policy_path
 
 
 def _resolve_model(vla_root: Path, model_dir: str, checkpoint: str, eval_terminator: str) -> dict:
@@ -35,6 +94,18 @@ def _resolve_model(vla_root: Path, model_dir: str, checkpoint: str, eval_termina
     cfg_json = policy_path / "config.json"
     if cfg_json.is_file():
         pol = json.loads(cfg_json.read_text())
+        if not as_bool(pol.get("stage0_vlm_residual", False)):
+            raise ValueError(
+                f"{model_dir}/{checkpoint} is not a renewed Stage-0 VLM-residual checkpoint."
+            )
+        legacy_vlm_edges = [
+            name for name in ("vlm_cond", "vlm_expert") if as_bool(pol.get(name, False))
+        ]
+        if legacy_vlm_edges:
+            raise ValueError(
+                f"{model_dir}/{checkpoint} enables {legacy_vlm_edges}; Conditional/Unconditional "
+                "eval requires the VLM residual to be the only VLM-to-action pathway."
+            )
     base_fsq = str(pol.get("fsq_path") or "")
     train_terminator_used = as_bool(pol.get("train_terminator", False))
     skill_latents_path = raw_dataset_dir = gt_skill_dataset_dir = eval_init_states_path = ""
@@ -80,40 +151,34 @@ def _auto_labels(model_dirs: list[str]) -> list[str]:
 
 
 def _stage0_modes(raw: str) -> tuple[str, ...]:
-    """Parse Stage-0 action routes; default compares A, B, and the pre-Stage-0 FSQ expert."""
+    """Parse the renewed Stage-0 action routes."""
     aliases = {
-        "a": "a", "full": "a", "connected": "a",
-        "b": "b", "severed": "b", "drop_vlm": "b",
-        "fsq": "fsq", "expert": "fsq", "frozen_fsq": "fsq", "frozen_expert": "fsq",
+        "conditional": "conditional", "cond": "conditional",
+        "unconditional": "unconditional", "uncond": "unconditional", "base": "unconditional",
     }
-    items = [s.strip().lower() for s in str(raw or "a,b,fsq").split(",") if s.strip()]
+    items = [s.strip().lower() for s in str(raw or "conditional,unconditional").split(",") if s.strip()]
     modes = tuple(aliases.get(s, "") for s in items)
     if not modes or any(not s for s in modes) or len(set(modes)) != len(modes):
         raise ValueError(
-            "stage0 models[].modes must be a comma list without duplicates from a,b,fsq "
-            "(aliases: full,severed,frozen_fsq), got " + repr(raw)
+            "Stage-0 modes must be a comma list without duplicates from "
+            "conditional,unconditional (aliases: cond,uncond,base), got " + repr(raw)
         )
     return modes
 
 
 def _expand_stage0_panels(models: list[dict]) -> list[dict]:
-    """Expand a Stage-0 checkpoint into the requested action-route comparison panels."""
+    """Expand each checkpoint into matched Conditional/Unconditional rollout panels."""
     panels: list[dict] = []
-    labels = {"a": "A", "b": "B", "fsq": "Frozen-FSQ"}
-    routes = {
-        "a": (False, False),   # VLM connected; Stage-0 adapters and language bridge active
-        "b": (True, True),     # VLM severed; cond + expert_lora remain (cond_lora too, if enabled)
-        "fsq": (False, False), # raw action_expert.* from FSQ.pt; no Stage-0 modules
-    }
+    labels = {"conditional": "Conditional", "unconditional": "Unconditional"}
     for model in models:
         for mode in _stage0_modes(model.get("modes", "")):
             panel = dict(model)
             panel["label"] = f"{model['label']} [{labels[mode]}]"
             panel["eval_mode"] = mode
-            panel["drop_vlm"], panel["keep_adapters"] = routes[mode]
-            if mode == "fsq":
-                panel["runner"] = "fsq"
-                panel["terminator_dino"] = model.get("terminator_dino_model_path", "")
+            # The renewed Stage-0 base was trained without any VLM edge. eval_drop_vlm therefore
+            # toggles exactly the final VLM residual: false=conditional, true=unconditional.
+            panel["drop_vlm"] = mode == "unconditional"
+            panel["keep_adapters"] = False
             panels.append(panel)
     return panels
 
@@ -150,17 +215,25 @@ def build_settings(cfg: dict) -> dict:
     if default_advance not in {"gt", "terminator"}:
         raise ValueError(f"skill_advance_mode must be gt|terminator, got {default_advance!r}.")
     skill_source = str(get_value(cfg, "skill_source", "gt")).strip().lower()
-    if skill_source != "gt":
-        raise ValueError("Stage-0 eval requires skill_source=gt because its skill reader/head are frozen.")
-    use_gt_skill = True
+    skill_source_aliases = {
+        "gt": "gt",
+        "pred": "predicted",
+        "predictor": "predicted",
+        "predicted": "predicted",
+        "stage3": "stage3",
+    }
+    skill_source = skill_source_aliases.get(skill_source, "")
+    if not skill_source:
+        raise ValueError("skill_source must be gt|predicted|stage3 (aliases: pred,predictor).")
+    use_gt_skill = skill_source == "gt"
+    stage3_predictor_path = (
+        _resolve_stage3_predictor_path(cfg, project_root) if skill_source == "stage3" else None
+    )
 
-    # Every model owns checkpoint/advance_mode and expands to the selected A/B/Frozen-FSQ panels. The old top-level
-    # checkpoint/skill_advance_mode/eval_dropout format remains readable for frozen config snapshots.
+    # Every model owns checkpoint/advance_mode and expands to the selected Conditional/Unconditional panels.
     models_yaml = get_value(cfg, "models", None)
-    legacy_eval_dropout = get_value(cfg, "eval_dropout", None)
-    legacy_default_modes = "a,b,fsq" if legacy_eval_dropout is None else (
-        "a,b" if as_bool(legacy_eval_dropout) else "a")
-    global_modes = str(get_value(cfg, "modes", legacy_default_modes) or legacy_default_modes)
+    default_modes = "conditional,unconditional"
+    global_modes = str(get_value(cfg, "modes", default_modes) or default_modes)
     if isinstance(models_yaml, list) and models_yaml:
         entries = [{
             "model_dir": str(get_value(e, "model_dir")),
@@ -180,7 +253,7 @@ def build_settings(cfg: dict) -> dict:
                              "`model_dir` — in the eval yaml.")
         entries = [{"model_dir": str(md), "checkpoint": default_ckpt,
                     "advance_mode": default_advance, "terminator_source": default_terminator,
-                    "modes": legacy_default_modes, "label": ""}]
+                    "modes": global_modes, "label": ""}]
 
     for e in entries:
         if e["advance_mode"] not in {"gt", "terminator"}:
@@ -191,7 +264,9 @@ def build_settings(cfg: dict) -> dict:
                 f"got {e['terminator_source']!r}."
             )
     if not use_gt_skill and any(e["advance_mode"] == "gt" for e in entries):
-        raise ValueError("models[].advance_mode=gt requires skill_source=gt.")
+        raise ValueError(
+            "models[].advance_mode=gt requires skill_source=gt; predicted skills must use terminator."
+        )
     for e in entries:
         _stage0_modes(e["modes"])
 
@@ -213,9 +288,9 @@ def build_settings(cfg: dict) -> dict:
     keepad_flags = [bool(r["keep_adapters"]) for r in resolved]
 
     m0 = resolved[0]
-    # The legacy single-panel path has no route arguments and therefore represents A only.
-    # A lone B or Frozen-FSQ panel must still use MODELS_JSON so its topology/runner is honored.
-    multi = len(resolved) >= 2 or m0.get("eval_mode") != "a"
+    # The single-panel path has no route override and therefore represents Conditional only.
+    # A lone Unconditional panel must still use MODELS_JSON so eval_drop_vlm is honored.
+    multi = len(resolved) >= 2 or m0.get("eval_mode") != "conditional"
 
     model_dir, checkpoint, policy_path = m0["model_dir"], m0["checkpoint"], m0["policy_path"]
     base_fsq, train_terminator_used, resolved_term = m0["base_fsq"], m0["train_terminator_used"], m0["resolved_term"]
@@ -241,10 +316,7 @@ def build_settings(cfg: dict) -> dict:
              "gt_skill_dataset_dir": r["gt_skill_dataset_dir"],
              "eval_init_states_path": r["eval_init_states_path"],
              "advance_mode": r["advance_mode"],
-             "drop_vlm": bool(d), "keep_adapters": bool(k),   # keep_adapters: severed인데 LoRA(②③) 유지 (drop_vlm 패널)
-             "runner": r.get("runner", "stage0"), "alias_target": "",
-             "terminator_dino": r.get("terminator_dino", ""),
-             "use_trained_terminator": bool(r.get("use_trained_terminator", False))}
+             "drop_vlm": bool(d), "keep_adapters": bool(k)}
             for lbl, r, d, k in zip(labels, resolved, drop_flags, keepad_flags)])
     else:
         models_json = ""
@@ -257,7 +329,7 @@ def build_settings(cfg: dict) -> dict:
         # MULTI: the full per-model list rides MODELS_JSON (read by eval.sbatch's panel loop).
         "models_json": models_json,
         "models_labels": json.dumps(labels) if multi else "",
-        "models_per_row": int(get_value(cfg, "models_per_row", 3) or 0),
+        "models_per_row": int(get_value(cfg, "models_per_row", 2) or 0),
         "policy_path": policy_path,
         "checkpoint": checkpoint,
         # terminator: eval sbatch picks FSQ_FOR_EVAL by EVAL_TERMINATOR — "cotrained" → ft_fsq_path
@@ -298,6 +370,9 @@ def build_settings(cfg: dict) -> dict:
         "use_gt_skill": use_gt_skill,
         "gt_skill_dataset_dir": gt_skill_dataset_dir,
         "skill_advance_mode": m0["advance_mode"],
+        # Blank uses this Stage-0 checkpoint's predictor. A Stage-3 path swaps only the skill-code
+        # producer; action generation and the FSQ terminator remain owned by the Stage-0 checkpoint.
+        "eval_skill_predictor_path": stage3_predictor_path or "",
         # output / wandb — chunked submission (TASK_TAG, e.g. "t0-4") → distinct wandb run per chunk
         "output_name": run_name,
         "wandb_project": str(get_value(cfg, "wandb_project", "VLA_eval")),
