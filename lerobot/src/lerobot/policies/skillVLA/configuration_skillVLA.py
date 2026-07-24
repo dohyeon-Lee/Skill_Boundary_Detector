@@ -162,11 +162,14 @@ class SkillVLAConfig(PI05Config):
     still receiving a healthy gradient through the nonzero alpha floor."""
     stage0_conditional_loss_weight: float = 1.0
     stage0_unconditional_loss_weight: float = 0.5
+    stage0_conditional_objective: str = "flow"
     stage0_gradient_routing: str = "shared"
     stage0_uncond_skill_start_loss_weight: float = 1.0
     stage0_uncond_skill_end_loss_weight: float = 1.0
     """Renewed Stage-0 loss:
        λ_cond * GT flow loss with VLM residual + λ_uncond * GT flow loss without the residual.
+       ``endpoint_xyz`` replaces the conditional flow term with the chunk-end XYZ displacement MSE,
+       reconstructed from the conditional flow prediction; the unconditional term remains flow MSE.
        The unconditional term can be skill-progress weighted from start_weight to end_weight.
        ``split`` routing lets conditional loss update only the VLM/residual path while unconditional
        loss owns the shared base VSA; ``shared`` preserves the original both-losses-update-base behavior."""
@@ -611,6 +614,14 @@ class SkillVLAConfig(PI05Config):
                     raise ValueError("stage0_conditional_loss_weight must be >= 0.")
                 if float(getattr(self, "stage0_unconditional_loss_weight", 0.5)) < 0.0:
                     raise ValueError("stage0_unconditional_loss_weight must be >= 0.")
+                conditional_objective = str(
+                    getattr(self, "stage0_conditional_objective", "flow")
+                ).strip().lower()
+                if conditional_objective not in {"flow", "endpoint_xyz"}:
+                    raise ValueError(
+                        "stage0_conditional_objective must be flow|endpoint_xyz, "
+                        f"got {self.stage0_conditional_objective!r}."
+                    )
                 routing = str(getattr(self, "stage0_gradient_routing", "shared")).strip().lower()
                 if routing not in {"shared", "split"}:
                     raise ValueError(
@@ -622,6 +633,11 @@ class SkillVLAConfig(PI05Config):
                 if float(getattr(self, "stage0_uncond_skill_end_loss_weight", 1.0)) <= 0.0:
                     raise ValueError("stage0_uncond_skill_end_loss_weight must be > 0.")
                 if bool(getattr(self, "stage0_language_ranking_enabled", False)):
+                    if conditional_objective != "flow":
+                        raise ValueError(
+                            "Stage-0 endpoint_xyz (Exp4-1) and language ranking (Exp4-2) are "
+                            "separate objectives and cannot be enabled together."
+                        )
                     if not bool(getattr(self, "attend_language", False)):
                         raise ValueError(
                             "stage0_language_ranking_enabled=True requires attend_language=True."

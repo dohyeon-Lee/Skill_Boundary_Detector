@@ -86,6 +86,8 @@ def build_settings(cfg: dict) -> dict:
 
     cond_weight = float(_at(cfg, "loss", "conditional", "weight", default=1.0))
     uncond_weight = float(_at(cfg, "loss", "unconditional", "weight", default=0.5))
+    conditional_objective = str(_at(
+        cfg, "loss", "conditional", "objective", default="flow")).strip().lower()
     gradient_routing = str(_at(cfg, "loss", "gradient_routing", default="split")).strip().lower()
     uncond_start = float(_at(cfg, "loss", "unconditional", "skill_start_weight", default=1.0))
     uncond_end = float(_at(cfg, "loss", "unconditional", "skill_end_weight", default=1.0))
@@ -93,6 +95,11 @@ def build_settings(cfg: dict) -> dict:
         raise ValueError("Stage-0 loss weights must satisfy cond/uncond >= 0 and timestep weights > 0.")
     if gradient_routing not in {"shared", "split"}:
         raise ValueError(f"loss.gradient_routing must be shared|split, got {gradient_routing!r}.")
+    if conditional_objective not in {"flow", "endpoint_xyz"}:
+        raise ValueError(
+            "loss.conditional.objective must be flow|endpoint_xyz, "
+            f"got {conditional_objective!r}."
+        )
     language_ranking_enabled = as_bool(_at(
         cfg, "loss", "language_ranking", "enabled", default=False))
     language_ranking_weight = float(_at(
@@ -101,6 +108,10 @@ def build_settings(cfg: dict) -> dict:
         cfg, "loss", "language_ranking", "relative_margin", default=0.01))
     if language_ranking_enabled and language_ranking_weight <= 0.0:
         raise ValueError("loss.language_ranking.weight must be > 0 when enabled.")
+    if language_ranking_enabled and conditional_objective != "flow":
+        raise ValueError(
+            "Exp4-1 endpoint_xyz and Exp4-2 language_ranking are separate objectives; enable only one."
+        )
     if language_ranking_relative_margin < 0.0:
         raise ValueError("loss.language_ranking.relative_margin must be >= 0.")
     if language_ranking_enabled and not as_bool(_at(cfg, "token_access", "language", default=True)):
@@ -206,6 +217,7 @@ def build_settings(cfg: dict) -> dict:
         "reader_attend_language": skill_predictor_attend_language,
         "stage0_conditional_loss_weight": cond_weight,
         "stage0_unconditional_loss_weight": uncond_weight,
+        "stage0_conditional_objective": conditional_objective,
         "stage0_gradient_routing": gradient_routing,
         "stage0_uncond_skill_start_loss_weight": uncond_start,
         "stage0_uncond_skill_end_loss_weight": uncond_end,

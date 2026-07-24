@@ -12,6 +12,7 @@ from lerobot.policies.skillVLA.modeling_skillVLA import (
     SkillVLAPolicy,
     _relative_language_ranking,
     _skill_endpoint_weights,
+    _stage0_endpoint_xyz_loss,
 )
 
 
@@ -277,6 +278,29 @@ def test_relative_language_ranking_hinge_is_samplewise() -> None:
     torch.testing.assert_close(result["loss"], torch.tensor(0.005))
     torch.testing.assert_close(result["active_fraction"], torch.tensor(0.5))
     torch.testing.assert_close(result["satisfied_fraction"], torch.tensor(0.5))
+
+
+def test_stage0_endpoint_xyz_loss_uses_only_valid_chunk_endpoint() -> None:
+    predicted = torch.zeros(2, 3, 4, requires_grad=True)
+    with torch.no_grad():
+        predicted[0, 0, 0] = 1.0
+        predicted[0, 1, 0] = -1.0
+        predicted[1, 0, 0] = 1.0
+        predicted[1, 1, 0] = 100.0
+    target = torch.zeros_like(predicted)
+    valid = torch.tensor([
+        [True, True, True],
+        [True, False, False],
+    ])
+
+    loss = _stage0_endpoint_xyz_loss(predicted, target, valid)
+    loss.backward()
+
+    # Sample 0 cancels at the endpoint; sample 1 has XYZ MSE=(1^2+0+0)/3.
+    torch.testing.assert_close(loss.detach(), torch.tensor(1.0 / 6.0))
+    assert predicted.grad is not None
+    assert torch.count_nonzero(predicted.grad[1, 1:]) == 0
+    assert torch.count_nonzero(predicted.grad[..., 3:]) == 0
 
 
 def test_stage0_endpoint_weights_support_both_directions_and_uniform() -> None:

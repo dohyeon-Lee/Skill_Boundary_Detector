@@ -1706,6 +1706,7 @@ class SkillVLAPytorch(PI05Pytorch):
         self._last_stage0_dual_losses = None
         self._last_stage0_alpha = None
         self._last_stage0_wrong_velocity = None
+        self._last_stage0_cond_actions = None
         self._last_wrong_flow_losses = None
 
         # SKILL regime — mode a (default): skill prediction only, no flow this batch.
@@ -1772,6 +1773,9 @@ class SkillVLAPytorch(PI05Pytorch):
             cond_losses = F.mse_loss(u_t, v_cond, reduction="none")
             uncond_losses = F.mse_loss(u_t, v_uncond, reduction="none")
             self._last_stage0_dual_losses = (cond_losses, uncond_losses)
+            # x_t = a + t*u, so a_hat = x_t - t*v. Keep the graph for Exp4-1's
+            # conditional chunk-end XYZ objective; default flow runs simply ignore this tensor.
+            self._last_stage0_cond_actions = x_t - t_exp * v_cond
             if self._last_stage0_wrong_velocity is not None:
                 self._last_wrong_flow_losses = F.mse_loss(
                     u_t, self._last_stage0_wrong_velocity, reduction="none")
@@ -2405,6 +2409,26 @@ def _relative_language_ranking(
         ),
         "valid_negative": valid_negative,
     }
+
+
+def _stage0_endpoint_xyz_loss(
+    predicted_actions: Tensor,
+    target_actions: Tensor,
+    valid: Tensor,
+) -> Tensor:
+    """Equal-weight per-sample MSE between predicted and GT chunk-end XYZ displacement."""
+    if predicted_actions.shape[-1] < 3 or target_actions.shape[-1] < 3:
+        raise ValueError("Stage-0 endpoint_xyz objective requires at least three action dimensions.")
+    sample_valid = valid.any(dim=1)
+    if not bool(sample_valid.any()):
+        raise ValueError("Stage-0 endpoint_xyz objective received a batch with no valid action steps.")
+    step_valid = valid.to(predicted_actions.device).float().unsqueeze(-1)
+    endpoint_error = (
+        (predicted_actions[..., :3] - target_actions[..., :3]) * step_valid
+    ).sum(dim=1)
+    per_sample = endpoint_error.square().mean(dim=-1)
+    selected = sample_valid.to(per_sample.device).float()
+    return (per_sample * selected).sum() / selected.sum().clamp(min=1.0)
 
 
 def _reverse_skill_endpoint_weights(valid: Tensor, batch: dict, max_weight: float) -> Tensor:
@@ -3102,7 +3126,8 @@ class SkillVLAPolicy(PI05Policy):
             skill_loss = self.model.skill_head.loss(skill_hidden, skill_code)
 
         flow_loss = plain_flow_loss = flow_within = flow_tail = None
-        stage0_cond_loss = stage0_uncond_loss = stage0_uncond_weight_mean = None
+        stage0_cond_loss = stage0_cond_flow_loss = stage0_cond_endpoint_xyz_loss = None
+        stage0_uncond_loss = stage0_uncond_weight_mean = None
         flow_weights = None
         vf = valid = None
         if flow_losses is not None:                           # COND/MOTOR regimes or the eval path
@@ -3110,7 +3135,7 @@ class SkillVLAPolicy(PI05Policy):
             # Supervise valid chunk steps only: drop EPISODE-END padding (action_is_pad — clamped-last
             # repeats, wrong for delta actions). The skill-TRANSITION boundary is deliberately NOT masked
             # here — steps that spill past the current skill's end (into the next skill) are KEPT, so the
-            # chunk's cross-skill tail is still supervised. (cumulative-position loss is NOT ported.)
+            # chunk's cross-skill tail is still supervised. Exp4-1 accumulates the same valid full chunk.
             bsize, K = flow_losses.shape[:2]
             valid = torch.ones(bsize, K, dtype=torch.bool, device=flow_losses.device)
             pad = batch.get("action_is_pad")
@@ -3126,7 +3151,27 @@ class SkillVLAPolicy(PI05Policy):
                 cond_losses, uncond_losses = dual
                 cond_losses = cond_losses[:, :, :action_dim]
                 uncond_losses = uncond_losses[:, :, :action_dim]
-                stage0_cond_loss = (cond_losses * vf).sum() / (n_steps * action_dim)
+                stage0_cond_flow_loss = (cond_losses * vf).sum() / (n_steps * action_dim)
+                conditional_objective = str(getattr(
+                    self.config, "stage0_conditional_objective", "flow")).strip().lower()
+                if conditional_objective == "flow":
+                    stage0_cond_loss = stage0_cond_flow_loss
+                elif conditional_objective == "endpoint_xyz":
+                    predicted_actions = getattr(self.model, "_last_stage0_cond_actions", None)
+                    if predicted_actions is None:
+                        raise RuntimeError(
+                            "Stage-0 endpoint_xyz objective did not receive reconstructed actions."
+                        )
+                    stage0_cond_endpoint_xyz_loss = _stage0_endpoint_xyz_loss(
+                        predicted_actions[:, :, :action_dim],
+                        actions[:, :, :action_dim],
+                        valid,
+                    )
+                    stage0_cond_loss = stage0_cond_endpoint_xyz_loss
+                else:
+                    raise RuntimeError(
+                        f"Unsupported Stage-0 conditional objective {conditional_objective!r}."
+                    )
                 start_weight = float(getattr(self.config, "stage0_uncond_skill_start_loss_weight", 1.0))
                 end_weight = float(getattr(self.config, "stage0_uncond_skill_end_loss_weight", 1.0))
                 flow_weights = _skill_timestep_weights(
@@ -3141,7 +3186,9 @@ class SkillVLAPolicy(PI05Policy):
                 cond_w = float(getattr(self.config, "stage0_conditional_loss_weight", 1.0))
                 uncond_w = float(getattr(self.config, "stage0_unconditional_loss_weight", 0.5))
                 flow_loss = cond_w * stage0_cond_loss + uncond_w * stage0_uncond_loss
-                plain_flow_loss = stage0_cond_loss
+                # Keep action_loss comparable across experiments: it remains the raw conditional flow MSE,
+                # even when Exp4-1 backprops endpoint_xyz as the conditional objective.
+                plain_flow_loss = stage0_cond_flow_loss
             else:
                 flow_loss = plain_flow_loss
             # Stage-2 connected A only: emphasize early-skill chunks. B remains a uniform frozen-VSA
@@ -3316,7 +3363,16 @@ class SkillVLAPolicy(PI05Policy):
             loss_dict["regime/B_active"] = float(regime == "stage0_b")
         if regime == "stage0":
             alpha = getattr(self.model, "_last_stage0_alpha", None)
-            loss_dict["stage0/cond_action_loss"] = stage0_cond_loss.detach().item()
+            conditional_objective = str(getattr(
+                self.config, "stage0_conditional_objective", "flow")).strip().lower()
+            loss_dict["stage0/cond_action_loss"] = stage0_cond_flow_loss.detach().item()
+            loss_dict["stage0/cond_flow_loss"] = stage0_cond_flow_loss.detach().item()
+            loss_dict["stage0/cond_objective_loss"] = stage0_cond_loss.detach().item()
+            loss_dict["stage0/cond_endpoint_xyz_active"] = float(
+                conditional_objective == "endpoint_xyz")
+            if stage0_cond_endpoint_xyz_loss is not None:
+                loss_dict["stage0/cond_endpoint_xyz_loss"] = (
+                    stage0_cond_endpoint_xyz_loss.detach().item())
             loss_dict["stage0/uncond_action_loss"] = stage0_uncond_loss.detach().item()
             loss_dict["stage0/objective_loss"] = flow_loss.detach().item()
             loss_dict["stage0/cond_weight"] = float(getattr(self.config, "stage0_conditional_loss_weight", 1.0))
@@ -3337,7 +3393,8 @@ class SkillVLAPolicy(PI05Policy):
                 if regime == "stage0":
                     loss_dict["regime/conditional_active"] = 1.0
                     loss_dict["regime/unconditional_active"] = 1.0
-                    loss_dict["regime/conditional_flow_loss"] = stage0_cond_loss.detach().item()
+                    loss_dict["regime/conditional_flow_loss"] = stage0_cond_flow_loss.detach().item()
+                    loss_dict["regime/conditional_objective_loss"] = stage0_cond_loss.detach().item()
                     loss_dict["regime/unconditional_flow_loss"] = stage0_uncond_loss.detach().item()
                     loss_dict["regime/dual_objective_loss"] = flow_loss.detach().item()
                 else:

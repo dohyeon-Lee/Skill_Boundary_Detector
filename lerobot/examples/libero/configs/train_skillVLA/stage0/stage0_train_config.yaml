@@ -8,9 +8,11 @@
 
 # Exp3: Exp2 설정에서 VLM residual은 language token만 읽고, skill predictor는 image+language를 유지. Same-skill batch 사용.
 
-# Exp4: Exp3 설정에 다른 task language negative를 추가. Current-skill 구간의 correct/wrong conditional error에 relative hinge ranking 적용.
+# Exp4-1: Exp2 설정에서 unconditional은 flow MSE, conditional은 chunk 전체 XYZ 누적 endpoint MSE로 학습.
 
-# Exp5: Exp2 설정에서 VLM의 LLM과 vision tower를 모두 unfreeze. Skill predictor는 VLM을 read-only로 사용하고 reader/head만 업데이트.
+# Exp4-2: Exp3 설정에 다른 task language negative를 추가. Current-skill 구간의 correct/wrong conditional error에 relative hinge ranking 적용.
+
+# Exp5: Exp3 설정에서 VLM의 LLM과 vision tower를 모두 unfreeze. Skill predictor는 VLM을 read-only로 사용하고 reader/head만 업데이트.
 
 
 
@@ -43,14 +45,21 @@ vlm_residual: {enabled: true, heads: auto, alpha_min: 0.1, alpha_max: 0.2, init_
 skill_predictor: {train: true, weight: 0.5, lr_scale: 1.0, all_layers: false, token_access: {image: true, language: true}}
 freeze: {vlm_llm: true, vlm_vision: true, cond: false, cond_vision: false, expert: false, skill_reader: true, skill_head: true}
 
+# Exp4-1: shared base, conditional XYZ endpoint steering, unconditional flow regularization.
 loss:
-  gradient_routing: split # split | shared
-  conditional: {weight: 1.0}
-  unconditional: {weight: 1.0, skill_start_weight: 1.0, skill_end_weight: 1.0}
+  gradient_routing: shared
+  conditional: {weight: 1.0, objective: endpoint_xyz}
+  unconditional: {weight: 0.5, skill_start_weight: 1.0, skill_end_weight: 1.0}
   language_ranking: {enabled: false, weight: 0.1, relative_margin: 0.01}
 
+# loss:
+#   gradient_routing: split # split | shared
+#   conditional: {weight: 1.0, objective: endpoint_xyz} # flow | endpoint_xyz
+#   unconditional: {weight: 1.0, skill_start_weight: 1.0, skill_end_weight: 1.0}
+#   language_ranking: {enabled: false, weight: 0.1, relative_margin: 0.01}
+
 terminator: {train: false, freeze_vision: true}
-run: {suffix: "exp3_split_langonly_batchon_newdata"}
+run: {suffix: "exp4_shared_langonly_batchon_newdata"}
 
 training:
   dataloader:
