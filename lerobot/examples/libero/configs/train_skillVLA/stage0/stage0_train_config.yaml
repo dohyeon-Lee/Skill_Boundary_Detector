@@ -15,6 +15,14 @@
 # Exp5: Exp3 설정에서 VLM의 LLM과 vision tower를 모두 unfreeze. Skill predictor는 VLM을 read-only로 사용하고 reader/head만 업데이트.
 
 
+#
+
+#
+
+#
+
+#
+
 
 dataset_root: dataset_filtered
 outputs_root: outputs_filtered
