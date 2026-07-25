@@ -51,23 +51,23 @@ token_access: {image: true, language: true}
 
 vlm_residual: {enabled: true, heads: auto, alpha_min: 0.1, alpha_max: 0.2, init_alpha: 0.15, zero_init_output: true, dropout: 0.0}
 skill_predictor: {train: true, weight: 0.5, lr_scale: 1.0, all_layers: false, token_access: {image: true, language: true}}
-freeze: {vlm_llm: true, vlm_vision: true, cond: false, cond_vision: false, expert: false, skill_reader: true, skill_head: true}
+freeze: {vlm_llm: false, vlm_vision: false, cond: false, cond_vision: false, expert: false, skill_reader: true, skill_head: true}
 
 # Exp4-1: shared base, conditional XYZ endpoint steering, unconditional flow regularization.
-# loss:
-#   gradient_routing: shared
-#   conditional: {weight: 1.0, objective: endpoint_xyz}
-#   unconditional: {weight: 0.5, skill_start_weight: 1.0, skill_end_weight: 1.0}
-#   language_ranking: {enabled: false, weight: 0.1, relative_margin: 0.01}
-
 loss:
-  gradient_routing: split # split | shared
-  conditional: {weight: 1.0, objective: endpoint_xyz} # flow | endpoint_xyz
-  unconditional: {weight: 1.0, skill_start_weight: 1.0, skill_end_weight: 1.0}
+  gradient_routing: shared
+  conditional: {weight: 1.0, objective: endpoint_xyz}
+  unconditional: {weight: 0.5, skill_start_weight: 1.0, skill_end_weight: 1.0}
   language_ranking: {enabled: false, weight: 0.1, relative_margin: 0.01}
 
+# loss:
+#   gradient_routing: split # split | shared
+#   conditional: {weight: 1.0, objective: endpoint_xyz} # flow | endpoint_xyz
+#   unconditional: {weight: 1.0, skill_start_weight: 1.0, skill_end_weight: 1.0}
+#   language_ranking: {enabled: false, weight: 0.1, relative_margin: 0.01}
+
 terminator: {train: false, freeze_vision: true}
-run: {suffix: "exp4_split_batchon_newdata"}
+run: {suffix: "exp5_shared_batchon_newdata"}
 
 training:
   dataloader:
@@ -76,7 +76,7 @@ training:
     gpus: 1
     same_skill_different_task: {enabled: true, grouped_fraction: 0.5, progress_temperature: 0.1}
   optimizer: {base_lr: 2.5e-05, cond_lr_scale: 1.0, expert_lr_scale: 1.0, terminator_lr_scale: 1.0}
-  gradient_checkpointing: false # false
+  gradient_checkpointing: true # false
   schedule: {steps: 50000, save_every: 5000}
 
 logging:

@@ -1,19 +1,23 @@
 # Each Stage-0 checkpoint expands to Conditional / Unconditional panels.
 models:
-  - {model_dir: FSQ333_dino_frozen_small_optimal_vsa_broadcast_150_std_pt_snap10_ms1_pmax15_halfnormal_exp2_split_batchon,
-     checkpoint: "last", advance_mode: terminator, terminator_source: auto, label: Exp2}
-#   - {model_dir: FSQ333_dino_frozen_small_optimal_broadcast_175_std_pt_snap10_ms1_pmax15_halfnormal_exp3_split_langonly_batchon_newdata,
-#      checkpoint: "005000", advance_mode: terminator, terminator_source: auto, label: Exp3}
+#   - {model_dir: FSQ333_dino_frozen_small_optimal_broadcast_175_std_pt_snap10_ms1_pmax15_halfnormal_exp4_split_batchon_newdata,
+#      checkpoint: "035000", advance_mode: terminator, terminator_source: auto, label: split}
+#   - {model_dir: FSQ333_dino_frozen_small_optimal_broadcast_175_std_pt_snap10_ms1_pmax15_halfnormal_exp4_shared_batchon_newdata,
+#      checkpoint: "035000", advance_mode: terminator, terminator_source: auto, label: shared}
+  - {model_dir: FSQ333_dino_frozen_small_optimal_broadcast_175_std_pt_snap10_ms1_pmax15_halfnormal_exp5_split_batchon_newdata,
+     checkpoint: "last", advance_mode: terminator, terminator_source: auto, label: split}
+  - {model_dir: FSQ333_dino_frozen_small_optimal_broadcast_175_std_pt_snap10_ms1_pmax15_halfnormal_exp5_shared_batchon_newdata,
+     checkpoint: "last", advance_mode: terminator, terminator_source: auto, label: shared}
 
 modes: "conditional,unconditional"
 models_per_row: 2
 skill_source: gt # gt | predicted | stage3
 stage3_eval_config: ../stage3_eval/stage3_eval_config.yaml # used only by skill_source: stage3
-output_name: "" # blank: config resolution time
+output_name: "exp5_gt_last" # blank: config resolution time
 
 target_task: libero_90
 task_ids: "[1,2,3,4,5,6,7,8,9,10]"
-eval_num_gpus: 1
+eval_num_gpus: 10
 n_episodes: 5
 n_action_steps: 5
 eval_batch_size: 1
