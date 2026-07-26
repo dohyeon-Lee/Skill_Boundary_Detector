@@ -1,484 +1,320 @@
 #!/usr/bin/env python3
-"""Config for SkillVLA Stage-2 training (policy.type=skill_vla).
-
-A PaliGemma VLM (warm-started from pi05_base) predicts the skill from the skill-START obs; an action
-expert warm-started from a Stage-1 ``skill_expert`` checkpoint flow-matches the action chunk. The
-Stage-1 checkpoint's config supplies vision_backbone, action_expert_variant, skill_vocab_size and
-state_cond_mode — the model reads them itself, so here we only point to it. All roots are declared in
-this yaml (standalone); source/run_tag/FSQ levels are parsed from stage1_run_name; FSQ.pt (eval
-terminator) lives in the run dir. Emits shell exports (--shell).
-"""
+"""Resolve clean BayesVLA-style Stage-2 training settings."""
 
 from __future__ import annotations
 
 import argparse
 import json
-import re
+import math
 import sys
 from pathlib import Path
 
 _HERE = Path(__file__).resolve()
 sys.path.insert(0, str(_HERE.parent.parent.parent.parent / "train_skills" / "src"))
-from train_skills_config import as_bool, as_levels, as_list, get_value, load_config, print_shell, resolve_path  # noqa: E402
+from train_skills_config import as_bool, as_list, load_config, print_shell  # noqa: E402
 
 DEFAULT_CONFIG_PATH = _HERE.parent.parent / "stage2_train_config.yaml"
 
 
-def _blank(value: object) -> bool:
-    return value is None or str(value).strip().lower() in ("", "none", "null", "~")
+def _at(config: dict, *path: str, default=None):
+    value = config
+    for key in path:
+        if not isinstance(value, dict) or key not in value:
+            return default
+        value = value[key]
+    return value
 
 
-def _localize_model_path(project_root: Path, value: object) -> Path:
-    """Re-anchor a model path copied from another server at this checkout's models directory."""
-    path = Path(str(value).strip()).expanduser()
+def _local_path(project_root: Path, value: object, *, marker: str | None = None) -> Path:
+    path = Path(str(value)).expanduser()
     if not path.is_absolute():
-        return Path(resolve_path(project_root, path))
-    if path.exists():
+        return project_root / path
+    if path.exists() or marker is None or marker not in path.parts:
         return path
-    if "models" in path.parts:
-        return project_root.joinpath(*path.parts[path.parts.index("models") :])
-    return path
+    return project_root.joinpath(*path.parts[path.parts.index(marker) :])
 
 
-def _stage1_terminator_dino_path(stage1_ckpt: Path) -> str | None:
-    """Read the exact DINO backbone used to construct Stage-1's co-trained terminator."""
-    config_path = stage1_ckpt / "config.json"
-    if not config_path.is_file():
-        return None
-    value = json.loads(config_path.read_text()).get("terminator_dino_model_path")
-    return None if _blank(value) else str(value)
+def _read_json(path: Path, label: str) -> dict:
+    if not path.is_file():
+        raise FileNotFoundError(f"{label} not found: {path}")
+    return json.loads(path.read_text())
 
 
-def _validate_transformers_model(path: Path, *, source: str) -> None:
-    weight_files = (
-        "model.safetensors",
-        "model.safetensors.index.json",
-        "pytorch_model.bin",
-        "pytorch_model.bin.index.json",
-    )
-    if not path.is_dir() or not any((path / name).is_file() for name in weight_files):
-        raise FileNotFoundError(
-            f"Terminator DINO inherited from {source} has no Transformers model weights: {path}. "
-            f"Expected one of {weight_files}."
-        )
-
-
-def _normalize_config(cfg: dict) -> dict:
-    """Accept the compact grouped YAML while retaining flat-key checkpoint/config compatibility."""
-    out = dict(cfg)
-    nested_keys = {
-        "skillvla_dataset_root": ("dataset", "skillvla_root"),
-        "source_dataset": ("dataset", "source"),
-        "pi_base": ("warm_start", "pi_base"),
-        "tokenizer_path": ("warm_start", "tokenizer"),
-        "stage1_run_name": ("warm_start", "stage1_run"),
-        "stage1_checkpoint": ("warm_start", "checkpoint"),
-        "run_tag": ("warm_start", "scratch_run_tag"),
-        "s1_vision_backbone": ("warm_start", "scratch_vision"),
-        "s1_state_cond_mode": ("warm_start", "scratch_state_mode"),
-        "skill_loss_weight": ("skill", "loss_weight"),
-        "skill_deadzone_frac": ("skill", "deadzone"),
-        "num_reader_tokens": ("skill", "reader", "tokens"),
-        "reader_depth": ("skill", "reader", "depth"),
-        "reader_heads": ("skill", "reader", "heads"),
-        "skill_reader_all_layers": ("skill", "reader", "all_layers"),
-        "action_weight": ("loss", "weighted"),
-        "skill_start_loss_weight": ("loss", "skill_start_weight"),
-        "attend_image": ("vlm_token_access", "cond", "image"),
-        "attend_language": ("vlm_token_access", "cond", "language"),
-        "reader_attend_image": ("vlm_token_access", "skill_reader", "image"),
-        "reader_attend_language": ("vlm_token_access", "skill_reader", "language"),
-        "vlm_cond": ("connections", "vlm_to_cond"),
-        "cond_expert": ("connections", "cond_to_expert"),
-        "vlm_expert": ("connections", "vlm_to_expert"),
-        "vlm_lora": ("lora", "train", "vlm"),
-        "cond_lora": ("lora", "train", "cond"),
-        "lora_targets": ("lora", "targets"),
-        "lora_rank": ("lora", "rank"),
-        "lora_alpha": ("lora", "alpha"),
-        "lora_dropout": ("lora", "dropout"),
-        "lora_lr_scale": ("lora", "lr_scale"),
-        "cond_severed_prob": ("regime", "vlm_severed", "probability"),
-        "cond_severed_anchor_weight": ("regime", "vlm_severed", "anchor_weight"),
-        "freeze_vlm": ("freeze", "vlm"),
-        "freeze_cond": ("freeze", "cond"),
-        "freeze_expert": ("freeze", "expert"),
-        "freeze_vlm_lora": ("freeze", "vlm_lora"),
-        "freeze_cond_lora": ("freeze", "cond_lora"),
-        "freeze_expert_lora": ("freeze", "expert_lora"),
-        "freeze_vlm_vision": ("freeze", "vlm_vision"),
-        "freeze_cond_vision": ("freeze", "cond_vision"),
-        "train_terminator": ("terminator", "train"),
-        "terminator_lr_scale": ("terminator", "lr_scale"),
-        "terminator_end_target_sigma": ("terminator", "target_sigma"),
-        "terminator_end_pos_weight": ("terminator", "end_weight"),
-        "terminator_dino_model_path": ("terminator", "dino_model"),
-        "track_param_drift": ("logging", "param_drift"),
-        "wandb_enable": ("logging", "wandb", "enable"),
-        "wandb_project": ("logging", "wandb", "project"),
-        "exp": ("run", "suffix"),
-        "batch_size": ("training", "dataloader", "batch_size"),
-        "num_workers": ("training", "dataloader", "workers"),
-        "num_gpus": ("training", "dataloader", "gpus"),
-        "lr_base": ("training", "optimizer", "base_lr"),
-        "expert_lr_scale": ("training", "optimizer", "expert_lr_scale"),
-        "cond_lr_scale": ("training", "optimizer", "cond_lr_scale"),
-        "steps": ("training", "schedule", "steps"),
-        "save_freq": ("training", "schedule", "save_every"),
-        "train_partition": ("slurm", "partition"),
-        "train_qos": ("slurm", "qos"),
-        "train_gres": ("slurm", "gres"),
-        "train_cpus_per_task": ("slurm", "cpus"),
-        "train_mem": ("slurm", "memory"),
-        "train_time": ("slurm", "time"),
-        "train_nodelist": ("slurm", "nodes"),
-        "train_exclude_nodes": ("slurm", "exclude_nodes"),
+def _dataset_contract(dataset_dir: Path) -> dict:
+    info = _read_json(dataset_dir / "meta" / "info.json", "Stage-2 dataset metadata")
+    levels = [int(value) for value in info.get("skill_fsq_levels", [])]
+    if not levels or any(value <= 1 for value in levels):
+        raise ValueError(f"Invalid Stage-2 skill_fsq_levels: {levels}")
+    features = info.get("features", {})
+    return {
+        "levels": levels,
+        "state_dim": int(features["observation.state"]["shape"][0]),
+        "action_dim": int(features["action"]["shape"][0]),
     }
-    for flat_key, path in nested_keys.items():
-        if flat_key in out:
-            continue
-        value = cfg
-        for part in path:
-            if not isinstance(value, dict) or part not in value:
-                break
-            value = value[part]
-        else:
-            out[flat_key] = value
-    if isinstance(out.get("lora_targets"), (list, tuple)):
-        out["lora_targets"] = ",".join(str(v) for v in out["lora_targets"])
-    return out
 
 
-def build_settings(cfg: dict) -> dict:
-    cfg = _normalize_config(cfg)
-    # Standalone: every root is declared in this yaml (no build_data dependency).
-    project_root = Path(str(get_value(cfg, "project_root"))).expanduser()
-    dataset_root = project_root / str(get_value(cfg, "dataset_root", "dataset"))
-    skillvla_root = dataset_root / str(get_value(cfg, "skillvla_dataset_root", "skillvla_dataset"))
-    lerobot_root = project_root / "lerobot"
-    tokenizer_path = _localize_model_path(
+def _require_stage1_contract(config: dict, checkpoint: Path) -> None:
+    if config.get("type") != "skill_expert":
+        raise ValueError(
+            f"Stage 2 requires policy.type=skill_expert, got {config.get('type')!r} at {checkpoint}."
+        )
+    if not config.get("train_skill_predictor", False):
+        raise ValueError("Stage-1 checkpoint must contain the trained frozen-VLM skill predictor.")
+    if not config.get("train_terminator", False):
+        raise ValueError("Stage-1 checkpoint must contain the co-trained terminator.")
+    if config.get("action_expert_variant") != "gemma_300m":
+        raise ValueError("Stage 2 expects the 18-layer gemma_300m action expert.")
+    if config.get("cond_encoder_variant") != "gemma_300m":
+        raise ValueError("Stage 2 expects the 18-layer gemma_300m condition encoder.")
+    if config.get("state_cond_mode") != "broadcast":
+        raise ValueError("Stage 2 expects Stage-1 per-layer skill broadcast.")
+    if not (
+        config.get("skill_predictor_attend_image", False)
+        and config.get("skill_predictor_attend_language", False)
+    ):
+        raise ValueError("Stage 2 needs both image and language tokens in the frozen VLM memory.")
+
+
+def _stage1_dataset_run(checkpoint: Path) -> str:
+    """Recover the dataset run directory recorded when Stage 1 was trained."""
+    train_config = _read_json(
+        checkpoint / "train_config.json", "Stage-1 training config"
+    )
+    dataset_path = Path(str((train_config.get("dataset") or {}).get("root") or ""))
+    if dataset_path.name != "skillvla" or not dataset_path.parent.name:
+        raise ValueError(
+            "Stage-1 train_config.json must record dataset.root ending in "
+            f"<run>/skillvla, got {str(dataset_path)!r}."
+        )
+    return dataset_path.parent.name
+
+
+def build_settings(config: dict) -> dict:
+    project_root = Path(str(config["project_root"])).expanduser()
+    dataset_root = project_root / str(config.get("dataset_root", "dataset"))
+    outputs_root = project_root / str(config.get("outputs_root", "outputs"))
+
+    stage1_run = str(_at(config, "warm_start", "stage1_run")).strip()
+    stage1_checkpoint = str(
+        _at(config, "warm_start", "checkpoint", default="last")
+    ).strip()
+    if not stage1_run:
+        raise ValueError("warm_start.stage1_run must be the exact Stage-1 output directory name.")
+    stage1_path = (
+        outputs_root
+        / "skillVLA_stage1"
+        / stage1_run
+        / "checkpoints"
+        / stage1_checkpoint
+        / "pretrained_model"
+    )
+    stage1_config = _read_json(stage1_path / "config.json", "Stage-1 policy config")
+    if not (stage1_path / "model.safetensors").is_file():
+        raise FileNotFoundError(f"Stage-1 weights not found: {stage1_path / 'model.safetensors'}")
+    _require_stage1_contract(stage1_config, stage1_path)
+
+    source = str(_at(config, "dataset", "source")).strip()
+    if not source:
+        raise ValueError("dataset.source is required because the Stage-2 split may differ from Stage 1.")
+    stage1_dataset_run = _stage1_dataset_run(stage1_path)
+    configured_run = str(_at(config, "dataset", "run", default="") or "").strip()
+    if configured_run and configured_run != stage1_dataset_run:
+        raise ValueError(
+            "dataset.run must match the Stage-1 dataset run when explicitly set: "
+            f"stage1={stage1_dataset_run!r}, configured={configured_run!r}."
+        )
+    run_tag = stage1_dataset_run
+    skillvla_root = dataset_root / str(
+        _at(config, "dataset", "skillvla_root", default="skillvla_dataset")
+    )
+    dataset_dir = skillvla_root / source / run_tag / "skillvla"
+    contract = _dataset_contract(dataset_dir)
+    stage1_levels = [int(value) for value in stage1_config["skill_fsq_levels"]]
+    if contract["levels"] != stage1_levels:
+        raise ValueError(
+            f"Stage-2 dataset FSQ levels {contract['levels']} do not match Stage 1 {stage1_levels}."
+        )
+    if contract["state_dim"] > int(stage1_config["max_state_dim"]):
+        raise ValueError("Stage-2 state dimension exceeds the Stage-1 projection size.")
+    if contract["action_dim"] > int(stage1_config["max_action_dim"]):
+        raise ValueError("Stage-2 action dimension exceeds the Stage-1 projection size.")
+
+    dino_path = _local_path(
+        project_root, stage1_config["dino_model_path"], marker="models"
+    )
+    tokenizer_path = _local_path(
+        project_root, stage1_config["tokenizer_path"], marker="models"
+    )
+    terminator_dino_path = _local_path(
         project_root,
-        get_value(cfg, "tokenizer_path", "models/paligemma-3b-pt-224-tokenizer"),
+        stage1_config.get("terminator_dino_model_path")
+        or stage1_config["dino_model_path"],
+        marker="models",
     )
-    required_tokenizer_files = ("config.json", "tokenizer_config.json", "tokenizer.json")
-    missing_tokenizer_files = [name for name in required_tokenizer_files if not (tokenizer_path / name).is_file()]
-    if missing_tokenizer_files:
-        raise FileNotFoundError(
-            f"Local PaliGemma tokenizer is incomplete at {tokenizer_path}: missing {missing_tokenizer_files}."
-        )
+    fsq_path = _local_path(project_root, stage1_config["fsq_path"])
+    for path, label in (
+        (dino_path, "DINO model"),
+        (tokenizer_path, "PaliGemma tokenizer"),
+        (terminator_dino_path, "terminator DINO model"),
+    ):
+        if not path.exists():
+            raise FileNotFoundError(f"Inherited {label} not found: {path}")
+    if not fsq_path.is_file():
+        raise FileNotFoundError(f"Inherited FSQ checkpoint not found: {fsq_path}")
 
-    # Single outputs root from yaml; per-stage subdirs fixed here. Warm-start lives in stage1's.
-    outputs_root = project_root / str(get_value(cfg, "outputs_root", "outputs"))
-    stage1_vla_root = outputs_root / "skillVLA_stage1"
-    vla_root = outputs_root / "skillVLA_stage2"
-
-    # SCRATCH mode: stage1_run_name이 "none"으로 시작하면 Stage-1 warm-start 없음 (fresh expert/cond;
-    # VSA는 vlm_dropout B 배치가 조각). 한 줄 포맷 none_{run_tag}_{siglip|dino}_{state|state_skill|broadcast}에서
-    # 데이터셋(run_tag)과 Stage-1측 아키텍처를 전부 파싱하며, stage1_checkpoint는 자동 무시됨.
-    #   예: stage1_run_name: none_FSQ555_dino8_both_1000_siglip_state
-    stage1_run_name = str(get_value(cfg, "stage1_run_name") or "").strip()
-    scratch = stage1_run_name.lower().startswith("none") or stage1_run_name.lower() in ("", "false", "null", "~")
-    stage1_checkpoint = str(get_value(cfg, "stage1_checkpoint", "last")).strip() or "last"
-
-    _s1_vb = _s1_scm = None            # scratch 한 줄 포맷에서 파싱된 vision/state_cond_mode (없으면 yaml 키)
-    if scratch:
-        stage1_ckpt = ""
-        stage1_checkpoint = ""         # scratch: stage1_checkpoint는 무시 (있어도 의미 없음)
-        spec = re.sub(r"^none_?", "", stage1_run_name, flags=re.IGNORECASE)
-        if spec:                       # one-liner: none_{run_tag}_{vision}_{mode}
-            m = re.match(r"(FSQ\d+_.+)_(dino|siglip)_(state_skill|broadcast|state)$", spec)
-            if not m:
-                raise ValueError(
-                    "SCRATCH one-liner must be none_{run_tag}_{siglip|dino}_{state|state_skill|broadcast} "
-                    f"(e.g. none_FSQ555_dino8_both_1000_siglip_state), got: {stage1_run_name}")
-            run_tag, _s1_vb, _s1_scm = m.group(1), m.group(2), m.group(3)
-        else:                          # bare "none": legacy separate keys (run_tag + s1_* below)
-            run_tag = str(get_value(cfg, "run_tag", "")).strip()
-            if not run_tag:
-                raise ValueError("SCRATCH mode needs the one-liner (stage1_run_name: none_{run_tag}_"
-                                 "{vision}_{mode}) or an explicit `run_tag:` key.")
-        s1_vis_tag = ""
-        source_from_dir = ""
-    else:
-        stage1_ckpt = stage1_vla_root / stage1_run_name / "checkpoints" / stage1_checkpoint / "pretrained_model"
-        # Everything is parsed from the stage1_run_name:
-        #   {source}_{run_tag}_[{dino|siglip}_{freeze|unfreeze}_]batch{N}[_exp][_c{N}]
-        # → the skillvla dataset (source + run_tag), the FSQ levels, and the Stage-1 policy vision tag
-        # (backbone + freeze, e.g. "dino_unfreeze"/"siglip_freeze") captured below so the Stage-2 run name
-        # records which vision encoder it warm-started from. (Arch is always joint now — no A/B tag.)
-        # Vision tag is {dino|siglip}[_{freeze|unfreeze}] — the DP-branch training emitter drops the
-        # freeze/unfreeze suffix (just "siglip"), so it is OPTIONAL inside the group.
-        _rt = re.search(
-            r"(FSQ\d+_.+)_((?:dino|siglip)(?:_(?:freeze|unfreeze))?)_batch\d+", stage1_run_name)
-        if not _rt:
-            raise ValueError(f"stage1_run_name must embed an 'FSQ..._<vision>_batch<N>' run tag, got: {stage1_run_name}")
-        run_tag = _rt.group(1)
-        s1_vis_tag = _rt.group(2) or ""   # Stage-1 vision: dino_freeze / siglip_unfreeze / siglip / ... ("" if absent)
-        # source_dataset: OLD naming embedded it as the stage1_run_name prefix ({source}_{run_tag}_...); the
-        # DP-branch training emitter drops that prefix ({run_tag}_{backbone}_batch{N}_{state_cond}), so it's empty.
-        # Prefer the prefix when present (back-compat), else fall back to the yaml's source_dataset.
-        source_from_dir = stage1_run_name[: _rt.start()].rstrip("_")
-    source_dataset = source_from_dir or str(get_value(cfg, "source_dataset", "")).strip()
-    if not source_dataset and not scratch:
-        # DISAMBIGUATION PROBE: the Stage-1 checkpoint's train_config.json records the dataset it
-        # trained on (dataset.root = .../{source}/{run_tag}/skillvla) → derive source from there.
-        # Robust even when the SAME run_tag exists under several sources (e.g. after building an FT
-        # dataset with the parent's run_tag). Same pattern as FT's run_tag derivation.
-        _s1_tc = stage1_ckpt / "train_config.json"
-        if _s1_tc.is_file():
-            _root = str(((json.loads(_s1_tc.read_text()).get("dataset") or {}).get("root")) or "")
-            if _root and Path(_root).name == "skillvla" and Path(_root).parent.name == run_tag:
-                source_dataset = Path(_root).parent.parent.name
-    if not source_dataset:
-        # Last resort (scratch, or no readable Stage-1 train_config.json): the run_tag lives under
-        # exactly one source dir in the skillvla root. If it exists under several, set source_dataset
-        # in the yaml.
-        cands = sorted({p.parent.name for p in skillvla_root.glob(f"*/{run_tag}") if p.is_dir()})
-        if len(cands) == 1:
-            source_dataset = cands[0]
-        else:
-            raise ValueError(
-                f"Could not auto-derive source_dataset for run_tag {run_tag!r} under {skillvla_root}/*/ "
-                f"(found {cands or 'none'}); set source_dataset in the Stage-2 yaml.")
-    run_dir = skillvla_root / source_dataset / run_tag
-    build_fsq_levels = [int(d) for d in re.search(r"FSQ(\d+)", run_tag).group(1)]
-
-    batch_size = int(get_value(cfg, "batch_size", 16))
-    num_gpus = int(get_value(cfg, "num_gpus", 1))
-    lr_base = float(get_value(cfg, "lr_base", 2.5e-05))
-    exp = str(get_value(cfg, "exp", "")).strip()
-
-    # FSQ skill structure: auto-match the FSQ the dataset was built with (parsed from run_tag).
-    skill_fsq_levels = list(as_levels(get_value(cfg, "skill_fsq_levels", build_fsq_levels)))
-
-    # run_name = {STAGE-1 정보}__{pA}{Afreeze}_{pB}{Bfreeze}_{pC}{Cfreeze}[_{exp}]
-    #   STAGE-1 정보 = {run_tag}_[{s1_vis_tag}_]{stage1_checkpoint}[_{mode}][_<loss tags>]
-    #     (source / reader / freeze·unfreeze 태그는 이름에서 제외 — config.json이 진실)
-    #   "__" 뒤 = 3-way 레짐: A=연결+freeze_A, B=연결+freeze_B, C=절단+freeze_C.
-    #     각 블록 = {확률%}{freeze t/f: expert,cond,llm,vlm_vision 순}, 예: 30ttff_50fftt_20fftt.
-    #   연결 토폴로지(attend_*/vlm_*)는 모델이 소비하되 이름엔 넣지 않음 — config.json이 진실.
-    # batch{N}/c{N}/np are dropped (arch is re-read from the Stage-1 ckpt at load time); exp is last.
-    # Inter-module attention connections (defaults: vlm_cond=T, cond_expert=T, vlm_expert=F, attend_language=F,
-    # attend_image=T). attend_image/attend_language pick the VLM read-set (image-only / +lang / language-only).
-    attend_language = as_bool(get_value(cfg, "attend_language", False))
-    attend_image = as_bool(get_value(cfg, "attend_image", True))
-    # reader 전용 read-set (tri-state): 빈칸/None → 상속(attend_*와 동일; 플래그 미전달), true/false → 명시.
-    # cond conduit를 lang-only로 조여도 skill reader는 이미지를 보게 분리하는 스위치.
-    def _tri(key):
-        v = get_value(cfg, key, None)
-        return "" if v in (None, "", "null") else ("true" if as_bool(v) else "false")
-    reader_attend_image = _tri("reader_attend_image")
-    reader_attend_language = _tri("reader_attend_language")
-    vlm_cond = as_bool(get_value(cfg, "vlm_cond", True))
-    cond_expert = as_bool(get_value(cfg, "cond_expert", True))
-    vlm_expert = as_bool(get_value(cfg, "vlm_expert", False))    # action ← VLM directly (was action_attend_vlm)
-    if not attend_image and not attend_language:
-        raise ValueError("attend_image=False AND attend_language=False leaves the VLM unreadable; "
-                         "use vlm_cond/vlm_expert=False to go VLM-blind instead.")
-    # Skill reader (separate post-VLM joint concat-KV probe module) + SkillHead dead-zone.
-    skill_deadzone_frac = float(get_value(cfg, "skill_deadzone_frac", 0.0))   # 0 = plain MSE
-    num_reader_tokens = int(get_value(cfg, "num_reader_tokens", 4))
-    reader_depth = int(get_value(cfg, "reader_depth", 2))
-    reader_heads = int(get_value(cfg, "reader_heads", 8))
-    skill_reader_all_layers = as_bool(get_value(cfg, "skill_reader_all_layers", False))
-    action_weight = as_bool(get_value(cfg, "action_weight", False))
-    skill_start_loss_weight = float(get_value(cfg, "skill_start_loss_weight", 1.0))
-    if skill_start_loss_weight <= 0.0:
-        raise ValueError(f"skill_start_loss_weight must be > 0 — got {skill_start_loss_weight}")
-    # STAGE 2 = cond-path PT: every batch is COND/flow; its complete trainability matrix comes from freeze.*.
-    vlm_lora = as_bool(get_value(cfg, "vlm_lora", True))
-    cond_lora = as_bool(get_value(cfg, "cond_lora", True))
-    lora_rank = int(get_value(cfg, "lora_rank", 8))
-    # lora_alpha: "auto"(또는 빈칸) → 2×rank — rank만 바꿔도 effective scale(alpha/r)이 2로 유지되어
-    # rank 효과와 scale 효과가 섞이지 않음. 숫자를 쓰면 그대로 (명시 오버라이드).
-    # stage3/FT는 이 resolve된 숫자를 체크포인트 config.json에서 상속하므로 여기 한 곳만 처리하면 됨.
-    _alpha_raw = get_value(cfg, "lora_alpha", "auto")
-    lora_alpha = (2.0 * lora_rank if _alpha_raw is None or str(_alpha_raw).strip().lower() in ("", "auto")
-                  else float(_alpha_raw))
-    lora_dropout = float(get_value(cfg, "lora_dropout", 0.0))
-    lora_targets = str(get_value(cfg, "lora_targets", "q,k,v,o"))
-    lora_lr_scale = float(get_value(cfg, "lora_lr_scale", 1.0))   # adapter-only LR × (vlm_vision stays base)
-    if not (vlm_lora or cond_lora):
-        raise ValueError("Both Stage-2 adapters (vlm_lora/cond_lora) are off — nothing would "
-                         "train on stage-2 COND batches besides vlm_vision (expert/bases are frozen).")
-    # SCRATCH-side arch knobs (model uses them only when stage1_checkpoint_path is empty). The one-liner
-    # (none_{run_tag}_{vision}_{mode}) takes precedence over the separate yaml keys.
-    s1_vision_backbone = _s1_vb or str(get_value(cfg, "s1_vision_backbone", "siglip")).strip()
-    s1_state_cond_mode = _s1_scm or str(get_value(cfg, "s1_state_cond_mode", "state")).strip()
-    if scratch:
-        raise ValueError("SCRATCH mode is incompatible with the LoRA-continual PT: the expert/cond bases "
-                         "are FROZEN by design (stage-1 완성 전제) — a fresh-init VSA would never train. "
-                         "Warm-start from a Stage-1 checkpoint instead.")
-    # state_skill checked first (it contains the substring "_state"); else state; else "" (older naming).
-    if scratch:
-        mode_tag, loss_tags = s1_state_cond_mode, []
-    else:
-        mode_tag = ("state_skill" if "_state_skill" in stage1_run_name
-                    else "state" if "_state" in stage1_run_name else "")
-        loss_tags = []
-        for pat in (r"_(cum_(?:ep|all))(?:_|$)", r"_(ac_w|ac_x|ac)(?:_|$)", r"_(weighted)(?:_|$)"):
-            m = re.search(pat, stage1_run_name)
-            if m:
-                loss_tags.append(m.group(1))
-    # Stage-2 root + its always-on adapters/LR are implicit; name only experiment-varying knobs.
-    regime_tag = f"r{lora_rank}"
-    cond_severed_prob = float(get_value(cfg, "cond_severed_prob", 0.0) or 0.0)
-    cond_severed_anchor_weight = float(get_value(cfg, "cond_severed_anchor_weight", 1.0))
-    if not 0.0 <= cond_severed_prob < 1.0:
-        raise ValueError(f"cond_severed_prob must be in [0, 1) — got {cond_severed_prob}")
-    if cond_severed_anchor_weight <= 0.0:
-        raise ValueError(f"cond_severed_anchor_weight must be > 0 — got {cond_severed_anchor_weight}")
-    if cond_severed_prob > 0.0:                  # severed 정규화 배치 (conduit gating) — sv50 = p 0.5
-        regime_tag += f"sv{int(round(cond_severed_prob * 100))}"
-    freeze_vlm = as_bool(get_value(cfg, "freeze_vlm", True))
-    freeze_cond = as_bool(get_value(cfg, "freeze_cond", True))
-    freeze_expert = as_bool(get_value(cfg, "freeze_expert", True))
-    freeze_vlm_lora = as_bool(get_value(cfg, "freeze_vlm_lora", False))
-    freeze_cond_lora = as_bool(get_value(cfg, "freeze_cond_lora", False))
-    freeze_expert_lora = as_bool(get_value(cfg, "freeze_expert_lora", True))
-    freeze_vlm_vision = as_bool(get_value(cfg, "freeze_vlm_vision", False))
-    freeze_cond_vision = as_bool(get_value(cfg, "freeze_cond_vision", True))
-    if freeze_vlm_vision:
-        regime_tag += "vf"
-    # terminator co-training은 ONLINE DINO (배치 현재 프레임 라이브 토큰화) — dino.npz/dino_wrist.npz
-    # 산출물이 필요 없으므로 wrist 존재 fail-fast 가드도 은퇴.
-    train_terminator = as_bool(get_value(cfg, "train_terminator", False))
-    # Preserve Stage-1's terminator architecture. A YAML value is an intentional override; otherwise
-    # inherit the path recorded beside the Stage-1 weights. Very old checkpoints without that field leave
-    # this blank so load_fsq_terminator falls back to the dino_model_path embedded in FSQ.pt.
-    term_dino_source = get_value(cfg, "terminator_dino_model_path", None)
-    term_dino_origin = "terminator.dino_model"
-    if _blank(term_dino_source):
-        term_dino_source = _stage1_terminator_dino_path(Path(stage1_ckpt))
-        term_dino_origin = f"Stage-1 checkpoint {stage1_ckpt}/config.json"
-    terminator_dino_model_path = (
-        "" if _blank(term_dino_source) else _localize_model_path(project_root, term_dino_source)
+    likelihood_layers = int(_at(config, "likelihood", "layers", default=4))
+    if likelihood_layers != 4:
+        raise ValueError("BayesVLA-matched Stage 2 fixes likelihood.layers=4.")
+    skill_source = str(
+        _at(config, "likelihood", "training_skill_source", default="gt")
+    ).strip().lower()
+    if skill_source not in {"gt", "predictor"}:
+        raise ValueError("likelihood.training_skill_source must be gt or predictor.")
+    finetune_skill_predictor = as_bool(
+        _at(config, "auxiliary", "skill_predictor", "train", default=False)
     )
-    if train_terminator and terminator_dino_model_path:
-        _validate_transformers_model(Path(terminator_dino_model_path), source=term_dino_origin)
+    finetune_terminator = as_bool(
+        _at(config, "auxiliary", "terminator", "train", default=False)
+    )
+    suffix = str(_at(config, "run", "suffix", default="")).strip().strip("_")
+    run_name = f"{stage1_run}_stage2_likelihood4_{skill_source}"
+    if finetune_skill_predictor:
+        run_name += "_skillpred"
+    if finetune_terminator:
+        run_name += "_term"
+    if suffix:
+        run_name += f"_{suffix}"
 
-    parts = ([run_tag] + ([s1_vis_tag] if s1_vis_tag else [])
-             + [stage1_checkpoint] + ([mode_tag] if mode_tag else []) + loss_tags)
-    run_name = "_".join(parts) + "__" + regime_tag
-    if exp:
-        run_name = f"{run_name}_{exp}"
-    output_dir = vla_root / run_name   # under skillVLA_stage2/, so no extra stage prefix
-
-    settings: dict = {
-        # roots
+    num_gpus = int(_at(config, "training", "dataloader", "gpus", default=1))
+    base_lr = float(_at(config, "training", "optimizer", "base_lr", default=2.5e-5))
+    settings = {
         "project_root": project_root,
-        "lerobot_root": lerobot_root,
-        # dataset (skillvla dataset: current + skill-start obs + skill_code + actions)
-        "source_dataset": source_dataset,
-        "run_tag": run_tag,
-        "skillvla_dataset_dir": run_dir / "skillvla",
-        "fsq_ckpt": run_dir / "FSQ.pt",            # eval-time terminator (recorded in the checkpoint)
-        "repo_id": f"dohyeon/{source_dataset}",
-        # warm-start: pi05 → VLM, Stage-1 skill_expert → action expert / cond side
-        "pi_base": resolve_path(project_root, get_value(cfg, "pi_base", "models/pi05_base")),
+        "lerobot_root": project_root / "lerobot",
+        "skillvla_dataset_dir": dataset_dir,
+        "repo_id": f"dohyeon/{source}",
+        "stage1_checkpoint_path": stage1_path,
+        "dino_model_path": dino_path,
         "tokenizer_path": tokenizer_path,
-        "stage1_run_name": stage1_run_name,
-        "stage1_checkpoint": stage1_checkpoint,
-        "stage1_checkpoint_path": stage1_ckpt,
-        # skill head / FSQ codebook
-        "skill_fsq_levels": "[" + ",".join(str(x) for x in skill_fsq_levels) + "]",
-        "skill_loss_weight": str(get_value(cfg, "skill_loss_weight", 0.5)),
-        # skill reader (post-VLM probe module) + SkillHead regression dead-zone
-        "skill_deadzone_frac": skill_deadzone_frac,
-        "num_reader_tokens": num_reader_tokens,
-        "reader_depth": reader_depth,
-        "reader_heads": reader_heads,
-        "skill_reader_all_layers": skill_reader_all_layers,   # reader reads ALL VLM layers (vs final only)
-        "action_weight": action_weight,
-        "skill_start_loss_weight": skill_start_loss_weight,
-        # inter-module attention connections (VLM/cond/expert edges + the language master switch)
-        "attend_language": attend_language,
-        "attend_image": attend_image,
-        "reader_attend_image": reader_attend_image,       # ""=상속(미전달) | true/false (reader 전용 read-set)
-        "reader_attend_language": reader_attend_language,
-        "vlm_cond": vlm_cond,
-        "cond_expert": cond_expert,
-        "vlm_expert": vlm_expert,                   # action tokens read the VLM directly (was action_attend_vlm)
-        # STAGE 2: pt_stage=cond (every batch COND/flow) + the two Stage-2 adapters (① lives in stage3).
-        "pt_stage": "cond",
-        "lora_skill": False,
-        "vlm_lora": vlm_lora,
-        "cond_lora": cond_lora,
-        "lora_rank": lora_rank,
-        "lora_alpha": lora_alpha,
-        "lora_dropout": lora_dropout,
-        "lora_targets": lora_targets,
-        "lora_lr_scale": lora_lr_scale,
-        "cond_severed_prob": cond_severed_prob,   # severed 정규화 배치 확률 (③만 활성; conduit gating)
-        "cond_severed_anchor_weight": cond_severed_anchor_weight,
-        "freeze_vlm": freeze_vlm,
-        "freeze_cond": freeze_cond,
-        "freeze_expert": freeze_expert,
-        "freeze_vlm_lora": freeze_vlm_lora,
-        "freeze_cond_lora": freeze_cond_lora,
-        "freeze_expert_lora": freeze_expert_lora,
-        "freeze_vlm_vision": freeze_vlm_vision,
-        "freeze_cond_vision": freeze_cond_vision,
-
-        # per-component update tracking (wandb param_drift/* + param_drift_rel/*)
-        "track_param_drift": as_bool(get_value(cfg, "track_param_drift", False)),
-        # scratch mode (no Stage-1): fresh expert/cond; arch from the two knobs below
-        "scratch": scratch,
-        "s1_vision_backbone": s1_vision_backbone,
-        "s1_state_cond_mode": s1_state_cond_mode,
-        # Stage-2 trainability is explicitly emitted above; Stage-3/FT keep their own fixed scopes.
-        # terminator co-training (same as FT): adapt the FSQ terminator on this dataset's GT signals
-        # (disjoint from the SkillVLA params). Its architecture is first built from fsq_ckpt, then the
-        # Stage-1 co-trained terminator weights replace that initialization during warm-start.
-        "train_terminator": train_terminator,
-        "terminator_lr_scale": float(get_value(cfg, "terminator_lr_scale", 1.0)),
-        "terminator_end_target_sigma": float(get_value(cfg, "terminator_end_target_sigma", 2.0)),
-        "terminator_end_pos_weight": float(get_value(cfg, "terminator_end_pos_weight", 1.0)),
-        "terminator_dino_model_path": terminator_dino_model_path,
-        # output
-        "skillvla_outputs_root": vla_root,
-        "pt_run_name": run_name,
-        "pt_output_dir": output_dir,
-        # optimization
-        "batch_size": batch_size,
-        "num_workers": int(get_value(cfg, "num_workers", 4)),
+        "fsq_path": fsq_path,
+        "action_expert_variant": stage1_config["action_expert_variant"],
+        "cond_encoder_variant": stage1_config["cond_encoder_variant"],
+        "chunk_size": int(stage1_config["chunk_size"]),
+        "n_action_steps": int(stage1_config["n_action_steps"]),
+        "max_state_dim": int(stage1_config["max_state_dim"]),
+        "max_action_dim": int(stage1_config["max_action_dim"]),
+        "num_inference_steps": int(stage1_config["num_inference_steps"]),
+        "min_period": float(stage1_config["min_period"]),
+        "max_period": float(stage1_config["max_period"]),
+        "time_sampling_beta_alpha": float(stage1_config["time_sampling_beta_alpha"]),
+        "time_sampling_beta_beta": float(stage1_config["time_sampling_beta_beta"]),
+        "time_sampling_scale": float(stage1_config["time_sampling_scale"]),
+        "time_sampling_offset": float(stage1_config["time_sampling_offset"]),
+        "dino_image_size": int(stage1_config["dino_image_size"]),
+        "freeze_vision_encoder": as_bool(stage1_config["freeze_vision_encoder"]),
+        "state_cond_mode": stage1_config["state_cond_mode"],
+        "skill_vocab_size": math.prod(stage1_levels),
+        "skill_fsq_levels": "[" + ",".join(str(value) for value in stage1_levels) + "]",
+        "transition_jitter_pmax": int(stage1_config["transition_jitter_pmax"]),
+        "transition_jitter_distribution": stage1_config["transition_jitter_distribution"],
+        "train_skill_predictor": True,
+        "skill_predictor_weight": float(
+            _at(
+                config,
+                "auxiliary",
+                "skill_predictor",
+                "weight",
+                default=stage1_config["skill_predictor_weight"],
+            )
+        ),
+        "skill_predictor_lr_scale": float(
+            _at(
+                config,
+                "auxiliary",
+                "skill_predictor",
+                "lr_scale",
+                default=stage1_config["skill_predictor_lr_scale"],
+            )
+        ),
+        "skill_predictor_all_layers": as_bool(stage1_config["skill_predictor_all_layers"]),
+        "skill_predictor_vlm_variant": stage1_config["skill_predictor_vlm_variant"],
+        "skill_predictor_image_size": int(stage1_config["skill_predictor_image_size"]),
+        "skill_predictor_reader_tokens": int(stage1_config["skill_predictor_reader_tokens"]),
+        "skill_predictor_reader_depth": int(stage1_config["skill_predictor_reader_depth"]),
+        "skill_predictor_reader_heads": int(stage1_config["skill_predictor_reader_heads"]),
+        "skill_predictor_deadzone_frac": float(stage1_config["skill_predictor_deadzone_frac"]),
+        "skill_predictor_attend_image": True,
+        "skill_predictor_attend_language": True,
+        "tokenizer_max_length": int(stage1_config["tokenizer_max_length"]),
+        "train_terminator": True,
+        "terminator_freeze_vision_encoder": as_bool(
+            stage1_config["terminator_freeze_vision_encoder"]
+        ),
+        "terminator_dino_model_path": terminator_dino_path,
+        "terminator_lr_scale": float(
+            _at(
+                config,
+                "auxiliary",
+                "terminator",
+                "lr_scale",
+                default=stage1_config["terminator_lr_scale"],
+            )
+        ),
+        "terminator_end_target_sigma": float(stage1_config["terminator_end_target_sigma"]),
+        "terminator_end_pos_weight": float(stage1_config["terminator_end_pos_weight"]),
+        "likelihood_num_layers": likelihood_layers,
+        "likelihood_cross_attention_heads": 8,
+        "training_skill_source": skill_source,
+        "finetune_skill_predictor": finetune_skill_predictor,
+        "finetune_terminator": finetune_terminator,
+        "gradient_checkpointing": as_bool(
+            _at(config, "training", "gradient_checkpointing", default=True)
+        ),
+        "lr": base_lr * num_gpus,
+        "batch_size": int(
+            _at(config, "training", "dataloader", "batch_size", default=16)
+        ),
+        "num_workers": int(
+            _at(config, "training", "dataloader", "workers", default=2)
+        ),
         "num_gpus": num_gpus,
-        "lr": lr_base * num_gpus,
-        "expert_lr_scale": float(get_value(cfg, "expert_lr_scale", 1.0)),
-        "cond_lr_scale": float(get_value(cfg, "cond_lr_scale", 1.0)),
-        "steps": int(get_value(cfg, "steps", 100000)),
-        "save_freq": int(get_value(cfg, "save_freq", 2500)),
-        # wandb
-        "wandb_enable": as_bool(get_value(cfg, "wandb_enable", True)),
-        "wandb_project": str(get_value(cfg, "wandb_project", "VLA_stage2")),
+        "steps": int(_at(config, "training", "schedule", "steps", default=50000)),
+        "log_freq": int(
+            _at(config, "training", "schedule", "log_every", default=100)
+        ),
+        "save_freq": int(
+            _at(config, "training", "schedule", "save_every", default=5000)
+        ),
+        "pt_run_name": run_name,
+        "pt_output_dir": outputs_root / "skillVLA_stage2" / run_name,
+        "wandb_enable": as_bool(
+            _at(config, "logging", "wandb", "enable", default=True)
+        ),
+        "wandb_project": str(
+            _at(config, "logging", "wandb", "project", default="VLA_stage2")
+        ),
+        "train_partition": ",".join(as_list(config.get("train_partition", ["big"]))) or "big",
+        "train_qos": str(config.get("train_qos", "big_qos")),
+        "train_gres": str(_at(config, "slurm", "gres", default="gpu:1")),
+        "train_cpus_per_task": int(_at(config, "slurm", "cpus", default=16)),
+        "train_mem": str(_at(config, "slurm", "memory", default="256G")),
+        "train_time": str(_at(config, "slurm", "time", default="48:00:00")),
+        "train_nodelist": str(config.get("train_nodelist", "")),
+        "train_exclude_nodes": ",".join(as_list(config.get("train_exclude_nodes", []))),
     }
-
-    part = ",".join(as_list(get_value(cfg, "train_partition", ["big"]))) or "big"
-    excl = ",".join(as_list(get_value(cfg, "train_exclude_nodes", [])))
-    settings.update({
-        "train_partition": part,
-        "train_qos": str(get_value(cfg, "train_qos", "big_qos")),
-        "train_gres": str(get_value(cfg, "train_gres", "gpu:1")),
-        "train_cpus_per_task": int(get_value(cfg, "train_cpus_per_task", 16)),
-        "train_mem": str(get_value(cfg, "train_mem", "128G")),
-        "train_time": str(get_value(cfg, "train_time", "48:00:00")),
-        "train_nodelist": str(get_value(cfg, "train_nodelist", "")),
-        "train_exclude_nodes": excl,
-    })
     return settings
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
-    ap.add_argument("--shell", action="store_true")
-    args = ap.parse_args()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
+    parser.add_argument("--shell", action="store_true")
+    args = parser.parse_args()
     settings = build_settings(load_config(args.config))
     if args.shell:
         print_shell(settings)
     else:
-        for k, v in settings.items():
-            print(f"{k}: {v}")
+        for key, value in settings.items():
+            print(f"{key}: {value}")
 
 
 if __name__ == "__main__":

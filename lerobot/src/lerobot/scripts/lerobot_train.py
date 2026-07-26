@@ -205,7 +205,9 @@ _WINDOWED_POLICY_METRIC_PREFIXES = (
     "ar/",
     "fast_context/",
 )
-_WINDOWED_POLICY_MODEL_TYPES = frozenset({"skill_expert", "skill_vla"})
+_WINDOWED_POLICY_MODEL_TYPES = frozenset(
+    {"skill_expert", "skill_vla", "skill_vla_stage2"}
+)
 
 
 class _WindowedPolicyMetrics:
@@ -513,7 +515,7 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
             processor_kwargs["preprocessor_overrides"]["tokenizer_processor"] = {
                 "tokenizer_name": tokenizer_path,
             }
-        if cfg.policy.type == "skill_vla":
+        if cfg.policy.type in {"skill_vla", "skill_vla_stage2"}:
             # SkillVLA's state-tokenizer step needs observation.state q01/q99 to discretize the
             # skill-start state. These aren't carried by the saved processor, so (like the normalizer
             # above) re-inject them from the dataset on resume — otherwise the step gets None and
@@ -796,8 +798,7 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                     "predicted_latent_prob",
                     "loss_skill", "skill_acc",  # Stage-2 SkillVLA: skill regression loss + skill-code accuracy
                     # (co-trained FSQ terminator logs via "terminator/*" → routed to train_terminator/* below)
-                    "action_loss",              # Stage-1 skill_expert: PLAIN (unweighted) action MSE — always (comparison)
-                    "action_weighted_loss",     # Stage-1 skill_expert: per-sample-weighted action MSE (action_weight only)
+                    "action_loss",              # Stage-1 skill_expert: plain action-flow MSE
                 }
                 wandb_log_dict = {k: v for k, v in wandb_log_dict.items()
                                   if k in _wandb_keep or k.startswith(

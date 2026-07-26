@@ -97,7 +97,7 @@ def test_sample_jitter_draw_uses_configured_distribution() -> None:
     assert draw == (20, True, -1)
 
 
-def test_stage1_jitters_action_code_but_keeps_terminator_true_code(monkeypatch) -> None:
+def test_stage1_jitters_action_skill_code(monkeypatch) -> None:
     stub = SimpleNamespace(
         training=True,
         config=SimpleNamespace(
@@ -106,7 +106,6 @@ def test_stage1_jitters_action_code_but_keeps_terminator_true_code(monkeypatch) 
             skill_vocab_size=8,
         ),
     )
-    stub._true_skill_code = lambda batch: SkillExpertPolicy._true_skill_code(stub, batch)
     batch = {
         "skill_sequence": torch.tensor([[2, 5, 8]]),
         "skill_index": torch.tensor([0]),
@@ -122,10 +121,27 @@ def test_stage1_jitters_action_code_but_keeps_terminator_true_code(monkeypatch) 
     )
 
     jittered = SkillExpertPolicy._skill_code(stub, batch)
-    true = SkillExpertPolicy._true_skill_code(stub, batch)
 
     torch.testing.assert_close(jittered, torch.tensor([5]))
-    torch.testing.assert_close(true, torch.tensor([2]))
+
+
+def test_stage1_reuses_skillvla_dataset_jitter_code() -> None:
+    stub = SimpleNamespace(
+        training=True,
+        config=SimpleNamespace(skill_vocab_size=8),
+    )
+    batch = {
+        "skill_code": torch.tensor([5]),
+        "skill_sequence": torch.tensor([[2, 5, 7]]),
+        "skill_index": torch.tensor([0]),
+    }
+
+    code = SkillExpertPolicy._skill_code(stub, batch)
+
+    torch.testing.assert_close(code, torch.tensor([5]))
+    torch.testing.assert_close(
+        stub._last_transition_jitter_fraction, torch.tensor(1.0)
+    )
 
 
 def test_transition_dataset_uses_state_from_same_half_normal_offset(monkeypatch) -> None:

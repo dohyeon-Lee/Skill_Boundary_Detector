@@ -23,7 +23,7 @@ skillvla_dataset_root: skillvla_dataset  # outputs under {dataset_root}/{skillvl
 # ── Source dataset (원본) ─────────────────────────────────────
 # Raw LeRobot dataset to convert into SkillVLA data (may differ from the
 # dataset the DP/FSQ were trained on).
-source_dataset: libero_90_full_full
+source_dataset: libero_90_full_lasthalf
 # This source's role in the eventual SkillVLA training mix.  It is part of the
 # final output name so the same raw dataset cannot silently reuse PT and FT
 # artifacts. All three use global skill boundaries:
@@ -50,8 +50,6 @@ skillset_gripper_indices: [-1]       # ABC bimanual layout: [6, 13]
 # Boundaries must be farther apart than this many frames; the same distance excludes
 # peaks at the start/end edge of each episode.
 skillset_nms_dist: 20
-# Keep episodes that contain only one valid segment (for example, a single drawer-close skill).
-skillset_min_skills: 1
 # Other detection parameters (dn_step, n_gmm, smooth_window, savgol_polyorder,
 # replan_interval) retain the shared defaults in src/train_skillVLA_config.py.
 # Parallelism: step-3 (DP segmentation) is the slow stage, so it is split across

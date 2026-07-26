@@ -66,8 +66,10 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
         )
     fsq_digits = lv_match.group(1)
     fsq_levels = [int(d) for d in fsq_digits]
-    fsq_variant = fsq_run_name[lv_match.end() :].strip("_") or "default"
-    fsq_exp_suffix = f"_{fsq_variant}"
+    # Short run names end at the fsq<levels> tag, so the variant may be empty;
+    # an empty variant is simply omitted from downstream folder names.
+    fsq_variant = fsq_run_name[lv_match.end() :].strip("_")
+    fsq_exp_suffix = f"_{fsq_variant}" if fsq_variant else ""
     fsq_exp = fsq_variant
 
     # ── DP (step 3) ──
@@ -75,7 +77,7 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
     dp_checkpoint = str(get_value(cfg, "dp_checkpoint", "100000"))
     dp_policy_path = dp_outputs_root / dp_policy_name / "checkpoints" / dp_checkpoint / "pretrained_model"
     probe_settings = skillset_probe_settings(cfg)
-    skillset_min_skills = int(get_value(cfg, "skillset_min_skills", 2))
+    skillset_min_skills = int(get_value(cfg, "skillset_min_skills", 1))
     if skillset_min_skills < 1:
         raise ValueError(f"skillset_min_skills must be >= 1, got {skillset_min_skills}.")
     jitter_distribution = str(
@@ -110,7 +112,7 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
     # another mode can never short-circuit this build. It also makes FT snap references resolve only
     # against a PT vocabulary produced with the same segmentation mode.
     skillset_mode_suffix = probe_settings["skillset_probe_suffix"]
-    base_run_tag = f"FSQ{fsq_digits}_{fsq_variant}_{ckpt_tag}{skillset_mode_suffix}"
+    base_run_tag = f"FSQ{fsq_digits}{fsq_exp_suffix}_{ckpt_tag}{skillset_mode_suffix}"
     run_tag = f"{base_run_tag}_{skillvla_data_mode}"
     # transfer 빌드(snap): 미지원 코드를 최근접 지원 코드로 snap한 빌드는 산출물(skill_latents/skillvla)이
     # 다르므로 폴더 분리 — run_tag에 _snap{min_freq} 부착 (downstream 파서들의 run_tag 정규식은

@@ -39,9 +39,12 @@ def norm_lang(s: str) -> str:
 
 
 def parse_hdf5_language(fname: str) -> str | None:
-    """'ROOM_SCENEn_<language>_demo.hdf5' → '<language>' (spaces, lowercased)."""
+    """Recover language from both scene-prefixed and 10-task-suite HDF5 names."""
     m = re.match(r"^(.*SCENE\d+)_(.*)_demo\.hdf5$", fname)
-    return norm_lang(m.group(2)) if m else None
+    if m:
+        return norm_lang(m.group(2))
+    suffix = "_demo.hdf5"
+    return norm_lang(fname[: -len(suffix)]) if fname.endswith(suffix) else None
 
 
 def load_episode_meta(lerobot_dir: Path) -> pd.DataFrame:

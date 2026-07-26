@@ -61,6 +61,17 @@ def load_skillvla_episodes(skillvla_dir: Path) -> pd.DataFrame:
     return df.sort_values(["episode_index", "frame_index"]).reset_index(drop=True)
 
 
+def load_task_names(dataset_dir: Path) -> dict[int, str]:
+    """task_index → language instruction from the raw dataset meta (tasks.parquet:
+    index = task string, column = task_index). Missing/unreadable → {} (IDs only)."""
+    try:
+        t = pd.read_parquet(Path(dataset_dir) / "meta" / "tasks.parquet")
+        return {int(v): str(k) for k, v in t["task_index"].items()}
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [warn] tasks.parquet unreadable → task IDs only: {exc}")
+        return {}
+
+
 def reconstruct_skills(ep_df: pd.DataFrame) -> list[tuple[int, int, int]]:
     """Per-episode [(frame_start, frame_end, token), ...] from skillvla columns."""
     fr = ep_df["frame_index"].to_numpy()
@@ -201,19 +212,31 @@ def eval_dino(df, dino: DinoNpz, frames_src, out_dir: Path, n_episodes: int,
 # ── eval 2: skillset split ───────────────────────────────────────────────────────
 
 def eval_skillset(df, frames_src, out_dir: Path, n_episodes: int,
-                  task_ids=None, thumb: int = 110, curves_dir=None):
+                  task_ids=None, thumb: int = 110, curves_dir=None, task_names=None):
     # Rendering (boxed frames + multimodality curve + gallery) is shared with
     # train_skills/skill_eval via skillset_boundary_viz; here the per-episode skills
     # come from the skillvla dataset parquet (reconstruct_skills).
+    names = task_names or {}
     cards = []
     for task_label, eps in select_episodes(df, task_ids, n_episodes):
+        section = task_label
+        if task_label is not None and int(task_label) in names:
+            section = f"task{int(task_label):02d} · {names[int(task_label)]}"
         for ep in eps:
             ep_df = df[df["episode_index"] == ep]
             skills = reconstruct_skills(ep_df)
             raw = frames_src(int(ep))
             curve = load_boundary_curve(curves_dir, ep)
             b64 = render_skillset_card(skills, raw, curve, thumb=thumb)
-            cards.append((task_label, f"{_cap(task_label, ep)} — {len(skills)} skills", b64))
+            cap = f"{_cap(task_label, ep)} — {len(skills)} skills"
+            if task_label is None and len(ep_df):
+                # flat gallery (no per-task sections) → put the task language on the card itself
+                ti = int(ep_df["task_index"].iloc[0])
+                lang = names.get(ti)
+                cap = (f"task{ti:02d} · episode {ep}"
+                       + (f" — {lang}" if lang else "")
+                       + f" — {len(skills)} skills")
+            cards.append((section, cap, b64))
     _save_gallery(out_dir, "Skill boundary split", cards)
 
 
@@ -428,7 +451,8 @@ def main():
         eval_dino(df, dino, frames_src, out / "dino", args.n_episodes, task_ids=args.task_ids)
     if args.run_skillset:
         eval_skillset(df, frames_src, out / "skillset", args.n_episodes, task_ids=args.task_ids,
-                      curves_dir=args.boundary_curves_dir)
+                      curves_dir=args.boundary_curves_dir,
+                      task_names=load_task_names(Path(args.dataset_dir)))
     if args.run_fsq_patch:
         eval_fsq_patch(df, dino, frames_src, out / "fsq_patch", args.n_episodes,
                        seed=args.seed, task_ids=args.task_ids)

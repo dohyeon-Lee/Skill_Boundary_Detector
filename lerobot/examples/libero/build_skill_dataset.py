@@ -121,7 +121,7 @@ class Args:
     # ── Dataset filtering ─────────────────────────────────────────────────────
     min_skill_len: int = 2
     """스킬 세그먼트 최소 프레임 수 (미만이면 해당 세그먼트 제외)."""
-    min_skills: int = 2
+    min_skills: int = 1
     """유효 스킬 수가 이 값 미만이면 episode 전체 skip."""
     # ── Misc ─────────────────────────────────────────────────────────────────
     dino_feature_dir: str = ""

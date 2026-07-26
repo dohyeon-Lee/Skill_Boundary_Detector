@@ -5,7 +5,7 @@
 # Pipeline order: DP (this) → build_data (skillset) → FSQ → DP_FSQ_eval.
 # The DP folder name produced here is what build_data / FSQ / eval reference as dp_run_name.
 
-target_dataset: abc_toy
+target_dataset: libero_goal_full_full
 
 
 # ── DP encoder / temporal ──
@@ -16,7 +16,7 @@ dp_vision: state   # resnet | state
 # RELATIVE action 학습 (ABC/bimanual): action−state(현재 state anchor)로 학습 — VLA(pi 계열)와
 # SBD probe가 도는 relative 공간과 정합. gripper dims는 absolute 유지(stats 파일의 exclude 규약).
 # 데이터셋에 meta/relative_action_stats.json(ABC_dataset build ④-b) 필요. LIBERO(delta EEF)면 false.
-dp_relative: true
+dp_relative: false # true
 dp_n_obs_steps: 20                          # observation history length
 dp_horizon: 24                              # UNet horizon (multiple of 2^len(down_dims)=8; > n_obs)
 # dp_n_action_steps: auto = horizon - n_obs_steps + 1 (override only if needed)

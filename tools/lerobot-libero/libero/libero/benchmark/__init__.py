@@ -53,12 +53,34 @@ def grab_language_from_filename(x):
     return language[:en]
 
 
+def grab_language_from_bddl(problem_folder, bddl_file):
+    """Read the (:language ...) field from the bddl file itself.
+
+    langgap_ext filenames are IDs (spatial_dim2_..._ext_01_...), not instructions, so the
+    filename-derived language used by the official suites would be garbage for them.
+    Falls back to the filename if the bddl is unreadable (e.g. LIBERO_CONFIG_PATH points at
+    a tree without langgap files) so importing this module never breaks existing setups —
+    env creation would fail loudly on the missing bddl anyway.
+    """
+    import re
+
+    try:
+        path = os.path.join(get_libero_path("bddl_files"), problem_folder, bddl_file)
+        match = re.search(r"\(:language ([^)]+)\)", open(path, encoding="utf-8").read())
+        if match:
+            return match.group(1).strip()
+    except (OSError, AssertionError):
+        pass
+    return grab_language_from_filename(bddl_file)
+
+
 libero_suites = [
     "libero_spatial",
     "libero_object",
     "libero_goal",
     "libero_90",
     "libero_10",
+    "langgap_ext",
 ]
 task_maps = {}
 max_len = 0
@@ -66,7 +88,10 @@ for libero_suite in libero_suites:
     task_maps[libero_suite] = {}
 
     for task in libero_task_map[libero_suite]:
-        language = grab_language_from_filename(task + ".bddl")
+        if libero_suite == "langgap_ext":
+            language = grab_language_from_bddl(libero_suite, task + ".bddl")
+        else:
+            language = grab_language_from_filename(task + ".bddl")
         task_maps[libero_suite][task] = Task(
             name=task,
             language=language,
@@ -114,7 +139,9 @@ class Benchmark(abc.ABC):
 
     def _make_benchmark(self):
         tasks = list(task_maps[self.name].values())
-        if self.name == "libero_90":
+        # Suites with != 10 tasks keep natural order; the task_orders permutations below
+        # are 10-task-only.
+        if self.name in ("libero_90", "langgap_ext"):
             self.tasks = tasks
         else:
             print(f"[info] using task orders {task_orders[self.task_order_index]}")
@@ -208,6 +235,19 @@ class LIBERO_10(Benchmark):
     def __init__(self, task_order_index=0):
         super().__init__(task_order_index=task_order_index)
         self.name = "libero_10"
+        self._make_benchmark()
+
+
+@register_benchmark
+class LANGGAP_EXT(Benchmark):
+    """LangGap extended tasks (59): same-scene semantic perturbations of LIBERO scenes."""
+
+    def __init__(self, task_order_index=0):
+        super().__init__(task_order_index=task_order_index)
+        assert (
+            task_order_index == 0
+        ), "[error] currently only support task order for 10-task suites"
+        self.name = "langgap_ext"
         self._make_benchmark()
 
 

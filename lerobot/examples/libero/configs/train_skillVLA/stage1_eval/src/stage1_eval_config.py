@@ -1,365 +1,356 @@
 #!/usr/bin/env python3
-"""Config for SkillVLA Stage-1 (skill_expert) closed-loop oracle EVAL.
-
-Point at a trained Stage-1 run by OUTPUT FOLDER NAME + checkpoint. The FSQ terminator
-(FSQ.pt) and the GT skill sequences (skillvla dataset) come from the same {run_dir} the
-model was trained on (source_dataset + run_tag). All roots are declared in this yaml
-(standalone). Env tasks are matched to dataset tasks by language. Emits shell exports (--shell).
-"""
+"""Resolve renewed Stage-1 multi-checkpoint evaluation into shell exports."""
 
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import re
 import sys
+from datetime import datetime
 from pathlib import Path
 
 _HERE = Path(__file__).resolve()
 sys.path.insert(0, str(_HERE.parent.parent.parent.parent / "train_skills" / "src"))
-from train_skills_config import as_bool, as_list, get_value, load_config, print_shell, resolve_path  # noqa: E402
+from train_skills_config import as_bool, as_list, get_value, load_config, print_shell  # noqa: E402
 
 DEFAULT_CONFIG_PATH = _HERE.parent.parent / "stage1_eval_config.yaml"
 
 
-_RUN_TAG_RE = re.compile(r"(FSQ\d+_.+?)_(?:dino|siglip)(?:_freeze)?_batch\d+")
+def _at(config: dict, *path: str, default=None):
+    value = config
+    for key in path:
+        if not isinstance(value, dict) or key not in value:
+            return default
+        value = value[key]
+    return value
 
 
-def _resolve_model(entry: dict, *, skillvla_root: Path, vla_root: Path, source_yaml: str) -> dict:
-    """Resolve one Stage-1 checkpoint or one raw FSQ action-expert panel."""
-    kind = str(entry.get("kind", "stage1")).strip().lower()
-    if kind not in {"stage1", "fsq_expert"}:
-        raise ValueError(f"models[].kind must be stage1|fsq_expert, got {kind!r}.")
-    checkpoint = str(entry.get("checkpoint", "last"))
-    source_override = str(entry.get("source_dataset", "") or "").strip()
-    if kind == "fsq_expert":
-        run_tag = str(entry.get("run_tag", "") or "").strip()
-        explicit_fsq = str(entry.get("fsq_path", "") or "").strip()
-        if explicit_fsq:
-            fsq_path = Path(explicit_fsq).expanduser()
-            if not fsq_path.is_absolute():
-                fsq_path = skillvla_root.parent.parent / fsq_path
-            run_dir = fsq_path.parent
-            run_tag = run_tag or run_dir.name
-            source = source_override or run_dir.parent.name
-        else:
-            if not run_tag:
-                raise ValueError("fsq_expert entry needs run_tag (or an explicit fsq_path).")
-            source = source_override or source_yaml
-            if not source:
-                raise ValueError("fsq_expert entry needs source_dataset at entry or top level.")
-            run_dir = skillvla_root / source / run_tag
-            fsq_path = run_dir / "FSQ.pt"
-        return {
-            "kind": kind, "model_dir": f"fsq_expert:{run_tag}", "checkpoint": "fsq",
-            "run_tag": run_tag, "source": source, "run_dir": run_dir, "policy_path": "",
-            "fsq_path": fsq_path, "skill_label_dataset_dir": run_dir / "skillvla",
-            "skill_latents_path": run_dir / "skill_latents.npz",
-            "eval_init_states_path": skillvla_root / source / "eval_init_states.npz",
-        }
-
-    model_dir = str(entry.get("model_dir", "") or "").strip()
-    if not model_dir:
-        raise ValueError("stage1 entry needs model_dir.")
-    m = _RUN_TAG_RE.search(model_dir)
-    if not m:
-        raise ValueError(f"model_dir must embed a 'FSQ..._dino..._<ckpt>_batch<N>' run tag, got: {model_dir}")
-    run_tag = m.group(1)
-    source = source_override or model_dir[: m.start()].rstrip("_") or source_yaml
-    if not source:
-        raise ValueError(
-            "Could not determine source_dataset: model_dir has no '{source}_' prefix and 'source_dataset' "
-            f"is not set in the eval yaml (e.g. libero_90_full_full). model_dir={model_dir}")
-    run_dir = skillvla_root / source / run_tag
-    return {
-        "kind": kind, "model_dir": model_dir, "checkpoint": checkpoint, "run_tag": run_tag, "source": source,
-        "run_dir": run_dir,
-        "policy_path": vla_root / model_dir / "checkpoints" / checkpoint / "pretrained_model",
-        "fsq_path": run_dir / "FSQ.pt",
-        "skill_label_dataset_dir": run_dir / "skillvla",
-        "skill_latents_path": run_dir / "skill_latents.npz",
-        "eval_init_states_path": skillvla_root / source / "eval_init_states.npz",
-    }
+def _relocate_project_path(project_root: Path, value: str | Path | None) -> Path:
+    path = Path(str(value or "")).expanduser()
+    if not str(value or "").strip():
+        return path
+    if not path.is_absolute():
+        return project_root / path
+    if path.exists():
+        return path
+    anchors = (
+        "dataset",
+        "dataset_filtered",
+        "dataset_ABC",
+        "models",
+        "outputs",
+        "outputs_filtered",
+    )
+    for anchor in anchors:
+        if anchor in path.parts:
+            return project_root.joinpath(*path.parts[path.parts.index(anchor) :])
+    return path
 
 
-def _auto_labels(model_dirs: list[str]) -> list[str]:
-    """Distinguishing middle token(s) of each model_dir (strip the common leading + trailing _-tokens),
-    used as the side-by-side panel label when a model has no explicit label."""
-    if len(model_dirs) <= 1:
-        return list(model_dirs)
-    toks = [d.split("_") for d in model_dirs]
-    short = min(len(t) for t in toks)
-    p = 0
-    while p < short and all(t[p] == toks[0][p] for t in toks):
-        p += 1
-    s = 0
-    while s < short - p and all(t[-1 - s] == toks[0][-1 - s] for t in toks):
-        s += 1
-    return ["_".join(t[p: len(t) - s]) or d for t, d in zip(toks, model_dirs)]
+def _safe_name(value: str, *, field: str) -> str:
+    value = value.strip()
+    if not value or value in {".", ".."} or "/" in value or "\0" in value:
+        raise ValueError(f"{field} must be a non-empty folder name, got {value!r}.")
+    return value
 
 
-def _stage1_modes(raw: str) -> tuple[str, ...]:
-    """Parse an optional compact stage-1 panel list; default is the full A/B/base triplet."""
-    aliases = {
-        "a": "a", "image": "a", "image_cond": "a",
-        "b": "b", "image_free": "b", "image_free_lora": "b",
-        "expert": "expert", "fsq": "expert", "frozen": "expert", "frozen_expert": "expert",
-    }
-    items = [s.strip().lower() for s in str(raw or "a,b,expert").split(",") if s.strip()]
-    modes = tuple(aliases.get(s, "") for s in items)
-    if not modes or any(not s for s in modes) or len(set(modes)) != len(modes):
-        raise ValueError(
-            "stage1 models[].modes must be a comma list without duplicates from "
-            "a,b,expert (aliases: image, image_free, fsq), got " + repr(raw)
+def _clean_label(value: str) -> str:
+    value = value.replace("/", "_").strip()
+    if not value:
+        raise ValueError("Every Stage-1 eval model needs a non-empty label.")
+    return value
+
+
+def _default_output_name(models: list[dict]) -> str:
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    if len(models) > 1:
+        return f"compare_{len(models)}models_{stamp}"
+    model = re.sub(r"[^A-Za-z0-9._-]+", "-", models[0]["model_dir"]).strip("-_")
+    raw = f"{model}_{models[0]['checkpoint']}_{stamp}"
+    return raw if len(raw) <= 200 else f"stage1_{models[0]['checkpoint']}_{stamp}"
+
+
+def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
+    required = (
+        "config.json",
+        "model.safetensors",
+        "policy_preprocessor.json",
+        "policy_postprocessor.json",
+    )
+    missing = [name for name in required if not (policy_path / name).is_file()]
+    if missing:
+        raise FileNotFoundError(
+            f"Incomplete Stage-1 checkpoint at {policy_path}: missing {missing}."
         )
-    return modes
+    policy = json.loads((policy_path / "config.json").read_text())
+    if policy.get("type", policy.get("model_type")) != "skill_expert":
+        raise ValueError(f"Expected a skill_expert checkpoint: {policy_path}")
+    if not as_bool(policy.get("train_terminator", False)):
+        raise ValueError(
+            f"Stage-1 checkpoint was not trained with train_terminator=true: {policy_path}"
+        )
 
-
-def _expand_stage1_panels(models: list[dict]) -> list[dict]:
-    """One trained Stage-1 checkpoint becomes its A, B, and frozen-FSQ action panels."""
-    panels: list[dict] = []
-    mode_labels = {"a": "A", "b": "B", "expert": "Frozen-FSQ"}
-    for model in models:
-        if model["kind"] == "fsq_expert":
-            panel = dict(model)
-            panel["eval_mode"] = "fsq_only"
-            panels.append(panel)
-            continue
-        for mode in _stage1_modes(model.get("modes", "")):
-            panel = dict(model)
-            panel["label"] = f"{model['label']} [{mode_labels[mode]}]"
-            if mode == "a":
-                panel["eval_mode"] = "a"
-            elif mode == "b":
-                panel["eval_mode"] = "b"
-            else:
-                # Preserve the Stage-1 run's co-trained terminator for a fair action-side comparison.
-                panel["kind"] = "fsq_expert"
-                panel["eval_mode"] = "frozen_expert"
-                panel["expert_fsq_path"] = model["fsq_path"]
-                panel["terminator_policy_path"] = model["policy_path"]
-            panels.append(panel)
-    return panels
-
-
-def _compare_folder(labels: list[str]) -> str:
-    """Keep auto-generated multi-panel output paths below common filesystem name limits."""
-    raw = "compare_" + "_vs_".join(labels)
-    safe = re.sub(r"[^A-Za-z0-9._-]+", "-", raw).strip("-_") or "compare"
-    if len(safe) <= 180:
-        return safe
-    digest = hashlib.sha1(safe.encode("utf-8")).hexdigest()[:10]
-    return f"compare_{len(labels)}panels_{digest}"
-
-
-def build_settings(cfg: dict) -> dict:
-    # Standalone: every root is declared in this yaml (no build_data dependency).
-    project_root = Path(str(get_value(cfg, "project_root"))).expanduser()
-    dataset_root = project_root / str(get_value(cfg, "dataset_root", "dataset"))
-    skillvla_root = dataset_root / str(get_value(cfg, "skillvla_dataset_root", "skillvla_dataset"))
-    lerobot_root = project_root / "lerobot"
-    outputs_root = project_root / str(get_value(cfg, "outputs_root", "outputs"))
-    vla_root = outputs_root / "skillVLA_stage1"
-    source_yaml = str(get_value(cfg, "source_dataset", "")).strip()
-    default_ckpt = str(get_value(cfg, "checkpoint", "last"))
-
-    # `models` (a list of {model_dir, checkpoint?, label?}) → MULTI-model side-by-side eval; otherwise the
-    # single `model_dir`/`checkpoint`. A 1-entry list behaves like the single case.
-    models_yaml = get_value(cfg, "models", None)
-    if isinstance(models_yaml, list) and models_yaml:
-        entries = [{
-            "kind": str(get_value(e, "kind", "stage1")),
-            "model_dir": str(get_value(e, "model_dir", "") or ""),
-            "run_tag": str(get_value(e, "run_tag", "") or ""),
-            "fsq_path": str(get_value(e, "fsq_path", "") or ""),
-            "source_dataset": str(get_value(e, "source_dataset", "") or ""),
-            "checkpoint": str(get_value(e, "checkpoint", default_ckpt)),
-            "advance_mode": str(get_value(e, "advance_mode", "") or "").strip(),
-            "modes": str(get_value(e, "modes", "") or "").strip(),
-            "label": str(get_value(e, "label", "")).strip(),
-        } for e in models_yaml]
-    else:  # back-compat: a single top-level model_dir (a 1-entry `models` list behaves identically)
-        md = get_value(cfg, "model_dir", None)
-        if not md:
-            raise ValueError("Set `models` (a list of {model_dir, checkpoint?, label?}) — or a single "
-                             "`model_dir` — in the eval yaml.")
-        entries = [{"kind": "stage1", "model_dir": str(md), "checkpoint": default_ckpt,
-                    "advance_mode": "", "modes": "", "label": ""}]
-
-    resolved_models = [_resolve_model(e, skillvla_root=skillvla_root, vla_root=vla_root,
-                                      source_yaml=source_yaml) for e in entries]
-    for r in resolved_models:
-        required = [Path(r["fsq_path"]), Path(r["skill_label_dataset_dir"])]
-        if r["kind"] == "stage1":
-            required.insert(0, Path(r["policy_path"]))
-        missing = [str(p) for p in required if not p.exists()]
-        if missing:
-            raise FileNotFoundError(
-                f"Missing artifacts for {r['model_dir']}: " + ", ".join(missing)
-            )
-    display_names = [r["model_dir"] for r in resolved_models]
-    for r, e, a in zip(resolved_models, entries, _auto_labels(display_names)):
-        r["label"] = e["label"] or a
-        r["modes"] = e["modes"]
-
-    advance_mode = str(get_value(cfg, "skill_advance_mode", "terminator"))
-    if advance_mode not in {"gt", "terminator"}:
-        raise ValueError(f"skill_advance_mode must be gt|terminator, got {advance_mode!r}.")
-    for r, e in zip(resolved_models, entries):
-        r["advance_mode"] = e.get("advance_mode") or advance_mode
-        if r["advance_mode"] not in {"gt", "terminator"}:
-            raise ValueError(
-                f"models[] advance_mode must be gt|terminator, got {r['advance_mode']!r}."
-            )
-    resolved = _expand_stage1_panels(resolved_models)
-    m0 = resolved[0]
-    multi = len(resolved) >= 2
-    eval_exp = str(get_value(cfg, "eval_exp", "")).strip()
-    # Optional terminator override: load the terminator from a DIFFERENT run's FSQ.pt for every panel.
-    terminator_path = str(get_value(cfg, "terminator_path", "")).strip()
-
-    if multi:
-        if terminator_path:
-            # A/B/Frozen-FSQ should share the override. Preserve each panel's original FSQ action expert
-            # separately, especially the frozen panel whose action route must stay tied to its parent run.
-            term_override = resolve_path(project_root, terminator_path)
-            for r in resolved:
-                r["expert_fsq_path"] = r.get("expert_fsq_path", r["fsq_path"])
-                r["fsq_path"] = term_override
-        # MULTI: env-side artifacts (POLICY_PATH etc.) point at model 0 so cfg.policy + the sbatch's artifact
-        # checks are valid; the FULL per-model list rides MODELS_JSON (read by run_eval). Combined folder.
-        folder = _compare_folder([r["label"] for r in resolved])
-        if eval_exp:
-            folder = f"{folder}_{eval_exp}"
-        if terminator_path:
-            _ts = re.search(r"checkpoints/([^/]+)/", terminator_path)
-            folder = f"{folder}_refterm{_ts.group(1) if _ts else ''}"
-        models_json = json.dumps([
-            {"kind": r["kind"], "policy_path": str(r["policy_path"]),
-             "fsq_path": str(r["fsq_path"]),
-             "expert_fsq_path": str(r.get("expert_fsq_path", r["fsq_path"])),
-             "terminator_policy_path": str(r.get("terminator_policy_path", "")),
-             "eval_mode": r.get("eval_mode", "a"),
-             "run_tag": r["run_tag"],
-             "skill_label_dataset_dir": str(r["skill_label_dataset_dir"]),
-             "advance_mode": r["advance_mode"], "label": r["label"]}
-            for r in resolved])
-        fsq_ckpt = m0["fsq_path"]
-    else:
-        folder = (f"fsq_expert_{m0['run_tag']}" if m0["kind"] == "fsq_expert"
-                  else f"{m0['model_dir']}_{m0['checkpoint']}")
-        if m0["advance_mode"] != "terminator":
-            folder = f"{folder}_adv-{m0['advance_mode']}"
-        if eval_exp:
-            folder = f"{folder}_{eval_exp}"
-        if terminator_path:  # distinct folder so a refined-terminator run doesn't clobber the FSQ-term run
-            _ts = re.search(r"checkpoints/([^/]+)/", terminator_path)
-            folder = f"{folder}_refterm{_ts.group(1) if _ts else ''}"
-        fsq_ckpt = resolve_path(project_root, terminator_path) if terminator_path else m0["fsq_path"]
-        models_json = json.dumps([{
-            "kind": m0["kind"], "policy_path": str(m0["policy_path"]),
-            "fsq_path": str(fsq_ckpt),
-            "expert_fsq_path": str(m0.get("expert_fsq_path", m0["fsq_path"])),
-            "terminator_policy_path": str(m0.get("terminator_policy_path", "")),
-            "eval_mode": m0.get("eval_mode", "a"),
-            "run_tag": m0["run_tag"],
-            "skill_label_dataset_dir": str(m0["skill_label_dataset_dir"]),
-            "advance_mode": m0["advance_mode"], "label": m0["label"],
-        }])
-
-    # Model-0 aliases (env-side single exports; also the single-model path uses these directly).
-    policy_path = m0["policy_path"]
-    run_dir = m0["run_dir"]
-    source_dataset = m0["source"]
-    stage1_eval_dir = _HERE.parent.parent
-    eval_out_dir = stage1_eval_dir / "outputs" / folder
-
-    settings: dict = {
-        "project_root": project_root,
-        "lerobot_root": lerobot_root,
-        # model + eval artifacts (FSQ + skillvla dataset from the training run_dir). For MULTI-model
-        # side-by-side, these are model 0's; the full per-model list is in models_json (env → run_eval).
-        "policy_path": policy_path,
-        "primary_model_kind": m0["kind"],
-        "models_json": models_json,
-        # side-by-side grid: Stage-1 triplets default to three columns, so two checkpoints naturally form
-        # a 2×3 grid. Explicit YAML values still override this (0 = one row).
-        "models_per_row": int(get_value(
-            cfg, "models_per_row", 3 if any(r["kind"] == "stage1" for r in resolved_models) else 0
-        ) or 0),
-        "fsq_ckpt": fsq_ckpt,
-        "skill_label_dataset_dir": run_dir / "skillvla",
-        # Episode-exact eval: per-episode MuJoCo init_state + scene (FSQ-independent → lives at the source
-        # parent, shared by every FSQ run). Built by stage1_eval/oracle_matching/run.sh {source}.
-        "eval_init_states_path": skillvla_root / source_dataset / "eval_init_states.npz",
-        "source_dataset": source_dataset,
-        # FSQ terminator's raw-image DINO (the policy's own backbone comes from the checkpoint).
-        "terminator_dino_model_path": resolve_path(
-            project_root, get_value(cfg, "terminator_dino_model_path", "models/dinov3-vits16")),
-        "eval_out_dir": eval_out_dir,
-        # skill HTML (FSQ cube + used skills + per-skill progress + FSQ-space samples)
-        "skill_html": as_bool(get_value(cfg, "skill_html", True)),
-        "skill_html_train_samples": int(get_value(cfg, "skill_html_train_samples", 6)),
+    fsq_path = _relocate_project_path(project_root, policy.get("fsq_path"))
+    if not fsq_path.is_file():
+        raise FileNotFoundError(f"FSQ checkpoint referenced by Stage 1 not found: {fsq_path}")
+    run_dir = fsq_path.parent
+    skill_dataset_dir = run_dir / "skillvla"
+    if not (skill_dataset_dir / "meta" / "info.json").is_file():
+        raise FileNotFoundError(f"SkillVLA oracle dataset not found: {skill_dataset_dir}")
+    source_dir = run_dir.parent
+    dataset_root = source_dir.parent.parent
+    paths = {
+        "fsq_path": fsq_path,
+        "skill_dataset_dir": skill_dataset_dir,
+        "eval_init_states_path": source_dir / "eval_init_states.npz",
         "skill_latents_path": run_dir / "skill_latents.npz",
-        "skill_html_raw_dataset_dir": run_dir / "skillvla",
-        "image_key": "observation.images.image",
-        # wandb
-        "wandb_enable": as_bool(get_value(cfg, "wandb_enable", True)),
-        # env / rollout — task_ids is env-overridable (TASK_IDS): submit_eval.sh splits it across
-        # eval_num_gpus Slurm jobs (1 GPU each), all writing into the SAME out dir (disjoint tasks).
-        "target_task": str(get_value(cfg, "target_task", "libero_90")),
-        "task_ids": str(get_value(cfg, "task_ids", "[0,1,2,3,4,5,6,7,8,9]")),
-        "eval_num_gpus": int(get_value(cfg, "eval_num_gpus", 1)),
-        "n_episodes": int(get_value(cfg, "n_episodes", 5)),
-        "eval_batch_size": int(get_value(cfg, "eval_batch_size", 1)),
-        "max_parallel_tasks": int(get_value(cfg, "max_parallel_tasks", 1)),
-        "n_action_steps": int(get_value(cfg, "n_action_steps", 5)),
-        "max_videos_per_task": int(get_value(cfg, "max_videos_per_task", 1)),
-        "video_frame_stride": int(get_value(cfg, "video_frame_stride", 2)),
-        "video_fps": int(get_value(cfg, "video_fps", 10)),
-        # terminator
-        "skill_advance_mode": advance_mode,
-        "skill_end_mode": str(get_value(cfg, "skill_end_mode", "termination")),
-        "skill_end_threshold": str(get_value(cfg, "skill_end_threshold", 0.5)),
-        "skill_end_progress_threshold": str(get_value(cfg, "skill_end_progress_threshold", 0.9)),
-        "inference_skill_max_length": int(get_value(cfg, "inference_skill_max_length", 200)),
-        # Use the checkpoint's co-trained terminator; a terminator_path override forces the raw FSQ.pt.
-        "eval_use_trained_terminator": as_bool(get_value(cfg, "eval_use_trained_terminator", True)) and not terminator_path,
-        # wandb
-        "wandb_project": str(get_value(cfg, "wandb_project", "VLA_stage1_eval")),
-        # Chunked submission (TASK_TAG, e.g. "t0-4") → distinct wandb run per chunk.
-        "wandb_run_name": f"S1eval_{folder}" + (f"_{os.environ['TASK_TAG']}" if os.environ.get("TASK_TAG") else ""),
+        "raw_dataset_dir": dataset_root / source_dir.name,
+        "dino_model_path": _relocate_project_path(
+            project_root, policy.get("dino_model_path")
+        ),
+        "terminator_dino_model_path": _relocate_project_path(
+            project_root,
+            policy.get("terminator_dino_model_path") or policy.get("dino_model_path"),
+        ),
+        "tokenizer_path": _relocate_project_path(
+            project_root, policy.get("tokenizer_path")
+        ),
     }
+    for key in ("dino_model_path", "terminator_dino_model_path"):
+        if not paths[key].is_dir():
+            raise FileNotFoundError(f"Stage-1 model directory not found: {paths[key]}")
+    if as_bool(policy.get("train_skill_predictor", False)) and not paths[
+        "tokenizer_path"
+    ].is_dir():
+        raise FileNotFoundError(f"Stage-1 tokenizer not found: {paths['tokenizer_path']}")
+    return {"policy": policy, **paths}
 
-    # Slurm partition/qos/nodelist/exclude are canonical (global_config.yaml train_*).
-    part = ",".join(as_list(get_value(cfg, "train_partition", ["debug"]))) or "debug"
-    excl = ",".join(as_list(get_value(cfg, "train_exclude_nodes", [])))
-    settings.update({
-        "eval_partition": part,
-        "eval_qos": str(get_value(cfg, "train_qos", "base_qos")),
-        "eval_gres": str(get_value(cfg, "eval_gres", "gpu:1")),
-        "eval_cpus_per_task": int(get_value(cfg, "eval_cpus_per_task", 8)),
-        "eval_mem": str(get_value(cfg, "eval_mem", "32G")),
-        "eval_time": str(get_value(cfg, "eval_time", "1:00:00")),
-        "eval_nodelist": str(get_value(cfg, "train_nodelist", "")),
-        "eval_exclude_nodes": excl,
-    })
+
+def _model_entries(config: dict) -> list[dict]:
+    default_checkpoint = str(get_value(config, "checkpoint", "last"))
+    default_skill_source = str(get_value(config, "skill_source", "gt")).lower()
+    default_advance = str(
+        _at(config, "oracle", "advance_mode", default="terminator")
+    ).lower()
+    models = get_value(config, "models", None)
+    if isinstance(models, list) and models:
+        raw_entries = models
+    else:
+        model_dir = str(get_value(config, "model_dir", "") or "")
+        if not model_dir:
+            raise ValueError("Set models[] or a top-level model_dir in Stage-1 eval config.")
+        raw_entries = [{"model_dir": model_dir}]
+
+    entries = []
+    for index, raw in enumerate(raw_entries):
+        model_dir = _safe_name(str(raw.get("model_dir", "")), field="models[].model_dir")
+        checkpoint = _safe_name(
+            str(raw.get("checkpoint", default_checkpoint)),
+            field="models[].checkpoint",
+        )
+        skill_source = str(raw.get("skill_source", default_skill_source)).lower()
+        aliases = {
+            "gt": "gt",
+            "oracle": "gt",
+            "pred": "predictor",
+            "predicted": "predictor",
+            "predictor": "predictor",
+        }
+        skill_source = aliases.get(skill_source, "")
+        if not skill_source:
+            raise ValueError("models[].skill_source must be gt|predictor.")
+        advance_mode = str(raw.get("advance_mode", default_advance)).lower()
+        if advance_mode not in {"terminator", "gt"}:
+            raise ValueError("models[].advance_mode must be terminator|gt.")
+        if skill_source == "predictor" and advance_mode != "terminator":
+            raise ValueError("skill_source=predictor requires advance_mode=terminator.")
+        label = str(raw.get("label", "") or "").strip()
+        if not label:
+            label = f"model{index + 1}-{skill_source}"
+        entries.append(
+            {
+                "model_dir": model_dir,
+                "checkpoint": checkpoint,
+                "skill_source": skill_source,
+                "advance_mode": advance_mode,
+                "label": _clean_label(label),
+            }
+        )
+    labels = [entry["label"] for entry in entries]
+    if len(labels) != len(set(labels)):
+        raise ValueError(f"models[].label values must be unique, got {labels}.")
+    return entries
+
+
+def build_settings(config: dict) -> dict:
+    project_root = Path(str(get_value(config, "project_root"))).expanduser()
+    eval_outputs_root = _HERE.parent.parent / "outputs"
+    outputs_root = project_root / str(get_value(config, "outputs_root", "outputs"))
+    entries = _model_entries(config)
+    resolved = []
+    for entry in entries:
+        policy_path = (
+            outputs_root
+            / "skillVLA_stage1"
+            / entry["model_dir"]
+            / "checkpoints"
+            / entry["checkpoint"]
+            / "pretrained_model"
+        )
+        contract = _checkpoint_contract(policy_path, project_root)
+        if entry["skill_source"] == "predictor" and not as_bool(
+            contract["policy"].get("train_skill_predictor", False)
+        ):
+            raise ValueError(
+                f"skill_source=predictor but checkpoint has no trained predictor: {policy_path}"
+            )
+        resolved.append({**entry, "policy_path": policy_path, **contract})
+
+    episode_exact = as_bool(_at(config, "oracle", "episode_exact", default=False))
+    if episode_exact:
+        init_state_paths = {
+            model["eval_init_states_path"].resolve() for model in resolved
+        }
+        if len(init_state_paths) != 1:
+            raise ValueError(
+                "Multi-model episode-exact comparison requires every checkpoint "
+                "to use the same source dataset/init-state map."
+            )
+        for model in resolved:
+            if not model["eval_init_states_path"].is_file():
+                source = model["skill_dataset_dir"].parents[1].name
+                raise FileNotFoundError(
+                    f"oracle.episode_exact=true requires {model['eval_init_states_path']}. "
+                    f"Build it with stage1_eval/oracle_matching/run.sh {source}."
+                )
+
+    end_mode = str(_at(config, "terminator", "end_mode", default="or")).lower()
+    if end_mode not in {"termination", "progress", "or", "and"}:
+        raise ValueError("terminator.end_mode must be termination|progress|or|and.")
+    n_action_steps = int(
+        get_value(config, "n_action_steps", resolved[0]["policy"].get("n_action_steps", 10))
+    )
+    for model in resolved:
+        chunk_size = int(model["policy"].get("chunk_size", n_action_steps))
+        if not 1 <= n_action_steps <= chunk_size:
+            raise ValueError(
+                f"n_action_steps={n_action_steps} exceeds {model['label']}'s chunk_size={chunk_size}."
+            )
+
+    task_ids = get_value(config, "task_ids", list(range(10)))
+    if isinstance(task_ids, str):
+        task_ids = json.loads(task_ids)
+    if not isinstance(task_ids, list) or not task_ids:
+        raise ValueError("task_ids must be a non-empty JSON/YAML list.")
+    task_ids = [int(task_id) for task_id in task_ids]
+
+    output_name = str(get_value(config, "output_name", "") or "").strip()
+    output_name = _safe_name(
+        output_name or _default_output_name(resolved), field="output_name"
+    )
+    models_json = json.dumps(
+        [
+            {
+                key: (
+                    ""
+                    if key == "eval_init_states_path" and not episode_exact
+                    else str(value)
+                    if isinstance(value, Path)
+                    else value
+                )
+                for key, value in model.items()
+                if key != "policy"
+            }
+            for model in resolved
+        ],
+        separators=(",", ":"),
+    )
+    primary = resolved[0]
+    settings = {
+        "project_root": project_root,
+        "lerobot_root": project_root / "lerobot",
+        "models_json": models_json,
+        "model_count": len(resolved),
+        "models_per_row": int(get_value(config, "models_per_row", 2) or 0),
+        "policy_path": primary["policy_path"],
+        "fsq_path": primary["fsq_path"],
+        "skill_dataset_dir": primary["skill_dataset_dir"],
+        "eval_init_states_path": (
+            primary["eval_init_states_path"] if episode_exact else ""
+        ),
+        "skill_latents_path": primary["skill_latents_path"],
+        "raw_dataset_dir": primary["raw_dataset_dir"],
+        "dino_model_path": primary["dino_model_path"],
+        "terminator_dino_model_path": primary["terminator_dino_model_path"],
+        "tokenizer_path": primary["tokenizer_path"],
+        "eval_out_dir": eval_outputs_root / output_name,
+        "target_task": str(get_value(config, "target_task", "libero_goal")),
+        "task_ids": json.dumps(task_ids, separators=(",", ":")),
+        "eval_num_gpus": int(get_value(config, "eval_num_gpus", 1)),
+        "n_episodes": int(get_value(config, "n_episodes", 3)),
+        "eval_batch_size": int(get_value(config, "eval_batch_size", 1)),
+        "max_parallel_tasks": int(get_value(config, "max_parallel_tasks", 1)),
+        "n_action_steps": n_action_steps,
+        "advance_mode": primary["advance_mode"],
+        "skill_end_mode": end_mode,
+        "skill_end_threshold": float(
+            _at(config, "terminator", "end_threshold", default=0.5)
+        ),
+        "skill_end_progress_threshold": float(
+            _at(config, "terminator", "progress_threshold", default=0.95)
+        ),
+        "inference_skill_max_length": int(
+            _at(config, "terminator", "max_skill_length", default=150)
+        ),
+        "max_videos_per_task": int(_at(config, "video", "max_per_task", default=3)),
+        "video_frame_stride": int(_at(config, "video", "frame_stride", default=2)),
+        "video_fps": int(_at(config, "video", "fps", default=10)),
+        "skill_html": as_bool(get_value(config, "skill_html", True)),
+        "skill_html_train_samples": int(get_value(config, "skill_html_train_samples", 5)),
+        "wandb_enable": as_bool(_at(config, "logging", "wandb", "enable", default=True)),
+        "wandb_project": str(
+            _at(config, "logging", "wandb", "project", default="VLA_stage1_eval")
+        ),
+        "wandb_run_name": f"S1eval_{output_name}"
+        + (f"_{os.environ['TASK_TAG']}" if os.environ.get("TASK_TAG") else ""),
+    }
+    if settings["n_episodes"] <= 0 or settings["eval_batch_size"] <= 0:
+        raise ValueError("n_episodes and eval_batch_size must be positive.")
+    if settings["max_parallel_tasks"] != 1:
+        raise ValueError("Stage-1 policies are stateful; max_parallel_tasks must remain 1.")
+    settings.update(
+        {
+            "eval_partition": ",".join(
+                as_list(get_value(config, "train_partition", ["debug"]))
+            )
+            or "debug",
+            "eval_qos": str(get_value(config, "train_qos", "base_qos")),
+            "eval_gres": str(_at(config, "slurm", "gres", default="gpu:1")),
+            "eval_cpus_per_task": int(_at(config, "slurm", "cpus", default=8)),
+            "eval_mem": str(_at(config, "slurm", "memory", default="64G")),
+            "eval_time": str(_at(config, "slurm", "time", default="4:00:00")),
+            "eval_nodelist": str(get_value(config, "train_nodelist", "")),
+            "eval_exclude_nodes": ",".join(
+                as_list(get_value(config, "train_exclude_nodes", []))
+            ),
+        }
+    )
     return settings
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
-    ap.add_argument("--shell", action="store_true")
-    args = ap.parse_args()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
+    parser.add_argument("--shell", action="store_true")
+    args = parser.parse_args()
     settings = build_settings(load_config(args.config))
     if args.shell:
         print_shell(settings)
     else:
-        for k, v in settings.items():
-            print(f"{k}: {v}")
+        for key, value in settings.items():
+            print(f"{key}: {value}")
 
 
 if __name__ == "__main__":

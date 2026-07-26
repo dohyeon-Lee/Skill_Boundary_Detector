@@ -125,7 +125,11 @@ def parse_args() -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--config", type=Path, default=CONFIG_PATH)
-    parser.add_argument("--suite", choices=["libero_90", "libero_10"], required=True)
+    parser.add_argument(
+        "--suite",
+        choices=["libero_90", "libero_10", "libero_goal", "libero_spatial", "libero_object"],
+        required=True,
+    )
     parser.add_argument(
         "--source-root",
         type=Path,

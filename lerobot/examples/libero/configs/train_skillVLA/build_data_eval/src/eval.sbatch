@@ -29,6 +29,16 @@ else
 fi
 eval "$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/eval_config.py" --config "${EVAL_CONFIG_PATH}" --shell)"
 
+# eval_run_dir may point the eval at a different source dataset than the build_data yaml,
+# but SKILLSET_DIR (boundary curves) still comes from the build_data source. The seg folder
+# name is source-independent, so swap only the source component so the overlaid curve
+# matches the episodes actually being evaluated.
+EVAL_SOURCE="$(basename "${RAW_DATASET_DIR}")"
+if [[ "${SKILLSET_DIR}" == *"/_work/"* && "${SKILLSET_DIR%%/_work/*}" != */"${EVAL_SOURCE}" ]]; then
+  SKILLSET_DIR="$(dirname "${SKILLSET_DIR%%/_work/*}")/${EVAL_SOURCE}/_work/${SKILLSET_DIR#*/_work/}"
+  echo "SKILLSET_DIR rewritten for eval source '${EVAL_SOURCE}': ${SKILLSET_DIR}"
+fi
+
 cd "${LEROBOT_ROOT}"
 source "${PROJECT_ROOT}/.venv/bin/activate"
 source "${PROJECT_ROOT}/lerobot/examples/libero/configs/runtime_env.sh"
@@ -52,10 +62,10 @@ TASK_ARGS=()
 PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
   python -u "${SRC_DIR}/run_eval.py" \
     --skillvla_dir   "${SKILLVLA_DATASET_DIR}" \
-    --dino_model_path "${DINO_MODEL_PATH}" \
+    --dino_model_path "${DINO_MODEL_PATH:-${PROJECT_ROOT}/models/dinov3-vits16}" \
     --fsq_model      "${FSQ_COPY_PATH}" \
     --dataset_dir    "${RAW_DATASET_DIR}" \
-    --image_key      "${DINO_IMAGE_KEY}" \
+    --image_key      "${DINO_IMAGE_KEY:-observation.images.image}" \
     --out_dir        "${EVAL_DIR}" \
     --boundary_curves_dir "${SKILLSET_DIR}/curves" \
     "${RUN_ARGS[@]}" \

@@ -9,7 +9,7 @@ pi_base: models/pi05_base   # project_root(global_config) 기준 상대경로 �
 pi05_tokenizer: models/paligemma-3b-pt-224-tokenizer
 
 # ── pi05 PT ───────────────────────────────────────────────────
-pt_dataset: libero_90_full_full
+pt_dataset: libero_goal_full_full
 pt_batch_size: 16
 pt_num_gpus: 1
 pt_num_workers: 4

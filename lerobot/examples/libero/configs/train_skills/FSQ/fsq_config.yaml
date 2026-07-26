@@ -10,9 +10,6 @@ target_dataset: libero_90_full_full
 dp_run_name: libero_90_full_full_state_obs20
 dp_checkpoint: "100000"
 skillset_mode: std                   # spherical | full | without_gripper | std
-# Select the exact build_data artifact: 1 -> `_ms1`; the historical default 2
-# keeps the suffix-free path. Must match the value used to build the skillset.
-skillset_min_skills: 1
 # Exact manual artifact tag. Empty selects the canonical no-suffix skillset;
 # set `trialA` to train on `..._std_globalmean_trialA/skillset`.
 skillset_output_suffix: ""
@@ -22,10 +19,11 @@ fsq_dataset_root: FSQ_dataset
 fsq_inputs_name: FSQ_inputs
 skillset_name: skillset
 # ── FSQ model / run ──
-# {dp_tag} = the DP run that produced the skillset (dataset prefix stripped, e.g. state_obs20 /
-# dino8_obs10) → the FSQ folder shows WHICH DP it was trained on, not just its own grid.
-fsq_run_name: "{target_dataset}_{dp_tag}_{fsq_tag}_{fsq_vision_tag}_{fsq_terminator_tag}{fsq_encoder_input_suffix}{fsq_skill_cond_suffix}{fsq_exp_suffix}"
-fsq_exp: ""                 # v3 suffix prevents incompatible checkpoint auto-resume
+# Run name defaults to {target_dataset}_{dp_tag}_{fsq_tag}{fsq_exp_suffix} — e.g.
+# libero_90_full_full_state_obs20_std_global_ms1_fsq333. {dp_tag} = the DP run that
+# produced the skillset (dataset prefix stripped). Architecture knobs below are fixed
+# project-wide and no longer appear in the name; set fsq_exp to separate runs.
+fsq_exp: ""                 # suffix prevents incompatible checkpoint auto-resume
 fsq_levels: [3, 3, 3] # [5, 5, 5]    # [8, 8] | [5, 5, 5]  
 
 # FSQ trajectory encoder input. optimal = zero-grounded trajectory plus ONE extra learned token

@@ -1,3 +1,4 @@
+import json
 import sys
 from pathlib import Path
 
@@ -5,14 +6,32 @@ from pathlib import Path
 _STAGE1_SRC = Path(__file__).resolve().parents[2] / "examples/libero/configs/train_skillVLA/stage1/src"
 sys.path.insert(0, str(_STAGE1_SRC))
 
-from stage1_train_config import _anchor_weight_run_suffix, _lora_targets_run_suffix
+from stage1_train_config import _read_dataset_contract
 
 
-def test_attention_only_targets_keep_historical_run_name() -> None:
-    assert _lora_targets_run_suffix("q,k,v,o") == ""
+def test_stage1_reads_skill_space_from_dataset_metadata(tmp_path: Path) -> None:
+    metadata_dir = tmp_path / "meta"
+    metadata_dir.mkdir()
+    (metadata_dir / "info.json").write_text(
+        json.dumps(
+            {
+                "skill_fsq_levels": [3, 3, 3],
+                "skill_pmax": 15,
+                "skill_jitter_distribution": "half-normal",
+                "features": {
+                    "observation.state": {"shape": [8]},
+                    "action": {"shape": [7]},
+                },
+            }
+        )
+    )
 
+    contract = _read_dataset_contract(tmp_path, "FSQ333_example")
 
-def test_expanded_targets_and_relaxed_anchor_are_tagged() -> None:
-    assert _lora_targets_run_suffix("q,k,v,o,mlp,action_out") == "_ltq-k-v-o-mlp-actionout"
-    assert _anchor_weight_run_suffix(1.0) == ""
-    assert _anchor_weight_run_suffix(0.5) == "_aw0p5"
+    assert contract == {
+        "levels": [3, 3, 3],
+        "state_dim": 8,
+        "action_dim": 7,
+        "jitter_pmax": 15,
+        "jitter_distribution": "half_normal",
+    }

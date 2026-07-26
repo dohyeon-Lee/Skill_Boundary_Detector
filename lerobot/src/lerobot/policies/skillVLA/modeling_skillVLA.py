@@ -64,10 +64,10 @@ from lerobot.policies.pi05.lora import (
     target_names_from_spec,
 )
 from lerobot.policies.pi_gemma import _gated_residual, add_broadcast_condition, layernorm_forward
-from lerobot.policies.skill_expert.modeling_skill_expert import (
-    _build_gemma,
-    _build_siglip_vision_tower,
-    _load_raw_state_dict,
+from lerobot.policies.skill_expert.modeling_utils import (
+    build_gemma as _build_gemma,
+    build_siglip_vision_tower as _build_siglip_vision_tower,
+    load_raw_state_dict as _load_raw_state_dict,
 )
 from lerobot.utils.constants import (
     ACTION,
@@ -2482,27 +2482,17 @@ class SkillVLAPolicy(PI05Policy):
             # the vlm_dropout B batches instead of a Stage-1 pretrain).
             from lerobot.policies.skill_expert.configuration_skill_expert import SkillExpertConfig  # noqa: PLC0415
 
-            direct_stage0 = (
-                getattr(config, "pt_stage", None) == "stage0"
-                or (
-                    getattr(config, "pt_stage", None) == "skill"
-                    and str(getattr(config, "stage3_parent_stage", "stage2")) == "stage0"
-                )
-            )
             return SkillExpertConfig(
-                vision_backbone=str(getattr(config, "s1_vision_backbone", "siglip")),
+                vision_backbone=str(getattr(config, "s1_vision_backbone", "dino")),
                 dino_model_path=str(getattr(config, "s1_dino_model_path", "models/dinov3-vits16")),
                 dino_image_size=int(getattr(config, "s1_dino_image_size", 224)),
-                siglip_image_size=int(getattr(config, "s1_siglip_image_size", 224)),
-                cond_encoder_variant=getattr(config, "s1_cond_encoder_variant", None),
-                state_cond_mode=str(getattr(config, "s1_state_cond_mode", "state")),
+                cond_encoder_variant=str(
+                    getattr(config, "s1_cond_encoder_variant", None)
+                    or config.action_expert_variant
+                ),
+                state_cond_mode=str(getattr(config, "s1_state_cond_mode", "broadcast")),
                 skill_fsq_levels=list(config.skill_fsq_levels),
                 skill_vocab_size=int(math.prod(config.skill_fsq_levels)),
-                lora_expert=(direct_stage0 and bool(getattr(config, "stage0_expert_lora", True))),
-                lora_targets=str(getattr(config, "stage0_expert_lora_targets", "q,k,v,o,mlp,action_out")),
-                lora_rank=int(getattr(config, "stage0_expert_lora_rank", 8)),
-                lora_alpha=float(getattr(config, "stage0_expert_lora_alpha", 16.0)),
-                lora_dropout=float(getattr(config, "stage0_expert_lora_dropout", 0.0)),
                 action_expert_variant=config.action_expert_variant,
                 max_state_dim=config.max_state_dim,
                 max_action_dim=config.max_action_dim,

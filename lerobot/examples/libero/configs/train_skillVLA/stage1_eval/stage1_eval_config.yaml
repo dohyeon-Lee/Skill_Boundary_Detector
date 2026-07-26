@@ -1,108 +1,64 @@
-# SkillVLA Stage-1 (skill_expert) closed-loop ORACLE eval on LIBERO sim.
-#
-# Oracle: no skill predictor in Stage 1, so the GT skill sequence is supplied; the FSQ terminator
-# advances the skill. EPISODE-EXACT: each rollout resets the sim to a specific dataset episode's
-# MuJoCo init_state (eval_init_states.npz, built by oracle_matching/) and is fed THAT episode's GT
-# skill sequence. Needs SyncVectorEnv (eval.use_async_envs=false, the default here).
-#
-# =========================================================================================
-# 사용법 (이 폴더에서 실행; 아래 model_dir 기준)
-# =========================================================================================
-# ① 클로즈드루프 oracle eval (sim, GT skill 시퀀스 주입):
-#      ./submit_eval.sh                          # model_dir + checkpoint 사용
-#
-# teacher-forced (sim 없음, skill 민감도 swap_delta / win_rate)는 별도 비교 모듈로 이동:
-#      TF_compare/  →  yaml에 모델들 나열 후 ./submit_tf_compare.sh  (여러 모델/체크포인트 비교표)
-#      해석: win_rate 0.5 = skill 무시 / →1.0 = skill이 action을 조향 (FSQ 디코더 기준 0.94)
-# =========================================================================================
+# Renewed Stage-1 VSA multi-model closed-loop evaluation.
+# Checkpoints follow global outputs_root. Eval artifacts are kept locally under
+# stage1_eval/outputs/ so evaluation never mixes with training outputs.
 
-# ── Paths (project_root/dataset_root come from configs/global_config.yaml) ──
-skillvla_dataset_root: skillvla_dataset  # .../{skillvla_dataset_root}/{source_dataset}/{run_tag}/
-# outputs_root comes from configs/global_config.yaml: trained S1 under {project_root}/{outputs_root}/skillVLA_stage1/.
-# The DP-branch training emitter names runs WITHOUT the source prefix ({run_tag}_{backbone}_batch{N}_{state_cond}),
-# so source_dataset (which locates run_dir/skillvla, FSQ.pt, eval_init_states.npz) is read from HERE.
-source_dataset: libero_90_full_full
-
-# ── Models ───────────────────────────────────────────────────────────────────────────────
-# `models[].kind`:
-#   fsq_expert = load ONLY action_expert.* from the SkillVLA data run's FSQ.pt (no image/cond model).
-#                This remains the standalone pre-Stage-1 FSQ-only evaluation path. Identify it by
-#                run_tag under skillvla_dataset/{source_dataset}/.
-#   stage1     = ONE trained Stage-1 checkpoint under {outputs_root}/skillVLA_stage1/. It automatically
-#                expands into three side-by-side panels:
-#                  A          = image cond + active expert LoRA (normal inference)
-#                  B          = active expert LoRA, but image/cond stream and its attention are absent
-#                  Frozen-FSQ = raw frozen FSQ action expert (the same Stage-1 run's FSQ.pt)
-#                The three panels share that Stage-1 checkpoint's co-trained terminator so they differ
-#                only in the action route. `modes: a,b,expert` is the default; use e.g. `modes: a` only
-#                for a legacy single-panel debug run.
-# Each entry declares its own `checkpoint` and `advance_mode` (gt | terminator).
-# 1 stage1 entry → 1×3 grid. 2 stage1 entries → 2×3 grid (each row: A / B / Frozen-FSQ). Every panel
-# rolls out the SAME scenes, then is glued into ONE labelled clip under outputs/.../side_by_side/.
-# Set `checkpoint: last` for the newest saved model, or a numeric step for an explicit training-progress
-# comparison. Label is optional but should stay short because it becomes the video panel title.
-# Layout: models_per_row = 한 행에 넣을 패널 수 (0 = 전부 한 행). 리스트 순서대로 행을 채움 —
-#   3이면 위 3개=1행, 다음 3개=2행 (6개=2×3, 9개=3×3, ...); 마지막 행이 모자라면 검은 패널로 패딩.
+# Each entry is one video/metric panel. Duplicate a checkpoint with different
+# skill_source values to compare oracle skills against its learned predictor.
 models:
-#   - {kind: fsq_expert, run_tag: FSQ555_dino_frozen_small_optimal_vsa_state_skill_125_pt_snap10,
-#      advance_mode: gt, label: FSQopt-expert_GT}
-#   - {kind: fsq_expert, run_tag: FSQ555_dino_frozen_small_optimal_vsa_state_skill_125_pt_snap10,
-#      advance_mode: terminator, label: FSQopt-expert_TERM}
+  - model_dir: FSQ333_dino_frozen_small_optimal_broadcast_175_std_pt_snap10_ms1_pmax15_halfnormal_vsa_stage1_dino_frozen_skillpred_term
+    checkpoint: last
+    skill_source: gt
+    advance_mode: terminator
+    label: Stage1-GT
+  - model_dir: FSQ333_dino_frozen_small_optimal_broadcast_175_std_pt_snap10_ms1_pmax15_halfnormal_vsa_stage1_dino_frozen_skillpred_term
+    checkpoint: last
+    skill_source: predictor
+    advance_mode: terminator
+    label: Stage1-Predictor
+  - model_dir: FSQ333_dino_frozen_small_optimal_broadcast_175_std_pt_snap10_ms1_pmax15_halfnormal_vsa_stage1_dino_tuned_skillpred_term
+    checkpoint: last
+    skill_source: gt
+    advance_mode: terminator
+    label: Stage1-GT-tuned
+  - model_dir: FSQ333_dino_frozen_small_optimal_broadcast_175_std_pt_snap10_ms1_pmax15_halfnormal_vsa_stage1_dino_tuned_skillpred_term
+    checkpoint: last
+    skill_source: predictor
+    advance_mode: terminator
+    label: Stage1-Predictor-tuned
+# Used only when an entry omits the corresponding field.
+checkpoint: last
+skill_source: gt              # gt | predictor
+models_per_row: 2
 
-#   Two trained Stage-1 entries produce a 2×3 grid. Keep labels short: they are video panel titles.
-  # - {kind: stage1, model_dir: FSQ333_dino_frozen_small_optimal_vsa_state_skill_125_pt_snap10_dino_batch128_state_skill_lorae8_ltq-k-v-o-mlp-actionout_weighted_sw0p5_ew5_termvis_tuned, checkpoint: "005000", advance_mode: terminator, label: 0.5to5_termvis_tuned}
-  # - {kind: stage1, model_dir: FSQ333_dino_frozen_small_optimal_vsa_state_skill_125_pt_snap10_dino_freeze_batch128_state_skill_lorae8_if50, checkpoint: "020000", advance_mode: terminator, label: 333_freeze_if50}
-  - {kind: stage1, model_dir: FSQ333_dino_frozen_small_optimal_vsa_state_skill_125_std_pt_snap10_dino_batch128_state_skill_lorae8_ltq-k-v-o-mlp-actionout_weighted_termvis_tuned, checkpoint: "last", advance_mode: terminator, label: 333_origin}
-  - {kind: stage1, model_dir: FSQ333_dino_frozen_small_optimal_vsa_state_skill_weighted3_125_std_pt_snap10_dino_batch128_state_skill_lorae8_ltq-k-v-o-mlp-actionout_weighted_termvis_tuned, checkpoint: "last", advance_mode: terminator, label: 333_weighted}
-models_per_row: 3              # stage1 triplet = A / B / Frozen-FSQ; two checkpoints → 2 rows × 3 columns
-eval_exp: "last"                   # optional free-form tag appended to the output folder
+# Empty => timestamped folder under stage1_eval/outputs/.
+output_name: ""
 
-# FSQ TERMINATOR's raw-image DINO only. The policy's own vision backbone is NOT set here —
-# it comes from the checkpoint's saved config and must match the trained weights (vits/vitb/...).
-terminator_dino_model_path: models/dinov3-vitl16   # project_root 기준 상대경로 → 서버마다 자동
-# Terminator 체크포인트 오버라이드: 비우면 = 학습 run의 FSQ.pt(기본); 채우면 다른 run의 FSQ.pt를 로드해
-# 비교 (code→z_q는 같은 frozen 코드북이라 drop-in). 출력 폴더에 _refterm{step} 태그가 붙어 안 섞임.
-terminator_path: ""   # 예: outputs_filtered/skillVLA_stage1/{run_name}/checkpoints/010000/FSQ.pt
-
-# ── Eval rollout ──
-target_task: libero_90
-task_ids: "[0,1,2,3,4,5,6,7,8,9]"
-# GPU(=Slurm 잡) 개수: task_ids를 연속 청크로 N등분해 1-GPU 잡 N개 제출 (프로세스 분리라 안전).
-# 같은 out 폴더 공유(태스크별 하위폴더는 안 겹침); 요약은 eval_info_t{a}-{b}.json으로 잡별 저장,
-# wandb run도 _t{a}-{b} 서픽스로 분리. 1 = 기존처럼 잡 하나. (salloc 안에서 실행 시 무시됨.)
+target_task: libero_goal
+task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
 eval_num_gpus: 10
-n_episodes: 3                 # episodes (init states) per task
-n_action_steps: 5
+n_episodes: 3
 eval_batch_size: 1
-max_parallel_tasks: 1         # 잡 내부 스레드 병렬(공유 policy state 오염 위험) — 1 고정 권장; 분할은 위 eval_num_gpus로
+max_parallel_tasks: 1
+n_action_steps: 10
 
-# ── Terminator settings (used by entries with advance_mode: terminator) ──
-# Which terminator signal(s) end a skill:
-#   termination = term-prob >= skill_end_threshold | progress = progress >= skill_end_progress_threshold
-#   or          = EITHER crosses (robust: the two heads peak at different steps) | and = BOTH at same step
-skill_end_mode: or
-skill_end_threshold: 0.5            # termination-prob threshold (termination/or/and)
-skill_end_progress_threshold: 0.95   # progress threshold (progress/or/and)
-inference_skill_max_length: 150    # force-advance skill after N steps (0 = off; terminator mode)
-# Use the checkpoint's CO-TRAINED terminator (fine-tuned via train_terminator) instead of raw FSQ.pt.
-# Auto-falls back to FSQ.pt if the ckpt has none, or if terminator_path (above) is set.
-eval_use_trained_terminator: true
+oracle:
+  # false: normal LIBERO reset states, GT/reference sequences matched by language.
+  # true: dataset episode-exact reset; run oracle_matching/run.sh first.
+  episode_exact: true
+  advance_mode: terminator       # per-model override allowed; gt requires skill_source=gt
 
-# ── Video ──
-max_videos_per_task: 5
-video_frame_stride: 2
-video_fps: 10
+terminator:
+  # Every panel uses the co-trained terminator inside its own checkpoint.
+  end_mode: or                   # termination | progress | or | and
+  end_threshold: 0.5
+  progress_threshold: 0.95
+  max_skill_length: 150
 
-# ── Skill HTML (FSQ cube + used skills + per-skill progress + FSQ-space samples) ──
+video: {max_per_task: 3, frame_stride: 2, fps: 10}
 skill_html: true
-skill_html_train_samples: 5      # how many training-frame samples to show per FSQ code
+skill_html_train_samples: 5
 
-# ── wandb ──
-wandb_enable: true               # false = no wandb upload
-wandb_project: VLA_stage1_eval
+logging:
+  wandb: {enable: true, project: VLA_stage1_eval}
 
-# ── Slurm (partition/qos/nodelist/exclude_nodes come from configs/global_config.yaml) ──
-eval_gres: gpu:1
-eval_cpus_per_task: 8
-eval_mem: 32G
-eval_time: "1:00:00"
+slurm: {gres: "gpu:1", cpus: 8, memory: 64G, time: "4:00:00"}

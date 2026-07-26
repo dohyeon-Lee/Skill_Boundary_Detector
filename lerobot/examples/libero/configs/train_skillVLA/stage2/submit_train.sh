@@ -1,16 +1,13 @@
 #!/usr/bin/env bash
-# Submit SkillVLA Stage-2 training (policy.type=skill_vla).
-#   (login) resolve config + check artifacts → sbatch train.sbatch
-# Prereqs: the skillvla dataset (configs/train_skillVLA/build_data) and a Stage-1 skill_expert
-# checkpoint (configs/train_skillVLA/stage1, named by stage1_run_name in the yaml).
+# Resolve and submit clean Stage-2 likelihood training.
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # stage2
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC_DIR="${SCRIPT_DIR}/src"
 CONFIG_PATH="${STAGE2_TRAIN_CONFIG:-${SCRIPT_DIR}/stage2_train_config.yaml}"
 
-# Freeze the config so this job ignores later edits to the repo yaml (see configs/snapshot_config.sh).
-_lib="$(dirname "${CONFIG_PATH}")"; while [ ! -f "${_lib}/snapshot_config.sh" ]; do _lib="$(dirname "${_lib}")"; done
+_lib="$(dirname "${CONFIG_PATH}")"
+while [ ! -f "${_lib}/snapshot_config.sh" ]; do _lib="$(dirname "${_lib}")"; done
 source "${_lib}/snapshot_config.sh"
 CONFIG_PATH="$(snapshot_config "${CONFIG_PATH}")"
 
@@ -18,29 +15,11 @@ BOOTSTRAP_PYTHON="${SCRIPT_DIR}/../../../../../../.venv/bin/python"
 if [ ! -x "${BOOTSTRAP_PYTHON}" ]; then
   BOOTSTRAP_PYTHON=python3
 fi
-
-# Resolve the config → FREEZE the resolved env to a per-submit snapshot the JOB sources verbatim, so the
-# job NEVER re-runs the emitter on a (possibly deleted/edited) yaml at start. Emitter failure surfaces
-# HERE at submit (set -e aborts), not as a confusing job-side traceback.
 mkdir -p "${SCRIPT_DIR}/logs"
 STAGE2_ENV_SNAPSHOT="${SCRIPT_DIR}/logs/stage2_env_$(date +%Y%m%d_%H%M%S)_$$.sh"
-"${BOOTSTRAP_PYTHON}" "${SRC_DIR}/stage2_train_config.py" --config "${CONFIG_PATH}" --shell > "${STAGE2_ENV_SNAPSHOT}"
+"${BOOTSTRAP_PYTHON}" "${SRC_DIR}/stage2_train_config.py" \
+  --config "${CONFIG_PATH}" --shell > "${STAGE2_ENV_SNAPSHOT}"
 source "${STAGE2_ENV_SNAPSHOT}"
-
-# ── prerequisite artifacts ──
-# skillvla dataset ← configs/train_skillVLA/build_data ; Stage-1 checkpoint ← configs/train_skillVLA/stage1.
-# FSQ.pt is eval-only (terminator) so it is NOT required to train.
-if [ ! -e "${SKILLVLA_DATASET_DIR}" ]; then
-  echo "Missing skillvla dataset: ${SKILLVLA_DATASET_DIR}" >&2
-  echo "Build it first: configs/train_skillVLA/build_data/submit_build_all.sh" >&2
-  exit 1
-fi
-# SCRATCH (stage1_run_name: none_*) → no Stage-1 checkpoint to check.
-if [ "${SCRATCH}" != "true" ] && [ ! -e "${STAGE1_CHECKPOINT_PATH}" ]; then
-  echo "Missing Stage-1 checkpoint: ${STAGE1_CHECKPOINT_PATH}" >&2
-  echo "Train Stage-1 first: configs/train_skillVLA/stage1/submit_train.sh (set stage1_run_name in the yaml)" >&2
-  exit 1
-fi
 
 SBATCH_ARGS=(
   --partition="${TRAIN_PARTITION}"
@@ -50,37 +29,15 @@ SBATCH_ARGS=(
   --mem="${TRAIN_MEM}"
   --time="${TRAIN_TIME}"
 )
-if [ -n "${TRAIN_NODELIST}" ]; then
-  SBATCH_ARGS+=(--nodelist="${TRAIN_NODELIST}")
-fi
-if [ -n "${TRAIN_EXCLUDE_NODES}" ]; then
-  SBATCH_ARGS+=(--exclude="${TRAIN_EXCLUDE_NODES}")
-fi
+if [ -n "${TRAIN_NODELIST}" ]; then SBATCH_ARGS+=(--nodelist="${TRAIN_NODELIST}"); fi
+if [ -n "${TRAIN_EXCLUDE_NODES}" ]; then SBATCH_ARGS+=(--exclude="${TRAIN_EXCLUDE_NODES}"); fi
+
+echo "Submit Stage-2 likelihood"
+echo "  run     : ${PT_RUN_NAME}"
+echo "  dataset : ${SKILLVLA_DATASET_DIR}"
+echo "  prior   : ${STAGE1_CHECKPOINT_PATH}"
+echo "  output  : ${PT_OUTPUT_DIR}"
 
 cd "${SCRIPT_DIR}"
-mkdir -p logs
-
-echo "Submit SkillVLA Stage-2"
-echo "  run      : ${PT_RUN_NAME}  (arch=joint)"
-echo "  dataset  : ${SKILLVLA_DATASET_DIR}"
-if [ "${SCRATCH}" = "true" ]; then
-  echo "  expert   : SCRATCH (no Stage-1; ${S1_VISION_BACKBONE}/${S1_STATE_COND_MODE})"
-else
-  echo "  expert   : ${STAGE1_CHECKPOINT_PATH}"
-fi
-echo "  output   : ${PT_OUTPUT_DIR}"
-echo "  slurm    : partition=${TRAIN_PARTITION} qos=${TRAIN_QOS} gres=${TRAIN_GRES} mem=${TRAIN_MEM}"
-
-if [ -n "${SLURM_JOB_ID:-}" ]; then
-  # Inside an existing allocation (e.g. salloc) → reuse the held GPU as a job
-  # step instead of queueing a fresh job. Resources come from the allocation,
-  # so SBATCH_ARGS are ignored here; the config snapshot still applies.
-  # NB: training runs in the FOREGROUND of this shell until it finishes.
-  echo "  mode     : srun (reusing allocation ${SLURM_JOB_ID})"
-  STAGE2_TRAIN_CONFIG="${CONFIG_PATH}" STAGE2_ENV_SNAPSHOT="${STAGE2_ENV_SNAPSHOT}" \
-    srun "${SRC_DIR}/train.sbatch"
-else
-  echo "  mode     : sbatch (new job)"
-  STAGE2_TRAIN_CONFIG="${CONFIG_PATH}" STAGE2_ENV_SNAPSHOT="${STAGE2_ENV_SNAPSHOT}" \
-    sbatch "${SBATCH_ARGS[@]}" "${SRC_DIR}/train.sbatch"
-fi
+STAGE2_TRAIN_CONFIG="${CONFIG_PATH}" STAGE2_ENV_SNAPSHOT="${STAGE2_ENV_SNAPSHOT}" \
+  sbatch "${SBATCH_ARGS[@]}" "${SRC_DIR}/train.sbatch"

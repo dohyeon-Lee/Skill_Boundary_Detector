@@ -15,6 +15,8 @@ Examples:
   python build_training_dataset.py --dataset libero_90_full_full --task-range 00to20 --episodes-per-task 10
   python build_training_dataset.py --dataset libero_10_full_full --task-range full --episodes-per-task 5
   python build_training_dataset.py --dataset libero_90_full_full --task-range task00-task30 --episodes-per-task full
+  python build_training_dataset.py --dataset libero_90_full_full --task-range full --episodes-per-task firsthalf
+  python build_training_dataset.py --dataset libero_90_full_full --task-range full --episodes-per-task lasthalf
 """
 
 from __future__ import annotations
@@ -94,20 +96,22 @@ def parse_task_range(raw: str, available_tasks: list[int]) -> tuple[list[int], s
     return requested, f"{start:02d}to{end:02d}"
 
 
-def parse_episodes_per_task(raw: str) -> tuple[int | None, str]:
+def parse_episodes_per_task(raw: str) -> tuple[int | str | None, str]:
     text = raw.strip().lower()
     if text == "full":
         return None, "full"
+    if text in ("firsthalf", "lasthalf"):
+        return text, text
     count = int(text)
     if count <= 0:
-        raise ValueError("--episodes-per-task must be a positive integer or 'full'")
+        raise ValueError("--episodes-per-task must be a positive integer, 'full', 'firsthalf', or 'lasthalf'")
     return count, str(count)
 
 
 def select_episodes(
     data_df: pd.DataFrame,
     task_ids: list[int],
-    episodes_per_task: int | None,
+    episodes_per_task: int | str | None,
     allow_fewer: bool,
 ) -> list[int]:
     ep_task = (
@@ -120,6 +124,17 @@ def select_episodes(
         episodes = ep_task.loc[ep_task["task_index"] == task_id, "episode_index"].tolist()
         if episodes_per_task is None:
             keep = episodes
+        elif episodes_per_task in ("firsthalf", "lasthalf"):
+            # 태스크별 에피소드를 절반으로 분할. 홀수면 lasthalf가 하나 더 가져간다
+            # (n=50: first 0..24 / last 25..49, n=51: first 25개 / last 26개).
+            # 두 분할은 서로소이며 합치면 full — 같은 소스로 두 번 돌려 train/heldout 쌍을 만든다.
+            half = len(episodes) // 2
+            if half == 0 and episodes_per_task == "firsthalf":
+                raise ValueError(
+                    f"Task {task_id:02d} has only {len(episodes)} episode(s) — "
+                    "firsthalf would be empty."
+                )
+            keep = episodes[:half] if episodes_per_task == "firsthalf" else episodes[half:]
         else:
             if len(episodes) < episodes_per_task and not allow_fewer:
                 raise ValueError(
@@ -259,7 +274,9 @@ def build_subset(
     video_keys = [key for key, value in info["features"].items() if value.get("dtype") == "video"]
     for video_key in video_keys:
         (dst / "videos" / video_key / "chunk-000").mkdir(parents=True)
-        for old_ep, new_ep in ep_map.items():
+        for done, (old_ep, new_ep) in enumerate(ep_map.items(), start=1):
+            if done % 100 == 0 or done == len(ep_map):
+                print(f"  trim {video_key}: {done}/{len(ep_map)}")
             ep_row = episodes_df[episodes_df["episode_index"] == old_ep].iloc[0]
             src_chunk = int(ep_row[f"videos/{video_key}/chunk_index"])
             src_file = int(ep_row[f"videos/{video_key}/file_index"])
@@ -300,6 +317,7 @@ def build_subset(
     subset_eps["data/file_index"] = 0
     subset_eps["meta/episodes/chunk_index"] = 0
     subset_eps["meta/episodes/file_index"] = 0
+    print("  episode metadata + stats ...")
     subset_eps = refresh_episode_stats(subset_eps, subset_data)
 
     (dst / "meta/episodes/chunk-000").mkdir(parents=True)
@@ -357,7 +375,7 @@ def main() -> None:
     parser.add_argument(
         "--episodes-per-task",
         default=str(get_value(cfg, "build_episodes_per_task", "full")),
-        help="full or the number of episodes to keep per task",
+        help="full, a number, or firsthalf/lasthalf (태스크별 앞/뒤 절반; 홀수면 lasthalf가 +1)",
     )
     parser.add_argument("--src-root", type=Path, default=default_root)
     parser.add_argument("--dst-root", type=Path, default=default_root)

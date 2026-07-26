@@ -44,10 +44,10 @@ fi
 cd "${SCRIPT_DIR}"
 mkdir -p logs
 
-echo "Submit Stage-1 (skill_expert)"
+echo "Submit Stage-1 VSA (skill_expert)"
 echo "  run      : ${PT_RUN_NAME}"
 echo "  dataset  : ${SKILLVLA_DATASET_DIR}"
-echo "  init     : ${PI_BASE:-scratch}"
+echo "  expert   : full fine-tuning from ${PI_BASE}"
 echo "  output   : ${PT_OUTPUT_DIR}"
 echo "  slurm    : partition=${TRAIN_PARTITION} qos=${TRAIN_QOS} gres=${TRAIN_GRES} mem=${TRAIN_MEM}"
 

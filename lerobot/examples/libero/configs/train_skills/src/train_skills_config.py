@@ -183,8 +183,8 @@ def resolve_skillset_min_skills(cfg: dict[str, Any], project_root: Path) -> int:
             / "train_skills" / "build_data" / "build_data_config.yaml"
         )
         if build_cfg.is_file():
-            value = get_value(load_config(build_cfg), "skillset_min_skills", 2)
-    min_skills = int(value if value is not None else 2)
+            value = get_value(load_config(build_cfg), "skillset_min_skills", 1)
+    min_skills = int(value if value is not None else 1)
     if min_skills < 1:
         raise ValueError(f"skillset_min_skills must be >= 1, got {min_skills}.")
     return min_skills
@@ -369,9 +369,8 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
     if skillset_boundary_threshold_mode == "global_mean":
         skillset_threshold_suffix = "_globalref" if skillset_global_threshold_source else "_globalmean"
     skillset_output_suffix = resolve_skillset_output_suffix(cfg, root)
-    # Preserve the historical default (2) name, while isolating any setting
-    # that changes episode inclusion.  This follows the existing `_msN`
-    # convention used by the SkillVLA data builder.
+    # Default is 1 (`_ms1`, the SkillVLA `_msN` convention); 2 keeps the
+    # historical suffix-free name so old artifacts stay addressable.
     skillset_min_skills_suffix = "" if skillset_min_skills == 2 else f"_ms{skillset_min_skills}"
     skillset_suffix = (
         probe_settings["skillset_probe_suffix"]
@@ -444,12 +443,14 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         dp_tag += "_global"
     dp_tag += skillset_min_skills_suffix
     dp_tag += skillset_output_suffix
+    # Architecture knobs (vision backbone/freeze, terminator, encoder input mode,
+    # skill cond mode, weighted loss) are fixed project-wide and deliberately NOT
+    # part of the name anymore — use fsq_exp to separate runs if one is ever varied.
     fsq_run_template = str(
         get_value(
             cfg,
             "fsq_run_name",
-            "{target_dataset}_{dp_tag}_{fsq_tag}_{fsq_vision_tag}_{fsq_terminator_tag}"
-            "{fsq_encoder_input_suffix}{fsq_skill_cond_suffix}{weighted_suffix}{fsq_exp_suffix}",
+            "{target_dataset}_{dp_tag}_{fsq_tag}{fsq_exp_suffix}",
         )
     )
     fsq_run_name = fsq_run_template.format(

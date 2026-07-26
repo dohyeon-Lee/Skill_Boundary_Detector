@@ -1,20 +1,15 @@
 #!/usr/bin/env bash
-# SkillVLA Stage-2 training: policy.type=skill_vla.
-# VLM (PaliGemma, warm-started from pi05_base) predicts the skill; an action expert warm-started
-# from a Stage-1 skill_expert checkpoint flow-matches the action chunk. expert_arch (A/B) /
-# vision_backbone / skill_vocab are read from the Stage-1 checkpoint config by the model. Resumes
-# from a Stage-2 checkpoint if one exists.
-#SBATCH --job-name=stage2
+# Stage 2: frozen Stage-1 VSA prior + four language-conditioned likelihood blocks.
+#SBATCH --job-name=stage2_likelihood
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=16
-#SBATCH --mem=128G
+#SBATCH --mem=256G
 #SBATCH --time=48:00:00
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 set -euo pipefail
-mkdir -p logs
 
-# Under Slurm the script runs from a spool copy → anchor on SLURM_SUBMIT_DIR (the stage2 dir).
+mkdir -p logs
 SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 SRC_DIR="${SUBMIT_DIR}/src"
 CONFIG_PATH="${STAGE2_TRAIN_CONFIG:-${SUBMIT_DIR}/stage2_train_config.yaml}"
@@ -23,9 +18,6 @@ BOOTSTRAP_PYTHON="${SUBMIT_DIR}/../../../../../../.venv/bin/python"
 if [ ! -x "${BOOTSTRAP_PYTHON}" ]; then
   BOOTSTRAP_PYTHON=python3
 fi
-
-# Prefer the submit-time env snapshot (frozen resolved env) → the job never re-runs the emitter on a
-# live/edited/deleted yaml at start. Fallback to a fresh resolve only when run directly (no snapshot).
 if [ -n "${STAGE2_ENV_SNAPSHOT:-}" ] && [ -f "${STAGE2_ENV_SNAPSHOT}" ]; then
   source "${STAGE2_ENV_SNAPSHOT}"
 else
@@ -35,146 +27,103 @@ fi
 cd "${LEROBOT_ROOT}"
 source "${PROJECT_ROOT}/.venv/bin/activate"
 source "${PROJECT_ROOT}/lerobot/examples/libero/configs/runtime_env.sh"
-unset LD_LIBRARY_PATH          # avoid system cuDNN shadowing the bundled one
+export PYTHONPATH="${LEROBOT_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
+unset LD_LIBRARY_PATH
 
-echo "START STAGE-2 (skill_vla)"
-echo "Node     : ${SLURMD_NODENAME:-local}"
-echo "dataset  : ${SKILLVLA_DATASET_DIR}"
-echo "VLM init : ${PI_BASE}"
-if [ "${SCRATCH}" = "true" ]; then
-  echo "expert   : SCRATCH (no Stage-1; ${S1_VISION_BACKBONE}/${S1_STATE_COND_MODE}, VSA carved by vdrop)"
-else
-  echo "expert   : ${STAGE1_CHECKPOINT_PATH}  (arch=joint)"
-fi
-echo "FSQ(eval): ${FSQ_CKPT}"
-echo "term     : train_terminator=${TRAIN_TERMINATOR}   dino=ONLINE(${TERMINATOR_DINO_MODEL_PATH})"
-echo "output   : ${PT_OUTPUT_DIR}   lr/bs: ${LR}/${BATCH_SIZE}"
-nvidia-smi || true
+echo "START STAGE 2 LIKELIHOOD"
+echo "dataset : ${SKILLVLA_DATASET_DIR}"
+echo "prior   : ${STAGE1_CHECKPOINT_PATH} (fully frozen)"
+echo "train   : VLM projection + ${LIKELIHOOD_NUM_LAYERS} blocks + action head"
+echo "skill   : ${TRAINING_SKILL_SOURCE}"
+echo "aux     : predictor=${FINETUNE_SKILL_PREDICTOR}, terminator=${FINETUNE_TERMINATOR}"
+echo "output  : ${PT_OUTPUT_DIR}"
 
 if [ ! -e "${SKILLVLA_DATASET_DIR}" ]; then
-  echo "Missing skillvla dataset: ${SKILLVLA_DATASET_DIR}  (run configs/train_skillVLA/build_data first)" >&2
+  echo "Missing Stage-2 dataset: ${SKILLVLA_DATASET_DIR}" >&2
   exit 1
 fi
-if [ "${SCRATCH}" != "true" ] && [ ! -e "${STAGE1_CHECKPOINT_PATH}" ]; then
-  echo "Missing Stage-1 checkpoint: ${STAGE1_CHECKPOINT_PATH}  (run configs/train_skillVLA/stage1 first)" >&2
-  exit 1
-fi
-# Resume if a Stage-2 checkpoint exists; otherwise wipe a stale (incomplete) output dir.
+
 CONFIG_JSON="${PT_OUTPUT_DIR}/checkpoints/last/pretrained_model/train_config.json"
 RESUME_ARGS=()
 if [ -f "${CONFIG_JSON}" ]; then
-  echo "Checkpoint found → resuming from ${CONFIG_JSON}"
+  echo "Checkpoint found; resuming from ${CONFIG_JSON}"
   RESUME_ARGS=(--resume=true --config_path="${CONFIG_JSON}")
-elif [ -d "${PT_OUTPUT_DIR}" ]; then
-  echo "No checkpoint → removing stale ${PT_OUTPUT_DIR} and starting fresh."
-  rm -rf "${PT_OUTPUT_DIR}"
+elif [ -e "${PT_OUTPUT_DIR}" ]; then
+  echo "Output exists without a resumable checkpoint: ${PT_OUTPUT_DIR}" >&2
+  exit 1
 fi
 
-# Terminator co-training inputs: attach current-frame DINO tokens only when train_terminator=true.
-TERM_ARGS=()
-if [ "${TRAIN_TERMINATOR}" = "true" ]; then
-  TERM_ARGS=(
-    --policy.train_terminator=true
-    --policy.terminator_lr_scale="${TERMINATOR_LR_SCALE}"
-    --policy.terminator_end_target_sigma="${TERMINATOR_END_TARGET_SIGMA}"
-    --policy.terminator_end_pos_weight="${TERMINATOR_END_POS_WEIGHT}"
-  )
-  # Empty means an old Stage-1 checkpoint had no recorded override; FSQ.pt then supplies its own DINO path.
-  [ -n "${TERMINATOR_DINO_MODEL_PATH:-}" ] && \
-    TERM_ARGS+=(--policy.terminator_dino_model_path="${TERMINATOR_DINO_MODEL_PATH}")
-fi
-
-# STAGE 2: every batch is a COND/flow batch (the interleaved regime_probs_pt legacy was retired;
-# the skill path trains in stage3).
-REGIME_ARGS=(--policy.pt_stage="${PT_STAGE}")
-
-# reader 전용 read-set (tri-state): 빈 env = 상속(attend_*와 동일) → 플래그 자체를 안 넘김 (config None 유지).
-READER_ARGS=()
-[ -n "${READER_ATTEND_IMAGE:-}" ] && READER_ARGS+=(--policy.reader_attend_image="${READER_ATTEND_IMAGE}")
-[ -n "${READER_ATTEND_LANGUAGE:-}" ] && READER_ARGS+=(--policy.reader_attend_language="${READER_ATTEND_LANGUAGE}")
-
-# pretrained_path=pi05 warm-starts the VLM; stage1_checkpoint_path warm-starts the action/cond side
-# (the policy's from_pretrained loads both). vision/skill_vocab/state_cond_mode are read from Stage-1.
-# SCRATCH ("" stage1 path): expert/cond fresh-init; arch from --policy.s1_vision_backbone/s1_state_cond_mode.
 PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="${NUM_GPUS}" \
   "${PROJECT_ROOT}/.venv/bin/lerobot-train" \
     --dataset.repo_id="${REPO_ID}" \
     --dataset.root="${SKILLVLA_DATASET_DIR}" \
     --dataset.video_backend=pyav \
-    --policy.type=skill_vla \
-    --output_dir="${PT_OUTPUT_DIR}" \
-    --job_name="${PT_RUN_NAME}" \
-    --policy.compile_model=false \
-    --policy.gradient_checkpointing=true \
+    --policy.type=skill_vla_stage2 \
+    --policy.stage1_checkpoint_path="${STAGE1_CHECKPOINT_PATH}" \
+    --policy.training_skill_source="${TRAINING_SKILL_SOURCE}" \
+    --policy.likelihood_num_layers="${LIKELIHOOD_NUM_LAYERS}" \
+    --policy.likelihood_cross_attention_heads="${LIKELIHOOD_CROSS_ATTENTION_HEADS}" \
+    --policy.finetune_skill_predictor="${FINETUNE_SKILL_PREDICTOR}" \
+    --policy.finetune_terminator="${FINETUNE_TERMINATOR}" \
+    --policy.action_expert_variant="${ACTION_EXPERT_VARIANT}" \
+    --policy.cond_encoder_variant="${COND_ENCODER_VARIANT}" \
+    --policy.vision_backbone=dino \
+    --policy.dino_model_path="${DINO_MODEL_PATH}" \
+    --policy.dino_image_size="${DINO_IMAGE_SIZE}" \
+    --policy.freeze_vision_encoder="${FREEZE_VISION_ENCODER}" \
+    --policy.state_cond_mode="${STATE_COND_MODE}" \
+    --policy.skill_vocab_size="${SKILL_VOCAB_SIZE}" \
+    --policy.skill_fsq_levels="${SKILL_FSQ_LEVELS}" \
+    --policy.transition_jitter_pmax="${TRANSITION_JITTER_PMAX}" \
+    --policy.transition_jitter_distribution="${TRANSITION_JITTER_DISTRIBUTION}" \
+    --policy.train_skill_predictor="${TRAIN_SKILL_PREDICTOR}" \
+    --policy.skill_predictor_weight="${SKILL_PREDICTOR_WEIGHT}" \
+    --policy.skill_predictor_lr_scale="${SKILL_PREDICTOR_LR_SCALE}" \
+    --policy.skill_predictor_all_layers="${SKILL_PREDICTOR_ALL_LAYERS}" \
+    --policy.skill_predictor_detach_vlm=true \
+    --policy.skill_predictor_vlm_variant="${SKILL_PREDICTOR_VLM_VARIANT}" \
+    --policy.skill_predictor_image_size="${SKILL_PREDICTOR_IMAGE_SIZE}" \
+    --policy.skill_predictor_reader_tokens="${SKILL_PREDICTOR_READER_TOKENS}" \
+    --policy.skill_predictor_reader_depth="${SKILL_PREDICTOR_READER_DEPTH}" \
+    --policy.skill_predictor_reader_heads="${SKILL_PREDICTOR_READER_HEADS}" \
+    --policy.skill_predictor_deadzone_frac="${SKILL_PREDICTOR_DEADZONE_FRAC}" \
+    --policy.skill_predictor_attend_image="${SKILL_PREDICTOR_ATTEND_IMAGE}" \
+    --policy.skill_predictor_attend_language="${SKILL_PREDICTOR_ATTEND_LANGUAGE}" \
+    --policy.tokenizer_path="${TOKENIZER_PATH}" \
+    --policy.tokenizer_max_length="${TOKENIZER_MAX_LENGTH}" \
+    --policy.train_terminator="${TRAIN_TERMINATOR}" \
+    --policy.fsq_path="${FSQ_PATH}" \
+    --policy.terminator_freeze_vision_encoder="${TERMINATOR_FREEZE_VISION_ENCODER}" \
+    --policy.terminator_dino_model_path="${TERMINATOR_DINO_MODEL_PATH}" \
+    --policy.terminator_lr_scale="${TERMINATOR_LR_SCALE}" \
+    --policy.terminator_end_target_sigma="${TERMINATOR_END_TARGET_SIGMA}" \
+    --policy.terminator_end_pos_weight="${TERMINATOR_END_POS_WEIGHT}" \
+    --policy.max_state_dim="${MAX_STATE_DIM}" \
+    --policy.max_action_dim="${MAX_ACTION_DIM}" \
+    --policy.chunk_size="${CHUNK_SIZE}" \
+    --policy.n_action_steps="${N_ACTION_STEPS}" \
+    --policy.num_inference_steps="${NUM_INFERENCE_STEPS}" \
+    --policy.min_period="${MIN_PERIOD}" \
+    --policy.max_period="${MAX_PERIOD}" \
+    --policy.time_sampling_beta_alpha="${TIME_SAMPLING_BETA_ALPHA}" \
+    --policy.time_sampling_beta_beta="${TIME_SAMPLING_BETA_BETA}" \
+    --policy.time_sampling_scale="${TIME_SAMPLING_SCALE}" \
+    --policy.time_sampling_offset="${TIME_SAMPLING_OFFSET}" \
+    --policy.gradient_checkpointing="${GRADIENT_CHECKPOINTING}" \
     --policy.dtype=bfloat16 \
     --policy.device=cuda \
     --policy.push_to_hub=false \
-    --policy.pretrained_path="${PI_BASE}" \
-    --policy.tokenizer_path="${TOKENIZER_PATH}" \
-    --policy.stage1_checkpoint_path="${STAGE1_CHECKPOINT_PATH}" \
-    --policy.s1_vision_backbone="${S1_VISION_BACKBONE}" \
-    --policy.s1_state_cond_mode="${S1_STATE_COND_MODE}" \
-    --policy.skill_fsq_levels="${SKILL_FSQ_LEVELS}" \
-    --policy.skill_loss_weight="${SKILL_LOSS_WEIGHT}" \
-    --policy.skill_deadzone_frac="${SKILL_DEADZONE_FRAC}" \
-    --policy.num_reader_tokens="${NUM_READER_TOKENS}" \
-    --policy.reader_depth="${READER_DEPTH}" \
-    --policy.reader_heads="${READER_HEADS}" \
-    --policy.skill_reader_all_layers="${SKILL_READER_ALL_LAYERS}" \
-    --policy.action_weight="${ACTION_WEIGHT}" \
-    --policy.skill_start_loss_weight="${SKILL_START_LOSS_WEIGHT}" \
-    --policy.attend_language="${ATTEND_LANGUAGE}" \
-    --policy.attend_image="${ATTEND_IMAGE}" \
-    ${READER_ARGS[@]+"${READER_ARGS[@]}"} \
-    --policy.vlm_cond="${VLM_COND}" \
-    --policy.cond_expert="${COND_EXPERT}" \
-    --policy.vlm_expert="${VLM_EXPERT}" \
-    --track_param_drift="${TRACK_PARAM_DRIFT}" \
-    --policy.lora_skill="${LORA_SKILL}" \
-    --policy.vlm_lora="${VLM_LORA}" \
-    --policy.cond_lora="${COND_LORA}" \
-    --policy.lora_rank="${LORA_RANK}" \
-    --policy.lora_alpha="${LORA_ALPHA}" \
-    --policy.lora_dropout="${LORA_DROPOUT}" \
-    --policy.lora_targets="${LORA_TARGETS}" \
-    --policy.lora_lr_scale="${LORA_LR_SCALE}" \
-    --policy.cond_severed_prob="${COND_SEVERED_PROB:-0.0}" \
-    --policy.cond_severed_anchor_weight="${COND_SEVERED_ANCHOR_WEIGHT:-1.0}" \
-    --policy.freeze_vlm="${FREEZE_VLM}" \
-    --policy.freeze_cond="${FREEZE_COND}" \
-    --policy.freeze_expert="${FREEZE_EXPERT}" \
-    --policy.freeze_vlm_lora="${FREEZE_VLM_LORA}" \
-    --policy.freeze_cond_lora="${FREEZE_COND_LORA}" \
-    --policy.freeze_expert_lora="${FREEZE_EXPERT_LORA}" \
-    --policy.freeze_vlm_vision="${FREEZE_VLM_VISION:-false}" \
-    --policy.freeze_cond_vision="${FREEZE_COND_VISION}" \
-    --policy.fsq_path="${FSQ_CKPT}" \
+    --policy.compile_model=false \
+    --policy.optimizer_lr="${LR}" \
+    --output_dir="${PT_OUTPUT_DIR}" \
+    --job_name="${PT_RUN_NAME}" \
     --batch_size="${BATCH_SIZE}" \
     --num_workers="${NUM_WORKERS}" \
     --steps="${STEPS}" \
+    --log_freq="${LOG_FREQ}" \
     --save_freq="${SAVE_FREQ}" \
-    --policy.optimizer_lr="${LR}" \
-    --policy.expert_lr_scale="${EXPERT_LR_SCALE}" \
-    --policy.cond_lr_scale="${COND_LR_SCALE}" \
     --wandb.enable="${WANDB_ENABLE}" \
     --wandb.project="${WANDB_PROJECT}" \
-    ${REGIME_ARGS[@]+"${REGIME_ARGS[@]}"} \
-    ${TERM_ARGS[@]+"${TERM_ARGS[@]}"} \
     ${RESUME_ARGS[@]+"${RESUME_ARGS[@]}"}
 
-# Export the co-trained terminator per saved checkpoint (checkpoints/<step>/FSQ_ft.pt) for stage2_eval
-# (the terminator weights live in each checkpoint's model.safetensors; reuses the FT export script).
-if [ "${TRAIN_TERMINATOR}" = "true" ]; then
-  for CKPT_DIR in "${PT_OUTPUT_DIR}"/checkpoints/*/; do
-    [ -d "${CKPT_DIR}pretrained_model" ] || continue
-    STEP="$(basename "${CKPT_DIR}")"
-    OUT="${CKPT_DIR%/}/FSQ_ft.pt"
-    [ -f "${OUT}" ] && continue
-    echo "Exporting terminator @ ${STEP} → ${OUT}"
-    "${PROJECT_ROOT}/.venv/bin/python" "${SRC_DIR}/../../FT/src/export_ft_terminator.py" \
-      --ft_run_dir="${PT_OUTPUT_DIR}" --checkpoint="${STEP}" \
-      --base_fsq="${FSQ_CKPT}" --out="${OUT}" --skip_if_no_terminator
-  done
-fi
-
-echo "DONE → ${PT_OUTPUT_DIR}"
+echo "DONE -> ${PT_OUTPUT_DIR}"

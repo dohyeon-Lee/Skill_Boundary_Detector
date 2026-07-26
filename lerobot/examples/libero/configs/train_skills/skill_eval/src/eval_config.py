@@ -2,8 +2,11 @@
 """skill_eval config: emit evaluation-only knobs + slurm settings as shell exports.
 
 Root paths come from train_skills_config.py; this only owns eval-specific knobs.
-Owns the eval_run_fsq / eval_run_dp toggles and the DP-eval knobs in addition to
-the FSQ-eval knobs.
+Shared by dp_eval_config.yaml and fsq_eval_config.yaml — each yaml carries only its
+own knobs (missing ones fall back to defaults), and the submit scripts force the
+eval_run_dp / eval_run_fsq toggles through the environment (env wins over yaml).
+Keys shared by both evals (thumb size, image key, slurm resources) use neutral
+`eval_*` names; the historical `fsq_eval_*` spellings still work as fallbacks.
 """
 
 from __future__ import annotations
@@ -72,15 +75,15 @@ def build_settings(config_path: str | None = None) -> dict:
             as_bool(get_value(cfg, "fsq_eval_random_far_skill", True))
         ).lower(),
         "fsq_eval_random_far_fraction": str(random_far_fraction),
-        "fsq_eval_thumb_size":     int(get_value(cfg, "fsq_eval_thumb_size", 160)),
-        "fsq_eval_image_key":      str(get_value(cfg, "fsq_eval_image_key", "observation.images.image")),
+        "fsq_eval_thumb_size":     int(get_value(cfg, "eval_thumb_size", get_value(cfg, "fsq_eval_thumb_size", 160))),
+        "fsq_eval_image_key":      str(get_value(cfg, "eval_image_key", get_value(cfg, "fsq_eval_image_key", "observation.images.image"))),
         "fsq_eval_wandb_project":  str(get_value(cfg, "fsq_eval_wandb_project", "VAE_eval")),
         "fsq_eval_partition":      ",".join(as_list(get_value(cfg, "train_partition", ["debug"]))) or "debug",
         "fsq_eval_qos":            str(get_value(cfg, "train_qos", "base_qos")),
-        "fsq_eval_gres":           str(get_value(cfg, "fsq_eval_gres", "gpu:1")),
-        "fsq_eval_cpus_per_task":  int(get_value(cfg, "fsq_eval_cpus_per_task", 4)),
-        "fsq_eval_mem":            str(get_value(cfg, "fsq_eval_mem", "32G")),
-        "fsq_eval_time":           str(get_value(cfg, "fsq_eval_time", "02:00:00")),
+        "fsq_eval_gres":           str(get_value(cfg, "eval_gres", get_value(cfg, "fsq_eval_gres", "gpu:1"))),
+        "fsq_eval_cpus_per_task":  int(get_value(cfg, "eval_cpus_per_task", get_value(cfg, "fsq_eval_cpus_per_task", 4))),
+        "fsq_eval_mem":            str(get_value(cfg, "eval_mem", get_value(cfg, "fsq_eval_mem", "32G"))),
+        "fsq_eval_time":           str(get_value(cfg, "eval_time", get_value(cfg, "fsq_eval_time", "02:00:00"))),
         "fsq_eval_nodelist":       str(get_value(cfg, "train_nodelist", "")),
         "fsq_eval_exclude_nodes":  ",".join(exclude),
     }

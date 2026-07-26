@@ -91,6 +91,9 @@ TASK_SUITE_MAX_STEPS: dict[str, int] = {
     "libero_goal": 300,  # longest training demo has 270 steps
     "libero_10": 520,  # longest training demo has 505 steps
     "libero_90": 400,  # longest training demo has 373 steps
+    # LangGap extended tasks reuse spatial/goal/object scenes (budgets 280-300); 400 leaves
+    # headroom for the drawer/cross-target variants without inflating failure-episode cost much.
+    "langgap_ext": 400,
 }
 
 

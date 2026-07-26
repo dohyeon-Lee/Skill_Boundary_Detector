@@ -1,0 +1,50 @@
+# skill_eval — DP skill-boundary eval config (Stage 4). Submit with ./submit_dp_eval.sh.
+# Renders the DP skill-boundary split HTML — boxed start/end frames per skill + the
+# multimodality (VF cos-divergence) curve. Works off the FSQ_dataset skillset
+# (skills npz + curves) only; FSQ-independent.
+# Project paths / slurm partition+qos come from configs/global_config.yaml.
+
+# ── Roots (used to locate the skillset to evaluate) ──
+# libero_90_full_full | abc_toy
+target_dataset: libero_90_full_full
+fsq_dataset_root: FSQ_dataset
+fsq_inputs_name: FSQ_inputs
+skillset_name: skillset
+# The explicitly selected action-manifold skillset the boundary HTML reads.
+skillset_mode: std                   # spherical | full | without_gripper | std
+# Exact manual artifact tag. Empty selects the canonical no-suffix skillset;
+# set `trialA` to evaluate `..._std_globalmean_trialA/skillset`.
+skillset_output_suffix: ""
+# global_mean selects seg_{dp}_ck{ckpt}_{mode}_globalmean; episode_mean omits
+# only the threshold suffix.
+skillset_boundary_threshold_mode: global_mean   # episode_mean | global_mean
+
+# ── DP selection ──
+# libero_90_full_full_state_obs20 | abc_toy_state_obs20
+eval_dp_run_name: abc_toy_state_obs20
+eval_dp_checkpoint: 100000
+# Optional skillset root containing skillset_manifest.json. Empty uses the
+# resolver-derived {mode}_{globalmean|globalref} path above.
+dp_eval_skillset_dir: ""
+# Optional HTML filename tag. Example: video_only → ..._global_video_only.html
+# Empty keeps the canonical filename and may overwrite a previous eval of the same DP.
+dp_eval_output_suffix: ""
+
+# ── HTML knobs ──
+dp_eval_n_episodes: 3           # episodes shown (per task when dp_eval_task_ids is set)
+dp_eval_task_ids: [56, 41, 31, 64, 73, 09] # [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]   # empty [] = first dp_eval_n_episodes overall
+# true: each skill becomes start image | lazy-loaded looping source-video clip | end image.
+# Clips reuse the original dataset MP4 and are loaded only when clicked; no GIF/clip files are created.
+dp_eval_skill_video: true
+# Independent display toggles. false removes that section from the generated HTML.
+dp_eval_show_start_end_frames: true
+dp_eval_show_cos_graph: true
+dp_eval_show_gripper_graph: true
+eval_thumb_size: 160
+eval_image_key: observation.images.image
+
+# ── Slurm / GPU. partition/qos/nodelist/exclude_nodes come from configs/global_config.yaml. ──
+eval_gres: gpu:1
+eval_cpus_per_task: 4
+eval_mem: 32G
+eval_time: "02:00:00"

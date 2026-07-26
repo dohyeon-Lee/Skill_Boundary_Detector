@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # Inputs:
-#   roots      : ../../train_skills_config.yaml
-#   eval knobs : ../eval_config.yaml
+#   config     : ../dp_eval_config.yaml or ../fsq_eval_config.yaml, passed via
+#                TRAIN_SKILLS_CONFIG / FSQ_EVAL_CONFIG by the submit scripts
+#   toggles    : EVAL_RUN_DP / EVAL_RUN_FSQ env, forced by submit_dp_eval.sh /
+#                submit_fsq_eval.sh (env wins over yaml)
 #   FSQ model  : {project_root}/outputs/FSQ/{fsq_eval_run_name}/FSQ.pt (or FSQ_epoch{N:04d}.pt)
 # Outputs (per eval_run_fsq / eval_run_dp toggles):
 #   FSQ : {skill_eval}/outputs/{run}/{epoch}/fsq_eval.html  (+ skill_latents.npz next to ckpt)
 #   DP  : {skill_eval}/outputs/dp_skillset/{dataset}/index.html
 #
-# DP_FSQ eval — FSQ reconstruction eval and/or the DP skill-boundary eval (toggled in yaml).
+# Shared eval job body — runs the FSQ reconstruction eval and/or the DP skill-boundary eval.
 #SBATCH --job-name=skill_eval
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
@@ -23,8 +25,10 @@ mkdir -p logs
 # Fall back to SLURM_SUBMIT_DIR, then to the spool path.
 EVAL_DIR="${FSQ_EVAL_DIR:-${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}}"   # skill_eval
 COMMON_SRC_DIR="${EVAL_DIR}/../src"                          # train_skills/src
-TRAIN_CONFIG="${TRAIN_SKILLS_CONFIG:-${EVAL_DIR}/eval_config.yaml}"
-EVAL_CONFIG="${FSQ_EVAL_CONFIG:-${EVAL_DIR}/eval_config.yaml}"
+# Two configs exist now (dp_eval_config.yaml / fsq_eval_config.yaml), so there is no safe
+# default — always launch through submit_dp_eval.sh / submit_fsq_eval.sh, which pass these.
+TRAIN_CONFIG="${TRAIN_SKILLS_CONFIG:?launch via submit_dp_eval.sh or submit_fsq_eval.sh}"
+EVAL_CONFIG="${FSQ_EVAL_CONFIG:?launch via submit_dp_eval.sh or submit_fsq_eval.sh}"
 
 BOOTSTRAP_PYTHON="${EVAL_DIR}/../../../../../../.venv/bin/python"
 if [ ! -x "${BOOTSTRAP_PYTHON}" ]; then

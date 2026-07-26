@@ -46,10 +46,10 @@ class SkillVLAConfig(PI05Config):
     None/"" = SCRATCH mode: the expert/cond side is FRESH-initialized (no Stage-1 training at all) and its
     architecture comes from s1_vision_backbone / s1_state_cond_mode below — the VSA identity is then
     carved purely by the vlm_dropout B batches (use vlm_dropout_p > 0, ideally with a decay schedule)."""
-    s1_vision_backbone: str = "siglip"
-    """SCRATCH mode only (stage1_checkpoint_path empty): the cond-side vision encoder ("dino"|"siglip")."""
-    s1_state_cond_mode: str = "state"
-    """SCRATCH mode only: Stage-1 conditioning mode ("state"|"state_skill"|"broadcast")."""
+    s1_vision_backbone: str = "dino"
+    """SCRATCH mode only: the Stage-0/Stage-1 DINO condition-side vision encoder."""
+    s1_state_cond_mode: str = "broadcast"
+    """SCRATCH mode only: time+state AdaRMS with per-layer skill broadcast."""
 
     # ── Skill (VLM head; FSQ codes shared with Stage-1 / FSQ) ──
     skill_fsq_levels: list[int] = field(default_factory=lambda: [5, 5, 5])

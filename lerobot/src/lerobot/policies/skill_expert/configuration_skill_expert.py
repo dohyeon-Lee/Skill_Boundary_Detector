@@ -1,230 +1,222 @@
+"""Configuration for the Stage-1 vision-state-action prior."""
+
+from __future__ import annotations
+
+import math
 from dataclasses import dataclass, field
 
 from lerobot.configs.policies import PreTrainedConfig
-from lerobot.policies.pi05.configuration_pi05 import PI05Config
+from lerobot.configs.types import FeatureType, NormalizationMode, PolicyFeature
+from lerobot.optim.optimizers import AdamWConfig
+from lerobot.optim.schedulers import CosineDecayWithWarmupSchedulerConfig
+from lerobot.utils.constants import ACTION, OBS_STATE
 
 
 @PreTrainedConfig.register_subclass("skill_expert")
 @dataclass
-class SkillExpertConfig(PI05Config):
-    """Stage-1 standalone action expert (no VLM, no language).
+class SkillExpertConfig(PreTrainedConfig):
+    """Stage-1 VSA policy: DINO images + state + GT skill -> action flow.
 
-    Predicts an action chunk by flow matching from the current 3rd-person + wrist images
-    (each encoded by a trainable DINOv3, shared weights), the robot state, and the GT FSQ
-    skill code. A fresh cond-encoder (own Gemma) encodes the image scene, and the action expert
-    reads it via PI05-style block attention (action sees cond + action; cond ⊥ action). State rides
-    expert AdaRMS; skill is routed by ``state_cond_mode``. The VLM is added in Stage 2 (the
-    `skill_vla` policy), which can be initialized from a Stage-1 `skill_expert` checkpoint.
-
-    Inherits the PI05 action-expert / flow-matching knobs (chunk_size, max_action_dim,
-    action_expert_variant, time sampling, num_inference_steps, normalization, ...). The
-    PaliGemma/SigLIP and language settings are inherited but unused here.
+    The condition transformer and action expert both use all 18 ``gemma_300m``
+    layers. The action expert is initialized from the pi0.5 base checkpoint and
+    fully trained. The condition transformer and all VSA projections are fresh.
     """
 
     model_type: str = "skill_expert"
+    dtype: str = "float32"
 
-    # ── Conditioning architecture (joint: cond-encoder ⊥ action expert) ──
-    # A SEPARATE cond-encoder (own Gemma) encodes the scene (images + per-dim discretized state); the
-    # action expert receives [skill, progress, action] and reads the cond stream via PI05-style joint
-    # block attention (action sees cond + action; cond ⊥ action). The action expert warm-starts from
-    # pi05; the cond-encoder is fresh. Skill (z_q) + progress are prepended to the ACTION stream.
-    cond_encoder_variant: str | None = None
-    """Gemma variant for the cond-encoder. None → same as action_expert_variant."""
+    action_expert_variant: str = "gemma_300m"
+    cond_encoder_variant: str = "gemma_300m"
+    chunk_size: int = 10
+    n_action_steps: int = 10
+    max_state_dim: int = 32
+    max_action_dim: int = 32
 
-    # ── Vision encoder (shared across the two cameras) ──
+    num_inference_steps: int = 10
+    time_sampling_beta_alpha: float = 1.5
+    time_sampling_beta_beta: float = 1.0
+    time_sampling_scale: float = 0.999
+    time_sampling_offset: float = 0.001
+    min_period: float = 4e-3
+    max_period: float = 4.0
+
     vision_backbone: str = "dino"
-    """Which image encoder feeds the action expert:
-    "dino"   → trainable DINOv3 (own weights, ImageNet norm);
-    "siglip" → PaliGemma/SigLIP vision tower, warm-started from the pi05 checkpoint's
-               vision_tower (robot-adapted prior). Its params are SEPARATE from the Stage-2 VLM."""
-    # DINO backbone (vision_backbone="dino")
-    dino_model_path: str = "/data2/dohyeon/SBD/models/dinov3-vits16"
+    dino_model_path: str = "models/dinov3-vitl16"
     dino_image_size: int = 224
-    """Square size the camera images are resized to before DINOv3 (patch 16 → 14×14)."""
-    dino_lr: float | None = None
-    """Separate LR for the DINO encoder. None → use optimizer_lr (same as the rest)."""
-    # SigLIP backbone (vision_backbone="siglip"); weights come from the pi05 pretrained_path.
-    siglip_image_size: int = 224
-    """Square size images are resized to before SigLIP (patch 14 → 16×16 = 256 tokens at 224)."""
-    siglip_lr: float | None = None
-    """Separate LR for the SigLIP encoder when unfrozen. None → use optimizer_lr."""
-    # Freeze the SELECTED vision backbone (one flag for whichever vision_backbone is active).
     freeze_vision_encoder: bool = False
-    """Statically freeze the active vision backbone. dino → False trains its own DINOv3. siglip → often
-    True (warm-started from pi05's robot-adapted vision_tower; only image_proj trains). Replaces the old
-    per-backbone freeze_dino / freeze_siglip."""
+    dino_lr: float | None = None
 
-    # ── State conditioning ──
-    state_cond_mode: str = "state_skill"
-    """What rides the ACTION expert's flow-time AdaRMS (DiT-style global conditioning, un-droppable by
-    attention). The cond-encoder is image-ONLY and plain-RMSNorm in both modes; state never rides the
-    (image-dominated) cond stream — the input_probe diagnostic showed a state token buried among ~400
-    image tokens is starved (Δ≈0), so state is always summed into the expert AdaRMS instead. The two
-    modes differ only in how SKILL reaches the action transformer:
-      "state"       → AdaRMS conditioning = time + state_proj(state). Skill (z_q) is a PREFIX token on the
-                      action stream (pi0 prefix⊥action: read by the action tokens, does not attend back).
-                      Image stays the dominant motion driver; skill is a lighter, attended signal — leaves
-                      room for Stage-2 language to modulate the motion.
-      "state_skill" → AdaRMS conditioning = time + state_proj(state) + skill_proj(z_q) (each its own
-                      projection, summed — DiT ⊕ pattern). NO prefix tokens at all; skill is a strong global
-                      signal (heaviest skill influence).
-      "broadcast"   → AdaRMS conditioning = time + state_proj(state). NO prefix token; skill_proj(z_q) is
-                      broadcast to every action token after input AdaRMS and before attention in every layer.
-                      The residual stream does not accumulate it, and skill does not control AdaRMS gates.
-    state_proj / skill_proj are allocated in both modes (only the destination differs), so "state" and
-    "state_skill" checkpoints stay structurally comparable."""
-
-    # ── Skill conditioning ──
-    skill_vocab_size: int = 125
-    """Number of FSQ skill codes (= prod(skill_fsq_levels)); bounds the codes in the dataset."""
-    skill_fsq_levels: list[int] = field(default_factory=lambda: [5, 5, 5])
-    """FSQ levels per dim. The flat dataset code is mapped back to its FSQ grid coordinate z_q
-    (little-endian strides — the codebook's own convention, the same value the FSQ decoder
-    consumes), normalized per dim to [-1, 1], and fed through a Linear(D → width) as ONE skill
-    token, constant within a skill — neighboring codes stay neighboring. (The skill-progress token
-    was removed — the action expert conditions on the skill code only.)"""
+    state_cond_mode: str = "broadcast"
+    skill_vocab_size: int = 27
+    skill_fsq_levels: list[int] = field(default_factory=lambda: [3, 3, 3])
     transition_jitter_pmax: int = 0
-    """Training-only skill-boundary jitter half-window in frames. Zero disables."""
     transition_jitter_distribution: str = "half_normal"
-    """Timing-shift distribution: half_normal favors small errors; uniform samples every magnitude."""
 
-    # ── FSQ expert adaptation ──
-    # ``lora_rank`` / ``lora_alpha`` / ``lora_dropout`` / ``lora_targets`` are inherited from PI05Config.
-    # ``lora_targets`` accepts q/k/v/o attention aliases, gate/up/down (or ``mlp``), and Stage-1-only
-    # ``action_in`` / ``action_out`` flow-head aliases. This uses the same named-adapter implementation as
-    # SkillVLA Stage 2, but only on the frozen FSQ action side when LoRA is enabled. The condition side
-    # remains a normal trainable scene encoder on A batches.
-    lora_expert: bool = False
-    """True → inject the named ``expert`` LoRA adapter and freeze every FSQ action-side base parameter.
-    False → inject no adapter and fine-tune the complete FSQ action side (Gemma plus
-    action/time/state/skill projections) together with the image condition side."""
-    lora_lr_scale: float = 1.0
-    """LR multiplier for LoRA parameters relative to optimizer_lr."""
-    image_free_lora_prob: float = 0.0
-    """Probability of a B batch during training. B skips image/cond entirely and anchors the current
-    image-free action velocity to frozen FSQ: LoRA uses its adapter-disabled base; full fine-tuning uses a
-    non-persistent copy of the original FSQ action tensors. A = 1 - this probability uses normal
-    image-conditioned action loss."""
-    image_free_lora_anchor_weight: float = 1.0
-    """Multiplier on the B adapter-to-base velocity anchor loss."""
-    eval_image_free_expert: bool = False
-    """Eval-only B route: keep the expert LoRA active while removing every image/condition-stream token.
-    This is set by the Stage-1 oracle evaluator and is never used during training."""
+    # Stage-0-compatible auxiliary: frozen pi0.5 VLM -> SkillReader -> FSQ SkillHead.
+    train_skill_predictor: bool = False
+    skill_predictor_weight: float = 0.5
+    skill_predictor_lr_scale: float = 1.0
+    skill_predictor_all_layers: bool = False
+    skill_predictor_detach_vlm: bool = True
+    skill_predictor_vlm_variant: str = "gemma_2b"
+    skill_predictor_image_size: int = 224
+    skill_predictor_reader_tokens: int = 4
+    skill_predictor_reader_depth: int = 2
+    skill_predictor_reader_heads: int = 8
+    skill_predictor_deadzone_frac: float = 0.0
+    skill_predictor_attend_image: bool = True
+    skill_predictor_attend_language: bool = True
+    tokenizer_path: str | None = None
+    tokenizer_max_length: int = 200
 
-    # ── Loss = action MSE (flow matching). Boundary handling: at the skill end (k>skill_de) and episode-end
-    #    pad, the action TARGET is a HOLD (arm deltas→0, gripper→last valid value) and supervised — NOT masked.
-    #    action_weight selects plain vs per-sample skill-progress-weighted MSE. ──
-    skill_start_loss_weight: float = 1.0
-    """Action-loss weight at skill progress 0 (only used when action_weight=True)."""
-    skill_end_loss_weight: float = 1.0
-    """Action-loss weight at skill progress 1 (only used when action_weight=True). The per-chunk weight is
-    linearly interpolated between skill_start_loss_weight and this value using the chunk ENDPOINT progress."""
-    action_weight: bool = False
-    """Weight action MSE PER-SAMPLE by start+(end-start)·prog_end. The K steps within a chunk share one
-    weight. False gives plain action MSE. B image-free anchor batches never use this weighting."""
-
-    # ── Co-trained FSQ terminator (skill-end timing for eval; gradient-disjoint from the main model) ──
+    # Parameter-disjoint FSQ terminator co-training on the same Stage-1 batch.
     train_terminator: bool = False
-    """Co-train the isolated FSQ terminator (skill-end timing) alongside Stage-1 — gradient-disjoint
-    from the main model (mirrors stage2/FT), warm-started from fsq_path. Lets a checkpoint be evaled
-    (skill transitions). Always-on (its own optimizer group)."""
-    terminator_freeze_vision_encoder: bool | None = None
-    """Freeze the co-trained terminator's DINO/SigLIP encoder. None inherits the FSQ checkpoint setting;
-    false fine-tunes it in the terminator optimizer group at terminator_lr_scale × optimizer_lr."""
-    terminator_end_target_sigma: float = 1.0
-    """Termination target = Gaussian bump exp(-de²/2σ²) peaking at the skill end (σ>0); σ≤0 → hard (de==0)."""
-    terminator_end_pos_weight: float = 1.0
-    """BCE pos_weight for the termination head (skill-end frames are rare positives)."""
-    terminator_lr_scale: float = 1.0
-    """LR scale (× optimizer_lr) for the co-trained terminator's own param group."""
-    # (skill_decoder_dino_* precompute 토큰 필드 은퇴 — terminator는 배치의 observation.images.*를
-    #  ONLINE DINO로 직접 토큰화; terminator_dino_model_path가 DINO 경로 오버라이드를 겸함.)
-
-    # ── Eval-only (oracle closed-loop sim). Ignored during training. ──
     fsq_path: str | None = None
-    """v3 FSQ checkpoint ({run_dir}/FSQ.pt). It always warm-starts the exact action expert.
-    A terminator_arch=cond checkpoint additionally warm-starts Stage-1's vision tower,
-    image projection, and condition Gemma; terminator_arch=small does not. The checkpoint
-    also supplies the isolated terminator for co-training/eval. The trajectory encoder is
-    never instantiated here (skill codes come from the dataset)."""
-    skill_label_dataset_dir: str | None = None
-    """skillvla dataset dir whose skill_sequence columns give the GT skill sequence per task
-    (matched to the env task by language) for the oracle eval."""
+    terminator_freeze_vision_encoder: bool | None = None
     terminator_dino_model_path: str | None = None
-    """Optional local override for the FSQ terminator's DINO model path. None → the FSQ
-    checkpoint's own dino_model_path (auto-resolved to this repo's models/ if absent).
-    Kept SEPARATE from dino_model_path, which is the policy's OWN vision backbone and must
-    match the checkpoint being loaded — never override that one at eval."""
-    skill_advance_mode: str = "terminator"
-    """How the oracle eval advances through the GT skill sequence:
-    "terminator" → the FSQ terminator decides each transition (skill_end_mode/threshold);
-    "gt"         → advance after each skill's GT demo duration (ideal timing; isolates the
-                   action expert from terminator timing errors). The terminator still runs so
-                   its curves are recorded for the HTML either way."""
-    skill_end_mode: str = "termination"
-    """Which FSQ terminator signal(s) end the current skill (used when skill_advance_mode=terminator):
-    "termination" → termination probability >= skill_end_threshold (e.g. 0.5);
-    "progress"    → predicted progress >= skill_end_progress_threshold (e.g. 0.9);
-    "or"          → EITHER crosses (term >= skill_end_threshold OR progress >= skill_end_progress_threshold)
-                    — robust default: the two heads peak at different steps, so requiring only one to fire
-                    avoids over-running when one head is weak/misaligned;
-    "and"         → BOTH cross at the same step (stricter; rarely fires if the heads disagree in timing)."""
-    skill_end_threshold: float = 0.5
-    """Threshold on the TERMINATION-probability signal, above which the skill is finished (termination/or/and)."""
-    skill_end_progress_threshold: float = 0.9
-    """Threshold on the predicted-PROGRESS signal, above which the skill is finished (progress/or/and).
-    Kept separate from skill_end_threshold since the two heads live on different scales."""
-    inference_skill_max_length: int = 200
-    """Force-advance the skill after this many steps even if the terminator never fires (0 = off)."""
-    eval_use_trained_terminator: bool = True
-    """At eval, use the CO-TRAINED terminator saved IN the checkpoint (model.fsq_term_train.*, fine-tuned on
-    this dataset via train_terminator) instead of the raw FSQ.pt terminator — overriding only the terminator
-    submodules' weights (the DINO backbone still comes from terminator_dino_model_path). Falls back to FSQ.pt
-    if the checkpoint carries no co-trained terminator, or when a terminator_path override is given."""
-    eval_init_states_path: str | None = None
-    """eval_init_states.npz (built by stage1_eval/oracle_matching/) mapping each dataset episode →
-    its MuJoCo init_state + scene_file. Makes the closed-loop eval EPISODE-EXACT: every rollout resets
-    the sim to a specific dataset episode's scene and is fed THAT episode's GT skill sequence (vs the old
-    task-level eval that ran LIBERO's default init states matched only by language). Required by run_eval."""
+    terminator_lr_scale: float = 1.0
+    terminator_end_target_sigma: float = 2.0
+    terminator_end_pos_weight: float = 1.0
 
-    def __post_init__(self):
+    normalization_mapping: dict[str, NormalizationMode] = field(
+        default_factory=lambda: {
+            "VISUAL": NormalizationMode.IDENTITY,
+            "STATE": NormalizationMode.QUANTILES,
+            "ACTION": NormalizationMode.QUANTILES,
+        }
+    )
+    gradient_checkpointing: bool = False
+    compile_model: bool = False
+    compile_mode: str = "max-autotune"
+
+    optimizer_lr: float = 2.5e-5
+    optimizer_betas: tuple[float, float] = (0.9, 0.95)
+    optimizer_eps: float = 1e-8
+    optimizer_weight_decay: float = 0.01
+    optimizer_grad_clip_norm: float = 1.0
+    scheduler_warmup_steps: int = 1_000
+    scheduler_decay_steps: int = 30_000
+    scheduler_decay_lr: float = 2.5e-6
+
+    def __post_init__(self) -> None:
         super().__post_init__()
-        if self.state_cond_mode not in ("state", "state_skill", "broadcast"):
+        if self.dtype not in {"float32", "bfloat16"}:
+            raise ValueError(f"dtype must be float32 or bfloat16, got {self.dtype!r}.")
+        if self.action_expert_variant != "gemma_300m":
             raise ValueError(
-                "state_cond_mode must be 'state', 'state_skill', or 'broadcast' "
-                f"(got {self.state_cond_mode!r})."
+                "Stage 1 fixes both 18-layer streams to gemma_300m; got "
+                f"action_expert_variant={self.action_expert_variant!r}."
             )
-        if self.train_terminator and not self.fsq_path:
-            raise ValueError("train_terminator=True needs fsq_path (the FSQ checkpoint to warm-start).")
-        if self.lora_expert and self.lora_rank <= 0:
-            raise ValueError(f"lora_expert=True needs lora_rank > 0 (got {self.lora_rank}).")
-        if self.lora_expert and self.lora_alpha <= 0:
-            raise ValueError(f"lora_expert=True needs lora_alpha > 0 (got {self.lora_alpha}).")
-        if self.lora_lr_scale <= 0.0:
-            raise ValueError(f"lora_lr_scale must be > 0 (got {self.lora_lr_scale}).")
-        if not 0.0 <= self.lora_dropout < 1.0:
-            raise ValueError(f"lora_dropout must be in [0, 1), got {self.lora_dropout}.")
-        if not 0.0 <= self.image_free_lora_prob < 1.0:
+        if self.cond_encoder_variant != self.action_expert_variant:
             raise ValueError(
-                "image_free_lora_prob must be in [0, 1); keep some A batches to train the image condition "
-                f"side (got {self.image_free_lora_prob})."
+                "Stage 1 requires matching 18-layer cond/expert variants; got "
+                f"{self.cond_encoder_variant!r} and {self.action_expert_variant!r}."
             )
-        if self.image_free_lora_prob > 0.0 and not self.lora_expert and not self.fsq_path:
-            raise ValueError("Full-FT image-free B batches need fsq_path for their frozen FSQ teacher.")
-        if self.image_free_lora_anchor_weight <= 0.0:
+        if self.vision_backbone != "dino":
+            raise ValueError("Stage 1 uses the Stage-0 DINO vision path; vision_backbone must be 'dino'.")
+        if self.dino_image_size <= 0:
+            raise ValueError("dino_image_size must be positive.")
+        if self.dino_lr is not None and self.dino_lr <= 0.0:
+            raise ValueError("dino_lr must be positive when set.")
+        if self.freeze_vision_encoder and self.dino_lr is not None:
+            raise ValueError("dino_lr cannot be set when freeze_vision_encoder=True.")
+        if self.state_cond_mode != "broadcast":
             raise ValueError(
-                "image_free_lora_anchor_weight must be > 0 "
-                f"(got {self.image_free_lora_anchor_weight})."
+                "Stage 1 fixes the conditioning contract to time+state AdaRMS and per-layer skill "
+                f"broadcast; got state_cond_mode={self.state_cond_mode!r}."
             )
-        if self.skill_start_loss_weight <= 0.0 or self.skill_end_loss_weight <= 0.0:
+        if not self.skill_fsq_levels or any(level <= 1 for level in self.skill_fsq_levels):
+            raise ValueError(f"skill_fsq_levels must all be greater than one, got {self.skill_fsq_levels}.")
+        expected_vocab = math.prod(self.skill_fsq_levels)
+        if self.skill_vocab_size != expected_vocab:
             raise ValueError(
-                "skill_start_loss_weight and skill_end_loss_weight must both be > 0 "
-                f"(got {self.skill_start_loss_weight} and {self.skill_end_loss_weight})."
+                f"skill_vocab_size={self.skill_vocab_size} does not match "
+                f"prod(skill_fsq_levels)={expected_vocab}."
             )
+        if self.n_action_steps > self.chunk_size:
+            raise ValueError("n_action_steps cannot exceed chunk_size.")
+        if min(self.max_state_dim, self.max_action_dim, self.num_inference_steps) <= 0:
+            raise ValueError("State/action dimensions and num_inference_steps must be positive.")
         if self.transition_jitter_pmax < 0:
-            raise ValueError("transition_jitter_pmax must be >= 0.")
+            raise ValueError("transition_jitter_pmax must be non-negative.")
         if self.transition_jitter_distribution not in {"half_normal", "uniform"}:
             raise ValueError(
-                "transition_jitter_distribution must be half_normal|uniform, "
-                f"got {self.transition_jitter_distribution!r}."
+                "transition_jitter_distribution must be 'half_normal' or 'uniform', got "
+                f"{self.transition_jitter_distribution!r}."
             )
+        if self.train_skill_predictor:
+            if not self.skill_predictor_detach_vlm:
+                raise ValueError(
+                    "skill_predictor_detach_vlm must remain True so predictor gradients cannot "
+                    "enter the frozen VLM or the VSA path."
+                )
+            if self.skill_predictor_vlm_variant != "gemma_2b":
+                raise ValueError("The pi0.5 base predictor VLM must use gemma_2b.")
+            if self.skill_predictor_weight <= 0.0:
+                raise ValueError("skill_predictor_weight must be positive.")
+            if self.skill_predictor_lr_scale <= 0.0:
+                raise ValueError("skill_predictor_lr_scale must be positive.")
+            if min(
+                self.skill_predictor_image_size,
+                self.skill_predictor_reader_tokens,
+                self.skill_predictor_reader_depth,
+                self.skill_predictor_reader_heads,
+                self.tokenizer_max_length,
+            ) <= 0:
+                raise ValueError("Skill predictor image, reader, and tokenizer sizes must be positive.")
+            if self.skill_predictor_deadzone_frac < 0.0:
+                raise ValueError("skill_predictor_deadzone_frac must be non-negative.")
+            if not (self.skill_predictor_attend_image or self.skill_predictor_attend_language):
+                raise ValueError("Skill predictor must attend image and/or language tokens.")
+        if self.train_terminator:
+            if not str(self.fsq_path or "").strip():
+                raise ValueError("train_terminator=True requires fsq_path.")
+            if self.terminator_lr_scale <= 0.0:
+                raise ValueError("terminator_lr_scale must be positive.")
+            if self.terminator_end_target_sigma < 0.0:
+                raise ValueError("terminator_end_target_sigma must be non-negative.")
+            if self.terminator_end_pos_weight <= 0.0:
+                raise ValueError("terminator_end_pos_weight must be positive.")
+
+    def validate_features(self) -> None:
+        if self.input_features is None:
+            self.input_features = {}
+        if self.output_features is None:
+            self.output_features = {}
+        if OBS_STATE not in self.input_features:
+            self.input_features[OBS_STATE] = PolicyFeature(
+                type=FeatureType.STATE, shape=(self.max_state_dim,)
+            )
+        if ACTION not in self.output_features:
+            self.output_features[ACTION] = PolicyFeature(
+                type=FeatureType.ACTION, shape=(self.max_action_dim,)
+            )
+
+    def get_optimizer_preset(self) -> AdamWConfig:
+        return AdamWConfig(
+            lr=self.optimizer_lr,
+            betas=self.optimizer_betas,
+            eps=self.optimizer_eps,
+            weight_decay=self.optimizer_weight_decay,
+            grad_clip_norm=self.optimizer_grad_clip_norm,
+        )
+
+    def get_scheduler_preset(self) -> CosineDecayWithWarmupSchedulerConfig:
+        return CosineDecayWithWarmupSchedulerConfig(
+            peak_lr=self.optimizer_lr,
+            decay_lr=self.scheduler_decay_lr,
+            num_warmup_steps=self.scheduler_warmup_steps,
+            num_decay_steps=self.scheduler_decay_steps,
+        )
+
+    @property
+    def observation_delta_indices(self) -> None:
+        return None
+
+    @property
+    def action_delta_indices(self) -> list[int]:
+        return list(range(self.chunk_size))
+
+    @property
+    def reward_delta_indices(self) -> None:
+        return None

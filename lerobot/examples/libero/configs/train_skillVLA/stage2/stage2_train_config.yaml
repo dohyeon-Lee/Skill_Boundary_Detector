@@ -1,58 +1,38 @@
-# Dataset source and FSQ settings are inferred from the Stage-1 run.
-dataset: {skillvla_root: skillvla_dataset}
+# project_root, dataset_root, outputs_root and cluster defaults come from global_config.yaml.
 
+# Stage-2 data is prepared separately. It must use the same FSQ skill space and
+# state/action geometry as the selected Stage-1 checkpoint.
+dataset:
+  skillvla_root: skillvla_dataset
+  source: libero_90_full_secondhalf
+  # run is inherited from the Stage-1 checkpoint's train_config.json.
+
+# Exact Stage-1 output directory name; it is never parsed for architecture.
+# The resolver reads checkpoints/<checkpoint>/pretrained_model/config.json.
 warm_start:
-  pi_base: models/pi05_base
-  tokenizer: models/paligemma-3b-pt-224-tokenizer
-  stage1_run: FSQ333_dino_frozen_small_optimal_vsa_state_skill_125_pt_snap10_dino_batch128_state_skill_lorae8_ltq-k-v-o-mlp-actionout_weighted
-  checkpoint: "020000"
+  stage1_run: libero_90_full_firsthalf_FSQ333_175_dino_tuned
+  checkpoint: last
 
-skill:
-  loss_weight: 0.1
-  deadzone: 0.8
-  reader: {tokens: 4, depth: 2, heads: 8, all_layers: true}
+likelihood:
+  layers: 4
+  # gt is the default; predictor uses the frozen Stage-1 predictor on skill-start observations.
+  training_skill_source: gt
 
-loss: {weighted: true, skill_start_weight: 3.0}
-
-vlm_token_access:
-  cond:         {image: false, language: true}
-  skill_reader: {image: true,  language: true}
-
-connections: {vlm_to_cond: true, cond_to_expert: true, vlm_to_expert: false}
-
-lora:
-  train: {vlm: true, cond: true}
-  targets: [q, k, v, o]
-  rank: 8
-  alpha: auto
-  dropout: 0.0
-  lr_scale: 10.0
-
-regime:
-  vlm_severed: {probability: 0, anchor_weight: 1.0}
-
-freeze:
-  vlm: true
-  cond: true
-  expert: true
-  vlm_lora: false
-  cond_lora: false
-  expert_lora: true
-  vlm_vision: true
-  cond_vision: true
-
-# This is a separate FSQ module; set train=false for strictly LoRA-only training.
-terminator: {train: true, lr_scale: 1.0, target_sigma: 1.0, end_weight: 1.0}
+# Optional continuation training. The predictor still keeps its VLM frozen and
+# trains only reader/head; both auxiliaries keep separate clipping from likelihood.
+auxiliary:
+  skill_predictor: {train: false, weight: 0.5, lr_scale: 1.0}
+  terminator: {train: false, lr_scale: 1.0}
 
 run: {suffix: ""}
 
 training:
-  dataloader: {batch_size: 128, workers: 2, gpus: 1}
+  dataloader: {batch_size: 16, workers: 2, gpus: 1}
   optimizer: {base_lr: 2.5e-05}
-  schedule: {steps: 50000, save_every: 2500}
+  gradient_checkpointing: true
+  schedule: {steps: 50000, log_every: 100, save_every: 5000}
 
 logging:
-  param_drift: true
   wandb: {enable: true, project: VLA_stage2}
 
 slurm: {gres: "gpu:1", cpus: 16, memory: 256G, time: "48:00:00"}

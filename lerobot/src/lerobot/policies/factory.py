@@ -36,6 +36,7 @@ from lerobot.policies.pi0.configuration_pi0 import PI0Config
 from lerobot.policies.pi05.configuration_pi05 import PI05Config
 from lerobot.policies.skillVLA.configuration_skillVLA import SkillVLAConfig
 from lerobot.policies.skill_expert.configuration_skill_expert import SkillExpertConfig
+from lerobot.policies.skill_vla_stage2.configuration_skill_vla_stage2 import SkillVLAStage2Config
 from lerobot.policies.pretrained import PreTrainedPolicy
 from lerobot.policies.sac.configuration_sac import SACConfig
 from lerobot.policies.sac.reward_model.configuration_classifier import RewardClassifierConfig
@@ -118,6 +119,10 @@ def get_policy_class(name: str) -> type[PreTrainedPolicy]:
         from lerobot.policies.skill_expert.modeling_skill_expert import SkillExpertPolicy
 
         return SkillExpertPolicy
+    elif name == "skill_vla_stage2":
+        from lerobot.policies.skill_vla_stage2.modeling_skill_vla_stage2 import SkillVLAStage2Policy
+
+        return SkillVLAStage2Policy
     elif name == "sac":
         from lerobot.policies.sac.modeling_sac import SACPolicy
 
@@ -190,6 +195,8 @@ def make_policy_config(policy_type: str, **kwargs) -> PreTrainedConfig:
         return SkillVLAConfig(**kwargs)
     elif policy_type == "skill_expert":
         return SkillExpertConfig(**kwargs)
+    elif policy_type == "skill_vla_stage2":
+        return SkillVLAStage2Config(**kwargs)
     elif policy_type == "sac":
         return SACConfig(**kwargs)
     elif policy_type == "smolvla":
@@ -308,10 +315,10 @@ def make_pre_post_processors(
             skill_expert_transition_to_batch,
         )
 
-        # Fresh Stage-1 training inits weights from a PI05 checkpoint but must NOT reuse
-        # the PI05 processor (no language tokenizer, no state discretization). During
-        # resume/eval (dataset_stats absent) we load the saved SkillExpert processor.
-        # NOTE: must precede the PI05Config branch below — SkillExpertConfig subclasses it.
+        # Fresh Stage-1 training initializes from PI05 but builds its own processor:
+        # VSA stays language-free while the optional isolated predictor adds the
+        # skill-start state prompt/tokenizer. During resume/eval (dataset_stats absent)
+        # we load the saved SkillExpert processor.
         if pretrained_path and kwargs.get("dataset_stats") is None:
             return (
                 PolicyProcessorPipeline.from_pretrained(
