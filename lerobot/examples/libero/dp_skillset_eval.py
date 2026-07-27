@@ -113,6 +113,17 @@ def _cap(task_label, ep) -> str:
     return f"episode {ep}" if task_label is None else f"task{int(task_label):02d} · episode {ep}"
 
 
+def _skill_stats(lengths: list[int]) -> str:
+    """'N skills · len min/max/mean' summary for a set of skill lengths (frames)."""
+    if not lengths:
+        return "0 skills"
+    arr = np.asarray(lengths)
+    return (
+        f"{len(arr)} skills · len min {int(arr.min())} / max {int(arr.max())}"
+        f" / mean {float(arr.mean()):.1f}"
+    )
+
+
 def make_frames_loader(dataset_dir: Path, image_key: str, episodes_meta=None):
     episodes_meta = _load_episodes_meta(dataset_dir) if episodes_meta is None else episodes_meta
     key = _resolve_image_key(episodes_meta, image_key)
@@ -299,6 +310,8 @@ def main():
 
     cards = []
     for task_label, eps in select_episodes(ep_task, args.task_ids, args.n_episodes):
+        task_cards = []
+        task_lengths = []
         for ep in eps:
             skills, gripper_signal, resolved_gripper_indices = load_episode_skills(
                 ep_files[ep], configured_gripper_indices
@@ -332,12 +345,19 @@ def main():
                 skill_videos=skill_videos,
                 show_frames=not args.hide_start_end_frames,
             )
+            lengths = [end - start for start, end, _video in skills]
+            task_lengths.extend(lengths)
+            task_cards.append((f"{_cap(task_label, ep)} — {_skill_stats(lengths)}", media))
+        # Section header (task id + instruction) gets the stats aggregated over the
+        # episodes shown for that task; each episode caption carries its own stats.
+        section_label = None
+        if task_label is not None:
             section_label = (
-                None
-                if task_label is None
-                else f"task{int(task_label):02d}: {instructions.get(int(task_label), '(instruction unavailable)')}"
+                f"task{int(task_label):02d}: "
+                f"{instructions.get(int(task_label), '(instruction unavailable)')}"
+                f" — {_skill_stats(task_lengths)}"
             )
-            cards.append((section_label, f"{_cap(task_label, ep)} — {len(skills)} skills", media))
+        cards.extend((section_label, caption, media) for caption, media in task_cards)
     save_gallery(out_dir, "DP skill boundary split", cards, filename=out_html)
     print(f"[dp_eval] done → {out_dir / out_html}")
 

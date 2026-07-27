@@ -167,6 +167,37 @@ def test_stage2_optional_auxiliaries_are_named_and_exported(tmp_path: Path) -> N
     assert settings["pt_run_name"].endswith("_skillpred_term")
 
 
+def test_stage2_inherits_stage1_predictor_lora_contract(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    checkpoint_config = (
+        Path(config["project_root"])
+        / "outputs/skillVLA_stage1/stage1_exact_name/checkpoints/last/pretrained_model/config.json"
+    )
+    stage1 = json.loads(checkpoint_config.read_text())
+    stage1.update(
+        {
+            "skill_predictor_detach_vlm": False,
+            "skill_predictor_lora": True,
+            "skill_predictor_lora_targets": "q,k,v,o",
+            "skill_predictor_lora_rank": 8,
+            "skill_predictor_lora_alpha": 16.0,
+            "skill_predictor_lora_dropout": 0.0,
+            "skill_predictor_lora_lr_scale": 10.0,
+            "skill_predictor_all_layers": True,
+            "skill_predictor_deadzone_frac": 0.8,
+        }
+    )
+    checkpoint_config.write_text(json.dumps(stage1))
+
+    settings = stage2_train_config.build_settings(config)
+
+    assert settings["skill_predictor_lora"] is True
+    assert settings["skill_predictor_detach_vlm"] is False
+    assert settings["skill_predictor_all_layers"] is True
+    assert settings["skill_predictor_deadzone_frac"] == 0.8
+    assert settings["skill_predictor_lora_lr_scale"] == 10.0
+
+
 def test_stage2_resolver_rejects_non_stage1_policy(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="policy.type=skill_expert"):
         stage2_train_config.build_settings(_config(tmp_path, policy_type="skill_vla"))

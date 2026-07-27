@@ -105,6 +105,32 @@ def build_settings(config: dict) -> dict:
     train_skill_predictor = as_bool(
         _at(config, "skill_predictor", "train", default=True)
     )
+    skill_predictor_lora = as_bool(
+        _at(config, "skill_predictor", "lora", "enabled", default=True)
+    )
+    skill_predictor_lora_targets = str(
+        _at(config, "skill_predictor", "lora", "targets", default="q,k,v,o")
+    ).strip()
+    skill_predictor_lora_rank = int(
+        _at(config, "skill_predictor", "lora", "rank", default=8)
+    )
+    skill_predictor_lora_alpha = float(
+        _at(config, "skill_predictor", "lora", "alpha", default=16.0)
+    )
+    skill_predictor_lora_dropout = float(
+        _at(config, "skill_predictor", "lora", "dropout", default=0.0)
+    )
+    skill_predictor_lora_lr_scale = float(
+        _at(config, "skill_predictor", "lora", "lr_scale", default=10.0)
+    )
+    if skill_predictor_lora and (
+        not skill_predictor_lora_targets
+        or skill_predictor_lora_rank <= 0
+        or skill_predictor_lora_alpha <= 0.0
+        or skill_predictor_lora_dropout < 0.0
+        or skill_predictor_lora_lr_scale <= 0.0
+    ):
+        raise ValueError("Invalid skill_predictor.lora configuration.")
     train_terminator = as_bool(_at(config, "terminator", "train", default=True))
     if train_terminator and not fsq_path.is_file():
         raise FileNotFoundError(
@@ -145,6 +171,12 @@ def build_settings(config: dict) -> dict:
         )
 
     chunk_size = int(_at(config, "architecture", "chunk_size", default=10))
+    action_loss_mode = str(config.get("loss", "flow")).strip().lower()
+    if action_loss_mode not in {"flow", "flow_endpoint_xyz"}:
+        raise ValueError(
+            "loss must be flow|flow_endpoint_xyz, got "
+            f"{action_loss_mode!r}."
+        )
     n_action_steps = int(
         _at(config, "execution", "action_steps", default=chunk_size)
     )
@@ -171,7 +203,7 @@ def build_settings(config: dict) -> dict:
         if re.fullmatch(r"FSQ\d+", token) or token.isdigit()
     ]
     short_run_tag = "_".join(short_tokens) or run_tag
-    run_name = f"{source}_{short_run_tag}_{vision_tag}"
+    run_name = f"{source}_{short_run_tag}_{vision_tag}_{action_loss_mode}"
     if suffix:
         run_name = f"{run_name}_{suffix}"
 
@@ -203,8 +235,15 @@ def build_settings(config: dict) -> dict:
             _at(config, "skill_predictor", "lr_scale", default=1.0)
         ),
         "skill_predictor_all_layers": as_bool(
-            _at(config, "skill_predictor", "all_layers", default=False)
+            _at(config, "skill_predictor", "all_layers", default=True)
         ),
+        "skill_predictor_detach_vlm": not skill_predictor_lora,
+        "skill_predictor_lora": skill_predictor_lora,
+        "skill_predictor_lora_targets": skill_predictor_lora_targets,
+        "skill_predictor_lora_rank": skill_predictor_lora_rank,
+        "skill_predictor_lora_alpha": skill_predictor_lora_alpha,
+        "skill_predictor_lora_dropout": skill_predictor_lora_dropout,
+        "skill_predictor_lora_lr_scale": skill_predictor_lora_lr_scale,
         "skill_predictor_reader_tokens": int(
             _at(config, "skill_predictor", "reader", "tokens", default=4)
         ),
@@ -215,7 +254,7 @@ def build_settings(config: dict) -> dict:
             _at(config, "skill_predictor", "reader", "heads", default=8)
         ),
         "skill_predictor_deadzone_frac": float(
-            _at(config, "skill_predictor", "reader", "deadzone_frac", default=0.0)
+            _at(config, "skill_predictor", "reader", "deadzone_frac", default=0.8)
         ),
         "skill_predictor_attend_image": as_bool(
             _at(config, "skill_predictor", "token_access", "image", default=True)
@@ -243,6 +282,7 @@ def build_settings(config: dict) -> dict:
         "max_state_dim": max_state_dim,
         "max_action_dim": max_action_dim,
         "chunk_size": chunk_size,
+        "action_loss_mode": action_loss_mode,
         "n_action_steps": n_action_steps,
         "min_period": float(_at(config, "flow", "min_period", default=4e-3)),
         "max_period": float(_at(config, "flow", "max_period", default=4.0)),

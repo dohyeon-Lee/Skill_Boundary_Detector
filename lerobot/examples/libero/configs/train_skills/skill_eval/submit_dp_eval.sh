@@ -43,7 +43,7 @@ eval "$("${BOOTSTRAP_PYTHON}" "${EVAL_SRC_DIR}/eval_config.py" --config "${EVAL_
 # build-data configuration (get_value prefers env over yaml).
 DEP_ARG=()
 _probe="$("${BOOTSTRAP_PYTHON}" "${COMMON_SRC_DIR}/train_skills_config.py" --config "${TRAIN_CONFIG}" ${TARGET_DATASET:+--dataset "${TARGET_DATASET}"} --shell 2>/dev/null \
-  | grep -E '^export (SKILLSET_DIR|SKILLSET_DONE_PATH|SKILLSET_MODE|SKILLSET_MIN_SKILLS)=')"
+  | grep -E '^export (TARGET_DATASET|SKILLSET_DIR|SKILLSET_DONE_PATH|SKILLSET_MODE|SKILLSET_MIN_SKILLS|SKILLSET_OUTPUT_SUFFIX|SKILLSET_GLOBAL_THRESHOLD_SOURCE)=')"
 eval "${_probe}"
 NEED_BUILD=false
 # Use the .complete marker, not just the skills dir — a PARTIAL skillset (some array shards failed) has
@@ -58,14 +58,19 @@ if [ "${NEED_BUILD}" = "true" ]; then
     exit 1
   fi
   echo "DP eval skillset not built yet → submitting build_data first (skillset only)"
-  echo "  DP   : ${EVAL_DP_RUN_NAME:-<build_data_config default>}  (skillset MISSING)"
-  # Strip eval-side config vars so build_data reads its own build_data_config.yaml; pass only the DP
-  # target. BUILD_SKILLSET_ONLY=true preserves the caller's intent; current build_data produces only
-  # the skillset. FSQ evaluation decodes selected raw frames live from its recorded skillset.
-  BUILD_OUT=$(env -u TARGET_DATASET \
+  echo "  DP     : ${EVAL_DP_RUN_NAME:-<build_data_config default>}  (skillset MISSING)"
+  echo "  target : ${TARGET_DATASET}"
+  # Build FOR THE EVAL's resolved target/DP/skillset selection — build_data reads its own
+  # build_data_config.yaml only for build-time knobs (gripper mode, nms, ...). The dataset is
+  # handed over as TRAIN_DATA (submit_build_data.sh's dataset input; it overwrites its own
+  # TARGET_DATASET from it). Without this, build_data would build its yaml's own target, which
+  # the eval's dependency wait would never see when the two configs point at different datasets.
+  BUILD_OUT=$(TRAIN_DATA="${TARGET_DATASET}" \
                   DP_RUN_NAME="${EVAL_DP_RUN_NAME}" DP_CHECKPOINT="${EVAL_DP_CHECKPOINT}" \
                   SKILLSET_MODE="${SKILLSET_MODE}" SKILLSET_MIN_SKILLS="${SKILLSET_MIN_SKILLS}" \
                   SKILLSET_BOUNDARY_THRESHOLD_MODE="${SKILLSET_BOUNDARY_THRESHOLD_MODE}" \
+                  SKILLSET_OUTPUT_SUFFIX="${SKILLSET_OUTPUT_SUFFIX}" \
+                  SKILLSET_GLOBAL_THRESHOLD_SOURCE="${SKILLSET_GLOBAL_THRESHOLD_SOURCE}" \
                   BUILD_SKILLSET_ONLY=true PRINT_LAST_JOB=1 \
     bash "${SCRIPT_DIR}/../build_data/submit_build_data.sh") || { echo "build_data submission failed" >&2; exit 1; }
   echo "${BUILD_OUT}"

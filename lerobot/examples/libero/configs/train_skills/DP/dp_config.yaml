@@ -5,7 +5,7 @@
 # Pipeline order: DP (this) → build_data (skillset) → FSQ → DP_FSQ_eval.
 # The DP folder name produced here is what build_data / FSQ / eval reference as dp_run_name.
 
-target_dataset: libero_goal_full_full
+target_dataset: langgap_56_full_full
 
 
 # ── DP encoder / temporal ──

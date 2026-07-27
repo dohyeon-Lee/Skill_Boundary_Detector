@@ -29,8 +29,9 @@ unset LD_LIBRARY_PATH
 echo "START STAGE 1 VSA"
 echo "dataset : ${SKILLVLA_DATASET_DIR}"
 echo "expert  : pi0.5 base ${PI_BASE} -> full fine-tuning"
+echo "loss    : ${ACTION_LOSS_MODE}"
 echo "vision  : DINO ${DINO_MODEL_PATH}   frozen=${FREEZE_VISION_ENCODER}"
-echo "predict : frozen pi0.5 VLM -> reader/head   train=${TRAIN_SKILL_PREDICTOR}"
+echo "predict : pi0.5 VLM skill-LoRA=${SKILL_PREDICTOR_LORA} all_layers=${SKILL_PREDICTOR_ALL_LAYERS} deadzone=${SKILL_PREDICTOR_DEADZONE_FRAC}"
 echo "term    : FSQ ${FSQ_PATH}   train=${TRAIN_TERMINATOR}, vision_frozen=${TERMINATOR_FREEZE_VISION_ENCODER}"
 echo "output  : ${PT_OUTPUT_DIR}"
 
@@ -76,7 +77,13 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.skill_predictor_weight="${SKILL_PREDICTOR_WEIGHT}" \
     --policy.skill_predictor_lr_scale="${SKILL_PREDICTOR_LR_SCALE}" \
     --policy.skill_predictor_all_layers="${SKILL_PREDICTOR_ALL_LAYERS}" \
-    --policy.skill_predictor_detach_vlm=true \
+    --policy.skill_predictor_detach_vlm="${SKILL_PREDICTOR_DETACH_VLM}" \
+    --policy.skill_predictor_lora="${SKILL_PREDICTOR_LORA}" \
+    --policy.skill_predictor_lora_targets="${SKILL_PREDICTOR_LORA_TARGETS}" \
+    --policy.skill_predictor_lora_rank="${SKILL_PREDICTOR_LORA_RANK}" \
+    --policy.skill_predictor_lora_alpha="${SKILL_PREDICTOR_LORA_ALPHA}" \
+    --policy.skill_predictor_lora_dropout="${SKILL_PREDICTOR_LORA_DROPOUT}" \
+    --policy.skill_predictor_lora_lr_scale="${SKILL_PREDICTOR_LORA_LR_SCALE}" \
     --policy.skill_predictor_reader_tokens="${SKILL_PREDICTOR_READER_TOKENS}" \
     --policy.skill_predictor_reader_depth="${SKILL_PREDICTOR_READER_DEPTH}" \
     --policy.skill_predictor_reader_heads="${SKILL_PREDICTOR_READER_HEADS}" \
@@ -95,6 +102,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.max_state_dim="${MAX_STATE_DIM}" \
     --policy.max_action_dim="${MAX_ACTION_DIM}" \
     --policy.chunk_size="${CHUNK_SIZE}" \
+    --policy.action_loss_mode="${ACTION_LOSS_MODE}" \
     --policy.n_action_steps="${N_ACTION_STEPS}" \
     --policy.min_period="${MIN_PERIOD}" \
     --policy.max_period="${MAX_PERIOD}" \

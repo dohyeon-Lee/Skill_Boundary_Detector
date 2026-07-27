@@ -14,6 +14,8 @@ skillset_name: skillset
 skillset_mode: std                   # spherical | full | without_gripper | std
 skillset_output_suffix: ""
 skillset_boundary_threshold_mode: global_mean   # episode_mean | global_mean
+# Optional frozen global-threshold JSON (selects the `_globalref` skillset). Must match build_data.
+skillset_global_threshold_source: ""
 
 # ── FSQ selection ──
 fsq_eval_dino_model_path: models/dinov3-vitl16

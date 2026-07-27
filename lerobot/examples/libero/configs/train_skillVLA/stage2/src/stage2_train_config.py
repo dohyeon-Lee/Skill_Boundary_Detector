@@ -236,6 +236,27 @@ def build_settings(config: dict) -> dict:
             )
         ),
         "skill_predictor_all_layers": as_bool(stage1_config["skill_predictor_all_layers"]),
+        "skill_predictor_detach_vlm": as_bool(
+            stage1_config.get("skill_predictor_detach_vlm", True)
+        ),
+        "skill_predictor_lora": as_bool(
+            stage1_config.get("skill_predictor_lora", False)
+        ),
+        "skill_predictor_lora_targets": str(
+            stage1_config.get("skill_predictor_lora_targets", "q,k,v,o")
+        ),
+        "skill_predictor_lora_rank": int(
+            stage1_config.get("skill_predictor_lora_rank", 8)
+        ),
+        "skill_predictor_lora_alpha": float(
+            stage1_config.get("skill_predictor_lora_alpha", 16.0)
+        ),
+        "skill_predictor_lora_dropout": float(
+            stage1_config.get("skill_predictor_lora_dropout", 0.0)
+        ),
+        "skill_predictor_lora_lr_scale": float(
+            stage1_config.get("skill_predictor_lora_lr_scale", 10.0)
+        ),
         "skill_predictor_vlm_variant": stage1_config["skill_predictor_vlm_variant"],
         "skill_predictor_image_size": int(stage1_config["skill_predictor_image_size"]),
         "skill_predictor_reader_tokens": int(stage1_config["skill_predictor_reader_tokens"]),

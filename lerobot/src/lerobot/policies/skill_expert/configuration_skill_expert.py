@@ -39,6 +39,7 @@ class SkillExpertConfig(PreTrainedConfig):
     time_sampling_offset: float = 0.001
     min_period: float = 4e-3
     max_period: float = 4.0
+    action_loss_mode: str = "flow"
 
     vision_backbone: str = "dino"
     dino_model_path: str = "models/dinov3-vitl16"
@@ -52,12 +53,20 @@ class SkillExpertConfig(PreTrainedConfig):
     transition_jitter_pmax: int = 0
     transition_jitter_distribution: str = "half_normal"
 
-    # Stage-0-compatible auxiliary: frozen pi0.5 VLM -> SkillReader -> FSQ SkillHead.
+    # Skill predictor. Old Stage-1 checkpoints use a fully detached VLM; the
+    # Stage3-A-matched path keeps the pi0.5 base frozen and trains only a named
+    # Q/K/V/O LoRA together with SkillReader/SkillHead.
     train_skill_predictor: bool = False
     skill_predictor_weight: float = 0.5
     skill_predictor_lr_scale: float = 1.0
     skill_predictor_all_layers: bool = False
     skill_predictor_detach_vlm: bool = True
+    skill_predictor_lora: bool = False
+    skill_predictor_lora_targets: str = "q,k,v,o"
+    skill_predictor_lora_rank: int = 8
+    skill_predictor_lora_alpha: float = 16.0
+    skill_predictor_lora_dropout: float = 0.0
+    skill_predictor_lora_lr_scale: float = 10.0
     skill_predictor_vlm_variant: str = "gemma_2b"
     skill_predictor_image_size: int = 224
     skill_predictor_reader_tokens: int = 4
@@ -137,6 +146,11 @@ class SkillExpertConfig(PreTrainedConfig):
             raise ValueError("n_action_steps cannot exceed chunk_size.")
         if min(self.max_state_dim, self.max_action_dim, self.num_inference_steps) <= 0:
             raise ValueError("State/action dimensions and num_inference_steps must be positive.")
+        if self.action_loss_mode not in {"flow", "flow_endpoint_xyz"}:
+            raise ValueError(
+                "action_loss_mode must be 'flow' or 'flow_endpoint_xyz', got "
+                f"{self.action_loss_mode!r}."
+            )
         if self.transition_jitter_pmax < 0:
             raise ValueError("transition_jitter_pmax must be non-negative.")
         if self.transition_jitter_distribution not in {"half_normal", "uniform"}:
@@ -145,10 +159,15 @@ class SkillExpertConfig(PreTrainedConfig):
                 f"{self.transition_jitter_distribution!r}."
             )
         if self.train_skill_predictor:
-            if not self.skill_predictor_detach_vlm:
+            if self.skill_predictor_lora and self.skill_predictor_detach_vlm:
                 raise ValueError(
-                    "skill_predictor_detach_vlm must remain True so predictor gradients cannot "
-                    "enter the frozen VLM or the VSA path."
+                    "skill_predictor_detach_vlm must be False when skill_predictor_lora=True "
+                    "so predictor gradients can reach the skill adapter."
+                )
+            if not self.skill_predictor_lora and not self.skill_predictor_detach_vlm:
+                raise ValueError(
+                    "skill_predictor_detach_vlm=False requires skill_predictor_lora=True; "
+                    "full VLM fine-tuning is not part of the Stage-1 contract."
                 )
             if self.skill_predictor_vlm_variant != "gemma_2b":
                 raise ValueError("The pi0.5 base predictor VLM must use gemma_2b.")
@@ -156,6 +175,17 @@ class SkillExpertConfig(PreTrainedConfig):
                 raise ValueError("skill_predictor_weight must be positive.")
             if self.skill_predictor_lr_scale <= 0.0:
                 raise ValueError("skill_predictor_lr_scale must be positive.")
+            if self.skill_predictor_lora:
+                if not str(self.skill_predictor_lora_targets).strip():
+                    raise ValueError("skill_predictor_lora_targets cannot be empty.")
+                if self.skill_predictor_lora_rank <= 0:
+                    raise ValueError("skill_predictor_lora_rank must be positive.")
+                if self.skill_predictor_lora_alpha <= 0.0:
+                    raise ValueError("skill_predictor_lora_alpha must be positive.")
+                if self.skill_predictor_lora_dropout < 0.0:
+                    raise ValueError("skill_predictor_lora_dropout must be non-negative.")
+                if self.skill_predictor_lora_lr_scale <= 0.0:
+                    raise ValueError("skill_predictor_lora_lr_scale must be positive.")
             if min(
                 self.skill_predictor_image_size,
                 self.skill_predictor_reader_tokens,

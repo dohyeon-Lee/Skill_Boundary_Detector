@@ -73,7 +73,7 @@ if [ "${EVAL_RUN_DP}" = "true" ]; then
   DP_OUTPUT_DATASET="${TARGET_DATASET}"
   DP_OUTPUT_POLICY="${DP_POLICY}"
   DP_OUTPUT_CHECKPOINT="${DP_CHECKPOINT}"
-  [ "${SKILLSET_BOUNDARY_THRESHOLD_MODE}" = "global_mean" ] && DP_SUFFIX+="_global"
+  if [ "${SKILLSET_BOUNDARY_THRESHOLD_MODE}" = "global_mean" ]; then DP_SUFFIX+="_global"; else DP_SUFFIX+="_episode"; fi
   if [ -n "${DP_EVAL_SKILLSET_DIR:-}" ]; then
     if [[ "${DP_EVAL_SKILLSET_DIR}" = /* ]]; then
       DP_SKILLSET_DIR="${DP_EVAL_SKILLSET_DIR}"
@@ -94,7 +94,7 @@ if [ "${EVAL_RUN_DP}" = "true" ]; then
     DP_OUTPUT_POLICY=$("${BOOTSTRAP_PYTHON}" -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).parents[2].name)' "${DP_MANIFEST_POLICY}")
     DP_OUTPUT_CHECKPOINT=$("${BOOTSTRAP_PYTHON}" -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).parent.name)' "${DP_MANIFEST_POLICY}")
     DP_SUFFIX="_${DP_MODE}"
-    [ "${DP_THRESHOLD_MODE}" = "global_mean" ] && DP_SUFFIX+="_global"
+    if [ "${DP_THRESHOLD_MODE}" = "global_mean" ]; then DP_SUFFIX+="_global"; else DP_SUFFIX+="_episode"; fi
   fi
   # Shallow folder + DP-named HTML so different DPs don't overwrite each other (no deep nesting).
   # Strip the redundant dataset prefix from the run name (libero_90_full_full_state_obs10 → state_obs10).

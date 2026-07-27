@@ -1,12 +1,19 @@
-"""Frozen-pi0.5-VLM skill predictor used as a Stage-1 auxiliary task."""
+"""Stage3-A-matched pi0.5-VLM skill predictor for Stage 1."""
 
 from __future__ import annotations
 
 import math
+from contextlib import nullcontext
 
 import torch
 from torch import Tensor, nn
 
+from lerobot.policies.pi05.lora import (
+    NamedLoRALinear,
+    inject_named_lora,
+    set_active_adapters,
+    target_names_from_spec,
+)
 from lerobot.policies.pi05.modeling_pi05 import (
     OPENPI_ATTENTION_MASK_VALUE,
     layernorm_forward,
@@ -20,10 +27,11 @@ from .modeling_utils import build_paligemma_model
 
 
 class FrozenVLMSkillPredictor(nn.Module):
-    """Read skill-start image/language tokens without updating the pi0.5 VLM.
+    """Read skill-start image/language tokens with an optional skill-only LoRA.
 
-    This is the renewed Stage-0 predictor contract: PaliGemma is a frozen feature
-    producer and only the standalone joint-KV reader and FSQ regression head train.
+    The pi0.5 VLM base and vision tower always stay frozen. In the Stage3-A
+    configuration, Q/K/V/O skill adapters across all 18 language layers train
+    together with the standalone joint-KV reader and FSQ regression head.
     """
 
     def __init__(self, config: SkillExpertConfig):
@@ -46,6 +54,35 @@ class FrozenVLMSkillPredictor(nn.Module):
             deadzone_frac=config.skill_predictor_deadzone_frac,
         )
 
+        self.lora_layer_count = 0
+        if config.skill_predictor_lora:
+            target_names = target_names_from_spec(
+                config.skill_predictor_lora_targets
+            )
+            self.lora_layer_count = inject_named_lora(
+                self.vlm.language_model,
+                target_names,
+                "skill",
+                config.skill_predictor_lora_rank,
+                config.skill_predictor_lora_alpha,
+                config.skill_predictor_lora_dropout,
+            )
+            if self.lora_layer_count == 0:
+                raise RuntimeError(
+                    "Skill predictor LoRA did not match any VLM projection; "
+                    f"targets={config.skill_predictor_lora_targets!r}."
+                )
+            qkvo = {"q_proj", "k_proj", "v_proj", "o_proj"}
+            if target_names == qkvo:
+                expected = 4 * int(
+                    self.vlm.language_model.config.num_hidden_layers
+                )
+                if self.lora_layer_count != expected:
+                    raise RuntimeError(
+                        "Skill predictor Q/K/V/O LoRA must cover every VLM layer; "
+                        f"wrapped={self.lora_layer_count}, expected={expected}."
+                    )
+
         # The main Stage-1 optimizer must never register predictor parameters.
         self.vlm.requires_grad_(False)
         self.reader.requires_grad_(False)
@@ -55,10 +92,41 @@ class FrozenVLMSkillPredictor(nn.Module):
     def train(self, mode: bool = True):
         super().train(mode)
         self.vlm.eval()
+        # Only the language-model adapter needs training behavior. The frozen
+        # vision tower remains deterministic, while this also enables the VLM's
+        # gradient-checkpointing path and LoRA dropout when configured.
+        if self._lora_attached_to_loss:
+            self.vlm.language_model.train(mode)
         return self
 
-    def auxiliary_parameters(self) -> list[nn.Parameter]:
+    @property
+    def _lora_attached_to_loss(self) -> bool:
+        return bool(
+            self.config.skill_predictor_lora
+            and not self.config.skill_predictor_detach_vlm
+        )
+
+    def reader_head_parameters(self) -> list[nn.Parameter]:
         return [*self.reader.parameters(), *self.head.parameters()]
+
+    def lora_parameters(self) -> list[nn.Parameter]:
+        parameters: list[nn.Parameter] = []
+        for module in self.vlm.language_model.modules():
+            if isinstance(module, NamedLoRALinear) and "skill" in module.adapters:
+                parameters.extend(module.adapters["skill"].parameters())
+        return parameters
+
+    def auxiliary_parameters(self) -> list[nn.Parameter]:
+        return [*self.reader_head_parameters(), *self.lora_parameters()]
+
+    def gradient_checkpointing_enable(self) -> None:
+        self.vlm.language_model.gradient_checkpointing = True
+
+    @staticmethod
+    def _activate_skill_adapter() -> None:
+        # Sticky selection is required when a checkpointed forward is later
+        # recomputed during backward.
+        set_active_adapters({"skill"})
 
     def _preprocess_image(self, image: Tensor) -> Tensor:
         image = image.to(torch.float32)
@@ -162,12 +230,13 @@ class FrozenVLMSkillPredictor(nn.Module):
         language_tokens: Tensor,
         language_mask: Tensor,
     ) -> tuple[Tensor, Tensor]:
-        """Return the frozen VLM's final joint image/language token sequence.
+        """Return the predictor VLM's final joint image/language token sequence.
 
         Stage 2 uses this sequence directly as the shared cross-attention memory
         for every likelihood block.  The second return value follows PyTorch's
         key-padding convention (``True`` means ignore).
         """
+        self._activate_skill_adapter()
         prefix, valid, _ = self._embed_prefix(images, language_tokens, language_mask)
         hidden, _ = self._encode_prefix(prefix, valid, all_layers=False)
         return hidden.detach(), (~valid).detach()
@@ -179,12 +248,16 @@ class FrozenVLMSkillPredictor(nn.Module):
         language_mask: Tensor,
         skill_code: Tensor,
     ) -> tuple[Tensor, float]:
-        # Keep the complete VLM graph out of the auxiliary backward pass.
-        with torch.no_grad():
+        self._activate_skill_adapter()
+        # Legacy checkpoints detach the complete VLM graph. Stage3-A keeps the
+        # graph only as far as the skill LoRA; every base tensor is still frozen.
+        context = nullcontext() if self._lora_attached_to_loss else torch.no_grad()
+        with context:
             prefix, valid, key_ignore = self._embed_prefix(
                 images, language_tokens, language_mask
             )
             hidden, layer_stack = self._encode_prefix(prefix, valid)
+        if not self._lora_attached_to_loss:
             hidden = hidden.detach()
             layer_stack = None if layer_stack is None else layer_stack.detach()
 
@@ -209,6 +282,7 @@ class FrozenVLMSkillPredictor(nn.Module):
         language_mask: Tensor,
     ) -> Tensor:
         """Predict one FSQ skill code from a runtime skill-start observation."""
+        self._activate_skill_adapter()
         prefix, valid, key_ignore = self._embed_prefix(
             images, language_tokens, language_mask
         )

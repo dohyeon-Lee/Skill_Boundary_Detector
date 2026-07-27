@@ -5,15 +5,17 @@
 # Consumes the skillset under
 # FSQ_inputs/seg_{dp_run_name}_ck{dp_checkpoint}_{skillset_mode}_{threshold}/.
 
-target_dataset: libero_90_full_full
+target_dataset: libero_goal_full_full
 # Which DP's skillset/tokens to train on — must match the build_data run.
-dp_run_name: libero_90_full_full_state_obs20
+dp_run_name: libero_goal_full_full_state_obs20
 dp_checkpoint: "100000"
 skillset_mode: std                   # spherical | full | without_gripper | std
 # Exact manual artifact tag. Empty selects the canonical no-suffix skillset;
 # set `trialA` to train on `..._std_globalmean_trialA/skillset`.
 skillset_output_suffix: ""
 skillset_boundary_threshold_mode: global_mean   # episode_mean | global_mean
+# Optional frozen global-threshold JSON (selects the `_globalref` skillset). Must match build_data.
+skillset_global_threshold_source: ""
 
 fsq_dataset_root: FSQ_dataset
 fsq_inputs_name: FSQ_inputs

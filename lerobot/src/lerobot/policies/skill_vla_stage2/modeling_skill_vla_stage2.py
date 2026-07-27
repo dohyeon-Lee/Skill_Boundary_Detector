@@ -159,8 +159,10 @@ class SkillVLAStage2Pytorch(SkillExpertPytorch):
 
     def gradient_checkpointing_enable(self) -> None:
         # The frozen 18-layer prior runs under no_grad. Checkpoint only the four
-        # trainable likelihood blocks, where recomputation actually saves memory.
+        # trainable likelihood blocks and an explicitly continued predictor.
         self._likelihood_gradient_checkpointing = True
+        if self.config.finetune_skill_predictor and self.skill_predictor is not None:
+            self.skill_predictor.gradient_checkpointing_enable()
 
     def _freeze_stage1_prior(self) -> None:
         self.requires_grad_(False)
@@ -391,6 +393,12 @@ _STAGE1_CONTRACT_FIELDS = (
     "skill_predictor_reader_depth",
     "skill_predictor_reader_heads",
     "skill_predictor_all_layers",
+    "skill_predictor_detach_vlm",
+    "skill_predictor_lora",
+    "skill_predictor_lora_targets",
+    "skill_predictor_lora_rank",
+    "skill_predictor_lora_alpha",
+    "skill_predictor_lora_dropout",
     "skill_predictor_deadzone_frac",
     "skill_predictor_attend_image",
     "skill_predictor_attend_language",
@@ -442,6 +450,10 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
             raise ValueError("Stage-1 checkpoint has no co-trained terminator.")
         mismatches = []
         for field in _STAGE1_CONTRACT_FIELDS:
+            # These fields were introduced with the Stage3-A predictor. Their
+            # absence unambiguously means the old detached, non-LoRA contract.
+            if field.startswith("skill_predictor_lora") and field not in stage1_config:
+                continue
             expected = stage1_config.get(field)
             actual = getattr(self.config, field)
             if expected != actual:

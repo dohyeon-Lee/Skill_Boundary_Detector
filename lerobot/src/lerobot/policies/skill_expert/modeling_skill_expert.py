@@ -3,8 +3,8 @@
 The action path has no VLM or language input: DINO and a fresh 18-layer condition
 transformer encode the current cameras, and the 18-layer pi0.5 action expert is
 conditioned by time+state AdaRMS plus per-layer GT-skill broadcast. Optionally, a
-frozen pi0.5 VLM feeds a separate SkillReader/SkillHead optimizer; its graph and
-gradient clipping are disjoint from the action path.
+frozen pi0.5 VLM base with a skill-only LoRA feeds a separate SkillReader/SkillHead
+optimizer; its graph and gradient clipping are disjoint from the action path.
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ from torch import Tensor, nn
 from transformers import AutoModel
 
 from lerobot.configs.policies import PreTrainedConfig
+from lerobot.policies.pi05.lora import route_plain_to_base
 from lerobot.policies.pi05.modeling_pi05 import (
     OPENPI_ATTENTION_MASK_VALUE,
     compute_layer_complete,
@@ -108,6 +109,7 @@ class SkillExpertPytorch(nn.Module):
             if terminator.freeze_vision_encoder:
                 terminator.vision_encoder.requires_grad_(False).eval()
             self.fsq_term_train = terminator.to(dtype=torch.float32)
+        self._last_predicted_actions: Tensor | None = None
         self._gradient_checkpointing = False
 
     @property
@@ -120,6 +122,8 @@ class SkillExpertPytorch(nn.Module):
             self.cond_encoder.gradient_checkpointing_enable()
         if hasattr(self.gemma_expert, "gradient_checkpointing_enable"):
             self.gemma_expert.gradient_checkpointing_enable()
+        if self.skill_predictor is not None:
+            self.skill_predictor.gradient_checkpointing_enable()
         if not self.config.freeze_vision_encoder and hasattr(
             self.dino, "gradient_checkpointing_enable"
         ):
@@ -330,6 +334,14 @@ class SkillExpertPytorch(nn.Module):
             self._expert_condition(time, state),
             self._skill_broadcast(skill_code),
         )
+        if self.config.action_loss_mode == "flow_endpoint_xyz":
+            # x_t = action + t * target_velocity, hence the one-step clean-action
+            # reconstruction is action_hat = x_t - t * predicted_velocity.
+            self._last_predicted_actions = (
+                x_t - time[:, None, None] * predicted_velocity
+            )
+        else:
+            self._last_predicted_actions = None
         return target_velocity - predicted_velocity
 
     @torch.no_grad()
@@ -769,15 +781,35 @@ class SkillExpertPolicy(PreTrainedPolicy):
         grad_clip_norm: float,
         current_lr: float | None = None,
     ) -> dict:
-        """Train only SkillReader/SkillHead after the isolated VSA optimizer step."""
+        """Train only skill LoRA/reader/head after the isolated VSA optimizer step."""
         predictor = self.model.skill_predictor
         if not self.config.train_skill_predictor or predictor is None:
             return {}
         params = predictor.auxiliary_parameters()
         if not hasattr(self, "_skill_predictor_optimizer"):
+            reader_head = predictor.reader_head_parameters()
+            lora = predictor.lora_parameters()
+            parameter_groups = [
+                {
+                    "params": reader_head,
+                    "lr": self.config.optimizer_lr
+                    * self.config.skill_predictor_lr_scale,
+                    "lr_scale": self.config.skill_predictor_lr_scale,
+                    "group_name": "reader_head",
+                }
+            ]
+            if lora:
+                parameter_groups.append(
+                    {
+                        "params": lora,
+                        "lr": self.config.optimizer_lr
+                        * self.config.skill_predictor_lora_lr_scale,
+                        "lr_scale": self.config.skill_predictor_lora_lr_scale,
+                        "group_name": "skill_lora",
+                    }
+                )
             self._skill_predictor_optimizer = torch.optim.AdamW(
-                params,
-                lr=self.config.optimizer_lr * self.config.skill_predictor_lr_scale,
+                parameter_groups,
                 betas=self.config.optimizer_betas,
                 eps=self.config.optimizer_eps,
                 weight_decay=self.config.optimizer_weight_decay,
@@ -785,7 +817,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
         optimizer = self._skill_predictor_optimizer
         if current_lr is not None:
             for group in optimizer.param_groups:
-                group["lr"] = current_lr * self.config.skill_predictor_lr_scale
+                group["lr"] = current_lr * float(group["lr_scale"])
 
         previous_requires_grad = [parameter.requires_grad for parameter in params]
         for parameter in params:
@@ -814,8 +846,20 @@ class SkillExpertPolicy(PreTrainedPolicy):
                     else grad_norm
                 ),
                 "skill_predictor/lr": optimizer.param_groups[0]["lr"],
+                "skill_predictor/lora_lr": next(
+                    (
+                        group["lr"]
+                        for group in optimizer.param_groups
+                        if group.get("group_name") == "skill_lora"
+                    ),
+                    0.0,
+                ),
+                "skill_predictor/lora_layers": float(predictor.lora_layer_count),
                 "skill_predictor/all_layers": float(
                     self.config.skill_predictor_all_layers
+                ),
+                "skill_predictor/deadzone_frac": float(
+                    self.config.skill_predictor_deadzone_frac
                 ),
             }
         finally:
@@ -826,40 +870,91 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 parameter.requires_grad_(old_value)
 
     @staticmethod
-    def _hold_after_boundary(actions: Tensor, batch: dict, real_dim: int) -> Tensor:
-        """Turn episode/skill-tail padding into supervised stop-and-hold targets."""
-        batch_size, chunk_size = actions.shape[:2]
-        device = actions.device
-        valid = torch.ones(batch_size, chunk_size, dtype=torch.bool, device=device)
-        if "action_is_pad" in batch:
-            valid &= ~batch["action_is_pad"].to(device).bool()
-        if "skill_de" in batch:
-            distance_to_end = batch["skill_de"].to(device).long().reshape(batch_size, 1)
-            valid &= torch.arange(chunk_size, device=device)[None] <= distance_to_end
+    def _valid_action_steps(actions: Tensor, batch: dict) -> Tensor:
+        """Match Stage-0 unconditional supervision: mask episode padding only.
 
-        offsets = torch.arange(chunk_size, device=device)[None].expand(batch_size, -1)
-        last_valid = torch.where(valid, offsets, torch.full_like(offsets, -1)).max(dim=1).values
-        anchor = last_valid.clamp(min=0)
-        rows = torch.arange(batch_size, device=device)
-        hold = torch.zeros_like(actions[:, 0])
-        hold[:, real_dim - 1] = actions[rows, anchor, real_dim - 1]
-        return torch.where(valid[..., None], actions, hold[:, None])
+        A chunk may cross a skill boundary. Those tail actions remain real dataset
+        targets even though the conditioning skill is the one active at the chunk
+        start; ``skill_de`` must therefore not shorten or rewrite the target.
+        """
+        valid = torch.ones(actions.shape[:2], dtype=torch.bool, device=actions.device)
+        if "action_is_pad" in batch:
+            valid &= ~batch["action_is_pad"].to(actions.device).bool()
+        return valid
+
+    @staticmethod
+    def _endpoint_xyz_loss(
+        predicted_actions: Tensor,
+        target_actions: Tensor,
+        valid: Tensor,
+    ) -> tuple[Tensor, Tensor]:
+        """Stage0 Exp4-1 endpoint: MSE of accumulated valid XYZ deltas.
+
+        Errors may cancel across intermediate timesteps; only the final chunk
+        displacement matters. Every sample has equal weight, irrespective of
+        the number of valid steps in its episode-clipped chunk.
+        """
+        if predicted_actions.shape[-1] < 3 or target_actions.shape[-1] < 3:
+            raise ValueError("endpoint_xyz loss requires at least three action dimensions.")
+        sample_valid = valid.any(dim=1)
+        if not bool(sample_valid.any()):
+            raise ValueError("endpoint_xyz loss received a batch with no valid action steps.")
+        step_valid = valid.to(predicted_actions.dtype).unsqueeze(-1)
+        endpoint_error = (
+            (predicted_actions[..., :3] - target_actions[..., :3]) * step_valid
+        ).sum(dim=1)
+        per_sample = endpoint_error.square().mean(dim=-1)
+        selected = sample_valid.to(per_sample.dtype)
+        loss = (per_sample * selected).sum() / selected.sum().clamp(min=1.0)
+        return loss, per_sample
 
     def forward(self, batch: dict, reduction: str = "mean"):
         actions = pad_vector(batch[ACTION], self.config.max_action_dim)
         real_dim = self.config.output_features[ACTION].shape[0]
-        actions = self._hold_after_boundary(actions, batch, real_dim)
         state = pad_vector(batch[OBS_STATE], self.config.max_state_dim)
         residual = self.model(
             self._collect_images(batch), state, self._skill_code(batch), actions
         )[..., :real_dim]
         squared_error = residual.square()
-        per_sample = squared_error.mean(dim=(1, 2))
+        valid = self._valid_action_steps(actions, batch)
+        valid_float = valid.to(squared_error.dtype).unsqueeze(-1)
+        valid_per_sample = valid.sum(dim=1).clamp(min=1).to(squared_error.dtype)
+        per_sample = (squared_error * valid_float).sum(dim=(1, 2)) / (
+            valid_per_sample * real_dim
+        )
+        valid_steps = valid.sum().clamp(min=1).to(squared_error.dtype)
+        action_loss = (squared_error * valid_float).sum() / (valid_steps * real_dim)
+        loss_per_dim = (squared_error * valid_float).sum(dim=(0, 1)) / valid_steps
+        endpoint_loss = None
+        action_objective = action_loss
+        objective_per_sample = per_sample
+        if self.config.action_loss_mode == "flow_endpoint_xyz":
+            predicted_actions = self.model._last_predicted_actions
+            if predicted_actions is None:
+                raise RuntimeError(
+                    "flow_endpoint_xyz did not receive reconstructed predicted actions."
+                )
+            endpoint_loss, endpoint_per_sample = self._endpoint_xyz_loss(
+                predicted_actions[..., :real_dim],
+                actions[..., :real_dim],
+                valid,
+            )
+            action_objective = 0.5 * action_loss + 0.5 * endpoint_loss
+            objective_per_sample = 0.5 * per_sample + 0.5 * endpoint_per_sample
         loss_dict = {
-            "action_loss": squared_error.mean().detach().item(),
-            "loss_per_dim": squared_error.mean(dim=(0, 1)).detach().cpu().tolist(),
+            "action_loss": action_loss.detach().item(),
+            "loss_per_dim": loss_per_dim.detach().cpu().tolist(),
             "regime/transition_jitter_fraction": self._last_transition_jitter_fraction.detach().item(),
         }
+        if endpoint_loss is not None:
+            loss_dict.update(
+                {
+                    "endpoint_xyz_loss": endpoint_loss.detach().item(),
+                    "action_objective": action_objective.detach().item(),
+                    "action_flow_weight": 0.5,
+                    "action_endpoint_weight": 0.5,
+                }
+            )
         terminator_loss = None
         if self.config.train_terminator and self.model.fsq_term_train is not None:
             terminator_loss, progress_loss, termination_loss = self._terminator_loss(batch)
@@ -871,8 +966,8 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 }
             )
         if reduction == "none":
-            return per_sample, loss_dict
-        total = per_sample.mean()
+            return objective_per_sample, loss_dict
+        total = action_objective
         if terminator_loss is not None:
             total = total + terminator_loss
             loss_dict["loss_total"] = total.detach().item()
@@ -922,10 +1017,21 @@ class SkillExpertPolicy(PreTrainedPolicy):
         state_dict, is_pi05 = loaded
         if is_pi05 and not any(key.startswith("model.gemma_expert.") for key in state_dict):
             raise RuntimeError("The pi0.5 checkpoint contains no action-expert weights.")
+        if is_pi05:
+            state_dict, routed = route_plain_to_base(
+                state_dict, set(policy.state_dict())
+            )
+            if routed:
+                log.info(
+                    "Stage-1 pi0.5 initialization routed %d predictor VLM tensors "
+                    "into LoRA base projections.",
+                    routed,
+                )
         if is_pi05 and config.train_skill_predictor:
             expected_vlm = {
                 f"model.skill_predictor.vlm.{key}"
                 for key in policy.model.skill_predictor.vlm.state_dict()
+                if ".adapters." not in key
             }
             missing_vlm = expected_vlm - set(state_dict)
             if missing_vlm:

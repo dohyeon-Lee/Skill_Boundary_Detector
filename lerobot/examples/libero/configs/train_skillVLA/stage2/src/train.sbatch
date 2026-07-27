@@ -80,7 +80,13 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.skill_predictor_weight="${SKILL_PREDICTOR_WEIGHT}" \
     --policy.skill_predictor_lr_scale="${SKILL_PREDICTOR_LR_SCALE}" \
     --policy.skill_predictor_all_layers="${SKILL_PREDICTOR_ALL_LAYERS}" \
-    --policy.skill_predictor_detach_vlm=true \
+    --policy.skill_predictor_detach_vlm="${SKILL_PREDICTOR_DETACH_VLM}" \
+    --policy.skill_predictor_lora="${SKILL_PREDICTOR_LORA}" \
+    --policy.skill_predictor_lora_targets="${SKILL_PREDICTOR_LORA_TARGETS}" \
+    --policy.skill_predictor_lora_rank="${SKILL_PREDICTOR_LORA_RANK}" \
+    --policy.skill_predictor_lora_alpha="${SKILL_PREDICTOR_LORA_ALPHA}" \
+    --policy.skill_predictor_lora_dropout="${SKILL_PREDICTOR_LORA_DROPOUT}" \
+    --policy.skill_predictor_lora_lr_scale="${SKILL_PREDICTOR_LORA_LR_SCALE}" \
     --policy.skill_predictor_vlm_variant="${SKILL_PREDICTOR_VLM_VARIANT}" \
     --policy.skill_predictor_image_size="${SKILL_PREDICTOR_IMAGE_SIZE}" \
     --policy.skill_predictor_reader_tokens="${SKILL_PREDICTOR_READER_TOKENS}" \

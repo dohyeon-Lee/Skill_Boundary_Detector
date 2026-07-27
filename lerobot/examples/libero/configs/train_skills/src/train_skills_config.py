@@ -113,52 +113,30 @@ def resolve_path(project_root: "Path | str", value: Any, default: str = "") -> s
 
 
 def resolve_skillset_threshold_mode(cfg: dict[str, Any], project_root: Path) -> str:
-    """Read the mode from this module, or inherit build_data's selection.
+    """Read the boundary-threshold mode from this module's own config.
 
-    The build config is the user-facing source of truth.  FSQ/eval configs omit
-    this key deliberately, so changing only build_data_config.yaml also makes
-    their resolver point at the matching `seg_*` directory.
+    Every config (build_data, FSQ, eval) is self-contained and must carry the
+    key itself when it deviates from the default — there is no cross-config
+    inheritance, so editing one module's yaml never changes another's resolution.
     """
-    value = get_value(cfg, "skillset_boundary_threshold_mode", None)
-    if value is None:
-        build_cfg = (
-            project_root / "lerobot" / "examples" / "libero" / "configs"
-            / "train_skills" / "build_data" / "build_data_config.yaml"
-        )
-        if build_cfg.is_file():
-            value = get_value(load_config(build_cfg), "skillset_boundary_threshold_mode", "episode_mean")
-    return str(value if value is not None else "episode_mean").strip().lower()
+    return str(
+        get_value(cfg, "skillset_boundary_threshold_mode", "episode_mean")
+    ).strip().lower()
 
 
 def resolve_skillset_global_threshold_source(cfg: dict[str, Any], project_root: Path) -> str:
-    """Resolve an optional fixed global-threshold JSON, inheriting build_data.
+    """Resolve an optional fixed global-threshold JSON from this module's config.
 
     A source is intentionally separate from ``global_mean``: the latter normally
     recomputes a mean for the dataset being built, while a non-empty source
     freezes a previously established cross-task threshold.
     """
-    value = get_value(cfg, "skillset_global_threshold_source", None)
-    if value is None:
-        build_cfg = (
-            project_root / "lerobot" / "examples" / "libero" / "configs"
-            / "train_skills" / "build_data" / "build_data_config.yaml"
-        )
-        if build_cfg.is_file():
-            value = get_value(load_config(build_cfg), "skillset_global_threshold_source", "")
-    return resolve_path(project_root, value)
+    return resolve_path(project_root, get_value(cfg, "skillset_global_threshold_source", ""))
 
 
 def resolve_skillset_output_suffix(cfg: dict[str, Any], project_root: Path) -> str:
     """Resolve an optional, manually chosen experiment suffix for a skillset."""
-    value = get_value(cfg, "skillset_output_suffix", None)
-    if value is None:
-        build_cfg = (
-            project_root / "lerobot" / "examples" / "libero" / "configs"
-            / "train_skills" / "build_data" / "build_data_config.yaml"
-        )
-        if build_cfg.is_file():
-            value = get_value(load_config(build_cfg), "skillset_output_suffix", "")
-    raw = str(value if value is not None else "").strip()
+    raw = str(get_value(cfg, "skillset_output_suffix", "") or "").strip()
     if not raw:
         return ""
     tag = raw[1:] if raw.startswith("_") else raw
@@ -171,20 +149,8 @@ def resolve_skillset_output_suffix(cfg: dict[str, Any], project_root: Path) -> s
 
 
 def resolve_skillset_min_skills(cfg: dict[str, Any], project_root: Path) -> int:
-    """Read the minimum segment count, inheriting build_data's selection.
-
-    This setting changes which episodes enter the skillset, so downstream FSQ
-    and eval configs must resolve the same artifact even when they omit the key.
-    """
-    value = get_value(cfg, "skillset_min_skills", None)
-    if value is None:
-        build_cfg = (
-            project_root / "lerobot" / "examples" / "libero" / "configs"
-            / "train_skills" / "build_data" / "build_data_config.yaml"
-        )
-        if build_cfg.is_file():
-            value = get_value(load_config(build_cfg), "skillset_min_skills", 1)
-    min_skills = int(value if value is not None else 1)
+    """Read the minimum segment count from this module's own config (default 1)."""
+    min_skills = int(get_value(cfg, "skillset_min_skills", 1))
     if min_skills < 1:
         raise ValueError(f"skillset_min_skills must be >= 1, got {min_skills}.")
     return min_skills
@@ -363,11 +329,13 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         raise ValueError(
             "skillset_global_threshold_source requires skillset_boundary_threshold_mode=global_mean."
         )
-    # Keep the legacy directory for episode_mean. A global threshold produces different
-    # labels, so isolate it instead of allowing --resume to mix both segmentations.
-    skillset_threshold_suffix = ""
+    # Both modes are tagged so the two segmentations can never share a directory
+    # (global vs per-episode thresholds produce different labels). Historical
+    # suffix-free dirs were episode_mean builds from before this tag existed.
     if skillset_boundary_threshold_mode == "global_mean":
         skillset_threshold_suffix = "_globalref" if skillset_global_threshold_source else "_globalmean"
+    else:
+        skillset_threshold_suffix = "_episodemean"
     skillset_output_suffix = resolve_skillset_output_suffix(cfg, root)
     # Default is 1 (`_ms1`, the SkillVLA `_msN` convention); 2 keeps the
     # historical suffix-free name so old artifacts stay addressable.
@@ -439,8 +407,7 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
     # was trained on (for example state_obs20), not just the FSQ architecture.
     dp_tag = dp_policy[len(target_dataset) + 1:] if dp_policy.startswith(f"{target_dataset}_") else dp_policy
     dp_tag += probe_settings["skillset_probe_suffix"]
-    if skillset_boundary_threshold_mode == "global_mean":
-        dp_tag += "_global"
+    dp_tag += "_global" if skillset_boundary_threshold_mode == "global_mean" else "_episode"
     dp_tag += skillset_min_skills_suffix
     dp_tag += skillset_output_suffix
     # Architecture knobs (vision backbone/freeze, terminator, encoder input mode,
