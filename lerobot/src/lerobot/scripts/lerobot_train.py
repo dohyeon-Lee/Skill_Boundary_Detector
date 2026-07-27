@@ -190,28 +190,13 @@ def update_policy(
     return train_metrics, output_dict
 
 
-_WINDOWED_POLICY_METRIC_KEYS = {
-    "action_loss", "action_weighted_loss", "loss_flow", "loss_skill", "skill_acc",
-    "skill_ce", "fast_ce", "structure_ce",
-    "skill_token_acc", "skill_exact_acc", "fast_token_acc",
-}
-_WINDOWED_POLICY_METRIC_PREFIXES = (
-    "regime/",
-    "terminator/",
-    "stage0/",
-    "skill_predictor/",
-    "batch_sampling/",
-    "wrong_language/",
-    "ar/",
-    "fast_context/",
-)
 _WINDOWED_POLICY_MODEL_TYPES = frozenset(
     {"skill_expert", "skill_vla", "skill_vla_stage2"}
 )
 
 
 class _WindowedPolicyMetrics:
-    """Mean selected scalar policy diagnostics over one WandB logging window.
+    """Mean all finite scalar policy diagnostics over one WandB logging window.
 
     Regime losses are emitted only on their matching batches, so each key keeps
     its own count instead of treating the other regime as a zero-loss update.
@@ -221,15 +206,17 @@ class _WindowedPolicyMetrics:
         self._sums: dict[str, float] = {}
         self._counts: dict[str, int] = {}
 
-    @staticmethod
-    def _tracks(key: str) -> bool:
-        return key in _WINDOWED_POLICY_METRIC_KEYS or key.startswith(_WINDOWED_POLICY_METRIC_PREFIXES)
-
     def update(self, metrics: dict | None) -> None:
         if not metrics:
             return
         for key, value in metrics.items():
-            if not self._tracks(key) or not isinstance(value, numbers.Real):
+            # Policy outputs own their metric names. Track every finite scalar so
+            # adding a diagnostic never requires a second trainer-side allowlist.
+            if torch.is_tensor(value):
+                if value.numel() != 1:
+                    continue
+                value = value.detach().item()
+            if not isinstance(value, numbers.Real):
                 continue
             value = float(value)
             if not math.isfinite(value):
@@ -243,6 +230,22 @@ class _WindowedPolicyMetrics:
     def reset(self) -> None:
         self._sums.clear()
         self._counts.clear()
+
+
+def _finite_scalar_metrics(metrics: dict) -> dict[str, float]:
+    """Keep every finite scalar and discard vectors/objects before W&B logging."""
+    scalars: dict[str, float] = {}
+    for key, value in metrics.items():
+        if torch.is_tensor(value):
+            if value.numel() != 1:
+                continue
+            value = value.detach().item()
+        if not isinstance(value, numbers.Real):
+            continue
+        value = float(value)
+        if math.isfinite(value):
+            scalars[key] = value
+    return scalars
 
 
 def build_pt_probe_batches(cfg: TrainPipelineConfig) -> list[dict]:
@@ -790,27 +793,10 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                             "rabc_num_frames": rabc_stats["num_frames"],
                         }
                     )
-                _wandb_keep = {
-                    "loss", "grad_norm", "lr", "epochs", "episodes",
-                    "dataloading_s",
-                    "loss_skill_decoder", "loss_flow", "loss_skill_predictor",
-                    "loss_skill_decoder_action_loss", "loss_skill_decoder_end_loss",
-                    "predicted_latent_prob",
-                    "loss_skill", "skill_acc",  # Stage-2 SkillVLA: skill regression loss + skill-code accuracy
-                    # (co-trained FSQ terminator logs via "terminator/*" → routed to train_terminator/* below)
-                    "action_loss",              # Stage-1 skill_expert: plain action-flow MSE
-                }
-                wandb_log_dict = {k: v for k, v in wandb_log_dict.items()
-                                  if k in _wandb_keep or k.startswith(
-                                      (
-                                          "terminator/",
-                                          "stage0/",
-                                          "skill_predictor/",
-                                          "batch_sampling/",
-                                          "regime/",
-                                          "distill/",
-                                          "wrong_language/",
-                                      ))}
+                # No metric-name allowlist: log every finite scalar. This keeps
+                # new policy diagnostics automatic while excluding vectors such
+                # as loss_per_dim and non-metric objects.
+                wandb_log_dict = _finite_scalar_metrics(wandb_log_dict)
                 # A policy that reports its own action_loss (Stage-1 skill_expert) replaces the generic
                 # backprop-scalar "loss" with it → drop the redundant generic "loss".
                 if "action_loss" in wandb_log_dict:

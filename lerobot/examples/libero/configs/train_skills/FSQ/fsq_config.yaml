@@ -5,10 +5,10 @@
 # Consumes the skillset under
 # FSQ_inputs/seg_{dp_run_name}_ck{dp_checkpoint}_{skillset_mode}_{threshold}/.
 
-target_dataset: libero_goal_full_full
+target_dataset: langgap_56_full_full
 # Which DP's skillset/tokens to train on — must match the build_data run.
-dp_run_name: libero_goal_full_full_state_obs20
-dp_checkpoint: "100000"
+dp_run_name: langgap_56_full_full_state_obs20
+dp_checkpoint: "050000"
 skillset_mode: std                   # spherical | full | without_gripper | std
 # Exact manual artifact tag. Empty selects the canonical no-suffix skillset;
 # set `trialA` to train on `..._std_globalmean_trialA/skillset`.

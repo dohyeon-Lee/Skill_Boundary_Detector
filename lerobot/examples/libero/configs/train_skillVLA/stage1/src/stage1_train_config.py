@@ -157,9 +157,9 @@ def build_settings(config: dict) -> dict:
         raise ValueError("Stage 1 requires the same 18-layer variant for cond and expert.")
     skill_conditioning = str(
         _at(config, "architecture", "skill_conditioning", default="broadcast")
-    )
-    if skill_conditioning != "broadcast":
-        raise ValueError("Stage 1 fixes skill conditioning to per-layer broadcast.")
+    ).strip().lower()
+    if skill_conditioning not in {"broadcast", "token"}:
+        raise ValueError("architecture.skill_conditioning must be broadcast|token.")
 
     max_state_dim = int(_at(config, "architecture", "max_state_dim", default=32))
     max_action_dim = int(_at(config, "architecture", "max_action_dim", default=32))
@@ -203,7 +203,13 @@ def build_settings(config: dict) -> dict:
         if re.fullmatch(r"FSQ\d+", token) or token.isdigit()
     ]
     short_run_tag = "_".join(short_tokens) or run_tag
-    run_name = f"{source}_{short_run_tag}_{vision_tag}_{action_loss_mode}"
+    # Preserve existing broadcast run names so active/old runs remain resumable.
+    # Token runs need an explicit tag to avoid sharing an output directory with
+    # the otherwise identical broadcast ablation.
+    conditioning_tag = "" if skill_conditioning == "broadcast" else "_token"
+    run_name = (
+        f"{source}_{short_run_tag}_{vision_tag}{conditioning_tag}_{action_loss_mode}"
+    )
     if suffix:
         run_name = f"{run_name}_{suffix}"
 

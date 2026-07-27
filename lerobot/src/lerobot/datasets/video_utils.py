@@ -165,6 +165,68 @@ def decode_video_frames(
         raise ValueError(f"Unsupported video backend: {backend}")
 
 
+def decode_episode_video_frames(
+    video_path: Path | str,
+    from_timestamp: float,
+    to_timestamp: float,
+    length: int,
+    fps: float,
+    *,
+    tolerance_s: float = 1e-4,
+    backend: str = "pyav",
+    decoder_num_threads: int | None = 1,
+) -> torch.Tensor:
+    """Decode exactly the timestamped frames belonging to one episode.
+
+    Range-based decoders may return the frame immediately preceding ``from_timestamp``
+    because seeking starts from a prior keyframe and floating-point episode timestamps can
+    lie infinitesimally below the encoded PTS. Consumers must therefore select frames by
+    their target timestamps rather than assume the first returned frame is episode frame 0.
+
+    The returned tensor has shape ``(length, C, H, W)`` and float values in ``[0, 1]``.
+    ``decode_video_frames`` validates every selected frame against ``tolerance_s``; this
+    wrapper additionally validates the episode duration and exact output length.
+    """
+    length = int(length)
+    fps = float(fps)
+    from_timestamp = float(from_timestamp)
+    to_timestamp = float(to_timestamp)
+    if length <= 0:
+        raise ValueError(f"Episode length must be positive, got {length}.")
+    if not np.isfinite(fps) or fps <= 0:
+        raise ValueError(f"Episode fps must be positive and finite, got {fps}.")
+    if not np.isfinite(from_timestamp) or not np.isfinite(to_timestamp):
+        raise ValueError(
+            f"Episode timestamps must be finite, got from={from_timestamp}, to={to_timestamp}."
+        )
+
+    expected_duration = length / fps
+    actual_duration = to_timestamp - from_timestamp
+    # Container durations can be rounded slightly. A quarter-frame allowance catches stale or
+    # wrong-fps metadata without rejecting harmless representation error such as 699.9499999999.
+    duration_tolerance = max(float(tolerance_s), 0.25 / fps)
+    if abs(actual_duration - expected_duration) > duration_tolerance:
+        raise ValueError(
+            f"Episode duration mismatch for {video_path}: metadata span={actual_duration:.9f}s, "
+            f"expected length/fps={expected_duration:.9f}s "
+            f"(length={length}, fps={fps:g}, tolerance={duration_tolerance:.9f}s)."
+        )
+
+    timestamps = [from_timestamp + frame_index / fps for frame_index in range(length)]
+    frames = decode_video_frames(
+        video_path,
+        timestamps,
+        float(tolerance_s),
+        backend,
+        decoder_num_threads=decoder_num_threads,
+    )
+    if frames.shape[0] != length:
+        raise RuntimeError(
+            f"Decoded {frames.shape[0]} frames from {video_path}, expected exactly {length}."
+        )
+    return frames
+
+
 def decode_video_frames_torchvision(
     video_path: Path | str,
     timestamps: list[float],

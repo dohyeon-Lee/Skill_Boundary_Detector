@@ -5,12 +5,12 @@
 # Each entry is one video/metric panel. Duplicate a checkpoint with different
 # skill_source values to compare oracle skills against its learned predictor.
 models:
-  - model_dir: libero_90_full_firsthalf_FSQ333_175_dino_tuned
+  - model_dir: libero_90_full_firsthalf_FSQ333_175_dino_tuned_flow_endpoint_xyz
     checkpoint: "last"
     skill_source: gt
     advance_mode: terminator
     label: Stage1-GT
-  - model_dir: libero_90_full_firsthalf_FSQ333_175_dino_tuned
+  - model_dir: libero_90_full_firsthalf_FSQ333_175_dino_tuned_flow_endpoint_xyz
     checkpoint: "last"
     skill_source: predictor
     advance_mode: terminator
@@ -22,7 +22,7 @@ skill_source: gt              # gt | predictor
 models_per_row: 2
 
 # Empty => timestamped folder under stage1_eval/outputs/.
-output_name: "libero90_7k"
+output_name: "libero90_endpoint"
 
 target_task: libero_90
 task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
@@ -42,8 +42,8 @@ terminator:
   # Every panel uses the co-trained terminator inside its own checkpoint.
   end_mode: or                   # termination | progress | or | and
   end_threshold: 0.5
-  progress_threshold: 0.95
-  max_skill_length: 150
+  progress_threshold: 0.9
+  max_skill_length: 200
 
 video: {max_per_task: 3, frame_stride: 2, fps: 10}
 skill_html: true

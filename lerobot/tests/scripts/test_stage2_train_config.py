@@ -142,6 +142,24 @@ def test_stage2_resolver_reads_checkpoint_config_without_parsing_run_name(
     assert settings["pt_run_name"] == "stage1_exact_name_stage2_likelihood4_gt"
 
 
+def test_stage2_inherits_token_conditioning_from_stage1_checkpoint(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    checkpoint_config = (
+        Path(config["project_root"])
+        / "outputs/skillVLA_stage1/stage1_exact_name/checkpoints/last/pretrained_model/config.json"
+    )
+    stage1 = json.loads(checkpoint_config.read_text())
+    stage1["state_cond_mode"] = "token"
+    checkpoint_config.write_text(json.dumps(stage1))
+
+    settings = stage2_train_config.build_settings(config)
+
+    assert settings["state_cond_mode"] == "token"
+    assert settings["pt_run_name"] == "stage1_exact_name_stage2_likelihood4_gt"
+
+
 def test_stage2_explicit_dataset_run_must_match_stage1(tmp_path: Path) -> None:
     config = _config(tmp_path)
     config["dataset"]["run"] = "FSQ333_different"

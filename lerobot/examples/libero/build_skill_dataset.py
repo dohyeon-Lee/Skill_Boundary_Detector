@@ -62,6 +62,40 @@ from action_manifold import (
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
+def _load_camera_frames(camera_keys, load_camera, *, serial_attempts: int = 3):
+    """Decode cameras in parallel, then retry serially on transient ffmpeg failures.
+
+    ``imageio_ffmpeg.read_frames`` waits only ten seconds for ffmpeg's metadata
+    header.  When many Slurm array workers hit the shared filesystem at once,
+    one of the camera decoders can exceed that timeout even though the video is
+    valid.  Keep the fast parallel path, but fall back to a few serial attempts
+    so a temporary startup delay does not leave a missing episode curve.
+    """
+    try:
+        with ThreadPoolExecutor(max_workers=len(camera_keys)) as pool:
+            return dict(pool.map(load_camera, camera_keys))
+    except (OSError, RuntimeError) as parallel_error:
+        last_error = parallel_error
+        print(
+            f" [video decode retry: {type(parallel_error).__name__}; serial fallback]",
+            end="",
+            flush=True,
+        )
+
+    for attempt in range(1, serial_attempts + 1):
+        try:
+            return dict(load_camera(cam_key) for cam_key in camera_keys)
+        except (OSError, RuntimeError) as error:
+            last_error = error
+            if attempt < serial_attempts:
+                time.sleep(float(attempt))
+
+    raise RuntimeError(
+        f"Camera video decoding failed after parallel attempt and "
+        f"{serial_attempts} serial attempts"
+    ) from last_error
+
+
 # ── Args ──────────────────────────────────────────────────────────────────────
 
 @dataclass
@@ -796,8 +830,7 @@ def main(args: Args) -> None:
                             )
                             return cam_key, viz.load_episode_frames(src, start_sec, end_sec)
 
-                        with ThreadPoolExecutor(max_workers=len(camera_keys)) as pool:
-                            cam_frames = dict(pool.map(_load_cam, camera_keys))
+                        cam_frames = _load_camera_frames(camera_keys, _load_cam)
                         ep_dino_tokens = None
 
                     vf_replan_ts, _, _, div_cos, _, _, _ = run_vf_analysis(
@@ -901,6 +934,15 @@ def main(args: Args) -> None:
             "final/total_time_min": (time.time() - t_start) / 60,
         })
         wandb_run.finish()
+
+    # Never let an incomplete shard look successful to Slurm.  The submit
+    # pipeline uses afterok dependencies, and the global threshold must include
+    # every episode curve.  Existing outputs remain resumable on the next run.
+    if n_error:
+        raise RuntimeError(
+            f"Skill dataset build finished with {n_error} episode error(s); "
+            "rerun with --resume after fixing or retrying the failed inputs."
+        )
 
 
 if __name__ == "__main__":

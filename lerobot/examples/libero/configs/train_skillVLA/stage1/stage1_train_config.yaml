@@ -18,13 +18,13 @@ vision:
 architecture:
   expert_variant: gemma_300m
   cond_variant: gemma_300m
-  skill_conditioning: broadcast
+  skill_conditioning: token  # broadcast | token
   max_state_dim: 32
   max_action_dim: 32
   chunk_size: 10
 
 # flow | flow_endpoint_xyz (the latter is 0.5 flow + 0.5 accumulated-XYZ endpoint MSE)
-loss: flow_endpoint_xyz
+loss: flow
 
 # Stage3-A predictor contract: frozen pi0.5 VLM base + Q/K/V/O skill LoRA.
 skill_predictor:

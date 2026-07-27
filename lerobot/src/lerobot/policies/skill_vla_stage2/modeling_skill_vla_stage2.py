@@ -264,13 +264,15 @@ class SkillVLAStage2Pytorch(SkillExpertPytorch):
         x_t = time[:, None, None] * source + (1.0 - time[:, None, None]) * actions
         target_velocity = source - actions
         expert_condition = self._expert_condition(time, state)
+        skill_token, skill_broadcast = self._skill_conditioning(skill_code)
 
         with torch.no_grad():
             prior_hidden = self._run_joint_hidden(
                 self._condition_tokens(images),
                 x_t,
                 expert_condition,
-                self._skill_broadcast(skill_code),
+                skill_broadcast,
+                skill_token,
             )
             vlm_hidden, vlm_key_padding_mask = (
                 self.skill_predictor.encode_last_hidden(
@@ -304,7 +306,10 @@ class SkillVLAStage2Pytorch(SkillExpertPytorch):
             )
         condition_tokens = self._condition_tokens(images)
         n_condition = condition_tokens.shape[1]
-        n_action = noise.shape[1]
+        n_chunk = noise.shape[1]
+        skill_token, skill_broadcast = self._skill_conditioning(skill_code)
+        n_prefix = 0 if skill_token is None else skill_token.shape[1]
+        n_action = n_prefix + n_chunk
 
         condition_padding = torch.ones(
             batch_size, n_condition, dtype=torch.bool, device=device
@@ -326,8 +331,12 @@ class SkillVLAStage2Pytorch(SkillExpertPytorch):
         ).past_key_values
 
         action_padding = torch.ones(batch_size, n_action, dtype=torch.bool, device=device)
+        action_block_starts = []
+        if n_prefix:
+            action_block_starts += [1] + [0] * (n_prefix - 1)
+        action_block_starts += [1] + [0] * (n_chunk - 1)
         action_blocks = torch.tensor(
-            [1] + [0] * (n_action - 1), dtype=torch.bool, device=device
+            action_block_starts, dtype=torch.bool, device=device
         )[None].expand(batch_size, -1)
         action_attention = make_att_2d_masks(action_padding, action_blocks)
         condition_visible = condition_padding[:, None].expand(
@@ -342,7 +351,6 @@ class SkillVLAStage2Pytorch(SkillExpertPytorch):
 
         dt = -1.0 / num_steps
         x_t = noise
-        skill_broadcast = self._skill_broadcast(skill_code)
         for step in range(num_steps):
             time = torch.full(
                 (batch_size,), 1.0 + step * dt, dtype=torch.float32, device=device
@@ -355,6 +363,7 @@ class SkillVLAStage2Pytorch(SkillExpertPytorch):
                 condition_cache,
                 full_attention,
                 action_positions,
+                skill_token,
             )
             velocity = self._likelihood_velocity(
                 prior_hidden,

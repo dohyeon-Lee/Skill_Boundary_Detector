@@ -75,6 +75,10 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
     # ── DP (step 3) ──
     dp_policy_name = str(get_value(cfg, "dp_policy_name"))
     dp_checkpoint = str(get_value(cfg, "dp_checkpoint", "100000"))
+    # lerobot checkpoint folders are zero-padded to 6 digits (050000); normalize numeric
+    # values so `50000` and `050000` resolve to the same checkpoint AND seg_* dir.
+    if dp_checkpoint.isdigit():
+        dp_checkpoint = dp_checkpoint.zfill(6)
     dp_policy_path = dp_outputs_root / dp_policy_name / "checkpoints" / dp_checkpoint / "pretrained_model"
     probe_settings = skillset_probe_settings(cfg)
     skillset_min_skills = int(get_value(cfg, "skillset_min_skills", 1))

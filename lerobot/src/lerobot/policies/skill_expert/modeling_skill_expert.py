@@ -2,9 +2,11 @@
 
 The action path has no VLM or language input: DINO and a fresh 18-layer condition
 transformer encode the current cameras, and the 18-layer pi0.5 action expert is
-conditioned by time+state AdaRMS plus per-layer GT-skill broadcast. Optionally, a
-frozen pi0.5 VLM base with a skill-only LoRA feeds a separate SkillReader/SkillHead
-optimizer; its graph and gradient clipping are disjoint from the action path.
+conditioned by time+state AdaRMS. GT skill is either broadcast into every action
+token at every layer or prepended as one attended action-prefix token. Optionally,
+a frozen pi0.5 VLM base with a skill-only LoRA feeds a separate
+SkillReader/SkillHead optimizer; its graph and gradient clipping are disjoint from
+the action path.
 """
 
 from __future__ import annotations
@@ -185,9 +187,25 @@ class SkillExpertPytorch(nn.Module):
         )
         return (level_ids.float() - self._fsq_half[None]) / self._fsq_half[None]
 
-    def _skill_broadcast(self, skill_code: Tensor) -> Tensor:
+    def _skill_embedding(self, skill_code: Tensor) -> Tensor:
         z_q = self._code_to_zq(skill_code).to(self.working_dtype)
         return self.skill_proj(z_q)
+
+    def _skill_conditioning(
+        self, skill_code: Tensor
+    ) -> tuple[Tensor | None, Tensor | None]:
+        """Return ``(skill_token, skill_broadcast)`` for the configured route."""
+        embedding = self._skill_embedding(skill_code)
+        if self.config.state_cond_mode == "token":
+            return embedding.unsqueeze(1), None
+        return None, embedding
+
+    def _skill_broadcast(self, skill_code: Tensor) -> Tensor | None:
+        """Compatibility helper used by the broadcast-only Stage-2 subclass."""
+        return self._skill_conditioning(skill_code)[1]
+
+    def _skill_token(self, skill_code: Tensor) -> Tensor | None:
+        return self._skill_conditioning(skill_code)[0]
 
     def terminator_predict(
         self,
@@ -235,10 +253,15 @@ class SkillExpertPytorch(nn.Module):
         condition_tokens: Tensor,
         noisy_actions: Tensor,
         expert_condition: Tensor,
-        skill_broadcast: Tensor,
+        skill_broadcast: Tensor | None,
+        skill_token: Tensor | None = None,
     ) -> Tensor:
         """Return the normalized action hidden after all 18 Stage-1 layer pairs."""
         action_tokens = self.action_in_proj(noisy_actions.to(self.working_dtype))
+        n_chunk = action_tokens.shape[1]
+        n_prefix = 0 if skill_token is None else skill_token.shape[1]
+        if skill_token is not None:
+            action_tokens = torch.cat((skill_token, action_tokens), dim=1)
         batch_size, n_condition = condition_tokens.shape[:2]
         n_action = action_tokens.shape[1]
         device = action_tokens.device
@@ -246,8 +269,14 @@ class SkillExpertPytorch(nn.Module):
         padding_mask = torch.ones(
             batch_size, n_condition + n_action, dtype=torch.bool, device=device
         )
-        # One bidirectional condition block followed by one bidirectional action block.
-        block_starts = [0] * n_condition + [1] + [0] * (n_action - 1)
+        # Scene is one bidirectional block. Token mode then has a separate skill
+        # block followed by the bidirectional action block: skill reads scene +
+        # itself but not actions; actions read scene + skill + actions. Broadcast
+        # mode has no prefix block.
+        block_starts = [0] * n_condition
+        if n_prefix:
+            block_starts += [1] + [0] * (n_prefix - 1)
+        block_starts += [1] + [0] * (n_chunk - 1)
         block_mask = torch.tensor(block_starts, dtype=torch.bool, device=device)
         block_mask = block_mask[None].expand(batch_size, -1)
         attention_mask = make_att_2d_masks(padding_mask, block_mask)[:, None]
@@ -292,14 +321,15 @@ class SkillExpertPytorch(nn.Module):
         action_hidden, _ = layernorm_forward(
             self.gemma_expert.model.norm, streams[1], expert_condition
         )
-        return action_hidden
+        return action_hidden[:, -n_chunk:]
 
     def _run_joint(
         self,
         condition_tokens: Tensor,
         noisy_actions: Tensor,
         expert_condition: Tensor,
-        skill_broadcast: Tensor,
+        skill_broadcast: Tensor | None,
+        skill_token: Tensor | None = None,
     ) -> Tensor:
         """Run Stage 1 and project its normalized action hidden to flow velocity."""
         action_hidden = self._run_joint_hidden(
@@ -307,6 +337,7 @@ class SkillExpertPytorch(nn.Module):
             noisy_actions,
             expert_condition,
             skill_broadcast,
+            skill_token,
         )
         return self.action_out_proj(action_hidden.to(self.working_dtype)).float()
 
@@ -327,12 +358,14 @@ class SkillExpertPytorch(nn.Module):
         source = source.to(actions.dtype)
         x_t = time[:, None, None] * source + (1.0 - time[:, None, None]) * actions
         target_velocity = source - actions
+        skill_token, skill_broadcast = self._skill_conditioning(skill_code)
 
         predicted_velocity = self._run_joint(
             self._condition_tokens(images),
             x_t,
             self._expert_condition(time, state),
-            self._skill_broadcast(skill_code),
+            skill_broadcast,
+            skill_token,
         )
         if self.config.action_loss_mode == "flow_endpoint_xyz":
             # x_t = action + t * target_velocity, hence the one-step clean-action
@@ -374,8 +407,11 @@ class SkillExpertPytorch(nn.Module):
     ) -> Tensor:
         """Encode the condition stream once, then Euler-integrate the action flow."""
         batch_size, n_condition = condition_tokens.shape[:2]
-        n_action = noise.shape[1]
+        n_chunk = noise.shape[1]
         device = noise.device
+        skill_token, skill_broadcast = self._skill_conditioning(skill_code)
+        n_prefix = 0 if skill_token is None else skill_token.shape[1]
+        n_action = n_prefix + n_chunk
 
         condition_padding = torch.ones(
             batch_size, n_condition, dtype=torch.bool, device=device
@@ -398,8 +434,12 @@ class SkillExpertPytorch(nn.Module):
         ).past_key_values
 
         action_padding = torch.ones(batch_size, n_action, dtype=torch.bool, device=device)
+        action_block_starts = []
+        if n_prefix:
+            action_block_starts += [1] + [0] * (n_prefix - 1)
+        action_block_starts += [1] + [0] * (n_chunk - 1)
         action_blocks = torch.tensor(
-            [1] + [0] * (n_action - 1), dtype=torch.bool, device=device
+            action_block_starts, dtype=torch.bool, device=device
         )[None].expand(batch_size, -1)
         action_attention = make_att_2d_masks(action_padding, action_blocks)
         condition_visible = condition_padding[:, None].expand(
@@ -413,7 +453,6 @@ class SkillExpertPytorch(nn.Module):
 
         dt = -1.0 / num_steps
         x_t = noise
-        skill_broadcast = self._skill_broadcast(skill_code)
         for step in range(num_steps):
             time = torch.full(
                 (batch_size,), 1.0 + step * dt, dtype=torch.float32, device=device
@@ -425,6 +464,7 @@ class SkillExpertPytorch(nn.Module):
                 condition_cache,
                 full_attention,
                 action_positions,
+                skill_token,
             )
             velocity = self.action_out_proj(action_hidden.to(self.working_dtype)).float()
             x_t = x_t + dt * velocity
@@ -438,10 +478,15 @@ class SkillExpertPytorch(nn.Module):
         condition_cache,
         attention_mask: Tensor,
         position_ids: Tensor,
+        skill_token: Tensor | None = None,
     ) -> Tensor:
         """Run only the 18-layer action stream against a cached condition stream."""
-        return self.gemma_expert.model.forward(
-            inputs_embeds=self.action_in_proj(noisy_actions.to(self.working_dtype)),
+        n_chunk = noisy_actions.shape[1]
+        action_tokens = self.action_in_proj(noisy_actions.to(self.working_dtype))
+        if skill_token is not None:
+            action_tokens = torch.cat((skill_token, action_tokens), dim=1)
+        hidden = self.gemma_expert.model.forward(
+            inputs_embeds=action_tokens,
             attention_mask=attention_mask,
             position_ids=position_ids,
             past_key_values=copy.deepcopy(condition_cache),
@@ -449,6 +494,7 @@ class SkillExpertPytorch(nn.Module):
             adarms_cond=expert_condition,
             broadcast_cond=skill_broadcast,
         ).last_hidden_state
+        return hidden[:, -n_chunk:]
 
 
 def _map_pi05_key(key: str, *, include_predictor_vlm: bool = False) -> str | None:

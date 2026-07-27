@@ -12,6 +12,7 @@ from lerobot.policies.skill_vla_stage2.configuration_skill_vla_stage2 import (
 from lerobot.policies.skill_vla_stage2.modeling_skill_vla_stage2 import (
     LikelihoodBlock,
     SkillVLAStage2Policy,
+    SkillVLAStage2Pytorch,
 )
 
 
@@ -34,6 +35,7 @@ def test_stage2_config_fixes_bayesvla_contract() -> None:
     assert config.training_skill_source == "gt"
     assert not config.finetune_skill_predictor
     assert not config.finetune_terminator
+    assert _config(state_cond_mode="token").state_cond_mode == "token"
     with pytest.raises(ValueError, match="fixes likelihood_num_layers=4"):
         _config(likelihood_num_layers=3)
     with pytest.raises(ValueError, match="gt.*predictor"):
@@ -128,3 +130,125 @@ def test_optional_terminator_has_separate_lr_and_clipping_group() -> None:
     assert policy.isolated_main_optimizer_grad_groups() == {
         "terminator": terminator_parameters
     }
+
+
+def test_stage2_forward_passes_inherited_token_through_frozen_prior_only() -> None:
+    class _Predictor:
+        @staticmethod
+        def encode_last_hidden(images, language_tokens, language_mask):
+            del images, language_tokens, language_mask
+            return torch.zeros(1, 2, 2), torch.zeros(1, 2, dtype=torch.bool)
+
+    model = SkillVLAStage2Pytorch.__new__(SkillVLAStage2Pytorch)
+    nn.Module.__init__(model)
+    skill_token = torch.tensor([[[7.0, 8.0]]])
+    captured = {}
+    model.skill_predictor = _Predictor()
+    model._condition_tokens = lambda images: torch.zeros(1, 2, 2)
+    model._expert_condition = lambda time, state: torch.zeros(1, 2)
+    model._skill_conditioning = lambda code: (skill_token, None)
+
+    def run_prior(condition, actions, expert_condition, broadcast, token):
+        del condition, expert_condition
+        captured["broadcast"] = broadcast
+        captured["token"] = token
+        return actions
+
+    model._run_joint_hidden = run_prior
+    model._likelihood_velocity = (
+        lambda prior, vlm, padding, expert: torch.zeros_like(prior)
+    )
+    actions = torch.ones(1, 3, 2)
+    residual = model.forward(
+        [],
+        torch.zeros(1, 2),
+        torch.tensor([0]),
+        actions,
+        torch.zeros(1, 1, dtype=torch.long),
+        torch.ones(1, 1, dtype=torch.bool),
+        noise=torch.zeros_like(actions),
+        time=torch.full((1,), 0.5),
+    )
+
+    assert captured["broadcast"] is None
+    assert captured["token"] is skill_token
+    # likelihood receives only K action positions from the frozen prior.
+    assert residual.shape == actions.shape
+
+
+def test_stage2_token_sampling_builds_prefix_mask_but_likelihood_sees_actions_only() -> None:
+    class _ConditionModel:
+        @staticmethod
+        def forward(**kwargs):
+            del kwargs
+            return SimpleNamespace(past_key_values=[("k", "v")])
+
+    class _Predictor:
+        @staticmethod
+        def encode_last_hidden(images, language_tokens, language_mask):
+            del images, language_tokens, language_mask
+            return torch.zeros(1, 2, 2), torch.zeros(1, 2, dtype=torch.bool)
+
+    model = SkillVLAStage2Pytorch.__new__(SkillVLAStage2Pytorch)
+    nn.Module.__init__(model)
+    model.config = SimpleNamespace(
+        num_inference_steps=1,
+        chunk_size=3,
+        max_action_dim=2,
+    )
+    model.cond_encoder = SimpleNamespace(model=_ConditionModel())
+    model.skill_predictor = _Predictor()
+    model._condition_tokens = lambda images: torch.zeros(1, 2, 2)
+    model._expert_condition = lambda time, state: torch.zeros(1, 2)
+    skill_token = torch.tensor([[[7.0, 8.0]]])
+    model._skill_conditioning = lambda code: (skill_token, None)
+    captured = {}
+
+    def action_prior(
+        noisy_actions,
+        expert_condition,
+        broadcast,
+        condition_cache,
+        attention_mask,
+        position_ids,
+        token,
+    ):
+        del expert_condition, condition_cache, position_ids
+        captured["broadcast"] = broadcast
+        captured["token"] = token
+        captured["attention"] = attention_mask
+        return noisy_actions
+
+    def likelihood(prior, vlm, padding, expert):
+        del vlm, padding, expert
+        captured["likelihood_shape"] = prior.shape
+        return prior
+
+    model._action_hidden_with_condition_cache = action_prior
+    model._likelihood_velocity = likelihood
+    noise = torch.tensor([[[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]]])
+    sampled = model.sample_actions(
+        [],
+        torch.zeros(1, 2),
+        torch.tensor([0]),
+        torch.zeros(1, 1, dtype=torch.long),
+        torch.ones(1, 1, dtype=torch.bool),
+        noise=noise,
+        num_steps=1,
+    )
+
+    torch.testing.assert_close(sampled, torch.zeros_like(noise))
+    assert captured["broadcast"] is None
+    assert captured["token"] is skill_token
+    assert captured["likelihood_shape"] == noise.shape
+    allowed = captured["attention"][0, 0].eq(0)
+    expected = torch.tensor(
+        [
+            [1, 1, 1, 0, 0, 0],
+            [1, 1, 1, 1, 1, 1],
+            [1, 1, 1, 1, 1, 1],
+            [1, 1, 1, 1, 1, 1],
+        ],
+        dtype=torch.bool,
+    )
+    torch.testing.assert_close(allowed, expected)

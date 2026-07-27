@@ -23,7 +23,7 @@ skillvla_dataset_root: skillvla_dataset  # outputs under {dataset_root}/{skillvl
 # ── Source dataset (원본) ─────────────────────────────────────
 # Raw LeRobot dataset to convert into SkillVLA data (may differ from the
 # dataset the DP/FSQ were trained on).
-source_dataset: libero_90_full_lasthalf
+source_dataset: libero_90_full_firsthalf
 # This source's role in the eventual SkillVLA training mix.  It is part of the
 # final output name so the same raw dataset cannot silently reuse PT and FT
 # artifacts. All three use global skill boundaries:

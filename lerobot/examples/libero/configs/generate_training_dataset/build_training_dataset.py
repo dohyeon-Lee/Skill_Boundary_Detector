@@ -29,8 +29,15 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import torch
 
-sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
+THIS_DIR = Path(__file__).resolve().parent
+# Prefer this checkout over a stale editable install/PYTHONPATH entry.  The
+# dataset builder is commonly run directly from this folder, in which case
+# Python would otherwise resolve ``lerobot`` from whichever checkout happened
+# to be activated in the shell.
+sys.path.insert(0, str(THIS_DIR.parents[3] / "src"))
+sys.path.insert(0, str(THIS_DIR / "src"))
 
 from training_dataset_config import (
     DEFAULT_CONFIG_PATH,
@@ -230,15 +237,25 @@ def _trim_episode_video(src_video: Path, dst_video: Path, from_ts: float, to_ts:
     """Extract ONLY this episode's [from_ts, to_ts] slice from the (multi-episode) source mp4 into a
     fresh per-episode mp4. The new LeRobot format packs MANY episodes per source file, so copying the
     whole file (the old bug) duplicated the entire source per episode → huge files + DINO decoding
-    the full source for a tiny slice. Trimming keeps each dst file = exactly this episode's frames."""
-    from torchvision.io import read_video, write_video  # noqa: PLC0415
-    # read a hair past to_ts so the last frame is captured, then keep exactly `length` frames.
-    frames, _, _ = read_video(str(src_video), start_pts=from_ts, end_pts=to_ts + 1.0 / fps,
-                              pts_unit="sec", output_format="THWC")
-    if frames.shape[0] < length:
-        raise ValueError(f"trim {src_video.name} @[{from_ts:.3f},{to_ts:.3f}]: got "
-                         f"{frames.shape[0]} frames < episode length {length}")
-    write_video(str(dst_video), frames[:length], fps=int(round(fps)))
+    the full source for a tiny slice. Frames are selected by their exact episode timestamps: a raw
+    range seek may include the preceding episode's final frame at floating-point boundaries."""
+    from lerobot.datasets.video_utils import decode_episode_video_frames  # noqa: PLC0415
+    from torchvision.io import write_video  # noqa: PLC0415
+
+    frames = decode_episode_video_frames(
+        src_video,
+        from_ts,
+        to_ts,
+        length,
+        fps,
+        backend="pyav",
+        # This is an offline, single-process conversion. Let the decoder use its
+        # native thread pool; the one-thread guard is only needed inside forked
+        # persistent training DataLoader workers.
+        decoder_num_threads=None,
+    )
+    frames_thwc = (frames.permute(0, 2, 3, 1) * 255.0).round().clamp(0, 255).to(torch.uint8)
+    write_video(str(dst_video), frames_thwc, fps=int(round(fps)))
 
 
 def build_subset(

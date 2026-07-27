@@ -66,8 +66,10 @@ def _require_stage1_contract(config: dict, checkpoint: Path) -> None:
         raise ValueError("Stage 2 expects the 18-layer gemma_300m action expert.")
     if config.get("cond_encoder_variant") != "gemma_300m":
         raise ValueError("Stage 2 expects the 18-layer gemma_300m condition encoder.")
-    if config.get("state_cond_mode") != "broadcast":
-        raise ValueError("Stage 2 expects Stage-1 per-layer skill broadcast.")
+    if config.get("state_cond_mode") not in {"broadcast", "token"}:
+        raise ValueError(
+            "Stage 2 expects Stage-1 skill conditioning to be broadcast|token."
+        )
     if not (
         config.get("skill_predictor_attend_image", False)
         and config.get("skill_predictor_attend_language", False)

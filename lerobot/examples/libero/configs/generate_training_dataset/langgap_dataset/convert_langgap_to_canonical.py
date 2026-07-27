@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import torch
 
 THIS_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(THIS_DIR / "src"))
@@ -259,7 +260,7 @@ def main() -> None:
     if str(lerobot_src) not in sys.path:
         sys.path.insert(0, str(lerobot_src))
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
-    from lerobot.datasets.video_utils import resolve_vcodec
+    from lerobot.datasets.video_utils import decode_episode_video_frames, resolve_vcodec
 
     src_info = json.loads((staging / "meta" / "info.json").read_text())
 
@@ -288,12 +289,11 @@ def main() -> None:
     )
 
     # ── Fast source reading ─────────────────────────────────────────
-    # LeRobotDataset reader의 __getitem__은 프레임마다 묶음 mp4를 timestamp-seek 디코드해서
-    # (54만 프레임 × 2캠 seek) 병목이 된다. 대신 state/action/task는 parquet에서 직접 읽고,
-    # 비디오는 에피소드당 한 번에 슬라이스 디코드한다 (seek 횟수: 프레임당 → 에피소드당 2회).
+    # State/action/task are read directly from parquet. Each camera is still decoded only once per
+    # episode, but every output frame is selected by its encoded timestamp. A raw read_video range
+    # can include the preceding episode's final frame at float/seek boundaries.
     import pandas as pd
     from concurrent.futures import ThreadPoolExecutor
-    from torchvision.io import read_video
 
     src_fps = float(src_info.get("fps", 10))
     data_df = pd.concat(
@@ -315,7 +315,7 @@ def main() -> None:
     SRC_CAMERAS = ("observation.images.image", "observation.images.image2")
 
     def decode_episode(row) -> dict[str, np.ndarray]:
-        """Decode this episode's slice of both cameras' packed mp4s in one pass each (THWC uint8)."""
+        """Decode both packed-video slices by exact source timestamps (THWC uint8)."""
         length = int(row["length"])
         out = {}
         for src_key in SRC_CAMERAS:
@@ -324,14 +324,25 @@ def main() -> None:
             from_ts = float(row[f"videos/{src_key}/from_timestamp"])
             to_ts = float(row[f"videos/{src_key}/to_timestamp"])
             path = staging / "videos" / src_key / f"chunk-{chunk:03d}" / f"file-{file:03d}.mp4"
-            frames, _, _ = read_video(str(path), start_pts=from_ts, end_pts=to_ts + 1.0 / src_fps,
-                                      pts_unit="sec", output_format="THWC")
-            if frames.shape[0] < length:
-                raise ValueError(
-                    f"episode {row['episode_index']}: decoded {frames.shape[0]} frames "
-                    f"< expected {length} from {path.name} @[{from_ts:.3f},{to_ts:.3f}]"
-                )
-            out[src_key] = frames[:length].numpy()
+            frames = decode_episode_video_frames(
+                path,
+                from_ts,
+                to_ts,
+                length,
+                src_fps,
+                backend="pyav",
+                # Offline conversion is not subject to the persistent
+                # DataLoader-worker AV1 deadlock, so use the decoder's native
+                # thread pool here.
+                decoder_num_threads=None,
+            )
+            out[src_key] = (
+                (frames.permute(0, 2, 3, 1) * 255.0)
+                .round()
+                .clamp(0, 255)
+                .to(torch.uint8)
+                .numpy()
+            )
         return out
 
     flip_img_fn = FLIPS[flip_image]

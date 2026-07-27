@@ -315,6 +315,10 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
     if dp_vision not in {"state", "resnet", "dino"}:
         raise ValueError(f"dp_vision must be state|resnet|dino, got {dp_vision!r}.")
     dp_checkpoint = str(get_value(cfg, "dp_checkpoint", "100000"))
+    # lerobot checkpoint folders are zero-padded to 6 digits (050000); normalize numeric
+    # values so `50000` and `050000` resolve to the same checkpoint AND seg_* skillset dir.
+    if dp_checkpoint.isdigit():
+        dp_checkpoint = dp_checkpoint.zfill(6)
     probe_settings = skillset_probe_settings(cfg)
     skillset_min_skills = resolve_skillset_min_skills(cfg, root)
     # Boundaries are DP/checkpoint-dependent, so different runs never reuse or clobber a skillset.

@@ -1,5 +1,6 @@
 from contextlib import nullcontext
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 import torch
@@ -29,7 +30,7 @@ def test_stage1_uses_two_matching_18_layer_transformers() -> None:
     assert get_gemma_config(config.action_expert_variant).depth == 18
 
 
-def test_stage1_contract_is_dino_broadcast_and_full_vocabulary() -> None:
+def test_stage1_contract_is_dino_with_selectable_skill_route_and_full_vocabulary() -> None:
     config = SkillExpertConfig()
 
     assert config.vision_backbone == "dino"
@@ -40,7 +41,8 @@ def test_stage1_contract_is_dino_broadcast_and_full_vocabulary() -> None:
     assert not hasattr(config, "lora_enable")
     assert config.fsq_path is None  # optional terminator source; never an expert warm-start
 
-    with pytest.raises(ValueError, match="per-layer skill broadcast"):
+    assert SkillExpertConfig(state_cond_mode="token").state_cond_mode == "token"
+    with pytest.raises(ValueError, match="broadcast.*token"):
         SkillExpertConfig(state_cond_mode="state_skill")
     with pytest.raises(ValueError, match="dino_lr cannot be set"):
         SkillExpertConfig(freeze_vision_encoder=True, dino_lr=1e-5)
@@ -131,6 +133,159 @@ def test_flat_skill_code_maps_to_fsq_grid_coordinate() -> None:
     torch.testing.assert_close(
         low_and_high, torch.tensor([[-1.0, -1.0, -1.0], [1.0, 1.0, 1.0]])
     )
+
+
+def test_skill_conditioning_selects_broadcast_or_one_prefix_token() -> None:
+    model = SkillExpertPytorch.__new__(SkillExpertPytorch)
+    nn.Module.__init__(model)
+    model.action_in_proj = nn.Linear(2, 4)
+    model.skill_proj = nn.Linear(3, 4, bias=False)
+    model.register_buffer("_fsq_levels", torch.tensor([3, 3, 3]))
+    model.register_buffer("_fsq_strides", torch.tensor([1, 3, 9]))
+    model.register_buffer("_fsq_half", torch.tensor([1.0, 1.0, 1.0]))
+    code = torch.tensor([0, 26])
+
+    model.config = SimpleNamespace(state_cond_mode="broadcast")
+    token, broadcast = model._skill_conditioning(code)
+    assert token is None
+    assert broadcast is not None and broadcast.shape == (2, 4)
+
+    model.config = SimpleNamespace(state_cond_mode="token")
+    token, token_broadcast = model._skill_conditioning(code)
+    assert token_broadcast is None
+    assert token is not None and token.shape == (2, 1, 4)
+    torch.testing.assert_close(token[:, 0], broadcast)
+
+
+def test_token_route_uses_separate_prefix_block_and_decodes_only_actions() -> None:
+    model = SkillExpertPytorch.__new__(SkillExpertPytorch)
+    nn.Module.__init__(model)
+    model.action_in_proj = nn.Linear(2, 2, bias=False)
+    with torch.no_grad():
+        model.action_in_proj.weight.copy_(torch.eye(2))
+    model.gemma_expert = SimpleNamespace(
+        model=SimpleNamespace(
+            config=SimpleNamespace(num_hidden_layers=1),
+            norm=object(),
+        )
+    )
+    model.cond_encoder = SimpleNamespace(model=object())
+    model._gradient_checkpointing = False
+    captured = {}
+
+    def fake_layer(
+        layer_index,
+        streams,
+        attention_mask,
+        position_ids,
+        adarms_conditions,
+        **kwargs,
+    ):
+        del layer_index, position_ids, adarms_conditions, kwargs
+        captured["attention"] = attention_mask
+        captured["action_stream"] = streams[1]
+        return streams
+
+    condition = torch.zeros(1, 2, 2)
+    actions = torch.tensor([[[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]]])
+    skill_token = torch.tensor([[[9.0, 8.0]]])
+    with (
+        patch(
+            "lerobot.policies.skill_expert.modeling_skill_expert.compute_layer_complete",
+            side_effect=fake_layer,
+        ),
+        patch(
+            "lerobot.policies.skill_expert.modeling_skill_expert.layernorm_forward",
+            side_effect=lambda norm, hidden, cond: (hidden, None),
+        ),
+    ):
+        hidden = model._run_joint_hidden(
+            condition,
+            actions,
+            torch.zeros(1, 2),
+            skill_broadcast=None,
+            skill_token=skill_token,
+        )
+
+    # The expert receives [skill, action x 3], but only the last three action
+    # positions are returned to the flow head.
+    assert captured["action_stream"].shape == (1, 4, 2)
+    torch.testing.assert_close(hidden, actions)
+    allowed = captured["attention"][0, 0].eq(0)
+    expected = torch.tensor(
+        [
+            [1, 1, 0, 0, 0, 0],
+            [1, 1, 0, 0, 0, 0],
+            [1, 1, 1, 0, 0, 0],
+            [1, 1, 1, 1, 1, 1],
+            [1, 1, 1, 1, 1, 1],
+            [1, 1, 1, 1, 1, 1],
+        ],
+        dtype=torch.bool,
+    )
+    torch.testing.assert_close(allowed, expected)
+
+
+def test_token_route_cached_sampling_uses_same_prefix_mask() -> None:
+    class _ConditionModel:
+        def forward(self, **kwargs):
+            del kwargs
+            return SimpleNamespace(past_key_values=[("k", "v")])
+
+    class _ActionModel:
+        def __init__(self) -> None:
+            self.attention = None
+            self.inputs = None
+
+        def forward(self, *, inputs_embeds, attention_mask, **kwargs):
+            del kwargs
+            self.inputs = inputs_embeds
+            self.attention = attention_mask
+            return SimpleNamespace(last_hidden_state=inputs_embeds)
+
+    model = SkillExpertPytorch.__new__(SkillExpertPytorch)
+    nn.Module.__init__(model)
+    model.config = SimpleNamespace(state_cond_mode="token")
+    model.action_in_proj = nn.Linear(2, 2, bias=False)
+    model.action_out_proj = nn.Linear(2, 2, bias=False)
+    model.skill_proj = nn.Linear(3, 2, bias=False)
+    with torch.no_grad():
+        model.action_in_proj.weight.copy_(torch.eye(2))
+        model.action_out_proj.weight.copy_(torch.eye(2))
+    model.register_buffer("_fsq_levels", torch.tensor([3, 3, 3]))
+    model.register_buffer("_fsq_strides", torch.tensor([1, 3, 9]))
+    model.register_buffer("_fsq_half", torch.tensor([1.0, 1.0, 1.0]))
+    action_model = _ActionModel()
+    model.cond_encoder = SimpleNamespace(model=_ConditionModel())
+    model.gemma_expert = SimpleNamespace(model=action_model)
+    model._expert_condition = lambda time, state: torch.zeros(
+        state.shape[0], 2, device=state.device
+    )
+
+    noise = torch.tensor([[[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]]])
+    sampled = model._sample_with_condition_cache(
+        torch.zeros(1, 2, 2),
+        noise,
+        torch.zeros(1, 2),
+        torch.tensor([0]),
+        num_steps=1,
+    )
+
+    # Identity fake velocity makes one Euler step map x -> 0. More
+    # importantly, the flow head received only the three action positions.
+    torch.testing.assert_close(sampled, torch.zeros_like(noise))
+    assert action_model.inputs.shape == (1, 4, 2)
+    allowed = action_model.attention[0, 0].eq(0)
+    expected = torch.tensor(
+        [
+            [1, 1, 1, 0, 0, 0],
+            [1, 1, 1, 1, 1, 1],
+            [1, 1, 1, 1, 1, 1],
+            [1, 1, 1, 1, 1, 1],
+        ],
+        dtype=torch.bool,
+    )
+    torch.testing.assert_close(allowed, expected)
 
 
 def test_action_validity_keeps_cross_skill_tail_and_masks_only_episode_padding() -> None:

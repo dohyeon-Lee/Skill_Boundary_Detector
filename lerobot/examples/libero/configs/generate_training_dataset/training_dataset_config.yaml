@@ -29,7 +29,7 @@
 #   langgap_56_full_full / 40to55 / firsthalf  → 확장 태스크 train 절반
 #   langgap_56_full_full / 40to55 / lasthalf   → 확장 태스크 heldout 절반
 #   (langgap task_index 40~55 = 확장 16태스크: 변환기의 task-order 검증이 배치를 보증)
-build_dataset: langgap_56_full_full
+build_dataset: libero_90_full_full
 build_task_range: full
 build_episodes_per_task: firsthalf
 build_output_name: ""     # 비우면 위 규칙으로 자동 명명
