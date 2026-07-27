@@ -1,0 +1,51 @@
+# i2rt YAM recorder의 LeRobot v3 데이터를 Pi0.5 학습용 canonical v3로 재작성한다.
+# 상대경로는 configs/global_config.yaml의 project_root 기준이다.
+
+yam_raw_root: dataset_YAM_raw
+yam_dataset_root: dataset_YAM
+yam_repo_prefix: dohyeon
+
+# build_yam_real_dataset.sh는 아래 set들을 순서대로 변환한다.
+# recorder에서 repo_id=user/yam_bimanual_raw, root=<...>/dataset_YAM_raw 로 수집했다면
+# 실제 source 폴더는 dataset_YAM_raw/yam_bimanual_raw 이다.
+yam_sets:
+  yam_pi05:
+    source: yam_bimanual_raw
+    output: yam_pi05
+
+# Recorder physical keys -> canonical training keys.
+camera_map:
+  agentview: top
+  wrist_left: left_wrist
+  wrist_right: right_wrist
+
+# Pi0.5/YAM contract.
+source_state_key: observation.state
+source_action_key: action
+state_dim: 14
+action_dim: 14
+
+# 빈 리스트면 outcome과 무관하게 모두 유지한다. Pi0.5 BC 학습은 성공 데모만 권장한다.
+include_outcomes: [success]
+require_outcomes: true
+min_episode_frames: 10
+include_episode_indices: []
+exclude_episode_indices: []
+
+# 홈 복귀/홈 포징도 데모 일부로 유지한다. 이 변환기는 프레임 trim을 하지 않는다.
+
+# 모든 카메라를 aspect-ratio 유지 + zero pad로 정방형 통일한다.
+# null이면 소스 해상도를 유지하지만 세 카메라 해상도가 같아야 한다.
+image_size: 256
+vcodec: h264
+streaming_encoding: true
+encoder_threads: 2
+image_writer_threads: 6
+image_writer_processes: 0
+decode_prefetch: 2
+
+# null이면 recorder dataset의 fps를 그대로 사용한다. 숫자를 넣으면 불일치 시 즉시 실패한다.
+expected_fps: null
+
+# writer stats를 만든 뒤 state/action의 q01/q10/q50/q90/q99를 전체 프레임 기준 exact로 덮어쓴다.
+exact_quantile_stats: true
