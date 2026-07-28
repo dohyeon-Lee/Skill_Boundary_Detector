@@ -4,35 +4,49 @@
 # state/action geometry as the selected Stage-1 checkpoint.
 dataset:
   skillvla_root: skillvla_dataset
-  source: libero_90_full_secondhalf
+  source: libero_90_full_full
   # run is inherited from the Stage-1 checkpoint's train_config.json.
 
 # Exact Stage-1 output directory name; it is never parsed for architecture.
 # The resolver reads checkpoints/<checkpoint>/pretrained_model/config.json.
 warm_start:
-  stage1_run: libero_90_full_firsthalf_FSQ333_175_dino_tuned
-  checkpoint: last
+  stage1_run: libero_90_full_firsthalf_FSQ333_175_dino_tuned_flow
+  # stage1_run: libero_90_full_firsthalf_FSQ333_175_dino_tuned_flow_endpoint_xyz
+  checkpoint: "050000"
 
 likelihood:
   layers: 4
   # gt is the default; predictor uses the frozen Stage-1 predictor on skill-start observations.
   training_skill_source: gt
 
-# Optional continuation training. The predictor still keeps its VLM frozen and
-# trains only reader/head; both auxiliaries keep separate clipping from likelihood.
-auxiliary:
-  skill_predictor: {train: false, weight: 0.5, lr_scale: 1.0}
-  terminator: {train: false, lr_scale: 1.0}
+# flow: ordinary action-flow MSE
+# flow_endpoint_xyz: 0.5 flow + 0.5 accumulated-XYZ endpoint MSE
+loss: flow  # flow | flow_endpoint_xyz
 
+# Optional continuation training. Architecture, loss weight, and LR scales are
+# inherited exactly from the selected Stage-1 checkpoint; Stage 2 chooses only
+# whether each auxiliary continues training.
+auxiliary:
+  skill_predictor: {train: true}
+  terminator: {train: true}
+
+# Auto name: {stage1_run}_{checkpoint}_{flow|endpoint}_{gt|predictor}_{batchON|batchOFF}[_{suffix}]
+# Auxiliary train flags are intentionally not encoded; use suffix when needed.
 run: {suffix: ""}
 
 training:
-  dataloader: {batch_size: 16, workers: 2, gpus: 1}
+  dataloader:
+    batch_size: 16
+    workers: 2
+    gpus: 1
+    # Half the batch becomes post-jitter-same-skill/different-task pairs.
+    # The other half stays random and is the only part used by terminator continuation.
+    same_skill_different_task: {enabled: true, grouped_fraction: 0.5, progress_temperature: 0.1}
   optimizer: {base_lr: 2.5e-05}
-  gradient_checkpointing: true
+  gradient_checkpointing: false
   schedule: {steps: 50000, log_every: 100, save_every: 5000}
 
 logging:
   wandb: {enable: true, project: VLA_stage2}
 
-slurm: {gres: "gpu:1", cpus: 16, memory: 256G, time: "48:00:00"}
+slurm: {gres: "gpu:1", cpus: 8, memory: 256G, time: "48:00:00"}

@@ -7,7 +7,7 @@
 # Reference model:
 #   none
 # Outputs:
-#   dataset name : {dataset}_{task_range}_{episodes_per_task}, unless --output-name is set
+#   dataset name : {dataset}_{task_range}_{episodes_per_task}[_scene], unless --output-name is set
 #   dataset path : {project_root}/{dataset_root}/{output_name}
 """Build a task/episode subset under libero_dataset/.
 
@@ -115,17 +115,151 @@ def parse_episodes_per_task(raw: str) -> tuple[int | str | None, str]:
     return count, str(count)
 
 
+def make_output_name(
+    dataset: str,
+    task_tag: str,
+    episode_tag: str,
+    *,
+    scene_aware_halves: bool,
+) -> str:
+    """Build the default subset name, marking an actually scene-aware half split."""
+    base = dataset[: -len("_full_full")] if dataset.endswith("_full_full") else dataset
+    name = f"{base}_{task_tag}_{episode_tag}"
+    return f"{name}_scene" if scene_aware_halves else name
+
+
+def load_libero_scene_map(path: Path) -> dict[int, str]:
+    """Load the content-matched source episode -> original LIBERO scene-task map."""
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"LIBERO scene-aware half split requires {path}. "
+            "Build it first with train_skillVLA/stage1_eval/oracle_matching/run.sh "
+            "<source_dataset>."
+        )
+    payload = np.load(path, allow_pickle=True)
+    required = {"episode_index", "scene_file"}
+    missing_keys = sorted(required - set(payload.files))
+    if missing_keys:
+        raise ValueError(f"LIBERO scene map {path} is missing arrays: {missing_keys}")
+
+    episodes = np.asarray(payload["episode_index"]).reshape(-1)
+    scenes = np.asarray(payload["scene_file"]).reshape(-1)
+    if len(episodes) != len(scenes):
+        raise ValueError(
+            f"LIBERO scene map length mismatch: episode_index={len(episodes)}, "
+            f"scene_file={len(scenes)} ({path})"
+        )
+
+    result: dict[int, str] = {}
+    for episode, scene in zip(episodes, scenes, strict=True):
+        episode = int(episode)
+        scene = str(scene)
+        previous = result.get(episode)
+        if previous is not None and previous != scene:
+            raise ValueError(
+                f"Episode {episode} maps to conflicting LIBERO scenes: "
+                f"{previous!r} vs {scene!r}"
+            )
+        result[episode] = scene
+    return result
+
+
+def write_subset_libero_scene_map(
+    source_path: Path,
+    destination: Path,
+    selected_episodes: list[int],
+) -> None:
+    """Subset and reindex the oracle map alongside the newly indexed LeRobot dataset."""
+    with np.load(source_path, allow_pickle=True) as payload:
+        files = list(payload.files)
+        source_episodes = np.asarray(payload["episode_index"]).reshape(-1)
+        position = {int(episode): index for index, episode in enumerate(source_episodes)}
+        missing = [episode for episode in selected_episodes if episode not in position]
+        if missing:
+            raise ValueError(
+                f"Cannot write subset LIBERO scene map; {len(missing)} selected episode(s) "
+                f"are absent from {source_path}."
+            )
+        indices = np.asarray([position[episode] for episode in selected_episodes], dtype=np.int64)
+        output = {}
+        for key in files:
+            values = np.asarray(payload[key])
+            output[key] = (
+                values[indices]
+                if values.ndim > 0 and len(values) == len(source_episodes)
+                else values
+            )
+
+    output["source_episode_index"] = np.asarray(selected_episodes, dtype=np.int32)
+    output["episode_index"] = np.arange(len(selected_episodes), dtype=np.int32)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(f".{destination.name}.tmp")
+    with open(temporary, "wb") as stream:
+        np.savez(stream, **output)
+    temporary.replace(destination)
+
+
+def _select_group_halves(
+    episodes: list[int],
+    mode: str,
+    group_by_episode: dict[int, str],
+) -> list[int]:
+    """Split each original LIBERO scene-task, preserving the source episode order."""
+    missing = [episode for episode in episodes if episode not in group_by_episode]
+    if missing:
+        preview = ", ".join(map(str, missing[:10]))
+        raise ValueError(
+            "LIBERO scene map does not cover every candidate episode: "
+            f"missing {len(missing)} episode(s), first=[{preview}]. "
+            "Rebuild eval_init_states.npz from this exact source dataset."
+        )
+
+    grouped: dict[str, list[int]] = {}
+    for episode in episodes:
+        grouped.setdefault(group_by_episode[episode], []).append(episode)
+
+    keep: set[int] = set()
+    for scene, scene_episodes in sorted(grouped.items()):
+        half = len(scene_episodes) // 2
+        if half == 0 and mode == "firsthalf":
+            raise ValueError(
+                f"LIBERO scene-task {scene!r} has only {len(scene_episodes)} episode(s); "
+                "firsthalf would be empty."
+            )
+        chosen = scene_episodes[:half] if mode == "firsthalf" else scene_episodes[half:]
+        keep.update(chosen)
+
+    # Keep the legacy task_index/episode_index ordering so downstream episode reindexing is stable.
+    return [episode for episode in episodes if episode in keep]
+
+
 def select_episodes(
     data_df: pd.DataFrame,
     task_ids: list[int],
     episodes_per_task: int | str | None,
     allow_fewer: bool,
+    *,
+    half_group_by_episode: dict[int, str] | None = None,
 ) -> list[int]:
     ep_task = (
         data_df[["episode_index", "task_index"]]
         .drop_duplicates()
         .sort_values(["task_index", "episode_index"])
     )
+    candidate_episodes = [
+        int(episode)
+        for episode in ep_task.loc[ep_task["task_index"].isin(task_ids), "episode_index"]
+    ]
+    if (
+        episodes_per_task in ("firsthalf", "lasthalf")
+        and half_group_by_episode is not None
+    ):
+        return _select_group_halves(
+            candidate_episodes,
+            str(episodes_per_task),
+            half_group_by_episode,
+        )
+
     selected: list[int] = []
     for task_id in task_ids:
         episodes = ep_task.loc[ep_task["task_index"] == task_id, "episode_index"].tolist()
@@ -268,6 +402,7 @@ def build_subset(
     task_ids: list[int],
     selected_eps: list[int],
     overwrite: bool,
+    split_metadata: dict | None = None,
 ) -> None:
     if dst.exists():
         if not overwrite:
@@ -355,6 +490,8 @@ def build_subset(
     new_info["source_dataset"] = src.name
     new_info["source_task_indices"] = [int(task_id) for task_id in task_ids]
     new_info["source_episode_indices"] = [int(ep) for ep in selected_eps]
+    if split_metadata:
+        new_info.update(split_metadata)
     new_info.pop("data_files_size_in_mb", None)
     new_info.pop("video_files_size_in_mb", None)
 
@@ -399,7 +536,7 @@ def main() -> None:
     parser.add_argument(
         "--output-name",
         default=str(get_value(cfg, "build_output_name", "")),
-        help="Override auto name: {dataset}_{range}_{episodes}",
+        help="Override auto name: {dataset}_{range}_{episodes}[_scene]",
     )
     parser.add_argument(
         "--overwrite",
@@ -413,6 +550,25 @@ def main() -> None:
         default=as_bool(get_value(cfg, "build_allow_fewer", False)),
         help="Use all available episodes when a task has fewer than requested",
     )
+    parser.add_argument(
+        "--libero-scene-aware-halves",
+        action=argparse.BooleanOptionalAction,
+        default=as_bool(get_value(cfg, "build_libero_scene_aware_halves", True)),
+        help=(
+            "For LIBERO firsthalf/lasthalf, split each original scene-task separately "
+            "instead of splitting merged language task_index groups"
+        ),
+    )
+    configured_scene_map = str(get_value(cfg, "build_libero_scene_map", "") or "").strip()
+    parser.add_argument(
+        "--libero-scene-map",
+        type=Path,
+        default=Path(configured_scene_map).expanduser() if configured_scene_map else None,
+        help=(
+            "Source eval_init_states.npz. Empty uses "
+            "<src-root>/skillvla_dataset/<dataset>/eval_init_states.npz"
+        ),
+    )
     args = parser.parse_args()
 
     src = args.src_root / args.dataset
@@ -421,17 +577,40 @@ def main() -> None:
     available_tasks = sorted(int(v) for v in data_df["task_index"].drop_duplicates().tolist())
     task_ids, task_tag = parse_task_range(args.task_range, available_tasks)
     episodes_per_task, episode_tag = parse_episodes_per_task(args.episodes_per_task)
-    selected_eps = select_episodes(data_df, task_ids, episodes_per_task, args.allow_fewer)
+    scene_map_path = None
+    half_group_by_episode = None
+    if (
+        args.libero_scene_aware_halves
+        and args.dataset.startswith("libero_")
+        and episodes_per_task in ("firsthalf", "lasthalf")
+    ):
+        scene_map_path = args.libero_scene_map or (
+            args.src_root / "skillvla_dataset" / args.dataset / "eval_init_states.npz"
+        )
+        if not scene_map_path.is_absolute():
+            scene_map_path = Path(str(get_value(cfg, "project_root"))) / scene_map_path
+        half_group_by_episode = load_libero_scene_map(scene_map_path)
+    selected_eps = select_episodes(
+        data_df,
+        task_ids,
+        episodes_per_task,
+        args.allow_fewer,
+        half_group_by_episode=half_group_by_episode,
+    )
 
     if not selected_eps:
         raise ValueError("No episodes were selected")
 
     # Filtered suites are named "<suite>_full_full" (full tasks / full episodes). Strip that base tag
-    # so a subset build doesn't double it (libero_10_full_full + _full_5 → libero_10_full_5; a full
-    # build → libero_10_full_full, matching the libero_90_full_full convention). src/provenance keep
-    # the real source name.
-    base = args.dataset[: -len("_full_full")] if args.dataset.endswith("_full_full") else args.dataset
-    output_name = args.output_name or f"{base}_{task_tag}_{episode_tag}"
+    # so a subset build doesn't double it. An actually active scene-aware half split gets a `_scene`
+    # suffix so it cannot be confused with the legacy task_index-only half dataset. Explicit
+    # --output-name/build_output_name always wins.
+    output_name = args.output_name or make_output_name(
+        args.dataset,
+        task_tag,
+        episode_tag,
+        scene_aware_halves=scene_map_path is not None,
+    )
     dst = args.dst_root / output_name
 
     print("Training dataset generation")
@@ -439,6 +618,10 @@ def main() -> None:
     print(f"  output       : {dst}")
     print(f"  task range   : {task_tag} ({len(task_ids)} tasks)")
     print(f"  episodes/task: {episode_tag}")
+    if scene_map_path is not None:
+        selected_scenes = {half_group_by_episode[episode] for episode in selected_eps}
+        print(f"  half split   : LIBERO scene-aware ({len(selected_scenes)} scene-tasks)")
+        print(f"  scene map    : {scene_map_path}")
     print(f"  selected eps : {len(selected_eps)}")
 
     build_subset(
@@ -451,7 +634,31 @@ def main() -> None:
         task_ids=task_ids,
         selected_eps=selected_eps,
         overwrite=args.overwrite,
+        split_metadata=(
+            {
+                "episode_half_split_unit": "libero_scene_file",
+                "libero_scene_aware_halves": True,
+            }
+            if scene_map_path is not None
+            else None
+        ),
     )
+    if scene_map_path is not None:
+        subset_scene_map = (
+            args.dst_root / "skillvla_dataset" / output_name / "eval_init_states.npz"
+        )
+        write_subset_libero_scene_map(scene_map_path, subset_scene_map, selected_eps)
+        print(f"  oracle map: {subset_scene_map}")
+        stale_entries = [
+            path
+            for path in subset_scene_map.parent.iterdir()
+            if path.name != subset_scene_map.name
+        ]
+        if stale_entries:
+            print(
+                "  [warning] Existing derived SkillVLA artifacts under this source are now stale; "
+                "rebuild them from the new subset."
+            )
 
 
 if __name__ == "__main__":

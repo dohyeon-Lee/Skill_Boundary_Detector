@@ -57,6 +57,10 @@ convert_fps: 20
 
 # Exact parity with current local datasets uses libsvtav1/AV1.
 convert_vcodec: libsvtav1
+# Encode each episode as before, but retain its temporary MP4 until a ~200 MB
+# LeRobot shard is ready and concatenate that shard once. Codec/FPS/timestamps
+# stay unchanged while the growing-file O(N^2) remux is removed.
+convert_deferred_video_packing: true
 convert_image_writer_threads: 10
 convert_image_writer_processes: 5
 convert_overwrite: false

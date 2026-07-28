@@ -61,6 +61,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
         encoder_queue_maxsize: int = 30,
         encoder_threads: int | None = None,
         video_keys_to_load: list[str] | None = None,
+        deferred_video_packing: bool = False,
     ):
         """
         2 modes are available for instantiating this class, depending on 2 different use cases:
@@ -184,9 +185,12 @@ class LeRobotDataset(torch.utils.data.Dataset):
             encoder_threads (int | None, optional): Number of threads per encoder instance. None lets the
                 codec auto-detect (default). Lower values reduce CPU usage per encoder. Maps to 'lp' (via svtav1-params) for
                 libsvtav1 and 'threads' for h264/hevc.
+            deferred_video_packing (bool, optional): Encode episode videos immediately, but concatenate them
+                once per completed packed-video shard. This avoids repeatedly rewriting a growing shard.
 
         Note:
-            Write-mode parameters (``streaming_encoding``, ``batch_encoding_size``) passed to
+            Write-mode parameters (``streaming_encoding``, ``batch_encoding_size``,
+            ``deferred_video_packing``) passed to
             ``__init__`` are deprecated. Use :meth:`create` for new datasets or :meth:`resume`
             to append to existing ones.
         """
@@ -202,6 +206,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
         self._batch_encoding_size = batch_encoding_size
         self._vcodec = resolve_vcodec(vcodec)
         self._encoder_threads = encoder_threads
+        self._deferred_video_packing = deferred_video_packing
         self._video_keys_to_load = video_keys_to_load
 
         if self._requested_root is not None:
@@ -234,12 +239,13 @@ class LeRobotDataset(torch.utils.data.Dataset):
             self.reader.load_and_activate()
 
         # Detect write-mode params for backward compatibility
-        _has_write_params = streaming_encoding or batch_encoding_size != 1
+        _has_write_params = streaming_encoding or batch_encoding_size != 1 or deferred_video_packing
         if _has_write_params:
             import warnings
 
             warnings.warn(
-                "Passing write-mode parameters (streaming_encoding, batch_encoding_size) to "
+                "Passing write-mode parameters (streaming_encoding, batch_encoding_size, "
+                "deferred_video_packing) to "
                 "LeRobotDataset.__init__() is deprecated. Use LeRobotDataset.resume() instead.",
                 DeprecationWarning,
                 stacklevel=2,
@@ -257,6 +263,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
                 batch_encoding_size=batch_encoding_size,
                 streaming_encoder=streaming_enc,
                 initial_frames=self.meta.total_frames,
+                deferred_video_packing=deferred_video_packing,
             )
         else:
             self.writer = None
@@ -613,6 +620,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
         streaming_encoding: bool = False,
         encoder_queue_maxsize: int = 30,
         encoder_threads: int | None = None,
+        deferred_video_packing: bool = False,
     ) -> "LeRobotDataset":
         """Create a new LeRobotDataset from scratch for recording data.
 
@@ -646,6 +654,8 @@ class LeRobotDataset(torch.utils.data.Dataset):
             encoder_queue_maxsize: Max buffered frames per camera when using
                 streaming encoding.
             encoder_threads: Threads per encoder instance. ``None`` for auto.
+            deferred_video_packing: Concatenate encoded episode videos once per
+                completed video shard instead of once per episode.
 
         Returns:
             A new :class:`LeRobotDataset` in write mode.
@@ -673,6 +683,8 @@ class LeRobotDataset(torch.utils.data.Dataset):
         obj._batch_encoding_size = batch_encoding_size
         obj._vcodec = vcodec
         obj._encoder_threads = encoder_threads
+        obj._deferred_video_packing = deferred_video_packing
+        obj._video_keys_to_load = None
 
         # Reader is lazily created on first access (write-only mode)
         obj.reader = None
@@ -688,6 +700,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
             encoder_threads=encoder_threads,
             batch_encoding_size=batch_encoding_size,
             streaming_encoder=streaming_enc,
+            deferred_video_packing=deferred_video_packing,
         )
 
         if image_writer_processes or image_writer_threads:
@@ -713,6 +726,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
         streaming_encoding: bool = False,
         encoder_queue_maxsize: int = 30,
         encoder_threads: int | None = None,
+        deferred_video_packing: bool = False,
     ) -> "LeRobotDataset":
         """Resume recording on an existing dataset.
 
@@ -742,6 +756,8 @@ class LeRobotDataset(torch.utils.data.Dataset):
                 capture.
             encoder_queue_maxsize: Max buffered frames per camera for streaming.
             encoder_threads: Threads per encoder instance. ``None`` for auto.
+            deferred_video_packing: Concatenate newly encoded episode videos
+                once per shard. A resumed writer starts a fresh video file.
 
         Returns:
             A :class:`LeRobotDataset` in write mode, ready to append episodes.
@@ -765,6 +781,8 @@ class LeRobotDataset(torch.utils.data.Dataset):
         obj._batch_encoding_size = batch_encoding_size
         obj._vcodec = vcodec
         obj._encoder_threads = encoder_threads
+        obj._deferred_video_packing = deferred_video_packing
+        obj._video_keys_to_load = None
 
         if obj._requested_root is not None:
             obj._requested_root.mkdir(exist_ok=True, parents=True)
@@ -792,6 +810,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
             batch_encoding_size=batch_encoding_size,
             streaming_encoder=streaming_enc,
             initial_frames=obj.meta.total_frames,
+            deferred_video_packing=deferred_video_packing,
         )
 
         if image_writer_processes or image_writer_threads:

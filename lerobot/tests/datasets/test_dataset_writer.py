@@ -33,6 +33,19 @@ SIMPLE_FEATURES = {
     "action": {"dtype": "float32", "shape": (6,), "names": None},
 }
 
+VIDEO_FEATURES = {
+    **SIMPLE_FEATURES,
+    "observation.images.camera": {
+        "dtype": "video",
+        "shape": (16, 16, 3),
+        "names": ["height", "width", "channels"],
+        # Keep this non-empty so the unit test does not need a real video just
+        # to populate codec metadata. Actual video validity is covered by the
+        # converter round-trip test.
+        "info": {"video.fps": DEFAULT_FPS, "video.codec": "av1"},
+    },
+}
+
 
 def _make_frame(features: dict, task: str = "Dummy task") -> dict:
     """Build a valid frame dict for the given features."""
@@ -175,6 +188,62 @@ def test_save_multiple_episodes(tmp_path):
 
     assert dataset.meta.total_episodes == 3
     assert dataset.meta.total_frames == total_frames
+
+
+def test_deferred_video_packing_remuxes_once_per_shard(tmp_path):
+    """Deferred packing assigns timestamps immediately but remuxes once per shard."""
+    root = tmp_path / "deferred"
+    dataset = LeRobotDataset.create(
+        repo_id=DUMMY_REPO_ID,
+        fps=DEFAULT_FPS,
+        features=VIDEO_FEATURES,
+        root=root,
+        deferred_video_packing=True,
+    )
+    dataset.meta.update_chunk_settings(video_files_size_in_mb=1)
+    writer = dataset.writer
+    video_key = "observation.images.camera"
+
+    temp_paths = []
+    for episode_index in range(3):
+        temp_dir = root / f"temp-{episode_index}"
+        temp_dir.mkdir()
+        temp_path = temp_dir / f"episode-{episode_index}.mp4"
+        temp_path.write_bytes(bytes([episode_index]) * 400_000)
+        temp_paths.append(temp_path)
+
+    concat_calls = []
+
+    def fake_concat(input_paths, output_path, overwrite=True):
+        concat_calls.append(list(input_paths))
+        output_path.write_bytes(b"".join(Path(path).read_bytes() for path in input_paths))
+
+    with (
+        patch("lerobot.datasets.dataset_writer.get_video_duration_in_s", return_value=1.0),
+        patch("lerobot.datasets.dataset_writer.concatenate_video_files", side_effect=fake_concat),
+    ):
+        metadata = [
+            writer._save_episode_video(video_key, episode_index, temp_path=temp_path)
+            for episode_index, temp_path in enumerate(temp_paths)
+        ]
+
+        # Two 0.38 MiB episodes share file 0. The third rotates to file 1,
+        # flushing file 0 once rather than once after each episode.
+        assert len(concat_calls) == 1
+        assert metadata[0][f"videos/{video_key}/file_index"] == 0
+        assert metadata[1][f"videos/{video_key}/file_index"] == 0
+        assert metadata[2][f"videos/{video_key}/file_index"] == 1
+        assert metadata[0][f"videos/{video_key}/from_timestamp"] == 0.0
+        assert metadata[1][f"videos/{video_key}/from_timestamp"] == 1.0
+        assert metadata[2][f"videos/{video_key}/from_timestamp"] == 0.0
+
+        dataset.finalize()
+
+    packed_0 = root / dataset.meta.video_path.format(video_key=video_key, chunk_index=0, file_index=0)
+    packed_1 = root / dataset.meta.video_path.format(video_key=video_key, chunk_index=0, file_index=1)
+    assert packed_0.stat().st_size == 800_000
+    assert packed_1.stat().st_size == 400_000
+    assert not any(path.parent.exists() for path in temp_paths)
 
 
 # ── clear / lifecycle ────────────────────────────────────────────────

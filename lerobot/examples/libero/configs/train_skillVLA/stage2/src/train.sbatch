@@ -24,6 +24,13 @@ else
   eval "$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/stage2_train_config.py" --config "${CONFIG_PATH}" --shell)"
 fi
 
+# Queued jobs submitted before same-skill batching was introduced carry an
+# older environment snapshot. Keep those jobs runnable and preserve their
+# submission-time behavior; newly submitted jobs receive these from the YAML.
+: "${SAME_SKILL_BATCH_ENABLED:=false}"
+: "${SAME_SKILL_BATCH_FRACTION:=0.5}"
+: "${SAME_SKILL_PROGRESS_TEMPERATURE:=0.1}"
+
 cd "${LEROBOT_ROOT}"
 source "${PROJECT_ROOT}/.venv/bin/activate"
 source "${PROJECT_ROOT}/lerobot/examples/libero/configs/runtime_env.sh"
@@ -35,6 +42,8 @@ echo "dataset : ${SKILLVLA_DATASET_DIR}"
 echo "prior   : ${STAGE1_CHECKPOINT_PATH} (fully frozen)"
 echo "train   : VLM projection + ${LIKELIHOOD_NUM_LAYERS} blocks + action head"
 echo "skill   : ${TRAINING_SKILL_SOURCE}"
+echo "loss    : ${ACTION_LOSS_MODE}"
+echo "batching: batch=${BATCH_SIZE}, same-skill=${SAME_SKILL_BATCH_ENABLED}, grouped=${SAME_SKILL_BATCH_FRACTION}, progress-temp=${SAME_SKILL_PROGRESS_TEMPERATURE}"
 echo "aux     : predictor=${FINETUNE_SKILL_PREDICTOR}, terminator=${FINETUNE_TERMINATOR}"
 echo "output  : ${PT_OUTPUT_DIR}"
 
@@ -61,6 +70,10 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.type=skill_vla_stage2 \
     --policy.stage1_checkpoint_path="${STAGE1_CHECKPOINT_PATH}" \
     --policy.training_skill_source="${TRAINING_SKILL_SOURCE}" \
+    --policy.action_loss_mode="${ACTION_LOSS_MODE}" \
+    --policy.same_skill_batch_enabled="${SAME_SKILL_BATCH_ENABLED}" \
+    --policy.same_skill_batch_fraction="${SAME_SKILL_BATCH_FRACTION}" \
+    --policy.same_skill_progress_temperature="${SAME_SKILL_PROGRESS_TEMPERATURE}" \
     --policy.likelihood_num_layers="${LIKELIHOOD_NUM_LAYERS}" \
     --policy.likelihood_cross_attention_heads="${LIKELIHOOD_CROSS_ATTENTION_HEADS}" \
     --policy.finetune_skill_predictor="${FINETUNE_SKILL_PREDICTOR}" \

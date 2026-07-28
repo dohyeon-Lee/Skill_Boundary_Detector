@@ -77,6 +77,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--vcodec", default=None)
     parser.add_argument("--image-writer-threads", type=int, default=None)
     parser.add_argument("--image-writer-processes", type=int, default=None)
+    parser.add_argument(
+        "--deferred-video-packing",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Pack episode videos once per shard instead of remuxing the growing shard every episode.",
+    )
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--max-episodes", type=int, default=None, help="Debug limit.")
     return parser.parse_args()
@@ -241,6 +247,11 @@ def main() -> None:
     fps = int(cfg.get("convert_fps", 20))
     image_size = int(cfg.get("convert_image_size", 256))
     vcodec = args.vcodec or str(cfg.get("convert_vcodec", "libsvtav1"))
+    deferred_video_packing = (
+        bool(cfg.get("convert_deferred_video_packing", True))
+        if args.deferred_video_packing is None
+        else args.deferred_video_packing
+    )
 
     if not (staging / "meta" / "info.json").exists():
         raise FileNotFoundError(f"Staging set not found (download first): {staging}")
@@ -275,6 +286,8 @@ def main() -> None:
     base_features = reference_feature_specs(schema_reference)
     resolved_vcodec = resolve_vcodec(vcodec)
     print(f"  codec        : requested={vcodec} resolved={resolved_vcodec}")
+    packing_mode = "deferred (one remux/shard)" if deferred_video_packing else "legacy (one remux/episode)"
+    print(f"  video packing: {packing_mode}")
     features = validated_reference_features(base_features, image_size, resolved_vcodec, fps)
 
     dataset = LeRobotDataset.create(
@@ -286,6 +299,7 @@ def main() -> None:
         image_writer_threads=args.image_writer_threads or int(cfg.get("convert_image_writer_threads", 10)),
         image_writer_processes=args.image_writer_processes or int(cfg.get("convert_image_writer_processes", 5)),
         vcodec=resolved_vcodec,
+        deferred_video_packing=deferred_video_packing,
     )
 
     # ── Fast source reading ─────────────────────────────────────────

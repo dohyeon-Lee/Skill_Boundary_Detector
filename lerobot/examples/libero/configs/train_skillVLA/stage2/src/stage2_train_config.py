@@ -25,6 +25,27 @@ def _at(config: dict, *path: str, default=None):
     return value
 
 
+def _validate_auxiliary_config(config: dict) -> None:
+    auxiliary = config.get("auxiliary") or {}
+    if not isinstance(auxiliary, dict):
+        raise ValueError("auxiliary must be a mapping.")
+    unknown_auxiliaries = sorted(set(auxiliary) - {"skill_predictor", "terminator"})
+    if unknown_auxiliaries:
+        raise ValueError(
+            f"Unknown Stage-2 auxiliary entries: {unknown_auxiliaries}."
+        )
+    for name in ("skill_predictor", "terminator"):
+        settings = auxiliary.get(name) or {}
+        if not isinstance(settings, dict):
+            raise ValueError(f"auxiliary.{name} must be a mapping.")
+        unknown = sorted(set(settings) - {"train"})
+        if unknown:
+            raise ValueError(
+                f"auxiliary.{name} only accepts 'train'; {unknown} must be "
+                "inherited from the Stage-1 checkpoint."
+            )
+
+
 def _local_path(project_root: Path, value: object, *, marker: str | None = None) -> Path:
     path = Path(str(value)).expanduser()
     if not path.is_absolute():
@@ -172,18 +193,76 @@ def build_settings(config: dict) -> dict:
     ).strip().lower()
     if skill_source not in {"gt", "predictor"}:
         raise ValueError("likelihood.training_skill_source must be gt or predictor.")
+    action_loss_mode = str(config.get("loss", "flow")).strip().lower()
+    if action_loss_mode not in {"flow", "flow_endpoint_xyz"}:
+        raise ValueError(
+            "loss must be flow|flow_endpoint_xyz, got "
+            f"{action_loss_mode!r}."
+        )
+    _validate_auxiliary_config(config)
     finetune_skill_predictor = as_bool(
         _at(config, "auxiliary", "skill_predictor", "train", default=False)
     )
     finetune_terminator = as_bool(
         _at(config, "auxiliary", "terminator", "train", default=False)
     )
+    batch_size = int(
+        _at(config, "training", "dataloader", "batch_size", default=16)
+    )
+    same_skill_batch_enabled = as_bool(
+        _at(
+            config,
+            "training",
+            "dataloader",
+            "same_skill_different_task",
+            "enabled",
+            default=False,
+        )
+    )
+    same_skill_batch_fraction = float(
+        _at(
+            config,
+            "training",
+            "dataloader",
+            "same_skill_different_task",
+            "grouped_fraction",
+            default=0.5,
+        )
+    )
+    same_skill_progress_temperature = float(
+        _at(
+            config,
+            "training",
+            "dataloader",
+            "same_skill_different_task",
+            "progress_temperature",
+            default=0.1,
+        )
+    )
+    if not 0.0 <= same_skill_batch_fraction <= 1.0:
+        raise ValueError(
+            "same_skill_different_task.grouped_fraction must be in [0, 1]."
+        )
+    if same_skill_progress_temperature <= 0.0:
+        raise ValueError(
+            "same_skill_different_task.progress_temperature must be > 0."
+        )
+    if same_skill_batch_enabled and batch_size < 4:
+        raise ValueError(
+            "same_skill_different_task needs dataloader.batch_size >= 4."
+        )
+    grouped_samples = int(batch_size * same_skill_batch_fraction) // 2 * 2
+    if same_skill_batch_enabled and finetune_terminator and grouped_samples >= batch_size:
+        raise ValueError(
+            "auxiliary.terminator.train=true needs at least one random dataloader "
+            "slot; lower same_skill_different_task.grouped_fraction."
+        )
     suffix = str(_at(config, "run", "suffix", default="")).strip().strip("_")
-    run_name = f"{stage1_run}_stage2_likelihood4_{skill_source}"
-    if finetune_skill_predictor:
-        run_name += "_skillpred"
-    if finetune_terminator:
-        run_name += "_term"
+    loss_tag = "flow" if action_loss_mode == "flow" else "endpoint"
+    batch_tag = "batchON" if same_skill_batch_enabled else "batchOFF"
+    run_name = (
+        f"{stage1_run}_{stage1_checkpoint}_{loss_tag}_{skill_source}_{batch_tag}"
+    )
     if suffix:
         run_name += f"_{suffix}"
 
@@ -219,23 +298,9 @@ def build_settings(config: dict) -> dict:
         "transition_jitter_pmax": int(stage1_config["transition_jitter_pmax"]),
         "transition_jitter_distribution": stage1_config["transition_jitter_distribution"],
         "train_skill_predictor": True,
-        "skill_predictor_weight": float(
-            _at(
-                config,
-                "auxiliary",
-                "skill_predictor",
-                "weight",
-                default=stage1_config["skill_predictor_weight"],
-            )
-        ),
+        "skill_predictor_weight": float(stage1_config["skill_predictor_weight"]),
         "skill_predictor_lr_scale": float(
-            _at(
-                config,
-                "auxiliary",
-                "skill_predictor",
-                "lr_scale",
-                default=stage1_config["skill_predictor_lr_scale"],
-            )
+            stage1_config["skill_predictor_lr_scale"]
         ),
         "skill_predictor_all_layers": as_bool(stage1_config["skill_predictor_all_layers"]),
         "skill_predictor_detach_vlm": as_bool(
@@ -273,29 +338,23 @@ def build_settings(config: dict) -> dict:
             stage1_config["terminator_freeze_vision_encoder"]
         ),
         "terminator_dino_model_path": terminator_dino_path,
-        "terminator_lr_scale": float(
-            _at(
-                config,
-                "auxiliary",
-                "terminator",
-                "lr_scale",
-                default=stage1_config["terminator_lr_scale"],
-            )
-        ),
+        "terminator_lr_scale": float(stage1_config["terminator_lr_scale"]),
         "terminator_end_target_sigma": float(stage1_config["terminator_end_target_sigma"]),
         "terminator_end_pos_weight": float(stage1_config["terminator_end_pos_weight"]),
         "likelihood_num_layers": likelihood_layers,
         "likelihood_cross_attention_heads": 8,
         "training_skill_source": skill_source,
+        "action_loss_mode": action_loss_mode,
         "finetune_skill_predictor": finetune_skill_predictor,
         "finetune_terminator": finetune_terminator,
+        "same_skill_batch_enabled": same_skill_batch_enabled,
+        "same_skill_batch_fraction": same_skill_batch_fraction,
+        "same_skill_progress_temperature": same_skill_progress_temperature,
         "gradient_checkpointing": as_bool(
             _at(config, "training", "gradient_checkpointing", default=True)
         ),
         "lr": base_lr * num_gpus,
-        "batch_size": int(
-            _at(config, "training", "dataloader", "batch_size", default=16)
-        ),
+        "batch_size": batch_size,
         "num_workers": int(
             _at(config, "training", "dataloader", "workers", default=2)
         ),

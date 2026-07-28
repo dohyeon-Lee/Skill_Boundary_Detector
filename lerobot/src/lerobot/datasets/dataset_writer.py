@@ -94,6 +94,7 @@ class DatasetWriter:
         batch_encoding_size: int,
         streaming_encoder: StreamingVideoEncoder | None = None,
         initial_frames: int = 0,
+        deferred_video_packing: bool = False,
     ):
         """Initialize the writer with metadata, codec, and encoding config.
 
@@ -108,13 +109,24 @@ class DatasetWriter:
             streaming_encoder: Optional pre-built :class:`StreamingVideoEncoder`
                 for real-time encoding. ``None`` disables streaming mode.
             initial_frames: Starting frame count (non-zero when resuming).
+            deferred_video_packing: Encode each episode immediately, but defer
+                concatenating episode videos until a complete video shard is
+                ready. This preserves the packed-video layout without rewriting
+                a growing shard after every episode.
         """
+        if deferred_video_packing and streaming_encoder is not None:
+            raise ValueError("deferred_video_packing is incompatible with streaming encoding")
+        if deferred_video_packing and batch_encoding_size > 1:
+            raise ValueError("deferred_video_packing is incompatible with batch_encoding_size > 1")
+
         self._meta = meta
         self._root = root
         self._vcodec = vcodec
         self._encoder_threads = encoder_threads
         self._batch_encoding_size = batch_encoding_size
         self._streaming_encoder = streaming_encoder
+        self._deferred_video_packing = deferred_video_packing
+        self._pending_video_packs: dict[str, dict] = {}
 
         # Writer state
         self.image_writer: AsyncImageWriter | None = None
@@ -447,6 +459,15 @@ class DatasetWriter:
         ep_size_in_mb = get_file_size_in_mb(ep_path)
         ep_duration_in_s = get_video_duration_in_s(ep_path)
 
+        if self._deferred_video_packing:
+            return self._defer_episode_video(
+                video_key,
+                episode_index,
+                ep_path,
+                ep_size_in_mb,
+                ep_duration_in_s,
+            )
+
         if (
             episode_index == 0
             or self._meta.latest_episode is None
@@ -506,6 +527,100 @@ class DatasetWriter:
             f"videos/{video_key}/to_timestamp": latest_duration_in_s + ep_duration_in_s,
         }
         return metadata
+
+    def _defer_episode_video(
+        self,
+        video_key: str,
+        episode_index: int,
+        ep_path: Path,
+        ep_size_in_mb: float,
+        ep_duration_in_s: float,
+    ) -> dict:
+        """Assign an episode to a packed video shard without remuxing yet."""
+        pack = self._pending_video_packs.get(video_key)
+
+        if pack is None:
+            chunk_idx, file_idx = 0, 0
+            # A resumed writer starts a fresh file. This is valid LeRobot v3 and
+            # avoids bringing an existing shard back into the append pipeline.
+            if self._meta.episodes is not None and len(self._meta.episodes) > 0:
+                latest = self._meta.episodes[-1]
+                old_chunk_idx = latest[f"videos/{video_key}/chunk_index"]
+                old_file_idx = latest[f"videos/{video_key}/file_index"]
+                chunk_idx, file_idx = update_chunk_file_indices(
+                    old_chunk_idx, old_file_idx, self._meta.chunks_size
+                )
+            pack = {
+                "chunk_index": chunk_idx,
+                "file_index": file_idx,
+                "paths": [],
+                "size_mb": 0.0,
+                "duration_s": 0.0,
+            }
+            self._pending_video_packs[video_key] = pack
+        elif pack["paths"] and pack["size_mb"] + ep_size_in_mb >= self._meta.video_files_size_in_mb:
+            old_chunk_idx = pack["chunk_index"]
+            old_file_idx = pack["file_index"]
+            self._flush_deferred_video_pack(video_key)
+            chunk_idx, file_idx = update_chunk_file_indices(
+                old_chunk_idx, old_file_idx, self._meta.chunks_size
+            )
+            pack = {
+                "chunk_index": chunk_idx,
+                "file_index": file_idx,
+                "paths": [],
+                "size_mb": 0.0,
+                "duration_s": 0.0,
+            }
+            self._pending_video_packs[video_key] = pack
+
+        from_timestamp = pack["duration_s"]
+        pack["paths"].append(ep_path)
+        pack["size_mb"] += ep_size_in_mb
+        pack["duration_s"] += ep_duration_in_s
+
+        return {
+            "episode_index": episode_index,
+            f"videos/{video_key}/chunk_index": pack["chunk_index"],
+            f"videos/{video_key}/file_index": pack["file_index"],
+            f"videos/{video_key}/from_timestamp": from_timestamp,
+            f"videos/{video_key}/to_timestamp": from_timestamp + ep_duration_in_s,
+        }
+
+    def _flush_deferred_video_pack(self, video_key: str) -> None:
+        """Write one complete packed shard with a single concat/remux pass."""
+        pack = self._pending_video_packs.get(video_key)
+        if pack is None or not pack["paths"]:
+            return
+
+        output_path = self._root / self._meta.video_path.format(
+            video_key=video_key,
+            chunk_index=pack["chunk_index"],
+            file_index=pack["file_index"],
+        )
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        if output_path.exists():
+            raise FileExistsError(f"Deferred video pack target already exists: {output_path}")
+
+        paths = list(pack["paths"])
+        if len(paths) == 1:
+            shutil.move(str(paths[0]), str(output_path))
+        else:
+            concatenate_video_files(paths, output_path)
+
+        for parent in {path.parent for path in paths}:
+            shutil.rmtree(str(parent))
+        del self._pending_video_packs[video_key]
+
+        if not self._meta.features[video_key].get("info"):
+            self._meta.update_video_info(video_key)
+            write_info(self._meta.info, self._meta.root)
+
+        logger.info(
+            "Packed %d episode videos into %s with one remux pass",
+            len(paths),
+            output_path,
+        )
 
     def clear_episode_buffer(self, delete_images: bool = True) -> None:
         """Discard the current episode buffer and optionally delete temp images.
@@ -579,7 +694,10 @@ class DatasetWriter:
         For streaming encoding: closes the encoder.
         For batch encoding: encodes any remaining episodes that haven't been batch-encoded yet.
         """
-        if self._streaming_encoder is not None:
+        if self._deferred_video_packing:
+            for video_key in list(self._pending_video_packs):
+                self._flush_deferred_video_pack(video_key)
+        elif self._streaming_encoder is not None:
             self._streaming_encoder.close()
         elif self._episodes_since_last_encoding > 0:
             start_ep = self._meta.total_episodes - self._episodes_since_last_encoding

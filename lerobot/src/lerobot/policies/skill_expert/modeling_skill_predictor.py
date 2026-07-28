@@ -230,13 +230,32 @@ class FrozenVLMSkillPredictor(nn.Module):
         language_tokens: Tensor,
         language_mask: Tensor,
     ) -> tuple[Tensor, Tensor]:
-        """Return the predictor VLM's final joint image/language token sequence.
-
-        Stage 2 uses this sequence directly as the shared cross-attention memory
-        for every likelihood block.  The second return value follows PyTorch's
-        key-padding convention (``True`` means ignore).
-        """
+        """Return the skill-LoRA-adapted VLM's final joint token sequence."""
         self._activate_skill_adapter()
+        return self._encode_last_hidden(images, language_tokens, language_mask)
+
+    @torch.no_grad()
+    def encode_base_last_hidden(
+        self,
+        images: list[Tensor],
+        language_tokens: Tensor,
+        language_mask: Tensor,
+    ) -> tuple[Tensor, Tensor]:
+        """Return pure frozen-base VLM memory with every named adapter disabled.
+
+        Stage 2 uses this path for every likelihood block, while predictor
+        ``loss``/``predict`` keep using the independently trained ``skill`` LoRA.
+        """
+        set_active_adapters(set())
+        return self._encode_last_hidden(images, language_tokens, language_mask)
+
+    def _encode_last_hidden(
+        self,
+        images: list[Tensor],
+        language_tokens: Tensor,
+        language_mask: Tensor,
+    ) -> tuple[Tensor, Tensor]:
+        """Encode joint image/language tokens under the caller-selected adapter route."""
         prefix, valid, _ = self._embed_prefix(images, language_tokens, language_mask)
         hidden, _ = self._encode_prefix(prefix, valid, all_layers=False)
         return hidden.detach(), (~valid).detach()

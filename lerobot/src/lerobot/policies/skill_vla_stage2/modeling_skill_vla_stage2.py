@@ -29,6 +29,11 @@ from lerobot.policies.skill_expert.modeling_skill_expert import (
     SkillExpertPytorch,
     _load_pretrained_state_dict,
 )
+from lerobot.policies.skillVLA.dataset_skillVLA import (
+    SAME_SKILL_PAIR_FALLBACK,
+    SAME_SKILL_PAIR_ID,
+    SKILL_PROGRESS,
+)
 from lerobot.utils.constants import (
     ACTION,
     OBS_LANGUAGE_ATTENTION_MASK,
@@ -275,7 +280,7 @@ class SkillVLAStage2Pytorch(SkillExpertPytorch):
                 skill_token,
             )
             vlm_hidden, vlm_key_padding_mask = (
-                self.skill_predictor.encode_last_hidden(
+                self.skill_predictor.encode_base_last_hidden(
                     images, language_tokens, language_mask
                 )
             )
@@ -285,6 +290,14 @@ class SkillVLAStage2Pytorch(SkillExpertPytorch):
             vlm_key_padding_mask,
             expert_condition,
         )
+        if self.config.action_loss_mode == "flow_endpoint_xyz":
+            # Match Stage 1: reconstruct the clean action from the same flow
+            # sample, then compare accumulated XYZ displacement in the policy.
+            self._last_predicted_actions = (
+                x_t - time[:, None, None] * predicted_velocity
+            )
+        else:
+            self._last_predicted_actions = None
         return target_velocity - predicted_velocity
 
     @torch.no_grad()
@@ -345,7 +358,7 @@ class SkillVLAStage2Pytorch(SkillExpertPytorch):
         full_attention = torch.cat((condition_visible, action_attention), dim=2)[:, None]
         full_attention = torch.where(full_attention, 0.0, OPENPI_ATTENTION_MASK_VALUE)
         action_positions = n_condition + torch.cumsum(action_padding, dim=1) - 1
-        vlm_hidden, vlm_key_padding_mask = self.skill_predictor.encode_last_hidden(
+        vlm_hidden, vlm_key_padding_mask = self.skill_predictor.encode_base_last_hidden(
             images, language_tokens, language_mask
         )
 
@@ -562,6 +575,107 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
         ]
         return {"terminator": parameters} if parameters else {}
 
+    def _same_skill_batch_metrics(
+        self, batch: dict, conditioning_skill: Tensor
+    ) -> dict[str, float]:
+        """Validate and report the sampler's post-jitter pairing contract.
+
+        Pair construction is based on the dataset's jittered GT code.  When
+        ``training_skill_source=predictor``, the extra conditioning metric shows
+        how often the predictor preserved the intended same-skill relation.
+        """
+        if not bool(getattr(self.config, "same_skill_batch_enabled", False)):
+            return {}
+        required = (
+            SAME_SKILL_PAIR_ID,
+            SAME_SKILL_PAIR_FALLBACK,
+            "skill_code",
+            "task_index",
+        )
+        missing = [key for key in required if key not in batch]
+        if missing:
+            raise ValueError(
+                "same_skill_batch_enabled=True but grouped sampler metadata is "
+                f"missing: {missing}."
+            )
+
+        device = conditioning_skill.device
+        pair_ids = batch[SAME_SKILL_PAIR_ID].to(device).view(-1).long()
+        fallback = batch[SAME_SKILL_PAIR_FALLBACK].to(device).view(-1).bool()
+        jittered_gt = batch["skill_code"].to(device).view(-1).long()
+        task = batch["task_index"].to(device).view(-1).long()
+        requested = (pair_ids >= 0) | fallback
+        constructed = pair_ids >= 0
+        positions = torch.nonzero(constructed, as_tuple=False).view(-1)
+        if positions.numel() % 2:
+            raise ValueError("Grouped sampler produced an odd number of pair samples.")
+        pairs = positions.view(-1, 2)
+        valid_gt = torch.ones(pairs.shape[0], dtype=torch.bool, device=device)
+        valid_conditioning = valid_gt.clone()
+        if pairs.numel() > 0:
+            valid_gt &= pair_ids[pairs[:, 0]] == pair_ids[pairs[:, 1]]
+            valid_gt &= jittered_gt[pairs[:, 0]] == jittered_gt[pairs[:, 1]]
+            valid_gt &= task[pairs[:, 0]] != task[pairs[:, 1]]
+            valid_conditioning = valid_gt & (
+                conditioning_skill[pairs[:, 0]]
+                == conditioning_skill[pairs[:, 1]]
+            )
+
+        batch_size = max(pair_ids.numel(), 1)
+        requested_count = requested.float().sum().clamp_min(1.0)
+        metrics = {
+            "batch_sampling/requested_fraction": requested.float().mean().item(),
+            "batch_sampling/constructed_fraction": constructed.float().mean().item(),
+            "batch_sampling/effective_after_jitter_fraction": (
+                2.0 * valid_gt.float().sum() / batch_size
+            ).item(),
+            "batch_sampling/effective_conditioning_fraction": (
+                2.0 * valid_conditioning.float().sum() / batch_size
+            ).item(),
+            "batch_sampling/effective_of_requested": (
+                2.0 * valid_gt.float().sum() / requested_count
+            ).item(),
+            "batch_sampling/fallback_fraction": fallback.float().mean().item(),
+            "batch_sampling/unique_jittered_skills": float(
+                torch.unique(jittered_gt).numel()
+            ),
+        }
+        progress = batch.get(SKILL_PROGRESS)
+        if pairs.numel() > 0 and progress is not None:
+            progress = progress.to(device).view(-1).float()
+            metrics["batch_sampling/jittered_progress_gap"] = (
+                progress[pairs[:, 0]] - progress[pairs[:, 1]]
+            ).abs().mean().item()
+        return metrics
+
+    def _terminator_random_batch(self, batch: dict) -> tuple[dict, float]:
+        """Keep grouped pair correlation out of terminator continuation training."""
+        if not bool(getattr(self.config, "same_skill_batch_enabled", False)):
+            return batch, 1.0
+        if SAME_SKILL_PAIR_ID not in batch:
+            raise ValueError(
+                "same-skill batching requires same_skill_pair_id for terminator masking."
+            )
+        pair_ids = batch[SAME_SKILL_PAIR_ID].view(-1)
+        random_mask = pair_ids < 0
+        if not bool(random_mask.any()):
+            raise ValueError(
+                "same-skill batching left no random samples for terminator continuation."
+            )
+        selected = dict(batch)
+        for key in (
+            "skill_code_true",
+            "skill_ds",
+            "skill_de",
+            "skill_decoder_state",
+            "observation.images.image",
+            "observation.images.wrist_image",
+        ):
+            if key in batch:
+                value = batch[key]
+                selected[key] = value[random_mask.to(value.device)]
+        return selected, random_mask.float().mean().item()
+
     @torch.no_grad()
     def _predicted_training_skill_code(self, batch: dict) -> Tensor:
         predictor = self.model.skill_predictor
@@ -575,21 +689,22 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
         ).long()
 
     def _training_skill_code(self, batch: dict) -> Tensor:
+        # Always resolve the dataset's coherent post-jitter code first.  Besides
+        # serving GT mode, this keeps transition-jitter logging truthful when
+        # predictor mode supplies the actual action-conditioning code.
+        jittered_gt = self._skill_code(batch)
         if self.config.training_skill_source == "gt":
-            return self._skill_code(batch)
+            return jittered_gt
         predicted = self._predicted_training_skill_code(batch)
-        self._last_transition_jitter_fraction = torch.zeros(
-            (), device=predicted.device
-        )
         return predicted.clamp(0, self.config.skill_vocab_size - 1)
 
     def forward(self, batch: dict, reduction: str = "mean"):
         actions = pad_vector(batch[ACTION], self.config.max_action_dim)
         real_dim = self.config.output_features[ACTION].shape[0]
-        actions = self._hold_after_boundary(actions, batch, real_dim)
         state = pad_vector(batch[OBS_STATE], self.config.max_state_dim)
         device = actions.device
         skill_code = self._training_skill_code(batch)
+        batch_sampling_metrics = self._same_skill_batch_metrics(batch, skill_code)
         residual = self.model(
             self._collect_images(batch),
             state,
@@ -599,10 +714,36 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
             batch[OBS_LANGUAGE_ATTENTION_MASK].to(device),
         )[..., :real_dim]
         squared_error = residual.square()
-        per_sample = squared_error.mean(dim=(1, 2))
+        valid = self._valid_action_steps(actions, batch)
+        valid_float = valid.to(squared_error.dtype).unsqueeze(-1)
+        valid_per_sample = valid.sum(dim=1).clamp(min=1).to(squared_error.dtype)
+        per_sample = (squared_error * valid_float).sum(dim=(1, 2)) / (
+            valid_per_sample * real_dim
+        )
+        valid_steps = valid.sum().clamp(min=1).to(squared_error.dtype)
+        action_loss = (squared_error * valid_float).sum() / (
+            valid_steps * real_dim
+        )
+        loss_per_dim = (squared_error * valid_float).sum(dim=(0, 1)) / valid_steps
+        endpoint_loss = None
+        action_objective = action_loss
+        objective_per_sample = per_sample
+        if self.config.action_loss_mode == "flow_endpoint_xyz":
+            predicted_actions = self.model._last_predicted_actions
+            if predicted_actions is None:
+                raise RuntimeError(
+                    "flow_endpoint_xyz did not receive reconstructed predicted actions."
+                )
+            endpoint_loss, endpoint_per_sample = self._endpoint_xyz_loss(
+                predicted_actions[..., :real_dim],
+                actions[..., :real_dim],
+                valid,
+            )
+            action_objective = 0.5 * action_loss + 0.5 * endpoint_loss
+            objective_per_sample = 0.5 * per_sample + 0.5 * endpoint_per_sample
         loss_dict = {
-            "action_loss": squared_error.mean().detach().item(),
-            "loss_per_dim": squared_error.mean(dim=(0, 1)).detach().cpu().tolist(),
+            "action_loss": action_loss.detach().item(),
+            "loss_per_dim": loss_per_dim.detach().cpu().tolist(),
             "stage2/skill_source_predictor": float(
                 self.config.training_skill_source == "predictor"
             ),
@@ -610,21 +751,35 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
                 self._last_transition_jitter_fraction.detach().item()
             ),
         }
+        loss_dict.update(batch_sampling_metrics)
+        if endpoint_loss is not None:
+            loss_dict.update(
+                {
+                    "endpoint_xyz_loss": endpoint_loss.detach().item(),
+                    "action_objective": action_objective.detach().item(),
+                    "action_flow_weight": 0.5,
+                    "action_endpoint_weight": 0.5,
+                }
+            )
         terminator_loss = None
         if self.config.finetune_terminator:
+            terminator_batch, terminator_sample_fraction = (
+                self._terminator_random_batch(batch)
+            )
             terminator_loss, progress_loss, termination_loss = self._terminator_loss(
-                batch
+                terminator_batch
             )
             loss_dict.update(
                 {
                     "terminator/loss": terminator_loss.detach().item(),
                     "terminator/progress": progress_loss.detach().item(),
                     "terminator/termination": termination_loss.detach().item(),
+                    "terminator/sample_fraction": terminator_sample_fraction,
                 }
             )
         if reduction == "none":
-            return per_sample, loss_dict
-        total = per_sample.mean()
+            return objective_per_sample, loss_dict
+        total = action_objective
         if terminator_loss is not None:
             total = total + terminator_loss
             loss_dict["loss_total"] = total.detach().item()

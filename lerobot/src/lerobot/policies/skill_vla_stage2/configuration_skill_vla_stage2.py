@@ -24,6 +24,9 @@ class SkillVLAStage2Config(SkillExpertConfig):
     likelihood_cross_attention_heads: int = 8
     finetune_skill_predictor: bool = False
     finetune_terminator: bool = False
+    same_skill_batch_enabled: bool = False
+    same_skill_batch_fraction: float = 0.5
+    same_skill_progress_temperature: float = 0.1
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -43,6 +46,10 @@ class SkillVLAStage2Config(SkillExpertConfig):
             raise ValueError(
                 "The gemma_300m likelihood blocks use 8 cross-attention heads."
             )
+        if not 0.0 <= self.same_skill_batch_fraction <= 1.0:
+            raise ValueError("same_skill_batch_fraction must be in [0, 1].")
+        if self.same_skill_progress_temperature <= 0.0:
+            raise ValueError("same_skill_progress_temperature must be > 0.")
         if not self.train_skill_predictor:
             raise ValueError(
                 "Stage 2 reuses the frozen Stage-1 VLM/predictor and requires "

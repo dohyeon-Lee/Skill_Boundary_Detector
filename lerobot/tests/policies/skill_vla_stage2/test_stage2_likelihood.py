@@ -6,6 +6,10 @@ from torch import nn
 from transformers.models.auto import CONFIG_MAPPING
 from transformers.models.gemma.modeling_gemma import GemmaRotaryEmbedding
 
+from lerobot.policies.skill_expert import modeling_skill_predictor
+from lerobot.policies.skill_expert.modeling_skill_predictor import (
+    FrozenVLMSkillPredictor,
+)
 from lerobot.policies.skill_vla_stage2.configuration_skill_vla_stage2 import (
     SkillVLAStage2Config,
 )
@@ -13,6 +17,12 @@ from lerobot.policies.skill_vla_stage2.modeling_skill_vla_stage2 import (
     LikelihoodBlock,
     SkillVLAStage2Policy,
     SkillVLAStage2Pytorch,
+)
+from lerobot.utils.constants import (
+    ACTION,
+    OBS_LANGUAGE_ATTENTION_MASK,
+    OBS_LANGUAGE_TOKENS,
+    OBS_STATE,
 )
 
 
@@ -135,12 +145,13 @@ def test_optional_terminator_has_separate_lr_and_clipping_group() -> None:
 def test_stage2_forward_passes_inherited_token_through_frozen_prior_only() -> None:
     class _Predictor:
         @staticmethod
-        def encode_last_hidden(images, language_tokens, language_mask):
+        def encode_base_last_hidden(images, language_tokens, language_mask):
             del images, language_tokens, language_mask
             return torch.zeros(1, 2, 2), torch.zeros(1, 2, dtype=torch.bool)
 
     model = SkillVLAStage2Pytorch.__new__(SkillVLAStage2Pytorch)
     nn.Module.__init__(model)
+    model.config = SimpleNamespace(action_loss_mode="flow_endpoint_xyz")
     skill_token = torch.tensor([[[7.0, 8.0]]])
     captured = {}
     model.skill_predictor = _Predictor()
@@ -174,6 +185,142 @@ def test_stage2_forward_passes_inherited_token_through_frozen_prior_only() -> No
     assert captured["token"] is skill_token
     # likelihood receives only K action positions from the frozen prior.
     assert residual.shape == actions.shape
+    torch.testing.assert_close(
+        model._last_predicted_actions,
+        torch.full_like(actions, 0.5),
+    )
+
+
+def test_stage2_memory_disables_skill_lora_but_predictor_memory_keeps_it(
+    monkeypatch,
+) -> None:
+    predictor = FrozenVLMSkillPredictor.__new__(FrozenVLMSkillPredictor)
+    nn.Module.__init__(predictor)
+    predictor._embed_prefix = lambda images, tokens, mask: (
+        torch.zeros(1, 2, 3),
+        torch.ones(1, 2, dtype=torch.bool),
+        torch.zeros(1, 2, dtype=torch.bool),
+    )
+    predictor._encode_prefix = lambda prefix, valid, all_layers: (prefix + 1.0, None)
+    selected = []
+    monkeypatch.setattr(
+        modeling_skill_predictor,
+        "set_active_adapters",
+        lambda names: selected.append(set(names)),
+    )
+    tokens = torch.zeros(1, 1, dtype=torch.long)
+    mask = torch.ones(1, 1, dtype=torch.bool)
+
+    base_hidden, base_padding = predictor.encode_base_last_hidden([], tokens, mask)
+    adapted_hidden, adapted_padding = predictor.encode_last_hidden([], tokens, mask)
+
+    assert selected == [set(), {"skill"}]
+    torch.testing.assert_close(base_hidden, adapted_hidden)
+    torch.testing.assert_close(base_padding, adapted_padding)
+
+
+class _CaptureStage2Residual(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.anchor = nn.Parameter(torch.zeros(()))
+        self.seen_actions = None
+
+    def forward(
+        self,
+        images,
+        state,
+        skill_code,
+        actions,
+        language_tokens,
+        language_mask,
+    ):
+        del images, state, skill_code, language_tokens, language_mask
+        self.seen_actions = actions.detach().clone()
+        self._last_predicted_actions = actions.clone()
+        self._last_predicted_actions[:, :2, 0] += 1.0
+        return torch.tensor(
+            [[[1.0, 1.0, 1.0], [2.0, 2.0, 2.0], [100.0, 100.0, 100.0]]],
+            device=actions.device,
+        )
+
+
+def test_stage2_can_mix_flow_and_endpoint_xyz_without_hold_targets() -> None:
+    policy = SkillVLAStage2Policy.__new__(SkillVLAStage2Policy)
+    nn.Module.__init__(policy)
+    policy.config = SimpleNamespace(
+        max_action_dim=3,
+        max_state_dim=2,
+        output_features={ACTION: SimpleNamespace(shape=(3,))},
+        finetune_terminator=False,
+        action_loss_mode="flow_endpoint_xyz",
+        training_skill_source="gt",
+    )
+    policy.model = _CaptureStage2Residual()
+    policy._collect_images = lambda batch: []
+    policy._training_skill_code = lambda batch: torch.zeros(1, dtype=torch.long)
+    policy._last_transition_jitter_fraction = torch.zeros(())
+    actions = torch.tensor(
+        [[[1.0, 2.0, 0.1], [3.0, 4.0, 0.2], [5.0, 6.0, 0.3]]]
+    )
+    batch = {
+        ACTION: actions,
+        OBS_STATE: torch.zeros(1, 2),
+        OBS_LANGUAGE_TOKENS: torch.zeros(1, 1, dtype=torch.long),
+        OBS_LANGUAGE_ATTENTION_MASK: torch.ones(1, 1, dtype=torch.bool),
+        "action_is_pad": torch.tensor([[False, False, True]]),
+    }
+
+    loss, metrics = policy.forward(batch)
+
+    torch.testing.assert_close(policy.model.seen_actions, actions)
+    assert metrics["action_loss"] == pytest.approx(2.5)
+    assert metrics["endpoint_xyz_loss"] == pytest.approx(4.0 / 3.0)
+    assert metrics["action_flow_weight"] == 0.5
+    assert metrics["action_endpoint_weight"] == 0.5
+    torch.testing.assert_close(loss, torch.tensor(23.0 / 12.0))
+
+
+def test_stage2_same_skill_metrics_use_post_jitter_code_and_different_task() -> None:
+    policy = SkillVLAStage2Policy.__new__(SkillVLAStage2Policy)
+    nn.Module.__init__(policy)
+    policy.config = SimpleNamespace(same_skill_batch_enabled=True)
+    batch = {
+        "same_skill_pair_id": torch.tensor([0, 0, -1, -1]),
+        "same_skill_pair_fallback": torch.tensor([False, False, False, False]),
+        "skill_code": torch.tensor([7, 7, 3, 4]),
+        "task_index": torch.tensor([1, 2, 3, 4]),
+        "skill_progress": torch.tensor([0.25, 0.30, 0.4, 0.8]),
+    }
+
+    metrics = policy._same_skill_batch_metrics(
+        batch, torch.tensor([7, 7, 3, 4])
+    )
+
+    assert metrics["batch_sampling/constructed_fraction"] == pytest.approx(0.5)
+    assert metrics["batch_sampling/effective_after_jitter_fraction"] == pytest.approx(0.5)
+    assert metrics["batch_sampling/effective_conditioning_fraction"] == pytest.approx(0.5)
+    assert metrics["batch_sampling/jittered_progress_gap"] == pytest.approx(0.05)
+
+
+def test_stage2_terminator_uses_only_random_and_failed_pair_slots() -> None:
+    policy = SkillVLAStage2Policy.__new__(SkillVLAStage2Policy)
+    nn.Module.__init__(policy)
+    policy.config = SimpleNamespace(same_skill_batch_enabled=True)
+    batch = {
+        "same_skill_pair_id": torch.tensor([0, 0, -1, -1]),
+        "skill_code_true": torch.tensor([1, 1, 2, 3]),
+        "skill_ds": torch.tensor([0, 1, 2, 3]),
+        "skill_de": torch.tensor([3, 2, 1, 0]),
+        "skill_decoder_state": torch.arange(8).view(4, 2),
+        "observation.images.image": torch.zeros(4, 3, 2, 2),
+        "observation.images.wrist_image": torch.zeros(4, 3, 2, 2),
+    }
+
+    selected, fraction = policy._terminator_random_batch(batch)
+
+    assert fraction == pytest.approx(0.5)
+    assert selected["skill_code_true"].tolist() == [2, 3]
+    assert selected["skill_ds"].tolist() == [2, 3]
 
 
 def test_stage2_token_sampling_builds_prefix_mask_but_likelihood_sees_actions_only() -> None:
@@ -185,7 +332,7 @@ def test_stage2_token_sampling_builds_prefix_mask_but_likelihood_sees_actions_on
 
     class _Predictor:
         @staticmethod
-        def encode_last_hidden(images, language_tokens, language_mask):
+        def encode_base_last_hidden(images, language_tokens, language_mask):
             del images, language_tokens, language_mask
             return torch.zeros(1, 2, 2), torch.zeros(1, 2, dtype=torch.bool)
 

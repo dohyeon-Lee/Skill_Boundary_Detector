@@ -137,9 +137,11 @@ def test_stage2_resolver_reads_checkpoint_config_without_parsing_run_name(
     assert settings["skill_fsq_levels"] == "[3,3,3]"
     assert settings["likelihood_num_layers"] == 4
     assert settings["training_skill_source"] == "gt"
+    assert settings["action_loss_mode"] == "flow"
     assert settings["finetune_skill_predictor"] is False
     assert settings["finetune_terminator"] is False
-    assert settings["pt_run_name"] == "stage1_exact_name_stage2_likelihood4_gt"
+    assert settings["same_skill_batch_enabled"] is False
+    assert settings["pt_run_name"] == "stage1_exact_name_last_flow_gt_batchOFF"
 
 
 def test_stage2_inherits_token_conditioning_from_stage1_checkpoint(
@@ -157,7 +159,76 @@ def test_stage2_inherits_token_conditioning_from_stage1_checkpoint(
     settings = stage2_train_config.build_settings(config)
 
     assert settings["state_cond_mode"] == "token"
-    assert settings["pt_run_name"] == "stage1_exact_name_stage2_likelihood4_gt"
+    assert settings["pt_run_name"] == "stage1_exact_name_last_flow_gt_batchOFF"
+
+
+def test_stage2_loss_is_validated_exported_and_named(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    config["loss"] = "flow_endpoint_xyz"
+
+    settings = stage2_train_config.build_settings(config)
+
+    assert settings["action_loss_mode"] == "flow_endpoint_xyz"
+    assert settings["pt_run_name"] == "stage1_exact_name_last_endpoint_gt_batchOFF"
+
+    config["loss"] = "endpoint_only"
+    with pytest.raises(ValueError, match="flow_endpoint_xyz"):
+        stage2_train_config.build_settings(config)
+
+
+def test_stage2_exports_same_skill_different_task_batching(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    config["training"] = {
+        "dataloader": {
+            "batch_size": 16,
+            "same_skill_different_task": {
+                "enabled": True,
+                "grouped_fraction": 0.5,
+                "progress_temperature": 0.2,
+            },
+        }
+    }
+
+    settings = stage2_train_config.build_settings(config)
+
+    assert settings["same_skill_batch_enabled"] is True
+    assert settings["same_skill_batch_fraction"] == pytest.approx(0.5)
+    assert settings["same_skill_progress_temperature"] == pytest.approx(0.2)
+    assert settings["pt_run_name"] == "stage1_exact_name_last_flow_gt_batchON"
+
+
+def test_stage2_same_skill_batch_keeps_random_slots_for_terminator(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    config["auxiliary"] = {"terminator": {"train": True}}
+    config["training"] = {
+        "dataloader": {
+            "batch_size": 8,
+            "same_skill_different_task": {
+                "enabled": True,
+                "grouped_fraction": 1.0,
+                "progress_temperature": 0.1,
+            },
+        }
+    }
+
+    with pytest.raises(ValueError, match="at least one random dataloader slot"):
+        stage2_train_config.build_settings(config)
+
+
+def test_stage2_name_uses_checkpoint_skill_source_and_manual_suffix(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    config["likelihood"]["training_skill_source"] = "predictor"
+    config["run"] = {"suffix": "ablation_a"}
+
+    settings = stage2_train_config.build_settings(config)
+
+    assert settings["pt_run_name"] == (
+        "stage1_exact_name_last_flow_predictor_batchOFF_ablation_a"
+    )
 
 
 def test_stage2_explicit_dataset_run_must_match_stage1(tmp_path: Path) -> None:
@@ -171,9 +242,18 @@ def test_stage2_explicit_dataset_run_must_match_stage1(tmp_path: Path) -> None:
 def test_stage2_optional_auxiliaries_are_named_and_exported(tmp_path: Path) -> None:
     config = _config(tmp_path)
     config["auxiliary"] = {
-        "skill_predictor": {"train": True, "weight": 0.25, "lr_scale": 0.5},
-        "terminator": {"train": True, "lr_scale": 0.75},
+        "skill_predictor": {"train": True},
+        "terminator": {"train": True},
     }
+    checkpoint_config = (
+        Path(config["project_root"])
+        / "outputs/skillVLA_stage1/stage1_exact_name/checkpoints/last/pretrained_model/config.json"
+    )
+    stage1 = json.loads(checkpoint_config.read_text())
+    stage1["skill_predictor_weight"] = 0.25
+    stage1["skill_predictor_lr_scale"] = 0.5
+    stage1["terminator_lr_scale"] = 0.75
+    checkpoint_config.write_text(json.dumps(stage1))
 
     settings = stage2_train_config.build_settings(config)
 
@@ -182,7 +262,27 @@ def test_stage2_optional_auxiliaries_are_named_and_exported(tmp_path: Path) -> N
     assert settings["skill_predictor_weight"] == pytest.approx(0.25)
     assert settings["skill_predictor_lr_scale"] == pytest.approx(0.5)
     assert settings["terminator_lr_scale"] == pytest.approx(0.75)
-    assert settings["pt_run_name"].endswith("_skillpred_term")
+    assert settings["pt_run_name"] == "stage1_exact_name_last_flow_gt_batchOFF"
+
+
+@pytest.mark.parametrize(
+    ("auxiliary", "match"),
+    [
+        ({"skill_predictor": {"train": True, "weight": 0.5}}, "only accepts 'train'"),
+        ({"terminator": {"train": True, "lr_scale": 1.0}}, "only accepts 'train'"),
+        ({"unknown": {"train": True}}, "Unknown Stage-2 auxiliary"),
+    ],
+)
+def test_stage2_auxiliary_yaml_exposes_only_train(
+    tmp_path: Path,
+    auxiliary: dict,
+    match: str,
+) -> None:
+    config = _config(tmp_path)
+    config["auxiliary"] = auxiliary
+
+    with pytest.raises(ValueError, match=match):
+        stage2_train_config.build_settings(config)
 
 
 def test_stage2_inherits_stage1_predictor_lora_contract(tmp_path: Path) -> None:
