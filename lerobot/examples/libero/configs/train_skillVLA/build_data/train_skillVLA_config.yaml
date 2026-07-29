@@ -23,13 +23,14 @@ skillvla_dataset_root: skillvla_dataset  # outputs under {dataset_root}/{skillvl
 # ── Source dataset (원본) ─────────────────────────────────────
 # Raw LeRobot dataset to convert into SkillVLA data (may differ from the
 # dataset the DP/FSQ were trained on).
-source_dataset: libero_90_full_firsthalf
+source_dataset: libero_90_full_firsthalf_scene
 # This source's role in the eventual SkillVLA training mix.  It is part of the
 # final output name so the same raw dataset cannot silently reuse PT and FT
-# artifacts. All three use global skill boundaries:
+# artifacts. With global_mean:
 #   pt     = this PT corpus computes its own global mean
 #   ft     = new task reuses the matching PT global mean (shared taxonomy)
 #   ft_own = new task computes its own global mean (ablation; other FT behavior unchanged)
+# With episode_mean, every mode uses each episode's own smoothed-curve mean.
 skillvla_data_mode: pt  # pt | ft | ft_own
 
 # ── DINO precompute (step 2) ──────────────────────────────────
@@ -50,6 +51,12 @@ skillset_gripper_indices: [-1]       # ABC bimanual layout: [6, 13]
 # Boundaries must be farther apart than this many frames; the same distance excludes
 # peaks at the start/end edge of each episode.
 skillset_nms_dist: 20
+# Boundary threshold. Output names always include the scope and mean percentage,
+# e.g. `_episodemean_80p`, `_globalmean_100p`, or `_globalref_80p`.
+skillset_boundary_threshold_mode: global_mean  # episode_mean | global_mean
+# Multiplier on the selected episode/global arithmetic mean. 1.0 reproduces
+# the old detector; 0.8 lowers the line to 80% of mean and admits more peaks.
+skillset_boundary_threshold_scale: 1
 # Other detection parameters (dn_step, n_gmm, smooth_window, savgol_polyorder,
 # replan_interval) retain the shared defaults in src/train_skillVLA_config.py.
 # Parallelism: step-3 (DP segmentation) is the slow stage, so it is split across

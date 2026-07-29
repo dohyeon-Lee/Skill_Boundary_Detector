@@ -84,11 +84,12 @@ EXTRA_ARGS=()
 [ "${CURVES_ONLY:-false}" = "true" ] && EXTRA_ARGS+=(--curves_only)
 [ "${USE_CACHED_CURVES:-false}" = "true" ] && EXTRA_ARGS+=(--use_cached_curves)
 
-# Global threshold selection is resolved from skillvla_data_mode by the config
-# emitter. Curves-only jobs deliberately do not read the threshold yet.
+# Boundary mode is resolved by the config emitter. Global curves-only jobs
+# deliberately do not read the threshold until their segmentation pass.
 EFFECTIVE_GLOBAL_THRESHOLD_PATH="${SKILLSET_GLOBAL_THRESHOLD_SOURCE:-${SKILLSET_GLOBAL_THRESHOLD_PATH}}"
 THRESHOLD_ARGS=(
   --boundary_threshold_mode "${SKILLSET_BOUNDARY_THRESHOLD_MODE}"
+  --boundary_threshold_scale "${SKILLSET_BOUNDARY_THRESHOLD_SCALE}"
   --global_threshold_path "${EFFECTIVE_GLOBAL_THRESHOLD_PATH}"
 )
 

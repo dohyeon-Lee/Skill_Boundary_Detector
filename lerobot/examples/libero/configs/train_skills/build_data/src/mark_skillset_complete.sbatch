@@ -59,6 +59,7 @@ mkdir -p "${SKILLSET_DIR}"
   echo "skillset_mode=${SKILLSET_MODE}"
   echo "manifest=${SKILLSET_DIR}/skillset_manifest.json"
   echo "boundary_threshold_mode=${SKILLSET_BOUNDARY_THRESHOLD_MODE}"
+  echo "boundary_threshold_scale=${SKILLSET_BOUNDARY_THRESHOLD_SCALE}"
   [ "${SKILLSET_BOUNDARY_THRESHOLD_MODE}" = "global_mean" ] && \
     echo "global_threshold_path=${EFFECTIVE_GLOBAL_THRESHOLD_PATH}"
   [ -n "${SKILLSET_GLOBAL_THRESHOLD_SOURCE:-}" ] && \

@@ -30,7 +30,12 @@ def test_global_threshold_changes_boundaries_and_curve_metadata(tmp_path: Path):
     episode_boundaries = _detect_boundaries(replan_ts, divergence, 50, args)
     assert episode_boundaries == [0, 10, 30, 50]
 
+    args.boundary_threshold_scale = 2.0
+    scaled_boundaries = _detect_boundaries(replan_ts, divergence, 50, args)
+    assert scaled_boundaries == [0, 10, 50]
+
     args.boundary_threshold_mode = "global_mean"
+    args.boundary_threshold_scale = 1.0
     global_boundaries = _detect_boundaries(
         replan_ts, divergence, 50, args, global_threshold=1.5
     )
@@ -50,6 +55,7 @@ def test_global_threshold_changes_boundaries_and_curve_metadata(tmp_path: Path):
     with np.load(tmp_path / "ep0000003.npz", allow_pickle=False) as curve:
         assert str(curve["probe_mode"]) == "std"
         assert str(curve["threshold_mode"]) == "global_mean"
+        assert float(curve["threshold_scale"]) == 1.0
         assert float(curve["mean_val"]) == 1.5
         assert curve["boundaries"].tolist() == [0, 10, 50]
 

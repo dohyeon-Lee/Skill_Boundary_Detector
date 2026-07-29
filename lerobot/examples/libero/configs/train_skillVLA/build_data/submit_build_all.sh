@@ -100,27 +100,33 @@ PY
   ARRAY_SPEC="0-$(( NUM_SHARDS - 1 ))"
   [ "${SKILLSET_ARRAY_THROTTLE:-0}" -gt 0 ] && ARRAY_SPEC="${ARRAY_SPEC}%${SKILLSET_ARRAY_THROTTLE}"
 
-  echo "[1/3] Submit global-boundary curve collection  (array=${ARRAY_SPEC}: ${N_TASKS} tasks / ${TPJ} per job = ${NUM_SHARDS} GPUs)"
   DEP_ARG=(); [ -n "${DEP}" ] && DEP_ARG=(--dependency="${DEP}" --kill-on-invalid-dep=yes)
-  JID_CURVES=$(env "${ENV[@]}" ALL_TASK_IDS="${ALL_TASK_IDS}" CURVES_ONLY=true \
-    sbatch --parsable --array="${ARRAY_SPEC}" ${DEP_ARG[@]+"${DEP_ARG[@]}"} "${SBATCH_ARGS[@]}" "${SRC_DIR}/build_skillset.sbatch")
-  echo "       curves ${JID_CURVES}"
-  if [ -n "${SKILLSET_GLOBAL_THRESHOLD_SOURCE:-}" ]; then
-    echo "       threshold: PT reference ${SKILLSET_GLOBAL_THRESHOLD_SOURCE}"
-    JID_SEG=$(env "${ENV[@]}" ALL_TASK_IDS="${ALL_TASK_IDS}" USE_CACHED_CURVES=true \
-      sbatch --parsable --array="${ARRAY_SPEC}" --dependency="afterok:${JID_CURVES}" --kill-on-invalid-dep=yes "${SBATCH_ARGS[@]}" "${SRC_DIR}/build_skillset.sbatch")
+  if [ "${SKILLSET_BOUNDARY_THRESHOLD_MODE}" = "episode_mean" ]; then
+    echo "[1/3] Submit episode-mean segmentation  (array=${ARRAY_SPEC}: ${N_TASKS} tasks / ${TPJ} per job = ${NUM_SHARDS} GPUs)"
+    JID_SEG=$(env "${ENV[@]}" ALL_TASK_IDS="${ALL_TASK_IDS}" \
+      sbatch --parsable --array="${ARRAY_SPEC}" ${DEP_ARG[@]+"${DEP_ARG[@]}"} "${SBATCH_ARGS[@]}" "${SRC_DIR}/build_skillset.sbatch")
   else
-    JID_REDUCE=$(env "${ENV[@]}" EXPECTED_EPISODES="${EXPECTED_EPISODES}" \
-      sbatch --parsable --dependency="afterok:${JID_CURVES}" --kill-on-invalid-dep=yes "${SBATCH_ARGS[@]}" "${SRC_DIR}/compute_global_boundary_threshold.sbatch")
-    echo "       threshold ${JID_REDUCE}  (${EXPECTED_EPISODES} episodes)"
-    JID_SEG=$(env "${ENV[@]}" ALL_TASK_IDS="${ALL_TASK_IDS}" USE_CACHED_CURVES=true \
-      sbatch --parsable --array="${ARRAY_SPEC}" --dependency="afterok:${JID_REDUCE}" --kill-on-invalid-dep=yes "${SBATCH_ARGS[@]}" "${SRC_DIR}/build_skillset.sbatch")
+    echo "[1/3] Submit global-boundary curve collection  (array=${ARRAY_SPEC}: ${N_TASKS} tasks / ${TPJ} per job = ${NUM_SHARDS} GPUs)"
+    JID_CURVES=$(env "${ENV[@]}" ALL_TASK_IDS="${ALL_TASK_IDS}" CURVES_ONLY=true \
+      sbatch --parsable --array="${ARRAY_SPEC}" ${DEP_ARG[@]+"${DEP_ARG[@]}"} "${SBATCH_ARGS[@]}" "${SRC_DIR}/build_skillset.sbatch")
+    echo "       curves ${JID_CURVES}"
+    if [ -n "${SKILLSET_GLOBAL_THRESHOLD_SOURCE:-}" ]; then
+      echo "       threshold: PT reference ${SKILLSET_GLOBAL_THRESHOLD_SOURCE}"
+      JID_SEG=$(env "${ENV[@]}" ALL_TASK_IDS="${ALL_TASK_IDS}" USE_CACHED_CURVES=true \
+        sbatch --parsable --array="${ARRAY_SPEC}" --dependency="afterok:${JID_CURVES}" --kill-on-invalid-dep=yes "${SBATCH_ARGS[@]}" "${SRC_DIR}/build_skillset.sbatch")
+    else
+      JID_REDUCE=$(env "${ENV[@]}" EXPECTED_EPISODES="${EXPECTED_EPISODES}" \
+        sbatch --parsable --dependency="afterok:${JID_CURVES}" --kill-on-invalid-dep=yes "${SBATCH_ARGS[@]}" "${SRC_DIR}/compute_global_boundary_threshold.sbatch")
+      echo "       threshold ${JID_REDUCE}  (${EXPECTED_EPISODES} episodes)"
+      JID_SEG=$(env "${ENV[@]}" ALL_TASK_IDS="${ALL_TASK_IDS}" USE_CACHED_CURVES=true \
+        sbatch --parsable --array="${ARRAY_SPEC}" --dependency="afterok:${JID_REDUCE}" --kill-on-invalid-dep=yes "${SBATCH_ARGS[@]}" "${SRC_DIR}/build_skillset.sbatch")
+    fi
   fi
   echo "       segment ${JID_SEG}"
   # afterany → verify runs even if some array elements died on a bad GPU
   JIDV=$(env "${ENV[@]}" \
     sbatch --parsable --dependency=afterany:"${JID_SEG}" --kill-on-invalid-dep=yes "${SBATCH_ARGS[@]}" "${SRC_DIR}/verify_skillset.sbatch")
-  echo "       verify   ${JIDV}  (re-runs cached-curve segmentation gaps up to ${SKILLSET_MAX_SWEEPS}×)"
+  echo "       verify   ${JIDV}  (re-runs segmentation gaps up to ${SKILLSET_MAX_SWEEPS}×)"
   DEP="afterok:${JIDV}"
 fi
 

@@ -12,6 +12,7 @@ _EVAL_SRC = (
 )
 sys.path.insert(0, str(_EVAL_SRC))
 
+import run_eval
 from run_eval import CheckpointTerminator, Stage1OraclePolicy
 from lerobot.policies.skill_expert.configuration_skill_expert import SkillExpertConfig
 
@@ -130,3 +131,49 @@ def test_predictor_source_repredicts_at_a_detected_boundary() -> None:
         "predictor",
         "predictor",
     ]
+
+
+def test_stage2_gt_eval_keeps_vlm_needed_by_likelihood(monkeypatch) -> None:
+    class _Policy(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.config = SkillExpertConfig(n_action_steps=2, chunk_size=2)
+            self.model = SimpleNamespace(
+                skill_predictor=object(), fsq_term_train=object()
+            )
+
+        def reset(self):
+            return None
+
+        def get_optim_params(self):
+            return []
+
+    policy = _Policy()
+    resolved_config = SimpleNamespace(
+        type="skill_vla_stage2",
+        n_action_steps=2,
+        pretrained_path=Path("/tmp/stage2"),
+        use_amp=False,
+    )
+    monkeypatch.setattr(run_eval, "_policy_config", lambda *args: resolved_config)
+    monkeypatch.setattr(run_eval, "make_policy", lambda **kwargs: policy)
+    monkeypatch.setattr(
+        run_eval, "make_pre_post_processors", lambda **kwargs: (object(), object())
+    )
+    monkeypatch.setenv("SKILL_END_MODE", "or")
+    monkeypatch.setenv("SKILL_END_THRESHOLD", "0.5")
+    monkeypatch.setenv("SKILL_END_PROGRESS_THRESHOLD", "0.9")
+    monkeypatch.setenv("INFERENCE_SKILL_MAX_LENGTH", "200")
+
+    context = run_eval._build_context(
+        {
+            "label": "stage2-gt",
+            "skill_source": "gt",
+            "advance_mode": "terminator",
+            "tokenizer_path": "/tmp/tokenizer",
+        },
+        SimpleNamespace(policy=object(), env=object(), rename_map={}),
+        torch.device("cpu"),
+    )
+
+    assert context["policy"].policy.model.skill_predictor is not None

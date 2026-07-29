@@ -39,4 +39,5 @@ python "${PROJECT_ROOT}/lerobot/examples/libero/configs/train_skills/build_data/
   --n_gmm_components "${SKILLSET_N_GMM}" \
   --replan_interval "${SKILLSET_REPLAN_INTERVAL}" \
   --smooth_window "${SKILLSET_SMOOTH_WINDOW}" \
-  --savgol_polyorder "${SKILLSET_SAVGOL_POLYORDER}"
+  --savgol_polyorder "${SKILLSET_SAVGOL_POLYORDER}" \
+  --threshold_scale "${SKILLSET_BOUNDARY_THRESHOLD_SCALE}"

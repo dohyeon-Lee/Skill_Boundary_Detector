@@ -47,6 +47,11 @@ DINO_FEATURE_ARGS=()
 if [ -n "${SKILLSET_DINO_FEATURE_DIR:-}" ]; then
   DINO_FEATURE_ARGS=(--dino_feature_dir "${SKILLSET_DINO_FEATURE_DIR}")
 fi
+RETRY_CURVE_ARGS=()
+if [ "${SKILLSET_BOUNDARY_THRESHOLD_MODE}" = "global_mean" ]; then
+  # Global segmentation has already generated every curve in its first pass.
+  RETRY_CURVE_ARGS=(--use_cached_curves)
+fi
 
 echo "START SKILLVLA SKILLSET VERIFY"
 echo "Node    : ${SLURMD_NODENAME:-local}"
@@ -103,9 +108,10 @@ while ! is_complete; do
       --smooth_window        "${SKILLSET_SMOOTH_WINDOW}" \
       --savgol_polyorder     "${SKILLSET_SAVGOL_POLYORDER}" \
       --boundary_threshold_mode "${SKILLSET_BOUNDARY_THRESHOLD_MODE}" \
+      --boundary_threshold_scale "${SKILLSET_BOUNDARY_THRESHOLD_SCALE}" \
       --global_threshold_path "${SKILLSET_GLOBAL_THRESHOLD_SOURCE:-${SKILLSET_GLOBAL_THRESHOLD_PATH}}" \
       ${DINO_FEATURE_ARGS[@]+"${DINO_FEATURE_ARGS[@]}"} \
-      --use_cached_curves \
+      ${RETRY_CURVE_ARGS[@]+"${RETRY_CURVE_ARGS[@]}"} \
       --resume \
       --write_done_markers \
       --task_ids ${MISSING}

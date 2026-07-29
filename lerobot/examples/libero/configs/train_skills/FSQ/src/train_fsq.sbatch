@@ -82,6 +82,7 @@ cat > "${FSQ_OUTPUT_DIR}/fsq_meta.json" <<JSON
   "skillset_mode": "${SKILLSET_MODE}",
   "skillset_min_skills": ${SKILLSET_MIN_SKILLS},
   "skillset_boundary_threshold_mode": "${SKILLSET_BOUNDARY_THRESHOLD_MODE}",
+  "skillset_boundary_threshold_scale": ${SKILLSET_BOUNDARY_THRESHOLD_SCALE},
   "skillset_global_threshold_source": "${SKILLSET_GLOBAL_THRESHOLD_SOURCE}",
   "skillset_output_suffix": "${SKILLSET_OUTPUT_SUFFIX}",
   "weighted_loss": ${FSQ_WEIGHTED_LOSS},

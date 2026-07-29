@@ -8,7 +8,10 @@ import torch
 
 from lerobot.policies.skill_expert.configuration_skill_expert import SkillExpertConfig
 from lerobot.policies.skillVLA.processor_skillVLA import (
+    SAME_SKILL_PAIR_FALLBACK,
+    SAME_SKILL_PAIR_ID,
     SKILL_CODE,
+    SKILL_PROGRESS,
     SKILL_START_IMAGE,
     SKILL_START_STATE,
     SKILL_START_WRIST_IMAGE,
@@ -51,6 +54,9 @@ SKILL_BATCH_KEYS = (
     SKILL_START_STATE,
     SKILL_CODE,
     "skill_code_true",
+    SKILL_PROGRESS,
+    SAME_SKILL_PAIR_ID,
+    SAME_SKILL_PAIR_FALLBACK,
 )
 
 
@@ -107,13 +113,10 @@ def make_skill_expert_pre_post_processors(
         RenameObservationsProcessorStep(rename_map={}),
         AddBatchDimensionProcessorStep(),
     ]
-    # Stage 2 retains the co-trained terminator as a frozen inference artifact;
-    # it does not need terminator targets or an extra raw-state batch copy.
-    needs_terminator_targets = config.train_terminator and (
-        config.type != "skill_vla_stage2"
-        or getattr(config, "finetune_terminator", False)
-    )
-    if needs_terminator_targets:
+    # The same raw inputs are needed both for terminator training and for
+    # checkpoint terminator inference.  Stage 2 must therefore preserve them
+    # even when the inherited terminator stays frozen.
+    if config.train_terminator:
         input_steps.append(SkillVLAPreserveRawStateProcessorStep())
     input_steps.append(
         NormalizerProcessorStep(

@@ -148,6 +148,8 @@ class Args:
     """NMS 거리. None이면 replan_interval * 2 사용."""
     boundary_threshold_mode: Literal["episode_mean", "global_mean"] = "episode_mean"
     """episode_mean(legacy) or one global_mean threshold shared by every episode."""
+    boundary_threshold_scale: float = 1.0
+    """Multiplier applied to the episode or global arithmetic mean."""
     global_threshold_path: str = ""
     """Path to global_boundary_threshold.json when boundary_threshold_mode=global_mean."""
     use_cached_curves: bool = False
@@ -187,7 +189,9 @@ def _threshold_for_episode(
 ) -> float:
     if args.boundary_threshold_mode == "global_mean" and global_threshold is not None:
         return float(global_threshold)
-    return float(np.mean(sg_vals)) if len(sg_vals) else 0.0
+    if not len(sg_vals):
+        return 0.0
+    return float(np.mean(sg_vals)) * args.boundary_threshold_scale
 
 
 def _infer_probe_mode(args: Args) -> str:
@@ -251,6 +255,13 @@ def _skillset_manifest(
             "peak_nms": args.peak_nms,
             "nms_dist": args.nms_dist if args.nms_dist is not None else args.replan_interval * 2,
             "boundary_threshold_mode": args.boundary_threshold_mode,
+            # Keep scale=1 manifests compatible so an interrupted historical
+            # mean build can resume after this feature is added.
+            **(
+                {"boundary_threshold_scale": args.boundary_threshold_scale}
+                if not np.isclose(args.boundary_threshold_scale, 1.0)
+                else {}
+            ),
             "global_threshold_path": (
                 str(Path(args.global_threshold_path).expanduser().resolve())
                 if args.global_threshold_path else ""
@@ -430,6 +441,8 @@ def _save_boundary_curve(curves_dir: Path, ep_id: int, task_id: int, replan_ts,
         episode_id=np.array(ep_id), task_id=np.array(task_id),
         replan_ts=replan_ts, div_cos=div_cos, sg_vals=sg_vals,
         mean_val=np.array(threshold, dtype=np.float32),
+        threshold_val=np.array(threshold, dtype=np.float32),
+        threshold_scale=np.array(args.boundary_threshold_scale, dtype=np.float32),
         threshold_mode=np.array(
             "episode_mean_staging"
             if args.curves_only and args.boundary_threshold_mode == "global_mean"
@@ -480,7 +493,7 @@ def _find_peaks_above_threshold(
     return [ts[i] for i in above], [float(vals[i]) for i in above]
 
 
-def _load_global_threshold(path: str) -> float:
+def _load_global_threshold(path: str, args: Args) -> float:
     if not path:
         raise ValueError("global_mean requires --global_threshold_path")
     threshold_path = Path(path)
@@ -492,7 +505,19 @@ def _load_global_threshold(path: str) -> float:
     payload = json.loads(threshold_path.read_text())
     if payload.get("boundary_threshold_mode") != "global_mean":
         raise ValueError(f"Not a global_mean threshold file: {threshold_path}")
-    value = float(payload["global_mean"])
+    source_scale = float(payload.get("boundary_threshold_scale", 1.0))
+    if not np.isclose(source_scale, args.boundary_threshold_scale):
+        raise ValueError(
+            "Global threshold scale mismatch: "
+            f"config={args.boundary_threshold_scale:g}, source={source_scale:g} "
+            f"({threshold_path})"
+        )
+    raw_value = (
+        payload["global_threshold"]
+        if "global_threshold" in payload
+        else payload["global_mean"]
+    )
+    value = float(raw_value)
     if not np.isfinite(value):
         raise ValueError(f"Invalid global mean in {threshold_path}: {value}")
     return value
@@ -556,9 +581,11 @@ def main(args: Args) -> None:
 
     if args.curves_only and args.use_cached_curves:
         raise ValueError("--curves_only and --use_cached_curves are mutually exclusive")
+    if args.boundary_threshold_scale <= 0.0:
+        raise ValueError("boundary_threshold_scale must be positive.")
     global_threshold = None
     if args.boundary_threshold_mode == "global_mean" and not args.curves_only:
-        global_threshold = _load_global_threshold(args.global_threshold_path)
+        global_threshold = _load_global_threshold(args.global_threshold_path, args)
         print(f"Global boundary threshold: {global_threshold:.8f} ({args.global_threshold_path})")
 
     if args.seed is not None:
@@ -740,6 +767,7 @@ def main(args: Args) -> None:
                 "savgol_polyorder": args.savgol_polyorder,
                 "nms_dist": args.nms_dist,
                 "boundary_threshold_mode": args.boundary_threshold_mode,
+                "boundary_threshold_scale": args.boundary_threshold_scale,
                 "global_threshold": global_threshold,
                 "use_cached_curves": args.use_cached_curves,
                 "min_skill_len": args.min_skill_len,

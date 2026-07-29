@@ -17,14 +17,14 @@ skillset_mode: std                   # spherical | full | without_gripper | std
 skillset_output_suffix: ""
 # global_mean selects seg_{dp}_ck{ckpt}_{mode}_globalmean; episode_mean omits
 # only the threshold suffix.
-skillset_boundary_threshold_mode: global_mean   # episode_mean | global_mean
+skillset_boundary_threshold_mode: episode_mean   # episode_mean | global_mean
 # Optional frozen global-threshold JSON (selects the `_globalref` skillset). Must match build_data.
 skillset_global_threshold_source: ""
 
 # ── DP selection ──
 # libero_90_full_full_state_obs20 | abc_toy_state_obs20
 eval_dp_run_name: langgap_56_full_full_state_obs20
-eval_dp_checkpoint: 50000 # 100000
+eval_dp_checkpoint: 100000 # 100000
 # Optional skillset root containing skillset_manifest.json. Empty uses the
 # resolver-derived {mode}_{globalmean|globalref} path above.
 dp_eval_skillset_dir: ""

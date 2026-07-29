@@ -124,6 +124,19 @@ def resolve_skillset_threshold_mode(cfg: dict[str, Any], project_root: Path) -> 
     ).strip().lower()
 
 
+def resolve_skillset_threshold_scale(cfg: dict[str, Any]) -> float:
+    scale = float(get_value(cfg, "skillset_boundary_threshold_scale", 1.0))
+    if scale <= 0.0:
+        raise ValueError(
+            f"skillset_boundary_threshold_scale must be positive, got {scale}."
+        )
+    return scale
+
+
+def _scale_percent_tag(scale: float) -> str:
+    return f"{scale * 100:g}".replace(".", "p") + "p"
+
+
 def resolve_skillset_global_threshold_source(cfg: dict[str, Any], project_root: Path) -> str:
     """Resolve an optional fixed global-threshold JSON from this module's config.
 
@@ -328,22 +341,29 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
             "skillset_boundary_threshold_mode must be 'episode_mean' or 'global_mean', "
             f"got {skillset_boundary_threshold_mode!r}."
         )
+    skillset_boundary_threshold_scale = resolve_skillset_threshold_scale(cfg)
     skillset_global_threshold_source = resolve_skillset_global_threshold_source(cfg, root)
     if skillset_global_threshold_source and skillset_boundary_threshold_mode != "global_mean":
         raise ValueError(
             "skillset_global_threshold_source requires skillset_boundary_threshold_mode=global_mean."
         )
-    # Both modes are tagged so the two segmentations can never share a directory
-    # (global vs per-episode thresholds produce different labels). Historical
-    # suffix-free dirs were episode_mean builds from before this tag existed.
+    # Both the threshold scope and scale are always tagged so distinct
+    # segmentations cannot share a directory (for example episodemean_80p).
     if skillset_boundary_threshold_mode == "global_mean":
-        skillset_threshold_suffix = "_globalref" if skillset_global_threshold_source else "_globalmean"
+        threshold_scope_tag = (
+            "globalref" if skillset_global_threshold_source else "globalmean"
+        )
     else:
-        skillset_threshold_suffix = "_episodemean"
+        threshold_scope_tag = "episodemean"
+    threshold_percent_tag = _scale_percent_tag(skillset_boundary_threshold_scale)
+    skillset_threshold_name = f"{threshold_scope_tag}_{threshold_percent_tag}"
+    skillset_threshold_suffix = f"_{skillset_threshold_name}"
     skillset_output_suffix = resolve_skillset_output_suffix(cfg, root)
-    # Default is 1 (`_ms1`, the SkillVLA `_msN` convention); 2 keeps the
-    # historical suffix-free name so old artifacts stay addressable.
-    skillset_min_skills_suffix = "" if skillset_min_skills == 2 else f"_ms{skillset_min_skills}"
+    # min_skills=1 is the normal setting and is omitted. Non-default values
+    # remain explicit so experiments with different episode filtering cannot mix.
+    skillset_min_skills_suffix = (
+        "" if skillset_min_skills == 1 else f"_ms{skillset_min_skills}"
+    )
     skillset_suffix = (
         probe_settings["skillset_probe_suffix"]
         + skillset_threshold_suffix
@@ -411,7 +431,7 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
     # was trained on (for example state_obs20), not just the FSQ architecture.
     dp_tag = dp_policy[len(target_dataset) + 1:] if dp_policy.startswith(f"{target_dataset}_") else dp_policy
     dp_tag += probe_settings["skillset_probe_suffix"]
-    dp_tag += "_global" if skillset_boundary_threshold_mode == "global_mean" else "_episode"
+    dp_tag += skillset_threshold_suffix
     dp_tag += skillset_min_skills_suffix
     dp_tag += skillset_output_suffix
     # Architecture knobs (vision backbone/freeze, terminator, encoder input mode,
@@ -578,6 +598,12 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "skillset_min_skills_suffix": skillset_min_skills_suffix,
         **probe_settings,
         "skillset_boundary_threshold_mode": skillset_boundary_threshold_mode,
+        "skillset_boundary_threshold_scale": skillset_boundary_threshold_scale,
+        "skillset_boundary_threshold_scale_tag": _scale_percent_tag(
+            skillset_boundary_threshold_scale
+        ),
+        "skillset_boundary_threshold_name": skillset_threshold_name,
+        "skillset_boundary_threshold_suffix": skillset_threshold_suffix,
         "skillset_global_threshold_source": skillset_global_threshold_source,
         "skillset_output_suffix": skillset_output_suffix,
         "skillset_global_threshold_path": (

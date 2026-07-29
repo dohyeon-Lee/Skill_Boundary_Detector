@@ -155,6 +155,7 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     --smooth_window "${SKILLSET_SMOOTH_WINDOW}" \
     --savgol_polyorder "${SKILLSET_SAVGOL_POLYORDER}" \
     --boundary_threshold_mode "${SKILLSET_BOUNDARY_THRESHOLD_MODE}" \
+    --boundary_threshold_scale "${SKILLSET_BOUNDARY_THRESHOLD_SCALE}" \
     --global_threshold_path "${EFFECTIVE_GLOBAL_THRESHOLD_PATH}" \
     ${DINO_FEATURE_ARGS[@]+"${DINO_FEATURE_ARGS[@]}"} \
     --resume \

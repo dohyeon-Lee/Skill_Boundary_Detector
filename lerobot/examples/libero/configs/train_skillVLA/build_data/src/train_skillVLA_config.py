@@ -37,6 +37,10 @@ def _levels(value: Any) -> list[int]:
     return [int(v) for v in cleaned.split()]
 
 
+def _scale_percent_tag(scale: float) -> str:
+    return f"{scale * 100:g}".replace(".", "p") + "p"
+
+
 def build_settings(cfg: dict, dataset: str | None = None) -> dict:
     root = Path(str(get_value(cfg, "project_root"))).expanduser()
     dataset_root = root / str(get_value(cfg, "dataset_root", "libero_dataset"))
@@ -53,6 +57,23 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
             "skillvla_data_mode must be pt|ft|ft_own, "
             f"got {skillvla_data_mode!r}."
         )
+    boundary_threshold_mode = str(
+        get_value(cfg, "skillset_boundary_threshold_mode", "global_mean")
+    ).strip().lower()
+    if boundary_threshold_mode not in {"episode_mean", "global_mean"}:
+        raise ValueError(
+            "skillset_boundary_threshold_mode must be episode_mean|global_mean, "
+            f"got {boundary_threshold_mode!r}."
+        )
+    boundary_threshold_scale = float(
+        get_value(cfg, "skillset_boundary_threshold_scale", 1.0)
+    )
+    if boundary_threshold_scale <= 0.0:
+        raise ValueError(
+            "skillset_boundary_threshold_scale must be positive, "
+            f"got {boundary_threshold_scale}."
+        )
+    threshold_percent_tag = _scale_percent_tag(boundary_threshold_scale)
 
     # ── FSQ reference (declared like dp_policy_name: folder name + checkpoint) ──
     # Parse codebook levels from the FSQ folder. The remaining suffix identifies
@@ -96,7 +117,12 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
     if skill_pmax < 0:
         raise ValueError(f"pmax must be >= 0, got {skill_pmax}.")
     jitter_tag = "halfnormal" if jitter_distribution == "half_normal" else "uniform"
-    data_identity_suffix = f"_ms{skillset_min_skills}_pmax{skill_pmax}_{jitter_tag}"
+    skillset_min_skills_suffix = (
+        "" if skillset_min_skills == 1 else f"_ms{skillset_min_skills}"
+    )
+    data_identity_suffix = (
+        f"{skillset_min_skills_suffix}_pmax{skill_pmax}_{jitter_tag}"
+    )
 
     # ── FSQ (step 4) — model path from the parsed run name + checkpoint ──
     fsq_model_dir = fsq_outputs_root / fsq_run_name
@@ -117,7 +143,17 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
     # against a PT vocabulary produced with the same segmentation mode.
     skillset_mode_suffix = probe_settings["skillset_probe_suffix"]
     base_run_tag = f"FSQ{fsq_digits}{fsq_exp_suffix}_{ckpt_tag}{skillset_mode_suffix}"
-    run_tag = f"{base_run_tag}_{skillvla_data_mode}"
+    own_threshold_scope = (
+        "episodemean" if boundary_threshold_mode == "episode_mean" else "globalmean"
+    )
+    run_threshold_scope = (
+        "globalref"
+        if boundary_threshold_mode == "global_mean" and skillvla_data_mode == "ft"
+        else own_threshold_scope
+    )
+    own_boundary_identity_suffix = f"_{own_threshold_scope}_{threshold_percent_tag}"
+    boundary_identity_suffix = f"_{run_threshold_scope}_{threshold_percent_tag}"
+    run_tag = f"{base_run_tag}_{skillvla_data_mode}{boundary_identity_suffix}"
     # transfer 빌드(snap): 미지원 코드를 최근접 지원 코드로 snap한 빌드는 산출물(skill_latents/skillvla)이
     # 다르므로 폴더 분리 — run_tag에 _snap{min_freq} 부착 (downstream 파서들의 run_tag 정규식은
     # `FSQ\d+_dino\d+.*?` 꼴이라 그대로 통과). _work 중간물은 snap 무관(dino/segmentation)이라 공유 유지.
@@ -133,7 +169,10 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
             # FT must use the PT vocabulary for this exact FSQ/checkpoint and
             # pruning threshold. Search source-dataset directories so the FT
             # config needs no duplicated PT dataset/path field.
-            pt_run_tag = f"{base_run_tag}_pt{snap_suffix}{data_identity_suffix}"
+            pt_run_tag = (
+                f"{base_run_tag}_pt{own_boundary_identity_suffix}"
+                f"{snap_suffix}{data_identity_suffix}"
+            )
             pt_refs = sorted(skillvla_root.glob(f"*/{pt_run_tag}/skill_latents.npz"))
             if len(pt_refs) != 1:
                 found = "\n  ".join(str(p) for p in pt_refs) or "(none)"
@@ -151,27 +190,39 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
     source_out_dir = skillvla_root / source_dataset
     run_dir = source_out_dir / run_tag
     work_dir = source_out_dir / "_work"
-    # All SkillVLA builds use global boundaries. pt and ft_own reduce this
-    # source's curves; ft reuses the one matching PT global threshold.
+    # Keep boundary modes in disjoint work directories. For global_mean, pt and
+    # ft_own reduce this source's curves while ft reuses the matching PT value.
+    # episode_mean needs neither a reducer nor a cross-dataset reference.
     seg_base = (
         f"seg_{dp_policy_name}_ck{dp_checkpoint}"
         f"{probe_settings['skillset_probe_suffix']}"
-        f"_ms{skillset_min_skills}"
+        f"{skillset_min_skills_suffix}"
     )
     skillset_global_threshold_source = ""
-    if skillvla_data_mode == "ft":
+    own_global_seg_suffix = f"_globalmean_{threshold_percent_tag}"
+    if boundary_threshold_mode == "global_mean" and skillvla_data_mode == "ft":
         pt_thresholds = sorted(
-            skillvla_root.glob(f"*/_work/{seg_base}_globalmean/skillset/global_boundary_threshold.json")
+            skillvla_root.glob(
+                f"*/_work/{seg_base}{own_global_seg_suffix}/skillset/"
+                "global_boundary_threshold.json"
+            )
         )
         if len(pt_thresholds) != 1:
             found = "\n  ".join(str(p) for p in pt_thresholds) or "(none)"
             raise ValueError(
                 "skillvla_data_mode=ft requires exactly one completed PT global threshold "
-                f"at */_work/{seg_base}_globalmean/skillset/global_boundary_threshold.json; "
+                f"at */_work/{seg_base}{own_global_seg_suffix}/skillset/"
+                "global_boundary_threshold.json; "
                 f"found:\n  {found}\nBuild the matching PT data first."
             )
         skillset_global_threshold_source = str(pt_thresholds[0])
-    seg_suffix = "_globalref" if skillset_global_threshold_source else "_globalmean"
+    if boundary_threshold_mode == "episode_mean":
+        seg_suffix = f"_episodemean_{threshold_percent_tag}"
+    else:
+        if skillset_global_threshold_source:
+            seg_suffix = f"_globalref_{threshold_percent_tag}"
+        else:
+            seg_suffix = own_global_seg_suffix
     seg_dir = work_dir / f"{seg_base}{seg_suffix}"
     skillset_dir = seg_dir / "skillset"
 
@@ -216,7 +267,8 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
         "skillset_nms_dist": int(get_value(cfg, "skillset_nms_dist", 25)),
         "skillset_min_skills": skillset_min_skills,
         **probe_settings,
-        "skillset_boundary_threshold_mode": "global_mean",
+        "skillset_boundary_threshold_mode": boundary_threshold_mode,
+        "skillset_boundary_threshold_scale": boundary_threshold_scale,
         "skillset_global_threshold_source": skillset_global_threshold_source,
         "skillset_global_threshold_path": skillset_dir / "global_boundary_threshold.json",
         "skillset_dino_feature_dir": resolve_path(

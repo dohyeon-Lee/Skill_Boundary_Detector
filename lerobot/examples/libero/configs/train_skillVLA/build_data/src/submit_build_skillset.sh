@@ -70,7 +70,7 @@ if [ "${SKILLSET_ARRAY_THROTTLE:-0}" -gt 0 ]; then
   ARRAY_SPEC="${ARRAY_SPEC}%${SKILLSET_ARRAY_THROTTLE}"
 fi
 
-# ── global boundary: curves → fresh/reference threshold → cached segmentation ──
+# ── boundary mode: direct episode segmentation or global two-pass reduction ──
 SBATCH_ARGS=(
   --partition="${SKILLVLA_PARTITION}"
   --qos="${SKILLVLA_QOS}"
@@ -89,27 +89,31 @@ fi
 cd "${SCRIPT_DIR}/.."
 mkdir -p logs
 
-echo "Submit global-boundary DP skillset"
+echo "Submit DP skillset (${SKILLSET_BOUNDARY_THRESHOLD_MODE})"
 echo "  source    : ${SOURCE_DATASET}"
 echo "  DP policy : ${DP_POLICY_PATH}"
 echo "  skillset  : ${SKILLSET_DIR}"
 echo "  slurm     : partition=${SKILLVLA_PARTITION} qos=${SKILLVLA_QOS} gres=${SKILLVLA_GRES}"
 echo "  array     : ${ARRAY_SPEC}  (${N_TASKS} tasks / ${TPJ} per job = ${NUM_SHARDS} GPUs)"
 
-JID_CURVES=$(TRAIN_SKILLVLA_CONFIG="${CONFIG_PATH}" SOURCE_DATA="${SOURCE_DATASET}" ALL_TASK_IDS="${ALL_TASK_IDS}" CURVES_ONLY=true \
-  sbatch --parsable --array="${ARRAY_SPEC}" "${SBATCH_ARGS[@]}" "${SRC_DIR}/build_skillset.sbatch")
-echo "  curve job    : ${JID_CURVES}"
-
-if [ -n "${SKILLSET_GLOBAL_THRESHOLD_SOURCE:-}" ]; then
-  echo "  threshold    : PT reference ${SKILLSET_GLOBAL_THRESHOLD_SOURCE}"
-  JID_SEG=$(TRAIN_SKILLVLA_CONFIG="${CONFIG_PATH}" SOURCE_DATA="${SOURCE_DATASET}" ALL_TASK_IDS="${ALL_TASK_IDS}" USE_CACHED_CURVES=true \
-    sbatch --parsable --array="${ARRAY_SPEC}" --dependency="afterok:${JID_CURVES}" "${SBATCH_ARGS[@]}" "${SRC_DIR}/build_skillset.sbatch")
+if [ "${SKILLSET_BOUNDARY_THRESHOLD_MODE}" = "episode_mean" ]; then
+  JID_SEG=$(TRAIN_SKILLVLA_CONFIG="${CONFIG_PATH}" SOURCE_DATA="${SOURCE_DATASET}" ALL_TASK_IDS="${ALL_TASK_IDS}" \
+    sbatch --parsable --array="${ARRAY_SPEC}" "${SBATCH_ARGS[@]}" "${SRC_DIR}/build_skillset.sbatch")
 else
-  JID_REDUCE=$(TRAIN_SKILLVLA_CONFIG="${CONFIG_PATH}" SOURCE_DATA="${SOURCE_DATASET}" EXPECTED_EPISODES="${EXPECTED_EPISODES}" \
-    sbatch --parsable --dependency="afterok:${JID_CURVES}" "${SBATCH_ARGS[@]}" "${SRC_DIR}/compute_global_boundary_threshold.sbatch")
-  echo "  threshold job: ${JID_REDUCE}  (${EXPECTED_EPISODES} episodes)"
-  JID_SEG=$(TRAIN_SKILLVLA_CONFIG="${CONFIG_PATH}" SOURCE_DATA="${SOURCE_DATASET}" ALL_TASK_IDS="${ALL_TASK_IDS}" USE_CACHED_CURVES=true \
-    sbatch --parsable --array="${ARRAY_SPEC}" --dependency="afterok:${JID_REDUCE}" "${SBATCH_ARGS[@]}" "${SRC_DIR}/build_skillset.sbatch")
+  JID_CURVES=$(TRAIN_SKILLVLA_CONFIG="${CONFIG_PATH}" SOURCE_DATA="${SOURCE_DATASET}" ALL_TASK_IDS="${ALL_TASK_IDS}" CURVES_ONLY=true \
+    sbatch --parsable --array="${ARRAY_SPEC}" "${SBATCH_ARGS[@]}" "${SRC_DIR}/build_skillset.sbatch")
+  echo "  curve job    : ${JID_CURVES}"
+  if [ -n "${SKILLSET_GLOBAL_THRESHOLD_SOURCE:-}" ]; then
+    echo "  threshold    : PT reference ${SKILLSET_GLOBAL_THRESHOLD_SOURCE}"
+    JID_SEG=$(TRAIN_SKILLVLA_CONFIG="${CONFIG_PATH}" SOURCE_DATA="${SOURCE_DATASET}" ALL_TASK_IDS="${ALL_TASK_IDS}" USE_CACHED_CURVES=true \
+      sbatch --parsable --array="${ARRAY_SPEC}" --dependency="afterok:${JID_CURVES}" "${SBATCH_ARGS[@]}" "${SRC_DIR}/build_skillset.sbatch")
+  else
+    JID_REDUCE=$(TRAIN_SKILLVLA_CONFIG="${CONFIG_PATH}" SOURCE_DATA="${SOURCE_DATASET}" EXPECTED_EPISODES="${EXPECTED_EPISODES}" \
+      sbatch --parsable --dependency="afterok:${JID_CURVES}" "${SBATCH_ARGS[@]}" "${SRC_DIR}/compute_global_boundary_threshold.sbatch")
+    echo "  threshold job: ${JID_REDUCE}  (${EXPECTED_EPISODES} episodes)"
+    JID_SEG=$(TRAIN_SKILLVLA_CONFIG="${CONFIG_PATH}" SOURCE_DATA="${SOURCE_DATASET}" ALL_TASK_IDS="${ALL_TASK_IDS}" USE_CACHED_CURVES=true \
+      sbatch --parsable --array="${ARRAY_SPEC}" --dependency="afterok:${JID_REDUCE}" "${SBATCH_ARGS[@]}" "${SRC_DIR}/build_skillset.sbatch")
+  fi
 fi
 echo "  segment job  : ${JID_SEG}"
 

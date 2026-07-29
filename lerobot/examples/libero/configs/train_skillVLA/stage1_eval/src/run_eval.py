@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Multi-checkpoint closed-loop LIBERO evaluation for renewed Stage 1."""
+"""Multi-checkpoint closed-loop LIBERO evaluation for Stage 1 and Stage 2."""
 
 import gc
 import json
@@ -45,13 +45,13 @@ log = logging.getLogger(__name__)
 
 
 class CheckpointTerminator:
-    """Inference adapter around the terminator stored in a Stage-1 checkpoint."""
+    """Inference adapter around the terminator stored in a policy checkpoint."""
 
     use_wrist = True
 
     def __init__(self, policy):
         if policy.model.fsq_term_train is None:
-            raise ValueError("The Stage-1 checkpoint has no co-trained terminator.")
+            raise ValueError("The policy checkpoint has no co-trained terminator.")
         self.model = policy.model
 
     @torch.no_grad()
@@ -80,14 +80,14 @@ def _parse_sequences(sequences) -> tuple[list[list[int]], list[list[int]]]:
                 int(skill.get("gt_length", 0)) if isinstance(skill, dict) else 0
             )
         if not episode_codes:
-            raise ValueError("Every Stage-1 reference skill sequence must be non-empty.")
+            raise ValueError("Every reference skill sequence must be non-empty.")
         codes.append(episode_codes)
         lengths.append(episode_lengths)
     return codes, lengths
 
 
 class Stage1OraclePolicy(PreTrainedPolicy):
-    """Run Stage-1 actions using either GT skills or its learned predictor."""
+    """Run a skill-conditioned policy with GT skills or its learned predictor."""
 
     config_class = SkillExpertConfig
     name = "stage1_oracle"
@@ -222,7 +222,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         missing = [key for key in (RAW_STATE, RAW_IMAGE, RAW_WRIST) if key not in batch]
         if missing:
             raise ValueError(
-                "The saved Stage-1 preprocessor must preserve raw terminator inputs; "
+                "The saved policy preprocessor must preserve raw terminator inputs; "
                 f"missing={missing}."
             )
         progress, probability = self.terminator.terminate(
@@ -429,7 +429,14 @@ def _build_context(spec: dict, cfg, device: torch.device) -> dict:
     )
     policy.eval()
     terminator = CheckpointTerminator(policy)
-    if spec["skill_source"] == "gt" and policy.model.skill_predictor is not None:
+    # A Stage-1 GT run does not need its predictor/VLM and can release it.  Stage 2
+    # is different: the likelihood blocks always consume the pristine frozen VLM
+    # memory owned by skill_predictor, even when the injected skill itself is GT.
+    if (
+        spec["skill_source"] == "gt"
+        and policy_config.type == "skill_expert"
+        and policy.model.skill_predictor is not None
+    ):
         policy.model.skill_predictor = None
         if device.type == "cuda":
             torch.cuda.empty_cache()
@@ -581,11 +588,15 @@ def _maybe_log_wandb(cfg, infos: dict[str, dict], specs: list[dict]) -> None:
 
 @parser.wrap()
 def eval_main(cfg: EvalPipelineConfig):
-    if cfg.policy is None or cfg.policy.type != "skill_expert":
-        raise ValueError("Stage-1 eval requires a skill_expert checkpoint.")
+    supported = {"skill_expert", "skill_vla_stage2"}
+    if cfg.policy is None or cfg.policy.type not in supported:
+        raise ValueError(
+            "Skill-conditioned eval requires a skill_expert or "
+            "skill_vla_stage2 checkpoint."
+        )
     specs = json.loads(os.environ.get("MODELS_JSON", "") or "[]")
     if not specs:
-        raise ValueError("MODELS_JSON is empty; resolve stage1_eval_config.yaml first.")
+        raise ValueError("MODELS_JSON is empty; resolve the eval config first.")
 
     device = get_safe_torch_device(cfg.policy.device, log=True)
     set_seed(cfg.seed)
@@ -611,7 +622,7 @@ def eval_main(cfg: EvalPipelineConfig):
             )
         )
         if not oracle_maps or not oracle_maps[0]:
-            raise RuntimeError("No requested LIBERO tasks matched every Stage-1 dataset.")
+            raise RuntimeError("No requested LIBERO tasks matched every model dataset.")
 
         output_dir = Path(cfg.output_dir)
         infos = {}

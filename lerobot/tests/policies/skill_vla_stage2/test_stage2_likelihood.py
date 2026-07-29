@@ -10,6 +10,10 @@ from lerobot.policies.skill_expert import modeling_skill_predictor
 from lerobot.policies.skill_expert.modeling_skill_predictor import (
     FrozenVLMSkillPredictor,
 )
+from lerobot.policies.skill_expert.processor_skill_expert import (
+    skill_expert_batch_to_transition,
+    skill_expert_transition_to_batch,
+)
 from lerobot.policies.skill_vla_stage2.configuration_skill_vla_stage2 import (
     SkillVLAStage2Config,
 )
@@ -321,6 +325,21 @@ def test_stage2_terminator_uses_only_random_and_failed_pair_slots() -> None:
     assert fraction == pytest.approx(0.5)
     assert selected["skill_code_true"].tolist() == [2, 3]
     assert selected["skill_ds"].tolist() == [2, 3]
+
+
+def test_stage2_processor_preserves_same_skill_sampler_metadata() -> None:
+    batch = {
+        "same_skill_pair_id": torch.tensor([0, 0, -1, -1]),
+        "same_skill_pair_fallback": torch.tensor([False, False, False, True]),
+        "skill_progress": torch.tensor([0.1, 0.2, 0.3, 0.4]),
+    }
+
+    restored = skill_expert_transition_to_batch(
+        skill_expert_batch_to_transition(batch)
+    )
+
+    for key, expected in batch.items():
+        torch.testing.assert_close(restored[key], expected)
 
 
 def test_stage2_token_sampling_builds_prefix_mask_but_likelihood_sees_actions_only() -> None:

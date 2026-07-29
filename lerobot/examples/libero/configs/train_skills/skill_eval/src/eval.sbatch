@@ -73,7 +73,7 @@ if [ "${EVAL_RUN_DP}" = "true" ]; then
   DP_OUTPUT_DATASET="${TARGET_DATASET}"
   DP_OUTPUT_POLICY="${DP_POLICY}"
   DP_OUTPUT_CHECKPOINT="${DP_CHECKPOINT}"
-  if [ "${SKILLSET_BOUNDARY_THRESHOLD_MODE}" = "global_mean" ]; then DP_SUFFIX+="_global"; else DP_SUFFIX+="_episode"; fi
+  DP_SUFFIX+="${SKILLSET_BOUNDARY_THRESHOLD_SUFFIX}"
   if [ -n "${DP_EVAL_SKILLSET_DIR:-}" ]; then
     if [[ "${DP_EVAL_SKILLSET_DIR}" = /* ]]; then
       DP_SKILLSET_DIR="${DP_EVAL_SKILLSET_DIR}"
@@ -89,12 +89,15 @@ if [ "${EVAL_RUN_DP}" = "true" ]; then
     DP_IMAGE_KEY=$("${BOOTSTRAP_PYTHON}" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("image_key", "observation.images.image"))' "${DP_MANIFEST}")
     DP_MODE=$("${BOOTSTRAP_PYTHON}" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("mode", "custom"))' "${DP_MANIFEST}")
     DP_THRESHOLD_MODE=$("${BOOTSTRAP_PYTHON}" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("detector", {}).get("boundary_threshold_mode", "episode_mean"))' "${DP_MANIFEST}")
+    DP_THRESHOLD_SCALE=$("${BOOTSTRAP_PYTHON}" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("detector", {}).get("boundary_threshold_scale", 1.0))' "${DP_MANIFEST}")
     DP_OUTPUT_DATASET=$("${BOOTSTRAP_PYTHON}" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("dataset_name", "dataset"))' "${DP_MANIFEST}")
     DP_MANIFEST_POLICY=$("${BOOTSTRAP_PYTHON}" -c 'import json,sys; print(json.load(open(sys.argv[1]))["policy_path"])' "${DP_MANIFEST}")
     DP_OUTPUT_POLICY=$("${BOOTSTRAP_PYTHON}" -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).parents[2].name)' "${DP_MANIFEST_POLICY}")
     DP_OUTPUT_CHECKPOINT=$("${BOOTSTRAP_PYTHON}" -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).parent.name)' "${DP_MANIFEST_POLICY}")
     DP_SUFFIX="_${DP_MODE}"
-    if [ "${DP_THRESHOLD_MODE}" = "global_mean" ]; then DP_SUFFIX+="_global"; else DP_SUFFIX+="_episode"; fi
+    if [ "${DP_THRESHOLD_MODE}" = "global_mean" ]; then DP_THRESHOLD_SCOPE="globalmean"; else DP_THRESHOLD_SCOPE="episodemean"; fi
+    DP_THRESHOLD_PERCENT=$("${BOOTSTRAP_PYTHON}" -c 'import sys; v=float(sys.argv[1]); print(f"{v*100:g}".replace(".","p")+"p")' "${DP_THRESHOLD_SCALE}")
+    DP_SUFFIX+="_${DP_THRESHOLD_SCOPE}_${DP_THRESHOLD_PERCENT}"
   fi
   # Shallow folder + DP-named HTML so different DPs don't overwrite each other (no deep nesting).
   # Strip the redundant dataset prefix from the run name (libero_90_full_full_state_obs10 → state_obs10).
@@ -169,13 +172,14 @@ if [ "${EVAL_RUN_FSQ}" = "true" ]; then
   FSQ_META="${MODEL_DIR}/fsq_meta.json"
   F_SKILLSET="${SKILLSET_DIR}"
   if [ -f "${FSQ_META}" ]; then
-    read -r F_DP F_CKPT F_THRESHOLD_MODE F_SKILLSET_MODE F_MIN_SKILLS F_GLOBAL_SOURCE F_OUTPUT_SUFFIX < <("${BOOTSTRAP_PYTHON}" - "${FSQ_META}" <<'PY'
+    read -r F_DP F_CKPT F_THRESHOLD_MODE F_THRESHOLD_SCALE F_SKILLSET_MODE F_MIN_SKILLS F_GLOBAL_SOURCE F_OUTPUT_SUFFIX < <("${BOOTSTRAP_PYTHON}" - "${FSQ_META}" <<'PY'
 import json, sys
 m = json.load(open(sys.argv[1]))
 print(
     m["dp_run_name"],
     m["dp_checkpoint"],
     m.get("skillset_boundary_threshold_mode", "episode_mean"),
+    m.get("skillset_boundary_threshold_scale", 1.0),
     m.get("skillset_mode") or "__none__",
     m.get("skillset_min_skills") or "__none__",
     m.get("skillset_global_threshold_source") or "__none__",
@@ -191,12 +195,13 @@ PY
     [ "${F_OUTPUT_SUFFIX}" = "__none__" ] && F_OUTPUT_SUFFIX=""
     eval "$(DP_RUN_NAME="${F_DP}" DP_CHECKPOINT="${F_CKPT}" \
       SKILLSET_BOUNDARY_THRESHOLD_MODE="${F_THRESHOLD_MODE}" SKILLSET_MODE="${F_SKILLSET_MODE}" \
+      SKILLSET_BOUNDARY_THRESHOLD_SCALE="${F_THRESHOLD_SCALE}" \
       SKILLSET_MIN_SKILLS="${F_MIN_SKILLS}" \
       SKILLSET_GLOBAL_THRESHOLD_SOURCE="${F_GLOBAL_SOURCE}" SKILLSET_OUTPUT_SUFFIX="${F_OUTPUT_SUFFIX}" \
       "${BOOTSTRAP_PYTHON}" "${COMMON_SRC_DIR}/train_skills_config.py" --config "${TRAIN_CONFIG}" --shell 2>/dev/null \
       | grep -E '^export SKILLSET_DIR=')"
     F_SKILLSET="${SKILLSET_DIR}"
-    echo "  FSQ source DP    : ${F_DP} (ck${F_CKPT}, ${F_SKILLSET_MODE:-legacy}, ${F_THRESHOLD_MODE}, ms${F_MIN_SKILLS})"
+    echo "  FSQ source DP    : ${F_DP} (ck${F_CKPT}, ${F_SKILLSET_MODE:-legacy}, ${F_THRESHOLD_MODE}×${F_THRESHOLD_SCALE}, ms${F_MIN_SKILLS})"
   fi
   if [ ! -d "${F_SKILLSET}/skills" ]; then
     echo "FSQ's training skillset not found: ${F_SKILLSET}/skills" >&2; exit 1
