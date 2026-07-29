@@ -87,9 +87,9 @@ def _require_stage1_contract(config: dict, checkpoint: Path) -> None:
         raise ValueError("Stage 2 expects the 18-layer gemma_300m action expert.")
     if config.get("cond_encoder_variant") != "gemma_300m":
         raise ValueError("Stage 2 expects the 18-layer gemma_300m condition encoder.")
-    if config.get("state_cond_mode") not in {"broadcast", "token"}:
+    if config.get("conditioning_route") not in {"state_cond", "state_skill_cond"}:
         raise ValueError(
-            "Stage 2 expects Stage-1 skill conditioning to be broadcast|token."
+            "Stage 2 expects conditioning_route=state_cond|state_skill_cond."
         )
     if not (
         config.get("skill_predictor_attend_image", False)
@@ -292,7 +292,7 @@ def build_settings(config: dict) -> dict:
         "time_sampling_offset": float(stage1_config["time_sampling_offset"]),
         "dino_image_size": int(stage1_config["dino_image_size"]),
         "freeze_vision_encoder": as_bool(stage1_config["freeze_vision_encoder"]),
-        "state_cond_mode": stage1_config["state_cond_mode"],
+        "conditioning_route": stage1_config["conditioning_route"],
         "skill_vocab_size": math.prod(stage1_levels),
         "skill_fsq_levels": "[" + ",".join(str(value) for value in stage1_levels) + "]",
         "transition_jitter_pmax": int(stage1_config["transition_jitter_pmax"]),

@@ -47,14 +47,15 @@ class SkillExpertConfig(PreTrainedConfig):
     freeze_vision_encoder: bool = False
     dino_lr: float | None = None
 
-    state_cond_mode: str = "broadcast"
-    """How the FSQ skill enters the action expert while state remains in AdaRMS:
+    conditioning_route: str = "state_cond"
+    """Where state and skill condition the two Stage-1 streams:
 
-    - ``broadcast``: add the projected skill to every action token before attention
-      in every expert layer.
-    - ``token``: prepend one projected skill token to the action stream. The skill
-      token reads the scene and itself, while action tokens read scene + skill +
-      action. The skill token never reads action tokens.
+    - ``state_cond``: state modulates the condition encoder through AdaRMS; skill
+      is broadcast into the action expert.
+    - ``state_skill_cond``: state still modulates the condition encoder through
+      AdaRMS, and skill is broadcast into the condition encoder as well.
+
+    In both routes the action expert's AdaRMS input is flow time only.
     """
     skill_vocab_size: int = 27
     skill_fsq_levels: list[int] = field(default_factory=lambda: [3, 3, 3])
@@ -137,10 +138,10 @@ class SkillExpertConfig(PreTrainedConfig):
             raise ValueError("dino_lr must be positive when set.")
         if self.freeze_vision_encoder and self.dino_lr is not None:
             raise ValueError("dino_lr cannot be set when freeze_vision_encoder=True.")
-        if self.state_cond_mode not in {"broadcast", "token"}:
+        if self.conditioning_route not in {"state_cond", "state_skill_cond"}:
             raise ValueError(
-                "Stage 1 skill conditioning must be 'broadcast' or 'token' while state remains "
-                f"in time+state AdaRMS; got state_cond_mode={self.state_cond_mode!r}."
+                "conditioning_route must be 'state_cond' or 'state_skill_cond', got "
+                f"{self.conditioning_route!r}."
             )
         if not self.skill_fsq_levels or any(level <= 1 for level in self.skill_fsq_levels):
             raise ValueError(f"skill_fsq_levels must all be greater than one, got {self.skill_fsq_levels}.")

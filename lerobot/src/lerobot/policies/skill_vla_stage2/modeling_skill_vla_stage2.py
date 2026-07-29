@@ -268,16 +268,18 @@ class SkillVLAStage2Pytorch(SkillExpertPytorch):
         source = source.to(actions.dtype)
         x_t = time[:, None, None] * source + (1.0 - time[:, None, None]) * actions
         target_velocity = source - actions
-        expert_condition = self._expert_condition(time, state)
-        skill_token, skill_broadcast = self._skill_conditioning(skill_code)
+        condition_state = self._state_condition(state)
+        condition_skill, expert_skill = self._skill_broadcasts(skill_code)
+        expert_condition = self._expert_condition(time)
 
         with torch.no_grad():
             prior_hidden = self._run_joint_hidden(
                 self._condition_tokens(images),
                 x_t,
+                condition_state,
                 expert_condition,
-                skill_broadcast,
-                skill_token,
+                condition_skill,
+                expert_skill,
             )
             vlm_hidden, vlm_key_padding_mask = (
                 self.skill_predictor.encode_base_last_hidden(
@@ -320,9 +322,8 @@ class SkillVLAStage2Pytorch(SkillExpertPytorch):
         condition_tokens = self._condition_tokens(images)
         n_condition = condition_tokens.shape[1]
         n_chunk = noise.shape[1]
-        skill_token, skill_broadcast = self._skill_conditioning(skill_code)
-        n_prefix = 0 if skill_token is None else skill_token.shape[1]
-        n_action = n_prefix + n_chunk
+        condition_state = self._state_condition(state)
+        condition_skill, expert_skill = self._skill_broadcasts(skill_code)
 
         condition_padding = torch.ones(
             batch_size, n_condition, dtype=torch.bool, device=device
@@ -340,20 +341,18 @@ class SkillVLAStage2Pytorch(SkillExpertPytorch):
             position_ids=condition_positions,
             past_key_values=None,
             use_cache=True,
-            adarms_cond=None,
+            adarms_cond=condition_state,
+            broadcast_cond=condition_skill,
         ).past_key_values
 
-        action_padding = torch.ones(batch_size, n_action, dtype=torch.bool, device=device)
-        action_block_starts = []
-        if n_prefix:
-            action_block_starts += [1] + [0] * (n_prefix - 1)
-        action_block_starts += [1] + [0] * (n_chunk - 1)
+        action_padding = torch.ones(batch_size, n_chunk, dtype=torch.bool, device=device)
+        action_block_starts = [1] + [0] * (n_chunk - 1)
         action_blocks = torch.tensor(
             action_block_starts, dtype=torch.bool, device=device
         )[None].expand(batch_size, -1)
         action_attention = make_att_2d_masks(action_padding, action_blocks)
         condition_visible = condition_padding[:, None].expand(
-            batch_size, n_action, n_condition
+            batch_size, n_chunk, n_condition
         )
         full_attention = torch.cat((condition_visible, action_attention), dim=2)[:, None]
         full_attention = torch.where(full_attention, 0.0, OPENPI_ATTENTION_MASK_VALUE)
@@ -368,15 +367,14 @@ class SkillVLAStage2Pytorch(SkillExpertPytorch):
             time = torch.full(
                 (batch_size,), 1.0 + step * dt, dtype=torch.float32, device=device
             )
-            expert_condition = self._expert_condition(time, state)
+            expert_condition = self._expert_condition(time)
             prior_hidden = self._action_hidden_with_condition_cache(
                 x_t,
                 expert_condition,
-                skill_broadcast,
+                expert_skill,
                 condition_cache,
                 full_attention,
                 action_positions,
-                skill_token,
             )
             velocity = self._likelihood_velocity(
                 prior_hidden,
@@ -404,7 +402,7 @@ _STAGE1_CONTRACT_FIELDS = (
     "max_period",
     "vision_backbone",
     "dino_image_size",
-    "state_cond_mode",
+    "conditioning_route",
     "skill_vocab_size",
     "skill_fsq_levels",
     "transition_jitter_pmax",

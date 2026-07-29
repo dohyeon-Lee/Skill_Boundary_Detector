@@ -155,11 +155,13 @@ def build_settings(config: dict) -> dict:
     )
     if expert_variant != cond_variant:
         raise ValueError("Stage 1 requires the same 18-layer variant for cond and expert.")
-    skill_conditioning = str(
-        _at(config, "architecture", "skill_conditioning", default="broadcast")
+    conditioning_route = str(
+        _at(config, "architecture", "conditioning_route", default="state_cond")
     ).strip().lower()
-    if skill_conditioning not in {"broadcast", "token"}:
-        raise ValueError("architecture.skill_conditioning must be broadcast|token.")
+    if conditioning_route not in {"state_cond", "state_skill_cond"}:
+        raise ValueError(
+            "architecture.conditioning_route must be state_cond|state_skill_cond."
+        )
 
     max_state_dim = int(_at(config, "architecture", "max_state_dim", default=32))
     max_action_dim = int(_at(config, "architecture", "max_action_dim", default=32))
@@ -203,12 +205,8 @@ def build_settings(config: dict) -> dict:
         if re.fullmatch(r"FSQ\d+", token) or token.isdigit()
     ]
     short_run_tag = "_".join(short_tokens) or run_tag
-    # Preserve existing broadcast run names so active/old runs remain resumable.
-    # Token runs need an explicit tag to avoid sharing an output directory with
-    # the otherwise identical broadcast ablation.
-    conditioning_tag = "" if skill_conditioning == "broadcast" else "_token"
     run_name = (
-        f"{source}_{short_run_tag}_{vision_tag}{conditioning_tag}_{action_loss_mode}"
+        f"{source}_{short_run_tag}_{vision_tag}_{conditioning_route}_{action_loss_mode}"
     )
     if suffix:
         run_name = f"{run_name}_{suffix}"
@@ -228,7 +226,7 @@ def build_settings(config: dict) -> dict:
         "dino_lr": dino_lr,
         "action_expert_variant": expert_variant,
         "cond_encoder_variant": cond_variant,
-        "state_cond_mode": skill_conditioning,
+        "conditioning_route": conditioning_route,
         "skill_fsq_levels": "[" + ",".join(str(level) for level in levels) + "]",
         "skill_vocab_size": math.prod(levels),
         "transition_jitter_pmax": jitter_pmax,

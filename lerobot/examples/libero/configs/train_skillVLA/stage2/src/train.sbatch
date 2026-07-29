@@ -84,7 +84,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.dino_model_path="${DINO_MODEL_PATH}" \
     --policy.dino_image_size="${DINO_IMAGE_SIZE}" \
     --policy.freeze_vision_encoder="${FREEZE_VISION_ENCODER}" \
-    --policy.state_cond_mode="${STATE_COND_MODE}" \
+    --policy.conditioning_route="${CONDITIONING_ROUTE}" \
     --policy.skill_vocab_size="${SKILL_VOCAB_SIZE}" \
     --policy.skill_fsq_levels="${SKILL_FSQ_LEVELS}" \
     --policy.transition_jitter_pmax="${TRANSITION_JITTER_PMAX}" \

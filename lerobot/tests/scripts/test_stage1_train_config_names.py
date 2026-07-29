@@ -100,9 +100,9 @@ def test_stage1_exports_stage3a_predictor_contract(tmp_path: Path) -> None:
         "_flow_endpoint_xyz_pred_lora_all_dz08"
     )
 
-    config["architecture"] = {"skill_conditioning": "token"}
-    token_settings = build_settings(config)
-    assert token_settings["state_cond_mode"] == "token"
-    assert token_settings["pt_run_name"].endswith(
-        "_dino_frozen_token_flow_endpoint_xyz_pred_lora_all_dz08"
+    config["architecture"] = {"conditioning_route": "state_skill_cond"}
+    routed_settings = build_settings(config)
+    assert routed_settings["conditioning_route"] == "state_skill_cond"
+    assert routed_settings["pt_run_name"].endswith(
+        "_dino_frozen_state_skill_cond_flow_endpoint_xyz_pred_lora_all_dz08"
     )

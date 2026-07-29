@@ -38,6 +38,22 @@ def build_settings(config_path: str | None = None) -> dict:
         raise ValueError(
             f"fsq_eval_random_far_fraction must be in (0,1], got {random_far_fraction}."
         )
+    boundary_threshold_mode = str(
+        get_value(cfg, "skillset_boundary_threshold_mode", "episode_mean")
+    ).strip().lower()
+    if boundary_threshold_mode not in {"episode_mean", "global_mean"}:
+        raise ValueError(
+            "skillset_boundary_threshold_mode must be episode_mean|global_mean, got "
+            f"{boundary_threshold_mode!r}."
+        )
+    boundary_threshold_scale = float(
+        get_value(cfg, "skillset_boundary_threshold_scale", 1.0)
+    )
+    if boundary_threshold_scale <= 0.0:
+        raise ValueError(
+            "skillset_boundary_threshold_scale must be positive, got "
+            f"{boundary_threshold_scale}."
+        )
     return {
         # which eval(s) to run
         "eval_run_fsq":            str(as_bool(get_value(cfg, "eval_run_fsq", True))).lower(),
@@ -47,9 +63,8 @@ def build_settings(config_path: str | None = None) -> dict:
         "eval_dp_checkpoint":      str(get_value(cfg, "eval_dp_checkpoint", "")),
         "dp_eval_skillset_dir":    str(get_value(cfg, "dp_eval_skillset_dir", "")),
         "dp_eval_output_suffix":   output_suffix,
-        "skillset_boundary_threshold_mode": str(
-            get_value(cfg, "skillset_boundary_threshold_mode", "episode_mean")
-        ),
+        "skillset_boundary_threshold_mode": boundary_threshold_mode,
+        "skillset_boundary_threshold_scale": boundary_threshold_scale,
         # DP skill-boundary eval knobs
         "dp_eval_n_episodes":      int(get_value(cfg, "dp_eval_n_episodes", 10)),
         "dp_eval_task_ids":        " ".join(as_list(get_value(cfg, "dp_eval_task_ids", []))),

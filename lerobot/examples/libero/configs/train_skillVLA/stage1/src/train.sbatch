@@ -29,7 +29,7 @@ unset LD_LIBRARY_PATH
 echo "START STAGE 1 VSA"
 echo "dataset : ${SKILLVLA_DATASET_DIR}"
 echo "expert  : pi0.5 base ${PI_BASE} -> full fine-tuning"
-echo "skill   : ${STATE_COND_MODE}"
+echo "route   : ${CONDITIONING_ROUTE}"
 echo "loss    : ${ACTION_LOSS_MODE}"
 echo "vision  : DINO ${DINO_MODEL_PATH}   frozen=${FREEZE_VISION_ENCODER}"
 echo "predict : pi0.5 VLM skill-LoRA=${SKILL_PREDICTOR_LORA} all_layers=${SKILL_PREDICTOR_ALL_LAYERS} deadzone=${SKILL_PREDICTOR_DEADZONE_FRAC}"
@@ -69,7 +69,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.dino_model_path="${DINO_MODEL_PATH}" \
     --policy.dino_image_size="${DINO_IMAGE_SIZE}" \
     --policy.freeze_vision_encoder="${FREEZE_VISION_ENCODER}" \
-    --policy.state_cond_mode="${STATE_COND_MODE}" \
+    --policy.conditioning_route="${CONDITIONING_ROUTE}" \
     --policy.skill_vocab_size="${SKILL_VOCAB_SIZE}" \
     --policy.skill_fsq_levels="${SKILL_FSQ_LEVELS}" \
     --policy.transition_jitter_pmax="${TRANSITION_JITTER_PMAX}" \

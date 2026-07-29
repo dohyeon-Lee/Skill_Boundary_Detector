@@ -1,19 +1,19 @@
 # Clean Stage-2 evaluation. Each entry is one complete skill_vla_stage2
 # checkpoint; there are no legacy A/B/Pure-VSA/Frozen-FSQ routes.
 models:
-  - model_dir: libero_90_full_firsthalf_FSQ333_175_dino_tuned_flow_endpoint_xyz_050000_endpoint_gt_batchON_small
-    checkpoint: "last"
-    skill_source: predictor          # gt | predictor
-    advance_mode: terminator  # terminator | gt (gt skill only)
-    label: endpoint
-  - model_dir: libero_90_full_firsthalf_FSQ333_175_dino_tuned_flow_050000_flow_gt_batchON
+  # - model_dir: libero_90_full_firsthalf_FSQ333_175_dino_tuned_flow_endpoint_xyz_050000_endpoint_gt_batchON
+  #   checkpoint: "last"
+  #   skill_source: predictor          # gt | predictor
+  #   advance_mode: terminator  # terminator | gt (gt skill only)
+  #   label: endpoint
+  - model_dir: libero_90_full_firsthalf_FSQ333_175_dino_tuned_flow_endpoint_xyz_050000_endpoint_gt_batchON
     checkpoint: "last"
     skill_source: predictor
     advance_mode: terminator
     label: flow
 
 models_per_row: 2
-output_name: "endpoint_vs_flow"  # empty: timestamped name under stage2_eval/outputs
+output_name: "endpoint_last2"  # empty: timestamped name under stage2_eval/outputs
 
 target_task: libero_90
 task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]

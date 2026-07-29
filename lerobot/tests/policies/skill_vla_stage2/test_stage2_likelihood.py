@@ -49,7 +49,10 @@ def test_stage2_config_fixes_bayesvla_contract() -> None:
     assert config.training_skill_source == "gt"
     assert not config.finetune_skill_predictor
     assert not config.finetune_terminator
-    assert _config(state_cond_mode="token").state_cond_mode == "token"
+    assert (
+        _config(conditioning_route="state_skill_cond").conditioning_route
+        == "state_skill_cond"
+    )
     with pytest.raises(ValueError, match="fixes likelihood_num_layers=4"):
         _config(likelihood_num_layers=3)
     with pytest.raises(ValueError, match="gt.*predictor"):
@@ -146,7 +149,7 @@ def test_optional_terminator_has_separate_lr_and_clipping_group() -> None:
     }
 
 
-def test_stage2_forward_passes_inherited_token_through_frozen_prior_only() -> None:
+def test_stage2_forward_preserves_inherited_conditioning_route_in_frozen_prior() -> None:
     class _Predictor:
         @staticmethod
         def encode_base_last_hidden(images, language_tokens, language_mask):
@@ -156,17 +159,29 @@ def test_stage2_forward_passes_inherited_token_through_frozen_prior_only() -> No
     model = SkillVLAStage2Pytorch.__new__(SkillVLAStage2Pytorch)
     nn.Module.__init__(model)
     model.config = SimpleNamespace(action_loss_mode="flow_endpoint_xyz")
-    skill_token = torch.tensor([[[7.0, 8.0]]])
+    condition_state = torch.tensor([[9.0, 8.0]])
+    condition_skill = torch.tensor([[7.0, 6.0]])
+    expert_time = torch.tensor([[5.0, 4.0]])
     captured = {}
     model.skill_predictor = _Predictor()
     model._condition_tokens = lambda images: torch.zeros(1, 2, 2)
-    model._expert_condition = lambda time, state: torch.zeros(1, 2)
-    model._skill_conditioning = lambda code: (skill_token, None)
+    model._state_condition = lambda state: condition_state
+    model._expert_condition = lambda time: expert_time
+    model._skill_broadcasts = lambda code: (condition_skill, None)
 
-    def run_prior(condition, actions, expert_condition, broadcast, token):
-        del condition, expert_condition
-        captured["broadcast"] = broadcast
-        captured["token"] = token
+    def run_prior(
+        condition,
+        actions,
+        routed_state,
+        expert_condition,
+        routed_condition_skill,
+        expert_skill,
+    ):
+        del condition
+        captured["state"] = routed_state
+        captured["expert_condition"] = expert_condition
+        captured["condition_skill"] = routed_condition_skill
+        captured["expert_skill"] = expert_skill
         return actions
 
     model._run_joint_hidden = run_prior
@@ -185,8 +200,10 @@ def test_stage2_forward_passes_inherited_token_through_frozen_prior_only() -> No
         time=torch.full((1,), 0.5),
     )
 
-    assert captured["broadcast"] is None
-    assert captured["token"] is skill_token
+    assert captured["state"] is condition_state
+    assert captured["expert_condition"] is expert_time
+    assert captured["condition_skill"] is condition_skill
+    assert captured["expert_skill"] is None
     # likelihood receives only K action positions from the frozen prior.
     assert residual.shape == actions.shape
     torch.testing.assert_close(
@@ -342,7 +359,7 @@ def test_stage2_processor_preserves_same_skill_sampler_metadata() -> None:
         torch.testing.assert_close(restored[key], expected)
 
 
-def test_stage2_token_sampling_builds_prefix_mask_but_likelihood_sees_actions_only() -> None:
+def test_stage2_sampling_keeps_condition_routing_and_likelihood_sees_actions_only() -> None:
     class _ConditionModel:
         @staticmethod
         def forward(**kwargs):
@@ -365,23 +382,21 @@ def test_stage2_token_sampling_builds_prefix_mask_but_likelihood_sees_actions_on
     model.cond_encoder = SimpleNamespace(model=_ConditionModel())
     model.skill_predictor = _Predictor()
     model._condition_tokens = lambda images: torch.zeros(1, 2, 2)
-    model._expert_condition = lambda time, state: torch.zeros(1, 2)
-    skill_token = torch.tensor([[[7.0, 8.0]]])
-    model._skill_conditioning = lambda code: (skill_token, None)
+    model._state_condition = lambda state: torch.zeros(1, 2)
+    model._expert_condition = lambda time: torch.zeros(1, 2)
+    model._skill_broadcasts = lambda code: (torch.tensor([[7.0, 8.0]]), None)
     captured = {}
 
     def action_prior(
         noisy_actions,
         expert_condition,
-        broadcast,
+        expert_skill,
         condition_cache,
         attention_mask,
         position_ids,
-        token,
     ):
         del expert_condition, condition_cache, position_ids
-        captured["broadcast"] = broadcast
-        captured["token"] = token
+        captured["expert_skill"] = expert_skill
         captured["attention"] = attention_mask
         return noisy_actions
 
@@ -404,17 +419,8 @@ def test_stage2_token_sampling_builds_prefix_mask_but_likelihood_sees_actions_on
     )
 
     torch.testing.assert_close(sampled, torch.zeros_like(noise))
-    assert captured["broadcast"] is None
-    assert captured["token"] is skill_token
+    assert captured["expert_skill"] is None
     assert captured["likelihood_shape"] == noise.shape
     allowed = captured["attention"][0, 0].eq(0)
-    expected = torch.tensor(
-        [
-            [1, 1, 1, 0, 0, 0],
-            [1, 1, 1, 1, 1, 1],
-            [1, 1, 1, 1, 1, 1],
-            [1, 1, 1, 1, 1, 1],
-        ],
-        dtype=torch.bool,
-    )
+    expected = torch.ones(3, 5, dtype=torch.bool)
     torch.testing.assert_close(allowed, expected)

@@ -79,7 +79,7 @@ def _config(tmp_path: Path, *, policy_type: str = "skill_expert") -> dict:
                 "dino_model_path": str(dino),
                 "dino_image_size": 224,
                 "freeze_vision_encoder": True,
-                "state_cond_mode": "broadcast",
+                "conditioning_route": "state_cond",
                 "skill_vocab_size": 27,
                 "skill_fsq_levels": [3, 3, 3],
                 "transition_jitter_pmax": 15,
@@ -144,7 +144,7 @@ def test_stage2_resolver_reads_checkpoint_config_without_parsing_run_name(
     assert settings["pt_run_name"] == "stage1_exact_name_last_flow_gt_batchOFF"
 
 
-def test_stage2_inherits_token_conditioning_from_stage1_checkpoint(
+def test_stage2_inherits_conditioning_route_from_stage1_checkpoint(
     tmp_path: Path,
 ) -> None:
     config = _config(tmp_path)
@@ -153,12 +153,12 @@ def test_stage2_inherits_token_conditioning_from_stage1_checkpoint(
         / "outputs/skillVLA_stage1/stage1_exact_name/checkpoints/last/pretrained_model/config.json"
     )
     stage1 = json.loads(checkpoint_config.read_text())
-    stage1["state_cond_mode"] = "token"
+    stage1["conditioning_route"] = "state_skill_cond"
     checkpoint_config.write_text(json.dumps(stage1))
 
     settings = stage2_train_config.build_settings(config)
 
-    assert settings["state_cond_mode"] == "token"
+    assert settings["conditioning_route"] == "state_skill_cond"
     assert settings["pt_run_name"] == "stage1_exact_name_last_flow_gt_batchOFF"
 
 
