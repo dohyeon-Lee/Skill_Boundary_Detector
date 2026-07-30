@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Inputs:
 #   dataset name : TRAIN_DATA or target_dataset in ../train_skills_config.yaml
-#   FSQ inputs   : {project_root}/{dataset_root}/FSQ_dataset/{target_dataset}/FSQ_inputs
-#   skillset     : {project_root}/{dataset_root}/FSQ_dataset/{target_dataset}/FSQ_inputs/seg_{dp}_ck{ckpt}/skillset/skills
+#   skillset     : selected by the five folder components in fsq_config.yaml;
+#                  DP/detector provenance is read from skillset_manifest.json
 # Reference models:
 #   DINO model   : {project_root}/models/dinov3-vits16
 # Outputs:
 #   FSQ run      : {project_root}/outputs/FSQ/{fsq_run_name}
-#   FSQ model    : {project_root}/outputs/FSQ/{fsq_run_name}/FSQ.pt
+#   FSQ checkpoints: {project_root}/outputs/FSQ/{fsq_run_name}/FSQ_epoch*.pt
 #   skill tokens : {project_root}/outputs/FSQ/{fsq_run_name}/skill_latents.npz
 #
 # Submit FSQ training using Slurm values from train_skills_config.yaml.
@@ -31,10 +31,11 @@ if [ ! -x "${BOOTSTRAP_PYTHON}" ]; then
 fi
 
 if [ -n "${TARGET_DATASET}" ]; then
-  eval "$("${BOOTSTRAP_PYTHON}" "${COMMON_SRC_DIR}/train_skills_config.py" --config "${CONFIG_PATH}" --dataset "${TARGET_DATASET}" --shell)"
+  RESOLVED_SETTINGS="$("${BOOTSTRAP_PYTHON}" "${COMMON_SRC_DIR}/train_skills_config.py" --config "${CONFIG_PATH}" --dataset "${TARGET_DATASET}" --shell)"
 else
-  eval "$("${BOOTSTRAP_PYTHON}" "${COMMON_SRC_DIR}/train_skills_config.py" --config "${CONFIG_PATH}" --shell)"
+  RESOLVED_SETTINGS="$("${BOOTSTRAP_PYTHON}" "${COMMON_SRC_DIR}/train_skills_config.py" --config "${CONFIG_PATH}" --shell)"
 fi
+eval "${RESOLVED_SETTINGS}"
 
 if [ ! -d "${SKILLSET_DIR}/skills" ]; then
   echo "Skillset not found: ${SKILLSET_DIR}/skills" >&2

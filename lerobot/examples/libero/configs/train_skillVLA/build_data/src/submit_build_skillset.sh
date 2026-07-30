@@ -6,7 +6,7 @@
 # Inputs (from train_skillVLA_config.yaml):
 #   source dataset : {project_root}/{dataset_root}/{source_dataset}
 #   base DINO      : {project_root}/{dataset_root}/{dino_base_dataset}_DINO/pg{grid}/
-#   DP policy      : {project_root}/DP_outputs/{dp_policy_name}/checkpoints/{dp_checkpoint}/pretrained_model
+#   DP policy      : resolved from the selected FSQ folder's fsq_meta.json
 # Outputs (intermediate, removed at end of full pipeline):
 #   per-episode DINO : {skillvla_dataset}/{source}/_work/dino/pg{grid}/
 #   skillset         : {skillvla_dataset}/{source}/_work/seg_{dp}_ck{ckpt}/skillset/skills/
@@ -35,7 +35,7 @@ if [ ! -d "${RAW_DATASET_DIR}" ]; then
 fi
 if [ ! -d "${DP_POLICY_PATH}" ]; then
   echo "DP policy checkpoint not found: ${DP_POLICY_PATH}" >&2
-  echo "Train the DP first (configs/train_skills/DP) or fix dp_policy_name/dp_checkpoint." >&2
+  echo "Train the DP first or select an FSQ folder with valid fsq_meta.json provenance." >&2
   exit 1
 fi
 

@@ -106,3 +106,47 @@ def test_stage1_exports_stage3a_predictor_contract(tmp_path: Path) -> None:
     assert routed_settings["pt_run_name"].endswith(
         "_dino_frozen_state_skill_cond_flow_endpoint_xyz_pred_lora_all_dz08"
     )
+
+
+def test_stage1_output_name_keeps_full_dataset_identity(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    run = "FSQ333_125_std_pt_episodemean_80p_snap10_pmax15_halfnormal"
+    dataset = project / "dataset/skillvla_dataset/source" / run / "skillvla"
+    (dataset / "meta").mkdir(parents=True)
+    (dataset / "meta/info.json").write_text(
+        json.dumps(
+            {
+                "skill_fsq_levels": [3, 3, 3],
+                "skill_pmax": 15,
+                "skill_jitter_distribution": "half_normal",
+                "features": {
+                    "observation.state": {"shape": [8]},
+                    "action": {"shape": [7]},
+                },
+            }
+        )
+    )
+    pi_base = project / "models/pi05_base"
+    dino = project / "models/dino"
+    pi_base.mkdir(parents=True)
+    dino.mkdir(parents=True)
+    (pi_base / "model.safetensors").touch()
+
+    settings = build_settings(
+        {
+            "project_root": str(project),
+            "dataset_root": "dataset",
+            "outputs_root": "outputs",
+            "dataset": {
+                "skillvla_root": "skillvla_dataset",
+                "source": "source",
+                "run": run,
+            },
+            "warm_start": {"pi_base": "models/pi05_base"},
+            "vision": {"dino_model": "models/dino", "freeze": True},
+            "skill_predictor": {"train": False},
+            "terminator": {"train": False},
+        }
+    )
+
+    assert settings["pt_run_name"] == f"source_{run}_dino_frozen_state_cond_flow"

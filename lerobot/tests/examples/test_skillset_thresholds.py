@@ -9,10 +9,64 @@ sys.path.insert(0, str(LIBERO_EXAMPLES))
 from build_skill_dataset import (  # noqa: E402
     Args,
     _detect_boundaries,
+    _find_peaks_above_threshold,
+    _merge_short_final_segment,
     _save_boundary_curve,
     _skillset_manifest,
     _write_skillset_manifest,
 )
+
+
+def test_peak_nms_keeps_peak_near_episode_end_but_not_start():
+    ts = [0, 5, 10, 15, 20, 25, 30]
+
+    end_peak_ts, _ = _find_peaks_above_threshold(
+        np.array([0.0, 0.0, 0.0, 0.0, 0.0, 2.0, 0.0]),
+        ts,
+        threshold=1.0,
+        min_distance=20,
+        start_margin=20,
+    )
+    assert end_peak_ts == [25]
+
+    start_peak_ts, _ = _find_peaks_above_threshold(
+        np.array([0.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+        ts,
+        threshold=1.0,
+        min_distance=20,
+        start_margin=20,
+    )
+    assert start_peak_ts == []
+
+
+def test_short_final_segment_merges_into_previous_skill():
+    assert _merge_short_final_segment([0, 30, 55, 60], min_skill_len=10) == [0, 30, 60]
+    assert _merge_short_final_segment([0, 30, 50, 60], min_skill_len=10) == [0, 30, 50, 60]
+
+
+def test_boundary_detection_accepts_exact_minimum_final_length():
+    args = Args(
+        smooth_window=1,
+        peak_nms=False,
+        boundary_threshold_mode="episode_mean",
+        min_skill_len=10,
+    )
+
+    too_short = _detect_boundaries(
+        [0, 10, 20, 30, 35, 40],
+        np.array([0.0, 0.0, 0.0, 0.0, 2.0, 0.0]),
+        40,
+        args,
+    )
+    assert too_short == [0, 40]
+
+    exactly_ten = _detect_boundaries(
+        [0, 10, 20, 30, 40],
+        np.array([0.0, 0.0, 0.0, 2.0, 0.0]),
+        40,
+        args,
+    )
+    assert exactly_ten == [0, 30, 40]
 
 
 def test_global_threshold_changes_boundaries_and_curve_metadata(tmp_path: Path):

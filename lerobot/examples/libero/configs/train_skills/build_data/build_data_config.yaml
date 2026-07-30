@@ -16,10 +16,11 @@ skillset_gripper_mode: discrete      # LIBERO: discrete; ABC: continuous
 skillset_gripper_indices: [-1]    # [-1]       # ABC bimanual layout: [6, 13]
 
 skillset_nms_dist: 20
+skillset_min_skill_len: 10
 skillset_output_suffix: ""
 
 skillset_boundary_threshold_mode: episode_mean   # episode_mean | global_mean
-skillset_boundary_threshold_scale: 1 # 0.8
+skillset_boundary_threshold_scale: 0.8
 skillset_global_threshold_source: ""
 
 # ── Slurm for skillset generation (partition/qos from global_config) ──

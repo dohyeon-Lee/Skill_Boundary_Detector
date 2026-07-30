@@ -16,11 +16,22 @@
 #SBATCH --output=logs/%x_%A_%a.out
 #SBATCH --error=logs/%x_%A_%a.err
 set -euo pipefail
-mkdir -p logs
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Slurm executes a spool copy of this file, so BASH_SOURCE no longer points into
+# the repository. submit_build_data.sh submits from the build_data directory;
+# use that stable cwd and retain a direct-execution fallback for local debugging.
+SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+SCRIPT_DIR="${SUBMIT_DIR}/src"
 COMMON_SRC_DIR="${SCRIPT_DIR}/../../src"
-CONFIG_PATH=${TRAIN_SKILLS_CONFIG:-${SCRIPT_DIR}/../build_data_config.yaml}
+CONFIG_PATH="${TRAIN_SKILLS_CONFIG:-${SUBMIT_DIR}/build_data_config.yaml}"
+
+if [ ! -f "${SCRIPT_DIR}/build_skillset.sbatch" ]; then
+  echo "Cannot resolve build_data/src from SLURM_SUBMIT_DIR=${SUBMIT_DIR}" >&2
+  exit 1
+fi
+
+cd "${SUBMIT_DIR}"
+mkdir -p logs
 
 BOOTSTRAP_PYTHON="${SCRIPT_DIR}/../../../../../../../.venv/bin/python"
 if [ ! -x "${BOOTSTRAP_PYTHON}" ]; then
@@ -133,6 +144,7 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     ${CURVES_ARG[@]+"${CURVES_ARG[@]}"} \
     --replan_interval "${SKILLSET_REPLAN_INTERVAL}" \
     --nms_dist "${SKILLSET_NMS_DIST}" \
+    --min_skill_len "${SKILLSET_MIN_SKILL_LEN}" \
     --min_skills "${SKILLSET_MIN_SKILLS}" \
     --noise_scheduler_type DDIM \
     --num_inference_steps 10 \

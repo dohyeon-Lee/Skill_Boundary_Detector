@@ -14,11 +14,21 @@
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 set -euo pipefail
-mkdir -p logs
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Slurm executes a spool copy of this file. Resolve repository paths from the
+# build_data directory where the submitter invoked sbatch, not from BASH_SOURCE.
+SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+SCRIPT_DIR="${SUBMIT_DIR}/src"
 COMMON_SRC_DIR="${SCRIPT_DIR}/../../src"
-CONFIG_PATH=${TRAIN_SKILLS_CONFIG:-${SCRIPT_DIR}/../build_data_config.yaml}
+CONFIG_PATH="${TRAIN_SKILLS_CONFIG:-${SUBMIT_DIR}/build_data_config.yaml}"
+
+if [ ! -f "${SCRIPT_DIR}/mark_skillset_complete.sbatch" ]; then
+  echo "Cannot resolve build_data/src from SLURM_SUBMIT_DIR=${SUBMIT_DIR}" >&2
+  exit 1
+fi
+
+cd "${SUBMIT_DIR}"
+mkdir -p logs
 
 BOOTSTRAP_PYTHON="${SCRIPT_DIR}/../../../../../../../.venv/bin/python"
 if [ ! -x "${BOOTSTRAP_PYTHON}" ]; then

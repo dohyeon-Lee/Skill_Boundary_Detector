@@ -1,106 +1,37 @@
-# Shared config for configs/train_skillVLA.
-# This folder turns already-trained DP + FSQ models into SkillVLA *training data*.
-# (It does NOT train/fine-tune/eval the SkillVLA model itself.)
-#
-# Pipeline:
-#   1. source dataset 지정
-#   2. 지정한 DP 모델로 원본을 skill 단위로 분할 (skillset)  → (중간물)
-#   3. 지정한 FSQ 인코더로 각 skill → latent vector 매핑      → skill_latents.npz (중간물)
-#   4. vector + skillset 으로 SkillVLA 최종 데이터 생성       → skillvla/
-#
-# Final outputs land under (run_tag includes the segmentation mode):
-#   {project_root}/{dataset_root}/{skillvla_dataset_root}/{source_dataset}/{run_tag}/
-#     ├─ FSQ.pt         (copied FSQ checkpoint used for encoding)
-#     └─ skillvla/      (final LeRobot SkillVLA dataset)
-# Intermediate artifacts (skillset/, skill_latents.npz, ...) are removed at the end.
+# SkillVLA training-data build. Project, dataset/output roots, and cluster
+# placement come from configs/global_config.yaml.
 
-# ── Paths (project_root/dataset_root come from configs/global_config.yaml) ──
-# Single checkpoint output root (matches train_skills). DP/FSQ subdirs are fixed
-# by the resolver: DP -> {outputs_root}/DP, FSQ -> {outputs_root}/FSQ.
-# outputs_root comes from configs/global_config.yaml.
-skillvla_dataset_root: skillvla_dataset  # outputs under {dataset_root}/{skillvla_dataset_root}/
-
-# ── Source dataset (원본) ─────────────────────────────────────
-# Raw LeRobot dataset to convert into SkillVLA data (may differ from the
-# dataset the DP/FSQ were trained on).
-source_dataset: libero_90_full_firsthalf_scene
-# This source's role in the eventual SkillVLA training mix.  It is part of the
-# final output name so the same raw dataset cannot silently reuse PT and FT
-# artifacts. With global_mean:
-#   pt     = this PT corpus computes its own global mean
-#   ft     = new task reuses the matching PT global mean (shared taxonomy)
-#   ft_own = new task computes its own global mean (ablation; other FT behavior unchanged)
-# With episode_mean, every mode uses each episode's own smoothed-curve mean.
+# Source
+skillvla_dataset_root: skillvla_dataset
+source_dataset: langgap_56_full_firsthalf # libero_90_full_firsthalf_scene | langgap_56_full_firsthalf
 skillvla_data_mode: pt  # pt | ft | ft_own
 
-# ── DINO precompute (step 2) ──────────────────────────────────
-# FSQ visual features are never materialized here; its terminator reads raw frames live.
+# Skill segmentation
+# Detector and action conventions come from the FSQ training skillset.
 
-# ── DP model for skill segmentation (step 3) ──────────────────
-# A trained Diffusion Policy from train_skills (under {project_root}/outputs/DP/).
-# Used to replan and detect skill boundaries on the source dataset.
-# The policy's n_obs_steps / n_action_steps / horizon are read from the checkpoint
-# config at load time, so they are not specified here.
-dp_policy_name: "libero_90_full_full_state_obs20"   # folder under outputs/DP/
-dp_checkpoint: "100000"
-# Keep this aligned with train_skills/build_data for comparable segmentation.
-skillset_mode: std                   # spherical | full | without_gripper | std
-skillset_action_mode: dataset        # LIBERO: dataset; ABC DP/VLA: anchor_relative
-skillset_gripper_mode: discrete      # LIBERO: discrete; ABC: continuous
-skillset_gripper_indices: [-1]       # ABC bimanual layout: [6, 13]
-# Boundaries must be farther apart than this many frames; the same distance excludes
-# peaks at the start/end edge of each episode.
-skillset_nms_dist: 20
-# Boundary threshold. Output names always include the scope and mean percentage,
-# e.g. `_episodemean_80p`, `_globalmean_100p`, or `_globalref_80p`.
-skillset_boundary_threshold_mode: global_mean  # episode_mean | global_mean
-# Multiplier on the selected episode/global arithmetic mean. 1.0 reproduces
-# the old detector; 0.8 lowers the line to 80% of mean and admits more peaks.
-skillset_boundary_threshold_scale: 1
-# Other detection parameters (dn_step, n_gmm, smooth_window, savgol_polyorder,
-# replan_interval) retain the shared defaults in src/train_skillVLA_config.py.
-# Parallelism: step-3 (DP segmentation) is the slow stage, so it is split across
-# GPUs as a Slurm array. Each array job handles `skillset_tasks_per_job` tasks on
-# one GPU; the array size is computed automatically from the source task count.
 skillset_tasks_per_job: 5
-skillset_array_throttle: 0   # max concurrent array jobs (0 = no cap → use all available GPUs)
+skillset_array_throttle: 0        # 0 = unlimited
 skillset_max_sweeps: 2
-# After the array, a verify job checks every episode was segmented and re-runs
-# tasks that still have missing episodes (e.g. a dead GPU left gaps). It sweeps up
-# to this many times, then fails (halting the chain) if still incomplete.
 
+# FSQ encoder
+fsq_run_name: langgap_56_full_full_state_obs20_std_episodemean_80p_fsq345
+# fsq_run_name: langgap_56_full_full_state_obs20_std_episodemean_80p_fsq333
 
-# ── FSQ encoder (step 4) ──────────────────────────────────────
-# A trained FSQ from train_skills. Declared like dp_policy_name: just the folder
-# name under {project_root}/outputs/FSQ/ + the checkpoint. Levels are parsed from
-# the fsq<levels> tag in the name (codebook size = prod(levels)); the rest of the
-# FSQ config lives in the checkpoint.
-# fsq_run_name: "libero_90_full_full_state_obs20_fsq555_dino8_weighted_wow"   # folder under outputs/FSQ/
-# fsq_run_name: "libero_90_full_full_state_obs20_fsq555_dino8_both"
-# fsq_run_name: "libero_90_full_full_state_obs20_std_global_fsq333_dino_frozen_small_optimal_vsa_state_skill"
-fsq_run_name: "libero_90_full_full_state_obs20_std_global_ms1_fsq333_dino_frozen_small_optimal_broadcast"
-fsq_checkpoint: 175                                 # epoch number; 0 = best (FSQ.pt)
-
-# ── transfer 안전망: 새 데이터셋 인코딩 시 FSQ가 "미지원(학습때 안 쓰인/희귀) 코드"를 뱉으면
-#    가장 가까운 지원 코드로 옮겨, 다운스트림 VLA가 학습 못한 코드로 스킬이 배정되는 걸 방지.
-#    true면 산출물 폴더가 {run_tag}_snap{min_freq}로 분리됨. 검증은 제출 시점(emitter)에서 fail-fast.
+# fsq_run_name: libero_90_full_full_state_obs20_std_episodemean_80p_fsq345
+# fsq_run_name: libero_90_full_full_state_obs20_std_episodemean_80p_fsq333
+fsq_checkpoint: 300 # 125               # epoch | best
 fsq_snap_to_supported: true
-fsq_snap_min_code_freq: 10        # 이 값 미만 빈도 코드를 '미지원'으로 간주 (1=완전 빈칸만; ↑면 희귀코드도 배제)
-# 지원 코드 기준은 skillvla_data_mode로 자동 선택한다:
-#   pt → 현재 PT 데이터의 raw code 분포(self)로 pruning
-#   ft → 같은 FSQ의 PT 빌드 skill_latents.npz를 자동 탐색해 그 어휘로 snap
+fsq_snap_min_code_freq: 10
 
-# ── SkillVLA dataset build (step 5) ───────────────────────────
-max_order: 0                               # 0 : auto
-# Must cover the longest segmented skill. Current std/global split has max=231 frames.
+# SkillVLA dataset
+max_order: 0                      # 0 = auto
 max_length: 500
-pmax: 15 # 10                                   # 전체 Stage0/1/2/3 transition randomization 반폭. ISS window=2*pmax+1
-transition_jitter_distribution: half_normal # half_normal # half_normal | uniform
-skill_decoder_state_indices: "[0,1,2,3,4,5,6,7]"   # full observation.state (ee6 + gripper_state2)
-cleanup_intermediate: false               # remove skillset/, skill_latents.npz after skillvla is built
+pmax: 15
+transition_jitter_distribution: half_normal  # half_normal | uniform
+skill_decoder_state_indices: "[0,1,2,3,4,5,6,7]"
+cleanup_intermediate: false
 
-# ── Slurm (shared by all build_data jobs: skillset / encode / build) ──
-# partition/qos/nodelist/exclude_nodes come from configs/global_config.yaml.
+# Slurm resources
 skillvla_gres: gpu:1
 skillvla_cpus_per_task: 8
 skillvla_mem: 64G

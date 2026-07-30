@@ -949,10 +949,13 @@ class SplineFSQAEConfig:
     reconstructor_lr: float = 3e-4
     batch_size: int = 64
     num_workers: int = 0
+    val_num_workers: int = 0
     epochs: int = 300
     grad_clip: float = 1.0
     gradient_checkpointing: bool = False
     val_split: float = 0.1
+    val_every: int = 1
+    save_best_model: bool = True
     val_select_action_weight: float | None = None
     val_select_progress_weight: float | None = None
     val_select_end_weight: float | None = None
@@ -1694,6 +1697,20 @@ def train_spline_fsqae(
         )
 
     train_ds, val_ds = dataset(train_ids, True), dataset(val_ids, False)
+    if cfg.num_workers < 0:
+        raise ValueError(f"num_workers must be >= 0, got {cfg.num_workers}.")
+    if cfg.val_num_workers < 0:
+        raise ValueError(
+            f"val_num_workers must be >= 0, got {cfg.val_num_workers}."
+        )
+    if cfg.val_every < 0:
+        raise ValueError(f"val_every must be >= 0, got {cfg.val_every}.")
+    if cfg.save_best_model and cfg.val_every == 0:
+        raise ValueError("save_best_model requires val_every > 0.")
+    print(
+        f"[FSQ-v3] data workers: train={cfg.num_workers} "
+        f"val={cfg.val_num_workers}; validation every={cfg.val_every or 'off'}"
+    )
     device = torch.device(cfg.device)
     # ``step`` moves tensors with non_blocking=True below; pinning makes that transfer genuinely
     # asynchronous instead of synchronizing the GPU after the worker has decoded the next batch.
@@ -1711,17 +1728,19 @@ def train_spline_fsqae(
         # GPU allocation forever.  Normal batches complete far below 5 minutes.
         timeout=300 if cfg.num_workers > 0 else 0,
     )
-    val_workers = min(2, cfg.num_workers)
     val_loader = DataLoader(
         val_ds,
         batch_size=cfg.batch_size,
         shuffle=False,
-        num_workers=val_workers,
+        # Validation defaults to the main process. Re-forking video-decoder
+        # workers after every training epoch can intermittently deadlock in
+        # AV1/PyAV and used to fail the whole run after the 300 s timeout.
+        num_workers=cfg.val_num_workers,
         collate_fn=collate_fsq_batch,
         pin_memory=pin_memory,
         persistent_workers=False,
-        prefetch_factor=1 if val_workers > 0 else None,
-        timeout=300 if val_workers > 0 else 0,
+        prefetch_factor=1 if cfg.val_num_workers > 0 else None,
+        timeout=300 if cfg.val_num_workers > 0 else 0,
     )
 
     model = SplineFSQAE(cfg).to(device)
@@ -1769,7 +1788,7 @@ def train_spline_fsqae(
         best_val = float(checkpoint.get("best_val", checkpoint.get("val_select", math.inf)))
         # Legacy periodic checkpoints only stored their own score. Keep the historical best in
         # FSQ.pt so resume cannot overwrite it with a model that merely beats the periodic snapshot.
-        if save_path.is_file():
+        if cfg.save_best_model and save_path.is_file():
             best_checkpoint = torch.load(
                 str(save_path), map_location="cpu", weights_only=False, mmap=True)
             best_val = min(best_val, float(best_checkpoint.get("val_select", math.inf)))
@@ -1779,6 +1798,11 @@ def train_spline_fsqae(
         loaded_vision = initialize_terminator_vision_from_pi05(model.terminator, cfg.pi_base)
         if loaded_vision:
             print(f"[FSQ-v3] initialized {loaded_vision} SigLIP tensors from {cfg.pi_base}")
+    if not cfg.save_best_model and save_path.is_file():
+        print(
+            f"[FSQ-v3] best-model saving is disabled; existing {save_path} "
+            "will be left untouched"
+        )
 
     if wandb_run is not None:
         # The same epoch aggregate is reported twice: train/val use optimizer_step as x, while
@@ -1881,20 +1905,22 @@ def train_spline_fsqae(
                 train_end[key] = train_end.get(key, 0.0) + value * count
         scheduler.step()
 
-        model.eval()
+        should_validate = cfg.val_every > 0 and epoch % cfg.val_every == 0
         val_sum: dict[str, float] = {}
         val_end: dict[str, float] = {}
         val_count = 0
         val_codes_seen = torch.zeros(model.fsq.codebook_size, dtype=torch.bool, device=device)
-        with torch.no_grad():
-            for batch_index, batch in enumerate(val_loader):
-                metrics, end_metrics, count, code_indices = step(batch, False, batch_index)
-                val_count += count
-                val_codes_seen[code_indices.reshape(-1).long()] = True
-                for key, value in metrics.items():
-                    val_sum[key] = val_sum.get(key, 0.0) + value * count
-                for key, value in end_metrics.items():
-                    val_end[key] = val_end.get(key, 0.0) + value * count
+        if should_validate:
+            model.eval()
+            with torch.no_grad():
+                for batch_index, batch in enumerate(val_loader):
+                    metrics, end_metrics, count, code_indices = step(batch, False, batch_index)
+                    val_count += count
+                    val_codes_seen[code_indices.reshape(-1).long()] = True
+                    for key, value in metrics.items():
+                        val_sum[key] = val_sum.get(key, 0.0) + value * count
+                    for key, value in end_metrics.items():
+                        val_end[key] = val_end.get(key, 0.0) + value * count
 
         train_avg = {k: v / max(train_count, 1) for k, v in train_sum.items()}
         val_avg = {k: v / max(val_count, 1) for k, v in val_sum.items()}
@@ -1903,22 +1929,24 @@ def train_spline_fsqae(
         train_active_codes = int(train_codes_seen.count_nonzero().item())
         val_active_codes = int(val_codes_seen.count_nonzero().item())
         codebook_size = model.fsq.codebook_size
-        select = (
-            (cfg.val_select_action_weight if cfg.val_select_action_weight is not None else cfg.action_loss_weight)
-            * val_avg["action"]
-            + (cfg.val_select_progress_weight if cfg.val_select_progress_weight is not None else cfg.progress_loss_weight)
-            * val_avg["progress"]
-            + (cfg.val_select_end_weight if cfg.val_select_end_weight is not None else cfg.end_loss_weight)
-            * val_avg["termination"]
-        )
-        if select < best_val:
-            best_val = select
-            save(save_path, epoch, val_avg["loss"], select, resumable=False)
+        select = math.nan
+        if should_validate:
+            select = (
+                (cfg.val_select_action_weight if cfg.val_select_action_weight is not None else cfg.action_loss_weight)
+                * val_avg["action"]
+                + (cfg.val_select_progress_weight if cfg.val_select_progress_weight is not None else cfg.progress_loss_weight)
+                * val_avg["progress"]
+                + (cfg.val_select_end_weight if cfg.val_select_end_weight is not None else cfg.end_loss_weight)
+                * val_avg["termination"]
+            )
+            if cfg.save_best_model and select < best_val:
+                best_val = select
+                save(save_path, epoch, val_avg["loss"], select, resumable=False)
         if cfg.checkpoint_every and epoch % cfg.checkpoint_every == 0:
             save(
                 save_path.with_name(f"FSQ_epoch{epoch:04d}.pt"),
                 epoch,
-                val_avg["loss"],
+                val_avg.get("loss", math.nan),
                 select,
                 resumable=True,
             )
@@ -1929,43 +1957,54 @@ def train_spline_fsqae(
             "perf/seconds": time.perf_counter() - epoch_start,
             "perf/updates_per_sec": len(train_loader) / max(time.perf_counter() - epoch_start, 1e-8),
             **{f"train/{k}": v for k, v in train_avg.items()},
-            **{f"val/{k}": v for k, v in val_avg.items()},
             **{f"train/end_{k}": v for k, v in train_end_avg.items()},
-            **{f"val/end_{k}": v for k, v in val_end_avg.items()},
             "train/codebook_utilization_pct": 100.0 * train_active_codes / codebook_size,
             "train/codebook_active_entries": train_active_codes,
-            "val/codebook_utilization_pct": 100.0 * val_active_codes / codebook_size,
-            "val/codebook_active_entries": val_active_codes,
-            "val/select": select,
             "lr/encoder": optimizer.param_groups[0]["lr"],
             "lr/reconstructor": optimizer.param_groups[1]["lr"],
             "lr/terminator": optimizer.param_groups[2]["lr"],
         }
         log.update({f"train_epoch/{k}": v for k, v in train_avg.items()})
-        log.update({f"val_epoch/{k}": v for k, v in val_avg.items()})
         log.update({f"train_epoch/end_{k}": v for k, v in train_end_avg.items()})
-        log.update({f"val_epoch/end_{k}": v for k, v in val_end_avg.items()})
         log.update({
             "train_epoch/codebook_utilization_pct": log["train/codebook_utilization_pct"],
             "train_epoch/codebook_active_entries": train_active_codes,
-            "val_epoch/codebook_utilization_pct": log["val/codebook_utilization_pct"],
-            "val_epoch/codebook_active_entries": val_active_codes,
-            "val_epoch/select": select,
             "perf_epoch/seconds": log["perf/seconds"],
             "perf_epoch/updates_per_sec": log["perf/updates_per_sec"],
             "lr_epoch/encoder": log["lr/encoder"],
             "lr_epoch/reconstructor": log["lr/reconstructor"],
             "lr_epoch/terminator": log["lr/terminator"],
         })
+        if should_validate:
+            log.update({f"val/{k}": v for k, v in val_avg.items()})
+            log.update({f"val/end_{k}": v for k, v in val_end_avg.items()})
+            log.update({f"val_epoch/{k}": v for k, v in val_avg.items()})
+            log.update({f"val_epoch/end_{k}": v for k, v in val_end_avg.items()})
+            log.update({
+                "val/codebook_utilization_pct": 100.0 * val_active_codes / codebook_size,
+                "val/codebook_active_entries": val_active_codes,
+                "val/select": select,
+                "val_epoch/codebook_utilization_pct": 100.0 * val_active_codes / codebook_size,
+                "val_epoch/codebook_active_entries": val_active_codes,
+                "val_epoch/select": select,
+            })
         if wandb_run is not None:
             wandb_run.log(log, step=global_step)
         if epoch == 1 or epoch % cfg.log_every == 0:
-            print(
+            message = (
                 f"[FSQ-v3] {epoch:4d}/{cfg.epochs} "
-                f"train={train_avg['loss']:.4f} val={val_avg['loss']:.4f} "
-                f"action={val_avg['action']:.4f} prog={val_avg['progress']:.4f} "
-                f"end={val_avg['termination']:.4f} select={select:.4f}"
+                f"train={train_avg['loss']:.4f}"
             )
+            if should_validate:
+                message += (
+                    f" val={val_avg['loss']:.4f} action={val_avg['action']:.4f} "
+                    f"prog={val_avg['progress']:.4f} "
+                    f"end={val_avg['termination']:.4f} select={select:.4f}"
+                )
+            print(message)
 
-    print(f"[FSQ-v3] done; best val-select={best_val:.6f} -> {save_path}")
+    if cfg.save_best_model:
+        print(f"[FSQ-v3] done; best val-select={best_val:.6f} -> {save_path}")
+    else:
+        print(f"[FSQ-v3] done; periodic checkpoints -> {save_path.parent}")
     return model

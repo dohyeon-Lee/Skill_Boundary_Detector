@@ -86,6 +86,7 @@ while ! is_complete; do
       --output_dir           "${SKILLSET_DIR}" \
       --replan_interval      "${SKILLSET_REPLAN_INTERVAL}" \
       --nms_dist             "${SKILLSET_NMS_DIST}" \
+      --min_skill_len        "${SKILLSET_MIN_SKILL_LEN}" \
       --min_skills           "${SKILLSET_MIN_SKILLS}" \
       --noise_scheduler_type DDIM \
       --num_inference_steps  10 \

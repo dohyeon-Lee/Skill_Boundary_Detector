@@ -10,6 +10,7 @@ Root/yaml helpers are reused from train_skills_config.py.
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import sys
 from pathlib import Path
@@ -41,6 +42,44 @@ def _scale_percent_tag(scale: float) -> str:
     return f"{scale * 100:g}".replace(".", "p") + "p"
 
 
+def _load_fsq_skillset_manifest(
+    fsq_meta: dict[str, Any],
+    *,
+    dataset_root: Path,
+    fsq_meta_path: Path,
+) -> tuple[dict[str, Any], Path]:
+    """Load the immutable skillset contract used to train the selected FSQ."""
+    component_keys = (
+        "fsq_dataset_root",
+        "target_dataset",
+        "fsq_inputs_name",
+        "skillset_seg_name",
+        "skillset_name",
+    )
+    missing = [key for key in component_keys if not str(fsq_meta.get(key, "")).strip()]
+    if missing:
+        raise ValueError(
+            f"FSQ metadata is missing skillset path fields {missing}: {fsq_meta_path}"
+        )
+    components = [str(fsq_meta[key]).strip() for key in component_keys]
+    invalid = [value for value in components if Path(value).name != value]
+    if invalid:
+        raise ValueError(
+            f"FSQ skillset path fields must be folder names, got {invalid}: {fsq_meta_path}"
+        )
+    manifest_path = dataset_root.joinpath(*components) / "skillset_manifest.json"
+    if not manifest_path.is_file():
+        raise FileNotFoundError(
+            "FSQ training skillset manifest not found: "
+            f"{manifest_path}. Keep dataset_root aligned with the selected FSQ output root."
+        )
+    try:
+        manifest = json.loads(manifest_path.read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"Invalid FSQ training skillset manifest: {manifest_path}: {error}") from error
+    return manifest, manifest_path
+
+
 def build_settings(cfg: dict, dataset: str | None = None) -> dict:
     root = Path(str(get_value(cfg, "project_root"))).expanduser()
     dataset_root = root / str(get_value(cfg, "dataset_root", "libero_dataset"))
@@ -57,29 +96,127 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
             "skillvla_data_mode must be pt|ft|ft_own, "
             f"got {skillvla_data_mode!r}."
         )
+    # ── FSQ reference (declared like dp_policy_name: folder name + checkpoint) ──
+    # The FSQ artifact is the source of truth for the DP/skillset taxonomy it
+    # learned. Do not duplicate those fields in train_skillVLA_config.yaml.
+    fsq_run_name = str(get_value(cfg, "fsq_run_name"))
+    fsq_checkpoint = str(get_value(cfg, "fsq_checkpoint", "1000"))
+    fsq_model_dir = fsq_outputs_root / fsq_run_name
+    fsq_meta_path = fsq_model_dir / "fsq_meta.json"
+    if not fsq_meta_path.is_file():
+        raise FileNotFoundError(
+            f"FSQ metadata not found: {fsq_meta_path}. "
+            "Select an FSQ output folder containing fsq_meta.json."
+        )
+    fsq_meta = json.loads(fsq_meta_path.read_text())
+
+    required_meta = ("dp_run_name", "dp_checkpoint", "skillset_mode")
+    missing_meta = [key for key in required_meta if fsq_meta.get(key) in (None, "")]
+    if missing_meta:
+        raise ValueError(
+            f"FSQ metadata is missing required fields {missing_meta}: {fsq_meta_path}"
+        )
+    fsq_skillset_manifest, fsq_skillset_manifest_path = _load_fsq_skillset_manifest(
+        fsq_meta,
+        dataset_root=dataset_root,
+        fsq_meta_path=fsq_meta_path,
+    )
+    action_contract = fsq_skillset_manifest.get("action") or {}
+    detector_contract = fsq_skillset_manifest.get("detector") or {}
+    required_action = ("mode", "gripper_mode", "gripper_indices")
+    missing_action = [key for key in required_action if key not in action_contract]
+    required_detector = ("nms_dist", "min_skill_len")
+    missing_detector = [key for key in required_detector if key not in detector_contract]
+    if missing_action or missing_detector:
+        raise ValueError(
+            "FSQ training skillset manifest is missing segmentation fields: "
+            f"action={missing_action}, detector={missing_detector}: "
+            f"{fsq_skillset_manifest_path}"
+        )
+
+    dp_policy_name = str(fsq_meta["dp_run_name"])
+    dp_checkpoint = str(fsq_meta["dp_checkpoint"])
+    if dp_checkpoint.isdigit():
+        dp_checkpoint = dp_checkpoint.zfill(6)
+    dp_policy_path = (
+        dp_outputs_root / dp_policy_name / "checkpoints" / dp_checkpoint / "pretrained_model"
+    )
+
     boundary_threshold_mode = str(
-        get_value(cfg, "skillset_boundary_threshold_mode", "global_mean")
+        fsq_meta.get("skillset_boundary_threshold_mode", "episode_mean")
     ).strip().lower()
     if boundary_threshold_mode not in {"episode_mean", "global_mean"}:
         raise ValueError(
-            "skillset_boundary_threshold_mode must be episode_mean|global_mean, "
-            f"got {boundary_threshold_mode!r}."
+            "fsq_meta skillset_boundary_threshold_mode must be episode_mean|global_mean, "
+            f"got {boundary_threshold_mode!r}: {fsq_meta_path}"
         )
     boundary_threshold_scale = float(
-        get_value(cfg, "skillset_boundary_threshold_scale", 1.0)
+        fsq_meta.get("skillset_boundary_threshold_scale", 1.0)
     )
     if boundary_threshold_scale <= 0.0:
         raise ValueError(
-            "skillset_boundary_threshold_scale must be positive, "
-            f"got {boundary_threshold_scale}."
+            "fsq_meta skillset_boundary_threshold_scale must be positive, "
+            f"got {boundary_threshold_scale}: {fsq_meta_path}"
         )
     threshold_percent_tag = _scale_percent_tag(boundary_threshold_scale)
 
-    # ── FSQ reference (declared like dp_policy_name: folder name + checkpoint) ──
+    # Reuse the exact action convention and probe settings that produced the FSQ
+    # training skillset; the conversion YAML should not duplicate this contract.
+    probe_contract = fsq_skillset_manifest.get("probe") or {}
+    artifact_cfg = dict(cfg)
+    artifact_cfg.update(
+        {
+            "skillset_mode": fsq_meta["skillset_mode"],
+            "skillset_action_mode": action_contract["mode"],
+            "skillset_relative_exclude_joints": action_contract.get(
+                "relative_exclude_joints", ["gripper"]
+            ),
+            "skillset_gripper_mode": action_contract["gripper_mode"],
+            "skillset_gripper_indices": action_contract["gripper_indices"],
+            "skillset_gripper_values": action_contract.get("gripper_values", [-1.0, 1.0]),
+            "skillset_gripper_threshold": action_contract.get("gripper_threshold", 0.0),
+            "skillset_probe_count": probe_contract.get("count", 24),
+            "skillset_probe_alpha": probe_contract.get("alpha", 0.1),
+            "skillset_pca_variance": probe_contract.get("pca_variance", 0.95),
+            "skillset_pca_stride": probe_contract.get("pca_stride", 3),
+        }
+    )
+    probe_settings = skillset_probe_settings(artifact_cfg)
+    fsq_skillset_mode = str(fsq_meta["skillset_mode"]).strip().lower()
+    if fsq_skillset_mode == "spherical":
+        probe_type, pca_scale_mode, probe_exclude_indices = "spherical_xyz", "none", ""
+    elif fsq_skillset_mode == "full":
+        probe_type, pca_scale_mode, probe_exclude_indices = "pca_action", "none", ""
+    elif fsq_skillset_mode == "without_gripper":
+        probe_type, pca_scale_mode = "pca_action", "none"
+        probe_exclude_indices = probe_settings["skillset_gripper_indices"]
+    elif fsq_skillset_mode == "std":
+        probe_type, pca_scale_mode, probe_exclude_indices = "pca_action", "std", ""
+    else:
+        raise ValueError(
+            "fsq_meta skillset_mode must be spherical|full|without_gripper|std, "
+            f"got {fsq_skillset_mode!r}: {fsq_meta_path}"
+        )
+    probe_settings.update(
+        skillset_mode=fsq_skillset_mode,
+        skillset_probe_type=probe_type,
+        skillset_pca_scale_mode=pca_scale_mode,
+        skillset_probe_exclude_indices=probe_exclude_indices,
+        skillset_probe_suffix=f"_{fsq_skillset_mode}",
+    )
+    skillset_min_skills = int(detector_contract.get("min_skills", 1))
+    if skillset_min_skills < 1:
+        raise ValueError(
+            f"fsq_meta skillset_min_skills must be >= 1, got {skillset_min_skills}."
+        )
+    skillset_min_skill_len = int(detector_contract["min_skill_len"])
+    if skillset_min_skill_len < 1:
+        raise ValueError(
+            f"skillset_min_skill_len must be >= 1, got {skillset_min_skill_len}."
+        )
+
     # Parse codebook levels from the FSQ folder. The remaining suffix identifies
     # its live vision backbone / freeze mode / terminator architecture.
-    fsq_run_name = str(get_value(cfg, "fsq_run_name"))
-    fsq_checkpoint = str(get_value(cfg, "fsq_checkpoint", "1000"))
     lv_match = re.search(r"fsq(\d+)", fsq_run_name)
     if not lv_match:
         raise ValueError(
@@ -93,18 +230,6 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
     fsq_exp_suffix = f"_{fsq_variant}" if fsq_variant else ""
     fsq_exp = fsq_variant
 
-    # ── DP (step 3) ──
-    dp_policy_name = str(get_value(cfg, "dp_policy_name"))
-    dp_checkpoint = str(get_value(cfg, "dp_checkpoint", "100000"))
-    # lerobot checkpoint folders are zero-padded to 6 digits (050000); normalize numeric
-    # values so `50000` and `050000` resolve to the same checkpoint AND seg_* dir.
-    if dp_checkpoint.isdigit():
-        dp_checkpoint = dp_checkpoint.zfill(6)
-    dp_policy_path = dp_outputs_root / dp_policy_name / "checkpoints" / dp_checkpoint / "pretrained_model"
-    probe_settings = skillset_probe_settings(cfg)
-    skillset_min_skills = int(get_value(cfg, "skillset_min_skills", 1))
-    if skillset_min_skills < 1:
-        raise ValueError(f"skillset_min_skills must be >= 1, got {skillset_min_skills}.")
     jitter_distribution = str(
         get_value(cfg, "transition_jitter_distribution", "half_normal")
     ).strip().lower().replace("-", "_").replace(" ", "_")
@@ -125,7 +250,6 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
     )
 
     # ── FSQ (step 4) — model path from the parsed run name + checkpoint ──
-    fsq_model_dir = fsq_outputs_root / fsq_run_name
     if fsq_checkpoint in ("0", "best"):
         fsq_model_path = fsq_model_dir / "FSQ.pt"
         ckpt_tag = "best"
@@ -258,14 +382,16 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
         "dp_checkpoint": dp_checkpoint,
         "dp_policy_path": dp_policy_path,
         "skillset_dir": skillset_dir,
+        "fsq_skillset_manifest_path": fsq_skillset_manifest_path,
         "skill_latents_path": run_dir / "skill_latents.npz",
-        "skillset_dn_step": int(get_value(cfg, "skillset_dn_step", 7)),
-        "skillset_n_gmm": int(get_value(cfg, "skillset_n_gmm", 5)),
-        "skillset_smooth_window": int(get_value(cfg, "skillset_smooth_window", 7)),
-        "skillset_savgol_polyorder": int(get_value(cfg, "skillset_savgol_polyorder", 4)),
-        "skillset_replan_interval": int(get_value(cfg, "skillset_replan_interval", 3)),
-        "skillset_nms_dist": int(get_value(cfg, "skillset_nms_dist", 25)),
+        "skillset_dn_step": int(detector_contract.get("eval_at_step", 7)),
+        "skillset_n_gmm": int(detector_contract.get("n_gmm_components", 5)),
+        "skillset_smooth_window": int(detector_contract.get("smooth_window", 7)),
+        "skillset_savgol_polyorder": int(detector_contract.get("savgol_polyorder", 4)),
+        "skillset_replan_interval": int(detector_contract.get("replan_interval", 3)),
+        "skillset_nms_dist": int(detector_contract["nms_dist"]),
         "skillset_min_skills": skillset_min_skills,
+        "skillset_min_skill_len": skillset_min_skill_len,
         **probe_settings,
         "skillset_boundary_threshold_mode": boundary_threshold_mode,
         "skillset_boundary_threshold_scale": boundary_threshold_scale,
@@ -285,6 +411,7 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
         "fsq_exp_suffix": fsq_exp_suffix,
         "fsq_model_dir": fsq_model_dir,
         "fsq_model_path": fsq_model_path,
+        "fsq_meta_path": fsq_meta_path,
         "fsq_checkpoint": fsq_checkpoint,
         # transfer 안전망(B): 인코딩 시 미지원(학습때 안 쓰인) 코드 → 최근접 지원 코드로 snap.
         # (snap=true인데 reference가 없/틀리면 아래에서 이미 제출 전에 raise — 런타임 좀비 체인 방지)

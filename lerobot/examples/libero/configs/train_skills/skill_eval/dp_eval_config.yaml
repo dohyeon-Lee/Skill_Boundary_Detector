@@ -4,34 +4,18 @@
 # (skills npz + curves) only; FSQ-independent.
 # Project paths / slurm partition+qos come from configs/global_config.yaml.
 
-# ── Roots (used to locate the skillset to evaluate) ──
-# libero_90_full_full | abc_toy
-target_dataset: langgap_56_full_full
+# ── Artifact to evaluate ──
+# dataset_root comes only from global_config.yaml. The remaining folder names
+# are composed here; provenance within the selected skillset comes from manifest.
 fsq_dataset_root: FSQ_dataset
+target_dataset: libero_90_full_full # libero_90_full_full
 fsq_inputs_name: FSQ_inputs
+# skillset_seg_name: seg_langgap_56_full_full_state_obs20_ck100000_std_episodemean_80p
+skillset_seg_name: seg_libero_90_full_full_state_obs20_ck100000_std_episodemean_80p
 skillset_name: skillset
-# The explicitly selected action-manifold skillset the boundary HTML reads.
-skillset_mode: std                   # spherical | full | without_gripper | std
-# Exact manual artifact tag. Empty selects the canonical no-suffix skillset;
-# set `trialA` to evaluate `..._std_globalmean_trialA/skillset`.
-skillset_output_suffix: ""
-# Both mode and scale are part of the skillset folder/HTML name, for example
-# `_episodemean_100p`, `_episodemean_80p`, or `_globalmean_100p`.
-skillset_boundary_threshold_mode: episode_mean   # episode_mean | global_mean
-skillset_boundary_threshold_scale: 0.8
-# Optional frozen global-threshold JSON (selects the `_globalref` skillset). Must match build_data.
-skillset_global_threshold_source: ""
-
-# ── DP selection ──
-# libero_90_full_full_state_obs20 | abc_toy_state_obs20
-eval_dp_run_name: langgap_56_full_full_state_obs20
-eval_dp_checkpoint: 100000 # 100000
-# Optional skillset root containing skillset_manifest.json. Empty uses the
-# resolver-derived {mode}_{episodemean|globalmean|globalref}_{scale} path above.
-dp_eval_skillset_dir: ""
 # Optional HTML filename tag. Example: video_only → ..._global_video_only.html
 # Empty keeps the canonical filename and may overwrite a previous eval of the same DP.
-dp_eval_output_suffix: "0to9"
+dp_eval_output_suffix: ""
 
 # ── HTML knobs ──
 dp_eval_n_episodes: 3 #           # episodes shown (per task when dp_eval_task_ids is set)
@@ -46,7 +30,6 @@ dp_eval_show_start_end_frames: true
 dp_eval_show_cos_graph: true
 dp_eval_show_gripper_graph: true
 eval_thumb_size: 160
-eval_image_key: observation.images.image
 
 # ── Slurm / GPU. partition/qos/nodelist/exclude_nodes come from configs/global_config.yaml. ──
 eval_gres: gpu:1

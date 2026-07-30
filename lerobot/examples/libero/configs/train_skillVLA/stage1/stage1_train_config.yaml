@@ -1,8 +1,7 @@
 dataset:
   skillvla_root: skillvla_dataset
-  # source: libero_goal_full_firsthalf
-  source: libero_90_full_firsthalf
-  run: FSQ333_dino_frozen_small_optimal_broadcast_175_std_pt_snap10_ms1_pmax15_halfnormal
+  source: langgap_56_full_firsthalf # langgap_56_full_firsthalf | libero_90_full_firsthalf_scene
+  run: FSQ345_175_std_pt_episodemean_80p_snap10_pmax15_halfnormal
 
 warm_start:
   pi_base: models/pi05_base

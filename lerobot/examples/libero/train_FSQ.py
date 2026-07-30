@@ -97,10 +97,16 @@ class Args:
     reconstructor_lr: float = 3e-4
     batch_size: int = 64
     num_workers: int = 8
+    val_num_workers: int = 0
+    """Validation video workers. Keep at 0 to avoid AV1 decoder deadlocks across epochs."""
     grad_clip: float = 1.0
     gradient_checkpointing: bool = False
     """Enable activation checkpointing. Saves VRAM at the cost of extra recompute; false is faster."""
     val_split: float = 0.1
+    val_every: int = 1
+    """Run validation every N epochs; 0 disables it."""
+    save_best_model: bool = True
+    """Write FSQ.pt whenever the validation selection metric improves."""
     # Best-val SELECTION metric weights. Unset (None) → follow the actual loss (total val). Set to
     # override: FSQ.pt = argmin over epochs of wa*action + wp*progress + we*end on val.
     val_select_action_weight: float | None = None
@@ -352,10 +358,13 @@ def main(args: Args) -> None:
         reconstructor_lr=args.reconstructor_lr,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
+        val_num_workers=args.val_num_workers,
         grad_clip=args.grad_clip,
         gradient_checkpointing=args.gradient_checkpointing,
         epochs=args.epochs,
         val_split=args.val_split,
+        val_every=args.val_every,
+        save_best_model=args.save_best_model,
         val_select_action_weight=args.val_select_action_weight,
         val_select_progress_weight=args.val_select_progress_weight,
         val_select_end_weight=args.val_select_end_weight,
@@ -389,7 +398,10 @@ def main(args: Args) -> None:
     # Skill latents (skill_latents.npz) are produced separately by encode_FSQ_skills.py
     # (build_data/encode_skills.sbatch) — the canonical, consumer-facing producer. We do
     # not re-emit them here to avoid a stale/duplicate copy under the training output_dir.
-    print(f"[FSQ] Saved model   → {output_dir / 'FSQ.pt'}")
+    if args.save_best_model:
+        print(f"[FSQ] Saved best model → {output_dir / 'FSQ.pt'}")
+    else:
+        print(f"[FSQ] Saved periodic checkpoints → {output_dir / 'FSQ_epoch*.pt'}")
 
     if wandb_run is not None:
         wandb_run.finish()

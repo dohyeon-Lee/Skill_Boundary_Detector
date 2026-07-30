@@ -199,14 +199,8 @@ def build_settings(config: dict) -> dict:
         raise ValueError("training.optimizer.dino_lr must be null when vision.freeze=true.")
     suffix = str(_at(config, "run", "suffix", default="")).strip().strip("_")
     vision_tag = "dino_frozen" if freeze_vision_encoder else "dino_tuned"
-    short_tokens = [
-        token
-        for token in run_tag.split("_")
-        if re.fullmatch(r"FSQ\d+", token) or token.isdigit()
-    ]
-    short_run_tag = "_".join(short_tokens) or run_tag
     run_name = (
-        f"{source}_{short_run_tag}_{vision_tag}_{conditioning_route}_{action_loss_mode}"
+        f"{source}_{run_tag}_{vision_tag}_{conditioning_route}_{action_loss_mode}"
     )
     if suffix:
         run_name = f"{run_name}_{suffix}"

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import json
 import math
 import os
 import shlex
@@ -169,6 +170,16 @@ def resolve_skillset_min_skills(cfg: dict[str, Any], project_root: Path) -> int:
     return min_skills
 
 
+def resolve_skillset_min_skill_len(cfg: dict[str, Any]) -> int:
+    """Minimum frames per final segment after boundary post-processing."""
+    min_skill_len = int(get_value(cfg, "skillset_min_skill_len", 10))
+    if min_skill_len < 1:
+        raise ValueError(
+            f"skillset_min_skill_len must be >= 1, got {min_skill_len}."
+        )
+    return min_skill_len
+
+
 def as_bool(value: Any) -> bool:
     if isinstance(value, bool):
         return value
@@ -278,19 +289,157 @@ def skillset_probe_settings(cfg: dict[str, Any]) -> dict[str, Any]:
 DINO_IMAGE_MODEL_DIR = "dinov3-vits16"
 
 
+def _selected_skillset(
+    cfg: dict[str, Any],
+    *,
+    dataset_root: Path,
+    target_dataset: str,
+) -> dict[str, Any] | None:
+    """Resolve an existing skillset selected by folder components.
+
+    Build configs still derive ``seg_*`` from DP/detector knobs. FSQ training can
+    instead name an immutable artifact directly and take all of its provenance
+    from ``skillset_manifest.json``.
+    """
+    seg_name = str(get_value(cfg, "skillset_seg_name", "") or "").strip()
+    if not seg_name:
+        return None
+
+    components = {
+        "fsq_dataset_root": str(
+            get_value(
+                cfg,
+                "fsq_dataset_root",
+                "FSQ_dataset",
+                env="FSQ_DATASET_ROOT_NAME",
+            )
+        ).strip(),
+        "target_dataset": str(target_dataset).strip(),
+        "fsq_inputs_name": str(get_value(cfg, "fsq_inputs_name", "FSQ_inputs")).strip(),
+        "skillset_seg_name": seg_name,
+        "skillset_name": str(get_value(cfg, "skillset_name", "skillset")).strip(),
+    }
+    missing = [key for key, value in components.items() if not value]
+    if missing:
+        raise ValueError(f"Selected skillset path is missing folder components: {missing}")
+    invalid = [
+        key
+        for key, value in components.items()
+        if Path(value).name != value or value in {".", ".."}
+    ]
+    if invalid:
+        raise ValueError(
+            "Selected skillset components must be folder names, not paths: "
+            f"{invalid}"
+        )
+
+    skillset_dir = (
+        dataset_root
+        / components["fsq_dataset_root"]
+        / components["target_dataset"]
+        / components["fsq_inputs_name"]
+        / components["skillset_seg_name"]
+        / components["skillset_name"]
+    )
+    manifest_path = skillset_dir / "skillset_manifest.json"
+    if not manifest_path.is_file():
+        raise FileNotFoundError(
+            f"Selected FSQ skillset manifest not found: {manifest_path}"
+        )
+    try:
+        manifest = json.loads(manifest_path.read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"Invalid skillset manifest: {manifest_path}: {error}") from error
+
+    manifest_dataset = str(manifest.get("dataset_name", "")).strip()
+    if manifest_dataset != target_dataset:
+        raise ValueError(
+            "Selected skillset dataset mismatch: "
+            f"folder/config={target_dataset!r}, manifest={manifest_dataset!r} "
+            f"({manifest_path})"
+        )
+    policy_raw = str(manifest.get("policy_path", "")).strip()
+    policy_path = Path(policy_raw)
+    if not policy_raw or len(policy_path.parents) < 3:
+        raise ValueError(f"Invalid policy_path in skillset manifest: {manifest_path}")
+    dp_policy = policy_path.parents[2].name
+    dp_checkpoint = policy_path.parent.name
+    if dp_checkpoint.isdigit():
+        dp_checkpoint = dp_checkpoint.zfill(6)
+    seg_prefix = f"seg_{dp_policy}_ck{dp_checkpoint}"
+    if not seg_name.startswith(seg_prefix):
+        raise ValueError(
+            "Selected seg folder disagrees with its manifest policy/checkpoint: "
+            f"expected prefix {seg_prefix!r}, got {seg_name!r}"
+        )
+
+    detector = manifest.get("detector") or {}
+    mode = str(manifest.get("mode", "")).strip().lower()
+    if mode not in SKILLSET_MODES:
+        raise ValueError(
+            f"Invalid mode in selected skillset manifest: {mode!r} ({manifest_path})"
+        )
+    threshold_mode = str(
+        detector.get("boundary_threshold_mode", "episode_mean")
+    ).strip().lower()
+    if threshold_mode not in {"episode_mean", "global_mean"}:
+        raise ValueError(
+            "Invalid detector.boundary_threshold_mode in selected skillset manifest: "
+            f"{threshold_mode!r} ({manifest_path})"
+        )
+    threshold_scale = float(detector.get("boundary_threshold_scale", 1.0))
+    if threshold_scale <= 0.0:
+        raise ValueError(
+            "Invalid detector.boundary_threshold_scale in selected skillset manifest: "
+            f"{threshold_scale} ({manifest_path})"
+        )
+
+    return {
+        **components,
+        "skillset_dir": skillset_dir,
+        "seg_dir": skillset_dir.parent,
+        "manifest_path": manifest_path,
+        "manifest": manifest,
+        "dp_policy": dp_policy,
+        "dp_checkpoint": dp_checkpoint,
+        "mode": mode,
+        "threshold_mode": threshold_mode,
+        "threshold_scale": threshold_scale,
+        "min_skills": int(detector.get("min_skills", 1)),
+        "min_skill_len": int(detector.get("min_skill_len", 10)),
+        # The exact suffix (including globalref/manual tags) is immutable in the
+        # selected folder name and is therefore safer than reconstructing it.
+        "seg_suffix": seg_name[len(seg_prefix) :],
+    }
+
+
 def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str, Any]:
     target_dataset = dataset or str(get_value(cfg, "target_dataset", "libero_90", env="TARGET_DATASET"))
     root = Path(str(get_value(cfg, "project_root"))).expanduser()
-    dataset_root_name = str(get_value(cfg, "dataset_root", "libero_dataset"))
+    dataset_root_name = str(
+        get_value(cfg, "dataset_root", "libero_dataset", env="DATASET_ROOT_NAME")
+    )
     dataset_root = root / dataset_root_name
     outputs_root = root / str(get_value(cfg, "outputs_root", "outputs"))
     # Fixed per-stage subdirs under the single outputs root (not configurable in yaml).
     dp_outputs_root = outputs_root / "DP"
     fsq_outputs_root = outputs_root / "FSQ"
-    fsq_dataset_root_name = str(get_value(cfg, "fsq_dataset_root", "FSQ_dataset"))
+    fsq_dataset_root_name = str(
+        get_value(
+            cfg,
+            "fsq_dataset_root",
+            "FSQ_dataset",
+            env="FSQ_DATASET_ROOT_NAME",
+        )
+    )
     fsq_dataset_root = dataset_root / fsq_dataset_root_name
     fsq_inputs_name = str(get_value(cfg, "fsq_inputs_name", "FSQ_inputs"))
     fsq_inputs_dir = fsq_dataset_root / target_dataset / fsq_inputs_name
+    selected_skillset = _selected_skillset(
+        cfg,
+        dataset_root=dataset_root,
+        target_dataset=target_dataset,
+    )
 
     raw_dataset_dir = dataset_root / target_dataset
 
@@ -332,24 +481,93 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
     # values so `50000` and `050000` resolve to the same checkpoint AND seg_* skillset dir.
     if dp_checkpoint.isdigit():
         dp_checkpoint = dp_checkpoint.zfill(6)
-    probe_settings = skillset_probe_settings(cfg)
-    skillset_min_skills = resolve_skillset_min_skills(cfg, root)
+    skillset_cfg = cfg
+    if selected_skillset is not None:
+        dp_policy = selected_skillset["dp_policy"]
+        dp_checkpoint = selected_skillset["dp_checkpoint"]
+        if "_state" in dp_policy:
+            dp_vision = "state"
+        elif "_resnet" in dp_policy:
+            dp_vision = "resnet"
+        elif "_dino" in dp_policy:
+            dp_vision = "dino"
+        manifest_action = selected_skillset["manifest"].get("action") or {}
+        manifest_probe = selected_skillset["manifest"].get("probe") or {}
+        skillset_cfg = {
+            **cfg,
+            "skillset_mode": selected_skillset["mode"],
+            "skillset_probe_count": manifest_probe.get("count", 24),
+            "skillset_probe_alpha": manifest_probe.get("alpha", 0.1),
+            "skillset_pca_variance": manifest_probe.get("pca_variance", 0.95),
+            "skillset_pca_stride": manifest_probe.get("pca_stride", 3),
+            "skillset_action_mode": manifest_action.get("mode", "dataset"),
+            "skillset_relative_exclude_joints": manifest_action.get(
+                "relative_exclude_joints", ["gripper"]
+            ),
+            "skillset_gripper_mode": manifest_action.get("gripper_mode", "continuous"),
+            "skillset_gripper_indices": manifest_action.get("gripper_indices", [-1]),
+            "skillset_gripper_values": manifest_action.get("gripper_values", [-1.0, 1.0]),
+            "skillset_gripper_threshold": manifest_action.get("gripper_threshold", 0.0),
+        }
+    probe_settings = skillset_probe_settings(skillset_cfg)
+    skillset_min_skills = (
+        selected_skillset["min_skills"]
+        if selected_skillset is not None
+        else resolve_skillset_min_skills(cfg, root)
+    )
+    skillset_min_skill_len = (
+        selected_skillset["min_skill_len"]
+        if selected_skillset is not None
+        else resolve_skillset_min_skill_len(cfg)
+    )
+    if skillset_min_skills < 1:
+        raise ValueError(f"skillset manifest min_skills must be >= 1, got {skillset_min_skills}.")
+    if skillset_min_skill_len < 1:
+        raise ValueError(
+            f"skillset manifest min_skill_len must be >= 1, got {skillset_min_skill_len}."
+        )
     # Boundaries are DP/checkpoint-dependent, so different runs never reuse or clobber a skillset.
-    skillset_boundary_threshold_mode = resolve_skillset_threshold_mode(cfg, root)
+    skillset_boundary_threshold_mode = (
+        selected_skillset["threshold_mode"]
+        if selected_skillset is not None
+        else resolve_skillset_threshold_mode(cfg, root)
+    )
     if skillset_boundary_threshold_mode not in {"episode_mean", "global_mean"}:
         raise ValueError(
             "skillset_boundary_threshold_mode must be 'episode_mean' or 'global_mean', "
             f"got {skillset_boundary_threshold_mode!r}."
         )
-    skillset_boundary_threshold_scale = resolve_skillset_threshold_scale(cfg)
-    skillset_global_threshold_source = resolve_skillset_global_threshold_source(cfg, root)
+    skillset_boundary_threshold_scale = (
+        selected_skillset["threshold_scale"]
+        if selected_skillset is not None
+        else resolve_skillset_threshold_scale(cfg)
+    )
+    selected_is_globalref = (
+        selected_skillset is not None
+        and "_globalref_" in selected_skillset["seg_suffix"]
+    )
+    skillset_global_threshold_source = (
+        str(
+            (selected_skillset["manifest"].get("detector") or {}).get(
+                "global_threshold_path", ""
+            )
+        )
+        if selected_is_globalref
+        else (
+            ""
+            if selected_skillset is not None
+            else resolve_skillset_global_threshold_source(cfg, root)
+        )
+    )
     if skillset_global_threshold_source and skillset_boundary_threshold_mode != "global_mean":
         raise ValueError(
             "skillset_global_threshold_source requires skillset_boundary_threshold_mode=global_mean."
         )
     # Both the threshold scope and scale are always tagged so distinct
     # segmentations cannot share a directory (for example episodemean_80p).
-    if skillset_boundary_threshold_mode == "global_mean":
+    if selected_is_globalref:
+        threshold_scope_tag = "globalref"
+    elif skillset_boundary_threshold_mode == "global_mean":
         threshold_scope_tag = (
             "globalref" if skillset_global_threshold_source else "globalmean"
         )
@@ -358,19 +576,37 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
     threshold_percent_tag = _scale_percent_tag(skillset_boundary_threshold_scale)
     skillset_threshold_name = f"{threshold_scope_tag}_{threshold_percent_tag}"
     skillset_threshold_suffix = f"_{skillset_threshold_name}"
-    skillset_output_suffix = resolve_skillset_output_suffix(cfg, root)
     # min_skills=1 is the normal setting and is omitted. Non-default values
     # remain explicit so experiments with different episode filtering cannot mix.
     skillset_min_skills_suffix = (
         "" if skillset_min_skills == 1 else f"_ms{skillset_min_skills}"
     )
+    if selected_skillset is not None:
+        canonical_suffix = (
+            probe_settings["skillset_probe_suffix"]
+            + skillset_threshold_suffix
+            + skillset_min_skills_suffix
+        )
+        if not selected_skillset["seg_suffix"].startswith(canonical_suffix):
+            raise ValueError(
+                "Selected seg folder identity disagrees with its manifest: "
+                f"expected suffix prefix {canonical_suffix!r}, "
+                f"got {selected_skillset['seg_suffix']!r}"
+            )
+        skillset_output_suffix = selected_skillset["seg_suffix"][len(canonical_suffix) :]
+    else:
+        skillset_output_suffix = resolve_skillset_output_suffix(cfg, root)
     skillset_suffix = (
         probe_settings["skillset_probe_suffix"]
         + skillset_threshold_suffix
         + skillset_min_skills_suffix
         + skillset_output_suffix
     )
-    fsq_seg_dir = fsq_inputs_dir / f"seg_{dp_policy}_ck{dp_checkpoint}{skillset_suffix}"
+    fsq_seg_dir = (
+        selected_skillset["seg_dir"]
+        if selected_skillset is not None
+        else fsq_inputs_dir / f"seg_{dp_policy}_ck{dp_checkpoint}{skillset_suffix}"
+    )
 
     fsq_levels = as_levels(get_value(cfg, "fsq_levels", [5, 5, 5]))
     fsq_tag = "fsq" + "".join(str(v) for v in fsq_levels)
@@ -430,10 +666,13 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
     # (libero_90_full_full_state_obs20 → state_obs20), so the FSQ folder shows WHICH DP's skillset it
     # was trained on (for example state_obs20), not just the FSQ architecture.
     dp_tag = dp_policy[len(target_dataset) + 1:] if dp_policy.startswith(f"{target_dataset}_") else dp_policy
-    dp_tag += probe_settings["skillset_probe_suffix"]
-    dp_tag += skillset_threshold_suffix
-    dp_tag += skillset_min_skills_suffix
-    dp_tag += skillset_output_suffix
+    if selected_skillset is not None:
+        dp_tag += selected_skillset["seg_suffix"]
+    else:
+        dp_tag += probe_settings["skillset_probe_suffix"]
+        dp_tag += skillset_threshold_suffix
+        dp_tag += skillset_min_skills_suffix
+        dp_tag += skillset_output_suffix
     # Architecture knobs (vision backbone/freeze, terminator, encoder input mode,
     # skill cond mode, weighted loss) are fixed project-wide and deliberately NOT
     # part of the name anymore — use fsq_exp to separate runs if one is ever varied.
@@ -526,6 +765,9 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "fsq_patch_grid": int(get_value(cfg, "fsq_patch_grid", 8)),
         "fsq_batch_size": int(get_value(cfg, "fsq_batch_size", 256)),
         "fsq_num_workers": int(get_value(cfg, "fsq_num_workers", 8)),
+        "fsq_val_num_workers": int(get_value(cfg, "fsq_val_num_workers", 0)),
+        "fsq_val_every": int(get_value(cfg, "fsq_val_every", 1)),
+        "fsq_save_best_model": as_bool(get_value(cfg, "fsq_save_best_model", True)),
         "fsq_gradient_checkpointing": as_bool(get_value(cfg, "fsq_gradient_checkpointing", False)),
         "fsq_num_epochs": int(get_value(cfg, "fsq_num_epochs", 1000)),
         "fsq_checkpoint_every": int(get_value(cfg, "fsq_checkpoint_every", 500)),
@@ -586,6 +828,13 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "skillset_name": str(get_value(cfg, "skillset_name", "skillset")),
         "skillset_dir": fsq_seg_dir / str(get_value(cfg, "skillset_name", "skillset")),
         "skillset_done_path": fsq_seg_dir / str(get_value(cfg, "skillset_name", "skillset")) / ".complete",
+        "skillset_seg_name": fsq_seg_dir.name,
+        "skillset_manifest_path": (
+            selected_skillset["manifest_path"]
+            if selected_skillset is not None
+            else fsq_seg_dir / str(get_value(cfg, "skillset_name", "skillset"))
+            / "skillset_manifest.json"
+        ),
         "skillset_tasks_per_job": int(get_value(cfg, "skillset_tasks_per_job", 5)),
         "skillset_wandb_project": str(get_value(cfg, "skillset_wandb_project", "Skill_dataset")),
         "skillset_dn_step": int(get_value(cfg, "skillset_dn_step", 7)),
@@ -596,6 +845,7 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "skillset_nms_dist": int(get_value(cfg, "skillset_nms_dist", 25)),
         "skillset_min_skills": skillset_min_skills,
         "skillset_min_skills_suffix": skillset_min_skills_suffix,
+        "skillset_min_skill_len": skillset_min_skill_len,
         **probe_settings,
         "skillset_boundary_threshold_mode": skillset_boundary_threshold_mode,
         "skillset_boundary_threshold_scale": skillset_boundary_threshold_scale,

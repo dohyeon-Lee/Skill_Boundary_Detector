@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # Inputs:
-#   FSQ inputs   : {project_root}/{dataset_root}/FSQ_dataset/{target_dataset}/FSQ_inputs
-#   skillset     : {project_root}/{dataset_root}/FSQ_dataset/{target_dataset}/FSQ_inputs/seg_{dp}_ck{ckpt}/skillset/skills
+#   skillset     : exact folder selected in fsq_config.yaml and validated against
+#                  its skillset_manifest.json before submission
 #   Images       : selected raw third+wrist frames, decoded live per batch
 # Reference models:
 #   DINO model   : {project_root}/models/dinov3-vits16
 # Outputs:
 #   FSQ run      : {project_root}/outputs/FSQ/{fsq_run_name}
-#   FSQ model    : {project_root}/outputs/FSQ/{fsq_run_name}/FSQ.pt
 #   checkpoints  : {project_root}/outputs/FSQ/{fsq_run_name}/FSQ_epoch*.pt
+#   best model   : optional FSQ.pt when fsq_save_best_model=true
 #   skill tokens : {project_root}/outputs/FSQ/{fsq_run_name}/skill_latents.npz
 #
 # Train FSQ from prepared FSQ_inputs.
@@ -35,10 +35,11 @@ if [ ! -x "${BOOTSTRAP_PYTHON}" ]; then
 fi
 
 if [ -n "${TRAIN_DATA:-}" ]; then
-  eval "$("${BOOTSTRAP_PYTHON}" "${COMMON_SRC_DIR}/train_skills_config.py" --config "${CONFIG_PATH}" --dataset "${TRAIN_DATA}" --shell)"
+  RESOLVED_SETTINGS="$("${BOOTSTRAP_PYTHON}" "${COMMON_SRC_DIR}/train_skills_config.py" --config "${CONFIG_PATH}" --dataset "${TRAIN_DATA}" --shell)"
 else
-  eval "$("${BOOTSTRAP_PYTHON}" "${COMMON_SRC_DIR}/train_skills_config.py" --config "${CONFIG_PATH}" --shell)"
+  RESOLVED_SETTINGS="$("${BOOTSTRAP_PYTHON}" "${COMMON_SRC_DIR}/train_skills_config.py" --config "${CONFIG_PATH}" --shell)"
 fi
+eval "${RESOLVED_SETTINGS}"
 
 cd "${LEROBOT_ROOT}"
 source "${PROJECT_ROOT}/.venv/bin/activate"
@@ -77,10 +78,16 @@ mkdir -p "${FSQ_OUTPUT_DIR}"
 # without the user re-specifying the DP (fsq_run_name doesn't encode the DP).
 cat > "${FSQ_OUTPUT_DIR}/fsq_meta.json" <<JSON
 {
+  "fsq_dataset_root": "${FSQ_DATASET_ROOT_NAME}",
+  "target_dataset": "${TARGET_DATASET}",
+  "fsq_inputs_name": "${FSQ_INPUTS_NAME}",
+  "skillset_seg_name": "${SKILLSET_SEG_NAME}",
+  "skillset_name": "${SKILLSET_NAME}",
   "dp_run_name": "${DP_POLICY}",
   "dp_checkpoint": "${DP_CHECKPOINT}",
   "skillset_mode": "${SKILLSET_MODE}",
   "skillset_min_skills": ${SKILLSET_MIN_SKILLS},
+  "skillset_min_skill_len": ${SKILLSET_MIN_SKILL_LEN},
   "skillset_boundary_threshold_mode": "${SKILLSET_BOUNDARY_THRESHOLD_MODE}",
   "skillset_boundary_threshold_scale": ${SKILLSET_BOUNDARY_THRESHOLD_SCALE},
   "skillset_global_threshold_source": "${SKILLSET_GLOBAL_THRESHOLD_SOURCE}",
@@ -92,6 +99,10 @@ cat > "${FSQ_OUTPUT_DIR}/fsq_meta.json" <<JSON
   "terminator_heads": ${FSQ_TERMINATOR_HEADS},
   "skill_cond_mode": "${FSQ_SKILL_COND_MODE}",
   "gradient_checkpointing": ${FSQ_GRADIENT_CHECKPOINTING},
+  "num_workers": ${FSQ_NUM_WORKERS},
+  "val_num_workers": ${FSQ_VAL_NUM_WORKERS},
+  "val_every": ${FSQ_VAL_EVERY},
+  "save_best_model": ${FSQ_SAVE_BEST_MODEL},
   "vision_backbone": "${FSQ_VISION_BACKBONE}",
   "freeze_vision_encoder": ${FSQ_FREEZE_VISION_ENCODER},
   "encoder_input_mode": "${FSQ_ENCODER_INPUT_MODE}"
@@ -116,6 +127,11 @@ fi
 GRADIENT_CKPT_ARG=(--no-gradient_checkpointing)
 if [ "${FSQ_GRADIENT_CHECKPOINTING:-false}" = "true" ]; then
   GRADIENT_CKPT_ARG=(--gradient_checkpointing)
+fi
+
+SAVE_BEST_ARG=(--no-save_best_model)
+if [ "${FSQ_SAVE_BEST_MODEL:-false}" = "true" ]; then
+  SAVE_BEST_ARG=(--save_best_model)
 fi
 
 # best-val SELECTION override: pass each val_select weight only if set in config (empty → omit → the
@@ -154,6 +170,9 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     --reconstructor_lr        "${FSQ_RECONSTRUCTOR_LR}" \
     --batch_size              "${FSQ_BATCH_SIZE}" \
     --num_workers             "${FSQ_NUM_WORKERS}" \
+    --val_num_workers         "${FSQ_VAL_NUM_WORKERS}" \
+    --val_every               "${FSQ_VAL_EVERY}" \
+    "${SAVE_BEST_ARG[@]}" \
     "${GRADIENT_CKPT_ARG[@]}" \
     --action_loss_weight      "${FSQ_ACTION_LOSS_WEIGHT}" \
     --progress_loss_weight    "${FSQ_PROGRESS_LOSS_WEIGHT}" \

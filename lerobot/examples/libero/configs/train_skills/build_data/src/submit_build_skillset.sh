@@ -61,7 +61,9 @@ if [ -n "${SLURM_EXCLUDE_NODES}" ]; then
   SBATCH_ARGS+=(--exclude="${SLURM_EXCLUDE_NODES}")
 fi
 
-cd "${SCRIPT_DIR}"
+# Keep SLURM_SUBMIT_DIR consistent with submit_build_data.sh. The worker and
+# marker sbatch files resolve all repository paths from this directory.
+cd "${FSQ_DIR}"
 mkdir -p logs
 
 echo "Submit skillset generation"

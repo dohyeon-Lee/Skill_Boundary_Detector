@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Inputs:
 #   config     : ../dp_eval_config.yaml or ../fsq_eval_config.yaml, passed via
-#                TRAIN_SKILLS_CONFIG / FSQ_EVAL_CONFIG by the submit scripts
+#                FSQ_EVAL_CONFIG by the submit scripts
 #   toggles    : EVAL_RUN_DP / EVAL_RUN_FSQ env, forced by submit_dp_eval.sh /
 #                submit_fsq_eval.sh (env wins over yaml)
-#   FSQ model  : {project_root}/outputs/FSQ/{fsq_eval_run_name}/FSQ.pt (or FSQ_epoch{N:04d}.pt)
+#   FSQ model  : resolved from {outputs_root}/FSQ/{fsq_eval_run_name}
 # Outputs (per eval_run_fsq / eval_run_dp toggles):
 #   FSQ : {skill_eval}/outputs/{run}/{epoch}/fsq_eval.html  (+ skill_latents.npz next to ckpt)
 #   DP  : {skill_eval}/outputs/dp_skillset/{dataset}/index.html
@@ -27,7 +27,7 @@ EVAL_DIR="${FSQ_EVAL_DIR:-${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}
 COMMON_SRC_DIR="${EVAL_DIR}/../src"                          # train_skills/src
 # Two configs exist now (dp_eval_config.yaml / fsq_eval_config.yaml), so there is no safe
 # default — always launch through submit_dp_eval.sh / submit_fsq_eval.sh, which pass these.
-TRAIN_CONFIG="${TRAIN_SKILLS_CONFIG:?launch via submit_dp_eval.sh or submit_fsq_eval.sh}"
+TRAIN_CONFIG="${TRAIN_SKILLS_CONFIG:-}"
 EVAL_CONFIG="${FSQ_EVAL_CONFIG:?launch via submit_dp_eval.sh or submit_fsq_eval.sh}"
 
 BOOTSTRAP_PYTHON="${EVAL_DIR}/../../../../../../.venv/bin/python"
@@ -35,14 +35,20 @@ if [ ! -x "${BOOTSTRAP_PYTHON}" ]; then
   BOOTSTRAP_PYTHON=python3
 fi
 
-# eval knobs FIRST so DP-selection overrides can steer the shared resolver below.
-eval "$("${BOOTSTRAP_PYTHON}" "${EVAL_DIR}/src/eval_config.py" --config "${EVAL_CONFIG}" --shell)"
-[ -n "${EVAL_DP_RUN_NAME}" ]   && export DP_RUN_NAME="${EVAL_DP_RUN_NAME}"
-[ -n "${EVAL_DP_CHECKPOINT}" ] && export DP_CHECKPOINT="${EVAL_DP_CHECKPOINT}"
-if [ -n "${TRAIN_DATA:-}" ]; then
-  eval "$("${BOOTSTRAP_PYTHON}" "${COMMON_SRC_DIR}/train_skills_config.py" --config "${TRAIN_CONFIG}" --dataset "${TRAIN_DATA}" --shell)"
-else
-  eval "$("${BOOTSTRAP_PYTHON}" "${COMMON_SRC_DIR}/train_skills_config.py" --config "${TRAIN_CONFIG}" --shell)"
+# Eval knobs and FSQ artifacts are resolved directly from fsq_meta.json.
+RESOLVED_EVAL="$("${BOOTSTRAP_PYTHON}" "${EVAL_DIR}/src/eval_config.py" --config "${EVAL_CONFIG}" --shell)"
+eval "${RESOLVED_EVAL}"
+if [ "${EVAL_RUN_DP}" = "true" ]; then
+  if [ -z "${TRAIN_CONFIG}" ]; then
+    echo "DP eval requires TRAIN_SKILLS_CONFIG; launch via submit_dp_eval.sh" >&2
+    exit 1
+  fi
+  if [ -n "${TRAIN_DATA:-}" ]; then
+    RESOLVED_TRAIN="$("${BOOTSTRAP_PYTHON}" "${COMMON_SRC_DIR}/train_skills_config.py" --config "${TRAIN_CONFIG}" --dataset "${TRAIN_DATA}" --shell)"
+  else
+    RESOLVED_TRAIN="$("${BOOTSTRAP_PYTHON}" "${COMMON_SRC_DIR}/train_skills_config.py" --config "${TRAIN_CONFIG}" --shell)"
+  fi
+  eval "${RESOLVED_TRAIN}"
 fi
 
 cd "${LEROBOT_ROOT}"
@@ -50,13 +56,9 @@ source "${PROJECT_ROOT}/.venv/bin/activate"
 source "${PROJECT_ROOT}/lerobot/examples/libero/configs/runtime_env.sh"
 export LD_LIBRARY_PATH=""
 
-DATASET_VIDEO_DIR="${DATASET_ROOT}/${TARGET_DATASET}"
-
 echo "START DP_FSQ EVAL"
 echo "Node    : ${SLURMD_NODENAME:-local}"
 echo "run_fsq : ${EVAL_RUN_FSQ}    run_dp : ${EVAL_RUN_DP}"
-echo "Skills  : ${SKILLSET_DIR}/skills"
-echo "Dataset : ${DATASET_VIDEO_DIR}"
 nvidia-smi || true
 
 if [ "${EVAL_RUN_FSQ}" != "true" ] && [ "${EVAL_RUN_DP}" != "true" ]; then
@@ -66,6 +68,7 @@ fi
 
 # ── DP skill-boundary eval (FSQ-independent; off the FSQ_dataset skillset npz + curves) ──
 if [ "${EVAL_RUN_DP}" = "true" ]; then
+  DATASET_VIDEO_DIR="${DATASET_ROOT}/${TARGET_DATASET}"
   DP_SKILLSET_DIR="${SKILLSET_DIR}"
   DP_DATASET_VIDEO_DIR="${DATASET_VIDEO_DIR}"
   DP_IMAGE_KEY="${FSQ_EVAL_IMAGE_KEY}"
@@ -94,10 +97,22 @@ if [ "${EVAL_RUN_DP}" = "true" ]; then
     DP_MANIFEST_POLICY=$("${BOOTSTRAP_PYTHON}" -c 'import json,sys; print(json.load(open(sys.argv[1]))["policy_path"])' "${DP_MANIFEST}")
     DP_OUTPUT_POLICY=$("${BOOTSTRAP_PYTHON}" -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).parents[2].name)' "${DP_MANIFEST_POLICY}")
     DP_OUTPUT_CHECKPOINT=$("${BOOTSTRAP_PYTHON}" -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).parent.name)' "${DP_MANIFEST_POLICY}")
-    DP_SUFFIX="_${DP_MODE}"
-    if [ "${DP_THRESHOLD_MODE}" = "global_mean" ]; then DP_THRESHOLD_SCOPE="globalmean"; else DP_THRESHOLD_SCOPE="episodemean"; fi
-    DP_THRESHOLD_PERCENT=$("${BOOTSTRAP_PYTHON}" -c 'import sys; v=float(sys.argv[1]); print(f"{v*100:g}".replace(".","p")+"p")' "${DP_THRESHOLD_SCALE}")
-    DP_SUFFIX+="_${DP_THRESHOLD_SCOPE}_${DP_THRESHOLD_PERCENT}"
+    # Preserve the complete canonical artifact identity, including globalref
+    # and any manual output suffix, directly from the selected seg_* folder.
+    DP_SEG_NAME="$(basename "$(dirname "${DP_SKILLSET_DIR}")")"
+    DP_SEG_PREFIX="seg_${DP_OUTPUT_POLICY}_ck${DP_OUTPUT_CHECKPOINT}"
+    if [[ "${DP_SEG_NAME}" = "${DP_SEG_PREFIX}"* ]]; then
+      DP_SUFFIX="${DP_SEG_NAME#${DP_SEG_PREFIX}}"
+    else
+      DP_SUFFIX="_${DP_MODE}"
+      if [ "${DP_THRESHOLD_MODE}" = "global_mean" ]; then
+        DP_THRESHOLD_SCOPE="globalmean"
+      else
+        DP_THRESHOLD_SCOPE="episodemean"
+      fi
+      DP_THRESHOLD_PERCENT=$("${BOOTSTRAP_PYTHON}" -c 'import sys; v=float(sys.argv[1]); print(f"{v*100:g}".replace(".","p")+"p")' "${DP_THRESHOLD_SCALE}")
+      DP_SUFFIX+="_${DP_THRESHOLD_SCOPE}_${DP_THRESHOLD_PERCENT}"
+    fi
   fi
   # Shallow folder + DP-named HTML so different DPs don't overwrite each other (no deep nesting).
   # Strip the redundant dataset prefix from the run name (libero_90_full_full_state_obs10 → state_obs10).
@@ -138,74 +153,17 @@ fi
 
 # ── FSQ reconstruction eval (encoder + decoder → wandb scalars + interactive HTML) ──
 if [ "${EVAL_RUN_FSQ}" = "true" ]; then
-  OUTPUTS_ROOT="$(dirname "$(dirname "${FSQ_OUTPUT_DIR}")")"
-  FSQ_OUTPUTS_ROOT="${OUTPUTS_ROOT}/FSQ"
-  if [[ "${FSQ_EVAL_DINO_MODEL_PATH}" = /* ]]; then
-    EVAL_DINO_MODEL_PATH="${FSQ_EVAL_DINO_MODEL_PATH}"
-  else
-    EVAL_DINO_MODEL_PATH="${PROJECT_ROOT}/${FSQ_EVAL_DINO_MODEL_PATH}"
-  fi
-  if [ ! -d "${EVAL_DINO_MODEL_PATH}" ]; then
-    echo "FSQ eval DINO model not found: ${EVAL_DINO_MODEL_PATH}" >&2
-    exit 1
-  fi
-  MODEL_DIR="${FSQ_OUTPUTS_ROOT}/${FSQ_EVAL_RUN_NAME}"
-  if [ "${FSQ_EVAL_CHECKPOINT}" = "0" ]; then
-    MODEL_PATH="${MODEL_DIR}/FSQ.pt"
-    EPOCH_TAG="best"
-    LATENTS_PATH="${MODEL_DIR}/skill_latents.npz"
-  else
-    MODEL_PATH="${MODEL_DIR}/FSQ_epoch$(printf '%04d' "${FSQ_EVAL_CHECKPOINT}").pt"
-    EPOCH_TAG="epoch$(printf '%04d' "${FSQ_EVAL_CHECKPOINT}")"
-    LATENTS_PATH="${MODEL_DIR}/skill_latents_${EPOCH_TAG}.npz"
-  fi
+  MODEL_PATH="${FSQ_EVAL_MODEL_PATH}"
+  EPOCH_TAG="${FSQ_EVAL_EPOCH_TAG}"
+  LATENTS_PATH="${FSQ_EVAL_LATENTS_PATH}"
+  F_SKILLSET="${FSQ_EVAL_SKILLSET_DIR}"
+  F_DATASET_VIDEO_DIR="${FSQ_EVAL_DATASET_DIR}"
   # HTML stays under skill_eval/outputs; latents live next to the checkpoint in outputs/FSQ.
   OUTPUT_DIR="${EVAL_DIR}/outputs/${FSQ_EVAL_RUN_NAME}/${EPOCH_TAG}"
   echo ""
   echo "FSQ eval → ${OUTPUT_DIR}  (model ${MODEL_PATH})"
-  if [ ! -f "${MODEL_PATH}" ]; then
-    echo "FSQ model not found: ${MODEL_PATH}" >&2
-    echo "Check fsq_eval_run_name / checkpoint in ${EVAL_CONFIG}" >&2
-    exit 1
-  fi
-  # Evaluate this FSQ on the skillset it was trained on, recorded in fsq_meta.json.
-  FSQ_META="${MODEL_DIR}/fsq_meta.json"
-  F_SKILLSET="${SKILLSET_DIR}"
-  if [ -f "${FSQ_META}" ]; then
-    read -r F_DP F_CKPT F_THRESHOLD_MODE F_THRESHOLD_SCALE F_SKILLSET_MODE F_MIN_SKILLS F_GLOBAL_SOURCE F_OUTPUT_SUFFIX < <("${BOOTSTRAP_PYTHON}" - "${FSQ_META}" <<'PY'
-import json, sys
-m = json.load(open(sys.argv[1]))
-print(
-    m["dp_run_name"],
-    m["dp_checkpoint"],
-    m.get("skillset_boundary_threshold_mode", "episode_mean"),
-    m.get("skillset_boundary_threshold_scale", 1.0),
-    m.get("skillset_mode") or "__none__",
-    m.get("skillset_min_skills") or "__none__",
-    m.get("skillset_global_threshold_source") or "__none__",
-    m.get("skillset_output_suffix") or "__none__",
-)
-PY
-)
-    [ "${F_SKILLSET_MODE}" = "__none__" ] && F_SKILLSET_MODE=""
-    # Legacy metadata omitted this field; retain the resolver's build-config
-    # value in that case so existing FSQ runs keep their historical behavior.
-    [ "${F_MIN_SKILLS}" = "__none__" ] && F_MIN_SKILLS="${SKILLSET_MIN_SKILLS}"
-    [ "${F_GLOBAL_SOURCE}" = "__none__" ] && F_GLOBAL_SOURCE=""
-    [ "${F_OUTPUT_SUFFIX}" = "__none__" ] && F_OUTPUT_SUFFIX=""
-    eval "$(DP_RUN_NAME="${F_DP}" DP_CHECKPOINT="${F_CKPT}" \
-      SKILLSET_BOUNDARY_THRESHOLD_MODE="${F_THRESHOLD_MODE}" SKILLSET_MODE="${F_SKILLSET_MODE}" \
-      SKILLSET_BOUNDARY_THRESHOLD_SCALE="${F_THRESHOLD_SCALE}" \
-      SKILLSET_MIN_SKILLS="${F_MIN_SKILLS}" \
-      SKILLSET_GLOBAL_THRESHOLD_SOURCE="${F_GLOBAL_SOURCE}" SKILLSET_OUTPUT_SUFFIX="${F_OUTPUT_SUFFIX}" \
-      "${BOOTSTRAP_PYTHON}" "${COMMON_SRC_DIR}/train_skills_config.py" --config "${TRAIN_CONFIG}" --shell 2>/dev/null \
-      | grep -E '^export SKILLSET_DIR=')"
-    F_SKILLSET="${SKILLSET_DIR}"
-    echo "  FSQ source DP    : ${F_DP} (ck${F_CKPT}, ${F_SKILLSET_MODE:-legacy}, ${F_THRESHOLD_MODE}×${F_THRESHOLD_SCALE}, ms${F_MIN_SKILLS})"
-  fi
-  if [ ! -d "${F_SKILLSET}/skills" ]; then
-    echo "FSQ's training skillset not found: ${F_SKILLSET}/skills" >&2; exit 1
-  fi
+  echo "  source skillset: ${F_SKILLSET}"
+  echo "  source dataset : ${F_DATASET_VIDEO_DIR}"
   FSQ_RANDOM_SKILL_ARGS=()
   if [ "${FSQ_EVAL_RANDOM_FAR_SKILL}" = "true" ]; then
     FSQ_RANDOM_SKILL_ARGS=(
@@ -216,9 +174,9 @@ PY
   PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     python -u examples/libero/fsq_eval.py \
       --model_path          "${MODEL_PATH}" \
-      --dino_model_path     "${EVAL_DINO_MODEL_PATH}" \
+      --dino_model_path     "${FSQ_EVAL_DINO_MODEL_PATH}" \
       --skills_dir          "${F_SKILLSET}/skills" \
-      --dataset_dir      "${DATASET_VIDEO_DIR}" \
+      --dataset_dir      "${F_DATASET_VIDEO_DIR}" \
       --output_dir       "${OUTPUT_DIR}" \
       --latents_path     "${LATENTS_PATH}" \
       --n_action_steps   "${FSQ_EVAL_N_ACTION_STEPS}" \

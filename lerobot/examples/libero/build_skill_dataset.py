@@ -155,8 +155,8 @@ class Args:
     use_cached_curves: bool = False
     """Re-segment from curves/ep*.npz without rerunning DP/VF inference (global 2-pass)."""
     # ── Dataset filtering ─────────────────────────────────────────────────────
-    min_skill_len: int = 2
-    """스킬 세그먼트 최소 프레임 수 (미만이면 해당 세그먼트 제외)."""
+    min_skill_len: int = 10
+    """Minimum segment length; a shorter final segment is merged into its predecessor."""
     min_skills: int = 1
     """유효 스킬 수가 이 값 미만이면 episode 전체 skip."""
     # ── Misc ─────────────────────────────────────────────────────────────────
@@ -407,9 +407,29 @@ def _detect_boundaries(
     sg_vals = _savgol_smooth(list(div_cos), args.smooth_window, polyorder=args.savgol_polyorder)
     threshold = _threshold_for_episode(sg_vals, args, global_threshold)
     peak_ts, _ = _find_peaks_above_threshold(
-        sg_vals, replan_ts, threshold=threshold, min_distance=nms_dist, margin=nms_dist
+        sg_vals,
+        replan_ts,
+        threshold=threshold,
+        min_distance=nms_dist,
+        start_margin=nms_dist,
     )
-    return sorted(set([0] + [int(p) for p in peak_ts] + [n_frames]))
+    boundaries = sorted(set([0] + [int(p) for p in peak_ts] + [n_frames]))
+    return _merge_short_final_segment(boundaries, args.min_skill_len)
+
+
+def _merge_short_final_segment(boundaries: list[int], min_skill_len: int) -> list[int]:
+    """Remove the final internal boundary until the last segment is long enough.
+
+    With peak NMS enabled, start and interior segment lengths are already guarded
+    by ``nms_dist``. The episode end is intentionally exempt from that margin, so
+    this independent post-process is needed only for a too-short final segment.
+    Removing the boundary preserves every frame by merging that tail into the
+    preceding skill instead of dropping it.
+    """
+    merged = list(boundaries)
+    while len(merged) > 2 and merged[-1] - merged[-2] < min_skill_len:
+        del merged[-2]
+    return merged
 
 
 def _save_boundary_curve(curves_dir: Path, ep_id: int, task_id: int, replan_ts,
@@ -433,8 +453,16 @@ def _save_boundary_curve(curves_dir: Path, ep_id: int, task_id: int, replan_ts,
         replan_ts.tolist(),
         threshold=threshold,
         min_distance=nms_dist,
-        margin=nms_dist,
+        start_margin=nms_dist,
     )
+    accepted_peaks = set(boundaries[1:-1])
+    accepted = [
+        (peak_t, peak_v)
+        for peak_t, peak_v in zip(peak_ts, peak_vals)
+        if peak_t in accepted_peaks
+    ]
+    peak_ts = [peak_t for peak_t, _ in accepted]
+    peak_vals = [peak_v for _, peak_v in accepted]
     curves_dir.mkdir(parents=True, exist_ok=True)
     np.savez(
         str(curves_dir / f"ep{ep_id:07d}.npz"),
@@ -466,17 +494,27 @@ def _find_peaks_above_threshold(
     *,
     threshold: float,
     min_distance: int = 0,
-    margin: int = 0,
+    start_margin: int = 0,
+    end_margin: int = 0,
 ) -> tuple[list, list]:
-    """Same peak/NMS policy as skill_divider, with an explicit threshold."""
+    """Find thresholded peaks while applying NMS and asymmetric edge margins.
+
+    The default zero end margin treats the episode as if it continued by one
+    NMS window: a valid final peak is not discarded merely because it is close
+    to the real episode end.
+    """
     from scipy.signal import find_peaks
 
     peak_idxs, _ = find_peaks(vals)
     above = [i for i in peak_idxs if vals[i] > threshold]
 
-    if margin > 0 and len(ts) >= 2:
+    if (start_margin > 0 or end_margin > 0) and len(ts) >= 2:
         t_min, t_max = ts[0], ts[-1]
-        above = [i for i in above if ts[i] - t_min > margin and t_max - ts[i] > margin]
+        above = [
+            i
+            for i in above
+            if ts[i] - t_min > start_margin and t_max - ts[i] > end_margin
+        ]
 
     if min_distance > 0 and len(above) > 1:
         by_height = sorted(above, key=lambda i: vals[i], reverse=True)

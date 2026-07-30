@@ -12,6 +12,7 @@ Keys shared by both evals (thumb size, image key, slurm resources) use neutral
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import sys
 from pathlib import Path
@@ -23,8 +24,164 @@ from train_skills_config import as_bool, as_list, get_value, load_config, print_
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "eval_config.yaml"
 
 
+def _folder_name(value: object, key: str) -> str:
+    name = str(value or "").strip()
+    if not name:
+        raise ValueError(f"{key} must be a non-empty folder name.")
+    if Path(name).name != name or name in {".", ".."}:
+        raise ValueError(f"{key} must be a folder name, not a path: {name!r}")
+    return name
+
+
+def _resolve_fsq_artifact(
+    cfg: dict,
+    *,
+    project_root: Path,
+    dataset_root: Path,
+    outputs_root: Path,
+) -> dict[str, str]:
+    """Resolve one FSQ run entirely from its immutable training metadata."""
+    run_name = _folder_name(get_value(cfg, "fsq_eval_run_name", ""), "fsq_eval_run_name")
+    model_dir = outputs_root / "FSQ" / run_name
+    if not model_dir.is_dir():
+        raise FileNotFoundError(f"FSQ run folder not found: {model_dir}")
+
+    checkpoint = str(get_value(cfg, "fsq_eval_checkpoint", "last")).strip().lower()
+    if checkpoint in {"0", "best"}:
+        model_path = model_dir / "FSQ.pt"
+        epoch_tag = "best"
+        latents_path = model_dir / "skill_latents.npz"
+    elif checkpoint == "last":
+        candidates: list[tuple[int, Path]] = []
+        for path in model_dir.glob("FSQ_epoch*.pt"):
+            match = re.fullmatch(r"FSQ_epoch(\d+)\.pt", path.name)
+            if match:
+                candidates.append((int(match.group(1)), path))
+        if not candidates:
+            raise FileNotFoundError(f"No FSQ_epoch*.pt checkpoints found in {model_dir}")
+        epoch, model_path = max(candidates, key=lambda item: item[0])
+        epoch_tag = f"epoch{epoch:04d}"
+        latents_path = model_dir / f"skill_latents_{epoch_tag}.npz"
+    elif checkpoint.isdigit() and int(checkpoint) > 0:
+        epoch = int(checkpoint)
+        model_path = model_dir / f"FSQ_epoch{epoch:04d}.pt"
+        epoch_tag = f"epoch{epoch:04d}"
+        latents_path = model_dir / f"skill_latents_{epoch_tag}.npz"
+    else:
+        raise ValueError(
+            "fsq_eval_checkpoint must be 'last', 'best', or a positive epoch, "
+            f"got {checkpoint!r}."
+        )
+    if not model_path.is_file():
+        raise FileNotFoundError(f"FSQ checkpoint not found: {model_path}")
+
+    meta_path = model_dir / "fsq_meta.json"
+    if not meta_path.is_file():
+        raise FileNotFoundError(f"FSQ training metadata not found: {meta_path}")
+    try:
+        meta = json.loads(meta_path.read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"Invalid FSQ training metadata: {meta_path}: {error}") from error
+    components = {
+        key: _folder_name(meta.get(key), f"fsq_meta.{key}")
+        for key in (
+            "fsq_dataset_root",
+            "target_dataset",
+            "fsq_inputs_name",
+            "skillset_seg_name",
+            "skillset_name",
+        )
+    }
+    skillset_dir = (
+        dataset_root
+        / components["fsq_dataset_root"]
+        / components["target_dataset"]
+        / components["fsq_inputs_name"]
+        / components["skillset_seg_name"]
+        / components["skillset_name"]
+    )
+    dataset_dir = dataset_root / components["target_dataset"]
+    if not (skillset_dir / "skills").is_dir():
+        raise FileNotFoundError(f"FSQ training skillset not found: {skillset_dir / 'skills'}")
+    if not (dataset_dir / "videos").is_dir():
+        raise FileNotFoundError(f"FSQ source dataset videos not found: {dataset_dir / 'videos'}")
+
+    dino_value = str(get_value(cfg, "fsq_eval_dino_model_path", "models/dinov3-vitl16"))
+    dino_path = Path(dino_value).expanduser()
+    if not dino_path.is_absolute():
+        dino_path = project_root / dino_path
+    if not dino_path.is_dir():
+        raise FileNotFoundError(f"FSQ eval DINO model not found: {dino_path}")
+
+    return {
+        "fsq_eval_run_name": run_name,
+        "fsq_eval_checkpoint": checkpoint,
+        "fsq_eval_model_dir": str(model_dir),
+        "fsq_eval_model_path": str(model_path),
+        "fsq_eval_epoch_tag": epoch_tag,
+        "fsq_eval_latents_path": str(latents_path),
+        "fsq_eval_meta_path": str(meta_path),
+        "fsq_eval_skillset_dir": str(skillset_dir),
+        "fsq_eval_dataset_dir": str(dataset_dir),
+        "fsq_eval_dino_model_path": str(dino_path),
+    }
+
+
 def build_settings(config_path: str | None = None) -> dict:
     cfg = load_config(config_path or DEFAULT_CONFIG_PATH)
+    project_root = Path(str(get_value(cfg, "project_root"))).expanduser()
+    dataset_root = Path(str(get_value(cfg, "dataset_root", "dataset"))).expanduser()
+    outputs_root = Path(str(get_value(cfg, "outputs_root", "outputs"))).expanduser()
+    if not dataset_root.is_absolute():
+        dataset_root = project_root / dataset_root
+    if not outputs_root.is_absolute():
+        outputs_root = project_root / outputs_root
+    eval_run_fsq = as_bool(get_value(cfg, "eval_run_fsq", True))
+    eval_run_dp = as_bool(get_value(cfg, "eval_run_dp", True))
+    fsq_artifact = (
+        _resolve_fsq_artifact(
+            cfg,
+            project_root=project_root,
+            dataset_root=dataset_root,
+            outputs_root=outputs_root,
+        )
+        if eval_run_fsq
+        else {}
+    )
+    dp_skillset_dir = ""
+    if eval_run_dp:
+        component_keys = (
+            "fsq_dataset_root",
+            "target_dataset",
+            "fsq_inputs_name",
+            "skillset_seg_name",
+            "skillset_name",
+        )
+        components = {
+            key: str(get_value(cfg, key, "")).strip()
+            for key in component_keys
+        }
+        missing = [key for key, value in components.items() if not value]
+        if missing:
+            raise ValueError(f"DP eval artifact path is missing components: {missing}")
+        invalid = [
+            key
+            for key, value in components.items()
+            if Path(value).name != value
+        ]
+        if invalid:
+            raise ValueError(
+                "DP eval artifact components must be folder names, not paths: "
+                f"{invalid}"
+            )
+        dp_skillset_dir = str(
+            dataset_root
+            / components["fsq_dataset_root"]
+            / components["target_dataset"]
+            / components["fsq_inputs_name"]
+            / components["skillset_seg_name"]
+            / components["skillset_name"]
+        )
     # Slurm partition/qos/nodelist/exclude are canonical (global_config.yaml train_*).
     exclude = as_list(get_value(cfg, "train_exclude_nodes", []))
     output_suffix = str(get_value(cfg, "dp_eval_output_suffix", "")).strip()
@@ -38,33 +195,18 @@ def build_settings(config_path: str | None = None) -> dict:
         raise ValueError(
             f"fsq_eval_random_far_fraction must be in (0,1], got {random_far_fraction}."
         )
-    boundary_threshold_mode = str(
-        get_value(cfg, "skillset_boundary_threshold_mode", "episode_mean")
-    ).strip().lower()
-    if boundary_threshold_mode not in {"episode_mean", "global_mean"}:
-        raise ValueError(
-            "skillset_boundary_threshold_mode must be episode_mean|global_mean, got "
-            f"{boundary_threshold_mode!r}."
-        )
-    boundary_threshold_scale = float(
-        get_value(cfg, "skillset_boundary_threshold_scale", 1.0)
-    )
-    if boundary_threshold_scale <= 0.0:
-        raise ValueError(
-            "skillset_boundary_threshold_scale must be positive, got "
-            f"{boundary_threshold_scale}."
-        )
     return {
+        "project_root":            str(project_root),
+        "lerobot_root":            str(project_root / "lerobot"),
+        "dataset_root":            str(dataset_root),
+        "outputs_root":            str(outputs_root),
+        "fsq_outputs_root":        str(outputs_root / "FSQ"),
         # which eval(s) to run
-        "eval_run_fsq":            str(as_bool(get_value(cfg, "eval_run_fsq", True))).lower(),
-        "eval_run_dp":             str(as_bool(get_value(cfg, "eval_run_dp", True))).lower(),
-        # DP selection: blank = follow train_skills_config; else the DP folder name (+ checkpoint) to eval.
-        "eval_dp_run_name":        str(get_value(cfg, "eval_dp_run_name", "")),
-        "eval_dp_checkpoint":      str(get_value(cfg, "eval_dp_checkpoint", "")),
-        "dp_eval_skillset_dir":    str(get_value(cfg, "dp_eval_skillset_dir", "")),
+        "eval_run_fsq":            str(eval_run_fsq).lower(),
+        "eval_run_dp":             str(eval_run_dp).lower(),
+        # DP artifact selection. Its immutable manifest owns all provenance.
+        "dp_eval_skillset_dir":    dp_skillset_dir,
         "dp_eval_output_suffix":   output_suffix,
-        "skillset_boundary_threshold_mode": boundary_threshold_mode,
-        "skillset_boundary_threshold_scale": boundary_threshold_scale,
         # DP skill-boundary eval knobs
         "dp_eval_n_episodes":      int(get_value(cfg, "dp_eval_n_episodes", 10)),
         "dp_eval_task_ids":        " ".join(as_list(get_value(cfg, "dp_eval_task_ids", []))),
@@ -76,14 +218,10 @@ def build_settings(config_path: str | None = None) -> dict:
         "dp_eval_show_gripper_graph": str(
             as_bool(get_value(cfg, "dp_eval_show_gripper_graph", True))
         ).lower(),
-        "fsq_eval_run_name":       str(get_value(cfg, "fsq_eval_run_name", "")),
-        "fsq_eval_dino_model_path": str(
-            get_value(cfg, "fsq_eval_dino_model_path", "models/dinov3-vitl16")
-        ),
-        "fsq_eval_checkpoint":     str(get_value(cfg, "fsq_eval_checkpoint", 0)),
+        **fsq_artifact,
         "fsq_eval_n_action_steps": int(get_value(cfg, "fsq_eval_n_action_steps", 5)),
-        "fsq_eval_n_samples":      int(get_value(cfg, "fsq_eval_n_samples", 5)),
-        "fsq_eval_max_entries":    int(get_value(cfg, "fsq_eval_max_entries", 0)),
+        "fsq_eval_n_samples":      int(get_value(cfg, "fsq_eval_n_samples", 10)),
+        "fsq_eval_max_entries":    int(get_value(cfg, "fsq_eval_max_entries", 10)),
         "fsq_eval_decoder_scope":  str(get_value(cfg, "fsq_eval_decoder_scope", "samples")),
         "fsq_eval_end_threshold":  str(get_value(cfg, "fsq_eval_end_threshold", 0.5)),
         "fsq_eval_random_far_skill": str(
@@ -97,7 +235,7 @@ def build_settings(config_path: str | None = None) -> dict:
         "fsq_eval_qos":            str(get_value(cfg, "train_qos", "base_qos")),
         "fsq_eval_gres":           str(get_value(cfg, "eval_gres", get_value(cfg, "fsq_eval_gres", "gpu:1"))),
         "fsq_eval_cpus_per_task":  int(get_value(cfg, "eval_cpus_per_task", get_value(cfg, "fsq_eval_cpus_per_task", 4))),
-        "fsq_eval_mem":            str(get_value(cfg, "eval_mem", get_value(cfg, "fsq_eval_mem", "32G"))),
+        "fsq_eval_mem":            str(get_value(cfg, "eval_mem", get_value(cfg, "fsq_eval_mem", "64G" if eval_run_fsq else "32G"))),
         "fsq_eval_time":           str(get_value(cfg, "eval_time", get_value(cfg, "fsq_eval_time", "02:00:00"))),
         "fsq_eval_nodelist":       str(get_value(cfg, "train_nodelist", "")),
         "fsq_eval_exclude_nodes":  ",".join(exclude),
