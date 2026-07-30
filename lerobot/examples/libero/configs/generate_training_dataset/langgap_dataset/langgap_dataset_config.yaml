@@ -6,7 +6,8 @@
 #   - fps metadata says 10 while the data is really 20 Hz (collect control_freq=20, frame_skip=1)
 #   - camera key is image2 instead of wrist_image
 #   - no observation.states.* sub-features (joint_state is not recoverable → omitted; unused by training)
-#   - image orientation may differ from local convention ([::-1] vs [::-1, ::-1])
+#   - official 40 tasks are already canonical, but author-collected ext tasks were
+#     stored with [::-1] rather than [::-1, ::-1]
 # The build here:
 #   download (HF v3.0) → verify orientation → full rewrite at 20 Hz (rename/flip/gripper) → quantile stats
 
@@ -39,13 +40,20 @@ download_sets: langgap_56_full_full
 # convert_flip_image / convert_flip_wrist: none | h | w | hw | auto
 #   auto = verify_image_orientation.py의 verdict(json)를 사용; 낮은 신뢰도면 빌드 중단.
 # 판정 기준 데이터셋(공통 task 문자열로 매칭; blank -> {global dataset_root}에서 자동 탐색).
-# NOTE: langgap_ext는 확장 task뿐이라 공통 task 매칭이 불가(verdict=unknown) → none 명시.
-#   근거: 2026-07-26 langgap_6 vs 로컬 libero_90_full_full 육안 대조 — 두 카메라 모두 동일한
-#   upright 컨벤션(플립 불필요). LangGap 전 세트가 같은 변환 파이프라인 산출물이므로 공유됨.
-#   langgap_56을 빌드하면 공식 task 문자열 매칭으로 자동 재검증됨(auto로 바꿔 확인 가능).
+# Base policy applies to the canonical official prefix. Ext tasks receive the explicit
+# additional W flip below; a single global verdict cannot represent the mixed langgap_56 set.
 orientation_reference: ""
 convert_flip_image: none
 convert_flip_wrist: none
+
+# Author source_to_lerobot.py uses obs[..., ::-1] (H only) for both cameras, whereas
+# LeRobot's LIBERO processor evaluates with H+W. Add the missing W only to ext tasks.
+convert_ext_flip_image: w
+convert_ext_flip_wrist: w
+convert_ext_task_start_by_set:
+  langgap_56_full_full: 40  # official 0..39, ext 40..55
+  langgap_ext_full_full: 0  # every task is ext
+  langgap_6_smoke: 0        # ext-only smoke set
 
 # ── Convert (HF LeRobot v3 @10fps-label → canonical v3 @20fps) ──
 # Canonical LeRobot dataset whose meta/info.json feature contract is copied for the

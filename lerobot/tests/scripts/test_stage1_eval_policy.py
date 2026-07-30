@@ -133,6 +133,27 @@ def test_predictor_source_repredicts_at_a_detected_boundary() -> None:
     ]
 
 
+def test_gt_timed_advancement_does_not_call_a_terminator() -> None:
+    expert = _FakeExpert()
+    wrapper = Stage1OraclePolicy(
+        expert,
+        None,
+        skill_source="gt",
+        advance_mode="gt",
+        end_mode="or",
+        end_threshold=0.5,
+        progress_threshold=0.95,
+        max_skill_length=0,
+        n_action_steps=2,
+    )
+    wrapper.set_forced_skill_token_sequences(
+        [[{"token": 3, "gt_length": 1}, {"token": 7, "gt_length": 2}]]
+    )
+
+    assert wrapper.select_action({"observation.state": torch.zeros(1, 8)}).item() == 7
+    assert [call.item() for call in expert.calls] == [7]
+
+
 def test_stage2_gt_eval_keeps_vlm_needed_by_likelihood(monkeypatch) -> None:
     class _Policy(nn.Module):
         def __init__(self):

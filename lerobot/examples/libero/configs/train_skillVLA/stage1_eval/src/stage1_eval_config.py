@@ -28,9 +28,10 @@ def _at(config: dict, *path: str, default=None):
 
 
 def _relocate_project_path(project_root: Path, value: str | Path | None) -> Path:
-    path = Path(str(value or "")).expanduser()
-    if not str(value or "").strip():
-        return path
+    raw = str(value or "").strip()
+    if not raw:
+        return project_root / ".missing-required-path"
+    path = Path(raw).expanduser()
     if not path.is_absolute():
         return project_root / path
     if path.exists():
@@ -78,6 +79,7 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         "model.safetensors",
         "policy_preprocessor.json",
         "policy_postprocessor.json",
+        "train_config.json",
     )
     missing = [name for name in required if not (policy_path / name).is_file()]
     if missing:
@@ -87,26 +89,45 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
     policy = json.loads((policy_path / "config.json").read_text())
     if policy.get("type", policy.get("model_type")) != "skill_expert":
         raise ValueError(f"Expected a skill_expert checkpoint: {policy_path}")
-    if not as_bool(policy.get("train_terminator", False)):
+
+    conditioning_route = str(policy.get("conditioning_route", "")).strip().lower()
+    if conditioning_route not in {"state_cond", "state_skill_cond"}:
         raise ValueError(
-            f"Stage-1 checkpoint was not trained with train_terminator=true: {policy_path}"
+            "Stage-1 checkpoint does not follow the current conditioning contract "
+            f"(state_cond|state_skill_cond): {policy_path}"
+        )
+    action_loss_mode = str(policy.get("action_loss_mode", "")).strip().lower()
+    if action_loss_mode not in {"flow", "flow_endpoint_xyz"}:
+        raise ValueError(
+            "Stage-1 checkpoint does not record a supported action objective "
+            f"(flow|flow_endpoint_xyz): {policy_path}"
         )
 
-    fsq_path = _relocate_project_path(project_root, policy.get("fsq_path"))
-    if not fsq_path.is_file():
-        raise FileNotFoundError(f"FSQ checkpoint referenced by Stage 1 not found: {fsq_path}")
-    run_dir = fsq_path.parent
-    skill_dataset_dir = run_dir / "skillvla"
+    train_config = json.loads((policy_path / "train_config.json").read_text())
+    dataset_value = str((train_config.get("dataset") or {}).get("root") or "").strip()
+    if not dataset_value:
+        raise ValueError(f"Stage-1 train_config has no dataset.root: {policy_path}")
+    skill_dataset_dir = _relocate_project_path(project_root, dataset_value)
     if not (skill_dataset_dir / "meta" / "info.json").is_file():
-        raise FileNotFoundError(f"SkillVLA oracle dataset not found: {skill_dataset_dir}")
+        raise FileNotFoundError(
+            f"Stage-1 SkillVLA dataset not found: {skill_dataset_dir}"
+        )
+    run_dir = skill_dataset_dir.parent
     source_dir = run_dir.parent
-    dataset_root = source_dir.parent.parent
+    if len(source_dir.parents) < 2:
+        raise ValueError(f"Unexpected Stage-1 dataset layout: {skill_dataset_dir}")
+
+    fsq_path = _relocate_project_path(project_root, policy.get("fsq_path"))
+    has_terminator = as_bool(policy.get("train_terminator", False))
+    has_predictor = as_bool(policy.get("train_skill_predictor", False))
+    if has_terminator and not fsq_path.is_file():
+        raise FileNotFoundError(f"FSQ checkpoint referenced by Stage 1 not found: {fsq_path}")
     paths = {
         "fsq_path": fsq_path,
         "skill_dataset_dir": skill_dataset_dir,
         "eval_init_states_path": source_dir / "eval_init_states.npz",
         "skill_latents_path": run_dir / "skill_latents.npz",
-        "raw_dataset_dir": dataset_root / source_dir.name,
+        "raw_dataset_dir": source_dir.parents[1] / source_dir.name,
         "dino_model_path": _relocate_project_path(
             project_root, policy.get("dino_model_path")
         ),
@@ -118,14 +139,25 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
             project_root, policy.get("tokenizer_path")
         ),
     }
-    for key in ("dino_model_path", "terminator_dino_model_path"):
-        if not paths[key].is_dir():
-            raise FileNotFoundError(f"Stage-1 model directory not found: {paths[key]}")
-    if as_bool(policy.get("train_skill_predictor", False)) and not paths[
-        "tokenizer_path"
-    ].is_dir():
+    if not paths["dino_model_path"].is_dir():
+        raise FileNotFoundError(
+            f"Stage-1 model directory not found: {paths['dino_model_path']}"
+        )
+    if has_terminator and not paths["terminator_dino_model_path"].is_dir():
+        raise FileNotFoundError(
+            "Stage-1 terminator model directory not found: "
+            f"{paths['terminator_dino_model_path']}"
+        )
+    if has_predictor and not paths["tokenizer_path"].is_dir():
         raise FileNotFoundError(f"Stage-1 tokenizer not found: {paths['tokenizer_path']}")
-    return {"policy": policy, **paths}
+    return {
+        "policy": policy,
+        "conditioning_route": conditioning_route,
+        "action_loss_mode": action_loss_mode,
+        "has_predictor": has_predictor,
+        "has_terminator": has_terminator,
+        **paths,
+    }
 
 
 def _model_entries(config: dict) -> list[dict]:
@@ -200,11 +232,14 @@ def build_settings(config: dict) -> dict:
             / "pretrained_model"
         )
         contract = _checkpoint_contract(policy_path, project_root)
-        if entry["skill_source"] == "predictor" and not as_bool(
-            contract["policy"].get("train_skill_predictor", False)
-        ):
+        if entry["skill_source"] == "predictor" and not contract["has_predictor"]:
             raise ValueError(
                 f"skill_source=predictor but checkpoint has no trained predictor: {policy_path}"
+            )
+        if entry["advance_mode"] == "terminator" and not contract["has_terminator"]:
+            raise ValueError(
+                "advance_mode=terminator but checkpoint has no trained terminator: "
+                f"{policy_path}"
             )
         resolved.append({**entry, "policy_path": policy_path, **contract})
 
@@ -285,6 +320,8 @@ def build_settings(config: dict) -> dict:
         "dino_model_path": primary["dino_model_path"],
         "terminator_dino_model_path": primary["terminator_dino_model_path"],
         "tokenizer_path": primary["tokenizer_path"],
+        "conditioning_route": primary["conditioning_route"],
+        "action_loss_mode": primary["action_loss_mode"],
         "eval_out_dir": eval_outputs_root / output_name,
         "target_task": str(get_value(config, "target_task", "libero_goal")),
         "task_ids": json.dumps(task_ids, separators=(",", ":")),

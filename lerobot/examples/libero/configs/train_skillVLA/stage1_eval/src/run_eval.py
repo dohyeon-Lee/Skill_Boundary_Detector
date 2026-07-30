@@ -112,6 +112,8 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             raise ValueError(f"advance_mode must be terminator|gt, got {advance_mode!r}.")
         if skill_source == "predictor" and advance_mode != "terminator":
             raise ValueError("Predictor skills require terminator-based advancement.")
+        if advance_mode == "terminator" and terminator is None:
+            raise ValueError("advance_mode=terminator requires a checkpoint terminator.")
         if end_mode not in {"termination", "progress", "or", "and"}:
             raise ValueError(
                 f"end_mode must be termination|progress|or|and, got {end_mode!r}."
@@ -219,27 +221,30 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             self._started = True
 
         codes = self._current_codes(batch_size, device)
-        missing = [key for key in (RAW_STATE, RAW_IMAGE, RAW_WRIST) if key not in batch]
-        if missing:
-            raise ValueError(
-                "The saved policy preprocessor must preserve raw terminator inputs; "
-                f"missing={missing}."
+        progress = probability = None
+        if self.advance_mode == "terminator":
+            missing = [key for key in (RAW_STATE, RAW_IMAGE, RAW_WRIST) if key not in batch]
+            if missing:
+                raise ValueError(
+                    "The saved policy preprocessor must preserve raw terminator inputs; "
+                    f"missing={missing}."
+                )
+            progress, probability = self.terminator.terminate(
+                codes, batch[RAW_STATE], batch[RAW_IMAGE], batch[RAW_WRIST]
             )
-        progress, probability = self.terminator.terminate(
-            codes, batch[RAW_STATE], batch[RAW_IMAGE], batch[RAW_WRIST]
-        )
 
         gt_advanced = []
         repredict = []
         for batch_index in range(batch_size):
             trace = self._trace[self._active_trace[batch_index]]
-            trace["end_probs"].append(
-                {
-                    "skill_step": self._skill_step[batch_index],
-                    "prob": float(probability[batch_index]),
-                    "progress": float(progress[batch_index]),
-                }
-            )
+            if self.advance_mode == "terminator":
+                trace["end_probs"].append(
+                    {
+                        "skill_step": self._skill_step[batch_index],
+                        "prob": float(probability[batch_index]),
+                        "progress": float(progress[batch_index]),
+                    }
+                )
             self._skill_step[batch_index] += 1
             trace["length"] = self._skill_step[batch_index]
             if self.advance_mode == "gt":
@@ -428,7 +433,11 @@ def _build_context(spec: dict, cfg, device: torch.device) -> dict:
         cfg=policy_config, env_cfg=cfg.env, rename_map=cfg.rename_map
     )
     policy.eval()
-    terminator = CheckpointTerminator(policy)
+    terminator = (
+        CheckpointTerminator(policy)
+        if spec["advance_mode"] == "terminator"
+        else None
+    )
     # A Stage-1 GT run does not need its predictor/VLM and can release it.  Stage 2
     # is different: the likelihood blocks always consume the pristine frozen VLM
     # memory owned by skill_predictor, even when the injected skill itself is GT.
@@ -563,6 +572,8 @@ def _maybe_log_wandb(cfg, infos: dict[str, dict], specs: list[dict]) -> None:
                         "label": spec["label"],
                         "policy_path": spec["policy_path"],
                         "skill_source": spec["skill_source"],
+                        "conditioning_route": spec.get("conditioning_route"),
+                        "action_loss_mode": spec.get("action_loss_mode"),
                     }
                     for spec in specs
                 ],

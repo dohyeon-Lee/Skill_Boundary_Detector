@@ -52,7 +52,7 @@ assets: ${LIBERO_BENCHMARK_ROOT}/assets
 EOF
 export LIBERO_CONFIG_PATH="${LIBERO_LOCAL_CONFIG_DIR}"
 
-for artifact in "${POLICY_PATH}" "${FSQ_PATH}" "${SKILL_DATASET_DIR}" "${DINO_MODEL_PATH}" "${TERMINATOR_DINO_MODEL_PATH}"; do
+for artifact in "${POLICY_PATH}" "${SKILL_DATASET_DIR}" "${DINO_MODEL_PATH}"; do
   if [ ! -e "${artifact}" ]; then
     echo "Missing Stage-1 eval artifact: ${artifact}" >&2
     exit 1
@@ -77,8 +77,9 @@ fi
 
 echo "START STAGE-1 EVAL"
 echo "models   : ${MODEL_COUNT} (primary=${POLICY_PATH})"
+echo "contract : route=${CONDITIONING_ROUTE}, loss=${ACTION_LOSS_MODE}"
 echo "skills   : ${SKILL_DATASET_DIR}"
-echo "term     : each checkpoint's co-trained terminator"
+echo "term     : used only by panels with advance_mode=terminator"
 echo "suite    : ${TARGET_TASK} task_ids=${TASK_IDS} episodes=${N_EPISODES}"
 echo "output   : ${EVAL_OUT_DIR}"
 nvidia-smi || true

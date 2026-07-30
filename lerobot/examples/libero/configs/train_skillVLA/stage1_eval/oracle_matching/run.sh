@@ -9,6 +9,7 @@
 #   ./run.sh                                  # libero_90_full_full  →  libero_original_dataset/libero_90
 #   ./run.sh libero_10_full_full              # reuse on another suite (orig suite auto-derived: libero_10)
 #   ./run.sh libero_10_full_full --orig_dataset /abs/path/to/hdf5_dir   # override a derived path
+#   ./submit_langgap_init_states.sh langgap_56_full_firsthalf            # LangGap: GPU render matching
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -29,6 +30,19 @@ PY
 )"
 
 SOURCE="${1:-libero_90_full_full}"; [ $# -gt 0 ] && shift   # rest of args forwarded to override defaults
+
+if [[ "${SOURCE}" == langgap_* ]]; then
+  if [ -z "${SLURM_JOB_ID:-}" ] && [ "${ALLOW_LOGIN_RENDER:-0}" != 1 ]; then
+    echo "[error] LangGap exact matching renders every candidate init state and must run on a GPU node." >&2
+    echo "        Use: ./submit_langgap_init_states.sh ${SOURCE} $*" >&2
+    exit 1
+  fi
+  exec "${PY}" "${HERE}/build_langgap_init_states.py" \
+    --lerobot_dataset "${PROJECT_ROOT}/${DATASET_ROOT_NAME}/${SOURCE}" \
+    --out "${PROJECT_ROOT}/${DATASET_ROOT_NAME}/skillvla_dataset/${SOURCE}/eval_init_states.npz" \
+    "$@"
+fi
+
 # original LIBERO suite (libero_90 / libero_10 / …) auto-derived from the source name; override via --orig_dataset
 SUITE="$(printf '%s' "${SOURCE}" | grep -oE 'libero_[0-9a-z]+' | head -n1 || echo libero_90)"
 

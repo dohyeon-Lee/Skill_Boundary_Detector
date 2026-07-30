@@ -8,7 +8,7 @@ LangGap(YC11Hou, arXiv 2603.00592)은 동일 장면에서 언어 지시만 바�
 |---|---|---|---|
 | fps 메타데이터 | 10 (라벨 오류) | 20 | 20 Hz로 재작성 (수집은 실제 control_freq=20, frame_skip=1) |
 | wrist 카메라 키 | `observation.images.image2` | `observation.images.wrist_image` | rename |
-| 이미지 방향 | raw robosuite에 `[::-1]` | 원본 HDF5에 `[::-1, ::-1]` | verify로 판정 후 flip |
+| 이미지 방향 | 공식 prefix는 canonical, 저자 ext는 raw에 `[::-1]`만 적용 | raw에 `[::-1, ::-1]` | ext task에만 추가 W flip |
 | `observation.states.*` | 없음 (joint_state 복원 불가) | 있음 | 생략 — 학습 미사용 확인됨 |
 
 action(OSC delta EEF 7D, gripper ±1)과 state(eef pos3+axis-angle3+gripper2 = 8D)는
@@ -32,10 +32,31 @@ LANGGAP_ONLY="langgap_6_smoke" ./build_langgap_dataset.sh   # 스모크(300ep)�
 MSE 최소 변형을 verdict.json에 기록하고, `flip=auto`인 변환기가 이를 읽는다.
 verdict가 unknown이면 변환이 중단된다 — `_hf/{name}/.orientation/*_compare.png`를
 눈으로 확인하고 yaml의 `convert_flip_image/wrist`에 none|h|w|hw를 명시할 것.
-자동 판정이 나와도 PNG는 반드시 한 번 눈으로 확인하는 것을 전제로 한다.
+자동 판정이 나와도 PNG는 반드시 한 번 눈으로 확인하는 것을 전제로 한다. 이 verdict는
+공유되는 공식 task의 base 방향만 판정한다. `langgap_56`은 서로 다른 두 변환 파이프라인을
+합친 데이터셋이므로 ext 방향까지 대표하지 않는다. 변환기는 yaml의
+`convert_ext_task_start_by_set`부터 추가 W flip을 별도로 적용한다.
 
-`langgap_6_smoke`는 확장 task 위주라 공통 task가 없어 verdict가 unknown일 수 있다 —
-스모크는 `--flip-image/--flip-wrist`를 CLI로 명시해 돌린다.
+`langgap_ext_full_full`과 `langgap_6_smoke`는 ext-only이므로 task 0부터 추가 W flip을
+적용한다.
+
+## Repair an existing conversion
+
+이미 만들어진 `langgap_56_full_full`은 전체 state/action 변환을 다시 할 필요가 없다.
+다음 명령은 원본을 보존한 hardlink clone을 만든다. 공식 40 task의 최종 비디오는
+bitstream 그대로 재사용하고, ext 비디오만 HF staging 원본에서 직접 좌우 flip+20 Hz PTS
+보정하여 정상 변환과 동일하게 한 번 인코딩한다.
+
+```bash
+python repair_ext_orientation.py --dataset langgap_56_full_full --dry-run
+./submit_repair_ext_orientation.sh
+```
+
+기본 출력은 `langgap_56_full_full_canonical_orientation`이다. 현재 데이터 기준 ext는
+episode 1693부터 2400개이며, staging의 ext-only packed video 10개만 새로 만든다. ext는
+현재 잘못된 최종 MP4를 다시 압축하지 않으므로 추가 인코딩 세대가 없고, 공식 task는
+재인코딩조차 없다. 공간 flip은 채널별 통계를 바꾸지 않으므로 stats는 그대로 재사용하며,
+episode video 위치/PTS 메타데이터만 새 ext 파일에 맞게 갱신한다.
 
 ## Why full rewrite (metadata patch가 아니라)
 

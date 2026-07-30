@@ -15,7 +15,7 @@ Why a full rewrite (decode+re-encode) instead of metadata patching:
   - 방향 플립이 필요하면 재인코딩이 필수.
 The rewrite keeps the current SBD conventions:
   - 20 Hz episodes (LangGap collect는 control_freq=20, frame_skip=1 — 라벨만 10이었음)
-  - observation.images.image  <- image   (flip per orientation verdict)
+  - observation.images.image  <- image   (base + optional ext-task flip)
   - observation.images.wrist_image <- image2
   - state = LangGap observation.state 그대로 (eef pos3 + axis-angle3 + gripper qpos2)
   - action = LangGap OSC delta action, gripper kept in {-1, 1}
@@ -74,6 +74,24 @@ def parse_args() -> argparse.Namespace:
                         help="Agentview flip. Default: yaml convert_flip_image")
     parser.add_argument("--flip-wrist", choices=[*FLIPS, "auto"], default=None,
                         help="Wrist flip. Default: yaml convert_flip_wrist")
+    parser.add_argument(
+        "--ext-task-start",
+        type=int,
+        default=None,
+        help="First task_index using the ext flip. Default: yaml mapping for this set.",
+    )
+    parser.add_argument(
+        "--ext-flip-image",
+        choices=FLIPS,
+        default=None,
+        help="Additional agentview flip for ext tasks. Default: yaml convert_ext_flip_image.",
+    )
+    parser.add_argument(
+        "--ext-flip-wrist",
+        choices=FLIPS,
+        default=None,
+        help="Additional wrist flip for ext tasks. Default: yaml convert_ext_flip_wrist.",
+    )
     parser.add_argument("--vcodec", default=None)
     parser.add_argument("--image-writer-threads", type=int, default=None)
     parser.add_argument("--image-writer-processes", type=int, default=None)
@@ -107,6 +125,43 @@ def resolve_flip(cli: str | None, cfg_value: str, staging: Path, camera: str) ->
             "또는 --flip-* 로 명시하세요."
         )
     return value
+
+
+def resolve_ext_flip_policy(
+    *,
+    set_name: str,
+    cfg: dict[str, Any],
+    cli_task_start: int | None = None,
+    cli_image: str | None = None,
+    cli_wrist: str | None = None,
+) -> tuple[int, str, str] | None:
+    """Resolve the extra flip needed by author-collected LangGap tasks.
+
+    ``langgap_full`` is a concatenation of canonical ``lerobot/libero`` tasks and
+    author-collected extension tasks. The author's extension converter stores both
+    cameras with only an H flip, while the LeRobot LIBERO contract uses H+W. Thus the
+    extension portion needs one additional W flip; the official prefix must stay intact.
+    """
+    starts = cfg.get("convert_ext_task_start_by_set", {}) or {}
+    if not isinstance(starts, dict):
+        raise TypeError("convert_ext_task_start_by_set must be a mapping of set name to task_index.")
+
+    configured_start = starts.get(set_name)
+    if cli_task_start is None and configured_start is None:
+        if cli_image is not None or cli_wrist is not None:
+            raise ValueError("--ext-flip-* requires --ext-task-start for an unconfigured set.")
+        return None
+
+    start = int(cli_task_start if cli_task_start is not None else configured_start)
+    if start < 0:
+        raise ValueError(f"ext task start must be non-negative, got {start}.")
+
+    image = str(cli_image or cfg.get("convert_ext_flip_image", "w")).strip().lower()
+    wrist = str(cli_wrist or cfg.get("convert_ext_flip_wrist", "w")).strip().lower()
+    for camera, mode in (("image", image), ("wrist", wrist)):
+        if mode not in FLIPS:
+            raise ValueError(f"Ext {camera} flip must be one of {sorted(FLIPS)}, got {mode!r}.")
+    return start, image, wrist
 
 
 def reference_feature_specs(reference_root: Path) -> dict[str, Any]:
@@ -262,6 +317,13 @@ def main() -> None:
 
     flip_image = resolve_flip(args.flip_image, cfg.get("convert_flip_image", "auto"), staging, "image")
     flip_wrist = resolve_flip(args.flip_wrist, cfg.get("convert_flip_wrist", "auto"), staging, "wrist")
+    ext_flip_policy = resolve_ext_flip_policy(
+        set_name=args.set,
+        cfg=cfg,
+        cli_task_start=args.ext_task_start,
+        cli_image=args.ext_flip_image,
+        cli_wrist=args.ext_flip_wrist,
+    )
 
     schema_reference = Path(str(cfg.get("convert_schema_reference", ""))).expanduser()
     if not schema_reference.is_absolute():
@@ -280,7 +342,15 @@ def main() -> None:
     print(f"  source       : {staging} (episodes={src_info.get('total_episodes')}, "
           f"fps-label={src_info.get('fps')}, real 20 Hz)")
     print(f"  output       : {output_dir}")
-    print(f"  flip         : image={flip_image} wrist={flip_wrist}")
+    print(f"  base flip    : image={flip_image} wrist={flip_wrist}")
+    if ext_flip_policy is None:
+        print("  ext flip     : disabled")
+    else:
+        ext_start, ext_flip_image, ext_flip_wrist = ext_flip_policy
+        print(
+            f"  ext flip     : task_index>={ext_start} "
+            f"image={ext_flip_image} wrist={ext_flip_wrist}"
+        )
     print(f"  schema ref   : {schema_reference}")
 
     base_features = reference_feature_specs(schema_reference)
@@ -319,6 +389,11 @@ def main() -> None:
         ignore_index=True,
     ).sort_values("episode_index")
     tasks_df = pd.read_parquet(staging / "meta" / "tasks.parquet")
+    if ext_flip_policy is not None and ext_flip_policy[0] >= len(tasks_df):
+        raise ValueError(
+            f"Ext task start {ext_flip_policy[0]} is outside this set's "
+            f"task range [0, {len(tasks_df) - 1}]."
+        )
     task_by_index = {int(row.task_index): name for name, row in tasks_df.iterrows()}
     frames_by_ep = {int(ep): g for ep, g in data_df.groupby("episode_index")}
 
@@ -359,8 +434,15 @@ def main() -> None:
             )
         return out
 
-    flip_img_fn = FLIPS[flip_image]
-    flip_wri_fn = FLIPS[flip_wrist]
+    base_flip_img_fn = FLIPS[flip_image]
+    base_flip_wri_fn = FLIPS[flip_wrist]
+    if ext_flip_policy is None:
+        ext_start = None
+        extra_flip_img_fn = extra_flip_wri_fn = None
+    else:
+        ext_start, ext_flip_image, ext_flip_wrist = ext_flip_policy
+        extra_flip_img_fn = FLIPS[ext_flip_image]
+        extra_flip_wri_fn = FLIPS[ext_flip_wrist]
     total_frames = 0
     total_episodes = 0
     # 프리페치: 다음 에피소드 디코드를 백그라운드에서 미리 수행해 인코딩과 겹친다.
@@ -378,15 +460,22 @@ def main() -> None:
                 raise ValueError(f"episode {ep}: parquet rows {len(group)} != episode length {length}")
             states = np.stack(group["observation.state"].to_numpy()).astype(np.float32)
             actions = normalized_action(np.stack(group["action"].to_numpy()))
-            task = task_by_index[int(group["task_index"].iloc[0])]
+            task_index = int(group["task_index"].iloc[0])
+            task = task_by_index[task_index]
             images = videos["observation.images.image"]
             wrists = videos["observation.images.image2"]
+            is_ext = ext_start is not None and task_index >= ext_start
 
             for t in range(length):
+                image = base_flip_img_fn(images[t])
+                wrist = base_flip_wri_fn(wrists[t])
+                if is_ext:
+                    image = extra_flip_img_fn(image)
+                    wrist = extra_flip_wri_fn(wrist)
                 dataset.add_frame(
                     {
-                        "observation.images.image": flip_img_fn(images[t]).copy(),
-                        "observation.images.wrist_image": flip_wri_fn(wrists[t]).copy(),
+                        "observation.images.image": image.copy(),
+                        "observation.images.wrist_image": wrist.copy(),
                         "observation.state": states[t],
                         "action": actions[t],
                         "task": task,
@@ -401,6 +490,22 @@ def main() -> None:
     dataset.finalize()
     validate_written_dataset(output_dir, features, fps)
     validate_task_order(staging, output_dir)
+    orientation_contract = {
+        "base": {"image": flip_image, "wrist": flip_wrist},
+        "ext": (
+            None
+            if ext_flip_policy is None
+            else {
+                "task_index_start": ext_flip_policy[0],
+                "extra_image": ext_flip_policy[1],
+                "extra_wrist": ext_flip_policy[2],
+            }
+        ),
+        "contract": "LeRobot LIBERO H+W canonical orientation",
+    }
+    (output_dir / "meta/orientation_contract.json").write_text(
+        json.dumps(orientation_contract, indent=2)
+    )
     print("")
     print("DONE")
     print("  LeRobot        : v3.0 (schema reference verified, 20 Hz)")

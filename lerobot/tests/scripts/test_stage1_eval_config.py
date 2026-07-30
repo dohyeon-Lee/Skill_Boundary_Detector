@@ -49,6 +49,8 @@ def _checkpoint_tree(
         json.dumps(
             {
                 "type": "skill_expert",
+                "conditioning_route": "state_cond",
+                "action_loss_mode": "flow",
                 "fsq_path": str(run / "FSQ.pt"),
                 "dino_model_path": str(project / "models/dino"),
                 "terminator_dino_model_path": str(project / "models/dino"),
@@ -59,6 +61,9 @@ def _checkpoint_tree(
                 "chunk_size": 10,
             }
         )
+    )
+    (policy_path / "train_config.json").write_text(
+        json.dumps({"dataset": {"root": str(run / "skillvla")}})
     )
     return {
         "project_root": str(project),
@@ -93,11 +98,68 @@ def test_stage1_eval_uses_checkpoint_contract_and_local_output_root(tmp_path: Pa
     assert settings["task_ids"] == "[0,1]"
 
 
+def test_stage1_eval_reads_dataset_from_train_config_not_fsq_location(
+    tmp_path: Path,
+) -> None:
+    config = _checkpoint_tree(tmp_path)
+    policy_path = (
+        Path(config["project_root"])
+        / config["outputs_root"]
+        / "skillVLA_stage1"
+        / config["model_dir"]
+        / "checkpoints/last/pretrained_model"
+    )
+    external_fsq = Path(config["project_root"]) / "models/external_fsq/FSQ.pt"
+    external_fsq.parent.mkdir(parents=True)
+    external_fsq.touch()
+    policy = json.loads((policy_path / "config.json").read_text())
+    policy["fsq_path"] = str(external_fsq)
+    (policy_path / "config.json").write_text(json.dumps(policy))
+
+    settings = build_settings(config)
+
+    assert settings["fsq_path"] == external_fsq
+    assert settings["skill_dataset_dir"].parts[-2:] == ("FSQ333_run", "skillvla")
+    assert settings["raw_dataset_dir"] == (
+        Path(config["project_root"]) / "dataset_filtered/libero_goal_full_firsthalf"
+    )
+
+
 def test_stage1_eval_requires_cotrained_terminator(tmp_path: Path) -> None:
     config = _checkpoint_tree(tmp_path, train_terminator=False)
 
-    with pytest.raises(ValueError, match="train_terminator=true"):
+    with pytest.raises(ValueError, match="no trained terminator"):
         build_settings(config)
+
+
+def test_gt_timed_eval_does_not_require_terminator(tmp_path: Path) -> None:
+    config = _checkpoint_tree(tmp_path, train_terminator=False)
+    config["skill_source"] = "gt"
+    config["oracle"]["advance_mode"] = "gt"
+
+    settings = build_settings(config)
+
+    assert json.loads(settings["models_json"])[0]["has_terminator"] is False
+
+
+def test_stage1_eval_reads_current_route_and_loss_contract(tmp_path: Path) -> None:
+    config = _checkpoint_tree(tmp_path)
+    policy_path = (
+        Path(config["project_root"])
+        / config["outputs_root"]
+        / "skillVLA_stage1"
+        / config["model_dir"]
+        / "checkpoints/last/pretrained_model"
+    )
+    policy = json.loads((policy_path / "config.json").read_text())
+    policy["conditioning_route"] = "state_skill_cond"
+    policy["action_loss_mode"] = "flow_endpoint_xyz"
+    (policy_path / "config.json").write_text(json.dumps(policy))
+
+    model = json.loads(build_settings(config)["models_json"])[0]
+
+    assert model["conditioning_route"] == "state_skill_cond"
+    assert model["action_loss_mode"] == "flow_endpoint_xyz"
 
 
 def test_episode_exact_mode_requires_init_state_map(tmp_path: Path) -> None:
