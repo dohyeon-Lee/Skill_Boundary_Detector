@@ -87,9 +87,14 @@ def _require_stage1_contract(config: dict, checkpoint: Path) -> None:
         raise ValueError("Stage 2 expects the 18-layer gemma_300m action expert.")
     if config.get("cond_encoder_variant") != "gemma_300m":
         raise ValueError("Stage 2 expects the 18-layer gemma_300m condition encoder.")
-    if config.get("conditioning_route") not in {"state_cond", "state_skill_cond"}:
+    if config.get("conditioning_route") not in {
+        "state_cond",
+        "state_skill_cond",
+        "skill_cond",
+    }:
         raise ValueError(
-            "Stage 2 expects conditioning_route=state_cond|state_skill_cond."
+            "Stage 2 expects conditioning_route="
+            "state_cond|state_skill_cond|skill_cond."
         )
     if not (
         config.get("skill_predictor_attend_image", False)

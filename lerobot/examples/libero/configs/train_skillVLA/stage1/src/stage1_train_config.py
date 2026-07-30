@@ -158,9 +158,10 @@ def build_settings(config: dict) -> dict:
     conditioning_route = str(
         _at(config, "architecture", "conditioning_route", default="state_cond")
     ).strip().lower()
-    if conditioning_route not in {"state_cond", "state_skill_cond"}:
+    if conditioning_route not in {"state_cond", "state_skill_cond", "skill_cond"}:
         raise ValueError(
-            "architecture.conditioning_route must be state_cond|state_skill_cond."
+            "architecture.conditioning_route must be "
+            "state_cond|state_skill_cond|skill_cond."
         )
 
     max_state_dim = int(_at(config, "architecture", "max_state_dim", default=32))

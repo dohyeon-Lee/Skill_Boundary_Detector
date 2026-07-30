@@ -53,6 +53,9 @@ def test_stage2_config_fixes_bayesvla_contract() -> None:
         _config(conditioning_route="state_skill_cond").conditioning_route
         == "state_skill_cond"
     )
+    assert (
+        _config(conditioning_route="skill_cond").conditioning_route == "skill_cond"
+    )
     with pytest.raises(ValueError, match="fixes likelihood_num_layers=4"):
         _config(likelihood_num_layers=3)
     with pytest.raises(ValueError, match="gt.*predictor"):

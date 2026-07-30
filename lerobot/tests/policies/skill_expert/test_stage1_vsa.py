@@ -30,7 +30,7 @@ def test_stage1_uses_two_matching_18_layer_transformers() -> None:
     assert get_gemma_config(config.action_expert_variant).depth == 18
 
 
-def test_stage1_contract_is_dino_with_two_condition_stream_routes() -> None:
+def test_stage1_contract_is_dino_with_three_condition_stream_routes() -> None:
     config = SkillExpertConfig()
 
     assert config.vision_backbone == "dino"
@@ -44,6 +44,10 @@ def test_stage1_contract_is_dino_with_two_condition_stream_routes() -> None:
     assert (
         SkillExpertConfig(conditioning_route="state_skill_cond").conditioning_route
         == "state_skill_cond"
+    )
+    assert (
+        SkillExpertConfig(conditioning_route="skill_cond").conditioning_route
+        == "skill_cond"
     )
     with pytest.raises(ValueError, match="state_cond.*state_skill_cond"):
         SkillExpertConfig(conditioning_route="broadcast")
@@ -158,6 +162,38 @@ def test_skill_broadcast_is_routed_to_exactly_one_stream() -> None:
     assert moved_expert_skill is None
     assert condition_skill is not None
     torch.testing.assert_close(condition_skill, expert_skill)
+
+    model.config = SimpleNamespace(conditioning_route="skill_cond")
+    skill_only_condition, skill_only_expert = model._skill_broadcasts(code)
+    assert skill_only_expert is None
+    torch.testing.assert_close(skill_only_condition, expert_skill)
+
+
+def test_skill_cond_has_no_state_projection_or_cond_adarms() -> None:
+    class _Dino(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.anchor = nn.Parameter(torch.zeros(()))
+            self.config = SimpleNamespace(hidden_size=8, num_register_tokens=0)
+
+    with (
+        patch(
+            "lerobot.policies.skill_expert.modeling_skill_expert.AutoModel.from_pretrained",
+            return_value=_Dino(),
+        ),
+        patch(
+            "lerobot.policies.skill_expert.modeling_skill_expert.build_gemma",
+            side_effect=(nn.Identity(), nn.Identity()),
+        ) as build_gemma_mock,
+    ):
+        model = SkillExpertPytorch(
+            SkillExpertConfig(conditioning_route="skill_cond")
+        )
+
+    assert model.state_proj is None
+    assert model._state_condition(torch.randn(2, 32)) is None
+    assert build_gemma_mock.call_args_list[0].kwargs == {"use_adarms": False}
+    assert build_gemma_mock.call_args_list[1].kwargs == {"use_adarms": True}
 
 
 def test_joint_route_uses_state_only_for_cond_adarms_and_time_only_for_expert() -> None:
@@ -314,9 +350,11 @@ class _CaptureActionResidual(nn.Module):
         super().__init__()
         self.anchor = nn.Parameter(torch.zeros(()))
         self.seen_actions = None
+        self.seen_state = None
 
     def forward(self, images, state, skill_code, actions):
-        del images, state, skill_code
+        del images, skill_code
+        self.seen_state = state
         self.seen_actions = actions.detach().clone()
         self._last_predicted_actions = actions.clone()
         self._last_predicted_actions[:, :2, 0] += 1.0
@@ -356,6 +394,31 @@ def test_stage1_forward_matches_stage0_unconditional_action_target_and_mask() ->
     torch.testing.assert_close(loss, torch.tensor(2.5))
     assert metrics["action_loss"] == pytest.approx(2.5)
     assert metrics["loss_per_dim"] == pytest.approx([2.5, 2.5, 2.5])
+
+
+def test_skill_cond_action_path_does_not_read_state_from_batch() -> None:
+    policy = SkillExpertPolicy.__new__(SkillExpertPolicy)
+    nn.Module.__init__(policy)
+    policy.config = SimpleNamespace(
+        conditioning_route="skill_cond",
+        max_action_dim=3,
+        max_state_dim=2,
+        output_features={ACTION: SimpleNamespace(shape=(3,))},
+        train_terminator=False,
+        action_loss_mode="flow",
+    )
+    policy.model = _CaptureActionResidual()
+    policy._collect_images = lambda batch: []
+    policy._skill_code = lambda batch: torch.zeros(1, dtype=torch.long)
+    policy._last_transition_jitter_fraction = torch.zeros(())
+    batch = {
+        ACTION: torch.zeros(1, 3, 3),
+        "action_is_pad": torch.zeros(1, 3, dtype=torch.bool),
+    }
+
+    policy.forward(batch)
+
+    assert policy.model.seen_state is None
 
 
 def test_endpoint_xyz_loss_matches_stage0_accumulated_delta_definition() -> None:

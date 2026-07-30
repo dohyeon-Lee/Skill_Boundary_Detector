@@ -19,6 +19,7 @@ architecture:
   cond_variant: gemma_300m
   # state_cond:       state -> cond AdaRMS, skill -> expert broadcast
   # state_skill_cond: state -> cond AdaRMS, skill -> cond broadcast
+  # skill_cond:       no state in VSA path, skill -> cond broadcast
   conditioning_route: state_cond
   max_state_dim: 32
   max_action_dim: 32

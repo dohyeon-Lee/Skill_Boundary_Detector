@@ -1,10 +1,11 @@
 """Stage-1 vision-state-action prior with an isolated skill-prediction auxiliary.
 
 The action path has no VLM or language input. DINO and a fresh 18-layer condition
-transformer encode the current cameras, while robot state modulates that condition
-stream through AdaRMS. The 18-layer pi0.5 action expert retains its original
-time-only AdaRMS input. GT skill is broadcast into either the action stream or the
-condition stream, depending on the selected experiment. Optionally, a frozen pi0.5
+transformer encode the current cameras. Depending on the selected experiment,
+robot state either modulates that condition stream through AdaRMS or is omitted
+from the action path entirely. The 18-layer pi0.5 action expert retains its
+original time-only AdaRMS input. GT skill is broadcast into either the action
+stream or the condition stream. Optionally, a frozen pi0.5
 VLM base with a skill-only LoRA feeds a separate
 SkillReader/SkillHead optimizer; its graph and gradient clipping are disjoint from
 the action path.
@@ -78,7 +79,13 @@ class SkillExpertPytorch(nn.Module):
             persistent=False,
         )
 
-        self.state_proj = nn.Linear(config.max_state_dim, self.width)
+        # skill_cond deliberately has no state parameters in the VSA graph. This
+        # also avoids an unused trainable projection under distributed training.
+        self.state_proj = (
+            None
+            if config.conditioning_route == "skill_cond"
+            else nn.Linear(config.max_state_dim, self.width)
+        )
         self.skill_proj = nn.Linear(len(config.skill_fsq_levels), self.width)
         levels = torch.tensor(config.skill_fsq_levels, dtype=torch.long)
         strides = torch.ones_like(levels)
@@ -93,7 +100,10 @@ class SkillExpertPytorch(nn.Module):
         self.time_mlp_in = nn.Linear(self.width, self.width)
         self.time_mlp_out = nn.Linear(self.width, self.width)
 
-        self.cond_encoder = build_gemma(config.cond_encoder_variant, use_adarms=True)
+        self.cond_encoder = build_gemma(
+            config.cond_encoder_variant,
+            use_adarms=config.conditioning_route != "skill_cond",
+        )
         self.gemma_expert = build_gemma(config.action_expert_variant, use_adarms=True)
         self.skill_predictor = (
             FrozenVLMSkillPredictor(config) if config.train_skill_predictor else None
@@ -192,8 +202,14 @@ class SkillExpertPytorch(nn.Module):
         z_q = self._code_to_zq(skill_code).to(self.working_dtype)
         return self.skill_proj(z_q)
 
-    def _state_condition(self, state: Tensor) -> Tensor:
-        """Project robot state for the condition encoder's AdaRMS layers."""
+    def _state_condition(self, state: Tensor | None) -> Tensor | None:
+        """Project state for cond AdaRMS, or omit it entirely in skill_cond."""
+        if self.config.conditioning_route == "skill_cond":
+            return None
+        if state is None or self.state_proj is None:
+            raise ValueError(
+                f"{self.config.conditioning_route} requires robot state conditioning."
+            )
         return self.state_proj(state.to(self.working_dtype))
 
     def _skill_broadcasts(
@@ -250,7 +266,7 @@ class SkillExpertPytorch(nn.Module):
         self,
         condition_tokens: Tensor,
         noisy_actions: Tensor,
-        condition_state: Tensor,
+        condition_state: Tensor | None,
         expert_condition: Tensor,
         condition_skill: Tensor | None,
         expert_skill: Tensor | None,
@@ -319,7 +335,7 @@ class SkillExpertPytorch(nn.Module):
         self,
         condition_tokens: Tensor,
         noisy_actions: Tensor,
-        condition_state: Tensor,
+        condition_state: Tensor | None,
         expert_condition: Tensor,
         condition_skill: Tensor | None,
         expert_skill: Tensor | None,
@@ -338,7 +354,7 @@ class SkillExpertPytorch(nn.Module):
     def forward(
         self,
         images: list[Tensor],
-        state: Tensor,
+        state: Tensor | None,
         skill_code: Tensor,
         actions: Tensor,
         *,
@@ -376,13 +392,13 @@ class SkillExpertPytorch(nn.Module):
     def sample_actions(
         self,
         images: list[Tensor],
-        state: Tensor,
+        state: Tensor | None,
         skill_code: Tensor,
         noise: Tensor | None = None,
         num_steps: int | None = None,
     ) -> Tensor:
         num_steps = self.config.num_inference_steps if num_steps is None else num_steps
-        batch_size, device = state.shape[0], state.device
+        batch_size, device = skill_code.shape[0], skill_code.device
         if noise is None:
             noise = self.sample_noise(
                 (batch_size, self.config.chunk_size, self.config.max_action_dim), device
@@ -396,7 +412,7 @@ class SkillExpertPytorch(nn.Module):
         self,
         condition_tokens: Tensor,
         noise: Tensor,
-        state: Tensor,
+        state: Tensor | None,
         skill_code: Tensor,
         num_steps: int,
     ) -> Tensor:
@@ -944,7 +960,12 @@ class SkillExpertPolicy(PreTrainedPolicy):
     def forward(self, batch: dict, reduction: str = "mean"):
         actions = pad_vector(batch[ACTION], self.config.max_action_dim)
         real_dim = self.config.output_features[ACTION].shape[0]
-        state = pad_vector(batch[OBS_STATE], self.config.max_state_dim)
+        state = (
+            None
+            if getattr(self.config, "conditioning_route", "state_cond")
+            == "skill_cond"
+            else pad_vector(batch[OBS_STATE], self.config.max_state_dim)
+        )
         residual = self.model(
             self._collect_images(batch), state, self._skill_code(batch), actions
         )[..., :real_dim]
@@ -1009,7 +1030,12 @@ class SkillExpertPolicy(PreTrainedPolicy):
     @torch.no_grad()
     def predict_action_chunk(self, batch: dict, **kwargs) -> Tensor:
         self.eval()
-        state = pad_vector(batch[OBS_STATE], self.config.max_state_dim)
+        state = (
+            None
+            if getattr(self.config, "conditioning_route", "state_cond")
+            == "skill_cond"
+            else pad_vector(batch[OBS_STATE], self.config.max_state_dim)
+        )
         actions = self.model.sample_actions(
             self._collect_images(batch), state, self._skill_code(batch), **kwargs
         )

@@ -161,6 +161,11 @@ def test_stage1_eval_reads_current_route_and_loss_contract(tmp_path: Path) -> No
     assert model["conditioning_route"] == "state_skill_cond"
     assert model["action_loss_mode"] == "flow_endpoint_xyz"
 
+    policy["conditioning_route"] = "skill_cond"
+    (policy_path / "config.json").write_text(json.dumps(policy))
+    skill_only_model = json.loads(build_settings(config)["models_json"])[0]
+    assert skill_only_model["conditioning_route"] == "skill_cond"
+
 
 def test_episode_exact_mode_requires_init_state_map(tmp_path: Path) -> None:
     config = _checkpoint_tree(tmp_path)

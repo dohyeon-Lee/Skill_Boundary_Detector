@@ -15,7 +15,7 @@ from lerobot.utils.constants import ACTION, OBS_STATE
 @PreTrainedConfig.register_subclass("skill_expert")
 @dataclass
 class SkillExpertConfig(PreTrainedConfig):
-    """Stage-1 VSA policy: DINO images + state + GT skill -> action flow.
+    """Stage-1 VSA policy: DINO images plus routed state/skill -> action flow.
 
     The condition transformer and action expert both use all 18 ``gemma_300m``
     layers. The action expert is initialized from the pi0.5 base checkpoint and
@@ -54,8 +54,10 @@ class SkillExpertConfig(PreTrainedConfig):
       is broadcast into the action expert.
     - ``state_skill_cond``: state still modulates the condition encoder through
       AdaRMS, and skill is broadcast into the condition encoder as well.
+    - ``skill_cond``: state is absent from the action path; skill alone is
+      broadcast into the condition encoder, which uses ordinary RMSNorm.
 
-    In both routes the action expert's AdaRMS input is flow time only.
+    In every route the action expert's AdaRMS input is flow time only.
     """
     skill_vocab_size: int = 27
     skill_fsq_levels: list[int] = field(default_factory=lambda: [3, 3, 3])
@@ -138,9 +140,14 @@ class SkillExpertConfig(PreTrainedConfig):
             raise ValueError("dino_lr must be positive when set.")
         if self.freeze_vision_encoder and self.dino_lr is not None:
             raise ValueError("dino_lr cannot be set when freeze_vision_encoder=True.")
-        if self.conditioning_route not in {"state_cond", "state_skill_cond"}:
+        if self.conditioning_route not in {
+            "state_cond",
+            "state_skill_cond",
+            "skill_cond",
+        }:
             raise ValueError(
-                "conditioning_route must be 'state_cond' or 'state_skill_cond', got "
+                "conditioning_route must be 'state_cond', 'state_skill_cond', "
+                "or 'skill_cond', got "
                 f"{self.conditioning_route!r}."
             )
         if not self.skill_fsq_levels or any(level <= 1 for level in self.skill_fsq_levels):

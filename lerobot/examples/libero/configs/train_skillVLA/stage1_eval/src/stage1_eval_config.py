@@ -91,10 +91,10 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         raise ValueError(f"Expected a skill_expert checkpoint: {policy_path}")
 
     conditioning_route = str(policy.get("conditioning_route", "")).strip().lower()
-    if conditioning_route not in {"state_cond", "state_skill_cond"}:
+    if conditioning_route not in {"state_cond", "state_skill_cond", "skill_cond"}:
         raise ValueError(
             "Stage-1 checkpoint does not follow the current conditioning contract "
-            f"(state_cond|state_skill_cond): {policy_path}"
+            f"(state_cond|state_skill_cond|skill_cond): {policy_path}"
         )
     action_loss_mode = str(policy.get("action_loss_mode", "")).strip().lower()
     if action_loss_mode not in {"flow", "flow_endpoint_xyz"}:
