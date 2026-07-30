@@ -20,16 +20,16 @@
 
 project_root: /data1/dohyeon/Skill_Boundary_Detector
 # dataset | dataset_filtered | dataset_ABC
-dataset_root: dataset_filtered
+dataset_root: dataset
 # outputs | outputs_filtered | outputs_ABC
-outputs_root: outputs_filtered
+outputs_root: outputs
 # --- Slurm common defaults (canonical; every module reads these) ---
 # train_partition: accepts one or more (comma/list); blank -> Slurm picks first available.
 # NOTE: leave non-empty — resolvers fall back to per-module defaults (big/debug) when this is
 # blank, which would re-introduce divergence. Set the partition(s) you actually want here.
 train_partition: debug
 train_qos: base_qos
-train_nodelist: "node200"
+train_nodelist: ""
 train_exclude_nodes: [""]
 
 # ============================================================================
