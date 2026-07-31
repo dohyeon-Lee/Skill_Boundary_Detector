@@ -1,7 +1,7 @@
 dataset:
   skillvla_root: skillvla_dataset
-  source: langgap_56_full_firsthalf # langgap_56_full_firsthalf | libero_90_full_firsthalf_scene
-  run: FSQ345_300_std_pt_episodemean_80p_snap10_pmax15_halfnormal
+  source: libero_90_full_firsthalf_scene # langgap_56_full_firsthalf | libero_90_full_firsthalf_scene
+  run: FSQ345_125_std_pt_episodemean_80p_snap10_pmax15_halfnormal
 
 warm_start:
   pi_base: models/pi05_base
@@ -20,7 +20,7 @@ architecture:
   # state_cond:       state -> cond AdaRMS, skill -> expert broadcast
   # state_skill_cond: state -> cond AdaRMS, skill -> cond broadcast
   # skill_cond:       no state in VSA path, skill -> cond broadcast
-  conditioning_route: skill_cond
+  conditioning_route: state_cond
   max_state_dim: 32
   max_action_dim: 32
   chunk_size: 10
@@ -51,9 +51,9 @@ transition_randomization: {enabled: true}
 run: {suffix: ""}
 
 training:
-  dataloader: {batch_size: 8, workers: 2, gpus: 1}
+  dataloader: {batch_size: 16, workers: 2, gpus: 1}
   optimizer: {base_lr: 2.5e-05, dino_lr: null, terminator_lr_scale: 1.0}
-  gradient_checkpointing: true
+  gradient_checkpointing: false
   schedule: {steps: 50000, log_every: 100, save_every: 5000}
 
 logging:
