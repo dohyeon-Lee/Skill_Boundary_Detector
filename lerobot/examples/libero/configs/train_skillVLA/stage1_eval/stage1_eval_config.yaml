@@ -4,19 +4,19 @@
 external_skill_model: outputs_filtered/skillVLA_stage1/libero_90_full_firsthalf_scene_FSQ333_125_std_pt_episodemean_80p_snap10_pmax15_halfnormal_dino_tuned_state_skill_cond_flow/checkpoints/030000/pretrained_model
 models:
   - model_dir: libero_90_full_firsthalf_scene_FSQ333_125_std_pt_episodemean_80p_snap10_pmax15_halfnormal_dino_tuned_visiononly_cond_flow_16batch
-    checkpoint: "025000"
+    checkpoint: "030000"
     skill_source: external
     advance_mode: external
     label: vision_O_state_X_skill_X
 
   - model_dir: libero_90_full_firsthalf_scene_FSQ333_125_std_pt_episodemean_80p_snap10_pmax15_halfnormal_dino_tuned_stateonly_cond_flow_16batch
-    checkpoint: "025000"
+    checkpoint: "030000"
     skill_source: external
     advance_mode: external
     label: vision_O_state_O_skill_X
 
   - model_dir: libero_90_full_firsthalf_scene_FSQ333_125_std_pt_episodemean_80p_snap10_pmax15_halfnormal_dino_tuned_state_skill_cond_flow
-    checkpoint: "025000"
+    checkpoint: "030000"
     skill_source: external
     advance_mode: external
     label: vision_O_state_O_skill_O
@@ -24,7 +24,7 @@ models:
 models_per_row: 3
 
 # Empty => timestamped folder under stage1_eval/outputs/.
-output_name: "VSA_obs_analysis_pred_25k_replan2_fixed"
+output_name: "VSA_obs_analysis_pred_30k_replan2_fixed"
 # Reuse completed panel artifacts under the same output_name.
 resume: true
 
