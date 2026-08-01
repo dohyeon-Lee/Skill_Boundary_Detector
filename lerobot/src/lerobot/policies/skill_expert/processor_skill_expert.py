@@ -125,7 +125,7 @@ def make_skill_expert_pre_post_processors(
             stats=dataset_stats,
         )
     )
-    if config.train_skill_predictor:
+    if config.uses_skill_predictor:
         state_stats = (dataset_stats or {}).get(OBS_STATE, {}) or {}
         input_steps.extend(
             [

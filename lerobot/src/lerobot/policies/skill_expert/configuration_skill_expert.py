@@ -54,6 +54,8 @@ class SkillExpertConfig(PreTrainedConfig):
       is broadcast into the action expert.
     - ``state_skill_cond``: state still modulates the condition encoder through
       AdaRMS, and skill is broadcast into the condition encoder as well.
+    - ``stateonly_cond``: state modulates the condition encoder through AdaRMS;
+      skill is omitted from both the condition and action streams.
     - ``skill_cond``: state is absent from the action path; skill alone is
       broadcast into the condition encoder, which uses ordinary RMSNorm.
 
@@ -63,6 +65,12 @@ class SkillExpertConfig(PreTrainedConfig):
     skill_fsq_levels: list[int] = field(default_factory=lambda: [3, 3, 3])
     transition_jitter_pmax: int = 0
     transition_jitter_distribution: str = "half_normal"
+
+    # Which skill code conditions the action path during offline training.  The
+    # predictor route loads only the learned predictor from a previous Stage-1
+    # checkpoint; its frozen pi0.5 VLM base is initialized by pretrained_path.
+    training_skill_source: str = "gt"
+    skill_predictor_checkpoint_path: str | None = None
 
     # Skill predictor. Old Stage-1 checkpoints use a fully detached VLM; the
     # Stage3-A-matched path keeps the pi0.5 base frozen and trains only a named
@@ -143,11 +151,12 @@ class SkillExpertConfig(PreTrainedConfig):
         if self.conditioning_route not in {
             "state_cond",
             "state_skill_cond",
+            "stateonly_cond",
             "skill_cond",
         }:
             raise ValueError(
                 "conditioning_route must be 'state_cond', 'state_skill_cond', "
-                "or 'skill_cond', got "
+                "'stateonly_cond', or 'skill_cond', got "
                 f"{self.conditioning_route!r}."
             )
         if not self.skill_fsq_levels or any(level <= 1 for level in self.skill_fsq_levels):
@@ -174,7 +183,22 @@ class SkillExpertConfig(PreTrainedConfig):
                 "transition_jitter_distribution must be 'half_normal' or 'uniform', got "
                 f"{self.transition_jitter_distribution!r}."
             )
-        if self.train_skill_predictor:
+        if self.training_skill_source not in {"gt", "predictor"}:
+            raise ValueError(
+                "training_skill_source must be 'gt' or 'predictor', got "
+                f"{self.training_skill_source!r}."
+            )
+        predictor_source = self.skill_predictor_checkpoint_path or getattr(
+            self, "stage1_checkpoint_path", None
+        )
+        if self.training_skill_source == "predictor" and not str(
+            predictor_source or ""
+        ).strip():
+            raise ValueError(
+                "training_skill_source='predictor' requires "
+                "skill_predictor_checkpoint_path."
+            )
+        if self.uses_skill_predictor:
             if self.skill_predictor_lora and self.skill_predictor_detach_vlm:
                 raise ValueError(
                     "skill_predictor_detach_vlm must be False when skill_predictor_lora=True "
@@ -237,6 +261,11 @@ class SkillExpertConfig(PreTrainedConfig):
             self.output_features[ACTION] = PolicyFeature(
                 type=FeatureType.ACTION, shape=(self.max_action_dim,)
             )
+
+    @property
+    def uses_skill_predictor(self) -> bool:
+        """Whether this policy must instantiate/tokenize the predictor path."""
+        return self.train_skill_predictor or self.training_skill_source == "predictor"
 
     def get_optimizer_preset(self) -> AdamWConfig:
         return AdamWConfig(

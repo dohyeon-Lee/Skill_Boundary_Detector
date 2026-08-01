@@ -1,13 +1,16 @@
 dataset:
   skillvla_root: skillvla_dataset
   source: libero_90_full_firsthalf_scene # langgap_56_full_firsthalf | libero_90_full_firsthalf_scene
-  run: FSQ345_125_std_pt_episodemean_80p_snap10_pmax15_halfnormal
+  run: FSQ333_125_std_pt_episodemean_80p_snap10_pmax15_halfnormal
 
 warm_start:
   pi_base: models/pi05_base
   tokenizer: models/paligemma-3b-pt-224-tokenizer
   # Empty = use the FSQ.pt beside this dataset run. Used only for the terminator.
   fsq: ""
+  # Used only when action_conditioning.training_skill_source=predictor.
+  # The new VSA still starts from pi_base; only model.skill_predictor.* is read here.
+  predictor_checkpoint: outputs_filtered/skillVLA_stage1/libero_90_full_firsthalf_scene_FSQ333_125_std_pt_episodemean_80p_snap10_pmax15_halfnormal_dino_tuned_state_skill_cond_flow/checkpoints/030000/pretrained_model
 
 vision:
   dino_model: models/dinov3-vitl16
@@ -19,8 +22,9 @@ architecture:
   cond_variant: gemma_300m
   # state_cond:       state -> cond AdaRMS, skill -> expert broadcast
   # state_skill_cond: state -> cond AdaRMS, skill -> cond broadcast
+  # stateonly_cond:   state -> cond AdaRMS, skill -> not used by VSA
   # skill_cond:       no state in VSA path, skill -> cond broadcast
-  conditioning_route: state_cond
+  conditioning_route: stateonly_cond
   max_state_dim: 32
   max_action_dim: 32
   chunk_size: 10
@@ -28,9 +32,14 @@ architecture:
 # flow | flow_endpoint_xyz (the latter is 0.5 flow + 0.5 accumulated-XYZ endpoint MSE)
 loss: flow
 
+# gt: legacy teacher-forced jittered GT code.
+# predictor: frozen checkpoint predictor(jittered skill-start input) -> hard code -> VSA.
+action_conditioning:
+  training_skill_source: gt
+
 # Stage3-A predictor contract: frozen pi0.5 VLM base + Q/K/V/O skill LoRA.
 skill_predictor:
-  train: true
+  train: false
   weight: 0.5
   lr_scale: 1.0
   all_layers: true
@@ -40,7 +49,7 @@ skill_predictor:
 
 # Separate FSQ terminator instance; never shares parameters with the VSA path.
 terminator:
-  train: true
+  train: false
   freeze_vision: true
   end_target_sigma: 2.0
   end_pos_weight: 1.0

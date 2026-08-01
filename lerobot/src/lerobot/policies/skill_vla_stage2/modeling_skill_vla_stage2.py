@@ -464,7 +464,10 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
             raise ValueError(
                 f"Stage 2 requires a skill_expert checkpoint, got {stage1_config.get('type')!r}."
             )
-        if not stage1_config.get("train_skill_predictor", False):
+        has_predictor = bool(stage1_config.get("train_skill_predictor", False)) or str(
+            stage1_config.get("training_skill_source", "gt")
+        ).strip().lower() == "predictor"
+        if not has_predictor:
             raise ValueError("Stage-1 checkpoint has no trained skill predictor/VLM.")
         if not stage1_config.get("train_terminator", False):
             raise ValueError("Stage-1 checkpoint has no co-trained terminator.")

@@ -114,6 +114,96 @@ def test_stage1_exports_stage3a_predictor_contract(tmp_path: Path) -> None:
         "_dino_frozen_skill_cond_flow_endpoint_xyz_pred_lora_all_dz08"
     )
 
+    config["architecture"] = {"conditioning_route": "stateonly_cond"}
+    state_only_settings = build_settings(config)
+    assert state_only_settings["conditioning_route"] == "stateonly_cond"
+    assert state_only_settings["pt_run_name"].endswith(
+        "_dino_frozen_stateonly_cond_flow_endpoint_xyz_pred_lora_all_dz08"
+    )
+
+
+def test_stage1_resolves_frozen_predictor_action_conditioning(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    run = "FSQ333_example"
+    dataset = project / "dataset/skillvla_dataset/source" / run / "skillvla"
+    (dataset / "meta").mkdir(parents=True)
+    (dataset / "meta/info.json").write_text(
+        json.dumps(
+            {
+                "skill_fsq_levels": [3, 3, 3],
+                "skill_pmax": 15,
+                "skill_jitter_distribution": "half_normal",
+                "features": {
+                    "observation.state": {"shape": [8]},
+                    "action": {"shape": [7]},
+                },
+            }
+        )
+    )
+    pi_base = project / "models/pi05_base"
+    dino = project / "models/dino"
+    tokenizer = project / "models/tokenizer"
+    predictor = project / "outputs/skillVLA_stage1/source/checkpoints/012000/pretrained_model"
+    for path in (pi_base, dino, tokenizer, predictor):
+        path.mkdir(parents=True)
+    (pi_base / "model.safetensors").touch()
+    (predictor / "model.safetensors").touch()
+    for name in ("config.json", "tokenizer_config.json", "tokenizer.json"):
+        (tokenizer / name).touch()
+    (predictor / "config.json").write_text(
+        json.dumps(
+            {
+                "type": "skill_expert",
+                "train_skill_predictor": True,
+                "skill_fsq_levels": [3, 3, 3],
+                "skill_vocab_size": 27,
+                "skill_predictor_vlm_variant": "gemma_2b",
+                "skill_predictor_image_size": 224,
+                "skill_predictor_reader_tokens": 4,
+                "skill_predictor_reader_depth": 2,
+                "skill_predictor_reader_heads": 8,
+                "skill_predictor_all_layers": True,
+                "skill_predictor_detach_vlm": False,
+                "skill_predictor_lora": True,
+                "skill_predictor_lora_targets": "q,k,v,o",
+                "skill_predictor_lora_rank": 8,
+                "skill_predictor_lora_alpha": 16.0,
+                "skill_predictor_lora_dropout": 0.0,
+                "skill_predictor_deadzone_frac": 0.8,
+                "skill_predictor_attend_image": True,
+                "skill_predictor_attend_language": True,
+                "tokenizer_max_length": 200,
+            }
+        )
+    )
+
+    settings = build_settings(
+        {
+            "project_root": str(project),
+            "dataset_root": "dataset",
+            "outputs_root": "outputs",
+            "dataset": {
+                "skillvla_root": "skillvla_dataset",
+                "source": "source",
+                "run": run,
+            },
+            "warm_start": {
+                "pi_base": "models/pi05_base",
+                "tokenizer": "models/tokenizer",
+                "predictor_checkpoint": str(predictor),
+            },
+            "vision": {"dino_model": "models/dino", "freeze": True},
+            "action_conditioning": {"training_skill_source": "predictor"},
+            "skill_predictor": {"train": False},
+            "terminator": {"train": False},
+        }
+    )
+
+    assert settings["training_skill_source"] == "predictor"
+    assert settings["skill_predictor_checkpoint_path"] == predictor
+    assert not settings["train_skill_predictor"]
+    assert settings["pt_run_name"].endswith("_flow_pretrained_predictor")
+
 
 def test_stage1_output_name_keeps_full_dataset_identity(tmp_path: Path) -> None:
     project = tmp_path / "project"

@@ -132,6 +132,25 @@ def test_stage1_eval_requires_cotrained_terminator(tmp_path: Path) -> None:
         build_settings(config)
 
 
+def test_stage1_eval_accepts_frozen_checkpoint_predictor(tmp_path: Path) -> None:
+    config = _checkpoint_tree(tmp_path, train_predictor=False)
+    config["skill_source"] = "predictor"
+    policy_path = (
+        Path(config["project_root"])
+        / config["outputs_root"]
+        / "skillVLA_stage1"
+        / config["model_dir"]
+        / "checkpoints/last/pretrained_model"
+    )
+    policy = json.loads((policy_path / "config.json").read_text())
+    policy["training_skill_source"] = "predictor"
+    (policy_path / "config.json").write_text(json.dumps(policy))
+
+    settings = build_settings(config)
+
+    assert json.loads(settings["models_json"])[0]["has_predictor"] is True
+
+
 def test_gt_timed_eval_does_not_require_terminator(tmp_path: Path) -> None:
     config = _checkpoint_tree(tmp_path, train_terminator=False)
     config["skill_source"] = "gt"
@@ -165,6 +184,11 @@ def test_stage1_eval_reads_current_route_and_loss_contract(tmp_path: Path) -> No
     (policy_path / "config.json").write_text(json.dumps(policy))
     skill_only_model = json.loads(build_settings(config)["models_json"])[0]
     assert skill_only_model["conditioning_route"] == "skill_cond"
+
+    policy["conditioning_route"] = "stateonly_cond"
+    (policy_path / "config.json").write_text(json.dumps(policy))
+    state_only_model = json.loads(build_settings(config)["models_json"])[0]
+    assert state_only_model["conditioning_route"] == "stateonly_cond"
 
 
 def test_episode_exact_mode_requires_init_state_map(tmp_path: Path) -> None:

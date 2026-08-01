@@ -12,6 +12,7 @@ from lerobot.policies.skill_expert.configuration_skill_expert import SkillExpert
 from lerobot.policies.skill_expert.modeling_skill_expert import (
     SkillExpertPolicy,
     SkillExpertPytorch,
+    _load_learned_predictor_parameters,
     _load_pretrained_state_dict,
     _map_pi05_key,
 )
@@ -30,7 +31,7 @@ def test_stage1_uses_two_matching_18_layer_transformers() -> None:
     assert get_gemma_config(config.action_expert_variant).depth == 18
 
 
-def test_stage1_contract_is_dino_with_three_condition_stream_routes() -> None:
+def test_stage1_contract_is_dino_with_four_condition_stream_routes() -> None:
     config = SkillExpertConfig()
 
     assert config.vision_backbone == "dino"
@@ -44,6 +45,10 @@ def test_stage1_contract_is_dino_with_three_condition_stream_routes() -> None:
     assert (
         SkillExpertConfig(conditioning_route="state_skill_cond").conditioning_route
         == "state_skill_cond"
+    )
+    assert (
+        SkillExpertConfig(conditioning_route="stateonly_cond").conditioning_route
+        == "stateonly_cond"
     )
     assert (
         SkillExpertConfig(conditioning_route="skill_cond").conditioning_route
@@ -84,6 +89,20 @@ def test_stage3a_predictor_contract_allows_only_skill_lora_vlm_gradients() -> No
             skill_predictor_lora=False,
             skill_predictor_detach_vlm=False,
         )
+
+
+def test_predicted_training_skill_requires_and_instantiates_checkpoint_predictor() -> None:
+    with pytest.raises(ValueError, match="skill_predictor_checkpoint_path"):
+        SkillExpertConfig(training_skill_source="predictor")
+
+    config = SkillExpertConfig(
+        training_skill_source="predictor",
+        skill_predictor_checkpoint_path="/tmp/stage1-predictor",
+        train_skill_predictor=False,
+    )
+
+    assert config.uses_skill_predictor
+    assert not config.train_skill_predictor
 
 
 def test_pi05_warm_start_maps_only_action_expert_motion_prior() -> None:
@@ -128,6 +147,34 @@ def test_pi05_loader_does_not_materialize_vlm_weights(tmp_path) -> None:
     ) is None
 
 
+def test_stage1_predictor_loader_overlays_only_learned_predictor_tensors(tmp_path) -> None:
+    class _TinyPredictor(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.reader = nn.Linear(2, 2)
+            self.head = nn.Linear(2, 1)
+            self.vlm = nn.Linear(2, 2)
+
+    predictor = _TinyPredictor()
+    base_before = predictor.vlm.weight.detach().clone()
+    target = predictor.state_dict()
+    source = {
+        f"model.skill_predictor.{key}": torch.full_like(value, 7)
+        for key, value in target.items()
+        if key.startswith(("reader.", "head."))
+    }
+    source["model.gemma_expert.unrelated"] = torch.ones(1)
+    save_file(source, tmp_path / "model.safetensors")
+
+    loaded = _load_learned_predictor_parameters(predictor, tmp_path)
+
+    assert loaded == 4
+    for key, value in predictor.state_dict().items():
+        if key.startswith(("reader.", "head.")):
+            torch.testing.assert_close(value, torch.full_like(value, 7))
+    torch.testing.assert_close(predictor.vlm.weight, base_before)
+
+
 def test_flat_skill_code_maps_to_fsq_grid_coordinate() -> None:
     model = SimpleNamespace(
         _fsq_levels=torch.tensor([3, 3, 3]),
@@ -167,6 +214,40 @@ def test_skill_broadcast_is_routed_to_exactly_one_stream() -> None:
     skill_only_condition, skill_only_expert = model._skill_broadcasts(code)
     assert skill_only_expert is None
     torch.testing.assert_close(skill_only_condition, expert_skill)
+
+    model.config = SimpleNamespace(conditioning_route="stateonly_cond")
+    state_only_condition, state_only_expert = model._skill_broadcasts(code)
+    assert state_only_condition is None
+    assert state_only_expert is None
+
+
+def test_stateonly_cond_has_state_adarms_but_no_skill_projection() -> None:
+    class _Dino(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.anchor = nn.Parameter(torch.zeros(()))
+            self.config = SimpleNamespace(hidden_size=8, num_register_tokens=0)
+
+    with (
+        patch(
+            "lerobot.policies.skill_expert.modeling_skill_expert.AutoModel.from_pretrained",
+            return_value=_Dino(),
+        ),
+        patch(
+            "lerobot.policies.skill_expert.modeling_skill_expert.build_gemma",
+            side_effect=(nn.Identity(), nn.Identity()),
+        ) as build_gemma_mock,
+    ):
+        model = SkillExpertPytorch(
+            SkillExpertConfig(conditioning_route="stateonly_cond")
+        )
+
+    assert model.state_proj is not None
+    assert model.skill_proj is None
+    assert model._state_condition(torch.randn(2, 32)).shape == (2, model.width)
+    assert model._skill_broadcasts(torch.tensor([0, 26])) == (None, None)
+    assert build_gemma_mock.call_args_list[0].kwargs == {"use_adarms": True}
+    assert build_gemma_mock.call_args_list[1].kwargs == {"use_adarms": True}
 
 
 def test_skill_cond_has_no_state_projection_or_cond_adarms() -> None:
@@ -606,6 +687,33 @@ def test_runtime_skill_prediction_uses_current_images_and_language_tokens() -> N
     prediction = policy.predict_skill_code(batch)
 
     assert prediction.tolist() == [6]
+
+
+def test_stage1_action_conditioning_uses_predictor_output_not_jittered_gt() -> None:
+    policy = SkillExpertPolicy.__new__(SkillExpertPolicy)
+    nn.Module.__init__(policy)
+    policy.config = SimpleNamespace(
+        training_skill_source="predictor",
+        skill_vocab_size=27,
+    )
+    holder = nn.Module()
+    holder.anchor = nn.Parameter(torch.zeros(()))
+    holder.skill_predictor = _FakePredictor()
+    policy.model = holder
+    policy._skill_code = lambda batch: torch.tensor([5])
+    batch = {
+        "skill_start_image": torch.zeros(1, 3, 4, 4),
+        "skill_start_wrist_image": torch.zeros(1, 3, 4, 4),
+        "skill_code_true": torch.tensor([6]),
+        OBS_LANGUAGE_TOKENS: torch.zeros(1, 3, dtype=torch.long),
+        OBS_LANGUAGE_ATTENTION_MASK: torch.ones(1, 3, dtype=torch.bool),
+    }
+
+    conditioning = policy._training_skill_code(batch)
+
+    assert conditioning.tolist() == [6]
+    assert policy._last_predicted_skill_accuracy.item() == 0.0
+    assert policy._last_predicted_diff_from_current.item() == 0.0
 
 
 class _FakeTerminatorModel(nn.Module):

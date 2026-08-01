@@ -4,8 +4,9 @@ The action path has no VLM or language input. DINO and a fresh 18-layer conditio
 transformer encode the current cameras. Depending on the selected experiment,
 robot state either modulates that condition stream through AdaRMS or is omitted
 from the action path entirely. The 18-layer pi0.5 action expert retains its
-original time-only AdaRMS input. GT skill is broadcast into either the action
-stream or the condition stream. Optionally, a frozen pi0.5
+original time-only AdaRMS input. The selected skill is broadcast into either
+the action stream or the condition stream, or omitted in ``stateonly_cond``.
+Optionally, a frozen pi0.5
 VLM base with a skill-only LoRA feeds a separate
 SkillReader/SkillHead optimizer; its graph and gradient clipping are disjoint from
 the action path.
@@ -14,6 +15,7 @@ the action path.
 from __future__ import annotations
 
 import copy
+import json
 import logging
 from collections import deque
 from contextlib import nullcontext
@@ -86,7 +88,13 @@ class SkillExpertPytorch(nn.Module):
             if config.conditioning_route == "skill_cond"
             else nn.Linear(config.max_state_dim, self.width)
         )
-        self.skill_proj = nn.Linear(len(config.skill_fsq_levels), self.width)
+        # stateonly_cond deliberately removes skill from the VSA graph. Avoid
+        # leaving an unused trainable projection under distributed training.
+        self.skill_proj = (
+            None
+            if config.conditioning_route == "stateonly_cond"
+            else nn.Linear(len(config.skill_fsq_levels), self.width)
+        )
         levels = torch.tensor(config.skill_fsq_levels, dtype=torch.long)
         strides = torch.ones_like(levels)
         for index in range(1, len(config.skill_fsq_levels)):
@@ -106,7 +114,7 @@ class SkillExpertPytorch(nn.Module):
         )
         self.gemma_expert = build_gemma(config.action_expert_variant, use_adarms=True)
         self.skill_predictor = (
-            FrozenVLMSkillPredictor(config) if config.train_skill_predictor else None
+            FrozenVLMSkillPredictor(config) if config.uses_skill_predictor else None
         )
         self.fsq_term_train = None
         if config.train_terminator:
@@ -135,7 +143,7 @@ class SkillExpertPytorch(nn.Module):
             self.cond_encoder.gradient_checkpointing_enable()
         if hasattr(self.gemma_expert, "gradient_checkpointing_enable"):
             self.gemma_expert.gradient_checkpointing_enable()
-        if self.skill_predictor is not None:
+        if self.skill_predictor is not None and self.config.train_skill_predictor:
             self.skill_predictor.gradient_checkpointing_enable()
         if not self.config.freeze_vision_encoder and hasattr(
             self.dino, "gradient_checkpointing_enable"
@@ -146,6 +154,10 @@ class SkillExpertPytorch(nn.Module):
         super().train(mode)
         if self.config.freeze_vision_encoder:
             self.dino.eval()
+        if self.skill_predictor is not None and not self.config.train_skill_predictor:
+            # Frozen checkpoint predictors must be deterministic while supplying
+            # the action-conditioning code during Stage-1 training.
+            self.skill_predictor.eval()
         if (
             self.fsq_term_train is not None
             and self.fsq_term_train.freeze_vision_encoder
@@ -199,6 +211,8 @@ class SkillExpertPytorch(nn.Module):
         return (level_ids.float() - self._fsq_half[None]) / self._fsq_half[None]
 
     def _skill_embedding(self, skill_code: Tensor) -> Tensor:
+        if self.skill_proj is None:
+            raise RuntimeError("stateonly_cond has no skill projection in the VSA graph.")
         z_q = self._code_to_zq(skill_code).to(self.working_dtype)
         return self.skill_proj(z_q)
 
@@ -216,6 +230,8 @@ class SkillExpertPytorch(nn.Module):
         self, skill_code: Tensor
     ) -> tuple[Tensor | None, Tensor | None]:
         """Return ``(condition_stream, action_stream)`` skill broadcasts."""
+        if self.config.conditioning_route == "stateonly_cond":
+            return None, None
         skill = self._skill_embedding(skill_code)
         if self.config.conditioning_route == "state_cond":
             return None, skill
@@ -596,6 +612,75 @@ def _load_pretrained_state_dict(
     )
 
 
+_PREDICTOR_CHECKPOINT_CONTRACT_FIELDS = (
+    "skill_vocab_size",
+    "skill_fsq_levels",
+    "skill_predictor_vlm_variant",
+    "skill_predictor_image_size",
+    "skill_predictor_reader_tokens",
+    "skill_predictor_reader_depth",
+    "skill_predictor_reader_heads",
+    "skill_predictor_all_layers",
+    "skill_predictor_detach_vlm",
+    "skill_predictor_lora",
+    "skill_predictor_lora_targets",
+    "skill_predictor_lora_rank",
+    "skill_predictor_lora_alpha",
+    "skill_predictor_lora_dropout",
+    "skill_predictor_deadzone_frac",
+    "skill_predictor_attend_image",
+    "skill_predictor_attend_language",
+    "tokenizer_max_length",
+)
+
+
+def _is_learned_predictor_key(key: str) -> bool:
+    """The pi0.5 predictor base is already loaded; overlay learned Stage-1 parts."""
+    return key.startswith(("reader.", "head.")) or ".adapters.skill." in key
+
+
+def _load_learned_predictor_parameters(
+    predictor: FrozenVLMSkillPredictor,
+    checkpoint_path: str | Path,
+) -> int:
+    """Copy only reader/head/skill-LoRA tensors without materializing a 4B checkpoint."""
+    from safetensors import safe_open  # noqa: PLC0415
+
+    path = Path(checkpoint_path)
+    weights_path = path if path.is_file() else path / "model.safetensors"
+    if not weights_path.is_file():
+        raise FileNotFoundError(f"Stage-1 predictor weights not found: {weights_path}")
+
+    prefix = "model.skill_predictor."
+    target_state = predictor.state_dict()
+    expected = {key for key in target_state if _is_learned_predictor_key(key)}
+    with safe_open(str(weights_path), framework="pt", device="cpu") as checkpoint:
+        source = {
+            key.removeprefix(prefix)
+            for key in checkpoint.keys()
+            if key.startswith(prefix)
+            and _is_learned_predictor_key(key.removeprefix(prefix))
+        }
+        missing = expected - source
+        unexpected = source - expected
+        if missing or unexpected:
+            raise RuntimeError(
+                "Stage-1 predictor tensor mismatch: "
+                f"missing={sorted(missing)}, unexpected={sorted(unexpected)}"
+            )
+        with torch.no_grad():
+            for key in sorted(expected):
+                value = checkpoint.get_tensor(prefix + key)
+                target = target_state[key]
+                if value.shape != target.shape:
+                    raise RuntimeError(
+                        f"Stage-1 predictor shape mismatch for {key}: "
+                        f"checkpoint={tuple(value.shape)}, model={tuple(target.shape)}"
+                    )
+                target.copy_(value.to(device=target.device, dtype=target.dtype))
+    return len(expected)
+
+
 class SkillExpertPolicy(PreTrainedPolicy):
     """LeRobot policy wrapper for the Stage-1 VSA prior."""
 
@@ -620,6 +705,42 @@ class SkillExpertPolicy(PreTrainedPolicy):
 
     def reset(self) -> None:
         self._action_queue = deque(maxlen=self.config.n_action_steps)
+
+    def _initialize_frozen_skill_predictor(
+        self, checkpoint_path: str | Path | None
+    ) -> None:
+        predictor = self.model.skill_predictor
+        if predictor is None:
+            raise RuntimeError("Predicted-skill training requires a predictor module.")
+        path = Path(str(checkpoint_path or ""))
+        config_path = path / "config.json"
+        if not config_path.is_file():
+            raise FileNotFoundError(f"Stage-1 predictor config not found: {config_path}")
+        source_config = json.loads(config_path.read_text())
+        if source_config.get("type") != "skill_expert":
+            raise ValueError(
+                "Predictor source must be a skill_expert checkpoint, got "
+                f"{source_config.get('type')!r}."
+            )
+        if not source_config.get("train_skill_predictor", False):
+            raise ValueError("Stage-1 predictor source has no trained predictor.")
+        mismatches = [
+            f"{field}: checkpoint={source_config.get(field)!r}, "
+            f"current={getattr(self.config, field)!r}"
+            for field in _PREDICTOR_CHECKPOINT_CONTRACT_FIELDS
+            if source_config.get(field) != getattr(self.config, field)
+        ]
+        if mismatches:
+            raise ValueError(
+                "Stage-1 predictor architecture mismatch: " + "; ".join(mismatches)
+            )
+        loaded = _load_learned_predictor_parameters(predictor, path)
+        predictor.requires_grad_(False).eval()
+        log.info(
+            "Stage 1 <- frozen predictor %s: loaded %d learned tensors.",
+            path,
+            loaded,
+        )
 
     def get_optim_params(self) -> list[dict]:
         """VSA groups plus a separate-LR terminator; predictor stays excluded."""
@@ -751,6 +872,44 @@ class SkillExpertPolicy(PreTrainedPolicy):
             batch[OBS_LANGUAGE_ATTENTION_MASK].to(target.device),
             target,
         )
+
+    @torch.no_grad()
+    def _predicted_training_skill_code(self, batch: dict) -> Tensor:
+        """Predict the held skill from the dataset's jittered skill-start view."""
+        predictor = self.model.skill_predictor
+        if predictor is None:
+            raise RuntimeError("Predicted-skill training has no loaded predictor.")
+        device = next(self.parameters()).device
+        return predictor.predict(
+            self._predictor_start_images(batch),
+            batch[OBS_LANGUAGE_TOKENS].to(device),
+            batch[OBS_LANGUAGE_ATTENTION_MASK].to(device),
+        ).view(-1).long()
+
+    def _training_skill_code(self, batch: dict) -> Tensor:
+        # Resolve the coherent post-jitter GT only as an audit label and for the
+        # legacy route.  Predictor mode never feeds this label to the VSA.
+        jittered_gt = self._skill_code(batch)
+        self._last_predicted_skill_accuracy = None
+        self._last_predicted_diff_from_current = None
+        self._last_unique_predicted_skills = None
+        if getattr(self.config, "training_skill_source", "gt") == "gt":
+            return jittered_gt
+
+        predicted = self._predicted_training_skill_code(batch).clamp(
+            0, self.config.skill_vocab_size - 1
+        )
+        jittered_gt = jittered_gt.to(predicted.device)
+        self._last_predicted_skill_accuracy = (
+            predicted == jittered_gt
+        ).float().mean()
+        self._last_unique_predicted_skills = torch.unique(predicted).numel()
+        if "skill_code_true" in batch:
+            current_gt = batch["skill_code_true"].to(predicted.device).view(-1).long()
+            self._last_predicted_diff_from_current = (
+                predicted != current_gt
+            ).float().mean()
+        return predicted
 
     @torch.no_grad()
     def predict_skill_code(self, batch: dict) -> Tensor:
@@ -966,8 +1125,9 @@ class SkillExpertPolicy(PreTrainedPolicy):
             == "skill_cond"
             else pad_vector(batch[OBS_STATE], self.config.max_state_dim)
         )
+        skill_code = self._training_skill_code(batch)
         residual = self.model(
-            self._collect_images(batch), state, self._skill_code(batch), actions
+            self._collect_images(batch), state, skill_code, actions
         )[..., :real_dim]
         squared_error = residual.square()
         valid = self._valid_action_steps(actions, batch)
@@ -998,8 +1158,22 @@ class SkillExpertPolicy(PreTrainedPolicy):
         loss_dict = {
             "action_loss": action_loss.detach().item(),
             "loss_per_dim": loss_per_dim.detach().cpu().tolist(),
+            "conditioning/skill_source_predictor": float(
+                getattr(self.config, "training_skill_source", "gt") == "predictor"
+            ),
             "regime/transition_jitter_fraction": self._last_transition_jitter_fraction.detach().item(),
         }
+        if self._last_predicted_skill_accuracy is not None:
+            loss_dict["conditioning/predictor_acc_vs_jittered_gt"] = (
+                self._last_predicted_skill_accuracy.detach().item()
+            )
+            loss_dict["conditioning/unique_predicted_skills"] = float(
+                self._last_unique_predicted_skills
+            )
+        if self._last_predicted_diff_from_current is not None:
+            loss_dict["conditioning/predicted_diff_from_current_gt"] = (
+                self._last_predicted_diff_from_current.detach().item()
+            )
         if endpoint_loss is not None:
             loss_dict.update(
                 {
@@ -1068,7 +1242,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
         loaded = _load_pretrained_state_dict(
             pretrained_name_or_path,
             kwargs,
-            include_predictor_vlm=config.train_skill_predictor,
+            include_predictor_vlm=config.uses_skill_predictor,
         )
         if loaded is None:
             raise FileNotFoundError(f"Could not load Stage-1 initialization: {pretrained_name_or_path}")
@@ -1086,7 +1260,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
                     "into LoRA base projections.",
                     routed,
                 )
-        if is_pi05 and config.train_skill_predictor:
+        if is_pi05 and config.uses_skill_predictor:
             expected_vlm = {
                 f"model.skill_predictor.vlm.{key}"
                 for key in policy.model.skill_predictor.vlm.state_dict()
@@ -1106,6 +1280,10 @@ class SkillExpertPolicy(PreTrainedPolicy):
             raise RuntimeError(
                 "Stage-1 checkpoint mismatch: "
                 f"missing={sorted(missing)}, unexpected={sorted(unexpected)}"
+            )
+        if is_pi05 and config.training_skill_source == "predictor":
+            policy._initialize_frozen_skill_predictor(
+                config.skill_predictor_checkpoint_path
             )
         source = "pi0.5 action expert" if is_pi05 else "Stage-1 checkpoint"
         log.info(

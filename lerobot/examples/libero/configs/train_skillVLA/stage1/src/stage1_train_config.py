@@ -63,6 +63,42 @@ def _read_dataset_contract(dataset_dir: Path, run_tag: str) -> dict:
     }
 
 
+def _validate_predictor_checkpoint(
+    checkpoint: Path,
+    *,
+    levels: list[int],
+    predictor_contract: dict,
+) -> None:
+    """Fail before submission when a frozen predictor cannot be loaded exactly."""
+    config_path = checkpoint / "config.json"
+    weights_path = checkpoint / "model.safetensors"
+    if not config_path.is_file():
+        raise FileNotFoundError(f"Stage-1 predictor config not found: {config_path}")
+    if not weights_path.is_file():
+        raise FileNotFoundError(f"Stage-1 predictor weights not found: {weights_path}")
+    source = json.loads(config_path.read_text())
+    if source.get("type") != "skill_expert":
+        raise ValueError(
+            "Predictor checkpoint must be policy.type=skill_expert, got "
+            f"{source.get('type')!r} at {checkpoint}."
+        )
+    if not source.get("train_skill_predictor", False):
+        raise ValueError(f"Stage-1 checkpoint has no trained predictor: {checkpoint}")
+
+    expected = {
+        "skill_fsq_levels": levels,
+        "skill_vocab_size": math.prod(levels),
+        **predictor_contract,
+    }
+    mismatches = [
+        f"{field}: checkpoint={source.get(field)!r}, requested={value!r}"
+        for field, value in expected.items()
+        if source.get(field) != value
+    ]
+    if mismatches:
+        raise ValueError("Predictor checkpoint contract mismatch: " + "; ".join(mismatches))
+
+
 def build_settings(config: dict) -> dict:
     project_root = Path(str(config["project_root"])).expanduser()
     dataset_root = project_root / str(config.get("dataset_root", "dataset"))
@@ -105,6 +141,26 @@ def build_settings(config: dict) -> dict:
     train_skill_predictor = as_bool(
         _at(config, "skill_predictor", "train", default=True)
     )
+    training_skill_source = str(
+        _at(config, "action_conditioning", "training_skill_source", default="gt")
+    ).strip().lower()
+    if training_skill_source not in {"gt", "predictor"}:
+        raise ValueError(
+            "action_conditioning.training_skill_source must be gt or predictor."
+        )
+    predictor_checkpoint_value = str(
+        _at(config, "warm_start", "predictor_checkpoint", default="") or ""
+    ).strip()
+    predictor_checkpoint = (
+        Path(resolve_path(project_root, predictor_checkpoint_value))
+        if predictor_checkpoint_value
+        else None
+    )
+    if training_skill_source == "predictor" and predictor_checkpoint is None:
+        raise ValueError(
+            "training_skill_source=predictor requires warm_start.predictor_checkpoint."
+        )
+    uses_skill_predictor = train_skill_predictor or training_skill_source == "predictor"
     skill_predictor_lora = as_bool(
         _at(config, "skill_predictor", "lora", "enabled", default=True)
     )
@@ -136,7 +192,7 @@ def build_settings(config: dict) -> dict:
         raise FileNotFoundError(
             f"Stage-1 terminator FSQ checkpoint not found: {fsq_path}"
         )
-    if train_skill_predictor:
+    if uses_skill_predictor:
         required = ("config.json", "tokenizer_config.json", "tokenizer.json")
         missing = [name for name in required if not (tokenizer_path / name).is_file()]
         if missing:
@@ -158,10 +214,15 @@ def build_settings(config: dict) -> dict:
     conditioning_route = str(
         _at(config, "architecture", "conditioning_route", default="state_cond")
     ).strip().lower()
-    if conditioning_route not in {"state_cond", "state_skill_cond", "skill_cond"}:
+    if conditioning_route not in {
+        "state_cond",
+        "state_skill_cond",
+        "stateonly_cond",
+        "skill_cond",
+    }:
         raise ValueError(
             "architecture.conditioning_route must be "
-            "state_cond|state_skill_cond|skill_cond."
+            "state_cond|state_skill_cond|stateonly_cond|skill_cond."
         )
 
     max_state_dim = int(_at(config, "architecture", "max_state_dim", default=32))
@@ -198,11 +259,54 @@ def build_settings(config: dict) -> dict:
     dino_lr = "" if dino_lr in (None, "", "null") else str(float(dino_lr))
     if freeze_vision_encoder and dino_lr:
         raise ValueError("training.optimizer.dino_lr must be null when vision.freeze=true.")
+
+    predictor_contract = {
+        "skill_predictor_vlm_variant": "gemma_2b",
+        "skill_predictor_image_size": 224,
+        "skill_predictor_reader_tokens": int(
+            _at(config, "skill_predictor", "reader", "tokens", default=4)
+        ),
+        "skill_predictor_reader_depth": int(
+            _at(config, "skill_predictor", "reader", "depth", default=2)
+        ),
+        "skill_predictor_reader_heads": int(
+            _at(config, "skill_predictor", "reader", "heads", default=8)
+        ),
+        "skill_predictor_all_layers": as_bool(
+            _at(config, "skill_predictor", "all_layers", default=True)
+        ),
+        "skill_predictor_detach_vlm": not skill_predictor_lora,
+        "skill_predictor_lora": skill_predictor_lora,
+        "skill_predictor_lora_targets": skill_predictor_lora_targets,
+        "skill_predictor_lora_rank": skill_predictor_lora_rank,
+        "skill_predictor_lora_alpha": skill_predictor_lora_alpha,
+        "skill_predictor_lora_dropout": skill_predictor_lora_dropout,
+        "skill_predictor_deadzone_frac": float(
+            _at(config, "skill_predictor", "reader", "deadzone_frac", default=0.8)
+        ),
+        "skill_predictor_attend_image": as_bool(
+            _at(config, "skill_predictor", "token_access", "image", default=True)
+        ),
+        "skill_predictor_attend_language": as_bool(
+            _at(config, "skill_predictor", "token_access", "language", default=True)
+        ),
+        "tokenizer_max_length": int(
+            _at(config, "skill_predictor", "tokenizer_max_length", default=200)
+        ),
+    }
+    if predictor_checkpoint is not None:
+        _validate_predictor_checkpoint(
+            predictor_checkpoint,
+            levels=contract["levels"],
+            predictor_contract=predictor_contract,
+        )
     suffix = str(_at(config, "run", "suffix", default="")).strip().strip("_")
     vision_tag = "dino_frozen" if freeze_vision_encoder else "dino_tuned"
     run_name = (
         f"{source}_{run_tag}_{vision_tag}_{conditioning_route}_{action_loss_mode}"
     )
+    if training_skill_source == "predictor":
+        run_name = f"{run_name}_pretrained_predictor"
     if suffix:
         run_name = f"{run_name}_{suffix}"
 
@@ -226,6 +330,8 @@ def build_settings(config: dict) -> dict:
         "skill_vocab_size": math.prod(levels),
         "transition_jitter_pmax": jitter_pmax,
         "transition_jitter_distribution": jitter_distribution,
+        "training_skill_source": training_skill_source,
+        "skill_predictor_checkpoint_path": predictor_checkpoint or "",
         "train_skill_predictor": train_skill_predictor,
         "skill_predictor_weight": float(
             _at(config, "skill_predictor", "weight", default=0.5)
@@ -233,9 +339,7 @@ def build_settings(config: dict) -> dict:
         "skill_predictor_lr_scale": float(
             _at(config, "skill_predictor", "lr_scale", default=1.0)
         ),
-        "skill_predictor_all_layers": as_bool(
-            _at(config, "skill_predictor", "all_layers", default=True)
-        ),
+        "skill_predictor_all_layers": predictor_contract["skill_predictor_all_layers"],
         "skill_predictor_detach_vlm": not skill_predictor_lora,
         "skill_predictor_lora": skill_predictor_lora,
         "skill_predictor_lora_targets": skill_predictor_lora_targets,
@@ -243,27 +347,13 @@ def build_settings(config: dict) -> dict:
         "skill_predictor_lora_alpha": skill_predictor_lora_alpha,
         "skill_predictor_lora_dropout": skill_predictor_lora_dropout,
         "skill_predictor_lora_lr_scale": skill_predictor_lora_lr_scale,
-        "skill_predictor_reader_tokens": int(
-            _at(config, "skill_predictor", "reader", "tokens", default=4)
-        ),
-        "skill_predictor_reader_depth": int(
-            _at(config, "skill_predictor", "reader", "depth", default=2)
-        ),
-        "skill_predictor_reader_heads": int(
-            _at(config, "skill_predictor", "reader", "heads", default=8)
-        ),
-        "skill_predictor_deadzone_frac": float(
-            _at(config, "skill_predictor", "reader", "deadzone_frac", default=0.8)
-        ),
-        "skill_predictor_attend_image": as_bool(
-            _at(config, "skill_predictor", "token_access", "image", default=True)
-        ),
-        "skill_predictor_attend_language": as_bool(
-            _at(config, "skill_predictor", "token_access", "language", default=True)
-        ),
-        "tokenizer_max_length": int(
-            _at(config, "skill_predictor", "tokenizer_max_length", default=200)
-        ),
+        "skill_predictor_reader_tokens": predictor_contract["skill_predictor_reader_tokens"],
+        "skill_predictor_reader_depth": predictor_contract["skill_predictor_reader_depth"],
+        "skill_predictor_reader_heads": predictor_contract["skill_predictor_reader_heads"],
+        "skill_predictor_deadzone_frac": predictor_contract["skill_predictor_deadzone_frac"],
+        "skill_predictor_attend_image": predictor_contract["skill_predictor_attend_image"],
+        "skill_predictor_attend_language": predictor_contract["skill_predictor_attend_language"],
+        "tokenizer_max_length": predictor_contract["tokenizer_max_length"],
         "train_terminator": train_terminator,
         "terminator_freeze_vision_encoder": as_bool(
             _at(config, "terminator", "freeze_vision", default=True)

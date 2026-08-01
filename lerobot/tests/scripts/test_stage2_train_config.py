@@ -144,6 +144,22 @@ def test_stage2_resolver_reads_checkpoint_config_without_parsing_run_name(
     assert settings["pt_run_name"] == "stage1_exact_name_last_flow_gt_batchOFF"
 
 
+def test_stage2_accepts_stage1_with_loaded_frozen_predictor(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    checkpoint = (
+        Path(config["project_root"])
+        / "outputs/skillVLA_stage1/stage1_exact_name/checkpoints/last/pretrained_model"
+    )
+    policy = json.loads((checkpoint / "config.json").read_text())
+    policy["train_skill_predictor"] = False
+    policy["training_skill_source"] = "predictor"
+    (checkpoint / "config.json").write_text(json.dumps(policy))
+
+    settings = stage2_train_config.build_settings(config)
+
+    assert settings["train_skill_predictor"] is True
+
+
 def test_stage2_inherits_conditioning_route_from_stage1_checkpoint(
     tmp_path: Path,
 ) -> None:
@@ -165,6 +181,11 @@ def test_stage2_inherits_conditioning_route_from_stage1_checkpoint(
     checkpoint_config.write_text(json.dumps(stage1))
     skill_only_settings = stage2_train_config.build_settings(config)
     assert skill_only_settings["conditioning_route"] == "skill_cond"
+
+    stage1["conditioning_route"] = "stateonly_cond"
+    checkpoint_config.write_text(json.dumps(stage1))
+    state_only_settings = stage2_train_config.build_settings(config)
+    assert state_only_settings["conditioning_route"] == "stateonly_cond"
 
 
 def test_stage2_loss_is_validated_exported_and_named(tmp_path: Path) -> None:

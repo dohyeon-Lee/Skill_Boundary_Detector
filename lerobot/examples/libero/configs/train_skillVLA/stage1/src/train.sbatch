@@ -31,6 +31,7 @@ echo "dataset : ${SKILLVLA_DATASET_DIR}"
 echo "expert  : pi0.5 base ${PI_BASE} -> full fine-tuning"
 echo "route   : ${CONDITIONING_ROUTE}"
 echo "loss    : ${ACTION_LOSS_MODE}"
+echo "skill   : ${TRAINING_SKILL_SOURCE}   predictor=${SKILL_PREDICTOR_CHECKPOINT_PATH:-none}"
 echo "vision  : DINO ${DINO_MODEL_PATH}   frozen=${FREEZE_VISION_ENCODER}"
 echo "predict : pi0.5 VLM skill-LoRA=${SKILL_PREDICTOR_LORA} all_layers=${SKILL_PREDICTOR_ALL_LAYERS} deadzone=${SKILL_PREDICTOR_DEADZONE_FRAC}"
 echo "term    : FSQ ${FSQ_PATH}   train=${TRAIN_TERMINATOR}, vision_frozen=${TERMINATOR_FREEZE_VISION_ENCODER}"
@@ -74,6 +75,8 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.skill_fsq_levels="${SKILL_FSQ_LEVELS}" \
     --policy.transition_jitter_pmax="${TRANSITION_JITTER_PMAX}" \
     --policy.transition_jitter_distribution="${TRANSITION_JITTER_DISTRIBUTION}" \
+    --policy.training_skill_source="${TRAINING_SKILL_SOURCE}" \
+    --policy.skill_predictor_checkpoint_path="${SKILL_PREDICTOR_CHECKPOINT_PATH}" \
     --policy.train_skill_predictor="${TRAIN_SKILL_PREDICTOR}" \
     --policy.skill_predictor_weight="${SKILL_PREDICTOR_WEIGHT}" \
     --policy.skill_predictor_lr_scale="${SKILL_PREDICTOR_LR_SCALE}" \

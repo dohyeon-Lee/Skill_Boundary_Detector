@@ -79,7 +79,10 @@ def _require_stage1_contract(config: dict, checkpoint: Path) -> None:
         raise ValueError(
             f"Stage 2 requires policy.type=skill_expert, got {config.get('type')!r} at {checkpoint}."
         )
-    if not config.get("train_skill_predictor", False):
+    has_predictor = as_bool(config.get("train_skill_predictor", False)) or str(
+        config.get("training_skill_source", "gt")
+    ).strip().lower() == "predictor"
+    if not has_predictor:
         raise ValueError("Stage-1 checkpoint must contain the trained frozen-VLM skill predictor.")
     if not config.get("train_terminator", False):
         raise ValueError("Stage-1 checkpoint must contain the co-trained terminator.")
@@ -90,11 +93,12 @@ def _require_stage1_contract(config: dict, checkpoint: Path) -> None:
     if config.get("conditioning_route") not in {
         "state_cond",
         "state_skill_cond",
+        "stateonly_cond",
         "skill_cond",
     }:
         raise ValueError(
             "Stage 2 expects conditioning_route="
-            "state_cond|state_skill_cond|skill_cond."
+            "state_cond|state_skill_cond|stateonly_cond|skill_cond."
         )
     if not (
         config.get("skill_predictor_attend_image", False)

@@ -91,10 +91,15 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         raise ValueError(f"Expected a skill_expert checkpoint: {policy_path}")
 
     conditioning_route = str(policy.get("conditioning_route", "")).strip().lower()
-    if conditioning_route not in {"state_cond", "state_skill_cond", "skill_cond"}:
+    if conditioning_route not in {
+        "state_cond",
+        "state_skill_cond",
+        "stateonly_cond",
+        "skill_cond",
+    }:
         raise ValueError(
             "Stage-1 checkpoint does not follow the current conditioning contract "
-            f"(state_cond|state_skill_cond|skill_cond): {policy_path}"
+            f"(state_cond|state_skill_cond|stateonly_cond|skill_cond): {policy_path}"
         )
     action_loss_mode = str(policy.get("action_loss_mode", "")).strip().lower()
     if action_loss_mode not in {"flow", "flow_endpoint_xyz"}:
@@ -119,7 +124,9 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
 
     fsq_path = _relocate_project_path(project_root, policy.get("fsq_path"))
     has_terminator = as_bool(policy.get("train_terminator", False))
-    has_predictor = as_bool(policy.get("train_skill_predictor", False))
+    has_predictor = as_bool(policy.get("train_skill_predictor", False)) or str(
+        policy.get("training_skill_source", "gt")
+    ).strip().lower() == "predictor"
     if has_terminator and not fsq_path.is_file():
         raise FileNotFoundError(f"FSQ checkpoint referenced by Stage 1 not found: {fsq_path}")
     paths = {
