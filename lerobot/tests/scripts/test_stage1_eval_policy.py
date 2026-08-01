@@ -2,6 +2,7 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 import torch
 from torch import nn
 
@@ -67,7 +68,7 @@ def _batch():
     }
 
 
-def test_oracle_replans_immediately_when_terminator_advances() -> None:
+def test_oracle_defers_terminator_advance_until_fixed_replan() -> None:
     expert = _FakeExpert()
     wrapper = Stage1OraclePolicy(
         expert,
@@ -83,6 +84,7 @@ def test_oracle_replans_immediately_when_terminator_advances() -> None:
         [[{"token": 3, "gt_length": 5}, {"token": 7, "gt_length": 5}]]
     )
 
+    assert wrapper.select_action(_batch()).item() == 3
     assert wrapper.select_action(_batch()).item() == 3
     assert wrapper.select_action(_batch()).item() == 7
     assert [call.item() for call in expert.calls] == [3, 7]
@@ -125,12 +127,34 @@ def test_predictor_source_repredicts_at_a_detected_boundary() -> None:
     )
 
     assert wrapper.select_action(_batch()).item() == 4
+    assert wrapper.select_action(_batch()).item() == 4
     assert wrapper.select_action(_batch()).item() == 8
     assert [call.item() for call in expert.calls] == [4, 8]
     assert [record["skill_source"] for record in wrapper.get_skill_trace()] == [
-        "predictor",
-        "predictor",
+        "own",
+        "own",
     ]
+
+
+def test_predictor_can_repredict_on_gt_boundaries() -> None:
+    expert = _FakeExpert()
+    wrapper = Stage1OraclePolicy(
+        expert,
+        None,
+        skill_source="own",
+        advance_mode="gt",
+        end_mode="or",
+        end_threshold=0.5,
+        progress_threshold=0.95,
+        max_skill_length=0,
+        n_action_steps=2,
+    )
+    wrapper.set_reference_skill_token_sequences(
+        [[{"token": 3, "gt_length": 1}, {"token": 7, "gt_length": 2}]]
+    )
+
+    assert wrapper.select_action({"observation.state": torch.zeros(1, 8)}).item() == 8
+    assert [call.item() for call in expert.calls] == [8]
 
 
 def test_gt_timed_advancement_does_not_call_a_terminator() -> None:
@@ -198,3 +222,80 @@ def test_stage2_gt_eval_keeps_vlm_needed_by_likelihood(monkeypatch) -> None:
     )
 
     assert context["policy"].policy.model.skill_predictor is not None
+
+
+@pytest.mark.parametrize("skill_source", ["gt", "own", "external"])
+@pytest.mark.parametrize("advance_mode", ["gt", "own", "external"])
+def test_stage1_eval_selects_own_external_or_gt_skill_modules(
+    monkeypatch, skill_source: str, advance_mode: str
+) -> None:
+    class _Policy(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.config = SkillExpertConfig(n_action_steps=2, chunk_size=2)
+            self.model = SimpleNamespace(
+                skill_predictor=object(), fsq_term_train=object()
+            )
+            self.loaded_predictor = None
+            self.loaded_terminator = None
+
+        def load_external_skill_predictor(self, checkpoint):
+            self.loaded_predictor = checkpoint
+            self.model.skill_predictor = object()
+
+        def load_external_terminator(self, checkpoint):
+            self.loaded_terminator = checkpoint
+            self.model.fsq_term_train = object()
+
+        def reset(self):
+            return None
+
+        def get_optim_params(self):
+            return []
+
+    policies = []
+
+    def make_test_policy(**kwargs):
+        del kwargs
+        policy = _Policy()
+        policies.append(policy)
+        return policy
+
+    resolved_config = SimpleNamespace(
+        type="skill_expert",
+        n_action_steps=2,
+        pretrained_path=Path("/tmp/stage1"),
+        use_amp=False,
+    )
+    monkeypatch.setattr(run_eval, "_policy_config", lambda *args: resolved_config)
+    monkeypatch.setattr(run_eval, "make_policy", make_test_policy)
+    monkeypatch.setattr(
+        run_eval, "make_pre_post_processors", lambda **kwargs: (object(), object())
+    )
+    monkeypatch.setenv("SKILL_END_MODE", "or")
+    monkeypatch.setenv("SKILL_END_THRESHOLD", "0.5")
+    monkeypatch.setenv("SKILL_END_PROGRESS_THRESHOLD", "0.9")
+    monkeypatch.setenv("INFERENCE_SKILL_MAX_LENGTH", "200")
+
+    context = run_eval._build_context(
+        {
+            "label": "source-selection",
+            "skill_source": skill_source,
+            "advance_mode": advance_mode,
+            "external_skill_model": "/tmp/external",
+            "tokenizer_path": "/tmp/tokenizer",
+        },
+        SimpleNamespace(policy=object(), env=object(), rename_map={}),
+        torch.device("cpu"),
+    )
+
+    policy = policies[0]
+    assert policy.loaded_predictor == (
+        "/tmp/external" if skill_source == "external" else None
+    )
+    assert policy.loaded_terminator == (
+        "/tmp/external" if advance_mode == "external" else None
+    )
+    assert context["policy"].skill_source == skill_source
+    assert context["policy"].advance_mode == advance_mode
+    assert (policy.model.skill_predictor is None) == (skill_source == "gt")

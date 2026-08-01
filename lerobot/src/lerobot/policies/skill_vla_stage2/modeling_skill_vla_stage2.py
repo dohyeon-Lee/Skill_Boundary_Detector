@@ -24,6 +24,9 @@ from lerobot.policies.pi_gemma import (
     _gated_residual,
 )
 from lerobot.policies.pretrained import PreTrainedPolicy
+from lerobot.policies.skill_expert.configuration_skill_expert import (
+    normalize_conditioning_route,
+)
 from lerobot.policies.skill_expert.modeling_skill_expert import (
     SkillExpertPolicy,
     SkillExpertPytorch,
@@ -274,7 +277,7 @@ class SkillVLAStage2Pytorch(SkillExpertPytorch):
 
         with torch.no_grad():
             prior_hidden = self._run_joint_hidden(
-                self._condition_tokens(images),
+                self._condition_tokens(images, batch_size=batch_size),
                 x_t,
                 condition_state,
                 expert_condition,
@@ -319,7 +322,7 @@ class SkillVLAStage2Pytorch(SkillExpertPytorch):
             noise = self.sample_noise(
                 (batch_size, self.config.chunk_size, self.config.max_action_dim), device
             )
-        condition_tokens = self._condition_tokens(images)
+        condition_tokens = self._condition_tokens(images, batch_size=batch_size)
         n_condition = condition_tokens.shape[1]
         n_chunk = noise.shape[1]
         condition_state = self._state_condition(state)
@@ -479,6 +482,9 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
                 continue
             expected = stage1_config.get(field)
             actual = getattr(self.config, field)
+            if field == "conditioning_route":
+                expected = normalize_conditioning_route(expected)
+                actual = normalize_conditioning_route(actual)
             if expected != actual:
                 mismatches.append(f"{field}: stage1={expected!r}, stage2={actual!r}")
         if mismatches:

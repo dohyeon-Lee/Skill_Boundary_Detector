@@ -54,7 +54,16 @@ def test_stage2_config_fixes_bayesvla_contract() -> None:
         == "state_skill_cond"
     )
     assert (
-        _config(conditioning_route="skill_cond").conditioning_route == "skill_cond"
+        _config(conditioning_route="state_skill_only_cond").conditioning_route
+        == "state_skill_only_cond"
+    )
+    assert (
+        _config(conditioning_route="skillonly_cond").conditioning_route
+        == "skillonly_cond"
+    )
+    assert (
+        _config(conditioning_route="visiononly_cond").conditioning_route
+        == "visiononly_cond"
     )
     with pytest.raises(ValueError, match="fixes likelihood_num_layers=4"):
         _config(likelihood_num_layers=3)
@@ -167,7 +176,7 @@ def test_stage2_forward_preserves_inherited_conditioning_route_in_frozen_prior()
     expert_time = torch.tensor([[5.0, 4.0]])
     captured = {}
     model.skill_predictor = _Predictor()
-    model._condition_tokens = lambda images: torch.zeros(1, 2, 2)
+    model._condition_tokens = lambda images, batch_size=None: torch.zeros(1, 2, 2)
     model._state_condition = lambda state: condition_state
     model._expert_condition = lambda time: expert_time
     model._skill_broadcasts = lambda code: (condition_skill, None)
@@ -384,7 +393,7 @@ def test_stage2_sampling_keeps_condition_routing_and_likelihood_sees_actions_onl
     )
     model.cond_encoder = SimpleNamespace(model=_ConditionModel())
     model.skill_predictor = _Predictor()
-    model._condition_tokens = lambda images: torch.zeros(1, 2, 2)
+    model._condition_tokens = lambda images, batch_size=None: torch.zeros(1, 2, 2)
     model._state_condition = lambda state: torch.zeros(1, 2)
     model._expert_condition = lambda time: torch.zeros(1, 2)
     model._skill_broadcasts = lambda code: (torch.tensor([[7.0, 8.0]]), None)

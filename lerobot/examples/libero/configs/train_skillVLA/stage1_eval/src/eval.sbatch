@@ -18,7 +18,11 @@ BOOTSTRAP_PYTHON="${SUBMIT_DIR}/../../../../../../.venv/bin/python"
 # submit_eval.sh exports one frozen resolution.  Resolve here only for direct
 # `sbatch src/eval.sbatch` use; this keeps array elements on the same output path.
 if [ -z "${POLICY_PATH:-}" ]; then
-  eval "$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/stage1_eval_config.py" --config "${CONFIG_PATH}" --shell)"
+  STAGE1_EVAL_EXPORTS="$(
+    "${BOOTSTRAP_PYTHON}" "${SRC_DIR}/stage1_eval_config.py" \
+      --config "${CONFIG_PATH}" --shell
+  )"
+  eval "${STAGE1_EVAL_EXPORTS}"
 fi
 
 if [ -n "${SLURM_ARRAY_TASK_ID:-}" ] && [ -n "${EVAL_FANOUT:-}" ]; then
@@ -76,10 +80,13 @@ if [ "${WANDB_ENABLE}" = true ]; then
 fi
 
 echo "START STAGE-1 EVAL"
+echo "node     : ${SLURMD_NODENAME:-${HOSTNAME:-unknown}}"
+echo "job      : ${SLURM_JOB_ID:-none} array=${SLURM_ARRAY_TASK_ID:-none}"
+echo "cuda     : ${CUDA_VISIBLE_DEVICES:-unset}"
 echo "models   : ${MODEL_COUNT} (primary=${POLICY_PATH})"
 echo "contract : route=${CONDITIONING_ROUTE}, loss=${ACTION_LOSS_MODE}"
 echo "skills   : ${SKILL_DATASET_DIR}"
-echo "term     : used only by panels with advance_mode=terminator"
+echo "term     : used only by panels with advance_mode=external|own"
 echo "suite    : ${TARGET_TASK} task_ids=${TASK_IDS} episodes=${N_EPISODES}"
 echo "output   : ${EVAL_OUT_DIR}"
 nvidia-smi || true

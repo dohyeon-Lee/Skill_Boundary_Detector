@@ -1,11 +1,13 @@
 """Stage-1 vision-state-action prior with an isolated skill-prediction auxiliary.
 
-The action path has no VLM or language input. DINO and a fresh 18-layer condition
-transformer encode the current cameras. Depending on the selected experiment,
-robot state either modulates that condition stream through AdaRMS or is omitted
-from the action path entirely. The 18-layer pi0.5 action expert retains its
-original time-only AdaRMS input. The selected skill is broadcast into either
-the action stream or the condition stream, or omitted in ``stateonly_cond``.
+The action path has no VLM or language input. Usually DINO and a fresh 18-layer
+condition transformer encode the current cameras; the visionless route replaces
+camera tokens with one learned condition seed. Depending on the selected
+experiment, robot state either modulates that condition stream through AdaRMS or
+is omitted from the action path entirely. The 18-layer pi0.5 action expert
+retains its original time-only AdaRMS input. The selected skill is broadcast
+into either the action stream or the condition stream, or omitted in the
+skill-free routes.
 Optionally, a frozen pi0.5
 VLM base with a skill-only LoRA feeds a separate
 SkillReader/SkillHead optimizer; its graph and gradient clipping are disjoint from
@@ -48,7 +50,13 @@ from lerobot.utils.constants import (
     OBS_STATE,
 )
 
-from .configuration_skill_expert import SkillExpertConfig
+from .configuration_skill_expert import (
+    SKILLLESS_CONDITIONING_ROUTES,
+    STATELESS_CONDITIONING_ROUTES,
+    VISIONLESS_CONDITIONING_ROUTES,
+    SkillExpertConfig,
+    normalize_conditioning_route,
+)
 from .modeling_utils import build_fsq_terminator, build_gemma, load_raw_state_dict
 from .modeling_skill_predictor import FrozenVLMSkillPredictor
 
@@ -64,12 +72,26 @@ class SkillExpertPytorch(nn.Module):
         expert_config = get_gemma_config(config.action_expert_variant)
         self.width = expert_config.width
 
-        self.dino = AutoModel.from_pretrained(config.dino_model_path)
-        if config.freeze_vision_encoder:
-            self.dino.requires_grad_(False)
-            self.dino.eval()
-        self.n_register_tokens = int(getattr(self.dino.config, "num_register_tokens", 0))
-        self.image_proj = nn.Linear(int(self.dino.config.hidden_size), self.width)
+        if config.conditioning_route in VISIONLESS_CONDITIONING_ROUTES:
+            # The transformer still needs a condition sequence to carry state
+            # AdaRMS and skill broadcasts. This learned seed contains no
+            # observation information and replaces all vision tokens.
+            self.dino = None
+            self.n_register_tokens = 0
+            self.image_proj = None
+            self.visionless_condition_token = nn.Parameter(
+                torch.zeros(1, 1, self.width)
+            )
+        else:
+            self.dino = AutoModel.from_pretrained(config.dino_model_path)
+            if config.freeze_vision_encoder:
+                self.dino.requires_grad_(False)
+                self.dino.eval()
+            self.n_register_tokens = int(
+                getattr(self.dino.config, "num_register_tokens", 0)
+            )
+            self.image_proj = nn.Linear(int(self.dino.config.hidden_size), self.width)
+            self.register_parameter("visionless_condition_token", None)
         self.register_buffer(
             "_image_mean",
             torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1),
@@ -81,18 +103,17 @@ class SkillExpertPytorch(nn.Module):
             persistent=False,
         )
 
-        # skill_cond deliberately has no state parameters in the VSA graph. This
-        # also avoids an unused trainable projection under distributed training.
+        # Stateless routes deliberately have no state parameters in the VSA
+        # graph. This also avoids an unused trainable projection under DDP.
         self.state_proj = (
             None
-            if config.conditioning_route == "skill_cond"
+            if config.conditioning_route in STATELESS_CONDITIONING_ROUTES
             else nn.Linear(config.max_state_dim, self.width)
         )
-        # stateonly_cond deliberately removes skill from the VSA graph. Avoid
-        # leaving an unused trainable projection under distributed training.
+        # Skill-free routes likewise omit the otherwise unused projection.
         self.skill_proj = (
             None
-            if config.conditioning_route == "stateonly_cond"
+            if config.conditioning_route in SKILLLESS_CONDITIONING_ROUTES
             else nn.Linear(len(config.skill_fsq_levels), self.width)
         )
         levels = torch.tensor(config.skill_fsq_levels, dtype=torch.long)
@@ -110,7 +131,7 @@ class SkillExpertPytorch(nn.Module):
 
         self.cond_encoder = build_gemma(
             config.cond_encoder_variant,
-            use_adarms=config.conditioning_route != "skill_cond",
+            use_adarms=config.conditioning_route not in STATELESS_CONDITIONING_ROUTES,
         )
         self.gemma_expert = build_gemma(config.action_expert_variant, use_adarms=True)
         self.skill_predictor = (
@@ -145,14 +166,16 @@ class SkillExpertPytorch(nn.Module):
             self.gemma_expert.gradient_checkpointing_enable()
         if self.skill_predictor is not None and self.config.train_skill_predictor:
             self.skill_predictor.gradient_checkpointing_enable()
-        if not self.config.freeze_vision_encoder and hasattr(
-            self.dino, "gradient_checkpointing_enable"
+        if (
+            self.dino is not None
+            and not self.config.freeze_vision_encoder
+            and hasattr(self.dino, "gradient_checkpointing_enable")
         ):
             self.dino.gradient_checkpointing_enable()
 
     def train(self, mode: bool = True):
         super().train(mode)
-        if self.config.freeze_vision_encoder:
+        if self.dino is not None and self.config.freeze_vision_encoder:
             self.dino.eval()
         if self.skill_predictor is not None and not self.config.train_skill_predictor:
             # Frozen checkpoint predictors must be deterministic while supplying
@@ -179,6 +202,10 @@ class SkillExpertPytorch(nn.Module):
         return time.to(dtype=torch.float32, device=device)
 
     def _image_features(self, image: Tensor) -> Tensor:
+        if self.dino is None:
+            raise RuntimeError(
+                f"{self.config.conditioning_route} has no vision encoder in the VSA graph."
+            )
         image = image.float()
         image = F.interpolate(
             image,
@@ -195,7 +222,17 @@ class SkillExpertPytorch(nn.Module):
         patch_tokens = hidden[:, 1 + self.n_register_tokens :]
         return torch.cat((cls_token, patch_tokens), dim=1)
 
-    def _condition_tokens(self, images: list[Tensor]) -> Tensor:
+    def _condition_tokens(
+        self, images: list[Tensor], *, batch_size: int | None = None
+    ) -> Tensor:
+        if self.config.conditioning_route in VISIONLESS_CONDITIONING_ROUTES:
+            if batch_size is None:
+                if not images:
+                    raise ValueError("Visionless conditioning requires batch_size.")
+                batch_size = images[0].shape[0]
+            return self.visionless_condition_token.expand(batch_size, -1, -1)
+        if self.image_proj is None:
+            raise RuntimeError("Vision-conditioned route has no image projection.")
         tokens = [
             self.image_proj(self._image_features(image).to(self.working_dtype))
             for image in images
@@ -212,13 +249,15 @@ class SkillExpertPytorch(nn.Module):
 
     def _skill_embedding(self, skill_code: Tensor) -> Tensor:
         if self.skill_proj is None:
-            raise RuntimeError("stateonly_cond has no skill projection in the VSA graph.")
+            raise RuntimeError(
+                f"{self.config.conditioning_route} has no skill projection in the VSA graph."
+            )
         z_q = self._code_to_zq(skill_code).to(self.working_dtype)
         return self.skill_proj(z_q)
 
     def _state_condition(self, state: Tensor | None) -> Tensor | None:
-        """Project state for cond AdaRMS, or omit it entirely in skill_cond."""
-        if self.config.conditioning_route == "skill_cond":
+        """Project state for cond AdaRMS, or omit it in stateless routes."""
+        if self.config.conditioning_route in STATELESS_CONDITIONING_ROUTES:
             return None
         if state is None or self.state_proj is None:
             raise ValueError(
@@ -227,11 +266,15 @@ class SkillExpertPytorch(nn.Module):
         return self.state_proj(state.to(self.working_dtype))
 
     def _skill_broadcasts(
-        self, skill_code: Tensor
+        self, skill_code: Tensor | None
     ) -> tuple[Tensor | None, Tensor | None]:
         """Return ``(condition_stream, action_stream)`` skill broadcasts."""
-        if self.config.conditioning_route == "stateonly_cond":
+        if self.config.conditioning_route in SKILLLESS_CONDITIONING_ROUTES:
             return None, None
+        if skill_code is None:
+            raise ValueError(
+                f"{self.config.conditioning_route} requires skill conditioning."
+            )
         skill = self._skill_embedding(skill_code)
         if self.config.conditioning_route == "state_cond":
             return None, skill
@@ -297,8 +340,8 @@ class SkillExpertPytorch(nn.Module):
         padding_mask = torch.ones(
             batch_size, n_condition + n_action, dtype=torch.bool, device=device
         )
-        # Image tokens form one bidirectional condition block. Action tokens form
-        # the second bidirectional block and can read the full condition stream.
+        # Condition tokens form one bidirectional block. Action tokens form the
+        # second bidirectional block and can read the full condition stream.
         block_starts = [0] * n_condition + [1] + [0] * (n_chunk - 1)
         block_mask = torch.tensor(block_starts, dtype=torch.bool, device=device)
         block_mask = block_mask[None].expand(batch_size, -1)
@@ -371,7 +414,7 @@ class SkillExpertPytorch(nn.Module):
         self,
         images: list[Tensor],
         state: Tensor | None,
-        skill_code: Tensor,
+        skill_code: Tensor | None,
         actions: Tensor,
         *,
         noise: Tensor | None = None,
@@ -387,7 +430,7 @@ class SkillExpertPytorch(nn.Module):
         condition_skill, expert_skill = self._skill_broadcasts(skill_code)
 
         predicted_velocity = self._run_joint(
-            self._condition_tokens(images),
+            self._condition_tokens(images, batch_size=batch_size),
             x_t,
             self._state_condition(state),
             self._expert_condition(time),
@@ -409,17 +452,24 @@ class SkillExpertPytorch(nn.Module):
         self,
         images: list[Tensor],
         state: Tensor | None,
-        skill_code: Tensor,
+        skill_code: Tensor | None,
         noise: Tensor | None = None,
         num_steps: int | None = None,
     ) -> Tensor:
         num_steps = self.config.num_inference_steps if num_steps is None else num_steps
-        batch_size, device = skill_code.shape[0], skill_code.device
+        if state is not None:
+            batch_size, device = state.shape[0], state.device
+        elif skill_code is not None:
+            batch_size, device = skill_code.shape[0], skill_code.device
+        elif images:
+            batch_size, device = images[0].shape[0], images[0].device
+        else:
+            raise ValueError("Action sampling requires state, skill, or image batch metadata.")
         if noise is None:
             noise = self.sample_noise(
                 (batch_size, self.config.chunk_size, self.config.max_action_dim), device
             )
-        condition_tokens = self._condition_tokens(images)
+        condition_tokens = self._condition_tokens(images, batch_size=batch_size)
         return self._sample_with_condition_cache(
             condition_tokens, noise, state, skill_code, num_steps
         )
@@ -429,7 +479,7 @@ class SkillExpertPytorch(nn.Module):
         condition_tokens: Tensor,
         noise: Tensor,
         state: Tensor | None,
-        skill_code: Tensor,
+        skill_code: Tensor | None,
         num_steps: int,
     ) -> Tensor:
         """Encode the condition stream once, then Euler-integrate the action flow."""
@@ -681,6 +731,88 @@ def _load_learned_predictor_parameters(
     return len(expected)
 
 
+def _load_complete_predictor_parameters(
+    predictor: FrozenVLMSkillPredictor,
+    checkpoint_path: str | Path,
+) -> int:
+    """Load one complete predictor without materializing unrelated Stage-1 tensors."""
+    from safetensors import safe_open  # noqa: PLC0415
+
+    path = Path(checkpoint_path)
+    weights_path = path if path.is_file() else path / "model.safetensors"
+    if not weights_path.is_file():
+        raise FileNotFoundError(f"Stage-1 predictor weights not found: {weights_path}")
+
+    prefix = "model.skill_predictor."
+    target_state = predictor.state_dict()
+    expected = set(target_state)
+    with safe_open(str(weights_path), framework="pt", device="cpu") as checkpoint:
+        source = {
+            key.removeprefix(prefix)
+            for key in checkpoint.keys()
+            if key.startswith(prefix)
+        }
+        missing = expected - source
+        unexpected = source - expected
+        if missing or unexpected:
+            raise RuntimeError(
+                "Complete Stage-1 predictor tensor mismatch: "
+                f"missing={sorted(missing)}, unexpected={sorted(unexpected)}"
+            )
+        with torch.no_grad():
+            for key in sorted(expected):
+                value = checkpoint.get_tensor(prefix + key)
+                target = target_state[key]
+                if value.shape != target.shape:
+                    raise RuntimeError(
+                        f"Stage-1 predictor shape mismatch for {key}: "
+                        f"checkpoint={tuple(value.shape)}, model={tuple(target.shape)}"
+                    )
+                target.copy_(value.to(device=target.device, dtype=target.dtype))
+    return len(expected)
+
+
+def _load_complete_terminator_parameters(
+    terminator: nn.Module,
+    checkpoint_path: str | Path,
+) -> int:
+    """Load one complete co-trained terminator without unrelated Stage-1 tensors."""
+    from safetensors import safe_open  # noqa: PLC0415
+
+    path = Path(checkpoint_path)
+    weights_path = path if path.is_file() else path / "model.safetensors"
+    if not weights_path.is_file():
+        raise FileNotFoundError(f"Stage-1 terminator weights not found: {weights_path}")
+
+    prefix = "model.fsq_term_train."
+    target_state = terminator.state_dict()
+    expected = set(target_state)
+    with safe_open(str(weights_path), framework="pt", device="cpu") as checkpoint:
+        source = {
+            key.removeprefix(prefix)
+            for key in checkpoint.keys()
+            if key.startswith(prefix)
+        }
+        missing = expected - source
+        unexpected = source - expected
+        if missing or unexpected:
+            raise RuntimeError(
+                "Complete Stage-1 terminator tensor mismatch: "
+                f"missing={sorted(missing)}, unexpected={sorted(unexpected)}"
+            )
+        with torch.no_grad():
+            for key in sorted(expected):
+                value = checkpoint.get_tensor(prefix + key)
+                target = target_state[key]
+                if value.shape != target.shape:
+                    raise RuntimeError(
+                        f"Stage-1 terminator shape mismatch for {key}: "
+                        f"checkpoint={tuple(value.shape)}, model={tuple(target.shape)}"
+                    )
+                target.copy_(value.to(device=target.device, dtype=target.dtype))
+    return len(expected)
+
+
 class SkillExpertPolicy(PreTrainedPolicy):
     """LeRobot policy wrapper for the Stage-1 VSA prior."""
 
@@ -742,6 +874,89 @@ class SkillExpertPolicy(PreTrainedPolicy):
             loaded,
         )
 
+    def load_external_skill_predictor(
+        self, checkpoint_path: str | Path | None
+    ) -> None:
+        """Override an existing predictor or attach one to a predictor-free VSA."""
+        if self.model.skill_predictor is not None:
+            self._initialize_frozen_skill_predictor(checkpoint_path)
+            return
+
+        path = Path(str(checkpoint_path or ""))
+        config_path = path / "config.json"
+        if not config_path.is_file():
+            raise FileNotFoundError(f"Stage-1 predictor config not found: {config_path}")
+        source_config = json.loads(config_path.read_text())
+        if source_config.get("type") != "skill_expert":
+            raise ValueError(
+                "Predictor source must be a skill_expert checkpoint, got "
+                f"{source_config.get('type')!r}."
+            )
+        if not source_config.get("train_skill_predictor", False):
+            raise ValueError("Stage-1 predictor source has no trained predictor.")
+        mismatches = [
+            f"{field}: checkpoint={source_config.get(field)!r}, "
+            f"current={getattr(self.config, field)!r}"
+            for field in _PREDICTOR_CHECKPOINT_CONTRACT_FIELDS
+            if source_config.get(field) != getattr(self.config, field)
+        ]
+        if mismatches:
+            raise ValueError(
+                "Stage-1 predictor architecture mismatch: " + "; ".join(mismatches)
+            )
+
+        predictor = FrozenVLMSkillPredictor(self.config).to(dtype=self._torch_dtype())
+        loaded = _load_complete_predictor_parameters(predictor, path)
+        device = next(self.model.parameters()).device
+        predictor.to(device=device)
+        predictor.requires_grad_(False).eval()
+        self.model.skill_predictor = predictor
+        log.info(
+            "Stage 1 <- attached external predictor %s: loaded %d tensors.",
+            path,
+            loaded,
+        )
+
+    def load_external_terminator(
+        self, checkpoint_path: str | Path | None
+    ) -> None:
+        """Attach or override the co-trained terminator used during evaluation."""
+        path = Path(str(checkpoint_path or ""))
+        config_path = path / "config.json"
+        if not config_path.is_file():
+            raise FileNotFoundError(f"Stage-1 terminator config not found: {config_path}")
+        source_config = json.loads(config_path.read_text())
+        if source_config.get("type") != "skill_expert":
+            raise ValueError(
+                "Terminator source must be a skill_expert checkpoint, got "
+                f"{source_config.get('type')!r}."
+            )
+        if not source_config.get("train_terminator", False):
+            raise ValueError("Stage-1 terminator source has no trained terminator.")
+        if source_config.get("skill_fsq_levels") != self.config.skill_fsq_levels:
+            raise ValueError(
+                "Stage-1 terminator FSQ mismatch: "
+                f"checkpoint={source_config.get('skill_fsq_levels')!r}, "
+                f"current={self.config.skill_fsq_levels!r}."
+            )
+
+        terminator = self.model.fsq_term_train
+        if terminator is None:
+            terminator = build_fsq_terminator(
+                self.config.fsq_path,
+                dino_model_path=self.config.terminator_dino_model_path,
+            ).to(dtype=torch.float32)
+        loaded = _load_complete_terminator_parameters(terminator, path)
+        device = next(self.model.parameters()).device
+        terminator.to(device=device, dtype=torch.float32)
+        terminator.requires_grad_(False).eval()
+        self.model.fsq_term_train = terminator
+        log.info(
+            "Stage 1 <- external terminator %s: loaded %d tensors.",
+            path,
+            loaded,
+        )
+
     def get_optim_params(self) -> list[dict]:
         """VSA groups plus a separate-LR terminator; predictor stays excluded."""
         terminator = getattr(self.model, "fsq_term_train", None)
@@ -753,7 +968,11 @@ class SkillExpertPolicy(PreTrainedPolicy):
         excluded_ids = {id(parameter) for parameter in terminator_parameters}
 
         dino_parameters = []
-        if not self.config.freeze_vision_encoder and self.config.dino_lr is not None:
+        if (
+            self.model.dino is not None
+            and not self.config.freeze_vision_encoder
+            and self.config.dino_lr is not None
+        ):
             dino_parameters = [
                 parameter
                 for parameter in self.model.dino.parameters()
@@ -1119,16 +1338,30 @@ class SkillExpertPolicy(PreTrainedPolicy):
     def forward(self, batch: dict, reduction: str = "mean"):
         actions = pad_vector(batch[ACTION], self.config.max_action_dim)
         real_dim = self.config.output_features[ACTION].shape[0]
+        route = normalize_conditioning_route(
+            getattr(self.config, "conditioning_route", "state_cond")
+        )
         state = (
             None
-            if getattr(self.config, "conditioning_route", "state_cond")
-            == "skill_cond"
+            if route in STATELESS_CONDITIONING_ROUTES
             else pad_vector(batch[OBS_STATE], self.config.max_state_dim)
         )
-        skill_code = self._training_skill_code(batch)
-        residual = self.model(
-            self._collect_images(batch), state, skill_code, actions
-        )[..., :real_dim]
+        if route in SKILLLESS_CONDITIONING_ROUTES:
+            skill_code = None
+            self._last_transition_jitter_fraction = torch.zeros(
+                (), device=actions.device
+            )
+            self._last_predicted_skill_accuracy = None
+            self._last_predicted_diff_from_current = None
+            self._last_unique_predicted_skills = None
+        else:
+            skill_code = self._training_skill_code(batch)
+        images = (
+            []
+            if route in VISIONLESS_CONDITIONING_ROUTES
+            else self._collect_images(batch)
+        )
+        residual = self.model(images, state, skill_code, actions)[..., :real_dim]
         squared_error = residual.square()
         valid = self._valid_action_steps(actions, batch)
         valid_float = valid.to(squared_error.dtype).unsqueeze(-1)
@@ -1204,15 +1437,25 @@ class SkillExpertPolicy(PreTrainedPolicy):
     @torch.no_grad()
     def predict_action_chunk(self, batch: dict, **kwargs) -> Tensor:
         self.eval()
+        route = normalize_conditioning_route(
+            getattr(self.config, "conditioning_route", "state_cond")
+        )
         state = (
             None
-            if getattr(self.config, "conditioning_route", "state_cond")
-            == "skill_cond"
+            if route in STATELESS_CONDITIONING_ROUTES
             else pad_vector(batch[OBS_STATE], self.config.max_state_dim)
         )
-        actions = self.model.sample_actions(
-            self._collect_images(batch), state, self._skill_code(batch), **kwargs
+        skill_code = (
+            None
+            if route in SKILLLESS_CONDITIONING_ROUTES
+            else self._skill_code(batch)
         )
+        images = (
+            []
+            if route in VISIONLESS_CONDITIONING_ROUTES
+            else self._collect_images(batch)
+        )
+        actions = self.model.sample_actions(images, state, skill_code, **kwargs)
         real_dim = self.config.output_features[ACTION].shape[0]
         return actions[..., :real_dim]
 

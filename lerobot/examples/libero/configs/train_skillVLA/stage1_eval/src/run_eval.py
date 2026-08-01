@@ -26,7 +26,7 @@ from lerobot.scripts.lerobot_skillvla_eval import (
     close_envs,
     eval_policy_all,
 )
-from lerobot.utils.constants import OBS_STATE
+from lerobot.utils.constants import OBS_STATE, POLICY_PREPROCESSOR_DEFAULT_NAME
 from lerobot.utils.device_utils import get_safe_torch_device
 from lerobot.utils.random_utils import set_seed
 
@@ -42,6 +42,35 @@ RAW_STATE = "skill_decoder_state"
 RAW_IMAGE = "skill_decoder_image"
 RAW_WRIST = "skill_decoder_wrist"
 log = logging.getLogger(__name__)
+
+
+def _normalize_skill_source(value: str) -> str:
+    aliases = {
+        "gt": "gt",
+        "oracle": "gt",
+        "own": "own",
+        "pred": "own",
+        "predicted": "own",
+        "predictor": "own",
+        "external": "external",
+    }
+    normalized = aliases.get(str(value).strip().lower())
+    if normalized is None:
+        raise ValueError(f"skill_source must be external|own|gt, got {value!r}.")
+    return normalized
+
+
+def _normalize_advance_mode(value: str) -> str:
+    aliases = {
+        "gt": "gt",
+        "own": "own",
+        "terminator": "own",
+        "external": "external",
+    }
+    normalized = aliases.get(str(value).strip().lower())
+    if normalized is None:
+        raise ValueError(f"advance_mode must be external|own|gt, got {value!r}.")
+    return normalized
 
 
 class CheckpointTerminator:
@@ -106,14 +135,12 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         n_action_steps: int,
     ):
         super().__init__(policy.config)
-        if skill_source not in {"gt", "predictor"}:
-            raise ValueError(f"skill_source must be gt|predictor, got {skill_source!r}.")
-        if advance_mode not in {"terminator", "gt"}:
-            raise ValueError(f"advance_mode must be terminator|gt, got {advance_mode!r}.")
-        if skill_source == "predictor" and advance_mode != "terminator":
-            raise ValueError("Predictor skills require terminator-based advancement.")
-        if advance_mode == "terminator" and terminator is None:
-            raise ValueError("advance_mode=terminator requires a checkpoint terminator.")
+        skill_source = _normalize_skill_source(skill_source)
+        advance_mode = _normalize_advance_mode(advance_mode)
+        if advance_mode != "gt" and terminator is None:
+            raise ValueError(
+                f"advance_mode={advance_mode} requires a checkpoint terminator."
+            )
         if end_mode not in {"termination", "progress", "or", "and"}:
             raise ValueError(
                 f"end_mode must be termination|progress|or|and, got {end_mode!r}."
@@ -152,6 +179,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         self._skill_step = [0] * count
         self._skill_order = [-1] * count
         self._active_trace = [None] * count
+        self._pending_advance: set[int] = set()
         self._predicted_codes: torch.Tensor | None = None
         self._trace: list[dict] = []
         self._episode_step = 0
@@ -161,7 +189,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         return self.policy.predict_skill_code(batch).view(-1).long()
 
     def _current_codes(self, batch_size: int, device: torch.device) -> torch.Tensor:
-        if self.skill_source == "predictor":
+        if self.skill_source != "gt":
             if self._predicted_codes is None or len(self._predicted_codes) != batch_size:
                 raise RuntimeError("Predictor skill codes have not been initialized.")
             return self._predicted_codes.to(device)
@@ -204,12 +232,41 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             return progress_high and termination_high
         return progress_high or termination_high
 
+    def _can_advance(self, batch_index: int) -> bool:
+        if self.skill_source == "gt":
+            return self._cursor[batch_index] < len(self._sequences[batch_index]) - 1
+        if self.advance_mode == "gt":
+            return self._cursor[batch_index] < len(self._references[batch_index]) - 1
+        return True
+
+    def _activate_pending_advances(
+        self, batch: dict, device: torch.device
+    ) -> set[int]:
+        indices = sorted(self._pending_advance)
+        if not indices:
+            return set()
+        if self.skill_source == "gt":
+            for batch_index in indices:
+                self._cursor[batch_index] += 1
+        else:
+            if self.advance_mode == "gt":
+                for batch_index in indices:
+                    self._cursor[batch_index] += 1
+            new_codes = self._predict_codes(batch).to(device)
+            self._predicted_codes[indices] = new_codes[indices]
+        codes = self._current_codes(len(self._cursor), device)
+        for batch_index in indices:
+            self._skill_step[batch_index] = 0
+            self._start_skill(batch_index, codes)
+        self._pending_advance.clear()
+        return set(indices)
+
     @torch.no_grad()
     def select_action(self, batch: dict) -> torch.Tensor:
         device = next(self.policy.parameters()).device
         batch_size = int(batch[OBS_STATE].shape[0])
         if not self._started:
-            if self.skill_source == "predictor":
+            if self.skill_source != "gt":
                 if self._references is None or len(self._references) != batch_size:
                     raise RuntimeError(
                         "Predictor evaluation needs one GT reference sequence per environment."
@@ -220,9 +277,15 @@ class Stage1OraclePolicy(PreTrainedPolicy):
                 self._start_skill(batch_index, codes)
             self._started = True
 
+        # A boundary detected during the previous action chunk becomes active only
+        # at this fixed replanning point. Never discard queued actions mid-chunk.
+        activated_at_start = set()
+        if not self._action_queue and self._pending_advance:
+            activated_at_start = self._activate_pending_advances(batch, device)
+
         codes = self._current_codes(batch_size, device)
         progress = probability = None
-        if self.advance_mode == "terminator":
+        if self.advance_mode != "gt":
             missing = [key for key in (RAW_STATE, RAW_IMAGE, RAW_WRIST) if key not in batch]
             if missing:
                 raise ValueError(
@@ -233,11 +296,9 @@ class Stage1OraclePolicy(PreTrainedPolicy):
                 codes, batch[RAW_STATE], batch[RAW_IMAGE], batch[RAW_WRIST]
             )
 
-        gt_advanced = []
-        repredict = []
         for batch_index in range(batch_size):
             trace = self._trace[self._active_trace[batch_index]]
-            if self.advance_mode == "terminator":
+            if self.advance_mode != "gt":
                 trace["end_probs"].append(
                     {
                         "skill_step": self._skill_step[batch_index],
@@ -247,8 +308,17 @@ class Stage1OraclePolicy(PreTrainedPolicy):
                 )
             self._skill_step[batch_index] += 1
             trace["length"] = self._skill_step[batch_index]
+            if batch_index in activated_at_start:
+                continue
+            if batch_index in self._pending_advance:
+                continue
             if self.advance_mode == "gt":
-                target = self._gt_lengths[batch_index][self._cursor[batch_index]]
+                lengths = (
+                    self._gt_lengths
+                    if self.skill_source == "gt"
+                    else self._reference_lengths
+                )
+                target = lengths[batch_index][self._cursor[batch_index]]
                 fired = self._skill_step[batch_index] >= max(1, int(target))
             else:
                 fired = self._terminator_fired(
@@ -259,24 +329,13 @@ class Stage1OraclePolicy(PreTrainedPolicy):
 
             if not fired:
                 continue
-            if self.skill_source == "predictor":
-                repredict.append(batch_index)
-            else:
-                last = len(self._sequences[batch_index]) - 1
-                if self._cursor[batch_index] < last:
-                    self._cursor[batch_index] += 1
-                    gt_advanced.append(batch_index)
+            if self._can_advance(batch_index):
+                self._pending_advance.add(batch_index)
 
-        advanced = gt_advanced + repredict
-        if repredict:
-            new_codes = self._predict_codes(batch).to(device)
-            self._predicted_codes[repredict] = new_codes[repredict]
-        if advanced:
-            codes = self._current_codes(batch_size, device)
-            for batch_index in advanced:
-                self._skill_step[batch_index] = 0
-                self._start_skill(batch_index, codes)
-            self._action_queue.clear()
+        # If the queue was already empty, this is itself a scheduled replanning
+        # point, so a boundary detected now can be applied before generating.
+        if not self._action_queue and self._pending_advance:
+            self._activate_pending_advances(batch, device)
 
         if not self._action_queue:
             codes = self._current_codes(batch_size, device)
@@ -427,22 +486,163 @@ def _policy_config(spec: dict, base, device: torch.device):
     return config
 
 
+def _ensure_skill_runtime_steps(
+    preprocessor,
+    policy_config,
+    *,
+    needs_predictor: bool,
+    needs_terminator: bool,
+) -> None:
+    """Add runtime-only steps absent from predictor/terminator-free checkpoints."""
+    from lerobot.policies.skillVLA.processor_skillVLA import (  # noqa: PLC0415
+        SkillVLAPrepareStateTokenizerProcessorStep,
+        SkillVLAPreserveRawStateProcessorStep,
+    )
+    from lerobot.processor import (  # noqa: PLC0415
+        DeviceProcessorStep,
+        NormalizerProcessorStep,
+        TokenizerProcessorStep,
+    )
+
+    steps = list(preprocessor.steps)
+    if needs_terminator and not any(
+        isinstance(step, SkillVLAPreserveRawStateProcessorStep) for step in steps
+    ):
+        normalizer_index = next(
+            (
+                index
+                for index, step in enumerate(steps)
+                if isinstance(step, NormalizerProcessorStep)
+            ),
+            None,
+        )
+        if normalizer_index is None:
+            raise ValueError(
+                "Cannot add external terminator inputs: saved preprocessor has no "
+                "normalizer step."
+            )
+        steps.insert(normalizer_index, SkillVLAPreserveRawStateProcessorStep())
+
+    if needs_predictor:
+        prepare_index = next(
+            (
+                index
+                for index, step in enumerate(steps)
+                if isinstance(step, SkillVLAPrepareStateTokenizerProcessorStep)
+            ),
+            None,
+        )
+        if prepare_index is None:
+            device_index = next(
+                (
+                    index
+                    for index, step in enumerate(steps)
+                    if isinstance(step, DeviceProcessorStep)
+                ),
+                len(steps),
+            )
+            steps.insert(
+                device_index,
+                SkillVLAPrepareStateTokenizerProcessorStep(
+                    max_state_dim=policy_config.max_state_dim
+                ),
+            )
+            prepare_index = device_index
+
+        tokenizer_index = next(
+            (
+                index
+                for index, step in enumerate(steps)
+                if isinstance(step, TokenizerProcessorStep)
+            ),
+            None,
+        )
+        tokenizer_path = str(policy_config.tokenizer_path)
+        if tokenizer_index is None:
+            steps.insert(
+                prepare_index + 1,
+                TokenizerProcessorStep(
+                    tokenizer_name=tokenizer_path,
+                    max_length=policy_config.tokenizer_max_length,
+                    padding_side="right",
+                    padding="max_length",
+                ),
+            )
+        elif str(steps[tokenizer_index].tokenizer_name) != tokenizer_path:
+            steps[tokenizer_index] = TokenizerProcessorStep(
+                tokenizer_name=tokenizer_path,
+                max_length=policy_config.tokenizer_max_length,
+                padding_side="right",
+                padding="max_length",
+            )
+
+    preprocessor.steps = steps
+
+
+def _saved_preprocessor_step_names(pretrained_path: str | Path) -> set[str]:
+    config_path = (
+        Path(pretrained_path) / f"{POLICY_PREPROCESSOR_DEFAULT_NAME}.json"
+    )
+    config = json.loads(config_path.read_text())
+    return {
+        str(step.get("registry_name") or step.get("class_name") or "")
+        for step in config.get("steps", [])
+    }
+
+
 def _build_context(spec: dict, cfg, device: torch.device) -> dict:
+    skill_source = _normalize_skill_source(spec["skill_source"])
+    advance_mode = _normalize_advance_mode(spec["advance_mode"])
+    external_skill_model = str(spec.get("external_skill_model") or "").strip()
     policy_config = _policy_config(spec, cfg.policy, device)
     policy = make_policy(
         cfg=policy_config, env_cfg=cfg.env, rename_map=cfg.rename_map
     )
+    if skill_source == "external":
+        if not external_skill_model:
+            raise ValueError(
+                f"[{spec['label']}] skill_source=external requires "
+                "external_skill_model."
+            )
+        if policy_config.type != "skill_expert":
+            raise ValueError(
+                f"[{spec['label']}] external predictor override is supported only "
+                "for skill_expert checkpoints."
+            )
+        policy.load_external_skill_predictor(external_skill_model)
+        log.info(
+            "[%s] overlaid external predictor from %s.",
+            spec["label"],
+            external_skill_model,
+        )
+    if advance_mode == "external":
+        if not external_skill_model:
+            raise ValueError(
+                f"[{spec['label']}] advance_mode=external requires "
+                "external_skill_model."
+            )
+        if policy_config.type != "skill_expert":
+            raise ValueError(
+                f"[{spec['label']}] external terminator override is supported only "
+                "for skill_expert checkpoints."
+            )
+        policy.load_external_terminator(external_skill_model)
+        log.info(
+            "[%s] overlaid external terminator from %s.",
+            spec["label"],
+            external_skill_model,
+        )
     policy.eval()
     terminator = (
         CheckpointTerminator(policy)
-        if spec["advance_mode"] == "terminator"
+        if advance_mode != "gt"
         else None
     )
     # A Stage-1 GT run does not need its predictor/VLM and can release it.  Stage 2
     # is different: the likelihood blocks always consume the pristine frozen VLM
     # memory owned by skill_predictor, even when the injected skill itself is GT.
     if (
-        spec["skill_source"] == "gt"
+        skill_source == "gt"
         and policy_config.type == "skill_expert"
         and policy.model.skill_predictor is not None
     ):
@@ -450,14 +650,14 @@ def _build_context(spec: dict, cfg, device: torch.device) -> dict:
         if device.type == "cuda":
             torch.cuda.empty_cache()
         log.info("[%s] released unused predictor.", spec["label"])
-    if spec["skill_source"] == "predictor" and policy.model.skill_predictor is None:
+    if skill_source != "gt" and policy.model.skill_predictor is None:
         raise ValueError(f"[{spec['label']}] checkpoint predictor is unavailable.")
 
     wrapper = Stage1OraclePolicy(
         policy,
         terminator,
-        skill_source=spec["skill_source"],
-        advance_mode=spec["advance_mode"],
+        skill_source=skill_source,
+        advance_mode=advance_mode,
         end_mode=os.environ["SKILL_END_MODE"],
         end_threshold=float(os.environ["SKILL_END_THRESHOLD"]),
         progress_threshold=float(os.environ["SKILL_END_PROGRESS_THRESHOLD"]),
@@ -469,14 +669,24 @@ def _build_context(spec: dict, cfg, device: torch.device) -> dict:
         "device_processor": {"device": str(device)},
         "rename_observations_processor": {"rename_map": cfg.rename_map},
     }
-    if spec.get("tokenizer_path"):
+    saved_steps = _saved_preprocessor_step_names(policy_config.pretrained_path)
+    if skill_source != "gt" and "tokenizer_processor" in saved_steps:
+        # Imported checkpoints can retain the source server's absolute tokenizer
+        # path inside policy_preprocessor.json. The resolver already relocated the
+        # corresponding config.json path, so apply it when this step exists.
         overrides["tokenizer_processor"] = {
-            "tokenizer_name": spec["tokenizer_path"]
+            "tokenizer_name": str(policy_config.tokenizer_path)
         }
     preprocessor, postprocessor = make_pre_post_processors(
         policy_cfg=policy_config,
         pretrained_path=policy_config.pretrained_path,
         preprocessor_overrides=overrides,
+    )
+    _ensure_skill_runtime_steps(
+        preprocessor,
+        policy_config,
+        needs_predictor=skill_source != "gt",
+        needs_terminator=advance_mode != "gt",
     )
     return {
         "policy": wrapper,
@@ -491,7 +701,126 @@ def _panel_dir(index: int, label: str) -> str:
     return f"{index:02d}_{safe.strip('-_') or 'model'}"
 
 
-def _stitch_panels(panels: list[tuple[Path, str]], output_dir: Path, per_row: int) -> None:
+def _panel_task_names(oracle_map: dict) -> set[str]:
+    return {
+        f"{task_group}_{int(task_id)}"
+        for task_group, task_id in oracle_map
+    }
+
+
+def _panel_artifacts_complete(
+    panel_root: Path,
+    task_names: set[str],
+    cfg,
+) -> bool:
+    expected_videos = min(
+        int(cfg.eval.n_episodes), int(cfg.eval.max_videos_per_task)
+    )
+    has_checkable_output = expected_videos > 0 or bool(cfg.eval.skill_html)
+    if not has_checkable_output:
+        return False
+    for task_name in task_names:
+        if expected_videos > 0:
+            videos = list((panel_root / "videos" / task_name).glob("eval_episode_*.mp4"))
+            if len(videos) < expected_videos or any(
+                video.stat().st_size == 0 for video in videos
+            ):
+                return False
+        if cfg.eval.skill_html:
+            task_group, task_id = task_name.rsplit("_", 1)
+            html = (
+                panel_root
+                / "skill_html"
+                / f"{task_group}_task{int(task_id):02d}"
+                / "skill_trace.html"
+            )
+            if not html.is_file() or html.stat().st_size == 0:
+                return False
+    return True
+
+
+def _panel_cache_path(panel_root: Path) -> Path:
+    task_tag = os.environ.get("TASK_TAG", "").strip()
+    name = f"eval_info_{task_tag}.json" if task_tag else "eval_info.json"
+    return panel_root / name
+
+
+def _panel_signature(spec: dict, task_names: set[str], cfg) -> dict:
+    return {
+        "policy_path": spec["policy_path"],
+        "external_skill_model": spec.get("external_skill_model") or "",
+        "skill_source": spec["skill_source"],
+        "advance_mode": spec["advance_mode"],
+        "tasks": sorted(task_names),
+        "n_episodes": int(cfg.eval.n_episodes),
+        "n_action_steps": int(cfg.policy.n_action_steps),
+        "seed": int(cfg.seed),
+        "replanning_mode": "fixed_chunk_v1",
+        "skill_end_mode": os.environ["SKILL_END_MODE"],
+        "skill_end_threshold": os.environ["SKILL_END_THRESHOLD"],
+        "skill_end_progress_threshold": os.environ[
+            "SKILL_END_PROGRESS_THRESHOLD"
+        ],
+        "inference_skill_max_length": os.environ["INFERENCE_SKILL_MAX_LENGTH"],
+    }
+
+
+def _load_resumed_panel_info(
+    panel_root: Path,
+    spec: dict,
+    task_names: set[str],
+    cfg,
+) -> tuple[dict | None, str | None]:
+    if not _panel_artifacts_complete(panel_root, task_names, cfg):
+        return None, None
+    cache_path = _panel_cache_path(panel_root)
+    signature = _panel_signature(spec, task_names, cfg)
+    if cache_path.is_file():
+        cached = json.loads(cache_path.read_text())
+        if cached.get("signature") == signature and isinstance(cached.get("info"), dict):
+            return cached["info"], "metrics cache"
+    # Compatibility for panels completed before per-panel caches were introduced.
+    return (
+        {
+            "overall": {},
+            "per_task": [],
+            "resume": {
+                "status": "reused_existing_artifacts",
+                "metrics_available": False,
+                "tasks": sorted(task_names),
+            },
+        },
+        "existing videos/HTML (metrics unavailable)",
+    )
+
+
+def _save_panel_info(
+    panel_root: Path,
+    spec: dict,
+    task_names: set[str],
+    cfg,
+    info: dict,
+) -> None:
+    cache_path = _panel_cache_path(panel_root)
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_text(
+        json.dumps(
+            {
+                "signature": _panel_signature(spec, task_names, cfg),
+                "info": info,
+            },
+            indent=2,
+        )
+    )
+
+
+def _stitch_panels(
+    panels: list[tuple[Path, str]],
+    output_dir: Path,
+    per_row: int,
+    *,
+    task_names: set[str] | None = None,
+) -> None:
     if len(panels) < 2:
         return
     try:
@@ -507,6 +836,8 @@ def _stitch_panels(panels: list[tuple[Path, str]], output_dir: Path, per_row: in
     first_dir = panels[0][0]
     written = 0
     for task_dir in sorted(path for path in first_dir.glob("*") if path.is_dir()):
+        if task_names is not None and task_dir.name not in task_names:
+            continue
         for first_video in sorted(task_dir.glob("eval_episode_*.mp4")):
             videos = [directory / task_dir.name / first_video.name for directory, _ in panels]
             if not all(video.is_file() for video in videos):
@@ -572,6 +903,10 @@ def _maybe_log_wandb(cfg, infos: dict[str, dict], specs: list[dict]) -> None:
                         "label": spec["label"],
                         "policy_path": spec["policy_path"],
                         "skill_source": spec["skill_source"],
+                        "advance_mode": spec["advance_mode"],
+                        "external_skill_model": (
+                            spec.get("external_skill_model") or "unused"
+                        ),
                         "conditioning_route": spec.get("conditioning_route"),
                         "action_loss_mode": spec.get("action_loss_mode"),
                     }
@@ -638,16 +973,34 @@ def eval_main(cfg: EvalPipelineConfig):
         output_dir = Path(cfg.output_dir)
         infos = {}
         video_panels = []
+        resume = os.environ.get("EVAL_RESUME", "false").lower() == "true"
+        current_task_names = _panel_task_names(oracle_maps[0])
         for index, (spec, oracle_map) in enumerate(zip(specs, oracle_maps, strict=True)):
+            panel_root = output_dir / "panels" / _panel_dir(index, spec["label"])
+            task_names = _panel_task_names(oracle_map)
+            if resume:
+                resumed_info, resume_source = _load_resumed_panel_info(
+                    panel_root, spec, task_names, cfg
+                )
+                if resumed_info is not None:
+                    infos[spec["label"]] = resumed_info
+                    video_panels.append((panel_root / "videos", spec["label"]))
+                    log.warning(
+                        "[%s] resume: skipping completed panel from %s.",
+                        spec["label"],
+                        resume_source,
+                    )
+                    continue
             log.info(
-                "[%s] loading %s (skill_source=%s, advance=%s).",
+                "[%s] loading %s (skill_source=%s, advance_mode=%s, "
+                "external_skill_model=%s).",
                 spec["label"],
                 spec["policy_path"],
                 spec["skill_source"],
                 spec["advance_mode"],
+                spec.get("external_skill_model") or "unused",
             )
             context = _build_context(spec, cfg, device)
-            panel_root = output_dir / "panels" / _panel_dir(index, spec["label"])
             try:
                 _reset_init_state_ids(envs)
                 use_gt = spec["skill_source"] == "gt"
@@ -681,6 +1034,7 @@ def eval_main(cfg: EvalPipelineConfig):
                         task_descriptions=task_descriptions,
                     )
                 infos[spec["label"]] = info
+                _save_panel_info(panel_root, spec, task_names, cfg, info)
                 video_panels.append((panel_root / "videos", spec["label"]))
                 log.info("[%s] overall=%s", spec["label"], info.get("overall"))
             finally:
@@ -693,6 +1047,7 @@ def eval_main(cfg: EvalPipelineConfig):
             video_panels,
             output_dir / "side_by_side",
             int(os.environ.get("MODELS_PER_ROW", "0") or 0),
+            task_names=current_task_names,
         )
         output_dir.mkdir(parents=True, exist_ok=True)
         task_tag = os.environ.get("TASK_TAG", "").strip()
@@ -701,7 +1056,7 @@ def eval_main(cfg: EvalPipelineConfig):
         )
         info_path.write_text(json.dumps(infos, indent=2))
         for label, info in infos.items():
-            print(f"{label}: {info['overall']}")
+            print(f"{label}: {info.get('overall', {})}")
         print("Saved:", info_path)
         _maybe_log_wandb(cfg, infos, specs)
     finally:

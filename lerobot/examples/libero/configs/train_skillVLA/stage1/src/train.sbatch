@@ -32,7 +32,11 @@ echo "expert  : pi0.5 base ${PI_BASE} -> full fine-tuning"
 echo "route   : ${CONDITIONING_ROUTE}"
 echo "loss    : ${ACTION_LOSS_MODE}"
 echo "skill   : ${TRAINING_SKILL_SOURCE}   predictor=${SKILL_PREDICTOR_CHECKPOINT_PATH:-none}"
-echo "vision  : DINO ${DINO_MODEL_PATH}   frozen=${FREEZE_VISION_ENCODER}"
+if [ "${CONDITIONING_ROUTE}" = state_skill_only_cond ]; then
+  echo "vision  : disabled in VSA action path"
+else
+  echo "vision  : DINO ${DINO_MODEL_PATH}   frozen=${FREEZE_VISION_ENCODER}"
+fi
 echo "predict : pi0.5 VLM skill-LoRA=${SKILL_PREDICTOR_LORA} all_layers=${SKILL_PREDICTOR_ALL_LAYERS} deadzone=${SKILL_PREDICTOR_DEADZONE_FRAC}"
 echo "term    : FSQ ${FSQ_PATH}   train=${TRAIN_TERMINATOR}, vision_frozen=${TERMINATOR_FREEZE_VISION_ENCODER}"
 echo "output  : ${PT_OUTPUT_DIR}"

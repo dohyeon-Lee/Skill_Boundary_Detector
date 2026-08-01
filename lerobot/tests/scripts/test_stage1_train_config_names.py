@@ -107,12 +107,30 @@ def test_stage1_exports_stage3a_predictor_contract(tmp_path: Path) -> None:
         "_dino_frozen_state_skill_cond_flow_endpoint_xyz_pred_lora_all_dz08"
     )
 
-    config["architecture"] = {"conditioning_route": "skill_cond"}
-    skill_only_settings = build_settings(config)
-    assert skill_only_settings["conditioning_route"] == "skill_cond"
-    assert skill_only_settings["pt_run_name"].endswith(
-        "_dino_frozen_skill_cond_flow_endpoint_xyz_pred_lora_all_dz08"
+    config["architecture"] = {"conditioning_route": "state_skill_only_cond"}
+    state_skill_only_settings = build_settings(config)
+    assert state_skill_only_settings["conditioning_route"] == "state_skill_only_cond"
+    assert state_skill_only_settings["pt_run_name"].endswith(
+        "_no_vision_state_skill_only_cond_flow_endpoint_xyz_pred_lora_all_dz08"
     )
+
+    config["architecture"] = {"conditioning_route": "skillonly_cond"}
+    skill_only_settings = build_settings(config)
+    assert skill_only_settings["conditioning_route"] == "skillonly_cond"
+    assert skill_only_settings["pt_run_name"].endswith(
+        "_dino_frozen_skillonly_cond_flow_endpoint_xyz_pred_lora_all_dz08"
+    )
+
+    config["architecture"] = {"conditioning_route": "visiononly_cond"}
+    vision_only_settings = build_settings(config)
+    assert vision_only_settings["conditioning_route"] == "visiononly_cond"
+    assert vision_only_settings["pt_run_name"].endswith(
+        "_dino_frozen_visiononly_cond_flow_endpoint_xyz_pred_lora_all_dz08"
+    )
+
+    config["architecture"] = {"conditioning_route": "skill_cond"}
+    legacy_settings = build_settings(config)
+    assert legacy_settings["conditioning_route"] == "skillonly_cond"
 
     config["architecture"] = {"conditioning_route": "stateonly_cond"}
     state_only_settings = build_settings(config)

@@ -12,6 +12,8 @@ from lerobot.policies.skill_expert.configuration_skill_expert import SkillExpert
 from lerobot.policies.skill_expert.modeling_skill_expert import (
     SkillExpertPolicy,
     SkillExpertPytorch,
+    _load_complete_predictor_parameters,
+    _load_complete_terminator_parameters,
     _load_learned_predictor_parameters,
     _load_pretrained_state_dict,
     _map_pi05_key,
@@ -31,7 +33,7 @@ def test_stage1_uses_two_matching_18_layer_transformers() -> None:
     assert get_gemma_config(config.action_expert_variant).depth == 18
 
 
-def test_stage1_contract_is_dino_with_four_condition_stream_routes() -> None:
+def test_stage1_contract_supports_six_condition_stream_routes() -> None:
     config = SkillExpertConfig()
 
     assert config.vision_backbone == "dino"
@@ -47,12 +49,26 @@ def test_stage1_contract_is_dino_with_four_condition_stream_routes() -> None:
         == "state_skill_cond"
     )
     assert (
+        SkillExpertConfig(
+            conditioning_route="state_skill_only_cond"
+        ).conditioning_route
+        == "state_skill_only_cond"
+    )
+    assert (
         SkillExpertConfig(conditioning_route="stateonly_cond").conditioning_route
         == "stateonly_cond"
     )
     assert (
-        SkillExpertConfig(conditioning_route="skill_cond").conditioning_route
-        == "skill_cond"
+        SkillExpertConfig(conditioning_route="skillonly_cond").conditioning_route
+        == "skillonly_cond"
+    )
+    assert (
+        SkillExpertConfig(conditioning_route="visiononly_cond").conditioning_route
+        == "visiononly_cond"
+    )
+    # Old checkpoint configs retain the same architecture under the new name.
+    assert SkillExpertConfig(conditioning_route="skill_cond").conditioning_route == (
+        "skillonly_cond"
     )
     with pytest.raises(ValueError, match="state_cond.*state_skill_cond"):
         SkillExpertConfig(conditioning_route="broadcast")
@@ -175,6 +191,45 @@ def test_stage1_predictor_loader_overlays_only_learned_predictor_tensors(tmp_pat
     torch.testing.assert_close(predictor.vlm.weight, base_before)
 
 
+def test_complete_predictor_loader_can_populate_a_new_predictor(tmp_path) -> None:
+    class _TinyPredictor(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.reader = nn.Linear(2, 2)
+            self.head = nn.Linear(2, 1)
+            self.vlm = nn.Linear(2, 2)
+
+    predictor = _TinyPredictor()
+    source = {
+        f"model.skill_predictor.{key}": torch.full_like(value, 9)
+        for key, value in predictor.state_dict().items()
+    }
+    source["model.gemma_expert.unrelated"] = torch.ones(1)
+    save_file(source, tmp_path / "model.safetensors")
+
+    loaded = _load_complete_predictor_parameters(predictor, tmp_path)
+
+    assert loaded == len(predictor.state_dict())
+    for value in predictor.state_dict().values():
+        torch.testing.assert_close(value, torch.full_like(value, 9))
+
+
+def test_complete_terminator_loader_can_populate_a_new_terminator(tmp_path) -> None:
+    terminator = nn.Sequential(nn.Linear(2, 2), nn.Linear(2, 1))
+    source = {
+        f"model.fsq_term_train.{key}": torch.full_like(value, 6)
+        for key, value in terminator.state_dict().items()
+    }
+    source["model.gemma_expert.unrelated"] = torch.ones(1)
+    save_file(source, tmp_path / "model.safetensors")
+
+    loaded = _load_complete_terminator_parameters(terminator, tmp_path)
+
+    assert loaded == len(terminator.state_dict())
+    for value in terminator.state_dict().values():
+        torch.testing.assert_close(value, torch.full_like(value, 6))
+
+
 def test_flat_skill_code_maps_to_fsq_grid_coordinate() -> None:
     model = SimpleNamespace(
         _fsq_levels=torch.tensor([3, 3, 3]),
@@ -210,7 +265,12 @@ def test_skill_broadcast_is_routed_to_exactly_one_stream() -> None:
     assert condition_skill is not None
     torch.testing.assert_close(condition_skill, expert_skill)
 
-    model.config = SimpleNamespace(conditioning_route="skill_cond")
+    model.config = SimpleNamespace(conditioning_route="state_skill_only_cond")
+    visionless_condition_skill, visionless_expert_skill = model._skill_broadcasts(code)
+    assert visionless_expert_skill is None
+    torch.testing.assert_close(visionless_condition_skill, expert_skill)
+
+    model.config = SimpleNamespace(conditioning_route="skillonly_cond")
     skill_only_condition, skill_only_expert = model._skill_broadcasts(code)
     assert skill_only_expert is None
     torch.testing.assert_close(skill_only_condition, expert_skill)
@@ -219,6 +279,9 @@ def test_skill_broadcast_is_routed_to_exactly_one_stream() -> None:
     state_only_condition, state_only_expert = model._skill_broadcasts(code)
     assert state_only_condition is None
     assert state_only_expert is None
+
+    model.config = SimpleNamespace(conditioning_route="visiononly_cond")
+    assert model._skill_broadcasts(None) == (None, None)
 
 
 def test_stateonly_cond_has_state_adarms_but_no_skill_projection() -> None:
@@ -250,7 +313,38 @@ def test_stateonly_cond_has_state_adarms_but_no_skill_projection() -> None:
     assert build_gemma_mock.call_args_list[1].kwargs == {"use_adarms": True}
 
 
-def test_skill_cond_has_no_state_projection_or_cond_adarms() -> None:
+def test_state_skill_only_cond_uses_state_and_skill_without_dino() -> None:
+    with (
+        patch(
+            "lerobot.policies.skill_expert.modeling_skill_expert.AutoModel.from_pretrained"
+        ) as dino_mock,
+        patch(
+            "lerobot.policies.skill_expert.modeling_skill_expert.build_gemma",
+            side_effect=(nn.Identity(), nn.Identity()),
+        ) as build_gemma_mock,
+    ):
+        model = SkillExpertPytorch(
+            SkillExpertConfig(conditioning_route="state_skill_only_cond")
+        )
+
+    dino_mock.assert_not_called()
+    assert model.dino is None
+    assert model.image_proj is None
+    assert model.state_proj is not None
+    assert model.skill_proj is not None
+    assert model._state_condition(torch.randn(2, 32)).shape == (2, model.width)
+    condition_skill, expert_skill = model._skill_broadcasts(torch.tensor([0, 26]))
+    assert condition_skill is not None and condition_skill.shape == (2, model.width)
+    assert expert_skill is None
+    first = model._condition_tokens([], batch_size=2)
+    second = model._condition_tokens([], batch_size=2)
+    assert first.shape == (2, 1, model.width)
+    torch.testing.assert_close(first, second, rtol=0.0, atol=0.0)
+    assert build_gemma_mock.call_args_list[0].kwargs == {"use_adarms": True}
+    assert build_gemma_mock.call_args_list[1].kwargs == {"use_adarms": True}
+
+
+def test_skillonly_cond_has_no_state_projection_or_cond_adarms() -> None:
     class _Dino(nn.Module):
         def __init__(self) -> None:
             super().__init__()
@@ -268,11 +362,41 @@ def test_skill_cond_has_no_state_projection_or_cond_adarms() -> None:
         ) as build_gemma_mock,
     ):
         model = SkillExpertPytorch(
-            SkillExpertConfig(conditioning_route="skill_cond")
+            SkillExpertConfig(conditioning_route="skillonly_cond")
         )
 
     assert model.state_proj is None
+    assert model.skill_proj is not None
     assert model._state_condition(torch.randn(2, 32)) is None
+    assert build_gemma_mock.call_args_list[0].kwargs == {"use_adarms": False}
+    assert build_gemma_mock.call_args_list[1].kwargs == {"use_adarms": True}
+
+
+def test_visiononly_cond_has_no_state_or_skill_parameters() -> None:
+    class _Dino(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.anchor = nn.Parameter(torch.zeros(()))
+            self.config = SimpleNamespace(hidden_size=8, num_register_tokens=0)
+
+    with (
+        patch(
+            "lerobot.policies.skill_expert.modeling_skill_expert.AutoModel.from_pretrained",
+            return_value=_Dino(),
+        ),
+        patch(
+            "lerobot.policies.skill_expert.modeling_skill_expert.build_gemma",
+            side_effect=(nn.Identity(), nn.Identity()),
+        ) as build_gemma_mock,
+    ):
+        model = SkillExpertPytorch(
+            SkillExpertConfig(conditioning_route="visiononly_cond")
+        )
+
+    assert model.state_proj is None
+    assert model.skill_proj is None
+    assert model._state_condition(None) is None
+    assert model._skill_broadcasts(None) == (None, None)
     assert build_gemma_mock.call_args_list[0].kwargs == {"use_adarms": False}
     assert build_gemma_mock.call_args_list[1].kwargs == {"use_adarms": True}
 
@@ -432,10 +556,12 @@ class _CaptureActionResidual(nn.Module):
         self.anchor = nn.Parameter(torch.zeros(()))
         self.seen_actions = None
         self.seen_state = None
+        self.seen_skill = None
 
     def forward(self, images, state, skill_code, actions):
-        del images, skill_code
+        del images
         self.seen_state = state
+        self.seen_skill = skill_code
         self.seen_actions = actions.detach().clone()
         self._last_predicted_actions = actions.clone()
         self._last_predicted_actions[:, :2, 0] += 1.0
@@ -477,11 +603,11 @@ def test_stage1_forward_matches_stage0_unconditional_action_target_and_mask() ->
     assert metrics["loss_per_dim"] == pytest.approx([2.5, 2.5, 2.5])
 
 
-def test_skill_cond_action_path_does_not_read_state_from_batch() -> None:
+def test_skillonly_cond_action_path_does_not_read_state_from_batch() -> None:
     policy = SkillExpertPolicy.__new__(SkillExpertPolicy)
     nn.Module.__init__(policy)
     policy.config = SimpleNamespace(
-        conditioning_route="skill_cond",
+        conditioning_route="skillonly_cond",
         max_action_dim=3,
         max_state_dim=2,
         output_features={ACTION: SimpleNamespace(shape=(3,))},
@@ -500,6 +626,66 @@ def test_skill_cond_action_path_does_not_read_state_from_batch() -> None:
     policy.forward(batch)
 
     assert policy.model.seen_state is None
+
+
+def test_state_skill_only_cond_action_path_does_not_read_images() -> None:
+    policy = SkillExpertPolicy.__new__(SkillExpertPolicy)
+    nn.Module.__init__(policy)
+    policy.config = SimpleNamespace(
+        conditioning_route="state_skill_only_cond",
+        max_action_dim=3,
+        max_state_dim=2,
+        output_features={ACTION: SimpleNamespace(shape=(3,))},
+        train_terminator=False,
+        action_loss_mode="flow",
+        training_skill_source="gt",
+    )
+    policy.model = _CaptureActionResidual()
+    policy._collect_images = lambda batch: pytest.fail(
+        "state_skill_only_cond read images"
+    )
+    policy._training_skill_code = lambda batch: torch.zeros(1, dtype=torch.long)
+    policy._last_transition_jitter_fraction = torch.zeros(())
+    policy._last_predicted_skill_accuracy = None
+    policy._last_predicted_diff_from_current = None
+    policy._last_unique_predicted_skills = None
+    batch = {
+        ACTION: torch.zeros(1, 3, 3),
+        OBS_STATE: torch.zeros(1, 2),
+        "action_is_pad": torch.zeros(1, 3, dtype=torch.bool),
+    }
+
+    policy.forward(batch)
+
+    assert policy.model.seen_state is not None
+    assert policy.model.seen_skill is not None
+
+
+def test_visiononly_cond_action_path_does_not_read_state_or_skill() -> None:
+    policy = SkillExpertPolicy.__new__(SkillExpertPolicy)
+    nn.Module.__init__(policy)
+    policy.config = SimpleNamespace(
+        conditioning_route="visiononly_cond",
+        max_action_dim=3,
+        max_state_dim=2,
+        output_features={ACTION: SimpleNamespace(shape=(3,))},
+        train_terminator=False,
+        action_loss_mode="flow",
+        training_skill_source="gt",
+    )
+    policy.model = _CaptureActionResidual()
+    policy._collect_images = lambda batch: []
+    policy._skill_code = lambda batch: pytest.fail("visiononly_cond read skill")
+    policy._last_transition_jitter_fraction = torch.zeros(())
+    batch = {
+        ACTION: torch.zeros(1, 3, 3),
+        "action_is_pad": torch.zeros(1, 3, dtype=torch.bool),
+    }
+
+    policy.forward(batch)
+
+    assert policy.model.seen_state is None
+    assert policy.model.seen_skill is None
 
 
 def test_endpoint_xyz_loss_matches_stage0_accumulated_delta_definition() -> None:

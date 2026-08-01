@@ -1,5 +1,5 @@
-benchmark_root: /data1/dohyeon/Skill_Boundary_Detector/tools/lerobot-libero/libero/libero
-bddl_files: /data1/dohyeon/Skill_Boundary_Detector/tools/lerobot-libero/libero/libero/bddl_files
-init_states: /data1/dohyeon/Skill_Boundary_Detector/tools/lerobot-libero/libero/libero/init_files
-datasets: /data1/dohyeon/Skill_Boundary_Detector/tools/lerobot-libero/libero/datasets
-assets: /data1/dohyeon/Skill_Boundary_Detector/tools/lerobot-libero/libero/libero/assets
+benchmark_root: /scratch2/mdorazi/Skill_Boundary_Detector/tools/lerobot-libero/libero/libero
+bddl_files: /scratch2/mdorazi/Skill_Boundary_Detector/tools/lerobot-libero/libero/libero/bddl_files
+init_states: /scratch2/mdorazi/Skill_Boundary_Detector/tools/lerobot-libero/libero/libero/init_files
+datasets: /scratch2/mdorazi/Skill_Boundary_Detector/tools/lerobot-libero/libero/datasets
+assets: /scratch2/mdorazi/Skill_Boundary_Detector/tools/lerobot-libero/libero/libero/assets

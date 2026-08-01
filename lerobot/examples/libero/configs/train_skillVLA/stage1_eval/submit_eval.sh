@@ -13,7 +13,11 @@ CONFIG_PATH="$(snapshot_config "${CONFIG_PATH}")"
 
 BOOTSTRAP_PYTHON="${SCRIPT_DIR}/../../../../../../.venv/bin/python"
 [ -x "${BOOTSTRAP_PYTHON}" ] || BOOTSTRAP_PYTHON=python3
-eval "$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/stage1_eval_config.py" --config "${CONFIG_PATH}" --shell)"
+STAGE1_EVAL_EXPORTS="$(
+  "${BOOTSTRAP_PYTHON}" "${SRC_DIR}/stage1_eval_config.py" \
+    --config "${CONFIG_PATH}" --shell
+)"
+eval "${STAGE1_EVAL_EXPORTS}"
 
 for artifact in "${POLICY_PATH}" "${FSQ_PATH}" "${SKILL_DATASET_DIR}"; do
   [ -e "${artifact}" ] || { echo "Missing artifact: ${artifact}" >&2; exit 1; }

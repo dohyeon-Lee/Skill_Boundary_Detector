@@ -177,15 +177,25 @@ def test_stage2_inherits_conditioning_route_from_stage1_checkpoint(
     assert settings["conditioning_route"] == "state_skill_cond"
     assert settings["pt_run_name"] == "stage1_exact_name_last_flow_gt_batchOFF"
 
+    stage1["conditioning_route"] = "state_skill_only_cond"
+    checkpoint_config.write_text(json.dumps(stage1))
+    state_skill_only_settings = stage2_train_config.build_settings(config)
+    assert state_skill_only_settings["conditioning_route"] == "state_skill_only_cond"
+
     stage1["conditioning_route"] = "skill_cond"
     checkpoint_config.write_text(json.dumps(stage1))
     skill_only_settings = stage2_train_config.build_settings(config)
-    assert skill_only_settings["conditioning_route"] == "skill_cond"
+    assert skill_only_settings["conditioning_route"] == "skillonly_cond"
 
     stage1["conditioning_route"] = "stateonly_cond"
     checkpoint_config.write_text(json.dumps(stage1))
     state_only_settings = stage2_train_config.build_settings(config)
     assert state_only_settings["conditioning_route"] == "stateonly_cond"
+
+    stage1["conditioning_route"] = "visiononly_cond"
+    checkpoint_config.write_text(json.dumps(stage1))
+    vision_only_settings = stage2_train_config.build_settings(config)
+    assert vision_only_settings["conditioning_route"] == "visiononly_cond"
 
 
 def test_stage2_loss_is_validated_exported_and_named(tmp_path: Path) -> None:

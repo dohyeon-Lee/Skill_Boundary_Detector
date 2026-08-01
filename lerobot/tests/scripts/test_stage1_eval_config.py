@@ -56,6 +56,24 @@ def _checkpoint_tree(
                 "terminator_dino_model_path": str(project / "models/dino"),
                 "tokenizer_path": str(project / "models/tokenizer"),
                 "train_skill_predictor": train_predictor,
+                "skill_vocab_size": 27,
+                "skill_fsq_levels": [3, 3, 3],
+                "skill_predictor_vlm_variant": "gemma_2b",
+                "skill_predictor_image_size": 224,
+                "skill_predictor_reader_tokens": 4,
+                "skill_predictor_reader_depth": 2,
+                "skill_predictor_reader_heads": 8,
+                "skill_predictor_all_layers": True,
+                "skill_predictor_detach_vlm": False,
+                "skill_predictor_lora": True,
+                "skill_predictor_lora_targets": "q,k,v,o",
+                "skill_predictor_lora_rank": 8,
+                "skill_predictor_lora_alpha": 16.0,
+                "skill_predictor_lora_dropout": 0.0,
+                "skill_predictor_deadzone_frac": 0.8,
+                "skill_predictor_attend_image": True,
+                "skill_predictor_attend_language": True,
+                "tokenizer_max_length": 200,
                 "train_terminator": train_terminator,
                 "n_action_steps": 10,
                 "chunk_size": 10,
@@ -78,6 +96,25 @@ def _checkpoint_tree(
         "terminator": {"end_mode": "or"},
         "logging": {"wandb": {"enable": False}},
     }
+
+
+def _external_skill_model(config: dict) -> Path:
+    project = Path(config["project_root"])
+    target = (
+        project
+        / config["outputs_root"]
+        / "skillVLA_stage1"
+        / config["model_dir"]
+        / "checkpoints/last/pretrained_model"
+    )
+    source = project / "external_predictor/checkpoints/030000/pretrained_model"
+    source.mkdir(parents=True)
+    policy = json.loads((target / "config.json").read_text())
+    policy["train_skill_predictor"] = True
+    policy["train_terminator"] = True
+    (source / "config.json").write_text(json.dumps(policy))
+    (source / "model.safetensors").touch()
+    return source
 
 
 def test_stage1_eval_uses_checkpoint_contract_and_local_output_root(tmp_path: Path) -> None:
@@ -151,6 +188,55 @@ def test_stage1_eval_accepts_frozen_checkpoint_predictor(tmp_path: Path) -> None
     assert json.loads(settings["models_json"])[0]["has_predictor"] is True
 
 
+def test_stage1_eval_resolves_external_skill_model(tmp_path: Path) -> None:
+    config = _checkpoint_tree(
+        tmp_path, train_predictor=False, train_terminator=False
+    )
+    source = _external_skill_model(config)
+    model_dir = config.pop("model_dir")
+    config["external_skill_model"] = str(
+        source.relative_to(config["project_root"])
+    )
+    config["models"] = [
+        {
+            "model_dir": model_dir,
+            "skill_source": "external",
+            "advance_mode": "external",
+        }
+    ]
+
+    model = json.loads(build_settings(config)["models_json"])[0]
+
+    assert Path(model["external_skill_model"]) == source
+    assert model["has_predictor"] is False
+    assert model["has_terminator"] is False
+    assert Path(model["policy_path"]).name == "pretrained_model"
+    assert Path(model["tokenizer_path"]) == (
+        Path(config["project_root"]) / "models/tokenizer"
+    )
+
+
+def test_external_predictor_must_match_target_architecture(tmp_path: Path) -> None:
+    config = _checkpoint_tree(tmp_path)
+    source = _external_skill_model(config)
+    source_config = json.loads((source / "config.json").read_text())
+    source_config["skill_fsq_levels"] = [5, 5, 5]
+    (source / "config.json").write_text(json.dumps(source_config))
+    config["skill_source"] = "external"
+    config["external_skill_model"] = str(source)
+
+    with pytest.raises(ValueError, match="architecture mismatch.*skill_fsq_levels"):
+        build_settings(config)
+
+
+def test_external_source_requires_external_skill_model(tmp_path: Path) -> None:
+    config = _checkpoint_tree(tmp_path)
+    config["skill_source"] = "external"
+
+    with pytest.raises(ValueError, match="requires top-level external_skill_model"):
+        build_settings(config)
+
+
 def test_gt_timed_eval_does_not_require_terminator(tmp_path: Path) -> None:
     config = _checkpoint_tree(tmp_path, train_terminator=False)
     config["skill_source"] = "gt"
@@ -180,15 +266,25 @@ def test_stage1_eval_reads_current_route_and_loss_contract(tmp_path: Path) -> No
     assert model["conditioning_route"] == "state_skill_cond"
     assert model["action_loss_mode"] == "flow_endpoint_xyz"
 
+    policy["conditioning_route"] = "state_skill_only_cond"
+    (policy_path / "config.json").write_text(json.dumps(policy))
+    state_skill_only_model = json.loads(build_settings(config)["models_json"])[0]
+    assert state_skill_only_model["conditioning_route"] == "state_skill_only_cond"
+
     policy["conditioning_route"] = "skill_cond"
     (policy_path / "config.json").write_text(json.dumps(policy))
     skill_only_model = json.loads(build_settings(config)["models_json"])[0]
-    assert skill_only_model["conditioning_route"] == "skill_cond"
+    assert skill_only_model["conditioning_route"] == "skillonly_cond"
 
     policy["conditioning_route"] = "stateonly_cond"
     (policy_path / "config.json").write_text(json.dumps(policy))
     state_only_model = json.loads(build_settings(config)["models_json"])[0]
     assert state_only_model["conditioning_route"] == "stateonly_cond"
+
+    policy["conditioning_route"] = "visiononly_cond"
+    (policy_path / "config.json").write_text(json.dumps(policy))
+    vision_only_model = json.loads(build_settings(config)["models_json"])[0]
+    assert vision_only_model["conditioning_route"] == "visiononly_cond"
 
 
 def test_episode_exact_mode_requires_init_state_map(tmp_path: Path) -> None:
@@ -216,7 +312,7 @@ def test_multi_model_entries_can_compare_gt_and_predictor(tmp_path: Path) -> Non
 
     assert settings["model_count"] == 2
     assert [model["label"] for model in models] == ["GT", "Predicted"]
-    assert [model["skill_source"] for model in models] == ["gt", "predictor"]
+    assert [model["skill_source"] for model in models] == ["gt", "own"]
     assert all(model["eval_init_states_path"] == "" for model in models)
 
 

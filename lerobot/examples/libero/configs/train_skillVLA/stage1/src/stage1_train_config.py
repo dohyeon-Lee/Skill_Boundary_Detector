@@ -214,15 +214,21 @@ def build_settings(config: dict) -> dict:
     conditioning_route = str(
         _at(config, "architecture", "conditioning_route", default="state_cond")
     ).strip().lower()
+    # Backward-compatible spelling used by existing Stage-1 configs/checkpoints.
+    if conditioning_route == "skill_cond":
+        conditioning_route = "skillonly_cond"
     if conditioning_route not in {
         "state_cond",
         "state_skill_cond",
+        "state_skill_only_cond",
         "stateonly_cond",
-        "skill_cond",
+        "skillonly_cond",
+        "visiononly_cond",
     }:
         raise ValueError(
             "architecture.conditioning_route must be "
-            "state_cond|state_skill_cond|stateonly_cond|skill_cond."
+            "state_cond|state_skill_cond|state_skill_only_cond|stateonly_cond|"
+            "skillonly_cond|visiononly_cond."
         )
 
     max_state_dim = int(_at(config, "architecture", "max_state_dim", default=32))
@@ -301,7 +307,11 @@ def build_settings(config: dict) -> dict:
             predictor_contract=predictor_contract,
         )
     suffix = str(_at(config, "run", "suffix", default="")).strip().strip("_")
-    vision_tag = "dino_frozen" if freeze_vision_encoder else "dino_tuned"
+    vision_tag = (
+        "no_vision"
+        if conditioning_route == "state_skill_only_cond"
+        else ("dino_frozen" if freeze_vision_encoder else "dino_tuned")
+    )
     run_name = (
         f"{source}_{run_tag}_{vision_tag}_{conditioning_route}_{action_loss_mode}"
     )

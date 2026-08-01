@@ -1,22 +1,32 @@
 # Stage-1 VSA multi-model closed-loop evaluation. The conditioning route, action
-# objective, DINO/predictor/terminator structure, and training dataset are read
-# directly from each checkpoint; do not duplicate them in this YAML.
+# objective, DINO structure, and training dataset are read from each target.
+# `external_skill_model` is the one optional source for both predictor/terminator.
+external_skill_model: outputs_filtered/skillVLA_stage1/libero_90_full_firsthalf_scene_FSQ333_125_std_pt_episodemean_80p_snap10_pmax15_halfnormal_dino_tuned_state_skill_cond_flow/checkpoints/030000/pretrained_model
 models:
-  - model_dir: libero_90_full_firsthalf_scene_FSQ333_125_std_pt_episodemean_80p_snap10_pmax15_halfnormal_dino_tuned_state_skill_cond_flow
-    checkpoint: "030000"
-    skill_source: predictor
-    advance_mode: terminator
-    label: skill_state
-  - model_dir: libero_90_full_firsthalf_scene_FSQ333_125_std_pt_episodemean_80p_snap10_pmax15_halfnormal_dino_tuned_state_skill_cond_flow_pretrained_predictor
-    checkpoint: "010000"
-    skill_source: predictor
-    advance_mode: terminator
-    label: skill_state_predictor
+  - model_dir: libero_90_full_firsthalf_scene_FSQ333_125_std_pt_episodemean_80p_snap10_pmax15_halfnormal_dino_tuned_visiononly_cond_flow_16batch
+    checkpoint: "025000"
+    skill_source: external
+    advance_mode: external
+    label: vision_O_state_X_skill_X
 
-models_per_row: 2
+  - model_dir: libero_90_full_firsthalf_scene_FSQ333_125_std_pt_episodemean_80p_snap10_pmax15_halfnormal_dino_tuned_stateonly_cond_flow_16batch
+    checkpoint: "025000"
+    skill_source: external
+    advance_mode: external
+    label: vision_O_state_O_skill_X
+
+  - model_dir: libero_90_full_firsthalf_scene_FSQ333_125_std_pt_episodemean_80p_snap10_pmax15_halfnormal_dino_tuned_state_skill_cond_flow
+    checkpoint: "025000"
+    skill_source: external
+    advance_mode: external
+    label: vision_O_state_O_skill_O
+
+models_per_row: 3
 
 # Empty => timestamped folder under stage1_eval/outputs/.
-output_name: "ss_30k_vs_ss_pred_10k"
+output_name: "VSA_obs_analysis_pred_25k_replan2_fixed"
+# Reuse completed panel artifacts under the same output_name.
+resume: true
 
 target_task: libero_90
 task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
@@ -24,16 +34,17 @@ eval_num_gpus: 10
 n_episodes: 3
 eval_batch_size: 1
 max_parallel_tasks: 1
-n_action_steps: 10
+n_action_steps: 2
 
 oracle:
   # false: normal LIBERO reset states, GT/reference sequences matched by language.
   # true: dataset episode-exact reset; run oracle_matching/run.sh first.
   episode_exact: true
-  advance_mode: terminator       # per-model override allowed; gt requires skill_source=gt
+  # Default when a model entry omits it: external | own | gt.
+  advance_mode: own
 
 terminator:
-  # Every panel uses the co-trained terminator inside its own checkpoint.
+  # Thresholds used when advance_mode is external or own.
   end_mode: or                   # termination | progress | or | and
   end_threshold: 0.5
   progress_threshold: 0.9

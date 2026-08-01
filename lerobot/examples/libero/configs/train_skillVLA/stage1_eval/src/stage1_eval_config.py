@@ -17,6 +17,27 @@ from train_skills_config import as_bool, as_list, get_value, load_config, print_
 
 DEFAULT_CONFIG_PATH = _HERE.parent.parent / "stage1_eval_config.yaml"
 
+_PREDICTOR_CHECKPOINT_CONTRACT_FIELDS = (
+    "skill_vocab_size",
+    "skill_fsq_levels",
+    "skill_predictor_vlm_variant",
+    "skill_predictor_image_size",
+    "skill_predictor_reader_tokens",
+    "skill_predictor_reader_depth",
+    "skill_predictor_reader_heads",
+    "skill_predictor_all_layers",
+    "skill_predictor_detach_vlm",
+    "skill_predictor_lora",
+    "skill_predictor_lora_targets",
+    "skill_predictor_lora_rank",
+    "skill_predictor_lora_alpha",
+    "skill_predictor_lora_dropout",
+    "skill_predictor_deadzone_frac",
+    "skill_predictor_attend_image",
+    "skill_predictor_attend_language",
+    "tokenizer_max_length",
+)
+
 
 def _at(config: dict, *path: str, default=None):
     value = config
@@ -91,15 +112,20 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         raise ValueError(f"Expected a skill_expert checkpoint: {policy_path}")
 
     conditioning_route = str(policy.get("conditioning_route", "")).strip().lower()
+    if conditioning_route == "skill_cond":
+        conditioning_route = "skillonly_cond"
     if conditioning_route not in {
         "state_cond",
         "state_skill_cond",
+        "state_skill_only_cond",
         "stateonly_cond",
-        "skill_cond",
+        "skillonly_cond",
+        "visiononly_cond",
     }:
         raise ValueError(
             "Stage-1 checkpoint does not follow the current conditioning contract "
-            f"(state_cond|state_skill_cond|stateonly_cond|skill_cond): {policy_path}"
+            "(state_cond|state_skill_cond|state_skill_only_cond|stateonly_cond|skillonly_cond|"
+            f"visiononly_cond): {policy_path}"
         )
     action_loss_mode = str(policy.get("action_loss_mode", "")).strip().lower()
     if action_loss_mode not in {"flow", "flow_endpoint_xyz"}:
@@ -167,11 +193,91 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
     }
 
 
+def _external_predictor_contract(
+    checkpoint: Path,
+    *,
+    target_policy: dict,
+    project_root: Path,
+) -> dict:
+    """Validate an eval-time predictor overlay against the target policy."""
+    config_path = checkpoint / "config.json"
+    weights_path = checkpoint / "model.safetensors"
+    if not config_path.is_file():
+        raise FileNotFoundError(f"External predictor config not found: {config_path}")
+    if not weights_path.is_file():
+        raise FileNotFoundError(f"External predictor weights not found: {weights_path}")
+    source = json.loads(config_path.read_text())
+    if source.get("type") != "skill_expert":
+        raise ValueError(
+            "External predictor must come from policy.type=skill_expert, got "
+            f"{source.get('type')!r} at {checkpoint}."
+        )
+    if not as_bool(source.get("train_skill_predictor", False)):
+        raise ValueError(
+            f"External predictor checkpoint has no trained predictor: {checkpoint}"
+        )
+    mismatches = [
+        f"{field}: predictor={source.get(field)!r}, target={target_policy.get(field)!r}"
+        for field in _PREDICTOR_CHECKPOINT_CONTRACT_FIELDS
+        if source.get(field) != target_policy.get(field)
+    ]
+    if mismatches:
+        raise ValueError(
+            "External predictor architecture mismatch: " + "; ".join(mismatches)
+        )
+    tokenizer_path = _relocate_project_path(
+        project_root, source.get("tokenizer_path")
+    )
+    if not tokenizer_path.is_dir():
+        raise FileNotFoundError(
+            f"External predictor tokenizer not found: {tokenizer_path}"
+        )
+    return {"tokenizer_path": tokenizer_path}
+
+
+def _external_terminator_contract(
+    checkpoint: Path,
+    *,
+    target_policy: dict,
+    project_root: Path,
+) -> dict:
+    """Validate and relocate an eval-time co-trained terminator source."""
+    config_path = checkpoint / "config.json"
+    weights_path = checkpoint / "model.safetensors"
+    if not config_path.is_file():
+        raise FileNotFoundError(f"External terminator config not found: {config_path}")
+    if not weights_path.is_file():
+        raise FileNotFoundError(f"External terminator weights not found: {weights_path}")
+    source = json.loads(config_path.read_text())
+    if source.get("type") != "skill_expert":
+        raise ValueError(
+            "External terminator must come from policy.type=skill_expert, got "
+            f"{source.get('type')!r} at {checkpoint}."
+        )
+    if not as_bool(source.get("train_terminator", False)):
+        raise ValueError(
+            f"External terminator checkpoint has no trained terminator: {checkpoint}"
+        )
+    if source.get("skill_fsq_levels") != target_policy.get("skill_fsq_levels"):
+        raise ValueError(
+            "External terminator FSQ mismatch: "
+            f"terminator={source.get('skill_fsq_levels')!r}, "
+            f"target={target_policy.get('skill_fsq_levels')!r}"
+        )
+    dino_path = _relocate_project_path(
+        project_root,
+        source.get("terminator_dino_model_path") or source.get("dino_model_path"),
+    )
+    if not dino_path.is_dir():
+        raise FileNotFoundError(f"External terminator DINO model not found: {dino_path}")
+    return {"terminator_dino_model_path": dino_path}
+
+
 def _model_entries(config: dict) -> list[dict]:
     default_checkpoint = str(get_value(config, "checkpoint", "last"))
     default_skill_source = str(get_value(config, "skill_source", "gt")).lower()
     default_advance = str(
-        _at(config, "oracle", "advance_mode", default="terminator")
+        _at(config, "oracle", "advance_mode", default="own")
     ).lower()
     models = get_value(config, "models", None)
     if isinstance(models, list) and models:
@@ -184,6 +290,17 @@ def _model_entries(config: dict) -> list[dict]:
 
     entries = []
     for index, raw in enumerate(raw_entries):
+        obsolete = [
+            field
+            for field in ("predictor_checkpoint", "terminator_checkpoint")
+            if str(raw.get(field, "") or "").strip()
+        ]
+        if obsolete:
+            raise ValueError(
+                f"models[] fields {obsolete} were replaced by top-level "
+                "external_skill_model; select them with skill_source=external "
+                "and/or advance_mode=external."
+            )
         model_dir = _safe_name(str(raw.get("model_dir", "")), field="models[].model_dir")
         checkpoint = _safe_name(
             str(raw.get("checkpoint", default_checkpoint)),
@@ -193,18 +310,25 @@ def _model_entries(config: dict) -> list[dict]:
         aliases = {
             "gt": "gt",
             "oracle": "gt",
-            "pred": "predictor",
-            "predicted": "predictor",
-            "predictor": "predictor",
+            "own": "own",
+            "pred": "own",
+            "predicted": "own",
+            "predictor": "own",
+            "external": "external",
         }
         skill_source = aliases.get(skill_source, "")
         if not skill_source:
-            raise ValueError("models[].skill_source must be gt|predictor.")
+            raise ValueError("models[].skill_source must be external|own|gt.")
         advance_mode = str(raw.get("advance_mode", default_advance)).lower()
-        if advance_mode not in {"terminator", "gt"}:
-            raise ValueError("models[].advance_mode must be terminator|gt.")
-        if skill_source == "predictor" and advance_mode != "terminator":
-            raise ValueError("skill_source=predictor requires advance_mode=terminator.")
+        advance_aliases = {
+            "gt": "gt",
+            "own": "own",
+            "terminator": "own",
+            "external": "external",
+        }
+        advance_mode = advance_aliases.get(advance_mode, "")
+        if not advance_mode:
+            raise ValueError("models[].advance_mode must be external|own|gt.")
         label = str(raw.get("label", "") or "").strip()
         if not label:
             label = f"model{index + 1}-{skill_source}"
@@ -227,6 +351,23 @@ def build_settings(config: dict) -> dict:
     project_root = Path(str(get_value(config, "project_root"))).expanduser()
     eval_outputs_root = _HERE.parent.parent / "outputs"
     outputs_root = project_root / str(get_value(config, "outputs_root", "outputs"))
+    obsolete = [
+        field
+        for field in ("predictor_checkpoint", "terminator_checkpoint")
+        if str(get_value(config, field, "") or "").strip()
+    ]
+    if obsolete:
+        raise ValueError(
+            f"Top-level fields {obsolete} were replaced by external_skill_model."
+        )
+    external_skill_model_value = str(
+        get_value(config, "external_skill_model", "") or ""
+    ).strip()
+    external_skill_model = (
+        _relocate_project_path(project_root, external_skill_model_value)
+        if external_skill_model_value
+        else None
+    )
     entries = _model_entries(config)
     resolved = []
     for entry in entries:
@@ -239,16 +380,51 @@ def build_settings(config: dict) -> dict:
             / "pretrained_model"
         )
         contract = _checkpoint_contract(policy_path, project_root)
-        if entry["skill_source"] == "predictor" and not contract["has_predictor"]:
+        if entry["skill_source"] == "own" and not contract["has_predictor"]:
             raise ValueError(
-                f"skill_source=predictor but checkpoint has no trained predictor: {policy_path}"
+                f"skill_source=own but checkpoint has no trained predictor: {policy_path}"
             )
-        if entry["advance_mode"] == "terminator" and not contract["has_terminator"]:
+        tokenizer_path = contract["tokenizer_path"]
+        if entry["skill_source"] == "external":
+            if external_skill_model is None:
+                raise ValueError(
+                    "skill_source=external requires top-level external_skill_model."
+                )
+            external = _external_predictor_contract(
+                external_skill_model,
+                target_policy=contract["policy"],
+                project_root=project_root,
+            )
+            tokenizer_path = external["tokenizer_path"]
+        terminator_dino_model_path = contract["terminator_dino_model_path"]
+        if entry["advance_mode"] == "external":
+            if external_skill_model is None:
+                raise ValueError(
+                    "advance_mode=external requires top-level external_skill_model."
+                )
+            external_terminator = _external_terminator_contract(
+                external_skill_model,
+                target_policy=contract["policy"],
+                project_root=project_root,
+            )
+            terminator_dino_model_path = external_terminator[
+                "terminator_dino_model_path"
+            ]
+        if entry["advance_mode"] == "own" and not contract["has_terminator"]:
             raise ValueError(
-                "advance_mode=terminator but checkpoint has no trained terminator: "
+                "advance_mode=own but checkpoint has no trained terminator: "
                 f"{policy_path}"
             )
-        resolved.append({**entry, "policy_path": policy_path, **contract})
+        resolved.append(
+            {
+                **entry,
+                "policy_path": policy_path,
+                **contract,
+                "external_skill_model": external_skill_model or "",
+                "tokenizer_path": tokenizer_path,
+                "terminator_dino_model_path": terminator_dino_model_path,
+            }
+        )
 
     episode_exact = as_bool(_at(config, "oracle", "episode_exact", default=False))
     if episode_exact:
@@ -316,6 +492,7 @@ def build_settings(config: dict) -> dict:
         "models_json": models_json,
         "model_count": len(resolved),
         "models_per_row": int(get_value(config, "models_per_row", 2) or 0),
+        "eval_resume": as_bool(get_value(config, "resume", False)),
         "policy_path": primary["policy_path"],
         "fsq_path": primary["fsq_path"],
         "skill_dataset_dir": primary["skill_dataset_dir"],

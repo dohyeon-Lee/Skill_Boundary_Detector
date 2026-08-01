@@ -12,14 +12,36 @@ from lerobot.optim.schedulers import CosineDecayWithWarmupSchedulerConfig
 from lerobot.utils.constants import ACTION, OBS_STATE
 
 
+CONDITIONING_ROUTES = frozenset(
+    {
+        "state_cond",
+        "state_skill_cond",
+        "state_skill_only_cond",
+        "stateonly_cond",
+        "skillonly_cond",
+        "visiononly_cond",
+    }
+)
+STATELESS_CONDITIONING_ROUTES = frozenset({"skillonly_cond", "visiononly_cond"})
+SKILLLESS_CONDITIONING_ROUTES = frozenset({"stateonly_cond", "visiononly_cond"})
+VISIONLESS_CONDITIONING_ROUTES = frozenset({"state_skill_only_cond"})
+
+
+def normalize_conditioning_route(route: str) -> str:
+    """Return the canonical route name while accepting old Stage-1 checkpoints."""
+    normalized = str(route).strip().lower()
+    return "skillonly_cond" if normalized == "skill_cond" else normalized
+
+
 @PreTrainedConfig.register_subclass("skill_expert")
 @dataclass
 class SkillExpertConfig(PreTrainedConfig):
-    """Stage-1 VSA policy: DINO images plus routed state/skill -> action flow.
+    """Stage-1 VSA policy: routed vision/state/skill -> action flow.
 
     The condition transformer and action expert both use all 18 ``gemma_300m``
     layers. The action expert is initialized from the pi0.5 base checkpoint and
     fully trained. The condition transformer and all VSA projections are fresh.
+    Vision routes use DINO; ``state_skill_only_cond`` uses a learned seed instead.
     """
 
     model_type: str = "skill_expert"
@@ -54,10 +76,14 @@ class SkillExpertConfig(PreTrainedConfig):
       is broadcast into the action expert.
     - ``state_skill_cond``: state still modulates the condition encoder through
       AdaRMS, and skill is broadcast into the condition encoder as well.
+    - ``state_skill_only_cond``: vision is omitted; a learned condition seed is
+      modulated by state through AdaRMS and by skill through cond broadcast.
     - ``stateonly_cond``: state modulates the condition encoder through AdaRMS;
       skill is omitted from both the condition and action streams.
-    - ``skill_cond``: state is absent from the action path; skill alone is
+    - ``skillonly_cond``: state is absent from the action path; skill alone is
       broadcast into the condition encoder, which uses ordinary RMSNorm.
+    - ``visiononly_cond``: state and skill are both absent from the action path;
+      the condition encoder receives only vision tokens and uses ordinary RMSNorm.
 
     In every route the action expert's AdaRMS input is flow time only.
     """
@@ -127,6 +153,9 @@ class SkillExpertConfig(PreTrainedConfig):
     scheduler_decay_lr: float = 2.5e-6
 
     def __post_init__(self) -> None:
+        # ``skill_cond`` was the original public name. Canonicalize it so old
+        # checkpoint configs retain the identical architecture after the rename.
+        self.conditioning_route = normalize_conditioning_route(self.conditioning_route)
         super().__post_init__()
         if self.dtype not in {"float32", "bfloat16"}:
             raise ValueError(f"dtype must be float32 or bfloat16, got {self.dtype!r}.")
@@ -148,15 +177,11 @@ class SkillExpertConfig(PreTrainedConfig):
             raise ValueError("dino_lr must be positive when set.")
         if self.freeze_vision_encoder and self.dino_lr is not None:
             raise ValueError("dino_lr cannot be set when freeze_vision_encoder=True.")
-        if self.conditioning_route not in {
-            "state_cond",
-            "state_skill_cond",
-            "stateonly_cond",
-            "skill_cond",
-        }:
+        if self.conditioning_route not in CONDITIONING_ROUTES:
             raise ValueError(
                 "conditioning_route must be 'state_cond', 'state_skill_cond', "
-                "'stateonly_cond', or 'skill_cond', got "
+                "'state_skill_only_cond', 'stateonly_cond', 'skillonly_cond', "
+                "or 'visiononly_cond', got "
                 f"{self.conditioning_route!r}."
             )
         if not self.skill_fsq_levels or any(level <= 1 for level in self.skill_fsq_levels):

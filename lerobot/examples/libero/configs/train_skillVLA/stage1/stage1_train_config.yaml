@@ -22,9 +22,11 @@ architecture:
   cond_variant: gemma_300m
   # state_cond:       state -> cond AdaRMS, skill -> expert broadcast
   # state_skill_cond: state -> cond AdaRMS, skill -> cond broadcast
+  # state_skill_only_cond: no vision in VSA path; state -> cond AdaRMS, skill -> cond broadcast
   # stateonly_cond:   state -> cond AdaRMS, skill -> not used by VSA
-  # skill_cond:       no state in VSA path, skill -> cond broadcast
-  conditioning_route: stateonly_cond
+  # skillonly_cond:   no state in VSA path, skill -> cond broadcast
+  # visiononly_cond:  no state or skill in VSA path; vision tokens only
+  conditioning_route: state_skill_only_cond
   max_state_dim: 32
   max_action_dim: 32
   chunk_size: 10
@@ -57,7 +59,7 @@ terminator:
 execution: {action_steps: 10}
 transition_randomization: {enabled: true}
 
-run: {suffix: "16batch"}
+run: {suffix: ""}
 
 training:
   dataloader: {batch_size: 16, workers: 2, gpus: 1} # 16
