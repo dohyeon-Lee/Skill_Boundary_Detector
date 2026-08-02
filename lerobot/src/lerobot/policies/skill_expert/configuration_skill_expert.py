@@ -13,9 +13,11 @@ from lerobot.utils.constants import ACTION, OBS_STATE
 
 
 VSA_ARCHITECTURE = "vsa_perceiver_crossattn"
+COND_GEMMA_ARCHITECTURE = "cond_gemma"
 # Kept unchanged so mode-less residual-SA18 checkpoints remain strict-loadable.
 # ``vision_conditioning_mode`` is the independent fusion-layout contract.
 VSA_ARCHITECTURE_REVISION = "residual_sa18_v2"
+COND_GEMMA_ARCHITECTURE_REVISION = "skillvla_real_v1"
 RESIDUAL_CROSS_ATTENTION = "residual_cross_attention"
 IN_CONTEXT_TOKENS = "in_context_tokens"
 GLOBAL_VISUAL_ADARMS = "global_visual_adarms"
@@ -24,12 +26,30 @@ VISION_CONDITIONING_MODES = (
     IN_CONTEXT_TOKENS,
     GLOBAL_VISUAL_ADARMS,
 )
+CONDITIONING_ROUTES = frozenset(
+    {
+        "state_cond",
+        "state_skill_cond",
+        "state_skill_only_cond",
+        "stateonly_cond",
+        "skillonly_cond",
+        "visiononly_cond",
+    }
+)
+STATELESS_CONDITIONING_ROUTES = frozenset({"skillonly_cond", "visiononly_cond"})
+SKILLLESS_CONDITIONING_ROUTES = frozenset({"stateonly_cond", "visiononly_cond"})
+VISIONLESS_CONDITIONING_ROUTES = frozenset({"state_skill_only_cond"})
+
+
+def normalize_conditioning_route(route: str) -> str:
+    normalized = str(route).strip().lower()
+    return "skillonly_cond" if normalized == "skill_cond" else normalized
 
 
 @PreTrainedConfig.register_subclass("skill_expert")
 @dataclass
 class SkillExpertConfig(PreTrainedConfig):
-    """Stage-1 DINO-Perceiver visual memory and cross-attention action expert."""
+    """Stage-1 config with explicit VSA or skillVLA_real condition-Gemma layout."""
 
     model_type: str = "skill_expert"
     dtype: str = "float32"
@@ -42,6 +62,9 @@ class SkillExpertConfig(PreTrainedConfig):
     include_state_in_visual_crossattn: bool = False
     include_skill_in_visual_crossattn: bool = False
     action_expert_variant: str = "gemma_300m"
+    # Used only by the explicitly selected skillVLA_real condition architecture.
+    cond_encoder_variant: str = "gemma_300m"
+    conditioning_route: str = "state_skill_cond"
     chunk_size: int = 10
     n_action_steps: int = 5
     max_state_dim: int = 32
@@ -60,6 +83,8 @@ class SkillExpertConfig(PreTrainedConfig):
     dino_model_path: str = "models/dinov3-vitl16"
     dino_image_size: int = 224
     dino_lr_scale: float = 0.1
+    freeze_vision_encoder: bool = False
+    dino_lr: float | None = None
     num_visual_latents_per_camera: int = 32
     skill_vocab_size: int = 27
     skill_fsq_levels: list[int] = field(default_factory=lambda: [3, 3, 3])
@@ -131,6 +156,7 @@ class SkillExpertConfig(PreTrainedConfig):
     scheduler_decay_lr: float = 2.5e-6
 
     def __post_init__(self) -> None:
+        self.conditioning_route = normalize_conditioning_route(self.conditioning_route)
         self.vsa_debug_schedule = tuple(int(step) for step in self.vsa_debug_schedule)
         super().__post_init__()
         if self.dtype not in {"float32", "bfloat16"}:
@@ -140,31 +166,56 @@ class SkillExpertConfig(PreTrainedConfig):
                 "Stage 1 fixes the 18-layer expert to gemma_300m; got "
                 f"action_expert_variant={self.action_expert_variant!r}."
             )
-        if self.architecture != VSA_ARCHITECTURE:
+        if self.architecture not in {VSA_ARCHITECTURE, COND_GEMMA_ARCHITECTURE}:
             raise ValueError(
-                f"Stage 1 on skillVLA_VSA only supports architecture={VSA_ARCHITECTURE!r}; "
-                f"legacy conditioning architectures are not available (got {self.architecture!r})."
+                "Stage 1 architecture must be "
+                f"{VSA_ARCHITECTURE!r} or {COND_GEMMA_ARCHITECTURE!r}, "
+                f"got {self.architecture!r}."
             )
-        if self.architecture_revision != VSA_ARCHITECTURE_REVISION:
-            raise ValueError(
-                "Stage 1 requires architecture_revision="
-                f"{VSA_ARCHITECTURE_REVISION!r}, got {self.architecture_revision!r}."
-            )
-        if self.vision_conditioning_mode not in VISION_CONDITIONING_MODES:
-            raise ValueError(
-                "vision_conditioning_mode must be one of "
-                f"{VISION_CONDITIONING_MODES}, got {self.vision_conditioning_mode!r}."
-            )
+        if self.architecture == VSA_ARCHITECTURE:
+            if self.architecture_revision != VSA_ARCHITECTURE_REVISION:
+                raise ValueError(
+                    "VSA Stage 1 requires architecture_revision="
+                    f"{VSA_ARCHITECTURE_REVISION!r}, got {self.architecture_revision!r}."
+                )
+            if self.vision_conditioning_mode not in VISION_CONDITIONING_MODES:
+                raise ValueError(
+                    "vision_conditioning_mode must be one of "
+                    f"{VISION_CONDITIONING_MODES}, got {self.vision_conditioning_mode!r}."
+                )
+        else:
+            if self.architecture_revision != COND_GEMMA_ARCHITECTURE_REVISION:
+                raise ValueError(
+                    "cond_gemma Stage 1 requires architecture_revision="
+                    f"{COND_GEMMA_ARCHITECTURE_REVISION!r}, "
+                    f"got {self.architecture_revision!r}."
+                )
+            if self.cond_encoder_variant != self.action_expert_variant:
+                raise ValueError(
+                    "cond_gemma requires matching 18-layer cond/expert variants; got "
+                    f"{self.cond_encoder_variant!r} and {self.action_expert_variant!r}."
+                )
+            if self.conditioning_route not in CONDITIONING_ROUTES:
+                raise ValueError(
+                    f"conditioning_route must be one of {sorted(CONDITIONING_ROUTES)}, "
+                    f"got {self.conditioning_route!r}."
+                )
         if self.vision_backbone != "dino":
             raise ValueError("Stage 1 uses the Stage-0 DINO vision path; vision_backbone must be 'dino'.")
         if self.dino_image_size <= 0:
             raise ValueError("dino_image_size must be positive.")
-        if self.dino_lr_scale <= 0.0:
-            raise ValueError("dino_lr_scale must be positive.")
-        if not 1 <= self.num_visual_latents_per_camera <= 197:
-            raise ValueError(
-                "num_visual_latents_per_camera must be between 1 and 197."
-            )
+        if self.architecture == VSA_ARCHITECTURE:
+            if self.dino_lr_scale <= 0.0:
+                raise ValueError("dino_lr_scale must be positive.")
+            if not 1 <= self.num_visual_latents_per_camera <= 197:
+                raise ValueError(
+                    "num_visual_latents_per_camera must be between 1 and 197."
+                )
+        else:
+            if self.dino_lr is not None and self.dino_lr <= 0.0:
+                raise ValueError("dino_lr must be positive when set.")
+            if self.freeze_vision_encoder and self.dino_lr is not None:
+                raise ValueError("dino_lr cannot be set when freeze_vision_encoder=True.")
         if self.vsa_debug_steps < 0:
             raise ValueError("vsa_debug_steps must be non-negative.")
         if any(step <= 0 for step in self.vsa_debug_schedule):

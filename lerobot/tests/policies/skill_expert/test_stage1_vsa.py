@@ -9,6 +9,8 @@ from transformers.models.auto import CONFIG_MAPPING
 from transformers.models.gemma.modeling_gemma import GemmaRotaryEmbedding
 
 from lerobot.policies.skill_expert.configuration_skill_expert import (
+    COND_GEMMA_ARCHITECTURE,
+    COND_GEMMA_ARCHITECTURE_REVISION,
     GLOBAL_VISUAL_ADARMS,
     IN_CONTEXT_TOKENS,
     RESIDUAL_CROSS_ATTENTION,
@@ -73,7 +75,7 @@ def test_legacy_eval_expert_preserves_alternating_checkpoint_layout() -> None:
     assert output.shape == (2, 5, 32)
 
 
-def test_config_has_one_architecture_and_no_legacy_condition_fields() -> None:
+def test_config_defaults_to_vsa_and_cond_architecture_is_explicit() -> None:
     config = SkillExpertConfig()
 
     assert config.architecture == VSA_ARCHITECTURE == "vsa_perceiver_crossattn"
@@ -86,10 +88,16 @@ def test_config_has_one_architecture_and_no_legacy_condition_fields() -> None:
     assert config.n_action_steps == 5
     assert config.vsa_debug_schedule == ()
     assert SkillExpertConfig(vsa_debug_schedule=[1, 100]).vsa_debug_schedule == (1, 100)
-    assert not hasattr(config, "conditioning_route")
-    assert not hasattr(config, "cond_encoder_variant")
-    assert not hasattr(config, "freeze_vision_encoder")
-    with pytest.raises(ValueError, match="legacy conditioning architectures"):
+    assert config.conditioning_route == "state_skill_cond"
+    assert config.cond_encoder_variant == "gemma_300m"
+    assert config.freeze_vision_encoder is False
+    cond = SkillExpertConfig(
+        architecture=COND_GEMMA_ARCHITECTURE,
+        architecture_revision=COND_GEMMA_ARCHITECTURE_REVISION,
+        conditioning_route="state_skill_cond",
+    )
+    assert cond.architecture == "cond_gemma"
+    with pytest.raises(ValueError, match="architecture must be"):
         SkillExpertConfig(architecture="state_skill_cond")
     with pytest.raises(ValueError, match="vision_conditioning_mode must be one of"):
         SkillExpertConfig(vision_conditioning_mode="unknown")
@@ -98,13 +106,13 @@ def test_config_has_one_architecture_and_no_legacy_condition_fields() -> None:
         SkillExpertConfig(vsa_debug_schedule=(100, 1, 100))
 
 
-def test_policy_loader_rejects_legacy_checkpoint_before_model_allocation(tmp_path) -> None:
+def test_policy_loader_rejects_cond_checkpoint_when_vsa_is_requested(tmp_path) -> None:
     (tmp_path / "config.json").write_text(
         json.dumps({"type": "skill_expert", "conditioning_route": "state_cond"})
     )
 
-    with pytest.raises(ValueError, match="cannot load legacy Stage-1 checkpoints"):
-        SkillExpertPolicy.from_pretrained(tmp_path)
+    with pytest.raises(ValueError, match="checkpoint architecture mismatch"):
+        SkillExpertPolicy.from_pretrained(tmp_path, config=SkillExpertConfig())
 
 
 def test_policy_loader_rejects_pre_residual_vsa_checkpoint(tmp_path) -> None:
@@ -803,7 +811,7 @@ def test_optimizer_covers_every_trainable_parameter_once_and_scales_dino() -> No
         )
 
 
-def test_pi05_initialization_mapping_is_explicit_and_has_no_cond_path() -> None:
+def test_pi05_vsa_initialization_mapping_is_explicit() -> None:
     assert _map_pi05_key(
         "paligemma_with_expert.gemma_expert.model.layers.0.self_attn.q_proj.weight"
     ) == "model.expert.blocks.0.self_attention.q_proj.weight"
@@ -820,6 +828,21 @@ def test_pi05_initialization_mapping_is_explicit_and_has_no_cond_path() -> None:
     assert _map_pi05_key(
         "paligemma_with_expert.paligemma.model.language_model.layers.0.mlp.up_proj.weight"
     ) is None
+
+
+def test_pi05_condition_gemma_mapping_matches_skillvla_real_layout() -> None:
+    assert _map_pi05_key(
+        "paligemma_with_expert.gemma_expert.model.layers.0.self_attn.q_proj.weight",
+        architecture=COND_GEMMA_ARCHITECTURE,
+    ) == "model.gemma_expert.model.layers.0.self_attn.q_proj.weight"
+    assert _map_pi05_key(
+        "paligemma_with_expert.gemma_expert.lm_head.weight",
+        architecture=COND_GEMMA_ARCHITECTURE,
+    ) is None
+    assert _map_pi05_key(
+        "action_in_proj.weight",
+        architecture=COND_GEMMA_ARCHITECTURE,
+    ) == "model.action_in_proj.weight"
 
 
 def test_pi05_missing_allowlist_is_mode_specific() -> None:

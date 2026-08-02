@@ -11,6 +11,7 @@ _SRC = (
 )
 sys.path.insert(0, str(_SRC))
 from stage1_train_config import build_settings  # noqa: E402
+from stage1_cond_train_config import build_settings as build_cond_settings  # noqa: E402
 
 
 def _config(tmp_path: Path) -> dict:
@@ -131,3 +132,47 @@ def test_stage1_rejects_any_other_architecture(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="legacy architectures do not exist"):
         build_settings(config)
+
+
+def test_isolated_cond_config_preserves_skillvla_real_contract(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    config["architecture"] = {
+        "name": "cond_gemma",
+        "revision": "skillvla_real_v1",
+        "expert_variant": "gemma_300m",
+        "cond_variant": "gemma_300m",
+        "conditioning_route": "state_skill_cond",
+        "chunk_size": 10,
+    }
+    config["vision"]["freeze"] = False
+    config["execution"] = {"action_steps": 10}
+    config["training"] = {
+        "dataloader": {"batch_size": 16, "workers": 2, "gpus": 1},
+        "optimizer": {"base_lr": 2.5e-5, "dino_lr": None},
+        "gradient_checkpointing": False,
+        "schedule": {"steps": 50_000, "log_every": 100, "save_every": 5_000},
+    }
+
+    settings = build_cond_settings(config)
+
+    assert settings["architecture"] == "cond_gemma"
+    assert settings["architecture_revision"] == "skillvla_real_v1"
+    assert settings["conditioning_route"] == "state_skill_cond"
+    assert settings["cond_encoder_variant"] == "gemma_300m"
+    assert settings["freeze_vision_encoder"] is False
+    assert settings["dino_lr"] == ""
+    assert settings["n_action_steps"] == 10
+    assert settings["batch_size"] == 16
+    assert settings["num_workers"] == 2
+    assert settings["steps"] == 50_000
+    assert settings["log_freq"] == 100
+    assert settings["save_freq"] == 5_000
+    assert "dino_tuned_state_skill_cond_flow" in settings["pt_run_name"]
+
+
+def test_isolated_cond_launcher_rejects_vsa_architecture(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    config["architecture"]["name"] = "vsa_perceiver_crossattn"
+
+    with pytest.raises(ValueError, match="requires architecture.name=cond_gemma"):
+        build_cond_settings(config)

@@ -1,0 +1,80 @@
+dataset_root: dataset_filtered
+outputs_root: outputs_filtered
+
+dataset:
+  skillvla_root: skillvla_dataset
+  source: libero_90_full_firsthalf_scene # langgap_56_full_firsthalf | libero_90_full_firsthalf_scene
+  run: FSQ333_300_std_pt_episodemean_80p_snap10_pmax15_halfnormal
+
+warm_start:
+  pi_base: models/pi05_base
+  tokenizer: models/paligemma-3b-pt-224-tokenizer
+  # Empty = use the FSQ.pt beside this dataset run. Used only for the terminator.
+  fsq: ""
+  # Used only when action_conditioning.training_skill_source=predictor.
+  # The action model still starts from pi_base; only model.skill_predictor.* is read here.
+  # predictor_checkpoint: outputs_filtered/skillVLA_stage1/libero_90_full_firsthalf_scene_FSQ333_125_std_pt_episodemean_80p_snap10_pmax15_halfnormal_dino_tuned_state_skill_cond_flow/checkpoints/030000/pretrained_model
+  predictor_checkpoint: ""
+vision:
+  dino_model: models/dinov3-vitl16
+  image_size: 224
+  freeze: false
+
+architecture:
+  # Exact skillVLA_real two-stream architecture. Do not change this in the cond launcher.
+  name: cond_gemma
+  revision: skillvla_real_v1
+  expert_variant: gemma_300m
+  cond_variant: gemma_300m
+  # state_cond:       state -> cond AdaRMS, skill -> expert broadcast
+  # state_skill_cond: state -> cond AdaRMS, skill -> cond broadcast
+  # state_skill_only_cond: no vision in VSA path; state -> cond AdaRMS, skill -> cond broadcast
+  # stateonly_cond:   state -> cond AdaRMS, skill -> not used by VSA
+  # skillonly_cond:   no state in VSA path, skill -> cond broadcast
+  # visiononly_cond:  no state or skill in VSA path; vision tokens only
+  conditioning_route: state_skill_cond
+  max_state_dim: 32
+  max_action_dim: 32
+  chunk_size: 10
+
+# flow | flow_endpoint_xyz (the latter is 0.5 flow + 0.5 accumulated-XYZ endpoint MSE)
+loss: flow
+
+# gt: legacy teacher-forced jittered GT code.
+# predictor: frozen checkpoint predictor(jittered skill-start input) -> hard code -> VSA.
+action_conditioning:
+  training_skill_source: gt
+
+# Stage3-A predictor contract: frozen pi0.5 VLM base + Q/K/V/O skill LoRA.
+skill_predictor:
+  train: true
+  weight: 0.5
+  lr_scale: 1.0
+  all_layers: true
+  lora: {enabled: true, targets: "q,k,v,o", rank: 8, alpha: 16.0, dropout: 0.0, lr_scale: 10.0}
+  reader: {tokens: 4, depth: 2, heads: 8, deadzone_frac: 0.8}
+  token_access: {image: true, language: true}
+
+# Separate FSQ terminator instance; never shares parameters with the VSA path.
+terminator:
+  train: true
+  freeze_vision: true
+  end_target_sigma: 2.0
+  end_pos_weight: 1.0
+
+execution: {action_steps: 10}
+transition_randomization: {enabled: true}
+
+# Keep this branch's new run separate from the existing skillVLA_real checkpoint folder.
+run: {suffix: "cond_gemma_10time"}
+
+training:
+  dataloader: {batch_size: 16, workers: 4, gpus: 1} # 16
+  optimizer: {base_lr: 2.5e-05, dino_lr: null, terminator_lr_scale: 1.0}
+  gradient_checkpointing: false
+  schedule: {steps: 500000, log_every: 100, save_every: 5000}
+
+logging:
+  wandb: {enable: true, project: VLA_stage1}
+
+slurm: {gres: "gpu:1", cpus: 10, memory: 128G, time: "48:00:00"}

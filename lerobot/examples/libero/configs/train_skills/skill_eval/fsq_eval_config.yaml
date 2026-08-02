@@ -4,21 +4,21 @@
 
 # Folder under {outputs_root}/FSQ.
 # fsq_eval_run_name: libero_90_full_full_state_obs20_std_episodemean_100p_fsq333
-# fsq_eval_run_name: libero_90_full_full_state_obs20_std_episodemean_80p_fsq333
+fsq_eval_run_name: libero_90_full_full_state_obs20_std_episodemean_80p_fsq333
 # fsq_eval_run_name: libero_90_full_full_state_obs20_std_episodemean_100p_fsq345
 # fsq_eval_run_name: libero_90_full_full_state_obs20_std_episodemean_80p_fsq345
 
 # fsq_eval_run_name: langgap_56_full_full_state_obs20_std_episodemean_100p_fsq333
 # fsq_eval_run_name: langgap_56_full_full_state_obs20_std_episodemean_80p_fsq333
 # fsq_eval_run_name: langgap_56_full_full_state_obs20_std_episodemean_100p_fsq345
-fsq_eval_run_name: langgap_56_full_full_state_obs20_std_episodemean_80p_fsq333
+# fsq_eval_run_name: langgap_56_full_full_state_obs20_std_episodemean_80p_fsq333
 
 # Scalar and list forms are both accepted. Each checkpoint writes its own
 # outputs/{run}/epochXXXX/fsq_eval.html.
 # fsq_eval_checkpoint: 300
 # fsq_eval_checkpoint: [300, 325, 350, 375, 400]
-fsq_eval_checkpoint: [125, 150, 175, 200, 225, 250, 275, 300, 325, 350] #, 375, 400]
+fsq_eval_checkpoint: [225, 250, 275, 300] #, 375, 400]
 
 # Maximum number of checkpoint array jobs running simultaneously. Each array
 # element requests eval_gres (normally gpu:1), so this is the total GPU fanout.
-fsq_eval_num_gpus: 5
+fsq_eval_num_gpus: 4

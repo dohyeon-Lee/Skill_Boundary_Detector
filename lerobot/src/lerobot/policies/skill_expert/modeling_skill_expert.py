@@ -31,12 +31,20 @@ from lerobot.utils.constants import (
 )
 
 from .configuration_skill_expert import (
+    COND_GEMMA_ARCHITECTURE,
+    COND_GEMMA_ARCHITECTURE_REVISION,
     GLOBAL_VISUAL_ADARMS,
     IN_CONTEXT_TOKENS,
     RESIDUAL_CROSS_ATTENTION,
+    SKILLLESS_CONDITIONING_ROUTES,
+    STATELESS_CONDITIONING_ROUTES,
+    VSA_ARCHITECTURE,
     VSA_ARCHITECTURE_REVISION,
+    VISIONLESS_CONDITIONING_ROUTES,
     SkillExpertConfig,
+    normalize_conditioning_route,
 )
+from .cond_gemma import CondGemmaSkillExpert
 from .modeling_utils import build_fsq_terminator, load_raw_state_dict
 from .modeling_skill_predictor import FrozenVLMSkillPredictor
 from .vsa_perceiver_crossattn import (
@@ -613,8 +621,47 @@ class SkillExpertPytorch(nn.Module):
         return x_t
 
 
-def _map_pi05_key(key: str, *, include_predictor_vlm: bool = False) -> str | None:
-    """Apply the explicit pi0.5 -> new VSA initialization contract."""
+def _map_pi05_cond_key(
+    key: str, *, include_predictor_vlm: bool = False
+) -> str | None:
+    """Original skillVLA_real pi0.5 -> condition-Gemma mapping."""
+    expert_prefix = "paligemma_with_expert.gemma_expert."
+    if key.startswith(expert_prefix):
+        suffix = key[len(expert_prefix) :]
+        if suffix.startswith("lm_head"):
+            return None
+        return f"model.gemma_expert.{suffix}"
+    vlm_prefix = "paligemma_with_expert.paligemma.model."
+    if include_predictor_vlm and key.startswith(vlm_prefix):
+        return "model.skill_predictor.vlm." + key.removeprefix(vlm_prefix)
+    if key.startswith("paligemma_with_expert."):
+        return None
+    for projection in (
+        "action_in_proj.",
+        "action_out_proj.",
+        "time_mlp_in.",
+        "time_mlp_out.",
+    ):
+        if key.startswith(projection):
+            return f"model.{key}"
+    if key.startswith("action_time_mlp_in."):
+        return "model.time_mlp_in." + key.removeprefix("action_time_mlp_in.")
+    if key.startswith("action_time_mlp_out."):
+        return "model.time_mlp_out." + key.removeprefix("action_time_mlp_out.")
+    return None
+
+
+def _map_pi05_key(
+    key: str,
+    *,
+    architecture: str = VSA_ARCHITECTURE,
+    include_predictor_vlm: bool = False,
+) -> str | None:
+    """Apply the architecture-specific pi0.5 initialization contract."""
+    if architecture == COND_GEMMA_ARCHITECTURE:
+        return _map_pi05_cond_key(
+            key, include_predictor_vlm=include_predictor_vlm
+        )
     layer_match = re.fullmatch(
         r"paligemma_with_expert\.gemma_expert\.model\.layers\.(\d+)\."
         r"(self_attn|mlp|input_layernorm|post_attention_layernorm)\.(.+)",
@@ -658,14 +705,19 @@ def _map_pi05_key(key: str, *, include_predictor_vlm: bool = False) -> str | Non
 
 
 def _build_state_dict(
-    raw: dict, *, include_predictor_vlm: bool = False
+    raw: dict,
+    *,
+    architecture: str,
+    include_predictor_vlm: bool = False,
 ) -> tuple[dict, bool]:
     is_pi05 = any(key.startswith("paligemma_with_expert.") for key in raw)
     if is_pi05:
         mapped = {}
         for key, value in raw.items():
             mapped_key = _map_pi05_key(
-                key, include_predictor_vlm=include_predictor_vlm
+                key,
+                architecture=architecture,
+                include_predictor_vlm=include_predictor_vlm,
             )
             if mapped_key is not None:
                 mapped[mapped_key] = value
@@ -688,6 +740,7 @@ def _load_pretrained_state_dict(
     path: str | Path,
     kwargs: dict,
     *,
+    architecture: str,
     include_predictor_vlm: bool = False,
 ) -> tuple[dict, bool] | None:
     """Selectively load the pi0.5 action prior and optional frozen predictor VLM."""
@@ -703,7 +756,9 @@ def _load_pretrained_state_dict(
                 mapped = {}
                 for key in keys:
                     mapped_key = _map_pi05_key(
-                        key, include_predictor_vlm=include_predictor_vlm
+                        key,
+                        architecture=architecture,
+                        include_predictor_vlm=include_predictor_vlm,
                     )
                     if mapped_key is not None:
                         mapped[mapped_key] = checkpoint.get_tensor(key)
@@ -721,12 +776,37 @@ def _load_pretrained_state_dict(
 
     raw = load_raw_state_dict(path, kwargs)
     return None if raw is None else _build_state_dict(
-        raw, include_predictor_vlm=include_predictor_vlm
+        raw,
+        architecture=architecture,
+        include_predictor_vlm=include_predictor_vlm,
     )
 
 
 def _allowed_pi05_missing_key(key: str, config: SkillExpertConfig) -> bool:
     """Return whether a target tensor is intentionally new relative to pi0.5."""
+    if config.architecture == COND_GEMMA_ARCHITECTURE:
+        if key.startswith(
+            (
+                "model.dino.",
+                "model.image_proj.",
+                "model.visionless_condition_token",
+                "model.state_proj.",
+                "model.skill_proj.",
+                "model.cond_encoder.",
+            )
+        ):
+            return True
+        if config.uses_skill_predictor and (
+            key.startswith(
+                (
+                    "model.skill_predictor.reader.",
+                    "model.skill_predictor.head.",
+                )
+            )
+            or ".adapters.skill." in key
+        ):
+            return True
+        return config.train_terminator and key.startswith("model.fsq_term_train.")
     if key.startswith(
         (
             "model.dino.",
@@ -921,7 +1001,7 @@ def _load_complete_terminator_parameters(
 
 
 class SkillExpertPolicy(PreTrainedPolicy):
-    """LeRobot policy wrapper for the Stage-1 VSA prior."""
+    """LeRobot policy wrapper for VSA or the original condition-Gemma Stage 1."""
 
     config_class = SkillExpertConfig
     name = "skill_expert"
@@ -930,41 +1010,46 @@ class SkillExpertPolicy(PreTrainedPolicy):
         super().__init__(config)
         config.validate_features()
         self.config = config
-        self.model = SkillExpertPytorch(config)
-        log.info("Vision conditioning mode: %s", config.vision_conditioning_mode)
-        if config.vision_conditioning_mode == RESIDUAL_CROSS_ATTENTION:
-            visual_query_tokens = []
-            if config.include_state_in_visual_crossattn:
-                visual_query_tokens.append("state")
-            if config.include_skill_in_visual_crossattn:
-                visual_query_tokens.append("skill")
-            visual_query_label = (
-                " + ".join((*visual_query_tokens, "action"))
-                if visual_query_tokens
-                else "action-only"
-            )
-            log.info("Visual cross-attention queries: %s", visual_query_label)
+        if config.architecture == COND_GEMMA_ARCHITECTURE:
+            self.model = CondGemmaSkillExpert(config)
+            log.info("Stage-1 architecture: condition Gemma + pi0.5 Gemma expert")
+            log.info("Conditioning route: %s", config.conditioning_route)
         else:
-            log.info(
-                "Visual cross-attention query switches are ignored in %s mode.",
-                config.vision_conditioning_mode,
-            )
-        if config.vision_conditioning_mode == IN_CONTEXT_TOKENS:
-            visual_tokens = 2 * config.num_visual_latents_per_camera
-            log.info(
-                "Expert sequence: %d visual + 1 state + 1 skill + H action",
-                visual_tokens,
-            )
-            log.info("Visual cross-attention modules: disabled")
-        elif config.vision_conditioning_mode == GLOBAL_VISUAL_ADARMS:
-            log.info("Visual aggregation: per-camera mean pooling")
-            log.info("Visual injection: timestep condition + global visual condition")
-            log.info("Visual cross-attention modules: disabled")
-            log.info("Visual tokens in expert sequence: false")
-        if getattr(config, "eval_legacy_vsa", False):
-            log.info("VSA checkpoint layout: legacy alternating (evaluation-only)")
-        elif config.vision_conditioning_mode == RESIDUAL_CROSS_ATTENTION:
-            log.info("Visual residual gate initialization: %.3f", VISUAL_RESIDUAL_GATE_INIT)
+            self.model = SkillExpertPytorch(config)
+            log.info("Vision conditioning mode: %s", config.vision_conditioning_mode)
+            if config.vision_conditioning_mode == RESIDUAL_CROSS_ATTENTION:
+                visual_query_tokens = []
+                if config.include_state_in_visual_crossattn:
+                    visual_query_tokens.append("state")
+                if config.include_skill_in_visual_crossattn:
+                    visual_query_tokens.append("skill")
+                visual_query_label = (
+                    " + ".join((*visual_query_tokens, "action"))
+                    if visual_query_tokens
+                    else "action-only"
+                )
+                log.info("Visual cross-attention queries: %s", visual_query_label)
+            else:
+                log.info(
+                    "Visual cross-attention query switches are ignored in %s mode.",
+                    config.vision_conditioning_mode,
+                )
+            if config.vision_conditioning_mode == IN_CONTEXT_TOKENS:
+                visual_tokens = 2 * config.num_visual_latents_per_camera
+                log.info(
+                    "Expert sequence: %d visual + 1 state + 1 skill + H action",
+                    visual_tokens,
+                )
+                log.info("Visual cross-attention modules: disabled")
+            elif config.vision_conditioning_mode == GLOBAL_VISUAL_ADARMS:
+                log.info("Visual aggregation: per-camera mean pooling")
+                log.info("Visual injection: timestep condition + global visual condition")
+                log.info("Visual cross-attention modules: disabled")
+                log.info("Visual tokens in expert sequence: false")
+            if getattr(config, "eval_legacy_vsa", False):
+                log.info("VSA checkpoint layout: legacy alternating (evaluation-only)")
+            elif config.vision_conditioning_mode == RESIDUAL_CROSS_ATTENTION:
+                log.info("Visual residual gate initialization: %.3f", VISUAL_RESIDUAL_GATE_INIT)
         if config.gradient_checkpointing:
             self.model.gradient_checkpointing_enable()
         self.model.to(device=config.device, dtype=self._torch_dtype())
@@ -972,16 +1057,28 @@ class SkillExpertPolicy(PreTrainedPolicy):
             # Match FSQ training/inference numerics; this auxiliary remains fp32.
             self.model.fsq_term_train.to(dtype=torch.float32)
         counts = self.parameter_counts()
-        log.info(
-            "Stage-1 parameters: total=%.1fM trainable=%.1fM dino=%.1fM "
-            "perceivers=%.1fM expert=%.1fM auxiliaries=%.1fM",
-            counts["total"] / 1e6,
-            counts["trainable"] / 1e6,
-            counts["dino"] / 1e6,
-            counts["perceivers"] / 1e6,
-            counts["expert"] / 1e6,
-            counts["auxiliaries"] / 1e6,
-        )
+        if config.architecture == COND_GEMMA_ARCHITECTURE:
+            log.info(
+                "Stage-1 parameters: total=%.1fM trainable=%.1fM dino=%.1fM "
+                "cond=%.1fM expert=%.1fM auxiliaries=%.1fM",
+                counts["total"] / 1e6,
+                counts["trainable"] / 1e6,
+                counts["dino"] / 1e6,
+                counts["conditioner"] / 1e6,
+                counts["expert"] / 1e6,
+                counts["auxiliaries"] / 1e6,
+            )
+        else:
+            log.info(
+                "Stage-1 parameters: total=%.1fM trainable=%.1fM dino=%.1fM "
+                "perceivers=%.1fM expert=%.1fM auxiliaries=%.1fM",
+                counts["total"] / 1e6,
+                counts["trainable"] / 1e6,
+                counts["dino"] / 1e6,
+                counts["perceivers"] / 1e6,
+                counts["expert"] / 1e6,
+                counts["auxiliaries"] / 1e6,
+            )
         self.reset()
 
     def set_training_step(self, step: int) -> None:
@@ -999,6 +1096,15 @@ class SkillExpertPolicy(PreTrainedPolicy):
             )
 
         auxiliaries = count(self.model.skill_predictor) + count(self.model.fsq_term_train)
+        if getattr(self.config, "architecture", VSA_ARCHITECTURE) == COND_GEMMA_ARCHITECTURE:
+            return {
+                "total": count(self),
+                "trainable": count(self, trainable=True),
+                "dino": count(self.model.dino),
+                "conditioner": count(self.model.cond_encoder),
+                "expert": count(self.model.gemma_expert),
+                "auxiliaries": auxiliaries,
+            }
         return {
             "total": count(self),
             "trainable": count(self, trainable=True),
@@ -1009,6 +1115,8 @@ class SkillExpertPolicy(PreTrainedPolicy):
         }
 
     def training_debug_metrics(self) -> dict[str, float]:
+        if self.config.architecture == COND_GEMMA_ARCHITECTURE:
+            return {}
         if not self.model._vsa_debug_active:
             return {}
 
@@ -1214,6 +1322,8 @@ class SkillExpertPolicy(PreTrainedPolicy):
 
     def get_optim_params(self) -> list[dict]:
         """Main VSA, mandatory 0.1x DINO, and optional terminator groups."""
+        if getattr(self.config, "architecture", VSA_ARCHITECTURE) == COND_GEMMA_ARCHITECTURE:
+            return self._get_cond_gemma_optim_params()
         terminator = getattr(self.model, "fsq_term_train", None)
         terminator_parameters = (
             [parameter for parameter in terminator.parameters() if parameter.requires_grad]
@@ -1264,6 +1374,47 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 sum(parameter.numel() for parameter in group["params"]) / 1e6,
                 float(group.get("lr_scale", 1.0)),
                 float(group.get("lr", self.config.optimizer_lr)),
+            )
+        return groups
+
+    def _get_cond_gemma_optim_params(self) -> list[dict]:
+        """Preserve skillVLA_real optimizer grouping exactly."""
+        terminator = getattr(self.model, "fsq_term_train", None)
+        terminator_parameters = (
+            [parameter for parameter in terminator.parameters() if parameter.requires_grad]
+            if terminator is not None
+            else []
+        )
+        excluded_ids = {id(parameter) for parameter in terminator_parameters}
+
+        dino_parameters = []
+        if (
+            self.model.dino is not None
+            and not self.config.freeze_vision_encoder
+            and self.config.dino_lr is not None
+        ):
+            dino_parameters = [
+                parameter
+                for parameter in self.model.dino.parameters()
+                if parameter.requires_grad
+            ]
+            excluded_ids.update(id(parameter) for parameter in dino_parameters)
+
+        base_parameters = [
+            parameter
+            for parameter in self.parameters()
+            if parameter.requires_grad and id(parameter) not in excluded_ids
+        ]
+        groups = [{"params": base_parameters}] if base_parameters else []
+        if dino_parameters:
+            groups.append({"params": dino_parameters, "lr": self.config.dino_lr})
+        if terminator_parameters:
+            groups.append(
+                {
+                    "params": terminator_parameters,
+                    "lr": self.config.optimizer_lr
+                    * self.config.terminator_lr_scale,
+                }
             )
         return groups
 
@@ -1612,9 +1763,27 @@ class SkillExpertPolicy(PreTrainedPolicy):
     def forward(self, batch: dict, reduction: str = "mean"):
         actions = pad_vector(batch[ACTION], self.config.max_action_dim)
         real_dim = self.config.output_features[ACTION].shape[0]
-        state = pad_vector(batch[OBS_STATE], self.config.max_state_dim)
-        skill_code = self._training_skill_code(batch)
-        images = self._collect_images(batch)
+        if self.config.architecture == COND_GEMMA_ARCHITECTURE:
+            route = normalize_conditioning_route(self.config.conditioning_route)
+            state = (
+                None
+                if route in STATELESS_CONDITIONING_ROUTES
+                else pad_vector(batch[OBS_STATE], self.config.max_state_dim)
+            )
+            skill_code = (
+                None
+                if route in SKILLLESS_CONDITIONING_ROUTES
+                else self._training_skill_code(batch)
+            )
+            images = (
+                []
+                if route in VISIONLESS_CONDITIONING_ROUTES
+                else self._collect_images(batch)
+            )
+        else:
+            state = pad_vector(batch[OBS_STATE], self.config.max_state_dim)
+            skill_code = self._training_skill_code(batch)
+            images = self._collect_images(batch)
         residual = self.model(images, state, skill_code, actions)[..., :real_dim]
         squared_error = residual.square()
         valid = self._valid_action_steps(actions, batch)
@@ -1697,9 +1866,27 @@ class SkillExpertPolicy(PreTrainedPolicy):
     @torch.no_grad()
     def predict_action_chunk(self, batch: dict, **kwargs) -> Tensor:
         self.eval()
-        state = pad_vector(batch[OBS_STATE], self.config.max_state_dim)
-        skill_code = self._skill_code(batch)
-        images = self._collect_images(batch)
+        if self.config.architecture == COND_GEMMA_ARCHITECTURE:
+            route = normalize_conditioning_route(self.config.conditioning_route)
+            state = (
+                None
+                if route in STATELESS_CONDITIONING_ROUTES
+                else pad_vector(batch[OBS_STATE], self.config.max_state_dim)
+            )
+            skill_code = (
+                None
+                if route in SKILLLESS_CONDITIONING_ROUTES
+                else self._skill_code(batch)
+            )
+            images = (
+                []
+                if route in VISIONLESS_CONDITIONING_ROUTES
+                else self._collect_images(batch)
+            )
+        else:
+            state = pad_vector(batch[OBS_STATE], self.config.max_state_dim)
+            skill_code = self._skill_code(batch)
+            images = self._collect_images(batch)
         actions = self.model.sample_actions(images, state, skill_code, **kwargs)
         real_dim = self.config.output_features[ACTION].shape[0]
         return actions[..., :real_dim]
@@ -1723,60 +1910,93 @@ class SkillExpertPolicy(PreTrainedPolicy):
         strict: bool = False,
         **kwargs,
     ):
-        """Load an exact new-Stage1 checkpoint or explicitly initialize from pi0.5."""
+        """Load an exact Stage-1 checkpoint or initialize either architecture from pi0.5."""
         local_config = Path(pretrained_name_or_path) / "config.json"
         raw_config = json.loads(local_config.read_text()) if local_config.is_file() else {}
+        saved_architecture = raw_config.get("architecture")
+        if saved_architecture is None and "conditioning_route" in raw_config:
+            # skillVLA_real checkpoints predate the explicit architecture field.
+            saved_architecture = COND_GEMMA_ARCHITECTURE
         if raw_config.get("type") == "skill_expert":
-            if raw_config.get("architecture") != "vsa_perceiver_crossattn":
-                raise ValueError(
-                    "This branch cannot load legacy Stage-1 checkpoints. Expected "
-                    "architecture='vsa_perceiver_crossattn'; use the original branch "
-                    f"for {pretrained_name_or_path}."
-                )
-            eval_legacy_vsa = bool(
-                config is not None and getattr(config, "eval_legacy_vsa", False)
+            requested_architecture = (
+                getattr(config, "architecture", None)
+                if config is not None
+                else saved_architecture
             )
-            if (
-                raw_config.get("architecture_revision") != VSA_ARCHITECTURE_REVISION
-                and not eval_legacy_vsa
-            ):
+            if saved_architecture != requested_architecture:
                 raise ValueError(
-                    "This checkpoint predates the residual-SA18 VSA revision and "
-                    "cannot be resumed by the new architecture: "
-                    f"{pretrained_name_or_path}."
+                    "Stage-1 checkpoint architecture mismatch: "
+                    f"checkpoint={saved_architecture!r}, "
+                    f"requested={requested_architecture!r}."
                 )
-            if not eval_legacy_vsa and config is not None:
-                saved_mode = str(
-                    raw_config.get(
-                        "vision_conditioning_mode", RESIDUAL_CROSS_ATTENTION
-                    )
+            if saved_architecture == COND_GEMMA_ARCHITECTURE:
+                saved_route = normalize_conditioning_route(
+                    raw_config.get("conditioning_route", "state_cond")
                 )
-                requested_mode = str(
-                    getattr(
-                        config,
-                        "vision_conditioning_mode",
-                        RESIDUAL_CROSS_ATTENTION,
-                    )
+                requested_route = normalize_conditioning_route(
+                    getattr(config, "conditioning_route", saved_route)
+                    if config is not None
+                    else saved_route
                 )
-                if saved_mode != requested_mode:
+                if saved_route != requested_route:
                     raise ValueError(
-                        "Stage-1 checkpoint vision_conditioning_mode mismatch: "
-                        f"checkpoint={saved_mode!r}, requested={requested_mode!r}. "
-                        "Cross-mode checkpoint conversion is not supported."
+                        "cond_gemma checkpoint conditioning_route mismatch: "
+                        f"checkpoint={saved_route!r}, requested={requested_route!r}."
                     )
+            else:
+                eval_legacy_vsa = bool(
+                    config is not None and getattr(config, "eval_legacy_vsa", False)
+                )
+                if (
+                    raw_config.get("architecture_revision") != VSA_ARCHITECTURE_REVISION
+                    and not eval_legacy_vsa
+                ):
+                    raise ValueError(
+                        "This checkpoint predates the residual-SA18 VSA revision and "
+                        "cannot be resumed by the new architecture: "
+                        f"{pretrained_name_or_path}."
+                    )
+                if not eval_legacy_vsa and config is not None:
+                    saved_mode = str(
+                        raw_config.get(
+                            "vision_conditioning_mode", RESIDUAL_CROSS_ATTENTION
+                        )
+                    )
+                    requested_mode = str(
+                        getattr(
+                            config,
+                            "vision_conditioning_mode",
+                            RESIDUAL_CROSS_ATTENTION,
+                        )
+                    )
+                    if saved_mode != requested_mode:
+                        raise ValueError(
+                            "Stage-1 checkpoint vision_conditioning_mode mismatch: "
+                            f"checkpoint={saved_mode!r}, requested={requested_mode!r}. "
+                            "Cross-mode checkpoint conversion is not supported."
+                        )
         if config is None:
             config = PreTrainedConfig.from_pretrained(pretrained_name_or_path, **kwargs)
+            if saved_architecture == COND_GEMMA_ARCHITECTURE:
+                config.architecture = COND_GEMMA_ARCHITECTURE
+                config.architecture_revision = COND_GEMMA_ARCHITECTURE_REVISION
         policy = cls(config, **kwargs)
         loaded = _load_pretrained_state_dict(
             pretrained_name_or_path,
             kwargs,
+            architecture=config.architecture,
             include_predictor_vlm=config.uses_skill_predictor,
         )
         if loaded is None:
             raise FileNotFoundError(f"Could not load Stage-1 initialization: {pretrained_name_or_path}")
 
         state_dict, is_pi05 = loaded
-        if is_pi05 and not any(key.startswith("model.expert.") for key in state_dict):
+        expert_prefix = (
+            "model.gemma_expert."
+            if config.architecture == COND_GEMMA_ARCHITECTURE
+            else "model.expert."
+        )
+        if is_pi05 and not any(key.startswith(expert_prefix) for key in state_dict):
             raise RuntimeError("The pi0.5 checkpoint contains no compatible action-expert weights.")
         if is_pi05:
             state_dict, routed = route_plain_to_base(

@@ -35,6 +35,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.checkpoint
 from scipy.interpolate import make_interp_spline
+from scipy.optimize import linear_sum_assignment
 from torch import Tensor
 from torch.utils.data import DataLoader, Dataset
 from transformers import AutoModel
@@ -555,15 +556,30 @@ class ConditionalRMSNorm(nn.Module):
         return (norm * self.weight.float() * (1.0 + scale.float()) + shift.float()).to(x.dtype)
 
 
+class DtypeAlignedRMSNorm(nn.RMSNorm):
+    """RMSNorm that keeps its autocast input and weight on the same fused-kernel dtype.
+
+    Parameters remain FP32 in the module/state dict and gradients still flow through
+    the temporary cast.  This only avoids PyTorch's slower mixed-dtype RMSNorm path
+    when the surrounding FSQ forward runs under BF16 autocast.
+    """
+
+    def forward(self, x: Tensor) -> Tensor:
+        weight = self.weight
+        if weight is not None and weight.dtype != x.dtype:
+            weight = weight.to(dtype=x.dtype)
+        return F.rms_norm(x, self.normalized_shape, weight, self.eps)
+
+
 class QueryTerminatorLayer(nn.Module):
     """Images self-attend; each output query reads images+self, never the other query."""
 
     def __init__(self, hidden_dim: int, n_heads: int, dropout: float):
         super().__init__()
-        self.image_norm1 = nn.RMSNorm(hidden_dim)
+        self.image_norm1 = DtypeAlignedRMSNorm(hidden_dim)
         self.query_norm1 = ConditionalRMSNorm(hidden_dim, hidden_dim)
         self.attention = nn.MultiheadAttention(hidden_dim, n_heads, dropout=dropout, batch_first=True)
-        self.image_norm2 = nn.RMSNorm(hidden_dim)
+        self.image_norm2 = DtypeAlignedRMSNorm(hidden_dim)
         self.query_norm2 = ConditionalRMSNorm(hidden_dim, hidden_dim)
         self.ffn = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim * 4),
@@ -775,7 +791,14 @@ class FSQQueryTerminator(nn.Module):
         hi = self.state_max.to(state.device, state.dtype)
         return 2.0 * (state[..., : self.state_dim] - lo) / (hi - lo + 1e-8) - 1.0
 
-    def _image_features(self, image: Tensor | None) -> Tensor:
+    def _preprocess_image(self, image: Tensor | None) -> Tensor:
+        """Convert the FSQ image contract to the shared vision tower input.
+
+        Video decoders used by both training and evaluation return floating-point
+        CHW images in [0, 1].  Integer images are also accepted and scaled once.
+        Keeping that explicit contract removes the per-camera ``amin().item()`` /
+        ``amax().item()`` CUDA synchronizations from every training step.
+        """
         if image is None:
             raise ValueError("FSQ terminator always requires both third-person and wrist images.")
         if image.ndim != 4:
@@ -784,18 +807,24 @@ class FSQQueryTerminator(nn.Module):
             image = image.permute(0, 3, 1, 2)
         if image.shape[1] == 1:
             image = image.expand(-1, 3, -1, -1)
-        x = image.float()
-        if x.numel() and float(x.detach().amin()) < -0.05:
-            x = (x + 1.0) / 2.0
-        if x.numel() and float(x.detach().amax()) > 2.0:
-            x = x / 255.0
+        if image.is_floating_point():
+            x = image.float()
+        else:
+            if image.dtype != torch.uint8:
+                raise TypeError(
+                    "Integer terminator images must be uint8 in [0, 255], "
+                    f"got {image.dtype}."
+                )
+            x = image.float().div_(255.0)
         x = F.interpolate(
             x.clamp(0.0, 1.0),
             size=(self.vision_image_size, self.vision_image_size),
             mode="bilinear",
             align_corners=False,
         )
-        x = (x - self._img_mean.float()) / self._img_std.float()
+        return (x - self._img_mean.float()) / self._img_std.float()
+
+    def _encode_image_batch(self, x: Tensor) -> Tensor:
         if self.vision_backbone == "dino":
             x = x.to(dtype=next(self.dino.parameters()).dtype)
             output = self.dino(x).last_hidden_state
@@ -805,12 +834,25 @@ class FSQQueryTerminator(nn.Module):
         x = x.to(dtype=next(self.siglip.parameters()).dtype)
         return self.siglip(pixel_values=x).last_hidden_state
 
+    def _image_features(self, image: Tensor | None) -> Tensor:
+        """Encode one camera batch; retained for component/evaluation callers."""
+        return self._encode_image_batch(self._preprocess_image(image))
+
     def _prepare_image_tokens(self, third: Tensor | None, wrist: Tensor | None) -> Tensor:
-        # Exactly Stage-1 cond's visual contract: shared backbone, shared projection, concatenation.
-        tokens = [self._image_features(third), self._image_features(wrist)]
-        return torch.cat(
-            [self.image_proj(value.to(self.image_proj.weight.dtype)) for value in tokens], dim=1
-        )
+        """Encode top+wrist in one shared-backbone call, then restore camera order."""
+        third_input = self._preprocess_image(third)
+        wrist_input = self._preprocess_image(wrist)
+        if third_input.shape[0] != wrist_input.shape[0]:
+            raise ValueError(
+                "Third-person and wrist image batches must match, got "
+                f"{third_input.shape[0]} and {wrist_input.shape[0]}."
+            )
+        batch_size = third_input.shape[0]
+        features = self._encode_image_batch(torch.cat([third_input, wrist_input], dim=0))
+        projected = self.image_proj(features.to(self.image_proj.weight.dtype))
+        third_tokens, wrist_tokens = projected.split(batch_size, dim=0)
+        # Preserve the historical [all top tokens, all wrist tokens] sequence.
+        return torch.cat([third_tokens, wrist_tokens], dim=1)
 
     @staticmethod
     def _allow_mask(n_image: int, device: torch.device) -> Tensor:
@@ -1642,6 +1684,93 @@ def end_signal_metrics(logits: Tensor, target: Tensor, threshold: float) -> dict
     }
 
 
+@torch.inference_mode()
+def _collect_code_assignments(
+    model: SplineFSQAE,
+    datasets: tuple[FSQTrajectoryDataset, ...],
+    device: torch.device,
+    batch_size: int,
+) -> Tensor:
+    """Encode every skill at one fixed model state without decoding images.
+
+    Training batches cannot be reused for this metric: they are shuffled and
+    are encoded by progressively different model states within an epoch. The
+    normalized trajectory control points cached by ``FSQTrajectoryDataset`` are
+    sufficient for a deterministic, encoder-only full-dataset pass.
+    """
+    assignments: list[Tensor] = []
+    for dataset in datasets:
+        for start in range(0, len(dataset), batch_size):
+            stop = min(start + batch_size, len(dataset))
+            ctrl = torch.from_numpy(np.stack(dataset.ctrl[start:stop])).to(
+                device, non_blocking=True
+            )
+            lengths = torch.as_tensor(
+                dataset.lengths[start:stop], dtype=torch.long, device=device
+            )
+            start_pose = None
+            if dataset.start_poses is not None:
+                start_pose = torch.from_numpy(
+                    np.stack(dataset.start_poses[start:stop])
+                ).to(device, non_blocking=True)
+            with torch.autocast(
+                device_type=device.type,
+                dtype=torch.bfloat16,
+                enabled=device.type == "cuda",
+            ):
+                _, indices = model.encoder(
+                    ctrl, lengths, start_pose, normalized=True
+                )
+            assignments.append(indices.reshape(-1).to(device="cpu", dtype=torch.long))
+    return torch.cat(assignments) if assignments else torch.empty(0, dtype=torch.long)
+
+
+def _code_assignment_stability(
+    previous: Tensor,
+    current: Tensor,
+    codebook_size: int,
+) -> dict[str, float]:
+    """Measure changes in the sample membership of FSQ code entries.
+
+    ``retention`` compares fixed FSQ token IDs directly. ``matched`` first
+    finds the best one-to-one relabeling of code IDs, separating genuine sample
+    migration from a global permutation of otherwise unchanged groups.
+    """
+    previous = previous.reshape(-1).to(device="cpu", dtype=torch.long)
+    current = current.reshape(-1).to(device="cpu", dtype=torch.long)
+    if previous.numel() != current.numel():
+        raise ValueError(
+            "Code-assignment comparison requires the same samples, got "
+            f"{previous.numel()} and {current.numel()}."
+        )
+    if previous.numel() == 0:
+        return {
+            "retention_pct": math.nan,
+            "change_pct": math.nan,
+            "matched_retention_pct": math.nan,
+        }
+    if (
+        int(previous.min()) < 0
+        or int(current.min()) < 0
+        or int(previous.max()) >= codebook_size
+        or int(current.max()) >= codebook_size
+    ):
+        raise ValueError("Code assignment contains an index outside the FSQ codebook.")
+
+    retention = float((previous == current).float().mean())
+    pairs = previous * codebook_size + current
+    overlap = torch.bincount(
+        pairs, minlength=codebook_size * codebook_size
+    ).reshape(codebook_size, codebook_size)
+    old_ids, new_ids = linear_sum_assignment(-overlap.numpy())
+    matched = float(overlap[old_ids, new_ids].sum()) / previous.numel()
+    return {
+        "retention_pct": 100.0 * retention,
+        "change_pct": 100.0 * (1.0 - retention),
+        "matched_retention_pct": 100.0 * matched,
+    }
+
+
 # -----------------------------------------------------------------------------
 # Training
 # -----------------------------------------------------------------------------
@@ -1680,6 +1809,14 @@ def train_spline_fsqae(
         order = np.random.default_rng(42).permutation(len(segments)).tolist()
         fingerprint = "seed42"
     val_ids, train_ids = order[:n_val], order[n_val:]
+    if len(metadata) == len(segments):
+        assignment_identity = ",".join(
+            f"{metadata[i].get('episode_id', -1)}_{metadata[i].get('skill_index', -1)}"
+            for i in (*val_ids, *train_ids)
+        )
+    else:
+        assignment_identity = ",".join(str(i) for i in (*val_ids, *train_ids))
+    assignment_fingerprint = hashlib.sha1(assignment_identity.encode()).hexdigest()[:12]
     print(f"[FSQ-v3] trajectories={len(segments)} train={len(train_ids)} val={len(val_ids)} fp={fingerprint}")
 
     def take(items: list[Any] | None, ids: list[int]):
@@ -1771,6 +1908,8 @@ def train_spline_fsqae(
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_factor)
     save_path = Path(cfg.save_path) if cfg.save_path else Path("FSQ.pt")
     start_epoch, best_val = 1, math.inf
+    previous_code_assignments: Tensor | None = None
+    previous_code_epoch: int | None = None
     if resume_from:
         checkpoint = torch.load(resume_from, map_location="cpu", weights_only=False)
         resume_cfg = _checkpoint_config(checkpoint)
@@ -1786,6 +1925,28 @@ def train_spline_fsqae(
             scheduler.load_state_dict(checkpoint["scheduler_state"])
         start_epoch = int(checkpoint.get("epoch", 0)) + 1
         best_val = float(checkpoint.get("best_val", checkpoint.get("val_select", math.inf)))
+        saved_assignments = checkpoint.get("code_assignments")
+        saved_assignment_epoch = checkpoint.get("code_assignments_epoch")
+        saved_assignment_fingerprint = checkpoint.get("code_assignments_fingerprint")
+        if saved_assignments is not None and saved_assignment_epoch is not None:
+            saved_assignments = torch.as_tensor(saved_assignments, dtype=torch.long).reshape(-1)
+            fingerprint_matches = (
+                saved_assignment_fingerprint is None
+                or saved_assignment_fingerprint == assignment_fingerprint
+            )
+            if saved_assignments.numel() == len(segments) and fingerprint_matches:
+                previous_code_assignments = saved_assignments
+                previous_code_epoch = int(saved_assignment_epoch)
+                print(
+                    "[FSQ-v3] restored code-assignment baseline from "
+                    f"epoch {previous_code_epoch} ({saved_assignments.numel()} skills)"
+                )
+            else:
+                print(
+                    "[FSQ-v3] ignoring incompatible code-assignment baseline: "
+                    f"checkpoint={saved_assignments.numel()}/{saved_assignment_fingerprint} "
+                    f"current={len(segments)}/{assignment_fingerprint}"
+                )
         # Legacy periodic checkpoints only stored their own score. Keep the historical best in
         # FSQ.pt so resume cannot overwrite it with a model that merely beats the periodic snapshot.
         if cfg.save_best_model and save_path.is_file():
@@ -1804,6 +1965,23 @@ def train_spline_fsqae(
             "will be left untouched"
         )
 
+    # Older checkpoints predate assignment tracking. Establish their loaded
+    # epoch as the baseline now so the first post-resume validation still emits
+    # a meaningful retention/change measurement.
+    if resume_from and previous_code_assignments is None:
+        model.eval()
+        previous_code_assignments = _collect_code_assignments(
+            model,
+            (val_ds, train_ds),
+            device,
+            cfg.batch_size,
+        )
+        previous_code_epoch = start_epoch - 1
+        print(
+            "[FSQ-v3] established code-assignment baseline from loaded epoch "
+            f"{previous_code_epoch} ({previous_code_assignments.numel()} skills)"
+        )
+
     if wandb_run is not None:
         # The same epoch aggregate is reported twice: train/val use optimizer_step as x, while
         # train_epoch/val_epoch use epoch as x.  Keeping train and val at the top-level avoids
@@ -1812,7 +1990,14 @@ def train_spline_fsqae(
         wandb_run.define_metric("optimizer_step")
         for name in ("train/*", "val/*", "perf/*", "lr/*"):
             wandb_run.define_metric(name, step_metric="optimizer_step")
-        for name in ("train_epoch/*", "val_epoch/*", "perf_epoch/*", "lr_epoch/*"):
+        wandb_run.define_metric("codebook/*", step_metric="optimizer_step")
+        for name in (
+            "train_epoch/*",
+            "val_epoch/*",
+            "perf_epoch/*",
+            "lr_epoch/*",
+            "codebook_epoch/*",
+        ):
             wandb_run.define_metric(name, step_metric="epoch")
 
     def save(path: str | Path, epoch: int, val: float, select: float, *, resumable: bool) -> None:
@@ -1830,6 +2015,12 @@ def train_spline_fsqae(
         if resumable:
             payload["optim_state"] = optimizer.state_dict()
             payload["scheduler_state"] = scheduler.state_dict()
+            if previous_code_assignments is not None and previous_code_epoch is not None:
+                # A compact baseline lets resumed jobs continue the retention curve instead of
+                # spending their first validation point only establishing a new reference.
+                payload["code_assignments"] = previous_code_assignments.to(torch.int32)
+                payload["code_assignments_epoch"] = previous_code_epoch
+                payload["code_assignments_fingerprint"] = assignment_fingerprint
         torch.save(payload, str(path))
 
     def step(batch: dict[str, Tensor | None], training: bool, batch_index: int):
@@ -1910,6 +2101,9 @@ def train_spline_fsqae(
         val_end: dict[str, float] = {}
         val_count = 0
         val_codes_seen = torch.zeros(model.fsq.codebook_size, dtype=torch.bool, device=device)
+        assignment_metrics: dict[str, float] = {}
+        assignment_reference_epoch: int | None = None
+        full_active_codes = 0
         if should_validate:
             model.eval()
             with torch.no_grad():
@@ -1921,6 +2115,26 @@ def train_spline_fsqae(
                         val_sum[key] = val_sum.get(key, 0.0) + value * count
                     for key, value in end_metrics.items():
                         val_end[key] = val_end.get(key, 0.0) + value * count
+
+            # Evaluate sample-to-code membership at one fixed model state. This pass touches only
+            # the cached spline inputs; it does not decode images or rerun the reconstructor.
+            current_code_assignments = _collect_code_assignments(
+                model,
+                (val_ds, train_ds),
+                device,
+                cfg.batch_size,
+            )
+            full_active_codes = int(current_code_assignments.unique().numel())
+            if previous_code_assignments is not None and previous_code_epoch is not None:
+                assignment_reference_epoch = previous_code_epoch
+                assignment_metrics = _code_assignment_stability(
+                    previous_code_assignments,
+                    current_code_assignments,
+                    model.fsq.codebook_size,
+                )
+                assignment_metrics["interval_epochs"] = float(epoch - previous_code_epoch)
+            previous_code_assignments = current_code_assignments
+            previous_code_epoch = epoch
 
         train_avg = {k: v / max(train_count, 1) for k, v in train_sum.items()}
         val_avg = {k: v / max(val_count, 1) for k, v in val_sum.items()}
@@ -1988,9 +2202,16 @@ def train_spline_fsqae(
                 "val_epoch/codebook_active_entries": val_active_codes,
                 "val_epoch/select": select,
             })
+            full_codebook_log = {
+                "full_active_entries": full_active_codes,
+                "full_utilization_pct": 100.0 * full_active_codes / codebook_size,
+                **assignment_metrics,
+            }
+            log.update({f"codebook/{key}": value for key, value in full_codebook_log.items()})
+            log.update({f"codebook_epoch/{key}": value for key, value in full_codebook_log.items()})
         if wandb_run is not None:
             wandb_run.log(log, step=global_step)
-        if epoch == 1 or epoch % cfg.log_every == 0:
+        if epoch == 1 or epoch % cfg.log_every == 0 or should_validate:
             message = (
                 f"[FSQ-v3] {epoch:4d}/{cfg.epochs} "
                 f"train={train_avg['loss']:.4f}"
@@ -2001,6 +2222,15 @@ def train_spline_fsqae(
                     f"prog={val_avg['progress']:.4f} "
                     f"end={val_avg['termination']:.4f} select={select:.4f}"
                 )
+                if assignment_metrics:
+                    message += (
+                        f" code-retain({assignment_reference_epoch}->{epoch})="
+                        f"{assignment_metrics['retention_pct']:.1f}% "
+                        f"changed={assignment_metrics['change_pct']:.1f}% "
+                        f"matched={assignment_metrics['matched_retention_pct']:.1f}%"
+                    )
+                else:
+                    message += f" code-retain=baseline({full_active_codes}/{codebook_size} active)"
             print(message)
 
     if cfg.save_best_model:

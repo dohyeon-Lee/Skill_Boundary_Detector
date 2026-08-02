@@ -14,12 +14,12 @@ skillset_array_throttle: 0        # 0 = unlimited
 skillset_max_sweeps: 2
 
 # FSQ encoder
-fsq_run_name: langgap_56_full_full_state_obs20_std_episodemean_80p_fsq345
-# fsq_run_name: langgap_56_full_full_state_obs20_std_episodemean_80p_fsq333
+# fsq_run_name: langgap_56_full_full_state_obs20_std_episodemean_80p_fsq345
+fsq_run_name: langgap_56_full_full_state_obs20_std_episodemean_80p_fsq333
 
 # fsq_run_name: libero_90_full_full_state_obs20_std_episodemean_80p_fsq345
 # fsq_run_name: libero_90_full_full_state_obs20_std_episodemean_80p_fsq333
-fsq_checkpoint: 300 # 125               # epoch | best
+fsq_checkpoint: 350 # 125               # epoch | best
 fsq_snap_to_supported: true
 fsq_snap_min_code_freq: 10
 
