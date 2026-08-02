@@ -1484,10 +1484,28 @@ class FSQTrajectoryDataset(Dataset):
 
     def _sample_indices(self, length: int) -> np.ndarray:
         m = self.samples_per_skill
+        if length < 1:
+            raise ValueError(f"Skill length must be positive, got {length}.")
         if self.training:
-            if length >= m:
-                return np.sort(np.random.choice(length, size=m, replace=False)).astype(np.int64)
-            return np.sort(np.random.choice(length, size=m, replace=True)).astype(np.int64)
+            # Termination validation always includes the exact endpoint through
+            # linspace below. Match that target distribution during training:
+            # reserve one slot for the endpoint and sample the remaining slots
+            # only from preceding frames. Very short skills use replacement to
+            # preserve the fixed samples-per-skill batch shape.
+            endpoint = length - 1
+            if m == 1:
+                return np.asarray([endpoint], dtype=np.int64)
+            if endpoint == 0:
+                preceding = np.zeros(m - 1, dtype=np.int64)
+            else:
+                preceding = np.random.choice(
+                    endpoint,
+                    size=m - 1,
+                    replace=endpoint < m - 1,
+                ).astype(np.int64)
+            return np.sort(
+                np.concatenate([preceding, np.asarray([endpoint], dtype=np.int64)])
+            )
         return np.rint(np.linspace(0, length - 1, m)).astype(np.int64)
 
     def _action_chunks(self, action: np.ndarray, indices: np.ndarray) -> np.ndarray:
