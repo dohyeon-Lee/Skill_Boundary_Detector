@@ -95,6 +95,10 @@ def update_policy(
     """
     start_time = time.perf_counter()
     policy.train()
+    unwrapped_policy = accelerator.unwrap_model(policy, keep_fp32_wrapper=True)
+    if has_method(unwrapped_policy, "set_training_step"):
+        # MetricsTracker still points to the last completed update here.
+        unwrapped_policy.set_training_step(train_metrics.steps + 1)
 
     # Get RA-BC weights if enabled
     rabc_batch_weights = None
@@ -128,7 +132,9 @@ def update_policy(
     # Some policies train parameter-disjoint auxiliaries in the same backward/optimizer step. Their
     # Adam states are already independent per parameter; clip them separately so a large auxiliary
     # gradient cannot rescale the main policy gradient (or vice versa).
-    unwrapped_policy = accelerator.unwrap_model(policy, keep_fp32_wrapper=True)
+    preclip_debug_metrics = {}
+    if has_method(unwrapped_policy, "training_debug_metrics"):
+        preclip_debug_metrics = unwrapped_policy.training_debug_metrics()
     isolated_grad_groups = {}
     if has_method(unwrapped_policy, "isolated_main_optimizer_grad_groups"):
         isolated_grad_groups = unwrapped_policy.isolated_main_optimizer_grad_groups()
@@ -161,6 +167,16 @@ def update_policy(
         grad_norm = torch.nn.utils.clip_grad_norm_(
             policy.parameters(), float("inf"), error_if_nonfinite=False
         )
+
+    if preclip_debug_metrics:
+        output_dict.update(preclip_debug_metrics)
+        raw_grad_norm = float(
+            grad_norm.detach().item() if torch.is_tensor(grad_norm) else grad_norm
+        )
+        output_dict["vsa_debug/gradient/preclip/global_norm"] = raw_grad_norm
+        output_dict["vsa_debug/gradient/clip_scale"] = min(
+            1.0, grad_clip_norm / max(raw_grad_norm, 1e-12)
+        ) if grad_clip_norm > 0 else 1.0
 
     # Optimizer step
     with lock if lock is not None else nullcontext():
@@ -210,6 +226,10 @@ class _WindowedPolicyMetrics:
         if not metrics:
             return
         for key, value in metrics.items():
+            # VSA diagnostics are sparse, exact-step measurements and are sent
+            # immediately to their own W&B namespace instead of window-averaged.
+            if key.startswith("vsa_debug/"):
+                continue
             # Policy outputs own their metric names. Track every finite scalar so
             # adding a diagnostic never requires a second trainer-side allowlist.
             if torch.is_tensor(value):
@@ -768,6 +788,14 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
         if is_main_process:
             progbar.update(1)
         train_tracker.step()
+        if is_main_process and wandb_logger and output_dict:
+            vsa_debug_metrics = {
+                key.removeprefix("vsa_debug/"): value
+                for key, value in _finite_scalar_metrics(output_dict).items()
+                if key.startswith("vsa_debug/")
+            }
+            if vsa_debug_metrics:
+                wandb_logger.log_dict(vsa_debug_metrics, step, mode="vsa_debug")
         is_log_step = cfg.log_freq > 0 and step % cfg.log_freq == 0 and is_main_process
         is_saving_step = step % cfg.save_freq == 0 or step == cfg.steps
         is_eval_step = cfg.eval_freq > 0 and step % cfg.eval_freq == 0
@@ -801,8 +829,8 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                 # backprop-scalar "loss" with it → drop the redundant generic "loss".
                 if "action_loss" in wandb_log_dict:
                     wandb_log_dict.pop("loss", None)
-                # Route "terminator/*" → train_terminator/* and "regime/*" (CFG A/B per-regime losses)
-                # → train_regime/*, each a SEPARATE wandb panel; the rest → train/*.
+                # Route each diagnostic family to its own W&B namespace. Sparse
+                # vsa_debug metrics were already logged at their exact step.
                 term_metrics = {k[len("terminator/"):]: v for k, v in wandb_log_dict.items()
                                 if k.startswith("terminator/")}
                 regime_metrics = {k[len("regime/"):]: v for k, v in wandb_log_dict.items()
@@ -830,6 +858,7 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                                         "regime/",
                                         "distill/",
                                         "wrong_language/",
+                                        "vsa_debug/",
                                     ))}
                 wandb_logger.log_dict(main_metrics, step)
                 if term_metrics:

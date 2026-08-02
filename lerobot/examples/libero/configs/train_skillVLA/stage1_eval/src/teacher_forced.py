@@ -115,9 +115,15 @@ def main() -> None:
             # Swap codes = other frames' GT codes (realistic, in-distribution codes).
             codes = true_code.roll(shifts=s, dims=0)
             same = codes == true_code
-            batch["skill_sequence"] = codes.view(bsize, 1)
-            batch["skill_index"] = torch.zeros(bsize, dtype=torch.long, device=codes.device)
-            pred_s = post(policy.predict_action_chunk(batch, noise=noise)).cpu()
+            swapped_batch = dict(batch)
+            # Current Stage-1 checkpoints prioritize skill_code over the legacy
+            # skill_sequence/index pair, so all three must agree for a real swap.
+            swapped_batch["skill_code"] = codes
+            swapped_batch["skill_sequence"] = codes.view(bsize, 1)
+            swapped_batch["skill_index"] = torch.zeros(
+                bsize, dtype=torch.long, device=codes.device
+            )
+            pred_s = post(policy.predict_action_chunk(swapped_batch, noise=noise)).cpu()
             mse_s, _ = masked_err(pred_s, gt_raw, pad)
             delta = (pred_s - pred_true).norm(dim=-1).mean(dim=1)  # (B,) mean per-step L2 vs true-code chunk
             mse_s[same.cpu()], delta[same.cpu()] = float("nan"), float("nan")

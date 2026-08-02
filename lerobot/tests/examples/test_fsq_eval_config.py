@@ -47,19 +47,24 @@ def _artifact(tmp_path: Path) -> tuple[Path, Path]:
     return model_dir, skillset
 
 
-def _config(tmp_path: Path, run_name: str, checkpoint: str) -> Path:
+def _config(
+    tmp_path: Path,
+    run_name: str,
+    checkpoint: object,
+    *,
+    num_gpus: int | None = None,
+) -> Path:
     path = tmp_path / "fsq_eval_config.yaml"
-    path.write_text(
-        "\n".join(
-            [
-                f"project_root: {tmp_path}",
-                "dataset_root: dataset",
-                "outputs_root: outputs",
-                f"fsq_eval_run_name: {run_name}",
-                f"fsq_eval_checkpoint: {checkpoint}",
-            ]
-        )
-    )
+    lines = [
+        f"project_root: {tmp_path}",
+        "dataset_root: dataset",
+        "outputs_root: outputs",
+        f"fsq_eval_run_name: {run_name}",
+        f"fsq_eval_checkpoint: {checkpoint}",
+    ]
+    if num_gpus is not None:
+        lines.append(f"fsq_eval_num_gpus: {num_gpus}")
+    path.write_text("\n".join(lines))
     return path
 
 
@@ -89,6 +94,48 @@ def test_fsq_eval_last_selects_highest_epoch(
 
     assert settings["fsq_eval_model_path"] == str(model_dir / "FSQ_epoch0100.pt")
     assert settings["fsq_eval_epoch_tag"] == "epoch0100"
+    assert settings["fsq_eval_checkpoints"] == "100"
+
+
+def test_fsq_eval_multiple_checkpoints_and_gpu_fanout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    model_dir, _ = _artifact(tmp_path)
+    monkeypatch.setenv("EVAL_RUN_FSQ", "true")
+    monkeypatch.setenv("EVAL_RUN_DP", "false")
+    config = _config(tmp_path, model_dir.name, [25, 100], num_gpus=2)
+
+    settings = build_settings(config)
+    selected = build_settings(config, checkpoint_override="100")
+
+    assert settings["fsq_eval_checkpoints"] == "25 100"
+    assert settings["fsq_eval_num_gpus"] == 2
+    assert settings["fsq_eval_model_path"] == str(model_dir / "FSQ_epoch0025.pt")
+    assert selected["fsq_eval_selected_checkpoint"] == "100"
+    assert selected["fsq_eval_model_path"] == str(model_dir / "FSQ_epoch0100.pt")
+    assert selected["fsq_eval_epoch_tag"] == "epoch0100"
+
+
+def test_fsq_eval_rejects_more_gpus_than_checkpoints(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    model_dir, _ = _artifact(tmp_path)
+    monkeypatch.setenv("EVAL_RUN_FSQ", "true")
+    monkeypatch.setenv("EVAL_RUN_DP", "false")
+
+    with pytest.raises(ValueError, match="cannot exceed"):
+        build_settings(_config(tmp_path, model_dir.name, [25, 100], num_gpus=3))
+
+
+def test_fsq_eval_rejects_checkpoints_resolving_to_same_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    model_dir, _ = _artifact(tmp_path)
+    monkeypatch.setenv("EVAL_RUN_FSQ", "true")
+    monkeypatch.setenv("EVAL_RUN_DP", "false")
+
+    with pytest.raises(ValueError, match="different checkpoint files"):
+        build_settings(_config(tmp_path, model_dir.name, ["last", 100], num_gpus=2))
 
 
 def test_fsq_eval_requires_complete_training_metadata(

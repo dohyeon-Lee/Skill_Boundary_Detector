@@ -1,47 +1,27 @@
-"""Stage-1 vision-state-action prior with an isolated skill-prediction auxiliary.
-
-The action path has no VLM or language input. Usually DINO and a fresh 18-layer
-condition transformer encode the current cameras; the visionless route replaces
-camera tokens with one learned condition seed. Depending on the selected
-experiment, robot state either modulates that condition stream through AdaRMS or
-is omitted from the action path entirely. The 18-layer pi0.5 action expert
-retains its original time-only AdaRMS input. The selected skill is broadcast
-into either the action stream or the condition stream, or omitted in the
-skill-free routes.
-Optionally, a frozen pi0.5
-VLM base with a skill-only LoRA feeds a separate
-SkillReader/SkillHead optimizer; its graph and gradient clipping are disjoint from
-the action path.
-"""
+"""Stage-1 DINO-Perceiver VSA prior with selectable vision conditioning."""
 
 from __future__ import annotations
 
-import copy
 import json
 import logging
+import re
 from collections import deque
-from contextlib import nullcontext
 from pathlib import Path
-from types import SimpleNamespace
 
 import torch
 import torch.nn.functional as F
-import torch.utils.checkpoint
 from torch import Tensor, nn
 from transformers import AutoModel
 
 from lerobot.configs.policies import PreTrainedConfig
 from lerobot.policies.pi05.lora import route_plain_to_base
 from lerobot.policies.pi05.modeling_pi05 import (
-    OPENPI_ATTENTION_MASK_VALUE,
-    compute_layer_complete,
     create_sinusoidal_pos_embedding,
     get_gemma_config,
-    layernorm_forward,
-    make_att_2d_masks,
     pad_vector,
     sample_beta,
 )
+from lerobot.policies.pi_gemma import PiGemmaRMSNorm
 from lerobot.policies.pretrained import PreTrainedPolicy
 from lerobot.utils.constants import (
     ACTION,
@@ -51,47 +31,44 @@ from lerobot.utils.constants import (
 )
 
 from .configuration_skill_expert import (
-    SKILLLESS_CONDITIONING_ROUTES,
-    STATELESS_CONDITIONING_ROUTES,
-    VISIONLESS_CONDITIONING_ROUTES,
+    GLOBAL_VISUAL_ADARMS,
+    IN_CONTEXT_TOKENS,
+    RESIDUAL_CROSS_ATTENTION,
+    VSA_ARCHITECTURE_REVISION,
     SkillExpertConfig,
-    normalize_conditioning_route,
 )
-from .modeling_utils import build_fsq_terminator, build_gemma, load_raw_state_dict
+from .modeling_utils import build_fsq_terminator, load_raw_state_dict
 from .modeling_skill_predictor import FrozenVLMSkillPredictor
+from .vsa_perceiver_crossattn import (
+    VISUAL_RESIDUAL_GATE_INIT,
+    CameraPerceiverResampler,
+    VSAActionExpert,
+)
 
 log = logging.getLogger(__name__)
 
 
 class SkillExpertPytorch(nn.Module):
-    """DINO condition stream + fully trainable pi0.5 action expert."""
+    """Shared DINO, camera-specific Perceivers, and one cross-attention expert."""
 
     def __init__(self, config: SkillExpertConfig):
         super().__init__()
         self.config = config
-        expert_config = get_gemma_config(config.action_expert_variant)
-        self.width = expert_config.width
-
-        if config.conditioning_route in VISIONLESS_CONDITIONING_ROUTES:
-            # The transformer still needs a condition sequence to carry state
-            # AdaRMS and skill broadcasts. This learned seed contains no
-            # observation information and replaces all vision tokens.
-            self.dino = None
-            self.n_register_tokens = 0
-            self.image_proj = None
-            self.visionless_condition_token = nn.Parameter(
-                torch.zeros(1, 1, self.width)
-            )
-        else:
-            self.dino = AutoModel.from_pretrained(config.dino_model_path)
-            if config.freeze_vision_encoder:
-                self.dino.requires_grad_(False)
-                self.dino.eval()
-            self.n_register_tokens = int(
-                getattr(self.dino.config, "num_register_tokens", 0)
-            )
-            self.image_proj = nn.Linear(int(self.dino.config.hidden_size), self.width)
-            self.register_parameter("visionless_condition_token", None)
+        self.width = get_gemma_config(config.action_expert_variant).width
+        self.dino = AutoModel.from_pretrained(config.dino_model_path)
+        self.dino.requires_grad_(True)
+        self.n_register_tokens = int(getattr(self.dino.config, "num_register_tokens", 0))
+        dino_width = int(self.dino.config.hidden_size)
+        self.top_resampler = CameraPerceiverResampler(
+            dino_width,
+            self.width,
+            num_latents=config.num_visual_latents_per_camera,
+        )
+        self.wrist_resampler = CameraPerceiverResampler(
+            dino_width,
+            self.width,
+            num_latents=config.num_visual_latents_per_camera,
+        )
         self.register_buffer(
             "_image_mean",
             torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1),
@@ -103,19 +80,10 @@ class SkillExpertPytorch(nn.Module):
             persistent=False,
         )
 
-        # Stateless routes deliberately have no state parameters in the VSA
-        # graph. This also avoids an unused trainable projection under DDP.
-        self.state_proj = (
-            None
-            if config.conditioning_route in STATELESS_CONDITIONING_ROUTES
-            else nn.Linear(config.max_state_dim, self.width)
-        )
-        # Skill-free routes likewise omit the otherwise unused projection.
-        self.skill_proj = (
-            None
-            if config.conditioning_route in SKILLLESS_CONDITIONING_ROUTES
-            else nn.Linear(len(config.skill_fsq_levels), self.width)
-        )
+        self.state_proj = nn.Linear(config.max_state_dim, self.width)
+        self.state_norm = PiGemmaRMSNorm(self.width)
+        self.skill_proj = nn.Linear(len(config.skill_fsq_levels), self.width)
+        self.skill_norm = PiGemmaRMSNorm(self.width)
         levels = torch.tensor(config.skill_fsq_levels, dtype=torch.long)
         strides = torch.ones_like(levels)
         for index in range(1, len(config.skill_fsq_levels)):
@@ -129,11 +97,28 @@ class SkillExpertPytorch(nn.Module):
         self.time_mlp_in = nn.Linear(self.width, self.width)
         self.time_mlp_out = nn.Linear(self.width, self.width)
 
-        self.cond_encoder = build_gemma(
-            config.cond_encoder_variant,
-            use_adarms=config.conditioning_route not in STATELESS_CONDITIONING_ROUTES,
-        )
-        self.gemma_expert = build_gemma(config.action_expert_variant, use_adarms=True)
+        # This is the only mode-specific parameter outside the expert. Starting
+        # from zero makes the first global-AdaRMS forward exactly timestep-only.
+        self.visual_condition_projection = None
+        if config.vision_conditioning_mode == GLOBAL_VISUAL_ADARMS:
+            self.visual_condition_projection = nn.Linear(self.width * 2, self.width)
+            nn.init.zeros_(self.visual_condition_projection.weight)
+            nn.init.zeros_(self.visual_condition_projection.bias)
+
+        expert_class = VSAActionExpert
+        if getattr(config, "eval_legacy_vsa", False):
+            # Explicit evaluation-only compatibility. Training configs never set
+            # this runtime flag, so the Stage-1 architecture remains single-path.
+            from .legacy_vsa_eval import LegacyVSAActionExpert  # noqa: PLC0415
+
+            expert_class = LegacyVSAActionExpert
+        expert_kwargs = {
+            "include_state_in_visual_crossattn": config.include_state_in_visual_crossattn,
+            "include_skill_in_visual_crossattn": config.include_skill_in_visual_crossattn,
+        }
+        if not getattr(config, "eval_legacy_vsa", False):
+            expert_kwargs["vision_conditioning_mode"] = config.vision_conditioning_mode
+        self.expert = expert_class(**expert_kwargs)
         self.skill_predictor = (
             FrozenVLMSkillPredictor(config) if config.uses_skill_predictor else None
         )
@@ -152,31 +137,127 @@ class SkillExpertPytorch(nn.Module):
                 terminator.vision_encoder.requires_grad_(False).eval()
             self.fsq_term_train = terminator.to(dtype=torch.float32)
         self._last_predicted_actions: Tensor | None = None
+        self._last_vsa_debug_stats: dict[str, float] = {}
+        self._vsa_training_step: int | None = None
+        self._vsa_debug_active = False
         self._gradient_checkpointing = False
 
     @property
     def working_dtype(self) -> torch.dtype:
         return self.action_in_proj.weight.dtype
 
+    def set_training_step(self, step: int) -> None:
+        """Enable expensive diagnostics only on explicitly configured steps."""
+        self._vsa_training_step = int(step)
+        scheduled = self._vsa_training_step in self.config.vsa_debug_schedule
+        initial = 0 < self._vsa_training_step <= self.config.vsa_debug_steps
+        self._vsa_debug_active = self.training and (scheduled or initial)
+        self.expert.debug_enabled = self._vsa_debug_active
+
+    @staticmethod
+    def _rms(tensor: Tensor) -> Tensor:
+        return tensor.detach().float().square().mean().sqrt()
+
+    @classmethod
+    def _latent_debug_stats(cls, latents: Tensor, name: str) -> dict[str, float]:
+        """Measure token diversity; unlike LayerNorm moments this detects collapse."""
+        values = latents.detach().float()
+        token_count = values.shape[1]
+        normalized = F.normalize(values, dim=-1, eps=1e-12)
+        cosine = normalized @ normalized.transpose(-1, -2)
+        off_diagonal = ~torch.eye(
+            token_count, dtype=torch.bool, device=values.device
+        )[None]
+        pairwise = cosine.masked_select(off_diagonal)
+
+        centered = values - values.mean(dim=1, keepdim=True)
+        gram = centered @ centered.transpose(-1, -2) / max(values.shape[-1], 1)
+        eigenvalues = torch.linalg.eigvalsh(gram).clamp_min(0)
+        probabilities = eigenvalues / eigenvalues.sum(dim=-1, keepdim=True).clamp_min(1e-12)
+        effective_rank = torch.exp(
+            -(probabilities * probabilities.clamp_min(1e-12).log()).sum(dim=-1)
+        )
+        return {
+            f"visual/{name}/pair_cosine_mean": float(pairwise.mean().item()),
+            f"visual/{name}/pair_cosine_abs_mean": float(pairwise.abs().mean().item()),
+            f"visual/{name}/pair_cosine_max": float(pairwise.max().item()),
+            f"visual/{name}/effective_rank": float(effective_rank.mean().item()),
+            f"visual/{name}/effective_rank_fraction": float(
+                (effective_rank / token_count).mean().item()
+            ),
+            f"visual/{name}/token_spread_rms": float(
+                centered.square().mean().sqrt().item()
+            ),
+            f"visual/{name}/batch_spread_rms": float(
+                (values - values.mean(dim=0, keepdim=True)).square().mean().sqrt().item()
+            ),
+        }
+
+    @classmethod
+    def _visual_debug_stats(
+        cls,
+        top_tokens: Tensor,
+        wrist_tokens: Tensor,
+        top_memory: Tensor,
+        wrist_memory: Tensor,
+    ) -> dict[str, float]:
+        stats = {
+            **cls._latent_debug_stats(top_memory, "top_latents"),
+            **cls._latent_debug_stats(wrist_memory, "wrist_latents"),
+        }
+        top_patch = top_tokens[:, 1:].detach().float()
+        wrist_patch = wrist_tokens[:, 1:].detach().float()
+        top_dino_spread = (
+            (top_patch - top_patch.mean(dim=1, keepdim=True))
+            .square().mean().sqrt()
+        )
+        wrist_dino_spread = (
+            (wrist_patch - wrist_patch.mean(dim=1, keepdim=True))
+            .square().mean().sqrt()
+        )
+        stats.update(
+            {
+                "visual/top_dino/patch_spread_rms": float(top_dino_spread.item()),
+                "visual/wrist_dino/patch_spread_rms": float(wrist_dino_spread.item()),
+                "visual/top_latents/spread_retention_vs_dino": float(
+                    stats["visual/top_latents/token_spread_rms"]
+                    / max(float(top_dino_spread.item()), 1e-12)
+                ),
+                "visual/wrist_latents/spread_retention_vs_dino": float(
+                    stats["visual/wrist_latents/token_spread_rms"]
+                    / max(float(wrist_dino_spread.item()), 1e-12)
+                ),
+            }
+        )
+        top_normalized = F.normalize(top_memory.detach().float(), dim=-1, eps=1e-12)
+        wrist_normalized = F.normalize(wrist_memory.detach().float(), dim=-1, eps=1e-12)
+        cross_camera = top_normalized @ wrist_normalized.transpose(-1, -2)
+        top_centroid = F.normalize(top_memory.detach().float().mean(dim=1), dim=-1)
+        wrist_centroid = F.normalize(wrist_memory.detach().float().mean(dim=1), dim=-1)
+        stats.update(
+            {
+                "visual/cross_camera/pair_cosine_mean": float(cross_camera.mean().item()),
+                "visual/cross_camera/pair_cosine_abs_mean": float(
+                    cross_camera.abs().mean().item()
+                ),
+                "visual/cross_camera/pair_cosine_max": float(cross_camera.amax().item()),
+                "visual/cross_camera/centroid_cosine": float(
+                    (top_centroid * wrist_centroid).sum(dim=-1).mean().item()
+                ),
+            }
+        )
+        return stats
+
     def gradient_checkpointing_enable(self) -> None:
         self._gradient_checkpointing = True
-        if hasattr(self.cond_encoder, "gradient_checkpointing_enable"):
-            self.cond_encoder.gradient_checkpointing_enable()
-        if hasattr(self.gemma_expert, "gradient_checkpointing_enable"):
-            self.gemma_expert.gradient_checkpointing_enable()
+        self.expert.gradient_checkpointing_enable()
         if self.skill_predictor is not None and self.config.train_skill_predictor:
             self.skill_predictor.gradient_checkpointing_enable()
-        if (
-            self.dino is not None
-            and not self.config.freeze_vision_encoder
-            and hasattr(self.dino, "gradient_checkpointing_enable")
-        ):
+        if hasattr(self.dino, "gradient_checkpointing_enable"):
             self.dino.gradient_checkpointing_enable()
 
     def train(self, mode: bool = True):
         super().train(mode)
-        if self.dino is not None and self.config.freeze_vision_encoder:
-            self.dino.eval()
         if self.skill_predictor is not None and not self.config.train_skill_predictor:
             # Frozen checkpoint predictors must be deterministic while supplying
             # the action-conditioning code during Stage-1 training.
@@ -201,43 +282,50 @@ class SkillExpertPytorch(nn.Module):
         time = time * self.config.time_sampling_scale + self.config.time_sampling_offset
         return time.to(dtype=torch.float32, device=device)
 
-    def _image_features(self, image: Tensor) -> Tensor:
-        if self.dino is None:
-            raise RuntimeError(
-                f"{self.config.conditioning_route} has no vision encoder in the VSA graph."
-            )
+    def _prepare_image(self, image: Tensor) -> Tensor:
         image = image.float()
-        image = F.interpolate(
+        return F.interpolate(
             image,
             size=(self.config.dino_image_size, self.config.dino_image_size),
             mode="bilinear",
             align_corners=False,
+            antialias=True,
         )
-        image = (image - self._image_mean.float()) / self._image_std.float()
-        image = image.to(dtype=next(self.dino.parameters()).dtype)
-        context = torch.no_grad() if self.config.freeze_vision_encoder else nullcontext()
-        with context:
-            hidden = self.dino(image).last_hidden_state
+
+    def _strip_register_tokens(self, hidden: Tensor) -> Tensor:
         cls_token = hidden[:, :1]
         patch_tokens = hidden[:, 1 + self.n_register_tokens :]
-        return torch.cat((cls_token, patch_tokens), dim=1)
+        tokens = torch.cat((cls_token, patch_tokens), dim=1)
+        if tokens.shape[1] != 197:
+            raise RuntimeError(
+                "DINO must produce CLS + 196 patch tokens after register removal; "
+                f"got {tokens.shape[1]} (registers={self.n_register_tokens})."
+            )
+        return tokens
 
-    def _condition_tokens(
-        self, images: list[Tensor], *, batch_size: int | None = None
-    ) -> Tensor:
-        if self.config.conditioning_route in VISIONLESS_CONDITIONING_ROUTES:
-            if batch_size is None:
-                if not images:
-                    raise ValueError("Visionless conditioning requires batch_size.")
-                batch_size = images[0].shape[0]
-            return self.visionless_condition_token.expand(batch_size, -1, -1)
-        if self.image_proj is None:
-            raise RuntimeError("Vision-conditioned route has no image projection.")
-        tokens = [
-            self.image_proj(self._image_features(image).to(self.working_dtype))
-            for image in images
-        ]
-        return torch.cat(tokens, dim=1)
+    def encode_visual_memory(self, images: list[Tensor]) -> Tensor:
+        """Run shared DINO once and each camera-specific resampler once."""
+        if len(images) != 2:
+            raise ValueError(f"Stage 1 requires [top, wrist] images, got {len(images)}.")
+        top, wrist = images
+        if top.shape[0] != wrist.shape[0]:
+            raise ValueError("Top and wrist image batches must have the same size.")
+        prepared = torch.cat((self._prepare_image(top), self._prepare_image(wrist)), dim=0)
+        prepared = (prepared - self._image_mean.float()) / self._image_std.float()
+        prepared = prepared.to(dtype=next(self.dino.parameters()).dtype)
+        hidden = self.dino(prepared).last_hidden_state
+        top_hidden, wrist_hidden = hidden.split(top.shape[0], dim=0)
+        top_tokens = self._strip_register_tokens(top_hidden)
+        wrist_tokens = self._strip_register_tokens(wrist_hidden)
+        top_memory = self.top_resampler(top_tokens.to(self.working_dtype))
+        wrist_memory = self.wrist_resampler(wrist_tokens.to(self.working_dtype))
+        if self._vsa_debug_active:
+            self._last_vsa_debug_stats.update(
+                self._visual_debug_stats(
+                    top_tokens, wrist_tokens, top_memory, wrist_memory
+                )
+            )
+        return torch.cat((top_memory, wrist_memory), dim=1)
 
     def _code_to_zq(self, skill_code: Tensor) -> Tensor:
         index = skill_code.reshape(-1, 1).long()
@@ -248,37 +336,18 @@ class SkillExpertPytorch(nn.Module):
         return (level_ids.float() - self._fsq_half[None]) / self._fsq_half[None]
 
     def _skill_embedding(self, skill_code: Tensor) -> Tensor:
-        if self.skill_proj is None:
-            raise RuntimeError(
-                f"{self.config.conditioning_route} has no skill projection in the VSA graph."
-            )
         z_q = self._code_to_zq(skill_code).to(self.working_dtype)
-        return self.skill_proj(z_q)
+        token, _ = self.skill_norm(self.skill_proj(z_q))
+        return token[:, None]
 
-    def _state_condition(self, state: Tensor | None) -> Tensor | None:
-        """Project state for cond AdaRMS, or omit it in stateless routes."""
-        if self.config.conditioning_route in STATELESS_CONDITIONING_ROUTES:
-            return None
-        if state is None or self.state_proj is None:
-            raise ValueError(
-                f"{self.config.conditioning_route} requires robot state conditioning."
-            )
-        return self.state_proj(state.to(self.working_dtype))
+    def _state_embedding(self, state: Tensor) -> Tensor:
+        token, _ = self.state_norm(self.state_proj(state.to(self.working_dtype)))
+        return token[:, None]
 
-    def _skill_broadcasts(
-        self, skill_code: Tensor | None
-    ) -> tuple[Tensor | None, Tensor | None]:
-        """Return ``(condition_stream, action_stream)`` skill broadcasts."""
-        if self.config.conditioning_route in SKILLLESS_CONDITIONING_ROUTES:
-            return None, None
-        if skill_code is None:
-            raise ValueError(
-                f"{self.config.conditioning_route} requires skill conditioning."
-            )
-        skill = self._skill_embedding(skill_code)
-        if self.config.conditioning_route == "state_cond":
-            return None, skill
-        return skill, None
+    def _context_tokens(self, state: Tensor, skill_code: Tensor) -> Tensor:
+        return torch.cat(
+            (self._state_embedding(state), self._skill_embedding(skill_code)), dim=1
+        )
 
     def terminator_predict(
         self,
@@ -317,126 +386,188 @@ class SkillExpertPytorch(nn.Module):
         condition = F.silu(self.time_mlp_in(condition))
         return F.silu(self.time_mlp_out(condition))
 
-    def _expert_condition(self, timestep: Tensor) -> Tensor:
-        """Keep the pi0.5 action expert's AdaRMS input strictly time-only."""
-        return self._time_condition(timestep)
+    def _pool_visual_memory(self, visual_memory: Tensor) -> Tensor:
+        """Mean-pool top/wrist latents independently, then concatenate features."""
+        camera_tokens = self.config.num_visual_latents_per_camera
+        if visual_memory.shape[1] != camera_tokens * 2:
+            raise ValueError(
+                "Global visual AdaRMS requires equal top/wrist memories; got "
+                f"{visual_memory.shape[1]} tokens for {camera_tokens} latents/camera."
+            )
+        top, wrist = visual_memory.split(
+            (camera_tokens, camera_tokens), dim=1
+        )
+        return torch.cat((top.mean(dim=1), wrist.mean(dim=1)), dim=-1)
+
+    def _action_condition(
+        self, visual_memory: Tensor, time_condition: Tensor
+    ) -> Tensor:
+        """Return the condition supplied to every action AdaRMS module."""
+        if self.config.vision_conditioning_mode != GLOBAL_VISUAL_ADARMS:
+            return time_condition
+        if self.visual_condition_projection is None:
+            raise RuntimeError("global_visual_adarms requires visual_condition_projection.")
+        pooled = self._pool_visual_memory(visual_memory)
+        return time_condition + self.visual_condition_projection(pooled)
 
     def _run_joint_hidden(
         self,
-        condition_tokens: Tensor,
+        visual_memory: Tensor,
         noisy_actions: Tensor,
-        condition_state: Tensor | None,
-        expert_condition: Tensor,
-        condition_skill: Tensor | None,
-        expert_skill: Tensor | None,
+        state: Tensor,
+        skill_code: Tensor,
+        time_condition: Tensor,
     ) -> Tensor:
-        """Return the normalized action hidden after all 18 Stage-1 layer pairs."""
+        """Return action hidden states after 18 self-attention expert blocks."""
         action_tokens = self.action_in_proj(noisy_actions.to(self.working_dtype))
-        n_chunk = action_tokens.shape[1]
-        batch_size, n_condition = condition_tokens.shape[:2]
-        n_action = action_tokens.shape[1]
-        device = action_tokens.device
+        context_tokens = self._context_tokens(state, skill_code)
+        action_condition = self._action_condition(visual_memory, time_condition)
+        action_hidden = self.expert(
+            context_tokens,
+            action_tokens,
+            visual_memory,
+            action_condition,
+        )
+        if self._vsa_debug_active:
+            tensors = {
+                "visual_memory": visual_memory,
+                "state_token": context_tokens[:, :1],
+                "skill_token": context_tokens[:, 1:],
+                "action_input": action_tokens,
+                "action_hidden": action_hidden,
+                "action_condition": action_condition,
+            }
+            self._last_vsa_debug_stats.update(
+                {
+                    f"activation/{name}_{stat}": float(value.detach().float().item())
+                    for name, tensor in tensors.items()
+                    for stat, value in (
+                        ("mean", tensor.detach().float().mean()),
+                        ("std", tensor.detach().float().std()),
+                        ("rms", tensor.detach().float().square().mean().sqrt()),
+                    )
+                }
+            )
+            self._last_vsa_debug_stats.update(self.expert.last_debug_stats)
+        return action_hidden
 
-        padding_mask = torch.ones(
-            batch_size, n_condition + n_action, dtype=torch.bool, device=device
-        )
-        # Condition tokens form one bidirectional block. Action tokens form the
-        # second bidirectional block and can read the full condition stream.
-        block_starts = [0] * n_condition + [1] + [0] * (n_chunk - 1)
-        block_mask = torch.tensor(block_starts, dtype=torch.bool, device=device)
-        block_mask = block_mask[None].expand(batch_size, -1)
-        attention_mask = make_att_2d_masks(padding_mask, block_mask)[:, None]
-        attention_mask = torch.where(
-            attention_mask, 0.0, OPENPI_ATTENTION_MASK_VALUE
-        )
-        position_ids = torch.cumsum(padding_mask, dim=1) - 1
-
-        streams = [condition_tokens, action_tokens]
-        adarms_conditions = [condition_state, expert_condition]
-        broadcast_conditions = [condition_skill, expert_skill]
-        condition_shim = SimpleNamespace(
-            model=SimpleNamespace(language_model=self.cond_encoder.model)
-        )
-        use_checkpoint = self._gradient_checkpointing and self.training
-        for layer_index in range(self.gemma_expert.model.config.num_hidden_layers):
-            if use_checkpoint:
-                streams = torch.utils.checkpoint.checkpoint(
-                    compute_layer_complete,
-                    layer_index,
-                    streams,
-                    attention_mask,
-                    position_ids,
-                    adarms_conditions,
-                    use_reentrant=False,
-                    preserve_rng_state=False,
-                    paligemma=condition_shim,
-                    gemma_expert=self.gemma_expert,
-                    broadcast_cond=broadcast_conditions,
+    @torch.no_grad()
+    def _input_sensitivity_stats(
+        self,
+        *,
+        predicted_velocity: Tensor,
+        visual_memory: Tensor,
+        noisy_actions: Tensor,
+        state: Tensor,
+        skill_code: Tensor,
+        time_condition: Tensor,
+    ) -> dict[str, float]:
+        """Measure input reliance with deterministic batch-roll perturbations."""
+        if predicted_velocity.shape[0] < 2:
+            return {}
+        previous_debug = self.expert.debug_enabled
+        self.expert.debug_enabled = False
+        try:
+            top, wrist = visual_memory.split(visual_memory.shape[1] // 2, dim=1)
+            variants = {
+                "top_image_shuffle": (
+                    torch.cat((top.roll(1, dims=0), wrist), dim=1),
+                    state,
+                    skill_code,
+                ),
+                "wrist_image_shuffle": (
+                    torch.cat((top, wrist.roll(1, dims=0)), dim=1),
+                    state,
+                    skill_code,
+                ),
+                "both_images_shuffle": (
+                    visual_memory.roll(1, dims=0),
+                    state,
+                    skill_code,
+                ),
+                "state_shuffle": (visual_memory, state.roll(1, dims=0), skill_code),
+                "skill_shuffle": (visual_memory, state, skill_code.roll(1, dims=0)),
+            }
+            baseline = predicted_velocity.detach().float()
+            baseline_rms = self._rms(baseline).clamp_min(1e-12)
+            stats = {}
+            for name, (memory, perturbed_state, perturbed_skill) in variants.items():
+                perturbed = self._run_joint(
+                    memory,
+                    noisy_actions,
+                    perturbed_state,
+                    perturbed_skill,
+                    time_condition,
+                ).float()
+                difference_rms = self._rms(perturbed - baseline)
+                stats[f"sensitivity/{name}/output_delta_rms"] = float(
+                    difference_rms.item()
                 )
-            else:
-                streams = compute_layer_complete(
-                    layer_index,
-                    streams,
-                    attention_mask,
-                    position_ids,
-                    adarms_conditions,
-                    paligemma=condition_shim,
-                    gemma_expert=self.gemma_expert,
-                    broadcast_cond=broadcast_conditions,
+                stats[f"sensitivity/{name}/relative_output_delta"] = float(
+                    (difference_rms / baseline_rms).item()
                 )
-
-        action_hidden, _ = layernorm_forward(
-            self.gemma_expert.model.norm, streams[1], expert_condition
-        )
-        return action_hidden[:, -n_chunk:]
+            return stats
+        finally:
+            self.expert.debug_enabled = previous_debug
 
     def _run_joint(
         self,
-        condition_tokens: Tensor,
+        visual_memory: Tensor,
         noisy_actions: Tensor,
-        condition_state: Tensor | None,
-        expert_condition: Tensor,
-        condition_skill: Tensor | None,
-        expert_skill: Tensor | None,
+        state: Tensor,
+        skill_code: Tensor,
+        time_condition: Tensor,
     ) -> Tensor:
         """Run Stage 1 and project its normalized action hidden to flow velocity."""
         action_hidden = self._run_joint_hidden(
-            condition_tokens,
+            visual_memory,
             noisy_actions,
-            condition_state,
-            expert_condition,
-            condition_skill,
-            expert_skill,
+            state,
+            skill_code,
+            time_condition,
         )
         return self.action_out_proj(action_hidden.to(self.working_dtype)).float()
 
     def forward(
         self,
         images: list[Tensor],
-        state: Tensor | None,
-        skill_code: Tensor | None,
+        state: Tensor,
+        skill_code: Tensor,
         actions: Tensor,
         *,
         noise: Tensor | None = None,
         time: Tensor | None = None,
     ) -> Tensor:
         """Return the signed flow residual; its square is the action-flow MSE."""
+        self._last_vsa_debug_stats = {}
         batch_size = actions.shape[0]
         time = self.sample_time(batch_size, actions.device) if time is None else time
         source = self.sample_noise(actions.shape, actions.device) if noise is None else noise
         source = source.to(actions.dtype)
         x_t = time[:, None, None] * source + (1.0 - time[:, None, None]) * actions
         target_velocity = source - actions
-        condition_skill, expert_skill = self._skill_broadcasts(skill_code)
-
+        visual_memory = self.encode_visual_memory(images)
+        time_condition = self._time_condition(time)
         predicted_velocity = self._run_joint(
-            self._condition_tokens(images, batch_size=batch_size),
+            visual_memory,
             x_t,
-            self._state_condition(state),
-            self._expert_condition(time),
-            condition_skill,
-            expert_skill,
+            state,
+            skill_code,
+            time_condition,
         )
+        if self._vsa_debug_active:
+            original_stats = dict(self._last_vsa_debug_stats)
+            sensitivity = self._input_sensitivity_stats(
+                predicted_velocity=predicted_velocity,
+                visual_memory=visual_memory,
+                noisy_actions=x_t,
+                state=state,
+                skill_code=skill_code,
+                time_condition=time_condition,
+            )
+            # Probe forwards intentionally disable layer instrumentation; retain
+            # the original forward's stats and append only sensitivity values.
+            self._last_vsa_debug_stats = {**original_stats, **sensitivity}
         if self.config.action_loss_mode == "flow_endpoint_xyz":
             # x_t = action + t * target_velocity, hence the one-step clean-action
             # reconstruction is action_hat = x_t - t * predicted_velocity.
@@ -451,129 +582,61 @@ class SkillExpertPytorch(nn.Module):
     def sample_actions(
         self,
         images: list[Tensor],
-        state: Tensor | None,
-        skill_code: Tensor | None,
+        state: Tensor,
+        skill_code: Tensor,
         noise: Tensor | None = None,
         num_steps: int | None = None,
     ) -> Tensor:
         num_steps = self.config.num_inference_steps if num_steps is None else num_steps
-        if state is not None:
-            batch_size, device = state.shape[0], state.device
-        elif skill_code is not None:
-            batch_size, device = skill_code.shape[0], skill_code.device
-        elif images:
-            batch_size, device = images[0].shape[0], images[0].device
-        else:
-            raise ValueError("Action sampling requires state, skill, or image batch metadata.")
+        batch_size, device = state.shape[0], state.device
         if noise is None:
             noise = self.sample_noise(
                 (batch_size, self.config.chunk_size, self.config.max_action_dim), device
             )
-        condition_tokens = self._condition_tokens(images, batch_size=batch_size)
-        return self._sample_with_condition_cache(
-            condition_tokens, noise, state, skill_code, num_steps
-        )
-
-    def _sample_with_condition_cache(
-        self,
-        condition_tokens: Tensor,
-        noise: Tensor,
-        state: Tensor | None,
-        skill_code: Tensor | None,
-        num_steps: int,
-    ) -> Tensor:
-        """Encode the condition stream once, then Euler-integrate the action flow."""
-        batch_size, n_condition = condition_tokens.shape[:2]
-        n_chunk = noise.shape[1]
-        device = noise.device
-        condition_state = self._state_condition(state)
-        condition_skill, expert_skill = self._skill_broadcasts(skill_code)
-
-        condition_padding = torch.ones(
-            batch_size, n_condition, dtype=torch.bool, device=device
-        )
-        condition_blocks = torch.zeros_like(condition_padding)
-        condition_attention = make_att_2d_masks(
-            condition_padding, condition_blocks
-        )[:, None]
-        condition_attention = torch.where(
-            condition_attention, 0.0, OPENPI_ATTENTION_MASK_VALUE
-        )
-        condition_positions = torch.cumsum(condition_padding, dim=1) - 1
-        condition_cache = self.cond_encoder.model.forward(
-            inputs_embeds=condition_tokens,
-            attention_mask=condition_attention,
-            position_ids=condition_positions,
-            past_key_values=None,
-            use_cache=True,
-            adarms_cond=condition_state,
-            broadcast_cond=condition_skill,
-        ).past_key_values
-
-        action_padding = torch.ones(batch_size, n_chunk, dtype=torch.bool, device=device)
-        action_block_starts = [1] + [0] * (n_chunk - 1)
-        action_blocks = torch.tensor(
-            action_block_starts, dtype=torch.bool, device=device
-        )[None].expand(batch_size, -1)
-        action_attention = make_att_2d_masks(action_padding, action_blocks)
-        condition_visible = condition_padding[:, None].expand(
-            batch_size, n_chunk, n_condition
-        )
-        full_attention = torch.cat((condition_visible, action_attention), dim=2)[:, None]
-        full_attention = torch.where(
-            full_attention, 0.0, OPENPI_ATTENTION_MASK_VALUE
-        )
-        action_positions = n_condition + torch.cumsum(action_padding, dim=1) - 1
-
+        visual_memory = self.encode_visual_memory(images)
+        context_tokens = self._context_tokens(state, skill_code)
         dt = -1.0 / num_steps
         x_t = noise
         for step in range(num_steps):
             time = torch.full(
                 (batch_size,), 1.0 + step * dt, dtype=torch.float32, device=device
             )
-            action_hidden = self._action_hidden_with_condition_cache(
-                x_t,
-                self._expert_condition(time),
-                expert_skill,
-                condition_cache,
-                full_attention,
-                action_positions,
+            action_tokens = self.action_in_proj(x_t.to(self.working_dtype))
+            action_hidden = self.expert(
+                context_tokens,
+                action_tokens,
+                visual_memory,
+                self._action_condition(visual_memory, self._time_condition(time)),
             )
             velocity = self.action_out_proj(action_hidden.to(self.working_dtype)).float()
             x_t = x_t + dt * velocity
         return x_t
 
-    def _action_hidden_with_condition_cache(
-        self,
-        noisy_actions: Tensor,
-        expert_condition: Tensor,
-        expert_skill: Tensor | None,
-        condition_cache,
-        attention_mask: Tensor,
-        position_ids: Tensor,
-    ) -> Tensor:
-        """Run only the 18-layer action stream against a cached condition stream."""
-        action_tokens = self.action_in_proj(noisy_actions.to(self.working_dtype))
-        hidden = self.gemma_expert.model.forward(
-            inputs_embeds=action_tokens,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            past_key_values=copy.deepcopy(condition_cache),
-            use_cache=False,
-            adarms_cond=expert_condition,
-            broadcast_cond=expert_skill,
-        ).last_hidden_state
-        return hidden
-
 
 def _map_pi05_key(key: str, *, include_predictor_vlm: bool = False) -> str | None:
-    """Map the pi0.5 action prior and, when enabled, its frozen predictor VLM."""
-    expert_prefix = "paligemma_with_expert.gemma_expert."
-    if key.startswith(expert_prefix):
-        suffix = key[len(expert_prefix) :]
-        if suffix.startswith("lm_head"):
-            return None
-        return f"model.gemma_expert.{suffix}"
+    """Apply the explicit pi0.5 -> new VSA initialization contract."""
+    layer_match = re.fullmatch(
+        r"paligemma_with_expert\.gemma_expert\.model\.layers\.(\d+)\."
+        r"(self_attn|mlp|input_layernorm|post_attention_layernorm)\.(.+)",
+        key,
+    )
+    if layer_match:
+        layer_index = int(layer_match.group(1))
+        component = layer_match.group(2)
+        suffix = layer_match.group(3)
+        if component == "self_attn":
+            return f"model.expert.blocks.{layer_index}.self_attention.{suffix}"
+        if component == "mlp":
+            return f"model.expert.blocks.{layer_index}.mlp.{suffix}"
+        norm_name = (
+            "self_attention_norm" if component == "input_layernorm" else "ffn_norm"
+        )
+        return f"model.expert.blocks.{layer_index}.{norm_name}.action_norm.{suffix}"
+    final_norm = "paligemma_with_expert.gemma_expert.model.norm."
+    if key.startswith(final_norm):
+        return "model.expert.final_norm." + key.removeprefix(final_norm)
+    if key.startswith("paligemma_with_expert.gemma_expert."):
+        return None
     vlm_prefix = "paligemma_with_expert.paligemma.model."
     if include_predictor_vlm and key.startswith(vlm_prefix):
         return "model.skill_predictor.vlm." + key.removeprefix(vlm_prefix)
@@ -660,6 +723,50 @@ def _load_pretrained_state_dict(
     return None if raw is None else _build_state_dict(
         raw, include_predictor_vlm=include_predictor_vlm
     )
+
+
+def _allowed_pi05_missing_key(key: str, config: SkillExpertConfig) -> bool:
+    """Return whether a target tensor is intentionally new relative to pi0.5."""
+    if key.startswith(
+        (
+            "model.dino.",
+            "model.top_resampler.",
+            "model.wrist_resampler.",
+            "model.state_proj.",
+            "model.state_norm.",
+            "model.skill_proj.",
+            "model.skill_norm.",
+        )
+    ):
+        return True
+    if re.fullmatch(
+        r"model\.expert\.blocks\.\d+\."
+        r"(self_attention_norm|ffn_norm)\.context_norm\..+",
+        key,
+    ):
+        return True
+    if config.vision_conditioning_mode == RESIDUAL_CROSS_ATTENTION and re.fullmatch(
+        r"model\.expert\.blocks\.\d+\."
+        r"(visual_attention_norm|visual_cross_attention|visual_residual_gate)(\..+)?",
+        key,
+    ):
+        return True
+    if (
+        config.vision_conditioning_mode == GLOBAL_VISUAL_ADARMS
+        and key.startswith("model.visual_condition_projection.")
+    ):
+        return True
+    if config.uses_skill_predictor and (
+        key.startswith(
+            (
+                "model.skill_predictor.reader.",
+                "model.skill_predictor.head.",
+            )
+        )
+        or ".adapters.skill." in key
+    ):
+        return True
+    return config.train_terminator and key.startswith("model.fsq_term_train.")
 
 
 _PREDICTOR_CHECKPOINT_CONTRACT_FIELDS = (
@@ -824,13 +931,161 @@ class SkillExpertPolicy(PreTrainedPolicy):
         config.validate_features()
         self.config = config
         self.model = SkillExpertPytorch(config)
+        log.info("Vision conditioning mode: %s", config.vision_conditioning_mode)
+        if config.vision_conditioning_mode == RESIDUAL_CROSS_ATTENTION:
+            visual_query_tokens = []
+            if config.include_state_in_visual_crossattn:
+                visual_query_tokens.append("state")
+            if config.include_skill_in_visual_crossattn:
+                visual_query_tokens.append("skill")
+            visual_query_label = (
+                " + ".join((*visual_query_tokens, "action"))
+                if visual_query_tokens
+                else "action-only"
+            )
+            log.info("Visual cross-attention queries: %s", visual_query_label)
+        else:
+            log.info(
+                "Visual cross-attention query switches are ignored in %s mode.",
+                config.vision_conditioning_mode,
+            )
+        if config.vision_conditioning_mode == IN_CONTEXT_TOKENS:
+            visual_tokens = 2 * config.num_visual_latents_per_camera
+            log.info(
+                "Expert sequence: %d visual + 1 state + 1 skill + H action",
+                visual_tokens,
+            )
+            log.info("Visual cross-attention modules: disabled")
+        elif config.vision_conditioning_mode == GLOBAL_VISUAL_ADARMS:
+            log.info("Visual aggregation: per-camera mean pooling")
+            log.info("Visual injection: timestep condition + global visual condition")
+            log.info("Visual cross-attention modules: disabled")
+            log.info("Visual tokens in expert sequence: false")
+        if getattr(config, "eval_legacy_vsa", False):
+            log.info("VSA checkpoint layout: legacy alternating (evaluation-only)")
+        elif config.vision_conditioning_mode == RESIDUAL_CROSS_ATTENTION:
+            log.info("Visual residual gate initialization: %.3f", VISUAL_RESIDUAL_GATE_INIT)
         if config.gradient_checkpointing:
             self.model.gradient_checkpointing_enable()
         self.model.to(device=config.device, dtype=self._torch_dtype())
         if self.model.fsq_term_train is not None:
             # Match FSQ training/inference numerics; this auxiliary remains fp32.
             self.model.fsq_term_train.to(dtype=torch.float32)
+        counts = self.parameter_counts()
+        log.info(
+            "Stage-1 parameters: total=%.1fM trainable=%.1fM dino=%.1fM "
+            "perceivers=%.1fM expert=%.1fM auxiliaries=%.1fM",
+            counts["total"] / 1e6,
+            counts["trainable"] / 1e6,
+            counts["dino"] / 1e6,
+            counts["perceivers"] / 1e6,
+            counts["expert"] / 1e6,
+            counts["auxiliaries"] / 1e6,
+        )
         self.reset()
+
+    def set_training_step(self, step: int) -> None:
+        """Receive the true optimizer step so resumed runs keep the debug schedule."""
+        self.model.set_training_step(step)
+
+    def parameter_counts(self) -> dict[str, int]:
+        def count(module: nn.Module | None, *, trainable: bool = False) -> int:
+            if module is None:
+                return 0
+            return sum(
+                parameter.numel()
+                for parameter in module.parameters()
+                if not trainable or parameter.requires_grad
+            )
+
+        auxiliaries = count(self.model.skill_predictor) + count(self.model.fsq_term_train)
+        return {
+            "total": count(self),
+            "trainable": count(self, trainable=True),
+            "dino": count(self.model.dino),
+            "perceivers": count(self.model.top_resampler) + count(self.model.wrist_resampler),
+            "expert": count(self.model.expert),
+            "auxiliaries": auxiliaries,
+        }
+
+    def training_debug_metrics(self) -> dict[str, float]:
+        if not self.model._vsa_debug_active:
+            return {}
+
+        def grad_stats(module: nn.Module) -> tuple[float, float]:
+            gradients = [
+                parameter.grad.detach().float()
+                for parameter in module.parameters()
+                if parameter.grad is not None
+            ]
+            if not gradients:
+                return 0.0, 0.0
+            squared_sum = torch.stack(
+                [gradient.square().sum() for gradient in gradients]
+            ).sum()
+            count = sum(gradient.numel() for gradient in gradients)
+            return (
+                float(squared_sum.sqrt().item()),
+                float((squared_sum / max(count, 1)).sqrt().item()),
+            )
+
+        cross_attention = nn.ModuleList(
+            [
+                block.visual_cross_attention
+                for block in self.model.expert.blocks
+                if block.cross_attention
+            ]
+        )
+        self_attention = nn.ModuleList(
+            [block.self_attention for block in self.model.expert.blocks]
+        )
+        expert_mlps = nn.ModuleList(
+            [block.mlp for block in self.model.expert.blocks]
+        )
+        visual_residual_gates = nn.ParameterList(
+            [
+                block.visual_residual_gate
+                for block in self.model.expert.blocks
+                if block.visual_residual_gate is not None
+            ]
+        )
+
+        modules = {
+            "dino": self.model.dino,
+            "top_resampler": self.model.top_resampler,
+            "wrist_resampler": self.model.wrist_resampler,
+            "state_path": nn.ModuleList(
+                [self.model.state_proj, self.model.state_norm]
+            ),
+            "skill_path": nn.ModuleList(
+                [self.model.skill_proj, self.model.skill_norm]
+            ),
+            "expert_total": self.model.expert,
+            "expert_cross_attention": cross_attention,
+            "expert_visual_residual_gates": visual_residual_gates,
+            "expert_self_attention": self_attention,
+            "expert_mlp": expert_mlps,
+            "action_io": nn.ModuleList(
+                [self.model.action_in_proj, self.model.action_out_proj]
+            ),
+            "time_mlp": nn.ModuleList(
+                [self.model.time_mlp_in, self.model.time_mlp_out]
+            ),
+        }
+        if self.model.visual_condition_projection is not None:
+            modules["visual_condition_projection"] = (
+                self.model.visual_condition_projection
+            )
+        metrics = {}
+        for name, module in modules.items():
+            norm, rms = grad_stats(module)
+            metrics[f"vsa_debug/gradient/preclip/{name}_norm"] = norm
+            metrics[f"vsa_debug/gradient/preclip/{name}_rms"] = rms
+        # The scheduled training update is complete. Avoid carrying debug mode
+        # into checkpoint-time evaluation or any auxiliary forward.
+        self.model._vsa_debug_active = False
+        self.model.expert.debug_enabled = False
+        return metrics
 
     def _torch_dtype(self) -> torch.dtype:
         return torch.bfloat16 if self.config.dtype == "bfloat16" else torch.float32
@@ -864,7 +1119,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
         ]
         if mismatches:
             raise ValueError(
-                "Stage-1 predictor architecture mismatch: " + "; ".join(mismatches)
+                "Stage-1 predictor module contract mismatch: " + "; ".join(mismatches)
             )
         loaded = _load_learned_predictor_parameters(predictor, path)
         predictor.requires_grad_(False).eval()
@@ -902,7 +1157,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
         ]
         if mismatches:
             raise ValueError(
-                "Stage-1 predictor architecture mismatch: " + "; ".join(mismatches)
+                "Stage-1 predictor module contract mismatch: " + "; ".join(mismatches)
             )
 
         predictor = FrozenVLMSkillPredictor(self.config).to(dtype=self._torch_dtype())
@@ -958,7 +1213,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
         )
 
     def get_optim_params(self) -> list[dict]:
-        """VSA groups plus a separate-LR terminator; predictor stays excluded."""
+        """Main VSA, mandatory 0.1x DINO, and optional terminator groups."""
         terminator = getattr(self.model, "fsq_term_train", None)
         terminator_parameters = (
             [parameter for parameter in terminator.parameters() if parameter.requires_grad]
@@ -967,34 +1222,48 @@ class SkillExpertPolicy(PreTrainedPolicy):
         )
         excluded_ids = {id(parameter) for parameter in terminator_parameters}
 
-        dino_parameters = []
-        if (
-            self.model.dino is not None
-            and not self.config.freeze_vision_encoder
-            and self.config.dino_lr is not None
-        ):
-            dino_parameters = [
-                parameter
-                for parameter in self.model.dino.parameters()
-                if parameter.requires_grad
-            ]
-            excluded_ids.update(id(parameter) for parameter in dino_parameters)
+        dino_parameters = [
+            parameter for parameter in self.model.dino.parameters() if parameter.requires_grad
+        ]
+        excluded_ids.update(id(parameter) for parameter in dino_parameters)
 
         base_parameters = [
             parameter
             for parameter in self.parameters()
             if parameter.requires_grad and id(parameter) not in excluded_ids
         ]
-        groups = [{"params": base_parameters}] if base_parameters else []
-        if dino_parameters:
-            groups.append({"params": dino_parameters, "lr": self.config.dino_lr})
+        groups = (
+            [{"params": base_parameters, "group_name": "vsa", "lr_scale": 1.0}]
+            if base_parameters
+            else []
+        )
+        if not dino_parameters:
+            raise RuntimeError("The fully trainable Stage-1 DINO optimizer group is empty.")
+        groups.append(
+            {
+                "params": dino_parameters,
+                "lr": self.config.optimizer_lr * self.config.dino_lr_scale,
+                "lr_scale": self.config.dino_lr_scale,
+                "group_name": "dino",
+            }
+        )
         if terminator_parameters:
             groups.append(
                 {
                     "params": terminator_parameters,
                     "lr": self.config.optimizer_lr
                     * self.config.terminator_lr_scale,
+                    "lr_scale": self.config.terminator_lr_scale,
+                    "group_name": "terminator",
                 }
+            )
+        for group in groups:
+            log.info(
+                "Stage-1 optimizer group %s: %.1fM params, lr_scale=%g, lr=%g",
+                group.get("group_name", "unnamed"),
+                sum(parameter.numel() for parameter in group["params"]) / 1e6,
+                float(group.get("lr_scale", 1.0)),
+                float(group.get("lr", self.config.optimizer_lr)),
             )
         return groups
 
@@ -1008,13 +1277,18 @@ class SkillExpertPolicy(PreTrainedPolicy):
 
     def _collect_images(self, batch: dict) -> list[Tensor]:
         device = next(self.parameters()).device
-        present = [key for key in self.config.image_features if key in batch]
-        if not present:
+        camera_keys = (
+            "observation.images.image",
+            "observation.images.wrist_image",
+        )
+        missing = [key for key in camera_keys if key not in batch]
+        if missing:
             raise ValueError(
-                f"No image features in batch; expected one of {list(self.config.image_features)}."
+                "Stage 1 requires ordered top and wrist cameras; "
+                f"missing={missing}."
             )
         images = []
-        for key in present:
+        for key in camera_keys:
             image = batch[key].to(device=device).float()
             if image.ndim == 4 and image.shape[1] != 3 and image.shape[-1] == 3:
                 image = image.permute(0, 3, 1, 2)
@@ -1338,29 +1612,9 @@ class SkillExpertPolicy(PreTrainedPolicy):
     def forward(self, batch: dict, reduction: str = "mean"):
         actions = pad_vector(batch[ACTION], self.config.max_action_dim)
         real_dim = self.config.output_features[ACTION].shape[0]
-        route = normalize_conditioning_route(
-            getattr(self.config, "conditioning_route", "state_cond")
-        )
-        state = (
-            None
-            if route in STATELESS_CONDITIONING_ROUTES
-            else pad_vector(batch[OBS_STATE], self.config.max_state_dim)
-        )
-        if route in SKILLLESS_CONDITIONING_ROUTES:
-            skill_code = None
-            self._last_transition_jitter_fraction = torch.zeros(
-                (), device=actions.device
-            )
-            self._last_predicted_skill_accuracy = None
-            self._last_predicted_diff_from_current = None
-            self._last_unique_predicted_skills = None
-        else:
-            skill_code = self._training_skill_code(batch)
-        images = (
-            []
-            if route in VISIONLESS_CONDITIONING_ROUTES
-            else self._collect_images(batch)
-        )
+        state = pad_vector(batch[OBS_STATE], self.config.max_state_dim)
+        skill_code = self._training_skill_code(batch)
+        images = self._collect_images(batch)
         residual = self.model(images, state, skill_code, actions)[..., :real_dim]
         squared_error = residual.square()
         valid = self._valid_action_steps(actions, batch)
@@ -1396,6 +1650,12 @@ class SkillExpertPolicy(PreTrainedPolicy):
             ),
             "regime/transition_jitter_fraction": self._last_transition_jitter_fraction.detach().item(),
         }
+        loss_dict.update(
+            {
+                f"vsa_debug/{name}": value
+                for name, value in self.model._last_vsa_debug_stats.items()
+            }
+        )
         if self._last_predicted_skill_accuracy is not None:
             loss_dict["conditioning/predictor_acc_vs_jittered_gt"] = (
                 self._last_predicted_skill_accuracy.detach().item()
@@ -1437,24 +1697,9 @@ class SkillExpertPolicy(PreTrainedPolicy):
     @torch.no_grad()
     def predict_action_chunk(self, batch: dict, **kwargs) -> Tensor:
         self.eval()
-        route = normalize_conditioning_route(
-            getattr(self.config, "conditioning_route", "state_cond")
-        )
-        state = (
-            None
-            if route in STATELESS_CONDITIONING_ROUTES
-            else pad_vector(batch[OBS_STATE], self.config.max_state_dim)
-        )
-        skill_code = (
-            None
-            if route in SKILLLESS_CONDITIONING_ROUTES
-            else self._skill_code(batch)
-        )
-        images = (
-            []
-            if route in VISIONLESS_CONDITIONING_ROUTES
-            else self._collect_images(batch)
-        )
+        state = pad_vector(batch[OBS_STATE], self.config.max_state_dim)
+        skill_code = self._skill_code(batch)
+        images = self._collect_images(batch)
         actions = self.model.sample_actions(images, state, skill_code, **kwargs)
         real_dim = self.config.output_features[ACTION].shape[0]
         return actions[..., :real_dim]
@@ -1478,7 +1723,47 @@ class SkillExpertPolicy(PreTrainedPolicy):
         strict: bool = False,
         **kwargs,
     ):
-        """Load either the pi0.5 expert prior or a complete Stage-1 checkpoint."""
+        """Load an exact new-Stage1 checkpoint or explicitly initialize from pi0.5."""
+        local_config = Path(pretrained_name_or_path) / "config.json"
+        raw_config = json.loads(local_config.read_text()) if local_config.is_file() else {}
+        if raw_config.get("type") == "skill_expert":
+            if raw_config.get("architecture") != "vsa_perceiver_crossattn":
+                raise ValueError(
+                    "This branch cannot load legacy Stage-1 checkpoints. Expected "
+                    "architecture='vsa_perceiver_crossattn'; use the original branch "
+                    f"for {pretrained_name_or_path}."
+                )
+            eval_legacy_vsa = bool(
+                config is not None and getattr(config, "eval_legacy_vsa", False)
+            )
+            if (
+                raw_config.get("architecture_revision") != VSA_ARCHITECTURE_REVISION
+                and not eval_legacy_vsa
+            ):
+                raise ValueError(
+                    "This checkpoint predates the residual-SA18 VSA revision and "
+                    "cannot be resumed by the new architecture: "
+                    f"{pretrained_name_or_path}."
+                )
+            if not eval_legacy_vsa and config is not None:
+                saved_mode = str(
+                    raw_config.get(
+                        "vision_conditioning_mode", RESIDUAL_CROSS_ATTENTION
+                    )
+                )
+                requested_mode = str(
+                    getattr(
+                        config,
+                        "vision_conditioning_mode",
+                        RESIDUAL_CROSS_ATTENTION,
+                    )
+                )
+                if saved_mode != requested_mode:
+                    raise ValueError(
+                        "Stage-1 checkpoint vision_conditioning_mode mismatch: "
+                        f"checkpoint={saved_mode!r}, requested={requested_mode!r}. "
+                        "Cross-mode checkpoint conversion is not supported."
+                    )
         if config is None:
             config = PreTrainedConfig.from_pretrained(pretrained_name_or_path, **kwargs)
         policy = cls(config, **kwargs)
@@ -1491,8 +1776,8 @@ class SkillExpertPolicy(PreTrainedPolicy):
             raise FileNotFoundError(f"Could not load Stage-1 initialization: {pretrained_name_or_path}")
 
         state_dict, is_pi05 = loaded
-        if is_pi05 and not any(key.startswith("model.gemma_expert.") for key in state_dict):
-            raise RuntimeError("The pi0.5 checkpoint contains no action-expert weights.")
+        if is_pi05 and not any(key.startswith("model.expert.") for key in state_dict):
+            raise RuntimeError("The pi0.5 checkpoint contains no compatible action-expert weights.")
         if is_pi05:
             state_dict, routed = route_plain_to_base(
                 state_dict, set(policy.state_dict())
@@ -1519,16 +1804,33 @@ class SkillExpertPolicy(PreTrainedPolicy):
             key: value.to(policy._torch_dtype()) for key, value in state_dict.items()
         }
         missing, unexpected = policy.load_state_dict(state_dict, strict=False)
-        if not is_pi05 and (missing or unexpected):
+        if unexpected:
+            raise RuntimeError(
+                "Stage-1 initialization produced unexpected tensors: "
+                f"{sorted(unexpected)}"
+            )
+        if not is_pi05 and missing:
             raise RuntimeError(
                 "Stage-1 checkpoint mismatch: "
                 f"missing={sorted(missing)}, unexpected={sorted(unexpected)}"
             )
+        if is_pi05:
+            disallowed_missing = sorted(
+                key
+                for key in missing
+                if not _allowed_pi05_missing_key(key, config)
+            )
+            if disallowed_missing:
+                raise RuntimeError(
+                    "The pi0.5 warm-start is incomplete outside the explicit "
+                    "Stage-1 new-parameter allowlist: "
+                    f"missing={disallowed_missing}"
+                )
         if is_pi05 and config.training_skill_source == "predictor":
             policy._initialize_frozen_skill_predictor(
                 config.skill_predictor_checkpoint_path
             )
-        source = "pi0.5 action expert" if is_pi05 else "Stage-1 checkpoint"
+        source = "explicit pi0.5 initialization" if is_pi05 else "exact Stage-1 checkpoint"
         log.info(
             "Stage 1 <- %s: loaded=%d, fresh=%d, unexpected=%d.",
             source,

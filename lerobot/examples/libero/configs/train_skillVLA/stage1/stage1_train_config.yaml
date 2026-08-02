@@ -10,23 +10,19 @@ warm_start:
   fsq: ""
   # Used only when action_conditioning.training_skill_source=predictor.
   # The new VSA still starts from pi_base; only model.skill_predictor.* is read here.
-  # predictor_checkpoint: outputs_filtered/skillVLA_stage1/libero_90_full_firsthalf_scene_FSQ333_125_std_pt_episodemean_80p_snap10_pmax15_halfnormal_dino_tuned_state_skill_cond_flow/checkpoints/030000/pretrained_model
+  # predictor_checkpoint: outputs_filtered/skillVLA_stage1/<predictor_run>/checkpoints/030000/pretrained_model
   predictor_checkpoint: ""
 vision:
   dino_model: models/dinov3-vitl16
   image_size: 224
-  freeze: false
 
 architecture:
+  name: vsa_perceiver_crossattn
+  # residual_cross_attention | in_context_tokens | global_visual_adarms
+  vision_conditioning_mode: residual_cross_attention
+  # DINO CLS+196 patches -> this many latents for each of top/wrist cameras.
+  visual_latents_per_camera: 32
   expert_variant: gemma_300m
-  cond_variant: gemma_300m
-  # state_cond:       state -> cond AdaRMS, skill -> expert broadcast
-  # state_skill_cond: state -> cond AdaRMS, skill -> cond broadcast
-  # state_skill_only_cond: no vision in VSA path; state -> cond AdaRMS, skill -> cond broadcast
-  # stateonly_cond:   state -> cond AdaRMS, skill -> not used by VSA
-  # skillonly_cond:   no state in VSA path, skill -> cond broadcast
-  # visiononly_cond:  no state or skill in VSA path; vision tokens only
-  conditioning_route: state_skill_only_cond
   max_state_dim: 32
   max_action_dim: 32
   chunk_size: 10
@@ -34,7 +30,7 @@ architecture:
 # flow | flow_endpoint_xyz (the latter is 0.5 flow + 0.5 accumulated-XYZ endpoint MSE)
 loss: flow
 
-# gt: legacy teacher-forced jittered GT code.
+# gt: teacher-forced jittered GT code.
 # predictor: frozen checkpoint predictor(jittered skill-start input) -> hard code -> VSA.
 action_conditioning:
   training_skill_source: gt
@@ -56,18 +52,24 @@ terminator:
   end_target_sigma: 2.0
   end_pos_weight: 1.0
 
-execution: {action_steps: 10}
+execution: {action_steps: 5}
 transition_randomization: {enabled: true}
 
-run: {suffix: ""}
+run: {suffix: "bs96"}
 
 training:
-  dataloader: {batch_size: 16, workers: 2, gpus: 1} # 16
-  optimizer: {base_lr: 2.5e-05, dino_lr: null, terminator_lr_scale: 1.0}
+  # dataloader: {batch_size: 16, workers: 4, gpus: 1}
+  dataloader: {batch_size: 96, workers: 8, gpus: 1}
+  optimizer: {base_lr: 2.5e-05, dino_lr_scale: 0.1, terminator_lr_scale: 1.0}
   gradient_checkpointing: false
+  # Diagnostics run only at these optimizer steps and are logged under a
+  # separate W&B `vsa_debug/*` namespace. Set [] to disable.
+  vsa_debug_steps: 0
+  vsa_debug_schedule: [1, 100, 1000, 10000, 20000, 30000, 40000, 50000]
   schedule: {steps: 50000, log_every: 100, save_every: 5000}
 
 logging:
   wandb: {enable: true, project: VLA_stage1}
 
-slurm: {gres: "gpu:1", cpus: 8, memory: 128G, time: "48:00:00"}
+# slurm: {gres: "gpu:1", cpus: 8, memory: 128G, time: "48:00:00"}
+slurm: {gres: "gpu:1", cpus: 12, memory: 128G, time: "48:00:00"}

@@ -39,6 +39,7 @@ def _resolve_fsq_artifact(
     project_root: Path,
     dataset_root: Path,
     outputs_root: Path,
+    checkpoint: str,
 ) -> dict[str, str]:
     """Resolve one FSQ run entirely from its immutable training metadata."""
     run_name = _folder_name(get_value(cfg, "fsq_eval_run_name", ""), "fsq_eval_run_name")
@@ -46,10 +47,10 @@ def _resolve_fsq_artifact(
     if not model_dir.is_dir():
         raise FileNotFoundError(f"FSQ run folder not found: {model_dir}")
 
-    checkpoint = str(get_value(cfg, "fsq_eval_checkpoint", "last")).strip().lower()
     if checkpoint in {"0", "best"}:
         model_path = model_dir / "FSQ.pt"
         epoch_tag = "best"
+        resolved_checkpoint = "best"
         latents_path = model_dir / "skill_latents.npz"
     elif checkpoint == "last":
         candidates: list[tuple[int, Path]] = []
@@ -61,11 +62,13 @@ def _resolve_fsq_artifact(
             raise FileNotFoundError(f"No FSQ_epoch*.pt checkpoints found in {model_dir}")
         epoch, model_path = max(candidates, key=lambda item: item[0])
         epoch_tag = f"epoch{epoch:04d}"
+        resolved_checkpoint = str(epoch)
         latents_path = model_dir / f"skill_latents_{epoch_tag}.npz"
     elif checkpoint.isdigit() and int(checkpoint) > 0:
         epoch = int(checkpoint)
         model_path = model_dir / f"FSQ_epoch{epoch:04d}.pt"
         epoch_tag = f"epoch{epoch:04d}"
+        resolved_checkpoint = str(epoch)
         latents_path = model_dir / f"skill_latents_{epoch_tag}.npz"
     else:
         raise ValueError(
@@ -115,7 +118,8 @@ def _resolve_fsq_artifact(
 
     return {
         "fsq_eval_run_name": run_name,
-        "fsq_eval_checkpoint": checkpoint,
+        "fsq_eval_selected_checkpoint": checkpoint,
+        "fsq_eval_resolved_checkpoint": resolved_checkpoint,
         "fsq_eval_model_dir": str(model_dir),
         "fsq_eval_model_path": str(model_path),
         "fsq_eval_epoch_tag": epoch_tag,
@@ -127,7 +131,24 @@ def _resolve_fsq_artifact(
     }
 
 
-def build_settings(config_path: str | None = None) -> dict:
+def _fsq_checkpoints(cfg: dict) -> list[str]:
+    checkpoints = [
+        str(value).strip().lower()
+        for value in as_list(get_value(cfg, "fsq_eval_checkpoint", "last"))
+        if str(value).strip()
+    ]
+    if not checkpoints:
+        raise ValueError("fsq_eval_checkpoint must contain at least one checkpoint.")
+    if len(checkpoints) != len(set(checkpoints)):
+        raise ValueError(f"fsq_eval_checkpoint contains duplicates: {checkpoints}.")
+    return checkpoints
+
+
+def build_settings(
+    config_path: str | None = None,
+    *,
+    checkpoint_override: str | None = None,
+) -> dict:
     cfg = load_config(config_path or DEFAULT_CONFIG_PATH)
     project_root = Path(str(get_value(cfg, "project_root"))).expanduser()
     dataset_root = Path(str(get_value(cfg, "dataset_root", "dataset"))).expanduser()
@@ -138,16 +159,42 @@ def build_settings(config_path: str | None = None) -> dict:
         outputs_root = project_root / outputs_root
     eval_run_fsq = as_bool(get_value(cfg, "eval_run_fsq", True))
     eval_run_dp = as_bool(get_value(cfg, "eval_run_dp", True))
-    fsq_artifact = (
+    fsq_checkpoints = _fsq_checkpoints(cfg) if eval_run_fsq else []
+    fsq_artifacts = [
         _resolve_fsq_artifact(
             cfg,
             project_root=project_root,
             dataset_root=dataset_root,
             outputs_root=outputs_root,
+            checkpoint=checkpoint,
         )
-        if eval_run_fsq
-        else {}
-    )
+        for checkpoint in fsq_checkpoints
+    ]
+    if len({artifact["fsq_eval_model_path"] for artifact in fsq_artifacts}) != len(
+        fsq_artifacts
+    ):
+        raise ValueError(
+            "fsq_eval_checkpoint entries must resolve to different checkpoint files."
+        )
+    if checkpoint_override is not None:
+        selected_checkpoint = str(checkpoint_override).strip().lower()
+        fsq_artifact = _resolve_fsq_artifact(
+            cfg,
+            project_root=project_root,
+            dataset_root=dataset_root,
+            outputs_root=outputs_root,
+            checkpoint=selected_checkpoint,
+        )
+    else:
+        fsq_artifact = fsq_artifacts[0] if fsq_artifacts else {}
+    fsq_eval_num_gpus = int(get_value(cfg, "fsq_eval_num_gpus", 1))
+    if fsq_eval_num_gpus <= 0:
+        raise ValueError("fsq_eval_num_gpus must be positive.")
+    if fsq_checkpoints and fsq_eval_num_gpus > len(fsq_checkpoints):
+        raise ValueError(
+            "fsq_eval_num_gpus cannot exceed the number of checkpoints: "
+            f"gpus={fsq_eval_num_gpus}, checkpoints={len(fsq_checkpoints)}."
+        )
     dp_skillset_dir = ""
     if eval_run_dp:
         component_keys = (
@@ -204,6 +251,10 @@ def build_settings(config_path: str | None = None) -> dict:
         # which eval(s) to run
         "eval_run_fsq":            str(eval_run_fsq).lower(),
         "eval_run_dp":             str(eval_run_dp).lower(),
+        "fsq_eval_checkpoints":    " ".join(
+            artifact["fsq_eval_resolved_checkpoint"] for artifact in fsq_artifacts
+        ),
+        "fsq_eval_num_gpus":       fsq_eval_num_gpus,
         # DP artifact selection. Its immutable manifest owns all provenance.
         "dp_eval_skillset_dir":    dp_skillset_dir,
         "dp_eval_output_suffix":   output_suffix,
@@ -245,9 +296,10 @@ def build_settings(config_path: str | None = None) -> dict:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default=None)
+    ap.add_argument("--checkpoint", default=None)
     ap.add_argument("--shell", action="store_true")
     args = ap.parse_args()
-    settings = build_settings(args.config)
+    settings = build_settings(args.config, checkpoint_override=args.checkpoint)
     if args.shell:
         print_shell(settings)
     else:

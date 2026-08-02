@@ -12,45 +12,38 @@ from lerobot.optim.schedulers import CosineDecayWithWarmupSchedulerConfig
 from lerobot.utils.constants import ACTION, OBS_STATE
 
 
-CONDITIONING_ROUTES = frozenset(
-    {
-        "state_cond",
-        "state_skill_cond",
-        "state_skill_only_cond",
-        "stateonly_cond",
-        "skillonly_cond",
-        "visiononly_cond",
-    }
+VSA_ARCHITECTURE = "vsa_perceiver_crossattn"
+# Kept unchanged so mode-less residual-SA18 checkpoints remain strict-loadable.
+# ``vision_conditioning_mode`` is the independent fusion-layout contract.
+VSA_ARCHITECTURE_REVISION = "residual_sa18_v2"
+RESIDUAL_CROSS_ATTENTION = "residual_cross_attention"
+IN_CONTEXT_TOKENS = "in_context_tokens"
+GLOBAL_VISUAL_ADARMS = "global_visual_adarms"
+VISION_CONDITIONING_MODES = (
+    RESIDUAL_CROSS_ATTENTION,
+    IN_CONTEXT_TOKENS,
+    GLOBAL_VISUAL_ADARMS,
 )
-STATELESS_CONDITIONING_ROUTES = frozenset({"skillonly_cond", "visiononly_cond"})
-SKILLLESS_CONDITIONING_ROUTES = frozenset({"stateonly_cond", "visiononly_cond"})
-VISIONLESS_CONDITIONING_ROUTES = frozenset({"state_skill_only_cond"})
-
-
-def normalize_conditioning_route(route: str) -> str:
-    """Return the canonical route name while accepting old Stage-1 checkpoints."""
-    normalized = str(route).strip().lower()
-    return "skillonly_cond" if normalized == "skill_cond" else normalized
 
 
 @PreTrainedConfig.register_subclass("skill_expert")
 @dataclass
 class SkillExpertConfig(PreTrainedConfig):
-    """Stage-1 VSA policy: routed vision/state/skill -> action flow.
-
-    The condition transformer and action expert both use all 18 ``gemma_300m``
-    layers. The action expert is initialized from the pi0.5 base checkpoint and
-    fully trained. The condition transformer and all VSA projections are fresh.
-    Vision routes use DINO; ``state_skill_only_cond`` uses a learned seed instead.
-    """
+    """Stage-1 DINO-Perceiver visual memory and cross-attention action expert."""
 
     model_type: str = "skill_expert"
     dtype: str = "float32"
 
+    architecture: str = VSA_ARCHITECTURE
+    architecture_revision: str = VSA_ARCHITECTURE_REVISION
+    # Missing in older residual-SA18 checkpoints, so this default is part of
+    # the backward-compatible checkpoint contract.
+    vision_conditioning_mode: str = RESIDUAL_CROSS_ATTENTION
+    include_state_in_visual_crossattn: bool = False
+    include_skill_in_visual_crossattn: bool = False
     action_expert_variant: str = "gemma_300m"
-    cond_encoder_variant: str = "gemma_300m"
     chunk_size: int = 10
-    n_action_steps: int = 10
+    n_action_steps: int = 5
     max_state_dim: int = 32
     max_action_dim: int = 32
 
@@ -66,27 +59,8 @@ class SkillExpertConfig(PreTrainedConfig):
     vision_backbone: str = "dino"
     dino_model_path: str = "models/dinov3-vitl16"
     dino_image_size: int = 224
-    freeze_vision_encoder: bool = False
-    dino_lr: float | None = None
-
-    conditioning_route: str = "state_cond"
-    """Where state and skill condition the two Stage-1 streams:
-
-    - ``state_cond``: state modulates the condition encoder through AdaRMS; skill
-      is broadcast into the action expert.
-    - ``state_skill_cond``: state still modulates the condition encoder through
-      AdaRMS, and skill is broadcast into the condition encoder as well.
-    - ``state_skill_only_cond``: vision is omitted; a learned condition seed is
-      modulated by state through AdaRMS and by skill through cond broadcast.
-    - ``stateonly_cond``: state modulates the condition encoder through AdaRMS;
-      skill is omitted from both the condition and action streams.
-    - ``skillonly_cond``: state is absent from the action path; skill alone is
-      broadcast into the condition encoder, which uses ordinary RMSNorm.
-    - ``visiononly_cond``: state and skill are both absent from the action path;
-      the condition encoder receives only vision tokens and uses ordinary RMSNorm.
-
-    In every route the action expert's AdaRMS input is flow time only.
-    """
+    dino_lr_scale: float = 0.1
+    num_visual_latents_per_camera: int = 32
     skill_vocab_size: int = 27
     skill_fsq_levels: list[int] = field(default_factory=lambda: [3, 3, 3])
     transition_jitter_pmax: int = 0
@@ -140,6 +114,10 @@ class SkillExpertConfig(PreTrainedConfig):
         }
     )
     gradient_checkpointing: bool = False
+    # ``vsa_debug_steps`` keeps the optional first-N smoke-test behavior.
+    # The schedule is based on real optimizer steps and remains correct on resume.
+    vsa_debug_steps: int = 0
+    vsa_debug_schedule: tuple[int, ...] = ()
     compile_model: bool = False
     compile_mode: str = "max-autotune"
 
@@ -153,37 +131,46 @@ class SkillExpertConfig(PreTrainedConfig):
     scheduler_decay_lr: float = 2.5e-6
 
     def __post_init__(self) -> None:
-        # ``skill_cond`` was the original public name. Canonicalize it so old
-        # checkpoint configs retain the identical architecture after the rename.
-        self.conditioning_route = normalize_conditioning_route(self.conditioning_route)
+        self.vsa_debug_schedule = tuple(int(step) for step in self.vsa_debug_schedule)
         super().__post_init__()
         if self.dtype not in {"float32", "bfloat16"}:
             raise ValueError(f"dtype must be float32 or bfloat16, got {self.dtype!r}.")
         if self.action_expert_variant != "gemma_300m":
             raise ValueError(
-                "Stage 1 fixes both 18-layer streams to gemma_300m; got "
+                "Stage 1 fixes the 18-layer expert to gemma_300m; got "
                 f"action_expert_variant={self.action_expert_variant!r}."
             )
-        if self.cond_encoder_variant != self.action_expert_variant:
+        if self.architecture != VSA_ARCHITECTURE:
             raise ValueError(
-                "Stage 1 requires matching 18-layer cond/expert variants; got "
-                f"{self.cond_encoder_variant!r} and {self.action_expert_variant!r}."
+                f"Stage 1 on skillVLA_VSA only supports architecture={VSA_ARCHITECTURE!r}; "
+                f"legacy conditioning architectures are not available (got {self.architecture!r})."
+            )
+        if self.architecture_revision != VSA_ARCHITECTURE_REVISION:
+            raise ValueError(
+                "Stage 1 requires architecture_revision="
+                f"{VSA_ARCHITECTURE_REVISION!r}, got {self.architecture_revision!r}."
+            )
+        if self.vision_conditioning_mode not in VISION_CONDITIONING_MODES:
+            raise ValueError(
+                "vision_conditioning_mode must be one of "
+                f"{VISION_CONDITIONING_MODES}, got {self.vision_conditioning_mode!r}."
             )
         if self.vision_backbone != "dino":
             raise ValueError("Stage 1 uses the Stage-0 DINO vision path; vision_backbone must be 'dino'.")
         if self.dino_image_size <= 0:
             raise ValueError("dino_image_size must be positive.")
-        if self.dino_lr is not None and self.dino_lr <= 0.0:
-            raise ValueError("dino_lr must be positive when set.")
-        if self.freeze_vision_encoder and self.dino_lr is not None:
-            raise ValueError("dino_lr cannot be set when freeze_vision_encoder=True.")
-        if self.conditioning_route not in CONDITIONING_ROUTES:
+        if self.dino_lr_scale <= 0.0:
+            raise ValueError("dino_lr_scale must be positive.")
+        if not 1 <= self.num_visual_latents_per_camera <= 197:
             raise ValueError(
-                "conditioning_route must be 'state_cond', 'state_skill_cond', "
-                "'state_skill_only_cond', 'stateonly_cond', 'skillonly_cond', "
-                "or 'visiononly_cond', got "
-                f"{self.conditioning_route!r}."
+                "num_visual_latents_per_camera must be between 1 and 197."
             )
+        if self.vsa_debug_steps < 0:
+            raise ValueError("vsa_debug_steps must be non-negative.")
+        if any(step <= 0 for step in self.vsa_debug_schedule):
+            raise ValueError("vsa_debug_schedule entries must be positive optimizer steps.")
+        if tuple(sorted(set(self.vsa_debug_schedule))) != self.vsa_debug_schedule:
+            raise ValueError("vsa_debug_schedule must be sorted and contain no duplicates.")
         if not self.skill_fsq_levels or any(level <= 1 for level in self.skill_fsq_levels):
             raise ValueError(f"skill_fsq_levels must all be greater than one, got {self.skill_fsq_levels}.")
         expected_vocab = math.prod(self.skill_fsq_levels)

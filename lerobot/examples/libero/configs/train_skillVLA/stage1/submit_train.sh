@@ -18,7 +18,15 @@ if [ ! -x "${BOOTSTRAP_PYTHON}" ]; then
   BOOTSTRAP_PYTHON=python3
 fi
 
-eval "$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/stage1_train_config.py" --config "${CONFIG_PATH}" --shell)"
+if ! BOOTSTRAP_EXPORTS="$(
+  "${BOOTSTRAP_PYTHON}" "${SRC_DIR}/stage1_train_config.py" \
+    --config "${CONFIG_PATH}" --shell
+)"; then
+  echo "Stage-1 configuration bootstrap failed; no job was submitted." >&2
+  exit 1
+fi
+eval "${BOOTSTRAP_EXPORTS}"
+: "${SKILLVLA_DATASET_DIR:?Stage-1 bootstrap did not export SKILLVLA_DATASET_DIR}"
 
 if [ ! -e "${SKILLVLA_DATASET_DIR}" ]; then
   echo "Missing skillvla dataset: ${SKILLVLA_DATASET_DIR}" >&2

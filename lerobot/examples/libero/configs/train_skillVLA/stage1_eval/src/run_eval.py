@@ -470,6 +470,34 @@ def _reset_init_state_ids(envs: dict) -> None:
 
 def _policy_config(spec: dict, base, device: torch.device):
     config = PreTrainedConfig.from_pretrained(spec["policy_path"])
+    config.eval_legacy_vsa = bool(spec.get("eval_legacy_vsa", False))
+    if not config.eval_legacy_vsa:
+        expected_mode = str(
+            spec.get("vision_conditioning_mode", "residual_cross_attention")
+        )
+        actual_mode = str(
+            getattr(config, "vision_conditioning_mode", "residual_cross_attention")
+        )
+        if actual_mode != expected_mode:
+            raise RuntimeError(
+                "Checkpoint contract changed while starting evaluation: "
+                f"vision_conditioning_mode resolved={expected_mode}, loaded={actual_mode} "
+                f"at {spec['policy_path']}"
+            )
+    config.num_visual_latents_per_camera = int(
+        spec.get("num_visual_latents_per_camera", 8 if config.eval_legacy_vsa else 32)
+    )
+    for field in (
+        "include_state_in_visual_crossattn",
+        "include_skill_in_visual_crossattn",
+    ):
+        expected = bool(spec.get(field, False))
+        actual = bool(getattr(config, field, False))
+        if actual != expected:
+            raise RuntimeError(
+                f"Checkpoint contract changed while starting evaluation: {field} "
+                f"resolved={expected}, loaded={actual} at {spec['policy_path']}"
+            )
     config.pretrained_path = Path(spec["policy_path"])
     config.device = str(device)
     config.use_amp = base.use_amp
@@ -595,6 +623,16 @@ def _build_context(spec: dict, cfg, device: torch.device) -> dict:
     advance_mode = _normalize_advance_mode(spec["advance_mode"])
     external_skill_model = str(spec.get("external_skill_model") or "").strip()
     policy_config = _policy_config(spec, cfg.policy, device)
+    log.info(
+        "[%s] Stage-1 architecture=%s revision=%s mode=%s, "
+        "visual cross-attention queries=%s, loss=%s.",
+        spec["label"],
+        spec.get("architecture"),
+        spec.get("architecture_revision"),
+        spec.get("vision_conditioning_mode"),
+        spec.get("visual_crossattn_queries"),
+        spec.get("action_loss_mode"),
+    )
     policy = make_policy(
         cfg=policy_config, env_cfg=cfg.env, rename_map=cfg.rename_map
     )
@@ -751,6 +789,14 @@ def _panel_signature(spec: dict, task_names: set[str], cfg) -> dict:
         "external_skill_model": spec.get("external_skill_model") or "",
         "skill_source": spec["skill_source"],
         "advance_mode": spec["advance_mode"],
+        "architecture": spec.get("architecture"),
+        "vision_conditioning_mode": spec.get("vision_conditioning_mode"),
+        "include_state_in_visual_crossattn": spec.get(
+            "include_state_in_visual_crossattn", False
+        ),
+        "include_skill_in_visual_crossattn": spec.get(
+            "include_skill_in_visual_crossattn", False
+        ),
         "tasks": sorted(task_names),
         "n_episodes": int(cfg.eval.n_episodes),
         "n_action_steps": int(cfg.policy.n_action_steps),
@@ -907,7 +953,19 @@ def _maybe_log_wandb(cfg, infos: dict[str, dict], specs: list[dict]) -> None:
                         "external_skill_model": (
                             spec.get("external_skill_model") or "unused"
                         ),
-                        "conditioning_route": spec.get("conditioning_route"),
+                        "architecture": spec.get("architecture"),
+                        "vision_conditioning_mode": spec.get(
+                            "vision_conditioning_mode"
+                        ),
+                        "include_state_in_visual_crossattn": spec.get(
+                            "include_state_in_visual_crossattn", False
+                        ),
+                        "include_skill_in_visual_crossattn": spec.get(
+                            "include_skill_in_visual_crossattn", False
+                        ),
+                        "visual_crossattn_queries": spec.get(
+                            "visual_crossattn_queries"
+                        ),
                         "action_loss_mode": spec.get("action_loss_mode"),
                     }
                     for spec in specs

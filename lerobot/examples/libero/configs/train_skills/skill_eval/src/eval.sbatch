@@ -35,8 +35,29 @@ if [ ! -x "${BOOTSTRAP_PYTHON}" ]; then
   BOOTSTRAP_PYTHON=python3
 fi
 
-# Eval knobs and FSQ artifacts are resolved directly from fsq_meta.json.
-RESOLVED_EVAL="$("${BOOTSTRAP_PYTHON}" "${EVAL_DIR}/src/eval_config.py" --config "${EVAL_CONFIG}" --shell)"
+# An FSQ array element selects exactly one checkpoint from the frozen fanout.
+CHECKPOINT_OVERRIDE="${FSQ_EVAL_CHECKPOINT_OVERRIDE:-}"
+if [ -n "${SLURM_ARRAY_TASK_ID:-}" ] && [ -n "${FSQ_EVAL_FANOUT:-}" ]; then
+  read -r -a FSQ_CHECKPOINTS <<< "${FSQ_EVAL_FANOUT}"
+  if [ "${SLURM_ARRAY_TASK_ID}" -ge "${#FSQ_CHECKPOINTS[@]}" ]; then
+    echo "FSQ array index ${SLURM_ARRAY_TASK_ID} is out of range." >&2
+    exit 1
+  fi
+  CHECKPOINT_OVERRIDE="${FSQ_CHECKPOINTS[${SLURM_ARRAY_TASK_ID}]}"
+fi
+
+# Eval knobs and the selected FSQ artifact are resolved from fsq_meta.json.
+EVAL_CONFIG_ARGS=(--config "${EVAL_CONFIG}")
+if [ -n "${CHECKPOINT_OVERRIDE}" ]; then
+  EVAL_CONFIG_ARGS+=(--checkpoint "${CHECKPOINT_OVERRIDE}")
+fi
+if ! RESOLVED_EVAL="$(
+  "${BOOTSTRAP_PYTHON}" "${EVAL_DIR}/src/eval_config.py" \
+    "${EVAL_CONFIG_ARGS[@]}" --shell
+)"; then
+  echo "FSQ evaluation bootstrap failed for checkpoint ${CHECKPOINT_OVERRIDE:-default}." >&2
+  exit 1
+fi
 eval "${RESOLVED_EVAL}"
 if [ "${EVAL_RUN_DP}" = "true" ]; then
   if [ -z "${TRAIN_CONFIG}" ]; then

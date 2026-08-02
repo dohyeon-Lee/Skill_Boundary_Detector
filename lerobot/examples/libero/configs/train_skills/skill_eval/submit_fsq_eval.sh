@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Inputs:
-#   config    : ./fsq_eval_config.yaml  (FSQ run folder + checkpoint only)
+#   config    : ./fsq_eval_config.yaml  (FSQ run folder + checkpoint list)
 #   FSQ model : {outputs_root}/FSQ/{fsq_eval_run_name}/FSQ_epoch*.pt
 # Outputs:
-#   FSQ : ./outputs/{fsq_eval_run_name}/{epoch}/fsq_eval.html
+#   FSQ : ./outputs/{fsq_eval_run_name}/{epoch}/fsq_eval.html per checkpoint
 #
 # Submit the FSQ reconstruction/termination/progress eval. The FSQ reads its OWN
 # skillset (recorded in fsq_meta.json), which already exists since the FSQ trained
@@ -29,9 +29,17 @@ if [ ! -x "${BOOTSTRAP_PYTHON}" ]; then
   BOOTSTRAP_PYTHON=python3
 fi
 
-# Resolve roots and the exact checkpoint/source skillset before reserving a GPU.
-RESOLVED_SETTINGS="$("${BOOTSTRAP_PYTHON}" "${EVAL_SRC_DIR}/eval_config.py" --config "${EVAL_CONFIG}" --shell)"
+# Resolve and validate every checkpoint before reserving GPUs.
+if ! RESOLVED_SETTINGS="$(
+  "${BOOTSTRAP_PYTHON}" "${EVAL_SRC_DIR}/eval_config.py" \
+    --config "${EVAL_CONFIG}" --shell
+)"; then
+  echo "FSQ evaluation bootstrap failed; no job was submitted." >&2
+  exit 1
+fi
 eval "${RESOLVED_SETTINGS}"
+read -r -a FSQ_CHECKPOINTS <<< "${FSQ_EVAL_CHECKPOINTS}"
+FSQ_CHECKPOINT_COUNT="${#FSQ_CHECKPOINTS[@]}"
 
 SBATCH_ARGS=(
   --job-name=fsq_eval
@@ -53,18 +61,43 @@ cd "${SCRIPT_DIR}"
 mkdir -p logs outputs
 
 echo "Submit FSQ eval"
-echo "  checkpoint  : ${FSQ_EVAL_MODEL_PATH}"
+echo "  checkpoints : ${FSQ_EVAL_CHECKPOINTS}"
+echo "  parallel GPU: ${FSQ_EVAL_NUM_GPUS} (one GPU per checkpoint)"
 echo "  dataset     : ${FSQ_EVAL_DATASET_DIR}"
 echo "  skillset    : ${FSQ_EVAL_SKILLSET_DIR}"
 echo "  slurm       : partition=${FSQ_EVAL_PARTITION} qos=${FSQ_EVAL_QOS} gres=${FSQ_EVAL_GRES}"
 
 if [ -n "${SLURM_JOB_ID:-}" ]; then
-  # Inside an existing allocation (e.g. salloc) → reuse the held GPU as a job
-  # step instead of queueing a fresh job. Resources come from the allocation,
-  # so SBATCH_ARGS are ignored here; the config snapshot still applies.
-  echo "  mode        : srun (reusing allocation ${SLURM_JOB_ID})"
+  # One exclusive one-GPU step per checkpoint. Slurm starts as many steps as
+  # the existing allocation can serve concurrently.
+  echo "  mode        : parallel srun steps (allocation ${SLURM_JOB_ID})"
+  PIDS=()
+  STATUS=0
+  for INDEX in "${!FSQ_CHECKPOINTS[@]}"; do
+    CHECKPOINT="${FSQ_CHECKPOINTS[${INDEX}]}"
+    FSQ_EVAL_DIR="${SCRIPT_DIR}" FSQ_EVAL_CONFIG="${EVAL_CONFIG}" \
+      FSQ_EVAL_CHECKPOINT_OVERRIDE="${CHECKPOINT}" \
+      srun --exclusive --nodes=1 --ntasks=1 --gres="${FSQ_EVAL_GRES}" \
+        "${EVAL_SRC_DIR}/eval.sbatch" &
+    PIDS+=("$!")
+    if [ "${#PIDS[@]}" -eq "${FSQ_EVAL_NUM_GPUS}" ] || \
+       [ "${INDEX}" -eq "$((FSQ_CHECKPOINT_COUNT - 1))" ]; then
+      for PID in "${PIDS[@]}"; do
+        wait "${PID}" || STATUS=1
+      done
+      PIDS=()
+    fi
+  done
+  exit "${STATUS}"
+elif [ "${FSQ_CHECKPOINT_COUNT}" -gt 1 ]; then
+  FSQ_EVAL_FANOUT="${FSQ_EVAL_CHECKPOINTS}"
+  export FSQ_EVAL_FANOUT
+  ARRAY_SPEC="0-$((FSQ_CHECKPOINT_COUNT - 1))%${FSQ_EVAL_NUM_GPUS}"
+  echo "  mode        : Slurm array ${ARRAY_SPEC}"
   FSQ_EVAL_DIR="${SCRIPT_DIR}" FSQ_EVAL_CONFIG="${EVAL_CONFIG}" \
-    srun "${EVAL_SRC_DIR}/eval.sbatch"
+    sbatch --array="${ARRAY_SPEC}" \
+      --output=logs/%x_%A_%a.out --error=logs/%x_%A_%a.err \
+      "${SBATCH_ARGS[@]}" "${EVAL_SRC_DIR}/eval.sbatch"
 else
   echo "  mode        : sbatch (new job)"
   FSQ_EVAL_DIR="${SCRIPT_DIR}" FSQ_EVAL_CONFIG="${EVAL_CONFIG}" \

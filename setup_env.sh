@@ -4,8 +4,18 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 UV="${HOME}/.local/bin/uv"
+VENV_DIR="${SBD_VENV_PATH:-${SCRIPT_DIR}/.venv}"
 
-# ── 1. uv / cmake 확인 ─────────────────────────────────────────────
+# Keep destructive cleanup scoped to a named environment inside this project.
+case "${VENV_DIR}" in
+    "${SCRIPT_DIR}/.venv"|"${SCRIPT_DIR}/.venv."*) ;;
+    *)
+        echo "ERROR: SBD_VENV_PATH must be ${SCRIPT_DIR}/.venv or ${SCRIPT_DIR}/.venv.*"
+        exit 1
+        ;;
+esac
+
+# ── 1. uv 확인 ──────────────────────────────────────────────────────
 if ! command -v uv &>/dev/null && [ ! -f "$UV" ]; then
     echo "[1/5] uv 설치 중..."
     curl -Ls https://astral.sh/uv/install.sh | sh
@@ -15,17 +25,16 @@ else
     echo "[1/5] uv 확인: $($UV --version)"
 fi
 
-if ! command -v cmake &>/dev/null; then
-    echo "ERROR: cmake가 없습니다. 먼저 설치하세요 (sudo apt install cmake)"
-    exit 1
-fi
-echo "      cmake 확인: $(cmake --version | head -1)"
-
 # ── 2. venv 생성 ────────────────────────────────────────────────────
-echo "[2/5] .venv 생성 중 (python 3.12)..."
-[ -d "$SCRIPT_DIR/.venv" ] && rm -rf "$SCRIPT_DIR/.venv"
-$UV venv "$SCRIPT_DIR/.venv" --python 3.12
-PYTHON="$SCRIPT_DIR/.venv/bin/python"
+echo "[2/5] 환경 생성 중: ${VENV_DIR} (python 3.12)..."
+[ -e "${VENV_DIR}" ] && rm -rf -- "${VENV_DIR}"
+$UV venv "${VENV_DIR}" --python 3.12
+PYTHON="${VENV_DIR}/bin/python"
+
+# Use an environment-local cmake so login nodes do not need a system package.
+$UV pip install --python "$PYTHON" setuptools wheel cmake==4.1.3
+export PATH="${VENV_DIR}/bin:${PATH}"
+echo "      cmake 확인: $(cmake --version | head -1)"
 
 # ── 3. hf-egl-probe: 패치 → wheel 빌드 → 로컬 wheel로 설치 ──────────
 # robomimic이 requirements.txt 설치 시 egl-probe를 재다운로드하지 않도록
@@ -69,8 +78,7 @@ sed -i 's/cmake_minimum_required(VERSION [0-9.]*)/cmake_minimum_required(VERSION
 # setup.py 패치: cmake 명령에 정책 플래그 추가
 sed -i 's/cmake \.\./cmake -DCMAKE_POLICY_VERSION_MINIMUM=3.5 ../' "$EGL_SRC/setup.py"
 
-# 빌드에 필요한 패키지 설치 후 wheel 빌드
-$UV pip install --python "$PYTHON" setuptools wheel
+# 빌드에 필요한 패키지를 설치한 뒤 wheel 빌드
 cd "$EGL_SRC"
 $PYTHON setup.py bdist_wheel --dist-dir "$WHEELS_DIR" 2>/dev/null
 cd "$SCRIPT_DIR"
@@ -97,4 +105,4 @@ $UV pip install --python "$PYTHON" -e "$SCRIPT_DIR/lerobot"
 
 echo ""
 echo "완료! 환경 활성화:"
-echo "  source $SCRIPT_DIR/.venv/bin/activate"
+echo "  source ${VENV_DIR}/bin/activate"

@@ -1,32 +1,36 @@
-# Stage-1 VSA multi-model closed-loop evaluation. The conditioning route, action
-# objective, DINO structure, and training dataset are read from each target.
-# `external_skill_model` is the one optional source for both predictor/terminator.
+# Stage-1 VSA multi-model closed-loop evaluation. The single Perceiver/cross-attn
+# architecture, visual-query switches, action objective, DINO structure, and
+# dataset are read from each checkpoint; this YAML never overrides them.
+# `external_skill_model` may use a legacy main VSA architecture: only its
+# predictor/terminator submodules are validated and overlaid on the target VSA.
+outputs_root: outputs_filtered
 external_skill_model: outputs_filtered/skillVLA_stage1/libero_90_full_firsthalf_scene_FSQ333_125_std_pt_episodemean_80p_snap10_pmax15_halfnormal_dino_tuned_state_skill_cond_flow/checkpoints/030000/pretrained_model
+
 models:
-  - model_dir: libero_90_full_firsthalf_scene_FSQ333_125_std_pt_episodemean_80p_snap10_pmax15_halfnormal_dino_tuned_visiononly_cond_flow_16batch
-    checkpoint: "030000"
-    skill_source: external
+  - model_dir: libero_90_full_firsthalf_scene_FSQ333_125_std_pt_episodemean_80p_snap10_pmax15_halfnormal_dino_tuned_vsa_perceiver_crossattn_flow_state_skill_visual_query
+    checkpoint: "015000"
+    skill_source: gt
     advance_mode: external
-    label: vision_O_state_X_skill_X
+    label: full_bs16
 
-  - model_dir: libero_90_full_firsthalf_scene_FSQ333_125_std_pt_episodemean_80p_snap10_pmax15_halfnormal_dino_tuned_stateonly_cond_flow_16batch
-    checkpoint: "030000"
-    skill_source: external
+  - model_dir: libero_90_full_firsthalf_scene_FSQ333_125_std_pt_episodemean_80p_snap10_pmax15_halfnormal_dino_tuned_vsa_perceiver_crossattn_flow_state_skill_visual_query_bs64
+    checkpoint: "015000"
+    skill_source: gt
     advance_mode: external
-    label: vision_O_state_O_skill_X
+    label: full_bs64
+  
+  # - model_dir: libero_90_full_firsthalf_scene_FSQ333_125_std_pt_episodemean_80p_snap10_pmax15_halfnormal_dino_tuned_vsa_perceiver_crossattn_flow_state_skill_visual_query_bs96
+  #   checkpoint: "015000"
+  #   skill_source: external
+  #   advance_mode: external
+  #   label: full_bs96
 
-  - model_dir: libero_90_full_firsthalf_scene_FSQ333_125_std_pt_episodemean_80p_snap10_pmax15_halfnormal_dino_tuned_state_skill_cond_flow
-    checkpoint: "030000"
-    skill_source: external
-    advance_mode: external
-    label: vision_O_state_O_skill_O
-
-models_per_row: 3
+models_per_row: 2
 
 # Empty => timestamped folder under stage1_eval/outputs/.
-output_name: "VSA_obs_analysis_pred_30k_replan2_fixed"
+output_name: "crossatten_bs_15k_gt"
 # Reuse completed panel artifacts under the same output_name.
-resume: true
+resume: false
 
 target_task: libero_90
 task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
@@ -34,14 +38,14 @@ eval_num_gpus: 10
 n_episodes: 3
 eval_batch_size: 1
 max_parallel_tasks: 1
-n_action_steps: 2
+n_action_steps: 5
 
 oracle:
   # false: normal LIBERO reset states, GT/reference sequences matched by language.
   # true: dataset episode-exact reset; run oracle_matching/run.sh first.
   episode_exact: true
   # Default when a model entry omits it: external | own | gt.
-  advance_mode: own
+  advance_mode: external
 
 terminator:
   # Thresholds used when advance_mode is external or own.

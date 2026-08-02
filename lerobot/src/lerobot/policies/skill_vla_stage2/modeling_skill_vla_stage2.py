@@ -24,9 +24,6 @@ from lerobot.policies.pi_gemma import (
     _gated_residual,
 )
 from lerobot.policies.pretrained import PreTrainedPolicy
-from lerobot.policies.skill_expert.configuration_skill_expert import (
-    normalize_conditioning_route,
-)
 from lerobot.policies.skill_expert.modeling_skill_expert import (
     SkillExpertPolicy,
     SkillExpertPytorch,
@@ -151,6 +148,11 @@ class SkillVLAStage2Pytorch(SkillExpertPytorch):
     """Stage-1 model plus four action-only likelihood blocks."""
 
     def __init__(self, config: SkillVLAStage2Config):
+        raise RuntimeError(
+            "skill_vla_stage2 has not yet been migrated to the "
+            "vsa_perceiver_crossattn Stage-1 architecture. Use the previous branch "
+            "for legacy Stage-2 experiments."
+        )
         super().__init__(config)
         if self.skill_predictor is None:
             raise RuntimeError("Stage 2 requires the Stage-1 frozen VLM/predictor.")
@@ -482,9 +484,6 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
                 continue
             expected = stage1_config.get(field)
             actual = getattr(self.config, field)
-            if field == "conditioning_route":
-                expected = normalize_conditioning_route(expected)
-                actual = normalize_conditioning_route(actual)
             if expected != actual:
                 mismatches.append(f"{field}: stage1={expected!r}, stage2={actual!r}")
         if mismatches:

@@ -29,14 +29,13 @@ unset LD_LIBRARY_PATH
 echo "START STAGE 1 VSA"
 echo "dataset : ${SKILLVLA_DATASET_DIR}"
 echo "expert  : pi0.5 base ${PI_BASE} -> full fine-tuning"
-echo "route   : ${CONDITIONING_ROUTE}"
+echo "arch    : ${ARCHITECTURE}"
+echo "vision conditioning: ${VISION_CONDITIONING_MODE}"
+echo "Visual cross-attention queries: ${VISUAL_CROSSATTN_QUERIES}"
+echo "vision memory: ${NUM_VISUAL_LATENTS_PER_CAMERA} latents/camera"
 echo "loss    : ${ACTION_LOSS_MODE}"
 echo "skill   : ${TRAINING_SKILL_SOURCE}   predictor=${SKILL_PREDICTOR_CHECKPOINT_PATH:-none}"
-if [ "${CONDITIONING_ROUTE}" = state_skill_only_cond ]; then
-  echo "vision  : disabled in VSA action path"
-else
-  echo "vision  : DINO ${DINO_MODEL_PATH}   frozen=${FREEZE_VISION_ENCODER}"
-fi
+echo "vision  : shared trainable DINO ${DINO_MODEL_PATH}   lr_scale=${DINO_LR_SCALE}"
 echo "predict : pi0.5 VLM skill-LoRA=${SKILL_PREDICTOR_LORA} all_layers=${SKILL_PREDICTOR_ALL_LAYERS} deadzone=${SKILL_PREDICTOR_DEADZONE_FRAC}"
 echo "term    : FSQ ${FSQ_PATH}   train=${TRAIN_TERMINATOR}, vision_frozen=${TERMINATOR_FREEZE_VISION_ENCODER}"
 echo "output  : ${PT_OUTPUT_DIR}"
@@ -44,11 +43,6 @@ echo "output  : ${PT_OUTPUT_DIR}"
 if [ ! -e "${SKILLVLA_DATASET_DIR}" ]; then
   echo "Missing Stage-1 dataset: ${SKILLVLA_DATASET_DIR}" >&2
   exit 1
-fi
-
-EXTRA_ARGS=()
-if [ -n "${DINO_LR}" ]; then
-  EXTRA_ARGS+=(--policy.dino_lr="${DINO_LR}")
 fi
 
 CONFIG_JSON="${PT_OUTPUT_DIR}/checkpoints/last/pretrained_model/train_config.json"
@@ -68,13 +62,16 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --dataset.video_backend=pyav \
     --policy.type=skill_expert \
     --policy.pretrained_path="${PI_BASE}" \
+    --policy.architecture="${ARCHITECTURE}" \
+    --policy.vision_conditioning_mode="${VISION_CONDITIONING_MODE}" \
+    --policy.include_state_in_visual_crossattn="${INCLUDE_STATE_IN_VISUAL_CROSSATTN}" \
+    --policy.include_skill_in_visual_crossattn="${INCLUDE_SKILL_IN_VISUAL_CROSSATTN}" \
+    --policy.num_visual_latents_per_camera="${NUM_VISUAL_LATENTS_PER_CAMERA}" \
     --policy.action_expert_variant="${ACTION_EXPERT_VARIANT}" \
-    --policy.cond_encoder_variant="${COND_ENCODER_VARIANT}" \
     --policy.vision_backbone=dino \
     --policy.dino_model_path="${DINO_MODEL_PATH}" \
     --policy.dino_image_size="${DINO_IMAGE_SIZE}" \
-    --policy.freeze_vision_encoder="${FREEZE_VISION_ENCODER}" \
-    --policy.conditioning_route="${CONDITIONING_ROUTE}" \
+    --policy.dino_lr_scale="${DINO_LR_SCALE}" \
     --policy.skill_vocab_size="${SKILL_VOCAB_SIZE}" \
     --policy.skill_fsq_levels="${SKILL_FSQ_LEVELS}" \
     --policy.transition_jitter_pmax="${TRANSITION_JITTER_PMAX}" \
@@ -119,6 +116,8 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.time_sampling_scale="${TIME_SAMPLING_SCALE}" \
     --policy.time_sampling_offset="${TIME_SAMPLING_OFFSET}" \
     --policy.gradient_checkpointing="${GRADIENT_CHECKPOINTING}" \
+    --policy.vsa_debug_steps="${VSA_DEBUG_STEPS}" \
+    --policy.vsa_debug_schedule="${VSA_DEBUG_SCHEDULE}" \
     --policy.dtype=bfloat16 \
     --policy.device=cuda \
     --policy.push_to_hub=false \
@@ -133,7 +132,6 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --save_freq="${SAVE_FREQ}" \
     --wandb.enable="${WANDB_ENABLE}" \
     --wandb.project="${WANDB_PROJECT}" \
-    ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
     ${RESUME_ARGS[@]+"${RESUME_ARGS[@]}"}
 
 echo "DONE -> ${PT_OUTPUT_DIR}"

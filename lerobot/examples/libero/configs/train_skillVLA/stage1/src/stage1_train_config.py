@@ -15,6 +15,11 @@ sys.path.insert(0, str(_HERE.parent.parent.parent.parent / "train_skills" / "src
 from train_skills_config import as_bool, as_list, load_config, print_shell, resolve_path  # noqa: E402
 
 DEFAULT_CONFIG_PATH = _HERE.parent.parent / "stage1_train_config.yaml"
+VISION_CONDITIONING_MODES = (
+    "residual_cross_attention",
+    "in_context_tokens",
+    "global_visual_adarms",
+)
 
 
 def _at(config: dict, *path: str, default=None):
@@ -199,36 +204,81 @@ def build_settings(config: dict) -> dict:
             raise FileNotFoundError(
                 f"Local PaliGemma tokenizer is incomplete at {tokenizer_path}: missing {missing}."
             )
-    freeze_vision_encoder = as_bool(
-        _at(config, "vision", "freeze", default=False)
-    )
-
+    if "freeze" in config.get("vision", {}):
+        raise ValueError(
+            "vision.freeze was removed: vsa_perceiver_crossattn always fine-tunes shared DINO."
+        )
     expert_variant = str(
         _at(config, "architecture", "expert_variant", default="gemma_300m")
     )
-    cond_variant = str(
-        _at(config, "architecture", "cond_variant", default=expert_variant)
-    )
-    if expert_variant != cond_variant:
-        raise ValueError("Stage 1 requires the same 18-layer variant for cond and expert.")
-    conditioning_route = str(
-        _at(config, "architecture", "conditioning_route", default="state_cond")
+    architecture = str(
+        _at(config, "architecture", "name", default="vsa_perceiver_crossattn")
     ).strip().lower()
-    # Backward-compatible spelling used by existing Stage-1 configs/checkpoints.
-    if conditioning_route == "skill_cond":
-        conditioning_route = "skillonly_cond"
-    if conditioning_route not in {
-        "state_cond",
-        "state_skill_cond",
-        "state_skill_only_cond",
-        "stateonly_cond",
-        "skillonly_cond",
-        "visiononly_cond",
-    }:
+    legacy_keys = {"cond_variant", "conditioning_route"} & set(
+        config.get("architecture", {})
+    )
+    if legacy_keys:
         raise ValueError(
-            "architecture.conditioning_route must be "
-            "state_cond|state_skill_cond|state_skill_only_cond|stateonly_cond|"
-            "skillonly_cond|visiononly_cond."
+            "Legacy Stage-1 architecture keys were removed: "
+            f"{sorted(legacy_keys)}. Use architecture.name=vsa_perceiver_crossattn."
+        )
+    if architecture != "vsa_perceiver_crossattn":
+        raise ValueError(
+            "architecture.name must be vsa_perceiver_crossattn; "
+            f"legacy architectures do not exist on this branch (got {architecture!r})."
+        )
+    vision_conditioning_mode = str(
+        _at(
+            config,
+            "architecture",
+            "vision_conditioning_mode",
+            default="residual_cross_attention",
+        )
+    ).strip().lower()
+    if vision_conditioning_mode not in VISION_CONDITIONING_MODES:
+        raise ValueError(
+            "architecture.vision_conditioning_mode must be one of "
+            f"{VISION_CONDITIONING_MODES}, got {vision_conditioning_mode!r}."
+        )
+    include_state_in_visual_crossattn = as_bool(
+        _at(
+            config,
+            "architecture",
+            "include_state_in_visual_crossattn",
+            default=True,
+        )
+    )
+    include_skill_in_visual_crossattn = as_bool(
+        _at(
+            config,
+            "architecture",
+            "include_skill_in_visual_crossattn",
+            default=True,
+        )
+    )
+    visual_crossattn_queries = [
+        token
+        for token, enabled in (
+            ("state", include_state_in_visual_crossattn),
+            ("skill", include_skill_in_visual_crossattn),
+        )
+        if enabled
+    ]
+    visual_crossattn_query_label = (
+        (
+            " + ".join((*visual_crossattn_queries, "action"))
+            if visual_crossattn_queries
+            else "action-only"
+        )
+        if vision_conditioning_mode == "residual_cross_attention"
+        else "ignored"
+    )
+    num_visual_latents_per_camera = int(
+        _at(config, "architecture", "visual_latents_per_camera", default=32)
+    )
+    if not 1 <= num_visual_latents_per_camera <= 197:
+        raise ValueError(
+            "architecture.visual_latents_per_camera must be between 1 and 197."
         )
 
     max_state_dim = int(_at(config, "architecture", "max_state_dim", default=32))
@@ -261,10 +311,15 @@ def build_settings(config: dict) -> dict:
     batch_size = int(_at(config, "training", "dataloader", "batch_size", default=16))
     num_gpus = int(_at(config, "training", "dataloader", "gpus", default=1))
     base_lr = float(_at(config, "training", "optimizer", "base_lr", default=2.5e-5))
-    dino_lr = _at(config, "training", "optimizer", "dino_lr", default=None)
-    dino_lr = "" if dino_lr in (None, "", "null") else str(float(dino_lr))
-    if freeze_vision_encoder and dino_lr:
-        raise ValueError("training.optimizer.dino_lr must be null when vision.freeze=true.")
+    if "dino_lr" in _at(config, "training", "optimizer", default={}):
+        raise ValueError(
+            "training.optimizer.dino_lr was replaced by the relative dino_lr_scale."
+        )
+    dino_lr_scale = float(
+        _at(config, "training", "optimizer", "dino_lr_scale", default=0.1)
+    )
+    if dino_lr_scale <= 0.0:
+        raise ValueError("training.optimizer.dino_lr_scale must be positive.")
 
     predictor_contract = {
         "skill_predictor_vlm_variant": "gemma_2b",
@@ -307,13 +362,8 @@ def build_settings(config: dict) -> dict:
             predictor_contract=predictor_contract,
         )
     suffix = str(_at(config, "run", "suffix", default="")).strip().strip("_")
-    vision_tag = (
-        "no_vision"
-        if conditioning_route == "state_skill_only_cond"
-        else ("dino_frozen" if freeze_vision_encoder else "dino_tuned")
-    )
     run_name = (
-        f"{source}_{run_tag}_{vision_tag}_{conditioning_route}_{action_loss_mode}"
+        f"{source}_{run_tag}_{vision_conditioning_mode}_{action_loss_mode}"
     )
     if training_skill_source == "predictor":
         run_name = f"{run_name}_pretrained_predictor"
@@ -321,6 +371,18 @@ def build_settings(config: dict) -> dict:
         run_name = f"{run_name}_{suffix}"
 
     levels = contract["levels"]
+    vsa_debug_schedule = [
+        int(step)
+        for step in as_list(
+            _at(config, "training", "vsa_debug_schedule", default=[])
+        )
+    ]
+    if any(step <= 0 for step in vsa_debug_schedule):
+        raise ValueError("training.vsa_debug_schedule entries must be positive.")
+    if sorted(set(vsa_debug_schedule)) != vsa_debug_schedule:
+        raise ValueError(
+            "training.vsa_debug_schedule must be sorted and contain no duplicates."
+        )
     settings = {
         "project_root": project_root,
         "lerobot_root": project_root / "lerobot",
@@ -331,11 +393,14 @@ def build_settings(config: dict) -> dict:
         "tokenizer_path": tokenizer_path,
         "dino_model_path": dino_model,
         "dino_image_size": int(_at(config, "vision", "image_size", default=224)),
-        "freeze_vision_encoder": freeze_vision_encoder,
-        "dino_lr": dino_lr,
+        "dino_lr_scale": dino_lr_scale,
+        "architecture": architecture,
+        "vision_conditioning_mode": vision_conditioning_mode,
+        "include_state_in_visual_crossattn": include_state_in_visual_crossattn,
+        "include_skill_in_visual_crossattn": include_skill_in_visual_crossattn,
+        "num_visual_latents_per_camera": num_visual_latents_per_camera,
+        "visual_crossattn_queries": visual_crossattn_query_label,
         "action_expert_variant": expert_variant,
-        "cond_encoder_variant": cond_variant,
-        "conditioning_route": conditioning_route,
         "skill_fsq_levels": "[" + ",".join(str(level) for level in levels) + "]",
         "skill_vocab_size": math.prod(levels),
         "transition_jitter_pmax": jitter_pmax,
@@ -403,6 +468,12 @@ def build_settings(config: dict) -> dict:
         "gradient_checkpointing": as_bool(
             _at(config, "training", "gradient_checkpointing", default=True)
         ),
+        "vsa_debug_steps": int(
+            _at(config, "training", "vsa_debug_steps", default=0)
+        ),
+        "vsa_debug_schedule": "["
+        + ",".join(str(step) for step in vsa_debug_schedule)
+        + "]",
         "lr": base_lr * num_gpus,
         "steps": int(_at(config, "training", "schedule", "steps", default=50000)),
         "log_freq": int(
@@ -426,6 +497,8 @@ def build_settings(config: dict) -> dict:
         "train_nodelist": str(config.get("train_nodelist", "")),
         "train_exclude_nodes": ",".join(as_list(config.get("train_exclude_nodes", []))),
     }
+    if settings["vsa_debug_steps"] < 0:
+        raise ValueError("training.vsa_debug_steps must be non-negative.")
     return settings
 
 

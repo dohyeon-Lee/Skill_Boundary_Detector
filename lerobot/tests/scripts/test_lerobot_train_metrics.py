@@ -62,6 +62,18 @@ def test_windowed_policy_metrics_tracks_stage0_pretrain_ar_values() -> None:
     }
 
 
+def test_windowed_policy_metrics_does_not_average_sparse_vsa_debug_values() -> None:
+    metrics = _WindowedPolicyMetrics()
+    metrics.update(
+        {
+            "action_loss": 2.0,
+            "vsa_debug/visual/top_latents/effective_rank": 4.5,
+        }
+    )
+
+    assert metrics.averages() == {"action_loss": 2.0}
+
+
 def test_wandb_metric_filter_keeps_all_finite_scalars_without_name_allowlist() -> None:
     filtered = _finite_scalar_metrics(
         {

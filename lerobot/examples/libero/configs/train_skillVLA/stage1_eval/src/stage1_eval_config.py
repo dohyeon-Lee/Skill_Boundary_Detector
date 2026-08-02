@@ -94,6 +94,22 @@ def _default_output_name(models: list[dict]) -> str:
     return raw if len(raw) <= 200 else f"stage1_{models[0]['checkpoint']}_{stamp}"
 
 
+def _visual_crossattn_query_label(*, include_state: bool, include_skill: bool) -> str:
+    tokens = []
+    if include_state:
+        tokens.append("state")
+    if include_skill:
+        tokens.append("skill")
+    return " + ".join((*tokens, "action")) if tokens else "action-only"
+
+
+VISION_CONDITIONING_MODES = (
+    "residual_cross_attention",
+    "in_context_tokens",
+    "global_visual_adarms",
+)
+
+
 def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
     required = (
         "config.json",
@@ -111,28 +127,53 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
     if policy.get("type", policy.get("model_type")) != "skill_expert":
         raise ValueError(f"Expected a skill_expert checkpoint: {policy_path}")
 
-    conditioning_route = str(policy.get("conditioning_route", "")).strip().lower()
-    if conditioning_route == "skill_cond":
-        conditioning_route = "skillonly_cond"
-    if conditioning_route not in {
-        "state_cond",
-        "state_skill_cond",
-        "state_skill_only_cond",
-        "stateonly_cond",
-        "skillonly_cond",
-        "visiononly_cond",
-    }:
+    architecture = str(policy.get("architecture", "")).strip().lower()
+    if architecture != "vsa_perceiver_crossattn":
         raise ValueError(
-            "Stage-1 checkpoint does not follow the current conditioning contract "
-            "(state_cond|state_skill_cond|state_skill_only_cond|stateonly_cond|skillonly_cond|"
-            f"visiononly_cond): {policy_path}"
+            "This branch evaluates only architecture=vsa_perceiver_crossattn; "
+            f"legacy Stage-1 checkpoints must be evaluated from their original branch: {policy_path}"
         )
+    architecture_revision = str(policy.get("architecture_revision", "")).strip()
+    if architecture_revision not in {"", "residual_sa18_v2"}:
+        raise ValueError(
+            "Unsupported VSA architecture_revision="
+            f"{architecture_revision!r} at {policy_path}."
+        )
+    eval_legacy_vsa = not architecture_revision
+    vision_conditioning_mode = str(
+        policy.get("vision_conditioning_mode", "residual_cross_attention")
+    ).strip().lower()
+    if not eval_legacy_vsa and vision_conditioning_mode not in VISION_CONDITIONING_MODES:
+        raise ValueError(
+            "Unsupported vision_conditioning_mode="
+            f"{vision_conditioning_mode!r} at {policy_path}."
+        )
+    num_visual_latents_per_camera = int(
+        policy.get("num_visual_latents_per_camera", 8 if eval_legacy_vsa else 32)
+    )
     action_loss_mode = str(policy.get("action_loss_mode", "")).strip().lower()
     if action_loss_mode not in {"flow", "flow_endpoint_xyz"}:
         raise ValueError(
             "Stage-1 checkpoint does not record a supported action objective "
             f"(flow|flow_endpoint_xyz): {policy_path}"
         )
+    # These switches belong to the checkpoint architecture. Evaluation must not
+    # override them from its own YAML. Checkpoints saved before either switch was
+    # introduced used the action-only path, which is represented by false/false.
+    include_state_in_visual_crossattn = as_bool(
+        policy.get("include_state_in_visual_crossattn", False)
+    )
+    include_skill_in_visual_crossattn = as_bool(
+        policy.get("include_skill_in_visual_crossattn", False)
+    )
+    visual_crossattn_queries = (
+        _visual_crossattn_query_label(
+            include_state=include_state_in_visual_crossattn,
+            include_skill=include_skill_in_visual_crossattn,
+        )
+        if vision_conditioning_mode == "residual_cross_attention"
+        else "ignored"
+    )
 
     train_config = json.loads((policy_path / "train_config.json").read_text())
     dataset_value = str((train_config.get("dataset") or {}).get("root") or "").strip()
@@ -185,7 +226,16 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         raise FileNotFoundError(f"Stage-1 tokenizer not found: {paths['tokenizer_path']}")
     return {
         "policy": policy,
-        "conditioning_route": conditioning_route,
+        "architecture": architecture,
+        "architecture_revision": architecture_revision or "legacy_alternating_v1",
+        "eval_legacy_vsa": eval_legacy_vsa,
+        "vision_conditioning_mode": (
+            "legacy_alternating" if eval_legacy_vsa else vision_conditioning_mode
+        ),
+        "num_visual_latents_per_camera": num_visual_latents_per_camera,
+        "include_state_in_visual_crossattn": include_state_in_visual_crossattn,
+        "include_skill_in_visual_crossattn": include_skill_in_visual_crossattn,
+        "visual_crossattn_queries": visual_crossattn_queries,
         "action_loss_mode": action_loss_mode,
         "has_predictor": has_predictor,
         "has_terminator": has_terminator,
@@ -223,7 +273,7 @@ def _external_predictor_contract(
     ]
     if mismatches:
         raise ValueError(
-            "External predictor architecture mismatch: " + "; ".join(mismatches)
+            "External predictor module contract mismatch: " + "; ".join(mismatches)
         )
     tokenizer_path = _relocate_project_path(
         project_root, source.get("tokenizer_path")
@@ -504,7 +554,15 @@ def build_settings(config: dict) -> dict:
         "dino_model_path": primary["dino_model_path"],
         "terminator_dino_model_path": primary["terminator_dino_model_path"],
         "tokenizer_path": primary["tokenizer_path"],
-        "conditioning_route": primary["conditioning_route"],
+        "architecture": primary["architecture"],
+        "vision_conditioning_mode": primary["vision_conditioning_mode"],
+        "include_state_in_visual_crossattn": primary[
+            "include_state_in_visual_crossattn"
+        ],
+        "include_skill_in_visual_crossattn": primary[
+            "include_skill_in_visual_crossattn"
+        ],
+        "visual_crossattn_queries": primary["visual_crossattn_queries"],
         "action_loss_mode": primary["action_loss_mode"],
         "eval_out_dir": eval_outputs_root / output_name,
         "target_task": str(get_value(config, "target_task", "libero_goal")),

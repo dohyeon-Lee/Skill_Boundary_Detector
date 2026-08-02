@@ -1,965 +1,848 @@
-from contextlib import nullcontext
+import json
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 import torch
 from torch import nn
-from safetensors.torch import save_file
+from transformers.models.auto import CONFIG_MAPPING
+from transformers.models.gemma.modeling_gemma import GemmaRotaryEmbedding
 
-from lerobot.policies.pi05.modeling_pi05 import get_gemma_config
-from lerobot.policies.skill_expert.configuration_skill_expert import SkillExpertConfig
+from lerobot.policies.skill_expert.configuration_skill_expert import (
+    GLOBAL_VISUAL_ADARMS,
+    IN_CONTEXT_TOKENS,
+    RESIDUAL_CROSS_ATTENTION,
+    VSA_ARCHITECTURE,
+    SkillExpertConfig,
+)
 from lerobot.policies.skill_expert.modeling_skill_expert import (
     SkillExpertPolicy,
     SkillExpertPytorch,
-    _load_complete_predictor_parameters,
-    _load_complete_terminator_parameters,
-    _load_learned_predictor_parameters,
-    _load_pretrained_state_dict,
+    _allowed_pi05_missing_key,
     _map_pi05_key,
 )
-from lerobot.utils.constants import (
-    ACTION,
-    OBS_LANGUAGE_ATTENTION_MASK,
-    OBS_LANGUAGE_TOKENS,
-    OBS_STATE,
+from lerobot.policies.skill_expert.legacy_vsa_eval import LegacyVSAActionExpert
+from lerobot.policies.skill_expert.vsa_perceiver_crossattn import (
+    VISUAL_RESIDUAL_GATE_INIT,
+    CameraPerceiverResampler,
+    ResidualVisualExpertBlock,
+    VSAActionExpert,
 )
 
 
-def test_stage1_uses_two_matching_18_layer_transformers() -> None:
+def _tiny_gemma_config(depth: int = 4):
+    config = CONFIG_MAPPING["gemma"](
+        head_dim=8,
+        hidden_size=32,
+        intermediate_size=64,
+        num_attention_heads=4,
+        num_hidden_layers=depth,
+        num_key_value_heads=1,
+        vocab_size=128,
+        hidden_activation="gelu_pytorch_tanh",
+        attention_bias=False,
+    )
+    config._attn_implementation = "eager"  # noqa: SLF001
+    return config
+
+
+def _position_embeddings(config, context, actions):
+    hidden = torch.cat((context, actions), dim=1)
+    positions = torch.arange(hidden.shape[1])[None].expand(hidden.shape[0], -1)
+    return GemmaRotaryEmbedding(config)(hidden, positions)
+
+
+def test_legacy_eval_expert_preserves_alternating_checkpoint_layout() -> None:
+    config = _tiny_gemma_config(depth=4)
+    expert = LegacyVSAActionExpert(
+        config,
+        include_state_in_visual_crossattn=True,
+        include_skill_in_visual_crossattn=True,
+    ).eval()
+
+    assert hasattr(expert.blocks[0], "attention")
+    assert not hasattr(expert.blocks[0], "self_attention")
+    assert expert.blocks[0].cross_attention is False
+    assert expert.blocks[1].cross_attention is True
+    output = expert(
+        torch.randn(2, 2, 32),
+        torch.randn(2, 5, 32),
+        torch.randn(2, 16, 32),
+        torch.randn(2, 32),
+    )
+    assert output.shape == (2, 5, 32)
+
+
+def test_config_has_one_architecture_and_no_legacy_condition_fields() -> None:
     config = SkillExpertConfig()
 
-    assert config.cond_encoder_variant == config.action_expert_variant == "gemma_300m"
-    assert get_gemma_config(config.action_expert_variant).depth == 18
+    assert config.architecture == VSA_ARCHITECTURE == "vsa_perceiver_crossattn"
+    assert config.vision_conditioning_mode == RESIDUAL_CROSS_ATTENTION
+    assert config.include_state_in_visual_crossattn is False
+    assert config.include_skill_in_visual_crossattn is False
+    assert config.action_expert_variant == "gemma_300m"
+    assert config.dino_lr_scale == 0.1
+    assert config.num_visual_latents_per_camera == 32
+    assert config.n_action_steps == 5
+    assert config.vsa_debug_schedule == ()
+    assert SkillExpertConfig(vsa_debug_schedule=[1, 100]).vsa_debug_schedule == (1, 100)
+    assert not hasattr(config, "conditioning_route")
+    assert not hasattr(config, "cond_encoder_variant")
+    assert not hasattr(config, "freeze_vision_encoder")
+    with pytest.raises(ValueError, match="legacy conditioning architectures"):
+        SkillExpertConfig(architecture="state_skill_cond")
+    with pytest.raises(ValueError, match="vision_conditioning_mode must be one of"):
+        SkillExpertConfig(vision_conditioning_mode="unknown")
+
+    with pytest.raises(ValueError, match="sorted and contain no duplicates"):
+        SkillExpertConfig(vsa_debug_schedule=(100, 1, 100))
 
 
-def test_stage1_contract_supports_six_condition_stream_routes() -> None:
-    config = SkillExpertConfig()
-
-    assert config.vision_backbone == "dino"
-    assert not config.freeze_vision_encoder
-    assert config.conditioning_route == "state_cond"
-    assert config.skill_fsq_levels == [3, 3, 3]
-    assert config.skill_vocab_size == 27
-    assert not hasattr(config, "lora_enable")
-    assert config.fsq_path is None  # optional terminator source; never an expert warm-start
-
-    assert (
-        SkillExpertConfig(conditioning_route="state_skill_cond").conditioning_route
-        == "state_skill_cond"
-    )
-    assert (
-        SkillExpertConfig(
-            conditioning_route="state_skill_only_cond"
-        ).conditioning_route
-        == "state_skill_only_cond"
-    )
-    assert (
-        SkillExpertConfig(conditioning_route="stateonly_cond").conditioning_route
-        == "stateonly_cond"
-    )
-    assert (
-        SkillExpertConfig(conditioning_route="skillonly_cond").conditioning_route
-        == "skillonly_cond"
-    )
-    assert (
-        SkillExpertConfig(conditioning_route="visiononly_cond").conditioning_route
-        == "visiononly_cond"
-    )
-    # Old checkpoint configs retain the same architecture under the new name.
-    assert SkillExpertConfig(conditioning_route="skill_cond").conditioning_route == (
-        "skillonly_cond"
-    )
-    with pytest.raises(ValueError, match="state_cond.*state_skill_cond"):
-        SkillExpertConfig(conditioning_route="broadcast")
-    with pytest.raises(ValueError, match="dino_lr cannot be set"):
-        SkillExpertConfig(freeze_vision_encoder=True, dino_lr=1e-5)
-    with pytest.raises(ValueError, match="requires fsq_path"):
-        SkillExpertConfig(train_terminator=True)
-    with pytest.raises(ValueError, match="action_loss_mode"):
-        SkillExpertConfig(action_loss_mode="endpoint_only")
-
-
-def test_stage3a_predictor_contract_allows_only_skill_lora_vlm_gradients() -> None:
-    config = SkillExpertConfig(
-        train_skill_predictor=True,
-        skill_predictor_all_layers=True,
-        skill_predictor_detach_vlm=False,
-        skill_predictor_lora=True,
-        skill_predictor_deadzone_frac=0.8,
+def test_policy_loader_rejects_legacy_checkpoint_before_model_allocation(tmp_path) -> None:
+    (tmp_path / "config.json").write_text(
+        json.dumps({"type": "skill_expert", "conditioning_route": "state_cond"})
     )
 
-    assert config.skill_predictor_lora_targets == "q,k,v,o"
-    assert config.skill_predictor_lora_rank == 8
-    assert config.skill_predictor_lora_alpha == 16.0
-    assert config.skill_predictor_lora_lr_scale == 10.0
-    with pytest.raises(ValueError, match="must be False"):
-        SkillExpertConfig(
-            train_skill_predictor=True,
-            skill_predictor_lora=True,
-            skill_predictor_detach_vlm=True,
+    with pytest.raises(ValueError, match="cannot load legacy Stage-1 checkpoints"):
+        SkillExpertPolicy.from_pretrained(tmp_path)
+
+
+def test_policy_loader_rejects_pre_residual_vsa_checkpoint(tmp_path) -> None:
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                "type": "skill_expert",
+                "architecture": "vsa_perceiver_crossattn",
+            }
         )
-    with pytest.raises(ValueError, match="full VLM fine-tuning"):
-        SkillExpertConfig(
-            train_skill_predictor=True,
-            skill_predictor_lora=False,
-            skill_predictor_detach_vlm=False,
+    )
+
+    with pytest.raises(ValueError, match="predates the residual-SA18 VSA revision"):
+        SkillExpertPolicy.from_pretrained(tmp_path)
+
+
+def test_policy_loader_rejects_explicit_cross_mode_checkpoint_override(tmp_path) -> None:
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                "type": "skill_expert",
+                "architecture": "vsa_perceiver_crossattn",
+                "architecture_revision": "residual_sa18_v2",
+                "vision_conditioning_mode": "in_context_tokens",
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="Cross-mode checkpoint conversion"):
+        SkillExpertPolicy.from_pretrained(
+            tmp_path,
+            config=SkillExpertConfig(
+                vision_conditioning_mode="global_visual_adarms"
+            ),
         )
 
 
-def test_predicted_training_skill_requires_and_instantiates_checkpoint_predictor() -> None:
-    with pytest.raises(ValueError, match="skill_predictor_checkpoint_path"):
-        SkillExpertConfig(training_skill_source="predictor")
+def test_perceiver_shape_and_camera_parameters_are_separate() -> None:
+    torch.manual_seed(0)
+    top = CameraPerceiverResampler(
+        24, expert_width=32, perceiver_width=16, num_latents=8
+    ).eval()
+    wrist = CameraPerceiverResampler(
+        24, expert_width=32, perceiver_width=16, num_latents=8
+    ).eval()
+    image_a = torch.randn(2, 197, 24)
+    image_b = torch.randn(2, 197, 24)
 
-    config = SkillExpertConfig(
-        training_skill_source="predictor",
-        skill_predictor_checkpoint_path="/tmp/stage1-predictor",
-        train_skill_predictor=False,
+    top_a, wrist_b = top(image_a), wrist(image_b)
+    swapped = torch.cat((top(image_b), wrist(image_a)), dim=1)
+
+    assert top_a.shape == wrist_b.shape == (2, 8, 32)
+    assert torch.cat((top_a, wrist_b), dim=1).shape == (2, 16, 32)
+    assert top.latents is not wrist.latents
+    assert not torch.equal(torch.cat((top_a, wrist_b), dim=1), swapped)
+
+
+def test_self_attention_mask_has_required_direction() -> None:
+    mask = VSAActionExpert.self_attention_mask(2, 5, "cpu")
+
+    assert mask.shape == (2, 1, 7, 7)
+    assert torch.all(mask[:, :, :2, :2] == 0)
+    assert torch.all(mask[:, :, :2, 2:] < -1e20)
+    assert torch.all(mask[:, :, 2:, :] == 0)
+
+
+def test_in_context_mask_and_continuous_position_ids() -> None:
+    mask = VSAActionExpert.in_context_attention_mask(
+        batch_size=2, visual_tokens=4, action_tokens=3, device="cpu"
     )
 
-    assert config.uses_skill_predictor
-    assert not config.train_skill_predictor
+    assert mask.shape == (2, 1, 9, 9)
+    assert torch.all(mask[:, :, :4, :4] == 0)
+    assert torch.all(mask[:, :, :4, 4:] < -1e20)
+    assert torch.all(mask[:, :, 4:6, :6] == 0)
+    assert torch.all(mask[:, :, 4:6, 6:] < -1e20)
+    assert torch.all(mask[:, :, 6:, :] == 0)
+    valid = torch.tensor([[True, True, False, True, True]])
+    positions = VSAActionExpert.position_ids_from_valid_mask(valid)
+    assert positions.tolist() == [[0, 1, 1, 2, 3]]
 
 
-def test_pi05_warm_start_maps_only_action_expert_motion_prior() -> None:
-    assert _map_pi05_key(
-        "paligemma_with_expert.gemma_expert.model.layers.0.self_attn.q_proj.weight"
-    ) == "model.gemma_expert.model.layers.0.self_attn.q_proj.weight"
-    assert _map_pi05_key("action_in_proj.weight") == "model.action_in_proj.weight"
-    assert _map_pi05_key("time_mlp_out.bias") == "model.time_mlp_out.bias"
-    assert _map_pi05_key(
-        "paligemma_with_expert.paligemma.model.language_model.layers.0.self_attn.q_proj.weight"
-    ) is None
-    assert _map_pi05_key(
-        "paligemma_with_expert.paligemma.model.language_model.layers.0.self_attn.q_proj.weight",
-        include_predictor_vlm=True,
-    ) == (
-        "model.skill_predictor.vlm.language_model.layers.0.self_attn.q_proj.weight"
-    )
+@pytest.mark.parametrize(
+    "mode", [RESIDUAL_CROSS_ATTENTION, IN_CONTEXT_TOKENS, GLOBAL_VISUAL_ADARMS]
+)
+def test_vision_modes_preserve_action_shape_and_instantiate_only_used_modules(
+    mode: str,
+) -> None:
+    torch.manual_seed(11)
+    expert = VSAActionExpert(
+        _tiny_gemma_config(depth=4), vision_conditioning_mode=mode
+    ).eval()
+    context = torch.randn(2, 2, 32)
+    actions = torch.randn(2, 5, 32)
+    memory = torch.randn(2, 8, 32)
+    output = expert(context, actions, memory, torch.randn(2, 32))
 
-
-def test_pi05_loader_does_not_materialize_vlm_weights(tmp_path) -> None:
-    checkpoint_path = tmp_path / "model.safetensors"
-    save_file(
-        {
-            "paligemma_with_expert.gemma_expert.model.norm.weight": torch.ones(2),
-            "paligemma_with_expert.paligemma.model.language_model.norm.weight": torch.ones(5),
-            "action_out_proj.weight": torch.ones(3, 2),
-        },
-        checkpoint_path,
-    )
-
-    loaded = _load_pretrained_state_dict(tmp_path, {})
-
-    assert loaded is not None
-    state_dict, is_pi05 = loaded
-    assert is_pi05
-    assert set(state_dict) == {
-        "model.gemma_expert.model.norm.weight",
-        "model.action_out_proj.weight",
-    }
-    assert _map_pi05_key(
-        "paligemma_with_expert.paligemma.model.vision_tower.vision_model.embeddings.patch_embedding.weight"
-    ) is None
-
-
-def test_stage1_predictor_loader_overlays_only_learned_predictor_tensors(tmp_path) -> None:
-    class _TinyPredictor(nn.Module):
-        def __init__(self) -> None:
-            super().__init__()
-            self.reader = nn.Linear(2, 2)
-            self.head = nn.Linear(2, 1)
-            self.vlm = nn.Linear(2, 2)
-
-    predictor = _TinyPredictor()
-    base_before = predictor.vlm.weight.detach().clone()
-    target = predictor.state_dict()
-    source = {
-        f"model.skill_predictor.{key}": torch.full_like(value, 7)
-        for key, value in target.items()
-        if key.startswith(("reader.", "head."))
-    }
-    source["model.gemma_expert.unrelated"] = torch.ones(1)
-    save_file(source, tmp_path / "model.safetensors")
-
-    loaded = _load_learned_predictor_parameters(predictor, tmp_path)
-
-    assert loaded == 4
-    for key, value in predictor.state_dict().items():
-        if key.startswith(("reader.", "head.")):
-            torch.testing.assert_close(value, torch.full_like(value, 7))
-    torch.testing.assert_close(predictor.vlm.weight, base_before)
-
-
-def test_complete_predictor_loader_can_populate_a_new_predictor(tmp_path) -> None:
-    class _TinyPredictor(nn.Module):
-        def __init__(self) -> None:
-            super().__init__()
-            self.reader = nn.Linear(2, 2)
-            self.head = nn.Linear(2, 1)
-            self.vlm = nn.Linear(2, 2)
-
-    predictor = _TinyPredictor()
-    source = {
-        f"model.skill_predictor.{key}": torch.full_like(value, 9)
-        for key, value in predictor.state_dict().items()
-    }
-    source["model.gemma_expert.unrelated"] = torch.ones(1)
-    save_file(source, tmp_path / "model.safetensors")
-
-    loaded = _load_complete_predictor_parameters(predictor, tmp_path)
-
-    assert loaded == len(predictor.state_dict())
-    for value in predictor.state_dict().values():
-        torch.testing.assert_close(value, torch.full_like(value, 9))
-
-
-def test_complete_terminator_loader_can_populate_a_new_terminator(tmp_path) -> None:
-    terminator = nn.Sequential(nn.Linear(2, 2), nn.Linear(2, 1))
-    source = {
-        f"model.fsq_term_train.{key}": torch.full_like(value, 6)
-        for key, value in terminator.state_dict().items()
-    }
-    source["model.gemma_expert.unrelated"] = torch.ones(1)
-    save_file(source, tmp_path / "model.safetensors")
-
-    loaded = _load_complete_terminator_parameters(terminator, tmp_path)
-
-    assert loaded == len(terminator.state_dict())
-    for value in terminator.state_dict().values():
-        torch.testing.assert_close(value, torch.full_like(value, 6))
-
-
-def test_flat_skill_code_maps_to_fsq_grid_coordinate() -> None:
-    model = SimpleNamespace(
-        _fsq_levels=torch.tensor([3, 3, 3]),
-        _fsq_strides=torch.tensor([1, 3, 9]),
-        _fsq_half=torch.tensor([1.0, 1.0, 1.0]),
-    )
-
-    low_and_high = SkillExpertPytorch._code_to_zq(model, torch.tensor([0, 26]))
-
-    torch.testing.assert_close(
-        low_and_high, torch.tensor([[-1.0, -1.0, -1.0], [1.0, 1.0, 1.0]])
+    assert output.shape == actions.shape
+    cross_layers = [block for block in expert.blocks if block.cross_attention]
+    if mode == RESIDUAL_CROSS_ATTENTION:
+        assert len(cross_layers) == 2
+        assert expert.last_sequence_length == 7
+    else:
+        assert not cross_layers
+        assert not any(
+            "visual_cross_attention" in key for key in expert.state_dict()
+        )
+        expected_length = 15 if mode == IN_CONTEXT_TOKENS else 7
+        assert expert.last_sequence_length == expected_length
+    assert expert.last_position_ids[0].tolist() == list(
+        range(expert.last_sequence_length)
     )
 
 
-def test_skill_broadcast_is_routed_to_exactly_one_stream() -> None:
-    model = SkillExpertPytorch.__new__(SkillExpertPytorch)
-    nn.Module.__init__(model)
-    model.action_in_proj = nn.Linear(2, 4)
-    model.skill_proj = nn.Linear(3, 4, bias=False)
-    model.register_buffer("_fsq_levels", torch.tensor([3, 3, 3]))
-    model.register_buffer("_fsq_strides", torch.tensor([1, 3, 9]))
-    model.register_buffer("_fsq_half", torch.tensor([1.0, 1.0, 1.0]))
-    code = torch.tensor([0, 26])
+def test_in_context_visual_tokens_receive_gradients_without_cross_attention() -> None:
+    torch.manual_seed(12)
+    expert = VSAActionExpert(
+        _tiny_gemma_config(depth=2), vision_conditioning_mode=IN_CONTEXT_TOKENS
+    )
+    context = torch.randn(2, 2, 32, requires_grad=True)
+    actions = torch.randn(2, 5, 32, requires_grad=True)
+    memory = torch.randn(2, 8, 32, requires_grad=True)
+    output = expert(context, actions, memory, torch.randn(2, 32))
+    output.square().mean().backward()
 
-    model.config = SimpleNamespace(conditioning_route="state_cond")
-    condition_skill, expert_skill = model._skill_broadcasts(code)
-    assert condition_skill is None
-    assert expert_skill is not None and expert_skill.shape == (2, 4)
-
-    model.config = SimpleNamespace(conditioning_route="state_skill_cond")
-    condition_skill, moved_expert_skill = model._skill_broadcasts(code)
-    assert moved_expert_skill is None
-    assert condition_skill is not None
-    torch.testing.assert_close(condition_skill, expert_skill)
-
-    model.config = SimpleNamespace(conditioning_route="state_skill_only_cond")
-    visionless_condition_skill, visionless_expert_skill = model._skill_broadcasts(code)
-    assert visionless_expert_skill is None
-    torch.testing.assert_close(visionless_condition_skill, expert_skill)
-
-    model.config = SimpleNamespace(conditioning_route="skillonly_cond")
-    skill_only_condition, skill_only_expert = model._skill_broadcasts(code)
-    assert skill_only_expert is None
-    torch.testing.assert_close(skill_only_condition, expert_skill)
-
-    model.config = SimpleNamespace(conditioning_route="stateonly_cond")
-    state_only_condition, state_only_expert = model._skill_broadcasts(code)
-    assert state_only_condition is None
-    assert state_only_expert is None
-
-    model.config = SimpleNamespace(conditioning_route="visiononly_cond")
-    assert model._skill_broadcasts(None) == (None, None)
+    assert memory.grad is not None and memory.grad.abs().sum() > 0
+    assert all(block.visual_cross_attention is None for block in expert.blocks)
 
 
-def test_stateonly_cond_has_state_adarms_but_no_skill_projection() -> None:
-    class _Dino(nn.Module):
-        def __init__(self) -> None:
-            super().__init__()
-            self.anchor = nn.Parameter(torch.zeros(()))
-            self.config = SimpleNamespace(hidden_size=8, num_register_tokens=0)
+def test_in_context_sequence_order_is_visual_state_skill_then_actions() -> None:
+    expert = VSAActionExpert(
+        _tiny_gemma_config(depth=1), vision_conditioning_mode=IN_CONTEXT_TOKENS
+    ).eval()
+    context = torch.randn(2, 2, 32)
+    actions = torch.randn(2, 5, 32)
+    memory = torch.randn(2, 8, 32)
+    captured_context = []
+    handle = expert.blocks[0].self_attention_norm.register_forward_pre_hook(
+        lambda _module, args: captured_context.append(args[0].detach().clone())
+    )
 
+    output = expert(context, actions, memory, torch.randn(2, 32))
+    handle.remove()
+
+    torch.testing.assert_close(captured_context[0], torch.cat((memory, context), dim=1))
+    assert output.shape == actions.shape
+
+
+def test_global_condition_reaches_every_action_adarms() -> None:
+    expert = VSAActionExpert(
+        _tiny_gemma_config(depth=2),
+        vision_conditioning_mode=GLOBAL_VISUAL_ADARMS,
+    ).eval()
+    condition = torch.randn(2, 32)
+    captured = []
+    handles = []
+    for block in expert.blocks:
+        handles.append(
+            block.self_attention_norm.register_forward_pre_hook(
+                lambda _module, args: captured.append(args[2])
+            )
+        )
+        handles.append(
+            block.ffn_norm.register_forward_pre_hook(
+                lambda _module, args: captured.append(args[2])
+            )
+        )
+    handles.append(
+        expert.final_norm.register_forward_pre_hook(
+            lambda _module, _args, kwargs: captured.append(kwargs["cond"]),
+            with_kwargs=True,
+        )
+    )
+
+    output = expert(
+        torch.randn(2, 2, 32),
+        torch.randn(2, 5, 32),
+        torch.randn(2, 8, 32),
+        condition,
+    )
+    for handle in handles:
+        handle.remove()
+
+    assert output.shape == (2, 5, 32)
+    assert len(captured) == 2 * len(expert.blocks) + 1
+    for actual in captured:
+        assert actual is condition
+
+
+def test_context_is_invariant_to_noisy_actions_but_actions_read_context() -> None:
+    torch.manual_seed(1)
+    config = _tiny_gemma_config(depth=1)
+    block = ResidualVisualExpertBlock(config, 0, cross_attention=False).eval()
+    context = torch.randn(2, 2, 32)
+    actions_a = torch.randn(2, 5, 32)
+    actions_b = torch.randn(2, 5, 32)
+    memory = torch.randn(2, 16, 32)
+    time = torch.randn(2, 32)
+    mask = VSAActionExpert.self_attention_mask(2, 5, "cpu")
+
+    context_a, action_a = block(
+        context,
+        actions_a,
+        memory,
+        time,
+        mask,
+        _position_embeddings(config, context, actions_a),
+    )
+    context_b, _ = block(
+        context,
+        actions_b,
+        memory,
+        time,
+        mask,
+        _position_embeddings(config, context, actions_b),
+    )
+    changed_context = context.clone()
+    changed_context[:, 0] += 3
+    _, action_b = block(
+        changed_context,
+        actions_a,
+        memory,
+        time,
+        mask,
+        _position_embeddings(config, changed_context, actions_a),
+    )
+
+    torch.testing.assert_close(context_a, context_b, atol=1e-6, rtol=1e-6)
+    assert not torch.allclose(action_a, action_b)
+
+
+def test_visual_cross_attention_updates_actions_only() -> None:
+    torch.manual_seed(2)
+    config = _tiny_gemma_config(depth=2)
+    block = ResidualVisualExpertBlock(config, 1, cross_attention=True).eval()
+    context = torch.randn(2, 2, 32)
+    actions = torch.randn(2, 5, 32)
+    memory_a = torch.randn(2, 16, 32)
+    memory_b = memory_a + 2
+    time = torch.randn(2, 32)
+    mask = VSAActionExpert.self_attention_mask(2, 5, "cpu")
+    positions = _position_embeddings(config, context, actions)
+
+    context_a, action_a = block(
+        context, actions, memory_a, time, mask, positions
+    )
+    context_b, action_b = block(
+        context, actions, memory_b, time, mask, positions
+    )
+
+    # Context is excluded from the default action-only visual query, while the
+    # weakly initialized gate exposes actions to vision from the first step.
+    torch.testing.assert_close(context_a, context_b, atol=1e-6, rtol=1e-6)
+    assert not torch.allclose(action_a, action_b)
+    assert block.visual_residual_gate.item() == pytest.approx(VISUAL_RESIDUAL_GATE_INIT)
+
+
+def test_state_visual_cross_attention_query_excludes_skill() -> None:
+    torch.manual_seed(3)
+    config = _tiny_gemma_config(depth=2)
+    block = ResidualVisualExpertBlock(
+        config,
+        1,
+        cross_attention=True,
+        include_state_in_visual_crossattn=True,
+    ).eval()
+    context = torch.randn(2, 2, 32)
+    actions = torch.randn(2, 5, 32)
+    memory = torch.randn(2, 16, 32)
+    time = torch.randn(2, 32)
+    mask = VSAActionExpert.self_attention_mask(2, 5, "cpu")
+    captured_queries = []
+    handle = block.visual_cross_attention.register_forward_pre_hook(
+        lambda _module, args: captured_queries.append(args[0].detach().clone())
+    )
+
+    block(
+        context,
+        actions,
+        memory,
+        time,
+        mask,
+        _position_embeddings(config, context, actions),
+    )
+    handle.remove()
+
+    assert captured_queries[0].shape[1] == actions.shape[1] + 1
+
+
+def test_state_skill_visual_cross_attention_query_includes_both() -> None:
+    torch.manual_seed(4)
+    config = _tiny_gemma_config(depth=2)
+    block = ResidualVisualExpertBlock(
+        config,
+        1,
+        cross_attention=True,
+        include_state_in_visual_crossattn=True,
+        include_skill_in_visual_crossattn=True,
+    ).eval()
+    context = torch.randn(2, 2, 32)
+    actions = torch.randn(2, 5, 32)
+    memory = torch.randn(2, 16, 32)
+    time = torch.randn(2, 32)
+    mask = VSAActionExpert.self_attention_mask(2, 5, "cpu")
+    captured_queries = []
+    handle = block.visual_cross_attention.register_forward_pre_hook(
+        lambda _module, args: captured_queries.append(args[0].detach().clone())
+    )
+
+    output_context, output_actions = block(
+        context,
+        actions,
+        memory,
+        time,
+        mask,
+        _position_embeddings(config, context, actions),
+    )
+    handle.remove()
+
+    assert captured_queries[0].shape[1] == actions.shape[1] + 2
+    assert output_context.shape == context.shape
+    assert output_actions.shape == actions.shape
+
+
+def test_visual_query_option_preserves_outputs_and_state_dict_contract() -> None:
+    torch.manual_seed(5)
+    config = _tiny_gemma_config(depth=2)
+    action_only = VSAActionExpert(
+        config, include_state_in_visual_crossattn=False
+    ).eval()
+    state_and_action = VSAActionExpert(
+        config,
+        include_state_in_visual_crossattn=True,
+        include_skill_in_visual_crossattn=True,
+    ).eval()
+    context = torch.randn(2, 2, 32)
+    actions = torch.randn(2, 5, 32)
+    memory = torch.randn(2, 16, 32)
+    time = torch.randn(2, 32)
+
+    action_only_output = action_only(context, actions, memory, time)
+    state_and_action_output = state_and_action(context, actions, memory, time)
+
+    assert action_only_output.shape == (2, 5, 32)
+    assert state_and_action_output.shape == action_only_output.shape
+    assert action_only.state_dict().keys() == state_and_action.state_dict().keys()
+    assert sum(p.numel() for p in action_only.parameters()) == sum(
+        p.numel() for p in state_and_action.parameters()
+    )
+    state_and_action.load_state_dict(action_only.state_dict(), strict=True)
+
+
+def test_default_mode_strict_loads_as_identical_residual_architecture() -> None:
+    torch.manual_seed(51)
+    config = _tiny_gemma_config(depth=2)
+    mode_field_missing = VSAActionExpert(config).eval()
+    explicit_residual = VSAActionExpert(
+        config, vision_conditioning_mode=RESIDUAL_CROSS_ATTENTION
+    ).eval()
+    explicit_residual.load_state_dict(mode_field_missing.state_dict(), strict=True)
+    context = torch.randn(2, 2, 32)
+    actions = torch.randn(2, 5, 32)
+    memory = torch.randn(2, 16, 32)
+    condition = torch.randn(2, 32)
+
+    expected = mode_field_missing(context, actions, memory, condition)
+    actual = explicit_residual(context, actions, memory, condition)
+
+    torch.testing.assert_close(actual, expected, atol=0, rtol=0)
+    assert explicit_residual.state_dict().keys() == mode_field_missing.state_dict().keys()
+
+
+def test_cross_attention_debug_reports_attention_and_token_updates() -> None:
+    torch.manual_seed(50)
+    expert = VSAActionExpert(
+        _tiny_gemma_config(depth=4),
+        include_state_in_visual_crossattn=True,
+        include_skill_in_visual_crossattn=True,
+    ).eval()
+    expert.debug_enabled = True
+
+    output = expert(
+        torch.randn(2, 2, 32),
+        torch.randn(2, 5, 32),
+        torch.randn(2, 16, 32),
+        torch.randn(2, 32),
+    )
+
+    assert output.shape == (2, 5, 32)
+    for layer in (1, 3):
+        prefix = f"cross_layer_{layer:02d}"
+        assert 0 <= expert.last_debug_stats[f"{prefix}/attention/normalized_entropy"] <= 1
+        assert 1 <= expert.last_debug_stats[f"{prefix}/attention/effective_memory_tokens"] <= 16
+        assert expert.last_debug_stats[f"{prefix}/action/applied_update_ratio"] >= 0
+        assert expert.last_debug_stats[f"{prefix}/state/applied_update_ratio"] >= 0
+        assert expert.last_debug_stats[f"{prefix}/skill/applied_update_ratio"] >= 0
+        assert expert.last_debug_stats[
+            f"{prefix}/residual_gate/tanh_scale"
+        ] == pytest.approx(torch.tanh(torch.tensor(VISUAL_RESIDUAL_GATE_INIT)).item())
+
+
+def test_latent_debug_detects_collapsed_tokens() -> None:
+    diverse = torch.eye(8).repeat(2, 1, 1)
+    collapsed = torch.ones(2, 8, 8)
+
+    diverse_stats = SkillExpertPytorch._latent_debug_stats(diverse, "camera")
+    collapsed_stats = SkillExpertPytorch._latent_debug_stats(collapsed, "camera")
+
+    assert diverse_stats["visual/camera/effective_rank"] > collapsed_stats[
+        "visual/camera/effective_rank"
+    ]
+    assert collapsed_stats["visual/camera/pair_cosine_mean"] == pytest.approx(1.0)
+    assert collapsed_stats["visual/camera/token_spread_rms"] == pytest.approx(0.0)
+
+
+@pytest.mark.parametrize("batch_size", [1, 3])
+def test_small_expert_forward_backward_has_all_core_gradients(batch_size: int) -> None:
+    torch.manual_seed(6)
+    expert = VSAActionExpert(_tiny_gemma_config())
+    context = torch.randn(batch_size, 2, 32, requires_grad=True)
+    actions = torch.randn(batch_size, 5, 32, requires_grad=True)
+    memory = torch.randn(batch_size, 16, 32, requires_grad=True)
+    time = torch.randn(batch_size, 32, requires_grad=True)
+    for block in expert.blocks:
+        if block.visual_residual_gate is not None:
+            block.visual_residual_gate.data.fill_(0.25)
+
+    output = expert(context, actions, memory, time)
+    output.square().mean().backward()
+
+    assert output.shape == (batch_size, 5, 32)
+    assert torch.isfinite(output).all()
+    assert context.grad is not None and context.grad.abs().sum() > 0
+    assert actions.grad is not None and actions.grad.abs().sum() > 0
+    assert memory.grad is not None and memory.grad.abs().sum() > 0
+    assert expert.blocks[0].self_attention.q_proj.weight.grad is not None
+    assert expert.blocks[1].self_attention.q_proj.weight.grad is not None
+    assert expert.blocks[1].visual_cross_attention.q_proj.weight.grad is not None
+    assert expert.blocks[0].mlp.up_proj.weight.grad is not None
+
+
+class _DummyDINO(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.config = SimpleNamespace(hidden_size=16, num_register_tokens=4)
+        self.proj = nn.Linear(3, 16)
+        self.calls = 0
+
+    def forward(self, image):
+        self.calls += 1
+        pooled = image.mean(dim=(-2, -1))
+        hidden = self.proj(pooled)[:, None].expand(-1, 201, -1)
+        return SimpleNamespace(last_hidden_state=hidden)
+
+
+class _TinyResampler(nn.Module):
+    def __init__(self, dino_width, expert_width, num_latents=8):
+        super().__init__()
+        self.proj = nn.Linear(dino_width, expert_width)
+        self.num_latents = num_latents
+        self.calls = 0
+
+    def forward(self, tokens):
+        self.calls += 1
+        return self.proj(tokens.mean(dim=1))[:, None].expand(
+            -1, self.num_latents, -1
+        )
+
+
+class _TinyExpert(nn.Module):
+    def __init__(self, *args, **kwargs):
+        super().__init__()
+        self.self_attn = nn.Linear(1024, 1024)
+        self.cross_attn = nn.Linear(1024, 1024)
+        self.debug_enabled = False
+        self.last_debug_stats = {}
+
+    def gradient_checkpointing_enable(self):
+        pass
+
+    def forward(self, context, actions, visual_memory, time):
+        return (
+            actions
+            + self.self_attn(context.mean(dim=1))[:, None]
+            + self.cross_attn(visual_memory.mean(dim=1))[:, None]
+            + time[:, None]
+        )
+
+
+def test_global_visual_adarms_zero_init_and_second_step_gradient_path() -> None:
+    dino = _DummyDINO()
     with (
         patch(
             "lerobot.policies.skill_expert.modeling_skill_expert.AutoModel.from_pretrained",
-            return_value=_Dino(),
+            return_value=dino,
         ),
         patch(
-            "lerobot.policies.skill_expert.modeling_skill_expert.build_gemma",
-            side_effect=(nn.Identity(), nn.Identity()),
-        ) as build_gemma_mock,
-    ):
-        model = SkillExpertPytorch(
-            SkillExpertConfig(conditioning_route="stateonly_cond")
-        )
-
-    assert model.state_proj is not None
-    assert model.skill_proj is None
-    assert model._state_condition(torch.randn(2, 32)).shape == (2, model.width)
-    assert model._skill_broadcasts(torch.tensor([0, 26])) == (None, None)
-    assert build_gemma_mock.call_args_list[0].kwargs == {"use_adarms": True}
-    assert build_gemma_mock.call_args_list[1].kwargs == {"use_adarms": True}
-
-
-def test_state_skill_only_cond_uses_state_and_skill_without_dino() -> None:
-    with (
-        patch(
-            "lerobot.policies.skill_expert.modeling_skill_expert.AutoModel.from_pretrained"
-        ) as dino_mock,
-        patch(
-            "lerobot.policies.skill_expert.modeling_skill_expert.build_gemma",
-            side_effect=(nn.Identity(), nn.Identity()),
-        ) as build_gemma_mock,
-    ):
-        model = SkillExpertPytorch(
-            SkillExpertConfig(conditioning_route="state_skill_only_cond")
-        )
-
-    dino_mock.assert_not_called()
-    assert model.dino is None
-    assert model.image_proj is None
-    assert model.state_proj is not None
-    assert model.skill_proj is not None
-    assert model._state_condition(torch.randn(2, 32)).shape == (2, model.width)
-    condition_skill, expert_skill = model._skill_broadcasts(torch.tensor([0, 26]))
-    assert condition_skill is not None and condition_skill.shape == (2, model.width)
-    assert expert_skill is None
-    first = model._condition_tokens([], batch_size=2)
-    second = model._condition_tokens([], batch_size=2)
-    assert first.shape == (2, 1, model.width)
-    torch.testing.assert_close(first, second, rtol=0.0, atol=0.0)
-    assert build_gemma_mock.call_args_list[0].kwargs == {"use_adarms": True}
-    assert build_gemma_mock.call_args_list[1].kwargs == {"use_adarms": True}
-
-
-def test_skillonly_cond_has_no_state_projection_or_cond_adarms() -> None:
-    class _Dino(nn.Module):
-        def __init__(self) -> None:
-            super().__init__()
-            self.anchor = nn.Parameter(torch.zeros(()))
-            self.config = SimpleNamespace(hidden_size=8, num_register_tokens=0)
-
-    with (
-        patch(
-            "lerobot.policies.skill_expert.modeling_skill_expert.AutoModel.from_pretrained",
-            return_value=_Dino(),
+            "lerobot.policies.skill_expert.modeling_skill_expert.CameraPerceiverResampler",
+            _TinyResampler,
         ),
         patch(
-            "lerobot.policies.skill_expert.modeling_skill_expert.build_gemma",
-            side_effect=(nn.Identity(), nn.Identity()),
-        ) as build_gemma_mock,
+            "lerobot.policies.skill_expert.modeling_skill_expert.VSAActionExpert",
+            _TinyExpert,
+        ),
     ):
         model = SkillExpertPytorch(
-            SkillExpertConfig(conditioning_route="skillonly_cond")
+            SkillExpertConfig(vision_conditioning_mode=GLOBAL_VISUAL_ADARMS)
         )
 
-    assert model.state_proj is None
-    assert model.skill_proj is not None
-    assert model._state_condition(torch.randn(2, 32)) is None
-    assert build_gemma_mock.call_args_list[0].kwargs == {"use_adarms": False}
-    assert build_gemma_mock.call_args_list[1].kwargs == {"use_adarms": True}
+    projection = model.visual_condition_projection
+    assert projection is not None
+    assert torch.count_nonzero(projection.weight) == 0
+    assert torch.count_nonzero(projection.bias) == 0
+    ordered_memory = torch.cat(
+        (
+            torch.full((2, 32, 1024), 2.0),
+            torch.full((2, 32, 1024), 5.0),
+        ),
+        dim=1,
+    )
+    pooled = model._pool_visual_memory(ordered_memory)
+    assert pooled.shape == (2, 2048)
+    torch.testing.assert_close(pooled[:, :1024], torch.full((2, 1024), 2.0))
+    torch.testing.assert_close(pooled[:, 1024:], torch.full((2, 1024), 5.0))
+    memory = torch.randn(2, 64, 1024, requires_grad=True)
+    time_condition = torch.randn(2, 1024)
+    first = model._action_condition(memory, time_condition)
+    torch.testing.assert_close(first, time_condition)
+    first.sum().backward()
+    assert projection.weight.grad is not None
+    assert projection.weight.grad.abs().sum() > 0
+    assert memory.grad is not None and torch.count_nonzero(memory.grad) == 0
+
+    torch.optim.SGD(projection.parameters(), lr=1e-4).step()
+    projection.zero_grad(set_to_none=True)
+    memory.grad = None
+    second = model._action_condition(memory, time_condition)
+    second.square().mean().backward()
+    assert memory.grad is not None and memory.grad.abs().sum() > 0
 
 
-def test_visiononly_cond_has_no_state_or_skill_parameters() -> None:
-    class _Dino(nn.Module):
-        def __init__(self) -> None:
-            super().__init__()
-            self.anchor = nn.Parameter(torch.zeros(()))
-            self.config = SimpleNamespace(hidden_size=8, num_register_tokens=0)
+def test_non_global_modes_have_no_visual_condition_projection_parameters() -> None:
+    for mode in (RESIDUAL_CROSS_ATTENTION, IN_CONTEXT_TOKENS):
+        dino = _DummyDINO()
+        with (
+            patch(
+                "lerobot.policies.skill_expert.modeling_skill_expert.AutoModel.from_pretrained",
+                return_value=dino,
+            ),
+            patch(
+                "lerobot.policies.skill_expert.modeling_skill_expert.CameraPerceiverResampler",
+                _TinyResampler,
+            ),
+            patch(
+                "lerobot.policies.skill_expert.modeling_skill_expert.VSAActionExpert",
+                _TinyExpert,
+            ),
+        ):
+            model = SkillExpertPytorch(
+                SkillExpertConfig(vision_conditioning_mode=mode)
+            )
+        assert model.visual_condition_projection is None
+        assert not any(
+            key.startswith("visual_condition_projection")
+            for key in model.state_dict()
+        )
 
+
+@pytest.mark.parametrize("batch_size", [1, 3])
+def test_stage1_flow_and_sampling_cache_vision_once(batch_size: int) -> None:
+    dino = _DummyDINO()
     with (
         patch(
             "lerobot.policies.skill_expert.modeling_skill_expert.AutoModel.from_pretrained",
-            return_value=_Dino(),
+            return_value=dino,
         ),
         patch(
-            "lerobot.policies.skill_expert.modeling_skill_expert.build_gemma",
-            side_effect=(nn.Identity(), nn.Identity()),
-        ) as build_gemma_mock,
+            "lerobot.policies.skill_expert.modeling_skill_expert.CameraPerceiverResampler",
+            _TinyResampler,
+        ),
+        patch(
+            "lerobot.policies.skill_expert.modeling_skill_expert.VSAActionExpert",
+            _TinyExpert,
+        ),
     ):
-        model = SkillExpertPytorch(
-            SkillExpertConfig(conditioning_route="visiononly_cond")
-        )
+        model = SkillExpertPytorch(SkillExpertConfig())
 
-    assert model.state_proj is None
-    assert model.skill_proj is None
-    assert model._state_condition(None) is None
-    assert model._skill_broadcasts(None) == (None, None)
-    assert build_gemma_mock.call_args_list[0].kwargs == {"use_adarms": False}
-    assert build_gemma_mock.call_args_list[1].kwargs == {"use_adarms": True}
+    images = [torch.rand(batch_size, 3, 256, 256) for _ in range(2)]
+    state = torch.randn(batch_size, 32)
+    skill = torch.arange(batch_size) % 27
+    actions = torch.randn(batch_size, 10, 32)
+    residual = model(images, state, skill, actions)
+    residual.square().mean().backward()
 
-
-def test_joint_route_uses_state_only_for_cond_adarms_and_time_only_for_expert() -> None:
-    model = SkillExpertPytorch.__new__(SkillExpertPytorch)
-    nn.Module.__init__(model)
-    model.action_in_proj = nn.Linear(2, 2, bias=False)
-    with torch.no_grad():
-        model.action_in_proj.weight.copy_(torch.eye(2))
-    model.gemma_expert = SimpleNamespace(
-        model=SimpleNamespace(
-            config=SimpleNamespace(num_hidden_layers=1),
-            norm=object(),
-        )
-    )
-    model.cond_encoder = SimpleNamespace(model=object())
-    model._gradient_checkpointing = False
-    captured = {}
-
-    def fake_layer(
-        layer_index,
-        streams,
-        attention_mask,
-        position_ids,
-        adarms_conditions,
-        **kwargs,
+    assert residual.shape == actions.shape
+    assert torch.isfinite(residual).all()
+    assert dino.calls == 1
+    assert model.top_resampler.calls == model.wrist_resampler.calls == 1
+    for module in (
+        dino.proj,
+        model.top_resampler.proj,
+        model.wrist_resampler.proj,
+        model.state_proj,
+        model.skill_proj,
+        model.expert.self_attn,
+        model.expert.cross_attn,
+        model.action_in_proj,
+        model.action_out_proj,
     ):
-        del layer_index, position_ids
-        captured["attention"] = attention_mask
-        captured["action_stream"] = streams[1]
-        captured["adarms"] = adarms_conditions
-        captured["broadcast"] = kwargs["broadcast_cond"]
-        return streams
+        assert module.weight.grad is not None
+    torch.optim.SGD(model.parameters(), lr=1e-4).step()
 
-    condition = torch.zeros(1, 2, 2)
-    actions = torch.tensor([[[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]]])
-    condition_state = torch.tensor([[9.0, 8.0]])
-    expert_time = torch.tensor([[7.0, 6.0]])
-    condition_skill = torch.tensor([[5.0, 4.0]])
+    dino.calls = model.top_resampler.calls = model.wrist_resampler.calls = 0
+    sampled = model.sample_actions(images, state, skill, num_steps=2)
+    assert sampled.shape == actions.shape
+    assert torch.isfinite(sampled).all()
+    assert dino.calls == 1
+    assert model.top_resampler.calls == model.wrist_resampler.calls == 1
+
+
+def test_stage1_scheduled_debug_collects_diversity_and_sensitivity() -> None:
+    dino = _DummyDINO()
     with (
         patch(
-            "lerobot.policies.skill_expert.modeling_skill_expert.compute_layer_complete",
-            side_effect=fake_layer,
+            "lerobot.policies.skill_expert.modeling_skill_expert.AutoModel.from_pretrained",
+            return_value=dino,
         ),
         patch(
-            "lerobot.policies.skill_expert.modeling_skill_expert.layernorm_forward",
-            side_effect=lambda norm, hidden, cond: (hidden, None),
+            "lerobot.policies.skill_expert.modeling_skill_expert.CameraPerceiverResampler",
+            _TinyResampler,
+        ),
+        patch(
+            "lerobot.policies.skill_expert.modeling_skill_expert.VSAActionExpert",
+            _TinyExpert,
         ),
     ):
-        hidden = model._run_joint_hidden(
-            condition,
-            actions,
-            condition_state,
-            expert_time,
-            condition_skill,
-            None,
-        )
+        model = SkillExpertPytorch(
+            SkillExpertConfig(vsa_debug_schedule=(1, 100))
+        ).train()
 
-    assert captured["action_stream"].shape == (1, 3, 2)
-    torch.testing.assert_close(hidden, actions)
-    assert captured["adarms"][0] is condition_state
-    assert captured["adarms"][1] is expert_time
-    assert captured["broadcast"][0] is condition_skill
-    assert captured["broadcast"][1] is None
-    allowed = captured["attention"][0, 0].eq(0)
-    expected = torch.tensor(
-        [
-            [1, 1, 0, 0, 0],
-            [1, 1, 0, 0, 0],
-            [1, 1, 1, 1, 1],
-            [1, 1, 1, 1, 1],
-            [1, 1, 1, 1, 1],
-        ],
-        dtype=torch.bool,
+    model.set_training_step(1)
+    residual = model(
+        [torch.rand(2, 3, 64, 64) for _ in range(2)],
+        torch.randn(2, 32),
+        torch.tensor([0, 13]),
+        torch.randn(2, 10, 32),
     )
-    torch.testing.assert_close(allowed, expected)
+    stats = model._last_vsa_debug_stats
 
+    assert residual.shape == (2, 10, 32)
+    assert "visual/top_latents/effective_rank" in stats
+    assert "visual/cross_camera/centroid_cosine" in stats
+    assert "sensitivity/top_image_shuffle/relative_output_delta" in stats
+    assert "sensitivity/wrist_image_shuffle/relative_output_delta" in stats
+    assert "sensitivity/state_shuffle/relative_output_delta" in stats
+    assert "sensitivity/skill_shuffle/relative_output_delta" in stats
 
-def test_cached_sampling_routes_state_and_skill_through_condition_stream() -> None:
-    class _ConditionModel:
-        def __init__(self) -> None:
-            self.kwargs = None
-
-        def forward(self, **kwargs):
-            self.kwargs = kwargs
-            return SimpleNamespace(past_key_values=[("k", "v")])
-
-    class _ActionModel:
-        def __init__(self) -> None:
-            self.attention = None
-            self.inputs = None
-            self.kwargs = None
-
-        def forward(self, *, inputs_embeds, attention_mask, **kwargs):
-            self.inputs = inputs_embeds
-            self.attention = attention_mask
-            self.kwargs = kwargs
-            return SimpleNamespace(last_hidden_state=inputs_embeds)
-
-    model = SkillExpertPytorch.__new__(SkillExpertPytorch)
-    nn.Module.__init__(model)
-    model.action_in_proj = nn.Linear(2, 2, bias=False)
-    model.action_out_proj = nn.Linear(2, 2, bias=False)
-    with torch.no_grad():
-        model.action_in_proj.weight.copy_(torch.eye(2))
-        model.action_out_proj.weight.copy_(torch.eye(2))
-    condition_model = _ConditionModel()
-    action_model = _ActionModel()
-    model.cond_encoder = SimpleNamespace(model=condition_model)
-    model.gemma_expert = SimpleNamespace(model=action_model)
-    condition_state = torch.tensor([[9.0, 8.0]])
-    condition_skill = torch.tensor([[7.0, 6.0]])
-    expert_time = torch.tensor([[5.0, 4.0]])
-    model._state_condition = lambda state: condition_state
-    model._skill_broadcasts = lambda code: (condition_skill, None)
-    model._expert_condition = lambda time: expert_time
-
-    noise = torch.tensor([[[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]]])
-    sampled = model._sample_with_condition_cache(
-        torch.zeros(1, 2, 2),
-        noise,
-        torch.zeros(1, 2),
-        torch.tensor([0]),
-        num_steps=1,
+    model.set_training_step(2)
+    model(
+        [torch.rand(2, 3, 64, 64) for _ in range(2)],
+        torch.randn(2, 32),
+        torch.tensor([1, 2]),
+        torch.randn(2, 10, 32),
     )
-
-    # Identity fake velocity makes one Euler step map x -> 0.
-    torch.testing.assert_close(sampled, torch.zeros_like(noise))
-    assert condition_model.kwargs["adarms_cond"] is condition_state
-    assert condition_model.kwargs["broadcast_cond"] is condition_skill
-    assert action_model.inputs.shape == (1, 3, 2)
-    assert action_model.kwargs["adarms_cond"] is expert_time
-    assert action_model.kwargs["broadcast_cond"] is None
-    allowed = action_model.attention[0, 0].eq(0)
-    expected = torch.ones(3, 5, dtype=torch.bool)
-    torch.testing.assert_close(allowed, expected)
+    assert model._last_vsa_debug_stats == {}
 
 
-def test_action_validity_keeps_cross_skill_tail_and_masks_only_episode_padding() -> None:
-    actions = torch.tensor(
-        [[[1.0, 2.0, 0.1], [3.0, 4.0, 0.2], [5.0, 6.0, 0.3]]]
-    )
-    batch = {
-        "skill_de": torch.tensor([0]),
-        "action_is_pad": torch.tensor([[False, False, True]]),
-    }
-
-    valid = SkillExpertPolicy._valid_action_steps(actions, batch)
-
-    assert valid.tolist() == [[True, True, False]]
-
-
-class _CaptureActionResidual(nn.Module):
-    def __init__(self) -> None:
-        super().__init__()
-        self.anchor = nn.Parameter(torch.zeros(()))
-        self.seen_actions = None
-        self.seen_state = None
-        self.seen_skill = None
-
-    def forward(self, images, state, skill_code, actions):
-        del images
-        self.seen_state = state
-        self.seen_skill = skill_code
-        self.seen_actions = actions.detach().clone()
-        self._last_predicted_actions = actions.clone()
-        self._last_predicted_actions[:, :2, 0] += 1.0
-        return torch.tensor(
-            [[[1.0, 1.0, 1.0], [2.0, 2.0, 2.0], [100.0, 100.0, 100.0]]],
-            device=actions.device,
-        )
-
-
-def test_stage1_forward_matches_stage0_unconditional_action_target_and_mask() -> None:
+def test_optimizer_covers_every_trainable_parameter_once_and_scales_dino() -> None:
     policy = SkillExpertPolicy.__new__(SkillExpertPolicy)
     nn.Module.__init__(policy)
     policy.config = SimpleNamespace(
-        max_action_dim=3,
-        max_state_dim=2,
-        output_features={ACTION: SimpleNamespace(shape=(3,))},
-        train_terminator=False,
-        action_loss_mode="flow",
+        optimizer_lr=2.5e-5, dino_lr_scale=0.1, terminator_lr_scale=1.0
     )
-    policy.model = _CaptureActionResidual()
-    policy._collect_images = lambda batch: []
-    policy._skill_code = lambda batch: torch.zeros(1, dtype=torch.long)
-    policy._last_transition_jitter_fraction = torch.zeros(())
-    actions = torch.tensor(
-        [[[1.0, 2.0, 0.1], [3.0, 4.0, 0.2], [5.0, 6.0, 0.3]]]
-    )
-    batch = {
-        ACTION: actions,
-        OBS_STATE: torch.zeros(1, 2),
-        "skill_de": torch.tensor([0]),
-        "action_is_pad": torch.tensor([[False, False, True]]),
-    }
-
-    loss, metrics = policy.forward(batch)
-
-    torch.testing.assert_close(policy.model.seen_actions, actions)
-    torch.testing.assert_close(loss, torch.tensor(2.5))
-    assert metrics["action_loss"] == pytest.approx(2.5)
-    assert metrics["loss_per_dim"] == pytest.approx([2.5, 2.5, 2.5])
-
-
-def test_skillonly_cond_action_path_does_not_read_state_from_batch() -> None:
-    policy = SkillExpertPolicy.__new__(SkillExpertPolicy)
-    nn.Module.__init__(policy)
-    policy.config = SimpleNamespace(
-        conditioning_route="skillonly_cond",
-        max_action_dim=3,
-        max_state_dim=2,
-        output_features={ACTION: SimpleNamespace(shape=(3,))},
-        train_terminator=False,
-        action_loss_mode="flow",
-    )
-    policy.model = _CaptureActionResidual()
-    policy._collect_images = lambda batch: []
-    policy._skill_code = lambda batch: torch.zeros(1, dtype=torch.long)
-    policy._last_transition_jitter_fraction = torch.zeros(())
-    batch = {
-        ACTION: torch.zeros(1, 3, 3),
-        "action_is_pad": torch.zeros(1, 3, dtype=torch.bool),
-    }
-
-    policy.forward(batch)
-
-    assert policy.model.seen_state is None
-
-
-def test_state_skill_only_cond_action_path_does_not_read_images() -> None:
-    policy = SkillExpertPolicy.__new__(SkillExpertPolicy)
-    nn.Module.__init__(policy)
-    policy.config = SimpleNamespace(
-        conditioning_route="state_skill_only_cond",
-        max_action_dim=3,
-        max_state_dim=2,
-        output_features={ACTION: SimpleNamespace(shape=(3,))},
-        train_terminator=False,
-        action_loss_mode="flow",
-        training_skill_source="gt",
-    )
-    policy.model = _CaptureActionResidual()
-    policy._collect_images = lambda batch: pytest.fail(
-        "state_skill_only_cond read images"
-    )
-    policy._training_skill_code = lambda batch: torch.zeros(1, dtype=torch.long)
-    policy._last_transition_jitter_fraction = torch.zeros(())
-    policy._last_predicted_skill_accuracy = None
-    policy._last_predicted_diff_from_current = None
-    policy._last_unique_predicted_skills = None
-    batch = {
-        ACTION: torch.zeros(1, 3, 3),
-        OBS_STATE: torch.zeros(1, 2),
-        "action_is_pad": torch.zeros(1, 3, dtype=torch.bool),
-    }
-
-    policy.forward(batch)
-
-    assert policy.model.seen_state is not None
-    assert policy.model.seen_skill is not None
-
-
-def test_visiononly_cond_action_path_does_not_read_state_or_skill() -> None:
-    policy = SkillExpertPolicy.__new__(SkillExpertPolicy)
-    nn.Module.__init__(policy)
-    policy.config = SimpleNamespace(
-        conditioning_route="visiononly_cond",
-        max_action_dim=3,
-        max_state_dim=2,
-        output_features={ACTION: SimpleNamespace(shape=(3,))},
-        train_terminator=False,
-        action_loss_mode="flow",
-        training_skill_source="gt",
-    )
-    policy.model = _CaptureActionResidual()
-    policy._collect_images = lambda batch: []
-    policy._skill_code = lambda batch: pytest.fail("visiononly_cond read skill")
-    policy._last_transition_jitter_fraction = torch.zeros(())
-    batch = {
-        ACTION: torch.zeros(1, 3, 3),
-        "action_is_pad": torch.zeros(1, 3, dtype=torch.bool),
-    }
-
-    policy.forward(batch)
-
-    assert policy.model.seen_state is None
-    assert policy.model.seen_skill is None
-
-
-def test_endpoint_xyz_loss_matches_stage0_accumulated_delta_definition() -> None:
-    predicted = torch.zeros(2, 3, 4, requires_grad=True)
-    with torch.no_grad():
-        predicted[0, 0, 0] = 1.0
-        predicted[0, 1, 0] = -1.0
-        predicted[1, 0, 0] = 1.0
-        predicted[1, 1, 0] = 100.0
-    target = torch.zeros_like(predicted)
-    valid = torch.tensor([[True, True, True], [True, False, False]])
-
-    loss, per_sample = SkillExpertPolicy._endpoint_xyz_loss(
-        predicted, target, valid
-    )
-    loss.backward()
-
-    torch.testing.assert_close(per_sample, torch.tensor([0.0, 1.0 / 3.0]))
-    torch.testing.assert_close(loss.detach(), torch.tensor(1.0 / 6.0))
-    assert predicted.grad is not None
-    assert torch.count_nonzero(predicted.grad[1, 1:]) == 0
-    assert torch.count_nonzero(predicted.grad[..., 3:]) == 0
-
-
-def test_stage1_can_mix_flow_and_endpoint_xyz_half_and_half() -> None:
-    policy = SkillExpertPolicy.__new__(SkillExpertPolicy)
-    nn.Module.__init__(policy)
-    policy.config = SimpleNamespace(
-        max_action_dim=3,
-        max_state_dim=2,
-        output_features={ACTION: SimpleNamespace(shape=(3,))},
-        train_terminator=False,
-        action_loss_mode="flow_endpoint_xyz",
-    )
-    policy.model = _CaptureActionResidual()
-    policy._collect_images = lambda batch: []
-    policy._skill_code = lambda batch: torch.zeros(1, dtype=torch.long)
-    policy._last_transition_jitter_fraction = torch.zeros(())
-    batch = {
-        ACTION: torch.tensor(
-            [[[1.0, 2.0, 0.1], [3.0, 4.0, 0.2], [5.0, 6.0, 0.3]]]
-        ),
-        OBS_STATE: torch.zeros(1, 2),
-        "action_is_pad": torch.tensor([[False, False, True]]),
-    }
-
-    loss, metrics = policy.forward(batch)
-
-    assert metrics["action_loss"] == pytest.approx(2.5)
-    assert metrics["endpoint_xyz_loss"] == pytest.approx(4.0 / 3.0)
-    assert metrics["action_flow_weight"] == 0.5
-    assert metrics["action_endpoint_weight"] == 0.5
-    torch.testing.assert_close(loss, torch.tensor(23.0 / 12.0))
-
-
-class _FakePredictor(nn.Module):
-    def __init__(self) -> None:
-        super().__init__()
-        self.vlm = nn.Linear(2, 2, bias=False)
-        self.skill_lora = nn.Linear(2, 2, bias=False)
-        self.reader = nn.Linear(2, 2, bias=False)
-        self.head = nn.Linear(2, 1, bias=False)
-        self.lora_layer_count = 1
-        self.requires_grad_(False)
-
-    def reader_head_parameters(self) -> list[nn.Parameter]:
-        return [*self.reader.parameters(), *self.head.parameters()]
-
-    def lora_parameters(self) -> list[nn.Parameter]:
-        return list(self.skill_lora.parameters())
-
-    def auxiliary_parameters(self) -> list[nn.Parameter]:
-        return [*self.reader_head_parameters(), *self.lora_parameters()]
-
-    def loss(self, images, language_tokens, language_mask, skill_code):
-        del images, language_tokens, language_mask, skill_code
-        objective = (
-            self.reader.weight.square().mean()
-            + self.head.weight.square().mean()
-            + self.skill_lora.weight.square().mean()
-        )
-        return objective, 0.25
-
-    def predict(self, images, language_tokens, language_mask):
-        del images, language_tokens, language_mask
-        return torch.tensor([6])
-
-
-class _FakeAccelerator:
-    def __init__(self) -> None:
-        self.clipped_ids: set[int] = set()
-
-    @staticmethod
-    def autocast():
-        return nullcontext()
-
-    @staticmethod
-    def backward(loss: torch.Tensor) -> None:
-        loss.backward()
-
-    def clip_grad_norm_(self, params, max_norm):
-        params = list(params)
-        self.clipped_ids = {id(parameter) for parameter in params}
-        return torch.nn.utils.clip_grad_norm_(params, max_norm)
-
-
-def test_skill_predictor_auxiliary_step_is_parameter_and_clip_isolated() -> None:
-    policy = SkillExpertPolicy.__new__(SkillExpertPolicy)
-    nn.Module.__init__(policy)
-    policy.config = SimpleNamespace(
-        train_skill_predictor=True,
-        skill_vocab_size=27,
-        skill_predictor_weight=0.5,
-        skill_predictor_lr_scale=0.25,
-        skill_predictor_lora_lr_scale=10.0,
-        skill_predictor_all_layers=False,
-        skill_predictor_deadzone_frac=0.8,
-        optimizer_lr=1e-3,
-        optimizer_betas=(0.9, 0.95),
-        optimizer_eps=1e-8,
-        optimizer_weight_decay=0.0,
-        freeze_vision_encoder=True,
-        dino_lr=None,
-    )
-    holder = nn.Module()
-    holder.main_weight = nn.Parameter(torch.tensor([3.0]))
-    holder.skill_predictor = _FakePredictor()
-    policy.model = holder
-    auxiliary = holder.skill_predictor.auxiliary_parameters()
-    main_optimizer_ids = {
-        id(parameter)
-        for group in policy.get_optim_params()
-        for parameter in group["params"]
-    }
-    assert id(holder.main_weight) in main_optimizer_ids
-    assert not main_optimizer_ids & {
-        id(parameter) for parameter in holder.skill_predictor.parameters()
-    }
-    reader_before = holder.skill_predictor.reader.weight.detach().clone()
-    lora_before = holder.skill_predictor.skill_lora.weight.detach().clone()
-    vlm_before = holder.skill_predictor.vlm.weight.detach().clone()
-    main_before = holder.main_weight.detach().clone()
-    accelerator = _FakeAccelerator()
-    batch = {
-        "skill_start_image": torch.zeros(2, 3, 4, 4),
-        "skill_start_wrist_image": torch.zeros(2, 3, 4, 4),
-        "skill_code": torch.tensor([0, 1]),
-        OBS_LANGUAGE_TOKENS: torch.zeros(2, 3, dtype=torch.long),
-        OBS_LANGUAGE_ATTENTION_MASK: torch.ones(2, 3, dtype=torch.bool),
-    }
-
-    metrics = policy.isolated_auxiliary_step(
-        batch, accelerator, grad_clip_norm=1.0, current_lr=2e-4
-    )
-
-    assert not torch.equal(holder.skill_predictor.reader.weight, reader_before)
-    assert not torch.equal(holder.skill_predictor.skill_lora.weight, lora_before)
-    torch.testing.assert_close(holder.skill_predictor.vlm.weight, vlm_before)
-    torch.testing.assert_close(holder.main_weight, main_before)
-    assert accelerator.clipped_ids == {id(parameter) for parameter in auxiliary}
-    assert all(not parameter.requires_grad and parameter.grad is None for parameter in auxiliary)
-    assert metrics["skill_predictor/skill_acc"] == 0.25
-    assert metrics["skill_predictor/lr"] == pytest.approx(5e-5)
-    assert metrics["skill_predictor/lora_lr"] == pytest.approx(2e-3)
-    assert metrics["skill_predictor/lora_layers"] == 1.0
-
-
-def test_runtime_skill_prediction_uses_current_images_and_language_tokens() -> None:
-    policy = SkillExpertPolicy.__new__(SkillExpertPolicy)
-    nn.Module.__init__(policy)
-    holder = nn.Module()
-    holder.anchor = nn.Parameter(torch.zeros(()))
-    holder.skill_predictor = _FakePredictor()
-    policy.model = holder
-    def collect_images(batch):
-        return [batch["image"]]
-
-    policy._collect_images = collect_images
-    batch = {
-        "image": torch.zeros(1, 3, 4, 4),
-        OBS_LANGUAGE_TOKENS: torch.zeros(1, 3, dtype=torch.long),
-        OBS_LANGUAGE_ATTENTION_MASK: torch.ones(1, 3, dtype=torch.bool),
-    }
-
-    prediction = policy.predict_skill_code(batch)
-
-    assert prediction.tolist() == [6]
-
-
-def test_stage1_action_conditioning_uses_predictor_output_not_jittered_gt() -> None:
-    policy = SkillExpertPolicy.__new__(SkillExpertPolicy)
-    nn.Module.__init__(policy)
-    policy.config = SimpleNamespace(
-        training_skill_source="predictor",
-        skill_vocab_size=27,
-    )
-    holder = nn.Module()
-    holder.anchor = nn.Parameter(torch.zeros(()))
-    holder.skill_predictor = _FakePredictor()
-    policy.model = holder
-    policy._skill_code = lambda batch: torch.tensor([5])
-    batch = {
-        "skill_start_image": torch.zeros(1, 3, 4, 4),
-        "skill_start_wrist_image": torch.zeros(1, 3, 4, 4),
-        "skill_code_true": torch.tensor([6]),
-        OBS_LANGUAGE_TOKENS: torch.zeros(1, 3, dtype=torch.long),
-        OBS_LANGUAGE_ATTENTION_MASK: torch.ones(1, 3, dtype=torch.bool),
-    }
-
-    conditioning = policy._training_skill_code(batch)
-
-    assert conditioning.tolist() == [6]
-    assert policy._last_predicted_skill_accuracy.item() == 0.0
-    assert policy._last_predicted_diff_from_current.item() == 0.0
-
-
-class _FakeTerminatorModel(nn.Module):
-    def __init__(self) -> None:
-        super().__init__()
-        self.main_weight = nn.Parameter(torch.tensor([3.0]))
-        self.fsq_term_train = nn.Linear(1, 2, bias=False)
-
-    def terminator_predict(self, true_code, raw_state, image, wrist_image):
-        del true_code, raw_state, image, wrist_image
-        output = self.fsq_term_train(torch.ones(2, 1))
-        return output[:, 0], output[:, 1]
-
-
-def test_terminator_loss_optimizer_and_clipping_are_vsa_disjoint() -> None:
-    policy = SkillExpertPolicy.__new__(SkillExpertPolicy)
-    nn.Module.__init__(policy)
-    policy.config = SimpleNamespace(
-        train_terminator=True,
-        skill_vocab_size=27,
-        terminator_end_target_sigma=2.0,
-        terminator_end_pos_weight=1.0,
-        terminator_lr_scale=0.5,
-        optimizer_lr=2e-4,
-        freeze_vision_encoder=True,
-        dino_lr=None,
-    )
-    policy.model = _FakeTerminatorModel()
-    batch = {
-        "skill_code_true": torch.tensor([0, 1]),
-        "skill_ds": torch.tensor([0, 2]),
-        "skill_de": torch.tensor([2, 0]),
-        "skill_decoder_state": torch.zeros(2, 3),
-        "observation.images.image": torch.zeros(2, 3, 4, 4),
-        "observation.images.wrist_image": torch.zeros(2, 3, 4, 4),
-    }
-
-    term_loss, progress_loss, end_loss = policy._terminator_loss(batch)
-    term_loss.backward()
-
-    assert term_loss.detach() == progress_loss.detach() + end_loss.detach()
-    assert policy.model.main_weight.grad is None
-    term_parameters = list(policy.model.fsq_term_train.parameters())
-    assert all(parameter.grad is not None for parameter in term_parameters)
-    isolated = policy.isolated_main_optimizer_grad_groups()
-    assert isolated == {"terminator": term_parameters}
+    policy.model = nn.Module()
+    policy.model.dino = nn.Linear(4, 4)
+    policy.model.body = nn.Linear(4, 4)
+    policy.model.fsq_term_train = None
 
     groups = policy.get_optim_params()
-    term_ids = {id(parameter) for parameter in term_parameters}
-    term_group = next(
-        group
-        for group in groups
-        if {id(parameter) for parameter in group["params"]} == term_ids
+    grouped = [parameter for group in groups for parameter in group["params"]]
+    expected = [parameter for parameter in policy.parameters() if parameter.requires_grad]
+
+    assert len(grouped) == len({id(parameter) for parameter in grouped})
+    assert {id(parameter) for parameter in grouped} == {id(parameter) for parameter in expected}
+    dino_group = next(group for group in groups if group["group_name"] == "dino")
+    assert dino_group["lr"] == pytest.approx(2.5e-6)
+    assert dino_group["lr_scale"] == 0.1
+
+    optimizer = torch.optim.AdamW(groups, lr=policy.config.optimizer_lr)
+    scheduler = SkillExpertConfig().get_scheduler_preset().build(optimizer, 30_000)
+    for _ in range(3):
+        optimizer.step()
+        scheduler.step()
+        assert optimizer.param_groups[1]["lr"] == pytest.approx(
+            optimizer.param_groups[0]["lr"] * 0.1
+        )
+
+
+def test_pi05_initialization_mapping_is_explicit_and_has_no_cond_path() -> None:
+    assert _map_pi05_key(
+        "paligemma_with_expert.gemma_expert.model.layers.0.self_attn.q_proj.weight"
+    ) == "model.expert.blocks.0.self_attention.q_proj.weight"
+    assert _map_pi05_key(
+        "paligemma_with_expert.gemma_expert.model.layers.1.self_attn.q_proj.weight"
+    ) == "model.expert.blocks.1.self_attention.q_proj.weight"
+    assert _map_pi05_key(
+        "paligemma_with_expert.gemma_expert.model.layers.1.mlp.up_proj.weight"
+    ) == "model.expert.blocks.1.mlp.up_proj.weight"
+    assert _map_pi05_key(
+        "paligemma_with_expert.gemma_expert.model.layers.0.input_layernorm.dense.weight"
+    ) == "model.expert.blocks.0.self_attention_norm.action_norm.dense.weight"
+    assert _map_pi05_key("action_in_proj.weight") == "model.action_in_proj.weight"
+    assert _map_pi05_key(
+        "paligemma_with_expert.paligemma.model.language_model.layers.0.mlp.up_proj.weight"
+    ) is None
+
+
+def test_pi05_missing_allowlist_is_mode_specific() -> None:
+    residual = SkillExpertConfig(
+        vision_conditioning_mode=RESIDUAL_CROSS_ATTENTION
     )
-    assert term_group["lr"] == pytest.approx(1e-4)
-    base_ids = {
-        id(parameter)
-        for group in groups
-        if group is not term_group
-        for parameter in group["params"]
-    }
-    assert id(policy.model.main_weight) in base_ids
-    assert not base_ids & term_ids
+    in_context = SkillExpertConfig(vision_conditioning_mode=IN_CONTEXT_TOKENS)
+    global_adarms = SkillExpertConfig(
+        vision_conditioning_mode=GLOBAL_VISUAL_ADARMS
+    )
+    cross_key = "model.expert.blocks.1.visual_cross_attention.q_proj.weight"
+    global_key = "model.visual_condition_projection.weight"
+
+    assert _allowed_pi05_missing_key("model.top_resampler.latents", residual)
+    assert _allowed_pi05_missing_key(
+        "model.expert.blocks.0.self_attention_norm.context_norm.weight",
+        residual,
+    )
+    assert _allowed_pi05_missing_key(cross_key, residual)
+    assert not _allowed_pi05_missing_key(cross_key, in_context)
+    assert _allowed_pi05_missing_key(global_key, global_adarms)
+    assert not _allowed_pi05_missing_key(global_key, residual)
+    assert not _allowed_pi05_missing_key(
+        "model.expert.blocks.0.self_attention.q_proj.weight", residual
+    )
+    assert not _allowed_pi05_missing_key("model.action_in_proj.weight", residual)

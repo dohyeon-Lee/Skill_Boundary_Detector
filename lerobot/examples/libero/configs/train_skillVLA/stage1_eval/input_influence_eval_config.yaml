@@ -1,0 +1,56 @@
+# Offline paired counterfactual analysis for Stage-1 inputs.
+# Replace/add models here. One array worker (one GPU) is assigned per model.
+outputs_root: outputs_filtered
+
+models:
+  # This is the expected name of the new residual-SA18/gate-0.1 run. Change the
+  # checkpoint after training has produced the desired pretrained_model folder.
+  - model_dir: libero_90_full_firsthalf_scene_FSQ333_125_std_pt_episodemean_80p_snap10_pmax15_halfnormal_dino_tuned_vsa_perceiver_crossattn_flow_state_skill_visual_query_bs96
+    checkpoint: "015000"
+    skill_source: gt
+    advance_mode: gt
+    label: crossatten_bs96
+
+  - model_dir: libero_90_full_firsthalf_scene_FSQ333_125_std_pt_episodemean_80p_snap10_pmax15_halfnormal_dino_tuned_vsa_perceiver_crossattn_flow_state_skill_visual_query_bs64
+    checkpoint: "015000"
+    skill_source: gt
+    advance_mode: gt
+    label: crossatten_bs64
+
+  - model_dir: libero_90_full_firsthalf_scene_FSQ333_125_std_pt_episodemean_80p_snap10_pmax15_halfnormal_dino_tuned_vsa_perceiver_crossattn_flow_state_skill_visual_query
+    checkpoint: "015000"
+    skill_source: gt
+    advance_mode: gt
+    label: crossatten_bs16
+
+  # Add more models in the same form. They are evaluated in parallel and merged
+  # into one HTML/CSV summary.
+  # - model_dir: another_stage1_run
+  #   checkpoint: "010000"
+  #   skill_source: gt
+  #   advance_mode: gt
+  #   label: another_model
+
+output_name: input_influence
+eval_num_gpus: 3
+
+analysis:
+  n_frames: 512
+  batch_size: 16
+  num_workers: 4
+  seed: 1000
+  # null uses the checkpoint's normal inference-step count.
+  num_inference_steps: null
+  save_per_sample: true
+  perturbations:
+    - state_swap
+    - top_image_swap
+    - wrist_image_swap
+    - image_swap
+    - skill_swap
+    - all_inputs_swap
+
+# Existing Stage-1 config resolver also reads these harmless offline defaults.
+oracle: {episode_exact: true, advance_mode: gt}
+logging: {wandb: {enable: false}}
+slurm: {gres: "gpu:1", cpus: 8, memory: 64G, time: "4:00:00"}

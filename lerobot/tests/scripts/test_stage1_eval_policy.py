@@ -68,6 +68,93 @@ def _batch():
     }
 
 
+@pytest.mark.parametrize(
+    ("include_state", "include_skill"),
+    [(False, False), (True, False), (False, True), (True, True)],
+)
+def test_policy_config_keeps_checkpoint_visual_query_switches(
+    monkeypatch, include_state: bool, include_skill: bool
+) -> None:
+    loaded = SimpleNamespace(
+        include_state_in_visual_crossattn=include_state,
+        include_skill_in_visual_crossattn=include_skill,
+    )
+    monkeypatch.setattr(
+        run_eval.PreTrainedConfig,
+        "from_pretrained",
+        lambda *args, **kwargs: loaded,
+    )
+
+    result = run_eval._policy_config(
+        {
+            "policy_path": "/tmp/new-stage1",
+            "include_state_in_visual_crossattn": include_state,
+            "include_skill_in_visual_crossattn": include_skill,
+            "fsq_path": "/tmp/fsq",
+            "dino_model_path": "/tmp/dino",
+            "terminator_dino_model_path": "/tmp/term-dino",
+            "tokenizer_path": "/tmp/tokenizer",
+        },
+        SimpleNamespace(use_amp=False, n_action_steps=5),
+        torch.device("cpu"),
+    )
+
+    assert result.include_state_in_visual_crossattn is include_state
+    assert result.include_skill_in_visual_crossattn is include_skill
+
+
+def test_policy_config_rejects_visual_query_contract_drift(monkeypatch) -> None:
+    loaded = SimpleNamespace(
+        include_state_in_visual_crossattn=False,
+        include_skill_in_visual_crossattn=False,
+    )
+    monkeypatch.setattr(
+        run_eval.PreTrainedConfig,
+        "from_pretrained",
+        lambda *args, **kwargs: loaded,
+    )
+
+    with pytest.raises(RuntimeError, match="contract changed.*include_state"):
+        run_eval._policy_config(
+            {
+                "policy_path": "/tmp/new-stage1",
+                "include_state_in_visual_crossattn": True,
+            },
+            SimpleNamespace(use_amp=False, n_action_steps=5),
+            torch.device("cpu"),
+        )
+
+
+def test_policy_config_keeps_checkpoint_vision_mode(monkeypatch) -> None:
+    loaded = SimpleNamespace(
+        vision_conditioning_mode="in_context_tokens",
+        include_state_in_visual_crossattn=True,
+        include_skill_in_visual_crossattn=True,
+    )
+    monkeypatch.setattr(
+        run_eval.PreTrainedConfig,
+        "from_pretrained",
+        lambda *args, **kwargs: loaded,
+    )
+
+    result = run_eval._policy_config(
+        {
+            "policy_path": "/tmp/in-context-stage1",
+            "vision_conditioning_mode": "in_context_tokens",
+            "include_state_in_visual_crossattn": True,
+            "include_skill_in_visual_crossattn": True,
+            "fsq_path": "/tmp/fsq",
+            "dino_model_path": "/tmp/dino",
+            "terminator_dino_model_path": "/tmp/term-dino",
+            "tokenizer_path": "/tmp/tokenizer",
+        },
+        SimpleNamespace(use_amp=False, n_action_steps=5),
+        torch.device("cpu"),
+    )
+
+    assert result.vision_conditioning_mode == "in_context_tokens"
+
+
 def test_oracle_defers_terminator_advance_until_fixed_replan() -> None:
     expert = _FakeExpert()
     wrapper = Stage1OraclePolicy(
@@ -178,52 +265,6 @@ def test_gt_timed_advancement_does_not_call_a_terminator() -> None:
     assert [call.item() for call in expert.calls] == [7]
 
 
-def test_stage2_gt_eval_keeps_vlm_needed_by_likelihood(monkeypatch) -> None:
-    class _Policy(nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.config = SkillExpertConfig(n_action_steps=2, chunk_size=2)
-            self.model = SimpleNamespace(
-                skill_predictor=object(), fsq_term_train=object()
-            )
-
-        def reset(self):
-            return None
-
-        def get_optim_params(self):
-            return []
-
-    policy = _Policy()
-    resolved_config = SimpleNamespace(
-        type="skill_vla_stage2",
-        n_action_steps=2,
-        pretrained_path=Path("/tmp/stage2"),
-        use_amp=False,
-    )
-    monkeypatch.setattr(run_eval, "_policy_config", lambda *args: resolved_config)
-    monkeypatch.setattr(run_eval, "make_policy", lambda **kwargs: policy)
-    monkeypatch.setattr(
-        run_eval, "make_pre_post_processors", lambda **kwargs: (object(), object())
-    )
-    monkeypatch.setenv("SKILL_END_MODE", "or")
-    monkeypatch.setenv("SKILL_END_THRESHOLD", "0.5")
-    monkeypatch.setenv("SKILL_END_PROGRESS_THRESHOLD", "0.9")
-    monkeypatch.setenv("INFERENCE_SKILL_MAX_LENGTH", "200")
-
-    context = run_eval._build_context(
-        {
-            "label": "stage2-gt",
-            "skill_source": "gt",
-            "advance_mode": "terminator",
-            "tokenizer_path": "/tmp/tokenizer",
-        },
-        SimpleNamespace(policy=object(), env=object(), rename_map={}),
-        torch.device("cpu"),
-    )
-
-    assert context["policy"].policy.model.skill_predictor is not None
-
-
 @pytest.mark.parametrize("skill_source", ["gt", "own", "external"])
 @pytest.mark.parametrize("advance_mode", ["gt", "own", "external"])
 def test_stage1_eval_selects_own_external_or_gt_skill_modules(
@@ -272,6 +313,17 @@ def test_stage1_eval_selects_own_external_or_gt_skill_modules(
     monkeypatch.setattr(
         run_eval, "make_pre_post_processors", lambda **kwargs: (object(), object())
     )
+    monkeypatch.setattr(
+        run_eval,
+        "_saved_preprocessor_step_names",
+        lambda *args: [
+            "rename_observations_processor",
+            "to_batch_processor",
+            "normalizer_processor",
+            "device_processor",
+        ],
+    )
+    monkeypatch.setattr(run_eval, "_ensure_skill_runtime_steps", lambda *args, **kwargs: None)
     monkeypatch.setenv("SKILL_END_MODE", "or")
     monkeypatch.setenv("SKILL_END_THRESHOLD", "0.5")
     monkeypatch.setenv("SKILL_END_PROGRESS_THRESHOLD", "0.9")
