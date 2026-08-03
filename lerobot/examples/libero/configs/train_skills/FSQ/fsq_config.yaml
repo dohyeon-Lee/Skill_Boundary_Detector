@@ -4,17 +4,17 @@
 # and DP/checkpoint/mode/threshold/min-length provenance comes from the selected
 # skillset_manifest.json.
 fsq_dataset_root: FSQ_dataset
-target_dataset: libero_90_full_full # libero_90_full_full | langgap_56_full_full 
+target_dataset: langgap_56_full_full # libero_90_full_full | langgap_56_full_full 
 fsq_inputs_name: FSQ_inputs
-# skillset_seg_name: seg_langgap_56_full_full_state_obs20_ck100000_std_episodemean_80p
-skillset_seg_name: seg_libero_90_full_full_state_obs20_ck100000_std_episodemean_80p
+skillset_seg_name: seg_langgap_56_full_full_state_obs20_ck100000_std_episodemean_80p
+# skillset_seg_name: seg_libero_90_full_full_state_obs20_ck100000_std_episodemean_80p
 skillset_name: skillset
 # ── FSQ model / run ──
 # Run name defaults to {target_dataset}_{dp_tag}_{fsq_tag}{fsq_exp_suffix}; dp_tag
 # is taken from the selected seg folder with the dataset prefix stripped. Thus
 # checkpoint/mode/threshold/manual artifact tags remain exact without duplicating
 # them as YAML knobs. Set fsq_exp to separate model-side experiments.
-fsq_exp: ""                 # suffix prevents incompatible checkpoint auto-resume
+fsq_exp: "fast"                 # suffix prevents incompatible checkpoint auto-resume
 fsq_levels: [3, 3, 3] # [3, 4, 5]    # [8, 8] | [5, 5, 5]
 
 # FSQ trajectory encoder input. optimal = zero-grounded trajectory plus ONE extra learned token
@@ -29,7 +29,7 @@ fsq_terminator_heads: 4                 # small only
 fsq_vision_backbone: dino               # dino | siglip
 fsq_freeze_vision_encoder: true         # false enables end-to-end visual fine-tuning 3
 # Relative paths are resolved from project_root, so this works on every scratch mount.
-fsq_dino_model_path: models/dinov3-vitl16
+fsq_dino_model_path: models/dinov3-vits16 # vitl16
 fsq_dino_image_size: 224
 fsq_siglip_image_size: 224
 fsq_cond_encoder_variant: gemma_300m

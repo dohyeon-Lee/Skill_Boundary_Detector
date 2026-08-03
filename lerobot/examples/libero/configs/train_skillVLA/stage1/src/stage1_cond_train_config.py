@@ -111,6 +111,17 @@ def build_settings(config: dict) -> dict:
     dataset_dir = skillvla_root / source / run_tag / "skillvla"
     contract = _read_dataset_contract(dataset_dir, run_tag)
 
+    training_steps = int(
+        _at(config, "training", "schedule", "steps", default=50000)
+    )
+    scheduler_decay_steps = int(
+        _at(config, "training", "schedule", "lr_decay_steps", default=30000)
+    )
+    if training_steps <= 0:
+        raise ValueError("training.schedule.steps must be positive.")
+    if scheduler_decay_steps <= 0:
+        raise ValueError("training.schedule.lr_decay_steps must be positive.")
+
     pi_base = _local_model_path(
         project_root, str(_at(config, "warm_start", "pi_base", default="models/pi05_base"))
     )
@@ -427,7 +438,8 @@ def build_settings(config: dict) -> dict:
             _at(config, "training", "gradient_checkpointing", default=True)
         ),
         "lr": base_lr * num_gpus,
-        "steps": int(_at(config, "training", "schedule", "steps", default=50000)),
+        "steps": training_steps,
+        "scheduler_decay_steps": scheduler_decay_steps,
         "log_freq": int(
             _at(config, "training", "schedule", "log_every", default=100)
         ),

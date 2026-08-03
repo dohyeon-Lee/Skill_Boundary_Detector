@@ -41,6 +41,7 @@ else
 fi
 echo "predict : pi0.5 VLM skill-LoRA=${SKILL_PREDICTOR_LORA} all_layers=${SKILL_PREDICTOR_ALL_LAYERS} deadzone=${SKILL_PREDICTOR_DEADZONE_FRAC}"
 echo "term    : FSQ ${FSQ_PATH}   train=${TRAIN_TERMINATOR}, vision_frozen=${TERMINATOR_FREEZE_VISION_ENCODER}"
+echo "schedule: steps=${STEPS}   lr_decay_steps=${SCHEDULER_DECAY_STEPS}"
 echo "output  : ${PT_OUTPUT_DIR}"
 
 if [ ! -e "${SKILLVLA_DATASET_DIR}" ]; then
@@ -128,6 +129,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.push_to_hub=false \
     --policy.compile_model=false \
     --policy.optimizer_lr="${LR}" \
+    --policy.scheduler_decay_steps="${SCHEDULER_DECAY_STEPS}" \
     --output_dir="${PT_OUTPUT_DIR}" \
     --job_name="${PT_RUN_NAME}" \
     --batch_size="${BATCH_SIZE}" \

@@ -75,6 +75,8 @@ def test_stage1_exports_single_architecture_and_relative_dino_lr(tmp_path: Path)
     assert "sa18_lat32" not in settings["pt_run_name"]
     assert "residual_cross_attention_flow" in settings["pt_run_name"]
     assert settings["vsa_debug_schedule"] == "[]"
+    assert settings["steps"] == 50_000
+    assert settings["scheduler_decay_steps"] == 30_000
 
     config["architecture"]["include_state_in_visual_crossattn"] = True
     config["architecture"]["include_skill_in_visual_crossattn"] = True
@@ -150,7 +152,12 @@ def test_isolated_cond_config_preserves_skillvla_real_contract(tmp_path: Path) -
         "dataloader": {"batch_size": 16, "workers": 2, "gpus": 1},
         "optimizer": {"base_lr": 2.5e-5, "dino_lr": None},
         "gradient_checkpointing": False,
-        "schedule": {"steps": 50_000, "log_every": 100, "save_every": 5_000},
+        "schedule": {
+            "steps": 1_000_000,
+            "lr_decay_steps": 1_000_000,
+            "log_every": 100,
+            "save_every": 5_000,
+        },
     }
 
     settings = build_cond_settings(config)
@@ -164,10 +171,39 @@ def test_isolated_cond_config_preserves_skillvla_real_contract(tmp_path: Path) -
     assert settings["n_action_steps"] == 10
     assert settings["batch_size"] == 16
     assert settings["num_workers"] == 2
-    assert settings["steps"] == 50_000
+    assert settings["steps"] == 1_000_000
+    assert settings["scheduler_decay_steps"] == 1_000_000
     assert settings["log_freq"] == 100
     assert settings["save_freq"] == 5_000
     assert "dino_tuned_state_skill_cond_flow" in settings["pt_run_name"]
+
+
+@pytest.mark.parametrize("value", [0, -1])
+def test_stage1_rejects_nonpositive_lr_decay_steps(
+    tmp_path: Path, value: int
+) -> None:
+    config = _config(tmp_path)
+    config.setdefault("training", {}).setdefault("schedule", {})[
+        "lr_decay_steps"
+    ] = value
+
+    with pytest.raises(
+        ValueError, match="training.schedule.lr_decay_steps must be positive"
+    ):
+        build_settings(config)
+
+    config["architecture"] = {
+        "name": "cond_gemma",
+        "revision": "skillvla_real_v1",
+        "expert_variant": "gemma_300m",
+        "cond_variant": "gemma_300m",
+        "conditioning_route": "state_skill_cond",
+    }
+    config["vision"]["freeze"] = False
+    with pytest.raises(
+        ValueError, match="training.schedule.lr_decay_steps must be positive"
+    ):
+        build_cond_settings(config)
 
 
 def test_isolated_cond_launcher_rejects_vsa_architecture(tmp_path: Path) -> None:

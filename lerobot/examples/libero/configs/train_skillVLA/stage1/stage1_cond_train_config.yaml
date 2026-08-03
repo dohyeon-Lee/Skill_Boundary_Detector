@@ -47,7 +47,7 @@ action_conditioning:
 
 # Stage3-A predictor contract: frozen pi0.5 VLM base + Q/K/V/O skill LoRA.
 skill_predictor:
-  train: true
+  train: false
   weight: 0.5
   lr_scale: 1.0
   all_layers: true
@@ -66,13 +66,14 @@ execution: {action_steps: 10}
 transition_randomization: {enabled: true}
 
 # Keep this branch's new run separate from the existing skillVLA_real checkpoint folder.
-run: {suffix: "cond_gemma_bs8"}
+run: {suffix: "cond_gemma_bs16s_20"}
 
 training:
-  dataloader: {batch_size: 8, workers: 4, gpus: 1} # 16
+  dataloader: {batch_size: 16, workers: 4, gpus: 1} # 16
   optimizer: {base_lr: 2.5e-05, dino_lr: null, terminator_lr_scale: 1.0}
   gradient_checkpointing: false
-  schedule: {steps: 50000, log_every: 100, save_every: 5000}
+  # Decay the LR across the full 1M-step run instead of reaching its floor at 30k.
+  schedule: {steps: 50000, lr_decay_steps: 1000000, log_every: 100, save_every: 5000}
 
 logging:
   wandb: {enable: true, project: VLA_stage1}

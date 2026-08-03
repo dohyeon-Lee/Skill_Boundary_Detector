@@ -66,7 +66,8 @@ training:
   # separate W&B `vsa_debug/*` namespace. Set [] to disable.
   vsa_debug_steps: 0
   vsa_debug_schedule: [1, 100, 1000, 10000, 20000, 30000, 40000, 50000]
-  schedule: {steps: 50000, log_every: 100, save_every: 5000}
+  # lr_decay_steps controls the cosine schedule independently of the run length.
+  schedule: {steps: 50000, lr_decay_steps: 30000, log_every: 100, save_every: 5000}
 
 logging:
   wandb: {enable: true, project: VLA_stage1}
