@@ -12,7 +12,7 @@ set -euo pipefail
 mkdir -p logs
 SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 SRC_DIR="${SUBMIT_DIR}/src"
-CONFIG_PATH="${STAGE1_COND_TRAIN_CONFIG:-${SUBMIT_DIR}/stage1_cond_train_config.yaml}"
+CONFIG_PATH="${STAGE1_COND_TRAIN_CONFIG:-${SUBMIT_DIR}/stage1_train_config.yaml}"
 
 BOOTSTRAP_PYTHON="${SUBMIT_DIR}/../../../../../../.venv/bin/python"
 if [ ! -x "${BOOTSTRAP_PYTHON}" ]; then
@@ -30,7 +30,7 @@ echo "START STAGE 1 CONDITION GEMMA"
 echo "host    : $(hostname)"
 echo "dataset : ${SKILLVLA_DATASET_DIR}"
 echo "expert  : pi0.5 base ${PI_BASE} -> full fine-tuning"
-echo "arch    : ${ARCHITECTURE} (${ARCHITECTURE_REVISION})"
+echo "arch    : ${ARCHITECTURE_LABEL} (${ARCHITECTURE}, ${ARCHITECTURE_REVISION})"
 echo "route   : ${CONDITIONING_ROUTE}"
 echo "loss    : ${ACTION_LOSS_MODE}"
 echo "skill   : ${TRAINING_SKILL_SOURCE}   predictor=${SKILL_PREDICTOR_CHECKPOINT_PATH:-none}"
@@ -72,6 +72,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.type=skill_expert \
     --policy.pretrained_path="${PI_BASE}" \
     --policy.architecture="${ARCHITECTURE}" \
+    --policy.architecture_label="${ARCHITECTURE_LABEL}" \
     --policy.architecture_revision="${ARCHITECTURE_REVISION}" \
     --policy.action_expert_variant="${ACTION_EXPERT_VARIANT}" \
     --policy.cond_encoder_variant="${COND_ENCODER_VARIANT}" \
@@ -108,7 +109,6 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.train_terminator="${TRAIN_TERMINATOR}" \
     --policy.fsq_path="${FSQ_PATH}" \
     --policy.terminator_freeze_vision_encoder="${TERMINATOR_FREEZE_VISION_ENCODER}" \
-    --policy.terminator_dino_model_path="${TERMINATOR_DINO_MODEL_PATH}" \
     --policy.terminator_lr_scale="${TERMINATOR_LR_SCALE}" \
     --policy.terminator_end_target_sigma="${TERMINATOR_END_TARGET_SIGMA}" \
     --policy.terminator_end_pos_weight="${TERMINATOR_END_POS_WEIGHT}" \

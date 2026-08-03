@@ -18,6 +18,7 @@ from torch.optim.lr_scheduler import LambdaLR
 from lerobot.optim.schedulers import (
     CosineDecayWithWarmupSchedulerConfig,
     DiffuserSchedulerConfig,
+    WarmupConstantSchedulerConfig,
     VQBeTSchedulerConfig,
     load_scheduler_state,
     save_scheduler_state,
@@ -91,6 +92,22 @@ def test_cosine_decay_with_warmup_scheduler(optimizer):
         expected_state_dict["_is_initial"] = False
 
     assert scheduler.state_dict() == expected_state_dict
+
+
+def test_warmup_constant_scheduler_reaches_peak_and_stays_constant(optimizer):
+    config = WarmupConstantSchedulerConfig(num_warmup_steps=2)
+    scheduler = config.build(optimizer, num_training_steps=100)
+
+    assert optimizer.param_groups[0]["lr"] == 0.001 / 3
+    optimizer.step()
+    scheduler.step()
+    assert optimizer.param_groups[0]["lr"] == 0.002 / 3
+    optimizer.step()
+    scheduler.step()
+    assert optimizer.param_groups[0]["lr"] == 0.001
+    optimizer.step()
+    scheduler.step()
+    assert optimizer.param_groups[0]["lr"] == 0.001
 
 
 def test_save_scheduler_state(scheduler, tmp_path):

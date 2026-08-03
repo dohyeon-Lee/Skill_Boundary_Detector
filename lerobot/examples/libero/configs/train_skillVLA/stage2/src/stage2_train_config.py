@@ -184,17 +184,10 @@ def build_settings(config: dict) -> dict:
     tokenizer_path = _local_path(
         project_root, stage1_config["tokenizer_path"], marker="models"
     )
-    terminator_dino_path = _local_path(
-        project_root,
-        stage1_config.get("terminator_dino_model_path")
-        or stage1_config["dino_model_path"],
-        marker="models",
-    )
     fsq_path = _local_path(project_root, stage1_config["fsq_path"])
     for path, label in (
         (dino_path, "DINO model"),
         (tokenizer_path, "PaliGemma tokenizer"),
-        (terminator_dino_path, "terminator DINO model"),
     ):
         if not path.exists():
             raise FileNotFoundError(f"Inherited {label} not found: {path}")
@@ -353,7 +346,6 @@ def build_settings(config: dict) -> dict:
         "terminator_freeze_vision_encoder": as_bool(
             stage1_config["terminator_freeze_vision_encoder"]
         ),
-        "terminator_dino_model_path": terminator_dino_path,
         "terminator_lr_scale": float(stage1_config["terminator_lr_scale"]),
         "terminator_end_target_sigma": float(stage1_config["terminator_end_target_sigma"]),
         "terminator_end_pos_weight": float(stage1_config["terminator_end_pos_weight"]),

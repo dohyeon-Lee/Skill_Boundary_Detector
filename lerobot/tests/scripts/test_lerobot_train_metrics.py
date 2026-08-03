@@ -6,6 +6,7 @@ from lerobot.scripts.lerobot_train import (
     _WINDOWED_POLICY_MODEL_TYPES,
     _WindowedPolicyMetrics,
     _finite_scalar_metrics,
+    _sparse_debug_metric_groups,
 )
 
 
@@ -67,7 +68,7 @@ def test_windowed_policy_metrics_does_not_average_sparse_vsa_debug_values() -> N
     metrics.update(
         {
             "action_loss": 2.0,
-            "vsa_debug/visual/top_latents/effective_rank": 4.5,
+            "vsa_debug/visual/top_latents/effective_rank_fraction": 0.45,
         }
     )
 
@@ -87,3 +88,16 @@ def test_wandb_metric_filter_keeps_all_finite_scalars_without_name_allowlist() -
     )
 
     assert filtered == {"brand_new_metric": 3.0, "scalar_tensor": 4.0}
+
+
+def test_input_influence_is_removed_from_vsa_debug_namespace() -> None:
+    vsa_debug, input_influence = _sparse_debug_metric_groups(
+        {
+            "vsa_debug/visual/top_latents/effective_rank_fraction": 0.5,
+            "vsa_debug/sensitivity/state_shuffle/relative_output_delta": 0.2,
+            "action_loss": 1.0,
+        }
+    )
+
+    assert vsa_debug == {"visual/top_latents/effective_rank_fraction": 0.5}
+    assert input_influence == {"state_shuffle/relative_output_delta": 0.2}

@@ -195,6 +195,12 @@ def update_policy(
     if lr_scheduler is not None:
         lr_scheduler.step()
 
+    # Preserve every parameter group's actual post-scheduler LR. The generic
+    # tracker only exposes group 0, which hides the DINO scaling used by Stage 1.
+    for index, group in enumerate(optimizer.param_groups):
+        group_name = str(group.get("group_name") or f"group_{index}")
+        output_dict[f"optimizer/lr/{group_name}"] = float(group["lr"])
+
     # Update internal buffers if policy has update method
     if has_method(unwrapped_policy, "update"):
         unwrapped_policy.update()
@@ -266,6 +272,23 @@ def _finite_scalar_metrics(metrics: dict) -> dict[str, float]:
         if math.isfinite(value):
             scalars[key] = value
     return scalars
+
+
+def _sparse_debug_metric_groups(metrics: dict) -> tuple[dict[str, float], dict[str, float]]:
+    """Separate architecture diagnostics from modality-influence probes."""
+    scalars = _finite_scalar_metrics(metrics)
+    input_influence = {
+        key.removeprefix("vsa_debug/sensitivity/"): value
+        for key, value in scalars.items()
+        if key.startswith("vsa_debug/sensitivity/")
+    }
+    vsa_debug = {
+        key.removeprefix("vsa_debug/"): value
+        for key, value in scalars.items()
+        if key.startswith("vsa_debug/")
+        and not key.startswith("vsa_debug/sensitivity/")
+    }
+    return vsa_debug, input_influence
 
 
 def build_pt_probe_batches(cfg: TrainPipelineConfig) -> list[dict]:
@@ -617,7 +640,40 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
 
     # create dataloader for offline training
     grouped_batch_sampler = None
-    if bool(getattr(cfg.policy, "same_skill_batch_enabled", False)):
+    if bool(getattr(cfg.policy, "phase_batch_sampling_enabled", False)):
+        if cfg.dataset.streaming:
+            raise ValueError(
+                "phase_batch_sampling_enabled is not supported for streaming datasets."
+            )
+        from lerobot.policies.skillVLA.dataset_skillVLA import SkillVLADataset
+        from lerobot.policies.skillVLA.skill_phase_batch_sampler import (
+            SkillPhaseFocusedBatchSampler,
+        )
+
+        if not isinstance(dataset, SkillVLADataset):
+            raise ValueError(
+                "phase_batch_sampling_enabled requires a frame-level SkillVLADataset."
+            )
+        grouped_batch_sampler = SkillPhaseFocusedBatchSampler(
+            dataset,
+            batch_size=cfg.batch_size,
+            focused_fraction=float(
+                getattr(cfg.policy, "phase_batch_focused_fraction", 0.75)
+            ),
+            early_fraction=float(
+                getattr(cfg.policy, "phase_batch_early_fraction", 0.5)
+            ),
+            early_threshold=float(
+                getattr(cfg.policy, "phase_batch_early_threshold", 0.25)
+            ),
+            late_threshold=float(
+                getattr(cfg.policy, "phase_batch_late_threshold", 0.75)
+            ),
+            seed=int(cfg.seed or 0),
+        )
+        shuffle = False
+        sampler = None
+    elif bool(getattr(cfg.policy, "same_skill_batch_enabled", False)):
         if cfg.dataset.streaming:
             raise ValueError("same_skill_batch_enabled is not supported for streaming datasets.")
         from lerobot.policies.skillVLA.dataset_skillVLA import SkillVLADataset
@@ -677,6 +733,24 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
         policy, optimizer, dataloader, lr_scheduler
     )
     dl_iter = cycle(dataloader)
+
+    if wandb_logger and is_main_process:
+        unwrapped_policy = accelerator.unwrap_model(policy, keep_fp32_wrapper=True)
+        model_metrics = {
+            "total_parameters": float(num_total_params),
+            "trainable_parameters": float(num_learnable_params),
+            "effective_batch_size": float(cfg.batch_size * accelerator.num_processes),
+        }
+        if has_method(unwrapped_policy, "parameter_counts"):
+            component_counts = unwrapped_policy.parameter_counts()
+            model_metrics.update(
+                {
+                    f"{name}_parameters": float(value)
+                    for name, value in component_counts.items()
+                    if name not in {"total", "trainable"}
+                }
+            )
+        wandb_logger.log_dict(model_metrics, step, mode="model")
 
     # ── PT-forgetting probe (FT): fixed PT-dataset batches re-measured every probe_every steps ──
     probe_batches = None
@@ -789,13 +863,15 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
             progbar.update(1)
         train_tracker.step()
         if is_main_process and wandb_logger and output_dict:
-            vsa_debug_metrics = {
-                key.removeprefix("vsa_debug/"): value
-                for key, value in _finite_scalar_metrics(output_dict).items()
-                if key.startswith("vsa_debug/")
-            }
+            vsa_debug_metrics, input_influence_metrics = (
+                _sparse_debug_metric_groups(output_dict)
+            )
             if vsa_debug_metrics:
                 wandb_logger.log_dict(vsa_debug_metrics, step, mode="vsa_debug")
+            if input_influence_metrics:
+                wandb_logger.log_dict(
+                    input_influence_metrics, step, mode="input_influence"
+                )
         is_log_step = cfg.log_freq > 0 and step % cfg.log_freq == 0 and is_main_process
         is_saving_step = step % cfg.save_freq == 0 or step == cfg.steps
         is_eval_step = cfg.eval_freq > 0 and step % cfg.eval_freq == 0
@@ -821,9 +897,8 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                             "rabc_num_frames": rabc_stats["num_frames"],
                         }
                     )
-                # No metric-name allowlist: log every finite scalar. This keeps
-                # new policy diagnostics automatic while excluding vectors such
-                # as loss_per_dim and non-metric objects.
+                # No metric-name allowlist: log every finite scalar while
+                # excluding vectors and non-metric objects.
                 wandb_log_dict = _finite_scalar_metrics(wandb_log_dict)
                 # A policy that reports its own action_loss (Stage-1 skill_expert) replaces the generic
                 # backprop-scalar "loss" with it → drop the redundant generic "loss".
@@ -849,6 +924,10 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                     k[len("batch_sampling/"):]: v for k, v in wandb_log_dict.items()
                     if k.startswith("batch_sampling/")
                 }
+                optimizer_metrics = {
+                    k[len("optimizer/"):]: v for k, v in wandb_log_dict.items()
+                    if k.startswith("optimizer/")
+                }
                 main_metrics = {k: v for k, v in wandb_log_dict.items()
                                 if not k.startswith(
                                     (
@@ -859,6 +938,7 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                                         "distill/",
                                         "wrong_language/",
                                         "vsa_debug/",
+                                        "optimizer/",
                                     ))}
                 wandb_logger.log_dict(main_metrics, step)
                 if term_metrics:
@@ -876,6 +956,9 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                 if batch_sampling_metrics:
                     wandb_logger.log_dict(
                         batch_sampling_metrics, step, mode="train_batch_sampling")
+                if optimizer_metrics:
+                    wandb_logger.log_dict(
+                        optimizer_metrics, step, mode="optimizer")
             train_tracker.reset_averages()
             if windowed_policy_metrics is not None:
                 windowed_policy_metrics.reset()

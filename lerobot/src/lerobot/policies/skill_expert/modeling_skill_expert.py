@@ -33,13 +33,18 @@ from lerobot.utils.constants import (
 from .configuration_skill_expert import (
     COND_GEMMA_ARCHITECTURE,
     COND_GEMMA_ARCHITECTURE_REVISION,
+    COND_GEMMA_PERCEIVER_EXPERT_TOKENS_REVISION,
+    COMPRESSED_VISUAL_KV_SELF_ATTENTION,
     GLOBAL_VISUAL_ADARMS,
     IN_CONTEXT_TOKENS,
-    RESIDUAL_CROSS_ATTENTION,
+    INTERLEAVED_CROSS_ATTENTION,
+    LEGACY_RESIDUAL_CROSS_ATTENTION,
+    LEGACY_RESIDUAL_VSA_REVISION,
     SKILLLESS_CONDITIONING_ROUTES,
     STATELESS_CONDITIONING_ROUTES,
     VSA_ARCHITECTURE,
     VSA_ARCHITECTURE_REVISION,
+    UNCOMPRESSED_VISUAL_KV_SELF_ATTENTION,
     VISIONLESS_CONDITIONING_ROUTES,
     SkillExpertConfig,
     normalize_conditioning_route,
@@ -48,7 +53,6 @@ from .cond_gemma import CondGemmaSkillExpert
 from .modeling_utils import build_fsq_terminator, load_raw_state_dict
 from .modeling_skill_predictor import FrozenVLMSkillPredictor
 from .vsa_perceiver_crossattn import (
-    VISUAL_RESIDUAL_GATE_INIT,
     CameraPerceiverResampler,
     VSAActionExpert,
 )
@@ -67,16 +71,31 @@ class SkillExpertPytorch(nn.Module):
         self.dino.requires_grad_(True)
         self.n_register_tokens = int(getattr(self.dino.config, "num_register_tokens", 0))
         dino_width = int(self.dino.config.hidden_size)
-        self.top_resampler = CameraPerceiverResampler(
-            dino_width,
-            self.width,
-            num_latents=config.num_visual_latents_per_camera,
+        self.uses_uncompressed_visual_memory = (
+            config.vision_conditioning_mode
+            == UNCOMPRESSED_VISUAL_KV_SELF_ATTENTION
         )
-        self.wrist_resampler = CameraPerceiverResampler(
-            dino_width,
-            self.width,
-            num_latents=config.num_visual_latents_per_camera,
-        )
+        if self.uses_uncompressed_visual_memory:
+            if dino_width != self.width:
+                raise ValueError(
+                    "Arch1_3 requires direct DINO/expert width equality; got "
+                    f"{dino_width} and {self.width}."
+                )
+            self.top_resampler = None
+            self.wrist_resampler = None
+        else:
+            self.top_resampler = CameraPerceiverResampler(
+                dino_width,
+                self.width,
+                perceiver_width=config.visual_perceiver_width,
+                num_latents=config.num_visual_latents_per_camera,
+            )
+            self.wrist_resampler = CameraPerceiverResampler(
+                dino_width,
+                self.width,
+                perceiver_width=config.visual_perceiver_width,
+                num_latents=config.num_visual_latents_per_camera,
+            )
         self.register_buffer(
             "_image_mean",
             torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1),
@@ -114,17 +133,25 @@ class SkillExpertPytorch(nn.Module):
             nn.init.zeros_(self.visual_condition_projection.bias)
 
         expert_class = VSAActionExpert
-        if getattr(config, "eval_legacy_vsa", False):
+        evaluation_revision = str(getattr(config, "eval_vsa_revision", ""))
+        if evaluation_revision:
             # Explicit evaluation-only compatibility. Training configs never set
-            # this runtime flag, so the Stage-1 architecture remains single-path.
-            from .legacy_vsa_eval import LegacyVSAActionExpert  # noqa: PLC0415
+            # this runtime field, so new Stage-1 runs remain on the current path.
+            from .legacy_vsa_eval import (  # noqa: PLC0415
+                LegacyResidualSA18VSAActionExpert,
+                LegacyVSAActionExpert,
+            )
 
-            expert_class = LegacyVSAActionExpert
+            expert_class = (
+                LegacyResidualSA18VSAActionExpert
+                if evaluation_revision == LEGACY_RESIDUAL_VSA_REVISION
+                else LegacyVSAActionExpert
+            )
         expert_kwargs = {
             "include_state_in_visual_crossattn": config.include_state_in_visual_crossattn,
             "include_skill_in_visual_crossattn": config.include_skill_in_visual_crossattn,
         }
-        if not getattr(config, "eval_legacy_vsa", False):
+        if not evaluation_revision or evaluation_revision == LEGACY_RESIDUAL_VSA_REVISION:
             expert_kwargs["vision_conditioning_mode"] = config.vision_conditioning_mode
         self.expert = expert_class(**expert_kwargs)
         self.skill_predictor = (
@@ -132,10 +159,7 @@ class SkillExpertPytorch(nn.Module):
         )
         self.fsq_term_train = None
         if config.train_terminator:
-            terminator = build_fsq_terminator(
-                config.fsq_path,
-                dino_model_path=config.terminator_dino_model_path,
-            )
+            terminator = build_fsq_terminator(config.fsq_path)
             if config.terminator_freeze_vision_encoder is not None:
                 terminator.freeze_vision_encoder = bool(
                     config.terminator_freeze_vision_encoder
@@ -145,6 +169,7 @@ class SkillExpertPytorch(nn.Module):
                 terminator.vision_encoder.requires_grad_(False).eval()
             self.fsq_term_train = terminator.to(dtype=torch.float32)
         self._last_predicted_actions: Tensor | None = None
+        self._last_flow_time: Tensor | None = None
         self._last_vsa_debug_stats: dict[str, float] = {}
         self._vsa_training_step: int | None = None
         self._vsa_debug_active = False
@@ -186,10 +211,7 @@ class SkillExpertPytorch(nn.Module):
             -(probabilities * probabilities.clamp_min(1e-12).log()).sum(dim=-1)
         )
         return {
-            f"visual/{name}/pair_cosine_mean": float(pairwise.mean().item()),
             f"visual/{name}/pair_cosine_abs_mean": float(pairwise.abs().mean().item()),
-            f"visual/{name}/pair_cosine_max": float(pairwise.max().item()),
-            f"visual/{name}/effective_rank": float(effective_rank.mean().item()),
             f"visual/{name}/effective_rank_fraction": float(
                 (effective_rank / token_count).mean().item()
             ),
@@ -225,8 +247,6 @@ class SkillExpertPytorch(nn.Module):
         )
         stats.update(
             {
-                "visual/top_dino/patch_spread_rms": float(top_dino_spread.item()),
-                "visual/wrist_dino/patch_spread_rms": float(wrist_dino_spread.item()),
                 "visual/top_latents/spread_retention_vs_dino": float(
                     stats["visual/top_latents/token_spread_rms"]
                     / max(float(top_dino_spread.item()), 1e-12)
@@ -237,18 +257,10 @@ class SkillExpertPytorch(nn.Module):
                 ),
             }
         )
-        top_normalized = F.normalize(top_memory.detach().float(), dim=-1, eps=1e-12)
-        wrist_normalized = F.normalize(wrist_memory.detach().float(), dim=-1, eps=1e-12)
-        cross_camera = top_normalized @ wrist_normalized.transpose(-1, -2)
         top_centroid = F.normalize(top_memory.detach().float().mean(dim=1), dim=-1)
         wrist_centroid = F.normalize(wrist_memory.detach().float().mean(dim=1), dim=-1)
         stats.update(
             {
-                "visual/cross_camera/pair_cosine_mean": float(cross_camera.mean().item()),
-                "visual/cross_camera/pair_cosine_abs_mean": float(
-                    cross_camera.abs().mean().item()
-                ),
-                "visual/cross_camera/pair_cosine_max": float(cross_camera.amax().item()),
                 "visual/cross_camera/centroid_cosine": float(
                     (top_centroid * wrist_centroid).sum(dim=-1).mean().item()
                 ),
@@ -325,8 +337,14 @@ class SkillExpertPytorch(nn.Module):
         top_hidden, wrist_hidden = hidden.split(top.shape[0], dim=0)
         top_tokens = self._strip_register_tokens(top_hidden)
         wrist_tokens = self._strip_register_tokens(wrist_hidden)
-        top_memory = self.top_resampler(top_tokens.to(self.working_dtype))
-        wrist_memory = self.wrist_resampler(wrist_tokens.to(self.working_dtype))
+        if self.uses_uncompressed_visual_memory:
+            top_memory = top_tokens.to(self.working_dtype)
+            wrist_memory = wrist_tokens.to(self.working_dtype)
+        else:
+            if self.top_resampler is None or self.wrist_resampler is None:
+                raise RuntimeError("Compressed visual mode has no Perceiver resamplers.")
+            top_memory = self.top_resampler(top_tokens.to(self.working_dtype))
+            wrist_memory = self.wrist_resampler(wrist_tokens.to(self.working_dtype))
         if self._vsa_debug_active:
             self._last_vsa_debug_stats.update(
                 self._visual_debug_stats(
@@ -416,7 +434,20 @@ class SkillExpertPytorch(nn.Module):
         if self.visual_condition_projection is None:
             raise RuntimeError("global_visual_adarms requires visual_condition_projection.")
         pooled = self._pool_visual_memory(visual_memory)
-        return time_condition + self.visual_condition_projection(pooled)
+        visual_condition = self.visual_condition_projection(pooled)
+        if self._vsa_debug_active:
+            visual_rms = self._rms(visual_condition)
+            time_rms = self._rms(time_condition)
+            self._last_vsa_debug_stats.update(
+                {
+                    "conditioning/global_visual_rms": float(visual_rms.item()),
+                    "conditioning/time_rms": float(time_rms.item()),
+                    "conditioning/visual_to_time_rms_ratio": float(
+                        (visual_rms / time_rms.clamp_min(1e-12)).item()
+                    ),
+                }
+            )
+        return time_condition + visual_condition
 
     def _run_joint_hidden(
         self,
@@ -447,13 +478,10 @@ class SkillExpertPytorch(nn.Module):
             }
             self._last_vsa_debug_stats.update(
                 {
-                    f"activation/{name}_{stat}": float(value.detach().float().item())
-                    for name, tensor in tensors.items()
-                    for stat, value in (
-                        ("mean", tensor.detach().float().mean()),
-                        ("std", tensor.detach().float().std()),
-                        ("rms", tensor.detach().float().square().mean().sqrt()),
+                    f"activation/{name}_rms": float(
+                        tensor.detach().float().square().mean().sqrt().item()
                     )
+                    for name, tensor in tensors.items()
                 }
             )
             self._last_vsa_debug_stats.update(self.expert.last_debug_stats)
@@ -550,6 +578,7 @@ class SkillExpertPytorch(nn.Module):
         self._last_vsa_debug_stats = {}
         batch_size = actions.shape[0]
         time = self.sample_time(batch_size, actions.device) if time is None else time
+        self._last_flow_time = time.detach()
         source = self.sample_noise(actions.shape, actions.device) if noise is None else noise
         source = source.to(actions.dtype)
         x_t = time[:, None, None] * source + (1.0 - time[:, None, None]) * actions
@@ -655,6 +684,7 @@ def _map_pi05_key(
     key: str,
     *,
     architecture: str = VSA_ARCHITECTURE,
+    vision_conditioning_mode: str = INTERLEAVED_CROSS_ATTENTION,
     include_predictor_vlm: bool = False,
 ) -> str | None:
     """Apply the architecture-specific pi0.5 initialization contract."""
@@ -671,10 +701,18 @@ def _map_pi05_key(
         layer_index = int(layer_match.group(1))
         component = layer_match.group(2)
         suffix = layer_match.group(3)
+        replaces_self_attention = (
+            vision_conditioning_mode == INTERLEAVED_CROSS_ATTENTION
+            and bool(layer_index % 2)
+        )
         if component == "self_attn":
+            if replaces_self_attention:
+                return None
             return f"model.expert.blocks.{layer_index}.self_attention.{suffix}"
         if component == "mlp":
             return f"model.expert.blocks.{layer_index}.mlp.{suffix}"
+        if component == "input_layernorm" and replaces_self_attention:
+            return None
         norm_name = (
             "self_attention_norm" if component == "input_layernorm" else "ffn_norm"
         )
@@ -708,6 +746,7 @@ def _build_state_dict(
     raw: dict,
     *,
     architecture: str,
+    vision_conditioning_mode: str = INTERLEAVED_CROSS_ATTENTION,
     include_predictor_vlm: bool = False,
 ) -> tuple[dict, bool]:
     is_pi05 = any(key.startswith("paligemma_with_expert.") for key in raw)
@@ -717,6 +756,7 @@ def _build_state_dict(
             mapped_key = _map_pi05_key(
                 key,
                 architecture=architecture,
+                vision_conditioning_mode=vision_conditioning_mode,
                 include_predictor_vlm=include_predictor_vlm,
             )
             if mapped_key is not None:
@@ -741,6 +781,7 @@ def _load_pretrained_state_dict(
     kwargs: dict,
     *,
     architecture: str,
+    vision_conditioning_mode: str = INTERLEAVED_CROSS_ATTENTION,
     include_predictor_vlm: bool = False,
 ) -> tuple[dict, bool] | None:
     """Selectively load the pi0.5 action prior and optional frozen predictor VLM."""
@@ -758,6 +799,7 @@ def _load_pretrained_state_dict(
                     mapped_key = _map_pi05_key(
                         key,
                         architecture=architecture,
+                        vision_conditioning_mode=vision_conditioning_mode,
                         include_predictor_vlm=include_predictor_vlm,
                     )
                     if mapped_key is not None:
@@ -778,6 +820,7 @@ def _load_pretrained_state_dict(
     return None if raw is None else _build_state_dict(
         raw,
         architecture=architecture,
+        vision_conditioning_mode=vision_conditioning_mode,
         include_predictor_vlm=include_predictor_vlm,
     )
 
@@ -793,6 +836,12 @@ def _allowed_pi05_missing_key(key: str, config: SkillExpertConfig) -> bool:
                 "model.state_proj.",
                 "model.skill_proj.",
                 "model.cond_encoder.",
+                "model.state_norm.",
+                "model.skill_norm.",
+                "model.context_input_norms.",
+                "model.context_post_attention_norms.",
+                "model.top_resampler.",
+                "model.wrist_resampler.",
             )
         ):
             return True
@@ -825,9 +874,9 @@ def _allowed_pi05_missing_key(key: str, config: SkillExpertConfig) -> bool:
         key,
     ):
         return True
-    if config.vision_conditioning_mode == RESIDUAL_CROSS_ATTENTION and re.fullmatch(
+    if config.vision_conditioning_mode == INTERLEAVED_CROSS_ATTENTION and re.fullmatch(
         r"model\.expert\.blocks\.\d+\."
-        r"(visual_attention_norm|visual_cross_attention|visual_residual_gate)(\..+)?",
+        r"(visual_attention_norm|visual_cross_attention)(\..+)?",
         key,
     ):
         return True
@@ -1010,14 +1059,46 @@ class SkillExpertPolicy(PreTrainedPolicy):
         super().__init__(config)
         config.validate_features()
         self.config = config
+        log.info(
+            "Stage-1 experiment architecture: %s",
+            config.architecture_label or "legacy-unlabeled",
+        )
         if config.architecture == COND_GEMMA_ARCHITECTURE:
             self.model = CondGemmaSkillExpert(config)
             log.info("Stage-1 architecture: condition Gemma + pi0.5 Gemma expert")
-            log.info("Conditioning route: %s", config.conditioning_route)
+            if config.architecture_revision == COND_GEMMA_ARCHITECTURE_REVISION:
+                log.info("Conditioning route: %s", config.conditioning_route)
+                log.info("State conditioning: Cond-Gemma AdaRMS")
+                log.info(
+                    "Skill conditioning: %s layerwise broadcast",
+                    "expert"
+                    if config.conditioning_route == "state_cond"
+                    else "Cond-Gemma",
+                )
+                log.info("Expert sequence: noisy actions only")
+            else:
+                log.info("Condition-Gemma state/skill conditioning: disabled")
+                log.info("Expert sequence: state + skill + noisy actions")
+                log.info("Expert mask: [visual | state, skill | actions]")
+                log.info("Timestep AdaRMS: action tokens only")
+                if (
+                    config.architecture_revision
+                    == COND_GEMMA_PERCEIVER_EXPERT_TOKENS_REVISION
+                ):
+                    log.info(
+                        "Condition-Gemma visual tokens: %d top + %d wrist Perceiver latents",
+                        config.num_visual_latents_per_camera,
+                        config.num_visual_latents_per_camera,
+                    )
+                else:
+                    log.info("Condition-Gemma visual tokens: uncompressed DINO tokens")
         else:
             self.model = SkillExpertPytorch(config)
             log.info("Vision conditioning mode: %s", config.vision_conditioning_mode)
-            if config.vision_conditioning_mode == RESIDUAL_CROSS_ATTENTION:
+            if config.vision_conditioning_mode in {
+                INTERLEAVED_CROSS_ATTENTION,
+                LEGACY_RESIDUAL_CROSS_ATTENTION,
+            }:
                 visual_query_tokens = []
                 if config.include_state_in_visual_crossattn:
                     visual_query_tokens.append("state")
@@ -1046,10 +1127,33 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 log.info("Visual injection: timestep condition + global visual condition")
                 log.info("Visual cross-attention modules: disabled")
                 log.info("Visual tokens in expert sequence: false")
-            if getattr(config, "eval_legacy_vsa", False):
-                log.info("VSA checkpoint layout: legacy alternating (evaluation-only)")
-            elif config.vision_conditioning_mode == RESIDUAL_CROSS_ATTENTION:
-                log.info("Visual residual gate initialization: %.3f", VISUAL_RESIDUAL_GATE_INIT)
+            elif config.vision_conditioning_mode in {
+                UNCOMPRESSED_VISUAL_KV_SELF_ATTENTION,
+                COMPRESSED_VISUAL_KV_SELF_ATTENTION,
+            }:
+                memory_tokens = (
+                    394
+                    if config.vision_conditioning_mode
+                    == UNCOMPRESSED_VISUAL_KV_SELF_ATTENTION
+                    else 2 * config.num_visual_latents_per_camera
+                )
+                log.info(
+                    "Visual fusion: fixed %d-token memory as K/V in all 18 expert self-attention layers",
+                    memory_tokens,
+                )
+                log.info("Visual query/update path: disabled")
+                log.info("Visual-side Transformer parameters: none")
+            evaluation_revision = str(getattr(config, "eval_vsa_revision", ""))
+            if evaluation_revision:
+                log.info(
+                    "VSA checkpoint layout: %s (historical evaluation-only)",
+                    evaluation_revision,
+                )
+            elif config.vision_conditioning_mode == INTERLEAVED_CROSS_ATTENTION:
+                log.info("Expert attention layout: even self-attention / odd visual cross-attention")
+                log.info("Visual cross-attention residual gate: none")
+            elif config.vision_conditioning_mode == LEGACY_RESIDUAL_CROSS_ATTENTION:
+                log.info("Historical expert attention layout: SA18 + residual visual cross-attention")
         if config.gradient_checkpointing:
             self.model.gradient_checkpointing_enable()
         self.model.to(device=config.device, dtype=self._torch_dtype())
@@ -1115,84 +1219,128 @@ class SkillExpertPolicy(PreTrainedPolicy):
         }
 
     def training_debug_metrics(self) -> dict[str, float]:
-        if self.config.architecture == COND_GEMMA_ARCHITECTURE:
-            return {}
         if not self.model._vsa_debug_active:
             return {}
 
-        def grad_stats(module: nn.Module) -> tuple[float, float]:
+        def grad_stats(module: nn.Module | None) -> tuple[float, float, float]:
+            if module is None:
+                return 0.0, 0.0, 0.0
+            parameters = [
+                parameter for parameter in module.parameters() if parameter.requires_grad
+            ]
+            if not parameters:
+                return 0.0, 0.0, 0.0
+            parameter_squared_sum = torch.stack(
+                [parameter.detach().float().square().sum() for parameter in parameters]
+            ).sum()
+            parameter_count = sum(parameter.numel() for parameter in parameters)
+            parameter_rms = (parameter_squared_sum / max(parameter_count, 1)).sqrt()
             gradients = [
                 parameter.grad.detach().float()
-                for parameter in module.parameters()
+                for parameter in parameters
                 if parameter.grad is not None
             ]
             if not gradients:
-                return 0.0, 0.0
-            squared_sum = torch.stack(
+                return 0.0, float(parameter_rms.item()), 0.0
+            gradient_squared_sum = torch.stack(
                 [gradient.square().sum() for gradient in gradients]
             ).sum()
-            count = sum(gradient.numel() for gradient in gradients)
+            gradient_count = sum(gradient.numel() for gradient in gradients)
+            gradient_rms = (gradient_squared_sum / max(gradient_count, 1)).sqrt()
             return (
-                float(squared_sum.sqrt().item()),
-                float((squared_sum / max(count, 1)).sqrt().item()),
+                float(gradient_rms.item()),
+                float(parameter_rms.item()),
+                float((gradient_rms / parameter_rms.clamp_min(1e-12)).item()),
             )
 
-        cross_attention = nn.ModuleList(
-            [
-                block.visual_cross_attention
-                for block in self.model.expert.blocks
-                if block.cross_attention
-            ]
-        )
-        self_attention = nn.ModuleList(
-            [block.self_attention for block in self.model.expert.blocks]
-        )
-        expert_mlps = nn.ModuleList(
-            [block.mlp for block in self.model.expert.blocks]
-        )
-        visual_residual_gates = nn.ParameterList(
-            [
-                block.visual_residual_gate
-                for block in self.model.expert.blocks
-                if block.visual_residual_gate is not None
-            ]
-        )
+        def module_list(*items: nn.Module | None) -> nn.ModuleList:
+            return nn.ModuleList([item for item in items if item is not None])
 
-        modules = {
-            "dino": self.model.dino,
-            "top_resampler": self.model.top_resampler,
-            "wrist_resampler": self.model.wrist_resampler,
-            "state_path": nn.ModuleList(
-                [self.model.state_proj, self.model.state_norm]
-            ),
-            "skill_path": nn.ModuleList(
-                [self.model.skill_proj, self.model.skill_norm]
-            ),
-            "expert_total": self.model.expert,
-            "expert_cross_attention": cross_attention,
-            "expert_visual_residual_gates": visual_residual_gates,
-            "expert_self_attention": self_attention,
-            "expert_mlp": expert_mlps,
-            "action_io": nn.ModuleList(
-                [self.model.action_in_proj, self.model.action_out_proj]
-            ),
-            "time_mlp": nn.ModuleList(
-                [self.model.time_mlp_in, self.model.time_mlp_out]
-            ),
-        }
-        if self.model.visual_condition_projection is not None:
-            modules["visual_condition_projection"] = (
-                self.model.visual_condition_projection
+        if self.config.architecture == COND_GEMMA_ARCHITECTURE:
+            modules = {
+                "dino": self.model.dino,
+                "conditioner": self.model.cond_encoder,
+                "expert": self.model.gemma_expert,
+                "state_path": module_list(
+                    self.model.state_proj, self.model.state_norm
+                ),
+                "skill_path": module_list(
+                    self.model.skill_proj, self.model.skill_norm
+                ),
+                "action_io": module_list(
+                    self.model.action_in_proj, self.model.action_out_proj
+                ),
+                "time_mlp": module_list(
+                    self.model.time_mlp_in, self.model.time_mlp_out
+                ),
+            }
+            context_norms = module_list(
+                self.model.context_input_norms,
+                self.model.context_post_attention_norms,
             )
+            if any(True for _ in context_norms.parameters()):
+                modules["expert_context_norms"] = context_norms
+        else:
+            cross_attention = nn.ModuleList(
+                [
+                    block.visual_cross_attention
+                    for block in self.model.expert.blocks
+                    if block.cross_attention
+                ]
+            )
+            self_attention = nn.ModuleList(
+                [block.self_attention for block in self.model.expert.blocks]
+            )
+            expert_mlps = nn.ModuleList(
+                [block.mlp for block in self.model.expert.blocks]
+            )
+            visual_residual_gates = nn.ParameterList(
+                [
+                    gate
+                    for block in self.model.expert.blocks
+                    if (gate := getattr(block, "visual_residual_gate", None)) is not None
+                ]
+            )
+            modules = {
+                "dino": self.model.dino,
+                "state_path": module_list(
+                    self.model.state_proj, self.model.state_norm
+                ),
+                "skill_path": module_list(
+                    self.model.skill_proj, self.model.skill_norm
+                ),
+                "expert_self_attention": self_attention,
+                "expert_mlp": expert_mlps,
+                "action_io": module_list(
+                    self.model.action_in_proj, self.model.action_out_proj
+                ),
+                "time_mlp": module_list(
+                    self.model.time_mlp_in, self.model.time_mlp_out
+                ),
+            }
+            if len(cross_attention) > 0:
+                modules["expert_cross_attention"] = cross_attention
+            if len(visual_residual_gates) > 0:
+                modules["expert_visual_residual_gates"] = visual_residual_gates
+            if self.model.visual_condition_projection is not None:
+                modules["visual_condition_projection"] = (
+                    self.model.visual_condition_projection
+                )
+        if self.model.top_resampler is not None:
+            modules["top_resampler"] = self.model.top_resampler
+        if self.model.wrist_resampler is not None:
+            modules["wrist_resampler"] = self.model.wrist_resampler
         metrics = {}
         for name, module in modules.items():
-            norm, rms = grad_stats(module)
-            metrics[f"vsa_debug/gradient/preclip/{name}_norm"] = norm
-            metrics[f"vsa_debug/gradient/preclip/{name}_rms"] = rms
+            gradient_rms, parameter_rms, ratio = grad_stats(module)
+            metrics[f"vsa_debug/gradient/preclip/{name}_grad_rms"] = gradient_rms
+            metrics[f"vsa_debug/parameter/{name}_rms"] = parameter_rms
+            metrics[f"vsa_debug/gradient/preclip/{name}_to_parameter_rms_ratio"] = ratio
         # The scheduled training update is complete. Avoid carrying debug mode
         # into checkpoint-time evaluation or any auxiliary forward.
         self.model._vsa_debug_active = False
-        self.model.expert.debug_enabled = False
+        if hasattr(self.model, "expert"):
+            self.model.expert.debug_enabled = False
         return metrics
 
     def _torch_dtype(self) -> torch.dtype:
@@ -1305,10 +1453,9 @@ class SkillExpertPolicy(PreTrainedPolicy):
 
         terminator = self.model.fsq_term_train
         if terminator is None:
-            terminator = build_fsq_terminator(
-                self.config.fsq_path,
-                dino_model_path=self.config.terminator_dino_model_path,
-            ).to(dtype=torch.float32)
+            terminator = build_fsq_terminator(self.config.fsq_path).to(
+                dtype=torch.float32
+            )
         loaded = _load_complete_terminator_parameters(terminator, path)
         device = next(self.model.parameters()).device
         terminator.to(device=device, dtype=torch.float32)
@@ -1378,7 +1525,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
         return groups
 
     def _get_cond_gemma_optim_params(self) -> list[dict]:
-        """Preserve skillVLA_real optimizer grouping exactly."""
+        """Build Arch1 groups with the same relative DINO LR contract as Arch2--4."""
         terminator = getattr(self.model, "fsq_term_train", None)
         terminator_parameters = (
             [parameter for parameter in terminator.parameters() if parameter.requires_grad]
@@ -1391,7 +1538,6 @@ class SkillExpertPolicy(PreTrainedPolicy):
         if (
             self.model.dino is not None
             and not self.config.freeze_vision_encoder
-            and self.config.dino_lr is not None
         ):
             dino_parameters = [
                 parameter
@@ -1405,16 +1551,44 @@ class SkillExpertPolicy(PreTrainedPolicy):
             for parameter in self.parameters()
             if parameter.requires_grad and id(parameter) not in excluded_ids
         ]
-        groups = [{"params": base_parameters}] if base_parameters else []
+        groups = (
+            [{"params": base_parameters, "group_name": "cond_gemma", "lr_scale": 1.0}]
+            if base_parameters
+            else []
+        )
         if dino_parameters:
-            groups.append({"params": dino_parameters, "lr": self.config.dino_lr})
+            # dino_lr is retained only so historical saved configs remain loadable.
+            # New unified Stage-1 runs always use the relative dino_lr_scale.
+            dino_lr = (
+                self.config.dino_lr
+                if self.config.dino_lr is not None
+                else self.config.optimizer_lr * self.config.dino_lr_scale
+            )
+            groups.append(
+                {
+                    "params": dino_parameters,
+                    "lr": dino_lr,
+                    "lr_scale": dino_lr / self.config.optimizer_lr,
+                    "group_name": "dino",
+                }
+            )
         if terminator_parameters:
             groups.append(
                 {
                     "params": terminator_parameters,
                     "lr": self.config.optimizer_lr
                     * self.config.terminator_lr_scale,
+                    "lr_scale": self.config.terminator_lr_scale,
+                    "group_name": "terminator",
                 }
+            )
+        for group in groups:
+            log.info(
+                "Stage-1 optimizer group %s: %.1fM params, lr_scale=%g, lr=%g",
+                group.get("group_name", "unnamed"),
+                sum(parameter.numel() for parameter in group["params"]) / 1e6,
+                float(group.get("lr_scale", 1.0)),
+                float(group.get("lr", self.config.optimizer_lr)),
             )
         return groups
 
@@ -1760,6 +1934,273 @@ class SkillExpertPolicy(PreTrainedPolicy):
         loss = (per_sample * selected).sum() / selected.sum().clamp(min=1.0)
         return loss, per_sample
 
+    @staticmethod
+    def _masked_action_mse(
+        squared_error: Tensor,
+        valid: Tensor,
+        *,
+        sample_mask: Tensor | None = None,
+        step_slice: slice | None = None,
+        dim_slice: slice | None = None,
+    ) -> Tensor:
+        """Average selected action errors without letting padding change the scale."""
+        values = squared_error
+        selected_valid = valid
+        if step_slice is not None:
+            values = values[:, step_slice]
+            selected_valid = selected_valid[:, step_slice]
+        if dim_slice is not None:
+            values = values[..., dim_slice]
+        if sample_mask is not None:
+            selected_valid = selected_valid & sample_mask[:, None]
+        denominator = selected_valid.sum() * values.shape[-1]
+        numerator = (
+            values * selected_valid.to(values.dtype).unsqueeze(-1)
+        ).sum()
+        denominator = denominator.to(values.dtype)
+        return torch.where(
+            denominator > 0,
+            numerator / denominator.clamp_min(1),
+            torch.full_like(numerator, float("nan")),
+        )
+
+    @classmethod
+    def _action_diagnostic_losses(
+        cls,
+        squared_error: Tensor,
+        valid: Tensor,
+        flow_time: Tensor | None,
+    ) -> dict[str, float]:
+        """Architecture-neutral diagnostics for Stage-1 ablation comparisons."""
+        tensor_metrics: dict[str, Tensor] = {}
+        if flow_time is not None:
+            time = flow_time.detach().float().reshape(-1)
+            if time.shape[0] != squared_error.shape[0]:
+                raise ValueError(
+                    "Flow timestep batch size does not match action residual batch size."
+                )
+            bins = (
+                ("t_0_025", 0.0, 0.25),
+                ("t_025_050", 0.25, 0.5),
+                ("t_050_075", 0.5, 0.75),
+                ("t_075_100", 0.75, float("inf")),
+            )
+            for name, lower, upper in bins:
+                value = cls._masked_action_mse(
+                    squared_error,
+                    valid,
+                    sample_mask=(time >= lower) & (time < upper),
+                )
+                tensor_metrics[f"flow_timestep/{name}_loss"] = value
+
+        if squared_error.shape[-1] == 7:
+            for name, dims in (
+                ("translation", slice(0, 3)),
+                ("rotation", slice(3, 6)),
+                ("gripper", slice(6, 7)),
+            ):
+                value = cls._masked_action_mse(
+                    squared_error, valid, dim_slice=dims
+                )
+                tensor_metrics[f"action_component/{name}_loss"] = value
+
+        horizon = squared_error.shape[1]
+        boundaries = (0, round(horizon / 3), round(2 * horizon / 3), horizon)
+        for name, start, end in zip(
+            ("early", "middle", "late"), boundaries[:-1], boundaries[1:], strict=True
+        ):
+            if start == end:
+                continue
+            value = cls._masked_action_mse(
+                squared_error, valid, step_slice=slice(start, end)
+            )
+            tensor_metrics[f"action_horizon/{name}_loss"] = value
+        if not tensor_metrics:
+            return {}
+        # A single transfer keeps these diagnostics from introducing one GPU
+        # synchronization per metric on every optimizer step.
+        values = torch.stack(tuple(tensor_metrics.values())).detach().float().cpu().tolist()
+        return dict(zip(tensor_metrics, values, strict=True))
+
+    @torch.no_grad()
+    def _phase_batch_sampling_metrics(
+        self,
+        batch: dict,
+        per_sample_action_loss: Tensor,
+    ) -> dict[str, float]:
+        """Report the realized batch composition and its jitter interaction.
+
+        The sampler selects rows using the unmodified physical progress
+        ``skill_ds / (skill_ds + skill_de)``. ``skill_code`` is created later by
+        SkillVLADataset, so comparing it with ``skill_code_true`` measures how
+        often transition randomization changed the conditioning code in each
+        original-progress region.
+        """
+        if not self.config.phase_batch_sampling_enabled:
+            return {}
+        missing = [
+            key
+            for key in (
+                "skill_ds",
+                "skill_de",
+                "skill_code",
+                "skill_code_true",
+                "skill_progress",
+            )
+            if key not in batch
+        ]
+        if missing:
+            raise ValueError(
+                "Phase batch sampling metrics require SkillVLADataset fields: "
+                f"missing={missing}."
+            )
+
+        ds = batch["skill_ds"].detach().float().reshape(-1)
+        de = batch["skill_de"].detach().float().reshape(-1).to(ds.device)
+        progress = (ds / (ds + de).clamp_min(1.0)).clamp(0.0, 1.0)
+        early = progress <= self.config.phase_batch_early_threshold
+        late = progress >= self.config.phase_batch_late_threshold
+        middle = ~(early | late)
+        jittered_progress = (
+            batch["skill_progress"]
+            .detach()
+            .float()
+            .reshape(-1)
+            .to(ds.device)
+            .clamp(0.0, 1.0)
+        )
+        jittered_early = (
+            jittered_progress <= self.config.phase_batch_early_threshold
+        )
+        jittered_late = jittered_progress >= self.config.phase_batch_late_threshold
+        jittered_middle = ~(jittered_early | jittered_late)
+        changed = (
+            batch["skill_code"].detach().reshape(-1).to(ds.device)
+            != batch["skill_code_true"].detach().reshape(-1).to(ds.device)
+        )
+        original_phase = torch.where(
+            early,
+            torch.zeros_like(progress, dtype=torch.long),
+            torch.where(
+                middle,
+                torch.ones_like(progress, dtype=torch.long),
+                torch.full_like(progress, 2, dtype=torch.long),
+            ),
+        )
+        jittered_phase = torch.where(
+            jittered_early,
+            torch.zeros_like(progress, dtype=torch.long),
+            torch.where(
+                jittered_middle,
+                torch.ones_like(progress, dtype=torch.long),
+                torch.full_like(progress, 2, dtype=torch.long),
+            ),
+        )
+
+        original_codes = (
+            batch["skill_code_true"].detach().long().reshape(-1).to(ds.device)
+        )
+        code_counts = torch.bincount(
+            original_codes.clamp(0, self.config.skill_vocab_size - 1),
+            minlength=self.config.skill_vocab_size,
+        ).float()
+        active_counts = code_counts[code_counts > 0]
+        code_probabilities = active_counts / active_counts.sum().clamp_min(1.0)
+        skill_entropy = -(
+            code_probabilities * code_probabilities.clamp_min(1e-12).log()
+        ).sum()
+        max_possible_skills = min(
+            self.config.skill_vocab_size, original_codes.numel()
+        )
+        max_entropy = torch.tensor(
+            float(max(max_possible_skills, 1)), device=ds.device
+        ).log()
+        normalized_skill_entropy = torch.where(
+            max_entropy > 0,
+            skill_entropy / max_entropy.clamp_min(1e-12),
+            torch.zeros_like(skill_entropy),
+        )
+
+        action_loss = per_sample_action_loss.detach().float().reshape(-1).to(ds.device)
+        if action_loss.shape != progress.shape:
+            raise ValueError(
+                "Per-sample action loss batch size does not match phase metadata."
+            )
+
+        def fraction(mask: Tensor) -> Tensor:
+            return mask.float().mean()
+
+        def changed_fraction(mask: Tensor) -> Tensor:
+            count = mask.sum()
+            return torch.where(
+                count > 0,
+                (changed & mask).float().sum() / count.clamp_min(1).float(),
+                torch.full((), float("nan"), device=ds.device),
+            )
+
+        def masked_mean(values: Tensor, mask: Tensor) -> Tensor:
+            count = mask.sum()
+            return torch.where(
+                count > 0,
+                (values * mask.to(values.dtype)).sum()
+                / count.clamp_min(1).to(values.dtype),
+                torch.full((), float("nan"), device=values.device),
+            )
+
+        tensor_metrics = {
+            "batch_sampling/configured_focused_fraction": torch.tensor(
+                self.config.phase_batch_focused_fraction, device=ds.device
+            ),
+            "batch_sampling/configured_early_share_within_focused": torch.tensor(
+                self.config.phase_batch_early_fraction, device=ds.device
+            ),
+            "batch_sampling/configured_early_threshold": torch.tensor(
+                self.config.phase_batch_early_threshold, device=ds.device
+            ),
+            "batch_sampling/configured_late_threshold": torch.tensor(
+                self.config.phase_batch_late_threshold, device=ds.device
+            ),
+            "batch_sampling/original_progress_mean": progress.mean(),
+            "batch_sampling/original_early_fraction": fraction(early),
+            "batch_sampling/original_middle_fraction": fraction(middle),
+            "batch_sampling/original_late_fraction": fraction(late),
+            "batch_sampling/original_focused_fraction": fraction(early | late),
+            "batch_sampling/jittered_progress_mean": jittered_progress.mean(),
+            "batch_sampling/jittered_early_fraction": fraction(jittered_early),
+            "batch_sampling/jittered_middle_fraction": fraction(jittered_middle),
+            "batch_sampling/jittered_late_fraction": fraction(jittered_late),
+            "batch_sampling/jittered_focused_fraction": fraction(
+                jittered_early | jittered_late
+            ),
+            "batch_sampling/phase_changed_fraction": fraction(
+                original_phase != jittered_phase
+            ),
+            "batch_sampling/jitter_changed_code_fraction": fraction(changed),
+            "batch_sampling/early_jitter_changed_code_fraction": changed_fraction(
+                early
+            ),
+            "batch_sampling/middle_jitter_changed_code_fraction": changed_fraction(
+                middle
+            ),
+            "batch_sampling/late_jitter_changed_code_fraction": changed_fraction(late),
+            "batch_sampling/original_unique_skill_count": (
+                code_counts > 0
+            ).sum().float(),
+            "batch_sampling/original_skill_entropy_normalized": normalized_skill_entropy,
+            "batch_sampling/original_max_skill_fraction": code_probabilities.max(),
+            "batch_sampling/original_early_action_loss": masked_mean(
+                action_loss, early
+            ),
+            "batch_sampling/original_middle_action_loss": masked_mean(
+                action_loss, middle
+            ),
+            "batch_sampling/original_late_action_loss": masked_mean(
+                action_loss, late
+            ),
+        }
+        values = torch.stack(tuple(tensor_metrics.values())).float().cpu().tolist()
+        return dict(zip(tensor_metrics, values, strict=True))
+
     def forward(self, batch: dict, reduction: str = "mean"):
         actions = pad_vector(batch[ACTION], self.config.max_action_dim)
         real_dim = self.config.output_features[ACTION].shape[0]
@@ -1794,7 +2235,6 @@ class SkillExpertPolicy(PreTrainedPolicy):
         )
         valid_steps = valid.sum().clamp(min=1).to(squared_error.dtype)
         action_loss = (squared_error * valid_float).sum() / (valid_steps * real_dim)
-        loss_per_dim = (squared_error * valid_float).sum(dim=(0, 1)) / valid_steps
         endpoint_loss = None
         action_objective = action_loss
         objective_per_sample = per_sample
@@ -1813,12 +2253,19 @@ class SkillExpertPolicy(PreTrainedPolicy):
             objective_per_sample = 0.5 * per_sample + 0.5 * endpoint_per_sample
         loss_dict = {
             "action_loss": action_loss.detach().item(),
-            "loss_per_dim": loss_per_dim.detach().cpu().tolist(),
             "conditioning/skill_source_predictor": float(
                 getattr(self.config, "training_skill_source", "gt") == "predictor"
             ),
             "regime/transition_jitter_fraction": self._last_transition_jitter_fraction.detach().item(),
         }
+        loss_dict.update(
+            self._action_diagnostic_losses(
+                squared_error,
+                valid,
+                getattr(self.model, "_last_flow_time", None),
+            )
+        )
+        loss_dict.update(self._phase_batch_sampling_metrics(batch, per_sample))
         loss_dict.update(
             {
                 f"vsa_debug/{name}": value
@@ -1930,6 +2377,22 @@ class SkillExpertPolicy(PreTrainedPolicy):
                     f"requested={requested_architecture!r}."
                 )
             if saved_architecture == COND_GEMMA_ARCHITECTURE:
+                saved_revision = str(
+                    raw_config.get(
+                        "architecture_revision", COND_GEMMA_ARCHITECTURE_REVISION
+                    )
+                )
+                requested_revision = str(
+                    getattr(config, "architecture_revision", saved_revision)
+                    if config is not None
+                    else saved_revision
+                )
+                if saved_revision != requested_revision:
+                    raise ValueError(
+                        "cond_gemma checkpoint architecture_revision mismatch: "
+                        f"checkpoint={saved_revision!r}, "
+                        f"requested={requested_revision!r}."
+                    )
                 saved_route = normalize_conditioning_route(
                     raw_config.get("conditioning_route", "state_cond")
                 )
@@ -1947,26 +2410,35 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 eval_legacy_vsa = bool(
                     config is not None and getattr(config, "eval_legacy_vsa", False)
                 )
-                if (
-                    raw_config.get("architecture_revision") != VSA_ARCHITECTURE_REVISION
-                    and not eval_legacy_vsa
-                ):
+                saved_revision = str(raw_config.get("architecture_revision", ""))
+                requested_revision = str(
+                    getattr(config, "architecture_revision", saved_revision)
+                    if config is not None
+                    else saved_revision
+                )
+                if not eval_legacy_vsa and not saved_revision:
                     raise ValueError(
-                        "This checkpoint predates the residual-SA18 VSA revision and "
-                        "cannot be resumed by the new architecture: "
+                        "This checkpoint does not match the current VSA revision and "
+                        "requires the historical evaluation contract: "
                         f"{pretrained_name_or_path}."
+                    )
+                if not eval_legacy_vsa and saved_revision != requested_revision:
+                    raise ValueError(
+                        "Stage-1 VSA checkpoint architecture_revision mismatch: "
+                        f"checkpoint={saved_revision!r}, "
+                        f"requested={requested_revision!r}."
                     )
                 if not eval_legacy_vsa and config is not None:
                     saved_mode = str(
                         raw_config.get(
-                            "vision_conditioning_mode", RESIDUAL_CROSS_ATTENTION
+                            "vision_conditioning_mode", INTERLEAVED_CROSS_ATTENTION
                         )
                     )
                     requested_mode = str(
                         getattr(
                             config,
                             "vision_conditioning_mode",
-                            RESIDUAL_CROSS_ATTENTION,
+                            INTERLEAVED_CROSS_ATTENTION,
                         )
                     )
                     if saved_mode != requested_mode:
@@ -1979,12 +2451,21 @@ class SkillExpertPolicy(PreTrainedPolicy):
             config = PreTrainedConfig.from_pretrained(pretrained_name_or_path, **kwargs)
             if saved_architecture == COND_GEMMA_ARCHITECTURE:
                 config.architecture = COND_GEMMA_ARCHITECTURE
-                config.architecture_revision = COND_GEMMA_ARCHITECTURE_REVISION
+                config.architecture_revision = str(
+                    raw_config.get(
+                        "architecture_revision", COND_GEMMA_ARCHITECTURE_REVISION
+                    )
+                )
         policy = cls(config, **kwargs)
         loaded = _load_pretrained_state_dict(
             pretrained_name_or_path,
             kwargs,
             architecture=config.architecture,
+            vision_conditioning_mode=getattr(
+                config,
+                "vision_conditioning_mode",
+                INTERLEAVED_CROSS_ATTENTION,
+            ),
             include_predictor_vlm=config.uses_skill_predictor,
         )
         if loaded is None:

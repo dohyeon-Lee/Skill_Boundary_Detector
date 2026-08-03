@@ -101,6 +101,7 @@ def test_policy_config_keeps_checkpoint_visual_query_switches(
 
     assert result.include_state_in_visual_crossattn is include_state
     assert result.include_skill_in_visual_crossattn is include_skill
+    assert result.visual_perceiver_width == 1024
 
 
 def test_policy_config_rejects_visual_query_contract_drift(monkeypatch) -> None:
@@ -153,6 +154,44 @@ def test_policy_config_keeps_checkpoint_vision_mode(monkeypatch) -> None:
     )
 
     assert result.vision_conditioning_mode == "in_context_tokens"
+
+
+def test_policy_config_materializes_implicit_skillvla_real_architecture(
+    monkeypatch,
+) -> None:
+    # Loading an old config through the current dataclass supplies the VSA
+    # defaults for fields that did not exist on skillVLA_real. The raw-config
+    # resolver marks that case explicitly, so eval restores the Cond contract.
+    loaded = SimpleNamespace(
+        architecture="vsa_perceiver_crossattn",
+        architecture_revision="residual_sa18_v2",
+        conditioning_route="state_skill_cond",
+    )
+    monkeypatch.setattr(
+        run_eval.PreTrainedConfig,
+        "from_pretrained",
+        lambda *args, **kwargs: loaded,
+    )
+
+    result = run_eval._policy_config(
+        {
+            "policy_path": "/tmp/skillvla-real-stage1",
+            "architecture": "cond_gemma",
+            "architecture_revision": "skillvla_real_v1",
+            "architecture_inferred": True,
+            "conditioning_route": "state_skill_cond",
+            "fsq_path": "/tmp/fsq",
+            "dino_model_path": "/tmp/dino",
+            "terminator_dino_model_path": "/tmp/term-dino",
+            "tokenizer_path": "/tmp/tokenizer",
+        },
+        SimpleNamespace(use_amp=False, n_action_steps=5),
+        torch.device("cpu"),
+    )
+
+    assert result.architecture == "cond_gemma"
+    assert result.architecture_revision == "skillvla_real_v1"
+    assert result.conditioning_route == "state_skill_cond"
 
 
 def test_oracle_defers_terminator_advance_until_fixed_replan() -> None:

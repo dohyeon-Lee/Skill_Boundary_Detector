@@ -118,17 +118,13 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         "dino_model_path": _relocate_project_path(
             project_root, policy.get("dino_model_path")
         ),
-        "terminator_dino_model_path": _relocate_project_path(
-            project_root,
-            policy.get("terminator_dino_model_path") or policy.get("dino_model_path"),
-        ),
         "tokenizer_path": _relocate_project_path(
             project_root, policy.get("tokenizer_path")
         ),
     }
     if not paths["fsq_path"].is_file():
         raise FileNotFoundError(f"Stage-2 FSQ checkpoint not found: {paths['fsq_path']}")
-    for key in ("dino_model_path", "terminator_dino_model_path", "tokenizer_path"):
+    for key in ("dino_model_path", "tokenizer_path"):
         if not paths[key].is_dir():
             raise FileNotFoundError(f"Stage-2 dependency not found ({key}): {paths[key]}")
     return {"policy": policy, **paths}
@@ -272,7 +268,6 @@ def build_settings(config: dict) -> dict:
         "skill_latents_path": primary["skill_latents_path"],
         "raw_dataset_dir": primary["raw_dataset_dir"],
         "dino_model_path": primary["dino_model_path"],
-        "terminator_dino_model_path": primary["terminator_dino_model_path"],
         "tokenizer_path": primary["tokenizer_path"],
         "eval_out_dir": eval_outputs_root / output_name,
         "target_task": str(get_value(config, "target_task", "libero_90")),

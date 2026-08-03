@@ -41,9 +41,9 @@ project_root: /scratch2/mdorazi/Skill_Boundary_Detector
 # (see generate_training_dataset/filtered_dataset/): dataset_filtered / outputs_filtered.
 
 # dataset | dataset_filtered | dataset_ABC
-dataset_root: dataset
+dataset_root: dataset_filtered
 # outputs | outputs_filtered | outputs_ABC
-outputs_root: outputs
+outputs_root: outputs_filtered
 
 train_partition:
   - suma_a6000
@@ -53,12 +53,12 @@ train_partition:
   - asus_pro6000
   - gigabyte_pro6000
   - suma_rtx4090
-  # - base_suma_rtx3090
-  # - dell_rtx3090
-  # - big_suma_rtx3090
+  - base_suma_rtx3090
+  - dell_rtx3090
+  - big_suma_rtx3090
 
 
-train_qos: pro6000_qos # pro6000_qos | base_qos
+train_qos: base_qos # pro6000_qos | base_qos
 train_nodelist: ""
 train_exclude_nodes:
   - node19

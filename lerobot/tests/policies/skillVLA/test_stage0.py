@@ -614,7 +614,7 @@ def test_stage0_terminator_vision_freeze_override() -> None:
                 terminator_dino_model_path=None,
                 terminator_freeze_vision_encoder=freeze_vision,
             ),
-            _construct_fsq=lambda path, dino_model_path: terminator,
+                _construct_fsq=lambda path: terminator,
             parameters=lambda: iter([torch.nn.Parameter(torch.zeros(1))]),
         )
 

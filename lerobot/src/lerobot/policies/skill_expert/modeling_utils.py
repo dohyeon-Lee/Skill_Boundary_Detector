@@ -101,14 +101,12 @@ def load_raw_state_dict(path: str | Path, kwargs: dict) -> dict | None:
         return None
 
 
-def build_fsq_terminator(path: str | Path, *, dino_model_path: str | None = None):
-    """Load only the v2 FSQ terminator, without allocating its action expert/encoder."""
+def build_fsq_terminator(path: str | Path):
+    """Load only the FSQ terminator using the vision contract stored in its checkpoint."""
     examples_root = Path(__file__).resolve().parents[4] / "examples" / "libero"
     if str(examples_root) not in sys.path:
         sys.path.insert(0, str(examples_root))
     from FSQ import load_fsq_terminator  # noqa: PLC0415
 
-    terminator, _ = load_fsq_terminator(
-        str(path), device="cpu", dino_model_path=dino_model_path
-    )
+    terminator, _ = load_fsq_terminator(str(path), device="cpu")
     return terminator

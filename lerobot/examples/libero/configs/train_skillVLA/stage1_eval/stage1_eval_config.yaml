@@ -1,35 +1,66 @@
-# Stage-1 VSA multi-model closed-loop evaluation. The single Perceiver/cross-attn
-# architecture, visual-query switches, action objective, DINO structure, and
-# dataset are read from each checkpoint; this YAML never overrides them.
-# `external_skill_model` may use a legacy main VSA architecture: only its
-# predictor/terminator submodules are validated and overlaid on the target VSA.
+# Unified Stage-1 closed-loop evaluation.
+#
+# Arch0--4 may be mixed freely in one models list. The evaluator reads the exact
+# architecture/revision from each checkpoint and loads one model at a time.
+# Historical VSA checkpoints under skillVLA_stage1/previous use `previous: true`.
+# Old skillVLA_real Cond-Gemma checkpoints without an architecture field are
+# recognized from their saved conditioning_route; no manual architecture field
+# belongs in this YAML.
 outputs_root: outputs_filtered
-external_skill_model: outputs_filtered/skillVLA_stage1/libero_90_full_firsthalf_scene_FSQ333_125_std_pt_episodemean_80p_snap10_pmax15_halfnormal_dino_tuned_state_skill_cond_flow/checkpoints/030000/pretrained_model
+
+# Used only by entries with skill_source: external or advance_mode: external.
+# The target model architecture may differ: only compatible predictor/terminator
+# submodules are validated and overlaid.
+external_skill_model: outputs_filtered/skillVLA_stage1/bs16_libero_90_full_firsthalf_scene_FSQ333_125_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch1_VisO_StateO_SkillO/checkpoints/030000/pretrained_model
 
 models:
-  - model_dir: libero_90_full_firsthalf_scene_FSQ333_125_std_pt_episodemean_80p_snap10_pmax15_halfnormal_dino_tuned_vsa_perceiver_crossattn_flow_state_skill_visual_query
-    checkpoint: "015000"
+  # Arch0: historical/current Cond-Gemma baseline in the normal output root.
+  - model_dir: bs16_libero_90_full_firsthalf_scene_FSQ333_125_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch1_VisO_StateO_SkillO
+    checkpoint: "030000"
     skill_source: gt
     advance_mode: external
-    label: full_bs16
+    label: arch0_bs16
 
-  - model_dir: libero_90_full_firsthalf_scene_FSQ333_125_std_pt_episodemean_80p_snap10_pmax15_halfnormal_dino_tuned_vsa_perceiver_crossattn_flow_state_skill_visual_query_bs64
+  # Historical VSA panels stored under skillVLA_stage1/previous/.
+  - model_dir: bs16_libero_90_full_firsthalf_scene_FSQ333_125_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch2_1
+    previous: true
     checkpoint: "015000"
     skill_source: gt
     advance_mode: external
-    label: full_bs64
-  
-  # - model_dir: libero_90_full_firsthalf_scene_FSQ333_125_std_pt_episodemean_80p_snap10_pmax15_halfnormal_dino_tuned_vsa_perceiver_crossattn_flow_state_skill_visual_query_bs96
+    label: previous_arch2_1_bs16
+
+  - model_dir: bs16_libero_90_full_firsthalf_scene_FSQ333_125_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch2_2
+    previous: true
+    checkpoint: "015000"
+    skill_source: gt
+    advance_mode: external
+    label: previous_arch2_2_bs16
+
+  - model_dir: bs16_libero_90_full_firsthalf_scene_FSQ333_125_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch3
+    previous: true
+    checkpoint: "015000"
+    skill_source: gt
+    advance_mode: external
+    label: previous_arch3_bs16
+
+  - model_dir: bs16_libero_90_full_firsthalf_scene_FSQ333_125_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch4
+    previous: true
+    checkpoint: "015000"
+    skill_source: gt
+    advance_mode: external
+    label: previous_arch4_bs16
+
+  # New Arch1_1--4 checkpoints use the same entry form without `previous`:
+  # - model_dir: bs96_<dataset-and-run>_arch1_1
   #   checkpoint: "015000"
-  #   skill_source: external
+  #   skill_source: gt
   #   advance_mode: external
-  #   label: full_bs96
+  #   label: arch1_1_bs96
 
-models_per_row: 2
+models_per_row: 3
 
-# Empty => timestamped folder under stage1_eval/outputs/.
-output_name: "crossatten_bs_15k_gt"
-# Reuse completed panel artifacts under the same output_name.
+# Empty => timestamped directory. A fixed name is useful with resume: true.
+output_name: "stage1_all_architectures"
 resume: false
 
 target_task: libero_90
@@ -41,14 +72,12 @@ max_parallel_tasks: 1
 n_action_steps: 5
 
 oracle:
-  # false: normal LIBERO reset states, GT/reference sequences matched by language.
-  # true: dataset episode-exact reset; run oracle_matching/run.sh first.
+  # true requires every listed model to use the same episode-exact dataset map.
   episode_exact: true
-  # Default when a model entry omits it: external | own | gt.
+  # Default when a model entry omits advance_mode: external | own | gt.
   advance_mode: external
 
 terminator:
-  # Thresholds used when advance_mode is external or own.
   end_mode: or                   # termination | progress | or | and
   end_threshold: 0.5
   progress_threshold: 0.9

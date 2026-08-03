@@ -243,15 +243,16 @@ def evaluate_model(config_path: Path, model_index: int) -> Path:
     policy_config = PreTrainedConfig.from_pretrained(policy_path)
     policy_config.pretrained_path = policy_path
     policy_config.eval_legacy_vsa = bool(spec.get("eval_legacy_vsa", False))
+    policy_config.eval_vsa_revision = str(spec.get("eval_vsa_revision", ""))
     if not policy_config.eval_legacy_vsa:
         expected_mode = str(
-            spec.get("vision_conditioning_mode", "residual_cross_attention")
+            spec.get("vision_conditioning_mode", "interleaved_cross_attention")
         )
         actual_mode = str(
             getattr(
                 policy_config,
                 "vision_conditioning_mode",
-                "residual_cross_attention",
+                "interleaved_cross_attention",
             )
         )
         if actual_mode != expected_mode:
@@ -262,9 +263,32 @@ def evaluate_model(config_path: Path, model_index: int) -> Path:
     policy_config.num_visual_latents_per_camera = int(
         spec.get(
             "num_visual_latents_per_camera",
-            8 if policy_config.eval_legacy_vsa else 32,
+            8
+            if policy_config.eval_vsa_revision == "legacy_alternating_v1"
+            else 32,
         )
     )
+    policy_config.visual_perceiver_width = int(
+        spec.get(
+            "visual_perceiver_width",
+            384 if policy_config.eval_legacy_vsa else 1024,
+        )
+    )
+    for field in (
+        "include_state_in_visual_crossattn",
+        "include_skill_in_visual_crossattn",
+    ):
+        expected = bool(spec.get(field, False))
+        if not policy_config.eval_legacy_vsa:
+            actual = bool(getattr(policy_config, field, False))
+            if actual != expected:
+                raise RuntimeError(
+                    f"Checkpoint {field} changed during input-influence eval: "
+                    f"resolved={expected}, loaded={actual}."
+                )
+        # Historical configs predate these serialized fields; use the exact
+        # values inferred by the shared Stage-1 eval resolver.
+        setattr(policy_config, field, expected)
     policy_config.device = str(device)
     policy_config.gradient_checkpointing = False
     policy_config.compile_model = False

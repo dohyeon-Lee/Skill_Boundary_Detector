@@ -20,7 +20,12 @@ from lerobot.configs.policies import PreTrainedConfig
 from lerobot.envs.factory import make_env, make_env_pre_post_processors
 from lerobot.policies.factory import make_policy, make_pre_post_processors
 from lerobot.policies.pretrained import PreTrainedPolicy
-from lerobot.policies.skill_expert.configuration_skill_expert import SkillExpertConfig
+from lerobot.policies.skill_expert.configuration_skill_expert import (
+    COND_GEMMA_ARCHITECTURE,
+    COND_GEMMA_ARCHITECTURE_REVISION,
+    SkillExpertConfig,
+    normalize_conditioning_route,
+)
 from lerobot.scripts.lerobot_skillvla_eval import (
     _libero_task_descriptions,
     close_envs,
@@ -470,34 +475,118 @@ def _reset_init_state_ids(envs: dict) -> None:
 
 def _policy_config(spec: dict, base, device: torch.device):
     config = PreTrainedConfig.from_pretrained(spec["policy_path"])
+    architecture = str(spec.get("architecture", "vsa_perceiver_crossattn"))
+    architecture_label = str(spec.get("architecture_label", ""))
+    loaded_architecture_label = str(getattr(config, "architecture_label", ""))
+    historical_arch0_alias = (
+        architecture == COND_GEMMA_ARCHITECTURE
+        and str(spec.get("architecture_revision", ""))
+        == COND_GEMMA_ARCHITECTURE_REVISION
+        and loaded_architecture_label == "arch1"
+        and architecture_label == "arch0"
+    )
+    historical_arch2_alias = (
+        architecture == "vsa_perceiver_crossattn"
+        and str(spec.get("architecture_revision", ""))
+        == "interleaved_direct1024_v3"
+        and str(spec.get("vision_conditioning_mode", ""))
+        == "interleaved_cross_attention"
+        and loaded_architecture_label == "arch2"
+        and architecture_label == "arch2_2"
+    )
+    if (
+        loaded_architecture_label
+        and loaded_architecture_label != architecture_label
+        and not historical_arch0_alias
+        and not historical_arch2_alias
+    ):
+        raise RuntimeError(
+            "Checkpoint contract changed while starting evaluation: "
+            f"architecture_label resolved={architecture_label}, "
+            f"loaded={loaded_architecture_label} at {spec['policy_path']}"
+        )
+    config.architecture_label = architecture_label
     config.eval_legacy_vsa = bool(spec.get("eval_legacy_vsa", False))
-    if not config.eval_legacy_vsa:
-        expected_mode = str(
-            spec.get("vision_conditioning_mode", "residual_cross_attention")
-        )
-        actual_mode = str(
-            getattr(config, "vision_conditioning_mode", "residual_cross_attention")
-        )
-        if actual_mode != expected_mode:
+    config.eval_vsa_revision = str(spec.get("eval_vsa_revision", ""))
+    if architecture == COND_GEMMA_ARCHITECTURE:
+        loaded_architecture = str(getattr(config, "architecture", ""))
+        if (
+            not bool(spec.get("architecture_inferred", False))
+            and loaded_architecture != COND_GEMMA_ARCHITECTURE
+        ):
             raise RuntimeError(
                 "Checkpoint contract changed while starting evaluation: "
-                f"vision_conditioning_mode resolved={expected_mode}, loaded={actual_mode} "
+                f"architecture resolved={COND_GEMMA_ARCHITECTURE}, "
+                f"loaded={loaded_architecture} at {spec['policy_path']}"
+            )
+        expected_route = normalize_conditioning_route(
+            spec.get("conditioning_route", "state_cond")
+        )
+        actual_route = normalize_conditioning_route(
+            getattr(config, "conditioning_route", "state_cond")
+        )
+        if actual_route != expected_route:
+            raise RuntimeError(
+                "Checkpoint contract changed while starting evaluation: "
+                f"conditioning_route resolved={expected_route}, loaded={actual_route} "
                 f"at {spec['policy_path']}"
             )
-    config.num_visual_latents_per_camera = int(
-        spec.get("num_visual_latents_per_camera", 8 if config.eval_legacy_vsa else 32)
-    )
-    for field in (
-        "include_state_in_visual_crossattn",
-        "include_skill_in_visual_crossattn",
-    ):
-        expected = bool(spec.get(field, False))
-        actual = bool(getattr(config, field, False))
-        if actual != expected:
-            raise RuntimeError(
-                f"Checkpoint contract changed while starting evaluation: {field} "
-                f"resolved={expected}, loaded={actual} at {spec['policy_path']}"
+        # skillVLA_real checkpoints predate the explicit architecture fields.
+        # The resolver verified the raw config; materialize that contract before
+        # construction so the current branch builds the exact Cond-Gemma path.
+        config.architecture = COND_GEMMA_ARCHITECTURE
+        config.architecture_revision = str(
+            spec.get(
+                "architecture_revision", COND_GEMMA_ARCHITECTURE_REVISION
             )
+        )
+        config.conditioning_route = expected_route
+        config.num_visual_latents_per_camera = int(
+            spec.get("num_visual_latents_per_camera", 32)
+        )
+        config.visual_perceiver_width = int(
+            spec.get("visual_perceiver_width", 1024)
+        )
+    else:
+        if not config.eval_legacy_vsa:
+            expected_mode = str(
+                spec.get("vision_conditioning_mode", "interleaved_cross_attention")
+            )
+            actual_mode = str(
+                getattr(config, "vision_conditioning_mode", "interleaved_cross_attention")
+            )
+            if actual_mode != expected_mode:
+                raise RuntimeError(
+                    "Checkpoint contract changed while starting evaluation: "
+                    f"vision_conditioning_mode resolved={expected_mode}, "
+                    f"loaded={actual_mode} at {spec['policy_path']}"
+                )
+        config.num_visual_latents_per_camera = int(
+            spec.get(
+                "num_visual_latents_per_camera",
+                8 if config.eval_vsa_revision == "legacy_alternating_v1" else 32,
+            )
+        )
+        config.visual_perceiver_width = int(
+            spec.get(
+                "visual_perceiver_width",
+                384 if config.eval_legacy_vsa else 1024,
+            )
+        )
+        for field in (
+            "include_state_in_visual_crossattn",
+            "include_skill_in_visual_crossattn",
+        ):
+            expected = bool(spec.get(field, False))
+            if config.eval_legacy_vsa:
+                setattr(config, field, expected)
+                continue
+            actual = bool(getattr(config, field, False))
+            if actual != expected:
+                raise RuntimeError(
+                    f"Checkpoint contract changed while starting evaluation: {field} "
+                    f"resolved={expected}, loaded={actual} at {spec['policy_path']}"
+                )
     config.pretrained_path = Path(spec["policy_path"])
     config.device = str(device)
     config.use_amp = base.use_amp
@@ -507,10 +596,12 @@ def _policy_config(spec: dict, base, device: torch.device):
     for field in (
         "fsq_path",
         "dino_model_path",
-        "terminator_dino_model_path",
         "tokenizer_path",
     ):
         setattr(config, field, spec[field])
+    # The VSA/cond DINO may intentionally differ from the FSQ terminator DINO.
+    # Ignore legacy policy overrides and reconstruct the terminator from FSQ.pt.
+    config.terminator_dino_model_path = None
     return config
 
 
@@ -623,16 +714,32 @@ def _build_context(spec: dict, cfg, device: torch.device) -> dict:
     advance_mode = _normalize_advance_mode(spec["advance_mode"])
     external_skill_model = str(spec.get("external_skill_model") or "").strip()
     policy_config = _policy_config(spec, cfg.policy, device)
-    log.info(
-        "[%s] Stage-1 architecture=%s revision=%s mode=%s, "
-        "visual cross-attention queries=%s, loss=%s.",
-        spec["label"],
-        spec.get("architecture"),
-        spec.get("architecture_revision"),
-        spec.get("vision_conditioning_mode"),
-        spec.get("visual_crossattn_queries"),
-        spec.get("action_loss_mode"),
-    )
+    if spec.get("architecture") == COND_GEMMA_ARCHITECTURE:
+        log.info(
+            "[%s] Stage-1 %s architecture=%s revision=%s conditioning_route=%s, "
+            "loss=%s%s.",
+            spec["label"],
+            spec.get("architecture_label"),
+            spec.get("architecture"),
+            spec.get("architecture_revision"),
+            spec.get("conditioning_route"),
+            spec.get("action_loss_mode"),
+            " (inferred from skillVLA_real metadata)"
+            if spec.get("architecture_inferred")
+            else "",
+        )
+    else:
+        log.info(
+            "[%s] Stage-1 %s architecture=%s revision=%s mode=%s, "
+            "visual cross-attention queries=%s, loss=%s.",
+            spec["label"],
+            spec.get("architecture_label"),
+            spec.get("architecture"),
+            spec.get("architecture_revision"),
+            spec.get("vision_conditioning_mode"),
+            spec.get("visual_crossattn_queries"),
+            spec.get("action_loss_mode"),
+        )
     policy = make_policy(
         cfg=policy_config, env_cfg=cfg.env, rename_map=cfg.rename_map
     )
@@ -708,10 +815,11 @@ def _build_context(spec: dict, cfg, device: torch.device) -> dict:
         "rename_observations_processor": {"rename_map": cfg.rename_map},
     }
     saved_steps = _saved_preprocessor_step_names(policy_config.pretrained_path)
-    if skill_source != "gt" and "tokenizer_processor" in saved_steps:
+    if "tokenizer_processor" in saved_steps:
         # Imported checkpoints can retain the source server's absolute tokenizer
         # path inside policy_preprocessor.json. The resolver already relocated the
-        # corresponding config.json path, so apply it when this step exists.
+        # corresponding config.json path. Apply it even for GT-skill evaluation:
+        # the saved pipeline constructs every configured step before inference.
         overrides["tokenizer_processor"] = {
             "tokenizer_name": str(policy_config.tokenizer_path)
         }
@@ -790,6 +898,10 @@ def _panel_signature(spec: dict, task_names: set[str], cfg) -> dict:
         "skill_source": spec["skill_source"],
         "advance_mode": spec["advance_mode"],
         "architecture": spec.get("architecture"),
+        "architecture_label": spec.get("architecture_label"),
+        "architecture_revision": spec.get("architecture_revision"),
+        "conditioning_route": spec.get("conditioning_route"),
+        "previous_checkpoint": spec.get("previous_checkpoint", False),
         "vision_conditioning_mode": spec.get("vision_conditioning_mode"),
         "include_state_in_visual_crossattn": spec.get(
             "include_state_in_visual_crossattn", False
@@ -954,6 +1066,12 @@ def _maybe_log_wandb(cfg, infos: dict[str, dict], specs: list[dict]) -> None:
                             spec.get("external_skill_model") or "unused"
                         ),
                         "architecture": spec.get("architecture"),
+                        "architecture_label": spec.get("architecture_label"),
+                        "architecture_revision": spec.get("architecture_revision"),
+                        "conditioning_route": spec.get("conditioning_route"),
+                        "previous_checkpoint": spec.get(
+                            "previous_checkpoint", False
+                        ),
                         "vision_conditioning_mode": spec.get(
                             "vision_conditioning_mode"
                         ),

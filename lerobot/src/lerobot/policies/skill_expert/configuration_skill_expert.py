@@ -8,24 +8,75 @@ from dataclasses import dataclass, field
 from lerobot.configs.policies import PreTrainedConfig
 from lerobot.configs.types import FeatureType, NormalizationMode, PolicyFeature
 from lerobot.optim.optimizers import AdamWConfig
-from lerobot.optim.schedulers import CosineDecayWithWarmupSchedulerConfig
+from lerobot.optim.schedulers import (
+    CosineDecayWithWarmupSchedulerConfig,
+    LRSchedulerConfig,
+    WarmupConstantSchedulerConfig,
+)
 from lerobot.utils.constants import ACTION, OBS_STATE
 
 
 VSA_ARCHITECTURE = "vsa_perceiver_crossattn"
 COND_GEMMA_ARCHITECTURE = "cond_gemma"
-# Kept unchanged so mode-less residual-SA18 checkpoints remain strict-loadable.
-# ``vision_conditioning_mode`` is the independent fusion-layout contract.
-VSA_ARCHITECTURE_REVISION = "residual_sa18_v2"
+# VSA revisions are explicit because the three visual-fusion ablations have
+# different parameter/state_dict contracts.
+VSA_ARCHITECTURE_REVISION = "interleaved_direct1024_v3"
+UNCOMPRESSED_VISUAL_KV_REVISION = "visual_kv_uncompressed_v1"
+COMPRESSED_VISUAL_KV_REVISION = "visual_kv_perceiver_v1"
+LEGACY_RESIDUAL_VSA_REVISION = "residual_sa18_v2"
+# Condition-Gemma family. The first revision preserves the skillVLA_real module
+# and state_dict contract; ``conditioning_route`` records whether its skill
+# broadcast targets Cond-Gemma (historical) or the expert (current Arch0).
+# The other two revisions move state/skill to explicit expert tokens.
 COND_GEMMA_ARCHITECTURE_REVISION = "skillvla_real_v1"
-RESIDUAL_CROSS_ATTENTION = "residual_cross_attention"
+COND_GEMMA_EXPERT_TOKENS_REVISION = "expert_tokens_uncompressed_v1"
+COND_GEMMA_PERCEIVER_EXPERT_TOKENS_REVISION = "expert_tokens_perceiver_v1"
+COND_GEMMA_ARCHITECTURE_LABELS = {
+    COND_GEMMA_ARCHITECTURE_REVISION: "arch0",
+    COND_GEMMA_EXPERT_TOKENS_REVISION: "arch1_1",
+    COND_GEMMA_PERCEIVER_EXPERT_TOKENS_REVISION: "arch1_2",
+}
+INTERLEAVED_CROSS_ATTENTION = "interleaved_cross_attention"
+UNCOMPRESSED_VISUAL_KV_SELF_ATTENTION = (
+    "uncompressed_visual_kv_self_attention"
+)
+COMPRESSED_VISUAL_KV_SELF_ATTENTION = "compressed_visual_kv_self_attention"
+LEGACY_RESIDUAL_CROSS_ATTENTION = "residual_cross_attention"
 IN_CONTEXT_TOKENS = "in_context_tokens"
 GLOBAL_VISUAL_ADARMS = "global_visual_adarms"
 VISION_CONDITIONING_MODES = (
-    RESIDUAL_CROSS_ATTENTION,
+    UNCOMPRESSED_VISUAL_KV_SELF_ATTENTION,
+    COMPRESSED_VISUAL_KV_SELF_ATTENTION,
+    INTERLEAVED_CROSS_ATTENTION,
     IN_CONTEXT_TOKENS,
     GLOBAL_VISUAL_ADARMS,
 )
+VSA_ARCHITECTURE_LABELS = {
+    UNCOMPRESSED_VISUAL_KV_SELF_ATTENTION: "arch1_3",
+    COMPRESSED_VISUAL_KV_SELF_ATTENTION: "arch2_1",
+    INTERLEAVED_CROSS_ATTENTION: "arch2_2",
+    IN_CONTEXT_TOKENS: "arch3",
+    GLOBAL_VISUAL_ADARMS: "arch4",
+}
+VSA_REVISION_MODE_LABELS = {
+    UNCOMPRESSED_VISUAL_KV_REVISION: {
+        UNCOMPRESSED_VISUAL_KV_SELF_ATTENTION: "arch1_3"
+    },
+    COMPRESSED_VISUAL_KV_REVISION: {
+        COMPRESSED_VISUAL_KV_SELF_ATTENTION: "arch2_1"
+    },
+    VSA_ARCHITECTURE_REVISION: {
+        INTERLEAVED_CROSS_ATTENTION: "arch2_2",
+        IN_CONTEXT_TOKENS: "arch3",
+        GLOBAL_VISUAL_ADARMS: "arch4",
+    },
+}
+LEGACY_VSA_ARCHITECTURE_LABELS = {
+    LEGACY_RESIDUAL_CROSS_ATTENTION: "arch2_2",
+    IN_CONTEXT_TOKENS: "arch3",
+    GLOBAL_VISUAL_ADARMS: "arch4",
+}
+COND_GEMMA_ARCHITECTURE_LABEL = "arch0"
 CONDITIONING_ROUTES = frozenset(
     {
         "state_cond",
@@ -55,12 +106,13 @@ class SkillExpertConfig(PreTrainedConfig):
     dtype: str = "float32"
 
     architecture: str = VSA_ARCHITECTURE
+    # User-facing experiment name. Empty preserves checkpoints saved before the
+    # User-facing ablation label; revisions keep old same-name checkpoints exact.
+    architecture_label: str = ""
     architecture_revision: str = VSA_ARCHITECTURE_REVISION
-    # Missing in older residual-SA18 checkpoints, so this default is part of
-    # the backward-compatible checkpoint contract.
-    vision_conditioning_mode: str = RESIDUAL_CROSS_ATTENTION
-    include_state_in_visual_crossattn: bool = False
-    include_skill_in_visual_crossattn: bool = False
+    vision_conditioning_mode: str = INTERLEAVED_CROSS_ATTENTION
+    include_state_in_visual_crossattn: bool = True
+    include_skill_in_visual_crossattn: bool = True
     action_expert_variant: str = "gemma_300m"
     # Used only by the explicitly selected skillVLA_real condition architecture.
     cond_encoder_variant: str = "gemma_300m"
@@ -86,10 +138,20 @@ class SkillExpertConfig(PreTrainedConfig):
     freeze_vision_encoder: bool = False
     dino_lr: float | None = None
     num_visual_latents_per_camera: int = 32
+    visual_perceiver_width: int = 1024
     skill_vocab_size: int = 27
     skill_fsq_levels: list[int] = field(default_factory=lambda: [3, 3, 3])
     transition_jitter_pmax: int = 0
     transition_jitter_distribution: str = "half_normal"
+    # Optional batch-composition experiment. Disabled is the ordinary shuffled
+    # DataLoader used by the architecture ablations. Enabled guarantees a
+    # configurable number of original-skill early/late frames in every batch;
+    # transition jitter is still sampled independently inside the dataset.
+    phase_batch_sampling_enabled: bool = False
+    phase_batch_focused_fraction: float = 0.75
+    phase_batch_early_fraction: float = 0.5
+    phase_batch_early_threshold: float = 0.25
+    phase_batch_late_threshold: float = 0.75
 
     # Which skill code conditions the action path during offline training.  The
     # predictor route loads only the learned predictor from a previous Stage-1
@@ -127,6 +189,7 @@ class SkillExpertConfig(PreTrainedConfig):
     fsq_path: str | None = None
     terminator_freeze_vision_encoder: bool | None = None
     terminator_dino_model_path: str | None = None
+    """Deprecated checkpoint-compatibility field; FSQ terminators use their own checkpoint config."""
     terminator_lr_scale: float = 1.0
     terminator_end_target_sigma: float = 2.0
     terminator_end_pos_weight: float = 1.0
@@ -152,10 +215,12 @@ class SkillExpertConfig(PreTrainedConfig):
     optimizer_weight_decay: float = 0.01
     optimizer_grad_clip_norm: float = 1.0
     scheduler_warmup_steps: int = 1_000
+    scheduler_mode: str = "cosine_decay"
     scheduler_decay_steps: int = 30_000
     scheduler_decay_lr: float = 2.5e-6
 
     def __post_init__(self) -> None:
+        self.architecture_label = str(self.architecture_label).strip().lower()
         self.conditioning_route = normalize_conditioning_route(self.conditioning_route)
         self.vsa_debug_schedule = tuple(int(step) for step in self.vsa_debug_schedule)
         super().__post_init__()
@@ -173,21 +238,33 @@ class SkillExpertConfig(PreTrainedConfig):
                 f"got {self.architecture!r}."
             )
         if self.architecture == VSA_ARCHITECTURE:
-            if self.architecture_revision != VSA_ARCHITECTURE_REVISION:
+            if self.architecture_revision in VSA_REVISION_MODE_LABELS:
+                architecture_labels = VSA_REVISION_MODE_LABELS[
+                    self.architecture_revision
+                ]
+                supported_modes = tuple(architecture_labels)
+            elif self.architecture_revision == LEGACY_RESIDUAL_VSA_REVISION:
+                supported_modes = tuple(LEGACY_VSA_ARCHITECTURE_LABELS)
+                architecture_labels = LEGACY_VSA_ARCHITECTURE_LABELS
+            else:
                 raise ValueError(
-                    "VSA Stage 1 requires architecture_revision="
-                    f"{VSA_ARCHITECTURE_REVISION!r}, got {self.architecture_revision!r}."
+                    "Unsupported VSA architecture_revision="
+                    f"{self.architecture_revision!r}; expected "
+                    f"one of {tuple(VSA_REVISION_MODE_LABELS)!r} for new training or "
+                    f"{LEGACY_RESIDUAL_VSA_REVISION!r} for historical evaluation."
                 )
-            if self.vision_conditioning_mode not in VISION_CONDITIONING_MODES:
+            if self.vision_conditioning_mode not in supported_modes:
                 raise ValueError(
                     "vision_conditioning_mode must be one of "
-                    f"{VISION_CONDITIONING_MODES}, got {self.vision_conditioning_mode!r}."
+                    f"{supported_modes}, got {self.vision_conditioning_mode!r}."
                 )
+            expected_architecture_label = architecture_labels[
+                self.vision_conditioning_mode
+            ]
         else:
-            if self.architecture_revision != COND_GEMMA_ARCHITECTURE_REVISION:
+            if self.architecture_revision not in COND_GEMMA_ARCHITECTURE_LABELS:
                 raise ValueError(
-                    "cond_gemma Stage 1 requires architecture_revision="
-                    f"{COND_GEMMA_ARCHITECTURE_REVISION!r}, "
+                    "Unsupported cond_gemma architecture_revision="
                     f"got {self.architecture_revision!r}."
                 )
             if self.cond_encoder_variant != self.action_expert_variant:
@@ -200,17 +277,59 @@ class SkillExpertConfig(PreTrainedConfig):
                     f"conditioning_route must be one of {sorted(CONDITIONING_ROUTES)}, "
                     f"got {self.conditioning_route!r}."
                 )
+            if (
+                self.architecture_revision != COND_GEMMA_ARCHITECTURE_REVISION
+                and self.conditioning_route != "state_skill_cond"
+            ):
+                raise ValueError(
+                    f"{COND_GEMMA_ARCHITECTURE_LABELS[self.architecture_revision]} "
+                    "fixes conditioning_route='state_skill_cond'; got "
+                    f"{self.conditioning_route!r}."
+                )
+            expected_architecture_label = COND_GEMMA_ARCHITECTURE_LABELS[
+                self.architecture_revision
+            ]
+        if (
+            self.architecture_label
+            and self.architecture_label != expected_architecture_label
+            # Checkpoints produced before the rename saved the current Arch0
+            # revision as "arch1". Accept only that historical metadata alias.
+            and not (
+                self.architecture == COND_GEMMA_ARCHITECTURE
+                and self.architecture_revision == COND_GEMMA_ARCHITECTURE_REVISION
+                and self.architecture_label == "arch1"
+            )
+            # Checkpoints from before the rename saved the current alternating
+            # cross-attention revision as "arch2"; it is now called Arch2_2.
+            and not (
+                self.architecture == VSA_ARCHITECTURE
+                and self.architecture_revision == VSA_ARCHITECTURE_REVISION
+                and self.vision_conditioning_mode == INTERLEAVED_CROSS_ATTENTION
+                and self.architecture_label == "arch2"
+            )
+        ):
+            raise ValueError(
+                f"architecture_label={self.architecture_label!r} does not match "
+                f"{self.architecture}/{getattr(self, 'vision_conditioning_mode', '')}: "
+                f"expected {expected_architecture_label!r}."
+            )
         if self.vision_backbone != "dino":
             raise ValueError("Stage 1 uses the Stage-0 DINO vision path; vision_backbone must be 'dino'.")
         if self.dino_image_size <= 0:
             raise ValueError("dino_image_size must be positive.")
-        if self.architecture == VSA_ARCHITECTURE:
-            if self.dino_lr_scale <= 0.0:
-                raise ValueError("dino_lr_scale must be positive.")
+        if self.dino_lr_scale <= 0.0:
+            raise ValueError("dino_lr_scale must be positive.")
+        if self.architecture == VSA_ARCHITECTURE or (
+            self.architecture == COND_GEMMA_ARCHITECTURE
+            and self.architecture_revision
+            == COND_GEMMA_PERCEIVER_EXPERT_TOKENS_REVISION
+        ):
             if not 1 <= self.num_visual_latents_per_camera <= 197:
                 raise ValueError(
                     "num_visual_latents_per_camera must be between 1 and 197."
                 )
+            if self.visual_perceiver_width <= 0:
+                raise ValueError("visual_perceiver_width must be positive.")
         else:
             if self.dino_lr is not None and self.dino_lr <= 0.0:
                 raise ValueError("dino_lr must be positive when set.")
@@ -222,6 +341,15 @@ class SkillExpertConfig(PreTrainedConfig):
             raise ValueError("vsa_debug_schedule entries must be positive optimizer steps.")
         if tuple(sorted(set(self.vsa_debug_schedule))) != self.vsa_debug_schedule:
             raise ValueError("vsa_debug_schedule must be sorted and contain no duplicates.")
+        if self.scheduler_mode not in {"cosine_decay", "warmup_constant"}:
+            raise ValueError(
+                "scheduler_mode must be 'cosine_decay' or 'warmup_constant', got "
+                f"{self.scheduler_mode!r}."
+            )
+        if self.scheduler_warmup_steps < 0:
+            raise ValueError("scheduler_warmup_steps must be non-negative.")
+        if self.scheduler_decay_steps <= 0:
+            raise ValueError("scheduler_decay_steps must be positive.")
         if not self.skill_fsq_levels or any(level <= 1 for level in self.skill_fsq_levels):
             raise ValueError(f"skill_fsq_levels must all be greater than one, got {self.skill_fsq_levels}.")
         expected_vocab = math.prod(self.skill_fsq_levels)
@@ -245,6 +373,19 @@ class SkillExpertConfig(PreTrainedConfig):
             raise ValueError(
                 "transition_jitter_distribution must be 'half_normal' or 'uniform', got "
                 f"{self.transition_jitter_distribution!r}."
+            )
+        if not 0.0 <= self.phase_batch_focused_fraction <= 1.0:
+            raise ValueError("phase_batch_focused_fraction must be in [0, 1].")
+        if not 0.0 <= self.phase_batch_early_fraction <= 1.0:
+            raise ValueError("phase_batch_early_fraction must be in [0, 1].")
+        if not (
+            0.0
+            <= self.phase_batch_early_threshold
+            < self.phase_batch_late_threshold
+            <= 1.0
+        ):
+            raise ValueError(
+                "Phase batch thresholds must satisfy 0 <= early < late <= 1."
             )
         if self.training_skill_source not in {"gt", "predictor"}:
             raise ValueError(
@@ -339,7 +480,11 @@ class SkillExpertConfig(PreTrainedConfig):
             grad_clip_norm=self.optimizer_grad_clip_norm,
         )
 
-    def get_scheduler_preset(self) -> CosineDecayWithWarmupSchedulerConfig:
+    def get_scheduler_preset(self) -> LRSchedulerConfig:
+        if self.scheduler_mode == "warmup_constant":
+            return WarmupConstantSchedulerConfig(
+                num_warmup_steps=self.scheduler_warmup_steps
+            )
         return CosineDecayWithWarmupSchedulerConfig(
             peak_lr=self.optimizer_lr,
             decay_lr=self.scheduler_decay_lr,

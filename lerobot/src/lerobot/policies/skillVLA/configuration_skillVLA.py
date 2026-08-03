@@ -492,9 +492,8 @@ class SkillVLAConfig(PI05Config):
     """Co-trained terminator vision override. True freezes only its vision encoder; False trains the
     vision encoder with the rest of the terminator. None preserves the freeze mode stored in FSQ.pt."""
     terminator_dino_model_path: str | None = None
-    """ONLINE DINO의 로컬 모델 경로 오버라이드 (예: {project_root}/models/dinov3-vits16). FSQ ckpt의
-    cfg에는 FSQ를 학습한 머신의 절대경로가 기록되어 있어 서버 이식 시 깨질 수 있음 — 설정하면
-    terminator 빌드(fsq_term/fsq_term_train)가 이 경로로 DINO를 lazy 로드한다. None = ckpt 기록 사용."""
+    """Deprecated checkpoint-compatibility field. Terminator DINO always follows FSQ.pt;
+    missing absolute paths are relocated to this repository's models directory by FSQ.py."""
     terminator_lr_scale: float = 1.0
     """LR multiplier (× optimizer_lr) for the co-trained terminator params (train_terminator only)."""
     terminator_end_target_sigma: float = 2.0

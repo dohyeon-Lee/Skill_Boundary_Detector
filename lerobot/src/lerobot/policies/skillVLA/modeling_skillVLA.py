@@ -2118,21 +2118,21 @@ class SkillVLAPytorch(PI05Pytorch):
 
     # ── FSQ terminator (inference-only skill-transition gating) ──
     @staticmethod
-    def _construct_fsq(path: str, dino_model_path: str | None = None):
+    def _construct_fsq(path: str):
         """Instantiate and load only ``terminator.*`` from a v2 FSQ checkpoint.
 
-        Neither the trajectory encoder nor the 300M FSQ action expert is allocated here.
-        ``dino_model_path`` overrides a checkpoint-local DINO path after moving servers."""
+        Neither the trajectory encoder nor the action reconstructor is allocated here.
+        The DINO architecture/path is owned by the FSQ checkpoint."""
         sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "examples" / "libero"))
         from FSQ import load_fsq_terminator  # noqa: PLC0415
 
-        terminator, _ = load_fsq_terminator(path, device="cpu", dino_model_path=dino_model_path)
+        terminator, _ = load_fsq_terminator(path, device="cpu")
         return terminator
 
     def load_terminator(self, path: str) -> None:
         """Load the frozen FSQ checkpoint's terminator (decides skill transitions in closed loop).
         Only ``predict_termination`` is used (the action chunk comes from the flow-matching expert)."""
-        terminator = self._construct_fsq(path, getattr(self.config, "terminator_dino_model_path", None))
+        terminator = self._construct_fsq(path)
         for p in terminator.parameters():
             p.requires_grad_(False)
         terminator.eval()
@@ -2148,7 +2148,7 @@ class SkillVLAPytorch(PI05Pytorch):
         Stage-1's co-trained ``fsq_term_train.*`` tensors when they exist. The raw FSQ weights remain the
         fallback for older Stage-1 checkpoints without a co-trained terminator.
         """
-        terminator = self._construct_fsq(path, getattr(self.config, "terminator_dino_model_path", None))
+        terminator = self._construct_fsq(path)
         freeze_override = getattr(self.config, "terminator_freeze_vision_encoder", None)
         if freeze_override is not None:
             terminator.freeze_vision_encoder = bool(freeze_override)
@@ -3964,7 +3964,7 @@ class SkillVLAPolicy(PI05Policy):
                 raise RuntimeError(
                     "Stage-1 co-trained terminator failed to restore exactly: "
                     f"missing={len(missing_term)}, unexpected={len(unexpected_term)}. "
-                    "Check terminator_dino_model_path and the Stage-1/FSQ terminator architecture."
+                    "Check the FSQ checkpoint's DINO contract and the Stage-1 terminator architecture."
                 )
         log.info(
             "SkillVLA warm-start: VLM<-pi05 (%d keys), expert/cond<-stage1 (%d keys). Terminator: %s. "

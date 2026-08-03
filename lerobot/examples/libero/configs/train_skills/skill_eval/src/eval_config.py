@@ -36,7 +36,6 @@ def _folder_name(value: object, key: str) -> str:
 def _resolve_fsq_artifact(
     cfg: dict,
     *,
-    project_root: Path,
     dataset_root: Path,
     outputs_root: Path,
     checkpoint: str,
@@ -109,13 +108,6 @@ def _resolve_fsq_artifact(
     if not (dataset_dir / "videos").is_dir():
         raise FileNotFoundError(f"FSQ source dataset videos not found: {dataset_dir / 'videos'}")
 
-    dino_value = str(get_value(cfg, "fsq_eval_dino_model_path", "models/dinov3-vitl16"))
-    dino_path = Path(dino_value).expanduser()
-    if not dino_path.is_absolute():
-        dino_path = project_root / dino_path
-    if not dino_path.is_dir():
-        raise FileNotFoundError(f"FSQ eval DINO model not found: {dino_path}")
-
     return {
         "fsq_eval_run_name": run_name,
         "fsq_eval_selected_checkpoint": checkpoint,
@@ -127,7 +119,6 @@ def _resolve_fsq_artifact(
         "fsq_eval_meta_path": str(meta_path),
         "fsq_eval_skillset_dir": str(skillset_dir),
         "fsq_eval_dataset_dir": str(dataset_dir),
-        "fsq_eval_dino_model_path": str(dino_path),
     }
 
 
@@ -163,7 +154,6 @@ def build_settings(
     fsq_artifacts = [
         _resolve_fsq_artifact(
             cfg,
-            project_root=project_root,
             dataset_root=dataset_root,
             outputs_root=outputs_root,
             checkpoint=checkpoint,
@@ -180,7 +170,6 @@ def build_settings(
         selected_checkpoint = str(checkpoint_override).strip().lower()
         fsq_artifact = _resolve_fsq_artifact(
             cfg,
-            project_root=project_root,
             dataset_root=dataset_root,
             outputs_root=outputs_root,
             checkpoint=selected_checkpoint,

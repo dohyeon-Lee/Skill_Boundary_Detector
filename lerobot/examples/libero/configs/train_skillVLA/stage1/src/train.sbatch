@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Stage 1: language-free VSA pretraining with a fully trainable pi0.5 action expert.
-#SBATCH --job-name=stage1_vsa
+# Stage 1: unified Arch1--4 training with a fully trainable pi0.5 action expert.
+#SBATCH --job-name=stage1
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=256G
@@ -13,12 +13,17 @@ mkdir -p logs
 SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 SRC_DIR="${SUBMIT_DIR}/src"
 CONFIG_PATH="${STAGE1_TRAIN_CONFIG:-${SUBMIT_DIR}/stage1_train_config.yaml}"
+ARCHITECTURE_OVERRIDE="${STAGE1_ARCHITECTURE_OVERRIDE:-}"
 
 BOOTSTRAP_PYTHON="${SUBMIT_DIR}/../../../../../../.venv/bin/python"
 if [ ! -x "${BOOTSTRAP_PYTHON}" ]; then
   BOOTSTRAP_PYTHON=python3
 fi
-eval "$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/stage1_train_config.py" --config "${CONFIG_PATH}" --shell)"
+CONFIG_ARGS=(--config "${CONFIG_PATH}" --shell)
+if [ -n "${ARCHITECTURE_OVERRIDE}" ]; then
+  CONFIG_ARGS+=(--architecture "${ARCHITECTURE_OVERRIDE}")
+fi
+eval "$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/stage1_train_config.py" "${CONFIG_ARGS[@]}")"
 
 cd "${LEROBOT_ROOT}"
 source "${PROJECT_ROOT}/.venv/bin/activate"
@@ -26,19 +31,33 @@ source "${PROJECT_ROOT}/lerobot/examples/libero/configs/runtime_env.sh"
 export PYTHONPATH="${LEROBOT_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
 unset LD_LIBRARY_PATH
 
-echo "START STAGE 1 VSA"
+echo "START STAGE 1"
+echo "host    : $(hostname)"
 echo "dataset : ${SKILLVLA_DATASET_DIR}"
 echo "expert  : pi0.5 base ${PI_BASE} -> full fine-tuning"
-echo "arch    : ${ARCHITECTURE}"
-echo "vision conditioning: ${VISION_CONDITIONING_MODE}"
-echo "Visual cross-attention queries: ${VISUAL_CROSSATTN_QUERIES}"
-echo "vision memory: ${NUM_VISUAL_LATENTS_PER_CAMERA} latents/camera"
+echo "arch    : ${ARCHITECTURE_LABEL} (${ARCHITECTURE}, ${ARCHITECTURE_REVISION})"
+if [ "${ARCHITECTURE}" = cond_gemma ]; then
+  echo "route   : ${CONDITIONING_ROUTE}"
+else
+  echo "vision conditioning: ${VISION_CONDITIONING_MODE}"
+  echo "Visual cross-attention queries: ${VISUAL_CROSSATTN_QUERIES}"
+  echo "vision memory: ${NUM_VISUAL_LATENTS_PER_CAMERA} latents/camera"
+  echo "perceiver width: ${VISUAL_PERCEIVER_WIDTH} (direct DINO/expert width)"
+fi
 echo "loss    : ${ACTION_LOSS_MODE}"
 echo "skill   : ${TRAINING_SKILL_SOURCE}   predictor=${SKILL_PREDICTOR_CHECKPOINT_PATH:-none}"
-echo "vision  : shared trainable DINO ${DINO_MODEL_PATH}   lr_scale=${DINO_LR_SCALE}"
+if [ "${PHASE_BATCH_SAMPLING_ENABLED}" = true ]; then
+  echo "batch   : phase-focused fraction=${PHASE_BATCH_FOCUSED_FRACTION} early_share=${PHASE_BATCH_EARLY_FRACTION} thresholds=${PHASE_BATCH_EARLY_THRESHOLD}/${PHASE_BATCH_LATE_THRESHOLD}"
+else
+  echo "batch   : ordinary random shuffle (architecture ablation)"
+fi
+echo "vision  : DINO ${DINO_MODEL_PATH}   frozen=${FREEZE_VISION_ENCODER} lr_scale=${DINO_LR_SCALE}"
 echo "predict : pi0.5 VLM skill-LoRA=${SKILL_PREDICTOR_LORA} all_layers=${SKILL_PREDICTOR_ALL_LAYERS} deadzone=${SKILL_PREDICTOR_DEADZONE_FRAC}"
 echo "term    : FSQ ${FSQ_PATH}   train=${TRAIN_TERMINATOR}, vision_frozen=${TERMINATOR_FREEZE_VISION_ENCODER}"
-echo "schedule: steps=${STEPS}   lr_decay_steps=${SCHEDULER_DECAY_STEPS}"
+echo "schedule: steps=${STEPS}   mode=${SCHEDULER_MODE}   warmup=${SCHEDULER_WARMUP_STEPS}"
+if [ "${SCHEDULER_MODE}" = cosine_decay ]; then
+  echo "          lr_decay_steps=${SCHEDULER_DECAY_STEPS}"
+fi
 echo "output  : ${PT_OUTPUT_DIR}"
 
 if [ ! -e "${SKILLVLA_DATASET_DIR}" ]; then
@@ -64,19 +83,30 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.type=skill_expert \
     --policy.pretrained_path="${PI_BASE}" \
     --policy.architecture="${ARCHITECTURE}" \
+    --policy.architecture_label="${ARCHITECTURE_LABEL}" \
+    --policy.architecture_revision="${ARCHITECTURE_REVISION}" \
     --policy.vision_conditioning_mode="${VISION_CONDITIONING_MODE}" \
     --policy.include_state_in_visual_crossattn="${INCLUDE_STATE_IN_VISUAL_CROSSATTN}" \
     --policy.include_skill_in_visual_crossattn="${INCLUDE_SKILL_IN_VISUAL_CROSSATTN}" \
     --policy.num_visual_latents_per_camera="${NUM_VISUAL_LATENTS_PER_CAMERA}" \
+    --policy.visual_perceiver_width="${VISUAL_PERCEIVER_WIDTH}" \
     --policy.action_expert_variant="${ACTION_EXPERT_VARIANT}" \
+    --policy.cond_encoder_variant="${COND_ENCODER_VARIANT}" \
+    --policy.conditioning_route="${CONDITIONING_ROUTE}" \
     --policy.vision_backbone=dino \
     --policy.dino_model_path="${DINO_MODEL_PATH}" \
     --policy.dino_image_size="${DINO_IMAGE_SIZE}" \
+    --policy.freeze_vision_encoder="${FREEZE_VISION_ENCODER}" \
     --policy.dino_lr_scale="${DINO_LR_SCALE}" \
     --policy.skill_vocab_size="${SKILL_VOCAB_SIZE}" \
     --policy.skill_fsq_levels="${SKILL_FSQ_LEVELS}" \
     --policy.transition_jitter_pmax="${TRANSITION_JITTER_PMAX}" \
     --policy.transition_jitter_distribution="${TRANSITION_JITTER_DISTRIBUTION}" \
+    --policy.phase_batch_sampling_enabled="${PHASE_BATCH_SAMPLING_ENABLED}" \
+    --policy.phase_batch_focused_fraction="${PHASE_BATCH_FOCUSED_FRACTION}" \
+    --policy.phase_batch_early_fraction="${PHASE_BATCH_EARLY_FRACTION}" \
+    --policy.phase_batch_early_threshold="${PHASE_BATCH_EARLY_THRESHOLD}" \
+    --policy.phase_batch_late_threshold="${PHASE_BATCH_LATE_THRESHOLD}" \
     --policy.training_skill_source="${TRAINING_SKILL_SOURCE}" \
     --policy.skill_predictor_checkpoint_path="${SKILL_PREDICTOR_CHECKPOINT_PATH}" \
     --policy.train_skill_predictor="${TRAIN_SKILL_PREDICTOR}" \
@@ -101,7 +131,6 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.train_terminator="${TRAIN_TERMINATOR}" \
     --policy.fsq_path="${FSQ_PATH}" \
     --policy.terminator_freeze_vision_encoder="${TERMINATOR_FREEZE_VISION_ENCODER}" \
-    --policy.terminator_dino_model_path="${TERMINATOR_DINO_MODEL_PATH}" \
     --policy.terminator_lr_scale="${TERMINATOR_LR_SCALE}" \
     --policy.terminator_end_target_sigma="${TERMINATOR_END_TARGET_SIGMA}" \
     --policy.terminator_end_pos_weight="${TERMINATOR_END_POS_WEIGHT}" \
@@ -124,6 +153,8 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.push_to_hub=false \
     --policy.compile_model=false \
     --policy.optimizer_lr="${LR}" \
+    --policy.scheduler_mode="${SCHEDULER_MODE}" \
+    --policy.scheduler_warmup_steps="${SCHEDULER_WARMUP_STEPS}" \
     --policy.scheduler_decay_steps="${SCHEDULER_DECAY_STEPS}" \
     --output_dir="${PT_OUTPUT_DIR}" \
     --job_name="${PT_RUN_NAME}" \

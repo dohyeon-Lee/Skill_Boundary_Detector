@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Renewed Stage-1 VSA multi-model closed-loop evaluation.
+# Stage-1 VSA/Cond-Gemma multi-model closed-loop evaluation.
 #SBATCH --job-name=S1eval
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
@@ -83,8 +83,8 @@ echo "START STAGE-1 EVAL"
 echo "node     : ${SLURMD_NODENAME:-${HOSTNAME:-unknown}}"
 echo "job      : ${SLURM_JOB_ID:-none} array=${SLURM_ARRAY_TASK_ID:-none}"
 echo "cuda     : ${CUDA_VISIBLE_DEVICES:-unset}"
-echo "models   : ${MODEL_COUNT} (primary=${POLICY_PATH})"
-echo "contract : arch=${ARCHITECTURE}, visual_queries=${VISUAL_CROSSATTN_QUERIES}, loss=${ACTION_LOSS_MODE}"
+echo "models   : ${MODEL_COUNT} (${MODEL_ARCHITECTURES})"
+echo "contract : auto-detected independently from every checkpoint"
 echo "skills   : ${SKILL_DATASET_DIR}"
 echo "term     : used only by panels with advance_mode=external|own"
 echo "suite    : ${TARGET_TASK} task_ids=${TASK_IDS} episodes=${N_EPISODES}"
@@ -97,7 +97,6 @@ PYTHONPATH="${LEROBOT_ROOT}/src:${LEROBOT_ROOT}/examples/libero:${LIBERO_REPO_RO
     --policy.path="${POLICY_PATH}" \
     --policy.fsq_path="${FSQ_PATH}" \
     --policy.dino_model_path="${DINO_MODEL_PATH}" \
-    --policy.terminator_dino_model_path="${TERMINATOR_DINO_MODEL_PATH}" \
     --policy.tokenizer_path="${TOKENIZER_PATH}" \
     --policy.n_action_steps="${N_ACTION_STEPS}" \
     --policy.device=cuda \

@@ -51,7 +51,7 @@ assets: ${LIBERO_BENCHMARK_ROOT}/assets
 EOF
 export LIBERO_CONFIG_PATH="${LIBERO_LOCAL_CONFIG_DIR}"
 
-for artifact in "${POLICY_PATH}" "${FSQ_PATH}" "${SKILL_DATASET_DIR}" "${DINO_MODEL_PATH}" "${TERMINATOR_DINO_MODEL_PATH}" "${TOKENIZER_PATH}"; do
+for artifact in "${POLICY_PATH}" "${FSQ_PATH}" "${SKILL_DATASET_DIR}" "${DINO_MODEL_PATH}" "${TOKENIZER_PATH}"; do
   if [ ! -e "${artifact}" ]; then
     echo "Missing Stage-2 eval artifact: ${artifact}" >&2
     exit 1
@@ -88,7 +88,6 @@ PYTHONPATH="${LEROBOT_ROOT}/src:${LEROBOT_ROOT}/examples/libero:${LIBERO_REPO_RO
     --policy.path="${POLICY_PATH}" \
     --policy.fsq_path="${FSQ_PATH}" \
     --policy.dino_model_path="${DINO_MODEL_PATH}" \
-    --policy.terminator_dino_model_path="${TERMINATOR_DINO_MODEL_PATH}" \
     --policy.tokenizer_path="${TOKENIZER_PATH}" \
     --policy.n_action_steps="${N_ACTION_STEPS}" \
     --policy.device=cuda \

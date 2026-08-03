@@ -11,11 +11,22 @@ from transformers.models.gemma.modeling_gemma import GemmaRotaryEmbedding
 from lerobot.policies.skill_expert.configuration_skill_expert import (
     COND_GEMMA_ARCHITECTURE,
     COND_GEMMA_ARCHITECTURE_REVISION,
+    COND_GEMMA_EXPERT_TOKENS_REVISION,
+    COND_GEMMA_PERCEIVER_EXPERT_TOKENS_REVISION,
+    COMPRESSED_VISUAL_KV_REVISION,
+    COMPRESSED_VISUAL_KV_SELF_ATTENTION,
     GLOBAL_VISUAL_ADARMS,
     IN_CONTEXT_TOKENS,
-    RESIDUAL_CROSS_ATTENTION,
+    INTERLEAVED_CROSS_ATTENTION,
+    UNCOMPRESSED_VISUAL_KV_REVISION,
+    UNCOMPRESSED_VISUAL_KV_SELF_ATTENTION,
     VSA_ARCHITECTURE,
+    VSA_ARCHITECTURE_REVISION,
     SkillExpertConfig,
+)
+from lerobot.policies.skill_expert.cond_gemma import (
+    CondGemmaSkillExpert,
+    expert_token_attention_contract,
 )
 from lerobot.policies.skill_expert.modeling_skill_expert import (
     SkillExpertPolicy,
@@ -23,13 +34,16 @@ from lerobot.policies.skill_expert.modeling_skill_expert import (
     _allowed_pi05_missing_key,
     _map_pi05_key,
 )
-from lerobot.policies.skill_expert.legacy_vsa_eval import LegacyVSAActionExpert
+from lerobot.policies.skill_expert.legacy_vsa_eval import (
+    LegacyResidualSA18VSAActionExpert,
+    LegacyVSAActionExpert,
+)
 from lerobot.policies.skill_expert.vsa_perceiver_crossattn import (
-    VISUAL_RESIDUAL_GATE_INIT,
     CameraPerceiverResampler,
-    ResidualVisualExpertBlock,
+    InterleavedExpertBlock,
     VSAActionExpert,
 )
+from lerobot.policies.pi_gemma import PiGemmaForCausalLM
 
 
 def _tiny_gemma_config(depth: int = 4):
@@ -75,28 +89,80 @@ def test_legacy_eval_expert_preserves_alternating_checkpoint_layout() -> None:
     assert output.shape == (2, 5, 32)
 
 
+def test_historical_residual_eval_expert_preserves_sa18_layout() -> None:
+    expert = LegacyResidualSA18VSAActionExpert(
+        _tiny_gemma_config(depth=4),
+        vision_conditioning_mode="residual_cross_attention",
+        include_state_in_visual_crossattn=True,
+        include_skill_in_visual_crossattn=True,
+    ).eval()
+
+    assert expert.blocks[0].self_attention is not None
+    assert expert.blocks[1].self_attention is not None
+    assert expert.blocks[1].visual_cross_attention is not None
+    assert expert.blocks[1].visual_residual_gate is not None
+    output = expert(
+        torch.randn(2, 2, 32),
+        torch.randn(2, 5, 32),
+        torch.randn(2, 16, 32),
+        torch.randn(2, 32),
+    )
+    assert output.shape == (2, 5, 32)
+
+
 def test_config_defaults_to_vsa_and_cond_architecture_is_explicit() -> None:
     config = SkillExpertConfig()
 
     assert config.architecture == VSA_ARCHITECTURE == "vsa_perceiver_crossattn"
-    assert config.vision_conditioning_mode == RESIDUAL_CROSS_ATTENTION
-    assert config.include_state_in_visual_crossattn is False
-    assert config.include_skill_in_visual_crossattn is False
+    assert config.vision_conditioning_mode == INTERLEAVED_CROSS_ATTENTION
+    assert config.include_state_in_visual_crossattn is True
+    assert config.include_skill_in_visual_crossattn is True
     assert config.action_expert_variant == "gemma_300m"
     assert config.dino_lr_scale == 0.1
     assert config.num_visual_latents_per_camera == 32
+    assert config.visual_perceiver_width == 1024
     assert config.n_action_steps == 5
     assert config.vsa_debug_schedule == ()
+    assert config.scheduler_mode == "cosine_decay"
+    assert config.scheduler_warmup_steps == 1_000
     assert SkillExpertConfig(vsa_debug_schedule=[1, 100]).vsa_debug_schedule == (1, 100)
     assert config.conditioning_route == "state_skill_cond"
     assert config.cond_encoder_variant == "gemma_300m"
     assert config.freeze_vision_encoder is False
     cond = SkillExpertConfig(
         architecture=COND_GEMMA_ARCHITECTURE,
+        architecture_label="arch0",
         architecture_revision=COND_GEMMA_ARCHITECTURE_REVISION,
         conditioning_route="state_skill_cond",
     )
     assert cond.architecture == "cond_gemma"
+    assert cond.architecture_label == "arch0"
+    assert SkillExpertConfig(
+        architecture=COND_GEMMA_ARCHITECTURE,
+        architecture_label="arch1_1",
+        architecture_revision=COND_GEMMA_EXPERT_TOKENS_REVISION,
+    ).architecture_label == "arch1_1"
+    assert SkillExpertConfig(
+        architecture=COND_GEMMA_ARCHITECTURE,
+        architecture_label="arch1_2",
+        architecture_revision=COND_GEMMA_PERCEIVER_EXPERT_TOKENS_REVISION,
+    ).architecture_label == "arch1_2"
+    assert SkillExpertConfig(
+        architecture_label="arch1_3",
+        architecture_revision=UNCOMPRESSED_VISUAL_KV_REVISION,
+        vision_conditioning_mode=UNCOMPRESSED_VISUAL_KV_SELF_ATTENTION,
+        num_visual_latents_per_camera=197,
+    ).architecture_label == "arch1_3"
+    assert SkillExpertConfig(
+        architecture_label="arch2_1",
+        architecture_revision=COMPRESSED_VISUAL_KV_REVISION,
+        vision_conditioning_mode=COMPRESSED_VISUAL_KV_SELF_ATTENTION,
+    ).architecture_label == "arch2_1"
+    assert SkillExpertConfig(
+        architecture_label="arch2",
+        architecture_revision=VSA_ARCHITECTURE_REVISION,
+        vision_conditioning_mode=INTERLEAVED_CROSS_ATTENTION,
+    ).architecture_label == "arch2"
     with pytest.raises(ValueError, match="architecture must be"):
         SkillExpertConfig(architecture="state_skill_cond")
     with pytest.raises(ValueError, match="vision_conditioning_mode must be one of"):
@@ -104,6 +170,8 @@ def test_config_defaults_to_vsa_and_cond_architecture_is_explicit() -> None:
 
     with pytest.raises(ValueError, match="sorted and contain no duplicates"):
         SkillExpertConfig(vsa_debug_schedule=(100, 1, 100))
+    with pytest.raises(ValueError, match="scheduler_mode must be"):
+        SkillExpertConfig(scheduler_mode="unknown")
 
 
 def test_policy_loader_rejects_cond_checkpoint_when_vsa_is_requested(tmp_path) -> None:
@@ -115,7 +183,9 @@ def test_policy_loader_rejects_cond_checkpoint_when_vsa_is_requested(tmp_path) -
         SkillExpertPolicy.from_pretrained(tmp_path, config=SkillExpertConfig())
 
 
-def test_policy_loader_rejects_pre_residual_vsa_checkpoint(tmp_path) -> None:
+def test_policy_loader_rejects_historical_vsa_checkpoint_without_eval_contract(
+    tmp_path,
+) -> None:
     (tmp_path / "config.json").write_text(
         json.dumps(
             {
@@ -125,7 +195,7 @@ def test_policy_loader_rejects_pre_residual_vsa_checkpoint(tmp_path) -> None:
         )
     )
 
-    with pytest.raises(ValueError, match="predates the residual-SA18 VSA revision"):
+    with pytest.raises(ValueError, match="does not match the current VSA revision"):
         SkillExpertPolicy.from_pretrained(tmp_path)
 
 
@@ -135,7 +205,7 @@ def test_policy_loader_rejects_explicit_cross_mode_checkpoint_override(tmp_path)
             {
                 "type": "skill_expert",
                 "architecture": "vsa_perceiver_crossattn",
-                "architecture_revision": "residual_sa18_v2",
+                "architecture_revision": VSA_ARCHITECTURE_REVISION,
                 "vision_conditioning_mode": "in_context_tokens",
             }
         )
@@ -148,6 +218,27 @@ def test_policy_loader_rejects_explicit_cross_mode_checkpoint_override(tmp_path)
                 vision_conditioning_mode="global_visual_adarms"
             ),
         )
+
+
+def test_policy_loader_rejects_cross_revision_cond_checkpoint(tmp_path) -> None:
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                "type": "skill_expert",
+                "architecture": COND_GEMMA_ARCHITECTURE,
+                "architecture_revision": COND_GEMMA_EXPERT_TOKENS_REVISION,
+                "architecture_label": "arch1_1",
+                "conditioning_route": "state_skill_cond",
+            }
+        )
+    )
+    requested = SkillExpertConfig(
+        architecture=COND_GEMMA_ARCHITECTURE,
+        architecture_label="arch1_2",
+        architecture_revision=COND_GEMMA_PERCEIVER_EXPERT_TOKENS_REVISION,
+    )
+    with pytest.raises(ValueError, match="architecture_revision mismatch"):
+        SkillExpertPolicy.from_pretrained(tmp_path, config=requested)
 
 
 def test_perceiver_shape_and_camera_parameters_are_separate() -> None:
@@ -168,6 +259,16 @@ def test_perceiver_shape_and_camera_parameters_are_separate() -> None:
     assert torch.cat((top_a, wrist_b), dim=1).shape == (2, 16, 32)
     assert top.latents is not wrist.latents
     assert not torch.equal(torch.cat((top_a, wrist_b), dim=1), swapped)
+
+
+def test_direct_width_perceiver_has_no_channel_projection_parameters() -> None:
+    resampler = CameraPerceiverResampler(
+        1024, expert_width=1024, perceiver_width=1024, num_latents=32
+    )
+
+    assert isinstance(resampler.input_proj, nn.Identity)
+    assert isinstance(resampler.output_proj, nn.Identity)
+    assert not any("input_proj" in key or "output_proj" in key for key in resampler.state_dict())
 
 
 def test_self_attention_mask_has_required_direction() -> None:
@@ -194,9 +295,265 @@ def test_in_context_mask_and_continuous_position_ids() -> None:
     positions = VSAActionExpert.position_ids_from_valid_mask(valid)
     assert positions.tolist() == [[0, 1, 1, 2, 3]]
 
+    visual_kv_mask = VSAActionExpert.visual_kv_attention_mask(
+        batch_size=2, visual_tokens=4, action_tokens=3, device="cpu"
+    )
+    assert visual_kv_mask.shape == (2, 1, 5, 9)
+    assert torch.all(visual_kv_mask[:, :, :2, :6] == 0)
+    assert torch.all(visual_kv_mask[:, :, :2, 6:] < -1e20)
+    assert torch.all(visual_kv_mask[:, :, 2:, :] == 0)
+
+
+def test_cond_expert_token_mask_has_fixed_three_block_contract() -> None:
+    mask, positions = expert_token_attention_contract(
+        batch_size=2, visual_tokens=4, action_tokens=3, device="cpu"
+    )
+
+    assert mask.shape == (2, 1, 9, 9)
+    # Visual cannot read state, skill, or actions.
+    assert torch.all(mask[:, :, :4, :4] == 0)
+    assert torch.all(mask[:, :, :4, 4:] < -1e20)
+    # State and skill are one bidirectional block and cannot read actions.
+    assert torch.all(mask[:, :, 4:6, :6] == 0)
+    assert torch.all(mask[:, :, 4:6, 6:] < -1e20)
+    # Actions read visual + state + skill + the entire action block.
+    assert torch.all(mask[:, :, 6:, :] == 0)
+    assert positions[0].tolist() == list(range(9))
+
+
+class _TinyDino(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.scale = nn.Parameter(torch.ones(1))
+        self.config = SimpleNamespace(hidden_size=32, num_register_tokens=0)
+
+    def forward(self, image):
+        pooled = image.mean(dim=(1, 2, 3), keepdim=True).reshape(-1, 1, 1)
+        hidden = (pooled * self.scale).expand(-1, 197, 32)
+        return SimpleNamespace(last_hidden_state=hidden)
+
+
+def _tiny_projection_gemma(*, use_adarms: bool):
+    config = _tiny_gemma_config(depth=2)
+    config.use_adarms = use_adarms
+    config.adarms_cond_dim = 32 if use_adarms else None
+    model = PiGemmaForCausalLM(config)
+    model.model.embed_tokens = None
+    model.lm_head = None
+    return model
+
+
+def _tiny_projection_gemma_pi05_heads(*, use_adarms: bool):
+    config = CONFIG_MAPPING["gemma"](
+        head_dim=4,
+        hidden_size=32,
+        intermediate_size=64,
+        num_attention_heads=8,
+        num_hidden_layers=2,
+        num_key_value_heads=1,
+        vocab_size=128,
+        hidden_activation="gelu_pytorch_tanh",
+        attention_bias=False,
+    )
+    config._attn_implementation = "eager"  # noqa: SLF001
+    config.use_adarms = use_adarms
+    config.adarms_cond_dim = 32 if use_adarms else None
+    model = PiGemmaForCausalLM(config)
+    model.model.embed_tokens = None
+    model.lm_head = None
+    return model
+
 
 @pytest.mark.parametrize(
-    "mode", [RESIDUAL_CROSS_ATTENTION, IN_CONTEXT_TOKENS, GLOBAL_VISUAL_ADARMS]
+    ("revision", "label", "visual_tokens"),
+    [
+        (COND_GEMMA_EXPERT_TOKENS_REVISION, "arch1_1", 394),
+        (COND_GEMMA_PERCEIVER_EXPERT_TOKENS_REVISION, "arch1_2", 8),
+    ],
+)
+def test_cond_expert_token_forward_and_cached_sampling_preserve_action_shape(
+    revision: str, label: str, visual_tokens: int
+) -> None:
+    config = SkillExpertConfig(
+        architecture=COND_GEMMA_ARCHITECTURE,
+        architecture_label=label,
+        architecture_revision=revision,
+        max_state_dim=4,
+        max_action_dim=4,
+        chunk_size=3,
+        n_action_steps=3,
+        dino_model_path="unused",
+        num_visual_latents_per_camera=4,
+        visual_perceiver_width=32,
+    )
+    tiny_geometry = SimpleNamespace(width=32, depth=2)
+    with (
+        patch(
+            "lerobot.policies.skill_expert.cond_gemma.get_gemma_config",
+            return_value=tiny_geometry,
+        ),
+        patch(
+            "lerobot.policies.skill_expert.cond_gemma.build_gemma",
+            side_effect=lambda _variant, *, use_adarms: _tiny_projection_gemma(
+                use_adarms=use_adarms
+            ),
+        ),
+        patch(
+            "lerobot.policies.skill_expert.cond_gemma.AutoModel.from_pretrained",
+            return_value=_TinyDino(),
+        ),
+    ):
+        model = CondGemmaSkillExpert(config).eval()
+
+    images = [torch.rand(1, 3, 16, 16), torch.rand(1, 3, 16, 16)]
+    state = torch.randn(1, 4)
+    skill = torch.tensor([3])
+    actions = torch.randn(1, 3, 4)
+    noise = torch.randn_like(actions)
+    time = torch.full((1,), 0.5)
+
+    condition = model._condition_tokens(images)
+    assert condition.shape == (1, visual_tokens, 32)
+    assert model._expert_context_tokens(state, skill).shape == (1, 2, 32)
+    residual = model(images, state, skill, actions, noise=noise, time=time)
+    sampled = model.sample_actions(
+        images, state, skill, noise=noise, num_steps=1
+    )
+    assert residual.shape == sampled.shape == actions.shape
+    if label == "arch1_2":
+        model.train()
+        model.gradient_checkpointing_enable()
+        checkpointed = model(
+            images, state, skill, actions, noise=noise, time=time
+        )
+        checkpointed.square().mean().backward()
+        assert model.action_in_proj.weight.grad is not None
+
+
+@pytest.mark.parametrize(
+    ("revision", "label"),
+    [
+        (COND_GEMMA_ARCHITECTURE_REVISION, "arch0"),
+        (COND_GEMMA_EXPERT_TOKENS_REVISION, "arch1_1"),
+        (COND_GEMMA_PERCEIVER_EXPERT_TOKENS_REVISION, "arch1_2"),
+    ],
+)
+def test_cond_architectures_collect_scheduled_debug_and_input_influence(
+    revision: str, label: str
+) -> None:
+    config = SkillExpertConfig(
+        architecture=COND_GEMMA_ARCHITECTURE,
+        architecture_label=label,
+        architecture_revision=revision,
+        conditioning_route=(
+            "state_cond"
+            if revision == COND_GEMMA_ARCHITECTURE_REVISION
+            else "state_skill_cond"
+        ),
+        max_state_dim=4,
+        max_action_dim=4,
+        chunk_size=3,
+        n_action_steps=3,
+        dino_model_path="unused",
+        num_visual_latents_per_camera=4,
+        visual_perceiver_width=32,
+        vsa_debug_schedule=(1,),
+    )
+    tiny_geometry = SimpleNamespace(width=32, depth=2)
+    with (
+        patch(
+            "lerobot.policies.skill_expert.cond_gemma.get_gemma_config",
+            return_value=tiny_geometry,
+        ),
+        patch(
+            "lerobot.policies.skill_expert.cond_gemma.build_gemma",
+            side_effect=lambda _variant, *, use_adarms: _tiny_projection_gemma_pi05_heads(
+                use_adarms=use_adarms
+            ),
+        ),
+        patch(
+            "lerobot.policies.skill_expert.cond_gemma.AutoModel.from_pretrained",
+            return_value=_TinyDino(),
+        ),
+    ):
+        model = CondGemmaSkillExpert(config).train()
+
+    model.set_training_step(1)
+    residual = model(
+        [torch.rand(2, 3, 16, 16), torch.rand(2, 3, 16, 16)],
+        torch.randn(2, 4),
+        torch.tensor([3, 5]),
+        torch.randn(2, 3, 4),
+        noise=torch.randn(2, 3, 4),
+        time=torch.tensor([0.3, 0.7]),
+    )
+    stats = model._last_vsa_debug_stats
+
+    assert "visual/top_latents/effective_rank_fraction" in stats
+    assert "activation/flow_prediction_rms" in stats
+    assert "sensitivity/top_image_shuffle/relative_output_delta" in stats
+    assert "sensitivity/wrist_image_shuffle/relative_output_delta" in stats
+    assert "sensitivity/state_shuffle/relative_output_delta" in stats
+    assert "sensitivity/skill_shuffle/relative_output_delta" in stats
+
+    residual.square().mean().backward()
+    policy = SkillExpertPolicy.__new__(SkillExpertPolicy)
+    nn.Module.__init__(policy)
+    policy.config = config
+    policy.model = model
+    gradient_metrics = policy.training_debug_metrics()
+    assert "vsa_debug/gradient/preclip/conditioner_grad_rms" in gradient_metrics
+    assert "vsa_debug/gradient/preclip/expert_grad_rms" in gradient_metrics
+    assert model._vsa_debug_active is False
+
+
+def test_arch0_routes_state_to_cond_and_skill_to_expert_broadcast() -> None:
+    config = SkillExpertConfig(
+        architecture=COND_GEMMA_ARCHITECTURE,
+        architecture_label="arch0",
+        architecture_revision=COND_GEMMA_ARCHITECTURE_REVISION,
+        conditioning_route="state_cond",
+        max_state_dim=4,
+        max_action_dim=4,
+        dino_model_path="unused",
+    )
+    tiny_geometry = SimpleNamespace(width=32, depth=2)
+    with (
+        patch(
+            "lerobot.policies.skill_expert.cond_gemma.get_gemma_config",
+            return_value=tiny_geometry,
+        ),
+        patch(
+            "lerobot.policies.skill_expert.cond_gemma.build_gemma",
+            side_effect=lambda _variant, *, use_adarms: _tiny_projection_gemma_pi05_heads(
+                use_adarms=use_adarms
+            ),
+        ),
+        patch(
+            "lerobot.policies.skill_expert.cond_gemma.AutoModel.from_pretrained",
+            return_value=_TinyDino(),
+        ),
+    ):
+        model = CondGemmaSkillExpert(config).eval()
+
+    state_condition = model._state_condition(torch.randn(2, 4))
+    condition_skill, expert_skill = model._skill_broadcasts(torch.tensor([3, 5]))
+
+    assert state_condition.shape == (2, 32)
+    assert condition_skill is None
+    assert expert_skill is not None
+    assert expert_skill.shape == (2, 32)
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [
+        UNCOMPRESSED_VISUAL_KV_SELF_ATTENTION,
+        COMPRESSED_VISUAL_KV_SELF_ATTENTION,
+        INTERLEAVED_CROSS_ATTENTION,
+        IN_CONTEXT_TOKENS,
+        GLOBAL_VISUAL_ADARMS,
+    ],
 )
 def test_vision_modes_preserve_action_shape_and_instantiate_only_used_modules(
     mode: str,
@@ -212,7 +569,7 @@ def test_vision_modes_preserve_action_shape_and_instantiate_only_used_modules(
 
     assert output.shape == actions.shape
     cross_layers = [block for block in expert.blocks if block.cross_attention]
-    if mode == RESIDUAL_CROSS_ATTENTION:
+    if mode == INTERLEAVED_CROSS_ATTENTION:
         assert len(cross_layers) == 2
         assert expert.last_sequence_length == 7
     else:
@@ -220,11 +577,76 @@ def test_vision_modes_preserve_action_shape_and_instantiate_only_used_modules(
         assert not any(
             "visual_cross_attention" in key for key in expert.state_dict()
         )
-        expected_length = 15 if mode == IN_CONTEXT_TOKENS else 7
+        expected_length = (
+            15
+            if mode
+            in {
+                UNCOMPRESSED_VISUAL_KV_SELF_ATTENTION,
+                COMPRESSED_VISUAL_KV_SELF_ATTENTION,
+                IN_CONTEXT_TOKENS,
+            }
+            else 7
+        )
         assert expert.last_sequence_length == expected_length
     assert expert.last_position_ids[0].tolist() == list(
         range(expert.last_sequence_length)
     )
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [
+        UNCOMPRESSED_VISUAL_KV_SELF_ATTENTION,
+        COMPRESSED_VISUAL_KV_SELF_ATTENTION,
+    ],
+)
+def test_visual_kv_self_attention_reuses_fixed_memory_without_new_parameters(
+    mode: str,
+) -> None:
+    torch.manual_seed(111)
+    config = _tiny_gemma_config(depth=3)
+    expert = VSAActionExpert(config, vision_conditioning_mode=mode).eval()
+    all_self_attention = VSAActionExpert(
+        config, vision_conditioning_mode=GLOBAL_VISUAL_ADARMS
+    ).eval()
+    assert expert.state_dict().keys() == all_self_attention.state_dict().keys()
+    assert sum(p.numel() for p in expert.parameters()) == sum(
+        p.numel() for p in all_self_attention.parameters()
+    )
+
+    context = torch.randn(2, 2, 32)
+    actions = torch.randn(2, 5, 32)
+    memory = torch.randn(2, 8, 32, requires_grad=True)
+    seen_memory = []
+    query_lengths = []
+    key_lengths = []
+    handles = [
+        block.register_forward_pre_hook(
+            lambda _module, args: seen_memory.append(args[2])
+        )
+        for block in expert.blocks
+    ]
+    handles.extend(
+        [
+            expert.blocks[0].self_attention.q_proj.register_forward_pre_hook(
+                lambda _module, args: query_lengths.append(args[0].shape[1])
+            ),
+            expert.blocks[0].self_attention.k_proj.register_forward_pre_hook(
+                lambda _module, args: key_lengths.append(args[0].shape[1])
+            ),
+        ]
+    )
+    output = expert(context, actions, memory, torch.randn(2, 32))
+    for handle in handles:
+        handle.remove()
+    output.square().mean().backward()
+
+    assert output.shape == actions.shape
+    assert len(seen_memory) == 3
+    assert all(item is memory for item in seen_memory)
+    assert query_lengths == [7]
+    assert key_lengths == [15]
+    assert memory.grad is not None and memory.grad.abs().sum() > 0
 
 
 def test_in_context_visual_tokens_receive_gradients_without_cross_attention() -> None:
@@ -305,7 +727,7 @@ def test_global_condition_reaches_every_action_adarms() -> None:
 def test_context_is_invariant_to_noisy_actions_but_actions_read_context() -> None:
     torch.manual_seed(1)
     config = _tiny_gemma_config(depth=1)
-    block = ResidualVisualExpertBlock(config, 0, cross_attention=False).eval()
+    block = InterleavedExpertBlock(config, 0, cross_attention=False).eval()
     context = torch.randn(2, 2, 32)
     actions_a = torch.randn(2, 5, 32)
     actions_b = torch.randn(2, 5, 32)
@@ -347,7 +769,13 @@ def test_context_is_invariant_to_noisy_actions_but_actions_read_context() -> Non
 def test_visual_cross_attention_updates_actions_only() -> None:
     torch.manual_seed(2)
     config = _tiny_gemma_config(depth=2)
-    block = ResidualVisualExpertBlock(config, 1, cross_attention=True).eval()
+    block = InterleavedExpertBlock(
+        config,
+        1,
+        cross_attention=True,
+        include_state_in_visual_crossattn=False,
+        include_skill_in_visual_crossattn=False,
+    ).eval()
     context = torch.randn(2, 2, 32)
     actions = torch.randn(2, 5, 32)
     memory_a = torch.randn(2, 16, 32)
@@ -363,21 +791,20 @@ def test_visual_cross_attention_updates_actions_only() -> None:
         context, actions, memory_b, time, mask, positions
     )
 
-    # Context is excluded from the default action-only visual query, while the
-    # weakly initialized gate exposes actions to vision from the first step.
+    # Context is excluded from this explicit action-only visual query.
     torch.testing.assert_close(context_a, context_b, atol=1e-6, rtol=1e-6)
     assert not torch.allclose(action_a, action_b)
-    assert block.visual_residual_gate.item() == pytest.approx(VISUAL_RESIDUAL_GATE_INIT)
 
 
 def test_state_visual_cross_attention_query_excludes_skill() -> None:
     torch.manual_seed(3)
     config = _tiny_gemma_config(depth=2)
-    block = ResidualVisualExpertBlock(
+    block = InterleavedExpertBlock(
         config,
         1,
         cross_attention=True,
         include_state_in_visual_crossattn=True,
+        include_skill_in_visual_crossattn=False,
     ).eval()
     context = torch.randn(2, 2, 32)
     actions = torch.randn(2, 5, 32)
@@ -405,7 +832,7 @@ def test_state_visual_cross_attention_query_excludes_skill() -> None:
 def test_state_skill_visual_cross_attention_query_includes_both() -> None:
     torch.manual_seed(4)
     config = _tiny_gemma_config(depth=2)
-    block = ResidualVisualExpertBlock(
+    block = InterleavedExpertBlock(
         config,
         1,
         cross_attention=True,
@@ -465,24 +892,24 @@ def test_visual_query_option_preserves_outputs_and_state_dict_contract() -> None
     state_and_action.load_state_dict(action_only.state_dict(), strict=True)
 
 
-def test_default_mode_strict_loads_as_identical_residual_architecture() -> None:
+def test_default_mode_strict_loads_as_identical_interleaved_architecture() -> None:
     torch.manual_seed(51)
     config = _tiny_gemma_config(depth=2)
     mode_field_missing = VSAActionExpert(config).eval()
-    explicit_residual = VSAActionExpert(
-        config, vision_conditioning_mode=RESIDUAL_CROSS_ATTENTION
+    explicit_interleaved = VSAActionExpert(
+        config, vision_conditioning_mode=INTERLEAVED_CROSS_ATTENTION
     ).eval()
-    explicit_residual.load_state_dict(mode_field_missing.state_dict(), strict=True)
+    explicit_interleaved.load_state_dict(mode_field_missing.state_dict(), strict=True)
     context = torch.randn(2, 2, 32)
     actions = torch.randn(2, 5, 32)
     memory = torch.randn(2, 16, 32)
     condition = torch.randn(2, 32)
 
     expected = mode_field_missing(context, actions, memory, condition)
-    actual = explicit_residual(context, actions, memory, condition)
+    actual = explicit_interleaved(context, actions, memory, condition)
 
     torch.testing.assert_close(actual, expected, atol=0, rtol=0)
-    assert explicit_residual.state_dict().keys() == mode_field_missing.state_dict().keys()
+    assert explicit_interleaved.state_dict().keys() == mode_field_missing.state_dict().keys()
 
 
 def test_cross_attention_debug_reports_attention_and_token_updates() -> None:
@@ -506,12 +933,13 @@ def test_cross_attention_debug_reports_attention_and_token_updates() -> None:
         prefix = f"cross_layer_{layer:02d}"
         assert 0 <= expert.last_debug_stats[f"{prefix}/attention/normalized_entropy"] <= 1
         assert 1 <= expert.last_debug_stats[f"{prefix}/attention/effective_memory_tokens"] <= 16
+        assert expert.last_debug_stats[f"{prefix}/attention/top_camera_mass"] + expert.last_debug_stats[
+            f"{prefix}/attention/wrist_camera_mass"
+        ] == pytest.approx(1.0)
         assert expert.last_debug_stats[f"{prefix}/action/applied_update_ratio"] >= 0
         assert expert.last_debug_stats[f"{prefix}/state/applied_update_ratio"] >= 0
         assert expert.last_debug_stats[f"{prefix}/skill/applied_update_ratio"] >= 0
-        assert expert.last_debug_stats[
-            f"{prefix}/residual_gate/tanh_scale"
-        ] == pytest.approx(torch.tanh(torch.tensor(VISUAL_RESIDUAL_GATE_INIT)).item())
+        assert f"{prefix}/residual_gate/tanh_scale" not in expert.last_debug_stats
 
 
 def test_latent_debug_detects_collapsed_tokens() -> None:
@@ -521,11 +949,31 @@ def test_latent_debug_detects_collapsed_tokens() -> None:
     diverse_stats = SkillExpertPytorch._latent_debug_stats(diverse, "camera")
     collapsed_stats = SkillExpertPytorch._latent_debug_stats(collapsed, "camera")
 
-    assert diverse_stats["visual/camera/effective_rank"] > collapsed_stats[
-        "visual/camera/effective_rank"
+    assert diverse_stats["visual/camera/effective_rank_fraction"] > collapsed_stats[
+        "visual/camera/effective_rank_fraction"
     ]
-    assert collapsed_stats["visual/camera/pair_cosine_mean"] == pytest.approx(1.0)
+    assert collapsed_stats["visual/camera/pair_cosine_abs_mean"] == pytest.approx(1.0)
     assert collapsed_stats["visual/camera/token_spread_rms"] == pytest.approx(0.0)
+
+
+def test_action_diagnostics_split_flow_time_components_and_horizon() -> None:
+    per_sample_error = torch.tensor([1.0, 4.0, 9.0, 16.0])
+    squared_error = per_sample_error[:, None, None].expand(4, 10, 7)
+    valid = torch.ones(4, 10, dtype=torch.bool)
+    flow_time = torch.tensor([0.1, 0.3, 0.6, 0.9])
+
+    metrics = SkillExpertPolicy._action_diagnostic_losses(
+        squared_error, valid, flow_time
+    )
+
+    assert metrics["flow_timestep/t_0_025_loss"] == pytest.approx(1.0)
+    assert metrics["flow_timestep/t_025_050_loss"] == pytest.approx(4.0)
+    assert metrics["flow_timestep/t_050_075_loss"] == pytest.approx(9.0)
+    assert metrics["flow_timestep/t_075_100_loss"] == pytest.approx(16.0)
+    for component in ("translation", "rotation", "gripper"):
+        assert metrics[f"action_component/{component}_loss"] == pytest.approx(7.5)
+    for segment in ("early", "middle", "late"):
+        assert metrics[f"action_horizon/{segment}_loss"] == pytest.approx(7.5)
 
 
 @pytest.mark.parametrize("batch_size", [1, 3])
@@ -536,10 +984,6 @@ def test_small_expert_forward_backward_has_all_core_gradients(batch_size: int) -
     actions = torch.randn(batch_size, 5, 32, requires_grad=True)
     memory = torch.randn(batch_size, 16, 32, requires_grad=True)
     time = torch.randn(batch_size, 32, requires_grad=True)
-    for block in expert.blocks:
-        if block.visual_residual_gate is not None:
-            block.visual_residual_gate.data.fill_(0.25)
-
     output = expert(context, actions, memory, time)
     output.square().mean().backward()
 
@@ -549,7 +993,7 @@ def test_small_expert_forward_backward_has_all_core_gradients(batch_size: int) -
     assert actions.grad is not None and actions.grad.abs().sum() > 0
     assert memory.grad is not None and memory.grad.abs().sum() > 0
     assert expert.blocks[0].self_attention.q_proj.weight.grad is not None
-    assert expert.blocks[1].self_attention.q_proj.weight.grad is not None
+    assert expert.blocks[1].self_attention is None
     assert expert.blocks[1].visual_cross_attention.q_proj.weight.grad is not None
     assert expert.blocks[0].mlp.up_proj.weight.grad is not None
 
@@ -569,7 +1013,9 @@ class _DummyDINO(nn.Module):
 
 
 class _TinyResampler(nn.Module):
-    def __init__(self, dino_width, expert_width, num_latents=8):
+    def __init__(
+        self, dino_width, expert_width, perceiver_width=1024, num_latents=8
+    ):
         super().__init__()
         self.proj = nn.Linear(dino_width, expert_width)
         self.num_latents = num_latents
@@ -600,6 +1046,54 @@ class _TinyExpert(nn.Module):
             + self.cross_attn(visual_memory.mean(dim=1))[:, None]
             + time[:, None]
         )
+
+
+class _DummyDINO1024(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.scale = nn.Parameter(torch.ones(1))
+        self.config = SimpleNamespace(hidden_size=1024, num_register_tokens=4)
+        self.calls = 0
+
+    def forward(self, image):
+        self.calls += 1
+        value = image.mean(dim=(1, 2, 3), keepdim=True).reshape(-1, 1, 1)
+        return SimpleNamespace(
+            last_hidden_state=(value * self.scale).expand(-1, 201, 1024)
+        )
+
+
+def test_arch1_3_uses_uncompressed_dino_tokens_without_resamplers() -> None:
+    dino = _DummyDINO1024()
+    config = SkillExpertConfig(
+        architecture_label="arch1_3",
+        architecture_revision=UNCOMPRESSED_VISUAL_KV_REVISION,
+        vision_conditioning_mode=UNCOMPRESSED_VISUAL_KV_SELF_ATTENTION,
+        num_visual_latents_per_camera=197,
+    )
+    with (
+        patch(
+            "lerobot.policies.skill_expert.modeling_skill_expert.AutoModel.from_pretrained",
+            return_value=dino,
+        ),
+        patch(
+            "lerobot.policies.skill_expert.modeling_skill_expert.CameraPerceiverResampler",
+            side_effect=AssertionError("Arch1_3 must not build a Perceiver"),
+        ),
+        patch(
+            "lerobot.policies.skill_expert.modeling_skill_expert.VSAActionExpert",
+            _TinyExpert,
+        ),
+    ):
+        model = SkillExpertPytorch(config)
+
+    memory = model.encode_visual_memory(
+        [torch.rand(1, 3, 32, 32), torch.rand(1, 3, 32, 32)]
+    )
+    assert memory.shape == (1, 394, 1024)
+    assert model.top_resampler is None
+    assert model.wrist_resampler is None
+    assert dino.calls == 1
 
 
 def test_global_visual_adarms_zero_init_and_second_step_gradient_path() -> None:
@@ -655,7 +1149,7 @@ def test_global_visual_adarms_zero_init_and_second_step_gradient_path() -> None:
 
 
 def test_non_global_modes_have_no_visual_condition_projection_parameters() -> None:
-    for mode in (RESIDUAL_CROSS_ATTENTION, IN_CONTEXT_TOKENS):
+    for mode in (INTERLEAVED_CROSS_ATTENTION, IN_CONTEXT_TOKENS):
         dino = _DummyDINO()
         with (
             patch(
@@ -763,7 +1257,7 @@ def test_stage1_scheduled_debug_collects_diversity_and_sensitivity() -> None:
     stats = model._last_vsa_debug_stats
 
     assert residual.shape == (2, 10, 32)
-    assert "visual/top_latents/effective_rank" in stats
+    assert "visual/top_latents/effective_rank_fraction" in stats
     assert "visual/cross_camera/centroid_cosine" in stats
     assert "sensitivity/top_image_shuffle/relative_output_delta" in stats
     assert "sensitivity/wrist_image_shuffle/relative_output_delta" in stats
@@ -778,6 +1272,51 @@ def test_stage1_scheduled_debug_collects_diversity_and_sensitivity() -> None:
         torch.randn(2, 10, 32),
     )
     assert model._last_vsa_debug_stats == {}
+
+
+def test_scheduled_debug_accepts_current_interleaved_blocks_without_residual_gate() -> None:
+    class _DebugBlock(nn.Module):
+        def __init__(self, *, cross_attention: bool):
+            super().__init__()
+            self.cross_attention = cross_attention
+            self.visual_cross_attention = nn.Linear(4, 4) if cross_attention else None
+            self.self_attention = None if cross_attention else nn.Linear(4, 4)
+            self.mlp = nn.Linear(4, 4)
+
+    policy = SkillExpertPolicy.__new__(SkillExpertPolicy)
+    nn.Module.__init__(policy)
+    policy.config = SimpleNamespace(architecture=VSA_ARCHITECTURE)
+    policy.model = nn.Module()
+    policy.model._vsa_debug_active = True
+    policy.model.dino = nn.Linear(4, 4)
+    policy.model.top_resampler = nn.Linear(4, 4)
+    policy.model.wrist_resampler = nn.Linear(4, 4)
+    policy.model.state_proj = nn.Linear(4, 4)
+    policy.model.state_norm = nn.LayerNorm(4)
+    policy.model.skill_proj = nn.Linear(4, 4)
+    policy.model.skill_norm = nn.LayerNorm(4)
+    policy.model.action_in_proj = nn.Linear(4, 4)
+    policy.model.action_out_proj = nn.Linear(4, 4)
+    policy.model.time_mlp_in = nn.Linear(4, 4)
+    policy.model.time_mlp_out = nn.Linear(4, 4)
+    policy.model.visual_condition_projection = None
+    policy.model.expert = nn.Module()
+    policy.model.expert.blocks = nn.ModuleList(
+        [_DebugBlock(cross_attention=False), _DebugBlock(cross_attention=True)]
+    )
+    policy.model.expert.debug_enabled = True
+
+    metrics = policy.training_debug_metrics()
+
+    assert not any("visual_residual_gate" in key for key in metrics)
+    assert "vsa_debug/gradient/preclip/expert_cross_attention_grad_rms" in metrics
+    assert "vsa_debug/parameter/expert_cross_attention_rms" in metrics
+    assert (
+        "vsa_debug/gradient/preclip/expert_cross_attention_to_parameter_rms_ratio"
+        in metrics
+    )
+    assert policy.model._vsa_debug_active is False
+    assert policy.model.expert.debug_enabled is False
 
 
 def test_optimizer_covers_every_trainable_parameter_once_and_scales_dino() -> None:
@@ -811,12 +1350,52 @@ def test_optimizer_covers_every_trainable_parameter_once_and_scales_dino() -> No
         )
 
 
+def test_arch1_optimizer_applies_relative_dino_lr_scale() -> None:
+    policy = SkillExpertPolicy.__new__(SkillExpertPolicy)
+    nn.Module.__init__(policy)
+    policy.config = SimpleNamespace(
+        architecture=COND_GEMMA_ARCHITECTURE,
+        optimizer_lr=2.5e-5,
+        dino_lr_scale=0.1,
+        dino_lr=None,
+        freeze_vision_encoder=False,
+        terminator_lr_scale=1.0,
+    )
+    policy.model = nn.Module()
+    policy.model.dino = nn.Linear(4, 4)
+    policy.model.body = nn.Linear(4, 4)
+    policy.model.fsq_term_train = None
+
+    groups = policy.get_optim_params()
+    grouped = [parameter for group in groups for parameter in group["params"]]
+    expected = [parameter for parameter in policy.parameters() if parameter.requires_grad]
+
+    assert len(grouped) == len({id(parameter) for parameter in grouped})
+    assert {id(parameter) for parameter in grouped} == {id(parameter) for parameter in expected}
+    dino_group = next(group for group in groups if group["group_name"] == "dino")
+    assert dino_group["lr"] == pytest.approx(2.5e-6)
+    assert dino_group["lr_scale"] == pytest.approx(0.1)
+
+    optimizer = torch.optim.AdamW(groups, lr=policy.config.optimizer_lr)
+    scheduler = SkillExpertConfig().get_scheduler_preset().build(optimizer, 30_000)
+    for _ in range(3):
+        optimizer.step()
+        scheduler.step()
+        assert optimizer.param_groups[1]["lr"] == pytest.approx(
+            optimizer.param_groups[0]["lr"] * 0.1
+        )
+
+
 def test_pi05_vsa_initialization_mapping_is_explicit() -> None:
     assert _map_pi05_key(
         "paligemma_with_expert.gemma_expert.model.layers.0.self_attn.q_proj.weight"
     ) == "model.expert.blocks.0.self_attention.q_proj.weight"
     assert _map_pi05_key(
         "paligemma_with_expert.gemma_expert.model.layers.1.self_attn.q_proj.weight"
+    ) is None
+    assert _map_pi05_key(
+        "paligemma_with_expert.gemma_expert.model.layers.1.self_attn.q_proj.weight",
+        vision_conditioning_mode=COMPRESSED_VISUAL_KV_SELF_ATTENTION,
     ) == "model.expert.blocks.1.self_attention.q_proj.weight"
     assert _map_pi05_key(
         "paligemma_with_expert.gemma_expert.model.layers.1.mlp.up_proj.weight"
@@ -846,8 +1425,8 @@ def test_pi05_condition_gemma_mapping_matches_skillvla_real_layout() -> None:
 
 
 def test_pi05_missing_allowlist_is_mode_specific() -> None:
-    residual = SkillExpertConfig(
-        vision_conditioning_mode=RESIDUAL_CROSS_ATTENTION
+    interleaved = SkillExpertConfig(
+        vision_conditioning_mode=INTERLEAVED_CROSS_ATTENTION
     )
     in_context = SkillExpertConfig(vision_conditioning_mode=IN_CONTEXT_TOKENS)
     global_adarms = SkillExpertConfig(
@@ -856,16 +1435,78 @@ def test_pi05_missing_allowlist_is_mode_specific() -> None:
     cross_key = "model.expert.blocks.1.visual_cross_attention.q_proj.weight"
     global_key = "model.visual_condition_projection.weight"
 
-    assert _allowed_pi05_missing_key("model.top_resampler.latents", residual)
+    assert _allowed_pi05_missing_key("model.top_resampler.latents", interleaved)
     assert _allowed_pi05_missing_key(
         "model.expert.blocks.0.self_attention_norm.context_norm.weight",
-        residual,
+        interleaved,
     )
-    assert _allowed_pi05_missing_key(cross_key, residual)
+    assert _allowed_pi05_missing_key(cross_key, interleaved)
     assert not _allowed_pi05_missing_key(cross_key, in_context)
     assert _allowed_pi05_missing_key(global_key, global_adarms)
-    assert not _allowed_pi05_missing_key(global_key, residual)
+    assert not _allowed_pi05_missing_key(global_key, interleaved)
     assert not _allowed_pi05_missing_key(
-        "model.expert.blocks.0.self_attention.q_proj.weight", residual
+        "model.expert.blocks.0.self_attention.q_proj.weight", interleaved
     )
-    assert not _allowed_pi05_missing_key("model.action_in_proj.weight", residual)
+    assert not _allowed_pi05_missing_key("model.action_in_proj.weight", interleaved)
+    cond_perceiver = SkillExpertConfig(
+        architecture=COND_GEMMA_ARCHITECTURE,
+        architecture_label="arch1_2",
+        architecture_revision=COND_GEMMA_PERCEIVER_EXPERT_TOKENS_REVISION,
+    )
+    assert _allowed_pi05_missing_key(
+        "model.context_input_norms.0.weight", cond_perceiver
+    )
+    assert _allowed_pi05_missing_key(
+        "model.top_resampler.latents", cond_perceiver
+    )
+
+
+def test_phase_batch_metrics_are_split_by_original_skill_progress() -> None:
+    policy = object.__new__(SkillExpertPolicy)
+    policy.config = SimpleNamespace(
+        phase_batch_sampling_enabled=True,
+        phase_batch_focused_fraction=0.8,
+        phase_batch_early_fraction=0.5,
+        phase_batch_early_threshold=0.25,
+        phase_batch_late_threshold=0.75,
+        skill_vocab_size=27,
+    )
+    batch = {
+        "skill_ds": torch.tensor([0, 2, 5, 8, 10]),
+        "skill_de": torch.tensor([10, 8, 5, 2, 0]),
+        "skill_code_true": torch.tensor([1, 2, 3, 4, 5]),
+        "skill_code": torch.tensor([9, 2, 3, 4, 9]),
+        "skill_progress": torch.tensor([0.0, 0.2, 0.5, 0.1, 0.9]),
+    }
+
+    metrics = policy._phase_batch_sampling_metrics(
+        batch, torch.tensor([1.0, 3.0, 5.0, 7.0, 9.0])
+    )
+
+    assert metrics["batch_sampling/configured_focused_fraction"] == pytest.approx(0.8)
+    assert metrics[
+        "batch_sampling/configured_early_share_within_focused"
+    ] == pytest.approx(0.5)
+    assert metrics["batch_sampling/original_early_fraction"] == pytest.approx(0.4)
+    assert metrics["batch_sampling/original_middle_fraction"] == pytest.approx(0.2)
+    assert metrics["batch_sampling/original_late_fraction"] == pytest.approx(0.4)
+    assert metrics["batch_sampling/original_focused_fraction"] == pytest.approx(0.8)
+    assert metrics["batch_sampling/jittered_early_fraction"] == pytest.approx(0.6)
+    assert metrics["batch_sampling/jittered_middle_fraction"] == pytest.approx(0.2)
+    assert metrics["batch_sampling/jittered_late_fraction"] == pytest.approx(0.2)
+    assert metrics["batch_sampling/phase_changed_fraction"] == pytest.approx(0.2)
+    assert metrics["batch_sampling/jitter_changed_code_fraction"] == pytest.approx(0.4)
+    assert metrics[
+        "batch_sampling/early_jitter_changed_code_fraction"
+    ] == pytest.approx(0.5)
+    assert metrics[
+        "batch_sampling/late_jitter_changed_code_fraction"
+    ] == pytest.approx(0.5)
+    assert metrics["batch_sampling/original_unique_skill_count"] == pytest.approx(5.0)
+    assert metrics[
+        "batch_sampling/original_skill_entropy_normalized"
+    ] == pytest.approx(1.0)
+    assert metrics["batch_sampling/original_max_skill_fraction"] == pytest.approx(0.2)
+    assert metrics["batch_sampling/original_early_action_loss"] == pytest.approx(2.0)
+    assert metrics["batch_sampling/original_middle_action_loss"] == pytest.approx(5.0)
+    assert metrics["batch_sampling/original_late_action_loss"] == pytest.approx(8.0)

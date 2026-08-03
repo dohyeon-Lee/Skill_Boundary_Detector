@@ -195,7 +195,6 @@ if [ "${EVAL_RUN_FSQ}" = "true" ]; then
   PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     python -u examples/libero/fsq_eval.py \
       --model_path          "${MODEL_PATH}" \
-      --dino_model_path     "${FSQ_EVAL_DINO_MODEL_PATH}" \
       --skills_dir          "${F_SKILLSET}/skills" \
       --dataset_dir      "${F_DATASET_VIDEO_DIR}" \
       --output_dir       "${OUTPUT_DIR}" \

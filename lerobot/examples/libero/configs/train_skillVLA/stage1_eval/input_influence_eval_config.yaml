@@ -3,21 +3,24 @@
 outputs_root: outputs_filtered
 
 models:
-  # This is the expected name of the new residual-SA18/gate-0.1 run. Change the
-  # checkpoint after training has produced the desired pretrained_model folder.
-  - model_dir: libero_90_full_firsthalf_scene_FSQ333_125_std_pt_episodemean_80p_snap10_pmax15_halfnormal_dino_tuned_vsa_perceiver_crossattn_flow_state_skill_visual_query_bs96
+  # Historical 384-wide arch2_1 checkpoints remain available under previous/.
+  # New direct-width runs use an `_arch2` suffix in the main Stage-1 output root.
+  - model_dir: bs96_libero_90_full_firsthalf_scene_FSQ333_125_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch2_1
+    previous: true
     checkpoint: "015000"
     skill_source: gt
     advance_mode: gt
     label: crossatten_bs96
 
-  - model_dir: libero_90_full_firsthalf_scene_FSQ333_125_std_pt_episodemean_80p_snap10_pmax15_halfnormal_dino_tuned_vsa_perceiver_crossattn_flow_state_skill_visual_query_bs64
+  - model_dir: bs64_libero_90_full_firsthalf_scene_FSQ333_125_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch2_1
+    previous: true
     checkpoint: "015000"
     skill_source: gt
     advance_mode: gt
     label: crossatten_bs64
 
-  - model_dir: libero_90_full_firsthalf_scene_FSQ333_125_std_pt_episodemean_80p_snap10_pmax15_halfnormal_dino_tuned_vsa_perceiver_crossattn_flow_state_skill_visual_query
+  - model_dir: bs16_libero_90_full_firsthalf_scene_FSQ333_125_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch2_1
+    previous: true
     checkpoint: "015000"
     skill_source: gt
     advance_mode: gt
