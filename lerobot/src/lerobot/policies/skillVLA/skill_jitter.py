@@ -175,3 +175,60 @@ def choose_jitter_torch(k, ds, de, seq_len, pmax: int, distribution: str = "half
     )
     offset = torch.where(can_early, -p, sign * p)
     return k_prime, offset
+
+
+def effective_jittered_skill_de(
+    *,
+    k: int,
+    k_prime: int,
+    ds: int,
+    de: int,
+    skill_initial_frames,
+    skill_lengths,
+    offset: int,
+) -> int:
+    """Distance to the end of the skill assignment created by transition jitter.
+
+    For an early transition, the next skill starts early but keeps its original
+    end. For a late transition, the previous skill's end is delayed by the
+    sampled magnitude ``abs(offset)``. An unchanged skill keeps its original
+    ``de``; the offset then perturbs only the predictor's start observation.
+    """
+    k = int(k)
+    k_prime = int(k_prime)
+    ds = int(ds)
+    de = int(de)
+    offset = int(offset)
+    if min(ds, de) < 0:
+        raise ValueError(f"skill ds/de must be non-negative, got ds={ds}, de={de}.")
+    if k_prime == k:
+        return de
+    if k_prime == k - 1:
+        effective_de = abs(offset) - 1 - ds
+    elif k_prime == k + 1:
+        starts = np.asarray(skill_initial_frames).reshape(-1)
+        lengths = np.asarray(skill_lengths).reshape(-1)
+        if not 0 <= k < len(starts) or not 0 <= k_prime < len(starts):
+            raise ValueError(
+                f"skill indices exceed metadata: k={k}, k_prime={k_prime}, "
+                f"num_starts={len(starts)}."
+            )
+        if int(lengths[k_prime]) <= 0:
+            raise ValueError(
+                f"Jittered skill {k_prime} has invalid length {int(lengths[k_prime])}."
+            )
+        current_frame = int(starts[k]) + ds
+        jittered_end_frame = int(starts[k_prime]) + int(lengths[k_prime]) - 1
+        effective_de = jittered_end_frame - current_frame
+    else:
+        raise ValueError(
+            "Transition jitter may select only the current or an adjacent skill, "
+            f"got k={k}, k_prime={k_prime}."
+        )
+    if effective_de < 0:
+        raise ValueError(
+            "Transition jitter produced an already-expired effective boundary: "
+            f"k={k}, k_prime={k_prime}, ds={ds}, de={de}, offset={offset}, "
+            f"effective_de={effective_de}."
+        )
+    return int(effective_de)

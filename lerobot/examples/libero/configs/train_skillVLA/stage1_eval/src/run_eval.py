@@ -78,27 +78,54 @@ def _normalize_advance_mode(value: str) -> str:
     return normalized
 
 
+def _normalize_terminator_variant(value: str) -> str:
+    aliases = {
+        "normal": "state_image",
+        "state_image": "state_image",
+        "state+image": "state_image",
+        "image": "image_only",
+        "image_only": "image_only",
+        "image-only": "image_only",
+    }
+    normalized = aliases.get(str(value).strip().lower())
+    if normalized is None:
+        raise ValueError(
+            f"terminator_variant must be state_image|image_only, got {value!r}."
+        )
+    return normalized
+
+
 class CheckpointTerminator:
     """Inference adapter around the terminator stored in a policy checkpoint."""
 
     use_wrist = True
 
-    def __init__(self, policy):
-        if policy.model.fsq_term_train is None:
-            raise ValueError("The policy checkpoint has no co-trained terminator.")
-        self.model = policy.model
+    def __init__(self, policy, variant: str = "state_image"):
+        self.variant = _normalize_terminator_variant(variant)
+        self.requires_state = self.variant == "state_image"
+        if self.requires_state:
+            if policy.model.fsq_term_train is None:
+                raise ValueError("The policy checkpoint has no co-trained terminator.")
+        elif getattr(policy.model, "fsq_image_term_train", None) is None:
+            raise ValueError("The policy has no attached image-only terminator.")
+        self.policy = policy
 
     @torch.no_grad()
     def terminate(
         self,
         codes: torch.Tensor,
-        state: torch.Tensor,
+        state: torch.Tensor | None,
         image: torch.Tensor,
         wrist_image: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        progress, logits = self.model.terminator_predict(
-            codes, state, image, wrist_image
-        )
+        if self.variant == "image_only":
+            progress, logits = self.policy.image_only_terminator_predict(
+                codes, image, wrist_image
+            )
+        else:
+            progress, logits = self.policy.model.terminator_predict(
+                codes, state, image, wrist_image
+            )
         return progress, torch.sigmoid(logits)
 
 
@@ -138,6 +165,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         progress_threshold: float,
         max_skill_length: int,
         n_action_steps: int,
+        immediate_replan_on_skill_end: bool = False,
     ):
         super().__init__(policy.config)
         skill_source = _normalize_skill_source(skill_source)
@@ -159,6 +187,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         self.progress_threshold = float(progress_threshold)
         self.max_skill_length = int(max_skill_length)
         self.n_action_steps = int(n_action_steps)
+        self.immediate_replan_on_skill_end = bool(immediate_replan_on_skill_end)
         self._sequences: list[list[int]] | None = None
         self._gt_lengths: list[list[int]] | None = None
         self._references: list[list[int]] | None = None
@@ -282,23 +311,34 @@ class Stage1OraclePolicy(PreTrainedPolicy):
                 self._start_skill(batch_index, codes)
             self._started = True
 
-        # A boundary detected during the previous action chunk becomes active only
-        # at this fixed replanning point. Never discard queued actions mid-chunk.
+        # Fixed mode activates a previously detected boundary only after every
+        # queued action has run. Immediate mode discards the shared batch queue
+        # and replans from the current observation instead.
         activated_at_start = set()
-        if not self._action_queue and self._pending_advance:
+        if self._pending_advance and (
+            not self._action_queue or self.immediate_replan_on_skill_end
+        ):
+            if self.immediate_replan_on_skill_end:
+                self._action_queue.clear()
             activated_at_start = self._activate_pending_advances(batch, device)
 
         codes = self._current_codes(batch_size, device)
         progress = probability = None
         if self.advance_mode != "gt":
-            missing = [key for key in (RAW_STATE, RAW_IMAGE, RAW_WRIST) if key not in batch]
+            required = [RAW_IMAGE, RAW_WRIST]
+            if getattr(self.terminator, "requires_state", True):
+                required.insert(0, RAW_STATE)
+            missing = [key for key in required if key not in batch]
             if missing:
                 raise ValueError(
                     "The saved policy preprocessor must preserve raw terminator inputs; "
                     f"missing={missing}."
                 )
             progress, probability = self.terminator.terminate(
-                codes, batch[RAW_STATE], batch[RAW_IMAGE], batch[RAW_WRIST]
+                codes,
+                batch.get(RAW_STATE),
+                batch[RAW_IMAGE],
+                batch[RAW_WRIST],
             )
 
         for batch_index in range(batch_size):
@@ -306,6 +346,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             if self.advance_mode != "gt":
                 trace["end_probs"].append(
                     {
+                        "episode_timestep": self._episode_step,
                         "skill_step": self._skill_step[batch_index],
                         "prob": float(probability[batch_index]),
                         "progress": float(progress[batch_index]),
@@ -337,9 +378,14 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             if self._can_advance(batch_index):
                 self._pending_advance.add(batch_index)
 
-        # If the queue was already empty, this is itself a scheduled replanning
-        # point, so a boundary detected now can be applied before generating.
-        if not self._action_queue and self._pending_advance:
+        # Immediate mode interrupts the current action chunk as soon as this
+        # observation fires the boundary. Fixed mode preserves the old behavior:
+        # activate only when the queue has naturally reached a replanning point.
+        if self._pending_advance and (
+            not self._action_queue or self.immediate_replan_on_skill_end
+        ):
+            if self.immediate_replan_on_skill_end:
+                self._action_queue.clear()
             self._activate_pending_advances(batch, device)
 
         if not self._action_queue:
@@ -359,6 +405,12 @@ class Stage1OraclePolicy(PreTrainedPolicy):
 
     def get_skill_trace(self) -> list[dict]:
         return self._trace
+
+    def get_progress_threshold(self) -> float:
+        return self.progress_threshold
+
+    def get_end_threshold(self) -> float:
+        return self.end_threshold
 
     def get_gt_timeline(self) -> dict[int, list[dict]]:
         sequences = self._sequences if self.skill_source == "gt" else self._references
@@ -712,6 +764,9 @@ def _saved_preprocessor_step_names(pretrained_path: str | Path) -> set[str]:
 def _build_context(spec: dict, cfg, device: torch.device) -> dict:
     skill_source = _normalize_skill_source(spec["skill_source"])
     advance_mode = _normalize_advance_mode(spec["advance_mode"])
+    terminator_variant = _normalize_terminator_variant(
+        spec.get("terminator_variant", "state_image")
+    )
     external_skill_model = str(spec.get("external_skill_model") or "").strip()
     policy_config = _policy_config(spec, cfg.policy, device)
     if spec.get("architecture") == COND_GEMMA_ARCHITECTURE:
@@ -771,15 +826,19 @@ def _build_context(spec: dict, cfg, device: torch.device) -> dict:
                 f"[{spec['label']}] external terminator override is supported only "
                 "for skill_expert checkpoints."
             )
-        policy.load_external_terminator(external_skill_model)
+        if terminator_variant == "image_only":
+            policy.load_external_image_only_terminator(external_skill_model)
+        else:
+            policy.load_external_terminator(external_skill_model)
         log.info(
-            "[%s] overlaid external terminator from %s.",
+            "[%s] overlaid external %s terminator from %s.",
             spec["label"],
+            terminator_variant,
             external_skill_model,
         )
     policy.eval()
     terminator = (
-        CheckpointTerminator(policy)
+        CheckpointTerminator(policy, terminator_variant)
         if advance_mode != "gt"
         else None
     )
@@ -808,6 +867,10 @@ def _build_context(spec: dict, cfg, device: torch.device) -> dict:
         progress_threshold=float(os.environ["SKILL_END_PROGRESS_THRESHOLD"]),
         max_skill_length=int(os.environ["INFERENCE_SKILL_MAX_LENGTH"]),
         n_action_steps=policy_config.n_action_steps,
+        immediate_replan_on_skill_end=(
+            os.environ.get("IMMEDIATE_REPLAN_ON_SKILL_END", "false").lower()
+            == "true"
+        ),
     )
     wrapper.eval()
     overrides = {
@@ -885,10 +948,19 @@ def _panel_artifacts_complete(
     return True
 
 
-def _panel_cache_path(panel_root: Path) -> Path:
+def _eval_info_name() -> str:
     task_tag = os.environ.get("TASK_TAG", "").strip()
-    name = f"eval_info_{task_tag}.json" if task_tag else "eval_info.json"
-    return panel_root / name
+    return f"eval_info_{task_tag}.json" if task_tag else "eval_info.json"
+
+
+def _panel_cache_path(panel_root: Path) -> Path:
+    output_root = panel_root.parent.parent
+    return output_root / "metrics" / "panel_cache" / panel_root.name / _eval_info_name()
+
+
+def _legacy_panel_cache_path(panel_root: Path) -> Path:
+    """Location used before eval JSON files were collected under metrics/."""
+    return panel_root / _eval_info_name()
 
 
 def _panel_signature(spec: dict, task_names: set[str], cfg) -> dict:
@@ -897,6 +969,7 @@ def _panel_signature(spec: dict, task_names: set[str], cfg) -> dict:
         "external_skill_model": spec.get("external_skill_model") or "",
         "skill_source": spec["skill_source"],
         "advance_mode": spec["advance_mode"],
+        "terminator_variant": spec.get("terminator_variant", "state_image"),
         "architecture": spec.get("architecture"),
         "architecture_label": spec.get("architecture_label"),
         "architecture_revision": spec.get("architecture_revision"),
@@ -913,7 +986,16 @@ def _panel_signature(spec: dict, task_names: set[str], cfg) -> dict:
         "n_episodes": int(cfg.eval.n_episodes),
         "n_action_steps": int(cfg.policy.n_action_steps),
         "seed": int(cfg.seed),
-        "replanning_mode": "fixed_chunk_v1",
+        "replanning_mode": (
+            "immediate_skill_end_v1"
+            if os.environ.get("IMMEDIATE_REPLAN_ON_SKILL_END", "false").lower()
+            == "true"
+            else "fixed_chunk_v1"
+        ),
+        "immediate_replan_on_skill_end": os.environ.get(
+            "IMMEDIATE_REPLAN_ON_SKILL_END", "false"
+        ).lower()
+        == "true",
         "skill_end_mode": os.environ["SKILL_END_MODE"],
         "skill_end_threshold": os.environ["SKILL_END_THRESHOLD"],
         "skill_end_progress_threshold": os.environ[
@@ -931,12 +1013,16 @@ def _load_resumed_panel_info(
 ) -> tuple[dict | None, str | None]:
     if not _panel_artifacts_complete(panel_root, task_names, cfg):
         return None, None
-    cache_path = _panel_cache_path(panel_root)
     signature = _panel_signature(spec, task_names, cfg)
-    if cache_path.is_file():
-        cached = json.loads(cache_path.read_text())
-        if cached.get("signature") == signature and isinstance(cached.get("info"), dict):
-            return cached["info"], "metrics cache"
+    cache_paths = (
+        (_panel_cache_path(panel_root), "metrics cache"),
+        (_legacy_panel_cache_path(panel_root), "legacy metrics cache"),
+    )
+    for cache_path, source in cache_paths:
+        if cache_path.is_file():
+            cached = json.loads(cache_path.read_text())
+            if cached.get("signature") == signature and isinstance(cached.get("info"), dict):
+                return cached["info"], source
     # Compatibility for panels completed before per-panel caches were introduced.
     return (
         {
@@ -975,12 +1061,13 @@ def _save_panel_info(
 def _stitch_panels(
     panels: list[tuple[Path, str]],
     output_dir: Path,
-    per_row: int,
+    columns: int,
     *,
     task_names: set[str] | None = None,
 ) -> None:
     if len(panels) < 2:
         return
+    grid_columns = columns if columns > 0 else len(panels)
     try:
         import imageio.v2 as imageio
         from compare_videos import even, label_bar, load_font, make_panel, read_video
@@ -1018,15 +1105,14 @@ def _stitch_panels(
                 quality=8,
                 macro_block_size=None,
             )
-            columns = per_row if per_row > 0 else len(panels)
             for frame_index in range(max(len(frames) for frames in frame_sets)):
                 tiles = [
                     make_panel(frames[min(frame_index, len(frames) - 1)], height, bar)
                     for frames, bar in zip(frame_sets, bars, strict=True)
                 ]
                 rows = [
-                    np.hstack(tiles[start : start + columns])
-                    for start in range(0, len(tiles), columns)
+                    np.hstack(tiles[start : start + grid_columns])
+                    for start in range(0, len(tiles), grid_columns)
                 ]
                 max_width = max(row.shape[1] for row in rows)
                 rows = [
@@ -1062,6 +1148,9 @@ def _maybe_log_wandb(cfg, infos: dict[str, dict], specs: list[dict]) -> None:
                         "policy_path": spec["policy_path"],
                         "skill_source": spec["skill_source"],
                         "advance_mode": spec["advance_mode"],
+                        "terminator_variant": spec.get(
+                            "terminator_variant", "state_image"
+                        ),
                         "external_skill_model": (
                             spec.get("external_skill_model") or "unused"
                         ),
@@ -1089,6 +1178,15 @@ def _maybe_log_wandb(cfg, infos: dict[str, dict], specs: list[dict]) -> None:
                     for spec in specs
                 ],
                 "n_episodes": cfg.eval.n_episodes,
+                "n_action_steps": int(cfg.policy.n_action_steps),
+                "replanning_mode": (
+                    "immediate_skill_end_v1"
+                    if os.environ.get(
+                        "IMMEDIATE_REPLAN_ON_SKILL_END", "false"
+                    ).lower()
+                    == "true"
+                    else "fixed_chunk_v1"
+                ),
             },
         )
         payload = {}
@@ -1169,11 +1267,13 @@ def eval_main(cfg: EvalPipelineConfig):
                     continue
             log.info(
                 "[%s] loading %s (skill_source=%s, advance_mode=%s, "
+                "terminator_variant=%s, "
                 "external_skill_model=%s).",
                 spec["label"],
                 spec["policy_path"],
                 spec["skill_source"],
                 spec["advance_mode"],
+                spec.get("terminator_variant", "state_image"),
                 spec.get("external_skill_model") or "unused",
             )
             context = _build_context(spec, cfg, device)
@@ -1222,14 +1322,13 @@ def eval_main(cfg: EvalPipelineConfig):
         _stitch_panels(
             video_panels,
             output_dir / "side_by_side",
-            int(os.environ.get("MODELS_PER_ROW", "0") or 0),
+            int(os.environ.get("GRID_COLUMNS", "0") or 0),
             task_names=current_task_names,
         )
         output_dir.mkdir(parents=True, exist_ok=True)
-        task_tag = os.environ.get("TASK_TAG", "").strip()
-        info_path = output_dir / (
-            f"eval_info_{task_tag}.json" if task_tag else "eval_info.json"
-        )
+        metrics_dir = output_dir / "metrics"
+        metrics_dir.mkdir(parents=True, exist_ok=True)
+        info_path = metrics_dir / _eval_info_name()
         info_path.write_text(json.dumps(infos, indent=2))
         for label, info in infos.items():
             print(f"{label}: {info.get('overall', {})}")

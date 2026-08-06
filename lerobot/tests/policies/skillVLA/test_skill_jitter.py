@@ -87,6 +87,54 @@ def test_reusable_jitter_draw_resolves_against_each_samples_metadata() -> None:
     assert skill_jitter.apply_jitter_draw(k=0, ds=4, de=5, seq_len=3, draw=draw) == (0, -2)
 
 
+def test_effective_skill_end_tracks_early_and_late_virtual_boundaries() -> None:
+    starts = np.array([0, 10, 20])
+    lengths = np.array([10, 10, 10])
+
+    # The next skill starts two frames early. At frame 9 its unchanged end is
+    # frame 19, so offsets 0..10 are assigned to the jittered next skill.
+    assert skill_jitter.effective_jittered_skill_de(
+        k=0,
+        k_prime=1,
+        ds=9,
+        de=0,
+        skill_initial_frames=starts,
+        skill_lengths=lengths,
+        offset=-2,
+    ) == 10
+
+    # A two-frame delayed transition keeps the previous skill active at the
+    # new skill's ds=0 and ds=1 frames respectively.
+    assert skill_jitter.effective_jittered_skill_de(
+        k=1,
+        k_prime=0,
+        ds=0,
+        de=9,
+        skill_initial_frames=starts,
+        skill_lengths=lengths,
+        offset=2,
+    ) == 1
+    assert skill_jitter.effective_jittered_skill_de(
+        k=1,
+        k_prime=0,
+        ds=1,
+        de=8,
+        skill_initial_frames=starts,
+        skill_lengths=lengths,
+        offset=-2,
+    ) == 0
+
+    assert skill_jitter.effective_jittered_skill_de(
+        k=1,
+        k_prime=1,
+        ds=4,
+        de=5,
+        skill_initial_frames=starts,
+        skill_lengths=lengths,
+        offset=-2,
+    ) == 5
+
+
 def test_sample_jitter_draw_uses_configured_distribution() -> None:
     draw = skill_jitter.sample_jitter_draw(
         pmax=20,

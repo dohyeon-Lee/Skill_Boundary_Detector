@@ -20,6 +20,7 @@ from .pi0.configuration_pi0 import PI0Config as PI0Config
 from .pi0_fast.configuration_pi0_fast import PI0FastConfig as PI0FastConfig
 from .pi05.configuration_pi05 import PI05Config as PI05Config
 from .skillVLA.configuration_skillVLA import SkillVLAConfig as SkillVLAConfig
+from .skill_aux.configuration_skill_aux import SkillAuxConfig as SkillAuxConfig
 from .skill_expert.configuration_skill_expert import SkillExpertConfig as SkillExpertConfig
 from .smolvla.configuration_smolvla import SmolVLAConfig as SmolVLAConfig
 from .smolvla.processor_smolvla import SmolVLANewLineProcessor
@@ -36,6 +37,7 @@ __all__ = [
     "PI05Config",
     "PI0FastConfig",
     "SkillVLAConfig",
+    "SkillAuxConfig",
     "SmolVLAConfig",
     "SARMConfig",
     "TDMPCConfig",

@@ -2,6 +2,7 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 import torch
 from torch import nn
@@ -16,6 +17,13 @@ sys.path.insert(0, str(_EVAL_SRC))
 import run_eval
 from run_eval import CheckpointTerminator, Stage1OraclePolicy
 from lerobot.policies.skill_expert.configuration_skill_expert import SkillExpertConfig
+from lerobot.scripts.lerobot_skillvla_eval import (
+    _annotate_eval_video,
+    _progress_values_from_trace,
+    _skill_banner_color,
+    _skill_ids_from_trace,
+    _termination_values_from_trace,
+)
 
 
 class _FakeExpert(nn.Module):
@@ -66,6 +74,152 @@ def _batch():
         "skill_decoder_image": torch.zeros(1, 3, 8, 8),
         "skill_decoder_wrist": torch.zeros(1, 3, 8, 8),
     }
+
+
+def test_stage1_eval_json_paths_are_collected_under_metrics(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("TASK_TAG", "t0-1")
+    panel_root = tmp_path / "eval_run" / "panels" / "00_arch0"
+
+    assert run_eval._panel_cache_path(panel_root) == (
+        tmp_path
+        / "eval_run"
+        / "metrics"
+        / "panel_cache"
+        / "00_arch0"
+        / "eval_info_t0-1.json"
+    )
+    assert run_eval._legacy_panel_cache_path(panel_root) == (
+        panel_root / "eval_info_t0-1.json"
+    )
+
+
+def test_video_skill_timeline_tracks_trace_at_render_stride() -> None:
+    trace = [
+        {"batch_index": 0, "episode_timestep": 0, "codebook_token": 2},
+        {"batch_index": 1, "episode_timestep": 0, "codebook_token": 9},
+        {"batch_index": 0, "episode_timestep": 3, "codebook_token": 7},
+        {"batch_index": 0, "episode_timestep": 8, "codebook_token": 4},
+    ]
+
+    assert _skill_ids_from_trace(
+        trace,
+        batch_index=0,
+        n_video_frames=6,
+        video_frame_stride=2,
+    ) == [2, 2, 7, 7, 4, 4]
+
+
+def test_video_skill_banner_changes_color_with_active_skill() -> None:
+    frames = np.zeros((4, 120, 160, 3), dtype=np.uint8)
+    annotated = _annotate_eval_video(
+        frames,
+        success=True,
+        task_description="pick up the object",
+        skill_ids=[3, 3, 8, 8],
+    )
+
+    assert annotated.shape[0] == len(frames)
+    skill_banner_y = max(18, 120 // 10) + 120
+    assert tuple(annotated[0, skill_banner_y, 0]) == _skill_banner_color(3)
+    assert tuple(annotated[1, skill_banner_y, 0]) == _skill_banner_color(3)
+    assert tuple(annotated[2, skill_banner_y, 0]) == _skill_banner_color(8)
+    assert tuple(annotated[0, -1, 0]) == (20, 20, 20)
+    assert _skill_banner_color(3) != _skill_banner_color(8)
+
+
+def test_video_progress_gauge_tracks_terminator_trace_at_render_stride() -> None:
+    trace = [
+        {
+            "batch_index": 0,
+            "episode_timestep": 0,
+            "end_probs": [
+                {"episode_timestep": 0, "skill_step": 0, "progress": 0.1},
+                {"episode_timestep": 1, "skill_step": 1, "progress": 0.2},
+                {"episode_timestep": 2, "skill_step": 2, "progress": 0.4},
+            ],
+        },
+        {
+            "batch_index": 0,
+            "episode_timestep": 3,
+            "end_probs": [
+                {"episode_timestep": 3, "skill_step": 0, "progress": 0.7},
+                {"episode_timestep": 4, "skill_step": 1, "progress": 0.95},
+            ],
+        },
+    ]
+
+    assert _progress_values_from_trace(
+        trace,
+        batch_index=0,
+        n_video_frames=3,
+        video_frame_stride=2,
+    ) == pytest.approx([0.1, 0.4, 0.95])
+
+
+def test_video_progress_gauge_adds_dynamic_right_panel() -> None:
+    frames = np.zeros((3, 120, 160, 3), dtype=np.uint8)
+    annotated = _annotate_eval_video(
+        frames,
+        success=True,
+        task_description="pick up the object",
+        skill_ids=[3, 3, 8],
+        progress_values=[0.1, 0.5, 0.95],
+        progress_threshold=0.9,
+    )
+
+    assert annotated.shape[2] == 160 + max(48, 160 // 6)
+    top_bar_height = max(18, 120 // 10)
+    right_panel = annotated[:, top_bar_height : top_bar_height + 120, 160:]
+    assert not np.array_equal(right_panel[0], right_panel[1])
+    assert not np.array_equal(right_panel[1], right_panel[2])
+
+
+def test_video_termination_gauge_latches_until_skill_transition() -> None:
+    trace = [
+        {
+            "batch_index": 0,
+            "episode_timestep": 0,
+            "end_probs": [
+                {"episode_timestep": 0, "skill_step": 0, "prob": 0.2},
+                {"episode_timestep": 1, "skill_step": 1, "prob": 0.7},
+                {"episode_timestep": 2, "skill_step": 2, "prob": 0.3},
+            ],
+        },
+        {
+            "batch_index": 0,
+            "episode_timestep": 3,
+            "end_probs": [
+                {"episode_timestep": 3, "skill_step": 0, "prob": 0.1},
+            ],
+        },
+    ]
+
+    assert _termination_values_from_trace(
+        trace,
+        batch_index=0,
+        n_video_frames=4,
+        video_frame_stride=1,
+        end_threshold=0.5,
+    ) == pytest.approx([0.2, 0.7, 0.7, 0.1])
+
+
+def test_video_progress_and_termination_gauges_are_side_by_side() -> None:
+    frames = np.zeros((3, 120, 160, 3), dtype=np.uint8)
+    annotated = _annotate_eval_video(
+        frames,
+        success=True,
+        task_description="pick up the object",
+        skill_ids=[3, 3, 8],
+        progress_values=[0.1, 0.5, 0.95],
+        progress_threshold=0.9,
+        termination_values=[0.2, 0.7, 0.7],
+        end_threshold=0.5,
+    )
+
+    gauge_width = max(48, 160 // 6)
+    assert annotated.shape[2] == 160 + 2 * gauge_width
 
 
 @pytest.mark.parametrize(
@@ -216,6 +370,31 @@ def test_oracle_defers_terminator_advance_until_fixed_replan() -> None:
     assert [call.item() for call in expert.calls] == [3, 7]
 
 
+def test_oracle_can_interrupt_chunk_and_replan_on_terminator_advance() -> None:
+    expert = _FakeExpert()
+    wrapper = Stage1OraclePolicy(
+        expert,
+        _FakeTerminator(),
+        advance_mode="terminator",
+        end_mode="termination",
+        end_threshold=0.5,
+        progress_threshold=0.95,
+        max_skill_length=0,
+        n_action_steps=2,
+        immediate_replan_on_skill_end=True,
+    )
+    wrapper.set_forced_skill_token_sequences(
+        [[{"token": 3, "gt_length": 5}, {"token": 7, "gt_length": 5}]]
+    )
+
+    assert wrapper.select_action(_batch()).item() == 3
+    # The second observation fires. The remaining action for skill 3 is
+    # discarded, and the first action replanned for skill 7 is returned now.
+    assert wrapper.select_action(_batch()).item() == 7
+    assert wrapper.select_action(_batch()).item() == 7
+    assert [call.item() for call in expert.calls] == [3, 7]
+
+
 def test_checkpoint_terminator_converts_logits_to_probability() -> None:
     class _Model:
         fsq_term_train = object()
@@ -232,6 +411,31 @@ def test_checkpoint_terminator_converts_logits_to_probability() -> None:
     )
 
     assert progress.item() == 0.25
+    assert probability.item() == 0.5
+
+
+def test_checkpoint_image_only_terminator_does_not_use_state() -> None:
+    class _Model:
+        fsq_term_train = None
+        fsq_image_term_train = object()
+
+    class _Policy:
+        model = _Model()
+
+        def image_only_terminator_predict(self, codes, image, wrist):
+            del codes, image, wrist
+            return torch.tensor([0.75]), torch.tensor([0.0])
+
+    adapter = CheckpointTerminator(_Policy(), variant="image_only")
+    progress, probability = adapter.terminate(
+        torch.tensor([1]),
+        None,
+        torch.zeros(1, 3, 8, 8),
+        torch.zeros(1, 3, 8, 8),
+    )
+
+    assert adapter.requires_state is False
+    assert progress.item() == 0.75
     assert probability.item() == 0.5
 
 
@@ -306,18 +510,25 @@ def test_gt_timed_advancement_does_not_call_a_terminator() -> None:
 
 @pytest.mark.parametrize("skill_source", ["gt", "own", "external"])
 @pytest.mark.parametrize("advance_mode", ["gt", "own", "external"])
+@pytest.mark.parametrize("terminator_variant", ["state_image", "image_only"])
 def test_stage1_eval_selects_own_external_or_gt_skill_modules(
-    monkeypatch, skill_source: str, advance_mode: str
+    monkeypatch,
+    skill_source: str,
+    advance_mode: str,
+    terminator_variant: str,
 ) -> None:
     class _Policy(nn.Module):
         def __init__(self):
             super().__init__()
             self.config = SkillExpertConfig(n_action_steps=2, chunk_size=2)
             self.model = SimpleNamespace(
-                skill_predictor=object(), fsq_term_train=object()
+                skill_predictor=object(),
+                fsq_term_train=object(),
+                fsq_image_term_train=object(),
             )
             self.loaded_predictor = None
             self.loaded_terminator = None
+            self.loaded_image_terminator = None
 
         def load_external_skill_predictor(self, checkpoint):
             self.loaded_predictor = checkpoint
@@ -326,6 +537,10 @@ def test_stage1_eval_selects_own_external_or_gt_skill_modules(
         def load_external_terminator(self, checkpoint):
             self.loaded_terminator = checkpoint
             self.model.fsq_term_train = object()
+
+        def load_external_image_only_terminator(self, checkpoint):
+            self.loaded_image_terminator = checkpoint
+            self.model.fsq_image_term_train = object()
 
         def reset(self):
             return None
@@ -373,6 +588,7 @@ def test_stage1_eval_selects_own_external_or_gt_skill_modules(
             "label": "source-selection",
             "skill_source": skill_source,
             "advance_mode": advance_mode,
+            "terminator_variant": terminator_variant,
             "external_skill_model": "/tmp/external",
             "tokenizer_path": "/tmp/tokenizer",
         },
@@ -385,7 +601,14 @@ def test_stage1_eval_selects_own_external_or_gt_skill_modules(
         "/tmp/external" if skill_source == "external" else None
     )
     assert policy.loaded_terminator == (
-        "/tmp/external" if advance_mode == "external" else None
+        "/tmp/external"
+        if advance_mode == "external" and terminator_variant == "state_image"
+        else None
+    )
+    assert policy.loaded_image_terminator == (
+        "/tmp/external"
+        if advance_mode == "external" and terminator_variant == "image_only"
+        else None
     )
     assert context["policy"].skill_source == skill_source
     assert context["policy"].advance_mode == advance_mode

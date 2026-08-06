@@ -2,6 +2,7 @@ dataset:
   skillvla_root: skillvla_dataset
   source: libero_90_full_firsthalf_scene # langgap_56_full_firsthalf | libero_90_full_firsthalf_scene
   run: FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal
+  # run: FSQ345_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal
 
 # Optional user label. It is appended at the very end of the automatic output
 # and W&B run name. Empty keeps the standard ablation naming unchanged.
@@ -19,12 +20,12 @@ warm_start:
 vision:
   dino_model: models/dinov3-vitl16
   image_size: 224
-  # Arch0/Arch1_1/Arch1_2 may be frozen; Arch1_3--4 require false.
+  # Arch0--0_3/Arch1_1/Arch1_2 may be frozen; Arch1_3--4 require false.
   freeze: false
 
 architecture:
   # Select with this value or
-  # `./submit_train.sh arch0|arch1_1|arch1_2|arch1_3|arch2_1|arch2_2|arch3|arch4`.
+  # `./submit_train.sh arch0|arch0_1|arch0_2|arch0_2_sep|arch0_3|arch1_1|arch1_2|arch1_3|arch2_1|arch2_2|arch3|arch4`.
   #
   # Reference map (idea-level references, not exact paper reproductions):
   # - Shared visual compressor:
@@ -35,6 +36,14 @@ architecture:
   #   motion-level skill bypasses Cond-Gemma and is broadcast to the action
   #   expert at every layer. Historical skillVLA_real checkpoints keep their
   #   saved Cond-Gemma skill broadcast when evaluated.
+  # - arch0_1: Arch0 visual/skill paths, but state leaves Cond-Gemma and joins
+  #   timestep conditioning in the action Expert AdaRMS at every layer.
+  # - arch0_2: the same projected state conditions both all Cond-Gemma tokens
+  #   and the action Expert AdaRMS; no second state projection is introduced.
+  # - arch0_2_sep: Arch0_2 with independent Cond and Expert state projections;
+  #   all downstream conditioning paths, masks, and transformer weights match.
+  # - arch0_3: Arch0_2, except direct Cond-Gemma state AdaRMS is masked to wrist
+  #   tokens. Top/wrist self-attention can still propagate state indirectly.
   # - arch1_1: same uncompressed DINO -> Cond-Gemma visual path as Arch0, but
   #   state/skill are expert in-context tokens as in Arch2--4.
   # - arch1_2: same expert state/skill tokens and mask as Arch1_1, but compresses
@@ -53,8 +62,8 @@ architecture:
   # Historical checkpoints with the same arch2_1/arch2_2 labels remain
   # evaluation-only under previous/ and are distinguished by revision metadata.
 
-  # arch0 arch1_1 arch1_2 arch1_3 arch2_1 arch2_2 arch3 arch4
-  name: arch4
+  # arch0 arch0_1 arch0_2 arch0_2_sep arch0_3 arch1_1 arch1_2 arch1_3 arch2_1 arch2_2 arch3 arch4
+  name: arch0_2_sep
 
   # Shared by Arch0--4.
   expert_variant: gemma_300m
@@ -69,6 +78,18 @@ architecture:
 
 # flow | flow_endpoint_xyz (the latter is 0.5 flow + 0.5 accumulated-XYZ endpoint MSE)
 loss: flow
+
+# false: supervise the full real action chunk (current behavior).
+# true: exclude offsets after the effective skill end from action loss. When
+# transition randomization changes k -> k±1, its shifted virtual boundary is used.
+mask_actions_after_skill_end: true
+
+# Optional relative-trajectory auxiliary. The existing flow loss keeps weight
+# 1.0; this adds weight * prefix cumulative clean-action XYZ MSE after one
+# per-sample horizon normalization ((valid_steps + 1) / 2).
+cumulative_xyz_loss:
+  enabled: false
+  weight: 0.5
 
 # gt: teacher-forced jittered GT code.
 # predictor: frozen checkpoint predictor(jittered skill-start input) -> hard code -> VSA.
@@ -87,7 +108,7 @@ skill_predictor:
 
 # Separate FSQ terminator instance; never shares parameters with the VSA path.
 terminator:
-  train: true
+  train: false
   freeze_vision: true
   end_target_sigma: 2.0
   end_pos_weight: 1.0
@@ -113,6 +134,8 @@ training:
   # dataloader: {batch_size: 32, workers: 8, gpus: 1}
   # DINO LR = base_lr * dino_lr_scale for every architecture.
   optimizer: {base_lr: 2.5e-05, dino_lr_scale: 0.1, terminator_lr_scale: 1.0}
+  # optimizer: {base_lr: 2.5e-05, dino_lr_scale: 1.0, terminator_lr_scale: 1.0}
+
   gradient_checkpointing: false
   schedule: {steps: 100000, lr_mode: warmup_constant, warmup_steps: 1000, log_every: 100, save_every: 5000}
   vsa_debug: {every: 5000, initial: [1, 100, 1000]}

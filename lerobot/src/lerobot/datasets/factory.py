@@ -101,9 +101,40 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
             # the prebuilt transitions.npz (no episode-video seeks; per-transition uniform sampling).
             dataset_cls = LeRobotDataset
             policy_type = getattr(cfg.policy, "type", None)
-            if policy_type in {"skill_expert", "skill_vla", "skill_vla_stage2"}:
+            if policy_type in {"skill_aux", "skill_expert", "skill_vla", "skill_vla_stage2"}:
                 _packs = getattr(cfg.policy, "transition_packs", None)
-                if policy_type == "skill_vla" and _packs:
+                if policy_type == "skill_aux":
+                    needs_predictor_start = bool(
+                        getattr(cfg.policy, "train_skill_predictor", False)
+                    )
+                    needs_terminator_start = bool(
+                        getattr(
+                            cfg.policy,
+                            "train_start_comparison_terminator",
+                            False,
+                        )
+                        or getattr(
+                            cfg.policy,
+                            "train_start_comparison_image_only_terminator",
+                            False,
+                        )
+                    )
+                    if needs_predictor_start or needs_terminator_start:
+                        from functools import partial
+
+                        from lerobot.policies.skillVLA.dataset_skillVLA import (
+                            SkillVLADataset,
+                        )
+
+                        dataset_cls = partial(
+                            SkillVLADataset,
+                            include_predictor_start_inputs=needs_predictor_start,
+                            include_terminator_start_image=needs_terminator_start,
+                        )
+                    else:
+                        # Current-view terminators consume no skill-start frame.
+                        dataset_cls = LeRobotDataset
+                elif policy_type == "skill_vla" and _packs:
                     from functools import partial
 
                     from lerobot.policies.skillVLA.dataset_transitions import SkillTransitionDataset
@@ -112,9 +143,20 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
                         SkillTransitionDataset,
                         transition_packs=[p.strip() for p in str(_packs).split(",") if p.strip()])
                 else:
+                    from functools import partial
+
                     from lerobot.policies.skillVLA.dataset_skillVLA import SkillVLADataset
 
-                    dataset_cls = SkillVLADataset
+                    dataset_cls = (
+                        partial(
+                            SkillVLADataset,
+                            jitter_pmax=int(
+                                getattr(cfg.policy, "transition_jitter_pmax", 0)
+                            ),
+                        )
+                        if policy_type == "skill_expert"
+                        else SkillVLADataset
+                    )
             dataset = dataset_cls(
                 cfg.dataset.repo_id,
                 root=cfg.dataset.root,

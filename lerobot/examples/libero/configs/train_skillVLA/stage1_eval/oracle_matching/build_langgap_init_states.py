@@ -43,6 +43,12 @@ OFFICIAL_RANGES = (
 # position/gripper differences when candidates are ranked.
 STATE_SCALE = np.asarray((0.05, 0.05, 0.05, 0.20, 0.20, 0.20, 0.02, 0.02), dtype=np.float32)
 
+# ``LiberoEnv`` exposes raw robosuite camera arrays.  The LeRobot LIBERO
+# datasets used here store both cameras in the canonical H+W-flipped
+# orientation (see the LangGap canonical converter).  Signatures must be in
+# the same coordinate system before their pixel distances are meaningful.
+CANONICAL_CAMERA_ORIENTATION = "flip_hw"
+
 
 @dataclass(frozen=True)
 class TaskSpec:
@@ -141,6 +147,25 @@ def image_signature(image: np.ndarray | torch.Tensor, size: int) -> np.ndarray:
         .cpu()
         .numpy()
     )
+
+
+def canonicalize_candidate_signatures(images: np.ndarray | None) -> np.ndarray | None:
+    """Convert cached/raw LiberoEnv signatures to the dataset camera convention.
+
+    Candidate caches deliberately remain raw so old caches are reusable.  A
+    spatial flip commutes with the area resize used by :func:`image_signature`,
+    therefore applying it to the cached thumbnail is equivalent to flipping
+    the full-resolution render before producing its signature.
+    """
+    if images is None:
+        return None
+    array = np.asarray(images)
+    if array.ndim != 4 or array.shape[-1] not in (1, 3, 4):
+        raise ValueError(
+            "Expected batched HWC candidate signatures, got "
+            f"shape={array.shape}."
+        )
+    return array[:, ::-1, ::-1, :]
 
 
 def rank_candidates(
@@ -260,22 +285,33 @@ def _load_episode_signatures(
 ) -> dict[int, tuple[np.ndarray, np.ndarray, np.ndarray | None, int]]:
     expected_episodes = first_rows["episode_index"].to_numpy(dtype=np.int32)
     if cache_file is not None and cache_file.is_file():
-        cache = np.load(cache_file, allow_pickle=False)
-        if (
-            int(cache["signature_size"]) == signature_size
-            and bool(cache["with_wrist"]) == with_wrist
-            and np.array_equal(cache["episode_index"], expected_episodes)
-        ):
-            wrists = cache["wrist"] if with_wrist else None
-            return {
-                int(episode): (
-                    cache["state"][index],
-                    cache["image"][index],
-                    None if wrists is None else wrists[index],
-                    int(cache["task_index"][index]),
-                )
-                for index, episode in enumerate(cache["episode_index"])
-            }
+        # NpzFile.__getitem__ decompresses an array on every access.  Accessing
+        # cache["image"] inside the episode comprehension therefore inflated
+        # the complete image array once per episode, retaining each copy via
+        # the returned row view (about 50 GB for the 2,035-episode set).
+        # Materialize every cached array exactly once instead.
+        with np.load(cache_file, allow_pickle=False) as cache:
+            cached_signature_size = int(cache["signature_size"])
+            cached_with_wrist = bool(cache["with_wrist"])
+            episode_indices = cache["episode_index"]
+            if (
+                cached_signature_size == signature_size
+                and cached_with_wrist == with_wrist
+                and np.array_equal(episode_indices, expected_episodes)
+            ):
+                states = cache["state"]
+                images = cache["image"]
+                task_indices = cache["task_index"]
+                wrists = cache["wrist"] if with_wrist else None
+                return {
+                    int(episode): (
+                        states[index],
+                        images[index],
+                        None if wrists is None else wrists[index],
+                        int(task_indices[index]),
+                    )
+                    for index, episode in enumerate(episode_indices)
+                }
 
     metadata = _episode_metadata(dataset_dir)
     info = json.loads((dataset_dir / "meta" / "info.json").read_text())
@@ -427,7 +463,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--wrist-weight", type=float, default=0.0)
     parser.add_argument("--max-state-score", type=float, default=1.0)
     parser.add_argument("--max-image-mae", type=float, default=0.18)
-    parser.add_argument("--min-score-margin", type=float, default=0.01)
+    # Scores are global means over 64x64 thumbnails.  The previous 0.01
+    # default rejected 80% of otherwise valid nearest neighbours: small object
+    # layout differences occupy only a small fraction of the image.  Keep a
+    # non-zero guard to reject exact/numerical ties without imposing that
+    # scale-dependent threshold.
+    parser.add_argument("--min-score-margin", type=float, default=1e-6)
     parser.add_argument("--accept-ambiguous", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
     return parser.parse_args()
@@ -498,7 +539,8 @@ def main() -> None:
             with_wrist=args.wrist_weight > 0,
             cache_dir=cache_dir,
         )
-        candidate_wrists = candidates.get("wrists")
+        candidate_images = canonicalize_candidate_signatures(candidates["images"])
+        candidate_wrists = canonicalize_candidate_signatures(candidates.get("wrists"))
         for _, row in rows.iterrows():
             episode = int(row["episode_index"])
             state, image, wrist, signature_task = signatures[episode]
@@ -512,7 +554,7 @@ def main() -> None:
                 image,
                 wrist,
                 candidates["settled_states"],
-                candidates["images"],
+                candidate_images,
                 candidate_wrists,
                 state_weight=args.state_weight,
                 image_weight=args.image_weight,
@@ -549,6 +591,17 @@ def main() -> None:
         json.dumps(
             {
                 "dataset": str(args.lerobot_dataset),
+                "matching_config": {
+                    "candidate_camera_orientation": CANONICAL_CAMERA_ORIENTATION,
+                    "signature_size": args.signature_size,
+                    "num_steps_wait": args.num_steps_wait,
+                    "state_weight": args.state_weight,
+                    "image_weight": args.image_weight,
+                    "wrist_weight": args.wrist_weight,
+                    "max_state_score": args.max_state_score,
+                    "max_image_mae": args.max_image_mae,
+                    "min_score_margin": args.min_score_margin,
+                },
                 "matched": [{k: v for k, v in row.items() if k != "init_state"} for row in matched],
                 "failed": failures,
             },

@@ -195,6 +195,9 @@ def update_policy(
     if lr_scheduler is not None:
         lr_scheduler.step()
 
+    if has_method(unwrapped_policy, "optimizer_metrics"):
+        output_dict.update(unwrapped_policy.optimizer_metrics(optimizer))
+
     # Preserve every parameter group's actual post-scheduler LR. The generic
     # tracker only exposes group 0, which hides the DINO scaling used by Stage 1.
     for index, group in enumerate(optimizer.param_groups):
@@ -213,7 +216,7 @@ def update_policy(
 
 
 _WINDOWED_POLICY_MODEL_TYPES = frozenset(
-    {"skill_expert", "skill_vla", "skill_vla_stage2"}
+    {"skill_aux", "skill_expert", "skill_vla", "skill_vla_stage2"}
 )
 
 
@@ -272,6 +275,21 @@ def _finite_scalar_metrics(metrics: dict) -> dict[str, float]:
         if math.isfinite(value):
             scalars[key] = value
     return scalars
+
+
+def _split_namespaced_metrics(
+    metrics: dict[str, float],
+) -> tuple[dict[str, float], dict[str, dict[str, float]]]:
+    """Split ``module/metric`` keys without maintaining a module allowlist."""
+    ungrouped: dict[str, float] = {}
+    groups: dict[str, dict[str, float]] = {}
+    for key, value in metrics.items():
+        namespace, separator, metric_name = key.partition("/")
+        if not separator:
+            ungrouped[key] = value
+            continue
+        groups.setdefault(namespace, {})[metric_name] = value
+    return ungrouped, groups
 
 
 def _sparse_debug_metric_groups(metrics: dict) -> tuple[dict[str, float], dict[str, float]]:
@@ -640,7 +658,47 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
 
     # create dataloader for offline training
     grouped_batch_sampler = None
-    if bool(getattr(cfg.policy, "phase_batch_sampling_enabled", False)):
+    if bool(
+        getattr(cfg.policy, "terminator_endpoint_oversampling_enabled", False)
+    ):
+        if cfg.dataset.streaming:
+            raise ValueError(
+                "terminator_endpoint_oversampling_enabled is not supported for "
+                "streaming datasets."
+            )
+        from lerobot.policies.skill_aux.endpoint_batch_sampler import (
+            TerminatorEndpointBatchSampler,
+        )
+
+        grouped_batch_sampler = TerminatorEndpointBatchSampler(
+            dataset,
+            batch_size=cfg.batch_size,
+            exact_end_fraction=float(
+                getattr(
+                    cfg.policy,
+                    "terminator_endpoint_exact_end_fraction",
+                    0.25,
+                )
+            ),
+            near_end_fraction=float(
+                getattr(
+                    cfg.policy,
+                    "terminator_endpoint_near_end_fraction",
+                    0.25,
+                )
+            ),
+            near_end_max_distance=int(
+                getattr(
+                    cfg.policy,
+                    "terminator_endpoint_near_end_max_distance",
+                    2,
+                )
+            ),
+            seed=int(cfg.seed or 0),
+        )
+        shuffle = False
+        sampler = None
+    elif bool(getattr(cfg.policy, "phase_batch_sampling_enabled", False)):
         if cfg.dataset.streaming:
             raise ValueError(
                 "phase_batch_sampling_enabled is not supported for streaming datasets."
@@ -908,6 +966,16 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                 # vsa_debug metrics were already logged at their exact step.
                 term_metrics = {k[len("terminator/"):]: v for k, v in wandb_log_dict.items()
                                 if k.startswith("terminator/")}
+                image_term_metrics = {
+                    k[len("image_terminator/"):]: v
+                    for k, v in wandb_log_dict.items()
+                    if k.startswith("image_terminator/")
+                }
+                wrist_term_metrics = {
+                    k[len("wrist_terminator/"):]: v
+                    for k, v in wandb_log_dict.items()
+                    if k.startswith("wrist_terminator/")
+                }
                 regime_metrics = {k[len("regime/"):]: v for k, v in wandb_log_dict.items()
                                   if k.startswith("regime/")}
                 distill_metrics = {k[len("distill/"):]: v for k, v in wandb_log_dict.items()
@@ -932,6 +1000,8 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                                 if not k.startswith(
                                     (
                                         "terminator/",
+                                        "image_terminator/",
+                                        "wrist_terminator/",
                                         "skill_predictor/",
                                         "batch_sampling/",
                                         "regime/",
@@ -940,9 +1010,30 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                                         "vsa_debug/",
                                         "optimizer/",
                                     ))}
+                dynamic_auxiliary_metrics: dict[str, dict[str, float]] = {}
+                if getattr(cfg.policy, "model_type", None) == "skill_aux":
+                    # Route every previously unseen ``module/metric`` family to
+                    # ``train_<module>`` automatically. This keeps auxiliary
+                    # panels separate without a prefix allowlist that silently
+                    # drops metrics whenever a new head is introduced.
+                    main_metrics, dynamic_auxiliary_metrics = (
+                        _split_namespaced_metrics(main_metrics)
+                    )
                 wandb_logger.log_dict(main_metrics, step)
                 if term_metrics:
                     wandb_logger.log_dict(term_metrics, step, mode="train_terminator")
+                if image_term_metrics:
+                    wandb_logger.log_dict(
+                        image_term_metrics,
+                        step,
+                        mode="train_image_terminator",
+                    )
+                if wrist_term_metrics:
+                    wandb_logger.log_dict(
+                        wrist_term_metrics,
+                        step,
+                        mode="train_wrist_terminator",
+                    )
                 if regime_metrics:
                     wandb_logger.log_dict(regime_metrics, step, mode="train_regime")
                 if distill_metrics:
@@ -959,6 +1050,12 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                 if optimizer_metrics:
                     wandb_logger.log_dict(
                         optimizer_metrics, step, mode="optimizer")
+                for namespace, metrics in dynamic_auxiliary_metrics.items():
+                    wandb_logger.log_dict(
+                        metrics,
+                        step,
+                        mode=f"train_{namespace}",
+                    )
             train_tracker.reset_averages()
             if windowed_policy_metrics is not None:
                 windowed_policy_metrics.reset()

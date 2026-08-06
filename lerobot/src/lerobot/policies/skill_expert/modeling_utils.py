@@ -110,3 +110,51 @@ def build_fsq_terminator(path: str | Path):
 
     terminator, _ = load_fsq_terminator(str(path), device="cpu")
     return terminator
+
+
+def build_fsq_image_only_terminator(path: str | Path):
+    """Build an image-only terminator with no weights warm-started from FSQ."""
+    examples_root = Path(__file__).resolve().parents[4] / "examples" / "libero"
+    if str(examples_root) not in sys.path:
+        sys.path.insert(0, str(examples_root))
+    from FSQ import build_fsq_image_only_terminator as build_image_only  # noqa: PLC0415
+
+    terminator, _ = build_image_only(str(path), device="cpu")
+    return terminator
+
+
+def build_fsq_start_comparison_terminator(path: str | Path):
+    """Build a start/current comparison terminator from the FSQ contract."""
+    examples_root = Path(__file__).resolve().parents[4] / "examples" / "libero"
+    if str(examples_root) not in sys.path:
+        sys.path.insert(0, str(examples_root))
+    from FSQ import (  # noqa: PLC0415
+        build_fsq_start_comparison_terminator as build_start_comparison,
+    )
+
+    terminator, _ = build_start_comparison(str(path), device="cpu")
+    return terminator
+
+
+def build_fsq_start_comparison_image_only_terminator(path: str | Path):
+    """Build the start/current comparison terminator without a state path."""
+    examples_root = Path(__file__).resolve().parents[4] / "examples" / "libero"
+    if str(examples_root) not in sys.path:
+        sys.path.insert(0, str(examples_root))
+    from FSQ import (  # noqa: PLC0415
+        build_fsq_start_comparison_image_only_terminator as build_image_comparison,
+    )
+
+    terminator, _ = build_image_comparison(str(path), device="cpu")
+    return terminator
+
+
+def build_fsq_wrist_only_terminator(path: str | Path):
+    """Build a wrist-only terminator with no weights warm-started from FSQ."""
+    examples_root = Path(__file__).resolve().parents[4] / "examples" / "libero"
+    if str(examples_root) not in sys.path:
+        sys.path.insert(0, str(examples_root))
+    from FSQ import build_fsq_wrist_only_terminator as build_wrist_only  # noqa: PLC0415
+
+    terminator, _ = build_wrist_only(str(path), device="cpu")
+    return terminator

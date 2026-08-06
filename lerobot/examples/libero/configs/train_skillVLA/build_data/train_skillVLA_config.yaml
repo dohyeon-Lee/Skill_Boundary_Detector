@@ -3,7 +3,7 @@
 
 # Source
 skillvla_dataset_root: skillvla_dataset
-source_dataset: libero_90_full_firsthalf_scene # libero_90_full_firsthalf_scene | langgap_56_full_firsthalf
+source_dataset: langgap_56_full_firsthalf # libero_90_full_firsthalf_scene | langgap_56_full_firsthalf
 skillvla_data_mode: pt  # pt | ft | ft_own
 
 # Skill segmentation
@@ -14,11 +14,11 @@ skillset_array_throttle: 0        # 0 = unlimited
 skillset_max_sweeps: 2
 
 # FSQ encoder
-# fsq_run_name: langgap_56_full_full_state_obs20_std_episodemean_80p_fsq345
+fsq_run_name: langgap_56_full_full_state_obs20_std_episodemean_80p_fsq345_fast
 # fsq_run_name: langgap_56_full_full_state_obs20_std_episodemean_80p_fsq333_fast
 
 # fsq_run_name: libero_90_full_full_state_obs20_std_episodemean_80p_fsq345
-fsq_run_name: libero_90_full_full_state_obs20_std_episodemean_80p_fsq333_fast
+# fsq_run_name: libero_90_full_full_state_obs20_std_episodemean_80p_fsq333_fast
 fsq_checkpoint: 500 # 125               # epoch | best
 fsq_snap_to_supported: true
 fsq_snap_min_code_freq: 10

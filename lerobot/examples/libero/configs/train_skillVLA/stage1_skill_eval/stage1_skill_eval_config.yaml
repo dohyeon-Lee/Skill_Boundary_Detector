@@ -1,0 +1,61 @@
+# Single-model, episode-exact Stage-1 skill-segment evaluation.
+#
+# For every selected training episode, each FSQ skill occurrence is evaluated
+# independently from its exact simulator state. Each HTML entry plays one
+# synchronized horizontal comparison:
+#   GT | exact | exact with different noise | early | late
+
+outputs_root: outputs_filtered
+
+model:
+  previous: false
+  model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch1_2
+  checkpoint: "070000"
+  label: arch1_2_70k
+  # own: use the terminator stored in this checkpoint.
+  # external: overlay only the terminator from external_skill_model.
+  terminator_source: external
+
+external_skill_model: outputs_filtered/skillVLA_stage1/bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch4_DINO_LR_100p_Skill_Predictor/checkpoints/100000/pretrained_model
+
+# Empty creates a timestamped output under stage1_skill_eval/outputs/.
+output_name: ""
+resume: false
+
+target_task: libero_90
+task_ids: [0,3]
+
+# Episode-exact is mandatory for this evaluator and cannot fall back to a
+# language-matched or standard LIBERO init state.
+episode_exact: true
+episodes_per_task: 5
+episode_selection: first     # first | random
+episode_ids: []              # optional exact global dataset episode ids
+seed: 42
+
+# Policy branches start at frame_start-offset, frame_start, frame_start+offset.
+time_shift_offset: 15
+n_action_steps: 5
+
+# Selected skill occurrences are distributed over this many one-GPU Slurm
+# array workers. The resolver caps it to the number of selected episodes.
+eval_num_gpus: 10
+
+terminator:
+  end_mode: or               # termination | progress | or | and
+  end_threshold: 0.5
+  progress_threshold: 0.95
+  max_skill_length: 200
+  # true preserves the fixed-replanning behavior: a detected boundary stops
+  # only after the already-generated action chunk has been consumed.
+  finish_action_chunk_on_end: true
+
+video:
+  frame_stride: 2
+  fps: 10
+
+# Explicit for auditability. The resolver checks that every scene/demo named by
+# eval_init_states.npz exists here.
+original_dataset_dir: libero_original_dataset/libero_90
+
+slurm: {gres: "gpu:1", cpus: 8, memory: 64G, time: "12:00:00"}

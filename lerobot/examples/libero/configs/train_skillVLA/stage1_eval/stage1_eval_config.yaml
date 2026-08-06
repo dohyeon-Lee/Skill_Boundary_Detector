@@ -7,66 +7,107 @@
 # recognized from their saved conditioning_route; no manual architecture field
 # belongs in this YAML.
 outputs_root: outputs_filtered
+# outputs_root: outputs
 
 # Used only by entries with skill_source: external or advance_mode: external.
 # The target model architecture may differ: only compatible predictor/terminator
 # submodules are validated and overlaid.
-external_skill_model: outputs_filtered/skillVLA_stage1/bs16_libero_90_full_firsthalf_scene_FSQ333_125_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch1_VisO_StateO_SkillO/checkpoints/030000/pretrained_model
+# external_skill_model: outputs_filtered/skillVLA_stage1/bs16_libero_90_full_firsthalf_scene_FSQ333_125_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch1_VisO_StateO_SkillO/checkpoints/030000/pretrained_model
+external_skill_model: outputs_filtered/skillVLA_stage1/bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch4_DINO_LR_100p_Skill_Predictor/checkpoints/100000/pretrained_model
+# external_skill_model: outputs/skillVLA_stage1/bs32_langgap_56_full_firsthalf_FSQ345_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch0/checkpoints/100000/pretrained_model
 
+# Common values inherited by every models[] entry. A value written inside an
+# individual model entry takes priority over the corresponding value here.
+
+model_defaults:
+  previous: false
+  # A scalar keeps the old behavior. A list evaluates every model at every
+  # checkpoint, e.g. ["050000", "070000", "090000"].
+  checkpoint: "070000"
+  # checkpoint: ["030000", "050000", "070000", "085000"]
+  skill_source: external
+  advance_mode: external
 models:
-  # Arch0: historical/current Cond-Gemma baseline in the normal output root.
-  - model_dir: bs16_libero_90_full_firsthalf_scene_FSQ333_125_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch1_VisO_StateO_SkillO
-    checkpoint: "030000"
-    skill_source: gt
-    advance_mode: external
-    label: arch0_bs16
-
-  # Historical VSA panels stored under skillVLA_stage1/previous/.
-  - model_dir: bs16_libero_90_full_firsthalf_scene_FSQ333_125_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch2_1
-    previous: true
-    checkpoint: "015000"
-    skill_source: gt
-    advance_mode: external
-    label: previous_arch2_1_bs16
-
-  - model_dir: bs16_libero_90_full_firsthalf_scene_FSQ333_125_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch2_2
-    previous: true
-    checkpoint: "015000"
-    skill_source: gt
-    advance_mode: external
-    label: previous_arch2_2_bs16
-
-  - model_dir: bs16_libero_90_full_firsthalf_scene_FSQ333_125_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch3
-    previous: true
-    checkpoint: "015000"
-    skill_source: gt
-    advance_mode: external
-    label: previous_arch3_bs16
-
-  - model_dir: bs16_libero_90_full_firsthalf_scene_FSQ333_125_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch4
-    previous: true
-    checkpoint: "015000"
-    skill_source: gt
-    advance_mode: external
-    label: previous_arch4_bs16
-
-  # New Arch1_1--4 checkpoints use the same entry form without `previous`:
-  # - model_dir: bs96_<dataset-and-run>_arch1_1
-  #   checkpoint: "015000"
-  #   skill_source: gt
-  #   advance_mode: external
-  #   label: arch1_1_bs96
-
-models_per_row: 3
-
+  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch1_2
+    label: a
+  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch2_1
+    label: b
+  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch2_2
+    label: c
+  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch3
+    label: d
+  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch4
+    label: e
 # Empty => timestamped directory. A fixed name is useful with resume: true.
-output_name: "stage1_all_architectures"
-resume: false
+output_name: "archA_70k_OOD_predictor100k"
 
+# model_defaults:
+#   previous: false
+#   checkpoint: "100000" # ["030000", "050000", "070000", "085000"]
+#   skill_source: gt
+#   advance_mode: external
+# models:
+#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch0
+#     label: A
+#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch1_1
+#     label: B
+#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch1_2
+#     label: C
+#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch1_3
+#     label: D
+# # Empty => timestamped directory. A fixed name is useful with resume: true.
+# output_name: "archB_react_100k_ext_ext_term_spgt"
+
+# model_defaults:
+#   previous: false
+#   checkpoint: "100000"
+#   skill_source: external
+#   advance_mode: external
+# models:
+#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch0
+#     label: arch0_DINO_LR_10p
+#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch0_DINO_LR_100p
+#     label: arch0_DINO_LR_100p
+#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch4
+#     label: arch4_DINO_LR_10p
+#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch4_DINO_LR_100p_Skill_Predictor
+#     label: arch4_DINO_LR_100p
+# # Empty => timestamped directory. A fixed name is useful with resume: true.
+# output_name: "archC_ext_ext_or"
+
+
+# model_defaults:
+#   previous: false
+#   checkpoint: "100000"
+#   skill_source: gt
+#   advance_mode: external
+# models:
+#   - model_dir: bs32_langgap_56_full_firsthalf_FSQ345_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch0
+#     label: A
+# # Empty => timestamped directory. A fixed name is useful with resume: true.
+# output_name: "langgap_100k_term_spgt"
+
+resume: false
 target_task: libero_90
 task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
-eval_num_gpus: 10
-n_episodes: 3
+
+# target_task: langgap_ext # in-distribution
+# task_ids: [0, 1, 3, 5, 6, 8, 17, 19, 21, 29, 30, 32, 39, 41, 42, 45]
+
+# target_task: langgap_ext # held-out
+# task_ids: [
+#   2, 4, 7, 9, 10, 11, 12, 13, 14, 15, 16, 18,
+#   20, 22, 23, 24, 25, 26, 27, 28, 31, 33, 34, 35,
+#   36, 37, 38, 40, 43, 44, 46, 47, 48, 49, 50, 51,
+#   52, 53, 54, 55, 56, 57, 58
+# ]
+
+# target_task: libero_10 # libero_10 | libero_goal | libero_object | libero_spatial
+# task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+
+
+eval_num_gpus: 16
+n_episodes: 5
 eval_batch_size: 1
 max_parallel_tasks: 1
 n_action_steps: 5
@@ -74,20 +115,22 @@ n_action_steps: 5
 oracle:
   # true requires every listed model to use the same episode-exact dataset map.
   episode_exact: true
-  # Default when a model entry omits advance_mode: external | own | gt.
-  advance_mode: external
 
 terminator:
-  end_mode: or                   # termination | progress | or | and
+  # state_image = regular state+camera terminator; image_only = camera-only aux model.
+  # image_only requires advance_mode: external and a skill_aux checkpoint above.
+  variant: state_image
+  end_mode: or             # termination | progress | or | and
   end_threshold: 0.5
-  progress_threshold: 0.9
+  progress_threshold: 0.95
+  immediate_replan_on_skill_end: false
   max_skill_length: 200
 
-video: {max_per_task: 3, frame_stride: 2, fps: 10}
+video: {max_per_task: 15, frame_stride: 4, fps: 10}
 skill_html: true
 skill_html_train_samples: 5
 
 logging:
   wandb: {enable: true, project: VLA_stage1_eval}
 
-slurm: {gres: "gpu:1", cpus: 8, memory: 64G, time: "4:00:00"}
+slurm: {gres: "gpu:1", cpus: 8, memory: 64G, time: "6:00:00"}

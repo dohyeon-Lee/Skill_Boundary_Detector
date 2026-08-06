@@ -75,6 +75,9 @@ def test_stage1_exports_single_architecture_and_relative_dino_lr(tmp_path: Path)
     assert settings["visual_perceiver_width"] == 1024
     assert settings["dino_lr_scale"] == 0.1
     assert settings["action_expert_variant"] == "gemma_300m"
+    assert settings["mask_actions_after_skill_end"] is False
+    assert settings["cumulative_xyz_loss_enabled"] is False
+    assert settings["cumulative_xyz_loss_weight"] == pytest.approx(0.5)
     assert settings["conditioning_route"] == "state_skill_cond"
     assert settings["cond_encoder_variant"] == "gemma_300m"
     assert settings["freeze_vision_encoder"] is False
@@ -122,6 +125,41 @@ def test_stage1_exports_single_architecture_and_relative_dino_lr(tmp_path: Path)
     batch96 = build_settings(config)
     assert batch96["pt_run_name"].startswith("bs96_")
     assert batch96["pt_run_name"].endswith("_arch3")
+
+
+def test_skill_end_loss_mask_supports_jitter_and_has_distinct_name(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    config["mask_actions_after_skill_end"] = True
+    settings = build_settings(config)
+
+    assert settings["mask_actions_after_skill_end"] is True
+    assert settings["transition_jitter_pmax"] == 15
+    assert settings["pt_run_name"].endswith("_arch2_2_skillendmask")
+
+
+def test_cumulative_xyz_auxiliary_has_weighted_distinct_name(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    config["mask_actions_after_skill_end"] = True
+    config["cumulative_xyz_loss"] = {"enabled": True, "weight": 0.5}
+
+    settings = build_settings(config)
+
+    assert settings["cumulative_xyz_loss_enabled"] is True
+    assert settings["cumulative_xyz_loss_weight"] == pytest.approx(0.5)
+    assert settings["pt_run_name"].endswith(
+        "_arch2_2_skillendmask_cumxyz0p5"
+    )
+
+
+def test_cumulative_xyz_auxiliary_rejects_endpoint_mix(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    config["loss"] = "flow_endpoint_xyz"
+    config["cumulative_xyz_loss"] = {"enabled": True, "weight": 0.5}
+
+    with pytest.raises(ValueError, match="cannot be combined"):
+        build_settings(config)
 
 
 def test_stage1_rejects_invalid_vsa_debug_initial_steps(tmp_path: Path) -> None:
@@ -234,7 +272,10 @@ def test_stage1_rejects_any_other_architecture(tmp_path: Path) -> None:
     config = _config(tmp_path)
     config["architecture"]["name"] = "state_skill_cond"
 
-    with pytest.raises(ValueError, match=r"must be arch0\|arch1_1\|arch1_2"):
+    with pytest.raises(
+        ValueError,
+        match=r"must be arch0\|arch0_1\|arch0_2\|arch0_2_sep\|arch0_3",
+    ):
         build_settings(config)
 
 
@@ -351,6 +392,30 @@ def test_unified_config_selects_arch0_and_applies_relative_dino_lr(tmp_path: Pat
     batch64 = build_settings(config)
     assert batch64["pt_run_name"].startswith("bs64_")
     assert batch64["pt_run_name"].endswith("_arch0")
+
+
+@pytest.mark.parametrize(
+    ("label", "revision"),
+    [
+        ("arch0_1", "expert_state_adarms_v1"),
+        ("arch0_2", "cond_expert_state_adarms_v1"),
+        ("arch0_2_sep", "cond_expert_separate_state_adarms_v1"),
+        ("arch0_3", "wrist_cond_expert_state_adarms_v1"),
+    ],
+)
+def test_arch0_state_location_ablations_resolve_distinct_contracts(
+    tmp_path: Path, label: str, revision: str
+) -> None:
+    config = _config(tmp_path)
+    config["architecture"]["name"] = label
+
+    settings = build_settings(config)
+
+    assert settings["architecture"] == "cond_gemma"
+    assert settings["architecture_label"] == label
+    assert settings["architecture_revision"] == revision
+    assert settings["conditioning_route"] == "state_cond"
+    assert settings["pt_run_name"].endswith(f"_{label}")
 
 
 def test_cond_family_rejects_removed_conditioning_override(tmp_path: Path) -> None:

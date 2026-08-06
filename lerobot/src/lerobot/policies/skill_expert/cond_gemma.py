@@ -1,7 +1,8 @@
-"""Original skillVLA_real condition-Gemma Stage-1 architecture.
+"""Condition-Gemma Stage-1 architecture and its state-location ablations.
 
-This module intentionally preserves the old two-stream implementation:
-DINO -> condition Gemma and noisy actions -> pi0.5 Gemma expert.
+Arch0 preserves the skillVLA_real two-stream implementation. Arch0_1--0_3
+change where projected state enters Cond/Expert AdaRMS; Arch0_2_sep alone
+removes projection sharing while preserving an identical initial function.
 """
 
 from __future__ import annotations
@@ -30,9 +31,12 @@ from lerobot.policies.pi05.modeling_pi05 import (
 from lerobot.policies.pi_gemma import PiGemmaRMSNorm, _gated_residual
 
 from .configuration_skill_expert import (
-    COND_GEMMA_ARCHITECTURE_REVISION,
     COND_GEMMA_EXPERT_TOKENS_REVISION,
     COND_GEMMA_PERCEIVER_EXPERT_TOKENS_REVISION,
+    COND_GEMMA_SEPARATE_DUAL_STATE_REVISION,
+    COND_GEMMA_WRIST_DUAL_STATE_REVISION,
+    COND_STATE_ADARMS_REVISIONS,
+    EXPERT_STATE_ADARMS_REVISIONS,
     SKILLLESS_CONDITIONING_ROUTES,
     STATELESS_CONDITIONING_ROUTES,
     VISIONLESS_CONDITIONING_ROUTES,
@@ -228,6 +232,20 @@ class CondGemmaSkillExpert(nn.Module):
             config.architecture_revision
             == COND_GEMMA_PERCEIVER_EXPERT_TOKENS_REVISION
         )
+        self.uses_cond_state_adarms = (
+            config.architecture_revision in COND_STATE_ADARMS_REVISIONS
+            and config.conditioning_route not in STATELESS_CONDITIONING_ROUTES
+        )
+        self.uses_expert_state_adarms = (
+            config.architecture_revision in EXPERT_STATE_ADARMS_REVISIONS
+        )
+        self.uses_separate_state_projections = (
+            config.architecture_revision
+            == COND_GEMMA_SEPARATE_DUAL_STATE_REVISION
+        )
+        self.uses_wrist_only_cond_state = (
+            config.architecture_revision == COND_GEMMA_WRIST_DUAL_STATE_REVISION
+        )
 
         if config.conditioning_route in VISIONLESS_CONDITIONING_ROUTES:
             # The transformer still needs a condition sequence to carry state
@@ -290,6 +308,15 @@ class CondGemmaSkillExpert(nn.Module):
             if config.conditioning_route in STATELESS_CONDITIONING_ROUTES
             else nn.Linear(config.max_state_dim, self.width)
         )
+        # Arch0_2_sep is identical to Arch0_2 except for this independent
+        # Expert-side state embedding. Start from an exact copy so the probe
+        # isolates gradient sharing rather than initialization differences.
+        # ``state_proj`` remains the Cond path.
+        self.expert_state_proj = (
+            copy.deepcopy(self.state_proj)
+            if self.uses_separate_state_projections
+            else None
+        )
         # Skill-free routes likewise omit the otherwise unused projection.
         self.skill_proj = (
             None
@@ -317,10 +344,7 @@ class CondGemmaSkillExpert(nn.Module):
 
         self.cond_encoder = build_gemma(
             config.cond_encoder_variant,
-            use_adarms=(
-                not self.uses_expert_context_tokens
-                and config.conditioning_route not in STATELESS_CONDITIONING_ROUTES
-            ),
+            use_adarms=self.uses_cond_state_adarms,
         )
         self.gemma_expert = build_gemma(config.action_expert_variant, use_adarms=True)
         if self.uses_expert_context_tokens:
@@ -338,6 +362,7 @@ class CondGemmaSkillExpert(nn.Module):
             FrozenVLMSkillPredictor(config) if config.uses_skill_predictor else None
         )
         self.fsq_term_train = None
+        self.fsq_image_term_train = None
         if config.train_terminator:
             terminator = build_fsq_terminator(config.fsq_path)
             if config.terminator_freeze_vision_encoder is not None:
@@ -594,8 +619,8 @@ class CondGemmaSkillExpert(nn.Module):
         skill_token, _ = self.skill_norm(self._skill_embedding(skill_code))
         return torch.stack((state_token, skill_token), dim=1)
 
-    def _state_condition(self, state: Tensor | None) -> Tensor | None:
-        """Project state for cond AdaRMS, or omit it in stateless routes."""
+    def _project_state(self, state: Tensor | None) -> Tensor | None:
+        """Return the Cond projection, also shared by Expert outside Arch0_2_sep."""
         if self.config.conditioning_route in STATELESS_CONDITIONING_ROUTES:
             return None
         if state is None or self.state_proj is None:
@@ -603,6 +628,40 @@ class CondGemmaSkillExpert(nn.Module):
                 f"{self.config.conditioning_route} requires robot state conditioning."
             )
         return self.state_proj(state.to(self.working_dtype))
+
+    def _project_expert_state(
+        self,
+        state: Tensor | None,
+        shared_projection: Tensor | None,
+    ) -> Tensor | None:
+        """Return the Expert state embedding, shared except in Arch0_2_sep."""
+        if not self.uses_expert_state_adarms:
+            return None
+        if self.expert_state_proj is None:
+            return shared_projection
+        if state is None:
+            raise ValueError(
+                f"{self.config.architecture_label} requires robot state conditioning."
+            )
+        return self.expert_state_proj(state.to(self.working_dtype))
+
+    def _state_condition(self, state: Tensor | None) -> Tensor | None:
+        """Project state only when this revision applies Cond-Gemma AdaRMS."""
+        projected_state = self._project_state(state)
+        return projected_state if self.uses_cond_state_adarms else None
+
+    def _condition_state_start_index(
+        self, condition_tokens: Tensor
+    ) -> int | None:
+        """Return the wrist-token boundary for Arch0_3's Cond AdaRMS."""
+        if not self.uses_wrist_only_cond_state:
+            return None
+        if condition_tokens.shape[1] % 2:
+            raise ValueError(
+                "Arch0_3 requires equal top/wrist condition sequences; got "
+                f"{condition_tokens.shape[1]} total tokens."
+            )
+        return condition_tokens.shape[1] // 2
 
     def _skill_broadcasts(
         self, skill_code: Tensor | None
@@ -656,9 +715,20 @@ class CondGemmaSkillExpert(nn.Module):
         condition = F.silu(self.time_mlp_in(condition))
         return F.silu(self.time_mlp_out(condition))
 
-    def _expert_condition(self, timestep: Tensor) -> Tensor:
-        """Keep the pi0.5 action expert's AdaRMS input strictly time-only."""
-        return self._time_condition(timestep)
+    def _expert_condition(
+        self,
+        timestep: Tensor,
+        projected_state: Tensor | None = None,
+    ) -> Tensor:
+        """Build Expert AdaRMS input from time and, for Arch0_1--0_3, state."""
+        condition = self._time_condition(timestep)
+        if not self.uses_expert_state_adarms:
+            return condition
+        if projected_state is None:
+            raise ValueError(
+                f"{self.config.architecture_label} requires projected state in Expert AdaRMS."
+            )
+        return condition + projected_state.to(condition.dtype)
 
     def _run_joint_hidden(
         self,
@@ -668,6 +738,7 @@ class CondGemmaSkillExpert(nn.Module):
         expert_condition: Tensor,
         condition_skill: Tensor | None,
         expert_skill: Tensor | None,
+        condition_state_start_index: int | None = None,
     ) -> Tensor:
         """Return the normalized action hidden after all 18 Stage-1 layer pairs."""
         action_tokens = self.action_in_proj(noisy_actions.to(self.working_dtype))
@@ -692,6 +763,7 @@ class CondGemmaSkillExpert(nn.Module):
 
         streams = [condition_tokens, action_tokens]
         adarms_conditions = [condition_state, expert_condition]
+        adarms_start_indices = [condition_state_start_index, None]
         broadcast_conditions = [condition_skill, expert_skill]
         condition_shim = SimpleNamespace(
             model=SimpleNamespace(language_model=self.cond_encoder.model)
@@ -711,6 +783,7 @@ class CondGemmaSkillExpert(nn.Module):
                     paligemma=condition_shim,
                     gemma_expert=self.gemma_expert,
                     broadcast_cond=broadcast_conditions,
+                    adarms_start_index=adarms_start_indices,
                 )
             else:
                 streams = compute_layer_complete(
@@ -722,6 +795,7 @@ class CondGemmaSkillExpert(nn.Module):
                     paligemma=condition_shim,
                     gemma_expert=self.gemma_expert,
                     broadcast_cond=broadcast_conditions,
+                    adarms_start_index=adarms_start_indices,
                 )
 
         action_hidden, _ = layernorm_forward(
@@ -737,6 +811,7 @@ class CondGemmaSkillExpert(nn.Module):
         expert_condition: Tensor,
         condition_skill: Tensor | None,
         expert_skill: Tensor | None,
+        condition_state_start_index: int | None = None,
     ) -> Tensor:
         """Run Stage 1 and project its normalized action hidden to flow velocity."""
         action_hidden = self._run_joint_hidden(
@@ -746,6 +821,7 @@ class CondGemmaSkillExpert(nn.Module):
             expert_condition,
             condition_skill,
             expert_skill,
+            condition_state_start_index,
         )
         return self.action_out_proj(action_hidden.to(self.working_dtype)).float()
 
@@ -831,8 +907,9 @@ class CondGemmaSkillExpert(nn.Module):
         time: Tensor,
     ) -> Tensor:
         """Run the post-vision path so scheduled probes can reuse encoded images."""
-        expert_condition = self._expert_condition(time)
+        expert_state_representation = None
         if self.uses_expert_context_tokens:
+            expert_condition = self._expert_condition(time)
             context_tokens = self._expert_context_tokens(state, skill_code)
             predicted_velocity = self._run_expert_token_joint(
                 condition_tokens,
@@ -843,18 +920,31 @@ class CondGemmaSkillExpert(nn.Module):
             state_representation = context_tokens[:, :1]
             skill_representation = context_tokens[:, 1:]
         else:
+            projected_state = self._project_state(state)
+            expert_projected_state = self._project_expert_state(
+                state, projected_state
+            )
+            if self.uses_separate_state_projections:
+                expert_state_representation = expert_projected_state
+            condition_state = (
+                projected_state if self.uses_cond_state_adarms else None
+            )
+            expert_condition = self._expert_condition(
+                time, expert_projected_state
+            )
             condition_skill, expert_skill = self._skill_broadcasts(skill_code)
-            state_representation = self._state_condition(state)
+            state_representation = projected_state
             skill_representation = (
                 condition_skill if condition_skill is not None else expert_skill
             )
             predicted_velocity = self._run_joint(
                 condition_tokens,
                 noisy_actions,
-                state_representation,
+                condition_state,
                 expert_condition,
                 condition_skill,
                 expert_skill,
+                self._condition_state_start_index(condition_tokens),
             )
         if self._vsa_debug_active:
             tensors = {
@@ -865,6 +955,8 @@ class CondGemmaSkillExpert(nn.Module):
             }
             if state_representation is not None:
                 tensors["state_token"] = state_representation
+            if expert_state_representation is not None:
+                tensors["expert_state_token"] = expert_state_representation
             if skill_representation is not None:
                 tensors["skill_token"] = skill_representation
             self._last_vsa_debug_stats.update(
@@ -983,7 +1075,10 @@ class CondGemmaSkillExpert(nn.Module):
                 time=time,
             )
             self._last_vsa_debug_stats = {**original_stats, **sensitivity}
-        if self.config.action_loss_mode == "flow_endpoint_xyz":
+        if (
+            self.config.action_loss_mode == "flow_endpoint_xyz"
+            or self.config.cumulative_xyz_loss_enabled
+        ):
             # x_t = action + t * target_velocity, hence the one-step clean-action
             # reconstruction is action_hat = x_t - t * predicted_velocity.
             self._last_predicted_actions = (
@@ -1131,7 +1226,14 @@ class CondGemmaSkillExpert(nn.Module):
         batch_size, n_condition = condition_tokens.shape[:2]
         n_chunk = noise.shape[1]
         device = noise.device
-        condition_state = self._state_condition(state)
+        projected_state = self._project_state(state)
+        expert_projected_state = self._project_expert_state(
+            state, projected_state
+        )
+        condition_state = projected_state if self.uses_cond_state_adarms else None
+        condition_state_start_index = self._condition_state_start_index(
+            condition_tokens
+        )
         condition_skill, expert_skill = self._skill_broadcasts(skill_code)
 
         condition_padding = torch.ones(
@@ -1152,6 +1254,7 @@ class CondGemmaSkillExpert(nn.Module):
             past_key_values=None,
             use_cache=True,
             adarms_cond=condition_state,
+            adarms_start_index=condition_state_start_index,
             broadcast_cond=condition_skill,
         ).past_key_values
 
@@ -1178,7 +1281,7 @@ class CondGemmaSkillExpert(nn.Module):
             )
             action_hidden = self._action_hidden_with_condition_cache(
                 x_t,
-                self._expert_condition(time),
+                self._expert_condition(time, expert_projected_state),
                 expert_skill,
                 condition_cache,
                 full_attention,

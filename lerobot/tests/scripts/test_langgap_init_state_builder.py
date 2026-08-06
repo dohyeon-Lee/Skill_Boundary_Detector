@@ -3,6 +3,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
+import pandas as pd
 
 
 _SRC = (
@@ -12,6 +13,8 @@ _SRC = (
 sys.path.insert(0, str(_SRC))
 
 from build_langgap_init_states import (  # noqa: E402
+    _load_episode_signatures,
+    canonicalize_candidate_signatures,
     image_signature,
     rank_candidates,
     resolve_task_specs,
@@ -109,3 +112,43 @@ def test_image_signature_normalizes_chw_float_and_hwc_uint8() -> None:
     chw = np.moveaxis(hwc.astype(np.float32) / 255.0, -1, 0)
 
     assert np.array_equal(image_signature(hwc, 8), image_signature(chw, 8))
+
+
+def test_candidate_signatures_are_flipped_to_canonical_dataset_orientation() -> None:
+    images = np.arange(2 * 3 * 4 * 3, dtype=np.uint8).reshape(2, 3, 4, 3)
+
+    canonical = canonicalize_candidate_signatures(images)
+
+    assert np.array_equal(canonical, images[:, ::-1, ::-1, :])
+    # Existing raw candidate caches must not be mutated in-place.
+    assert np.array_equal(images[0, 0, 0], np.asarray((0, 1, 2), dtype=np.uint8))
+
+
+def test_episode_signature_cache_materializes_each_array_once(tmp_path: Path) -> None:
+    cache_file = tmp_path / "episode_signatures.npz"
+    episode_indices = np.asarray((0, 1), dtype=np.int32)
+    images = np.arange(2 * 4 * 4 * 3, dtype=np.uint8).reshape(2, 4, 4, 3)
+    np.savez_compressed(
+        cache_file,
+        episode_index=episode_indices,
+        task_index=np.asarray((3, 3), dtype=np.int16),
+        state=np.zeros((2, 8), dtype=np.float32),
+        image=images,
+        signature_size=np.asarray(4, dtype=np.int16),
+        with_wrist=np.asarray(False, dtype=np.bool_),
+    )
+    first_rows = pd.DataFrame({"episode_index": episode_indices})
+
+    signatures = _load_episode_signatures(
+        tmp_path,
+        first_rows,
+        signature_size=4,
+        with_wrist=False,
+        cache_file=cache_file,
+    )
+
+    assert np.array_equal(signatures[0][1], images[0])
+    assert np.array_equal(signatures[1][1], images[1])
+    # Both episode views retain one shared decompressed image array, rather
+    # than one complete array allocation per episode.
+    assert signatures[0][1].base is signatures[1][1].base

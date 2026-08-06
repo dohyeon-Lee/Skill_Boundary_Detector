@@ -228,6 +228,7 @@ def resize_with_pad_torch(  # see openpi `resize_with_pad_torch` (exact copy)
 def compute_layer_complete(
     layer_idx, inputs_embeds, attention_mask, position_ids, adarms_cond, paligemma, gemma_expert,
     broadcast_cond=None,
+    adarms_start_index=None,
 ):
     models = [paligemma.model.language_model, gemma_expert.model]
     query_states = []
@@ -236,7 +237,12 @@ def compute_layer_complete(
     gates = []
     for i, hidden_states in enumerate(inputs_embeds):
         layer = models[i].layers[layer_idx]
-        hidden_states, gate = layernorm_forward(layer.input_layernorm, hidden_states, adarms_cond[i])
+        stream_start = (
+            None if adarms_start_index is None else adarms_start_index[i]
+        )
+        hidden_states, gate = layernorm_forward(
+            layer.input_layernorm, hidden_states, adarms_cond[i], stream_start
+        )
         if broadcast_cond is not None:
             hidden_states = add_broadcast_condition(hidden_states, broadcast_cond[i])
         gates.append(gate)
@@ -289,7 +295,12 @@ def compute_layer_complete(
         # first residual
         out_emb = _gated_residual(hidden_states, out_emb, gates[i])
         after_first_residual = out_emb.clone()
-        out_emb, gate = layernorm_forward(layer.post_attention_layernorm, out_emb, adarms_cond[i])
+        stream_start = (
+            None if adarms_start_index is None else adarms_start_index[i]
+        )
+        out_emb, gate = layernorm_forward(
+            layer.post_attention_layernorm, out_emb, adarms_cond[i], stream_start
+        )
         # Convert to bfloat16 if the next layer (mlp) uses bfloat16
         if layer.mlp.up_proj.weight.dtype == torch.bfloat16:
             out_emb = out_emb.to(dtype=torch.bfloat16)

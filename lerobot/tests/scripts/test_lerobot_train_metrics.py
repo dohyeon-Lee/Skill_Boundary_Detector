@@ -6,6 +6,7 @@ from lerobot.scripts.lerobot_train import (
     _WINDOWED_POLICY_MODEL_TYPES,
     _WindowedPolicyMetrics,
     _finite_scalar_metrics,
+    _split_namespaced_metrics,
     _sparse_debug_metric_groups,
 )
 
@@ -88,6 +89,22 @@ def test_wandb_metric_filter_keeps_all_finite_scalars_without_name_allowlist() -
     )
 
     assert filtered == {"brand_new_metric": 3.0, "scalar_tensor": 4.0}
+
+
+def test_skill_aux_metric_namespaces_need_no_prefix_allowlist() -> None:
+    main, groups = _split_namespaced_metrics(
+        {
+            "steps": 100.0,
+            "start_comparison_terminator/loss": 0.4,
+            "future_auxiliary_head/end_f1": 0.7,
+        }
+    )
+
+    assert main == {"steps": 100.0}
+    assert groups == {
+        "start_comparison_terminator": {"loss": 0.4},
+        "future_auxiliary_head": {"end_f1": 0.7},
+    }
 
 
 def test_input_influence_is_removed_from_vsa_debug_namespace() -> None:

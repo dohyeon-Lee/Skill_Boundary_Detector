@@ -77,6 +77,7 @@ Note that in both examples, the repo/folder should contain at least `config.json
 You can learn about the CLI options for this script in the `EvalPipelineConfig` in lerobot/configs/eval.py
 """
 
+import colorsys
 import concurrent.futures as cf
 import html
 import json
@@ -126,6 +127,10 @@ from lerobot.utils.utils import (
     init_logging,
     inside_slurm,
 )
+
+
+_EVAL_GAUGE_CACHE: dict[tuple[int, int, str, int, int, str], np.ndarray] = {}
+_EVAL_GAUGE_CACHE_MAX_SIZE = 512
 
 
 def rollout(
@@ -434,10 +439,160 @@ def _load_raw_dataset_meta(dataset_dir: Path):
     return pd.concat([pd.read_parquet(path) for path in files], ignore_index=True)
 
 
-def _annotate_eval_video(frames: np.ndarray, success: bool, task_description: str | None) -> np.ndarray:
-    """Eval-video annotation: a TOP bar colored by the episode outcome (green SUCCESS / red FAIL) and,
-    when available, a BOTTOM bar with the task language prompt (word-wrapped). Both bars are static, so
-    they are rendered ONCE and broadcast over time. frames (t, H, W, 3) uint8 → taller frames."""
+def _skill_banner_color(skill_id: int) -> tuple[int, int, int]:
+    """Return a deterministic, eval-global color for a skill ID."""
+    if skill_id < 0:
+        return (80, 80, 80)
+    # Golden-ratio hue spacing keeps nearby integer IDs visually distinct while
+    # making the mapping independent of task, episode, model, and Python's hash seed.
+    hue = (int(skill_id) * 0.618033988749895) % 1.0
+    red, green, blue = colorsys.hsv_to_rgb(hue, 0.68, 0.78)
+    return tuple(round(channel * 255) for channel in (red, green, blue))
+
+
+def _skill_ids_from_trace(
+    trace: list[dict],
+    *,
+    batch_index: int,
+    n_video_frames: int,
+    video_frame_stride: int,
+) -> list[int] | None:
+    """Sample the active skill trace at the timesteps represented by saved video frames."""
+    records = sorted(
+        (
+            record
+            for record in trace
+            if int(record.get("batch_index", 0)) == int(batch_index)
+        ),
+        key=lambda record: int(record.get("episode_timestep", 0)),
+    )
+    if not records:
+        return None
+
+    result: list[int] = []
+    record_index = 0
+    stride = max(1, int(video_frame_stride))
+    for frame_index in range(int(n_video_frames)):
+        episode_timestep = frame_index * stride
+        while (
+            record_index + 1 < len(records)
+            and int(records[record_index + 1].get("episode_timestep", 0))
+            <= episode_timestep
+        ):
+            record_index += 1
+        result.append(int(records[record_index].get("codebook_token", -1)))
+    return result
+
+
+def _progress_values_from_trace(
+    trace: list[dict],
+    *,
+    batch_index: int,
+    n_video_frames: int,
+    video_frame_stride: int,
+) -> list[float] | None:
+    """Sample terminator progress at the timesteps represented by saved video frames."""
+    samples: list[tuple[int, float]] = []
+    for record in trace:
+        if int(record.get("batch_index", 0)) != int(batch_index):
+            continue
+        skill_start = int(record.get("episode_timestep", 0))
+        # Reset at the actual skill transition. A same-timestep terminator
+        # reading for the new skill, when present, overrides this reset.
+        samples.append((skill_start, 0.0))
+        for point in record.get("end_probs", []):
+            # New traces record the exact global timestep. The fallback keeps
+            # older trace producers usable when progress is rendered elsewhere.
+            episode_timestep = int(
+                point.get(
+                    "episode_timestep",
+                    skill_start + int(point.get("skill_step", 0)),
+                )
+            )
+            samples.append((episode_timestep, float(point.get("progress", float("nan")))))
+    if not samples:
+        return None
+
+    samples.sort(key=lambda item: item[0])
+    result: list[float] = []
+    sample_index = 0
+    stride = max(1, int(video_frame_stride))
+    for frame_index in range(int(n_video_frames)):
+        episode_timestep = frame_index * stride
+        while (
+            sample_index + 1 < len(samples)
+            and samples[sample_index + 1][0] <= episode_timestep
+        ):
+            sample_index += 1
+        result.append(samples[sample_index][1])
+    return result
+
+
+def _termination_values_from_trace(
+    trace: list[dict],
+    *,
+    batch_index: int,
+    n_video_frames: int,
+    video_frame_stride: int,
+    end_threshold: float,
+) -> list[float] | None:
+    """Sample termination probability, latched after threshold until the next skill."""
+    samples: list[tuple[int, float]] = []
+    threshold = float(end_threshold)
+    for record in trace:
+        if int(record.get("batch_index", 0)) != int(batch_index):
+            continue
+        skill_start = int(record.get("episode_timestep", 0))
+        samples.append((skill_start, 0.0))
+        latched_value: float | None = None
+        for point in record.get("end_probs", []):
+            episode_timestep = int(
+                point.get(
+                    "episode_timestep",
+                    skill_start + int(point.get("skill_step", 0)),
+                )
+            )
+            probability = float(point.get("prob", float("nan")))
+            if latched_value is None and np.isfinite(probability) and probability >= threshold:
+                latched_value = probability
+            samples.append(
+                (
+                    episode_timestep,
+                    latched_value if latched_value is not None else probability,
+                )
+            )
+    if not samples:
+        return None
+
+    samples.sort(key=lambda item: item[0])
+    result: list[float] = []
+    sample_index = 0
+    stride = max(1, int(video_frame_stride))
+    for frame_index in range(int(n_video_frames)):
+        episode_timestep = frame_index * stride
+        while (
+            sample_index + 1 < len(samples)
+            and samples[sample_index + 1][0] <= episode_timestep
+        ):
+            sample_index += 1
+        result.append(samples[sample_index][1])
+    return result
+
+
+def _annotate_eval_video(
+    frames: np.ndarray,
+    success: bool,
+    task_description: str | None,
+    skill_ids: list[int] | np.ndarray | None = None,
+    progress_values: list[float] | np.ndarray | None = None,
+    progress_threshold: float | None = None,
+    termination_values: list[float] | np.ndarray | None = None,
+    end_threshold: float | None = None,
+) -> np.ndarray:
+    """Eval-video annotation: a TOP outcome bar, BOTTOM skill/task bars, and optional right-side
+    progress/termination gauges. Skill colors are stable across the evaluation, and each gauge marks its
+    configured threshold.
+    frames (t, H, W, 3) uint8 → taller frames."""
     from PIL import Image, ImageDraw, ImageFont  # noqa: PLC0415
 
     t, h, w = frames.shape[:3]
@@ -448,24 +603,176 @@ def _annotate_eval_video(frames: np.ndarray, success: bool, task_description: st
         except Exception:  # noqa: BLE001  (bitmap fallback — size is then fixed/small)
             return ImageFont.load_default()
 
+    def _normalize_gauge_values(values, name: str):
+        if values is None:
+            return None
+        normalized = np.asarray(values, dtype=np.float32).reshape(-1)
+        if len(normalized) != t:
+            raise ValueError(
+                f"{name} must contain exactly one value per video frame: "
+                f"got {len(normalized)} values for {t} frames."
+            )
+        return normalized
+
+    normalized_progress = _normalize_gauge_values(progress_values, "progress_values")
+    normalized_termination = _normalize_gauge_values(
+        termination_values, "termination_values"
+    )
+    gauge_specs = []
+    if normalized_progress is not None:
+        gauge_specs.append(
+            (
+                "PROG",
+                normalized_progress,
+                progress_threshold,
+                (52, 152, 219),
+                (46, 204, 113),
+            )
+        )
+    if normalized_termination is not None:
+        gauge_specs.append(
+            (
+                "TERM",
+                normalized_termination,
+                end_threshold,
+                (155, 89, 182),
+                (231, 76, 60),
+            )
+        )
+
+    # Right-side dynamic gauges. Cache by rounded percentage so repeated values
+    # and subsequent videos do not redraw identical PIL panels.
+    gauge_w = max(48, w // 6) if gauge_specs else 0
+    canvas_w = w + gauge_w * len(gauge_specs)
+
+    def _gauge_frames(title, values, raw_threshold, below_color, above_color):
+        gauge_font = _font(max(9, int(gauge_w * 0.18)))
+        track_x0 = max(8, int(gauge_w * 0.31))
+        track_x1 = min(gauge_w - 8, int(gauge_w * 0.69))
+        track_top = max(24, h // 9)
+        track_bottom = h - max(22, h // 10)
+        track_height = max(1, track_bottom - track_top)
+        threshold = (
+            float(np.clip(raw_threshold, 0.0, 1.0))
+            if raw_threshold is not None
+            else None
+        )
+        threshold_key = -1 if threshold is None else round(threshold * 10_000)
+        panel_cache: dict[int, np.ndarray] = {}
+        percentages = []
+        for value in values:
+            percentage = (
+                -1
+                if not np.isfinite(value)
+                else int(round(float(np.clip(value, 0.0, 1.0)) * 100))
+            )
+            percentages.append(percentage)
+            if percentage in panel_cache:
+                continue
+            cache_key = (
+                gauge_w,
+                h,
+                title,
+                threshold_key,
+                percentage,
+                frames.dtype.str,
+            )
+            cached_panel = _EVAL_GAUGE_CACHE.get(cache_key)
+            if cached_panel is not None:
+                panel_cache[percentage] = cached_panel
+                continue
+            panel = Image.new("RGB", (gauge_w, h), (22, 24, 28))
+            panel_draw = ImageDraw.Draw(panel)
+            panel_draw.text(
+                ((gauge_w - panel_draw.textlength(title, font=gauge_font)) / 2, 4),
+                title,
+                fill=(235, 235, 235),
+                font=gauge_font,
+            )
+            if percentage >= 0:
+                if percentage > 0:
+                    fill_bottom = track_bottom - 2
+                    fill_top = min(
+                        fill_bottom,
+                        track_bottom
+                        - max(2, round(track_height * percentage / 100)),
+                    )
+                    fill_color = (
+                        above_color
+                        if threshold is not None and percentage / 100 >= threshold
+                        else below_color
+                    )
+                    panel_draw.rectangle(
+                        (track_x0 + 2, fill_top, track_x1 - 2, fill_bottom),
+                        fill=fill_color,
+                    )
+                value_label = f"{percentage}%"
+            else:
+                value_label = "N/A"
+            panel_draw.rectangle(
+                (track_x0, track_top, track_x1, track_bottom),
+                outline=(210, 210, 210),
+                width=2,
+            )
+            if threshold is not None:
+                threshold_y = track_bottom - round(track_height * threshold)
+                panel_draw.line(
+                    (track_x0 - 4, threshold_y, track_x1 + 4, threshold_y),
+                    fill=(255, 196, 48),
+                    width=3,
+                )
+            panel_draw.text(
+                (
+                    (gauge_w - panel_draw.textlength(value_label, font=gauge_font)) / 2,
+                    h - max(18, h // 12),
+                ),
+                value_label,
+                fill=(245, 245, 245),
+                font=gauge_font,
+            )
+            rendered_panel = np.asarray(panel, dtype=frames.dtype)
+            if len(_EVAL_GAUGE_CACHE) >= _EVAL_GAUGE_CACHE_MAX_SIZE:
+                oldest_key = next(iter(_EVAL_GAUGE_CACHE))
+                _EVAL_GAUGE_CACHE.pop(oldest_key)
+            _EVAL_GAUGE_CACHE[cache_key] = rendered_panel
+            panel_cache[percentage] = rendered_panel
+        return np.stack([panel_cache[percentage] for percentage in percentages])
+
+    gauge_frame_sets = [
+        _gauge_frames(title, values, threshold, below_color, above_color)
+        for title, values, threshold, below_color, above_color in gauge_specs
+    ]
+    visual_frames = (
+        np.concatenate([frames, *gauge_frame_sets], axis=2)
+        if gauge_frame_sets
+        else frames
+    )
+
     # top outcome bar
     top_h = max(18, h // 10)
-    top = Image.new("RGB", (w, top_h), (34, 139, 34) if success else (178, 34, 34))
+    top = Image.new("RGB", (canvas_w, top_h), (34, 139, 34) if success else (178, 34, 34))
     draw = ImageDraw.Draw(top)
     label = "SUCCESS" if success else "FAIL"
     font = _font(max(10, int(top_h * 0.62)))
-    draw.text(((w - draw.textlength(label, font=font)) / 2, top_h * 0.14), label,
+    draw.text(((canvas_w - draw.textlength(label, font=font)) / 2, top_h * 0.14), label,
               fill=(255, 255, 255), font=font)
-    parts = [np.broadcast_to(np.asarray(top, dtype=frames.dtype), (t, top_h, w, 3)), frames]
+    parts = [
+        np.broadcast_to(
+            np.asarray(top, dtype=frames.dtype), (t, top_h, canvas_w, 3)
+        ),
+        visual_frames,
+    ]
 
-    # bottom language-prompt bar (wrapped to the frame width)
+    # Prepare the language bar now, but append it after the skill bar so the
+    # bottom layout is always: current skill ID, then task instruction.
+    language_banner = None
     if task_description:
         fs = max(10, int(h * 0.055))
         pfont = _font(fs)
         lines, cur = [], ""
         for word in str(task_description).split():
             trial = f"{cur} {word}".strip()
-            if draw.textlength(trial, font=pfont) <= w - 8:
+            if draw.textlength(trial, font=pfont) <= canvas_w - 8:
                 cur = trial
             else:
                 if cur:
@@ -475,12 +782,45 @@ def _annotate_eval_video(frames: np.ndarray, success: bool, task_description: st
             lines.append(cur)
         line_h = fs + 4
         bot_h = 6 + line_h * len(lines)
-        bot = Image.new("RGB", (w, bot_h), (20, 20, 20))
+        bot = Image.new("RGB", (canvas_w, bot_h), (20, 20, 20))
         bdraw = ImageDraw.Draw(bot)
         for i, ln in enumerate(lines):
-            bdraw.text(((w - bdraw.textlength(ln, font=pfont)) / 2, 3 + i * line_h), ln,
+            bdraw.text(((canvas_w - bdraw.textlength(ln, font=pfont)) / 2, 3 + i * line_h), ln,
                        fill=(240, 240, 240), font=pfont)
-        parts.append(np.broadcast_to(np.asarray(bot, dtype=frames.dtype), (t, bot_h, w, 3)))
+        language_banner = np.broadcast_to(
+            np.asarray(bot, dtype=frames.dtype), (t, bot_h, canvas_w, 3)
+        )
+
+    # Dynamic current-skill bar. Render each unique ID only once, then reuse it
+    # for all corresponding frames so this adds no per-frame PIL drawing work.
+    if skill_ids is not None:
+        normalized_skill_ids = np.asarray(skill_ids, dtype=np.int64).reshape(-1)
+        if len(normalized_skill_ids) != t:
+            raise ValueError(
+                "skill_ids must contain exactly one ID per video frame: "
+                f"got {len(normalized_skill_ids)} IDs for {t} frames."
+            )
+        skill_h = max(18, h // 12)
+        skill_font = _font(max(10, int(skill_h * 0.58)))
+        banner_cache: dict[int, np.ndarray] = {}
+        for skill_id in np.unique(normalized_skill_ids):
+            skill_id = int(skill_id)
+            background = _skill_banner_color(skill_id)
+            banner = Image.new("RGB", (canvas_w, skill_h), background)
+            banner_draw = ImageDraw.Draw(banner)
+            label = f"CURRENT SKILL ID: {skill_id}" if skill_id >= 0 else "CURRENT SKILL ID: UNKNOWN"
+            luminance = 0.2126 * background[0] + 0.7152 * background[1] + 0.0722 * background[2]
+            foreground = (15, 15, 15) if luminance >= 145 else (255, 255, 255)
+            banner_draw.text(
+                ((canvas_w - banner_draw.textlength(label, font=skill_font)) / 2, skill_h * 0.14),
+                label,
+                fill=foreground,
+                font=skill_font,
+            )
+            banner_cache[skill_id] = np.asarray(banner, dtype=frames.dtype)
+        parts.append(np.stack([banner_cache[int(skill_id)] for skill_id in normalized_skill_ids]))
+    if language_banner is not None:
+        parts.append(language_banner)
     return np.concatenate(parts, axis=1)
 
 
@@ -1062,7 +1402,8 @@ def eval_policy(
         policy: The policy.
         n_episodes: The number of episodes to evaluate.
         task_description: The task's language prompt — rendered into a bottom bar of every episode
-            video (the top bar is colored green/red by that episode's success).
+            video (the top bar is colored green/red by that episode's success). Stage1 policies that
+            expose a skill trace also get a second, dynamically colored bottom bar for the active skill.
         max_episodes_rendered: Maximum number of episodes to render into videos.
         videos_dir: Where to save rendered videos.
         return_episode_data: Whether to return episode data for online training. Incorporates the data into
@@ -1184,6 +1525,19 @@ def eval_policy(
             return_observations=return_episode_data,
             render_callback=render_frame if (max_episodes_rendered > 0 or collect_skill_html) else None,
         )
+        trace = []
+        progress_threshold = None
+        end_threshold = None
+        if max_episodes_rendered > 0 or collect_skill_html:
+            get_skill_trace = getattr(policy, "get_skill_trace", None)
+            if callable(get_skill_trace):
+                trace = get_skill_trace() or []
+            get_progress_threshold = getattr(policy, "get_progress_threshold", None)
+            if callable(get_progress_threshold):
+                progress_threshold = float(get_progress_threshold())
+            get_end_threshold = getattr(policy, "get_end_threshold", None)
+            if callable(get_end_threshold):
+                end_threshold = float(get_end_threshold())
 
         # Figure out where in each rollout sequence the first done condition was encountered (results after
         # this won't be included).
@@ -1226,19 +1580,55 @@ def eval_policy(
         # Maybe render video for visualization.
         if max_episodes_rendered > 0 and len(ep_frames) > 0:
             batch_stacked_frames = np.stack(ep_frames, axis=1)  # (b, t, *)
-            for stacked_frames, done_index, ep_success in zip(
-                batch_stacked_frames, done_indices.flatten().tolist(),
-                batch_successes.flatten().tolist(), strict=False,
-            ):
+            episode_results = zip(
+                batch_stacked_frames,
+                done_indices.flatten().tolist(),
+                batch_successes.flatten().tolist(),
+                strict=False,
+            )
+            for local_i, (stacked_frames, done_index, ep_success) in enumerate(episode_results):
                 if n_episodes_rendered >= max_episodes_rendered:
                     break
 
                 videos_dir.mkdir(parents=True, exist_ok=True)
                 video_path = videos_dir / f"eval_episode_{n_episodes_rendered}.mp4"
                 video_paths.append(str(video_path))
-                clip = _annotate_eval_video(   # top bar: green/red outcome; bottom bar: language prompt
-                    stacked_frames[: done_index // video_frame_stride + 1],  # exclude auto-reset frame
-                    bool(ep_success), task_description)
+                episode_frames = stacked_frames[
+                    : done_index // video_frame_stride + 1
+                ]  # exclude auto-reset frame
+                skill_ids = _skill_ids_from_trace(
+                    trace,
+                    batch_index=local_i,
+                    n_video_frames=len(episode_frames),
+                    video_frame_stride=video_frame_stride,
+                )
+                progress_values = _progress_values_from_trace(
+                    trace,
+                    batch_index=local_i,
+                    n_video_frames=len(episode_frames),
+                    video_frame_stride=video_frame_stride,
+                )
+                termination_values = (
+                    _termination_values_from_trace(
+                        trace,
+                        batch_index=local_i,
+                        n_video_frames=len(episode_frames),
+                        video_frame_stride=video_frame_stride,
+                        end_threshold=end_threshold,
+                    )
+                    if end_threshold is not None
+                    else None
+                )
+                clip = _annotate_eval_video(
+                    episode_frames,
+                    bool(ep_success),
+                    task_description,
+                    skill_ids,
+                    progress_values,
+                    progress_threshold,
+                    termination_values,
+                    end_threshold,
+                )
                 thread = threading.Thread(
                     target=write_video,
                     args=(
@@ -1253,10 +1643,6 @@ def eval_policy(
 
         if collect_skill_html and len(ep_html_frames) > 0:
             batch_html_frames = np.stack(ep_html_frames, axis=1)  # (b, t, h, w, c)
-            trace = []
-            get_skill_trace = getattr(policy, "get_skill_trace", None)
-            if get_skill_trace is not None:
-                trace = get_skill_trace()
             gt_timeline: dict[int, list[dict]] = {}
             get_gt_timeline = getattr(policy, "get_gt_timeline", None)
             if get_gt_timeline is not None:

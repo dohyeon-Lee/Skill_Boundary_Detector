@@ -54,7 +54,7 @@ else:
 def _gated_residual(
     x: torch.Tensor | None,
     y: torch.Tensor | None,
-    gate: torch.Tensor | None,
+    gate: torch.Tensor | tuple[torch.Tensor, int] | None,
 ) -> torch.Tensor | None:
     """Gated residual: x + y when gate is None, else x + y * gate."""
     if x is None and y is None:
@@ -63,6 +63,20 @@ def _gated_residual(
         return x if x is not None else y
     if gate is None:
         return x + y
+    if isinstance(gate, tuple):
+        compact_gate, start = gate
+        if x.ndim != 3 or y.shape != x.shape:
+            raise ValueError("Token-selective gates require matching (B, T, D) tensors.")
+        if not 0 <= start <= x.shape[1]:
+            raise ValueError(
+                f"Token-selective gate start must be in [0, {x.shape[1]}], got {start}."
+            )
+        # The unconditioned prefix uses the ordinary residual (gate=1). Only
+        # the conditioned suffix multiplies by the compact global gate. This
+        # is equivalent to an expanded per-token gate without materializing it.
+        prefix = x[:, :start] + y[:, :start]
+        suffix = x[:, start:] + y[:, start:] * compact_gate
+        return torch.cat((prefix, suffix), dim=1)
     return x + y * gate
 
 
@@ -70,6 +84,7 @@ def layernorm_forward(
     layernorm: nn.Module,
     x: torch.Tensor,
     cond: torch.Tensor | None = None,
+    cond_start_index: int | None = None,
 ):
     """
     call layernorm and return hidden states and gate
@@ -77,7 +92,9 @@ def layernorm_forward(
     otherwise, use normal gemma norm
     """
     if cond is not None:
-        return layernorm(x, cond=cond)
+        return layernorm(x, cond=cond, cond_start_index=cond_start_index)
+    if cond_start_index is not None:
+        raise ValueError("cond_start_index requires a non-null adaptive condition.")
     else:
         return layernorm(x)
 
@@ -138,7 +155,11 @@ class PiGemmaRMSNorm(nn.Module):
         self,
         x: torch.Tensor,
         cond: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        cond_start_index: int | None = None,
+    ) -> tuple[
+        torch.Tensor,
+        torch.Tensor | tuple[torch.Tensor, int] | None,
+    ]:
         dtype = x.dtype
         normed = self._norm(x)
         if cond is None or self.dense is None:
@@ -147,9 +168,35 @@ class PiGemmaRMSNorm(nn.Module):
         if cond.shape[-1] != self.cond_dim:
             raise ValueError(f"Expected cond dim {self.cond_dim}, got {cond.shape[-1]}")
         modulation = self.dense(cond)
-        if len(x.shape) == 3:
+        if x.ndim == 3 and modulation.ndim == 2:
             modulation = modulation.unsqueeze(1)
+        if modulation.ndim != x.ndim:
+            raise ValueError(
+                "Adaptive condition must be global (B, D) or tokenwise (B, T, D); "
+                f"got condition {tuple(cond.shape)} for input {tuple(x.shape)}."
+            )
         scale, shift, gate = modulation.chunk(3, dim=-1)
+        if cond_start_index is not None:
+            if x.ndim != 3:
+                raise ValueError(
+                    "cond_start_index is supported only for token sequences (B, T, D)."
+                )
+            if not 0 <= cond_start_index <= x.shape[1]:
+                raise ValueError(
+                    "cond_start_index must be within the token sequence, got "
+                    f"{cond_start_index} for input {tuple(x.shape)}."
+                )
+            # Keep the unconditioned prefix as plain RMSNorm and modulate only
+            # the suffix. scale/shift/gate remain compact (B, 1, D).
+            prefix = normed[:, :cond_start_index]
+            suffix = (
+                normed[:, cond_start_index:] * (1 + scale.float())
+                + shift.float()
+            )
+            return (
+                torch.cat((prefix, suffix), dim=1).to(dtype),
+                (gate.to(dtype), cond_start_index),
+            )
         normed = normed * (1 + scale.float()) + shift.float()
         return normed.to(dtype), gate.to(dtype)
 
@@ -190,11 +237,16 @@ def _get_pi_gemma_decoder_layer_base():
             cache_position: torch.LongTensor | None = None,
             position_embeddings: tuple[torch.Tensor, torch.Tensor] | None = None,
             adarms_cond: torch.Tensor | None = None,
+            adarms_start_index: int | None = None,
             broadcast_cond: torch.Tensor | None = None,
             **kwargs,
         ) -> torch.Tensor:
             residual = hidden_states
-            hidden_states, gate = self.input_layernorm(hidden_states, cond=adarms_cond)
+            hidden_states, gate = self.input_layernorm(
+                hidden_states,
+                cond=adarms_cond,
+                cond_start_index=adarms_start_index,
+            )
             hidden_states = add_broadcast_condition(hidden_states, broadcast_cond)
             hidden_states, _ = self.self_attn(
                 hidden_states,
@@ -210,7 +262,11 @@ def _get_pi_gemma_decoder_layer_base():
             hidden_states = _gated_residual(residual, hidden_states, gate)
 
             residual = hidden_states
-            hidden_states, gate = self.post_attention_layernorm(hidden_states, cond=adarms_cond)
+            hidden_states, gate = self.post_attention_layernorm(
+                hidden_states,
+                cond=adarms_cond,
+                cond_start_index=adarms_start_index,
+            )
             hidden_states = self.mlp(hidden_states)
             hidden_states = _gated_residual(residual, hidden_states, gate)
             return hidden_states
@@ -246,6 +302,7 @@ class PiGemmaModel(GemmaModel):  # type: ignore[misc]
         output_hidden_states: bool | None = None,
         cache_position: torch.LongTensor | None = None,
         adarms_cond: torch.Tensor | None = None,
+        adarms_start_index: int | None = None,
         broadcast_cond: torch.Tensor | None = None,
         **kwargs,
     ) -> BaseModelOutputWithPast:
@@ -329,6 +386,7 @@ class PiGemmaModel(GemmaModel):  # type: ignore[misc]
                 cache_position=cache_position,
                 position_embeddings=position_embeddings,
                 adarms_cond=adarms_cond,
+                adarms_start_index=adarms_start_index,
                 broadcast_cond=broadcast_cond,
                 **kwargs,
             )
@@ -338,7 +396,9 @@ class PiGemmaModel(GemmaModel):  # type: ignore[misc]
             if output_attentions:
                 all_self_attns += (layer_outputs[1],)
 
-        hidden_states, _ = self.norm(hidden_states, adarms_cond)
+        hidden_states, _ = self.norm(
+            hidden_states, adarms_cond, adarms_start_index
+        )
 
         # add hidden states from the last decoder layer
         if output_hidden_states:

@@ -11,10 +11,12 @@ from lerobot.policies.skillVLA.processor_skillVLA import (
     SAME_SKILL_PAIR_FALLBACK,
     SAME_SKILL_PAIR_ID,
     SKILL_CODE,
+    SKILL_EFFECTIVE_DE,
     SKILL_PROGRESS,
     SKILL_START_IMAGE,
     SKILL_START_STATE,
     SKILL_START_WRIST_IMAGE,
+    TERMINATOR_START_IMAGE,
     SkillVLAPrepareStateTokenizerProcessorStep,
     SkillVLAPreserveRawStateProcessorStep,
 )
@@ -49,6 +51,7 @@ SKILL_BATCH_KEYS = (
     "skill_sequence_len",
     "skill_ds",
     "skill_de",
+    SKILL_EFFECTIVE_DE,
     SKILL_START_IMAGE,
     SKILL_START_WRIST_IMAGE,
     SKILL_START_STATE,
@@ -57,6 +60,7 @@ SKILL_BATCH_KEYS = (
     SKILL_PROGRESS,
     SAME_SKILL_PAIR_ID,
     SAME_SKILL_PAIR_FALLBACK,
+    TERMINATOR_START_IMAGE,
 )
 
 
@@ -116,7 +120,9 @@ def make_skill_expert_pre_post_processors(
     # The same raw inputs are needed both for terminator training and for
     # checkpoint terminator inference.  Stage 2 must therefore preserve them
     # even when the inherited terminator stays frozen.
-    if config.train_terminator:
+    if config.train_terminator or getattr(
+        config, "train_start_comparison_terminator", False
+    ):
         input_steps.append(SkillVLAPreserveRawStateProcessorStep())
     input_steps.append(
         NormalizerProcessorStep(

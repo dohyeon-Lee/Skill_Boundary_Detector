@@ -45,6 +45,8 @@ else
   echo "perceiver width: ${VISUAL_PERCEIVER_WIDTH} (direct DINO/expert width)"
 fi
 echo "loss    : ${ACTION_LOSS_MODE}"
+echo "loss mask: after_skill_end=${MASK_ACTIONS_AFTER_SKILL_END}"
+echo "cumulative XYZ: enabled=${CUMULATIVE_XYZ_LOSS_ENABLED} weight=${CUMULATIVE_XYZ_LOSS_WEIGHT}"
 echo "skill   : ${TRAINING_SKILL_SOURCE}   predictor=${SKILL_PREDICTOR_CHECKPOINT_PATH:-none}"
 if [ "${PHASE_BATCH_SAMPLING_ENABLED}" = true ]; then
   echo "batch   : phase-focused fraction=${PHASE_BATCH_FOCUSED_FRACTION} early_share=${PHASE_BATCH_EARLY_FRACTION} thresholds=${PHASE_BATCH_EARLY_THRESHOLD}/${PHASE_BATCH_LATE_THRESHOLD}"
@@ -138,6 +140,9 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.max_action_dim="${MAX_ACTION_DIM}" \
     --policy.chunk_size="${CHUNK_SIZE}" \
     --policy.action_loss_mode="${ACTION_LOSS_MODE}" \
+    --policy.mask_actions_after_skill_end="${MASK_ACTIONS_AFTER_SKILL_END}" \
+    --policy.cumulative_xyz_loss_enabled="${CUMULATIVE_XYZ_LOSS_ENABLED}" \
+    --policy.cumulative_xyz_loss_weight="${CUMULATIVE_XYZ_LOSS_WEIGHT}" \
     --policy.n_action_steps="${N_ACTION_STEPS}" \
     --policy.min_period="${MIN_PERIOD}" \
     --policy.max_period="${MAX_PERIOD}" \

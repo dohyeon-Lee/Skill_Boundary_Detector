@@ -31,6 +31,10 @@ VSA_LABEL_TO_REVISION = {
 }
 COND_GEMMA_LABEL_TO_REVISION = {
     "arch0": "skillvla_real_v1",
+    "arch0_1": "expert_state_adarms_v1",
+    "arch0_2": "cond_expert_state_adarms_v1",
+    "arch0_2_sep": "cond_expert_separate_state_adarms_v1",
+    "arch0_3": "wrist_cond_expert_state_adarms_v1",
     "arch1_1": "expert_tokens_uncompressed_v1",
     "arch1_2": "expert_tokens_perceiver_v1",
 }
@@ -96,9 +100,9 @@ def _validate_predictor_checkpoint(
     if not weights_path.is_file():
         raise FileNotFoundError(f"Stage-1 predictor weights not found: {weights_path}")
     source = json.loads(config_path.read_text())
-    if source.get("type") != "skill_expert":
+    if source.get("type") not in {"skill_expert", "skill_aux"}:
         raise ValueError(
-            "Predictor checkpoint must be policy.type=skill_expert, got "
+            "Predictor checkpoint must be policy.type=skill_expert or skill_aux, got "
             f"{source.get('type')!r} at {checkpoint}."
         )
     if not source.get("train_skill_predictor", False):
@@ -274,6 +278,10 @@ def build_settings(config: dict) -> dict:
         raise ValueError("architecture must be a mapping.")
     misplaced_keys = {
         "arch0",
+        "arch0_1",
+        "arch0_2",
+        "arch0_2_sep",
+        "arch0_3",
         "arch1",
         "arch1_1",
         "arch1_2",
@@ -285,7 +293,7 @@ def build_settings(config: dict) -> dict:
     } & set(architecture_config)
     if misplaced_keys:
         raise ValueError(
-            "Arch0/Arch1_1/Arch1_2 are fixed Cond-Gemma ablations, while VSA-only "
+            "Arch0--0_3/Arch1_1/Arch1_2 are fixed Cond-Gemma ablations, while VSA-only "
             "settings belong under architecture.vsa; remove architecture keys: "
             f"{sorted(misplaced_keys)}."
         )
@@ -305,7 +313,8 @@ def build_settings(config: dict) -> dict:
     }:
         raise ValueError(
             "architecture.name must be "
-            "arch0|arch1_1|arch1_2|arch1_3|arch2_1|arch2_2|arch3|arch4, got "
+            "arch0|arch0_1|arch0_2|arch0_2_sep|arch0_3|arch1_1|arch1_2|arch1_3|"
+            "arch2_1|arch2_2|arch3|arch4, got "
             f"{architecture_label!r}."
         )
     vsa_config = _at(config, "architecture", "vsa", default={})
@@ -316,11 +325,13 @@ def build_settings(config: dict) -> dict:
         architecture = "cond_gemma"
         architecture_revision = COND_GEMMA_LABEL_TO_REVISION[architecture_label]
         cond_variant = expert_variant
-        # Arch0 keeps visual/state processing in Cond-Gemma but injects the
+        # Arch0--0_3 keep the uncompressed visual Cond-Gemma path and inject the
         # motion-level skill directly into the action expert at every layer.
         # Arch1_1/Arch1_2 instead use explicit expert state/skill tokens.
         conditioning_route = (
-            "state_cond" if architecture_label == "arch0" else "state_skill_cond"
+            "state_cond"
+            if architecture_label.startswith("arch0")
+            else "state_skill_cond"
         )
         vision_conditioning_mode = "interleaved_cross_attention"
         include_state_in_visual_crossattn = True
@@ -393,6 +404,23 @@ def build_settings(config: dict) -> dict:
         raise ValueError(
             "loss must be flow|flow_endpoint_xyz, got "
             f"{action_loss_mode!r}."
+        )
+    mask_actions_after_skill_end = as_bool(
+        config.get("mask_actions_after_skill_end", False)
+    )
+    cumulative_xyz_config = config.get("cumulative_xyz_loss", {})
+    if not isinstance(cumulative_xyz_config, dict):
+        raise ValueError("cumulative_xyz_loss must be a mapping.")
+    cumulative_xyz_loss_enabled = as_bool(
+        cumulative_xyz_config.get("enabled", False)
+    )
+    cumulative_xyz_loss_weight = float(cumulative_xyz_config.get("weight", 0.5))
+    if not math.isfinite(cumulative_xyz_loss_weight) or cumulative_xyz_loss_weight <= 0:
+        raise ValueError("cumulative_xyz_loss.weight must be finite and positive.")
+    if cumulative_xyz_loss_enabled and action_loss_mode != "flow":
+        raise ValueError(
+            "cumulative_xyz_loss.enabled=true requires loss: flow; it cannot be "
+            "combined with flow_endpoint_xyz."
         )
     n_action_steps = int(
         _at(config, "execution", "action_steps", default=chunk_size)
@@ -495,6 +523,13 @@ def build_settings(config: dict) -> dict:
     run_name = f"bs{batch_size}_{source}_{run_tag}_{architecture_label}"
     if training_skill_source == "predictor":
         run_name = f"{run_name}_pretrained_predictor"
+    if mask_actions_after_skill_end:
+        run_name = f"{run_name}_skillendmask"
+    if cumulative_xyz_loss_enabled:
+        cumulative_weight_label = f"{cumulative_xyz_loss_weight:g}".replace(
+            ".", "p"
+        )
+        run_name = f"{run_name}_cumxyz{cumulative_weight_label}"
     if phase_batch_sampling_enabled:
         # Phase-focused sampling is a different data distribution and must not
         # silently resume or share a W&B run with the random-batch ablation.
@@ -608,6 +643,9 @@ def build_settings(config: dict) -> dict:
         "max_action_dim": max_action_dim,
         "chunk_size": chunk_size,
         "action_loss_mode": action_loss_mode,
+        "mask_actions_after_skill_end": mask_actions_after_skill_end,
+        "cumulative_xyz_loss_enabled": cumulative_xyz_loss_enabled,
+        "cumulative_xyz_loss_weight": cumulative_xyz_loss_weight,
         "n_action_steps": n_action_steps,
         "min_period": float(_at(config, "flow", "min_period", default=4e-3)),
         "max_period": float(_at(config, "flow", "max_period", default=4.0)),
@@ -669,6 +707,10 @@ def main() -> None:
         "--architecture",
         choices=(
             "arch0",
+            "arch0_1",
+            "arch0_2",
+            "arch0_2_sep",
+            "arch0_3",
             "arch1_1",
             "arch1_2",
             "arch1_3",

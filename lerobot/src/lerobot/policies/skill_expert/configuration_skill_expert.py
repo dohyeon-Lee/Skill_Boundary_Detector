@@ -27,15 +27,42 @@ LEGACY_RESIDUAL_VSA_REVISION = "residual_sa18_v2"
 # Condition-Gemma family. The first revision preserves the skillVLA_real module
 # and state_dict contract; ``conditioning_route`` records whether its skill
 # broadcast targets Cond-Gemma (historical) or the expert (current Arch0).
-# The other two revisions move state/skill to explicit expert tokens.
+# Arch0_1--0_3 ablate the state AdaRMS target; the final two revisions move
+# state/skill to explicit expert tokens.
 COND_GEMMA_ARCHITECTURE_REVISION = "skillvla_real_v1"
+COND_GEMMA_EXPERT_STATE_REVISION = "expert_state_adarms_v1"
+COND_GEMMA_DUAL_STATE_REVISION = "cond_expert_state_adarms_v1"
+COND_GEMMA_SEPARATE_DUAL_STATE_REVISION = (
+    "cond_expert_separate_state_adarms_v1"
+)
+COND_GEMMA_WRIST_DUAL_STATE_REVISION = "wrist_cond_expert_state_adarms_v1"
 COND_GEMMA_EXPERT_TOKENS_REVISION = "expert_tokens_uncompressed_v1"
 COND_GEMMA_PERCEIVER_EXPERT_TOKENS_REVISION = "expert_tokens_perceiver_v1"
 COND_GEMMA_ARCHITECTURE_LABELS = {
     COND_GEMMA_ARCHITECTURE_REVISION: "arch0",
+    COND_GEMMA_EXPERT_STATE_REVISION: "arch0_1",
+    COND_GEMMA_DUAL_STATE_REVISION: "arch0_2",
+    COND_GEMMA_SEPARATE_DUAL_STATE_REVISION: "arch0_2_sep",
+    COND_GEMMA_WRIST_DUAL_STATE_REVISION: "arch0_3",
     COND_GEMMA_EXPERT_TOKENS_REVISION: "arch1_1",
     COND_GEMMA_PERCEIVER_EXPERT_TOKENS_REVISION: "arch1_2",
 }
+COND_STATE_ADARMS_REVISIONS = frozenset(
+    {
+        COND_GEMMA_ARCHITECTURE_REVISION,
+        COND_GEMMA_DUAL_STATE_REVISION,
+        COND_GEMMA_SEPARATE_DUAL_STATE_REVISION,
+        COND_GEMMA_WRIST_DUAL_STATE_REVISION,
+    }
+)
+EXPERT_STATE_ADARMS_REVISIONS = frozenset(
+    {
+        COND_GEMMA_EXPERT_STATE_REVISION,
+        COND_GEMMA_DUAL_STATE_REVISION,
+        COND_GEMMA_SEPARATE_DUAL_STATE_REVISION,
+        COND_GEMMA_WRIST_DUAL_STATE_REVISION,
+    }
+)
 INTERLEAVED_CROSS_ATTENTION = "interleaved_cross_attention"
 UNCOMPRESSED_VISUAL_KV_SELF_ATTENTION = (
     "uncompressed_visual_kv_self_attention"
@@ -130,6 +157,13 @@ class SkillExpertConfig(PreTrainedConfig):
     min_period: float = 4e-3
     max_period: float = 4.0
     action_loss_mode: str = "flow"
+    # When enabled, supervise only action offsets that still belong to the
+    # effective (possibly transition-jittered) skill assignment.
+    mask_actions_after_skill_end: bool = False
+    # Optional prefix-trajectory auxiliary: flow + weight * normalized
+    # cumulative clean-action XYZ error. Flow always retains coefficient 1.
+    cumulative_xyz_loss_enabled: bool = False
+    cumulative_xyz_loss_weight: float = 0.5
 
     vision_backbone: str = "dino"
     dino_model_path: str = "models/dinov3-vitl16"
@@ -278,12 +312,32 @@ class SkillExpertConfig(PreTrainedConfig):
                     f"got {self.conditioning_route!r}."
                 )
             if (
-                self.architecture_revision != COND_GEMMA_ARCHITECTURE_REVISION
+                self.architecture_revision
+                in {
+                    COND_GEMMA_EXPERT_TOKENS_REVISION,
+                    COND_GEMMA_PERCEIVER_EXPERT_TOKENS_REVISION,
+                }
                 and self.conditioning_route != "state_skill_cond"
             ):
                 raise ValueError(
                     f"{COND_GEMMA_ARCHITECTURE_LABELS[self.architecture_revision]} "
                     "fixes conditioning_route='state_skill_cond'; got "
+                    f"{self.conditioning_route!r}."
+                )
+            if (
+                self.architecture_revision
+                in {
+                    COND_GEMMA_EXPERT_STATE_REVISION,
+                    COND_GEMMA_DUAL_STATE_REVISION,
+                    COND_GEMMA_SEPARATE_DUAL_STATE_REVISION,
+                    COND_GEMMA_WRIST_DUAL_STATE_REVISION,
+                }
+                and self.conditioning_route != "state_cond"
+            ):
+                raise ValueError(
+                    f"{COND_GEMMA_ARCHITECTURE_LABELS[self.architecture_revision]} "
+                    "fixes conditioning_route='state_cond' so skill is broadcast "
+                    "only to the expert; got "
                     f"{self.conditioning_route!r}."
                 )
             expected_architecture_label = COND_GEMMA_ARCHITECTURE_LABELS[
@@ -367,6 +421,13 @@ class SkillExpertConfig(PreTrainedConfig):
                 "action_loss_mode must be 'flow' or 'flow_endpoint_xyz', got "
                 f"{self.action_loss_mode!r}."
             )
+        if self.cumulative_xyz_loss_enabled and self.action_loss_mode != "flow":
+            raise ValueError(
+                "cumulative_xyz_loss_enabled=true requires action_loss_mode='flow'; "
+                "it cannot be combined with flow_endpoint_xyz."
+            )
+        if not math.isfinite(self.cumulative_xyz_loss_weight) or self.cumulative_xyz_loss_weight <= 0:
+            raise ValueError("cumulative_xyz_loss_weight must be finite and positive.")
         if self.transition_jitter_pmax < 0:
             raise ValueError("transition_jitter_pmax must be non-negative.")
         if self.transition_jitter_distribution not in {"half_normal", "uniform"}:

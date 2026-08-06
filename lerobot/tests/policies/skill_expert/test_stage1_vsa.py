@@ -11,8 +11,12 @@ from transformers.models.gemma.modeling_gemma import GemmaRotaryEmbedding
 from lerobot.policies.skill_expert.configuration_skill_expert import (
     COND_GEMMA_ARCHITECTURE,
     COND_GEMMA_ARCHITECTURE_REVISION,
+    COND_GEMMA_DUAL_STATE_REVISION,
     COND_GEMMA_EXPERT_TOKENS_REVISION,
+    COND_GEMMA_EXPERT_STATE_REVISION,
     COND_GEMMA_PERCEIVER_EXPERT_TOKENS_REVISION,
+    COND_GEMMA_SEPARATE_DUAL_STATE_REVISION,
+    COND_GEMMA_WRIST_DUAL_STATE_REVISION,
     COMPRESSED_VISUAL_KV_REVISION,
     COMPRESSED_VISUAL_KV_SELF_ATTENTION,
     GLOBAL_VISUAL_ADARMS,
@@ -43,7 +47,11 @@ from lerobot.policies.skill_expert.vsa_perceiver_crossattn import (
     InterleavedExpertBlock,
     VSAActionExpert,
 )
-from lerobot.policies.pi_gemma import PiGemmaForCausalLM
+from lerobot.policies.pi_gemma import (
+    PiGemmaForCausalLM,
+    PiGemmaRMSNorm,
+    _gated_residual,
+)
 
 
 def _tiny_gemma_config(depth: int = 4):
@@ -60,6 +68,52 @@ def _tiny_gemma_config(depth: int = 4):
     )
     config._attn_implementation = "eager"  # noqa: SLF001
     return config
+
+
+def test_token_selective_adarms_matches_expanded_mask_math_and_gradients() -> None:
+    torch.manual_seed(7)
+    norm = PiGemmaRMSNorm(8, cond_dim=8)
+    with torch.no_grad():
+        norm.dense.weight.normal_(std=0.05)
+        norm.dense.bias.normal_(std=0.05)
+    hidden = torch.randn(2, 6, 8, requires_grad=True)
+    update = torch.randn(2, 6, 8, requires_grad=True)
+    condition = torch.randn(2, 8, requires_grad=True)
+    start = 3
+
+    optimized_norm, compact_gate = norm(
+        hidden, condition, cond_start_index=start
+    )
+    optimized = _gated_residual(hidden, update, compact_gate)
+
+    modulation = norm.dense(condition).unsqueeze(1)
+    scale, shift, gate = modulation.chunk(3, dim=-1)
+    mask = torch.zeros(2, 6, 1)
+    mask[:, start:] = 1
+    reference_norm = (
+        norm._norm(hidden) * (1 + scale * mask) + shift * mask
+    )
+    reference_gate = gate * mask + (1 - mask)
+    reference = hidden + update * reference_gate
+
+    assert torch.allclose(optimized_norm, reference_norm, atol=1e-6, rtol=1e-6)
+    assert torch.allclose(optimized, reference, atol=1e-6, rtol=1e-6)
+
+    optimized_grads = torch.autograd.grad(
+        optimized.square().mean(),
+        (hidden, update, condition, norm.dense.weight, norm.dense.bias),
+        retain_graph=True,
+    )
+    reference_grads = torch.autograd.grad(
+        reference.square().mean(),
+        (hidden, update, condition, norm.dense.weight, norm.dense.bias),
+    )
+    for optimized_grad, reference_grad in zip(
+        optimized_grads, reference_grads, strict=True
+    ):
+        assert torch.allclose(
+            optimized_grad, reference_grad, atol=1e-6, rtol=1e-6
+        )
 
 
 def _position_embeddings(config, context, actions):
@@ -137,6 +191,18 @@ def test_config_defaults_to_vsa_and_cond_architecture_is_explicit() -> None:
     )
     assert cond.architecture == "cond_gemma"
     assert cond.architecture_label == "arch0"
+    for revision, label in (
+        (COND_GEMMA_EXPERT_STATE_REVISION, "arch0_1"),
+        (COND_GEMMA_DUAL_STATE_REVISION, "arch0_2"),
+        (COND_GEMMA_SEPARATE_DUAL_STATE_REVISION, "arch0_2_sep"),
+        (COND_GEMMA_WRIST_DUAL_STATE_REVISION, "arch0_3"),
+    ):
+        assert SkillExpertConfig(
+            architecture=COND_GEMMA_ARCHITECTURE,
+            architecture_label=label,
+            architecture_revision=revision,
+            conditioning_route="state_cond",
+        ).architecture_label == label
     assert SkillExpertConfig(
         architecture=COND_GEMMA_ARCHITECTURE,
         architecture_label="arch1_1",
@@ -382,6 +448,7 @@ def test_cond_expert_token_forward_and_cached_sampling_preserve_action_shape(
         max_action_dim=4,
         chunk_size=3,
         n_action_steps=3,
+        cumulative_xyz_loss_enabled=True,
         dino_model_path="unused",
         num_visual_latents_per_camera=4,
         visual_perceiver_width=32,
@@ -416,6 +483,8 @@ def test_cond_expert_token_forward_and_cached_sampling_preserve_action_shape(
     assert condition.shape == (1, visual_tokens, 32)
     assert model._expert_context_tokens(state, skill).shape == (1, 2, 32)
     residual = model(images, state, skill, actions, noise=noise, time=time)
+    assert model._last_predicted_actions is not None
+    assert model._last_predicted_actions.shape == actions.shape
     sampled = model.sample_actions(
         images, state, skill, noise=noise, num_steps=1
     )
@@ -434,6 +503,10 @@ def test_cond_expert_token_forward_and_cached_sampling_preserve_action_shape(
     ("revision", "label"),
     [
         (COND_GEMMA_ARCHITECTURE_REVISION, "arch0"),
+        (COND_GEMMA_EXPERT_STATE_REVISION, "arch0_1"),
+        (COND_GEMMA_DUAL_STATE_REVISION, "arch0_2"),
+        (COND_GEMMA_SEPARATE_DUAL_STATE_REVISION, "arch0_2_sep"),
+        (COND_GEMMA_WRIST_DUAL_STATE_REVISION, "arch0_3"),
         (COND_GEMMA_EXPERT_TOKENS_REVISION, "arch1_1"),
         (COND_GEMMA_PERCEIVER_EXPERT_TOKENS_REVISION, "arch1_2"),
     ],
@@ -447,7 +520,7 @@ def test_cond_architectures_collect_scheduled_debug_and_input_influence(
         architecture_revision=revision,
         conditioning_route=(
             "state_cond"
-            if revision == COND_GEMMA_ARCHITECTURE_REVISION
+            if label.startswith("arch0")
             else "state_skill_cond"
         ),
         max_state_dim=4,
@@ -543,6 +616,114 @@ def test_arch0_routes_state_to_cond_and_skill_to_expert_broadcast() -> None:
     assert condition_skill is None
     assert expert_skill is not None
     assert expert_skill.shape == (2, 32)
+
+
+@pytest.mark.parametrize(
+    ("revision", "label", "cond_state", "wrist_only", "separate_projection"),
+    [
+        (COND_GEMMA_EXPERT_STATE_REVISION, "arch0_1", False, False, False),
+        (COND_GEMMA_DUAL_STATE_REVISION, "arch0_2", True, False, False),
+        (
+            COND_GEMMA_SEPARATE_DUAL_STATE_REVISION,
+            "arch0_2_sep",
+            True,
+            False,
+            True,
+        ),
+        (COND_GEMMA_WRIST_DUAL_STATE_REVISION, "arch0_3", True, True, False),
+    ],
+)
+def test_arch0_state_location_ablations_match_training_and_cached_inference(
+    revision: str,
+    label: str,
+    cond_state: bool,
+    wrist_only: bool,
+    separate_projection: bool,
+) -> None:
+    config = SkillExpertConfig(
+        architecture=COND_GEMMA_ARCHITECTURE,
+        architecture_label=label,
+        architecture_revision=revision,
+        conditioning_route="state_cond",
+        max_state_dim=4,
+        max_action_dim=4,
+        chunk_size=3,
+        n_action_steps=3,
+        cumulative_xyz_loss_enabled=True,
+        dino_model_path="unused",
+    )
+    tiny_geometry = SimpleNamespace(width=32, depth=2)
+    with (
+        patch(
+            "lerobot.policies.skill_expert.cond_gemma.get_gemma_config",
+            return_value=tiny_geometry,
+        ),
+        patch(
+            "lerobot.policies.skill_expert.cond_gemma.build_gemma",
+            side_effect=lambda _variant, *, use_adarms: _tiny_projection_gemma_pi05_heads(
+                use_adarms=use_adarms
+            ),
+        ),
+        patch(
+            "lerobot.policies.skill_expert.cond_gemma.AutoModel.from_pretrained",
+            return_value=_TinyDino(),
+        ),
+    ):
+        model = CondGemmaSkillExpert(config).eval()
+
+    images = [torch.rand(1, 3, 16, 16), torch.rand(1, 3, 16, 16)]
+    state = torch.randn(1, 4)
+    skill = torch.tensor([3])
+    actions = torch.randn(1, 3, 4)
+    noise = torch.randn_like(actions)
+    time = torch.tensor([0.5])
+    condition_tokens = model._condition_tokens(images)
+    projected_state = model._project_state(state)
+    expert_projected_state = model._project_expert_state(
+        state, projected_state
+    )
+
+    assert model.cond_encoder.model.config.use_adarms is cond_state
+    assert (model._state_condition(state) is not None) is cond_state
+    assert (model.expert_state_proj is not None) is separate_projection
+    if separate_projection:
+        assert expert_projected_state is not projected_state
+        assert model.expert_state_proj is not model.state_proj
+        assert torch.allclose(expert_projected_state, projected_state)
+    else:
+        assert expert_projected_state is projected_state
+    expert_condition = model._expert_condition(time, expert_projected_state)
+    assert torch.allclose(
+        expert_condition,
+        model._time_condition(time) + expert_projected_state,
+    )
+    state_start_index = model._condition_state_start_index(condition_tokens)
+    if wrist_only:
+        assert state_start_index == 197
+    else:
+        assert state_start_index is None
+
+    residual = model(images, state, skill, actions, noise=noise, time=time)
+    assert model._last_predicted_actions is not None
+    assert model._last_predicted_actions.shape == actions.shape
+    sampled = model.sample_actions(
+        images, state, skill, noise=noise, num_steps=1
+    )
+    assert residual.shape == sampled.shape == actions.shape
+    if separate_projection:
+        model.train()
+        residual = model(images, state, skill, actions, noise=noise, time=time)
+        residual.square().mean().backward()
+        assert model.state_proj.weight.grad is not None
+        assert model.expert_state_proj.weight.grad is not None
+    if wrist_only:
+        model.train()
+        model.gradient_checkpointing_enable()
+        checkpointed = model(
+            images, state, skill, actions, noise=noise, time=time
+        )
+        checkpointed.square().mean().backward()
+        assert model.action_in_proj.weight.grad is not None
 
 
 @pytest.mark.parametrize(
@@ -1510,3 +1691,107 @@ def test_phase_batch_metrics_are_split_by_original_skill_progress() -> None:
     assert metrics["batch_sampling/original_early_action_loss"] == pytest.approx(2.0)
     assert metrics["batch_sampling/original_middle_action_loss"] == pytest.approx(5.0)
     assert metrics["batch_sampling/original_late_action_loss"] == pytest.approx(8.0)
+
+
+def test_skill_end_loss_mask_excludes_only_offsets_after_boundary() -> None:
+    owner = SimpleNamespace(
+        config=SimpleNamespace(mask_actions_after_skill_end=True)
+    )
+    actions = torch.zeros(2, 5, 7)
+    batch = {
+        "skill_de": torch.tensor([1, 3]),
+        "skill_effective_de": torch.tensor([1, 3]),
+        "action_is_pad": torch.tensor(
+            [
+                [False, False, False, False, False],
+                [False, False, True, False, False],
+            ]
+        ),
+    }
+
+    valid = SkillExpertPolicy._valid_action_steps(owner, actions, batch)
+
+    torch.testing.assert_close(
+        valid,
+        torch.tensor(
+            [
+                [True, True, False, False, False],
+                [True, True, False, True, False],
+            ]
+        ),
+    )
+
+
+def test_disabled_skill_end_loss_mask_preserves_full_unpadded_chunk() -> None:
+    owner = SimpleNamespace(
+        config=SimpleNamespace(mask_actions_after_skill_end=False)
+    )
+    actions = torch.zeros(1, 4, 7)
+    batch = {
+        "skill_de": torch.tensor([0]),
+        "action_is_pad": torch.tensor([[False, False, False, True]]),
+    }
+
+    valid = SkillExpertPolicy._valid_action_steps(owner, actions, batch)
+
+    torch.testing.assert_close(valid, torch.tensor([[True, True, True, False]]))
+
+
+def test_skill_end_loss_mask_requires_distance_to_end() -> None:
+    owner = SimpleNamespace(
+        config=SimpleNamespace(mask_actions_after_skill_end=True)
+    )
+    with pytest.raises(KeyError, match="skill_de"):
+        SkillExpertPolicy._valid_action_steps(owner, torch.zeros(1, 4, 7), {})
+
+
+def test_skill_end_loss_mask_prefers_jittered_effective_boundary() -> None:
+    owner = SimpleNamespace(
+        config=SimpleNamespace(
+            mask_actions_after_skill_end=True,
+            transition_jitter_pmax=15,
+        )
+    )
+    actions = torch.zeros(2, 5, 7)
+    batch = {
+        "skill_de": torch.tensor([0, 4]),
+        "skill_effective_de": torch.tensor([3, 1]),
+    }
+
+    valid = SkillExpertPolicy._valid_action_steps(owner, actions, batch)
+
+    torch.testing.assert_close(
+        valid,
+        torch.tensor(
+            [
+                [True, True, True, True, False],
+                [True, True, False, False, False],
+            ]
+        ),
+    )
+
+
+def test_cumulative_xyz_loss_uses_one_horizon_normalizer_per_sample() -> None:
+    predicted = torch.ones(2, 3, 3)
+    target = torch.zeros_like(predicted)
+    valid = torch.tensor(
+        [
+            [True, True, True],
+            [True, True, False],
+        ]
+    )
+
+    normalized, raw, normalized_per_sample, raw_per_sample = (
+        SkillExpertPolicy._cumulative_xyz_loss(predicted, target, valid)
+    )
+
+    # Prefix MSEs are [1, 4, 9]. Row 0: mean=14/3, normalized by 2.
+    # Row 1 uses [1, 4]: mean=5/2, normalized by 3/2.
+    torch.testing.assert_close(
+        raw_per_sample, torch.tensor([14.0 / 3.0, 5.0 / 2.0])
+    )
+    torch.testing.assert_close(
+        normalized_per_sample, torch.tensor([7.0 / 3.0, 5.0 / 3.0])
+    )
+    torch.testing.assert_close(raw, torch.tensor(43.0 / 12.0))
+    torch.testing.assert_close(normalized, torch.tensor(2.0))

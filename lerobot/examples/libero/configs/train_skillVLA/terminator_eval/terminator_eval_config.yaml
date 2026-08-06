@@ -1,0 +1,136 @@
+# Single-policy, episode-exact multi-terminator skill evaluation.
+#
+# For every selected training episode, each FSQ skill occurrence is evaluated
+# independently from its exact simulator state. Each HTML entry plays one
+# synchronized horizontal comparison:
+#   GT | exact | exact with different noise | early | late
+
+outputs_root: outputs_filtered
+
+model:
+  previous: false
+  model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch1_2
+  checkpoint: "070000"
+  label: arch1_2_70k
+  # own: use the terminator stored in this checkpoint.
+  # external: overlay only the terminator from external_skill_model.
+  terminator_source: external
+
+# Use the pristine state+image terminator stored in the selected policy's raw
+# FSQ.pt, before any Stage-1 or specialist terminator training.
+external_skill_model:
+  variant: fsq_initial
+
+# A trained checkpoint can instead be selected with:
+# external_skill_model:
+#   variant: checkpoint
+#   group: skillVLA_stage1
+#   model_dir: trained_terminator_model_dir
+#   checkpoint: "100000"
+
+# Trained entries resolve as:
+#   <outputs_root>/skillVLA_terminator/<model_dir>/checkpoints/<checkpoint>/pretrained_model
+# All entries are display-only. Only MAIN controls rollout stopping.
+# variant: state_image | image_only | wrist_only | fsq_initial
+terminator_models:
+  - label: STATE_bias
+    variant: state_image
+    model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_endpoint_os_terminator_3
+    checkpoint: "040000"
+  
+  - label: IMAGE_bias
+    variant: image_only
+    model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_endpoint_os_terminator_3
+    checkpoint: "040000"
+
+  - label: WRIST_bias
+    variant: wrist_only
+    model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_endpoint_os_terminator_3
+    checkpoint: "040000"
+
+  - label: STATE
+    variant: state_image
+    model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_terminator_3
+    checkpoint: "040000"
+
+  - label: IMAGE
+    variant: image_only
+    model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_terminator_3
+    checkpoint: "040000"
+  
+  - label: WRIST
+    variant: wrist_only
+    model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_terminator_3
+    checkpoint: "040000"
+
+  # - label: STATE_bias_25k
+  #   variant: state_image
+  #   model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_endpoint_os_terminator_both
+  #   checkpoint: "025000"
+  
+  # - label: IMAGE_bias_25k
+  #   variant: image_only
+  #   model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_endpoint_os_terminator_both
+  #   checkpoint: "025000"
+
+  # - label: STATE_bias_100k
+  #   variant: state_image
+  #   model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_endpoint_os_terminator_both
+  #   checkpoint: "100000"
+  
+  # - label: IMAGE_bias_100k
+  #   variant: image_only
+  #   model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_endpoint_os_terminator_both
+  #   checkpoint: "100000"
+
+  - label: FSQ_INIT
+    variant: fsq_initial
+
+  # Enable after selecting a checkpoint trained with wrist_only_terminator.train=true.
+  # - label: WRIST60K
+  #   variant: wrist_only
+  #   model_dir: wrist_only_terminator_output_folder
+  #   checkpoint: "060000"
+
+# Empty creates a timestamped output under terminator_eval/outputs/.
+output_name: ""
+resume: false
+
+target_task: libero_90
+task_ids: [3]
+
+# Episode-exact is mandatory for this evaluator and cannot fall back to a
+# language-matched or standard LIBERO init state.
+episode_exact: true
+episodes_per_task: 5
+episode_selection: first     # first | random
+episode_ids: []              # optional exact global dataset episode ids
+seed: 42
+
+# Policy branches start at frame_start-offset, frame_start, frame_start+offset.
+time_shift_offset: 15
+n_action_steps: 5
+
+# Selected skill occurrences are distributed over this many one-GPU Slurm
+# array workers. The resolver caps it to the number of selected episodes.
+eval_num_gpus: 10
+
+terminator:
+  end_mode: termination               # termination | progress | or | and
+  # Each termination bar freezes at its first crossing of this threshold.
+  end_threshold: 0.95
+  progress_threshold: 0.95
+  max_skill_length: 200
+  # true preserves the fixed-replanning behavior: a detected boundary stops
+  # only after the already-generated action chunk has been consumed.
+  finish_action_chunk_on_end: true
+
+video:
+  frame_stride: 2
+  fps: 10
+
+# Explicit for auditability. The resolver checks that every scene/demo named by
+# eval_init_states.npz exists here.
+original_dataset_dir: libero_original_dataset/libero_90
+
+slurm: {gres: "gpu:1", cpus: 8, memory: 64G, time: "12:00:00"}

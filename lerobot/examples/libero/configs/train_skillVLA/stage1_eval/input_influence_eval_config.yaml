@@ -2,36 +2,29 @@
 # Replace/add models here. One array worker (one GPU) is assigned per model.
 outputs_root: outputs_filtered
 
+model_defaults:
+  previous: true
+  checkpoint: "015000"
+  skill_source: gt
+  advance_mode: gt
+
 models:
   # Historical 384-wide arch2_1 checkpoints remain available under previous/.
   # New direct-width runs use an `_arch2` suffix in the main Stage-1 output root.
   - model_dir: bs96_libero_90_full_firsthalf_scene_FSQ333_125_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch2_1
-    previous: true
-    checkpoint: "015000"
-    skill_source: gt
-    advance_mode: gt
     label: crossatten_bs96
 
   - model_dir: bs64_libero_90_full_firsthalf_scene_FSQ333_125_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch2_1
-    previous: true
-    checkpoint: "015000"
-    skill_source: gt
-    advance_mode: gt
     label: crossatten_bs64
 
   - model_dir: bs16_libero_90_full_firsthalf_scene_FSQ333_125_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch2_1
-    previous: true
-    checkpoint: "015000"
-    skill_source: gt
-    advance_mode: gt
     label: crossatten_bs16
 
   # Add more models in the same form. They are evaluated in parallel and merged
   # into one HTML/CSV summary.
   # - model_dir: another_stage1_run
   #   checkpoint: "010000"
-  #   skill_source: gt
-  #   advance_mode: gt
+  #   previous: false
   #   label: another_model
 
 output_name: input_influence
@@ -53,7 +46,7 @@ analysis:
     - skill_swap
     - all_inputs_swap
 
-# Existing Stage-1 config resolver also reads these harmless offline defaults.
-oracle: {episode_exact: true, advance_mode: gt}
+# Existing Stage-1 config resolver also reads this harmless offline default.
+oracle: {episode_exact: true}
 logging: {wandb: {enable: false}}
 slurm: {gres: "gpu:1", cpus: 8, memory: 64G, time: "4:00:00"}

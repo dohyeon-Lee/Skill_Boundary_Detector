@@ -361,6 +361,7 @@ def test_stage2_processor_preserves_same_skill_sampler_metadata() -> None:
         "same_skill_pair_id": torch.tensor([0, 0, -1, -1]),
         "same_skill_pair_fallback": torch.tensor([False, False, False, True]),
         "skill_progress": torch.tensor([0.1, 0.2, 0.3, 0.4]),
+        "skill_effective_de": torch.tensor([4, 3, 2, 1]),
     }
 
     restored = skill_expert_transition_to_batch(

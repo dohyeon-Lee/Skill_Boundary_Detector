@@ -1,0 +1,25 @@
+# Existing Stage-1 eval folders under outputs/. Rows appear in this order.
+sources:
+  - folder: archA_70k_ID
+    label: ID
+  - folder: archA_70k_OOD
+    label: OOD
+
+# Result: outputs/<output_name>/side_by_side/libero_90_N/eval_episode_K.mp4
+# output_name: architecture_comparison_40k_ext_ext_or_vs_termination
+output_name: archA_70k_ID_VS_OOD
+
+outputs_root: outputs
+task_prefix: libero_90
+task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+episode_ids: auto
+
+# error: stop and report every source video that is missing.
+# skip:  merge only task/episode pairs present in every source.
+missing_policy: skip
+overwrite: false
+
+video:
+  show_source_labels: true
+  label_height: 32
+  target_width: auto

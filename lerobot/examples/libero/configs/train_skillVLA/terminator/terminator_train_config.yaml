@@ -1,0 +1,87 @@
+dataset:
+  skillvla_root: skillvla_dataset
+  source: libero_90_full_firsthalf_scene
+  run: FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal
+
+# Optional label appended to the generated run/output name.
+run: {suffix: ""}
+
+warm_start:
+  # Used only when skill_predictor.train=true.
+  pi_base: models/pi05_base
+  tokenizer: models/paligemma-3b-pt-224-tokenizer
+
+terminator:
+  train: false
+  freeze_vision: true
+  end_target_sigma: 2.0
+  end_pos_weight: 1.0
+
+image_only_terminator:
+  train: false
+  freeze_vision: true
+  end_target_sigma: 2.0
+  end_pos_weight: 1.0
+
+wrist_only_terminator:
+  train: false
+  freeze_vision: true
+  end_target_sigma: 2.0
+  end_pos_weight: 1.0
+
+start_comparison_terminator:
+  train: true
+  freeze_vision: true
+  end_target_sigma: 2.0
+  end_pos_weight: 1.0
+
+start_comparison_image_only_terminator:
+  train: true
+  freeze_vision: true
+  end_target_sigma: 2.0
+  end_pos_weight: 1.0
+
+skill_predictor:
+  train: false
+  weight: 0.5
+  all_layers: true
+  lora:
+    enabled: true
+    targets: "q,k,v,o"
+    rank: 8
+    alpha: 16.0
+    dropout: 0.0
+  reader: {tokens: 4, depth: 2, heads: 8, deadzone_frac: 0.8}
+  token_access: {image: true, language: true}
+
+training:
+  dataloader: {batch_size: 32, workers: 8, gpus: 1}
+  endpoint_oversampling:
+    enabled: false
+    exact_end_fraction: 0.15
+    near_end_fraction: 0.15
+    near_end_max_distance: 2
+  optimizer:
+    base_lr: 2.5e-05
+    terminator_lr_scale: 1.0
+    image_only_terminator_lr_scale: 1.0
+    wrist_only_terminator_lr_scale: 1.0
+    start_comparison_terminator_lr_scale: 1.0
+    start_comparison_image_only_terminator_lr_scale: 1.0
+    predictor_lr_scale: 1.0
+    predictor_lora_lr_scale: 10.0
+    grad_clip_norm: 1.0
+  gradient_checkpointing: false
+  schedule:
+    steps: 50000
+    lr_mode: warmup_constant
+    warmup_steps: 1000
+    lr_decay_steps: 30000
+    log_every: 100
+    save_every: 5000
+
+logging:
+  # Kept separate from Stage-1 action-model runs.
+  wandb: {enable: true, project: VLA_terminator}
+
+slurm: {gres: "gpu:1", cpus: 10, memory: 128G, time: "48:00:00"}

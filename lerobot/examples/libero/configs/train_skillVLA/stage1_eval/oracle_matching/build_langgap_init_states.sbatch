@@ -18,6 +18,7 @@ mkdir -p "${HERE}/../logs" "${PROJECT_ROOT}/.cache/numba" "${PROJECT_ROOT}/.cach
 source "${PROJECT_ROOT}/.venv/bin/activate"
 export NUMBA_CACHE_DIR="${PROJECT_ROOT}/.cache/numba"
 export MPLCONFIGDIR="${PROJECT_ROOT}/.cache/matplotlib"
+export PYTHONUNBUFFERED=1
 export MUJOCO_GL=egl
 export LIBERO_CONFIG_PATH="${PROJECT_ROOT}/tools/lerobot-libero/.libero_config"
 export PYTHONPATH="${PROJECT_ROOT}/lerobot/src:${PROJECT_ROOT}/tools/lerobot-libero${PYTHONPATH:+:${PYTHONPATH}}"

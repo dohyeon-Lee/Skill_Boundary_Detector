@@ -42,8 +42,10 @@ from lerobot.utils.constants import (
 SKILL_START_IMAGE = "skill_start_image"
 SKILL_START_WRIST_IMAGE = "skill_start_wrist_image"
 SKILL_START_STATE = "skill_start_state"
+TERMINATOR_START_IMAGE = "terminator_start_image"
 SKILL_CODE = "skill_code"
 SKILL_PROGRESS = "skill_progress"
+SKILL_EFFECTIVE_DE = "skill_effective_de"
 SAME_SKILL_PAIR_ID = "same_skill_pair_id"
 SAME_SKILL_PAIR_FALLBACK = "same_skill_pair_fallback"
 
@@ -51,6 +53,7 @@ SKILL_VLA_BATCH_KEYS = (
     SKILL_START_IMAGE,
     SKILL_START_WRIST_IMAGE,
     SKILL_START_STATE,
+    TERMINATOR_START_IMAGE,
     SKILL_CODE,
     "skill_decoder_state",
     "skill_decoder_image",
@@ -63,6 +66,7 @@ SKILL_VLA_BATCH_KEYS = (
     SAME_SKILL_PAIR_FALLBACK,
     "skill_ds",
     "skill_de",
+    SKILL_EFFECTIVE_DE,
 )
 
 

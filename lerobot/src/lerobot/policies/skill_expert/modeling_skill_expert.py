@@ -50,7 +50,11 @@ from .configuration_skill_expert import (
     normalize_conditioning_route,
 )
 from .cond_gemma import CondGemmaSkillExpert
-from .modeling_utils import build_fsq_terminator, load_raw_state_dict
+from .modeling_utils import (
+    build_fsq_image_only_terminator,
+    build_fsq_terminator,
+    load_raw_state_dict,
+)
 from .modeling_skill_predictor import FrozenVLMSkillPredictor
 from .vsa_perceiver_crossattn import (
     CameraPerceiverResampler,
@@ -158,6 +162,7 @@ class SkillExpertPytorch(nn.Module):
             FrozenVLMSkillPredictor(config) if config.uses_skill_predictor else None
         )
         self.fsq_term_train = None
+        self.fsq_image_term_train = None
         if config.train_terminator:
             terminator = build_fsq_terminator(config.fsq_path)
             if config.terminator_freeze_vision_encoder is not None:
@@ -605,7 +610,10 @@ class SkillExpertPytorch(nn.Module):
             # Probe forwards intentionally disable layer instrumentation; retain
             # the original forward's stats and append only sensitivity values.
             self._last_vsa_debug_stats = {**original_stats, **sensitivity}
-        if self.config.action_loss_mode == "flow_endpoint_xyz":
+        if (
+            self.config.action_loss_mode == "flow_endpoint_xyz"
+            or getattr(self.config, "cumulative_xyz_loss_enabled", False)
+        ):
             # x_t = action + t * target_velocity, hence the one-step clean-action
             # reconstruction is action_hat = x_t - t * predicted_velocity.
             self._last_predicted_actions = (
@@ -834,6 +842,7 @@ def _allowed_pi05_missing_key(key: str, config: SkillExpertConfig) -> bool:
                 "model.image_proj.",
                 "model.visionless_condition_token",
                 "model.state_proj.",
+                "model.expert_state_proj.",
                 "model.skill_proj.",
                 "model.cond_encoder.",
                 "model.state_norm.",
@@ -1011,6 +1020,9 @@ def _load_complete_predictor_parameters(
 def _load_complete_terminator_parameters(
     terminator: nn.Module,
     checkpoint_path: str | Path,
+    *,
+    prefix: str = "model.fsq_term_train.",
+    label: str = "terminator",
 ) -> int:
     """Load one complete co-trained terminator without unrelated Stage-1 tensors."""
     from safetensors import safe_open  # noqa: PLC0415
@@ -1020,7 +1032,6 @@ def _load_complete_terminator_parameters(
     if not weights_path.is_file():
         raise FileNotFoundError(f"Stage-1 terminator weights not found: {weights_path}")
 
-    prefix = "model.fsq_term_train."
     target_state = terminator.state_dict()
     expected = set(target_state)
     with safe_open(str(weights_path), framework="pt", device="cpu") as checkpoint:
@@ -1033,7 +1044,7 @@ def _load_complete_terminator_parameters(
         unexpected = source - expected
         if missing or unexpected:
             raise RuntimeError(
-                "Complete Stage-1 terminator tensor mismatch: "
+                f"Complete Stage-1 {label} tensor mismatch: "
                 f"missing={sorted(missing)}, unexpected={sorted(unexpected)}"
             )
         with torch.no_grad():
@@ -1042,7 +1053,7 @@ def _load_complete_terminator_parameters(
                 target = target_state[key]
                 if value.shape != target.shape:
                     raise RuntimeError(
-                        f"Stage-1 terminator shape mismatch for {key}: "
+                        f"Stage-1 {label} shape mismatch for {key}: "
                         f"checkpoint={tuple(value.shape)}, model={tuple(target.shape)}"
                     )
                 target.copy_(value.to(device=target.device, dtype=target.dtype))
@@ -1066,9 +1077,28 @@ class SkillExpertPolicy(PreTrainedPolicy):
         if config.architecture == COND_GEMMA_ARCHITECTURE:
             self.model = CondGemmaSkillExpert(config)
             log.info("Stage-1 architecture: condition Gemma + pi0.5 Gemma expert")
-            if config.architecture_revision == COND_GEMMA_ARCHITECTURE_REVISION:
+            if not self.model.uses_expert_context_tokens:
                 log.info("Conditioning route: %s", config.conditioning_route)
-                log.info("State conditioning: Cond-Gemma AdaRMS")
+                if self.model.uses_wrist_only_cond_state:
+                    cond_state_target = "Cond-Gemma wrist tokens only"
+                elif self.model.uses_cond_state_adarms:
+                    cond_state_target = "all Cond-Gemma tokens"
+                else:
+                    cond_state_target = "disabled"
+                log.info("State conditioning (Cond): %s", cond_state_target)
+                log.info(
+                    "State conditioning (Expert): %s",
+                    "time + projected-state AdaRMS"
+                    if self.model.uses_expert_state_adarms
+                    else "time-only AdaRMS",
+                )
+                if self.model.uses_expert_state_adarms:
+                    log.info(
+                        "State projections (Cond/Expert): %s",
+                        "separate"
+                        if self.model.uses_separate_state_projections
+                        else "shared",
+                    )
                 log.info(
                     "Skill conditioning: %s layerwise broadcast",
                     "expert"
@@ -1262,7 +1292,9 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 "conditioner": self.model.cond_encoder,
                 "expert": self.model.gemma_expert,
                 "state_path": module_list(
-                    self.model.state_proj, self.model.state_norm
+                    self.model.state_proj,
+                    self.model.expert_state_proj,
+                    self.model.state_norm,
                 ),
                 "skill_path": module_list(
                     self.model.skill_proj, self.model.skill_norm
@@ -1274,6 +1306,11 @@ class SkillExpertPolicy(PreTrainedPolicy):
                     self.model.time_mlp_in, self.model.time_mlp_out
                 ),
             }
+            if self.model.expert_state_proj is not None:
+                modules["cond_state_projection"] = self.model.state_proj
+                modules["expert_state_projection"] = (
+                    self.model.expert_state_proj
+                )
             context_norms = module_list(
                 self.model.context_input_norms,
                 self.model.context_post_attention_norms,
@@ -1360,9 +1397,9 @@ class SkillExpertPolicy(PreTrainedPolicy):
         if not config_path.is_file():
             raise FileNotFoundError(f"Stage-1 predictor config not found: {config_path}")
         source_config = json.loads(config_path.read_text())
-        if source_config.get("type") != "skill_expert":
+        if source_config.get("type") not in {"skill_expert", "skill_aux"}:
             raise ValueError(
-                "Predictor source must be a skill_expert checkpoint, got "
+                "Predictor source must be a skill_expert or skill_aux checkpoint, got "
                 f"{source_config.get('type')!r}."
             )
         if not source_config.get("train_skill_predictor", False):
@@ -1398,9 +1435,9 @@ class SkillExpertPolicy(PreTrainedPolicy):
         if not config_path.is_file():
             raise FileNotFoundError(f"Stage-1 predictor config not found: {config_path}")
         source_config = json.loads(config_path.read_text())
-        if source_config.get("type") != "skill_expert":
+        if source_config.get("type") not in {"skill_expert", "skill_aux"}:
             raise ValueError(
-                "Predictor source must be a skill_expert checkpoint, got "
+                "Predictor source must be a skill_expert or skill_aux checkpoint, got "
                 f"{source_config.get('type')!r}."
             )
         if not source_config.get("train_skill_predictor", False):
@@ -1437,9 +1474,9 @@ class SkillExpertPolicy(PreTrainedPolicy):
         if not config_path.is_file():
             raise FileNotFoundError(f"Stage-1 terminator config not found: {config_path}")
         source_config = json.loads(config_path.read_text())
-        if source_config.get("type") != "skill_expert":
+        if source_config.get("type") not in {"skill_expert", "skill_aux"}:
             raise ValueError(
-                "Terminator source must be a skill_expert checkpoint, got "
+                "Terminator source must be a skill_expert or skill_aux checkpoint, got "
                 f"{source_config.get('type')!r}."
             )
         if not source_config.get("train_terminator", False):
@@ -1465,6 +1502,76 @@ class SkillExpertPolicy(PreTrainedPolicy):
             "Stage 1 <- external terminator %s: loaded %d tensors.",
             path,
             loaded,
+        )
+
+    def load_external_image_only_terminator(
+        self, checkpoint_path: str | Path | None
+    ) -> None:
+        """Attach the image-only terminator trained by ``skill_aux``."""
+        path = Path(str(checkpoint_path or ""))
+        config_path = path / "config.json"
+        if not config_path.is_file():
+            raise FileNotFoundError(
+                f"Stage-1 image-only terminator config not found: {config_path}"
+            )
+        source_config = json.loads(config_path.read_text())
+        if source_config.get("type") != "skill_aux":
+            raise ValueError(
+                "Image-only terminator source must be a skill_aux checkpoint, got "
+                f"{source_config.get('type')!r}."
+            )
+        if not source_config.get("train_image_only_terminator", False):
+            raise ValueError(
+                "Stage-1 image-only terminator source has no trained image-only "
+                "terminator."
+            )
+        if source_config.get("skill_fsq_levels") != self.config.skill_fsq_levels:
+            raise ValueError(
+                "Stage-1 image-only terminator FSQ mismatch: "
+                f"checkpoint={source_config.get('skill_fsq_levels')!r}, "
+                f"current={self.config.skill_fsq_levels!r}."
+            )
+
+        terminator = getattr(self.model, "fsq_image_term_train", None)
+        if terminator is None:
+            terminator = build_fsq_image_only_terminator(self.config.fsq_path).to(
+                dtype=torch.float32
+            )
+        loaded = _load_complete_terminator_parameters(
+            terminator,
+            path,
+            prefix="model.fsq_image_term_train.",
+            label="image-only terminator",
+        )
+        device = next(self.model.parameters()).device
+        terminator.to(device=device, dtype=torch.float32)
+        terminator.requires_grad_(False).eval()
+        self.model.fsq_image_term_train = terminator
+        log.info(
+            "Stage 1 <- external image-only terminator %s: loaded %d tensors.",
+            path,
+            loaded,
+        )
+
+    def image_only_terminator_predict(
+        self,
+        true_code: Tensor,
+        image: Tensor,
+        wrist_image: Tensor,
+    ) -> tuple[Tensor, Tensor]:
+        """Run an attached image-only terminator on current camera frames."""
+        terminator = getattr(self.model, "fsq_image_term_train", None)
+        if terminator is None:
+            raise RuntimeError("Image-only terminator is unavailable.")
+        device = next(terminator.parameters()).device
+        dtype = next(terminator.parameters()).dtype
+        z_q = self.model._code_to_zq(  # noqa: SLF001
+            true_code.to(self.model._fsq_strides.device)  # noqa: SLF001
+        ).to(device=device, dtype=dtype)
+        return terminator(
+            z_q,
+            image.to(device=device, dtype=dtype),
+            wrist_image.to(device=device, dtype=dtype),
         )
 
     def get_optim_params(self) -> list[dict]:
@@ -1895,17 +2002,40 @@ class SkillExpertPolicy(PreTrainedPolicy):
             ):
                 parameter.requires_grad_(old_value)
 
-    @staticmethod
-    def _valid_action_steps(actions: Tensor, batch: dict) -> Tensor:
-        """Match Stage-0 unconditional supervision: mask episode padding only.
-
-        A chunk may cross a skill boundary. Those tail actions remain real dataset
-        targets even though the conditioning skill is the one active at the chunk
-        start; ``skill_de`` must therefore not shorten or rewrite the target.
-        """
+    def _valid_action_steps(self, actions: Tensor, batch: dict) -> Tensor:
+        """Return action offsets supervised by the selected loss-mask contract."""
         valid = torch.ones(actions.shape[:2], dtype=torch.bool, device=actions.device)
         if "action_is_pad" in batch:
             valid &= ~batch["action_is_pad"].to(actions.device).bool()
+        if getattr(self.config, "mask_actions_after_skill_end", False):
+            boundary_key = (
+                "skill_effective_de"
+                if "skill_effective_de" in batch
+                else "skill_de"
+            )
+            if boundary_key not in batch:
+                raise KeyError(
+                    "mask_actions_after_skill_end=true requires batch['skill_effective_de'] "
+                    "or batch['skill_de']."
+                )
+            if (
+                getattr(self.config, "transition_jitter_pmax", 0) > 0
+                and boundary_key != "skill_effective_de"
+            ):
+                raise KeyError(
+                    "Transition jitter with skill-end loss masking requires "
+                    "batch['skill_effective_de'] from SkillVLADataset."
+                )
+            distance_to_end = batch[boundary_key].to(actions.device).long().reshape(-1)
+            if distance_to_end.shape[0] != actions.shape[0]:
+                raise ValueError(
+                    "skill_de batch size does not match actions: "
+                    f"{distance_to_end.shape[0]} != {actions.shape[0]}."
+                )
+            if bool((distance_to_end < 0).any()):
+                raise ValueError("skill_de must be non-negative.")
+            offsets = torch.arange(actions.shape[1], device=actions.device).unsqueeze(0)
+            valid &= offsets <= distance_to_end.unsqueeze(1)
         return valid
 
     @staticmethod
@@ -1933,6 +2063,42 @@ class SkillExpertPolicy(PreTrainedPolicy):
         selected = sample_valid.to(per_sample.dtype)
         loss = (per_sample * selected).sum() / selected.sum().clamp(min=1.0)
         return loss, per_sample
+
+    @staticmethod
+    def _cumulative_xyz_loss(
+        predicted_actions: Tensor,
+        target_actions: Tensor,
+        valid: Tensor,
+    ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+        """Prefix cumulative XYZ error with one horizon-scale normalization.
+
+        Prefixes retain equal weight in the raw trajectory objective. The raw
+        per-sample mean is divided once by ``(valid_steps + 1) / 2`` so its
+        expected scale matches stepwise MSE for independent delta errors,
+        without applying distinct 1/t weights to individual prefixes.
+        """
+        if predicted_actions.shape[-1] < 3 or target_actions.shape[-1] < 3:
+            raise ValueError("cumulative XYZ loss requires at least three action dimensions.")
+        sample_valid = valid.any(dim=1)
+        if not bool(sample_valid.any()):
+            raise ValueError("cumulative XYZ loss received a batch with no valid action steps.")
+        valid_float = valid.float()
+        delta_error = (
+            predicted_actions[..., :3].float() - target_actions[..., :3].float()
+        ) * valid_float.unsqueeze(-1)
+        prefix_error = delta_error.cumsum(dim=1)
+        prefix_mse = prefix_error.square().mean(dim=-1)
+        valid_count = valid.sum(dim=1).clamp(min=1).to(prefix_mse.dtype)
+        raw_per_sample = (prefix_mse * valid_float).sum(dim=1) / valid_count
+        horizon_normalizer = (valid_count + 1.0) / 2.0
+        normalized_per_sample = raw_per_sample / horizon_normalizer
+        selected = sample_valid.to(prefix_mse.dtype)
+        raw_loss = (raw_per_sample * selected).sum() / selected.sum().clamp(min=1.0)
+        normalized_loss = (
+            (normalized_per_sample * selected).sum()
+            / selected.sum().clamp(min=1.0)
+        )
+        return normalized_loss, raw_loss, normalized_per_sample, raw_per_sample
 
     @staticmethod
     def _masked_action_mse(
@@ -2236,6 +2402,8 @@ class SkillExpertPolicy(PreTrainedPolicy):
         valid_steps = valid.sum().clamp(min=1).to(squared_error.dtype)
         action_loss = (squared_error * valid_float).sum() / (valid_steps * real_dim)
         endpoint_loss = None
+        cumulative_xyz_loss = None
+        cumulative_xyz_raw_loss = None
         action_objective = action_loss
         objective_per_sample = per_sample
         if self.config.action_loss_mode == "flow_endpoint_xyz":
@@ -2251,6 +2419,27 @@ class SkillExpertPolicy(PreTrainedPolicy):
             )
             action_objective = 0.5 * action_loss + 0.5 * endpoint_loss
             objective_per_sample = 0.5 * per_sample + 0.5 * endpoint_per_sample
+        elif getattr(self.config, "cumulative_xyz_loss_enabled", False):
+            predicted_actions = self.model._last_predicted_actions
+            if predicted_actions is None:
+                raise RuntimeError(
+                    "cumulative XYZ loss did not receive reconstructed predicted actions."
+                )
+            (
+                cumulative_xyz_loss,
+                cumulative_xyz_raw_loss,
+                cumulative_xyz_per_sample,
+                _cumulative_xyz_raw_per_sample,
+            ) = self._cumulative_xyz_loss(
+                predicted_actions[..., :real_dim],
+                actions[..., :real_dim],
+                valid,
+            )
+            cumulative_weight = getattr(
+                self.config, "cumulative_xyz_loss_weight", 0.5
+            )
+            action_objective = action_loss + cumulative_weight * cumulative_xyz_loss
+            objective_per_sample = per_sample + cumulative_weight * cumulative_xyz_per_sample
         loss_dict = {
             "action_loss": action_loss.detach().item(),
             "conditioning/skill_source_predictor": float(
@@ -2258,6 +2447,44 @@ class SkillExpertPolicy(PreTrainedPolicy):
             ),
             "regime/transition_jitter_fraction": self._last_transition_jitter_fraction.detach().item(),
         }
+        if getattr(self.config, "mask_actions_after_skill_end", False):
+            unpadded = torch.ones_like(valid)
+            if "action_is_pad" in batch:
+                unpadded &= ~batch["action_is_pad"].to(valid.device).bool()
+            unpadded_count = unpadded.sum().clamp(min=1)
+            boundary_masked = unpadded & ~valid
+            loss_dict.update(
+                {
+                    "loss_mask/skill_end_masked_fraction": (
+                        boundary_masked.sum().float() / unpadded_count
+                    ).detach().item(),
+                    "loss_mask/valid_action_steps_mean": valid.sum(dim=1)
+                    .float()
+                    .mean()
+                    .detach()
+                    .item(),
+                }
+            )
+            if "skill_effective_de" in batch and "skill_de" in batch:
+                effective_de = batch["skill_effective_de"].to(valid.device).float()
+                original_de = batch["skill_de"].to(valid.device).float()
+                loss_dict.update(
+                    {
+                        "loss_mask/effective_boundary_changed_fraction": (
+                            effective_de != original_de
+                        )
+                        .float()
+                        .mean()
+                        .detach()
+                        .item(),
+                        "loss_mask/effective_minus_original_de_mean": (
+                            effective_de - original_de
+                        )
+                        .mean()
+                        .detach()
+                        .item(),
+                    }
+                )
         loss_dict.update(
             self._action_diagnostic_losses(
                 squared_error,
@@ -2290,6 +2517,29 @@ class SkillExpertPolicy(PreTrainedPolicy):
                     "action_objective": action_objective.detach().item(),
                     "action_flow_weight": 0.5,
                     "action_endpoint_weight": 0.5,
+                }
+            )
+        if cumulative_xyz_loss is not None and cumulative_xyz_raw_loss is not None:
+            cumulative_weight = getattr(
+                self.config, "cumulative_xyz_loss_weight", 0.5
+            )
+            weighted_cumulative = cumulative_weight * cumulative_xyz_loss
+            loss_dict.update(
+                {
+                    "cumulative_xyz/raw": cumulative_xyz_raw_loss.detach().item(),
+                    "cumulative_xyz/normalized": cumulative_xyz_loss.detach().item(),
+                    "cumulative_xyz/weighted": weighted_cumulative.detach().item(),
+                    "cumulative_xyz/weight": float(cumulative_weight),
+                    "cumulative_xyz/horizon_normalizer_mean": (
+                        (valid.sum(dim=1).float() + 1.0) / 2.0
+                    ).mean().item(),
+                    "cumulative_xyz/to_flow_ratio": (
+                        weighted_cumulative.detach()
+                        / action_loss.detach().clamp(min=torch.finfo(action_loss.dtype).eps)
+                    ).item(),
+                    "action_objective": action_objective.detach().item(),
+                    "action_flow_weight": 1.0,
+                    "action_cumulative_xyz_weight": float(cumulative_weight),
                 }
             )
         terminator_loss = None

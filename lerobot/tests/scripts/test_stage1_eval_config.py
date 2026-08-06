@@ -1,4 +1,5 @@
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -10,7 +11,7 @@ _SRC = (
     / "examples/libero/configs/train_skillVLA/stage1_eval/src"
 )
 sys.path.insert(0, str(_SRC))
-from stage1_eval_config import build_settings  # noqa: E402
+from stage1_eval_config import _model_entries, build_settings  # noqa: E402
 
 
 def _config(
@@ -94,12 +95,150 @@ def _config(
     }
 
 
+def test_model_defaults_are_inherited_and_model_values_override_them() -> None:
+    entries = _model_entries(
+        {
+            "model_defaults": {
+                "previous": True,
+                "checkpoint": "015000",
+                "skill_source": "gt",
+                "advance_mode": "external",
+            },
+            "models": [
+                {"model_dir": "historical", "label": "historical"},
+                {
+                    "model_dir": "current",
+                    "label": "current",
+                    "previous": False,
+                    "checkpoint": "030000",
+                    "skill_source": "own",
+                    "advance_mode": "gt",
+                },
+            ],
+        }
+    )
+
+    assert entries[0] == {
+        "model_dir": "historical",
+        "checkpoint": "015000",
+        "skill_source": "gt",
+        "advance_mode": "external",
+        "terminator_variant": "state_image",
+        "label": "historical",
+        "model_label": "historical",
+        "model_index": 0,
+        "checkpoint_index": 0,
+        "previous_checkpoint": True,
+    }
+    assert entries[1] == {
+        "model_dir": "current",
+        "checkpoint": "030000",
+        "skill_source": "own",
+        "advance_mode": "gt",
+        "terminator_variant": "state_image",
+        "label": "current",
+        "model_label": "current",
+        "model_index": 1,
+        "checkpoint_index": 0,
+        "previous_checkpoint": False,
+    }
+
+
+def test_checkpoint_list_expands_checkpoint_major_for_automatic_grid() -> None:
+    entries = _model_entries(
+        {
+            "model_defaults": {
+                "checkpoint": ["050000", "070000", "090000"],
+                "skill_source": "gt",
+                "advance_mode": "gt",
+            },
+            "models": [
+                {"model_dir": "arch3", "label": "arch3"},
+                {"model_dir": "arch4", "label": "arch4"},
+            ],
+        }
+    )
+
+    assert [entry["checkpoint"] for entry in entries] == [
+        "050000",
+        "050000",
+        "070000",
+        "070000",
+        "090000",
+        "090000",
+    ]
+    assert [entry["model_index"] for entry in entries] == [0, 1, 0, 1, 0, 1]
+    assert [entry["checkpoint_index"] for entry in entries] == [0, 0, 1, 1, 2, 2]
+    assert [entry["label"] for entry in entries] == [
+        "arch3 | ckpt 050000",
+        "arch4 | ckpt 050000",
+        "arch3 | ckpt 070000",
+        "arch4 | ckpt 070000",
+        "arch3 | ckpt 090000",
+        "arch4 | ckpt 090000",
+    ]
+
+
+def test_grid_uses_models_as_columns_and_checkpoints_as_rows(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    project = Path(config["project_root"])
+    checkpoint_root = project / "outputs/skillVLA_stage1/new-vsa/checkpoints"
+    shutil.copytree(checkpoint_root / "000100", checkpoint_root / "000200")
+    config["model_defaults"] = {
+        "checkpoint": ["000100", "000200"],
+        "skill_source": "gt",
+        "advance_mode": "gt",
+    }
+    config["models"] = [
+        {"model_dir": "new-vsa", "label": "model-a"},
+        {"model_dir": "new-vsa", "label": "model-b"},
+    ]
+
+    settings = build_settings(config)
+    models = json.loads(settings["models_json"])
+
+    assert settings["model_count"] == 2
+    assert settings["checkpoint_count"] == 2
+    assert settings["grid_columns"] == 2
+    assert [(model["checkpoint_index"], model["model_index"]) for model in models] == [
+        (0, 0),
+        (0, 1),
+        (1, 0),
+        (1, 1),
+    ]
+
+
+def test_checkpoint_grid_rejects_different_columns_per_model() -> None:
+    with pytest.raises(ValueError, match="same ordered checkpoint list"):
+        _model_entries(
+            {
+                "models": [
+                    {
+                        "model_dir": "arch3",
+                        "label": "arch3",
+                        "checkpoint": ["050000", "070000"],
+                    },
+                    {
+                        "model_dir": "arch4",
+                        "label": "arch4",
+                        "checkpoint": ["050000", "090000"],
+                    },
+                ]
+            }
+        )
+
+
 def test_eval_accepts_new_architecture_and_exports_it(tmp_path: Path) -> None:
     settings = build_settings(_config(tmp_path))
     models = json.loads(settings["models_json"])
 
     assert settings["architecture"] == "vsa_perceiver_crossattn"
+    assert settings["model_count"] == 1
+    assert settings["checkpoint_count"] == 1
+    assert settings["panel_count"] == 1
+    assert settings["grid_columns"] == 1
     assert settings["n_action_steps"] == 5
+    assert settings["immediate_replan_on_skill_end"] is False
     assert models[0]["architecture"] == "vsa_perceiver_crossattn"
     assert models[0]["architecture_revision"] == "interleaved_direct1024_v3"
     assert models[0]["architecture_label"] == "arch2_2"
@@ -239,16 +378,27 @@ def test_eval_accepts_implicit_skillvla_real_checkpoint(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("revision", "label", "visual_tokens", "width"),
+    ("revision", "label", "route", "visual_tokens", "width"),
     [
-        ("expert_tokens_uncompressed_v1", "arch1_1", 0, 0),
-        ("expert_tokens_perceiver_v1", "arch1_2", 32, 1024),
+        ("expert_state_adarms_v1", "arch0_1", "state_cond", 0, 0),
+        ("cond_expert_state_adarms_v1", "arch0_2", "state_cond", 0, 0),
+        (
+            "cond_expert_separate_state_adarms_v1",
+            "arch0_2_sep",
+            "state_cond",
+            0,
+            0,
+        ),
+        ("wrist_cond_expert_state_adarms_v1", "arch0_3", "state_cond", 0, 0),
+        ("expert_tokens_uncompressed_v1", "arch1_1", "state_skill_cond", 0, 0),
+        ("expert_tokens_perceiver_v1", "arch1_2", "state_skill_cond", 32, 1024),
     ],
 )
 def test_eval_resolves_cond_ablation_revision(
     tmp_path: Path,
     revision: str,
     label: str,
+    route: str,
     visual_tokens: int,
     width: int,
 ) -> None:
@@ -257,13 +407,14 @@ def test_eval_resolves_cond_ablation_revision(
             tmp_path,
             architecture="cond_gemma",
             architecture_revision=revision,
-            conditioning_route="state_skill_cond",
+            conditioning_route=route,
         )
     )
     model = json.loads(settings["models_json"])[0]
 
     assert model["architecture_revision"] == revision
     assert model["architecture_label"] == label
+    assert model["conditioning_route"] == route
     assert model["num_visual_latents_per_camera"] == visual_tokens
     assert model["visual_perceiver_width"] == width
 
@@ -426,6 +577,52 @@ def test_eval_accepts_auxiliaries_from_legacy_main_architecture(tmp_path: Path) 
     assert Path(model["external_skill_model"]) == external
 
 
+def test_eval_accepts_external_image_only_terminator(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    project = Path(config["project_root"])
+    target = (
+        project
+        / config["outputs_root"]
+        / "skillVLA_stage1/new-vsa/checkpoints/000100/pretrained_model"
+    )
+    target_policy = json.loads((target / "config.json").read_text())
+    fsq = project / "dataset/skillvla_dataset/source/run/FSQ.pt"
+    fsq.touch()
+    target_policy["fsq_path"] = str(fsq)
+    (target / "config.json").write_text(json.dumps(target_policy))
+
+    external = project / "external/image-aux/checkpoints/030000/pretrained_model"
+    external.mkdir(parents=True)
+    (external / "config.json").write_text(
+        json.dumps(
+            {
+                "type": "skill_aux",
+                "train_terminator": False,
+                "train_image_only_terminator": True,
+                "skill_fsq_levels": [3, 3, 3],
+            }
+        )
+    )
+    (external / "model.safetensors").touch()
+
+    config["external_skill_model"] = str(external)
+    config["models"][0]["advance_mode"] = "external"
+    config["models"][0]["terminator_variant"] = "image_only"
+    model = json.loads(build_settings(config)["models_json"])[0]
+
+    assert model["advance_mode"] == "external"
+    assert model["terminator_variant"] == "image_only"
+
+
+def test_eval_rejects_image_only_variant_for_own_terminator(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    config["models"][0]["advance_mode"] = "own"
+    config["models"][0]["terminator_variant"] = "image_only"
+
+    with pytest.raises(ValueError, match="requires advance_mode=external"):
+        build_settings(config)
+
+
 def test_eval_rejects_legacy_stage1_checkpoint(tmp_path: Path) -> None:
     config = _config(tmp_path, architecture="state_skill_cond")
 
@@ -439,3 +636,12 @@ def test_eval_rejects_replanning_beyond_chunk(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="exceeds"):
         build_settings(config)
+
+
+def test_eval_exports_immediate_skill_end_replanning(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    config["terminator"] = {"immediate_replan_on_skill_end": True}
+
+    settings = build_settings(config)
+
+    assert settings["immediate_replan_on_skill_end"] is True

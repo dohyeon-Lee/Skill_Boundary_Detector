@@ -85,13 +85,31 @@ def _clean_label(value: str) -> str:
     return value
 
 
-def _default_output_name(models: list[dict]) -> str:
+def _default_output_name(
+    models: list[dict], *, model_count: int, checkpoint_count: int
+) -> str:
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    if len(models) > 1:
-        return f"compare_{len(models)}models_{stamp}"
+    if model_count > 1 or checkpoint_count > 1:
+        return (
+            f"compare_{model_count}models_"
+            f"{checkpoint_count}checkpoints_{stamp}"
+        )
     model = re.sub(r"[^A-Za-z0-9._-]+", "-", models[0]["model_dir"]).strip("-_")
     raw = f"{model}_{models[0]['checkpoint']}_{stamp}"
     return raw if len(raw) <= 200 else f"stage1_{models[0]['checkpoint']}_{stamp}"
+
+
+def _checkpoint_list(value: object, *, field: str) -> list[str]:
+    """Normalize a scalar/list checkpoint setting while preserving its order."""
+    values = value if isinstance(value, list) else [value]
+    if not values:
+        raise ValueError(f"{field} must contain at least one checkpoint.")
+    checkpoints = [
+        _safe_name(str(checkpoint), field=field) for checkpoint in values
+    ]
+    if len(checkpoints) != len(set(checkpoints)):
+        raise ValueError(f"{field} contains duplicate checkpoints: {checkpoints}.")
+    return checkpoints
 
 
 def _visual_crossattn_query_label(*, include_state: bool, include_skill: bool) -> str:
@@ -119,6 +137,10 @@ COND_GEMMA_ARCHITECTURE = "cond_gemma"
 COND_GEMMA_ARCHITECTURE_REVISION = "skillvla_real_v1"
 COND_GEMMA_ARCHITECTURE_LABELS = {
     COND_GEMMA_ARCHITECTURE_REVISION: "arch0",
+    "expert_state_adarms_v1": "arch0_1",
+    "cond_expert_state_adarms_v1": "arch0_2",
+    "cond_expert_separate_state_adarms_v1": "arch0_2_sep",
+    "wrist_cond_expert_state_adarms_v1": "arch0_3",
     "expert_tokens_uncompressed_v1": "arch1_1",
     "expert_tokens_perceiver_v1": "arch1_2",
 }
@@ -448,9 +470,9 @@ def _external_predictor_contract(
     if not weights_path.is_file():
         raise FileNotFoundError(f"External predictor weights not found: {weights_path}")
     source = json.loads(config_path.read_text())
-    if source.get("type") != "skill_expert":
+    if source.get("type") not in {"skill_expert", "skill_aux"}:
         raise ValueError(
-            "External predictor must come from policy.type=skill_expert, got "
+            "External predictor must come from policy.type=skill_expert or skill_aux, got "
             f"{source.get('type')!r} at {checkpoint}."
         )
     if not as_bool(source.get("train_skill_predictor", False)):
@@ -480,6 +502,7 @@ def _validate_external_terminator(
     checkpoint: Path,
     *,
     target_policy: dict,
+    variant: str = "state_image",
 ) -> None:
     """Validate an eval-time co-trained terminator source."""
     config_path = checkpoint / "config.json"
@@ -489,14 +512,24 @@ def _validate_external_terminator(
     if not weights_path.is_file():
         raise FileNotFoundError(f"External terminator weights not found: {weights_path}")
     source = json.loads(config_path.read_text())
-    if source.get("type") != "skill_expert":
+    allowed_types = {"skill_aux"} if variant == "image_only" else {
+        "skill_expert",
+        "skill_aux",
+    }
+    if source.get("type") not in allowed_types:
         raise ValueError(
-            "External terminator must come from policy.type=skill_expert, got "
+            f"External {variant} terminator must come from "
+            f"policy.type={sorted(allowed_types)}, got "
             f"{source.get('type')!r} at {checkpoint}."
         )
-    if not as_bool(source.get("train_terminator", False)):
+    train_field = (
+        "train_image_only_terminator"
+        if variant == "image_only"
+        else "train_terminator"
+    )
+    if not as_bool(source.get(train_field, False)):
         raise ValueError(
-            f"External terminator checkpoint has no trained terminator: {checkpoint}"
+            f"External checkpoint has no trained {variant} terminator: {checkpoint}"
         )
     if source.get("skill_fsq_levels") != target_policy.get("skill_fsq_levels"):
         raise ValueError(
@@ -507,10 +540,46 @@ def _validate_external_terminator(
 
 
 def _model_entries(config: dict) -> list[dict]:
-    default_checkpoint = str(get_value(config, "checkpoint", "last"))
-    default_skill_source = str(get_value(config, "skill_source", "gt")).lower()
+    model_defaults = get_value(config, "model_defaults", {}) or {}
+    if not isinstance(model_defaults, dict):
+        raise ValueError("model_defaults must be a YAML mapping.")
+    supported_defaults = {
+        "previous",
+        "checkpoint",
+        "skill_source",
+        "advance_mode",
+        "terminator_variant",
+    }
+    unknown_defaults = sorted(set(model_defaults) - supported_defaults)
+    if unknown_defaults:
+        raise ValueError(
+            f"Unknown model_defaults fields {unknown_defaults}; "
+            f"supported={sorted(supported_defaults)}."
+        )
+
+    # Per-model values below override this block. The older top-level fields and
+    # oracle.advance_mode remain as compatibility fallbacks for saved configs.
+    default_previous = as_bool(
+        model_defaults.get("previous", get_value(config, "previous", False))
+    )
+    default_checkpoints = _checkpoint_list(
+        model_defaults.get("checkpoint", get_value(config, "checkpoint", "last")),
+        field="model_defaults.checkpoint",
+    )
+    default_skill_source = str(
+        model_defaults.get("skill_source", get_value(config, "skill_source", "gt"))
+    ).lower()
     default_advance = str(
-        _at(config, "oracle", "advance_mode", default="own")
+        model_defaults.get(
+            "advance_mode",
+            _at(config, "oracle", "advance_mode", default="own"),
+        )
+    ).lower()
+    default_terminator_variant = str(
+        model_defaults.get(
+            "terminator_variant",
+            _at(config, "terminator", "variant", default="state_image"),
+        )
     ).lower()
     models = get_value(config, "models", None)
     if isinstance(models, list) and models:
@@ -521,8 +590,10 @@ def _model_entries(config: dict) -> list[dict]:
             raise ValueError("Set models[] or a top-level model_dir in Stage-1 eval config.")
         raw_entries = [{"model_dir": model_dir}]
 
-    entries = []
+    rows = []
     for index, raw in enumerate(raw_entries):
+        if not isinstance(raw, dict):
+            raise ValueError(f"models[{index}] must be a YAML mapping.")
         obsolete = [
             field
             for field in ("predictor_checkpoint", "terminator_checkpoint")
@@ -535,8 +606,8 @@ def _model_entries(config: dict) -> list[dict]:
                 "and/or advance_mode=external."
             )
         model_dir = _safe_name(str(raw.get("model_dir", "")), field="models[].model_dir")
-        checkpoint = _safe_name(
-            str(raw.get("checkpoint", default_checkpoint)),
+        checkpoints = _checkpoint_list(
+            raw.get("checkpoint", default_checkpoints),
             field="models[].checkpoint",
         )
         skill_source = str(raw.get("skill_source", default_skill_source)).lower()
@@ -562,22 +633,90 @@ def _model_entries(config: dict) -> list[dict]:
         advance_mode = advance_aliases.get(advance_mode, "")
         if not advance_mode:
             raise ValueError("models[].advance_mode must be external|own|gt.")
+        variant_aliases = {
+            "normal": "state_image",
+            "state_image": "state_image",
+            "state+image": "state_image",
+            "image": "image_only",
+            "image_only": "image_only",
+            "image-only": "image_only",
+        }
+        terminator_variant = variant_aliases.get(
+            str(raw.get("terminator_variant", default_terminator_variant)).lower(), ""
+        )
+        if not terminator_variant:
+            raise ValueError(
+                "models[].terminator_variant must be state_image|image_only."
+            )
+        if advance_mode == "own" and terminator_variant == "image_only":
+            raise ValueError(
+                "terminator_variant=image_only requires advance_mode=external; "
+                "Stage-1 action checkpoints contain only the normal terminator."
+            )
         label = str(raw.get("label", "") or "").strip()
         if not label:
             label = f"model{index + 1}-{skill_source}"
-        entries.append(
+        rows.append(
             {
                 "model_dir": model_dir,
-                "checkpoint": checkpoint,
+                "checkpoints": checkpoints,
                 "skill_source": skill_source,
                 "advance_mode": advance_mode,
+                "terminator_variant": terminator_variant,
                 "label": _clean_label(label),
-                "previous_checkpoint": as_bool(raw.get("previous", False)),
+                "previous_checkpoint": as_bool(
+                    raw.get("previous", default_previous)
+                ),
             }
         )
-    labels = [entry["label"] for entry in entries]
+    labels = [row["label"] for row in rows]
     if len(labels) != len(set(labels)):
         raise ValueError(f"models[].label values must be unique, got {labels}.")
+
+    checkpoint_sequences = [row["checkpoints"] for row in rows]
+    # Preserve the historical comparison where each model may select one
+    # different checkpoint. Multi-checkpoint grids, however, need identical
+    # ordered rows across every model column.
+    is_single_checkpoint_comparison = all(
+        len(sequence) == 1 for sequence in checkpoint_sequences
+    )
+    if not is_single_checkpoint_comparison and any(
+        sequence != checkpoint_sequences[0]
+        for sequence in checkpoint_sequences[1:]
+    ):
+        raise ValueError(
+            "Every models[] entry must use the same ordered checkpoint list so "
+            "side-by-side rows represent the same checkpoints. Put the shared "
+            "list in model_defaults.checkpoint."
+        )
+
+    checkpoint_count = len(checkpoint_sequences[0])
+    entries = []
+    # Flatten checkpoint-major: one output row per checkpoint, with all models
+    # adjacent horizontally in YAML order.
+    for checkpoint_index in range(checkpoint_count):
+        for model_index, row in enumerate(rows):
+            checkpoint = row["checkpoints"][checkpoint_index]
+            model_label = row["label"]
+            panel_label = (
+                f"{model_label} | ckpt {checkpoint}"
+                if checkpoint_count > 1
+                else model_label
+            )
+            entries.append(
+                {
+                    "model_dir": row["model_dir"],
+                    "checkpoint": checkpoint,
+                    "skill_source": row["skill_source"],
+                    "advance_mode": row["advance_mode"],
+                    "terminator_variant": row["terminator_variant"],
+                    "label": panel_label,
+                    "model_label": model_label,
+                    "model_index": model_index,
+                    "checkpoint_index": checkpoint_index,
+                    "previous_checkpoint": row["previous_checkpoint"],
+                }
+            )
     return entries
 
 
@@ -603,6 +742,8 @@ def build_settings(config: dict) -> dict:
         else None
     )
     entries = _model_entries(config)
+    model_count = 1 + max(entry["model_index"] for entry in entries)
+    checkpoint_count = 1 + max(entry["checkpoint_index"] for entry in entries)
     resolved = []
     for entry in entries:
         model_root = outputs_root / "skillVLA_stage1"
@@ -652,6 +793,7 @@ def build_settings(config: dict) -> dict:
             _validate_external_terminator(
                 external_skill_model,
                 target_policy=contract["policy"],
+                variant=entry["terminator_variant"],
             )
         if entry["advance_mode"] == "own" and not contract["has_terminator"]:
             raise ValueError(
@@ -708,7 +850,13 @@ def build_settings(config: dict) -> dict:
 
     output_name = str(get_value(config, "output_name", "") or "").strip()
     output_name = _safe_name(
-        output_name or _default_output_name(resolved), field="output_name"
+        output_name
+        or _default_output_name(
+            resolved,
+            model_count=model_count,
+            checkpoint_count=checkpoint_count,
+        ),
+        field="output_name",
     )
     models_json = json.dumps(
         [
@@ -732,13 +880,17 @@ def build_settings(config: dict) -> dict:
         "project_root": project_root,
         "lerobot_root": project_root / "lerobot",
         "models_json": models_json,
-        "model_count": len(resolved),
+        "model_count": model_count,
+        "checkpoint_count": checkpoint_count,
+        "panel_count": len(resolved),
         "model_architectures": ", ".join(
             f"{model['label']}={model['architecture_label']}"
             + ("[previous]" if model["previous_checkpoint"] else "")
             for model in resolved
         ),
-        "models_per_row": int(get_value(config, "models_per_row", 2) or 0),
+        # Specs are flattened checkpoint-major, so this many columns produces
+        # one row per checkpoint and one column per model.
+        "grid_columns": model_count,
         "eval_resume": as_bool(get_value(config, "resume", False)),
         "policy_path": primary["policy_path"],
         "fsq_path": primary["fsq_path"],
@@ -771,12 +923,21 @@ def build_settings(config: dict) -> dict:
         "max_parallel_tasks": int(get_value(config, "max_parallel_tasks", 1)),
         "n_action_steps": n_action_steps,
         "advance_mode": primary["advance_mode"],
+        "terminator_variant": primary["terminator_variant"],
         "skill_end_mode": end_mode,
         "skill_end_threshold": float(
             _at(config, "terminator", "end_threshold", default=0.5)
         ),
         "skill_end_progress_threshold": float(
             _at(config, "terminator", "progress_threshold", default=0.95)
+        ),
+        "immediate_replan_on_skill_end": as_bool(
+            _at(
+                config,
+                "terminator",
+                "immediate_replan_on_skill_end",
+                default=False,
+            )
         ),
         "inference_skill_max_length": int(
             _at(config, "terminator", "max_skill_length", default=150)

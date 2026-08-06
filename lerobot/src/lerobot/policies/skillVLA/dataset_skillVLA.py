@@ -6,8 +6,10 @@ the skill transition slightly early/late at inference:
 
   skill_start_image        : 3rd-person frame decoded at the (jittered) skill start
   skill_start_wrist_image  : wrist frame at the same start
+  terminator_start_image   : 3rd-person frame at the exact current-skill start
   skill_start_state        : observation.state at that start (from skill_initial_state.npz)
   skill_code               : the (jittered) skill's FSQ code (VLM target + action-expert teacher forcing)
+  skill_effective_de       : distance to the jittered skill assignment's virtual end
 
 Static ingredients come from build_data:
   parquet columns  : skill_index(k), skill_sequence(SS), skill_ds, skill_de, skill_initial_frame(IFS)
@@ -26,15 +28,21 @@ import torch
 
 from lerobot.datasets.dataset_metadata import LeRobotDatasetMetadata
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
-from lerobot.policies.skillVLA.skill_jitter import choose_jitter, normalize_jitter_distribution
+from lerobot.policies.skillVLA.skill_jitter import (
+    choose_jitter,
+    effective_jittered_skill_de,
+    normalize_jitter_distribution,
+)
 
 # Batch keys this dataset adds (the model + processor consume these).
 SKILL_START_IMAGE = "skill_start_image"
 SKILL_START_WRIST_IMAGE = "skill_start_wrist_image"
+TERMINATOR_START_IMAGE = "terminator_start_image"
 SKILL_START_STATE = "skill_start_state"
 SKILL_CODE = "skill_code"
 SKILL_CODE_TRUE = "skill_code_true"
 SKILL_PROGRESS = "skill_progress"
+SKILL_EFFECTIVE_DE = "skill_effective_de"
 SAME_SKILL_PAIR_ID = "same_skill_pair_id"
 SAME_SKILL_PAIR_FALLBACK = "same_skill_pair_fallback"
 
@@ -77,6 +85,13 @@ class SkillVLADataset(LeRobotDataset):
     """LeRobotDataset that also yields the VLM's (jittered) skill-start image/state + skill code."""
 
     def __init__(self, *args, **kwargs):
+        jitter_pmax_override = kwargs.pop("jitter_pmax", None)
+        self._include_predictor_start_inputs = bool(
+            kwargs.pop("include_predictor_start_inputs", True)
+        )
+        self._include_terminator_start_image = bool(
+            kwargs.pop("include_terminator_start_image", False)
+        )
         # Sample only episodes that actually have skills. The skill segmentation
         # (build_skill_dataset.py, min_skills=2) drops episodes with <2 detected skills, so they are
         # absent from the ISS npz and carry no Stage-2 supervision — but the LeRobot parquet still
@@ -88,8 +103,26 @@ class SkillVLADataset(LeRobotDataset):
         super().__init__(*args, **kwargs)
         info = self.meta.info
         iss_path = self._resolve_iss_path(info.get("skill_initial_state_path"), self.root)
-        self._iss = _ISSStore(iss_path)
-        self._pmax = int(info.get("skill_pmax", self._iss.pmax))
+        self._iss = (
+            _ISSStore(iss_path) if self._include_predictor_start_inputs else None
+        )
+        default_pmax = self._iss.pmax if self._iss is not None else 0
+        dataset_pmax = int(info.get("skill_pmax", default_pmax))
+        if self._iss is not None and dataset_pmax != self._iss.pmax:
+            raise ValueError(
+                "Dataset skill_pmax does not match the ISS window: "
+                f"info.json={dataset_pmax}, ISS={self._iss.pmax}."
+            )
+        self._pmax = (
+            dataset_pmax
+            if jitter_pmax_override is None
+            else int(jitter_pmax_override)
+        )
+        if self._pmax < 0 or self._pmax > dataset_pmax:
+            raise ValueError(
+                "Requested transition jitter pmax must be within the prebuilt ISS "
+                f"window [0, {dataset_pmax}], got {self._pmax}."
+            )
         self._jitter_distribution = normalize_jitter_distribution(
             info.get("skill_jitter_distribution", "half_normal"))
 
@@ -147,7 +180,6 @@ class SkillVLADataset(LeRobotDataset):
                     f"got {idx!r}."
                 )
         item = super().__getitem__(int(idx))
-        reader = self._ensure_reader()
 
         ep_idx = _scalar(item["episode_index"])
         k = _scalar(item["skill_index"])
@@ -156,48 +188,98 @@ class SkillVLADataset(LeRobotDataset):
         seq_len = _scalar(item["skill_sequence_len"])
         ss = np.asarray(item["skill_sequence"]).reshape(-1)
         ifs = np.asarray(item["skill_initial_frame"]).reshape(-1)
-
-        # 1) pick the (possibly jittered) skill + start-frame offset
-        if jitter_override is None:
-            kp, offset = choose_jitter(
-                k, ds, de, seq_len, self._pmax, distribution=self._jitter_distribution)
-        else:
-            kp, offset = jitter_override
-            if not 0 <= kp < seq_len - 1 or not -self._pmax <= offset <= self._pmax:
-                raise ValueError(
-                    f"Invalid sampler-provided jitter (k'={kp}, offset={offset}) for "
-                    f"seq_len={seq_len}, pmax={self._pmax}."
-                )
-        skill_code = int(ss[kp])
-        gt_start = int(ifs[kp])
-
-        # 2) decode the start frame's images (clamp to the episode)
-        ep_len = _scalar(self.meta.episodes[ep_idx]["length"])
-        start_frame = int(np.clip(gt_start + offset, 0, ep_len - 1))
-        start_ts = start_frame / self.fps
-        start_imgs = reader._query_videos({CAM_3RD: [start_ts], CAM_WRIST: [start_ts]}, ep_idx)  # noqa: SLF001
-        if reader._image_transforms is not None:  # noqa: SLF001  (match current-frame transforms)
-            start_imgs = {c: reader._image_transforms(v) for c, v in start_imgs.items()}  # noqa: SLF001
-
-        # 3) start state from the ISS window (offset is clamped into the window by construction)
-        iss_index = int(np.clip(self._pmax + offset, 0, 2 * self._pmax))
-        start_state = self._iss.state(ep_idx, kp, iss_index, gt_start)
-
-        item[SKILL_START_IMAGE] = start_imgs[CAM_3RD]
-        item[SKILL_START_WRIST_IMAGE] = start_imgs[CAM_WRIST]
-        item[SKILL_START_STATE] = torch.from_numpy(start_state)
-        item[SKILL_CODE] = torch.tensor(skill_code, dtype=torch.long)
         # TRUE current skill's code (un-jittered) — the FSQ terminator co-training (FT) conditions on
         # the actual skill the current frame belongs to, with progress/termination from its ds/de.
         item[SKILL_CODE_TRUE] = torch.tensor(int(ss[k]), dtype=torch.long)
+        item[SKILL_EFFECTIVE_DE] = torch.tensor(de, dtype=torch.long)
 
-        # 4) GT progress of the CURRENT frame within the CHOSEN skill kp (terminator's training
-        # scale: 0 at skill start, 1 at its last frame). Transition-jittered samples clamp: a frame
-        # relabeled as the NEXT skill sits before its start → 0; as the PREVIOUS → past its end → 1.
-        lens = np.asarray(item["skill_length_sequence"]).reshape(-1)
-        t = int(ifs[k]) + int(ds)
-        prog = (t - int(ifs[kp])) / max(int(lens[kp]) - 1, 1)
-        item[SKILL_PROGRESS] = torch.tensor(float(np.clip(prog, 0.0, 1.0)), dtype=torch.float32)
-        item[SAME_SKILL_PAIR_ID] = torch.tensor(int(pair_id), dtype=torch.long)
-        item[SAME_SKILL_PAIR_FALLBACK] = torch.tensor(bool(pair_fallback), dtype=torch.bool)
+        reader = None
+        ep_len = _scalar(self.meta.episodes[ep_idx]["length"])
+        predictor_start_frame = None
+        predictor_start_images = None
+        if self._include_predictor_start_inputs:
+            reader = self._ensure_reader()
+            if jitter_override is None:
+                kp, offset = choose_jitter(
+                    k,
+                    ds,
+                    de,
+                    seq_len,
+                    self._pmax,
+                    distribution=self._jitter_distribution,
+                )
+            else:
+                kp, offset = jitter_override
+                if not 0 <= kp < seq_len - 1 or not -self._pmax <= offset <= self._pmax:
+                    raise ValueError(
+                        f"Invalid sampler-provided jitter (k'={kp}, offset={offset}) for "
+                        f"seq_len={seq_len}, pmax={self._pmax}."
+                    )
+            skill_code = int(ss[kp])
+            gt_start = int(ifs[kp])
+            predictor_start_frame = int(np.clip(gt_start + offset, 0, ep_len - 1))
+            start_ts = predictor_start_frame / self.fps
+            predictor_start_images = reader._query_videos(  # noqa: SLF001
+                {CAM_3RD: [start_ts], CAM_WRIST: [start_ts]}, ep_idx
+            )
+            if reader._image_transforms is not None:  # noqa: SLF001
+                predictor_start_images = {
+                    camera: reader._image_transforms(image)  # noqa: SLF001
+                    for camera, image in predictor_start_images.items()
+                }
+
+            if self._iss is None:
+                raise RuntimeError("Predictor start inputs require the ISS store.")
+            # The ISS array was built with the dataset's original pmax. A
+            # smaller runtime jitter window must still index around that center.
+            iss_center = self._iss.pmax
+            iss_index = int(np.clip(iss_center + offset, 0, 2 * iss_center))
+            start_state = self._iss.state(ep_idx, kp, iss_index, gt_start)
+            item[SKILL_START_IMAGE] = predictor_start_images[CAM_3RD]
+            item[SKILL_START_WRIST_IMAGE] = predictor_start_images[CAM_WRIST]
+            item[SKILL_START_STATE] = torch.from_numpy(start_state)
+            item[SKILL_CODE] = torch.tensor(skill_code, dtype=torch.long)
+
+            # GT progress of the current frame within the chosen (possibly
+            # jittered) predictor skill.
+            lens = np.asarray(item["skill_length_sequence"]).reshape(-1)
+            current_frame = int(ifs[k]) + int(ds)
+            effective_de = effective_jittered_skill_de(
+                k=k,
+                k_prime=kp,
+                ds=ds,
+                de=de,
+                skill_initial_frames=ifs,
+                skill_lengths=lens,
+                offset=offset,
+            )
+            item[SKILL_EFFECTIVE_DE] = torch.tensor(
+                effective_de, dtype=torch.long
+            )
+            progress = (current_frame - int(ifs[kp])) / max(int(lens[kp]) - 1, 1)
+            item[SKILL_PROGRESS] = torch.tensor(
+                float(np.clip(progress, 0.0, 1.0)), dtype=torch.float32
+            )
+            item[SAME_SKILL_PAIR_ID] = torch.tensor(int(pair_id), dtype=torch.long)
+            item[SAME_SKILL_PAIR_FALLBACK] = torch.tensor(
+                bool(pair_fallback), dtype=torch.bool
+            )
+
+        if self._include_terminator_start_image:
+            reader = reader or self._ensure_reader()
+            true_start_frame = int(np.clip(int(ifs[k]), 0, ep_len - 1))
+            if (
+                predictor_start_frame == true_start_frame
+                and predictor_start_images is not None
+            ):
+                terminator_start_image = predictor_start_images[CAM_3RD]
+            else:
+                terminator_start_image = reader._query_videos(  # noqa: SLF001
+                    {CAM_3RD: [true_start_frame / self.fps]}, ep_idx
+                )[CAM_3RD]
+                if reader._image_transforms is not None:  # noqa: SLF001
+                    terminator_start_image = reader._image_transforms(  # noqa: SLF001
+                        terminator_start_image
+                    )
+            item[TERMINATOR_START_IMAGE] = terminator_start_image
         return item

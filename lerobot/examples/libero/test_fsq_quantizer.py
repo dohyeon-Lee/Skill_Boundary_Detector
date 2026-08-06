@@ -47,3 +47,14 @@ def test_nonbinary_levels_preserve_the_previous_quantization() -> None:
 
     torch.testing.assert_close(z_q, expected_z_q, rtol=0, atol=0)
     assert torch.equal(codes, expected_codes)
+
+
+def test_boundary_margin_is_zero_at_boundary_and_maximal_at_bin_center() -> None:
+    quantizer = FSQ([3])
+    # For L=3 the bounded coordinate is tanh(z), so these map to 0 and 0.5.
+    z = torch.tensor([[0.0], [torch.atanh(torch.tensor(0.5))]])
+
+    margins = quantizer.boundary_margin(z)
+
+    torch.testing.assert_close(margins[0], torch.tensor([0.5]))
+    torch.testing.assert_close(margins[1], torch.tensor([0.0]), atol=1e-6, rtol=0)

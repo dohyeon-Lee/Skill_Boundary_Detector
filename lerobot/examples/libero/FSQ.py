@@ -257,9 +257,23 @@ class FSQ(nn.Module):
         self.codebook_size = int(np.prod(levels))
         self.latent_dim = len(levels)
 
-    def forward(self, z: Tensor) -> tuple[Tensor, Tensor]:
+    def bound(self, z: Tensor) -> Tensor:
+        """Map continuous encoder outputs onto the coordinate system rounded by FSQ."""
         half = self.levels_half.to(z.dtype)
-        bounded = torch.tanh(z + self.shift.to(z.dtype)) * half - self.offset.to(z.dtype)
+        return torch.tanh(z + self.shift.to(z.dtype)) * half - self.offset.to(z.dtype)
+
+    def boundary_margin(self, z: Tensor) -> Tensor:
+        """Distance to the nearest rounding boundary, in unit-width FSQ-bin coordinates.
+
+        A margin of 0 lies exactly on a decision boundary and 0.5 is the
+        center of a bin.  The returned tensor retains the FSQ latent axes so
+        callers can take the minimum across axes for sample-level stability.
+        """
+        bounded = self.bound(z)
+        return (0.5 - (bounded - torch.round(bounded)).abs()).clamp_(0.0, 0.5)
+
+    def forward(self, z: Tensor) -> tuple[Tensor, Tensor]:
+        bounded = self.bound(z)
         z_int = torch.round(bounded)
         z_q = bounded + (z_int - bounded).detach()
         index = ((z_int + self.half_width.to(z.dtype)).long() * self.strides).sum(dim=-1)
@@ -343,14 +357,14 @@ class SplineFSQEncoder(nn.Module):
         hi = self.encoder_start_max.to(start_pose.device, start_pose.dtype)
         return 2.0 * (start_pose - lo) / (hi - lo + 1e-8) - 1.0
 
-    def forward(
+    def encode_continuous(
         self,
         ctrl: Tensor,
         lengths: Tensor,
         start_pose: Tensor | None = None,
         *,
         normalized: bool = True,
-    ) -> tuple[Tensor, Tensor]:
+    ) -> Tensor:
         if not normalized:
             ctrl = self.normalize_control_points(ctrl)
             if start_pose is not None:
@@ -367,7 +381,22 @@ class SplineFSQEncoder(nn.Module):
                 raise ValueError("optimal encoder mode requires start_pose on every forward pass.")
             tokens.append(self.enc_start_proj(start_pose).unsqueeze(1))
         tokens.append(length_tok)
-        z_e = self.z_head(self.enc_traj_pool(torch.cat(tokens, dim=1)))
+        return self.z_head(self.enc_traj_pool(torch.cat(tokens, dim=1)))
+
+    def forward(
+        self,
+        ctrl: Tensor,
+        lengths: Tensor,
+        start_pose: Tensor | None = None,
+        *,
+        normalized: bool = True,
+    ) -> tuple[Tensor, Tensor]:
+        z_e = self.encode_continuous(
+            ctrl,
+            lengths,
+            start_pose,
+            normalized=normalized,
+        )
         return self.fsq(z_e)
 
     @torch.no_grad()
@@ -855,47 +884,79 @@ class FSQQueryTerminator(nn.Module):
         return torch.cat([third_tokens, wrist_tokens], dim=1)
 
     @staticmethod
-    def _allow_mask(n_image: int, device: torch.device) -> Tensor:
+    def _allow_mask(
+        n_image: int,
+        device: torch.device,
+        *,
+        image_allow: Tensor | None = None,
+        query_image_allow: Tensor | None = None,
+    ) -> Tensor:
         total = n_image + 2
         allow = torch.zeros(total, total, dtype=torch.bool, device=device)
-        allow[:n_image, :n_image] = True
-        allow[n_image, :n_image] = True
+        if image_allow is None:
+            allow[:n_image, :n_image] = True
+        else:
+            if image_allow.shape != (n_image, n_image):
+                raise ValueError(
+                    "image_allow must have shape "
+                    f"({n_image}, {n_image}), got {tuple(image_allow.shape)}."
+                )
+            allow[:n_image, :n_image] = image_allow.to(
+                device=device, dtype=torch.bool
+            )
+        if query_image_allow is None:
+            allow[n_image:, :n_image] = True
+        else:
+            if query_image_allow.shape != (2, n_image):
+                raise ValueError(
+                    "query_image_allow must have shape "
+                    f"(2, {n_image}), got {tuple(query_image_allow.shape)}."
+                )
+            allow[n_image:, :n_image] = query_image_allow.to(
+                device=device, dtype=torch.bool
+            )
         allow[n_image, n_image] = True
-        allow[n_image + 1, :n_image] = True
         allow[n_image + 1, n_image + 1] = True
         return allow
 
-    def forward(
+    def _forward_from_conditions(
         self,
-        z_norm: Tensor,
-        raw_state: Tensor,
-        third: Tensor | None,
-        wrist: Tensor | None = None,
+        image_tokens: Tensor,
+        norm_cond: Tensor,
+        skill_broadcast: Tensor | None,
+        *,
+        image_allow: Tensor | None = None,
+        query_image_allow: Tensor | None = None,
     ) -> tuple[Tensor, Tensor]:
-        image_tokens = self._prepare_image_tokens(third, wrist)
+        """Run the shared query decoder from an already-built condition.
+
+        Keeping this path separate lets the image-only terminator reuse the
+        exact visual/query architecture while omitting the state projection.
+        """
         bsize, n_image = image_tokens.shape[:2]
         queries = torch.cat(
-            [self.progress_query.expand(bsize, -1, -1), self.termination_query.expand(bsize, -1, -1)],
+            [
+                self.progress_query.expand(bsize, -1, -1),
+                self.termination_query.expand(bsize, -1, -1),
+            ],
             dim=1,
         ).to(image_tokens.dtype)
-        state_cond = self.state_proj(self._normalize_state(raw_state).to(self.state_proj.weight.dtype))
-        skill_cond = self.skill_proj(z_norm.to(self.skill_proj.weight.dtype))
-        if self.skill_cond_mode == "broadcast":
-            norm_cond = state_cond
-            skill_broadcast = skill_cond
-        else:
-            norm_cond = state_cond + skill_cond
-            skill_broadcast = None
         if self.arch == "cond":
             queries = self.query_in_norm(queries, norm_cond)
         x = torch.cat([image_tokens, queries], dim=1)
-        allow = self._allow_mask(n_image, x.device)
+        allow = self._allow_mask(
+            n_image,
+            x.device,
+            image_allow=image_allow,
+            query_image_allow=query_image_allow,
+        )
         if self.arch == "small":
             for layer in self.layers:
                 if self.gradient_checkpointing and self.training:
                     x = torch.utils.checkpoint.checkpoint(
                         lambda hidden, layer=layer: layer(
-                            hidden, n_image, norm_cond, ~allow, skill_broadcast),
+                            hidden, n_image, norm_cond, ~allow, skill_broadcast
+                        ),
                         x,
                         use_reentrant=False,
                         preserve_rng_state=False,
@@ -907,13 +968,19 @@ class FSQQueryTerminator(nn.Module):
             attention = torch.where(
                 allow[None, None],
                 torch.tensor(0.0, device=x.device, dtype=x.dtype),
-                torch.tensor(OPENPI_ATTENTION_MASK_VALUE, device=x.device, dtype=x.dtype),
+                torch.tensor(
+                    OPENPI_ATTENTION_MASK_VALUE, device=x.device, dtype=x.dtype
+                ),
             ).expand(bsize, 1, -1, -1)
             broadcast = None
             if skill_broadcast is not None:
                 broadcast = torch.zeros_like(x)
-                broadcast[:, n_image:] = skill_broadcast.to(device=x.device, dtype=x.dtype).unsqueeze(1)
-            positions = torch.arange(x.shape[1], device=x.device)[None].expand(bsize, -1)
+                broadcast[:, n_image:] = skill_broadcast.to(
+                    device=x.device, dtype=x.dtype
+                ).unsqueeze(1)
+            positions = torch.arange(x.shape[1], device=x.device)[None].expand(
+                bsize, -1
+            )
             hidden = self.cond_encoder.model(
                 inputs_embeds=x,
                 attention_mask=attention,
@@ -927,6 +994,24 @@ class FSQQueryTerminator(nn.Module):
         termination = self.termination_head(query_out[:, 1]).squeeze(-1)
         return progress, termination
 
+    def forward(
+        self,
+        z_norm: Tensor,
+        raw_state: Tensor,
+        third: Tensor | None,
+        wrist: Tensor | None = None,
+    ) -> tuple[Tensor, Tensor]:
+        image_tokens = self._prepare_image_tokens(third, wrist)
+        state_cond = self.state_proj(self._normalize_state(raw_state).to(self.state_proj.weight.dtype))
+        skill_cond = self.skill_proj(z_norm.to(self.skill_proj.weight.dtype))
+        if self.skill_cond_mode == "broadcast":
+            norm_cond = state_cond
+            skill_broadcast = skill_cond
+        else:
+            norm_cond = state_cond + skill_cond
+            skill_broadcast = None
+        return self._forward_from_conditions(image_tokens, norm_cond, skill_broadcast)
+
     @torch.no_grad()
     def predict_termination(
         self,
@@ -936,6 +1021,257 @@ class FSQQueryTerminator(nn.Module):
         wrist: Tensor | None = None,
     ) -> tuple[Tensor, Tensor]:
         progress, logits = self(z_norm, raw_state, third, wrist)
+        return progress, torch.sigmoid(logits)
+
+
+class FSQStartComparisonQueryTerminator(FSQQueryTerminator):
+    """Compare the current view with the exact start of the current skill.
+
+    The frozen/shared vision tower encodes start-third, current-third, and
+    current-wrist images in one call.  A learned relation token at every
+    third-person patch is built from ``[start, current, current - start]``.
+
+    The progress query reads only current-third/current-wrist tokens.  The
+    termination query additionally reads the relation tokens.  Image-token
+    attention is masked so the relation stream cannot leak into the current
+    stream used by the progress query.
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        width = self.hidden_dim
+        self.start_third_type = nn.Parameter(torch.zeros(1, 1, width))
+        self.current_third_type = nn.Parameter(torch.zeros(1, 1, width))
+        self.current_wrist_type = nn.Parameter(torch.zeros(1, 1, width))
+        self.change_type = nn.Parameter(torch.zeros(1, 1, width))
+        self.change_mlp = nn.Sequential(
+            DtypeAlignedRMSNorm(width * 3),
+            nn.Linear(width * 3, width),
+            nn.GELU(),
+            nn.Linear(width, width),
+        )
+
+    def _prepare_comparison_tokens(
+        self,
+        start_third: Tensor | None,
+        current_third: Tensor | None,
+        current_wrist: Tensor | None,
+    ) -> tuple[Tensor, Tensor, Tensor]:
+        inputs = [
+            self._preprocess_image(start_third),
+            self._preprocess_image(current_third),
+            self._preprocess_image(current_wrist),
+        ]
+        batch_size = inputs[0].shape[0]
+        if any(image.shape[0] != batch_size for image in inputs[1:]):
+            raise ValueError("Start/current terminator image batches must match.")
+
+        features = self._encode_image_batch(torch.cat(inputs, dim=0))
+        projected = self.image_proj(features.to(self.image_proj.weight.dtype))
+        start, current, wrist = projected.split(batch_size, dim=0)
+
+        start_tagged = start + self.start_third_type.to(start)
+        current_tagged = current + self.current_third_type.to(current)
+        wrist_tagged = wrist + self.current_wrist_type.to(wrist)
+        change = self.change_mlp(
+            torch.cat([start_tagged, current_tagged, current - start], dim=-1)
+        )
+        change = change + self.change_type.to(change)
+
+        # Raw start tokens are consumed by the explicit relation MLP and do not
+        # need to lengthen the query-transformer sequence.
+        image_tokens = torch.cat([current_tagged, change, wrist_tagged], dim=1)
+        tokens_per_view = current.shape[1]
+        n_image = image_tokens.shape[1]
+
+        current_indices = torch.zeros(n_image, dtype=torch.bool, device=image_tokens.device)
+        current_indices[:tokens_per_view] = True
+        current_indices[2 * tokens_per_view :] = True
+        change_indices = torch.zeros_like(current_indices)
+        change_indices[tokens_per_view : 2 * tokens_per_view] = True
+
+        # Current tokens remain independent of the comparison stream. Change
+        # tokens may read all visual context before the termination query reads
+        # them.
+        image_allow = torch.zeros(
+            n_image, n_image, dtype=torch.bool, device=image_tokens.device
+        )
+        image_allow[current_indices[:, None] & current_indices[None, :]] = True
+        image_allow[change_indices, :] = True
+        query_image_allow = torch.stack(
+            [current_indices, current_indices | change_indices], dim=0
+        )
+        return image_tokens, image_allow, query_image_allow
+
+    def forward(
+        self,
+        z_norm: Tensor,
+        raw_state: Tensor,
+        start_third: Tensor | None,
+        current_third: Tensor | None,
+        current_wrist: Tensor | None,
+    ) -> tuple[Tensor, Tensor]:
+        image_tokens, image_allow, query_image_allow = self._prepare_comparison_tokens(
+            start_third, current_third, current_wrist
+        )
+        state_cond = self.state_proj(
+            self._normalize_state(raw_state).to(self.state_proj.weight.dtype)
+        )
+        skill_cond = self.skill_proj(z_norm.to(self.skill_proj.weight.dtype))
+        if self.skill_cond_mode == "broadcast":
+            norm_cond = state_cond
+            skill_broadcast = skill_cond
+        else:
+            norm_cond = state_cond + skill_cond
+            skill_broadcast = None
+        return self._forward_from_conditions(
+            image_tokens,
+            norm_cond,
+            skill_broadcast,
+            image_allow=image_allow,
+            query_image_allow=query_image_allow,
+        )
+
+    @torch.no_grad()
+    def predict_termination(
+        self,
+        z_norm: Tensor,
+        raw_state: Tensor,
+        start_third: Tensor | None,
+        current_third: Tensor | None,
+        current_wrist: Tensor | None,
+    ) -> tuple[Tensor, Tensor]:
+        progress, logits = self(
+            z_norm, raw_state, start_third, current_third, current_wrist
+        )
+        return progress, torch.sigmoid(logits)
+
+
+class FSQStartComparisonImageOnlyQueryTerminator(
+    FSQStartComparisonQueryTerminator
+):
+    """Start/current comparison terminator conditioned on skill but not state."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        del self.state_proj
+        del self.state_min
+        del self.state_max
+
+    def forward(
+        self,
+        z_norm: Tensor,
+        start_third: Tensor | None,
+        current_third: Tensor | None,
+        current_wrist: Tensor | None,
+    ) -> tuple[Tensor, Tensor]:
+        image_tokens, image_allow, query_image_allow = self._prepare_comparison_tokens(
+            start_third, current_third, current_wrist
+        )
+        skill_cond = self.skill_proj(z_norm.to(self.skill_proj.weight.dtype))
+        if self.skill_cond_mode == "broadcast":
+            norm_cond = torch.zeros_like(skill_cond)
+            skill_broadcast = skill_cond
+        else:
+            norm_cond = skill_cond
+            skill_broadcast = None
+        return self._forward_from_conditions(
+            image_tokens,
+            norm_cond,
+            skill_broadcast,
+            image_allow=image_allow,
+            query_image_allow=query_image_allow,
+        )
+
+    @torch.no_grad()
+    def predict_termination(
+        self,
+        z_norm: Tensor,
+        start_third: Tensor | None,
+        current_third: Tensor | None,
+        current_wrist: Tensor | None,
+    ) -> tuple[Tensor, Tensor]:
+        progress, logits = self(
+            z_norm, start_third, current_third, current_wrist
+        )
+        return progress, torch.sigmoid(logits)
+
+
+class FSQImageOnlyQueryTerminator(FSQQueryTerminator):
+    """Current top+wrist images and skill code -> progress and termination.
+
+    This deliberately has no state projection, state-normalization buffers, or
+    state input.  The visual/query architecture otherwise matches
+    :class:`FSQQueryTerminator` exactly.
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        del self.state_proj
+        del self.state_min
+        del self.state_max
+
+    def forward(
+        self,
+        z_norm: Tensor,
+        third: Tensor | None,
+        wrist: Tensor | None = None,
+    ) -> tuple[Tensor, Tensor]:
+        image_tokens = self._prepare_image_tokens(third, wrist)
+        return self._forward_without_state(z_norm, image_tokens)
+
+    def _forward_without_state(
+        self,
+        z_norm: Tensor,
+        image_tokens: Tensor,
+    ) -> tuple[Tensor, Tensor]:
+        skill_cond = self.skill_proj(z_norm.to(self.skill_proj.weight.dtype))
+        if self.skill_cond_mode == "broadcast":
+            norm_cond = torch.zeros_like(skill_cond)
+            skill_broadcast = skill_cond
+        else:
+            norm_cond = skill_cond
+            skill_broadcast = None
+        return self._forward_from_conditions(image_tokens, norm_cond, skill_broadcast)
+
+    @torch.no_grad()
+    def predict_termination(
+        self,
+        z_norm: Tensor,
+        third: Tensor | None,
+        wrist: Tensor | None = None,
+    ) -> tuple[Tensor, Tensor]:
+        progress, logits = self(z_norm, third, wrist)
+        return progress, torch.sigmoid(logits)
+
+
+class FSQWristOnlyQueryTerminator(FSQImageOnlyQueryTerminator):
+    """Current wrist image and skill code -> progress and termination.
+
+    Like :class:`FSQImageOnlyQueryTerminator`, this model has no state input or
+    state projection. It additionally omits the third-person camera entirely,
+    so the query decoder attends only to wrist-camera tokens.
+    """
+
+    def _prepare_wrist_tokens(self, wrist: Tensor | None) -> Tensor:
+        features = self._image_features(wrist)
+        return self.image_proj(features.to(self.image_proj.weight.dtype))
+
+    def forward(
+        self,
+        z_norm: Tensor,
+        wrist: Tensor | None,
+    ) -> tuple[Tensor, Tensor]:
+        image_tokens = self._prepare_wrist_tokens(wrist)
+        return self._forward_without_state(z_norm, image_tokens)
+
+    @torch.no_grad()
+    def predict_termination(
+        self,
+        z_norm: Tensor,
+        wrist: Tensor | None,
+    ) -> tuple[Tensor, Tensor]:
+        progress, logits = self(z_norm, wrist)
         return progress, torch.sigmoid(logits)
 
 
@@ -1347,6 +1683,192 @@ def load_fsq_terminator(
     return terminator, cfg
 
 
+def build_fsq_image_only_terminator(
+    path: str | Path,
+    device: str | torch.device = "cpu",
+    dino_model_path: str | None = None,
+) -> tuple[FSQImageOnlyQueryTerminator, SplineFSQAEConfig]:
+    """Build a fresh image-only terminator without loading any FSQ model tensor.
+
+    The FSQ checkpoint contributes only the architecture/FSQ contract. DINO is
+    loaded from its original pretrained model path; every image-only
+    terminator-specific tensor keeps its constructor initialization.
+    """
+    checkpoint = torch.load(str(path), map_location="cpu", weights_only=False)
+    cfg = _checkpoint_config(checkpoint)
+    if cfg.vision_backbone != "dino":
+        raise ValueError(
+            "The image-only terminator currently requires a DINO FSQ checkpoint; "
+            f"got vision_backbone={cfg.vision_backbone!r}."
+        )
+    terminator = FSQImageOnlyQueryTerminator(
+        state_dim=cfg.state_dim,
+        fsq_levels=cfg.fsq_levels,
+        hidden_dim=cfg.hidden_dim,
+        n_layers=cfg.image_encoder_layers,
+        n_heads=cfg.image_encoder_heads,
+        dropout=0.0,
+        arch=cfg.terminator_arch,
+        vision_backbone=cfg.vision_backbone,
+        freeze_vision_encoder=cfg.freeze_vision_encoder,
+        dino_model_path=dino_model_path or cfg.dino_model_path,
+        dino_image_size=cfg.dino_image_size,
+        siglip_image_size=cfg.siglip_image_size,
+        cond_encoder_variant=cfg.cond_encoder_variant,
+        skill_cond_mode=cfg.skill_cond_mode,
+        state_min=cfg.state_min,
+        state_max=cfg.state_max,
+    )
+    terminator.to(device).eval()
+    return terminator, cfg
+
+
+def _warm_start_fsq_comparison_terminator(
+    terminator: nn.Module,
+    checkpoint: dict[str, Any],
+    *,
+    ignored_unexpected: tuple[str, ...] = (),
+) -> None:
+    """Load the shared FSQ terminator tensors around new comparison modules."""
+    base_state = {
+        key.removeprefix("terminator."): value
+        for key, value in checkpoint["model_state"].items()
+        if key.startswith("terminator.")
+    }
+    if not base_state:
+        raise ValueError("FSQ checkpoint contains no 'terminator.*' tensors.")
+    missing, unexpected = terminator.load_state_dict(base_state, strict=False)
+    comparison_prefixes = (
+        "start_third_type",
+        "current_third_type",
+        "current_wrist_type",
+        "change_type",
+        "change_mlp.",
+    )
+    incompatible_missing = [
+        key for key in missing if not key.startswith(comparison_prefixes)
+    ]
+    incompatible_unexpected = [
+        key for key in unexpected if not key.startswith(ignored_unexpected)
+    ]
+    if incompatible_missing or incompatible_unexpected:
+        raise RuntimeError(
+            "Start-comparison warm start is incompatible with the FSQ terminator: "
+            f"missing={incompatible_missing}, unexpected={incompatible_unexpected}."
+        )
+
+
+def build_fsq_start_comparison_terminator(
+    path: str | Path,
+    device: str | torch.device = "cpu",
+    dino_model_path: str | None = None,
+) -> tuple[FSQStartComparisonQueryTerminator, SplineFSQAEConfig]:
+    """Warm-start the shared terminator and initialize only comparison tensors."""
+    checkpoint = torch.load(str(path), map_location="cpu", weights_only=False)
+    cfg = _checkpoint_config(checkpoint)
+    if cfg.vision_backbone != "dino":
+        raise ValueError(
+            "The start-comparison terminator currently requires a DINO FSQ "
+            f"checkpoint; got vision_backbone={cfg.vision_backbone!r}."
+        )
+    terminator = FSQStartComparisonQueryTerminator(
+        state_dim=cfg.state_dim,
+        fsq_levels=cfg.fsq_levels,
+        hidden_dim=cfg.hidden_dim,
+        n_layers=cfg.image_encoder_layers,
+        n_heads=cfg.image_encoder_heads,
+        dropout=0.0,
+        arch=cfg.terminator_arch,
+        vision_backbone=cfg.vision_backbone,
+        freeze_vision_encoder=cfg.freeze_vision_encoder,
+        dino_model_path=dino_model_path or cfg.dino_model_path,
+        dino_image_size=cfg.dino_image_size,
+        siglip_image_size=cfg.siglip_image_size,
+        cond_encoder_variant=cfg.cond_encoder_variant,
+        skill_cond_mode=cfg.skill_cond_mode,
+        state_min=cfg.state_min,
+        state_max=cfg.state_max,
+    )
+    _warm_start_fsq_comparison_terminator(terminator, checkpoint)
+    terminator.to(device).eval()
+    return terminator, cfg
+
+
+def build_fsq_start_comparison_image_only_terminator(
+    path: str | Path,
+    device: str | torch.device = "cpu",
+    dino_model_path: str | None = None,
+) -> tuple[FSQStartComparisonImageOnlyQueryTerminator, SplineFSQAEConfig]:
+    """Build the skill+image comparison variant with no robot-state path."""
+    checkpoint = torch.load(str(path), map_location="cpu", weights_only=False)
+    cfg = _checkpoint_config(checkpoint)
+    if cfg.vision_backbone != "dino":
+        raise ValueError(
+            "The state-free start-comparison terminator requires a DINO FSQ "
+            f"checkpoint; got vision_backbone={cfg.vision_backbone!r}."
+        )
+    terminator = FSQStartComparisonImageOnlyQueryTerminator(
+        state_dim=cfg.state_dim,
+        fsq_levels=cfg.fsq_levels,
+        hidden_dim=cfg.hidden_dim,
+        n_layers=cfg.image_encoder_layers,
+        n_heads=cfg.image_encoder_heads,
+        dropout=0.0,
+        arch=cfg.terminator_arch,
+        vision_backbone=cfg.vision_backbone,
+        freeze_vision_encoder=cfg.freeze_vision_encoder,
+        dino_model_path=dino_model_path or cfg.dino_model_path,
+        dino_image_size=cfg.dino_image_size,
+        siglip_image_size=cfg.siglip_image_size,
+        cond_encoder_variant=cfg.cond_encoder_variant,
+        skill_cond_mode=cfg.skill_cond_mode,
+        state_min=cfg.state_min,
+        state_max=cfg.state_max,
+    )
+    _warm_start_fsq_comparison_terminator(
+        terminator,
+        checkpoint,
+        ignored_unexpected=("state_proj.", "state_min", "state_max"),
+    )
+    terminator.to(device).eval()
+    return terminator, cfg
+
+
+def build_fsq_wrist_only_terminator(
+    path: str | Path,
+    device: str | torch.device = "cpu",
+    dino_model_path: str | None = None,
+) -> tuple[FSQWristOnlyQueryTerminator, SplineFSQAEConfig]:
+    """Build a fresh wrist-only terminator without loading any FSQ tensor."""
+    checkpoint = torch.load(str(path), map_location="cpu", weights_only=False)
+    cfg = _checkpoint_config(checkpoint)
+    if cfg.vision_backbone != "dino":
+        raise ValueError(
+            "The wrist-only terminator currently requires a DINO FSQ checkpoint; "
+            f"got vision_backbone={cfg.vision_backbone!r}."
+        )
+    terminator = FSQWristOnlyQueryTerminator(
+        state_dim=cfg.state_dim,
+        fsq_levels=cfg.fsq_levels,
+        hidden_dim=cfg.hidden_dim,
+        n_layers=cfg.image_encoder_layers,
+        n_heads=cfg.image_encoder_heads,
+        dropout=0.0,
+        arch=cfg.terminator_arch,
+        vision_backbone=cfg.vision_backbone,
+        freeze_vision_encoder=cfg.freeze_vision_encoder,
+        dino_model_path=dino_model_path or cfg.dino_model_path,
+        dino_image_size=cfg.dino_image_size,
+        siglip_image_size=cfg.siglip_image_size,
+        cond_encoder_variant=cfg.cond_encoder_variant,
+        skill_cond_mode=cfg.skill_cond_mode,
+        state_min=cfg.state_min,
+        state_max=cfg.state_max,
+    )
+    terminator.to(device).eval()
+    return terminator, cfg
+
+
 def load_fsq_reconstructor_state(path: str | Path) -> tuple[dict[str, Tensor], SplineFSQAEConfig]:
     checkpoint = torch.load(str(path), map_location="cpu", weights_only=False)
     cfg = _checkpoint_config(checkpoint)
@@ -1708,15 +2230,18 @@ def _collect_code_assignments(
     datasets: tuple[FSQTrajectoryDataset, ...],
     device: torch.device,
     batch_size: int,
-) -> Tensor:
-    """Encode every skill at one fixed model state without decoding images.
+) -> tuple[Tensor, Tensor]:
+    """Encode every skill and measure its nearest FSQ boundary at one model state.
 
     Training batches cannot be reused for this metric: they are shuffled and
     are encoded by progressively different model states within an epoch. The
     normalized trajectory control points cached by ``FSQTrajectoryDataset`` are
-    sufficient for a deterministic, encoder-only full-dataset pass.
+    sufficient for a deterministic, encoder-only full-dataset pass.  Margins
+    are the minimum across FSQ axes because crossing any one axis changes the
+    sample's discrete code.
     """
     assignments: list[Tensor] = []
+    boundary_margins: list[Tensor] = []
     for dataset in datasets:
         for start in range(0, len(dataset), batch_size):
             stop = min(start + batch_size, len(dataset))
@@ -1736,11 +2261,44 @@ def _collect_code_assignments(
                 dtype=torch.bfloat16,
                 enabled=device.type == "cuda",
             ):
-                _, indices = model.encoder(
+                z_e = model.encoder.encode_continuous(
                     ctrl, lengths, start_pose, normalized=True
                 )
+                _, indices = model.fsq(z_e)
+            # Compute the diagnostic in FP32 even when the encoder forward uses
+            # BF16; assignment itself remains identical to the training path.
+            margins = model.fsq.boundary_margin(z_e.float()).amin(dim=-1)
             assignments.append(indices.reshape(-1).to(device="cpu", dtype=torch.long))
-    return torch.cat(assignments) if assignments else torch.empty(0, dtype=torch.long)
+            boundary_margins.append(margins.reshape(-1).to(device="cpu", dtype=torch.float32))
+    assignment_tensor = (
+        torch.cat(assignments) if assignments else torch.empty(0, dtype=torch.long)
+    )
+    margin_tensor = (
+        torch.cat(boundary_margins)
+        if boundary_margins
+        else torch.empty(0, dtype=torch.float32)
+    )
+    return assignment_tensor, margin_tensor
+
+
+def _boundary_margin_metrics(margins: Tensor) -> dict[str, float]:
+    """Summarize sample-level FSQ boundary margins on a 0--100 center scale."""
+    margins = margins.reshape(-1).to(device="cpu", dtype=torch.float32)
+    if margins.numel() == 0:
+        return {
+            "boundary_margin_mean_pct": math.nan,
+            "boundary_margin_p10_pct": math.nan,
+            "near_boundary_pct": math.nan,
+        }
+    margins = margins.clamp(0.0, 0.5)
+    # Divide by the maximum center-to-boundary distance (0.5), so 0% means
+    # exactly on a decision boundary and 100% means at the center of a bin.
+    normalized = margins / 0.5
+    return {
+        "boundary_margin_mean_pct": 100.0 * float(normalized.mean()),
+        "boundary_margin_p10_pct": 100.0 * float(torch.quantile(normalized, 0.1)),
+        "near_boundary_pct": 100.0 * float((normalized <= 0.1).float().mean()),
+    }
 
 
 def _code_assignment_stability(
@@ -1988,7 +2546,7 @@ def train_spline_fsqae(
     # a meaningful retention/change measurement.
     if resume_from and previous_code_assignments is None:
         model.eval()
-        previous_code_assignments = _collect_code_assignments(
+        previous_code_assignments, _ = _collect_code_assignments(
             model,
             (val_ds, train_ds),
             device,
@@ -2120,6 +2678,7 @@ def train_spline_fsqae(
         val_count = 0
         val_codes_seen = torch.zeros(model.fsq.codebook_size, dtype=torch.bool, device=device)
         assignment_metrics: dict[str, float] = {}
+        boundary_margin_metrics: dict[str, float] = {}
         assignment_reference_epoch: int | None = None
         full_active_codes = 0
         if should_validate:
@@ -2136,12 +2695,13 @@ def train_spline_fsqae(
 
             # Evaluate sample-to-code membership at one fixed model state. This pass touches only
             # the cached spline inputs; it does not decode images or rerun the reconstructor.
-            current_code_assignments = _collect_code_assignments(
+            current_code_assignments, current_boundary_margins = _collect_code_assignments(
                 model,
                 (val_ds, train_ds),
                 device,
                 cfg.batch_size,
             )
+            boundary_margin_metrics = _boundary_margin_metrics(current_boundary_margins)
             full_active_codes = int(current_code_assignments.unique().numel())
             if previous_code_assignments is not None and previous_code_epoch is not None:
                 assignment_reference_epoch = previous_code_epoch
@@ -2223,6 +2783,7 @@ def train_spline_fsqae(
             full_codebook_log = {
                 "full_active_entries": full_active_codes,
                 "full_utilization_pct": 100.0 * full_active_codes / codebook_size,
+                **boundary_margin_metrics,
                 **assignment_metrics,
             }
             log.update({f"codebook/{key}": value for key, value in full_codebook_log.items()})
@@ -2249,6 +2810,12 @@ def train_spline_fsqae(
                     )
                 else:
                     message += f" code-retain=baseline({full_active_codes}/{codebook_size} active)"
+                message += (
+                    " boundary-margin="
+                    f"{boundary_margin_metrics['boundary_margin_mean_pct']:.1f}% "
+                    f"p10={boundary_margin_metrics['boundary_margin_p10_pct']:.1f}% "
+                    f"near={boundary_margin_metrics['near_boundary_pct']:.1f}%"
+                )
             print(message)
 
     if cfg.save_best_model:
