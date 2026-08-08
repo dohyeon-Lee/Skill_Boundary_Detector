@@ -2829,9 +2829,10 @@ def train_spline_fsqae(
             "train_epoch/codebook_active_entries": train_active_codes,
             "perf_epoch/seconds": log["perf/seconds"],
             "perf_epoch/updates_per_sec": log["perf/updates_per_sec"],
-            "lr_epoch/encoder": log["lr/encoder"],
-            "lr_epoch/reconstructor": log["lr/reconstructor"],
-            "lr_epoch/terminator": log["lr/terminator"],
+            **{
+                f"lr_epoch/{group['name']}": group["lr"]
+                for group in optimizer.param_groups
+            },
         })
         if should_validate:
             log.update({f"val/{k}": v for k, v in val_avg.items()})

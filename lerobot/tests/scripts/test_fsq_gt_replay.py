@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -125,6 +126,7 @@ def test_report_groups_occurrences_by_fsq_token() -> None:
         "levels": [3, 3, 3],
         "run_name": "fsq333",
         "epoch_tag": "epoch0500",
+        "train_codebook_used": 18,
         "signature": {
             "target_task": "libero_90",
             "selected_episodes": {"0": [2]},
@@ -148,6 +150,7 @@ def test_report_groups_occurrences_by_fsq_token() -> None:
     payload = REPORT.report_payload(manifest)
 
     assert payload["occurrence_count"] == 2
+    assert payload["train_codebook_used"] == 18
     assert payload["skills"][0]["token"] == 4
     assert payload["skills"][0]["coord"] == [1, 1, 0]
     assert [row["frame_start"] for row in payload["skills"][0]["occurrences"]] == [
@@ -209,6 +212,23 @@ def test_report_shows_start_and_final_image_pair(tmp_path: Path) -> None:
     assert 'class="task-group"' in html
     assert 'class="occ-row"' in html
     assert 'id="positionMode"' in html
+    assert "Cohesion" in html
+    assert "cohesionTable()" in html
+    assert "codebook used (train)" in html
+    assert "mean effective codes per cell" in html
+
+
+def test_backfill_train_codebook_used_from_latents(tmp_path: Path) -> None:
+    latents = tmp_path / "skill_latents.npz"
+    np.savez(latents, tokens=np.asarray([0, 4, 4, 7], dtype=np.int32))
+    manifest_path = tmp_path / "manifest.json"
+    manifest = {"signature": {"latents_path": str(latents)}, "completed": True}
+    manifest_path.write_text(json.dumps(manifest))
+
+    REPORT._backfill_train_codebook_used(manifest_path, manifest)
+
+    assert manifest["train_codebook_used"] == 3
+    assert json.loads(manifest_path.read_text())["train_codebook_used"] == 3
 
 
 def test_collection_keeps_checkpoint_codebooks_and_prefixes_media() -> None:

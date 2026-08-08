@@ -204,6 +204,10 @@ def main() -> None:
             f"Latent artifact contains tokens outside FSQ{levels}: {invalid_tokens}."
         )
     manifest["levels"] = levels
+    # The latents artifact encodes the full training skillset, so its distinct
+    # token count is this checkpoint's codebook usage over all training data.
+    train_tokens = np.asarray(np.load(str(args.latents_path))["tokens"], dtype=np.int64)
+    manifest["train_codebook_used"] = int(np.unique(train_tokens).size)
     _atomic_manifest(manifest_path, manifest)
 
     worker_task_ids = sorted({occurrence.task_id for occurrence in occurrences})

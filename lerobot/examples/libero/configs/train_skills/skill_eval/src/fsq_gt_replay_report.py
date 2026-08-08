@@ -56,6 +56,7 @@ def report_payload(manifest: dict) -> dict:
             len(values) for values in signature["selected_episodes"].values()
         ),
         "occurrence_count": len(manifest["records"]),
+        "train_codebook_used": manifest.get("train_codebook_used"),
         "skills": skills,
     }
 
@@ -209,6 +210,19 @@ function checkpointTaskTable(){
   const head=`<tr><th class="label">checkpoint</th>${tasks.map(task=>`<th>task ${task}</th>`).join('')}<th>all tasks</th></tr>`;
   const body=counted.map(({tag,cells,total})=>`<tr><td class="label">${esc(tag)}</td>${cells.map(value=>usageCell(value,peak)).join('')}<td class="total" title="${total.occurrences} occurrences">${total.codes}</td></tr>`).join('');
   return `<div class="table-scroll"><table class="usage"><thead>${head}</thead><tbody>${body}</tbody></table></div>`}
+function cohesionTable(){
+  const mean=values=>values.length?values.reduce((a,b)=>a+b,0)/values.length:0;
+  const rows=checkpoints.map(cp=>{
+    const entries=entriesFor(cp);const cells=new Map();
+    entries.forEach(entry=>{const key=`${Number(entry.o.task_id)}:${columnKey(entry.info)}`;if(!cells.has(key))cells.set(key,[]);cells.get(key).push(Number(entry.o.token))});
+    const stats=[...cells.values()].map(tokens=>{const counts=new Map();tokens.forEach(token=>counts.set(token,(counts.get(token)||0)+1));let entropy=0;counts.forEach(count=>{const p=count/tokens.length;entropy-=p*Math.log(p)});return{distinct:counts.size,effective:Math.exp(entropy)}});
+    const size=cp.levels.reduce((a,b)=>a*b,1);const used=cp.train_codebook_used;
+    return{tag:cp.epoch_tag,distinct:mean(stats.map(s=>s.distinct)),effective:mean(stats.map(s=>s.effective)),cells:stats.length,occurrences:entries.length,usage:used==null?'\\u00b7':`${used}/${size} (${(100*used/size).toFixed(1)}%)`}});
+  if(!rows.length)return '<div class="no-rows">No occurrences.</div>';
+  const best=Math.min(...rows.map(row=>row.effective));
+  const head='<tr><th class="label">checkpoint</th><th>mean effective codes per cell</th><th>mean distinct codes per cell</th><th>codebook used (train)</th><th>cells</th><th>occurrences</th></tr>';
+  const body=rows.map(row=>`<tr class="${row.effective===best?'summary':''}"><td class="label">${esc(row.tag)}</td><td class="total">${row.effective.toFixed(2)}</td><td>${row.distinct.toFixed(2)}</td><td>${esc(row.usage)}</td><td>${row.cells}</td><td>${row.occurrences}</td></tr>`).join('');
+  return `<div class="table-scroll"><table class="usage"><thead>${head}</thead><tbody>${body}</tbody></table></div>`}
 function taskRows(cp,entries){
   const tasks=[...new Set(entries.map(entry=>Number(entry.o.task_id)))].sort((a,b)=>a-b);
   const rows=tasks.map(task=>({checkpoint:cp.epoch_tag,task:`task ${task}`,entries:entries.filter(entry=>Number(entry.o.task_id)===task)}));
@@ -221,6 +235,7 @@ function renderTables(){
   if(selectionRows.length>1)selectionRows.push({checkpoint:cp.epoch_tag,task:'all tasks',entries:selectionEntries,summary:true});
   const overviewRows=checkpoints.flatMap(item=>taskRows(item,entriesFor(item)));
   document.getElementById('tables').innerHTML=
+    `<details class="panel" open><summary>Cohesion \\u00b7 codes per task \\u00d7 skill order (lower is better)</summary><p class="hint">For each checkpoint, occurrences are grouped into task \\u00d7 skill-order cells ("Table order" above picks the order unit). "Effective codes" is the entropy-based count exp(\\u2212\\u03a3 p ln p), which rewards concentration: two codes split 90/10 score 1.38 while 50/50 scores 2.00, and a single code scores 1.00. "Distinct codes" ignores the split. Both are averaged over cells; the best checkpoint by effective codes is highlighted. Uses every task and order, ignoring the task/position filters. "codebook used (train)" counts the distinct codes this checkpoint assigned over the whole training skillset (from its latents artifact), not just the evaluated tasks.</p>${cohesionTable()}</details>`+
     `<details class="panel" open><summary>Skill variety \\u00b7 checkpoint \\u00d7 task</summary><p class="hint">Distinct FSQ codes used in each task, over every skill order in that task. Independent of the controls above. Codebook size ${size}.</p>${checkpointTaskTable()}</details>`+
     `<details class="panel" open><summary>Codebook usage \\u00b7 current filters</summary><p class="hint">Distinct FSQ codes per checkpoint \\u00d7 task \\u00d7 skill order, limited to the checkpoint, tasks and skill-position range selected above. Cell titles show the occurrence count; "all orders" is the union over orders, not the column sum. Codebook size ${size}.</p>${usageTable(selectionRows)}</details>`+
     `<details class="panel" open><summary>Codebook usage \\u00b7 every checkpoint (unfiltered)</summary><p class="hint">The same counts over every checkpoint, task and skill order in this report, ignoring the controls above.</p>${usageTable(overviewRows)}</details>`}
@@ -272,6 +287,7 @@ def maybe_merge_chunks(output_dir: str | Path, *, expected_chunks: int) -> Path 
             "run_name": chunks[0]["run_name"],
             "epoch_tag": chunks[0]["epoch_tag"],
             "levels": levels,
+            "train_codebook_used": chunks[0].get("train_codebook_used"),
             "records": records,
             "completed": True,
         }
@@ -287,6 +303,26 @@ def _comparable_signature(manifest: dict) -> dict:
 def _tag_sort_key(tag: str) -> tuple[int, int, str]:
     match = re.fullmatch(r"epoch(\d+)", tag)
     return (0, int(match.group(1)), "") if match else (1, 0, tag)
+
+
+def _backfill_train_codebook_used(path: Path, manifest: dict) -> None:
+    """Fill train_codebook_used on manifests written before the field existed."""
+    if manifest.get("train_codebook_used") is not None:
+        return
+    latents_path = str((manifest.get("signature") or {}).get("latents_path") or "")
+    if not latents_path or not Path(latents_path).is_file():
+        return
+    try:
+        import numpy as np
+    except ImportError:
+        print(
+            f"numpy unavailable; leaving train_codebook_used empty for {path}. "
+            "Re-run with the project venv python to backfill it."
+        )
+        return
+    tokens = np.asarray(np.load(latents_path)["tokens"], dtype=np.int64)
+    manifest["train_codebook_used"] = int(np.unique(tokens).size)
+    _atomic_json(path, manifest)
 
 
 def completed_manifests(collection_dir: str | Path) -> dict[str, dict]:
@@ -307,6 +343,7 @@ def completed_manifests(collection_dir: str | Path) -> dict[str, dict]:
             raise ValueError(
                 f"Checkpoint manifest {path} declares epoch tag {tag!r}."
             )
+        _backfill_train_codebook_used(path, manifest)
         manifests[tag] = manifest
     return manifests
 
