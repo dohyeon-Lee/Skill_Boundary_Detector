@@ -49,6 +49,8 @@ export LIBERO_CONFIG_PATH="${LIBERO_LOCAL_CONFIG_DIR}"
 
 for artifact in \
   "${POLICY_PATH}" \
+  "${FSQ_PATH}" \
+  "${TERMINATOR_MODEL_PATH}" \
   "${SKILL_DATASET_DIR}" \
   "${SKILL_LATENTS_PATH}" \
   "${EVAL_INIT_STATES_PATH}" \
@@ -61,17 +63,20 @@ for artifact in \
 done
 mkdir -p "${EVAL_OUT_DIR}"
 
-echo "START STAGE-1 SKILL EVAL"
+echo "START STAGE-1 MULTI-POLICY SKILL EVAL"
 echo "node      : ${SLURMD_NODENAME:-${HOSTNAME:-unknown}}"
 echo "job       : ${SLURM_JOB_ID:-none}"
 echo "worker    : ${SKILL_EVAL_WORKER_INDEX}/${SKILL_EVAL_WORKER_COUNT}"
 echo "cuda      : ${CUDA_VISIBLE_DEVICES:-unset}"
-echo "model     : ${MODEL_LABEL} (${ARCHITECTURE_LABEL})"
+echo "policies  : ${MODEL_COUNT} (${ARCHITECTURE_LABEL})"
+echo "MAIN      : ${MAIN_TERMINATOR_LABEL} (${MAIN_TERMINATOR_VARIANT}) ${MAIN_TERMINATOR_PATH}"
+echo "display   : ${TERMINATOR_MODEL_LABEL} (${TERMINATOR_MODEL_VARIANT}) ${TERMINATOR_MODEL_PATH}"
+echo "display rule: mode=${TERMINATOR_MODEL_END_MODE} term=${TERMINATOR_MODEL_END_THRESHOLD} progress=${TERMINATOR_MODEL_PROGRESS_THRESHOLD}"
 echo "suite     : ${TARGET_TASK} task_ids=${TASK_IDS}"
 echo "episodes  : ${EPISODES_PER_TASK}/task selection=${EPISODE_SELECTION} explicit=${EPISODE_IDS}"
 echo "exact     : ${EPISODE_EXACT} (mandatory)"
 echo "branches  : GT | policy@0 | policy@0 alt-noise | policy@-${TIME_SHIFT_OFFSET} | policy@+${TIME_SHIFT_OFFSET}"
-echo "terminator: mode=${SKILL_END_MODE} finish_chunk=${FINISH_ACTION_CHUNK_ON_END}"
+echo "stopping  : MAIN-only mode=${SKILL_END_MODE} max=${SKILL_MAX_LENGTH_MODE}:${SKILL_MAX_LENGTH_SCALE} finish_chunk=${FINISH_ACTION_CHUNK_ON_END}"
 echo "output    : ${EVAL_OUT_DIR}"
 nvidia-smi || true
 

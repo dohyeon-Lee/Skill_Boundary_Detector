@@ -31,37 +31,58 @@ external_skill_model:
 # Trained entries resolve as:
 #   <outputs_root>/skillVLA_terminator/<model_dir>/checkpoints/<checkpoint>/pretrained_model
 # All entries are display-only. Only MAIN controls rollout stopping.
-# variant: state_image | image_only | wrist_only | fsq_initial
+# variant: state_image | image_only | wrist_only | start_comparison |
+#          start_comparison_image_only | fsq_initial
 terminator_models:
-  - label: STATE_bias
-    variant: state_image
-    model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_endpoint_os_terminator_3
-    checkpoint: "040000"
+  - label: IMAGE_cmp_1k
+    variant: start_comparison_image_only
+    model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_startcmp_both
+    checkpoint: "010000"
   
-  - label: IMAGE_bias
-    variant: image_only
-    model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_endpoint_os_terminator_3
-    checkpoint: "040000"
-
-  - label: WRIST_bias
-    variant: wrist_only
-    model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_endpoint_os_terminator_3
-    checkpoint: "040000"
-
-  - label: STATE
-    variant: state_image
-    model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_terminator_3
-    checkpoint: "040000"
-
-  - label: IMAGE
+  - label: IMAGE_cmp_3k
+    variant: start_comparison_image_only
+    model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_startcmp_both
+    checkpoint: "030000"
+  
+  - label: IMAGE_cmp_5k
+    variant: start_comparison_image_only
+    model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_startcmp_both
+    checkpoint: "050000"
+  
+  - label: IMAGE_1k
     variant: image_only
     model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_terminator_3
-    checkpoint: "040000"
-  
-  - label: WRIST
+    checkpoint: "010000"
+
+  - label: IMAGE_3k
+    variant: image_only
+    model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_terminator_3
+    checkpoint: "030000"
+
+  - label: IMAGE_5k
+    variant: image_only
+    model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_terminator_3
+    checkpoint: "050000"
+
+  - label: WRIST_1k
     variant: wrist_only
     model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_terminator_3
-    checkpoint: "040000"
+    checkpoint: "010000"
+
+  - label: WRIST_3k
+    variant: wrist_only
+    model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_terminator_3
+    checkpoint: "030000"
+
+  - label: WRIST_5k
+    variant: wrist_only
+    model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_terminator_3
+    checkpoint: "050000"
+  
+  # - label: WRIST
+  #   variant: wrist_only
+  #   model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_terminator_3
+  #   checkpoint: "050000"
 
   # - label: STATE_bias_25k
   #   variant: state_image
@@ -97,7 +118,7 @@ output_name: ""
 resume: false
 
 target_task: libero_90
-task_ids: [3]
+task_ids: [0, 3]
 
 # Episode-exact is mandatory for this evaluator and cannot fall back to a
 # language-matched or standard LIBERO init state.

@@ -5,6 +5,7 @@ import warnings
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import torch
 from torch import nn
 
@@ -14,11 +15,81 @@ sys.path.insert(0, str(_ROOT / "lerobot/examples/libero"))
 import FSQ as fsq_module  # noqa: E402
 from FSQ import (  # noqa: E402
     DtypeAlignedRMSNorm,
+    FSQTrajectoryDataset,
     FSQQueryTerminator,
     FSQStartComparisonQueryTerminator,
     FSQWristOnlyQueryTerminator,
     SplineFSQAEConfig,
+    fsq_lr_factor,
+    fsq_reconstruction_loss,
 )
+
+
+def _sampling_only_dataset() -> FSQTrajectoryDataset:
+    dataset = FSQTrajectoryDataset.__new__(FSQTrajectoryDataset)
+    dataset.samples_per_skill = 5
+    dataset.training = True
+    dataset.cfg = SimpleNamespace(end_target_sigma=1.0)
+    return dataset
+
+
+def test_training_samples_are_uniform_over_the_full_skill(monkeypatch) -> None:
+    dataset = _sampling_only_dataset()
+
+    def full_skill_choice(high, *, size, replace):
+        assert high == 10
+        assert size == 5
+        assert replace is False
+        return np.asarray([8, 0, 6, 2, 4])
+
+    monkeypatch.setattr(fsq_module.np.random, "choice", full_skill_choice)
+
+    sample = dataset._sample_indices(10)
+
+    np.testing.assert_array_equal(sample, [0, 2, 4, 6, 8])
+
+
+def test_validation_samples_are_a_deterministic_linspace() -> None:
+    dataset = _sampling_only_dataset()
+    dataset.training = False
+
+    np.testing.assert_array_equal(dataset._sample_indices(10), [0, 2, 4, 7, 9])
+
+
+def test_reconstruction_action_loss_is_plain_sample_mean() -> None:
+    config = SplineFSQAEConfig(
+        action_dim=1,
+        max_action_dim=1,
+        chunk_size=1,
+        samples_per_skill=2,
+        action_loss_weight=1.0,
+        progress_loss_weight=0.0,
+        end_loss_weight=0.0,
+    )
+    output = {
+        "actions": torch.tensor([[[0.0]], [[2.0]]]),
+        "progress": torch.zeros(2),
+        "term_logits": torch.zeros(2),
+    }
+    batch = {
+        "ctrl": torch.zeros(1, 1, 1),
+        "actions": torch.zeros(1, 2, 1, 1),
+        "progress": torch.zeros(1, 2),
+        "termination": torch.zeros(1, 2),
+    }
+
+    loss, metrics = fsq_reconstruction_loss(output, batch, config)
+
+    torch.testing.assert_close(loss, torch.tensor(2.0))
+    torch.testing.assert_close(metrics["action"], torch.tensor(2.0))
+    assert "action_objective" not in metrics
+
+
+def test_fsq_lr_schedule_supports_cosine_and_constant() -> None:
+    assert fsq_lr_factor("constant", epoch=0, epochs=500) == 1.0
+    assert fsq_lr_factor("constant", epoch=499, epochs=500) == 1.0
+    assert fsq_lr_factor("cosine", epoch=0, epochs=500) == 1.0
+    assert fsq_lr_factor("cosine", epoch=499, epochs=500) == 0.01
 
 
 class _CountingDino(nn.Module):

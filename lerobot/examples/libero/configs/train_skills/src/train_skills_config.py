@@ -612,22 +612,10 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
     fsq_tag = "fsq" + "".join(str(v) for v in fsq_levels)
     fsq_exp = str(get_value(cfg, "fsq_exp", "")).strip()
     fsq_exp_suffix = f"_{fsq_exp}" if fsq_exp else ""
-    # End-weight the FSQ reconstructor loss. The endpoint multiplier is explicit so different
-    # curricula cannot auto-resume from one another. Keep the historical `_weighted` tag for 2x.
-    weighted_loss = as_bool(get_value(cfg, "weighted_loss", False))
-    weighted_loss_end_weight = float(get_value(cfg, "weighted_loss_end_weight", 2.0))
-    if weighted_loss_end_weight <= 0:
-        raise ValueError(
-            "weighted_loss_end_weight must be positive, "
-            f"got {weighted_loss_end_weight}."
-        )
-    if not weighted_loss:
-        weighted_suffix = ""
-    elif math.isclose(weighted_loss_end_weight, 2.0):
-        weighted_suffix = "_weighted"
-    else:
-        weight_tag = f"{weighted_loss_end_weight:g}".replace("-", "m").replace(".", "p")
-        weighted_suffix = f"_weighted{weight_tag}"
+    fsq_samples_per_skill = int(get_value(cfg, "fsq_samples_per_skill", 2))
+    fsq_lr_schedule = str(get_value(cfg, "fsq_lr_schedule", "cosine")).strip().lower()
+    if fsq_lr_schedule not in {"cosine", "constant"}:
+        raise ValueError(f"fsq_lr_schedule must be cosine|constant, got {fsq_lr_schedule!r}.")
     fsq_terminator_arch = str(get_value(cfg, "fsq_terminator_arch", "small"))
     if fsq_terminator_arch not in {"small", "cond"}:
         raise ValueError(f"fsq_terminator_arch must be small|cond, got {fsq_terminator_arch!r}.")
@@ -635,6 +623,15 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
     fsq_terminator_heads = int(get_value(cfg, "fsq_terminator_heads", 4))
     if fsq_terminator_layers < 1 or fsq_terminator_heads < 1:
         raise ValueError("fsq_terminator_layers and fsq_terminator_heads must both be >= 1.")
+    fsq_terminator_termination_only = as_bool(
+        get_value(cfg, "fsq_terminator_termination_only", False)
+    )
+    fsq_reconstructor_only = as_bool(get_value(cfg, "fsq_reconstructor_only", False))
+    if fsq_reconstructor_only and fsq_terminator_termination_only:
+        raise ValueError(
+            "fsq_reconstructor_only and fsq_terminator_termination_only are mutually "
+            "exclusive: reconstructor_only builds no terminator at all."
+        )
     fsq_cond_encoder_variant = str(get_value(cfg, "fsq_cond_encoder_variant", "gemma_300m"))
     fsq_terminator_tag = fsq_terminator_arch
     fsq_vision_backbone = str(get_value(cfg, "fsq_vision_backbone", "dino"))
@@ -674,7 +671,7 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         dp_tag += skillset_min_skills_suffix
         dp_tag += skillset_output_suffix
     # Architecture knobs (vision backbone/freeze, terminator, encoder input mode,
-    # skill cond mode, weighted loss) are fixed project-wide and deliberately NOT
+    # skill cond mode) are fixed project-wide and deliberately NOT
     # part of the name anymore — use fsq_exp to separate runs if one is ever varied.
     fsq_run_template = str(
         get_value(
@@ -689,7 +686,6 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         fsq_tag=fsq_tag,
         fsq_exp=fsq_exp,
         fsq_exp_suffix=fsq_exp_suffix,
-        weighted_suffix=weighted_suffix,
         fsq_vision_tag=fsq_vision_tag,
         fsq_terminator_arch=fsq_terminator_arch,
         fsq_terminator_tag=fsq_terminator_tag,
@@ -751,9 +747,6 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "fsq_tag": fsq_tag,
         "fsq_exp": fsq_exp,
         "fsq_exp_suffix": fsq_exp_suffix,
-        "fsq_weighted_loss": weighted_loss,
-        "fsq_weighted_loss_end_weight": weighted_loss_end_weight,
-        "weighted_suffix": weighted_suffix,
         "fsq_encoder_input_suffix": fsq_encoder_input_suffix,
         "fsq_skill_cond_mode": fsq_skill_cond_mode,
         "fsq_skill_cond_suffix": fsq_skill_cond_suffix,
@@ -775,11 +768,14 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "fsq_terminator_lr": str(get_value(cfg, "fsq_terminator_lr", "3e-4")),
         "fsq_reconstructor_lr": str(get_value(cfg, "fsq_reconstructor_lr", get_value(cfg, "fsq_encoder_lr", "3e-4"))),
         "fsq_lr": str(get_value(cfg, "fsq_lr", get_value(cfg, "fsq_encoder_lr", "3e-4"))),
-        "fsq_samples_per_skill": int(get_value(cfg, "fsq_samples_per_skill", 2)),
+        "fsq_lr_schedule": fsq_lr_schedule,
+        "fsq_samples_per_skill": fsq_samples_per_skill,
         "fsq_encoder_input_mode": fsq_encoder_input_mode,
         "fsq_terminator_arch": fsq_terminator_arch,
         "fsq_terminator_layers": fsq_terminator_layers,
         "fsq_terminator_heads": fsq_terminator_heads,
+        "fsq_terminator_termination_only": fsq_terminator_termination_only,
+        "fsq_reconstructor_only": fsq_reconstructor_only,
         "fsq_vision_backbone": fsq_vision_backbone,
         "fsq_freeze_vision_encoder": fsq_freeze_vision_encoder,
         "fsq_hidden_dim": int(get_value(cfg, "fsq_hidden_dim", 256)),

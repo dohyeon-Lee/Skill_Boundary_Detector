@@ -123,6 +123,14 @@ def _normalize_display_variant(value: object) -> str:
         "wrist": "wrist_only",
         "wrist_only": "wrist_only",
         "wrist-only": "wrist_only",
+        "start_comparison": "start_comparison",
+        "start-comparison": "start_comparison",
+        "state_start_comparison": "start_comparison",
+        "state_startcmp": "start_comparison",
+        "start_comparison_image_only": "start_comparison_image_only",
+        "start-comparison-image-only": "start_comparison_image_only",
+        "image_start_comparison": "start_comparison_image_only",
+        "image_startcmp": "start_comparison_image_only",
         "fsq": "fsq_initial",
         "fsq_base": "fsq_initial",
         "fsq_initial": "fsq_initial",
@@ -131,7 +139,8 @@ def _normalize_display_variant(value: object) -> str:
     if normalized is None:
         raise ValueError(
             "terminator_models[].variant must be "
-            "state_image|image_only|wrist_only|fsq_initial, "
+            "state_image|image_only|wrist_only|start_comparison|"
+            "start_comparison_image_only|fsq_initial, "
             f"got {value!r}."
         )
     return normalized
@@ -162,6 +171,8 @@ def _resolve_display_models(
         "state_image": "STATE",
         "image_only": "IMAGE",
         "wrist_only": "WRIST",
+        "start_comparison": "STATE_STARTCMP",
+        "start_comparison_image_only": "IMAGE_STARTCMP",
         "fsq_initial": "FSQ_INIT",
     }
     for index, entry in enumerate(entries):
@@ -262,6 +273,30 @@ def _validate_display_model(model: dict[str, str], *, target_policy: dict) -> No
     if not weights_path.is_file():
         raise FileNotFoundError(f"External wrist terminator weights not found: {weights_path}")
     source = json.loads(config_path.read_text())
+    if variant in {"start_comparison", "start_comparison_image_only"}:
+        if source.get("type") != "skill_aux":
+            raise ValueError(
+                f"External {variant} terminator must come from "
+                f"policy.type='skill_aux', got {source.get('type')!r} at "
+                f"{checkpoint}."
+            )
+        train_field = (
+            "train_start_comparison_terminator"
+            if variant == "start_comparison"
+            else "train_start_comparison_image_only_terminator"
+        )
+        if not as_bool(source.get(train_field, False)):
+            raise ValueError(
+                f"External checkpoint has no trained {variant} terminator: "
+                f"{checkpoint}"
+            )
+        if source.get("skill_fsq_levels") != target_policy.get("skill_fsq_levels"):
+            raise ValueError(
+                f"External {variant} terminator FSQ mismatch: "
+                f"terminator={source.get('skill_fsq_levels')!r}, "
+                f"target={target_policy.get('skill_fsq_levels')!r}"
+            )
+        return
     if source.get("type") != "skill_aux":
         raise ValueError(
             "External wrist-only terminator must come from policy.type=skill_aux, "

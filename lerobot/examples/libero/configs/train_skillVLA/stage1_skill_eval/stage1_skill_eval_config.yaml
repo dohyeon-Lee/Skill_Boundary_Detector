@@ -1,4 +1,10 @@
-# Single-model, episode-exact Stage-1 skill-segment evaluation.
+# ./review.sh                                      # 가장 최근의 병합 완료된 결과 자동 선택
+# ./review.sh compare_5policies_20260807_215617    # 특정 결과 지정
+# ./review.sh compare_5policies_20260807_215617 --port 9000   # 포트 변경 등 추가 옵션
+
+
+
+# Multi-policy, configurable-MAIN plus one display-terminator Stage-1 skill evaluation.
 #
 # For every selected training episode, each FSQ skill occurrence is evaluated
 # independently from its exact simulator state. Each HTML entry plays one
@@ -7,23 +13,64 @@
 
 outputs_root: outputs_filtered
 
-model:
+model_defaults:
   previous: false
-  model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch1_2
-  checkpoint: "070000"
-  label: arch1_2_70k
-  # own: use the terminator stored in this checkpoint.
-  # external: overlay only the terminator from external_skill_model.
-  terminator_source: external
+  checkpoint: "050000"
+models:
+  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch0
+    label: state_cond_nonmask
+  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch0_skillendmask
+    label: state_cond
+  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch0_1_skillendmask
+    label: state_expert
+  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch0_2_sep_skillendmask
+    label: state_both
+  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch0_3_skillendmask
+    label: state_expert_wrist
 
-external_skill_model: outputs_filtered/skillVLA_stage1/bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch4_DINO_LR_100p_Skill_Predictor/checkpoints/100000/pretrained_model
+# model_defaults:
+#   previous: false
+#   checkpoint: "050000"
+# models:
+#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch3
+#     label: A
+#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch2_2
+#     label: B
+#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch2_1
+#     label: C
+#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch1_2
+#     label: D
+#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch4
+#     label: E
+
+# MAIN decides when every rollout stops. With variant and end-rule fields
+# omitted, it reuses terminator_model's checkpoint, output, and rule exactly;
+# the terminator forward runs only once. Set `variant: fsq_initial` to use the
+# pristine FSQ.pt, or specify a trained variant/rule to override only the rule.
+main_terminator:
+  # Base budget per occurrence: ceil(GT action length L * scale). The early
+  # branch additionally receives time_shift_offset steps.
+  max_skill_length_scale: 1.50
+  finish_action_chunk_on_end: false
+
+# This trained terminator is display-only unless main_terminator selects it too.
+# A direct `path:` is also accepted instead of group/model_dir/checkpoint.
+terminator_model:
+  label: image_only
+  variant: image_only      # state_image | image_only
+  group: skillVLA_terminator
+  model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_terminator_3
+  checkpoint: "030000"
+  end_mode: termination      # termination | progress | or | and
+  end_threshold: 0.5
+  progress_threshold: 0.95
 
 # Empty creates a timestamped output under stage1_skill_eval/outputs/.
 output_name: ""
 resume: false
 
 target_task: libero_90
-task_ids: [0,3]
+task_ids: [3,4,5]
 
 # Episode-exact is mandatory for this evaluator and cannot fall back to a
 # language-matched or standard LIBERO init state.
@@ -38,17 +85,8 @@ time_shift_offset: 15
 n_action_steps: 5
 
 # Selected skill occurrences are distributed over this many one-GPU Slurm
-# array workers. The resolver caps it to the number of selected episodes.
-eval_num_gpus: 10
-
-terminator:
-  end_mode: or               # termination | progress | or | and
-  end_threshold: 0.5
-  progress_threshold: 0.95
-  max_skill_length: 200
-  # true preserves the fixed-replanning behavior: a detected boundary stops
-  # only after the already-generated action chunk has been consumed.
-  finish_action_chunk_on_end: true
+# array workers. The resolver caps it to policy count x selected episode count.
+eval_num_gpus: 50
 
 video:
   frame_stride: 2

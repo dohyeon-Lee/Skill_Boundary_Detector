@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Submit one GPU job for the single-model skill-segment evaluation.
+# Submit policy x episode workers for the multi-policy skill evaluation.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -33,12 +33,15 @@ SBATCH_ARGS=(
 
 cd "${SCRIPT_DIR}"
 mkdir -p logs
-echo "Submit Stage-1 skill eval"
-echo "  model    : ${MODEL_LABEL} (${ARCHITECTURE_LABEL})"
+echo "Submit Stage-1 multi-policy skill eval"
+echo "  policies : ${MODEL_COUNT} (${ARCHITECTURE_LABEL})"
+echo "  MAIN     : ${MAIN_TERMINATOR_LABEL} (${MAIN_TERMINATOR_VARIANT})"
+echo "  display  : ${TERMINATOR_MODEL_LABEL} (${TERMINATOR_MODEL_VARIANT})"
+echo "  display rule: ${TERMINATOR_MODEL_END_MODE} term=${TERMINATOR_MODEL_END_THRESHOLD} progress=${TERMINATOR_MODEL_PROGRESS_THRESHOLD}"
 echo "  tasks    : ${TARGET_TASK} ${TASK_IDS}"
 echo "  episodes : ${EPISODES_PER_TASK}/task (${EPISODE_SELECTION})"
 echo "  shift    : ±${TIME_SHIFT_OFFSET}"
-echo "  GPUs     : ${EVAL_NUM_GPUS} occurrence workers"
+echo "  GPUs     : ${EVAL_NUM_GPUS} policy x episode workers"
 echo "  output   : ${EVAL_OUT_DIR}"
 
 if [ -n "${SLURM_JOB_ID:-}" ]; then

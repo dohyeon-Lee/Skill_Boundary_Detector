@@ -92,13 +92,14 @@ cat > "${FSQ_OUTPUT_DIR}/fsq_meta.json" <<JSON
   "skillset_boundary_threshold_scale": ${SKILLSET_BOUNDARY_THRESHOLD_SCALE},
   "skillset_global_threshold_source": "${SKILLSET_GLOBAL_THRESHOLD_SOURCE}",
   "skillset_output_suffix": "${SKILLSET_OUTPUT_SUFFIX}",
-  "weighted_loss": ${FSQ_WEIGHTED_LOSS},
-  "weighted_loss_end_weight": ${FSQ_WEIGHTED_LOSS_END_WEIGHT},
   "terminator_arch": "${FSQ_TERMINATOR_ARCH}",
   "terminator_layers": ${FSQ_TERMINATOR_LAYERS},
   "terminator_heads": ${FSQ_TERMINATOR_HEADS},
+  "terminator_termination_only": ${FSQ_TERMINATOR_TERMINATION_ONLY},
+  "reconstructor_only": ${FSQ_RECONSTRUCTOR_ONLY},
   "skill_cond_mode": "${FSQ_SKILL_COND_MODE}",
   "gradient_checkpointing": ${FSQ_GRADIENT_CHECKPOINTING},
+  "lr_schedule": "${FSQ_LR_SCHEDULE}",
   "num_workers": ${FSQ_NUM_WORKERS},
   "val_num_workers": ${FSQ_VAL_NUM_WORKERS},
   "val_every": ${FSQ_VAL_EVERY},
@@ -118,12 +119,6 @@ else
   echo "No checkpoint found, training from scratch"
 fi
 
-# weighted_loss probe (tyro bool flag): end-weight the sampled reconstructor loss.
-WEIGHTED_ARG=(--no-weighted_loss)
-if [ "${FSQ_WEIGHTED_LOSS:-false}" = "true" ]; then
-  WEIGHTED_ARG=(--weighted_loss)
-fi
-
 GRADIENT_CKPT_ARG=(--no-gradient_checkpointing)
 if [ "${FSQ_GRADIENT_CHECKPOINTING:-false}" = "true" ]; then
   GRADIENT_CKPT_ARG=(--gradient_checkpointing)
@@ -132,6 +127,16 @@ fi
 SAVE_BEST_ARG=(--no-save_best_model)
 if [ "${FSQ_SAVE_BEST_MODEL:-false}" = "true" ]; then
   SAVE_BEST_ARG=(--save_best_model)
+fi
+
+TERMINATION_ONLY_ARG=(--no-terminator_termination_only)
+if [ "${FSQ_TERMINATOR_TERMINATION_ONLY:-false}" = "true" ]; then
+  TERMINATION_ONLY_ARG=(--terminator_termination_only)
+fi
+
+RECONSTRUCTOR_ONLY_ARG=(--no-reconstructor_only)
+if [ "${FSQ_RECONSTRUCTOR_ONLY:-false}" = "true" ]; then
+  RECONSTRUCTOR_ONLY_ARG=(--reconstructor_only)
 fi
 
 # best-val SELECTION override: pass each val_select weight only if set in config (empty → omit → the
@@ -156,6 +161,8 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     --n_control               "${FSQ_N_CONTROL}" \
     --encoder_input_mode      "${FSQ_ENCODER_INPUT_MODE}" \
     --terminator_arch         "${FSQ_TERMINATOR_ARCH}" \
+    "${TERMINATION_ONLY_ARG[@]}" \
+    "${RECONSTRUCTOR_ONLY_ARG[@]}" \
     --image_encoder_layers    "${FSQ_TERMINATOR_LAYERS}" \
     --image_encoder_heads     "${FSQ_TERMINATOR_HEADS}" \
     --vision_backbone         "${FSQ_VISION_BACKBONE}" \
@@ -168,6 +175,7 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     --encoder_lr              "${FSQ_ENCODER_LR}" \
     --terminator_lr           "${FSQ_TERMINATOR_LR}" \
     --reconstructor_lr        "${FSQ_RECONSTRUCTOR_LR}" \
+    --lr_schedule             "${FSQ_LR_SCHEDULE}" \
     --batch_size              "${FSQ_BATCH_SIZE}" \
     --num_workers             "${FSQ_NUM_WORKERS}" \
     --val_num_workers         "${FSQ_VAL_NUM_WORKERS}" \
@@ -179,8 +187,6 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     --end_loss_weight         "${FSQ_END_LOSS_WEIGHT}" \
     "${VAL_SELECT_ARGS[@]}" \
     --end_target_sigma        "${FSQ_END_TARGET_SIGMA}" \
-    "${WEIGHTED_ARG[@]}" \
-    --weighted_loss_end_weight "${FSQ_WEIGHTED_LOSS_END_WEIGHT}" \
     --checkpoint_every        "${FSQ_CHECKPOINT_EVERY}" \
     --wandb_project           "${FSQ_WANDB_PROJECT}" \
     --wandb_run_name          "${FSQ_RUN_NAME}" \

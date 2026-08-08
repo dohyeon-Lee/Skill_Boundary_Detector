@@ -1,0 +1,26 @@
+
+fsq_eval_run_name: libero_90_full_full_state_obs20_std_episodemean_80p_fsq333
+
+# Scalar and list forms are accepted, for example: 300 or [125, 175, 300].
+fsq_eval_checkpoint: [50, 100, 150, 200, 250, 300, 350, 400, 450, 500]
+
+target_task: libero_90
+task_ids: [3,4,5]                  # one or more, e.g. [1, 3, 4]
+episodes_per_task: 5
+episode_selection: first       # first | random
+episode_ids: []                # optional exact global episode IDs
+seed: 42
+
+# eval_num_gpus caps how many jobs (GPUs) run at once; workers_per_checkpoint
+# splits one checkpoint's occurrences across that many jobs. Work per occurrence
+# is only two state restores + renders now, so 1 worker per checkpoint is enough.
+eval_num_gpus: 10
+workers_per_checkpoint: 1
+resume: true
+output_name: "80p_fsq333"               # blank -> run/epoch tag or run/compare_<epoch tags>
+
+slurm:
+  gres: gpu:1
+  cpus: 8
+  memory: 64G
+  time: "12:00:00"

@@ -614,9 +614,53 @@ def test_eval_accepts_external_image_only_terminator(tmp_path: Path) -> None:
     assert model["terminator_variant"] == "image_only"
 
 
-def test_eval_rejects_image_only_variant_for_own_terminator(tmp_path: Path) -> None:
+def test_eval_accepts_original_fsq_terminator_without_trained_terminator(
+    tmp_path: Path,
+) -> None:
     config = _config(tmp_path)
-    config["models"][0]["advance_mode"] = "own"
+    project = Path(config["project_root"])
+    target = (
+        project
+        / config["outputs_root"]
+        / "skillVLA_stage1/new-vsa/checkpoints/000100/pretrained_model"
+    )
+    target_policy = json.loads((target / "config.json").read_text())
+    fsq = project / "dataset/skillvla_dataset/source/run/FSQ.pt"
+    fsq.touch()
+    target_policy["fsq_path"] = str(fsq)
+    assert target_policy["train_terminator"] is False
+    (target / "config.json").write_text(json.dumps(target_policy))
+
+    config["models"][0]["advance_mode"] = "original"
+    model = json.loads(build_settings(config)["models_json"])[0]
+
+    assert model["advance_mode"] == "original"
+    assert Path(model["fsq_path"]) == fsq
+
+
+def test_eval_original_terminator_requires_fsq_checkpoint(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    project = Path(config["project_root"])
+    target = (
+        project
+        / config["outputs_root"]
+        / "skillVLA_stage1/new-vsa/checkpoints/000100/pretrained_model"
+    )
+    target_policy = json.loads((target / "config.json").read_text())
+    target_policy["fsq_path"] = str(project / "missing/FSQ.pt")
+    (target / "config.json").write_text(json.dumps(target_policy))
+    config["models"][0]["advance_mode"] = "original"
+
+    with pytest.raises(FileNotFoundError, match="advance_mode=original"):
+        build_settings(config)
+
+
+@pytest.mark.parametrize("advance_mode", ["own", "original"])
+def test_eval_rejects_image_only_variant_for_non_external_terminator(
+    tmp_path: Path, advance_mode: str
+) -> None:
+    config = _config(tmp_path)
+    config["models"][0]["advance_mode"] = advance_mode
     config["models"][0]["terminator_variant"] = "image_only"
 
     with pytest.raises(ValueError, match="requires advance_mode=external"):

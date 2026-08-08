@@ -39,8 +39,13 @@ def _resolve_fsq_artifact(
     dataset_root: Path,
     outputs_root: Path,
     checkpoint: str,
-) -> dict[str, str]:
-    """Resolve one FSQ run entirely from its immutable training metadata."""
+    missing_ok: bool = False,
+) -> dict[str, str] | None:
+    """Resolve one FSQ run entirely from its immutable training metadata.
+
+    With missing_ok=True, a checkpoint whose weight file was not trained yet
+    resolves to None instead of raising; run-level problems still raise.
+    """
     run_name = _folder_name(get_value(cfg, "fsq_eval_run_name", ""), "fsq_eval_run_name")
     model_dir = outputs_root / "FSQ" / run_name
     if not model_dir.is_dir():
@@ -58,6 +63,8 @@ def _resolve_fsq_artifact(
             if match:
                 candidates.append((int(match.group(1)), path))
         if not candidates:
+            if missing_ok:
+                return None
             raise FileNotFoundError(f"No FSQ_epoch*.pt checkpoints found in {model_dir}")
         epoch, model_path = max(candidates, key=lambda item: item[0])
         epoch_tag = f"epoch{epoch:04d}"
@@ -75,6 +82,8 @@ def _resolve_fsq_artifact(
             f"got {checkpoint!r}."
         )
     if not model_path.is_file():
+        if missing_ok:
+            return None
         raise FileNotFoundError(f"FSQ checkpoint not found: {model_path}")
 
     meta_path = model_dir / "fsq_meta.json"

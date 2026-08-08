@@ -19,44 +19,43 @@ external_skill_model: outputs_filtered/skillVLA_stage1/bs32_libero_90_full_first
 # Common values inherited by every models[] entry. A value written inside an
 # individual model entry takes priority over the corresponding value here.
 
-model_defaults:
-  previous: false
-  # A scalar keeps the old behavior. A list evaluates every model at every
-  # checkpoint, e.g. ["050000", "070000", "090000"].
-  checkpoint: "070000"
-  # checkpoint: ["030000", "050000", "070000", "085000"]
-  skill_source: external
-  advance_mode: external
-models:
-  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch1_2
-    label: a
-  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch2_1
-    label: b
-  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch2_2
-    label: c
-  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch3
-    label: d
-  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch4
-    label: e
-# Empty => timestamped directory. A fixed name is useful with resume: true.
-output_name: "archA_70k_OOD_predictor100k"
-
 # model_defaults:
 #   previous: false
-#   checkpoint: "100000" # ["030000", "050000", "070000", "085000"]
-#   skill_source: gt
-#   advance_mode: external
+#   # A scalar keeps the old behavior. A list evaluates every model at every
+#   # checkpoint, e.g. ["050000", "070000", "090000"].
+#   checkpoint: "050000"
+#   skill_source: external
+#   advance_mode: original
 # models:
 #   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch0
-#     label: A
-#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch1_1
-#     label: B
-#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch1_2
-#     label: C
-#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch1_3
-#     label: D
+#     label: state_cond_nonmask
+#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch0_skillendmask
+#     label: state_cond
+#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch0_1_skillendmask
+#     label: state_expert
+#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch0_2_skillendmask
+#     label: state_both
+#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch0_3_skillendmask
+#     label: state_expert_wrist
 # # Empty => timestamped directory. A fixed name is useful with resume: true.
-# output_name: "archB_react_100k_ext_ext_term_spgt"
+# output_name: "skillendmask_and_stateposition_ext_5k_or"
+
+model_defaults:
+  previous: false
+  checkpoint: "050000" # ["030000", "050000", "070000", "085000"]
+  skill_source: external
+  advance_mode: original
+models:
+  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch0_2_skillendmask
+    label: arch0_2
+  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch0_2_skillendmask_cumxyz0p5
+    label: arch0_2_cumxyz0p5
+  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch0_2_sep_skillendmask
+    label: arch0_2_sep
+  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch0_2_sep_skillendmask_cumxyz0p5
+    label: arch0_2_sep_cumxyz0p5
+# Empty => timestamped directory. A fixed name is useful with resume: true.
+output_name: "cum_and_sep_ext_5k_or"
 
 # model_defaults:
 #   previous: false
@@ -123,7 +122,7 @@ terminator:
   end_mode: or             # termination | progress | or | and
   end_threshold: 0.5
   progress_threshold: 0.95
-  immediate_replan_on_skill_end: false
+  immediate_replan_on_skill_end: true
   max_skill_length: 200
 
 video: {max_per_task: 15, frame_stride: 4, fps: 10}

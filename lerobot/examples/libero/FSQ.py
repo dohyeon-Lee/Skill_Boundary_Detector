@@ -720,6 +720,7 @@ class FSQQueryTerminator(nn.Module):
         skill_cond_mode: str,
         state_min: np.ndarray,
         state_max: np.ndarray,
+        termination_only: bool = False,
     ):
         super().__init__()
         if arch not in {"small", "cond"}:
@@ -734,6 +735,10 @@ class FSQQueryTerminator(nn.Module):
         self.fsq_levels = [int(x) for x in fsq_levels]
         self.arch = arch
         self.skill_cond_mode = skill_cond_mode
+        # The progress query never reaches the termination query (queries cannot
+        # attend to each other and images cannot attend to queries), so keeping
+        # its token/head with termination_only is inert and shape-compatible.
+        self.termination_only = bool(termination_only)
         self.vision_backbone = vision_backbone
         self.freeze_vision_encoder = bool(freeze_vision_encoder)
         self.dino_model_path = resolve_image_model_path(dino_model_path)
@@ -990,8 +995,11 @@ class FSQQueryTerminator(nn.Module):
                 broadcast_cond=broadcast,
             ).last_hidden_state
             query_out = self.query_out_norm(hidden[:, n_image:], norm_cond)
-        progress = torch.sigmoid(self.progress_head(query_out[:, 0])).squeeze(-1)
         termination = self.termination_head(query_out[:, 1]).squeeze(-1)
+        if self.termination_only:
+            progress = torch.zeros_like(termination)
+        else:
+            progress = torch.sigmoid(self.progress_head(query_out[:, 0])).squeeze(-1)
         return progress, termination
 
     def forward(
@@ -1314,17 +1322,24 @@ class SplineFSQAEConfig:
 
     samples_per_skill: int = 2
     end_target_sigma: float = 1.0
+    terminator_termination_only: bool = False
+    """Train and predict only termination: progress output is fixed to zero and its
+    loss term is dropped. The progress query/head stay in the module (they are
+    attention-isolated from termination), so checkpoint shapes are unchanged."""
+    reconstructor_only: bool = False
+    """Train only encoder+FSQ+reconstructor: no terminator module is built, no video
+    frames are decoded, and the progress/termination loss terms are dropped."""
     action_loss_weight: float = 1.0
     progress_loss_weight: float = 0.1
     end_loss_weight: float = 0.1
     end_pos_weight: float = 1.0
-    weighted_loss: bool = False
-    weighted_loss_end_weight: float = 2.0
     end_threshold: float = 0.5
 
     encoder_lr: float = 3e-4
     terminator_lr: float = 3e-4
     reconstructor_lr: float = 3e-4
+    lr_schedule: str = "cosine"
+    """Learning-rate schedule: cosine decays to 1% of the configured LR; constant keeps it fixed."""
     batch_size: int = 64
     num_workers: int = 0
     val_num_workers: int = 0
@@ -1379,6 +1394,13 @@ class SplineFSQAE(nn.Module):
             raise ValueError(f"vision_backbone must be dino|siglip, got {cfg.vision_backbone!r}.")
         if cfg.skill_cond_mode not in {"token", "broadcast"}:
             raise ValueError(f"skill_cond_mode must be token|broadcast, got {cfg.skill_cond_mode!r}.")
+        if cfg.lr_schedule not in {"cosine", "constant"}:
+            raise ValueError(f"lr_schedule must be cosine|constant, got {cfg.lr_schedule!r}.")
+        if cfg.reconstructor_only and cfg.terminator_termination_only:
+            raise ValueError(
+                "reconstructor_only and terminator_termination_only are mutually "
+                "exclusive: reconstructor_only builds no terminator at all."
+            )
         for name in (
             "encoder_min", "encoder_max", "state_min", "state_max",
             "state_q01", "state_q99", "action_q01", "action_q99",
@@ -1418,7 +1440,7 @@ class SplineFSQAE(nn.Module):
             max_action_dim=cfg.max_action_dim,
             chunk_size=cfg.chunk_size,
         )
-        self.terminator = FSQQueryTerminator(
+        self.terminator = None if cfg.reconstructor_only else FSQQueryTerminator(
             state_dim=cfg.state_dim,
             fsq_levels=cfg.fsq_levels,
             hidden_dim=cfg.hidden_dim,
@@ -1435,17 +1457,20 @@ class SplineFSQAE(nn.Module):
             skill_cond_mode=cfg.skill_cond_mode,
             state_min=cfg.state_min,
             state_max=cfg.state_max,
+            termination_only=cfg.terminator_termination_only,
         )
 
     def gradient_checkpointing_enable(self) -> None:
         self.encoder.enc_traj_pool.gradient_checkpointing_enable()
         self.reconstructor.pool.gradient_checkpointing_enable()
-        self.terminator.gradient_checkpointing_enable()
+        if self.terminator is not None:
+            self.terminator.gradient_checkpointing_enable()
 
     def gradient_checkpointing_disable(self) -> None:
         self.encoder.enc_traj_pool.gradient_checkpointing_disable()
         self.reconstructor.pool.gradient_checkpointing_disable()
-        self.terminator.gradient_checkpointing_disable()
+        if self.terminator is not None:
+            self.terminator.gradient_checkpointing_disable()
 
     @property
     def fsq(self) -> FSQ:
@@ -1559,6 +1584,10 @@ class SplineFSQAE(nn.Module):
                 return None
             return value.reshape(bsize * steps, *value.shape[2:])
 
+        if self.terminator is None:
+            raise RuntimeError(
+                "This FSQ model was trained reconstructor_only and has no terminator."
+            )
         progress, term_logits = self.terminator(
             z_norm,
             flat_state,
@@ -1595,7 +1624,13 @@ class SplineFSQAE(nn.Module):
             z_sample,
             progress_target,
         )
-        progress, term_logits = self.terminator(z_sample, raw_state, third, wrist)
+        if self.terminator is None:
+            zeros = torch.zeros(
+                z_sample.shape[0], device=z_sample.device, dtype=actions.dtype
+            )
+            progress, term_logits = zeros, zeros
+        else:
+            progress, term_logits = self.terminator(z_sample, raw_state, third, wrist)
         return {
             "z_q": z_q,
             "indices": indices,
@@ -1610,6 +1645,13 @@ def _checkpoint_config(checkpoint: dict[str, Any]) -> SplineFSQAEConfig:
     if cfg is None:
         raise ValueError("FSQ checkpoint has no cfg.")
     if isinstance(cfg, dict):
+        # Read checkpoints written before endpoint-weighted reconstruction was removed.
+        cfg = dict(cfg)
+        cfg.pop("weighted_loss", None)
+        cfg.pop("weighted_loss_end_weight", None)
+        cfg.pop("force_endpoint_sample", None)
+        cfg.pop("sample_from_end_window", None)
+        cfg.pop("end_window_min_termination", None)
         cfg = SplineFSQAEConfig(**cfg)
     if int(getattr(cfg, "format_version", 0)) != FORMAT_VERSION:
         raise ValueError(
@@ -1677,6 +1719,7 @@ def load_fsq_terminator(
         skill_cond_mode=cfg.skill_cond_mode,
         state_min=cfg.state_min,
         state_max=cfg.state_max,
+        termination_only=getattr(cfg, "terminator_termination_only", False),
     )
     _load_prefixed(terminator, checkpoint["model_state"], "terminator.")
     terminator.to(device).eval()
@@ -2004,29 +2047,22 @@ class FSQTrajectoryDataset(Dataset):
     def _quantile_norm(x: np.ndarray, lo: np.ndarray, hi: np.ndarray) -> np.ndarray:
         return (2.0 * (x - lo) / (hi - lo + 1e-8) - 1.0).astype(np.float32)
 
+    def _termination_targets(self, length: int, sample: np.ndarray) -> np.ndarray:
+        distance_to_end = (length - 1 - sample).astype(np.float32)
+        if self.cfg.end_target_sigma > 0:
+            return np.exp(
+                -(distance_to_end ** 2) / (2.0 * self.cfg.end_target_sigma ** 2)
+            ).astype(np.float32)
+        return (distance_to_end == 0).astype(np.float32)
+
     def _sample_indices(self, length: int) -> np.ndarray:
+        """Uniformly sample M training timesteps; validation uses a deterministic linspace."""
         m = self.samples_per_skill
         if length < 1:
             raise ValueError(f"Skill length must be positive, got {length}.")
         if self.training:
-            # Termination validation always includes the exact endpoint through
-            # linspace below. Match that target distribution during training:
-            # reserve one slot for the endpoint and sample the remaining slots
-            # only from preceding frames. Very short skills use replacement to
-            # preserve the fixed samples-per-skill batch shape.
-            endpoint = length - 1
-            if m == 1:
-                return np.asarray([endpoint], dtype=np.int64)
-            if endpoint == 0:
-                preceding = np.zeros(m - 1, dtype=np.int64)
-            else:
-                preceding = np.random.choice(
-                    endpoint,
-                    size=m - 1,
-                    replace=endpoint < m - 1,
-                ).astype(np.int64)
             return np.sort(
-                np.concatenate([preceding, np.asarray([endpoint], dtype=np.int64)])
+                np.random.choice(length, size=m, replace=length < m).astype(np.int64)
             )
         return np.rint(np.linspace(0, length - 1, m)).astype(np.int64)
 
@@ -2120,27 +2156,20 @@ class FSQTrajectoryDataset(Dataset):
         start_state = np.zeros((len(sample), self.cfg.max_state_dim), dtype=np.float32)
         start_state[:, : self.cfg.state_dim] = start_norm
         progress = sample.astype(np.float32) / max(length - 1, 1)
-        distance_to_end = (length - 1 - sample).astype(np.float32)
-        if self.cfg.end_target_sigma > 0:
-            termination = np.exp(
-                -(distance_to_end ** 2) / (2.0 * self.cfg.end_target_sigma ** 2)
-            ).astype(np.float32)
-        else:
-            termination = (distance_to_end == 0).astype(np.float32)
-        third, wrist = self._sample_images(index, sample)
+        termination = self._termination_targets(length, sample)
         item = {
             "ctrl": torch.from_numpy(self.ctrl[index]),
             "length": torch.tensor(length, dtype=torch.long),
             "start_state": torch.from_numpy(start_state),
             "raw_state": torch.from_numpy(raw_state.copy()),
             "actions": torch.from_numpy(self._action_chunks(self.actions[index], sample)),
-            "third": third,
-            "wrist": wrist,
             "progress": torch.from_numpy(progress),
             "termination": torch.from_numpy(termination),
             "sample_index": torch.from_numpy(sample),
             "trajectory_index": torch.tensor(index, dtype=torch.long),
         }
+        if not self.cfg.reconstructor_only:
+            item["third"], item["wrist"] = self._sample_images(index, sample)
         if self.start_poses is not None:
             item["start_pose"] = torch.from_numpy(self.start_poses[index])
         return item
@@ -2168,41 +2197,34 @@ def fsq_reconstruction_loss(
     target = batch["actions"].reshape(bsize * m, cfg.chunk_size, cfg.max_action_dim)
     target = target[..., : cfg.action_dim].to(pred)
     per_sample_action = (pred - target).square().mean(dim=(1, 2))
-    action_plain = _per_trajectory_mean(per_sample_action, bsize, m)
-    if cfg.weighted_loss:
-        if cfg.weighted_loss_end_weight <= 0:
-            raise ValueError(
-                "weighted_loss_end_weight must be positive, "
-                f"got {cfg.weighted_loss_end_weight}."
-            )
-        progress = batch["progress"].reshape(-1).to(per_sample_action)
-        weight = 1.0 + (cfg.weighted_loss_end_weight - 1.0) * progress
-        weighted = (per_sample_action * weight).view(bsize, m).sum(dim=1) / weight.view(bsize, m).sum(dim=1)
-        action_objective = weighted.mean()
-    else:
-        action_objective = action_plain
+    action_loss = _per_trajectory_mean(per_sample_action, bsize, m)
 
-    progress_per = F.smooth_l1_loss(
-        output["progress"], batch["progress"].reshape(-1).to(output["progress"]), reduction="none"
-    )
-    progress_loss = _per_trajectory_mean(progress_per, bsize, m)
-    pos_weight = torch.as_tensor(cfg.end_pos_weight, device=output["term_logits"].device)
-    end_per = F.binary_cross_entropy_with_logits(
-        output["term_logits"],
-        batch["termination"].reshape(-1).to(output["term_logits"]),
-        reduction="none",
-        pos_weight=pos_weight,
-    )
-    end_loss = _per_trajectory_mean(end_per, bsize, m)
+    if cfg.terminator_termination_only or cfg.reconstructor_only:
+        progress_loss = torch.zeros((), device=pred.device, dtype=pred.dtype)
+    else:
+        progress_per = F.smooth_l1_loss(
+            output["progress"], batch["progress"].reshape(-1).to(output["progress"]), reduction="none"
+        )
+        progress_loss = _per_trajectory_mean(progress_per, bsize, m)
+    if cfg.reconstructor_only:
+        end_loss = torch.zeros((), device=pred.device, dtype=pred.dtype)
+    else:
+        pos_weight = torch.as_tensor(cfg.end_pos_weight, device=output["term_logits"].device)
+        end_per = F.binary_cross_entropy_with_logits(
+            output["term_logits"],
+            batch["termination"].reshape(-1).to(output["term_logits"]),
+            reduction="none",
+            pos_weight=pos_weight,
+        )
+        end_loss = _per_trajectory_mean(end_per, bsize, m)
     total = (
-        cfg.action_loss_weight * action_objective
+        cfg.action_loss_weight * action_loss
         + cfg.progress_loss_weight * progress_loss
         + cfg.end_loss_weight * end_loss
     )
     metrics = {
         "loss": total.detach(),
-        "action": action_plain.detach(),
-        "action_objective": action_objective.detach(),
+        "action": action_loss.detach(),
         "progress": progress_loss.detach(),
         "termination": end_loss.detach(),
     }
@@ -2213,14 +2235,16 @@ def fsq_reconstruction_loss(
 def end_signal_metrics(logits: Tensor, target: Tensor, threshold: float) -> dict[str, float]:
     pred = torch.sigmoid(logits) >= threshold
     truth = target >= 0.5
-    tp = (pred & truth).sum().float()
-    fp = (pred & ~truth).sum().float()
-    fn = (~pred & truth).sum().float()
+    tp = (pred & truth).float().sum()
+    fp = (pred & ~truth).float().sum()
+    fn = (~pred & truth).float().sum()
+    eps = torch.finfo(torch.float32).eps
+    total = torch.tensor(float(pred.numel())).clamp_min(eps)
     return {
-        "acc": float((pred == truth).float().mean()),
-        "precision": float(tp / (tp + fp).clamp_min(1.0)),
-        "recall": float(tp / (tp + fn).clamp_min(1.0)),
-        "positive_rate": float(pred.float().mean()),
+        "acc": float((pred == truth).float().sum() / total),
+        "precision": float(tp / (tp + fp).clamp_min(eps)),
+        "recall": float(tp / (tp + fn).clamp_min(eps)),
+        "positive_rate": float(pred.float().sum() / total),
     }
 
 
@@ -2352,6 +2376,18 @@ def _code_assignment_stability(
 # -----------------------------------------------------------------------------
 
 
+def fsq_lr_factor(schedule: str, epoch: int, epochs: int) -> float:
+    """Return the LR multiplier for one FSQ epoch."""
+    if schedule == "constant":
+        return 1.0
+    if schedule != "cosine":
+        raise ValueError(f"lr_schedule must be cosine|constant, got {schedule!r}.")
+    if epochs <= 1:
+        return 0.01
+    progress = min(max(epoch / (epochs - 1), 0.0), 1.0)
+    return 0.01 + 0.99 * 0.5 * (1.0 + math.cos(math.pi * progress))
+
+
 def train_spline_fsqae(
     *,
     segments: list[np.ndarray],
@@ -2464,24 +2500,25 @@ def train_spline_fsqae(
         model.gradient_checkpointing_disable()
         print("[FSQ-v3] gradient checkpointing: disabled")
 
+    param_groups = [
+        {"params": model.encoder.parameters(), "lr": cfg.encoder_lr, "name": "encoder"},
+        {"params": model.reconstructor.parameters(), "lr": cfg.reconstructor_lr, "name": "reconstructor"},
+    ]
+    if model.terminator is not None:
+        param_groups.append(
+            {"params": model.terminator.parameters(), "lr": cfg.terminator_lr, "name": "terminator"}
+        )
     optimizer = torch.optim.AdamW(
-        [
-            {"params": model.encoder.parameters(), "lr": cfg.encoder_lr, "name": "encoder"},
-            {"params": model.reconstructor.parameters(), "lr": cfg.reconstructor_lr, "name": "reconstructor"},
-            {"params": model.terminator.parameters(), "lr": cfg.terminator_lr, "name": "terminator"},
-        ],
+        param_groups,
         betas=(0.9, 0.95),
         eps=1e-8,
         weight_decay=0.01,
     )
 
-    def lr_factor(epoch: int) -> float:
-        if cfg.epochs <= 1:
-            return 0.01
-        progress = min(max(epoch / (cfg.epochs - 1), 0.0), 1.0)
-        return 0.01 + 0.99 * 0.5 * (1.0 + math.cos(math.pi * progress))
-
-    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_factor)
+    scheduler = torch.optim.lr_scheduler.LambdaLR(
+        optimizer,
+        lr_lambda=lambda epoch: fsq_lr_factor(cfg.lr_schedule, epoch, cfg.epochs),
+    )
     save_path = Path(cfg.save_path) if cfg.save_path else Path("FSQ.pt")
     start_epoch, best_val = 1, math.inf
     previous_code_assignments: Tensor | None = None
@@ -2494,6 +2531,31 @@ def train_spline_fsqae(
             raise ValueError(
                 "Cannot resume FSQ with a different encoder input convention: "
                 f"checkpoint={resume_input_mode!r}, current={cfg.encoder_input_mode!r}."
+            )
+        resume_lr_schedule = getattr(resume_cfg, "lr_schedule", "cosine")
+        if resume_lr_schedule != cfg.lr_schedule:
+            raise ValueError(
+                "Cannot resume FSQ with a different LR schedule: "
+                f"checkpoint={resume_lr_schedule!r}, current={cfg.lr_schedule!r}. "
+                "Use a different fsq_exp for a new run."
+            )
+        resume_termination_only = getattr(
+            resume_cfg, "terminator_termination_only", False
+        )
+        if resume_termination_only != cfg.terminator_termination_only:
+            raise ValueError(
+                "Cannot resume FSQ with a different terminator objective: "
+                f"checkpoint termination_only={resume_termination_only}, "
+                f"current={cfg.terminator_termination_only}. "
+                "Use a different fsq_exp for a new run."
+            )
+        resume_reconstructor_only = getattr(resume_cfg, "reconstructor_only", False)
+        if resume_reconstructor_only != cfg.reconstructor_only:
+            raise ValueError(
+                "Cannot resume FSQ with a different model composition: "
+                f"checkpoint reconstructor_only={resume_reconstructor_only}, "
+                f"current={cfg.reconstructor_only}. "
+                "Use a different fsq_exp for a new run."
             )
         model.load_state_dict(checkpoint["model_state"], strict=True)
         optimizer.load_state_dict(checkpoint["optim_state"])
@@ -2531,7 +2593,7 @@ def train_spline_fsqae(
             best_val = min(best_val, float(best_checkpoint.get("val_select", math.inf)))
             del best_checkpoint
         print(f"[FSQ-v3] resumed {resume_from} at epoch {start_epoch} (best select={best_val:.6f})")
-    else:
+    elif model.terminator is not None:
         loaded_vision = initialize_terminator_vision_from_pi05(model.terminator, cfg.pi_base)
         if loaded_vision:
             print(f"[FSQ-v3] initialized {loaded_vision} SigLIP tensors from {cfg.pi_base}")
@@ -2605,8 +2667,10 @@ def train_spline_fsqae(
         m = cfg.samples_per_skill
         start_state = moved["start_state"].reshape(bsize * m, cfg.max_state_dim)
         raw_state = moved["raw_state"].reshape(bsize * m, cfg.state_dim)
-        third = moved["third"].reshape(bsize * m, *moved["third"].shape[2:])
-        wrist = moved["wrist"].reshape(bsize * m, *moved["wrist"].shape[2:])
+        third = wrist = None
+        if "third" in moved:
+            third = moved["third"].reshape(bsize * m, *moved["third"].shape[2:])
+            wrist = moved["wrist"].reshape(bsize * m, *moved["wrist"].shape[2:])
         noise = time = None
         if not training:
             generator = torch.Generator(device=device).manual_seed(10_000 + batch_index)
@@ -2641,10 +2705,14 @@ def train_spline_fsqae(
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
             optimizer.step()
-        end_metrics = end_signal_metrics(
-            output["term_logits"].detach(),
-            moved["termination"].reshape(-1),
-            cfg.end_threshold,
+        end_metrics = (
+            {}
+            if cfg.reconstructor_only
+            else end_signal_metrics(
+                output["term_logits"].detach(),
+                moved["termination"].reshape(-1),
+                cfg.end_threshold,
+            )
         )
         # One FSQ index per input skill is already produced by the encoder. Keep
         # it on-device so epoch-level codebook coverage costs only a boolean
@@ -2752,9 +2820,7 @@ def train_spline_fsqae(
             **{f"train/end_{k}": v for k, v in train_end_avg.items()},
             "train/codebook_utilization_pct": 100.0 * train_active_codes / codebook_size,
             "train/codebook_active_entries": train_active_codes,
-            "lr/encoder": optimizer.param_groups[0]["lr"],
-            "lr/reconstructor": optimizer.param_groups[1]["lr"],
-            "lr/terminator": optimizer.param_groups[2]["lr"],
+            **{f"lr/{group['name']}": group["lr"] for group in optimizer.param_groups},
         }
         log.update({f"train_epoch/{k}": v for k, v in train_avg.items()})
         log.update({f"train_epoch/end_{k}": v for k, v in train_end_avg.items()})

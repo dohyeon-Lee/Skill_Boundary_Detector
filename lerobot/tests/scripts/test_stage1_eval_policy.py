@@ -51,6 +51,37 @@ class _FakeExpert(nn.Module):
         return []
 
 
+def test_attach_original_terminator_replaces_checkpoint_copy(
+    monkeypatch, tmp_path: Path
+) -> None:
+    class _Terminator(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.anchor = nn.Parameter(torch.ones(()))
+
+    class _Policy(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.anchor = nn.Parameter(torch.zeros(()))
+            self.model = SimpleNamespace(fsq_term_train=object())
+
+    fsq_path = tmp_path / "FSQ.pt"
+    fsq_path.touch()
+    original = _Terminator()
+    monkeypatch.setattr(run_eval, "build_fsq_terminator", lambda path: original)
+    policy = _Policy()
+
+    run_eval._attach_original_terminator(policy, fsq_path)
+
+    assert policy.model.fsq_term_train is original
+    assert original.training is False
+    assert all(parameter.requires_grad is False for parameter in original.parameters())
+
+
+def test_normalize_advance_mode_accepts_original() -> None:
+    assert run_eval._normalize_advance_mode("original") == "original"
+
+
 class _FakeTerminator:
     use_wrist = True
 
@@ -509,9 +540,19 @@ def test_gt_timed_advancement_does_not_call_a_terminator() -> None:
 
 
 @pytest.mark.parametrize("skill_source", ["gt", "own", "external"])
-@pytest.mark.parametrize("advance_mode", ["gt", "own", "external"])
-@pytest.mark.parametrize("terminator_variant", ["state_image", "image_only"])
-def test_stage1_eval_selects_own_external_or_gt_skill_modules(
+@pytest.mark.parametrize(
+    ("advance_mode", "terminator_variant"),
+    [
+        ("gt", "state_image"),
+        ("gt", "image_only"),
+        ("own", "state_image"),
+        ("own", "image_only"),
+        ("external", "state_image"),
+        ("external", "image_only"),
+        ("original", "state_image"),
+    ],
+)
+def test_stage1_eval_selects_own_external_original_or_gt_skill_modules(
     monkeypatch,
     skill_source: str,
     advance_mode: str,
@@ -549,6 +590,7 @@ def test_stage1_eval_selects_own_external_or_gt_skill_modules(
             return []
 
     policies = []
+    original_terminator_paths = []
 
     def make_test_policy(**kwargs):
         del kwargs
@@ -564,6 +606,11 @@ def test_stage1_eval_selects_own_external_or_gt_skill_modules(
     )
     monkeypatch.setattr(run_eval, "_policy_config", lambda *args: resolved_config)
     monkeypatch.setattr(run_eval, "make_policy", make_test_policy)
+    monkeypatch.setattr(
+        run_eval,
+        "_attach_original_terminator",
+        lambda policy, path: original_terminator_paths.append(str(path)),
+    )
     monkeypatch.setattr(
         run_eval, "make_pre_post_processors", lambda **kwargs: (object(), object())
     )
@@ -590,6 +637,7 @@ def test_stage1_eval_selects_own_external_or_gt_skill_modules(
             "advance_mode": advance_mode,
             "terminator_variant": terminator_variant,
             "external_skill_model": "/tmp/external",
+            "fsq_path": "/tmp/fsq/FSQ.pt",
             "tokenizer_path": "/tmp/tokenizer",
         },
         SimpleNamespace(policy=object(), env=object(), rename_map={}),
@@ -609,6 +657,9 @@ def test_stage1_eval_selects_own_external_or_gt_skill_modules(
         "/tmp/external"
         if advance_mode == "external" and terminator_variant == "image_only"
         else None
+    )
+    assert original_terminator_paths == (
+        ["/tmp/fsq/FSQ.pt"] if advance_mode == "original" else []
     )
     assert context["policy"].skill_source == skill_source
     assert context["policy"].advance_mode == advance_mode

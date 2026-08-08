@@ -4,18 +4,27 @@
 # and DP/checkpoint/mode/threshold/min-length provenance comes from the selected
 # skillset_manifest.json.
 fsq_dataset_root: FSQ_dataset
-target_dataset: langgap_56_full_full # libero_90_full_full | langgap_56_full_full 
+target_dataset: libero_90_full_full # libero_90_full_full | langgap_56_full_full
 fsq_inputs_name: FSQ_inputs
-skillset_seg_name: seg_langgap_56_full_full_state_obs20_ck100000_std_episodemean_80p
-# skillset_seg_name: seg_libero_90_full_full_state_obs20_ck100000_std_episodemean_80p
+# skillset_seg_name: seg_langgap_56_full_full_state_obs20_ck100000_std_episodemean_80p
+skillset_seg_name: seg_libero_90_full_full_state_obs20_ck100000_std_episodemean_100p
 skillset_name: skillset
+
+
 # ── FSQ model / run ──
-# Run name defaults to {target_dataset}_{dp_tag}_{fsq_tag}{fsq_exp_suffix}; dp_tag
-# is taken from the selected seg folder with the dataset prefix stripped. Thus
-# checkpoint/mode/threshold/manual artifact tags remain exact without duplicating
-# them as YAML knobs. Set fsq_exp to separate model-side experiments.
-fsq_exp: "fast"                 # suffix prevents incompatible checkpoint auto-resume
-fsq_levels: [3, 3, 3] # [3, 4, 5]    # [8, 8] | [5, 5, 5]
+fsq_exp: "constLR_termonly_LRdown" # _endwindow_iw_          
+fsq_levels: [3, 9] # [3, 4, 5]    # [6, 10] | [5, 5, 5]
+fsq_terminator_termination_only: false
+fsq_reconstructor_only: true
+fsq_lr_schedule: constant # cosine | constant
+
+
+# ── FSQ training hyperparameters ──
+fsq_batch_size: 64
+fsq_num_epochs: 2000
+fsq_checkpoint_every: 50
+fsq_samples_per_skill: 5
+fsq_skill_cond_mode: broadcast
 
 # FSQ trajectory encoder input. optimal = zero-grounded trajectory plus ONE extra learned token
 # containing the absolute skill-start EEF pose (not gripper state). It adds `_optimal` to run names.
@@ -35,15 +44,6 @@ fsq_siglip_image_size: 224
 fsq_cond_encoder_variant: gemma_300m
 
 
-fsq_batch_size: 64
-fsq_num_epochs: 500
-fsq_checkpoint_every: 25
-fsq_samples_per_skill: 5
-# token: reconstructor uses z as a token; terminator uses state+z AdaRMS.
-# broadcast: both modules use hidden-state skill broadcast.
-fsq_skill_cond_mode: broadcast
-
-
 fsq_chunk_size: 10
 fsq_num_workers: 8
 # Validation decodes in the training process to avoid intermittent AV1 worker deadlocks.
@@ -56,19 +56,11 @@ fsq_encoder_lr: 3.0e-4
 fsq_terminator_lr: 3.0e-4
 fsq_reconstructor_lr: 3.0e-4
 
-
-
 # ── FSQ loss weights ──
 fsq_action_loss_weight: 1.0
 fsq_progress_loss_weight: 1.0    # 학습은 (1,1,1) — end까지 다 걸어 코드를 termination-coherent하게 형성
 fsq_end_loss_weight: 1.0          #   (종료 다른 스킬 분리).
 fsq_end_target_sigma: 1.0
-
-# End-weight the sampled reconstructor loss. The start weight is always 1; the end weight below
-# applies at progress=1. Progress and termination losses stay uniform. `2.0` keeps the historical
-# w=1+progress behavior and `_weighted` run tag; other values get `_weighted<value>`.
-weighted_loss: false
-weighted_loss_end_weight: 2.0
 
 # ── Slurm (partition/qos/nodelist/exclude from configs/global_config.yaml) ──
 fsq_train_gres: gpu:1

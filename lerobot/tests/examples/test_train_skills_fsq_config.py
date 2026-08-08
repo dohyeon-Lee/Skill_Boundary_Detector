@@ -82,6 +82,7 @@ def test_fsq_selects_skillset_by_folders_and_reads_manifest(tmp_path: Path) -> N
     config["fsq_val_num_workers"] = 0
     config["fsq_val_every"] = 25
     config["fsq_save_best_model"] = False
+    config["fsq_lr_schedule"] = "constant"
     manifest_path = _write_manifest(tmp_path, config)
 
     settings = train_settings(config)
@@ -100,6 +101,7 @@ def test_fsq_selects_skillset_by_folders_and_reads_manifest(tmp_path: Path) -> N
     assert settings["fsq_val_num_workers"] == 0
     assert settings["fsq_val_every"] == 25
     assert settings["fsq_save_best_model"] is False
+    assert settings["fsq_lr_schedule"] == "constant"
     assert settings["fsq_run_name"] == (
         "demo_full_full_state_obs20_std_episodemean_80p_trial_fsq333"
     )
@@ -109,6 +111,15 @@ def test_fsq_selected_skillset_requires_manifest(tmp_path: Path) -> None:
     config = _minimal_fsq_config(tmp_path)
 
     with pytest.raises(FileNotFoundError, match="skillset manifest not found"):
+        train_settings(config)
+
+
+def test_fsq_lr_schedule_rejects_unknown_value(tmp_path: Path) -> None:
+    config = _minimal_fsq_config(tmp_path)
+    config["fsq_lr_schedule"] = "linear"
+    _write_manifest(tmp_path, config)
+
+    with pytest.raises(ValueError, match=r"fsq_lr_schedule must be cosine\|constant"):
         train_settings(config)
 
 

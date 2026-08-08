@@ -26,6 +26,7 @@ from lerobot.policies.skill_expert.configuration_skill_expert import (
     SkillExpertConfig,
     normalize_conditioning_route,
 )
+from lerobot.policies.skill_expert.modeling_utils import build_fsq_terminator
 from lerobot.scripts.lerobot_skillvla_eval import (
     _libero_task_descriptions,
     close_envs,
@@ -71,10 +72,13 @@ def _normalize_advance_mode(value: str) -> str:
         "own": "own",
         "terminator": "own",
         "external": "external",
+        "original": "original",
     }
     normalized = aliases.get(str(value).strip().lower())
     if normalized is None:
-        raise ValueError(f"advance_mode must be external|own|gt, got {value!r}.")
+        raise ValueError(
+            f"advance_mode must be external|own|original|gt, got {value!r}."
+        )
     return normalized
 
 
@@ -96,7 +100,7 @@ def _normalize_terminator_variant(value: str) -> str:
 
 
 class CheckpointTerminator:
-    """Inference adapter around the terminator stored in a policy checkpoint."""
+    """Inference adapter around the terminator currently attached to a policy."""
 
     use_wrist = True
 
@@ -127,6 +131,18 @@ class CheckpointTerminator:
                 codes, state, image, wrist_image
             )
         return progress, torch.sigmoid(logits)
+
+
+def _attach_original_terminator(policy, fsq_path: str | Path) -> None:
+    """Replace any co-trained terminator with the pristine one saved by FSQ."""
+    path = Path(fsq_path)
+    if not path.is_file():
+        raise FileNotFoundError(f"Original FSQ terminator checkpoint not found: {path}")
+    terminator = build_fsq_terminator(path)
+    device = next(policy.parameters()).device
+    terminator.to(device=device, dtype=torch.float32)
+    terminator.requires_grad_(False).eval()
+    policy.model.fsq_term_train = terminator
 
 
 def _parse_sequences(sequences) -> tuple[list[list[int]], list[list[int]]]:
@@ -172,7 +188,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         advance_mode = _normalize_advance_mode(advance_mode)
         if advance_mode != "gt" and terminator is None:
             raise ValueError(
-                f"advance_mode={advance_mode} requires a checkpoint terminator."
+                f"advance_mode={advance_mode} requires a terminator."
             )
         if end_mode not in {"termination", "progress", "or", "and"}:
             raise ValueError(
@@ -835,6 +851,23 @@ def _build_context(spec: dict, cfg, device: torch.device) -> dict:
             spec["label"],
             terminator_variant,
             external_skill_model,
+        )
+    elif advance_mode == "original":
+        if policy_config.type != "skill_expert":
+            raise ValueError(
+                f"[{spec['label']}] original FSQ terminator is supported only "
+                "for skill_expert checkpoints."
+            )
+        if terminator_variant != "state_image":
+            raise ValueError(
+                f"[{spec['label']}] advance_mode=original supports only "
+                "terminator_variant=state_image."
+            )
+        _attach_original_terminator(policy, spec["fsq_path"])
+        log.info(
+            "[%s] attached pristine FSQ terminator from %s.",
+            spec["label"],
+            spec["fsq_path"],
         )
     policy.eval()
     terminator = (

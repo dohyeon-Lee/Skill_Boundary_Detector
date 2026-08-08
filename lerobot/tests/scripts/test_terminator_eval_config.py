@@ -64,6 +64,40 @@ def test_fsq_initial_validation_requires_raw_fsq_file(tmp_path: Path) -> None:
     MODULE._validate_display_model(model, target_policy={})
 
 
+@pytest.mark.parametrize(
+    ("variant", "train_field"),
+    [
+        ("start_comparison", "train_start_comparison_terminator"),
+        (
+            "start_comparison_image_only",
+            "train_start_comparison_image_only_terminator",
+        ),
+    ],
+)
+def test_start_comparison_variant_validates_its_own_trained_module(
+    tmp_path: Path,
+    variant: str,
+    train_field: str,
+) -> None:
+    checkpoint = tmp_path / variant
+    checkpoint.mkdir()
+    (checkpoint / "model.safetensors").touch()
+    (checkpoint / "config.json").write_text(
+        json.dumps(
+            {
+                "type": "skill_aux",
+                "skill_fsq_levels": [3, 3, 3],
+                train_field: True,
+            }
+        )
+    )
+
+    MODULE._validate_display_model(
+        {"label": variant, "variant": variant, "path": str(checkpoint)},
+        target_policy={"skill_fsq_levels": [3, 3, 3]},
+    )
+
+
 def test_build_settings_binds_fsq_initial_to_selected_policy_fsq(
     tmp_path: Path, monkeypatch
 ) -> None:

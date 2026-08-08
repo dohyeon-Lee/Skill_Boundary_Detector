@@ -629,10 +629,13 @@ def _model_entries(config: dict) -> list[dict]:
             "own": "own",
             "terminator": "own",
             "external": "external",
+            "original": "original",
         }
         advance_mode = advance_aliases.get(advance_mode, "")
         if not advance_mode:
-            raise ValueError("models[].advance_mode must be external|own|gt.")
+            raise ValueError(
+                "models[].advance_mode must be external|own|original|gt."
+            )
         variant_aliases = {
             "normal": "state_image",
             "state_image": "state_image",
@@ -648,10 +651,13 @@ def _model_entries(config: dict) -> list[dict]:
             raise ValueError(
                 "models[].terminator_variant must be state_image|image_only."
             )
-        if advance_mode == "own" and terminator_variant == "image_only":
+        if (
+            advance_mode in {"own", "original"}
+            and terminator_variant == "image_only"
+        ):
             raise ValueError(
                 "terminator_variant=image_only requires advance_mode=external; "
-                "Stage-1 action checkpoints contain only the normal terminator."
+                "own/original provide only the normal state+image terminator."
             )
         label = str(raw.get("label", "") or "").strip()
         if not label:
@@ -794,6 +800,11 @@ def build_settings(config: dict) -> dict:
                 external_skill_model,
                 target_policy=contract["policy"],
                 variant=entry["terminator_variant"],
+            )
+        if entry["advance_mode"] == "original" and not contract["fsq_path"].is_file():
+            raise FileNotFoundError(
+                "advance_mode=original requires the FSQ checkpoint referenced by "
+                f"the Stage-1 policy: {contract['fsq_path']}"
             )
         if entry["advance_mode"] == "own" and not contract["has_terminator"]:
             raise ValueError(

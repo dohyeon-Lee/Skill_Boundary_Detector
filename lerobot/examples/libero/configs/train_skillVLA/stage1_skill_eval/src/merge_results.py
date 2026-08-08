@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Race-free aggregation of Stage-1 skill-eval array worker manifests."""
+"""Race-free aggregation of multi-policy skill-eval worker manifests."""
 
 from __future__ import annotations
 
@@ -13,7 +13,80 @@ _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))
 
 from html_report import write_html_report  # noqa: E402
+from review_common import review_id_for_signature  # noqa: E402
 from skill_data import token_to_coord  # noqa: E402
+
+
+def _model_skill_success(
+    manifest: dict,
+    *,
+    records: list[dict] | None = None,
+) -> list[dict]:
+    """Count green ID and OOD policy branches for each policy model."""
+    branch_groups = {
+        "id": {"policy", "policy_alt_noise"},
+        "ood": {"policy_early", "policy_late"},
+    }
+    policies = manifest["signature"].get("policies", [])
+    stats = [
+        {
+            "model_index": index,
+            "label": str(policy.get("label", f"model_{index:02d}")),
+            **{
+                group: {"success_count": 0, "total_count": 0}
+                for group in branch_groups
+            },
+        }
+        for index, policy in enumerate(policies)
+    ]
+    source_records = manifest["records"].values() if records is None else records
+    for record in source_records:
+        model_index = int(record.get("model_index", 0))
+        if not 0 <= model_index < len(stats):
+            raise ValueError(f"Record has unknown model_index={model_index}.")
+        for branch in record.get("branches", []):
+            branch_name = branch.get("name")
+            group = next(
+                (
+                    group_name
+                    for group_name, names in branch_groups.items()
+                    if branch_name in names
+                ),
+                None,
+            )
+            # GT is not in either group. Invalid early/late shifts were not
+            # evaluated, so they are excluded from the corresponding denominator.
+            if group is None or branch.get("unavailable_reason") is not None:
+                continue
+            stats[model_index][group]["total_count"] += 1
+            stats[model_index][group]["success_count"] += int(
+                bool(branch.get("green_tint", False))
+            )
+    for stat in stats:
+        for group in branch_groups:
+            total = int(stat[group]["total_count"])
+            stat[group]["success_rate"] = (
+                float(stat[group]["success_count"]) / total if total else 0.0
+            )
+    # Rank ID and OOD independently.  Dense ranking makes tied rates share the
+    # same color while the next distinct rate remains rank 2.  A metric with no
+    # evaluated branches is deliberately unranked.
+    for group in branch_groups:
+        rates = sorted(
+            {
+                float(stat[group]["success_rate"])
+                for stat in stats
+                if int(stat[group]["total_count"]) > 0
+            },
+            reverse=True,
+        )
+        ranks = {rate: index + 1 for index, rate in enumerate(rates[:2])}
+        for stat in stats:
+            rate = float(stat[group]["success_rate"])
+            stat[group]["rank"] = (
+                ranks.get(rate) if int(stat[group]["total_count"]) > 0 else None
+            )
+    return stats
 
 
 def report_payload(manifest: dict, *, levels: list[int]) -> dict:
@@ -27,26 +100,43 @@ def report_payload(manifest: dict, *, levels: list[int]) -> dict:
                 value["task_id"],
                 value["episode_id"],
                 value["frame_start"],
+                value.get("model_index", 0),
             )
         )
         skills.append(
             {
                 "token": token,
                 "coord": token_to_coord(token, levels),
+                "model_skill_success": _model_skill_success(
+                    manifest,
+                    records=records,
+                ),
                 "occurrences": records,
             }
         )
     signature = manifest["signature"]
+    review_id = review_id_for_signature(signature)
     return {
+        "review_id": review_id,
         "levels": levels,
         "model_label": manifest["model_label"],
+        "models": signature.get("policies", manifest.get("models", [])),
+        "main_terminator": signature.get("main_terminator", {}),
         "target_task": signature["target_task"],
         "task_ids": sorted(int(value) for value in signature["selected_episodes"]),
         "selected_episode_count": sum(
             len(value) for value in signature["selected_episodes"].values()
         ),
-        "occurrence_count": len(manifest["records"]),
+        "occurrence_count": len(
+            {
+                record.get("occurrence_uid", record["uid"])
+                for record in manifest["records"].values()
+            }
+        ),
+        "evaluation_count": len(manifest["records"]),
+        "model_skill_success": _model_skill_success(manifest),
         "time_shift_offset": signature["time_shift_offset"],
+        "terminator_models": signature.get("terminator_models", []),
         "skills": skills,
     }
 
@@ -117,6 +207,7 @@ def maybe_merge_chunks(
         merged = {
             "signature": signature,
             "model_label": chunks[0]["model_label"],
+            "models": chunks[0].get("models", []),
             "architecture_label": chunks[0].get("architecture_label", ""),
             "levels": levels,
             "chunk_count": expected_chunks,

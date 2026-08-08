@@ -55,6 +55,12 @@ class Args:
     """zero_grounded | raw_state | optimal (zero-grounded + one absolute start-EEF token)."""
     terminator_arch: str = "small"
     """small: lightweight query transformer; cond: Stage-1-cond-compatible Gemma."""
+    terminator_termination_only: bool = False
+    """Drop the progress objective: the terminator trains and predicts only termination
+    (progress output is fixed to zero). Checkpoint shapes stay unchanged."""
+    reconstructor_only: bool = False
+    """Train only encoder+FSQ+reconstructor: no terminator is built, no video frames
+    are decoded, and the progress/termination losses are dropped."""
     vision_backbone: str = "dino"
     """dino or siglip; shared by third-person and wrist images."""
     freeze_vision_encoder: bool = True
@@ -85,16 +91,14 @@ class Args:
     end_target_sigma: float = 0.0
     """Soft termination target std in frames (Gaussian bump at the skill end). 0 = hard 1-frame
     spike. σ≈2-3 curbs the val overfit a sharp spike causes and adds ±tolerance to recall/precision."""
-    weighted_loss: bool = False
-    """End-weight the per-sampled-timestep reconstructor loss."""
-    weighted_loss_end_weight: float = 2.0
-    """Reconstructor-loss weight at progress=1; progress=0 always has weight 1."""
 
     # ── training
     epochs: int = 300
     encoder_lr: float = 3e-4
     terminator_lr: float = 3e-4
     reconstructor_lr: float = 3e-4
+    lr_schedule: str = "cosine"
+    """cosine: decay to 1% of each configured LR; constant: keep each LR fixed."""
     batch_size: int = 64
     num_workers: int = 8
     val_num_workers: int = 0
@@ -333,6 +337,8 @@ def main(args: Args) -> None:
         skill_cond_mode=args.skill_cond_mode,
         pi_base=args.pi_base,
         terminator_arch=args.terminator_arch,
+        terminator_termination_only=args.terminator_termination_only,
+        reconstructor_only=args.reconstructor_only,
         vision_backbone=args.vision_backbone,
         freeze_vision_encoder=args.freeze_vision_encoder,
         dino_model_path=args.dino_model_path,
@@ -351,11 +357,10 @@ def main(args: Args) -> None:
         end_pos_weight=args.end_pos_weight,
         end_threshold=args.end_threshold,
         end_target_sigma=args.end_target_sigma,
-        weighted_loss=args.weighted_loss,
-        weighted_loss_end_weight=args.weighted_loss_end_weight,
         encoder_lr=args.encoder_lr,
         terminator_lr=args.terminator_lr,
         reconstructor_lr=args.reconstructor_lr,
+        lr_schedule=args.lr_schedule,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         val_num_workers=args.val_num_workers,
