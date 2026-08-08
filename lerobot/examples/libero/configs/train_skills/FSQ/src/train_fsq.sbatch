@@ -97,6 +97,7 @@ cat > "${FSQ_OUTPUT_DIR}/fsq_meta.json" <<JSON
   "terminator_heads": ${FSQ_TERMINATOR_HEADS},
   "terminator_termination_only": ${FSQ_TERMINATOR_TERMINATION_ONLY},
   "reconstructor_only": ${FSQ_RECONSTRUCTOR_ONLY},
+  "terminator_only": ${FSQ_TERMINATOR_ONLY},
   "skill_cond_mode": "${FSQ_SKILL_COND_MODE}",
   "gradient_checkpointing": ${FSQ_GRADIENT_CHECKPOINTING},
   "lr_schedule": "${FSQ_LR_SCHEDULE}",
@@ -139,6 +140,11 @@ if [ "${FSQ_RECONSTRUCTOR_ONLY:-false}" = "true" ]; then
   RECONSTRUCTOR_ONLY_ARG=(--reconstructor_only)
 fi
 
+TERMINATOR_ONLY_ARG=(--no-terminator_only)
+if [ "${FSQ_TERMINATOR_ONLY:-false}" = "true" ]; then
+  TERMINATOR_ONLY_ARG=(--terminator_only)
+fi
+
 # best-val SELECTION override: pass each val_select weight only if set in config (empty → omit → the
 # trainer falls back to selecting FSQ.pt on action+progress+end with their weights).
 VAL_SELECT_ARGS=()
@@ -163,6 +169,7 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     --terminator_arch         "${FSQ_TERMINATOR_ARCH}" \
     "${TERMINATION_ONLY_ARG[@]}" \
     "${RECONSTRUCTOR_ONLY_ARG[@]}" \
+    "${TERMINATOR_ONLY_ARG[@]}" \
     --image_encoder_layers    "${FSQ_TERMINATOR_LAYERS}" \
     --image_encoder_heads     "${FSQ_TERMINATOR_HEADS}" \
     --vision_backbone         "${FSQ_VISION_BACKBONE}" \

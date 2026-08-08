@@ -1329,6 +1329,10 @@ class SplineFSQAEConfig:
     reconstructor_only: bool = False
     """Train only encoder+FSQ+reconstructor: no terminator module is built, no video
     frames are decoded, and the progress/termination loss terms are dropped."""
+    terminator_only: bool = False
+    """Train only encoder+FSQ+terminator: no reconstructor module is built and the
+    action loss term is dropped. The encoder is driven purely by the terminator's
+    progress/termination objectives through the FSQ straight-through estimator."""
     action_loss_weight: float = 1.0
     progress_loss_weight: float = 0.1
     end_loss_weight: float = 0.1
@@ -1401,6 +1405,10 @@ class SplineFSQAE(nn.Module):
                 "reconstructor_only and terminator_termination_only are mutually "
                 "exclusive: reconstructor_only builds no terminator at all."
             )
+        if cfg.reconstructor_only and cfg.terminator_only:
+            raise ValueError(
+                "reconstructor_only and terminator_only are mutually exclusive."
+            )
         for name in (
             "encoder_min", "encoder_max", "state_min", "state_max",
             "state_q01", "state_q99", "action_q01", "action_q99",
@@ -1429,7 +1437,7 @@ class SplineFSQAE(nn.Module):
             encoder_start_min=cfg.encoder_start_min,
             encoder_start_max=cfg.encoder_start_max,
         )
-        self.reconstructor = MotionChunkReconstructor(
+        self.reconstructor = None if cfg.terminator_only else MotionChunkReconstructor(
             fsq_levels=cfg.fsq_levels,
             hidden_dim=cfg.hidden_dim,
             n_layers=cfg.num_layers,
@@ -1462,13 +1470,15 @@ class SplineFSQAE(nn.Module):
 
     def gradient_checkpointing_enable(self) -> None:
         self.encoder.enc_traj_pool.gradient_checkpointing_enable()
-        self.reconstructor.pool.gradient_checkpointing_enable()
+        if self.reconstructor is not None:
+            self.reconstructor.pool.gradient_checkpointing_enable()
         if self.terminator is not None:
             self.terminator.gradient_checkpointing_enable()
 
     def gradient_checkpointing_disable(self) -> None:
         self.encoder.enc_traj_pool.gradient_checkpointing_disable()
-        self.reconstructor.pool.gradient_checkpointing_disable()
+        if self.reconstructor is not None:
+            self.reconstructor.pool.gradient_checkpointing_disable()
         if self.terminator is not None:
             self.terminator.gradient_checkpointing_disable()
 
@@ -1535,6 +1545,10 @@ class SplineFSQAE(nn.Module):
             progress = torch.arange(steps, device=raw_states.device, dtype=raw_states.dtype)[None].expand(bsize, -1)
             progress = progress / max(steps - 1, 1)
         progress = progress.to(device=raw_states.device, dtype=raw_states.dtype).reshape(bsize * steps)
+        if self.reconstructor is None:
+            raise RuntimeError(
+                "This FSQ model was trained terminator_only and has no reconstructor."
+            )
         z_norm = self.fsq.normalized(z_q).repeat_interleave(steps, dim=0)
         action_norm = self.reconstructor(
             start_state,
@@ -1619,11 +1633,20 @@ class SplineFSQAE(nn.Module):
         z_norm = self.fsq.normalized(z_q)
         z_sample = z_norm.repeat_interleave(samples_per_skill, dim=0)
         _ = noise, time  # older validation path passes these; the reconstructor is deterministic.
-        actions = self.reconstructor(
-            start_state,
-            z_sample,
-            progress_target,
-        )
+        if self.reconstructor is None:
+            actions = torch.zeros(
+                z_sample.shape[0],
+                self.cfg.chunk_size,
+                self.cfg.max_action_dim,
+                device=z_sample.device,
+                dtype=z_sample.dtype,
+            )
+        else:
+            actions = self.reconstructor(
+                start_state,
+                z_sample,
+                progress_target,
+            )
         if self.terminator is None:
             zeros = torch.zeros(
                 z_sample.shape[0], device=z_sample.device, dtype=actions.dtype
@@ -2194,10 +2217,13 @@ def fsq_reconstruction_loss(
     bsize = int(batch["ctrl"].shape[0])
     m = cfg.samples_per_skill
     pred = output["actions"][..., : cfg.action_dim]
-    target = batch["actions"].reshape(bsize * m, cfg.chunk_size, cfg.max_action_dim)
-    target = target[..., : cfg.action_dim].to(pred)
-    per_sample_action = (pred - target).square().mean(dim=(1, 2))
-    action_loss = _per_trajectory_mean(per_sample_action, bsize, m)
+    if cfg.terminator_only:
+        action_loss = torch.zeros((), device=pred.device, dtype=pred.dtype)
+    else:
+        target = batch["actions"].reshape(bsize * m, cfg.chunk_size, cfg.max_action_dim)
+        target = target[..., : cfg.action_dim].to(pred)
+        per_sample_action = (pred - target).square().mean(dim=(1, 2))
+        action_loss = _per_trajectory_mean(per_sample_action, bsize, m)
 
     if cfg.terminator_termination_only or cfg.reconstructor_only:
         progress_loss = torch.zeros((), device=pred.device, dtype=pred.dtype)
@@ -2502,8 +2528,11 @@ def train_spline_fsqae(
 
     param_groups = [
         {"params": model.encoder.parameters(), "lr": cfg.encoder_lr, "name": "encoder"},
-        {"params": model.reconstructor.parameters(), "lr": cfg.reconstructor_lr, "name": "reconstructor"},
     ]
+    if model.reconstructor is not None:
+        param_groups.append(
+            {"params": model.reconstructor.parameters(), "lr": cfg.reconstructor_lr, "name": "reconstructor"}
+        )
     if model.terminator is not None:
         param_groups.append(
             {"params": model.terminator.parameters(), "lr": cfg.terminator_lr, "name": "terminator"}
@@ -2549,13 +2578,16 @@ def train_spline_fsqae(
                 f"current={cfg.terminator_termination_only}. "
                 "Use a different fsq_exp for a new run."
             )
-        resume_reconstructor_only = getattr(resume_cfg, "reconstructor_only", False)
-        if resume_reconstructor_only != cfg.reconstructor_only:
+        resume_composition = (
+            getattr(resume_cfg, "reconstructor_only", False),
+            getattr(resume_cfg, "terminator_only", False),
+        )
+        current_composition = (cfg.reconstructor_only, cfg.terminator_only)
+        if resume_composition != current_composition:
             raise ValueError(
-                "Cannot resume FSQ with a different model composition: "
-                f"checkpoint reconstructor_only={resume_reconstructor_only}, "
-                f"current={cfg.reconstructor_only}. "
-                "Use a different fsq_exp for a new run."
+                "Cannot resume FSQ with a different model composition: checkpoint "
+                f"(reconstructor_only, terminator_only)={resume_composition}, "
+                f"current={current_composition}. Use a different fsq_exp for a new run."
             )
         model.load_state_dict(checkpoint["model_state"], strict=True)
         optimizer.load_state_dict(checkpoint["optim_state"])

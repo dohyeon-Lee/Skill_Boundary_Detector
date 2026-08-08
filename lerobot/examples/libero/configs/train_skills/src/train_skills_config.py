@@ -632,6 +632,11 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
             "fsq_reconstructor_only and fsq_terminator_termination_only are mutually "
             "exclusive: reconstructor_only builds no terminator at all."
         )
+    fsq_terminator_only = as_bool(get_value(cfg, "fsq_terminator_only", False))
+    if fsq_reconstructor_only and fsq_terminator_only:
+        raise ValueError(
+            "fsq_reconstructor_only and fsq_terminator_only are mutually exclusive."
+        )
     fsq_cond_encoder_variant = str(get_value(cfg, "fsq_cond_encoder_variant", "gemma_300m"))
     fsq_terminator_tag = fsq_terminator_arch
     fsq_vision_backbone = str(get_value(cfg, "fsq_vision_backbone", "dino"))
@@ -776,6 +781,7 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "fsq_terminator_heads": fsq_terminator_heads,
         "fsq_terminator_termination_only": fsq_terminator_termination_only,
         "fsq_reconstructor_only": fsq_reconstructor_only,
+        "fsq_terminator_only": fsq_terminator_only,
         "fsq_vision_backbone": fsq_vision_backbone,
         "fsq_freeze_vision_encoder": fsq_freeze_vision_encoder,
         "fsq_hidden_dim": int(get_value(cfg, "fsq_hidden_dim", 256)),

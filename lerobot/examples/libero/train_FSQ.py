@@ -61,6 +61,9 @@ class Args:
     reconstructor_only: bool = False
     """Train only encoder+FSQ+reconstructor: no terminator is built, no video frames
     are decoded, and the progress/termination losses are dropped."""
+    terminator_only: bool = False
+    """Train only encoder+FSQ+terminator: no reconstructor is built and the action
+    loss is dropped; progress/termination alone drive the encoder and codebook."""
     vision_backbone: str = "dino"
     """dino or siglip; shared by third-person and wrist images."""
     freeze_vision_encoder: bool = True
@@ -339,6 +342,7 @@ def main(args: Args) -> None:
         terminator_arch=args.terminator_arch,
         terminator_termination_only=args.terminator_termination_only,
         reconstructor_only=args.reconstructor_only,
+        terminator_only=args.terminator_only,
         vision_backbone=args.vision_backbone,
         freeze_vision_encoder=args.freeze_vision_encoder,
         dino_model_path=args.dino_model_path,
