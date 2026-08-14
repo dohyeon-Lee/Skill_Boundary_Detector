@@ -842,6 +842,81 @@ def test_arch0_token_makes_skill_one_expert_token_and_keeps_state_on_cond_adarms
     assert model.state_proj.weight.grad is not None
 
 
+@pytest.mark.parametrize(
+    ("revision", "label"),
+    [
+        (COND_GEMMA_ARCHITECTURE_REVISION, "arch0"),
+        (COND_GEMMA_EXPERT_STATE_REVISION, "arch0_1"),
+        (COND_GEMMA_DUAL_STATE_REVISION, "arch0_2"),
+        (COND_GEMMA_SEPARATE_DUAL_STATE_REVISION, "arch0_2_sep"),
+        (COND_GEMMA_WRIST_DUAL_STATE_REVISION, "arch0_3"),
+        (COND_GEMMA_SKILL_ADARMS_REVISION, "arch0_adarms"),
+        (COND_GEMMA_SKILL_TOKEN_REVISION, "arch0_token"),
+        (COND_GEMMA_ISOLATED_SKILL_TOKEN_REVISION, "arch0_token_iso"),
+        (COND_GEMMA_EXPERT_TOKENS_REVISION, "arch1_1"),
+        (COND_GEMMA_PERCEIVER_EXPERT_TOKENS_REVISION, "arch1_2"),
+    ],
+)
+def test_every_cond_gemma_parameter_is_either_warm_started_or_allowlisted(
+    revision: str, label: str
+) -> None:
+    """Any module a new ablation adds must be declared new relative to pi0.5.
+
+    ``from_pretrained`` refuses a warm start whose missing keys fall outside the
+    allowlist, so forgetting one entry only surfaces at job launch. Enumerating
+    the parameters here catches it at test time instead.
+    """
+    config = SkillExpertConfig(
+        architecture=COND_GEMMA_ARCHITECTURE,
+        architecture_label=label,
+        architecture_revision=revision,
+        conditioning_route=(
+            "state_cond" if label.startswith("arch0") else "state_skill_cond"
+        ),
+        max_state_dim=4,
+        max_action_dim=4,
+        chunk_size=3,
+        n_action_steps=3,
+        dino_model_path="unused",
+        num_visual_latents_per_camera=4,
+        visual_perceiver_width=32,
+    )
+    tiny_geometry = SimpleNamespace(width=32, depth=2)
+    with (
+        patch(
+            "lerobot.policies.skill_expert.cond_gemma.get_gemma_config",
+            return_value=tiny_geometry,
+        ),
+        patch(
+            "lerobot.policies.skill_expert.cond_gemma.build_gemma",
+            side_effect=lambda _variant, *, use_adarms: _tiny_projection_gemma_pi05_heads(
+                use_adarms=use_adarms
+            ),
+        ),
+        patch(
+            "lerobot.policies.skill_expert.cond_gemma.AutoModel.from_pretrained",
+            return_value=_TinyDino(),
+        ),
+    ):
+        model = CondGemmaSkillExpert(config)
+
+    # Exactly the targets _map_pi05_cond_key can produce from a pi0.5 checkpoint.
+    warm_started = (
+        "model.gemma_expert.",
+        "model.action_in_proj.",
+        "model.action_out_proj.",
+        "model.time_mlp_in.",
+        "model.time_mlp_out.",
+    )
+    unaccounted = sorted(
+        f"model.{key}"
+        for key in model.state_dict()
+        if not f"model.{key}".startswith(warm_started)
+        and not _allowed_pi05_missing_key(f"model.{key}", config)
+    )
+    assert unaccounted == []
+
+
 def test_arch0_token_iso_hides_vision_from_the_skill_token_in_both_paths() -> None:
     torch.manual_seed(29)
     config = SkillExpertConfig(

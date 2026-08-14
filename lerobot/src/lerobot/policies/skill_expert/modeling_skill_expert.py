@@ -841,6 +841,7 @@ def _allowed_pi05_missing_key(key: str, config: SkillExpertConfig) -> bool:
                 "model.cond_encoder.",
                 "model.state_norm.",
                 "model.skill_norm.",
+                "model.expert_skill_norm.",
                 "model.context_input_norms.",
                 "model.context_post_attention_norms.",
                 "model.top_resampler.",
