@@ -20,7 +20,7 @@ from lerobot.policies.skill_expert.modeling_skill_expert import (
 from lerobot.policies.skill_expert.modeling_skill_predictor import FrozenVLMSkillPredictor
 from lerobot.policies.skill_expert.modeling_utils import (
     build_fsq_image_only_terminator,
-    build_fsq_terminator,
+    build_trainable_fsq_terminator,
     build_fsq_wrist_only_terminator,
 )
 from lerobot.utils.constants import OBS_LANGUAGE_ATTENTION_MASK, OBS_LANGUAGE_TOKENS
@@ -40,7 +40,7 @@ class SkillAuxModules(nn.Module):
         )
         self.fsq_term_train = None
         if config.train_terminator:
-            terminator = build_fsq_terminator(config.fsq_path)
+            terminator = build_trainable_fsq_terminator(config.fsq_path)
             terminator.freeze_vision_encoder = bool(config.terminator_freeze_vision_encoder)
             terminator.requires_grad_(True)
             if terminator.freeze_vision_encoder:

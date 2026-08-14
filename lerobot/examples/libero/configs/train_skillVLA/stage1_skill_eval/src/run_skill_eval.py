@@ -27,6 +27,7 @@ from lerobot.policies.skill_expert.modeling_skill_expert import (
 from lerobot.policies.skill_expert.modeling_utils import (
     build_fsq_image_only_terminator,
     build_fsq_terminator,
+    build_trainable_fsq_terminator,
     build_fsq_wrist_only_terminator,
 )
 from lerobot.scripts.lerobot_skillvla_eval import _libero_task_descriptions
@@ -109,11 +110,13 @@ class IndependentTerminator:
 def _load_display_terminator(policy, model_spec: dict, fsq_path: str | Path):
     variant = str(model_spec["variant"])
     checkpoint_path = str(model_spec.get("path") or "")
-    if variant in {"state_image", "fsq_initial"}:
-        raw_fsq_path = checkpoint_path if variant == "fsq_initial" else fsq_path
-        if not raw_fsq_path:
+    if variant == "fsq_initial":
+        if not checkpoint_path:
             raise ValueError("fsq_initial requires its resolved raw FSQ.pt path.")
-        module = build_fsq_terminator(raw_fsq_path)
+        module = build_fsq_terminator(checkpoint_path)
+        prefix = "model.fsq_term_train."
+    elif variant == "state_image":
+        module = build_trainable_fsq_terminator(fsq_path)
         prefix = "model.fsq_term_train."
     elif variant == "image_only":
         module = build_fsq_image_only_terminator(fsq_path)

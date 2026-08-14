@@ -126,7 +126,11 @@ def _batch() -> dict:
 
 @pytest.fixture(autouse=True)
 def _mock_auxiliary_builders(monkeypatch):
-    monkeypatch.setattr(skill_aux_module, "build_fsq_terminator", lambda path: _DummyTerminator())
+    monkeypatch.setattr(
+        skill_aux_module,
+        "build_trainable_fsq_terminator",
+        lambda path: _DummyTerminator(),
+    )
     monkeypatch.setattr(
         skill_aux_module,
         "build_fsq_image_only_terminator",

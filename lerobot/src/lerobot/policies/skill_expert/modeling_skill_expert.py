@@ -53,6 +53,7 @@ from .cond_gemma import CondGemmaSkillExpert
 from .modeling_utils import (
     build_fsq_image_only_terminator,
     build_fsq_terminator,
+    build_trainable_fsq_terminator,
     load_raw_state_dict,
 )
 from .modeling_skill_predictor import FrozenVLMSkillPredictor
@@ -1477,7 +1478,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
 
         terminator = self.model.fsq_term_train
         if terminator is None:
-            terminator = build_fsq_terminator(self.config.fsq_path).to(
+            terminator = build_trainable_fsq_terminator(self.config.fsq_path).to(
                 dtype=torch.float32
             )
         loaded = _load_complete_terminator_parameters(terminator, path)

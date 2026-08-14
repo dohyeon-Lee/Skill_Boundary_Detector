@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 import torch
 from torch import nn
 
@@ -13,6 +14,7 @@ _ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(_ROOT / "lerobot/examples/libero"))
 
 import FSQ as fsq_module  # noqa: E402
+from FSQ_original import FSQOriginalConfig  # noqa: E402
 from FSQ import (  # noqa: E402
     DtypeAlignedRMSNorm,
     FSQTrajectoryDataset,
@@ -228,6 +230,103 @@ def test_image_only_builder_uses_fsq_config_but_no_fsq_model_weights(
     assert loaded_config is config
     assert terminator.kwargs["dino_model_path"] == "pretrained-dino"
     assert terminator.training is False
+
+
+def test_trainable_terminator_accepts_fsq_original_as_fresh_contract(
+    monkeypatch,
+) -> None:
+    state_min = np.arange(8, dtype=np.float32)
+    state_max = state_min + 10.0
+    config = FSQOriginalConfig(
+        enc_dim=8,
+        hidden_dim=256,
+        fsq_levels=[3, 3, 3],
+        num_layers=3,
+        num_heads=4,
+        encoder_min=state_min,
+        encoder_max=state_max,
+    )
+
+    class _FreshStateImageTerminator(nn.Module):
+        def __init__(self, **kwargs):
+            super().__init__()
+            self.kwargs = kwargs
+            self.anchor = nn.Parameter(torch.zeros(()))
+
+    monkeypatch.setattr(
+        fsq_module.torch,
+        "load",
+        lambda *args, **kwargs: {
+            "cfg": config,
+            "model_state": {"encoder.unused": torch.ones(())},
+        },
+    )
+    monkeypatch.setattr(
+        fsq_module,
+        "FSQQueryTerminator",
+        _FreshStateImageTerminator,
+    )
+
+    terminator, loaded_config = fsq_module.build_trainable_fsq_terminator(
+        "FSQ.pt"
+    )
+
+    assert loaded_config is config
+    assert terminator.kwargs["state_dim"] == 8
+    assert terminator.kwargs["fsq_levels"] == [3, 3, 3]
+    assert terminator.kwargs["n_layers"] == 3
+    assert terminator.kwargs["n_heads"] == 4
+    assert terminator.kwargs["skill_cond_mode"] == "broadcast"
+    np.testing.assert_array_equal(terminator.kwargs["state_min"], state_min)
+    np.testing.assert_array_equal(terminator.kwargs["state_max"], state_max)
+    assert terminator.training is False
+
+
+def test_trainable_terminator_keeps_v3_warm_start(monkeypatch) -> None:
+    config = SplineFSQAEConfig()
+
+    class _WarmStartedTerminator(nn.Module):
+        def __init__(self, **kwargs):
+            super().__init__()
+            self.kwargs = kwargs
+            self.anchor = nn.Parameter(torch.zeros(()))
+
+    monkeypatch.setattr(
+        fsq_module.torch,
+        "load",
+        lambda *args, **kwargs: {
+            "cfg": config,
+            "model_state": {"terminator.anchor": torch.tensor(3.0)},
+        },
+    )
+    monkeypatch.setattr(
+        fsq_module,
+        "FSQQueryTerminator",
+        _WarmStartedTerminator,
+    )
+
+    terminator, loaded_config = fsq_module.build_trainable_fsq_terminator(
+        "FSQ.pt"
+    )
+
+    assert loaded_config is config
+    assert terminator.anchor.item() == 3.0
+    assert terminator.training is False
+
+
+def test_pristine_fsq_terminator_still_rejects_fsq_original(monkeypatch) -> None:
+    config = FSQOriginalConfig(
+        encoder_min=np.zeros(8, dtype=np.float32),
+        encoder_max=np.ones(8, dtype=np.float32),
+    )
+    monkeypatch.setattr(
+        fsq_module.torch,
+        "load",
+        lambda *args, **kwargs: {"cfg": config, "model_state": {}},
+    )
+
+    with pytest.raises(ValueError, match="Legacy FSQ checkpoint is unsupported"):
+        fsq_module.load_fsq_terminator("FSQ.pt")
 
 
 def test_wrist_only_builder_uses_fsq_config_but_no_fsq_model_weights(

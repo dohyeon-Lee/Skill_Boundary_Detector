@@ -23,6 +23,7 @@ There is intentionally no PI05/Gemma action expert in this FSQ variant.
 from __future__ import annotations
 
 import hashlib
+import logging
 import math
 import time
 from dataclasses import dataclass, field
@@ -53,6 +54,8 @@ N_GRIPPER_DIMS = 2
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _DEFAULT_IMAGE_MODEL = str(_REPO_ROOT / "models" / "dinov3-vits16")
 _DEFAULT_PI_BASE = str(_REPO_ROOT / "models" / "pi05_base")
+
+log = logging.getLogger(__name__)
 
 
 # -----------------------------------------------------------------------------
@@ -1511,6 +1514,111 @@ def _checkpoint_config(checkpoint: dict[str, Any]) -> SplineFSQAEConfig:
     return cfg
 
 
+def _terminator_build_config(
+    checkpoint: dict[str, Any],
+) -> tuple[SplineFSQAEConfig, Any, bool]:
+    """Resolve the terminator contract for either joint-v3 or FSQ-original.
+
+    FSQ-original checkpoints intentionally contain no terminator tensors.  For
+    them, derive only the shared skill/state contract and construct a fresh
+    terminator.  Joint-v3 checkpoints retain their historical warm start.
+    """
+    source_cfg = checkpoint.get("cfg")
+    try:
+        from FSQ_original import FSQOriginalConfig  # noqa: PLC0415
+    except ImportError:
+        FSQOriginalConfig = ()  # type: ignore[assignment,misc]
+
+    if isinstance(source_cfg, FSQOriginalConfig):
+        if str(getattr(source_cfg, "quantizer", "fsq")) != "fsq":
+            raise ValueError(
+                "Fresh terminator construction supports FSQ-original checkpoints "
+                "only; BSQ uses a different code-coordinate contract."
+            )
+        if str(getattr(source_cfg, "encoder_arch", "spline")) != "spline":
+            raise ValueError(
+                "Fresh terminator construction requires an FSQ-original spline "
+                "encoder with raw state bounds."
+            )
+        state_min = getattr(source_cfg, "encoder_min", None)
+        state_max = getattr(source_cfg, "encoder_max", None)
+        if state_min is None or state_max is None:
+            raise ValueError(
+                "FSQ-original checkpoint has no encoder_min/encoder_max values "
+                "from which to derive terminator state normalization."
+            )
+        state_min = np.asarray(state_min, dtype=np.float32)
+        state_max = np.asarray(state_max, dtype=np.float32)
+        if state_min.ndim != 1 or state_max.shape != state_min.shape:
+            raise ValueError(
+                "FSQ-original state bounds must be matching 1-D arrays, got "
+                f"{state_min.shape} and {state_max.shape}."
+            )
+        cfg = SplineFSQAEConfig(
+            action_dim=int(source_cfg.action_dim),
+            enc_dim=int(source_cfg.enc_dim),
+            state_dim=int(state_min.shape[0]),
+            n_control=int(source_cfg.n_control),
+            spline_degree=int(source_cfg.spline_degree),
+            encoder_input_mode=str(source_cfg.encoder_input_mode),
+            hidden_dim=int(source_cfg.hidden_dim),
+            fsq_levels=[int(level) for level in source_cfg.fsq_levels],
+            num_layers=int(source_cfg.num_layers),
+            dropout=float(source_cfg.dropout),
+            length_min=float(source_cfg.length_min),
+            length_max=float(source_cfg.length_max),
+            terminator_arch="small",
+            vision_backbone="dino",
+            freeze_vision_encoder=True,
+            dino_model_path=_DEFAULT_IMAGE_MODEL,
+            dino_image_size=224,
+            siglip_image_size=224,
+            cond_encoder_variant="gemma_300m",
+            image_encoder_layers=int(source_cfg.num_layers),
+            image_encoder_heads=int(source_cfg.num_heads),
+            skill_cond_mode="broadcast",
+            encoder_min=state_min,
+            encoder_max=state_max,
+            state_min=state_min,
+            state_max=state_max,
+        )
+        return cfg, source_cfg, False
+
+    cfg = _checkpoint_config(checkpoint)
+    return cfg, cfg, True
+
+
+def _new_fsq_terminator(
+    terminator_cls: type[FSQQueryTerminator],
+    cfg: SplineFSQAEConfig,
+    *,
+    dino_model_path: str | None,
+) -> FSQQueryTerminator:
+    kwargs = {
+        "state_dim": cfg.state_dim,
+        "fsq_levels": cfg.fsq_levels,
+        "hidden_dim": cfg.hidden_dim,
+        "n_layers": cfg.image_encoder_layers,
+        "n_heads": cfg.image_encoder_heads,
+        "dropout": 0.0,
+        "arch": cfg.terminator_arch,
+        "vision_backbone": cfg.vision_backbone,
+        "freeze_vision_encoder": cfg.freeze_vision_encoder,
+        "dino_model_path": dino_model_path or cfg.dino_model_path,
+        "dino_image_size": cfg.dino_image_size,
+        "siglip_image_size": cfg.siglip_image_size,
+        "cond_encoder_variant": cfg.cond_encoder_variant,
+        "skill_cond_mode": cfg.skill_cond_mode,
+        "state_min": cfg.state_min,
+        "state_max": cfg.state_max,
+    }
+    if terminator_cls is FSQQueryTerminator:
+        kwargs["termination_only"] = getattr(
+            cfg, "terminator_termination_only", False
+        )
+    return terminator_cls(**kwargs)
+
+
 def _load_prefixed(module: nn.Module, state: dict[str, Tensor], prefix: str) -> None:
     selected = {k[len(prefix) :]: v for k, v in state.items() if k.startswith(prefix)}
     if not selected:
@@ -1552,28 +1660,44 @@ def load_fsq_terminator(
 ) -> tuple[FSQQueryTerminator, SplineFSQAEConfig]:
     checkpoint = torch.load(str(path), map_location="cpu", weights_only=False)
     cfg = _checkpoint_config(checkpoint)
-    terminator = FSQQueryTerminator(
-        state_dim=cfg.state_dim,
-        fsq_levels=cfg.fsq_levels,
-        hidden_dim=cfg.hidden_dim,
-        n_layers=cfg.image_encoder_layers,
-        n_heads=cfg.image_encoder_heads,
-        dropout=0.0,
-        arch=cfg.terminator_arch,
-        vision_backbone=cfg.vision_backbone,
-        freeze_vision_encoder=cfg.freeze_vision_encoder,
-        dino_model_path=dino_model_path or cfg.dino_model_path,
-        dino_image_size=cfg.dino_image_size,
-        siglip_image_size=cfg.siglip_image_size,
-        cond_encoder_variant=cfg.cond_encoder_variant,
-        skill_cond_mode=cfg.skill_cond_mode,
-        state_min=cfg.state_min,
-        state_max=cfg.state_max,
-        termination_only=getattr(cfg, "terminator_termination_only", False),
+    terminator = _new_fsq_terminator(
+        FSQQueryTerminator,
+        cfg,
+        dino_model_path=dino_model_path,
     )
     _load_prefixed(terminator, checkpoint["model_state"], "terminator.")
     terminator.to(device).eval()
     return terminator, cfg
+
+
+def build_trainable_fsq_terminator(
+    path: str | Path,
+    device: str | torch.device = "cpu",
+    dino_model_path: str | None = None,
+) -> tuple[FSQQueryTerminator, Any]:
+    """Build the state+image terminator used by standalone training.
+
+    Joint-v3 FSQ checkpoints warm-start their saved ``terminator.*`` tensors.
+    FSQ-original checkpoints have no such component, so the same terminator
+    architecture is initialized fresh from their FSQ/state contract.
+    """
+    checkpoint = torch.load(str(path), map_location="cpu", weights_only=False)
+    cfg, source_cfg, has_terminator_weights = _terminator_build_config(checkpoint)
+    terminator = _new_fsq_terminator(
+        FSQQueryTerminator,
+        cfg,
+        dino_model_path=dino_model_path,
+    )
+    if has_terminator_weights:
+        _load_prefixed(terminator, checkpoint["model_state"], "terminator.")
+    else:
+        log.info(
+            "FSQ-original checkpoint has no terminator tensors; initializing "
+            "a fresh state+image terminator from %s.",
+            path,
+        )
+    terminator.to(device).eval()
+    return terminator, source_cfg
 
 
 def build_fsq_image_only_terminator(
@@ -1588,32 +1712,19 @@ def build_fsq_image_only_terminator(
     terminator-specific tensor keeps its constructor initialization.
     """
     checkpoint = torch.load(str(path), map_location="cpu", weights_only=False)
-    cfg = _checkpoint_config(checkpoint)
+    cfg, source_cfg, _ = _terminator_build_config(checkpoint)
     if cfg.vision_backbone != "dino":
         raise ValueError(
             "The image-only terminator currently requires a DINO FSQ checkpoint; "
             f"got vision_backbone={cfg.vision_backbone!r}."
         )
-    terminator = FSQImageOnlyQueryTerminator(
-        state_dim=cfg.state_dim,
-        fsq_levels=cfg.fsq_levels,
-        hidden_dim=cfg.hidden_dim,
-        n_layers=cfg.image_encoder_layers,
-        n_heads=cfg.image_encoder_heads,
-        dropout=0.0,
-        arch=cfg.terminator_arch,
-        vision_backbone=cfg.vision_backbone,
-        freeze_vision_encoder=cfg.freeze_vision_encoder,
-        dino_model_path=dino_model_path or cfg.dino_model_path,
-        dino_image_size=cfg.dino_image_size,
-        siglip_image_size=cfg.siglip_image_size,
-        cond_encoder_variant=cfg.cond_encoder_variant,
-        skill_cond_mode=cfg.skill_cond_mode,
-        state_min=cfg.state_min,
-        state_max=cfg.state_max,
+    terminator = _new_fsq_terminator(
+        FSQImageOnlyQueryTerminator,
+        cfg,
+        dino_model_path=dino_model_path,
     )
     terminator.to(device).eval()
-    return terminator, cfg
+    return terminator, source_cfg
 
 
 def build_fsq_wrist_only_terminator(
@@ -1623,32 +1734,19 @@ def build_fsq_wrist_only_terminator(
 ) -> tuple[FSQWristOnlyQueryTerminator, SplineFSQAEConfig]:
     """Build a fresh wrist-only terminator without loading any FSQ tensor."""
     checkpoint = torch.load(str(path), map_location="cpu", weights_only=False)
-    cfg = _checkpoint_config(checkpoint)
+    cfg, source_cfg, _ = _terminator_build_config(checkpoint)
     if cfg.vision_backbone != "dino":
         raise ValueError(
             "The wrist-only terminator currently requires a DINO FSQ checkpoint; "
             f"got vision_backbone={cfg.vision_backbone!r}."
         )
-    terminator = FSQWristOnlyQueryTerminator(
-        state_dim=cfg.state_dim,
-        fsq_levels=cfg.fsq_levels,
-        hidden_dim=cfg.hidden_dim,
-        n_layers=cfg.image_encoder_layers,
-        n_heads=cfg.image_encoder_heads,
-        dropout=0.0,
-        arch=cfg.terminator_arch,
-        vision_backbone=cfg.vision_backbone,
-        freeze_vision_encoder=cfg.freeze_vision_encoder,
-        dino_model_path=dino_model_path or cfg.dino_model_path,
-        dino_image_size=cfg.dino_image_size,
-        siglip_image_size=cfg.siglip_image_size,
-        cond_encoder_variant=cfg.cond_encoder_variant,
-        skill_cond_mode=cfg.skill_cond_mode,
-        state_min=cfg.state_min,
-        state_max=cfg.state_max,
+    terminator = _new_fsq_terminator(
+        FSQWristOnlyQueryTerminator,
+        cfg,
+        dino_model_path=dino_model_path,
     )
     terminator.to(device).eval()
-    return terminator, cfg
+    return terminator, source_cfg
 
 
 def load_fsq_reconstructor_state(path: str | Path) -> tuple[dict[str, Tensor], SplineFSQAEConfig]:

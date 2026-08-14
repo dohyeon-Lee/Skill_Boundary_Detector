@@ -11,6 +11,14 @@ Select the training target in `terminator_train_config.yaml`:
 booleans. Any non-empty combination is valid; setting all four to `false` is a
 configuration error.
 
+The normal state+image terminator supports both FSQ implementations. A joint
+FSQ-v3 checkpoint warm-starts its saved `terminator.*` tensors. An
+`FSQOriginalConfig` checkpoint contains no terminator tensors, so its FSQ
+levels, hidden size, attention shape, and encoder state bounds are used to
+construct a fresh terminator instead. The raw `fsq_initial` evaluation remains
+v3-only because an FSQ-original checkpoint has no pretrained terminator to
+evaluate.
+
 The image-only model consumes the current skill code plus top/wrist images. It
 uses the same progress and termination targets as the normal terminator, does
 not consume transition-randomized predictor inputs, and loads no model tensor
