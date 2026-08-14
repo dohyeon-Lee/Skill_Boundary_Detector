@@ -61,7 +61,7 @@ train_partition:
 
 
 
-train_qos: big_qos # pro6000_qos | base_qos | big_qos
+train_qos: base_qos # pro6000_qos | base_qos | big_qos
 train_nodelist: ""
 train_exclude_nodes:
   - node19
@@ -79,9 +79,12 @@ train_exclude_nodes:
   - cs-gpu-01
   - node24
   # - node23
-  - node39 #
-  # - node58
+  - node39 
+
+  - node37
   - node34
   - node33
+  - node38
+  - node06
 # node38, 33 bad
 # node27, 36, 40 good

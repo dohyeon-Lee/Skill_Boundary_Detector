@@ -1,26 +1,22 @@
 dataset:
   skillvla_root: skillvla_dataset
   source: libero_90_full_firsthalf_scene # langgap_56_full_firsthalf | libero_90_full_firsthalf_scene
-  run: FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal
+  run: FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal
+  # run: FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal
   # run: FSQ345_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal
 
 # Optional user label. It is appended at the very end of the automatic output
 # and W&B run name. Empty keeps the standard ablation naming unchanged.
-run: {suffix: ""}
+run: {suffix: "pro"}
 
 warm_start:
   pi_base: models/pi05_base
   tokenizer: models/paligemma-3b-pt-224-tokenizer
-  # Empty = use the FSQ.pt beside this dataset run. Used only for the terminator.
-  fsq: ""
-  # Used only when action_conditioning.training_skill_source=predictor.
-  # The new VSA still starts from pi_base; only model.skill_predictor.* is read here.
   # predictor_checkpoint: outputs_filtered/skillVLA_stage1/<predictor_run>/checkpoints/030000/pretrained_model
   predictor_checkpoint: ""
 vision:
   dino_model: models/dinov3-vitl16
   image_size: 224
-  # Arch0--0_3/Arch1_1/Arch1_2 may be frozen; Arch1_3--4 require false.
   freeze: false
 
 architecture:
@@ -63,7 +59,7 @@ architecture:
   # evaluation-only under previous/ and are distinguished by revision metadata.
 
   # arch0 arch0_1 arch0_2 arch0_2_sep arch0_3 arch1_1 arch1_2 arch1_3 arch2_1 arch2_2 arch3 arch4
-  name: arch0_2_sep
+  name: arch0
 
   # Shared by Arch0--4.
   expert_variant: gemma_300m
@@ -76,15 +72,12 @@ architecture:
     # DINO CLS+196 patches -> this many latents for each top/wrist camera.
     visual_latents_per_camera: 32
 
-# flow | flow_endpoint_xyz (the latter is 0.5 flow + 0.5 accumulated-XYZ endpoint MSE)
-loss: flow
-
 # false: supervise the full real action chunk (current behavior).
 # true: exclude offsets after the effective skill end from action loss. When
 # transition randomization changes k -> k±1, its shifted virtual boundary is used.
 mask_actions_after_skill_end: true
 
-# Optional relative-trajectory auxiliary. The existing flow loss keeps weight
+# Optional relative-trajectory auxiliary. The fixed flow loss keeps weight
 # 1.0; this adds weight * prefix cumulative clean-action XYZ MSE after one
 # per-sample horizon normalization ((valid_steps + 1) / 2).
 cumulative_xyz_loss:
@@ -96,45 +89,16 @@ cumulative_xyz_loss:
 action_conditioning:
   training_skill_source: gt
 
-# Stage3-A predictor contract: frozen pi0.5 VLM base + Q/K/V/O skill LoRA.
-skill_predictor:
-  train: false
-  weight: 0.5
-  lr_scale: 1.0
-  all_layers: true
-  lora: {enabled: true, targets: "q,k,v,o", rank: 8, alpha: 16.0, dropout: 0.0, lr_scale: 10.0}
-  reader: {tokens: 4, depth: 2, heads: 8, deadzone_frac: 0.8}
-  token_access: {image: true, language: true}
-
-# Separate FSQ terminator instance; never shares parameters with the VSA path.
-terminator:
-  train: false
-  freeze_vision: true
-  end_target_sigma: 2.0
-  end_pos_weight: 1.0
-
 execution: {action_steps: 5}
 transition_randomization: {enabled: true}
-
-# false: ordinary random batches used by the architecture ablations.
-# true: guarantee early/late original-skill frames in each batch. Transition
-# randomization is still applied independently after the sample index is chosen.
-# focused_fraction is the guaranteed early+late share of a batch;
-# early_fraction is the early share inside that focused portion.
-batch_sampling:
-  enabled: false
-  focused_fraction: 0.75
-  early_fraction: 0.5
-  early_threshold: 0.20
-  late_threshold: 0.80
 
 training:
   dataloader: {batch_size: 32, workers: 4, gpus: 1}
   # Output names always start with the actual batch size, e.g. `bs96_...`.
   # dataloader: {batch_size: 32, workers: 8, gpus: 1}
   # DINO LR = base_lr * dino_lr_scale for every architecture.
-  optimizer: {base_lr: 2.5e-05, dino_lr_scale: 0.1, terminator_lr_scale: 1.0}
-  # optimizer: {base_lr: 2.5e-05, dino_lr_scale: 1.0, terminator_lr_scale: 1.0}
+  optimizer: {base_lr: 2.5e-05, dino_lr_scale: 0.1}
+  # optimizer: {base_lr: 2.5e-05, dino_lr_scale: 1.0}
 
   gradient_checkpointing: false
   schedule: {steps: 100000, lr_mode: warmup_constant, warmup_steps: 1000, log_every: 100, save_every: 5000}

@@ -704,6 +704,27 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
         predicted = self._predicted_training_skill_code(batch)
         return predicted.clamp(0, self.config.skill_vocab_size - 1)
 
+    @staticmethod
+    def _endpoint_xyz_loss(
+        predicted_actions: Tensor,
+        target_actions: Tensor,
+        valid: Tensor,
+    ) -> tuple[Tensor, Tensor]:
+        """Stage2-only chunk-end XYZ displacement objective."""
+        if predicted_actions.shape[-1] < 3 or target_actions.shape[-1] < 3:
+            raise ValueError("endpoint XYZ loss requires at least three action dimensions.")
+        sample_valid = valid.any(dim=1)
+        if not bool(sample_valid.any()):
+            raise ValueError("endpoint XYZ loss received a batch with no valid action steps.")
+        step_valid = valid.to(predicted_actions.dtype).unsqueeze(-1)
+        endpoint_error = (
+            (predicted_actions[..., :3] - target_actions[..., :3]) * step_valid
+        ).sum(dim=1)
+        per_sample = endpoint_error.square().mean(dim=-1)
+        selected = sample_valid.to(per_sample.dtype)
+        loss = (per_sample * selected).sum() / selected.sum().clamp(min=1.0)
+        return loss, per_sample
+
     def forward(self, batch: dict, reduction: str = "mean"):
         actions = pad_vector(batch[ACTION], self.config.max_action_dim)
         real_dim = self.config.output_features[ACTION].shape[0]

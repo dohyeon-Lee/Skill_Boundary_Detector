@@ -1,0 +1,85 @@
+# ── FSQ-original training config (one-shot reconstruction) ────────────────────
+# Trains the original-style spline FSQ autoencoder on one completed DP skillset.
+# The decoder reconstructs the ENCODER INPUT itself — normalized spline control
+# points + normalized length — in one shot from z_q. No images, no terminator,
+# no raw-video access. The start pose (optimal mode) conditions the encoder
+# only and is never reconstructed.
+# Dataset/skillset selection works exactly like FSQ/fsq_config.yaml.
+fsq_dataset_root: FSQ_dataset
+target_dataset: libero_90_full_full # libero_90_full_full | langgap_56_full_full
+fsq_inputs_name: FSQ_inputs
+skillset_seg_name: seg_libero_90_full_full_state_obs20_ck100000_std_episodemean_100p
+skillset_name: skillset
+
+
+# ── model / run ──
+# Output lives under the SAME outputs/FSQ root as v3. Run identity comes purely
+# from fsq_exp — 태그 관례: 구조는 입출력 모달리티로 표기
+#   pos_pos (spline 인코더 + oneshot 디코더) | pos_act (spline + rnn)
+#   act_act (action_seq + rnn)
+# 예: "pos_act_LR6_raw_withEntH". loss 태그: ReconOnly | withEntH. constLR(기본 LR)은 생략.
+fsq_exp: "constLR_act_rnn_noLenTok_LR6_raw_entH" # 학습 중 run과 일치 유지; 다음 run부터 새 관례(act_act_LR6_raw_entH 등) 사용
+fsq_levels: [3, 3, 3]
+fsq_hidden_dim: 256
+fsq_num_layers: 3
+fsq_n_control: 30
+# zero_grounded | raw_state | optimal (zero-grounded + one absolute start-EEF token)
+fsq_encoder_input_mode: raw_state
+# false: 인코더에서 길이 토큰 제거 — z는 (정규화 시간축의) 컨트롤포인트 형태만 보고,
+# 길이는 모션 형태를 통해서만 간접적으로 z에 들어감 (코드별 학습 속성이 됨).
+fsq_orig_encoder_length_token: false
+# spline: 고정 컨트롤포인트 토큰 (아래 input_mode/길이토큰 프로브 적용됨).
+# action_seq: 가변 길이 ACTION 시퀀스 transformer — 스플라인 코덱/grounding/길이토큰
+#             선택이 전부 불필요 (delta action엔 절대좌표가 없음). decoder는 rnn 필수.
+fsq_orig_encoder_arch: action_seq
+fsq_orig_decoder_layers: 3
+# oneshot: ctrl point 30개(+길이)를 MLP 한 번에 복원.
+# rnn    : z만 받는 GRU unroll(teacher forcing 없음)이 매 스텝 정규화 action +
+#          termination logit을 출력 — 길이는 termination 신호로 암시적으로 표현.
+fsq_orig_decoder_arch: rnn # oneshot
+# false: recon 타겟에서 스킬 길이를 제거 — length 헤드/로스 없이 ctrl point만 복원.
+# (인코더의 길이 입력 토큰은 그대로 유지; 디코딩 시 길이는 외부에서 지정해야 함)
+# rnn arch에서는 무시됨 (termination이 항상 길이를 담당).
+fsq_orig_reconstruct_length: false
+
+# ── rnn arch 전용 loss ──
+fsq_orig_action_loss_weight: 1.0
+fsq_orig_term_loss_weight: 1.0
+fsq_orig_term_pos_weight: 1.0
+fsq_orig_term_sigma: 1.0        # 종료 타겟 가우시안 std (frames); 0 = 하드 스파이크
+
+
+# ── training ──
+fsq_encoder_lr: 3.0e-6
+fsq_orig_decoder_lr: 3.0e-6
+fsq_lr_schedule: constant # cosine | constant
+fsq_batch_size: 64
+fsq_num_epochs: 1000
+fsq_checkpoint_every: 25
+fsq_num_workers: 0
+# Validation is diagnostic only; FSQ_epoch*.pt files are the training artifacts.
+fsq_val_every: 25
+fsq_save_best_model: false
+
+
+# ── loss ──
+fsq_orig_ctrl_loss_weight: 1.0
+fsq_orig_length_loss_weight: 1.0
+
+# ── FSQ entropy 프로브 (FSQ-vs-BSQ 원인 귀속 ablation) ──
+# true: BSQ식 entropy 항(샘플 confidence + 배치 diversity)을 FSQ 그리드에 적용.
+# 아래 bsq_* 노브를 그대로 재사용 (τ는 그리드 스텝 단위).
+fsq_orig_entropy: true
+bsq_inv_temperature: 10.0
+bsq_entropy_conf_weight: 0.1
+bsq_entropy_div_weight: 0.1
+# dataset entropy는 항상 joint(전체 코드 열거, 정확 계산) — 선택지 아님.
+
+
+# ── Slurm (partition/qos/nodelist/exclude from configs/global_config.yaml) ──
+# Much lighter than FSQ v3: no video decoding, no vision tower.
+fsq_train_gres: gpu:1
+fsq_train_cpus_per_task: 8
+fsq_train_mem: 32G
+fsq_train_time: "24:00:00"
+fsq_wandb_project: VAE_train

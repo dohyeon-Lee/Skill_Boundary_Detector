@@ -26,8 +26,6 @@ from lerobot.policies.skill_expert.modeling_skill_expert import (
 )
 from lerobot.policies.skill_expert.modeling_utils import (
     build_fsq_image_only_terminator,
-    build_fsq_start_comparison_image_only_terminator,
-    build_fsq_start_comparison_terminator,
     build_fsq_terminator,
     build_fsq_wrist_only_terminator,
 )
@@ -82,7 +80,6 @@ class IndependentTerminator:
         state: torch.Tensor | None,
         image: torch.Tensor,
         wrist_image: torch.Tensor,
-        start_image: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         device = next(self.module.parameters()).device
         dtype = next(self.module.parameters()).dtype
@@ -104,29 +101,6 @@ class IndependentTerminator:
             progress, logits = self.module(z_q, image, wrist_image)
         elif self.variant == "wrist_only":
             progress, logits = self.module(z_q, wrist_image)
-        elif self.variant == "start_comparison":
-            if state is None:
-                raise ValueError("start_comparison terminator requires robot state.")
-            if start_image is None:
-                raise ValueError("start_comparison terminator requires a start image.")
-            progress, logits = self.module(
-                z_q,
-                state.to(device=device, dtype=dtype),
-                start_image.to(device=device, dtype=dtype),
-                image,
-                wrist_image,
-            )
-        elif self.variant == "start_comparison_image_only":
-            if start_image is None:
-                raise ValueError(
-                    "start_comparison_image_only terminator requires a start image."
-                )
-            progress, logits = self.module(
-                z_q,
-                start_image.to(device=device, dtype=dtype),
-                image,
-                wrist_image,
-            )
         else:
             raise ValueError(f"Unknown display terminator variant: {self.variant!r}.")
         return progress, torch.sigmoid(logits)
@@ -147,12 +121,6 @@ def _load_display_terminator(policy, model_spec: dict, fsq_path: str | Path):
     elif variant == "wrist_only":
         module = build_fsq_wrist_only_terminator(fsq_path)
         prefix = "model.fsq_wrist_term_train."
-    elif variant == "start_comparison":
-        module = build_fsq_start_comparison_terminator(fsq_path)
-        prefix = "model.fsq_start_comparison_term_train."
-    elif variant == "start_comparison_image_only":
-        module = build_fsq_start_comparison_image_only_terminator(fsq_path)
-        prefix = "model.fsq_start_comparison_image_term_train."
     else:
         raise ValueError(f"Unknown display terminator variant: {variant!r}.")
 
@@ -316,7 +284,6 @@ def _query_terminator(
     token: int,
     context: dict,
     env_preprocessor,
-    start_image: torch.Tensor | None = None,
 ) -> tuple[
     dict[str, Any],
     np.ndarray,
@@ -358,9 +325,6 @@ def _query_terminator(
                 batch[RAW_STATE],
                 batch[RAW_IMAGE],
                 batch[RAW_WRIST],
-                start_image=(
-                    batch[RAW_IMAGE] if start_image is None else start_image
-                ),
             )
         display_signals.append(
             (
@@ -824,7 +788,6 @@ def _run_gt_actions(
     display_traces = _new_display_traces(context)
     stop_reason = "gt_frame_end"
     steps = 0
-    start_image: torch.Tensor | None = None
     for action in np.asarray(actions, dtype=np.float32):
         batch, _, progress, termination, display_signals = _query_terminator(
             base_env=base_env,
@@ -832,10 +795,7 @@ def _run_gt_actions(
             token=token,
             context=context,
             env_preprocessor=env_preprocessor,
-            start_image=start_image,
         )
-        if start_image is None:
-            start_image = batch[RAW_IMAGE].detach().clone()
         progress_values.append(progress)
         termination_values.append(termination)
         _append_display_signals(display_traces, display_signals)
@@ -852,7 +812,6 @@ def _run_gt_actions(
         token=token,
         context=context,
         env_preprocessor=env_preprocessor,
-        start_image=start_image,
     )
     progress_values.append(progress)
     termination_values.append(termination)
@@ -897,7 +856,6 @@ def _run_policy(
     stop_reason = "max_skill_length"
     steps = 0
     restored_state_rms = None
-    start_image: torch.Tensor | None = None
     main_boundary: dict[str, Any] | None = None
     boundary_display_signals: list[tuple[float, float]] | None = None
 
@@ -914,10 +872,7 @@ def _run_policy(
             token=token,
             context=context,
             env_preprocessor=env_preprocessor,
-            start_image=start_image,
         )
-        if start_image is None:
-            start_image = batch[RAW_IMAGE].detach().clone()
         if restored_state_rms is None:
             expected = np.asarray(expected_filtered_state, dtype=np.float32)
             restored_state_rms = float(np.sqrt(np.mean((restored_state - expected) ** 2)))

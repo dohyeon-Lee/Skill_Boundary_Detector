@@ -352,10 +352,10 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
             f"{policy_path}."
         )
     action_loss_mode = str(policy.get("action_loss_mode", "")).strip().lower()
-    if action_loss_mode not in {"flow", "flow_endpoint_xyz"}:
+    if action_loss_mode != "flow":
         raise ValueError(
-            "Stage-1 checkpoint does not record a supported action objective "
-            f"(flow|flow_endpoint_xyz): {policy_path}"
+            "Stage-1 checkpoint action objective must be flow: "
+            f"{policy_path}"
         )
     if architecture == VSA_ARCHITECTURE:
         # These switches belong to the VSA checkpoint architecture. Evaluation

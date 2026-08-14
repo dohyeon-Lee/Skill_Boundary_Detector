@@ -44,18 +44,14 @@ else
   echo "vision memory: ${NUM_VISUAL_LATENTS_PER_CAMERA} latents/camera"
   echo "perceiver width: ${VISUAL_PERCEIVER_WIDTH} (direct DINO/expert width)"
 fi
-echo "loss    : ${ACTION_LOSS_MODE}"
+echo "base loss: flow (fixed)"
 echo "loss mask: after_skill_end=${MASK_ACTIONS_AFTER_SKILL_END}"
 echo "cumulative XYZ: enabled=${CUMULATIVE_XYZ_LOSS_ENABLED} weight=${CUMULATIVE_XYZ_LOSS_WEIGHT}"
 echo "skill   : ${TRAINING_SKILL_SOURCE}   predictor=${SKILL_PREDICTOR_CHECKPOINT_PATH:-none}"
-if [ "${PHASE_BATCH_SAMPLING_ENABLED}" = true ]; then
-  echo "batch   : phase-focused fraction=${PHASE_BATCH_FOCUSED_FRACTION} early_share=${PHASE_BATCH_EARLY_FRACTION} thresholds=${PHASE_BATCH_EARLY_THRESHOLD}/${PHASE_BATCH_LATE_THRESHOLD}"
-else
-  echo "batch   : ordinary random shuffle (architecture ablation)"
-fi
+echo "batch   : ordinary random shuffle"
 echo "vision  : DINO ${DINO_MODEL_PATH}   frozen=${FREEZE_VISION_ENCODER} lr_scale=${DINO_LR_SCALE}"
-echo "predict : pi0.5 VLM skill-LoRA=${SKILL_PREDICTOR_LORA} all_layers=${SKILL_PREDICTOR_ALL_LAYERS} deadzone=${SKILL_PREDICTOR_DEADZONE_FRAC}"
-echo "term    : FSQ ${FSQ_PATH}   train=${TRAIN_TERMINATOR}, vision_frozen=${TERMINATOR_FREEZE_VISION_ENCODER}"
+echo "predict : frozen skill source=${SKILL_PREDICTOR_CHECKPOINT_PATH:-none}"
+echo "train   : action model only (no predictor/terminator co-training)"
 echo "schedule: steps=${STEPS}   mode=${SCHEDULER_MODE}   warmup=${SCHEDULER_WARMUP_STEPS}"
 if [ "${SCHEDULER_MODE}" = cosine_decay ]; then
   echo "          lr_decay_steps=${SCHEDULER_DECAY_STEPS}"
@@ -104,16 +100,8 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.skill_fsq_levels="${SKILL_FSQ_LEVELS}" \
     --policy.transition_jitter_pmax="${TRANSITION_JITTER_PMAX}" \
     --policy.transition_jitter_distribution="${TRANSITION_JITTER_DISTRIBUTION}" \
-    --policy.phase_batch_sampling_enabled="${PHASE_BATCH_SAMPLING_ENABLED}" \
-    --policy.phase_batch_focused_fraction="${PHASE_BATCH_FOCUSED_FRACTION}" \
-    --policy.phase_batch_early_fraction="${PHASE_BATCH_EARLY_FRACTION}" \
-    --policy.phase_batch_early_threshold="${PHASE_BATCH_EARLY_THRESHOLD}" \
-    --policy.phase_batch_late_threshold="${PHASE_BATCH_LATE_THRESHOLD}" \
     --policy.training_skill_source="${TRAINING_SKILL_SOURCE}" \
     --policy.skill_predictor_checkpoint_path="${SKILL_PREDICTOR_CHECKPOINT_PATH}" \
-    --policy.train_skill_predictor="${TRAIN_SKILL_PREDICTOR}" \
-    --policy.skill_predictor_weight="${SKILL_PREDICTOR_WEIGHT}" \
-    --policy.skill_predictor_lr_scale="${SKILL_PREDICTOR_LR_SCALE}" \
     --policy.skill_predictor_all_layers="${SKILL_PREDICTOR_ALL_LAYERS}" \
     --policy.skill_predictor_detach_vlm="${SKILL_PREDICTOR_DETACH_VLM}" \
     --policy.skill_predictor_lora="${SKILL_PREDICTOR_LORA}" \
@@ -121,7 +109,6 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.skill_predictor_lora_rank="${SKILL_PREDICTOR_LORA_RANK}" \
     --policy.skill_predictor_lora_alpha="${SKILL_PREDICTOR_LORA_ALPHA}" \
     --policy.skill_predictor_lora_dropout="${SKILL_PREDICTOR_LORA_DROPOUT}" \
-    --policy.skill_predictor_lora_lr_scale="${SKILL_PREDICTOR_LORA_LR_SCALE}" \
     --policy.skill_predictor_reader_tokens="${SKILL_PREDICTOR_READER_TOKENS}" \
     --policy.skill_predictor_reader_depth="${SKILL_PREDICTOR_READER_DEPTH}" \
     --policy.skill_predictor_reader_heads="${SKILL_PREDICTOR_READER_HEADS}" \
@@ -130,16 +117,10 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.skill_predictor_attend_language="${SKILL_PREDICTOR_ATTEND_LANGUAGE}" \
     --policy.tokenizer_path="${TOKENIZER_PATH}" \
     --policy.tokenizer_max_length="${TOKENIZER_MAX_LENGTH}" \
-    --policy.train_terminator="${TRAIN_TERMINATOR}" \
     --policy.fsq_path="${FSQ_PATH}" \
-    --policy.terminator_freeze_vision_encoder="${TERMINATOR_FREEZE_VISION_ENCODER}" \
-    --policy.terminator_lr_scale="${TERMINATOR_LR_SCALE}" \
-    --policy.terminator_end_target_sigma="${TERMINATOR_END_TARGET_SIGMA}" \
-    --policy.terminator_end_pos_weight="${TERMINATOR_END_POS_WEIGHT}" \
     --policy.max_state_dim="${MAX_STATE_DIM}" \
     --policy.max_action_dim="${MAX_ACTION_DIM}" \
     --policy.chunk_size="${CHUNK_SIZE}" \
-    --policy.action_loss_mode="${ACTION_LOSS_MODE}" \
     --policy.mask_actions_after_skill_end="${MASK_ACTIONS_AFTER_SKILL_END}" \
     --policy.cumulative_xyz_loss_enabled="${CUMULATIVE_XYZ_LOSS_ENABLED}" \
     --policy.cumulative_xyz_loss_weight="${CUMULATIVE_XYZ_LOSS_WEIGHT}" \

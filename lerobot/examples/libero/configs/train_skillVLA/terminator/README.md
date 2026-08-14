@@ -11,22 +11,6 @@ Select the training target in `terminator_train_config.yaml`:
 booleans. Any non-empty combination is valid; setting all four to `false` is a
 configuration error.
 
-`training.endpoint_oversampling.enabled` controls frame-level endpoint
-oversampling for any enabled terminator. For example, `0.25/0.25` reserves 25%
-of every batch for exact skill ends (`skill_de == 0`), 25% for near-end frames,
-and samples the remaining 50% uniformly from the full dataset. The uniform
-portion can contain additional end frames, so the configured exact/near
-fractions are guaranteed minima. The observed batch composition is logged
-under `train_batch_sampling/*`.
-When enabled, `_endpoint_os` is inserted in the run/output name immediately
-before `run.suffix`; disabled runs keep the original name.
-
-The sampler uses the original current-frame `skill_de`. If the skill predictor
-is enabled in the same run, its transition randomization still happens after
-index selection. It therefore sees the same endpoint-focused source frames,
-while its parameters, loss, and gradients remain independent from all
-terminators. Set `enabled: false` to restore ordinary shuffled sampling.
-
 The image-only model consumes the current skill code plus top/wrist images. It
 uses the same progress and termination targets as the normal terminator, does
 not consume transition-randomized predictor inputs, and loads no model tensor

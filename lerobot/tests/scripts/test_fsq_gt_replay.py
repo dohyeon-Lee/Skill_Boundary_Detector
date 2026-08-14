@@ -40,6 +40,15 @@ def test_checkpoint_list_accepts_multiple_noncontiguous_epochs() -> None:
     ) == ["125", "175", "300"]
 
 
+def test_run_names_accept_scalar_and_list() -> None:
+    assert CONFIG._run_names({"fsq_eval_run_name": "solo"}) == ["solo"]
+    assert CONFIG._run_names({"fsq_eval_run_name": ["a", "b"]}) == ["a", "b"]
+    with pytest.raises(ValueError, match="duplicates"):
+        CONFIG._run_names({"fsq_eval_run_name": ["a", "a"]})
+    with pytest.raises(ValueError, match="at least one"):
+        CONFIG._run_names({"fsq_eval_run_name": []})
+
+
 @pytest.mark.parametrize("value", ["../escape", "/absolute", "bad name"])
 def test_output_name_rejects_unsafe_paths(value: str) -> None:
     with pytest.raises(ValueError, match="output_name"):
@@ -82,43 +91,145 @@ def test_resolve_artifact_missing_ok_still_rejects_unknown_run(tmp_path: Path) -
         )
 
 
-def test_end_state_uses_next_frame_start_state() -> None:
-    class _Occurrence:
-        frame_start = 0
-        frame_end = 2
+def test_filter_task_ids_drops_unavailable_and_supports_all() -> None:
+    assert RUNNER._filter_task_ids([3, 51, 5], [3, 4, 5]) == [3, 5]
+    assert RUNNER._filter_task_ids(None, [3, 4, 5]) == [3, 4, 5]
+    with pytest.raises(RuntimeError, match="No requested task"):
+        RUNNER._filter_task_ids([51], [3, 4, 5])
 
-    class _Aligned:
-        original_action_indices = np.asarray([0, 1, 2])
-        original_states = np.asarray([[0.0], [1.0], [2.0]])
 
-        def state_at(self, filtered_frame: int) -> np.ndarray:
-            return self.original_states[
-                self.original_action_indices[filtered_frame]
-            ].astype(np.float64)
+class _Occurrence:
+    uid = "occ"
 
-        def original_frame_at(self, filtered_frame: int) -> int:
-            return int(self.original_action_indices[filtered_frame])
+    def __init__(self, frame_start: int, frame_end: int) -> None:
+        self.frame_start = frame_start
+        self.frame_end = frame_end
 
-    np.testing.assert_array_equal(
-        RUNNER._end_state(_Aligned(), _Occurrence()), [2.0]
+
+def test_fsq_levels_reads_dict_and_dataclass_cfg(tmp_path: Path) -> None:
+    import torch
+    from types import SimpleNamespace
+
+    v3_path = tmp_path / "v3.pt"
+    torch.save({"cfg": {"fsq_levels": [3, 3, 3]}}, v3_path)
+    assert RUNNER._fsq_levels(v3_path) == [3, 3, 3]
+
+    oneshot_path = tmp_path / "oneshot.pt"
+    torch.save({"cfg": SimpleNamespace(fsq_levels=[7, 5])}, oneshot_path)
+    assert RUNNER._fsq_levels(oneshot_path) == [7, 5]
+
+
+def test_resolve_artifact_accepts_fsq_original_meta(tmp_path: Path) -> None:
+    run_dir = tmp_path / "outputs" / "FSQ" / "oneshot_run"
+    run_dir.mkdir(parents=True)
+    (run_dir / "FSQ_epoch0100.pt").write_bytes(b"x")
+    components = {
+        "fsq_dataset_root": "FSQ_dataset",
+        "target_dataset": "ds",
+        "fsq_inputs_name": "FSQ_inputs",
+        "skillset_seg_name": "seg",
+        "skillset_name": "skillset",
+    }
+    (run_dir / "fsq_original_meta.json").write_text(json.dumps(components))
+    dataset_root = tmp_path / "dataset"
+    (dataset_root / "FSQ_dataset" / "ds" / "FSQ_inputs" / "seg" / "skillset" / "skills").mkdir(
+        parents=True
     )
+    (dataset_root / "ds" / "videos").mkdir(parents=True)
 
-
-def test_end_state_clamps_final_episode_skill() -> None:
-    class _Occurrence:
-        frame_start = 1
-        frame_end = 3
-
-    class _Aligned:
-        original_action_indices = np.asarray([0, 1, 2])
-        original_states = np.asarray([[0.0], [1.0], [2.0]])
-
-        def original_frame_at(self, filtered_frame: int) -> int:
-            return int(self.original_action_indices[filtered_frame])
-
-    np.testing.assert_array_equal(
-        RUNNER._end_state(_Aligned(), _Occurrence()), [2.0]
+    artifact = CONFIG._resolve_fsq_artifact(
+        {"fsq_eval_run_name": "oneshot_run"},
+        dataset_root=dataset_root,
+        outputs_root=tmp_path / "outputs",
+        checkpoint="100",
     )
+    assert artifact["fsq_eval_meta_path"].endswith("fsq_original_meta.json")
+
+
+def _replay_run(tmp_path: Path, *, epochs: list[int]) -> dict:
+    """A minimal on-disk FSQ run plus the config that build_settings resolves."""
+    run_dir = tmp_path / "outputs" / "FSQ" / "run"
+    run_dir.mkdir(parents=True)
+    for epoch in epochs:
+        (run_dir / f"FSQ_epoch{epoch:04d}.pt").write_bytes(b"x")
+    (run_dir / "fsq_meta.json").write_text(
+        json.dumps(
+            {
+                "fsq_dataset_root": "FSQ_dataset",
+                "target_dataset": "ds",
+                "fsq_inputs_name": "FSQ_inputs",
+                "skillset_seg_name": "seg",
+                "skillset_name": "skillset",
+            }
+        )
+    )
+    dataset_root = tmp_path / "dataset"
+    (
+        dataset_root / "FSQ_dataset" / "ds" / "FSQ_inputs" / "seg" / "skillset" / "skills"
+    ).mkdir(parents=True)
+    (dataset_root / "ds" / "videos").mkdir(parents=True)
+    (dataset_root / "skillvla_dataset" / "ds").mkdir(parents=True)
+    (dataset_root / "skillvla_dataset" / "ds" / "eval_init_states.npz").write_bytes(b"x")
+    (tmp_path / "libero_original_dataset" / "libero_90").mkdir(parents=True)
+    return {
+        "project_root": str(tmp_path),
+        "dataset_root": "dataset",
+        "outputs_root": "outputs",
+        "fsq_eval_run_name": "run",
+        "fsq_eval_checkpoint": [50, 100, 150],
+        "target_task": "libero_90",
+        "task_ids": [3],
+        "episodes_per_task": 2,
+        "output_name": "out",
+    }
+
+
+def test_expected_epoch_tags_track_disk_without_a_frozen_list(tmp_path: Path) -> None:
+    config = _replay_run(tmp_path, epochs=[50, 100])
+    settings = CONFIG.build_settings(config)
+    assert json.loads(settings["fsq_expected_epoch_tags"]) == ["epoch0050", "epoch0100"]
+    assert settings["fsq_skipped_checkpoints"] == "150"
+
+
+def test_frozen_checkpoint_list_ignores_checkpoints_trained_after_submission(
+    tmp_path: Path,
+) -> None:
+    """A job must expect exactly the checkpoints its array was sized for.
+
+    Training that keeps writing checkpoints while the array runs would otherwise
+    enlarge the expected set, and the collection report would wait forever for
+    jobs that were never submitted.
+    """
+    config = _replay_run(tmp_path, epochs=[50, 100])
+    frozen = json.loads(CONFIG.build_settings(config)["fsq_expected_epoch_tags"])
+    (tmp_path / "outputs" / "FSQ" / "run" / "FSQ_epoch0150.pt").write_bytes(b"x")
+
+    settings = CONFIG.build_settings(
+        config, checkpoint_override="100", checkpoint_list_override=["50", "100"]
+    )
+    assert json.loads(settings["fsq_expected_epoch_tags"]) == frozen
+    assert settings["fsq_epoch_tag"] == "epoch0100"
+
+
+def test_frozen_checkpoint_list_rejects_a_vanished_checkpoint(tmp_path: Path) -> None:
+    config = _replay_run(tmp_path, epochs=[50])
+    with pytest.raises(FileNotFoundError):
+        CONFIG.build_settings(
+            config, checkpoint_override="50", checkpoint_list_override=["50", "100"]
+        )
+
+
+def test_frame_pair_uses_next_frame_start() -> None:
+    assert RUNNER._frame_pair(_Occurrence(0, 2), episode_length=5) == (0, 2)
+
+
+def test_frame_pair_clamps_final_episode_skill() -> None:
+    assert RUNNER._frame_pair(_Occurrence(3, 5), episode_length=5) == (3, 4)
+
+
+def test_frame_pair_rejects_empty_segment() -> None:
+    with pytest.raises(RuntimeError, match="no GT frame"):
+        RUNNER._frame_pair(_Occurrence(2, 2), episode_length=5)
 
 
 def test_report_groups_occurrences_by_fsq_token() -> None:
@@ -216,6 +327,79 @@ def test_report_shows_start_and_final_image_pair(tmp_path: Path) -> None:
     assert "cohesionTable()" in html
     assert "codebook used (train)" in html
     assert "mean effective codes per cell" in html
+    assert 'id="modelTabs"' in html
+    assert 'class="small-button cube-mode' in html
+    assert 'data-mode="length"' in html
+    assert 'data-mode="count"' in html
+    assert "renderCubeLegend" in html
+
+
+def _write_collection_manifest(
+    root: Path, run: str, epoch: int, episodes: list[int]
+) -> None:
+    tag = f"epoch{epoch:04d}"
+    manifest = {
+        "signature": {
+            "format": "fsq_gt_replay_v2",
+            "target_task": "libero_90",
+            "selected_episodes": {"3": episodes},
+            "seed": 42,
+        },
+        "run_name": run,
+        "epoch_tag": tag,
+        "levels": [3, 3, 3],
+        "train_codebook_used": 9,
+        "completed": True,
+        "records": {
+            f"{tag}-a": {
+                "token": 1,
+                "task_id": 3,
+                "episode_id": episodes[0],
+                "frame_start": 0,
+                "start_image_path": "images/a_start.png",
+                "final_image_path": "images/a_final.png",
+            }
+        },
+    }
+    path = root / "checkpoints" / tag / "metrics" / "manifest.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(manifest))
+
+
+def test_compare_payload_prefixes_media_and_flags_mismatch(tmp_path: Path) -> None:
+    _write_collection_manifest(tmp_path / "a", "run_a", 100, [33])
+    _write_collection_manifest(tmp_path / "b", "run_b", 200, [44])
+
+    payload = REPORT.compare_payload(
+        [tmp_path / "a", tmp_path / "b"], output_dir=tmp_path / "compare"
+    )
+
+    assert [model["name"] for model in payload["models"]] == ["a", "b"]
+    occurrence = payload["models"][0]["checkpoints"][0]["skills"][0]["occurrences"][0]
+    assert occurrence["start_image_path"] == (
+        "../a/checkpoints/epoch0100/images/a_start.png"
+    )
+    assert "mismatched" not in payload["models"][0]
+    assert payload["models"][1]["mismatched"] is True
+
+
+def test_maybe_build_compare_waits_for_every_collection(tmp_path: Path) -> None:
+    _write_collection_manifest(tmp_path / "a", "run_a", 100, [33])
+    _write_collection_manifest(tmp_path / "b", "run_b", 100, [33])
+    dirs = [tmp_path / "a", tmp_path / "b"]
+    compare_dir = tmp_path / "compare"
+
+    (tmp_path / "a" / "metrics").mkdir()
+    (tmp_path / "a" / "metrics" / "collection.json").write_text("{}")
+    assert REPORT.maybe_build_compare(dirs, output_dir=compare_dir) is None
+
+    (tmp_path / "b" / "metrics").mkdir()
+    (tmp_path / "b" / "metrics" / "collection.json").write_text("{}")
+    path = REPORT.maybe_build_compare(dirs, output_dir=compare_dir)
+    assert path == compare_dir / "index.html"
+    assert path.is_file()
+    payload = json.loads((compare_dir / "metrics" / "compare.json").read_text())
+    assert [model["name"] for model in payload["models"]] == ["a", "b"]
 
 
 def test_backfill_train_codebook_used_from_latents(tmp_path: Path) -> None:
@@ -228,7 +412,10 @@ def test_backfill_train_codebook_used_from_latents(tmp_path: Path) -> None:
     REPORT._backfill_train_codebook_used(manifest_path, manifest)
 
     assert manifest["train_codebook_used"] == 3
-    assert json.loads(manifest_path.read_text())["train_codebook_used"] == 3
+    assert manifest["train_codebook_effective"] == pytest.approx(2.8284, abs=1e-3)
+    saved = json.loads(manifest_path.read_text())
+    assert saved["train_codebook_used"] == 3
+    assert saved["train_codebook_effective"] == pytest.approx(2.8284, abs=1e-3)
 
 
 def test_collection_keeps_checkpoint_codebooks_and_prefixes_media() -> None:

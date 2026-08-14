@@ -95,14 +95,14 @@ def test_skill_aux_metric_namespaces_need_no_prefix_allowlist() -> None:
     main, groups = _split_namespaced_metrics(
         {
             "steps": 100.0,
-            "start_comparison_terminator/loss": 0.4,
+            "wrist_terminator/loss": 0.4,
             "future_auxiliary_head/end_f1": 0.7,
         }
     )
 
     assert main == {"steps": 100.0}
     assert groups == {
-        "start_comparison_terminator": {"loss": 0.4},
+        "wrist_terminator": {"loss": 0.4},
         "future_auxiliary_head": {"end_f1": 0.7},
     }
 

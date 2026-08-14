@@ -12,12 +12,14 @@ skillset_name: skillset
 
 
 # ── FSQ model / run ──
-fsq_exp: "constLR_termonly" # _LRdown          
-fsq_levels: [3, 9] # [3, 4, 5]    # [6, 10] | [5, 5, 5]
+fsq_exp: "constLR_LRdown_all" # _LRdown          
+fsq_levels: [3, 3, 3] # [3, 4, 5]    # [6, 10] | [5, 5, 5]
 fsq_terminator_termination_only: false
 fsq_reconstructor_only: false
-fsq_terminator_only: true
-fsq_encoder_lr: 3.0e-4
+fsq_terminator_only: false
+fsq_encoder_lr: 3.0e-5
+fsq_terminator_lr: 3.0e-5
+fsq_reconstructor_lr: 3.0e-5
 fsq_lr_schedule: constant # cosine | constant
 
 
@@ -54,8 +56,7 @@ fsq_val_num_workers: 0
 fsq_val_every: 25
 fsq_save_best_model: false
 fsq_gradient_checkpointing: false
-fsq_terminator_lr: 3.0e-4
-fsq_reconstructor_lr: 3.0e-4
+
 
 # ── FSQ loss weights ──
 fsq_action_loss_weight: 1.0

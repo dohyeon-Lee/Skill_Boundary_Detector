@@ -156,6 +156,18 @@ def test_missing_fsq_metadata_fails_early(tmp_path: Path) -> None:
         build_settings(config)
 
 
+def test_fsq_original_metadata_is_accepted(tmp_path: Path) -> None:
+    """FSQ-original (one-shot) runs carry the same provenance under another filename."""
+    config = _config(tmp_path, "episode_mean")
+    fsq_dir = tmp_path / "outputs/FSQ/libero_90_std_global_fsq333_dino"
+    (fsq_dir / "fsq_meta.json").rename(fsq_dir / "fsq_original_meta.json")
+
+    settings = build_settings(config)
+
+    assert settings["fsq_meta_path"].name == "fsq_original_meta.json"
+    assert settings["run_tag"] == build_settings(_config(tmp_path, "episode_mean"))["run_tag"]
+
+
 def test_fsq_metadata_mode_beats_stale_environment(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

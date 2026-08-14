@@ -107,19 +107,7 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
                     needs_predictor_start = bool(
                         getattr(cfg.policy, "train_skill_predictor", False)
                     )
-                    needs_terminator_start = bool(
-                        getattr(
-                            cfg.policy,
-                            "train_start_comparison_terminator",
-                            False,
-                        )
-                        or getattr(
-                            cfg.policy,
-                            "train_start_comparison_image_only_terminator",
-                            False,
-                        )
-                    )
-                    if needs_predictor_start or needs_terminator_start:
+                    if needs_predictor_start:
                         from functools import partial
 
                         from lerobot.policies.skillVLA.dataset_skillVLA import (
@@ -128,8 +116,7 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
 
                         dataset_cls = partial(
                             SkillVLADataset,
-                            include_predictor_start_inputs=needs_predictor_start,
-                            include_terminator_start_image=needs_terminator_start,
+                            include_predictor_start_inputs=True,
                         )
                     else:
                         # Current-view terminators consume no skill-start frame.

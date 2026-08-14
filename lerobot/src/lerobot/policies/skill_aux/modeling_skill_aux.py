@@ -20,8 +20,6 @@ from lerobot.policies.skill_expert.modeling_skill_expert import (
 from lerobot.policies.skill_expert.modeling_skill_predictor import FrozenVLMSkillPredictor
 from lerobot.policies.skill_expert.modeling_utils import (
     build_fsq_image_only_terminator,
-    build_fsq_start_comparison_image_only_terminator,
-    build_fsq_start_comparison_terminator,
     build_fsq_terminator,
     build_fsq_wrist_only_terminator,
 )
@@ -68,30 +66,6 @@ class SkillAuxModules(nn.Module):
             if terminator.freeze_vision_encoder:
                 terminator.vision_encoder.requires_grad_(False).eval()
             self.fsq_wrist_term_train = terminator.to(dtype=torch.float32)
-        self.fsq_start_comparison_term_train = None
-        if config.train_start_comparison_terminator:
-            terminator = build_fsq_start_comparison_terminator(config.fsq_path)
-            terminator.freeze_vision_encoder = bool(
-                config.start_comparison_terminator_freeze_vision_encoder
-            )
-            terminator.requires_grad_(True)
-            if terminator.freeze_vision_encoder:
-                terminator.vision_encoder.requires_grad_(False).eval()
-            self.fsq_start_comparison_term_train = terminator.to(dtype=torch.float32)
-        self.fsq_start_comparison_image_term_train = None
-        if config.train_start_comparison_image_only_terminator:
-            terminator = build_fsq_start_comparison_image_only_terminator(
-                config.fsq_path
-            )
-            terminator.freeze_vision_encoder = bool(
-                config.start_comparison_image_only_terminator_freeze_vision_encoder
-            )
-            terminator.requires_grad_(True)
-            if terminator.freeze_vision_encoder:
-                terminator.vision_encoder.requires_grad_(False).eval()
-            self.fsq_start_comparison_image_term_train = terminator.to(
-                dtype=torch.float32
-            )
 
 
 class SkillAuxPolicy(PreTrainedPolicy):
@@ -128,20 +102,13 @@ class SkillAuxPolicy(PreTrainedPolicy):
             self.model.fsq_image_term_train.to(dtype=torch.float32)
         if self.model.fsq_wrist_term_train is not None:
             self.model.fsq_wrist_term_train.to(dtype=torch.float32)
-        if self.model.fsq_start_comparison_term_train is not None:
-            self.model.fsq_start_comparison_term_train.to(dtype=torch.float32)
-        if self.model.fsq_start_comparison_image_term_train is not None:
-            self.model.fsq_start_comparison_image_term_train.to(dtype=torch.float32)
         self.to(device=config.device)
         log.info(
             "Auxiliary-only policy: terminator=%s, image_only_terminator=%s, "
-            "wrist_only_terminator=%s, start_comparison_terminator=%s, "
-            "start_comparison_image_only_terminator=%s, skill_predictor=%s",
+            "wrist_only_terminator=%s, skill_predictor=%s",
             config.train_terminator,
             config.train_image_only_terminator,
             config.train_wrist_only_terminator,
-            config.train_start_comparison_terminator,
-            config.train_start_comparison_image_only_terminator,
             config.train_skill_predictor,
         )
 
@@ -162,20 +129,6 @@ class SkillAuxPolicy(PreTrainedPolicy):
             and wrist_terminator.freeze_vision_encoder
         ):
             wrist_terminator.vision_encoder.eval()
-        comparison_terminator = self.model.fsq_start_comparison_term_train
-        if (
-            comparison_terminator is not None
-            and comparison_terminator.freeze_vision_encoder
-        ):
-            comparison_terminator.vision_encoder.eval()
-        image_comparison_terminator = (
-            self.model.fsq_start_comparison_image_term_train
-        )
-        if (
-            image_comparison_terminator is not None
-            and image_comparison_terminator.freeze_vision_encoder
-        ):
-            image_comparison_terminator.vision_encoder.eval()
         return self
 
     def reset(self) -> None:
@@ -404,115 +357,6 @@ class SkillAuxPolicy(PreTrainedPolicy):
             positive_weight=self.config.wrist_only_terminator_end_pos_weight,
         )
 
-    def _start_comparison_terminator_objective(
-        self, batch: dict
-    ) -> tuple[Tensor, dict[str, float]]:
-        required = (
-            "skill_ds",
-            "skill_de",
-            "skill_decoder_state",
-            "terminator_start_image",
-            "observation.images.image",
-            "observation.images.wrist_image",
-        )
-        missing = [key for key in required if key not in batch]
-        if missing:
-            raise ValueError(
-                f"Start-comparison terminator training batch is missing {missing}."
-            )
-        terminator = self.model.fsq_start_comparison_term_train
-        if terminator is None:
-            raise RuntimeError("Start-comparison terminator training is disabled.")
-        device = next(terminator.parameters()).device
-        dtype = next(terminator.parameters()).dtype
-        true_code = self._true_skill_code(batch)
-        raw_state = batch["skill_decoder_state"].to(device=device, dtype=dtype)[
-            ..., : int(terminator.state_dim)
-        ]
-        z_q = self._code_to_zq(true_code.to(self._fsq_strides.device)).to(
-            device=device, dtype=dtype
-        )
-        progress_prediction, termination_logits = terminator(
-            z_q,
-            raw_state,
-            self._as_channels_first(batch["terminator_start_image"]).to(
-                device=device, dtype=dtype
-            ),
-            self._as_channels_first(batch["observation.images.image"]).to(
-                device=device, dtype=dtype
-            ),
-            self._as_channels_first(batch["observation.images.wrist_image"]).to(
-                device=device, dtype=dtype
-            ),
-        )
-        progress_target, termination_target = self._termination_targets(
-            batch,
-            device,
-            self.config.start_comparison_terminator_end_target_sigma,
-        )
-        return self._termination_loss_and_metrics(
-            prefix="start_comparison_terminator",
-            progress_prediction=progress_prediction,
-            termination_logits=termination_logits,
-            progress_target=progress_target,
-            termination_target=termination_target,
-            positive_weight=self.config.start_comparison_terminator_end_pos_weight,
-        )
-
-    def _start_comparison_image_only_terminator_objective(
-        self, batch: dict
-    ) -> tuple[Tensor, dict[str, float]]:
-        required = (
-            "skill_ds",
-            "skill_de",
-            "terminator_start_image",
-            "observation.images.image",
-            "observation.images.wrist_image",
-        )
-        missing = [key for key in required if key not in batch]
-        if missing:
-            raise ValueError(
-                "State-free start-comparison terminator training batch is "
-                f"missing {missing}."
-            )
-        terminator = self.model.fsq_start_comparison_image_term_train
-        if terminator is None:
-            raise RuntimeError(
-                "State-free start-comparison terminator training is disabled."
-            )
-        device = next(terminator.parameters()).device
-        dtype = next(terminator.parameters()).dtype
-        z_q = self._code_to_zq(
-            self._true_skill_code(batch).to(self._fsq_strides.device)
-        ).to(device=device, dtype=dtype)
-        progress_prediction, termination_logits = terminator(
-            z_q,
-            self._as_channels_first(batch["terminator_start_image"]).to(
-                device=device, dtype=dtype
-            ),
-            self._as_channels_first(batch["observation.images.image"]).to(
-                device=device, dtype=dtype
-            ),
-            self._as_channels_first(batch["observation.images.wrist_image"]).to(
-                device=device, dtype=dtype
-            ),
-        )
-        progress_target, termination_target = self._termination_targets(
-            batch,
-            device,
-            self.config.start_comparison_image_only_terminator_end_target_sigma,
-        )
-        return self._termination_loss_and_metrics(
-            prefix="start_comparison_image_only_terminator",
-            progress_prediction=progress_prediction,
-            termination_logits=termination_logits,
-            progress_target=progress_target,
-            termination_target=termination_target,
-            positive_weight=(
-                self.config.start_comparison_image_only_terminator_end_pos_weight
-            ),
-        )
-
     def _skill_predictor_objective(self, batch: dict) -> tuple[Tensor, dict[str, float]]:
         required = (
             "skill_start_image",
@@ -540,12 +384,9 @@ class SkillAuxPolicy(PreTrainedPolicy):
             batch[OBS_LANGUAGE_ATTENTION_MASK].to(device),
             target,
         )
-        objective = self.config.skill_predictor_weight * raw_loss
-        return objective, {
+        return raw_loss, {
             "skill_predictor/loss": raw_loss.detach().item(),
-            "skill_predictor/objective_loss": objective.detach().item(),
             "skill_predictor/skill_accuracy": float(accuracy),
-            "skill_predictor/weight": self.config.skill_predictor_weight,
             "skill_predictor/all_layers": float(self.config.skill_predictor_all_layers),
             "skill_predictor/lora_layers": float(predictor.lora_layer_count),
             "skill_predictor/deadzone_frac": self.config.skill_predictor_deadzone_frac,
@@ -568,50 +409,10 @@ class SkillAuxPolicy(PreTrainedPolicy):
             objective, output = self._wrist_only_terminator_objective(batch)
             objectives.append(objective)
             metrics.update(output)
-        if self.config.train_start_comparison_terminator:
-            objective, output = self._start_comparison_terminator_objective(batch)
-            objectives.append(objective)
-            metrics.update(output)
-        if self.config.train_start_comparison_image_only_terminator:
-            objective, output = (
-                self._start_comparison_image_only_terminator_objective(batch)
-            )
-            objectives.append(objective)
-            metrics.update(output)
         if self.config.train_skill_predictor:
             objective, output = self._skill_predictor_objective(batch)
             objectives.append(objective)
             metrics.update(output)
-        if self.config.terminator_endpoint_oversampling_enabled:
-            distance_to_end = batch["skill_de"].float().view(-1)
-            near_end = (
-                (distance_to_end > 0)
-                & (
-                    distance_to_end
-                    <= self.config.terminator_endpoint_near_end_max_distance
-                )
-            )
-            metrics.update(
-                {
-                    "batch_sampling/exact_end_fraction": (
-                        distance_to_end == 0
-                    ).float().mean().item(),
-                    "batch_sampling/near_end_fraction": near_end.float().mean().item(),
-                    "batch_sampling/outside_end_window_fraction": (
-                        distance_to_end
-                        > self.config.terminator_endpoint_near_end_max_distance
-                    ).float().mean().item(),
-                    "batch_sampling/exact_end_target_fraction": (
-                        self.config.terminator_endpoint_exact_end_fraction
-                    ),
-                    "batch_sampling/near_end_target_fraction": (
-                        self.config.terminator_endpoint_near_end_fraction
-                    ),
-                    "batch_sampling/near_end_max_distance": float(
-                        self.config.terminator_endpoint_near_end_max_distance
-                    ),
-                }
-            )
         if not objectives:
             raise RuntimeError("No auxiliary objective is enabled.")
         return torch.stack(objectives).sum(), metrics
@@ -662,44 +463,6 @@ class SkillAuxPolicy(PreTrainedPolicy):
                         * self.config.wrist_only_terminator_lr_scale,
                         "lr_scale": self.config.wrist_only_terminator_lr_scale,
                         "group_name": "wrist_terminator",
-                    }
-                )
-        comparison_terminator = self.model.fsq_start_comparison_term_train
-        if comparison_terminator is not None:
-            params = [
-                parameter
-                for parameter in comparison_terminator.parameters()
-                if parameter.requires_grad
-            ]
-            if params:
-                groups.append(
-                    {
-                        "params": params,
-                        "lr": self.config.optimizer_lr
-                        * self.config.start_comparison_terminator_lr_scale,
-                        "lr_scale": self.config.start_comparison_terminator_lr_scale,
-                        "group_name": "start_comparison_terminator",
-                    }
-                )
-        image_comparison_terminator = (
-            self.model.fsq_start_comparison_image_term_train
-        )
-        if image_comparison_terminator is not None:
-            params = [
-                parameter
-                for parameter in image_comparison_terminator.parameters()
-                if parameter.requires_grad
-            ]
-            if params:
-                groups.append(
-                    {
-                        "params": params,
-                        "lr": self.config.optimizer_lr
-                        * self.config.start_comparison_image_only_terminator_lr_scale,
-                        "lr_scale": (
-                            self.config.start_comparison_image_only_terminator_lr_scale
-                        ),
-                        "group_name": "start_comparison_image_only_terminator",
                     }
                 )
         predictor = self.model.skill_predictor
@@ -760,26 +523,6 @@ class SkillAuxPolicy(PreTrainedPolicy):
             ]
             if params:
                 groups["wrist_terminator"] = params
-        comparison_terminator = self.model.fsq_start_comparison_term_train
-        if comparison_terminator is not None:
-            params = [
-                parameter
-                for parameter in comparison_terminator.parameters()
-                if parameter.requires_grad
-            ]
-            if params:
-                groups["start_comparison_terminator"] = params
-        image_comparison_terminator = (
-            self.model.fsq_start_comparison_image_term_train
-        )
-        if image_comparison_terminator is not None:
-            params = [
-                parameter
-                for parameter in image_comparison_terminator.parameters()
-                if parameter.requires_grad
-            ]
-            if params:
-                groups["start_comparison_image_only_terminator"] = params
         predictor = self.model.skill_predictor
         if predictor is not None:
             params = [
@@ -801,12 +544,6 @@ class SkillAuxPolicy(PreTrainedPolicy):
                 metrics["image_terminator/lr"] = float(group["lr"])
             elif name == "wrist_terminator":
                 metrics["wrist_terminator/lr"] = float(group["lr"])
-            elif name == "start_comparison_terminator":
-                metrics["start_comparison_terminator/lr"] = float(group["lr"])
-            elif name == "start_comparison_image_only_terminator":
-                metrics["start_comparison_image_only_terminator/lr"] = float(
-                    group["lr"]
-                )
             elif name == "skill_predictor_reader_head":
                 metrics["skill_predictor/reader_head_lr"] = float(group["lr"])
             elif name == "skill_predictor_lora":
@@ -829,12 +566,6 @@ class SkillAuxPolicy(PreTrainedPolicy):
             "terminator": count(self.model.fsq_term_train),
             "image_terminator": count(self.model.fsq_image_term_train),
             "wrist_terminator": count(self.model.fsq_wrist_term_train),
-            "start_comparison_terminator": count(
-                self.model.fsq_start_comparison_term_train
-            ),
-            "start_comparison_image_only_terminator": count(
-                self.model.fsq_start_comparison_image_term_train
-            ),
             "skill_predictor": count(self.model.skill_predictor),
         }
 

@@ -148,31 +148,16 @@ def build_settings(config: dict) -> dict:
     train_wrist_terminator = as_bool(
         _at(config, "wrist_only_terminator", "train", default=False)
     )
-    train_start_comparison_terminator = as_bool(
-        _at(config, "start_comparison_terminator", "train", default=False)
-    )
-    train_start_comparison_image_only_terminator = as_bool(
-        _at(
-            config,
-            "start_comparison_image_only_terminator",
-            "train",
-            default=False,
-        )
-    )
     train_predictor = as_bool(_at(config, "skill_predictor", "train", default=False))
     if not (
         train_terminator
         or train_image_terminator
         or train_wrist_terminator
-        or train_start_comparison_terminator
-        or train_start_comparison_image_only_terminator
         or train_predictor
     ):
         raise ValueError(
             "Set terminator.train, image_only_terminator.train, "
-            "wrist_only_terminator.train, start_comparison_terminator.train, "
-            "start_comparison_image_only_terminator.train, "
-            "and/or skill_predictor.train to true; "
+            "wrist_only_terminator.train, and/or skill_predictor.train to true; "
             "all false is empty."
         )
     enabled = []
@@ -182,10 +167,6 @@ def build_settings(config: dict) -> dict:
         enabled.append("image_terminator")
     if train_wrist_terminator:
         enabled.append("wrist_terminator")
-    if train_start_comparison_terminator:
-        enabled.append("start_comparison_terminator")
-    if train_start_comparison_image_only_terminator:
-        enabled.append("start_comparison_image_only_terminator")
     if train_predictor:
         enabled.append("predictor")
     mode = "_".join(enabled)
@@ -216,8 +197,6 @@ def build_settings(config: dict) -> dict:
         train_terminator
         or train_image_terminator
         or train_wrist_terminator
-        or train_start_comparison_terminator
-        or train_start_comparison_image_only_terminator
     ) and not fsq_path.is_file():
         raise FileNotFoundError(f"FSQ terminator checkpoint not found: {fsq_path}")
     if train_predictor:
@@ -254,81 +233,7 @@ def build_settings(config: dict) -> dict:
     if warmup_steps < 0 or decay_steps <= 0:
         raise ValueError("Invalid scheduler step counts.")
 
-    endpoint_oversampling = as_bool(
-        _at(
-            config,
-            "training",
-            "endpoint_oversampling",
-            "enabled",
-            default=False,
-        )
-    )
-    endpoint_exact_fraction = float(
-        _at(
-            config,
-            "training",
-            "endpoint_oversampling",
-            "exact_end_fraction",
-            default=0.25,
-        )
-    )
-    endpoint_near_fraction = float(
-        _at(
-            config,
-            "training",
-            "endpoint_oversampling",
-            "near_end_fraction",
-            default=0.25,
-        )
-    )
-    endpoint_near_distance = int(
-        _at(
-            config,
-            "training",
-            "endpoint_oversampling",
-            "near_end_max_distance",
-            default=2,
-        )
-    )
-    if not 0.0 <= endpoint_exact_fraction <= 1.0:
-        raise ValueError("endpoint exact_end_fraction must be in [0, 1].")
-    if not 0.0 <= endpoint_near_fraction <= 1.0:
-        raise ValueError("endpoint near_end_fraction must be in [0, 1].")
-    if endpoint_exact_fraction + endpoint_near_fraction > 1.0:
-        raise ValueError("endpoint exact + near fractions must be <= 1.")
-    if endpoint_near_distance < 1:
-        raise ValueError("endpoint near_end_max_distance must be at least 1.")
-    if endpoint_oversampling:
-        if not (
-            train_terminator
-            or train_image_terminator
-            or train_wrist_terminator
-            or train_start_comparison_terminator
-            or train_start_comparison_image_only_terminator
-        ):
-            raise ValueError(
-                "Endpoint oversampling requires terminator.train, "
-                "image_only_terminator.train, wrist_only_terminator.train, "
-                "start_comparison_terminator.train, and/or "
-                "start_comparison_image_only_terminator.train."
-            )
-        if endpoint_exact_fraction + endpoint_near_fraction <= 0.0:
-            raise ValueError(
-                "Enabled endpoint oversampling needs a positive exact and/or near fraction."
-            )
-
     run_name = f"bs{batch_size}_{source}_{run_tag}"
-    if endpoint_oversampling:
-        run_name += "_endpoint_os"
-    if (
-        train_start_comparison_terminator
-        and train_start_comparison_image_only_terminator
-    ):
-        run_name += "_startcmp_both"
-    elif train_start_comparison_terminator:
-        run_name += "_startcmp"
-    elif train_start_comparison_image_only_terminator:
-        run_name += "_startcmp_img"
     if suffix:
         run_name += f"_{suffix}"
     base_lr = float(_at(config, "training", "optimizer", "base_lr", default=2.5e-5))
@@ -344,16 +249,8 @@ def build_settings(config: dict) -> dict:
         "train_terminator": train_terminator,
         "train_image_only_terminator": train_image_terminator,
         "train_wrist_only_terminator": train_wrist_terminator,
-        "train_start_comparison_terminator": train_start_comparison_terminator,
-        "train_start_comparison_image_only_terminator": (
-            train_start_comparison_image_only_terminator
-        ),
         "train_skill_predictor": train_predictor,
         "training_mode": mode,
-        "terminator_endpoint_oversampling_enabled": endpoint_oversampling,
-        "terminator_endpoint_exact_end_fraction": endpoint_exact_fraction,
-        "terminator_endpoint_near_end_fraction": endpoint_near_fraction,
-        "terminator_endpoint_near_end_max_distance": endpoint_near_distance,
         "skill_fsq_levels": "[" + ",".join(str(level) for level in dataset["levels"]) + "]",
         "skill_vocab_size": math.prod(dataset["levels"]),
         "max_state_dim": dataset["state_dim"],
@@ -385,52 +282,6 @@ def build_settings(config: dict) -> dict:
         "wrist_only_terminator_end_pos_weight": float(
             _at(config, "wrist_only_terminator", "end_pos_weight", default=1.0)
         ),
-        "start_comparison_terminator_freeze_vision_encoder": as_bool(
-            _at(config, "start_comparison_terminator", "freeze_vision", default=True)
-        ),
-        "start_comparison_terminator_end_target_sigma": float(
-            _at(
-                config,
-                "start_comparison_terminator",
-                "end_target_sigma",
-                default=2.0,
-            )
-        ),
-        "start_comparison_terminator_end_pos_weight": float(
-            _at(
-                config,
-                "start_comparison_terminator",
-                "end_pos_weight",
-                default=1.0,
-            )
-        ),
-        "start_comparison_image_only_terminator_freeze_vision_encoder": as_bool(
-            _at(
-                config,
-                "start_comparison_image_only_terminator",
-                "freeze_vision",
-                default=True,
-            )
-        ),
-        "start_comparison_image_only_terminator_end_target_sigma": float(
-            _at(
-                config,
-                "start_comparison_image_only_terminator",
-                "end_target_sigma",
-                default=2.0,
-            )
-        ),
-        "start_comparison_image_only_terminator_end_pos_weight": float(
-            _at(
-                config,
-                "start_comparison_image_only_terminator",
-                "end_pos_weight",
-                default=1.0,
-            )
-        ),
-        "skill_predictor_weight": float(
-            _at(config, "skill_predictor", "weight", default=0.5)
-        ),
         **predictor_contract,
         "skill_predictor_lr_scale": float(
             _at(config, "training", "optimizer", "predictor_lr_scale", default=1.0)
@@ -456,24 +307,6 @@ def build_settings(config: dict) -> dict:
                 "training",
                 "optimizer",
                 "wrist_only_terminator_lr_scale",
-                default=1.0,
-            )
-        ),
-        "start_comparison_terminator_lr_scale": float(
-            _at(
-                config,
-                "training",
-                "optimizer",
-                "start_comparison_terminator_lr_scale",
-                default=1.0,
-            )
-        ),
-        "start_comparison_image_only_terminator_lr_scale": float(
-            _at(
-                config,
-                "training",
-                "optimizer",
-                "start_comparison_image_only_terminator_lr_scale",
                 default=1.0,
             )
         ),

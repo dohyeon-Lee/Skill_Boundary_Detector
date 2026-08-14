@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Render GT start/end states of FSQ-labelled skill segments in exact LIBERO scenes.
+"""Extract GT start/end frames of FSQ-labelled skill segments from dataset videos.
 
-No policy, no action replay, no terminator: every frame's full MuJoCo state is
-stored in the original LIBERO HDF5, so each skill occurrence only needs its start
-and end states restored and rendered. The report groups the image pairs by FSQ
+No simulator: the filtered LeRobot dataset already stores every camera frame the
+demos produced, and skill occurrences index exactly those frames. Each occurrence
+therefore costs two video-frame decodes. The report groups the image pairs by FSQ
 code to show which skills the codebook collected.
 """
 
@@ -14,19 +14,17 @@ import gc
 import json
 import logging
 import sys
+from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import torch
 from PIL import Image
 
-from lerobot.envs.configs import LiberoEnv
-from lerobot.envs.factory import make_env
-from lerobot.envs.utils import close_envs
+from lerobot.datasets.video_utils import decode_video_frames
 from lerobot.scripts.lerobot_skillvla_eval import _libero_task_descriptions
 from lerobot.utils.random_utils import set_seed
-
-from FSQ import _checkpoint_config
 
 _HERE = Path(__file__).resolve().parent
 _EXACT_DATA_SRC = _HERE.parents[2] / "train_skillVLA" / "terminator_eval" / "src"
@@ -35,6 +33,7 @@ sys.path.insert(0, str(_EXACT_DATA_SRC))
 from skill_data import SkillEvaluationDataset  # noqa: E402
 
 from fsq_gt_replay_report import (  # noqa: E402
+    maybe_build_compare,
     maybe_merge_collection,
     maybe_merge_chunks,
     report_payload,
@@ -42,48 +41,132 @@ from fsq_gt_replay_report import (  # noqa: E402
 )
 
 log = logging.getLogger("fsq_gt_replay")
-
-
-def _restore_state(base_env, state: np.ndarray) -> None:
-    base_env._env.reset()
-    base_env._env.set_init_state(np.asarray(state, dtype=np.float64))
-
-
-def _render(base_env) -> np.ndarray:
-    return np.asarray(base_env.render(), dtype=np.uint8).copy()
+VIDEO_KEY = "observation.images.image"
 
 
 def _fsq_levels(model_path: Path) -> list[int]:
+    """Read the codebook shape from FSQ v3 / FSQ-original / BSQ checkpoints.
+
+    FSQ variants store `cfg.fsq_levels` directly. BSQ checkpoints carry
+    quantizer="bsq" and an unused fsq_levels placeholder; their bit indexing is
+    mathematically identical to FSQ levels [2]*code_dim (same strides), so we
+    report exactly that — token validation and codebook stats stay correct.
+    """
     checkpoint = torch.load(str(model_path), map_location="cpu", weights_only=False)
-    config = _checkpoint_config(checkpoint)
+    config = checkpoint.get("cfg")
+
+    def read(key: str):
+        return config.get(key) if isinstance(config, dict) else getattr(config, key, None)
+
+    if str(read("quantizer") or "fsq") == "bsq":
+        levels = [2] * int(read("bsq_code_dim"))
+    else:
+        levels = read("fsq_levels")
     del checkpoint
     gc.collect()
-    return [int(value) for value in config.fsq_levels]
+    if not levels:
+        raise ValueError(f"FSQ checkpoint carries no fsq_levels: {model_path}")
+    return [int(value) for value in levels]
 
 
-def _end_state(aligned, occurrence) -> np.ndarray:
-    """State right after the occurrence's last GT action.
-
-    That state is the start state of the next filtered frame; the final skill of
-    an episode has no next frame, so fall back to the next original demo state
-    (clamped to the last one the demo recorded).
-    """
-    if occurrence.frame_end < len(aligned.original_action_indices):
-        return aligned.state_at(occurrence.frame_end)
-    original_frame = min(
-        aligned.original_frame_at(occurrence.frame_end - 1) + 1,
-        len(aligned.original_states) - 1,
+def _available_task_ids(dataset, *, episodes_per_task: int) -> list[int]:
+    """Tasks the exact-episode dataset can actually serve, mirroring select_episodes."""
+    counts: dict[int, int] = {}
+    for episode_id, source in dataset.sources.items():
+        if (
+            episode_id in dataset._rows_by_episode
+            and episode_id in dataset.episode_meta.index
+        ):
+            counts[source.task_id] = counts.get(source.task_id, 0) + 1
+    return sorted(
+        task_id for task_id, count in counts.items() if count >= episodes_per_task
     )
-    return np.asarray(aligned.original_states[original_frame], dtype=np.float64).copy()
 
 
-def _capture_segment(*, base_env, aligned, occurrence) -> dict:
-    if occurrence.frame_end <= occurrence.frame_start:
+def _filter_task_ids(
+    requested: list[int] | None, available: list[int]
+) -> list[int]:
+    """Keep only dataset-available tasks; None means every available task."""
+    if requested is None:
+        selected = list(available)
+    else:
+        available_set = set(available)
+        selected = [task_id for task_id in requested if task_id in available_set]
+        skipped = [task_id for task_id in requested if task_id not in available_set]
+        if skipped:
+            log.warning(
+                "Skipping task_ids without enough episode-exact skill episodes: %s",
+                skipped,
+            )
+    if not selected:
+        raise RuntimeError(
+            "No requested task has enough episode-exact skill episodes in the dataset."
+        )
+    return selected
+
+
+def _frame_pair(occurrence, episode_length: int) -> tuple[int, int]:
+    """Start frame and the frame right after the last GT action (clamped for the
+    final skill of an episode, whose next frame was never recorded)."""
+    if (
+        occurrence.frame_end <= occurrence.frame_start
+        or occurrence.frame_start >= episode_length
+    ):
         raise RuntimeError(f"Skill occurrence has no GT frame: {occurrence.uid}")
-    _restore_state(base_env, aligned.state_at(occurrence.frame_start))
-    start_frame = _render(base_env)
-    _restore_state(base_env, _end_state(aligned, occurrence))
-    return {"start_frame": start_frame, "final_frame": _render(base_env)}
+    return occurrence.frame_start, min(occurrence.frame_end, episode_length - 1)
+
+
+class _EpisodeFrameReader:
+    """Decode requested frames of one episode from the dataset's stored videos."""
+
+    def __init__(self, dataset_dir: Path, *, video_key: str = VIDEO_KEY) -> None:
+        self.dataset_dir = Path(dataset_dir)
+        self.video_key = video_key
+        info = json.loads((self.dataset_dir / "meta" / "info.json").read_text())
+        self.fps = float(info["fps"])
+        self.path_template = str(info["video_path"])
+        files = sorted((self.dataset_dir / "meta" / "episodes").glob("**/*.parquet"))
+        if not files:
+            raise FileNotFoundError(
+                f"No episode metadata under {self.dataset_dir / 'meta/episodes'}"
+            )
+        columns = [
+            "episode_index",
+            "length",
+            f"videos/{video_key}/chunk_index",
+            f"videos/{video_key}/file_index",
+            f"videos/{video_key}/from_timestamp",
+        ]
+        self.index = pd.concat(
+            [pd.read_parquet(path, columns=columns) for path in files],
+            ignore_index=True,
+        ).set_index("episode_index", drop=False)
+
+    def episode_length(self, episode_id: int) -> int:
+        return int(self.index.loc[int(episode_id), "length"])
+
+    def frames(self, episode_id: int, frame_indices) -> dict[int, np.ndarray]:
+        row = self.index.loc[int(episode_id)]
+        video_path = self.dataset_dir / self.path_template.format(
+            video_key=self.video_key,
+            chunk_index=int(row[f"videos/{self.video_key}/chunk_index"]),
+            file_index=int(row[f"videos/{self.video_key}/file_index"]),
+        )
+        start_timestamp = float(row[f"videos/{self.video_key}/from_timestamp"])
+        ordered = sorted({int(index) for index in frame_indices})
+        timestamps = [start_timestamp + index / self.fps for index in ordered]
+        decoded = decode_video_frames(
+            video_path, timestamps, tolerance_s=0.5 / self.fps
+        )
+        images = (
+            (decoded.clamp(0.0, 1.0) * 255.0)
+            .round()
+            .to(torch.uint8)
+            .permute(0, 2, 3, 1)
+            .cpu()
+            .numpy()
+        )
+        return {index: images[position] for position, index in enumerate(ordered)}
 
 
 def _write_image(path: Path, frame: np.ndarray) -> None:
@@ -100,6 +183,16 @@ def _atomic_manifest(path: Path, manifest: dict) -> None:
     temporary.replace(path)
 
 
+def _record_is_complete(manifest: dict, occurrence, output_dir: Path) -> bool:
+    existing = manifest["records"].get(occurrence.uid)
+    if existing is None:
+        return False
+    return all(
+        key in existing and (output_dir / existing[key]).is_file()
+        for key in ("start_image_path", "final_image_path")
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model-path", type=Path, required=True)
@@ -114,6 +207,8 @@ def main() -> None:
     parser.add_argument("--episode-selection", choices=("first", "random"), required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--collection-dir", type=Path, required=True)
+    parser.add_argument("--compare-dir", default="")
+    parser.add_argument("--compare-collection-dirs", default="")
     parser.add_argument("--expected-epoch-tags", required=True)
     parser.add_argument("--run-name", required=True)
     parser.add_argument("--epoch-tag", required=True)
@@ -123,9 +218,18 @@ def main() -> None:
     parser.add_argument("--resume", action="store_true")
     args = parser.parse_args()
 
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+        force=True,
+    )
     set_seed(args.seed)
-    task_ids = [int(value) for value in json.loads(args.task_ids)]
+    raw_task_ids = args.task_ids.strip()
+    requested_task_ids = (
+        None
+        if raw_task_ids.lower() == "all"
+        else [int(value) for value in json.loads(raw_task_ids)]
+    )
     episode_ids = [int(value) for value in json.loads(args.episode_ids)]
     expected_epoch_tags = [
         str(value) for value in json.loads(args.expected_epoch_tags)
@@ -142,6 +246,11 @@ def main() -> None:
         original_dataset_dir=args.original_dataset_dir,
         suite_name=args.target_task,
     )
+    task_ids = _filter_task_ids(
+        requested_task_ids,
+        _available_task_ids(dataset, episodes_per_task=args.episodes_per_task),
+    )
+    log.info("evaluating %d task(s): %s", len(task_ids), task_ids)
     selected = dataset.select_episodes(
         task_ids=task_ids,
         episodes_per_task=args.episodes_per_task,
@@ -167,7 +276,7 @@ def main() -> None:
         else output_dir / "metrics" / "chunks" / f"chunk_{args.worker_index:03d}.json"
     )
     signature = {
-        "format": "fsq_gt_replay_v2",
+        "format": "fsq_gt_replay_v3",
         "model_path": str(args.model_path.resolve()),
         "latents_path": str(args.latents_path.resolve()),
         "target_task": args.target_task,
@@ -204,38 +313,49 @@ def main() -> None:
             f"Latent artifact contains tokens outside FSQ{levels}: {invalid_tokens}."
         )
     manifest["levels"] = levels
-    # The latents artifact encodes the full training skillset, so its distinct
-    # token count is this checkpoint's codebook usage over all training data.
+    # The latents artifact encodes the full training skillset, so its token
+    # distribution is this checkpoint's codebook usage over all training data:
+    # distinct count, plus the entropy-based effective count used to normalize
+    # the report's cohesion metric.
     train_tokens = np.asarray(np.load(str(args.latents_path))["tokens"], dtype=np.int64)
-    manifest["train_codebook_used"] = int(np.unique(train_tokens).size)
+    token_counts = np.bincount(train_tokens)
+    probabilities = token_counts[token_counts > 0] / train_tokens.size
+    manifest["train_codebook_used"] = int((token_counts > 0).sum())
+    manifest["train_codebook_effective"] = float(
+        np.exp(-(probabilities * np.log(probabilities)).sum())
+    )
     _atomic_manifest(manifest_path, manifest)
 
-    worker_task_ids = sorted({occurrence.task_id for occurrence in occurrences})
-    env_config = LiberoEnv(
-        task=args.target_task,
-        task_ids=worker_task_ids,
-        fps=20,
-        init_states=False,
-        max_parallel_tasks=1,
-    )
-    envs = make_env(env_config, n_envs=1, use_async_envs=False)
+    reader = _EpisodeFrameReader(Path(args.skill_dataset_dir))
     descriptions = _libero_task_descriptions(args.target_task)
-    try:
-        for index, occurrence in enumerate(occurrences, start=1):
-            existing = manifest["records"].get(occurrence.uid)
-            if existing is not None:
-                artifact_keys = ("start_image_path", "final_image_path")
-                if all(
-                    key in existing and (output_dir / existing[key]).is_file()
-                    for key in artifact_keys
-                ):
-                    continue
-            aligned = dataset.load_aligned_episode(occurrence.episode_id)
-            base_env = envs[args.target_task][occurrence.task_id].envs[0].unwrapped
+    by_episode: dict[int, list] = defaultdict(list)
+    for occurrence in occurrences:
+        by_episode[occurrence.episode_id].append(occurrence)
+
+    processed = 0
+    for episode_id in sorted(by_episode):
+        pending = [
+            occurrence
+            for occurrence in by_episode[episode_id]
+            if not _record_is_complete(manifest, occurrence, output_dir)
+        ]
+        if not pending:
+            continue
+        episode_length = reader.episode_length(episode_id)
+        frame_pairs = {
+            occurrence.uid: _frame_pair(occurrence, episode_length)
+            for occurrence in pending
+        }
+        needed_frames = sorted(
+            {frame for pair in frame_pairs.values() for frame in pair}
+        )
+        images = reader.frames(episode_id, needed_frames)
+        source = dataset.sources[episode_id]
+        for occurrence in pending:
+            processed += 1
             log.info(
-                "[%d/%d] token=%d task=%d episode=%d skill=%d frames=[%d,%d)",
-                index,
-                len(occurrences),
+                "[%d] token=%d task=%d episode=%d skill=%d frames=[%d,%d)",
+                processed,
                 occurrence.token,
                 occurrence.task_id,
                 occurrence.episode_id,
@@ -243,9 +363,7 @@ def main() -> None:
                 occurrence.frame_start,
                 occurrence.frame_end,
             )
-            capture = _capture_segment(
-                base_env=base_env, aligned=aligned, occurrence=occurrence
-            )
+            start_frame, final_frame = frame_pairs[occurrence.uid]
             image_dir = (
                 Path("images")
                 / f"task_{occurrence.task_id:02d}"
@@ -253,8 +371,8 @@ def main() -> None:
             )
             relative_start_image = image_dir / f"{occurrence.uid}_start.png"
             relative_final_image = image_dir / f"{occurrence.uid}_final.png"
-            _write_image(output_dir / relative_start_image, capture["start_frame"])
-            _write_image(output_dir / relative_final_image, capture["final_frame"])
+            _write_image(output_dir / relative_start_image, images[start_frame])
+            _write_image(output_dir / relative_final_image, images[final_frame])
             manifest["records"][occurrence.uid] = {
                 "uid": occurrence.uid,
                 "token": occurrence.token,
@@ -265,35 +383,41 @@ def main() -> None:
                 "frame_start": occurrence.frame_start,
                 "frame_end": occurrence.frame_end,
                 "length": occurrence.length,
-                "scene_file": aligned.source.scene_file,
-                "demo": aligned.source.demo,
+                "scene_file": source.scene_file,
+                "demo": source.demo,
                 "start_image_path": relative_start_image.as_posix(),
                 "final_image_path": relative_final_image.as_posix(),
             }
-            _atomic_manifest(manifest_path, manifest)
-        manifest["completed"] = True
         _atomic_manifest(manifest_path, manifest)
-        if args.worker_count == 1:
-            report_path = write_html_report(output_dir, report_payload(manifest))
+    manifest["completed"] = True
+    _atomic_manifest(manifest_path, manifest)
+    if args.worker_count == 1:
+        report_path = write_html_report(output_dir, report_payload(manifest))
+    else:
+        report_path = maybe_merge_chunks(
+            output_dir, expected_chunks=args.worker_count
+        )
+    collection_path = None
+    if report_path is not None:
+        collection_path = maybe_merge_collection(
+            args.collection_dir, expected_epoch_tags=expected_epoch_tags
+        )
+        log.info("FSQ checkpoint replay report: %s", report_path)
+    if collection_path is not None:
+        log.info("FSQ combined replay report: %s", collection_path)
+    elif report_path is not None:
+        log.info("Checkpoint complete; waiting for the remaining checkpoints.")
+    else:
+        log.info("Worker complete; waiting for the remaining chunks.")
+    if collection_path is not None and args.compare_dir:
+        compare_path = maybe_build_compare(
+            json.loads(args.compare_collection_dirs),
+            output_dir=args.compare_dir,
+        )
+        if compare_path is not None:
+            log.info("FSQ model comparison report: %s", compare_path)
         else:
-            report_path = maybe_merge_chunks(
-                output_dir, expected_chunks=args.worker_count
-            )
-        collection_path = None
-        if report_path is not None:
-            collection_path = maybe_merge_collection(
-                args.collection_dir, expected_epoch_tags=expected_epoch_tags
-            )
-            log.info("FSQ checkpoint replay report: %s", report_path)
-        if collection_path is not None:
-            log.info("FSQ combined replay report: %s", collection_path)
-        elif report_path is not None:
-            log.info("Checkpoint complete; waiting for the remaining checkpoints.")
-        else:
-            log.info("Worker complete; waiting for the remaining chunks.")
-    finally:
-        close_envs(envs)
-        gc.collect()
+            log.info("Run complete; waiting for the remaining runs to compare.")
 
 
 if __name__ == "__main__":

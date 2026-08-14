@@ -86,13 +86,32 @@ def _read_dataset_contract(dataset_dir: Path, run_tag: str) -> dict:
     }
 
 
-def _validate_predictor_checkpoint(
+_PREDICTOR_CONTRACT_FIELDS = (
+    "skill_predictor_vlm_variant",
+    "skill_predictor_image_size",
+    "skill_predictor_reader_tokens",
+    "skill_predictor_reader_depth",
+    "skill_predictor_reader_heads",
+    "skill_predictor_all_layers",
+    "skill_predictor_detach_vlm",
+    "skill_predictor_lora",
+    "skill_predictor_lora_targets",
+    "skill_predictor_lora_rank",
+    "skill_predictor_lora_alpha",
+    "skill_predictor_lora_dropout",
+    "skill_predictor_deadzone_frac",
+    "skill_predictor_attend_image",
+    "skill_predictor_attend_language",
+    "tokenizer_max_length",
+)
+
+
+def _predictor_contract_from_checkpoint(
     checkpoint: Path,
     *,
     levels: list[int],
-    predictor_contract: dict,
-) -> None:
-    """Fail before submission when a frozen predictor cannot be loaded exactly."""
+) -> dict:
+    """Read the frozen predictor contract; Stage1 never trains this module."""
     config_path = checkpoint / "config.json"
     weights_path = checkpoint / "model.safetensors"
     if not config_path.is_file():
@@ -108,21 +127,33 @@ def _validate_predictor_checkpoint(
     if not source.get("train_skill_predictor", False):
         raise ValueError(f"Stage-1 checkpoint has no trained predictor: {checkpoint}")
 
-    expected = {
+    expected_geometry = {
         "skill_fsq_levels": levels,
         "skill_vocab_size": math.prod(levels),
-        **predictor_contract,
     }
     mismatches = [
-        f"{field}: checkpoint={source.get(field)!r}, requested={value!r}"
-        for field, value in expected.items()
+        f"{field}: checkpoint={source.get(field)!r}, dataset={value!r}"
+        for field, value in expected_geometry.items()
         if source.get(field) != value
     ]
     if mismatches:
         raise ValueError("Predictor checkpoint contract mismatch: " + "; ".join(mismatches))
+    missing = [field for field in _PREDICTOR_CONTRACT_FIELDS if field not in source]
+    if missing:
+        raise ValueError(
+            "Predictor checkpoint does not record its complete frozen contract: "
+            f"missing={missing} at {checkpoint}."
+        )
+    return {field: source[field] for field in _PREDICTOR_CONTRACT_FIELDS}
 
 
 def build_settings(config: dict) -> dict:
+    removed_sections = {"skill_predictor", "terminator"} & set(config)
+    if removed_sections:
+        raise ValueError(
+            "Stage1 trains only the action model; remove co-training sections: "
+            f"{sorted(removed_sections)}."
+        )
     run_config = config.get("run", {})
     if not isinstance(run_config, dict):
         raise ValueError("run must be a mapping containing an optional suffix.")
@@ -193,19 +224,11 @@ def build_settings(config: dict) -> dict:
     dino_model = _local_model_path(
         project_root, str(_at(config, "vision", "dino_model", default="models/dinov3-vitl16"))
     )
-    fsq_value = str(_at(config, "warm_start", "fsq", default="")).strip()
-    fsq_path = (
-        _local_model_path(project_root, fsq_value)
-        if fsq_value
-        else dataset_dir.parent / "FSQ.pt"
-    )
+    fsq_path = dataset_dir.parent / "FSQ.pt"
     if not (pi_base / "model.safetensors").is_file():
         raise FileNotFoundError(f"pi0.5 base checkpoint not found: {pi_base}")
     if not dino_model.is_dir():
         raise FileNotFoundError(f"DINO model not found: {dino_model}")
-    train_skill_predictor = as_bool(
-        _at(config, "skill_predictor", "train", default=True)
-    )
     training_skill_source = str(
         _at(config, "action_conditioning", "training_skill_source", default="gt")
     ).strip().lower()
@@ -225,38 +248,7 @@ def build_settings(config: dict) -> dict:
         raise ValueError(
             "training_skill_source=predictor requires warm_start.predictor_checkpoint."
         )
-    uses_skill_predictor = train_skill_predictor or training_skill_source == "predictor"
-    skill_predictor_lora = as_bool(
-        _at(config, "skill_predictor", "lora", "enabled", default=True)
-    )
-    skill_predictor_lora_targets = str(
-        _at(config, "skill_predictor", "lora", "targets", default="q,k,v,o")
-    ).strip()
-    skill_predictor_lora_rank = int(
-        _at(config, "skill_predictor", "lora", "rank", default=8)
-    )
-    skill_predictor_lora_alpha = float(
-        _at(config, "skill_predictor", "lora", "alpha", default=16.0)
-    )
-    skill_predictor_lora_dropout = float(
-        _at(config, "skill_predictor", "lora", "dropout", default=0.0)
-    )
-    skill_predictor_lora_lr_scale = float(
-        _at(config, "skill_predictor", "lora", "lr_scale", default=10.0)
-    )
-    if skill_predictor_lora and (
-        not skill_predictor_lora_targets
-        or skill_predictor_lora_rank <= 0
-        or skill_predictor_lora_alpha <= 0.0
-        or skill_predictor_lora_dropout < 0.0
-        or skill_predictor_lora_lr_scale <= 0.0
-    ):
-        raise ValueError("Invalid skill_predictor.lora configuration.")
-    train_terminator = as_bool(_at(config, "terminator", "train", default=True))
-    if train_terminator and not fsq_path.is_file():
-        raise FileNotFoundError(
-            f"Stage-1 terminator FSQ checkpoint not found: {fsq_path}"
-        )
+    uses_skill_predictor = training_skill_source == "predictor"
     if uses_skill_predictor:
         required = ("config.json", "tokenizer_config.json", "tokenizer.json")
         missing = [name for name in required if not (tokenizer_path / name).is_file()]
@@ -399,11 +391,11 @@ def build_settings(config: dict) -> dict:
         )
 
     chunk_size = int(_at(config, "architecture", "chunk_size", default=10))
-    action_loss_mode = str(config.get("loss", "flow")).strip().lower()
-    if action_loss_mode not in {"flow", "flow_endpoint_xyz"}:
+    if "loss" in config:
         raise ValueError(
-            "loss must be flow|flow_endpoint_xyz, got "
-            f"{action_loss_mode!r}."
+            "Stage1 uses a fixed flow objective; remove the legacy top-level "
+            "loss key and control the trajectory auxiliary with "
+            "cumulative_xyz_loss.enabled."
         )
     mask_actions_after_skill_end = as_bool(
         config.get("mask_actions_after_skill_end", False)
@@ -417,11 +409,6 @@ def build_settings(config: dict) -> dict:
     cumulative_xyz_loss_weight = float(cumulative_xyz_config.get("weight", 0.5))
     if not math.isfinite(cumulative_xyz_loss_weight) or cumulative_xyz_loss_weight <= 0:
         raise ValueError("cumulative_xyz_loss.weight must be finite and positive.")
-    if cumulative_xyz_loss_enabled and action_loss_mode != "flow":
-        raise ValueError(
-            "cumulative_xyz_loss.enabled=true requires loss: flow; it cannot be "
-            "combined with flow_endpoint_xyz."
-        )
     n_action_steps = int(
         _at(config, "execution", "action_steps", default=chunk_size)
     )
@@ -433,39 +420,6 @@ def build_settings(config: dict) -> dict:
     if jitter_distribution not in {"half_normal", "uniform"}:
         raise ValueError(f"Unsupported dataset jitter distribution: {jitter_distribution!r}")
 
-    batch_sampling_config = config.get("batch_sampling", {})
-    if not isinstance(batch_sampling_config, dict):
-        raise ValueError("batch_sampling must be a mapping.")
-    phase_batch_sampling_enabled = as_bool(
-        batch_sampling_config.get("enabled", False)
-    )
-    phase_batch_focused_fraction = float(
-        batch_sampling_config.get("focused_fraction", 0.75)
-    )
-    phase_batch_early_fraction = float(
-        batch_sampling_config.get("early_fraction", 0.5)
-    )
-    phase_batch_early_threshold = float(
-        batch_sampling_config.get("early_threshold", 0.25)
-    )
-    phase_batch_late_threshold = float(
-        batch_sampling_config.get("late_threshold", 0.75)
-    )
-    if not 0.0 <= phase_batch_focused_fraction <= 1.0:
-        raise ValueError("batch_sampling.focused_fraction must be in [0, 1].")
-    if not 0.0 <= phase_batch_early_fraction <= 1.0:
-        raise ValueError("batch_sampling.early_fraction must be in [0, 1].")
-    if not (
-        0.0
-        <= phase_batch_early_threshold
-        < phase_batch_late_threshold
-        <= 1.0
-    ):
-        raise ValueError(
-            "batch_sampling thresholds must satisfy "
-            "0 <= early_threshold < late_threshold <= 1."
-        )
-
     batch_size = int(_at(config, "training", "dataloader", "batch_size", default=16))
     num_gpus = int(_at(config, "training", "dataloader", "gpus", default=1))
     base_lr = float(_at(config, "training", "optimizer", "base_lr", default=2.5e-5))
@@ -473,6 +427,11 @@ def build_settings(config: dict) -> dict:
     if "dino_lr" in optimizer_config:
         raise ValueError(
             "training.optimizer.dino_lr was replaced by the relative dino_lr_scale."
+        )
+    if "terminator_lr_scale" in optimizer_config:
+        raise ValueError(
+            "training.optimizer.terminator_lr_scale was removed; Stage1 trains "
+            "only the action model."
         )
     dino_lr_scale = float(
         _at(config, "training", "optimizer", "dino_lr_scale", default=0.1)
@@ -483,42 +442,25 @@ def build_settings(config: dict) -> dict:
     predictor_contract = {
         "skill_predictor_vlm_variant": "gemma_2b",
         "skill_predictor_image_size": 224,
-        "skill_predictor_reader_tokens": int(
-            _at(config, "skill_predictor", "reader", "tokens", default=4)
-        ),
-        "skill_predictor_reader_depth": int(
-            _at(config, "skill_predictor", "reader", "depth", default=2)
-        ),
-        "skill_predictor_reader_heads": int(
-            _at(config, "skill_predictor", "reader", "heads", default=8)
-        ),
-        "skill_predictor_all_layers": as_bool(
-            _at(config, "skill_predictor", "all_layers", default=True)
-        ),
-        "skill_predictor_detach_vlm": not skill_predictor_lora,
-        "skill_predictor_lora": skill_predictor_lora,
-        "skill_predictor_lora_targets": skill_predictor_lora_targets,
-        "skill_predictor_lora_rank": skill_predictor_lora_rank,
-        "skill_predictor_lora_alpha": skill_predictor_lora_alpha,
-        "skill_predictor_lora_dropout": skill_predictor_lora_dropout,
-        "skill_predictor_deadzone_frac": float(
-            _at(config, "skill_predictor", "reader", "deadzone_frac", default=0.8)
-        ),
-        "skill_predictor_attend_image": as_bool(
-            _at(config, "skill_predictor", "token_access", "image", default=True)
-        ),
-        "skill_predictor_attend_language": as_bool(
-            _at(config, "skill_predictor", "token_access", "language", default=True)
-        ),
-        "tokenizer_max_length": int(
-            _at(config, "skill_predictor", "tokenizer_max_length", default=200)
-        ),
+        "skill_predictor_reader_tokens": 4,
+        "skill_predictor_reader_depth": 2,
+        "skill_predictor_reader_heads": 8,
+        "skill_predictor_all_layers": False,
+        "skill_predictor_detach_vlm": True,
+        "skill_predictor_lora": False,
+        "skill_predictor_lora_targets": "q,k,v,o",
+        "skill_predictor_lora_rank": 8,
+        "skill_predictor_lora_alpha": 16.0,
+        "skill_predictor_lora_dropout": 0.0,
+        "skill_predictor_deadzone_frac": 0.0,
+        "skill_predictor_attend_image": True,
+        "skill_predictor_attend_language": True,
+        "tokenizer_max_length": 200,
     }
     if predictor_checkpoint is not None:
-        _validate_predictor_checkpoint(
+        predictor_contract = _predictor_contract_from_checkpoint(
             predictor_checkpoint,
             levels=contract["levels"],
-            predictor_contract=predictor_contract,
         )
     run_name = f"bs{batch_size}_{source}_{run_tag}_{architecture_label}"
     if training_skill_source == "predictor":
@@ -530,10 +472,6 @@ def build_settings(config: dict) -> dict:
             ".", "p"
         )
         run_name = f"{run_name}_cumxyz{cumulative_weight_label}"
-    if phase_batch_sampling_enabled:
-        # Phase-focused sampling is a different data distribution and must not
-        # silently resume or share a W&B run with the random-batch ablation.
-        run_name = f"{run_name}_phasefocus"
     if run_suffix:
         # The user suffix is always last so the automatic batch/architecture
         # naming contract stays machine-readable.
@@ -597,28 +535,15 @@ def build_settings(config: dict) -> dict:
         "skill_vocab_size": math.prod(levels),
         "transition_jitter_pmax": jitter_pmax,
         "transition_jitter_distribution": jitter_distribution,
-        "phase_batch_sampling_enabled": phase_batch_sampling_enabled,
-        "phase_batch_focused_fraction": phase_batch_focused_fraction,
-        "phase_batch_early_fraction": phase_batch_early_fraction,
-        "phase_batch_early_threshold": phase_batch_early_threshold,
-        "phase_batch_late_threshold": phase_batch_late_threshold,
         "training_skill_source": training_skill_source,
         "skill_predictor_checkpoint_path": predictor_checkpoint or "",
-        "train_skill_predictor": train_skill_predictor,
-        "skill_predictor_weight": float(
-            _at(config, "skill_predictor", "weight", default=0.5)
-        ),
-        "skill_predictor_lr_scale": float(
-            _at(config, "skill_predictor", "lr_scale", default=1.0)
-        ),
         "skill_predictor_all_layers": predictor_contract["skill_predictor_all_layers"],
-        "skill_predictor_detach_vlm": not skill_predictor_lora,
-        "skill_predictor_lora": skill_predictor_lora,
-        "skill_predictor_lora_targets": skill_predictor_lora_targets,
-        "skill_predictor_lora_rank": skill_predictor_lora_rank,
-        "skill_predictor_lora_alpha": skill_predictor_lora_alpha,
-        "skill_predictor_lora_dropout": skill_predictor_lora_dropout,
-        "skill_predictor_lora_lr_scale": skill_predictor_lora_lr_scale,
+        "skill_predictor_detach_vlm": predictor_contract["skill_predictor_detach_vlm"],
+        "skill_predictor_lora": predictor_contract["skill_predictor_lora"],
+        "skill_predictor_lora_targets": predictor_contract["skill_predictor_lora_targets"],
+        "skill_predictor_lora_rank": predictor_contract["skill_predictor_lora_rank"],
+        "skill_predictor_lora_alpha": predictor_contract["skill_predictor_lora_alpha"],
+        "skill_predictor_lora_dropout": predictor_contract["skill_predictor_lora_dropout"],
         "skill_predictor_reader_tokens": predictor_contract["skill_predictor_reader_tokens"],
         "skill_predictor_reader_depth": predictor_contract["skill_predictor_reader_depth"],
         "skill_predictor_reader_heads": predictor_contract["skill_predictor_reader_heads"],
@@ -626,23 +551,9 @@ def build_settings(config: dict) -> dict:
         "skill_predictor_attend_image": predictor_contract["skill_predictor_attend_image"],
         "skill_predictor_attend_language": predictor_contract["skill_predictor_attend_language"],
         "tokenizer_max_length": predictor_contract["tokenizer_max_length"],
-        "train_terminator": train_terminator,
-        "terminator_freeze_vision_encoder": as_bool(
-            _at(config, "terminator", "freeze_vision", default=True)
-        ),
-        "terminator_lr_scale": float(
-            _at(config, "training", "optimizer", "terminator_lr_scale", default=1.0)
-        ),
-        "terminator_end_target_sigma": float(
-            _at(config, "terminator", "end_target_sigma", default=2.0)
-        ),
-        "terminator_end_pos_weight": float(
-            _at(config, "terminator", "end_pos_weight", default=1.0)
-        ),
         "max_state_dim": max_state_dim,
         "max_action_dim": max_action_dim,
         "chunk_size": chunk_size,
-        "action_loss_mode": action_loss_mode,
         "mask_actions_after_skill_end": mask_actions_after_skill_end,
         "cumulative_xyz_loss_enabled": cumulative_xyz_loss_enabled,
         "cumulative_xyz_loss_weight": cumulative_xyz_loss_weight,

@@ -6,7 +6,6 @@ the skill transition slightly early/late at inference:
 
   skill_start_image        : 3rd-person frame decoded at the (jittered) skill start
   skill_start_wrist_image  : wrist frame at the same start
-  terminator_start_image   : 3rd-person frame at the exact current-skill start
   skill_start_state        : observation.state at that start (from skill_initial_state.npz)
   skill_code               : the (jittered) skill's FSQ code (VLM target + action-expert teacher forcing)
   skill_effective_de       : distance to the jittered skill assignment's virtual end
@@ -37,7 +36,6 @@ from lerobot.policies.skillVLA.skill_jitter import (
 # Batch keys this dataset adds (the model + processor consume these).
 SKILL_START_IMAGE = "skill_start_image"
 SKILL_START_WRIST_IMAGE = "skill_start_wrist_image"
-TERMINATOR_START_IMAGE = "terminator_start_image"
 SKILL_START_STATE = "skill_start_state"
 SKILL_CODE = "skill_code"
 SKILL_CODE_TRUE = "skill_code_true"
@@ -88,9 +86,6 @@ class SkillVLADataset(LeRobotDataset):
         jitter_pmax_override = kwargs.pop("jitter_pmax", None)
         self._include_predictor_start_inputs = bool(
             kwargs.pop("include_predictor_start_inputs", True)
-        )
-        self._include_terminator_start_image = bool(
-            kwargs.pop("include_terminator_start_image", False)
         )
         # Sample only episodes that actually have skills. The skill segmentation
         # (build_skill_dataset.py, min_skills=2) drops episodes with <2 detected skills, so they are
@@ -265,21 +260,4 @@ class SkillVLADataset(LeRobotDataset):
                 bool(pair_fallback), dtype=torch.bool
             )
 
-        if self._include_terminator_start_image:
-            reader = reader or self._ensure_reader()
-            true_start_frame = int(np.clip(int(ifs[k]), 0, ep_len - 1))
-            if (
-                predictor_start_frame == true_start_frame
-                and predictor_start_images is not None
-            ):
-                terminator_start_image = predictor_start_images[CAM_3RD]
-            else:
-                terminator_start_image = reader._query_videos(  # noqa: SLF001
-                    {CAM_3RD: [true_start_frame / self.fps]}, ep_idx
-                )[CAM_3RD]
-                if reader._image_transforms is not None:  # noqa: SLF001
-                    terminator_start_image = reader._image_transforms(  # noqa: SLF001
-                        terminator_start_image
-                    )
-            item[TERMINATOR_START_IMAGE] = terminator_start_image
         return item

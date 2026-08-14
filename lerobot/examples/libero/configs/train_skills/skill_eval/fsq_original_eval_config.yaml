@@ -1,0 +1,23 @@
+# FSQ-original (oneshot | rnn) checkpoint evaluation.
+# Separate from fsq_eval: v3's contract (sample_action_chunks + image terminator)
+# does not exist in FSQ-original variants. Each run's skills dir is resolved
+# from its own fsq_original_meta.json; dataset/outputs roots come from
+# configs/global_config.yaml.
+
+# One run or a list of runs under {outputs_root}/FSQ.
+fsq_orig_eval_run_name:
+  - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_constLR_rnn_oneshot
+
+# Scalar and list forms are accepted, e.g. 200 or [50, 100, 150, 200].
+fsq_orig_eval_checkpoint: [25,50,75,100,125]
+
+# rnn arch: sigmoid threshold that stops the rollout.
+fsq_orig_eval_term_threshold: 0.5
+# Must match the training val_split so val rows are truly held-out.
+fsq_orig_eval_val_split: 0.1
+
+# ── Slurm (partition/qos from global train_*) ──
+eval_gres: gpu:1
+eval_cpus: 8
+eval_mem: 32G
+eval_time: "1:00:00"

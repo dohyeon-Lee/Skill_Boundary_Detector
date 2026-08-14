@@ -33,10 +33,7 @@ echo "dataset   : ${SKILLVLA_DATASET_DIR}"
 echo "terminator: enabled=${TRAIN_TERMINATOR} fsq=${FSQ_PATH} vision_frozen=${TERMINATOR_FREEZE_VISION_ENCODER}"
 echo "image term: enabled=${TRAIN_IMAGE_ONLY_TERMINATOR} fresh=true vision_frozen=${IMAGE_ONLY_TERMINATOR_FREEZE_VISION_ENCODER}"
 echo "wrist term: enabled=${TRAIN_WRIST_ONLY_TERMINATOR} fresh=true vision_frozen=${WRIST_ONLY_TERMINATOR_FREEZE_VISION_ENCODER}"
-echo "compare term: enabled=${TRAIN_START_COMPARISON_TERMINATOR} base_warm_start=true vision_frozen=${START_COMPARISON_TERMINATOR_FREEZE_VISION_ENCODER}"
-echo "compare image term: enabled=${TRAIN_START_COMPARISON_IMAGE_ONLY_TERMINATOR} base_warm_start=true vision_frozen=${START_COMPARISON_IMAGE_ONLY_TERMINATOR_FREEZE_VISION_ENCODER}"
 echo "predictor : enabled=${TRAIN_SKILL_PREDICTOR} pi_base=${PI_BASE} warm_start=${PREDICTOR_CHECKPOINT_PATH:-none}"
-echo "end sample: enabled=${TERMINATOR_ENDPOINT_OVERSAMPLING_ENABLED} exact=${TERMINATOR_ENDPOINT_EXACT_END_FRACTION} near=${TERMINATOR_ENDPOINT_NEAR_END_FRACTION} distance<=${TERMINATOR_ENDPOINT_NEAR_END_MAX_DISTANCE}"
 echo "schedule  : steps=${STEPS} mode=${SCHEDULER_MODE} warmup=${SCHEDULER_WARMUP_STEPS}"
 echo "wandb     : ${WANDB_PROJECT}"
 echo "output    : ${PT_OUTPUT_DIR}"
@@ -82,10 +79,6 @@ PYTHONUNBUFFERED=1 PYTORCH_ALLOC_CONF=expandable_segments:True \
     "${PRETRAIN_ARGS[@]}" \
     --policy.train_terminator="${TRAIN_TERMINATOR}" \
     --policy.fsq_path="${FSQ_PATH}" \
-    --policy.terminator_endpoint_oversampling_enabled="${TERMINATOR_ENDPOINT_OVERSAMPLING_ENABLED}" \
-    --policy.terminator_endpoint_exact_end_fraction="${TERMINATOR_ENDPOINT_EXACT_END_FRACTION}" \
-    --policy.terminator_endpoint_near_end_fraction="${TERMINATOR_ENDPOINT_NEAR_END_FRACTION}" \
-    --policy.terminator_endpoint_near_end_max_distance="${TERMINATOR_ENDPOINT_NEAR_END_MAX_DISTANCE}" \
     --policy.terminator_freeze_vision_encoder="${TERMINATOR_FREEZE_VISION_ENCODER}" \
     --policy.terminator_lr_scale="${TERMINATOR_LR_SCALE}" \
     --policy.terminator_end_target_sigma="${TERMINATOR_END_TARGET_SIGMA}" \
@@ -100,19 +93,8 @@ PYTHONUNBUFFERED=1 PYTORCH_ALLOC_CONF=expandable_segments:True \
     --policy.wrist_only_terminator_lr_scale="${WRIST_ONLY_TERMINATOR_LR_SCALE}" \
     --policy.wrist_only_terminator_end_target_sigma="${WRIST_ONLY_TERMINATOR_END_TARGET_SIGMA}" \
     --policy.wrist_only_terminator_end_pos_weight="${WRIST_ONLY_TERMINATOR_END_POS_WEIGHT}" \
-    --policy.train_start_comparison_terminator="${TRAIN_START_COMPARISON_TERMINATOR}" \
-    --policy.start_comparison_terminator_freeze_vision_encoder="${START_COMPARISON_TERMINATOR_FREEZE_VISION_ENCODER}" \
-    --policy.start_comparison_terminator_lr_scale="${START_COMPARISON_TERMINATOR_LR_SCALE}" \
-    --policy.start_comparison_terminator_end_target_sigma="${START_COMPARISON_TERMINATOR_END_TARGET_SIGMA}" \
-    --policy.start_comparison_terminator_end_pos_weight="${START_COMPARISON_TERMINATOR_END_POS_WEIGHT}" \
-    --policy.train_start_comparison_image_only_terminator="${TRAIN_START_COMPARISON_IMAGE_ONLY_TERMINATOR}" \
-    --policy.start_comparison_image_only_terminator_freeze_vision_encoder="${START_COMPARISON_IMAGE_ONLY_TERMINATOR_FREEZE_VISION_ENCODER}" \
-    --policy.start_comparison_image_only_terminator_lr_scale="${START_COMPARISON_IMAGE_ONLY_TERMINATOR_LR_SCALE}" \
-    --policy.start_comparison_image_only_terminator_end_target_sigma="${START_COMPARISON_IMAGE_ONLY_TERMINATOR_END_TARGET_SIGMA}" \
-    --policy.start_comparison_image_only_terminator_end_pos_weight="${START_COMPARISON_IMAGE_ONLY_TERMINATOR_END_POS_WEIGHT}" \
     --policy.train_skill_predictor="${TRAIN_SKILL_PREDICTOR}" \
     --policy.skill_predictor_checkpoint_path="${PREDICTOR_CHECKPOINT_PATH}" \
-    --policy.skill_predictor_weight="${SKILL_PREDICTOR_WEIGHT}" \
     --policy.skill_predictor_lr_scale="${SKILL_PREDICTOR_LR_SCALE}" \
     --policy.skill_predictor_all_layers="${SKILL_PREDICTOR_ALL_LAYERS}" \
     --policy.skill_predictor_detach_vlm="${SKILL_PREDICTOR_DETACH_VLM}" \

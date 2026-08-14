@@ -161,6 +161,8 @@ class SkillExpertPytorch(nn.Module):
         self.skill_predictor = (
             FrozenVLMSkillPredictor(config) if config.uses_skill_predictor else None
         )
+        if self.skill_predictor is not None:
+            self.skill_predictor.requires_grad_(False).eval()
         self.fsq_term_train = None
         self.fsq_image_term_train = None
         if config.train_terminator:
@@ -169,10 +171,9 @@ class SkillExpertPytorch(nn.Module):
                 terminator.freeze_vision_encoder = bool(
                     config.terminator_freeze_vision_encoder
                 )
-            terminator.requires_grad_(True).train()
-            if terminator.freeze_vision_encoder:
-                terminator.vision_encoder.requires_grad_(False).eval()
-            self.fsq_term_train = terminator.to(dtype=torch.float32)
+            self.fsq_term_train = (
+                terminator.to(dtype=torch.float32).requires_grad_(False).eval()
+            )
         self._last_predicted_actions: Tensor | None = None
         self._last_flow_time: Tensor | None = None
         self._last_vsa_debug_stats: dict[str, float] = {}
@@ -276,22 +277,16 @@ class SkillExpertPytorch(nn.Module):
     def gradient_checkpointing_enable(self) -> None:
         self._gradient_checkpointing = True
         self.expert.gradient_checkpointing_enable()
-        if self.skill_predictor is not None and self.config.train_skill_predictor:
-            self.skill_predictor.gradient_checkpointing_enable()
         if hasattr(self.dino, "gradient_checkpointing_enable"):
             self.dino.gradient_checkpointing_enable()
 
     def train(self, mode: bool = True):
         super().train(mode)
-        if self.skill_predictor is not None and not self.config.train_skill_predictor:
-            # Frozen checkpoint predictors must be deterministic while supplying
-            # the action-conditioning code during Stage-1 training.
+        if self.skill_predictor is not None:
+            # Predictor is an optional frozen input provider, never a Stage1 target.
             self.skill_predictor.eval()
-        if (
-            self.fsq_term_train is not None
-            and self.fsq_term_train.freeze_vision_encoder
-        ):
-            self.fsq_term_train.vision_encoder.eval()
+        if self.fsq_term_train is not None:
+            self.fsq_term_train.eval()
         return self
 
     def sample_noise(self, shape, device) -> Tensor:
@@ -610,10 +605,7 @@ class SkillExpertPytorch(nn.Module):
             # Probe forwards intentionally disable layer instrumentation; retain
             # the original forward's stats and append only sensitivity values.
             self._last_vsa_debug_stats = {**original_stats, **sensitivity}
-        if (
-            self.config.action_loss_mode == "flow_endpoint_xyz"
-            or getattr(self.config, "cumulative_xyz_loss_enabled", False)
-        ):
+        if getattr(self.config, "cumulative_xyz_loss_enabled", False):
             # x_t = action + t * target_velocity, hence the one-step clean-action
             # reconstruction is action_hat = x_t - t * predicted_velocity.
             self._last_predicted_actions = (
@@ -1194,24 +1186,22 @@ class SkillExpertPolicy(PreTrainedPolicy):
         if config.architecture == COND_GEMMA_ARCHITECTURE:
             log.info(
                 "Stage-1 parameters: total=%.1fM trainable=%.1fM dino=%.1fM "
-                "cond=%.1fM expert=%.1fM auxiliaries=%.1fM",
+                "cond=%.1fM expert=%.1fM",
                 counts["total"] / 1e6,
                 counts["trainable"] / 1e6,
                 counts["dino"] / 1e6,
                 counts["conditioner"] / 1e6,
                 counts["expert"] / 1e6,
-                counts["auxiliaries"] / 1e6,
             )
         else:
             log.info(
                 "Stage-1 parameters: total=%.1fM trainable=%.1fM dino=%.1fM "
-                "perceivers=%.1fM expert=%.1fM auxiliaries=%.1fM",
+                "perceivers=%.1fM expert=%.1fM",
                 counts["total"] / 1e6,
                 counts["trainable"] / 1e6,
                 counts["dino"] / 1e6,
                 counts["perceivers"] / 1e6,
                 counts["expert"] / 1e6,
-                counts["auxiliaries"] / 1e6,
             )
         self.reset()
 
@@ -1229,7 +1219,6 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 if not trainable or parameter.requires_grad
             )
 
-        auxiliaries = count(self.model.skill_predictor) + count(self.model.fsq_term_train)
         if getattr(self.config, "architecture", VSA_ARCHITECTURE) == COND_GEMMA_ARCHITECTURE:
             return {
                 "total": count(self),
@@ -1237,7 +1226,6 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 "dino": count(self.model.dino),
                 "conditioner": count(self.model.cond_encoder),
                 "expert": count(self.model.gemma_expert),
-                "auxiliaries": auxiliaries,
             }
         return {
             "total": count(self),
@@ -1245,7 +1233,6 @@ class SkillExpertPolicy(PreTrainedPolicy):
             "dino": count(self.model.dino),
             "perceivers": count(self.model.top_resampler) + count(self.model.wrist_resampler),
             "expert": count(self.model.expert),
-            "auxiliaries": auxiliaries,
         }
 
     def training_debug_metrics(self) -> dict[str, float]:
@@ -1575,21 +1562,22 @@ class SkillExpertPolicy(PreTrainedPolicy):
         )
 
     def get_optim_params(self) -> list[dict]:
-        """Main VSA, mandatory 0.1x DINO, and optional terminator groups."""
+        """Return only action-model and DINO groups; auxiliaries are frozen."""
+        for name in (
+            "skill_predictor",
+            "fsq_term_train",
+            "fsq_image_term_train",
+            "fsq_wrist_term_train",
+        ):
+            auxiliary = getattr(self.model, name, None)
+            if auxiliary is not None:
+                auxiliary.requires_grad_(False).eval()
         if getattr(self.config, "architecture", VSA_ARCHITECTURE) == COND_GEMMA_ARCHITECTURE:
             return self._get_cond_gemma_optim_params()
-        terminator = getattr(self.model, "fsq_term_train", None)
-        terminator_parameters = (
-            [parameter for parameter in terminator.parameters() if parameter.requires_grad]
-            if terminator is not None
-            else []
-        )
-        excluded_ids = {id(parameter) for parameter in terminator_parameters}
-
         dino_parameters = [
             parameter for parameter in self.model.dino.parameters() if parameter.requires_grad
         ]
-        excluded_ids.update(id(parameter) for parameter in dino_parameters)
+        excluded_ids = {id(parameter) for parameter in dino_parameters}
 
         base_parameters = [
             parameter
@@ -1611,16 +1599,6 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 "group_name": "dino",
             }
         )
-        if terminator_parameters:
-            groups.append(
-                {
-                    "params": terminator_parameters,
-                    "lr": self.config.optimizer_lr
-                    * self.config.terminator_lr_scale,
-                    "lr_scale": self.config.terminator_lr_scale,
-                    "group_name": "terminator",
-                }
-            )
         for group in groups:
             log.info(
                 "Stage-1 optimizer group %s: %.1fM params, lr_scale=%g, lr=%g",
@@ -1632,15 +1610,8 @@ class SkillExpertPolicy(PreTrainedPolicy):
         return groups
 
     def _get_cond_gemma_optim_params(self) -> list[dict]:
-        """Build Arch1 groups with the same relative DINO LR contract as Arch2--4."""
-        terminator = getattr(self.model, "fsq_term_train", None)
-        terminator_parameters = (
-            [parameter for parameter in terminator.parameters() if parameter.requires_grad]
-            if terminator is not None
-            else []
-        )
-        excluded_ids = {id(parameter) for parameter in terminator_parameters}
-
+        """Build Cond-Gemma action-model and relative-DINO-LR groups only."""
+        excluded_ids: set[int] = set()
         dino_parameters = []
         if (
             self.model.dino is not None
@@ -1679,16 +1650,6 @@ class SkillExpertPolicy(PreTrainedPolicy):
                     "group_name": "dino",
                 }
             )
-        if terminator_parameters:
-            groups.append(
-                {
-                    "params": terminator_parameters,
-                    "lr": self.config.optimizer_lr
-                    * self.config.terminator_lr_scale,
-                    "lr_scale": self.config.terminator_lr_scale,
-                    "group_name": "terminator",
-                }
-            )
         for group in groups:
             log.info(
                 "Stage-1 optimizer group %s: %.1fM params, lr_scale=%g, lr=%g",
@@ -1698,14 +1659,6 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 float(group.get("lr", self.config.optimizer_lr)),
             )
         return groups
-
-    def isolated_main_optimizer_grad_groups(self) -> dict[str, list[nn.Parameter]]:
-        """Clip terminator gradients independently from the disjoint VSA graph."""
-        terminator = getattr(self.model, "fsq_term_train", None)
-        if not getattr(self.config, "train_terminator", False) or terminator is None:
-            return {}
-        params = [parameter for parameter in terminator.parameters() if parameter.requires_grad]
-        return {"terminator": params} if params else {}
 
     def _collect_images(self, batch: dict) -> list[Tensor]:
         device = next(self.parameters()).device
@@ -1785,19 +1738,6 @@ class SkillExpertPolicy(PreTrainedPolicy):
             images.append(image)
         return images
 
-    def _skill_predictor_loss(self, batch: dict) -> tuple[Tensor, float]:
-        predictor = self.model.skill_predictor
-        if predictor is None:
-            raise RuntimeError("Skill predictor is disabled.")
-        target = batch["skill_code"].to(next(self.parameters()).device).view(-1).long()
-        target = target.clamp(0, self.config.skill_vocab_size - 1)
-        return predictor.loss(
-            self._predictor_start_images(batch),
-            batch[OBS_LANGUAGE_TOKENS].to(target.device),
-            batch[OBS_LANGUAGE_ATTENTION_MASK].to(target.device),
-            target,
-        )
-
     @torch.no_grad()
     def _predicted_training_skill_code(self, batch: dict) -> Tensor:
         """Predict the held skill from the dataset's jittered skill-start view."""
@@ -1851,157 +1791,6 @@ class SkillExpertPolicy(PreTrainedPolicy):
             batch[OBS_LANGUAGE_ATTENTION_MASK].to(device),
         ).long()
 
-    def _terminator_loss(self, batch: dict) -> tuple[Tensor, Tensor, Tensor]:
-        """Stage-0-matched progress SmoothL1 + soft end BCE on current raw obs."""
-        required = (
-            "skill_code_true",
-            "skill_ds",
-            "skill_de",
-            "skill_decoder_state",
-            "observation.images.image",
-            "observation.images.wrist_image",
-        )
-        missing = [key for key in required if key not in batch]
-        if missing:
-            raise ValueError(
-                "train_terminator=True requires SkillVLADataset and the raw-state "
-                f"processor; missing={missing}."
-            )
-        true_code = batch["skill_code_true"].view(-1).long().clamp(
-            0, self.config.skill_vocab_size - 1
-        )
-        progress_prediction, termination_logits = self.model.terminator_predict(
-            true_code,
-            batch["skill_decoder_state"],
-            batch["observation.images.image"],
-            batch["observation.images.wrist_image"],
-        )
-        distance_from_start = batch["skill_ds"].float().view(-1).to(
-            progress_prediction.device
-        )
-        distance_to_end = batch["skill_de"].float().view(-1).to(
-            progress_prediction.device
-        )
-        progress_target = (
-            distance_from_start
-            / (distance_from_start + distance_to_end).clamp_min(1.0)
-        ).clamp(0.0, 1.0)
-        sigma = self.config.terminator_end_target_sigma
-        termination_target = (
-            torch.exp(-(distance_to_end.square()) / (2.0 * sigma**2))
-            if sigma > 0
-            else (distance_to_end == 0).float()
-        )
-        progress_loss = F.smooth_l1_loss(
-            progress_prediction, progress_target.to(progress_prediction.dtype)
-        )
-        positive_weight = torch.tensor(
-            self.config.terminator_end_pos_weight,
-            device=termination_logits.device,
-            dtype=termination_logits.dtype,
-        )
-        termination_loss = F.binary_cross_entropy_with_logits(
-            termination_logits,
-            termination_target.to(termination_logits.dtype),
-            pos_weight=positive_weight,
-        )
-        return progress_loss + termination_loss, progress_loss, termination_loss
-
-    def isolated_auxiliary_step(
-        self,
-        batch: dict,
-        accelerator,
-        grad_clip_norm: float,
-        current_lr: float | None = None,
-    ) -> dict:
-        """Train only skill LoRA/reader/head after the isolated VSA optimizer step."""
-        predictor = self.model.skill_predictor
-        if not self.config.train_skill_predictor or predictor is None:
-            return {}
-        params = predictor.auxiliary_parameters()
-        if not hasattr(self, "_skill_predictor_optimizer"):
-            reader_head = predictor.reader_head_parameters()
-            lora = predictor.lora_parameters()
-            parameter_groups = [
-                {
-                    "params": reader_head,
-                    "lr": self.config.optimizer_lr
-                    * self.config.skill_predictor_lr_scale,
-                    "lr_scale": self.config.skill_predictor_lr_scale,
-                    "group_name": "reader_head",
-                }
-            ]
-            if lora:
-                parameter_groups.append(
-                    {
-                        "params": lora,
-                        "lr": self.config.optimizer_lr
-                        * self.config.skill_predictor_lora_lr_scale,
-                        "lr_scale": self.config.skill_predictor_lora_lr_scale,
-                        "group_name": "skill_lora",
-                    }
-                )
-            self._skill_predictor_optimizer = torch.optim.AdamW(
-                parameter_groups,
-                betas=self.config.optimizer_betas,
-                eps=self.config.optimizer_eps,
-                weight_decay=self.config.optimizer_weight_decay,
-            )
-        optimizer = self._skill_predictor_optimizer
-        if current_lr is not None:
-            for group in optimizer.param_groups:
-                group["lr"] = current_lr * float(group["lr_scale"])
-
-        previous_requires_grad = [parameter.requires_grad for parameter in params]
-        for parameter in params:
-            parameter.requires_grad_(True)
-        optimizer.zero_grad(set_to_none=True)
-        try:
-            with accelerator.autocast():
-                raw_loss, accuracy = self._skill_predictor_loss(batch)
-                objective = self.config.skill_predictor_weight * raw_loss
-            accelerator.backward(objective)
-            if grad_clip_norm > 0:
-                grad_norm = accelerator.clip_grad_norm_(params, grad_clip_norm)
-            else:
-                grad_norm = torch.nn.utils.clip_grad_norm_(
-                    params, float("inf"), error_if_nonfinite=False
-                )
-            optimizer.step()
-            return {
-                "skill_predictor/loss": raw_loss.detach().item(),
-                "skill_predictor/objective_loss": objective.detach().item(),
-                "skill_predictor/skill_acc": float(accuracy),
-                "skill_predictor/weight": self.config.skill_predictor_weight,
-                "skill_predictor/grad_norm": float(
-                    grad_norm.detach().item()
-                    if torch.is_tensor(grad_norm)
-                    else grad_norm
-                ),
-                "skill_predictor/lr": optimizer.param_groups[0]["lr"],
-                "skill_predictor/lora_lr": next(
-                    (
-                        group["lr"]
-                        for group in optimizer.param_groups
-                        if group.get("group_name") == "skill_lora"
-                    ),
-                    0.0,
-                ),
-                "skill_predictor/lora_layers": float(predictor.lora_layer_count),
-                "skill_predictor/all_layers": float(
-                    self.config.skill_predictor_all_layers
-                ),
-                "skill_predictor/deadzone_frac": float(
-                    self.config.skill_predictor_deadzone_frac
-                ),
-            }
-        finally:
-            optimizer.zero_grad(set_to_none=True)
-            for parameter, old_value in zip(
-                params, previous_requires_grad, strict=True
-            ):
-                parameter.requires_grad_(old_value)
-
     def _valid_action_steps(self, actions: Tensor, batch: dict) -> Tensor:
         """Return action offsets supervised by the selected loss-mask contract."""
         valid = torch.ones(actions.shape[:2], dtype=torch.bool, device=actions.device)
@@ -2037,32 +1826,6 @@ class SkillExpertPolicy(PreTrainedPolicy):
             offsets = torch.arange(actions.shape[1], device=actions.device).unsqueeze(0)
             valid &= offsets <= distance_to_end.unsqueeze(1)
         return valid
-
-    @staticmethod
-    def _endpoint_xyz_loss(
-        predicted_actions: Tensor,
-        target_actions: Tensor,
-        valid: Tensor,
-    ) -> tuple[Tensor, Tensor]:
-        """Stage0 Exp4-1 endpoint: MSE of accumulated valid XYZ deltas.
-
-        Errors may cancel across intermediate timesteps; only the final chunk
-        displacement matters. Every sample has equal weight, irrespective of
-        the number of valid steps in its episode-clipped chunk.
-        """
-        if predicted_actions.shape[-1] < 3 or target_actions.shape[-1] < 3:
-            raise ValueError("endpoint_xyz loss requires at least three action dimensions.")
-        sample_valid = valid.any(dim=1)
-        if not bool(sample_valid.any()):
-            raise ValueError("endpoint_xyz loss received a batch with no valid action steps.")
-        step_valid = valid.to(predicted_actions.dtype).unsqueeze(-1)
-        endpoint_error = (
-            (predicted_actions[..., :3] - target_actions[..., :3]) * step_valid
-        ).sum(dim=1)
-        per_sample = endpoint_error.square().mean(dim=-1)
-        selected = sample_valid.to(per_sample.dtype)
-        loss = (per_sample * selected).sum() / selected.sum().clamp(min=1.0)
-        return loss, per_sample
 
     @staticmethod
     def _cumulative_xyz_loss(
@@ -2188,185 +1951,6 @@ class SkillExpertPolicy(PreTrainedPolicy):
         values = torch.stack(tuple(tensor_metrics.values())).detach().float().cpu().tolist()
         return dict(zip(tensor_metrics, values, strict=True))
 
-    @torch.no_grad()
-    def _phase_batch_sampling_metrics(
-        self,
-        batch: dict,
-        per_sample_action_loss: Tensor,
-    ) -> dict[str, float]:
-        """Report the realized batch composition and its jitter interaction.
-
-        The sampler selects rows using the unmodified physical progress
-        ``skill_ds / (skill_ds + skill_de)``. ``skill_code`` is created later by
-        SkillVLADataset, so comparing it with ``skill_code_true`` measures how
-        often transition randomization changed the conditioning code in each
-        original-progress region.
-        """
-        if not self.config.phase_batch_sampling_enabled:
-            return {}
-        missing = [
-            key
-            for key in (
-                "skill_ds",
-                "skill_de",
-                "skill_code",
-                "skill_code_true",
-                "skill_progress",
-            )
-            if key not in batch
-        ]
-        if missing:
-            raise ValueError(
-                "Phase batch sampling metrics require SkillVLADataset fields: "
-                f"missing={missing}."
-            )
-
-        ds = batch["skill_ds"].detach().float().reshape(-1)
-        de = batch["skill_de"].detach().float().reshape(-1).to(ds.device)
-        progress = (ds / (ds + de).clamp_min(1.0)).clamp(0.0, 1.0)
-        early = progress <= self.config.phase_batch_early_threshold
-        late = progress >= self.config.phase_batch_late_threshold
-        middle = ~(early | late)
-        jittered_progress = (
-            batch["skill_progress"]
-            .detach()
-            .float()
-            .reshape(-1)
-            .to(ds.device)
-            .clamp(0.0, 1.0)
-        )
-        jittered_early = (
-            jittered_progress <= self.config.phase_batch_early_threshold
-        )
-        jittered_late = jittered_progress >= self.config.phase_batch_late_threshold
-        jittered_middle = ~(jittered_early | jittered_late)
-        changed = (
-            batch["skill_code"].detach().reshape(-1).to(ds.device)
-            != batch["skill_code_true"].detach().reshape(-1).to(ds.device)
-        )
-        original_phase = torch.where(
-            early,
-            torch.zeros_like(progress, dtype=torch.long),
-            torch.where(
-                middle,
-                torch.ones_like(progress, dtype=torch.long),
-                torch.full_like(progress, 2, dtype=torch.long),
-            ),
-        )
-        jittered_phase = torch.where(
-            jittered_early,
-            torch.zeros_like(progress, dtype=torch.long),
-            torch.where(
-                jittered_middle,
-                torch.ones_like(progress, dtype=torch.long),
-                torch.full_like(progress, 2, dtype=torch.long),
-            ),
-        )
-
-        original_codes = (
-            batch["skill_code_true"].detach().long().reshape(-1).to(ds.device)
-        )
-        code_counts = torch.bincount(
-            original_codes.clamp(0, self.config.skill_vocab_size - 1),
-            minlength=self.config.skill_vocab_size,
-        ).float()
-        active_counts = code_counts[code_counts > 0]
-        code_probabilities = active_counts / active_counts.sum().clamp_min(1.0)
-        skill_entropy = -(
-            code_probabilities * code_probabilities.clamp_min(1e-12).log()
-        ).sum()
-        max_possible_skills = min(
-            self.config.skill_vocab_size, original_codes.numel()
-        )
-        max_entropy = torch.tensor(
-            float(max(max_possible_skills, 1)), device=ds.device
-        ).log()
-        normalized_skill_entropy = torch.where(
-            max_entropy > 0,
-            skill_entropy / max_entropy.clamp_min(1e-12),
-            torch.zeros_like(skill_entropy),
-        )
-
-        action_loss = per_sample_action_loss.detach().float().reshape(-1).to(ds.device)
-        if action_loss.shape != progress.shape:
-            raise ValueError(
-                "Per-sample action loss batch size does not match phase metadata."
-            )
-
-        def fraction(mask: Tensor) -> Tensor:
-            return mask.float().mean()
-
-        def changed_fraction(mask: Tensor) -> Tensor:
-            count = mask.sum()
-            return torch.where(
-                count > 0,
-                (changed & mask).float().sum() / count.clamp_min(1).float(),
-                torch.full((), float("nan"), device=ds.device),
-            )
-
-        def masked_mean(values: Tensor, mask: Tensor) -> Tensor:
-            count = mask.sum()
-            return torch.where(
-                count > 0,
-                (values * mask.to(values.dtype)).sum()
-                / count.clamp_min(1).to(values.dtype),
-                torch.full((), float("nan"), device=values.device),
-            )
-
-        tensor_metrics = {
-            "batch_sampling/configured_focused_fraction": torch.tensor(
-                self.config.phase_batch_focused_fraction, device=ds.device
-            ),
-            "batch_sampling/configured_early_share_within_focused": torch.tensor(
-                self.config.phase_batch_early_fraction, device=ds.device
-            ),
-            "batch_sampling/configured_early_threshold": torch.tensor(
-                self.config.phase_batch_early_threshold, device=ds.device
-            ),
-            "batch_sampling/configured_late_threshold": torch.tensor(
-                self.config.phase_batch_late_threshold, device=ds.device
-            ),
-            "batch_sampling/original_progress_mean": progress.mean(),
-            "batch_sampling/original_early_fraction": fraction(early),
-            "batch_sampling/original_middle_fraction": fraction(middle),
-            "batch_sampling/original_late_fraction": fraction(late),
-            "batch_sampling/original_focused_fraction": fraction(early | late),
-            "batch_sampling/jittered_progress_mean": jittered_progress.mean(),
-            "batch_sampling/jittered_early_fraction": fraction(jittered_early),
-            "batch_sampling/jittered_middle_fraction": fraction(jittered_middle),
-            "batch_sampling/jittered_late_fraction": fraction(jittered_late),
-            "batch_sampling/jittered_focused_fraction": fraction(
-                jittered_early | jittered_late
-            ),
-            "batch_sampling/phase_changed_fraction": fraction(
-                original_phase != jittered_phase
-            ),
-            "batch_sampling/jitter_changed_code_fraction": fraction(changed),
-            "batch_sampling/early_jitter_changed_code_fraction": changed_fraction(
-                early
-            ),
-            "batch_sampling/middle_jitter_changed_code_fraction": changed_fraction(
-                middle
-            ),
-            "batch_sampling/late_jitter_changed_code_fraction": changed_fraction(late),
-            "batch_sampling/original_unique_skill_count": (
-                code_counts > 0
-            ).sum().float(),
-            "batch_sampling/original_skill_entropy_normalized": normalized_skill_entropy,
-            "batch_sampling/original_max_skill_fraction": code_probabilities.max(),
-            "batch_sampling/original_early_action_loss": masked_mean(
-                action_loss, early
-            ),
-            "batch_sampling/original_middle_action_loss": masked_mean(
-                action_loss, middle
-            ),
-            "batch_sampling/original_late_action_loss": masked_mean(
-                action_loss, late
-            ),
-        }
-        values = torch.stack(tuple(tensor_metrics.values())).float().cpu().tolist()
-        return dict(zip(tensor_metrics, values, strict=True))
-
     def forward(self, batch: dict, reduction: str = "mean"):
         actions = pad_vector(batch[ACTION], self.config.max_action_dim)
         real_dim = self.config.output_features[ACTION].shape[0]
@@ -2401,25 +1985,11 @@ class SkillExpertPolicy(PreTrainedPolicy):
         )
         valid_steps = valid.sum().clamp(min=1).to(squared_error.dtype)
         action_loss = (squared_error * valid_float).sum() / (valid_steps * real_dim)
-        endpoint_loss = None
         cumulative_xyz_loss = None
         cumulative_xyz_raw_loss = None
         action_objective = action_loss
         objective_per_sample = per_sample
-        if self.config.action_loss_mode == "flow_endpoint_xyz":
-            predicted_actions = self.model._last_predicted_actions
-            if predicted_actions is None:
-                raise RuntimeError(
-                    "flow_endpoint_xyz did not receive reconstructed predicted actions."
-                )
-            endpoint_loss, endpoint_per_sample = self._endpoint_xyz_loss(
-                predicted_actions[..., :real_dim],
-                actions[..., :real_dim],
-                valid,
-            )
-            action_objective = 0.5 * action_loss + 0.5 * endpoint_loss
-            objective_per_sample = 0.5 * per_sample + 0.5 * endpoint_per_sample
-        elif getattr(self.config, "cumulative_xyz_loss_enabled", False):
+        if getattr(self.config, "cumulative_xyz_loss_enabled", False):
             predicted_actions = self.model._last_predicted_actions
             if predicted_actions is None:
                 raise RuntimeError(
@@ -2492,7 +2062,6 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 getattr(self.model, "_last_flow_time", None),
             )
         )
-        loss_dict.update(self._phase_batch_sampling_metrics(batch, per_sample))
         loss_dict.update(
             {
                 f"vsa_debug/{name}": value
@@ -2509,15 +2078,6 @@ class SkillExpertPolicy(PreTrainedPolicy):
         if self._last_predicted_diff_from_current is not None:
             loss_dict["conditioning/predicted_diff_from_current_gt"] = (
                 self._last_predicted_diff_from_current.detach().item()
-            )
-        if endpoint_loss is not None:
-            loss_dict.update(
-                {
-                    "endpoint_xyz_loss": endpoint_loss.detach().item(),
-                    "action_objective": action_objective.detach().item(),
-                    "action_flow_weight": 0.5,
-                    "action_endpoint_weight": 0.5,
-                }
             )
         if cumulative_xyz_loss is not None and cumulative_xyz_raw_loss is not None:
             cumulative_weight = getattr(
@@ -2542,23 +2102,9 @@ class SkillExpertPolicy(PreTrainedPolicy):
                     "action_cumulative_xyz_weight": float(cumulative_weight),
                 }
             )
-        terminator_loss = None
-        if self.config.train_terminator and self.model.fsq_term_train is not None:
-            terminator_loss, progress_loss, termination_loss = self._terminator_loss(batch)
-            loss_dict.update(
-                {
-                    "terminator/loss": terminator_loss.detach().item(),
-                    "terminator/progress": progress_loss.detach().item(),
-                    "terminator/termination": termination_loss.detach().item(),
-                }
-            )
         if reduction == "none":
             return objective_per_sample, loss_dict
-        total = action_objective
-        if terminator_loss is not None:
-            total = total + terminator_loss
-            loss_dict["loss_total"] = total.detach().item()
-        return total, loss_dict
+        return action_objective, loss_dict
 
     @torch.no_grad()
     def predict_action_chunk(self, batch: dict, **kwargs) -> Tensor:

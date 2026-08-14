@@ -361,6 +361,8 @@ class CondGemmaSkillExpert(nn.Module):
         self.skill_predictor = (
             FrozenVLMSkillPredictor(config) if config.uses_skill_predictor else None
         )
+        if self.skill_predictor is not None:
+            self.skill_predictor.requires_grad_(False).eval()
         self.fsq_term_train = None
         self.fsq_image_term_train = None
         if config.train_terminator:
@@ -369,10 +371,9 @@ class CondGemmaSkillExpert(nn.Module):
                 terminator.freeze_vision_encoder = bool(
                     config.terminator_freeze_vision_encoder
                 )
-            terminator.requires_grad_(True).train()
-            if terminator.freeze_vision_encoder:
-                terminator.vision_encoder.requires_grad_(False).eval()
-            self.fsq_term_train = terminator.to(dtype=torch.float32)
+            self.fsq_term_train = (
+                terminator.to(dtype=torch.float32).requires_grad_(False).eval()
+            )
         self._last_predicted_actions: Tensor | None = None
         self._last_flow_time: Tensor | None = None
         # The current trainer calls this common observability surface.  Keeping
@@ -450,8 +451,6 @@ class CondGemmaSkillExpert(nn.Module):
             self.cond_encoder.gradient_checkpointing_enable()
         if hasattr(self.gemma_expert, "gradient_checkpointing_enable"):
             self.gemma_expert.gradient_checkpointing_enable()
-        if self.skill_predictor is not None and self.config.train_skill_predictor:
-            self.skill_predictor.gradient_checkpointing_enable()
         if (
             self.dino is not None
             and not self.config.freeze_vision_encoder
@@ -463,15 +462,11 @@ class CondGemmaSkillExpert(nn.Module):
         super().train(mode)
         if self.dino is not None and self.config.freeze_vision_encoder:
             self.dino.eval()
-        if self.skill_predictor is not None and not self.config.train_skill_predictor:
-            # Frozen checkpoint predictors must be deterministic while supplying
-            # the action-conditioning code during Stage-1 training.
+        if self.skill_predictor is not None:
+            # Predictor is an optional frozen input provider, never a Stage1 target.
             self.skill_predictor.eval()
-        if (
-            self.fsq_term_train is not None
-            and self.fsq_term_train.freeze_vision_encoder
-        ):
-            self.fsq_term_train.vision_encoder.eval()
+        if self.fsq_term_train is not None:
+            self.fsq_term_train.eval()
         return self
 
     def sample_noise(self, shape, device) -> Tensor:
@@ -1075,10 +1070,7 @@ class CondGemmaSkillExpert(nn.Module):
                 time=time,
             )
             self._last_vsa_debug_stats = {**original_stats, **sensitivity}
-        if (
-            self.config.action_loss_mode == "flow_endpoint_xyz"
-            or self.config.cumulative_xyz_loss_enabled
-        ):
+        if self.config.cumulative_xyz_loss_enabled:
             # x_t = action + t * target_velocity, hence the one-step clean-action
             # reconstruction is action_hat = x_t - t * predicted_velocity.
             self._last_predicted_actions = (

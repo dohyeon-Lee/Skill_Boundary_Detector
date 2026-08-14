@@ -156,6 +156,8 @@ class SkillExpertConfig(PreTrainedConfig):
     time_sampling_offset: float = 0.001
     min_period: float = 4e-3
     max_period: float = 4.0
+    # Kept in serialized configs for checkpoint compatibility. Stage1 fixes it
+    # to flow; the only selectable trajectory auxiliary is cumulative XYZ.
     action_loss_mode: str = "flow"
     # When enabled, supervise only action offsets that still belong to the
     # effective (possibly transition-jittered) skill assignment.
@@ -177,15 +179,6 @@ class SkillExpertConfig(PreTrainedConfig):
     skill_fsq_levels: list[int] = field(default_factory=lambda: [3, 3, 3])
     transition_jitter_pmax: int = 0
     transition_jitter_distribution: str = "half_normal"
-    # Optional batch-composition experiment. Disabled is the ordinary shuffled
-    # DataLoader used by the architecture ablations. Enabled guarantees a
-    # configurable number of original-skill early/late frames in every batch;
-    # transition jitter is still sampled independently inside the dataset.
-    phase_batch_sampling_enabled: bool = False
-    phase_batch_focused_fraction: float = 0.75
-    phase_batch_early_fraction: float = 0.5
-    phase_batch_early_threshold: float = 0.25
-    phase_batch_late_threshold: float = 0.75
 
     # Which skill code conditions the action path during offline training.  The
     # predictor route loads only the learned predictor from a previous Stage-1
@@ -193,9 +186,10 @@ class SkillExpertConfig(PreTrainedConfig):
     training_skill_source: str = "gt"
     skill_predictor_checkpoint_path: str | None = None
 
-    # Skill predictor. Old Stage-1 checkpoints use a fully detached VLM; the
-    # Stage3-A-matched path keeps the pi0.5 base frozen and trains only a named
-    # Q/K/V/O LoRA together with SkillReader/SkillHead.
+    # Legacy checkpoint-schema fields. New Stage1 runs never set/train these;
+    # they remain readable so historical checkpoints can expose their own
+    # predictor during eval. A predictor selected as training_skill_source is
+    # always frozen.
     train_skill_predictor: bool = False
     skill_predictor_weight: float = 0.5
     skill_predictor_lr_scale: float = 1.0
@@ -218,7 +212,8 @@ class SkillExpertConfig(PreTrainedConfig):
     tokenizer_path: str | None = None
     tokenizer_max_length: int = 200
 
-    # Parameter-disjoint FSQ terminator co-training on the same Stage-1 batch.
+    # Legacy checkpoint-schema fields for historical own-terminator evaluation.
+    # The current Stage1 forward and optimizer never train this module.
     train_terminator: bool = False
     fsq_path: str | None = None
     terminator_freeze_vision_encoder: bool | None = None
@@ -416,15 +411,10 @@ class SkillExpertConfig(PreTrainedConfig):
             raise ValueError("n_action_steps cannot exceed chunk_size.")
         if min(self.max_state_dim, self.max_action_dim, self.num_inference_steps) <= 0:
             raise ValueError("State/action dimensions and num_inference_steps must be positive.")
-        if self.action_loss_mode not in {"flow", "flow_endpoint_xyz"}:
+        if self.model_type == "skill_expert" and self.action_loss_mode != "flow":
             raise ValueError(
-                "action_loss_mode must be 'flow' or 'flow_endpoint_xyz', got "
-                f"{self.action_loss_mode!r}."
-            )
-        if self.cumulative_xyz_loss_enabled and self.action_loss_mode != "flow":
-            raise ValueError(
-                "cumulative_xyz_loss_enabled=true requires action_loss_mode='flow'; "
-                "it cannot be combined with flow_endpoint_xyz."
+                "Stage1 action_loss_mode is fixed to 'flow'; configure only "
+                "cumulative_xyz_loss_enabled and cumulative_xyz_loss_weight."
             )
         if not math.isfinite(self.cumulative_xyz_loss_weight) or self.cumulative_xyz_loss_weight <= 0:
             raise ValueError("cumulative_xyz_loss_weight must be finite and positive.")
@@ -434,19 +424,6 @@ class SkillExpertConfig(PreTrainedConfig):
             raise ValueError(
                 "transition_jitter_distribution must be 'half_normal' or 'uniform', got "
                 f"{self.transition_jitter_distribution!r}."
-            )
-        if not 0.0 <= self.phase_batch_focused_fraction <= 1.0:
-            raise ValueError("phase_batch_focused_fraction must be in [0, 1].")
-        if not 0.0 <= self.phase_batch_early_fraction <= 1.0:
-            raise ValueError("phase_batch_early_fraction must be in [0, 1].")
-        if not (
-            0.0
-            <= self.phase_batch_early_threshold
-            < self.phase_batch_late_threshold
-            <= 1.0
-        ):
-            raise ValueError(
-                "Phase batch thresholds must satisfy 0 <= early < late <= 1."
             )
         if self.training_skill_source not in {"gt", "predictor"}:
             raise ValueError(
@@ -476,10 +453,6 @@ class SkillExpertConfig(PreTrainedConfig):
                 )
             if self.skill_predictor_vlm_variant != "gemma_2b":
                 raise ValueError("The pi0.5 base predictor VLM must use gemma_2b.")
-            if self.skill_predictor_weight <= 0.0:
-                raise ValueError("skill_predictor_weight must be positive.")
-            if self.skill_predictor_lr_scale <= 0.0:
-                raise ValueError("skill_predictor_lr_scale must be positive.")
             if self.skill_predictor_lora:
                 if not str(self.skill_predictor_lora_targets).strip():
                     raise ValueError("skill_predictor_lora_targets cannot be empty.")
@@ -489,8 +462,6 @@ class SkillExpertConfig(PreTrainedConfig):
                     raise ValueError("skill_predictor_lora_alpha must be positive.")
                 if self.skill_predictor_lora_dropout < 0.0:
                     raise ValueError("skill_predictor_lora_dropout must be non-negative.")
-                if self.skill_predictor_lora_lr_scale <= 0.0:
-                    raise ValueError("skill_predictor_lora_lr_scale must be positive.")
             if min(
                 self.skill_predictor_image_size,
                 self.skill_predictor_reader_tokens,
@@ -505,13 +476,7 @@ class SkillExpertConfig(PreTrainedConfig):
                 raise ValueError("Skill predictor must attend image and/or language tokens.")
         if self.train_terminator:
             if not str(self.fsq_path or "").strip():
-                raise ValueError("train_terminator=True requires fsq_path.")
-            if self.terminator_lr_scale <= 0.0:
-                raise ValueError("terminator_lr_scale must be positive.")
-            if self.terminator_end_target_sigma < 0.0:
-                raise ValueError("terminator_end_target_sigma must be non-negative.")
-            if self.terminator_end_pos_weight <= 0.0:
-                raise ValueError("terminator_end_pos_weight must be positive.")
+                raise ValueError("Historical own terminator requires fsq_path.")
 
     def validate_features(self) -> None:
         if self.input_features is None:

@@ -31,24 +31,8 @@ external_skill_model:
 # Trained entries resolve as:
 #   <outputs_root>/skillVLA_terminator/<model_dir>/checkpoints/<checkpoint>/pretrained_model
 # All entries are display-only. Only MAIN controls rollout stopping.
-# variant: state_image | image_only | wrist_only | start_comparison |
-#          start_comparison_image_only | fsq_initial
+# variant: state_image | image_only | wrist_only | fsq_initial
 terminator_models:
-  - label: IMAGE_cmp_1k
-    variant: start_comparison_image_only
-    model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_startcmp_both
-    checkpoint: "010000"
-  
-  - label: IMAGE_cmp_3k
-    variant: start_comparison_image_only
-    model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_startcmp_both
-    checkpoint: "030000"
-  
-  - label: IMAGE_cmp_5k
-    variant: start_comparison_image_only
-    model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_startcmp_both
-    checkpoint: "050000"
-  
   - label: IMAGE_1k
     variant: image_only
     model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_terminator_3
@@ -83,26 +67,6 @@ terminator_models:
   #   variant: wrist_only
   #   model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_terminator_3
   #   checkpoint: "050000"
-
-  # - label: STATE_bias_25k
-  #   variant: state_image
-  #   model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_endpoint_os_terminator_both
-  #   checkpoint: "025000"
-  
-  # - label: IMAGE_bias_25k
-  #   variant: image_only
-  #   model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_endpoint_os_terminator_both
-  #   checkpoint: "025000"
-
-  # - label: STATE_bias_100k
-  #   variant: state_image
-  #   model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_endpoint_os_terminator_both
-  #   checkpoint: "100000"
-  
-  # - label: IMAGE_bias_100k
-  #   variant: image_only
-  #   model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_endpoint_os_terminator_both
-  #   checkpoint: "100000"
 
   - label: FSQ_INIT
     variant: fsq_initial

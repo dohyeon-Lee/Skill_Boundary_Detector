@@ -11,9 +11,6 @@ _SRC = (
 )
 sys.path.insert(0, str(_SRC))
 from stage1_train_config import build_settings  # noqa: E402
-from stage1_cond_train_config import (  # noqa: E402
-    build_settings as build_legacy_cond_settings,
-)
 
 
 def _config(tmp_path: Path) -> dict:
@@ -55,8 +52,6 @@ def _config(tmp_path: Path) -> dict:
             "expert_variant": "gemma_300m",
             "vsa": {"visual_latents_per_camera": 32},
         },
-        "skill_predictor": {"train": False},
-        "terminator": {"train": False},
         "training": {"optimizer": {"dino_lr_scale": 0.1}},
     }
 
@@ -92,6 +87,12 @@ def test_stage1_exports_single_architecture_and_relative_dino_lr(tmp_path: Path)
     assert settings["scheduler_mode"] == "cosine_decay"
     assert settings["scheduler_warmup_steps"] == 1_000
     assert settings["scheduler_decay_steps"] == 30_000
+    assert "train_skill_predictor" not in settings
+    assert "skill_predictor_weight" not in settings
+    assert "skill_predictor_lr_scale" not in settings
+    assert "skill_predictor_lora_lr_scale" not in settings
+    assert "train_terminator" not in settings
+    assert "terminator_lr_scale" not in settings
 
     config["training"]["vsa_debug"] = {
         "every": 5_000,
@@ -127,6 +128,56 @@ def test_stage1_exports_single_architecture_and_relative_dino_lr(tmp_path: Path)
     assert batch96["pt_run_name"].endswith("_arch3")
 
 
+def test_stage1_can_use_but_never_train_an_external_frozen_predictor(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    project = Path(config["project_root"])
+    predictor = project / "outputs/predictor/checkpoints/000100/pretrained_model"
+    predictor.mkdir(parents=True)
+    predictor_config = {
+        "type": "skill_aux",
+        "train_skill_predictor": True,
+        "skill_fsq_levels": [3, 3, 3],
+        "skill_vocab_size": 27,
+        "skill_predictor_vlm_variant": "gemma_2b",
+        "skill_predictor_image_size": 224,
+        "skill_predictor_reader_tokens": 6,
+        "skill_predictor_reader_depth": 3,
+        "skill_predictor_reader_heads": 8,
+        "skill_predictor_all_layers": True,
+        "skill_predictor_detach_vlm": False,
+        "skill_predictor_lora": True,
+        "skill_predictor_lora_targets": "q,k,v,o",
+        "skill_predictor_lora_rank": 8,
+        "skill_predictor_lora_alpha": 16.0,
+        "skill_predictor_lora_dropout": 0.0,
+        "skill_predictor_deadzone_frac": 0.8,
+        "skill_predictor_attend_image": True,
+        "skill_predictor_attend_language": True,
+        "tokenizer_max_length": 200,
+    }
+    (predictor / "config.json").write_text(json.dumps(predictor_config))
+    (predictor / "model.safetensors").touch()
+    tokenizer = project / "models/tokenizer"
+    tokenizer.mkdir(parents=True)
+    for filename in ("config.json", "tokenizer_config.json", "tokenizer.json"):
+        (tokenizer / filename).write_text("{}")
+
+    config["warm_start"].update(
+        {"predictor_checkpoint": str(predictor), "tokenizer": str(tokenizer)}
+    )
+    config["action_conditioning"] = {"training_skill_source": "predictor"}
+    settings = build_settings(config)
+
+    assert settings["skill_predictor_checkpoint_path"] == predictor
+    assert settings["skill_predictor_reader_tokens"] == 6
+    assert settings["skill_predictor_reader_depth"] == 3
+    assert settings["skill_predictor_lora"] is True
+    assert "train_skill_predictor" not in settings
+    assert settings["pt_run_name"].endswith("_arch2_2_pretrained_predictor")
+
+
 def test_skill_end_loss_mask_supports_jitter_and_has_distinct_name(
     tmp_path: Path,
 ) -> None:
@@ -153,12 +204,11 @@ def test_cumulative_xyz_auxiliary_has_weighted_distinct_name(tmp_path: Path) -> 
     )
 
 
-def test_cumulative_xyz_auxiliary_rejects_endpoint_mix(tmp_path: Path) -> None:
+def test_stage1_rejects_removed_loss_selector(tmp_path: Path) -> None:
     config = _config(tmp_path)
-    config["loss"] = "flow_endpoint_xyz"
-    config["cumulative_xyz_loss"] = {"enabled": True, "weight": 0.5}
+    config["loss"] = "flow"
 
-    with pytest.raises(ValueError, match="cannot be combined"):
+    with pytest.raises(ValueError, match="fixed flow objective"):
         build_settings(config)
 
 
@@ -203,49 +253,6 @@ def test_stage1_exports_warmup_constant_schedule(tmp_path: Path) -> None:
     assert settings["scheduler_decay_steps"] == 30_000
 
 
-def test_stage1_phase_batch_sampling_is_opt_in_and_uses_separate_run(
-    tmp_path: Path,
-) -> None:
-    config = _config(tmp_path)
-
-    ordinary = build_settings(config)
-    assert ordinary["phase_batch_sampling_enabled"] is False
-    assert ordinary["pt_run_name"].endswith("_arch2_2")
-
-    config["batch_sampling"] = {
-        "enabled": True,
-        "focused_fraction": 0.8,
-        "early_fraction": 0.4,
-        "early_threshold": 0.2,
-        "late_threshold": 0.7,
-    }
-    focused = build_settings(config)
-    assert focused["phase_batch_sampling_enabled"] is True
-    assert focused["phase_batch_focused_fraction"] == pytest.approx(0.8)
-    assert focused["phase_batch_early_fraction"] == pytest.approx(0.4)
-    assert focused["phase_batch_early_threshold"] == pytest.approx(0.2)
-    assert focused["phase_batch_late_threshold"] == pytest.approx(0.7)
-    assert focused["pt_run_name"].endswith("_arch2_2_phasefocus")
-
-
-@pytest.mark.parametrize(
-    "batch_sampling",
-    [
-        {"focused_fraction": -0.1},
-        {"early_fraction": 1.1},
-        {"early_threshold": 0.8, "late_threshold": 0.7},
-    ],
-)
-def test_stage1_rejects_invalid_phase_batch_sampling(
-    tmp_path: Path, batch_sampling: dict
-) -> None:
-    config = _config(tmp_path)
-    config["batch_sampling"] = batch_sampling
-
-    with pytest.raises(ValueError, match="batch_sampling"):
-        build_settings(config)
-
-
 @pytest.mark.parametrize(
     ("section", "field", "message"),
     [
@@ -265,6 +272,27 @@ def test_stage1_rejects_legacy_config_keys(
         config[section][field] = "legacy"
 
     with pytest.raises(ValueError, match=message):
+        build_settings(config)
+
+
+@pytest.mark.parametrize("section", ["skill_predictor", "terminator"])
+def test_stage1_rejects_removed_cotraining_sections(
+    tmp_path: Path, section: str
+) -> None:
+    config = _config(tmp_path)
+    config[section] = {"train": False}
+
+    with pytest.raises(ValueError, match="trains only the action model"):
+        build_settings(config)
+
+
+def test_stage1_rejects_removed_terminator_optimizer_option(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    config["training"]["optimizer"]["terminator_lr_scale"] = 1.0
+
+    with pytest.raises(ValueError, match="terminator_lr_scale was removed"):
         build_settings(config)
 
 
@@ -335,10 +363,6 @@ def test_stage1_appends_user_defined_run_suffix_last(tmp_path: Path) -> None:
     settings = build_settings(config)
 
     assert settings["pt_run_name"].endswith("_arch2_2_custom-20")
-
-    config["batch_sampling"] = {"enabled": True}
-    focused = build_settings(config)
-    assert focused["pt_run_name"].endswith("_arch2_2_phasefocus_custom-20")
 
 
 @pytest.mark.parametrize("suffix", ["has space", "../escape", "/absolute", "한글"])
@@ -457,25 +481,6 @@ def test_arch1_old_name_requires_explicit_new_choice(tmp_path: Path) -> None:
     config["architecture"]["name"] = "arch1"
     with pytest.raises(ValueError, match="was split into arch0, arch1_1, and arch1_2"):
         build_settings(config)
-
-
-def test_legacy_cond_shim_preserves_already_submitted_run_contract(tmp_path: Path) -> None:
-    config = _config(tmp_path)
-    config["architecture"] = {
-        "name": "arch1",
-        "revision": "skillvla_real_v1",
-        "expert_variant": "gemma_300m",
-        "cond_variant": "gemma_300m",
-        "conditioning_route": "VisO_StateO_SkillO",
-    }
-    config["vision"]["freeze"] = False
-    config["training"]["optimizer"] = {"base_lr": 2.5e-5, "dino_lr": None}
-
-    settings = build_legacy_cond_settings(config)
-
-    assert settings["conditioning_route"] == "state_skill_cond"
-    assert settings["pt_run_name"].endswith("_arch1_VisO_StateO_SkillO")
-    assert float(settings["dino_lr"]) == pytest.approx(settings["lr"])
 
 
 @pytest.mark.parametrize("value", [0, -1])

@@ -35,18 +35,6 @@ class _DummyPolicyModel(nn.Module):
         return torch.ones(codes.shape[0], 3, device=codes.device)
 
 
-class _RecordingTerminator(nn.Module):
-    def __init__(self) -> None:
-        super().__init__()
-        self.anchor = nn.Parameter(torch.zeros(()))
-        self.arguments: tuple[torch.Tensor, ...] | None = None
-
-    def forward(self, *arguments: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        self.arguments = arguments
-        batch_size = arguments[0].shape[0]
-        return torch.zeros(batch_size), torch.zeros(batch_size)
-
-
 def test_termination_display_latches_at_first_threshold_crossing() -> None:
     values = [0.1, 0.49, 0.72, 0.3, 0.91]
 
@@ -66,7 +54,7 @@ def test_termination_display_latch_ignores_missing_and_nonfinite_values() -> Non
     assert latched[2:] == [0.6, 0.6, 0.6]
 
 
-def test_signal_panel_uses_header_and_one_labeled_row_per_terminator() -> None:
+def test_signal_panel_uses_one_row_per_terminator() -> None:
     frame = np.zeros((70, 210, 3), dtype=np.uint8)
 
     annotated = MODULE._annotate_frames(
@@ -80,8 +68,8 @@ def test_signal_panel_uses_header_and_one_labeled_row_per_terminator() -> None:
         end_threshold=0.5,
     )
 
-    # camera + header + one display terminator + MAIN
-    assert annotated[0].shape == (70 + 3 * 36, 210, 3)
+    # camera + one display terminator + MAIN
+    assert annotated[0].shape == (70 + 2 * 36, 210, 3)
 
 
 def test_fsq_initial_can_be_attached_as_main_terminator(
@@ -174,51 +162,3 @@ def test_fsq_initial_loads_raw_fsq_without_checkpoint_overlay(
     assert terminator.variant == "fsq_initial"
     assert terminator.module.training is False
     assert not any(parameter.requires_grad for parameter in terminator.module.parameters())
-
-
-def test_state_start_comparison_receives_fixed_start_and_current_images() -> None:
-    module = _RecordingTerminator()
-    wrapper = MODULE.IndependentTerminator(
-        SimpleNamespace(model=_DummyPolicyModel()),
-        module,
-        "start_comparison",
-    )
-    state = torch.randn(1, 7)
-    start = torch.randn(1, 3, 8, 8)
-    current = torch.randn(1, 3, 8, 8)
-    wrist = torch.randn(1, 3, 8, 8)
-
-    wrapper.terminate(torch.tensor([1]), state, current, wrist, start_image=start)
-
-    assert module.arguments is not None
-    assert len(module.arguments) == 5
-    assert torch.equal(module.arguments[1], state)
-    assert torch.equal(module.arguments[2], start)
-    assert torch.equal(module.arguments[3], current)
-    assert torch.equal(module.arguments[4], wrist)
-
-
-def test_image_start_comparison_omits_state_but_receives_start_image() -> None:
-    module = _RecordingTerminator()
-    wrapper = MODULE.IndependentTerminator(
-        SimpleNamespace(model=_DummyPolicyModel()),
-        module,
-        "start_comparison_image_only",
-    )
-    start = torch.randn(1, 3, 8, 8)
-    current = torch.randn(1, 3, 8, 8)
-    wrist = torch.randn(1, 3, 8, 8)
-
-    wrapper.terminate(
-        torch.tensor([1]),
-        torch.randn(1, 7),
-        current,
-        wrist,
-        start_image=start,
-    )
-
-    assert module.arguments is not None
-    assert len(module.arguments) == 4
-    assert torch.equal(module.arguments[1], start)
-    assert torch.equal(module.arguments[2], current)
-    assert torch.equal(module.arguments[3], wrist)

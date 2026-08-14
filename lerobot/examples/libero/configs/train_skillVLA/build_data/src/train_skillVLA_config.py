@@ -104,10 +104,15 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
     fsq_model_dir = fsq_outputs_root / fsq_run_name
     fsq_meta_path = fsq_model_dir / "fsq_meta.json"
     if not fsq_meta_path.is_file():
-        raise FileNotFoundError(
-            f"FSQ metadata not found: {fsq_meta_path}. "
-            "Select an FSQ output folder containing fsq_meta.json."
-        )
+        # FSQ-original (one-shot) runs write the same provenance keys here.
+        fsq_original_meta_path = fsq_model_dir / "fsq_original_meta.json"
+        if not fsq_original_meta_path.is_file():
+            raise FileNotFoundError(
+                f"FSQ metadata not found: {fsq_meta_path}. "
+                "Select an FSQ output folder containing fsq_meta.json "
+                "or fsq_original_meta.json."
+            )
+        fsq_meta_path = fsq_original_meta_path
     fsq_meta = json.loads(fsq_meta_path.read_text())
 
     required_meta = ("dp_run_name", "dp_checkpoint", "skillset_mode")

@@ -47,7 +47,19 @@ class Args:
 
 
 def load_model(model_path: Path, device: str) -> SplineFSQEncoder:
-    model, _ = load_fsq_encoder(model_path, device)
+    try:
+        model, _ = load_fsq_encoder(model_path, device)
+    except Exception as v3_error:
+        # FSQ-original (one-shot) checkpoints carry an FSQOriginalConfig `cfg`;
+        # their model wraps the same SplineFSQEncoder and exposes the identical
+        # encode_numpy / encode_index interface.
+        try:
+            from FSQ_original import load_fsq_original_model
+
+            model, _ = load_fsq_original_model(model_path, device)
+        except Exception:
+            raise v3_error
+        print(f"[FSQ encode] FSQ-original (one-shot) checkpoint: {model_path}")
     return model
 
 
@@ -83,6 +95,8 @@ def _load_supported(ref_path: Path, n_codes: int, min_freq: int) -> np.ndarray:
 def _snap_to_supported(latents: np.ndarray, tokens: np.ndarray, model: SplineFSQEncoder, args: Args):
     """Remap each skill whose raw code is unsupported → nearest supported code (grid distance in the
     integer cell-coord space, which is exactly what `latents` holds). Returns (latents, tokens)."""
+    if type(model).__name__ == "SplineFSQOriginalAE":
+        model = model.encoder
     coords = _grid_coords(model)                                    # (C, D)
     if str(args.supported_freq_path).strip().lower() == "self":
         # self-pruning: 방금 인코딩한 RAW 토큰 분포가 곧 기준표 (외부 파일 불필요 — 1-pass 자기완결).
@@ -121,7 +135,7 @@ def main(args: Args) -> None:
     output_path = Path(args.output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    segments, _, _, metadata = load_skill_files(skills_dir)
+    segments, _, skill_actions, metadata = load_skill_files(skills_dir)
 
     model = load_model(Path(args.model_path), device)
     print(f"[FSQ encode] model={args.model_path}")
@@ -129,9 +143,17 @@ def main(args: Args) -> None:
 
     latents = []
     tokens = []
-    for seg in tqdm(segments, desc="Encoding FSQ skills"):  # action-only encoder: no images needed
-        latents.append(model.encode_numpy(seg, device=device))
-        tokens.append(model.encode_index(seg, device=device))
+    # action_seq (FSQ-original probe) encodes ACTION sequences; every other
+    # variant encodes the state trajectory. No images either way.
+    action_seq_encoder = getattr(getattr(model, "cfg", None), "encoder_arch", "spline") == "action_seq"
+    source = skill_actions if action_seq_encoder else segments
+    for item in tqdm(source, desc="Encoding FSQ skills"):
+        if action_seq_encoder:
+            latents.append(model.encode_actions_numpy(item, device=device))
+            tokens.append(model.encode_actions_index(item, device=device))
+        else:
+            latents.append(model.encode_numpy(item, device=device))
+            tokens.append(model.encode_index(item, device=device))
 
     latents_arr = np.stack(latents).astype(np.float32)
     tokens_arr = np.array(tokens, dtype=np.int32)

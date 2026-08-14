@@ -1503,13 +1503,12 @@ def test_scheduled_debug_accepts_current_interleaved_blocks_without_residual_gat
 def test_optimizer_covers_every_trainable_parameter_once_and_scales_dino() -> None:
     policy = SkillExpertPolicy.__new__(SkillExpertPolicy)
     nn.Module.__init__(policy)
-    policy.config = SimpleNamespace(
-        optimizer_lr=2.5e-5, dino_lr_scale=0.1, terminator_lr_scale=1.0
-    )
+    policy.config = SimpleNamespace(optimizer_lr=2.5e-5, dino_lr_scale=0.1)
     policy.model = nn.Module()
     policy.model.dino = nn.Linear(4, 4)
     policy.model.body = nn.Linear(4, 4)
-    policy.model.fsq_term_train = None
+    policy.model.skill_predictor = nn.Linear(4, 4)
+    policy.model.fsq_term_train = nn.Linear(4, 4)
 
     groups = policy.get_optim_params()
     grouped = [parameter for group in groups for parameter in group["params"]]
@@ -1517,6 +1516,10 @@ def test_optimizer_covers_every_trainable_parameter_once_and_scales_dino() -> No
 
     assert len(grouped) == len({id(parameter) for parameter in grouped})
     assert {id(parameter) for parameter in grouped} == {id(parameter) for parameter in expected}
+    assert not any(parameter.requires_grad for parameter in policy.model.skill_predictor.parameters())
+    assert not any(parameter.requires_grad for parameter in policy.model.fsq_term_train.parameters())
+    assert not hasattr(SkillExpertPolicy, "isolated_auxiliary_step")
+    assert not hasattr(SkillExpertPolicy, "isolated_main_optimizer_grad_groups")
     dino_group = next(group for group in groups if group["group_name"] == "dino")
     assert dino_group["lr"] == pytest.approx(2.5e-6)
     assert dino_group["lr_scale"] == 0.1
@@ -1540,12 +1543,12 @@ def test_arch1_optimizer_applies_relative_dino_lr_scale() -> None:
         dino_lr_scale=0.1,
         dino_lr=None,
         freeze_vision_encoder=False,
-        terminator_lr_scale=1.0,
     )
     policy.model = nn.Module()
     policy.model.dino = nn.Linear(4, 4)
     policy.model.body = nn.Linear(4, 4)
-    policy.model.fsq_term_train = None
+    policy.model.skill_predictor = nn.Linear(4, 4)
+    policy.model.fsq_term_train = nn.Linear(4, 4)
 
     groups = policy.get_optim_params()
     grouped = [parameter for group in groups for parameter in group["params"]]
@@ -1640,57 +1643,6 @@ def test_pi05_missing_allowlist_is_mode_specific() -> None:
     assert _allowed_pi05_missing_key(
         "model.top_resampler.latents", cond_perceiver
     )
-
-
-def test_phase_batch_metrics_are_split_by_original_skill_progress() -> None:
-    policy = object.__new__(SkillExpertPolicy)
-    policy.config = SimpleNamespace(
-        phase_batch_sampling_enabled=True,
-        phase_batch_focused_fraction=0.8,
-        phase_batch_early_fraction=0.5,
-        phase_batch_early_threshold=0.25,
-        phase_batch_late_threshold=0.75,
-        skill_vocab_size=27,
-    )
-    batch = {
-        "skill_ds": torch.tensor([0, 2, 5, 8, 10]),
-        "skill_de": torch.tensor([10, 8, 5, 2, 0]),
-        "skill_code_true": torch.tensor([1, 2, 3, 4, 5]),
-        "skill_code": torch.tensor([9, 2, 3, 4, 9]),
-        "skill_progress": torch.tensor([0.0, 0.2, 0.5, 0.1, 0.9]),
-    }
-
-    metrics = policy._phase_batch_sampling_metrics(
-        batch, torch.tensor([1.0, 3.0, 5.0, 7.0, 9.0])
-    )
-
-    assert metrics["batch_sampling/configured_focused_fraction"] == pytest.approx(0.8)
-    assert metrics[
-        "batch_sampling/configured_early_share_within_focused"
-    ] == pytest.approx(0.5)
-    assert metrics["batch_sampling/original_early_fraction"] == pytest.approx(0.4)
-    assert metrics["batch_sampling/original_middle_fraction"] == pytest.approx(0.2)
-    assert metrics["batch_sampling/original_late_fraction"] == pytest.approx(0.4)
-    assert metrics["batch_sampling/original_focused_fraction"] == pytest.approx(0.8)
-    assert metrics["batch_sampling/jittered_early_fraction"] == pytest.approx(0.6)
-    assert metrics["batch_sampling/jittered_middle_fraction"] == pytest.approx(0.2)
-    assert metrics["batch_sampling/jittered_late_fraction"] == pytest.approx(0.2)
-    assert metrics["batch_sampling/phase_changed_fraction"] == pytest.approx(0.2)
-    assert metrics["batch_sampling/jitter_changed_code_fraction"] == pytest.approx(0.4)
-    assert metrics[
-        "batch_sampling/early_jitter_changed_code_fraction"
-    ] == pytest.approx(0.5)
-    assert metrics[
-        "batch_sampling/late_jitter_changed_code_fraction"
-    ] == pytest.approx(0.5)
-    assert metrics["batch_sampling/original_unique_skill_count"] == pytest.approx(5.0)
-    assert metrics[
-        "batch_sampling/original_skill_entropy_normalized"
-    ] == pytest.approx(1.0)
-    assert metrics["batch_sampling/original_max_skill_fraction"] == pytest.approx(0.2)
-    assert metrics["batch_sampling/original_early_action_loss"] == pytest.approx(2.0)
-    assert metrics["batch_sampling/original_middle_action_loss"] == pytest.approx(5.0)
-    assert metrics["batch_sampling/original_late_action_loss"] == pytest.approx(8.0)
 
 
 def test_skill_end_loss_mask_excludes_only_offsets_after_boundary() -> None:

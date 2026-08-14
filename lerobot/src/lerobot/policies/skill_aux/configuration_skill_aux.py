@@ -48,26 +48,8 @@ class SkillAuxConfig(PreTrainedConfig):
     wrist_only_terminator_end_target_sigma: float = 2.0
     wrist_only_terminator_end_pos_weight: float = 1.0
 
-    train_start_comparison_terminator: bool = False
-    start_comparison_terminator_freeze_vision_encoder: bool = True
-    start_comparison_terminator_lr_scale: float = 1.0
-    start_comparison_terminator_end_target_sigma: float = 2.0
-    start_comparison_terminator_end_pos_weight: float = 1.0
-
-    train_start_comparison_image_only_terminator: bool = False
-    start_comparison_image_only_terminator_freeze_vision_encoder: bool = True
-    start_comparison_image_only_terminator_lr_scale: float = 1.0
-    start_comparison_image_only_terminator_end_target_sigma: float = 2.0
-    start_comparison_image_only_terminator_end_pos_weight: float = 1.0
-
-    terminator_endpoint_oversampling_enabled: bool = False
-    terminator_endpoint_exact_end_fraction: float = 0.25
-    terminator_endpoint_near_end_fraction: float = 0.25
-    terminator_endpoint_near_end_max_distance: int = 2
-
     train_skill_predictor: bool = False
     skill_predictor_checkpoint_path: str | None = None
-    skill_predictor_weight: float = 0.5
     skill_predictor_lr_scale: float = 1.0
     skill_predictor_all_layers: bool = True
     skill_predictor_detach_vlm: bool = False
@@ -113,16 +95,12 @@ class SkillAuxConfig(PreTrainedConfig):
             self.train_terminator
             or self.train_image_only_terminator
             or self.train_wrist_only_terminator
-            or self.train_start_comparison_terminator
-            or self.train_start_comparison_image_only_terminator
             or self.train_skill_predictor
         ):
             raise ValueError(
                 "Auxiliary-only training needs terminator.train, "
                 "image_only_terminator.train, wrist_only_terminator.train, "
-                "start_comparison_terminator.train, "
-                "start_comparison_image_only_terminator.train, and/or "
-                "skill_predictor.train to be true."
+                "and/or skill_predictor.train to be true."
             )
         if self.dtype not in {"float32", "bfloat16"}:
             raise ValueError(f"dtype must be float32 or bfloat16, got {self.dtype!r}.")
@@ -140,8 +118,6 @@ class SkillAuxConfig(PreTrainedConfig):
             self.train_terminator
             or self.train_image_only_terminator
             or self.train_wrist_only_terminator
-            or self.train_start_comparison_terminator
-            or self.train_start_comparison_image_only_terminator
         ):
             if not str(self.fsq_path or "").strip():
                 raise ValueError("Terminator training requires fsq_path.")
@@ -174,77 +150,9 @@ class SkillAuxConfig(PreTrainedConfig):
                 raise ValueError(
                     "wrist_only_terminator_end_pos_weight must be positive."
                 )
-        if self.train_start_comparison_terminator:
-            if self.start_comparison_terminator_lr_scale <= 0.0:
-                raise ValueError(
-                    "start_comparison_terminator_lr_scale must be positive."
-                )
-            if self.start_comparison_terminator_end_target_sigma < 0.0:
-                raise ValueError(
-                    "start_comparison_terminator_end_target_sigma must be non-negative."
-                )
-            if self.start_comparison_terminator_end_pos_weight <= 0.0:
-                raise ValueError(
-                    "start_comparison_terminator_end_pos_weight must be positive."
-                )
-        if self.train_start_comparison_image_only_terminator:
-            if self.start_comparison_image_only_terminator_lr_scale <= 0.0:
-                raise ValueError(
-                    "start_comparison_image_only_terminator_lr_scale must be positive."
-                )
-            if self.start_comparison_image_only_terminator_end_target_sigma < 0.0:
-                raise ValueError(
-                    "start_comparison_image_only_terminator_end_target_sigma "
-                    "must be non-negative."
-                )
-            if self.start_comparison_image_only_terminator_end_pos_weight <= 0.0:
-                raise ValueError(
-                    "start_comparison_image_only_terminator_end_pos_weight "
-                    "must be positive."
-                )
-        if not 0.0 <= self.terminator_endpoint_exact_end_fraction <= 1.0:
-            raise ValueError(
-                "terminator_endpoint_exact_end_fraction must be in [0, 1]."
-            )
-        if not 0.0 <= self.terminator_endpoint_near_end_fraction <= 1.0:
-            raise ValueError(
-                "terminator_endpoint_near_end_fraction must be in [0, 1]."
-            )
-        endpoint_fraction = (
-            self.terminator_endpoint_exact_end_fraction
-            + self.terminator_endpoint_near_end_fraction
-        )
-        if endpoint_fraction > 1.0:
-            raise ValueError(
-                "terminator endpoint exact + near fractions must be <= 1."
-            )
-        if self.terminator_endpoint_near_end_max_distance < 1:
-            raise ValueError(
-                "terminator_endpoint_near_end_max_distance must be at least 1."
-            )
-        if self.terminator_endpoint_oversampling_enabled:
-            if not (
-                self.train_terminator
-                or self.train_image_only_terminator
-                or self.train_wrist_only_terminator
-                or self.train_start_comparison_terminator
-                or self.train_start_comparison_image_only_terminator
-            ):
-                raise ValueError(
-                    "Terminator endpoint oversampling requires normal, image-only, "
-                    "wrist-only, start-comparison, and/or state-free "
-                    "start-comparison terminator training."
-                )
-            if endpoint_fraction <= 0.0:
-                raise ValueError(
-                    "Enabled terminator endpoint oversampling needs a positive "
-                    "exact and/or near fraction."
-                )
         if self.train_skill_predictor:
             if self.skill_predictor_vlm_variant != "gemma_2b":
                 raise ValueError("The auxiliary predictor VLM must use gemma_2b.")
-            if self.skill_predictor_weight <= 0.0:
-                raise ValueError("skill_predictor_weight must be positive.")
             if self.skill_predictor_lr_scale <= 0.0:
                 raise ValueError("skill_predictor_lr_scale must be positive.")
             if self.skill_predictor_lora and self.skill_predictor_detach_vlm:
