@@ -14,8 +14,11 @@ from lerobot.policies.skill_expert.configuration_skill_expert import (
     COND_GEMMA_DUAL_STATE_REVISION,
     COND_GEMMA_EXPERT_TOKENS_REVISION,
     COND_GEMMA_EXPERT_STATE_REVISION,
+    COND_GEMMA_ISOLATED_SKILL_TOKEN_REVISION,
     COND_GEMMA_PERCEIVER_EXPERT_TOKENS_REVISION,
     COND_GEMMA_SEPARATE_DUAL_STATE_REVISION,
+    COND_GEMMA_SKILL_ADARMS_REVISION,
+    COND_GEMMA_SKILL_TOKEN_REVISION,
     COND_GEMMA_WRIST_DUAL_STATE_REVISION,
     COMPRESSED_VISUAL_KV_REVISION,
     COMPRESSED_VISUAL_KV_SELF_ATTENTION,
@@ -196,6 +199,9 @@ def test_config_defaults_to_vsa_and_cond_architecture_is_explicit() -> None:
         (COND_GEMMA_DUAL_STATE_REVISION, "arch0_2"),
         (COND_GEMMA_SEPARATE_DUAL_STATE_REVISION, "arch0_2_sep"),
         (COND_GEMMA_WRIST_DUAL_STATE_REVISION, "arch0_3"),
+        (COND_GEMMA_SKILL_ADARMS_REVISION, "arch0_adarms"),
+        (COND_GEMMA_SKILL_TOKEN_REVISION, "arch0_token"),
+        (COND_GEMMA_ISOLATED_SKILL_TOKEN_REVISION, "arch0_token_iso"),
     ):
         assert SkillExpertConfig(
             architecture=COND_GEMMA_ARCHITECTURE,
@@ -507,6 +513,9 @@ def test_cond_expert_token_forward_and_cached_sampling_preserve_action_shape(
         (COND_GEMMA_DUAL_STATE_REVISION, "arch0_2"),
         (COND_GEMMA_SEPARATE_DUAL_STATE_REVISION, "arch0_2_sep"),
         (COND_GEMMA_WRIST_DUAL_STATE_REVISION, "arch0_3"),
+        (COND_GEMMA_SKILL_ADARMS_REVISION, "arch0_adarms"),
+        (COND_GEMMA_SKILL_TOKEN_REVISION, "arch0_token"),
+        (COND_GEMMA_ISOLATED_SKILL_TOKEN_REVISION, "arch0_token_iso"),
         (COND_GEMMA_EXPERT_TOKENS_REVISION, "arch1_1"),
         (COND_GEMMA_PERCEIVER_EXPERT_TOKENS_REVISION, "arch1_2"),
     ],
@@ -616,6 +625,304 @@ def test_arch0_routes_state_to_cond_and_skill_to_expert_broadcast() -> None:
     assert condition_skill is None
     assert expert_skill is not None
     assert expert_skill.shape == (2, 32)
+
+
+def test_arch0_adarms_replaces_skill_broadcast_with_normalized_expert_adarms() -> None:
+    torch.manual_seed(19)
+    config = SkillExpertConfig(
+        architecture=COND_GEMMA_ARCHITECTURE,
+        # Mixed case survives because architecture_label is lowercased.
+        architecture_label="arch0_adaRMS",
+        architecture_revision=COND_GEMMA_SKILL_ADARMS_REVISION,
+        conditioning_route="state_cond",
+        max_state_dim=4,
+        max_action_dim=4,
+        chunk_size=3,
+        n_action_steps=3,
+        dino_model_path="unused",
+    )
+    assert config.architecture_label == "arch0_adarms"
+    tiny_geometry = SimpleNamespace(width=32, depth=2)
+    with (
+        patch(
+            "lerobot.policies.skill_expert.cond_gemma.get_gemma_config",
+            return_value=tiny_geometry,
+        ),
+        patch(
+            "lerobot.policies.skill_expert.cond_gemma.build_gemma",
+            side_effect=lambda _variant, *, use_adarms: _tiny_projection_gemma_pi05_heads(
+                use_adarms=use_adarms
+            ),
+        ),
+        patch(
+            "lerobot.policies.skill_expert.cond_gemma.AutoModel.from_pretrained",
+            return_value=_TinyDino(),
+        ),
+    ):
+        model = CondGemmaSkillExpert(config).eval()
+
+    state = torch.randn(2, 4)
+    skill = torch.tensor([3, 5])
+    time = torch.tensor([0.3, 0.7])
+
+    # State keeps the Arch0 Cond-Gemma AdaRMS path untouched.
+    assert model.uses_cond_state_adarms is True
+    assert model.uses_expert_state_adarms is False
+    assert model._state_condition(state).shape == (2, 32)
+    # Skill leaves the layerwise broadcast on both streams.
+    assert model._skill_broadcasts(skill) == (None, None)
+
+    skill_condition = model._expert_skill_condition(skill)
+    assert skill_condition.shape == (2, 32)
+    # The condition is time + skill, with no state term.
+    assert torch.allclose(
+        model._expert_condition(time, None, skill),
+        model._time_condition(time) + skill_condition,
+    )
+    # PiGemmaRMSNorm pins the skill term at unit RMS so it cannot swamp the
+    # timestep embedding at initialization.
+    assert torch.allclose(
+        skill_condition.square().mean(dim=-1).sqrt(),
+        torch.ones(2),
+        atol=1e-5,
+    )
+    # FSQ333 code 13 is the grid centre, whose _code_to_zq is the zero vector.
+    # Without the norm it would condition far more weakly than a corner code.
+    centre = model._expert_skill_condition(torch.tensor([13]))
+    corner = model._expert_skill_condition(torch.tensor([0]))
+    assert torch.allclose(
+        torch.cat((centre, corner)).square().mean(dim=-1).sqrt(),
+        torch.ones(2),
+        atol=1e-5,
+    )
+    assert not torch.allclose(centre, corner)
+    assert not torch.allclose(skill_condition[0], skill_condition[1])
+
+    images = [torch.rand(2, 3, 16, 16), torch.rand(2, 3, 16, 16)]
+    actions = torch.randn(2, 3, 4)
+    noise = torch.randn_like(actions)
+    residual = model(images, state, skill, actions, noise=noise, time=time)
+    sampled = model.sample_actions(images, state, skill, noise=noise, num_steps=1)
+    assert residual.shape == sampled.shape == actions.shape
+
+    # AdaRMS dense weights are zero-init, so every AdaRMS signal -- timestep
+    # included -- starts with exactly zero effect on the output. Unlike the
+    # Arch0 broadcast, Arch0_adaRMS skill therefore only begins to act once
+    # those denses move off zero.
+    other = model.sample_actions(
+        images, state, torch.tensor([7, 11]), noise=noise, num_steps=1
+    )
+    assert torch.allclose(sampled, other)
+
+    with torch.no_grad():
+        for module in model.gemma_expert.modules():
+            if isinstance(module, PiGemmaRMSNorm) and module.dense is not None:
+                module.dense.weight.normal_(std=0.05)
+    trained_like = model.sample_actions(
+        images, state, skill, noise=noise, num_steps=1
+    )
+    trained_like_other = model.sample_actions(
+        images, state, torch.tensor([7, 11]), noise=noise, num_steps=1
+    )
+    assert not torch.allclose(trained_like, trained_like_other)
+
+    model.train()
+    model.gradient_checkpointing_enable()
+    model(images, state, skill, actions, noise=noise, time=time).square().mean().backward()
+    assert model.skill_proj.weight.grad is not None
+    assert model.expert_skill_norm.weight.grad is not None
+
+
+def test_arch0_token_makes_skill_one_expert_token_and_keeps_state_on_cond_adarms() -> None:
+    torch.manual_seed(23)
+    config = SkillExpertConfig(
+        architecture=COND_GEMMA_ARCHITECTURE,
+        architecture_label="arch0_token",
+        architecture_revision=COND_GEMMA_SKILL_TOKEN_REVISION,
+        conditioning_route="state_cond",
+        max_state_dim=4,
+        max_action_dim=4,
+        chunk_size=3,
+        n_action_steps=3,
+        dino_model_path="unused",
+    )
+    tiny_geometry = SimpleNamespace(width=32, depth=2)
+    with (
+        patch(
+            "lerobot.policies.skill_expert.cond_gemma.get_gemma_config",
+            return_value=tiny_geometry,
+        ),
+        patch(
+            "lerobot.policies.skill_expert.cond_gemma.build_gemma",
+            side_effect=lambda _variant, *, use_adarms: _tiny_projection_gemma_pi05_heads(
+                use_adarms=use_adarms
+            ),
+        ),
+        patch(
+            "lerobot.policies.skill_expert.cond_gemma.AutoModel.from_pretrained",
+            return_value=_TinyDino(),
+        ),
+    ):
+        model = CondGemmaSkillExpert(config).eval()
+
+    state = torch.randn(2, 4)
+    skill = torch.tensor([3, 5])
+
+    # Skill is the only context token; state stays on the Arch0 Cond-Gemma path.
+    assert model.uses_expert_context_tokens is True
+    assert model.uses_expert_state_token is False
+    assert model.n_expert_context_tokens == 1
+    assert model.uses_cond_state_adarms is True
+    assert model.cond_encoder.model.config.use_adarms is True
+    assert model._state_condition(state).shape == (2, 32)
+    # No skill broadcast and no skill AdaRMS on this route.
+    assert model._skill_broadcasts(skill) == (None, None)
+    assert model.uses_expert_skill_adarms is False
+    # Arch1_1's state token machinery must not be allocated here.
+    assert model.state_norm is None
+    assert model.state_proj is not None
+
+    context_tokens = model._expert_context_tokens(state, skill)
+    assert context_tokens.shape == (2, 1, 32)
+    # The token is RMS-normalized like Arch1_1's, and distinct per FSQ code.
+    assert torch.allclose(
+        context_tokens.square().mean(dim=-1).sqrt(),
+        torch.ones(2, 1),
+        atol=1e-5,
+    )
+    assert not torch.allclose(context_tokens[0], context_tokens[1])
+
+    # [visual | skill | actions]: the skill token reads visual + itself, and the
+    # action block reads everything before it.
+    mask, positions = expert_token_attention_contract(1, 4, 3, "cpu", 1)
+    assert mask.shape == (1, 1, 8, 8)
+    visible = mask[0, 0] == 0.0
+    # Visual tokens see only each other.
+    assert visible[0].tolist() == [True] * 4 + [False] * 4
+    # The skill token adds itself to the visual prefix, and nothing more.
+    assert visible[4].tolist() == [True] * 5 + [False] * 3
+    # Every action token sees visual + skill + the whole bidirectional chunk.
+    for action_row in (5, 6, 7):
+        assert visible[action_row].tolist() == [True] * 8
+    assert positions[0].tolist() == list(range(8))
+
+    images = [torch.rand(2, 3, 16, 16), torch.rand(2, 3, 16, 16)]
+    other_images = [torch.rand(2, 3, 16, 16), torch.rand(2, 3, 16, 16)]
+    # Unlike Arch0_token_iso, this skill token is contextualized by the scene:
+    # its cached key differs once the images change.
+    assert model.uses_isolated_skill_token is False
+    skill_keys = [
+        model._visual_context_cache(
+            model._condition_tokens(frames, batch_size=2),
+            context_tokens,
+            model._state_condition(state),
+        ).layers[1].keys[:, :, -1, :]
+        for frames in (images, other_images)
+    ]
+    assert not torch.allclose(skill_keys[0], skill_keys[1])
+
+    actions = torch.randn(2, 3, 4)
+    noise = torch.randn_like(actions)
+    time = torch.tensor([0.3, 0.7])
+    residual = model(images, state, skill, actions, noise=noise, time=time)
+    sampled = model.sample_actions(images, state, skill, noise=noise, num_steps=1)
+    assert residual.shape == sampled.shape == actions.shape
+    # An in-context token enters attention directly, so unlike the zero-init
+    # AdaRMS of Arch0_adaRMS it already moves the output at initialization.
+    other = model.sample_actions(
+        images, state, torch.tensor([7, 11]), noise=noise, num_steps=1
+    )
+    assert not torch.allclose(sampled, other)
+
+    model.train()
+    model.gradient_checkpointing_enable()
+    model(images, state, skill, actions, noise=noise, time=time).square().mean().backward()
+    assert model.skill_proj.weight.grad is not None
+    assert model.skill_norm.weight.grad is not None
+    assert model.state_proj.weight.grad is not None
+
+
+def test_arch0_token_iso_hides_vision_from_the_skill_token_in_both_paths() -> None:
+    torch.manual_seed(29)
+    config = SkillExpertConfig(
+        architecture=COND_GEMMA_ARCHITECTURE,
+        architecture_label="arch0_token_iso",
+        architecture_revision=COND_GEMMA_ISOLATED_SKILL_TOKEN_REVISION,
+        conditioning_route="state_cond",
+        max_state_dim=4,
+        max_action_dim=4,
+        chunk_size=3,
+        n_action_steps=3,
+        dino_model_path="unused",
+    )
+    tiny_geometry = SimpleNamespace(width=32, depth=2)
+    with (
+        patch(
+            "lerobot.policies.skill_expert.cond_gemma.get_gemma_config",
+            return_value=tiny_geometry,
+        ),
+        patch(
+            "lerobot.policies.skill_expert.cond_gemma.build_gemma",
+            side_effect=lambda _variant, *, use_adarms: _tiny_projection_gemma_pi05_heads(
+                use_adarms=use_adarms
+            ),
+        ),
+        patch(
+            "lerobot.policies.skill_expert.cond_gemma.AutoModel.from_pretrained",
+            return_value=_TinyDino(),
+        ),
+    ):
+        model = CondGemmaSkillExpert(config).eval()
+
+    assert model.uses_isolated_skill_token is True
+    assert model.n_expert_context_tokens == 1
+
+    mask, _ = expert_token_attention_contract(1, 4, 3, "cpu", 1, False)
+    visible = mask[0, 0] == 0.0
+    # The skill token now sees only itself: no vision, and still no actions.
+    assert visible[4].tolist() == [False] * 4 + [True] + [False] * 3
+    # Actions keep full visibility of vision and skill.
+    for action_row in (5, 6, 7):
+        assert visible[action_row].tolist() == [True] * 8
+
+    state = torch.randn(2, 4)
+    skill = torch.tensor([3, 5])
+    context_tokens = model._expert_context_tokens(state, skill)
+    actions = torch.randn(2, 3, 4)
+    noise = torch.randn_like(actions)
+    time = torch.tensor([0.3, 0.7])
+    images_a = [torch.rand(2, 3, 16, 16), torch.rand(2, 3, 16, 16)]
+    images_b = [torch.rand(2, 3, 16, 16), torch.rand(2, 3, 16, 16)]
+
+    # The cached prefix is what the action stream reads, so the skill half of it
+    # must be identical under different images -- that is the isolation claim,
+    # and it must hold on the inference path too.
+    def skill_prefix(images):
+        condition_tokens = model._condition_tokens(images, batch_size=2)
+        cache = model._visual_context_cache(
+            condition_tokens, context_tokens, model._state_condition(state)
+        )
+        # (batch, kv_heads, prefix, head_dim); the skill token is the last one.
+        return [layer.keys[:, :, -1, :].clone() for layer in cache.layers]
+
+    isolated_a = skill_prefix(images_a)
+    isolated_b = skill_prefix(images_b)
+    assert len(isolated_a) == 2
+    for first, second in zip(isolated_a, isolated_b, strict=True):
+        assert torch.allclose(first, second, atol=1e-6)
+
+    residual = model(images_a, state, skill, actions, noise=noise, time=time)
+    sampled = model.sample_actions(images_a, state, skill, noise=noise, num_steps=1)
+    assert residual.shape == sampled.shape == actions.shape
+    other = model.sample_actions(
+        images_a, state, torch.tensor([7, 11]), noise=noise, num_steps=1
+    )
+    assert not torch.allclose(sampled, other)
+    # Vision still reaches the actions directly, just not through the skill token.
+    assert not torch.allclose(
+        sampled,
+        model.sample_actions(images_b, state, skill, noise=noise, num_steps=1),
+    )
 
 
 @pytest.mark.parametrize(

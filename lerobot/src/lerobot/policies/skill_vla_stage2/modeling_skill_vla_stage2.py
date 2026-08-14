@@ -275,7 +275,7 @@ class SkillVLAStage2Pytorch(SkillExpertPytorch):
         target_velocity = source - actions
         condition_state = self._state_condition(state)
         condition_skill, expert_skill = self._skill_broadcasts(skill_code)
-        expert_condition = self._expert_condition(time)
+        expert_condition = self._expert_condition(time, None, skill_code)
 
         with torch.no_grad():
             prior_hidden = self._run_joint_hidden(
@@ -372,7 +372,7 @@ class SkillVLAStage2Pytorch(SkillExpertPytorch):
             time = torch.full(
                 (batch_size,), 1.0 + step * dt, dtype=torch.float32, device=device
             )
-            expert_condition = self._expert_condition(time)
+            expert_condition = self._expert_condition(time, None, skill_code)
             prior_hidden = self._action_hidden_with_condition_cache(
                 x_t,
                 expert_condition,

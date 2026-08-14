@@ -52,6 +52,7 @@ echo "batch   : ordinary random shuffle"
 echo "vision  : DINO ${DINO_MODEL_PATH}   frozen=${FREEZE_VISION_ENCODER} lr_scale=${DINO_LR_SCALE}"
 echo "predict : frozen skill source=${SKILL_PREDICTOR_CHECKPOINT_PATH:-none}"
 echo "train   : action model only (no predictor/terminator co-training)"
+echo "optim   : muon=${USE_MUON} base_lr=${LR}"
 echo "schedule: steps=${STEPS}   mode=${SCHEDULER_MODE}   warmup=${SCHEDULER_WARMUP_STEPS}"
 if [ "${SCHEDULER_MODE}" = cosine_decay ]; then
   echo "          lr_decay_steps=${SCHEDULER_DECAY_STEPS}"
@@ -139,6 +140,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.push_to_hub=false \
     --policy.compile_model=false \
     --policy.optimizer_lr="${LR}" \
+    --policy.use_muon="${USE_MUON}" \
     --policy.scheduler_mode="${SCHEDULER_MODE}" \
     --policy.scheduler_warmup_steps="${SCHEDULER_WARMUP_STEPS}" \
     --policy.scheduler_decay_steps="${SCHEDULER_DECAY_STEPS}" \

@@ -36,7 +36,10 @@ from .configuration_skill_expert import (
     COND_GEMMA_SEPARATE_DUAL_STATE_REVISION,
     COND_GEMMA_WRIST_DUAL_STATE_REVISION,
     COND_STATE_ADARMS_REVISIONS,
+    EXPERT_SKILL_ADARMS_REVISIONS,
+    EXPERT_SKILL_TOKEN_REVISIONS,
     EXPERT_STATE_ADARMS_REVISIONS,
+    ISOLATED_SKILL_TOKEN_REVISIONS,
     SKILLLESS_CONDITIONING_ROUTES,
     STATELESS_CONDITIONING_ROUTES,
     VISIONLESS_CONDITIONING_ROUTES,
@@ -60,20 +63,55 @@ def expert_token_attention_contract(
     visual_tokens: int,
     action_tokens: int,
     device: torch.device | str,
+    context_tokens: int = 2,
+    context_reads_visual: bool = True,
 ) -> tuple[Tensor, Tensor]:
-    """Build the fixed [visual | state, skill | actions] mask and positions."""
-    total = visual_tokens + 2 + action_tokens
+    """Build the fixed [visual | context | actions] mask and positions.
+
+    ``context_tokens`` is 2 for the Arch1_1/Arch1_2 [state, skill] context and 1
+    for the Arch0_token skill-only context. The context block is bidirectional
+    and never sees the action block; actions read everything before them.
+    ``context_reads_visual=False`` additionally isolates the context block from
+    the visual prefix, which keeps the Arch0_token_iso skill token a static
+    per-code embedding instead of a scene-contextualized one.
+    """
+    if context_tokens < 1:
+        raise ValueError(f"Expert context needs at least one token, got {context_tokens}.")
+    total = visual_tokens + context_tokens + action_tokens
     padding = torch.ones(batch_size, total, dtype=torch.bool, device=device)
     block_starts = (
-        [0] * visual_tokens + [1, 0] + [1] + [0] * (action_tokens - 1)
+        [0] * visual_tokens
+        + [1]
+        + [0] * (context_tokens - 1)
+        + [1]
+        + [0] * (action_tokens - 1)
     )
     blocks = torch.tensor(block_starts, dtype=torch.bool, device=device)[None].expand(
         batch_size, -1
     )
     attention = make_att_2d_masks(padding, blocks)[:, None]
+    attention = _isolate_context_from_visual(
+        attention, visual_tokens, context_tokens, context_reads_visual
+    )
     attention = torch.where(attention, 0.0, OPENPI_ATTENTION_MASK_VALUE)
     positions = torch.cumsum(padding, dim=1) - 1
     return attention, positions
+
+
+def _isolate_context_from_visual(
+    attention: Tensor,
+    visual_tokens: int,
+    context_tokens: int,
+    context_reads_visual: bool,
+) -> Tensor:
+    """Blank the context->visual quadrant of a boolean mask for Arch0_token_iso."""
+    if context_reads_visual:
+        return attention
+    attention = attention.clone()
+    attention[
+        ..., visual_tokens : visual_tokens + context_tokens, :visual_tokens
+    ] = False
+    return attention
 
 
 def _mixed_visual_expert_layer(
@@ -87,13 +125,16 @@ def _mixed_visual_expert_layer(
     gemma_expert,
     context_input_norm: nn.Module,
     context_post_attention_norm: nn.Module,
+    condition_state: Tensor | None = None,
 ) -> tuple[list[Tensor], Tensor, Tensor]:
     """Run one joint layer over visual, expert-context, and optional action streams.
 
-    The visual stream uses the Cond-Gemma block. State/skill and actions share
-    the pi0.5 expert attention/MLP weights, but only actions use timestep AdaRMS.
-    Returned K/V are already RoPE-encoded and can be retained as an inference
-    prefix when ``streams`` contains visual and context only.
+    The visual stream uses the Cond-Gemma block, with ``condition_state`` driving
+    its AdaRMS for Arch0_token (``None`` for Arch1_1/Arch1_2, whose state is a
+    context token instead). Context and actions share the pi0.5 expert
+    attention/MLP weights, but only actions use timestep AdaRMS. Returned K/V are
+    already RoPE-encoded and can be retained as an inference prefix when
+    ``streams`` contains visual and context only.
     """
     if len(streams) not in {2, 3}:
         raise ValueError(f"Expected 2 or 3 streams, got {len(streams)}.")
@@ -105,7 +146,9 @@ def _mixed_visual_expert_layer(
     normalized: list[Tensor] = []
     gates: list[Tensor | None] = []
 
-    hidden, gate = layernorm_forward(cond_layer.input_layernorm, streams[0], None)
+    hidden, gate = layernorm_forward(
+        cond_layer.input_layernorm, streams[0], condition_state
+    )
     normalized.append(hidden)
     gates.append(gate)
     hidden, gate = layernorm_forward(context_input_norm, streams[1], None)
@@ -174,7 +217,7 @@ def _mixed_visual_expert_layer(
         post_residual = hidden
         if stream_index == 0:
             hidden, mlp_gate = layernorm_forward(
-                cond_layer.post_attention_layernorm, hidden, None
+                cond_layer.post_attention_layernorm, hidden, condition_state
             )
         elif stream_index == 1:
             hidden, mlp_gate = layernorm_forward(
@@ -201,6 +244,7 @@ def compute_expert_token_layer(
     gemma_expert,
     context_input_norm: nn.Module,
     context_post_attention_norm: nn.Module,
+    condition_state: Tensor | None = None,
 ) -> list[Tensor]:
     """Checkpoint-friendly wrapper for the three-stream training layer."""
     outputs, _, _ = _mixed_visual_expert_layer(
@@ -213,6 +257,7 @@ def compute_expert_token_layer(
         gemma_expert=gemma_expert,
         context_input_norm=context_input_norm,
         context_post_attention_norm=context_post_attention_norm,
+        condition_state=condition_state,
     )
     return outputs
 
@@ -225,8 +270,22 @@ class CondGemmaSkillExpert(nn.Module):
         self.config = config
         expert_config = get_gemma_config(config.action_expert_variant)
         self.width = expert_config.width
-        self.uses_expert_context_tokens = (
+        # Arch1_1/Arch1_2 carry [state, skill]; Arch0_token carries skill alone
+        # and leaves state on the Arch0 Cond-Gemma AdaRMS path.
+        self.uses_expert_state_token = (
             config.architecture_revision in EXPERT_TOKEN_REVISIONS
+        )
+        self.uses_expert_skill_token = (
+            config.architecture_revision in EXPERT_SKILL_TOKEN_REVISIONS
+            and config.conditioning_route not in SKILLLESS_CONDITIONING_ROUTES
+        )
+        self.uses_expert_context_tokens = (
+            self.uses_expert_state_token or self.uses_expert_skill_token
+        )
+        # Arch0_token_iso hides the visual prefix from the skill token as well,
+        # leaving it a static per-code embedding.
+        self.uses_isolated_skill_token = (
+            config.architecture_revision in ISOLATED_SKILL_TOKEN_REVISIONS
         )
         self.uses_visual_perceiver = (
             config.architecture_revision
@@ -245,6 +304,10 @@ class CondGemmaSkillExpert(nn.Module):
         )
         self.uses_wrist_only_cond_state = (
             config.architecture_revision == COND_GEMMA_WRIST_DUAL_STATE_REVISION
+        )
+        self.uses_expert_skill_adarms = (
+            config.architecture_revision in EXPERT_SKILL_ADARMS_REVISIONS
+            and config.conditioning_route not in SKILLLESS_CONDITIONING_ROUTES
         )
 
         if config.conditioning_route in VISIONLESS_CONDITIONING_ROUTES:
@@ -323,11 +386,22 @@ class CondGemmaSkillExpert(nn.Module):
             if config.conditioning_route in SKILLLESS_CONDITIONING_ROUTES
             else nn.Linear(len(config.skill_fsq_levels), self.width)
         )
+        # Arch0_token has no state token, so it must not allocate this otherwise
+        # unused trainable norm under DDP.
         self.state_norm = (
-            PiGemmaRMSNorm(self.width) if self.uses_expert_context_tokens else None
+            PiGemmaRMSNorm(self.width) if self.uses_expert_state_token else None
         )
         self.skill_norm = (
             PiGemmaRMSNorm(self.width) if self.uses_expert_context_tokens else None
+        )
+        # Arch0_adaRMS sums the skill embedding into the expert AdaRMS condition
+        # beside the timestep. Normalizing first pins the skill RMS at 1.0 so it
+        # cannot swamp the timestep embedding, and equalizes the FSQ codes:
+        # ``_code_to_zq`` maps the grid centre to the zero vector and the corners
+        # to +-1 per axis, so raw ``skill_proj`` outputs would condition centre
+        # codes more weakly. The zero-init per-dim weight lets training rescale.
+        self.expert_skill_norm = (
+            PiGemmaRMSNorm(self.width) if self.uses_expert_skill_adarms else None
         )
         levels = torch.tensor(config.skill_fsq_levels, dtype=torch.long)
         strides = torch.ones_like(levels)
@@ -593,25 +667,36 @@ class CondGemmaSkillExpert(nn.Module):
         z_q = self._code_to_zq(skill_code).to(self.working_dtype)
         return self.skill_proj(z_q)
 
+    @property
+    def n_expert_context_tokens(self) -> int:
+        """Number of expert context tokens: [state, skill], or [skill] alone."""
+        if not self.uses_expert_context_tokens:
+            return 0
+        return 2 if self.uses_expert_state_token else 1
+
     def _expert_context_tokens(
         self, state: Tensor | None, skill_code: Tensor | None
     ) -> Tensor:
-        """Return normalized [state, skill] tokens for Arch1_1/Arch1_2."""
+        """Return normalized [state, skill] tokens, or [skill] for Arch0_token."""
         if not self.uses_expert_context_tokens:
             raise RuntimeError("Expert context tokens are disabled for Arch0.")
-        if state is None or skill_code is None:
+        if skill_code is None:
+            raise ValueError(
+                f"{self.config.architecture_label} requires skill conditioning."
+            )
+        if self.skill_proj is None or self.skill_norm is None:
+            raise RuntimeError("Expert context projections are incomplete.")
+        skill_token, _ = self.skill_norm(self._skill_embedding(skill_code))
+        if not self.uses_expert_state_token:
+            # Arch0_token: skill alone; state still drives Cond-Gemma AdaRMS.
+            return skill_token.unsqueeze(1)
+        if state is None:
             raise ValueError("Arch1_1/Arch1_2 require both state and skill inputs.")
-        if (
-            self.state_proj is None
-            or self.skill_proj is None
-            or self.state_norm is None
-            or self.skill_norm is None
-        ):
+        if self.state_proj is None or self.state_norm is None:
             raise RuntimeError("Expert context projections are incomplete.")
         state_token, _ = self.state_norm(
             self.state_proj(state.to(self.working_dtype))
         )
-        skill_token, _ = self.skill_norm(self._skill_embedding(skill_code))
         return torch.stack((state_token, skill_token), dim=1)
 
     def _project_state(self, state: Tensor | None) -> Tensor | None:
@@ -664,6 +749,11 @@ class CondGemmaSkillExpert(nn.Module):
         """Return ``(condition_stream, action_stream)`` skill broadcasts."""
         if self.config.conditioning_route in SKILLLESS_CONDITIONING_ROUTES:
             return None, None
+        if self.uses_expert_skill_adarms or self.uses_expert_context_tokens:
+            # Arch0_adaRMS routes the same skill embedding through
+            # ``_expert_skill_condition``, and Arch0_token/Arch1_1/Arch1_2 make
+            # it an expert context token. None of them use a layerwise broadcast.
+            return None, None
         if skill_code is None:
             raise ValueError(
                 f"{self.config.conditioning_route} requires skill conditioning."
@@ -710,13 +800,30 @@ class CondGemmaSkillExpert(nn.Module):
         condition = F.silu(self.time_mlp_in(condition))
         return F.silu(self.time_mlp_out(condition))
 
+    def _expert_skill_condition(self, skill_code: Tensor | None) -> Tensor | None:
+        """Return the RMS-normalized skill term of Arch0_adaRMS' Expert AdaRMS."""
+        if not self.uses_expert_skill_adarms:
+            return None
+        if skill_code is None:
+            raise ValueError(
+                f"{self.config.architecture_label} requires skill conditioning."
+            )
+        if self.expert_skill_norm is None:
+            raise RuntimeError("Expert skill AdaRMS normalization is missing.")
+        skill, _ = self.expert_skill_norm(self._skill_embedding(skill_code))
+        return skill
+
     def _expert_condition(
         self,
         timestep: Tensor,
         projected_state: Tensor | None = None,
+        skill_code: Tensor | None = None,
     ) -> Tensor:
-        """Build Expert AdaRMS input from time and, for Arch0_1--0_3, state."""
+        """Build Expert AdaRMS input from time, Arch0_1--0_3 state, Arch0_adaRMS skill."""
         condition = self._time_condition(timestep)
+        expert_skill = self._expert_skill_condition(skill_code)
+        if expert_skill is not None:
+            condition = condition + expert_skill.to(condition.dtype)
         if not self.uses_expert_state_adarms:
             return condition
         if projected_state is None:
@@ -826,22 +933,29 @@ class CondGemmaSkillExpert(nn.Module):
         context_tokens: Tensor,
         noisy_actions: Tensor,
         expert_condition: Tensor,
+        condition_state: Tensor | None = None,
     ) -> Tensor:
-        """Joint Arch1_1/Arch1_2 forward with the fixed three-block mask."""
-        if context_tokens.shape[1] != 2:
+        """Joint Arch1_1/Arch1_2/Arch0_token forward with the fixed three-block mask."""
+        n_context = self.n_expert_context_tokens
+        if context_tokens.shape[1] != n_context:
             raise ValueError(
-                "Expert context must contain exactly [state, skill] tokens; got "
-                f"{context_tokens.shape[1]}."
+                f"{self.config.architecture_label} expects {n_context} expert "
+                f"context token(s); got {context_tokens.shape[1]}."
             )
         action_tokens = self.action_in_proj(noisy_actions.to(self.working_dtype))
         batch_size = action_tokens.shape[0]
         n_visual = condition_tokens.shape[1]
         n_action = action_tokens.shape[1]
         device = action_tokens.device
-        # [visual] reads visual; [state, skill] reads visual + both context
-        # tokens; [actions] reads everything and is bidirectional internally.
+        # [visual] reads visual; the context block reads visual + itself;
+        # [actions] reads everything and is bidirectional internally.
         attention_mask, position_ids = expert_token_attention_contract(
-            batch_size, n_visual, n_action, device
+            batch_size,
+            n_visual,
+            n_action,
+            device,
+            n_context,
+            not self.uses_isolated_skill_token,
         )
         # One continuous coordinate system across visual/context/action tokens.
         streams = [condition_tokens, context_tokens, action_tokens]
@@ -854,6 +968,7 @@ class CondGemmaSkillExpert(nn.Module):
                 "context_post_attention_norm": self.context_post_attention_norms[
                     layer_index
                 ],
+                "condition_state": condition_state,
             }
             if use_checkpoint:
                 streams = torch.utils.checkpoint.checkpoint(
@@ -887,9 +1002,14 @@ class CondGemmaSkillExpert(nn.Module):
         context_tokens: Tensor,
         noisy_actions: Tensor,
         expert_condition: Tensor,
+        condition_state: Tensor | None = None,
     ) -> Tensor:
         hidden = self._run_expert_token_hidden(
-            condition_tokens, context_tokens, noisy_actions, expert_condition
+            condition_tokens,
+            context_tokens,
+            noisy_actions,
+            expert_condition,
+            condition_state,
         )
         return self.action_out_proj(hidden.to(self.working_dtype)).float()
 
@@ -906,14 +1026,21 @@ class CondGemmaSkillExpert(nn.Module):
         if self.uses_expert_context_tokens:
             expert_condition = self._expert_condition(time)
             context_tokens = self._expert_context_tokens(state, skill_code)
+            # None for Arch1_1/Arch1_2, whose state is a context token instead.
+            condition_state = self._state_condition(state)
             predicted_velocity = self._run_expert_token_joint(
                 condition_tokens,
                 context_tokens,
                 noisy_actions,
                 expert_condition,
+                condition_state,
             )
-            state_representation = context_tokens[:, :1]
-            skill_representation = context_tokens[:, 1:]
+            if self.uses_expert_state_token:
+                state_representation = context_tokens[:, :1]
+                skill_representation = context_tokens[:, 1:]
+            else:
+                state_representation = condition_state
+                skill_representation = context_tokens
         else:
             projected_state = self._project_state(state)
             expert_projected_state = self._project_expert_state(
@@ -925,13 +1052,16 @@ class CondGemmaSkillExpert(nn.Module):
                 projected_state if self.uses_cond_state_adarms else None
             )
             expert_condition = self._expert_condition(
-                time, expert_projected_state
+                time, expert_projected_state, skill_code
             )
             condition_skill, expert_skill = self._skill_broadcasts(skill_code)
             state_representation = projected_state
             skill_representation = (
                 condition_skill if condition_skill is not None else expert_skill
             )
+            if skill_representation is None:
+                # Arch0_adaRMS carries skill inside expert_condition instead.
+                skill_representation = self._expert_skill_condition(skill_code)
             predicted_velocity = self._run_joint(
                 condition_tokens,
                 noisy_actions,
@@ -1109,26 +1239,36 @@ class CondGemmaSkillExpert(nn.Module):
                 self._expert_context_tokens(state, skill_code),
                 noise,
                 num_steps,
+                self._state_condition(state),
             )
         return self._sample_with_condition_cache(
             condition_tokens, noise, state, skill_code, num_steps
         )
 
     def _visual_context_cache(
-        self, condition_tokens: Tensor, context_tokens: Tensor
+        self,
+        condition_tokens: Tensor,
+        context_tokens: Tensor,
+        condition_state: Tensor | None = None,
     ) -> DynamicCache:
-        """Cache the timestep-independent visual + [state, skill] prefix."""
+        """Cache the timestep-independent visual + context prefix."""
         batch_size, n_visual = condition_tokens.shape[:2]
+        n_context = context_tokens.shape[1]
         device = condition_tokens.device
         prefix_padding = torch.ones(
-            batch_size, n_visual + 2, dtype=torch.bool, device=device
+            batch_size, n_visual + n_context, dtype=torch.bool, device=device
         )
         prefix_blocks = torch.tensor(
-            [0] * n_visual + [1, 0], dtype=torch.bool, device=device
+            [0] * n_visual + [1] + [0] * (n_context - 1),
+            dtype=torch.bool,
+            device=device,
         )[None].expand(batch_size, -1)
         prefix_attention = make_att_2d_masks(
             prefix_padding, prefix_blocks
         )[:, None]
+        prefix_attention = _isolate_context_from_visual(
+            prefix_attention, n_visual, n_context, not self.uses_isolated_skill_token
+        )
         prefix_attention = torch.where(
             prefix_attention, 0.0, OPENPI_ATTENTION_MASK_VALUE
         )
@@ -1148,6 +1288,7 @@ class CondGemmaSkillExpert(nn.Module):
                 context_post_attention_norm=self.context_post_attention_norms[
                     layer_index
                 ],
+                condition_state=condition_state,
             )
             cache.update(key, value, layer_index)
         return cache
@@ -1158,13 +1299,16 @@ class CondGemmaSkillExpert(nn.Module):
         context_tokens: Tensor,
         noise: Tensor,
         num_steps: int,
+        condition_state: Tensor | None = None,
     ) -> Tensor:
         """Euler integration with visual/state/skill encoded exactly once."""
         batch_size = noise.shape[0]
         n_prefix = condition_tokens.shape[1] + context_tokens.shape[1]
         n_action = noise.shape[1]
         device = noise.device
-        prefix_cache = self._visual_context_cache(condition_tokens, context_tokens)
+        prefix_cache = self._visual_context_cache(
+            condition_tokens, context_tokens, condition_state
+        )
         action_padding = torch.ones(
             batch_size, n_action, dtype=torch.bool, device=device
         )
@@ -1273,7 +1417,7 @@ class CondGemmaSkillExpert(nn.Module):
             )
             action_hidden = self._action_hidden_with_condition_cache(
                 x_t,
-                self._expert_condition(time, expert_projected_state),
+                self._expert_condition(time, expert_projected_state, skill_code),
                 expert_skill,
                 condition_cache,
                 full_attention,

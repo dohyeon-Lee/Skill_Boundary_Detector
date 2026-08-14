@@ -35,6 +35,9 @@ COND_GEMMA_LABEL_TO_REVISION = {
     "arch0_2": "cond_expert_state_adarms_v1",
     "arch0_2_sep": "cond_expert_separate_state_adarms_v1",
     "arch0_3": "wrist_cond_expert_state_adarms_v1",
+    "arch0_adarms": "expert_skill_adarms_v1",
+    "arch0_token": "expert_skill_token_v1",
+    "arch0_token_iso": "expert_skill_token_isolated_v1",
     "arch1_1": "expert_tokens_uncompressed_v1",
     "arch1_2": "expert_tokens_perceiver_v1",
 }
@@ -274,6 +277,9 @@ def build_settings(config: dict) -> dict:
         "arch0_2",
         "arch0_2_sep",
         "arch0_3",
+        "arch0_adarms",
+        "arch0_token",
+        "arch0_token_iso",
         "arch1",
         "arch1_1",
         "arch1_2",
@@ -305,7 +311,9 @@ def build_settings(config: dict) -> dict:
     }:
         raise ValueError(
             "architecture.name must be "
-            "arch0|arch0_1|arch0_2|arch0_2_sep|arch0_3|arch1_1|arch1_2|arch1_3|"
+            "arch0|arch0_1|arch0_2|arch0_2_sep|arch0_3|arch0_adaRMS|"
+            "arch0_token|arch0_token_iso|"
+            "arch1_1|arch1_2|arch1_3|"
             "arch2_1|arch2_2|arch3|arch4, got "
             f"{architecture_label!r}."
         )
@@ -317,8 +325,9 @@ def build_settings(config: dict) -> dict:
         architecture = "cond_gemma"
         architecture_revision = COND_GEMMA_LABEL_TO_REVISION[architecture_label]
         cond_variant = expert_variant
-        # Arch0--0_3 keep the uncompressed visual Cond-Gemma path and inject the
-        # motion-level skill directly into the action expert at every layer.
+        # Arch0--0_3 and Arch0_adaRMS keep the uncompressed visual Cond-Gemma
+        # path and inject the motion-level skill directly into the action expert
+        # (layerwise broadcast, or expert AdaRMS for Arch0_adaRMS).
         # Arch1_1/Arch1_2 instead use explicit expert state/skill tokens.
         conditioning_route = (
             "state_cond"
@@ -438,6 +447,9 @@ def build_settings(config: dict) -> dict:
     )
     if dino_lr_scale <= 0.0:
         raise ValueError("training.optimizer.dino_lr_scale must be positive.")
+    # Muon probe: 2D hidden matrices switch to Muon (AdamW keeps the rest).
+    # base_lr/dino_lr_scale are reused unchanged (match_rms_adamw scaling).
+    use_muon = as_bool(_at(config, "training", "optimizer", "muon", default=False))
 
     predictor_contract = {
         "skill_predictor_vlm_variant": "gemma_2b",
@@ -472,6 +484,9 @@ def build_settings(config: dict) -> dict:
             ".", "p"
         )
         run_name = f"{run_name}_cumxyz{cumulative_weight_label}"
+    if use_muon:
+        # Muon A/B runs must never collide with the AdamW output directory.
+        run_name = f"{run_name}_muon"
     if run_suffix:
         # The user suffix is always last so the automatic batch/architecture
         # naming contract stays machine-readable.
@@ -583,6 +598,7 @@ def build_settings(config: dict) -> dict:
         + ",".join(str(step) for step in vsa_debug_schedule)
         + "]",
         "lr": base_lr * num_gpus,
+        "use_muon": use_muon,
         "steps": training_steps,
         "scheduler_mode": scheduler_mode,
         "scheduler_warmup_steps": scheduler_warmup_steps,
@@ -616,12 +632,18 @@ def main() -> None:
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
     parser.add_argument(
         "--architecture",
+        # architecture.name is lowercased when the YAML is resolved, so accept
+        # the arch0_adaRMS spelling used in the docs and submit_train.sh too.
+        type=str.lower,
         choices=(
             "arch0",
             "arch0_1",
             "arch0_2",
             "arch0_2_sep",
             "arch0_3",
+            "arch0_adarms",
+            "arch0_token",
+            "arch0_token_iso",
             "arch1_1",
             "arch1_2",
             "arch1_3",

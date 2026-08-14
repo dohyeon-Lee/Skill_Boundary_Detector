@@ -112,6 +112,187 @@ class AdamWConfig(OptimizerConfig):
         return torch.optim.AdamW(params, **kwargs)
 
 
+def split_param_groups_for_muon(
+    param_groups: OptimizerParams,
+    adamw_only_ids: Iterable[int] = (),
+) -> list[dict[str, Any]]:
+    """Split optimizer param groups into Muon and auxiliary-AdamW halves.
+
+    Muon orthogonalizes 2D hidden-layer weight matrices only. Every other
+    tensor (biases, norms, 3D/4D embeddings and conv kernels, plus any
+    parameter id listed in ``adamw_only_ids`` such as I/O projections) stays on
+    AdamW, following standard Muon usage. Group metadata (``lr``, ``lr_scale``,
+    ...) is copied to both halves; ``group_name`` gains a ``_muon``/``_adamw``
+    suffix so per-group logs stay readable. Each returned group carries a
+    ``use_muon`` tag consumed by :class:`MuonWithAuxAdamW`.
+    """
+    adamw_only = set(adamw_only_ids)
+    groups: list[dict[str, Any]] = []
+    for group in param_groups:
+        if not isinstance(group, dict):
+            raise TypeError(
+                "split_param_groups_for_muon expects param groups "
+                f"(list of dicts), got an entry of type {type(group)}."
+            )
+        params = list(group["params"])
+        muon_params = [p for p in params if p.ndim == 2 and id(p) not in adamw_only]
+        adamw_params = [p for p in params if p.ndim != 2 or id(p) in adamw_only]
+        shared = {key: value for key, value in group.items() if key != "params"}
+        group_name = shared.pop("group_name", None)
+        for use_muon, subset, suffix in (
+            (True, muon_params, "muon"),
+            (False, adamw_params, "adamw"),
+        ):
+            if not subset:
+                continue
+            subgroup = dict(shared, params=subset, use_muon=use_muon)
+            if group_name is not None:
+                subgroup["group_name"] = f"{group_name}_{suffix}"
+            groups.append(subgroup)
+    return groups
+
+
+class MuonWithAuxAdamW(torch.optim.Optimizer):
+    """Single-optimizer facade routing tagged param groups to Muon or AdamW.
+
+    The training loop, LR schedulers, gradient clipping, and the
+    ``save/load_optimizer_state`` helpers all assume one ``torch.optim.Optimizer``.
+    This class keeps that contract: the child optimizers are constructed over
+    the parent's own param-group dicts (torch appends the same dict objects, so
+    scheduler LR updates propagate) and share the parent's ``state`` mapping,
+    which makes the inherited ``state_dict``/``zero_grad`` see the union of both
+    children with no extra serialization code.
+    """
+
+    def __init__(
+        self,
+        params: OptimizerParams,
+        *,
+        lr: float,
+        weight_decay: float,
+        momentum: float,
+        nesterov: bool,
+        ns_steps: int,
+        adjust_lr_fn: str,
+        adamw_betas: tuple[float, float],
+        adamw_eps: float,
+    ) -> None:
+        groups: list[dict[str, Any]] = []
+        for entry in self._as_param_groups(params):
+            if "use_muon" in entry:
+                groups.append(entry)
+            else:
+                # Untagged groups (e.g. a bare parameter list) fall back to the
+                # shape-based split so MuonConfig stays usable standalone.
+                groups.extend(split_param_groups_for_muon([entry]))
+        super().__init__(groups, {"lr": lr, "weight_decay": weight_decay})
+        muon_groups = [g for g in self.param_groups if g["use_muon"]]
+        adamw_groups = [g for g in self.param_groups if not g["use_muon"]]
+        self._muon = (
+            torch.optim.Muon(
+                muon_groups,
+                lr=lr,
+                weight_decay=weight_decay,
+                momentum=momentum,
+                nesterov=nesterov,
+                ns_steps=ns_steps,
+                adjust_lr_fn=adjust_lr_fn,
+            )
+            if muon_groups
+            else None
+        )
+        self._adamw = (
+            torch.optim.AdamW(
+                adamw_groups,
+                lr=lr,
+                betas=adamw_betas,
+                eps=adamw_eps,
+                weight_decay=weight_decay,
+            )
+            if adamw_groups
+            else None
+        )
+        for child in (self._muon, self._adamw):
+            if child is not None:
+                child.state = self.state
+        self._children_initialized = True
+
+    @staticmethod
+    def _as_param_groups(params: OptimizerParams) -> list[dict[str, Any]]:
+        entries = list(params)
+        if entries and not isinstance(entries[0], dict):
+            entries = [{"params": entries}]
+        return entries
+
+    def add_param_group(self, param_group: dict[str, Any]) -> None:
+        if getattr(self, "_children_initialized", False):
+            raise NotImplementedError(
+                "MuonWithAuxAdamW does not support adding param groups after "
+                "construction; rebuild the optimizer instead."
+            )
+        super().add_param_group(param_group)
+
+    def _rebind_children(self) -> None:
+        """Point the children at the parent's (possibly replaced) groups/state."""
+        for child, use_muon in ((self._muon, True), (self._adamw, False)):
+            if child is not None:
+                child.param_groups = [
+                    g for g in self.param_groups if bool(g["use_muon"]) is use_muon
+                ]
+                child.state = self.state
+
+    def load_state_dict(self, state_dict: dict[str, Any]) -> None:
+        # The base implementation rebuilds both the state mapping and the
+        # param-group dicts, so the children must be re-pointed afterwards.
+        super().load_state_dict(state_dict)
+        self._rebind_children()
+
+    def step(self, closure=None):
+        loss = None
+        if closure is not None:
+            with torch.enable_grad():
+                loss = closure()
+        if self._muon is not None:
+            self._muon.step()
+        if self._adamw is not None:
+            self._adamw.step()
+        return loss
+
+
+@OptimizerConfig.register_subclass("muon")
+@dataclass
+class MuonConfig(OptimizerConfig):
+    """Muon for 2D hidden-layer weights plus an auxiliary AdamW for the rest.
+
+    ``adjust_lr_fn`` defaults to Moonshot's ``match_rms_adamw`` scaling (rather
+    than torch's ``original``) so the AdamW-tuned ``lr``/``weight_decay`` can be
+    reused unchanged for the Muon groups.
+    """
+
+    lr: float = 1e-3
+    weight_decay: float = 1e-2
+    grad_clip_norm: float = 10.0
+    momentum: float = 0.95
+    nesterov: bool = True
+    ns_steps: int = 5
+    adjust_lr_fn: str = "match_rms_adamw"
+    adamw_betas: tuple[float, float] = (0.9, 0.999)
+    adamw_eps: float = 1e-8
+
+    def build(self, params: OptimizerParams) -> torch.optim.Optimizer:
+        return MuonWithAuxAdamW(
+            params,
+            lr=self.lr,
+            weight_decay=self.weight_decay,
+            momentum=self.momentum,
+            nesterov=self.nesterov,
+            ns_steps=self.ns_steps,
+            adjust_lr_fn=self.adjust_lr_fn,
+            adamw_betas=self.adamw_betas,
+            adamw_eps=self.adamw_eps,
+        )
+
+
 @OptimizerConfig.register_subclass("sgd")
 @dataclass
 class SGDConfig(OptimizerConfig):

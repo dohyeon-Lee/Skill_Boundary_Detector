@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 
 from lerobot.configs.policies import PreTrainedConfig
 from lerobot.configs.types import FeatureType, NormalizationMode, PolicyFeature
-from lerobot.optim.optimizers import AdamWConfig
+from lerobot.optim.optimizers import AdamWConfig, MuonConfig
 from lerobot.optim.schedulers import (
     CosineDecayWithWarmupSchedulerConfig,
     LRSchedulerConfig,
@@ -27,8 +27,10 @@ LEGACY_RESIDUAL_VSA_REVISION = "residual_sa18_v2"
 # Condition-Gemma family. The first revision preserves the skillVLA_real module
 # and state_dict contract; ``conditioning_route`` records whether its skill
 # broadcast targets Cond-Gemma (historical) or the expert (current Arch0).
-# Arch0_1--0_3 ablate the state AdaRMS target; the final two revisions move
-# state/skill to explicit expert tokens.
+# Arch0_1--0_3 ablate the state AdaRMS target; Arch0_adaRMS and Arch0_token keep
+# the Arch0 state/visual paths and only change how skill reaches the expert
+# (AdaRMS or one in-context token); the final two revisions move both state and
+# skill to explicit expert tokens.
 COND_GEMMA_ARCHITECTURE_REVISION = "skillvla_real_v1"
 COND_GEMMA_EXPERT_STATE_REVISION = "expert_state_adarms_v1"
 COND_GEMMA_DUAL_STATE_REVISION = "cond_expert_state_adarms_v1"
@@ -36,6 +38,9 @@ COND_GEMMA_SEPARATE_DUAL_STATE_REVISION = (
     "cond_expert_separate_state_adarms_v1"
 )
 COND_GEMMA_WRIST_DUAL_STATE_REVISION = "wrist_cond_expert_state_adarms_v1"
+COND_GEMMA_SKILL_ADARMS_REVISION = "expert_skill_adarms_v1"
+COND_GEMMA_SKILL_TOKEN_REVISION = "expert_skill_token_v1"
+COND_GEMMA_ISOLATED_SKILL_TOKEN_REVISION = "expert_skill_token_isolated_v1"
 COND_GEMMA_EXPERT_TOKENS_REVISION = "expert_tokens_uncompressed_v1"
 COND_GEMMA_PERCEIVER_EXPERT_TOKENS_REVISION = "expert_tokens_perceiver_v1"
 COND_GEMMA_ARCHITECTURE_LABELS = {
@@ -44,6 +49,11 @@ COND_GEMMA_ARCHITECTURE_LABELS = {
     COND_GEMMA_DUAL_STATE_REVISION: "arch0_2",
     COND_GEMMA_SEPARATE_DUAL_STATE_REVISION: "arch0_2_sep",
     COND_GEMMA_WRIST_DUAL_STATE_REVISION: "arch0_3",
+    # ``architecture_label`` is lowercased on validation, so the canonical label
+    # of the arch0_adaRMS ablation is stored lowercase.
+    COND_GEMMA_SKILL_ADARMS_REVISION: "arch0_adarms",
+    COND_GEMMA_SKILL_TOKEN_REVISION: "arch0_token",
+    COND_GEMMA_ISOLATED_SKILL_TOKEN_REVISION: "arch0_token_iso",
     COND_GEMMA_EXPERT_TOKENS_REVISION: "arch1_1",
     COND_GEMMA_PERCEIVER_EXPERT_TOKENS_REVISION: "arch1_2",
 }
@@ -53,7 +63,27 @@ COND_STATE_ADARMS_REVISIONS = frozenset(
         COND_GEMMA_DUAL_STATE_REVISION,
         COND_GEMMA_SEPARATE_DUAL_STATE_REVISION,
         COND_GEMMA_WRIST_DUAL_STATE_REVISION,
+        COND_GEMMA_SKILL_ADARMS_REVISION,
+        COND_GEMMA_SKILL_TOKEN_REVISION,
+        COND_GEMMA_ISOLATED_SKILL_TOKEN_REVISION,
     }
+)
+# Arch0_adaRMS drops the expert skill broadcast and sums the skill embedding
+# into the expert AdaRMS condition next to the timestep instead. The shared
+# AdaRMS dense keeps this free; a dedicated dense per signal would add
+# 37 x Linear(1024, 3072) ~ 116M parameters for a log2(27)-bit code.
+EXPERT_SKILL_ADARMS_REVISIONS = frozenset({COND_GEMMA_SKILL_ADARMS_REVISION})
+# Arch0_token drops the broadcast as well, but promotes the skill to a single
+# in-context expert token. State keeps the Arch0 Cond-Gemma AdaRMS path, which
+# is what separates it from Arch1_1's two-token [state, skill] context.
+EXPERT_SKILL_TOKEN_REVISIONS = frozenset(
+    {COND_GEMMA_SKILL_TOKEN_REVISION, COND_GEMMA_ISOLATED_SKILL_TOKEN_REVISION}
+)
+# Arch0_token_iso additionally blanks the skill token's view of the visual
+# prefix, so it stays a static per-code embedding rather than a
+# scene-contextualized one. Both directions still hide actions from skill.
+ISOLATED_SKILL_TOKEN_REVISIONS = frozenset(
+    {COND_GEMMA_ISOLATED_SKILL_TOKEN_REVISION}
 )
 EXPERT_STATE_ADARMS_REVISIONS = frozenset(
     {
@@ -243,6 +273,10 @@ class SkillExpertConfig(PreTrainedConfig):
     optimizer_eps: float = 1e-8
     optimizer_weight_decay: float = 0.01
     optimizer_grad_clip_norm: float = 1.0
+    # Muon probe: route 2D hidden matrices to Muon (match_rms_adamw scaling, so
+    # the AdamW-tuned lr/weight_decay above are reused); everything else keeps
+    # AdamW. False preserves the historical single-AdamW behavior exactly.
+    use_muon: bool = False
     scheduler_warmup_steps: int = 1_000
     scheduler_mode: str = "cosine_decay"
     scheduler_decay_steps: int = 30_000
@@ -326,13 +360,16 @@ class SkillExpertConfig(PreTrainedConfig):
                     COND_GEMMA_DUAL_STATE_REVISION,
                     COND_GEMMA_SEPARATE_DUAL_STATE_REVISION,
                     COND_GEMMA_WRIST_DUAL_STATE_REVISION,
+                    COND_GEMMA_SKILL_ADARMS_REVISION,
+                    COND_GEMMA_SKILL_TOKEN_REVISION,
+                    COND_GEMMA_ISOLATED_SKILL_TOKEN_REVISION,
                 }
                 and self.conditioning_route != "state_cond"
             ):
                 raise ValueError(
                     f"{COND_GEMMA_ARCHITECTURE_LABELS[self.architecture_revision]} "
-                    "fixes conditioning_route='state_cond' so skill is broadcast "
-                    "only to the expert; got "
+                    "fixes conditioning_route='state_cond' so skill bypasses "
+                    "Cond-Gemma and reaches the expert only; got "
                     f"{self.conditioning_route!r}."
                 )
             expected_architecture_label = COND_GEMMA_ARCHITECTURE_LABELS[
@@ -497,7 +534,18 @@ class SkillExpertConfig(PreTrainedConfig):
         """Whether this policy must instantiate/tokenize the predictor path."""
         return self.train_skill_predictor or self.training_skill_source == "predictor"
 
-    def get_optimizer_preset(self) -> AdamWConfig:
+    def get_optimizer_preset(self) -> AdamWConfig | MuonConfig:
+        if self.use_muon:
+            # Muon-specific hyperparameters (momentum, ns_steps, ...) stay at
+            # MuonConfig defaults; the shared lr/weight_decay are reusable
+            # because of the match_rms_adamw update scaling.
+            return MuonConfig(
+                lr=self.optimizer_lr,
+                weight_decay=self.optimizer_weight_decay,
+                grad_clip_norm=self.optimizer_grad_clip_norm,
+                adamw_betas=self.optimizer_betas,
+                adamw_eps=self.optimizer_eps,
+            )
         return AdamWConfig(
             lr=self.optimizer_lr,
             betas=self.optimizer_betas,

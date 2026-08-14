@@ -178,7 +178,7 @@ def test_stage2_forward_preserves_inherited_conditioning_route_in_frozen_prior()
     model.skill_predictor = _Predictor()
     model._condition_tokens = lambda images, batch_size=None: torch.zeros(1, 2, 2)
     model._state_condition = lambda state: condition_state
-    model._expert_condition = lambda time: expert_time
+    model._expert_condition = lambda time, state=None, skill=None: expert_time
     model._skill_broadcasts = lambda code: (condition_skill, None)
 
     def run_prior(
@@ -396,7 +396,7 @@ def test_stage2_sampling_keeps_condition_routing_and_likelihood_sees_actions_onl
     model.skill_predictor = _Predictor()
     model._condition_tokens = lambda images, batch_size=None: torch.zeros(1, 2, 2)
     model._state_condition = lambda state: torch.zeros(1, 2)
-    model._expert_condition = lambda time: torch.zeros(1, 2)
+    model._expert_condition = lambda time, state=None, skill=None: torch.zeros(1, 2)
     model._skill_broadcasts = lambda code: (torch.tensor([[7.0, 8.0]]), None)
     captured = {}
 

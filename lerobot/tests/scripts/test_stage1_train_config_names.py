@@ -190,6 +190,21 @@ def test_skill_end_loss_mask_supports_jitter_and_has_distinct_name(
     assert settings["pt_run_name"].endswith("_arch2_2_skillendmask")
 
 
+def test_stage1_muon_probe_defaults_off_and_keeps_names(tmp_path: Path) -> None:
+    settings = build_settings(_config(tmp_path))
+    assert settings["use_muon"] is False
+    assert "_muon" not in settings["pt_run_name"]
+
+
+def test_stage1_muon_probe_tags_run_name_before_user_suffix(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    config["training"]["optimizer"]["muon"] = True
+    config["run"] = {"suffix": "ab"}
+    settings = build_settings(config)
+    assert settings["use_muon"] is True
+    assert settings["pt_run_name"].endswith("_arch2_2_muon_ab")
+
+
 def test_cumulative_xyz_auxiliary_has_weighted_distinct_name(tmp_path: Path) -> None:
     config = _config(tmp_path)
     config["mask_actions_after_skill_end"] = True

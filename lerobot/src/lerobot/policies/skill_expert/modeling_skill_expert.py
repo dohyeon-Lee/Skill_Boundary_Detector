@@ -14,6 +14,7 @@ from torch import Tensor, nn
 from transformers import AutoModel
 
 from lerobot.configs.policies import PreTrainedConfig
+from lerobot.optim.optimizers import split_param_groups_for_muon
 from lerobot.policies.pi05.lora import route_plain_to_base
 from lerobot.policies.pi05.modeling_pi05 import (
     create_sinusoidal_pos_embedding,
@@ -1092,17 +1093,40 @@ class SkillExpertPolicy(PreTrainedPolicy):
                         if self.model.uses_separate_state_projections
                         else "shared",
                     )
-                log.info(
-                    "Skill conditioning: %s layerwise broadcast",
-                    "expert"
-                    if config.conditioning_route == "state_cond"
-                    else "Cond-Gemma",
-                )
+                if self.model.uses_expert_skill_adarms:
+                    log.info(
+                        "Skill conditioning: expert AdaRMS "
+                        "(RMS-normalized, summed with timestep)"
+                    )
+                else:
+                    log.info(
+                        "Skill conditioning: %s layerwise broadcast",
+                        "expert"
+                        if config.conditioning_route == "state_cond"
+                        else "Cond-Gemma",
+                    )
                 log.info("Expert sequence: noisy actions only")
             else:
-                log.info("Condition-Gemma state/skill conditioning: disabled")
-                log.info("Expert sequence: state + skill + noisy actions")
-                log.info("Expert mask: [visual | state, skill | actions]")
+                if self.model.uses_expert_state_token:
+                    log.info("Condition-Gemma state/skill conditioning: disabled")
+                    log.info("Expert sequence: state + skill + noisy actions")
+                    log.info("Expert mask: [visual | state, skill | actions]")
+                else:
+                    log.info("Conditioning route: %s", config.conditioning_route)
+                    log.info("State conditioning (Cond): all Cond-Gemma tokens")
+                    log.info(
+                        "Skill conditioning: one expert in-context token (%s)",
+                        "isolated from vision"
+                        if self.model.uses_isolated_skill_token
+                        else "reads the visual prefix",
+                    )
+                    log.info("Expert sequence: skill + noisy actions")
+                    log.info(
+                        "Expert mask: %s",
+                        "[visual | skill (visual-blind) | actions]"
+                        if self.model.uses_isolated_skill_token
+                        else "[visual | skill | actions]",
+                    )
                 log.info("Timestep AdaRMS: action tokens only")
                 if (
                     config.architecture_revision
@@ -1562,6 +1586,29 @@ class SkillExpertPolicy(PreTrainedPolicy):
             wrist_image.to(device=device, dtype=dtype),
         )
 
+    # I/O interface layers stay on AdamW under the Muon probe, following the
+    # standard Muon convention of excluding embeddings and heads. Non-2D
+    # tensors (norms, biases, DINO patch/cls embeddings) are excluded by shape.
+    _MUON_ADAMW_ONLY_NAME_PARTS = (
+        "embed",
+        "action_in_proj",
+        "action_out_proj",
+        "state_proj",
+        "skill_proj",
+        "image_proj",
+    )
+
+    def _maybe_split_param_groups_for_muon(self, groups: list[dict]) -> list[dict]:
+        """With use_muon, split each group into Muon(2D)/AdamW halves; else no-op."""
+        if not getattr(self.config, "use_muon", False):
+            return groups
+        adamw_only_ids = {
+            id(parameter)
+            for name, parameter in self.named_parameters()
+            if any(part in name for part in self._MUON_ADAMW_ONLY_NAME_PARTS)
+        }
+        return split_param_groups_for_muon(groups, adamw_only_ids)
+
     def get_optim_params(self) -> list[dict]:
         """Return only action-model and DINO groups; auxiliaries are frozen."""
         for name in (
@@ -1600,6 +1647,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 "group_name": "dino",
             }
         )
+        groups = self._maybe_split_param_groups_for_muon(groups)
         for group in groups:
             log.info(
                 "Stage-1 optimizer group %s: %.1fM params, lr_scale=%g, lr=%g",
@@ -1651,6 +1699,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
                     "group_name": "dino",
                 }
             )
+        groups = self._maybe_split_param_groups_for_muon(groups)
         for group in groups:
             log.info(
                 "Stage-1 optimizer group %s: %.1fM params, lr_scale=%g, lr=%g",
