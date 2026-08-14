@@ -120,7 +120,13 @@ class FrozenVLMSkillPredictor(nn.Module):
         return [*self.reader_head_parameters(), *self.lora_parameters()]
 
     def gradient_checkpointing_enable(self) -> None:
-        self.vlm.language_model.gradient_checkpointing = True
+        # PiGemma decoder layers inherit Transformers' GradientCheckpointingLayer.
+        # Calling the public enable method propagates both the flag and the
+        # checkpoint function to every layer; setting only the top-level boolean
+        # leaves the layer loop completely uncheckpointed.
+        self.vlm.language_model.gradient_checkpointing_enable(
+            gradient_checkpointing_kwargs={"use_reentrant": False}
+        )
 
     @staticmethod
     def _activate_skill_adapter() -> None:

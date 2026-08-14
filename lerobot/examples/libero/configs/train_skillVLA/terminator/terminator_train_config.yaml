@@ -42,7 +42,7 @@ skill_predictor:
   token_access: {image: true, language: true}
 
 training:
-  dataloader: {batch_size: 32, workers: 8, gpus: 1}
+  dataloader: {batch_size: 16, workers: 8, gpus: 1}
   optimizer:
     base_lr: 2.5e-05
     terminator_lr_scale: 1.0
