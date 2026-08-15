@@ -14,6 +14,8 @@ from lerobot.policies.skill_expert.configuration_skill_expert import (
     COND_GEMMA_DUAL_STATE_REVISION,
     COND_GEMMA_EXPERT_TOKENS_REVISION,
     COND_GEMMA_EXPERT_STATE_REVISION,
+    COND_GEMMA_COND_SKILL_BROADCAST_REVISION,
+    COND_GEMMA_DUAL_SKILL_BROADCAST_REVISION,
     COND_GEMMA_ISOLATED_SKILL_TOKEN_REVISION,
     COND_GEMMA_PERCEIVER_EXPERT_TOKENS_REVISION,
     COND_GEMMA_SEPARATE_DUAL_STATE_REVISION,
@@ -202,6 +204,8 @@ def test_config_defaults_to_vsa_and_cond_architecture_is_explicit() -> None:
         (COND_GEMMA_SKILL_ADARMS_REVISION, "arch0_adarms"),
         (COND_GEMMA_SKILL_TOKEN_REVISION, "arch0_token"),
         (COND_GEMMA_ISOLATED_SKILL_TOKEN_REVISION, "arch0_token_iso"),
+        (COND_GEMMA_COND_SKILL_BROADCAST_REVISION, "arch0_cond"),
+        (COND_GEMMA_DUAL_SKILL_BROADCAST_REVISION, "arch0_both"),
     ):
         assert SkillExpertConfig(
             architecture=COND_GEMMA_ARCHITECTURE,
@@ -516,6 +520,8 @@ def test_cond_expert_token_forward_and_cached_sampling_preserve_action_shape(
         (COND_GEMMA_SKILL_ADARMS_REVISION, "arch0_adarms"),
         (COND_GEMMA_SKILL_TOKEN_REVISION, "arch0_token"),
         (COND_GEMMA_ISOLATED_SKILL_TOKEN_REVISION, "arch0_token_iso"),
+        (COND_GEMMA_COND_SKILL_BROADCAST_REVISION, "arch0_cond"),
+        (COND_GEMMA_DUAL_SKILL_BROADCAST_REVISION, "arch0_both"),
         (COND_GEMMA_EXPERT_TOKENS_REVISION, "arch1_1"),
         (COND_GEMMA_PERCEIVER_EXPERT_TOKENS_REVISION, "arch1_2"),
     ],
@@ -853,6 +859,8 @@ def test_arch0_token_makes_skill_one_expert_token_and_keeps_state_on_cond_adarms
         (COND_GEMMA_SKILL_ADARMS_REVISION, "arch0_adarms"),
         (COND_GEMMA_SKILL_TOKEN_REVISION, "arch0_token"),
         (COND_GEMMA_ISOLATED_SKILL_TOKEN_REVISION, "arch0_token_iso"),
+        (COND_GEMMA_COND_SKILL_BROADCAST_REVISION, "arch0_cond"),
+        (COND_GEMMA_DUAL_SKILL_BROADCAST_REVISION, "arch0_both"),
         (COND_GEMMA_EXPERT_TOKENS_REVISION, "arch1_1"),
         (COND_GEMMA_PERCEIVER_EXPERT_TOKENS_REVISION, "arch1_2"),
     ],
@@ -2129,3 +2137,77 @@ def test_cumulative_xyz_loss_uses_one_horizon_normalizer_per_sample() -> None:
     )
     torch.testing.assert_close(raw, torch.tensor(43.0 / 12.0))
     torch.testing.assert_close(normalized, torch.tensor(2.0))
+
+
+@pytest.mark.parametrize(
+    ("revision", "label", "to_cond", "to_expert"),
+    [
+        (COND_GEMMA_ARCHITECTURE_REVISION, "arch0", False, True),
+        (COND_GEMMA_COND_SKILL_BROADCAST_REVISION, "arch0_cond", True, False),
+        (COND_GEMMA_DUAL_SKILL_BROADCAST_REVISION, "arch0_both", True, True),
+    ],
+)
+def test_skill_broadcast_target_ablations_select_the_right_streams(
+    revision: str, label: str, to_cond: bool, to_expert: bool
+) -> None:
+    """Arch0/Arch0_cond/Arch0_both differ only in which stream sees the skill."""
+    torch.manual_seed(31)
+    config = SkillExpertConfig(
+        architecture=COND_GEMMA_ARCHITECTURE,
+        architecture_label=label,
+        architecture_revision=revision,
+        conditioning_route="state_cond",
+        max_state_dim=4,
+        max_action_dim=4,
+        chunk_size=3,
+        n_action_steps=3,
+        dino_model_path="unused",
+    )
+    tiny_geometry = SimpleNamespace(width=32, depth=2)
+    with (
+        patch(
+            "lerobot.policies.skill_expert.cond_gemma.get_gemma_config",
+            return_value=tiny_geometry,
+        ),
+        patch(
+            "lerobot.policies.skill_expert.cond_gemma.build_gemma",
+            side_effect=lambda _variant, *, use_adarms: _tiny_projection_gemma_pi05_heads(
+                use_adarms=use_adarms
+            ),
+        ),
+        patch(
+            "lerobot.policies.skill_expert.cond_gemma.AutoModel.from_pretrained",
+            return_value=_TinyDino(),
+        ),
+    ):
+        model = CondGemmaSkillExpert(config).eval()
+
+    skill = torch.tensor([3, 5])
+    condition_skill, expert_skill = model._skill_broadcasts(skill)
+
+    assert (condition_skill is not None) is to_cond
+    assert (expert_skill is not None) is to_expert
+    # All three share one projection, so the two streams get the same vector.
+    if to_cond and to_expert:
+        assert torch.equal(condition_skill, expert_skill)
+    # State keeps the Arch0 Cond-Gemma AdaRMS path in every variant.
+    assert model.uses_cond_state_adarms is True
+    assert model.uses_expert_state_adarms is False
+    assert model.uses_expert_skill_adarms is False
+    assert model.uses_expert_context_tokens is False
+
+    state = torch.randn(2, 4)
+    images = [torch.rand(2, 3, 16, 16), torch.rand(2, 3, 16, 16)]
+    actions = torch.randn(2, 3, 4)
+    noise = torch.randn_like(actions)
+    residual = model(
+        images, state, skill, actions, noise=noise, time=torch.tensor([0.3, 0.7])
+    )
+    sampled = model.sample_actions(images, state, skill, noise=noise, num_steps=1)
+    assert residual.shape == sampled.shape == actions.shape
+    # A broadcast enters attention directly, so it moves the output immediately
+    # on the cached-condition inference path too.
+    other = model.sample_actions(
+        images, state, torch.tensor([7, 11]), noise=noise, num_steps=1
+    )
+    assert not torch.allclose(sampled, other)

@@ -7,31 +7,37 @@ dataset:
   source: libero_90_full_full
   # run is inherited from the Stage-1 checkpoint's train_config.json.
 
-# Exact Stage-1 output directory name; it is never parsed for architecture.
-# The resolver reads checkpoints/<checkpoint>/pretrained_model/config.json.
+# Stage 2 assembles two independently trained frozen sources; architecture is
+# never parsed from run names, only from each checkpoint's config.json.
+#   stage1_run : cond_gemma (arch0-family) VSA prior. Needs no predictor or
+#                terminator of its own.
+#   predictor  : any Stage-1/skill_aux run with train_skill_predictor=true.
+#                Its frozen VLM provides the cross-attention memory.
+# Terminators stay out of Stage 2; attach one at evaluation time.
 warm_start:
-  # stage1_run: libero_90_full_firsthalf_FSQ333_175_dino_tuned_flow
-  stage1_run: libero_90_full_firsthalf_FSQ333_175_dino_tuned_flow_endpoint_xyz
-  checkpoint: "050000"
+  stage1_run: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask
+  checkpoint: "100000"
+  predictor:
+    run: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch4_DINO_LR_100p_Skill_Predictor
+    checkpoint: "100000"
+    # path: <pretrained_model dir>   # optional; overrides run/checkpoint.
+    # This predictor was trained in a different FSQ run than the Stage-1 prior.
+    # gt-mode training only uses its frozen VLM base, which is unaffected; its
+    # reader/head skill predictions are meaningless for rollout until a
+    # predictor trained on the matching FSQ run replaces it.
+    allow_fsq_mismatch: true
 
 likelihood:
   layers: 4
-  # gt is the default; predictor uses the frozen Stage-1 predictor on skill-start observations.
+  # gt is the default; predictor conditions training on the frozen predictor's
+  # skill-start predictions and requires a matching-FSQ predictor.
   training_skill_source: gt
 
 # flow: ordinary action-flow MSE
 # flow_endpoint_xyz: 0.5 flow + 0.5 accumulated-XYZ endpoint MSE
-loss: flow_endpoint_xyz  # flow | flow_endpoint_xyz
-
-# Optional continuation training. Architecture, loss weight, and LR scales are
-# inherited exactly from the selected Stage-1 checkpoint; Stage 2 chooses only
-# whether each auxiliary continues training.
-auxiliary:
-  skill_predictor: {train: true}
-  terminator: {train: true}
+loss: flow  # flow | flow_endpoint_xyz
 
 # Auto name: {stage1_run}_{checkpoint}_{flow|endpoint}_{gt|predictor}_{batchON|batchOFF}[_{suffix}]
-# Auxiliary train flags are intentionally not encoded; use suffix when needed.
 run: {suffix: "small"}
 
 training:
@@ -40,7 +46,6 @@ training:
     workers: 2
     gpus: 1
     # Half the batch becomes post-jitter-same-skill/different-task pairs.
-    # The other half stays random and is the only part used by terminator continuation.
     same_skill_different_task: {enabled: true, grouped_fraction: 0.5, progress_temperature: 0.1}
   optimizer: {base_lr: 2.5e-05}
   gradient_checkpointing: true

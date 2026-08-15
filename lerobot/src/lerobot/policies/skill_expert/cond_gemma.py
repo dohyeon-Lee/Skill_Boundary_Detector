@@ -35,7 +35,9 @@ from .configuration_skill_expert import (
     COND_GEMMA_PERCEIVER_EXPERT_TOKENS_REVISION,
     COND_GEMMA_SEPARATE_DUAL_STATE_REVISION,
     COND_GEMMA_WRIST_DUAL_STATE_REVISION,
+    COND_SKILL_BROADCAST_REVISIONS,
     COND_STATE_ADARMS_REVISIONS,
+    DUAL_SKILL_BROADCAST_REVISIONS,
     EXPERT_SKILL_ADARMS_REVISIONS,
     EXPERT_SKILL_TOKEN_REVISIONS,
     EXPERT_STATE_ADARMS_REVISIONS,
@@ -308,6 +310,23 @@ class CondGemmaSkillExpert(nn.Module):
         self.uses_expert_skill_adarms = (
             config.architecture_revision in EXPERT_SKILL_ADARMS_REVISIONS
             and config.conditioning_route not in SKILLLESS_CONDITIONING_ROUTES
+        )
+        # Which streams receive the layerwise skill broadcast. Arch0 keeps the
+        # historical rule (expert for state_cond, Cond-Gemma otherwise); Arch0_cond
+        # and Arch0_both override the target without changing the mechanism.
+        broadcasts_skill = (
+            config.conditioning_route not in SKILLLESS_CONDITIONING_ROUTES
+            and not self.uses_expert_skill_adarms
+            and not self.uses_expert_context_tokens
+        )
+        cond_only = config.architecture_revision in COND_SKILL_BROADCAST_REVISIONS
+        both_streams = config.architecture_revision in DUAL_SKILL_BROADCAST_REVISIONS
+        self.uses_cond_skill_broadcast = broadcasts_skill and (
+            cond_only or both_streams or config.conditioning_route != "state_cond"
+        )
+        self.uses_expert_skill_broadcast = broadcasts_skill and (
+            both_streams
+            or (not cond_only and config.conditioning_route == "state_cond")
         )
 
         if config.conditioning_route in VISIONLESS_CONDITIONING_ROUTES:
@@ -747,21 +766,20 @@ class CondGemmaSkillExpert(nn.Module):
         self, skill_code: Tensor | None
     ) -> tuple[Tensor | None, Tensor | None]:
         """Return ``(condition_stream, action_stream)`` skill broadcasts."""
-        if self.config.conditioning_route in SKILLLESS_CONDITIONING_ROUTES:
-            return None, None
-        if self.uses_expert_skill_adarms or self.uses_expert_context_tokens:
-            # Arch0_adaRMS routes the same skill embedding through
-            # ``_expert_skill_condition``, and Arch0_token/Arch1_1/Arch1_2 make
-            # it an expert context token. None of them use a layerwise broadcast.
+        if not (self.uses_cond_skill_broadcast or self.uses_expert_skill_broadcast):
+            # Skill-free routes, plus Arch0_adaRMS (expert AdaRMS) and
+            # Arch0_token/Arch1_1/Arch1_2 (expert context token), which carry the
+            # same embedding without any layerwise broadcast.
             return None, None
         if skill_code is None:
             raise ValueError(
                 f"{self.config.conditioning_route} requires skill conditioning."
             )
         skill = self._skill_embedding(skill_code)
-        if self.config.conditioning_route == "state_cond":
-            return None, skill
-        return skill, None
+        return (
+            skill if self.uses_cond_skill_broadcast else None,
+            skill if self.uses_expert_skill_broadcast else None,
+        )
 
     def terminator_predict(
         self,

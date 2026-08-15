@@ -7,7 +7,7 @@ dataset:
 
 # Optional user label. It is appended at the very end of the automatic output
 # and W&B run name. Empty keeps the standard ablation naming unchanged.
-run: {suffix: "visfrez"}
+run: {suffix: ""}
 
 warm_start:
   pi_base: models/pi05_base
@@ -17,11 +17,11 @@ warm_start:
 vision:
   dino_model: models/dinov3-vitl16
   image_size: 224
-  freeze: true
+  freeze: false
 
 architecture:
   # Select with this value or
-  # `./submit_train.sh arch0|arch0_1|arch0_2|arch0_2_sep|arch0_3|arch0_adaRMS|arch0_token|arch0_token_iso|arch1_1|arch1_2|arch1_3|arch2_1|arch2_2|arch3|arch4`.
+  # `./submit_train.sh arch0|arch0_1|arch0_2|arch0_2_sep|arch0_3|arch0_adaRMS|arch0_token|arch0_token_iso|arch0_cond|arch0_both|arch1_1|arch1_2|arch1_3|arch2_1|arch2_2|arch3|arch4`.
   #
   # Reference map (idea-level references, not exact paper reproductions):
   # - Shared visual compressor:
@@ -52,6 +52,9 @@ architecture:
   # - arch0_token_iso: Arch0_token with the skill token also cut off from the
   #   visual prefix, so it stays a static per-code embedding that the action
   #   tokens attend to. Isolates skill conditioning from scene context.
+  # - arch0_cond: Arch0's broadcast mechanism, retargeted to Cond-Gemma only.
+  #   The expert sees skill only through the condition stream it attends to.
+  # - arch0_both: the same broadcast applied to Cond-Gemma and the expert.
   # - arch1_1: same uncompressed DINO -> Cond-Gemma visual path as Arch0, but
   #   state/skill are expert in-context tokens as in Arch2--4.
   # - arch1_2: same expert state/skill tokens and mask as Arch1_1, but compresses
@@ -70,7 +73,7 @@ architecture:
   # Historical checkpoints with the same arch2_1/arch2_2 labels remain
   # evaluation-only under previous/ and are distinguished by revision metadata.
 
-  # arch0 arch0_1 arch0_2 arch0_2_sep arch0_3 arch0_adaRMS arch0_token arch0_token_iso arch1_1 arch1_2 arch1_3 arch2_1 arch2_2 arch3 arch4
+  # arch0 arch0_1 arch0_2 arch0_2_sep arch0_3 arch0_adaRMS arch0_token arch0_token_iso arch0_cond arch0_both arch1_1 arch1_2 arch1_3 arch2_1 arch2_2 arch3 arch4
   # arch0 arch0_adaRMS arch0_token arch0_token_iso
   name: arch0_adaRMS
 

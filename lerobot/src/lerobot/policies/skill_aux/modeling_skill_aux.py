@@ -40,7 +40,10 @@ class SkillAuxModules(nn.Module):
         )
         self.fsq_term_train = None
         if config.train_terminator:
-            terminator = build_trainable_fsq_terminator(config.fsq_path)
+            terminator = build_trainable_fsq_terminator(
+                config.fsq_path,
+                termination_only=config.terminator_termination_only,
+            )
             terminator.freeze_vision_encoder = bool(config.terminator_freeze_vision_encoder)
             terminator.requires_grad_(True)
             if terminator.freeze_vision_encoder:
@@ -48,7 +51,10 @@ class SkillAuxModules(nn.Module):
             self.fsq_term_train = terminator.to(dtype=torch.float32)
         self.fsq_image_term_train = None
         if config.train_image_only_terminator:
-            terminator = build_fsq_image_only_terminator(config.fsq_path)
+            terminator = build_fsq_image_only_terminator(
+                config.fsq_path,
+                termination_only=config.image_only_terminator_termination_only,
+            )
             terminator.freeze_vision_encoder = bool(
                 config.image_only_terminator_freeze_vision_encoder
             )
@@ -58,7 +64,10 @@ class SkillAuxModules(nn.Module):
             self.fsq_image_term_train = terminator.to(dtype=torch.float32)
         self.fsq_wrist_term_train = None
         if config.train_wrist_only_terminator:
-            terminator = build_fsq_wrist_only_terminator(config.fsq_path)
+            terminator = build_fsq_wrist_only_terminator(
+                config.fsq_path,
+                termination_only=config.wrist_only_terminator_termination_only,
+            )
             terminator.freeze_vision_encoder = bool(
                 config.wrist_only_terminator_freeze_vision_encoder
             )
@@ -194,9 +203,18 @@ class SkillAuxPolicy(PreTrainedPolicy):
         progress_target: Tensor,
         termination_target: Tensor,
         positive_weight: float,
+        termination_only: bool = False,
     ) -> tuple[Tensor, dict[str, float]]:
-        progress_loss = F.smooth_l1_loss(
-            progress_prediction, progress_target.to(progress_prediction.dtype)
+        # In termination-only mode the model returns a detached zero progress, so
+        # a smooth-L1 term against it would carry no gradient while still moving
+        # the reported loss. Drop the term and its panels instead of scoring a
+        # head that is not being trained.
+        progress_loss = (
+            None
+            if termination_only
+            else F.smooth_l1_loss(
+                progress_prediction, progress_target.to(progress_prediction.dtype)
+            )
         )
         termination_loss = F.binary_cross_entropy_with_logits(
             termination_logits,
@@ -207,7 +225,9 @@ class SkillAuxPolicy(PreTrainedPolicy):
                 dtype=termination_logits.dtype,
             ),
         )
-        objective = progress_loss + termination_loss
+        objective = (
+            termination_loss if progress_loss is None else progress_loss + termination_loss
+        )
         with torch.no_grad():
             predicted_end = termination_logits.sigmoid() >= 0.5
             target_end = termination_target >= 0.5
@@ -219,11 +239,8 @@ class SkillAuxPolicy(PreTrainedPolicy):
             f1 = 2.0 * precision * recall / (precision + recall).clamp_min(1e-8)
             metrics = {
                 f"{prefix}/loss": objective.detach().item(),
-                f"{prefix}/progress_loss": progress_loss.detach().item(),
                 f"{prefix}/termination_loss": termination_loss.detach().item(),
-                f"{prefix}/progress_mae": F.l1_loss(
-                    progress_prediction, progress_target.to(progress_prediction.dtype)
-                ).item(),
+                f"{prefix}/termination_only": float(termination_only),
                 f"{prefix}/end_accuracy": (
                     (predicted_end == target_end).float().mean().item()
                 ),
@@ -232,6 +249,11 @@ class SkillAuxPolicy(PreTrainedPolicy):
                 f"{prefix}/end_f1": f1.item(),
                 f"{prefix}/positive_fraction": target_end.float().mean().item(),
             }
+            if progress_loss is not None:
+                metrics[f"{prefix}/progress_loss"] = progress_loss.detach().item()
+                metrics[f"{prefix}/progress_mae"] = F.l1_loss(
+                    progress_prediction, progress_target.to(progress_prediction.dtype)
+                ).item()
         return objective, metrics
 
     def _terminator_objective(self, batch: dict) -> tuple[Tensor, dict[str, float]]:
@@ -277,6 +299,7 @@ class SkillAuxPolicy(PreTrainedPolicy):
             progress_target=progress_target,
             termination_target=termination_target,
             positive_weight=self.config.terminator_end_pos_weight,
+            termination_only=self.config.terminator_termination_only,
         )
 
     def _image_only_terminator_objective(
@@ -318,6 +341,7 @@ class SkillAuxPolicy(PreTrainedPolicy):
             progress_target=progress_target,
             termination_target=termination_target,
             positive_weight=self.config.image_only_terminator_end_pos_weight,
+            termination_only=self.config.image_only_terminator_termination_only,
         )
 
     def _wrist_only_terminator_objective(
@@ -355,6 +379,7 @@ class SkillAuxPolicy(PreTrainedPolicy):
             progress_target=progress_target,
             termination_target=termination_target,
             positive_weight=self.config.wrist_only_terminator_end_pos_weight,
+            termination_only=self.config.wrist_only_terminator_termination_only,
         )
 
     def _skill_predictor_objective(self, batch: dict) -> tuple[Tensor, dict[str, float]]:

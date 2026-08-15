@@ -4,7 +4,7 @@ dataset:
   run: FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal
 
 # Optional label appended to the generated run/output name.
-run: {suffix: ""}
+run: {suffix: "terminator_termonly"}
 
 warm_start:
   # Used only when skill_predictor.train=true.
@@ -14,23 +14,32 @@ warm_start:
 terminator:
   train: true
   freeze_vision: true
-  end_target_sigma: 1.0
+  end_target_sigma: 2.0
   end_pos_weight: 1.0
+  # true: drop the progress head from both the output and the loss;
+  # train the module purely as a boundary detector.
+  termination_only: true
 
 image_only_terminator:
   train: true
   freeze_vision: true
-  end_target_sigma: 1.0
+  end_target_sigma: 2.0
   end_pos_weight: 1.0
+  # true: drop the progress head from both the output and the loss;
+  # train the module purely as a boundary detector.
+  termination_only: true
 
 wrist_only_terminator:
-  train: true
-  freeze_vision: true
-  end_target_sigma: 1.0
+  train: false
+  freeze_vision: false
+  end_target_sigma: 2.0
   end_pos_weight: 1.0
+  # true: drop the progress head from both the output and the loss;
+  # train the module purely as a boundary detector.
+  termination_only: false
 
 skill_predictor:
-  train: true
+  train: false
   all_layers: true
   lora:
     enabled: true
@@ -42,7 +51,8 @@ skill_predictor:
   token_access: {image: true, language: true}
 
 training:
-  dataloader: {batch_size: 16, workers: 8, gpus: 1}
+  # dataloader: {batch_size: 32, workers: 8, gpus: 1}
+  dataloader: {batch_size: 256, workers: 12, gpus: 1}
   optimizer:
     base_lr: 2.5e-05
     terminator_lr_scale: 1.0
@@ -53,15 +63,15 @@ training:
     grad_clip_norm: 1.0
   gradient_checkpointing: false
   schedule:
-    steps: 50000
+    steps: 30000
     lr_mode: warmup_constant
-    warmup_steps: 1000
+    warmup_steps: 2500
     lr_decay_steps: 30000
     log_every: 100
-    save_every: 5000
+    save_every: 1000
 
 logging:
   # Kept separate from Stage-1 action-model runs.
   wandb: {enable: true, project: VLA_terminator}
 
-slurm: {gres: "gpu:1", cpus: 10, memory: 128G, time: "48:00:00"}
+slurm: {gres: "gpu:1", cpus: 14, memory: 128G, time: "48:00:00"}

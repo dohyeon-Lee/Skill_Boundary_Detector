@@ -35,6 +35,44 @@ class _DummyPolicyModel(nn.Module):
         return torch.ones(codes.shape[0], 3, device=codes.device)
 
 
+def test_restore_state_synchronizes_controller_before_first_action() -> None:
+    events: list[object] = []
+
+    class _Controller:
+        use_delta = False
+
+        def update(self, *, force: bool = False) -> None:
+            events.append(("controller_update", force))
+
+        def reset_goal(self) -> None:
+            events.append("controller_reset_goal")
+
+    class _Env:
+        def __init__(self) -> None:
+            self.robots = [SimpleNamespace(controller=_Controller())]
+
+        def reset(self) -> None:
+            events.append("env_reset")
+
+        def set_init_state(self, state: np.ndarray):
+            events.append(("set_init_state", state.copy()))
+            return "restored_obs"
+
+    env = _Env()
+    base_env = SimpleNamespace(_env=env)
+    state = np.array([1.0, 2.0], dtype=np.float32)
+
+    raw_obs = MODULE._restore_state(base_env, state)
+
+    assert raw_obs == "restored_obs"
+    assert env.robots[0].controller.use_delta is True
+    assert events[0] == "env_reset"
+    assert events[1][0] == "set_init_state"
+    assert events[1][1].dtype == np.float64
+    assert np.array_equal(events[1][1], state)
+    assert events[2:] == [("controller_update", True), "controller_reset_goal"]
+
+
 def test_termination_display_latches_at_first_threshold_crossing() -> None:
     values = [0.1, 0.49, 0.72, 0.3, 0.91]
 

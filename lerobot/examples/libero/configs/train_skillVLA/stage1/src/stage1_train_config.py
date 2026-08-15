@@ -38,6 +38,8 @@ COND_GEMMA_LABEL_TO_REVISION = {
     "arch0_adarms": "expert_skill_adarms_v1",
     "arch0_token": "expert_skill_token_v1",
     "arch0_token_iso": "expert_skill_token_isolated_v1",
+    "arch0_cond": "cond_skill_broadcast_v1",
+    "arch0_both": "dual_skill_broadcast_v1",
     "arch1_1": "expert_tokens_uncompressed_v1",
     "arch1_2": "expert_tokens_perceiver_v1",
 }
@@ -280,6 +282,8 @@ def build_settings(config: dict) -> dict:
         "arch0_adarms",
         "arch0_token",
         "arch0_token_iso",
+        "arch0_cond",
+        "arch0_both",
         "arch1",
         "arch1_1",
         "arch1_2",
@@ -312,7 +316,7 @@ def build_settings(config: dict) -> dict:
         raise ValueError(
             "architecture.name must be "
             "arch0|arch0_1|arch0_2|arch0_2_sep|arch0_3|arch0_adaRMS|"
-            "arch0_token|arch0_token_iso|"
+            "arch0_token|arch0_token_iso|arch0_cond|arch0_both|"
             "arch1_1|arch1_2|arch1_3|"
             "arch2_1|arch2_2|arch3|arch4, got "
             f"{architecture_label!r}."
@@ -644,6 +648,8 @@ def main() -> None:
             "arch0_adarms",
             "arch0_token",
             "arch0_token_iso",
+            "arch0_cond",
+            "arch0_both",
             "arch1_1",
             "arch1_2",
             "arch1_3",

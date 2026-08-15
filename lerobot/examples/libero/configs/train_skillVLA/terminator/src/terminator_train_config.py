@@ -264,6 +264,9 @@ def build_settings(config: dict) -> dict:
         "terminator_end_pos_weight": float(
             _at(config, "terminator", "end_pos_weight", default=1.0)
         ),
+        "terminator_termination_only": as_bool(
+            _at(config, "terminator", "termination_only", default=False)
+        ),
         "image_only_terminator_freeze_vision_encoder": as_bool(
             _at(config, "image_only_terminator", "freeze_vision", default=True)
         ),
@@ -273,6 +276,9 @@ def build_settings(config: dict) -> dict:
         "image_only_terminator_end_pos_weight": float(
             _at(config, "image_only_terminator", "end_pos_weight", default=1.0)
         ),
+        "image_only_terminator_termination_only": as_bool(
+            _at(config, "image_only_terminator", "termination_only", default=False)
+        ),
         "wrist_only_terminator_freeze_vision_encoder": as_bool(
             _at(config, "wrist_only_terminator", "freeze_vision", default=True)
         ),
@@ -281,6 +287,9 @@ def build_settings(config: dict) -> dict:
         ),
         "wrist_only_terminator_end_pos_weight": float(
             _at(config, "wrist_only_terminator", "end_pos_weight", default=1.0)
+        ),
+        "wrist_only_terminator_termination_only": as_bool(
+            _at(config, "wrist_only_terminator", "termination_only", default=False)
         ),
         **predictor_contract,
         "skill_predictor_lr_scale": float(

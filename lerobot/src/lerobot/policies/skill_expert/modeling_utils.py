@@ -112,34 +112,40 @@ def build_fsq_terminator(path: str | Path):
     return terminator
 
 
-def build_trainable_fsq_terminator(path: str | Path):
+def build_trainable_fsq_terminator(path: str | Path, termination_only: bool | None = None):
     """Build a trainable/overlayable terminator from joint-v3 or FSQ-original."""
     examples_root = Path(__file__).resolve().parents[4] / "examples" / "libero"
     if str(examples_root) not in sys.path:
         sys.path.insert(0, str(examples_root))
     from FSQ import build_trainable_fsq_terminator as build_trainable  # noqa: PLC0415
 
-    terminator, _ = build_trainable(str(path), device="cpu")
+    terminator, _ = build_trainable(
+        str(path), device="cpu", termination_only=termination_only
+    )
     return terminator
 
 
-def build_fsq_image_only_terminator(path: str | Path):
+def build_fsq_image_only_terminator(path: str | Path, termination_only: bool | None = None):
     """Build an image-only terminator with no weights warm-started from FSQ."""
     examples_root = Path(__file__).resolve().parents[4] / "examples" / "libero"
     if str(examples_root) not in sys.path:
         sys.path.insert(0, str(examples_root))
     from FSQ import build_fsq_image_only_terminator as build_image_only  # noqa: PLC0415
 
-    terminator, _ = build_image_only(str(path), device="cpu")
+    terminator, _ = build_image_only(
+        str(path), device="cpu", termination_only=termination_only
+    )
     return terminator
 
 
-def build_fsq_wrist_only_terminator(path: str | Path):
+def build_fsq_wrist_only_terminator(path: str | Path, termination_only: bool | None = None):
     """Build a wrist-only terminator with no weights warm-started from FSQ."""
     examples_root = Path(__file__).resolve().parents[4] / "examples" / "libero"
     if str(examples_root) not in sys.path:
         sys.path.insert(0, str(examples_root))
     from FSQ import build_fsq_wrist_only_terminator as build_wrist_only  # noqa: PLC0415
 
-    terminator, _ = build_wrist_only(str(path), device="cpu")
+    terminator, _ = build_wrist_only(
+        str(path), device="cpu", termination_only=termination_only
+    )
     return terminator

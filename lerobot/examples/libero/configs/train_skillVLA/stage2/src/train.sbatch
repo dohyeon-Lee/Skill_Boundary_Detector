@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Stage 2: frozen Stage-1 VSA prior + four language-conditioned likelihood blocks.
+# Stage 2: frozen cond_gemma Stage-1 prior + frozen predictor VLM + four
+# language-conditioned likelihood blocks. No terminator in training.
 #SBATCH --job-name=stage2_likelihood
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=16
@@ -24,13 +25,6 @@ else
   eval "$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/stage2_train_config.py" --config "${CONFIG_PATH}" --shell)"
 fi
 
-# Queued jobs submitted before same-skill batching was introduced carry an
-# older environment snapshot. Keep those jobs runnable and preserve their
-# submission-time behavior; newly submitted jobs receive these from the YAML.
-: "${SAME_SKILL_BATCH_ENABLED:=false}"
-: "${SAME_SKILL_BATCH_FRACTION:=0.5}"
-: "${SAME_SKILL_PROGRESS_TEMPERATURE:=0.1}"
-
 cd "${LEROBOT_ROOT}"
 source "${PROJECT_ROOT}/.venv/bin/activate"
 source "${PROJECT_ROOT}/lerobot/examples/libero/configs/runtime_env.sh"
@@ -38,14 +32,14 @@ export PYTHONPATH="${LEROBOT_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
 unset LD_LIBRARY_PATH
 
 echo "START STAGE 2 LIKELIHOOD"
-echo "dataset : ${SKILLVLA_DATASET_DIR}"
-echo "prior   : ${STAGE1_CHECKPOINT_PATH} (fully frozen)"
-echo "train   : VLM projection + ${LIKELIHOOD_NUM_LAYERS} blocks + action head"
-echo "skill   : ${TRAINING_SKILL_SOURCE}"
-echo "loss    : ${ACTION_LOSS_MODE}"
-echo "batching: batch=${BATCH_SIZE}, same-skill=${SAME_SKILL_BATCH_ENABLED}, grouped=${SAME_SKILL_BATCH_FRACTION}, progress-temp=${SAME_SKILL_PROGRESS_TEMPERATURE}"
-echo "aux     : predictor=${FINETUNE_SKILL_PREDICTOR}, terminator=${FINETUNE_TERMINATOR}"
-echo "output  : ${PT_OUTPUT_DIR}"
+echo "dataset  : ${SKILLVLA_DATASET_DIR}"
+echo "prior    : ${STAGE1_CHECKPOINT_PATH} (fully frozen, ${ARCHITECTURE}/${ARCHITECTURE_REVISION})"
+echo "predictor: ${PREDICTOR_CHECKPOINT_PATH} (fully frozen VLM)"
+echo "train    : VLM projection + ${LIKELIHOOD_NUM_LAYERS} blocks + action head"
+echo "skill    : ${TRAINING_SKILL_SOURCE}"
+echo "loss     : ${ACTION_LOSS_MODE}"
+echo "batching : batch=${BATCH_SIZE}, same-skill=${SAME_SKILL_BATCH_ENABLED}, grouped=${SAME_SKILL_BATCH_FRACTION}, progress-temp=${SAME_SKILL_PROGRESS_TEMPERATURE}"
+echo "output   : ${PT_OUTPUT_DIR}"
 
 if [ ! -e "${SKILLVLA_DATASET_DIR}" ]; then
   echo "Missing Stage-2 dataset: ${SKILLVLA_DATASET_DIR}" >&2
@@ -69,6 +63,10 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --dataset.video_backend=pyav \
     --policy.type=skill_vla_stage2 \
     --policy.stage1_checkpoint_path="${STAGE1_CHECKPOINT_PATH}" \
+    --policy.skill_predictor_checkpoint_path="${PREDICTOR_CHECKPOINT_PATH}" \
+    --policy.architecture="${ARCHITECTURE}" \
+    --policy.architecture_revision="${ARCHITECTURE_REVISION}" \
+    --policy.architecture_label="${ARCHITECTURE_LABEL}" \
     --policy.training_skill_source="${TRAINING_SKILL_SOURCE}" \
     --policy.action_loss_mode="${ACTION_LOSS_MODE}" \
     --policy.same_skill_batch_enabled="${SAME_SKILL_BATCH_ENABLED}" \
@@ -76,8 +74,6 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.same_skill_progress_temperature="${SAME_SKILL_PROGRESS_TEMPERATURE}" \
     --policy.likelihood_num_layers="${LIKELIHOOD_NUM_LAYERS}" \
     --policy.likelihood_cross_attention_heads="${LIKELIHOOD_CROSS_ATTENTION_HEADS}" \
-    --policy.finetune_skill_predictor="${FINETUNE_SKILL_PREDICTOR}" \
-    --policy.finetune_terminator="${FINETUNE_TERMINATOR}" \
     --policy.action_expert_variant="${ACTION_EXPERT_VARIANT}" \
     --policy.cond_encoder_variant="${COND_ENCODER_VARIANT}" \
     --policy.vision_backbone=dino \
@@ -85,13 +81,19 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.dino_image_size="${DINO_IMAGE_SIZE}" \
     --policy.freeze_vision_encoder="${FREEZE_VISION_ENCODER}" \
     --policy.conditioning_route="${CONDITIONING_ROUTE}" \
+    --policy.mask_actions_after_skill_end="${MASK_ACTIONS_AFTER_SKILL_END}" \
+    --policy.num_visual_latents_per_camera="${NUM_VISUAL_LATENTS_PER_CAMERA}" \
+    --policy.visual_perceiver_width="${VISUAL_PERCEIVER_WIDTH}" \
     --policy.skill_vocab_size="${SKILL_VOCAB_SIZE}" \
     --policy.skill_fsq_levels="${SKILL_FSQ_LEVELS}" \
     --policy.transition_jitter_pmax="${TRANSITION_JITTER_PMAX}" \
     --policy.transition_jitter_distribution="${TRANSITION_JITTER_DISTRIBUTION}" \
     --policy.train_skill_predictor="${TRAIN_SKILL_PREDICTOR}" \
-    --policy.skill_predictor_weight="${SKILL_PREDICTOR_WEIGHT}" \
-    --policy.skill_predictor_lr_scale="${SKILL_PREDICTOR_LR_SCALE}" \
+    --policy.skill_predictor_vlm_variant="${SKILL_PREDICTOR_VLM_VARIANT}" \
+    --policy.skill_predictor_image_size="${SKILL_PREDICTOR_IMAGE_SIZE}" \
+    --policy.skill_predictor_reader_tokens="${SKILL_PREDICTOR_READER_TOKENS}" \
+    --policy.skill_predictor_reader_depth="${SKILL_PREDICTOR_READER_DEPTH}" \
+    --policy.skill_predictor_reader_heads="${SKILL_PREDICTOR_READER_HEADS}" \
     --policy.skill_predictor_all_layers="${SKILL_PREDICTOR_ALL_LAYERS}" \
     --policy.skill_predictor_detach_vlm="${SKILL_PREDICTOR_DETACH_VLM}" \
     --policy.skill_predictor_lora="${SKILL_PREDICTOR_LORA}" \
@@ -99,12 +101,6 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.skill_predictor_lora_rank="${SKILL_PREDICTOR_LORA_RANK}" \
     --policy.skill_predictor_lora_alpha="${SKILL_PREDICTOR_LORA_ALPHA}" \
     --policy.skill_predictor_lora_dropout="${SKILL_PREDICTOR_LORA_DROPOUT}" \
-    --policy.skill_predictor_lora_lr_scale="${SKILL_PREDICTOR_LORA_LR_SCALE}" \
-    --policy.skill_predictor_vlm_variant="${SKILL_PREDICTOR_VLM_VARIANT}" \
-    --policy.skill_predictor_image_size="${SKILL_PREDICTOR_IMAGE_SIZE}" \
-    --policy.skill_predictor_reader_tokens="${SKILL_PREDICTOR_READER_TOKENS}" \
-    --policy.skill_predictor_reader_depth="${SKILL_PREDICTOR_READER_DEPTH}" \
-    --policy.skill_predictor_reader_heads="${SKILL_PREDICTOR_READER_HEADS}" \
     --policy.skill_predictor_deadzone_frac="${SKILL_PREDICTOR_DEADZONE_FRAC}" \
     --policy.skill_predictor_attend_image="${SKILL_PREDICTOR_ATTEND_IMAGE}" \
     --policy.skill_predictor_attend_language="${SKILL_PREDICTOR_ATTEND_LANGUAGE}" \
@@ -112,10 +108,6 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.tokenizer_max_length="${TOKENIZER_MAX_LENGTH}" \
     --policy.train_terminator="${TRAIN_TERMINATOR}" \
     --policy.fsq_path="${FSQ_PATH}" \
-    --policy.terminator_freeze_vision_encoder="${TERMINATOR_FREEZE_VISION_ENCODER}" \
-    --policy.terminator_lr_scale="${TERMINATOR_LR_SCALE}" \
-    --policy.terminator_end_target_sigma="${TERMINATOR_END_TARGET_SIGMA}" \
-    --policy.terminator_end_pos_weight="${TERMINATOR_END_POS_WEIGHT}" \
     --policy.max_state_dim="${MAX_STATE_DIM}" \
     --policy.max_action_dim="${MAX_ACTION_DIM}" \
     --policy.chunk_size="${CHUNK_SIZE}" \

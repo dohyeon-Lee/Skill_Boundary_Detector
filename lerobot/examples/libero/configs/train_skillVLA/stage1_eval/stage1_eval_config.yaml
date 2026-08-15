@@ -1,11 +1,3 @@
-# Unified Stage-1 closed-loop evaluation.
-#
-# Arch0--4 may be mixed freely in one models list. The evaluator reads the exact
-# architecture/revision from each checkpoint and loads one model at a time.
-# Historical VSA checkpoints under skillVLA_stage1/previous use `previous: true`.
-# Old skillVLA_real Cond-Gemma checkpoints without an architecture field are
-# recognized from their saved conditioning_route; no manual architecture field
-# belongs in this YAML.
 outputs_root: outputs_filtered
 # outputs_root: outputs
 
@@ -13,9 +5,9 @@ outputs_root: outputs_filtered
 # The target model architecture may differ: only compatible predictor/terminator
 # submodules are validated and overlaid.
 # external_skill_model: outputs_filtered/skillVLA_stage1/bs16_libero_90_full_firsthalf_scene_FSQ333_125_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch1_VisO_StateO_SkillO/checkpoints/030000/pretrained_model
-external_skill_model: outputs_filtered/skillVLA_stage1/bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch4_DINO_LR_100p_Skill_Predictor/checkpoints/100000/pretrained_model
+# external_skill_model: outputs_filtered/skillVLA_stage1/bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch4_DINO_LR_100p_Skill_Predictor/checkpoints/100000/pretrained_model
 # external_skill_model: outputs/skillVLA_stage1/bs32_langgap_56_full_firsthalf_FSQ345_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch0/checkpoints/100000/pretrained_model
-
+external_skill_model: outputs_filtered/skillVLA_terminator/bs256_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_terminator/checkpoints/020000/pretrained_model
 # Common values inherited by every models[] entry. A value written inside an
 # individual model entry takes priority over the corresponding value here.
 
@@ -42,37 +34,60 @@ external_skill_model: outputs_filtered/skillVLA_stage1/bs32_libero_90_full_first
 
 model_defaults:
   previous: false
-  checkpoint: "050000" # ["030000", "050000", "070000", "085000"]
+  checkpoint: "100000" # ["030000", "050000", "070000", "085000"]
   skill_source: external
-  advance_mode: original
+  advance_mode: external
 models:
-  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch0_2_skillendmask
-    label: arch0_2
-  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch0_2_skillendmask_cumxyz0p5
-    label: arch0_2_cumxyz0p5
-  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch0_2_sep_skillendmask
-    label: arch0_2_sep
-  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch0_2_sep_skillendmask_cumxyz0p5
-    label: arch0_2_sep_cumxyz0p5
+  # external_skill_model may be set per entry, so each target uses the terminator
+  # trained on its own FSQ run. The terminator's skill_fsq_levels must match the
+  # target policy's, and the source must have train_terminator: true.
+  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch0_skillendmask
+    label: 80p_prevFSQ
+    skill_source: external
+    advance_mode: external
+    terminator_variant: state_image
+    external_predictor_model: outputs_filtered/skillVLA_stage1/bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch4_DINO_LR_100p_Skill_Predictor/checkpoints/100000/pretrained_model
+    external_terminator_model: outputs_filtered/skillVLA_stage1/bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch4_DINO_LR_100p_Skill_Predictor/checkpoints/100000/pretrained_model
+
+  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask
+    label: 100p_broadcast
+    skill_source: external
+    advance_mode: external
+    external_predictor_model:  outputs_filtered/skillVLA_terminator/bs16_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal/checkpoints/050000/pretrained_model
+    external_terminator_model: outputs_filtered/skillVLA_terminator/bs256_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_terminator/checkpoints/020000/pretrained_model
 # Empty => timestamped directory. A fixed name is useful with resume: true.
-output_name: "cum_and_sep_ext_5k_or"
+output_name: "FSQ_comparison_100K_external"
 
 # model_defaults:
 #   previous: false
-#   checkpoint: "100000"
-#   skill_source: external
+#   checkpoint: "100000" # ["030000", "050000", "070000", "085000"]
+#   skill_source: gt
 #   advance_mode: external
 # models:
-#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch0
-#     label: arch0_DINO_LR_10p
-#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch0_DINO_LR_100p
-#     label: arch0_DINO_LR_100p
-#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch4
-#     label: arch4_DINO_LR_10p
-#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch4_DINO_LR_100p_Skill_Predictor
-#     label: arch4_DINO_LR_100p
+#   # external_skill_model may be set per entry, so each target uses the terminator
+#   # trained on its own FSQ run. The terminator's skill_fsq_levels must match the
+#   # target policy's, and the source must have train_terminator: true.
+#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask
+#     label: 100p_broadcast
+#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_adarms_skillendmask
+#     label: 100p_adaRMS
+#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_token_skillendmask
+#     label: 100p_token
 # # Empty => timestamped directory. A fixed name is useful with resume: true.
-# output_name: "archC_ext_ext_or"
+# output_name: "skill_conditioning_100K"
+
+# model_defaults:
+#   previous: false
+#   checkpoint: "030000" # ["030000", "050000", "070000", "085000"]
+#   skill_source: gt
+#   advance_mode: gt
+# models:
+#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_adarms_skillendmask
+#     label: adaRMS
+#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask
+#     label: broadcast
+# # Empty => timestamped directory. A fixed name is useful with resume: true.
+# output_name: "FSQ_skill_conditioning_3K"
 
 
 # model_defaults:
@@ -118,8 +133,8 @@ oracle:
 terminator:
   # state_image = regular state+camera terminator; image_only = camera-only aux model.
   # image_only requires advance_mode: external and a skill_aux checkpoint above.
-  variant: state_image
-  end_mode: or             # termination | progress | or | and
+  variant: image_only
+  end_mode: termination             # termination | progress | or | and
   end_threshold: 0.5
   progress_threshold: 0.95
   immediate_replan_on_skill_end: true

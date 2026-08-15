@@ -1540,6 +1540,18 @@ def _terminator_build_config(
                 "Fresh terminator construction requires an FSQ-original spline "
                 "encoder with raw state bounds."
             )
+        # The terminator normalizes ABSOLUTE proprioception, so encoder_min/max
+        # may stand in for the v3 state_min/max only when the encoder consumed
+        # raw states. Under zero_grounded/optimal those bounds describe
+        # start-relative deltas, which would silently mis-scale every state.
+        encoder_input_mode = str(getattr(source_cfg, "encoder_input_mode", "zero_grounded"))
+        if encoder_input_mode != "raw_state":
+            raise ValueError(
+                "Fresh terminator construction requires an FSQ-original checkpoint "
+                f"trained with encoder_input_mode='raw_state', got {encoder_input_mode!r}: "
+                "its encoder_min/max are start-relative and cannot normalize the "
+                "terminator's absolute state input."
+            )
         state_min = getattr(source_cfg, "encoder_min", None)
         state_max = getattr(source_cfg, "encoder_max", None)
         if state_min is None or state_max is None:
@@ -1593,6 +1605,7 @@ def _new_fsq_terminator(
     cfg: SplineFSQAEConfig,
     *,
     dino_model_path: str | None,
+    termination_only: bool | None = None,
 ) -> FSQQueryTerminator:
     kwargs = {
         "state_dim": cfg.state_dim,
@@ -1612,10 +1625,14 @@ def _new_fsq_terminator(
         "state_min": cfg.state_min,
         "state_max": cfg.state_max,
     }
-    if terminator_cls is FSQQueryTerminator:
-        kwargs["termination_only"] = getattr(
-            cfg, "terminator_termination_only", False
-        )
+    # Every terminator variant subclasses FSQQueryTerminator and forwards **kwargs
+    # to it, so the image-only and wrist-only models honor this too. An explicit
+    # argument wins over the checkpoint contract; None keeps the cfg default.
+    kwargs["termination_only"] = (
+        bool(getattr(cfg, "terminator_termination_only", False))
+        if termination_only is None
+        else bool(termination_only)
+    )
     return terminator_cls(**kwargs)
 
 
@@ -1674,6 +1691,7 @@ def build_trainable_fsq_terminator(
     path: str | Path,
     device: str | torch.device = "cpu",
     dino_model_path: str | None = None,
+    termination_only: bool | None = None,
 ) -> tuple[FSQQueryTerminator, Any]:
     """Build the state+image terminator used by standalone training.
 
@@ -1687,6 +1705,7 @@ def build_trainable_fsq_terminator(
         FSQQueryTerminator,
         cfg,
         dino_model_path=dino_model_path,
+        termination_only=termination_only,
     )
     if has_terminator_weights:
         _load_prefixed(terminator, checkpoint["model_state"], "terminator.")
@@ -1704,6 +1723,7 @@ def build_fsq_image_only_terminator(
     path: str | Path,
     device: str | torch.device = "cpu",
     dino_model_path: str | None = None,
+    termination_only: bool | None = None,
 ) -> tuple[FSQImageOnlyQueryTerminator, SplineFSQAEConfig]:
     """Build a fresh image-only terminator without loading any FSQ model tensor.
 
@@ -1722,6 +1742,7 @@ def build_fsq_image_only_terminator(
         FSQImageOnlyQueryTerminator,
         cfg,
         dino_model_path=dino_model_path,
+        termination_only=termination_only,
     )
     terminator.to(device).eval()
     return terminator, source_cfg
@@ -1731,6 +1752,7 @@ def build_fsq_wrist_only_terminator(
     path: str | Path,
     device: str | torch.device = "cpu",
     dino_model_path: str | None = None,
+    termination_only: bool | None = None,
 ) -> tuple[FSQWristOnlyQueryTerminator, SplineFSQAEConfig]:
     """Build a fresh wrist-only terminator without loading any FSQ tensor."""
     checkpoint = torch.load(str(path), map_location="cpu", weights_only=False)
@@ -1744,6 +1766,7 @@ def build_fsq_wrist_only_terminator(
         FSQWristOnlyQueryTerminator,
         cfg,
         dino_model_path=dino_model_path,
+        termination_only=termination_only,
     )
     terminator.to(device).eval()
     return terminator, source_cfg

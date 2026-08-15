@@ -41,6 +41,8 @@ COND_GEMMA_WRIST_DUAL_STATE_REVISION = "wrist_cond_expert_state_adarms_v1"
 COND_GEMMA_SKILL_ADARMS_REVISION = "expert_skill_adarms_v1"
 COND_GEMMA_SKILL_TOKEN_REVISION = "expert_skill_token_v1"
 COND_GEMMA_ISOLATED_SKILL_TOKEN_REVISION = "expert_skill_token_isolated_v1"
+COND_GEMMA_COND_SKILL_BROADCAST_REVISION = "cond_skill_broadcast_v1"
+COND_GEMMA_DUAL_SKILL_BROADCAST_REVISION = "dual_skill_broadcast_v1"
 COND_GEMMA_EXPERT_TOKENS_REVISION = "expert_tokens_uncompressed_v1"
 COND_GEMMA_PERCEIVER_EXPERT_TOKENS_REVISION = "expert_tokens_perceiver_v1"
 COND_GEMMA_ARCHITECTURE_LABELS = {
@@ -54,6 +56,8 @@ COND_GEMMA_ARCHITECTURE_LABELS = {
     COND_GEMMA_SKILL_ADARMS_REVISION: "arch0_adarms",
     COND_GEMMA_SKILL_TOKEN_REVISION: "arch0_token",
     COND_GEMMA_ISOLATED_SKILL_TOKEN_REVISION: "arch0_token_iso",
+    COND_GEMMA_COND_SKILL_BROADCAST_REVISION: "arch0_cond",
+    COND_GEMMA_DUAL_SKILL_BROADCAST_REVISION: "arch0_both",
     COND_GEMMA_EXPERT_TOKENS_REVISION: "arch1_1",
     COND_GEMMA_PERCEIVER_EXPERT_TOKENS_REVISION: "arch1_2",
 }
@@ -66,6 +70,8 @@ COND_STATE_ADARMS_REVISIONS = frozenset(
         COND_GEMMA_SKILL_ADARMS_REVISION,
         COND_GEMMA_SKILL_TOKEN_REVISION,
         COND_GEMMA_ISOLATED_SKILL_TOKEN_REVISION,
+        COND_GEMMA_COND_SKILL_BROADCAST_REVISION,
+        COND_GEMMA_DUAL_SKILL_BROADCAST_REVISION,
     }
 )
 # Arch0_adaRMS drops the expert skill broadcast and sums the skill embedding
@@ -84,6 +90,14 @@ EXPERT_SKILL_TOKEN_REVISIONS = frozenset(
 # scene-contextualized one. Both directions still hide actions from skill.
 ISOLATED_SKILL_TOKEN_REVISIONS = frozenset(
     {COND_GEMMA_ISOLATED_SKILL_TOKEN_REVISION}
+)
+# Arch0 broadcasts the skill to the action expert only. These two ablate the
+# broadcast target instead of the mechanism: Cond-Gemma alone, or both streams.
+COND_SKILL_BROADCAST_REVISIONS = frozenset(
+    {COND_GEMMA_COND_SKILL_BROADCAST_REVISION}
+)
+DUAL_SKILL_BROADCAST_REVISIONS = frozenset(
+    {COND_GEMMA_DUAL_SKILL_BROADCAST_REVISION}
 )
 EXPERT_STATE_ADARMS_REVISIONS = frozenset(
     {
@@ -203,6 +217,16 @@ class SkillExpertConfig(PreTrainedConfig):
     dino_lr_scale: float = 0.1
     freeze_vision_encoder: bool = False
     dino_lr: float | None = None
+    # Phase-batch sampling was removed from Stage 1, but 286 of the existing
+    # checkpoints saved these fields into config.json. draccus rejects unknown
+    # fields, so dropping them outright made every one of those checkpoints
+    # impossible to evaluate. They are retained purely so historical configs stay
+    # loadable: nothing reads them and they are deliberately left unvalidated.
+    phase_batch_sampling_enabled: bool = False
+    phase_batch_focused_fraction: float = 0.75
+    phase_batch_early_fraction: float = 0.5
+    phase_batch_early_threshold: float = 0.25
+    phase_batch_late_threshold: float = 0.75
     num_visual_latents_per_camera: int = 32
     visual_perceiver_width: int = 1024
     skill_vocab_size: int = 27
@@ -363,6 +387,8 @@ class SkillExpertConfig(PreTrainedConfig):
                     COND_GEMMA_SKILL_ADARMS_REVISION,
                     COND_GEMMA_SKILL_TOKEN_REVISION,
                     COND_GEMMA_ISOLATED_SKILL_TOKEN_REVISION,
+                    COND_GEMMA_COND_SKILL_BROADCAST_REVISION,
+                    COND_GEMMA_DUAL_SKILL_BROADCAST_REVISION,
                 }
                 and self.conditioning_route != "state_cond"
             ):

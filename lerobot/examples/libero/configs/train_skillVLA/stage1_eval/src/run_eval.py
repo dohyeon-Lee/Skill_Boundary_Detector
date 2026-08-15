@@ -784,6 +784,14 @@ def _build_context(spec: dict, cfg, device: torch.device) -> dict:
         spec.get("terminator_variant", "state_image")
     )
     external_skill_model = str(spec.get("external_skill_model") or "").strip()
+    # The predictor and terminator overlays may come from different checkpoints;
+    # both fall back to external_skill_model when a role is not split out.
+    external_predictor_model = str(
+        spec.get("external_predictor_model") or external_skill_model
+    ).strip()
+    external_terminator_model = str(
+        spec.get("external_terminator_model") or external_skill_model
+    ).strip()
     policy_config = _policy_config(spec, cfg.policy, device)
     if spec.get("architecture") == COND_GEMMA_ARCHITECTURE:
         log.info(
@@ -815,27 +823,27 @@ def _build_context(spec: dict, cfg, device: torch.device) -> dict:
         cfg=policy_config, env_cfg=cfg.env, rename_map=cfg.rename_map
     )
     if skill_source == "external":
-        if not external_skill_model:
+        if not external_predictor_model:
             raise ValueError(
                 f"[{spec['label']}] skill_source=external requires "
-                "external_skill_model."
+                "external_predictor_model or external_skill_model."
             )
         if policy_config.type != "skill_expert":
             raise ValueError(
                 f"[{spec['label']}] external predictor override is supported only "
                 "for skill_expert checkpoints."
             )
-        policy.load_external_skill_predictor(external_skill_model)
+        policy.load_external_skill_predictor(external_predictor_model)
         log.info(
             "[%s] overlaid external predictor from %s.",
             spec["label"],
-            external_skill_model,
+            external_predictor_model,
         )
     if advance_mode == "external":
-        if not external_skill_model:
+        if not external_terminator_model:
             raise ValueError(
                 f"[{spec['label']}] advance_mode=external requires "
-                "external_skill_model."
+                "external_terminator_model or external_skill_model."
             )
         if policy_config.type != "skill_expert":
             raise ValueError(
@@ -843,14 +851,14 @@ def _build_context(spec: dict, cfg, device: torch.device) -> dict:
                 "for skill_expert checkpoints."
             )
         if terminator_variant == "image_only":
-            policy.load_external_image_only_terminator(external_skill_model)
+            policy.load_external_image_only_terminator(external_terminator_model)
         else:
-            policy.load_external_terminator(external_skill_model)
+            policy.load_external_terminator(external_terminator_model)
         log.info(
             "[%s] overlaid external %s terminator from %s.",
             spec["label"],
             terminator_variant,
-            external_skill_model,
+            external_terminator_model,
         )
     elif advance_mode == "original":
         if policy_config.type != "skill_expert":

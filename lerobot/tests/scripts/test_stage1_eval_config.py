@@ -103,6 +103,7 @@ def test_model_defaults_are_inherited_and_model_values_override_them() -> None:
                 "checkpoint": "015000",
                 "skill_source": "gt",
                 "advance_mode": "external",
+                "external_skill_model": "outputs/shared/ckpt",
             },
             "models": [
                 {"model_dir": "historical", "label": "historical"},
@@ -113,6 +114,7 @@ def test_model_defaults_are_inherited_and_model_values_override_them() -> None:
                     "checkpoint": "030000",
                     "skill_source": "own",
                     "advance_mode": "gt",
+                    "external_skill_model": "outputs/own/ckpt",
                 },
             ],
         }
@@ -129,6 +131,9 @@ def test_model_defaults_are_inherited_and_model_values_override_them() -> None:
         "model_index": 0,
         "checkpoint_index": 0,
         "previous_checkpoint": True,
+        # Inherited from model_defaults; one value covers both overlays.
+        "external_predictor_model_value": "outputs/shared/ckpt",
+        "external_terminator_model_value": "outputs/shared/ckpt",
     }
     assert entries[1] == {
         "model_dir": "current",
@@ -141,6 +146,9 @@ def test_model_defaults_are_inherited_and_model_values_override_them() -> None:
         "model_index": 1,
         "checkpoint_index": 0,
         "previous_checkpoint": False,
+        # A per-entry value wins, so each target can use its own terminator.
+        "external_predictor_model_value": "outputs/own/ckpt",
+        "external_terminator_model_value": "outputs/own/ckpt",
     }
 
 
@@ -689,3 +697,119 @@ def test_eval_exports_immediate_skill_end_replanning(tmp_path: Path) -> None:
     settings = build_settings(config)
 
     assert settings["immediate_replan_on_skill_end"] is True
+
+
+def test_predictor_and_terminator_externals_can_name_different_checkpoints() -> None:
+    """skill_source and advance_mode may overlay from separate checkpoints."""
+    entries = _model_entries(
+        {
+            "external_skill_model": "outputs/top/ckpt",
+            "model_defaults": {
+                "checkpoint": "100000",
+                "skill_source": "external",
+                "advance_mode": "external",
+            },
+            "models": [
+                # Inherits the shared top-level value for both roles.
+                {"model_dir": "shared", "label": "shared"},
+                # Splits the two roles apart.
+                {
+                    "model_dir": "split",
+                    "label": "split",
+                    "external_predictor_model": "outputs/pred/ckpt",
+                    "external_terminator_model": "outputs/term/ckpt",
+                },
+                # A per-entry external_skill_model still covers both roles.
+                {
+                    "model_dir": "both",
+                    "label": "both",
+                    "external_skill_model": "outputs/both/ckpt",
+                },
+                # One role overridden, the other left on the entry-wide value.
+                {
+                    "model_dir": "mixed",
+                    "label": "mixed",
+                    "external_skill_model": "outputs/both/ckpt",
+                    "external_terminator_model": "outputs/term/ckpt",
+                },
+            ],
+        }
+    )
+
+    roles = {
+        entry["label"]: (
+            entry["external_predictor_model_value"],
+            entry["external_terminator_model_value"],
+        )
+        for entry in entries
+    }
+
+    assert roles == {
+        "shared": ("outputs/top/ckpt", "outputs/top/ckpt"),
+        "split": ("outputs/pred/ckpt", "outputs/term/ckpt"),
+        "both": ("outputs/both/ckpt", "outputs/both/ckpt"),
+        "mixed": ("outputs/both/ckpt", "outputs/term/ckpt"),
+    }
+
+
+@pytest.mark.parametrize("target_has_predictor", [False, True])
+def test_predictor_overlay_contract_depends_on_whether_target_owns_a_predictor(
+    tmp_path: Path, target_has_predictor: bool
+) -> None:
+    """A predictor-free target rebuilds the module from the source checkpoint.
+
+    Its own skill_predictor_* values are unused defaults in that case, so only the
+    skill geometry must agree. A target that trained a predictor keeps the strict
+    module contract, because the overlay loads into its existing module.
+    """
+    config = _config(tmp_path)
+    project = Path(config["project_root"])
+    target = (
+        project
+        / config["outputs_root"]
+        / "skillVLA_stage1/new-vsa/checkpoints/000100/pretrained_model"
+    )
+    target_policy = json.loads((target / "config.json").read_text())
+    fsq = project / "dataset/skillvla_dataset/source/run/FSQ.pt"
+    fsq.touch()
+    target_policy["fsq_path"] = str(fsq)
+    target_policy["train_skill_predictor"] = target_has_predictor
+    # The target's own module shape: LoRA-free.
+    target_policy["skill_predictor_lora"] = False
+    target_policy["skill_predictor_all_layers"] = False
+    tokenizer = project / "models/tokenizer"
+    tokenizer.mkdir(parents=True)
+    if target_has_predictor:
+        # A target owning a predictor must carry its own tokenizer.
+        target_policy["tokenizer_path"] = str(tokenizer)
+    (target / "config.json").write_text(json.dumps(target_policy))
+
+    external = project / "external/predictor/checkpoints/030000/pretrained_model"
+    external.mkdir(parents=True)
+    source_policy = {
+        **target_policy,
+        "train_skill_predictor": True,
+        "tokenizer_path": str(tokenizer),
+        # Differs from the target only in module shape, not skill geometry.
+        "skill_predictor_lora": True,
+        "skill_predictor_all_layers": True,
+    }
+    (external / "config.json").write_text(json.dumps(source_policy))
+    (external / "model.safetensors").touch()
+
+    config["external_skill_model"] = str(external)
+    config["models"][0]["skill_source"] = "external"
+
+    if target_has_predictor:
+        with pytest.raises(ValueError, match="module contract mismatch"):
+            build_settings(config)
+        return
+
+    model = json.loads(build_settings(config)["models_json"])[0]
+    assert Path(model["external_predictor_model"]) == external
+
+    # Skill geometry is still enforced on the relaxed path.
+    source_policy["skill_fsq_levels"] = [3, 4, 5]
+    (external / "config.json").write_text(json.dumps(source_policy))
+    with pytest.raises(ValueError, match="skill geometry mismatch"):
+        build_settings(config)

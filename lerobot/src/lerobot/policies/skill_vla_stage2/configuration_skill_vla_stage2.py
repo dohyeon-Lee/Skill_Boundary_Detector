@@ -5,25 +5,36 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from lerobot.configs.policies import PreTrainedConfig
-from lerobot.policies.skill_expert.configuration_skill_expert import SkillExpertConfig
+from lerobot.policies.skill_expert.configuration_skill_expert import (
+    COND_GEMMA_ARCHITECTURE,
+    COND_GEMMA_ARCHITECTURE_REVISION,
+    SkillExpertConfig,
+)
 
 
 @PreTrainedConfig.register_subclass("skill_vla_stage2")
 @dataclass
 class SkillVLAStage2Config(SkillExpertConfig):
-    """Frozen Stage-1 VSA prior plus four language-conditioned action blocks.
+    """Frozen cond_gemma Stage-1 prior plus four language-conditioned action blocks.
 
-    Predictor reader/head and terminator continuation training are optional and
-    disabled by default; neither can send gradients into the frozen VSA prior.
+    The Stage-1 prior checkpoint carries no predictor or terminator of its own.
+    The frozen VLM memory comes from a separate ``skill_predictor_checkpoint_path``
+    (any Stage-1/skill_aux run with a trained predictor); the module fields
+    describing that predictor are inherited from that checkpoint's config.
+    Terminators are attached externally at evaluation time and are never part
+    of Stage-2 training.
     """
 
     model_type: str = "skill_vla_stage2"
+    architecture: str = COND_GEMMA_ARCHITECTURE
+    architecture_revision: str = COND_GEMMA_ARCHITECTURE_REVISION
+    # The frozen VLM module must be instantiated (and language tokenization
+    # enabled); Stage 2 never trains it.
+    train_skill_predictor: bool = True
     stage1_checkpoint_path: str | None = None
     training_skill_source: str = "gt"
     likelihood_num_layers: int = 4
     likelihood_cross_attention_heads: int = 8
-    finetune_skill_predictor: bool = False
-    finetune_terminator: bool = False
     same_skill_batch_enabled: bool = False
     same_skill_batch_fraction: float = 0.5
     same_skill_progress_temperature: float = 0.1
@@ -32,6 +43,16 @@ class SkillVLAStage2Config(SkillExpertConfig):
         super().__post_init__()
         if not str(self.stage1_checkpoint_path or "").strip():
             raise ValueError("Stage 2 requires stage1_checkpoint_path.")
+        if not str(self.skill_predictor_checkpoint_path or "").strip():
+            raise ValueError(
+                "Stage 2 requires skill_predictor_checkpoint_path; the frozen "
+                "VLM memory is assembled separately from the Stage-1 prior."
+            )
+        if self.architecture != COND_GEMMA_ARCHITECTURE:
+            raise ValueError(
+                "Stage 2 is implemented on the cond_gemma Stage-1 prior; got "
+                f"architecture={self.architecture!r}."
+            )
         if self.training_skill_source not in {"gt", "predictor"}:
             raise ValueError(
                 "training_skill_source must be 'gt' or 'predictor', got "
@@ -52,13 +73,14 @@ class SkillVLAStage2Config(SkillExpertConfig):
             raise ValueError("same_skill_progress_temperature must be > 0.")
         if not self.train_skill_predictor:
             raise ValueError(
-                "Stage 2 reuses the frozen Stage-1 VLM/predictor and requires "
-                "train_skill_predictor=True in the inherited architecture."
+                "Stage 2 requires train_skill_predictor=True so the frozen VLM "
+                "module is instantiated and language tokens are produced; the "
+                "predictor itself is never trained in Stage 2."
             )
-        if not self.train_terminator:
+        if self.train_terminator:
             raise ValueError(
-                "Stage 2 checkpoints retain the frozen Stage-1 terminator; "
-                "train_terminator=True is required in the inherited architecture."
+                "Stage 2 trains without a terminator; keep train_terminator=False "
+                "and attach one at evaluation time via load_external_terminator."
             )
         if not (
             self.skill_predictor_attend_image

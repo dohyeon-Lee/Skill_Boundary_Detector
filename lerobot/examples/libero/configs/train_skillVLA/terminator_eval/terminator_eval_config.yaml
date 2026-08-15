@@ -9,67 +9,104 @@ outputs_root: outputs_filtered
 
 model:
   previous: false
-  model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch1_2
-  checkpoint: "070000"
-  label: arch1_2_70k
+  model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask
+  checkpoint: "100000"
+  label: arch0_skillendmask
   # own: use the terminator stored in this checkpoint.
   # external: overlay only the terminator from external_skill_model.
   terminator_source: external
 
 # Use the pristine state+image terminator stored in the selected policy's raw
 # FSQ.pt, before any Stage-1 or specialist terminator training.
-external_skill_model:
-  variant: fsq_initial
+# external_skill_model:
+#   variant: fsq_initial
 
 # A trained checkpoint can instead be selected with:
-# external_skill_model:
-#   variant: checkpoint
-#   group: skillVLA_stage1
-#   model_dir: trained_terminator_model_dir
-#   checkpoint: "100000"
+external_skill_model:
+  variant: state_image
+  group: skillVLA_terminator
+  model_dir: bs256_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_terminator
+  checkpoint: "020000"
 
 # Trained entries resolve as:
 #   <outputs_root>/skillVLA_terminator/<model_dir>/checkpoints/<checkpoint>/pretrained_model
 # All entries are display-only. Only MAIN controls rollout stopping.
 # variant: state_image | image_only | wrist_only | fsq_initial
 terminator_models:
-  - label: IMAGE_1k
-    variant: image_only
-    model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_terminator_3
+  - label: both_5k
+    variant: state_image
+    model_dir: bs256_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_terminator
+    checkpoint: "005000"
+  - label: both_10k
+    variant: state_image
+    model_dir: bs256_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_terminator
     checkpoint: "010000"
-
-  - label: IMAGE_3k
-    variant: image_only
-    model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_terminator_3
-    checkpoint: "030000"
+  - label: both_15k
+    variant: state_image
+    model_dir: bs256_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_terminator
+    checkpoint: "015000"
+  - label: both_20k
+    variant: state_image
+    model_dir: bs256_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_terminator
+    checkpoint: "020000"
+  - label: both_25k
+    variant: state_image
+    model_dir: bs256_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_terminator
+    checkpoint: "025000"
 
   - label: IMAGE_5k
     variant: image_only
-    model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_terminator_3
-    checkpoint: "050000"
-
-  - label: WRIST_1k
-    variant: wrist_only
-    model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_terminator_3
+    model_dir: bs256_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_terminator
+    checkpoint: "005000"
+  - label: IMAGE_10k
+    variant: image_only
+    model_dir: bs256_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_terminator
     checkpoint: "010000"
+  - label: IMAGE_15k
+    variant: image_only
+    model_dir: bs256_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_terminator
+    checkpoint: "015000"
+  - label: IMAGE_20k
+    variant: image_only
+    model_dir: bs256_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_terminator
+    checkpoint: "020000"
+  - label: IMAGE_25k
+    variant: image_only
+    model_dir: bs256_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_terminator
+    checkpoint: "025000"
 
-  - label: WRIST_3k
-    variant: wrist_only
-    model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_terminator_3
-    checkpoint: "030000"
+  # - label: vis_both_5k
+  #   variant: state_image
+  #   model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_terminator
+  #   checkpoint: "005000"
+  # - label: vis_both_10k
+  #   variant: state_image
+  #   model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_terminator
+  #   checkpoint: "010000"
+  # - label: vis_both_25k
+  #   variant: state_image
+  #   model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_terminator
+  #   checkpoint: "025000"
 
-  - label: WRIST_5k
-    variant: wrist_only
-    model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_terminator_3
-    checkpoint: "050000"
-  
-  # - label: WRIST
-  #   variant: wrist_only
-  #   model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_terminator_3
-  #   checkpoint: "050000"
+  # - label: vis_IMAGE_5k
+  #   variant: image_only
+  #   model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_terminator
+  #   checkpoint: "005000"
+  # - label: vis_IMAGE_10k
+  #   variant: image_only
+  #   model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_terminator
+  #   checkpoint: "010000"
+  # - label: vis_IMAGE_15k
+  #   variant: image_only
+  #   model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_terminator
+  #   checkpoint: "015000"
+  # - label: vis_IMAGE_25k
+  #   variant: image_only
+  #   model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_terminator
+  #   checkpoint: "025000"
 
-  - label: FSQ_INIT
-    variant: fsq_initial
+  # - label: FSQ_INIT
+  #   variant: fsq_initial
 
   # Enable after selecting a checkpoint trained with wrist_only_terminator.train=true.
   # - label: WRIST60K
@@ -78,7 +115,7 @@ terminator_models:
   #   checkpoint: "060000"
 
 # Empty creates a timestamped output under terminator_eval/outputs/.
-output_name: ""
+output_name: "5_10_15_20_25k_vis_freeze"
 resume: false
 
 target_task: libero_90
@@ -87,7 +124,7 @@ task_ids: [0, 3]
 # Episode-exact is mandatory for this evaluator and cannot fall back to a
 # language-matched or standard LIBERO init state.
 episode_exact: true
-episodes_per_task: 5
+episodes_per_task: 3
 episode_selection: first     # first | random
 episode_ids: []              # optional exact global dataset episode ids
 seed: 42
@@ -103,7 +140,7 @@ eval_num_gpus: 10
 terminator:
   end_mode: termination               # termination | progress | or | and
   # Each termination bar freezes at its first crossing of this threshold.
-  end_threshold: 0.95
+  end_threshold: 0.5
   progress_threshold: 0.95
   max_skill_length: 200
   # true preserves the fixed-replanning behavior: a detected boundary stops

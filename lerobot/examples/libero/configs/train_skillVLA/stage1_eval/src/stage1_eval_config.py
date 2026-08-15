@@ -144,6 +144,8 @@ COND_GEMMA_ARCHITECTURE_LABELS = {
     "expert_skill_adarms_v1": "arch0_adarms",
     "expert_skill_token_v1": "arch0_token",
     "expert_skill_token_isolated_v1": "arch0_token_iso",
+    "cond_skill_broadcast_v1": "arch0_cond",
+    "dual_skill_broadcast_v1": "arch0_both",
     "expert_tokens_uncompressed_v1": "arch1_1",
     "expert_tokens_perceiver_v1": "arch1_2",
 }
@@ -482,14 +484,27 @@ def _external_predictor_contract(
         raise ValueError(
             f"External predictor checkpoint has no trained predictor: {checkpoint}"
         )
+    # A target that trained its own predictor already owns a fixed module, so the
+    # overlay must match it exactly. A predictor-free target instead rebuilds the
+    # module from this checkpoint, so only the skill geometry has to agree --
+    # mirroring SkillExpertPolicy.load_external_skill_predictor.
+    target_has_predictor = as_bool(target_policy.get("train_skill_predictor", False))
+    checked_fields = (
+        _PREDICTOR_CHECKPOINT_CONTRACT_FIELDS
+        if target_has_predictor
+        else ("skill_vocab_size", "skill_fsq_levels")
+    )
     mismatches = [
         f"{field}: predictor={source.get(field)!r}, target={target_policy.get(field)!r}"
-        for field in _PREDICTOR_CHECKPOINT_CONTRACT_FIELDS
+        for field in checked_fields
         if source.get(field) != target_policy.get(field)
     ]
     if mismatches:
         raise ValueError(
-            "External predictor module contract mismatch: " + "; ".join(mismatches)
+            "External predictor "
+            + ("module contract" if target_has_predictor else "skill geometry")
+            + " mismatch: "
+            + "; ".join(mismatches)
         )
     tokenizer_path = _relocate_project_path(
         project_root, source.get("tokenizer_path")
@@ -552,6 +567,9 @@ def _model_entries(config: dict) -> list[dict]:
         "skill_source",
         "advance_mode",
         "terminator_variant",
+        "external_skill_model",
+        "external_predictor_model",
+        "external_terminator_model",
     }
     unknown_defaults = sorted(set(model_defaults) - supported_defaults)
     if unknown_defaults:
@@ -572,6 +590,23 @@ def _model_entries(config: dict) -> list[dict]:
     default_skill_source = str(
         model_defaults.get("skill_source", get_value(config, "skill_source", "gt"))
     ).lower()
+    # A models[] entry may name its own external checkpoint, which matters when
+    # each target needs a terminator trained on its own FSQ/dataset run.
+    # external_skill_model is the shared fallback; the predictor- and
+    # terminator-specific keys split it when the two overlays must come from
+    # different checkpoints.
+    def _external_default(field: str, fallback: str = "") -> str:
+        return str(
+            model_defaults.get(field, get_value(config, field, fallback)) or ""
+        ).strip()
+
+    default_external_skill_model = _external_default("external_skill_model")
+    default_external_predictor_model = _external_default(
+        "external_predictor_model", default_external_skill_model
+    )
+    default_external_terminator_model = _external_default(
+        "external_terminator_model", default_external_skill_model
+    )
     default_advance = str(
         model_defaults.get(
             "advance_mode",
@@ -676,6 +711,27 @@ def _model_entries(config: dict) -> list[dict]:
                 "previous_checkpoint": as_bool(
                     raw.get("previous", default_previous)
                 ),
+                # Raw strings; build_settings resolves them against project_root.
+                # A per-entry external_skill_model still covers both overlays,
+                # but either role may name its own checkpoint instead.
+                "external_predictor_model_value": str(
+                    raw.get(
+                        "external_predictor_model",
+                        raw.get(
+                            "external_skill_model", default_external_predictor_model
+                        ),
+                    )
+                    or ""
+                ).strip(),
+                "external_terminator_model_value": str(
+                    raw.get(
+                        "external_terminator_model",
+                        raw.get(
+                            "external_skill_model", default_external_terminator_model
+                        ),
+                    )
+                    or ""
+                ).strip(),
             }
         )
     labels = [row["label"] for row in rows]
@@ -724,6 +780,12 @@ def _model_entries(config: dict) -> list[dict]:
                     "model_index": model_index,
                     "checkpoint_index": checkpoint_index,
                     "previous_checkpoint": row["previous_checkpoint"],
+                    "external_predictor_model_value": row[
+                        "external_predictor_model_value"
+                    ],
+                    "external_terminator_model_value": row[
+                        "external_terminator_model_value"
+                    ],
                 }
             )
     return entries
@@ -783,24 +845,40 @@ def build_settings(config: dict) -> dict:
                 f"skill_source=own but checkpoint has no trained predictor: {policy_path}"
             )
         tokenizer_path = contract["tokenizer_path"]
+        predictor_value = entry.pop("external_predictor_model_value", "")
+        terminator_value = entry.pop("external_terminator_model_value", "")
+        entry_predictor = (
+            _relocate_project_path(project_root, predictor_value)
+            if predictor_value
+            else external_skill_model
+        )
+        entry_terminator = (
+            _relocate_project_path(project_root, terminator_value)
+            if terminator_value
+            else external_skill_model
+        )
         if entry["skill_source"] == "external":
-            if external_skill_model is None:
+            if entry_predictor is None:
                 raise ValueError(
-                    "skill_source=external requires top-level external_skill_model."
+                    f"models[].label={entry['label']!r} uses skill_source=external "
+                    "but no external_predictor_model or external_skill_model was "
+                    "set on the entry, in model_defaults, or at the top level."
                 )
             external = _external_predictor_contract(
-                external_skill_model,
+                entry_predictor,
                 target_policy=contract["policy"],
                 project_root=project_root,
             )
             tokenizer_path = external["tokenizer_path"]
         if entry["advance_mode"] == "external":
-            if external_skill_model is None:
+            if entry_terminator is None:
                 raise ValueError(
-                    "advance_mode=external requires top-level external_skill_model."
+                    f"models[].label={entry['label']!r} uses advance_mode=external "
+                    "but no external_terminator_model or external_skill_model was "
+                    "set on the entry, in model_defaults, or at the top level."
                 )
             _validate_external_terminator(
-                external_skill_model,
+                entry_terminator,
                 target_policy=contract["policy"],
                 variant=entry["terminator_variant"],
             )
@@ -819,7 +897,11 @@ def build_settings(config: dict) -> dict:
                 **entry,
                 "policy_path": policy_path,
                 **contract,
-                "external_skill_model": external_skill_model or "",
+                # Kept for logging/back-compat; the two role-specific paths below
+                # are what run_eval actually overlays.
+                "external_skill_model": entry_terminator or entry_predictor or "",
+                "external_predictor_model": entry_predictor or "",
+                "external_terminator_model": entry_terminator or "",
                 "tokenizer_path": tokenizer_path,
             }
         )

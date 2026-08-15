@@ -1,4 +1,17 @@
-"""BayesVLA-style Stage-2 likelihood refinement for the frozen Stage-1 VSA prior."""
+"""BayesVLA-style Stage-2 likelihood refinement on the frozen cond_gemma Stage-1 prior.
+
+Stage 2 assembles two independently trained frozen pieces:
+
+* ``stage1_checkpoint_path``: a cond_gemma (Arch0-family) Stage-1 VSA prior.
+  It carries no predictor or terminator of its own.
+* ``skill_predictor_checkpoint_path``: any Stage-1/skill_aux checkpoint whose
+  frozen VLM (and trained reader/head) is loaded completely into the predictor
+  module built from that checkpoint's own architecture fields.
+
+Only the four likelihood blocks, the VLM projection, and the action head train.
+Terminators are attached externally at evaluation time via
+``load_external_terminator`` and are never part of Stage-2 training.
+"""
 
 from __future__ import annotations
 
@@ -24,9 +37,18 @@ from lerobot.policies.pi_gemma import (
     _gated_residual,
 )
 from lerobot.policies.pretrained import PreTrainedPolicy
+from lerobot.policies.skill_expert.cond_gemma import CondGemmaSkillExpert
+from lerobot.policies.skill_expert.configuration_skill_expert import (
+    COND_GEMMA_ARCHITECTURE,
+    COND_GEMMA_ARCHITECTURE_REVISION,
+    SKILLLESS_CONDITIONING_ROUTES,
+    STATELESS_CONDITIONING_ROUTES,
+    normalize_conditioning_route,
+)
 from lerobot.policies.skill_expert.modeling_skill_expert import (
+    _PREDICTOR_CHECKPOINT_CONTRACT_FIELDS,
     SkillExpertPolicy,
-    SkillExpertPytorch,
+    _load_complete_predictor_parameters,
     _load_pretrained_state_dict,
 )
 from lerobot.policies.skillVLA.dataset_skillVLA import (
@@ -144,18 +166,17 @@ class LikelihoodBlock(nn.Module):
         return _gated_residual(residual, transformed, gate)
 
 
-class SkillVLAStage2Pytorch(SkillExpertPytorch):
-    """Stage-1 model plus four action-only likelihood blocks."""
+class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
+    """Frozen cond_gemma Stage-1 prior plus four action-only likelihood blocks."""
 
     def __init__(self, config: SkillVLAStage2Config):
-        raise RuntimeError(
-            "skill_vla_stage2 has not yet been migrated to the "
-            "vsa_perceiver_crossattn Stage-1 architecture. Use the previous branch "
-            "for legacy Stage-2 experiments."
-        )
         super().__init__(config)
         if self.skill_predictor is None:
-            raise RuntimeError("Stage 2 requires the Stage-1 frozen VLM/predictor.")
+            raise RuntimeError("Stage 2 requires the frozen VLM predictor module.")
+        if self.fsq_term_train is not None:
+            raise RuntimeError(
+                "Stage 2 trains without a terminator; attach one at evaluation time."
+            )
         expert_config = self.gemma_expert.model.config
         vlm_width = int(self.skill_predictor.vlm.language_model.config.hidden_size)
         self.vlm_to_expert_projection = nn.Linear(vlm_width, self.width)
@@ -168,54 +189,66 @@ class SkillVLAStage2Pytorch(SkillExpertPytorch):
         self._freeze_stage1_prior()
 
     def gradient_checkpointing_enable(self) -> None:
-        # The frozen 18-layer prior runs under no_grad. Checkpoint only the four
-        # trainable likelihood blocks and an explicitly continued predictor.
+        # The frozen 18-layer prior and the VLM run under no_grad; checkpointing
+        # helps only the four trainable likelihood blocks.
         self._likelihood_gradient_checkpointing = True
-        if self.config.finetune_skill_predictor and self.skill_predictor is not None:
-            self.skill_predictor.gradient_checkpointing_enable()
 
     def _freeze_stage1_prior(self) -> None:
         self.requires_grad_(False)
         self.vlm_to_expert_projection.requires_grad_(True)
         self.likelihood_blocks.requires_grad_(True)
         self.action_out_proj.requires_grad_(True)
-        if self.config.finetune_terminator and self.fsq_term_train is not None:
-            self.fsq_term_train.requires_grad_(True)
-            if self.fsq_term_train.freeze_vision_encoder:
-                self.fsq_term_train.vision_encoder.requires_grad_(False)
 
     def train(self, mode: bool = True):
+        # Stage 2 must not change stochastic behavior or running state anywhere
+        # in the frozen prior or VLM; only fresh likelihood modules follow mode.
         nn.Module.train(self, mode)
-        # Stage 2 must not change stochastic behavior or running state in the
-        # frozen prior. Optional auxiliaries retain Stage-1's isolated behavior.
-        frozen_modules = (
-            self.dino,
-            self.image_proj,
-            self.state_proj,
-            self.skill_proj,
-            self.action_in_proj,
-            self.time_mlp_in,
-            self.time_mlp_out,
-            self.cond_encoder,
-            self.gemma_expert,
-        )
-        for module in frozen_modules:
-            if module is not None:
-                module.eval()
-        if self.config.finetune_skill_predictor:
-            self.skill_predictor.train(mode)
-        else:
-            self.skill_predictor.eval()
-        if self.fsq_term_train is not None:
-            self.fsq_term_train.train(
-                mode and self.config.finetune_terminator
-            )
-            if self.fsq_term_train.freeze_vision_encoder:
-                self.fsq_term_train.vision_encoder.eval()
-        self.vlm_to_expert_projection.train(mode)
-        self.likelihood_blocks.train(mode)
-        self.action_out_proj.train(mode)
+        trainable_ids = {
+            id(self.vlm_to_expert_projection),
+            id(self.likelihood_blocks),
+            id(self.action_out_proj),
+        }
+        for child in self.children():
+            if id(child) not in trainable_ids:
+                child.eval()
         return self
+
+    def _prior_action_hidden(
+        self,
+        condition_tokens: Tensor,
+        noisy_actions: Tensor,
+        state: Tensor | None,
+        skill_code: Tensor | None,
+        time: Tensor,
+    ) -> tuple[Tensor, Tensor]:
+        """Return (18-layer action hidden, expert AdaRMS condition) for any revision."""
+        if self.uses_expert_context_tokens:
+            expert_condition = self._expert_condition(time)
+            hidden = self._run_expert_token_hidden(
+                condition_tokens,
+                self._expert_context_tokens(state, skill_code),
+                noisy_actions,
+                expert_condition,
+                self._state_condition(state),
+            )
+            return hidden, expert_condition
+        projected_state = self._project_state(state)
+        expert_projected_state = self._project_expert_state(state, projected_state)
+        condition_state = projected_state if self.uses_cond_state_adarms else None
+        expert_condition = self._expert_condition(
+            time, expert_projected_state, skill_code
+        )
+        condition_skill, expert_skill = self._skill_broadcasts(skill_code)
+        hidden = self._run_joint_hidden(
+            condition_tokens,
+            noisy_actions,
+            condition_state,
+            expert_condition,
+            condition_skill,
+            expert_skill,
+            self._condition_state_start_index(condition_tokens),
+        )
+        return hidden, expert_condition
 
     def _likelihood_velocity(
         self,
@@ -258,8 +291,8 @@ class SkillVLAStage2Pytorch(SkillExpertPytorch):
     def forward(
         self,
         images: list[Tensor],
-        state: Tensor,
-        skill_code: Tensor,
+        state: Tensor | None,
+        skill_code: Tensor | None,
         actions: Tensor,
         language_tokens: Tensor,
         language_mask: Tensor,
@@ -267,24 +300,19 @@ class SkillVLAStage2Pytorch(SkillExpertPytorch):
         noise: Tensor | None = None,
         time: Tensor | None = None,
     ) -> Tensor:
+        self._last_vsa_debug_stats = {}
         batch_size = actions.shape[0]
         time = self.sample_time(batch_size, actions.device) if time is None else time
+        self._last_flow_time = time.detach()
         source = self.sample_noise(actions.shape, actions.device) if noise is None else noise
         source = source.to(actions.dtype)
         x_t = time[:, None, None] * source + (1.0 - time[:, None, None]) * actions
         target_velocity = source - actions
-        condition_state = self._state_condition(state)
-        condition_skill, expert_skill = self._skill_broadcasts(skill_code)
-        expert_condition = self._expert_condition(time, None, skill_code)
 
         with torch.no_grad():
-            prior_hidden = self._run_joint_hidden(
-                self._condition_tokens(images, batch_size=batch_size),
-                x_t,
-                condition_state,
-                expert_condition,
-                condition_skill,
-                expert_skill,
+            condition_tokens = self._condition_tokens(images, batch_size=batch_size)
+            prior_hidden, expert_condition = self._prior_action_hidden(
+                condition_tokens, x_t, state, skill_code, time
             )
             vlm_hidden, vlm_key_padding_mask = (
                 self.skill_predictor.encode_base_last_hidden(
@@ -298,8 +326,8 @@ class SkillVLAStage2Pytorch(SkillExpertPytorch):
             expert_condition,
         )
         if self.config.action_loss_mode == "flow_endpoint_xyz":
-            # Match Stage 1: reconstruct the clean action from the same flow
-            # sample, then compare accumulated XYZ displacement in the policy.
+            # x_t = action + t * target_velocity, hence the one-step clean-action
+            # reconstruction is action_hat = x_t - t * predicted_velocity.
             self._last_predicted_actions = (
                 x_t - time[:, None, None] * predicted_velocity
             )
@@ -311,30 +339,138 @@ class SkillVLAStage2Pytorch(SkillExpertPytorch):
     def sample_actions(
         self,
         images: list[Tensor],
-        state: Tensor,
-        skill_code: Tensor,
+        state: Tensor | None,
+        skill_code: Tensor | None,
         language_tokens: Tensor,
         language_mask: Tensor,
         noise: Tensor | None = None,
         num_steps: int | None = None,
     ) -> Tensor:
         num_steps = self.config.num_inference_steps if num_steps is None else num_steps
-        batch_size, device = state.shape[0], state.device
+        if state is not None:
+            batch_size, device = state.shape[0], state.device
+        elif skill_code is not None:
+            batch_size, device = skill_code.shape[0], skill_code.device
+        elif images:
+            batch_size, device = images[0].shape[0], images[0].device
+        else:
+            raise ValueError("Action sampling requires state, skill, or image batch metadata.")
         if noise is None:
             noise = self.sample_noise(
                 (batch_size, self.config.chunk_size, self.config.max_action_dim), device
             )
         condition_tokens = self._condition_tokens(images, batch_size=batch_size)
-        n_condition = condition_tokens.shape[1]
+        vlm_hidden, vlm_key_padding_mask = self.skill_predictor.encode_base_last_hidden(
+            images, language_tokens, language_mask
+        )
+        if self.uses_expert_context_tokens:
+            return self._likelihood_sample_with_expert_context_cache(
+                condition_tokens,
+                self._expert_context_tokens(state, skill_code),
+                noise,
+                num_steps,
+                vlm_hidden,
+                vlm_key_padding_mask,
+                self._state_condition(state),
+            )
+        return self._likelihood_sample_with_condition_cache(
+            condition_tokens,
+            noise,
+            state,
+            skill_code,
+            num_steps,
+            vlm_hidden,
+            vlm_key_padding_mask,
+        )
+
+    def _likelihood_sample_with_expert_context_cache(
+        self,
+        condition_tokens: Tensor,
+        context_tokens: Tensor,
+        noise: Tensor,
+        num_steps: int,
+        vlm_hidden: Tensor,
+        vlm_key_padding_mask: Tensor,
+        condition_state: Tensor | None = None,
+    ) -> Tensor:
+        """Stage-1 expert-context sampler with likelihood blocks before the head."""
+        batch_size = noise.shape[0]
+        n_prefix = condition_tokens.shape[1] + context_tokens.shape[1]
+        n_action = noise.shape[1]
+        device = noise.device
+        prefix_cache = self._visual_context_cache(
+            condition_tokens, context_tokens, condition_state
+        )
+        action_padding = torch.ones(
+            batch_size, n_action, dtype=torch.bool, device=device
+        )
+        action_blocks = torch.tensor(
+            [1] + [0] * (n_action - 1), dtype=torch.bool, device=device
+        )[None].expand(batch_size, -1)
+        action_attention = make_att_2d_masks(action_padding, action_blocks)
+        prefix_visible = torch.ones(
+            batch_size, n_action, n_prefix, dtype=torch.bool, device=device
+        )
+        full_attention = torch.cat(
+            (prefix_visible, action_attention), dim=2
+        )[:, None]
+        full_attention = torch.where(
+            full_attention, 0.0, OPENPI_ATTENTION_MASK_VALUE
+        )
+        action_positions = n_prefix + torch.cumsum(action_padding, dim=1) - 1
+
+        dt = -1.0 / num_steps
+        x_t = noise
+        for step in range(num_steps):
+            time = torch.full(
+                (batch_size,), 1.0 + step * dt, dtype=torch.float32, device=device
+            )
+            expert_condition = self._expert_condition(time)
+            prior_hidden = self._action_hidden_with_condition_cache(
+                x_t,
+                expert_condition,
+                None,
+                prefix_cache,
+                full_attention,
+                action_positions,
+            )
+            velocity = self._likelihood_velocity(
+                prior_hidden,
+                vlm_hidden,
+                vlm_key_padding_mask,
+                expert_condition,
+            )
+            x_t = x_t + dt * velocity
+        return x_t
+
+    def _likelihood_sample_with_condition_cache(
+        self,
+        condition_tokens: Tensor,
+        noise: Tensor,
+        state: Tensor | None,
+        skill_code: Tensor | None,
+        num_steps: int,
+        vlm_hidden: Tensor,
+        vlm_key_padding_mask: Tensor,
+    ) -> Tensor:
+        """Stage-1 condition-cache sampler with likelihood blocks before the head."""
+        batch_size, n_condition = condition_tokens.shape[:2]
         n_chunk = noise.shape[1]
-        condition_state = self._state_condition(state)
+        device = noise.device
+        projected_state = self._project_state(state)
+        expert_projected_state = self._project_expert_state(state, projected_state)
+        condition_state = projected_state if self.uses_cond_state_adarms else None
+        condition_state_start_index = self._condition_state_start_index(
+            condition_tokens
+        )
         condition_skill, expert_skill = self._skill_broadcasts(skill_code)
 
         condition_padding = torch.ones(
             batch_size, n_condition, dtype=torch.bool, device=device
         )
+        condition_blocks = torch.zeros_like(condition_padding)
         condition_attention = make_att_2d_masks(
-            condition_padding, torch.zeros_like(condition_padding)
+            condition_padding, condition_blocks
         )[:, None]
         condition_attention = torch.where(
             condition_attention, 0.0, OPENPI_ATTENTION_MASK_VALUE
@@ -347,6 +483,7 @@ class SkillVLAStage2Pytorch(SkillExpertPytorch):
             past_key_values=None,
             use_cache=True,
             adarms_cond=condition_state,
+            adarms_start_index=condition_state_start_index,
             broadcast_cond=condition_skill,
         ).past_key_values
 
@@ -362,9 +499,6 @@ class SkillVLAStage2Pytorch(SkillExpertPytorch):
         full_attention = torch.cat((condition_visible, action_attention), dim=2)[:, None]
         full_attention = torch.where(full_attention, 0.0, OPENPI_ATTENTION_MASK_VALUE)
         action_positions = n_condition + torch.cumsum(action_padding, dim=1) - 1
-        vlm_hidden, vlm_key_padding_mask = self.skill_predictor.encode_base_last_hidden(
-            images, language_tokens, language_mask
-        )
 
         dt = -1.0 / num_steps
         x_t = noise
@@ -372,7 +506,9 @@ class SkillVLAStage2Pytorch(SkillExpertPytorch):
             time = torch.full(
                 (batch_size,), 1.0 + step * dt, dtype=torch.float32, device=device
             )
-            expert_condition = self._expert_condition(time, None, skill_code)
+            expert_condition = self._expert_condition(
+                time, expert_projected_state, skill_code
+            )
             prior_hidden = self._action_hidden_with_condition_cache(
                 x_t,
                 expert_condition,
@@ -391,9 +527,11 @@ class SkillVLAStage2Pytorch(SkillExpertPytorch):
         return x_t
 
 
+# Geometry and prior-architecture fields the Stage-1 checkpoint must agree on.
 _STAGE1_CONTRACT_FIELDS = (
     "action_expert_variant",
     "cond_encoder_variant",
+    "conditioning_route",
     "chunk_size",
     "n_action_steps",
     "max_state_dim",
@@ -407,32 +545,24 @@ _STAGE1_CONTRACT_FIELDS = (
     "max_period",
     "vision_backbone",
     "dino_image_size",
-    "conditioning_route",
+    "freeze_vision_encoder",
     "skill_vocab_size",
     "skill_fsq_levels",
     "transition_jitter_pmax",
     "transition_jitter_distribution",
-    "skill_predictor_vlm_variant",
-    "skill_predictor_image_size",
-    "skill_predictor_reader_tokens",
-    "skill_predictor_reader_depth",
-    "skill_predictor_reader_heads",
-    "skill_predictor_all_layers",
-    "skill_predictor_detach_vlm",
-    "skill_predictor_lora",
-    "skill_predictor_lora_targets",
-    "skill_predictor_lora_rank",
-    "skill_predictor_lora_alpha",
-    "skill_predictor_lora_dropout",
-    "skill_predictor_deadzone_frac",
-    "skill_predictor_attend_image",
-    "skill_predictor_attend_language",
-    "tokenizer_max_length",
+)
+# Fields absent from older Stage-1 configs; when missing they unambiguously
+# carry that era's defaults, so Stage 2 adopts its own configured value.
+_STAGE1_OPTIONAL_CONTRACT_FIELDS = (
+    "num_visual_latents_per_camera",
+    "visual_perceiver_width",
+    "mask_actions_after_skill_end",
+    "freeze_vision_encoder",
 )
 
 
 class SkillVLAStage2Policy(SkillExpertPolicy):
-    """Likelihood policy with optional parameter-disjoint Stage-1 auxiliaries."""
+    """Likelihood policy assembled from a frozen prior and a frozen predictor VLM."""
 
     config_class = SkillVLAStage2Config
     name = "skill_vla_stage2"
@@ -441,7 +571,7 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
         self,
         config: SkillVLAStage2Config,
         *,
-        initialize_from_stage1: bool = True,
+        initialize_from_sources: bool = True,
         **kwargs,
     ):
         del kwargs
@@ -452,10 +582,9 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
         if config.gradient_checkpointing:
             self.model.gradient_checkpointing_enable()
         self.model.to(device=config.device, dtype=self._torch_dtype())
-        if self.model.fsq_term_train is not None:
-            self.model.fsq_term_train.to(dtype=torch.float32)
-        if initialize_from_stage1:
+        if initialize_from_sources:
             self._initialize_from_stage1(config.stage1_checkpoint_path)
+            self._initialize_predictor(config.skill_predictor_checkpoint_path)
         self.model._freeze_stage1_prior()
         self.reset()
 
@@ -469,36 +598,65 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
             raise ValueError(
                 f"Stage 2 requires a skill_expert checkpoint, got {stage1_config.get('type')!r}."
             )
-        has_predictor = bool(stage1_config.get("train_skill_predictor", False)) or str(
-            stage1_config.get("training_skill_source", "gt")
-        ).strip().lower() == "predictor"
-        if not has_predictor:
-            raise ValueError("Stage-1 checkpoint has no trained skill predictor/VLM.")
-        if not stage1_config.get("train_terminator", False):
-            raise ValueError("Stage-1 checkpoint has no co-trained terminator.")
+        saved_architecture = stage1_config.get("architecture") or (
+            COND_GEMMA_ARCHITECTURE if "conditioning_route" in stage1_config else ""
+        )
+        if saved_architecture != COND_GEMMA_ARCHITECTURE:
+            raise ValueError(
+                "Stage 2 is implemented on the cond_gemma Stage-1 prior; got "
+                f"architecture={saved_architecture!r} at {path}."
+            )
+        saved_revision = str(
+            stage1_config.get("architecture_revision", COND_GEMMA_ARCHITECTURE_REVISION)
+        )
+        if saved_revision != self.config.architecture_revision:
+            raise ValueError(
+                "Stage-1 architecture_revision mismatch: "
+                f"stage1={saved_revision!r}, stage2={self.config.architecture_revision!r}."
+            )
         mismatches = []
         for field in _STAGE1_CONTRACT_FIELDS:
-            # These fields were introduced with the Stage3-A predictor. Their
-            # absence unambiguously means the old detached, non-LoRA contract.
-            if field.startswith("skill_predictor_lora") and field not in stage1_config:
+            if field not in stage1_config and field in _STAGE1_OPTIONAL_CONTRACT_FIELDS:
                 continue
             expected = stage1_config.get(field)
             actual = getattr(self.config, field)
+            if field == "conditioning_route":
+                expected = normalize_conditioning_route(str(expected))
+                actual = normalize_conditioning_route(str(actual))
+            elif field == "skill_fsq_levels":
+                expected = [int(value) for value in (expected or [])]
+                actual = [int(value) for value in (actual or [])]
             if expected != actual:
                 mismatches.append(f"{field}: stage1={expected!r}, stage2={actual!r}")
         if mismatches:
             raise ValueError("Stage-1 architecture mismatch: " + "; ".join(mismatches))
 
-        loaded = _load_pretrained_state_dict(path, {})
+        loaded = _load_pretrained_state_dict(
+            path, {}, architecture=COND_GEMMA_ARCHITECTURE
+        )
         if loaded is None:
             raise FileNotFoundError(f"Stage-1 model weights not found: {path}")
         state_dict, is_pi05 = loaded
         if is_pi05:
             raise ValueError("Stage 2 cannot initialize directly from a pi0.5 checkpoint.")
+        # The predictor is loaded completely from its own checkpoint, and Stage 2
+        # never carries a terminator; drop those tensors if the prior has them.
+        dropped_prefixes = (
+            "model.skill_predictor.",
+            "model.fsq_term_train.",
+            "model.fsq_image_term_train.",
+            "model.fsq_wrist_term_train.",
+        )
+        state_dict = {
+            key: value.to(self._torch_dtype())
+            for key, value in state_dict.items()
+            if not key.startswith(dropped_prefixes)
+        }
         missing, unexpected = self.load_state_dict(state_dict, strict=False)
         allowed_prefixes = (
             "model.vlm_to_expert_projection.",
             "model.likelihood_blocks.",
+            "model.skill_predictor.",
         )
         invalid_missing = [
             key for key in missing if not key.startswith(allowed_prefixes)
@@ -509,9 +667,44 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
                 f"missing={sorted(invalid_missing)}, unexpected={sorted(unexpected)}"
             )
         log.info(
-            "Stage 2 <- Stage 1: loaded=%d, fresh_likelihood=%d.",
+            "Stage 2 <- Stage-1 prior %s: loaded=%d, fresh=%d.",
+            path,
             len(state_dict),
             len(missing),
+        )
+
+    def _initialize_predictor(self, checkpoint_path: str | Path | None) -> None:
+        predictor = self.model.skill_predictor
+        if predictor is None:
+            raise RuntimeError("Stage 2 has no predictor module to initialize.")
+        path = Path(str(checkpoint_path or ""))
+        config_path = path / "config.json"
+        if not config_path.is_file():
+            raise FileNotFoundError(f"Stage-2 predictor config not found: {config_path}")
+        source_config = json.loads(config_path.read_text())
+        if source_config.get("type") not in {"skill_expert", "skill_aux"}:
+            raise ValueError(
+                "Predictor source must be a skill_expert or skill_aux checkpoint, got "
+                f"{source_config.get('type')!r}."
+            )
+        if not source_config.get("train_skill_predictor", False):
+            raise ValueError("Predictor source has no trained predictor.")
+        mismatches = [
+            f"{field}: predictor={source_config.get(field)!r}, "
+            f"stage2={getattr(self.config, field)!r}"
+            for field in _PREDICTOR_CHECKPOINT_CONTRACT_FIELDS
+            if source_config.get(field) != getattr(self.config, field)
+        ]
+        if mismatches:
+            raise ValueError(
+                "Predictor module contract mismatch: " + "; ".join(mismatches)
+            )
+        loaded = _load_complete_predictor_parameters(predictor, path)
+        predictor.requires_grad_(False).eval()
+        log.info(
+            "Stage 2 <- frozen predictor %s: loaded %d tensors.",
+            path,
+            loaded,
         )
 
     def get_optim_params(self) -> list[dict]:
@@ -525,17 +718,7 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
             for parameter in module.parameters()
             if parameter.requires_grad
         ]
-        terminator = self.model.fsq_term_train
-        terminator_parameters = (
-            [
-                parameter
-                for parameter in terminator.parameters()
-                if parameter.requires_grad
-            ]
-            if self.config.finetune_terminator and terminator is not None
-            else []
-        )
-        expected = {id(parameter) for parameter in main_parameters + terminator_parameters}
+        expected = {id(parameter) for parameter in main_parameters}
         actual = {
             id(parameter)
             for parameter in self.parameters()
@@ -543,16 +726,7 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
         }
         if actual != expected:
             raise RuntimeError("Stage-2 trainable-parameter freeze contract was violated.")
-        groups = [{"params": main_parameters}]
-        if terminator_parameters:
-            groups.append(
-                {
-                    "params": terminator_parameters,
-                    "lr": self.config.optimizer_lr
-                    * self.config.terminator_lr_scale,
-                }
-            )
-        return groups
+        return [{"params": main_parameters}]
 
     def isolated_auxiliary_step(
         self,
@@ -561,25 +735,9 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
         grad_clip_norm: float,
         current_lr: float | None = None,
     ) -> dict:
-        """Optionally continue predictor reader/head training; its VLM stays frozen."""
-        if not self.config.finetune_skill_predictor:
-            return {}
-        return SkillExpertPolicy.isolated_auxiliary_step(
-            self,
-            batch,
-            accelerator,
-            grad_clip_norm,
-            current_lr=current_lr,
-        )
-
-    def isolated_main_optimizer_grad_groups(self) -> dict:
-        terminator = self.model.fsq_term_train
-        if not self.config.finetune_terminator or terminator is None:
-            return {}
-        parameters = [
-            parameter for parameter in terminator.parameters() if parameter.requires_grad
-        ]
-        return {"terminator": parameters} if parameters else {}
+        """Stage 2 keeps the predictor frozen; there is no auxiliary training."""
+        del batch, accelerator, grad_clip_norm, current_lr
+        return {}
 
     def _same_skill_batch_metrics(
         self, batch: dict, conditioning_skill: Tensor
@@ -654,56 +812,6 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
             ).abs().mean().item()
         return metrics
 
-    def _terminator_random_batch(self, batch: dict) -> tuple[dict, float]:
-        """Keep grouped pair correlation out of terminator continuation training."""
-        if not bool(getattr(self.config, "same_skill_batch_enabled", False)):
-            return batch, 1.0
-        if SAME_SKILL_PAIR_ID not in batch:
-            raise ValueError(
-                "same-skill batching requires same_skill_pair_id for terminator masking."
-            )
-        pair_ids = batch[SAME_SKILL_PAIR_ID].view(-1)
-        random_mask = pair_ids < 0
-        if not bool(random_mask.any()):
-            raise ValueError(
-                "same-skill batching left no random samples for terminator continuation."
-            )
-        selected = dict(batch)
-        for key in (
-            "skill_code_true",
-            "skill_ds",
-            "skill_de",
-            "skill_decoder_state",
-            "observation.images.image",
-            "observation.images.wrist_image",
-        ):
-            if key in batch:
-                value = batch[key]
-                selected[key] = value[random_mask.to(value.device)]
-        return selected, random_mask.float().mean().item()
-
-    @torch.no_grad()
-    def _predicted_training_skill_code(self, batch: dict) -> Tensor:
-        predictor = self.model.skill_predictor
-        if predictor is None:
-            raise RuntimeError("Stage 2 has no loaded skill predictor.")
-        device = next(self.parameters()).device
-        return predictor.predict(
-            self._predictor_start_images(batch),
-            batch[OBS_LANGUAGE_TOKENS].to(device),
-            batch[OBS_LANGUAGE_ATTENTION_MASK].to(device),
-        ).long()
-
-    def _training_skill_code(self, batch: dict) -> Tensor:
-        # Always resolve the dataset's coherent post-jitter code first.  Besides
-        # serving GT mode, this keeps transition-jitter logging truthful when
-        # predictor mode supplies the actual action-conditioning code.
-        jittered_gt = self._skill_code(batch)
-        if self.config.training_skill_source == "gt":
-            return jittered_gt
-        predicted = self._predicted_training_skill_code(batch)
-        return predicted.clamp(0, self.config.skill_vocab_size - 1)
-
     @staticmethod
     def _endpoint_xyz_loss(
         predicted_actions: Tensor,
@@ -728,12 +836,28 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
     def forward(self, batch: dict, reduction: str = "mean"):
         actions = pad_vector(batch[ACTION], self.config.max_action_dim)
         real_dim = self.config.output_features[ACTION].shape[0]
-        state = pad_vector(batch[OBS_STATE], self.config.max_state_dim)
         device = actions.device
-        skill_code = self._training_skill_code(batch)
-        batch_sampling_metrics = self._same_skill_batch_metrics(batch, skill_code)
+        route = normalize_conditioning_route(self.config.conditioning_route)
+        state = (
+            None
+            if route in STATELESS_CONDITIONING_ROUTES
+            else pad_vector(batch[OBS_STATE], self.config.max_state_dim)
+        )
+        skill_code = (
+            None
+            if route in SKILLLESS_CONDITIONING_ROUTES
+            else self._training_skill_code(batch)
+        )
+        # The VLM memory always consumes the raw camera frames, so images are
+        # collected even for visionless prior routes.
+        images = self._collect_images(batch)
+        batch_sampling_metrics = (
+            self._same_skill_batch_metrics(batch, skill_code)
+            if skill_code is not None
+            else {}
+        )
         residual = self.model(
-            self._collect_images(batch),
+            images,
             state,
             skill_code,
             actions,
@@ -774,10 +898,25 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
             "stage2/skill_source_predictor": float(
                 self.config.training_skill_source == "predictor"
             ),
-            "regime/transition_jitter_fraction": (
-                self._last_transition_jitter_fraction.detach().item()
-            ),
         }
+        jitter_fraction = getattr(self, "_last_transition_jitter_fraction", None)
+        if jitter_fraction is not None:
+            loss_dict["regime/transition_jitter_fraction"] = (
+                jitter_fraction.detach().item()
+            )
+        predicted_accuracy = getattr(self, "_last_predicted_skill_accuracy", None)
+        if predicted_accuracy is not None:
+            loss_dict["conditioning/predictor_acc_vs_jittered_gt"] = (
+                predicted_accuracy.detach().item()
+            )
+            loss_dict["conditioning/unique_predicted_skills"] = float(
+                self._last_unique_predicted_skills
+            )
+        predicted_diff = getattr(self, "_last_predicted_diff_from_current", None)
+        if predicted_diff is not None:
+            loss_dict["conditioning/predicted_diff_from_current_gt"] = (
+                predicted_diff.detach().item()
+            )
         loss_dict.update(batch_sampling_metrics)
         if endpoint_loss is not None:
             loss_dict.update(
@@ -788,39 +927,29 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
                     "action_endpoint_weight": 0.5,
                 }
             )
-        terminator_loss = None
-        if self.config.finetune_terminator:
-            terminator_batch, terminator_sample_fraction = (
-                self._terminator_random_batch(batch)
-            )
-            terminator_loss, progress_loss, termination_loss = self._terminator_loss(
-                terminator_batch
-            )
-            loss_dict.update(
-                {
-                    "terminator/loss": terminator_loss.detach().item(),
-                    "terminator/progress": progress_loss.detach().item(),
-                    "terminator/termination": termination_loss.detach().item(),
-                    "terminator/sample_fraction": terminator_sample_fraction,
-                }
-            )
         if reduction == "none":
             return objective_per_sample, loss_dict
-        total = action_objective
-        if terminator_loss is not None:
-            total = total + terminator_loss
-            loss_dict["loss_total"] = total.detach().item()
-        return total, loss_dict
+        return action_objective, loss_dict
 
     @torch.no_grad()
     def predict_action_chunk(self, batch: dict, **kwargs) -> Tensor:
         self.eval()
         device = next(self.parameters()).device
-        state = pad_vector(batch[OBS_STATE], self.config.max_state_dim)
+        route = normalize_conditioning_route(self.config.conditioning_route)
+        state = (
+            None
+            if route in STATELESS_CONDITIONING_ROUTES
+            else pad_vector(batch[OBS_STATE], self.config.max_state_dim)
+        )
+        skill_code = (
+            None
+            if route in SKILLLESS_CONDITIONING_ROUTES
+            else self._skill_code(batch)
+        )
         actions = self.model.sample_actions(
             self._collect_images(batch),
             state,
-            self._skill_code(batch),
+            skill_code,
             batch[OBS_LANGUAGE_TOKENS].to(device),
             batch[OBS_LANGUAGE_ATTENTION_MASK].to(device),
             **kwargs,
@@ -845,6 +974,6 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
             pretrained_name_or_path,
             config=config,
             strict=strict,
-            initialize_from_stage1=False,
+            initialize_from_sources=False,
             **kwargs,
         )

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import re
@@ -922,6 +923,17 @@ _PREDICTOR_CHECKPOINT_CONTRACT_FIELDS = (
     "skill_predictor_attend_language",
     "tokenizer_max_length",
 )
+# Skill geometry is tied to the dataset/FSQ codebook the target was trained on,
+# so it must match on both overlay paths.
+_PREDICTOR_SKILL_GEOMETRY_FIELDS = ("skill_vocab_size", "skill_fsq_levels")
+# The remaining fields only describe the predictor module's own shape. When the
+# target owns no predictor they are unused defaults, so a predictor-free target
+# adopts them from the source checkpoint instead of imposing its own.
+_PREDICTOR_MODULE_FIELDS = tuple(
+    field
+    for field in _PREDICTOR_CHECKPOINT_CONTRACT_FIELDS
+    if field not in _PREDICTOR_SKILL_GEOMETRY_FIELDS
+)
 
 
 def _is_learned_predictor_key(key: str) -> bool:
@@ -1100,11 +1112,17 @@ class SkillExpertPolicy(PreTrainedPolicy):
                         "(RMS-normalized, summed with timestep)"
                     )
                 else:
+                    targets = [
+                        name
+                        for name, active in (
+                            ("Cond-Gemma", self.model.uses_cond_skill_broadcast),
+                            ("expert", self.model.uses_expert_skill_broadcast),
+                        )
+                        if active
+                    ]
                     log.info(
                         "Skill conditioning: %s layerwise broadcast",
-                        "expert"
-                        if config.conditioning_route == "state_cond"
-                        else "Cond-Gemma",
+                        " + ".join(targets) if targets else "disabled",
                     )
                 log.info("Expert sequence: noisy actions only")
             else:
@@ -1455,18 +1473,28 @@ class SkillExpertPolicy(PreTrainedPolicy):
             )
         if not source_config.get("train_skill_predictor", False):
             raise ValueError("Stage-1 predictor source has no trained predictor.")
+        # This branch attaches a predictor to a target that has none of its own,
+        # so its unused skill_predictor_* defaults must not dictate the module
+        # shape. Only the skill geometry has to agree; the module itself is
+        # rebuilt from the source checkpoint that trained these weights.
         mismatches = [
             f"{field}: checkpoint={source_config.get(field)!r}, "
             f"current={getattr(self.config, field)!r}"
-            for field in _PREDICTOR_CHECKPOINT_CONTRACT_FIELDS
+            for field in _PREDICTOR_SKILL_GEOMETRY_FIELDS
             if source_config.get(field) != getattr(self.config, field)
         ]
         if mismatches:
             raise ValueError(
-                "Stage-1 predictor module contract mismatch: " + "; ".join(mismatches)
+                "Stage-1 predictor skill geometry mismatch: " + "; ".join(mismatches)
             )
+        predictor_config = copy.deepcopy(self.config)
+        for field in _PREDICTOR_MODULE_FIELDS:
+            if field in source_config:
+                setattr(predictor_config, field, source_config[field])
 
-        predictor = FrozenVLMSkillPredictor(self.config).to(dtype=self._torch_dtype())
+        predictor = FrozenVLMSkillPredictor(predictor_config).to(
+            dtype=self._torch_dtype()
+        )
         loaded = _load_complete_predictor_parameters(predictor, path)
         device = next(self.model.parameters()).device
         predictor.to(device=device)
@@ -1503,9 +1531,15 @@ class SkillExpertPolicy(PreTrainedPolicy):
 
         terminator = self.model.fsq_term_train
         if terminator is None:
-            terminator = build_trainable_fsq_terminator(self.config.fsq_path).to(
-                dtype=torch.float32
-            )
+            # A termination-only source keeps its (untrained) progress head for
+            # shape compatibility, so build with the same contract rather than
+            # exposing a random progress output to progress-based advance modes.
+            terminator = build_trainable_fsq_terminator(
+                self.config.fsq_path,
+                termination_only=bool(
+                    source_config.get("terminator_termination_only", False)
+                ),
+            ).to(dtype=torch.float32)
         loaded = _load_complete_terminator_parameters(terminator, path)
         device = next(self.model.parameters()).device
         terminator.to(device=device, dtype=torch.float32)
@@ -1547,9 +1581,12 @@ class SkillExpertPolicy(PreTrainedPolicy):
 
         terminator = getattr(self.model, "fsq_image_term_train", None)
         if terminator is None:
-            terminator = build_fsq_image_only_terminator(self.config.fsq_path).to(
-                dtype=torch.float32
-            )
+            terminator = build_fsq_image_only_terminator(
+                self.config.fsq_path,
+                termination_only=bool(
+                    source_config.get("image_only_terminator_termination_only", False)
+                ),
+            ).to(dtype=torch.float32)
         loaded = _load_complete_terminator_parameters(
             terminator,
             path,

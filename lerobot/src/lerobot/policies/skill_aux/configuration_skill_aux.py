@@ -35,18 +35,25 @@ class SkillAuxConfig(PreTrainedConfig):
     terminator_lr_scale: float = 1.0
     terminator_end_target_sigma: float = 2.0
     terminator_end_pos_weight: float = 1.0
+    # Drop the progress head from both the model output and the objective, so the
+    # terminator is trained purely as a boundary detector. The progress query and
+    # head stay in the module for checkpoint-shape compatibility; the attention
+    # mask already isolates them from the termination query, so they are inert.
+    terminator_termination_only: bool = False
 
     train_image_only_terminator: bool = False
     image_only_terminator_freeze_vision_encoder: bool = True
     image_only_terminator_lr_scale: float = 1.0
     image_only_terminator_end_target_sigma: float = 2.0
     image_only_terminator_end_pos_weight: float = 1.0
+    image_only_terminator_termination_only: bool = False
 
     train_wrist_only_terminator: bool = False
     wrist_only_terminator_freeze_vision_encoder: bool = True
     wrist_only_terminator_lr_scale: float = 1.0
     wrist_only_terminator_end_target_sigma: float = 2.0
     wrist_only_terminator_end_pos_weight: float = 1.0
+    wrist_only_terminator_termination_only: bool = False
 
     train_skill_predictor: bool = False
     skill_predictor_checkpoint_path: str | None = None

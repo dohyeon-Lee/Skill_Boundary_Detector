@@ -342,6 +342,10 @@ def build_settings(config: dict) -> dict:
 
     resolved = []
     for entry in entries:
+        # This evaluator drives both overlays from the one terminator_model, so
+        # drop stage1_eval's per-role raw values instead of exporting them.
+        entry.pop("external_predictor_model_value", None)
+        entry.pop("external_terminator_model_value", None)
         model_root = outputs_root / "skillVLA_stage1"
         if entry["previous_checkpoint"]:
             model_root = model_root / "previous"

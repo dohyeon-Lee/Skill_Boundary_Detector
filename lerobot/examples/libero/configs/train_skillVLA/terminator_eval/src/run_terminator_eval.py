@@ -106,6 +106,21 @@ class IndependentTerminator:
         return progress, torch.sigmoid(logits)
 
 
+def _checkpoint_termination_only(checkpoint_path: str, field: str) -> bool:
+    """Read a skill_aux checkpoint's termination-only contract.
+
+    The progress head is present in every checkpoint for shape compatibility, so
+    a termination-only module would otherwise be evaluated with an untrained
+    progress output and silently drive progress-based advance modes.
+    """
+    if not checkpoint_path:
+        return False
+    config_path = Path(checkpoint_path) / "config.json"
+    if not config_path.is_file():
+        return False
+    return bool(json.loads(config_path.read_text()).get(field, False))
+
+
 def _load_display_terminator(policy, model_spec: dict, fsq_path: str | Path):
     variant = str(model_spec["variant"])
     checkpoint_path = str(model_spec.get("path") or "")
@@ -115,13 +130,28 @@ def _load_display_terminator(policy, model_spec: dict, fsq_path: str | Path):
         module = build_fsq_terminator(checkpoint_path)
         prefix = "model.fsq_term_train."
     elif variant == "state_image":
-        module = build_trainable_fsq_terminator(fsq_path)
+        module = build_trainable_fsq_terminator(
+            fsq_path,
+            termination_only=_checkpoint_termination_only(
+                checkpoint_path, "terminator_termination_only"
+            ),
+        )
         prefix = "model.fsq_term_train."
     elif variant == "image_only":
-        module = build_fsq_image_only_terminator(fsq_path)
+        module = build_fsq_image_only_terminator(
+            fsq_path,
+            termination_only=_checkpoint_termination_only(
+                checkpoint_path, "image_only_terminator_termination_only"
+            ),
+        )
         prefix = "model.fsq_image_term_train."
     elif variant == "wrist_only":
-        module = build_fsq_wrist_only_terminator(fsq_path)
+        module = build_fsq_wrist_only_terminator(
+            fsq_path,
+            termination_only=_checkpoint_termination_only(
+                checkpoint_path, "wrist_only_terminator_termination_only"
+            ),
+        )
         prefix = "model.fsq_wrist_term_train."
     else:
         raise ValueError(f"Unknown display terminator variant: {variant!r}.")
@@ -208,12 +238,18 @@ def _terminator_fired(
 
 def _restore_state(base_env, state: np.ndarray):
     # Reset controller internals first, then install the exact per-frame MuJoCo
-    # state. No settling/no-op step is allowed: that would change the requested
-    # skill start state before the first recorded or predicted action.
+    # state. The reset-created controller still caches the episode-initial EE
+    # pose after set_init_state(), so force it to observe the restored pose and
+    # reset its goal before the first recorded or predicted action. Otherwise
+    # the first OSC torque pulls the arm toward that stale pose. No settling or
+    # no-op step is used because that would alter the requested skill start.
     base_env._env.reset()
     raw_obs = base_env._env.set_init_state(np.asarray(state, dtype=np.float64))
     for robot in base_env._env.robots:
-        robot.controller.use_delta = True
+        controller = robot.controller
+        controller.use_delta = True
+        controller.update(force=True)
+        controller.reset_goal()
     return raw_obs
 
 
@@ -712,6 +748,15 @@ def _run_gt_actions(
     display_traces = _new_display_traces(context)
     stop_reason = "gt_frame_end"
     steps = 0
+    # LIBERO overrides `done` with `_check_success()`, and a demonstration keeps
+    # recording for several frames after the task first succeeds. Breaking there
+    # ended the GT replay ~9 frames short of the skill boundary on every
+    # episode-final skill, so the terminator was read at de≈9 for those and at
+    # de=0 for every mid-episode skill — the two were never comparable. Replay
+    # the full GT action sequence instead and record where success first fired.
+    # `self.done` inside robosuite stays horizon-driven, so stepping past a
+    # success is safe.
+    environment_done_step: int | None = None
     for action in np.asarray(actions, dtype=np.float32):
         batch, _, progress, termination, display_signals = _query_terminator(
             base_env=base_env,
@@ -726,9 +771,8 @@ def _run_gt_actions(
         raw_obs, _, done, _ = base_env._env.step(action)
         steps += 1
         frames.append(_render(base_env))
-        if bool(done):
-            stop_reason = "environment_done"
-            break
+        if bool(done) and environment_done_step is None:
+            environment_done_step = steps
     # Also annotate the state reached by the final GT action.
     _, _, progress, termination, display_signals = _query_terminator(
         base_env=base_env,
@@ -744,6 +788,7 @@ def _run_gt_actions(
         "frames": frames,
         "steps": steps,
         "stop_reason": stop_reason,
+        "environment_done_step": environment_done_step,
         "progress": progress_values,
         "termination": termination_values,
         "display_traces": display_traces,
@@ -1187,6 +1232,14 @@ def eval_main(cfg: EvalPipelineConfig):
                                 "requested_offset": offset,
                                 "steps": int(result["steps"]),
                                 "stop_reason": result["stop_reason"],
+                                # GT branch only: step at which LIBERO first
+                                # reported task success, or None. The replay no
+                                # longer stops there, so this is diagnostic.
+                                "environment_done_step": (
+                                    None
+                                    if result.get("environment_done_step") is None
+                                    else int(result["environment_done_step"])
+                                ),
                                 "final_progress": (
                                     None
                                     if not result["progress"] or result["progress"][-1] is None

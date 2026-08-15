@@ -1,5 +1,16 @@
 #!/usr/bin/env python3
-"""Resolve clean BayesVLA-style Stage-2 training settings."""
+"""Resolve clean BayesVLA-style Stage-2 training settings.
+
+Stage 2 assembles two independently trained frozen sources:
+
+* ``warm_start.stage1_run``: a cond_gemma (arch0-family) Stage-1 prior. It
+  needs neither predictor nor terminator.
+* ``warm_start.predictor``: any Stage-1/skill_aux run whose config records
+  ``train_skill_predictor=true``; its frozen VLM provides the cross-attention
+  memory and its architecture fields are inherited verbatim.
+
+Terminators stay out of Stage 2 entirely; evaluation attaches one externally.
+"""
 
 from __future__ import annotations
 
@@ -15,6 +26,33 @@ from train_skills_config import as_bool, as_list, load_config, print_shell  # no
 
 DEFAULT_CONFIG_PATH = _HERE.parent.parent / "stage2_train_config.yaml"
 
+_CONDITIONING_ROUTES = {
+    "state_cond",
+    "state_skill_cond",
+    "state_skill_only_cond",
+    "stateonly_cond",
+    "skillonly_cond",
+    "visiononly_cond",
+}
+
+# Module-shape fields adopted verbatim from the predictor checkpoint's config.
+_PREDICTOR_MODULE_FIELDS = (
+    "skill_predictor_vlm_variant",
+    "skill_predictor_image_size",
+    "skill_predictor_reader_tokens",
+    "skill_predictor_reader_depth",
+    "skill_predictor_reader_heads",
+    "skill_predictor_all_layers",
+    "skill_predictor_detach_vlm",
+    "skill_predictor_lora",
+    "skill_predictor_lora_targets",
+    "skill_predictor_lora_rank",
+    "skill_predictor_lora_alpha",
+    "skill_predictor_lora_dropout",
+    "skill_predictor_deadzone_frac",
+    "tokenizer_max_length",
+)
+
 
 def _at(config: dict, *path: str, default=None):
     value = config
@@ -23,27 +61,6 @@ def _at(config: dict, *path: str, default=None):
             return default
         value = value[key]
     return value
-
-
-def _validate_auxiliary_config(config: dict) -> None:
-    auxiliary = config.get("auxiliary") or {}
-    if not isinstance(auxiliary, dict):
-        raise ValueError("auxiliary must be a mapping.")
-    unknown_auxiliaries = sorted(set(auxiliary) - {"skill_predictor", "terminator"})
-    if unknown_auxiliaries:
-        raise ValueError(
-            f"Unknown Stage-2 auxiliary entries: {unknown_auxiliaries}."
-        )
-    for name in ("skill_predictor", "terminator"):
-        settings = auxiliary.get(name) or {}
-        if not isinstance(settings, dict):
-            raise ValueError(f"auxiliary.{name} must be a mapping.")
-        unknown = sorted(set(settings) - {"train"})
-        if unknown:
-            raise ValueError(
-                f"auxiliary.{name} only accepts 'train'; {unknown} must be "
-                "inherited from the Stage-1 checkpoint."
-            )
 
 
 def _local_path(project_root: Path, value: object, *, marker: str | None = None) -> Path:
@@ -74,44 +91,67 @@ def _dataset_contract(dataset_dir: Path) -> dict:
     }
 
 
-def _require_stage1_contract(config: dict, checkpoint: Path) -> None:
+def _normalize_route(route: object) -> str:
+    normalized = str(route or "").strip().lower()
+    return "skillonly_cond" if normalized == "skill_cond" else normalized
+
+
+def _require_stage1_prior_contract(config: dict, checkpoint: Path) -> None:
     if config.get("type") != "skill_expert":
         raise ValueError(
             f"Stage 2 requires policy.type=skill_expert, got {config.get('type')!r} at {checkpoint}."
         )
-    has_predictor = as_bool(config.get("train_skill_predictor", False)) or str(
-        config.get("training_skill_source", "gt")
-    ).strip().lower() == "predictor"
-    if not has_predictor:
-        raise ValueError("Stage-1 checkpoint must contain the trained frozen-VLM skill predictor.")
-    if not config.get("train_terminator", False):
-        raise ValueError("Stage-1 checkpoint must contain the co-trained terminator.")
+    architecture = config.get("architecture") or (
+        "cond_gemma" if "conditioning_route" in config else ""
+    )
+    if architecture != "cond_gemma":
+        raise ValueError(
+            "Stage 2 is implemented on the cond_gemma (arch0-family) Stage-1 "
+            f"prior; got architecture={architecture!r} at {checkpoint}."
+        )
     if config.get("action_expert_variant") != "gemma_300m":
         raise ValueError("Stage 2 expects the 18-layer gemma_300m action expert.")
     if config.get("cond_encoder_variant") != "gemma_300m":
         raise ValueError("Stage 2 expects the 18-layer gemma_300m condition encoder.")
-    conditioning_route = str(config.get("conditioning_route", "")).strip().lower()
-    if conditioning_route == "skill_cond":
-        conditioning_route = "skillonly_cond"
-    if conditioning_route not in {
-        "state_cond",
-        "state_skill_cond",
-        "state_skill_only_cond",
-        "stateonly_cond",
-        "skillonly_cond",
-        "visiononly_cond",
-    }:
+    conditioning_route = _normalize_route(config.get("conditioning_route"))
+    if conditioning_route not in _CONDITIONING_ROUTES:
         raise ValueError(
-            "Stage 2 expects conditioning_route="
-            "state_cond|state_skill_cond|state_skill_only_cond|stateonly_cond|"
-            "skillonly_cond|visiononly_cond."
+            f"Stage 2 expects conditioning_route in {sorted(_CONDITIONING_ROUTES)}, "
+            f"got {conditioning_route!r}."
         )
     config["conditioning_route"] = conditioning_route
+
+
+def _require_predictor_contract(config: dict, checkpoint: Path) -> None:
+    if config.get("type") not in {"skill_expert", "skill_aux"}:
+        raise ValueError(
+            "Predictor source must be a skill_expert or skill_aux checkpoint, got "
+            f"{config.get('type')!r} at {checkpoint}."
+        )
+    if not as_bool(config.get("train_skill_predictor", False)):
+        raise ValueError(
+            f"Predictor run has no trained predictor (train_skill_predictor=false): {checkpoint}"
+        )
     if not (
-        config.get("skill_predictor_attend_image", False)
-        and config.get("skill_predictor_attend_language", False)
+        as_bool(config.get("skill_predictor_attend_image", False))
+        and as_bool(config.get("skill_predictor_attend_language", False))
     ):
-        raise ValueError("Stage 2 needs both image and language tokens in the frozen VLM memory.")
+        raise ValueError(
+            "Stage 2 needs both image and language tokens in the frozen VLM memory."
+        )
+    missing = [field for field in _PREDICTOR_MODULE_FIELDS if field not in config]
+    if missing:
+        raise ValueError(
+            f"Predictor checkpoint config is missing module fields {missing}: {checkpoint}"
+        )
+
+
+def _fsq_run_tag(config: dict, label: str) -> str:
+    """Return the FSQ dataset-run directory name recorded in fsq_path."""
+    fsq_path = Path(str(config.get("fsq_path") or ""))
+    if not fsq_path.name:
+        raise ValueError(f"{label} config records no fsq_path.")
+    return fsq_path.parent.name
 
 
 def _stage1_dataset_run(checkpoint: Path) -> str:
@@ -128,29 +168,113 @@ def _stage1_dataset_run(checkpoint: Path) -> str:
     return dataset_path.parent.name
 
 
+def _pretrained_model_dir(
+    outputs_root: Path, run: str, checkpoint: str, label: str
+) -> Path:
+    path = (
+        outputs_root
+        / "skillVLA_stage1"
+        / run
+        / "checkpoints"
+        / checkpoint
+        / "pretrained_model"
+    )
+    if not (path / "config.json").is_file():
+        raise FileNotFoundError(f"{label} config not found: {path / 'config.json'}")
+    if not (path / "model.safetensors").is_file():
+        raise FileNotFoundError(f"{label} weights not found: {path / 'model.safetensors'}")
+    return path
+
+
 def build_settings(config: dict) -> dict:
+    if "auxiliary" in config:
+        raise ValueError(
+            "Stage 2 no longer trains auxiliaries; remove the 'auxiliary' section. "
+            "Predictor and terminator stay frozen (terminators attach at evaluation)."
+        )
     project_root = Path(str(config["project_root"])).expanduser()
     dataset_root = project_root / str(config.get("dataset_root", "dataset"))
     outputs_root = project_root / str(config.get("outputs_root", "outputs"))
 
-    stage1_run = str(_at(config, "warm_start", "stage1_run")).strip()
+    stage1_run = str(_at(config, "warm_start", "stage1_run", default="") or "").strip()
     stage1_checkpoint = str(
         _at(config, "warm_start", "checkpoint", default="last")
     ).strip()
     if not stage1_run:
         raise ValueError("warm_start.stage1_run must be the exact Stage-1 output directory name.")
-    stage1_path = (
-        outputs_root
-        / "skillVLA_stage1"
-        / stage1_run
-        / "checkpoints"
-        / stage1_checkpoint
-        / "pretrained_model"
+    stage1_path = _pretrained_model_dir(
+        outputs_root, stage1_run, stage1_checkpoint, "Stage-1 prior"
     )
     stage1_config = _read_json(stage1_path / "config.json", "Stage-1 policy config")
-    if not (stage1_path / "model.safetensors").is_file():
-        raise FileNotFoundError(f"Stage-1 weights not found: {stage1_path / 'model.safetensors'}")
-    _require_stage1_contract(stage1_config, stage1_path)
+    _require_stage1_prior_contract(stage1_config, stage1_path)
+
+    predictor_path_setting = str(
+        _at(config, "warm_start", "predictor", "path", default="") or ""
+    ).strip()
+    if predictor_path_setting:
+        predictor_path = _local_path(project_root, predictor_path_setting)
+        for name in ("config.json", "model.safetensors"):
+            if not (predictor_path / name).is_file():
+                raise FileNotFoundError(
+                    f"Predictor {name} not found: {predictor_path / name}"
+                )
+    else:
+        predictor_run = str(
+            _at(config, "warm_start", "predictor", "run", default="") or ""
+        ).strip()
+        if not predictor_run:
+            raise ValueError(
+                "warm_start.predictor.run (or .path) must name the run providing "
+                "the trained frozen-VLM skill predictor."
+            )
+        predictor_checkpoint = str(
+            _at(config, "warm_start", "predictor", "checkpoint", default="last")
+        ).strip()
+        predictor_path = _pretrained_model_dir(
+            outputs_root, predictor_run, predictor_checkpoint, "Predictor"
+        )
+    predictor_config = _read_json(predictor_path / "config.json", "Predictor policy config")
+    _require_predictor_contract(predictor_config, predictor_path)
+
+    stage1_levels = [int(value) for value in stage1_config["skill_fsq_levels"]]
+    predictor_levels = [int(value) for value in predictor_config["skill_fsq_levels"]]
+    if predictor_levels != stage1_levels:
+        raise ValueError(
+            f"Predictor FSQ levels {predictor_levels} do not match Stage 1 {stage1_levels}."
+        )
+    skill_source = str(
+        _at(config, "likelihood", "training_skill_source", default="gt")
+    ).strip().lower()
+    if skill_source not in {"gt", "predictor"}:
+        raise ValueError("likelihood.training_skill_source must be gt or predictor.")
+    stage1_fsq_run = _fsq_run_tag(stage1_config, "Stage-1")
+    predictor_fsq_run = _fsq_run_tag(predictor_config, "Predictor")
+    allow_fsq_mismatch = as_bool(
+        _at(config, "warm_start", "predictor", "allow_fsq_mismatch", default=False)
+    )
+    if predictor_fsq_run != stage1_fsq_run:
+        if skill_source == "predictor":
+            raise ValueError(
+                "training_skill_source=predictor requires a predictor trained in "
+                f"the same FSQ skill space: stage1={stage1_fsq_run!r}, "
+                f"predictor={predictor_fsq_run!r}."
+            )
+        if not allow_fsq_mismatch:
+            raise ValueError(
+                "Predictor FSQ run does not match the Stage-1 prior: "
+                f"stage1={stage1_fsq_run!r}, predictor={predictor_fsq_run!r}. "
+                "Codes with the same index mean different skills across FSQ runs, "
+                "so rollout skill prediction would be wrong. Set "
+                "warm_start.predictor.allow_fsq_mismatch=true only if this "
+                "predictor is a placeholder for gt-mode training."
+            )
+        print(
+            "WARNING: predictor FSQ run differs from the Stage-1 prior "
+            f"(stage1={stage1_fsq_run!r}, predictor={predictor_fsq_run!r}); "
+            "gt-mode training is unaffected, but rollout skill prediction "
+            "from this predictor is meaningless.",
+            file=sys.stderr,
+        )
 
     source = str(_at(config, "dataset", "source")).strip()
     if not source:
@@ -168,7 +292,6 @@ def build_settings(config: dict) -> dict:
     )
     dataset_dir = skillvla_root / source / run_tag / "skillvla"
     contract = _dataset_contract(dataset_dir)
-    stage1_levels = [int(value) for value in stage1_config["skill_fsq_levels"]]
     if contract["levels"] != stage1_levels:
         raise ValueError(
             f"Stage-2 dataset FSQ levels {contract['levels']} do not match Stage 1 {stage1_levels}."
@@ -182,9 +305,11 @@ def build_settings(config: dict) -> dict:
         project_root, stage1_config["dino_model_path"], marker="models"
     )
     tokenizer_path = _local_path(
-        project_root, stage1_config["tokenizer_path"], marker="models"
+        project_root, predictor_config["tokenizer_path"], marker="models"
     )
-    fsq_path = _local_path(project_root, stage1_config["fsq_path"])
+    fsq_path = _local_path(
+        project_root, stage1_config["fsq_path"], marker=dataset_root.name
+    )
     for path, label in (
         (dino_path, "DINO model"),
         (tokenizer_path, "PaliGemma tokenizer"),
@@ -197,24 +322,12 @@ def build_settings(config: dict) -> dict:
     likelihood_layers = int(_at(config, "likelihood", "layers", default=4))
     if likelihood_layers != 4:
         raise ValueError("BayesVLA-matched Stage 2 fixes likelihood.layers=4.")
-    skill_source = str(
-        _at(config, "likelihood", "training_skill_source", default="gt")
-    ).strip().lower()
-    if skill_source not in {"gt", "predictor"}:
-        raise ValueError("likelihood.training_skill_source must be gt or predictor.")
     action_loss_mode = str(config.get("loss", "flow")).strip().lower()
     if action_loss_mode not in {"flow", "flow_endpoint_xyz"}:
         raise ValueError(
             "loss must be flow|flow_endpoint_xyz, got "
             f"{action_loss_mode!r}."
         )
-    _validate_auxiliary_config(config)
-    finetune_skill_predictor = as_bool(
-        _at(config, "auxiliary", "skill_predictor", "train", default=False)
-    )
-    finetune_terminator = as_bool(
-        _at(config, "auxiliary", "terminator", "train", default=False)
-    )
     batch_size = int(
         _at(config, "training", "dataloader", "batch_size", default=16)
     )
@@ -260,12 +373,6 @@ def build_settings(config: dict) -> dict:
         raise ValueError(
             "same_skill_different_task needs dataloader.batch_size >= 4."
         )
-    grouped_samples = int(batch_size * same_skill_batch_fraction) // 2 * 2
-    if same_skill_batch_enabled and finetune_terminator and grouped_samples >= batch_size:
-        raise ValueError(
-            "auxiliary.terminator.train=true needs at least one random dataloader "
-            "slot; lower same_skill_different_task.grouped_fraction."
-        )
     suffix = str(_at(config, "run", "suffix", default="")).strip().strip("_")
     loss_tag = "flow" if action_loss_mode == "flow" else "endpoint"
     batch_tag = "batchON" if same_skill_batch_enabled else "batchOFF"
@@ -283,9 +390,15 @@ def build_settings(config: dict) -> dict:
         "skillvla_dataset_dir": dataset_dir,
         "repo_id": f"dohyeon/{source}",
         "stage1_checkpoint_path": stage1_path,
+        "predictor_checkpoint_path": predictor_path,
         "dino_model_path": dino_path,
         "tokenizer_path": tokenizer_path,
         "fsq_path": fsq_path,
+        "architecture": "cond_gemma",
+        "architecture_revision": str(
+            stage1_config.get("architecture_revision", "skillvla_real_v1")
+        ),
+        "architecture_label": str(stage1_config.get("architecture_label", "")),
         "action_expert_variant": stage1_config["action_expert_variant"],
         "cond_encoder_variant": stage1_config["cond_encoder_variant"],
         "chunk_size": int(stage1_config["chunk_size"]),
@@ -302,59 +415,41 @@ def build_settings(config: dict) -> dict:
         "dino_image_size": int(stage1_config["dino_image_size"]),
         "freeze_vision_encoder": as_bool(stage1_config["freeze_vision_encoder"]),
         "conditioning_route": stage1_config["conditioning_route"],
+        "mask_actions_after_skill_end": as_bool(
+            stage1_config.get("mask_actions_after_skill_end", False)
+        ),
+        "num_visual_latents_per_camera": int(
+            stage1_config.get("num_visual_latents_per_camera", 32)
+        ),
+        "visual_perceiver_width": int(
+            stage1_config.get("visual_perceiver_width", 1024)
+        ),
         "skill_vocab_size": math.prod(stage1_levels),
         "skill_fsq_levels": "[" + ",".join(str(value) for value in stage1_levels) + "]",
         "transition_jitter_pmax": int(stage1_config["transition_jitter_pmax"]),
         "transition_jitter_distribution": stage1_config["transition_jitter_distribution"],
         "train_skill_predictor": True,
-        "skill_predictor_weight": float(stage1_config["skill_predictor_weight"]),
-        "skill_predictor_lr_scale": float(
-            stage1_config["skill_predictor_lr_scale"]
-        ),
-        "skill_predictor_all_layers": as_bool(stage1_config["skill_predictor_all_layers"]),
-        "skill_predictor_detach_vlm": as_bool(
-            stage1_config.get("skill_predictor_detach_vlm", True)
-        ),
-        "skill_predictor_lora": as_bool(
-            stage1_config.get("skill_predictor_lora", False)
-        ),
-        "skill_predictor_lora_targets": str(
-            stage1_config.get("skill_predictor_lora_targets", "q,k,v,o")
-        ),
-        "skill_predictor_lora_rank": int(
-            stage1_config.get("skill_predictor_lora_rank", 8)
-        ),
-        "skill_predictor_lora_alpha": float(
-            stage1_config.get("skill_predictor_lora_alpha", 16.0)
-        ),
-        "skill_predictor_lora_dropout": float(
-            stage1_config.get("skill_predictor_lora_dropout", 0.0)
-        ),
-        "skill_predictor_lora_lr_scale": float(
-            stage1_config.get("skill_predictor_lora_lr_scale", 10.0)
-        ),
-        "skill_predictor_vlm_variant": stage1_config["skill_predictor_vlm_variant"],
-        "skill_predictor_image_size": int(stage1_config["skill_predictor_image_size"]),
-        "skill_predictor_reader_tokens": int(stage1_config["skill_predictor_reader_tokens"]),
-        "skill_predictor_reader_depth": int(stage1_config["skill_predictor_reader_depth"]),
-        "skill_predictor_reader_heads": int(stage1_config["skill_predictor_reader_heads"]),
-        "skill_predictor_deadzone_frac": float(stage1_config["skill_predictor_deadzone_frac"]),
+        "skill_predictor_vlm_variant": predictor_config["skill_predictor_vlm_variant"],
+        "skill_predictor_image_size": int(predictor_config["skill_predictor_image_size"]),
+        "skill_predictor_reader_tokens": int(predictor_config["skill_predictor_reader_tokens"]),
+        "skill_predictor_reader_depth": int(predictor_config["skill_predictor_reader_depth"]),
+        "skill_predictor_reader_heads": int(predictor_config["skill_predictor_reader_heads"]),
+        "skill_predictor_all_layers": as_bool(predictor_config["skill_predictor_all_layers"]),
+        "skill_predictor_detach_vlm": as_bool(predictor_config["skill_predictor_detach_vlm"]),
+        "skill_predictor_lora": as_bool(predictor_config["skill_predictor_lora"]),
+        "skill_predictor_lora_targets": str(predictor_config["skill_predictor_lora_targets"]),
+        "skill_predictor_lora_rank": int(predictor_config["skill_predictor_lora_rank"]),
+        "skill_predictor_lora_alpha": float(predictor_config["skill_predictor_lora_alpha"]),
+        "skill_predictor_lora_dropout": float(predictor_config["skill_predictor_lora_dropout"]),
+        "skill_predictor_deadzone_frac": float(predictor_config["skill_predictor_deadzone_frac"]),
         "skill_predictor_attend_image": True,
         "skill_predictor_attend_language": True,
-        "tokenizer_max_length": int(stage1_config["tokenizer_max_length"]),
-        "train_terminator": True,
-        "terminator_freeze_vision_encoder": as_bool(
-            stage1_config["terminator_freeze_vision_encoder"]
-        ),
-        "terminator_lr_scale": float(stage1_config["terminator_lr_scale"]),
-        "terminator_end_target_sigma": float(stage1_config["terminator_end_target_sigma"]),
-        "terminator_end_pos_weight": float(stage1_config["terminator_end_pos_weight"]),
+        "tokenizer_max_length": int(predictor_config["tokenizer_max_length"]),
+        "train_terminator": False,
         "likelihood_num_layers": likelihood_layers,
         "likelihood_cross_attention_heads": 8,
         "training_skill_source": skill_source,
         "action_loss_mode": action_loss_mode,
-        "finetune_skill_predictor": finetune_skill_predictor,
-        "finetune_terminator": finetune_terminator,
         "same_skill_batch_enabled": same_skill_batch_enabled,
         "same_skill_batch_fraction": same_skill_batch_fraction,
         "same_skill_progress_temperature": same_skill_progress_temperature,
