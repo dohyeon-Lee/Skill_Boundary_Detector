@@ -214,16 +214,31 @@ def build_settings(
     if episode_selection not in {"first", "random"}:
         raise ValueError("episode_selection must be first|random.")
 
-    eval_init_states_path = (
-        dataset_root / "skillvla_dataset" / target_dataset / "eval_init_states.npz"
-    )
-    original_dataset_dir = project_root / "libero_original_dataset" / target_task
-    for label, path in (
+    episode_source = str(
+        get_value(config, "episode_source", "exact")
+    ).strip().lower()
+    if episode_source not in {"exact", "dataset"}:
+        raise ValueError("episode_source must be exact|dataset.")
+    required = [
         ("FSQ checkpoint", model_path),
         ("FSQ source dataset", skill_dataset_dir),
-        ("episode-exact map", eval_init_states_path),
-        ("original LIBERO dataset", original_dataset_dir),
-    ):
+    ]
+    if episode_source == "exact":
+        eval_init_states_path = (
+            dataset_root / "skillvla_dataset" / target_dataset / "eval_init_states.npz"
+        )
+        original_dataset_dir = project_root / "libero_original_dataset" / target_task
+        required += [
+            ("episode-exact map", eval_init_states_path),
+            ("original LIBERO dataset", original_dataset_dir),
+        ]
+    else:
+        # The dataset's own task table numbers every episode, so neither the
+        # rendered episode-exact map nor the original HDF5s are consulted;
+        # target_task stays on as the report label only.
+        eval_init_states_path = None
+        original_dataset_dir = None
+    for label, path in required:
         if not path.exists():
             raise FileNotFoundError(f"{label} not found: {path}")
 
@@ -283,8 +298,9 @@ def build_settings(
         "fsq_latents_path": str(latents_path),
         "fsq_skills_dir": str(skills_dir),
         "skill_dataset_dir": str(skill_dataset_dir),
-        "eval_init_states_path": str(eval_init_states_path),
-        "original_dataset_dir": str(original_dataset_dir),
+        "episode_source": episode_source,
+        "eval_init_states_path": str(eval_init_states_path or ""),
+        "original_dataset_dir": str(original_dataset_dir or ""),
         "fsq_run_name": run_name,
         "fsq_eval_run_names": " ".join(run_names),
         "fsq_run_count": len(run_names),

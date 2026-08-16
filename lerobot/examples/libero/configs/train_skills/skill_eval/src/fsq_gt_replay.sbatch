@@ -74,12 +74,15 @@ assets: ${LIBERO_BENCHMARK_ROOT}/assets
 EOF
 export LIBERO_CONFIG_PATH="${LIBERO_LOCAL_CONFIG_DIR}"
 
+# EVAL_INIT_STATES_PATH and ORIGINAL_DATASET_DIR are empty when episode_source
+# is "dataset": episodes are then grouped by the dataset's own task table.
 for artifact in \
   "${FSQ_MODEL_PATH}" \
   "${FSQ_SKILLS_DIR}" \
   "${SKILL_DATASET_DIR}" \
   "${EVAL_INIT_STATES_PATH}" \
   "${ORIGINAL_DATASET_DIR}"; do
+  [ -n "${artifact}" ] || continue
   if [ ! -e "${artifact}" ]; then
     echo "Missing FSQ GT replay artifact: ${artifact}" >&2
     exit 1
@@ -113,6 +116,7 @@ echo "worker    : ${WORKER_INDEX}/${WORKER_COUNT}"
 echo "FSQ       : ${FSQ_RUN_NAME} ${FSQ_EPOCH_TAG}"
 echo "suite     : ${TARGET_TASK} task_ids=${TASK_IDS}"
 echo "episodes  : ${EPISODES_PER_TASK}/task selection=${EPISODE_SELECTION} explicit=${EPISODE_IDS}"
+echo "ep source : ${EPISODE_SOURCE}"
 echo "rollout   : GT actions only"
 echo "output    : ${EVAL_OUT_DIR}"
 nvidia-smi || true

@@ -36,8 +36,10 @@ echo "dataset  : ${SKILLVLA_DATASET_DIR}"
 echo "prior    : ${STAGE1_CHECKPOINT_PATH} (fully frozen, ${ARCHITECTURE}/${ARCHITECTURE_REVISION})"
 echo "predictor: ${PREDICTOR_CHECKPOINT_PATH} (fully frozen VLM)"
 echo "train    : VLM projection + ${LIKELIHOOD_NUM_LAYERS} blocks + action head"
+echo "memory   : ${LIKELIHOOD_VLM_MEMORY} (gate lr x${LIKELIHOOD_GATE_LR_SCALE})"
+echo "schedule : ${SCHEDULER_MODE} warmup=${SCHEDULER_WARMUP_STEPS}"
 echo "skill    : ${TRAINING_SKILL_SOURCE}"
-echo "loss     : ${ACTION_LOSS_MODE}"
+echo "cumulative XYZ: enabled=${CUMULATIVE_XYZ_LOSS_ENABLED} weight=${CUMULATIVE_XYZ_LOSS_WEIGHT}"
 echo "batching : batch=${BATCH_SIZE}, same-skill=${SAME_SKILL_BATCH_ENABLED}, grouped=${SAME_SKILL_BATCH_FRACTION}, progress-temp=${SAME_SKILL_PROGRESS_TEMPERATURE}"
 echo "output   : ${PT_OUTPUT_DIR}"
 
@@ -68,12 +70,18 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.architecture_revision="${ARCHITECTURE_REVISION}" \
     --policy.architecture_label="${ARCHITECTURE_LABEL}" \
     --policy.training_skill_source="${TRAINING_SKILL_SOURCE}" \
-    --policy.action_loss_mode="${ACTION_LOSS_MODE}" \
+    --policy.cumulative_xyz_loss_enabled="${CUMULATIVE_XYZ_LOSS_ENABLED}" \
+    --policy.cumulative_xyz_loss_weight="${CUMULATIVE_XYZ_LOSS_WEIGHT}" \
     --policy.same_skill_batch_enabled="${SAME_SKILL_BATCH_ENABLED}" \
     --policy.same_skill_batch_fraction="${SAME_SKILL_BATCH_FRACTION}" \
     --policy.same_skill_progress_temperature="${SAME_SKILL_PROGRESS_TEMPERATURE}" \
     --policy.likelihood_num_layers="${LIKELIHOOD_NUM_LAYERS}" \
     --policy.likelihood_cross_attention_heads="${LIKELIHOOD_CROSS_ATTENTION_HEADS}" \
+    --policy.likelihood_vlm_memory="${LIKELIHOOD_VLM_MEMORY}" \
+    --policy.likelihood_gate_lr_scale="${LIKELIHOOD_GATE_LR_SCALE}" \
+    --policy.scheduler_mode="${SCHEDULER_MODE}" \
+    --policy.scheduler_warmup_steps="${SCHEDULER_WARMUP_STEPS}" \
+    --policy.scheduler_decay_steps="${SCHEDULER_DECAY_STEPS}" \
     --policy.action_expert_variant="${ACTION_EXPERT_VARIANT}" \
     --policy.cond_encoder_variant="${COND_ENCODER_VARIANT}" \
     --policy.vision_backbone=dino \

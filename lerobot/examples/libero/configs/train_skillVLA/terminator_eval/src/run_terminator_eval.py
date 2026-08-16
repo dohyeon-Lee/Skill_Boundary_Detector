@@ -72,6 +72,7 @@ class IndependentTerminator:
         self.policy_model = policy.model
         self.module = module
         self.variant = variant
+        self.termination_only = bool(getattr(module, "termination_only", False))
 
     @torch.no_grad()
     def terminate(
@@ -343,7 +344,12 @@ def _query_terminator(
         )
         display_signals.append(
             (
-                float(display_progress_tensor[0]),
+                # A termination-only module emits a constant zero progress. Report
+                # it as missing so the panel draws an empty "n/a" track instead of
+                # a real-looking bar pinned at 0.
+                None
+                if display_entry["terminator"].termination_only
+                else float(display_progress_tensor[0]),
                 float(display_termination_tensor[0]),
             )
         )
@@ -1093,6 +1099,19 @@ def eval_main(cfg: EvalPipelineConfig):
             progress_threshold = float(os.environ["SKILL_END_PROGRESS_THRESHOLD"])
             max_skill_length = int(os.environ["INFERENCE_SKILL_MAX_LENGTH"])
             finish_chunk = _as_bool(os.environ["FINISH_ACTION_CHUNK_ON_END"])
+            # A termination-only MAIN terminator emits a constant zero progress, so
+            # a progress-gated end_mode would either never fire ("progress"/"and")
+            # or silently degrade to termination alone ("or"). Fail loudly instead.
+            main_terminator = context["policy"].terminator
+            if (
+                getattr(main_terminator, "termination_only", False)
+                and end_mode != "termination"
+            ):
+                raise ValueError(
+                    f"terminator.end_mode={end_mode!r} needs a progress signal, but the "
+                    "MAIN terminator was trained with termination_only=true. "
+                    "Set terminator.end_mode: termination."
+                )
             task_descriptions = _libero_task_descriptions(cfg.env.task)
 
             inference_context = (
@@ -1256,11 +1275,13 @@ def eval_main(cfg: EvalPipelineConfig):
                                         "progress": (
                                             None
                                             if not trace["progress"]
+                                            or trace["progress"][-1] is None
                                             else float(trace["progress"][-1])
                                         ),
                                         "termination": (
                                             None
                                             if not trace["termination"]
+                                            or trace["termination"][-1] is None
                                             else float(trace["termination"][-1])
                                         ),
                                     }

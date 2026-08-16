@@ -184,6 +184,35 @@ def _replay_run(tmp_path: Path, *, epochs: list[int]) -> dict:
     }
 
 
+def test_episode_source_dataset_drops_the_exact_map_requirements(tmp_path: Path) -> None:
+    """Neither the rendered map nor the original HDF5s are consulted in this mode.
+
+    A dataset whose scenes span several LIBERO suites has neither, and its own
+    task table numbers every episode instead.
+    """
+    config = _replay_run(tmp_path, epochs=[50])
+    config["episode_source"] = "dataset"
+    config["target_task"] = "no_such_suite"
+    settings = CONFIG.build_settings(config)
+    assert settings["eval_init_states_path"] == ""
+    assert settings["original_dataset_dir"] == ""
+    assert settings["episode_source"] == "dataset"
+
+
+def test_episode_source_exact_still_requires_the_map(tmp_path: Path) -> None:
+    config = _replay_run(tmp_path, epochs=[50])
+    (tmp_path / "dataset" / "skillvla_dataset" / "ds" / "eval_init_states.npz").unlink()
+    with pytest.raises(FileNotFoundError, match="episode-exact map"):
+        CONFIG.build_settings(config)
+
+
+def test_episode_source_rejects_unknown_values(tmp_path: Path) -> None:
+    config = _replay_run(tmp_path, epochs=[50])
+    config["episode_source"] = "sim"
+    with pytest.raises(ValueError, match="episode_source"):
+        CONFIG.build_settings(config)
+
+
 def test_expected_epoch_tags_track_disk_without_a_frozen_list(tmp_path: Path) -> None:
     config = _replay_run(tmp_path, epochs=[50, 100])
     settings = CONFIG.build_settings(config)
@@ -216,6 +245,89 @@ def test_frozen_checkpoint_list_rejects_a_vanished_checkpoint(tmp_path: Path) ->
     with pytest.raises(FileNotFoundError):
         CONFIG.build_settings(
             config, checkpoint_override="50", checkpoint_list_override=["50", "100"]
+        )
+
+
+def _meta_only_dataset(tmp_path: Path, *, tasks: list[str], episode_tasks: list[str]):
+    """A skill dataset carrying only the metadata episode sourcing reads."""
+    import pandas as pd
+
+    dataset_dir = tmp_path / "ds"
+    (dataset_dir / "meta" / "episodes").mkdir(parents=True)
+    pd.DataFrame({"task_index": range(len(tasks))}, index=pd.Index(tasks, name="task")).to_parquet(
+        dataset_dir / "meta" / "tasks.parquet"
+    )
+    pd.DataFrame(
+        {
+            "episode_index": range(len(episode_tasks)),
+            "data/chunk_index": [0] * len(episode_tasks),
+            "data/file_index": [0] * len(episode_tasks),
+            "length": [10] * len(episode_tasks),
+            "tasks": [[task] for task in episode_tasks],
+        }
+    ).to_parquet(dataset_dir / "meta" / "episodes" / "chunk.parquet")
+    latents = tmp_path / "latents.npz"
+    count = len(episode_tasks)
+    np.savez(
+        latents,
+        tokens=np.zeros(count, dtype=np.int64),
+        episode_id=np.arange(count, dtype=np.int64),
+        skill_index=np.zeros(count, dtype=np.int64),
+        frame_start=np.zeros(count, dtype=np.int64),
+        frame_end=np.full(count, 10, dtype=np.int64),
+    )
+    return dataset_dir, latents
+
+
+def test_dataset_meta_sourcing_numbers_every_episode(tmp_path: Path) -> None:
+    """The dataset's own table covers scenes no single LIBERO suite contains."""
+    import skill_data
+
+    dataset_dir, latents = _meta_only_dataset(
+        tmp_path, tasks=["pick up a", "pick up b"], episode_tasks=["pick up b", "pick up a"]
+    )
+    dataset = skill_data.SkillEvaluationDataset(
+        skill_dataset_dir=dataset_dir,
+        skill_latents_path=latents,
+        eval_init_states_path=None,
+        original_dataset_dir=None,
+        suite_name="not_a_libero_suite",
+    )
+    assert {episode: source.task_id for episode, source in dataset.sources.items()} == {0: 1, 1: 0}
+    assert dataset.task_descriptions == {0: "pick up a", 1: "pick up b"}
+    assert RUNNER._available_task_ids(dataset, episodes_per_task=1) == [0, 1]
+
+
+def test_dataset_meta_sourcing_refuses_state_alignment(tmp_path: Path) -> None:
+    import skill_data
+
+    dataset_dir, latents = _meta_only_dataset(
+        tmp_path, tasks=["pick up a"], episode_tasks=["pick up a"]
+    )
+    dataset = skill_data.SkillEvaluationDataset(
+        skill_dataset_dir=dataset_dir,
+        skill_latents_path=latents,
+        eval_init_states_path=None,
+        original_dataset_dir=None,
+        suite_name="not_a_libero_suite",
+    )
+    with pytest.raises(RuntimeError, match="episode-exact map"):
+        dataset.load_aligned_episode(0)
+
+
+def test_dataset_meta_sourcing_rejects_a_task_outside_the_table(tmp_path: Path) -> None:
+    import skill_data
+
+    dataset_dir, latents = _meta_only_dataset(
+        tmp_path, tasks=["pick up a"], episode_tasks=["pick up z"]
+    )
+    with pytest.raises(ValueError, match="absent from"):
+        skill_data.SkillEvaluationDataset(
+            skill_dataset_dir=dataset_dir,
+            skill_latents_path=latents,
+            eval_init_states_path=None,
+            original_dataset_dir=None,
+            suite_name="not_a_libero_suite",
         )
 
 

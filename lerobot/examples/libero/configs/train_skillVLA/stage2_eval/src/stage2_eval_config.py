@@ -1,5 +1,18 @@
 #!/usr/bin/env python3
-"""Resolve clean Stage-2 multi-checkpoint evaluation into shell exports."""
+"""Resolve Stage-2 evaluation into shell exports.
+
+Stage-2 evaluation assembles three frozen sources: the Stage-2 likelihood
+checkpoint, an external predictor (frozen VLM + reader/head), and an external
+terminator. Each configured checkpoint expands into up to two panels:
+
+* ``stage2``: the full likelihood policy (frozen prior + language blocks).
+* ``prior``: the exact frozen Stage-1 prior recorded in the Stage-2
+  checkpoint's config, evaluated standalone.
+
+Both panels run under the same predictor, terminator, and oracle skill map,
+and the shared evaluator stitches them into one side-by-side video, so the
+difference is exactly what the likelihood blocks added.
+"""
 
 from __future__ import annotations
 
@@ -13,9 +26,18 @@ from pathlib import Path
 
 _HERE = Path(__file__).resolve()
 sys.path.insert(0, str(_HERE.parent.parent.parent.parent / "train_skills" / "src"))
+sys.path.insert(0, str(_HERE.parent.parent.parent / "stage1_eval" / "src"))
 from train_skills_config import as_bool, as_list, get_value, load_config, print_shell  # noqa: E402
 
+from stage1_eval_config import (  # noqa: E402
+    _checkpoint_contract as _stage1_prior_contract,
+    _external_predictor_contract,
+    _validate_external_terminator,
+)
+
 DEFAULT_CONFIG_PATH = _HERE.parent.parent / "stage2_eval_config.yaml"
+
+_MODES = ("stage2", "prior")
 
 
 def _at(config: dict, *path: str, default=None):
@@ -64,16 +86,24 @@ def _clean_label(value: str) -> str:
     return value
 
 
-def _default_output_name(models: list[dict]) -> str:
+def _default_output_name(entries: list[dict]) -> str:
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    if len(models) > 1:
-        return f"compare_{len(models)}models_{stamp}"
-    model = re.sub(r"[^A-Za-z0-9._-]+", "-", models[0]["model_dir"]).strip("-_")
-    raw = f"{model}_{models[0]['checkpoint']}_{stamp}"
-    return raw if len(raw) <= 200 else f"stage2_{models[0]['checkpoint']}_{stamp}"
+    if len(entries) > 1:
+        return f"compare_{len(entries)}models_{stamp}"
+    model = re.sub(r"[^A-Za-z0-9._-]+", "-", entries[0]["model_dir"]).strip("-_")
+    raw = f"{model}_{entries[0]['checkpoint']}_{stamp}"
+    return raw if len(raw) <= 200 else f"stage2_{entries[0]['checkpoint']}_{stamp}"
 
 
-def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
+def _fsq_run_tag(policy_config: dict, label: str) -> str:
+    """Return the FSQ dataset-run directory name recorded in fsq_path."""
+    fsq_path = Path(str(policy_config.get("fsq_path") or ""))
+    if not fsq_path.name:
+        raise ValueError(f"{label} config records no fsq_path.")
+    return fsq_path.parent.name
+
+
+def _stage2_checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
     required = (
         "config.json",
         "model.safetensors",
@@ -90,10 +120,20 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
     policy = json.loads((policy_path / "config.json").read_text())
     if policy.get("type", policy.get("model_type")) != "skill_vla_stage2":
         raise ValueError(f"Expected a skill_vla_stage2 checkpoint: {policy_path}")
+    if str(policy.get("architecture", "")) != "cond_gemma":
+        raise ValueError(
+            f"Stage-2 checkpoints are built on the cond_gemma prior: {policy_path}"
+        )
     if not as_bool(policy.get("train_skill_predictor", False)):
-        raise ValueError(f"Stage-2 checkpoint has no frozen VLM/predictor: {policy_path}")
-    if not as_bool(policy.get("train_terminator", False)):
-        raise ValueError(f"Stage-2 checkpoint has no retained terminator: {policy_path}")
+        raise ValueError(f"Stage-2 checkpoint has no frozen VLM module: {policy_path}")
+    stage1_prior_path = _relocate_project_path(
+        project_root, policy.get("stage1_checkpoint_path")
+    )
+    if not (stage1_prior_path / "config.json").is_file():
+        raise FileNotFoundError(
+            "Stage-1 prior recorded in the Stage-2 checkpoint not found: "
+            f"{stage1_prior_path}"
+        )
 
     train_config = json.loads((policy_path / "train_config.json").read_text())
     dataset_value = str((train_config.get("dataset") or {}).get("root") or "").strip()
@@ -127,7 +167,20 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
     for key in ("dino_model_path", "tokenizer_path"):
         if not paths[key].is_dir():
             raise FileNotFoundError(f"Stage-2 dependency not found ({key}): {paths[key]}")
-    return {"policy": policy, **paths}
+    return {
+        "policy": policy,
+        "stage1_prior_path": stage1_prior_path,
+        "architecture": str(policy.get("architecture")),
+        "architecture_label": str(policy.get("architecture_label", "")),
+        "architecture_revision": str(policy.get("architecture_revision", "")),
+        "conditioning_route": str(policy.get("conditioning_route", "state_cond")),
+        "num_visual_latents_per_camera": int(
+            policy.get("num_visual_latents_per_camera", 32)
+        ),
+        "visual_perceiver_width": int(policy.get("visual_perceiver_width", 1024)),
+        "action_loss_mode": str(policy.get("action_loss_mode", "flow")),
+        **paths,
+    }
 
 
 def _model_entries(config: dict) -> list[dict]:
@@ -136,6 +189,7 @@ def _model_entries(config: dict) -> list[dict]:
     default_advance = str(
         _at(config, "oracle", "advance_mode", default="terminator")
     ).lower()
+    default_modes = get_value(config, "modes", list(_MODES))
     models = get_value(config, "models", None)
     if isinstance(models, list) and models:
         raw_entries = models
@@ -159,6 +213,17 @@ def _model_entries(config: dict) -> list[dict]:
             raise ValueError("models[].advance_mode must be terminator|gt.")
         if skill_source == "predictor" and advance_mode != "terminator":
             raise ValueError("skill_source=predictor requires advance_mode=terminator.")
+        modes = raw.get("modes", default_modes)
+        if isinstance(modes, str):
+            modes = [modes]
+        modes = [str(mode).strip().lower() for mode in modes]
+        if not modes or len(modes) != len(set(modes)):
+            raise ValueError("models[].modes must be a non-empty unique list.")
+        unknown_modes = sorted(set(modes) - set(_MODES))
+        if unknown_modes:
+            raise ValueError(
+                f"models[].modes only accepts {list(_MODES)}, got {unknown_modes}."
+            )
         label = str(raw.get("label", "") or "").strip()
         entries.append(
             {
@@ -166,6 +231,7 @@ def _model_entries(config: dict) -> list[dict]:
                 "checkpoint": checkpoint,
                 "skill_source": skill_source,
                 "advance_mode": advance_mode,
+                "modes": modes,
                 "label": _clean_label(label or f"model{index + 1}-{skill_source}"),
             }
         )
@@ -175,14 +241,96 @@ def _model_entries(config: dict) -> list[dict]:
     return entries
 
 
+def _terminator_variant(config: dict) -> str:
+    aliases = {
+        "normal": "state_image",
+        "state_image": "state_image",
+        "state+image": "state_image",
+        "image": "image_only",
+        "image_only": "image_only",
+        "image-only": "image_only",
+    }
+    raw = str(_at(config, "terminator", "variant", default="state_image"))
+    variant = aliases.get(raw.strip().lower(), "")
+    if not variant:
+        raise ValueError(
+            f"terminator.variant must be state_image|image_only, got {raw!r}."
+        )
+    return variant
+
+
+def _panel_spec(
+    entry: dict,
+    mode: str,
+    *,
+    policy_path: Path,
+    policy_config: dict,
+    architecture_fields: dict,
+    eval_data_fields: dict,
+    tokenizer_path: Path,
+    predictor_path: Path | None,
+    terminator_path: Path | None,
+    terminator_variant: str,
+) -> dict:
+    if entry["skill_source"] == "gt":
+        skill_source = "gt"
+    elif mode == "prior" or predictor_path is not None:
+        skill_source = "external"
+    else:
+        # The Stage-2 checkpoint embeds the predictor it trained with.
+        skill_source = "own"
+    advance_mode = "external" if entry["advance_mode"] == "terminator" else "gt"
+    return {
+        "model_dir": entry["model_dir"],
+        "checkpoint": entry["checkpoint"],
+        "mode": mode,
+        "label": f"{entry['label']}-{mode}",
+        "policy_path": policy_path,
+        "policy": policy_config,
+        "skill_source": skill_source,
+        "advance_mode": advance_mode,
+        "terminator_variant": terminator_variant,
+        "external_predictor_model": str(predictor_path or ""),
+        "external_terminator_model": str(terminator_path or ""),
+        "eval_legacy_vsa": False,
+        "eval_vsa_revision": "",
+        "tokenizer_path": tokenizer_path,
+        **architecture_fields,
+        **eval_data_fields,
+    }
+
+
 def build_settings(config: dict) -> dict:
     project_root = Path(str(get_value(config, "project_root"))).expanduser()
     outputs_root = project_root / str(get_value(config, "outputs_root", "outputs"))
     eval_outputs_root = _HERE.parent.parent / "outputs"
+
+    predictor_setting = str(
+        get_value(config, "external_predictor_model", "") or ""
+    ).strip()
+    terminator_setting = str(
+        get_value(config, "external_terminator_model", "") or ""
+    ).strip()
+    predictor_path = (
+        _relocate_project_path(project_root, predictor_setting)
+        if predictor_setting
+        else None
+    )
+    terminator_path = (
+        _relocate_project_path(project_root, terminator_setting)
+        if terminator_setting
+        else None
+    )
+
+    terminator_variant = _terminator_variant(config)
     entries = _model_entries(config)
     resolved = []
+    # Prior panels are identical whenever they share the same frozen Stage-1
+    # checkpoint and runtime settings; evaluate each distinct prior only once.
+    prior_specs: dict[tuple, dict] = {}
+    prior_requests: dict[tuple, int] = {}
     for entry in entries:
-        policy_path = (
+        stage2_path = (
             outputs_root
             / "skillVLA_stage2"
             / entry["model_dir"]
@@ -190,26 +338,159 @@ def build_settings(config: dict) -> dict:
             / entry["checkpoint"]
             / "pretrained_model"
         )
-        resolved.append(
-            {
-                **entry,
-                "policy_path": policy_path,
-                **_checkpoint_contract(policy_path, project_root),
+        contract = _stage2_checkpoint_contract(stage2_path, project_root)
+        stage2_policy = contract["policy"]
+        stage2_fsq_run = _fsq_run_tag(stage2_policy, "Stage-2")
+
+        needs_terminator = entry["advance_mode"] == "terminator"
+        needs_predictor = entry["skill_source"] == "predictor"
+        if needs_terminator:
+            if terminator_path is None:
+                raise ValueError(
+                    "advance_mode=terminator requires external_terminator_model; "
+                    "Stage-2 checkpoints carry no terminator."
+                )
+            _validate_external_terminator(
+                terminator_path,
+                target_policy=stage2_policy,
+                variant=terminator_variant,
+            )
+            terminator_policy = json.loads(
+                (terminator_path / "config.json").read_text()
+            )
+            terminator_fsq_run = _fsq_run_tag(terminator_policy, "Terminator")
+            if terminator_fsq_run != stage2_fsq_run:
+                raise ValueError(
+                    "External terminator FSQ run does not match the Stage-2 "
+                    f"checkpoint: terminator={terminator_fsq_run!r}, "
+                    f"stage2={stage2_fsq_run!r}."
+                )
+        if needs_predictor:
+            if predictor_path is None and "prior" in entry["modes"]:
+                raise ValueError(
+                    "skill_source=predictor with the prior panel requires "
+                    "external_predictor_model; the Stage-1 prior has no "
+                    "predictor of its own."
+                )
+            if predictor_path is not None:
+                _external_predictor_contract(
+                    predictor_path,
+                    target_policy=stage2_policy,
+                    project_root=project_root,
+                )
+                predictor_policy = json.loads(
+                    (predictor_path / "config.json").read_text()
+                )
+                predictor_fsq_run = _fsq_run_tag(predictor_policy, "Predictor")
+                if predictor_fsq_run != stage2_fsq_run:
+                    raise ValueError(
+                        "External predictor FSQ run does not match the Stage-2 "
+                        f"checkpoint: predictor={predictor_fsq_run!r}, "
+                        f"stage2={stage2_fsq_run!r}."
+                    )
+
+        # Both panels evaluate against the Stage-2 checkpoint's dataset so their
+        # oracle maps, init states, and skill traces are identical.
+        eval_data_fields = {
+            "fsq_path": contract["fsq_path"],
+            "dino_model_path": contract["dino_model_path"],
+            "skill_dataset_dir": contract["skill_dataset_dir"],
+            "eval_init_states_path": contract["eval_init_states_path"],
+            "skill_latents_path": contract["skill_latents_path"],
+            "raw_dataset_dir": contract["raw_dataset_dir"],
+        }
+        stage2_architecture_fields = {
+            "architecture": contract["architecture"],
+            "architecture_label": contract["architecture_label"],
+            "architecture_revision": contract["architecture_revision"],
+            "architecture_inferred": False,
+            "conditioning_route": contract["conditioning_route"],
+            "num_visual_latents_per_camera": contract["num_visual_latents_per_camera"],
+            "visual_perceiver_width": contract["visual_perceiver_width"],
+            "action_loss_mode": contract["action_loss_mode"],
+        }
+        for mode in entry["modes"]:
+            if mode == "stage2":
+                resolved.append(
+                    _panel_spec(
+                        entry,
+                        mode,
+                        policy_path=stage2_path,
+                        policy_config=stage2_policy,
+                        architecture_fields=stage2_architecture_fields,
+                        eval_data_fields=eval_data_fields,
+                        tokenizer_path=contract["tokenizer_path"],
+                        predictor_path=predictor_path,
+                        terminator_path=terminator_path,
+                        terminator_variant=terminator_variant,
+                    )
+                )
+                continue
+            prior_key = (
+                str(contract["stage1_prior_path"]),
+                entry["skill_source"],
+                entry["advance_mode"],
+                str(predictor_path or ""),
+                str(terminator_path or ""),
+                terminator_variant,
+            )
+            prior_requests[prior_key] = prior_requests.get(prior_key, 0) + 1
+            if prior_key in prior_specs:
+                continue
+            prior_contract = _stage1_prior_contract(
+                contract["stage1_prior_path"], project_root
+            )
+            prior_architecture_fields = {
+                "architecture": prior_contract["architecture"],
+                "architecture_label": prior_contract["architecture_label"],
+                "architecture_revision": prior_contract["architecture_revision"],
+                "architecture_inferred": prior_contract["architecture_inferred"],
+                "conditioning_route": prior_contract.get(
+                    "conditioning_route", "state_cond"
+                ),
+                "num_visual_latents_per_camera": prior_contract[
+                    "num_visual_latents_per_camera"
+                ],
+                "visual_perceiver_width": prior_contract["visual_perceiver_width"],
+                "action_loss_mode": prior_contract["action_loss_mode"],
             }
-        )
+            prior_spec = _panel_spec(
+                entry,
+                mode,
+                policy_path=contract["stage1_prior_path"],
+                policy_config=prior_contract["policy"],
+                architecture_fields=prior_architecture_fields,
+                eval_data_fields=eval_data_fields,
+                tokenizer_path=contract["tokenizer_path"],
+                predictor_path=predictor_path,
+                terminator_path=terminator_path,
+                terminator_variant=terminator_variant,
+            )
+            prior_specs[prior_key] = prior_spec
+            resolved.append(prior_spec)
+
+    shared_priors = [
+        spec for key, spec in prior_specs.items() if prior_requests[key] > 1
+    ]
+    for index, spec in enumerate(shared_priors):
+        spec["label"] = "prior" if len(shared_priors) == 1 else f"prior{index + 1}"
+
+    labels = [spec["label"] for spec in resolved]
+    if len(labels) != len(set(labels)):
+        raise ValueError(f"Resolved panel labels must be unique, got {labels}.")
 
     episode_exact = as_bool(_at(config, "oracle", "episode_exact", default=False))
     if episode_exact:
-        init_state_paths = {model["eval_init_states_path"].resolve() for model in resolved}
+        init_state_paths = {spec["eval_init_states_path"].resolve() for spec in resolved}
         if len(init_state_paths) != 1:
             raise ValueError(
                 "Multi-model episode-exact comparison requires the same source init-state map."
             )
-        for model in resolved:
-            if not model["eval_init_states_path"].is_file():
+        for spec in resolved:
+            if not spec["eval_init_states_path"].is_file():
                 raise FileNotFoundError(
                     "oracle.episode_exact=true requires "
-                    f"{model['eval_init_states_path']}. Build the oracle map first."
+                    f"{spec['eval_init_states_path']}. Build the oracle map first."
                 )
 
     end_mode = str(_at(config, "terminator", "end_mode", default="or")).lower()
@@ -218,11 +499,11 @@ def build_settings(config: dict) -> dict:
     n_action_steps = int(
         get_value(config, "n_action_steps", resolved[0]["policy"].get("n_action_steps", 10))
     )
-    for model in resolved:
-        chunk_size = int(model["policy"].get("chunk_size", n_action_steps))
+    for spec in resolved:
+        chunk_size = int(spec["policy"].get("chunk_size", n_action_steps))
         if not 1 <= n_action_steps <= chunk_size:
             raise ValueError(
-                f"n_action_steps={n_action_steps} exceeds {model['label']}'s "
+                f"n_action_steps={n_action_steps} exceeds {spec['label']}'s "
                 f"chunk_size={chunk_size}."
             )
 
@@ -235,7 +516,7 @@ def build_settings(config: dict) -> dict:
 
     output_name = str(get_value(config, "output_name", "") or "").strip()
     output_name = _safe_name(
-        output_name or _default_output_name(resolved), field="output_name"
+        output_name or _default_output_name(entries), field="output_name"
     )
     models_json = json.dumps(
         [
@@ -247,21 +528,24 @@ def build_settings(config: dict) -> dict:
                     if isinstance(value, Path)
                     else value
                 )
-                for key, value in model.items()
+                for key, value in spec.items()
                 if key != "policy"
             }
-            for model in resolved
+            for spec in resolved
         ],
         separators=(",", ":"),
     )
     primary = resolved[0]
+    models_per_row = int(get_value(config, "models_per_row", 2) or 0)
     settings = {
         "project_root": project_root,
         "lerobot_root": project_root / "lerobot",
         "models_json": models_json,
         "model_count": len(resolved),
-        "models_per_row": int(get_value(config, "models_per_row", 2) or 0),
+        "grid_columns": models_per_row,
         "policy_path": primary["policy_path"],
+        "external_predictor_model": str(predictor_path or ""),
+        "external_terminator_model": str(terminator_path or ""),
         "fsq_path": primary["fsq_path"],
         "skill_dataset_dir": primary["skill_dataset_dir"],
         "eval_init_states_path": primary["eval_init_states_path"] if episode_exact else "",
@@ -283,6 +567,15 @@ def build_settings(config: dict) -> dict:
         ),
         "skill_end_progress_threshold": float(
             _at(config, "terminator", "progress_threshold", default=0.95)
+        ),
+        "terminator_variant": terminator_variant,
+        "immediate_replan_on_skill_end": as_bool(
+            _at(
+                config,
+                "terminator",
+                "immediate_replan_on_skill_end",
+                default=False,
+            )
         ),
         "inference_skill_max_length": int(
             _at(config, "terminator", "max_skill_length", default=150)

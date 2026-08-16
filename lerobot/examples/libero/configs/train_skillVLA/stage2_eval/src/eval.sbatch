@@ -20,10 +20,14 @@ if [ -z "${POLICY_PATH:-}" ]; then
   eval "$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/stage2_eval_config.py" --config "${CONFIG_PATH}" --shell)"
 fi
 
+EVAL_ALL_TASK_IDS="${TASK_IDS}"
 if [ -n "${SLURM_ARRAY_TASK_ID:-}" ] && [ -n "${EVAL_FANOUT:-}" ]; then
   LINE="$(printf '%s\n' "${EVAL_FANOUT}" | sed -n "$((SLURM_ARRAY_TASK_ID + 1))p")"
-  IFS='|' read -r TASK_IDS TASK_TAG <<< "${LINE}"
+  IFS='|' read -r TASK_IDS TASK_TAG PANEL_INDICES <<< "${LINE}"
   export TASK_IDS TASK_TAG
+  # Third field selects one panel per unit; older two-field snapshots keep the
+  # all-panels-per-job behavior.
+  if [ -n "${PANEL_INDICES:-}" ]; then export PANEL_INDICES; fi
   WANDB_RUN_NAME="${WANDB_RUN_NAME}_${TASK_TAG}"
   export WANDB_RUN_NAME
 fi
@@ -57,6 +61,12 @@ for artifact in "${POLICY_PATH}" "${FSQ_PATH}" "${SKILL_DATASET_DIR}" "${DINO_MO
     exit 1
   fi
 done
+for overlay in "${EXTERNAL_PREDICTOR_MODEL}" "${EXTERNAL_TERMINATOR_MODEL}"; do
+  if [ -n "${overlay}" ] && [ ! -d "${overlay}" ]; then
+    echo "Missing Stage-2 eval overlay checkpoint: ${overlay}" >&2
+    exit 1
+  fi
+done
 if [ -n "${EVAL_INIT_STATES_PATH}" ] && [ ! -f "${EVAL_INIT_STATES_PATH}" ]; then
   echo "Missing episode-exact init states: ${EVAL_INIT_STATES_PATH}" >&2
   exit 1
@@ -75,9 +85,10 @@ if [ "${WANDB_ENABLE}" = true ]; then
 fi
 
 echo "START STAGE-2 EVAL"
-echo "models   : ${MODEL_COUNT} (primary=${POLICY_PATH})"
+echo "panels   : ${MODEL_COUNT} (primary=${POLICY_PATH})"
 echo "skills   : ${SKILL_DATASET_DIR}"
-echo "term     : each checkpoint's retained terminator"
+echo "predictor: ${EXTERNAL_PREDICTOR_MODEL:-<none>}"
+echo "term     : ${EXTERNAL_TERMINATOR_MODEL:-<none>}"
 echo "suite    : ${TARGET_TASK} task_ids=${TASK_IDS} episodes=${N_EPISODES}"
 echo "output   : ${EVAL_OUT_DIR}"
 nvidia-smi || true
@@ -113,5 +124,13 @@ PYTHONPATH="${LEROBOT_ROOT}/src:${LEROBOT_ROOT}/examples/libero:${LIBERO_REPO_RO
     --job_name="${WANDB_RUN_NAME}" \
     --rename_map='{"observation.images.image2":"observation.images.wrist_image"}' \
     "${WANDB_ARGS[@]}"
+
+# Merge every chunk finished so far and regenerate the success-rate chart.
+# Idempotent: whichever array job ends last leaves the complete chart behind.
+EXPECTED_TASKS="$("${BOOTSTRAP_PYTHON}" -c 'import json, sys; print(len(json.loads(sys.argv[1])))' "${EVAL_ALL_TASK_IDS}")"
+"${PROJECT_ROOT}/.venv/bin/python" \
+  "${SUBMIT_DIR}/../stage1_eval/src/merge_eval_chunks.py" \
+  --out_dir="${EVAL_OUT_DIR}" --expected_tasks="${EXPECTED_TASKS}" \
+  || echo "chunk merge failed (non-fatal)"
 
 echo "DONE -> ${EVAL_OUT_DIR}"

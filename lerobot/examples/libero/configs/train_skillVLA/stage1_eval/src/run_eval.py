@@ -113,6 +113,14 @@ class CheckpointTerminator:
         elif getattr(policy.model, "fsq_image_term_train", None) is None:
             raise ValueError("The policy has no attached image-only terminator.")
         self.policy = policy
+        module = (
+            policy.model.fsq_term_train
+            if self.requires_state
+            else policy.model.fsq_image_term_train
+        )
+        # Exposed so progress-gated advance modes can reject a terminator whose
+        # progress output is a constant zero by construction.
+        self.termination_only = bool(getattr(module, "termination_only", False))
 
     @torch.no_grad()
     def terminate(
@@ -828,10 +836,10 @@ def _build_context(spec: dict, cfg, device: torch.device) -> dict:
                 f"[{spec['label']}] skill_source=external requires "
                 "external_predictor_model or external_skill_model."
             )
-        if policy_config.type != "skill_expert":
+        if policy_config.type not in {"skill_expert", "skill_vla_stage2"}:
             raise ValueError(
                 f"[{spec['label']}] external predictor override is supported only "
-                "for skill_expert checkpoints."
+                "for skill_expert and skill_vla_stage2 checkpoints."
             )
         policy.load_external_skill_predictor(external_predictor_model)
         log.info(
@@ -845,10 +853,10 @@ def _build_context(spec: dict, cfg, device: torch.device) -> dict:
                 f"[{spec['label']}] advance_mode=external requires "
                 "external_terminator_model or external_skill_model."
             )
-        if policy_config.type != "skill_expert":
+        if policy_config.type not in {"skill_expert", "skill_vla_stage2"}:
             raise ValueError(
                 f"[{spec['label']}] external terminator override is supported only "
-                "for skill_expert checkpoints."
+                "for skill_expert and skill_vla_stage2 checkpoints."
             )
         if terminator_variant == "image_only":
             policy.load_external_image_only_terminator(external_terminator_model)
@@ -1128,6 +1136,11 @@ def _stitch_panels(
             videos = [directory / task_dir.name / first_video.name for directory, _ in panels]
             if not all(video.is_file() for video in videos):
                 continue
+            destination = output_dir / task_dir.name / first_video.name
+            # Concurrent fanout jobs may both reach a completed task; the first
+            # finished stitch wins and later jobs skip it.
+            if destination.is_file() and destination.stat().st_size > 0:
+                continue
             reads = [read_video(video) for video in videos]
             frame_sets = [read[0] for read in reads]
             if any(not frames for frames in frame_sets):
@@ -1137,10 +1150,12 @@ def _stitch_panels(
                 frame_height, frame_width = frames[0].shape[:2]
                 width = even(max(2, round(frame_width * height / frame_height)))
                 bars.append(label_bar(width, bar_height, label, font))
-            destination = output_dir / task_dir.name / first_video.name
             destination.parent.mkdir(parents=True, exist_ok=True)
+            temporary = destination.with_name(
+                f"{destination.stem}.tmp{os.getpid()}.mp4"
+            )
             writer = imageio.get_writer(
-                str(destination),
+                str(temporary),
                 fps=reads[0][1],
                 codec="libx264",
                 quality=8,
@@ -1169,6 +1184,7 @@ def _stitch_panels(
                 ]
                 writer.append_data(frame)
             writer.close()
+            temporary.replace(destination)
             written += 1
     log.info("Wrote %d side-by-side videos to %s.", written, output_dir)
 
@@ -1287,10 +1303,26 @@ def eval_main(cfg: EvalPipelineConfig):
 
         output_dir = Path(cfg.output_dir)
         infos = {}
-        video_panels = []
+        # Fanout jobs evaluate a subset of panels; every job still stitches over
+        # the full panel directory list, so whichever job finishes a task last
+        # completes that task's side-by-side clips.
+        video_panels = [
+            (
+                output_dir / "panels" / _panel_dir(index, spec["label"]) / "videos",
+                spec["label"],
+            )
+            for index, spec in enumerate(specs)
+        ]
+        panel_filter = {
+            int(value)
+            for value in os.environ.get("PANEL_INDICES", "").split(",")
+            if value.strip()
+        }
         resume = os.environ.get("EVAL_RESUME", "false").lower() == "true"
         current_task_names = _panel_task_names(oracle_maps[0])
         for index, (spec, oracle_map) in enumerate(zip(specs, oracle_maps, strict=True)):
+            if panel_filter and index not in panel_filter:
+                continue
             panel_root = output_dir / "panels" / _panel_dir(index, spec["label"])
             task_names = _panel_task_names(oracle_map)
             if resume:
@@ -1299,7 +1331,6 @@ def eval_main(cfg: EvalPipelineConfig):
                 )
                 if resumed_info is not None:
                     infos[spec["label"]] = resumed_info
-                    video_panels.append((panel_root / "videos", spec["label"]))
                     log.warning(
                         "[%s] resume: skipping completed panel from %s.",
                         spec["label"],
@@ -1352,7 +1383,6 @@ def eval_main(cfg: EvalPipelineConfig):
                     )
                 infos[spec["label"]] = info
                 _save_panel_info(panel_root, spec, task_names, cfg, info)
-                video_panels.append((panel_root / "videos", spec["label"]))
                 log.info("[%s] overall=%s", spec["label"], info.get("overall"))
             finally:
                 del context

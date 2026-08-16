@@ -33,8 +33,7 @@ from lerobot.utils.constants import (
 def _config(**overrides) -> SkillVLAStage2Config:
     values = {
         "stage1_checkpoint_path": "/tmp/stage1",
-        "train_skill_predictor": True,
-        "train_terminator": True,
+        "skill_predictor_checkpoint_path": "/tmp/predictor",
         "fsq_path": "/tmp/FSQ.pt",
     }
     values.update(overrides)
@@ -45,10 +44,11 @@ def test_stage2_config_fixes_bayesvla_contract() -> None:
     config = _config()
 
     assert config.type == "skill_vla_stage2"
+    assert config.architecture == "cond_gemma"
     assert config.likelihood_num_layers == 4
     assert config.training_skill_source == "gt"
-    assert not config.finetune_skill_predictor
-    assert not config.finetune_terminator
+    assert config.train_skill_predictor
+    assert not config.train_terminator
     assert (
         _config(conditioning_route="state_skill_cond").conditioning_route
         == "state_skill_cond"
@@ -67,10 +67,26 @@ def test_stage2_config_fixes_bayesvla_contract() -> None:
     )
     with pytest.raises(ValueError, match="fixes likelihood_num_layers=4"):
         _config(likelihood_num_layers=3)
+    with pytest.raises(ValueError, match="fixed to 'flow'"):
+        _config(action_loss_mode="flow_endpoint_xyz")
+    with pytest.raises(ValueError, match="last.*layer_mix"):
+        _config(likelihood_vlm_memory="every_layer")
+    with pytest.raises(ValueError, match="gate_lr_scale"):
+        _config(likelihood_gate_lr_scale=0.0)
+    assert _config(likelihood_vlm_memory="layer_mix").likelihood_vlm_memory == "layer_mix"
     with pytest.raises(ValueError, match="gt.*predictor"):
         _config(training_skill_source="mixed")
-    with pytest.raises(ValueError, match="VLM/predictor"):
+    with pytest.raises(ValueError, match="skill_predictor_checkpoint_path"):
+        _config(skill_predictor_checkpoint_path=None)
+    with pytest.raises(ValueError, match="train_skill_predictor=True"):
         _config(train_skill_predictor=False)
+    with pytest.raises(ValueError, match="without a terminator"):
+        _config(train_terminator=True)
+    with pytest.raises(ValueError, match="cond_gemma"):
+        _config(
+            architecture="vsa_perceiver_crossattn",
+            architecture_revision="interleaved_direct1024_v3",
+        )
 
 
 def test_fresh_likelihood_block_is_exact_identity() -> None:
@@ -113,9 +129,8 @@ def test_stage2_optimizer_contains_only_injected_path_and_action_head() -> None:
     holder.vlm_to_expert_projection = nn.Linear(2, 2)
     holder.likelihood_blocks = nn.ModuleList([nn.Linear(2, 2), nn.Linear(2, 2)])
     holder.action_out_proj = nn.Linear(2, 1)
-    holder.fsq_term_train = None
     policy.model = holder
-    policy.config = SimpleNamespace(finetune_terminator=False)
+    policy.config = SimpleNamespace(likelihood_gate_lr_scale=1.0)
 
     groups = policy.get_optim_params()
     optimized = {id(parameter) for parameter in groups[0]["params"]}
@@ -129,36 +144,80 @@ def test_stage2_optimizer_contains_only_injected_path_and_action_head() -> None:
         for parameter in module.parameters()
     }
 
+    assert len(groups) == 1
     assert optimized == expected
     assert not optimized & {id(parameter) for parameter in holder.prior.parameters()}
 
 
-def test_optional_terminator_has_separate_lr_and_clipping_group() -> None:
+def test_stage2_layer_mix_memories_start_near_the_last_layer() -> None:
+    model = SkillVLAStage2Pytorch.__new__(SkillVLAStage2Pytorch)
+    nn.Module.__init__(model)
+    model.likelihood_blocks = nn.ModuleList([nn.Identity(), nn.Identity()])
+    model.vlm_to_expert_projection = nn.Identity()
+    model.vlm_to_expert_projection.weight = nn.Parameter(torch.zeros(1))
+    mix = torch.zeros(2, 3)
+    mix[:, -1] = 5.0
+    model.likelihood_layer_mix = nn.Parameter(mix)
+    stack = torch.stack(
+        [torch.full((1, 4, 2), float(layer)) for layer in (1.0, 2.0, 3.0)], dim=1
+    )
+
+    memories = model._likelihood_memories(stack)
+
+    assert len(memories) == 2
+    weights = torch.softmax(model.likelihood_layer_mix, dim=-1)
+    assert weights[0, -1].item() > 0.97
+    expected = (weights[0, :, None, None] * stack[0]).sum(dim=0)
+    torch.testing.assert_close(memories[0][0], expected)
+
+    # Without the mix, every block shares one projected last-hidden memory.
+    model.likelihood_layer_mix = None
+    shared = model._likelihood_memories(torch.randn(1, 4, 2))
+    assert len(shared) == 2 and shared[0] is shared[1]
+
+
+def test_stage2_gate_lr_scale_splits_bootstrap_parameters() -> None:
     policy = SkillVLAStage2Policy.__new__(SkillVLAStage2Policy)
     nn.Module.__init__(policy)
     holder = nn.Module()
     holder.vlm_to_expert_projection = nn.Linear(2, 2)
     holder.likelihood_blocks = nn.ModuleList([nn.Linear(2, 2)])
     holder.action_out_proj = nn.Linear(2, 1)
-    holder.fsq_term_train = nn.Linear(2, 2)
     policy.model = holder
     policy.config = SimpleNamespace(
-        finetune_terminator=True,
-        optimizer_lr=2e-4,
-        terminator_lr_scale=0.5,
+        likelihood_gate_lr_scale=10.0, optimizer_lr=2.5e-5
     )
 
     groups = policy.get_optim_params()
-    terminator_parameters = list(holder.fsq_term_train.parameters())
 
     assert len(groups) == 2
-    assert groups[1]["lr"] == pytest.approx(1e-4)
-    assert {id(parameter) for parameter in groups[1]["params"]} == {
-        id(parameter) for parameter in terminator_parameters
+    assert groups[1]["lr"] == pytest.approx(2.5e-4)
+    boosted = {id(parameter) for parameter in groups[1]["params"]}
+    assert boosted == {
+        id(parameter)
+        for parameter in holder.vlm_to_expert_projection.parameters()
     }
-    assert policy.isolated_main_optimizer_grad_groups() == {
-        "terminator": terminator_parameters
-    }
+
+
+def test_stage2_freeze_contract_violation_is_detected() -> None:
+    policy = SkillVLAStage2Policy.__new__(SkillVLAStage2Policy)
+    nn.Module.__init__(policy)
+    holder = nn.Module()
+    holder.prior = nn.Linear(2, 2)  # stays trainable -> contract violation
+    holder.vlm_to_expert_projection = nn.Linear(2, 2)
+    holder.likelihood_blocks = nn.ModuleList([nn.Linear(2, 2)])
+    holder.action_out_proj = nn.Linear(2, 1)
+    policy.model = holder
+
+    with pytest.raises(RuntimeError, match="freeze contract"):
+        policy.get_optim_params()
+
+
+def test_stage2_has_no_auxiliary_training_step() -> None:
+    policy = SkillVLAStage2Policy.__new__(SkillVLAStage2Policy)
+    nn.Module.__init__(policy)
+
+    assert policy.isolated_auxiliary_step({}, None, 1.0) == {}
 
 
 def test_stage2_forward_preserves_inherited_conditioning_route_in_frozen_prior() -> None:
@@ -170,16 +229,22 @@ def test_stage2_forward_preserves_inherited_conditioning_route_in_frozen_prior()
 
     model = SkillVLAStage2Pytorch.__new__(SkillVLAStage2Pytorch)
     nn.Module.__init__(model)
-    model.config = SimpleNamespace(action_loss_mode="flow_endpoint_xyz")
+    model.config = SimpleNamespace(cumulative_xyz_loss_enabled=True)
+    model.uses_expert_context_tokens = False
+    model.uses_cond_state_adarms = True
+    model.likelihood_layer_mix = None
     condition_state = torch.tensor([[9.0, 8.0]])
     condition_skill = torch.tensor([[7.0, 6.0]])
     expert_time = torch.tensor([[5.0, 4.0]])
     captured = {}
     model.skill_predictor = _Predictor()
+    model._likelihood_memories = lambda hidden: [hidden]
     model._condition_tokens = lambda images, batch_size=None: torch.zeros(1, 2, 2)
-    model._state_condition = lambda state: condition_state
+    model._project_state = lambda state: condition_state
+    model._project_expert_state = lambda state, shared: None
     model._expert_condition = lambda time, state=None, skill=None: expert_time
     model._skill_broadcasts = lambda code: (condition_skill, None)
+    model._condition_state_start_index = lambda tokens: None
 
     def run_prior(
         condition,
@@ -188,8 +253,9 @@ def test_stage2_forward_preserves_inherited_conditioning_route_in_frozen_prior()
         expert_condition,
         routed_condition_skill,
         expert_skill,
+        condition_state_start_index=None,
     ):
-        del condition
+        del condition, condition_state_start_index
         captured["state"] = routed_state
         captured["expert_condition"] = expert_condition
         captured["condition_skill"] = routed_condition_skill
@@ -277,15 +343,16 @@ class _CaptureStage2Residual(nn.Module):
         )
 
 
-def test_stage2_can_mix_flow_and_endpoint_xyz_without_hold_targets() -> None:
+def test_stage2_mixes_flow_and_cumulative_xyz_like_stage1() -> None:
     policy = SkillVLAStage2Policy.__new__(SkillVLAStage2Policy)
     nn.Module.__init__(policy)
     policy.config = SimpleNamespace(
         max_action_dim=3,
         max_state_dim=2,
         output_features={ACTION: SimpleNamespace(shape=(3,))},
-        finetune_terminator=False,
-        action_loss_mode="flow_endpoint_xyz",
+        conditioning_route="state_cond",
+        cumulative_xyz_loss_enabled=True,
+        cumulative_xyz_loss_weight=0.5,
         training_skill_source="gt",
     )
     policy.model = _CaptureStage2Residual()
@@ -306,11 +373,16 @@ def test_stage2_can_mix_flow_and_endpoint_xyz_without_hold_targets() -> None:
     loss, metrics = policy.forward(batch)
 
     torch.testing.assert_close(policy.model.seen_actions, actions)
+    # The fake model adds +1.0 XYZ error to the first two (valid) steps, so the
+    # masked prefix cumulative squared error is [1/3, 4/3] -> raw 5/6, and the
+    # (valid_steps + 1) / 2 = 1.5 horizon normalization gives 5/9.
     assert metrics["action_loss"] == pytest.approx(2.5)
-    assert metrics["endpoint_xyz_loss"] == pytest.approx(4.0 / 3.0)
-    assert metrics["action_flow_weight"] == 0.5
-    assert metrics["action_endpoint_weight"] == 0.5
-    torch.testing.assert_close(loss, torch.tensor(23.0 / 12.0))
+    assert metrics["cumulative_xyz/raw"] == pytest.approx(5.0 / 6.0)
+    assert metrics["cumulative_xyz/normalized"] == pytest.approx(5.0 / 9.0)
+    assert metrics["cumulative_xyz/weighted"] == pytest.approx(5.0 / 18.0)
+    assert metrics["action_flow_weight"] == 1.0
+    assert metrics["action_cumulative_xyz_weight"] == 0.5
+    torch.testing.assert_close(loss, torch.tensor(2.5 + 5.0 / 18.0))
 
 
 def test_stage2_same_skill_metrics_use_post_jitter_code_and_different_task() -> None:
@@ -333,27 +405,6 @@ def test_stage2_same_skill_metrics_use_post_jitter_code_and_different_task() -> 
     assert metrics["batch_sampling/effective_after_jitter_fraction"] == pytest.approx(0.5)
     assert metrics["batch_sampling/effective_conditioning_fraction"] == pytest.approx(0.5)
     assert metrics["batch_sampling/jittered_progress_gap"] == pytest.approx(0.05)
-
-
-def test_stage2_terminator_uses_only_random_and_failed_pair_slots() -> None:
-    policy = SkillVLAStage2Policy.__new__(SkillVLAStage2Policy)
-    nn.Module.__init__(policy)
-    policy.config = SimpleNamespace(same_skill_batch_enabled=True)
-    batch = {
-        "same_skill_pair_id": torch.tensor([0, 0, -1, -1]),
-        "skill_code_true": torch.tensor([1, 1, 2, 3]),
-        "skill_ds": torch.tensor([0, 1, 2, 3]),
-        "skill_de": torch.tensor([3, 2, 1, 0]),
-        "skill_decoder_state": torch.arange(8).view(4, 2),
-        "observation.images.image": torch.zeros(4, 3, 2, 2),
-        "observation.images.wrist_image": torch.zeros(4, 3, 2, 2),
-    }
-
-    selected, fraction = policy._terminator_random_batch(batch)
-
-    assert fraction == pytest.approx(0.5)
-    assert selected["skill_code_true"].tolist() == [2, 3]
-    assert selected["skill_ds"].tolist() == [2, 3]
 
 
 def test_stage2_processor_preserves_same_skill_sampler_metadata() -> None:
@@ -392,12 +443,18 @@ def test_stage2_sampling_keeps_condition_routing_and_likelihood_sees_actions_onl
         chunk_size=3,
         max_action_dim=2,
     )
+    model.uses_expert_context_tokens = False
+    model.uses_cond_state_adarms = True
+    model.likelihood_layer_mix = None
     model.cond_encoder = SimpleNamespace(model=_ConditionModel())
     model.skill_predictor = _Predictor()
+    model._likelihood_memories = lambda hidden: [hidden]
     model._condition_tokens = lambda images, batch_size=None: torch.zeros(1, 2, 2)
-    model._state_condition = lambda state: torch.zeros(1, 2)
+    model._project_state = lambda state: torch.zeros(1, 2)
+    model._project_expert_state = lambda state, shared: None
     model._expert_condition = lambda time, state=None, skill=None: torch.zeros(1, 2)
     model._skill_broadcasts = lambda code: (torch.tensor([[7.0, 8.0]]), None)
+    model._condition_state_start_index = lambda tokens: None
     captured = {}
 
     def action_prior(

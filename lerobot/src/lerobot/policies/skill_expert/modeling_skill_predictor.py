@@ -255,6 +255,25 @@ class FrozenVLMSkillPredictor(nn.Module):
         set_active_adapters(set())
         return self._encode_last_hidden(images, language_tokens, language_mask)
 
+    @torch.no_grad()
+    def encode_base_hidden_stack(
+        self,
+        images: list[Tensor],
+        language_tokens: Tensor,
+        language_mask: Tensor,
+    ) -> tuple[Tensor, Tensor]:
+        """Return the frozen-base VLM's per-layer memory stack, adapters disabled.
+
+        Shapes: ``(B, num_layers, N, width)`` plus the ``(B, N)`` key-padding
+        mask. Every intermediate layer is normalized with the final norm (the
+        reader's ``all_layers`` contract) so Stage-2 layer mixing combines
+        comparably scaled representations.
+        """
+        set_active_adapters(set())
+        prefix, valid, _ = self._embed_prefix(images, language_tokens, language_mask)
+        _, layer_stack = self._encode_prefix(prefix, valid, all_layers=True)
+        return layer_stack.detach(), (~valid).detach()
+
     def _encode_last_hidden(
         self,
         images: list[Tensor],

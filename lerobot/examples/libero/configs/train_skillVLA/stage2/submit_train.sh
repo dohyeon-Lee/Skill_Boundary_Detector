@@ -33,10 +33,11 @@ if [ -n "${TRAIN_NODELIST}" ]; then SBATCH_ARGS+=(--nodelist="${TRAIN_NODELIST}"
 if [ -n "${TRAIN_EXCLUDE_NODES}" ]; then SBATCH_ARGS+=(--exclude="${TRAIN_EXCLUDE_NODES}"); fi
 
 echo "Submit Stage-2 likelihood"
-echo "  run     : ${PT_RUN_NAME}"
-echo "  dataset : ${SKILLVLA_DATASET_DIR}"
-echo "  prior   : ${STAGE1_CHECKPOINT_PATH}"
-echo "  output  : ${PT_OUTPUT_DIR}"
+echo "  run      : ${PT_RUN_NAME}"
+echo "  dataset  : ${SKILLVLA_DATASET_DIR}"
+echo "  prior    : ${STAGE1_CHECKPOINT_PATH}"
+echo "  predictor: ${PREDICTOR_CHECKPOINT_PATH}"
+echo "  output   : ${PT_OUTPUT_DIR}"
 
 cd "${SCRIPT_DIR}"
 STAGE2_TRAIN_CONFIG="${CONFIG_PATH}" STAGE2_ENV_SNAPSHOT="${STAGE2_ENV_SNAPSHOT}" \

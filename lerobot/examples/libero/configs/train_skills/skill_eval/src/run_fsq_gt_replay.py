@@ -198,8 +198,10 @@ def main() -> None:
     parser.add_argument("--model-path", type=Path, required=True)
     parser.add_argument("--latents-path", type=Path, required=True)
     parser.add_argument("--skill-dataset-dir", type=Path, required=True)
-    parser.add_argument("--eval-init-states-path", type=Path, required=True)
-    parser.add_argument("--original-dataset-dir", type=Path, required=True)
+    # Empty means episode_source=dataset: episodes are grouped by the dataset's
+    # own task table instead of the rendered episode-exact map.
+    parser.add_argument("--eval-init-states-path", default="")
+    parser.add_argument("--original-dataset-dir", default="")
     parser.add_argument("--target-task", required=True)
     parser.add_argument("--task-ids", required=True)
     parser.add_argument("--episode-ids", default="[]")
@@ -242,9 +244,15 @@ def main() -> None:
     dataset = SkillEvaluationDataset(
         skill_dataset_dir=args.skill_dataset_dir,
         skill_latents_path=args.latents_path,
-        eval_init_states_path=args.eval_init_states_path,
-        original_dataset_dir=args.original_dataset_dir,
+        eval_init_states_path=(
+            Path(args.eval_init_states_path) if args.eval_init_states_path else None
+        ),
+        original_dataset_dir=args.original_dataset_dir or None,
         suite_name=args.target_task,
+    )
+    log.info(
+        "episode source: %s",
+        "dataset task table" if not args.eval_init_states_path else "episode-exact map",
     )
     task_ids = _filter_task_ids(
         requested_task_ids,
@@ -327,7 +335,11 @@ def main() -> None:
     _atomic_manifest(manifest_path, manifest)
 
     reader = _EpisodeFrameReader(Path(args.skill_dataset_dir))
-    descriptions = _libero_task_descriptions(args.target_task)
+    # Dataset-sourced episodes already carry their own task strings, which cover
+    # every task even when the dataset spans several LIBERO suites.
+    descriptions = dataset.task_descriptions or _libero_task_descriptions(
+        args.target_task
+    )
     by_episode: dict[int, list] = defaultdict(list)
     for occurrence in occurrences:
         by_episode[occurrence.episode_id].append(occurrence)

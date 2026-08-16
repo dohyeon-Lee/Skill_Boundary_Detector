@@ -249,31 +249,12 @@ def build_settings(config: dict) -> dict:
         raise ValueError("likelihood.training_skill_source must be gt or predictor.")
     stage1_fsq_run = _fsq_run_tag(stage1_config, "Stage-1")
     predictor_fsq_run = _fsq_run_tag(predictor_config, "Predictor")
-    allow_fsq_mismatch = as_bool(
-        _at(config, "warm_start", "predictor", "allow_fsq_mismatch", default=False)
-    )
     if predictor_fsq_run != stage1_fsq_run:
-        if skill_source == "predictor":
-            raise ValueError(
-                "training_skill_source=predictor requires a predictor trained in "
-                f"the same FSQ skill space: stage1={stage1_fsq_run!r}, "
-                f"predictor={predictor_fsq_run!r}."
-            )
-        if not allow_fsq_mismatch:
-            raise ValueError(
-                "Predictor FSQ run does not match the Stage-1 prior: "
-                f"stage1={stage1_fsq_run!r}, predictor={predictor_fsq_run!r}. "
-                "Codes with the same index mean different skills across FSQ runs, "
-                "so rollout skill prediction would be wrong. Set "
-                "warm_start.predictor.allow_fsq_mismatch=true only if this "
-                "predictor is a placeholder for gt-mode training."
-            )
-        print(
-            "WARNING: predictor FSQ run differs from the Stage-1 prior "
-            f"(stage1={stage1_fsq_run!r}, predictor={predictor_fsq_run!r}); "
-            "gt-mode training is unaffected, but rollout skill prediction "
-            "from this predictor is meaningless.",
-            file=sys.stderr,
+        raise ValueError(
+            "Predictor FSQ run does not match the Stage-1 prior: "
+            f"stage1={stage1_fsq_run!r}, predictor={predictor_fsq_run!r}. "
+            "Codes with the same index mean different skills across FSQ runs, "
+            "so the assembled policy would predict skills in the wrong space."
         )
 
     source = str(_at(config, "dataset", "source")).strip()
@@ -322,12 +303,58 @@ def build_settings(config: dict) -> dict:
     likelihood_layers = int(_at(config, "likelihood", "layers", default=4))
     if likelihood_layers != 4:
         raise ValueError("BayesVLA-matched Stage 2 fixes likelihood.layers=4.")
-    action_loss_mode = str(config.get("loss", "flow")).strip().lower()
-    if action_loss_mode not in {"flow", "flow_endpoint_xyz"}:
+    likelihood_vlm_memory = str(
+        _at(config, "likelihood", "vlm_memory", default="last")
+    ).strip().lower()
+    if likelihood_vlm_memory not in {"last", "layer_mix"}:
         raise ValueError(
-            "loss must be flow|flow_endpoint_xyz, got "
-            f"{action_loss_mode!r}."
+            "likelihood.vlm_memory must be last|layer_mix, got "
+            f"{likelihood_vlm_memory!r}."
         )
+    likelihood_gate_lr_scale = float(
+        _at(config, "likelihood", "gate_lr_scale", default=1.0)
+    )
+    if likelihood_gate_lr_scale <= 0.0:
+        raise ValueError("likelihood.gate_lr_scale must be positive.")
+    scheduler_mode = str(
+        _at(config, "training", "schedule", "lr_mode", default="cosine_decay")
+    ).strip().lower()
+    if scheduler_mode not in {"cosine_decay", "warmup_constant"}:
+        raise ValueError(
+            "training.schedule.lr_mode must be 'cosine_decay' or "
+            f"'warmup_constant', got {scheduler_mode!r}."
+        )
+    scheduler_warmup_steps = int(
+        _at(config, "training", "schedule", "warmup_steps", default=1000)
+    )
+    if scheduler_warmup_steps < 0:
+        raise ValueError("training.schedule.warmup_steps must be non-negative.")
+    scheduler_decay_steps = int(
+        _at(config, "training", "schedule", "lr_decay_steps", default=30000)
+    )
+    if scheduler_decay_steps <= 0:
+        raise ValueError("training.schedule.lr_decay_steps must be positive.")
+    if "loss" in config:
+        raise ValueError(
+            "Stage 2 no longer has a 'loss' selector; the flow loss is fixed. "
+            "Configure only cumulative_xyz_loss.enabled/weight, like Stage 1."
+        )
+    cumulative_xyz_config = config.get("cumulative_xyz_loss", {})
+    if not isinstance(cumulative_xyz_config, dict):
+        raise ValueError("cumulative_xyz_loss must be a mapping.")
+    cumulative_xyz_loss_enabled = as_bool(
+        cumulative_xyz_config.get("enabled", False)
+    )
+    cumulative_xyz_loss_weight = float(cumulative_xyz_config.get("weight", 0.5))
+    if not math.isfinite(cumulative_xyz_loss_weight) or cumulative_xyz_loss_weight <= 0:
+        raise ValueError("cumulative_xyz_loss.weight must be finite and positive.")
+    stage1_skill_end_mask = as_bool(
+        stage1_config.get("mask_actions_after_skill_end", False)
+    )
+    mask_override = config.get("mask_actions_after_skill_end")
+    mask_actions_after_skill_end = (
+        stage1_skill_end_mask if mask_override is None else as_bool(mask_override)
+    )
     batch_size = int(
         _at(config, "training", "dataloader", "batch_size", default=16)
     )
@@ -374,11 +401,18 @@ def build_settings(config: dict) -> dict:
             "same_skill_different_task needs dataloader.batch_size >= 4."
         )
     suffix = str(_at(config, "run", "suffix", default="")).strip().strip("_")
-    loss_tag = "flow" if action_loss_mode == "flow" else "endpoint"
     batch_tag = "batchON" if same_skill_batch_enabled else "batchOFF"
-    run_name = (
-        f"{stage1_run}_{stage1_checkpoint}_{loss_tag}_{skill_source}_{batch_tag}"
-    )
+    run_name = f"{stage1_run}_{stage1_checkpoint}_{skill_source}_{batch_tag}"
+    if mask_actions_after_skill_end != stage1_skill_end_mask:
+        # Keep overridden-mask runs out of the inherited-mask output directory.
+        run_name += "_nomask" if not mask_actions_after_skill_end else "_endmask"
+    if cumulative_xyz_loss_enabled:
+        cumulative_weight_label = f"{cumulative_xyz_loss_weight:g}".replace(".", "p")
+        run_name += f"_cumxyz{cumulative_weight_label}"
+    if likelihood_vlm_memory == "layer_mix":
+        run_name += "_layermix"
+    if likelihood_gate_lr_scale != 1.0:
+        run_name += f"_glr{likelihood_gate_lr_scale:g}".replace(".", "p")
     if suffix:
         run_name += f"_{suffix}"
 
@@ -415,9 +449,7 @@ def build_settings(config: dict) -> dict:
         "dino_image_size": int(stage1_config["dino_image_size"]),
         "freeze_vision_encoder": as_bool(stage1_config["freeze_vision_encoder"]),
         "conditioning_route": stage1_config["conditioning_route"],
-        "mask_actions_after_skill_end": as_bool(
-            stage1_config.get("mask_actions_after_skill_end", False)
-        ),
+        "mask_actions_after_skill_end": mask_actions_after_skill_end,
         "num_visual_latents_per_camera": int(
             stage1_config.get("num_visual_latents_per_camera", 32)
         ),
@@ -448,8 +480,11 @@ def build_settings(config: dict) -> dict:
         "train_terminator": False,
         "likelihood_num_layers": likelihood_layers,
         "likelihood_cross_attention_heads": 8,
+        "likelihood_vlm_memory": likelihood_vlm_memory,
+        "likelihood_gate_lr_scale": likelihood_gate_lr_scale,
         "training_skill_source": skill_source,
-        "action_loss_mode": action_loss_mode,
+        "cumulative_xyz_loss_enabled": cumulative_xyz_loss_enabled,
+        "cumulative_xyz_loss_weight": cumulative_xyz_loss_weight,
         "same_skill_batch_enabled": same_skill_batch_enabled,
         "same_skill_batch_fraction": same_skill_batch_fraction,
         "same_skill_progress_temperature": same_skill_progress_temperature,
@@ -462,6 +497,9 @@ def build_settings(config: dict) -> dict:
             _at(config, "training", "dataloader", "workers", default=2)
         ),
         "num_gpus": num_gpus,
+        "scheduler_mode": scheduler_mode,
+        "scheduler_warmup_steps": scheduler_warmup_steps,
+        "scheduler_decay_steps": scheduler_decay_steps,
         "steps": int(_at(config, "training", "schedule", "steps", default=50000)),
         "log_freq": int(
             _at(config, "training", "schedule", "log_every", default=100)

@@ -145,8 +145,11 @@ class LikelihoodBlock(nn.Module):
         expert_condition: Tensor,
         position_embeddings: tuple[Tensor, Tensor],
     ) -> Tensor:
+        gate_rms: dict[str, Tensor] = {}
+
         residual = hidden
         normalized, gate = self.self_norm(hidden, cond=expert_condition)
+        gate_rms["self"] = gate.detach().float().square().mean().sqrt()
         attended, _ = self.self_attn(
             normalized,
             attention_mask=None,
@@ -157,12 +160,17 @@ class LikelihoodBlock(nn.Module):
 
         residual = hidden
         normalized, gate = self.cross_norm(hidden, cond=expert_condition)
+        gate_rms["cross"] = gate.detach().float().square().mean().sqrt()
         attended = self.cross_attn(normalized, memory, memory_key_padding_mask)
         hidden = _gated_residual(residual, attended, gate)
 
         residual = hidden
         normalized, gate = self.ffn_norm(hidden, cond=expert_condition)
+        gate_rms["ffn"] = gate.detach().float().square().mean().sqrt()
         transformed = self.mlp(normalized)
+        # Whether the language pathway is actually used is invisible in the
+        # loss; expose the gate magnitudes so training logs can answer it.
+        self._last_gate_rms = gate_rms
         return _gated_residual(residual, transformed, gate)
 
 
@@ -185,6 +193,16 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
             LikelihoodBlock(expert_config, first_index + index)
             for index in range(config.likelihood_num_layers)
         )
+        self.likelihood_layer_mix = None
+        if config.likelihood_vlm_memory == "layer_mix":
+            vlm_layers = int(
+                self.skill_predictor.vlm.language_model.config.num_hidden_layers
+            )
+            # Biased toward the final layer so training starts from the
+            # known-working last-hidden memory and only moves depth on demand.
+            mix = torch.zeros(config.likelihood_num_layers, vlm_layers)
+            mix[:, -1] = 5.0
+            self.likelihood_layer_mix = nn.Parameter(mix)
         self._likelihood_gradient_checkpointing = False
         self._freeze_stage1_prior()
 
@@ -198,6 +216,8 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
         self.vlm_to_expert_projection.requires_grad_(True)
         self.likelihood_blocks.requires_grad_(True)
         self.action_out_proj.requires_grad_(True)
+        if self.likelihood_layer_mix is not None:
+            self.likelihood_layer_mix.requires_grad_(True)
 
     def train(self, mode: bool = True):
         # Stage 2 must not change stochastic behavior or running state anywhere
@@ -250,23 +270,54 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
         )
         return hidden, expert_condition
 
+    def _encode_likelihood_memory(
+        self,
+        images: list[Tensor],
+        language_tokens: Tensor,
+        language_mask: Tensor,
+    ) -> tuple[Tensor, Tensor]:
+        """Return the frozen VLM memory in the configured layout."""
+        if self.likelihood_layer_mix is None:
+            return self.skill_predictor.encode_base_last_hidden(
+                images, language_tokens, language_mask
+            )
+        return self.skill_predictor.encode_base_hidden_stack(
+            images, language_tokens, language_mask
+        )
+
+    def _likelihood_memories(self, vlm_hidden: Tensor) -> list[Tensor]:
+        """Project the VLM memory once per block; layer mixing happens first.
+
+        The memory is timestep-independent, so callers compute this once per
+        batch (or per rollout) and reuse it across every flow step.
+        """
+        projection = self.vlm_to_expert_projection
+        if self.likelihood_layer_mix is None:
+            memory = projection(vlm_hidden.to(projection.weight.dtype))
+            return [memory] * len(self.likelihood_blocks)
+        stack = vlm_hidden.to(projection.weight.dtype)
+        weights = torch.softmax(self.likelihood_layer_mix.float(), dim=-1).to(
+            stack.dtype
+        )
+        return [
+            projection(torch.einsum("l,blnd->bnd", weights[index], stack))
+            for index in range(len(self.likelihood_blocks))
+        ]
+
     def _likelihood_velocity(
         self,
         prior_hidden: Tensor,
-        vlm_hidden: Tensor,
+        memories: list[Tensor],
         vlm_key_padding_mask: Tensor,
         expert_condition: Tensor,
     ) -> Tensor:
         hidden = prior_hidden.to(self.working_dtype)
-        memory = self.vlm_to_expert_projection(
-            vlm_hidden.to(self.vlm_to_expert_projection.weight.dtype)
-        )
         position_ids = torch.arange(
             hidden.shape[1], device=hidden.device, dtype=torch.long
         )[None].expand(hidden.shape[0], -1)
         position_embeddings = self.gemma_expert.model.rotary_emb(hidden, position_ids)
         use_checkpoint = self._likelihood_gradient_checkpointing and self.training
-        for block in self.likelihood_blocks:
+        for block, memory in zip(self.likelihood_blocks, memories, strict=True):
             if use_checkpoint:
                 hidden = torch.utils.checkpoint.checkpoint(
                     block,
@@ -314,18 +365,16 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
             prior_hidden, expert_condition = self._prior_action_hidden(
                 condition_tokens, x_t, state, skill_code, time
             )
-            vlm_hidden, vlm_key_padding_mask = (
-                self.skill_predictor.encode_base_last_hidden(
-                    images, language_tokens, language_mask
-                )
+            vlm_hidden, vlm_key_padding_mask = self._encode_likelihood_memory(
+                images, language_tokens, language_mask
             )
         predicted_velocity = self._likelihood_velocity(
             prior_hidden,
-            vlm_hidden,
+            self._likelihood_memories(vlm_hidden),
             vlm_key_padding_mask,
             expert_condition,
         )
-        if self.config.action_loss_mode == "flow_endpoint_xyz":
+        if self.config.cumulative_xyz_loss_enabled:
             # x_t = action + t * target_velocity, hence the one-step clean-action
             # reconstruction is action_hat = x_t - t * predicted_velocity.
             self._last_predicted_actions = (
@@ -360,16 +409,17 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
                 (batch_size, self.config.chunk_size, self.config.max_action_dim), device
             )
         condition_tokens = self._condition_tokens(images, batch_size=batch_size)
-        vlm_hidden, vlm_key_padding_mask = self.skill_predictor.encode_base_last_hidden(
+        vlm_hidden, vlm_key_padding_mask = self._encode_likelihood_memory(
             images, language_tokens, language_mask
         )
+        memories = self._likelihood_memories(vlm_hidden)
         if self.uses_expert_context_tokens:
             return self._likelihood_sample_with_expert_context_cache(
                 condition_tokens,
                 self._expert_context_tokens(state, skill_code),
                 noise,
                 num_steps,
-                vlm_hidden,
+                memories,
                 vlm_key_padding_mask,
                 self._state_condition(state),
             )
@@ -379,7 +429,7 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
             state,
             skill_code,
             num_steps,
-            vlm_hidden,
+            memories,
             vlm_key_padding_mask,
         )
 
@@ -389,7 +439,7 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
         context_tokens: Tensor,
         noise: Tensor,
         num_steps: int,
-        vlm_hidden: Tensor,
+        memories: list[Tensor],
         vlm_key_padding_mask: Tensor,
         condition_state: Tensor | None = None,
     ) -> Tensor:
@@ -436,7 +486,7 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
             )
             velocity = self._likelihood_velocity(
                 prior_hidden,
-                vlm_hidden,
+                memories,
                 vlm_key_padding_mask,
                 expert_condition,
             )
@@ -450,7 +500,7 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
         state: Tensor | None,
         skill_code: Tensor | None,
         num_steps: int,
-        vlm_hidden: Tensor,
+        memories: list[Tensor],
         vlm_key_padding_mask: Tensor,
     ) -> Tensor:
         """Stage-1 condition-cache sampler with likelihood blocks before the head."""
@@ -519,7 +569,7 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
             )
             velocity = self._likelihood_velocity(
                 prior_hidden,
-                vlm_hidden,
+                memories,
                 vlm_key_padding_mask,
                 expert_condition,
             )
@@ -656,6 +706,7 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
         allowed_prefixes = (
             "model.vlm_to_expert_projection.",
             "model.likelihood_blocks.",
+            "model.likelihood_layer_mix",
             "model.skill_predictor.",
         )
         invalid_missing = [
@@ -671,6 +722,11 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
             path,
             len(state_dict),
             len(missing),
+        )
+        # Snapshot the warm-started head so training logs can separate "head
+        # re-fitting" from genuine likelihood-block usage.
+        self._initial_action_head = (
+            self.model.action_out_proj.weight.detach().float().cpu().clone()
         )
 
     def _initialize_predictor(self, checkpoint_path: str | Path | None) -> None:
@@ -707,8 +763,65 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
             loaded,
         )
 
+    def _likelihood_usage_metrics(self) -> dict[str, float]:
+        """Report whether the language pathway is actually being used.
+
+        Gates start at exactly zero, so near-zero values here mean the blocks
+        are inactive and any loss improvement came from the action head alone.
+        """
+        blocks = getattr(self.model, "likelihood_blocks", None)
+        if blocks is None:
+            return {}
+        metrics: dict[str, float] = {}
+        for kind in ("self", "cross", "ffn"):
+            weight_values = []
+            gate_values = []
+            for block in blocks:
+                norm = getattr(block, f"{kind}_norm")
+                weight_values.append(
+                    norm.dense.weight.detach().float().square().mean().sqrt()
+                )
+                last = getattr(block, "_last_gate_rms", None)
+                if last is not None and kind in last:
+                    gate_values.append(last[kind])
+            metrics[f"stage2/gate_weight_rms/{kind}"] = float(
+                torch.stack(weight_values).mean().item()
+            )
+            if gate_values:
+                metrics[f"stage2/gate_value_rms/{kind}"] = float(
+                    torch.stack(gate_values).mean().item()
+                )
+        metrics["stage2/vlm_projection_weight_rms"] = float(
+            self.model.vlm_to_expert_projection.weight.detach()
+            .float()
+            .square()
+            .mean()
+            .sqrt()
+            .item()
+        )
+        layer_mix = getattr(self.model, "likelihood_layer_mix", None)
+        if layer_mix is not None:
+            weights = torch.softmax(layer_mix.detach().float(), dim=-1)
+            depth = torch.arange(
+                1, weights.shape[1] + 1, dtype=torch.float32, device=weights.device
+            )
+            metrics["stage2/layer_mix/last_layer_weight"] = float(
+                weights[:, -1].mean().item()
+            )
+            metrics["stage2/layer_mix/mean_depth"] = float(
+                (weights * depth).sum(dim=-1).mean().item()
+            )
+        initial_head = getattr(self, "_initial_action_head", None)
+        if initial_head is not None:
+            head = self.model.action_out_proj.weight.detach().float().cpu()
+            reference_rms = float(initial_head.square().mean().sqrt().item())
+            metrics["stage2/action_head_drift_rel"] = float(
+                (head - initial_head).square().mean().sqrt().item()
+            ) / max(reference_rms, 1e-12)
+        return metrics
+
     def get_optim_params(self) -> list[dict]:
-        main_parameters = [
+        trainable = [
             parameter
             for module in (
                 self.model.vlm_to_expert_projection,
@@ -718,7 +831,10 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
             for parameter in module.parameters()
             if parameter.requires_grad
         ]
-        expected = {id(parameter) for parameter in main_parameters}
+        layer_mix = getattr(self.model, "likelihood_layer_mix", None)
+        if layer_mix is not None and layer_mix.requires_grad:
+            trainable.append(layer_mix)
+        expected = {id(parameter) for parameter in trainable}
         actual = {
             id(parameter)
             for parameter in self.parameters()
@@ -726,7 +842,37 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
         }
         if actual != expected:
             raise RuntimeError("Stage-2 trainable-parameter freeze contract was violated.")
-        return [{"params": main_parameters}]
+
+        gate_lr_scale = float(getattr(self.config, "likelihood_gate_lr_scale", 1.0))
+        if gate_lr_scale == 1.0:
+            return [{"params": trainable}]
+        # Bootstrap parameters of the language pathway learn faster to escape
+        # the zero-gate cold start: gate dense layers, the VLM projection, and
+        # the layer mix.
+        boosted_ids = {
+            id(parameter)
+            for parameter in self.model.vlm_to_expert_projection.parameters()
+        }
+        for block in self.model.likelihood_blocks:
+            for kind in ("self_norm", "cross_norm", "ffn_norm"):
+                norm = getattr(block, kind, None)
+                if norm is not None and norm.dense is not None:
+                    boosted_ids.update(
+                        id(parameter) for parameter in norm.dense.parameters()
+                    )
+        if layer_mix is not None:
+            boosted_ids.add(id(layer_mix))
+        boosted = [p for p in trainable if id(p) in boosted_ids]
+        main_parameters = [p for p in trainable if id(p) not in boosted_ids]
+        groups = [{"params": main_parameters}]
+        if boosted:
+            groups.append(
+                {
+                    "params": boosted,
+                    "lr": self.config.optimizer_lr * gate_lr_scale,
+                }
+            )
+        return groups
 
     def isolated_auxiliary_step(
         self,
@@ -812,27 +958,6 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
             ).abs().mean().item()
         return metrics
 
-    @staticmethod
-    def _endpoint_xyz_loss(
-        predicted_actions: Tensor,
-        target_actions: Tensor,
-        valid: Tensor,
-    ) -> tuple[Tensor, Tensor]:
-        """Stage2-only chunk-end XYZ displacement objective."""
-        if predicted_actions.shape[-1] < 3 or target_actions.shape[-1] < 3:
-            raise ValueError("endpoint XYZ loss requires at least three action dimensions.")
-        sample_valid = valid.any(dim=1)
-        if not bool(sample_valid.any()):
-            raise ValueError("endpoint XYZ loss received a batch with no valid action steps.")
-        step_valid = valid.to(predicted_actions.dtype).unsqueeze(-1)
-        endpoint_error = (
-            (predicted_actions[..., :3] - target_actions[..., :3]) * step_valid
-        ).sum(dim=1)
-        per_sample = endpoint_error.square().mean(dim=-1)
-        selected = sample_valid.to(per_sample.dtype)
-        loss = (per_sample * selected).sum() / selected.sum().clamp(min=1.0)
-        return loss, per_sample
-
     def forward(self, batch: dict, reduction: str = "mean"):
         actions = pad_vector(batch[ACTION], self.config.max_action_dim)
         real_dim = self.config.output_features[ACTION].shape[0]
@@ -876,22 +1001,31 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
             valid_steps * real_dim
         )
         loss_per_dim = (squared_error * valid_float).sum(dim=(0, 1)) / valid_steps
-        endpoint_loss = None
+        cumulative_xyz_loss = None
+        cumulative_xyz_raw_loss = None
         action_objective = action_loss
         objective_per_sample = per_sample
-        if self.config.action_loss_mode == "flow_endpoint_xyz":
+        if self.config.cumulative_xyz_loss_enabled:
             predicted_actions = self.model._last_predicted_actions
             if predicted_actions is None:
                 raise RuntimeError(
-                    "flow_endpoint_xyz did not receive reconstructed predicted actions."
+                    "cumulative XYZ loss did not receive reconstructed predicted actions."
                 )
-            endpoint_loss, endpoint_per_sample = self._endpoint_xyz_loss(
+            (
+                cumulative_xyz_loss,
+                cumulative_xyz_raw_loss,
+                cumulative_xyz_per_sample,
+                _cumulative_xyz_raw_per_sample,
+            ) = self._cumulative_xyz_loss(
                 predicted_actions[..., :real_dim],
                 actions[..., :real_dim],
                 valid,
             )
-            action_objective = 0.5 * action_loss + 0.5 * endpoint_loss
-            objective_per_sample = 0.5 * per_sample + 0.5 * endpoint_per_sample
+            cumulative_weight = self.config.cumulative_xyz_loss_weight
+            action_objective = action_loss + cumulative_weight * cumulative_xyz_loss
+            objective_per_sample = (
+                per_sample + cumulative_weight * cumulative_xyz_per_sample
+            )
         loss_dict = {
             "action_loss": action_loss.detach().item(),
             "loss_per_dim": loss_per_dim.detach().cpu().tolist(),
@@ -918,13 +1052,28 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
                 predicted_diff.detach().item()
             )
         loss_dict.update(batch_sampling_metrics)
-        if endpoint_loss is not None:
+        loss_dict.update(self._likelihood_usage_metrics())
+        if cumulative_xyz_loss is not None and cumulative_xyz_raw_loss is not None:
+            cumulative_weight = self.config.cumulative_xyz_loss_weight
+            weighted_cumulative = cumulative_weight * cumulative_xyz_loss
             loss_dict.update(
                 {
-                    "endpoint_xyz_loss": endpoint_loss.detach().item(),
+                    "cumulative_xyz/raw": cumulative_xyz_raw_loss.detach().item(),
+                    "cumulative_xyz/normalized": cumulative_xyz_loss.detach().item(),
+                    "cumulative_xyz/weighted": weighted_cumulative.detach().item(),
+                    "cumulative_xyz/weight": float(cumulative_weight),
+                    "cumulative_xyz/horizon_normalizer_mean": (
+                        (valid.sum(dim=1).float() + 1.0) / 2.0
+                    ).mean().item(),
+                    "cumulative_xyz/to_flow_ratio": (
+                        weighted_cumulative.detach()
+                        / action_loss.detach().clamp(
+                            min=torch.finfo(action_loss.dtype).eps
+                        )
+                    ).item(),
                     "action_objective": action_objective.detach().item(),
-                    "action_flow_weight": 0.5,
-                    "action_endpoint_weight": 0.5,
+                    "action_flow_weight": 1.0,
+                    "action_cumulative_xyz_weight": float(cumulative_weight),
                 }
             )
         if reduction == "none":

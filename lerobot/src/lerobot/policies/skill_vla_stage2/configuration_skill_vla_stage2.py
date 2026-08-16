@@ -35,6 +35,13 @@ class SkillVLAStage2Config(SkillExpertConfig):
     training_skill_source: str = "gt"
     likelihood_num_layers: int = 4
     likelihood_cross_attention_heads: int = 8
+    # last: cross-attend the frozen VLM's final hidden state (original design).
+    # layer_mix: each block learns a softmax mixture over all VLM layers.
+    likelihood_vlm_memory: str = "last"
+    # LR multiplier for the language-pathway bootstrap parameters (gate dense
+    # layers, the VLM projection, and the layer mix). Counters the zero-gate
+    # cold start that keeps the cross-attention pathway from opening.
+    likelihood_gate_lr_scale: float = 1.0
     same_skill_batch_enabled: bool = False
     same_skill_batch_fraction: float = 0.5
     same_skill_progress_temperature: float = 0.1
@@ -53,6 +60,12 @@ class SkillVLAStage2Config(SkillExpertConfig):
                 "Stage 2 is implemented on the cond_gemma Stage-1 prior; got "
                 f"architecture={self.architecture!r}."
             )
+        if self.action_loss_mode != "flow":
+            raise ValueError(
+                "Stage 2 matches Stage 1: action_loss_mode is fixed to 'flow'; "
+                "configure only cumulative_xyz_loss_enabled and "
+                "cumulative_xyz_loss_weight."
+            )
         if self.training_skill_source not in {"gt", "predictor"}:
             raise ValueError(
                 "training_skill_source must be 'gt' or 'predictor', got "
@@ -67,6 +80,13 @@ class SkillVLAStage2Config(SkillExpertConfig):
             raise ValueError(
                 "The gemma_300m likelihood blocks use 8 cross-attention heads."
             )
+        if self.likelihood_vlm_memory not in {"last", "layer_mix"}:
+            raise ValueError(
+                "likelihood_vlm_memory must be 'last' or 'layer_mix', got "
+                f"{self.likelihood_vlm_memory!r}."
+            )
+        if self.likelihood_gate_lr_scale <= 0.0:
+            raise ValueError("likelihood_gate_lr_scale must be positive.")
         if not 0.0 <= self.same_skill_batch_fraction <= 1.0:
             raise ValueError("same_skill_batch_fraction must be in [0, 1].")
         if self.same_skill_progress_temperature <= 0.0:

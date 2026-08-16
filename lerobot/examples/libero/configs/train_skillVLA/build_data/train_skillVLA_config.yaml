@@ -3,7 +3,7 @@
 
 # Source
 skillvla_dataset_root: skillvla_dataset
-source_dataset: libero_90_full_full # libero_90_full_firsthalf_scene | langgap_56_full_firsthalf
+source_dataset: libero_90_full_lasthalf_scene # libero_90_full_firsthalf_scene | langgap_56_full_firsthalf | libero_90_full_lasthalf_scene
 skillvla_data_mode: pt  # pt | ft | ft_own
 
 # Skill segmentation

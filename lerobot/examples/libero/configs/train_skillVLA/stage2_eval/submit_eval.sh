@@ -33,9 +33,11 @@ SBATCH_ARGS=(
 cd "${SCRIPT_DIR}"
 mkdir -p logs
 echo "Submit Stage-2 eval"
-echo "  models : ${MODEL_COUNT}"
-echo "  policy : ${POLICY_PATH}"
-echo "  output : ${EVAL_OUT_DIR}"
+echo "  panels    : ${MODEL_COUNT}"
+echo "  policy    : ${POLICY_PATH}"
+echo "  predictor : ${EXTERNAL_PREDICTOR_MODEL:-<none>}"
+echo "  terminator: ${EXTERNAL_TERMINATOR_MODEL:-<none>}"
+echo "  output    : ${EVAL_OUT_DIR}"
 
 if [ -n "${SLURM_JOB_ID:-}" ]; then
   echo "  mode   : srun in allocation ${SLURM_JOB_ID}"
@@ -46,24 +48,22 @@ elif [ "${EVAL_NUM_GPUS}" -le 1 ]; then
   STAGE2_EVAL_DIR="${SCRIPT_DIR}" STAGE2_EVAL_CONFIG="${CONFIG_PATH}" \
     sbatch "${SBATCH_ARGS[@]}" "${SRC_DIR}/eval.sbatch"
 else
-  CHUNKS="$("${BOOTSTRAP_PYTHON}" - "${TASK_IDS}" "${EVAL_NUM_GPUS}" <<'PY'
+  # One array element per (task, panel) unit; eval_num_gpus only throttles
+  # concurrency, so Slurm feeds the next unit to whichever GPU frees up first.
+  CHUNKS="$("${BOOTSTRAP_PYTHON}" - "${TASK_IDS}" "${MODEL_COUNT}" <<'PY'
 import json, sys
 task_ids = json.loads(sys.argv[1])
-jobs = min(max(1, int(sys.argv[2])), len(task_ids))
-base, extra = divmod(len(task_ids), jobs)
-start = 0
-for index in range(jobs):
-    end = start + base + (index < extra)
-    chunk = task_ids[start:end]
-    start = end
-    print(json.dumps(chunk, separators=(",", ":")) + f"|t{chunk[0]}-{chunk[-1]}")
+panels = max(1, int(sys.argv[2]))
+for task_id in task_ids:
+    for panel in range(panels):
+        chunk = json.dumps([task_id], separators=(",", ":"))
+        print(f"{chunk}|t{task_id}_p{panel:02d}|{panel}")
 PY
 )"
   EVAL_FANOUT="${CHUNKS}"$'\n'
   ARRAY_SIZE="$(printf '%s\n' "${CHUNKS}" | sed '/^$/d' | wc -l)"
   ARRAY_SPEC="0-$((ARRAY_SIZE - 1))%${EVAL_NUM_GPUS}"
-  echo "  mode   : array ${ARRAY_SPEC}"
-  printf '  chunks :\n%s\n' "${CHUNKS}"
+  echo "  mode   : array ${ARRAY_SPEC} (${ARRAY_SIZE} task x panel units)"
   export EVAL_FANOUT
   STAGE2_EVAL_DIR="${SCRIPT_DIR}" STAGE2_EVAL_CONFIG="${CONFIG_PATH}" \
     sbatch --job-name=S2eval --array="${ARRAY_SPEC}" \

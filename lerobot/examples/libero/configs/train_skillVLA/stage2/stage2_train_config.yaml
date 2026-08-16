@@ -4,7 +4,7 @@
 # state/action geometry as the selected Stage-1 checkpoint.
 dataset:
   skillvla_root: skillvla_dataset
-  source: libero_90_full_full
+  source: libero_90_full_full # libero_90_full_full | libero_90_full_firsthalf_scene
   # run is inherited from the Stage-1 checkpoint's train_config.json.
 
 # Stage 2 assembles two independently trained frozen sources; architecture is
@@ -18,40 +18,55 @@ warm_start:
   stage1_run: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask
   checkpoint: "100000"
   predictor:
-    run: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch4_DINO_LR_100p_Skill_Predictor
-    checkpoint: "100000"
-    # path: <pretrained_model dir>   # optional; overrides run/checkpoint.
-    # This predictor was trained in a different FSQ run than the Stage-1 prior.
-    # gt-mode training only uses its frozen VLM base, which is unaffected; its
-    # reader/head skill predictions are meaningless for rollout until a
-    # predictor trained on the matching FSQ run replaces it.
-    allow_fsq_mismatch: true
+    # Either run/checkpoint under outputs skillVLA_stage1, or an explicit
+    # pretrained_model directory via path (relative paths resolve from
+    # project_root). The predictor must share the Stage-1 prior's FSQ run.
+    path: outputs_filtered/skillVLA_terminator/bs16_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal/checkpoints/050000/pretrained_model
 
 likelihood:
   layers: 4
   # gt is the default; predictor conditions training on the frozen predictor's
   # skill-start predictions and requires a matching-FSQ predictor.
   training_skill_source: gt
+  # last: cross-attend the VLM's final hidden (original design).
+  # layer_mix: each block learns a softmax mixture over all 18 VLM layers,
+  # initialized near the final layer. Adds a _layermix run-name tag.
+  vlm_memory: layer_mix
+  # LR multiplier for the language-pathway bootstrap parameters (gate dense,
+  # VLM projection, layer mix) to escape the zero-gate cold start. Diagnosis of
+  # the first four runs showed the projection stuck at its random init.
+  # Adds a _glr{n} run-name tag when != 1.
+  gate_lr_scale: 10
 
-# flow: ordinary action-flow MSE
-# flow_endpoint_xyz: 0.5 flow + 0.5 accumulated-XYZ endpoint MSE
-loss: flow  # flow | flow_endpoint_xyz
+# Loss-mask override. Omit (or comment out) to inherit the Stage-1 checkpoint's
+# setting; false supervises the full action chunk even past the skill end.
+# Overriding away from the Stage-1 value adds a _nomask/_endmask run-name tag.
+mask_actions_after_skill_end: false
 
-# Auto name: {stage1_run}_{checkpoint}_{flow|endpoint}_{gt|predictor}_{batchON|batchOFF}[_{suffix}]
-run: {suffix: "small"}
+# Optional relative-trajectory auxiliary, identical to Stage 1. The fixed flow
+# loss keeps weight 1.0; this adds weight * prefix cumulative clean-action XYZ
+# MSE after one per-sample horizon normalization ((valid_steps + 1) / 2).
+cumulative_xyz_loss:
+  enabled: false
+  weight: 0.5
+
+# Auto name: {stage1_run}_{checkpoint}_{gt|predictor}_{batchON|batchOFF}[_cumxyz{weight}][_{suffix}]
+run: {suffix: "full"}
 
 training:
   dataloader:
-    batch_size: 16
-    workers: 2
+    batch_size: 32
+    workers: 8
     gpus: 1
     # Half the batch becomes post-jitter-same-skill/different-task pairs.
-    same_skill_different_task: {enabled: true, grouped_fraction: 0.5, progress_temperature: 0.1}
+    same_skill_different_task: {enabled: false, grouped_fraction: 0.5, progress_temperature: 0.1}
   optimizer: {base_lr: 2.5e-05}
-  gradient_checkpointing: true
-  schedule: {steps: 50000, log_every: 100, save_every: 5000}
+  gradient_checkpointing: false
+  # lr_mode warmup_constant matches Stage 1: warm up then hold base_lr flat
+  # (no cosine decay; lr_decay_steps is only used by cosine_decay).
+  schedule: {steps: 100000, log_every: 100, save_every: 5000, lr_mode: warmup_constant, warmup_steps: 1000}
 
 logging:
   wandb: {enable: true, project: VLA_stage2}
 
-slurm: {gres: "gpu:1", cpus: 8, memory: 256G, time: "48:00:00"}
+slurm: {gres: "gpu:1", cpus: 12, memory: 256G, time: "48:00:00"}

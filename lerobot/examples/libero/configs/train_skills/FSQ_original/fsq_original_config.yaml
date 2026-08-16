@@ -6,9 +6,11 @@
 # only and is never reconstructed.
 # Dataset/skillset selection works exactly like FSQ/fsq_config.yaml.
 fsq_dataset_root: FSQ_dataset
-target_dataset: libero_90_full_full # libero_90_full_full | langgap_56_full_full
+target_dataset: langgap_56_full_full # libero_90_full_full | langgap_56_full_full
 fsq_inputs_name: FSQ_inputs
-skillset_seg_name: seg_libero_90_full_full_state_obs20_ck100000_std_episodemean_100p
+# skillset_seg_name: seg_libero_90_full_full_state_obs20_ck100000_std_episodemean_100p
+skillset_seg_name: seg_langgap_56_full_full_state_obs20_ck100000_std_episodemean_80p
+
 skillset_name: skillset
 
 
@@ -18,7 +20,7 @@ skillset_name: skillset
 #   pos_pos (spline 인코더 + oneshot 디코더) | pos_act (spline + rnn)
 #   act_act (action_seq + rnn)
 # 예: "pos_act_LR6_raw_withEntH". loss 태그: ReconOnly | withEntH. constLR(기본 LR)은 생략.
-fsq_exp: "constLR_act_rnn_noLenTok_LR6_raw_entH" # 학습 중 run과 일치 유지; 다음 run부터 새 관례(act_act_LR6_raw_entH 등) 사용
+fsq_exp: "pos_pos_LR6_raw_entH" # 학습 중 run과 일치 유지; 다음 run부터 새 관례(act_act_LR6_raw_entH 등) 사용
 fsq_levels: [3, 3, 3]
 fsq_hidden_dim: 256
 fsq_num_layers: 3
@@ -31,12 +33,12 @@ fsq_orig_encoder_length_token: false
 # spline: 고정 컨트롤포인트 토큰 (아래 input_mode/길이토큰 프로브 적용됨).
 # action_seq: 가변 길이 ACTION 시퀀스 transformer — 스플라인 코덱/grounding/길이토큰
 #             선택이 전부 불필요 (delta action엔 절대좌표가 없음). decoder는 rnn 필수.
-fsq_orig_encoder_arch: action_seq
+fsq_orig_encoder_arch: spline
 fsq_orig_decoder_layers: 3
 # oneshot: ctrl point 30개(+길이)를 MLP 한 번에 복원.
 # rnn    : z만 받는 GRU unroll(teacher forcing 없음)이 매 스텝 정규화 action +
 #          termination logit을 출력 — 길이는 termination 신호로 암시적으로 표현.
-fsq_orig_decoder_arch: rnn # oneshot
+fsq_orig_decoder_arch: oneshot # oneshot
 # false: recon 타겟에서 스킬 길이를 제거 — length 헤드/로스 없이 ctrl point만 복원.
 # (인코더의 길이 입력 토큰은 그대로 유지; 디코딩 시 길이는 외부에서 지정해야 함)
 # rnn arch에서는 무시됨 (termination이 항상 길이를 담당).

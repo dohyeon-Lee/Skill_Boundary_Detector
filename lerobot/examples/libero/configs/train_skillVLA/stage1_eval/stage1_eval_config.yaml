@@ -32,31 +32,28 @@ external_skill_model: outputs_filtered/skillVLA_terminator/bs256_libero_90_full_
 # # Empty => timestamped directory. A fixed name is useful with resume: true.
 # output_name: "skillendmask_and_stateposition_ext_5k_or"
 
-model_defaults:
-  previous: false
-  checkpoint: "100000" # ["030000", "050000", "070000", "085000"]
-  skill_source: external
-  advance_mode: external
-models:
-  # external_skill_model may be set per entry, so each target uses the terminator
-  # trained on its own FSQ run. The terminator's skill_fsq_levels must match the
-  # target policy's, and the source must have train_terminator: true.
-  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch0_skillendmask
-    label: 80p_prevFSQ
-    skill_source: external
-    advance_mode: external
-    terminator_variant: state_image
-    external_predictor_model: outputs_filtered/skillVLA_stage1/bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch4_DINO_LR_100p_Skill_Predictor/checkpoints/100000/pretrained_model
-    external_terminator_model: outputs_filtered/skillVLA_stage1/bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch4_DINO_LR_100p_Skill_Predictor/checkpoints/100000/pretrained_model
+# model_defaults:
+#   previous: false
+#   checkpoint: "100000" # ["030000", "050000", "070000", "085000"]
+#   skill_source: external
+#   advance_mode: external
+# models:
+#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch0_skillendmask
+#     label: 80p_prevFSQ
+#     skill_source: external
+#     advance_mode: external
+#     terminator_variant: state_image
+#     external_predictor_model: outputs_filtered/skillVLA_stage1/bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch4_DINO_LR_100p_Skill_Predictor/checkpoints/100000/pretrained_model
+#     external_terminator_model: outputs_filtered/skillVLA_stage1/bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch4_DINO_LR_100p_Skill_Predictor/checkpoints/100000/pretrained_model
 
-  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask
-    label: 100p_broadcast
-    skill_source: external
-    advance_mode: external
-    external_predictor_model:  outputs_filtered/skillVLA_terminator/bs16_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal/checkpoints/050000/pretrained_model
-    external_terminator_model: outputs_filtered/skillVLA_terminator/bs256_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_terminator/checkpoints/020000/pretrained_model
-# Empty => timestamped directory. A fixed name is useful with resume: true.
-output_name: "FSQ_comparison_100K_external"
+#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask
+#     label: 100p_broadcast
+#     skill_source: external
+#     advance_mode: external
+#     external_predictor_model:  outputs_filtered/skillVLA_terminator/bs16_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal/checkpoints/050000/pretrained_model
+#     external_terminator_model: outputs_filtered/skillVLA_terminator/bs256_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_terminator/checkpoints/020000/pretrained_model
+# # Empty => timestamped directory. A fixed name is useful with resume: true.
+# output_name: "FSQ_comparison_100K_external"
 
 # model_defaults:
 #   previous: false
@@ -78,17 +75,39 @@ output_name: "FSQ_comparison_100K_external"
 
 # model_defaults:
 #   previous: false
-#   checkpoint: "030000" # ["030000", "050000", "070000", "085000"]
+#   checkpoint: "100000" # ["030000", "050000", "070000", "085000"]
 #   skill_source: gt
-#   advance_mode: gt
+#   advance_mode: external
 # models:
-#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_adarms_skillendmask
-#     label: adaRMS
+#   # external_skill_model may be set per entry, so each target uses the terminator
+#   # trained on its own FSQ run. The terminator's skill_fsq_levels must match the
+#   # target policy's, and the source must have train_terminator: true.
 #   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask
-#     label: broadcast
+#     label: 100p_broadcast_expert
+#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_cond_skillendmask
+#     label: 100p_broadcast_cond
+#   # - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_token_skillendmask
+#   #   label: 100p_broadcast_both
 # # Empty => timestamped directory. A fixed name is useful with resume: true.
-# output_name: "FSQ_skill_conditioning_3K"
+# output_name: "skill_conditioning_pos_100K"
 
+model_defaults:
+  previous: false
+  checkpoint: "100000" # ["030000", "050000", "070000", "085000"]
+  skill_source: gt
+  advance_mode: external
+models:
+  # external_skill_model may be set per entry, so each target uses the terminator
+  # trained on its own FSQ run. The terminator's skill_fsq_levels must match the
+  # target policy's, and the source must have train_terminator: true.
+  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask
+    label: adamW
+  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask_muon
+    label: muon
+  # - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_token_skillendmask
+  #   label: 100p_broadcast_both
+# Empty => timestamped directory. A fixed name is useful with resume: true.
+output_name: "optimizor"
 
 # model_defaults:
 #   previous: false

@@ -69,15 +69,25 @@ outputs_root: outputs_filtered
 #     label: skill_broadcast_cum
 # output_name: "cumulative_loss"
 
+# model_defaults:
+#   previous: false
+#   checkpoint: "100000"
+# models:
+#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask
+#     label: skill_broadcast
+#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask_visfrez
+#     label: skill_broadcast_DINOfreeze
+# output_name: "vision_freeze"
+
 model_defaults:
   previous: false
   checkpoint: "100000"
 models:
   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask
-    label: skill_broadcast
-  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask_visfrez
-    label: skill_broadcast_DINOfreeze
-output_name: "vision_freeze"
+    label: 100p_broadcast_expert
+  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_cond_skillendmask
+    label: 100p_broadcast_cond
+output_name: "skill_conditioning_pos_100K"
 
 main_terminator:
   # Base budget per occurrence: ceil(GT action length L * scale). The early

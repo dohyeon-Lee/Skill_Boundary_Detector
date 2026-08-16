@@ -80,6 +80,26 @@ def _scene_task_ids(suite_name: str) -> dict[str, int]:
     return {str(task.name): index for index, task in enumerate(suite.tasks)}
 
 
+def _dataset_task_ids(dataset_dir: Path) -> dict[str, int]:
+    """Task description -> task index, from the dataset's own task table.
+
+    A dataset whose episodes come from several LIBERO suites has no single
+    suite to number its tasks by, so its own table is the only numbering that
+    covers every episode.
+    """
+    path = dataset_dir / "meta" / "tasks.parquet"
+    if not path.is_file():
+        raise FileNotFoundError(f"Dataset task table not found: {path}")
+    frame = pd.read_parquet(path).reset_index()
+    missing = sorted({"task", "task_index"} - set(frame.columns))
+    if missing:
+        raise ValueError(f"{path} is missing {missing}.")
+    task_ids = {str(task): int(index) for task, index in zip(frame["task"], frame["task_index"], strict=True)}
+    if len(task_ids) != len(frame):
+        raise ValueError(f"{path} maps one task description to several indices.")
+    return task_ids
+
+
 def _load_episode_meta(dataset_dir: Path) -> pd.DataFrame:
     files = sorted((dataset_dir / "meta" / "episodes").glob("**/*.parquet"))
     if not files:
@@ -108,12 +128,14 @@ class SkillEvaluationDataset:
         *,
         skill_dataset_dir: str | Path,
         skill_latents_path: str | Path,
-        eval_init_states_path: str | Path,
-        original_dataset_dir: str | Path,
+        eval_init_states_path: str | Path | None,
+        original_dataset_dir: str | Path | None,
         suite_name: str,
     ) -> None:
         self.skill_dataset_dir = Path(skill_dataset_dir)
-        self.original_dataset_dir = Path(original_dataset_dir)
+        self.original_dataset_dir = (
+            Path(original_dataset_dir) if original_dataset_dir else None
+        )
         self.suite_name = str(suite_name)
         self.episode_meta = _load_episode_meta(self.skill_dataset_dir)
         self._shard_cache: dict[tuple[int, int], pd.DataFrame] = {}
@@ -151,6 +173,29 @@ class SkillEvaluationDataset:
             )
         ]
 
+        # Task descriptions are only known up front in dataset-meta mode; suite
+        # mode leaves them to the caller's LIBERO benchmark lookup.
+        self.task_descriptions: dict[int, str] = {}
+        self.sources: dict[int, EpisodeSource] = (
+            self._sources_from_dataset_meta()
+            if eval_init_states_path is None
+            else self._sources_from_exact_map(eval_init_states_path)
+        )
+
+        self._rows_by_episode: dict[int, list[dict]] = {}
+        for row in self._latent_rows:
+            self._rows_by_episode.setdefault(row["episode_id"], []).append(row)
+        for rows in self._rows_by_episode.values():
+            rows.sort(key=lambda row: (row["frame_start"], row["skill_index"]))
+
+    def _sources_from_exact_map(
+        self, eval_init_states_path: str | Path
+    ) -> dict[int, EpisodeSource]:
+        """Episode provenance from the rendered episode-exact map.
+
+        Episodes whose scene is not part of ``suite_name`` are dropped: without
+        a suite task id they cannot be selected or grouped.
+        """
         exact = np.load(str(eval_init_states_path), allow_pickle=True)
         required_exact = {"episode_index", "scene_file", "demo"}
         missing_exact = sorted(required_exact - set(exact.files))
@@ -159,7 +204,7 @@ class SkillEvaluationDataset:
                 f"Episode-exact map is missing {missing_exact}; scene/demo provenance is mandatory."
             )
         scene_to_task = _scene_task_ids(self.suite_name)
-        self.sources: dict[int, EpisodeSource] = {}
+        sources: dict[int, EpisodeSource] = {}
         for episode, scene_file, demo in zip(
             exact["episode_index"], exact["scene_file"], exact["demo"], strict=True
         ):
@@ -169,20 +214,48 @@ class SkillEvaluationDataset:
             if task_id is None:
                 continue
             episode_id = int(episode)
-            if episode_id in self.sources:
+            if episode_id in sources:
                 raise ValueError(f"Duplicate exact source for episode {episode_id}.")
-            self.sources[episode_id] = EpisodeSource(
+            sources[episode_id] = EpisodeSource(
                 episode_id=episode_id,
                 task_id=int(task_id),
                 scene_file=scene_file,
                 demo=str(demo),
             )
+        return sources
 
-        self._rows_by_episode: dict[int, list[dict]] = {}
-        for row in self._latent_rows:
-            self._rows_by_episode.setdefault(row["episode_id"], []).append(row)
-        for rows in self._rows_by_episode.values():
-            rows.sort(key=lambda row: (row["frame_start"], row["skill_index"]))
+    def _sources_from_dataset_meta(self) -> dict[int, EpisodeSource]:
+        """Episode provenance from the dataset's own task table.
+
+        Every episode is covered, including datasets that draw their scenes from
+        several LIBERO suites, but the original HDF5 demo is unknown -- so this
+        mode serves selection and grouping only, never state alignment.
+        """
+        task_ids = _dataset_task_ids(self.skill_dataset_dir)
+        self.task_descriptions = {index: task for task, index in task_ids.items()}
+        sources: dict[int, EpisodeSource] = {}
+        for episode, tasks in zip(
+            self.episode_meta["episode_index"], self.episode_meta["tasks"], strict=True
+        ):
+            names = [str(name) for name in np.atleast_1d(tasks)]
+            if len(names) != 1:
+                raise ValueError(
+                    f"Episode {int(episode)} carries {len(names)} task descriptions; "
+                    "dataset-meta episode sourcing needs exactly one."
+                )
+            task_id = task_ids.get(names[0])
+            if task_id is None:
+                raise ValueError(
+                    f"Episode {int(episode)} has task {names[0]!r}, which is absent from "
+                    f"{self.skill_dataset_dir / 'meta/tasks.parquet'}."
+                )
+            sources[int(episode)] = EpisodeSource(
+                episode_id=int(episode),
+                task_id=task_id,
+                scene_file="",
+                demo="",
+            )
+        return sources
 
     def select_episodes(
         self,
@@ -349,6 +422,11 @@ class SkillEvaluationDataset:
         source = self.sources.get(episode_id)
         if source is None:
             raise KeyError(f"Episode {episode_id} has no exact source mapping.")
+        if self.original_dataset_dir is None or not source.scene_file:
+            raise RuntimeError(
+                "State alignment needs the episode-exact map: episodes sourced from "
+                "the dataset task table carry no original HDF5 scene/demo."
+            )
         frame = self._episode_frame(episode_id)
         filtered_actions = np.stack(frame["action"].to_numpy()).astype(np.float32)
         filtered_states = np.stack(frame["observation.state"].to_numpy()).astype(np.float32)
