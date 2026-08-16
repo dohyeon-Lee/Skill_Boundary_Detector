@@ -6,7 +6,8 @@
 
 # One run or a list of runs under {outputs_root}/FSQ.
 fsq_orig_eval_run_name:
-  - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_constLR_rnn_oneshot
+  - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_act_act_LR6_raw_withEntH
+  - libero_90_full_full_state_obs20_std_episodemean_100p_bsq5_act_act_LR6_raw_withEntH
 
 # Scalar and list forms are accepted, e.g. 200 or [50, 100, 150, 200].
 fsq_orig_eval_checkpoint: [25,50,75,100,125]

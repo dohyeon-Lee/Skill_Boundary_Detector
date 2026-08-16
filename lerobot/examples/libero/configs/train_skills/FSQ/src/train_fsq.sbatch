@@ -107,7 +107,11 @@ cat > "${FSQ_OUTPUT_DIR}/fsq_meta.json" <<JSON
   "save_best_model": ${FSQ_SAVE_BEST_MODEL},
   "vision_backbone": "${FSQ_VISION_BACKBONE}",
   "freeze_vision_encoder": ${FSQ_FREEZE_VISION_ENCODER},
-  "encoder_input_mode": "${FSQ_ENCODER_INPUT_MODE}"
+  "encoder_input_mode": "${FSQ_ENCODER_INPUT_MODE}",
+  "encoder_arch": "${FSQ_ENCODER_ARCH}",
+  "encoder_length_token": ${FSQ_ENCODER_LENGTH_TOKEN},
+  "fsq_entropy": ${FSQ_ENTROPY},
+  "reconstructor_start_state": ${FSQ_RECONSTRUCTOR_START_STATE}
 }
 JSON
 
@@ -128,6 +132,21 @@ fi
 SAVE_BEST_ARG=(--no-save_best_model)
 if [ "${FSQ_SAVE_BEST_MODEL:-false}" = "true" ]; then
   SAVE_BEST_ARG=(--save_best_model)
+fi
+
+ENC_LENGTH_TOKEN_ARG=(--encoder_length_token)
+if [ "${FSQ_ENCODER_LENGTH_TOKEN:-true}" = "false" ]; then
+  ENC_LENGTH_TOKEN_ARG=(--no-encoder_length_token)
+fi
+
+RECON_START_STATE_ARG=(--reconstructor_start_state)
+if [ "${FSQ_RECONSTRUCTOR_START_STATE:-true}" = "false" ]; then
+  RECON_START_STATE_ARG=(--no-reconstructor_start_state)
+fi
+
+FSQ_ENTROPY_ARG=(--no-fsq_entropy)
+if [ "${FSQ_ENTROPY:-false}" = "true" ]; then
+  FSQ_ENTROPY_ARG=(--fsq_entropy)
 fi
 
 TERMINATION_ONLY_ARG=(--no-terminator_termination_only)
@@ -166,6 +185,13 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     --num_layers              "${FSQ_NUM_LAYERS}" \
     --n_control               "${FSQ_N_CONTROL}" \
     --encoder_input_mode      "${FSQ_ENCODER_INPUT_MODE}" \
+    --encoder_arch            "${FSQ_ENCODER_ARCH}" \
+    "${ENC_LENGTH_TOKEN_ARG[@]}" \
+    "${FSQ_ENTROPY_ARG[@]}" \
+    "${RECON_START_STATE_ARG[@]}" \
+    --entropy_conf_weight     "${FSQ_ENTROPY_CONF_WEIGHT}" \
+    --entropy_div_weight      "${FSQ_ENTROPY_DIV_WEIGHT}" \
+    --entropy_inv_temperature "${FSQ_ENTROPY_INV_TEMPERATURE}" \
     --terminator_arch         "${FSQ_TERMINATOR_ARCH}" \
     "${TERMINATION_ONLY_ARG[@]}" \
     "${RECONSTRUCTOR_ONLY_ARG[@]}" \

@@ -657,6 +657,11 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "raw_state": "_rawstate",
         "optimal": "_optimal",
     }[fsq_encoder_input_mode]
+    fsq_encoder_length_token = as_bool(get_value(cfg, "fsq_encoder_length_token", True))
+    fsq_encoder_arch = str(get_value(cfg, "fsq_encoder_arch", "spline")).strip().lower()
+    if fsq_encoder_arch not in {"spline", "action_seq"}:
+        raise ValueError(f"fsq_encoder_arch must be spline|action_seq, got {fsq_encoder_arch!r}.")
+    fsq_entropy = as_bool(get_value(cfg, "fsq_entropy", False))
     fsq_skill_cond_mode = str(get_value(cfg, "fsq_skill_cond_mode", "token")).strip().lower()
     if fsq_skill_cond_mode not in {"token", "broadcast"}:
         raise ValueError(
@@ -776,6 +781,15 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "fsq_lr_schedule": fsq_lr_schedule,
         "fsq_samples_per_skill": fsq_samples_per_skill,
         "fsq_encoder_input_mode": fsq_encoder_input_mode,
+        "fsq_encoder_length_token": fsq_encoder_length_token,
+        "fsq_encoder_arch": fsq_encoder_arch,
+        "fsq_entropy": fsq_entropy,
+        "fsq_entropy_conf_weight": str(get_value(cfg, "fsq_entropy_conf_weight", 0.1)),
+        "fsq_entropy_div_weight": str(get_value(cfg, "fsq_entropy_div_weight", 0.1)),
+        "fsq_entropy_inv_temperature": str(get_value(cfg, "fsq_entropy_inv_temperature", 10.0)),
+        "fsq_reconstructor_start_state": as_bool(
+            get_value(cfg, "fsq_reconstructor_start_state", True)
+        ),
         "fsq_terminator_arch": fsq_terminator_arch,
         "fsq_terminator_layers": fsq_terminator_layers,
         "fsq_terminator_heads": fsq_terminator_heads,

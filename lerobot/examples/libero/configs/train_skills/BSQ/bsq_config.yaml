@@ -21,7 +21,7 @@ bsq_entropy_div_weight: 0.1      # 배치 entropy 최대화(비트 균형). 0=co
 # ── model / run ──
 # fsq_exp 태그 관례: 구조는 입출력 모달리티로 표기 — pos_pos | pos_act | act_act.
 # joint는 항상 켜져 있으므로 태그 생략, constLR(기본 LR)도 생략. BSQ는 loss 태그 항상 withEntH.
-fsq_exp: "constLR_act_rnn_joint_noLenTok_LR6_raw" # 학습 중 run과 일치 유지; 다음 run부터 새 관례(act_act_LR6_raw 등) 사용
+fsq_exp: "act_act_LR6_raw_withEntH"
 fsq_levels: [3, 3, 3]            # bsq에선 무시되지만 resolver 태그 치환용으로 유지
 fsq_hidden_dim: 256
 fsq_num_layers: 3

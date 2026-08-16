@@ -53,6 +53,20 @@ class Args:
     spline_degree: int = 3
     encoder_input_mode: str = "zero_grounded"
     """zero_grounded | raw_state | optimal (zero-grounded + one absolute start-EEF token)."""
+    encoder_length_token: bool = True
+    """False: drop the spline encoder's length token — duration reaches z only
+    through motion shape (probe ported from FSQ-original)."""
+    encoder_arch: str = "spline"
+    """spline: fixed control-point tokens. action_seq: variable-length ACTION
+    sequence transformer (no spline codec / grounding / length-token choices)."""
+    fsq_entropy: bool = False
+    """Apply BSQ-style entropy terms to the FSQ grid (confidence + diversity)."""
+    reconstructor_start_state: bool = True
+    """False: reconstructor drops the skill-start-state token — the action chunk
+    becomes a pure (z, progress) lookup."""
+    entropy_conf_weight: float = 0.1
+    entropy_div_weight: float = 0.1
+    entropy_inv_temperature: float = 10.0
     terminator_arch: str = "small"
     """small: lightweight query transformer; cond: Stage-1-cond-compatible Gemma."""
     terminator_termination_only: bool = False
@@ -235,6 +249,18 @@ def main(args: Args) -> None:
             "--encoder_input_mode must be zero_grounded|raw_state|optimal, "
             f"got {args.encoder_input_mode!r}."
         )
+    if args.encoder_arch not in {"spline", "action_seq"}:
+        raise ValueError(f"--encoder_arch must be spline|action_seq, got {args.encoder_arch!r}.")
+    print(
+        f"[FSQ] encoder arch: {args.encoder_arch}, length token: {args.encoder_length_token}, "
+        f"fsq_entropy: {args.fsq_entropy}"
+        + (
+            f" (tau={args.entropy_inv_temperature} conf/div="
+            f"{args.entropy_conf_weight}/{args.entropy_div_weight}, joint)"
+            if args.fsq_entropy
+            else ""
+        )
+    )
 
     # Encoder normalization stats must follow the exact checkpointed input convention used before
     # spline fitting. Length stats are data-driven min/max over skill lengths.
@@ -331,6 +357,13 @@ def main(args: Args) -> None:
         n_control=args.n_control,
         spline_degree=args.spline_degree,
         encoder_input_mode=args.encoder_input_mode,
+        encoder_length_token=args.encoder_length_token,
+        encoder_arch=args.encoder_arch,
+        fsq_entropy=args.fsq_entropy,
+        entropy_conf_weight=args.entropy_conf_weight,
+        entropy_div_weight=args.entropy_div_weight,
+        entropy_inv_temperature=args.entropy_inv_temperature,
+        reconstructor_start_state=args.reconstructor_start_state,
         hidden_dim=args.hidden_dim,
         fsq_levels=args.fsq_levels,
         num_layers=args.num_layers,

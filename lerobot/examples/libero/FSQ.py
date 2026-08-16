@@ -439,6 +439,213 @@ class SplineFSQEncoder(nn.Module):
         return int(index.item())
 
 
+class LengthFreeSplineFSQEncoder(SplineFSQEncoder):
+    """SplineFSQEncoder without the length token (encoder_length_token=False).
+
+    Control points live on normalized time, so with no length token the
+    absolute duration reaches z only through motion shape. ``lengths`` is
+    still accepted everywhere for API compatibility but never enters the
+    computation. Checkpoint shapes differ from the parent (smaller pos_embed,
+    no enc_len_proj), so runs can never silently cross-load.
+    """
+
+    def __init__(
+        self,
+        *,
+        enc_dim: int,
+        n_control: int,
+        spline_degree: int,
+        hidden_dim: int,
+        fsq_levels: list[int],
+        n_layers: int,
+        n_heads: int,
+        dropout: float,
+        length_min: float,
+        length_max: float,
+        encoder_min: np.ndarray,
+        encoder_max: np.ndarray,
+        encoder_input_mode: str = "zero_grounded",
+        encoder_start_min: np.ndarray | None = None,
+        encoder_start_max: np.ndarray | None = None,
+    ):
+        super().__init__(
+            enc_dim=enc_dim,
+            n_control=n_control,
+            spline_degree=spline_degree,
+            hidden_dim=hidden_dim,
+            fsq_levels=fsq_levels,
+            n_layers=n_layers,
+            n_heads=n_heads,
+            dropout=dropout,
+            length_min=length_min,
+            length_max=length_max,
+            encoder_min=encoder_min,
+            encoder_max=encoder_max,
+            encoder_input_mode=encoder_input_mode,
+            encoder_start_min=encoder_start_min,
+            encoder_start_max=encoder_start_max,
+        )
+        self.enc_len_proj = None
+        self.enc_traj_pool = TokenTransformerPool(
+            hidden_dim,
+            n_control + int(encoder_input_mode == "optimal"),
+            n_layers=n_layers,
+            n_heads=n_heads,
+            dropout=dropout,
+        )
+
+    def encode_continuous(
+        self,
+        ctrl: Tensor,
+        lengths: Tensor,
+        start_pose: Tensor | None = None,
+        *,
+        normalized: bool = True,
+    ) -> Tensor:
+        _ = lengths  # accepted for API compatibility; duration is not an input
+        if not normalized:
+            ctrl = self.normalize_control_points(ctrl)
+            if start_pose is not None:
+                start_pose = self.normalize_start_pose(start_pose)
+        tokens = [self.enc_ctrl_proj(ctrl)]
+        if self.enc_start_proj is not None:
+            if start_pose is None:
+                raise ValueError("optimal encoder mode requires start_pose on every forward pass.")
+            tokens.append(self.enc_start_proj(start_pose).unsqueeze(1))
+        return self.z_head(self.enc_traj_pool(torch.cat(tokens, dim=1)))
+
+
+class ActionSeqEncoder(nn.Module):
+    """Variable-length ACTION-sequence encoder (encoder_arch='action_seq').
+
+    Consumes q01/q99-normalized action sequences directly: no spline codec,
+    no grounding decision (delta actions carry no absolute pose), no length
+    token (duration is implicit in the sequence). Sinusoidal step-index
+    positions keep absolute timing visible; padding is masked in every
+    attention, so z is invariant to the batch pad width. Exposes ``z_head`` /
+    ``fsq`` under the same names as SplineFSQEncoder so quantizer swaps and
+    codebook diagnostics reuse unchanged.
+    """
+
+    def __init__(
+        self,
+        *,
+        action_dim: int,
+        hidden_dim: int,
+        fsq_levels: list[int],
+        n_layers: int,
+        n_heads: int,
+        dropout: float,
+    ):
+        super().__init__()
+        if hidden_dim % 2 or hidden_dim % n_heads:
+            raise ValueError(
+                f"hidden_dim={hidden_dim} must be even and divisible by n_heads={n_heads}."
+            )
+        self.hidden_dim = int(hidden_dim)
+        self.action_proj = nn.Linear(action_dim, hidden_dim)
+        layer = nn.TransformerEncoderLayer(
+            d_model=hidden_dim,
+            nhead=n_heads,
+            dim_feedforward=hidden_dim * 4,
+            dropout=dropout,
+            activation="gelu",
+            batch_first=True,
+            norm_first=True,
+        )
+        self.encoder = nn.TransformerEncoder(layer, num_layers=n_layers)
+        self.query = nn.Parameter(torch.zeros(1, 1, hidden_dim))
+        self.pool = nn.MultiheadAttention(hidden_dim, n_heads, dropout=dropout, batch_first=True)
+        self.out_norm = nn.LayerNorm(hidden_dim)
+        self.z_head = nn.Linear(hidden_dim, len(fsq_levels))
+        self.fsq = FSQ(fsq_levels)
+        nn.init.trunc_normal_(self.query, std=0.02)
+
+    @staticmethod
+    def _sinusoidal_positions(steps: int, dim: int, device: torch.device) -> Tensor:
+        position = torch.arange(steps, device=device, dtype=torch.float32)[:, None]
+        div = torch.exp(
+            -math.log(10000.0)
+            * torch.arange(0, dim, 2, device=device, dtype=torch.float32)
+            / dim
+        )
+        pe = torch.zeros(steps, dim, device=device)
+        pe[:, 0::2] = torch.sin(position * div)
+        pe[:, 1::2] = torch.cos(position * div)
+        return pe
+
+    def encode_continuous(
+        self,
+        actions: Tensor,
+        lengths: Tensor,
+        start_pose: Tensor | None = None,
+        *,
+        normalized: bool = True,
+    ) -> Tensor:
+        _ = start_pose, normalized  # API parity with SplineFSQEncoder; input arrives normalized
+        bsize, steps, _ = actions.shape
+        pad_mask = torch.arange(steps, device=actions.device)[None] >= lengths[:, None]
+        x = self.action_proj(actions)
+        x = x + self._sinusoidal_positions(steps, self.hidden_dim, actions.device)[None].to(x.dtype)
+        x = self.encoder(x, src_key_padding_mask=pad_mask)
+        query = self.query.to(x.dtype).expand(bsize, -1, -1)
+        pooled, _ = self.pool(query, x, x, key_padding_mask=pad_mask, need_weights=False)
+        return self.z_head(self.out_norm(pooled[:, 0]))
+
+    def forward(
+        self,
+        actions: Tensor,
+        lengths: Tensor,
+        start_pose: Tensor | None = None,
+        *,
+        normalized: bool = True,
+    ) -> tuple[Tensor, Tensor]:
+        return self.fsq(self.encode_continuous(actions, lengths, start_pose, normalized=normalized))
+
+
+def fsq_entropy_terms(
+    bounded: Tensor,
+    fsq_levels: list[int],
+    inv_temperature: float,
+    *,
+    joint_dataset: bool = False,
+) -> tuple[Tensor, Tensor]:
+    """BSQ-style entropy terms for the FSQ grid.
+
+    ``bounded`` is FSQ.bound's continuous coordinate (grid spacing 1, centers
+    at integers). Each dim gets a soft level assignment
+    p ∝ softmax(-τ·(bounded - center)²), so τ is in grid-step units: the
+    confidence term's gradient lives near rounding boundaries (distance 0.5)
+    and vanishes at bin centers. Returns (sample_entropy, dataset_entropy) in
+    nats; the joint dataset mode enumerates all prod(levels) codes in FSQ's
+    index order (dim 0 fastest) — the factorized mode is an upper bound that
+    is blind to inter-dim correlations (antipodal-pair collapse).
+    """
+    probs: list[Tensor] = []
+    for d, level in enumerate(int(v) for v in fsq_levels):
+        centers = torch.arange(level, device=bounded.device, dtype=torch.float32)
+        centers = centers - level // 2
+        logits = -inv_temperature * (bounded[:, d : d + 1].float() - centers[None]) ** 2
+        probs.append(torch.softmax(logits, dim=-1).clamp(1e-6, 1.0))
+    sample_entropy = sum(
+        -(p * p.log()).sum(dim=-1) for p in probs
+    ).mean()
+    if not joint_dataset:
+        dataset_entropy = bounded.new_zeros(())
+        for p in probs:
+            p_bar = p.mean(dim=0)
+            p_bar = p_bar / p_bar.sum()
+            dataset_entropy = dataset_entropy - (p_bar * p_bar.log()).sum()
+        return sample_entropy, dataset_entropy
+    q = probs[0]
+    for p in probs[1:]:
+        q = (p[:, :, None] * q[:, None, :]).reshape(q.shape[0], -1)
+    q_bar = q.mean(dim=0).clamp_min(1e-12)
+    q_bar = q_bar / q_bar.sum()
+    dataset_entropy = -(q_bar * q_bar.log()).sum()
+    return sample_entropy, dataset_entropy
+
+
 # -----------------------------------------------------------------------------
 # Gemma helper for the optional cond-style terminator
 # -----------------------------------------------------------------------------
@@ -487,6 +694,7 @@ class MotionChunkReconstructor(nn.Module):
         max_state_dim: int,
         max_action_dim: int,
         chunk_size: int,
+        use_start_state: bool = True,
     ):
         super().__init__()
         if skill_cond_mode not in {"token", "broadcast"}:
@@ -495,10 +703,14 @@ class MotionChunkReconstructor(nn.Module):
         self.max_state_dim = int(max_state_dim)
         self.max_action_dim = int(max_action_dim)
         self.chunk_size = int(chunk_size)
-        self.state_proj = nn.Linear(max_state_dim, hidden_dim)
+        # Probe: drop the skill-start-state token entirely — the chunk is then a
+        # pure (z, progress) motion-program lookup. The forward still ACCEPTS
+        # start_state for API compatibility and ignores it.
+        self.use_start_state = bool(use_start_state)
+        self.state_proj = nn.Linear(max_state_dim, hidden_dim) if self.use_start_state else None
         self.skill_proj = nn.Linear(len(fsq_levels), hidden_dim)
         self.progress_proj = nn.Linear(1, hidden_dim)
-        n_tokens = 3 if skill_cond_mode == "token" else 2
+        n_tokens = (2 if skill_cond_mode == "token" else 1) + int(self.use_start_state)
         self.pool = TokenTransformerPool(
             hidden_dim=hidden_dim,
             n_tokens=n_tokens,
@@ -518,16 +730,15 @@ class MotionChunkReconstructor(nn.Module):
         z_norm: Tensor,
         progress: Tensor,
     ) -> Tensor:
-        bsize = start_state.shape[0]
-        state_tok = self.state_proj(start_state.to(self.working_dtype))
+        bsize = z_norm.shape[0]
         skill_tok = self.skill_proj(z_norm.to(self.working_dtype))
         progress_tok = self.progress_proj(progress.reshape(bsize, 1).to(self.working_dtype))
-        if self.skill_cond_mode == "token":
-            tokens = torch.stack([skill_tok, state_tok, progress_tok], dim=1)
-            cond = None
-        else:
-            tokens = torch.stack([state_tok, progress_tok], dim=1)
-            cond = skill_tok
+        parts: list[Tensor] = [skill_tok] if self.skill_cond_mode == "token" else []
+        if self.use_start_state:
+            parts.append(self.state_proj(start_state.to(self.working_dtype)))
+        parts.append(progress_tok)
+        tokens = torch.stack(parts, dim=1)
+        cond = None if self.skill_cond_mode == "token" else skill_tok
         hidden = self.pool(tokens, broadcast_cond=cond)
         action = self.action_head(hidden).view(bsize, self.chunk_size, self.max_action_dim)
         return torch.tanh(action).float()
@@ -1127,6 +1338,26 @@ class SplineFSQAEConfig:
     n_control: int = 30
     spline_degree: int = 3
     encoder_input_mode: str = "zero_grounded"
+    encoder_length_token: bool = True
+    """False: the spline encoder consumes NO length token — duration reaches z
+    only through motion shape (probe ported from FSQ-original)."""
+    encoder_arch: str = "spline"
+    """spline: fixed control-point tokens. action_seq: variable-length ACTION
+    sequence transformer (no spline codec / grounding / length-token choices)."""
+    fsq_entropy: bool = False
+    """Apply BSQ-style entropy terms to the FSQ grid: sample entropy
+    minimization (confidence — pushes samples off rounding boundaries) and
+    batch entropy maximization (code-usage diversity)."""
+    entropy_conf_weight: float = 0.1
+    entropy_div_weight: float = 0.1
+    entropy_inv_temperature: float = 10.0
+    entropy_joint: bool = True
+    """Exact dataset entropy over all prod(fsq_levels) codes (project standard);
+    the factorized bound exists only as a fallback for huge codebooks."""
+    reconstructor_start_state: bool = True
+    """False: the reconstructor drops its skill-start-state token — the action
+    chunk becomes a pure (z, progress) motion-program lookup with no spatial
+    grounding input."""
     hidden_dim: int = 256
     fsq_levels: list[int] = field(default_factory=lambda: [5, 5, 5])
     num_layers: int = 2
@@ -1249,24 +1480,48 @@ class SplineFSQAE(nn.Module):
             for name in ("encoder_start_min", "encoder_start_max"):
                 if getattr(cfg, name) is None:
                     raise ValueError(f"Optimal FSQ config is missing required statistic: {name}")
+        if cfg.encoder_arch not in {"spline", "action_seq"}:
+            raise ValueError(f"encoder_arch must be spline|action_seq, got {cfg.encoder_arch!r}.")
+        if (
+            cfg.fsq_entropy
+            and cfg.entropy_joint
+            and math.prod(int(v) for v in cfg.fsq_levels) > 16384
+        ):
+            raise ValueError(
+                "fsq_entropy with entropy_joint enumerates prod(fsq_levels) codes; "
+                f"{cfg.fsq_levels} is too large (max 16384)."
+            )
         self.cfg = cfg
-        self.encoder = SplineFSQEncoder(
-            enc_dim=cfg.enc_dim,
-            n_control=cfg.n_control,
-            spline_degree=cfg.spline_degree,
-            hidden_dim=cfg.hidden_dim,
-            fsq_levels=cfg.fsq_levels,
-            n_layers=cfg.num_layers,
-            n_heads=cfg.image_encoder_heads,
-            dropout=cfg.dropout,
-            length_min=cfg.length_min,
-            length_max=cfg.length_max,
-            encoder_min=cfg.encoder_min,
-            encoder_max=cfg.encoder_max,
-            encoder_input_mode=cfg.encoder_input_mode,
-            encoder_start_min=cfg.encoder_start_min,
-            encoder_start_max=cfg.encoder_start_max,
-        )
+        if cfg.encoder_arch == "action_seq":
+            self.encoder = ActionSeqEncoder(
+                action_dim=cfg.action_dim,
+                hidden_dim=cfg.hidden_dim,
+                fsq_levels=cfg.fsq_levels,
+                n_layers=cfg.num_layers,
+                n_heads=cfg.image_encoder_heads,
+                dropout=cfg.dropout,
+            )
+        else:
+            encoder_cls = (
+                SplineFSQEncoder if cfg.encoder_length_token else LengthFreeSplineFSQEncoder
+            )
+            self.encoder = encoder_cls(
+                enc_dim=cfg.enc_dim,
+                n_control=cfg.n_control,
+                spline_degree=cfg.spline_degree,
+                hidden_dim=cfg.hidden_dim,
+                fsq_levels=cfg.fsq_levels,
+                n_layers=cfg.num_layers,
+                n_heads=cfg.image_encoder_heads,
+                dropout=cfg.dropout,
+                length_min=cfg.length_min,
+                length_max=cfg.length_max,
+                encoder_min=cfg.encoder_min,
+                encoder_max=cfg.encoder_max,
+                encoder_input_mode=cfg.encoder_input_mode,
+                encoder_start_min=cfg.encoder_start_min,
+                encoder_start_max=cfg.encoder_start_max,
+            )
         self.reconstructor = None if cfg.terminator_only else MotionChunkReconstructor(
             fsq_levels=cfg.fsq_levels,
             hidden_dim=cfg.hidden_dim,
@@ -1277,6 +1532,7 @@ class SplineFSQAE(nn.Module):
             max_state_dim=cfg.max_state_dim,
             max_action_dim=cfg.max_action_dim,
             chunk_size=cfg.chunk_size,
+            use_start_state=cfg.reconstructor_start_state,
         )
         self.terminator = None if cfg.reconstructor_only else FSQQueryTerminator(
             state_dim=cfg.state_dim,
@@ -1299,14 +1555,16 @@ class SplineFSQAE(nn.Module):
         )
 
     def gradient_checkpointing_enable(self) -> None:
-        self.encoder.enc_traj_pool.gradient_checkpointing_enable()
+        if hasattr(self.encoder, "enc_traj_pool"):
+            self.encoder.enc_traj_pool.gradient_checkpointing_enable()
         if self.reconstructor is not None:
             self.reconstructor.pool.gradient_checkpointing_enable()
         if self.terminator is not None:
             self.terminator.gradient_checkpointing_enable()
 
     def gradient_checkpointing_disable(self) -> None:
-        self.encoder.enc_traj_pool.gradient_checkpointing_disable()
+        if hasattr(self.encoder, "enc_traj_pool"):
+            self.encoder.enc_traj_pool.gradient_checkpointing_disable()
         if self.reconstructor is not None:
             self.reconstructor.pool.gradient_checkpointing_disable()
         if self.terminator is not None:
@@ -1344,10 +1602,43 @@ class SplineFSQAE(nn.Module):
         return self.encoder(ctrl, lengths, start_pose, normalized=True)
 
     def encode_numpy(self, trajectory: np.ndarray, device: str | torch.device = "cpu") -> np.ndarray:
+        if self.cfg.encoder_arch == "action_seq":
+            raise ValueError("This model encodes ACTION sequences; use encode_actions_numpy.")
         return self.encoder.encode_numpy(trajectory, device)
 
     def encode_index(self, trajectory: np.ndarray, device: str | torch.device = "cpu") -> int:
+        if self.cfg.encoder_arch == "action_seq":
+            raise ValueError("This model encodes ACTION sequences; use encode_actions_index.")
         return self.encoder.encode_index(trajectory, device)
+
+    def _normalize_actions_numpy(self, actions: np.ndarray) -> Tensor:
+        lo = np.asarray(self.cfg.action_q01, dtype=np.float32)
+        hi = np.asarray(self.cfg.action_q99, dtype=np.float32)
+        norm = 2.0 * (np.asarray(actions, dtype=np.float32) - lo) / (hi - lo + 1e-8) - 1.0
+        return torch.from_numpy(norm)
+
+    @torch.no_grad()
+    def encode_actions_numpy(
+        self, actions: np.ndarray, device: str | torch.device = "cpu"
+    ) -> np.ndarray:
+        """action_seq encoder: raw (T, A) dataset-unit actions -> z_q."""
+        if self.cfg.encoder_arch != "action_seq":
+            raise ValueError("encode_actions_numpy requires encoder_arch='action_seq'.")
+        acts = self._normalize_actions_numpy(actions).unsqueeze(0).to(device)
+        lengths = torch.tensor([acts.shape[1]], dtype=torch.long, device=device)
+        z_q, _ = self.encoder(acts, lengths)
+        return z_q[0].cpu().numpy()
+
+    @torch.no_grad()
+    def encode_actions_index(
+        self, actions: np.ndarray, device: str | torch.device = "cpu"
+    ) -> int:
+        if self.cfg.encoder_arch != "action_seq":
+            raise ValueError("encode_actions_index requires encoder_arch='action_seq'.")
+        acts = self._normalize_actions_numpy(actions).unsqueeze(0).to(device)
+        lengths = torch.tensor([acts.shape[1]], dtype=torch.long, device=device)
+        _, index = self.encoder(acts, lengths)
+        return int(index.item())
 
     @torch.no_grad()
     def sample_action_chunks(
@@ -1458,8 +1749,19 @@ class SplineFSQAE(nn.Module):
         samples_per_skill: int,
         noise: Tensor | None = None,
         time: Tensor | None = None,
+        action_seq: Tensor | None = None,
     ) -> dict[str, Tensor]:
-        z_q, indices = self.encoder(ctrl, lengths, start_pose, normalized=True)
+        if self.cfg.encoder_arch == "action_seq":
+            if action_seq is None:
+                raise ValueError("encoder_arch='action_seq' requires the action_seq input.")
+            z_e = self.encoder.encode_continuous(
+                action_seq[:, : int(lengths.max())], lengths
+            )
+        else:
+            z_e = self.encoder.encode_continuous(ctrl, lengths, start_pose, normalized=True)
+        z_q, indices = self.fsq(z_e)
+        # Continuous FSQ coordinate for the entropy terms (None unless enabled).
+        u_cont = self.fsq.bound(z_e) if self.cfg.fsq_entropy else None
         z_norm = self.fsq.normalized(z_q)
         z_sample = z_norm.repeat_interleave(samples_per_skill, dim=0)
         _ = noise, time  # older validation path passes these; the reconstructor is deterministic.
@@ -1487,10 +1789,25 @@ class SplineFSQAE(nn.Module):
         return {
             "z_q": z_q,
             "indices": indices,
+            "u_cont": u_cont,
             "actions": actions,
             "progress": progress,
             "term_logits": term_logits,
         }
+
+
+# Fields added after v3 checkpoints already existed; loaders backfill defaults
+# so a pickled pre-probe dataclass cfg still builds the exact same model.
+_V3_CFG_BACKFILL = (
+    ("encoder_length_token", True),
+    ("encoder_arch", "spline"),
+    ("fsq_entropy", False),
+    ("entropy_conf_weight", 0.1),
+    ("entropy_div_weight", 0.1),
+    ("entropy_inv_temperature", 10.0),
+    ("entropy_joint", True),
+    ("reconstructor_start_state", True),
+)
 
 
 def _checkpoint_config(checkpoint: dict[str, Any]) -> SplineFSQAEConfig:
@@ -1511,6 +1828,9 @@ def _checkpoint_config(checkpoint: dict[str, Any]) -> SplineFSQAEConfig:
             f"Legacy FSQ checkpoint is unsupported: expected format_version={FORMAT_VERSION}, "
             f"got {getattr(cfg, 'format_version', 0)}. Retrain with the transformer-reconstructor FSQ."
         )
+    for name, default in _V3_CFG_BACKFILL:
+        if not hasattr(cfg, name):
+            setattr(cfg, name, default)
     return cfg
 
 
@@ -1648,7 +1968,20 @@ def _load_prefixed(module: nn.Module, state: dict[str, Tensor], prefix: str) -> 
 def load_fsq_encoder(path: str | Path, device: str | torch.device = "cpu") -> tuple[SplineFSQEncoder, SplineFSQAEConfig]:
     checkpoint = torch.load(str(path), map_location="cpu", weights_only=False)
     cfg = _checkpoint_config(checkpoint)
-    encoder = SplineFSQEncoder(
+    if cfg.encoder_arch == "action_seq":
+        encoder = ActionSeqEncoder(
+            action_dim=cfg.action_dim,
+            hidden_dim=cfg.hidden_dim,
+            fsq_levels=cfg.fsq_levels,
+            n_layers=cfg.num_layers,
+            n_heads=cfg.image_encoder_heads,
+            dropout=0.0,
+        )
+        _load_prefixed(encoder, checkpoint["model_state"], "encoder.")
+        encoder.to(device).eval()
+        return encoder, cfg
+    encoder_cls = SplineFSQEncoder if cfg.encoder_length_token else LengthFreeSplineFSQEncoder
+    encoder = encoder_cls(
         enc_dim=cfg.enc_dim,
         n_control=cfg.n_control,
         spline_degree=cfg.spline_degree,
@@ -2032,6 +2365,14 @@ class FSQTrajectoryDataset(Dataset):
             item["third"], item["wrist"] = self._sample_images(index, sample)
         if self.start_poses is not None:
             item["start_pose"] = torch.from_numpy(self.start_poses[index])
+        if getattr(self.cfg, "encoder_arch", "spline") == "action_seq":
+            # Full normalized action sequence padded to length_max; the encoder
+            # slices to the batch max and masks padding.
+            pad_steps = int(round(self.cfg.length_max))
+            action = self._quantile_norm(self.actions[index], self.action_q01, self.action_q99)
+            padded = np.zeros((pad_steps, action.shape[-1]), dtype=np.float32)
+            padded[: len(action)] = action[:pad_steps]
+            item["encoder_action_seq"] = torch.from_numpy(padded)
         return item
 
 
@@ -2086,11 +2427,25 @@ def fsq_reconstruction_loss(
         + cfg.end_loss_weight * end_loss
     )
     metrics = {
-        "loss": total.detach(),
         "action": action_loss.detach(),
         "progress": progress_loss.detach(),
         "termination": end_loss.detach(),
     }
+    if getattr(cfg, "fsq_entropy", False) and output.get("u_cont") is not None:
+        sample_entropy, dataset_entropy = fsq_entropy_terms(
+            output["u_cont"],
+            cfg.fsq_levels,
+            cfg.entropy_inv_temperature,
+            joint_dataset=cfg.entropy_joint,
+        )
+        total = (
+            total
+            + cfg.entropy_conf_weight * sample_entropy
+            - cfg.entropy_div_weight * dataset_entropy
+        )
+        metrics["entropy_sample"] = sample_entropy.detach()
+        metrics["entropy_dataset"] = dataset_entropy.detach()
+    metrics["loss"] = total.detach()
     return total, metrics
 
 
@@ -2129,28 +2484,44 @@ def _collect_code_assignments(
     """
     assignments: list[Tensor] = []
     boundary_margins: list[Tensor] = []
+    action_seq_arch = getattr(model.cfg, "encoder_arch", "spline") == "action_seq"
     for dataset in datasets:
         for start in range(0, len(dataset), batch_size):
             stop = min(start + batch_size, len(dataset))
-            ctrl = torch.from_numpy(np.stack(dataset.ctrl[start:stop])).to(
-                device, non_blocking=True
-            )
             lengths = torch.as_tensor(
                 dataset.lengths[start:stop], dtype=torch.long, device=device
             )
-            start_pose = None
-            if dataset.start_poses is not None:
-                start_pose = torch.from_numpy(
-                    np.stack(dataset.start_poses[start:stop])
-                ).to(device, non_blocking=True)
+            if action_seq_arch:
+                lo, hi = dataset.action_q01, dataset.action_q99
+                acts = [
+                    2.0 * (dataset.actions[i] - lo) / (hi - lo + 1e-8) - 1.0
+                    for i in range(start, stop)
+                ]
+                steps = max(len(a) for a in acts)
+                batch = np.zeros((len(acts), steps, acts[0].shape[-1]), dtype=np.float32)
+                for row, a in enumerate(acts):
+                    batch[row, : len(a)] = a
+                seq = torch.from_numpy(batch).to(device, non_blocking=True)
+            else:
+                ctrl = torch.from_numpy(np.stack(dataset.ctrl[start:stop])).to(
+                    device, non_blocking=True
+                )
+                start_pose = None
+                if dataset.start_poses is not None:
+                    start_pose = torch.from_numpy(
+                        np.stack(dataset.start_poses[start:stop])
+                    ).to(device, non_blocking=True)
             with torch.autocast(
                 device_type=device.type,
                 dtype=torch.bfloat16,
                 enabled=device.type == "cuda",
             ):
-                z_e = model.encoder.encode_continuous(
-                    ctrl, lengths, start_pose, normalized=True
-                )
+                if action_seq_arch:
+                    z_e = model.encoder.encode_continuous(seq, lengths)
+                else:
+                    z_e = model.encoder.encode_continuous(
+                        ctrl, lengths, start_pose, normalized=True
+                    )
                 _, indices = model.fsq(z_e)
             # Compute the diagnostic in FP32 even when the encoder forward uses
             # BF16; assignment itself remains identical to the training path.
@@ -2398,6 +2769,19 @@ def train_spline_fsqae(
                 "Cannot resume FSQ with a different encoder input convention: "
                 f"checkpoint={resume_input_mode!r}, current={cfg.encoder_input_mode!r}."
             )
+        for probe, default in (
+            ("encoder_arch", "spline"),
+            ("encoder_length_token", True),
+            ("fsq_entropy", False),
+            ("reconstructor_start_state", True),
+        ):
+            resume_value = getattr(resume_cfg, probe, default)
+            if resume_value != getattr(cfg, probe):
+                raise ValueError(
+                    f"Cannot resume FSQ with a different {probe}: "
+                    f"checkpoint={resume_value!r}, current={getattr(cfg, probe)!r}. "
+                    "Use a different fsq_exp for a new run."
+                )
         resume_lr_schedule = getattr(resume_cfg, "lr_schedule", "cosine")
         if resume_lr_schedule != cfg.lr_schedule:
             raise ValueError(
@@ -2567,6 +2951,7 @@ def train_spline_fsqae(
                 samples_per_skill=m,
                 noise=noise,
                 time=time,
+                action_seq=moved.get("encoder_action_seq"),
             )
             loss, metrics = fsq_reconstruction_loss(output, moved, cfg)
         if training:
