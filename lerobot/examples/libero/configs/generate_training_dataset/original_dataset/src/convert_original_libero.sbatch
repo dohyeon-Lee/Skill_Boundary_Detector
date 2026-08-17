@@ -12,6 +12,7 @@
 #   ../original_dataset_config.yaml
 #SBATCH --job-name=convert_libero
 #SBATCH --gres=gpu:1
+#SBATCH --requeue
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=128G
 #SBATCH --time=48:00:00
@@ -64,6 +65,10 @@ echo "Schema ref : ${CONVERT_SCHEMA_REFERENCE}"
 echo "Codec      : ${CONVERT_VCODEC}"
 echo "Overwrite  : ${CONVERT_OVERWRITE}"
 nvidia-smi || true
+
+# Fail over to another GPU instead of silently running on CPU.
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/gpu_guard.sh"
+require_cuda_or_requeue "${PROJECT_ROOT}/.venv/bin/python"
 
 "${PYTHON_BIN}" "${CONVERT_SCRIPT}" "${ARGS[@]}"
 

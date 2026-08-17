@@ -2,6 +2,7 @@
 # Stage-1 VSA/Cond-Gemma multi-model closed-loop evaluation.
 #SBATCH --job-name=S1eval
 #SBATCH --gres=gpu:1
+#SBATCH --requeue
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --time=4:00:00
@@ -92,6 +93,10 @@ echo "replan   : n_action_steps=${N_ACTION_STEPS} immediate_on_skill_end=${IMMED
 echo "suite    : ${TARGET_TASK} task_ids=${TASK_IDS} episodes=${N_EPISODES}"
 echo "output   : ${EVAL_OUT_DIR}"
 nvidia-smi || true
+
+# Fail over to another GPU instead of silently running on CPU.
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/gpu_guard.sh"
+require_cuda_or_requeue "${PROJECT_ROOT}/.venv/bin/python"
 
 PYTORCH_ALLOC_CONF=expandable_segments:True \
 PYTHONPATH="${LEROBOT_ROOT}/src:${LEROBOT_ROOT}/examples/libero:${LIBERO_REPO_ROOT}" \

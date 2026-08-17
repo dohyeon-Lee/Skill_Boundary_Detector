@@ -790,6 +790,7 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "fsq_reconstructor_start_state": as_bool(
             get_value(cfg, "fsq_reconstructor_start_state", True)
         ),
+        "fsq_reconstructor_arch": str(get_value(cfg, "fsq_reconstructor_arch", "chunk")).strip().lower(),
         "fsq_terminator_arch": fsq_terminator_arch,
         "fsq_terminator_layers": fsq_terminator_layers,
         "fsq_terminator_heads": fsq_terminator_heads,

@@ -6,6 +6,7 @@
 #   best model   : optional FSQ.pt when fsq_save_best_model=true
 #SBATCH --job-name=BSQ_train
 #SBATCH --gres=gpu:1
+#SBATCH --requeue
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
 #SBATCH --time=24:00:00
@@ -43,6 +44,10 @@ echo "Skillset   : ${SKILLSET_DIR}/skills"
 echo "Quantizer  : bsq code_dim=${BSQ_CODE_DIM} tau=${BSQ_INV_TEMPERATURE} entropy conf/div=${BSQ_ENTROPY_CONF_WEIGHT}/${BSQ_ENTROPY_DIV_WEIGHT}"
 echo "Output     : ${FSQ_OUTPUT_DIR}"
 nvidia-smi
+
+# Fail over to another GPU instead of silently running on CPU.
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/gpu_guard.sh"
+require_cuda_or_requeue "${PROJECT_ROOT}/.venv/bin/python"
 
 if [ ! -d "${SKILLSET_DIR}/skills" ]; then
   echo "Skillset not found: ${SKILLSET_DIR}/skills" >&2

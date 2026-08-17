@@ -18,6 +18,7 @@
 #
 #SBATCH --job-name=DP_train
 #SBATCH --gres=gpu:1
+#SBATCH --requeue
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --time=48:00:00
@@ -54,6 +55,10 @@ source "${PROJECT_ROOT}/lerobot/examples/libero/configs/runtime_env.sh"
 echo "START DP TRAIN"
 echo "Node       : ${SLURMD_NODENAME:-local}"
 nvidia-smi
+
+# Fail over to another GPU instead of silently running on CPU.
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/gpu_guard.sh"
+require_cuda_or_requeue "${PROJECT_ROOT}/.venv/bin/python"
 
 if [ ! -d "${RAW_DATASET_DIR}" ]; then
   echo "Dataset not found: ${RAW_DATASET_DIR}" >&2

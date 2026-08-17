@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=TermEval
 #SBATCH --gres=gpu:1
+#SBATCH --requeue
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --time=12:00:00
@@ -75,6 +76,10 @@ echo "terminator: mode=${SKILL_END_MODE} finish_chunk=${FINISH_ACTION_CHUNK_ON_E
 echo "display terms: ${TERMINATOR_MODELS_JSON} (display only)"
 echo "output    : ${EVAL_OUT_DIR}"
 nvidia-smi || true
+
+# Fail over to another GPU instead of silently running on CPU.
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/gpu_guard.sh"
+require_cuda_or_requeue "${PROJECT_ROOT}/.venv/bin/python"
 
 PYTORCH_ALLOC_CONF=expandable_segments:True \
 PYTHONPATH="${LEROBOT_ROOT}/src:${LEROBOT_ROOT}/examples/libero:${LIBERO_REPO_ROOT}" \

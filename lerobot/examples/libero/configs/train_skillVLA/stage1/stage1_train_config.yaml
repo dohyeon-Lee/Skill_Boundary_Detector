@@ -21,7 +21,7 @@ vision:
 
 architecture:
   # Select with this value or
-  # `./submit_train.sh arch0|arch0_1|arch0_2|arch0_2_sep|arch0_3|arch0_adaRMS|arch0_token|arch0_token_iso|arch0_cond|arch0_both|arch1_1|arch1_2|arch1_3|arch2_1|arch2_2|arch3|arch4`.
+  # `./submit_train.sh arch0|arch0_1|arch0_2|arch0_2_sep|arch0_3|arch0_adaRMS|arch0_adaRMS_zero|arch0_token|arch0_token_iso|arch0_cond|arch0_both|arch1_1|arch1_2|arch1_3|arch2_1|arch2_2|arch3|arch4`.
   #
   # Reference map (idea-level references, not exact paper reproductions):
   # - Shared visual compressor:
@@ -44,6 +44,10 @@ architecture:
   #   additive layerwise broadcast and is instead RMS-normalized and summed into
   #   the action Expert AdaRMS condition beside the timestep. Sharing that
   #   AdaRMS dense adds no parameters; a per-signal dense would add ~116M.
+  # - arch0_adaRMS_zero: Arch0_adaRMS with a zero-init scalar gain on the skill
+  #   term. The trained Arch0_adaRMS put skill into the shared AdaRMS channel at
+  #   ~8x the timestep embedding's RMS, which degrades flow-time conditioning;
+  #   here skill starts silent and training chooses its level.
   # - arch0_token: Arch0 visual/state paths, but the skill becomes a single
   #   in-context expert token that the action tokens attend to, instead of the
   #   layerwise broadcast. Differs from Arch1_1 in that state stays on the
@@ -73,9 +77,9 @@ architecture:
   # Historical checkpoints with the same arch2_1/arch2_2 labels remain
   # evaluation-only under previous/ and are distinguished by revision metadata.
 
-  # arch0 arch0_1 arch0_2 arch0_2_sep arch0_3 arch0_adaRMS arch0_token arch0_token_iso arch0_cond arch0_both arch1_1 arch1_2 arch1_3 arch2_1 arch2_2 arch3 arch4
-  # arch0 arch0_adaRMS arch0_token arch0_token_iso
-  name: arch0_adaRMS
+  # arch0 arch0_1 arch0_2 arch0_2_sep arch0_3 arch0_adaRMS arch0_adaRMS_zero arch0_token arch0_token_iso arch0_cond arch0_both arch1_1 arch1_2 arch1_3 arch2_1 arch2_2 arch3 arch4
+  # arch0 arch0_adaRMS arch0_adaRMS_zero arch0_token arch0_token_iso
+  name: arch0_adaRMS_zero
 
   # Shared by Arch0--4.
   expert_variant: gemma_300m

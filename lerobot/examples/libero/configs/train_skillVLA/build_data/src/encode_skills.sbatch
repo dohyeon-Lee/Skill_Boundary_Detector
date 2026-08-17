@@ -8,6 +8,7 @@
 #   {skillvla_dataset}/{source}/{run_tag}/skill_latents.npz   (FSQ vectors)
 #SBATCH --job-name=skillVLA_encode
 #SBATCH --gres=gpu:1
+#SBATCH --requeue
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --time=8:00:00
@@ -45,6 +46,10 @@ echo "Skillset : ${SKILLSET_DIR}/skills"
 echo "FSQ      : ${FSQ_MODEL_PATH}"
 echo "Latents  : ${SKILL_LATENTS_PATH}"
 nvidia-smi || true
+
+# Fail over to another GPU instead of silently running on CPU.
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/gpu_guard.sh"
+require_cuda_or_requeue "${PROJECT_ROOT}/.venv/bin/python"
 
 if [ ! -f "${FSQ_MODEL_PATH}" ]; then
   echo "FSQ model not found: ${FSQ_MODEL_PATH}" >&2

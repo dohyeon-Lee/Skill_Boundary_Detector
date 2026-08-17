@@ -20,6 +20,7 @@ from lerobot.policies.skill_expert.configuration_skill_expert import (
     COND_GEMMA_PERCEIVER_EXPERT_TOKENS_REVISION,
     COND_GEMMA_SEPARATE_DUAL_STATE_REVISION,
     COND_GEMMA_SKILL_ADARMS_REVISION,
+    COND_GEMMA_SKILL_ADARMS_ZERO_REVISION,
     COND_GEMMA_SKILL_TOKEN_REVISION,
     COND_GEMMA_WRIST_DUAL_STATE_REVISION,
     COMPRESSED_VISUAL_KV_REVISION,
@@ -202,6 +203,7 @@ def test_config_defaults_to_vsa_and_cond_architecture_is_explicit() -> None:
         (COND_GEMMA_SEPARATE_DUAL_STATE_REVISION, "arch0_2_sep"),
         (COND_GEMMA_WRIST_DUAL_STATE_REVISION, "arch0_3"),
         (COND_GEMMA_SKILL_ADARMS_REVISION, "arch0_adarms"),
+        (COND_GEMMA_SKILL_ADARMS_ZERO_REVISION, "arch0_adarms_zero"),
         (COND_GEMMA_SKILL_TOKEN_REVISION, "arch0_token"),
         (COND_GEMMA_ISOLATED_SKILL_TOKEN_REVISION, "arch0_token_iso"),
         (COND_GEMMA_COND_SKILL_BROADCAST_REVISION, "arch0_cond"),
@@ -518,6 +520,7 @@ def test_cond_expert_token_forward_and_cached_sampling_preserve_action_shape(
         (COND_GEMMA_SEPARATE_DUAL_STATE_REVISION, "arch0_2_sep"),
         (COND_GEMMA_WRIST_DUAL_STATE_REVISION, "arch0_3"),
         (COND_GEMMA_SKILL_ADARMS_REVISION, "arch0_adarms"),
+        (COND_GEMMA_SKILL_ADARMS_ZERO_REVISION, "arch0_adarms_zero"),
         (COND_GEMMA_SKILL_TOKEN_REVISION, "arch0_token"),
         (COND_GEMMA_ISOLATED_SKILL_TOKEN_REVISION, "arch0_token_iso"),
         (COND_GEMMA_COND_SKILL_BROADCAST_REVISION, "arch0_cond"),
@@ -857,6 +860,7 @@ def test_arch0_token_makes_skill_one_expert_token_and_keeps_state_on_cond_adarms
         (COND_GEMMA_SEPARATE_DUAL_STATE_REVISION, "arch0_2_sep"),
         (COND_GEMMA_WRIST_DUAL_STATE_REVISION, "arch0_3"),
         (COND_GEMMA_SKILL_ADARMS_REVISION, "arch0_adarms"),
+        (COND_GEMMA_SKILL_ADARMS_ZERO_REVISION, "arch0_adarms_zero"),
         (COND_GEMMA_SKILL_TOKEN_REVISION, "arch0_token"),
         (COND_GEMMA_ISOLATED_SKILL_TOKEN_REVISION, "arch0_token_iso"),
         (COND_GEMMA_COND_SKILL_BROADCAST_REVISION, "arch0_cond"),
@@ -2211,3 +2215,76 @@ def test_skill_broadcast_target_ablations_select_the_right_streams(
         images, state, torch.tensor([7, 11]), noise=noise, num_steps=1
     )
     assert not torch.allclose(sampled, other)
+
+
+def test_arch0_adarms_zero_starts_silent_and_learns_its_level() -> None:
+    """The zero-init gain fixes Arch0_adaRMS' skill/timestep imbalance.
+
+    Arch0_adaRMS pins skill at unit RMS while the trained timestep embedding sits
+    near RMS 0.1, so skill enters the shared AdaRMS channel far louder than the
+    signal it shares with. Here the scalar gain starts at 0 and training sets it.
+    """
+    torch.manual_seed(37)
+    config = SkillExpertConfig(
+        architecture=COND_GEMMA_ARCHITECTURE,
+        architecture_label="arch0_adarms_zero",
+        architecture_revision=COND_GEMMA_SKILL_ADARMS_ZERO_REVISION,
+        conditioning_route="state_cond",
+        max_state_dim=4,
+        max_action_dim=4,
+        chunk_size=3,
+        n_action_steps=3,
+        dino_model_path="unused",
+    )
+    tiny_geometry = SimpleNamespace(width=32, depth=2)
+    with (
+        patch(
+            "lerobot.policies.skill_expert.cond_gemma.get_gemma_config",
+            return_value=tiny_geometry,
+        ),
+        patch(
+            "lerobot.policies.skill_expert.cond_gemma.build_gemma",
+            side_effect=lambda _variant, *, use_adarms: _tiny_projection_gemma_pi05_heads(
+                use_adarms=use_adarms
+            ),
+        ),
+        patch(
+            "lerobot.policies.skill_expert.cond_gemma.AutoModel.from_pretrained",
+            return_value=_TinyDino(),
+        ),
+    ):
+        model = CondGemmaSkillExpert(config).eval()
+
+    assert model.uses_expert_skill_adarms is True
+    assert model.uses_zero_init_skill_gain is True
+    assert model.expert_skill_gain is not None
+    assert torch.equal(model.expert_skill_gain, torch.zeros(1))
+
+    skill = torch.tensor([3, 5])
+    time = torch.tensor([0.3, 0.7])
+    # Silent at initialization: the condition is the timestep alone.
+    assert torch.allclose(model._expert_skill_condition(skill), torch.zeros(2, 32))
+    assert torch.allclose(
+        model._expert_condition(time, None, skill), model._time_condition(time)
+    )
+
+    # Once the gain is non-zero the skill term appears, still RMS-normalized so
+    # every FSQ code contributes equally.
+    with torch.no_grad():
+        model.expert_skill_gain.fill_(0.1)
+    scaled = model._expert_skill_condition(skill)
+    assert torch.allclose(
+        scaled.square().mean(dim=-1).sqrt(), torch.full((2,), 0.1), atol=1e-5
+    )
+    assert torch.allclose(
+        model._expert_condition(time, None, skill),
+        model._time_condition(time) + scaled,
+    )
+
+    images = [torch.rand(2, 3, 16, 16), torch.rand(2, 3, 16, 16)]
+    actions = torch.randn(2, 3, 4)
+    noise = torch.randn_like(actions)
+    model.train()
+    model(images, torch.randn(2, 4), skill, actions, noise=noise, time=time).square().mean().backward()
+    assert model.expert_skill_gain.grad is not None
+    assert model.skill_proj.weight.grad is not None

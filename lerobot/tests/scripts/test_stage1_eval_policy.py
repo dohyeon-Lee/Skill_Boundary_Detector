@@ -51,6 +51,25 @@ class _FakeExpert(nn.Module):
         return []
 
 
+class _FakeStage2Expert(_FakeExpert):
+    name = "skill_vla_stage2"
+
+    def __init__(self):
+        super().__init__()
+        self.vlm_calls = []
+
+    def predict_action_chunk(self, batch):
+        self.vlm_calls.append(
+            {
+                "current_image": batch["observation.images.image"].detach().clone(),
+                "start_image": batch["skill_start_image"].detach().clone(),
+                "start_wrist": batch["skill_start_wrist_image"].detach().clone(),
+                "start_tokens": batch["observation.language.tokens"].detach().clone(),
+            }
+        )
+        return super().predict_action_chunk(batch)
+
+
 def test_attach_original_terminator_replaces_checkpoint_copy(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -105,6 +124,23 @@ def _batch():
         "skill_decoder_image": torch.zeros(1, 3, 8, 8),
         "skill_decoder_wrist": torch.zeros(1, 3, 8, 8),
     }
+
+
+def _stage2_batch(value: int):
+    batch = _batch()
+    batch.update(
+        {
+            "observation.images.image": torch.full((1, 3, 8, 8), float(value)),
+            "observation.images.wrist_image": torch.full(
+                (1, 3, 8, 8), float(value + 10)
+            ),
+            "observation.language.tokens": torch.tensor([[value]], dtype=torch.long),
+            "observation.language.attention_mask": torch.ones(
+                1, 1, dtype=torch.bool
+            ),
+        }
+    )
+    return batch
 
 
 def test_stage1_eval_json_paths_are_collected_under_metrics(
@@ -424,6 +460,44 @@ def test_oracle_can_interrupt_chunk_and_replan_on_terminator_advance() -> None:
     assert wrapper.select_action(_batch()).item() == 7
     assert wrapper.select_action(_batch()).item() == 7
     assert [call.item() for call in expert.calls] == [3, 7]
+
+
+def test_stage2_eval_holds_vlm_start_condition_until_the_next_skill() -> None:
+    expert = _FakeStage2Expert()
+    wrapper = Stage1OraclePolicy(
+        expert,
+        None,
+        advance_mode="gt",
+        end_mode="or",
+        end_threshold=0.5,
+        progress_threshold=0.95,
+        max_skill_length=0,
+        n_action_steps=1,
+    )
+    wrapper.set_forced_skill_token_sequences(
+        [[{"token": 3, "gt_length": 3}, {"token": 7, "gt_length": 3}]]
+    )
+
+    assert wrapper.select_action(_stage2_batch(1)).item() == 3
+    assert wrapper.select_action(_stage2_batch(2)).item() == 3
+    assert wrapper.select_action(_stage2_batch(3)).item() == 7
+
+    assert [call["current_image"].flatten()[0].item() for call in expert.vlm_calls] == [
+        1.0,
+        2.0,
+        3.0,
+    ]
+    assert [call["start_image"].flatten()[0].item() for call in expert.vlm_calls] == [
+        1.0,
+        1.0,
+        3.0,
+    ]
+    assert [call["start_wrist"].flatten()[0].item() for call in expert.vlm_calls] == [
+        11.0,
+        11.0,
+        13.0,
+    ]
+    assert [call["start_tokens"].item() for call in expert.vlm_calls] == [1, 1, 3]
 
 
 def test_checkpoint_terminator_converts_logits_to_probability() -> None:

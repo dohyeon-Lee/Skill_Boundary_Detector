@@ -10,6 +10,7 @@
 # Output: {skillvla_dataset}/{source}/_work/seg_{dp}_ck{ckpt}/skillset/skills/ep*_skill*.npz
 #SBATCH --job-name=skillVLA_skillset
 #SBATCH --gres=gpu:1
+#SBATCH --requeue
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
 #SBATCH --time=8:00:00
@@ -52,6 +53,10 @@ echo "DP      : ${DP_POLICY_PATH}"
 echo "Output  : ${SKILLSET_DIR}"
 echo "Probe   : ${SKILLSET_MODE} (n=${SKILLSET_PROBE_COUNT}, alpha=${SKILLSET_PROBE_ALPHA})"
 nvidia-smi || true
+
+# Fail over to another GPU instead of silently running on CPU.
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/gpu_guard.sh"
+require_cuda_or_requeue "${PROJECT_ROOT}/.venv/bin/python"
 
 if [ ! -d "${DP_POLICY_PATH}" ]; then
   echo "DP policy not found: ${DP_POLICY_PATH}" >&2

@@ -142,6 +142,7 @@ COND_GEMMA_ARCHITECTURE_LABELS = {
     "cond_expert_separate_state_adarms_v1": "arch0_2_sep",
     "wrist_cond_expert_state_adarms_v1": "arch0_3",
     "expert_skill_adarms_v1": "arch0_adarms",
+    "expert_skill_adarms_zero_v1": "arch0_adarms_zero",
     "expert_skill_token_v1": "arch0_token",
     "expert_skill_token_isolated_v1": "arch0_token_iso",
     "cond_skill_broadcast_v1": "arch0_cond",

@@ -843,6 +843,7 @@ def _allowed_pi05_missing_key(key: str, config: SkillExpertConfig) -> bool:
                 "model.state_norm.",
                 "model.skill_norm.",
                 "model.expert_skill_norm.",
+                "model.expert_skill_gain",
                 "model.context_input_norms.",
                 "model.context_post_attention_norms.",
                 "model.top_resampler.",
@@ -1109,7 +1110,10 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 if self.model.uses_expert_skill_adarms:
                     log.info(
                         "Skill conditioning: expert AdaRMS "
-                        "(RMS-normalized, summed with timestep)"
+                        "(RMS-normalized, summed with timestep, %s)",
+                        "zero-init scalar gain"
+                        if self.model.uses_zero_init_skill_gain
+                        else "unit gain",
                     )
                 else:
                     targets = [

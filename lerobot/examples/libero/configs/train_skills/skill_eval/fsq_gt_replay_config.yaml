@@ -12,7 +12,7 @@
 # 길이토큰 세대 run(구 noLenTok 미표기 시절)은 LenTok/에 보관 — noLenTok 라벨 폐지(무토큰이 기본).
 # loss 구조 태그 전 run 필수: ReconOnly(entropy 항 없음) | withEntH(entropy 항 포함; BSQ는 항상 withEntH).
 
-output_name: "langgap_eval" 
+output_name: "progress_comparison" 
 fsq_eval_run_name:
   # exp1 : FSQ_opt_raw_zero
   # - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_act_LR6_opt_ReconOnly
@@ -38,12 +38,25 @@ fsq_eval_run_name:
   # - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_act_act_LR6_raw_withEntH
   # - libero_90_full_full_state_obs20_std_episodemean_100p_bsq5_act_act_LR6_raw_withEntH 
   # exp5 : langgap_eval
-  - langgap_56_full_full_state_obs20_std_episodemean_80p_fsq333_pos_pos_LR6_raw_withEntH
+  # - langgap_56_full_full_state_obs20_std_episodemean_80p_fsq333_pos_pos_LR6_raw_withEntH
+  # exp6 : recon_chunk_comparison
+  # - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_couple_LR6_raw_entH_ss
+  # - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_couple_LR6_raw_entH
+  # - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_couplefull_LR6_raw_entH
+  # exp6 : progress_comparison
+  - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_pos_term_LR6_raw_entH
+  - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_pos_termfull_LR6_raw_entH
+  # exp7 : term__state_comparison
+  # - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_pos_term_LR6_raw_entH
+  # - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_pos_term_LR6_raw_entH_ss
+  # exp8 : term_progress__state_comparison
+  # - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_pos_termfull_LR6_raw_entH
+  # - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_pos_termfull_LR6_raw_entH_ss
 
 # fsq_eval_checkpoint: [50, 100, 150, 200, 250, 300, 350, 400, 450, 500, 550, 600, 650, 700, 750, 800, 850, 900, 950, 1000]
-fsq_eval_checkpoint: [50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000]
+# fsq_eval_checkpoint: [50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000]
 
-# fsq_eval_checkpoint: [25, 50, 75, 100, 125, 150, 175, 200]
+fsq_eval_checkpoint: [50, 100, 150, 200, 250, 300, 350, 400, 450, 500, 550, 600, 650, 700]
 # fsq_eval_checkpoint: [400, 500, 600]
 
 
@@ -56,16 +69,16 @@ fsq_eval_checkpoint: [50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000]
 #             langgap_ext + libero_spatial + libero_object + libero_goal + libero_10),
 #             needs neither the exact map nor libero_original_dataset, and makes
 #             target_task a report label only.  No original-HDF5 demo provenance.
-episode_source: dataset        # exact | dataset
+episode_source: exact        # exact | dataset
 
-target_task: langgap_56 # langgap_ext | libero_90
+target_task: libero_90 # langgap_56 | libero_90
 # List of task ids, or "all" for every task the dataset can serve. Ids without
 # enough episodes in the dataset are skipped with a warning.
 # The list below picks one task per libero_90 scene (20 scenes; task 51 is
 # absent from the filtered dataset).
 # task_ids: [3, 4, 5]
-# task_ids: [0, 3, 4, 5, 6, 11, 18, 22, 28, 33, 35, 38, 40, 46, 50, 55, 60, 65, 69, 73, 77, 81, 86]
-task_ids: all
+task_ids: [0, 3, 4, 5, 6, 11, 18, 22, 28, 33, 35, 38, 40, 46, 50, 55, 60, 65, 69, 73, 77, 81, 86]
+# task_ids: all
 episodes_per_task: 20
 episode_selection: first       # first | random
 episode_ids: []                # optional exact global episode IDs

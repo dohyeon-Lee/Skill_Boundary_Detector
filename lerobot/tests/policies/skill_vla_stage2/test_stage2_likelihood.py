@@ -221,10 +221,13 @@ def test_stage2_has_no_auxiliary_training_step() -> None:
 
 
 def test_stage2_forward_preserves_inherited_conditioning_route_in_frozen_prior() -> None:
+    captured = {}
+
     class _Predictor:
         @staticmethod
         def encode_base_last_hidden(images, language_tokens, language_mask):
-            del images, language_tokens, language_mask
+            del language_tokens, language_mask
+            captured["vlm_images"] = images
             return torch.zeros(1, 2, 2), torch.zeros(1, 2, dtype=torch.bool)
 
     model = SkillVLAStage2Pytorch.__new__(SkillVLAStage2Pytorch)
@@ -236,10 +239,15 @@ def test_stage2_forward_preserves_inherited_conditioning_route_in_frozen_prior()
     condition_state = torch.tensor([[9.0, 8.0]])
     condition_skill = torch.tensor([[7.0, 6.0]])
     expert_time = torch.tensor([[5.0, 4.0]])
-    captured = {}
     model.skill_predictor = _Predictor()
     model._likelihood_memories = lambda hidden: [hidden]
-    model._condition_tokens = lambda images, batch_size=None: torch.zeros(1, 2, 2)
+
+    def condition_tokens(images, batch_size=None):
+        del batch_size
+        captured["vsa_images"] = images
+        return torch.zeros(1, 2, 2)
+
+    model._condition_tokens = condition_tokens
     model._project_state = lambda state: condition_state
     model._project_expert_state = lambda state, shared: None
     model._expert_condition = lambda time, state=None, skill=None: expert_time
@@ -268,7 +276,8 @@ def test_stage2_forward_preserves_inherited_conditioning_route_in_frozen_prior()
     )
     actions = torch.ones(1, 3, 2)
     residual = model.forward(
-        [],
+        [torch.tensor([1.0])],
+        [torch.tensor([2.0])],
         torch.zeros(1, 2),
         torch.tensor([0]),
         actions,
@@ -278,6 +287,8 @@ def test_stage2_forward_preserves_inherited_conditioning_route_in_frozen_prior()
         time=torch.full((1,), 0.5),
     )
 
+    assert captured["vsa_images"][0].item() == 1.0
+    assert captured["vlm_images"][0].item() == 2.0
     assert captured["state"] is condition_state
     assert captured["expert_condition"] is expert_time
     assert captured["condition_skill"] is condition_skill
@@ -323,17 +334,22 @@ class _CaptureStage2Residual(nn.Module):
         super().__init__()
         self.anchor = nn.Parameter(torch.zeros(()))
         self.seen_actions = None
+        self.seen_images = None
+        self.seen_vlm_start_images = None
 
     def forward(
         self,
         images,
+        vlm_start_images,
         state,
         skill_code,
         actions,
         language_tokens,
         language_mask,
     ):
-        del images, state, skill_code, language_tokens, language_mask
+        del state, skill_code, language_tokens, language_mask
+        self.seen_images = images
+        self.seen_vlm_start_images = vlm_start_images
         self.seen_actions = actions.detach().clone()
         self._last_predicted_actions = actions.clone()
         self._last_predicted_actions[:, :2, 0] += 1.0
@@ -356,7 +372,10 @@ def test_stage2_mixes_flow_and_cumulative_xyz_like_stage1() -> None:
         training_skill_source="gt",
     )
     policy.model = _CaptureStage2Residual()
-    policy._collect_images = lambda batch: []
+    current_images = [torch.tensor([1.0])]
+    start_images = [torch.tensor([2.0])]
+    policy._collect_images = lambda batch: current_images
+    policy._predictor_start_images = lambda batch: start_images
     policy._training_skill_code = lambda batch: torch.zeros(1, dtype=torch.long)
     policy._last_transition_jitter_fraction = torch.zeros(())
     actions = torch.tensor(
@@ -372,6 +391,8 @@ def test_stage2_mixes_flow_and_cumulative_xyz_like_stage1() -> None:
 
     loss, metrics = policy.forward(batch)
 
+    assert policy.model.seen_images is current_images
+    assert policy.model.seen_vlm_start_images is start_images
     torch.testing.assert_close(policy.model.seen_actions, actions)
     # The fake model adds +1.0 XYZ error to the first two (valid) steps, so the
     # masked prefix cumulative squared error is [1/3, 4/3] -> raw 5/6, and the
@@ -479,6 +500,7 @@ def test_stage2_sampling_keeps_condition_routing_and_likelihood_sees_actions_onl
     model._likelihood_velocity = likelihood
     noise = torch.tensor([[[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]]])
     sampled = model.sample_actions(
+        [],
         [],
         torch.zeros(1, 2),
         torch.tensor([0]),

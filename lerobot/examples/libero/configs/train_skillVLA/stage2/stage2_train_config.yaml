@@ -4,7 +4,7 @@
 # state/action geometry as the selected Stage-1 checkpoint.
 dataset:
   skillvla_root: skillvla_dataset
-  source: libero_90_full_full # libero_90_full_full | libero_90_full_firsthalf_scene
+  source: libero_90_full_lasthalf_scene # libero_90_full_full | libero_90_full_firsthalf_scene
   # run is inherited from the Stage-1 checkpoint's train_config.json.
 
 # Stage 2 assembles two independently trained frozen sources; architecture is
@@ -51,7 +51,7 @@ cumulative_xyz_loss:
   weight: 0.5
 
 # Auto name: {stage1_run}_{checkpoint}_{gt|predictor}_{batchON|batchOFF}[_cumxyz{weight}][_{suffix}]
-run: {suffix: "full"}
+run: {suffix: "lasthalf"}
 
 training:
   dataloader:
@@ -64,7 +64,7 @@ training:
   gradient_checkpointing: false
   # lr_mode warmup_constant matches Stage 1: warm up then hold base_lr flat
   # (no cosine decay; lr_decay_steps is only used by cosine_decay).
-  schedule: {steps: 100000, log_every: 100, save_every: 5000, lr_mode: warmup_constant, warmup_steps: 1000}
+  schedule: {steps: 500000, log_every: 100, save_every: 10000, lr_mode: warmup_constant, warmup_steps: 1000}
 
 logging:
   wandb: {enable: true, project: VLA_stage2}

@@ -14,6 +14,7 @@
 # Train FSQ from prepared FSQ_inputs.
 #SBATCH --job-name=FSQ_train
 #SBATCH --gres=gpu:1
+#SBATCH --requeue
 #SBATCH --cpus-per-task=12
 #SBATCH --mem=64G
 #SBATCH --time=48:00:00
@@ -55,6 +56,10 @@ echo "Output     : ${FSQ_OUTPUT_DIR}"
 echo "HF cache   : ${HF_HOME}"
 echo "Grad ckpt  : ${FSQ_GRADIENT_CHECKPOINTING}"
 nvidia-smi
+
+# Fail over to another GPU instead of silently running on CPU.
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/gpu_guard.sh"
+require_cuda_or_requeue "${PROJECT_ROOT}/.venv/bin/python"
 
 if [ ! -d "${SKILLSET_DIR}/skills" ]; then
   echo "Skillset not found: ${SKILLSET_DIR}/skills" >&2
@@ -111,7 +116,8 @@ cat > "${FSQ_OUTPUT_DIR}/fsq_meta.json" <<JSON
   "encoder_arch": "${FSQ_ENCODER_ARCH}",
   "encoder_length_token": ${FSQ_ENCODER_LENGTH_TOKEN},
   "fsq_entropy": ${FSQ_ENTROPY},
-  "reconstructor_start_state": ${FSQ_RECONSTRUCTOR_START_STATE}
+  "reconstructor_start_state": ${FSQ_RECONSTRUCTOR_START_STATE},
+  "reconstructor_arch": "${FSQ_RECONSTRUCTOR_ARCH}"
 }
 JSON
 
@@ -189,6 +195,7 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     "${ENC_LENGTH_TOKEN_ARG[@]}" \
     "${FSQ_ENTROPY_ARG[@]}" \
     "${RECON_START_STATE_ARG[@]}" \
+    --reconstructor_arch      "${FSQ_RECONSTRUCTOR_ARCH}" \
     --entropy_conf_weight     "${FSQ_ENTROPY_CONF_WEIGHT}" \
     --entropy_div_weight      "${FSQ_ENTROPY_DIV_WEIGHT}" \
     --entropy_inv_temperature "${FSQ_ENTROPY_INV_TEMPERATURE}" \

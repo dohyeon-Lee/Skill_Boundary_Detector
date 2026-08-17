@@ -3,6 +3,7 @@
 # Outputs: skill_eval/outputs/fsq_original_eval/{run}/{epoch_tag}/metrics.json + html
 #SBATCH --job-name=FSQ_orig_eval
 #SBATCH --gres=gpu:1
+#SBATCH --requeue
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
 #SBATCH --time=1:00:00
@@ -33,6 +34,10 @@ OUTPUT_DIR="${SUBMIT_DIR}/outputs/fsq_original_eval/${FSQ_RUN_NAME}/${FSQ_EPOCH_
 
 cd "${LEROBOT_ROOT}"
 source "${PROJECT_ROOT}/.venv/bin/activate"
+
+# Fail over to another GPU instead of silently running on CPU.
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/gpu_guard.sh"
+require_cuda_or_requeue "${PROJECT_ROOT}/.venv/bin/python"
 source "${PROJECT_ROOT}/lerobot/examples/libero/configs/runtime_env.sh"
 export LD_LIBRARY_PATH=""
 

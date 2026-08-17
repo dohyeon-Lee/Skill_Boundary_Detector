@@ -342,6 +342,7 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
     def forward(
         self,
         images: list[Tensor],
+        vlm_start_images: list[Tensor],
         state: Tensor | None,
         skill_code: Tensor | None,
         actions: Tensor,
@@ -366,7 +367,7 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
                 condition_tokens, x_t, state, skill_code, time
             )
             vlm_hidden, vlm_key_padding_mask = self._encode_likelihood_memory(
-                images, language_tokens, language_mask
+                vlm_start_images, language_tokens, language_mask
             )
         predicted_velocity = self._likelihood_velocity(
             prior_hidden,
@@ -388,6 +389,7 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
     def sample_actions(
         self,
         images: list[Tensor],
+        vlm_start_images: list[Tensor],
         state: Tensor | None,
         skill_code: Tensor | None,
         language_tokens: Tensor,
@@ -410,7 +412,7 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
             )
         condition_tokens = self._condition_tokens(images, batch_size=batch_size)
         vlm_hidden, vlm_key_padding_mask = self._encode_likelihood_memory(
-            images, language_tokens, language_mask
+            vlm_start_images, language_tokens, language_mask
         )
         memories = self._likelihood_memories(vlm_hidden)
         if self.uses_expert_context_tokens:
@@ -973,9 +975,11 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
             if route in SKILLLESS_CONDITIONING_ROUTES
             else self._training_skill_code(batch)
         )
-        # The VLM memory always consumes the raw camera frames, so images are
-        # collected even for visionless prior routes.
+        # Keep the frozen VSA on the current observation, while the VLM memory
+        # sees the same jittered skill-start observation used to build the
+        # language prompt and GT skill code.
         images = self._collect_images(batch)
+        vlm_start_images = self._predictor_start_images(batch)
         batch_sampling_metrics = (
             self._same_skill_batch_metrics(batch, skill_code)
             if skill_code is not None
@@ -983,6 +987,7 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
         )
         residual = self.model(
             images,
+            vlm_start_images,
             state,
             skill_code,
             actions,
@@ -1097,6 +1102,7 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
         )
         actions = self.model.sample_actions(
             self._collect_images(batch),
+            self._predictor_start_images(batch),
             state,
             skill_code,
             batch[OBS_LANGUAGE_TOKENS].to(device),

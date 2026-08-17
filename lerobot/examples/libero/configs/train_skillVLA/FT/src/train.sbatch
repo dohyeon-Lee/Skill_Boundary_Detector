@@ -5,6 +5,7 @@
 # on GT signals and exported to FSQ_ft.pt for eval. Resumes from an FT checkpoint if one exists.
 #SBATCH --job-name=ft
 #SBATCH --gres=gpu:1
+#SBATCH --requeue
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=128G
 #SBATCH --time=48:00:00
@@ -45,6 +46,10 @@ echo "FSQ(term) : ${FSQ_CKPT}   dino=ONLINE(${TERMINATOR_DINO_MODEL_PATH})"
 echo "cond_skill: ${COND_SKILL_SOURCE}   train_terminator: ${TRAIN_TERMINATOR}"
 echo "output    : ${PT_OUTPUT_DIR}   lr/bs: ${LR}/${BATCH_SIZE}"
 nvidia-smi || true
+
+# Fail over to another GPU instead of silently running on CPU.
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/gpu_guard.sh"
+require_cuda_or_requeue "${PROJECT_ROOT}/.venv/bin/python"
 
 if [ ! -e "${SKILLVLA_DATASET_DIR}" ]; then
   echo "Missing skillvla dataset: ${SKILLVLA_DATASET_DIR}  (run configs/train_skillVLA/build_data first)" >&2

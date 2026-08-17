@@ -12,9 +12,9 @@ skillset_name: skillset
 
 
 # ── FSQ model / run ──
-fsq_exp: "pos_couple_LR6_raw_entH" # _LRdown          
+fsq_exp: "pos_pos_termfull_LR6_raw_entH_ss" # _LRdown          
 fsq_levels: [3, 3, 3] # [3, 4, 5]    # [6, 10] | [5, 5, 5]
-fsq_terminator_termination_only: true
+fsq_terminator_termination_only: false
 fsq_reconstructor_only: false
 fsq_terminator_only: false
 fsq_encoder_lr: 3.0e-6
@@ -43,7 +43,10 @@ fsq_entropy_conf_weight: 0.1
 fsq_entropy_div_weight: 0.1
 fsq_entropy_inv_temperature: 10.0
 # false: reconstructor에서 스킬 시작 state 토큰 제거 — action chunk가 순수 (z, progress) 룩업이 됨
-fsq_reconstructor_start_state: false
+fsq_reconstructor_start_state: true
+# chunk: 매 샘플 시점 action chunk 복원 (기존). oneshot: FSQ_original식 전체 ctrl point를
+# 궤적당 1회 복원 (M은 terminator에만 적용; recon loss는 ctrl MSE가 'action' 슬롯을 차지)
+fsq_reconstructor_arch: oneshot
 
 # Terminator: both third-person + wrist images are always consumed live.
 # small = lightweight query transformer; cond = Gemma backbone reusable as Stage-1 cond.

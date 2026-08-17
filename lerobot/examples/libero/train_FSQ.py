@@ -64,6 +64,9 @@ class Args:
     reconstructor_start_state: bool = True
     """False: reconstructor drops the skill-start-state token — the action chunk
     becomes a pure (z, progress) lookup."""
+    reconstructor_arch: str = "chunk"
+    """chunk: per-timestep action chunks (default). oneshot: FSQ-original-style
+    full ctrl-grid reconstruction once per trajectory (M applies to terminator only)."""
     entropy_conf_weight: float = 0.1
     entropy_div_weight: float = 0.1
     entropy_inv_temperature: float = 10.0
@@ -251,6 +254,8 @@ def main(args: Args) -> None:
         )
     if args.encoder_arch not in {"spline", "action_seq"}:
         raise ValueError(f"--encoder_arch must be spline|action_seq, got {args.encoder_arch!r}.")
+    if args.reconstructor_arch not in {"chunk", "oneshot"}:
+        raise ValueError(f"--reconstructor_arch must be chunk|oneshot, got {args.reconstructor_arch!r}.")
     print(
         f"[FSQ] encoder arch: {args.encoder_arch}, length token: {args.encoder_length_token}, "
         f"fsq_entropy: {args.fsq_entropy}"
@@ -364,6 +369,7 @@ def main(args: Args) -> None:
         entropy_div_weight=args.entropy_div_weight,
         entropy_inv_temperature=args.entropy_inv_temperature,
         reconstructor_start_state=args.reconstructor_start_state,
+        reconstructor_arch=args.reconstructor_arch,
         hidden_dim=args.hidden_dim,
         fsq_levels=args.fsq_levels,
         num_layers=args.num_layers,

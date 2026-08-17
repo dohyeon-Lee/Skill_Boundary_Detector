@@ -39,6 +39,7 @@ COND_GEMMA_SEPARATE_DUAL_STATE_REVISION = (
 )
 COND_GEMMA_WRIST_DUAL_STATE_REVISION = "wrist_cond_expert_state_adarms_v1"
 COND_GEMMA_SKILL_ADARMS_REVISION = "expert_skill_adarms_v1"
+COND_GEMMA_SKILL_ADARMS_ZERO_REVISION = "expert_skill_adarms_zero_v1"
 COND_GEMMA_SKILL_TOKEN_REVISION = "expert_skill_token_v1"
 COND_GEMMA_ISOLATED_SKILL_TOKEN_REVISION = "expert_skill_token_isolated_v1"
 COND_GEMMA_COND_SKILL_BROADCAST_REVISION = "cond_skill_broadcast_v1"
@@ -54,6 +55,7 @@ COND_GEMMA_ARCHITECTURE_LABELS = {
     # ``architecture_label`` is lowercased on validation, so the canonical label
     # of the arch0_adaRMS ablation is stored lowercase.
     COND_GEMMA_SKILL_ADARMS_REVISION: "arch0_adarms",
+    COND_GEMMA_SKILL_ADARMS_ZERO_REVISION: "arch0_adarms_zero",
     COND_GEMMA_SKILL_TOKEN_REVISION: "arch0_token",
     COND_GEMMA_ISOLATED_SKILL_TOKEN_REVISION: "arch0_token_iso",
     COND_GEMMA_COND_SKILL_BROADCAST_REVISION: "arch0_cond",
@@ -68,6 +70,7 @@ COND_STATE_ADARMS_REVISIONS = frozenset(
         COND_GEMMA_SEPARATE_DUAL_STATE_REVISION,
         COND_GEMMA_WRIST_DUAL_STATE_REVISION,
         COND_GEMMA_SKILL_ADARMS_REVISION,
+        COND_GEMMA_SKILL_ADARMS_ZERO_REVISION,
         COND_GEMMA_SKILL_TOKEN_REVISION,
         COND_GEMMA_ISOLATED_SKILL_TOKEN_REVISION,
         COND_GEMMA_COND_SKILL_BROADCAST_REVISION,
@@ -78,7 +81,17 @@ COND_STATE_ADARMS_REVISIONS = frozenset(
 # into the expert AdaRMS condition next to the timestep instead. The shared
 # AdaRMS dense keeps this free; a dedicated dense per signal would add
 # 37 x Linear(1024, 3072) ~ 116M parameters for a log2(27)-bit code.
-EXPERT_SKILL_ADARMS_REVISIONS = frozenset({COND_GEMMA_SKILL_ADARMS_REVISION})
+EXPERT_SKILL_ADARMS_REVISIONS = frozenset(
+    {COND_GEMMA_SKILL_ADARMS_REVISION, COND_GEMMA_SKILL_ADARMS_ZERO_REVISION}
+)
+# Arch0_adaRMS pins the skill term at unit RMS, but the trained timestep
+# embedding sits near RMS 0.1, so skill entered the shared AdaRMS channel ~8x
+# louder than the timestep it has to coexist with. Arch0_adaRMS_zero adds a
+# zero-init scalar gain after that norm: skill starts silent, and training picks
+# its level against the timestep instead of inheriting a hardcoded ratio.
+ZERO_INIT_SKILL_GAIN_REVISIONS = frozenset(
+    {COND_GEMMA_SKILL_ADARMS_ZERO_REVISION}
+)
 # Arch0_token drops the broadcast as well, but promotes the skill to a single
 # in-context expert token. State keeps the Arch0 Cond-Gemma AdaRMS path, which
 # is what separates it from Arch1_1's two-token [state, skill] context.
@@ -385,6 +398,7 @@ class SkillExpertConfig(PreTrainedConfig):
                     COND_GEMMA_SEPARATE_DUAL_STATE_REVISION,
                     COND_GEMMA_WRIST_DUAL_STATE_REVISION,
                     COND_GEMMA_SKILL_ADARMS_REVISION,
+                    COND_GEMMA_SKILL_ADARMS_ZERO_REVISION,
                     COND_GEMMA_SKILL_TOKEN_REVISION,
                     COND_GEMMA_ISOLATED_SKILL_TOKEN_REVISION,
                     COND_GEMMA_COND_SKILL_BROADCAST_REVISION,

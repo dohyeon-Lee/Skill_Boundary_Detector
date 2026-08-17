@@ -10,6 +10,7 @@
 # Build skillset data by segmenting demonstrations with a trained DP.
 #SBATCH --job-name=DP_skill
 #SBATCH --gres=gpu:1
+#SBATCH --requeue
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
 #SBATCH --time=4:00:00
@@ -53,6 +54,10 @@ echo "START SKILLSET JOB"
 echo "Node          : ${SLURMD_NODENAME:-local}"
 echo "Array Task ID : ${SLURM_ARRAY_TASK_ID:-0}"
 nvidia-smi
+
+# Fail over to another GPU instead of silently running on CPU.
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/gpu_guard.sh"
+require_cuda_or_requeue "${PROJECT_ROOT}/.venv/bin/python"
 
 if [ ! -d "${RAW_DATASET_DIR}" ]; then
   echo "Dataset not found: ${RAW_DATASET_DIR}" >&2

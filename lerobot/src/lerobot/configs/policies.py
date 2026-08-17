@@ -36,6 +36,14 @@ from lerobot.utils.hub import HubMixin
 T = TypeVar("T", bound="PreTrainedConfig")
 logger = getLogger(__name__)
 
+# Escape hatch for deliberately running an accelerator-configured job on CPU.
+# examples/libero/configs/gpu_guard.sh honours the same variable.
+_CPU_FALLBACK_ENV = "LEROBOT_ALLOW_CPU_FALLBACK"
+
+
+def _cpu_fallback_allowed() -> bool:
+    return os.environ.get(_CPU_FALLBACK_ENV, "0").strip().lower() in {"1", "true", "yes"}
+
 
 @dataclass
 class PreTrainedConfig(draccus.ChoiceRegistry, HubMixin, abc.ABC):  # type: ignore[misc,name-defined] #TODO: draccus issue
@@ -82,6 +90,18 @@ class PreTrainedConfig(draccus.ChoiceRegistry, HubMixin, abc.ABC):  # type: igno
 
     def __post_init__(self) -> None:
         if not self.device or not is_torch_device_available(self.device):
+            requested = str(self.device or "")
+            # Silently downgrading an explicit accelerator request to CPU turns a
+            # broken node into a job that still "runs" -- orders of magnitude
+            # slower, holding its GPU allocation, and only noticed hours later.
+            # An unset device still auto-selects; only an explicit one is fatal.
+            if requested.startswith(("cuda", "mps", "xpu")) and not _cpu_fallback_allowed():
+                raise RuntimeError(
+                    f"Requested device '{requested}' is unavailable to torch on host "
+                    f"{os.uname().nodename!r}, so this run would fall back to CPU. "
+                    "The GPU can be visible to nvidia-smi and still be unusable here. "
+                    f"Set {_CPU_FALLBACK_ENV}=1 to allow the CPU fallback anyway."
+                )
             auto_device = auto_select_torch_device()
             logger.warning(f"Device '{self.device}' is not available. Switching to '{auto_device}'.")
             self.device = auto_device.type

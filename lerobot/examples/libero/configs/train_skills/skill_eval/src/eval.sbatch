@@ -12,6 +12,7 @@
 # Shared eval job body — runs the FSQ reconstruction eval and/or the DP skill-boundary eval.
 #SBATCH --job-name=skill_eval
 #SBATCH --gres=gpu:1
+#SBATCH --requeue
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
 #SBATCH --time=02:00:00
@@ -81,6 +82,10 @@ echo "START DP_FSQ EVAL"
 echo "Node    : ${SLURMD_NODENAME:-local}"
 echo "run_fsq : ${EVAL_RUN_FSQ}    run_dp : ${EVAL_RUN_DP}"
 nvidia-smi || true
+
+# Fail over to another GPU instead of silently running on CPU.
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/gpu_guard.sh"
+require_cuda_or_requeue "${PROJECT_ROOT}/.venv/bin/python"
 
 if [ "${EVAL_RUN_FSQ}" != "true" ] && [ "${EVAL_RUN_DP}" != "true" ]; then
   echo "Both eval_run_fsq and eval_run_dp are false — nothing to do." >&2

@@ -44,6 +44,7 @@ from .configuration_skill_expert import (
     ISOLATED_SKILL_TOKEN_REVISIONS,
     SKILLLESS_CONDITIONING_ROUTES,
     STATELESS_CONDITIONING_ROUTES,
+    ZERO_INIT_SKILL_GAIN_REVISIONS,
     VISIONLESS_CONDITIONING_ROUTES,
     SkillExpertConfig,
 )
@@ -311,6 +312,10 @@ class CondGemmaSkillExpert(nn.Module):
             config.architecture_revision in EXPERT_SKILL_ADARMS_REVISIONS
             and config.conditioning_route not in SKILLLESS_CONDITIONING_ROUTES
         )
+        self.uses_zero_init_skill_gain = (
+            self.uses_expert_skill_adarms
+            and config.architecture_revision in ZERO_INIT_SKILL_GAIN_REVISIONS
+        )
         # Which streams receive the layerwise skill broadcast. Arch0 keeps the
         # historical rule (expert for state_cond, Cond-Gemma otherwise); Arch0_cond
         # and Arch0_both override the target without changing the mechanism.
@@ -421,6 +426,13 @@ class CondGemmaSkillExpert(nn.Module):
         # codes more weakly. The zero-init per-dim weight lets training rescale.
         self.expert_skill_norm = (
             PiGemmaRMSNorm(self.width) if self.uses_expert_skill_adarms else None
+        )
+        # Arch0_adaRMS_zero: the norm still equalizes the FSQ codes, but this
+        # zero-init scalar decides how loud the result is next to the timestep.
+        # Starting at 0 keeps skill silent at initialization -- matching the
+        # zero-init AdaRMS dense -- instead of entering ~8x above the timestep.
+        self.expert_skill_gain = (
+            nn.Parameter(torch.zeros(1)) if self.uses_zero_init_skill_gain else None
         )
         levels = torch.tensor(config.skill_fsq_levels, dtype=torch.long)
         strides = torch.ones_like(levels)
@@ -829,6 +841,8 @@ class CondGemmaSkillExpert(nn.Module):
         if self.expert_skill_norm is None:
             raise RuntimeError("Expert skill AdaRMS normalization is missing.")
         skill, _ = self.expert_skill_norm(self._skill_embedding(skill_code))
+        if self.expert_skill_gain is not None:
+            skill = skill * self.expert_skill_gain.to(skill.dtype)
         return skill
 
     def _expert_condition(

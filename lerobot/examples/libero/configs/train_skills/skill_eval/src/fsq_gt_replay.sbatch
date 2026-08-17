@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=FSQ_GT
 #SBATCH --gres=gpu:1
+#SBATCH --requeue
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --time=12:00:00
@@ -120,6 +121,10 @@ echo "ep source : ${EPISODE_SOURCE}"
 echo "rollout   : GT actions only"
 echo "output    : ${EVAL_OUT_DIR}"
 nvidia-smi || true
+
+# Fail over to another GPU instead of silently running on CPU.
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/gpu_guard.sh"
+require_cuda_or_requeue "${PROJECT_ROOT}/.venv/bin/python"
 
 RESUME_ARGS=()
 [ "${EVAL_RESUME}" != "true" ] || RESUME_ARGS=(--resume)

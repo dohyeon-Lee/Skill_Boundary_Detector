@@ -4,6 +4,7 @@
 # (skill adapter + skill_reader + skill_head). pi05_base swaps only the predictor VLM.
 #SBATCH --job-name=stage3
 #SBATCH --gres=gpu:1
+#SBATCH --requeue
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=128G
 #SBATCH --time=48:00:00
@@ -45,6 +46,10 @@ echo "FSQ       : ${FSQ_CKPT} (${FSQ_SOURCE})"
 echo "stage1cfg : ${STAGE1_CHECKPOINT_PATH:-<none>}"
 echo "output    : ${PT_OUTPUT_DIR}   lr/bs: ${LR}/${BATCH_SIZE}  (① lr ×${LORA_LR_SCALE})"
 nvidia-smi || true
+
+# Fail over to another GPU instead of silently running on CPU.
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/gpu_guard.sh"
+require_cuda_or_requeue "${PROJECT_ROOT}/.venv/bin/python"
 
 if [ ! -e "${SKILLVLA_DATASET_DIR}" ]; then
   echo "Missing skillvla dataset: ${SKILLVLA_DATASET_DIR}" >&2

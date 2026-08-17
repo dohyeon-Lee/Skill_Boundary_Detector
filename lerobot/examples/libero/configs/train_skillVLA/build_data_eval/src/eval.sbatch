@@ -2,6 +2,7 @@
 # SkillVLA-data evals off final artifacts → {run_dir}/eval/{dino,skillset,fsq_patch,fsq_recon}/
 #SBATCH --job-name=skillVLA_eval
 #SBATCH --gres=gpu:1
+#SBATCH --requeue
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --time=04:00:00
@@ -49,6 +50,10 @@ echo "Node     : ${SLURMD_NODENAME:-local}"
 echo "skillvla : ${SKILLVLA_DATASET_DIR}"
 echo "out      : ${EVAL_DIR}"
 nvidia-smi || true
+
+# Fail over to another GPU instead of silently running on CPU.
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/gpu_guard.sh"
+require_cuda_or_requeue "${PROJECT_ROOT}/.venv/bin/python"
 
 RUN_ARGS=()
 [ "${EVAL_RUN_DINO}" = "true" ]      && RUN_ARGS+=(--run_dino)

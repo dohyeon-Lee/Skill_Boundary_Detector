@@ -673,6 +673,71 @@ def _build_gemma(variant: str, *, use_adarms: bool = True) -> PiGemmaForCausalLM
     return model
 
 
+class _MLPBlock(nn.Module):
+    def __init__(self, in_dim: int, out_dim: int, dropout: float):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(in_dim, out_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+        )
+
+    def forward(self, x: Tensor) -> Tensor:
+        return self.net(x)
+
+
+class OneShotTrajectoryDecoder(nn.Module):
+    """z_norm [+ optional start state] -> full normalized control-point grid
+    (+ normalized length), in one shot.
+
+    Heads are linear (no tanh/sigmoid): both targets are min/max-normalized and
+    spline control points can legitimately overshoot slightly outside [-1, 1].
+    ``state_dim > 0`` revives the original spline_vqae contract
+    (z + initial_state -> ctrl): the normalized skill-start state is
+    concatenated to z before the MLP. Default 0 keeps the pure z-only decoder.
+    """
+
+    def __init__(
+        self,
+        *,
+        fsq_dim: int,
+        enc_dim: int,
+        n_control: int,
+        hidden_dim: int,
+        n_layers: int,
+        dropout: float,
+        predict_length: bool = True,
+        state_dim: int = 0,
+    ):
+        super().__init__()
+        if n_layers < 1:
+            raise ValueError(f"decoder_layers must be >= 1, got {n_layers}.")
+        self.enc_dim = int(enc_dim)
+        self.n_control = int(n_control)
+        self.state_dim = int(state_dim)
+        blocks = [_MLPBlock(fsq_dim + self.state_dim, hidden_dim, dropout)]
+        for _ in range(n_layers - 1):
+            blocks.append(_MLPBlock(hidden_dim, hidden_dim, dropout))
+        self.mlp = nn.Sequential(*blocks)
+        self.ctrl_head = nn.Linear(hidden_dim, n_control * enc_dim)
+        self.length_head = nn.Linear(hidden_dim, 1) if predict_length else None
+
+    def forward(
+        self, z_norm: Tensor, start_state: Tensor | None = None
+    ) -> tuple[Tensor, Tensor | None]:
+        if self.state_dim > 0:
+            if start_state is None:
+                raise ValueError("This oneshot decoder was built with a start-state input.")
+            z_norm = torch.cat(
+                [z_norm, start_state[:, : self.state_dim].to(z_norm.dtype)], dim=-1
+            )
+        hidden = self.mlp(z_norm)
+        ctrl = self.ctrl_head(hidden).view(-1, self.n_control, self.enc_dim)
+        length = None if self.length_head is None else self.length_head(hidden).squeeze(-1)
+        return ctrl, length
+
+
+
 class MotionChunkReconstructor(nn.Module):
     """Image-free transformer decoder for normalized action chunks.
 
@@ -1358,6 +1423,12 @@ class SplineFSQAEConfig:
     """False: the reconstructor drops its skill-start-state token — the action
     chunk becomes a pure (z, progress) motion-program lookup with no spatial
     grounding input."""
+    reconstructor_arch: str = "chunk"
+    """chunk: per-timestep action-chunk reconstructor (v3 default; runs at the
+    M sampled timesteps). oneshot: FSQ-original-style decoder that reconstructs
+    the FULL control-point grid ONCE per trajectory from z alone — M then
+    applies only to the terminator, and the recon loss ('action' metric slot)
+    becomes the ctrl MSE."""
     hidden_dim: int = 256
     fsq_levels: list[int] = field(default_factory=lambda: [5, 5, 5])
     num_layers: int = 2
@@ -1482,6 +1553,10 @@ class SplineFSQAE(nn.Module):
                     raise ValueError(f"Optimal FSQ config is missing required statistic: {name}")
         if cfg.encoder_arch not in {"spline", "action_seq"}:
             raise ValueError(f"encoder_arch must be spline|action_seq, got {cfg.encoder_arch!r}.")
+        if cfg.reconstructor_arch not in {"chunk", "oneshot"}:
+            raise ValueError(
+                f"reconstructor_arch must be chunk|oneshot, got {cfg.reconstructor_arch!r}."
+            )
         if (
             cfg.fsq_entropy
             and cfg.entropy_joint
@@ -1522,18 +1597,35 @@ class SplineFSQAE(nn.Module):
                 encoder_start_min=cfg.encoder_start_min,
                 encoder_start_max=cfg.encoder_start_max,
             )
-        self.reconstructor = None if cfg.terminator_only else MotionChunkReconstructor(
-            fsq_levels=cfg.fsq_levels,
-            hidden_dim=cfg.hidden_dim,
-            n_layers=cfg.num_layers,
-            n_heads=cfg.image_encoder_heads,
-            dropout=cfg.dropout,
-            skill_cond_mode=cfg.skill_cond_mode,
-            max_state_dim=cfg.max_state_dim,
-            max_action_dim=cfg.max_action_dim,
-            chunk_size=cfg.chunk_size,
-            use_start_state=cfg.reconstructor_start_state,
-        )
+        if cfg.terminator_only:
+            self.reconstructor = None
+        elif cfg.reconstructor_arch == "oneshot":
+            # FSQ-original-style whole-trajectory decoder: z [+ start state when
+            # reconstructor_start_state] -> the full control-point grid. No
+            # length head — termination is the terminator's job.
+            self.reconstructor = OneShotTrajectoryDecoder(
+                fsq_dim=len(cfg.fsq_levels),
+                enc_dim=cfg.enc_dim,
+                n_control=cfg.n_control,
+                hidden_dim=cfg.hidden_dim,
+                n_layers=cfg.num_layers,
+                dropout=cfg.dropout,
+                predict_length=False,
+                state_dim=cfg.max_state_dim if cfg.reconstructor_start_state else 0,
+            )
+        else:
+            self.reconstructor = MotionChunkReconstructor(
+                fsq_levels=cfg.fsq_levels,
+                hidden_dim=cfg.hidden_dim,
+                n_layers=cfg.num_layers,
+                n_heads=cfg.image_encoder_heads,
+                dropout=cfg.dropout,
+                skill_cond_mode=cfg.skill_cond_mode,
+                max_state_dim=cfg.max_state_dim,
+                max_action_dim=cfg.max_action_dim,
+                chunk_size=cfg.chunk_size,
+                use_start_state=cfg.reconstructor_start_state,
+            )
         self.terminator = None if cfg.reconstructor_only else FSQQueryTerminator(
             state_dim=cfg.state_dim,
             fsq_levels=cfg.fsq_levels,
@@ -1558,14 +1650,15 @@ class SplineFSQAE(nn.Module):
         if hasattr(self.encoder, "enc_traj_pool"):
             self.encoder.enc_traj_pool.gradient_checkpointing_enable()
         if self.reconstructor is not None:
-            self.reconstructor.pool.gradient_checkpointing_enable()
+            if hasattr(self.reconstructor, "pool"):
+                self.reconstructor.pool.gradient_checkpointing_enable()
         if self.terminator is not None:
             self.terminator.gradient_checkpointing_enable()
 
     def gradient_checkpointing_disable(self) -> None:
         if hasattr(self.encoder, "enc_traj_pool"):
             self.encoder.enc_traj_pool.gradient_checkpointing_disable()
-        if self.reconstructor is not None:
+        if self.reconstructor is not None and hasattr(self.reconstructor, "pool"):
             self.reconstructor.pool.gradient_checkpointing_disable()
         if self.terminator is not None:
             self.terminator.gradient_checkpointing_disable()
@@ -1670,6 +1763,12 @@ class SplineFSQAE(nn.Module):
             raise RuntimeError(
                 "This FSQ model was trained terminator_only and has no reconstructor."
             )
+        if self.cfg.reconstructor_arch == "oneshot":
+            raise RuntimeError(
+                "This FSQ model uses the oneshot ctrl reconstructor; per-timestep "
+                "action chunks are not available. Decode the control points via "
+                "reconstructor(z_norm) + FSQ_original.spline_decode instead."
+            )
         z_norm = self.fsq.normalized(z_q).repeat_interleave(steps, dim=0)
         action_norm = self.reconstructor(
             start_state,
@@ -1684,6 +1783,48 @@ class SplineFSQAE(nn.Module):
         )
         actions = (action_norm + 1.0) * 0.5 * (action_hi - action_lo) + action_lo
         return actions.view(bsize, steps, self.cfg.chunk_size, self.cfg.action_dim)
+
+    @torch.no_grad()
+    def sample_control_points(
+        self, z_q: Tensor, raw_start_states: Tensor | None = None
+    ) -> Tensor:
+        """Oneshot reconstructor control points ``(B, n_control, enc_dim)``.
+
+        The oneshot counterpart of ``sample_action_chunks``: one control-point
+        grid per skill, returned in encoder-trajectory units so callers can
+        spline-decode it against the encoder's own target convention.
+        ``raw_start_states`` are the per-skill start states in dataset units,
+        required only when the decoder was built with a start-state input.
+        """
+        if self.reconstructor is None:
+            raise RuntimeError(
+                "This FSQ model was trained terminator_only and has no reconstructor."
+            )
+        if self.cfg.reconstructor_arch != "oneshot":
+            raise RuntimeError(
+                "Control points exist only for the oneshot reconstructor; this model "
+                "uses the per-timestep chunk reconstructor (sample_action_chunks)."
+            )
+        z_norm = self.fsq.normalized(z_q)
+        start_state = None
+        if getattr(self.reconstructor, "state_dim", 0) > 0:
+            if raw_start_states is None:
+                raise ValueError("This oneshot decoder was built with a start-state input.")
+            raw = raw_start_states[:, : self.cfg.state_dim].to(z_norm)
+            lo = torch.as_tensor(self.cfg.state_q01, device=raw.device, dtype=raw.dtype)
+            hi = torch.as_tensor(self.cfg.state_q99, device=raw.device, dtype=raw.dtype)
+            start_state = torch.zeros(
+                raw.shape[0], self.cfg.max_state_dim, device=raw.device, dtype=raw.dtype
+            )
+            start_state[:, : self.cfg.state_dim] = 2.0 * (raw - lo) / (hi - lo + 1e-8) - 1.0
+        ctrl_norm, _ = self.reconstructor(z_norm, start_state=start_state)
+        ctrl_lo = torch.as_tensor(
+            self.cfg.encoder_min, device=ctrl_norm.device, dtype=ctrl_norm.dtype
+        )
+        ctrl_hi = torch.as_tensor(
+            self.cfg.encoder_max, device=ctrl_norm.device, dtype=ctrl_norm.dtype
+        )
+        return (ctrl_norm + 1.0) * 0.5 * (ctrl_hi - ctrl_lo + 1e-8) + ctrl_lo
 
     @torch.no_grad()
     def decode(
@@ -1765,7 +1906,18 @@ class SplineFSQAE(nn.Module):
         z_norm = self.fsq.normalized(z_q)
         z_sample = z_norm.repeat_interleave(samples_per_skill, dim=0)
         _ = noise, time  # older validation path passes these; the reconstructor is deterministic.
-        if self.reconstructor is None:
+        ctrl_hat = None
+        if self.reconstructor is not None and self.cfg.reconstructor_arch == "oneshot":
+            # One decode per TRAJECTORY; samples_per_skill applies only to the
+            # terminator below. start_state rows repeat per trajectory, so the
+            # first of each group is the per-trajectory skill-start state.
+            dec_state = None
+            if getattr(self.reconstructor, "state_dim", 0) > 0:
+                dec_state = start_state.view(
+                    z_norm.shape[0], samples_per_skill, -1
+                )[:, 0]
+            ctrl_hat, _ = self.reconstructor(z_norm, start_state=dec_state)
+        if self.reconstructor is None or ctrl_hat is not None:
             actions = torch.zeros(
                 z_sample.shape[0],
                 self.cfg.chunk_size,
@@ -1790,6 +1942,7 @@ class SplineFSQAE(nn.Module):
             "z_q": z_q,
             "indices": indices,
             "u_cont": u_cont,
+            "ctrl_hat": ctrl_hat,
             "actions": actions,
             "progress": progress,
             "term_logits": term_logits,
@@ -1807,6 +1960,7 @@ _V3_CFG_BACKFILL = (
     ("entropy_inv_temperature", 10.0),
     ("entropy_joint", True),
     ("reconstructor_start_state", True),
+    ("reconstructor_arch", "chunk"),
 )
 
 
@@ -2395,8 +2549,21 @@ def fsq_reconstruction_loss(
     bsize = int(batch["ctrl"].shape[0])
     m = cfg.samples_per_skill
     pred = output["actions"][..., : cfg.action_dim]
+    ctrl_diag: dict[str, Tensor] = {}
     if cfg.terminator_only:
         action_loss = torch.zeros((), device=pred.device, dtype=pred.dtype)
+    elif getattr(cfg, "reconstructor_arch", "chunk") == "oneshot":
+        # One ctrl-grid reconstruction per trajectory; occupies the 'action'
+        # metric/weight slot so selection, prints, and wandb panels carry over.
+        ctrl_hat = output["ctrl_hat"]
+        ctrl_target = batch["ctrl"].to(ctrl_hat)
+        ctrl_error = (ctrl_hat - ctrl_target).square()
+        action_loss = ctrl_error.mean()
+        pose_dims = ctrl_target.shape[-1] - N_GRIPPER_DIMS
+        ctrl_diag = {
+            "ctrl_pose": ctrl_error[..., :pose_dims].mean().detach(),
+            "ctrl_gripper": ctrl_error[..., pose_dims:].mean().detach(),
+        }
     else:
         target = batch["actions"].reshape(bsize * m, cfg.chunk_size, cfg.max_action_dim)
         target = target[..., : cfg.action_dim].to(pred)
@@ -2430,6 +2597,7 @@ def fsq_reconstruction_loss(
         "action": action_loss.detach(),
         "progress": progress_loss.detach(),
         "termination": end_loss.detach(),
+        **ctrl_diag,
     }
     if getattr(cfg, "fsq_entropy", False) and output.get("u_cont") is not None:
         sample_entropy, dataset_entropy = fsq_entropy_terms(

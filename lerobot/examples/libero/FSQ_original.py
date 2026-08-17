@@ -42,6 +42,7 @@ from FSQ import (
     N_GRIPPER_DIMS,
     ActionSeqEncoder,
     LengthFreeSplineFSQEncoder,
+    OneShotTrajectoryDecoder,
     SplineFSQEncoder,
     TokenTransformerPool,
     fsq_entropy_terms,
@@ -284,56 +285,6 @@ class FSQOriginalConfig:
 # -----------------------------------------------------------------------------
 # Decoder + model
 # -----------------------------------------------------------------------------
-
-
-class _MLPBlock(nn.Module):
-    def __init__(self, in_dim: int, out_dim: int, dropout: float):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(in_dim, out_dim),
-            nn.GELU(),
-            nn.Dropout(dropout),
-        )
-
-    def forward(self, x: Tensor) -> Tensor:
-        return self.net(x)
-
-
-class OneShotTrajectoryDecoder(nn.Module):
-    """z_norm -> full normalized control-point grid + normalized length, in one shot.
-
-    Heads are linear (no tanh/sigmoid): both targets are min/max-normalized and
-    spline control points can legitimately overshoot slightly outside [-1, 1].
-    """
-
-    def __init__(
-        self,
-        *,
-        fsq_dim: int,
-        enc_dim: int,
-        n_control: int,
-        hidden_dim: int,
-        n_layers: int,
-        dropout: float,
-        predict_length: bool = True,
-    ):
-        super().__init__()
-        if n_layers < 1:
-            raise ValueError(f"decoder_layers must be >= 1, got {n_layers}.")
-        self.enc_dim = int(enc_dim)
-        self.n_control = int(n_control)
-        blocks = [_MLPBlock(fsq_dim, hidden_dim, dropout)]
-        for _ in range(n_layers - 1):
-            blocks.append(_MLPBlock(hidden_dim, hidden_dim, dropout))
-        self.mlp = nn.Sequential(*blocks)
-        self.ctrl_head = nn.Linear(hidden_dim, n_control * enc_dim)
-        self.length_head = nn.Linear(hidden_dim, 1) if predict_length else None
-
-    def forward(self, z_norm: Tensor) -> tuple[Tensor, Tensor | None]:
-        hidden = self.mlp(z_norm)
-        ctrl = self.ctrl_head(hidden).view(-1, self.n_control, self.enc_dim)
-        length = None if self.length_head is None else self.length_head(hidden).squeeze(-1)
-        return ctrl, length
 
 
 class RNNTrajectoryDecoder(nn.Module):

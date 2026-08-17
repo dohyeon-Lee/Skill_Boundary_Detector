@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=S1skill
 #SBATCH --gres=gpu:1
+#SBATCH --requeue
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --time=12:00:00
@@ -79,6 +80,10 @@ echo "branches  : GT | policy@0 | policy@0 alt-noise | policy@-${TIME_SHIFT_OFFS
 echo "stopping  : MAIN-only mode=${SKILL_END_MODE} max=${SKILL_MAX_LENGTH_MODE}:${SKILL_MAX_LENGTH_SCALE} finish_chunk=${FINISH_ACTION_CHUNK_ON_END}"
 echo "output    : ${EVAL_OUT_DIR}"
 nvidia-smi || true
+
+# Fail over to another GPU instead of silently running on CPU.
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/gpu_guard.sh"
+require_cuda_or_requeue "${PROJECT_ROOT}/.venv/bin/python"
 
 PYTORCH_ALLOC_CONF=expandable_segments:True \
 PYTHONPATH="${LEROBOT_ROOT}/src:${LEROBOT_ROOT}/examples/libero:${LIBERO_REPO_ROOT}" \

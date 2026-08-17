@@ -10,6 +10,7 @@
 # Train the one-shot (original-style) FSQ trajectory autoencoder.
 #SBATCH --job-name=FSQ_orig_train
 #SBATCH --gres=gpu:1
+#SBATCH --requeue
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
 #SBATCH --time=24:00:00
@@ -47,6 +48,10 @@ echo "Node       : ${SLURMD_NODENAME:-local}"
 echo "Skillset   : ${SKILLSET_DIR}/skills"
 echo "Output     : ${FSQ_OUTPUT_DIR}"
 nvidia-smi
+
+# Fail over to another GPU instead of silently running on CPU.
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/gpu_guard.sh"
+require_cuda_or_requeue "${PROJECT_ROOT}/.venv/bin/python"
 
 if [ ! -d "${SKILLSET_DIR}/skills" ]; then
   echo "Skillset not found: ${SKILLSET_DIR}/skills" >&2

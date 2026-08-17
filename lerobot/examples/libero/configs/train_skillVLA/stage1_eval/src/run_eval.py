@@ -32,7 +32,12 @@ from lerobot.scripts.lerobot_skillvla_eval import (
     close_envs,
     eval_policy_all,
 )
-from lerobot.utils.constants import OBS_STATE, POLICY_PREPROCESSOR_DEFAULT_NAME
+from lerobot.utils.constants import (
+    OBS_LANGUAGE_ATTENTION_MASK,
+    OBS_LANGUAGE_TOKENS,
+    OBS_STATE,
+    POLICY_PREPROCESSOR_DEFAULT_NAME,
+)
 from lerobot.utils.device_utils import get_safe_torch_device
 from lerobot.utils.random_utils import set_seed
 
@@ -47,6 +52,8 @@ from eval_oracle import (  # noqa: E402
 RAW_STATE = "skill_decoder_state"
 RAW_IMAGE = "skill_decoder_image"
 RAW_WRIST = "skill_decoder_wrist"
+CURRENT_IMAGE = "observation.images.image"
+CURRENT_WRIST = "observation.images.wrist_image"
 log = logging.getLogger(__name__)
 
 
@@ -239,6 +246,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         self._active_trace = [None] * count
         self._pending_advance: set[int] = set()
         self._predicted_codes: torch.Tensor | None = None
+        self._stage2_vlm_start: dict[str, torch.Tensor] | None = None
         self._trace: list[dict] = []
         self._episode_step = 0
         self._started = False
@@ -279,6 +287,55 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         )
         self._active_trace[batch_index] = len(self._trace) - 1
 
+    def _capture_stage2_vlm_start(
+        self, batch: dict, batch_indices: list[int]
+    ) -> None:
+        """Snapshot one VLM condition per skill; keep the VSA observation live."""
+        if getattr(self.policy, "name", None) != "skill_vla_stage2":
+            return
+        source_keys = (
+            CURRENT_IMAGE,
+            CURRENT_WRIST,
+            OBS_LANGUAGE_TOKENS,
+            OBS_LANGUAGE_ATTENTION_MASK,
+        )
+        missing = [key for key in source_keys if key not in batch]
+        if missing:
+            raise ValueError(
+                "Stage-2 evaluation requires current images and state-tokenized "
+                f"language at each skill boundary; missing={missing}."
+            )
+        if self._stage2_vlm_start is None:
+            self._stage2_vlm_start = {
+                key: batch[key].detach().clone() for key in source_keys
+            }
+            return
+        for key in source_keys:
+            current = batch[key]
+            cached = self._stage2_vlm_start[key]
+            if current.shape[0] != cached.shape[0]:
+                raise ValueError(
+                    "Stage-2 evaluation batch size changed within an episode: "
+                    f"{current.shape[0]} != {cached.shape[0]}."
+                )
+            index = torch.as_tensor(batch_indices, device=current.device, dtype=torch.long)
+            cached[index] = current[index].detach()
+
+    def _apply_stage2_vlm_start(self, action_batch: dict) -> None:
+        if self._stage2_vlm_start is None:
+            return
+        action_batch["skill_start_image"] = self._stage2_vlm_start[CURRENT_IMAGE]
+        action_batch["skill_start_wrist_image"] = self._stage2_vlm_start[CURRENT_WRIST]
+        # These tokens already contain the discretized proprio state. Replacing
+        # them here keeps the state prompt fixed while current OBS_STATE remains
+        # available to the VSA.
+        action_batch[OBS_LANGUAGE_TOKENS] = self._stage2_vlm_start[
+            OBS_LANGUAGE_TOKENS
+        ]
+        action_batch[OBS_LANGUAGE_ATTENTION_MASK] = self._stage2_vlm_start[
+            OBS_LANGUAGE_ATTENTION_MASK
+        ]
+
     def _terminator_fired(self, progress: float, probability: float) -> bool:
         progress_high = progress >= self.progress_threshold
         termination_high = probability >= self.end_threshold
@@ -313,6 +370,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             new_codes = self._predict_codes(batch).to(device)
             self._predicted_codes[indices] = new_codes[indices]
         codes = self._current_codes(len(self._cursor), device)
+        self._capture_stage2_vlm_start(batch, indices)
         for batch_index in indices:
             self._skill_step[batch_index] = 0
             self._start_skill(batch_index, codes)
@@ -333,6 +391,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             codes = self._current_codes(batch_size, device)
             for batch_index in range(batch_size):
                 self._start_skill(batch_index, codes)
+            self._capture_stage2_vlm_start(batch, list(range(batch_size)))
             self._started = True
 
         # Fixed mode activates a previously detected boundary only after every
@@ -420,6 +479,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             action_batch["skill_index"] = torch.zeros(
                 batch_size, dtype=torch.long, device=device
             )
+            self._apply_stage2_vlm_start(action_batch)
             chunk = self.policy.predict_action_chunk(action_batch)
             self._action_queue.extend(
                 chunk[:, : self.n_action_steps].transpose(0, 1)

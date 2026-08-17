@@ -4,6 +4,7 @@
 # train_terminator is forced false so no co-training terminator is built at eval.
 #SBATCH --job-name=ft_eval
 #SBATCH --gres=gpu:1
+#SBATCH --requeue
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
 #SBATCH --time=1:00:00
@@ -163,6 +164,10 @@ echo "START SkillVLA FT EVAL"
 echo "Node     : ${SLURMD_NODENAME:-local}"
 echo "target   : ${TARGET_TASK}  task_ids=${TASK_IDS}  episodes=${N_EPISODES}/task"
 nvidia-smi || true
+
+# Fail over to another GPU instead of silently running on CPU.
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/gpu_guard.sh"
+require_cuda_or_requeue "${PROJECT_ROOT}/.venv/bin/python"
 mkdir -p "${EVAL_OUT_DIR}"
 BASE_RN="${WANDB_RUN_NAME}"
 [ -n "${TASK_TAG:-}" ] && BASE_RN="${WANDB_RUN_NAME%_${TASK_TAG}}"

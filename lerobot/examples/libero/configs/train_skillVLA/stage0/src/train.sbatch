@@ -2,6 +2,7 @@
 # SkillVLA Stage-0: pi05 expert + VSA base path + bounded VLM residual.
 #SBATCH --job-name=stage0
 #SBATCH --gres=gpu:1
+#SBATCH --requeue
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=256G
 #SBATCH --time=48:00:00
@@ -43,6 +44,10 @@ echo "batching  : batch=${BATCH_SIZE}, same-skill=${SAME_SKILL_BATCH_ENABLED}, g
 echo "grad ckpt : ${GRADIENT_CHECKPOINTING}"
 echo "output    : ${PT_OUTPUT_DIR}"
 nvidia-smi || true
+
+# Fail over to another GPU instead of silently running on CPU.
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/gpu_guard.sh"
+require_cuda_or_requeue "${PROJECT_ROOT}/.venv/bin/python"
 
 for required in "${SKILLVLA_DATASET_DIR}" "${PI_BASE}" "${TOKENIZER_PATH}" "${FSQ_CKPT}"; do
   if [ ! -e "${required}" ]; then

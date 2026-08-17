@@ -47,10 +47,13 @@ from codebook_visualizer import (  # noqa: E402
     _video_path,
 )
 from FSQ import (  # noqa: E402
+    N_GRIPPER_DIMS,
     encoder_start_eef_pose,
     load_fsq_model as load_original_fsq_model,
+    prepare_encoder_trajectory,
     spline_encode,
 )
+from FSQ_original import spline_decode  # noqa: E402
 from train_FSQ import attach_episode_offsets, load_skill_files  # noqa: E402
 
 
@@ -137,6 +140,39 @@ def _dim_groups(action_dim: int) -> dict[str, list[int]]:
     return {k: [i for i in v if i < action_dim] for k, v in g.items()}
 
 
+def _traj_dim_groups(traj_dim: int) -> dict[str, list[int]]:
+    """xyz / rpy / gripper groups of an encoder trajectory.
+
+    Unlike an action vector, the encoder trajectory keeps the gripper STATE in
+    its trailing ``N_GRIPPER_DIMS`` dims (LIBERO: ee_state(6) + gripper(2)).
+    """
+    return {
+        "xyz": [i for i in (0, 1, 2) if i < traj_dim],
+        "rpy": [i for i in (3, 4, 5) if i < traj_dim],
+        "gripper": list(range(max(0, traj_dim - N_GRIPPER_DIMS), traj_dim)),
+    }
+
+
+def _timing_progress_metrics(progress, term_prob, T, end_threshold) -> dict:
+    """Termination timing and progress error — identical for both reconstructors."""
+    # termination timing: first step crossing threshold, else argmax
+    gt_end = T - 1
+    hits = np.flatnonzero(term_prob[:T] >= end_threshold)
+    pred_end = int(hits[0]) if len(hits) else int(np.argmax(term_prob[:T]))
+    timing = pred_end - gt_end
+
+    # progress regression error
+    gt_prog = np.arange(T, dtype=np.float32) / max(T - 1, 1)
+    prog_err = float(np.mean(np.abs(progress[:T] - gt_prog)))
+    return {
+        "timing":     timing,
+        "timing_abs": abs(timing),
+        "prog_err":   prog_err,
+        "pred_end":   pred_end,
+        "length":     T,
+    }
+
+
 def skill_metrics(delta, progress, term_prob, gt_actions, T, end_threshold, groups):
     """Per-skill metrics. Reconstruction MSE is computed over the whole chunk."""
     K, A = delta.shape[1], delta.shape[2]
@@ -154,26 +190,39 @@ def skill_metrics(delta, progress, term_prob, gt_actions, T, end_threshold, grou
 
     chunk_mse = float(err.sum() / (n_valid * A)) if n_valid > 0 else 0.0
 
-    # termination timing: first step crossing threshold, else argmax
-    gt_end = T - 1
-    hits = np.flatnonzero(term_prob[:T] >= end_threshold)
-    pred_end = int(hits[0]) if len(hits) else int(np.argmax(term_prob[:T]))
-    timing = pred_end - gt_end
-
-    # progress regression error
-    gt_prog = np.arange(T, dtype=np.float32) / max(T - 1, 1)
-    prog_err = float(np.mean(np.abs(progress[:T] - gt_prog)))
-
     return {
         "chunk_mse":  chunk_mse,
         "mse_xyz":    group_mse(groups["xyz"]),
         "mse_rpy":    group_mse(groups["rpy"]),
         "mse_grip":   group_mse(groups["gripper"]),
-        "timing":     timing,
-        "timing_abs": abs(timing),
-        "prog_err":   prog_err,
-        "pred_end":   pred_end,
-        "length":     T,
+        **_timing_progress_metrics(progress, term_prob, T, end_threshold),
+    }
+
+
+def ctrl_skill_metrics(recon, progress, term_prob, gt_traj, T, end_threshold, groups):
+    """Per-skill metrics for the oneshot reconstructor.
+
+    Reconstruction is the spline-decoded control-point trajectory scored against
+    the encoder's own target convention, so the error lives in trajectory units
+    rather than action units. The metric keys match ``skill_metrics`` on purpose:
+    the ctrl error occupies the same slot the chunk error does, exactly as
+    ``fsq_reconstruction_loss`` does during training, so every downstream
+    aggregation, chart, and panel carries over unchanged.
+    """
+    _, traj = recon                                            # (ctrl points, trajectory)
+    err = (traj[:T] - gt_traj[:T]) ** 2                        # (T, enc_dim)
+
+    def group_mse(idxs: list[int]) -> float:
+        if not idxs or err.size == 0:
+            return 0.0
+        return float(err[:, idxs].mean())
+
+    return {
+        "chunk_mse":  float(err.mean()) if err.size else 0.0,
+        "mse_xyz":    group_mse(groups["xyz"]),
+        "mse_rpy":    group_mse(groups["rpy"]),
+        "mse_grip":   group_mse(groups["gripper"]),
+        **_timing_progress_metrics(progress, term_prob, T, end_threshold),
     }
 
 
@@ -230,6 +279,35 @@ def batched_encode(model, segments, lengths, device, batch_size):
     return latents, tokens
 
 
+def is_oneshot(cfg) -> bool:
+    """Whether the checkpoint reconstructs a whole control-point grid per skill."""
+    return getattr(cfg, "reconstructor_arch", "chunk") == "oneshot"
+
+
+@torch.no_grad()
+def batched_decode_ctrl(model, latents, states, lengths, device, batch_size):
+    """Oneshot reconstructor: one control-point grid per skill, spline-decoded.
+
+    The grid does not depend on the timestep, so this runs once per skill rather
+    than once per frame. Returns (ctrl points (n_control, enc_dim), trajectory
+    (T, enc_dim)) pairs in encoder-trajectory units.
+    """
+    degree = int(model.spline_degree)
+    ctrls: list[np.ndarray] = []
+    for start in tqdm(range(0, len(latents), batch_size), desc="Decoding ctrl (per skill)"):
+        stop = min(start + batch_size, len(latents))
+        z = torch.from_numpy(np.asarray(latents[start:stop], dtype=np.float32)).to(device)
+        start_st = torch.from_numpy(
+            np.stack([states[i][0] for i in range(start, stop)]).astype(np.float32)
+        ).to(device)
+        ctrl = model.sample_control_points(z, start_st)
+        ctrls.extend(ctrl.float().cpu().numpy())
+    return [
+        (ctrl, spline_decode(ctrl, int(lengths[i]), degree))
+        for i, ctrl in enumerate(ctrls)
+    ]
+
+
 @torch.no_grad()
 def _batched_decode_impl(
     model,
@@ -244,21 +322,33 @@ def _batched_decode_impl(
 ):
     """Decode all valid frames in bounded frame microbatches.
 
-    Returns per-skill lists sliced to T: deltas[i] (T,K,A), progresses[i] (T,),
-    term_probs[i] (T,). The reconstructor receives skill-start state plus GT
-    progress, matching training; the terminator receives the current state and
-    live third-person/wrist frames. ``batch_size`` is a frame microbatch count.
+    Returns per-skill lists sliced to T: progresses[i] (T,), term_probs[i] (T,),
+    and a reconstruction whose shape follows the checkpoint's reconstructor —
+    deltas[i] (T,K,A) for the chunk arch, or a (ctrl points, trajectory) pair for
+    the oneshot arch, which decodes once per skill instead of once per frame.
+    The chunk reconstructor receives skill-start state plus GT progress, matching
+    training; the terminator receives the current state and live third-person/
+    wrist frames either way. ``batch_size`` is a frame microbatch count.
     """
     N = len(latents)
+    oneshot = is_oneshot(model.cfg)
     K, A = model.chunk_size, model.action_dim
-    deltas = [np.empty((lengths[i], K, A), np.float32) for i in range(N)]
-    progs = [np.empty(lengths[i], np.float32) for i in range(N)]
-    terms = [np.empty(lengths[i], np.float32) for i in range(N)]
-    random_deltas = (
-        None
-        if random_skill_latents is None
+    deltas = (
+        batched_decode_ctrl(model, latents, states, lengths, device, batch_size)
+        if oneshot
         else [np.empty((lengths[i], K, A), np.float32) for i in range(N)]
     )
+    progs = [np.empty(lengths[i], np.float32) for i in range(N)]
+    terms = [np.empty(lengths[i], np.float32) for i in range(N)]
+    random_deltas = None
+    if random_skill_latents is not None:
+        random_deltas = (
+            batched_decode_ctrl(
+                model, random_skill_latents, states, lengths, device, batch_size
+            )
+            if oneshot
+            else [np.empty((lengths[i], K, A), np.float32) for i in range(N)]
+        )
     refs = [(i, t) for i, length in enumerate(lengths) for t in range(length)]
     for start in tqdm(range(0, len(refs), batch_size), desc="Decoding (frame microbatches)"):
         part = refs[start : start + batch_size]
@@ -289,30 +379,29 @@ def _batched_decode_impl(
         ]
         dec = torch.stack([frame["observation.images.image"] for frame in frames]).to(device)
         dec_w = torch.stack([frame["observation.images.wrist_image"] for frame in frames]).to(device)
-        delta = model.sample_action_chunks(
-            z,
-            start_st[:, None],
-            progress=progress_hint[:, None],
-        )
-        random_delta = None
-        if random_z is not None:
-            random_delta = model.sample_action_chunks(
-                random_z,
+        delta = random_delta = None
+        if not oneshot:
+            delta = model.sample_action_chunks(
+                z,
                 start_st[:, None],
                 progress=progress_hint[:, None],
-            )
+            )[:, 0].cpu().numpy()
+            if random_z is not None:
+                random_delta = model.sample_action_chunks(
+                    random_z,
+                    start_st[:, None],
+                    progress=progress_hint[:, None],
+                )[:, 0].cpu().numpy()
         z_norm = model.fsq.normalized(z)
         prog, term_logits = model.terminator(z_norm, current_st, dec, dec_w)
-        delta = delta[:, 0].cpu().numpy()
-        if random_delta is not None:
-            random_delta = random_delta[:, 0].cpu().numpy()
         prog = prog.cpu().numpy()
         term = torch.sigmoid(term_logits).cpu().numpy()
         for row, (i, t) in enumerate(part):
-            deltas[i][t] = delta[row]
             progs[i][t] = prog[row]
             terms[i][t] = term[row]
-            if random_deltas is not None:
+            if delta is not None:
+                deltas[i][t] = delta[row]
+            if random_delta is not None:
                 random_deltas[i][t] = random_delta[row]
     return deltas, progs, terms, random_deltas
 
@@ -412,6 +501,87 @@ def make_sample_plot(start_img, end_img, delta, progress, term_prob, gt_actions,
     return base64.b64encode(buf.getvalue()).decode()
 
 
+def make_ctrl_sample_plot(start_img, end_img, recon, progress, term_prob, gt_traj, gt_ctrl, T,
+                          dim_labels, end_threshold, ctrl_variants=None) -> str:
+    """Oneshot sample plot: control points and their spline over the GT trajectory.
+
+    Same rows as ``make_sample_plot`` -- start/end frames, one row per dimension,
+    then termination and progress -- but the reconstruction row shows the decoded
+    control-point grid rather than per-timestep action chunks.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.gridspec import GridSpec
+
+    D = gt_traj.shape[1]
+    n_rows = D + 2  # per-dim recon + termination + progress
+    n_img_rows = 1
+    img_h = 4.0
+    row_h = 1.0
+    fig = plt.figure(figsize=(8.5, img_h * n_img_rows + row_h * n_rows))
+    gs = GridSpec(n_img_rows + n_rows, 2, figure=fig,
+                  height_ratios=[img_h] * n_img_rows + [row_h] * n_rows, wspace=0.03)
+
+    ax_s = fig.add_subplot(gs[0, 0]); ax_e = fig.add_subplot(gs[0, 1])
+    ax_s.imshow(start_img); ax_s.set_title("start", fontsize=10); ax_s.axis("off")
+    ax_e.imshow(end_img);   ax_e.set_title("end",   fontsize=10); ax_e.axis("off")
+
+    base = n_img_rows
+    t_full = np.arange(T)
+    if ctrl_variants is None:
+        ctrl_variants = [("pred ctrl", recon, "#B71C1C", "--")]
+    # Control points sit on the spline's uniform knots, so they map onto the
+    # timestep axis at evenly spaced positions across the skill.
+    def ctrl_x(n_control: int) -> np.ndarray:
+        return np.linspace(0, max(T - 1, 0), n_control)
+
+    for d in range(D):
+        ax = fig.add_subplot(gs[base + d, :])
+        ax.plot(t_full, gt_traj[:T, d], color="#0D47A1", linewidth=1.5, label="GT", zorder=3)
+        if gt_ctrl is not None:
+            ax.plot(ctrl_x(len(gt_ctrl)), gt_ctrl[:, d], color="#0D47A1", marker="o",
+                    markersize=3.4, linestyle="none", label="GT ctrl" if d == 0 else None,
+                    alpha=0.85, zorder=5)
+        for variant_index, (label, (ctrl, traj), color, linestyle) in enumerate(ctrl_variants):
+            ax.plot(t_full, traj[:T, d], color=color, linewidth=1.4, alpha=0.92,
+                    linestyle=linestyle, label=label if d == 0 else None,
+                    zorder=4 + variant_index)
+            ax.plot(ctrl_x(len(ctrl)), ctrl[:, d], color=color, marker="D", markersize=3.4,
+                    linestyle="none", label=f"{label} pts" if d == 0 else None,
+                    alpha=0.9, zorder=6 + variant_index)
+        ax.set_ylabel(dim_labels[d], fontsize=8, rotation=0, labelpad=26)
+        ax.tick_params(labelsize=7); ax.grid(True, color="#eee", linewidth=0.6)
+        ax.set_xticks([])
+        if d == 0:
+            ax.legend(fontsize=6, loc="upper right", framealpha=0.8, ncol=2)
+
+    ax_t = fig.add_subplot(gs[base + D, :])
+    gt_term = np.zeros(T); gt_term[T - 1] = 1.0
+    ax_t.plot(t_full, gt_term, color="#0D47A1", linewidth=1.5, label="GT end")
+    ax_t.plot(t_full, term_prob[:T], color="#B71C1C", linewidth=1.4, linestyle="--", label="pred prob")
+    ax_t.axhline(end_threshold, color="#888", linewidth=0.8, linestyle=":")
+    ax_t.set_ylabel("term", fontsize=8, rotation=0, labelpad=26)
+    ax_t.set_ylim(-0.05, 1.05); ax_t.tick_params(labelsize=7)
+    ax_t.grid(True, color="#eee", linewidth=0.6); ax_t.set_xticks([])
+    ax_t.legend(fontsize=7, loc="upper left", framealpha=0.8)
+
+    ax_p = fig.add_subplot(gs[base + 1 + D, :])
+    gt_prog = np.arange(T, dtype=np.float32) / max(T - 1, 1)
+    ax_p.plot(t_full, gt_prog, color="#0D47A1", linewidth=1.5, label="GT")
+    ax_p.plot(t_full, progress[:T], color="#B71C1C", linewidth=1.4, linestyle="--", label="pred")
+    ax_p.set_ylabel("prog", fontsize=8, rotation=0, labelpad=26)
+    ax_p.set_ylim(-0.05, 1.05); ax_p.tick_params(labelsize=7)
+    ax_p.grid(True, color="#eee", linewidth=0.6)
+    ax_p.legend(fontsize=7, loc="upper left", framealpha=0.8)
+
+    fig.tight_layout(h_pad=0.3)
+    buf = io.BytesIO()
+    fig.savefig(buf, format="jpeg", dpi=110, bbox_inches="tight", pil_kwargs={"quality": 88})
+    plt.close(fig)
+    return base64.b64encode(buf.getvalue()).decode()
+
+
 # ── HTML assembly ──────────────────────────────────────────────────────────────
 
 _CSS = """
@@ -491,7 +661,7 @@ cubeCanvas.addEventListener('click',e=>{
 // ── per-entry bar charts ──────────────────────────────────────────
 const CHARTS=[
   {id:'c_count', vals:COUNTS,                title:'Skill count',        color:'#455A64', fmt:v=>v.toFixed(0)},
-  {id:'c_recon', vals:VAL('chunk_mse'),      title:'Recon chunk MSE',    color:'#1976D2', fmt:v=>v.toExponential(1)},
+  {id:'c_recon', vals:VAL('chunk_mse'),      title:'Recon '+RECON_LABEL+' MSE', color:'#1976D2', fmt:v=>v.toExponential(1)},
   {id:'c_term',  vals:VAL('timing_abs'),     title:'Termination |err| (steps)', color:'#7B1FA2', fmt:v=>v.toFixed(1)},
   {id:'c_prog',  vals:VAL('prog_err'),       title:'Progress |err|',     color:'#2E7D32', fmt:v=>v.toFixed(3)},
 ];
@@ -525,7 +695,7 @@ function showPanel(tok){
   const baseLabel=d.base_action_label||'base';
   const rows=[
     ['# skills',COUNTS[tok]],
-    ['Recon '+baseLabel+' chunk MSE',d.chunk_mse.toExponential(3)],
+    ['Recon '+baseLabel+' '+RECON_LABEL+' MSE',d.chunk_mse.toExponential(3)],
     ['Recon '+baseLabel+' MSE xyz',d.mse_xyz.toExponential(3)],
     ['Recon '+baseLabel+' MSE rpy',d.mse_rpy.toExponential(3)],
     ['Recon '+baseLabel+' MSE gripper',d.mse_grip.toExponential(3)],
@@ -538,7 +708,7 @@ function showPanel(tok){
     const variantRows=[];
     Object.entries(d.variant_metrics).forEach(([label,m])=>{
       variantRows.push(
-        ['Recon '+label+' chunk MSE',m.chunk_mse.toExponential(3)],
+        ['Recon '+label+' '+RECON_LABEL+' MSE',m.chunk_mse.toExponential(3)],
         ['Recon '+label+' MSE xyz',m.mse_xyz.toExponential(3)],
         ['Recon '+label+' MSE rpy',m.mse_rpy.toExponential(3)],
         ['Recon '+label+' MSE gripper',m.mse_grip.toExponential(3)]
@@ -559,9 +729,11 @@ drawCube(-1);drawAllCharts();
 """
 
 
-def build_html(title, summary, fsq_levels, counts, entry_data, samples, codebook_size) -> str:
+def build_html(title, summary, fsq_levels, counts, entry_data, samples, codebook_size,
+               recon_label="chunk") -> str:
     data_js = (
         "const SUMMARY=" + json.dumps(summary) + ";\n"
+        "const RECON_LABEL=" + json.dumps(recon_label) + ";\n"
         "const FSQ_LEVELS=" + json.dumps(list(fsq_levels)) + ";\n"
         "const COUNTS=" + json.dumps(counts) + ";\n"
         "const ENTRY=" + json.dumps([entry_data.get(i) for i in range(codebook_size)]) + ";\n"
@@ -628,11 +800,15 @@ def log_wandb(
     decoded_skill_count,
     html_path,
     action_variant_means=None,
+    recon_label="chunk",
 ):
     import wandb
     wandb.init(project=args.wandb_project, name=args.wandb_run_name or Path(args.model_path).parent.name,
                config=vars(args), resume="allow")
     decoder_prefix = "decoder" if args.decoder_scope == "all" else "decoder_sample"
+    # The oneshot reconstructor scores a control-point trajectory, not action
+    # chunks, so it gets its own scalar name instead of silently reusing one.
+    recon_key = "chunk_action_mse_mean" if recon_label == "chunk" else f"{recon_label}_mse_mean"
     values = {
         "codebook/utilization_pct":       enc_stats["utilization_pct"],
         "codebook/skills_per_entry_mean": enc_stats["skills_per_entry_mean"],
@@ -641,7 +817,7 @@ def log_wandb(
         "decoder/evaluated_skills":       decoded_skill_count,
     }
     values.update({
-        f"{decoder_prefix}/chunk_action_mse_mean": dec_means["chunk_mse"],
+        f"{decoder_prefix}/{recon_key}": dec_means["chunk_mse"],
         f"{decoder_prefix}/recon_mse_xyz":         dec_means["mse_xyz"],
         f"{decoder_prefix}/recon_mse_rpy":         dec_means["mse_rpy"],
         f"{decoder_prefix}/recon_mse_gripper":     dec_means["mse_grip"],
@@ -656,7 +832,7 @@ def log_wandb(
             char.lower() if char.isalnum() else "_" for char in metric_label
         ).strip("_")
         values.update({
-            f"{decoder_prefix}/{tag}/chunk_action_mse_mean": means["chunk_mse"],
+            f"{decoder_prefix}/{tag}/{recon_key}": means["chunk_mse"],
             f"{decoder_prefix}/{tag}/recon_mse_xyz": means["mse_xyz"],
             f"{decoder_prefix}/{tag}/recon_mse_rpy": means["mse_rpy"],
             f"{decoder_prefix}/{tag}/recon_mse_gripper": means["mse_grip"],
@@ -813,16 +989,39 @@ def main():
         )
 
     # ── decoder: live-frame inference only for the requested scope ────────────
-    action_dim = dec_targets[0].shape[-1]
-    groups = _dim_groups(action_dim)
-    dim_labels = [f"d{i}" for i in range(action_dim - 1)] + ["grip"]
+    # The oneshot reconstructor emits a control-point grid in the ENCODER's
+    # trajectory convention, so it is scored against the encoder targets rather
+    # than the dataset actions the chunk reconstructor predicts.
+    oneshot = is_oneshot(cfg)
+    recon_label = "ctrl" if oneshot else "chunk"
+    if oneshot:
+        targets = [
+            prepare_encoder_trajectory(seg, cfg.encoder_input_mode) for seg in segments
+        ]
+        traj_dim = targets[0].shape[-1]
+        groups = _traj_dim_groups(traj_dim)
+        dim_labels = [f"d{i}" for i in range(traj_dim - N_GRIPPER_DIMS)] + [
+            f"grip{i}" for i in range(N_GRIPPER_DIMS)
+        ]
+        metrics_fn = ctrl_skill_metrics
+    else:
+        targets = dec_targets
+        action_dim = dec_targets[0].shape[-1]
+        groups = _dim_groups(action_dim)
+        dim_labels = [f"d{i}" for i in range(action_dim - 1)] + ["grip"]
+        metrics_fn = skill_metrics
     decode_latents = latents[decode_ids]
     decode_states = [dec_states[i] for i in decode_ids]
     decode_metadata = [metadata[i] for i in decode_ids]
     decode_lengths = [lengths[i] for i in decode_ids]
-    decode_targets = [dec_targets[i] for i in decode_ids]
-    print(f"[fsq_eval] decoder_scope={args.decoder_scope}: decoding {len(decode_ids)}/{len(metadata)} skills")
-    base_action_label = "current skill" if decode_random_latents is not None else "pred chunk"
+    decode_targets = [targets[i] for i in decode_ids]
+    print(f"[fsq_eval] decoder_scope={args.decoder_scope}: decoding {len(decode_ids)}/{len(metadata)} skills "
+          f"(reconstructor={'oneshot ctrl' if oneshot else 'chunk'})")
+    base_action_label = (
+        "current skill"
+        if decode_random_latents is not None
+        else ("pred ctrl" if oneshot else "pred chunk")
+    )
     decoded_delta, decoded_progress, decoded_term, random_delta = (
         _batched_decode_impl(
             model, decode_latents, decode_states, decode_metadata, raw_dataset,
@@ -844,7 +1043,7 @@ def main():
         for label, values in decoded_variant_deltas.items()
     }
     per_skill = {
-        original_id: skill_metrics(
+        original_id: metrics_fn(
             decoded_delta[j], decoded_progress[j], decoded_term[j], decode_targets[j],
             decode_lengths[j], args.end_threshold, groups,
         )
@@ -857,7 +1056,7 @@ def main():
     action_keys = ["chunk_mse", "mse_xyz", "mse_rpy", "mse_grip"]
     per_skill_variants = {
         label: {
-            original_id: skill_metrics(
+            original_id: metrics_fn(
                 values[j], decoded_progress[j], decoded_term[j], decode_targets[j],
                 decode_lengths[j], args.end_threshold, groups,
             )
@@ -873,11 +1072,11 @@ def main():
         for label, metrics in per_skill_variants.items()
     }
     print(f"[fsq_eval] [{args.decoder_scope}, n={len(decode_ids)}] "
-          f"chunk_mse={dec_means['chunk_mse']:.4e}  term|err|={dec_means['timing_abs']:.2f}  "
+          f"{recon_label}_mse={dec_means['chunk_mse']:.4e}  term|err|={dec_means['timing_abs']:.2f}  "
           f"early={dec_means['early_rate']:.1%} late={dec_means['late_rate']:.1%}  "
           f"prog_err={dec_means['prog_err']:.4f}")
     for label, means in dec_means_variants.items():
-        print(f"[fsq_eval] action variant {label}: chunk_mse={means['chunk_mse']:.4e}")
+        print(f"[fsq_eval] recon variant {label}: {recon_label}_mse={means['chunk_mse']:.4e}")
 
     # Per-entry values are exact in decoder_scope=all; in samples mode they are
     # the rendered random samples only (entries outside the top set have no bar).
@@ -927,23 +1126,33 @@ def main():
                     (base_action_label, delta, "#B71C1C", "--"),
                     (far_label, decoded_variants["far active skill"][i], "#00897B", ":"),
                 ]
-            imgs.append(make_sample_plot(s_img, e_img, delta, progress, term_prob,
-                                         dec_targets[i], T, dim_labels, args.n_action_steps,
-                                         args.end_threshold, action_variants=action_variants))
+            if oneshot:
+                gt_ctrl, _ = spline_encode(
+                    segments[i], model.n_control, model.spline_degree,
+                    input_mode=cfg.encoder_input_mode,
+                )
+                imgs.append(make_ctrl_sample_plot(s_img, e_img, delta, progress, term_prob,
+                                                  targets[i], gt_ctrl, T, dim_labels,
+                                                  args.end_threshold, ctrl_variants=action_variants))
+            else:
+                imgs.append(make_sample_plot(s_img, e_img, delta, progress, term_prob,
+                                             targets[i], T, dim_labels, args.n_action_steps,
+                                             args.end_threshold, action_variants=action_variants))
         samples[tok] = imgs
 
     summary = (
         f"codebook {len(active)}/{codebook_size} ({enc_stats['utilization_pct']:.1f}%) | "
         f"skills/entry mean={enc_stats['skills_per_entry_mean']:.1f} max={enc_stats['skills_per_entry_max']} | "
         f"decoder={args.decoder_scope} n={len(decode_ids)}/{len(metadata)} | "
-        f"chunk MSE={dec_means['chunk_mse']:.3e} (xyz={dec_means['mse_xyz']:.2e} rpy={dec_means['mse_rpy']:.2e} "
+        f"{recon_label} MSE={dec_means['chunk_mse']:.3e} (xyz={dec_means['mse_xyz']:.2e} rpy={dec_means['mse_rpy']:.2e} "
         f"grip={dec_means['mse_grip']:.2e}) | term|err|={dec_means['timing_abs']:.2f} "
         f"early={dec_means['early_rate']:.0%} late={dec_means['late_rate']:.0%} | progress|err|={dec_means['prog_err']:.3f}"
     )
     for label, means in dec_means_variants.items():
-        summary += f" | {label} chunk MSE={means['chunk_mse']:.3e}"
+        summary += f" | {label} {recon_label} MSE={means['chunk_mse']:.3e}"
     title = f"{Path(args.model_path).parent.name} ({Path(args.model_path).stem})"
-    html = build_html(title, summary, levels, counts, entry_data, samples, codebook_size)
+    html = build_html(title, summary, levels, counts, entry_data, samples, codebook_size,
+                      recon_label=recon_label)
     html_path = out_dir / "fsq_eval.html"
     html_path.write_text(html, encoding="utf-8")
     print(f"[fsq_eval] HTML → {html_path}")
@@ -956,6 +1165,7 @@ def main():
             len(decode_ids),
             html_path,
             action_variant_means=dec_means_variants,
+            recon_label=recon_label,
         )
 
 

@@ -79,15 +79,25 @@ outputs_root: outputs_filtered
 #     label: skill_broadcast_DINOfreeze
 # output_name: "vision_freeze"
 
+# model_defaults:
+#   previous: false
+#   checkpoint: "100000"
+# models:
+#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask
+#     label: 100p_broadcast_expert
+#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_cond_skillendmask
+#     label: 100p_broadcast_cond
+# output_name: "skill_conditioning_pos_100K"
+
 model_defaults:
   previous: false
   checkpoint: "100000"
 models:
   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask
-    label: 100p_broadcast_expert
-  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_cond_skillendmask
-    label: 100p_broadcast_cond
-output_name: "skill_conditioning_pos_100K"
+    label: adamW
+  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask_muon
+    label: muon
+output_name: "optimizor_100K"
 
 main_terminator:
   # Base budget per occurrence: ceil(GT action length L * scale). The early
@@ -134,7 +144,7 @@ video:
 # eval_init_states.npz exists here.
 original_dataset_dir: libero_original_dataset/libero_90
 
-slurm: {gres: "gpu:1", cpus: 8, memory: 64G, time: "12:00:00"}
+slurm: {gres: "gpu:1", cpus: 8, memory: 64G, time: "00:30:00"}
 
 
 # This trained terminator is display-only unless main_terminator selects it too.
