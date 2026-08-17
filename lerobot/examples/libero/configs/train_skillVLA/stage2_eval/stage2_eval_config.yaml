@@ -1,7 +1,7 @@
 # Stage-2 evaluation assembles three frozen sources: the Stage-2 checkpoint,
 # an external predictor, and an external terminator. Every entry in models[]
 # expands into up to two panels rendered side by side in one video:
-#   stage2: the full likelihood policy (frozen prior + language blocks)
+#   stage2: the full policy; likelihood/DSBC is read from its checkpoint
 #   prior : the frozen Stage-1 prior recorded in the Stage-2 checkpoint,
 #           evaluated standalone under the same predictor/terminator/oracle
 models:
@@ -20,7 +20,7 @@ models:
 # Frozen overlays shared by every panel; both must live in the same FSQ run as
 # the Stage-2 checkpoint. The prior panel always needs them (the Stage-1 prior
 # has neither), and applying the same pair to the stage2 panel keeps the
-# comparison about the likelihood blocks alone.
+# comparison about the selected Stage-2 method alone.
 external_predictor_model: outputs_filtered/skillVLA_terminator/bs16_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal/checkpoints/050000/pretrained_model
 external_terminator_model: outputs_filtered/skillVLA_terminator/bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_terminator/checkpoints/030000/pretrained_model
 

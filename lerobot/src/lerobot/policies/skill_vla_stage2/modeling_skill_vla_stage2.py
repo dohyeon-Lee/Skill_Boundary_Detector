@@ -433,7 +433,13 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
         )
         if self.config.dsbc_noise_output_mode == "shared":
             hidden = hidden.mean(dim=1)
-        return self.noise_out_proj(hidden.to(self.working_dtype)).float()
+        raw_prediction = self.noise_out_proj(
+            hidden.to(self.working_dtype)
+        ).float()
+        noise_bound = float(
+            getattr(self.config, "dsbc_noise_output_bound", 5.0)
+        )
+        return noise_bound * torch.tanh(raw_prediction)
 
     @staticmethod
     def _frs_state(
@@ -1490,6 +1496,51 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
             loss_per_dim = (squared_error * valid_float).sum(dim=(0, 1)) / valid_steps
             metric_prediction = prediction
 
+        # The selector is supervised on the chunk mean in shared mode and on
+        # each valid FRS target in per-step mode. Keep those statistics separate
+        # from the unaveraged FRS distribution so the tanh bound can be audited.
+        valid_frs_target = target.detach().float()[valid]
+        supervision_target = (
+            shared_target.detach().float()
+            if self.config.dsbc_noise_output_mode == "shared"
+            else valid_frs_target
+        )
+        noise_bound = float(
+            getattr(self.config, "dsbc_noise_output_bound", 5.0)
+        )
+
+        def _abs_noise_stats(values: Tensor) -> tuple[float, float, float, float]:
+            absolute = values.abs().reshape(-1)
+            if absolute.numel() == 0:
+                return 0.0, 0.0, 0.0, 0.0
+            quantiles = torch.quantile(
+                absolute,
+                torch.tensor([0.95, 0.99], device=absolute.device),
+            )
+            return (
+                quantiles[0].item(),
+                quantiles[1].item(),
+                absolute.max().item(),
+                absolute.gt(noise_bound).float().mean().item(),
+            )
+
+        frs_p95, frs_p99, frs_max, frs_outside = _abs_noise_stats(
+            valid_frs_target
+        )
+        target_p95, target_p99, target_max, target_outside = _abs_noise_stats(
+            supervision_target
+        )
+        supervision_target_rms = (
+            supervision_target.square().mean().sqrt().item()
+            if supervision_target.numel() > 0
+            else 0.0
+        )
+        valid_frs_target_rms = (
+            valid_frs_target.square().mean().sqrt().item()
+            if valid_frs_target.numel() > 0
+            else 0.0
+        )
+
         loss_dict = {
             # Same flow-velocity MSE key as legacy Stage 2 for W&B comparison;
             # this detached diagnostic is not the DSBC optimization objective.
@@ -1504,6 +1555,17 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
             "dsbc/prediction_rms": (
                 metric_prediction.detach().float().square().mean().sqrt().item()
             ),
+            "dsbc/supervision_target_rms": supervision_target_rms,
+            "dsbc/frs_target_valid_rms": valid_frs_target_rms,
+            "dsbc/supervision_target_abs_p95": target_p95,
+            "dsbc/supervision_target_abs_p99": target_p99,
+            "dsbc/supervision_target_abs_max": target_max,
+            "dsbc/supervision_target_outside_bound_fraction": target_outside,
+            "dsbc/frs_target_abs_p95": frs_p95,
+            "dsbc/frs_target_abs_p99": frs_p99,
+            "dsbc/frs_target_abs_max": frs_max,
+            "dsbc/frs_target_outside_bound_fraction": frs_outside,
+            "dsbc/noise_output_bound": noise_bound,
             "dsbc/frs_displacement_rms": (
                 (target.detach() - actions[..., :real_dim].float())
                 .square()

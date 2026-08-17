@@ -174,6 +174,17 @@ def _checkpoint_tree(tmp_path: Path, *, policy_type: str = "skill_vla_stage2") -
     }
 
 
+def _stage2_config_path(config: dict) -> Path:
+    return (
+        Path(config["project_root"])
+        / "outputs_filtered/skillVLA_stage2"
+        / config["model_dir"]
+        / "checkpoints"
+        / config["checkpoint"]
+        / "pretrained_model/config.json"
+    )
+
+
 def test_stage2_eval_expands_into_stage2_and_prior_panels(tmp_path: Path) -> None:
     config = _checkpoint_tree(tmp_path)
     settings = build_settings(config)
@@ -187,6 +198,11 @@ def test_stage2_eval_expands_into_stage2_and_prior_panels(tmp_path: Path) -> Non
         "model1-predictor-prior",
     ]
     stage2_panel, prior_panel = panels
+    # No eval selector is needed. Checkpoints created before stage2_mode was
+    # introduced are unambiguously interpreted as likelihood.
+    assert stage2_panel["stage2_mode"] == "likelihood"
+    assert stage2_panel["dsbc_noise_output_mode"] == "shared"
+    assert "stage2_mode" not in prior_panel
     assert stage2_panel["policy_path"].endswith(
         "skillVLA_stage2/stage1_prior_100000_gt_batchON/checkpoints/last/pretrained_model"
     )
@@ -205,6 +221,43 @@ def test_stage2_eval_expands_into_stage2_and_prior_panels(tmp_path: Path) -> Non
     assert prior_panel["skill_dataset_dir"] == stage2_panel["skill_dataset_dir"]
     assert prior_panel["architecture"] == "cond_gemma"
     assert settings["eval_out_dir"] == _EVAL_SRC.parent / "outputs/smoke"
+
+
+def test_stage2_eval_automatically_reads_dsbc_mode_from_checkpoint(
+    tmp_path: Path,
+) -> None:
+    config = _checkpoint_tree(tmp_path)
+    checkpoint_config = _stage2_config_path(config)
+    policy = json.loads(checkpoint_config.read_text())
+    policy.update(
+        {
+            "stage2_mode": "dsbc",
+            "dsbc_noise_output_mode": "per_step",
+            "dsbc_frs_num_steps": 8,
+            "dsbc_anchor_seed": 17,
+        }
+    )
+    checkpoint_config.write_text(json.dumps(policy))
+
+    panels = json.loads(build_settings(config)["models_json"])
+    stage2_panel, prior_panel = panels
+
+    assert stage2_panel["stage2_mode"] == "dsbc"
+    assert stage2_panel["dsbc_noise_output_mode"] == "per_step"
+    assert stage2_panel["dsbc_frs_num_steps"] == 8
+    assert stage2_panel["dsbc_anchor_seed"] == 17
+    assert "stage2_mode" not in prior_panel
+
+
+def test_stage2_eval_rejects_invalid_checkpoint_mode(tmp_path: Path) -> None:
+    config = _checkpoint_tree(tmp_path)
+    checkpoint_config = _stage2_config_path(config)
+    policy = json.loads(checkpoint_config.read_text())
+    policy["stage2_mode"] = "manual_override"
+    checkpoint_config.write_text(json.dumps(policy))
+
+    with pytest.raises(ValueError, match="Invalid Stage-2 mode"):
+        build_settings(config)
 
 
 def test_stage2_eval_dedupes_shared_prior_panels(tmp_path: Path) -> None:

@@ -46,6 +46,8 @@ dsbc:
   # shared predicts one 7D noise vector and repeats it over the action chunk;
   # per_step predicts a separate 7D vector for every action token.
   noise_output_mode: shared  # shared | per_step
+  # Paper setting: squash normalized predicted noise to (-5, 5).
+  noise_output_bound: 5.0
   # Online action(t=0) -> noise(t=1) Euler integration through frozen Stage 1.
   frs_num_steps: 10
   # Seed for the fixed Gaussian selector anchor (not the predicted VSA noise).

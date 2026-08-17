@@ -96,10 +96,13 @@ def test_stage2_config_fixes_bayesvla_contract() -> None:
         dsbc_anchor_seed=17,
     )
     assert dsbc.dsbc_noise_output_mode == "per_step"
+    assert dsbc.dsbc_noise_output_bound == pytest.approx(5.0)
     assert dsbc.dsbc_frs_num_steps == 8
     assert dsbc.dsbc_anchor_seed == 17
     with pytest.raises(ValueError, match="shared.*per_step"):
         _config(stage2_mode="dsbc", dsbc_noise_output_mode="full")
+    with pytest.raises(ValueError, match="noise_output_bound"):
+        _config(stage2_mode="dsbc", dsbc_noise_output_bound=0.0)
     with pytest.raises(ValueError, match="FRS noise"):
         _config(stage2_mode="dsbc", cumulative_xyz_loss_enabled=True)
 
@@ -446,7 +449,8 @@ def test_dsbc_selector_uses_fixed_t1_anchor_and_configurable_noise_shape(
     torch.testing.assert_close(captured["time"], torch.ones(1))
     assert captured["start_images"] is start_images
     expected = hidden.mean(dim=1) if output_mode == "shared" else hidden
-    torch.testing.assert_close(prediction, expected)
+    torch.testing.assert_close(prediction, 5.0 * torch.tanh(expected))
+    assert prediction.abs().max() <= 5.0
 
 
 def test_online_frs_runs_action_to_noise_and_forces_linear_padding_path() -> None:
@@ -672,6 +676,13 @@ def test_dsbc_shared_mode_supervises_mean_valid_frs_noise() -> None:
     assert metrics["action_loss"] == pytest.approx(0.0)
     assert metrics["gt_noise_loss"] == pytest.approx(2.5)
     assert metrics["noise_loss"] == pytest.approx(2.5)
+    assert metrics["dsbc/supervision_target_rms"] == pytest.approx(10.0**0.5)
+    assert metrics["dsbc/frs_target_valid_rms"] == pytest.approx(11.0**0.5)
+    assert metrics["dsbc/supervision_target_abs_max"] == pytest.approx(4.0)
+    assert metrics["dsbc/frs_target_abs_max"] == pytest.approx(5.0)
+    assert metrics["dsbc/supervision_target_outside_bound_fraction"] == 0.0
+    assert metrics["dsbc/frs_target_outside_bound_fraction"] == 0.0
+    assert metrics["dsbc/noise_output_bound"] == pytest.approx(5.0)
     assert metrics["regime/transition_jitter_fraction"] == pytest.approx(1.0)
     assert policy.model.seen[0] is current_images
     assert policy.model.seen[1] is start_images

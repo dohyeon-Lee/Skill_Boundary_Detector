@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """Resolve Stage-2 evaluation into shell exports.
 
-Stage-2 evaluation assembles three frozen sources: the Stage-2 likelihood
+Stage-2 evaluation assembles three frozen sources: a likelihood or DSBC
 checkpoint, an external predictor (frozen VLM + reader/head), and an external
 terminator. Each configured checkpoint expands into up to two panels:
 
-* ``stage2``: the full likelihood policy (frozen prior + language blocks).
+* ``stage2``: the complete Stage-2 policy, with its mode read from checkpoint.
 * ``prior``: the exact frozen Stage-1 prior recorded in the Stage-2
   checkpoint's config, evaluated standalone.
 
 Both panels run under the same predictor, terminator, and oracle skill map,
 and the shared evaluator stitches them into one side-by-side video, so the
-difference is exactly what the likelihood blocks added.
+difference is exactly what the selected Stage-2 method added.
 """
 
 from __future__ import annotations
@@ -38,6 +38,8 @@ from stage1_eval_config import (  # noqa: E402
 DEFAULT_CONFIG_PATH = _HERE.parent.parent / "stage2_eval_config.yaml"
 
 _MODES = ("stage2", "prior")
+_STAGE2_MODES = ("likelihood", "dsbc")
+_DSBC_NOISE_OUTPUT_MODES = ("shared", "per_step")
 
 
 def _at(config: dict, *path: str, default=None):
@@ -126,6 +128,36 @@ def _stage2_checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         )
     if not as_bool(policy.get("train_skill_predictor", False)):
         raise ValueError(f"Stage-2 checkpoint has no frozen VLM module: {policy_path}")
+    # Mode is checkpoint-owned. Legacy checkpoints predate this field and are
+    # exactly the likelihood architecture, so their unambiguous default is
+    # likelihood rather than an eval-time selector.
+    stage2_mode = str(policy.get("stage2_mode", "likelihood")).strip().lower()
+    if stage2_mode not in _STAGE2_MODES:
+        raise ValueError(
+            f"Invalid Stage-2 mode {stage2_mode!r} at {policy_path}; "
+            f"expected one of {_STAGE2_MODES}."
+        )
+    dsbc_noise_output_mode = str(
+        policy.get("dsbc_noise_output_mode", "shared")
+    ).strip().lower()
+    if dsbc_noise_output_mode not in _DSBC_NOISE_OUTPUT_MODES:
+        raise ValueError(
+            "Invalid DSBC noise output mode "
+            f"{dsbc_noise_output_mode!r} at {policy_path}; expected one of "
+            f"{_DSBC_NOISE_OUTPUT_MODES}."
+        )
+    dsbc_frs_num_steps = int(policy.get("dsbc_frs_num_steps", 10))
+    dsbc_anchor_seed = int(policy.get("dsbc_anchor_seed", 0))
+    if dsbc_frs_num_steps <= 0:
+        raise ValueError(f"DSBC FRS steps must be positive at {policy_path}.")
+    if dsbc_anchor_seed < 0:
+        raise ValueError(f"DSBC anchor seed must be non-negative at {policy_path}.")
+    if stage2_mode == "dsbc" and as_bool(
+        policy.get("cumulative_xyz_loss_enabled", False)
+    ):
+        raise ValueError(
+            f"DSBC checkpoint cannot enable cumulative_xyz_loss: {policy_path}"
+        )
     stage1_prior_path = _relocate_project_path(
         project_root, policy.get("stage1_checkpoint_path")
     )
@@ -179,6 +211,10 @@ def _stage2_checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         ),
         "visual_perceiver_width": int(policy.get("visual_perceiver_width", 1024)),
         "action_loss_mode": str(policy.get("action_loss_mode", "flow")),
+        "stage2_mode": stage2_mode,
+        "dsbc_noise_output_mode": dsbc_noise_output_mode,
+        "dsbc_frs_num_steps": dsbc_frs_num_steps,
+        "dsbc_anchor_seed": dsbc_anchor_seed,
         **paths,
     }
 
@@ -408,6 +444,10 @@ def build_settings(config: dict) -> dict:
             "num_visual_latents_per_camera": contract["num_visual_latents_per_camera"],
             "visual_perceiver_width": contract["visual_perceiver_width"],
             "action_loss_mode": contract["action_loss_mode"],
+            "stage2_mode": contract["stage2_mode"],
+            "dsbc_noise_output_mode": contract["dsbc_noise_output_mode"],
+            "dsbc_frs_num_steps": contract["dsbc_frs_num_steps"],
+            "dsbc_anchor_seed": contract["dsbc_anchor_seed"],
         }
         for mode in entry["modes"]:
             if mode == "stage2":

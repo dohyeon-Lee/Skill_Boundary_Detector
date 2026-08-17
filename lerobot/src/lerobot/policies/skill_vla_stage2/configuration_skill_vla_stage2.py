@@ -49,6 +49,8 @@ class SkillVLAStage2Config(SkillExpertConfig):
     # DSBC predicts either one real-action noise vector shared over the chunk,
     # or one vector for every action token. Padding dimensions are never learned.
     dsbc_noise_output_mode: str = "shared"
+    # FRS bounds the predicted normalized noise with bound * tanh(raw).
+    dsbc_noise_output_bound: float = 5.0
     dsbc_frs_num_steps: int = 10
     dsbc_anchor_seed: int = 0
     same_skill_batch_enabled: bool = False
@@ -110,6 +112,8 @@ class SkillVLAStage2Config(SkillExpertConfig):
                 "dsbc_noise_output_mode must be 'shared' or 'per_step', got "
                 f"{self.dsbc_noise_output_mode!r}."
             )
+        if self.dsbc_noise_output_bound <= 0.0:
+            raise ValueError("dsbc_noise_output_bound must be positive.")
         if self.dsbc_frs_num_steps <= 0:
             raise ValueError("dsbc_frs_num_steps must be positive.")
         if self.dsbc_anchor_seed < 0:

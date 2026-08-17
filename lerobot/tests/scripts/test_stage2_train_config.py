@@ -185,6 +185,7 @@ def test_stage2_resolver_reads_checkpoint_config_without_parsing_run_name(
     assert settings["skill_fsq_levels"] == "[3,3,3]"
     assert settings["likelihood_num_layers"] == 4
     assert settings["dsbc_noise_output_mode"] == "shared"
+    assert settings["dsbc_noise_output_bound"] == pytest.approx(5.0)
     assert settings["dsbc_frs_num_steps"] == 10
     assert settings["training_skill_source"] == "gt"
     assert settings["cumulative_xyz_loss_enabled"] is False
@@ -281,6 +282,7 @@ def test_stage2_dsbc_settings_are_exported_and_use_a_separate_run(tmp_path: Path
     config["stage2_mode"] = "dsbc"
     config["dsbc"] = {
         "noise_output_mode": "per_step",
+        "noise_output_bound": 4.5,
         "frs_num_steps": 8,
         "anchor_seed": 17,
     }
@@ -289,6 +291,7 @@ def test_stage2_dsbc_settings_are_exported_and_use_a_separate_run(tmp_path: Path
 
     assert settings["stage2_mode"] == "dsbc"
     assert settings["dsbc_noise_output_mode"] == "per_step"
+    assert settings["dsbc_noise_output_bound"] == pytest.approx(4.5)
     assert settings["dsbc_frs_num_steps"] == 8
     assert settings["dsbc_anchor_seed"] == 17
     assert settings["pt_run_name"] == (

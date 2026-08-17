@@ -54,8 +54,9 @@ class _FakeExpert(nn.Module):
 class _FakeStage2Expert(_FakeExpert):
     name = "skill_vla_stage2"
 
-    def __init__(self):
+    def __init__(self, stage2_mode: str = "likelihood"):
         super().__init__()
+        self.config.stage2_mode = stage2_mode
         self.vlm_calls = []
 
     def predict_action_chunk(self, batch):
@@ -160,6 +161,52 @@ def test_stage1_eval_json_paths_are_collected_under_metrics(
     assert run_eval._legacy_panel_cache_path(panel_root) == (
         panel_root / "eval_info_t0-1.json"
     )
+
+
+def test_stage2_eval_does_not_reuse_artifacts_after_contract_change(
+    tmp_path: Path, monkeypatch
+) -> None:
+    for key, value in {
+        "SKILL_END_MODE": "or",
+        "SKILL_END_THRESHOLD": "0.5",
+        "SKILL_END_PROGRESS_THRESHOLD": "0.9",
+        "INFERENCE_SKILL_MAX_LENGTH": "200",
+        "IMMEDIATE_REPLAN_ON_SKILL_END": "true",
+    }.items():
+        monkeypatch.setenv(key, value)
+    panel_root = tmp_path / "eval_run/panels/00_dsbc"
+    video = panel_root / "videos/libero_90_0/eval_episode_0.mp4"
+    video.parent.mkdir(parents=True)
+    video.write_bytes(b"video")
+    cfg = SimpleNamespace(
+        eval=SimpleNamespace(
+            n_episodes=1,
+            max_videos_per_task=1,
+            skill_html=False,
+        ),
+        policy=SimpleNamespace(n_action_steps=5),
+        seed=1000,
+    )
+    spec = {
+        "policy_path": "/tmp/stage2",
+        "mode": "stage2",
+        "stage2_mode": "dsbc",
+        "dsbc_noise_output_mode": "shared",
+        "skill_source": "gt",
+        "advance_mode": "gt",
+    }
+    cache = run_eval._panel_cache_path(panel_root)
+    cache.parent.mkdir(parents=True)
+    cache.write_text(
+        '{"signature":{"stage2_mode":"likelihood"},"info":{"stale":true}}'
+    )
+
+    info, source = run_eval._load_resumed_panel_info(
+        panel_root, spec, {"libero_90_0"}, cfg
+    )
+
+    assert info is None
+    assert source is None
 
 
 def test_video_skill_timeline_tracks_trace_at_render_stride() -> None:
@@ -415,6 +462,55 @@ def test_policy_config_materializes_implicit_skillvla_real_architecture(
     assert result.conditioning_route == "state_skill_cond"
 
 
+def test_policy_config_verifies_checkpoint_owned_dsbc_mode(monkeypatch) -> None:
+    loaded = SimpleNamespace(
+        type="skill_vla_stage2",
+        architecture="cond_gemma",
+        architecture_label="arch0",
+        conditioning_route="state_cond",
+        stage2_mode="dsbc",
+        dsbc_noise_output_mode="per_step",
+        dsbc_frs_num_steps=8,
+        dsbc_anchor_seed=17,
+    )
+    monkeypatch.setattr(
+        run_eval.PreTrainedConfig,
+        "from_pretrained",
+        lambda *args, **kwargs: loaded,
+    )
+    spec = {
+        "policy_path": "/tmp/stage2-dsbc",
+        "architecture": "cond_gemma",
+        "architecture_label": "arch0",
+        "architecture_revision": "skillvla_real_v1",
+        "conditioning_route": "state_cond",
+        "stage2_mode": "dsbc",
+        "dsbc_noise_output_mode": "per_step",
+        "dsbc_frs_num_steps": 8,
+        "dsbc_anchor_seed": 17,
+        "fsq_path": "/tmp/fsq",
+        "dino_model_path": "/tmp/dino",
+        "tokenizer_path": "/tmp/tokenizer",
+    }
+
+    result = run_eval._policy_config(
+        spec,
+        SimpleNamespace(use_amp=False, n_action_steps=5),
+        torch.device("cpu"),
+    )
+
+    assert result.stage2_mode == "dsbc"
+    assert result.dsbc_noise_output_mode == "per_step"
+
+    spec["stage2_mode"] = "likelihood"
+    with pytest.raises(RuntimeError, match="stage2_mode resolved=likelihood"):
+        run_eval._policy_config(
+            spec,
+            SimpleNamespace(use_amp=False, n_action_steps=5),
+            torch.device("cpu"),
+        )
+
+
 def test_oracle_defers_terminator_advance_until_fixed_replan() -> None:
     expert = _FakeExpert()
     wrapper = Stage1OraclePolicy(
@@ -462,8 +558,11 @@ def test_oracle_can_interrupt_chunk_and_replan_on_terminator_advance() -> None:
     assert [call.item() for call in expert.calls] == [3, 7]
 
 
-def test_stage2_eval_holds_vlm_start_condition_until_the_next_skill() -> None:
-    expert = _FakeStage2Expert()
+@pytest.mark.parametrize("stage2_mode", ["likelihood", "dsbc"])
+def test_stage2_eval_holds_vlm_start_condition_until_the_next_skill(
+    stage2_mode: str,
+) -> None:
+    expert = _FakeStage2Expert(stage2_mode)
     wrapper = Stage1OraclePolicy(
         expert,
         None,

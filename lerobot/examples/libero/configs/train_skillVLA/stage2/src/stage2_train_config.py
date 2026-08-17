@@ -324,6 +324,11 @@ def build_settings(config: dict) -> dict:
     ).strip().lower()
     if dsbc_noise_output_mode not in {"shared", "per_step"}:
         raise ValueError("dsbc.noise_output_mode must be shared|per_step.")
+    dsbc_noise_output_bound = float(
+        _at(config, "dsbc", "noise_output_bound", default=5.0)
+    )
+    if dsbc_noise_output_bound <= 0.0:
+        raise ValueError("dsbc.noise_output_bound must be positive.")
     dsbc_frs_num_steps = int(
         _at(
             config,
@@ -511,6 +516,7 @@ def build_settings(config: dict) -> dict:
         "likelihood_vlm_memory": likelihood_vlm_memory,
         "likelihood_gate_lr_scale": likelihood_gate_lr_scale,
         "dsbc_noise_output_mode": dsbc_noise_output_mode,
+        "dsbc_noise_output_bound": dsbc_noise_output_bound,
         "dsbc_frs_num_steps": dsbc_frs_num_steps,
         "dsbc_anchor_seed": dsbc_anchor_seed,
         "training_skill_source": skill_source,

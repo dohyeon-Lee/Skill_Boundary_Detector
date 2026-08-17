@@ -54,6 +54,10 @@ RAW_IMAGE = "skill_decoder_image"
 RAW_WRIST = "skill_decoder_wrist"
 CURRENT_IMAGE = "observation.images.image"
 CURRENT_WRIST = "observation.images.wrist_image"
+# Bump this string whenever the Stage-2 VLM snapshot semantics change so
+# completed eval artifacts are never silently reused under a different input
+# contract.
+STAGE2_VLM_START_CONTRACT = "skill_boundary_image_state_v1"
 log = logging.getLogger(__name__)
 
 
@@ -611,6 +615,43 @@ def _reset_init_state_ids(envs: dict) -> None:
 
 def _policy_config(spec: dict, base, device: torch.device):
     config = PreTrainedConfig.from_pretrained(spec["policy_path"])
+    if getattr(config, "type", getattr(config, "model_type", "")) == "skill_vla_stage2":
+        expected_stage2_mode = str(
+            spec.get("stage2_mode", "likelihood")
+        ).strip().lower()
+        loaded_stage2_mode = str(
+            getattr(config, "stage2_mode", "likelihood")
+        ).strip().lower()
+        if loaded_stage2_mode != expected_stage2_mode:
+            raise RuntimeError(
+                "Checkpoint contract changed while starting evaluation: "
+                f"stage2_mode resolved={expected_stage2_mode}, "
+                f"loaded={loaded_stage2_mode} at {spec['policy_path']}"
+            )
+        expected_noise_mode = str(
+            spec.get("dsbc_noise_output_mode", "shared")
+        ).strip().lower()
+        loaded_noise_mode = str(
+            getattr(config, "dsbc_noise_output_mode", "shared")
+        ).strip().lower()
+        if loaded_noise_mode != expected_noise_mode:
+            raise RuntimeError(
+                "Checkpoint contract changed while starting evaluation: "
+                f"dsbc_noise_output_mode resolved={expected_noise_mode}, "
+                f"loaded={loaded_noise_mode} at {spec['policy_path']}"
+            )
+        for field, default in (
+            ("dsbc_frs_num_steps", 10),
+            ("dsbc_anchor_seed", 0),
+        ):
+            expected = int(spec.get(field, default))
+            loaded = int(getattr(config, field, default))
+            if loaded != expected:
+                raise RuntimeError(
+                    "Checkpoint contract changed while starting evaluation: "
+                    f"{field} resolved={expected}, loaded={loaded} "
+                    f"at {spec['policy_path']}"
+                )
     architecture = str(spec.get("architecture", "vsa_perceiver_crossattn"))
     architecture_label = str(spec.get("architecture_label", ""))
     loaded_architecture_label = str(getattr(config, "architecture_label", ""))
@@ -861,7 +902,26 @@ def _build_context(spec: dict, cfg, device: torch.device) -> dict:
         spec.get("external_terminator_model") or external_skill_model
     ).strip()
     policy_config = _policy_config(spec, cfg.policy, device)
-    if spec.get("architecture") == COND_GEMMA_ARCHITECTURE:
+    if policy_config.type == "skill_vla_stage2":
+        stage2_mode = str(getattr(policy_config, "stage2_mode", "likelihood"))
+        dsbc_detail = (
+            ", noise_output="
+            f"{getattr(policy_config, 'dsbc_noise_output_mode', 'shared')}"
+            if stage2_mode == "dsbc"
+            else ""
+        )
+        log.info(
+            "[%s] Stage-2 mode=%s%s architecture=%s revision=%s "
+            "conditioning_route=%s; VLM start=%s.",
+            spec["label"],
+            stage2_mode,
+            dsbc_detail,
+            spec.get("architecture"),
+            spec.get("architecture_revision"),
+            spec.get("conditioning_route"),
+            STAGE2_VLM_START_CONTRACT,
+        )
+    elif spec.get("architecture") == COND_GEMMA_ARCHITECTURE:
         log.info(
             "[%s] Stage-1 %s architecture=%s revision=%s conditioning_route=%s, "
             "loss=%s%s.",
@@ -1076,6 +1136,8 @@ def _panel_signature(spec: dict, task_names: set[str], cfg) -> dict:
     return {
         "policy_path": spec["policy_path"],
         "external_skill_model": spec.get("external_skill_model") or "",
+        "external_predictor_model": spec.get("external_predictor_model") or "",
+        "external_terminator_model": spec.get("external_terminator_model") or "",
         "skill_source": spec["skill_source"],
         "advance_mode": spec["advance_mode"],
         "terminator_variant": spec.get("terminator_variant", "state_image"),
@@ -1083,6 +1145,15 @@ def _panel_signature(spec: dict, task_names: set[str], cfg) -> dict:
         "architecture_label": spec.get("architecture_label"),
         "architecture_revision": spec.get("architecture_revision"),
         "conditioning_route": spec.get("conditioning_route"),
+        "stage2_mode": spec.get("stage2_mode"),
+        "dsbc_noise_output_mode": spec.get("dsbc_noise_output_mode"),
+        "dsbc_frs_num_steps": spec.get("dsbc_frs_num_steps"),
+        "dsbc_anchor_seed": spec.get("dsbc_anchor_seed"),
+        "stage2_vlm_start_contract": (
+            STAGE2_VLM_START_CONTRACT
+            if spec.get("mode") == "stage2"
+            else None
+        ),
         "previous_checkpoint": spec.get("previous_checkpoint", False),
         "vision_conditioning_mode": spec.get("vision_conditioning_mode"),
         "include_state_in_visual_crossattn": spec.get(
@@ -1127,11 +1198,20 @@ def _load_resumed_panel_info(
         (_panel_cache_path(panel_root), "metrics cache"),
         (_legacy_panel_cache_path(panel_root), "legacy metrics cache"),
     )
+    found_signature_cache = False
     for cache_path, source in cache_paths:
         if cache_path.is_file():
+            found_signature_cache = True
             cached = json.loads(cache_path.read_text())
-            if cached.get("signature") == signature and isinstance(cached.get("info"), dict):
+            if cached.get("signature") == signature and isinstance(
+                cached.get("info"), dict
+            ):
                 return cached["info"], source
+    if found_signature_cache:
+        # A cache from a known evaluator exists but its contract changed (for
+        # example likelihood -> DSBC or live-frame -> skill-start VLM input).
+        # Never fall through to the pre-signature artifact compatibility path.
+        return None, None
     # Compatibility for panels completed before per-panel caches were introduced.
     return (
         {
@@ -1271,10 +1351,27 @@ def _maybe_log_wandb(cfg, infos: dict[str, dict], specs: list[dict]) -> None:
                         "external_skill_model": (
                             spec.get("external_skill_model") or "unused"
                         ),
+                        "external_predictor_model": (
+                            spec.get("external_predictor_model") or "unused"
+                        ),
+                        "external_terminator_model": (
+                            spec.get("external_terminator_model") or "unused"
+                        ),
                         "architecture": spec.get("architecture"),
                         "architecture_label": spec.get("architecture_label"),
                         "architecture_revision": spec.get("architecture_revision"),
                         "conditioning_route": spec.get("conditioning_route"),
+                        "stage2_mode": spec.get("stage2_mode"),
+                        "dsbc_noise_output_mode": spec.get(
+                            "dsbc_noise_output_mode"
+                        ),
+                        "dsbc_frs_num_steps": spec.get("dsbc_frs_num_steps"),
+                        "dsbc_anchor_seed": spec.get("dsbc_anchor_seed"),
+                        "stage2_vlm_start_contract": (
+                            STAGE2_VLM_START_CONTRACT
+                            if spec.get("mode") == "stage2"
+                            else None
+                        ),
                         "previous_checkpoint": spec.get(
                             "previous_checkpoint", False
                         ),
@@ -1398,15 +1495,21 @@ def eval_main(cfg: EvalPipelineConfig):
                     )
                     continue
             log.info(
-                "[%s] loading %s (skill_source=%s, advance_mode=%s, "
-                "terminator_variant=%s, "
-                "external_skill_model=%s).",
+                "[%s] loading %s (stage2_mode=%s, skill_source=%s, "
+                "advance_mode=%s, terminator_variant=%s, predictor=%s, "
+                "terminator=%s).",
                 spec["label"],
                 spec["policy_path"],
+                spec.get("stage2_mode", "prior_or_stage1"),
                 spec["skill_source"],
                 spec["advance_mode"],
                 spec.get("terminator_variant", "state_image"),
-                spec.get("external_skill_model") or "unused",
+                spec.get("external_predictor_model")
+                or spec.get("external_skill_model")
+                or "unused",
+                spec.get("external_terminator_model")
+                or spec.get("external_skill_model")
+                or "unused",
             )
             context = _build_context(spec, cfg, device)
             try:
