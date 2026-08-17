@@ -66,18 +66,14 @@ cumulative_xyz_loss:
   weight: 0.5
 
 # Auto name: {stage1_run}_{checkpoint}_{gt|predictor}_{batchON|batchOFF}[_cumxyz{weight}][_{suffix}]
-<<<<<<< HEAD
 run: {suffix: "lasthalf_bs256"}
-=======
-run: {suffix: "lasthalf_fixed"}
->>>>>>> e211906 (sav)
 
 training:
   dataloader:
-    # batch_size: 32
-    # workers: 8
-    batch_size: 256
-    workers: 24
+    batch_size: 256 # 32
+    workers: 24 # 8
+    # batch_size: 32 
+    # workers: 8 
     gpus: 1
     # Half the batch becomes post-jitter-same-skill/different-task pairs.
     same_skill_different_task: {enabled: false, grouped_fraction: 0.5, progress_temperature: 0.1}
