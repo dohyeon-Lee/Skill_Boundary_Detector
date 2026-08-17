@@ -1,4 +1,4 @@
-"""BayesVLA-style Stage-2 likelihood refinement on the frozen cond_gemma Stage-1 prior.
+"""Selectable likelihood or FRS/DSBC Stage 2 on a frozen Cond-Gemma VSA.
 
 Stage 2 assembles two independently trained frozen pieces:
 
@@ -8,9 +8,10 @@ Stage 2 assembles two independently trained frozen pieces:
   frozen VLM (and trained reader/head) is loaded completely into the predictor
   module built from that checkpoint's own architecture fields.
 
-Only the four likelihood blocks, the VLM projection, and the action head train.
-Terminators are attached externally at evaluation time via
-``load_external_terminator`` and are never part of Stage-2 training.
+Likelihood mode trains the four extra blocks, VLM projection, and warm-started
+action head. DSBC instead freezes the complete Stage-1 VSA and trains the same
+extra path with a fresh initial-noise head. Terminators are attached externally
+at evaluation time and are never part of Stage-2 training.
 """
 
 from __future__ import annotations
@@ -175,7 +176,7 @@ class LikelihoodBlock(nn.Module):
 
 
 class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
-    """Frozen cond_gemma Stage-1 prior plus four action-only likelihood blocks."""
+    """Frozen Stage-1 VSA plus four language-conditioned Stage-2 blocks."""
 
     def __init__(self, config: SkillVLAStage2Config):
         super().__init__(config)
@@ -193,6 +194,27 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
             LikelihoodBlock(expert_config, first_index + index)
             for index in range(config.likelihood_num_layers)
         )
+        action_feature = (config.output_features or {}).get(ACTION)
+        self.real_action_dim = (
+            int(action_feature.shape[0])
+            if action_feature is not None
+            else int(config.max_action_dim)
+        )
+        self.noise_out_proj = None
+        if config.stage2_mode == "dsbc":
+            self.noise_out_proj = nn.Linear(self.width, self.real_action_dim)
+            anchor_generator = torch.Generator(device="cpu")
+            anchor_generator.manual_seed(config.dsbc_anchor_seed)
+            self.register_buffer(
+                "dsbc_anchor_noise",
+                torch.randn(
+                    1,
+                    config.chunk_size,
+                    config.max_action_dim,
+                    generator=anchor_generator,
+                    dtype=torch.float32,
+                ),
+            )
         self.likelihood_layer_mix = None
         if config.likelihood_vlm_memory == "layer_mix":
             vlm_layers = int(
@@ -215,7 +237,12 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
         self.requires_grad_(False)
         self.vlm_to_expert_projection.requires_grad_(True)
         self.likelihood_blocks.requires_grad_(True)
-        self.action_out_proj.requires_grad_(True)
+        if self.config.stage2_mode == "likelihood":
+            self.action_out_proj.requires_grad_(True)
+        else:
+            if self.noise_out_proj is None:
+                raise RuntimeError("DSBC mode has no noise output head.")
+            self.noise_out_proj.requires_grad_(True)
         if self.likelihood_layer_mix is not None:
             self.likelihood_layer_mix.requires_grad_(True)
 
@@ -226,8 +253,14 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
         trainable_ids = {
             id(self.vlm_to_expert_projection),
             id(self.likelihood_blocks),
-            id(self.action_out_proj),
         }
+        trainable_head = (
+            self.action_out_proj
+            if self.config.stage2_mode == "likelihood"
+            else self.noise_out_proj
+        )
+        if trainable_head is not None:
+            trainable_ids.add(id(trainable_head))
         for child in self.children():
             if id(child) not in trainable_ids:
                 child.eval()
@@ -304,7 +337,7 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
             for index in range(len(self.likelihood_blocks))
         ]
 
-    def _likelihood_velocity(
+    def _run_likelihood_blocks(
         self,
         prior_hidden: Tensor,
         memories: list[Tensor],
@@ -337,7 +370,362 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
                     expert_condition,
                     position_embeddings,
                 )
+        return hidden
+
+    def _likelihood_velocity(
+        self,
+        prior_hidden: Tensor,
+        memories: list[Tensor],
+        vlm_key_padding_mask: Tensor,
+        expert_condition: Tensor,
+    ) -> Tensor:
+        hidden = self._run_likelihood_blocks(
+            prior_hidden,
+            memories,
+            vlm_key_padding_mask,
+            expert_condition,
+        )
         return self.action_out_proj(hidden.to(self.working_dtype)).float()
+
+    def _dsbc_noise_prediction(
+        self,
+        images: list[Tensor],
+        vlm_start_images: list[Tensor],
+        state: Tensor | None,
+        skill_code: Tensor | None,
+        language_tokens: Tensor,
+        language_mask: Tensor,
+        *,
+        condition_tokens: Tensor | None = None,
+    ) -> Tensor:
+        """Predict the real-action part of the initial VSA noise."""
+        if self.config.stage2_mode != "dsbc" or self.noise_out_proj is None:
+            raise RuntimeError("DSBC noise prediction requires stage2_mode='dsbc'.")
+        if state is not None:
+            batch_size = state.shape[0]
+        elif skill_code is not None:
+            batch_size = skill_code.shape[0]
+        elif images:
+            batch_size = images[0].shape[0]
+        else:
+            raise ValueError("DSBC prediction requires state, skill, or image metadata.")
+
+        selector_time = torch.ones(
+            batch_size, dtype=torch.float32, device=language_tokens.device
+        )
+        anchor = self.dsbc_anchor_noise.expand(batch_size, -1, -1)
+        with torch.no_grad():
+            if condition_tokens is None:
+                condition_tokens = self._condition_tokens(
+                    images, batch_size=batch_size
+                )
+            prior_hidden, expert_condition = self._prior_action_hidden(
+                condition_tokens, anchor, state, skill_code, selector_time
+            )
+            vlm_hidden, vlm_key_padding_mask = self._encode_likelihood_memory(
+                vlm_start_images, language_tokens, language_mask
+            )
+        hidden = self._run_likelihood_blocks(
+            prior_hidden,
+            self._likelihood_memories(vlm_hidden),
+            vlm_key_padding_mask,
+            expert_condition,
+        )
+        if self.config.dsbc_noise_output_mode == "shared":
+            hidden = hidden.mean(dim=1)
+        return self.noise_out_proj(hidden.to(self.working_dtype)).float()
+
+    @staticmethod
+    def _frs_state(
+        real_state: Tensor,
+        padding_noise: Tensor,
+        time_value: float,
+    ) -> Tensor:
+        if padding_noise.shape[-1] == 0:
+            return real_state
+        return torch.cat(
+            (real_state, padding_noise * time_value),
+            dim=-1,
+        )
+
+    @torch.no_grad()
+    def _frs_reverse_with_expert_context_cache(
+        self,
+        condition_tokens: Tensor,
+        context_tokens: Tensor,
+        actions: Tensor,
+        padding_noise: Tensor,
+        num_steps: int,
+        condition_state: Tensor | None,
+    ) -> Tensor:
+        """Integrate the frozen Stage-1 VSA from action t=0 to noise t=1."""
+        batch_size = actions.shape[0]
+        n_prefix = condition_tokens.shape[1] + context_tokens.shape[1]
+        n_action = actions.shape[1]
+        device = actions.device
+        prefix_cache = self._visual_context_cache(
+            condition_tokens, context_tokens, condition_state
+        )
+        action_padding = torch.ones(
+            batch_size, n_action, dtype=torch.bool, device=device
+        )
+        action_blocks = torch.tensor(
+            [1] + [0] * (n_action - 1), dtype=torch.bool, device=device
+        )[None].expand(batch_size, -1)
+        action_attention = make_att_2d_masks(action_padding, action_blocks)
+        prefix_visible = torch.ones(
+            batch_size, n_action, n_prefix, dtype=torch.bool, device=device
+        )
+        full_attention = torch.cat((prefix_visible, action_attention), dim=2)[:, None]
+        full_attention = torch.where(
+            full_attention, 0.0, OPENPI_ATTENTION_MASK_VALUE
+        )
+        action_positions = n_prefix + torch.cumsum(action_padding, dim=1) - 1
+
+        dt = 1.0 / num_steps
+        real_state = actions[..., : self.real_action_dim].float()
+        for step in range(num_steps):
+            time_value = step * dt
+            time = torch.full(
+                (batch_size,), time_value, dtype=torch.float32, device=device
+            )
+            expert_condition = self._expert_condition(time)
+            action_hidden = self._action_hidden_with_condition_cache(
+                self._frs_state(real_state, padding_noise, time_value),
+                expert_condition,
+                None,
+                prefix_cache,
+                full_attention,
+                action_positions,
+            )
+            velocity = self.action_out_proj(
+                action_hidden.to(self.working_dtype)
+            ).float()
+            real_state = real_state + dt * velocity[..., : self.real_action_dim]
+        return real_state
+
+    @torch.no_grad()
+    def _frs_reverse_with_condition_cache(
+        self,
+        condition_tokens: Tensor,
+        actions: Tensor,
+        state: Tensor | None,
+        skill_code: Tensor | None,
+        padding_noise: Tensor,
+        num_steps: int,
+    ) -> Tensor:
+        """Action-to-noise integration for the standard Cond-Gemma route."""
+        batch_size, n_condition = condition_tokens.shape[:2]
+        n_chunk = actions.shape[1]
+        device = actions.device
+        projected_state = self._project_state(state)
+        expert_projected_state = self._project_expert_state(
+            state, projected_state
+        )
+        condition_state = projected_state if self.uses_cond_state_adarms else None
+        condition_state_start_index = self._condition_state_start_index(
+            condition_tokens
+        )
+        condition_skill, expert_skill = self._skill_broadcasts(skill_code)
+
+        condition_padding = torch.ones(
+            batch_size, n_condition, dtype=torch.bool, device=device
+        )
+        condition_blocks = torch.zeros_like(condition_padding)
+        condition_attention = make_att_2d_masks(
+            condition_padding, condition_blocks
+        )[:, None]
+        condition_attention = torch.where(
+            condition_attention, 0.0, OPENPI_ATTENTION_MASK_VALUE
+        )
+        condition_positions = torch.cumsum(condition_padding, dim=1) - 1
+        condition_cache = self.cond_encoder.model.forward(
+            inputs_embeds=condition_tokens,
+            attention_mask=condition_attention,
+            position_ids=condition_positions,
+            past_key_values=None,
+            use_cache=True,
+            adarms_cond=condition_state,
+            adarms_start_index=condition_state_start_index,
+            broadcast_cond=condition_skill,
+        ).past_key_values
+
+        action_padding = torch.ones(
+            batch_size, n_chunk, dtype=torch.bool, device=device
+        )
+        action_blocks = torch.tensor(
+            [1] + [0] * (n_chunk - 1), dtype=torch.bool, device=device
+        )[None].expand(batch_size, -1)
+        action_attention = make_att_2d_masks(action_padding, action_blocks)
+        condition_visible = condition_padding[:, None].expand(
+            batch_size, n_chunk, n_condition
+        )
+        full_attention = torch.cat((condition_visible, action_attention), dim=2)[:, None]
+        full_attention = torch.where(
+            full_attention, 0.0, OPENPI_ATTENTION_MASK_VALUE
+        )
+        action_positions = n_condition + torch.cumsum(action_padding, dim=1) - 1
+
+        dt = 1.0 / num_steps
+        real_state = actions[..., : self.real_action_dim].float()
+        for step in range(num_steps):
+            time_value = step * dt
+            time = torch.full(
+                (batch_size,), time_value, dtype=torch.float32, device=device
+            )
+            expert_condition = self._expert_condition(
+                time, expert_projected_state, skill_code
+            )
+            action_hidden = self._action_hidden_with_condition_cache(
+                self._frs_state(real_state, padding_noise, time_value),
+                expert_condition,
+                expert_skill,
+                condition_cache,
+                full_attention,
+                action_positions,
+            )
+            velocity = self.action_out_proj(
+                action_hidden.to(self.working_dtype)
+            ).float()
+            real_state = real_state + dt * velocity[..., : self.real_action_dim]
+        return real_state
+
+    @torch.no_grad()
+    def _frs_target_noise(
+        self,
+        images: list[Tensor],
+        state: Tensor | None,
+        skill_code: Tensor | None,
+        actions: Tensor,
+        *,
+        padding_noise: Tensor | None = None,
+        condition_tokens: Tensor | None = None,
+    ) -> Tensor:
+        """Build an online FRS real-action noise target with the frozen VSA."""
+        if self.config.stage2_mode != "dsbc":
+            raise RuntimeError("FRS targets are defined only in DSBC mode.")
+        batch_size, chunk_size = actions.shape[:2]
+        padding_dim = self.config.max_action_dim - self.real_action_dim
+        if padding_noise is None:
+            padding_noise = self.sample_noise(
+                (batch_size, chunk_size, padding_dim), actions.device
+            )
+        expected_shape = (batch_size, chunk_size, padding_dim)
+        if tuple(padding_noise.shape) != expected_shape:
+            raise ValueError(
+                f"FRS padding noise must have shape {expected_shape}, got "
+                f"{tuple(padding_noise.shape)}."
+            )
+        if condition_tokens is None:
+            condition_tokens = self._condition_tokens(
+                images, batch_size=batch_size
+            )
+        num_steps = self.config.dsbc_frs_num_steps
+        if self.uses_expert_context_tokens:
+            return self._frs_reverse_with_expert_context_cache(
+                condition_tokens,
+                self._expert_context_tokens(state, skill_code),
+                actions,
+                padding_noise,
+                num_steps,
+                self._state_condition(state),
+            )
+        return self._frs_reverse_with_condition_cache(
+            condition_tokens,
+            actions,
+            state,
+            skill_code,
+            padding_noise,
+            num_steps,
+        )
+
+    @torch.no_grad()
+    def _dsbc_action_flow_residual(
+        self,
+        condition_tokens: Tensor,
+        state: Tensor | None,
+        skill_code: Tensor | None,
+        actions: Tensor,
+        predicted_noise: Tensor,
+        padding_noise: Tensor,
+    ) -> Tensor:
+        """Evaluate DSBC with the same flow residual logged by legacy Stage 2.
+
+        This is a detached comparison metric only. The optimization objective
+        remains the FRS-target noise MSE returned by ``dsbc_training_pair``.
+        """
+        if self.config.dsbc_noise_output_mode == "shared":
+            predicted_noise = predicted_noise[:, None].expand(
+                -1, actions.shape[1], -1
+            )
+        source = torch.cat((predicted_noise.float(), padding_noise.float()), dim=-1)
+        time = self.sample_time(actions.shape[0], actions.device)
+        x_t = (
+            time[:, None, None] * source
+            + (1.0 - time[:, None, None]) * actions.float()
+        )
+        target_velocity = source - actions.float()
+        prior_hidden, expert_condition = self._prior_action_hidden(
+            condition_tokens,
+            x_t,
+            state,
+            skill_code,
+            time,
+        )
+        predicted_velocity = self.action_out_proj(
+            prior_hidden.to(self.working_dtype)
+        ).float()
+        return (
+            target_velocity[..., : self.real_action_dim]
+            - predicted_velocity[..., : self.real_action_dim]
+        )
+
+    def dsbc_training_pair(
+        self,
+        images: list[Tensor],
+        vlm_start_images: list[Tensor],
+        state: Tensor | None,
+        skill_code: Tensor | None,
+        actions: Tensor,
+        language_tokens: Tensor,
+        language_mask: Tensor,
+    ) -> tuple[Tensor, Tensor, Tensor]:
+        """Return prediction, FRS target, and detached legacy action residual."""
+        batch_size, chunk_size = actions.shape[:2]
+        padding_dim = self.config.max_action_dim - self.real_action_dim
+        padding_noise = self.sample_noise(
+            (batch_size, chunk_size, padding_dim), actions.device
+        )
+        with torch.no_grad():
+            condition_tokens = self._condition_tokens(
+                images, batch_size=batch_size
+            )
+        target = self._frs_target_noise(
+            images,
+            state,
+            skill_code,
+            actions,
+            padding_noise=padding_noise,
+            condition_tokens=condition_tokens,
+        )
+        prediction = self._dsbc_noise_prediction(
+            images,
+            vlm_start_images,
+            state,
+            skill_code,
+            language_tokens,
+            language_mask,
+            condition_tokens=condition_tokens,
+        )
+        action_residual = self._dsbc_action_flow_residual(
+            condition_tokens,
+            state,
+            skill_code,
+            actions,
+            prediction.detach(),
+            padding_noise,
+        )
+        return prediction, target, action_residual
 
     def forward(
         self,
@@ -352,6 +740,11 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
         noise: Tensor | None = None,
         time: Tensor | None = None,
     ) -> Tensor:
+        if getattr(self.config, "stage2_mode", "likelihood") != "likelihood":
+            raise RuntimeError(
+                "The flow-residual forward is available only in likelihood mode; "
+                "use dsbc_training_pair in DSBC mode."
+            )
         self._last_vsa_debug_stats = {}
         batch_size = actions.shape[0]
         time = self.sample_time(batch_size, actions.device) if time is None else time
@@ -397,6 +790,17 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
         noise: Tensor | None = None,
         num_steps: int | None = None,
     ) -> Tensor:
+        if getattr(self.config, "stage2_mode", "likelihood") == "dsbc":
+            return self._sample_dsbc_actions(
+                images,
+                vlm_start_images,
+                state,
+                skill_code,
+                language_tokens,
+                language_mask,
+                noise=noise,
+                num_steps=num_steps,
+            )
         num_steps = self.config.num_inference_steps if num_steps is None else num_steps
         if state is not None:
             batch_size, device = state.shape[0], state.device
@@ -433,6 +837,54 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
             num_steps,
             memories,
             vlm_key_padding_mask,
+        )
+
+    @torch.no_grad()
+    def _sample_dsbc_actions(
+        self,
+        images: list[Tensor],
+        vlm_start_images: list[Tensor],
+        state: Tensor | None,
+        skill_code: Tensor | None,
+        language_tokens: Tensor,
+        language_mask: Tensor,
+        *,
+        noise: Tensor | None,
+        num_steps: int | None,
+    ) -> Tensor:
+        """Select initial noise once, then run the completely frozen Stage-1 VSA."""
+        predicted = self._dsbc_noise_prediction(
+            images,
+            vlm_start_images,
+            state,
+            skill_code,
+            language_tokens,
+            language_mask,
+        )
+        if self.config.dsbc_noise_output_mode == "shared":
+            predicted = predicted[:, None].expand(-1, self.config.chunk_size, -1)
+        batch_size = predicted.shape[0]
+        expected_shape = (
+            batch_size,
+            self.config.chunk_size,
+            self.config.max_action_dim,
+        )
+        if noise is None:
+            initial_noise = self.sample_noise(expected_shape, predicted.device)
+        else:
+            if tuple(noise.shape) != expected_shape:
+                raise ValueError(
+                    f"DSBC padding-noise reservoir must have shape {expected_shape}, "
+                    f"got {tuple(noise.shape)}."
+                )
+            initial_noise = noise.float().clone()
+        initial_noise[..., : self.real_action_dim] = predicted
+        return super().sample_actions(
+            images,
+            state,
+            skill_code,
+            noise=initial_noise,
+            num_steps=num_steps,
         )
 
     def _likelihood_sample_with_expert_context_cache(
@@ -614,7 +1066,7 @@ _STAGE1_OPTIONAL_CONTRACT_FIELDS = (
 
 
 class SkillVLAStage2Policy(SkillExpertPolicy):
-    """Likelihood policy assembled from a frozen prior and a frozen predictor VLM."""
+    """Stage-2 policy assembled from a frozen prior and predictor VLM."""
 
     config_class = SkillVLAStage2Config
     name = "skill_vla_stage2"
@@ -709,6 +1161,8 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
             "model.vlm_to_expert_projection.",
             "model.likelihood_blocks.",
             "model.likelihood_layer_mix",
+            "model.noise_out_proj.",
+            "model.dsbc_anchor_noise",
             "model.skill_predictor.",
         )
         invalid_missing = [
@@ -725,11 +1179,12 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
             len(state_dict),
             len(missing),
         )
-        # Snapshot the warm-started head so training logs can separate "head
-        # re-fitting" from genuine likelihood-block usage.
-        self._initial_action_head = (
-            self.model.action_out_proj.weight.detach().float().cpu().clone()
-        )
+        if self.config.stage2_mode == "likelihood":
+            # Snapshot the warm-started head so training logs can separate "head
+            # re-fitting" from genuine likelihood-block usage.
+            self._initial_action_head = (
+                self.model.action_out_proj.weight.detach().float().cpu().clone()
+            )
 
     def _initialize_predictor(self, checkpoint_path: str | Path | None) -> None:
         predictor = self.model.skill_predictor
@@ -820,15 +1275,28 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
             metrics["stage2/action_head_drift_rel"] = float(
                 (head - initial_head).square().mean().sqrt().item()
             ) / max(reference_rms, 1e-12)
+        noise_head = getattr(self.model, "noise_out_proj", None)
+        if noise_head is not None:
+            metrics["dsbc/noise_head_weight_rms"] = float(
+                noise_head.weight.detach().float().square().mean().sqrt().item()
+            )
         return metrics
 
     def get_optim_params(self) -> list[dict]:
+        stage2_mode = getattr(getattr(self, "config", None), "stage2_mode", "likelihood")
+        trainable_head = (
+            self.model.action_out_proj
+            if stage2_mode == "likelihood"
+            else self.model.noise_out_proj
+        )
+        if trainable_head is None:
+            raise RuntimeError(f"Stage-2 mode {stage2_mode!r} has no trainable head.")
         trainable = [
             parameter
             for module in (
                 self.model.vlm_to_expert_projection,
                 self.model.likelihood_blocks,
-                self.model.action_out_proj,
+                trainable_head,
             )
             for parameter in module.parameters()
             if parameter.requires_grad
@@ -960,7 +1428,125 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
             ).abs().mean().item()
         return metrics
 
+    def _forward_dsbc(self, batch: dict, reduction: str):
+        actions = pad_vector(batch[ACTION], self.config.max_action_dim)
+        real_dim = self.config.output_features[ACTION].shape[0]
+        if real_dim != self.model.real_action_dim:
+            raise RuntimeError(
+                "DSBC real-action dimension changed after model construction: "
+                f"{real_dim} != {self.model.real_action_dim}."
+            )
+        device = actions.device
+        route = normalize_conditioning_route(self.config.conditioning_route)
+        state = (
+            None
+            if route in STATELESS_CONDITIONING_ROUTES
+            else pad_vector(batch[OBS_STATE], self.config.max_state_dim)
+        )
+        skill_code = (
+            None
+            if route in SKILLLESS_CONDITIONING_ROUTES
+            else self._training_skill_code(batch)
+        )
+        images = self._collect_images(batch)
+        vlm_start_images = self._predictor_start_images(batch)
+        prediction, target, action_residual = self.model.dsbc_training_pair(
+            images,
+            vlm_start_images,
+            state,
+            skill_code,
+            actions,
+            batch[OBS_LANGUAGE_TOKENS].to(device),
+            batch[OBS_LANGUAGE_ATTENTION_MASK].to(device),
+        )
+        valid = self._valid_action_steps(actions, batch)
+        valid_float = valid.to(target.dtype).unsqueeze(-1)
+        valid_per_sample = valid.sum(dim=1).clamp(min=1).to(target.dtype)
+
+        action_squared_error = action_residual.square()
+        valid_steps = valid.sum().clamp(min=1).to(target.dtype)
+        action_loss = (action_squared_error * valid_float).sum() / (
+            valid_steps * real_dim
+        )
+        action_loss_per_dim = (
+            action_squared_error * valid_float
+        ).sum(dim=(0, 1)) / valid_steps
+
+        if self.config.dsbc_noise_output_mode == "shared":
+            shared_target = (target * valid_float).sum(dim=1) / valid_per_sample[:, None]
+            squared_error = (prediction - shared_target).square()
+            per_sample = squared_error.mean(dim=-1)
+            noise_loss = per_sample.mean()
+            loss_per_dim = squared_error.mean(dim=0)
+            metric_prediction = prediction[:, None].expand_as(target)
+        else:
+            squared_error = (prediction - target).square()
+            per_sample = (squared_error * valid_float).sum(dim=(1, 2)) / (
+                valid_per_sample * real_dim
+            )
+            noise_loss = (squared_error * valid_float).sum() / (
+                valid_steps * real_dim
+            )
+            loss_per_dim = (squared_error * valid_float).sum(dim=(0, 1)) / valid_steps
+            metric_prediction = prediction
+
+        loss_dict = {
+            # Same flow-velocity MSE key as legacy Stage 2 for W&B comparison;
+            # this detached diagnostic is not the DSBC optimization objective.
+            "action_loss": action_loss.detach().item(),
+            "loss_per_dim": action_loss_per_dim.detach().cpu().tolist(),
+            "gt_noise_loss": noise_loss.detach().item(),
+            "gt_noise_loss_per_dim": loss_per_dim.detach().cpu().tolist(),
+            # Retain the shorter aliases for scripts consuming early DSBC runs.
+            "noise_loss": noise_loss.detach().item(),
+            "noise_loss_per_dim": loss_per_dim.detach().cpu().tolist(),
+            "dsbc/target_rms": target.detach().float().square().mean().sqrt().item(),
+            "dsbc/prediction_rms": (
+                metric_prediction.detach().float().square().mean().sqrt().item()
+            ),
+            "dsbc/frs_displacement_rms": (
+                (target.detach() - actions[..., :real_dim].float())
+                .square()
+                .mean()
+                .sqrt()
+                .item()
+            ),
+            "dsbc/output_shared": float(
+                self.config.dsbc_noise_output_mode == "shared"
+            ),
+            "dsbc/frs_num_steps": float(self.config.dsbc_frs_num_steps),
+            "stage2/skill_source_predictor": float(
+                self.config.training_skill_source == "predictor"
+            ),
+        }
+        jitter_fraction = getattr(self, "_last_transition_jitter_fraction", None)
+        if jitter_fraction is not None:
+            loss_dict["regime/transition_jitter_fraction"] = (
+                jitter_fraction.detach().item()
+            )
+        predicted_accuracy = getattr(self, "_last_predicted_skill_accuracy", None)
+        if predicted_accuracy is not None:
+            loss_dict["conditioning/predictor_acc_vs_jittered_gt"] = (
+                predicted_accuracy.detach().item()
+            )
+            loss_dict["conditioning/unique_predicted_skills"] = float(
+                self._last_unique_predicted_skills
+            )
+        predicted_diff = getattr(self, "_last_predicted_diff_from_current", None)
+        if predicted_diff is not None:
+            loss_dict["conditioning/predicted_diff_from_current_gt"] = (
+                predicted_diff.detach().item()
+            )
+        if skill_code is not None:
+            loss_dict.update(self._same_skill_batch_metrics(batch, skill_code))
+        loss_dict.update(self._likelihood_usage_metrics())
+        if reduction == "none":
+            return per_sample, loss_dict
+        return noise_loss, loss_dict
+
     def forward(self, batch: dict, reduction: str = "mean"):
+        if getattr(self.config, "stage2_mode", "likelihood") == "dsbc":
+            return self._forward_dsbc(batch, reduction)
         actions = pad_vector(batch[ACTION], self.config.max_action_dim)
         real_dim = self.config.output_features[ACTION].shape[0]
         device = actions.device

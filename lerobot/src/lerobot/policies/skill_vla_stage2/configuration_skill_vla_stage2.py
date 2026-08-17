@@ -15,7 +15,7 @@ from lerobot.policies.skill_expert.configuration_skill_expert import (
 @PreTrainedConfig.register_subclass("skill_vla_stage2")
 @dataclass
 class SkillVLAStage2Config(SkillExpertConfig):
-    """Frozen cond_gemma Stage-1 prior plus four language-conditioned action blocks.
+    """Frozen Stage-1 prior with likelihood-refinement or DSBC Stage-2 blocks.
 
     The Stage-1 prior checkpoint carries no predictor or terminator of its own.
     The frozen VLM memory comes from a separate ``skill_predictor_checkpoint_path``
@@ -32,6 +32,10 @@ class SkillVLAStage2Config(SkillExpertConfig):
     # enabled); Stage 2 never trains it.
     train_skill_predictor: bool = True
     stage1_checkpoint_path: str | None = None
+    # likelihood preserves the original Stage-2 flow-refinement objective.
+    # dsbc learns an initial-noise selector from online FRS targets while the
+    # complete Stage-1 VSA, including its action head, remains frozen.
+    stage2_mode: str = "likelihood"
     training_skill_source: str = "gt"
     likelihood_num_layers: int = 4
     likelihood_cross_attention_heads: int = 8
@@ -42,6 +46,11 @@ class SkillVLAStage2Config(SkillExpertConfig):
     # layers, the VLM projection, and the layer mix). Counters the zero-gate
     # cold start that keeps the cross-attention pathway from opening.
     likelihood_gate_lr_scale: float = 1.0
+    # DSBC predicts either one real-action noise vector shared over the chunk,
+    # or one vector for every action token. Padding dimensions are never learned.
+    dsbc_noise_output_mode: str = "shared"
+    dsbc_frs_num_steps: int = 10
+    dsbc_anchor_seed: int = 0
     same_skill_batch_enabled: bool = False
     same_skill_batch_fraction: float = 0.5
     same_skill_progress_temperature: float = 0.1
@@ -59,6 +68,12 @@ class SkillVLAStage2Config(SkillExpertConfig):
             raise ValueError(
                 "Stage 2 is implemented on the cond_gemma Stage-1 prior; got "
                 f"architecture={self.architecture!r}."
+            )
+        self.stage2_mode = str(self.stage2_mode).strip().lower()
+        if self.stage2_mode not in {"likelihood", "dsbc"}:
+            raise ValueError(
+                "stage2_mode must be 'likelihood' or 'dsbc', got "
+                f"{self.stage2_mode!r}."
             )
         if self.action_loss_mode != "flow":
             raise ValueError(
@@ -87,6 +102,23 @@ class SkillVLAStage2Config(SkillExpertConfig):
             )
         if self.likelihood_gate_lr_scale <= 0.0:
             raise ValueError("likelihood_gate_lr_scale must be positive.")
+        self.dsbc_noise_output_mode = str(
+            self.dsbc_noise_output_mode
+        ).strip().lower()
+        if self.dsbc_noise_output_mode not in {"shared", "per_step"}:
+            raise ValueError(
+                "dsbc_noise_output_mode must be 'shared' or 'per_step', got "
+                f"{self.dsbc_noise_output_mode!r}."
+            )
+        if self.dsbc_frs_num_steps <= 0:
+            raise ValueError("dsbc_frs_num_steps must be positive.")
+        if self.dsbc_anchor_seed < 0:
+            raise ValueError("dsbc_anchor_seed must be non-negative.")
+        if self.stage2_mode == "dsbc" and self.cumulative_xyz_loss_enabled:
+            raise ValueError(
+                "cumulative_xyz_loss is defined only for likelihood mode; "
+                "DSBC is supervised directly on FRS noise."
+            )
         if not 0.0 <= self.same_skill_batch_fraction <= 1.0:
             raise ValueError("same_skill_batch_fraction must be in [0, 1].")
         if self.same_skill_progress_temperature <= 0.0:

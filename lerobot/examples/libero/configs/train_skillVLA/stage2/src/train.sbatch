@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Stage 2: frozen cond_gemma Stage-1 prior + frozen predictor VLM + four
-# language-conditioned likelihood blocks. No terminator in training.
+# Stage 2: corrected likelihood refinement or FRS/DSBC initial-noise selection.
 #SBATCH --job-name=stage2_likelihood
 #SBATCH --gres=gpu:1
 #SBATCH --requeue
@@ -25,6 +24,12 @@ if [ -n "${STAGE2_ENV_SNAPSHOT:-}" ] && [ -f "${STAGE2_ENV_SNAPSHOT}" ]; then
 else
   eval "$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/stage2_train_config.py" --config "${CONFIG_PATH}" --shell)"
 fi
+# Environment snapshots created before DSBC existed remain valid likelihood
+# snapshots, including across a manual restart after this code update.
+STAGE2_MODE="${STAGE2_MODE:-likelihood}"
+DSBC_NOISE_OUTPUT_MODE="${DSBC_NOISE_OUTPUT_MODE:-shared}"
+DSBC_FRS_NUM_STEPS="${DSBC_FRS_NUM_STEPS:-${NUM_INFERENCE_STEPS:-10}}"
+DSBC_ANCHOR_SEED="${DSBC_ANCHOR_SEED:-0}"
 
 cd "${LEROBOT_ROOT}"
 source "${PROJECT_ROOT}/.venv/bin/activate"
@@ -36,11 +41,16 @@ source "${PROJECT_ROOT}/lerobot/examples/libero/configs/runtime_env.sh"
 export PYTHONPATH="${LEROBOT_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
 unset LD_LIBRARY_PATH
 
-echo "START STAGE 2 LIKELIHOOD"
+echo "START STAGE 2 (${STAGE2_MODE})"
 echo "dataset  : ${SKILLVLA_DATASET_DIR}"
 echo "prior    : ${STAGE1_CHECKPOINT_PATH} (fully frozen, ${ARCHITECTURE}/${ARCHITECTURE_REVISION})"
 echo "predictor: ${PREDICTOR_CHECKPOINT_PATH} (fully frozen VLM)"
-echo "train    : VLM projection + ${LIKELIHOOD_NUM_LAYERS} blocks + action head"
+if [ "${STAGE2_MODE}" = dsbc ]; then
+  echo "train    : VLM projection + ${LIKELIHOOD_NUM_LAYERS} blocks + noise head (Stage-1 head frozen)"
+  echo "DSBC     : output=${DSBC_NOISE_OUTPUT_MODE}, online FRS steps=${DSBC_FRS_NUM_STEPS}, anchor seed=${DSBC_ANCHOR_SEED}"
+else
+  echo "train    : VLM projection + ${LIKELIHOOD_NUM_LAYERS} blocks + action head"
+fi
 echo "memory   : ${LIKELIHOOD_VLM_MEMORY} (gate lr x${LIKELIHOOD_GATE_LR_SCALE})"
 echo "schedule : ${SCHEDULER_MODE} warmup=${SCHEDULER_WARMUP_STEPS}"
 echo "skill    : ${TRAINING_SKILL_SOURCE}"
@@ -74,6 +84,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.architecture="${ARCHITECTURE}" \
     --policy.architecture_revision="${ARCHITECTURE_REVISION}" \
     --policy.architecture_label="${ARCHITECTURE_LABEL}" \
+    --policy.stage2_mode="${STAGE2_MODE}" \
     --policy.training_skill_source="${TRAINING_SKILL_SOURCE}" \
     --policy.cumulative_xyz_loss_enabled="${CUMULATIVE_XYZ_LOSS_ENABLED}" \
     --policy.cumulative_xyz_loss_weight="${CUMULATIVE_XYZ_LOSS_WEIGHT}" \
@@ -84,6 +95,9 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.likelihood_cross_attention_heads="${LIKELIHOOD_CROSS_ATTENTION_HEADS}" \
     --policy.likelihood_vlm_memory="${LIKELIHOOD_VLM_MEMORY}" \
     --policy.likelihood_gate_lr_scale="${LIKELIHOOD_GATE_LR_SCALE}" \
+    --policy.dsbc_noise_output_mode="${DSBC_NOISE_OUTPUT_MODE}" \
+    --policy.dsbc_frs_num_steps="${DSBC_FRS_NUM_STEPS}" \
+    --policy.dsbc_anchor_seed="${DSBC_ANCHOR_SEED}" \
     --policy.scheduler_mode="${SCHEDULER_MODE}" \
     --policy.scheduler_warmup_steps="${SCHEDULER_WARMUP_STEPS}" \
     --policy.scheduler_decay_steps="${SCHEDULER_DECAY_STEPS}" \

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Resolve and submit clean Stage-2 likelihood training.
+# Resolve and submit selectable likelihood or DSBC Stage-2 training.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -22,6 +22,7 @@ STAGE2_ENV_SNAPSHOT="${SCRIPT_DIR}/logs/stage2_env_$(date +%Y%m%d_%H%M%S)_$$.sh"
 source "${STAGE2_ENV_SNAPSHOT}"
 
 SBATCH_ARGS=(
+  --job-name="stage2_${STAGE2_MODE}"
   --partition="${TRAIN_PARTITION}"
   --qos="${TRAIN_QOS}"
   --gres="${TRAIN_GRES}"
@@ -32,7 +33,7 @@ SBATCH_ARGS=(
 if [ -n "${TRAIN_NODELIST}" ]; then SBATCH_ARGS+=(--nodelist="${TRAIN_NODELIST}"); fi
 if [ -n "${TRAIN_EXCLUDE_NODES}" ]; then SBATCH_ARGS+=(--exclude="${TRAIN_EXCLUDE_NODES}"); fi
 
-echo "Submit Stage-2 likelihood"
+echo "Submit Stage-2 ${STAGE2_MODE}"
 echo "  run      : ${PT_RUN_NAME}"
 echo "  dataset  : ${SKILLVLA_DATASET_DIR}"
 echo "  prior    : ${STAGE1_CHECKPOINT_PATH}"

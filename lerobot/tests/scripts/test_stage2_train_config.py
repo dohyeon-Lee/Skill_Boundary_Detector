@@ -181,8 +181,11 @@ def test_stage2_resolver_reads_checkpoint_config_without_parsing_run_name(
     assert settings["architecture"] == "cond_gemma"
     assert settings["architecture_revision"] == "skillvla_real_v1"
     assert settings["architecture_label"] == "arch0"
+    assert settings["stage2_mode"] == "likelihood"
     assert settings["skill_fsq_levels"] == "[3,3,3]"
     assert settings["likelihood_num_layers"] == 4
+    assert settings["dsbc_noise_output_mode"] == "shared"
+    assert settings["dsbc_frs_num_steps"] == 10
     assert settings["training_skill_source"] == "gt"
     assert settings["cumulative_xyz_loss_enabled"] is False
     assert settings["cumulative_xyz_loss_weight"] == pytest.approx(0.5)
@@ -270,6 +273,30 @@ def test_stage2_layer_mix_gate_scale_and_scheduler_knobs(tmp_path: Path) -> None
     config["likelihood"]["vlm_memory"] = "layer_mix"
     config["training"]["schedule"]["lr_mode"] = "linear"
     with pytest.raises(ValueError, match="warmup_constant"):
+        stage2_train_config.build_settings(config)
+
+
+def test_stage2_dsbc_settings_are_exported_and_use_a_separate_run(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    config["stage2_mode"] = "dsbc"
+    config["dsbc"] = {
+        "noise_output_mode": "per_step",
+        "frs_num_steps": 8,
+        "anchor_seed": 17,
+    }
+
+    settings = stage2_train_config.build_settings(config)
+
+    assert settings["stage2_mode"] == "dsbc"
+    assert settings["dsbc_noise_output_mode"] == "per_step"
+    assert settings["dsbc_frs_num_steps"] == 8
+    assert settings["dsbc_anchor_seed"] == 17
+    assert settings["pt_run_name"] == (
+        "stage1_exact_name_last_gt_batchOFF_dsbc_per_step_frs8"
+    )
+
+    config["cumulative_xyz_loss"] = {"enabled": True, "weight": 0.5}
+    with pytest.raises(ValueError, match="unavailable in DSBC"):
         stage2_train_config.build_settings(config)
 
 

@@ -6,6 +6,7 @@ from torch import nn
 from transformers.models.auto import CONFIG_MAPPING
 from transformers.models.gemma.modeling_gemma import GemmaRotaryEmbedding
 
+from lerobot.policies.skill_expert.cond_gemma import CondGemmaSkillExpert
 from lerobot.policies.skill_expert import modeling_skill_predictor
 from lerobot.policies.skill_expert.modeling_skill_predictor import (
     FrozenVLMSkillPredictor,
@@ -45,6 +46,7 @@ def test_stage2_config_fixes_bayesvla_contract() -> None:
 
     assert config.type == "skill_vla_stage2"
     assert config.architecture == "cond_gemma"
+    assert config.stage2_mode == "likelihood"
     assert config.likelihood_num_layers == 4
     assert config.training_skill_source == "gt"
     assert config.train_skill_predictor
@@ -87,6 +89,19 @@ def test_stage2_config_fixes_bayesvla_contract() -> None:
             architecture="vsa_perceiver_crossattn",
             architecture_revision="interleaved_direct1024_v3",
         )
+    dsbc = _config(
+        stage2_mode="dsbc",
+        dsbc_noise_output_mode="per_step",
+        dsbc_frs_num_steps=8,
+        dsbc_anchor_seed=17,
+    )
+    assert dsbc.dsbc_noise_output_mode == "per_step"
+    assert dsbc.dsbc_frs_num_steps == 8
+    assert dsbc.dsbc_anchor_seed == 17
+    with pytest.raises(ValueError, match="shared.*per_step"):
+        _config(stage2_mode="dsbc", dsbc_noise_output_mode="full")
+    with pytest.raises(ValueError, match="FRS noise"):
+        _config(stage2_mode="dsbc", cumulative_xyz_loss_enabled=True)
 
 
 def test_fresh_likelihood_block_is_exact_identity() -> None:
@@ -147,6 +162,55 @@ def test_stage2_optimizer_contains_only_injected_path_and_action_head() -> None:
     assert len(groups) == 1
     assert optimized == expected
     assert not optimized & {id(parameter) for parameter in holder.prior.parameters()}
+
+
+def test_dsbc_freezes_stage1_head_and_optimizes_only_selector_path() -> None:
+    model = SkillVLAStage2Pytorch.__new__(SkillVLAStage2Pytorch)
+    nn.Module.__init__(model)
+    model.config = SimpleNamespace(stage2_mode="dsbc")
+    model.prior = nn.Linear(2, 2)
+    model.vlm_to_expert_projection = nn.Linear(2, 2)
+    model.likelihood_blocks = nn.ModuleList([nn.Linear(2, 2)])
+    model.action_out_proj = nn.Linear(2, 1)
+    model.noise_out_proj = nn.Linear(2, 1)
+    model.likelihood_layer_mix = None
+
+    model._freeze_stage1_prior()
+
+    assert not any(parameter.requires_grad for parameter in model.prior.parameters())
+    assert not any(
+        parameter.requires_grad for parameter in model.action_out_proj.parameters()
+    )
+    assert all(
+        parameter.requires_grad
+        for module in (
+            model.vlm_to_expert_projection,
+            model.likelihood_blocks,
+            model.noise_out_proj,
+        )
+        for parameter in module.parameters()
+    )
+
+    policy = SkillVLAStage2Policy.__new__(SkillVLAStage2Policy)
+    nn.Module.__init__(policy)
+    policy.model = model
+    policy.config = SimpleNamespace(
+        stage2_mode="dsbc",
+        likelihood_gate_lr_scale=1.0,
+    )
+    optimized = {
+        id(parameter)
+        for parameter in policy.get_optim_params()[0]["params"]
+    }
+    assert optimized == {
+        id(parameter)
+        for module in (
+            model.vlm_to_expert_projection,
+            model.likelihood_blocks,
+            model.noise_out_proj,
+        )
+        for parameter in module.parameters()
+    }
 
 
 def test_stage2_layer_mix_memories_start_near_the_last_layer() -> None:
@@ -329,6 +393,127 @@ def test_stage2_memory_disables_skill_lora_but_predictor_memory_keeps_it(
     torch.testing.assert_close(base_padding, adapted_padding)
 
 
+@pytest.mark.parametrize("output_mode", ["shared", "per_step"])
+def test_dsbc_selector_uses_fixed_t1_anchor_and_configurable_noise_shape(
+    output_mode: str,
+) -> None:
+    model = SkillVLAStage2Pytorch.__new__(SkillVLAStage2Pytorch)
+    nn.Module.__init__(model)
+    model.config = SimpleNamespace(
+        stage2_mode="dsbc",
+        dsbc_noise_output_mode=output_mode,
+    )
+    model.action_in_proj = nn.Linear(2, 2, bias=False)
+    model.noise_out_proj = nn.Identity()
+    model.dsbc_anchor_noise = torch.tensor(
+        [[[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]]]
+    )
+    hidden = torch.tensor(
+        [[[10.0, 20.0], [30.0, 40.0], [50.0, 60.0]]]
+    )
+    captured = {}
+    model._condition_tokens = lambda images, batch_size=None: torch.zeros(1, 1, 2)
+
+    def prior(condition, anchor, state, skill, time):
+        del condition, state, skill
+        captured["anchor"] = anchor.detach().clone()
+        captured["time"] = time.detach().clone()
+        return hidden, torch.zeros(1, 2)
+
+    def vlm(start_images, tokens, mask):
+        del tokens, mask
+        captured["start_images"] = start_images
+        return torch.zeros(1, 1, 2), torch.zeros(1, 1, dtype=torch.bool)
+
+    model._prior_action_hidden = prior
+    model._encode_likelihood_memory = vlm
+    model._likelihood_memories = lambda vlm_hidden: [vlm_hidden]
+    model._run_likelihood_blocks = (
+        lambda prior_hidden, memories, padding, condition: prior_hidden
+    )
+    start_images = [torch.tensor([9.0])]
+
+    prediction = model._dsbc_noise_prediction(
+        [torch.tensor([8.0])],
+        start_images,
+        torch.zeros(1, 2),
+        torch.tensor([7]),
+        torch.zeros(1, 1, dtype=torch.long),
+        torch.ones(1, 1, dtype=torch.bool),
+    )
+
+    torch.testing.assert_close(captured["anchor"], model.dsbc_anchor_noise)
+    torch.testing.assert_close(captured["time"], torch.ones(1))
+    assert captured["start_images"] is start_images
+    expected = hidden.mean(dim=1) if output_mode == "shared" else hidden
+    torch.testing.assert_close(prediction, expected)
+
+
+def test_online_frs_runs_action_to_noise_and_forces_linear_padding_path() -> None:
+    model = SkillVLAStage2Pytorch.__new__(SkillVLAStage2Pytorch)
+    nn.Module.__init__(model)
+    model.real_action_dim = 1
+    model.action_in_proj = nn.Linear(2, 2, bias=False)
+    model.action_out_proj = nn.Identity()
+    model._visual_context_cache = lambda condition, context, state: object()
+    times = []
+    noisy_states = []
+
+    def expert_condition(time):
+        times.append(time.detach().clone())
+        return torch.zeros(time.shape[0], 2)
+
+    def action_hidden(noisy, condition, skill, cache, attention, positions):
+        del condition, skill, cache, attention, positions
+        noisy_states.append(noisy.detach().clone())
+        return noisy
+
+    model._expert_condition = expert_condition
+    model._action_hidden_with_condition_cache = action_hidden
+    target = model._frs_reverse_with_expert_context_cache(
+        torch.zeros(1, 1, 2),
+        torch.zeros(1, 1, 2),
+        torch.tensor([[[1.0, 0.0]]]),
+        torch.tensor([[[2.0]]]),
+        num_steps=2,
+        condition_state=None,
+    )
+
+    torch.testing.assert_close(target, torch.tensor([[[2.25]]]))
+    torch.testing.assert_close(torch.stack(times).flatten(), torch.tensor([0.0, 0.5]))
+    torch.testing.assert_close(noisy_states[0], torch.tensor([[[1.0, 0.0]]]))
+    torch.testing.assert_close(noisy_states[1], torch.tensor([[[1.5, 1.0]]]))
+
+
+def test_dsbc_action_metric_is_detached_legacy_flow_residual() -> None:
+    model = SkillVLAStage2Pytorch.__new__(SkillVLAStage2Pytorch)
+    nn.Module.__init__(model)
+    model.config = SimpleNamespace(dsbc_noise_output_mode="shared")
+    model.real_action_dim = 1
+    model.action_in_proj = nn.Linear(2, 2, bias=False)
+    model.action_out_proj = nn.Identity()
+    model.sample_time = lambda batch_size, device: torch.full(
+        (batch_size,), 0.5, device=device
+    )
+
+    def prior(condition, x_t, state, skill, time):
+        del condition, state, skill, time
+        return x_t, torch.zeros(x_t.shape[0], 2)
+
+    model._prior_action_hidden = prior
+    residual = model._dsbc_action_flow_residual(
+        torch.zeros(1, 1, 2),
+        torch.zeros(1, 2),
+        torch.tensor([7]),
+        torch.tensor([[[1.0, 0.0], [3.0, 0.0]]]),
+        torch.tensor([[5.0]], requires_grad=True),
+        torch.zeros(1, 2, 1),
+    )
+
+    torch.testing.assert_close(residual, torch.tensor([[[1.0], [-2.0]]]))
+    assert not residual.requires_grad
+
+
 class _CaptureStage2Residual(nn.Module):
     def __init__(self) -> None:
         super().__init__()
@@ -404,6 +589,118 @@ def test_stage2_mixes_flow_and_cumulative_xyz_like_stage1() -> None:
     assert metrics["action_flow_weight"] == 1.0
     assert metrics["action_cumulative_xyz_weight"] == 0.5
     torch.testing.assert_close(loss, torch.tensor(2.5 + 5.0 / 18.0))
+
+
+class _CaptureDSBCPair(nn.Module):
+    def __init__(
+        self,
+        prediction: torch.Tensor,
+        target: torch.Tensor,
+        action_residual: torch.Tensor,
+    ) -> None:
+        super().__init__()
+        self.real_action_dim = target.shape[-1]
+        self.prediction = prediction
+        self.target = target
+        self.action_residual = action_residual
+        self.seen = None
+
+    def dsbc_training_pair(
+        self,
+        images,
+        start_images,
+        state,
+        skill,
+        actions,
+        tokens,
+        mask,
+    ):
+        del state, actions, tokens, mask
+        self.seen = (images, start_images, skill.detach().clone())
+        return self.prediction, self.target, self.action_residual
+
+
+def _dsbc_policy(
+    output_mode: str,
+    prediction: torch.Tensor,
+    target: torch.Tensor,
+    action_residual: torch.Tensor | None = None,
+):
+    policy = SkillVLAStage2Policy.__new__(SkillVLAStage2Policy)
+    nn.Module.__init__(policy)
+    policy.config = SimpleNamespace(
+        stage2_mode="dsbc",
+        max_action_dim=3,
+        max_state_dim=2,
+        output_features={ACTION: SimpleNamespace(shape=(2,))},
+        conditioning_route="state_skill_cond",
+        training_skill_source="gt",
+        dsbc_noise_output_mode=output_mode,
+        dsbc_frs_num_steps=10,
+        same_skill_batch_enabled=False,
+        mask_actions_after_skill_end=False,
+    )
+    if action_residual is None:
+        action_residual = torch.zeros_like(target)
+    policy.model = _CaptureDSBCPair(prediction, target, action_residual)
+    current_images = [torch.tensor([1.0])]
+    start_images = [torch.tensor([2.0])]
+    policy._collect_images = lambda batch: current_images
+    policy._predictor_start_images = lambda batch: start_images
+    policy._training_skill_code = lambda batch: torch.tensor([7])
+    policy._last_transition_jitter_fraction = torch.ones(())
+    return policy, current_images, start_images
+
+
+def test_dsbc_shared_mode_supervises_mean_valid_frs_noise() -> None:
+    target = torch.tensor([[[1.0, 3.0], [3.0, 5.0], [100.0, 100.0]]])
+    prediction = torch.tensor([[1.0, 2.0]], requires_grad=True)
+    policy, current_images, start_images = _dsbc_policy(
+        "shared", prediction, target
+    )
+    batch = {
+        ACTION: torch.zeros(1, 3, 2),
+        OBS_STATE: torch.zeros(1, 2),
+        OBS_LANGUAGE_TOKENS: torch.zeros(1, 1, dtype=torch.long),
+        OBS_LANGUAGE_ATTENTION_MASK: torch.ones(1, 1, dtype=torch.bool),
+        "action_is_pad": torch.tensor([[False, False, True]]),
+    }
+
+    loss, metrics = policy.forward(batch)
+
+    torch.testing.assert_close(loss, torch.tensor(2.5))
+    assert metrics["action_loss"] == pytest.approx(0.0)
+    assert metrics["gt_noise_loss"] == pytest.approx(2.5)
+    assert metrics["noise_loss"] == pytest.approx(2.5)
+    assert metrics["regime/transition_jitter_fraction"] == pytest.approx(1.0)
+    assert policy.model.seen[0] is current_images
+    assert policy.model.seen[1] is start_images
+    torch.testing.assert_close(policy.model.seen[2], torch.tensor([7]))
+
+
+def test_dsbc_per_step_mode_masks_padded_frs_targets() -> None:
+    target = torch.tensor([[[1.0, 3.0], [3.0, 5.0], [100.0, 100.0]]])
+    prediction = (target + 1.0).requires_grad_()
+    action_residual = torch.tensor(
+        [[[1.0, 1.0], [2.0, 2.0], [100.0, 100.0]]]
+    )
+    policy, _, _ = _dsbc_policy(
+        "per_step", prediction, target, action_residual
+    )
+    batch = {
+        ACTION: torch.zeros(1, 3, 2),
+        OBS_STATE: torch.zeros(1, 2),
+        OBS_LANGUAGE_TOKENS: torch.zeros(1, 1, dtype=torch.long),
+        OBS_LANGUAGE_ATTENTION_MASK: torch.ones(1, 1, dtype=torch.bool),
+        "action_is_pad": torch.tensor([[False, False, True]]),
+    }
+
+    loss, metrics = policy.forward(batch)
+
+    torch.testing.assert_close(loss, torch.tensor(1.0))
+    assert metrics["action_loss"] == pytest.approx(2.5)
+    assert metrics["gt_noise_loss"] == pytest.approx(1.0)
+    assert metrics["noise_loss"] == pytest.approx(1.0)
 
 
 def test_stage2_same_skill_metrics_use_post_jitter_code_and_different_task() -> None:
@@ -516,3 +813,57 @@ def test_stage2_sampling_keeps_condition_routing_and_likelihood_sees_actions_onl
     allowed = captured["attention"][0, 0].eq(0)
     expected = torch.ones(3, 5, dtype=torch.bool)
     torch.testing.assert_close(allowed, expected)
+
+
+@pytest.mark.parametrize(
+    ("output_mode", "prediction"),
+    [
+        ("shared", torch.tensor([[1.0, 2.0]])),
+        (
+            "per_step",
+            torch.tensor([[[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]]]),
+        ),
+    ],
+)
+def test_dsbc_sampling_uses_selected_real_noise_and_preserves_gaussian_padding(
+    monkeypatch,
+    output_mode: str,
+    prediction: torch.Tensor,
+) -> None:
+    model = SkillVLAStage2Pytorch.__new__(SkillVLAStage2Pytorch)
+    nn.Module.__init__(model)
+    model.config = SimpleNamespace(
+        stage2_mode="dsbc",
+        dsbc_noise_output_mode=output_mode,
+        chunk_size=3,
+        max_action_dim=4,
+    )
+    model.real_action_dim = 2
+    model._dsbc_noise_prediction = lambda *args, **kwargs: prediction
+    captured = {}
+
+    def base_sample(self, images, state, skill, noise=None, num_steps=None):
+        del self, images, state, skill, num_steps
+        captured["noise"] = noise.detach().clone()
+        return noise
+
+    monkeypatch.setattr(CondGemmaSkillExpert, "sample_actions", base_sample)
+    reservoir = torch.tensor(
+        [[[9.0, 9.0, 3.0, 4.0], [9.0, 9.0, 5.0, 6.0], [9.0, 9.0, 7.0, 8.0]]]
+    )
+
+    sampled = model.sample_actions(
+        [],
+        [],
+        torch.zeros(1, 2),
+        torch.tensor([7]),
+        torch.zeros(1, 1, dtype=torch.long),
+        torch.ones(1, 1, dtype=torch.bool),
+        noise=reservoir,
+        num_steps=10,
+    )
+
+    expected = reservoir.clone()
+    expected[..., :2] = prediction[:, None] if output_mode == "shared" else prediction
+    torch.testing.assert_close(captured["noise"], expected)
+    torch.testing.assert_close(sampled, expected)

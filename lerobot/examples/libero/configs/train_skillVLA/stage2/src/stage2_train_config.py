@@ -195,6 +195,9 @@ def build_settings(config: dict) -> dict:
     project_root = Path(str(config["project_root"])).expanduser()
     dataset_root = project_root / str(config.get("dataset_root", "dataset"))
     outputs_root = project_root / str(config.get("outputs_root", "outputs"))
+    stage2_mode = str(config.get("stage2_mode", "likelihood")).strip().lower()
+    if stage2_mode not in {"likelihood", "dsbc"}:
+        raise ValueError("stage2_mode must be likelihood|dsbc.")
 
     stage1_run = str(_at(config, "warm_start", "stage1_run", default="") or "").strip()
     stage1_checkpoint = str(
@@ -316,6 +319,24 @@ def build_settings(config: dict) -> dict:
     )
     if likelihood_gate_lr_scale <= 0.0:
         raise ValueError("likelihood.gate_lr_scale must be positive.")
+    dsbc_noise_output_mode = str(
+        _at(config, "dsbc", "noise_output_mode", default="shared")
+    ).strip().lower()
+    if dsbc_noise_output_mode not in {"shared", "per_step"}:
+        raise ValueError("dsbc.noise_output_mode must be shared|per_step.")
+    dsbc_frs_num_steps = int(
+        _at(
+            config,
+            "dsbc",
+            "frs_num_steps",
+            default=int(stage1_config["num_inference_steps"]),
+        )
+    )
+    if dsbc_frs_num_steps <= 0:
+        raise ValueError("dsbc.frs_num_steps must be positive.")
+    dsbc_anchor_seed = int(_at(config, "dsbc", "anchor_seed", default=0))
+    if dsbc_anchor_seed < 0:
+        raise ValueError("dsbc.anchor_seed must be non-negative.")
     scheduler_mode = str(
         _at(config, "training", "schedule", "lr_mode", default="cosine_decay")
     ).strip().lower()
@@ -348,6 +369,10 @@ def build_settings(config: dict) -> dict:
     cumulative_xyz_loss_weight = float(cumulative_xyz_config.get("weight", 0.5))
     if not math.isfinite(cumulative_xyz_loss_weight) or cumulative_xyz_loss_weight <= 0:
         raise ValueError("cumulative_xyz_loss.weight must be finite and positive.")
+    if stage2_mode == "dsbc" and cumulative_xyz_loss_enabled:
+        raise ValueError(
+            "cumulative_xyz_loss is unavailable in DSBC mode; DSBC trains on FRS noise."
+        )
     stage1_skill_end_mask = as_bool(
         stage1_config.get("mask_actions_after_skill_end", False)
     )
@@ -403,6 +428,8 @@ def build_settings(config: dict) -> dict:
     suffix = str(_at(config, "run", "suffix", default="")).strip().strip("_")
     batch_tag = "batchON" if same_skill_batch_enabled else "batchOFF"
     run_name = f"{stage1_run}_{stage1_checkpoint}_{skill_source}_{batch_tag}"
+    if stage2_mode == "dsbc":
+        run_name += f"_dsbc_{dsbc_noise_output_mode}_frs{dsbc_frs_num_steps}"
     if mask_actions_after_skill_end != stage1_skill_end_mask:
         # Keep overridden-mask runs out of the inherited-mask output directory.
         run_name += "_nomask" if not mask_actions_after_skill_end else "_endmask"
@@ -433,6 +460,7 @@ def build_settings(config: dict) -> dict:
             stage1_config.get("architecture_revision", "skillvla_real_v1")
         ),
         "architecture_label": str(stage1_config.get("architecture_label", "")),
+        "stage2_mode": stage2_mode,
         "action_expert_variant": stage1_config["action_expert_variant"],
         "cond_encoder_variant": stage1_config["cond_encoder_variant"],
         "chunk_size": int(stage1_config["chunk_size"]),
@@ -482,6 +510,9 @@ def build_settings(config: dict) -> dict:
         "likelihood_cross_attention_heads": 8,
         "likelihood_vlm_memory": likelihood_vlm_memory,
         "likelihood_gate_lr_scale": likelihood_gate_lr_scale,
+        "dsbc_noise_output_mode": dsbc_noise_output_mode,
+        "dsbc_frs_num_steps": dsbc_frs_num_steps,
+        "dsbc_anchor_seed": dsbc_anchor_seed,
         "training_skill_source": skill_source,
         "cumulative_xyz_loss_enabled": cumulative_xyz_loss_enabled,
         "cumulative_xyz_loss_weight": cumulative_xyz_loss_weight,

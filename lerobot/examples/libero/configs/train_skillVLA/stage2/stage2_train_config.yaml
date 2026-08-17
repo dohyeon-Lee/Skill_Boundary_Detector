@@ -23,6 +23,10 @@ warm_start:
     # project_root). The predictor must share the Stage-1 prior's FSQ run.
     path: outputs_filtered/skillVLA_terminator/bs16_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal/checkpoints/050000/pretrained_model
 
+# likelihood preserves the corrected legacy Stage-2 objective. dsbc freezes the
+# complete Stage-1 VSA and learns only an FRS-supervised initial-noise selector.
+stage2_mode: likelihood  # likelihood | dsbc
+
 likelihood:
   layers: 4
   # gt is the default; predictor conditions training on the frozen predictor's
@@ -37,6 +41,15 @@ likelihood:
   # the first four runs showed the projection stuck at its random init.
   # Adds a _glr{n} run-name tag when != 1.
   gate_lr_scale: 10
+
+dsbc:
+  # shared predicts one 7D noise vector and repeats it over the action chunk;
+  # per_step predicts a separate 7D vector for every action token.
+  noise_output_mode: shared  # shared | per_step
+  # Online action(t=0) -> noise(t=1) Euler integration through frozen Stage 1.
+  frs_num_steps: 10
+  # Seed for the fixed Gaussian selector anchor (not the predicted VSA noise).
+  anchor_seed: 0
 
 # Loss-mask override. Omit (or comment out) to inherit the Stage-1 checkpoint's
 # setting; false supervises the full action chunk even past the skill end.
