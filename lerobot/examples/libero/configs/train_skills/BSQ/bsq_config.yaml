@@ -15,6 +15,9 @@ bsq_code_dim: 5                  # 코드북 2^5=32 (fsq333=27과 비교용). �
 bsq_inv_temperature: 10.0        # soft-bit 날카로움. 논문은 100; 10→30→100 스케줄 비교 가치
 bsq_entropy_conf_weight: 0.1     # 샘플 entropy 최소화(비트 확신, 경계 밀어냄). 0=끔
 bsq_entropy_div_weight: 0.1      # 배치 entropy 최대화(비트 균형). 0=confidence-only. 논문 γ=1 ≙ conf=div
+# coverage loss: 죽은 코드 소생 전용 (floor 미달 코드에만 압력; 균등화 없음). 0 = 끔.
+bsq_entropy_cov_weight: 0.0
+bsq_entropy_cov_floor: 0.0      # 0 = 자동 (1/batch)
 # dataset entropy는 항상 joint(전체 코드 열거, 정확 계산) — 선택지 아님.
 
 

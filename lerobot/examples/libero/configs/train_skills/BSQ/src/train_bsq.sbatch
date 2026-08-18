@@ -69,6 +69,7 @@ cat > "${FSQ_OUTPUT_DIR}/fsq_original_meta.json" <<JSON
   "bsq_entropy_conf_weight": ${BSQ_ENTROPY_CONF_WEIGHT},
   "bsq_entropy_div_weight": ${BSQ_ENTROPY_DIV_WEIGHT},
   "bsq_entropy_joint": ${BSQ_ENTROPY_JOINT},
+  "bsq_entropy_cov_weight": ${BSQ_ENTROPY_COV_WEIGHT},
   "fsq_dataset_root": "${FSQ_DATASET_ROOT_NAME}",
   "target_dataset": "${TARGET_DATASET}",
   "fsq_inputs_name": "${FSQ_INPUTS_NAME}",
@@ -137,6 +138,8 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     --bsq_inv_temperature     "${BSQ_INV_TEMPERATURE}" \
     --bsq_entropy_conf_weight "${BSQ_ENTROPY_CONF_WEIGHT}" \
     --bsq_entropy_div_weight  "${BSQ_ENTROPY_DIV_WEIGHT}" \
+    --bsq_entropy_cov_weight  "${BSQ_ENTROPY_COV_WEIGHT}" \
+    --bsq_entropy_cov_floor   "${BSQ_ENTROPY_COV_FLOOR}" \
     "${ENTROPY_JOINT_ARG[@]}" \
     --fsq_levels              "${FSQ_LEVELS[@]}" \
     --hidden_dim              "${FSQ_HIDDEN_DIM}" \

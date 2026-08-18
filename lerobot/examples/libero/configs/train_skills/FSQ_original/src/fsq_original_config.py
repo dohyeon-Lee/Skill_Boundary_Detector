@@ -76,6 +76,8 @@ def resolve(cfg: dict, dataset: str | None = None) -> dict:
         "bsq_entropy_div_weight": str(get_value(cfg, "bsq_entropy_div_weight", 0.1)),
         # Joint (exact) dataset entropy is the project standard; not a yaml choice.
         "bsq_entropy_joint": as_bool(get_value(cfg, "bsq_entropy_joint", True)),
+        "bsq_entropy_cov_weight": str(get_value(cfg, "bsq_entropy_cov_weight", 0.0)),
+        "bsq_entropy_cov_floor": str(get_value(cfg, "bsq_entropy_cov_floor", 0.0)),
     })
     return settings
 

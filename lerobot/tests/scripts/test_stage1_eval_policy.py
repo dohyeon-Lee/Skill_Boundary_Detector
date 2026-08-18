@@ -24,6 +24,7 @@ from lerobot.scripts.lerobot_skillvla_eval import (
     _skill_ids_from_trace,
     _termination_values_from_trace,
 )
+from lerobot.utils.constants import STAGE2_VLM_CACHE_ID
 
 
 class _FakeExpert(nn.Module):
@@ -66,6 +67,7 @@ class _FakeStage2Expert(_FakeExpert):
                 "start_image": batch["skill_start_image"].detach().clone(),
                 "start_wrist": batch["skill_start_wrist_image"].detach().clone(),
                 "start_tokens": batch["observation.language.tokens"].detach().clone(),
+                "cache_id": batch[STAGE2_VLM_CACHE_ID].detach().clone(),
             }
         )
         return super().predict_action_chunk(batch)
@@ -597,6 +599,7 @@ def test_stage2_eval_holds_vlm_start_condition_until_the_next_skill(
         13.0,
     ]
     assert [call["start_tokens"].item() for call in expert.vlm_calls] == [1, 1, 3]
+    assert [call["cache_id"].item() for call in expert.vlm_calls] == [0, 0, 1]
 
 
 def test_checkpoint_terminator_converts_logits_to_probability() -> None:

@@ -49,6 +49,11 @@ class Args:
     fsq_entropy: bool = False
     """FSQ quantizer only: apply BSQ-style entropy terms to the FSQ grid,
     reusing the bsq_inv_temperature / bsq_entropy_* knobs (attribution ablation)."""
+    bsq_entropy_cov_weight: float = 0.0
+    """Coverage (dead-code revival) loss weight — pressure only on codes below
+    cov_floor, zero once all codes are used. 0 = off."""
+    bsq_entropy_cov_floor: float = 0.0
+    """Soft batch-mass floor for coverage; 0 = auto (1/batch_size)."""
     num_layers: int = 3
     num_heads: int = 4
     dropout: float = 0.1
@@ -244,6 +249,8 @@ def main(args: Args) -> None:
         bsq_entropy_div_weight=args.bsq_entropy_div_weight,
         bsq_entropy_joint=args.bsq_entropy_joint,
         fsq_entropy=args.fsq_entropy,
+        bsq_entropy_cov_weight=args.bsq_entropy_cov_weight,
+        bsq_entropy_cov_floor=args.bsq_entropy_cov_floor,
         num_layers=args.num_layers,
         num_heads=args.num_heads,
         dropout=args.dropout,

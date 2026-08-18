@@ -62,6 +62,7 @@ from lerobot.utils.constants import (
     OBS_LANGUAGE_ATTENTION_MASK,
     OBS_LANGUAGE_TOKENS,
     OBS_STATE,
+    STAGE2_VLM_CACHE_ID,
 )
 
 from .configuration_skill_vla_stage2 import SkillVLAStage2Config
@@ -337,6 +338,18 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
             for index in range(len(self.likelihood_blocks))
         ]
 
+    def encode_likelihood_memories(
+        self,
+        images: list[Tensor],
+        language_tokens: Tensor,
+        language_mask: Tensor,
+    ) -> tuple[list[Tensor], Tensor]:
+        """Encode and project the frozen VLM condition for inference reuse."""
+        vlm_hidden, vlm_key_padding_mask = self._encode_likelihood_memory(
+            images, language_tokens, language_mask
+        )
+        return self._likelihood_memories(vlm_hidden), vlm_key_padding_mask
+
     def _run_likelihood_blocks(
         self,
         prior_hidden: Tensor,
@@ -397,6 +410,7 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
         language_mask: Tensor,
         *,
         condition_tokens: Tensor | None = None,
+        vlm_memory: tuple[list[Tensor], Tensor] | None = None,
     ) -> Tensor:
         """Predict the real-action part of the initial VSA noise."""
         if self.config.stage2_mode != "dsbc" or self.noise_out_proj is None:
@@ -422,12 +436,21 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
             prior_hidden, expert_condition = self._prior_action_hidden(
                 condition_tokens, anchor, state, skill_code, selector_time
             )
-            vlm_hidden, vlm_key_padding_mask = self._encode_likelihood_memory(
-                vlm_start_images, language_tokens, language_mask
-            )
+            if vlm_memory is None:
+                vlm_hidden, vlm_key_padding_mask = self._encode_likelihood_memory(
+                    vlm_start_images, language_tokens, language_mask
+                )
+            else:
+                vlm_hidden = None
+                _, vlm_key_padding_mask = vlm_memory
+        memories = (
+            self._likelihood_memories(vlm_hidden)
+            if vlm_memory is None
+            else vlm_memory[0]
+        )
         hidden = self._run_likelihood_blocks(
             prior_hidden,
-            self._likelihood_memories(vlm_hidden),
+            memories,
             vlm_key_padding_mask,
             expert_condition,
         )
@@ -795,6 +818,7 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
         language_mask: Tensor,
         noise: Tensor | None = None,
         num_steps: int | None = None,
+        vlm_memory: tuple[list[Tensor], Tensor] | None = None,
     ) -> Tensor:
         if getattr(self.config, "stage2_mode", "likelihood") == "dsbc":
             return self._sample_dsbc_actions(
@@ -806,6 +830,7 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
                 language_mask,
                 noise=noise,
                 num_steps=num_steps,
+                vlm_memory=vlm_memory,
             )
         num_steps = self.config.num_inference_steps if num_steps is None else num_steps
         if state is not None:
@@ -821,10 +846,12 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
                 (batch_size, self.config.chunk_size, self.config.max_action_dim), device
             )
         condition_tokens = self._condition_tokens(images, batch_size=batch_size)
-        vlm_hidden, vlm_key_padding_mask = self._encode_likelihood_memory(
-            vlm_start_images, language_tokens, language_mask
-        )
-        memories = self._likelihood_memories(vlm_hidden)
+        if vlm_memory is None:
+            memories, vlm_key_padding_mask = self.encode_likelihood_memories(
+                vlm_start_images, language_tokens, language_mask
+            )
+        else:
+            memories, vlm_key_padding_mask = vlm_memory
         if self.uses_expert_context_tokens:
             return self._likelihood_sample_with_expert_context_cache(
                 condition_tokens,
@@ -857,6 +884,7 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
         *,
         noise: Tensor | None,
         num_steps: int | None,
+        vlm_memory: tuple[list[Tensor], Tensor] | None,
     ) -> Tensor:
         """Select initial noise once, then run the completely frozen Stage-1 VSA."""
         predicted = self._dsbc_noise_prediction(
@@ -866,6 +894,7 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
             skill_code,
             language_tokens,
             language_mask,
+            vlm_memory=vlm_memory,
         )
         if self.config.dsbc_noise_output_mode == "shared":
             predicted = predicted[:, None].expand(-1, self.config.chunk_size, -1)
@@ -1097,6 +1126,96 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
             self._initialize_predictor(config.skill_predictor_checkpoint_path)
         self.model._freeze_stage1_prior()
         self.reset()
+
+    def reset(self) -> None:
+        super().reset()
+        # Eval-only tensors. They are deliberately ordinary attributes rather
+        # than buffers so checkpoints never persist rollout-specific memory.
+        self._eval_vlm_cache_ids: Tensor | None = None
+        self._eval_vlm_cache: tuple[list[Tensor], Tensor] | None = None
+
+    @torch.no_grad()
+    def _cached_eval_vlm_memory(
+        self,
+        start_images: list[Tensor],
+        language_tokens: Tensor,
+        language_mask: Tensor,
+        cache_ids: Tensor | None,
+    ) -> tuple[list[Tensor], Tensor] | None:
+        """Reuse projected VLM memory until an environment starts a new skill.
+
+        Direct policy callers that do not provide ``STAGE2_VLM_CACHE_ID`` retain
+        the uncached behavior. The LIBERO rollout wrapper supplies one monotonic
+        generation per vector-environment row.
+        """
+        if cache_ids is None:
+            return None
+        batch_size = language_tokens.shape[0]
+        cache_ids = cache_ids.to(
+            device=language_tokens.device, dtype=torch.long
+        ).reshape(-1)
+        if cache_ids.numel() != batch_size:
+            raise ValueError(
+                f"{STAGE2_VLM_CACHE_ID} must have {batch_size} entries, got "
+                f"{cache_ids.numel()}."
+            )
+
+        cached_ids = self._eval_vlm_cache_ids
+        cached_memory = self._eval_vlm_cache
+        cache_is_compatible = (
+            cached_ids is not None
+            and cached_memory is not None
+            and cached_ids.shape == cache_ids.shape
+            and cached_ids.device == cache_ids.device
+            and len(cached_memory[0]) == len(self.model.likelihood_blocks)
+            and cached_memory[1].shape[0] == batch_size
+        )
+        if not cache_is_compatible:
+            cached_memory = self.model.encode_likelihood_memories(
+                start_images, language_tokens, language_mask
+            )
+            self._eval_vlm_cache = (
+                [memory.detach() for memory in cached_memory[0]],
+                cached_memory[1].detach(),
+            )
+            self._eval_vlm_cache_ids = cache_ids.detach().clone()
+            return self._eval_vlm_cache
+
+        assert cached_ids is not None and cached_memory is not None
+        stale = cache_ids.ne(cached_ids)
+        if not bool(stale.any()):
+            return cached_memory
+
+        indices = stale.nonzero(as_tuple=False).flatten()
+        refreshed = self.model.encode_likelihood_memories(
+            [image.index_select(0, indices) for image in start_images],
+            language_tokens.index_select(0, indices),
+            language_mask.index_select(0, indices),
+        )
+        shapes_match = (
+            len(refreshed[0]) == len(cached_memory[0])
+            and all(
+                new.shape[1:] == old.shape[1:]
+                for new, old in zip(refreshed[0], cached_memory[0], strict=True)
+            )
+            and refreshed[1].shape[1:] == cached_memory[1].shape[1:]
+        )
+        if not shapes_match:
+            refreshed = self.model.encode_likelihood_memories(
+                start_images, language_tokens, language_mask
+            )
+            self._eval_vlm_cache = (
+                [memory.detach() for memory in refreshed[0]],
+                refreshed[1].detach(),
+            )
+            self._eval_vlm_cache_ids = cache_ids.detach().clone()
+            return self._eval_vlm_cache
+
+        for old, new in zip(cached_memory[0], refreshed[0], strict=True):
+            old.index_copy_(0, indices, new)
+        cached_memory[1].index_copy_(0, indices, refreshed[1])
+        cached_ids.index_copy_(0, indices, cache_ids.index_select(0, indices))
+        return cached_memory
 
     def _initialize_from_stage1(self, checkpoint_path: str | Path | None) -> None:
         path = Path(str(checkpoint_path or ""))
@@ -1748,13 +1867,23 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
             if route in SKILLLESS_CONDITIONING_ROUTES
             else self._skill_code(batch)
         )
+        start_images = self._predictor_start_images(batch)
+        language_tokens = batch[OBS_LANGUAGE_TOKENS].to(device)
+        language_mask = batch[OBS_LANGUAGE_ATTENTION_MASK].to(device)
+        vlm_memory = self._cached_eval_vlm_memory(
+            start_images,
+            language_tokens,
+            language_mask,
+            batch.get(STAGE2_VLM_CACHE_ID),
+        )
         actions = self.model.sample_actions(
             self._collect_images(batch),
-            self._predictor_start_images(batch),
+            start_images,
             state,
             skill_code,
-            batch[OBS_LANGUAGE_TOKENS].to(device),
-            batch[OBS_LANGUAGE_ATTENTION_MASK].to(device),
+            language_tokens,
+            language_mask,
+            vlm_memory=vlm_memory,
             **kwargs,
         )
         real_dim = self.config.output_features[ACTION].shape[0]

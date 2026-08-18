@@ -214,6 +214,16 @@ class FSQOriginalConfig:
     bsq_entropy_joint. The attribution ablation for the FSQ-vs-BSQ gap:
     if FSQ+entropy matches BSQ stability, the loss — not the sphere geometry —
     is what matters."""
+    bsq_entropy_cov_weight: float = 0.0
+    """COVERAGE loss weight (0 = off). Unlike the div term (uniformity prior),
+    this only revives dead codes: each code whose soft batch mass falls below
+    cov_floor is penalized in proportion to the shortfall, and the pressure is
+    EXACTLY zero once every code clears the floor — living codes' shares stay
+    untouched. Differentiable analog of VQ dead-code revival. Requires the
+    entropy machinery (quantizer='bsq', or fsq with fsq_entropy=True)."""
+    bsq_entropy_cov_floor: float = 0.0
+    """Batch-mass threshold below which a code counts as dying. 0 = auto
+    (1/batch, i.e. "average one sample per batch")."""
     num_layers: int = 3
     num_heads: int = 4
     dropout: float = 0.1
@@ -385,6 +395,21 @@ class SplineFSQOriginalAE(nn.Module):
                 "fsq_entropy with bsq_entropy_joint enumerates prod(fsq_levels) codes; "
                 f"{cfg.fsq_levels} is too large (max 16384)."
             )
+        if getattr(cfg, "bsq_entropy_cov_weight", 0.0) > 0:
+            codebook = (
+                2 ** cfg.bsq_code_dim
+                if cfg.quantizer == "bsq"
+                else math.prod(int(v) for v in cfg.fsq_levels)
+            )
+            if codebook > 16384:
+                raise ValueError(
+                    f"bsq_entropy_cov_weight enumerates all {codebook} codes; too large (max 16384)."
+                )
+            if cfg.quantizer == "fsq" and not cfg.fsq_entropy:
+                raise ValueError(
+                    "bsq_entropy_cov_weight on the fsq quantizer requires fsq_entropy=True "
+                    "(the coverage loss rides on the soft-assignment machinery)."
+                )
         for name in ("encoder_min", "encoder_max"):
             if getattr(cfg, name) is None:
                 raise ValueError(f"FSQ-original config is missing required statistic: {name}")
@@ -888,6 +913,38 @@ def _rnn_loss(
     return total, metrics
 
 
+def _soft_joint_distribution(u_cont: Tensor, cfg: FSQOriginalConfig) -> Tensor:
+    """Soft joint code distribution q(c|x) of shape (B, codebook_size).
+
+    Same factorized-Bernoulli / per-dim-softmax construction the entropy terms
+    use, materialized over every code so batch masses can be thresholded."""
+    tau = cfg.bsq_inv_temperature
+    if cfg.quantizer == "bsq":
+        p = torch.sigmoid(2.0 * tau * u_cont.float()).clamp(1e-6, 1.0 - 1e-6)
+        code_dim = u_cont.shape[-1]
+        codes = torch.arange(2 ** code_dim, device=u_cont.device)
+        bits = ((codes[:, None] >> torch.arange(code_dim, device=u_cont.device)) & 1).float()
+        log_q = p.log() @ bits.T + (1.0 - p).log() @ (1.0 - bits).T
+        return log_q.exp()
+    q = None
+    for d, level in enumerate(int(v) for v in cfg.fsq_levels):
+        centers = torch.arange(level, device=u_cont.device, dtype=torch.float32)
+        centers = centers - level // 2
+        logits = -tau * (u_cont[:, d : d + 1].float() - centers[None]) ** 2
+        p = torch.softmax(logits, dim=-1).clamp(1e-6, 1.0)
+        q = p if q is None else (p[:, :, None] * q[:, None, :]).reshape(q.shape[0], -1)
+    return q
+
+
+def coverage_loss(q: Tensor, floor: float) -> Tensor:
+    """Dead-code revival hinge: penalize only codes below the mass floor.
+
+    Zero pressure once every code clears the floor — living codes' shares are
+    never touched, unlike the entropy-max (uniformity) diversity term."""
+    mass = q.mean(dim=0)
+    return (torch.relu(floor - mass) / max(floor, 1e-12)).sum()
+
+
 def _apply_bsq_entropy(
     total: Tensor,
     metrics: dict[str, Tensor],
@@ -918,10 +975,17 @@ def _apply_bsq_entropy(
     )
     metrics = {
         **metrics,
-        "loss": total.detach(),
         "entropy_sample": sample_entropy.detach(),
         "entropy_dataset": dataset_entropy.detach(),
     }
+    cov_weight = getattr(cfg, "bsq_entropy_cov_weight", 0.0)
+    if cov_weight > 0:
+        q = _soft_joint_distribution(output["u_cont"], cfg)
+        floor = getattr(cfg, "bsq_entropy_cov_floor", 0.0) or 1.0 / q.shape[0]
+        cov = coverage_loss(q, floor)
+        total = total + cov_weight * cov
+        metrics["coverage"] = cov.detach()
+    metrics["loss"] = total.detach()
     return total, metrics
 
 

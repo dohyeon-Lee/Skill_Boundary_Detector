@@ -6,10 +6,10 @@
 # only and is never reconstructed.
 # Dataset/skillset selection works exactly like FSQ/fsq_config.yaml.
 fsq_dataset_root: FSQ_dataset
-target_dataset: langgap_56_full_full # libero_90_full_full | langgap_56_full_full
+target_dataset: libero_90_full_full # libero_90_full_full | langgap_56_full_full
 fsq_inputs_name: FSQ_inputs
-# skillset_seg_name: seg_libero_90_full_full_state_obs20_ck100000_std_episodemean_100p
-skillset_seg_name: seg_langgap_56_full_full_state_obs20_ck100000_std_episodemean_80p
+skillset_seg_name: seg_libero_90_full_full_state_obs20_ck100000_std_episodemean_100p
+# skillset_seg_name: seg_langgap_56_full_full_state_obs20_ck100000_std_episodemean_80p
 
 skillset_name: skillset
 
@@ -20,7 +20,7 @@ skillset_name: skillset
 #   pos_pos (spline 인코더 + oneshot 디코더) | pos_act (spline + rnn)
 #   act_act (action_seq + rnn)
 # 예: "pos_act_LR6_raw_withEntH". loss 태그: ReconOnly | withEntH. constLR(기본 LR)은 생략.
-fsq_exp: "pos_pos_LR6_raw_entH" # 학습 중 run과 일치 유지; 다음 run부터 새 관례(act_act_LR6_raw_entH 등) 사용
+fsq_exp: "pos_pos_LR6_raw_withentH_nodiv_tem50" # 학습 중 run과 일치 유지; 다음 run부터 새 관례(act_act_LR6_raw_entH 등) 사용
 fsq_levels: [3, 3, 3]
 fsq_hidden_dim: 256
 fsq_num_layers: 3
@@ -56,8 +56,8 @@ fsq_encoder_lr: 3.0e-6
 fsq_orig_decoder_lr: 3.0e-6
 fsq_lr_schedule: constant # cosine | constant
 fsq_batch_size: 64
-fsq_num_epochs: 1000
-fsq_checkpoint_every: 25
+fsq_num_epochs: 5000
+fsq_checkpoint_every: 50
 fsq_num_workers: 0
 # Validation is diagnostic only; FSQ_epoch*.pt files are the training artifacts.
 fsq_val_every: 25
@@ -72,9 +72,13 @@ fsq_orig_length_loss_weight: 1.0
 # true: BSQ식 entropy 항(샘플 confidence + 배치 diversity)을 FSQ 그리드에 적용.
 # 아래 bsq_* 노브를 그대로 재사용 (τ는 그리드 스텝 단위).
 fsq_orig_entropy: true
-bsq_inv_temperature: 10.0
+bsq_inv_temperature: 50 # 10.0
 bsq_entropy_conf_weight: 0.1
-bsq_entropy_div_weight: 0.1
+bsq_entropy_div_weight: 0 # 0.1
+# coverage loss: div(균등화)와 달리 "죽은 코드 소생"만 담당 — floor 미달 코드에만 압력,
+# 전 코드가 floor를 넘으면 압력 0 (살아있는 코드의 점유율은 절대 안 건드림).
+bsq_entropy_cov_weight: 0 # 0.1     # 0 = 끔. div 대체 실험: div=0 + cov=0.1
+bsq_entropy_cov_floor: 0.004      # 0 = 자동 (1/batch = 배치당 평균 1샘플)
 # dataset entropy는 항상 joint(전체 코드 열거, 정확 계산) — 선택지 아님.
 
 

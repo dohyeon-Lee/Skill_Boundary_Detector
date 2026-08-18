@@ -23,6 +23,7 @@ from FSQ_original import (  # noqa: E402
     FSQOriginalDataset,
     SplineFSQOriginalAE,
     bsq_entropy_terms,
+    coverage_loss,
     fsq_entropy_terms,
     fsq_original_loss,
     spline_decode,
@@ -281,6 +282,52 @@ def test_fsq_entropy_terms_confidence_and_collapse_detection() -> None:
     s, d = fsq_entropy_terms(grad_in, levels, 10.0, joint_dataset=True)
     (s + d).backward()
     assert grad_in.grad is not None and torch.isfinite(grad_in.grad).all()
+
+
+def test_coverage_loss_revives_dead_codes_without_flattening() -> None:
+    floor = 1.0 / 32  # 0.031 — below every living code's 5% share
+    # All 8 codes above the floor, HEAVILY skewed (one holds 65%): pressure must
+    # be exactly zero — coverage never touches living codes' shares.
+    skewed = torch.tensor([[0.65, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05]]).repeat(4, 1)
+    assert float(coverage_loss(skewed, floor)) == 0.0
+    # Two dead codes -> positive loss proportional to shortfall.
+    dead = torch.tensor([[0.5, 0.5, 0.0, 0.0]]).repeat(4, 1)
+    assert float(coverage_loss(dead, floor)) > 0.0
+    # Gradient flows toward raising the dead codes' mass.
+    q = torch.tensor([[0.6, 0.399, 0.001, 0.0]]).repeat(4, 1).requires_grad_(True)
+    coverage_loss(q, floor).backward()
+    assert q.grad is not None and float(q.grad[0, 2]) < 0 and float(q.grad[0, 3]) < 0
+    assert float(q.grad[0, 0]) == 0.0  # 살아있는 대형 클러스터는 무압력
+
+
+def test_coverage_wires_into_loss() -> None:
+    segments, metadata = _segments()
+    cfg = _config(segments)
+    cfg.reconstruct_length = False
+    cfg.fsq_entropy = True
+    cfg.bsq_entropy_cov_weight = 0.1
+    dataset = FSQOriginalDataset(segments, metadata, cfg)
+    batch = {
+        key: torch.stack([dataset[i][key] for i in range(3)])
+        for key in ("ctrl", "length", "length_target", "start_pose")
+    }
+    model = SplineFSQOriginalAE(cfg)
+    output = model(batch["ctrl"], batch["length"], batch["start_pose"])
+    loss, metrics = fsq_original_loss(output, batch, cfg)
+    loss.backward()
+    assert "coverage" in metrics and float(metrics["coverage"]) >= 0.0
+    # Off by default.
+    cfg.bsq_entropy_cov_weight = 0.0
+    model2 = SplineFSQOriginalAE(cfg)
+    _, metrics2 = fsq_original_loss(
+        model2(batch["ctrl"], batch["length"], batch["start_pose"]), batch, cfg
+    )
+    assert "coverage" not in metrics2
+    # fsq quantizer + cov without the entropy machinery is a config error.
+    cfg.bsq_entropy_cov_weight = 0.1
+    cfg.fsq_entropy = False
+    with pytest.raises(ValueError, match="fsq_entropy=True"):
+        SplineFSQOriginalAE(cfg)
 
 
 def test_fsq_entropy_probe_wires_into_loss() -> None:

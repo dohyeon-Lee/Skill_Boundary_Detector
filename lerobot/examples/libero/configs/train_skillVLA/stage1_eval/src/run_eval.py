@@ -37,6 +37,7 @@ from lerobot.utils.constants import (
     OBS_LANGUAGE_TOKENS,
     OBS_STATE,
     POLICY_PREPROCESSOR_DEFAULT_NAME,
+    STAGE2_VLM_CACHE_ID,
 )
 from lerobot.utils.device_utils import get_safe_torch_device
 from lerobot.utils.random_utils import set_seed
@@ -484,6 +485,10 @@ class Stage1OraclePolicy(PreTrainedPolicy):
                 batch_size, dtype=torch.long, device=device
             )
             self._apply_stage2_vlm_start(action_batch)
+            if getattr(self.policy, "name", None) == "skill_vla_stage2":
+                action_batch[STAGE2_VLM_CACHE_ID] = torch.as_tensor(
+                    self._skill_order, dtype=torch.long, device=device
+                )
             chunk = self.policy.predict_action_chunk(action_batch)
             self._action_queue.extend(
                 chunk[:, : self.n_action_steps].transpose(0, 1)

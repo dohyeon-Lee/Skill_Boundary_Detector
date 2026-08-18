@@ -28,6 +28,7 @@ from lerobot.utils.constants import (
     OBS_LANGUAGE_ATTENTION_MASK,
     OBS_LANGUAGE_TOKENS,
     OBS_STATE,
+    STAGE2_VLM_CACHE_ID,
 )
 
 
@@ -807,6 +808,10 @@ def test_stage2_sampling_keeps_condition_routing_and_likelihood_sees_actions_onl
     model._action_hidden_with_condition_cache = action_prior
     model._likelihood_velocity = likelihood
     noise = torch.tensor([[[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]]])
+    cached_vlm = (
+        [torch.zeros(1, 2, 2)],
+        torch.zeros(1, 2, dtype=torch.bool),
+    )
     sampled = model.sample_actions(
         [],
         [],
@@ -816,6 +821,7 @@ def test_stage2_sampling_keeps_condition_routing_and_likelihood_sees_actions_onl
         torch.ones(1, 1, dtype=torch.bool),
         noise=noise,
         num_steps=1,
+        vlm_memory=cached_vlm,
     )
 
     torch.testing.assert_close(sampled, torch.zeros_like(noise))
@@ -850,8 +856,14 @@ def test_dsbc_sampling_uses_selected_real_noise_and_preserves_gaussian_padding(
         max_action_dim=4,
     )
     model.real_action_dim = 2
-    model._dsbc_noise_prediction = lambda *args, **kwargs: prediction
     captured = {}
+
+    def predict_noise(*args, **kwargs):
+        del args
+        captured["vlm_memory"] = kwargs["vlm_memory"]
+        return prediction
+
+    model._dsbc_noise_prediction = predict_noise
 
     def base_sample(self, images, state, skill, noise=None, num_steps=None):
         del self, images, state, skill, num_steps
@@ -861,6 +873,10 @@ def test_dsbc_sampling_uses_selected_real_noise_and_preserves_gaussian_padding(
     monkeypatch.setattr(CondGemmaSkillExpert, "sample_actions", base_sample)
     reservoir = torch.tensor(
         [[[9.0, 9.0, 3.0, 4.0], [9.0, 9.0, 5.0, 6.0], [9.0, 9.0, 7.0, 8.0]]]
+    )
+    cached_vlm = (
+        [torch.zeros(1, 2, 2)],
+        torch.zeros(1, 2, dtype=torch.bool),
     )
 
     sampled = model.sample_actions(
@@ -872,9 +888,85 @@ def test_dsbc_sampling_uses_selected_real_noise_and_preserves_gaussian_padding(
         torch.ones(1, 1, dtype=torch.bool),
         noise=reservoir,
         num_steps=10,
+        vlm_memory=cached_vlm,
     )
 
     expected = reservoir.clone()
     expected[..., :2] = prediction[:, None] if output_mode == "shared" else prediction
     torch.testing.assert_close(captured["noise"], expected)
     torch.testing.assert_close(sampled, expected)
+    assert captured["vlm_memory"] is cached_vlm
+
+
+def test_eval_vlm_cache_refreshes_only_rows_whose_skill_generation_changes() -> None:
+    class _CacheModel(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.likelihood_blocks = nn.ModuleList([nn.Identity(), nn.Identity()])
+            self.calls = []
+
+        def encode_likelihood_memories(self, images, tokens, mask):
+            del tokens
+            values = images[0].flatten(1).mean(dim=1)[:, None, None]
+            self.calls.append(values.detach().clone())
+            return [values, values + 100.0], mask.detach().clone()
+
+    policy = SkillVLAStage2Policy.__new__(SkillVLAStage2Policy)
+    nn.Module.__init__(policy)
+    policy.config = SimpleNamespace(n_action_steps=2)
+    policy.model = _CacheModel()
+    policy.reset()
+    tokens = torch.zeros(2, 1, dtype=torch.long)
+
+    first = policy._cached_eval_vlm_memory(
+        [torch.tensor([[[[1.0]]], [[[2.0]]]])],
+        tokens,
+        torch.ones(2, 1, dtype=torch.bool),
+        torch.tensor([0, 0]),
+    )
+    second = policy._cached_eval_vlm_memory(
+        [torch.tensor([[[[10.0]]], [[[20.0]]]])],
+        tokens,
+        torch.zeros(2, 1, dtype=torch.bool),
+        torch.tensor([0, 0]),
+    )
+    third = policy._cached_eval_vlm_memory(
+        [torch.tensor([[[[10.0]]], [[[20.0]]]])],
+        tokens,
+        torch.tensor([[False], [True]]),
+        torch.tensor([0, 1]),
+    )
+
+    assert first is second is third
+    assert [call.flatten().tolist() for call in policy.model.calls] == [
+        [1.0, 2.0],
+        [20.0],
+    ]
+    torch.testing.assert_close(third[0][0].flatten(), torch.tensor([1.0, 20.0]))
+    torch.testing.assert_close(third[0][1].flatten(), torch.tensor([101.0, 120.0]))
+    torch.testing.assert_close(
+        third[1], torch.tensor([[True], [True]], dtype=torch.bool)
+    )
+
+    policy.reset()
+    assert policy._eval_vlm_cache is None
+    assert policy._eval_vlm_cache_ids is None
+
+
+def test_eval_vlm_cache_is_opt_in_for_direct_policy_callers() -> None:
+    policy = SkillVLAStage2Policy.__new__(SkillVLAStage2Policy)
+    nn.Module.__init__(policy)
+    policy.config = SimpleNamespace(n_action_steps=2)
+    policy.model = nn.Module()
+    policy.reset()
+
+    assert (
+        policy._cached_eval_vlm_memory(
+            [],
+            torch.zeros(1, 1, dtype=torch.long),
+            torch.ones(1, 1, dtype=torch.bool),
+            None,
+        )
+        is None
+    )
+    assert STAGE2_VLM_CACHE_ID == "stage2_vlm_cache_id"

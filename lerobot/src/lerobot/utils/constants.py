@@ -29,6 +29,9 @@ OBS_LANGUAGE_ATTENTION_MASK = OBS_LANGUAGE + ".attention_mask"
 OBS_LANGUAGE_SUBTASK = OBS_STR + ".subtask"
 OBS_LANGUAGE_SUBTASK_TOKENS = OBS_LANGUAGE_SUBTASK + ".tokens"
 OBS_LANGUAGE_SUBTASK_ATTENTION_MASK = OBS_LANGUAGE_SUBTASK + ".attention_mask"
+# Eval-only per-environment generation used to reuse frozen Stage-2 VLM memory
+# until the next skill boundary. It is never serialized into a dataset.
+STAGE2_VLM_CACHE_ID = "stage2_vlm_cache_id"
 
 ACTION = "action"
 ACTION_PREFIX = ACTION + "."

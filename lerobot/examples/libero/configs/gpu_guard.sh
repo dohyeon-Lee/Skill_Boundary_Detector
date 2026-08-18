@@ -5,8 +5,8 @@
 # initialization ("CUDA unknown error"). Without a check the run silently drops
 # to CPU: orders of magnitude slower, still holding the GPU allocation, and
 # usually noticed only hours later. node26 in global_config.yaml is the
-# documented example, and node04/05/08/10/13/14/16/18/19/21/23/24/31/39 have
-# shown the same behaviour.
+# documented example, and node04/05/08/10/12/13/14/16/18/19/21/23/24/31/39
+# have shown the same behaviour.
 #
 # On a bad node this records the hostname and asks Slurm to requeue the job with
 # that node excluded, so the work lands on a healthy GPU instead of dying or
@@ -46,6 +46,14 @@ require_cuda_or_requeue() {
 
   local node="${SLURMD_NODENAME:-${HOSTNAME:-unknown}}"
   local attempt="${SLURM_RESTART_COUNT:-0}"
+  # For one task per array SLURM_JOB_ID equals the array-parent id, and
+  # scontrol update on the parent silently fails to pin ExcNodeList to the
+  # task (observed: task 13 of 2046583 kept landing on the bad node until it
+  # burned all retries). The <array>_<task> form is unambiguous for every task.
+  local jobref="${SLURM_JOB_ID:-}"
+  if [ -n "${SLURM_ARRAY_JOB_ID:-}" ] && [ -n "${SLURM_ARRAY_TASK_ID:-}" ]; then
+    jobref="${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}"
+  fi
   echo "GPU GUARD: torch cannot initialize CUDA on ${node} (attempt ${attempt})." >&2
 
   # Recorded so submit scripts can exclude the node up front next time.
@@ -62,22 +70,31 @@ require_cuda_or_requeue() {
     exit 1
   fi
 
-  # Widen the job's exclude list before releasing it, otherwise Slurm is free to
-  # hand back the very node that just failed. requeuehold keeps the job pending
-  # long enough for the update to apply; every step is best-effort because some
-  # sites restrict scontrol updates on array tasks.
+  # Widen the job's exclude list, then requeue WITHOUT holding. A held requeue
+  # needs an in-job `scontrol release`, but the requeue only completes once this
+  # very script dies — so the release fires before the hold exists and the job
+  # stays held forever (observed on this cluster; gpu_guard_watchdog.sh cleans
+  # up any survivors). Plain requeue never holds, and Slurm's ~2 min BeginTime
+  # delay on requeued jobs leaves time for the exclusion to land.
   local exclude
-  exclude="$(scontrol show job "${SLURM_JOB_ID}" 2>/dev/null |
+  exclude="$(scontrol show job "${jobref}" 2>/dev/null |
     tr ' ' '\n' | sed -n 's/^ExcNodeList=//p' | head -1)"
   case "${exclude}" in
     "" | "(null)") exclude="${node}" ;;
     *) exclude="${exclude},${node}" ;;
   esac
 
-  if scontrol requeuehold "${SLURM_JOB_ID}" 2>/dev/null; then
-    scontrol update JobId="${SLURM_JOB_ID}" ExcNodeList="${exclude}" 2>/dev/null || true
-    scontrol release "${SLURM_JOB_ID}" 2>/dev/null || true
-    echo "GPU GUARD: requeued ${SLURM_JOB_ID} excluding ${exclude}." >&2
+  local updated=1
+  scontrol update JobId="${jobref}" ExcNodeList="${exclude}" 2>/dev/null || updated=0
+
+  # Survive the SIGTERM Slurm sends while requeueing us, so the post-requeue
+  # retry below still runs on sites that refuse updates on running jobs.
+  trap '' TERM
+  if scontrol requeue "${jobref}" 2>/dev/null; then
+    if [ "${updated}" = "0" ]; then
+      scontrol update JobId="${jobref}" ExcNodeList="${exclude}" 2>/dev/null || true
+    fi
+    echo "GPU GUARD: requeued ${jobref} excluding ${exclude}." >&2
   else
     echo "GPU GUARD: requeue was refused (is '#SBATCH --requeue' set?);" \
          "exiting instead of running on CPU." >&2
