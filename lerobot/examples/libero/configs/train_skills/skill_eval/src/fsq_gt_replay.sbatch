@@ -90,6 +90,16 @@ for artifact in \
   fi
 done
 
+# Latents are normally produced by the GPU prepass (fsq_latents_prepass.sbatch)
+# so that this array can run GPU-free. Encoding here is the fallback for a job
+# that was given a GPU anyway; on a GPU-free job it would silently drop to CPU
+# and take about an hour per checkpoint, so fail fast instead.
+if [ ! -f "${FSQ_LATENTS_PATH}" ] && [ -z "${EVAL_REPLAY_GRES}" ]; then
+  echo "Missing FSQ latents: ${FSQ_LATENTS_PATH}" >&2
+  echo "This replay array runs GPU-free; run the latents prepass first (resubmit" >&2
+  echo "with submit_fsq_gt_replay.sh, which submits it automatically)." >&2
+  exit 1
+fi
 if [ ! -f "${FSQ_LATENTS_PATH}" ]; then
   LATENTS_LOCK="${FSQ_LATENTS_PATH}.lock"
   (
@@ -120,11 +130,15 @@ echo "episodes  : ${EPISODES_PER_TASK}/task selection=${EPISODE_SELECTION} expli
 echo "ep source : ${EPISODE_SOURCE}"
 echo "rollout   : GT actions only"
 echo "output    : ${EVAL_OUT_DIR}"
-nvidia-smi || true
+echo "gpu       : ${EVAL_REPLAY_GRES:-none (replay is CPU-only)}"
+[ -z "${EVAL_REPLAY_GRES}" ] || nvidia-smi || true
 
-# Fail over to another GPU instead of silently running on CPU.
-source "${PROJECT_ROOT}/lerobot/examples/libero/configs/gpu_guard.sh"
-require_cuda_or_requeue "${PROJECT_ROOT}/.venv/bin/python"
+# Fail over to another GPU instead of silently running on CPU -- only when this
+# array actually asked for one. The replay itself decodes dataset video on CPU.
+if [ -n "${EVAL_REPLAY_GRES}" ]; then
+  source "${PROJECT_ROOT}/lerobot/examples/libero/configs/gpu_guard.sh"
+  require_cuda_or_requeue "${PROJECT_ROOT}/.venv/bin/python"
+fi
 
 RESUME_ARGS=()
 [ "${EVAL_RESUME}" != "true" ] || RESUME_ARGS=(--resume)

@@ -154,6 +154,15 @@ def build_settings(
     resolved_checkpoints = [
         artifact["fsq_eval_resolved_checkpoint"] for artifact in artifacts
     ]
+    # Encoding a checkpoint's skill latents is the only GPU work in this
+    # pipeline; the replay itself decodes dataset video on CPU. Listing the
+    # checkpoints that still lack latents lets the submitter put just that work
+    # on a GPU and leave the whole replay array GPU-free.
+    missing_latents = [
+        artifact["fsq_eval_resolved_checkpoint"]
+        for artifact in artifacts
+        if not Path(artifact["fsq_eval_latents_path"]).is_file()
+    ]
     epoch_tags = [artifact["fsq_eval_epoch_tag"] for artifact in artifacts]
     if len(resolved_checkpoints) != len(set(resolved_checkpoints)):
         raise ValueError(
@@ -242,10 +251,22 @@ def build_settings(
         if not path.exists():
             raise FileNotFoundError(f"{label} not found: {path}")
 
-    requested_gpus = int(get_value(config, "eval_num_gpus", 1))
+    # Named eval_num_gpus before the replay array went GPU-free: it has always
+    # been the array's concurrency throttle, and now that the replay holds no
+    # GPU at all the old name only misleads. The GPU count is not configurable --
+    # it is one latent-encoding prepass per run that still needs one.
+    requested_concurrency = int(
+        get_value(
+            config,
+            "eval_max_concurrent",
+            get_value(config, "eval_num_gpus", 1),
+        )
+    )
     workers_per_checkpoint = int(get_value(config, "workers_per_checkpoint", 1))
-    if requested_gpus <= 0 or workers_per_checkpoint <= 0:
-        raise ValueError("eval_num_gpus and workers_per_checkpoint must be positive.")
+    if requested_concurrency <= 0 or workers_per_checkpoint <= 0:
+        raise ValueError(
+            "eval_max_concurrent and workers_per_checkpoint must be positive."
+        )
     if episode_ids:
         selected_episode_upper_bound = len(episode_ids)
     elif task_ids is not None:
@@ -258,7 +279,7 @@ def build_settings(
         if selected_episode_upper_bound is None
         else min(workers_per_checkpoint, selected_episode_upper_bound)
     )
-    concurrent_jobs = min(requested_gpus, len(artifacts) * worker_count)
+    concurrent_jobs = min(requested_concurrency, len(artifacts) * worker_count)
 
     run_name = artifact["fsq_eval_run_name"]
     epoch_tag = artifact["fsq_eval_epoch_tag"]
@@ -306,6 +327,8 @@ def build_settings(
         "fsq_run_count": len(run_names),
         "fsq_epoch_tag": epoch_tag,
         "fsq_eval_checkpoints": " ".join(resolved_checkpoints),
+        "fsq_missing_latents": " ".join(missing_latents),
+        "fsq_missing_latents_count": len(missing_latents),
         "fsq_skipped_checkpoints": " ".join(skipped_checkpoints),
         "fsq_expected_epoch_tags": json.dumps(epoch_tags, separators=(",", ":")),
         "fsq_checkpoint_count": len(artifacts),
@@ -317,7 +340,7 @@ def build_settings(
         "episodes_per_task": episodes_per_task,
         "episode_selection": episode_selection,
         "eval_seed": int(get_value(config, "seed", 42)),
-        "eval_num_gpus": concurrent_jobs,
+        "eval_max_concurrent": concurrent_jobs,
         "eval_worker_count": worker_count,
         "eval_resume": str(as_bool(get_value(config, "resume", False))).lower(),
         "eval_collection_dir": str(collection_dir),
@@ -332,7 +355,11 @@ def build_settings(
             as_list(get_value(config, "train_partition", ["debug"]))
         ) or "debug",
         "eval_qos": str(get_value(config, "train_qos", "base_qos")),
+        # slurm.gres covers the GPU latent-encoding prepass; slurm.replay_gres
+        # covers the replay array, which needs no GPU at all (default: none).
         "eval_gres": str(_at(config, "slurm", "gres", "gpu:1")),
+        "eval_replay_gres": str(_at(config, "slurm", "replay_gres", "") or ""),
+        "eval_latents_time": str(_at(config, "slurm", "latents_time", "04:00:00")),
         "eval_cpus_per_task": int(_at(config, "slurm", "cpus", 8)),
         "eval_mem": str(_at(config, "slurm", "memory", "64G")),
         "eval_time": str(_at(config, "slurm", "time", "12:00:00")),

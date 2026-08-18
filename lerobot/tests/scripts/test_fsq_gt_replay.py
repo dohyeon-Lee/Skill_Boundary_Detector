@@ -213,6 +213,66 @@ def test_episode_source_rejects_unknown_values(tmp_path: Path) -> None:
         CONFIG.build_settings(config)
 
 
+def test_missing_latents_lists_only_checkpoints_without_an_npz(tmp_path: Path) -> None:
+    """Encoding latents is the pipeline's only GPU work, so the submitter needs
+    to know exactly which checkpoints still require it."""
+    config = _replay_run(tmp_path, epochs=[50, 100, 150])
+    run_dir = tmp_path / "outputs" / "FSQ" / "run"
+    (run_dir / "skill_latents_epoch0100.npz").write_bytes(b"x")
+
+    settings = CONFIG.build_settings(config)
+
+    assert settings["fsq_missing_latents"] == "50 150"
+    assert settings["fsq_missing_latents_count"] == 2
+
+
+def test_missing_latents_is_empty_once_every_checkpoint_is_encoded(tmp_path: Path) -> None:
+    config = _replay_run(tmp_path, epochs=[50, 100, 150])
+    run_dir = tmp_path / "outputs" / "FSQ" / "run"
+    for tag in ("epoch0050", "epoch0100", "epoch0150"):
+        (run_dir / f"skill_latents_{tag}.npz").write_bytes(b"x")
+
+    settings = CONFIG.build_settings(config)
+
+    assert settings["fsq_missing_latents"] == ""
+    assert settings["fsq_missing_latents_count"] == 0
+
+
+def test_replay_gres_defaults_to_no_gpu(tmp_path: Path) -> None:
+    """The replay array only decodes dataset video; the GPU belongs to the prepass."""
+    config = _replay_run(tmp_path, epochs=[50])
+    settings = CONFIG.build_settings(config)
+    assert settings["eval_replay_gres"] == ""
+    assert settings["eval_gres"] == "gpu:1"
+
+    config["slurm"] = {"replay_gres": "gpu:1"}
+    assert CONFIG.build_settings(config)["eval_replay_gres"] == "gpu:1"
+
+
+def test_max_concurrent_still_accepts_the_old_gpu_count_name(tmp_path: Path) -> None:
+    """eval_num_gpus was always the array throttle, never a GPU count."""
+    config = _replay_run(tmp_path, epochs=[50, 100, 150])
+    config["eval_num_gpus"] = 2
+
+    assert CONFIG.build_settings(config)["eval_max_concurrent"] == 2
+
+
+def test_max_concurrent_wins_over_the_old_name(tmp_path: Path) -> None:
+    config = _replay_run(tmp_path, epochs=[50, 100, 150])
+    config["eval_num_gpus"] = 2
+    config["eval_max_concurrent"] = 3
+
+    assert CONFIG.build_settings(config)["eval_max_concurrent"] == 3
+
+
+def test_max_concurrent_is_capped_by_the_number_of_tasks(tmp_path: Path) -> None:
+    """Asking for more slots than there are tasks must not inflate the array."""
+    config = _replay_run(tmp_path, epochs=[50])
+    config["eval_max_concurrent"] = 50
+
+    assert CONFIG.build_settings(config)["eval_max_concurrent"] == 1
+
+
 def test_expected_epoch_tags_track_disk_without_a_frozen_list(tmp_path: Path) -> None:
     config = _replay_run(tmp_path, epochs=[50, 100])
     settings = CONFIG.build_settings(config)
