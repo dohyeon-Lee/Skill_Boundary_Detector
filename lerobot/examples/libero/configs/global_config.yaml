@@ -61,24 +61,24 @@ train_exclude_nodes: [""]
 
 
 
-# train_qos: big_qos # pro6000_qos | base_qos | big_qos
-# train_nodelist: ""
-# train_exclude_nodes:
-#   - node19
-#   - node13
-#   - node26   # GPU present in nvidia-smi but torch "No CUDA GPUs available" — packs jobs, GPU unusable
-#   - node18
-#   - node16
-#   - node08
-#   - node10
-#   - node21
-#   - node14
-#   - node04
-#   - node05
-#   - node31
-#   - cs-gpu-01
-#   - node24
-#   - node39 
+train_qos: big_qos # pro6000_qos | base_qos | big_qos
+train_nodelist: ""
+train_exclude_nodes:
+  - node19
+  - node13
+  - node26   # GPU present in nvidia-smi but torch "No CUDA GPUs available" — packs jobs, GPU unusable
+  - node18
+  - node16
+  - node08
+  - node10
+  - node21
+  - node14
+  - node04
+  - node05
+  - node31
+  - cs-gpu-01
+  - node24
+  - node39 
 
   # - node23
   # - node12

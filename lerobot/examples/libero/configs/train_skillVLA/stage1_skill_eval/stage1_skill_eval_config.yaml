@@ -43,21 +43,21 @@ outputs_root: outputs_filtered
 #   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch4
 #     label: E
 
-# model_defaults:
-#   previous: false
-#   checkpoint: "100000"
-# models:
-#   # - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch0_skillendmask
-#   #   label: previous
-#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask
-#     label: skill_broadcast
-#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_adarms_skillendmask
-#     label: skill_adaRMS
-#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_token_skillendmask
-#     label: skill_token
-#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_token_iso_skillendmask
-#     label: skill_token_iso
-# output_name: "skill_conditioning"
+model_defaults:
+  previous: false
+  checkpoint: "100000"
+models:
+  # - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch0_skillendmask
+  #   label: previous
+  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask
+    label: skill_broadcast
+  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_adarms_zero_skillendmask
+    label: skill_adaRMS
+  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_token_skillendmask
+    label: skill_token
+  # - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_token_iso_skillendmask
+  #   label: skill_token_iso
+output_name: "skill_conditioning"
 
 # model_defaults:
 #   previous: false
@@ -89,15 +89,15 @@ outputs_root: outputs_filtered
 #     label: 100p_broadcast_cond
 # output_name: "skill_conditioning_pos_100K"
 
-model_defaults:
-  previous: false
-  checkpoint: "100000"
-models:
-  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask
-    label: adamW
-  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask_muon
-    label: muon
-output_name: "optimizor_100K"
+# model_defaults:
+#   previous: false
+#   checkpoint: "100000"
+# models:
+#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask
+#     label: adamW
+#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask_muon
+#     label: muon
+# output_name: "optimizor_100K"
 
 main_terminator:
   # Base budget per occurrence: ceil(GT action length L * scale). The early

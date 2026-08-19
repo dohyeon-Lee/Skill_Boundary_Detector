@@ -7,6 +7,8 @@ terminator are deliberately absent from this build step.
 
 from __future__ import annotations
 
+import json
+import os
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -23,14 +25,24 @@ from train_FSQ import _compute_skill_orders, load_skill_files
 
 @dataclass
 class Args:
-    model_path: str
-    """FSQ checkpoint path: FSQ.pt or FSQ_epochXXXX.pt."""
-
     skills_dir: str
     """Directory containing per-skill npz files."""
 
-    output_path: str
-    """Output skill_latents npz path."""
+    model_path: str = ""
+    """FSQ checkpoint path: FSQ.pt or FSQ_epochXXXX.pt. Omit when using --plan-path."""
+
+    output_path: str = ""
+    """Output skill_latents npz path. Omit when using --plan-path."""
+
+    plan_path: str = ""
+    """JSON file holding [{"model_path": ..., "output_path": ...}, ...].
+
+    Reading the skillset dominates a single-checkpoint run (11k npz files versus
+    ~40s of encoding), so a plan encodes many checkpoints of one run in one
+    process and pays that cost once instead of once per checkpoint."""
+
+    overwrite: bool = False
+    """Re-encode a plan entry whose output already exists (default: skip it)."""
 
     device: str = "cuda"
 
@@ -129,16 +141,32 @@ def _snap_to_supported(latents: np.ndarray, tokens: np.ndarray, model: SplineFSQ
     return lat, tok
 
 
-def main(args: Args) -> None:
-    device = args.device if torch.cuda.is_available() and args.device == "cuda" else "cpu"
-    skills_dir = Path(args.skills_dir)
-    output_path = Path(args.output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+def _encode_plan(args: Args) -> list[tuple[Path, Path]]:
+    """(checkpoint, output) pairs to encode, from --plan-path or the single-run flags."""
+    if args.plan_path:
+        if args.model_path or args.output_path:
+            raise ValueError("--plan-path replaces --model-path/--output-path; pass one form.")
+        entries = json.loads(Path(args.plan_path).read_text())
+        if not isinstance(entries, list) or not entries:
+            raise ValueError(f"{args.plan_path} must hold a non-empty list of entries.")
+        return [(Path(e["model_path"]), Path(e["output_path"])) for e in entries]
+    if not args.model_path or not args.output_path:
+        raise ValueError("Pass --model-path and --output-path, or --plan-path.")
+    return [(Path(args.model_path), Path(args.output_path))]
 
-    segments, _, skill_actions, metadata = load_skill_files(skills_dir)
 
-    model = load_model(Path(args.model_path), device)
-    print(f"[FSQ encode] model={args.model_path}")
+def _encode_one(
+    args: Args,
+    *,
+    model_path: Path,
+    output_path: Path,
+    device: str,
+    segments,
+    skill_actions,
+    metadata,
+) -> None:
+    model = load_model(model_path, device)
+    print(f"[FSQ encode] model={model_path}")
     print(f"[FSQ encode] device={device} skills={len(segments)}")
 
     latents = []
@@ -170,8 +198,39 @@ def main(args: Args) -> None:
     }
     for key in ("episode_id", "task_id", "skill_index", "frame_start", "frame_end", "length"):
         save_dict[key] = np.array([m[key] for m in metadata])
-    np.savez(str(output_path), **save_dict)
+    # Write through a temp file so a killed job never leaves a half-written npz
+    # that later runs would treat as an already-encoded checkpoint. The name must
+    # keep the .npz suffix: np.savez appends one when it is missing, and the
+    # rename would then target a file that was never written.
+    temporary = output_path.with_suffix(f".tmp{os.getpid()}.npz")
+    np.savez(str(temporary), **save_dict)
+    temporary.replace(output_path)
     print(f"[FSQ encode] saved -> {output_path}")
+
+
+def main(args: Args) -> None:
+    device = args.device if torch.cuda.is_available() and args.device == "cuda" else "cpu"
+    plan = _encode_plan(args)
+    for _, output_path in plan:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Read the skillset ONCE: it costs far more than a checkpoint's encoding.
+    segments, _, skill_actions, metadata = load_skill_files(Path(args.skills_dir))
+
+    for index, (model_path, output_path) in enumerate(plan, start=1):
+        if output_path.is_file() and not args.overwrite:
+            print(f"[FSQ encode] ({index}/{len(plan)}) exists, skipping -> {output_path}")
+            continue
+        print(f"[FSQ encode] ({index}/{len(plan)}) {model_path.name}")
+        _encode_one(
+            args,
+            model_path=model_path,
+            output_path=output_path,
+            device=device,
+            segments=segments,
+            skill_actions=skill_actions,
+            metadata=metadata,
+        )
 
 
 if __name__ == "__main__":

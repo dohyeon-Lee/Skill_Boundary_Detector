@@ -53,6 +53,14 @@ unset LD_LIBRARY_PATH
 source "${PROJECT_ROOT}/lerobot/examples/libero/configs/gpu_guard.sh"
 require_cuda_or_requeue "${PROJECT_ROOT}/.venv/bin/python"
 
+# Resolve every checkpoint first, then encode them in ONE process: reading the
+# 11k-file skillset dominates a single-checkpoint run (~40s of encoding against
+# many minutes of loading), so it must be paid once per run, not once per
+# checkpoint.
+PLAN_FILE="$(mktemp "${SLURM_TMPDIR:-${TMPDIR:-/tmp}}/fsq_latents_plan.XXXXXX.json")"
+trap 'rm -f "${PLAN_FILE}"' EXIT
+SKILLS_DIR=""
+PLAN_ENTRIES=()
 for CHECKPOINT in "${CHECKPOINTS[@]}"; do
   SETTINGS="$(
     "${BOOTSTRAP_PYTHON}" "${SRC_DIR}/fsq_gt_replay_config.py" \
@@ -64,26 +72,24 @@ for CHECKPOINT in "${CHECKPOINTS[@]}"; do
     echo "[${FSQ_EPOCH_TAG}] latents already present; skipping"
     continue
   fi
-  # The same lock the replay path uses, so a concurrently submitted replay job
-  # never encodes the same checkpoint twice.
-  LATENTS_LOCK="${FSQ_LATENTS_PATH}.lock"
-  (
-    flock 9
-    if [ -f "${FSQ_LATENTS_PATH}" ]; then
-      echo "[${FSQ_EPOCH_TAG}] latents appeared while waiting for the lock; skipping"
-      exit 0
-    fi
-    TEMP_LATENTS="${FSQ_LATENTS_PATH%.npz}.tmp.${SLURM_JOB_ID:-$$}.npz"
-    echo "[${FSQ_EPOCH_TAG}] encoding -> ${FSQ_LATENTS_PATH}"
-    PYTHONPATH="${LEROBOT_ROOT}/src:${LEROBOT_ROOT}/examples/libero" \
-      "${PROJECT_ROOT}/.venv/bin/python" \
-        "${LEROBOT_ROOT}/examples/libero/encode_FSQ_skills.py" \
-        --model-path "${FSQ_MODEL_PATH}" \
-        --skills-dir "${FSQ_SKILLS_DIR}" \
-        --output-path "${TEMP_LATENTS}" \
-        --device cuda
-    mv "${TEMP_LATENTS}" "${FSQ_LATENTS_PATH}"
-  ) 9>"${LATENTS_LOCK}"
+  SKILLS_DIR="${FSQ_SKILLS_DIR}"
+  PLAN_ENTRIES+=("{\"model_path\": \"${FSQ_MODEL_PATH}\", \"output_path\": \"${FSQ_LATENTS_PATH}\"}")
+  echo "[${FSQ_EPOCH_TAG}] queued -> ${FSQ_LATENTS_PATH}"
 done
+
+if [ "${#PLAN_ENTRIES[@]}" -eq 0 ]; then
+  echo "Nothing to encode; every requested checkpoint already has latents."
+else
+  printf '[%s]\n' "$(IFS=,; echo "${PLAN_ENTRIES[*]}")" > "${PLAN_FILE}"
+  echo "Encoding ${#PLAN_ENTRIES[@]} checkpoint(s) in one process"
+  # encode_FSQ_skills.py writes each output atomically and skips ones that
+  # already exist, so a requeued job resumes where it stopped.
+  PYTHONPATH="${LEROBOT_ROOT}/src:${LEROBOT_ROOT}/examples/libero" \
+    "${PROJECT_ROOT}/.venv/bin/python" \
+      "${LEROBOT_ROOT}/examples/libero/encode_FSQ_skills.py" \
+      --skills-dir "${SKILLS_DIR}" \
+      --plan-path "${PLAN_FILE}" \
+      --device cuda
+fi
 
 echo "DONE FSQ LATENTS PREPASS: ${FSQ_GT_REPLAY_RUN}"
