@@ -165,6 +165,22 @@ def _attach_original_terminator(policy, fsq_path: str | Path) -> None:
     policy.model.fsq_term_train = terminator
 
 
+# Predictor-driven panels keep the GT sequence only as a per-env placeholder: the
+# skill comes from the predictor and the boundary from the terminator. Evaluating a
+# suite the skill dataset never covered (e.g. libero_10 against libero_90 skills)
+# therefore only needs a stand-in of the right shape, flagged so the HTML report
+# does not render it as a real GT timeline.
+_SYNTHETIC_SKILL = {"token": 0, "gt_length": 0, "synthetic": True}
+
+
+def _is_synthetic_sequences(sequences) -> bool:
+    return any(
+        isinstance(skill, dict) and skill.get("synthetic")
+        for sequence in sequences
+        for skill in sequence
+    )
+
+
 def _parse_sequences(sequences) -> tuple[list[list[int]], list[list[int]]]:
     codes, lengths = [], []
     for sequence in sequences:
@@ -228,6 +244,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         self._gt_lengths: list[list[int]] | None = None
         self._references: list[list[int]] | None = None
         self._reference_lengths: list[list[int]] | None = None
+        self._references_synthetic = False
         self._action_queue: deque = deque(maxlen=self.n_action_steps)
         self.reset()
 
@@ -236,6 +253,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         self.reset()
 
     def set_reference_skill_token_sequences(self, sequences) -> None:
+        self._references_synthetic = _is_synthetic_sequences(sequences)
         self._references, self._reference_lengths = _parse_sequences(sequences)
         self.reset()
 
@@ -506,6 +524,8 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         return self.end_threshold
 
     def get_gt_timeline(self) -> dict[int, list[dict]]:
+        if self.skill_source != "gt" and self._references_synthetic:
+            return {}
         sequences = self._sequences if self.skill_source == "gt" else self._references
         lengths = self._gt_lengths if self.skill_source == "gt" else self._reference_lengths
         if sequences is None or lengths is None:
@@ -547,15 +567,32 @@ def _language_oracle_maps(
         )
         for spec in specs
     ]
+    # Every panel that reads its skill from the predictor and its boundary from the
+    # terminator ignores the GT sequence, so a suite with no GT coverage can still be
+    # evaluated on a synthetic placeholder instead of losing the task outright.
+    gt_optional = all(
+        _normalize_skill_source(spec["skill_source"]) != "gt"
+        and _normalize_advance_mode(spec["advance_mode"]) != "gt"
+        for spec in specs
+    )
     maps = [dict() for _ in specs]
     for task_group, group in envs.items():
         for task_id in list(group):
             sequences = [model.get(int(task_id), []) for model in per_model]
             if not all(sequences):
-                log.warning("task_id=%s is absent from at least one model dataset; dropping it.", task_id)
-                group[task_id].close()
-                del group[task_id]
-                continue
+                if not gt_optional:
+                    log.warning("task_id=%s is absent from at least one model dataset; dropping it.", task_id)
+                    group[task_id].close()
+                    del group[task_id]
+                    continue
+                log.warning(
+                    "task_id=%s has no GT skills; evaluating it on predictor/terminator only.",
+                    task_id,
+                )
+                sequences = [
+                    model_sequences or [[dict(_SYNTHETIC_SKILL)]]
+                    for model_sequences in sequences
+                ]
             for index, model_sequences in enumerate(sequences):
                 maps[index][(task_group, int(task_id))] = _repeat_to_length(
                     model_sequences, n_episodes

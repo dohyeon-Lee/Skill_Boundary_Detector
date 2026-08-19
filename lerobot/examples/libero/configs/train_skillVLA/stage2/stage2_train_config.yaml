@@ -45,7 +45,7 @@ likelihood:
 dsbc:
   # shared predicts one 7D noise vector and repeats it over the action chunk;
   # per_step predicts a separate 7D vector for every action token.
-  noise_output_mode: shared  # shared | per_step
+  noise_output_mode: per_step  # shared | per_step
   # Paper setting: squash normalized predicted noise to (-5, 5).
   noise_output_bound: 5.0
   # Online action(t=0) -> noise(t=1) Euler integration through frozen Stage 1.
@@ -66,14 +66,14 @@ cumulative_xyz_loss:
   weight: 0.5
 
 # Auto name: {stage1_run}_{checkpoint}_{gt|predictor}_{batchON|batchOFF}[_cumxyz{weight}][_{suffix}]
-run: {suffix: "lasthalf_bs256"}
+run: {suffix: "lasthalf"}
 
 training:
   dataloader:
-    batch_size: 256 # 32
-    workers: 24 # 8
-    # batch_size: 32 
-    # workers: 8 
+    # batch_size: 256 # 32
+    # workers: 24 # 8
+    batch_size: 32 
+    workers: 8 
     gpus: 1
     # Half the batch becomes post-jitter-same-skill/different-task pairs.
     same_skill_different_task: {enabled: false, grouped_fraction: 0.5, progress_temperature: 0.1}
@@ -86,5 +86,5 @@ training:
 logging:
   wandb: {enable: true, project: VLA_stage2}
 
-# slurm: {gres: "gpu:1", cpus: 12, memory: 256G, time: "48:00:00"}
-slurm: {gres: "gpu:1", cpus: 32, memory: 256G, time: "48:00:00"}
+slurm: {gres: "gpu:1", cpus: 12, memory: 256G, time: "48:00:00"}
+# slurm: {gres: "gpu:1", cpus: 32, memory: 256G, time: "48:00:00"}
