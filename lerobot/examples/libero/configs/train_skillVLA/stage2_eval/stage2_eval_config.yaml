@@ -15,7 +15,7 @@ models:
   # - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask_100000_gt_batchOFF_nomask_layermix_glr10_lasthalf_bs256
   # - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask_100000_gt_batchOFF_dsbc_shared_frs10_nomask_layermix_glr10_lasthalf
 
-    checkpoint: "240000"
+    checkpoint: "300000"
     skill_source: predictor   # gt | predictor
     advance_mode: terminator  # terminator | gt (gt skill only)
     modes: [stage2, prior]    # subset of [stage2, prior]
