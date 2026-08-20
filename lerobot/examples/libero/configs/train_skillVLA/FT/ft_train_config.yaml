@@ -1,115 +1,43 @@
-# SkillVLA FINETUNING (FT) — adapt a post-trained Stage-2 model to a NEW task.
+# Stage-2 fine-tuning on a new SkillVLA dataset.
 #
-# Warm-starts the WHOLE skill_vla policy from a Stage-2 checkpoint (pretrained_path → from_pretrained's
-# is_stage2 full-load: VLM + cond + expert + skill head), then trains on the new task's skillvla
-# dataset (same FSQ codebook). stage1_checkpoint_path / skill_fsq_levels / skill_loss_weight are read
-# from the Stage-2 checkpoint's config.json (architecture only; no Stage-1 weights reloaded).
-# Output: {project_root}/{outputs_root}/skillVLA_FT/{run_name}/
+# Unlike stage2/, this starts from a COMPLETE skill_vla_stage2 checkpoint.
+# The Stage-1 prior and Stage-2 likelihood/DSBC modules are restored from that
+# checkpoint, then the normal Stage-2 freeze/optimizer contract is continued on
+# the new dataset with a fresh optimizer and scheduler.
+# No predictor overlay is needed here: training_skill_source stays GT, and the
+# Stage-2 memory encoder explicitly disables the learned predictor adapter.
 
-# ── Paths (project_root/dataset_root/outputs_root come from configs/global_config.yaml) ──
-skillvla_dataset_root: skillvla_dataset
+dataset:
+  skillvla_root: skillvla_dataset
+  source: libero_10_full_5
+  # Empty: inherit the FSQ run directory name from the Stage-2 checkpoint.
+  # The selected dataset FSQ.pt must be byte-identical to the checkpoint FSQ.pt.
+  run: ""
 
-# ── Warm-start: the Stage-2 run + checkpoint to finetune from ──
-# stage2_run_name: FSQ555_dino8_both_1000_siglip_015000_state__20tttff_40ffttt_40fffff
-stage2_run_name: FSQ88_dino8_both_1000_siglip_015000_state__20tttff_40ffttt_40fffff
-stage2_checkpoint: "050000"          # "last" or a step number
-# stage1_checkpoint_path:            # blank → read from the Stage-2 checkpoint config.json
-# skill_fsq_levels:                  # blank → read from the Stage-2 checkpoint config.json
+warm_start:
+  outputs_subdir: skillVLA_stage2
+  stage2_run: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask_100000_gt_batchOFF_nomask_layermix_glr10_lasthalf_fixed
+  checkpoint: "400000"
+  # stage2_run: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask_100000_gt_batchOFF_dsbc_shared_frs10_nomask_layermix_glr10_lasthalf_bs256
+  # checkpoint: "040000"
 
-# ── New task: the skillvla dataset to finetune ON (built by build_data with the SAME FSQ) ──
-# run_tag는 입력하지 않는다 — 부모 Stage-2가 학습한 데이터셋과 같은 run_tag(같은 FSQ/파이프라인)여야
-# 하므로 부모 체크포인트의 train_config.json에서 자동 유도. FT 데이터셋은
-# {skillvla_root}/{source_dataset}/{그 run_tag}/skillvla 에 미리 빌드돼 있어야 함.
-source_dataset: libero_object_full_2
+run:
+  # Explicit names keep the output readable and avoid filesystem name limits.
+  name: libero10_lasthalf40k_likelihood_ft
 
-# ── FT behaviour ──────────────────────────────────────────────
-# cond_skill_source: gt = teacher-force GT skill (Stage-2 style); pred = condition the action prefix
-# on the VLM's OWN predicted skill (STE) → matches inference, flow loss backprops into the VLM.
-cond_skill_source: gt
-skill_loss_weight:                   # blank → inherit the Stage-2 value (0.1)
+training:
+  dataloader: {batch_size: 32, workers: 8, gpus: 1}
+  optimizer: {base_lr: 2.5e-05}
+  gradient_checkpointing: false
+  schedule:
+    steps: 100000
+    log_every: 100
+    save_every: 1000
+    lr_mode: warmup_constant
+    warmup_steps: 1000
+    lr_decay_steps: 30000
 
-# ── Terminator co-training (adapt the FSQ terminator to the new task; disjoint from the policy) ──
-train_terminator: true
-terminator_lr_scale: 1.0
-terminator_end_target_sigma: 1.0     # soft termination target std in FRAMES (exp(-de²/2σ²))
-terminator_end_pos_weight: 1.0
+logging:
+  wandb: {enable: true, project: VLA_stage2_FT}
 
-# ═══ LoRA-continual FT regime (배치마다 뽑음 — A/B/C 3-way를 대체; 부모 stage2도 새 스킴이어야 함) ═══
-# LoRA 구조(①②③, rank 등)는 부모 Stage-2 체크포인트의 config.json에서 자동 상속 — 여기서 지정 안 함.
-# 고정 trainability: expert(+z/state proj) 학습, ②③·베이스·양쪽 vision 동결 (_apply_continual_freezes).
-#   SKILL      = standalone VLM(+①) → reader → skill loss만. ft_train_skill=true일 때만 의미(아니면 확률 0으로).
-#   MOTOR_conn = VLM(+②frozen) → cond(+③frozen) → expert 학습 (GT skill, real tail).
-#   MOTOR_sev  = 어댑터 전부 off(③ 바이패스 = 순수 Stage-1 VSA), VLM 안 돎; Stage-1 hold target;
-#                + random-skill distill → frozen-PT teacher (아래 vsa_distill; teacher도 severed).
-# 폴더명: ...__ft{P_SKILL}{P_conn}{P_sev}[_ts]{distill_tag} (예: __ft05050_distill22w100).
-regime_probs_ft: [0.0, 0.5, 0.5]  # [SKILL, MOTOR_conn, MOTOR_sev] 확률 (합 1). 필수.
-ft_train_skill: false             # true → ①+reader+head 학습(신규 어휘/물체 적응; replay와 함께 권장,
-                                  # SKILL 확률도 >0으로). false → skill 경로 완전 동결(motor-only FT).
-
-# ── PT-forgetting probe (부모 Stage-2 데이터셋에 대한 실시간 forgetting 곡선) ──
-# FT 중 probe_every 스텝마다 부모 PT 데이터셋의 고정 배치(프레임+flow 노이즈까지 seed 고정 = 같은 자)를
-# forward-only로 재측정 → wandb probe/*(절대 loss/flow/skill) + probe_forget/*(step0 대비 회귀율, 별도 위젯). PT 데이터셋
-# 위치는 부모 체크포인트의 train_config.json에서 자동 유도. probe_vsa: VLM 절단(B/VSA) 상태도 같이 측정
-# (*_vsa 키) → "VLM경로 forgetting" vs "VSA단독 forgetting" 분리. 오버헤드 ~0.5% (backward 없음).
-# baseline은 output_dir/probe_baseline.json에 저장 → resume해도 같은 기준점 유지.
-probe_pt_forgetting: true
-probe_every: 250
-probe_batches: 4              # 고정 probe 배치 수 (각 batch_size 프레임)
-probe_seed: 12345
-probe_vsa: true
-
-# ── 컴포넌트별 업데이트 추적 (어느 부분이 집중 학습되나) ──
-# log_freq마다 5개 컴포넌트(llm / vlm_vision / cond / cond_vision_encoder / action_expert)의 시작
-# 대비 파라미터 이동량 ‖θ_now−θ_init‖을 잰다 → wandb param_drift/*(절대) + param_drift_rel/*(÷‖θ_init‖,
-# 크기 다른 컴포넌트 5개를 같은 축에 겹쳐 비교). 얼린 그룹은 ~0으로 나와 freeze 동작도 확인됨.
-# 오버헤드는 log마다 파라미터 1회 순회(≈1s), CPU에 시작 스냅샷 1부 보관.
-track_param_drift: true
-
-# ── Continual-learning VSA distillation (forgetting 방지; 껐다 켜서 ablation) ──
-# B(VSA-only) 배치에서, GT skill 강한 action loss는 그대로 두고, 같은 (obs, x_t, t)에 "샘플된 non-GT
-# skill"을 넣어 student 액션을 frozen PT teacher(워밍스타트 VSA)의 액션에 맞추는 약한 loss를 추가.
-# skill→action 함수를 코드북 전체에 걸쳐 못박아 재사용 레퍼토리 보존 (LwF식, replay 불필요).
-# 샘플: n_local(GT FSQ 이웃 = local 기하) + n_global(전역 빈도 중 GT·이웃 제외 = cross-context, 진짜
-# forgetting 영역). 전역 빈도표는 부모 PT 데이터셋 히스토그램(FT/src/build_skill_code_freq.py로 생성;
-# 없으면 uniform). vlm_dropout이 발화(B 배치 존재)하고 B에서 expert/cond가 unfrozen이어야 의미 있음.
-# wandb train_distill/vsa 로 감시, probe_forget/flow 로 효과 측정.
-vsa_distill: true
-vsa_distill_weight: 1          # λ (GT BC 대비 약하게, 0.1~0.3). 0 = 모니터 전용(loss 안 걸고
-vsa_distill_n_local: 2           # GT FSQ 이웃 skill 수
-vsa_distill_n_global: 2          # 전역 빈도 skill 수 (GT·이웃 제외)
-vsa_distill_neighbor_radius: 1   # FSQ 격자 ±r (이웃/제외 집합 정의)
-# 모션 카운터: 코드별 trajectory(세그먼트) 수를 체크포인트에 누적 저장(FT 계보 따라 +). 학습 땐 이번
-# 데이터 반영 전(prior) 값에 접근. 이번 FT 데이터셋이 쓰는 코드는 GT BC로 직접 학습되니 distill 샘플에서
-# 제외 — 단 prior 모션수가 하위 pct를 넘으면(옛 지식 충분) 선택 가능. 히스토그램(skill_code_freq.npz)은
-# sbatch가 PT·FT 데이터셋 옆에 자동 생성. distill on일 때만 활성.
-vsa_distill_prior_pct: 20        # FT 코드는 prior 모션수가 이 퍼센타일 이상일 때만 distill 대상
-# (frozen-PT distill은 C(절단) 배치에서만 걸림 — 순수 VSA 레퍼토리 보존은 severed 맥락에 속함.
-#  옛 main_connected/gt_severed_bc는 B/C regime이 흡수하여 제거됨.)
-# 분리(severed) VSA의 GT BC target을 Stage-1처럼: 스킬 끝(skill_de) 이후 chunk는 hold(팔 delta→0,
-# gripper 마지막 값 유지)로 눌러 supervise → 스킬이 자기완결적으로 STOP. severed VSA는 다음 스킬을 못
-# 보므로 다음 스킬 action으로 학습하면 안 됨. vsa_gt_severed_bc(분리 GT BC)에 적용됨. off면 폴더명 _nohold.
-severed_hold_target: true
-
-
-exp: ""                              # optional EXTRA run-name suffix
-
-# ── Optimization ──────────────────────────────────────────────
-batch_size: 16
-num_workers: 4
-num_gpus: 1
-lr_base: 2.5e-05                     # effective base lr = lr_base * num_gpus
-steps: 30000
-save_freq: 5000
-
-# ── wandb ─────────────────────────────────────────────────────
-wandb_enable: true
-wandb_project: VLA_FT
-
-# ── Slurm (partition/qos/nodelist/exclude_nodes come from configs/global_config.yaml) ──
-# 메모리 참고: cond_skill_source=pred는 VLM을 두 번 돌려서 stage2보다 메모리를 더 씀 — 48GB 노드에서
-# batch 16 OOM 이력 있음(24GB 4090/3090은 불가). pred로 돌릴 땐 97GB pro6000 노드(asus_pro6000/
-# gigabyte_pro6000 + pro6000_qos)를 global 설정이나 여기 override로 지정할 것.
-train_gres: gpu:1
-train_cpus_per_task: 16
-train_mem: 128G
-train_time: "48:00:00"
+slurm: {gres: "gpu:1", cpus: 12, memory: 256G, time: "48:00:00"}

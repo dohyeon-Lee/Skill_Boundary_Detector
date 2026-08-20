@@ -219,8 +219,40 @@ def _stage2_checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
     }
 
 
+def _oracle_dataset_contract(config: dict, project_root: Path) -> dict | None:
+    """Resolve an optional eval-only GT dataset shared by every panel."""
+    dataset_value = str(
+        _at(config, "oracle", "skill_dataset_dir", default="") or ""
+    ).strip()
+    if not dataset_value:
+        return None
+
+    skill_dataset_dir = _relocate_project_path(project_root, dataset_value)
+    if not (skill_dataset_dir / "meta" / "info.json").is_file():
+        raise FileNotFoundError(
+            "Stage-2 oracle SkillVLA dataset not found: "
+            f"{skill_dataset_dir}"
+        )
+    run_dir = skill_dataset_dir.parent
+    source_dir = run_dir.parent
+    if len(source_dir.parents) < 2:
+        raise ValueError(
+            f"Unexpected Stage-2 oracle dataset layout: {skill_dataset_dir}"
+        )
+    return {
+        "skill_dataset_dir": skill_dataset_dir,
+        "eval_init_states_path": source_dir / "eval_init_states.npz",
+        "skill_latents_path": run_dir / "skill_latents.npz",
+        "raw_dataset_dir": source_dir.parents[1] / source_dir.name,
+    }
+
+
 def _model_entries(config: dict) -> list[dict]:
     default_checkpoint = str(get_value(config, "checkpoint", "last"))
+    default_outputs_subdir = _safe_name(
+        str(get_value(config, "outputs_subdir", "skillVLA_stage2")),
+        field="outputs_subdir",
+    )
     default_skill_source = str(get_value(config, "skill_source", "gt")).lower()
     default_advance = str(
         _at(config, "oracle", "advance_mode", default="terminator")
@@ -238,6 +270,10 @@ def _model_entries(config: dict) -> list[dict]:
     entries = []
     for index, raw in enumerate(raw_entries):
         model_dir = _safe_name(str(raw.get("model_dir", "")), field="models[].model_dir")
+        outputs_subdir = _safe_name(
+            str(raw.get("outputs_subdir", default_outputs_subdir)),
+            field="models[].outputs_subdir",
+        )
         checkpoint = _safe_name(
             str(raw.get("checkpoint", default_checkpoint)), field="models[].checkpoint"
         )
@@ -264,6 +300,7 @@ def _model_entries(config: dict) -> list[dict]:
         entries.append(
             {
                 "model_dir": model_dir,
+                "outputs_subdir": outputs_subdir,
                 "checkpoint": checkpoint,
                 "skill_source": skill_source,
                 "advance_mode": advance_mode,
@@ -360,6 +397,7 @@ def build_settings(config: dict) -> dict:
 
     terminator_variant = _terminator_variant(config)
     entries = _model_entries(config)
+    oracle_dataset = _oracle_dataset_contract(config, project_root)
     resolved = []
     # Prior panels are identical whenever they share the same frozen Stage-1
     # checkpoint and runtime settings; evaluate each distinct prior only once.
@@ -368,7 +406,7 @@ def build_settings(config: dict) -> dict:
     for entry in entries:
         stage2_path = (
             outputs_root
-            / "skillVLA_stage2"
+            / entry["outputs_subdir"]
             / entry["model_dir"]
             / "checkpoints"
             / entry["checkpoint"]
@@ -425,8 +463,10 @@ def build_settings(config: dict) -> dict:
                         f"stage2={stage2_fsq_run!r}."
                     )
 
-        # Both panels evaluate against the Stage-2 checkpoint's dataset so their
-        # oracle maps, init states, and skill traces are identical.
+        # Both panels share one oracle dataset so their GT maps, init states,
+        # and skill traces are identical. By default this is the Stage-2
+        # training dataset; oracle.skill_dataset_dir can explicitly select an
+        # eval-suite dataset without changing the checkpoint-owned model paths.
         eval_data_fields = {
             "fsq_path": contract["fsq_path"],
             "dino_model_path": contract["dino_model_path"],
@@ -435,6 +475,8 @@ def build_settings(config: dict) -> dict:
             "skill_latents_path": contract["skill_latents_path"],
             "raw_dataset_dir": contract["raw_dataset_dir"],
         }
+        if oracle_dataset is not None:
+            eval_data_fields.update(oracle_dataset)
         stage2_architecture_fields = {
             "architecture": contract["architecture"],
             "architecture_label": contract["architecture_label"],

@@ -100,10 +100,10 @@ nvidia-smi || true
 
 # Fail over to another GPU instead of silently running on CPU.
 source "${PROJECT_ROOT}/lerobot/examples/libero/configs/gpu_guard.sh"
-require_cuda_or_requeue "${PROJECT_ROOT}/.venv/bin/python"
+prepare_inline_cuda_guard
 
-PYTORCH_ALLOC_CONF=expandable_segments:True \
-PYTHONPATH="${LEROBOT_ROOT}/src:${LEROBOT_ROOT}/examples/libero:${LIBERO_REPO_ROOT}" \
+if PYTORCH_ALLOC_CONF=expandable_segments:True \
+  PYTHONPATH="${LEROBOT_ROOT}/src:${LEROBOT_ROOT}/examples/libero:${LIBERO_REPO_ROOT}" \
   "${PROJECT_ROOT}/.venv/bin/python" "${SRC_DIR}/run_eval.py" \
     --policy.path="${POLICY_PATH}" \
     --policy.fsq_path="${FSQ_PATH}" \
@@ -132,7 +132,16 @@ PYTHONPATH="${LEROBOT_ROOT}/src:${LEROBOT_ROOT}/examples/libero:${LIBERO_REPO_RO
     --output_dir="${EVAL_OUT_DIR}" \
     --job_name="${WANDB_RUN_NAME}" \
     --rename_map='{"observation.images.image2":"observation.images.wrist_image"}' \
-    "${WANDB_ARGS[@]}"
+    "${WANDB_ARGS[@]}"; then
+  EVAL_STATUS=0
+else
+  EVAL_STATUS=$?
+fi
+
+handle_inline_cuda_guard_exit "${EVAL_STATUS}"
+if (( EVAL_STATUS != 0 )); then
+  exit "${EVAL_STATUS}"
+fi
 
 # Merge every chunk finished so far and regenerate the success-rate chart.
 # Idempotent: whichever array job ends last leaves the complete chart behind.

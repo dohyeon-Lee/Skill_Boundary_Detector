@@ -62,6 +62,33 @@ CURRENT_WRIST = "observation.images.wrist_image"
 STAGE2_VLM_START_CONTRACT = "skill_boundary_image_state_v1"
 log = logging.getLogger(__name__)
 
+_INLINE_CUDA_GUARD_EXIT_CODE = 86
+
+
+def _run_inline_cuda_guard() -> None:
+    """Validate CUDA in the real evaluator process to avoid a second torch import."""
+    if os.environ.get("LEROBOT_INLINE_CUDA_GUARD", "0") != "1":
+        return
+    if torch.cuda.is_available():
+        return
+
+    marker = os.environ.get("LEROBOT_CUDA_GUARD_FAILURE_MARKER", "")
+    if marker:
+        try:
+            Path(marker).write_text(
+                "torch.cuda.is_available()=false\n", encoding="utf-8"
+            )
+        except OSError as error:
+            print(
+                f"GPU GUARD: could not write failure marker {marker}: {error}",
+                flush=True,
+            )
+    print(
+        "GPU GUARD: torch.cuda.is_available() is false; refusing CPU fallback.",
+        flush=True,
+    )
+    raise SystemExit(_INLINE_CUDA_GUARD_EXIT_CODE)
+
 
 def _normalize_skill_source(value: str) -> str:
     aliases = {
@@ -1519,6 +1546,7 @@ def _maybe_log_wandb(cfg, infos: dict[str, dict], specs: list[dict]) -> None:
 
 @parser.wrap()
 def eval_main(cfg: EvalPipelineConfig):
+    _run_inline_cuda_guard()
     supported = {"skill_expert", "skill_vla_stage2"}
     if cfg.policy is None or cfg.policy.type not in supported:
         raise ValueError(

@@ -1,86 +1,62 @@
-# SkillVLA FT closed-loop EVAL on LIBERO sim via lerobot_skillvla_eval.
+# Evaluate a Stage-2 FT checkpoint on the dataset/suite it was adapted to.
 #
-# Point at a FINETUNED run (under {outputs_root}/skillVLA_FT/) by its OUTPUT FOLDER NAME + checkpoint.
-# The model is restored from the checkpoint's config.json; the terminator (ft | base | stage2) is
-# resolved at eval time. Structure mirrors stage2_eval (multi-model side-by-side, multi-GPU job-array
-# fan-out, eval_dropout probe, episode-exact resets, chunk merge).
-
-# ── Paths (project_root comes from configs/global_config.yaml) ──
-# outputs_root comes from configs/global_config.yaml: trained FT under {project_root}/{outputs_root}/skillVLA_FT/.
-
-# ── Which trained FT model(s) to evaluate ──
-# `models:` 리스트에 넣는다. 하나면 SINGLE(그 모델만), 둘 이상이면 MULTI 비교 — 각 모델을 같은
-# seed/task로 롤아웃하고 task별 영상을 라벨 달린 그리드 한 편으로 스티칭 →
-# outputs/compare_{labels}_{ckpt}_.../side_by_side/. 모델별 개별 산출물(eval_info/차트/videos)은
-# panels/{label}/ 아래. per entry: checkpoint 생략 → 아래 top-level checkpoint; label 생략 →
-# model_dir의 차이 토큰 자동. multi에선 skill_html 자동 off.
-eval_dropout: true
+# The two entries below load the same FT policy and differ only in where the
+# skill sequence comes from.  Predictor mode applies the LIBERO-10 predictor
+# checkpoint at evaluation time; GT mode reads the oracle sequence from the
+# FT checkpoint's training dataset.
+outputs_subdir: skillVLA_FT
 models:
-  - {model_dir: libero_10_full_2_FSQ555_dino8_both_1000_siglip_015000_state_050000__tttf_50p_tfff_ffff__gt_30ttff_50fftt_20fftt__tt_distill22w100, label: libero_10}
-  - {model_dir: libero_object_full_2_FSQ555_dino8_both_1000_siglip_015000_state_050000__tttf_50p_tfff_ffff__gt_30ttff_50fftt_20fftt__tt_distill22w100, label: libero_object}
+  - model_dir: libero10_lasthalf400k_likelihood_ft
+    checkpoint: "100000"
+    skill_source: predictor
+    advance_mode: terminator
+    modes: [stage2]
+    label: ft-predictor
 
-models_per_row: 2                 # 행당 패널 수 (0=한 행) — stage2_eval과 동일
+  - model_dir: libero10_lasthalf400k_likelihood_ft
+    checkpoint: "100000"
+    skill_source: gt
+    advance_mode: terminator
+    modes: [stage2]
+    label: ft-gt
 
-checkpoint: "last"               # "last" or a step number (models 항목에서 개별 override 가능)
+# Used only by predictor panels. GT panels do not consume predictor outputs.
+external_predictor_model: outputs_filtered/skillVLA_terminator/bs8_libero_10_full_5_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_predictor_ft_small/checkpoints/002500/pretrained_model
 
-# ── Eval rollout (libero_10 = the finetuned task suite) ──
-target_task: libero_90
-task_ids: "[0,1,2,3,4,5,6,7,8,9]"
-# EPISODE-EXACT는 항상 ON (stage1 방식; 각 롤아웃 = 데이터셋 에피소드의 MuJoCo init_state로 리셋). 없으면
-# seed-기반 리셋으로 자동 폴백+경고. use_gt_skill이면 GT 시퀀스도 그 에피소드에 정렬 주입.
-# 총 GPU(=1-GPU 잡) 예산. SINGLE: task_ids를 N등분해 잡 N개. MULTI: 모델×청크로 팬아웃(청크수 =
-# eval_num_gpus ÷ 모델수). 잡 array라 {ID}_0,{ID}_1,…로 뜨고 scancel {ID} 하나로 전체 취소.
-eval_num_gpus: 10
-n_episodes: 5
+# Stage-2 checkpoints do not train a terminator, so skill advancement remains
+# an explicit evaluation-time dependency for both panels.
+external_terminator_model: outputs_filtered/skillVLA_terminator/bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_terminator/checkpoints/030000/pretrained_model
+
+models_per_row: 2
+output_name: libero10_likelihood_ft100k_predictor_vs_gt
+
+target_task: libero_10
+task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+eval_num_gpus: 2
+n_episodes: 3
+eval_batch_size: 3
 n_action_steps: 5
-eval_batch_size: 1
 max_parallel_tasks: 1
 
-# ── Video / skill HTML ──
-max_videos_per_task: 5
-video_frame_stride: 2
-video_fps: 10
+oracle:
+  # Empty means: read dataset.root from the FT checkpoint's train_config.json.
+  # This therefore follows the new dataset selected in FT/ft_train_config.yaml.
+  skill_dataset_dir: ""
+  episode_exact: false
+  advance_mode: terminator
+
+terminator:
+  variant: state_image
+  end_mode: termination
+  end_threshold: 0.5
+  progress_threshold: 0.9
+  immediate_replan_on_skill_end: true
+  max_skill_length: 200
+
+video: {max_per_task: 5, frame_stride: 2, fps: 10}
 skill_html: true
 skill_html_train_samples: 10
+logging:
+  wandb: {enable: true, project: VLA_stage2_FT_eval}
 
-# ── Inference (eval-time tuning; model STRUCTURE comes from the checkpoint) ──
-# How a skill ends from the FSQ terminator signals:
-#   termination → end_prob >= skill_end_threshold
-#   progress    → progress >= skill_end_threshold
-#   and         → end_prob >= skill_end_threshold AND progress >= skill_end_progress_threshold
-#   or          → end_prob >= skill_end_threshold OR  progress >= skill_end_progress_threshold
-skill_end_mode: or
-skill_end_threshold: 0.5
-skill_end_progress_threshold: 0.9   # progress gate for skill_end_mode=and/or
-inference_skill_max_length: 200    # force a skill switch after this many steps (0 = off)
-
-# Which terminator gates skill transitions (the action chunk always comes from the expert):
-#   ft     → the FT-adapted terminator co-trained INTO this checkpoint (FSQ_ft.pt). Falls back to
-#            base if FT didn't co-train. (default — matches the model you finetuned)
-#   base   → the new task's ORIGINAL dataset FSQ.pt (terminator before any in-policy co-training).
-#   stage2 → the terminator FT INHERITED from its Stage-2 source checkpoint (before FT adapted it).
-#            Requires the Stage-2 run to have co-trained a terminator. Ablates FT's terminator adaptation.
-# 폴더명에 _{ft|base|s2}로 태깅돼 나란히 비교됨.
-eval_terminator: ft # stage2
-
-# 어느 VLM(PaliGemma 타워)으로 평가할지 — cond + action-expert는 항상 FT 학습한 것 사용.
-#   ft     → FT가 적응한 VLM (기본).
-#   stage2 → FT의 Stage-2 소스 체크포인트의 원본(FT 적응 전) VLM으로 덮어씀. "새 task로 적응한 모터가
-#            옛 perception과도 작동하나 / 어느 쪽 적응이 성능을 좌우하나"를 isolate. Stage-2 소스는
-#            config.json의 pretrained_path에서 자동 유도. 폴더명에 _s2vlm 태그.
-eval_vlm: ft # stage2
-
-# ── Oracle eval (isolate the action expert from the VLM's skill prediction) ──
-use_gt_skill: false        # true = teacher-force the dataset's GT skill sequence (per task)
-skill_advance_mode: terminator     # "terminator" (FSQ signal) or "gt" (GT demo duration; oracle only)
-
-eval_exp: ""              # 폴더명 끝에 붙는 자유 태그 (예: skill_end_mode=and 비교 시 "and")
-
-# ── wandb ──
-wandb_project: VLA_eval
-
-# ── Slurm (partition/qos/nodelist/exclude_nodes come from configs/global_config.yaml) ──
-eval_gres: gpu:1
-eval_cpus_per_task: 8
-eval_mem: 32G
-eval_time: "1:00:00"
+slurm: {gres: "gpu:1", cpus: 8, memory: 64G, time: "2:00:00"}

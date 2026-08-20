@@ -11,27 +11,30 @@ models:
   # - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask_100000_gt_batchON_full
   # - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask_100000_gt_batchOFF_nomask_layermix_glr10_full
   
-  # - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask_100000_gt_batchOFF_nomask_layermix_glr10_lasthalf_fixed
+  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask_100000_gt_batchOFF_nomask_layermix_glr10_lasthalf_fixed
   # - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask_100000_gt_batchOFF_nomask_layermix_glr10_lasthalf_bs256
-  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask_100000_gt_batchOFF_dsbc_shared_frs10_nomask_layermix_glr10_lasthalf
+  # - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask_100000_gt_batchOFF_dsbc_shared_frs10_nomask_layermix_glr10_lasthalf
+  # - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask_100000_gt_batchOFF_dsbc_shared_frs10_nomask_layermix_glr10_lasthalf_bs256
 
-    checkpoint: "180000"
-    skill_source: predictor   # gt | predictor
+    checkpoint: "400000"
+    skill_source: gt          # gt | predictor
     advance_mode: terminator  # terminator | gt (gt skill only)
     modes: [stage2, prior]    # subset of [stage2, prior]
-    label: dsbc_lasthalf_180k_pred
+    label: lasthalf_400k_gt_libero10
 
 # Frozen overlays shared by every panel; both must live in the same FSQ run as
 # the Stage-2 checkpoint. The prior panel always needs them (the Stage-1 prior
 # has neither), and applying the same pair to the stage2 panel keeps the
 # comparison about the selected Stage-2 method alone.
-external_predictor_model: outputs_filtered/skillVLA_terminator/bs16_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal/checkpoints/050000/pretrained_model
+# external_predictor_model: outputs_filtered/skillVLA_terminator/bs16_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal/checkpoints/050000/pretrained_model
+external_predictor_model: outputs_filtered/skillVLA_terminator/bs8_libero_10_full_5_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_predictor_ft_small/checkpoints/002500/pretrained_model
+
 external_terminator_model: outputs_filtered/skillVLA_terminator/bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_terminator/checkpoints/030000/pretrained_model
 
 models_per_row: 2
-output_name: "dsbc_lasthalf_180k_pred"  # empty: timestamped name under stage2_eval/outputs
+output_name: "lasthalf_400k_gt_libero10"  # empty: timestamped name under stage2_eval/outputs
 
-target_task: libero_90
+target_task: libero_10
 task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
 eval_num_gpus: 2
 n_episodes: 3
@@ -42,6 +45,10 @@ max_parallel_tasks: 1
 # false matches skills to simulator tasks by language. true additionally fixes
 # the exact source episode/init state and requires eval_init_states.npz.
 oracle:
+  # Eval-only GT sequence source. This LIBERO-10 dataset was built with the
+  # same FSQ.pt as the Stage-2 checkpoint, so its skill token IDs are compatible.
+  # Empty or omitted: use each model_dir checkpoint's training dataset.
+  skill_dataset_dir: dataset_filtered/skillvla_dataset/libero_10_full_5/FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal/skillvla
   episode_exact: false
   advance_mode: terminator
 

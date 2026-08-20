@@ -1,31 +1,22 @@
 #!/usr/bin/env bash
-# SkillVLA FINETUNING (FT): policy.type=skill_vla, warm-started from a Stage-2 checkpoint
-# (pretrained_path → from_pretrained is_stage2 full-load) and trained on a NEW task. cond_skill_source
-# =pred self-conditions the action prefix on the VLM's predicted skill; the FSQ terminator is co-trained
-# on GT signals and exported to FSQ_ft.pt for eval. Resumes from an FT checkpoint if one exists.
-#SBATCH --job-name=ft
+# Fine-tune a complete Stage-2 checkpoint on a new SkillVLA dataset.
+#SBATCH --job-name=stage2_ft
 #SBATCH --gres=gpu:1
 #SBATCH --requeue
-#SBATCH --cpus-per-task=16
-#SBATCH --mem=128G
+#SBATCH --cpus-per-task=12
+#SBATCH --mem=256G
 #SBATCH --time=48:00:00
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 set -euo pipefail
-mkdir -p logs
 
-# Under Slurm the script runs from a spool copy → anchor on SLURM_SUBMIT_DIR (the FT dir).
-SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+mkdir -p logs
+SUBMIT_DIR="${FT_TRAIN_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 SRC_DIR="${SUBMIT_DIR}/src"
 CONFIG_PATH="${FT_TRAIN_CONFIG:-${SUBMIT_DIR}/ft_train_config.yaml}"
-
 BOOTSTRAP_PYTHON="${SUBMIT_DIR}/../../../../../../.venv/bin/python"
-if [ ! -x "${BOOTSTRAP_PYTHON}" ]; then
-  BOOTSTRAP_PYTHON=python3
-fi
+[ -x "${BOOTSTRAP_PYTHON}" ] || BOOTSTRAP_PYTHON=python3
 
-# Prefer the submit-time env snapshot (frozen resolved env) → the job never re-runs the emitter on a
-# live/edited/deleted yaml at start. Fallback to a fresh resolve only when run directly (no snapshot).
 if [ -n "${FT_ENV_SNAPSHOT:-}" ] && [ -f "${FT_ENV_SNAPSHOT}" ]; then
   source "${FT_ENV_SNAPSHOT}"
 else
@@ -35,169 +26,68 @@ fi
 cd "${LEROBOT_ROOT}"
 source "${PROJECT_ROOT}/.venv/bin/activate"
 source "${PROJECT_ROOT}/lerobot/examples/libero/configs/runtime_env.sh"
-unset LD_LIBRARY_PATH          # avoid system cuDNN shadowing the bundled one
+export PYTHONPATH="${LEROBOT_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
+unset LD_LIBRARY_PATH
 
-echo "START SkillVLA FT (skill_vla)"
-echo "Node      : ${SLURMD_NODENAME:-local}"
-echo "dataset   : ${SKILLVLA_DATASET_DIR}"
-echo "warm-start: ${STAGE2_CHECKPOINT_PATH}"
-echo "stage1cfg : ${STAGE1_CHECKPOINT_PATH:-SCRATCH-parent (${S1_VISION_BACKBONE}/${S1_STATE_COND_MODE})}"
-echo "FSQ(term) : ${FSQ_CKPT}   dino=ONLINE(${TERMINATOR_DINO_MODEL_PATH})"
-echo "cond_skill: ${COND_SKILL_SOURCE}   train_terminator: ${TRAIN_TERMINATOR}"
-echo "output    : ${PT_OUTPUT_DIR}   lr/bs: ${LR}/${BATCH_SIZE}"
+echo "START STAGE-2 FT (${STAGE2_MODE})"
+echo "dataset  : ${SKILLVLA_DATASET_DIR}"
+echo "parent   : ${STAGE2_CHECKPOINT_PATH}"
+echo "skill    : ${TRAINING_SKILL_SOURCE}"
+echo "schedule : ${SCHEDULER_MODE} warmup=${SCHEDULER_WARMUP_STEPS}"
+echo "output   : ${PT_OUTPUT_DIR}"
 nvidia-smi || true
 
-# Fail over to another GPU instead of silently running on CPU.
-source "${PROJECT_ROOT}/lerobot/examples/libero/configs/gpu_guard.sh"
-require_cuda_or_requeue "${PROJECT_ROOT}/.venv/bin/python"
-
-if [ ! -e "${SKILLVLA_DATASET_DIR}" ]; then
-  echo "Missing skillvla dataset: ${SKILLVLA_DATASET_DIR}  (run configs/train_skillVLA/build_data first)" >&2
-  exit 1
-fi
-if [ ! -e "${STAGE2_CHECKPOINT_PATH}" ]; then
-  echo "Missing Stage-2 checkpoint: ${STAGE2_CHECKPOINT_PATH}  (train Stage-2 first)" >&2
-  exit 1
-fi
-# SCRATCH-parent: the forked Stage-2 was trained without Stage-1 → empty path is fine (the model
-# synthesizes the Stage-1-side architecture from --policy.s1_vision_backbone/s1_state_cond_mode).
-if [ -n "${STAGE1_CHECKPOINT_PATH}" ] && [ ! -e "${STAGE1_CHECKPOINT_PATH}" ]; then
-  echo "Missing Stage-1 checkpoint (architecture config): ${STAGE1_CHECKPOINT_PATH}" >&2
+if [ ! -d "${SKILLVLA_DATASET_DIR}" ]; then
+  echo "Missing FT dataset: ${SKILLVLA_DATASET_DIR}" >&2
   exit 1
 fi
 
-# Resume if an FT checkpoint exists; otherwise wipe a stale (incomplete) output dir.
 CONFIG_JSON="${PT_OUTPUT_DIR}/checkpoints/last/pretrained_model/train_config.json"
-RESUME_ARGS=()
 if [ -f "${CONFIG_JSON}" ]; then
-  echo "Checkpoint found → resuming from ${CONFIG_JSON}"
-  RESUME_ARGS=(--resume=true --config_path="${CONFIG_JSON}")
-elif [ -d "${PT_OUTPUT_DIR}" ]; then
-  echo "No checkpoint → removing stale ${PT_OUTPUT_DIR} and starting fresh."
-  rm -rf "${PT_OUTPUT_DIR}"
-fi
-
-# VSA-distill motion-counter histograms: auto-build skill_code_freq.npz (frame + trajectory counts)
-# next to the PT (seed) and THIS-FT (contribution) skillvla dirs if missing — cheap, one-time.
-if [ -n "${VSA_FT_FREQ_PATH}" ]; then
-  for pair in "${VSA_PT_SKILLVLA_DIR}|${VSA_DISTILL_FREQ_PATH}" "${VSA_FT_SKILLVLA_DIR}|${VSA_FT_FREQ_PATH}"; do
-    ds="${pair%%|*}"; npz="${pair##*|}"
-    if [ -n "${ds}" ] && [ -d "${ds}" ] && [ ! -f "${npz}" ]; then
-      echo "Building skill_code_freq: ${ds} → ${npz}"
-      "${PROJECT_ROOT}/.venv/bin/python" "${SRC_DIR}/build_skill_code_freq.py" \
-        --pt_dataset_root="${ds}" || echo "  (freq build failed — falls back to uniform/no-counter)"
-    fi
-  done
-fi
-
-# LoRA-continual FT regimes [SKILL, MOTOR_conn, MOTOR_sev] (A/B/C legacy replaced). regime_probs_pt
-# rides in from the parent Stage-2 config.json — regime_probs_ft takes precedence in the model.
-REGIME_ARGS=(--policy.regime_probs_ft="[${REGIME_PROBS_FT}]" --policy.ft_train_skill="${FT_TRAIN_SKILL}")
-
-# VSA distillation global-sampler frequency npz — pass only when built (empty → model uses uniform).
-DISTILL_ARGS=()
-if [ -n "${VSA_DISTILL_FREQ_PATH}" ]; then
-  DISTILL_ARGS=(--policy.vsa_distill_freq_path="${VSA_DISTILL_FREQ_PATH}")
-fi
-if [ -n "${VSA_FT_FREQ_PATH}" ]; then
-  DISTILL_ARGS+=(--policy.vsa_ft_freq_path="${VSA_FT_FREQ_PATH}"
-                --policy.vsa_distill_prior_pct="${VSA_DISTILL_PRIOR_PCT}")
-fi
-
-# PT-forgetting probe: fixed parent-Stage-2-dataset batches re-measured every PROBE_EVERY steps
-# (forward-only, wandb probe/*). Empty PROBE_DATASET_ROOT = probe off.
-PROBE_ARGS=()
-if [ -n "${PROBE_DATASET_ROOT}" ]; then
-  PROBE_ARGS=(
-    --probe_dataset_root="${PROBE_DATASET_ROOT}"
-    --probe_dataset_repo_id="${PROBE_DATASET_REPO_ID}"
-    --probe_every="${PROBE_EVERY}"
-    --probe_batches="${PROBE_BATCHES}"
-    --probe_seed="${PROBE_SEED}"
-    --probe_vsa="${PROBE_VSA}"
+  echo "FT checkpoint found; resuming from ${CONFIG_JSON}"
+  TRAIN_ARGS=(--resume=true --config_path="${CONFIG_JSON}")
+elif [ -e "${PT_OUTPUT_DIR}" ]; then
+  echo "Output exists without a resumable checkpoint: ${PT_OUTPUT_DIR}" >&2
+  exit 1
+else
+  TRAIN_ARGS=(
+    --dataset.repo_id="${REPO_ID}"
+    --dataset.root="${SKILLVLA_DATASET_DIR}"
+    --dataset.video_backend=pyav
+    --policy.path="${STAGE2_CHECKPOINT_PATH}"
+    --policy.gradient_checkpointing="${GRADIENT_CHECKPOINTING}"
+    --policy.optimizer_lr="${LR}"
+    --policy.scheduler_mode="${SCHEDULER_MODE}"
+    --policy.scheduler_warmup_steps="${SCHEDULER_WARMUP_STEPS}"
+    --policy.scheduler_decay_steps="${SCHEDULER_DECAY_STEPS}"
+    --policy.device=cuda
+    --policy.dtype=bfloat16
+    --policy.push_to_hub=false
+    --policy.compile_model=false
+    --output_dir="${PT_OUTPUT_DIR}"
+    --job_name="${PT_RUN_NAME}"
+    --batch_size="${BATCH_SIZE}"
+    --num_workers="${NUM_WORKERS}"
+    --steps="${STEPS}"
+    --log_freq="${LOG_FREQ}"
+    --save_freq="${SAVE_FREQ}"
+    --wandb.enable="${WANDB_ENABLE}"
+    --wandb.project="${WANDB_PROJECT}"
   )
 fi
 
-# Terminator co-training inputs: attach current-frame DINO tokens only when train_terminator=true.
-TERM_ARGS=()
-if [ "${TRAIN_TERMINATOR}" = "true" ]; then
-  TERM_ARGS=(
-    --policy.train_terminator=true
-    --policy.terminator_lr_scale="${TERMINATOR_LR_SCALE}"
-    --policy.terminator_end_target_sigma="${TERMINATOR_END_TARGET_SIGMA}"
-    --policy.terminator_end_pos_weight="${TERMINATOR_END_POS_WEIGHT}"
-    --policy.terminator_dino_model_path="${TERMINATOR_DINO_MODEL_PATH}"
-  )
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/gpu_guard.sh"
+prepare_inline_cuda_guard
+if PYTORCH_ALLOC_CONF=expandable_segments:True \
+  accelerate launch --num_processes="${NUM_GPUS}" \
+  "${PROJECT_ROOT}/.venv/bin/lerobot-train" "${TRAIN_ARGS[@]}"; then
+  TRAIN_STATUS=0
+else
+  TRAIN_STATUS=$?
+fi
+handle_inline_cuda_guard_exit "${TRAIN_STATUS}"
+if (( TRAIN_STATUS != 0 )); then
+  exit "${TRAIN_STATUS}"
 fi
 
-# pretrained_path = Stage-2 checkpoint (full-loaded); stage1_checkpoint_path supplies the architecture
-# config only (no weights reloaded); fsq_path = the new task's FSQ (terminator warm-start + eval base).
-PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="${NUM_GPUS}" \
-  "${PROJECT_ROOT}/.venv/bin/lerobot-train" \
-    --dataset.repo_id="${REPO_ID}" \
-    --dataset.root="${SKILLVLA_DATASET_DIR}" \
-    --dataset.video_backend=pyav \
-    --policy.type=skill_vla \
-    --output_dir="${PT_OUTPUT_DIR}" \
-    --job_name="${PT_RUN_NAME}" \
-    --policy.compile_model=false \
-    --policy.gradient_checkpointing=true \
-    --policy.dtype=bfloat16 \
-    --policy.device=cuda \
-    --policy.push_to_hub=false \
-    --policy.pretrained_path="${STAGE2_CHECKPOINT_PATH}" \
-    --policy.stage1_checkpoint_path="${STAGE1_CHECKPOINT_PATH}" \
-    --policy.s1_vision_backbone="${S1_VISION_BACKBONE}" \
-    --policy.s1_state_cond_mode="${S1_STATE_COND_MODE}" \
-    --policy.skill_fsq_levels="${SKILL_FSQ_LEVELS}" \
-    --policy.skill_loss_weight="${SKILL_LOSS_WEIGHT}" \
-    --policy.skill_deadzone_frac="${SKILL_DEADZONE_FRAC}" \
-    --policy.num_reader_tokens="${NUM_READER_TOKENS}" \
-    --policy.reader_depth="${READER_DEPTH}" \
-    --policy.reader_heads="${READER_HEADS}" \
-    --policy.skill_reader_all_layers="${SKILL_READER_ALL_LAYERS}" \
-    --policy.attend_language="${ATTEND_LANGUAGE}" \
-    --policy.attend_image="${ATTEND_IMAGE}" \
-    --policy.vlm_cond="${VLM_COND}" \
-    --policy.cond_expert="${COND_EXPERT}" \
-    --policy.vlm_expert="${VLM_EXPERT}" \
-    --policy.fsq_path="${FSQ_CKPT}" \
-    --policy.cond_skill_source="${COND_SKILL_SOURCE}" \
-    \
-    --track_param_drift="${TRACK_PARAM_DRIFT}" \
-    --policy.vsa_distill="${VSA_DISTILL}" \
-    --policy.vsa_distill_weight="${VSA_DISTILL_WEIGHT}" \
-    --policy.vsa_distill_n_local="${VSA_DISTILL_N_LOCAL}" \
-    --policy.vsa_distill_n_global="${VSA_DISTILL_N_GLOBAL}" \
-    --policy.vsa_distill_neighbor_radius="${VSA_DISTILL_NEIGHBOR_RADIUS}" \
-    --policy.severed_hold_target="${SEVERED_HOLD_TARGET}" \
-    --batch_size="${BATCH_SIZE}" \
-    --num_workers="${NUM_WORKERS}" \
-    --steps="${STEPS}" \
-    --save_freq="${SAVE_FREQ}" \
-    --policy.optimizer_lr="${LR}" \
-    --wandb.enable="${WANDB_ENABLE}" \
-    --wandb.project="${WANDB_PROJECT}" \
-    ${REGIME_ARGS[@]+"${REGIME_ARGS[@]}"} \
-    ${DISTILL_ARGS[@]+"${DISTILL_ARGS[@]}"} \
-    ${PROBE_ARGS[@]+"${PROBE_ARGS[@]}"} \
-    ${TERM_ARGS[@]+"${TERM_ARGS[@]}"} \
-    ${RESUME_ARGS[@]+"${RESUME_ARGS[@]}"}
-
-# Export the co-trained terminator into a standalone FSQ checkpoint PER saved checkpoint, co-located
-# with it (checkpoints/<step>/FSQ_ft.pt), so FT_eval can use the terminator from the SAME timepoint as
-# the policy it evaluates (the terminator weights live in each checkpoint's model.safetensors).
-if [ "${TRAIN_TERMINATOR}" = "true" ]; then
-  for CKPT_DIR in "${PT_OUTPUT_DIR}"/checkpoints/*/; do
-    [ -d "${CKPT_DIR}pretrained_model" ] || continue
-    STEP="$(basename "${CKPT_DIR}")"
-    OUT="${CKPT_DIR%/}/FSQ_ft.pt"
-    [ -f "${OUT}" ] && continue
-    echo "Exporting terminator @ ${STEP} → ${OUT}"
-    "${PROJECT_ROOT}/.venv/bin/python" "${SRC_DIR}/export_ft_terminator.py" \
-      --ft_run_dir="${PT_OUTPUT_DIR}" --checkpoint="${STEP}" \
-      --base_fsq="${FSQ_CKPT}" --out="${OUT}" --skip_if_no_terminator
-  done
-fi
-
-echo "DONE → ${PT_OUTPUT_DIR}"
+echo "DONE -> ${PT_OUTPUT_DIR}"

@@ -312,6 +312,54 @@ def test_stage2_eval_gt_mode_needs_no_predictor(tmp_path: Path) -> None:
     assert [panel["advance_mode"] for panel in panels] == ["external", "external"]
 
 
+def test_stage2_eval_uses_explicit_oracle_skill_dataset(tmp_path: Path) -> None:
+    config = _checkpoint_tree(tmp_path)
+    project = Path(config["project_root"])
+    oracle_dataset = (
+        project
+        / "dataset_filtered/skillvla_dataset/libero_10_full_5/FSQ333_run/skillvla"
+    )
+    (oracle_dataset / "meta").mkdir(parents=True)
+    (oracle_dataset / "meta/info.json").write_text("{}")
+    (oracle_dataset.parent / "skill_latents.npz").touch()
+    config["skill_source"] = "gt"
+    config["oracle"]["skill_dataset_dir"] = str(
+        oracle_dataset.relative_to(project)
+    )
+
+    settings = build_settings(config)
+    panels = json.loads(settings["models_json"])
+
+    assert settings["skill_dataset_dir"] == oracle_dataset
+    assert settings["skill_latents_path"] == oracle_dataset.parent / "skill_latents.npz"
+    assert settings["raw_dataset_dir"] == project / "dataset_filtered/libero_10_full_5"
+    assert all(panel["skill_dataset_dir"] == str(oracle_dataset) for panel in panels)
+    assert all(panel["skill_source"] == "gt" for panel in panels)
+
+
+def test_stage2_eval_rejects_missing_oracle_skill_dataset(tmp_path: Path) -> None:
+    config = _checkpoint_tree(tmp_path)
+    config["oracle"]["skill_dataset_dir"] = "dataset_filtered/missing/skillvla"
+
+    with pytest.raises(FileNotFoundError, match="oracle SkillVLA dataset"):
+        build_settings(config)
+
+
+def test_stage2_eval_empty_oracle_dataset_uses_checkpoint_dataset(
+    tmp_path: Path,
+) -> None:
+    config = _checkpoint_tree(tmp_path)
+    config["oracle"]["skill_dataset_dir"] = ""
+
+    settings = build_settings(config)
+    expected = (
+        Path(config["project_root"])
+        / "dataset_filtered/skillvla_dataset/libero_90_full_full/FSQ333_run/skillvla"
+    )
+
+    assert settings["skill_dataset_dir"] == expected
+
+
 def test_stage2_eval_single_mode_selection(tmp_path: Path) -> None:
     config = _checkpoint_tree(tmp_path)
     config["modes"] = ["stage2"]
@@ -325,6 +373,34 @@ def test_stage2_eval_single_mode_selection(tmp_path: Path) -> None:
     config["modes"] = ["everything"]
     with pytest.raises(ValueError, match="modes only accepts"):
         build_settings(config)
+
+
+def test_stage2_eval_supports_an_alternate_outputs_subdir(tmp_path: Path) -> None:
+    config = _checkpoint_tree(tmp_path)
+    project = Path(config["project_root"])
+    source = (
+        project
+        / "outputs_filtered/skillVLA_stage2"
+        / config["model_dir"]
+        / "checkpoints/last/pretrained_model"
+    )
+    target = (
+        project
+        / "outputs_filtered/skillVLA_FT"
+        / config["model_dir"]
+        / "checkpoints/last/pretrained_model"
+    )
+    target.mkdir(parents=True)
+    for path in source.iterdir():
+        (target / path.name).write_bytes(path.read_bytes())
+    config["outputs_subdir"] = "skillVLA_FT"
+
+    panels = json.loads(build_settings(config)["models_json"])
+
+    stage2_panel = next(panel for panel in panels if panel["mode"] == "stage2")
+    prior_panel = next(panel for panel in panels if panel["mode"] == "prior")
+    assert "/skillVLA_FT/" in stage2_panel["policy_path"]
+    assert "/skillVLA_stage1/" in prior_panel["policy_path"]
 
 
 def test_stage2_eval_requires_external_terminator(tmp_path: Path) -> None:

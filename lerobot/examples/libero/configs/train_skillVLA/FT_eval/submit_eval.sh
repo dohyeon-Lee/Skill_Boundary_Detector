@@ -1,41 +1,23 @@
 #!/usr/bin/env bash
-# Submit SkillVLA FT closed-loop EVAL on LIBERO sim.
-#   (login) resolve config + check the FT checkpoint → sbatch eval.sbatch
-#   Multi-model / multi-GPU fan-out mirrors stage2_eval (job arrays, chunk-major interleave).
+# Submit FT evaluation; (task x panel) units are packed across eval_num_gpus.
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # FT_eval
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC_DIR="${SCRIPT_DIR}/src"
 CONFIG_PATH="${FT_EVAL_CONFIG:-${SCRIPT_DIR}/ft_eval_config.yaml}"
 
-# Freeze the config so this job ignores later edits to the repo yaml (see configs/snapshot_config.sh).
-_lib="$(dirname "${CONFIG_PATH}")"; while [ ! -f "${_lib}/snapshot_config.sh" ]; do _lib="$(dirname "${_lib}")"; done
-source "${_lib}/snapshot_config.sh"
+CONFIG_LIB="$(dirname "${CONFIG_PATH}")"
+while [ ! -f "${CONFIG_LIB}/snapshot_config.sh" ]; do CONFIG_LIB="$(dirname "${CONFIG_LIB}")"; done
+source "${CONFIG_LIB}/snapshot_config.sh"
 CONFIG_PATH="$(snapshot_config "${CONFIG_PATH}")"
 
 BOOTSTRAP_PYTHON="${SCRIPT_DIR}/../../../../../../.venv/bin/python"
-if [ ! -x "${BOOTSTRAP_PYTHON}" ]; then
-  BOOTSTRAP_PYTHON=python3
-fi
+[ -x "${BOOTSTRAP_PYTHON}" ] || BOOTSTRAP_PYTHON=python3
+eval "$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/ft_eval_config.py" --config "${CONFIG_PATH}" --shell)"
 
-# Freeze the resolved env to a per-submit snapshot the JOB sources verbatim (no job-side emitter re-run
-# on a possibly deleted/edited yaml). Exported → carried to all srun/sbatch(-array) paths via --export=ALL.
-# Failure surfaces HERE at submit (set -e aborts), not as a confusing job-side traceback.
-mkdir -p "${SCRIPT_DIR}/logs"
-FT_EVAL_ENV_SNAPSHOT="${SCRIPT_DIR}/logs/ft_eval_env_$(date +%Y%m%d_%H%M%S)_$$.sh"
-"${BOOTSTRAP_PYTHON}" "${SRC_DIR}/ft_eval_config.py" --config "${CONFIG_PATH}" --shell > "${FT_EVAL_ENV_SNAPSHOT}"
-source "${FT_EVAL_ENV_SNAPSHOT}"
-export FT_EVAL_ENV_SNAPSHOT
-
-if [ ! -d "${POLICY_PATH}" ]; then
-  echo "FT checkpoint not found: ${POLICY_PATH}" >&2
-  echo "Train it first: configs/train_skillVLA/FT/submit_train.sh" >&2
-  exit 1
-fi
-if [ ! -f "${BASE_FSQ}" ]; then
-  echo "Base FSQ not found: ${BASE_FSQ}  (the dataset's FSQ.pt the model was trained with)" >&2
-  exit 1
-fi
+for artifact in "${POLICY_PATH}" "${FSQ_PATH}" "${SKILL_DATASET_DIR}"; do
+  [ -e "${artifact}" ] || { echo "Missing FT eval artifact: ${artifact}" >&2; exit 1; }
+done
 
 SBATCH_ARGS=(
   --partition="${EVAL_PARTITION}"
@@ -43,110 +25,128 @@ SBATCH_ARGS=(
   --gres="${EVAL_GRES}"
   --cpus-per-task="${EVAL_CPUS_PER_TASK}"
   --mem="${EVAL_MEM}"
-  --time="${EVAL_TIME}"
 )
-if [ -n "${EVAL_NODELIST}" ]; then
-  SBATCH_ARGS+=(--nodelist="${EVAL_NODELIST}")
-fi
-if [ -n "${EVAL_EXCLUDE_NODES}" ]; then
-  SBATCH_ARGS+=(--exclude="${EVAL_EXCLUDE_NODES}")
-fi
+[ -z "${EVAL_NODELIST}" ] || SBATCH_ARGS+=(--nodelist="${EVAL_NODELIST}")
+[ -z "${EVAL_EXCLUDE_NODES}" ] || SBATCH_ARGS+=(--exclude="${EVAL_EXCLUDE_NODES}")
 
-cd "${SCRIPT_DIR}"
-mkdir -p logs
+scale_time() {
+  "${BOOTSTRAP_PYTHON}" - "$1" "$2" <<'PY'
+import math
+import sys
 
-echo "Submit SkillVLA FT EVAL"
-echo "  policy   : ${POLICY_PATH}"
-echo "  fsq(base): ${BASE_FSQ}   (per-checkpoint terminator resolved in eval.sbatch)"
-echo "  target   : ${TARGET_TASK}  task_ids=${TASK_IDS}"
-echo "  out      : ${EVAL_OUT_DIR}"
-echo "  slurm    : partition=${EVAL_PARTITION} qos=${EVAL_QOS} gres=${EVAL_GRES} mem=${EVAL_MEM}"
-
-# task_ids → contiguous chunks ("TAG|CHUNK" lines; $1<=1 → one all-tasks line with tag "").
-_make_chunks() {
-  "${BOOTSTRAP_PYTHON}" - "${TASK_IDS}" "${1:-1}" <<'PY'
-import json, sys
-ids, n = json.loads(sys.argv[1]), max(1, int(sys.argv[2]))
-if n <= 1:
-    print(f"|{json.dumps(ids, separators=(',', ':'))}")
+spec, factor = sys.argv[1].strip(), int(sys.argv[2])
+if factor <= 1:
+    print(spec)
+    raise SystemExit
+days = 0
+if "-" in spec:
+    day_part, rest = spec.split("-", 1)
+    days = int(day_part)
+    parts = [int(part) for part in rest.split(":")]
+    parts += [0] * (3 - len(parts))
+    hours, minutes, seconds = parts
 else:
-    n = min(n, len(ids))                  # never more jobs than tasks
-    base, rem = divmod(len(ids), n)
-    s = 0
-    for i in range(n):
-        e = s + base + (1 if i < rem else 0)
-        chunk = ids[s:e]; s = e
-        print(f"t{chunk[0]}-{chunk[-1]}|{json.dumps(chunk, separators=(',', ':'))}")
+    parts = [int(part) for part in spec.split(":")]
+    if len(parts) == 1:
+        hours, minutes, seconds = 0, parts[0], 0
+    elif len(parts) == 2:
+        hours, minutes, seconds = 0, parts[0], parts[1]
+    else:
+        hours, minutes, seconds = parts
+total = (((days * 24 + hours) * 60 + minutes) * 60 + seconds) * factor
+total_minutes = math.ceil(total / 60)
+out_days, remainder = divmod(total_minutes, 24 * 60)
+out_hours, out_minutes = divmod(remainder, 60)
+print(f"{out_days}-{out_hours:02d}:{out_minutes:02d}:00")
 PY
 }
 
-_preclean_chunks() {
-  # Clean STALE chunk artifacts from a previous split of this same out dir, so this round's merge
-  # (eval_info_t*.json count vs TASKS_TOTAL) and the merged-wandb sentinel see only THIS round.
-  rm -f "${EVAL_OUT_DIR}"/eval_info_t*.json "${EVAL_OUT_DIR}"/task_success_rates_t*.png \
-        "${EVAL_OUT_DIR}/.merged_wandb_done" \
-        "${EVAL_OUT_DIR}"/panels/*/eval_info_t*.json "${EVAL_OUT_DIR}"/panels/*/task_success_rates_t*.png \
-        "${EVAL_OUT_DIR}"/panels/*/.merged_wandb_done 2>/dev/null || true
-}
+cd "${SCRIPT_DIR}"
+mkdir -p logs
+echo "Submit Stage-2 FT eval"
+echo "  panels    : ${MODEL_COUNT}"
+echo "  policy    : ${POLICY_PATH}"
+echo "  predictor : ${EXTERNAL_PREDICTOR_MODEL:-<none>}"
+echo "  terminator: ${EXTERNAL_TERMINATOR_MODEL:-<none>}"
+echo "  output    : ${EVAL_OUT_DIR}"
 
 if [ -n "${SLURM_JOB_ID:-}" ]; then
-  # Inside an existing allocation (e.g. salloc) → reuse the held GPU as a job step (sequential run).
-  [ "${EVAL_NUM_GPUS:-1}" -gt 1 ] && echo "  note     : eval_num_gpus=${EVAL_NUM_GPUS} ignored under srun (single allocation)"
-  echo "  mode     : srun (reusing allocation ${SLURM_JOB_ID})"
+  echo "  mode      : srun in allocation ${SLURM_JOB_ID}"
   FT_EVAL_DIR="${SCRIPT_DIR}" FT_EVAL_CONFIG="${CONFIG_PATH}" \
     srun "${SRC_DIR}/eval.sbatch"
-elif [ -n "${MODELS_JSON:-}" ]; then
-  # ── MULTI-model: ONE job ARRAY ({ID}_0,{ID}_1,… — `scancel {ID}` kills the whole eval) with
-  # tasks = MODELS × task-chunks (1 GPU each). Fan-out is CHUNK-major so with limited GPUs every model
-  # advances the SAME task block together (a task's grid clip appears as soon as its last panel job
-  # finishes + stitches). eval_num_gpus = TOTAL GPU budget → chunks per model = num_gpus // n_models. ──
-  TASKS_TOTAL="$("${BOOTSTRAP_PYTHON}" -c "import json,sys; print(len(json.loads(sys.argv[1])))" "${TASK_IDS}")"
-  LABELS="$("${BOOTSTRAP_PYTHON}" -c "import json,os; print('\n'.join(json.loads(os.environ['MODELS_LABELS'])))")"
-  N_MODELS="$(printf '%s\n' "${LABELS}" | wc -l)"
-  CHUNK_N=$(( ${EVAL_NUM_GPUS:-1} / N_MODELS ))
-  [ "${CHUNK_N}" -lt 1 ] && CHUNK_N=1
-  _preclean_chunks
-  CHUNKS="$(_make_chunks "${CHUNK_N}")"
-  EVAL_FANOUT=""
-  i=0
-  while IFS='|' read -r TAG CHUNK; do            # chunk-major interleave
-    [ -z "${CHUNK}" ] && continue
-    while IFS= read -r LBL; do
-      [ -z "${LBL}" ] && continue
-      EVAL_FANOUT+="${LBL}|${CHUNK}|${TAG}"$'\n'
-      echo "    [_$i] ${LBL}${TAG:+_${TAG}}: task_ids=${CHUNK}"
-      i=$((i + 1))
-    done <<< "${LABELS}"
-  done <<< "${CHUNKS}"
-  echo "  mode     : sbatch --array 0-$((i - 1)) (models=${N_MODELS} × chunks=${CHUNK_N}, chunk-major, ≤${EVAL_NUM_GPUS} GPUs)"
+elif [ "${EVAL_NUM_GPUS}" -le 1 ]; then
+  UNITS_TOTAL="$("${BOOTSTRAP_PYTHON}" -c \
+    'import json, sys; print(len(json.loads(sys.argv[1])) * max(1, int(sys.argv[2])))' \
+    "${TASK_IDS}" "${MODEL_COUNT}")"
+  JOB_TIME="$(scale_time "${EVAL_TIME}" "${UNITS_TOTAL}")"
+  echo "  mode      : one sbatch job (${UNITS_TOTAL} task x panel units)"
+  echo "  time      : ${EVAL_TIME} x ${UNITS_TOTAL} units -> ${JOB_TIME}"
   FT_EVAL_DIR="${SCRIPT_DIR}" FT_EVAL_CONFIG="${CONFIG_PATH}" \
-    EVAL_FANOUT="${EVAL_FANOUT}" TASKS_TOTAL="${TASKS_TOTAL}" \
-    sbatch --job-name="FTeval" --array="0-$((i - 1))" \
-           --output=logs/%x_%A_%a.out --error=logs/%x_%A_%a.err \
-           "${SBATCH_ARGS[@]}" "${SRC_DIR}/eval.sbatch"
-elif [ "${EVAL_NUM_GPUS:-1}" -le 1 ]; then
-  echo "  mode     : sbatch (new job)"
-  FT_EVAL_DIR="${SCRIPT_DIR}" FT_EVAL_CONFIG="${CONFIG_PATH}" \
-    sbatch "${SBATCH_ARGS[@]}" "${SRC_DIR}/eval.sbatch"
+    sbatch --job-name=FTeval --time="${JOB_TIME}" "${SBATCH_ARGS[@]}" \
+      "${SRC_DIR}/eval.sbatch"
 else
-  # SINGLE model, eval_num_gpus > 1 → ONE job ARRAY over task chunks (each task = 1-GPU job).
-  # All tasks share EVAL_OUT_DIR (task subdirs are disjoint); per-chunk eval_info_{tag}.json, a
-  # wandb-run suffix, and the atomic FSQ_ft export keep them from clobbering each other.
-  _preclean_chunks
-  TASKS_TOTAL="$("${BOOTSTRAP_PYTHON}" -c "import json,sys; print(len(json.loads(sys.argv[1])))" "${TASK_IDS}")"
-  CHUNKS="$(_make_chunks "${EVAL_NUM_GPUS:-1}")"
-  EVAL_FANOUT=""
-  i=0
-  while IFS='|' read -r TAG CHUNK; do
-    [ -z "${CHUNK}" ] && continue
-    EVAL_FANOUT+="|${CHUNK}|${TAG}"$'\n'         # empty PANEL_LABEL = single-model
-    echo "    [_$i] ${TAG}: task_ids=${CHUNK}"
-    i=$((i + 1))
-  done <<< "${CHUNKS}"
-  echo "  mode     : sbatch --array 0-$((i - 1)) (task-split, 1 GPU each)"
+  FANOUT_RAW="$("${BOOTSTRAP_PYTHON}" - "${TASK_IDS}" "${MODEL_COUNT}" "${EVAL_NUM_GPUS}" <<'PY'
+import json
+import sys
+
+task_ids = json.loads(sys.argv[1])
+panels = max(1, int(sys.argv[2]))
+n_gpus = max(1, int(sys.argv[3]))
+
+
+def split(sequence, count):
+    count = max(1, min(count, len(sequence)))
+    base, remainder = divmod(len(sequence), count)
+    groups, start = [], 0
+    for index in range(count):
+        size = base + (1 if index < remainder else 0)
+        groups.append(sequence[start : start + size])
+        start += size
+    return groups
+
+
+chunks = []
+if n_gpus >= panels:
+    slot_base, slot_remainder = divmod(
+        min(n_gpus, len(task_ids) * panels), panels
+    )
+    for panel in range(panels):
+        slots = slot_base + (1 if panel < slot_remainder else 0)
+        for group in split(task_ids, slots):
+            chunks.append((group, [panel]))
+else:
+    for panel_group in split(list(range(panels)), n_gpus):
+        chunks.append((list(task_ids), panel_group))
+
+
+def tag(ids, panel_ids):
+    task = f"t{ids[0]}" if len(ids) == 1 else f"t{ids[0]}-{ids[-1]}"
+    panel = (
+        f"p{panel_ids[0]:02d}"
+        if len(panel_ids) == 1
+        else f"p{panel_ids[0]:02d}-{panel_ids[-1]:02d}"
+    )
+    return f"{task}_{panel}"
+
+
+print(max(len(ids) * len(panel_ids) for ids, panel_ids in chunks))
+for ids, panel_ids in chunks:
+    ids_json = json.dumps(ids, separators=(",", ":"))
+    selected = ",".join(str(panel) for panel in panel_ids)
+    print(f"{ids_json}|{tag(ids, panel_ids)}|{selected}")
+PY
+)"
+  MAX_UNITS="$(printf '%s\n' "${FANOUT_RAW}" | head -n 1)"
+  CHUNKS="$(printf '%s\n' "${FANOUT_RAW}" | tail -n +2)"
+  EVAL_FANOUT="${CHUNKS}"$'\n'
+  ARRAY_SIZE="$(printf '%s\n' "${CHUNKS}" | sed '/^$/d' | wc -l)"
+  ARRAY_SPEC="0-$((ARRAY_SIZE - 1))%${EVAL_NUM_GPUS}"
+  CHUNK_TIME="$(scale_time "${EVAL_TIME}" "${MAX_UNITS}")"
+  echo "  mode      : array ${ARRAY_SPEC} (${ARRAY_SIZE} chunks, <=${MAX_UNITS} units each)"
+  echo "  time      : ${EVAL_TIME} x ${MAX_UNITS} units -> ${CHUNK_TIME}"
+  export EVAL_FANOUT
   FT_EVAL_DIR="${SCRIPT_DIR}" FT_EVAL_CONFIG="${CONFIG_PATH}" \
-    EVAL_FANOUT="${EVAL_FANOUT}" TASKS_TOTAL="${TASKS_TOTAL}" \
-    sbatch --job-name="FTeval" --array="0-$((i - 1))" \
-           --output=logs/%x_%A_%a.out --error=logs/%x_%A_%a.err \
-           "${SBATCH_ARGS[@]}" "${SRC_DIR}/eval.sbatch"
+    sbatch --job-name=FTeval --array="${ARRAY_SPEC}" \
+      --output=logs/%x_%A_%a.out --error=logs/%x_%A_%a.err \
+      --time="${CHUNK_TIME}" "${SBATCH_ARGS[@]}" "${SRC_DIR}/eval.sbatch"
 fi

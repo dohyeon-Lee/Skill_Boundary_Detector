@@ -27,6 +27,41 @@ from lerobot.scripts.lerobot_skillvla_eval import (
 from lerobot.utils.constants import STAGE2_VLM_CACHE_ID
 
 
+def test_inline_cuda_guard_is_opt_in(monkeypatch, tmp_path: Path) -> None:
+    marker = tmp_path / "cuda.failed"
+    monkeypatch.delenv("LEROBOT_INLINE_CUDA_GUARD", raising=False)
+    monkeypatch.setenv("LEROBOT_CUDA_GUARD_FAILURE_MARKER", str(marker))
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+
+    run_eval._run_inline_cuda_guard()
+
+    assert not marker.exists()
+
+
+def test_inline_cuda_guard_marks_cuda_failure(monkeypatch, tmp_path: Path) -> None:
+    marker = tmp_path / "cuda.failed"
+    monkeypatch.setenv("LEROBOT_INLINE_CUDA_GUARD", "1")
+    monkeypatch.setenv("LEROBOT_CUDA_GUARD_FAILURE_MARKER", str(marker))
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+
+    with pytest.raises(SystemExit) as error:
+        run_eval._run_inline_cuda_guard()
+
+    assert error.value.code == 86
+    assert marker.read_text() == "torch.cuda.is_available()=false\n"
+
+
+def test_inline_cuda_guard_accepts_cuda(monkeypatch, tmp_path: Path) -> None:
+    marker = tmp_path / "cuda.failed"
+    monkeypatch.setenv("LEROBOT_INLINE_CUDA_GUARD", "1")
+    monkeypatch.setenv("LEROBOT_CUDA_GUARD_FAILURE_MARKER", str(marker))
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+
+    run_eval._run_inline_cuda_guard()
+
+    assert not marker.exists()
+
+
 class _FakeExpert(nn.Module):
     def __init__(self):
         super().__init__()
