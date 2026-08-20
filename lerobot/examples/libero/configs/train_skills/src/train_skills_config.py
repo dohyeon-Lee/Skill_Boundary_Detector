@@ -616,38 +616,97 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
     fsq_lr_schedule = str(get_value(cfg, "fsq_lr_schedule", "cosine")).strip().lower()
     if fsq_lr_schedule not in {"cosine", "constant"}:
         raise ValueError(f"fsq_lr_schedule must be cosine|constant, got {fsq_lr_schedule!r}.")
-    fsq_terminator_arch = str(get_value(cfg, "fsq_terminator_arch", "small"))
-    if fsq_terminator_arch not in {"small", "cond"}:
-        raise ValueError(f"fsq_terminator_arch must be small|cond, got {fsq_terminator_arch!r}.")
+    raw_terminator_arch = str(get_value(cfg, "fsq_terminator_arch", "default")).strip().lower()
+    # Legacy configs used fsq_terminator_arch for the visual small/cond choice.
+    # The cleaned interface uses it for default/rnn and keeps the visual detail
+    # under fsq_terminator_default_arch.
+    if raw_terminator_arch in {"small", "cond"}:
+        fsq_terminator_model = "default"
+        legacy_visual_arch = raw_terminator_arch
+    elif raw_terminator_arch in {"default", "rnn"}:
+        fsq_terminator_model = raw_terminator_arch
+        legacy_visual_arch = "small"
+    else:
+        raise ValueError(
+            "fsq_terminator_arch must be default|rnn, "
+            f"got {raw_terminator_arch!r}."
+        )
+    fsq_terminator_default_arch = str(
+        get_value(cfg, "fsq_terminator_default_arch", legacy_visual_arch)
+    ).strip().lower()
+    if fsq_terminator_default_arch not in {"small", "cond"}:
+        raise ValueError(
+            "fsq_terminator_default_arch must be small|cond, "
+            f"got {fsq_terminator_default_arch!r}."
+        )
     fsq_terminator_layers = int(get_value(cfg, "fsq_terminator_layers", 2))
     fsq_terminator_heads = int(get_value(cfg, "fsq_terminator_heads", 4))
     if fsq_terminator_layers < 1 or fsq_terminator_heads < 1:
         raise ValueError("fsq_terminator_layers and fsq_terminator_heads must both be >= 1.")
-    fsq_terminator_termination_only = as_bool(
-        get_value(cfg, "fsq_terminator_termination_only", False)
+    decoder_keys = {
+        "fsq_decoder_reconstructor",
+        "fsq_decoder_terminator_progress",
+        "fsq_decoder_terminator_termination",
+    }
+    if decoder_keys.intersection(cfg):
+        fsq_decoder_reconstructor = as_bool(
+            get_value(cfg, "fsq_decoder_reconstructor", True)
+        )
+        fsq_decoder_terminator_progress = as_bool(
+            get_value(cfg, "fsq_decoder_terminator_progress", True)
+        )
+        fsq_decoder_terminator_termination = as_bool(
+            get_value(cfg, "fsq_decoder_terminator_termination", True)
+        )
+    else:
+        # Backward-compatible read of the old mutually-dependent booleans.
+        legacy_reconstructor_only = as_bool(get_value(cfg, "fsq_reconstructor_only", False))
+        legacy_terminator_only = as_bool(get_value(cfg, "fsq_terminator_only", False))
+        legacy_termination_only = as_bool(
+            get_value(cfg, "fsq_terminator_termination_only", False)
+        )
+        if legacy_reconstructor_only and legacy_terminator_only:
+            raise ValueError("Legacy reconstructor_only and terminator_only cannot both be true.")
+        fsq_decoder_reconstructor = not legacy_terminator_only
+        terminator_enabled = not legacy_reconstructor_only
+        fsq_decoder_terminator_progress = terminator_enabled and not legacy_termination_only
+        fsq_decoder_terminator_termination = terminator_enabled
+    terminator_enabled = (
+        fsq_decoder_terminator_progress or fsq_decoder_terminator_termination
     )
-    fsq_reconstructor_only = as_bool(get_value(cfg, "fsq_reconstructor_only", False))
-    if fsq_reconstructor_only and fsq_terminator_termination_only:
+    if not fsq_decoder_reconstructor and not terminator_enabled:
+        raise ValueError("At least one FSQ decoder output must be enabled.")
+    fsq_reconstructor_only = fsq_decoder_reconstructor and not terminator_enabled
+    fsq_terminator_only = not fsq_decoder_reconstructor and terminator_enabled
+    fsq_terminator_termination_only = (
+        fsq_decoder_terminator_termination and not fsq_decoder_terminator_progress
+    )
+    legacy_state_rnn = as_bool(get_value(cfg, "fsq_state_rnn_terminator", False))
+    fsq_terminator_input_space = str(
+        get_value(cfg, "fsq_terminator_input_space", "state" if legacy_state_rnn else "both")
+    ).strip().lower()
+    if fsq_terminator_input_space not in {"state", "image", "both"}:
         raise ValueError(
-            "fsq_reconstructor_only and fsq_terminator_termination_only are mutually "
-            "exclusive: reconstructor_only builds no terminator at all."
+            "fsq_terminator_input_space must be state|image|both, "
+            f"got {fsq_terminator_input_space!r}."
         )
-    fsq_terminator_only = as_bool(get_value(cfg, "fsq_terminator_only", False))
-    if fsq_reconstructor_only and fsq_terminator_only:
-        raise ValueError(
-            "fsq_reconstructor_only and fsq_terminator_only are mutually exclusive."
-        )
+    if legacy_state_rnn and "fsq_terminator_arch" not in cfg:
+        fsq_terminator_model = "rnn"
+    fsq_state_rnn_terminator = terminator_enabled and fsq_terminator_model == "rnn"
+    if fsq_state_rnn_terminator and fsq_terminator_input_space != "state":
+        raise ValueError("The RNN terminator currently supports input_space=state only.")
     fsq_cond_encoder_variant = str(get_value(cfg, "fsq_cond_encoder_variant", "gemma_300m"))
-    fsq_terminator_tag = fsq_terminator_arch
+    fsq_terminator_tag = fsq_terminator_model
     fsq_vision_backbone = str(get_value(cfg, "fsq_vision_backbone", "dino"))
     if fsq_vision_backbone not in {"dino", "siglip"}:
         raise ValueError(f"fsq_vision_backbone must be dino|siglip, got {fsq_vision_backbone!r}.")
     fsq_freeze_vision_encoder = as_bool(get_value(cfg, "fsq_freeze_vision_encoder", True))
     fsq_vision_tag = fsq_vision_backbone + ("_frozen" if fsq_freeze_vision_encoder else "_tuned")
     fsq_encoder_input_mode = str(get_value(cfg, "fsq_encoder_input_mode", "zero_grounded")).strip().lower()
+    fsq_encoder_input_mode = "raw_state" if fsq_encoder_input_mode == "raw" else fsq_encoder_input_mode
     if fsq_encoder_input_mode not in {"zero_grounded", "raw_state", "optimal"}:
         raise ValueError(
-            "fsq_encoder_input_mode must be zero_grounded|raw_state|optimal, "
+            "fsq_encoder_input_mode must be raw|zero_grounded|optimal, "
             f"got {fsq_encoder_input_mode!r}."
         )
     # Preserve the historical zero-grounded name; the other conventions get explicit suffixes so
@@ -657,10 +716,26 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "raw_state": "_rawstate",
         "optimal": "_optimal",
     }[fsq_encoder_input_mode]
-    fsq_encoder_length_token = as_bool(get_value(cfg, "fsq_encoder_length_token", True))
+    if "fsq_encoder_length_token" in cfg and as_bool(cfg["fsq_encoder_length_token"]):
+        raise ValueError("fsq_encoder_length_token is fixed to false in the FSQ training path.")
+    fsq_encoder_length_token = False
     fsq_encoder_arch = str(get_value(cfg, "fsq_encoder_arch", "spline")).strip().lower()
     if fsq_encoder_arch not in {"spline", "action_seq"}:
         raise ValueError(f"fsq_encoder_arch must be spline|action_seq, got {fsq_encoder_arch!r}.")
+    raw_reconstructor_arch = str(
+        get_value(cfg, "fsq_reconstructor_arch", "chunk")
+    ).strip().lower()
+    reconstructor_arch_aliases = {
+        "chunk": "chunk",
+        "skill": "oneshot",
+        "oneshot": "oneshot",
+    }
+    if raw_reconstructor_arch not in reconstructor_arch_aliases:
+        raise ValueError(
+            "fsq_reconstructor_arch must be chunk|skill, "
+            f"got {raw_reconstructor_arch!r}."
+        )
+    fsq_reconstructor_arch = reconstructor_arch_aliases[raw_reconstructor_arch]
     fsq_entropy = as_bool(get_value(cfg, "fsq_entropy", False))
     fsq_skill_cond_mode = str(get_value(cfg, "fsq_skill_cond_mode", "token")).strip().lower()
     if fsq_skill_cond_mode not in {"token", "broadcast"}:
@@ -697,7 +772,7 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         fsq_exp=fsq_exp,
         fsq_exp_suffix=fsq_exp_suffix,
         fsq_vision_tag=fsq_vision_tag,
-        fsq_terminator_arch=fsq_terminator_arch,
+        fsq_terminator_arch=fsq_terminator_model,
         fsq_terminator_tag=fsq_terminator_tag,
         fsq_terminator_layers=fsq_terminator_layers,
         fsq_terminator_heads=fsq_terminator_heads,
@@ -790,13 +865,20 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "fsq_reconstructor_start_state": as_bool(
             get_value(cfg, "fsq_reconstructor_start_state", True)
         ),
-        "fsq_reconstructor_arch": str(get_value(cfg, "fsq_reconstructor_arch", "chunk")).strip().lower(),
-        "fsq_terminator_arch": fsq_terminator_arch,
+        "fsq_reconstructor_arch": fsq_reconstructor_arch,
+        "fsq_decoder_reconstructor": fsq_decoder_reconstructor,
+        "fsq_decoder_terminator_progress": fsq_decoder_terminator_progress,
+        "fsq_decoder_terminator_termination": fsq_decoder_terminator_termination,
+        "fsq_terminator_input_space": fsq_terminator_input_space,
+        "fsq_terminator_model": fsq_terminator_model,
+        "fsq_terminator_arch": fsq_terminator_model,
+        "fsq_terminator_default_arch": fsq_terminator_default_arch,
         "fsq_terminator_layers": fsq_terminator_layers,
         "fsq_terminator_heads": fsq_terminator_heads,
         "fsq_terminator_termination_only": fsq_terminator_termination_only,
         "fsq_reconstructor_only": fsq_reconstructor_only,
         "fsq_terminator_only": fsq_terminator_only,
+        "fsq_state_rnn_terminator": fsq_state_rnn_terminator,
         "fsq_vision_backbone": fsq_vision_backbone,
         "fsq_freeze_vision_encoder": fsq_freeze_vision_encoder,
         "fsq_hidden_dim": int(get_value(cfg, "fsq_hidden_dim", 256)),

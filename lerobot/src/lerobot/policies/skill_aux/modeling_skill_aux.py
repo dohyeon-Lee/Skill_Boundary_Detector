@@ -20,12 +20,20 @@ from lerobot.policies.skill_expert.modeling_skill_expert import (
 from lerobot.policies.skill_expert.modeling_skill_predictor import FrozenVLMSkillPredictor
 from lerobot.policies.skill_expert.modeling_utils import (
     build_fsq_image_only_terminator,
-    build_trainable_fsq_terminator,
     build_fsq_wrist_only_terminator,
+    build_trainable_fsq_terminator,
 )
-from lerobot.utils.constants import OBS_LANGUAGE_ATTENTION_MASK, OBS_LANGUAGE_TOKENS
+from lerobot.utils.constants import (
+    OBS_LANGUAGE_ATTENTION_MASK,
+    OBS_LANGUAGE_TOKENS,
+    OBS_STATE,
+)
 
 from .configuration_skill_aux import SkillAuxConfig
+from .modeling_state_terminator import (
+    StateSkillMLPTerminator,
+    StateSkillRNNTerminator,
+)
 
 log = logging.getLogger(__name__)
 
@@ -75,6 +83,30 @@ class SkillAuxModules(nn.Module):
             if terminator.freeze_vision_encoder:
                 terminator.vision_encoder.requires_grad_(False).eval()
             self.fsq_wrist_term_train = terminator.to(dtype=torch.float32)
+        self.fsq_state_term_train = (
+            StateSkillMLPTerminator(
+                state_dim=config.max_state_dim,
+                skill_dim=len(config.skill_fsq_levels),
+                hidden_dim=config.state_only_terminator_hidden_dim,
+                num_layers=config.state_only_terminator_num_layers,
+                termination_only=config.state_only_terminator_termination_only,
+            ).to(dtype=torch.float32)
+            if config.train_state_only_terminator
+            else None
+        )
+        self.fsq_state_rnn_term_train = (
+            StateSkillRNNTerminator(
+                state_dim=config.max_state_dim,
+                skill_dim=len(config.skill_fsq_levels),
+                input_dim=config.state_rnn_terminator_input_dim,
+                hidden_dim=config.state_rnn_terminator_hidden_dim,
+                num_layers=config.state_rnn_terminator_num_layers,
+                dropout=config.state_rnn_terminator_dropout,
+                termination_only=config.state_rnn_terminator_termination_only,
+            ).to(dtype=torch.float32)
+            if config.train_state_rnn_terminator
+            else None
+        )
 
 
 class SkillAuxPolicy(PreTrainedPolicy):
@@ -111,13 +143,20 @@ class SkillAuxPolicy(PreTrainedPolicy):
             self.model.fsq_image_term_train.to(dtype=torch.float32)
         if self.model.fsq_wrist_term_train is not None:
             self.model.fsq_wrist_term_train.to(dtype=torch.float32)
+        if self.model.fsq_state_term_train is not None:
+            self.model.fsq_state_term_train.to(dtype=torch.float32)
+        if self.model.fsq_state_rnn_term_train is not None:
+            self.model.fsq_state_rnn_term_train.to(dtype=torch.float32)
         self.to(device=config.device)
         log.info(
             "Auxiliary-only policy: terminator=%s, image_only_terminator=%s, "
-            "wrist_only_terminator=%s, skill_predictor=%s",
+            "wrist_only_terminator=%s, state_only_terminator=%s, "
+            "state_rnn_terminator=%s, skill_predictor=%s",
             config.train_terminator,
             config.train_image_only_terminator,
             config.train_wrist_only_terminator,
+            config.train_state_only_terminator,
+            config.train_state_rnn_terminator,
             config.train_skill_predictor,
         )
 
@@ -256,6 +295,177 @@ class SkillAuxPolicy(PreTrainedPolicy):
                 ).item()
         return objective, metrics
 
+    def _state_sequence(self, batch: dict, *, label: str) -> Tensor:
+        if OBS_STATE not in batch:
+            raise ValueError(f"{label} training batch is missing {OBS_STATE!r}.")
+        module = (
+            self.model.fsq_state_rnn_term_train
+            if label == "State-RNN terminator"
+            else self.model.fsq_state_term_train
+        )
+        if module is None:
+            raise RuntimeError(f"{label} training is disabled.")
+        device = next(module.parameters()).device
+        dtype = next(module.parameters()).dtype
+        states = batch[OBS_STATE].to(device=device, dtype=dtype)
+        if states.ndim == 2:
+            states = states[:, None, :]
+        if states.ndim != 3:
+            raise ValueError(
+                f"{label} expects normalized state [B, D] or [B, T, D], "
+                f"got {tuple(states.shape)}."
+            )
+        if states.shape[-1] < self.config.max_state_dim:
+            raise ValueError(
+                f"{label} state width {states.shape[-1]} is smaller than "
+                f"max_state_dim={self.config.max_state_dim}."
+            )
+        return states[..., : self.config.max_state_dim]
+
+    def _state_sequence_targets(
+        self,
+        *,
+        batch: dict,
+        sequence_length: int,
+        device: torch.device,
+        sigma: float,
+    ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+        current_ds = batch["skill_ds"].to(device=device).long().view(-1)
+        current_de = batch["skill_de"].to(device=device).long().view(-1)
+        unclamped_lengths = current_ds + 1
+        if self.config.state_full_skill_supervision:
+            if torch.any(current_de != 0):
+                raise ValueError(
+                    "Full-skill state supervision requires endpoint-anchored "
+                    "samples with skill_de == 0."
+                )
+            if torch.any(unclamped_lengths > sequence_length):
+                longest = int(unclamped_lengths.max().item())
+                raise ValueError(
+                    "state_rnn_terminator.sequence_length does not cover the "
+                    f"longest sampled skill: {sequence_length} < {longest}."
+                )
+        lengths = unclamped_lengths.clamp(1, sequence_length)
+        positions = torch.arange(sequence_length, device=device)[None, :]
+        valid = positions < lengths[:, None]
+        distance_from_current = (lengths[:, None] - 1 - positions).clamp_min(0)
+        distance_from_start = (current_ds[:, None] - distance_from_current).clamp_min(0)
+        distance_to_end = current_de[:, None] + distance_from_current
+        progress_target = (
+            distance_from_start.float()
+            / (distance_from_start + distance_to_end).float().clamp_min(1.0)
+        ).clamp(0.0, 1.0)
+        termination_target = (
+            torch.exp(-(distance_to_end.float().square()) / (2.0 * sigma**2))
+            if sigma > 0
+            else (distance_to_end == 0).float()
+        )
+        return lengths, valid, progress_target, termination_target
+
+    @staticmethod
+    def _state_sequence_loss_and_metrics(
+        *,
+        prefix: str,
+        progress_prediction: Tensor,
+        termination_logits: Tensor,
+        progress_target: Tensor,
+        termination_target: Tensor,
+        valid: Tensor,
+        positive_weight: float,
+        balance_positive_negative: bool,
+        termination_only: bool,
+    ) -> tuple[Tensor, dict[str, float]]:
+        if progress_prediction.shape != valid.shape or termination_logits.shape != valid.shape:
+            raise ValueError(
+                f"{prefix} predictions must match sequence mask {tuple(valid.shape)}, "
+                f"got progress={tuple(progress_prediction.shape)}, "
+                f"termination={tuple(termination_logits.shape)}."
+            )
+        valid_count = valid.sum().clamp_min(1)
+        progress_errors = F.smooth_l1_loss(
+            progress_prediction,
+            progress_target.to(progress_prediction.dtype),
+            reduction="none",
+        )
+        progress_loss = (
+            None
+            if termination_only
+            else (progress_errors * valid).sum() / valid_count
+        )
+        element_loss = F.binary_cross_entropy_with_logits(
+            termination_logits,
+            termination_target.to(termination_logits.dtype),
+            pos_weight=torch.tensor(
+                positive_weight,
+                device=termination_logits.device,
+                dtype=termination_logits.dtype,
+            ),
+            reduction="none",
+        )
+        target_end = termination_target >= 0.5
+        positive_mask = valid & target_end
+        if balance_positive_negative:
+            negative_mask = valid & ~target_end
+            positive_count = positive_mask.sum(dim=1)
+            negative_count = negative_mask.sum(dim=1)
+            positive_loss = (
+                (element_loss * positive_mask).sum(dim=1)
+                / positive_count.clamp_min(1)
+            )
+            negative_loss = (
+                (element_loss * negative_mask).sum(dim=1)
+                / negative_count.clamp_min(1)
+            )
+            has_positive = positive_count > 0
+            has_negative = negative_count > 0
+            group_count = has_positive.long() + has_negative.long()
+            termination_loss = (
+                positive_loss * has_positive + negative_loss * has_negative
+            ) / group_count.clamp_min(1)
+            termination_loss = termination_loss.mean()
+        else:
+            termination_loss = (element_loss * valid).sum() / valid_count
+        objective = (
+            termination_loss if progress_loss is None else termination_loss + progress_loss
+        )
+        with torch.no_grad():
+            probabilities = termination_logits.sigmoid()
+            predicted_end = probabilities >= 0.5
+            true_positive = (predicted_end & target_end & valid).sum().float()
+            predicted_positive = (predicted_end & valid).sum().float()
+            actual_positive = positive_mask.sum().float()
+            precision = true_positive / predicted_positive.clamp_min(1.0)
+            recall = true_positive / actual_positive.clamp_min(1.0)
+            f1 = 2.0 * precision * recall / (precision + recall).clamp_min(1e-8)
+            metrics = {
+                f"{prefix}/loss": objective.detach().item(),
+                f"{prefix}/termination_loss": termination_loss.detach().item(),
+                f"{prefix}/termination_only": float(termination_only),
+                f"{prefix}/balanced_positive_negative": float(
+                    balance_positive_negative
+                ),
+                f"{prefix}/all_step_supervision": 1.0,
+                f"{prefix}/end_accuracy": (
+                    ((predicted_end == target_end) & valid).sum().float() / valid_count
+                ).item(),
+                f"{prefix}/end_precision": precision.item(),
+                f"{prefix}/end_recall": recall.item(),
+                f"{prefix}/end_f1": f1.item(),
+                f"{prefix}/positive_fraction": (actual_positive / valid_count).item(),
+                f"{prefix}/predicted_positive_fraction": (
+                    predicted_positive / valid_count
+                ).item(),
+                f"{prefix}/termination_probability_mean": (
+                    (probabilities * valid).sum() / valid_count
+                ).item(),
+            }
+            if progress_loss is not None:
+                metrics[f"{prefix}/progress_loss"] = progress_loss.detach().item()
+                metrics[f"{prefix}/progress_mae"] = (
+                    (progress_prediction - progress_target).abs() * valid
+                ).sum().div(valid_count).item()
+        return objective, metrics
+
     def _terminator_objective(self, batch: dict) -> tuple[Tensor, dict[str, float]]:
         required = (
             "skill_ds",
@@ -276,6 +486,8 @@ class SkillAuxPolicy(PreTrainedPolicy):
         raw_state = batch["skill_decoder_state"].to(device=device, dtype=dtype)[
             ..., : int(terminator.state_dim)
         ]
+        if raw_state.ndim == 3:
+            raw_state = raw_state[:, -1]
         z_q = self._code_to_zq(true_code.to(self._fsq_strides.device)).to(
             device=device, dtype=dtype
         )
@@ -382,6 +594,177 @@ class SkillAuxPolicy(PreTrainedPolicy):
             termination_only=self.config.wrist_only_terminator_termination_only,
         )
 
+    def _state_only_terminator_objective(
+        self, batch: dict
+    ) -> tuple[Tensor, dict[str, float]]:
+        required = ("skill_ds", "skill_de")
+        missing = [key for key in required if key not in batch]
+        if missing:
+            raise ValueError(f"State-only terminator training batch is missing {missing}.")
+        terminator = self.model.fsq_state_term_train
+        if terminator is None:
+            raise RuntimeError("State-only terminator training is disabled.")
+        states = self._state_sequence(batch, label="State-only terminator")
+        z_q = self._code_to_zq(
+            self._true_skill_code(batch).to(self._fsq_strides.device)
+        ).to(device=states.device, dtype=states.dtype)
+        lengths, valid, progress_target, termination_target = (
+            self._state_sequence_targets(
+                batch=batch,
+                sequence_length=states.shape[1],
+                device=states.device,
+                sigma=self.config.state_only_terminator_end_target_sigma,
+            )
+        )
+        compact_states = StateSkillRNNTerminator.compact_valid_suffix(states, lengths)
+        batch_size, sequence_length, state_dim = compact_states.shape
+        sequence_z_q = z_q[:, None, :].expand(-1, sequence_length, -1)
+        progress, logits = terminator.forward_outputs(
+            sequence_z_q.reshape(batch_size * sequence_length, -1),
+            compact_states.reshape(batch_size * sequence_length, state_dim),
+        )
+        progress = progress.view(batch_size, sequence_length)
+        logits = logits.view(batch_size, sequence_length)
+        return self._state_sequence_loss_and_metrics(
+            prefix="state_terminator",
+            progress_prediction=progress,
+            termination_logits=logits,
+            progress_target=progress_target,
+            termination_target=termination_target,
+            valid=valid,
+            positive_weight=self.config.state_only_terminator_end_pos_weight,
+            balance_positive_negative=(
+                self.config.state_only_terminator_balance_positive_negative
+            ),
+            termination_only=self.config.state_only_terminator_termination_only,
+        )
+
+    def _state_rnn_terminator_objective(
+        self, batch: dict
+    ) -> tuple[Tensor, dict[str, float]]:
+        required = ("skill_ds", "skill_de")
+        missing = [key for key in required if key not in batch]
+        if missing:
+            raise ValueError(f"State-RNN terminator training batch is missing {missing}.")
+        terminator = self.model.fsq_state_rnn_term_train
+        if terminator is None:
+            raise RuntimeError("State-RNN terminator training is disabled.")
+        states = self._state_sequence(batch, label="State-RNN terminator")
+        if states.shape[1] != self.config.state_rnn_terminator_sequence_length:
+            raise ValueError(
+                "State-RNN dataset window does not match sequence_length: "
+                f"batch={states.shape[1]}, "
+                f"config={self.config.state_rnn_terminator_sequence_length}."
+            )
+        z_q = self._code_to_zq(
+            self._true_skill_code(batch).to(self._fsq_strides.device)
+        ).to(device=states.device, dtype=states.dtype)
+        valid_lengths, valid, progress_target, termination_target = (
+            self._state_sequence_targets(
+                batch=batch,
+                sequence_length=states.shape[1],
+                device=states.device,
+                sigma=self.config.state_rnn_terminator_end_target_sigma,
+            )
+        )
+        progress, logits, _ = terminator.forward_all_outputs(
+            z_q,
+            states,
+            lengths=valid_lengths,
+        )
+        objective, metrics = self._state_sequence_loss_and_metrics(
+            prefix="state_rnn_terminator",
+            progress_prediction=progress,
+            termination_logits=logits,
+            progress_target=progress_target,
+            termination_target=termination_target,
+            valid=valid,
+            positive_weight=self.config.state_rnn_terminator_end_pos_weight,
+            balance_positive_negative=(
+                self.config.state_rnn_terminator_balance_positive_negative
+            ),
+            termination_only=self.config.state_rnn_terminator_termination_only,
+        )
+        metrics["state_rnn_terminator/mean_valid_length"] = (
+            valid_lengths.float().mean().item()
+        )
+        return objective, metrics
+
+    @torch.no_grad()
+    def state_only_terminator_predict(
+        self,
+        skill_code: Tensor,
+        normalized_state: Tensor,
+    ) -> Tensor:
+        """Return state-only boundary probabilities for normalized proprio."""
+        _, probability = self.state_only_terminator_predict_outputs(
+            skill_code,
+            normalized_state,
+        )
+        return probability
+
+    @torch.no_grad()
+    def state_only_terminator_predict_outputs(
+        self,
+        skill_code: Tensor,
+        normalized_state: Tensor,
+    ) -> tuple[Tensor, Tensor]:
+        """Return ``(progress, boundary_probability)`` for normalized proprio."""
+        terminator = self.model.fsq_state_term_train
+        if terminator is None:
+            raise RuntimeError("State-only terminator is not attached.")
+        device = next(terminator.parameters()).device
+        dtype = next(terminator.parameters()).dtype
+        z_q = self._code_to_zq(skill_code.to(self._fsq_strides.device)).to(
+            device=device,
+            dtype=dtype,
+        )
+        state = normalized_state.to(device=device, dtype=dtype)[
+            ..., : self.config.max_state_dim
+        ]
+        progress, logits = terminator.forward_outputs(z_q, state)
+        return progress, logits.sigmoid()
+
+    @torch.no_grad()
+    def state_rnn_terminator_predict(
+        self,
+        skill_code: Tensor,
+        normalized_state: Tensor,
+        hidden: Tensor | None = None,
+    ) -> tuple[Tensor, Tensor]:
+        """Online recurrent boundary prediction with explicit hidden I/O."""
+        _, probability, next_hidden = self.state_rnn_terminator_predict_outputs(
+            skill_code,
+            normalized_state,
+            hidden,
+        )
+        return probability, next_hidden
+
+    @torch.no_grad()
+    def state_rnn_terminator_predict_outputs(
+        self,
+        skill_code: Tensor,
+        normalized_state: Tensor,
+        hidden: Tensor | None = None,
+    ) -> tuple[Tensor, Tensor, Tensor]:
+        """Return online ``(progress, boundary_probability, next_hidden)``."""
+        terminator = self.model.fsq_state_rnn_term_train
+        if terminator is None:
+            raise RuntimeError("State-RNN terminator is not attached.")
+        device = next(terminator.parameters()).device
+        dtype = next(terminator.parameters()).dtype
+        z_q = self._code_to_zq(skill_code.to(self._fsq_strides.device)).to(
+            device=device,
+            dtype=dtype,
+        )
+        state = normalized_state.to(device=device, dtype=dtype)[
+            ..., : self.config.max_state_dim
+        ]
+        if hidden is not None:
+            hidden = hidden.to(device=device, dtype=dtype)
+        progress, logits, next_hidden = terminator.step_outputs(z_q, state, hidden)
+        return progress, logits.sigmoid(), next_hidden
+
     def _skill_predictor_objective(self, batch: dict) -> tuple[Tensor, dict[str, float]]:
         required = (
             "skill_start_image",
@@ -432,6 +815,14 @@ class SkillAuxPolicy(PreTrainedPolicy):
             metrics.update(output)
         if self.config.train_wrist_only_terminator:
             objective, output = self._wrist_only_terminator_objective(batch)
+            objectives.append(objective)
+            metrics.update(output)
+        if self.config.train_state_only_terminator:
+            objective, output = self._state_only_terminator_objective(batch)
+            objectives.append(objective)
+            metrics.update(output)
+        if self.config.train_state_rnn_terminator:
+            objective, output = self._state_rnn_terminator_objective(batch)
             objectives.append(objective)
             metrics.update(output)
         if self.config.train_skill_predictor:
@@ -488,6 +879,40 @@ class SkillAuxPolicy(PreTrainedPolicy):
                         * self.config.wrist_only_terminator_lr_scale,
                         "lr_scale": self.config.wrist_only_terminator_lr_scale,
                         "group_name": "wrist_terminator",
+                    }
+                )
+        state_terminator = self.model.fsq_state_term_train
+        if state_terminator is not None:
+            params = [
+                parameter
+                for parameter in state_terminator.parameters()
+                if parameter.requires_grad
+            ]
+            if params:
+                groups.append(
+                    {
+                        "params": params,
+                        "lr": self.config.optimizer_lr
+                        * self.config.state_only_terminator_lr_scale,
+                        "lr_scale": self.config.state_only_terminator_lr_scale,
+                        "group_name": "state_terminator",
+                    }
+                )
+        state_rnn_terminator = self.model.fsq_state_rnn_term_train
+        if state_rnn_terminator is not None:
+            params = [
+                parameter
+                for parameter in state_rnn_terminator.parameters()
+                if parameter.requires_grad
+            ]
+            if params:
+                groups.append(
+                    {
+                        "params": params,
+                        "lr": self.config.optimizer_lr
+                        * self.config.state_rnn_terminator_lr_scale,
+                        "lr_scale": self.config.state_rnn_terminator_lr_scale,
+                        "group_name": "state_rnn_terminator",
                     }
                 )
         predictor = self.model.skill_predictor
@@ -548,6 +973,24 @@ class SkillAuxPolicy(PreTrainedPolicy):
             ]
             if params:
                 groups["wrist_terminator"] = params
+        state_terminator = self.model.fsq_state_term_train
+        if state_terminator is not None:
+            params = [
+                parameter
+                for parameter in state_terminator.parameters()
+                if parameter.requires_grad
+            ]
+            if params:
+                groups["state_terminator"] = params
+        state_rnn_terminator = self.model.fsq_state_rnn_term_train
+        if state_rnn_terminator is not None:
+            params = [
+                parameter
+                for parameter in state_rnn_terminator.parameters()
+                if parameter.requires_grad
+            ]
+            if params:
+                groups["state_rnn_terminator"] = params
         predictor = self.model.skill_predictor
         if predictor is not None:
             params = [
@@ -569,6 +1012,10 @@ class SkillAuxPolicy(PreTrainedPolicy):
                 metrics["image_terminator/lr"] = float(group["lr"])
             elif name == "wrist_terminator":
                 metrics["wrist_terminator/lr"] = float(group["lr"])
+            elif name == "state_terminator":
+                metrics["state_terminator/lr"] = float(group["lr"])
+            elif name == "state_rnn_terminator":
+                metrics["state_rnn_terminator/lr"] = float(group["lr"])
             elif name == "skill_predictor_reader_head":
                 metrics["skill_predictor/reader_head_lr"] = float(group["lr"])
             elif name == "skill_predictor_lora":
@@ -591,6 +1038,8 @@ class SkillAuxPolicy(PreTrainedPolicy):
             "terminator": count(self.model.fsq_term_train),
             "image_terminator": count(self.model.fsq_image_term_train),
             "wrist_terminator": count(self.model.fsq_wrist_term_train),
+            "state_terminator": count(self.model.fsq_state_term_train),
+            "state_rnn_terminator": count(self.model.fsq_state_rnn_term_train),
             "skill_predictor": count(self.model.skill_predictor),
         }
 

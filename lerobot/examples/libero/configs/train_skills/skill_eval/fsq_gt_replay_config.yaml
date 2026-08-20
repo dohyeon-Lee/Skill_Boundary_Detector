@@ -12,7 +12,7 @@
 # 길이토큰 세대 run(구 noLenTok 미표기 시절)은 LenTok/에 보관 — noLenTok 라벨 폐지(무토큰이 기본).
 # loss 구조 태그 전 run 필수: ReconOnly(entropy 항 없음) | withEntH(entropy 항 포함; BSQ는 항상 withEntH).
 
-output_name: "FSQ_recononly_loss_structor" 
+output_name: "LAST__comparison" 
 fsq_eval_run_name:
   # exp1 : FSQ_opt_raw_zero
   # - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_act_LR6_opt_ReconOnly
@@ -53,13 +53,23 @@ fsq_eval_run_name:
   # - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_pos_termfull_LR6_raw_entH
   # - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_pos_termfull_LR6_raw_entH_ss
   # exp9 : FSQ_recononly_loss_structor
+  # - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_pos_LR6_raw_withEntH
+  # - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_pos_LR6_raw_withentH_nodiv_tem50
+  # - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_pos_LR6_raw_withentH_nodiv_cov_tem50
+  # exp10 : term_recon__recon__recon_nodiv
+  # - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_pos_termfull_LR6_raw_entH
+  # - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_pos_LR6_raw_withEntH
+  # - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_pos_LR6_raw_withentH_nodiv_tem50
+  # exp11 : LAST__comparison
   - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_pos_LR6_raw_withEntH
-  - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_pos_LR6_raw_withentH_nodiv_tem50
-  - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_pos_LR6_raw_withentH_nodiv_cov_tem50
+  - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_pos_term_LR6_raw_entH
+  - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_pos_termfull_LR6_raw_entH
+  - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_pos_termfull_LR6_raw_withentH_stateonly
+  - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_pos_termfull_LR6_raw_withentH_stateonly_nodiv
 # fsq_eval_checkpoint: [50, 100, 150, 200, 250, 300, 350, 400, 450, 500, 550, 600, 650, 700, 750, 800, 850, 900, 950, 1000]
-fsq_eval_checkpoint: [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1100, 1200, 1300, 1400, 1500, 1600, 1700, 1800, 1900, 2000]
+# fsq_eval_checkpoint: [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1100, 1200, 1300, 1400, 1500, 1600, 1700, 1800, 1900, 2000]
 
-# fsq_eval_checkpoint: [50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000]
+fsq_eval_checkpoint: [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000]
 
 # fsq_eval_checkpoint: [50, 100, 150, 200, 250, 300, 350, 400, 450, 500, 550, 600, 650, 700]
 # fsq_eval_checkpoint: [400, 500, 600]
@@ -95,6 +105,11 @@ seed: 42
 # CPU-slot throttle -- raise it freely. The GPU count is not set here: it is one
 # latent-encoding prepass per run whose latents are missing (see slurm.gres).
 eval_max_concurrent: 20   # was eval_num_gpus; the old name is still accepted
+# How many checkpoints one array task replays in a single process. Start-up is
+# minutes (torch + lerobot imports) against seconds-to-minutes of actual replay,
+# so 1 spends most of the cluster's time importing. 4 measured ~16 min wall
+# clock and 72 node-minutes for 30 checkpoints, against ~20 min and 240 at 1.
+checkpoints_per_job: 4
 workers_per_checkpoint: 1
 resume: true
               # FSQ_VS_BSQ
@@ -107,6 +122,16 @@ slurm:
   # The replay array itself only decodes dataset video and writes PNGs, so it
   # asks for no GPU. Set replay_gres: gpu:1 to go back to the old behaviour.
   replay_gres: ""
+  # ...and it must therefore leave the GPU partitions: their QOS requires at
+  # least one GPU per job (a zero-GPU request pends as QOSMinGRES forever).
+  # dell_cpu = cnode01-04, 208 CPUs, AllowQos=cpu_qos,big_qos.
+  replay_partition: dell_cpu
+  replay_qos: cpu_qos
+  # dell_cpu is only 4 nodes (52 CPUs / 450G each), so a smaller footprint fits
+  # many more replay tasks at once: 8 CPU/64G allows 6 per node, 4 CPU/16G
+  # allows 13. The replay itself just decodes two frames per occurrence.
+  replay_cpus: 4
+  replay_memory: 16G
   cpus: 8
   memory: 64G
   time: "00:30:00"

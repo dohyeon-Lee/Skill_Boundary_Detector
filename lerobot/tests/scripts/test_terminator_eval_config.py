@@ -64,6 +64,76 @@ def test_fsq_initial_validation_requires_raw_fsq_file(tmp_path: Path) -> None:
     MODULE._validate_display_model(model, target_policy={})
 
 
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("state_only", "state_only"),
+        ("state_only_terminator", "state_only"),
+        ("state_rnn", "state_rnn"),
+        ("state_rnn_terminator", "state_rnn"),
+    ],
+)
+def test_state_terminator_variants_are_normalized(value: str, expected: str) -> None:
+    assert MODULE._normalize_display_variant(value) == expected
+
+
+@pytest.mark.parametrize(
+    ("variant", "train_field"),
+    [
+        ("state_only", "train_state_only_terminator"),
+        ("state_rnn", "train_state_rnn_terminator"),
+    ],
+)
+def test_state_terminator_validation_uses_matching_checkpoint_field(
+    tmp_path: Path,
+    variant: str,
+    train_field: str,
+) -> None:
+    checkpoint = tmp_path / variant
+    checkpoint.mkdir()
+    (checkpoint / "config.json").write_text(
+        json.dumps(
+            {
+                "type": "skill_aux",
+                train_field: True,
+                "skill_fsq_levels": [3, 3, 3],
+            }
+        )
+    )
+    (checkpoint / "model.safetensors").touch()
+
+    MODULE._validate_display_model(
+        {"variant": variant, "path": str(checkpoint)},
+        target_policy={"skill_fsq_levels": [3, 3, 3]},
+    )
+
+
+@pytest.mark.parametrize("variant", ["state_only", "state_rnn"])
+def test_external_main_accepts_state_terminator_variants(
+    tmp_path: Path,
+    variant: str,
+) -> None:
+    checkpoint, resolved_variant = MODULE._resolve_external_model(
+        {
+            "external_skill_model": {
+                "variant": variant,
+                "group": "skillVLA_terminator",
+                "model_dir": "state_models",
+                "checkpoint": "030000",
+            }
+        },
+        tmp_path,
+        tmp_path / "outputs",
+        fsq_path=tmp_path / "FSQ.pt",
+    )
+
+    assert resolved_variant == variant
+    assert checkpoint == (
+        tmp_path
+        / "outputs/skillVLA_terminator/state_models/checkpoints/030000/pretrained_model"
+    )
+
+
 def test_build_settings_binds_fsq_initial_to_selected_policy_fsq(
     tmp_path: Path, monkeypatch
 ) -> None:

@@ -78,6 +78,10 @@ class DatasetReader:
 
         self.hf_dataset: datasets.Dataset | None = None
         self._absolute_to_relative_idx: dict[int, int] | None = None
+        # Optional RAM-backed columns used for dense temporal windows. A
+        # proprio column is only a few MB, but repeatedly gathering hundreds of
+        # tiny rows through Hugging Face transforms is expensive.
+        self._delta_column_cache: dict[str, torch.Tensor] = {}
 
         # Setup delta_indices (doesn't depend on hf_dataset)
         self.delta_indices = None
@@ -101,7 +105,37 @@ class DatasetReader:
     def load_and_activate(self) -> None:
         """Load HF dataset from disk and build index mapping. Call after data is on disk."""
         self.hf_dataset = self._load_hf_dataset()
+        self._delta_column_cache.clear()
         self._build_index_mapping()
+
+    def cache_delta_column(self, key: str) -> torch.Tensor:
+        """Materialize one numeric delta-window column as a contiguous CPU tensor.
+
+        Hugging Face's custom transform converts every selected row into an
+        individual tensor before ``torch.stack``. For long state histories this
+        Python/Arrow overhead dwarfs the model compute. The numpy formatter can
+        materialize the full fixed-size column in one vectorized operation;
+        subsequent temporal gathers then use ordinary tensor indexing.
+        """
+        if self.hf_dataset is None:
+            raise RuntimeError("Cannot cache a delta column before the dataset is loaded.")
+        if key not in self.hf_dataset.column_names:
+            raise KeyError(f"Dataset has no column {key!r} to cache.")
+        if self.delta_indices is None or key not in self.delta_indices:
+            raise ValueError(f"Column {key!r} is not configured for delta-window queries.")
+        if key not in self._delta_column_cache:
+            values = (
+                self.hf_dataset.select_columns([key])
+                .with_format("numpy")[:][key]
+            )
+            # clone() owns writable storage and keeps worker processes from
+            # retaining an Arrow/numpy view with surprising lifetime semantics.
+            self._delta_column_cache[key] = torch.from_numpy(values).clone().contiguous()
+        return self._delta_column_cache[key]
+
+    @property
+    def cached_delta_columns(self) -> tuple[str, ...]:
+        return tuple(self._delta_column_cache)
 
     def _build_index_mapping(self) -> None:
         """Build absolute-to-relative index mapping from loaded hf_dataset."""
@@ -226,10 +260,17 @@ class DatasetReader:
                 if self._absolute_to_relative_idx is None
                 else [self._absolute_to_relative_idx[idx] for idx in q_idx]
             )
-            try:
-                result[key] = torch.stack(self.hf_dataset[key][relative_indices])
-            except (KeyError, TypeError, IndexError):
-                result[key] = torch.stack(self.hf_dataset[relative_indices][key])
+            cached = self._delta_column_cache.get(key)
+            if cached is not None:
+                result[key] = cached.index_select(
+                    0,
+                    torch.as_tensor(relative_indices, dtype=torch.long),
+                )
+            else:
+                try:
+                    result[key] = torch.stack(self.hf_dataset[key][relative_indices])
+                except (KeyError, TypeError, IndexError):
+                    result[key] = torch.stack(self.hf_dataset[relative_indices][key])
         return result
 
     def _query_videos(self, query_timestamps: dict[str, list[float]], ep_idx: int) -> dict[str, torch.Tensor]:

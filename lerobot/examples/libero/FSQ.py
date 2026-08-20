@@ -35,21 +35,17 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.checkpoint
-from scipy.interpolate import make_interp_spline
-from scipy.optimize import linear_sum_assignment
 from torch import Tensor
 from torch.utils.data import DataLoader, Dataset
-from transformers import AutoModel
-from transformers.models.auto import CONFIG_MAPPING
 
-from lerobot.policies.pi05.modeling_pi05 import (
-    OPENPI_ATTENTION_MASK_VALUE,
-    get_gemma_config,
+from lerobot.policies.skill_aux.modeling_state_terminator import (
+    StateSkillMLPTerminator,
+    StateSkillRNNTerminator,
 )
-from lerobot.policies.pi_gemma import PiGemmaForCausalLM
 
 
 FORMAT_VERSION = 3
+_OPENPI_ATTENTION_MASK_VALUE = -2.3819763e38
 N_GRIPPER_DIMS = 2
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _DEFAULT_IMAGE_MODEL = str(_REPO_ROOT / "models" / "dinov3-vits16")
@@ -114,6 +110,10 @@ def spline_encode(
     input_mode: str = "zero_grounded",
 ) -> tuple[np.ndarray, int]:
     """Trajectory -> fixed control points and original skill length."""
+    # SciPy is unnecessary for action_seq and state-RNN module construction.
+    # Import it only when the spline codec is actually selected.
+    from scipy.interpolate import make_interp_spline
+
     trajectory = prepare_encoder_trajectory(trajectory, input_mode)
     length, dim = trajectory.shape
     if length == 1:
@@ -651,8 +651,19 @@ def fsq_entropy_terms(
 # -----------------------------------------------------------------------------
 
 
-def _build_gemma(variant: str, *, use_adarms: bool = True) -> PiGemmaForCausalLM:
-    cfg = get_gemma_config(variant)
+def _gemma_config(variant: str) -> Any:
+    """Load PI05's Gemma config only for the optional visual-cond path."""
+    from lerobot.policies.pi05.modeling_pi05 import get_gemma_config
+
+    return get_gemma_config(variant)
+
+
+def _build_gemma(variant: str, *, use_adarms: bool = True) -> nn.Module:
+    from transformers.models.auto import CONFIG_MAPPING
+
+    from lerobot.policies.pi_gemma import PiGemmaForCausalLM
+
+    cfg = _gemma_config(variant)
     hf = CONFIG_MAPPING["gemma"](
         head_dim=cfg.head_dim,
         hidden_size=cfg.width,
@@ -953,6 +964,7 @@ def resolve_image_model_path(name: str) -> str:
 def _build_siglip_vision_tower(image_size: int) -> nn.Module:
     """Build the exact SigLIP tower used by Stage-1's condition stream."""
     from transformers import SiglipVisionModel
+    from transformers.models.auto import CONFIG_MAPPING
 
     vlm_cfg = CONFIG_MAPPING["paligemma"]()
     vision_cfg = vlm_cfg.vision_config
@@ -961,6 +973,13 @@ def _build_siglip_vision_tower(image_size: int) -> nn.Module:
     vision_cfg.projection_dim = 2048
     vision_cfg.projector_hidden_act = "gelu_fast"
     return SiglipVisionModel(vision_cfg)
+
+
+def _load_dino_model(model_path: str) -> nn.Module:
+    """Keep Transformers/DINO completely out of state-only FSQ startup."""
+    from transformers import AutoModel
+
+    return AutoModel.from_pretrained(model_path)
 
 
 class FSQQueryTerminator(nn.Module):
@@ -1029,7 +1048,7 @@ class FSQQueryTerminator(nn.Module):
         self.siglip = None
         self.n_register = 0
         if vision_backbone == "dino":
-            self.dino = AutoModel.from_pretrained(self.dino_model_path)
+            self.dino = _load_dino_model(self.dino_model_path)
             visual_dim = int(self.dino.config.hidden_size)
             self.n_register = int(getattr(self.dino.config, "num_register_tokens", 0))
             self.vision_image_size = self.dino_image_size
@@ -1045,7 +1064,7 @@ class FSQQueryTerminator(nn.Module):
         self.register_buffer("_img_mean", torch.tensor(mean).view(1, 3, 1, 1), persistent=False)
         self.register_buffer("_img_std", torch.tensor(std).view(1, 3, 1, 1), persistent=False)
 
-        width = int(hidden_dim) if arch == "small" else int(get_gemma_config(cond_encoder_variant).width)
+        width = int(hidden_dim) if arch == "small" else int(_gemma_config(cond_encoder_variant).width)
         self.hidden_dim = width
         self.image_proj = nn.Linear(visual_dim, width)
         self.progress_query = nn.Parameter(torch.zeros(1, 1, width))
@@ -1253,7 +1272,7 @@ class FSQQueryTerminator(nn.Module):
                 allow[None, None],
                 torch.tensor(0.0, device=x.device, dtype=x.dtype),
                 torch.tensor(
-                    OPENPI_ATTENTION_MASK_VALUE, device=x.device, dtype=x.dtype
+                    _OPENPI_ATTENTION_MASK_VALUE, device=x.device, dtype=x.dtype
                 ),
             ).expand(bsize, 1, -1, -1)
             broadcast = None
@@ -1389,6 +1408,108 @@ class FSQWristOnlyQueryTerminator(FSQImageOnlyQueryTerminator):
         return progress, torch.sigmoid(logits)
 
 
+class FSQStateRNNTerminator(StateSkillRNNTerminator):
+    """Full-skill causal terminator using only raw proprioception and FSQ skill.
+
+    The recurrent architecture deliberately matches the standalone state-RNN
+    probe (vanilla tanh RNN, 64-wide input/hidden, one layer).  Raw dataset
+    states are quantile-normalized inside the module, so training and online
+    one-step inference share the same input contract.
+    """
+
+    def __init__(
+        self,
+        *,
+        state_dim: int,
+        fsq_levels: list[int],
+        state_q01: np.ndarray,
+        state_q99: np.ndarray,
+        termination_only: bool,
+    ) -> None:
+        super().__init__(
+            state_dim=state_dim,
+            skill_dim=len(fsq_levels),
+            input_dim=64,
+            hidden_dim=64,
+            num_layers=1,
+            dropout=0.0,
+            termination_only=termination_only,
+        )
+        self.fsq_levels = [int(level) for level in fsq_levels]
+        self.register_buffer(
+            "state_q01",
+            torch.as_tensor(state_q01, dtype=torch.float32)[:state_dim],
+        )
+        self.register_buffer(
+            "state_q99",
+            torch.as_tensor(state_q99, dtype=torch.float32)[:state_dim],
+        )
+
+    def _sequence_inputs(self, z_q: Tensor, states: Tensor) -> Tensor:
+        lo = self.state_q01.to(device=states.device, dtype=states.dtype)
+        hi = self.state_q99.to(device=states.device, dtype=states.dtype)
+        normalized = 2.0 * (states[..., : self.state_dim] - lo) / (hi - lo + 1e-8) - 1.0
+        return super()._sequence_inputs(z_q, normalized)
+
+    @torch.no_grad()
+    def predict_termination_step(
+        self,
+        z_norm: Tensor,
+        raw_state: Tensor,
+        hidden: Tensor | None = None,
+    ) -> tuple[Tensor, Tensor, Tensor]:
+        """Return ``(progress, probability, next_hidden)`` for one online step."""
+        progress, logits, next_hidden = self.step_outputs(z_norm, raw_state, hidden)
+        return progress, torch.sigmoid(logits), next_hidden
+
+
+class FSQStateMLPTerminator(StateSkillMLPTerminator):
+    """Current-state FSQ terminator used by ``input_space=state, arch=default``."""
+
+    def __init__(
+        self,
+        *,
+        state_dim: int,
+        fsq_levels: list[int],
+        state_q01: np.ndarray,
+        state_q99: np.ndarray,
+        termination_only: bool,
+    ) -> None:
+        super().__init__(
+            state_dim=state_dim,
+            skill_dim=len(fsq_levels),
+            hidden_dim=64,
+            num_layers=2,
+            termination_only=termination_only,
+        )
+        self.fsq_levels = [int(level) for level in fsq_levels]
+        self.register_buffer(
+            "state_q01",
+            torch.as_tensor(state_q01, dtype=torch.float32)[:state_dim],
+        )
+        self.register_buffer(
+            "state_q99",
+            torch.as_tensor(state_q99, dtype=torch.float32)[:state_dim],
+        )
+
+    def _normalize_state(self, raw_state: Tensor) -> Tensor:
+        lo = self.state_q01.to(device=raw_state.device, dtype=raw_state.dtype)
+        hi = self.state_q99.to(device=raw_state.device, dtype=raw_state.dtype)
+        return 2.0 * (raw_state[..., : self.state_dim] - lo) / (hi - lo + 1e-8) - 1.0
+
+    def forward_outputs(self, z_q: Tensor, state: Tensor) -> tuple[Tensor, Tensor]:
+        return super().forward_outputs(z_q, self._normalize_state(state))
+
+    @torch.no_grad()
+    def predict_termination(
+        self,
+        z_norm: Tensor,
+        raw_state: Tensor,
+    ) -> tuple[Tensor, Tensor]:
+        progress, logits = self.forward_outputs(z_norm, raw_state)
+        return progress, torch.sigmoid(logits)
+
+
 # -----------------------------------------------------------------------------
 # Full model/config and component checkpoint loaders
 # -----------------------------------------------------------------------------
@@ -1454,6 +1575,16 @@ class SplineFSQAEConfig:
 
     samples_per_skill: int = 2
     end_target_sigma: float = 1.0
+    terminator_input_space: str = "both"
+    """Terminator observations: state, image (third+wrist), or both."""
+    terminator_model: str = "default"
+    """default uses the current-step MLP/query model; rnn uses full state history."""
+    terminator_progress: bool = True
+    terminator_termination: bool = True
+    state_rnn_terminator: bool = False
+    """Replace the visual query terminator with a full-skill causal RNN that
+    consumes only raw proprioception and the FSQ skill latent. Every valid
+    timestep is supervised and no camera frame or vision model is loaded."""
     terminator_termination_only: bool = False
     """Train and predict only termination: progress output is fixed to zero and its
     loss term is dropped. The progress query/head stay in the module (they are
@@ -1510,6 +1641,19 @@ class SplineFSQAE(nn.Module):
 
     def __init__(self, cfg: SplineFSQAEConfig):
         super().__init__()
+        # Normalize legacy programmatic configs before validating the cleaned
+        # decoder/terminator option surface. New YAML configs already arrive in
+        # this form through train_skills_config.py.
+        if cfg.reconstructor_only:
+            cfg.terminator_progress = False
+            cfg.terminator_termination = False
+            cfg.state_rnn_terminator = False
+        elif cfg.state_rnn_terminator:
+            cfg.terminator_input_space = "state"
+            cfg.terminator_model = "rnn"
+        if cfg.terminator_termination_only and not cfg.reconstructor_only:
+            cfg.terminator_progress = False
+            cfg.terminator_termination = True
         if int(cfg.format_version) != FORMAT_VERSION:
             raise ValueError(f"Only FSQ format v{FORMAT_VERSION} is supported, got {cfg.format_version}.")
         if cfg.action_dim > cfg.max_action_dim or cfg.state_dim > cfg.max_state_dim:
@@ -1526,6 +1670,47 @@ class SplineFSQAE(nn.Module):
             )
         if cfg.terminator_arch not in {"small", "cond"}:
             raise ValueError(f"terminator_arch must be small|cond, got {cfg.terminator_arch!r}.")
+        if cfg.terminator_input_space not in {"state", "image", "both"}:
+            raise ValueError(
+                "terminator_input_space must be state|image|both, "
+                f"got {cfg.terminator_input_space!r}."
+            )
+        if cfg.terminator_model not in {"default", "rnn"}:
+            raise ValueError(
+                f"terminator_model must be default|rnn, got {cfg.terminator_model!r}."
+            )
+        if (
+            not cfg.reconstructor_only
+            and cfg.terminator_model == "rnn"
+            and cfg.terminator_input_space != "state"
+        ):
+            raise ValueError(
+                "The RNN terminator currently supports input_space=state only."
+            )
+        if cfg.state_rnn_terminator != (
+            not cfg.reconstructor_only and cfg.terminator_model == "rnn"
+        ):
+            raise ValueError(
+                "state_rnn_terminator is an internal compatibility flag and must "
+                "match terminator_model='rnn'."
+            )
+        if cfg.reconstructor_only and (cfg.terminator_progress or cfg.terminator_termination):
+            raise ValueError(
+                "reconstructor_only requires both terminator objectives to be disabled."
+            )
+        if not cfg.reconstructor_only and not (
+            cfg.terminator_progress or cfg.terminator_termination
+        ):
+            raise ValueError(
+                "A built terminator must enable progress, termination, or both."
+            )
+        if cfg.terminator_termination_only != (
+            cfg.terminator_termination and not cfg.terminator_progress
+        ):
+            raise ValueError(
+                "terminator_termination_only is an internal compatibility flag and "
+                "must match the selected decoder objectives."
+            )
         if cfg.vision_backbone not in {"dino", "siglip"}:
             raise ValueError(f"vision_backbone must be dino|siglip, got {cfg.vision_backbone!r}.")
         if cfg.skill_cond_mode not in {"token", "broadcast"}:
@@ -1540,6 +1725,11 @@ class SplineFSQAE(nn.Module):
         if cfg.reconstructor_only and cfg.terminator_only:
             raise ValueError(
                 "reconstructor_only and terminator_only are mutually exclusive."
+            )
+        if cfg.reconstructor_only and cfg.state_rnn_terminator:
+            raise ValueError(
+                "state_rnn_terminator requires a terminator, but reconstructor_only "
+                "removes the terminator branch."
             )
         for name in (
             "encoder_min", "encoder_max", "state_min", "state_max",
@@ -1626,25 +1816,49 @@ class SplineFSQAE(nn.Module):
                 chunk_size=cfg.chunk_size,
                 use_start_state=cfg.reconstructor_start_state,
             )
-        self.terminator = None if cfg.reconstructor_only else FSQQueryTerminator(
-            state_dim=cfg.state_dim,
-            fsq_levels=cfg.fsq_levels,
-            hidden_dim=cfg.hidden_dim,
-            n_layers=cfg.image_encoder_layers,
-            n_heads=cfg.image_encoder_heads,
-            dropout=cfg.dropout,
-            arch=cfg.terminator_arch,
-            vision_backbone=cfg.vision_backbone,
-            freeze_vision_encoder=cfg.freeze_vision_encoder,
-            dino_model_path=cfg.dino_model_path,
-            dino_image_size=cfg.dino_image_size,
-            siglip_image_size=cfg.siglip_image_size,
-            cond_encoder_variant=cfg.cond_encoder_variant,
-            skill_cond_mode=cfg.skill_cond_mode,
-            state_min=cfg.state_min,
-            state_max=cfg.state_max,
-            termination_only=cfg.terminator_termination_only,
-        )
+        if cfg.reconstructor_only:
+            self.terminator = None
+        elif cfg.state_rnn_terminator:
+            self.terminator = FSQStateRNNTerminator(
+                state_dim=cfg.state_dim,
+                fsq_levels=cfg.fsq_levels,
+                state_q01=cfg.state_q01,
+                state_q99=cfg.state_q99,
+                termination_only=cfg.terminator_termination_only,
+            )
+        elif cfg.terminator_input_space == "state":
+            self.terminator = FSQStateMLPTerminator(
+                state_dim=cfg.state_dim,
+                fsq_levels=cfg.fsq_levels,
+                state_q01=cfg.state_q01,
+                state_q99=cfg.state_q99,
+                termination_only=cfg.terminator_termination_only,
+            )
+        else:
+            terminator_cls = (
+                FSQImageOnlyQueryTerminator
+                if cfg.terminator_input_space == "image"
+                else FSQQueryTerminator
+            )
+            self.terminator = terminator_cls(
+                state_dim=cfg.state_dim,
+                fsq_levels=cfg.fsq_levels,
+                hidden_dim=cfg.hidden_dim,
+                n_layers=cfg.image_encoder_layers,
+                n_heads=cfg.image_encoder_heads,
+                dropout=cfg.dropout,
+                arch=cfg.terminator_arch,
+                vision_backbone=cfg.vision_backbone,
+                freeze_vision_encoder=cfg.freeze_vision_encoder,
+                dino_model_path=cfg.dino_model_path,
+                dino_image_size=cfg.dino_image_size,
+                siglip_image_size=cfg.siglip_image_size,
+                cond_encoder_variant=cfg.cond_encoder_variant,
+                skill_cond_mode=cfg.skill_cond_mode,
+                state_min=cfg.state_min,
+                state_max=cfg.state_max,
+                termination_only=cfg.terminator_termination_only,
+            )
 
     def gradient_checkpointing_enable(self) -> None:
         if hasattr(self.encoder, "enc_traj_pool"):
@@ -1652,7 +1866,9 @@ class SplineFSQAE(nn.Module):
         if self.reconstructor is not None:
             if hasattr(self.reconstructor, "pool"):
                 self.reconstructor.pool.gradient_checkpointing_enable()
-        if self.terminator is not None:
+        if self.terminator is not None and hasattr(
+            self.terminator, "gradient_checkpointing_enable"
+        ):
             self.terminator.gradient_checkpointing_enable()
 
     def gradient_checkpointing_disable(self) -> None:
@@ -1660,7 +1876,9 @@ class SplineFSQAE(nn.Module):
             self.encoder.enc_traj_pool.gradient_checkpointing_disable()
         if self.reconstructor is not None and hasattr(self.reconstructor, "pool"):
             self.reconstructor.pool.gradient_checkpointing_disable()
-        if self.terminator is not None:
+        if self.terminator is not None and hasattr(
+            self.terminator, "gradient_checkpointing_disable"
+        ):
             self.terminator.gradient_checkpointing_disable()
 
     @property
@@ -1831,7 +2049,7 @@ class SplineFSQAE(nn.Module):
         self,
         z_q: Tensor,
         raw_states: Tensor,
-        third: Tensor,
+        third: Tensor | None = None,
         wrist: Tensor | None = None,
         _progress_hint: Tensor | None = None,
         *,
@@ -1864,12 +2082,22 @@ class SplineFSQAE(nn.Module):
             raise RuntimeError(
                 "This FSQ model was trained reconstructor_only and has no terminator."
             )
-        progress, term_logits = self.terminator(
-            z_norm,
-            flat_state,
-            flatten_camera(third),
-            flatten_camera(wrist),
-        )
+        if self.cfg.state_rnn_terminator:
+            progress, term_logits, _ = self.terminator.forward_all_outputs(
+                self.fsq.normalized(z_q),
+                raw_states[..., : self.cfg.state_dim],
+            )
+            return actions, progress, term_logits
+        if self.cfg.terminator_input_space == "state":
+            progress, term_logits = self.terminator.forward_outputs(z_norm, flat_state)
+        elif self.cfg.terminator_input_space == "image":
+            progress, term_logits = self.terminator(
+                z_norm, flatten_camera(third), flatten_camera(wrist)
+            )
+        else:
+            progress, term_logits = self.terminator(
+                z_norm, flat_state, flatten_camera(third), flatten_camera(wrist)
+            )
         return (
             actions,
             progress.view(bsize, steps),
@@ -1888,6 +2116,7 @@ class SplineFSQAE(nn.Module):
         third: Tensor | None,
         wrist: Tensor | None,
         samples_per_skill: int,
+        terminator_state_sequence: Tensor | None = None,
         noise: Tensor | None = None,
         time: Tensor | None = None,
         action_seq: Tensor | None = None,
@@ -1936,6 +2165,20 @@ class SplineFSQAE(nn.Module):
                 z_sample.shape[0], device=z_sample.device, dtype=actions.dtype
             )
             progress, term_logits = zeros, zeros
+        elif self.cfg.state_rnn_terminator:
+            if terminator_state_sequence is None:
+                raise ValueError(
+                    "state_rnn_terminator requires the cached full-skill state sequence."
+                )
+            progress, term_logits, _ = self.terminator.forward_all_outputs(
+                z_norm,
+                terminator_state_sequence,
+                lengths=lengths,
+            )
+        elif self.cfg.terminator_input_space == "state":
+            progress, term_logits = self.terminator.forward_outputs(z_sample, raw_state)
+        elif self.cfg.terminator_input_space == "image":
+            progress, term_logits = self.terminator(z_sample, third, wrist)
         else:
             progress, term_logits = self.terminator(z_sample, raw_state, third, wrist)
         return {
@@ -1961,6 +2204,7 @@ _V3_CFG_BACKFILL = (
     ("entropy_joint", True),
     ("reconstructor_start_state", True),
     ("reconstructor_arch", "chunk"),
+    ("state_rnn_terminator", False),
 )
 
 
@@ -1976,6 +2220,15 @@ def _checkpoint_config(checkpoint: dict[str, Any]) -> SplineFSQAEConfig:
         cfg.pop("force_endpoint_sample", None)
         cfg.pop("sample_from_end_window", None)
         cfg.pop("end_window_min_termination", None)
+        reconstructor_only = bool(cfg.get("reconstructor_only", False))
+        state_rnn = bool(cfg.get("state_rnn_terminator", False))
+        cfg.setdefault(
+            "terminator_progress",
+            not reconstructor_only and not bool(cfg.get("terminator_termination_only", False)),
+        )
+        cfg.setdefault("terminator_termination", not reconstructor_only)
+        cfg.setdefault("terminator_input_space", "state" if state_rnn else "both")
+        cfg.setdefault("terminator_model", "rnn" if state_rnn else "default")
         cfg = SplineFSQAEConfig(**cfg)
     if int(getattr(cfg, "format_version", 0)) != FORMAT_VERSION:
         raise ValueError(
@@ -1985,6 +2238,21 @@ def _checkpoint_config(checkpoint: dict[str, Any]) -> SplineFSQAEConfig:
     for name, default in _V3_CFG_BACKFILL:
         if not hasattr(cfg, name):
             setattr(cfg, name, default)
+    instance_fields = vars(cfg)
+    if "terminator_progress" not in instance_fields:
+        cfg.terminator_progress = not bool(getattr(cfg, "reconstructor_only", False)) and not bool(
+            getattr(cfg, "terminator_termination_only", False)
+        )
+    if "terminator_termination" not in instance_fields:
+        cfg.terminator_termination = not bool(getattr(cfg, "reconstructor_only", False))
+    if "terminator_input_space" not in instance_fields:
+        cfg.terminator_input_space = (
+            "state" if bool(getattr(cfg, "state_rnn_terminator", False)) else "both"
+        )
+    if "terminator_model" not in instance_fields:
+        cfg.terminator_model = (
+            "rnn" if bool(getattr(cfg, "state_rnn_terminator", False)) else "default"
+        )
     return cfg
 
 
@@ -2161,14 +2429,33 @@ def load_fsq_terminator(
     path: str | Path,
     device: str | torch.device = "cpu",
     dino_model_path: str | None = None,
-) -> tuple[FSQQueryTerminator, SplineFSQAEConfig]:
+) -> tuple[nn.Module, SplineFSQAEConfig]:
     checkpoint = torch.load(str(path), map_location="cpu", weights_only=False)
     cfg = _checkpoint_config(checkpoint)
-    terminator = _new_fsq_terminator(
-        FSQQueryTerminator,
-        cfg,
-        dino_model_path=dino_model_path,
-    )
+    if cfg.state_rnn_terminator:
+        terminator = FSQStateRNNTerminator(
+            state_dim=cfg.state_dim,
+            fsq_levels=cfg.fsq_levels,
+            state_q01=cfg.state_q01,
+            state_q99=cfg.state_q99,
+            termination_only=cfg.terminator_termination_only,
+        )
+    elif cfg.terminator_input_space == "state":
+        terminator = FSQStateMLPTerminator(
+            state_dim=cfg.state_dim,
+            fsq_levels=cfg.fsq_levels,
+            state_q01=cfg.state_q01,
+            state_q99=cfg.state_q99,
+            termination_only=cfg.terminator_termination_only,
+        )
+    else:
+        terminator = _new_fsq_terminator(
+            FSQImageOnlyQueryTerminator
+            if cfg.terminator_input_space == "image"
+            else FSQQueryTerminator,
+            cfg,
+            dino_model_path=dino_model_path,
+        )
     _load_prefixed(terminator, checkpoint["model_state"], "terminator.")
     terminator.to(device).eval()
     return terminator, cfg
@@ -2188,6 +2475,14 @@ def build_trainable_fsq_terminator(
     """
     checkpoint = torch.load(str(path), map_location="cpu", weights_only=False)
     cfg, source_cfg, has_terminator_weights = _terminator_build_config(checkpoint)
+    if (
+        getattr(cfg, "state_rnn_terminator", False)
+        or getattr(cfg, "terminator_input_space", "both") != "both"
+    ):
+        # State-only and image-only checkpoints have no compatible state+image
+        # query tensor set. Keep the FSQ contract and initialize this requested
+        # standalone variant fresh, as for FSQ-original checkpoints.
+        has_terminator_weights = False
     terminator = _new_fsq_terminator(
         FSQQueryTerminator,
         cfg,
@@ -2321,7 +2616,7 @@ def load_fsq_model(
 
 
 class FSQTrajectoryDataset(Dataset):
-    """One trajectory plus M sampled timesteps with live raw camera frames.
+    """One trajectory plus decoder/terminator targets for the selected inputs.
 
     Video decoding is lazy and worker-local. Only the selected M timesteps are
     read; there is no episode-wide DINO warm pass or in-RAM feature cache.
@@ -2342,7 +2637,13 @@ class FSQTrajectoryDataset(Dataset):
             raise ValueError("FSQ dataset component lengths do not match.")
         self.cfg = cfg
         self.training = bool(training)
-        self.samples_per_skill = int(cfg.samples_per_skill)
+        self.sampled_timestep_required = (
+            (not cfg.terminator_only and cfg.reconstructor_arch == "chunk")
+            or (not cfg.reconstructor_only and not cfg.state_rnn_terminator)
+        )
+        self.samples_per_skill = (
+            int(cfg.samples_per_skill) if self.sampled_timestep_required else 1
+        )
         if self.samples_per_skill < 1:
             raise ValueError("samples_per_skill must be >=1.")
         self.ctrl: list[np.ndarray] = []
@@ -2372,7 +2673,12 @@ class FSQTrajectoryDataset(Dataset):
                     f"Skill {i} is shorter than metadata length {length}: "
                     f"states={len(self.states[i])}, actions={len(self.actions[i])}"
                 )
-            if "dataset_from_index" not in metadata[i]:
+            if (
+                not cfg.reconstructor_only
+                and not cfg.state_rnn_terminator
+                and cfg.terminator_input_space in {"image", "both"}
+                and "dataset_from_index" not in metadata[i]
+            ):
                 raise ValueError(f"Skill {i} metadata has no dataset_from_index.")
             self.ctrl.append((2.0 * (ctrl - enc_min) / (enc_max - enc_min + 1e-8) - 1.0).astype(np.float32))
             if self.start_poses is not None:
@@ -2386,6 +2692,39 @@ class FSQTrajectoryDataset(Dataset):
         self.state_q99 = np.asarray(cfg.state_q99, dtype=np.float32)
         self.action_q01 = np.asarray(cfg.action_q01, dtype=np.float32)
         self.action_q99 = np.asarray(cfg.action_q99, dtype=np.float32)
+        self.terminator_state_sequences: list[Tensor] | None = None
+        self.terminator_progress_targets: list[Tensor] | None = None
+        self.terminator_end_targets: list[Tensor] | None = None
+        if cfg.state_rnn_terminator and not cfg.reconstructor_only:
+            # Cache every compact full-skill target once. Inputs are left-padded
+            # because StateSkillRNNTerminator compacts the valid suffix before
+            # pack_padded_sequence; outputs/targets are left-aligned.
+            max_steps = int(round(cfg.length_max))
+            self.terminator_state_sequences = []
+            self.terminator_progress_targets = []
+            self.terminator_end_targets = []
+            for state, length in zip(self.states, self.lengths, strict=True):
+                if length > max_steps:
+                    raise ValueError(
+                        f"Full-skill state sequence length {length} exceeds "
+                        f"length_max={max_steps}."
+                    )
+                padded_state = torch.zeros(max_steps, cfg.state_dim, dtype=torch.float32)
+                padded_state[-length:] = torch.from_numpy(
+                    state[:length, : cfg.state_dim].copy()
+                )
+                positions = np.arange(length, dtype=np.int64)
+                progress = torch.zeros(max_steps, dtype=torch.float32)
+                progress[:length] = torch.from_numpy(
+                    positions.astype(np.float32) / max(length - 1, 1)
+                )
+                termination = torch.zeros(max_steps, dtype=torch.float32)
+                termination[:length] = torch.from_numpy(
+                    self._termination_targets(length, positions)
+                )
+                self.terminator_state_sequences.append(padded_state)
+                self.terminator_progress_targets.append(progress)
+                self.terminator_end_targets.append(termination)
 
     def __len__(self) -> int:
         return len(self.ctrl)
@@ -2404,6 +2743,11 @@ class FSQTrajectoryDataset(Dataset):
 
     def _sample_indices(self, length: int) -> np.ndarray:
         """Uniformly sample M training timesteps; validation uses a deterministic linspace."""
+        if not getattr(self, "sampled_timestep_required", True):
+            # Oneshot reconstruction and full-sequence RNN termination consume
+            # no sampled timestep. Keep one placeholder row for the shared
+            # batch contract without invoking the RNG.
+            return np.zeros(1, dtype=np.int64)
         m = self.samples_per_skill
         if length < 1:
             raise ValueError(f"Skill length must be positive, got {length}.")
@@ -2515,7 +2859,14 @@ class FSQTrajectoryDataset(Dataset):
             "sample_index": torch.from_numpy(sample),
             "trajectory_index": torch.tensor(index, dtype=torch.long),
         }
-        if not self.cfg.reconstructor_only:
+        if self.terminator_state_sequences is not None:
+            item["terminator_state_sequence"] = self.terminator_state_sequences[index]
+            item["terminator_progress"] = self.terminator_progress_targets[index]
+            item["terminator_termination"] = self.terminator_end_targets[index]
+        elif (
+            not self.cfg.reconstructor_only
+            and self.cfg.terminator_input_space in {"image", "both"}
+        ):
             item["third"], item["wrist"] = self._sample_images(index, sample)
         if self.start_poses is not None:
             item["start_pose"] = torch.from_numpy(self.start_poses[index])
@@ -2570,24 +2921,51 @@ def fsq_reconstruction_loss(
         per_sample_action = (pred - target).square().mean(dim=(1, 2))
         action_loss = _per_trajectory_mean(per_sample_action, bsize, m)
 
-    if cfg.terminator_termination_only or cfg.reconstructor_only:
+    sequence_valid = None
+    if cfg.state_rnn_terminator and not cfg.reconstructor_only:
+        sequence_length = int(output["term_logits"].shape[1])
+        positions = torch.arange(
+            sequence_length, device=output["term_logits"].device
+        )[None]
+        sequence_valid = positions < batch["length"].to(positions.device)[:, None]
+
+    if not cfg.terminator_progress or cfg.reconstructor_only:
         progress_loss = torch.zeros((), device=pred.device, dtype=pred.dtype)
+    elif sequence_valid is not None:
+        progress_per = F.smooth_l1_loss(
+            output["progress"],
+            batch["terminator_progress"].to(output["progress"]),
+            reduction="none",
+        )
+        progress_loss = (
+            progress_per * sequence_valid.to(progress_per.dtype)
+        ).sum() / sequence_valid.sum().clamp_min(1)
     else:
         progress_per = F.smooth_l1_loss(
             output["progress"], batch["progress"].reshape(-1).to(output["progress"]), reduction="none"
         )
         progress_loss = _per_trajectory_mean(progress_per, bsize, m)
-    if cfg.reconstructor_only:
+    if cfg.reconstructor_only or not cfg.terminator_termination:
         end_loss = torch.zeros((), device=pred.device, dtype=pred.dtype)
     else:
         pos_weight = torch.as_tensor(cfg.end_pos_weight, device=output["term_logits"].device)
+        end_target = (
+            batch["terminator_termination"].to(output["term_logits"])
+            if sequence_valid is not None
+            else batch["termination"].reshape(-1).to(output["term_logits"])
+        )
         end_per = F.binary_cross_entropy_with_logits(
             output["term_logits"],
-            batch["termination"].reshape(-1).to(output["term_logits"]),
+            end_target,
             reduction="none",
             pos_weight=pos_weight,
         )
-        end_loss = _per_trajectory_mean(end_per, bsize, m)
+        end_loss = (
+            (end_per * sequence_valid.to(end_per.dtype)).sum()
+            / sequence_valid.sum().clamp_min(1)
+            if sequence_valid is not None
+            else _per_trajectory_mean(end_per, bsize, m)
+        )
     total = (
         cfg.action_loss_weight * action_loss
         + cfg.progress_loss_weight * progress_loss
@@ -2599,6 +2977,8 @@ def fsq_reconstruction_loss(
         "termination": end_loss.detach(),
         **ctrl_diag,
     }
+    if sequence_valid is not None:
+        metrics["terminator_mean_valid_length"] = sequence_valid.sum(dim=1).float().mean().detach()
     if getattr(cfg, "fsq_entropy", False) and output.get("u_cont") is not None:
         sample_entropy, dataset_entropy = fsq_entropy_terms(
             output["u_cont"],
@@ -2764,6 +3144,9 @@ def _code_assignment_stability(
     overlap = torch.bincount(
         pairs, minlength=codebook_size * codebook_size
     ).reshape(codebook_size, codebook_size)
+    # Validation-only dependency; no need to load SciPy while importing FSQ.
+    from scipy.optimize import linear_sum_assignment
+
     old_ids, new_ids = linear_sum_assignment(-overlap.numpy())
     matched = float(overlap[old_ids, new_ids].sum()) / previous.numel()
     return {
@@ -2803,6 +3186,23 @@ def train_spline_fsqae(
 ) -> SplineFSQAE:
     if not segments:
         raise ValueError("No skill trajectories were provided.")
+    sampled_timestep_required = (
+        (not cfg.terminator_only and cfg.reconstructor_arch == "chunk")
+        or (not cfg.reconstructor_only and not cfg.state_rnn_terminator)
+    )
+    if not sampled_timestep_required and cfg.samples_per_skill != 1:
+        requested_samples = cfg.samples_per_skill
+        cfg.samples_per_skill = 1
+        print(
+            "[FSQ-v3] samples_per_skill "
+            f"{requested_samples} -> effective 1: selected decoder objectives "
+            "do not use sampled timesteps"
+        )
+        if wandb_run is not None and hasattr(wandb_run, "config"):
+            wandb_run.config.update(
+                {"effective_samples_per_skill": 1},
+                allow_val_change=True,
+            )
     n_val = max(1, int(len(segments) * cfg.val_split))
     if len(metadata) == len(segments):
         def identity_hash(i: int) -> int:
@@ -2957,25 +3357,38 @@ def train_spline_fsqae(
                 f"checkpoint={resume_lr_schedule!r}, current={cfg.lr_schedule!r}. "
                 "Use a different fsq_exp for a new run."
             )
-        resume_termination_only = getattr(
-            resume_cfg, "terminator_termination_only", False
+        resume_objectives = (
+            bool(resume_cfg.terminator_progress),
+            bool(resume_cfg.terminator_termination),
         )
-        if resume_termination_only != cfg.terminator_termination_only:
+        current_objectives = (
+            bool(cfg.terminator_progress),
+            bool(cfg.terminator_termination),
+        )
+        if resume_objectives != current_objectives:
             raise ValueError(
                 "Cannot resume FSQ with a different terminator objective: "
-                f"checkpoint termination_only={resume_termination_only}, "
-                f"current={cfg.terminator_termination_only}. "
+                f"checkpoint(progress, termination)={resume_objectives}, "
+                f"current={current_objectives}. "
                 "Use a different fsq_exp for a new run."
             )
         resume_composition = (
             getattr(resume_cfg, "reconstructor_only", False),
             getattr(resume_cfg, "terminator_only", False),
+            getattr(resume_cfg, "terminator_input_space", "both"),
+            getattr(resume_cfg, "terminator_model", "default"),
         )
-        current_composition = (cfg.reconstructor_only, cfg.terminator_only)
+        current_composition = (
+            cfg.reconstructor_only,
+            cfg.terminator_only,
+            cfg.terminator_input_space,
+            cfg.terminator_model,
+        )
         if resume_composition != current_composition:
             raise ValueError(
                 "Cannot resume FSQ with a different model composition: checkpoint "
-                f"(reconstructor_only, terminator_only)={resume_composition}, "
+                "(reconstructor_only, terminator_only, input_space, terminator_model)="
+                f"{resume_composition}, "
                 f"current={current_composition}. Use a different fsq_exp for a new run."
             )
         model.load_state_dict(checkpoint["model_state"], strict=True)
@@ -3014,7 +3427,10 @@ def train_spline_fsqae(
             best_val = min(best_val, float(best_checkpoint.get("val_select", math.inf)))
             del best_checkpoint
         print(f"[FSQ-v3] resumed {resume_from} at epoch {start_epoch} (best select={best_val:.6f})")
-    elif model.terminator is not None:
+    elif (
+        model.terminator is not None
+        and cfg.terminator_input_space in {"image", "both"}
+    ):
         loaded_vision = initialize_terminator_vision_from_pi05(model.terminator, cfg.pi_base)
         if loaded_vision:
             print(f"[FSQ-v3] initialized {loaded_vision} SigLIP tensors from {cfg.pi_base}")
@@ -3117,6 +3533,7 @@ def train_spline_fsqae(
                 third=third,
                 wrist=wrist,
                 samples_per_skill=m,
+                terminator_state_sequence=moved.get("terminator_state_sequence"),
                 noise=noise,
                 time=time,
                 action_seq=moved.get("encoder_action_seq"),
@@ -3127,15 +3544,24 @@ def train_spline_fsqae(
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
             optimizer.step()
-        end_metrics = (
-            {}
-            if cfg.reconstructor_only
-            else end_signal_metrics(
+        if cfg.reconstructor_only or not cfg.terminator_termination:
+            end_metrics = {}
+        elif cfg.state_rnn_terminator:
+            positions = torch.arange(
+                output["term_logits"].shape[1], device=device
+            )[None]
+            valid = positions < moved["length"][:, None]
+            end_metrics = end_signal_metrics(
+                output["term_logits"].detach()[valid],
+                moved["terminator_termination"][valid],
+                cfg.end_threshold,
+            )
+        else:
+            end_metrics = end_signal_metrics(
                 output["term_logits"].detach(),
                 moved["termination"].reshape(-1),
                 cfg.end_threshold,
             )
-        )
         # One FSQ index per input skill is already produced by the encoder. Keep
         # it on-device so epoch-level codebook coverage costs only a boolean
         # scatter, not an additional encode pass or per-batch CPU synchronization.

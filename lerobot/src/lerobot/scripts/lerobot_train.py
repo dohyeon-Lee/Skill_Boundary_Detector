@@ -19,6 +19,7 @@ import json
 import logging
 import math
 import numbers
+import os
 import time
 from contextlib import nullcontext
 from pprint import pformat
@@ -33,7 +34,7 @@ from tqdm import tqdm
 from lerobot.configs import parser
 from lerobot.configs.train import TrainPipelineConfig
 from lerobot.datasets.factory import make_dataset
-from lerobot.datasets.sampler import EpisodeAwareSampler
+from lerobot.datasets.sampler import EpisodeAwareSampler, SkillEndpointSampler
 from lerobot.datasets.utils import cycle
 from lerobot.envs.factory import make_env, make_env_pre_post_processors
 from lerobot.envs.utils import close_envs
@@ -58,6 +59,36 @@ from lerobot.utils.utils import (
     init_logging,
     inside_slurm,
 )
+
+
+_INLINE_CUDA_GUARD_EXIT_CODE = 86
+
+
+def _run_inline_cuda_guard() -> None:
+    """Check CUDA inside the real trainer process, avoiding a duplicate import.
+
+    The Slurm wrapper opts in with ``LEROBOT_INLINE_CUDA_GUARD=1`` and handles
+    the marker after this process exits. Keeping requeue operations in the
+    wrapper preserves the existing node-exclusion behavior for both direct and
+    ``accelerate launch`` entrypoints.
+    """
+    if os.environ.get("LEROBOT_INLINE_CUDA_GUARD", "0") != "1":
+        return
+    if torch.cuda.is_available():
+        return
+
+    marker = os.environ.get("LEROBOT_CUDA_GUARD_FAILURE_MARKER", "")
+    if marker:
+        try:
+            with open(marker, "w", encoding="utf-8") as marker_file:
+                marker_file.write("torch.cuda.is_available()=false\n")
+        except OSError as error:
+            print(f"GPU GUARD: could not write failure marker {marker}: {error}")
+    print(
+        "GPU GUARD: torch.cuda.is_available() is false; refusing CPU fallback.",
+        flush=True,
+    )
+    raise SystemExit(_INLINE_CUDA_GUARD_EXIT_CODE)
 
 
 def update_policy(
@@ -675,6 +706,14 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
         )
         shuffle = False
         sampler = None
+    elif bool(getattr(cfg.policy, "state_full_skill_supervision", False)):
+        shuffle = False
+        sampler = SkillEndpointSampler(dataset, shuffle=True)
+        if is_main_process:
+            logging.info(
+                "Full-skill state supervision: sampling %d skill endpoints.",
+                len(sampler),
+            )
     elif hasattr(cfg.policy, "drop_n_last_frames"):
         shuffle = False
         sampler = EpisodeAwareSampler(
@@ -1088,6 +1127,7 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
 
 
 def main():
+    _run_inline_cuda_guard()
     register_third_party_plugins()
     train()
 

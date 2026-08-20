@@ -279,7 +279,11 @@ def build_settings(
         if selected_episode_upper_bound is None
         else min(workers_per_checkpoint, selected_episode_upper_bound)
     )
-    concurrent_jobs = min(requested_concurrency, len(artifacts) * worker_count)
+    # Clamp to the number of array tasks that will actually exist: one task now
+    # replays a chunk of checkpoints, so len(artifacts) overstates it.
+    checkpoints_per_job = max(1, int(get_value(config, "checkpoints_per_job", 4)))
+    chunk_count = -(-len(artifacts) // checkpoints_per_job)
+    concurrent_jobs = min(requested_concurrency, chunk_count * worker_count)
 
     run_name = artifact["fsq_eval_run_name"]
     epoch_tag = artifact["fsq_eval_epoch_tag"]
@@ -359,6 +363,27 @@ def build_settings(
         # covers the replay array, which needs no GPU at all (default: none).
         "eval_gres": str(_at(config, "slurm", "gres", "gpu:1")),
         "eval_replay_gres": str(_at(config, "slurm", "replay_gres", "") or ""),
+        # A GPU-free replay cannot use the GPU partitions: their QOS enforces a
+        # minimum of one GPU per job, so a zero-GPU request pends forever with
+        # reason QOSMinGRES. Send it to the CPU partition instead.
+        "eval_replay_partition": ",".join(
+            as_list(_at(config, "slurm", "replay_partition", "dell_cpu"))
+        ) or "dell_cpu",
+        "eval_replay_qos": str(_at(config, "slurm", "replay_qos", "cpu_qos")),
+        # The replay decodes two frames per occurrence and writes two PNGs; the
+        # 8 CPU / 64G defaults belong to the GPU encoding prepass. Asking for
+        # less lets far more tasks fit the small CPU partition at once.
+        "eval_replay_cpus": int(
+            _at(config, "slurm", "replay_cpus", _at(config, "slurm", "cpus", 8))
+        ),
+        "eval_replay_mem": str(
+            _at(config, "slurm", "replay_memory", _at(config, "slurm", "memory", "64G"))
+        ),
+        # Checkpoints replayed by ONE array task. Start-up (torch + lerobot
+        # imports) costs minutes while a checkpoint's replay costs seconds to a
+        # few minutes, so batching a few together is faster in wall clock AND
+        # wastes far fewer node-minutes than one task per checkpoint.
+        "eval_checkpoints_per_job": checkpoints_per_job,
         "eval_latents_time": str(_at(config, "slurm", "latents_time", "04:00:00")),
         "eval_cpus_per_task": int(_at(config, "slurm", "cpus", 8)),
         "eval_mem": str(_at(config, "slurm", "memory", "64G")),

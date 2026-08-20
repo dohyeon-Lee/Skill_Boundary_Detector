@@ -1,0 +1,69 @@
+# Skill predictor-only fine-tuning on a new dataset.
+#
+# Usually only the two blocks below need to change:
+#   1. dataset: the new SkillVLA dataset to fine-tune on
+#   2. warm_start.predictor_checkpoint: the already-trained predictor
+# Submit from this directory with:
+#   TERMINATOR_TRAIN_CONFIG="$PWD/predictor_ft_train_config.yaml" ./submit_train.sh
+#
+# The new dataset and the warm-start checkpoint must use the same FSQ levels
+# and predictor architecture. Relative paths resolve from project_root.
+
+dataset:
+  skillvla_root: skillvla_dataset
+  source: libero_10_full_5
+  run: FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal
+
+# Appended to the generated output name so this run never resumes or overwrites
+# the original predictor run by accident.
+run: {suffix: "predictor_ft_small"}
+
+warm_start:
+  # pi_base supplies the frozen base VLM weights first. The trained reader/head
+  # and LoRA tensors are then loaded on top from predictor_checkpoint.
+  pi_base: models/pi05_base
+  tokenizer: models/paligemma-3b-pt-224-tokenizer
+  predictor_checkpoint: outputs_filtered/skillVLA_terminator/bs16_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal/checkpoints/050000/pretrained_model
+
+# Fine-tune only the skill predictor. No terminator or action/VSA model is
+# constructed or optimized by this configuration.
+terminator: {train: false}
+image_only_terminator: {train: false}
+wrist_only_terminator: {train: false}
+state_only_terminator: {train: false}
+state_rnn_terminator: {train: false}
+
+# These architecture settings must match predictor_checkpoint. The defaults
+# below match the existing first-half predictor used by Stage 2.
+skill_predictor:
+  train: true
+  all_layers: true
+  lora:
+    enabled: true
+    targets: "q,k,v,o"
+    rank: 8
+    alpha: 16.0
+    dropout: 0.0
+  reader: {tokens: 4, depth: 2, heads: 8, deadzone_frac: 0.8}
+  token_access: {image: true, language: true}
+
+training:
+  dataloader: {batch_size: 8, workers: 8, gpus: 1}
+  optimizer:
+    base_lr: 2.5e-05
+    predictor_lr_scale: 1.0
+    predictor_lora_lr_scale: 10.0
+    grad_clip_norm: 1.0
+  gradient_checkpointing: true
+  schedule:
+    steps: 50000
+    lr_mode: warmup_constant
+    warmup_steps: 2500
+    lr_decay_steps: 30000
+    log_every: 100
+    save_every: 2500
+
+logging:
+  wandb: {enable: true, project: VLA_predictor_FT}
+
+slurm: {gres: "gpu:1", cpus: 12, memory: 128G, time: "48:00:00"}

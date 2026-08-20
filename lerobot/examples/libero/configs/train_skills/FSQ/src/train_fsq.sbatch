@@ -2,7 +2,7 @@
 # Inputs:
 #   skillset     : exact folder selected in fsq_config.yaml and validated against
 #                  its skillset_manifest.json before submission
-#   Images       : selected raw third+wrist frames, decoded live per batch
+#   Images       : selected raw frames only for image/both terminator input
 # Reference models:
 #   DINO model   : {project_root}/models/dinov3-vits16
 # Outputs:
@@ -30,10 +30,9 @@ SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 COMMON_SRC_DIR="${SUBMIT_DIR}/../src"
 CONFIG_PATH=${TRAIN_SKILLS_CONFIG:-${SUBMIT_DIR}/fsq_config.yaml}
 
-BOOTSTRAP_PYTHON="${SUBMIT_DIR}/../../../../../../.venv/bin/python"
-if [ ! -x "${BOOTSTRAP_PYTHON}" ]; then
-  BOOTSTRAP_PYTHON=python3
-fi
+# Config resolution is stdlib-only (with a built-in YAML fallback), so do not
+# traverse the project .venv until the actual training process starts.
+BOOTSTRAP_PYTHON=/usr/bin/python3
 
 if [ -n "${TRAIN_DATA:-}" ]; then
   RESOLVED_SETTINGS="$("${BOOTSTRAP_PYTHON}" "${COMMON_SRC_DIR}/train_skills_config.py" --config "${CONFIG_PATH}" --dataset "${TRAIN_DATA}" --shell)"
@@ -43,7 +42,17 @@ fi
 eval "${RESOLVED_SETTINGS}"
 
 cd "${LEROBOT_ROOT}"
-source "${PROJECT_ROOT}/.venv/bin/activate"
+SHARED_VENV="$(readlink -f "${PROJECT_ROOT}/.venv")"
+TRAIN_VENV="${SHARED_VENV}"
+source "${SUBMIT_DIR}/src/fsq_node_local_venv.sh"
+if [ -n "${FSQ_VENV_ARCHIVE:-}" ]; then
+  if STAGED_VENV="$(fsq_stage_venv_on_node "${FSQ_VENV_ARCHIVE}" "${SHARED_VENV}")"; then
+    TRAIN_VENV="${STAGED_VENV}"
+  fi
+fi
+TRAIN_PYTHON="${TRAIN_VENV}/bin/python"
+export VIRTUAL_ENV="${TRAIN_VENV}"
+export PATH="${TRAIN_VENV}/bin:${PATH}"
 source "${PROJECT_ROOT}/lerobot/examples/libero/configs/runtime_env.sh"
 export LD_LIBRARY_PATH=""
 # Reduce CUDA fragmentation: activation tensor sizes vary per batch (max skill length).
@@ -54,18 +63,22 @@ echo "Node       : ${SLURMD_NODENAME:-local}"
 echo "Inputs     : ${FSQ_INPUTS_DIR}"
 echo "Output     : ${FSQ_OUTPUT_DIR}"
 echo "HF cache   : ${HF_HOME}"
+echo "Python     : ${TRAIN_PYTHON}"
 echo "Grad ckpt  : ${FSQ_GRADIENT_CHECKPOINTING}"
 nvidia-smi
 
-# Fail over to another GPU instead of silently running on CPU.
+# Fail over to another GPU instead of silently running on CPU. The Python
+# entrypoint reuses its first torch import, avoiding a duplicate cold import.
 source "${PROJECT_ROOT}/lerobot/examples/libero/configs/gpu_guard.sh"
-require_cuda_or_requeue "${PROJECT_ROOT}/.venv/bin/python"
+prepare_inline_cuda_guard
 
 if [ ! -d "${SKILLSET_DIR}/skills" ]; then
   echo "Skillset not found: ${SKILLSET_DIR}/skills" >&2
   exit 1
 fi
-if [ ! -d "${RAW_DATASET_DIR}/videos" ]; then
+if { [ "${FSQ_DECODER_TERMINATOR_PROGRESS}" = "true" ] || [ "${FSQ_DECODER_TERMINATOR_TERMINATION}" = "true" ]; } \
+  && [ "${FSQ_TERMINATOR_INPUT_SPACE}" != "state" ] \
+  && [ ! -d "${RAW_DATASET_DIR}/videos" ]; then
   echo "Raw dataset videos not found: ${RAW_DATASET_DIR}/videos" >&2
   exit 1
 fi
@@ -97,12 +110,14 @@ cat > "${FSQ_OUTPUT_DIR}/fsq_meta.json" <<JSON
   "skillset_boundary_threshold_scale": ${SKILLSET_BOUNDARY_THRESHOLD_SCALE},
   "skillset_global_threshold_source": "${SKILLSET_GLOBAL_THRESHOLD_SOURCE}",
   "skillset_output_suffix": "${SKILLSET_OUTPUT_SUFFIX}",
-  "terminator_arch": "${FSQ_TERMINATOR_ARCH}",
+  "decoder_reconstructor": ${FSQ_DECODER_RECONSTRUCTOR},
+  "decoder_terminator_progress": ${FSQ_DECODER_TERMINATOR_PROGRESS},
+  "decoder_terminator_termination": ${FSQ_DECODER_TERMINATOR_TERMINATION},
+  "terminator_input_space": "${FSQ_TERMINATOR_INPUT_SPACE}",
+  "terminator_arch": "${FSQ_TERMINATOR_MODEL}",
+  "terminator_default_arch": "${FSQ_TERMINATOR_DEFAULT_ARCH}",
   "terminator_layers": ${FSQ_TERMINATOR_LAYERS},
   "terminator_heads": ${FSQ_TERMINATOR_HEADS},
-  "terminator_termination_only": ${FSQ_TERMINATOR_TERMINATION_ONLY},
-  "reconstructor_only": ${FSQ_RECONSTRUCTOR_ONLY},
-  "terminator_only": ${FSQ_TERMINATOR_ONLY},
   "skill_cond_mode": "${FSQ_SKILL_COND_MODE}",
   "gradient_checkpointing": ${FSQ_GRADIENT_CHECKPOINTING},
   "lr_schedule": "${FSQ_LR_SCHEDULE}",
@@ -140,11 +155,6 @@ if [ "${FSQ_SAVE_BEST_MODEL:-false}" = "true" ]; then
   SAVE_BEST_ARG=(--save_best_model)
 fi
 
-ENC_LENGTH_TOKEN_ARG=(--encoder_length_token)
-if [ "${FSQ_ENCODER_LENGTH_TOKEN:-true}" = "false" ]; then
-  ENC_LENGTH_TOKEN_ARG=(--no-encoder_length_token)
-fi
-
 RECON_START_STATE_ARG=(--reconstructor_start_state)
 if [ "${FSQ_RECONSTRUCTOR_START_STATE:-true}" = "false" ]; then
   RECON_START_STATE_ARG=(--no-reconstructor_start_state)
@@ -155,19 +165,19 @@ if [ "${FSQ_ENTROPY:-false}" = "true" ]; then
   FSQ_ENTROPY_ARG=(--fsq_entropy)
 fi
 
-TERMINATION_ONLY_ARG=(--no-terminator_termination_only)
-if [ "${FSQ_TERMINATOR_TERMINATION_ONLY:-false}" = "true" ]; then
-  TERMINATION_ONLY_ARG=(--terminator_termination_only)
+DECODER_RECONSTRUCTOR_ARG=(--no-decoder_reconstructor)
+if [ "${FSQ_DECODER_RECONSTRUCTOR}" = "true" ]; then
+  DECODER_RECONSTRUCTOR_ARG=(--decoder_reconstructor)
 fi
 
-RECONSTRUCTOR_ONLY_ARG=(--no-reconstructor_only)
-if [ "${FSQ_RECONSTRUCTOR_ONLY:-false}" = "true" ]; then
-  RECONSTRUCTOR_ONLY_ARG=(--reconstructor_only)
+DECODER_PROGRESS_ARG=(--no-decoder_terminator_progress)
+if [ "${FSQ_DECODER_TERMINATOR_PROGRESS}" = "true" ]; then
+  DECODER_PROGRESS_ARG=(--decoder_terminator_progress)
 fi
 
-TERMINATOR_ONLY_ARG=(--no-terminator_only)
-if [ "${FSQ_TERMINATOR_ONLY:-false}" = "true" ]; then
-  TERMINATOR_ONLY_ARG=(--terminator_only)
+DECODER_TERMINATION_ARG=(--no-decoder_terminator_termination)
+if [ "${FSQ_DECODER_TERMINATOR_TERMINATION}" = "true" ]; then
+  DECODER_TERMINATION_ARG=(--decoder_terminator_termination)
 fi
 
 # best-val SELECTION override: pass each val_select weight only if set in config (empty → omit → the
@@ -177,8 +187,9 @@ if [ -n "${FSQ_VAL_SELECT_ACTION_WEIGHT:-}" ];   then VAL_SELECT_ARGS+=(--val_se
 if [ -n "${FSQ_VAL_SELECT_PROGRESS_WEIGHT:-}" ]; then VAL_SELECT_ARGS+=(--val_select_progress_weight "${FSQ_VAL_SELECT_PROGRESS_WEIGHT}"); fi
 if [ -n "${FSQ_VAL_SELECT_END_WEIGHT:-}" ];      then VAL_SELECT_ARGS+=(--val_select_end_weight      "${FSQ_VAL_SELECT_END_WEIGHT}"); fi
 
+TRAIN_STATUS=0
 PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
-  python -u examples/libero/train_FSQ.py \
+  "${TRAIN_PYTHON}" -u examples/libero/train_FSQ.py \
     --skills_dir              "${SKILLSET_DIR}/skills" \
     --raw_dataset_dir         "${RAW_DATASET_DIR}" \
     --output_dir              "${FSQ_OUTPUT_DIR}" \
@@ -192,17 +203,18 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     --n_control               "${FSQ_N_CONTROL}" \
     --encoder_input_mode      "${FSQ_ENCODER_INPUT_MODE}" \
     --encoder_arch            "${FSQ_ENCODER_ARCH}" \
-    "${ENC_LENGTH_TOKEN_ARG[@]}" \
     "${FSQ_ENTROPY_ARG[@]}" \
     "${RECON_START_STATE_ARG[@]}" \
     --reconstructor_arch      "${FSQ_RECONSTRUCTOR_ARCH}" \
     --entropy_conf_weight     "${FSQ_ENTROPY_CONF_WEIGHT}" \
     --entropy_div_weight      "${FSQ_ENTROPY_DIV_WEIGHT}" \
     --entropy_inv_temperature "${FSQ_ENTROPY_INV_TEMPERATURE}" \
-    --terminator_arch         "${FSQ_TERMINATOR_ARCH}" \
-    "${TERMINATION_ONLY_ARG[@]}" \
-    "${RECONSTRUCTOR_ONLY_ARG[@]}" \
-    "${TERMINATOR_ONLY_ARG[@]}" \
+    "${DECODER_RECONSTRUCTOR_ARG[@]}" \
+    "${DECODER_PROGRESS_ARG[@]}" \
+    "${DECODER_TERMINATION_ARG[@]}" \
+    --terminator_input_space  "${FSQ_TERMINATOR_INPUT_SPACE}" \
+    --terminator_model        "${FSQ_TERMINATOR_MODEL}" \
+    --visual_terminator_arch  "${FSQ_TERMINATOR_DEFAULT_ARCH}" \
     --image_encoder_layers    "${FSQ_TERMINATOR_LAYERS}" \
     --image_encoder_heads     "${FSQ_TERMINATOR_HEADS}" \
     --vision_backbone         "${FSQ_VISION_BACKBONE}" \
@@ -230,6 +242,11 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     --checkpoint_every        "${FSQ_CHECKPOINT_EVERY}" \
     --wandb_project           "${FSQ_WANDB_PROJECT}" \
     --wandb_run_name          "${FSQ_RUN_NAME}" \
-    "${RESUME_ARG[@]}"
+    "${RESUME_ARG[@]}" || TRAIN_STATUS=$?
+
+handle_inline_cuda_guard_exit "${TRAIN_STATUS}"
+if [ "${TRAIN_STATUS}" -ne 0 ]; then
+  exit "${TRAIN_STATUS}"
+fi
 
 echo "DONE ${FSQ_RUN_NAME}"

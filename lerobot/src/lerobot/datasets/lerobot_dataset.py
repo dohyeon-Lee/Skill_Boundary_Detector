@@ -467,6 +467,14 @@ class LeRobotDataset(torch.utils.data.Dataset):
         """
         return self.hf_dataset.select_columns(column_names)
 
+    def cache_delta_columns(self, column_names: list[str]) -> None:
+        """Preload small numeric history columns for fast delta-window reads."""
+        reader = self._ensure_reader()
+        if reader.hf_dataset is None:
+            reader.load_and_activate()
+        for key in column_names:
+            reader.cache_delta_column(key)
+
     def get_raw_item(self, idx) -> dict:
         """Get a raw frame without image transforms applied.
 

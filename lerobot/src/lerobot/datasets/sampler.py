@@ -84,3 +84,29 @@ class EpisodeAwareSampler:
 
     def __len__(self) -> int:
         return len(self.indices)
+
+
+class SkillEndpointSampler:
+    """Sample one endpoint-anchored item per segmented skill occurrence."""
+
+    def __init__(self, dataset, *, shuffle: bool = True) -> None:
+        if "skill_de" not in dataset.hf_dataset.column_names:
+            raise ValueError("Full-skill sequence sampling requires a skill_de column.")
+        self.indices = [
+            index
+            for index, distance_to_end in enumerate(dataset.hf_dataset["skill_de"])
+            if int(distance_to_end) == 0
+        ]
+        if not self.indices:
+            raise ValueError("Dataset contains no skill endpoint frames (skill_de == 0).")
+        self.shuffle = bool(shuffle)
+
+    def __iter__(self) -> Iterator[int]:
+        if self.shuffle:
+            for index in torch.randperm(len(self.indices)):
+                yield self.indices[int(index)]
+        else:
+            yield from self.indices
+
+    def __len__(self) -> int:
+        return len(self.indices)

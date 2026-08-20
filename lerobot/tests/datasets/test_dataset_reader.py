@@ -15,6 +15,8 @@
 # limitations under the License.
 """Contract tests for DatasetReader."""
 
+import torch
+
 from lerobot.datasets.dataset_reader import DatasetReader
 from lerobot.datasets.video_utils import get_safe_default_codec
 
@@ -115,6 +117,31 @@ def test_get_item_values_are_correct(tmp_path, lerobot_dataset_factory):
 
     assert item_0["index"].item() == 0
     assert item_0["episode_index"].item() == 0
+
+
+def test_cached_delta_column_matches_huggingface_history_query(
+    tmp_path,
+    lerobot_dataset_factory,
+):
+    fps = 30
+    dataset = lerobot_dataset_factory(
+        root=tmp_path / "ds",
+        total_episodes=1,
+        total_frames=10,
+        use_videos=False,
+        delta_timestamps={
+            "state": [-2 / fps, -1 / fps, 0.0],
+        },
+    )
+    expected = dataset[5]["state"].clone()
+
+    cached = dataset.reader.cache_delta_column("state")
+    actual = dataset[5]["state"]
+
+    assert dataset.reader.cached_delta_columns == ("state",)
+    assert cached.shape[0] == len(dataset)
+    assert cached.is_contiguous()
+    torch.testing.assert_close(actual, expected)
 
 
 # ── Transforms ───────────────────────────────────────────────────────

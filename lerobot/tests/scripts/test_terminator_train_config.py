@@ -24,6 +24,8 @@ def _config(
     predictor: bool,
     image_terminator: bool = False,
     wrist_terminator: bool = False,
+    state_terminator: bool = False,
+    state_rnn_terminator: bool = False,
 ) -> dict:
     run = "FSQ345_test"
     dataset_dir = (
@@ -68,6 +70,24 @@ def _config(
         "terminator": {"train": terminator},
         "image_only_terminator": {"train": image_terminator},
         "wrist_only_terminator": {"train": wrist_terminator},
+        "state_only_terminator": {
+            "train": state_terminator,
+            "hidden_dim": 32,
+            "num_layers": 2,
+            "balance_positive_negative": False,
+            "termination_only": False,
+        },
+        "state_rnn_terminator": {
+            "train": state_rnn_terminator,
+            "sequence_length": 8,
+            "full_skill_sequence": False,
+            "input_dim": 24,
+            "hidden_dim": 32,
+            "num_layers": 1,
+            "dropout": 0.0,
+            "balance_positive_negative": False,
+            "termination_only": False,
+        },
         "skill_predictor": {
             "train": predictor,
             "lora": {"enabled": True},
@@ -164,3 +184,61 @@ def test_all_yaml_switches_false_is_rejected(tmp_path):
                 predictor=False,
             )
         )
+
+
+@pytest.mark.parametrize(
+    ("state_terminator", "state_rnn_terminator", "mode"),
+    [
+        (True, False, "state_terminator"),
+        (False, True, "state_rnn_terminator"),
+        (True, True, "state_terminator_state_rnn_terminator"),
+    ],
+)
+def test_state_terminator_yaml_switches(
+    tmp_path,
+    state_terminator,
+    state_rnn_terminator,
+    mode,
+):
+    config = _config(
+        tmp_path,
+        terminator=False,
+        predictor=False,
+        state_terminator=state_terminator,
+        state_rnn_terminator=state_rnn_terminator,
+    )
+
+    settings = MODULE.build_settings(config)
+
+    assert settings["training_mode"] == mode
+    assert settings["train_state_only_terminator"] is state_terminator
+    assert settings["train_state_rnn_terminator"] is state_rnn_terminator
+    assert settings["state_only_terminator_hidden_dim"] == 32
+    assert settings["state_rnn_terminator_sequence_length"] == 8
+    assert settings["state_rnn_terminator_full_skill_sequence"] is False
+    assert settings["state_rnn_terminator_input_dim"] == 24
+    assert settings["state_rnn_terminator_hidden_dim"] == 32
+    assert settings["state_only_terminator_termination_only"] is False
+    assert settings["state_rnn_terminator_termination_only"] is False
+    assert settings["state_only_terminator_balance_positive_negative"] is False
+    assert settings["state_rnn_terminator_balance_positive_negative"] is False
+
+
+def test_state_terminators_do_not_require_fsq_checkpoint(tmp_path):
+    config = _config(
+        tmp_path,
+        terminator=False,
+        predictor=False,
+        state_terminator=True,
+        state_rnn_terminator=True,
+    )
+    fsq_path = (
+        tmp_path
+        / "dataset/skillvla_dataset/source/FSQ345_test/FSQ.pt"
+    )
+    fsq_path.unlink()
+
+    settings = MODULE.build_settings(config)
+
+    assert settings["train_state_only_terminator"] is True
+    assert settings["train_state_rnn_terminator"] is True

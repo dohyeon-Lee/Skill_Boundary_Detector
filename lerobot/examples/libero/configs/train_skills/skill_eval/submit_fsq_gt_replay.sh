@@ -31,9 +31,15 @@ for RUN_NAME in "${RUN_NAMES[@]}"; do
   )"
   eval "${SETTINGS}"
   read -r -a FSQ_CHECKPOINTS <<< "${FSQ_EVAL_CHECKPOINTS}"
-  TOTAL_JOBS=$((FSQ_CHECKPOINT_COUNT * EVAL_WORKER_COUNT))
+  # One array task replays a CHUNK of checkpoints in a single process, so the
+  # multi-minute torch/lerobot import is paid once per chunk instead of once per
+  # checkpoint.
+  CHUNK="${EVAL_CHECKPOINTS_PER_JOB}"
+  CHUNK_COUNT=$(( (FSQ_CHECKPOINT_COUNT + CHUNK - 1) / CHUNK ))
+  TOTAL_JOBS=$((CHUNK_COUNT * EVAL_WORKER_COUNT))
   export FSQ_GT_REPLAY_CHECKPOINTS="${FSQ_EVAL_CHECKPOINTS}"
   export FSQ_GT_REPLAY_WORKER_COUNT="${EVAL_WORKER_COUNT}"
+  export FSQ_GT_REPLAY_CHUNK="${CHUNK}"
   export FSQ_GT_REPLAY_RUN="${RUN_NAME}"
 
   # Encoding a checkpoint's skill latents is the only GPU work here, so it goes
@@ -65,12 +71,19 @@ for RUN_NAME in "${RUN_NAMES[@]}"; do
     echo "  latents  : all present, no GPU needed"
   fi
 
+  # A GPU-free replay uses the CPU partition/QOS; asking a GPU QOS for zero GPUs
+  # pends forever as QOSMinGRES.
+  if [ -n "${EVAL_REPLAY_GRES}" ]; then
+    REPLAY_PARTITION="${EVAL_PARTITION}"; REPLAY_QOS="${EVAL_QOS}"
+  else
+    REPLAY_PARTITION="${EVAL_REPLAY_PARTITION}"; REPLAY_QOS="${EVAL_REPLAY_QOS}"
+  fi
   SBATCH_ARGS=(
     --job-name=FSQ_GT
-    --partition="${EVAL_PARTITION}"
-    --qos="${EVAL_QOS}"
-    --cpus-per-task="${EVAL_CPUS_PER_TASK}"
-    --mem="${EVAL_MEM}"
+    --partition="${REPLAY_PARTITION}"
+    --qos="${REPLAY_QOS}"
+    --cpus-per-task="${EVAL_REPLAY_CPUS}"
+    --mem="${EVAL_REPLAY_MEM}"
     --time="${EVAL_TIME}"
   )
   [ -z "${EVAL_REPLAY_GRES}" ] || SBATCH_ARGS+=(--gres="${EVAL_REPLAY_GRES}")
@@ -83,7 +96,7 @@ for RUN_NAME in "${RUN_NAMES[@]}"; do
     echo "  skipped  : not trained yet -> ${FSQ_SKIPPED_CHECKPOINTS}"
   echo "  tasks    : ${TARGET_TASK} ${TASK_IDS}"
   echo "  episodes : ${EPISODES_PER_TASK}/task (${EPISODE_SELECTION})"
-  echo "  jobs     : ${FSQ_CHECKPOINT_COUNT} checkpoints x ${EVAL_WORKER_COUNT} workers"
+  echo "  jobs     : ${FSQ_CHECKPOINT_COUNT} checkpoints / ${CHUNK} per task x ${EVAL_WORKER_COUNT} workers = ${TOTAL_JOBS}"
   echo "  replay   : ${EVAL_REPLAY_GRES:-CPU-only (no GPU requested)}"
   echo "  slots    : at most ${EVAL_MAX_CONCURRENT} concurrent jobs"
   echo "  output   : ${EVAL_COLLECTION_DIR}/index.html"

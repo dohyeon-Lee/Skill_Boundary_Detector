@@ -83,6 +83,7 @@ def test_fsq_selects_skillset_by_folders_and_reads_manifest(tmp_path: Path) -> N
     config["fsq_val_every"] = 25
     config["fsq_save_best_model"] = False
     config["fsq_lr_schedule"] = "constant"
+    config["fsq_state_rnn_terminator"] = True
     manifest_path = _write_manifest(tmp_path, config)
 
     settings = train_settings(config)
@@ -102,6 +103,7 @@ def test_fsq_selects_skillset_by_folders_and_reads_manifest(tmp_path: Path) -> N
     assert settings["fsq_val_every"] == 25
     assert settings["fsq_save_best_model"] is False
     assert settings["fsq_lr_schedule"] == "constant"
+    assert settings["fsq_state_rnn_terminator"] is True
     assert settings["fsq_run_name"] == (
         "demo_full_full_state_obs20_std_episodemean_80p_trial_fsq333"
     )
@@ -121,6 +123,35 @@ def test_fsq_lr_schedule_rejects_unknown_value(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match=r"fsq_lr_schedule must be cosine\|constant"):
         train_settings(config)
+
+
+def test_fsq_clean_model_options_resolve_to_internal_contract(tmp_path: Path) -> None:
+    config = _minimal_fsq_config(tmp_path)
+    config.update(
+        fsq_encoder_input_mode="raw",
+        fsq_encoder_arch="spline",
+        fsq_decoder_reconstructor=True,
+        fsq_decoder_terminator_progress=False,
+        fsq_decoder_terminator_termination=True,
+        fsq_terminator_input_space="state",
+        fsq_terminator_arch="rnn",
+        fsq_terminator_default_arch="small",
+        fsq_reconstructor_arch="skill",
+    )
+    _write_manifest(tmp_path, config)
+
+    settings = train_settings(config)
+
+    assert settings["fsq_encoder_input_mode"] == "raw_state"
+    assert settings["fsq_encoder_length_token"] is False
+    assert settings["fsq_reconstructor_arch"] == "oneshot"
+    assert settings["fsq_decoder_reconstructor"] is True
+    assert settings["fsq_decoder_terminator_progress"] is False
+    assert settings["fsq_decoder_terminator_termination"] is True
+    assert settings["fsq_terminator_input_space"] == "state"
+    assert settings["fsq_terminator_model"] == "rnn"
+    assert settings["fsq_terminator_termination_only"] is True
+    assert settings["fsq_state_rnn_terminator"] is True
 
 
 def test_fsq_job_reresolution_uses_exported_folder_name(

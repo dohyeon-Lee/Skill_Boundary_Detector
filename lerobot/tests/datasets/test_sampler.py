@@ -14,6 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import logging
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -22,7 +23,7 @@ from datasets import Dataset
 from lerobot.datasets.io_utils import (
     hf_transform_to_torch,
 )
-from lerobot.datasets.sampler import EpisodeAwareSampler
+from lerobot.datasets.sampler import EpisodeAwareSampler, SkillEndpointSampler
 
 
 def calculate_episode_data_index(hf_dataset: Dataset) -> dict[str, torch.Tensor]:
@@ -134,3 +135,15 @@ def test_partial_episode_drop_warns(caplog):
     # Episode 0 is skipped (1 frame, drop 1), Episode 1 keeps frames 2-5
     assert sampler.indices == [2, 3, 4, 5]
     assert "Episode 0" in caplog.text
+
+
+def test_skill_endpoint_sampler_selects_one_anchor_per_skill():
+    dataset = SimpleNamespace(
+        hf_dataset=Dataset.from_dict({"skill_de": [2, 1, 0, 3, 2, 1, 0]})
+    )
+
+    sampler = SkillEndpointSampler(dataset, shuffle=False)
+
+    assert sampler.indices == [2, 6]
+    assert list(sampler) == [2, 6]
+    assert len(sampler) == 2

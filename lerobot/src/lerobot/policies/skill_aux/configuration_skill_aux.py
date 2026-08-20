@@ -55,6 +55,28 @@ class SkillAuxConfig(PreTrainedConfig):
     wrist_only_terminator_end_pos_weight: float = 1.0
     wrist_only_terminator_termination_only: bool = False
 
+    train_state_only_terminator: bool = False
+    state_only_terminator_hidden_dim: int = 64
+    state_only_terminator_num_layers: int = 2
+    state_only_terminator_lr_scale: float = 1.0
+    state_only_terminator_end_target_sigma: float = 2.0
+    state_only_terminator_end_pos_weight: float = 1.0
+    state_only_terminator_balance_positive_negative: bool = True
+    state_only_terminator_termination_only: bool = True
+
+    train_state_rnn_terminator: bool = False
+    state_rnn_terminator_sequence_length: int = 16
+    state_rnn_terminator_full_skill_sequence: bool = True
+    state_rnn_terminator_input_dim: int = 64
+    state_rnn_terminator_hidden_dim: int = 64
+    state_rnn_terminator_num_layers: int = 1
+    state_rnn_terminator_dropout: float = 0.0
+    state_rnn_terminator_lr_scale: float = 1.0
+    state_rnn_terminator_end_target_sigma: float = 2.0
+    state_rnn_terminator_end_pos_weight: float = 1.0
+    state_rnn_terminator_balance_positive_negative: bool = True
+    state_rnn_terminator_termination_only: bool = True
+
     train_skill_predictor: bool = False
     skill_predictor_checkpoint_path: str | None = None
     skill_predictor_lr_scale: float = 1.0
@@ -102,11 +124,14 @@ class SkillAuxConfig(PreTrainedConfig):
             self.train_terminator
             or self.train_image_only_terminator
             or self.train_wrist_only_terminator
+            or self.train_state_only_terminator
+            or self.train_state_rnn_terminator
             or self.train_skill_predictor
         ):
             raise ValueError(
                 "Auxiliary-only training needs terminator.train, "
                 "image_only_terminator.train, wrist_only_terminator.train, "
+                "state_only_terminator.train, state_rnn_terminator.train, "
                 "and/or skill_predictor.train to be true."
             )
         if self.dtype not in {"float32", "bfloat16"}:
@@ -157,6 +182,42 @@ class SkillAuxConfig(PreTrainedConfig):
                 raise ValueError(
                     "wrist_only_terminator_end_pos_weight must be positive."
                 )
+        if self.train_state_only_terminator:
+            if min(
+                self.state_only_terminator_hidden_dim,
+                self.state_only_terminator_num_layers,
+            ) <= 0:
+                raise ValueError("State-only terminator dimensions must be positive.")
+            if self.state_only_terminator_lr_scale <= 0.0:
+                raise ValueError("state_only_terminator_lr_scale must be positive.")
+            if self.state_only_terminator_end_target_sigma < 0.0:
+                raise ValueError(
+                    "state_only_terminator_end_target_sigma must be non-negative."
+                )
+            if self.state_only_terminator_end_pos_weight <= 0.0:
+                raise ValueError(
+                    "state_only_terminator_end_pos_weight must be positive."
+                )
+        if self.train_state_rnn_terminator:
+            if min(
+                self.state_rnn_terminator_sequence_length,
+                self.state_rnn_terminator_input_dim,
+                self.state_rnn_terminator_hidden_dim,
+                self.state_rnn_terminator_num_layers,
+            ) <= 0:
+                raise ValueError("State-RNN terminator dimensions must be positive.")
+            if not 0.0 <= self.state_rnn_terminator_dropout < 1.0:
+                raise ValueError("state_rnn_terminator_dropout must be in [0, 1).")
+            if self.state_rnn_terminator_lr_scale <= 0.0:
+                raise ValueError("state_rnn_terminator_lr_scale must be positive.")
+            if self.state_rnn_terminator_end_target_sigma < 0.0:
+                raise ValueError(
+                    "state_rnn_terminator_end_target_sigma must be non-negative."
+                )
+            if self.state_rnn_terminator_end_pos_weight <= 0.0:
+                raise ValueError(
+                    "state_rnn_terminator_end_pos_weight must be positive."
+                )
         if self.train_skill_predictor:
             if self.skill_predictor_vlm_variant != "gemma_2b":
                 raise ValueError("The auxiliary predictor VLM must use gemma_2b.")
@@ -201,6 +262,29 @@ class SkillAuxConfig(PreTrainedConfig):
     def uses_skill_predictor(self) -> bool:
         return self.train_skill_predictor
 
+    @property
+    def state_only_auxiliary(self) -> bool:
+        """Whether training can skip decoding every camera stream."""
+        has_state_model = (
+            self.train_state_only_terminator or self.train_state_rnn_terminator
+        )
+        has_visual_model = (
+            self.train_terminator
+            or self.train_image_only_terminator
+            or self.train_wrist_only_terminator
+            or self.train_skill_predictor
+        )
+        return has_state_model and not has_visual_model
+
+    @property
+    def state_full_skill_supervision(self) -> bool:
+        """Whether the dataloader can sample endpoint-anchored full skills."""
+        return (
+            self.train_state_rnn_terminator
+            and self.state_rnn_terminator_full_skill_sequence
+            and self.state_only_auxiliary
+        )
+
     def validate_features(self) -> None:
         if self.input_features is None:
             self.input_features = {}
@@ -235,8 +319,10 @@ class SkillAuxConfig(PreTrainedConfig):
         )
 
     @property
-    def observation_delta_indices(self) -> None:
-        return None
+    def observation_delta_indices(self) -> list[int] | None:
+        if not self.train_state_rnn_terminator:
+            return None
+        return list(range(1 - self.state_rnn_terminator_sequence_length, 1))
 
     @property
     def action_delta_indices(self) -> None:

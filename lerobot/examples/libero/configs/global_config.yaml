@@ -61,7 +61,7 @@ train_partition:
 
 
 
-train_qos: base_qos # pro6000_qos | base_qos | big_qos
+train_qos: big_qos # pro6000_qos | base_qos | big_qos
 train_nodelist: ""
 train_exclude_nodes:
   - node19
@@ -79,8 +79,14 @@ train_exclude_nodes:
   - cs-gpu-01
   - node24
   - node39 
-
-  # - node23
+  # CPU-only jobs hang before their first log line here and die at the time
+  # limit; gpu_guard cannot catch it because those jobs never touch CUDA.
+  # 2026-08-20: every fsq_gt_replay task landing on these two hung (6/6), while
+  # all 24 on other nodes finished.
+  - node17
+  - node49
+  - node12
+  - node23
   # - node12
   # - node37
   # - node34

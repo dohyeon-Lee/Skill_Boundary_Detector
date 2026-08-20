@@ -1,14 +1,44 @@
 import math
 
+import pytest
 import torch
 
 from lerobot.scripts.lerobot_train import (
     _WINDOWED_POLICY_MODEL_TYPES,
     _WindowedPolicyMetrics,
     _finite_scalar_metrics,
+    _run_inline_cuda_guard,
     _split_namespaced_metrics,
     _sparse_debug_metric_groups,
 )
+
+
+def test_inline_cuda_guard_reuses_trainer_torch_import(
+    tmp_path, monkeypatch
+) -> None:
+    marker = tmp_path / "cuda.failed"
+    monkeypatch.setenv("LEROBOT_INLINE_CUDA_GUARD", "1")
+    monkeypatch.setenv("LEROBOT_CUDA_GUARD_FAILURE_MARKER", str(marker))
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+
+    _run_inline_cuda_guard()
+
+    assert not marker.exists()
+
+
+def test_inline_cuda_guard_marks_failure_for_slurm_wrapper(
+    tmp_path, monkeypatch
+) -> None:
+    marker = tmp_path / "cuda.failed"
+    monkeypatch.setenv("LEROBOT_INLINE_CUDA_GUARD", "1")
+    monkeypatch.setenv("LEROBOT_CUDA_GUARD_FAILURE_MARKER", str(marker))
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+
+    with pytest.raises(SystemExit) as error:
+        _run_inline_cuda_guard()
+
+    assert error.value.code == 86
+    assert marker.read_text() == "torch.cuda.is_available()=false\n"
 
 
 def test_skill_vla_uses_windowed_policy_metrics() -> None:

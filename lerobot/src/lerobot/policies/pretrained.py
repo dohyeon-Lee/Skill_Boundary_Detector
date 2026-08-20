@@ -37,6 +37,38 @@ from lerobot.utils.hub import HubMixin
 T = TypeVar("T", bound="PreTrainedPolicy")
 
 
+class _StateDictModel:
+    """Minimal model facade used to hand a repaired state dict to safetensors."""
+
+    def __init__(self, state_dict: dict[str, Tensor]) -> None:
+        self._state_dict = state_dict
+
+    def state_dict(self) -> dict[str, Tensor]:
+        # safetensors removes tied aliases in-place, so return a fresh mapping.
+        return self._state_dict.copy()
+
+
+def _save_model_as_safetensor(model: nn.Module, filename: str) -> None:
+    """Save parameters after detaching tensors that only view larger storages."""
+    state_dict = model.state_dict()
+    for name, tensor in state_dict.items():
+        if tensor.device.type == "meta" or tensor.numel() == 0:
+            continue
+        try:
+            storage = tensor.untyped_storage()
+        except (NotImplementedError, RuntimeError):
+            continue
+        owns_storage = (
+            tensor.data_ptr() == storage.data_ptr()
+            and tensor.numel() * tensor.element_size() == storage.nbytes()
+        )
+        if not owns_storage:
+            # CUDA RNN packing creates exactly this kind of view. Cloning only
+            # affected tensors avoids copying large unrelated policy weights.
+            state_dict[name] = tensor.detach().clone().contiguous()
+    save_model_as_safetensor(_StateDictModel(state_dict), filename)
+
+
 class ActionSelectKwargs(TypedDict, total=False):
     noise: Tensor | None
 
@@ -69,7 +101,7 @@ class PreTrainedPolicy(nn.Module, HubMixin, abc.ABC):
     def _save_pretrained(self, save_directory: Path) -> None:
         self.config._save_pretrained(save_directory)
         model_to_save = self.module if hasattr(self, "module") else self
-        save_model_as_safetensor(model_to_save, str(save_directory / SAFETENSORS_SINGLE_FILE))
+        _save_model_as_safetensor(model_to_save, str(save_directory / SAFETENSORS_SINGLE_FILE))
 
     @classmethod
     def from_pretrained(

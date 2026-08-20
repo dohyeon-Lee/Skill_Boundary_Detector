@@ -59,6 +59,15 @@ def resolve_delta_timestamps(
         if key == ACTION and cfg.action_delta_indices is not None:
             delta_timestamps[key] = [i / ds_meta.fps for i in cfg.action_delta_indices]
         if key.startswith(OBS_PREFIX) and cfg.observation_delta_indices is not None:
+            # The auxiliary recurrent terminator needs only a proprio history.
+            # Keep camera observations at the current frame so it can still be
+            # co-trained with any visual auxiliary without decoding T videos.
+            if (
+                getattr(cfg, "type", None) == "skill_aux"
+                and getattr(cfg, "train_state_rnn_terminator", False)
+                and key != OBS_STATE
+            ):
+                continue
             # DINO / state-only modes condition on observation.state only — skip windowing other obs.
             vision_off = getattr(cfg, "use_dino_features", False) or getattr(cfg, "state_only", False)
             if vision_off and key != OBS_STATE:
@@ -93,7 +102,11 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
         )
         delta_timestamps = resolve_delta_timestamps(cfg.policy, ds_meta)
         # DINO uses precomputed tokens, state-only uses no vision → skip loading video frames.
-        _no_video = getattr(cfg.policy, "use_dino_features", False) or getattr(cfg.policy, "state_only", False)
+        _no_video = (
+            getattr(cfg.policy, "use_dino_features", False)
+            or getattr(cfg.policy, "state_only", False)
+            or getattr(cfg.policy, "state_only_auxiliary", False)
+        )
         video_keys_to_load = [] if _no_video else None
         if not cfg.dataset.streaming:
             # SkillExpert/SkillVLA add the (jittered) skill-start image/state + skill code per item.
@@ -155,6 +168,16 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
                 tolerance_s=cfg.tolerance_s,
                 video_keys_to_load=video_keys_to_load,
             )
+            if (
+                isinstance(dataset, LeRobotDataset)
+                and getattr(cfg.policy, "type", None) == "skill_aux"
+                and getattr(cfg.policy, "train_state_rnn_terminator", False)
+            ):
+                dataset.cache_delta_columns([OBS_STATE])
+                logging.info(
+                    "Cached %s in RAM for auxiliary RNN history windows ",
+                    OBS_STATE,
+                )
         else:
             dataset = StreamingLeRobotDataset(
                 cfg.dataset.repo_id,

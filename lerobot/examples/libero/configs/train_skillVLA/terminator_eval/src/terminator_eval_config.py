@@ -89,26 +89,31 @@ def _resolve_external_model(
                 f"policy's FSQ.pt and accepts no checkpoint fields; unknown={unknown}."
             )
         return fsq_path, "fsq_initial"
-    if variant not in {"checkpoint", "trained", "state_image"}:
-        raise ValueError(
-            "external_skill_model.variant must be checkpoint|fsq_initial, "
-            f"got {raw.get('variant')!r}."
-        )
+    canonical_variant = (
+        "state_image"
+        if variant in {"checkpoint", "trained"}
+        else _normalize_display_variant(variant)
+    )
     unknown = sorted(set(raw) - {"variant", "group", "model_dir", "checkpoint"})
     if unknown:
         raise ValueError(
             "external_skill_model supports variant/group/model_dir/checkpoint; "
             f"unknown={unknown}."
         )
+    default_group = (
+        "skillVLA_stage1"
+        if canonical_variant == "state_image"
+        else "skillVLA_terminator"
+    )
     return (
         _model_checkpoint_path(
             outputs_root=outputs_root,
-            group=str(raw.get("group", "skillVLA_stage1") or "skillVLA_stage1"),
+            group=str(raw.get("group", default_group) or default_group),
             model_dir=raw.get("model_dir"),
             checkpoint=raw.get("checkpoint"),
             field="external_skill_model",
         ),
-        "checkpoint",
+        "checkpoint" if canonical_variant == "state_image" else canonical_variant,
     )
 
 
@@ -123,6 +128,14 @@ def _normalize_display_variant(value: object) -> str:
         "wrist": "wrist_only",
         "wrist_only": "wrist_only",
         "wrist-only": "wrist_only",
+        "proprio": "state_only",
+        "state_only": "state_only",
+        "state-only": "state_only",
+        "state_only_terminator": "state_only",
+        "rnn": "state_rnn",
+        "state_rnn": "state_rnn",
+        "state-rnn": "state_rnn",
+        "state_rnn_terminator": "state_rnn",
         "fsq": "fsq_initial",
         "fsq_base": "fsq_initial",
         "fsq_initial": "fsq_initial",
@@ -131,7 +144,7 @@ def _normalize_display_variant(value: object) -> str:
     if normalized is None:
         raise ValueError(
             "terminator_models[].variant must be "
-            "state_image|image_only|wrist_only|fsq_initial, "
+            "state_image|image_only|wrist_only|state_only|state_rnn|fsq_initial, "
             f"got {value!r}."
         )
     return normalized
@@ -162,6 +175,8 @@ def _resolve_display_models(
         "state_image": "STATE",
         "image_only": "IMAGE",
         "wrist_only": "WRIST",
+        "state_only": "STATE_ONLY",
+        "state_rnn": "STATE_RNN",
         "fsq_initial": "FSQ_INIT",
     }
     for index, entry in enumerate(entries):
@@ -258,22 +273,33 @@ def _validate_display_model(model: dict[str, str], *, target_policy: dict) -> No
     config_path = checkpoint / "config.json"
     weights_path = checkpoint / "model.safetensors"
     if not config_path.is_file():
-        raise FileNotFoundError(f"External wrist terminator config not found: {config_path}")
+        raise FileNotFoundError(
+            f"External {variant} terminator config not found: {config_path}"
+        )
     if not weights_path.is_file():
-        raise FileNotFoundError(f"External wrist terminator weights not found: {weights_path}")
+        raise FileNotFoundError(
+            f"External {variant} terminator weights not found: {weights_path}"
+        )
     source = json.loads(config_path.read_text())
     if source.get("type") != "skill_aux":
         raise ValueError(
-            "External wrist-only terminator must come from policy.type=skill_aux, "
+            f"External {variant} terminator must come from policy.type=skill_aux, "
             f"got {source.get('type')!r} at {checkpoint}."
         )
-    if not as_bool(source.get("train_wrist_only_terminator", False)):
+    train_field = {
+        "wrist_only": "train_wrist_only_terminator",
+        "state_only": "train_state_only_terminator",
+        "state_rnn": "train_state_rnn_terminator",
+    }.get(variant)
+    if train_field is None:
+        raise ValueError(f"Unsupported auxiliary terminator variant: {variant!r}.")
+    if not as_bool(source.get(train_field, False)):
         raise ValueError(
-            f"External checkpoint has no trained wrist-only terminator: {checkpoint}"
+            f"External checkpoint has no trained {variant} terminator: {checkpoint}"
         )
     if source.get("skill_fsq_levels") != target_policy.get("skill_fsq_levels"):
         raise ValueError(
-            "External wrist-only terminator FSQ mismatch: "
+            f"External {variant} terminator FSQ mismatch: "
             f"terminator={source.get('skill_fsq_levels')!r}, "
             f"target={target_policy.get('skill_fsq_levels')!r}"
         )
@@ -336,9 +362,17 @@ def build_settings(config: dict) -> dict:
                 raise FileNotFoundError(
                     f"Raw FSQ terminator checkpoint not found: {external_skill_model}"
                 )
-        else:
+        elif external_skill_model_variant == "checkpoint":
             _validate_external_terminator(
                 external_skill_model,
+                target_policy=contract["policy"],
+            )
+        else:
+            _validate_display_model(
+                {
+                    "variant": external_skill_model_variant,
+                    "path": str(external_skill_model),
+                },
                 target_policy=contract["policy"],
             )
     for display_model in display_terminator_models:

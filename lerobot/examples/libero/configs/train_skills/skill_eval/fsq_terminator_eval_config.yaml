@@ -1,0 +1,61 @@
+# GT-skill probe of FSQ co-trained terminators.
+#
+# Every listed model is scored against the SAME GT skills: the skillset fixes
+# each skill's start and end frame, so no policy rollout and no MAIN terminator
+# are involved -- the question is only "when does this terminator fire relative
+# to the known end?". Entries must therefore share one FSQ skillset; the config
+# resolver refuses the run otherwise.
+#
+# The terminator variant (state+image / image-only / state MLP / state RNN) is
+# read from each checkpoint's own cfg, so nothing about it is configured here.
+
+output_name: "fsq_terminator_probe_nodiv"
+
+# Checkpoints are named explicitly, one per row -- no sweeping.
+# Only FSQ v3 runs have a terminator module to probe. FSQ-original runs keep
+# their termination inside the rnn decoder, so the resolver rejects them here.
+terminator_models:
+  - label: term_entH
+    run_name: libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_pos_term_LR6_raw_entH
+    checkpoint: "1000"
+  - label: termfull_entH
+    run_name: libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_pos_termfull_LR6_raw_entH
+    checkpoint: "1000"
+  - label: termfull_stateonly
+    run_name: libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_pos_termfull_LR6_raw_withentH_stateonly
+    checkpoint: "1000"
+  - label: termfull_stateonly_nodiv
+    run_name: libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_pos_termfull_LR6_raw_withentH_stateonly
+    checkpoint: "600"
+
+target_task: libero_90
+# Which numbering task_ids uses. The skillset numbers tasks by the SOURCE
+# DATASET's meta/tasks.parquet, while terminator_eval / fsq_gt_replay with an
+# episode-exact map number them by the LIBERO suite -- and a filtered dataset
+# drops tasks, so the two disagree (libero_90_full_full has 73 tasks; suite id 1
+# is dataset id 26). Set "suite" to paste the same list those tools use; the run
+# then logs the translation it applied.
+task_id_space: suite        # dataset | suite
+# Task ids, or "all" for every task the skillset covers.
+task_ids: [0, 3] # , 4, 5, 6]
+episodes_per_task: 3
+episode_selection: first       # first | random
+episode_ids: []                # optional exact global episode ids
+seed: 42
+
+# Firing rule: the first frame whose termination probability crosses this.
+end_threshold: 0.5
+
+# Rendering cost knob. Every sampled skill is scored, but only this many per
+# codebook entry get a GT video with the terminator bars drawn on it.
+max_plot_entries: 0             # 0 = every active entry
+max_plot_samples: 3
+batch_size: 64
+
+video:
+  frame_stride: 1
+  fps: 10
+
+resume: true
+eval_num_gpus: 3
+slurm: {gres: "gpu:1", cpus: 8, memory: 64G, time: "01:00:00"}

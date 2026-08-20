@@ -1,14 +1,15 @@
 # Auxiliary-only training
 
 This directory trains the Stage-1 FSQ terminator, image-only terminator,
-wrist-only terminator, and skill predictor without constructing or optimizing
-an action/VSA model.
+wrist-only terminator, two proprio-only terminators, and skill predictor
+without constructing or optimizing an action/VSA model.
 
 Select the training target in `terminator_train_config.yaml`:
 
 `terminator.train`, `image_only_terminator.train`,
-`wrist_only_terminator.train`, and `skill_predictor.train` are independent
-booleans. Any non-empty combination is valid; setting all four to `false` is a
+`wrist_only_terminator.train`, `state_only_terminator.train`,
+`state_rnn_terminator.train`, and `skill_predictor.train` are independent
+booleans. Any non-empty combination is valid; setting all six to `false` is a
 configuration error.
 
 The normal state+image terminator supports both FSQ implementations. A joint
@@ -31,6 +32,26 @@ image only. It has no state or top-camera input and, like the image-only model,
 starts every terminator-specific tensor from scratch while keeping the original
 DINO encoder frozen. Its checkpoint prefix is `model.fsq_wrist_term_train.*`.
 
+The state-only model concatenates the normalized current proprio state with
+the three-dimensional FSQ latent and passes it through a small MLP. The
+state-RNN model applies the same conditioning at every step of an
+endpoint-anchored full-skill sequence and predicts with a vanilla tanh RNN.
+Every valid timestep receives its own termination loss (and progress loss when
+enabled). With `full_skill_sequence: true`, samples are anchored at skill
+endpoints and `sequence_length` must cover the longest skill. With
+`full_skill_sequence: false`, current frames are sampled normally from the
+whole dataset and only the preceding `sequence_length`-frame rolling window is
+used; every valid step in that window is still supervised. The optional
+`balance_positive_negative` switch averages positive and negative timestep
+losses separately; `false` uses one ordinary masked BCE mean. Online inference
+still consumes one current state plus the previous hidden state and returns the
+next hidden state; pass `None` when a rollout or skill begins. Both models start
+from scratch, require no image/DINO tensors, and do not warm-start any weights
+from `FSQ.pt`. Each state model has an independent `termination_only` switch.
+Its default `true` preserves the original termination-only parameter set and
+objective; `false` adds a progress head on the shared MLP feature or RNN hidden
+state and jointly optimizes smooth-L1 progress loss.
+
 Submit with:
 
 ```bash
@@ -43,11 +64,12 @@ does not perform a redundant cold Python/Torch import. Multi-GPU runs retain
 
 Runs use the separate `VLA_terminator` W&B project by default. Metrics are
 reported under `train_terminator/*`, `train_image_terminator/*`,
-`train_wrist_terminator/*`, and `train_skill_predictor/*`; action/VSA loss and
-optimizer panels are not produced. Checkpoints use `model.fsq_term_train.*`,
-`model.fsq_image_term_train.*`, `model.fsq_wrist_term_train.*`, and
-`model.skill_predictor.*` prefixes. Wrist-only training is wired here; its
-Stage-1 evaluator variant is intentionally a separate integration step.
+`train_wrist_terminator/*`, `train_state_terminator/*`,
+`train_state_rnn_terminator/*`, and `train_skill_predictor/*`; action/VSA loss
+and optimizer panels are not produced. Checkpoints use
+`model.fsq_term_train.*`, `model.fsq_image_term_train.*`,
+`model.fsq_wrist_term_train.*`, `model.fsq_state_term_train.*`,
+`model.fsq_state_rnn_term_train.*`, and `model.skill_predictor.*` prefixes.
 
 For image-only Stage-1 evaluation, point `external_skill_model` at this
 checkpoint, set `advance_mode: external`, and set

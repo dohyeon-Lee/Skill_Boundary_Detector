@@ -2836,6 +2836,9 @@ def eval_policy_all(
 ) -> dict:
     """
     Evaluate a nested `envs` dict: {task_group: {task_id: vec_env}}.
+    A task entry may also be a zero-arg factory returning the vec env; it is then
+    created right before its task runs and closed right after, so only one task's
+    simulator (and its GPU render contexts) exists at a time.
     on_task_done_cmd: shell command run (best-effort) AFTER EACH task's videos are written — used to
     stitch the multi-model side-by-side grid task-by-task (progressive, like stage1) instead of once
     at job end. "{task_id}"/"{task_group}" placeholders are substituted. Sequential path only.
@@ -2919,11 +2922,26 @@ def eval_policy_all(
         task_descriptions=task_descriptions,
     )
 
+    def _run_task(task_group, task_id, env):
+        # env may be a zero-arg factory: create the vec env now, close it after
+        # the task so its simulator memory is released before the next one.
+        live = env() if callable(env) else env
+        try:
+            return task_runner(task_group, task_id, live)
+        finally:
+            if callable(env):
+                try:
+                    live.close()
+                except Exception as exc:  # noqa: BLE001
+                    logging.warning(
+                        "Failed to close lazy env %s/%s: %s", task_group, task_id, exc
+                    )
+
     if max_parallel_tasks <= 1:
         # sequential path (single accumulator path on the main thread)
         # NOTE: keeping a single-threaded accumulator avoids concurrent list appends or locks
         for task_group, task_id, env in tasks:
-            tg, tid, metrics = task_runner(task_group, task_id, env)
+            tg, tid, metrics = _run_task(task_group, task_id, env)
             _accumulate_to(tg, metrics)
             per_task_infos.append({"task_group": tg, "task_id": tid, "metrics": metrics})
             if on_task_done_cmd:   # progressive per-task stitch (best-effort; never fail the eval)
@@ -2937,7 +2955,7 @@ def eval_policy_all(
         with cf.ThreadPoolExecutor(max_workers=max_parallel_tasks) as executor:
             fut2meta = {}
             for task_group, task_id, env in tasks:
-                fut = executor.submit(task_runner, task_group, task_id, env)
+                fut = executor.submit(_run_task, task_group, task_id, env)
                 fut2meta[fut] = (task_group, task_id)
             for fut in cf.as_completed(fut2meta):
                 tg, tid, metrics = fut.result()

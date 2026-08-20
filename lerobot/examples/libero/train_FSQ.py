@@ -1,9 +1,8 @@
-"""Train the v3 FSQ tokenizer, transformer reconstructor, and query terminator jointly.
+"""Train the v3 FSQ tokenizer and selected decoder objectives jointly.
 
-The terminator reads live third-person and wrist frames only at the M timesteps
-sampled for each trajectory. Its DINO/SigLIP frontend is the same unpooled visual
-contract used by Stage-1 cond. There is no DINO precompute, warm pass, token cache,
-or camera-selection mode in the FSQ path.
+The terminator input is configurable as state, image, or both. Visual modes read
+live third-person and wrist frames at sampled timesteps; the state RNN instead
+supervises the complete skill sequence and never constructs a video reader.
 
 Usage:
     python examples/libero/train_FSQ.py \
@@ -19,17 +18,31 @@ Data requirements:
 
 from __future__ import annotations
 
-import sys
 import json
+import os
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
 import torch
-import tyro
 
 sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+
+
+def _enforce_inline_cuda_guard() -> None:
+    """Reuse this process's torch import for the Slurm CUDA preflight."""
+    if os.environ.get("LEROBOT_INLINE_CUDA_GUARD") != "1":
+        return
+    if torch.cuda.is_available():
+        return
+
+    marker = os.environ.get("LEROBOT_CUDA_GUARD_FAILURE_MARKER")
+    if marker:
+        Path(marker).touch()
+    print("GPU GUARD: training process cannot initialize CUDA.", file=sys.stderr)
+    raise SystemExit(86)
 
 
 # ── Args ───────────────────────────────────────────────────────────────────────
@@ -40,7 +53,8 @@ class Args:
     skills_dir: str = ""
     """Directory (recursively searched) for per-skill .npz files."""
     raw_dataset_dir: str = ""
-    """Raw LeRobot dataset. Selected M timesteps load both camera frames live."""
+    """Raw LeRobot dataset. State-RNN mode reads only normalization metadata;
+    the visual terminator additionally decodes selected camera frames live."""
     output_dir: str = ""
     """Output directory. Defaults to parent of skills_dir."""
 
@@ -52,10 +66,9 @@ class Args:
     n_control: int = 30
     spline_degree: int = 3
     encoder_input_mode: str = "zero_grounded"
-    """zero_grounded | raw_state | optimal (zero-grounded + one absolute start-EEF token)."""
-    encoder_length_token: bool = True
-    """False: drop the spline encoder's length token — duration reaches z only
-    through motion shape (probe ported from FSQ-original)."""
+    """raw | zero_grounded | optimal (raw is normalized internally to raw_state)."""
+    encoder_length_token: bool = False
+    """Fixed false by the standard YAML path; retained only for direct CLI compatibility."""
     encoder_arch: str = "spline"
     """spline: fixed control-point tokens. action_seq: variable-length ACTION
     sequence transformer (no spline codec / grounding / length-token choices)."""
@@ -65,22 +78,20 @@ class Args:
     """False: reconstructor drops the skill-start-state token — the action chunk
     becomes a pure (z, progress) lookup."""
     reconstructor_arch: str = "chunk"
-    """chunk: per-timestep action chunks (default). oneshot: FSQ-original-style
+    """chunk: per-timestep action chunks. skill/oneshot: FSQ-original-style
     full ctrl-grid reconstruction once per trajectory (M applies to terminator only)."""
     entropy_conf_weight: float = 0.1
     entropy_div_weight: float = 0.1
     entropy_inv_temperature: float = 10.0
-    terminator_arch: str = "small"
-    """small: lightweight query transformer; cond: Stage-1-cond-compatible Gemma."""
-    terminator_termination_only: bool = False
-    """Drop the progress objective: the terminator trains and predicts only termination
-    (progress output is fixed to zero). Checkpoint shapes stay unchanged."""
-    reconstructor_only: bool = False
-    """Train only encoder+FSQ+reconstructor: no terminator is built, no video frames
-    are decoded, and the progress/termination losses are dropped."""
-    terminator_only: bool = False
-    """Train only encoder+FSQ+terminator: no reconstructor is built and the action
-    loss is dropped; progress/termination alone drive the encoder and codebook."""
+    decoder_reconstructor: bool = True
+    decoder_terminator_progress: bool = True
+    decoder_terminator_termination: bool = True
+    terminator_input_space: str = "both"
+    """state | image (third+wrist) | both."""
+    terminator_model: str = "default"
+    """default | rnn. The RNN currently supports state input only."""
+    visual_terminator_arch: str = "small"
+    """small | cond; used only by the default image/both terminator."""
     vision_backbone: str = "dino"
     """dino or siglip; shared by third-person and wrist images."""
     freeze_vision_encoder: bool = True
@@ -244,8 +255,46 @@ def main(args: Args) -> None:
     segments, dec_states, dec_targets, metadata = load_skill_files(skills_dir)
 
     if not args.raw_dataset_dir:
-        raise ValueError("--raw_dataset_dir is required (LeRobot videos + metadata).")
-    attach_episode_offsets(args.raw_dataset_dir, metadata)
+        raise ValueError("--raw_dataset_dir is required for dataset normalization metadata.")
+    args.encoder_input_mode = {
+        "raw": "raw_state",
+        "raw_state": "raw_state",
+        "zero_grounded": "zero_grounded",
+        "optimal": "optimal",
+    }.get(args.encoder_input_mode, args.encoder_input_mode)
+    args.reconstructor_arch = {
+        "chunk": "chunk",
+        "skill": "oneshot",
+        "oneshot": "oneshot",
+    }.get(args.reconstructor_arch, args.reconstructor_arch)
+    terminator_enabled = (
+        args.decoder_terminator_progress or args.decoder_terminator_termination
+    )
+    if not args.decoder_reconstructor and not terminator_enabled:
+        raise ValueError("At least one decoder output must be enabled.")
+    if args.terminator_input_space not in {"state", "image", "both"}:
+        raise ValueError("--terminator_input_space must be state|image|both.")
+    if args.terminator_model not in {"default", "rnn"}:
+        raise ValueError("--terminator_model must be default|rnn.")
+    if (
+        terminator_enabled
+        and args.terminator_model == "rnn"
+        and args.terminator_input_space != "state"
+    ):
+        raise ValueError("The RNN terminator currently supports state input only.")
+
+    reconstructor_only = args.decoder_reconstructor and not terminator_enabled
+    terminator_only = not args.decoder_reconstructor and terminator_enabled
+    state_rnn_terminator = terminator_enabled and args.terminator_model == "rnn"
+    terminator_termination_only = (
+        args.decoder_terminator_termination
+        and not args.decoder_terminator_progress
+    )
+    uses_visual_terminator = (
+        terminator_enabled and args.terminator_input_space in {"image", "both"}
+    )
+    if uses_visual_terminator:
+        attach_episode_offsets(args.raw_dataset_dir, metadata)
 
     if args.encoder_input_mode not in {"zero_grounded", "raw_state", "optimal"}:
         raise ValueError(
@@ -255,7 +304,9 @@ def main(args: Args) -> None:
     if args.encoder_arch not in {"spline", "action_seq"}:
         raise ValueError(f"--encoder_arch must be spline|action_seq, got {args.encoder_arch!r}.")
     if args.reconstructor_arch not in {"chunk", "oneshot"}:
-        raise ValueError(f"--reconstructor_arch must be chunk|oneshot, got {args.reconstructor_arch!r}.")
+        raise ValueError(
+            f"--reconstructor_arch must be chunk|skill, got {args.reconstructor_arch!r}."
+        )
     print(
         f"[FSQ] encoder arch: {args.encoder_arch}, length token: {args.encoder_length_token}, "
         f"fsq_entropy: {args.fsq_entropy}"
@@ -378,10 +429,15 @@ def main(args: Args) -> None:
         max_action_dim=args.max_action_dim,
         skill_cond_mode=args.skill_cond_mode,
         pi_base=args.pi_base,
-        terminator_arch=args.terminator_arch,
-        terminator_termination_only=args.terminator_termination_only,
-        reconstructor_only=args.reconstructor_only,
-        terminator_only=args.terminator_only,
+        terminator_arch=args.visual_terminator_arch,
+        terminator_input_space=args.terminator_input_space,
+        terminator_model=args.terminator_model,
+        terminator_progress=args.decoder_terminator_progress,
+        terminator_termination=args.decoder_terminator_termination,
+        terminator_termination_only=terminator_termination_only,
+        reconstructor_only=reconstructor_only,
+        terminator_only=terminator_only,
+        state_rnn_terminator=state_rnn_terminator,
         vision_backbone=args.vision_backbone,
         freeze_vision_encoder=args.freeze_vision_encoder,
         dino_model_path=args.dino_model_path,
@@ -456,4 +512,10 @@ def main(args: Args) -> None:
 
 
 if __name__ == "__main__":
+    _enforce_inline_cuda_guard()
+
+    # CLI parsing is needed only after CUDA is known to work. Keeping it here
+    # also shortens the bad-node/requeue path.
+    import tyro
+
     main(tyro.cli(Args))

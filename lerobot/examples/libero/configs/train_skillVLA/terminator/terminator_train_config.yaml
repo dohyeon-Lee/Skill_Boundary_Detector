@@ -4,7 +4,7 @@ dataset:
   run: FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal
 
 # Optional label appended to the generated run/output name.
-run: {suffix: "terminator_termonly"}
+run: {suffix: "terminator_w3_s2_vis"}
 
 warm_start:
   # Used only when skill_predictor.train=true.
@@ -13,18 +13,18 @@ warm_start:
 
 terminator:
   train: true
-  freeze_vision: true
+  freeze_vision: false
   end_target_sigma: 2.0
-  end_pos_weight: 1.0
+  end_pos_weight: 3.0
   # true: drop the progress head from both the output and the loss;
   # train the module purely as a boundary detector.
   termination_only: true
 
 image_only_terminator:
-  train: true
+  train: false
   freeze_vision: true
-  end_target_sigma: 2.0
-  end_pos_weight: 1.0
+  end_target_sigma: 0.0
+  end_pos_weight: 3.0
   # true: drop the progress head from both the output and the loss;
   # train the module purely as a boundary detector.
   termination_only: true
@@ -37,6 +37,40 @@ wrist_only_terminator:
   # true: drop the progress head from both the output and the loss;
   # train the module purely as a boundary detector.
   termination_only: false
+
+# Current normalized proprio + FSQ skill latent -> small MLP -> termination.
+# This model is initialized from scratch and uses no image/DINO/FSQ weights.
+state_only_terminator:
+  train: false
+  hidden_dim: 64
+  num_layers: 2
+  end_target_sigma: 2.0
+  end_pos_weight: 1.0
+  # false: use the ordinary mean BCE over every supervised timestep.
+  balance_positive_negative: false
+  # false: jointly train an additional progress head.
+  termination_only: true
+
+# Proprio sequence + FSQ skill latent -> vanilla RNN -> per-timestep termination.
+# At inference it consumes one current state and returns an explicit hidden state.
+state_rnn_terminator:
+  train: false
+  # true: endpoint-anchored full-skill sequences (must cover the longest skill).
+  # false: random rolling windows ending at arbitrary dataset frames.
+  # full_skill_sequence: true
+  # sequence_length: 192
+  full_skill_sequence: false
+  sequence_length: 16
+  input_dim: 64
+  hidden_dim: 64
+  num_layers: 1
+  dropout: 0.0
+  end_target_sigma: 2.0
+  end_pos_weight: 1.0
+  # false: use the ordinary mean BCE over every valid sequence timestep.
+  balance_positive_negative: true
+  # false: jointly train an additional progress head.
+  termination_only: true
 
 skill_predictor:
   train: false
@@ -51,24 +85,26 @@ skill_predictor:
   token_access: {image: true, language: true}
 
 training:
-  # dataloader: {batch_size: 32, workers: 8, gpus: 1}
-  dataloader: {batch_size: 256, workers: 12, gpus: 1}
+  dataloader: {batch_size: 32, workers: 8, gpus: 1}
+  # dataloader: {batch_size: 256, workers: 12, gpus: 1}
   optimizer:
     base_lr: 2.5e-05
     terminator_lr_scale: 1.0
     image_only_terminator_lr_scale: 1.0
     wrist_only_terminator_lr_scale: 1.0
+    state_only_terminator_lr_scale: 1.0
+    state_rnn_terminator_lr_scale: 1.0
     predictor_lr_scale: 1.0
     predictor_lora_lr_scale: 10.0
     grad_clip_norm: 1.0
   gradient_checkpointing: false
   schedule:
-    steps: 30000
+    steps: 100000
     lr_mode: warmup_constant
     warmup_steps: 2500
-    lr_decay_steps: 30000
+    lr_decay_steps: 50000
     log_every: 100
-    save_every: 1000
+    save_every: 5000
 
 logging:
   # Kept separate from Stage-1 action-model runs.

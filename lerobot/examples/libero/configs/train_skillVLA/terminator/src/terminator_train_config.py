@@ -148,16 +148,25 @@ def build_settings(config: dict) -> dict:
     train_wrist_terminator = as_bool(
         _at(config, "wrist_only_terminator", "train", default=False)
     )
+    train_state_terminator = as_bool(
+        _at(config, "state_only_terminator", "train", default=False)
+    )
+    train_state_rnn_terminator = as_bool(
+        _at(config, "state_rnn_terminator", "train", default=False)
+    )
     train_predictor = as_bool(_at(config, "skill_predictor", "train", default=False))
     if not (
         train_terminator
         or train_image_terminator
         or train_wrist_terminator
+        or train_state_terminator
+        or train_state_rnn_terminator
         or train_predictor
     ):
         raise ValueError(
             "Set terminator.train, image_only_terminator.train, "
-            "wrist_only_terminator.train, and/or skill_predictor.train to true; "
+            "wrist_only_terminator.train, state_only_terminator.train, "
+            "state_rnn_terminator.train, and/or skill_predictor.train to true; "
             "all false is empty."
         )
     enabled = []
@@ -167,6 +176,10 @@ def build_settings(config: dict) -> dict:
         enabled.append("image_terminator")
     if train_wrist_terminator:
         enabled.append("wrist_terminator")
+    if train_state_terminator:
+        enabled.append("state_terminator")
+    if train_state_rnn_terminator:
+        enabled.append("state_rnn_terminator")
     if train_predictor:
         enabled.append("predictor")
     mode = "_".join(enabled)
@@ -249,6 +262,8 @@ def build_settings(config: dict) -> dict:
         "train_terminator": train_terminator,
         "train_image_only_terminator": train_image_terminator,
         "train_wrist_only_terminator": train_wrist_terminator,
+        "train_state_only_terminator": train_state_terminator,
+        "train_state_rnn_terminator": train_state_rnn_terminator,
         "train_skill_predictor": train_predictor,
         "training_mode": mode,
         "skill_fsq_levels": "[" + ",".join(str(level) for level in dataset["levels"]) + "]",
@@ -291,6 +306,64 @@ def build_settings(config: dict) -> dict:
         "wrist_only_terminator_termination_only": as_bool(
             _at(config, "wrist_only_terminator", "termination_only", default=False)
         ),
+        "state_only_terminator_hidden_dim": int(
+            _at(config, "state_only_terminator", "hidden_dim", default=64)
+        ),
+        "state_only_terminator_num_layers": int(
+            _at(config, "state_only_terminator", "num_layers", default=2)
+        ),
+        "state_only_terminator_end_target_sigma": float(
+            _at(config, "state_only_terminator", "end_target_sigma", default=2.0)
+        ),
+        "state_only_terminator_end_pos_weight": float(
+            _at(config, "state_only_terminator", "end_pos_weight", default=1.0)
+        ),
+        "state_only_terminator_balance_positive_negative": as_bool(
+            _at(
+                config,
+                "state_only_terminator",
+                "balance_positive_negative",
+                default=True,
+            )
+        ),
+        "state_only_terminator_termination_only": as_bool(
+            _at(config, "state_only_terminator", "termination_only", default=True)
+        ),
+        "state_rnn_terminator_sequence_length": int(
+            _at(config, "state_rnn_terminator", "sequence_length", default=16)
+        ),
+        "state_rnn_terminator_full_skill_sequence": as_bool(
+            _at(config, "state_rnn_terminator", "full_skill_sequence", default=True)
+        ),
+        "state_rnn_terminator_input_dim": int(
+            _at(config, "state_rnn_terminator", "input_dim", default=64)
+        ),
+        "state_rnn_terminator_hidden_dim": int(
+            _at(config, "state_rnn_terminator", "hidden_dim", default=64)
+        ),
+        "state_rnn_terminator_num_layers": int(
+            _at(config, "state_rnn_terminator", "num_layers", default=1)
+        ),
+        "state_rnn_terminator_dropout": float(
+            _at(config, "state_rnn_terminator", "dropout", default=0.0)
+        ),
+        "state_rnn_terminator_end_target_sigma": float(
+            _at(config, "state_rnn_terminator", "end_target_sigma", default=2.0)
+        ),
+        "state_rnn_terminator_end_pos_weight": float(
+            _at(config, "state_rnn_terminator", "end_pos_weight", default=1.0)
+        ),
+        "state_rnn_terminator_balance_positive_negative": as_bool(
+            _at(
+                config,
+                "state_rnn_terminator",
+                "balance_positive_negative",
+                default=True,
+            )
+        ),
+        "state_rnn_terminator_termination_only": as_bool(
+            _at(config, "state_rnn_terminator", "termination_only", default=True)
+        ),
         **predictor_contract,
         "skill_predictor_lr_scale": float(
             _at(config, "training", "optimizer", "predictor_lr_scale", default=1.0)
@@ -316,6 +389,24 @@ def build_settings(config: dict) -> dict:
                 "training",
                 "optimizer",
                 "wrist_only_terminator_lr_scale",
+                default=1.0,
+            )
+        ),
+        "state_only_terminator_lr_scale": float(
+            _at(
+                config,
+                "training",
+                "optimizer",
+                "state_only_terminator_lr_scale",
+                default=1.0,
+            )
+        ),
+        "state_rnn_terminator_lr_scale": float(
+            _at(
+                config,
+                "training",
+                "optimizer",
+                "state_rnn_terminator_lr_scale",
                 default=1.0,
             )
         ),
@@ -350,6 +441,29 @@ def build_settings(config: dict) -> dict:
         "train_nodelist": str(config.get("train_nodelist", "")),
         "train_exclude_nodes": ",".join(as_list(config.get("train_exclude_nodes", []))),
     }
+    positive_state_settings = (
+        "state_only_terminator_hidden_dim",
+        "state_only_terminator_num_layers",
+        "state_rnn_terminator_sequence_length",
+        "state_rnn_terminator_input_dim",
+        "state_rnn_terminator_hidden_dim",
+        "state_rnn_terminator_num_layers",
+        "state_only_terminator_lr_scale",
+        "state_rnn_terminator_lr_scale",
+        "state_only_terminator_end_pos_weight",
+        "state_rnn_terminator_end_pos_weight",
+    )
+    invalid = [key for key in positive_state_settings if settings[key] <= 0]
+    if invalid:
+        raise ValueError(f"State terminator settings must be positive: {invalid}.")
+    for key in (
+        "state_only_terminator_end_target_sigma",
+        "state_rnn_terminator_end_target_sigma",
+    ):
+        if settings[key] < 0:
+            raise ValueError(f"{key} must be non-negative.")
+    if not 0.0 <= settings["state_rnn_terminator_dropout"] < 1.0:
+        raise ValueError("state_rnn_terminator.dropout must be in [0, 1).")
     return settings
 
 

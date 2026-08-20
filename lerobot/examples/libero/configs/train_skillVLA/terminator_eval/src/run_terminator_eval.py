@@ -20,6 +20,10 @@ from lerobot.configs import parser
 from lerobot.configs.eval import EvalPipelineConfig
 from lerobot.envs.factory import make_env, make_env_pre_post_processors
 from lerobot.envs.utils import close_envs, preprocess_observation
+from lerobot.policies.skill_aux.modeling_state_terminator import (
+    StateSkillMLPTerminator,
+    StateSkillRNNTerminator,
+)
 from lerobot.policies.skill_expert.modeling_skill_expert import (
     _load_complete_terminator_parameters,
 )
@@ -73,6 +77,12 @@ class IndependentTerminator:
         self.module = module
         self.variant = variant
         self.termination_only = bool(getattr(module, "termination_only", False))
+        self.requires_normalized_state = variant in {"state_only", "state_rnn"}
+        self.hidden: torch.Tensor | None = None
+
+    def reset(self) -> None:
+        """Clear recurrent state at every rollout/skill boundary."""
+        self.hidden = None
 
     @torch.no_grad()
     def terminate(
@@ -87,21 +97,46 @@ class IndependentTerminator:
         z_q = self.policy_model._code_to_zq(  # noqa: SLF001
             codes.to(self.policy_model._fsq_strides.device)  # noqa: SLF001
         ).to(device=device, dtype=dtype)
-        image = image.to(device=device, dtype=dtype)
-        wrist_image = wrist_image.to(device=device, dtype=dtype)
         if self.variant in {"state_image", "fsq_initial"}:
             if state is None:
                 raise ValueError(f"{self.variant} terminator requires robot state.")
             progress, logits = self.module(
                 z_q,
                 state.to(device=device, dtype=dtype),
-                image,
-                wrist_image,
+                image.to(device=device, dtype=dtype),
+                wrist_image.to(device=device, dtype=dtype),
             )
         elif self.variant == "image_only":
-            progress, logits = self.module(z_q, image, wrist_image)
+            progress, logits = self.module(
+                z_q,
+                image.to(device=device, dtype=dtype),
+                wrist_image.to(device=device, dtype=dtype),
+            )
         elif self.variant == "wrist_only":
-            progress, logits = self.module(z_q, wrist_image)
+            progress, logits = self.module(
+                z_q,
+                wrist_image.to(device=device, dtype=dtype),
+            )
+        elif self.variant == "state_only":
+            if state is None:
+                raise ValueError("state_only terminator requires normalized state.")
+            normalized_state = state.to(device=device, dtype=dtype)
+            if normalized_state.ndim == 3:
+                normalized_state = normalized_state[:, -1]
+            normalized_state = normalized_state[..., : self.module.state_dim]
+            progress, logits = self.module.forward_outputs(z_q, normalized_state)
+        elif self.variant == "state_rnn":
+            if state is None:
+                raise ValueError("state_rnn terminator requires normalized state.")
+            normalized_state = state.to(device=device, dtype=dtype)
+            if normalized_state.ndim == 3:
+                normalized_state = normalized_state[:, -1]
+            normalized_state = normalized_state[..., : self.module.state_dim]
+            progress, logits, self.hidden = self.module.step_outputs(
+                z_q,
+                normalized_state,
+                self.hidden,
+            )
         else:
             raise ValueError(f"Unknown display terminator variant: {self.variant!r}.")
         return progress, torch.sigmoid(logits)
@@ -122,9 +157,19 @@ def _checkpoint_termination_only(checkpoint_path: str, field: str) -> bool:
     return bool(json.loads(config_path.read_text()).get(field, False))
 
 
+def _checkpoint_config(checkpoint_path: str) -> dict:
+    config_path = Path(checkpoint_path) / "config.json"
+    if not config_path.is_file():
+        raise FileNotFoundError(f"Terminator config not found: {config_path}")
+    return json.loads(config_path.read_text())
+
+
 def _load_display_terminator(policy, model_spec: dict, fsq_path: str | Path):
     variant = str(model_spec["variant"])
     checkpoint_path = str(model_spec.get("path") or "")
+    source_config = None
+    if variant != "fsq_initial":
+        source_config = _checkpoint_config(checkpoint_path)
     if variant == "fsq_initial":
         if not checkpoint_path:
             raise ValueError("fsq_initial requires its resolved raw FSQ.pt path.")
@@ -154,6 +199,34 @@ def _load_display_terminator(policy, model_spec: dict, fsq_path: str | Path):
             ),
         )
         prefix = "model.fsq_wrist_term_train."
+    elif variant == "state_only":
+        assert source_config is not None
+        module = StateSkillMLPTerminator(
+            state_dim=int(source_config["max_state_dim"]),
+            skill_dim=len(source_config["skill_fsq_levels"]),
+            hidden_dim=int(source_config.get("state_only_terminator_hidden_dim", 64)),
+            num_layers=int(source_config.get("state_only_terminator_num_layers", 2)),
+            # Checkpoints created before this switch existed were intrinsically
+            # termination-only, so the compatibility default is true.
+            termination_only=bool(
+                source_config.get("state_only_terminator_termination_only", True)
+            ),
+        )
+        prefix = "model.fsq_state_term_train."
+    elif variant == "state_rnn":
+        assert source_config is not None
+        module = StateSkillRNNTerminator(
+            state_dim=int(source_config["max_state_dim"]),
+            skill_dim=len(source_config["skill_fsq_levels"]),
+            input_dim=int(source_config.get("state_rnn_terminator_input_dim", 64)),
+            hidden_dim=int(source_config.get("state_rnn_terminator_hidden_dim", 64)),
+            num_layers=int(source_config.get("state_rnn_terminator_num_layers", 1)),
+            dropout=float(source_config.get("state_rnn_terminator_dropout", 0.0)),
+            termination_only=bool(
+                source_config.get("state_rnn_terminator_termination_only", True)
+            ),
+        )
+        prefix = "model.fsq_state_rnn_term_train."
     else:
         raise ValueError(f"Unknown display terminator variant: {variant!r}.")
 
@@ -171,18 +244,21 @@ def _load_display_terminator(policy, model_spec: dict, fsq_path: str | Path):
 
 
 def _build_context(spec: dict, cfg, device: torch.device) -> dict:
-    """Build evaluation context, including the raw-FSQ MAIN special case."""
-    use_fsq_initial_main = (
-        str(spec.get("advance_mode", "")) == "external"
-        and str(spec.get("external_skill_model_variant", "checkpoint"))
-        == "fsq_initial"
+    """Build context, including MAIN variants absent from the action policy."""
+    external_variant = str(
+        spec.get("external_skill_model_variant", "checkpoint")
     )
-    if not use_fsq_initial_main:
+    use_independent_main = (
+        str(spec.get("advance_mode", "")) == "external"
+        and external_variant
+        in {"fsq_initial", "image_only", "wrist_only", "state_only", "state_rnn"}
+    )
+    if not use_independent_main:
         return _build_stage1_context(spec, cfg, device)
 
     # The shared Stage-1 loader treats every external source as a trained
     # pretrained_model directory. Build the action policy without an overlay,
-    # then attach the pristine terminator reconstructed directly from FSQ.pt.
+    # then attach the requested independent terminator adapter.
     base_spec = dict(spec)
     base_spec["advance_mode"] = "gt"
     context = _build_stage1_context(base_spec, cfg, device)
@@ -198,21 +274,19 @@ def _build_context(spec: dict, cfg, device: torch.device) -> dict:
         # The action checkpoint's co-trained copy is not the requested baseline
         # and can be released before constructing the pristine FSQ module.
         action_policy.model.fsq_term_train = None
-    module = build_fsq_terminator(spec["external_skill_model"])
-    module.to(
-        device=next(action_policy.model.parameters()).device,
-        dtype=torch.float32,
-    )
-    module.requires_grad_(False).eval()
-    wrapper.terminator = IndependentTerminator(
+    wrapper.terminator = _load_display_terminator(
         action_policy,
-        module,
-        "fsq_initial",
+        {
+            "variant": external_variant,
+            "path": spec["external_skill_model"],
+        },
+        spec.get("fsq_path", spec["external_skill_model"]),
     )
     wrapper.advance_mode = "external"
     log.info(
-        "[%s] attached pristine FSQ terminator as MAIN from %s.",
+        "[%s] attached %s terminator as MAIN from %s.",
         spec["label"],
+        external_variant,
         spec["external_skill_model"],
     )
     return context
@@ -324,11 +398,31 @@ def _query_terminator(
     device = next(policy.parameters()).device
     codes = torch.tensor([int(token)], dtype=torch.long, device=device)
     missing = [key for key in (RAW_STATE, RAW_IMAGE, RAW_WRIST) if key not in batch]
+    state_terminators = [
+        terminator,
+        *[
+            entry["terminator"]
+            for entry in context.get("display_terminators", [])
+        ],
+    ]
+    if (
+        any(
+            getattr(candidate, "requires_normalized_state", False)
+            for candidate in state_terminators
+        )
+        and OBS_STATE not in batch
+    ):
+        missing.append(OBS_STATE)
     if missing:
         raise ValueError(f"Policy preprocessor omitted terminator inputs: {missing}.")
+    main_state = (
+        batch[OBS_STATE]
+        if getattr(terminator, "requires_normalized_state", False)
+        else batch[RAW_STATE]
+    )
     current_progress, current_termination = terminator.terminate(
         codes,
-        batch[RAW_STATE],
+        main_state,
         batch[RAW_IMAGE],
         batch[RAW_WRIST],
     )
@@ -338,7 +432,11 @@ def _query_terminator(
             "terminator"
         ].terminate(
             codes,
-            batch[RAW_STATE],
+            (
+                batch[OBS_STATE]
+                if display_entry["terminator"].requires_normalized_state
+                else batch[RAW_STATE]
+            ),
             batch[RAW_IMAGE],
             batch[RAW_WRIST],
         )
@@ -360,6 +458,21 @@ def _query_terminator(
         float(current_termination[0]),
         display_signals,
     )
+
+
+def _reset_terminators(context: dict) -> None:
+    """Reset recurrent MAIN/display state before each independent rollout."""
+    terminators = [
+        context["policy"].terminator,
+        *[
+            entry["terminator"]
+            for entry in context.get("display_terminators", [])
+        ],
+    ]
+    for terminator in terminators:
+        reset = getattr(terminator, "reset", None)
+        if callable(reset):
+            reset()
 
 
 def _load_font(size: int):
@@ -747,6 +860,7 @@ def _run_gt_actions(
     context: dict,
     env_preprocessor,
 ) -> dict:
+    _reset_terminators(context)
     raw_obs = _restore_state(base_env, state)
     frames = [_render(base_env)]
     progress_values: list[float | None] = []
@@ -821,6 +935,7 @@ def _run_policy(
     set_seed(int(seed))
     policy = context["policy"].policy
     policy.reset()
+    _reset_terminators(context)
     action_queue: deque[torch.Tensor] = deque()
     raw_obs = _restore_state(base_env, state)
     frames = [_render(base_env)]

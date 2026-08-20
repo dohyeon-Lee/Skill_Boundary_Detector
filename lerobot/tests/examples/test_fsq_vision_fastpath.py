@@ -17,13 +17,141 @@ import FSQ as fsq_module  # noqa: E402
 from FSQ_original import FSQOriginalConfig  # noqa: E402
 from FSQ import (  # noqa: E402
     DtypeAlignedRMSNorm,
+    FSQStateRNNTerminator,
     FSQTrajectoryDataset,
     FSQQueryTerminator,
     FSQWristOnlyQueryTerminator,
+    SplineFSQAE,
     SplineFSQAEConfig,
     fsq_lr_factor,
     fsq_reconstruction_loss,
 )
+
+
+def _state_rnn_config(**overrides) -> SplineFSQAEConfig:
+    state_dim = 8
+    action_dim = 7
+    values = dict(
+        action_dim=action_dim,
+        enc_dim=state_dim,
+        state_dim=state_dim,
+        n_control=6,
+        spline_degree=3,
+        encoder_input_mode="raw_state",
+        hidden_dim=32,
+        num_layers=1,
+        fsq_levels=[3, 3, 3],
+        max_state_dim=state_dim,
+        max_action_dim=action_dim,
+        chunk_size=1,
+        samples_per_skill=2,
+        length_min=1.0,
+        length_max=6.0,
+        terminator_input_space="state",
+        terminator_model="rnn",
+        terminator_progress=False,
+        terminator_termination=True,
+        state_rnn_terminator=True,
+        terminator_termination_only=True,
+        encoder_min=np.full(state_dim, -1.0, dtype=np.float32),
+        encoder_max=np.full(state_dim, 1.0, dtype=np.float32),
+        state_min=np.full(state_dim, -1.0, dtype=np.float32),
+        state_max=np.full(state_dim, 1.0, dtype=np.float32),
+        state_q01=np.full(state_dim, -1.0, dtype=np.float32),
+        state_q99=np.full(state_dim, 1.0, dtype=np.float32),
+        action_q01=np.full(action_dim, -1.0, dtype=np.float32),
+        action_q99=np.full(action_dim, 1.0, dtype=np.float32),
+    )
+    values.update(overrides)
+    return SplineFSQAEConfig(**values)
+
+
+def test_state_rnn_model_builds_without_a_vision_encoder(monkeypatch) -> None:
+    monkeypatch.setattr(
+        fsq_module,
+        "_load_dino_model",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("state-RNN FSQ must not load DINO")
+        ),
+    )
+
+    model = SplineFSQAE(_state_rnn_config(reconstructor_arch="oneshot"))
+
+    assert isinstance(model.terminator, FSQStateRNNTerminator)
+    assert not hasattr(model.terminator, "vision_encoder")
+
+
+def test_state_rnn_dataset_caches_full_skill_and_skips_images(monkeypatch) -> None:
+    config = _state_rnn_config(reconstructor_arch="oneshot", end_target_sigma=0.0)
+    states = np.arange(4 * 8, dtype=np.float32).reshape(4, 8)
+    actions = np.zeros((4, 7), dtype=np.float32)
+    dataset = FSQTrajectoryDataset(
+        segments=[states],
+        states=[states],
+        actions=[actions],
+        metadata=[{"episode_id": 0, "skill_index": 0, "frame_start": 0}],
+        raw_dataset_dir="unused",
+        cfg=config,
+        training=True,
+    )
+    monkeypatch.setattr(
+        dataset,
+        "_sample_images",
+        lambda *args: (_ for _ in ()).throw(AssertionError("images must stay unused")),
+    )
+    monkeypatch.setattr(
+        fsq_module.np.random,
+        "choice",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("oneshot+RNN must not sample a timestep")
+        ),
+    )
+
+    item = dataset[0]
+
+    assert dataset.samples_per_skill == 1
+    torch.testing.assert_close(item["sample_index"], torch.tensor([0]))
+    assert "third" not in item and "wrist" not in item
+    assert item["terminator_state_sequence"].shape == (6, 8)
+    torch.testing.assert_close(item["terminator_state_sequence"][-4:], torch.from_numpy(states))
+    torch.testing.assert_close(
+        item["terminator_progress"][:4],
+        torch.tensor([0.0, 1 / 3, 2 / 3, 1.0]),
+    )
+    torch.testing.assert_close(
+        item["terminator_termination"],
+        torch.tensor([0.0, 0.0, 0.0, 1.0, 0.0, 0.0]),
+    )
+
+
+def test_state_rnn_loss_supervises_all_valid_steps_and_masks_padding() -> None:
+    config = _state_rnn_config(
+        terminator_only=True,
+        action_loss_weight=0.0,
+        progress_loss_weight=0.0,
+        end_loss_weight=1.0,
+    )
+    output = {
+        "actions": torch.zeros(2, 1, 7),
+        "progress": torch.zeros(1, 4),
+        # Invalid padding is deliberately very wrong; it must not affect loss.
+        "term_logits": torch.tensor([[0.0, 0.0, 100.0, 100.0]]),
+    }
+    batch = {
+        "ctrl": torch.zeros(1, 6, 8),
+        "length": torch.tensor([2]),
+        "actions": torch.zeros(1, 2, 1, 7),
+        "progress": torch.zeros(1, 2),
+        "termination": torch.zeros(1, 2),
+        "terminator_progress": torch.zeros(1, 4),
+        "terminator_termination": torch.tensor([[0.0, 1.0, 0.0, 0.0]]),
+    }
+
+    loss, metrics = fsq_reconstruction_loss(output, batch, config)
+
+    torch.testing.assert_close(loss, torch.tensor(np.log(2.0), dtype=torch.float32))
+    torch.testing.assert_close(metrics["termination"], loss)
+    torch.testing.assert_close(metrics["terminator_mean_valid_length"], torch.tensor(2.0))
 
 
 def _sampling_only_dataset() -> FSQTrajectoryDataset:

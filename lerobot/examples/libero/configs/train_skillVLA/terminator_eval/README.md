@@ -5,13 +5,14 @@ This evaluator is the episode-exact, single-skill evaluation separated from
 independent display-only terminators:
 
 - `external_skill_model` (or the action checkpoint's own terminator) is the
-  **MAIN** state+image terminator and controls rollout stopping. Its mapping
+  **MAIN** terminator and controls rollout stopping. Its mapping
   can be `{variant: fsq_initial}` to reconstruct the pristine terminator from
   the selected action policy's raw `FSQ.pt`, or can select a trained overlay
-  using `variant: checkpoint` plus `group`, `model_dir`, and `checkpoint`.
-- `terminator_models` selects `state_image`, `image_only`, `wrist_only`, or
-  `fsq_initial` for each display row. Trained entries use
-  `{label, variant, model_dir, checkpoint}` and resolve under the fixed
+  using `variant: state_image|image_only|wrist_only|state_only|state_rnn` plus
+  `group`, `model_dir`, and `checkpoint`.
+- `terminator_models` selects `state_image`, `image_only`, `wrist_only`,
+  `state_only`, `state_rnn`, or `fsq_initial` for each display row. Trained
+  entries use `{label, variant, model_dir, checkpoint}` and resolve under the fixed
   `skillVLA_terminator` group plus top-level `outputs_root`. `fsq_initial`
   accepts no checkpoint fields: it loads the normal state+top+wrist terminator
   directly from the `fsq_path` recorded by the selected action policy, before
@@ -19,6 +20,13 @@ independent display-only terminators:
   which may still supply the MAIN terminator. Every entry is **display-only**.
   The legacy `image_only_terminator_model` key/path format remains accepted as
   `image_only` for existing configs.
+
+`state_only` and `state_rnn` consume the current normalized proprio state and
+skill code; they never receive camera tensors. The recurrent variant receives
+one current state per evaluator step and carries its returned RNN hidden state
+to the next step. MAIN and display hidden states are independent and are reset
+to `None` at the start of every GT/policy branch (therefore every evaluated
+skill).
 
 Each branch panel contains only full-width signal bars:
 

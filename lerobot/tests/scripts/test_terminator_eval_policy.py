@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 import torch
 from torch import nn
 
@@ -200,3 +202,112 @@ def test_fsq_initial_loads_raw_fsq_without_checkpoint_overlay(
     assert terminator.variant == "fsq_initial"
     assert terminator.module.training is False
     assert not any(parameter.requires_grad for parameter in terminator.module.parameters())
+
+
+class _RecordingStateRNN(nn.Module):
+    state_dim = 2
+    termination_only = False
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.anchor = nn.Parameter(torch.zeros(()))
+        self.calls: list[tuple[torch.Tensor, torch.Tensor | None]] = []
+
+    def step_outputs(self, z_q, state, hidden=None):
+        del z_q
+        self.calls.append(
+            (
+                state.detach().clone(),
+                None if hidden is None else hidden.detach().clone(),
+            )
+        )
+        next_hidden = torch.ones(1, state.shape[0], 1, device=state.device)
+        if hidden is not None:
+            next_hidden = hidden + 1
+        progress = next_hidden[0, :, 0] / 10
+        logits = torch.zeros(state.shape[0], device=state.device)
+        return progress, logits, next_hidden
+
+
+def test_state_rnn_uses_current_state_and_carries_then_resets_hidden() -> None:
+    module = _RecordingStateRNN()
+    adapter = MODULE.IndependentTerminator(
+        SimpleNamespace(model=_DummyPolicyModel()),
+        module,
+        "state_rnn",
+    )
+    codes = torch.tensor([2])
+    # A singleton history dimension is accepted, but only its current/last
+    # state is sent to the online RNN step.
+    state = torch.tensor([[[1.0, 2.0]]])
+    image = torch.zeros(1, 3, 4, 4)
+
+    adapter.terminate(codes, state, image, image)
+    adapter.terminate(codes, state + 1, image, image)
+
+    assert module.calls[0][0].shape == (1, 2)
+    assert module.calls[0][1] is None
+    torch.testing.assert_close(module.calls[1][1], torch.ones(1, 1, 1))
+    adapter.reset()
+    adapter.terminate(codes, state + 2, image, image)
+    assert module.calls[2][1] is None
+
+
+@pytest.mark.parametrize(
+    ("variant", "expected_type", "expected_prefix"),
+    [
+        (
+            "state_only",
+            MODULE.StateSkillMLPTerminator,
+            "model.fsq_state_term_train.",
+        ),
+        (
+            "state_rnn",
+            MODULE.StateSkillRNNTerminator,
+            "model.fsq_state_rnn_term_train.",
+        ),
+    ],
+)
+def test_state_display_terminator_rebuilds_checkpoint_architecture(
+    tmp_path: Path,
+    monkeypatch,
+    variant: str,
+    expected_type,
+    expected_prefix: str,
+) -> None:
+    checkpoint = tmp_path / variant
+    checkpoint.mkdir()
+    (checkpoint / "config.json").write_text(
+        json.dumps(
+            {
+                "type": "skill_aux",
+                "skill_fsq_levels": [3, 3, 3],
+                "max_state_dim": 8,
+                "state_only_terminator_hidden_dim": 16,
+                "state_only_terminator_num_layers": 2,
+                "state_only_terminator_termination_only": False,
+                "state_rnn_terminator_input_dim": 12,
+                "state_rnn_terminator_hidden_dim": 16,
+                "state_rnn_terminator_num_layers": 1,
+                "state_rnn_terminator_dropout": 0.0,
+                "state_rnn_terminator_termination_only": False,
+            }
+        )
+    )
+    loaded: list[tuple[type[nn.Module], str]] = []
+
+    def load(module, _path, *, prefix, label):
+        del label
+        loaded.append((type(module), prefix))
+        return len(module.state_dict())
+
+    monkeypatch.setattr(MODULE, "_load_complete_terminator_parameters", load)
+    adapter = MODULE._load_display_terminator(
+        SimpleNamespace(model=_DummyPolicyModel()),
+        {"variant": variant, "path": str(checkpoint)},
+        tmp_path / "unused_fsq.pt",
+    )
+
+    assert isinstance(adapter.module, expected_type)
+    assert adapter.termination_only is False
+    assert loaded == [(expected_type, expected_prefix)]

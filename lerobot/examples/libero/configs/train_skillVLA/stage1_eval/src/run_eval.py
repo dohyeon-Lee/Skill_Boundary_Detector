@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 """Multi-checkpoint closed-loop LIBERO evaluation for Stage 1 and Stage 2."""
 
+import copy
 import gc
 import json
 import logging
@@ -582,8 +583,9 @@ def _language_oracle_maps(
             if not all(sequences):
                 if not gt_optional:
                     log.warning("task_id=%s is absent from at least one model dataset; dropping it.", task_id)
-                    group[task_id].close()
-                    del group[task_id]
+                    entry = group.pop(task_id)
+                    if hasattr(entry, "close"):
+                        entry.close()
                     continue
                 log.warning(
                     "task_id=%s has no GT skills; evaluating it on predictor/terminator only.",
@@ -605,6 +607,7 @@ def _episode_exact_oracle_maps(
     specs: list[dict],
     suite_name: str,
     n_episodes: int,
+    init_state_arrays: dict[tuple[str, int], np.ndarray],
 ) -> list[dict]:
     episode_data = [
         load_episode_exact_data(
@@ -626,20 +629,16 @@ def _episode_exact_oracle_maps(
                     task_id,
                     len(common),
                 )
-                group[task_id].close()
-                del group[task_id]
+                entry = group.pop(task_id)
+                if hasattr(entry, "close"):
+                    entry.close()
                 continue
             common = common[:n_episodes]
             init_states = np.stack(
                 [indexed[0][episode]["init_state"] for episode in common]
             ).astype(np.float64)
-            sub_envs = getattr(group[task_id], "envs", None)
-            if sub_envs is None:
-                raise RuntimeError("Episode-exact eval requires SyncVectorEnv.")
-            for sub_env in sub_envs:
-                base = sub_env.unwrapped
-                base.init_states = True
-                base._init_states = init_states
+            # Applied by the lazy env factory when this task's env is created.
+            init_state_arrays[(task_group, int(task_id))] = init_states
             for index, model in enumerate(indexed):
                 maps[index][(task_group, int(task_id))] = [
                     model[episode]["skills"] for episode in common
@@ -653,6 +652,62 @@ def _reset_init_state_ids(envs: dict) -> None:
             for sub_env in getattr(vector_env, "envs", []):
                 base = sub_env.unwrapped
                 base.init_state_id = base.episode_index
+
+
+def _lazy_env_factory(
+    cfg,
+    suite_name: str,
+    task_id: int,
+    init_state_arrays: dict[tuple[str, int], np.ndarray],
+):
+    def build():
+        env_cfg = copy.deepcopy(cfg.env)
+        env_cfg.task = suite_name
+        env_cfg.task_ids = [task_id]
+        vec = make_env(
+            env_cfg,
+            n_envs=cfg.eval.batch_size,
+            use_async_envs=cfg.eval.use_async_envs,
+            trust_remote_code=cfg.trust_remote_code,
+        )[suite_name][task_id]
+        init_states = init_state_arrays.get((suite_name, int(task_id)))
+        sub_envs = getattr(vec, "envs", None)
+        if init_states is not None and sub_envs is None:
+            raise RuntimeError("Episode-exact eval requires SyncVectorEnv.")
+        for sub_env in sub_envs or []:
+            base = sub_env.unwrapped
+            if init_states is not None:
+                base.init_states = True
+                base._init_states = init_states
+            base.init_state_id = base.episode_index
+        return vec
+
+    return build
+
+
+def _make_lazy_envs(
+    cfg, init_state_arrays: dict[tuple[str, int], np.ndarray]
+) -> dict[str, dict[int, object]]:
+    """Build {suite: {task_id: env_factory}} without instantiating simulators.
+
+    Every LIBERO env keeps an EGL render context on the GPU, so instantiating a
+    multi-task chunk upfront stacks batch_size contexts per task next to the
+    policy weights and can OOM. eval_policy_all calls each factory right before
+    its task runs and closes the env right after, so only one task's contexts
+    are resident at a time. init_state_arrays is filled by the episode-exact
+    oracle stage before any factory runs and is read at env-creation time.
+    """
+    from lerobot.envs.libero import _get_suite, _select_task_ids
+
+    suite_names = [s.strip() for s in str(cfg.env.task).split(",") if s.strip()]
+    envs: dict[str, dict[int, object]] = {}
+    for suite_name in suite_names:
+        total = len(_get_suite(suite_name).tasks)
+        for tid in _select_task_ids(total, cfg.env.task_ids):
+            envs.setdefault(suite_name, {})[tid] = _lazy_env_factory(
+                cfg, suite_name, tid, init_state_arrays
+            )
+    return envs
 
 
 def _policy_config(spec: dict, base, device: torch.device):
@@ -1476,12 +1531,11 @@ def eval_main(cfg: EvalPipelineConfig):
 
     device = get_safe_torch_device(cfg.policy.device, log=True)
     set_seed(cfg.seed)
-    envs = make_env(
-        cfg.env,
-        n_envs=cfg.eval.batch_size,
-        use_async_envs=cfg.eval.use_async_envs,
-        trust_remote_code=cfg.trust_remote_code,
-    )
+    # Env factories instead of live envs: eval_policy_all creates and closes
+    # one task's env at a time, so multi-task chunks don't stack simulator
+    # render contexts on the GPU next to the policy weights.
+    init_state_arrays: dict[tuple[str, int], np.ndarray] = {}
+    envs = _make_lazy_envs(cfg, init_state_arrays)
     try:
         env_preprocessor, env_postprocessor = make_env_pre_post_processors(
             env_cfg=cfg.env, policy_cfg=cfg.policy
@@ -1490,7 +1544,7 @@ def eval_main(cfg: EvalPipelineConfig):
         episode_exact = all(spec.get("eval_init_states_path") for spec in specs)
         oracle_maps = (
             _episode_exact_oracle_maps(
-                envs, specs, cfg.env.task, cfg.eval.n_episodes
+                envs, specs, cfg.env.task, cfg.eval.n_episodes, init_state_arrays
             )
             if episode_exact
             else _language_oracle_maps(

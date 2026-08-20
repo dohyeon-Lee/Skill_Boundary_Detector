@@ -26,7 +26,9 @@ source "${PROJECT_ROOT}/.venv/bin/activate"
 
 # Fail over to another GPU instead of silently running on CPU.
 source "${PROJECT_ROOT}/lerobot/examples/libero/configs/gpu_guard.sh"
-require_cuda_or_requeue "${PROJECT_ROOT}/.venv/bin/python"
+# The real lerobot-train process performs the CUDA check after its one Torch
+# import. This preserves bad-node requeueing without a duplicate cold import.
+prepare_inline_cuda_guard
 source "${PROJECT_ROOT}/lerobot/examples/libero/configs/runtime_env.sh"
 export PYTHONPATH="${LEROBOT_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
 unset LD_LIBRARY_PATH
@@ -38,6 +40,8 @@ echo "dataset   : ${SKILLVLA_DATASET_DIR}"
 echo "terminator: enabled=${TRAIN_TERMINATOR} fsq=${FSQ_PATH} vision_frozen=${TERMINATOR_FREEZE_VISION_ENCODER}"
 echo "image term: enabled=${TRAIN_IMAGE_ONLY_TERMINATOR} fresh=true vision_frozen=${IMAGE_ONLY_TERMINATOR_FREEZE_VISION_ENCODER}"
 echo "wrist term: enabled=${TRAIN_WRIST_ONLY_TERMINATOR} fresh=true vision_frozen=${WRIST_ONLY_TERMINATOR_FREEZE_VISION_ENCODER}"
+echo "state term: enabled=${TRAIN_STATE_ONLY_TERMINATOR} fresh=true hidden=${STATE_ONLY_TERMINATOR_HIDDEN_DIM}x${STATE_ONLY_TERMINATOR_NUM_LAYERS} balanced=${STATE_ONLY_TERMINATOR_BALANCE_POSITIVE_NEGATIVE} termination_only=${STATE_ONLY_TERMINATOR_TERMINATION_ONLY}"
+echo "state RNN : enabled=${TRAIN_STATE_RNN_TERMINATOR} fresh=true seq=${STATE_RNN_TERMINATOR_SEQUENCE_LENGTH} full_skill=${STATE_RNN_TERMINATOR_FULL_SKILL_SEQUENCE} balanced=${STATE_RNN_TERMINATOR_BALANCE_POSITIVE_NEGATIVE} hidden=${STATE_RNN_TERMINATOR_HIDDEN_DIM}x${STATE_RNN_TERMINATOR_NUM_LAYERS} termination_only=${STATE_RNN_TERMINATOR_TERMINATION_ONLY}"
 echo "predictor : enabled=${TRAIN_SKILL_PREDICTOR} pi_base=${PI_BASE} warm_start=${PREDICTOR_CHECKPOINT_PATH:-none}"
 echo "schedule  : steps=${STEPS} mode=${SCHEDULER_MODE} warmup=${SCHEDULER_WARMUP_STEPS}"
 echo "wandb     : ${WANDB_PROJECT}"
@@ -75,7 +79,7 @@ else
   echo "launcher  : direct lerobot-train (single GPU; no launcher import)"
 fi
 
-PYTHONUNBUFFERED=1 PYTORCH_ALLOC_CONF=expandable_segments:True \
+if PYTHONUNBUFFERED=1 PYTORCH_ALLOC_CONF=expandable_segments:True \
   "${TRAIN_LAUNCH[@]}" \
     --dataset.repo_id="${REPO_ID}" \
     --dataset.root="${SKILLVLA_DATASET_DIR}" \
@@ -101,6 +105,26 @@ PYTHONUNBUFFERED=1 PYTORCH_ALLOC_CONF=expandable_segments:True \
     --policy.wrist_only_terminator_end_target_sigma="${WRIST_ONLY_TERMINATOR_END_TARGET_SIGMA}" \
     --policy.wrist_only_terminator_end_pos_weight="${WRIST_ONLY_TERMINATOR_END_POS_WEIGHT}" \
     --policy.wrist_only_terminator_termination_only="${WRIST_ONLY_TERMINATOR_TERMINATION_ONLY}" \
+    --policy.train_state_only_terminator="${TRAIN_STATE_ONLY_TERMINATOR}" \
+    --policy.state_only_terminator_hidden_dim="${STATE_ONLY_TERMINATOR_HIDDEN_DIM}" \
+    --policy.state_only_terminator_num_layers="${STATE_ONLY_TERMINATOR_NUM_LAYERS}" \
+    --policy.state_only_terminator_lr_scale="${STATE_ONLY_TERMINATOR_LR_SCALE}" \
+    --policy.state_only_terminator_end_target_sigma="${STATE_ONLY_TERMINATOR_END_TARGET_SIGMA}" \
+    --policy.state_only_terminator_end_pos_weight="${STATE_ONLY_TERMINATOR_END_POS_WEIGHT}" \
+    --policy.state_only_terminator_balance_positive_negative="${STATE_ONLY_TERMINATOR_BALANCE_POSITIVE_NEGATIVE}" \
+    --policy.state_only_terminator_termination_only="${STATE_ONLY_TERMINATOR_TERMINATION_ONLY}" \
+    --policy.train_state_rnn_terminator="${TRAIN_STATE_RNN_TERMINATOR}" \
+    --policy.state_rnn_terminator_sequence_length="${STATE_RNN_TERMINATOR_SEQUENCE_LENGTH}" \
+    --policy.state_rnn_terminator_full_skill_sequence="${STATE_RNN_TERMINATOR_FULL_SKILL_SEQUENCE}" \
+    --policy.state_rnn_terminator_input_dim="${STATE_RNN_TERMINATOR_INPUT_DIM}" \
+    --policy.state_rnn_terminator_hidden_dim="${STATE_RNN_TERMINATOR_HIDDEN_DIM}" \
+    --policy.state_rnn_terminator_num_layers="${STATE_RNN_TERMINATOR_NUM_LAYERS}" \
+    --policy.state_rnn_terminator_dropout="${STATE_RNN_TERMINATOR_DROPOUT}" \
+    --policy.state_rnn_terminator_lr_scale="${STATE_RNN_TERMINATOR_LR_SCALE}" \
+    --policy.state_rnn_terminator_end_target_sigma="${STATE_RNN_TERMINATOR_END_TARGET_SIGMA}" \
+    --policy.state_rnn_terminator_end_pos_weight="${STATE_RNN_TERMINATOR_END_POS_WEIGHT}" \
+    --policy.state_rnn_terminator_balance_positive_negative="${STATE_RNN_TERMINATOR_BALANCE_POSITIVE_NEGATIVE}" \
+    --policy.state_rnn_terminator_termination_only="${STATE_RNN_TERMINATOR_TERMINATION_ONLY}" \
     --policy.train_skill_predictor="${TRAIN_SKILL_PREDICTOR}" \
     --policy.skill_predictor_checkpoint_path="${PREDICTOR_CHECKPOINT_PATH}" \
     --policy.skill_predictor_lr_scale="${SKILL_PREDICTOR_LR_SCALE}" \
@@ -145,6 +169,15 @@ PYTHONUNBUFFERED=1 PYTORCH_ALLOC_CONF=expandable_segments:True \
     --eval_freq=0 \
     --wandb.enable="${WANDB_ENABLE}" \
     --wandb.project="${WANDB_PROJECT}" \
-    "${RESUME_ARGS[@]}"
+    "${RESUME_ARGS[@]}"; then
+  TRAIN_STATUS=0
+else
+  TRAIN_STATUS=$?
+fi
+
+handle_inline_cuda_guard_exit "${TRAIN_STATUS}"
+if (( TRAIN_STATUS != 0 )); then
+  exit "${TRAIN_STATUS}"
+fi
 
 echo "DONE -> ${PT_OUTPUT_DIR}"

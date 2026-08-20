@@ -23,7 +23,6 @@ import torch
 from PIL import Image
 
 from lerobot.datasets.video_utils import decode_video_frames
-from lerobot.scripts.lerobot_skillvla_eval import _libero_task_descriptions
 from lerobot.utils.random_utils import set_seed
 
 _HERE = Path(__file__).resolve().parent
@@ -41,6 +40,26 @@ from fsq_gt_replay_report import (  # noqa: E402
 )
 
 log = logging.getLogger("fsq_gt_replay")
+
+
+def _libero_task_descriptions(suite_name: str) -> dict[int, str]:
+    """Task id -> language string for one LIBERO suite.
+
+    Inlined rather than imported from lerobot.scripts.lerobot_skillvla_eval:
+    that module pulls in lerobot.policies.factory (every policy, transformers,
+    ...) at import time, which costs minutes on this cluster's shared venv --
+    for a replay that never touches a policy.
+    """
+    try:
+        from libero.libero import benchmark  # noqa: PLC0415
+
+        suite = benchmark.get_benchmark_dict()[suite_name]()
+        return {int(index): str(task.language) for index, task in enumerate(suite.tasks)}
+    except Exception as error:  # noqa: BLE001 - descriptions are cosmetic
+        log.warning("Could not load LIBERO task descriptions for %s: %s", suite_name, error)
+        return {}
+
+
 VIDEO_KEY = "observation.images.image"
 
 
@@ -193,10 +212,10 @@ def _record_is_complete(manifest: dict, occurrence, output_dir: Path) -> bool:
     )
 
 
-def main() -> None:
+def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model-path", type=Path, required=True)
-    parser.add_argument("--latents-path", type=Path, required=True)
+    parser.add_argument("--model-path", type=Path, default=None)
+    parser.add_argument("--latents-path", type=Path, default=None)
     parser.add_argument("--skill-dataset-dir", type=Path, required=True)
     # Empty means episode_source=dataset: episodes are grouped by the dataset's
     # own task table instead of the rendered episode-exact map.
@@ -207,24 +226,29 @@ def main() -> None:
     parser.add_argument("--episode-ids", default="[]")
     parser.add_argument("--episodes-per-task", type=int, required=True)
     parser.add_argument("--episode-selection", choices=("first", "random"), required=True)
-    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument("--collection-dir", type=Path, required=True)
     parser.add_argument("--compare-dir", default="")
     parser.add_argument("--compare-collection-dirs", default="")
     parser.add_argument("--expected-epoch-tags", required=True)
     parser.add_argument("--run-name", required=True)
-    parser.add_argument("--epoch-tag", required=True)
+    parser.add_argument("--epoch-tag", default="")
     parser.add_argument("--worker-index", type=int, default=0)
     parser.add_argument("--worker-count", type=int, default=1)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--resume", action="store_true")
-    args = parser.parse_args()
-
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(message)s",
-        force=True,
+    parser.add_argument(
+        "--plan-path",
+        default="",
+        help='JSON list of {"model_path","latents_path","output_dir","epoch_tag"}. '
+        "Replaying several checkpoints in ONE process amortizes the import cost, "
+        "which on this cluster is minutes against seconds of actual replay.",
     )
+    return parser.parse_args()
+
+
+def run_one(args, shared: dict) -> None:
+    """Replay one checkpoint. ``shared`` caches what does not vary between them."""
     set_seed(args.seed)
     raw_task_ids = args.task_ids.strip()
     requested_task_ids = (
@@ -334,12 +358,14 @@ def main() -> None:
     )
     _atomic_manifest(manifest_path, manifest)
 
-    reader = _EpisodeFrameReader(Path(args.skill_dataset_dir))
+    reader = shared.get("reader")
+    if reader is None:
+        reader = shared["reader"] = _EpisodeFrameReader(Path(args.skill_dataset_dir))
     # Dataset-sourced episodes already carry their own task strings, which cover
     # every task even when the dataset spans several LIBERO suites.
-    descriptions = dataset.task_descriptions or _libero_task_descriptions(
-        args.target_task
-    )
+    if "descriptions" not in shared:
+        shared["descriptions"] = _libero_task_descriptions(args.target_task)
+    descriptions = dataset.task_descriptions or shared["descriptions"]
     by_episode: dict[int, list] = defaultdict(list)
     for occurrence in occurrences:
         by_episode[occurrence.episode_id].append(occurrence)
@@ -430,6 +456,57 @@ def main() -> None:
             log.info("FSQ model comparison report: %s", compare_path)
         else:
             log.info("Run complete; waiting for the remaining runs to compare.")
+
+
+def main() -> None:
+    args = parse_args()
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+        force=True,
+    )
+    if args.plan_path:
+        entries = json.loads(Path(args.plan_path).read_text())
+        if not isinstance(entries, list) or not entries:
+            raise ValueError(f"{args.plan_path} must hold a non-empty list of entries.")
+    else:
+        missing = [
+            name
+            for name, value in (
+                ("--model-path", args.model_path),
+                ("--latents-path", args.latents_path),
+                ("--output-dir", args.output_dir),
+                ("--epoch-tag", args.epoch_tag),
+            )
+            if not value
+        ]
+        if missing:
+            raise SystemExit(f"Pass --plan-path, or all of {missing}.")
+        entries = [
+            {
+                "model_path": str(args.model_path),
+                "latents_path": str(args.latents_path),
+                "output_dir": str(args.output_dir),
+                "epoch_tag": args.epoch_tag,
+            }
+        ]
+    # One process, many checkpoints: imports and the video frame reader are paid
+    # once instead of once per checkpoint.
+    shared: dict = {}
+    for index, entry in enumerate(entries, start=1):
+        log.info("[%d/%d] replaying %s", index, len(entries), entry["epoch_tag"])
+        run_one(
+            argparse.Namespace(
+                **{
+                    **vars(args),
+                    "model_path": Path(entry["model_path"]),
+                    "latents_path": Path(entry["latents_path"]),
+                    "output_dir": Path(entry["output_dir"]),
+                    "epoch_tag": entry["epoch_tag"],
+                }
+            ),
+            shared,
+        )
 
 
 if __name__ == "__main__":

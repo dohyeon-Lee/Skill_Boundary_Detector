@@ -55,7 +55,11 @@ unset LD_LIBRARY_PATH          # avoid system cuDNN shadowing the bundled one
 LIBERO_REPO_ROOT="${PROJECT_ROOT}/tools/lerobot-libero"
 LIBERO_SOURCE_ROOT="${LIBERO_REPO_ROOT}/libero"
 LIBERO_BENCHMARK_ROOT="${LIBERO_SOURCE_ROOT}/libero"
-LIBERO_LOCAL_CONFIG_DIR="${LIBERO_REPO_ROOT}/.libero_config"
+# Every task gets its own config dir. Sharing one file across array tasks
+# (and across concurrent libero jobs) let a task read a config another job
+# was mid-rewrite, resolving bddl_files to a stale root and killing the run.
+LIBERO_CONFIG_TMP_ROOT="${SLURM_TMPDIR:-${TMPDIR:-/tmp}}"
+LIBERO_LOCAL_CONFIG_DIR="$(mktemp -d "${LIBERO_CONFIG_TMP_ROOT}/libero_cfg.XXXXXX")"
 if [ ! -d "${LIBERO_BENCHMARK_ROOT}/init_files" ]; then
   echo "LIBERO init_files not found: ${LIBERO_BENCHMARK_ROOT}/init_files" >&2
   exit 1
