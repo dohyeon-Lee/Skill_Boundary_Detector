@@ -12,8 +12,7 @@ set -euo pipefail
 
 FT_EVAL_DIR="${FT_EVAL_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 CONFIG_PATH="${FT_EVAL_CONFIG:-${FT_EVAL_DIR}/ft_eval_config.yaml}"
-BOOTSTRAP_PYTHON="${FT_EVAL_DIR}/../../../../../../.venv/bin/python"
-[ -x "${BOOTSTRAP_PYTHON}" ] || BOOTSTRAP_PYTHON=python3
+BOOTSTRAP_PYTHON=/usr/bin/python3
 
 # submit_eval.sh normally exports one frozen resolution. This branch keeps the
 # sbatch file directly runnable as well.

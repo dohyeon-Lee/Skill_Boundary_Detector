@@ -89,6 +89,63 @@ def _run_names(config: dict) -> list[str]:
     return names
 
 
+def _model_names(config: dict, run_names: list[str]) -> list[str]:
+    """Resolve the user-facing HTML label paired with each FSQ run."""
+    raw_names = get_value(config, "fsq_eval_model_name", None)
+    if raw_names is None:
+        return list(run_names)
+    values = raw_names if isinstance(raw_names, (list, tuple)) else [raw_names]
+    names = [str(value).strip() for value in values]
+    if len(names) != len(run_names) or any(not name for name in names):
+        raise ValueError(
+            "fsq_eval_model_name must contain one non-empty display name for each "
+            f"fsq_eval_run_name entry ({len(run_names)} expected, got {len(names)})."
+        )
+    if len(names) != len(set(names)):
+        raise ValueError(f"fsq_eval_model_name contains duplicates: {names}.")
+    return names
+
+
+def _model_entries(config: dict) -> list[dict[str, str]]:
+    """Resolve paired run-folder and user-facing model names.
+
+    ``fsq_eval_models`` is the preferred form. The two legacy scalar/list keys
+    remain accepted so old snapshots and launch commands keep working.
+    """
+    raw_entries = get_value(config, "fsq_eval_models", None)
+    if raw_entries is None:
+        run_names = _run_names(config)
+        model_names = _model_names(config, run_names)
+        return [
+            {"run_name": run_name, "model_name": model_name}
+            for run_name, model_name in zip(run_names, model_names, strict=True)
+        ]
+    if not isinstance(raw_entries, list) or not raw_entries:
+        raise ValueError("fsq_eval_models must be a non-empty list of mappings.")
+    entries: list[dict[str, str]] = []
+    for index, raw_entry in enumerate(raw_entries):
+        if not isinstance(raw_entry, dict):
+            raise ValueError(
+                f"fsq_eval_models[{index}] must be a mapping with run_name and model_name."
+            )
+        run_name = str(raw_entry.get("run_name") or "").strip()
+        model_name = str(raw_entry.get("model_name") or "").strip()
+        if not run_name or not model_name:
+            raise ValueError(
+                f"fsq_eval_models[{index}] requires non-empty run_name and model_name."
+            )
+        entries.append({"run_name": run_name, "model_name": model_name})
+    run_names = [entry["run_name"] for entry in entries]
+    model_names = [entry["model_name"] for entry in entries]
+    if len(run_names) != len(set(run_names)):
+        raise ValueError(f"fsq_eval_models contains duplicate run_name values: {run_names}.")
+    if len(model_names) != len(set(model_names)):
+        raise ValueError(
+            f"fsq_eval_models contains duplicate model_name values: {model_names}."
+        )
+    return entries
+
+
 def build_settings(
     config: dict,
     *,
@@ -96,12 +153,15 @@ def build_settings(
     run_override: str | None = None,
     checkpoint_list_override: list[str] | None = None,
 ) -> dict:
-    run_names = _run_names(config)
+    model_entries = _model_entries(config)
+    run_names = [entry["run_name"] for entry in model_entries]
+    model_names = [entry["model_name"] for entry in model_entries]
     if run_override is not None and run_override not in run_names:
         raise ValueError(
-            f"Run override {run_override!r} is not one of fsq_eval_run_name {run_names}."
+            f"Run override {run_override!r} is not one of the configured run names {run_names}."
         )
     selected_run = run_override or run_names[0]
+    selected_model_name = model_names[run_names.index(selected_run)]
     config = {**config, "fsq_eval_run_name": selected_run}
     project_root = Path(str(get_value(config, "project_root"))).expanduser().resolve()
     dataset_root = Path(str(get_value(config, "dataset_root", "dataset"))).expanduser()
@@ -154,10 +214,10 @@ def build_settings(
     resolved_checkpoints = [
         artifact["fsq_eval_resolved_checkpoint"] for artifact in artifacts
     ]
-    # Encoding a checkpoint's skill latents is the only GPU work in this
-    # pipeline; the replay itself decodes dataset video on CPU. Listing the
-    # checkpoints that still lack latents lets the submitter put just that work
-    # on a GPU and leave the whole replay array GPU-free.
+    # Encoding a checkpoint's skill latents is the only GPU computation in this
+    # pipeline; replay itself decodes dataset video on CPU. Listing missing
+    # latents keeps encoding in one prepass even when replay reserves a GPU only
+    # to satisfy its inherited QOS.
     missing_latents = [
         artifact["fsq_eval_resolved_checkpoint"]
         for artifact in artifacts
@@ -251,10 +311,8 @@ def build_settings(
         if not path.exists():
             raise FileNotFoundError(f"{label} not found: {path}")
 
-    # Named eval_num_gpus before the replay array went GPU-free: it has always
-    # been the array's concurrency throttle, and now that the replay holds no
-    # GPU at all the old name only misleads. The GPU count is not configurable --
-    # it is one latent-encoding prepass per run that still needs one.
+    # eval_num_gpus has always been the replay concurrency throttle rather than
+    # a GRES count. Keep accepting it as a legacy alias for max_concurrent.
     requested_concurrency = int(
         get_value(
             config,
@@ -281,7 +339,16 @@ def build_settings(
     )
     # Clamp to the number of array tasks that will actually exist: one task now
     # replays a chunk of checkpoints, so len(artifacts) overstates it.
-    checkpoints_per_job = max(1, int(get_value(config, "checkpoints_per_job", 4)))
+    raw_checkpoints_per_job = get_value(config, "checkpoints_per_job", 4)
+    if (
+        isinstance(raw_checkpoints_per_job, str)
+        and raw_checkpoints_per_job.strip().lower() == "all"
+    ):
+        checkpoints_per_job = len(artifacts)
+    else:
+        checkpoints_per_job = int(raw_checkpoints_per_job)
+        if checkpoints_per_job <= 0:
+            raise ValueError("checkpoints_per_job must be positive or 'all'.")
     chunk_count = -(-len(artifacts) // checkpoints_per_job)
     concurrent_jobs = min(requested_concurrency, chunk_count * worker_count)
 
@@ -295,10 +362,11 @@ def build_settings(
     output_value = str(get_value(config, "output_name", "") or "").strip()
     if len(run_names) > 1 and not output_value:
         raise ValueError(
-            "output_name is required when fsq_eval_run_name lists several runs; "
+            "output_name is required when fsq_eval_models lists several runs; "
             "it becomes the comparison parent folder."
         )
     output_relative = _safe_relative_output(output_value, default=default_output)
+    report_title = output_relative.as_posix()
     eval_dir = _HERE.parent
     replay_outputs = eval_dir / "outputs" / "fsq_gt_replay"
     # With several runs, output_name is the comparison parent: each run keeps its
@@ -315,6 +383,38 @@ def build_settings(
         collection_dir = replay_outputs / output_relative
     checkpoint_output_dir = collection_dir / "checkpoints" / epoch_tag
     exclude = as_list(get_value(config, "train_exclude_nodes", []))
+    # A blank replay override inherits the canonical global train_* Slurm
+    # settings. Clusters that reject zero-GPU jobs on their GPU partitions can
+    # still set an explicit CPU partition/QOS in this module's slurm section.
+    local_replay_partitions = [
+        str(value).strip()
+        for value in as_list(_at(config, "slurm", "replay_partition", ""))
+        if str(value).strip()
+    ]
+    global_train_partitions = [
+        str(value).strip()
+        for value in as_list(get_value(config, "train_partition", ["debug"]))
+        if str(value).strip()
+    ]
+    replay_partitions = (
+        local_replay_partitions or global_train_partitions or ["debug"]
+    )
+    local_replay_qos = str(_at(config, "slurm", "replay_qos", "") or "").strip()
+    global_train_qos = str(get_value(config, "train_qos", "base_qos") or "").strip()
+    replay_qos = local_replay_qos or global_train_qos or "base_qos"
+    latent_gres = str(_at(config, "slurm", "gres", "gpu:1") or "gpu:1").strip()
+    configured_replay_gres = str(
+        _at(config, "slurm", "replay_gres", "") or ""
+    ).strip()
+    # Leaving replay_qos blank selects the global train placement, whose QOS
+    # may require a GPU GRES even though replay computation itself stays on CPU.
+    # An explicit replay_qos selects replay placement and permits true CPU-only
+    # execution when replay_gres is blank.
+    replay_gres = (
+        configured_replay_gres
+        if local_replay_qos
+        else configured_replay_gres or "gpu:1"
+    )
     return {
         "project_root": str(project_root),
         "lerobot_root": str(project_root / "lerobot"),
@@ -327,6 +427,7 @@ def build_settings(
         "eval_init_states_path": str(eval_init_states_path or ""),
         "original_dataset_dir": str(original_dataset_dir or ""),
         "fsq_run_name": run_name,
+        "fsq_model_name": selected_model_name,
         "fsq_eval_run_names": " ".join(run_names),
         "fsq_run_count": len(run_names),
         "fsq_epoch_tag": epoch_tag,
@@ -347,6 +448,7 @@ def build_settings(
         "eval_max_concurrent": concurrent_jobs,
         "eval_worker_count": worker_count,
         "eval_resume": str(as_bool(get_value(config, "resume", False))).lower(),
+        "eval_report_title": report_title,
         "eval_collection_dir": str(collection_dir),
         "eval_out_dir": str(checkpoint_output_dir),
         "eval_compare_dir": str(compare_dir) if compare_dir else "",
@@ -359,20 +461,15 @@ def build_settings(
             as_list(get_value(config, "train_partition", ["debug"]))
         ) or "debug",
         "eval_qos": str(get_value(config, "train_qos", "base_qos")),
-        # slurm.gres covers the GPU latent-encoding prepass; slurm.replay_gres
-        # covers the replay array, which needs no GPU at all (default: none).
-        "eval_gres": str(_at(config, "slurm", "gres", "gpu:1")),
-        "eval_replay_gres": str(_at(config, "slurm", "replay_gres", "") or ""),
-        # A GPU-free replay cannot use the GPU partitions: their QOS enforces a
-        # minimum of one GPU per job, so a zero-GPU request pends forever with
-        # reason QOSMinGRES. Send it to the CPU partition instead.
-        "eval_replay_partition": ",".join(
-            as_list(_at(config, "slurm", "replay_partition", "dell_cpu"))
-        ) or "dell_cpu",
-        "eval_replay_qos": str(_at(config, "slurm", "replay_qos", "cpu_qos")),
+        # In inherited train placement, replay reserves one GPU for QOS while
+        # the evaluator itself still runs on CPU.
+        "eval_gres": latent_gres,
+        "eval_replay_gres": replay_gres,
+        "eval_replay_partition": ",".join(replay_partitions),
+        "eval_replay_qos": replay_qos,
         # The replay decodes two frames per occurrence and writes two PNGs; the
         # 8 CPU / 64G defaults belong to the GPU encoding prepass. Asking for
-        # less lets far more tasks fit the small CPU partition at once.
+        # less lets far more replay tasks fit each selected node at once.
         "eval_replay_cpus": int(
             _at(config, "slurm", "replay_cpus", _at(config, "slurm", "cpus", 8))
         ),

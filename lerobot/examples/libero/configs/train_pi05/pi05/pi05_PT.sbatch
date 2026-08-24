@@ -41,12 +41,27 @@ echo "base     : ${PI_BASE}"
 echo "tokenizer: ${PI05_TOKENIZER_PATH}"
 echo "output   : ${PT_OUTPUT_DIR}"
 echo "lr/bs    : ${PT_LR} / ${PT_BATCH_SIZE}"
+echo "lr sched : ${PT_LR_MODE} (warmup=${PT_WARMUP_STEPS})"
 echo "freeze   : vision=${PT_FREEZE_VISION_ENCODER} lang=${PT_FREEZE_LANGUAGE_MODEL}"
+echo "eef rel  : ${PT_EEF_RELATIVE}"
 nvidia-smi || true
 
 if [ ! -d "${PT_DATASET_DIR}" ]; then
   echo "Dataset not found: ${PT_DATASET_DIR}" >&2
   exit 1
+fi
+
+EEF_RELATIVE_ARGS=()
+if [ "${PT_EEF_RELATIVE}" = "true" ]; then
+  echo "eef stats: ${PT_EEF_RELATIVE_STATS_PATH}"
+  echo "OSC scale: position=${PT_EEF_POSITION_SCALE} rotation=${PT_EEF_ROTATION_SCALE}"
+  EEF_RELATIVE_ARGS=(
+    --policy.use_eef_relative_actions=true
+    --policy.eef_relative_stats_path="${PT_EEF_RELATIVE_STATS_PATH}"
+    --policy.eef_position_scale="${PT_EEF_POSITION_SCALE}"
+    --policy.eef_rotation_scale="${PT_EEF_ROTATION_SCALE}"
+    --policy.n_action_steps=1
+  )
 fi
 
 CONFIG_JSON="${PT_OUTPUT_DIR}/checkpoints/last/pretrained_model/train_config.json"
@@ -67,6 +82,8 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
   --job_name="${PT_RUN_NAME}" \
   --policy.pretrained_path="${PI_BASE}" \
   --policy.tokenizer_path="${PI05_TOKENIZER_PATH}" \
+  --policy.chunk_size="${PT_CHUNK_SIZE}" \
+  "${EEF_RELATIVE_ARGS[@]}" \
   --policy.compile_model=false \
   --policy.gradient_checkpointing=true \
   --wandb.enable=true \
@@ -88,6 +105,10 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
   --dataset.video_backend=pyav \
   --batch_size="${PT_BATCH_SIZE}" \
   --policy.optimizer_lr="${PT_LR}" \
+  --policy.scheduler_mode="${PT_LR_MODE}" \
+  --policy.scheduler_warmup_steps="${PT_WARMUP_STEPS}" \
+  --policy.scheduler_decay_steps="${PT_DECAY_STEPS}" \
+  --policy.scheduler_decay_lr="${PT_DECAY_LR}" \
   --num_workers="${PT_NUM_WORKERS}" \
   ${RESUME_ARGS[@]+"${RESUME_ARGS[@]}"}
 

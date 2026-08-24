@@ -9,11 +9,13 @@ pi_base: models/pi05_base   # project_root(global_config) 기준 상대경로 �
 pi05_tokenizer: models/paligemma-3b-pt-224-tokenizer
 
 # ── pi05 PT ───────────────────────────────────────────────────
-pt_dataset: libero_goal_full_full
+pt_dataset: libero_90_full_full_rel
+pt_eef_relative: true  # OSC scale/statistics are loaded from this dataset's meta contract.
 pt_batch_size: 16
+pt_chunk_size: 10  # Existing PI0.5 PT horizon; relative stats currently cover offsets through 50.
 pt_num_gpus: 1
 pt_num_workers: 4
-pt_exp: ""
+pt_exp: "pro"
 # Freeze 프로브 2개 (action expert는 항상 학습; 구 train_expert_only는 yaml에서 제거). 조합:
 #   (F,F)=full_unfreeze | vision=F,lang=T=freeze_LANG(LM만 동결, vision+projector 학습)
 #   vision=T,lang=F=vision만 동결   | vision=T,lang=T≈freeze_VLM(projector만 학습으로 남음)
@@ -36,6 +38,12 @@ pt_lora_dropout: 0.0
 
 pt_lora_targets: "q,k,v,o"       # 어텐션 투영 (q,k,v,o [+ gate,up,down / fc1,fc2])
 pt_lr_base: 2.5e-05
+# Stage 1/2-style schedule: warm up for 1k steps, then keep pt_lr_base constant.
+# Set cosine_decay to recover the previous PI0.5 schedule.
+pt_lr_mode: warmup_constant  # warmup_constant | cosine_decay
+pt_warmup_steps: 1000
+pt_decay_steps: 30000        # used only by cosine_decay
+pt_decay_lr: 2.5e-06         # used only by cosine_decay
 pt_steps: 30000
 pt_save_freq: 5000
 pt_wandb_project: VLA_posttrain

@@ -14,7 +14,13 @@ sys.path.insert(0, str(_ROOT / "lerobot/examples/libero"))
 sys.path.insert(0, str(_ROOT / "lerobot/src"))
 
 import fsq_eval as FE  # noqa: E402
-from FSQ import N_GRIPPER_DIMS, SplineFSQAE, SplineFSQAEConfig  # noqa: E402
+from FSQ import (  # noqa: E402
+    BSQ,
+    N_GRIPPER_DIMS,
+    SplineFSQAE,
+    SplineFSQAEConfig,
+    load_fsq_model,
+)
 
 
 def _config(**overrides) -> SplineFSQAEConfig:
@@ -34,6 +40,9 @@ def _config(**overrides) -> SplineFSQAEConfig:
         encoder_input_mode="raw_state",
         encoder_min=np.full(enc_dim, -1.0, dtype=np.float32),
         encoder_max=np.full(enc_dim, 1.0, dtype=np.float32),
+        reconstructor_output_mode="raw_state",
+        reconstructor_min=np.full(enc_dim, -1.0, dtype=np.float32),
+        reconstructor_max=np.full(enc_dim, 1.0, dtype=np.float32),
         state_min=np.full(enc_dim, -1.0, dtype=np.float32),
         state_max=np.full(enc_dim, 1.0, dtype=np.float32),
         state_q01=np.full(enc_dim, -1.0, dtype=np.float32),
@@ -47,6 +56,43 @@ def _config(**overrides) -> SplineFSQAEConfig:
 
 def _model(**overrides) -> SplineFSQAE:
     return SplineFSQAE(_config(**overrides)).eval()
+
+
+def test_joint_model_can_replace_fsq_grid_with_bsq5() -> None:
+    model = _model(
+        quantizer="bsq",
+        bsq_code_dim=5,
+        fsq_entropy=False,
+        reconstructor_arch="oneshot",
+        reconstructor_start_state=False,
+        reconstructor_only=True,
+    )
+
+    assert isinstance(model.fsq, BSQ)
+    assert model.encoder.z_head.out_features == 5
+    assert model.reconstructor.mlp[0].net[0].in_features == 5
+    assert model.cfg.fsq_levels == [2, 2, 2, 2, 2]
+    assert model.fsq.codebook_size == 32
+
+
+def test_joint_bsq_checkpoint_round_trip(tmp_path: Path) -> None:
+    model = _model(
+        quantizer="bsq",
+        bsq_code_dim=5,
+        fsq_entropy=False,
+        reconstructor_arch="oneshot",
+        reconstructor_start_state=False,
+        reconstructor_only=True,
+    )
+    path = tmp_path / "BSQ_epoch0001.pt"
+    torch.save({"cfg": model.cfg, "model_state": model.state_dict()}, path)
+
+    restored, restored_cfg = load_fsq_model(path)
+
+    assert isinstance(restored.fsq, BSQ)
+    assert restored_cfg.quantizer == "bsq"
+    assert restored_cfg.bsq_code_dim == 5
+    assert restored.encoder.z_head.out_features == 5
 
 
 def test_is_oneshot_reads_the_checkpoint_arch() -> None:
@@ -67,6 +113,23 @@ def test_sample_control_points_returns_one_grid_per_skill(start_state: bool) -> 
 
     assert ctrl.shape == (3, model.cfg.n_control, model.cfg.enc_dim)
     assert torch.isfinite(ctrl).all()
+
+
+def test_sample_control_points_uses_reconstructor_output_statistics() -> None:
+    model = _model(
+        reconstructor_arch="oneshot",
+        reconstructor_start_state=False,
+        reconstructor_output_mode="zero_grounded",
+        reconstructor_min=np.full(8, 10.0, dtype=np.float32),
+        reconstructor_max=np.full(8, 20.0, dtype=np.float32),
+    )
+    for parameter in model.reconstructor.parameters():
+        torch.nn.init.zeros_(parameter)
+    z_q, _ = model.fsq(torch.zeros(1, 3))
+
+    ctrl = model.sample_control_points(z_q)
+
+    torch.testing.assert_close(ctrl, torch.full_like(ctrl, 15.0))
 
 
 def test_sample_control_points_needs_start_states_when_the_decoder_takes_them() -> None:

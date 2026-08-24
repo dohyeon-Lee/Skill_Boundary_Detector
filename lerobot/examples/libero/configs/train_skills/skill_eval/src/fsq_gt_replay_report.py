@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import hashlib
 import json
 import os
 import re
+from html import escape as escape_html
 from pathlib import Path
 
 # Signature fields every checkpoint of one comparison must share. model_path and
@@ -50,6 +52,8 @@ def report_payload(manifest: dict) -> dict:
     return {
         "levels": levels,
         "run_name": manifest["run_name"],
+        "model_name": manifest.get("model_name") or manifest["run_name"],
+        "title": manifest.get("report_title") or "",
         "epoch_tag": manifest["epoch_tag"],
         "target_task": signature["target_task"],
         "task_ids": sorted(int(value) for value in signature["selected_episodes"]),
@@ -67,11 +71,23 @@ def collection_payload(manifests: list[dict]) -> dict:
     if not manifests:
         raise ValueError("At least one FSQ replay manifest is required.")
     run_names = {manifest["run_name"] for manifest in manifests}
+    model_names = {
+        str(manifest.get("model_name") or "").strip()
+        for manifest in manifests
+        if str(manifest.get("model_name") or "").strip()
+    }
+    titles = {
+        str(manifest.get("report_title") or "").strip()
+        for manifest in manifests
+        if str(manifest.get("report_title") or "").strip()
+    }
     target_tasks = {
         manifest["signature"]["target_task"] for manifest in manifests
     }
     if len(run_names) != 1 or len(target_tasks) != 1:
         raise ValueError("FSQ replay checkpoints must share one run and task suite.")
+    if len(model_names) > 1 or len(titles) > 1:
+        raise ValueError("FSQ replay checkpoints must share one model name and title.")
     checkpoints = []
     for manifest in manifests:
         checkpoint = report_payload(manifest)
@@ -89,6 +105,8 @@ def collection_payload(manifests: list[dict]) -> dict:
     return {
         "format": "fsq_gt_replay_collection_v1",
         "run_name": next(iter(run_names)),
+        "model_name": next(iter(model_names), ""),
+        "title": next(iter(titles), ""),
         "target_task": next(iter(target_tasks)),
         "checkpoints": checkpoints,
     }
@@ -108,6 +126,7 @@ def compare_payload(
         raise ValueError("At least one collection directory is required.")
     output_dir = Path(output_dir)
     models: list[dict] = []
+    titles: set[str] = set()
     reference_signature: dict | None = None
     for collection_dir in collection_dirs:
         collection_dir = Path(collection_dir)
@@ -120,6 +139,8 @@ def compare_payload(
         reference_tag = sorted(available, key=_tag_sort_key)[-1]
         manifests, excluded = _partition_compatible(available, reference_tag)
         payload = collection_payload(manifests)
+        if payload.get("title"):
+            titles.add(payload["title"])
         prefix = Path(os.path.relpath(collection_dir, output_dir))
         for checkpoint in payload["checkpoints"]:
             for skill in checkpoint["skills"]:
@@ -129,7 +150,7 @@ def compare_payload(
                             occurrence[key] = (prefix / occurrence[key]).as_posix()
         signature = _comparable_signature(manifests[0])
         model = {
-            "name": collection_dir.name,
+            "name": payload.get("model_name") or collection_dir.name,
             "run_name": payload["run_name"],
             "target_task": payload["target_task"],
             "checkpoints": payload["checkpoints"],
@@ -145,7 +166,14 @@ def compare_payload(
         raise FileNotFoundError(
             "None of the given directories holds a completed checkpoint manifest."
         )
-    return {"format": "fsq_gt_replay_compare_v1", "models": models}
+    if len(titles) > 1:
+        raise ValueError(f"Compared FSQ runs disagree on report title: {sorted(titles)}.")
+    default_title = output_dir.parent.name if output_dir.name == "compare" else output_dir.name
+    return {
+        "format": "fsq_gt_replay_compare_v1",
+        "title": next(iter(titles), default_title),
+        "models": models,
+    }
 
 
 def maybe_build_compare(
@@ -178,6 +206,84 @@ def _atomic_json(path: Path, payload: dict) -> None:
     temporary.replace(path)
 
 
+_REPORT_DATA_CHUNK_BYTES = 16 * 1024 * 1024
+
+
+def _script_json(value: object) -> str:
+    """Serialize JSON so it is safe in both inline and external script elements."""
+    return json.dumps(value, separators=(",", ":")).replace("</", "<\\/")
+
+
+def _report_data_chunks(
+    payload: dict, *, max_bytes: int = _REPORT_DATA_CHUNK_BYTES
+) -> tuple[str, list[str]]:
+    """Split report data into ordered JavaScript chunks.
+
+    The HTML bootstraps an empty model list, then ordinary external scripts fill
+    it before the UI script runs.  Checkpoints are normally added one skill at a
+    time; an unusually large skill falls back to occurrence-at-a-time statements
+    so every generated asset remains comfortably below editor/viewer limits.
+    """
+    if max_bytes <= 0:
+        raise ValueError("Report data chunk size must be positive.")
+    bootstrap = {key: value for key, value in payload.items() if key != "models"}
+    bootstrap["models"] = []
+    chunks: list[str] = []
+    parts: list[str] = []
+    part_bytes = 0
+
+    def flush() -> None:
+        nonlocal parts, part_bytes
+        if parts:
+            chunks.append("".join(parts))
+            parts = []
+            part_bytes = 0
+
+    def add(statement: str) -> None:
+        nonlocal part_bytes
+        encoded_bytes = len(statement.encode("utf-8"))
+        if encoded_bytes > max_bytes:
+            raise ValueError(
+                "One FSQ replay data record exceeds the configured report-data "
+                f"chunk size ({encoded_bytes} > {max_bytes} bytes)."
+            )
+        if parts and part_bytes + encoded_bytes > max_bytes:
+            flush()
+        parts.append(statement)
+        part_bytes += encoded_bytes
+
+    data_ref = "window.FSQ_GT_REPLAY_DATA"
+    for model_index, model in enumerate(payload["models"]):
+        model_header = {
+            key: value for key, value in model.items() if key != "checkpoints"
+        }
+        model_header["checkpoints"] = []
+        add(f"{data_ref}.models.push({_script_json(model_header)});\n")
+        model_ref = f"{data_ref}.models[{model_index}]"
+        for checkpoint_index, checkpoint in enumerate(model["checkpoints"]):
+            checkpoint_header = {
+                key: value for key, value in checkpoint.items() if key != "skills"
+            }
+            checkpoint_header["skills"] = []
+            add(f"{model_ref}.checkpoints.push({_script_json(checkpoint_header)});\n")
+            skills_ref = f"{model_ref}.checkpoints[{checkpoint_index}].skills"
+            for skill_index, skill in enumerate(checkpoint["skills"]):
+                full_statement = f"{skills_ref}.push({_script_json(skill)});\n"
+                if len(full_statement.encode("utf-8")) <= max_bytes:
+                    add(full_statement)
+                    continue
+                skill_header = {
+                    key: value for key, value in skill.items() if key != "occurrences"
+                }
+                skill_header["occurrences"] = []
+                add(f"{skills_ref}.push({_script_json(skill_header)});\n")
+                occurrences_ref = f"{skills_ref}[{skill_index}].occurrences"
+                for occurrence in skill["occurrences"]:
+                    add(f"{occurrences_ref}.push({_script_json(occurrence)});\n")
+    flush()
+    return _script_json(bootstrap), chunks
+
+
 def write_html_report(output_dir: str | Path, payload: dict) -> Path:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -186,25 +292,48 @@ def write_html_report(output_dir: str | Path, payload: dict) -> Path:
             payload = {
                 "format": "fsq_gt_replay_collection_v1",
                 "run_name": payload["run_name"],
+                "model_name": payload.get("model_name") or payload["run_name"],
+                "title": payload.get("title") or "",
                 "target_task": payload["target_task"],
                 "checkpoints": [payload],
             }
         model = {
-            "name": payload["run_name"],
+            "name": payload.get("model_name") or payload["run_name"],
             "run_name": payload["run_name"],
             "target_task": payload["target_task"],
             "checkpoints": payload["checkpoints"],
         }
         if payload.get("excluded_epoch_tags"):
             model["excluded_epoch_tags"] = payload["excluded_epoch_tags"]
-        payload = {"format": "fsq_gt_replay_compare_v1", "models": [model]}
-    data = json.dumps(payload, separators=(",", ":")).replace("</", "<\\/")
+        payload = {
+            "format": "fsq_gt_replay_compare_v1",
+            "title": payload.get("title") or "FSQ GT skill replay",
+            "models": [model],
+        }
+    report_title = str(payload.get("title") or "FSQ GT skill replay")
+    bootstrap, data_chunks = _report_data_chunks(payload)
+    digest = hashlib.sha256()
+    digest.update(bootstrap.encode("utf-8"))
+    for chunk in data_chunks:
+        digest.update(chunk.encode("utf-8"))
+    generation = digest.hexdigest()[:12]
+    data_paths = [
+        output_dir / f"report-data-{generation}-{index:03d}.js"
+        for index in range(len(data_chunks))
+    ]
+    for data_path, chunk in zip(data_paths, data_chunks, strict=True):
+        temporary = data_path.with_name(data_path.name + ".tmp")
+        temporary.write_text(chunk, encoding="utf-8")
+        temporary.replace(data_path)
+    data_scripts = "\n".join(
+        f'<script src="{path.name}"></script>' for path in data_paths
+    )
     html = """<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>FSQ GT skill replay</title>
+  <title>__REPORT_TITLE__</title>
   <style>
     :root{--ink:#17202a;--muted:#667085;--line:#d4dbe6;--blue:#2878b5;--red:#d62728}
     *{box-sizing:border-box} body{margin:0;font-family:Inter,Arial,sans-serif;background:#f4f6f9;color:var(--ink)}
@@ -238,7 +367,7 @@ def write_html_report(output_dir: str | Path, payload: dict) -> Path:
   </style>
 </head>
 <body>
-<header><h1>FSQ GT skill replay</h1><div class="subtitle" id="summary"></div>
+<header><h1>__REPORT_TITLE__</h1><div class="subtitle" id="summary"></div>
   <div class="tabs" id="modelTabs" hidden></div>
   <div class="controls">
     <label class="control">Checkpoint <select id="checkpoint"></select></label>
@@ -259,11 +388,13 @@ def write_html_report(output_dir: str | Path, payload: dict) -> Path:
     <section id="content"></section>
   </div>
 </main>
+<script>window.FSQ_GT_REPLAY_DATA=__DATA_BOOTSTRAP__;</script>
+__DATA_SCRIPTS__
 <script>
-const DATA=__DATA__, models=DATA.models;
+const DATA=window.FSQ_GT_REPLAY_DATA, models=DATA.models;
 let modelIndex=0,checkpointIndex=0,selectedTasks=new Set(),activeSkills=[],byToken=new Map(),positionByOccurrence=new Map(),positionMode='all';
 let checkpoints=models.length?models[0].checkpoints:[];
-const maximumSkillId=Math.max(0,...models.flatMap(m=>m.checkpoints.flatMap(cp=>cp.skills.flatMap(skill=>skill.occurrences.map(o=>Number(o.skill_index))))));const positionRanges={percent:[0,100],id:[0,maximumSkillId]};
+let maximumSkillId=0;models.forEach(model=>model.checkpoints.forEach(cp=>cp.skills.forEach(skill=>skill.occurrences.forEach(o=>{maximumSkillId=Math.max(maximumSkillId,Number(o.skill_index)||0)}))));const positionRanges={percent:[0,100],id:[0,maximumSkillId]};
 const esc=v=>String(v).replace(/[&<>'"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[c]));
 const current=()=>checkpoints[checkpointIndex];
 function coord(token,levels){const c=[];let base=1;for(const level of levels){c.push(Math.floor(token/base)%level);base*=level}return c}
@@ -385,7 +516,7 @@ function renderTables(){
 function occurrenceCard(o){const info=positionByOccurrence.get(o),position=info?`${info.rank}/${info.total} · ${info.percent.toFixed(1)}%`:'';const figure=(src,label)=>src?`<figure><img loading="lazy" src="${esc(src)}" alt="${label}"><figcaption>${label}</figcaption></figure>`:'';return `<article class="occ"><div class="occ-title">episode ${o.episode_id} · skill ${o.skill_index}</div><div class="meta">position ${position} · frames [${o.frame_start}, ${o.frame_end}) · length ${o.length}</div><div class="pair">${figure(o.start_image_path,'GT start')}${figure(o.final_image_path,'GT end')}</div></article>`}
 function selectToken(token){const skill=byToken.get(Number(token));if(!skill)return;renderCube(token);document.getElementById('selected').innerHTML=`token #${token} [${skill.coord.join(', ')}] <span class="count">${skill.occurrences.length} occurrences</span>`;const groups=new Map();skill.occurrences.forEach(o=>{const task=Number(o.task_id);if(!groups.has(task))groups.set(task,[]);groups.get(task).push(o)});document.getElementById('content').innerHTML=[...groups.entries()].sort((a,b)=>a[0]-b[0]).map(([task,occurrences])=>`<section class="task-group"><div class="task-group-title">Task ${task}: ${esc(occurrences[0].task_description||'')} <span class="task-count">${occurrences.length} videos</span></div><div class="occ-row">${occurrences.map(occurrenceCard).join('')}</div></section>`).join('')}
 function renderTaskFilters(reset){const tasks=current().task_ids.map(Number);if(reset)selectedTasks=new Set(tasks);else selectedTasks=new Set([...selectedTasks].filter(t=>tasks.includes(t)));const box=document.getElementById('tasks');box.innerHTML=tasks.map(t=>`<label class="task-chip"><input type="checkbox" value="${t}" ${selectedTasks.has(t)?'checked':''}>${t}</label>`).join('');box.querySelectorAll('input').forEach(input=>input.addEventListener('change',()=>{const task=Number(input.value);if(input.checked)selectedTasks.add(task);else selectedTasks.delete(task);refresh()}))}
-function refresh(){const model=models[modelIndex],cp=current();positionByOccurrence=positionsFor(cp);renderTables();activeSkills=cp.skills.map(skill=>({...skill,occurrences:skill.occurrences.filter(o=>selectedTasks.has(Number(o.task_id))&&positionMatches(o))})).filter(skill=>skill.occurrences.length);byToken=new Map(activeSkills.map(skill=>[Number(skill.token),skill]));const tasks=[...selectedTasks].sort((a,b)=>a-b);const occurrences=activeSkills.reduce((sum,skill)=>sum+skill.occurrences.length,0),range=positionMode==='all'?'all':`${positionRanges[positionMode][0]}–${positionRanges[positionMode][1]}${positionMode==='percent'?'%':' ID'}`;document.getElementById('summary').textContent=`${model.run_name} · ${cp.epoch_tag} · GT start/end frames · ${model.target_task} · tasks ${tasks.length?tasks.join(', '):'none'} · position ${range} · ${occurrences} skill occurrences${(model.excluded_epoch_tags||[]).length?` \\u00b7 excluded (different replay settings): ${model.excluded_epoch_tags.join(', ')}`:''}`;if(activeSkills.length){const initial=activeSkills.slice().sort((a,b)=>b.occurrences.length-a.occurrences.length||a.token-b.token)[0].token;selectToken(initial)}else{renderCube(-1);document.getElementById('selected').textContent='No used code for the selected filters';document.getElementById('content').innerHTML='<div class="empty">No occurrences for the selected task and skill-position filters.</div>'}}
+function refresh(){const model=models[modelIndex],cp=current();positionByOccurrence=positionsFor(cp);renderTables();activeSkills=cp.skills.map(skill=>({...skill,occurrences:skill.occurrences.filter(o=>selectedTasks.has(Number(o.task_id))&&positionMatches(o))})).filter(skill=>skill.occurrences.length);byToken=new Map(activeSkills.map(skill=>[Number(skill.token),skill]));const tasks=[...selectedTasks].sort((a,b)=>a-b);const occurrences=activeSkills.reduce((sum,skill)=>sum+skill.occurrences.length,0),range=positionMode==='all'?'all':`${positionRanges[positionMode][0]}–${positionRanges[positionMode][1]}${positionMode==='percent'?'%':' ID'}`;document.getElementById('summary').textContent=`${model.name} · ${cp.epoch_tag} · GT start/end frames · ${model.target_task} · tasks ${tasks.length?tasks.join(', '):'none'} · position ${range} · ${occurrences} skill occurrences${(model.excluded_epoch_tags||[]).length?` \\u00b7 excluded (different replay settings): ${model.excluded_epoch_tags.join(', ')}`:''}`;if(activeSkills.length){const initial=activeSkills.slice().sort((a,b)=>b.occurrences.length-a.occurrences.length||a.token-b.token)[0].token;selectToken(initial)}else{renderCube(-1);document.getElementById('selected').textContent='No used code for the selected filters';document.getElementById('content').innerHTML='<div class="empty">No occurrences for the selected task and skill-position filters.</div>'}}
 function configurePositionRange(){const range=document.getElementById('positionRange'),start=document.getElementById('positionStart'),end=document.getElementById('positionEnd'),unit=document.getElementById('positionUnit');range.hidden=positionMode==='all';if(positionMode==='all')return;const values=positionRanges[positionMode],percent=positionMode==='percent';start.min=0;end.min=0;start.max=percent?100:maximumSkillId;end.max=percent?100:maximumSkillId;start.step=percent?'0.1':'1';end.step=start.step;start.value=values[0];end.value=values[1];unit.textContent=percent?'%':'ID'}
 const checkpointSelect=document.getElementById('checkpoint');
 function renderCheckpointSelect(){checkpointSelect.innerHTML=checkpoints.map((cp,index)=>`<option value="${index}">${esc(cp.epoch_tag)}</option>`).join('');checkpointSelect.value=String(checkpointIndex)}
@@ -397,11 +528,17 @@ const tableUnitSelect=document.getElementById('tableUnit');tableUnitSelect.addEv
 document.getElementById('allTasks').addEventListener('click',()=>{renderTaskFilters(true);refresh()});document.getElementById('clearTasks').addEventListener('click',()=>{selectedTasks.clear();renderTaskFilters(false);refresh()});
 document.querySelectorAll('.cube-mode').forEach(button=>button.addEventListener('click',()=>{cubeMode=button.dataset.mode;document.querySelectorAll('.cube-mode').forEach(other=>other.classList.toggle('active',other===button));renderCube(selectedToken)}));
 if(models.length&&checkpoints.length){renderModelTabs();renderCheckpointSelect();renderTaskFilters(true);refresh()}else{document.getElementById('content').innerHTML='<div class="empty">No completed checkpoints.</div>'}
-</script></body></html>""".replace("__DATA__", data)
+</script></body></html>""".replace(
+        "__REPORT_TITLE__", escape_html(report_title)
+    ).replace("__DATA_BOOTSTRAP__", bootstrap).replace("__DATA_SCRIPTS__", data_scripts)
     path = output_dir / "index.html"
     temporary = path.with_suffix(".html.tmp")
     temporary.write_text(html, encoding="utf-8")
     temporary.replace(path)
+    active_data_names = {data_path.name for data_path in data_paths}
+    for stale_path in output_dir.glob("report-data-*.js"):
+        if stale_path.name not in active_data_names:
+            stale_path.unlink()
     return path
 
 
@@ -433,6 +570,8 @@ def maybe_merge_chunks(output_dir: str | Path, *, expected_chunks: int) -> Path 
         merged = {
             "signature": signature,
             "run_name": chunks[0]["run_name"],
+            "model_name": chunks[0].get("model_name") or chunks[0]["run_name"],
+            "report_title": chunks[0].get("report_title") or "",
             "epoch_tag": chunks[0]["epoch_tag"],
             "levels": levels,
             "train_codebook_used": chunks[0].get("train_codebook_used"),

@@ -240,6 +240,7 @@ def aggregate_datasets(
     data_files_size_in_mb: float | None = None,
     video_files_size_in_mb: float | None = None,
     chunk_size: int | None = None,
+    concatenate_videos: bool = True,
 ):
     """Aggregates multiple LeRobot datasets into a single unified dataset.
 
@@ -257,6 +258,9 @@ def aggregate_datasets(
         data_files_size_in_mb: Maximum size for data files in MB (defaults to DEFAULT_DATA_FILE_SIZE_IN_MB)
         video_files_size_in_mb: Maximum size for video files in MB (defaults to DEFAULT_VIDEO_FILE_SIZE_IN_MB)
         chunk_size: Maximum number of files per chunk (defaults to DEFAULT_CHUNK_SIZE)
+        concatenate_videos: Whether to remux input videos into size-bounded output files. If False,
+            every input MP4 is copied to a separate output file. This avoids timestamp incompatibilities
+            when source datasets were encoded with different H.264 encoders or B-frame settings.
     """
     logging.info("Start aggregate_datasets")
 
@@ -304,7 +308,14 @@ def aggregate_datasets(
     dst_meta.episodes = {}
 
     for src_meta in tqdm.tqdm(all_metadata, desc="Copy data and videos"):
-        videos_idx = aggregate_videos(src_meta, dst_meta, videos_idx, video_files_size_in_mb, chunk_size)
+        videos_idx = aggregate_videos(
+            src_meta,
+            dst_meta,
+            videos_idx,
+            video_files_size_in_mb,
+            chunk_size,
+            concatenate_videos=concatenate_videos,
+        )
         data_idx = aggregate_data(src_meta, dst_meta, data_idx, data_files_size_in_mb, chunk_size)
 
         meta_idx = aggregate_metadata(src_meta, dst_meta, meta_idx, data_idx, videos_idx)
@@ -320,7 +331,14 @@ def aggregate_datasets(
     logging.info("Aggregation complete.")
 
 
-def aggregate_videos(src_meta, dst_meta, videos_idx, video_files_size_in_mb, chunk_size):
+def aggregate_videos(
+    src_meta,
+    dst_meta,
+    videos_idx,
+    video_files_size_in_mb,
+    chunk_size,
+    concatenate_videos=True,
+):
     """Aggregates video chunks from a source dataset into the destination dataset.
 
     Handles video file concatenation and rotation based on file size limits.
@@ -332,6 +350,8 @@ def aggregate_videos(src_meta, dst_meta, videos_idx, video_files_size_in_mb, chu
         videos_idx: Dictionary tracking video chunk and file indices.
         video_files_size_in_mb: Maximum size for video files in MB (defaults to DEFAULT_VIDEO_FILE_SIZE_IN_MB)
         chunk_size: Maximum number of files per chunk (defaults to DEFAULT_CHUNK_SIZE)
+        concatenate_videos: Whether compatible source MP4s may be remuxed into the current output file.
+            If False, each source MP4 is copied to a new destination file after the first one.
 
     Returns:
         dict: Updated videos_idx with current chunk and file indices.
@@ -393,7 +413,7 @@ def aggregate_videos(src_meta, dst_meta, videos_idx, video_files_size_in_mb, chu
             src_size = get_file_size_in_mb(src_path)
             dst_size = get_file_size_in_mb(dst_path)
 
-            if dst_size + src_size >= video_files_size_in_mb:
+            if not concatenate_videos or dst_size + src_size >= video_files_size_in_mb:
                 # Rotate to a new file - offset is 0
                 chunk_idx, file_idx = update_chunk_file_indices(chunk_idx, file_idx, chunk_size)
                 dst_key = (chunk_idx, file_idx)

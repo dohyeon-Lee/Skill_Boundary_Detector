@@ -54,6 +54,37 @@ def _relocate_project_path(project_root: Path, value: object) -> Path:
     return path
 
 
+def _relocate_checkpoint_reference(
+    project_root: Path,
+    value: object,
+    *,
+    field: str,
+    require_local: bool = False,
+) -> str:
+    """Rebase a checkpoint-owned local path without rewriting Hub references."""
+    text = str(value or "").strip()
+    if not text or text == "null":
+        return ""
+
+    path = Path(text).expanduser()
+    if path.is_absolute():
+        resolved = _relocate_project_path(project_root, path)
+        if require_local and not resolved.exists():
+            raise FileNotFoundError(
+                f"Rebased Stage-2 {field} not found: {resolved} "
+                f"(checkpoint value: {text})"
+            )
+        return str(resolved)
+
+    # Project-relative checkpoint paths are local when their rebased target
+    # exists. Otherwise preserve the original string: values such as
+    # ``namespace/model`` may intentionally be Hugging Face repo IDs.
+    candidate = project_root / path
+    if candidate.exists():
+        return str(candidate)
+    return text
+
+
 def _read_json(path: Path, label: str) -> dict:
     if not path.is_file():
         raise FileNotFoundError(f"{label} not found: {path}")
@@ -139,6 +170,34 @@ def build_settings(config: dict) -> dict:
         raise ValueError("Invalid Stage-2 FSQ geometry in the warm-start checkpoint.")
 
     parent_fsq = _relocate_project_path(project_root, parent.get("fsq_path"))
+    policy_dino_model_path = _relocate_checkpoint_reference(
+        project_root,
+        parent.get("dino_model_path", "models/dinov3-vitl16"),
+        field="dino_model_path",
+        require_local=True,
+    )
+    policy_tokenizer_path = _relocate_checkpoint_reference(
+        project_root,
+        parent.get("tokenizer_path"),
+        field="tokenizer_path",
+        require_local=True,
+    )
+    policy_stage1_checkpoint_path = _relocate_checkpoint_reference(
+        project_root,
+        parent.get("stage1_checkpoint_path"),
+        field="stage1_checkpoint_path",
+    )
+    policy_skill_predictor_checkpoint_path = _relocate_checkpoint_reference(
+        project_root,
+        parent.get("skill_predictor_checkpoint_path"),
+        field="skill_predictor_checkpoint_path",
+    )
+    policy_terminator_dino_model_path = _relocate_checkpoint_reference(
+        project_root,
+        parent.get("terminator_dino_model_path"),
+        field="terminator_dino_model_path",
+        require_local=True,
+    )
     source = _safe_name(_at(config, "dataset", "source", default=""), field="dataset.source")
     configured_run = str(_at(config, "dataset", "run", default="") or "").strip()
     if configured_run:
@@ -220,6 +279,15 @@ def build_settings(config: dict) -> dict:
         "parent_stage2_checkpoint": checkpoint,
         "stage2_mode": stage2_mode,
         "training_skill_source": training_skill_source,
+        # A complete Stage-2 checkpoint carries its architecture, but historical
+        # checkpoints may contain absolute paths from the machine that created
+        # them. Export rebased overrides so both fresh FT and resume are portable.
+        "policy_dino_model_path": policy_dino_model_path,
+        "policy_tokenizer_path": policy_tokenizer_path,
+        "policy_stage1_checkpoint_path": policy_stage1_checkpoint_path,
+        "policy_skill_predictor_checkpoint_path": policy_skill_predictor_checkpoint_path,
+        "policy_fsq_path": parent_fsq,
+        "policy_terminator_dino_model_path": policy_terminator_dino_model_path,
         "gradient_checkpointing": as_bool(
             _at(config, "training", "gradient_checkpointing", default=False)
         ),

@@ -1,10 +1,10 @@
 dataset:
   skillvla_root: skillvla_dataset
-  source: libero_90_full_firsthalf_scene
-  run: FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal
+  source: libero_90_full_firsthalf_scene # libero_90_full_firsthalf_scene | libero_90_full_full
+  run: FSQ333_fusion_raw_raw__recon_lincontrast_bj10_w01_warm50_ramp50_new_initcal_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal
 
 # Optional label appended to the generated run/output name.
-run: {suffix: "terminator_w3_s2_vis"}
+run: {suffix: "terminator_visfreeze"}
 
 warm_start:
   # Used only when skill_predictor.train=true.
@@ -13,9 +13,9 @@ warm_start:
 
 terminator:
   train: true
-  freeze_vision: false
+  freeze_vision: true
   end_target_sigma: 2.0
-  end_pos_weight: 3.0
+  end_pos_weight: 1.0
   # true: drop the progress head from both the output and the loss;
   # train the module purely as a boundary detector.
   termination_only: true

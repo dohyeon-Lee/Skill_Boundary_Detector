@@ -33,6 +33,7 @@ from lerobot.processor import (
     RenameObservationsProcessorStep,
     TransitionKey,
     UnnormalizerProcessorStep,
+    osc_actions_to_absolute_eef,
 )
 from lerobot.processor.converters import create_transition, transition_to_batch
 from lerobot.utils.constants import ACTION, OBS_IMAGE, OBS_STATE
@@ -133,6 +134,83 @@ def test_diffusion_relative_actions_use_current_state_and_round_trip(tmp_path):
     loaded_processed = loaded_preprocessor(batch)
     loaded_restored = loaded_postprocessor(loaded_processed[ACTION])
     assert torch.allclose(loaded_restored, actions[0], atol=1e-5)
+
+
+def test_default_diffusion_processor_does_not_enable_eef_relative_path():
+    config = create_default_config()
+    assert config.use_relative_actions is False
+    assert config.use_eef_relative_actions is False
+    preprocessor, postprocessor = make_diffusion_pre_post_processors(config, create_default_stats())
+    assert len(preprocessor.steps) == 4
+    assert len(postprocessor.steps) == 2
+
+
+def test_diffusion_eef_relative_actions_round_trip_to_osc_and_reload(tmp_path):
+    config = create_default_config()
+    config.input_features[OBS_STATE] = PolicyFeature(type=FeatureType.STATE, shape=(8,))
+    config.output_features[ACTION] = PolicyFeature(type=FeatureType.ACTION, shape=(7,))
+    config.horizon = 3
+    config.n_action_steps = 1
+    config.use_eef_relative_actions = True
+    config.eef_relative_stats_path = str(tmp_path / "relative_action_stats.json")
+    payload = {
+        "schema_version": 1,
+        "representation": "eef_anchor_relative_so3",
+        "storage_representation": "absolute_eef_command",
+        "rotation_representation": "axis_angle_rotation_vector",
+        "rotation_composition": "left_world",
+        "chunk_size": 3,
+        "osc_position_scale": 0.05,
+        "osc_rotation_scale": 0.5,
+        "action": {
+            "min": [-1.0] * 7,
+            "max": [1.0] * 7,
+            "mean": [0.0] * 7,
+            "std": [1.0] * 7,
+            "q01": [-1.0] * 7,
+            "q99": [1.0] * 7,
+        },
+    }
+    (tmp_path / "relative_action_stats.json").write_text(json.dumps(payload))
+    stats = {
+        OBS_STATE: {"mean": torch.zeros(8), "std": torch.ones(8)},
+        OBS_IMAGE: {},
+        ACTION: {"min": torch.full((7,), -10.0), "max": torch.full((7,), 10.0)},
+    }
+    state_window = torch.tensor(
+        [[
+            [0.20, 0.10, 0.90, 0.10, -0.10, 2.80, 0.01, -0.01],
+            [0.30, 0.05, 1.00, 0.20, -0.15, 2.90, 0.02, -0.02],
+        ]]
+    )
+    osc = torch.tensor([[[0.4, -0.5, 0.2, 0.2, -0.3, 0.1, -1.0]]])
+    absolute = osc_actions_to_absolute_eef(osc, state_window[:, -1])
+    batch = transition_to_batch(create_transition({OBS_STATE: state_window}, absolute))
+
+    preprocessor, postprocessor = make_diffusion_pre_post_processors(config, stats)
+    processed = preprocessor(batch)
+    restored_osc = postprocessor(processed[ACTION])
+    assert torch.allclose(restored_osc, osc[0], atol=2e-5, rtol=2e-5)
+
+    preprocessor.save_pretrained(tmp_path)
+    postprocessor.save_pretrained(tmp_path)
+    loaded_preprocessor, loaded_postprocessor = make_pre_post_processors(
+        policy_cfg=config, pretrained_path=str(tmp_path)
+    )
+    loaded_processed = loaded_preprocessor(batch)
+    loaded_osc = loaded_postprocessor(loaded_processed[ACTION])
+    assert torch.allclose(loaded_osc, osc[0], atol=2e-5, rtol=2e-5)
+
+
+def test_diffusion_eef_relative_config_rejects_queued_execution_and_joint_relative_mix():
+    with pytest.raises(ValueError, match="n_action_steps=1"):
+        DiffusionConfig(use_eef_relative_actions=True, n_action_steps=2)
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        DiffusionConfig(
+            use_relative_actions=True,
+            use_eef_relative_actions=True,
+            n_action_steps=1,
+        )
 
 
 def test_diffusion_processor_with_images():

@@ -5,6 +5,7 @@
 #   Images       : selected raw frames only for image/both terminator input
 # Reference models:
 #   DINO model   : {project_root}/models/dinov3-vits16
+#   ResNet model : torchvision ImageNet-pretrained ResNet-18
 # Outputs:
 #   FSQ run      : {project_root}/outputs/FSQ/{fsq_run_name}
 #   checkpoints  : {project_root}/outputs/FSQ/{fsq_run_name}/FSQ_epoch*.pt
@@ -58,13 +59,35 @@ export LD_LIBRARY_PATH=""
 # Reduce CUDA fragmentation: activation tensor sizes vary per batch (max skill length).
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
+# Keep the immutable shared path for provenance, but feed the DataLoader a
+# node-local copy when the visual cache can be staged safely. This happens
+# before CUDA initialization so the expensive sequential copy does not hold
+# initialized model state or DataLoader workers in memory.
+SHARED_FSQ_FRAME_CACHE_DIR="${FSQ_FRAME_CACHE_DIR:-}"
+FRAME_CACHE_STAGED_LOCAL=false
+if [ "${FSQ_FRAME_CACHE_STAGE_LOCAL}" = "true" ] && [ -n "${SHARED_FSQ_FRAME_CACHE_DIR}" ]; then
+  source "${SUBMIT_DIR}/src/fsq_node_local_frame_cache.sh"
+  if STAGED_FRAME_CACHE="$(fsq_stage_frame_cache_on_node \
+    "${SHARED_FSQ_FRAME_CACHE_DIR}" \
+    "${FSQ_FRAME_CACHE_LOCAL_ROOT}" \
+    "${FSQ_FRAME_CACHE_LOCAL_RESERVE_GB}")"; then
+    FSQ_FRAME_CACHE_DIR="${STAGED_FRAME_CACHE}"
+    FRAME_CACHE_STAGED_LOCAL=true
+  else
+    FSQ_FRAME_CACHE_DIR="${SHARED_FSQ_FRAME_CACHE_DIR}"
+  fi
+fi
+
 echo "START FSQ TRAIN"
 echo "Node       : ${SLURMD_NODENAME:-local}"
 echo "Inputs     : ${FSQ_INPUTS_DIR}"
 echo "Output     : ${FSQ_OUTPUT_DIR}"
+echo "Quantizer  : ${FSQ_QUANTIZER} (BSQ dim=${BSQ_CODE_DIM})"
 echo "HF cache   : ${HF_HOME}"
 echo "Python     : ${TRAIN_PYTHON}"
 echo "Grad ckpt  : ${FSQ_GRADIENT_CHECKPOINTING}"
+echo "Frame source: ${SHARED_FSQ_FRAME_CACHE_DIR:-disabled}"
+echo "Frame cache : ${FSQ_FRAME_CACHE_DIR:-disabled} (local=${FRAME_CACHE_STAGED_LOCAL})"
 nvidia-smi
 
 # Fail over to another GPU instead of silently running on CPU. The Python
@@ -127,12 +150,39 @@ cat > "${FSQ_OUTPUT_DIR}/fsq_meta.json" <<JSON
   "save_best_model": ${FSQ_SAVE_BEST_MODEL},
   "vision_backbone": "${FSQ_VISION_BACKBONE}",
   "freeze_vision_encoder": ${FSQ_FREEZE_VISION_ENCODER},
+  "resnet_image_size": ${FSQ_RESNET_IMAGE_SIZE},
+  "frame_cache_source_dir": "${SHARED_FSQ_FRAME_CACHE_DIR}",
+  "frame_cache_dir": "${FSQ_FRAME_CACHE_DIR}",
+  "frame_cache_staged_local": ${FRAME_CACHE_STAGED_LOCAL},
   "encoder_input_mode": "${FSQ_ENCODER_INPUT_MODE}",
+  "encoder_grounding_convention": "trajectory_mean_xyz_v1",
   "encoder_arch": "${FSQ_ENCODER_ARCH}",
   "encoder_length_token": ${FSQ_ENCODER_LENGTH_TOKEN},
+  "quantizer": "${FSQ_QUANTIZER}",
+  "bsq_code_dim": ${BSQ_CODE_DIM},
   "fsq_entropy": ${FSQ_ENTROPY},
+  "entropy_conf_weight": ${FSQ_ENTROPY_CONF_WEIGHT},
+  "entropy_conf_ceiling": ${FSQ_ENTROPY_CONF_CEILING},
+  "entropy_div_weight": ${FSQ_ENTROPY_DIV_WEIGHT},
+  "entropy_inv_temperature": ${FSQ_ENTROPY_INV_TEMPERATURE},
+  "init_calibration": ${FSQ_INIT_CALIBRATION},
+  "init_calibration_gain": ${FSQ_INIT_CALIBRATION_GAIN},
+  "init_calibration_samples": ${FSQ_INIT_CALIBRATION_SAMPLES},
+  "pair_loss": "${FSQ_PAIR_LOSS}",
+  "pair_weight": ${FSQ_PAIR_WEIGHT},
+  "pair_inv_temperature": ${FSQ_PAIR_INV_TEMPERATURE},
+  "pair_warmup": ${FSQ_PAIR_WARMUP},
+  "pair_warmup_epochs": ${FSQ_PAIR_WARMUP_EPOCHS},
+  "pair_ramp_epochs": ${FSQ_PAIR_RAMP_EPOCHS},
+  "boundary_aug_pmax": ${FSQ_BOUNDARY_AUG_PMAX},
+  "boundary_aug_early_start_pmax": ${FSQ_BOUNDARY_AUG_EARLY_START_PMAX},
+  "boundary_aug_late_start_pmax": ${FSQ_BOUNDARY_AUG_LATE_START_PMAX},
+  "boundary_aug_early_end_pmax": ${FSQ_BOUNDARY_AUG_EARLY_END_PMAX},
+  "boundary_aug_late_end_pmax": ${FSQ_BOUNDARY_AUG_LATE_END_PMAX},
+  "boundary_aug_distribution": "${FSQ_BOUNDARY_AUG_DISTRIBUTION}",
   "reconstructor_start_state": ${FSQ_RECONSTRUCTOR_START_STATE},
-  "reconstructor_arch": "${FSQ_RECONSTRUCTOR_ARCH}"
+  "reconstructor_arch": "${FSQ_RECONSTRUCTOR_ARCH}",
+  "reconstructor_output_mode": "${FSQ_RECONSTRUCTOR_OUTPUT_MODE}"
 }
 JSON
 
@@ -165,6 +215,16 @@ if [ "${FSQ_ENTROPY:-false}" = "true" ]; then
   FSQ_ENTROPY_ARG=(--fsq_entropy)
 fi
 
+INIT_CALIBRATION_ARG=(--no-init-calibration)
+if [ "${FSQ_INIT_CALIBRATION:-false}" = "true" ]; then
+  INIT_CALIBRATION_ARG=(--init-calibration)
+fi
+
+PAIR_WARMUP_ARG=(--no-pair_warmup)
+if [ "${FSQ_PAIR_WARMUP:-false}" = "true" ]; then
+  PAIR_WARMUP_ARG=(--pair_warmup)
+fi
+
 DECODER_RECONSTRUCTOR_ARG=(--no-decoder_reconstructor)
 if [ "${FSQ_DECODER_RECONSTRUCTOR}" = "true" ]; then
   DECODER_RECONSTRUCTOR_ARG=(--decoder_reconstructor)
@@ -193,6 +253,8 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     --skills_dir              "${SKILLSET_DIR}/skills" \
     --raw_dataset_dir         "${RAW_DATASET_DIR}" \
     --output_dir              "${FSQ_OUTPUT_DIR}" \
+    --quantizer               "${FSQ_QUANTIZER}" \
+    --bsq_code_dim            "${BSQ_CODE_DIM}" \
     --fsq_levels              "${FSQ_LEVELS[@]}" \
     --chunk_size              "${FSQ_CHUNK_SIZE}" \
     --samples_per_skill       "${FSQ_SAMPLES_PER_SKILL}" \
@@ -204,11 +266,28 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     --encoder_input_mode      "${FSQ_ENCODER_INPUT_MODE}" \
     --encoder_arch            "${FSQ_ENCODER_ARCH}" \
     "${FSQ_ENTROPY_ARG[@]}" \
+    "${INIT_CALIBRATION_ARG[@]}" \
+    --init-calibration-gain   "${FSQ_INIT_CALIBRATION_GAIN}" \
+    --init-calibration-samples "${FSQ_INIT_CALIBRATION_SAMPLES}" \
     "${RECON_START_STATE_ARG[@]}" \
     --reconstructor_arch      "${FSQ_RECONSTRUCTOR_ARCH}" \
+    --reconstructor_output_mode "${FSQ_RECONSTRUCTOR_OUTPUT_MODE}" \
     --entropy_conf_weight     "${FSQ_ENTROPY_CONF_WEIGHT}" \
+    --entropy_conf_ceiling    "${FSQ_ENTROPY_CONF_CEILING}" \
     --entropy_div_weight      "${FSQ_ENTROPY_DIV_WEIGHT}" \
     --entropy_inv_temperature "${FSQ_ENTROPY_INV_TEMPERATURE}" \
+    --pair_loss               "${FSQ_PAIR_LOSS}" \
+    --pair_weight             "${FSQ_PAIR_WEIGHT}" \
+    --pair_inv_temperature    "${FSQ_PAIR_INV_TEMPERATURE}" \
+    "${PAIR_WARMUP_ARG[@]}" \
+    --pair_warmup_epochs      "${FSQ_PAIR_WARMUP_EPOCHS}" \
+    --pair_ramp_epochs        "${FSQ_PAIR_RAMP_EPOCHS}" \
+    --boundary_aug_pmax       "${FSQ_BOUNDARY_AUG_PMAX}" \
+    --boundary_aug_early_start_pmax "${FSQ_BOUNDARY_AUG_EARLY_START_PMAX}" \
+    --boundary_aug_late_start_pmax "${FSQ_BOUNDARY_AUG_LATE_START_PMAX}" \
+    --boundary_aug_early_end_pmax "${FSQ_BOUNDARY_AUG_EARLY_END_PMAX}" \
+    --boundary_aug_late_end_pmax "${FSQ_BOUNDARY_AUG_LATE_END_PMAX}" \
+    --boundary_aug_distribution "${FSQ_BOUNDARY_AUG_DISTRIBUTION}" \
     "${DECODER_RECONSTRUCTOR_ARG[@]}" \
     "${DECODER_PROGRESS_ARG[@]}" \
     "${DECODER_TERMINATION_ARG[@]}" \
@@ -222,7 +301,8 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     --dino_model_path         "${FSQ_DINO_MODEL_PATH}" \
     --dino_image_size         "${FSQ_DINO_IMAGE_SIZE}" \
     --siglip_image_size       "${FSQ_SIGLIP_IMAGE_SIZE}" \
-    --cond_encoder_variant    "${FSQ_COND_ENCODER_VARIANT}" \
+    --resnet_image_size       "${FSQ_RESNET_IMAGE_SIZE}" \
+    --frame_cache_dir         "${FSQ_FRAME_CACHE_DIR}" \
     --epochs                  "${FSQ_NUM_EPOCHS}" \
     --encoder_lr              "${FSQ_ENCODER_LR}" \
     --terminator_lr           "${FSQ_TERMINATOR_LR}" \

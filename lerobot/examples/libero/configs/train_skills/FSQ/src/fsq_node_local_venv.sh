@@ -29,6 +29,7 @@ fsq_prepare_venv_archive() {
   } | sha256sum | cut -d' ' -f1)"
 
   local archive="${archive_root}/venv-${fingerprint:0:16}.tar.zst"
+  local size_file="${archive}.size"
   local lock_file="${archive}.lock"
   (
     flock 9
@@ -41,6 +42,12 @@ fsq_prepare_venv_archive() {
       trap - EXIT
       echo "FSQ venv cache: archive ready." >&2
     fi
+    if [ ! -s "${size_file}" ] \
+      || ! [[ "$(tr -dc '0-9' < "${size_file}")" =~ ^[0-9]+$ ]]; then
+      local size_tmp="${size_file}.tmp.$$"
+      du -s --apparent-size --block-size=1 "${source_venv}" | awk '{print $1}' > "${size_tmp}"
+      mv "${size_tmp}" "${size_file}"
+    fi
   ) 9>"${lock_file}"
   printf '%s\n' "${archive}"
 }
@@ -49,30 +56,107 @@ fsq_prepare_venv_archive() {
 fsq_stage_venv_on_node() {
   local archive="${1:?fsq_stage_venv_on_node needs an archive}"
   local shared_venv="${2:?fsq_stage_venv_on_node needs a fallback venv}"
-  if [ ! -s "${archive}" ] || [ -z "${SLURM_TMPDIR:-}" ]; then
-    echo "FSQ venv cache: archive or SLURM_TMPDIR unavailable; using ${shared_venv}." >&2
+  if [ ! -s "${archive}" ]; then
+    echo "FSQ venv cache: archive unavailable; using ${shared_venv}." >&2
     return 1
   fi
-  if ! command -v zstd >/dev/null 2>&1; then
-    echo "FSQ venv cache: zstd unavailable on compute node; using ${shared_venv}." >&2
+  if ! command -v zstd >/dev/null 2>&1 || ! command -v flock >/dev/null 2>&1; then
+    echo "FSQ venv cache: zstd/flock unavailable on compute node; using ${shared_venv}." >&2
     return 1
   fi
 
-  local local_root="${SLURM_TMPDIR}/fsq_venv_${SLURM_JOB_ID:-$$}"
-  local local_archive="${SLURM_TMPDIR}/$(basename "${archive}")"
-  mkdir -p "${local_root}"
-  echo "FSQ venv cache: copying one archive to ${SLURM_TMPDIR}." >&2
-  if ! cp "${archive}" "${local_archive}"; then
-    echo "FSQ venv cache: copy failed; using ${shared_venv}." >&2
+  local owner="${USER:-}"
+  if [ -z "${owner}" ]; then
+    owner="$(id -un)"
+  fi
+  local local_root="${FSQ_VENV_LOCAL_ROOT:-}"
+  if [ -z "${local_root}" ] && [ -n "${SLURM_TMPDIR:-}" ]; then
+    local_root="${SLURM_TMPDIR}/fsq_venv"
+  fi
+  if [ -z "${local_root}" ] && [ -d /dev/shm ] && [ -w /dev/shm ]; then
+    local_root="/dev/shm/${owner}/fsq_venv"
+  fi
+  if [ -z "${local_root}" ] && [ -d /tmp ] && [ -w /tmp ]; then
+    local_root="/tmp/${owner}/fsq_venv"
+  fi
+  if [ -z "${local_root}" ] || [[ "${local_root}" != /* ]]; then
+    echo "FSQ venv cache: no absolute writable local root; using ${shared_venv}." >&2
     return 1
   fi
-  if ! zstd -q -d -c "${local_archive}" | tar --no-same-owner -C "${local_root}" -xf -; then
-    echo "FSQ venv cache: extraction failed; using ${shared_venv}." >&2
+  if ! mkdir -p "${local_root}"; then
+    echo "FSQ venv cache: cannot create ${local_root}; using ${shared_venv}." >&2
     return 1
   fi
-  if [ ! -x "${local_root}/bin/python" ]; then
-    echo "FSQ venv cache: extracted interpreter is invalid; using ${shared_venv}." >&2
+
+  local archive_name fingerprint
+  archive_name="$(basename "${archive}")"
+  fingerprint="${archive_name%.tar.zst}"
+  case "${fingerprint}" in
+    *[!A-Za-z0-9._-]*)
+      echo "FSQ venv cache: unsafe archive name ${archive_name}; using ${shared_venv}." >&2
+      return 1
+      ;;
+  esac
+
+  local final_root="${local_root}/${fingerprint}"
+  local lock_file="${local_root}/.${fingerprint}.lock"
+  (
+    flock -x 9
+    if [ -x "${final_root}/bin/python" ] \
+      && [ -f "${final_root}/.fsq_venv_archive" ] \
+      && [ "$(cat "${final_root}/.fsq_venv_archive")" = "${archive_name}" ]; then
+      echo "FSQ venv cache: reusing ${final_root}." >&2
+      printf '%s\n' "${final_root}"
+      exit 0
+    fi
+
+    local expected_bytes
+    if [ -s "${archive}.size" ]; then
+      expected_bytes="$(tr -dc '0-9' < "${archive}.size")"
+    else
+      expected_bytes=$(( $(stat -c %s "${archive}") * 3 ))
+    fi
+    if [ -z "${expected_bytes}" ]; then
+      echo "FSQ venv cache: invalid size metadata; using ${shared_venv}." >&2
+      exit 1
+    fi
+    local available_bytes reserve_bytes
+    available_bytes="$(df -P --block-size=1 "${local_root}" | awk 'NR == 2 {print $4}')"
+    reserve_bytes=$((8 * 1024 * 1024 * 1024))
+    if (( expected_bytes > available_bytes \
+      || available_bytes - expected_bytes < reserve_bytes )); then
+      echo "FSQ venv cache: insufficient local space at ${local_root} " \
+        "(available=${available_bytes}, payload=${expected_bytes}, reserve=${reserve_bytes}); " \
+        "using ${shared_venv}." >&2
+      exit 1
+    fi
+
+    if [ -e "${final_root}" ]; then
+      local invalid_root="${local_root}/.invalid"
+      mkdir -p "${invalid_root}"
+      mv "${final_root}" "${invalid_root}/${fingerprint}.$(date +%s).$$"
+    fi
+    local partial_root="${local_root}/.${fingerprint}.partial.$$"
+    mkdir -p "${partial_root}"
+    trap 'rm -rf -- "${partial_root}"' EXIT
+    echo "FSQ venv cache: extracting one sequential archive to ${final_root}." >&2
+    if ! zstd -q -d -c "${archive}" \
+      | tar --no-same-owner -C "${partial_root}" -xf -; then
+      echo "FSQ venv cache: extraction failed; using ${shared_venv}." >&2
+      exit 1
+    fi
+    if [ ! -x "${partial_root}/bin/python" ]; then
+      echo "FSQ venv cache: extracted interpreter is invalid; using ${shared_venv}." >&2
+      exit 1
+    fi
+    printf '%s\n' "${archive_name}" > "${partial_root}/.fsq_venv_archive"
+    mv "${partial_root}" "${final_root}"
+    trap - EXIT
+    echo "FSQ venv cache: local venv ready at ${final_root}." >&2
+    printf '%s\n' "${final_root}"
+  ) 9>"${lock_file}"
+  local status=$?
+  if [ "${status}" -ne 0 ]; then
     return 1
   fi
-  printf '%s\n' "${local_root}"
 }

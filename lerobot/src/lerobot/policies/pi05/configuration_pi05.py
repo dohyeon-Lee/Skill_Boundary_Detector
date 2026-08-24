@@ -19,7 +19,11 @@ from dataclasses import dataclass, field
 from lerobot.configs.policies import PreTrainedConfig
 from lerobot.configs.types import FeatureType, NormalizationMode, PolicyFeature
 from lerobot.optim.optimizers import AdamWConfig
-from lerobot.optim.schedulers import CosineDecayWithWarmupSchedulerConfig
+from lerobot.optim.schedulers import (
+    CosineDecayWithWarmupSchedulerConfig,
+    LRSchedulerConfig,
+    WarmupConstantSchedulerConfig,
+)
 from lerobot.policies.rtc.configuration_rtc import RTCConfig
 from lerobot.utils.constants import ACTION, OBS_IMAGES, OBS_STATE
 
@@ -68,6 +72,16 @@ class PI05Config(PreTrainedConfig):
     # required on compute nodes. None retains the upstream Hub fallback.
     tokenizer_path: str | None = None
 
+    # Opt-in LIBERO EEF contract. The derived dataset stores absolute commanded
+    # EEF targets; preprocessing maps them to one-anchor SE(3)-relative targets,
+    # and postprocessing maps predictions back to normalized OSC delta inputs.
+    # This is separate from ordinary PI0.5 so existing datasets/checkpoints keep
+    # their original processor layout and action semantics.
+    use_eef_relative_actions: bool = False
+    eef_relative_stats_path: str | None = None
+    eef_position_scale: float = 0.05
+    eef_rotation_scale: float = 0.5
+
     normalization_mapping: dict[str, NormalizationMode] = field(
         default_factory=lambda: {
             "VISUAL": NormalizationMode.IDENTITY,
@@ -109,7 +123,9 @@ class PI05Config(PreTrainedConfig):
     optimizer_weight_decay: float = 0.01
     optimizer_grad_clip_norm: float = 1.0
 
-    # Scheduler settings: see openpi `CosineDecaySchedule`
+    # Scheduler settings. warmup_constant matches SkillVLA Stage 1/2: linearly
+    # warm up, then hold optimizer_lr flat for the rest of training.
+    scheduler_mode: str = "cosine_decay"
     # Note: These will auto-scale if --steps < scheduler_decay_steps
     # For example, --steps=3000 will scale warmup to 100 and decay to 3000
     scheduler_warmup_steps: int = 1_000
@@ -127,6 +143,15 @@ class PI05Config(PreTrainedConfig):
                 f"n_action_steps ({self.n_action_steps}) cannot be greater than chunk_size ({self.chunk_size})"
             )
 
+        if self.use_eef_relative_actions:
+            if self.n_action_steps != 1:
+                raise ValueError(
+                    "EEF anchor-relative execution currently requires n_action_steps=1 so each "
+                    "prediction is interpreted with the same live pose used as its plan anchor."
+                )
+            if self.eef_position_scale <= 0 or self.eef_rotation_scale <= 0:
+                raise ValueError("EEF OSC position and rotation scales must be positive.")
+
         if self.paligemma_variant not in ["gemma_300m", "gemma_2b"]:
             raise ValueError(f"Invalid paligemma_variant: {self.paligemma_variant}")
 
@@ -135,6 +160,16 @@ class PI05Config(PreTrainedConfig):
 
         if self.dtype not in ["bfloat16", "float32"]:
             raise ValueError(f"Invalid dtype: {self.dtype}")
+
+        if self.scheduler_mode not in {"cosine_decay", "warmup_constant"}:
+            raise ValueError(
+                "scheduler_mode must be 'cosine_decay' or 'warmup_constant', got "
+                f"{self.scheduler_mode!r}."
+            )
+        if self.scheduler_warmup_steps < 0:
+            raise ValueError("scheduler_warmup_steps must be non-negative.")
+        if self.scheduler_decay_steps <= 0:
+            raise ValueError("scheduler_decay_steps must be positive.")
 
     def validate_features(self) -> None:
         """Validate and set up input/output features."""
@@ -169,7 +204,11 @@ class PI05Config(PreTrainedConfig):
             grad_clip_norm=self.optimizer_grad_clip_norm,
         )
 
-    def get_scheduler_preset(self):
+    def get_scheduler_preset(self) -> LRSchedulerConfig:
+        if self.scheduler_mode == "warmup_constant":
+            return WarmupConstantSchedulerConfig(
+                num_warmup_steps=self.scheduler_warmup_steps
+            )
         return CosineDecayWithWarmupSchedulerConfig(
             peak_lr=self.optimizer_lr,
             decay_lr=self.scheduler_decay_lr,

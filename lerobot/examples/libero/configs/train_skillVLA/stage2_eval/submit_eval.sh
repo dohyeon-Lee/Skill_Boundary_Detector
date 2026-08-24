@@ -12,13 +12,31 @@ while [ ! -f "${CONFIG_LIB}/snapshot_config.sh" ]; do CONFIG_LIB="$(dirname "${C
 source "${CONFIG_LIB}/snapshot_config.sh"
 CONFIG_PATH="$(snapshot_config "${CONFIG_PATH}")"
 
-BOOTSTRAP_PYTHON="${SCRIPT_DIR}/../../../../../../.venv/bin/python"
-[ -x "${BOOTSTRAP_PYTHON}" ] || BOOTSTRAP_PYTHON=python3
+# Config resolution is stdlib-only; do not traverse the shared project venv on
+# the submit host before the actual evaluation needs it.
+BOOTSTRAP_PYTHON=/usr/bin/python3
 eval "$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/stage2_eval_config.py" --config "${CONFIG_PATH}" --shell)"
 
 for artifact in "${POLICY_PATH}" "${FSQ_PATH}" "${SKILL_DATASET_DIR}"; do
   [ -e "${artifact}" ] || { echo "Missing artifact: ${artifact}" >&2; exit 1; }
 done
+
+# Build one immutable venv archive on the submit host. Each compute node then
+# does one sequential Lustre read and imports PyTorch from its local scratch.
+# Set STAGE2_EVAL_NODE_LOCAL_VENV=0 to retain the old shared-venv behavior.
+STAGE2_EVAL_VENV_ARCHIVE="${STAGE2_EVAL_VENV_ARCHIVE:-}"
+if [ "${STAGE2_EVAL_NODE_LOCAL_VENV:-1}" = "1" ]; then
+  source "${SCRIPT_DIR}/../../node_local_venv.sh"
+  if [ -z "${STAGE2_EVAL_VENV_ARCHIVE}" ] && \
+     ! STAGE2_EVAL_VENV_ARCHIVE="$(prepare_node_local_venv_archive "${PROJECT_ROOT}" "Stage-2 eval venv")"; then
+    STAGE2_EVAL_VENV_ARCHIVE=""
+    echo "Stage-2 eval venv: preparation failed; jobs will use the shared venv." >&2
+  fi
+else
+  STAGE2_EVAL_VENV_ARCHIVE=""
+fi
+export STAGE2_EVAL_VENV_ARCHIVE
+export STAGE2_EVAL_VENV_LABEL="Stage-2 eval venv"
 
 SBATCH_ARGS=(
   --partition="${EVAL_PARTITION}"
@@ -71,6 +89,11 @@ echo "  policy    : ${POLICY_PATH}"
 echo "  predictor : ${EXTERNAL_PREDICTOR_MODEL:-<none>}"
 echo "  terminator: ${EXTERNAL_TERMINATOR_MODEL:-<none>}"
 echo "  output    : ${EVAL_OUT_DIR}"
+if [ -n "${STAGE2_EVAL_VENV_ARCHIVE}" ]; then
+  echo "  Python    : node-local copy from ${STAGE2_EVAL_VENV_ARCHIVE}"
+else
+  echo "  Python    : shared ${PROJECT_ROOT}/.venv"
+fi
 
 if [ -n "${SLURM_JOB_ID:-}" ]; then
   echo "  mode   : srun in allocation ${SLURM_JOB_ID}"

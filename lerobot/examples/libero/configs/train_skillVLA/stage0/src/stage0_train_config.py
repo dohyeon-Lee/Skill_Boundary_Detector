@@ -178,7 +178,7 @@ def build_settings(cfg: dict) -> dict:
         "fsq_ckpt": fsq_path,
         "dino_model_path": dino_model,
         "vision_backbone": str(fsq_cfg.vision_backbone),
-        "cond_encoder_variant": str(fsq_cfg.cond_encoder_variant),
+        "cond_encoder_variant": str(_at(cfg, "cond", "encoder_variant", default="gemma_300m")),
         "state_cond_mode": state_cond_mode,
         "cond_state_adarms": as_bool(_at(cfg, "cond", "state_adarms", default=False)),
         "action_expert_variant": str(_at(cfg, "expert", "variant", default="gemma_300m")),

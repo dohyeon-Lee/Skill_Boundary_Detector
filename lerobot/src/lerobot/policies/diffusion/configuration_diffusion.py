@@ -154,6 +154,15 @@ class DiffusionConfig(PreTrainedConfig):
     # exclude list (e.g. grippers stay absolute). Absolute meta/stats.json is NOT touched.
     use_relative_actions: bool = False
     relative_stats_path: str | None = None
+    # Opt-in LIBERO EEF contract. The derived dataset stores absolute commanded
+    # EEF targets; preprocessing maps them to one-anchor SE(3)-relative targets,
+    # and postprocessing maps predictions back to normalized OSC delta inputs.
+    # Kept separate from use_relative_actions so the existing ABC joint-space
+    # path and all legacy LIBERO checkpoints remain byte-for-byte compatible.
+    use_eef_relative_actions: bool = False
+    eef_relative_stats_path: str | None = None
+    eef_position_scale: float = 0.05
+    eef_rotation_scale: float = 0.5
     # Unet.
     down_dims: tuple[int, ...] = (512, 1024, 2048)
     kernel_size: int = 5
@@ -192,6 +201,16 @@ class DiffusionConfig(PreTrainedConfig):
         super().__post_init__()
 
         """Input validation (not exhaustive)."""
+        if self.use_relative_actions and self.use_eef_relative_actions:
+            raise ValueError("Joint-relative and EEF-relative action modes are mutually exclusive.")
+        if self.use_eef_relative_actions:
+            if self.n_action_steps != 1:
+                raise ValueError(
+                    "EEF anchor-relative execution currently requires n_action_steps=1 so every "
+                    "queued action is interpreted with the same live pose used as its plan anchor."
+                )
+            if self.eef_position_scale <= 0 or self.eef_rotation_scale <= 0:
+                raise ValueError("EEF OSC position and rotation scales must be positive.")
         if not self.use_dino_features and not self.state_only and not self.vision_backbone.startswith("resnet"):
             raise ValueError(
                 f"`vision_backbone` must be one of the ResNet variants. Got {self.vision_backbone}."

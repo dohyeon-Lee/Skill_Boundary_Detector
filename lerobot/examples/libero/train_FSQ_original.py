@@ -60,8 +60,8 @@ class Args:
     n_control: int = 30
     spline_degree: int = 3
     encoder_input_mode: str = "zero_grounded"
-    """zero_grounded | raw_state | optimal (zero-grounded + one absolute start-EEF token).
-    The start pose conditions the encoder only; it is never reconstructed."""
+    """zero_grounded | raw_state | optimal (mean-XYZ-grounded + its absolute mean-XYZ token).
+    The grounding position conditions the encoder only; it is never reconstructed."""
     encoder_length_token: bool = True
     """False: drop the encoder's length token — duration reaches z only through
     motion shape, becoming a learned per-code property."""
@@ -117,7 +117,7 @@ class Args:
 
 
 def main(args: Args) -> None:
-    from FSQ import encoder_start_eef_pose, prepare_encoder_trajectory
+    from FSQ import encoder_grounding_position, prepare_encoder_trajectory
     from FSQ_original import FSQOriginalConfig, train_fsq_original
     from skills_bundle import load_skills
 
@@ -159,8 +159,9 @@ def main(args: Args) -> None:
     encoder_min, encoder_max = encoder_trajectories.min(0), encoder_trajectories.max(0)
     encoder_start_min = encoder_start_max = None
     if args.encoder_input_mode == "optimal":
-        start_poses = np.stack([encoder_start_eef_pose(s) for s in segments])
-        encoder_start_min, encoder_start_max = start_poses.min(0), start_poses.max(0)
+        grounding_positions = np.stack([encoder_grounding_position(s) for s in segments])
+        encoder_start_min = grounding_positions.min(0)
+        encoder_start_max = grounding_positions.max(0)
     lengths = [int(m["length"]) for m in metadata]
     length_min, length_max = float(min(lengths)), float(max(lengths))
     # rnn arch: q01/q99 action normalization computed from the skill data itself
@@ -175,6 +176,7 @@ def main(args: Args) -> None:
     stats = dict(
         encoder_min=encoder_min, encoder_max=encoder_max,
         encoder_input_mode=np.asarray(args.encoder_input_mode),
+        encoder_grounding_convention=np.asarray("trajectory_mean_xyz_v1"),
         length_min=np.float32(length_min), length_max=np.float32(length_max),
     )
     if encoder_start_min is not None:
@@ -187,7 +189,7 @@ def main(args: Args) -> None:
     print(f"[FSQ-orig] encoder_max: {np.round(encoder_max, 4)}")
     if encoder_start_min is not None:
         print(
-            f"[FSQ-orig] optimal start-EEF min/max: {np.round(encoder_start_min, 4)} / "
+            f"[FSQ-orig] optimal grounding mean-XYZ min/max: {np.round(encoder_start_min, 4)} / "
             f"{np.round(encoder_start_max, 4)}"
         )
     print(f"[FSQ-orig] length_min/max: {length_min:.0f} / {length_max:.0f}")

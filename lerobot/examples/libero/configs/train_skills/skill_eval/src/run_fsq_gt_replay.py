@@ -136,7 +136,7 @@ def _frame_pair(occurrence, episode_length: int) -> tuple[int, int]:
 
 
 class _EpisodeFrameReader:
-    """Decode requested frames of one episode from the dataset's stored videos."""
+    """Decode requested frames once and reuse them across checkpoint replays."""
 
     def __init__(self, dataset_dir: Path, *, video_key: str = VIDEO_KEY) -> None:
         self.dataset_dir = Path(dataset_dir)
@@ -144,6 +144,7 @@ class _EpisodeFrameReader:
         info = json.loads((self.dataset_dir / "meta" / "info.json").read_text())
         self.fps = float(info["fps"])
         self.path_template = str(info["video_path"])
+        self._frame_cache: dict[tuple[int, int], np.ndarray] = {}
         files = sorted((self.dataset_dir / "meta" / "episodes").glob("**/*.parquet"))
         if not files:
             raise FileNotFoundError(
@@ -165,6 +166,16 @@ class _EpisodeFrameReader:
         return int(self.index.loc[int(episode_id), "length"])
 
     def frames(self, episode_id: int, frame_indices) -> dict[int, np.ndarray]:
+        episode_id = int(episode_id)
+        ordered = sorted({int(index) for index in frame_indices})
+        missing = [
+            index for index in ordered if (episode_id, index) not in self._frame_cache
+        ]
+        if not missing:
+            return {
+                index: self._frame_cache[(episode_id, index)] for index in ordered
+            }
+
         row = self.index.loc[int(episode_id)]
         video_path = self.dataset_dir / self.path_template.format(
             video_key=self.video_key,
@@ -172,8 +183,7 @@ class _EpisodeFrameReader:
             file_index=int(row[f"videos/{self.video_key}/file_index"]),
         )
         start_timestamp = float(row[f"videos/{self.video_key}/from_timestamp"])
-        ordered = sorted({int(index) for index in frame_indices})
-        timestamps = [start_timestamp + index / self.fps for index in ordered]
+        timestamps = [start_timestamp + index / self.fps for index in missing]
         decoded = decode_video_frames(
             video_path, timestamps, tolerance_s=0.5 / self.fps
         )
@@ -185,7 +195,19 @@ class _EpisodeFrameReader:
             .cpu()
             .numpy()
         )
-        return {index: images[position] for position, index in enumerate(ordered)}
+        for position, index in enumerate(missing):
+            # Own each image independently: retaining a small view must not pin
+            # the complete decoded batch after the remaining frames are unused.
+            self._frame_cache[(episode_id, index)] = images[position].copy()
+        return {index: self._frame_cache[(episode_id, index)] for index in ordered}
+
+    @property
+    def cached_frame_count(self) -> int:
+        return len(self._frame_cache)
+
+    @property
+    def cached_bytes(self) -> int:
+        return sum(frame.nbytes for frame in self._frame_cache.values())
 
 
 def _write_image(path: Path, frame: np.ndarray) -> None:
@@ -232,6 +254,8 @@ def parse_args():
     parser.add_argument("--compare-collection-dirs", default="")
     parser.add_argument("--expected-epoch-tags", required=True)
     parser.add_argument("--run-name", required=True)
+    parser.add_argument("--model-name", default="")
+    parser.add_argument("--report-title", default="FSQ GT skill replay")
     parser.add_argument("--epoch-tag", default="")
     parser.add_argument("--worker-index", type=int, default=0)
     parser.add_argument("--worker-count", type=int, default=1)
@@ -335,7 +359,14 @@ def run_one(args, shared: dict) -> None:
         }
         _atomic_manifest(manifest_path, manifest)
 
-    levels = _fsq_levels(args.model_path)
+    # Cosmetic report metadata stays outside the replay signature. This lets a
+    # resume run rename the HTML without invalidating extracted image pairs.
+    manifest["model_name"] = args.model_name or args.run_name
+    manifest["report_title"] = args.report_title
+
+    levels = shared.get("levels")
+    if levels is None:
+        levels = shared["levels"] = _fsq_levels(args.model_path)
     max_token = int(np.prod(levels))
     invalid_tokens = sorted(
         {occurrence.token for occurrence in occurrences if not 0 <= occurrence.token < max_token}
@@ -506,6 +537,13 @@ def main() -> None:
                 }
             ),
             shared,
+        )
+    reader = shared.get("reader")
+    if reader is not None:
+        log.info(
+            "decoded-frame cache: %d frames, %.2f GiB",
+            reader.cached_frame_count,
+            reader.cached_bytes / (1024**3),
         )
 
 

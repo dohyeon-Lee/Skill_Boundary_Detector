@@ -114,8 +114,6 @@ class DatasetWriter:
                 ready. This preserves the packed-video layout without rewriting
                 a growing shard after every episode.
         """
-        if deferred_video_packing and streaming_encoder is not None:
-            raise ValueError("deferred_video_packing is incompatible with streaming encoding")
         if deferred_video_packing and batch_encoding_size > 1:
             raise ValueError("deferred_video_packing is incompatible with batch_encoding_size > 1")
 
@@ -697,7 +695,7 @@ class DatasetWriter:
         if self._deferred_video_packing:
             for video_key in list(self._pending_video_packs):
                 self._flush_deferred_video_pack(video_key)
-        elif self._streaming_encoder is not None:
+        if self._streaming_encoder is not None:
             self._streaming_encoder.close()
         elif self._episodes_since_last_encoding > 0:
             start_ep = self._meta.total_episodes - self._episodes_since_last_encoding

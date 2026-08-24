@@ -8,7 +8,7 @@
 # dataset_root comes only from global_config.yaml. The remaining folder names
 # are composed here; provenance within the selected skillset comes from manifest.
 fsq_dataset_root: FSQ_dataset
-target_dataset: libero_90_full_full # libero_90_full_full
+target_dataset: libero_90_full_full_rel # libero_90_full_full
 fsq_inputs_name: FSQ_inputs
 # skillset_seg_name: seg_langgap_56_full_full_state_obs20_ck100000_std_episodemean_80p
 skillset_seg_name: seg_libero_90_full_full_state_obs20_ck100000_std_episodemean_80p

@@ -15,6 +15,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -32,12 +33,17 @@ from lerobot.processor import (
     UnnormalizerProcessorStep,
 )
 from lerobot.processor.converters import policy_action_to_transition, transition_to_policy_action
+from lerobot.processor.eef_relative_action_processor import (
+    EefRelativeActionsProcessorStep,
+    EefRelativeToOscActionsProcessorStep,
+)
 from lerobot.processor.relative_action_processor import (
     AbsoluteActionsProcessorStep,
     RelativeActionsProcessorStep,
 )
 from lerobot.types import EnvTransition, TransitionKey
 from lerobot.utils.constants import (
+    ACTION,
     OBS_STATE,
     POLICY_POSTPROCESSOR_DEFAULT_NAME,
     POLICY_PREPROCESSOR_DEFAULT_NAME,
@@ -106,6 +112,63 @@ def with_diffusion_relative_action_stats(
     return stats
 
 
+def _load_eef_relative_action_stats(config: DiffusionConfig) -> dict[str, torch.Tensor]:
+    if not config.eef_relative_stats_path:
+        raise ValueError(
+            "use_eef_relative_actions=True needs eef_relative_stats_path "
+            "(derived LIBERO dataset meta/relative_action_stats.json)"
+        )
+    path = Path(config.eef_relative_stats_path)
+    if not path.exists():
+        raise FileNotFoundError(f"eef_relative_stats_path not found: {path}")
+    payload = json.loads(path.read_text())
+    expected_contract = {
+        "representation": "eef_anchor_relative_so3",
+        "storage_representation": "absolute_eef_command",
+        "rotation_representation": "axis_angle_rotation_vector",
+        "rotation_composition": "left_world",
+    }
+    mismatches = {
+        key: (payload.get(key), expected)
+        for key, expected in expected_contract.items()
+        if payload.get(key) != expected
+    }
+    if mismatches:
+        raise ValueError(
+            f"Unsupported EEF relative stats contract in {path}: {mismatches}"
+        )
+    horizon_needed = int(config.horizon)
+    if int(payload.get("chunk_size", 0)) < horizon_needed:
+        raise ValueError(
+            f"EEF relative stats chunk_size={payload.get('chunk_size')} < policy horizon={horizon_needed}"
+        )
+    scale_pairs = (
+        ("osc_position_scale", config.eef_position_scale),
+        ("osc_rotation_scale", config.eef_rotation_scale),
+    )
+    for key, configured in scale_pairs:
+        stored = float(payload.get(key, float("nan")))
+        if not math.isclose(stored, configured, rel_tol=1e-7, abs_tol=1e-9):
+            raise ValueError(
+                f"{key} mismatch: stats={stored}, policy={configured}. "
+                "The execution conversion must use the same OSC scale as dataset construction."
+            )
+    stats = {key: torch.tensor(value, dtype=torch.float32) for key, value in payload["action"].items()}
+    invalid_shapes = {key: tuple(value.shape) for key, value in stats.items() if value.shape != (7,)}
+    if invalid_shapes:
+        raise ValueError(f"EEF relative action stats must be 7D, got {invalid_shapes}")
+    return stats
+
+
+def with_diffusion_eef_relative_action_stats(
+    config: DiffusionConfig,
+    dataset_stats: dict[str, dict[str, torch.Tensor]] | None,
+) -> dict[str, dict[str, torch.Tensor]]:
+    stats = dict(dataset_stats or {})
+    stats["action"] = _load_eef_relative_action_stats(config)
+    return stats
+
+
 def reconnect_diffusion_relative_processors(preprocessor: Any, postprocessor: Any) -> None:
     """Restore the runtime link omitted from serialized postprocessor config."""
     relative_step = next(
@@ -121,6 +184,20 @@ def reconnect_diffusion_relative_processors(preprocessor: Any, postprocessor: An
             "Relative Diffusion checkpoint is missing its relative/absolute processor steps."
         )
     absolute_step.relative_step = relative_step
+
+
+def reconnect_diffusion_eef_relative_processors(preprocessor: Any, postprocessor: Any) -> None:
+    relative_step = next(
+        (step for step in preprocessor.steps if isinstance(step, EefRelativeActionsProcessorStep)),
+        None,
+    )
+    osc_step = next(
+        (step for step in postprocessor.steps if isinstance(step, EefRelativeToOscActionsProcessorStep)),
+        None,
+    )
+    if relative_step is None or osc_step is None:
+        raise RuntimeError("EEF-relative Diffusion checkpoint is missing its paired processor steps.")
+    osc_step.relative_step = relative_step
 
 
 def make_diffusion_pre_post_processors(
@@ -154,6 +231,7 @@ def make_diffusion_pre_post_processors(
     """
 
     relative_step = None
+    eef_relative_step = None
     if config.use_relative_actions:
         # relative → normalize 순서 (pi 계열과 동일). action stats는 relative 분포로 교체 —
         # 원본 dataset_stats(absolute)는 다른 feature용으로 그대로 두고 action만 스왑.
@@ -162,12 +240,24 @@ def make_diffusion_pre_post_processors(
         dataset_stats["action"] = rel_stats
         relative_step = DiffusionRelativeActionsProcessorStep(
             enabled=True, exclude_joints=exclude_joints, action_names=action_names or None)
+    elif config.use_eef_relative_actions:
+        state_feature = config.input_features.get(OBS_STATE)
+        action_feature = config.output_features.get(ACTION)
+        if state_feature is None or state_feature.shape != (8,):
+            raise ValueError("EEF-relative Diffusion requires 8D observation.state.")
+        if action_feature is None or action_feature.shape != (7,):
+            raise ValueError("EEF-relative Diffusion requires a 7D action feature.")
+        rel_stats = _load_eef_relative_action_stats(config)
+        dataset_stats = dict(dataset_stats or {})
+        dataset_stats["action"] = rel_stats
+        eef_relative_step = EefRelativeActionsProcessorStep(enabled=True)
 
     input_steps = [
         RenameObservationsProcessorStep(rename_map={}),
         AddBatchDimensionProcessorStep(),
         DeviceProcessorStep(device=config.device),
         *([relative_step] if relative_step is not None else []),
+        *([eef_relative_step] if eef_relative_step is not None else []),
         NormalizerProcessorStep(
             features={**config.input_features, **config.output_features},
             norm_map=config.normalization_mapping,
@@ -181,6 +271,14 @@ def make_diffusion_pre_post_processors(
         # unnormalize → +anchor state (짝 스텝의 캐시) → absolute 복원 (추론/replay 소비자용)
         *([AbsoluteActionsProcessorStep(enabled=True, relative_step=relative_step)]
           if relative_step is not None else []),
+        *([
+            EefRelativeToOscActionsProcessorStep(
+                enabled=True,
+                position_scale=config.eef_position_scale,
+                rotation_scale=config.eef_rotation_scale,
+                relative_step=eef_relative_step,
+            )
+        ] if eef_relative_step is not None else []),
         DeviceProcessorStep(device="cpu"),
     ]
     return (

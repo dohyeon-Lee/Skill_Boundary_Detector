@@ -16,21 +16,21 @@ dataset:
 
 warm_start:
   outputs_subdir: skillVLA_stage2
-  stage2_run: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask_100000_gt_batchOFF_nomask_layermix_glr10_lasthalf_fixed
-  checkpoint: "400000"
-  # stage2_run: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask_100000_gt_batchOFF_dsbc_shared_frs10_nomask_layermix_glr10_lasthalf_bs256
-  # checkpoint: "040000"
+  # stage2_run: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask_100000_gt_batchOFF_nomask_layermix_glr10_lasthalf_fixed
+  # checkpoint: "400000"
+  stage2_run: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask_100000_gt_batchOFF_dsbc_shared_frs10_nomask_layermix_glr10_lasthalf_bs256
+  checkpoint: "040000"
 
 run:
   # Explicit names keep the output readable and avoid filesystem name limits.
-  name: libero10_lasthalf40k_likelihood_ft
+  name: libero10_lasthalf40k_likelihood_ft_bs16
 
 training:
-  dataloader: {batch_size: 32, workers: 8, gpus: 1}
+  dataloader: {batch_size: 16, workers: 8, gpus: 1}
   optimizer: {base_lr: 2.5e-05}
   gradient_checkpointing: false
   schedule:
-    steps: 100000
+    steps: 30000
     log_every: 100
     save_every: 1000
     lr_mode: warmup_constant
@@ -40,4 +40,4 @@ training:
 logging:
   wandb: {enable: true, project: VLA_stage2_FT}
 
-slurm: {gres: "gpu:1", cpus: 12, memory: 256G, time: "48:00:00"}
+slurm: {gres: "gpu:1", cpus: 12, memory: 192G, time: "48:00:00"}

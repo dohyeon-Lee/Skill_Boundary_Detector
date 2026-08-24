@@ -11,13 +11,30 @@ while [ ! -f "${CONFIG_LIB}/snapshot_config.sh" ]; do CONFIG_LIB="$(dirname "${C
 source "${CONFIG_LIB}/snapshot_config.sh"
 CONFIG_PATH="$(snapshot_config "${CONFIG_PATH}")"
 
-BOOTSTRAP_PYTHON="${SCRIPT_DIR}/../../../../../../.venv/bin/python"
-[ -x "${BOOTSTRAP_PYTHON}" ] || BOOTSTRAP_PYTHON=python3
+# FT config resolution is stdlib-only. Avoid touching the shared project venv
+# until the compute job stages it onto node-local scratch.
+BOOTSTRAP_PYTHON=/usr/bin/python3
 eval "$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/ft_eval_config.py" --config "${CONFIG_PATH}" --shell)"
 
 for artifact in "${POLICY_PATH}" "${FSQ_PATH}" "${SKILL_DATASET_DIR}"; do
   [ -e "${artifact}" ] || { echo "Missing FT eval artifact: ${artifact}" >&2; exit 1; }
 done
+
+# The FT sbatch delegates to the shared Stage-2 runner, so export the archive
+# under the runner's environment name. Disable with FT_EVAL_NODE_LOCAL_VENV=0.
+FT_EVAL_VENV_ARCHIVE="${FT_EVAL_VENV_ARCHIVE:-}"
+if [ "${FT_EVAL_NODE_LOCAL_VENV:-1}" = "1" ]; then
+  source "${SCRIPT_DIR}/../../node_local_venv.sh"
+  if [ -z "${FT_EVAL_VENV_ARCHIVE}" ] && \
+     ! FT_EVAL_VENV_ARCHIVE="$(prepare_node_local_venv_archive "${PROJECT_ROOT}" "FT eval venv")"; then
+    FT_EVAL_VENV_ARCHIVE=""
+    echo "FT eval venv: preparation failed; jobs will use the shared venv." >&2
+  fi
+else
+  FT_EVAL_VENV_ARCHIVE=""
+fi
+export STAGE2_EVAL_VENV_ARCHIVE="${FT_EVAL_VENV_ARCHIVE}"
+export STAGE2_EVAL_VENV_LABEL="FT eval venv"
 
 SBATCH_ARGS=(
   --partition="${EVAL_PARTITION}"
@@ -69,6 +86,11 @@ echo "  policy    : ${POLICY_PATH}"
 echo "  predictor : ${EXTERNAL_PREDICTOR_MODEL:-<none>}"
 echo "  terminator: ${EXTERNAL_TERMINATOR_MODEL:-<none>}"
 echo "  output    : ${EVAL_OUT_DIR}"
+if [ -n "${FT_EVAL_VENV_ARCHIVE}" ]; then
+  echo "  Python    : node-local copy from ${FT_EVAL_VENV_ARCHIVE}"
+else
+  echo "  Python    : shared ${PROJECT_ROOT}/.venv"
+fi
 
 if [ -n "${SLURM_JOB_ID:-}" ]; then
   echo "  mode      : srun in allocation ${SLURM_JOB_ID}"

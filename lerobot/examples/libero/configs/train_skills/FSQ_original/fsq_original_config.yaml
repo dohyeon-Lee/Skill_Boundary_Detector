@@ -25,7 +25,7 @@ fsq_levels: [3, 3, 3]
 fsq_hidden_dim: 256
 fsq_num_layers: 3
 fsq_n_control: 30
-# zero_grounded | raw_state | optimal (zero-grounded + one absolute start-EEF token)
+# zero_grounded | raw_state | optimal (mean-XYZ-grounded + one absolute mean-XYZ token)
 fsq_encoder_input_mode: raw_state
 # false: 인코더에서 길이 토큰 제거 — z는 (정규화 시간축의) 컨트롤포인트 형태만 보고,
 # 길이는 모션 형태를 통해서만 간접적으로 z에 들어감 (코드별 학습 속성이 됨).

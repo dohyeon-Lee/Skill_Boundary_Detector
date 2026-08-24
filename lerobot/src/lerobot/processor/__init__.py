@@ -31,6 +31,16 @@ from .converters import (
 )
 from .delta_action_processor import MapDeltaActionToRobotActionStep, MapTensorToDeltaActionDictStep
 from .device_processor import DeviceProcessorStep
+from .eef_relative_action_processor import (
+    EefRelativeActionsProcessorStep,
+    EefRelativeToOscActionsProcessorStep,
+    absolute_eef_actions_to_osc,
+    matrix_to_rotation_vector,
+    osc_actions_to_absolute_eef,
+    rotation_vector_to_matrix,
+    to_eef_absolute_actions,
+    to_eef_relative_actions,
+)
 from .factory import (
     make_default_processors,
     make_default_robot_action_processor,
@@ -93,6 +103,8 @@ __all__ = [
     "create_transition",
     "DeviceProcessorStep",
     "DoneProcessorStep",
+    "EefRelativeActionsProcessorStep",
+    "EefRelativeToOscActionsProcessorStep",
     "EnvAction",
     "EnvTransition",
     "GymHILAdapterProcessorStep",
@@ -135,6 +147,12 @@ __all__ = [
     "RobotActionToPolicyActionProcessorStep",
     "PolicyActionToRobotActionProcessorStep",
     "to_absolute_actions",
+    "absolute_eef_actions_to_osc",
+    "matrix_to_rotation_vector",
+    "osc_actions_to_absolute_eef",
+    "rotation_vector_to_matrix",
+    "to_eef_absolute_actions",
+    "to_eef_relative_actions",
     "to_relative_actions",
     "transition_to_batch",
     "TransitionKey",

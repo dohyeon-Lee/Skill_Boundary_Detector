@@ -13,7 +13,7 @@ sys.path.insert(0, str(ROOT / "examples/libero"))
 sys.path.insert(0, str(ROOT / "src"))
 
 from FSQ import (  # noqa: E402
-    encoder_start_eef_pose,
+    encoder_grounding_position,
     prepare_encoder_trajectory,
     spline_encode,
 )
@@ -53,7 +53,7 @@ def _config(segments: list[np.ndarray], mode: str = "optimal") -> FSQOriginalCon
     lengths = [len(s) for s in segments]
     start_min = start_max = None
     if mode == "optimal":
-        starts = np.stack([encoder_start_eef_pose(s) for s in segments])
+        starts = np.stack([encoder_grounding_position(s) for s in segments])
         start_min, start_max = starts.min(0), starts.max(0)
     return FSQOriginalConfig(
         enc_dim=ENC_DIM,
@@ -81,9 +81,31 @@ def test_spline_decode_round_trips_encoder_input() -> None:
     recon = spline_decode(ctrl, length, 3)
     target = prepare_encoder_trajectory(segments[0], "zero_grounded")
     assert recon.shape == target.shape
-    # The trajectory starts zero-grounded and the codec must preserve that anchor.
-    assert np.abs(recon[0, :-2]).max() < 1e-4
+    # XYZ is centered around the skill mean; rotation and gripper stay absolute.
+    assert np.abs(recon[:, :3].mean(0)).max() < 0.1
     assert float(np.abs(recon - target).mean()) < 0.1
+
+
+def test_grounding_centers_only_xyz_and_optimal_uses_that_mean() -> None:
+    trajectory = np.asarray(
+        [
+            [1.0, 3.0, 5.0, 0.1, 0.2, 0.3, 0.01, 0.02],
+            [3.0, 5.0, 7.0, 0.4, 0.5, 0.6, 0.03, 0.04],
+            [5.0, 7.0, 9.0, 0.7, 0.8, 0.9, 0.05, 0.06],
+        ],
+        dtype=np.float32,
+    )
+
+    grounded = prepare_encoder_trajectory(trajectory, "zero_grounded")
+    optimal = prepare_encoder_trajectory(trajectory, "optimal")
+
+    np.testing.assert_allclose(grounded[:, :3].mean(0), np.zeros(3), atol=1e-6)
+    np.testing.assert_array_equal(grounded[:, 3:], trajectory[:, 3:])
+    np.testing.assert_array_equal(optimal, grounded)
+    np.testing.assert_allclose(
+        encoder_grounding_position(trajectory), trajectory[:, :3].mean(0)
+    )
+    assert encoder_grounding_position(trajectory).shape == (3,)
 
 
 def test_one_shot_forward_reconstructs_input_shapes() -> None:
@@ -524,7 +546,10 @@ def test_dataset_exposes_codebook_diagnostic_layout() -> None:
     segments, metadata = _segments()
     cfg = _config(segments)
     dataset = FSQOriginalDataset(segments, metadata, cfg)
+    model = SplineFSQOriginalAE(cfg)
     # _collect_code_assignments (reused from FSQ.py) needs these attributes.
     assert len(dataset.ctrl) == len(dataset.lengths) == len(segments)
     assert dataset.start_poses is not None and len(dataset.start_poses) == len(segments)
+    assert dataset.start_poses[0].shape == (3,)
+    assert model.encoder.enc_start_proj.in_features == 3
     assert dataset.ctrl[0].shape == (N_CONTROL, ENC_DIM)

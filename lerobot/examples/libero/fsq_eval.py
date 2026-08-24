@@ -48,7 +48,7 @@ from codebook_visualizer import (  # noqa: E402
 )
 from FSQ import (  # noqa: E402
     N_GRIPPER_DIMS,
-    encoder_start_eef_pose,
+    encoder_grounding_position,
     load_fsq_model as load_original_fsq_model,
     prepare_encoder_trajectory,
     spline_encode,
@@ -203,7 +203,7 @@ def ctrl_skill_metrics(recon, progress, term_prob, gt_traj, T, end_threshold, gr
     """Per-skill metrics for the oneshot reconstructor.
 
     Reconstruction is the spline-decoded control-point trajectory scored against
-    the encoder's own target convention, so the error lives in trajectory units
+    the reconstructor's configured target convention, so the error lives in trajectory units
     rather than action units. The metric keys match ``skill_metrics`` on purpose:
     the ctrl error occupies the same slot the chunk error does, exactly as
     ``fsq_reconstruction_loss`` does during training, so every downstream
@@ -253,7 +253,7 @@ def batched_encode(model, segments, lengths, device, batch_size):
         cp = (cp - amin) / (amax - amin + 1e-8) * 2.0 - 1.0
         ctrl_norm.append(cp.astype(np.float32))
         if optimal:
-            pose = encoder_start_eef_pose(seg)
+            pose = encoder_grounding_position(seg)
             start_norm.append(((pose - smin) / (smax - smin + 1e-8) * 2.0 - 1.0).astype(np.float32))
 
     latents = np.zeros((N, int(model.fsq.latent_dim)), np.float32)
@@ -989,14 +989,15 @@ def main():
         )
 
     # ── decoder: live-frame inference only for the requested scope ────────────
-    # The oneshot reconstructor emits a control-point grid in the ENCODER's
-    # trajectory convention, so it is scored against the encoder targets rather
-    # than the dataset actions the chunk reconstructor predicts.
+    # The oneshot reconstructor emits a control-point grid in its independently
+    # configured trajectory convention, rather than the action chunks predicted
+    # by the chunk reconstructor.
     oneshot = is_oneshot(cfg)
     recon_label = "ctrl" if oneshot else "chunk"
     if oneshot:
         targets = [
-            prepare_encoder_trajectory(seg, cfg.encoder_input_mode) for seg in segments
+            prepare_encoder_trajectory(seg, cfg.reconstructor_output_mode)
+            for seg in segments
         ]
         traj_dim = targets[0].shape[-1]
         groups = _traj_dim_groups(traj_dim)
@@ -1129,7 +1130,7 @@ def main():
             if oneshot:
                 gt_ctrl, _ = spline_encode(
                     segments[i], model.n_control, model.spline_degree,
-                    input_mode=cfg.encoder_input_mode,
+                    input_mode=cfg.reconstructor_output_mode,
                 )
                 imgs.append(make_ctrl_sample_plot(s_img, e_img, delta, progress, term_prob,
                                                   targets[i], gt_ctrl, T, dim_labels,

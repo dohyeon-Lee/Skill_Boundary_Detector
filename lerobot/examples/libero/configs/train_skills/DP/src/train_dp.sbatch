@@ -115,6 +115,10 @@ fi
 
 # RELATIVE actions (ABC/bimanual): action−state(anchor) 학습 — VLA/SBD probe와 동일 공간.
 # 정규화는 relative 분포 stats(meta/relative_action_stats.json, build ④-b)를 사용.
+if [ "${DP_RELATIVE:-false}" = "true" ] && [ "${DP_EEF_RELATIVE:-false}" = "true" ]; then
+  echo "dp_relative와 dp_eef_relative는 동시에 사용할 수 없습니다." >&2
+  exit 1
+fi
 if [ "${DP_RELATIVE:-false}" = "true" ]; then
   REL_STATS="${RAW_DATASET_DIR}/meta/relative_action_stats.json"
   if [ ! -f "${REL_STATS}" ]; then
@@ -126,6 +130,32 @@ if [ "${DP_RELATIVE:-false}" = "true" ]; then
   POLICY_ARGS+=(
     --policy.use_relative_actions=true
     --policy.relative_stats_path="${REL_STATS}"
+  )
+fi
+
+# LIBERO EEF-relative path: derived absolute targets → anchor-relative SO(3) target at
+# train time, then relative prediction → live-pose absolute target → OSC input at inference.
+if [ "${DP_EEF_RELATIVE:-false}" = "true" ]; then
+  EEF_REL_STATS="${RAW_DATASET_DIR}/meta/relative_action_stats.json"
+  EEF_CONTRACT="${RAW_DATASET_DIR}/meta/action_contract.json"
+  if [ ! -f "${EEF_REL_STATS}" ] || [ ! -f "${EEF_CONTRACT}" ]; then
+    echo "dp_eef_relative=true인데 derived LIBERO contract/stats가 없습니다:" >&2
+    echo "  ${EEF_CONTRACT}" >&2
+    echo "  ${EEF_REL_STATS}" >&2
+    echo "  → libero_anchor_relative_dataset builder를 먼저 실행하세요." >&2
+    exit 1
+  fi
+  if [ "${DP_N_ACTION_STEPS}" != "1" ]; then
+    echo "dp_eef_relative는 live anchor 정합을 위해 dp_n_action_steps=1이 필요합니다." >&2
+    exit 1
+  fi
+  echo "  EEF relative : ON (stats: ${EEF_REL_STATS})"
+  echo "  OSC scales   : position=${DP_EEF_POSITION_SCALE} rotation=${DP_EEF_ROTATION_SCALE} (dataset contract)"
+  POLICY_ARGS+=(
+    --policy.use_eef_relative_actions=true
+    --policy.eef_relative_stats_path="${EEF_REL_STATS}"
+    --policy.eef_position_scale="${DP_EEF_POSITION_SCALE}"
+    --policy.eef_rotation_scale="${DP_EEF_ROTATION_SCALE}"
   )
 fi
 echo "  dataset      : ${TARGET_DATASET}"

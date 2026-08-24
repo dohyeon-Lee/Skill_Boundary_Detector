@@ -7,6 +7,7 @@
 #   dataset path : {project_root}/{dataset_root}/{target_dataset}   (LeRobot v3)
 #   base DP cfg  : {project_root}/lerobot/{dp_base_config} (아키텍처만; 나머지는 런타임 오버라이드)
 #   relative     : dp_relative=true면 dataset의 meta/relative_action_stats.json 필요 (ABC build ④-b)
+#   EEF relative : dp_eef_relative=true면 derived LIBERO action_contract/stats sidecar 필요
 # Outputs:
 #   DP policy    : {project_root}/{outputs_root}/DP/{dp_policy_name}
 #   checkpoint   : …/DP/{dp_policy_name}/checkpoints/{dp_checkpoint}/pretrained_model

@@ -13,8 +13,7 @@ set -euo pipefail
 SUBMIT_DIR="${STAGE2_EVAL_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 SRC_DIR="${SUBMIT_DIR}/src"
 CONFIG_PATH="${STAGE2_EVAL_CONFIG:-${SUBMIT_DIR}/stage2_eval_config.yaml}"
-BOOTSTRAP_PYTHON="${SUBMIT_DIR}/../../../../../../.venv/bin/python"
-[ -x "${BOOTSTRAP_PYTHON}" ] || BOOTSTRAP_PYTHON=python3
+BOOTSTRAP_PYTHON=/usr/bin/python3
 
 # submit_eval.sh exports one frozen resolution. Resolve only for direct sbatch use.
 if [ -z "${POLICY_PATH:-}" ]; then
@@ -34,7 +33,19 @@ if [ -n "${SLURM_ARRAY_TASK_ID:-}" ] && [ -n "${EVAL_FANOUT:-}" ]; then
 fi
 
 cd "${LEROBOT_ROOT}"
-source "${PROJECT_ROOT}/.venv/bin/activate"
+SHARED_VENV="$(readlink -f "${PROJECT_ROOT}/.venv")"
+EVAL_VENV="${SHARED_VENV}"
+if [ -n "${STAGE2_EVAL_VENV_ARCHIVE:-}" ]; then
+  source "${PROJECT_ROOT}/lerobot/examples/libero/configs/node_local_venv.sh"
+  if STAGED_VENV="$(stage_node_local_venv \
+      "${STAGE2_EVAL_VENV_ARCHIVE}" "${SHARED_VENV}" \
+      "${STAGE2_EVAL_VENV_LABEL:-Stage-2 eval venv}")"; then
+    EVAL_VENV="${STAGED_VENV}"
+  fi
+fi
+EVAL_PYTHON="${EVAL_VENV}/bin/python"
+export VIRTUAL_ENV="${EVAL_VENV}"
+export PATH="${EVAL_VENV}/bin:${PATH}"
 source "${PROJECT_ROOT}/lerobot/examples/libero/configs/runtime_env.sh"
 unset LD_LIBRARY_PATH
 
@@ -96,6 +107,7 @@ echo "predictor: ${EXTERNAL_PREDICTOR_MODEL:-<none>}"
 echo "term     : ${EXTERNAL_TERMINATOR_MODEL:-<none>}"
 echo "suite    : ${TARGET_TASK} task_ids=${TASK_IDS} episodes=${N_EPISODES}"
 echo "output   : ${EVAL_OUT_DIR}"
+echo "Python   : ${EVAL_PYTHON}"
 nvidia-smi || true
 
 # Fail over to another GPU instead of silently running on CPU.
@@ -104,7 +116,7 @@ prepare_inline_cuda_guard
 
 if PYTORCH_ALLOC_CONF=expandable_segments:True \
   PYTHONPATH="${LEROBOT_ROOT}/src:${LEROBOT_ROOT}/examples/libero:${LIBERO_REPO_ROOT}" \
-  "${PROJECT_ROOT}/.venv/bin/python" "${SRC_DIR}/run_eval.py" \
+  "${EVAL_PYTHON}" "${SRC_DIR}/run_eval.py" \
     --policy.path="${POLICY_PATH}" \
     --policy.fsq_path="${FSQ_PATH}" \
     --policy.dino_model_path="${DINO_MODEL_PATH}" \
@@ -146,7 +158,7 @@ fi
 # Merge every chunk finished so far and regenerate the success-rate chart.
 # Idempotent: whichever array job ends last leaves the complete chart behind.
 EXPECTED_TASKS="$("${BOOTSTRAP_PYTHON}" -c 'import json, sys; print(len(json.loads(sys.argv[1])))' "${EVAL_ALL_TASK_IDS}")"
-"${PROJECT_ROOT}/.venv/bin/python" \
+"${EVAL_PYTHON}" \
   "${SUBMIT_DIR}/../stage1_eval/src/merge_eval_chunks.py" \
   --out_dir="${EVAL_OUT_DIR}" --expected_tasks="${EXPECTED_TASKS}" \
   || echo "chunk merge failed (non-fatal)"

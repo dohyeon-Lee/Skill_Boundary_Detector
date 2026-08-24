@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "examples/libero"))
 sys.path.insert(0, str(ROOT / "src"))
 
-from FSQ import encoder_start_eef_pose, prepare_encoder_trajectory  # noqa: E402
+from FSQ import encoder_grounding_position, prepare_encoder_trajectory  # noqa: E402
 from FSQ_original import FSQOriginalConfig, SplineFSQOriginalAE  # noqa: E402
 from fsq_original_eval import Args, main  # noqa: E402
 
@@ -46,7 +46,7 @@ def _checkpoint(
 ) -> Path:
     mode = "optimal"
     prep = np.concatenate([prepare_encoder_trajectory(s, mode) for s in segments])
-    starts = np.stack([encoder_start_eef_pose(s) for s in segments])
+    starts = np.stack([encoder_grounding_position(s) for s in segments])
     lengths = [len(s) for s in segments]
     all_actions = np.concatenate(actions)
     cfg = FSQOriginalConfig(

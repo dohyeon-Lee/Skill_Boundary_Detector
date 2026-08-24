@@ -39,6 +39,7 @@ warm_start:
   fsq: ""
 
 cond:
+  encoder_variant: gemma_300m
   dino_model: models/dinov3-vitl16
   state_adarms: false
 

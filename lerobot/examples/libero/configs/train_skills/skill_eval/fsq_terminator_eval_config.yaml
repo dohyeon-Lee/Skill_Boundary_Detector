@@ -9,24 +9,18 @@
 # The terminator variant (state+image / image-only / state MLP / state RNN) is
 # read from each checkpoint's own cfg, so nothing about it is configured here.
 
-output_name: "fsq_terminator_probe_nodiv"
+output_name: "contrastive_terminator_2"
 
 # Checkpoints are named explicitly, one per row -- no sweeping.
 # Only FSQ v3 runs have a terminator module to probe. FSQ-original runs keep
 # their termination inside the rnn decoder, so the resolver rejects them here.
 terminator_models:
-  - label: term_entH
-    run_name: libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_pos_term_LR6_raw_entH
-    checkpoint: "1000"
-  - label: termfull_entH
-    run_name: libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_pos_termfull_LR6_raw_entH
-    checkpoint: "1000"
-  - label: termfull_stateonly
-    run_name: libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_pos_termfull_LR6_raw_withentH_stateonly
-    checkpoint: "1000"
-  - label: termfull_stateonly_nodiv
-    run_name: libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_pos_termfull_LR6_raw_withentH_stateonly
-    checkpoint: "600"
+  - label: term_recon_w01_contrastive
+    run_name: libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_resnet_tuned_fusion_raw_raw__recon_lincontrast_bj10_w01_warm50_ramp50_new_initcal
+    checkpoint: "500"
+  - label: term_w01_contrastive
+    run_name: libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_resnet_tuned_fusion_raw_raw__lincontrast_bj10_w01_warm50_ramp50_new_initcal
+    checkpoint: "500"
 
 target_task: libero_90
 # Which numbering task_ids uses. The skillset numbers tasks by the SOURCE
@@ -37,7 +31,7 @@ target_task: libero_90
 # then logs the translation it applied.
 task_id_space: suite        # dataset | suite
 # Task ids, or "all" for every task the skillset covers.
-task_ids: [0, 3] # , 4, 5, 6]
+task_ids: [0, 3, 4, 5, 6, 11, 18, 22, 28, 33, 35, 38, 40, 46, 50, 55, 60, 65, 69, 73, 77, 81, 86]
 episodes_per_task: 3
 episode_selection: first       # first | random
 episode_ids: []                # optional exact global episode ids

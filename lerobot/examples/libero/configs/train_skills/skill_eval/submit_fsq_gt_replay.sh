@@ -42,10 +42,9 @@ for RUN_NAME in "${RUN_NAMES[@]}"; do
   export FSQ_GT_REPLAY_CHUNK="${CHUNK}"
   export FSQ_GT_REPLAY_RUN="${RUN_NAME}"
 
-  # Encoding a checkpoint's skill latents is the only GPU work here, so it goes
-  # into one prepass job per run and the replay array below asks for no GPU at
-  # all. Three models to compare therefore need three GPUs, not one per
-  # checkpoint -- and the replay array schedules against idle CPU nodes.
+  # Encoding a checkpoint's skill latents is the only GPU computation here, so
+  # it goes into one prepass job per run. Replay may still reserve a GPU when it
+  # inherits a GPU QOS, although its computation remains CPU-only.
   DEPENDENCY_ARGS=()
   if [ -n "${FSQ_MISSING_LATENTS}" ]; then
     PREPASS_ID="$(
@@ -71,13 +70,10 @@ for RUN_NAME in "${RUN_NAMES[@]}"; do
     echo "  latents  : all present, no GPU needed"
   fi
 
-  # A GPU-free replay uses the CPU partition/QOS; asking a GPU QOS for zero GPUs
-  # pends forever as QOSMinGRES.
-  if [ -n "${EVAL_REPLAY_GRES}" ]; then
-    REPLAY_PARTITION="${EVAL_PARTITION}"; REPLAY_QOS="${EVAL_QOS}"
-  else
-    REPLAY_PARTITION="${EVAL_REPLAY_PARTITION}"; REPLAY_QOS="${EVAL_REPLAY_QOS}"
-  fi
+  # The resolver has already selected inherited train placement or an explicit
+  # replay override, together with the corresponding GRES policy.
+  REPLAY_PARTITION="${EVAL_REPLAY_PARTITION}"
+  REPLAY_QOS="${EVAL_REPLAY_QOS}"
   SBATCH_ARGS=(
     --job-name=FSQ_GT
     --partition="${REPLAY_PARTITION}"

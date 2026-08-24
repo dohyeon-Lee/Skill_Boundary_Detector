@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import shlex
 from pathlib import Path
@@ -137,6 +138,100 @@ def run_name(prefix: str, dataset: str, batch_size: int, exp: str, tag: str = ""
     return name
 
 
+def resolve_pt_eef_contract(
+    dataset_dir: Path,
+    policy_chunk_size: int,
+) -> dict[str, Any]:
+    """Resolve PI0.5 EEF-relative settings from the derived dataset itself.
+
+    The dataset contract is the single source of truth for OSC scales. The
+    relative statistics must also cover the full PI0.5 prediction chunk, even
+    though only one action is executed at a time.
+    """
+    contract_path = dataset_dir / "meta" / "action_contract.json"
+    stats_path = dataset_dir / "meta" / "relative_action_stats.json"
+    missing = [path for path in (contract_path, stats_path) if not path.is_file()]
+    if missing:
+        raise FileNotFoundError(
+            "pt_eef_relative=true requires the derived LIBERO dataset contract/stats; missing: "
+            + ", ".join(str(path) for path in missing)
+        )
+
+    try:
+        contract = json.loads(contract_path.read_text())
+        stats = json.loads(stats_path.read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"Invalid PI0.5 EEF-relative metadata: {error}") from error
+
+    expected_contract = {
+        "storage_representation": "absolute_eef_command",
+        "model_representation": "eef_anchor_relative_so3",
+        "rotation_representation": "axis_angle_rotation_vector",
+        "rotation_composition": "left_world",
+    }
+    contract_mismatches = {
+        key: (contract.get(key), expected)
+        for key, expected in expected_contract.items()
+        if contract.get(key) != expected
+    }
+    if contract_mismatches:
+        raise ValueError(
+            f"Unsupported EEF action contract in {contract_path}: {contract_mismatches}"
+        )
+
+    expected_stats = {
+        "representation": "eef_anchor_relative_so3",
+        "storage_representation": "absolute_eef_command",
+        "rotation_representation": "axis_angle_rotation_vector",
+        "rotation_composition": "left_world",
+    }
+    stats_mismatches = {
+        key: (stats.get(key), expected)
+        for key, expected in expected_stats.items()
+        if stats.get(key) != expected
+    }
+    if stats_mismatches:
+        raise ValueError(
+            f"Unsupported EEF relative stats contract in {stats_path}: {stats_mismatches}"
+        )
+
+    try:
+        stats_chunk_size = int(stats["chunk_size"])
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError(f"Missing or invalid chunk_size in {stats_path}") from error
+    if stats_chunk_size < policy_chunk_size:
+        raise ValueError(
+            f"EEF relative stats chunk_size={stats_chunk_size} "
+            f"< PI0.5 chunk_size={policy_chunk_size}"
+        )
+
+    resolved_scales: dict[str, float] = {}
+    for key in ("osc_position_scale", "osc_rotation_scale"):
+        try:
+            contract_value = float(contract[key])
+            stats_value = float(stats[key])
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError(
+                f"Invalid or missing {key} in {contract_path} or {stats_path}"
+            ) from error
+        if not math.isfinite(contract_value) or contract_value <= 0.0:
+            raise ValueError(f"{key} must be finite and positive, got {contract_value}")
+        if not math.isclose(contract_value, stats_value, rel_tol=1e-7, abs_tol=1e-9):
+            raise ValueError(
+                f"{key} mismatch inside derived dataset: "
+                f"action_contract={contract_value}, relative_stats={stats_value}"
+            )
+        resolved_scales[key] = contract_value
+
+    return {
+        "stats_path": stats_path,
+        "contract_path": contract_path,
+        "position_scale": resolved_scales["osc_position_scale"],
+        "rotation_scale": resolved_scales["osc_rotation_scale"],
+        "chunk_size": policy_chunk_size,
+    }
+
+
 def frz_lora_tag(fv: bool, fl: bool, lora_enable: bool, lora_llm: bool, lora_vision: bool) -> str:
     """Run-name tag: '{freeze_vision}{freeze_language}_{lora_vision}{lora_language}' as t/f, e.g. 'tt_ff'.
     BOTH halves read vision-then-language (freeze half, then LoRA half) so the position of each char is
@@ -207,6 +302,9 @@ def slurm_settings(cfg: dict[str, Any], prefix: str, *, cpus: int, mem: str, tim
 def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
     project_root = Path(str(get_value(cfg, "project_root"))).expanduser()
     lerobot_root = project_root / "lerobot"
+    pi_base = Path(
+        resolve_path(project_root, get_value(cfg, "pi_base", "models/pi05_base"))
+    )
     pi05_tokenizer_path = Path(resolve_path(
         project_root,
         get_value(cfg, "pi05_tokenizer", "models/paligemma-3b-pt-224-tokenizer"),
@@ -229,16 +327,73 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
 
     pt_dataset = str(get_value(cfg, "pt_dataset", "libero_90", env="PT_DATASET"))
     pt_dataset_root = str(get_value(cfg, "pt_dataset_root", get_value(cfg, "dataset_root", "libero_dataset"), env="PT_DATASET_ROOT"))
+    pt_dataset_dir = project_root / pt_dataset_root / pt_dataset
     pt_batch_size = int(get_value(cfg, "pt_batch_size", 32, env="PT_BATCH_SIZE"))
+    pt_chunk_size = int(get_value(cfg, "pt_chunk_size", 10, env="PT_CHUNK_SIZE"))
+    if pt_chunk_size < 1:
+        raise ValueError(f"pt_chunk_size must be >= 1, got {pt_chunk_size}")
     pt_num_gpus = int(get_value(cfg, "pt_num_gpus", 1, env="PT_NUM_GPUS"))
     pt_exp = str(get_value(cfg, "pt_exp", "exp1", env="PT_EXP")).strip()
+    pt_lr_mode = str(
+        get_value(cfg, "pt_lr_mode", "cosine_decay", env="PT_LR_MODE")
+    ).strip().lower()
+    if pt_lr_mode not in {"cosine_decay", "warmup_constant"}:
+        raise ValueError(
+            "pt_lr_mode must be 'cosine_decay' or 'warmup_constant', got "
+            f"{pt_lr_mode!r}."
+        )
+    pt_warmup_steps = int(
+        get_value(cfg, "pt_warmup_steps", 1000, env="PT_WARMUP_STEPS")
+    )
+    pt_decay_steps = int(
+        get_value(cfg, "pt_decay_steps", 30000, env="PT_DECAY_STEPS")
+    )
+    pt_decay_lr = float(
+        get_value(cfg, "pt_decay_lr", 2.5e-6, env="PT_DECAY_LR")
+    )
+    if pt_warmup_steps < 0:
+        raise ValueError("pt_warmup_steps must be non-negative.")
+    if pt_decay_steps <= 0:
+        raise ValueError("pt_decay_steps must be positive.")
+    if not math.isfinite(pt_decay_lr) or pt_decay_lr <= 0.0:
+        raise ValueError("pt_decay_lr must be finite and positive.")
     # freeze + LoRA run-name tag: {freeze_vision}{freeze_language}_{lora_vision}{lora_language}, e.g. tt_ff.
     pt_freeze_vis = as_bool(get_value(cfg, "pt_freeze_vision_encoder", False, env="PI05_PT_FREEZE_VISION_ENCODER"))
     pt_freeze_lang = as_bool(get_value(cfg, "pt_freeze_language_model", False, env="PI05_PT_FREEZE_LANGUAGE_MODEL"))
     pt_lora_enable = as_bool(get_value(cfg, "pt_lora_enable", False, env="PI05_PT_LORA_ENABLE"))
     pt_lora_llm = as_bool(get_value(cfg, "pt_lora_llm", True, env="PI05_PT_LORA_LLM"))
     pt_lora_vision = as_bool(get_value(cfg, "pt_lora_vision", False, env="PI05_PT_LORA_VISION"))
+    pt_eef_relative = as_bool(
+        get_value(cfg, "pt_eef_relative", False, env="PT_EEF_RELATIVE")
+    )
+    if pt_eef_relative:
+        manual_scale_keys = [
+            key
+            for key, env_key in (
+                ("pt_eef_position_scale", "PT_EEF_POSITION_SCALE"),
+                ("pt_eef_rotation_scale", "PT_EEF_ROTATION_SCALE"),
+            )
+            if key in cfg or env_key in os.environ
+        ]
+        if manual_scale_keys:
+            raise ValueError(
+                "Remove manual EEF scale settings; they are loaded from the dataset contract: "
+                f"{manual_scale_keys}"
+            )
+        pt_eef = resolve_pt_eef_contract(pt_dataset_dir, pt_chunk_size)
+    else:
+        pt_eef = {
+            "stats_path": "",
+            "contract_path": "",
+            "position_scale": 0.05,
+            "rotation_scale": 0.5,
+            "chunk_size": 0,
+        }
     pt_tag = frz_lora_tag(pt_freeze_vis, pt_freeze_lang, pt_lora_enable, pt_lora_llm, pt_lora_vision)
+    if pt_eef_relative:
+        pt_tag = f"{pt_tag}_eefrel"
+    if pt_lr_mode == "warmup_constant":
+        pt_tag = f"{pt_tag}_constlr"
     pt_run_name = run_name("PT", pt_dataset, pt_batch_size, pt_exp, tag=pt_tag)
 
     ft_dataset = str(get_value(cfg, "ft_dataset", "libero_10_op1_10", env="FT_DATASET"))
@@ -321,17 +476,28 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         "eval_bin": project_root / ".venv" / "bin" / "lerobot-eval",
         "pi05_pt_outputs_root": pi05_pt_root,
         "pi05_ft_outputs_root": pi05_ft_root,
-        "pi_base": resolve_path(project_root, get_value(cfg, "pi_base", "models/pi05_base")),
+        "pi_base": pi_base,
         "pi05_tokenizer_path": pi05_tokenizer_path,
         # PT
         "pt_dataset": pt_dataset,
         "pt_dataset_root": pt_dataset_root,
-        "pt_dataset_dir": project_root / pt_dataset_root / pt_dataset,
+        "pt_dataset_dir": pt_dataset_dir,
+        "pt_eef_relative": pt_eef_relative,
+        "pt_eef_relative_stats_path": pt_eef["stats_path"],
+        "pt_eef_action_contract_path": pt_eef["contract_path"],
+        "pt_eef_position_scale": pt_eef["position_scale"],
+        "pt_eef_rotation_scale": pt_eef["rotation_scale"],
+        "pt_eef_chunk_size": pt_eef["chunk_size"],
         "pt_batch_size": pt_batch_size,
+        "pt_chunk_size": pt_chunk_size,
         "pt_num_gpus": pt_num_gpus,
         "pt_num_workers": int(get_value(cfg, "pt_num_workers", 4, env="PT_NUM_WORKERS")),
         "pt_exp": pt_exp,
         "pt_lr": float(get_value(cfg, "pt_lr_base", 2.5e-05, env="PT_LR_BASE")) * pt_num_gpus,
+        "pt_lr_mode": pt_lr_mode,
+        "pt_warmup_steps": pt_warmup_steps,
+        "pt_decay_steps": pt_decay_steps,
+        "pt_decay_lr": pt_decay_lr,
         "pt_steps": int(get_value(cfg, "pt_steps", 100000, env="PT_STEPS")),
         "pt_save_freq": int(get_value(cfg, "pt_save_freq", 5000, env="PT_SAVE_FREQ")),
         "pt_wandb_project": str(get_value(cfg, "pt_wandb_project", "VLA_posttrain", env="PT_WANDB_PROJECT")),

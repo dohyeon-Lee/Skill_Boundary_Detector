@@ -246,6 +246,24 @@ def test_deferred_video_packing_remuxes_once_per_shard(tmp_path):
     assert not any(path.parent.exists() for path in temp_paths)
 
 
+def test_streaming_encoding_can_defer_video_packing(tmp_path):
+    """Streaming episode MP4s can use the same one-remux-per-shard packing path."""
+    dataset = LeRobotDataset.create(
+        repo_id=DUMMY_REPO_ID,
+        fps=DEFAULT_FPS,
+        features=VIDEO_FEATURES,
+        root=tmp_path / "streaming-deferred",
+        vcodec="h264",
+        streaming_encoding=True,
+        deferred_video_packing=True,
+    )
+
+    assert dataset.writer._streaming_encoder is not None
+    assert dataset.writer._deferred_video_packing is True
+    dataset.writer.flush_pending_videos()
+    assert dataset.writer._streaming_encoder._closed is True
+
+
 # ── clear / lifecycle ────────────────────────────────────────────────
 
 

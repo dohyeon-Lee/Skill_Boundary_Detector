@@ -413,6 +413,55 @@ def _selected_skillset(
     }
 
 
+def resolve_dp_eef_scales(dataset_dir: Path) -> tuple[float, float]:
+    """Load the OSC execution scales from one derived LIBERO dataset contract."""
+    contract_path = dataset_dir / "meta" / "action_contract.json"
+    stats_path = dataset_dir / "meta" / "relative_action_stats.json"
+    missing = [path for path in (contract_path, stats_path) if not path.is_file()]
+    if missing:
+        raise FileNotFoundError(
+            "dp_eef_relative=true requires the derived LIBERO dataset contract and stats; "
+            f"missing: {', '.join(str(path) for path in missing)}"
+        )
+
+    contract = json.loads(contract_path.read_text())
+    stats = json.loads(stats_path.read_text())
+    expected_contract = {
+        "storage_representation": "absolute_eef_command",
+        "model_representation": "eef_anchor_relative_so3",
+        "rotation_representation": "axis_angle_rotation_vector",
+        "rotation_composition": "left_world",
+    }
+    contract_mismatches = {
+        key: (contract.get(key), expected)
+        for key, expected in expected_contract.items()
+        if contract.get(key) != expected
+    }
+    if contract_mismatches:
+        raise ValueError(
+            f"Unsupported EEF action contract in {contract_path}: {contract_mismatches}"
+        )
+
+    resolved: list[float] = []
+    for key in ("osc_position_scale", "osc_rotation_scale"):
+        try:
+            contract_value = float(contract[key])
+            stats_value = float(stats[key])
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError(
+                f"Invalid or missing {key} in {contract_path} or {stats_path}"
+            ) from error
+        if not math.isfinite(contract_value) or contract_value <= 0.0:
+            raise ValueError(f"{key} must be finite and positive, got {contract_value}")
+        if not math.isclose(contract_value, stats_value, rel_tol=1e-7, abs_tol=1e-9):
+            raise ValueError(
+                f"{key} mismatch inside derived dataset: "
+                f"action_contract={contract_value}, relative_stats={stats_value}"
+            )
+        resolved.append(contract_value)
+    return resolved[0], resolved[1]
+
+
 def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str, Any]:
     target_dataset = dataset or str(get_value(cfg, "target_dataset", "libero_90", env="TARGET_DATASET"))
     root = Path(str(get_value(cfg, "project_root"))).expanduser()
@@ -442,9 +491,107 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
     )
 
     raw_dataset_dir = dataset_root / target_dataset
+    fsq_frame_cache_enabled = as_bool(
+        get_value(cfg, "fsq_frame_cache_enabled", True)
+    )
+    fsq_frame_cache_stage_local = as_bool(
+        get_value(cfg, "fsq_frame_cache_stage_local", True)
+    )
+    fsq_frame_cache_local_root = str(
+        get_value(cfg, "fsq_frame_cache_local_root", "") or ""
+    ).strip()
+    if fsq_frame_cache_local_root and not Path(
+        fsq_frame_cache_local_root
+    ).is_absolute():
+        raise ValueError(
+            "fsq_frame_cache_local_root must be empty or an absolute node-local path."
+        )
+    fsq_frame_cache_local_reserve_gb = int(
+        get_value(cfg, "fsq_frame_cache_local_reserve_gb", 16)
+    )
+    if fsq_frame_cache_local_reserve_gb < 0:
+        raise ValueError("fsq_frame_cache_local_reserve_gb must be >= 0.")
+    default_frame_cache_root = (
+        root
+        / ".cache"
+        / "fsq_frame_cache"
+        / dataset_root_name
+        / target_dataset
+        / "rgb_zstd_v2"
+    )
+    configured_frame_cache_root = str(
+        get_value(cfg, "fsq_frame_cache_root", "") or ""
+    ).strip()
+    fsq_frame_cache_root = (
+        resolve_path(root, configured_frame_cache_root)
+        if configured_frame_cache_root
+        else str(default_frame_cache_root)
+    )
+    # The submit script supplies the fingerprinted, completed directory through
+    # FSQ_FRAME_CACHE_DIR. It stays blank during the initial config resolution.
+    fsq_frame_cache_dir = resolve_path(
+        root,
+        get_value(cfg, "fsq_frame_cache_dir", ""),
+    )
+    fsq_frame_cache_partition = str(
+        get_value(cfg, "fsq_frame_cache_partition", "dell_cpu")
+    ).strip()
+    fsq_frame_cache_qos = str(
+        get_value(cfg, "fsq_frame_cache_qos", "cpu_qos")
+    ).strip()
+    fsq_frame_cache_cpus_per_task = int(
+        get_value(cfg, "fsq_frame_cache_cpus_per_task", 16)
+    )
+    fsq_frame_cache_workers = int(
+        get_value(cfg, "fsq_frame_cache_workers", 16)
+    )
+    fsq_frame_cache_decoder_threads = int(
+        get_value(cfg, "fsq_frame_cache_decoder_threads", 1)
+    )
+    if not fsq_frame_cache_partition or not fsq_frame_cache_qos:
+        raise ValueError("FSQ frame-cache partition and qos must be non-empty.")
+    if min(
+        fsq_frame_cache_cpus_per_task,
+        fsq_frame_cache_workers,
+        fsq_frame_cache_decoder_threads,
+    ) < 1:
+        raise ValueError(
+            "FSQ frame-cache cpus_per_task, workers, and decoder_threads must all be >= 1."
+        )
 
     dp_n_obs_steps = int(get_value(cfg, "dp_n_obs_steps", 10))
     dp_horizon = int(get_value(cfg, "dp_horizon", 16))
+    dp_relative = as_bool(get_value(cfg, "dp_relative", False))
+    dp_eef_relative = as_bool(get_value(cfg, "dp_eef_relative", False))
+    if dp_relative and dp_eef_relative:
+        raise ValueError("dp_relative and dp_eef_relative are mutually exclusive.")
+    dp_n_action_steps = int(
+        get_value(
+            cfg,
+            "dp_n_action_steps",
+            1 if dp_eef_relative else dp_horizon - dp_n_obs_steps + 1,
+        )
+    )
+    if dp_eef_relative and dp_n_action_steps != 1:
+        raise ValueError("dp_eef_relative requires dp_n_action_steps=1.")
+    if dp_eef_relative:
+        deprecated_scale_keys = [
+            key
+            for key in ("dp_eef_position_scale", "dp_eef_rotation_scale")
+            if key in cfg or key.upper() in os.environ
+        ]
+        if deprecated_scale_keys:
+            raise ValueError(
+                "Remove manual EEF scale settings; they are loaded from the dataset contract: "
+                f"{deprecated_scale_keys}"
+            )
+        dp_eef_position_scale, dp_eef_rotation_scale = resolve_dp_eef_scales(
+            raw_dataset_dir
+        )
+    else:
+        # Inert compatibility values; they are not passed to the policy unless EEF-relative mode is on.
+        dp_eef_position_scale, dp_eef_rotation_scale = 0.05, 0.5
+    dp_action_suffix = "_eefrel" if dp_eef_relative else ""
     train_dp = as_bool(get_value(cfg, "train_DP", get_value(cfg, "train_dp", True), env="TRAIN_DP"))
     dp_vision = str(get_value(cfg, "dp_vision", "state")).strip().lower()
     dp_vision_tag = dp_vision
@@ -461,7 +608,10 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         dp_vision_tag=dp_vision_tag,
         dp_n_obs_steps=dp_n_obs_steps,
         dp_horizon=dp_horizon,
+        dp_action_suffix=dp_action_suffix,
     )
+    if dp_eef_relative and "{dp_action_suffix}" not in dp_policy_template:
+        dp_policy += dp_action_suffix
     # dp_run_name (or env DP_RUN_NAME) names a trained DP folder DIRECTLY (outputs/DP/<name>).
     # Downstream stages (build_data / FSQ / eval) set it to target a DP without re-deriving the
     # name from vision/grid/n_obs. Empty → use the name generated above.
@@ -608,19 +758,61 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         else fsq_inputs_dir / f"seg_{dp_policy}_ck{dp_checkpoint}{skillset_suffix}"
     )
 
-    fsq_levels = as_levels(get_value(cfg, "fsq_levels", [5, 5, 5]))
-    fsq_tag = "fsq" + "".join(str(v) for v in fsq_levels)
+    fsq_quantizer = str(get_value(cfg, "fsq_quantizer", "fsq")).strip().lower()
+    if fsq_quantizer not in {"fsq", "bsq"}:
+        raise ValueError(
+            f"fsq_quantizer must be fsq|bsq, got {fsq_quantizer!r}."
+        )
+    bsq_code_dim = int(get_value(cfg, "bsq_code_dim", 5))
+    if bsq_code_dim < 2:
+        raise ValueError(f"bsq_code_dim must be >= 2, got {bsq_code_dim}.")
+    configured_fsq_levels = as_levels(get_value(cfg, "fsq_levels", [5, 5, 5]))
+    fsq_levels = (
+        [2] * bsq_code_dim
+        if fsq_quantizer == "bsq"
+        else configured_fsq_levels
+    )
+    fsq_tag = (
+        f"bsq{bsq_code_dim}"
+        if fsq_quantizer == "bsq"
+        else "fsq" + "".join(str(v) for v in fsq_levels)
+    )
     fsq_exp = str(get_value(cfg, "fsq_exp", "")).strip()
-    fsq_exp_suffix = f"_{fsq_exp}" if fsq_exp else ""
+    fsq_init_calibration = as_bool(get_value(cfg, "fsq_init_calibration", False))
+    fsq_init_calibration_gain = float(
+        get_value(cfg, "fsq_init_calibration_gain", 1.0)
+    )
+    fsq_init_calibration_samples = int(
+        get_value(cfg, "fsq_init_calibration_samples", 0)
+    )
+    if fsq_init_calibration_gain <= 0:
+        raise ValueError(
+            "fsq_init_calibration_gain must be positive, "
+            f"got {fsq_init_calibration_gain}."
+        )
+    if fsq_init_calibration_samples < 0:
+        raise ValueError(
+            "fsq_init_calibration_samples must be non-negative, "
+            f"got {fsq_init_calibration_samples}."
+        )
+    calibration_suffix = ""
+    if fsq_init_calibration:
+        calibration_suffix = "_initcal"
+        if fsq_init_calibration_gain != 1.0:
+            gain_tag = f"{fsq_init_calibration_gain:g}".replace(".", "p")
+            calibration_suffix += f"g{gain_tag}"
+        if fsq_init_calibration_samples:
+            calibration_suffix += f"n{fsq_init_calibration_samples}"
+    fsq_exp_suffix = (f"_{fsq_exp}" if fsq_exp else "") + calibration_suffix
     fsq_samples_per_skill = int(get_value(cfg, "fsq_samples_per_skill", 2))
     fsq_lr_schedule = str(get_value(cfg, "fsq_lr_schedule", "cosine")).strip().lower()
     if fsq_lr_schedule not in {"cosine", "constant"}:
         raise ValueError(f"fsq_lr_schedule must be cosine|constant, got {fsq_lr_schedule!r}.")
     raw_terminator_arch = str(get_value(cfg, "fsq_terminator_arch", "default")).strip().lower()
-    # Legacy configs used fsq_terminator_arch for the visual small/cond choice.
+    # Legacy configs used fsq_terminator_arch for the visual small/fusion choice.
     # The cleaned interface uses it for default/rnn and keeps the visual detail
     # under fsq_terminator_default_arch.
-    if raw_terminator_arch in {"small", "cond"}:
+    if raw_terminator_arch in {"small", "fusion"}:
         fsq_terminator_model = "default"
         legacy_visual_arch = raw_terminator_arch
     elif raw_terminator_arch in {"default", "rnn"}:
@@ -628,15 +820,15 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         legacy_visual_arch = "small"
     else:
         raise ValueError(
-            "fsq_terminator_arch must be default|rnn, "
+            "fsq_terminator_arch must be default|rnn (or legacy small|fusion), "
             f"got {raw_terminator_arch!r}."
         )
     fsq_terminator_default_arch = str(
         get_value(cfg, "fsq_terminator_default_arch", legacy_visual_arch)
     ).strip().lower()
-    if fsq_terminator_default_arch not in {"small", "cond"}:
+    if fsq_terminator_default_arch not in {"small", "fusion"}:
         raise ValueError(
-            "fsq_terminator_default_arch must be small|cond, "
+            "fsq_terminator_default_arch must be small|fusion, "
             f"got {fsq_terminator_default_arch!r}."
         )
     fsq_terminator_layers = int(get_value(cfg, "fsq_terminator_layers", 2))
@@ -695,13 +887,27 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
     fsq_state_rnn_terminator = terminator_enabled and fsq_terminator_model == "rnn"
     if fsq_state_rnn_terminator and fsq_terminator_input_space != "state":
         raise ValueError("The RNN terminator currently supports input_space=state only.")
-    fsq_cond_encoder_variant = str(get_value(cfg, "fsq_cond_encoder_variant", "gemma_300m"))
     fsq_terminator_tag = fsq_terminator_model
-    fsq_vision_backbone = str(get_value(cfg, "fsq_vision_backbone", "dino"))
-    if fsq_vision_backbone not in {"dino", "siglip"}:
-        raise ValueError(f"fsq_vision_backbone must be dino|siglip, got {fsq_vision_backbone!r}.")
+    fsq_vision_backbone = str(
+        get_value(cfg, "fsq_vision_backbone", "dino")
+    ).strip().lower()
+    if fsq_vision_backbone not in {"dino", "siglip", "resnet"}:
+        raise ValueError(
+            "fsq_vision_backbone must be dino|siglip|resnet, "
+            f"got {fsq_vision_backbone!r}."
+        )
     fsq_freeze_vision_encoder = as_bool(get_value(cfg, "fsq_freeze_vision_encoder", True))
     fsq_vision_tag = fsq_vision_backbone + ("_frozen" if fsq_freeze_vision_encoder else "_tuned")
+    uses_visual_terminator = (
+        terminator_enabled and fsq_terminator_input_space in {"image", "both"}
+    )
+    # Preserve historical DINO-frozen output paths, but isolate every newly
+    # selectable visual contract so auto-resume cannot mix incompatible towers.
+    fsq_vision_suffix = (
+        ""
+        if not uses_visual_terminator or fsq_vision_tag == "dino_frozen"
+        else f"_{fsq_vision_tag}"
+    )
     fsq_encoder_input_mode = str(get_value(cfg, "fsq_encoder_input_mode", "zero_grounded")).strip().lower()
     fsq_encoder_input_mode = "raw_state" if fsq_encoder_input_mode == "raw" else fsq_encoder_input_mode
     if fsq_encoder_input_mode not in {"zero_grounded", "raw_state", "optimal"}:
@@ -736,7 +942,96 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
             f"got {raw_reconstructor_arch!r}."
         )
     fsq_reconstructor_arch = reconstructor_arch_aliases[raw_reconstructor_arch]
+    default_reconstructor_output_mode = (
+        "raw_state" if fsq_encoder_input_mode == "raw_state" else "zero_grounded"
+    )
+    fsq_reconstructor_output_mode = str(
+        get_value(
+            cfg,
+            "fsq_reconstructor_output_mode",
+            default_reconstructor_output_mode,
+        )
+    ).strip().lower()
+    if fsq_reconstructor_output_mode == "raw":
+        fsq_reconstructor_output_mode = "raw_state"
+    if fsq_reconstructor_output_mode not in {"raw_state", "zero_grounded"}:
+        raise ValueError(
+            "fsq_reconstructor_output_mode must be raw|zero_grounded, "
+            f"got {fsq_reconstructor_output_mode!r}."
+        )
     fsq_entropy = as_bool(get_value(cfg, "fsq_entropy", False))
+    if fsq_quantizer == "bsq" and fsq_entropy:
+        raise ValueError(
+            "BSQ in fsq_config uses the recon + pair-loss path only; "
+            "set fsq_entropy=false."
+        )
+    fsq_entropy_conf_ceiling = float(
+        get_value(cfg, "fsq_entropy_conf_ceiling", 0.0)
+    )
+    if not 0.0 <= fsq_entropy_conf_ceiling <= 1.0:
+        raise ValueError(
+            "fsq_entropy_conf_ceiling must be in [0, 1], "
+            f"got {fsq_entropy_conf_ceiling}."
+        )
+    fsq_pair_loss = str(get_value(cfg, "fsq_pair_loss", "none")).strip().lower()
+    if fsq_pair_loss not in {"none", "overlap", "js", "contrastive"}:
+        raise ValueError(
+            "fsq_pair_loss must be none|overlap|js|contrastive, "
+            f"got {fsq_pair_loss!r}."
+        )
+    fsq_pair_weight = float(get_value(cfg, "fsq_pair_weight", 0.1))
+    if fsq_pair_weight < 0:
+        raise ValueError(
+            f"fsq_pair_weight must be non-negative, got {fsq_pair_weight}."
+        )
+    fsq_pair_inv_temperature = float(
+        get_value(cfg, "fsq_pair_inv_temperature", 5.0)
+    )
+    if fsq_pair_inv_temperature <= 0:
+        raise ValueError(
+            "fsq_pair_inv_temperature must be positive, "
+            f"got {fsq_pair_inv_temperature}."
+        )
+    fsq_pair_warmup = as_bool(get_value(cfg, "fsq_pair_warmup", False))
+    fsq_pair_warmup_epochs = int(get_value(cfg, "fsq_pair_warmup_epochs", 0))
+    fsq_pair_ramp_epochs = int(get_value(cfg, "fsq_pair_ramp_epochs", 0))
+    if fsq_pair_warmup_epochs < 0 or fsq_pair_ramp_epochs < 0:
+        raise ValueError(
+            "fsq_pair_warmup_epochs and fsq_pair_ramp_epochs must be non-negative, "
+            f"got {fsq_pair_warmup_epochs} and {fsq_pair_ramp_epochs}."
+        )
+    legacy_boundary_aug_pmax = int(get_value(cfg, "fsq_boundary_aug_pmax", 0))
+    if legacy_boundary_aug_pmax < 0:
+        raise ValueError(
+            "fsq_boundary_aug_pmax must be non-negative, "
+            f"got {legacy_boundary_aug_pmax}."
+        )
+
+    directional_boundary_aug_pmaxes: dict[str, int] = {}
+    for direction in ("early_start", "late_start", "early_end", "late_end"):
+        key = f"fsq_boundary_aug_{direction}_pmax"
+        raw_value = get_value(cfg, key, None)
+        value = legacy_boundary_aug_pmax if raw_value is None else int(raw_value)
+        if value < 0:
+            raise ValueError(f"{key} must be non-negative, got {value}.")
+        directional_boundary_aug_pmaxes[direction] = value
+    fsq_boundary_aug_pmax = max(directional_boundary_aug_pmaxes.values())
+    fsq_boundary_aug_distribution = str(
+        get_value(cfg, "fsq_boundary_aug_distribution", "half_normal")
+    ).strip().lower().replace("-", "_").replace(" ", "_")
+    if fsq_boundary_aug_distribution not in {"half_normal", "uniform"}:
+        raise ValueError(
+            "fsq_boundary_aug_distribution must be half_normal|uniform, "
+            f"got {fsq_boundary_aug_distribution!r}."
+        )
+    if fsq_pair_loss != "none":
+        if fsq_encoder_arch != "spline":
+            raise ValueError("fsq_pair_loss requires fsq_encoder_arch=spline.")
+        if not any(directional_boundary_aug_pmaxes.values()):
+            raise ValueError(
+                "fsq_pair_loss requires at least one positive directional "
+                "boundary augmentation pmax."
+            )
     fsq_skill_cond_mode = str(get_value(cfg, "fsq_skill_cond_mode", "token")).strip().lower()
     if fsq_skill_cond_mode not in {"token", "broadcast"}:
         raise ValueError(
@@ -744,6 +1039,11 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
             f"got {fsq_skill_cond_mode!r}."
         )
     fsq_skill_cond_suffix = "" if fsq_skill_cond_mode == "token" else "_broadcast"
+    # Fusion checkpoints have a different module/state contract and must never
+    # silently resume a historical query-terminator run with the same fsq_exp.
+    fsq_terminator_default_suffix = (
+        "_fusion" if fsq_terminator_default_arch == "fusion" else ""
+    )
     # DP tag for the FSQ run name = the DP run with the dataset prefix stripped
     # (libero_90_full_full_state_obs20 → state_obs20), so the FSQ folder shows WHICH DP's skillset it
     # was trained on (for example state_obs20), not just the FSQ architecture.
@@ -755,14 +1055,15 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         dp_tag += skillset_threshold_suffix
         dp_tag += skillset_min_skills_suffix
         dp_tag += skillset_output_suffix
-    # Architecture knobs (vision backbone/freeze, terminator, encoder input mode,
-    # skill cond mode) are fixed project-wide and deliberately NOT
-    # part of the name anymore — use fsq_exp to separate runs if one is ever varied.
+    # The default DINO-frozen contract keeps its historical name. Other visual
+    # towers/freezing modes are suffixed because their checkpoints cannot resume
+    # into one another. Remaining architecture experiments use fsq_exp.
     fsq_run_template = str(
         get_value(
             cfg,
             "fsq_run_name",
-            "{target_dataset}_{dp_tag}_{fsq_tag}{fsq_exp_suffix}",
+            "{target_dataset}_{dp_tag}_{fsq_tag}{fsq_vision_suffix}"
+            "{fsq_terminator_default_suffix}{fsq_exp_suffix}",
         )
     )
     fsq_run_name = fsq_run_template.format(
@@ -772,8 +1073,11 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         fsq_exp=fsq_exp,
         fsq_exp_suffix=fsq_exp_suffix,
         fsq_vision_tag=fsq_vision_tag,
+        fsq_vision_suffix=fsq_vision_suffix,
         fsq_terminator_arch=fsq_terminator_model,
         fsq_terminator_tag=fsq_terminator_tag,
+        fsq_terminator_default_arch=fsq_terminator_default_arch,
+        fsq_terminator_default_suffix=fsq_terminator_default_suffix,
         fsq_terminator_layers=fsq_terminator_layers,
         fsq_terminator_heads=fsq_terminator_heads,
         fsq_patch_grid=int(get_value(cfg, "fsq_patch_grid", 8)),
@@ -799,6 +1103,23 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "fsq_dataset_root_name": fsq_dataset_root_name,
         "target_dataset": target_dataset,
         "raw_dataset_dir": raw_dataset_dir,
+        "fsq_frame_cache_enabled": fsq_frame_cache_enabled,
+        "fsq_frame_cache_stage_local": fsq_frame_cache_stage_local,
+        "fsq_frame_cache_local_root": fsq_frame_cache_local_root,
+        "fsq_frame_cache_local_reserve_gb": fsq_frame_cache_local_reserve_gb,
+        "fsq_frame_cache_root": fsq_frame_cache_root,
+        "fsq_frame_cache_dir": fsq_frame_cache_dir,
+        "fsq_frame_cache_partition": fsq_frame_cache_partition,
+        "fsq_frame_cache_qos": fsq_frame_cache_qos,
+        "fsq_frame_cache_cpus_per_task": fsq_frame_cache_cpus_per_task,
+        "fsq_frame_cache_workers": fsq_frame_cache_workers,
+        "fsq_frame_cache_decoder_threads": fsq_frame_cache_decoder_threads,
+        "fsq_frame_cache_mem": str(
+            get_value(cfg, "fsq_frame_cache_mem", "32G")
+        ),
+        "fsq_frame_cache_time": str(
+            get_value(cfg, "fsq_frame_cache_time", "12:00:00")
+        ),
         "data_dir": dataset_root / f"{target_dataset}_data",
         "outputs_root": outputs_root,
         "dp_outputs_root": dp_outputs_root,
@@ -814,10 +1135,13 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "train_DP": train_dp,
         "dp_n_obs_steps": dp_n_obs_steps,
         # Default = max valid chunk (horizon - n_obs + 1); stays consistent if n_obs/horizon change.
-        "dp_n_action_steps": int(get_value(cfg, "dp_n_action_steps", dp_horizon - dp_n_obs_steps + 1)),
+        "dp_n_action_steps": dp_n_action_steps,
         "dp_horizon": dp_horizon,
         "dp_batch_size": int(get_value(cfg, "dp_batch_size", 64)),
-        "dp_relative": as_bool(get_value(cfg, "dp_relative", False)),
+        "dp_relative": dp_relative,
+        "dp_eef_relative": dp_eef_relative,
+        "dp_eef_position_scale": dp_eef_position_scale,
+        "dp_eef_rotation_scale": dp_eef_rotation_scale,
         "dp_steps": int(get_value(cfg, "dp_steps", 100000)),
         "dp_num_workers": int(get_value(cfg, "dp_num_workers", 4)),
         "dp_save_freq": int(get_value(cfg, "dp_save_freq", 50000)),
@@ -829,6 +1153,8 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "dp_overwrite_output": as_bool(get_value(cfg, "dp_overwrite_output", True)),
         "fsq_levels_str": " ".join(str(v) for v in fsq_levels),
         "fsq_levels_arg": "[" + ",".join(str(v) for v in fsq_levels) + "]",
+        "fsq_quantizer": fsq_quantizer,
+        "bsq_code_dim": bsq_code_dim,
         "fsq_tag": fsq_tag,
         "fsq_exp": fsq_exp,
         "fsq_exp_suffix": fsq_exp_suffix,
@@ -860,12 +1186,29 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "fsq_encoder_arch": fsq_encoder_arch,
         "fsq_entropy": fsq_entropy,
         "fsq_entropy_conf_weight": str(get_value(cfg, "fsq_entropy_conf_weight", 0.1)),
+        "fsq_entropy_conf_ceiling": str(fsq_entropy_conf_ceiling),
         "fsq_entropy_div_weight": str(get_value(cfg, "fsq_entropy_div_weight", 0.1)),
         "fsq_entropy_inv_temperature": str(get_value(cfg, "fsq_entropy_inv_temperature", 10.0)),
+        "fsq_init_calibration": fsq_init_calibration,
+        "fsq_init_calibration_gain": str(fsq_init_calibration_gain),
+        "fsq_init_calibration_samples": fsq_init_calibration_samples,
+        "fsq_pair_loss": fsq_pair_loss,
+        "fsq_pair_weight": str(fsq_pair_weight),
+        "fsq_pair_inv_temperature": str(fsq_pair_inv_temperature),
+        "fsq_pair_warmup": fsq_pair_warmup,
+        "fsq_pair_warmup_epochs": fsq_pair_warmup_epochs,
+        "fsq_pair_ramp_epochs": fsq_pair_ramp_epochs,
+        "fsq_boundary_aug_pmax": fsq_boundary_aug_pmax,
+        "fsq_boundary_aug_early_start_pmax": directional_boundary_aug_pmaxes["early_start"],
+        "fsq_boundary_aug_late_start_pmax": directional_boundary_aug_pmaxes["late_start"],
+        "fsq_boundary_aug_early_end_pmax": directional_boundary_aug_pmaxes["early_end"],
+        "fsq_boundary_aug_late_end_pmax": directional_boundary_aug_pmaxes["late_end"],
+        "fsq_boundary_aug_distribution": fsq_boundary_aug_distribution,
         "fsq_reconstructor_start_state": as_bool(
             get_value(cfg, "fsq_reconstructor_start_state", True)
         ),
         "fsq_reconstructor_arch": fsq_reconstructor_arch,
+        "fsq_reconstructor_output_mode": fsq_reconstructor_output_mode,
         "fsq_decoder_reconstructor": fsq_decoder_reconstructor,
         "fsq_decoder_terminator_progress": fsq_decoder_terminator_progress,
         "fsq_decoder_terminator_termination": fsq_decoder_terminator_termination,
@@ -880,6 +1223,7 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "fsq_terminator_only": fsq_terminator_only,
         "fsq_state_rnn_terminator": fsq_state_rnn_terminator,
         "fsq_vision_backbone": fsq_vision_backbone,
+        "fsq_vision_suffix": fsq_vision_suffix,
         "fsq_freeze_vision_encoder": fsq_freeze_vision_encoder,
         "fsq_hidden_dim": int(get_value(cfg, "fsq_hidden_dim", 256)),
         "fsq_num_layers": int(get_value(cfg, "fsq_num_layers", 2)),
@@ -899,7 +1243,7 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "dino_image_size": int(get_value(cfg, "dino_image_size", get_value(cfg, "fsq_dino_image_size", 224))),
         "fsq_dino_image_size": int(get_value(cfg, "fsq_dino_image_size", 224)),
         "fsq_siglip_image_size": int(get_value(cfg, "fsq_siglip_image_size", 224)),
-        "fsq_cond_encoder_variant": fsq_cond_encoder_variant,
+        "fsq_resnet_image_size": int(get_value(cfg, "fsq_resnet_image_size", 224)),
         "fsq_chunk_size": int(get_value(cfg, "fsq_chunk_size", 10)),
         "fsq_action_loss_weight": str(get_value(cfg, "fsq_action_loss_weight", 1.0)),
         "fsq_delta_loss_weight": str(

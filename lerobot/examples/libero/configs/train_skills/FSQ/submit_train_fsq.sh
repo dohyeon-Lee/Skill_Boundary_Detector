@@ -55,9 +55,12 @@ if [ ! -d "${SKILLSET_DIR}/skills" ]; then
 fi
 # Image/both terminators decode their sampled frames live. State-only and
 # reconstructor-only jobs never touch the video directory.
+USES_VISUAL_TERMINATOR=false
 if { [ "${FSQ_DECODER_TERMINATOR_PROGRESS}" = "true" ] || [ "${FSQ_DECODER_TERMINATOR_TERMINATION}" = "true" ]; } \
-  && [ "${FSQ_TERMINATOR_INPUT_SPACE}" != "state" ] \
-  && [ ! -d "${RAW_DATASET_DIR}/videos" ]; then
+  && [ "${FSQ_TERMINATOR_INPUT_SPACE}" != "state" ]; then
+  USES_VISUAL_TERMINATOR=true
+fi
+if [ "${USES_VISUAL_TERMINATOR}" = "true" ] && [ ! -d "${RAW_DATASET_DIR}/videos" ]; then
   echo "Raw dataset videos not found: ${RAW_DATASET_DIR}/videos" >&2
   exit 1
 fi
@@ -78,6 +81,79 @@ if [ -n "${FSQ_TRAIN_EXCLUDE_NODES}" ]; then
   SBATCH_ARGS+=(--exclude="${FSQ_TRAIN_EXCLUDE_NODES}")
 fi
 
+# Resolve or submit the one shared lossless-zstd RGB producer before a GPU.
+# flock serializes concurrent submit commands; the potentially large producer
+# is CPU-only, and every visual training job attaches with afterok.
+FRAME_CACHE_DEPENDENCY_ARGS=()
+if [ "${USES_VISUAL_TERMINATOR}" = "true" ] && [ "${FSQ_FRAME_CACHE_ENABLED}" = "true" ]; then
+  FRAME_CACHE_TOOL="${LEROBOT_ROOT}/examples/libero/fsq_frame_cache.py"
+  mkdir -p "${FSQ_FRAME_CACHE_ROOT}/.jobs"
+  exec 9>"${FSQ_FRAME_CACHE_ROOT}/.submit.lock"
+  flock 9
+  FRAME_CACHE_STATUS="$(${BOOTSTRAP_PYTHON} "${FRAME_CACHE_TOOL}" status \
+    --raw-dataset-dir "${RAW_DATASET_DIR}" \
+    --cache-root "${FSQ_FRAME_CACHE_ROOT}" \
+    --shell)"
+  eval "${FRAME_CACHE_STATUS}"
+
+  if [ "${FSQ_FRAME_CACHE_COMPLETE}" != "true" ]; then
+    FRAME_CACHE_JOB_ID=""
+    if [ -f "${FSQ_FRAME_CACHE_JOB_FILE}" ]; then
+      CANDIDATE_JOB_ID="$(tr -dc '0-9' < "${FSQ_FRAME_CACHE_JOB_FILE}")"
+      if [ -n "${CANDIDATE_JOB_ID}" ]; then
+        CANDIDATE_STATE="$(squeue -h -j "${CANDIDATE_JOB_ID}" -o '%T' 2>/dev/null | head -1 || true)"
+        case "${CANDIDATE_STATE}" in
+          PENDING|RUNNING|CONFIGURING|COMPLETING|SUSPENDED|REQUEUED|RESIZING)
+            FRAME_CACHE_JOB_ID="${CANDIDATE_JOB_ID}"
+            ;;
+        esac
+      fi
+    fi
+
+    if [ -z "${FRAME_CACHE_JOB_ID}" ]; then
+      mkdir -p "${SCRIPT_DIR}/logs_cache"
+      CACHE_SBATCH_ARGS=(
+        --parsable
+        --partition="${FSQ_FRAME_CACHE_PARTITION}"
+        --qos="${FSQ_FRAME_CACHE_QOS}"
+        --cpus-per-task="${FSQ_FRAME_CACHE_CPUS_PER_TASK}"
+        --mem="${FSQ_FRAME_CACHE_MEM}"
+        --time="${FSQ_FRAME_CACHE_TIME}"
+      )
+      cd "${SCRIPT_DIR}"
+      FRAME_CACHE_JOB_ID="$({ \
+        PROJECT_ROOT="${PROJECT_ROOT}" \
+        RAW_DATASET_DIR="${RAW_DATASET_DIR}" \
+        FSQ_FRAME_CACHE_ROOT="${FSQ_FRAME_CACHE_ROOT}" \
+        FSQ_FRAME_CACHE_FINGERPRINT="${FSQ_FRAME_CACHE_FINGERPRINT}" \
+        FSQ_FRAME_CACHE_WORKERS="${FSQ_FRAME_CACHE_WORKERS}" \
+        FSQ_FRAME_CACHE_DECODER_THREADS="${FSQ_FRAME_CACHE_DECODER_THREADS}" \
+          sbatch "${CACHE_SBATCH_ARGS[@]}" "${FSQ_SRC_DIR}/prepare_fsq_frame_cache.sbatch"; \
+      } | tail -1)"
+      FRAME_CACHE_JOB_ID="${FRAME_CACHE_JOB_ID%%;*}"
+      if ! [[ "${FRAME_CACHE_JOB_ID}" =~ ^[0-9]+$ ]]; then
+        echo "Could not parse FSQ frame-cache Slurm job id: '${FRAME_CACHE_JOB_ID}'" >&2
+        exit 1
+      fi
+      JOB_FILE_TMP="${FSQ_FRAME_CACHE_JOB_FILE}.tmp.$$"
+      printf '%s\n' "${FRAME_CACHE_JOB_ID}" > "${JOB_FILE_TMP}"
+      mv "${JOB_FILE_TMP}" "${FSQ_FRAME_CACHE_JOB_FILE}"
+      echo "Submitted FSQ frame cache job ${FRAME_CACHE_JOB_ID}"
+    else
+      echo "Reusing active FSQ frame cache job ${FRAME_CACHE_JOB_ID}"
+    fi
+    FRAME_CACHE_DEPENDENCY_ARGS=(
+      --dependency="afterok:${FRAME_CACHE_JOB_ID}"
+      --kill-on-invalid-dep=yes
+    )
+  else
+    echo "FSQ frame cache ready: ${FSQ_FRAME_CACHE_DIR}"
+  fi
+  flock -u 9
+else
+  FSQ_FRAME_CACHE_DIR=""
+fi
+
 cd "${SCRIPT_DIR}"
 mkdir -p logs_train
 
@@ -93,7 +169,16 @@ elif [ "${FSQ_TERMINATOR_INPUT_SPACE}" = "state" ]; then
   echo "  terminator  : current state+FSQ default model (no image/DINO loading)"
 else
   echo "  terminator  : ${FSQ_TERMINATOR_INPUT_SPACE}+FSQ ${FSQ_TERMINATOR_ARCH}"
-  echo "  vision      : ${FSQ_VISION_BACKBONE} online ← ${RAW_DATASET_DIR}/videos"
+  echo "  vision      : ${FSQ_VISION_BACKBONE} ← ${RAW_DATASET_DIR}/videos"
+  if [ -n "${FSQ_FRAME_CACHE_DIR}" ]; then
+    echo "  frame cache : ${FSQ_FRAME_CACHE_DIR}"
+    echo "  local stage : ${FSQ_FRAME_CACHE_STAGE_LOCAL} (root=${FSQ_FRAME_CACHE_LOCAL_ROOT:-auto})"
+  elif [ "${FSQ_FRAME_CACHE_ENABLED}" = "true" ]; then
+    echo "  frame cache : waiting for job ${FRAME_CACHE_JOB_ID}"
+    echo "  local stage : ${FSQ_FRAME_CACHE_STAGE_LOCAL} (root=${FSQ_FRAME_CACHE_LOCAL_ROOT:-auto})"
+  else
+    echo "  frame cache : disabled (live AV1 decode)"
+  fi
 fi
 echo "  output      : ${FSQ_OUTPUT_DIR}"
 echo "  slurm       : partition=${FSQ_TRAIN_PARTITION} qos=${FSQ_TRAIN_QOS} gres=${FSQ_TRAIN_GRES}"
@@ -103,5 +188,7 @@ else
   echo "  Python      : shared ${PROJECT_ROOT}/.venv"
 fi
 
-TRAIN_SKILLS_CONFIG="${CONFIG_PATH}" TRAIN_DATA="${TARGET_DATASET}" FSQ_VENV_ARCHIVE="${FSQ_VENV_ARCHIVE}" \
-  sbatch "${SBATCH_ARGS[@]}" "${FSQ_SRC_DIR}/train_fsq.sbatch"
+TRAIN_SKILLS_CONFIG="${CONFIG_PATH}" TRAIN_DATA="${TARGET_DATASET}" \
+FSQ_VENV_ARCHIVE="${FSQ_VENV_ARCHIVE}" FSQ_FRAME_CACHE_DIR="${FSQ_FRAME_CACHE_DIR}" \
+  sbatch "${SBATCH_ARGS[@]}" "${FRAME_CACHE_DEPENDENCY_ARGS[@]}" \
+  "${FSQ_SRC_DIR}/train_fsq.sbatch"

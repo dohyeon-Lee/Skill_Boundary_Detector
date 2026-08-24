@@ -49,6 +49,60 @@ def test_run_names_accept_scalar_and_list() -> None:
         CONFIG._run_names({"fsq_eval_run_name": []})
 
 
+def test_model_names_are_optional_and_pair_with_runs() -> None:
+    runs = ["folder_a", "folder_b"]
+    assert CONFIG._model_names({}, runs) == runs
+    assert CONFIG._model_names({"fsq_eval_model_name": "Model with spaces"}, ["solo"]) == [
+        "Model with spaces"
+    ]
+    assert CONFIG._model_names(
+        {"fsq_eval_model_name": ["Model A", "모델 B"]}, runs
+    ) == ["Model A", "모델 B"]
+    with pytest.raises(ValueError, match="one non-empty display name"):
+        CONFIG._model_names({"fsq_eval_model_name": ["only one"]}, runs)
+    with pytest.raises(ValueError, match="duplicates"):
+        CONFIG._model_names({"fsq_eval_model_name": ["same", "same"]}, runs)
+
+
+def test_model_entries_pair_run_folder_and_html_name() -> None:
+    config = {
+        "fsq_eval_models": [
+            {"run_name": "folder_a", "model_name": "Model A"},
+            {"run_name": "folder_b", "model_name": "모델 B"},
+        ]
+    }
+    assert CONFIG._model_entries(config) == config["fsq_eval_models"]
+    assert CONFIG._model_entries(
+        {
+            "fsq_eval_run_name": ["folder_a", "folder_b"],
+            "fsq_eval_model_name": ["Model A", "Model B"],
+        }
+    ) == [
+        {"run_name": "folder_a", "model_name": "Model A"},
+        {"run_name": "folder_b", "model_name": "Model B"},
+    ]
+
+
+@pytest.mark.parametrize(
+    "entries, message",
+    [
+        ([], "non-empty list"),
+        (["folder_a"], "must be a mapping"),
+        ([{"run_name": "folder_a"}], "requires non-empty"),
+        (
+            [
+                {"run_name": "folder_a", "model_name": "same"},
+                {"run_name": "folder_b", "model_name": "same"},
+            ],
+            "duplicate model_name",
+        ),
+    ],
+)
+def test_model_entries_reject_invalid_pairs(entries: list, message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        CONFIG._model_entries({"fsq_eval_models": entries})
+
+
 @pytest.mark.parametrize("value", ["../escape", "/absolute", "bad name"])
 def test_output_name_rejects_unsafe_paths(value: str) -> None:
     with pytest.raises(ValueError, match="output_name"):
@@ -117,6 +171,21 @@ def test_fsq_levels_reads_dict_and_dataclass_cfg(tmp_path: Path) -> None:
     oneshot_path = tmp_path / "oneshot.pt"
     torch.save({"cfg": SimpleNamespace(fsq_levels=[7, 5])}, oneshot_path)
     assert RUNNER._fsq_levels(oneshot_path) == [7, 5]
+
+    joint_bsq_path = tmp_path / "joint_bsq.pt"
+    torch.save(
+        {
+            "cfg": {
+                "quantizer": "bsq",
+                "bsq_code_dim": 5,
+                # Deliberately retain an FSQ-looking placeholder: BSQ metadata
+                # must win so the HTML renders the 32-corner 5D hypercube.
+                "fsq_levels": [3, 3, 3],
+            }
+        },
+        joint_bsq_path,
+    )
+    assert RUNNER._fsq_levels(joint_bsq_path) == [2, 2, 2, 2, 2]
 
 
 def test_resolve_artifact_accepts_fsq_original_meta(tmp_path: Path) -> None:
@@ -238,20 +307,60 @@ def test_missing_latents_is_empty_once_every_checkpoint_is_encoded(tmp_path: Pat
     assert settings["fsq_missing_latents_count"] == 0
 
 
-def test_replay_gres_defaults_to_no_gpu(tmp_path: Path) -> None:
-    """The replay array only decodes dataset video; the GPU belongs to the prepass."""
+def test_blank_replay_qos_inherits_train_gpu_reservation(tmp_path: Path) -> None:
+    """Inherited GPU QOS gets a GPU reservation although replay remains CPU-only."""
     config = _replay_run(tmp_path, epochs=[50])
     settings = CONFIG.build_settings(config)
-    assert settings["eval_replay_gres"] == ""
+    assert settings["eval_replay_gres"] == "gpu:1"
     assert settings["eval_gres"] == "gpu:1"
 
-    config["slurm"] = {"replay_gres": "gpu:1"}
-    assert CONFIG.build_settings(config)["eval_replay_gres"] == "gpu:1"
+    config["slurm"] = {
+        "replay_partition": "dell_cpu",
+        "replay_qos": "cpu_qos",
+        "replay_gres": "",
+    }
+    settings = CONFIG.build_settings(config)
+    assert settings["eval_replay_gres"] == ""
+    assert settings["eval_replay_partition"] == "dell_cpu"
+    assert settings["eval_replay_qos"] == "cpu_qos"
+
+
+def test_blank_replay_slurm_values_inherit_global_train_defaults(tmp_path: Path) -> None:
+    config = _replay_run(tmp_path, epochs=[50])
+    config.update(
+        train_partition=["gpu_a", "gpu_b"],
+        train_qos="global_train_qos",
+        slurm={"replay_partition": "", "replay_qos": ""},
+    )
+
+    settings = CONFIG.build_settings(config)
+
+    assert settings["eval_replay_partition"] == "gpu_a,gpu_b"
+    assert settings["eval_replay_qos"] == "global_train_qos"
+    assert settings["eval_replay_gres"] == "gpu:1"
+
+
+def test_nonempty_module_replay_slurm_values_override_global_defaults(
+    tmp_path: Path,
+) -> None:
+    config = _replay_run(tmp_path, epochs=[50])
+    config.update(
+        train_partition="global_gpu",
+        train_qos="global_train_qos",
+        slurm={"replay_partition": "local_cpu", "replay_qos": "local_cpu_qos"},
+    )
+
+    settings = CONFIG.build_settings(config)
+
+    assert settings["eval_replay_partition"] == "local_cpu"
+    assert settings["eval_replay_qos"] == "local_cpu_qos"
+    assert settings["eval_replay_gres"] == ""
 
 
 def test_max_concurrent_still_accepts_the_old_gpu_count_name(tmp_path: Path) -> None:
     """eval_num_gpus was always the array throttle, never a GPU count."""
     config = _replay_run(tmp_path, epochs=[50, 100, 150])
+    config["checkpoints_per_job"] = 1
     config["eval_num_gpus"] = 2
 
     assert CONFIG.build_settings(config)["eval_max_concurrent"] == 2
@@ -259,6 +368,7 @@ def test_max_concurrent_still_accepts_the_old_gpu_count_name(tmp_path: Path) -> 
 
 def test_max_concurrent_wins_over_the_old_name(tmp_path: Path) -> None:
     config = _replay_run(tmp_path, epochs=[50, 100, 150])
+    config["checkpoints_per_job"] = 1
     config["eval_num_gpus"] = 2
     config["eval_max_concurrent"] = 3
 
@@ -271,6 +381,17 @@ def test_max_concurrent_is_capped_by_the_number_of_tasks(tmp_path: Path) -> None
     config["eval_max_concurrent"] = 50
 
     assert CONFIG.build_settings(config)["eval_max_concurrent"] == 1
+
+
+def test_checkpoints_per_job_all_packs_one_replay_task_per_run(tmp_path: Path) -> None:
+    config = _replay_run(tmp_path, epochs=[50, 100, 150])
+    config["checkpoints_per_job"] = "all"
+    config["eval_max_concurrent"] = 20
+
+    settings = CONFIG.build_settings(config)
+
+    assert settings["eval_checkpoints_per_job"] == 3
+    assert settings["eval_max_concurrent"] == 1
 
 
 def test_expected_epoch_tags_track_disk_without_a_frozen_list(tmp_path: Path) -> None:
@@ -404,6 +525,47 @@ def test_frame_pair_rejects_empty_segment() -> None:
         RUNNER._frame_pair(_Occurrence(2, 2), episode_length=5)
 
 
+def test_episode_frame_reader_decodes_each_frame_only_once(monkeypatch, tmp_path: Path) -> None:
+    import pandas as pd
+    import torch
+
+    reader = RUNNER._EpisodeFrameReader.__new__(RUNNER._EpisodeFrameReader)
+    reader.dataset_dir = tmp_path
+    reader.video_key = RUNNER.VIDEO_KEY
+    reader.fps = 10.0
+    reader.path_template = "videos/{video_key}/{chunk_index}/{file_index}.mp4"
+    reader._frame_cache = {}
+    reader.index = pd.DataFrame(
+        {
+            "episode_index": [7],
+            "length": [10],
+            f"videos/{RUNNER.VIDEO_KEY}/chunk_index": [0],
+            f"videos/{RUNNER.VIDEO_KEY}/file_index": [0],
+            f"videos/{RUNNER.VIDEO_KEY}/from_timestamp": [0.0],
+        }
+    ).set_index("episode_index", drop=False)
+    calls: list[list[float]] = []
+
+    def fake_decode(_path, timestamps, *, tolerance_s):
+        assert tolerance_s == pytest.approx(0.05)
+        calls.append(list(timestamps))
+        return torch.stack(
+            [torch.full((3, 2, 2), timestamp) for timestamp in timestamps]
+        )
+
+    monkeypatch.setattr(RUNNER, "decode_video_frames", fake_decode)
+
+    first = reader.frames(7, [2, 1, 2])
+    second = reader.frames(7, [1, 2])
+    third = reader.frames(7, [2, 3])
+
+    assert calls == [[0.1, 0.2], [0.3]]
+    np.testing.assert_array_equal(first[1], second[1])
+    np.testing.assert_array_equal(first[2], third[2])
+    assert reader.cached_frame_count == 3
+    assert reader.cached_bytes == 3 * 2 * 2 * 3
+
+
 def test_report_groups_occurrences_by_fsq_token() -> None:
     manifest = {
         "levels": [3, 3, 3],
@@ -455,6 +617,8 @@ def test_report_shows_start_and_final_image_pair(tmp_path: Path) -> None:
     payload = {
         "levels": [3, 3, 3],
         "run_name": "fsq333",
+        "model_name": "Readable model",
+        "title": "term comparison <2>",
         "epoch_tag": "epoch0500",
         "target_task": "libero_90",
         "task_ids": [0],
@@ -483,9 +647,20 @@ def test_report_shows_start_and_final_image_pair(tmp_path: Path) -> None:
 
     report = REPORT.write_html_report(tmp_path, payload)
     html = report.read_text(encoding="utf-8")
+    data_paths = sorted(tmp_path.glob("report-data-*.js"))
+    data = "".join(path.read_text(encoding="utf-8") for path in data_paths)
 
-    assert "images/test_start.png" in html
-    assert "images/test_final.png" in html
+    assert data_paths
+    assert all(
+        path.stat().st_size <= REPORT._REPORT_DATA_CHUNK_BYTES for path in data_paths
+    )
+    assert all(f'<script src="{path.name}"></script>' in html for path in data_paths)
+    assert "window.FSQ_GT_REPLAY_DATA=" in html
+    assert "<title>term comparison &lt;2&gt;</title>" in html
+    assert "<h1>term comparison &lt;2&gt;</h1>" in html
+    assert "Readable model" in data
+    assert "images/test_start.png" in data
+    assert "images/test_final.png" in data
     assert "<video" not in html
     assert 'class="pair"' in html
     assert "GT start" in html
@@ -504,10 +679,18 @@ def test_report_shows_start_and_final_image_pair(tmp_path: Path) -> None:
     assert 'data-mode="length"' in html
     assert 'data-mode="count"' in html
     assert "renderCubeLegend" in html
+    assert "Math.max(0,...models.flatMap" not in html
+    assert "maximumSkillId=Math.max(maximumSkillId" in html
 
 
 def _write_collection_manifest(
-    root: Path, run: str, epoch: int, episodes: list[int]
+    root: Path,
+    run: str,
+    epoch: int,
+    episodes: list[int],
+    *,
+    model_name: str = "",
+    title: str = "",
 ) -> None:
     tag = f"epoch{epoch:04d}"
     manifest = {
@@ -533,20 +716,29 @@ def _write_collection_manifest(
             }
         },
     }
+    if model_name:
+        manifest["model_name"] = model_name
+    if title:
+        manifest["report_title"] = title
     path = root / "checkpoints" / tag / "metrics" / "manifest.json"
     path.parent.mkdir(parents=True)
     path.write_text(json.dumps(manifest))
 
 
 def test_compare_payload_prefixes_media_and_flags_mismatch(tmp_path: Path) -> None:
-    _write_collection_manifest(tmp_path / "a", "run_a", 100, [33])
-    _write_collection_manifest(tmp_path / "b", "run_b", 200, [44])
+    _write_collection_manifest(
+        tmp_path / "a", "run_a", 100, [33], model_name="Model A", title="Comparison"
+    )
+    _write_collection_manifest(
+        tmp_path / "b", "run_b", 200, [44], model_name="Model B", title="Comparison"
+    )
 
     payload = REPORT.compare_payload(
         [tmp_path / "a", tmp_path / "b"], output_dir=tmp_path / "compare"
     )
 
-    assert [model["name"] for model in payload["models"]] == ["a", "b"]
+    assert payload["title"] == "Comparison"
+    assert [model["name"] for model in payload["models"]] == ["Model A", "Model B"]
     occurrence = payload["models"][0]["checkpoints"][0]["skills"][0]["occurrences"][0]
     assert occurrence["start_image_path"] == (
         "../a/checkpoints/epoch0100/images/a_start.png"

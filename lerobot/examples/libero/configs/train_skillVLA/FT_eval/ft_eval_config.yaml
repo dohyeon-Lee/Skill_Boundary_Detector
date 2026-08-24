@@ -6,15 +6,15 @@
 # FT checkpoint's training dataset.
 outputs_subdir: skillVLA_FT
 models:
-  - model_dir: libero10_lasthalf400k_likelihood_ft
-    checkpoint: "100000"
+  - model_dir: libero10_lasthalf40k_likelihood_ft_lab
+    checkpoint: "010000"
     skill_source: predictor
     advance_mode: terminator
     modes: [stage2]
     label: ft-predictor
 
-  - model_dir: libero10_lasthalf400k_likelihood_ft
-    checkpoint: "100000"
+  - model_dir: libero10_lasthalf40k_likelihood_ft_lab
+    checkpoint: "010000"
     skill_source: gt
     advance_mode: terminator
     modes: [stage2]
@@ -28,7 +28,7 @@ external_predictor_model: outputs_filtered/skillVLA_terminator/bs8_libero_10_ful
 external_terminator_model: outputs_filtered/skillVLA_terminator/bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_terminator/checkpoints/030000/pretrained_model
 
 models_per_row: 2
-output_name: libero10_likelihood_ft100k_predictor_vs_gt
+output_name: libero10_dsbc_ft100k_predictor_vs_gt
 
 target_task: libero_10
 task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]

@@ -1,7 +1,7 @@
 
-# One FSQ run or a list of runs to evaluate together, e.g.
-#   fsq_eval_run_name: [runA, runB, runC]
-# With a list, output_name becomes the comparison parent and each run writes to
+# One FSQ model or a list of models to evaluate together. Each entry pairs its
+# real run folder (run_name) with the label shown in HTML (model_name).
+# With several entries, output_name becomes the comparison parent and each run writes to
 # output_name/<run_name>; afterwards build the tabbed comparison report:
 #   python src/fsq_gt_replay_report.py --compare outputs/fsq_gt_replay/<output_name>/*/
 # 네이밍 규칙 (2026-08 정리): constLR(기본 LR)·말미 _oneshot 마커·bsq의 joint(항상 joint)는
@@ -12,64 +12,44 @@
 # 길이토큰 세대 run(구 noLenTok 미표기 시절)은 LenTok/에 보관 — noLenTok 라벨 폐지(무토큰이 기본).
 # loss 구조 태그 전 run 필수: ReconOnly(entropy 항 없음) | withEntH(entropy 항 포함; BSQ는 항상 withEntH).
 
-output_name: "LAST__comparison" 
-fsq_eval_run_name:
-  # exp1 : FSQ_opt_raw_zero
-  # - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_act_LR6_opt_ReconOnly
-  # - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_act_LR6_raw_ReconOnly
-  # - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_act_LR6_zero_ReconOnly
-  # # exp2 : FSQ_LR 
-  # - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_act_LR5_opt_ReconOnly
-  # - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_act_LR6_opt_ReconOnly
-  # # exp3 : FSQ_pospos_posact_ReconOnly
-  # - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_pos_LR6_raw_ReconOnly
-  # - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_act_LR6_raw_ReconOnly
-  # # exp4 : FSQ_pospos_posact_actact_withEntH
-  # - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_pos_LR6_raw_withEntH
-  # - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_act_LR6_raw_withEntH
-  # - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_act_act_LR6_raw_withEntH
-  # # exp5 : FSQ_ReconOnly_withEntH_pospos
-  # - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_pos_LR6_raw_ReconOnly
-  # - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_pos_LR6_raw_withEntH
-  # # exp6 : FSQ_ReconOnly_withEntH_posact
-  # - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_act_LR6_raw_ReconOnly
-  # - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_act_LR6_raw_withEntH
-  # # exp4 : act2act_FSQ_vs_BSQ
-  # - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_act_act_LR6_raw_withEntH
-  # - libero_90_full_full_state_obs20_std_episodemean_100p_bsq5_act_act_LR6_raw_withEntH 
-  # exp5 : langgap_eval
-  # - langgap_56_full_full_state_obs20_std_episodemean_80p_fsq333_pos_pos_LR6_raw_withEntH
-  # exp6 : recon_chunk_comparison
-  # - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_couple_LR6_raw_entH_ss
-  # - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_couple_LR6_raw_entH
-  # - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_couplefull_LR6_raw_entH
-  # # exp6 : progress_comparison ***
-  # - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_pos_term_LR6_raw_entH
-  # - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_pos_termfull_LR6_raw_entH
-  # exp7 : term__state_comparison
-  # - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_pos_term_LR6_raw_entH
-  # - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_pos_term_LR6_raw_entH_ss
-  # exp8 : term_progress__state_comparison
-  # - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_pos_termfull_LR6_raw_entH
-  # - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_pos_termfull_LR6_raw_entH_ss
-  # exp9 : FSQ_recononly_loss_structor
-  # - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_pos_LR6_raw_withEntH
-  # - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_pos_LR6_raw_withentH_nodiv_tem50
-  # - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_pos_LR6_raw_withentH_nodiv_cov_tem50
-  # exp10 : term_recon__recon__recon_nodiv
-  # - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_pos_termfull_LR6_raw_entH
-  # - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_pos_LR6_raw_withEntH
-  # - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_pos_LR6_raw_withentH_nodiv_tem50
-  # exp11 : LAST__comparison
-  - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_pos_LR6_raw_withEntH
-  - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_pos_term_LR6_raw_entH
-  - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_pos_termfull_LR6_raw_entH
-  - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_pos_termfull_LR6_raw_withentH_stateonly
-  - libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_pos_termfull_LR6_raw_withentH_stateonly_nodiv
-# fsq_eval_checkpoint: [50, 100, 150, 200, 250, 300, 350, 400, 450, 500, 550, 600, 650, 700, 750, 800, 850, 900, 950, 1000]
-# fsq_eval_checkpoint: [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1100, 1200, 1300, 1400, 1500, 1600, 1700, 1800, 1900, 2000]
+# output_name: "FSQ_decoder_term_recon_combination"
+# # Pair the actual run folder with its HTML display name in one entry.
+# # Spaces and Korean text are allowed in model_name; it does not affect folder paths.
+# fsq_eval_models:
+#   - {"model_name": "term w=0.1 (new)", "run_name": "libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_resnet_tuned_fusion_raw_raw__js_bj10_w01_warm50_ramp50_new_initcal"}
+#   - {"model_name": "term w=0.1", "run_name": "libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_resnet_tuned_raw_raw__js_bj10_w01_warm50_ramp50_new_initcal"}
+#   - {"model_name": "term w=1", "run_name": "libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_resnet_tuned_raw_raw__js_bj10_w1_warm50_ramp50_new_initcal"}
+#   - {"model_name": "recon w=1", "run_name": "libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_raw_raw__recon_js_bj10_w1_warm50_ramp50_new_initcal"}
+#   - {"model_name": "recon w=2", "run_name": "libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_raw_raw__recon_js_bj10_w2_warm50_ramp50_new_initcal"}
+#   - {"model_name": "recon w0.1 (old)", "run_name": "libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_raw_raw__recon_js_bj10_w01_warm50_ramp50_cal_initcal"}
+#   - {"model_name": "recon w=1 (old)", "run_name": "libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_raw_raw__recon_js_bj10_w1_warm50_ramp50_cal_initcal"}
+#   - {"model_name": "recon w=2 (old)", "run_name": "libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_raw_raw__recon_js_bj10_w2_warm50_ramp50_cal_initcal"}
+#   - {"model_name": "recon w=5 (old)", "run_name": "libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_raw_raw__recon_js_bj10_w5_warm50_ramp50_cal_initcal"}
+#   - {"model_name": "recon w=10 (old)", "run_name": "libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_raw_raw__recon_js_bj10_w10_warm50_ramp50_cal_initcal"}
+#   - {"model_name": "recon (0.1) + term w=0.1 (new)", "run_name": "libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_resnet_tuned_fusion_raw_raw__recon01_js_bj10_w01_warm50_ramp50_new_prox_initcal"}
+#   - {"model_name": "recon (0.1) + term w=0.1", "run_name": "libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_resnet_tuned_raw_raw__recon01_js_bj10_w01_warm50_ramp50_new_initcal"}
+#   - {"model_name": "recon + term w=0.1", "run_name": "libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_resnet_tuned_raw_raw__recon_js_bj10_w01_warm50_ramp50_new_initcal"}
+#   - {"model_name": "recon + term w=1", "run_name": "libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_resnet_tuned_raw_raw__recon_js_bj10_w1_warm50_ramp50_new_initcal"}
+#   - {"model_name": "recon + term w=2", "run_name": "libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_resnet_tuned_raw_raw__recon_js_bj10_w2_warm50_ramp50_new_initcal"}
 
-fsq_eval_checkpoint: [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000]
+# output_name: "contrastive_recon"
+# # Pair the actual run folder with its HTML display name in one entry.
+# # Spaces and Korean text are allowed in model_name; it does not affect folder paths.
+# fsq_eval_models:
+#   - {"model_name": "recon w0.1 contrastive", "run_name": "libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_fusion_raw_raw__recon_lincontrast_bj10_w01_warm50_ramp50_new_initcal"}
+#   - {"model_name": "recon w0.1 (old) JS", "run_name": "libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_raw_raw__recon_js_bj10_w01_warm50_ramp50_cal_initcal"}
+#   # - {"model_name": "term w0.1 contrastive", "run_name": "libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_resnet_tuned_fusion_raw_raw__lincontrast_bj10_w01_warm50_ramp50_new_initcal"}
+#   # - {"model_name": "term w0.1 JS", "run_name": "libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_resnet_tuned_fusion_raw_raw__js_bj10_w01_warm50_ramp50_new_initcal"}
+
+output_name: "contrastive_recon_full"
+fsq_eval_models:
+  - {"model_name": "recon w1 contrastive", "run_name": "libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_fusion_raw_raw__recon_lincontrast_bj10_w1_warm50_ramp50_new_initcal"}
+  - {"model_name": "recon w0.1 contrastive", "run_name": "libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_fusion_raw_raw__recon_lincontrast_bj10_w01_warm50_ramp50_new_initcal"}
+  - {"model_name": "recon w0.01 contrastive", "run_name": "libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_fusion_raw_raw__recon_lincontrast_bj10_w001_warm50_ramp50_new_initcal"}
+  - {"model_name": "term w0.1 contrastive", "run_name": "libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_resnet_tuned_fusion_raw_raw__lincontrast_bj10_w01_warm50_ramp50_new_initcal"}
+  - {"model_name": "term+recon w0.1 contrastive", "run_name": "libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_resnet_tuned_fusion_raw_raw__recon_lincontrast_bj10_w01_warm50_ramp50_new_initcal"}
+
+fsq_eval_checkpoint: [50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1500, 2000]
 
 # fsq_eval_checkpoint: [50, 100, 150, 200, 250, 300, 350, 400, 450, 500, 550, 600, 650, 700]
 # fsq_eval_checkpoint: [400, 500, 600]
@@ -102,14 +82,13 @@ seed: 42
 # eval_max_concurrent caps how many replay tasks run at once; workers_per_checkpoint
 # splits one checkpoint's occurrences across that many jobs. Images come straight
 # from the dataset videos (no simulator) and the replay holds NO GPU, so this is a
-# CPU-slot throttle -- raise it freely. The GPU count is not set here: it is one
-# latent-encoding prepass per run whose latents are missing (see slurm.gres).
-eval_max_concurrent: 20   # was eval_num_gpus; the old name is still accepted
-# How many checkpoints one array task replays in a single process. Start-up is
-# minutes (torch + lerobot imports) against seconds-to-minutes of actual replay,
-# so 1 spends most of the cluster's time importing. 4 measured ~16 min wall
-# clock and 72 node-minutes for 30 checkpoints, against ~20 min and 240 at 1.
-checkpoints_per_job: 4
+# Replay concurrency throttle. With inherited train QOS, each slot also reserves
+# one GPU even though the replay computation itself remains CPU-only.
+eval_max_concurrent: 2   # one replay job per listed FSQ run
+# "all" makes one CPU allocation replay every available checkpoint for a run.
+# The process keeps decoded frames in RAM, so later checkpoints neither re-import
+# the stack nor decode the same episode frames again.
+checkpoints_per_job: all
 workers_per_checkpoint: 1
 resume: true
               # FSQ_VS_BSQ
@@ -118,15 +97,15 @@ slurm:
   # gres/latents_time cover the GPU prepass that encodes each checkpoint's skill
   # latents -- the only GPU work in this pipeline, submitted as ONE job per run.
   gres: gpu:1
-  latents_time: "04:00:00"
-  # The replay array itself only decodes dataset video and writes PNGs, so it
-  # asks for no GPU. Set replay_gres: gpu:1 to go back to the old behaviour.
+  latents_time: "01:00:00"
+  # Replay computation only uses CPU. When replay_qos is blank, however, it
+  # inherits train placement and reserves gpu:1 to satisfy GPU-QOS rules.
+  # With an explicit replay_qos, blank replay_gres means true CPU-only.
   replay_gres: ""
-  # ...and it must therefore leave the GPU partitions: their QOS requires at
-  # least one GPU per job (a zero-GPU request pends as QOSMinGRES forever).
-  # dell_cpu = cnode01-04, 208 CPUs, AllowQos=cpu_qos,big_qos.
-  replay_partition: dell_cpu
-  replay_qos: cpu_qos
+  # Blank -> global_config.yaml train_partition/train_qos + one GPU reservation.
+  # For CPU-only, explicitly set dell_cpu/cpu_qos and leave replay_gres blank.
+  replay_partition: ""
+  replay_qos: ""
   # dell_cpu is only 4 nodes (52 CPUs / 450G each), so a smaller footprint fits
   # many more replay tasks at once: 8 CPU/64G allows 6 per node, 4 CPU/16G
   # allows 13. The replay itself just decodes two frames per occurrence.
@@ -134,4 +113,4 @@ slurm:
   replay_memory: 16G
   cpus: 8
   memory: 64G
-  time: "00:30:00"
+  time: "01:00:00"

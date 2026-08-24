@@ -2,6 +2,7 @@ import math
 
 import pytest
 import torch
+from accelerate import Accelerator
 
 from lerobot.scripts.lerobot_train import (
     _WINDOWED_POLICY_MODEL_TYPES,
@@ -10,7 +11,46 @@ from lerobot.scripts.lerobot_train import (
     _run_inline_cuda_guard,
     _split_namespaced_metrics,
     _sparse_debug_metric_groups,
+    update_policy,
 )
+from lerobot.utils.logging_utils import AverageMeter, MetricsTracker
+
+
+class _PolicyWithoutOutputDict(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.weight = torch.nn.Parameter(torch.tensor(1.0))
+
+    def forward(self, batch):
+        loss = torch.square(self.weight - batch["target"])
+        return loss, None
+
+
+def test_update_policy_accepts_none_output_dict() -> None:
+    policy = _PolicyWithoutOutputDict()
+    optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
+    accelerator = Accelerator(cpu=True)
+    metrics = MetricsTracker(
+        batch_size=1,
+        num_frames=1,
+        num_episodes=1,
+        metrics={
+            name: AverageMeter(name)
+            for name in ("loss", "grad_norm", "lr", "update_s")
+        },
+        accelerator=accelerator,
+    )
+
+    _, output_dict = update_policy(
+        train_metrics=metrics,
+        policy=policy,
+        batch={"target": torch.tensor(0.0)},
+        optimizer=optimizer,
+        grad_clip_norm=10.0,
+        accelerator=accelerator,
+    )
+
+    assert output_dict == {"optimizer/lr/group_0": pytest.approx(1e-3)}
 
 
 def test_inline_cuda_guard_reuses_trainer_torch_import(

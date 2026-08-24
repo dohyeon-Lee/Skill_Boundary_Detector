@@ -11,6 +11,14 @@
 # flat (key: value), and do NOT put inline comments on empty-value lines.
 # ============================================================================
 
+# srun --pty \
+#   --partition=dell_cpu \
+#   --account=ys_ms \
+#   --qos=cpu_qos \
+#   --cpus-per-task=4 \
+#   --mem=16G \
+#   --time=08:00:00 \
+#   bash -l
 
 # ============================================================================
 # Cluster A (RLLAB) ==========================================================
@@ -46,18 +54,18 @@ dataset_root: dataset_filtered
 outputs_root: outputs_filtered
 
 train_partition:
-  # - suma_rtx4090
-  # - base_suma_rtx3090
-  # - dell_rtx3090
-  # - big_suma_rtx3090
-  # - asus_a5000
-  # - gigabyte_a5000
-  - suma_a6000
+  - suma_rtx4090
+  - base_suma_rtx3090
+  - dell_rtx3090
+  - big_suma_rtx3090
+  - asus_a5000
+  - gigabyte_a5000 
   - gigabyte_a6000
+  - suma_a6000
   - asus_6000ada
   - tyan_a6000
-  - asus_pro6000
-  - gigabyte_pro6000
+  # - asus_pro6000
+  # - gigabyte_pro6000
 
 
 

@@ -3,18 +3,18 @@
 Unlike FSQ.py v3 (per-timestep action-chunk reconstructor + image query
 terminator), this variant revives the original spline autoencoder contract:
 
-    encoder input  : spline control points of the zero-grounded state
-                     trajectory [+ start-EEF token in optimal mode]
+    encoder input  : spline control points of the mean-XYZ-grounded state
+                     trajectory [+ absolute mean-XYZ token in optimal mode]
                      + one length token
     decoder output : the SAME normalized control points + normalized length,
                      reconstructed in ONE shot from z alone
 
 There are no images, no terminator, and no per-timestep sampling — a pure
 autoencoder over the encoder-input representation. ``spline_decode`` turns
-reconstructed control points + length back into a full zero-grounded
-trajectory. The start pose is intentionally NOT reconstructed: in optimal
-mode it conditions the encoder only, and absolute trajectories are recovered
-by adding the caller's known start pose after decoding.
+reconstructed control points + length back into a full mean-XYZ-grounded
+trajectory. The grounding position is intentionally NOT reconstructed: in
+optimal mode it conditions the encoder only, and absolute XYZ is recovered by
+adding the caller's known trajectory mean after decoding.
 
 The encoder is the exact ``SplineFSQEncoder`` used by FSQ v3, so its weights
 stay transplant-compatible (state-dict prefix ``encoder.*``).
@@ -38,6 +38,7 @@ from torch import Tensor
 from torch.utils.data import DataLoader, Dataset
 
 from FSQ import (
+    ENCODER_GROUNDING_CONVENTION,
     FSQ,
     N_GRIPPER_DIMS,
     ActionSeqEncoder,
@@ -49,7 +50,7 @@ from FSQ import (
     _boundary_margin_metrics,
     _code_assignment_stability,
     _collect_code_assignments,
-    encoder_start_eef_pose,
+    encoder_grounding_position,
     fsq_lr_factor,
     prepare_encoder_trajectory,
     spline_encode,
@@ -186,6 +187,7 @@ class FSQOriginalConfig:
     n_control: int = 30
     spline_degree: int = 3
     encoder_input_mode: str = "zero_grounded"
+    encoder_grounding_convention: str = ENCODER_GROUNDING_CONVENTION
     hidden_dim: int = 256
     fsq_levels: list[int] = field(default_factory=lambda: [3, 3, 3])
     quantizer: str = "fsq"
@@ -417,6 +419,14 @@ class SplineFSQOriginalAE(nn.Module):
             for name in ("encoder_start_min", "encoder_start_max"):
                 if getattr(cfg, name) is None:
                     raise ValueError(f"Optimal FSQ-original config is missing statistic: {name}")
+        if (
+            cfg.encoder_input_mode in {"zero_grounded", "optimal"}
+            and cfg.encoder_grounding_convention != ENCODER_GROUNDING_CONVENTION
+        ):
+            raise ValueError(
+                "This FSQ-original checkpoint uses legacy start-pose grounding. "
+                "Mean-XYZ grounding requires a new run."
+            )
         if cfg.decoder_arch == "rnn":
             if cfg.action_dim < 1:
                 raise ValueError(f"rnn decoder requires action_dim >= 1, got {cfg.action_dim}.")
@@ -596,7 +606,7 @@ class SplineFSQOriginalAE(nn.Module):
         device: str | torch.device = "cpu",
         length: int | None = None,
     ) -> np.ndarray:
-        """Codebook index -> zero-grounded trajectory via the one-shot decoder."""
+        """Codebook index -> encoder-convention trajectory via the one-shot decoder."""
         if self.cfg.decoder_arch != "oneshot":
             raise ValueError("decode_index_numpy is oneshot-only; use rollout_index_numpy for rnn.")
         code = torch.tensor([index], dtype=torch.long, device=device)
@@ -622,11 +632,11 @@ class SplineFSQOriginalAE(nn.Module):
         *,
         use_true_length: bool = True,
     ) -> np.ndarray:
-        """Full round trip: raw state trajectory -> z -> zero-grounded reconstruction.
+        """Full round trip: raw state trajectory -> z -> mean-XYZ-grounded reconstruction.
 
-        The output lives in the encoder-input convention (zero-grounded pose,
-        absolute gripper). Add ``trajectory[0]``'s pose offset back to compare
-        in absolute coordinates.
+        The output keeps rotation and gripper absolute, while XYZ is centered
+        around the trajectory mean. Add ``trajectory[:, :3].mean(0)`` back to
+        reconstructed XYZ to compare in absolute coordinates.
         """
         if self.cfg.decoder_arch != "oneshot":
             raise ValueError("reconstruct_numpy is oneshot-only; use rollout_actions_numpy for rnn.")
@@ -643,7 +653,7 @@ class SplineFSQOriginalAE(nn.Module):
         start_t = None
         if self.encoder.enc_start_proj is not None:
             start_t = self.encoder.normalize_start_pose(
-                torch.from_numpy(encoder_start_eef_pose(trajectory)).float().unsqueeze(0).to(device)
+                torch.from_numpy(encoder_grounding_position(trajectory)).float().unsqueeze(0).to(device)
             )
         output = self(ctrl_t, length_t, start_t)
         ctrl_hat = self._denormalize_ctrl(output["ctrl_hat"][0])
@@ -709,7 +719,7 @@ class SplineFSQOriginalAE(nn.Module):
         start_t = None
         if self.encoder.enc_start_proj is not None:
             start_t = self.encoder.normalize_start_pose(
-                torch.from_numpy(encoder_start_eef_pose(trajectory)).float().unsqueeze(0).to(device)
+                torch.from_numpy(encoder_grounding_position(trajectory)).float().unsqueeze(0).to(device)
             )
         z_q, _ = self.encoder(ctrl_t, length_t, start_t, normalized=True)
         return self._rollout_z(self.fsq.normalized(z_q), max_steps, threshold)
@@ -763,6 +773,13 @@ def load_fsq_original_model(
     cfg = checkpoint.get("cfg")
     if not isinstance(cfg, FSQOriginalConfig):
         raise ValueError(f"Not an FSQ-original checkpoint (cfg missing/wrong type): {path}")
+    if (
+        cfg.encoder_input_mode in {"zero_grounded", "optimal"}
+        and "encoder_grounding_convention" not in vars(cfg)
+    ):
+        raise ValueError(
+            "Legacy FSQ-original grounding checkpoint is incompatible with mean-XYZ grounding."
+        )
     model = SplineFSQOriginalAE(cfg)
     model.load_state_dict(checkpoint["model_state"], strict=True)
     return model.to(device).eval(), cfg
@@ -774,9 +791,10 @@ def load_fsq_original_model(
 
 
 class FSQOriginalDataset(Dataset):
-    """Whole-trajectory items: normalized control points, length, optional start pose.
+    """Whole-trajectory items: normalized control points, length, optional grounding position.
 
-    Exposes ``ctrl`` / ``lengths`` / ``start_poses`` attributes with the same
+    ``start_poses`` is retained as a compatibility name for normalized mean XYZ.
+    It and ``ctrl`` / ``lengths`` use the same
     layout as ``FSQTrajectoryDataset`` so FSQ.py's codebook diagnostics
     (``_collect_code_assignments``) can be reused unchanged.
     """
@@ -836,7 +854,7 @@ class FSQOriginalDataset(Dataset):
                 (2.0 * (ctrl - enc_min) / (enc_max - enc_min + 1e-8) - 1.0).astype(np.float32)
             )
             if self.start_poses is not None:
-                start_pose = encoder_start_eef_pose(segment)
+                start_pose = encoder_grounding_position(segment)
                 self.start_poses.append(
                     (2.0 * (start_pose - start_min) / (start_max - start_min + 1e-8) - 1.0).astype(
                         np.float32
@@ -1175,6 +1193,17 @@ def train_fsq_original(
             raise ValueError(
                 "Cannot resume FSQ-original with a different encoder input convention: "
                 f"checkpoint={resume_cfg.encoder_input_mode!r}, current={cfg.encoder_input_mode!r}."
+            )
+        if (
+            cfg.encoder_input_mode in {"zero_grounded", "optimal"}
+            and (
+                "encoder_grounding_convention" not in vars(resume_cfg)
+                or resume_cfg.encoder_grounding_convention
+                != cfg.encoder_grounding_convention
+            )
+        ):
+            raise ValueError(
+                "Cannot resume FSQ-original across grounding conventions; start a new run."
             )
         if resume_cfg.lr_schedule != cfg.lr_schedule:
             raise ValueError(

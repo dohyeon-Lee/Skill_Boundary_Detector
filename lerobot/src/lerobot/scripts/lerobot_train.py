@@ -143,6 +143,7 @@ def update_policy(
         if rabc_batch_weights is not None:
             # Get per-sample losses
             per_sample_loss, output_dict = policy.forward(batch, reduction="none")
+            output_dict = dict(output_dict or {})
 
             # Apply RA-BC weights: L_RA-BC = Σ(w_i * l_i) / (Σw_i + ε)
             # rabc_batch_weights is already normalized to sum to batch_size
@@ -154,6 +155,9 @@ def update_policy(
             output_dict["rabc_num_full_weight"] = rabc_batch_stats["num_full_weight"]
         else:
             loss, output_dict = policy.forward(batch)
+            # Some policies (including Diffusion Policy) intentionally return no auxiliary
+            # logging payload. The generic trainer still appends optimizer/LR diagnostics.
+            output_dict = dict(output_dict or {})
 
         # TODO(rcadene): policy.unnormalize_outputs(out_dict)
 
@@ -582,6 +586,30 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
         processor_dataset_stats = with_diffusion_relative_action_stats(
             policy.config, processor_dataset_stats
         )
+    elif cfg.policy.pretrained_path is not None and getattr(
+        policy.config, "use_eef_relative_actions", False
+    ):
+        if policy.config.type == "diffusion":
+            from lerobot.policies.diffusion.processor_diffusion import (
+                with_diffusion_eef_relative_action_stats,
+            )
+
+            processor_dataset_stats = with_diffusion_eef_relative_action_stats(
+                policy.config, processor_dataset_stats
+            )
+        elif policy.config.type == "pi05":
+            from lerobot.policies.pi05.processor_pi05 import (
+                with_pi05_eef_relative_action_stats,
+            )
+
+            processor_dataset_stats = with_pi05_eef_relative_action_stats(
+                policy.config, processor_dataset_stats
+            )
+        else:
+            raise ValueError(
+                "EEF-relative action preprocessing is not implemented for "
+                f"policy type {policy.config.type!r}."
+            )
     if (cfg.policy.pretrained_path and not cfg.resume) or not cfg.policy.pretrained_path:
         # Only provide dataset_stats when not resuming from saved processor state
         processor_kwargs["dataset_stats"] = processor_dataset_stats
@@ -603,10 +631,11 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
             "rename_map": cfg.rename_map
         }
         tokenizer_path = getattr(policy.config, "tokenizer_path", None)
-        if cfg.policy.type == "pi05" and tokenizer_path:
-            # PI05 warm-starts from a saved processor whose tokenizer entry may
-            # still name the gated Hub repo. Always reconnect it to the local
-            # tokenizer selected by the current policy config.
+        if cfg.policy.type in {"pi05", "skill_vla", "skill_vla_stage2"} and tokenizer_path:
+            # Warm-started processors may retain a gated Hub reference or an
+            # absolute tokenizer path from the machine that saved the checkpoint.
+            # Always reconnect them to the tokenizer selected by the current
+            # (possibly path-rebased) policy config.
             processor_kwargs["preprocessor_overrides"]["tokenizer_processor"] = {
                 "tokenizer_name": tokenizer_path,
             }

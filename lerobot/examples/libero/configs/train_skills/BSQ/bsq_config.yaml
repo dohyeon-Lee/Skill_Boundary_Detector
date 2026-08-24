@@ -29,7 +29,7 @@ fsq_levels: [3, 3, 3]            # bsq에선 무시되지만 resolver 태그 치
 fsq_hidden_dim: 256
 fsq_num_layers: 3
 fsq_n_control: 30
-# zero_grounded | raw_state | optimal (zero-grounded + one absolute start-EEF token)
+# zero_grounded | raw_state | optimal (mean-XYZ-grounded + one absolute mean-XYZ token)
 fsq_encoder_input_mode: raw_state
 # false: 인코더에서 길이 토큰 제거 (길이는 모션 형태를 통해서만 z에 들어감)
 fsq_orig_encoder_length_token: false

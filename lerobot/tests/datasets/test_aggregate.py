@@ -343,6 +343,69 @@ def test_aggregate_with_low_threshold(tmp_path, lerobot_dataset_factory):
         assert len(video_files) > 1, "Small file size limits should create multiple video files"
 
 
+def test_aggregate_without_video_concatenation(tmp_path, lerobot_dataset_factory):
+    """Input MP4s can remain separate when encoder timestamps may be incompatible."""
+    datasets = [
+        lerobot_dataset_factory(
+            root=tmp_path / f"separate_{index}",
+            repo_id=f"{DUMMY_REPO_ID}_separate_{index}",
+            total_episodes=2,
+            total_frames=100,
+        )
+        for index in range(2)
+    ]
+    source_video_count = sum(
+        len(list((dataset.root / "videos").rglob("*.mp4"))) for dataset in datasets
+    )
+
+    with patch("lerobot.datasets.aggregate.concatenate_video_files") as concatenate_video_files:
+        aggregate_datasets(
+            repo_ids=[dataset.repo_id for dataset in datasets],
+            roots=[dataset.root for dataset in datasets],
+            aggr_repo_id=f"{DUMMY_REPO_ID}_separate_aggr",
+            aggr_root=tmp_path / "separate_aggr",
+            concatenate_videos=False,
+        )
+
+    concatenate_video_files.assert_not_called()
+    output_video_count = len(list((tmp_path / "separate_aggr" / "videos").rglob("*.mp4")))
+    assert output_video_count == source_video_count
+
+    with (
+        patch("lerobot.datasets.dataset_metadata.get_safe_version") as mock_get_safe_version,
+        patch("lerobot.datasets.dataset_metadata.snapshot_download") as mock_snapshot_download,
+    ):
+        mock_get_safe_version.return_value = "v3.0"
+        mock_snapshot_download.return_value = str(tmp_path / "separate_aggr")
+        aggregated = LeRobotDataset(
+            f"{DUMMY_REPO_ID}_separate_aggr", root=tmp_path / "separate_aggr"
+        )
+
+    assert_episode_and_frame_counts(aggregated, expected_episodes=4, expected_frames=200)
+    from lerobot.datasets.video_utils import get_video_duration_in_s
+
+    for video_key in aggregated.meta.video_keys:
+        first_source_files = {
+            aggregated.meta.get_video_file_path(episode_index, video_key)
+            for episode_index in range(2)
+        }
+        second_source_files = {
+            aggregated.meta.get_video_file_path(episode_index, video_key)
+            for episode_index in range(2, 4)
+        }
+        assert first_source_files.isdisjoint(second_source_files)
+
+        for episode_index in range(aggregated.num_episodes):
+            episode = aggregated.meta.episodes[episode_index]
+            video_path = aggregated.root / aggregated.meta.get_video_file_path(
+                episode_index, video_key
+            )
+            assert episode[f"videos/{video_key}/from_timestamp"] >= 0
+            assert episode[f"videos/{video_key}/to_timestamp"] <= get_video_duration_in_s(
+                video_path
+            ) + 1e-6
+
+
 def test_video_timestamps_regression(tmp_path, lerobot_dataset_factory):
     """Regression test for video timestamp bug when merging datasets.
 

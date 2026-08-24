@@ -35,6 +35,8 @@ echo "parent   : ${STAGE2_CHECKPOINT_PATH}"
 echo "skill    : ${TRAINING_SKILL_SOURCE}"
 echo "schedule : ${SCHEDULER_MODE} warmup=${SCHEDULER_WARMUP_STEPS}"
 echo "output   : ${PT_OUTPUT_DIR}"
+echo "dino     : ${POLICY_DINO_MODEL_PATH}"
+echo "tokenizer: ${POLICY_TOKENIZER_PATH}"
 nvidia-smi || true
 
 if [ ! -d "${SKILLVLA_DATASET_DIR}" ]; then
@@ -46,10 +48,21 @@ CONFIG_JSON="${PT_OUTPUT_DIR}/checkpoints/last/pretrained_model/train_config.jso
 if [ -f "${CONFIG_JSON}" ]; then
   echo "FT checkpoint found; resuming from ${CONFIG_JSON}"
   TRAIN_ARGS=(--resume=true --config_path="${CONFIG_JSON}")
-elif [ -e "${PT_OUTPUT_DIR}" ]; then
-  echo "Output exists without a resumable checkpoint: ${PT_OUTPUT_DIR}" >&2
-  exit 1
 else
+  if [ -e "${PT_OUTPUT_DIR}" ]; then
+    # A startup failure (for example, an invalid checkpoint-owned model path)
+    # leaves only W&B metadata behind. Preserve that evidence, but do not let it
+    # permanently poison this run name.
+    FAILED_RUNS_DIR="$(dirname "${PT_OUTPUT_DIR}")/.failed_runs"
+    FAILED_RUN_NAME="$(basename "${PT_OUTPUT_DIR}").$(date +%Y%m%d_%H%M%S).${SLURM_JOB_ID:-$$}"
+    mkdir -p "${FAILED_RUNS_DIR}"
+    if [ -e "${FAILED_RUNS_DIR}/${FAILED_RUN_NAME}" ]; then
+      echo "Failed-run archive already exists: ${FAILED_RUNS_DIR}/${FAILED_RUN_NAME}" >&2
+      exit 1
+    fi
+    mv -- "${PT_OUTPUT_DIR}" "${FAILED_RUNS_DIR}/${FAILED_RUN_NAME}"
+    echo "Archived non-resumable output -> ${FAILED_RUNS_DIR}/${FAILED_RUN_NAME}"
+  fi
   TRAIN_ARGS=(
     --dataset.repo_id="${REPO_ID}"
     --dataset.root="${SKILLVLA_DATASET_DIR}"
@@ -76,11 +89,28 @@ else
   )
 fi
 
+# Historical checkpoints can retain absolute paths from the machine that
+# created them. The resolver rebases those paths to this PROJECT_ROOT; pass the
+# values as CLI overrides so they apply both to a fresh warm-start and resume.
+POLICY_PATH_ARGS=()
+[ -z "${POLICY_DINO_MODEL_PATH}" ] || \
+  POLICY_PATH_ARGS+=(--policy.dino_model_path="${POLICY_DINO_MODEL_PATH}")
+[ -z "${POLICY_TOKENIZER_PATH}" ] || \
+  POLICY_PATH_ARGS+=(--policy.tokenizer_path="${POLICY_TOKENIZER_PATH}")
+[ -z "${POLICY_STAGE1_CHECKPOINT_PATH}" ] || \
+  POLICY_PATH_ARGS+=(--policy.stage1_checkpoint_path="${POLICY_STAGE1_CHECKPOINT_PATH}")
+[ -z "${POLICY_SKILL_PREDICTOR_CHECKPOINT_PATH}" ] || \
+  POLICY_PATH_ARGS+=(--policy.skill_predictor_checkpoint_path="${POLICY_SKILL_PREDICTOR_CHECKPOINT_PATH}")
+[ -z "${POLICY_FSQ_PATH}" ] || \
+  POLICY_PATH_ARGS+=(--policy.fsq_path="${POLICY_FSQ_PATH}")
+[ -z "${POLICY_TERMINATOR_DINO_MODEL_PATH}" ] || \
+  POLICY_PATH_ARGS+=(--policy.terminator_dino_model_path="${POLICY_TERMINATOR_DINO_MODEL_PATH}")
+
 source "${PROJECT_ROOT}/lerobot/examples/libero/configs/gpu_guard.sh"
 prepare_inline_cuda_guard
 if PYTORCH_ALLOC_CONF=expandable_segments:True \
   accelerate launch --num_processes="${NUM_GPUS}" \
-  "${PROJECT_ROOT}/.venv/bin/lerobot-train" "${TRAIN_ARGS[@]}"; then
+  "${PROJECT_ROOT}/.venv/bin/lerobot-train" "${TRAIN_ARGS[@]}" "${POLICY_PATH_ARGS[@]}"; then
   TRAIN_STATUS=0
 else
   TRAIN_STATUS=$?

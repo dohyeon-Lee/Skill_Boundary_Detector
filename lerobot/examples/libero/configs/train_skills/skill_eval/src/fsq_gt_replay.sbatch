@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=FSQ_GT
-# No --gres here: the replay only decodes dataset video on CPU. A #SBATCH
-# default still applies when the submit line omits --gres, so leaving gpu:1
-# here would silently make every task queue for a GPU it never uses.
-# submit_fsq_gt_replay.sh passes --gres only when slurm.replay_gres is set.
+# No static --gres here: submit_fsq_gt_replay.sh resolves whether this job is
+# true CPU-only or merely reserves a GPU to satisfy the inherited train QOS.
 #SBATCH --requeue
 # submit_fsq_gt_replay.sh overrides these with slurm.replay_cpus/replay_memory;
 # they are only the fallback for a hand-run sbatch.
@@ -114,8 +112,8 @@ for CHECKPOINT in "${MY_CHECKPOINTS[@]}"; do
       ${RUN_ARGS[@]+"${RUN_ARGS[@]}"} --shell
   )"
   eval "${ENTRY_SETTINGS}"
-  # Latents come from the GPU prepass so this array can stay GPU-free; encoding
-  # them here on CPU would take about an hour each, so fail fast instead.
+  # Latents come from the GPU prepass; encoding them here on CPU would take
+  # about an hour each, so fail fast instead.
   if [ ! -f "${FSQ_LATENTS_PATH}" ]; then
     echo "Missing FSQ latents: ${FSQ_LATENTS_PATH}" >&2
     echo "Run the latents prepass first (submit_fsq_gt_replay.sh does it)." >&2
@@ -135,15 +133,7 @@ echo "episodes  : ${EPISODES_PER_TASK}/task selection=${EPISODE_SELECTION} expli
 echo "ep source : ${EPISODE_SOURCE}"
 echo "rollout   : GT actions only"
 echo "output    : ${EVAL_OUT_DIR}"
-echo "gpu       : ${EVAL_REPLAY_GRES:-none (replay is CPU-only)}"
-[ -z "${EVAL_REPLAY_GRES}" ] || nvidia-smi || true
-
-# Fail over to another GPU instead of silently running on CPU -- only when this
-# array actually asked for one. The replay itself decodes dataset video on CPU.
-if [ -n "${EVAL_REPLAY_GRES}" ]; then
-  source "${PROJECT_ROOT}/lerobot/examples/libero/configs/gpu_guard.sh"
-  require_cuda_or_requeue "${PROJECT_ROOT}/.venv/bin/python"
-fi
+echo "gpu alloc : ${EVAL_REPLAY_GRES:-none} (replay computation is CPU-only)"
 
 RESUME_ARGS=()
 [ "${EVAL_RESUME}" != "true" ] || RESUME_ARGS=(--resume)
@@ -172,6 +162,8 @@ PYTHONPATH="${LEROBOT_ROOT}/src:${LEROBOT_ROOT}/examples/libero:${LIBERO_REPO_RO
     --collection-dir "${EVAL_COLLECTION_DIR}" \
     --expected-epoch-tags "${FSQ_EXPECTED_EPOCH_TAGS}" \
     --run-name "${FSQ_RUN_NAME}" \
+    --model-name "${FSQ_MODEL_NAME}" \
+    --report-title "${EVAL_REPORT_TITLE}" \
     --worker-index "${WORKER_INDEX}" \
     --worker-count "${WORKER_COUNT}" \
     --seed "${EVAL_SEED}" \

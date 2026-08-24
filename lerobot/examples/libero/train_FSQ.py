@@ -54,13 +54,16 @@ class Args:
     """Directory (recursively searched) for per-skill .npz files."""
     raw_dataset_dir: str = ""
     """Raw LeRobot dataset. State-RNN mode reads only normalization metadata;
-    the visual terminator additionally decodes selected camera frames live."""
+    the visual terminator reads selected camera frames from cache or live video."""
     output_dir: str = ""
     """Output directory. Defaults to parent of skills_dir."""
 
     # ── model
     hidden_dim: int = 256
     fsq_levels: list[int] = field(default_factory=lambda: [5, 5, 5])
+    quantizer: str = "fsq"
+    """fsq | bsq. BSQ uses bsq_code_dim bits and ignores fsq_levels."""
+    bsq_code_dim: int = 5
     num_layers: int = 3
     dropout: float = 0.1
     n_control: int = 30
@@ -80,9 +83,39 @@ class Args:
     reconstructor_arch: str = "chunk"
     """chunk: per-timestep action chunks. skill/oneshot: FSQ-original-style
     full ctrl-grid reconstruction once per trajectory (M applies to terminator only)."""
+    reconstructor_output_mode: str = "match_encoder"
+    """Spline/oneshot output: raw | zero_grounded | match_encoder."""
     entropy_conf_weight: float = 0.1
+    entropy_conf_ceiling: float = 0.0
+    """Normalized per-sample entropy ceiling. At or below it the confidence
+    hinge contributes exactly zero loss and gradient; 0 preserves legacy behavior."""
     entropy_div_weight: float = 0.1
     entropy_inv_temperature: float = 10.0
+    init_calibration: bool = False
+    """Calibrate the fresh z_head once from clean training trajectories."""
+    init_calibration_gain: float = 1.0
+    """Target per-axis z standard deviation after one-shot calibration."""
+    init_calibration_samples: int = 0
+    """Clean trajectories used for calibration; 0 uses the full training split."""
+    pair_loss: str = "none"
+    """none | overlap | js | contrastive. The linear contrastive mode also
+    repels one randomly selected adjacent skill by full-code overlap."""
+    pair_weight: float = 0.1
+    pair_inv_temperature: float = 5.0
+    pair_warmup: bool = False
+    """Enable reconstruction-only warm-up and pair-weight ramp."""
+    pair_warmup_epochs: int = 0
+    """Initial reconstruction-only epochs."""
+    pair_ramp_epochs: int = 0
+    """Epochs to linearly ramp pair weight to pair_weight."""
+    boundary_aug_pmax: int = 0
+    """Legacy shared fallback for directional augmentation windows."""
+    boundary_aug_early_start_pmax: int = -1
+    boundary_aug_late_start_pmax: int = -1
+    boundary_aug_early_end_pmax: int = -1
+    boundary_aug_late_end_pmax: int = -1
+    """Directional maxima; -1 inherits boundary_aug_pmax and 0 disables."""
+    boundary_aug_distribution: str = "half_normal"
     decoder_reconstructor: bool = True
     decoder_terminator_progress: bool = True
     decoder_terminator_termination: bool = True
@@ -91,14 +124,16 @@ class Args:
     terminator_model: str = "default"
     """default | rnn. The RNN currently supports state input only."""
     visual_terminator_arch: str = "small"
-    """small | cond; used only by the default image/both terminator."""
+    """small | fusion; used only by the default image/both terminator."""
     vision_backbone: str = "dino"
-    """dino or siglip; shared by third-person and wrist images."""
+    """dino, siglip, or resnet; shared by third-person and wrist images."""
     freeze_vision_encoder: bool = True
     dino_model_path: str = "../models/dinov3-vits16"
     dino_image_size: int = 224
     siglip_image_size: int = 224
-    cond_encoder_variant: str = "gemma_300m"
+    resnet_image_size: int = 224
+    frame_cache_dir: str = ""
+    """Completed exact RGB frame cache; blank retains live video decoding."""
     image_encoder_layers: int = 1
     image_encoder_heads: int = 4
     skill_cond_mode: str = "token"
@@ -173,8 +208,9 @@ def _compute_skill_orders(metadata: list[dict]) -> list[float]:
 
 def _make_encoder_traj(states):
     """Encoder trajectory = full observation.state (EEF pose + gripper STATE), same source as the
-    decoder state. Pose dims are zero-grounded downstream; the trailing gripper-STATE dims stay
-    absolute (see N_GRIPPER_DIMS in FSQ.py). For LIBERO this is 8D: ee_state(6) + gripper_state(2)."""
+    decoder state. The selected encoder convention is applied downstream; mean grounding changes
+    XYZ only, while rotation and trailing gripper-state dimensions stay absolute. For LIBERO this
+    is 8D: ee_state(6) + gripper_state(2)."""
     return states.astype(np.float32)
 
 
@@ -243,7 +279,12 @@ def attach_episode_offsets(raw_dataset_dir: str, metadata: list[dict]) -> None:
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 def main(args: Args) -> None:
-    from FSQ import SplineFSQAEConfig, prepare_encoder_trajectory, train_spline_fsqae
+    from FSQ import (
+        SplineFSQAEConfig,
+        prepare_encoder_trajectory,
+        resolve_boundary_augmentation_pmaxes,
+        train_spline_fsqae,
+    )
 
     skills_dir = Path(args.skills_dir)
     output_dir = Path(args.output_dir) if args.output_dir else skills_dir.parent
@@ -262,6 +303,14 @@ def main(args: Args) -> None:
         "zero_grounded": "zero_grounded",
         "optimal": "optimal",
     }.get(args.encoder_input_mode, args.encoder_input_mode)
+    args.reconstructor_output_mode = {
+        "raw": "raw_state",
+        "raw_state": "raw_state",
+        "zero_grounded": "zero_grounded",
+        "match_encoder": (
+            "raw_state" if args.encoder_input_mode == "raw_state" else "zero_grounded"
+        ),
+    }.get(args.reconstructor_output_mode, args.reconstructor_output_mode)
     args.reconstructor_arch = {
         "chunk": "chunk",
         "skill": "oneshot",
@@ -296,13 +345,61 @@ def main(args: Args) -> None:
     if uses_visual_terminator:
         attach_episode_offsets(args.raw_dataset_dir, metadata)
 
+    args.quantizer = args.quantizer.strip().lower()
+    if args.quantizer not in {"fsq", "bsq"}:
+        raise ValueError(f"--quantizer must be fsq|bsq, got {args.quantizer!r}.")
+    if args.bsq_code_dim < 2:
+        raise ValueError("--bsq_code_dim must be >= 2.")
+    if args.quantizer == "bsq" and args.fsq_entropy:
+        raise ValueError(
+            "The BSQ path is recon + pair-loss only; pass --no-fsq_entropy."
+        )
     if args.encoder_input_mode not in {"zero_grounded", "raw_state", "optimal"}:
         raise ValueError(
             "--encoder_input_mode must be zero_grounded|raw_state|optimal, "
             f"got {args.encoder_input_mode!r}."
         )
+    if args.reconstructor_output_mode not in {"zero_grounded", "raw_state"}:
+        raise ValueError(
+            "--reconstructor_output_mode must be raw|zero_grounded|match_encoder, "
+            f"got {args.reconstructor_output_mode!r}."
+        )
     if args.encoder_arch not in {"spline", "action_seq"}:
         raise ValueError(f"--encoder_arch must be spline|action_seq, got {args.encoder_arch!r}.")
+    if args.init_calibration_gain <= 0:
+        raise ValueError("--init_calibration_gain must be positive.")
+    if args.init_calibration_samples < 0:
+        raise ValueError("--init_calibration_samples must be non-negative.")
+    if not 0.0 <= args.entropy_conf_ceiling <= 1.0:
+        raise ValueError("--entropy_conf_ceiling must be in [0, 1].")
+    args.pair_loss = args.pair_loss.strip().lower()
+    if args.pair_loss not in {"none", "overlap", "js", "contrastive"}:
+        raise ValueError(
+            "--pair_loss must be none|overlap|js|contrastive, "
+            f"got {args.pair_loss!r}."
+        )
+    if args.pair_loss != "none" and args.encoder_arch != "spline":
+        raise ValueError("--pair_loss requires --encoder_arch spline.")
+    directional_pmaxes = resolve_boundary_augmentation_pmaxes(
+        args.boundary_aug_pmax,
+        early_start_pmax=args.boundary_aug_early_start_pmax,
+        late_start_pmax=args.boundary_aug_late_start_pmax,
+        early_end_pmax=args.boundary_aug_early_end_pmax,
+        late_end_pmax=args.boundary_aug_late_end_pmax,
+    )
+    (
+        args.boundary_aug_early_start_pmax,
+        args.boundary_aug_late_start_pmax,
+        args.boundary_aug_early_end_pmax,
+        args.boundary_aug_late_end_pmax,
+    ) = directional_pmaxes
+    args.boundary_aug_pmax = max(directional_pmaxes)
+    if args.pair_loss != "none" and not any(directional_pmaxes):
+        raise ValueError(
+            "--pair_loss requires at least one positive directional boundary augmentation pmax."
+        )
+    if args.pair_warmup_epochs < 0 or args.pair_ramp_epochs < 0:
+        raise ValueError("--pair_warmup_epochs and --pair_ramp_epochs must be non-negative.")
     if args.reconstructor_arch not in {"chunk", "oneshot"}:
         raise ValueError(
             f"--reconstructor_arch must be chunk|skill, got {args.reconstructor_arch!r}."
@@ -312,8 +409,36 @@ def main(args: Args) -> None:
         f"fsq_entropy: {args.fsq_entropy}"
         + (
             f" (tau={args.entropy_inv_temperature} conf/div="
-            f"{args.entropy_conf_weight}/{args.entropy_div_weight}, joint)"
+            f"{args.entropy_conf_weight}/{args.entropy_div_weight}, "
+            f"conf_ceiling={args.entropy_conf_ceiling:g}, joint)"
             if args.fsq_entropy
+            else ""
+        )
+    )
+    print(
+        "[FSQ] z_head init calibration: "
+        + (
+            f"enabled (gain={args.init_calibration_gain:g}, "
+            f"samples={args.init_calibration_samples or 'all training'})"
+            if args.init_calibration
+            else "disabled"
+        )
+    )
+    print(
+        f"[FSQ] pair loss: {args.pair_loss}"
+        + (
+            f" (weight={args.pair_weight}, inv_temperature={args.pair_inv_temperature}, "
+            f"warmup={'on' if args.pair_warmup else 'off'}, "
+            f"recon-only={args.pair_warmup_epochs} epochs, "
+            f"ramp={args.pair_ramp_epochs} epochs, "
+            "boundary=one-of-enabled-start/end, "
+            "pmax(early_start/late_start/early_end/late_end)="
+            f"{args.boundary_aug_early_start_pmax}/"
+            f"{args.boundary_aug_late_start_pmax}/"
+            f"{args.boundary_aug_early_end_pmax}/"
+            f"{args.boundary_aug_late_end_pmax}, "
+            f"distribution={args.boundary_aug_distribution})"
+            if args.pair_loss != "none"
             else ""
         )
     )
@@ -325,14 +450,21 @@ def main(args: Args) -> None:
         for s in segments
     ])
     encoder_min, encoder_max = encoder_trajectories.min(0), encoder_trajectories.max(0)
+    reconstructor_trajectories = np.concatenate([
+        prepare_encoder_trajectory(s, args.reconstructor_output_mode)
+        for s in segments
+    ])
+    reconstructor_min = reconstructor_trajectories.min(0)
+    reconstructor_max = reconstructor_trajectories.max(0)
     encoder_start_min = encoder_start_max = None
     if args.encoder_input_mode == "optimal":
-        from FSQ import encoder_start_eef_pose
+        from FSQ import encoder_grounding_position
 
-        start_poses = np.stack([
-            encoder_start_eef_pose(s) for s in segments
+        grounding_positions = np.stack([
+            encoder_grounding_position(s) for s in segments
         ])
-        encoder_start_min, encoder_start_max = start_poses.min(0), start_poses.max(0)
+        encoder_start_min = grounding_positions.min(0)
+        encoder_start_max = grounding_positions.max(0)
     all_state = np.concatenate(dec_states)   # decoder/terminator proprioception (raw, all timesteps)
     state_min,  state_max  = all_state.min(0), all_state.max(0)
     _lens = [int(m["length"]) for m in metadata]
@@ -359,6 +491,9 @@ def main(args: Args) -> None:
     stats = dict(
         encoder_min=encoder_min, encoder_max=encoder_max,
         encoder_input_mode=np.asarray(args.encoder_input_mode),
+        encoder_grounding_convention=np.asarray("trajectory_mean_xyz_v1"),
+        reconstructor_min=reconstructor_min, reconstructor_max=reconstructor_max,
+        reconstructor_output_mode=np.asarray(args.reconstructor_output_mode),
         state_q01=state_q01, state_q99=state_q99,
         action_q01=action_q01, action_q99=action_q99,
         state_min=state_min, state_max=state_max,
@@ -368,10 +503,11 @@ def main(args: Args) -> None:
         stats.update(encoder_start_min=encoder_start_min, encoder_start_max=encoder_start_max)
     np.savez(str(output_dir / "action_stats.npz"), **stats)
     print(f"[FSQ] encoder input mode: {args.encoder_input_mode}")
+    print(f"[FSQ] reconstructor output mode: {args.reconstructor_output_mode}")
     print(f"[FSQ] encoder_min: {np.round(encoder_min, 4)}")
     print(f"[FSQ] encoder_max: {np.round(encoder_max, 4)}")
     if encoder_start_min is not None:
-        print(f"[FSQ] optimal start-EEF min/max: {np.round(encoder_start_min, 4)} / "
+        print(f"[FSQ] optimal grounding mean-XYZ min/max: {np.round(encoder_start_min, 4)} / "
               f"{np.round(encoder_start_max, 4)}")
     print(f"[FSQ] state q01/q99: {np.round(state_q01, 4)} / {np.round(state_q99, 4)}")
     print(f"[FSQ] action q01/q99: {np.round(action_q01, 4)} / {np.round(action_q99, 4)}")
@@ -415,12 +551,31 @@ def main(args: Args) -> None:
         encoder_input_mode=args.encoder_input_mode,
         encoder_length_token=args.encoder_length_token,
         encoder_arch=args.encoder_arch,
+        quantizer=args.quantizer,
+        bsq_code_dim=args.bsq_code_dim,
         fsq_entropy=args.fsq_entropy,
         entropy_conf_weight=args.entropy_conf_weight,
+        entropy_conf_ceiling=args.entropy_conf_ceiling,
         entropy_div_weight=args.entropy_div_weight,
         entropy_inv_temperature=args.entropy_inv_temperature,
+        init_calibration=args.init_calibration,
+        init_calibration_gain=args.init_calibration_gain,
+        init_calibration_samples=args.init_calibration_samples,
+        pair_loss=args.pair_loss,
+        pair_weight=args.pair_weight,
+        pair_inv_temperature=args.pair_inv_temperature,
+        pair_warmup=args.pair_warmup,
+        pair_warmup_epochs=args.pair_warmup_epochs,
+        pair_ramp_epochs=args.pair_ramp_epochs,
+        boundary_aug_pmax=args.boundary_aug_pmax,
+        boundary_aug_early_start_pmax=args.boundary_aug_early_start_pmax,
+        boundary_aug_late_start_pmax=args.boundary_aug_late_start_pmax,
+        boundary_aug_early_end_pmax=args.boundary_aug_early_end_pmax,
+        boundary_aug_late_end_pmax=args.boundary_aug_late_end_pmax,
+        boundary_aug_distribution=args.boundary_aug_distribution,
         reconstructor_start_state=args.reconstructor_start_state,
         reconstructor_arch=args.reconstructor_arch,
+        reconstructor_output_mode=args.reconstructor_output_mode,
         hidden_dim=args.hidden_dim,
         fsq_levels=args.fsq_levels,
         num_layers=args.num_layers,
@@ -443,7 +598,8 @@ def main(args: Args) -> None:
         dino_model_path=args.dino_model_path,
         dino_image_size=args.dino_image_size,
         siglip_image_size=args.siglip_image_size,
-        cond_encoder_variant=args.cond_encoder_variant,
+        resnet_image_size=args.resnet_image_size,
+        frame_cache_dir=args.frame_cache_dir,
         image_encoder_layers=args.image_encoder_layers,
         image_encoder_heads=args.image_encoder_heads,
         chunk_size=args.chunk_size,
@@ -480,6 +636,8 @@ def main(args: Args) -> None:
         encoder_max=encoder_max,
         encoder_start_min=encoder_start_min,
         encoder_start_max=encoder_start_max,
+        reconstructor_min=reconstructor_min,
+        reconstructor_max=reconstructor_max,
         state_min=state_min,
         state_max=state_max,
         state_q01=state_q01,
