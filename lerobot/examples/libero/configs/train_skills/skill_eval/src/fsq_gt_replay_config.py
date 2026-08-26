@@ -146,6 +146,134 @@ def _model_entries(config: dict) -> list[dict[str, str]]:
     return entries
 
 
+def _replay_request(
+    *,
+    episode_source: str,
+    target_task: str,
+    task_ids: list[int] | None,
+    episode_ids: list[int],
+    episodes_per_task: int,
+    episode_selection: str,
+    seed: int,
+) -> dict:
+    """The lightweight, submission-time portion of a replay signature."""
+    return {
+        "format": "fsq_gt_replay_request_v1",
+        "episode_source": episode_source,
+        "target_task": target_task,
+        "task_ids": task_ids,
+        "episode_ids": episode_ids,
+        "episodes_per_task": episodes_per_task,
+        "episode_selection": episode_selection,
+        "seed": seed,
+    }
+
+
+def _same_resolved_path(left: object, right: object) -> bool:
+    if not left or not right:
+        return False
+    return (
+        Path(str(left)).expanduser().resolve()
+        == Path(str(right)).expanduser().resolve()
+    )
+
+
+def _legacy_request_is_compatible(manifest: dict, request: dict) -> bool:
+    """Recognize reports written before ``request`` metadata was recorded.
+
+    Existing reports still carry the expensive-to-compute selected episode map
+    in their signature.  Validate every field that can be checked without
+    loading LIBERO/PyTorch so old completed evaluations can be skipped on the
+    first incremental submission too.
+    """
+    # Dataset-sourced replay was introduced alongside request metadata. Be
+    # conservative for an older manifest because its task-table provenance
+    # cannot be reconstructed from the old signature alone.
+    if request["episode_source"] != "exact":
+        return False
+    signature = manifest.get("signature") or {}
+    if (
+        signature.get("target_task") != request["target_task"]
+        or int(signature.get("seed", -1)) != request["seed"]
+    ):
+        return False
+    selected = signature.get("selected_episodes")
+    if not isinstance(selected, dict) or not selected:
+        return False
+    try:
+        selected_ids = {
+            int(task_id): [int(episode) for episode in episodes]
+            for task_id, episodes in selected.items()
+        }
+    except (TypeError, ValueError):
+        return False
+    requested_tasks = request["task_ids"]
+    if requested_tasks is not None and set(selected_ids) != set(requested_tasks):
+        return False
+    if any(
+        len(episodes) != request["episodes_per_task"]
+        for episodes in selected_ids.values()
+    ):
+        return False
+    explicit = request["episode_ids"]
+    selected_flat = sorted(
+        episode for values in selected_ids.values() for episode in values
+    )
+    if explicit and selected_flat != sorted(explicit):
+        return False
+    return True
+
+
+def _checkpoint_replay_is_complete(
+    artifact: dict,
+    *,
+    collection_dir: Path,
+    request: dict,
+) -> bool:
+    """Return true only for a compatible, finished replay with all media."""
+    epoch_tag = str(artifact["fsq_eval_epoch_tag"])
+    output_dir = collection_dir / "checkpoints" / epoch_tag
+    manifest_path = output_dir / "metrics" / "manifest.json"
+    if not manifest_path.is_file() or manifest_path.stat().st_size == 0:
+        return False
+    try:
+        manifest = json.loads(manifest_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return False
+    signature = manifest.get("signature") or {}
+    if (
+        not manifest.get("completed", False)
+        or manifest.get("run_name") != artifact["fsq_eval_run_name"]
+        or manifest.get("epoch_tag") != epoch_tag
+        or not _same_resolved_path(
+            signature.get("model_path"), artifact["fsq_eval_model_path"]
+        )
+        or not _same_resolved_path(
+            signature.get("latents_path"), artifact["fsq_eval_latents_path"]
+        )
+    ):
+        return False
+    stored_request = manifest.get("request")
+    if stored_request is not None:
+        if stored_request != request:
+            return False
+    elif not _legacy_request_is_compatible(manifest, request):
+        return False
+    records = manifest.get("records")
+    if not isinstance(records, dict) or not records:
+        return False
+    # ``completed`` is written atomically only after every image and record was
+    # persisted. Avoid tens of thousands of Lustre stat calls per checkpoint at
+    # every submission; validate the manifest contract instead. If files are
+    # deleted out-of-band, removing/marking the manifest incomplete explicitly
+    # requests a repair replay.
+    return all(
+        isinstance(record, dict)
+        and all(record.get(key) for key in ("start_image_path", "final_image_path"))
+        for record in records.values()
+    )
+
+
 def build_settings(
     config: dict,
     *,
@@ -213,15 +341,6 @@ def build_settings(
         )
     resolved_checkpoints = [
         artifact["fsq_eval_resolved_checkpoint"] for artifact in artifacts
-    ]
-    # Encoding a checkpoint's skill latents is the only GPU computation in this
-    # pipeline; replay itself decodes dataset video on CPU. Listing missing
-    # latents keeps encoding in one prepass even when replay reserves a GPU only
-    # to satisfy its inherited QOS.
-    missing_latents = [
-        artifact["fsq_eval_resolved_checkpoint"]
-        for artifact in artifacts
-        if not Path(artifact["fsq_eval_latents_path"]).is_file()
     ]
     epoch_tags = [artifact["fsq_eval_epoch_tag"] for artifact in artifacts]
     if len(resolved_checkpoints) != len(set(resolved_checkpoints)):
@@ -340,17 +459,14 @@ def build_settings(
     # Clamp to the number of array tasks that will actually exist: one task now
     # replays a chunk of checkpoints, so len(artifacts) overstates it.
     raw_checkpoints_per_job = get_value(config, "checkpoints_per_job", 4)
-    if (
+    checkpoints_per_job_all = (
         isinstance(raw_checkpoints_per_job, str)
         and raw_checkpoints_per_job.strip().lower() == "all"
-    ):
-        checkpoints_per_job = len(artifacts)
-    else:
+    )
+    if not checkpoints_per_job_all:
         checkpoints_per_job = int(raw_checkpoints_per_job)
         if checkpoints_per_job <= 0:
             raise ValueError("checkpoints_per_job must be positive or 'all'.")
-    chunk_count = -(-len(artifacts) // checkpoints_per_job)
-    concurrent_jobs = min(requested_concurrency, chunk_count * worker_count)
 
     run_name = artifact["fsq_eval_run_name"]
     epoch_tag = artifact["fsq_eval_epoch_tag"]
@@ -382,6 +498,60 @@ def build_settings(
         compare_collection_dirs = []
         collection_dir = replay_outputs / output_relative
     checkpoint_output_dir = collection_dir / "checkpoints" / epoch_tag
+
+    seed = int(get_value(config, "seed", 42))
+    request = _replay_request(
+        episode_source=episode_source,
+        target_task=target_task,
+        task_ids=task_ids,
+        episode_ids=episode_ids,
+        episodes_per_task=episodes_per_task,
+        episode_selection=episode_selection,
+        seed=seed,
+    )
+    # Only submission-time resolution may shrink the work list. A running
+    # array passes --expected-checkpoints and must retain its frozen shape even
+    # if another process completes one of those checkpoints in the meantime.
+    if checkpoint_list_override is None and as_bool(
+        get_value(config, "resume", False)
+    ):
+        pending_artifacts = [
+            item
+            for item in artifacts
+            if not _checkpoint_replay_is_complete(
+                item, collection_dir=collection_dir, request=request
+            )
+        ]
+    else:
+        pending_artifacts = list(artifacts)
+    completed_artifacts = [item for item in artifacts if item not in pending_artifacts]
+    pending_checkpoints = [
+        item["fsq_eval_resolved_checkpoint"] for item in pending_artifacts
+    ]
+    completed_checkpoints = [
+        item["fsq_eval_resolved_checkpoint"] for item in completed_artifacts
+    ]
+    # Encoding is needed only for checkpoints that still require replay. A
+    # completed report remains self-contained even if its source latent was
+    # later archived, so do not launch a pointless GPU prepass for it.
+    missing_latents = [
+        item["fsq_eval_resolved_checkpoint"]
+        for item in pending_artifacts
+        if not Path(item["fsq_eval_latents_path"]).is_file()
+    ]
+    pending_count = len(pending_artifacts)
+    if checkpoints_per_job_all:
+        checkpoints_per_job = max(pending_count, 1)
+    else:
+        checkpoints_per_job = min(checkpoints_per_job, max(pending_count, 1))
+    chunk_count = (
+        -(-pending_count // checkpoints_per_job) if pending_count else 0
+    )
+    concurrent_jobs = (
+        min(requested_concurrency, chunk_count * worker_count)
+        if chunk_count
+        else 0
+    )
     exclude = as_list(get_value(config, "train_exclude_nodes", []))
     # A blank replay override inherits the canonical global train_* Slurm
     # settings. Clusters that reject zero-GPU jobs on their GPU partitions can
@@ -432,6 +602,9 @@ def build_settings(
         "fsq_run_count": len(run_names),
         "fsq_epoch_tag": epoch_tag,
         "fsq_eval_checkpoints": " ".join(resolved_checkpoints),
+        "fsq_pending_checkpoints": " ".join(pending_checkpoints),
+        "fsq_pending_checkpoint_count": pending_count,
+        "fsq_completed_checkpoints": " ".join(completed_checkpoints),
         "fsq_missing_latents": " ".join(missing_latents),
         "fsq_missing_latents_count": len(missing_latents),
         "fsq_skipped_checkpoints": " ".join(skipped_checkpoints),
@@ -444,7 +617,7 @@ def build_settings(
         "episode_ids": json.dumps(episode_ids, separators=(",", ":")),
         "episodes_per_task": episodes_per_task,
         "episode_selection": episode_selection,
-        "eval_seed": int(get_value(config, "seed", 42)),
+        "eval_seed": seed,
         "eval_max_concurrent": concurrent_jobs,
         "eval_worker_count": worker_count,
         "eval_resume": str(as_bool(get_value(config, "resume", False))).lower(),

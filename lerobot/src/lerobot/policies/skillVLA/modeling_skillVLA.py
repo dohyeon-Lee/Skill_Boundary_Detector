@@ -85,6 +85,8 @@ from .dataset_skillVLA import (
     SKILL_CODE,
     SKILL_CODE_TRUE,
     SKILL_PROGRESS,
+    SKILL_PREVIOUS_ACTION,
+    SKILL_PREVIOUS_ACTION_BOS,
     SKILL_START_IMAGE,
     SKILL_START_STATE,
     SKILL_START_WRIST_IMAGE,
@@ -1632,7 +1634,7 @@ class SkillVLAPytorch(PI05Pytorch):
         start_images: list[Tensor],
         lang_tokens: Tensor,
         lang_masks: Tensor,
-        state: Tensor,
+        state: Tensor | None,
         skill_code: Tensor,
         actions: Tensor,
         noise: Tensor | None = None,
@@ -2092,7 +2094,7 @@ class SkillVLAPytorch(PI05Pytorch):
         start_images: list[Tensor],
         lang_tokens: Tensor,
         lang_masks: Tensor,
-        state: Tensor,
+        state: Tensor | None,
         skill_code: Tensor | None = None,
         noise: Tensor | None = None,
         num_steps: int | None = None,
@@ -2160,13 +2162,26 @@ class SkillVLAPytorch(PI05Pytorch):
         n_tr = sum(p.numel() for p in terminator.parameters())
         log.info("Built TRAINABLE v2 FSQ terminator from %s (%d params).", path, n_tr)
 
-    def terminator_predict(self, true_code: Tensor, state: Tensor, image: Tensor,
-                           wrist_image: Tensor | None = None) -> tuple[Tensor, Tensor]:
+    def terminator_predict(
+        self,
+        true_code: Tensor,
+        state: Tensor,
+        image: Tensor,
+        wrist_image: Tensor | None = None,
+        *,
+        previous_action: Tensor | None = None,
+        bos_mask: Tensor | None = None,
+    ) -> tuple[Tensor, Tensor]:
         """FT co-training on current raw third-person and wrist frames."""
         terminator = self.fsq_term_train
         dev = next(terminator.parameters()).device
         dtype = next(terminator.parameters()).dtype
-        st = state.to(device=dev, dtype=dtype)[..., : int(terminator.state_dim)]
+        context = self._prepare_terminator_context(
+            terminator,
+            state=state,
+            previous_action=previous_action,
+            bos_mask=bos_mask,
+        )
         z_norm = (
             self._code_to_z(true_code.to(self._fsq_strides.device)) / self._fsq_half[None, :]
         ).to(device=dev, dtype=dtype)
@@ -2174,7 +2189,7 @@ class SkillVLAPytorch(PI05Pytorch):
             raise ValueError("FSQ terminator requires observation.images.wrist_image.")
         third = image.to(device=dev, dtype=dtype)
         wrist = wrist_image.to(device=dev, dtype=dtype)
-        return terminator(z_norm, st, third, wrist)
+        return terminator(z_norm, context, third, wrist)
 
     def _code_to_z(self, code: Tensor) -> Tensor:
         """Flat FSQ code (B,) → z_q (B, D) in the FSQ codebook's coordinate frame."""
@@ -2183,13 +2198,49 @@ class SkillVLAPytorch(PI05Pytorch):
         level_ids = torch.div(idx, strides, rounding_mode="floor") % levels
         return level_ids.float() - self._fsq_half[None, :]
 
-    def _prepare_term_state(self, state: Tensor) -> Tensor:
-        s = state.to(device=next(self.parameters()).device, dtype=torch.float32)
+    def _prepare_terminator_context(
+        self,
+        terminator,
+        *,
+        state: Tensor | None,
+        previous_action: Tensor | None,
+        bos_mask: Tensor | None = None,
+    ) -> Tensor:
+        device = next(terminator.parameters()).device
+        dtype = next(terminator.parameters()).dtype
+        mode = str(getattr(terminator, "context_mode", "proprio"))
+        if mode == "prev_action":
+            dim = int(terminator.state_dim)
+            if previous_action is None:
+                if state is None:
+                    raise ValueError(
+                        "prev_action terminator needs a batch size source for its BOS token."
+                    )
+                return torch.zeros(
+                    state.shape[0], dim, device=device, dtype=dtype
+                )
+            action = previous_action.to(device=device, dtype=dtype)
+            if action.ndim == 3 and action.shape[1] == 1:
+                action = action[:, 0]
+            if action.ndim != 2 or action.shape[-1] < dim:
+                raise ValueError(
+                    "Previous terminator action must be (B,A) with "
+                    f"A>={dim}, got {tuple(action.shape)}."
+                )
+            context = terminator.normalize_previous_action(action[..., :dim])
+            if bos_mask is not None:
+                mask = bos_mask.to(device=device, dtype=torch.bool).view(-1)
+                context = context.clone()
+                context[mask] = 0.0
+            return context
+        if state is None:
+            raise ValueError("Legacy proprio terminator requires current raw state.")
+        s = state.to(device=device, dtype=dtype)
         if s.ndim == 3 and s.shape[1] == 1:
             s = s[:, 0]
         if s.ndim != 2:
             raise ValueError(f"Current terminator state must be (B,D), got {tuple(s.shape)}.")
-        sd = int(getattr(self.fsq_term, "state_dim", s.shape[-1]))
+        sd = int(getattr(terminator, "state_dim", s.shape[-1]))
         if s.shape[-1] < sd:
             raise ValueError(f"FSQ terminator expects state_dim={sd}, got {s.shape[-1]}-dim raw state.")
         return s[..., :sd]
@@ -2202,17 +2253,36 @@ class SkillVLAPytorch(PI05Pytorch):
         return x
 
     @torch.no_grad()
-    def terminator_step(self, code, state, image, wrist=None):
+    def terminator_step(self, code, state, image, wrist=None, previous_action=None):
         """Run the FSQ terminator on the CURRENT obs for the active skill → (progress, end_prob), each (B,)."""
         z_norm = self._code_to_z(code) / self._fsq_half[None, :]
-        st = self._prepare_term_state(state)
+        bos_mask = None
+        if (
+            str(getattr(self.fsq_term, "context_mode", "proprio")) == "prev_action"
+            and previous_action is None
+        ):
+            previous_action = torch.zeros(
+                code.reshape(-1).shape[0],
+                int(self.fsq_term.state_dim),
+                device=code.device,
+                dtype=torch.float32,
+            )
+            bos_mask = torch.ones(
+                code.reshape(-1).shape[0], device=code.device, dtype=torch.bool
+            )
+        context = self._prepare_terminator_context(
+            self.fsq_term,
+            state=state,
+            previous_action=previous_action,
+            bos_mask=bos_mask,
+        )
         img = self._prepare_term_image(image)
         if img is None:
             return None
         w = self._prepare_term_image(wrist)
         if w is None:
             raise ValueError("FSQ terminator requires a current wrist image (skill_decoder_wrist).")
-        return self.fsq_term.predict_termination(z_norm, st, img, w)
+        return self.fsq_term.predict_termination(z_norm, context, img, w)
 
 
 # ── Warm-start key remapping ────────────────────────────────────────────────────────────────
@@ -3312,29 +3382,53 @@ class SkillVLAPolicy(PI05Policy):
             if term_sample_mask is not None:
                 true_code = true_code[term_sample_mask]
             true_code = true_code.clamp(0, self.stage1_config.skill_vocab_size - 1)
-            # RAW state (skill_decoder_state, snapshotted pre-normalization by the processor) — the FSQ
-            # terminator normalizes internally with its own min/max; feeding the already quantile-
-            # normalized OBS_STATE would double-normalize and diverge from closed-loop eval (which uses
-            # raw skill_decoder_state). Images are IDENTITY-normalized so `primary` needs no raw snapshot.
-            # FAIL-FAST (no OBS_STATE fallback): resuming with an OLD saved processor lacking the preserve
-            # step would silently re-introduce the double-normalization bug — surface it loudly instead.
+            # Historical terminators consume raw proprio; new terminators consume
+            # the raw action emitted at t-1 and apply their checkpointed action
+            # normalization here. Only true episode starts use the exact-zero BOS;
+            # ordinary skill boundaries retain the preceding skill's final action.
             raw_state = batch.get("skill_decoder_state")
-            if raw_state is None:
+            context_mode = str(
+                getattr(self.model.fsq_term_train, "context_mode", "proprio")
+            )
+            previous_action = batch.get(SKILL_PREVIOUS_ACTION)
+            previous_action_bos = batch.get(SKILL_PREVIOUS_ACTION_BOS)
+            if context_mode == "proprio" and raw_state is None:
                 raise ValueError(
                     "train_terminator=True needs RAW 'skill_decoder_state' in the batch (snapshotted "
                     "pre-normalization by SkillVLAPreserveRawStateProcessorStep). It is missing — likely "
                     "resuming with an OLD pre-processor from before that step existed. Rebuild the "
                     "pre-processor; feeding normalized observation.state would double-normalize the FSQ input.")
+            if context_mode == "prev_action" and previous_action is None:
+                raise ValueError(
+                    "train_terminator=True with a prev_action FSQ checkpoint requires "
+                    f"'{SKILL_PREVIOUS_ACTION}' from SkillVLADataset."
+                )
+            if context_mode == "prev_action" and previous_action_bos is None:
+                raise ValueError(
+                    "train_terminator=True with a prev_action FSQ checkpoint requires "
+                    f"'{SKILL_PREVIOUS_ACTION_BOS}' from SkillVLADataset."
+                )
+            ds = batch["skill_ds"].float().view(-1)
+            de = batch["skill_de"].float().view(-1)
             if term_sample_mask is not None:
-                raw_state = raw_state[term_sample_mask]
-            prog_pred, term_logits = self.model.terminator_predict(
-                true_code, raw_state, img_3rd, wrist_image=img_wrist)
-            ds = batch["skill_ds"].float().view(-1).to(prog_pred.device)
-            de = batch["skill_de"].float().view(-1).to(prog_pred.device)
-            if term_sample_mask is not None:
-                term_sample_mask = term_sample_mask.to(prog_pred.device)
+                if raw_state is not None:
+                    raw_state = raw_state[term_sample_mask]
+                if previous_action is not None:
+                    previous_action = previous_action[term_sample_mask]
+                if previous_action_bos is not None:
+                    previous_action_bos = previous_action_bos[term_sample_mask]
                 ds = ds[term_sample_mask]
                 de = de[term_sample_mask]
+            prog_pred, term_logits = self.model.terminator_predict(
+                true_code,
+                raw_state,
+                img_3rd,
+                wrist_image=img_wrist,
+                previous_action=previous_action,
+                bos_mask=previous_action_bos,
+            )
+            ds = ds.to(prog_pred.device)
+            de = de.to(prog_pred.device)
             prog_tgt = (ds / (ds + de).clamp_min(1.0)).clamp(0.0, 1.0)        # = ds/(length-1)
             sigma = float(self.config.terminator_end_target_sigma)
             term_tgt = (torch.exp(-(de ** 2) / (2.0 * sigma ** 2)) if sigma > 0 else (de == 0).float())
@@ -3488,6 +3582,7 @@ class SkillVLAPolicy(PI05Policy):
         self._skill_trace: list[dict] = []
         self._cur_skill: dict | None = None   # in-progress skill record
         self._episode_step = 0                # global env step within the episode
+        self._last_emitted_action: Tensor | None = None
         self._oracle_cursor = 0               # index into the GT skill sequence (oracle eval)
 
     # ── oracle eval: GT skill sequence injected via the cond-encoder (see config.use_gt_skill) ──
@@ -3677,9 +3772,18 @@ class SkillVLAPolicy(PI05Policy):
         term_fired = False
         if self.model.fsq_term is not None:
             state, image = batch.get("skill_decoder_state"), batch.get("skill_decoder_image")
-            if state is not None and image is not None:
+            context_mode = str(
+                getattr(self.model.fsq_term, "context_mode", "proprio")
+            )
+            context_available = state is not None or context_mode == "prev_action"
+            if context_available and image is not None:
                 out = self.model.terminator_step(
-                    self._skill_code, state, image, batch.get("skill_decoder_wrist"))
+                    self._skill_code,
+                    state,
+                    image,
+                    batch.get("skill_decoder_wrist"),
+                    previous_action=self._last_emitted_action,
+                )
                 if out is not None:
                     progress, end_prob = out   # progress only gates skill_end / feeds skill_html (no token)
                     if self._cur_skill is not None:  # per-step series for skill_html (_plot_skill_progress)
@@ -3748,6 +3852,7 @@ class SkillVLAPolicy(PI05Policy):
             self._action_queue.extend(actions.transpose(0, 1))
 
         action = self._action_queue.popleft()
+        self._last_emitted_action = action.detach()
         self._episode_step += 1
         return action
 

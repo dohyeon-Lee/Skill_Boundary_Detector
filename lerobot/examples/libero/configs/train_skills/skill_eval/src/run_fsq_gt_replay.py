@@ -339,6 +339,16 @@ def run_one(args, shared: dict) -> None:
         "selected_episodes": {str(key): value for key, value in selected.items()},
         "seed": args.seed,
     }
+    request = {
+        "format": "fsq_gt_replay_request_v1",
+        "episode_source": "exact" if args.eval_init_states_path else "dataset",
+        "target_task": args.target_task,
+        "task_ids": requested_task_ids,
+        "episode_ids": episode_ids,
+        "episodes_per_task": args.episodes_per_task,
+        "episode_selection": args.episode_selection,
+        "seed": args.seed,
+    }
     if manifest_path.is_file():
         if not args.resume:
             raise FileExistsError(
@@ -361,6 +371,7 @@ def run_one(args, shared: dict) -> None:
 
     # Cosmetic report metadata stays outside the replay signature. This lets a
     # resume run rename the HTML without invalidating extracted image pairs.
+    manifest["request"] = request
     manifest["model_name"] = args.model_name or args.run_name
     manifest["report_title"] = args.report_title
 
@@ -378,11 +389,12 @@ def run_one(args, shared: dict) -> None:
     manifest["levels"] = levels
     # The latents artifact encodes the full training skillset, so its token
     # distribution is this checkpoint's codebook usage over all training data:
-    # distinct count, plus the entropy-based effective count used to normalize
-    # the report's cohesion metric.
+    # per-code counts for the full-data cube, the distinct count, and the
+    # entropy-based effective count used to normalize the cohesion metric.
     train_tokens = np.asarray(np.load(str(args.latents_path))["tokens"], dtype=np.int64)
-    token_counts = np.bincount(train_tokens)
+    token_counts = np.bincount(train_tokens, minlength=max_token)
     probabilities = token_counts[token_counts > 0] / train_tokens.size
+    manifest["train_codebook_counts"] = [int(count) for count in token_counts]
     manifest["train_codebook_used"] = int((token_counts > 0).sum())
     manifest["train_codebook_effective"] = float(
         np.exp(-(probabilities * np.log(probabilities)).sum())

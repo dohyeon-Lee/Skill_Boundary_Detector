@@ -1,162 +1,88 @@
-# ── FSQ training config (Stage 3) ──────────────────────────────────────────────
-# Trains FSQ on one completed DP skillset. Live images are read only when the
-# selected terminator input includes image. Select the
-# immutable artifact by folder names only; dataset_root comes from global_config
-# and DP/checkpoint/mode/threshold/min-length provenance comes from the selected
-# skillset_manifest.json.
+# FSQ whole-skill autoencoder. Architecture and input/output convention are
+# selected together by fsq_autoencoder; mixed combinations are unsupported.
+
+
+# ── Data artifact ─────────────────────────────────────────────────────────────
 fsq_dataset_root: FSQ_dataset
-target_dataset: libero_90_full_full # libero_90_full_full | langgap_56_full_full
+target_dataset: libero_90_full_full
 fsq_inputs_name: FSQ_inputs
-# skillset_seg_name: seg_langgap_56_full_full_state_obs20_ck100000_std_episodemean_80p
 skillset_seg_name: seg_libero_90_full_full_state_obs20_ck100000_std_episodemean_100p
 skillset_name: skillset
 
 
-# ── Run / FSQ bottleneck ──────────────────────────────────────────────────────
-fsq_exp: "raw_raw__recon_lincontrast_bj10_w01_warm50_ramp50_new_dino" # _pairwarmX
-# fsq: scalar grid below. bsq: spherical sign quantizer with 2^bsq_code_dim codes.
-fsq_quantizer: fsq # fsq | bsq
-bsq_code_dim: 5    # BSQ5 = 32 codes; ignored when fsq_quantizer=fsq
-fsq_levels: [3, 3, 3] # [3, 4, 5]    # [6, 10] | [5, 5, 5]
-fsq_encoder_lr: 3.0e-6
-fsq_terminator_lr: 3.0e-6
-fsq_reconstructor_lr: 3.0e-6
-fsq_lr_schedule: constant # cosine | constant
-# One-shot data-calibrated z_head initialization. The calibration is folded into
-# the linear head before optimization; no normalization layer remains afterward.
-fsq_init_calibration: true
-fsq_init_calibration_gain: 1.0
-# 0 = use every trajectory in the training split.
-fsq_init_calibration_samples: 0
+# ── Experiment / bottleneck ──────────────────────────────────────────────────
+# Optional suffix appended after the automatic mode/decoder/loss run name.
+# Two layers are the default and therefore carry no suffix; set this only for
+# a genuinely separate experiment (for example "layer3").
+fsq_exp: ""
+fsq_levels: [3, 3, 3]              # 27 codes
+fsq_hidden_dim: 256
+fsq_num_layers: 2
 
 
-# ── Encoder ───────────────────────────────────────────────────────────────────
-# raw: absolute state trajectory
-# zero_grounded: mean-center XYZ only; keep rotation/gripper absolute
-# optimal: zero_grounded trajectory + its absolute mean-XYZ encoder token
-fsq_encoder_input_mode: raw
-# spline: proprio trajectory -> spline control points
-# action_seq: full action sequence -> transformer
-fsq_encoder_arch: spline
-# The encoder length token is fixed OFF in the standard FSQ training path.
-
-
-# ── FSQ entropy loss ──────────────────────────────────────────────────────────
-fsq_entropy: false
-fsq_entropy_conf_weight: 0.1
-# Per-sample normalized entropy constraint. Samples below this wall receive
-# exactly zero confidence loss/gradient; 0 recovers the old always-on loss.
-fsq_entropy_conf_ceiling: 0.10
-fsq_entropy_div_weight: 0 # 0.1
-fsq_entropy_inv_temperature: 10 # 100.0
-
-
-# ── Augmentation-pair loss ───────────────────────────────────────────────────
-# Each training fetch moves either start or end (not both), then refits B-spline.
-# Validation always uses the original clean segment.
-fsq_pair_loss: contrastive    # none | overlap | js | contrastive (linear positive/adjacent-negative overlap)
-fsq_pair_weight: 0.1
-fsq_pair_inv_temperature: 5.0
-# First train the code space using reconstruction, then introduce the pair objective gradually.
-fsq_pair_warmup: true
-fsq_pair_warmup_epochs: 50
-fsq_pair_ramp_epochs: 50
-# Directional frame windows. 0 disables only that direction.
-# Existing configs with only fsq_boundary_aug_pmax remain supported: its value
-# is inherited by all four directions.
-fsq_boundary_aug_early_start_pmax: 10 # prepend previous-skill frames OKAY
-fsq_boundary_aug_late_start_pmax: 5  # trim frames from the skill start DANGEROUS
-fsq_boundary_aug_early_end_pmax: 10   # trim frames from the skill end DANGEROUS
-fsq_boundary_aug_late_end_pmax: 5   # append next-skill frames Okay
-fsq_boundary_aug_distribution: half_normal
-
-
-# ── Decoder outputs ───────────────────────────────────────────────────────────
-# Each branch/objective can be enabled independently. At least one must be true.
+# ── Architecture ─────────────────────────────────────────────────────────────
+# raw    : absolute proprio B-spline -> FSQ -> absolute proprio B-spline
+# zero   : zero-grounded proprio B-spline -> FSQ -> zero-grounded B-spline
+# action      : raw controller actions -> FSQ -> causal Transformer raw actions
+# norm_action : dataset q01/q99-normalized actions -> FSQ -> normalized actions
+# Encoder and decoder are an indivisible preset; mixed combinations are not
+# exposed. gripper_weight is the gripper MSE weight; sqrt(weight) is applied to
+# the final 2 proprio axes (raw/zero) or final action axis (action/norm_action)
+# in both encoder input and decoder target so route/recon agree.
+# 1.0 is the untuned normalized baseline.
+# Every mode name includes the compact value: zero/0.1 -> zero01.
+fsq_autoencoder: {mode: zero, gripper_weight: 0.1}  # raw | zero | action | norm_action
+# Optional decoder context, available in every autoencoder mode.  The FSQ code
+# remains the decoder content; the normalized skill-start proprio state only
+# modulates decoder blocks through a separate zero-init AdaLN path.
+fsq_start_state_conditioning: none      # none | adaln
+fsq_terminator: {termination: true, context: prev_action, default_arch: fusion, vision_backbone: resnet, freeze_vision_encoder: true}
 fsq_decoder_reconstructor: true
-fsq_decoder_terminator_termination: true
-fsq_decoder_terminator_progress: false
-
-# ── Reconstructor ─────────────────────────────────────────────────────────────
-# chunk: reconstruct an action chunk at sampled timesteps
-# skill: reconstruct the complete skill spline control-point grid once
-fsq_reconstructor_arch: skill
-# Spline+skill reconstruction target, independent of encoder input: raw | zero_grounded
-fsq_reconstructor_output_mode: raw
-# false: reconstruct from skill z (and progress for chunk) without start state
-fsq_reconstructor_start_state: false
-fsq_chunk_size: 10
 
 
-# ── Terminator ────────────────────────────────────────────────────────────────
-# input_space always includes FSQ skill z:
-# state = proprio only, image = third+wrist images, both = proprio+third+wrist
-fsq_terminator_input_space: both       # state | image | both
-# default = current-step MLP/query model; rnn = full-skill state RNN
-# rnn currently supports input_space=state only.
-fsq_terminator_arch: default                # default | rnn
-# Visual/default terminator details. Ignored by state+rnn.
-fsq_terminator_default_arch: fusion      # small | fusion
-# small: query layers; fusion: full skill/state/image self-attention layers
-fsq_terminator_layers: 3
-fsq_terminator_heads: 4                 # small/fusion only
-fsq_vision_backbone: dino               # dino | siglip | resnet (ImageNet ResNet-18)
-fsq_freeze_vision_encoder: true
-fsq_dino_model_path: models/dinov3-vits16
-fsq_dino_image_size: 224
-fsq_siglip_image_size: 224
-fsq_resnet_image_size: 224
+# ── Code assignment / regularization ─────────────────────────────────────────
+# One-time z_head calibration only; samples=0 uses all training skills.
+fsq_init_calibration: {enabled: true, gain: 1.0, samples: 0}
 
-# Exact lossless-zstd RGB cache shared by every visual FSQ run on this dataset.
-# The first submit automatically creates it in a CPU-only Slurm job; later
-# submits reuse the completed fingerprinted cache without another AV1 pass.
-fsq_frame_cache_enabled: true
-# Empty = {project_root}/.cache/fsq_frame_cache/{dataset_root}/{dataset}/rgb_zstd_v2
-fsq_frame_cache_root: ""
-# Copy the compressed cache once per compute node, then decompress only selected
-# frames. Jobs using the same dataset/fingerprint on that node reuse one copy.
-fsq_frame_cache_stage_local: true
-# Empty = auto: /dev/shm/$USER/fsq_frame_cache, then /tmp as fallback.
-# An override must be an absolute path on node-local storage.
-fsq_frame_cache_local_root: ""
-# Do not begin a copy unless this much node-local space remains afterward.
-fsq_frame_cache_local_reserve_gb: 16
-fsq_frame_cache_partition: dell_cpu
-fsq_frame_cache_qos: cpu_qos
-fsq_frame_cache_cpus_per_task: 16
-fsq_frame_cache_workers: 16
-fsq_frame_cache_decoder_threads: 1
-fsq_frame_cache_mem: 32G
-fsq_frame_cache_time: "12:00:00"
+fsq_entropy: false
+
+# Losses are each configured in one place. pair type: none | contrastive | overlap | js.
+# type=none disables pair loss and names the run pairOFF.
+fsq_pair_loss: {type: js, weight: 0.1, inv_temperature: 5.0}
+fsq_route_loss: {enabled: true}
+fsq_action_loss: {weight: 1.0}
+fsq_end_loss: {weight: 1.0, target_sigma: 2.0}
+
+# Reconstruction-only warm-up, followed by a linear pair-weight ramp.
+fsq_pair_warmup: {enabled: true, epochs: 50, ramp_epochs: 50}
+
+# One boundary is moved per positive pair. With all four directions enabled,
+# start/end is selected 50:50 and early/late within it is selected 50:50
+# (thus each direction is 25%). Values below are maximum frame offsets, not %.
+fsq_boundary_aug_early_start_pmax: 10  # prepend previous-skill actions
+fsq_boundary_aug_late_start_pmax: 5    # trim actions from the skill start
+fsq_boundary_aug_early_end_pmax: 10    # trim actions from the skill end
+fsq_boundary_aug_late_end_pmax: 5      # append next-skill actions
 
 
-# ── Training hyperparameters ──────────────────────────────────────────────────
-fsq_batch_size: 64 # 64
+# ── Optimization ─────────────────────────────────────────────────────────────
+fsq_lr: 3.0e-6                  # encoder = reconstructor = terminator
+fsq_lr_schedule: constant           # constant | cosine
+
+fsq_batch_size: 64
 fsq_num_epochs: 2000
-fsq_checkpoint_every: 50
-# Used by chunk reconstruction or a default/current-step terminator.
-# Automatically becomes 1 for skill(oneshot) + full-sequence RNN.
-fsq_samples_per_skill: 2
-fsq_skill_cond_mode: broadcast
-fsq_num_workers: 10
-# Validation decodes in the training process to avoid intermittent AV1 worker deadlocks.
+fsq_samples_per_skill: 1            # full sequence is decoded once per skill
+fsq_num_workers: 10 # 10
 fsq_val_num_workers: 0
-# Validation is diagnostic only; FSQ_epoch*.pt files are the training artifacts.
 fsq_val_every: 25
+fsq_checkpoint_every: 50
 fsq_save_best_model: false
 fsq_gradient_checkpointing: false
 
 
-# ── FSQ loss weights ──
-fsq_action_loss_weight: 1.0
-fsq_progress_loss_weight: 1.0    # 학습은 (1,1,1) — end까지 다 걸어 코드를 termination-coherent하게 형성
-fsq_end_loss_weight: 1.0          #   (종료 다른 스킬 분리).
-fsq_end_target_sigma: 2.0
-
-# ── Slurm (partition/qos/nodelist/exclude from configs/global_config.yaml) ──
+# ── Slurm / logging ──────────────────────────────────────────────────────────
 fsq_train_gres: gpu:1
 fsq_train_cpus_per_task: 12
-# Lossless zstd RGB is ~68 GiB for libero_90; leave room for DataLoader/model.
-fsq_train_mem: 128G
+fsq_train_mem: 96G                  # no image cache/video decoding in this run
 fsq_train_time: "48:00:00"
 fsq_wandb_project: VAE_train

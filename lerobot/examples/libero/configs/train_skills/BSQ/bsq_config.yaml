@@ -33,7 +33,8 @@ fsq_n_control: 30
 fsq_encoder_input_mode: raw_state
 # false: 인코더에서 길이 토큰 제거 (길이는 모션 형태를 통해서만 z에 들어감)
 fsq_orig_encoder_length_token: false
-# spline: 고정 컨트롤포인트 토큰. action_seq: 가변 ACTION 시퀀스 transformer (rnn 디코더 필수)
+# spline: 고정 컨트롤포인트 토큰. action_seq: 가변 raw ACTION 시퀀스 transformer
+# (추가 normalization 없음, rnn 디코더 필수)
 fsq_orig_encoder_arch: action_seq
 fsq_orig_decoder_layers: 3
 # oneshot: ctrl point 복원 MLP. rnn: z-only GRU unroll (매 스텝 action + termination)

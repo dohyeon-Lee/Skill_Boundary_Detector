@@ -20,8 +20,10 @@ def _config(
     *,
     threshold_scale: float = 1.0,
     min_skills: int = 1,
+    fsq_run_name: str = "libero_90_std_global_fsq333_dino",
+    fsq_levels: list[int] | None = None,
+    fsq_exp: str | None = None,
 ) -> dict:
-    fsq_run_name = "libero_90_std_global_fsq333_dino"
     fsq_dir = tmp_path / "outputs" / "FSQ" / fsq_run_name
     fsq_dir.mkdir(parents=True, exist_ok=True)
     skillset_dir = (
@@ -66,23 +68,24 @@ def _config(
             }
         )
     )
-    (fsq_dir / "fsq_meta.json").write_text(
-        json.dumps(
-            {
-                "fsq_dataset_root": "FSQ_dataset",
-                "target_dataset": "libero_90_full_full",
-                "fsq_inputs_name": "FSQ_inputs",
-                "skillset_seg_name": "seg_libero_90_state_obs20_ck100000_std",
-                "skillset_name": "skillset",
-                "dp_run_name": "libero_90_state_obs20",
-                "dp_checkpoint": "100000",
-                "skillset_mode": "std",
-                "skillset_min_skills": min_skills,
-                "skillset_boundary_threshold_mode": threshold_mode,
-                "skillset_boundary_threshold_scale": threshold_scale,
-            }
-        )
-    )
+    fsq_meta = {
+        "fsq_dataset_root": "FSQ_dataset",
+        "target_dataset": "libero_90_full_full",
+        "fsq_inputs_name": "FSQ_inputs",
+        "skillset_seg_name": "seg_libero_90_state_obs20_ck100000_std",
+        "skillset_name": "skillset",
+        "dp_run_name": "libero_90_state_obs20",
+        "dp_checkpoint": "100000",
+        "skillset_mode": "std",
+        "skillset_min_skills": min_skills,
+        "skillset_boundary_threshold_mode": threshold_mode,
+        "skillset_boundary_threshold_scale": threshold_scale,
+    }
+    if fsq_levels is not None:
+        fsq_meta["fsq_levels"] = fsq_levels
+    if fsq_exp is not None:
+        fsq_meta["fsq_exp"] = fsq_exp
+    (fsq_dir / "fsq_meta.json").write_text(json.dumps(fsq_meta))
     return {
         "project_root": str(tmp_path),
         "dataset_root": "dataset",
@@ -108,6 +111,25 @@ def test_episode_mean_has_disjoint_work_and_final_paths(tmp_path: Path) -> None:
     assert settings["skillset_min_skill_len"] == 10
     assert "minlen" not in settings["skillvla_seg_dir"].name
     assert "minlen" not in settings["run_tag"]
+
+
+def test_exp_only_fsq_folder_uses_metadata_instead_of_name_parsing(
+    tmp_path: Path,
+) -> None:
+    config = _config(
+        tmp_path,
+        "episode_mean",
+        fsq_run_name="motion_categories_v2",
+        fsq_levels=[3, 3, 3],
+        fsq_exp="motion_categories_v2",
+    )
+
+    settings = build_settings(config)
+
+    assert settings["fsq_run_name"] == "motion_categories_v2"
+    assert settings["fsq_exp"] == "motion_categories_v2"
+    assert settings["fsq_levels_str"] == "3 3 3"
+    assert "FSQ333_motion_categories_v2_" in settings["run_tag"]
 
 
 def test_global_mean_has_explicit_threshold_identity(tmp_path: Path) -> None:

@@ -33,10 +33,11 @@ fsq_orig_encoder_length_token: false
 # spline: 고정 컨트롤포인트 토큰 (아래 input_mode/길이토큰 프로브 적용됨).
 # action_seq: 가변 길이 ACTION 시퀀스 transformer — 스플라인 코덱/grounding/길이토큰
 #             선택이 전부 불필요 (delta action엔 절대좌표가 없음). decoder는 rnn 필수.
+#             action은 dataset의 raw controller command를 그대로 사용하며 추가 normalization 없음.
 fsq_orig_encoder_arch: spline
 fsq_orig_decoder_layers: 3
 # oneshot: ctrl point 30개(+길이)를 MLP 한 번에 복원.
-# rnn    : z만 받는 GRU unroll(teacher forcing 없음)이 매 스텝 정규화 action +
+# rnn    : z만 받는 GRU unroll(teacher forcing 없음)이 매 스텝 raw action +
 #          termination logit을 출력 — 길이는 termination 신호로 암시적으로 표현.
 fsq_orig_decoder_arch: oneshot # oneshot
 # false: recon 타겟에서 스킬 길이를 제거 — length 헤드/로스 없이 ctrl point만 복원.

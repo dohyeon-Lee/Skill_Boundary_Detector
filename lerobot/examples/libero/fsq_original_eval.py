@@ -71,7 +71,7 @@ def _encode_all(model, dataset, device, batch_size):
         stop = min(start + batch_size, len(dataset))
         lengths = torch.as_tensor(dataset.lengths[start:stop], dtype=torch.long, device=device)
         if is_action_seq:
-            acts = torch.from_numpy(np.stack(dataset.actions_norm[start:stop])).to(device)
+            acts = torch.from_numpy(np.stack(dataset.action_sequences[start:stop])).to(device)
             z_e = model.encoder.encode_continuous(acts[:, : int(lengths.max())], lengths)
         else:
             ctrl = torch.from_numpy(np.stack(dataset.ctrl[start:stop])).to(device)
@@ -156,16 +156,13 @@ def _rnn_recon_metrics(model, dataset, actions, z_norms, device, batch_size, thr
     The unroll is deterministic in z, so one capped-length pass provides both
     the reconstruction (cut at GT length) and the stop step (first firing)."""
     cap = int(round(model.cfg.length_max))
-    a_lo = np.asarray(model.cfg.action_q01, dtype=np.float32)
-    a_hi = np.asarray(model.cfg.action_q99, dtype=np.float32)
-
     mse = {"xyz": [], "rpy": [], "gripper": [], "total": []}
     timing_abs, early, no_fire = [], [], []
     for start in range(0, len(dataset), batch_size):
         stop = min(start + batch_size, len(dataset))
         z = z_norms[start:stop].to(device)
-        actions_norm, term_logits = model.decoder(z, cap)
-        pred = ((actions_norm.float().cpu().numpy() + 1.0) * 0.5 * (a_hi - a_lo + 1e-8)) + a_lo
+        actions_pred, term_logits = model.decoder(z, cap)
+        pred = model._actions_to_dataset_units(actions_pred.float())  # noqa: SLF001
         fired = torch.sigmoid(term_logits.float().cpu()) >= threshold
         for row, i in enumerate(range(start, stop)):
             true_len = dataset.lengths[i]

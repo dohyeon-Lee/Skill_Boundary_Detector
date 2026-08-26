@@ -1,13 +1,13 @@
 dataset:
   skillvla_root: skillvla_dataset
   source: libero_90_full_firsthalf_scene # langgap_56_full_firsthalf | libero_90_full_firsthalf_scene
-  run: FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal
-  # run: FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal
-  # run: FSQ345_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal
+  # run: FSQ333_norm_action01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal
+  run: FSQ333_zero01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal
+
 
 # Optional user label. It is appended at the very end of the automatic output
 # and W&B run name. Empty keeps the standard ablation naming unchanged.
-run: {suffix: ""}
+run: {suffix: "visfreeze"}
 
 warm_start:
   pi_base: models/pi05_base
@@ -17,7 +17,7 @@ warm_start:
 vision:
   dino_model: models/dinov3-vitl16
   image_size: 224
-  freeze: false
+  freeze: true
 
 architecture:
   # Select with this value or
@@ -79,7 +79,7 @@ architecture:
 
   # arch0 arch0_1 arch0_2 arch0_2_sep arch0_3 arch0_adaRMS arch0_adaRMS_zero arch0_token arch0_token_iso arch0_cond arch0_both arch1_1 arch1_2 arch1_3 arch2_1 arch2_2 arch3 arch4
   # arch0 arch0_adaRMS arch0_adaRMS_zero arch0_token arch0_token_iso
-  name: arch0_adaRMS_zero
+  name: arch0
 
   # Shared by Arch0--4.
   expert_variant: gemma_300m
@@ -113,22 +113,22 @@ execution: {action_steps: 5}
 transition_randomization: {enabled: true}
 
 training:
-  dataloader: {batch_size: 32, workers: 4, gpus: 1}
+  # dataloader: {batch_size: 32, workers: 4, gpus: 1}
   # Output names always start with the actual batch size, e.g. `bs96_...`.
-  # dataloader: {batch_size: 32, workers: 8, gpus: 1}
+  dataloader: {batch_size: 32, workers: 8, gpus: 1}
   # DINO LR = base_lr * dino_lr_scale for every architecture.
   # muon: true routes 2D hidden matrices to Muon (AdamW keeps norms/biases/
   # embeddings/IO projections); base_lr is reused via match_rms_adamw scaling.
   # Run names gain a `_muon` tag so A/B outputs never collide.
-  optimizer: {base_lr: 2.5e-05, dino_lr_scale: 0.1, muon: false}
+  optimizer: {base_lr: 2.5e-05, dino_lr_scale: 1.0, muon: false}
   # optimizer: {base_lr: 2.5e-05, dino_lr_scale: 1.0}
 
   gradient_checkpointing: false
-  schedule: {steps: 100000, lr_mode: warmup_constant, warmup_steps: 1000, log_every: 100, save_every: 5000}
+  schedule: {steps: 500000, lr_mode: warmup_constant, warmup_steps: 1000, log_every: 100, save_every: 10000}
   vsa_debug: {every: 5000, initial: [1, 100, 1000]}
 
 logging:
   wandb: {enable: true, project: VLA_stage1}
 
-slurm: {gres: "gpu:1", cpus: 10, memory: 128G, time: "48:00:00"}
-# slurm: {gres: "gpu:1", cpus: 12, memory: 128G, time: "48:00:00"}
+# slurm: {gres: "gpu:1", cpus: 10, memory: 128G, time: "48:00:00"}
+slurm: {gres: "gpu:1", cpus: 12, memory: 128G, time: "48:00:00"}

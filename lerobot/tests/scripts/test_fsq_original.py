@@ -108,6 +108,63 @@ def test_grounding_centers_only_xyz_and_optimal_uses_that_mean() -> None:
     assert encoder_grounding_position(trajectory).shape == (3,)
 
 
+def test_start_grounding_is_se3_relative_and_preserves_gripper() -> None:
+    from scipy.spatial.transform import Rotation
+
+    relative_positions = np.asarray(
+        [
+            [0.0, 0.0, 0.0],
+            [0.08, -0.03, 0.02],
+            [0.11, 0.04, -0.01],
+            [-0.02, 0.06, 0.05],
+        ],
+        dtype=np.float64,
+    )
+    relative_rotvecs = np.asarray(
+        [
+            [0.0, 0.0, 0.0],
+            [0.08, -0.04, 0.12],
+            [-0.10, 0.06, 0.03],
+            [0.04, 0.09, -0.07],
+        ],
+        dtype=np.float64,
+    )
+    gripper = np.asarray(
+        [[0.01, 0.02], [0.01, 0.02], [0.04, 0.04], [0.04, 0.04]],
+        dtype=np.float32,
+    )
+
+    def absolute_trajectory(start_position, start_rotvec) -> np.ndarray:
+        start_rotation = Rotation.from_rotvec(start_rotvec)
+        positions = start_rotation.apply(relative_positions) + start_position
+        rotations = start_rotation * Rotation.from_rotvec(relative_rotvecs)
+        return np.concatenate(
+            [positions, rotations.as_rotvec(), gripper], axis=1
+        ).astype(np.float32)
+
+    trajectory = absolute_trajectory(
+        np.asarray([0.42, -0.18, 0.71]),
+        np.asarray([0.31, -0.22, 0.48]),
+    )
+    globally_shifted = absolute_trajectory(
+        np.asarray([-0.13, 0.55, 0.36]),
+        np.asarray([-0.27, 0.41, -0.19]),
+    )
+    grounded = prepare_encoder_trajectory(trajectory, "start_grounded")
+    shifted_grounded = prepare_encoder_trajectory(globally_shifted, "start_grounded")
+
+    np.testing.assert_allclose(grounded[:, :3], relative_positions, atol=1e-6)
+    np.testing.assert_allclose(grounded[:, 3:6], relative_rotvecs, atol=1e-6)
+    np.testing.assert_allclose(shifted_grounded[:, :6], grounded[:, :6], atol=1e-6)
+    np.testing.assert_array_equal(grounded[:, 6:], gripper)
+    np.testing.assert_array_equal(shifted_grounded[:, 6:], gripper)
+    np.testing.assert_array_equal(grounded[0, :6], np.zeros(6, dtype=np.float32))
+
+    ctrl, _ = spline_encode(trajectory, N_CONTROL, 3, input_mode="start_grounded")
+    np.testing.assert_allclose(ctrl[0, :6], np.zeros(6), atol=1e-7)
+    np.testing.assert_array_equal(ctrl[0, 6:], gripper[0])
+
+
 def test_one_shot_forward_reconstructs_input_shapes() -> None:
     segments, metadata = _segments()
     cfg = _config(segments)
@@ -172,16 +229,13 @@ def test_reconstruct_length_false_drops_length_head_and_loss() -> None:
 
 def _actions_for(segments: list[np.ndarray]) -> list[np.ndarray]:
     rng = np.random.default_rng(1)
-    return [rng.normal(size=(len(s), 7)).astype(np.float32) for s in segments]
+    return [rng.uniform(-1.0, 1.0, size=(len(s), 7)).astype(np.float32) for s in segments]
 
 
 def _rnn_config(segments: list[np.ndarray], actions: list[np.ndarray]) -> FSQOriginalConfig:
     cfg = _config(segments)
     cfg.decoder_arch = "rnn"
     cfg.action_dim = 7
-    all_actions = np.concatenate(actions)
-    cfg.action_q01 = np.quantile(all_actions, 0.01, axis=0).astype(np.float32)
-    cfg.action_q99 = np.quantile(all_actions, 0.99, axis=0).astype(np.float32)
     return cfg
 
 
@@ -193,7 +247,7 @@ def test_rnn_arch_forward_loss_and_padding_mask() -> None:
     model = SplineFSQOriginalAE(cfg)
     batch = {
         key: torch.stack([dataset[i][key] for i in range(3)])
-        for key in ("ctrl", "length", "length_target", "start_pose", "actions_norm")
+        for key in ("ctrl", "length", "length_target", "start_pose", "actions")
     }
     max_len = int(batch["length"].max())
     output = model(batch["ctrl"], batch["length"], batch["start_pose"], unroll_steps=max_len)
@@ -427,14 +481,20 @@ def test_action_seq_encoder_forward_and_pad_invariance() -> None:
     cfg.encoder_arch = "action_seq"
     model = SplineFSQOriginalAE(cfg)
     dataset = FSQOriginalDataset(segments, metadata, cfg, actions=actions)
+    np.testing.assert_array_equal(
+        dataset.action_sequences[0][: len(actions[0])], actions[0]
+    )
+    np.testing.assert_array_equal(
+        model._prepare_actions_numpy(actions[0]).numpy(), actions[0]  # noqa: SLF001
+    )
     batch = {
         key: torch.stack([dataset[i][key] for i in range(3)])
-        for key in ("ctrl", "length", "length_target", "start_pose", "actions_norm")
+        for key in ("ctrl", "length", "length_target", "start_pose", "actions")
     }
     output = model(
         batch["ctrl"], batch["length"], batch["start_pose"],
         unroll_steps=int(batch["length"].max()),
-        action_seq=batch["actions_norm"],
+        action_seq=batch["actions"],
     )
     assert output["actions_hat"].shape[0] == 3
     loss, metrics = fsq_original_loss(output, batch, cfg)
@@ -443,7 +503,7 @@ def test_action_seq_encoder_forward_and_pad_invariance() -> None:
     # Pad invariance: garbage in the padded region must not change z.
     lengths = batch["length"][:1]
     steps = int(lengths.max())
-    acts = batch["actions_norm"][:1, :steps]
+    acts = batch["actions"][:1, :steps]
     with torch.no_grad():
         z_a = model.encoder.encode_continuous(acts, lengths)
         padded = torch.cat([acts, torch.randn(1, 7, acts.shape[-1])], dim=1)
@@ -475,12 +535,12 @@ def test_action_seq_encoder_composes_with_bsq() -> None:
     dataset = FSQOriginalDataset(segments, metadata, cfg, actions=actions)
     batch = {
         key: torch.stack([dataset[i][key] for i in range(3)])
-        for key in ("ctrl", "length", "length_target", "start_pose", "actions_norm")
+        for key in ("ctrl", "length", "length_target", "start_pose", "actions")
     }
     output = model(
         batch["ctrl"], batch["length"], batch["start_pose"],
         unroll_steps=int(batch["length"].max()),
-        action_seq=batch["actions_norm"],
+        action_seq=batch["actions"],
     )
     assert output["u_cont"] is not None and output["u_cont"].shape == (3, 4)
     loss, metrics = fsq_original_loss(output, batch, cfg)
@@ -526,10 +586,14 @@ def test_length_free_encoder_ignores_duration() -> None:
     assert recon.shape == segments[0].shape
 
 
-def test_rnn_requires_action_stats() -> None:
+def test_rnn_v2_uses_raw_actions_and_legacy_v1_requires_stats() -> None:
     segments, _ = _segments()
     cfg = _config(segments)
     cfg.decoder_arch = "rnn"
+    model = SplineFSQOriginalAE(cfg)
+    assert model.cfg.action_q01 is None and model.cfg.action_q99 is None
+
+    cfg.format_version = 1
     with pytest.raises(ValueError, match="action_q01"):
         SplineFSQOriginalAE(cfg)
 

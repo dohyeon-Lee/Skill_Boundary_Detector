@@ -14,7 +14,12 @@ CONFIG_PATH="$(snapshot_config "${CONFIG_PATH}")"
 BOOTSTRAP_PYTHON="${SCRIPT_DIR}/../../../../../../.venv/bin/python"
 [ -x "${BOOTSTRAP_PYTHON}" ] || BOOTSTRAP_PYTHON=python3
 SETTINGS="$(
-  "${BOOTSTRAP_PYTHON}" "${SRC_DIR}/fsq_gt_replay_config.py" \
+  # The resolver emits EVAL_MAX_CONCURRENT after clamping it to the pending
+  # work count.  Do not feed that derived value back into the next resolver
+  # call: an already-complete run legitimately emits zero, while the input
+  # YAML concurrency must remain positive.
+  env -u EVAL_MAX_CONCURRENT \
+    "${BOOTSTRAP_PYTHON}" "${SRC_DIR}/fsq_gt_replay_config.py" \
     --config "${CONFIG_PATH}" --shell
 )"
 eval "${SETTINGS}"
@@ -26,18 +31,25 @@ echo "Submit FSQ GT skill replay (${#RUN_NAMES[@]} run(s))"
 
 for RUN_NAME in "${RUN_NAMES[@]}"; do
   SETTINGS="$(
-    "${BOOTSTRAP_PYTHON}" "${SRC_DIR}/fsq_gt_replay_config.py" \
+    env -u EVAL_MAX_CONCURRENT \
+      "${BOOTSTRAP_PYTHON}" "${SRC_DIR}/fsq_gt_replay_config.py" \
       --config "${CONFIG_PATH}" --run-name "${RUN_NAME}" --shell
   )"
   eval "${SETTINGS}"
-  read -r -a FSQ_CHECKPOINTS <<< "${FSQ_EVAL_CHECKPOINTS}"
+  if [ "${FSQ_PENDING_CHECKPOINT_COUNT}" -eq 0 ]; then
+    echo "  FSQ      : ${FSQ_RUN_NAME} already complete; no job submitted"
+    echo "  complete : ${FSQ_COMPLETED_CHECKPOINTS}"
+    echo "  output   : ${EVAL_COLLECTION_DIR}/index.html"
+    continue
+  fi
+  read -r -a FSQ_CHECKPOINTS <<< "${FSQ_PENDING_CHECKPOINTS}"
   # One array task replays a CHUNK of checkpoints in a single process, so the
   # multi-minute torch/lerobot import is paid once per chunk instead of once per
   # checkpoint.
   CHUNK="${EVAL_CHECKPOINTS_PER_JOB}"
   CHUNK_COUNT=$(( (FSQ_CHECKPOINT_COUNT + CHUNK - 1) / CHUNK ))
   TOTAL_JOBS=$((CHUNK_COUNT * EVAL_WORKER_COUNT))
-  export FSQ_GT_REPLAY_CHECKPOINTS="${FSQ_EVAL_CHECKPOINTS}"
+  export FSQ_GT_REPLAY_CHECKPOINTS="${FSQ_PENDING_CHECKPOINTS}"
   export FSQ_GT_REPLAY_WORKER_COUNT="${EVAL_WORKER_COUNT}"
   export FSQ_GT_REPLAY_CHUNK="${CHUNK}"
   export FSQ_GT_REPLAY_RUN="${RUN_NAME}"
@@ -87,12 +99,14 @@ for RUN_NAME in "${RUN_NAMES[@]}"; do
   [ -z "${EVAL_NODELIST}" ] || SBATCH_ARGS+=(--nodelist="${EVAL_NODELIST}")
   [ -z "${EVAL_EXCLUDE_NODES}" ] || SBATCH_ARGS+=(--exclude="${EVAL_EXCLUDE_NODES}")
 
-  echo "  FSQ      : ${FSQ_RUN_NAME} checkpoints=${FSQ_EVAL_CHECKPOINTS}"
+  echo "  FSQ      : ${FSQ_RUN_NAME} pending=${FSQ_PENDING_CHECKPOINTS}"
+  [ -z "${FSQ_COMPLETED_CHECKPOINTS}" ] || \
+    echo "  complete : ${FSQ_COMPLETED_CHECKPOINTS} (skipped)"
   [ -z "${FSQ_SKIPPED_CHECKPOINTS}" ] || \
     echo "  skipped  : not trained yet -> ${FSQ_SKIPPED_CHECKPOINTS}"
   echo "  tasks    : ${TARGET_TASK} ${TASK_IDS}"
   echo "  episodes : ${EPISODES_PER_TASK}/task (${EPISODE_SELECTION})"
-  echo "  jobs     : ${FSQ_CHECKPOINT_COUNT} checkpoints / ${CHUNK} per task x ${EVAL_WORKER_COUNT} workers = ${TOTAL_JOBS}"
+  echo "  jobs     : ${FSQ_PENDING_CHECKPOINT_COUNT} checkpoints / ${CHUNK} per task x ${EVAL_WORKER_COUNT} workers = ${TOTAL_JOBS}"
   echo "  replay   : ${EVAL_REPLAY_GRES:-CPU-only (no GPU requested)}"
   echo "  slots    : at most ${EVAL_MAX_CONCURRENT} concurrent jobs"
   echo "  output   : ${EVAL_COLLECTION_DIR}/index.html"

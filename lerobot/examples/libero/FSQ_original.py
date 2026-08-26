@@ -1,18 +1,17 @@
-"""One-shot trajectory FSQ autoencoder (original spline VQ-AE style).
+"""Whole-skill FSQ autoencoders (original-style reconstruction probes).
 
-Unlike FSQ.py v3 (per-timestep action-chunk reconstructor + image query
-terminator), this variant revives the original spline autoencoder contract:
+Unlike FSQ.py v3's per-progress action-chunk reconstructor, this module keeps
+the decoder conditioned on the discrete skill code alone. It supports two
+matched encoder/decoder contracts:
 
-    encoder input  : spline control points of the mean-XYZ-grounded state
-                     trajectory [+ absolute mean-XYZ token in optimal mode]
-                     + one length token
-    decoder output : the SAME normalized control points + normalized length,
-                     reconstructed in ONE shot from z alone
+    spline + oneshot : state control points -> z -> the same control points
+    action_seq + rnn : raw action sequence -> z -> raw action sequence + end logit
 
-There are no images, no terminator, and no per-timestep sampling — a pure
-autoencoder over the encoder-input representation. ``spline_decode`` turns
-reconstructed control points + length back into a full mean-XYZ-grounded
-trajectory. The grounding position is intentionally NOT reconstructed: in
+There are no images or sampled progress queries. In action_seq+rnn, a shared
+GRU produces both the reconstructed action at every step and the termination
+logit used to represent variable sequence length. In spline+oneshot,
+``spline_decode`` turns reconstructed control points + length back into a full
+trajectory. The grounding position is intentionally not reconstructed: in
 optimal mode it conditions the encoder only, and absolute XYZ is recovered by
 adding the caller's known trajectory mean after decoding.
 
@@ -41,6 +40,7 @@ from FSQ import (
     ENCODER_GROUNDING_CONVENTION,
     FSQ,
     N_GRIPPER_DIMS,
+    ActionSequenceRNNDecoder,
     ActionSeqEncoder,
     LengthFreeSplineFSQEncoder,
     OneShotTrajectoryDecoder,
@@ -56,7 +56,13 @@ from FSQ import (
     spline_encode,
 )
 
-ORIGINAL_FORMAT_VERSION = 1
+# v1 checkpoints used per-axis q01/q99 normalization for every action seen by
+# the encoder and decoder.  v2 makes the action contract deliberately simple:
+# controller actions are consumed and reconstructed verbatim.  The model still
+# understands v1 at load/eval time so existing experiments remain reproducible,
+# but every newly constructed/trained config is v2 (raw action only).
+ORIGINAL_FORMAT_VERSION = 2
+LEGACY_QUANTILE_ACTION_FORMAT_VERSION = 1
 
 
 class BSQ(nn.Module):
@@ -290,67 +296,14 @@ class FSQOriginalConfig:
     encoder_max: np.ndarray | None = None
     encoder_start_min: np.ndarray | None = None
     encoder_start_max: np.ndarray | None = None
+    # Legacy v1 checkpoint statistics. New v2 runs never populate or use them.
     action_q01: np.ndarray | None = None
     action_q99: np.ndarray | None = None
 
 
 # -----------------------------------------------------------------------------
-# Decoder + model
+# Model
 # -----------------------------------------------------------------------------
-
-
-class RNNTrajectoryDecoder(nn.Module):
-    """z-only GRU unroll: no teacher forcing, so z stays the sole information source.
-
-    Every step consumes the projected skill vector (a constant input sequence)
-    from an initial hidden state also derived from z. Two heads emit a
-    normalized action (tanh, v3 convention) and a termination logit per step.
-    Feeding previous GT states back in would let the recurrence explain the
-    trajectory without z (posterior-collapse analog), so it is deliberately
-    not done.
-    """
-
-    def __init__(
-        self,
-        *,
-        fsq_dim: int,
-        action_dim: int,
-        hidden_dim: int,
-        n_layers: int,
-        dropout: float,
-    ):
-        super().__init__()
-        if n_layers < 1:
-            raise ValueError(f"decoder_layers must be >= 1, got {n_layers}.")
-        self.action_dim = int(action_dim)
-        self.n_layers = int(n_layers)
-        self.hidden_dim = int(hidden_dim)
-        self.z_proj = nn.Linear(fsq_dim, hidden_dim)
-        self.h0_proj = nn.Linear(fsq_dim, n_layers * hidden_dim)
-        self.gru = nn.GRU(
-            hidden_dim,
-            hidden_dim,
-            num_layers=n_layers,
-            batch_first=True,
-            dropout=dropout if n_layers > 1 else 0.0,
-        )
-        self.action_head = nn.Linear(hidden_dim, action_dim)
-        self.term_head = nn.Linear(hidden_dim, 1)
-
-    def forward(self, z_norm: Tensor, steps: int) -> tuple[Tensor, Tensor]:
-        bsize = z_norm.shape[0]
-        z_tok = self.z_proj(z_norm)
-        inputs = z_tok.unsqueeze(1).expand(bsize, int(steps), -1)
-        h0 = (
-            torch.tanh(self.h0_proj(z_norm))
-            .view(bsize, self.n_layers, self.hidden_dim)
-            .transpose(0, 1)
-            .contiguous()
-        )
-        hidden, _ = self.gru(inputs, h0)
-        actions = torch.tanh(self.action_head(hidden))
-        term_logits = self.term_head(hidden).squeeze(-1)
-        return actions, term_logits
 
 
 class SplineFSQOriginalAE(nn.Module):
@@ -358,9 +311,14 @@ class SplineFSQOriginalAE(nn.Module):
 
     def __init__(self, cfg: FSQOriginalConfig):
         super().__init__()
-        if int(cfg.format_version) != ORIGINAL_FORMAT_VERSION:
+        if int(cfg.format_version) not in {
+            LEGACY_QUANTILE_ACTION_FORMAT_VERSION,
+            ORIGINAL_FORMAT_VERSION,
+        }:
             raise ValueError(
-                f"Only FSQ-original format v{ORIGINAL_FORMAT_VERSION} is supported, "
+                "FSQ-original supports checkpoint formats "
+                f"v{LEGACY_QUANTILE_ACTION_FORMAT_VERSION} and "
+                f"v{ORIGINAL_FORMAT_VERSION}, "
                 f"got {cfg.format_version}."
             )
         if cfg.encoder_input_mode not in {"zero_grounded", "raw_state", "optimal"}:
@@ -427,12 +385,19 @@ class SplineFSQOriginalAE(nn.Module):
                 "This FSQ-original checkpoint uses legacy start-pose grounding. "
                 "Mean-XYZ grounding requires a new run."
             )
-        if cfg.decoder_arch == "rnn":
+        if (
+            cfg.decoder_arch == "rnn"
+            and int(cfg.format_version) == LEGACY_QUANTILE_ACTION_FORMAT_VERSION
+        ):
             if cfg.action_dim < 1:
                 raise ValueError(f"rnn decoder requires action_dim >= 1, got {cfg.action_dim}.")
             for name in ("action_q01", "action_q99"):
                 if getattr(cfg, name) is None:
-                    raise ValueError(f"rnn FSQ-original config is missing statistic: {name}")
+                    raise ValueError(
+                        f"legacy v1 rnn FSQ-original config is missing statistic: {name}"
+                    )
+        elif cfg.decoder_arch == "rnn" and cfg.action_dim < 1:
+            raise ValueError(f"rnn decoder requires action_dim >= 1, got {cfg.action_dim}.")
         self.cfg = cfg
         if cfg.encoder_arch == "action_seq":
             self.encoder = ActionSeqEncoder(
@@ -442,6 +407,9 @@ class SplineFSQOriginalAE(nn.Module):
                 n_layers=cfg.num_layers,
                 n_heads=cfg.num_heads,
                 dropout=cfg.dropout,
+                raw_actions=int(cfg.format_version) == ORIGINAL_FORMAT_VERSION,
+                action_q01=cfg.action_q01,
+                action_q99=cfg.action_q99,
             )
         else:
             encoder_cls = SplineFSQEncoder if cfg.encoder_length_token else LengthFreeSplineFSQEncoder
@@ -470,12 +438,13 @@ class SplineFSQOriginalAE(nn.Module):
             self.encoder.z_head = nn.Linear(cfg.hidden_dim, latent_dim)
             self.encoder.fsq = BSQ(latent_dim, cfg.bsq_inv_temperature)
         if cfg.decoder_arch == "rnn":
-            self.decoder = RNNTrajectoryDecoder(
+            self.decoder = ActionSequenceRNNDecoder(
                 fsq_dim=latent_dim,
                 action_dim=cfg.action_dim,
                 hidden_dim=cfg.hidden_dim,
                 n_layers=cfg.decoder_layers,
                 dropout=cfg.dropout,
+                predict_termination=True,
             )
         else:
             self.decoder = OneShotTrajectoryDecoder(
@@ -565,11 +534,19 @@ class SplineFSQOriginalAE(nn.Module):
             )
         return self.encoder.encode_index(trajectory, device)
 
-    def _normalize_actions_numpy(self, actions: np.ndarray) -> Tensor:
+    def _prepare_actions_numpy(self, actions: np.ndarray) -> Tensor:
+        """Convert dataset-unit actions to the checkpoint's input convention.
+
+        New v2 checkpoints are raw-action models, so this is an identity cast.
+        The v1 branch exists solely to reproduce already-trained checkpoints.
+        """
+        actions = np.asarray(actions, dtype=np.float32)
+        if int(self.cfg.format_version) == ORIGINAL_FORMAT_VERSION:
+            return torch.from_numpy(actions)
         lo = np.asarray(self.cfg.action_q01, dtype=np.float32)
         hi = np.asarray(self.cfg.action_q99, dtype=np.float32)
-        norm = 2.0 * (np.asarray(actions, dtype=np.float32) - lo) / (hi - lo + 1e-8) - 1.0
-        return torch.from_numpy(norm)
+        normalized = 2.0 * (actions - lo) / (hi - lo + 1e-8) - 1.0
+        return torch.from_numpy(normalized)
 
     @torch.no_grad()
     def encode_actions_numpy(
@@ -578,7 +555,7 @@ class SplineFSQOriginalAE(nn.Module):
         """action_seq encoder: raw (T, A) dataset-unit actions -> z_q."""
         if self.cfg.encoder_arch != "action_seq":
             raise ValueError("encode_actions_numpy requires encoder_arch='action_seq'.")
-        acts = self._normalize_actions_numpy(actions).unsqueeze(0).to(device)
+        acts = self._prepare_actions_numpy(actions).unsqueeze(0).to(device)
         lengths = torch.tensor([acts.shape[1]], dtype=torch.long, device=device)
         z_q, _ = self.encoder(acts, lengths)
         return z_q[0].cpu().numpy()
@@ -589,7 +566,7 @@ class SplineFSQOriginalAE(nn.Module):
     ) -> int:
         if self.cfg.encoder_arch != "action_seq":
             raise ValueError("encode_actions_index requires encoder_arch='action_seq'.")
-        acts = self._normalize_actions_numpy(actions).unsqueeze(0).to(device)
+        acts = self._prepare_actions_numpy(actions).unsqueeze(0).to(device)
         lengths = torch.tensor([acts.shape[1]], dtype=torch.long, device=device)
         _, index = self.encoder(acts, lengths)
         return int(index.item())
@@ -670,10 +647,16 @@ class SplineFSQOriginalAE(nn.Module):
 
     # ── rnn-arch inference ────────────────────────────────────────────────────
 
-    def _denormalize_actions(self, actions_norm: Tensor) -> np.ndarray:
-        lo = torch.as_tensor(self.cfg.action_q01, device=actions_norm.device, dtype=actions_norm.dtype)
-        hi = torch.as_tensor(self.cfg.action_q99, device=actions_norm.device, dtype=actions_norm.dtype)
-        return ((actions_norm + 1.0) * 0.5 * (hi - lo + 1e-8) + lo).cpu().numpy()
+    def _actions_to_dataset_units(self, actions_pred: Tensor) -> np.ndarray:
+        if int(self.cfg.format_version) == ORIGINAL_FORMAT_VERSION:
+            return actions_pred.cpu().numpy()
+        lo = torch.as_tensor(
+            self.cfg.action_q01, device=actions_pred.device, dtype=actions_pred.dtype
+        )
+        hi = torch.as_tensor(
+            self.cfg.action_q99, device=actions_pred.device, dtype=actions_pred.dtype
+        )
+        return ((actions_pred + 1.0) * 0.5 * (hi - lo + 1e-8) + lo).cpu().numpy()
 
     def _rollout_z(
         self, z_norm: Tensor, max_steps: int | None, threshold: float
@@ -682,11 +665,11 @@ class SplineFSQOriginalAE(nn.Module):
         deterministic in z, so computing the capped sequence once and cutting it
         at the first firing equals a step-by-step rollout."""
         cap = int(max_steps) if max_steps is not None else int(round(self.cfg.length_max))
-        actions_norm, term_logits = self.decoder(z_norm, cap)
+        actions_pred, term_logits = self.decoder(z_norm, cap)
         fired = (torch.sigmoid(term_logits[0]) >= threshold).nonzero()
         terminated = fired.numel() > 0
         steps = int(fired[0].item()) + 1 if terminated else cap
-        return self._denormalize_actions(actions_norm[0, :steps]), terminated
+        return self._actions_to_dataset_units(actions_pred[0, :steps]), terminated
 
     @torch.no_grad()
     def rollout_actions_numpy(
@@ -739,7 +722,7 @@ class SplineFSQOriginalAE(nn.Module):
                 "rollout_from_actions_numpy requires encoder_arch='action_seq' "
                 "and decoder_arch='rnn'."
             )
-        acts = self._normalize_actions_numpy(actions).unsqueeze(0).to(device)
+        acts = self._prepare_actions_numpy(actions).unsqueeze(0).to(device)
         lengths = torch.tensor([acts.shape[1]], dtype=torch.long, device=device)
         z_q, _ = self.encoder(acts, lengths)
         return self._rollout_z(self.fsq.normalized(z_q), max_steps, threshold)
@@ -791,12 +774,14 @@ def load_fsq_original_model(
 
 
 class FSQOriginalDataset(Dataset):
-    """Whole-trajectory items: normalized control points, length, optional grounding position.
+    """Whole-trajectory items: control points, length, and optional actions.
 
     ``start_poses`` is retained as a compatibility name for normalized mean XYZ.
     It and ``ctrl`` / ``lengths`` use the same
     layout as ``FSQTrajectoryDataset`` so FSQ.py's codebook diagnostics
-    (``_collect_code_assignments``) can be reused unchanged.
+    (``_collect_code_assignments``) can be reused unchanged. New v2 RNN runs
+    expose native raw controller actions; legacy v1 datasets reproduce their
+    historical q01/q99 convention only when evaluating an old checkpoint.
     """
 
     def __init__(
@@ -818,24 +803,30 @@ class FSQOriginalDataset(Dataset):
             [] if cfg.encoder_input_mode == "optimal" else None
         )
         self.lengths: list[int] = []
-        # rnn arch: q01/q99-normalized action targets padded to length_max so the
-        # default collate stacks them; the loss masks steps >= length.
-        self.actions_norm: list[np.ndarray] | None = None
+        # RNN arch: action targets padded to length_max so the default collate
+        # stacks them; the loss masks steps >= length.
+        self.action_sequences: list[np.ndarray] | None = None
         if cfg.decoder_arch == "rnn":
             pad_steps = int(round(cfg.length_max))
-            a_lo = np.asarray(cfg.action_q01, dtype=np.float32)
-            a_hi = np.asarray(cfg.action_q99, dtype=np.float32)
-            self.actions_norm = []
+            legacy_quantile = (
+                int(cfg.format_version) == LEGACY_QUANTILE_ACTION_FORMAT_VERSION
+            )
+            if legacy_quantile:
+                a_lo = np.asarray(cfg.action_q01, dtype=np.float32)
+                a_hi = np.asarray(cfg.action_q99, dtype=np.float32)
+            self.action_sequences = []
             for action in actions:
                 action = np.asarray(action, dtype=np.float32)
                 if len(action) > pad_steps:
                     raise ValueError(
                         f"Skill action length {len(action)} exceeds length_max {pad_steps}."
                     )
-                norm = 2.0 * (action - a_lo) / (a_hi - a_lo + 1e-8) - 1.0
+                sequence = action
+                if legacy_quantile:
+                    sequence = 2.0 * (action - a_lo) / (a_hi - a_lo + 1e-8) - 1.0
                 padded = np.zeros((pad_steps, action.shape[-1]), dtype=np.float32)
-                padded[: len(action)] = norm
-                self.actions_norm.append(padded)
+                padded[: len(action)] = sequence
+                self.action_sequences.append(padded)
 
         enc_min = np.asarray(cfg.encoder_min, dtype=np.float32)
         enc_max = np.asarray(cfg.encoder_max, dtype=np.float32)
@@ -879,8 +870,8 @@ class FSQOriginalDataset(Dataset):
         }
         if self.start_poses is not None:
             item["start_pose"] = torch.from_numpy(self.start_poses[index])
-        if self.actions_norm is not None:
-            item["actions_norm"] = torch.from_numpy(self.actions_norm[index])
+        if self.action_sequences is not None:
+            item["actions"] = torch.from_numpy(self.action_sequences[index])
         return item
 
 
@@ -897,10 +888,10 @@ def _rnn_loss(
     pred = output["actions_hat"]
     # Steps beyond every skill's length are masked out, so trimming to the
     # shorter of prediction/target width never changes the loss value.
-    steps = min(pred.shape[1], batch["actions_norm"].shape[1])
+    steps = min(pred.shape[1], batch["actions"].shape[1])
     pred = pred[:, :steps]
     lengths = batch["length"].to(pred.device)
-    target = batch["actions_norm"][:, :steps].to(pred)
+    target = batch["actions"][:, :steps].to(pred)
     step_ids = torch.arange(steps, device=pred.device)
     mask = (step_ids[None] < lengths[:, None]).to(pred.dtype)
     denom = mask.sum(dim=1).clamp_min(1.0)
@@ -1051,7 +1042,7 @@ def _collect_assignments(
     """Arch-aware code-assignment sweep for the codebook diagnostics.
 
     The spline arch delegates to FSQ.py's collector (identical inputs); the
-    action_seq arch feeds the padded normalized action sequences instead."""
+    action_seq arch feeds the padded action sequences instead."""
     if model.cfg.encoder_arch != "action_seq":
         return _collect_code_assignments(model, datasets, device, batch_size)
     assignments, margins = [], []
@@ -1059,7 +1050,7 @@ def _collect_assignments(
         for start in range(0, len(dataset), batch_size):
             stop = min(start + batch_size, len(dataset))
             acts = torch.from_numpy(
-                np.stack(dataset.actions_norm[start:stop])
+                np.stack(dataset.action_sequences[start:stop])
             ).to(device, non_blocking=True)
             lengths = torch.as_tensor(
                 dataset.lengths[start:stop], dtype=torch.long, device=device
@@ -1189,6 +1180,16 @@ def train_fsq_original(
         resume_cfg = checkpoint.get("cfg")
         if not isinstance(resume_cfg, FSQOriginalConfig):
             raise ValueError(f"Not an FSQ-original checkpoint: {resume_from}")
+        if (
+            int(resume_cfg.format_version) != int(cfg.format_version)
+            and (resume_cfg.decoder_arch == "rnn" or cfg.decoder_arch == "rnn")
+        ):
+            raise ValueError(
+                "Cannot resume across FSQ-original action conventions: "
+                f"checkpoint format=v{resume_cfg.format_version}, "
+                f"current format=v{cfg.format_version}. v1 used q01/q99-normalized "
+                "actions; v2 uses raw controller actions. Start a new fsq_exp."
+            )
         if resume_cfg.encoder_input_mode != cfg.encoder_input_mode:
             raise ValueError(
                 "Cannot resume FSQ-original with a different encoder input convention: "
@@ -1326,7 +1327,7 @@ def train_fsq_original(
                 moved["length"],
                 moved.get("start_pose"),
                 unroll_steps=unroll_steps,
-                action_seq=moved.get("actions_norm") if cfg.encoder_arch == "action_seq" else None,
+                action_seq=moved.get("actions") if cfg.encoder_arch == "action_seq" else None,
             )
             loss, metrics = fsq_original_loss(output, moved, cfg)
         if training:

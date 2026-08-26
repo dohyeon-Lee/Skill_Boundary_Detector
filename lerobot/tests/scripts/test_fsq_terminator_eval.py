@@ -6,12 +6,16 @@ import importlib.util
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
+import numpy as np
 import pytest
+import torch
 
 ROOT = Path(__file__).resolve().parents[2]
 SRC = ROOT / "examples/libero/configs/train_skills/skill_eval/src"
 sys.path.insert(0, str(SRC))
+sys.path.insert(0, str(ROOT / "examples/libero"))
 
 
 def _load(name: str, filename: str):
@@ -24,6 +28,7 @@ def _load(name: str, filename: str):
 
 CONFIG = _load("fsq_terminator_eval_config_test", "fsq_terminator_eval_config.py")
 REPORT = _load("fsq_terminator_eval_report_test", "fsq_terminator_eval_report.py")
+RUNNER = _load("run_fsq_terminator_eval_test", "run_fsq_terminator_eval.py")
 
 
 def _record(task, episode, skill, *, token, termination):
@@ -152,6 +157,155 @@ def test_task_id_space_is_validated_and_defaults_to_the_skillset(tmp_path: Path)
     config["task_id_space"] = "libero"
     with pytest.raises(ValueError, match="task_id_space"):
         CONFIG.build_settings(config)
+
+
+# ── checkpoint input contracts ────────────────────────────────────────────────
+
+
+def _write_skill(
+    path: Path,
+    *,
+    episode: int,
+    task: int,
+    skill: int,
+    frame_start: int,
+    actions: np.ndarray,
+) -> dict:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    frame_end = frame_start + len(actions)
+    np.savez(
+        path,
+        states=np.zeros((len(actions), 8), dtype=np.float32),
+        actions=np.asarray(actions, dtype=np.float32),
+        episode_id=np.asarray(episode),
+        task_id=np.asarray(task),
+        skill_index=np.asarray(skill),
+        frame_start=np.asarray(frame_start),
+        frame_end=np.asarray(frame_end),
+    )
+    return {
+        "path": path,
+        "episode_id": episode,
+        "task_id": task,
+        "skill_index": skill,
+    }
+
+
+def test_previous_action_context_uses_cross_skill_predecessor_and_zero_bos(
+    tmp_path: Path,
+) -> None:
+    first = _write_skill(
+        tmp_path / "ep7_task2_skill0.npz",
+        episode=7,
+        task=2,
+        skill=0,
+        frame_start=0,
+        actions=np.asarray([[1.0, 10.0], [2.0, 20.0]], dtype=np.float32),
+    )
+    second = _write_skill(
+        tmp_path / "ep7_task2_skill1.npz",
+        episode=7,
+        task=2,
+        skill=1,
+        frame_start=2,
+        actions=np.asarray([[3.0, 30.0], [4.0, 40.0]], dtype=np.float32),
+    )
+    selected = [first, second]
+    _, states, actions, metadata = RUNNER.load_selected_skills(selected)
+
+    class FakeModel:
+        cfg = SimpleNamespace(action_dim=2, terminator_context="prev_action")
+        terminator = SimpleNamespace(context_mode="prev_action")
+
+        @staticmethod
+        def _previous_action_context(emitted, initial_previous_action=None):
+            previous = torch.zeros_like(emitted)
+            previous[:, 1:] = emitted[:, :-1]
+            if initial_previous_action is not None:
+                previous[:, 0] = initial_previous_action
+            return previous
+
+    contexts = RUNNER.build_terminator_contexts(
+        FakeModel(),
+        "state_image",
+        states,
+        actions,
+        selected,
+        metadata,
+        selected,
+    )
+    np.testing.assert_array_equal(contexts[0], [[0.0, 0.0], [1.0, 10.0]])
+    np.testing.assert_array_equal(contexts[1], [[2.0, 20.0], [3.0, 30.0]])
+
+
+def test_previous_action_context_loads_an_unselected_preceding_skill(
+    tmp_path: Path,
+) -> None:
+    first = _write_skill(
+        tmp_path / "ep7_task2_skill0.npz",
+        episode=7,
+        task=2,
+        skill=0,
+        frame_start=0,
+        actions=np.asarray([[1.0, 10.0], [2.0, 20.0]], dtype=np.float32),
+    )
+    second = _write_skill(
+        tmp_path / "ep7_task2_skill1.npz",
+        episode=7,
+        task=2,
+        skill=1,
+        frame_start=2,
+        actions=np.asarray([[3.0, 30.0]], dtype=np.float32),
+    )
+    _, _, actions, metadata = RUNNER.load_selected_skills([second])
+    initial = RUNNER.recover_initial_previous_actions(
+        [second], actions, metadata, [first, second], action_dim=2
+    )
+    np.testing.assert_array_equal(initial[0], [2.0, 20.0])
+
+
+def test_legacy_proprio_context_is_unchanged() -> None:
+    states = [np.asarray([[1.0, 2.0]], dtype=np.float32)]
+    model = SimpleNamespace(
+        cfg=SimpleNamespace(terminator_context="proprio"),
+        terminator=SimpleNamespace(context_mode="proprio"),
+    )
+    result = RUNNER.build_terminator_contexts(
+        model,
+        "state_image",
+        states,
+        [np.asarray([[9.0]], dtype=np.float32)],
+        [],
+        [],
+        [],
+    )
+    assert result is states
+
+
+def test_action_sequence_encoder_uses_actions_and_checkpoint_transform() -> None:
+    class FakeEncoder:
+        @staticmethod
+        def __call__(batch, lengths):
+            latent = batch.sum(dim=(1, 2), keepdim=False).unsqueeze(-1)
+            return latent, lengths
+
+    class FakeModel:
+        fsq = SimpleNamespace(latent_dim=1)
+        encoder = FakeEncoder()
+
+        @staticmethod
+        def _prepare_actions_numpy(actions):
+            return torch.from_numpy(np.asarray(actions, dtype=np.float32) * 2.0)
+
+    actions = [
+        np.asarray([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32),
+        np.asarray([[5.0, 6.0]], dtype=np.float32),
+    ]
+    latents, tokens = RUNNER.batched_encode_action_sequences(
+        FakeModel(), actions, [2, 1], torch.device("cpu"), batch_size=2
+    )
+    np.testing.assert_array_equal(latents[:, 0], [20.0, 22.0])
+    np.testing.assert_array_equal(tokens, [2, 1])
 
 
 # ── report ────────────────────────────────────────────────────────────────────

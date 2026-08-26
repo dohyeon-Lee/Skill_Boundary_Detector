@@ -83,6 +83,9 @@ echo "Node       : ${SLURMD_NODENAME:-local}"
 echo "Inputs     : ${FSQ_INPUTS_DIR}"
 echo "Output     : ${FSQ_OUTPUT_DIR}"
 echo "Quantizer  : ${FSQ_QUANTIZER} (BSQ dim=${BSQ_CODE_DIM})"
+echo "AE mode    : ${FSQ_AUTOENCODER_MODE}"
+echo "Grip weight: ${FSQ_ACTION_GRIPPER_WEIGHT}"
+echo "Start cond : ${FSQ_START_STATE_CONDITIONING}"
 echo "HF cache   : ${HF_HOME}"
 echo "Python     : ${TRAIN_PYTHON}"
 echo "Grad ckpt  : ${FSQ_GRADIENT_CHECKPOINTING}"
@@ -119,6 +122,11 @@ mkdir -p "${FSQ_OUTPUT_DIR}"
 # without the user re-specifying the DP (fsq_run_name doesn't encode the DP).
 cat > "${FSQ_OUTPUT_DIR}/fsq_meta.json" <<JSON
 {
+  "fsq_exp": "${FSQ_EXP}",
+  "fsq_run_name": "${FSQ_RUN_NAME}",
+  "decoder_name": "${FSQ_DECODER_NAME}",
+  "loss_name": "${FSQ_LOSS_NAME}",
+  "fsq_levels": [${FSQ_LEVELS_STR// /, }],
   "fsq_dataset_root": "${FSQ_DATASET_ROOT_NAME}",
   "target_dataset": "${TARGET_DATASET}",
   "fsq_inputs_name": "${FSQ_INPUTS_NAME}",
@@ -137,12 +145,14 @@ cat > "${FSQ_OUTPUT_DIR}/fsq_meta.json" <<JSON
   "decoder_terminator_progress": ${FSQ_DECODER_TERMINATOR_PROGRESS},
   "decoder_terminator_termination": ${FSQ_DECODER_TERMINATOR_TERMINATION},
   "terminator_input_space": "${FSQ_TERMINATOR_INPUT_SPACE}",
+  "terminator_context": "${FSQ_TERMINATOR_CONTEXT}",
   "terminator_arch": "${FSQ_TERMINATOR_MODEL}",
   "terminator_default_arch": "${FSQ_TERMINATOR_DEFAULT_ARCH}",
   "terminator_layers": ${FSQ_TERMINATOR_LAYERS},
   "terminator_heads": ${FSQ_TERMINATOR_HEADS},
   "skill_cond_mode": "${FSQ_SKILL_COND_MODE}",
   "gradient_checkpointing": ${FSQ_GRADIENT_CHECKPOINTING},
+  "lr": ${FSQ_LR},
   "lr_schedule": "${FSQ_LR_SCHEDULE}",
   "num_workers": ${FSQ_NUM_WORKERS},
   "val_num_workers": ${FSQ_VAL_NUM_WORKERS},
@@ -154,8 +164,11 @@ cat > "${FSQ_OUTPUT_DIR}/fsq_meta.json" <<JSON
   "frame_cache_source_dir": "${SHARED_FSQ_FRAME_CACHE_DIR}",
   "frame_cache_dir": "${FSQ_FRAME_CACHE_DIR}",
   "frame_cache_staged_local": ${FRAME_CACHE_STAGED_LOCAL},
+  "autoencoder_mode": "${FSQ_AUTOENCODER_MODE}",
+  "action_gripper_weight": ${FSQ_ACTION_GRIPPER_WEIGHT},
+  "start_state_conditioning": "${FSQ_START_STATE_CONDITIONING}",
   "encoder_input_mode": "${FSQ_ENCODER_INPUT_MODE}",
-  "encoder_grounding_convention": "trajectory_mean_xyz_v1",
+  "encoder_grounding_convention": "${FSQ_ENCODER_GROUNDING_CONVENTION}",
   "encoder_arch": "${FSQ_ENCODER_ARCH}",
   "encoder_length_token": ${FSQ_ENCODER_LENGTH_TOKEN},
   "quantizer": "${FSQ_QUANTIZER}",
@@ -171,6 +184,7 @@ cat > "${FSQ_OUTPUT_DIR}/fsq_meta.json" <<JSON
   "pair_loss": "${FSQ_PAIR_LOSS}",
   "pair_weight": ${FSQ_PAIR_WEIGHT},
   "pair_inv_temperature": ${FSQ_PAIR_INV_TEMPERATURE},
+  "route_loss": ${FSQ_ROUTE_LOSS},
   "pair_warmup": ${FSQ_PAIR_WARMUP},
   "pair_warmup_epochs": ${FSQ_PAIR_WARMUP_EPOCHS},
   "pair_ramp_epochs": ${FSQ_PAIR_RAMP_EPOCHS},
@@ -205,11 +219,6 @@ if [ "${FSQ_SAVE_BEST_MODEL:-false}" = "true" ]; then
   SAVE_BEST_ARG=(--save_best_model)
 fi
 
-RECON_START_STATE_ARG=(--reconstructor_start_state)
-if [ "${FSQ_RECONSTRUCTOR_START_STATE:-true}" = "false" ]; then
-  RECON_START_STATE_ARG=(--no-reconstructor_start_state)
-fi
-
 FSQ_ENTROPY_ARG=(--no-fsq_entropy)
 if [ "${FSQ_ENTROPY:-false}" = "true" ]; then
   FSQ_ENTROPY_ARG=(--fsq_entropy)
@@ -223,6 +232,11 @@ fi
 PAIR_WARMUP_ARG=(--no-pair_warmup)
 if [ "${FSQ_PAIR_WARMUP:-false}" = "true" ]; then
   PAIR_WARMUP_ARG=(--pair_warmup)
+fi
+
+ROUTE_LOSS_ARG=(--no-route_loss)
+if [ "${FSQ_ROUTE_LOSS:-false}" = "true" ]; then
+  ROUTE_LOSS_ARG=(--route_loss)
 fi
 
 DECODER_RECONSTRUCTOR_ARG=(--no-decoder_reconstructor)
@@ -263,15 +277,13 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     --hidden_dim              "${FSQ_HIDDEN_DIM}" \
     --num_layers              "${FSQ_NUM_LAYERS}" \
     --n_control               "${FSQ_N_CONTROL}" \
-    --encoder_input_mode      "${FSQ_ENCODER_INPUT_MODE}" \
-    --encoder_arch            "${FSQ_ENCODER_ARCH}" \
+    --autoencoder_mode        "${FSQ_AUTOENCODER_MODE}" \
+    --action_gripper_weight   "${FSQ_ACTION_GRIPPER_WEIGHT}" \
+    --start_state_conditioning "${FSQ_START_STATE_CONDITIONING}" \
     "${FSQ_ENTROPY_ARG[@]}" \
     "${INIT_CALIBRATION_ARG[@]}" \
     --init-calibration-gain   "${FSQ_INIT_CALIBRATION_GAIN}" \
     --init-calibration-samples "${FSQ_INIT_CALIBRATION_SAMPLES}" \
-    "${RECON_START_STATE_ARG[@]}" \
-    --reconstructor_arch      "${FSQ_RECONSTRUCTOR_ARCH}" \
-    --reconstructor_output_mode "${FSQ_RECONSTRUCTOR_OUTPUT_MODE}" \
     --entropy_conf_weight     "${FSQ_ENTROPY_CONF_WEIGHT}" \
     --entropy_conf_ceiling    "${FSQ_ENTROPY_CONF_CEILING}" \
     --entropy_div_weight      "${FSQ_ENTROPY_DIV_WEIGHT}" \
@@ -279,6 +291,8 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     --pair_loss               "${FSQ_PAIR_LOSS}" \
     --pair_weight             "${FSQ_PAIR_WEIGHT}" \
     --pair_inv_temperature    "${FSQ_PAIR_INV_TEMPERATURE}" \
+    "${ROUTE_LOSS_ARG[@]}" \
+    --terminator_context      "${FSQ_TERMINATOR_CONTEXT}" \
     "${PAIR_WARMUP_ARG[@]}" \
     --pair_warmup_epochs      "${FSQ_PAIR_WARMUP_EPOCHS}" \
     --pair_ramp_epochs        "${FSQ_PAIR_RAMP_EPOCHS}" \
@@ -291,22 +305,15 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     "${DECODER_RECONSTRUCTOR_ARG[@]}" \
     "${DECODER_PROGRESS_ARG[@]}" \
     "${DECODER_TERMINATION_ARG[@]}" \
-    --terminator_input_space  "${FSQ_TERMINATOR_INPUT_SPACE}" \
-    --terminator_model        "${FSQ_TERMINATOR_MODEL}" \
     --visual_terminator_arch  "${FSQ_TERMINATOR_DEFAULT_ARCH}" \
-    --image_encoder_layers    "${FSQ_TERMINATOR_LAYERS}" \
-    --image_encoder_heads     "${FSQ_TERMINATOR_HEADS}" \
     --vision_backbone         "${FSQ_VISION_BACKBONE}" \
     "${VISION_FREEZE_ARG[@]}" \
-    --dino_model_path         "${FSQ_DINO_MODEL_PATH}" \
     --dino_image_size         "${FSQ_DINO_IMAGE_SIZE}" \
     --siglip_image_size       "${FSQ_SIGLIP_IMAGE_SIZE}" \
     --resnet_image_size       "${FSQ_RESNET_IMAGE_SIZE}" \
     --frame_cache_dir         "${FSQ_FRAME_CACHE_DIR}" \
     --epochs                  "${FSQ_NUM_EPOCHS}" \
-    --encoder_lr              "${FSQ_ENCODER_LR}" \
-    --terminator_lr           "${FSQ_TERMINATOR_LR}" \
-    --reconstructor_lr        "${FSQ_RECONSTRUCTOR_LR}" \
+    --lr                      "${FSQ_LR}" \
     --lr_schedule             "${FSQ_LR_SCHEDULE}" \
     --batch_size              "${FSQ_BATCH_SIZE}" \
     --num_workers             "${FSQ_NUM_WORKERS}" \

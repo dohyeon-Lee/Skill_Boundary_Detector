@@ -50,13 +50,79 @@ from lerobot.policies.skillVLA.skill_jitter import (
 
 FORMAT_VERSION = 3
 ENCODER_GROUNDING_CONVENTION = "trajectory_mean_xyz_v1"
+START_GROUNDED_CONVENTION = "trajectory_start_se3_v1"
 N_GRIPPER_DIMS = 2
 N_POSITION_DIMS = 3
+N_ROTATION_DIMS = 3
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _DEFAULT_IMAGE_MODEL = str(_REPO_ROOT / "models" / "dinov3-vits16")
 _DEFAULT_PI_BASE = str(_REPO_ROOT / "models" / "pi05_base")
+ACTION_SEQUENCE_RECONSTRUCTOR_ARCHS = frozenset(
+    {"action_seq", "action_seq_transformer"}
+)
 
 log = logging.getLogger(__name__)
+
+
+def is_action_sequence_reconstructor_arch(value: str) -> bool:
+    return str(value) in ACTION_SEQUENCE_RECONSTRUCTOR_ARCHS
+
+
+def scale_gripper_features(
+    values: np.ndarray,
+    *,
+    gripper_weight: float,
+    gripper_dims: int,
+) -> np.ndarray:
+    """Apply an exact MSE weight to trailing normalized gripper features."""
+    array = np.asarray(values, dtype=np.float32)
+    weight = float(gripper_weight)
+    if not math.isfinite(weight) or not 0.0 < weight <= 1.0:
+        raise ValueError(f"gripper_weight must be in (0, 1], got {weight}.")
+    dims = int(gripper_dims)
+    if dims < 1 or dims > array.shape[-1]:
+        raise ValueError(
+            f"gripper_dims must be in [1, {array.shape[-1]}], got {dims}."
+        )
+    if weight == 1.0:
+        return array
+    scaled = array.copy()
+    scaled[..., -dims:] *= math.sqrt(weight)
+    return scaled
+
+
+def normalize_action_sequence(
+    actions: np.ndarray,
+    action_q01: np.ndarray,
+    action_q99: np.ndarray,
+    *,
+    gripper_weight: float = 1.0,
+    clip: bool = True,
+) -> np.ndarray:
+    """Map dataset-unit actions to the normalized action-sequence contract.
+
+    Every action axis uses the dataset-wide q01/q99 anchors. Values outside
+    that robust range are clipped because the matched decoder has a tanh
+    output. The final action axis is multiplied by ``sqrt(gripper_weight)`` in
+    both the encoder input and reconstruction target, so its squared-error
+    contribution is weighted by exactly ``gripper_weight``.
+    """
+    values = np.asarray(actions, dtype=np.float32)
+    lo = np.asarray(action_q01, dtype=np.float32)
+    hi = np.asarray(action_q99, dtype=np.float32)
+    if values.shape[-1] != lo.shape[-1] or hi.shape != lo.shape:
+        raise ValueError(
+            "Action/stat shapes do not match: "
+            f"actions={values.shape}, q01={lo.shape}, q99={hi.shape}."
+        )
+    normalized = 2.0 * (values - lo) / (hi - lo + 1e-8) - 1.0
+    if clip:
+        normalized = np.clip(normalized, -1.0, 1.0)
+    return scale_gripper_features(
+        normalized,
+        gripper_weight=gripper_weight,
+        gripper_dims=1,
+    )
 
 
 # -----------------------------------------------------------------------------
@@ -76,6 +142,51 @@ def zero_ground_trajectory(trajectory: np.ndarray) -> np.ndarray:
         )
     traj[:, :N_POSITION_DIMS] -= traj[:, :N_POSITION_DIMS].mean(axis=0, keepdims=True)
     return traj
+
+
+def start_ground_trajectory(trajectory: np.ndarray) -> np.ndarray:
+    """Express the 6D EEF pose relative to its first pose; retain gripper state.
+
+    Position is rotated into the starting EEF frame and rotation is composed on
+    SO(3), rather than subtracting axis-angle vector components.  For absolute
+    poses ``(p_t, R_t)`` this produces ``(R_0^-1 (p_t - p_0), R_0^-1 R_t)``.
+    """
+    # Keep scipy optional for model construction and non-spline encoder paths.
+    from scipy.spatial.transform import Rotation
+
+    traj = np.asarray(trajectory, dtype=np.float32).copy()
+    if len(traj) == 0:
+        raise ValueError("Cannot encode an empty skill trajectory.")
+    pose_dims = N_POSITION_DIMS + N_ROTATION_DIMS
+    required_dims = pose_dims + N_GRIPPER_DIMS
+    if traj.shape[-1] < required_dims:
+        raise ValueError(
+            f"Start-grounded pose requires at least {required_dims} state dimensions "
+            f"(XYZ + rotation vector + gripper), got {traj.shape[-1]}."
+        )
+
+    absolute_positions = traj[:, :N_POSITION_DIMS].astype(np.float64, copy=True)
+    absolute_rotations = Rotation.from_rotvec(
+        traj[:, N_POSITION_DIMS:pose_dims].astype(np.float64, copy=False)
+    )
+    start_rotation_inv = absolute_rotations[0].inv()
+    relative_positions = start_rotation_inv.apply(
+        absolute_positions - absolute_positions[0]
+    )
+    relative_rotations = start_rotation_inv * absolute_rotations
+
+    traj[:, :N_POSITION_DIMS] = relative_positions.astype(np.float32)
+    traj[:, N_POSITION_DIMS:pose_dims] = relative_rotations.as_rotvec().astype(np.float32)
+    # Remove tiny numerical residue and make the contract exact at t=0.
+    traj[0, :pose_dims] = 0.0
+    return traj
+
+
+def encoder_grounding_convention(input_mode: str) -> str:
+    """Return the checkpoint convention corresponding to an encoder input mode."""
+    if input_mode == "start_grounded":
+        return START_GROUNDED_CONVENTION
+    return ENCODER_GROUNDING_CONVENTION
 
 
 def encoder_grounding_position(trajectory: np.ndarray) -> np.ndarray:
@@ -106,10 +217,13 @@ def prepare_encoder_trajectory(
         raise ValueError("Cannot encode an empty skill trajectory.")
     if input_mode in {"zero_grounded", "optimal"}:
         return zero_ground_trajectory(traj)
+    if input_mode == "start_grounded":
+        return start_ground_trajectory(traj)
     if input_mode == "raw_state":
         return traj.copy()
     raise ValueError(
-        f"encoder_input_mode must be zero_grounded|raw_state|optimal, got {input_mode!r}."
+        "encoder_input_mode must be zero_grounded|start_grounded|raw_state|optimal, "
+        f"got {input_mode!r}."
     )
 
 
@@ -379,17 +493,21 @@ class SplineFSQEncoder(nn.Module):
         encoder_input_mode: str = "zero_grounded",
         encoder_start_min: np.ndarray | None = None,
         encoder_start_max: np.ndarray | None = None,
+        gripper_weight: float = 1.0,
     ):
         super().__init__()
-        if encoder_input_mode not in {"zero_grounded", "raw_state", "optimal"}:
+        if encoder_input_mode not in {
+            "zero_grounded", "start_grounded", "raw_state", "optimal"
+        }:
             raise ValueError(
-                "encoder_input_mode must be zero_grounded|raw_state|optimal, "
+                "encoder_input_mode must be zero_grounded|start_grounded|raw_state|optimal, "
                 f"got {encoder_input_mode!r}."
             )
         self.enc_dim = int(enc_dim)
         self.n_control = int(n_control)
         self.spline_degree = int(spline_degree)
         self.encoder_input_mode = encoder_input_mode
+        self.gripper_weight = float(gripper_weight)
         if N_GRIPPER_DIMS >= self.enc_dim:
             raise ValueError(
                 f"Expected encoder dim > {N_GRIPPER_DIMS}, got {self.enc_dim}."
@@ -427,7 +545,13 @@ class SplineFSQEncoder(nn.Module):
     def normalize_control_points(self, ctrl: Tensor) -> Tensor:
         lo = self.encoder_min.to(ctrl.device, ctrl.dtype)
         hi = self.encoder_max.to(ctrl.device, ctrl.dtype)
-        return 2.0 * (ctrl - lo) / (hi - lo + 1e-8) - 1.0
+        normalized = 2.0 * (ctrl - lo) / (hi - lo + 1e-8) - 1.0
+        if self.gripper_weight != 1.0:
+            normalized = normalized.clone()
+            normalized[..., -N_GRIPPER_DIMS:] *= math.sqrt(
+                self.gripper_weight
+            )
+        return normalized
 
     def normalize_start_pose(self, start_pose: Tensor) -> Tensor:
         if self.enc_start_proj is None:
@@ -543,6 +667,7 @@ class LengthFreeSplineFSQEncoder(SplineFSQEncoder):
         encoder_input_mode: str = "zero_grounded",
         encoder_start_min: np.ndarray | None = None,
         encoder_start_max: np.ndarray | None = None,
+        gripper_weight: float = 1.0,
     ):
         super().__init__(
             enc_dim=enc_dim,
@@ -560,6 +685,7 @@ class LengthFreeSplineFSQEncoder(SplineFSQEncoder):
             encoder_input_mode=encoder_input_mode,
             encoder_start_min=encoder_start_min,
             encoder_start_max=encoder_start_max,
+            gripper_weight=gripper_weight,
         )
         self.enc_len_proj = None
         self.enc_traj_pool = TokenTransformerPool(
@@ -594,9 +720,12 @@ class LengthFreeSplineFSQEncoder(SplineFSQEncoder):
 class ActionSeqEncoder(nn.Module):
     """Variable-length ACTION-sequence encoder (encoder_arch='action_seq').
 
-    Consumes q01/q99-normalized action sequences directly: no spline codec,
-    no grounding decision (delta actions carry no absolute pose), no length
-    token (duration is implicit in the sequence). Sinusoidal step-index
+    Consumes the caller-provided action sequence directly. The matched main
+    action_seq autoencoder and FSQ-original v2 supply native raw controller
+    actions; legacy main action_seq-to-chunk checkpoints retain their historical
+    q01/q99 convention. There is no spline codec, grounding decision
+    (delta actions carry no absolute pose), or length token (duration is
+    implicit in the sequence). Sinusoidal step-index
     positions keep absolute timing visible; padding is masked in every
     attention, so z is invariant to the batch pad width. Exposes ``z_head`` /
     ``fsq`` under the same names as SplineFSQEncoder so quantizer swaps and
@@ -612,6 +741,11 @@ class ActionSeqEncoder(nn.Module):
         n_layers: int,
         n_heads: int,
         dropout: float,
+        raw_actions: bool = False,
+        action_q01: np.ndarray | None = None,
+        action_q99: np.ndarray | None = None,
+        clip_normalized_actions: bool = False,
+        action_gripper_weight: float = 1.0,
     ):
         super().__init__()
         if hidden_dim % 2 or hidden_dim % n_heads:
@@ -619,6 +753,15 @@ class ActionSeqEncoder(nn.Module):
                 f"hidden_dim={hidden_dim} must be even and divisible by n_heads={n_heads}."
             )
         self.hidden_dim = int(hidden_dim)
+        self.raw_actions = bool(raw_actions)
+        self.action_q01 = (
+            None if action_q01 is None else np.asarray(action_q01, dtype=np.float32)
+        )
+        self.action_q99 = (
+            None if action_q99 is None else np.asarray(action_q99, dtype=np.float32)
+        )
+        self.clip_normalized_actions = bool(clip_normalized_actions)
+        self.action_gripper_weight = float(action_gripper_weight)
         self.action_proj = nn.Linear(action_dim, hidden_dim)
         layer = nn.TransformerEncoderLayer(
             d_model=hidden_dim,
@@ -658,7 +801,8 @@ class ActionSeqEncoder(nn.Module):
         *,
         normalized: bool = True,
     ) -> Tensor:
-        _ = start_pose, normalized  # API parity with SplineFSQEncoder; input arrives normalized
+        # API parity with SplineFSQEncoder; this module never rescales actions.
+        _ = start_pose, normalized
         bsize, steps, _ = actions.shape
         pad_mask = torch.arange(steps, device=actions.device)[None] >= lengths[:, None]
         x = self.action_proj(actions)
@@ -677,6 +821,47 @@ class ActionSeqEncoder(nn.Module):
         normalized: bool = True,
     ) -> tuple[Tensor, Tensor]:
         return self.fsq(self.encode_continuous(actions, lengths, start_pose, normalized=normalized))
+
+    def _prepare_actions_numpy(self, actions: np.ndarray) -> Tensor:
+        actions = np.asarray(actions, dtype=np.float32)
+        if self.raw_actions:
+            scaled = scale_gripper_features(
+                actions,
+                gripper_weight=self.action_gripper_weight,
+                gripper_dims=1,
+            )
+            return torch.from_numpy(scaled)
+        if self.action_q01 is None or self.action_q99 is None:
+            raise ValueError(
+                "This action-sequence encoder needs q01/q99 statistics for its "
+                "legacy normalized-action contract."
+            )
+        normalized = normalize_action_sequence(
+            actions,
+            self.action_q01,
+            self.action_q99,
+            gripper_weight=self.action_gripper_weight,
+            clip=self.clip_normalized_actions,
+        )
+        return torch.from_numpy(normalized)
+
+    @torch.no_grad()
+    def encode_actions_numpy(
+        self, actions: np.ndarray, device: str | torch.device = "cpu"
+    ) -> np.ndarray:
+        sequence = self._prepare_actions_numpy(actions).unsqueeze(0).to(device)
+        lengths = torch.tensor([sequence.shape[1]], dtype=torch.long, device=device)
+        z_q, _ = self(sequence, lengths)
+        return z_q[0].cpu().numpy()
+
+    @torch.no_grad()
+    def encode_actions_index(
+        self, actions: np.ndarray, device: str | torch.device = "cpu"
+    ) -> int:
+        sequence = self._prepare_actions_numpy(actions).unsqueeze(0).to(device)
+        lengths = torch.tensor([sequence.shape[1]], dtype=torch.long, device=device)
+        _, index = self(sequence, lengths)
+        return int(index.item())
 
 
 def fsq_soft_assignments(
@@ -923,15 +1108,40 @@ class _MLPBlock(nn.Module):
         return self.net(x)
 
 
+class _StartConditionedMLPBlock(nn.Module):
+    """Residual MLP block with a separate zero-init start-state AdaLN path."""
+
+    def __init__(self, hidden_dim: int, dropout: float):
+        super().__init__()
+        self.norm = nn.LayerNorm(hidden_dim, elementwise_affine=False)
+        self.ffn = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+        )
+        self.adaln = nn.Sequential(
+            nn.SiLU(),
+            nn.Linear(hidden_dim, hidden_dim * 2),
+        )
+        nn.init.zeros_(self.adaln[-1].weight)
+        nn.init.zeros_(self.adaln[-1].bias)
+
+    def forward(self, hidden: Tensor, condition: Tensor) -> Tensor:
+        shift, scale = self.adaln(condition).chunk(2, dim=-1)
+        modulated = self.norm(hidden) * (1.0 + scale) + shift
+        return hidden + self.ffn(modulated)
+
+
 class OneShotTrajectoryDecoder(nn.Module):
-    """z_norm [+ optional start state] -> full normalized control-point grid
+    """z_norm [+ optional start-state context] -> normalized control-point grid
     (+ normalized length), in one shot.
 
     Heads are linear (no tanh/sigmoid): both targets are min/max-normalized and
     spline control points can legitimately overshoot slightly outside [-1, 1].
-    ``state_dim > 0`` revives the original spline_vqae contract
-    (z + initial_state -> ctrl): the normalized skill-start state is
-    concatenated to z before the MLP. Default 0 keeps the pure z-only decoder.
+    ``state_dim > 0`` with ``concat`` revives the original spline_vqae
+    contract. ``adaln`` instead keeps z as the content input and uses the
+    normalized skill-start state only for zero-init layerwise modulation.
+    Default state_dim=0 keeps the pure z-only decoder.
     """
 
     def __init__(
@@ -945,6 +1155,7 @@ class OneShotTrajectoryDecoder(nn.Module):
         dropout: float,
         predict_length: bool = True,
         state_dim: int = 0,
+        start_state_conditioning: str = "concat",
     ):
         super().__init__()
         if n_layers < 1:
@@ -952,10 +1163,41 @@ class OneShotTrajectoryDecoder(nn.Module):
         self.enc_dim = int(enc_dim)
         self.n_control = int(n_control)
         self.state_dim = int(state_dim)
-        blocks = [_MLPBlock(fsq_dim + self.state_dim, hidden_dim, dropout)]
-        for _ in range(n_layers - 1):
-            blocks.append(_MLPBlock(hidden_dim, hidden_dim, dropout))
-        self.mlp = nn.Sequential(*blocks)
+        self.start_state_conditioning = str(start_state_conditioning).strip().lower()
+        if self.start_state_conditioning not in {"concat", "adaln"}:
+            raise ValueError(
+                "start_state_conditioning must be concat|adaln, "
+                f"got {start_state_conditioning!r}."
+            )
+        if self.state_dim > 0 and self.start_state_conditioning == "adaln":
+            # z remains the content path.  The start state never joins z by
+            # concatenation; it only controls per-channel AdaLN parameters.
+            self.z_proj = _MLPBlock(fsq_dim, hidden_dim, dropout)
+            self.state_proj = nn.Sequential(
+                nn.Linear(self.state_dim, hidden_dim),
+                nn.SiLU(),
+            )
+            self.conditioned_blocks = nn.ModuleList(
+                [
+                    _StartConditionedMLPBlock(hidden_dim, dropout)
+                    for _ in range(max(n_layers - 1, 0))
+                ]
+            )
+            self.output_norm = nn.LayerNorm(hidden_dim, elementwise_affine=False)
+            self.output_adaln = nn.Sequential(
+                nn.SiLU(),
+                nn.Linear(hidden_dim, hidden_dim * 2),
+            )
+            nn.init.zeros_(self.output_adaln[-1].weight)
+            nn.init.zeros_(self.output_adaln[-1].bias)
+            self.mlp = None
+        else:
+            # Preserve the exact legacy z-only / start-state-concat module and
+            # checkpoint key layout whenever adaptive conditioning is unused.
+            blocks = [_MLPBlock(fsq_dim + self.state_dim, hidden_dim, dropout)]
+            for _ in range(n_layers - 1):
+                blocks.append(_MLPBlock(hidden_dim, hidden_dim, dropout))
+            self.mlp = nn.Sequential(*blocks)
         self.ctrl_head = nn.Linear(hidden_dim, n_control * enc_dim)
         self.length_head = nn.Linear(hidden_dim, 1) if predict_length else None
 
@@ -965,13 +1207,271 @@ class OneShotTrajectoryDecoder(nn.Module):
         if self.state_dim > 0:
             if start_state is None:
                 raise ValueError("This oneshot decoder was built with a start-state input.")
-            z_norm = torch.cat(
-                [z_norm, start_state[:, : self.state_dim].to(z_norm.dtype)], dim=-1
-            )
-        hidden = self.mlp(z_norm)
+            state = start_state[:, : self.state_dim].to(z_norm.dtype)
+        else:
+            state = None
+        if self.state_dim > 0 and self.start_state_conditioning == "adaln":
+            condition = self.state_proj(state)
+            hidden = self.z_proj(z_norm)
+            for block in self.conditioned_blocks:
+                hidden = block(hidden, condition)
+            shift, scale = self.output_adaln(condition).chunk(2, dim=-1)
+            hidden = self.output_norm(hidden) * (1.0 + scale) + shift
+        else:
+            if state is not None:
+                z_norm = torch.cat([z_norm, state], dim=-1)
+            hidden = self.mlp(z_norm)
         ctrl = self.ctrl_head(hidden).view(-1, self.n_control, self.enc_dim)
         length = None if self.length_head is None else self.length_head(hidden).squeeze(-1)
         return ctrl, length
+
+
+class ActionSequenceRNNDecoder(nn.Module):
+    """Decode one complete raw controller-action sequence from a skill code.
+
+    The GRU receives only the quantized skill code: the code is projected to a
+    constant input token at every step and also initializes the hidden state.
+    Previous ground-truth or predicted actions are never fed back, so the code
+    remains the sole source of trajectory information. LIBERO controller
+    commands already live in [-1, 1], matching the action head's tanh range.
+
+    ``predict_termination`` is used by FSQ-original, whose sequence decoder also
+    owns the length head. The regular FSQ path keeps termination in its existing
+    independently selectable terminator branch and therefore disables it here.
+    """
+
+    def __init__(
+        self,
+        *,
+        fsq_dim: int,
+        action_dim: int,
+        hidden_dim: int,
+        n_layers: int,
+        dropout: float,
+        predict_termination: bool = False,
+    ):
+        super().__init__()
+        if n_layers < 1:
+            raise ValueError(f"Action-sequence decoder layers must be >= 1, got {n_layers}.")
+        self.action_dim = int(action_dim)
+        self.n_layers = int(n_layers)
+        self.hidden_dim = int(hidden_dim)
+        self.z_proj = nn.Linear(fsq_dim, hidden_dim)
+        self.h0_proj = nn.Linear(fsq_dim, n_layers * hidden_dim)
+        self.gru = nn.GRU(
+            hidden_dim,
+            hidden_dim,
+            num_layers=n_layers,
+            batch_first=True,
+            dropout=dropout if n_layers > 1 else 0.0,
+        )
+        self.action_head = nn.Linear(hidden_dim, action_dim)
+        self.term_head = nn.Linear(hidden_dim, 1) if predict_termination else None
+
+    def forward(self, z_norm: Tensor, steps: int) -> tuple[Tensor, Tensor | None]:
+        bsize = z_norm.shape[0]
+        z_token = self.z_proj(z_norm)
+        inputs = z_token.unsqueeze(1).expand(bsize, int(steps), -1)
+        h0 = (
+            torch.tanh(self.h0_proj(z_norm))
+            .view(bsize, self.n_layers, self.hidden_dim)
+            .transpose(0, 1)
+            .contiguous()
+        )
+        hidden, _ = self.gru(inputs, h0)
+        actions = torch.tanh(self.action_head(hidden))
+        term_logits = None if self.term_head is None else self.term_head(hidden).squeeze(-1)
+        return actions, term_logits
+
+
+class _FSQConditionedCausalDecoderBlock(nn.Module):
+    """Pre-norm causal Transformer block modulated by one FSQ skill code.
+
+    The FSQ code supplies per-channel scale and shift parameters before both
+    self-attention and the feed-forward network. The modulation projection is
+    zero-initialized, so a new block starts as a conventional pre-norm
+    Transformer while retaining the decoder's direct z-to-query path.
+    """
+
+    def __init__(
+        self,
+        *,
+        hidden_dim: int,
+        n_heads: int,
+        dropout: float,
+        start_conditioned: bool = False,
+    ):
+        super().__init__()
+        self.norm1 = nn.LayerNorm(hidden_dim, elementwise_affine=False)
+        self.self_attn = nn.MultiheadAttention(
+            hidden_dim,
+            n_heads,
+            dropout=dropout,
+            batch_first=True,
+        )
+        self.attn_dropout = nn.Dropout(dropout)
+        self.norm2 = nn.LayerNorm(hidden_dim, elementwise_affine=False)
+        self.ffn = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim * 4),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim * 4, hidden_dim),
+        )
+        self.ffn_dropout = nn.Dropout(dropout)
+        self.adaln = nn.Sequential(
+            nn.SiLU(),
+            nn.Linear(hidden_dim, hidden_dim * 4),
+        )
+        nn.init.zeros_(self.adaln[-1].weight)
+        nn.init.zeros_(self.adaln[-1].bias)
+        self.start_adaln = (
+            nn.Sequential(
+                nn.SiLU(),
+                nn.Linear(hidden_dim, hidden_dim * 4),
+            )
+            if start_conditioned
+            else None
+        )
+        if self.start_adaln is not None:
+            nn.init.zeros_(self.start_adaln[-1].weight)
+            nn.init.zeros_(self.start_adaln[-1].bias)
+
+    @staticmethod
+    def _modulate(x: Tensor, shift: Tensor, scale: Tensor) -> Tensor:
+        return x * (1.0 + scale.unsqueeze(1)) + shift.unsqueeze(1)
+
+    def forward(
+        self,
+        tokens: Tensor,
+        z_condition: Tensor,
+        causal_mask: Tensor,
+        start_condition: Tensor | None = None,
+    ) -> Tensor:
+        modulation = self.adaln(z_condition)
+        if self.start_adaln is not None:
+            if start_condition is None:
+                raise ValueError("This decoder block requires a start-state condition.")
+            # Keep skill and spatial-context projections independent.  Their
+            # scale/shift contributions meet only at the normalized hidden state.
+            modulation = modulation + self.start_adaln(start_condition)
+        attn_shift, attn_scale, ffn_shift, ffn_scale = modulation.chunk(4, dim=-1)
+        attn_input = self._modulate(
+            self.norm1(tokens), attn_shift, attn_scale
+        )
+        attn_output, _ = self.self_attn(
+            attn_input,
+            attn_input,
+            attn_input,
+            attn_mask=causal_mask,
+            need_weights=False,
+        )
+        tokens = tokens + self.attn_dropout(attn_output)
+        ffn_input = self._modulate(self.norm2(tokens), ffn_shift, ffn_scale)
+        return tokens + self.ffn_dropout(self.ffn(ffn_input))
+
+
+class CausalActionSequenceTransformerDecoder(nn.Module):
+    """Decode raw actions from z with prefix-invariant causal self-attention.
+
+    The caller chooses only how many output slots to evaluate. Every slot sees
+    the same projected FSQ code plus an absolute sinusoidal timestep encoding.
+    The code additionally modulates attention and feed-forward normalization in
+    every decoder block. An optional absolute start state contributes through a
+    separate zero-init AdaLN projection; it is never concatenated with the code.
+    No ground-truth/predicted action, normalized progress, or final sequence
+    length is embedded. A strict causal mask ensures that appending future
+    slots cannot change an already generated prefix.
+    """
+
+    def __init__(
+        self,
+        *,
+        fsq_dim: int,
+        action_dim: int,
+        hidden_dim: int,
+        n_layers: int,
+        n_heads: int,
+        dropout: float,
+        state_dim: int = 0,
+    ):
+        super().__init__()
+        if n_layers < 1:
+            raise ValueError(
+                f"Action-sequence decoder layers must be >= 1, got {n_layers}."
+            )
+        if hidden_dim % 2 or hidden_dim % n_heads:
+            raise ValueError(
+                f"hidden_dim={hidden_dim} must be even and divisible by n_heads={n_heads}."
+            )
+        self.action_dim = int(action_dim)
+        self.hidden_dim = int(hidden_dim)
+        self.state_dim = int(state_dim)
+        self.z_proj = nn.Linear(fsq_dim, hidden_dim)
+        self.state_proj = (
+            nn.Sequential(
+                nn.Linear(self.state_dim, hidden_dim),
+                nn.SiLU(),
+            )
+            if self.state_dim > 0
+            else None
+        )
+        self.query = nn.Parameter(torch.zeros(1, 1, hidden_dim))
+        self.blocks = nn.ModuleList(
+            [
+                _FSQConditionedCausalDecoderBlock(
+                    hidden_dim=hidden_dim,
+                    n_heads=n_heads,
+                    dropout=dropout,
+                    start_conditioned=self.state_dim > 0,
+                )
+                for _ in range(n_layers)
+            ]
+        )
+        self.final_norm = nn.LayerNorm(hidden_dim)
+        self.action_head = nn.Linear(hidden_dim, action_dim)
+        nn.init.trunc_normal_(self.query, std=0.02)
+
+    def forward(
+        self,
+        z_norm: Tensor,
+        steps: int,
+        start_state: Tensor | None = None,
+    ) -> tuple[Tensor, None]:
+        steps = int(steps)
+        if steps < 1:
+            raise ValueError(f"Action-sequence decode steps must be >= 1, got {steps}.")
+        positions = ActionSeqEncoder._sinusoidal_positions(
+            steps, self.hidden_dim, z_norm.device
+        ).to(dtype=z_norm.dtype)
+        z_condition = self.z_proj(z_norm)
+        start_condition = None
+        if self.state_dim > 0:
+            if start_state is None:
+                raise ValueError(
+                    "This action-sequence decoder was built with start-state conditioning."
+                )
+            start_condition = self.state_proj(
+                start_state[:, : self.state_dim].to(z_norm.dtype)
+            )
+        tokens = (
+            z_condition.unsqueeze(1)
+            + self.query.to(dtype=z_norm.dtype)
+            + positions.unsqueeze(0)
+        )
+        causal_mask = torch.triu(
+            torch.ones(steps, steps, device=z_norm.device, dtype=torch.bool),
+            diagonal=1,
+        )
+        hidden = tokens
+        for block in self.blocks:
+            hidden = block(
+                hidden,
+                z_condition,
+                causal_mask,
+                start_condition=start_condition,
+            )
+        hidden = self.final_norm(hidden)
+        return torch.tanh(self.action_head(hidden)), None
 
 
 
@@ -1246,7 +1746,7 @@ def _build_resnet18_vision_tower() -> nn.Module:
 
 
 class FSQQueryTerminator(nn.Module):
-    """Live third+wrist images + state/skill conditioning -> progress and termination.
+    """Live third+wrist images + context/skill conditioning -> termination.
 
     The visual frontend and token contract intentionally match Stage-1's
     condition stream:
@@ -1286,6 +1786,8 @@ class FSQQueryTerminator(nn.Module):
         skill_cond_mode: str,
         state_min: np.ndarray,
         state_max: np.ndarray,
+        context_mode: str = "proprio",
+        context_gripper_weight: float = 1.0,
         termination_only: bool = False,
     ):
         super().__init__()
@@ -1301,6 +1803,13 @@ class FSQQueryTerminator(nn.Module):
         if skill_cond_mode not in {"token", "broadcast"}:
             raise ValueError(f"skill_cond_mode must be token|broadcast, got {skill_cond_mode!r}.")
         self.state_dim = int(state_dim)
+        self.context_mode = str(context_mode)
+        self.context_gripper_weight = float(context_gripper_weight)
+        if self.context_mode not in {"prev_action", "proprio"}:
+            raise ValueError(
+                "context_mode must be prev_action|proprio, "
+                f"got {self.context_mode!r}."
+            )
         self.fsq_levels = [int(x) for x in fsq_levels]
         self.arch = arch
         self.skill_cond_mode = skill_cond_mode
@@ -1424,9 +1933,29 @@ class FSQQueryTerminator(nn.Module):
             self.vision_encoder.gradient_checkpointing_disable()
 
     def _normalize_state(self, state: Tensor) -> Tensor:
+        if self.context_mode == "prev_action":
+            # The dataset/inference adapter applies the shared clipped action
+            # transform and emits an exact all-zero BOS token at t=0.
+            return state[..., : self.state_dim]
         lo = self.state_min.to(state.device, state.dtype)
         hi = self.state_max.to(state.device, state.dtype)
         return 2.0 * (state[..., : self.state_dim] - lo) / (hi - lo + 1e-8) - 1.0
+
+    def normalize_previous_action(self, action: Tensor) -> Tensor:
+        """Normalize one or more raw emitted actions for terminator inference."""
+        if self.context_mode != "prev_action":
+            raise RuntimeError(
+                "normalize_previous_action is available only for prev_action terminators."
+            )
+        lo = self.state_min.to(action.device, action.dtype)
+        hi = self.state_max.to(action.device, action.dtype)
+        normalized = (
+            2.0 * (action[..., : self.state_dim] - lo) / (hi - lo + 1e-8) - 1.0
+        ).clamp(-1.0, 1.0)
+        if self.context_gripper_weight != 1.0:
+            normalized = normalized.clone()
+            normalized[..., -1] *= math.sqrt(self.context_gripper_weight)
+        return normalized
 
     def _preprocess_image(self, image: Tensor | None) -> Tensor:
         """Convert the FSQ image contract to the shared vision tower input.
@@ -1869,6 +2398,7 @@ class FSQStateRNNTerminator(StateSkillRNNTerminator):
         fsq_levels: list[int],
         state_q01: np.ndarray,
         state_q99: np.ndarray,
+        context_mode: str = "proprio",
         termination_only: bool,
     ) -> None:
         super().__init__(
@@ -1881,6 +2411,7 @@ class FSQStateRNNTerminator(StateSkillRNNTerminator):
             termination_only=termination_only,
         )
         self.fsq_levels = [int(level) for level in fsq_levels]
+        self.context_mode = str(context_mode)
         self.register_buffer(
             "state_q01",
             torch.as_tensor(state_q01, dtype=torch.float32)[:state_dim],
@@ -1891,6 +2422,10 @@ class FSQStateRNNTerminator(StateSkillRNNTerminator):
         )
 
     def _sequence_inputs(self, z_q: Tensor, states: Tensor) -> Tensor:
+        if self.context_mode == "prev_action":
+            return StateSkillRNNTerminator._sequence_inputs(
+                self, z_q, states[..., : self.state_dim]
+            )
         lo = self.state_q01.to(device=states.device, dtype=states.dtype)
         hi = self.state_q99.to(device=states.device, dtype=states.dtype)
         normalized = 2.0 * (states[..., : self.state_dim] - lo) / (hi - lo + 1e-8) - 1.0
@@ -1918,6 +2453,7 @@ class FSQStateMLPTerminator(StateSkillMLPTerminator):
         fsq_levels: list[int],
         state_q01: np.ndarray,
         state_q99: np.ndarray,
+        context_mode: str = "proprio",
         termination_only: bool,
     ) -> None:
         super().__init__(
@@ -1928,6 +2464,7 @@ class FSQStateMLPTerminator(StateSkillMLPTerminator):
             termination_only=termination_only,
         )
         self.fsq_levels = [int(level) for level in fsq_levels]
+        self.context_mode = str(context_mode)
         self.register_buffer(
             "state_q01",
             torch.as_tensor(state_q01, dtype=torch.float32)[:state_dim],
@@ -1938,6 +2475,8 @@ class FSQStateMLPTerminator(StateSkillMLPTerminator):
         )
 
     def _normalize_state(self, raw_state: Tensor) -> Tensor:
+        if self.context_mode == "prev_action":
+            return raw_state[..., : self.state_dim]
         lo = self.state_q01.to(device=raw_state.device, dtype=raw_state.dtype)
         hi = self.state_q99.to(device=raw_state.device, dtype=raw_state.dtype)
         return 2.0 * (raw_state[..., : self.state_dim] - lo) / (hi - lo + 1e-8) - 1.0
@@ -1997,6 +2536,10 @@ class SplineFSQAEConfig:
     encoder_arch: str = "spline"
     """spline: fixed control-point tokens. action_seq: variable-length ACTION
     sequence transformer (no spline codec / grounding / length-token choices)."""
+    autoencoder_mode: str = "legacy"
+    """Resolved whole-system preset: raw, zero, action, norm_action, or legacy."""
+    action_gripper_weight: float = 1.0
+    """Gripper-axis MSE weight for every preset; representation uses its square root."""
     quantizer: str = "fsq"
     """fsq: finite scalar grid. bsq: binary spherical codebook."""
     bsq_code_dim: int = 5
@@ -2030,6 +2573,15 @@ class SplineFSQAEConfig:
     """Pair objective: none, overlap, js, or linear contrastive overlap."""
     pair_weight: float = 0.1
     pair_inv_temperature: float = 5.0
+    route_loss: bool = False
+    """Add a schedule-free joint decoder-aware code-routing objective.
+
+    Every finite code is evaluated by the enabled reconstructor and termination
+    head under the same decoder context. Candidate distortions are detached, so
+    this objective updates only the encoder assignment; the regular hard-code
+    losses remain the decoders' sole training signals. The soft assignment
+    reuses ``pair_inv_temperature`` and has no separate weight.
+    """
     pair_warmup: bool = False
     """Enable reconstruction-only warm-up and the following pair-weight ramp."""
     pair_warmup_epochs: int = 0
@@ -2055,14 +2607,24 @@ class SplineFSQAEConfig:
     """False: the reconstructor drops its skill-start-state token — the action
     chunk becomes a pure (z, progress) motion-program lookup with no spatial
     grounding input."""
+    reconstructor_start_state_conditioning: str = "concat"
+    """Internal conditioning implementation. ``concat`` preserves historical
+    checkpoints; current raw/zero/action presets use ``adaln`` when start-state
+    conditioning is enabled."""
     reconstructor_arch: str = "chunk"
     """chunk: per-timestep action-chunk reconstructor (v3 default; runs at the
     M sampled timesteps). oneshot: FSQ-original-style decoder that reconstructs
     the FULL control-point grid ONCE per trajectory from z alone — M then
     applies only to the terminator, and the recon loss ('action' metric slot)
-    becomes the ctrl MSE."""
+    becomes the ctrl MSE. action_seq: raw full action sequence reconstructed
+    once from z by a GRU. action_seq_transformer: the same raw contract with a
+    prefix-invariant causal query Transformer whose every block is conditioned
+    on z through adaptive LayerNorm and can independently receive start-state
+    AdaLN context. Action targets use neither dataset normalization nor teacher
+    forcing."""
     reconstructor_output_mode: str = "zero_grounded"
-    """Spline/oneshot reconstruction target: raw_state or zero_grounded.
+    """Spline/oneshot reconstruction target: raw_state, zero_grounded, or
+    start_grounded.
     This is independent of encoder_input_mode; optimal is an encoder-only
     convention because its extra mean-XYZ value is a conditioning token."""
     hidden_dim: int = 256
@@ -2093,7 +2655,10 @@ class SplineFSQAEConfig:
     samples_per_skill: int = 2
     end_target_sigma: float = 1.0
     terminator_input_space: str = "both"
-    """Terminator observations: state, image (third+wrist), or both."""
+    """Terminator observations: context, image (third+wrist), or both."""
+    terminator_context: str = "prev_action"
+    """Context token contract. New models use the normalized action emitted at
+    t-1; ``proprio`` is retained only when loading historical checkpoints."""
     terminator_model: str = "default"
     """default uses the current-step MLP/query model; rnn uses full state history."""
     terminator_progress: bool = True
@@ -2119,11 +2684,10 @@ class SplineFSQAEConfig:
     end_pos_weight: float = 1.0
     end_threshold: float = 0.5
 
-    encoder_lr: float = 3e-4
-    terminator_lr: float = 3e-4
-    reconstructor_lr: float = 3e-4
+    lr: float = 3e-4
+    """Shared learning rate for encoder, reconstructor, and terminator."""
     lr_schedule: str = "cosine"
-    """Learning-rate schedule: cosine decays to 1% of the configured LR; constant keeps it fixed."""
+    """Learning-rate schedule: cosine decays to 1% of lr; constant keeps it fixed."""
     batch_size: int = 64
     num_workers: int = 0
     val_num_workers: int = 0
@@ -2160,6 +2724,12 @@ class SplineFSQAE(nn.Module):
 
     def __init__(self, cfg: SplineFSQAEConfig):
         super().__init__()
+        # Checkpoints written before joint terminator routing used the narrower
+        # reconstruction_route_loss name. Preserve their exact on/off state.
+        if "route_loss" not in vars(cfg) and "reconstruction_route_loss" in vars(cfg):
+            cfg.route_loss = bool(vars(cfg)["reconstruction_route_loss"])
+        if "terminator_context" not in vars(cfg):
+            cfg.terminator_context = "proprio"
         # Normalize legacy programmatic configs before validating the cleaned
         # decoder/terminator option surface. New YAML configs already arrive in
         # this form through train_skills_config.py.
@@ -2197,18 +2767,23 @@ class SplineFSQAE(nn.Module):
             )
         if cfg.samples_per_skill < 1 or cfg.chunk_size < 1:
             raise ValueError("samples_per_skill and chunk_size must both be >=1.")
-        if cfg.encoder_input_mode not in {"zero_grounded", "raw_state", "optimal"}:
+        if cfg.encoder_input_mode not in {
+            "zero_grounded", "start_grounded", "raw_state", "optimal"
+        }:
             raise ValueError(
-                "encoder_input_mode must be zero_grounded|raw_state|optimal, "
+                "encoder_input_mode must be zero_grounded|start_grounded|raw_state|optimal, "
                 f"got {cfg.encoder_input_mode!r}."
             )
         if (
-            cfg.encoder_input_mode in {"zero_grounded", "optimal"}
-            and cfg.encoder_grounding_convention != ENCODER_GROUNDING_CONVENTION
+            cfg.encoder_input_mode in {"zero_grounded", "start_grounded", "optimal"}
+            and cfg.encoder_grounding_convention
+            != encoder_grounding_convention(cfg.encoder_input_mode)
         ):
             raise ValueError(
-                "This checkpoint uses the legacy start-pose grounding convention. "
-                "Mean-XYZ grounding changes the encoder contract; start a new run."
+                "Encoder grounding convention does not match encoder_input_mode: "
+                f"mode={cfg.encoder_input_mode!r}, "
+                f"convention={cfg.encoder_grounding_convention!r}, expected="
+                f"{encoder_grounding_convention(cfg.encoder_input_mode)!r}."
             )
         if cfg.terminator_arch not in {"small", "fusion"}:
             raise ValueError(
@@ -2219,6 +2794,11 @@ class SplineFSQAE(nn.Module):
             raise ValueError(
                 "terminator_input_space must be state|image|both, "
                 f"got {cfg.terminator_input_space!r}."
+            )
+        if cfg.terminator_context not in {"prev_action", "proprio"}:
+            raise ValueError(
+                "terminator_context must be prev_action|proprio, "
+                f"got {cfg.terminator_context!r}."
             )
         if cfg.terminator_model not in {"default", "rnn"}:
             raise ValueError(
@@ -2265,6 +2845,8 @@ class SplineFSQAE(nn.Module):
             raise ValueError(f"skill_cond_mode must be token|broadcast, got {cfg.skill_cond_mode!r}.")
         if cfg.lr_schedule not in {"cosine", "constant"}:
             raise ValueError(f"lr_schedule must be cosine|constant, got {cfg.lr_schedule!r}.")
+        if cfg.lr <= 0:
+            raise ValueError(f"lr must be positive, got {cfg.lr}.")
         if cfg.reconstructor_only and cfg.terminator_termination_only:
             raise ValueError(
                 "reconstructor_only and terminator_termination_only are mutually "
@@ -2291,6 +2873,64 @@ class SplineFSQAE(nn.Module):
                     raise ValueError(f"Optimal FSQ config is missing required statistic: {name}")
         if cfg.encoder_arch not in {"spline", "action_seq"}:
             raise ValueError(f"encoder_arch must be spline|action_seq, got {cfg.encoder_arch!r}.")
+        autoencoder_contracts = {
+            "raw": ("spline", "raw_state", "oneshot", "raw_state"),
+            "zero": ("spline", "zero_grounded", "oneshot", "zero_grounded"),
+            "action": (
+                "action_seq",
+                "zero_grounded",
+                "action_seq_transformer",
+                "zero_grounded",
+            ),
+            "norm_action": (
+                "action_seq",
+                "zero_grounded",
+                "action_seq_transformer",
+                "zero_grounded",
+            ),
+        }
+        if cfg.autoencoder_mode not in {"legacy", *autoencoder_contracts}:
+            raise ValueError(
+                "autoencoder_mode must be raw|zero|action|norm_action|legacy, "
+                f"got {cfg.autoencoder_mode!r}."
+            )
+        if cfg.autoencoder_mode != "legacy":
+            actual_contract = (
+                cfg.encoder_arch,
+                cfg.encoder_input_mode,
+                cfg.reconstructor_arch,
+                cfg.reconstructor_output_mode,
+            )
+            expected_contract = autoencoder_contracts[cfg.autoencoder_mode]
+            if actual_contract != expected_contract:
+                raise ValueError(
+                    f"autoencoder_mode={cfg.autoencoder_mode!r} requires "
+                    f"{expected_contract}, got {actual_contract}."
+                )
+            if (
+                not math.isfinite(cfg.action_gripper_weight)
+                or not 0.0 < cfg.action_gripper_weight <= 1.0
+            ):
+                raise ValueError(
+                    "action_gripper_weight must be in (0, 1], got "
+                    f"{cfg.action_gripper_weight}."
+                )
+            expected_start_state = (
+                cfg.reconstructor_start_state_conditioning == "adaln"
+            )
+            if cfg.reconstructor_start_state != expected_start_state:
+                raise ValueError(
+                    "Current autoencoder presets require "
+                    "reconstructor_start_state_conditioning=concat/adaln to agree "
+                    "with reconstructor_start_state; got "
+                    f"{cfg.reconstructor_start_state_conditioning!r} and "
+                    f"{cfg.reconstructor_start_state}."
+                )
+        if cfg.reconstructor_start_state_conditioning not in {"concat", "adaln"}:
+            raise ValueError(
+                "reconstructor_start_state_conditioning must be concat|adaln, "
+                f"got {cfg.reconstructor_start_state_conditioning!r}."
+            )
         if cfg.pair_loss not in {"none", "overlap", "js", "contrastive"}:
             raise ValueError(
                 "pair_loss must be none|overlap|js|contrastive, "
@@ -2318,6 +2958,15 @@ class SplineFSQAE(nn.Module):
                 "pair_inv_temperature must be positive, "
                 f"got {cfg.pair_inv_temperature}."
             )
+        if cfg.route_loss and cfg.terminator_only:
+            raise ValueError(
+                "route_loss requires an enabled reconstructor."
+            )
+        if cfg.route_loss and cfg.reconstructor_arch == "chunk":
+            raise ValueError(
+                "route_loss requires a whole-skill reconstructor; "
+                "the chunk reconstructor is legacy-only."
+            )
         if cfg.pair_warmup_epochs < 0 or cfg.pair_ramp_epochs < 0:
             raise ValueError(
                 "pair_warmup_epochs and pair_ramp_epochs must be non-negative, "
@@ -2341,20 +2990,24 @@ class SplineFSQAE(nn.Module):
             cfg.boundary_aug_distribution
         )
         if cfg.pair_loss != "none":
-            if cfg.encoder_arch != "spline":
-                raise ValueError("FSQ boundary pair loss requires encoder_arch='spline'.")
             if not any(directional_pmaxes):
                 raise ValueError(
                     "FSQ boundary pair loss requires at least one positive "
                     "directional boundary augmentation pmax."
                 )
-        if cfg.reconstructor_arch not in {"chunk", "oneshot"}:
+        if cfg.reconstructor_arch not in {
+            "chunk", "oneshot", *ACTION_SEQUENCE_RECONSTRUCTOR_ARCHS
+        }:
             raise ValueError(
-                f"reconstructor_arch must be chunk|oneshot, got {cfg.reconstructor_arch!r}."
+                "reconstructor_arch must be chunk|oneshot|action_seq|"
+                "action_seq_transformer, "
+                f"got {cfg.reconstructor_arch!r}."
             )
-        if cfg.reconstructor_output_mode not in {"raw_state", "zero_grounded"}:
+        if cfg.reconstructor_output_mode not in {
+            "raw_state", "zero_grounded", "start_grounded"
+        }:
             raise ValueError(
-                "reconstructor_output_mode must be raw_state|zero_grounded, "
+                "reconstructor_output_mode must be raw_state|zero_grounded|start_grounded, "
                 f"got {cfg.reconstructor_output_mode!r}."
             )
         if cfg.reconstructor_arch == "oneshot":
@@ -2371,6 +3024,19 @@ class SplineFSQAE(nn.Module):
                         f"{name} must have shape ({cfg.enc_dim},), "
                         f"got {np.asarray(value).shape}."
                     )
+        if is_action_sequence_reconstructor_arch(cfg.reconstructor_arch):
+            if cfg.encoder_arch != "action_seq":
+                raise ValueError(
+                    "Action-sequence reconstruction requires encoder_arch='action_seq'."
+                )
+            if (
+                cfg.reconstructor_arch == "action_seq"
+                and cfg.reconstructor_start_state
+            ):
+                # Historical direct configs defaulted this flag to true and
+                # the legacy GRU silently disabled it. Keep that checkpoint
+                # behavior; the current action preset uses the Transformer.
+                cfg.reconstructor_start_state = False
         if (
             cfg.fsq_entropy
             and cfg.entropy_joint
@@ -2389,6 +3055,14 @@ class SplineFSQAE(nn.Module):
                 n_layers=cfg.num_layers,
                 n_heads=cfg.image_encoder_heads,
                 dropout=cfg.dropout,
+                raw_actions=(
+                    is_action_sequence_reconstructor_arch(cfg.reconstructor_arch)
+                    and cfg.autoencoder_mode != "norm_action"
+                ),
+                action_q01=cfg.action_q01,
+                action_q99=cfg.action_q99,
+                clip_normalized_actions=cfg.autoencoder_mode == "norm_action",
+                action_gripper_weight=cfg.action_gripper_weight,
             )
         else:
             encoder_cls = (
@@ -2410,6 +3084,7 @@ class SplineFSQAE(nn.Module):
                 encoder_input_mode=cfg.encoder_input_mode,
                 encoder_start_min=cfg.encoder_start_min,
                 encoder_start_max=cfg.encoder_start_max,
+                gripper_weight=cfg.action_gripper_weight,
             )
         if cfg.quantizer == "bsq":
             self.encoder.fsq = BSQ(cfg.bsq_code_dim)
@@ -2427,7 +3102,32 @@ class SplineFSQAE(nn.Module):
                 n_layers=cfg.num_layers,
                 dropout=cfg.dropout,
                 predict_length=False,
-                state_dim=cfg.max_state_dim if cfg.reconstructor_start_state else 0,
+                state_dim=(
+                    cfg.state_dim
+                    if cfg.reconstructor_start_state
+                    and cfg.reconstructor_start_state_conditioning == "adaln"
+                    else cfg.max_state_dim if cfg.reconstructor_start_state else 0
+                ),
+                start_state_conditioning=cfg.reconstructor_start_state_conditioning,
+            )
+        elif cfg.reconstructor_arch == "action_seq":
+            self.reconstructor = ActionSequenceRNNDecoder(
+                fsq_dim=len(cfg.fsq_levels),
+                action_dim=cfg.action_dim,
+                hidden_dim=cfg.hidden_dim,
+                n_layers=cfg.num_layers,
+                dropout=cfg.dropout,
+                predict_termination=False,
+            )
+        elif cfg.reconstructor_arch == "action_seq_transformer":
+            self.reconstructor = CausalActionSequenceTransformerDecoder(
+                fsq_dim=len(cfg.fsq_levels),
+                action_dim=cfg.action_dim,
+                hidden_dim=cfg.hidden_dim,
+                n_layers=cfg.num_layers,
+                n_heads=cfg.image_encoder_heads,
+                dropout=cfg.dropout,
+                state_dim=cfg.state_dim if cfg.reconstructor_start_state else 0,
             )
         else:
             self.reconstructor = MotionChunkReconstructor(
@@ -2442,22 +3142,39 @@ class SplineFSQAE(nn.Module):
                 chunk_size=cfg.chunk_size,
                 use_start_state=cfg.reconstructor_start_state,
             )
+        terminator_context_dim = (
+            cfg.action_dim if cfg.terminator_context == "prev_action" else cfg.state_dim
+        )
+        terminator_context_lo = (
+            cfg.action_q01 if cfg.terminator_context == "prev_action" else cfg.state_min
+        )
+        terminator_context_hi = (
+            cfg.action_q99 if cfg.terminator_context == "prev_action" else cfg.state_max
+        )
+        terminator_context_q01 = (
+            cfg.action_q01 if cfg.terminator_context == "prev_action" else cfg.state_q01
+        )
+        terminator_context_q99 = (
+            cfg.action_q99 if cfg.terminator_context == "prev_action" else cfg.state_q99
+        )
         if cfg.reconstructor_only:
             self.terminator = None
         elif cfg.state_rnn_terminator:
             self.terminator = FSQStateRNNTerminator(
-                state_dim=cfg.state_dim,
+                state_dim=terminator_context_dim,
                 fsq_levels=cfg.fsq_levels,
-                state_q01=cfg.state_q01,
-                state_q99=cfg.state_q99,
+                state_q01=terminator_context_q01,
+                state_q99=terminator_context_q99,
+                context_mode=cfg.terminator_context,
                 termination_only=cfg.terminator_termination_only,
             )
         elif cfg.terminator_input_space == "state":
             self.terminator = FSQStateMLPTerminator(
-                state_dim=cfg.state_dim,
+                state_dim=terminator_context_dim,
                 fsq_levels=cfg.fsq_levels,
-                state_q01=cfg.state_q01,
-                state_q99=cfg.state_q99,
+                state_q01=terminator_context_q01,
+                state_q99=terminator_context_q99,
+                context_mode=cfg.terminator_context,
                 termination_only=cfg.terminator_termination_only,
             )
         else:
@@ -2467,7 +3184,7 @@ class SplineFSQAE(nn.Module):
                 else FSQQueryTerminator
             )
             self.terminator = terminator_cls(
-                state_dim=cfg.state_dim,
+                state_dim=terminator_context_dim,
                 fsq_levels=cfg.fsq_levels,
                 hidden_dim=cfg.hidden_dim,
                 n_layers=cfg.image_encoder_layers,
@@ -2481,10 +3198,264 @@ class SplineFSQAE(nn.Module):
                 siglip_image_size=cfg.siglip_image_size,
                 resnet_image_size=cfg.resnet_image_size,
                 skill_cond_mode=cfg.skill_cond_mode,
-                state_min=cfg.state_min,
-                state_max=cfg.state_max,
+                state_min=terminator_context_lo,
+                state_max=terminator_context_hi,
+                context_mode=cfg.terminator_context,
+                context_gripper_weight=cfg.action_gripper_weight,
                 termination_only=cfg.terminator_termination_only,
             )
+
+    def _decode_reconstruction_route_candidates(
+        self,
+        *,
+        z_norm: Tensor,
+        start_state: Tensor,
+        lengths: Tensor,
+        samples_per_skill: int,
+    ) -> dict[str, Tensor | None]:
+        """Decode every code under the current decoder context, without gradients.
+
+        Candidate axes are ``(B,K,...)`` for whole-trajectory decoders and
+        code-only decoders run the K prototypes once and broadcast them.
+        A start-state-conditioned decoder evaluates the exact context/code
+        Cartesian product.
+        """
+        candidates: dict[str, Tensor | None] = {
+            "route_candidate_ctrl": None,
+            "route_candidate_action_sequence": None,
+        }
+        if not self.cfg.route_loss:
+            return candidates
+        if self.reconstructor is None:
+            raise RuntimeError(
+                "route_loss is enabled but no reconstructor was built."
+            )
+
+        code_ids = torch.arange(
+            self.fsq.codebook_size, device=z_norm.device, dtype=torch.long
+        )
+        all_codes = self.fsq.code_to_normalized(code_ids).to(
+            device=z_norm.device, dtype=z_norm.dtype
+        )
+        bsize, code_count = z_norm.shape[0], all_codes.shape[0]
+        with torch.no_grad():
+            if self.cfg.reconstructor_arch == "oneshot":
+                if getattr(self.reconstructor, "state_dim", 0) > 0:
+                    dec_state = start_state.view(
+                        bsize, samples_per_skill, -1
+                    )[:, 0]
+                    code_batch = (
+                        all_codes.unsqueeze(0)
+                        .expand(bsize, code_count, -1)
+                        .reshape(bsize * code_count, -1)
+                    )
+                    state_batch = (
+                        dec_state.unsqueeze(1)
+                        .expand(bsize, code_count, -1)
+                        .reshape(bsize * code_count, -1)
+                    )
+                    ctrl, _ = self.reconstructor(
+                        code_batch, start_state=state_batch
+                    )
+                    ctrl = ctrl.view(
+                        bsize,
+                        code_count,
+                        self.cfg.n_control,
+                        self.cfg.enc_dim,
+                    )
+                else:
+                    ctrl, _ = self.reconstructor(all_codes)
+                    ctrl = ctrl.unsqueeze(0).expand(bsize, -1, -1, -1)
+                candidates["route_candidate_ctrl"] = ctrl.detach()
+            elif is_action_sequence_reconstructor_arch(
+                self.cfg.reconstructor_arch
+            ):
+                if getattr(self.reconstructor, "state_dim", 0) > 0:
+                    dec_state = start_state.view(
+                        bsize, samples_per_skill, -1
+                    )[:, 0]
+                    code_batch = (
+                        all_codes.unsqueeze(0)
+                        .expand(bsize, code_count, -1)
+                        .reshape(bsize * code_count, -1)
+                    )
+                    state_batch = (
+                        dec_state.unsqueeze(1)
+                        .expand(bsize, code_count, -1)
+                        .reshape(bsize * code_count, -1)
+                    )
+                    sequence, _ = self.reconstructor(
+                        code_batch,
+                        int(lengths.max()),
+                        start_state=state_batch,
+                    )
+                    sequence = sequence.view(
+                        bsize,
+                        code_count,
+                        int(lengths.max()),
+                        self.cfg.action_dim,
+                    )
+                else:
+                    sequence, _ = self.reconstructor(
+                        all_codes, int(lengths.max())
+                    )
+                    sequence = sequence.unsqueeze(0).expand(
+                        bsize, -1, -1, -1
+                    )
+                candidates["route_candidate_action_sequence"] = sequence.detach()
+            else:
+                raise RuntimeError(
+                    "Reconstruction-aware routing supports whole-skill "
+                    "reconstructors only; the chunk reconstructor is legacy-only."
+                )
+        return candidates
+
+    def _decode_termination_route_candidates(
+        self,
+        *,
+        z_norm: Tensor,
+        terminator_context: Tensor,
+        lengths: Tensor,
+        samples_per_skill: int,
+        terminator_context_sequence: Tensor | None,
+        image_tokens: Tensor | None,
+    ) -> dict[str, Tensor | None]:
+        """Evaluate the termination head under every code without gradients.
+
+        The returned logits use the same ``(B,K,T)`` contract for both the
+        full-sequence state terminator and the sampled-timestep terminators.
+        Visual features are supplied by the caller so the expensive backbone
+        is run once and shared with the ordinary selected-code forward pass.
+        """
+        candidates: dict[str, Tensor | None] = {
+            "route_candidate_term_logits": None,
+        }
+        if (
+            not self.cfg.route_loss
+            or self.terminator is None
+            or self.cfg.reconstructor_only
+            or not self.cfg.terminator_termination
+            or self.cfg.end_loss_weight == 0.0
+        ):
+            return candidates
+
+        code_ids = torch.arange(
+            self.fsq.codebook_size, device=z_norm.device, dtype=torch.long
+        )
+        all_codes = self.fsq.code_to_normalized(code_ids).to(
+            device=z_norm.device, dtype=z_norm.dtype
+        )
+        bsize = z_norm.shape[0]
+        code_count = all_codes.shape[0]
+
+        with torch.no_grad():
+            if self.cfg.state_rnn_terminator:
+                if terminator_context_sequence is None:
+                    raise ValueError(
+                        "state_rnn_terminator route scoring requires the cached "
+                        "full-skill state sequence."
+                    )
+                # The state-only path is cheap enough to evaluate all codes in
+                # one batch.  Keep B adjacent within each code chunk contract.
+                code_batch = (
+                    all_codes.unsqueeze(0)
+                    .expand(bsize, code_count, -1)
+                    .reshape(bsize * code_count, -1)
+                )
+                state_batch = (
+                    terminator_context_sequence.unsqueeze(1)
+                    .expand(bsize, code_count, *terminator_context_sequence.shape[1:])
+                    .reshape(
+                        bsize * code_count,
+                        *terminator_context_sequence.shape[1:],
+                    )
+                )
+                length_batch = (
+                    lengths.unsqueeze(1)
+                    .expand(bsize, code_count)
+                    .reshape(bsize * code_count)
+                )
+                _, logits, _ = self.terminator.forward_all_outputs(
+                    code_batch,
+                    state_batch,
+                    lengths=length_batch,
+                )
+                candidates["route_candidate_term_logits"] = logits.view(
+                    bsize, code_count, logits.shape[-1]
+                ).detach()
+                return candidates
+
+            sample_count = terminator_context.shape[0]
+            expected_samples = bsize * samples_per_skill
+            if sample_count != expected_samples:
+                raise ValueError(
+                    "Terminator route scoring expected B*samples_per_skill states, "
+                    f"got {sample_count} vs {expected_samples}."
+                )
+
+            if self.cfg.terminator_input_space in {"image", "both"}:
+                if image_tokens is None:
+                    raise ValueError(
+                        "Visual terminator route scoring requires precomputed image tokens."
+                    )
+                # Long DINO/SigLIP token sequences make code batching memory
+                # hungry; ResNet's shorter spatial sequence safely amortizes a
+                # few codes per call.  This is an internal execution detail,
+                # not a tuning parameter.
+                code_chunk_size = 4 if image_tokens.shape[1] <= 128 else 1
+            else:
+                code_chunk_size = code_count
+
+            logits_by_chunk: list[Tensor] = []
+            for code_chunk in all_codes.split(code_chunk_size, dim=0):
+                chunk_size = code_chunk.shape[0]
+                code_batch = (
+                    code_chunk.unsqueeze(0)
+                    .expand(sample_count, chunk_size, -1)
+                    .reshape(sample_count * chunk_size, -1)
+                )
+                state_batch = (
+                    terminator_context.unsqueeze(1)
+                    .expand(sample_count, chunk_size, -1)
+                    .reshape(sample_count * chunk_size, -1)
+                )
+                if self.cfg.terminator_input_space == "state":
+                    _, logits = self.terminator.forward_outputs(
+                        code_batch, state_batch
+                    )
+                else:
+                    token_batch = (
+                        image_tokens.unsqueeze(1)
+                        .expand(
+                            sample_count,
+                            chunk_size,
+                            image_tokens.shape[1],
+                            image_tokens.shape[2],
+                        )
+                        .reshape(
+                            sample_count * chunk_size,
+                            image_tokens.shape[1],
+                            image_tokens.shape[2],
+                        )
+                    )
+                    if self.cfg.terminator_input_space == "image":
+                        _, logits = self.terminator._forward_without_state(
+                            code_batch, token_batch
+                        )
+                    else:
+                        _, logits = self.terminator._forward_from_image_tokens(
+                            code_batch, state_batch, token_batch
+                        )
+                logits_by_chunk.append(logits.view(sample_count, chunk_size))
+
+            sampled_logits = torch.cat(logits_by_chunk, dim=1)
+            candidates["route_candidate_term_logits"] = (
+                sampled_logits.view(bsize, samples_per_skill, code_count)
+                .permute(0, 2, 1)
+                .contiguous()
+                .detach()
+            )
+        return candidates
 
     def gradient_checkpointing_enable(self) -> None:
         if hasattr(self.encoder, "enc_traj_pool"):
@@ -2548,11 +3519,84 @@ class SplineFSQAE(nn.Module):
             raise ValueError("This model encodes ACTION sequences; use encode_actions_index.")
         return self.encoder.encode_index(trajectory, device)
 
-    def _normalize_actions_numpy(self, actions: np.ndarray) -> Tensor:
+    def _prepare_actions_numpy(self, actions: np.ndarray) -> Tensor:
+        actions = np.asarray(actions, dtype=np.float32)
+        if is_action_sequence_reconstructor_arch(self.cfg.reconstructor_arch):
+            if self.cfg.autoencoder_mode == "norm_action":
+                normalized = normalize_action_sequence(
+                    actions,
+                    self.cfg.action_q01,
+                    self.cfg.action_q99,
+                    gripper_weight=self.cfg.action_gripper_weight,
+                    clip=True,
+                )
+                return torch.from_numpy(normalized)
+            scaled = scale_gripper_features(
+                actions,
+                gripper_weight=self.cfg.action_gripper_weight,
+                gripper_dims=1,
+            )
+            return torch.from_numpy(scaled)
         lo = np.asarray(self.cfg.action_q01, dtype=np.float32)
         hi = np.asarray(self.cfg.action_q99, dtype=np.float32)
-        norm = 2.0 * (np.asarray(actions, dtype=np.float32) - lo) / (hi - lo + 1e-8) - 1.0
+        norm = 2.0 * (actions - lo) / (hi - lo + 1e-8) - 1.0
         return torch.from_numpy(norm)
+
+    def _previous_action_context(
+        self,
+        emitted_actions: Tensor,
+        initial_previous_action: Tensor | None = None,
+    ) -> Tensor:
+        """Right-shift raw emitted actions into normalized t-1 context tokens."""
+        if emitted_actions.ndim != 3:
+            raise ValueError(
+                "emitted_actions must have shape (B,T,A), got "
+                f"{tuple(emitted_actions.shape)}."
+            )
+        lo = torch.as_tensor(
+            self.cfg.action_q01,
+            device=emitted_actions.device,
+            dtype=emitted_actions.dtype,
+        )
+        hi = torch.as_tensor(
+            self.cfg.action_q99,
+            device=emitted_actions.device,
+            dtype=emitted_actions.dtype,
+        )
+        normalized = (
+            2.0 * (emitted_actions[..., : self.cfg.action_dim] - lo)
+            / (hi - lo + 1e-8)
+            - 1.0
+        ).clamp(-1.0, 1.0)
+        if self.cfg.action_gripper_weight != 1.0:
+            normalized = normalized.clone()
+            normalized[..., -1] *= math.sqrt(self.cfg.action_gripper_weight)
+        previous = torch.zeros_like(normalized)
+        previous[:, 1:] = normalized[:, :-1]
+        if initial_previous_action is not None:
+            initial = initial_previous_action
+            if initial.ndim == 1:
+                initial = initial.unsqueeze(0)
+            expected = (emitted_actions.shape[0], self.cfg.action_dim)
+            if tuple(initial.shape) != expected:
+                raise ValueError(
+                    "initial_previous_action must have shape (B,A), got "
+                    f"{tuple(initial.shape)}; expected {expected}."
+                )
+            initial = initial.to(
+                device=emitted_actions.device,
+                dtype=emitted_actions.dtype,
+            )
+            initial_norm = (
+                2.0 * (initial - lo) / (hi - lo + 1e-8) - 1.0
+            ).clamp(-1.0, 1.0)
+            if self.cfg.action_gripper_weight != 1.0:
+                initial_norm = initial_norm.clone()
+                initial_norm[..., -1] *= math.sqrt(
+                    self.cfg.action_gripper_weight
+                )
+            previous[:, 0] = initial_norm
+        return previous
 
     @torch.no_grad()
     def encode_actions_numpy(
@@ -2561,7 +3605,7 @@ class SplineFSQAE(nn.Module):
         """action_seq encoder: raw (T, A) dataset-unit actions -> z_q."""
         if self.cfg.encoder_arch != "action_seq":
             raise ValueError("encode_actions_numpy requires encoder_arch='action_seq'.")
-        acts = self._normalize_actions_numpy(actions).unsqueeze(0).to(device)
+        acts = self._prepare_actions_numpy(actions).unsqueeze(0).to(device)
         lengths = torch.tensor([acts.shape[1]], dtype=torch.long, device=device)
         z_q, _ = self.encoder(acts, lengths)
         return z_q[0].cpu().numpy()
@@ -2572,7 +3616,7 @@ class SplineFSQAE(nn.Module):
     ) -> int:
         if self.cfg.encoder_arch != "action_seq":
             raise ValueError("encode_actions_index requires encoder_arch='action_seq'.")
-        acts = self._normalize_actions_numpy(actions).unsqueeze(0).to(device)
+        acts = self._prepare_actions_numpy(actions).unsqueeze(0).to(device)
         lengths = torch.tensor([acts.shape[1]], dtype=torch.long, device=device)
         _, index = self.encoder(acts, lengths)
         return int(index.item())
@@ -2607,11 +3651,10 @@ class SplineFSQAE(nn.Module):
             raise RuntimeError(
                 "This FSQ model was trained terminator_only and has no reconstructor."
             )
-        if self.cfg.reconstructor_arch == "oneshot":
+        if self.cfg.reconstructor_arch != "chunk":
             raise RuntimeError(
-                "This FSQ model uses the oneshot ctrl reconstructor; per-timestep "
-                "action chunks are not available. Decode the control points via "
-                "reconstructor(z_norm) + FSQ_original.spline_decode instead."
+                "Per-timestep action chunks require reconstructor_arch='chunk'; "
+                f"this model uses {self.cfg.reconstructor_arch!r}."
             )
         z_norm = self.fsq.normalized(z_q).repeat_interleave(steps, dim=0)
         action_norm = self.reconstructor(
@@ -2627,6 +3670,117 @@ class SplineFSQAE(nn.Module):
         )
         actions = (action_norm + 1.0) * 0.5 * (action_hi - action_lo) + action_lo
         return actions.view(bsize, steps, self.cfg.chunk_size, self.cfg.action_dim)
+
+    def _normalize_reconstructor_start_state(
+        self,
+        raw_start_states: Tensor,
+        *,
+        dtype: torch.dtype,
+    ) -> Tensor:
+        """Normalize absolute start proprioception for decoder conditioning.
+
+        New AdaLN conditioning uses exact state min/max so its numerical range
+        matches the autoencoder's [-1, 1] contract without applying a
+        zero-grounded delta range to an absolute pose.  Legacy concat models
+        retain their historical q01/q99 convention for checkpoint fidelity.
+        """
+        if raw_start_states.ndim != 2:
+            raise ValueError(
+                "raw_start_states must have shape (B, state_dim), got "
+                f"{tuple(raw_start_states.shape)}."
+            )
+        if raw_start_states.shape[-1] < self.cfg.state_dim:
+            raise ValueError(
+                f"raw_start_states needs at least {self.cfg.state_dim} features, "
+                f"got {raw_start_states.shape[-1]}."
+            )
+        raw = raw_start_states[:, : self.cfg.state_dim].to(dtype=dtype)
+        if self.cfg.reconstructor_start_state_conditioning == "adaln":
+            lo_values, hi_values = self.cfg.state_min, self.cfg.state_max
+        else:
+            lo_values, hi_values = self.cfg.state_q01, self.cfg.state_q99
+        lo = torch.as_tensor(lo_values, device=raw.device, dtype=raw.dtype)
+        hi = torch.as_tensor(hi_values, device=raw.device, dtype=raw.dtype)
+        normalized = 2.0 * (raw - lo) / (hi - lo + 1e-8) - 1.0
+        if self.cfg.action_gripper_weight != 1.0:
+            normalized = normalized.clone()
+            normalized[..., -N_GRIPPER_DIMS:] *= math.sqrt(
+                self.cfg.action_gripper_weight
+            )
+        state = torch.zeros(
+            raw.shape[0],
+            self.cfg.max_state_dim,
+            device=raw.device,
+            dtype=raw.dtype,
+        )
+        state[:, : self.cfg.state_dim] = normalized
+        return state
+
+    @torch.no_grad()
+    def sample_action_sequence(
+        self,
+        z_q: Tensor,
+        steps: int,
+        raw_start_states: Tensor | None = None,
+    ) -> Tensor:
+        """Decode dataset-unit controller actions ``(B, steps, action_dim)``.
+
+        ``raw_start_states`` is required only for an AdaLN-conditioned action
+        decoder and is supplied in dataset units.
+        """
+        if self.reconstructor is None:
+            raise RuntimeError(
+                "This FSQ model was trained terminator_only and has no reconstructor."
+            )
+        if not is_action_sequence_reconstructor_arch(self.cfg.reconstructor_arch):
+            raise RuntimeError(
+                "Full action-sequence decoding requires "
+                "an action-sequence reconstructor, "
+                f"got {self.cfg.reconstructor_arch!r}."
+            )
+        z_norm = self.fsq.normalized(z_q)
+        start_state = None
+        if getattr(self.reconstructor, "state_dim", 0) > 0:
+            if raw_start_states is None:
+                raise ValueError(
+                    "This action-sequence decoder requires raw start states."
+                )
+            start_state = self._normalize_reconstructor_start_state(
+                raw_start_states,
+                dtype=z_norm.dtype,
+            )
+        if getattr(self.reconstructor, "state_dim", 0) > 0:
+            action_values, _ = self.reconstructor(
+                z_norm,
+                int(steps),
+                start_state=start_state,
+            )
+        else:
+            action_values, _ = self.reconstructor(z_norm, int(steps))
+        # Invert the shared representation weight so public sampling always
+        # returns unweighted dataset-unit gripper values.
+        values = action_values
+        if self.cfg.action_gripper_weight != 1.0:
+            values = values.clone()
+            values[..., -1] = (
+                values[..., -1] / math.sqrt(self.cfg.action_gripper_weight)
+            ).clamp(-1.0, 1.0)
+        if self.cfg.autoencoder_mode != "norm_action":
+            return values
+
+        normalized = values.clone()
+        normalized[..., -1].clamp_(-1.0, 1.0)
+        lo = torch.as_tensor(
+            self.cfg.action_q01,
+            device=normalized.device,
+            dtype=normalized.dtype,
+        )
+        hi = torch.as_tensor(
+            self.cfg.action_q99,
+            device=normalized.device,
+            dtype=normalized.dtype,
+        )
+        return (normalized + 1.0) * 0.5 * (hi - lo) + lo
 
     @torch.no_grad()
     def sample_control_points(
@@ -2654,14 +3808,16 @@ class SplineFSQAE(nn.Module):
         if getattr(self.reconstructor, "state_dim", 0) > 0:
             if raw_start_states is None:
                 raise ValueError("This oneshot decoder was built with a start-state input.")
-            raw = raw_start_states[:, : self.cfg.state_dim].to(z_norm)
-            lo = torch.as_tensor(self.cfg.state_q01, device=raw.device, dtype=raw.dtype)
-            hi = torch.as_tensor(self.cfg.state_q99, device=raw.device, dtype=raw.dtype)
-            start_state = torch.zeros(
-                raw.shape[0], self.cfg.max_state_dim, device=raw.device, dtype=raw.dtype
+            start_state = self._normalize_reconstructor_start_state(
+                raw_start_states,
+                dtype=z_norm.dtype,
             )
-            start_state[:, : self.cfg.state_dim] = 2.0 * (raw - lo) / (hi - lo + 1e-8) - 1.0
         ctrl_norm, _ = self.reconstructor(z_norm, start_state=start_state)
+        if self.cfg.action_gripper_weight != 1.0:
+            ctrl_norm = ctrl_norm.clone()
+            ctrl_norm[..., -N_GRIPPER_DIMS:] /= math.sqrt(
+                self.cfg.action_gripper_weight
+            )
         ctrl_lo = torch.as_tensor(
             self.cfg.reconstructor_min, device=ctrl_norm.device, dtype=ctrl_norm.dtype
         )
@@ -2679,6 +3835,8 @@ class SplineFSQAE(nn.Module):
         wrist: Tensor | None = None,
         _progress_hint: Tensor | None = None,
         *,
+        emitted_actions: Tensor | None = None,
+        initial_previous_action: Tensor | None = None,
         num_steps: int = 10,
         noise: Tensor | None = None,
     ) -> tuple[Tensor, Tensor, Tensor]:
@@ -2708,21 +3866,40 @@ class SplineFSQAE(nn.Module):
             raise RuntimeError(
                 "This FSQ model was trained reconstructor_only and has no terminator."
             )
+        if (
+            self.cfg.terminator_context == "prev_action"
+            and self.cfg.terminator_input_space != "image"
+        ):
+            if emitted_actions is None:
+                raise ValueError(
+                    "prev_action terminator decode requires the actions actually emitted "
+                    "at each timestep so they can be shifted by one step."
+                )
+            context_sequence = self._previous_action_context(
+                emitted_actions,
+                initial_previous_action=initial_previous_action,
+            )
+            flat_context = context_sequence.reshape(
+                bsize * steps, self.cfg.action_dim
+            )
+        else:
+            context_sequence = raw_states[..., : self.cfg.state_dim]
+            flat_context = flat_state
         if self.cfg.state_rnn_terminator:
             progress, term_logits, _ = self.terminator.forward_all_outputs(
                 self.fsq.normalized(z_q),
-                raw_states[..., : self.cfg.state_dim],
+                context_sequence,
             )
             return actions, progress, term_logits
         if self.cfg.terminator_input_space == "state":
-            progress, term_logits = self.terminator.forward_outputs(z_norm, flat_state)
+            progress, term_logits = self.terminator.forward_outputs(z_norm, flat_context)
         elif self.cfg.terminator_input_space == "image":
             progress, term_logits = self.terminator(
                 z_norm, flatten_camera(third), flatten_camera(wrist)
             )
         else:
             progress, term_logits = self.terminator(
-                z_norm, flat_state, flatten_camera(third), flatten_camera(wrist)
+                z_norm, flat_context, flatten_camera(third), flatten_camera(wrist)
             )
         return (
             actions,
@@ -2738,22 +3915,44 @@ class SplineFSQAE(nn.Module):
         start_pose: Tensor | None = None,
         start_state: Tensor,
         raw_state: Tensor,
+        prev_action: Tensor | None = None,
         progress_target: Tensor,
         third: Tensor | None,
         wrist: Tensor | None,
         samples_per_skill: int,
+        terminator_context_sequence: Tensor | None = None,
         terminator_state_sequence: Tensor | None = None,
         noise: Tensor | None = None,
         time: Tensor | None = None,
         action_seq: Tensor | None = None,
         augmented_ctrl: Tensor | None = None,
+        augmented_action_seq: Tensor | None = None,
         augmented_lengths: Tensor | None = None,
         augmented_start_pose: Tensor | None = None,
         negative_ctrl: Tensor | None = None,
+        negative_action_seq: Tensor | None = None,
         negative_lengths: Tensor | None = None,
         negative_start_pose: Tensor | None = None,
         compute_skill_shuffle: bool = False,
     ) -> dict[str, Tensor]:
+        if (
+            self.cfg.terminator_context == "prev_action"
+            and self.cfg.terminator_input_space != "image"
+        ):
+            if prev_action is None and self.terminator is not None:
+                raise ValueError(
+                    "prev_action terminator requires the normalized action emitted at t-1."
+                )
+            terminator_context = prev_action
+        else:
+            terminator_context = raw_state
+        if terminator_context is None:
+            # Reconstructor-only models never consume it; keep the common
+            # forward surface tensor-complete without introducing a dummy API.
+            terminator_context = raw_state
+        if terminator_context_sequence is None:
+            # Compatibility for direct callers of historical proprio-RNN models.
+            terminator_context_sequence = terminator_state_sequence
         if self.cfg.encoder_arch == "action_seq":
             if action_seq is None:
                 raise ValueError("encoder_arch='action_seq' requires the action_seq input.")
@@ -2764,33 +3963,59 @@ class SplineFSQAE(nn.Module):
             z_e = self.encoder.encode_continuous(ctrl, lengths, start_pose, normalized=True)
         z_q, indices = self.fsq(z_e)
         pair_configured = self.cfg.pair_loss != "none"
-        pair_enabled = pair_configured and augmented_ctrl is not None
+        augmented_pair_input = (
+            augmented_action_seq
+            if self.cfg.encoder_arch == "action_seq"
+            else augmented_ctrl
+        )
+        pair_enabled = pair_configured and augmented_pair_input is not None
         # FSQ uses its bounded grid coordinate; BSQ.bound returns z/||z||.
-        u_cont = self.fsq.bound(z_e) if self.cfg.fsq_entropy or pair_configured else None
+        u_cont = (
+            self.fsq.bound(z_e)
+            if self.cfg.fsq_entropy
+            or pair_configured
+            or self.cfg.route_loss
+            else None
+        )
         augmented_u_cont = augmented_indices = None
         if pair_enabled:
-            if self.cfg.encoder_arch != "spline":
-                raise ValueError("FSQ augmentation pair loss currently requires encoder_arch='spline'.")
             if augmented_lengths is None:
                 raise ValueError("FSQ pair loss requires augmented_lengths.")
-            augmented_z_e = self.encoder.encode_continuous(
-                augmented_ctrl,
-                augmented_lengths,
-                augmented_start_pose,
-                normalized=True,
-            )
+            if self.cfg.encoder_arch == "action_seq":
+                augmented_z_e = self.encoder.encode_continuous(
+                    augmented_action_seq[:, : int(augmented_lengths.max())],
+                    augmented_lengths,
+                )
+            else:
+                augmented_z_e = self.encoder.encode_continuous(
+                    augmented_ctrl,
+                    augmented_lengths,
+                    augmented_start_pose,
+                    normalized=True,
+                )
             _, augmented_indices = self.fsq(augmented_z_e)
             augmented_u_cont = self.fsq.bound(augmented_z_e)
         negative_u_cont = negative_indices = None
-        if self.cfg.pair_loss == "contrastive" and negative_ctrl is not None:
+        negative_pair_input = (
+            negative_action_seq
+            if self.cfg.encoder_arch == "action_seq"
+            else negative_ctrl
+        )
+        if self.cfg.pair_loss == "contrastive" and negative_pair_input is not None:
             if negative_lengths is None:
                 raise ValueError("Contrastive pair loss requires negative_lengths.")
-            negative_z_e = self.encoder.encode_continuous(
-                negative_ctrl,
-                negative_lengths,
-                negative_start_pose,
-                normalized=True,
-            )
+            if self.cfg.encoder_arch == "action_seq":
+                negative_z_e = self.encoder.encode_continuous(
+                    negative_action_seq[:, : int(negative_lengths.max())],
+                    negative_lengths,
+                )
+            else:
+                negative_z_e = self.encoder.encode_continuous(
+                    negative_ctrl,
+                    negative_lengths,
+                    negative_start_pose,
+                    normalized=True,
+                )
             _, negative_indices = self.fsq(negative_z_e)
             negative_u_cont = self.fsq.bound(negative_z_e)
         z_norm = self.fsq.normalized(z_q)
@@ -2804,6 +4029,7 @@ class SplineFSQAE(nn.Module):
             )
         _ = noise, time  # older validation path passes these; the reconstructor is deterministic.
         ctrl_hat = None
+        action_sequence_hat = None
         if self.reconstructor is not None and self.cfg.reconstructor_arch == "oneshot":
             # One decode per TRAJECTORY; samples_per_skill applies only to the
             # terminator below. start_state rows repeat per trajectory, so the
@@ -2814,7 +4040,31 @@ class SplineFSQAE(nn.Module):
                     z_norm.shape[0], samples_per_skill, -1
                 )[:, 0]
             ctrl_hat, _ = self.reconstructor(z_norm, start_state=dec_state)
-        if self.reconstructor is None or ctrl_hat is not None:
+        elif (
+            self.reconstructor is not None
+            and is_action_sequence_reconstructor_arch(self.cfg.reconstructor_arch)
+        ):
+            dec_state = None
+            if getattr(self.reconstructor, "state_dim", 0) > 0:
+                dec_state = start_state.view(
+                    z_norm.shape[0], samples_per_skill, -1
+                )[:, 0]
+            if getattr(self.reconstructor, "state_dim", 0) > 0:
+                action_sequence_hat, _ = self.reconstructor(
+                    z_norm,
+                    int(lengths.max()),
+                    start_state=dec_state,
+                )
+            else:
+                action_sequence_hat, _ = self.reconstructor(
+                    z_norm,
+                    int(lengths.max()),
+                )
+        if (
+            self.reconstructor is None
+            or ctrl_hat is not None
+            or action_sequence_hat is not None
+        ):
             actions = torch.zeros(
                 z_sample.shape[0],
                 self.cfg.chunk_size,
@@ -2828,6 +4078,39 @@ class SplineFSQAE(nn.Module):
                 z_sample,
                 progress_target,
             )
+        route_candidates = self._decode_reconstruction_route_candidates(
+            z_norm=z_norm,
+            start_state=start_state,
+            lengths=lengths,
+            samples_per_skill=samples_per_skill,
+        )
+        terminator_image_tokens = None
+        if (
+            self.cfg.route_loss
+            and self.terminator is not None
+            and not self.cfg.reconstructor_only
+            and self.cfg.terminator_termination
+            and self.cfg.end_loss_weight != 0.0
+            and not self.cfg.state_rnn_terminator
+            and self.cfg.terminator_input_space in {"image", "both"}
+        ):
+            # Share this graph-bearing visual encoding with the ordinary
+            # selected-code terminator pass. Candidate heads run under
+            # no_grad, while the selected-code path still trains image_proj
+            # and an unfrozen vision backbone normally.
+            terminator_image_tokens = self.terminator._prepare_image_tokens(
+                third, wrist
+            )
+        route_candidates.update(
+            self._decode_termination_route_candidates(
+                z_norm=z_norm,
+                terminator_context=terminator_context,
+                lengths=lengths,
+                samples_per_skill=samples_per_skill,
+                terminator_context_sequence=terminator_context_sequence,
+                image_tokens=terminator_image_tokens,
+            )
+        )
         shuffled_progress = shuffled_term_logits = None
         if self.terminator is None:
             zeros = torch.zeros(
@@ -2835,31 +4118,43 @@ class SplineFSQAE(nn.Module):
             )
             progress, term_logits = zeros, zeros
         elif self.cfg.state_rnn_terminator:
-            if terminator_state_sequence is None:
+            if terminator_context_sequence is None:
                 raise ValueError(
-                    "state_rnn_terminator requires the cached full-skill state sequence."
+                    "state_rnn_terminator requires the cached full-skill context sequence."
                 )
             progress, term_logits, _ = self.terminator.forward_all_outputs(
                 z_norm,
-                terminator_state_sequence,
+                terminator_context_sequence,
                 lengths=lengths,
             )
             if shuffled_z_norm is not None:
                 shuffled_progress, shuffled_term_logits, _ = (
                     self.terminator.forward_all_outputs(
                         shuffled_z_norm,
-                        terminator_state_sequence,
+                        terminator_context_sequence,
                         lengths=lengths,
                     )
                 )
         elif self.cfg.terminator_input_space == "state":
-            progress, term_logits = self.terminator.forward_outputs(z_sample, raw_state)
+            progress, term_logits = self.terminator.forward_outputs(
+                z_sample, terminator_context
+            )
             if shuffled_z_sample is not None:
                 shuffled_progress, shuffled_term_logits = self.terminator.forward_outputs(
-                    shuffled_z_sample, raw_state
+                    shuffled_z_sample, terminator_context
                 )
         elif self.cfg.terminator_input_space == "image":
-            if shuffled_z_sample is None:
+            if terminator_image_tokens is not None:
+                progress, term_logits = self.terminator._forward_without_state(
+                    z_sample, terminator_image_tokens
+                )
+                if shuffled_z_sample is not None:
+                    shuffled_progress, shuffled_term_logits = (
+                        self.terminator._forward_without_state(
+                            shuffled_z_sample, terminator_image_tokens
+                        )
+                    )
+            elif shuffled_z_sample is None:
                 progress, term_logits = self.terminator(z_sample, third, wrist)
             else:
                 (
@@ -2874,9 +4169,21 @@ class SplineFSQAE(nn.Module):
                     wrist,
                 )
         else:
-            if shuffled_z_sample is None:
+            if terminator_image_tokens is not None:
+                progress, term_logits = self.terminator._forward_from_image_tokens(
+                    z_sample, terminator_context, terminator_image_tokens
+                )
+                if shuffled_z_sample is not None:
+                    shuffled_progress, shuffled_term_logits = (
+                        self.terminator._forward_from_image_tokens(
+                            shuffled_z_sample,
+                            terminator_context,
+                            terminator_image_tokens,
+                        )
+                    )
+            elif shuffled_z_sample is None:
                 progress, term_logits = self.terminator(
-                    z_sample, raw_state, third, wrist
+                    z_sample, terminator_context, third, wrist
                 )
             else:
                 (
@@ -2887,7 +4194,7 @@ class SplineFSQAE(nn.Module):
                 ) = self.terminator.forward_with_skill_shuffle(
                     z_sample,
                     shuffled_z_sample,
-                    raw_state,
+                    terminator_context,
                     third,
                     wrist,
                 )
@@ -2900,9 +4207,11 @@ class SplineFSQAE(nn.Module):
             "negative_u_cont": negative_u_cont,
             "negative_indices": negative_indices,
             "ctrl_hat": ctrl_hat,
+            "action_sequence_hat": action_sequence_hat,
             "actions": actions,
             "progress": progress,
             "term_logits": term_logits,
+            **route_candidates,
         }
         if shuffled_progress is not None and shuffled_term_logits is not None:
             result.update(
@@ -2920,6 +4229,8 @@ class SplineFSQAE(nn.Module):
 _V3_CFG_BACKFILL = (
     ("encoder_length_token", True),
     ("encoder_arch", "spline"),
+    ("autoencoder_mode", "legacy"),
+    ("action_gripper_weight", 1.0),
     ("quantizer", "fsq"),
     ("bsq_code_dim", 5),
     ("fsq_entropy", False),
@@ -2934,6 +4245,7 @@ _V3_CFG_BACKFILL = (
     ("pair_loss", "none"),
     ("pair_weight", 0.1),
     ("pair_inv_temperature", 5.0),
+    ("route_loss", False),
     ("pair_warmup", False),
     ("pair_warmup_epochs", 0),
     ("pair_ramp_epochs", 0),
@@ -2946,8 +4258,10 @@ _V3_CFG_BACKFILL = (
     ("resnet_image_size", 224),
     ("frame_cache_dir", ""),
     ("reconstructor_start_state", True),
+    ("reconstructor_start_state_conditioning", "concat"),
     ("reconstructor_arch", "chunk"),
     ("state_rnn_terminator", False),
+    ("terminator_context", "proprio"),
 )
 
 
@@ -2958,6 +4272,16 @@ def _checkpoint_config(checkpoint: dict[str, Any]) -> SplineFSQAEConfig:
     if isinstance(cfg, dict):
         # Read checkpoints written before endpoint-weighted reconstruction was removed.
         cfg = dict(cfg)
+        legacy_route_loss = cfg.pop("reconstruction_route_loss", None)
+        if "route_loss" not in cfg and legacy_route_loss is not None:
+            cfg["route_loss"] = bool(legacy_route_loss)
+        legacy_lrs = [
+            cfg.pop(name)
+            for name in ("encoder_lr", "reconstructor_lr", "terminator_lr")
+            if name in cfg
+        ]
+        if "lr" not in cfg and legacy_lrs:
+            cfg["lr"] = legacy_lrs[0]
         cfg.pop("weighted_loss", None)
         cfg.pop("weighted_loss_end_weight", None)
         cfg.pop("force_endpoint_sample", None)
@@ -2972,6 +4296,7 @@ def _checkpoint_config(checkpoint: dict[str, Any]) -> SplineFSQAEConfig:
         cfg.setdefault("terminator_termination", not reconstructor_only)
         cfg.setdefault("terminator_input_space", "state" if state_rnn else "both")
         cfg.setdefault("terminator_model", "rnn" if state_rnn else "default")
+        cfg.setdefault("terminator_context", "proprio")
         cfg.setdefault("encoder_grounding_convention", "skill_start_pose_v0")
         legacy_output_mode = (
             "raw_state"
@@ -2987,9 +4312,16 @@ def _checkpoint_config(checkpoint: dict[str, Any]) -> SplineFSQAEConfig:
             f"Legacy FSQ checkpoint is unsupported: expected format_version={FORMAT_VERSION}, "
             f"got {getattr(cfg, 'format_version', 0)}. Retrain with the transformer-reconstructor FSQ."
         )
+    instance_fields = vars(cfg)
+    if "terminator_context" not in instance_fields:
+        cfg.terminator_context = "proprio"
+    if "route_loss" not in instance_fields:
+        cfg.route_loss = bool(instance_fields.get("reconstruction_route_loss", False))
     for name, default in _V3_CFG_BACKFILL:
         if not hasattr(cfg, name):
             setattr(cfg, name, default)
+    if not hasattr(cfg, "lr"):
+        cfg.lr = float(getattr(cfg, "encoder_lr", 3e-4))
     instance_fields = vars(cfg)
     if "encoder_grounding_convention" not in instance_fields:
         cfg.encoder_grounding_convention = "skill_start_pose_v0"
@@ -3004,12 +4336,15 @@ def _checkpoint_config(checkpoint: dict[str, Any]) -> SplineFSQAEConfig:
     if "reconstructor_max" not in instance_fields:
         cfg.reconstructor_max = getattr(cfg, "encoder_max", None)
     if (
-        getattr(cfg, "encoder_input_mode", None) in {"zero_grounded", "optimal"}
-        and cfg.encoder_grounding_convention != ENCODER_GROUNDING_CONVENTION
+        getattr(cfg, "encoder_input_mode", None)
+        in {"zero_grounded", "start_grounded", "optimal"}
+        and cfg.encoder_grounding_convention
+        != encoder_grounding_convention(cfg.encoder_input_mode)
     ):
         raise ValueError(
-            "Legacy start-pose-grounded FSQ checkpoints are incompatible with "
-            "the mean-XYZ grounding contract; start a new run."
+            "FSQ checkpoint grounding convention does not match its encoder input "
+            f"mode: mode={cfg.encoder_input_mode!r}, "
+            f"convention={cfg.encoder_grounding_convention!r}."
         )
     if "terminator_progress" not in instance_fields:
         cfg.terminator_progress = not bool(getattr(cfg, "reconstructor_only", False)) and not bool(
@@ -3104,6 +4439,7 @@ def _terminator_build_config(
             image_encoder_layers=int(source_cfg.num_layers),
             image_encoder_heads=int(source_cfg.num_heads),
             skill_cond_mode="broadcast",
+            terminator_context="proprio",
             encoder_min=state_min,
             encoder_max=state_max,
             state_min=state_min,
@@ -3126,8 +4462,9 @@ def _new_fsq_terminator(
     dino_model_path: str | None,
     termination_only: bool | None = None,
 ) -> FSQQueryTerminator:
+    context_is_action = cfg.terminator_context == "prev_action"
     kwargs = {
-        "state_dim": cfg.state_dim,
+        "state_dim": cfg.action_dim if context_is_action else cfg.state_dim,
         "fsq_levels": cfg.fsq_levels,
         "hidden_dim": cfg.hidden_dim,
         "n_layers": cfg.image_encoder_layers,
@@ -3141,8 +4478,10 @@ def _new_fsq_terminator(
         "siglip_image_size": cfg.siglip_image_size,
         "resnet_image_size": cfg.resnet_image_size,
         "skill_cond_mode": cfg.skill_cond_mode,
-        "state_min": cfg.state_min,
-        "state_max": cfg.state_max,
+        "state_min": cfg.action_q01 if context_is_action else cfg.state_min,
+        "state_max": cfg.action_q99 if context_is_action else cfg.state_max,
+        "context_mode": cfg.terminator_context,
+        "context_gripper_weight": cfg.action_gripper_weight,
     }
     # Every terminator variant subclasses FSQQueryTerminator and forwards **kwargs
     # to it, so the image-only and wrist-only models honor this too. An explicit
@@ -3175,10 +4514,19 @@ def load_fsq_encoder(path: str | Path, device: str | torch.device = "cpu") -> tu
             n_layers=cfg.num_layers,
             n_heads=cfg.image_encoder_heads,
             dropout=0.0,
+            raw_actions=(
+                is_action_sequence_reconstructor_arch(cfg.reconstructor_arch)
+                and cfg.autoencoder_mode != "norm_action"
+            ),
+            action_q01=cfg.action_q01,
+            action_q99=cfg.action_q99,
+            clip_normalized_actions=cfg.autoencoder_mode == "norm_action",
+            action_gripper_weight=cfg.action_gripper_weight,
         )
         if cfg.quantizer == "bsq":
             encoder.fsq = BSQ(cfg.bsq_code_dim)
         _load_prefixed(encoder, checkpoint["model_state"], "encoder.")
+        encoder.cfg = cfg
         encoder.to(device).eval()
         return encoder, cfg
     encoder_cls = SplineFSQEncoder if cfg.encoder_length_token else LengthFreeSplineFSQEncoder
@@ -3198,6 +4546,7 @@ def load_fsq_encoder(path: str | Path, device: str | torch.device = "cpu") -> tu
         encoder_input_mode=getattr(cfg, "encoder_input_mode", "zero_grounded"),
         encoder_start_min=getattr(cfg, "encoder_start_min", None),
         encoder_start_max=getattr(cfg, "encoder_start_max", None),
+        gripper_weight=cfg.action_gripper_weight,
     )
     if cfg.quantizer == "bsq":
         encoder.fsq = BSQ(cfg.bsq_code_dim)
@@ -3214,19 +4563,23 @@ def load_fsq_terminator(
     checkpoint = torch.load(str(path), map_location="cpu", weights_only=False)
     cfg = _checkpoint_config(checkpoint)
     if cfg.state_rnn_terminator:
+        context_is_action = cfg.terminator_context == "prev_action"
         terminator = FSQStateRNNTerminator(
-            state_dim=cfg.state_dim,
+            state_dim=cfg.action_dim if context_is_action else cfg.state_dim,
             fsq_levels=cfg.fsq_levels,
-            state_q01=cfg.state_q01,
-            state_q99=cfg.state_q99,
+            state_q01=cfg.action_q01 if context_is_action else cfg.state_q01,
+            state_q99=cfg.action_q99 if context_is_action else cfg.state_q99,
+            context_mode=cfg.terminator_context,
             termination_only=cfg.terminator_termination_only,
         )
     elif cfg.terminator_input_space == "state":
+        context_is_action = cfg.terminator_context == "prev_action"
         terminator = FSQStateMLPTerminator(
-            state_dim=cfg.state_dim,
+            state_dim=cfg.action_dim if context_is_action else cfg.state_dim,
             fsq_levels=cfg.fsq_levels,
-            state_q01=cfg.state_q01,
-            state_q99=cfg.state_q99,
+            state_q01=cfg.action_q01 if context_is_action else cfg.state_q01,
+            state_q99=cfg.action_q99 if context_is_action else cfg.state_q99,
+            context_mode=cfg.terminator_context,
             termination_only=cfg.terminator_termination_only,
         )
     else:
@@ -3501,6 +4854,44 @@ def build_adjacent_skill_indices(
     ]
 
 
+def build_skill_initial_previous_actions(
+    actions: list[np.ndarray],
+    metadata: list[dict[str, Any]],
+    action_dim: int,
+) -> list[np.ndarray | None]:
+    """Return the real action immediately preceding each saved skill.
+
+    Saved skill files contain only their own action interval. For every
+    non-episode-start skill, action[t-1] is therefore the last action of the
+    exactly contiguous preceding skill. Only a true episode start receives
+    the all-zero BOS token.
+    """
+    if len(actions) != len(metadata):
+        raise ValueError("Previous-action source and metadata lengths do not match.")
+    previous, _ = _contiguous_skill_neighbor_maps(metadata)
+    initial: list[np.ndarray | None] = []
+    for i, (action, item) in enumerate(zip(actions, metadata, strict=True)):
+        frame_start = int(item["frame_start"])
+        if frame_start == 0:
+            initial.append(None)
+            continue
+        if i not in previous:
+            raise ValueError(
+                "Cannot recover action[t-1] for non-episode-start skill "
+                f"{i} (task={item.get('task_id', -1)}, "
+                f"episode={item.get('episode_id', -1)}, frame_start={frame_start}). "
+                "The supplied skill set must include the exactly contiguous "
+                "preceding skill."
+            )
+        source = np.asarray(actions[previous[i]], dtype=np.float32)
+        if len(source) == 0 or source.shape[-1] < action_dim:
+            raise ValueError(
+                f"Invalid preceding action sequence for skill {i}: shape={source.shape}."
+            )
+        initial.append(source[-1, :action_dim].copy())
+    return initial
+
+
 def sample_boundary_augmented_segment(
     context: BoundaryAugmentationContext,
     *,
@@ -3585,6 +4976,7 @@ class FSQTrajectoryDataset(Dataset):
         cfg: SplineFSQAEConfig,
         *,
         training: bool,
+        initial_previous_actions: list[np.ndarray | None] | None = None,
         boundary_contexts: list[BoundaryAugmentationContext] | None = None,
         adjacent_skill_indices: list[tuple[int, ...]] | None = None,
     ):
@@ -3626,7 +5018,11 @@ class FSQTrajectoryDataset(Dataset):
         self.reconstructor_ctrl: list[np.ndarray] | None = (
             [] if cfg.reconstructor_arch == "oneshot" and not cfg.terminator_only else None
         )
-        self.start_poses: list[np.ndarray] | None = [] if cfg.encoder_input_mode == "optimal" else None
+        self.start_poses: list[np.ndarray] | None = (
+            []
+            if cfg.encoder_arch == "spline" and cfg.encoder_input_mode == "optimal"
+            else None
+        )
         self.lengths: list[int] = []
         self.states = [np.asarray(x, dtype=np.float32) for x in states]
         self.actions = [np.asarray(x, dtype=np.float32) for x in actions]
@@ -3680,7 +5076,16 @@ class FSQTrajectoryDataset(Dataset):
                 )
             if self._uses_visual_samples and "dataset_from_index" not in metadata[i]:
                 raise ValueError(f"Skill {i} metadata has no dataset_from_index.")
-            self.ctrl.append((2.0 * (ctrl - enc_min) / (enc_max - enc_min + 1e-8) - 1.0).astype(np.float32))
+            normalized_ctrl = (
+                2.0 * (ctrl - enc_min) / (enc_max - enc_min + 1e-8) - 1.0
+            ).astype(np.float32)
+            self.ctrl.append(
+                scale_gripper_features(
+                    normalized_ctrl,
+                    gripper_weight=cfg.action_gripper_weight,
+                    gripper_dims=N_GRIPPER_DIMS,
+                )
+            )
             if self.reconstructor_ctrl is not None:
                 recon_ctrl, recon_length = spline_encode(
                     segment,
@@ -3692,12 +5097,17 @@ class FSQTrajectoryDataset(Dataset):
                     raise RuntimeError(
                         f"Encoder/reconstructor spline lengths differ: {length} != {recon_length}."
                     )
+                normalized_recon_ctrl = (
+                    2.0 * (recon_ctrl - recon_min)
+                    / (recon_max - recon_min + 1e-8)
+                    - 1.0
+                ).astype(np.float32)
                 self.reconstructor_ctrl.append(
-                    (
-                        2.0 * (recon_ctrl - recon_min)
-                        / (recon_max - recon_min + 1e-8)
-                        - 1.0
-                    ).astype(np.float32)
+                    scale_gripper_features(
+                        normalized_recon_ctrl,
+                        gripper_weight=cfg.action_gripper_weight,
+                        gripper_dims=N_GRIPPER_DIMS,
+                    )
                 )
             if self.start_poses is not None:
                 start_pose = encoder_grounding_position(segment)
@@ -3710,27 +5120,51 @@ class FSQTrajectoryDataset(Dataset):
         self.state_q99 = np.asarray(cfg.state_q99, dtype=np.float32)
         self.action_q01 = np.asarray(cfg.action_q01, dtype=np.float32)
         self.action_q99 = np.asarray(cfg.action_q99, dtype=np.float32)
-        self.terminator_state_sequences: list[Tensor] | None = None
+        if initial_previous_actions is None:
+            if not cfg.reconstructor_only and cfg.terminator_context == "prev_action":
+                initial_previous_actions = build_skill_initial_previous_actions(
+                    self.actions, self.metadata, cfg.action_dim
+                )
+            else:
+                initial_previous_actions = [None] * len(self.actions)
+        if len(initial_previous_actions) != len(self.actions):
+            raise ValueError(
+                "initial_previous_actions must contain one action per skill."
+            )
+        self.previous_actions = [
+            self._normalized_previous_action_values(action, initial)
+            for action, initial in zip(
+                self.actions, initial_previous_actions, strict=True
+            )
+        ]
+        self.terminator_context_sequences: list[Tensor] | None = None
         self.terminator_progress_targets: list[Tensor] | None = None
         self.terminator_end_targets: list[Tensor] | None = None
         if cfg.state_rnn_terminator and not cfg.reconstructor_only:
-            # Cache every compact full-skill target once. Inputs are left-padded
+            # Cache every compact full-skill context once. Inputs are left-padded
             # because StateSkillRNNTerminator compacts the valid suffix before
             # pack_padded_sequence; outputs/targets are left-aligned.
             max_steps = int(round(cfg.length_max))
-            self.terminator_state_sequences = []
+            self.terminator_context_sequences = []
             self.terminator_progress_targets = []
             self.terminator_end_targets = []
-            for state, length in zip(self.states, self.lengths, strict=True):
+            for state, previous_action, length in zip(
+                self.states, self.previous_actions, self.lengths, strict=True
+            ):
                 if length > max_steps:
                     raise ValueError(
                         f"Full-skill state sequence length {length} exceeds "
                         f"length_max={max_steps}."
                     )
-                padded_state = torch.zeros(max_steps, cfg.state_dim, dtype=torch.float32)
-                padded_state[-length:] = torch.from_numpy(
-                    state[:length, : cfg.state_dim].copy()
+                context = (
+                    previous_action[:length]
+                    if cfg.terminator_context == "prev_action"
+                    else state[:length, : cfg.state_dim]
                 )
+                padded_context = torch.zeros(
+                    max_steps, context.shape[-1], dtype=torch.float32
+                )
+                padded_context[-length:] = torch.from_numpy(context.copy())
                 positions = np.arange(length, dtype=np.int64)
                 progress = torch.zeros(max_steps, dtype=torch.float32)
                 progress[:length] = torch.from_numpy(
@@ -3740,7 +5174,7 @@ class FSQTrajectoryDataset(Dataset):
                 termination[:length] = torch.from_numpy(
                     self._termination_targets(length, positions)
                 )
-                self.terminator_state_sequences.append(padded_state)
+                self.terminator_context_sequences.append(padded_context)
                 self.terminator_progress_targets.append(progress)
                 self.terminator_end_targets.append(termination)
 
@@ -3750,6 +5184,92 @@ class FSQTrajectoryDataset(Dataset):
     @staticmethod
     def _quantile_norm(x: np.ndarray, lo: np.ndarray, hi: np.ndarray) -> np.ndarray:
         return (2.0 * (x - lo) / (hi - lo + 1e-8) - 1.0).astype(np.float32)
+
+    def encoder_action_values(self, index: int) -> np.ndarray:
+        """Action values seen by the action-sequence encoder.
+
+        The matched action_seq reconstructor defines the new raw-action
+        contract. Historical action_seq+chunk models retain their q01/q99
+        encoder convention so existing checkpoints remain reproducible.
+        """
+        return self._encoder_action_values(self.actions[index])
+
+    def _encoder_action_values(self, action: np.ndarray) -> np.ndarray:
+        """Apply the checkpoint's action-sequence value convention."""
+        if is_action_sequence_reconstructor_arch(self.cfg.reconstructor_arch):
+            if self.cfg.autoencoder_mode == "norm_action":
+                return normalize_action_sequence(
+                    action,
+                    self.action_q01,
+                    self.action_q99,
+                    gripper_weight=self.cfg.action_gripper_weight,
+                    clip=True,
+                )
+            return scale_gripper_features(
+                action,
+                gripper_weight=self.cfg.action_gripper_weight,
+                gripper_dims=1,
+            )
+        return self._quantile_norm(action, self.action_q01, self.action_q99)
+
+    def _normalized_previous_action_values(
+        self,
+        action: np.ndarray,
+        initial_previous_action: np.ndarray | None,
+    ) -> np.ndarray:
+        """Right-shift actions, preserving the real cross-skill predecessor."""
+        previous = np.zeros(
+            (len(action), self.cfg.action_dim), dtype=np.float32
+        )
+        if len(action) and initial_previous_action is not None:
+            raw_initial = np.asarray(initial_previous_action, dtype=np.float32)
+            if raw_initial.shape != (self.cfg.action_dim,):
+                raise ValueError(
+                    "Initial previous action must have shape "
+                    f"({self.cfg.action_dim},), got {raw_initial.shape}."
+                )
+            previous[0] = normalize_action_sequence(
+                raw_initial[None],
+                self.action_q01,
+                self.action_q99,
+                gripper_weight=self.cfg.action_gripper_weight,
+                clip=True,
+            )[0]
+        if len(action) > 1:
+            previous[1:] = normalize_action_sequence(
+                action[:-1, : self.cfg.action_dim],
+                self.action_q01,
+                self.action_q99,
+                gripper_weight=self.cfg.action_gripper_weight,
+                clip=True,
+            )
+        return previous
+
+    def _padded_encoder_action_sequence(self, action: np.ndarray) -> Tensor:
+        """Pad one clean/positive/negative encoder sequence for collation.
+
+        Boundary augmentation moves only one boundary, so a positive can grow
+        by at most the early-start or late-end window. Keeping that extra room
+        in every training item lets raw action pairs remain variable-length;
+        the encoder masks all padding and slices each batch to its actual max.
+        """
+        extension = (
+            max(
+                self.cfg.boundary_aug_early_start_pmax,
+                self.cfg.boundary_aug_late_end_pmax,
+            )
+            if self.cfg.pair_loss != "none"
+            else 0
+        )
+        pad_steps = int(round(self.cfg.length_max)) + int(extension)
+        values = self._encoder_action_values(action)
+        if len(values) > pad_steps:
+            raise ValueError(
+                f"Action sequence length {len(values)} exceeds padded limit={pad_steps}."
+            )
+        padded = np.zeros((pad_steps, values.shape[-1]), dtype=np.float32)
+        padded[: len(values)] = values
+        return torch.from_numpy(padded)
 
     def _termination_targets(self, length: int, sample: np.ndarray) -> np.ndarray:
         distance_to_end = (length - 1 - sample).astype(np.float32)
@@ -3866,9 +5386,29 @@ class FSQTrajectoryDataset(Dataset):
         length = self.lengths[index]
         sample = self._sample_indices(length)
         raw_state = self.states[index][sample, : self.cfg.state_dim]
+        prev_action = self.previous_actions[index][sample, : self.cfg.action_dim]
+        if (
+            self.cfg.reconstructor_start_state
+            and self.cfg.reconstructor_start_state_conditioning == "adaln"
+        ):
+            # Absolute start pose keeps absolute-state statistics even in the
+            # zero-grounded autoencoder.  Applying the zero-grounded XYZ range
+            # to an absolute XYZ value would mix incompatible coordinates.
+            start_lo = np.asarray(self.cfg.state_min, dtype=np.float32)
+            start_hi = np.asarray(self.cfg.state_max, dtype=np.float32)
+        else:
+            # Legacy concat/chunk checkpoints used Stage-1 q01/q99 scaling.
+            start_lo, start_hi = self.state_q01, self.state_q99
         start_norm = self._quantile_norm(
-            self.states[index][0:1, : self.cfg.state_dim], self.state_q01, self.state_q99
+            self.states[index][0:1, : self.cfg.state_dim],
+            start_lo,
+            start_hi,
         )[0]
+        start_norm = scale_gripper_features(
+            start_norm,
+            gripper_weight=self.cfg.action_gripper_weight,
+            gripper_dims=N_GRIPPER_DIMS,
+        )
         start_state = np.zeros((len(sample), self.cfg.max_state_dim), dtype=np.float32)
         start_state[:, : self.cfg.state_dim] = start_norm
         progress = sample.astype(np.float32) / max(length - 1, 1)
@@ -3878,6 +5418,7 @@ class FSQTrajectoryDataset(Dataset):
             "length": torch.tensor(length, dtype=torch.long),
             "start_state": torch.from_numpy(start_state),
             "raw_state": torch.from_numpy(raw_state.copy()),
+            "prev_action": torch.from_numpy(prev_action.copy()),
             "actions": torch.from_numpy(self._action_chunks(self.actions[index], sample)),
             "progress": torch.from_numpy(progress),
             "termination": torch.from_numpy(termination),
@@ -3886,8 +5427,8 @@ class FSQTrajectoryDataset(Dataset):
         }
         if self.reconstructor_ctrl is not None:
             item["reconstructor_ctrl"] = torch.from_numpy(self.reconstructor_ctrl[index])
-        if self.terminator_state_sequences is not None:
-            item["terminator_state_sequence"] = self.terminator_state_sequences[index]
+        if self.terminator_context_sequences is not None:
+            item["terminator_context_sequence"] = self.terminator_context_sequences[index]
             item["terminator_progress"] = self.terminator_progress_targets[index]
             item["terminator_termination"] = self.terminator_end_targets[index]
         elif (
@@ -3908,19 +5449,30 @@ class FSQTrajectoryDataset(Dataset):
                 min_length=max(1, int(round(self.cfg.length_min))),
                 distribution=self.cfg.boundary_aug_distribution,
             )
-            augmented_ctrl, augmented_length = spline_encode(
-                augmented,
-                self.cfg.n_control,
-                self.cfg.spline_degree,
-                input_mode=self.cfg.encoder_input_mode,
-            )
-            augmented_ctrl = (
-                2.0
-                * (augmented_ctrl - self.encoder_min)
-                / (self.encoder_max - self.encoder_min + 1e-8)
-                - 1.0
-            ).astype(np.float32)
-            item["augmented_ctrl"] = torch.from_numpy(augmented_ctrl)
+            if self.cfg.encoder_arch == "action_seq":
+                augmented_length = len(augmented)
+                item["augmented_action_seq"] = self._padded_encoder_action_sequence(
+                    augmented
+                )
+            else:
+                augmented_ctrl, augmented_length = spline_encode(
+                    augmented,
+                    self.cfg.n_control,
+                    self.cfg.spline_degree,
+                    input_mode=self.cfg.encoder_input_mode,
+                )
+                augmented_ctrl = (
+                    2.0
+                    * (augmented_ctrl - self.encoder_min)
+                    / (self.encoder_max - self.encoder_min + 1e-8)
+                    - 1.0
+                ).astype(np.float32)
+                augmented_ctrl = scale_gripper_features(
+                    augmented_ctrl,
+                    gripper_weight=self.cfg.action_gripper_weight,
+                    gripper_dims=N_GRIPPER_DIMS,
+                )
+                item["augmented_ctrl"] = torch.from_numpy(augmented_ctrl)
             item["augmented_length"] = torch.tensor(augmented_length, dtype=torch.long)
             item["augmentation_boundary"] = torch.tensor(boundary, dtype=torch.long)
             item["augmentation_offset"] = torch.tensor(offset, dtype=torch.long)
@@ -3947,7 +5499,12 @@ class FSQTrajectoryDataset(Dataset):
                     # masks its negative component for true singleton episodes.
                     negative_index = index
                     negative_valid = False
-                item["negative_ctrl"] = torch.from_numpy(self.ctrl[negative_index])
+                if self.cfg.encoder_arch == "action_seq":
+                    item["negative_action_seq"] = self._padded_encoder_action_sequence(
+                        self.actions[negative_index]
+                    )
+                else:
+                    item["negative_ctrl"] = torch.from_numpy(self.ctrl[negative_index])
                 item["negative_length"] = torch.tensor(
                     self.lengths[negative_index], dtype=torch.long
                 )
@@ -3957,18 +5514,32 @@ class FSQTrajectoryDataset(Dataset):
                 item["negative_trajectory_index"] = torch.tensor(
                     negative_index, dtype=torch.long
                 )
-                if self.start_poses is not None:
+                if self.start_poses is not None and self.cfg.encoder_arch == "spline":
                     item["negative_start_pose"] = torch.from_numpy(
                         self.start_poses[negative_index]
                     )
         if getattr(self.cfg, "encoder_arch", "spline") == "action_seq":
-            # Full normalized action sequence padded to length_max; the encoder
-            # slices to the batch max and masks padding.
-            pad_steps = int(round(self.cfg.length_max))
-            action = self._quantile_norm(self.actions[index], self.action_q01, self.action_q99)
-            padded = np.zeros((pad_steps, action.shape[-1]), dtype=np.float32)
-            padded[: len(action)] = action[:pad_steps]
-            item["encoder_action_seq"] = torch.from_numpy(padded)
+            # Full sequence padded to length_max; the encoder slices to the
+            # batch max and masks padding. The matched action_seq pair is raw
+            # for action and normalized/scaled for norm_action; historical
+            # action_seq->chunk remains q01/q99 normalized.
+            item["encoder_action_seq"] = self._padded_encoder_action_sequence(
+                self.actions[index]
+            )
+        if (
+            is_action_sequence_reconstructor_arch(self.cfg.reconstructor_arch)
+            and not self.cfg.terminator_only
+        ):
+            # Raw reconstruction target. Reuse the encoder tensor when present;
+            # the matched architecture guarantees it has the same convention.
+            if "encoder_action_seq" in item:
+                item["reconstructor_action_seq"] = item["encoder_action_seq"]
+            else:
+                pad_steps = int(round(self.cfg.length_max))
+                action = self.actions[index]
+                padded = np.zeros((pad_steps, action.shape[-1]), dtype=np.float32)
+                padded[: len(action)] = action
+                item["reconstructor_action_seq"] = torch.from_numpy(padded)
         return item
 
 
@@ -4011,6 +5582,97 @@ def fsq_pair_weight_at_epoch(
     return float(target_weight) * progress
 
 
+def reconstruction_route_distortions(
+    output: dict[str, Tensor],
+    batch: dict[str, Tensor | None],
+    cfg: SplineFSQAEConfig,
+) -> Tensor:
+    """Return detached per-trajectory reconstruction costs for every code.
+
+    The result is shaped ``(B,K)`` regardless of the whole-skill decoder
+    architecture. Decoder candidates are produced without autograd; keeping
+    this helper explicit makes it hard to accidentally train every code toward
+    every target and collapse the prototypes to an average.
+    """
+    if is_action_sequence_reconstructor_arch(cfg.reconstructor_arch):
+        candidates = output.get("route_candidate_action_sequence")
+        if candidates is None:
+            raise ValueError(
+                "Route loss requires all-code action-sequence candidates."
+            )
+        steps = int(candidates.shape[2])
+        target = batch["reconstructor_action_seq"][:, :steps].to(candidates)
+        target = target[..., : cfg.action_dim]
+        positions = torch.arange(steps, device=candidates.device)[None]
+        valid = positions < batch["length"].to(candidates.device)[:, None]
+        squared = (
+            candidates[..., : cfg.action_dim].float()
+            - target[:, None].float()
+        ).square()
+        per_step = squared.mean(dim=-1)
+        return (
+            (per_step * valid[:, None].to(per_step.dtype)).sum(dim=-1)
+            / valid.sum(dim=-1, keepdim=True).clamp_min(1)
+        ).detach()
+
+    if cfg.reconstructor_arch == "oneshot":
+        candidates = output.get("route_candidate_ctrl")
+        if candidates is None:
+            raise ValueError(
+                "Route loss requires all-code control-point candidates."
+            )
+        target = batch["reconstructor_ctrl"].to(candidates)
+        return (
+            candidates.float() - target[:, None].float()
+        ).square().mean(dim=(-1, -2)).detach()
+
+    raise ValueError(
+        "Route loss requires a whole-skill reconstructor, got "
+        f"{cfg.reconstructor_arch!r}."
+    )
+
+
+def termination_route_distortions(
+    output: dict[str, Tensor],
+    batch: dict[str, Tensor | None],
+    cfg: SplineFSQAEConfig,
+) -> Tensor:
+    """Return detached per-trajectory termination BCE for every candidate code."""
+    candidates = output.get("route_candidate_term_logits")
+    if candidates is None:
+        raise ValueError(
+            "Joint route loss requires all-code termination-logit candidates."
+        )
+    if candidates.ndim != 3:
+        raise ValueError(
+            "Termination route candidates must have shape (B,K,T), got "
+            f"{tuple(candidates.shape)}."
+        )
+    pos_weight = torch.as_tensor(
+        cfg.end_pos_weight, device=candidates.device, dtype=candidates.dtype
+    )
+    if cfg.state_rnn_terminator:
+        steps = int(candidates.shape[-1])
+        target = batch["terminator_termination"][:, :steps].to(candidates)
+        positions = torch.arange(steps, device=candidates.device)[None]
+        valid = positions < batch["length"].to(candidates.device)[:, None]
+    else:
+        target = batch["termination"].reshape(
+            candidates.shape[0], candidates.shape[-1]
+        ).to(candidates)
+        valid = torch.ones_like(target, dtype=torch.bool)
+    per_step = F.binary_cross_entropy_with_logits(
+        candidates,
+        target[:, None].expand_as(candidates),
+        reduction="none",
+        pos_weight=pos_weight,
+    )
+    return (
+        (per_step * valid[:, None].to(per_step.dtype)).sum(dim=-1)
+        / valid.sum(dim=-1, keepdim=True).clamp_min(1)
+    ).detach()
+
+
 def fsq_reconstruction_loss(
     output: dict[str, Tensor],
     batch: dict[str, Tensor | None],
@@ -4024,6 +5686,38 @@ def fsq_reconstruction_loss(
     ctrl_diag: dict[str, Tensor] = {}
     if cfg.terminator_only:
         action_loss = torch.zeros((), device=pred.device, dtype=pred.dtype)
+    elif is_action_sequence_reconstructor_arch(
+        getattr(cfg, "reconstructor_arch", "chunk")
+    ):
+        sequence_pred = output["action_sequence_hat"]
+        steps = int(sequence_pred.shape[1])
+        sequence_target = batch["reconstructor_action_seq"][:, :steps].to(sequence_pred)
+        sequence_target = sequence_target[..., : cfg.action_dim]
+        positions = torch.arange(steps, device=sequence_pred.device)[None]
+        valid = positions < batch["length"].to(sequence_pred.device)[:, None]
+        squared = (sequence_pred - sequence_target).square()
+        per_step = squared.mean(dim=-1)
+        per_trajectory = (
+            (per_step * valid.to(per_step.dtype)).sum(dim=1)
+            / valid.sum(dim=1).clamp_min(1)
+        )
+        action_loss = per_trajectory.mean()
+
+        def masked_group_mean(start: int, stop: int) -> Tensor:
+            group = squared[..., start:stop]
+            if group.shape[-1] == 0:
+                return squared.new_zeros(())
+            mask = valid[..., None].to(group.dtype)
+            return (group * mask).sum() / (
+                valid.sum().clamp_min(1) * group.shape[-1]
+            )
+
+        ctrl_diag = {
+            "action_xyz": masked_group_mean(0, min(3, cfg.action_dim)).detach(),
+            "action_rpy": masked_group_mean(3, min(6, cfg.action_dim)).detach(),
+            "action_gripper": masked_group_mean(6, cfg.action_dim).detach(),
+            "action_mean_valid_length": valid.sum(dim=1).float().mean().detach(),
+        }
     elif getattr(cfg, "reconstructor_arch", "chunk") == "oneshot":
         # One ctrl-grid reconstruction per trajectory; occupies the 'action'
         # metric/weight slot so selection, prints, and wandb panels carry over.
@@ -4135,6 +5829,91 @@ def fsq_reconstruction_loss(
         if deltas:
             metrics["skill_shuffle_mean_delta"] = torch.stack(deltas).mean().detach()
         metrics["skill_shuffle_valid_fraction"] = trajectory_valid.float().mean().detach()
+    if cfg.route_loss:
+        if output.get("u_cont") is None:
+            raise ValueError(
+                "Route loss requires continuous quantizer coordinates."
+            )
+        reconstruction_distortions = reconstruction_route_distortions(
+            output, batch, cfg
+        )
+        termination_distortions = None
+        joint_distortions = (
+            cfg.action_loss_weight * reconstruction_distortions
+        )
+        if (
+            not cfg.reconstructor_only
+            and cfg.terminator_termination
+            and cfg.end_loss_weight != 0.0
+        ):
+            termination_distortions = termination_route_distortions(
+                output, batch, cfg
+            )
+            joint_distortions = (
+                joint_distortions
+                + cfg.end_loss_weight * termination_distortions
+            )
+        if cfg.quantizer == "bsq":
+            route_probabilities = bsq_joint_soft_assignments(
+                output["u_cont"], cfg.pair_inv_temperature
+            )
+        else:
+            route_probabilities = fsq_joint_soft_assignments(
+                output["u_cont"],
+                cfg.fsq_levels,
+                cfg.pair_inv_temperature,
+            )
+        if route_probabilities.shape != joint_distortions.shape:
+            raise ValueError(
+                "Route probability/distortion shapes do not match: "
+                f"{tuple(route_probabilities.shape)} vs "
+                f"{tuple(joint_distortions.shape)}."
+            )
+        reconstruction_route_component = (
+            route_probabilities
+            * reconstruction_distortions.to(route_probabilities)
+        ).sum(dim=-1).mean()
+        termination_route_loss = None
+        if termination_distortions is not None:
+            termination_route_loss = (
+                route_probabilities
+                * termination_distortions.to(route_probabilities)
+            ).sum(dim=-1).mean()
+        route_loss = (
+            route_probabilities
+            * joint_distortions.to(route_probabilities)
+        ).sum(dim=-1).mean()
+        # Candidate distortions are detached, so this term updates only the
+        # soft encoder assignment. The ordinary selected-code losses above
+        # remain responsible for training the reconstructor and terminator.
+        total = total + route_loss
+
+        oracle_distortion, oracle_code = joint_distortions.min(dim=-1)
+        hard_code = output["indices"].long()
+        hard_distortion = joint_distortions.gather(
+            1, hard_code[:, None]
+        ).squeeze(1)
+        oracle_probability = route_probabilities.gather(
+            1, oracle_code[:, None]
+        ).squeeze(1)
+        metrics.update(
+            {
+                "route_loss": route_loss.detach(),
+                "route_weighted_loss": route_loss.detach(),
+                "route_reconstruction_loss": reconstruction_route_component.detach(),
+                "route_hard_distortion": hard_distortion.mean().detach(),
+                "route_oracle_distortion": oracle_distortion.mean().detach(),
+                "route_regret": (
+                    hard_distortion - oracle_distortion
+                ).mean().detach(),
+                "route_oracle_code_agreement": (
+                    hard_code == oracle_code
+                ).float().mean().detach(),
+                "route_oracle_probability": oracle_probability.mean().detach(),
+            }
+        )
+        if termination_route_loss is not None:
+            metrics["route_termination_loss"] = termination_route_loss.detach()
     if getattr(cfg, "fsq_entropy", False) and output.get("u_cont") is not None:
         sample_entropies, dataset_entropy = fsq_entropy_statistics(
             output["u_cont"],
@@ -4274,6 +6053,17 @@ def fsq_reconstruction_loss(
         metrics["pair_code_agreement"] = (
             output["indices"] == output["augmented_indices"]
         ).float().mean().detach()
+        metrics["pair_forward_skipped"] = pair_loss.new_zeros(()).detach()
+    elif getattr(cfg, "pair_loss", "none") != "none":
+        effective_pair_weight = cfg.pair_weight if pair_weight is None else pair_weight
+        if effective_pair_weight > 0.0:
+            raise ValueError(
+                "A positive FSQ pair weight requires augmented pair coordinates."
+            )
+        zero = total.new_zeros(())
+        metrics["pair_weighted_loss"] = zero.detach()
+        metrics["pair_weight"] = zero.detach()
+        metrics["pair_forward_skipped"] = total.new_ones(()).detach()
     metrics["loss"] = total.detach()
     return total, metrics
 
@@ -4397,11 +6187,7 @@ def calibrate_fsq_z_head_(
             enabled=device.type == "cuda",
         ):
             if action_seq_arch:
-                lo, hi = dataset.action_q01, dataset.action_q99
-                actions = [
-                    2.0 * (dataset.actions[i] - lo) / (hi - lo + 1e-8) - 1.0
-                    for i in ids
-                ]
+                actions = [dataset.encoder_action_values(i) for i in ids]
                 steps = max(len(action) for action in actions)
                 padded = np.zeros(
                     (len(actions), steps, actions[0].shape[-1]), dtype=np.float32
@@ -4478,11 +6264,7 @@ def _collect_code_assignments(
                 dataset.lengths[start:stop], dtype=torch.long, device=device
             )
             if action_seq_arch:
-                lo, hi = dataset.action_q01, dataset.action_q99
-                acts = [
-                    2.0 * (dataset.actions[i] - lo) / (hi - lo + 1e-8) - 1.0
-                    for i in range(start, stop)
-                ]
+                acts = [dataset.encoder_action_values(i) for i in range(start, stop)]
                 steps = max(len(a) for a in acts)
                 batch = np.zeros((len(acts), steps, acts[0].shape[-1]), dtype=np.float32)
                 for row, a in enumerate(acts):
@@ -4760,6 +6542,13 @@ def train_spline_fsqae(
                 {"effective_samples_per_skill": 1},
                 allow_val_change=True,
             )
+    all_initial_previous_actions = None
+    if not cfg.reconstructor_only and cfg.terminator_context == "prev_action":
+        all_initial_previous_actions = build_skill_initial_previous_actions(
+            decoder_targets,
+            metadata,
+            cfg.action_dim,
+        )
     n_val = max(1, int(len(segments) * cfg.val_split))
     if len(metadata) == len(segments) and cfg.pair_loss == "contrastive":
         train_ids, val_ids = episode_grouped_train_val_ids(metadata, n_val)
@@ -4815,12 +6604,16 @@ def train_spline_fsqae(
 
     def dataset(ids: list[int], training: bool) -> FSQTrajectoryDataset:
         selected_segments = take(segments, ids)
+        selected_actions = take(decoder_targets, ids)
         selected_metadata = take(metadata, ids)
         boundary_contexts = None
         adjacent_skill_indices = None
         if training and cfg.pair_loss != "none":
+            boundary_source = (
+                selected_actions if cfg.encoder_arch == "action_seq" else selected_segments
+            )
             boundary_contexts = build_boundary_augmentation_contexts(
-                selected_segments,
+                boundary_source,
                 selected_metadata,
                 cfg.boundary_aug_pmax,
             )
@@ -4835,11 +6628,12 @@ def train_spline_fsqae(
         return FSQTrajectoryDataset(
             selected_segments,
             take(decoder_states, ids),
-            take(decoder_targets, ids),
+            selected_actions,
             selected_metadata,
             raw_dataset_dir,
             cfg,
             training=training,
+            initial_previous_actions=take(all_initial_previous_actions, ids),
             boundary_contexts=boundary_contexts,
             adjacent_skill_indices=adjacent_skill_indices,
         )
@@ -4936,15 +6730,15 @@ def train_spline_fsqae(
         print("[FSQ-v3] z_head init calibration: disabled")
 
     param_groups = [
-        {"params": model.encoder.parameters(), "lr": cfg.encoder_lr, "name": "encoder"},
+        {"params": model.encoder.parameters(), "lr": cfg.lr, "name": "encoder"},
     ]
     if model.reconstructor is not None:
         param_groups.append(
-            {"params": model.reconstructor.parameters(), "lr": cfg.reconstructor_lr, "name": "reconstructor"}
+            {"params": model.reconstructor.parameters(), "lr": cfg.lr, "name": "reconstructor"}
         )
     if model.terminator is not None:
         param_groups.append(
-            {"params": model.terminator.parameters(), "lr": cfg.terminator_lr, "name": "terminator"}
+            {"params": model.terminator.parameters(), "lr": cfg.lr, "name": "terminator"}
         )
     optimizer = torch.optim.AdamW(
         param_groups,
@@ -4964,6 +6758,28 @@ def train_spline_fsqae(
     if resume_from:
         checkpoint = torch.load(resume_from, map_location="cpu", weights_only=False)
         resume_cfg = _checkpoint_config(checkpoint)
+        resume_directional_pmaxes = resolve_boundary_augmentation_pmaxes(
+            getattr(resume_cfg, "boundary_aug_pmax", 0),
+            early_start_pmax=getattr(
+                resume_cfg, "boundary_aug_early_start_pmax", -1
+            ),
+            late_start_pmax=getattr(
+                resume_cfg, "boundary_aug_late_start_pmax", -1
+            ),
+            early_end_pmax=getattr(
+                resume_cfg, "boundary_aug_early_end_pmax", -1
+            ),
+            late_end_pmax=getattr(
+                resume_cfg, "boundary_aug_late_end_pmax", -1
+            ),
+        )
+        (
+            resume_cfg.boundary_aug_early_start_pmax,
+            resume_cfg.boundary_aug_late_start_pmax,
+            resume_cfg.boundary_aug_early_end_pmax,
+            resume_cfg.boundary_aug_late_end_pmax,
+        ) = resume_directional_pmaxes
+        resume_cfg.boundary_aug_pmax = max(resume_directional_pmaxes)
         resume_input_mode = getattr(resume_cfg, "encoder_input_mode", "zero_grounded")
         if resume_input_mode != cfg.encoder_input_mode:
             raise ValueError(
@@ -4971,7 +6787,7 @@ def train_spline_fsqae(
                 f"checkpoint={resume_input_mode!r}, current={cfg.encoder_input_mode!r}."
             )
         if (
-            cfg.encoder_input_mode in {"zero_grounded", "optimal"}
+            cfg.encoder_input_mode in {"zero_grounded", "start_grounded", "optimal"}
             and resume_cfg.encoder_grounding_convention
             != cfg.encoder_grounding_convention
         ):
@@ -5003,8 +6819,14 @@ def train_spline_fsqae(
             ("pair_warmup_epochs", 0),
             ("pair_ramp_epochs", 0),
             ("boundary_aug_pmax", 0),
+            ("boundary_aug_early_start_pmax", -1),
+            ("boundary_aug_late_start_pmax", -1),
+            ("boundary_aug_early_end_pmax", -1),
+            ("boundary_aug_late_end_pmax", -1),
             ("boundary_aug_distribution", "half_normal"),
             ("reconstructor_start_state", True),
+            ("reconstructor_start_state_conditioning", "concat"),
+            ("reconstructor_arch", "chunk"),
         ):
             resume_value = getattr(resume_cfg, probe, default)
             if resume_value != getattr(cfg, probe):
@@ -5176,9 +6998,19 @@ def train_spline_fsqae(
         epoch: int,
     ):
         moved = {k: (v.to(device, non_blocking=True) if isinstance(v, Tensor) else v) for k, v in batch.items()}
-        if training and cfg.pair_loss != "none" and "augmented_ctrl" not in moved:
+        positive_pair_key = (
+            "augmented_action_seq"
+            if cfg.encoder_arch == "action_seq"
+            else "augmented_ctrl"
+        )
+        negative_pair_key = (
+            "negative_action_seq"
+            if cfg.encoder_arch == "action_seq"
+            else "negative_ctrl"
+        )
+        if training and cfg.pair_loss != "none" and positive_pair_key not in moved:
             raise RuntimeError("Training batch is missing the configured FSQ augmentation pair.")
-        if training and cfg.pair_loss == "contrastive" and "negative_ctrl" not in moved:
+        if training and cfg.pair_loss == "contrastive" and negative_pair_key not in moved:
             raise RuntimeError(
                 "Training batch is missing the configured adjacent-skill negative pair."
             )
@@ -5186,6 +7018,7 @@ def train_spline_fsqae(
         m = cfg.samples_per_skill
         start_state = moved["start_state"].reshape(bsize * m, cfg.max_state_dim)
         raw_state = moved["raw_state"].reshape(bsize * m, cfg.state_dim)
+        prev_action = moved["prev_action"].reshape(bsize * m, cfg.action_dim)
         third = wrist = None
         if "third" in moved:
             third = moved["third"].reshape(bsize * m, *moved["third"].shape[2:])
@@ -5200,6 +7033,18 @@ def train_spline_fsqae(
                 dtype=moved["actions"].dtype,
             )
             time = torch.full((bsize * m,), 0.5, device=device)
+        effective_pair_weight = (
+            fsq_pair_weight_at_epoch(
+                cfg.pair_weight,
+                epoch,
+                cfg.pair_warmup_epochs,
+                cfg.pair_ramp_epochs,
+                enabled=cfg.pair_warmup,
+            )
+            if training and cfg.pair_loss != "none"
+            else 0.0
+        )
+        compute_pair_forward = effective_pair_weight > 0.0
         with torch.autocast(
             device_type=device.type,
             dtype=torch.bfloat16,
@@ -5211,35 +7056,43 @@ def train_spline_fsqae(
                 start_pose=moved.get("start_pose"),
                 start_state=start_state,
                 raw_state=raw_state,
+                prev_action=prev_action,
                 progress_target=moved["progress"].reshape(bsize * m),
                 third=third,
                 wrist=wrist,
                 samples_per_skill=m,
-                terminator_state_sequence=moved.get("terminator_state_sequence"),
+                terminator_context_sequence=moved.get("terminator_context_sequence"),
                 noise=noise,
                 time=time,
                 action_seq=moved.get("encoder_action_seq"),
-                augmented_ctrl=moved.get("augmented_ctrl"),
-                augmented_lengths=moved.get("augmented_length"),
-                augmented_start_pose=moved.get("augmented_start_pose"),
-                negative_ctrl=moved.get("negative_ctrl"),
-                negative_lengths=moved.get("negative_length"),
-                negative_start_pose=moved.get("negative_start_pose"),
+                augmented_ctrl=(
+                    moved.get("augmented_ctrl") if compute_pair_forward else None
+                ),
+                augmented_action_seq=(
+                    moved.get("augmented_action_seq") if compute_pair_forward else None
+                ),
+                augmented_lengths=(
+                    moved.get("augmented_length") if compute_pair_forward else None
+                ),
+                augmented_start_pose=(
+                    moved.get("augmented_start_pose") if compute_pair_forward else None
+                ),
+                negative_ctrl=(
+                    moved.get("negative_ctrl") if compute_pair_forward else None
+                ),
+                negative_action_seq=(
+                    moved.get("negative_action_seq") if compute_pair_forward else None
+                ),
+                negative_lengths=(
+                    moved.get("negative_length") if compute_pair_forward else None
+                ),
+                negative_start_pose=(
+                    moved.get("negative_start_pose") if compute_pair_forward else None
+                ),
                 # Diagnostic only: the visual frontend is shared between the
                 # true/shuffled passes, so validation adds one lightweight
                 # terminator/fusion pass but never a second ResNet/DINO call.
                 compute_skill_shuffle=not training,
-            )
-            effective_pair_weight = (
-                fsq_pair_weight_at_epoch(
-                    cfg.pair_weight,
-                    epoch,
-                    cfg.pair_warmup_epochs,
-                    cfg.pair_ramp_epochs,
-                    enabled=cfg.pair_warmup,
-                )
-                if training and cfg.pair_loss != "none"
-                else 0.0
             )
             loss, metrics = fsq_reconstruction_loss(
                 output,

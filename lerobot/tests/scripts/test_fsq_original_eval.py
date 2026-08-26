@@ -28,7 +28,7 @@ def _write_skills(root: Path, count: int = 8) -> tuple[Path, list[np.ndarray], l
         pose = np.sin(2 * np.pi * (t + i / 5.0) * harmonics[None]).astype(np.float32)
         gripper = np.tile((t > 0.5).astype(np.float32), (1, 2)) * 0.04
         states = np.concatenate([pose, gripper], axis=1).astype(np.float32)
-        acts = rng.normal(size=(length, 7)).astype(np.float32)
+        acts = rng.uniform(-1.0, 1.0, size=(length, 7)).astype(np.float32)
         segments.append(states)
         actions.append(acts)
         np.savez(
@@ -48,7 +48,6 @@ def _checkpoint(
     prep = np.concatenate([prepare_encoder_trajectory(s, mode) for s in segments])
     starts = np.stack([encoder_grounding_position(s) for s in segments])
     lengths = [len(s) for s in segments]
-    all_actions = np.concatenate(actions)
     cfg = FSQOriginalConfig(
         enc_dim=8, n_control=12, hidden_dim=32, fsq_levels=[3, 3, 3],
         quantizer=quantizer, bsq_code_dim=4, encoder_arch=encoder_arch,
@@ -57,13 +56,14 @@ def _checkpoint(
         length_min=float(min(lengths)), length_max=float(max(lengths)),
         encoder_min=prep.min(0), encoder_max=prep.max(0),
         encoder_start_min=starts.min(0), encoder_start_max=starts.max(0),
-        action_q01=np.quantile(all_actions, 0.01, axis=0).astype(np.float32),
-        action_q99=np.quantile(all_actions, 0.99, axis=0).astype(np.float32),
         device="cpu",
     )
     model = SplineFSQOriginalAE(cfg)
     path = tmp / f"FSQ_epoch0001_{arch}_{quantizer}_{encoder_arch}.pt"
-    torch.save({"format_version": 1, "cfg": cfg, "model_state": model.state_dict()}, str(path))
+    torch.save(
+        {"format_version": cfg.format_version, "cfg": cfg, "model_state": model.state_dict()},
+        str(path),
+    )
     return path
 
 

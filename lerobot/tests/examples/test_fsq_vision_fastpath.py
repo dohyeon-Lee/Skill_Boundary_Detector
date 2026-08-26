@@ -18,6 +18,7 @@ from FSQ_original import FSQOriginalConfig  # noqa: E402
 from FSQ import (  # noqa: E402
     BSQ,
     BoundaryAugmentationContext,
+    CausalActionSequenceTransformerDecoder,
     DtypeAlignedRMSNorm,
     FSQStateRNNTerminator,
     FSQTrajectoryDataset,
@@ -31,6 +32,7 @@ from FSQ import (  # noqa: E402
     bsq_js_pair_loss,
     build_adjacent_skill_indices,
     build_boundary_augmentation_contexts,
+    build_skill_initial_previous_actions,
     calibrate_fsq_z_head_,
     episode_grouped_train_val_ids,
     fsq_entropy_terms,
@@ -40,6 +42,8 @@ from FSQ import (  # noqa: E402
     fsq_pair_joint_overlaps,
     fsq_pair_weight_at_epoch,
     fsq_reconstruction_loss,
+    load_fsq_encoder,
+    normalize_action_sequence,
     sample_boundary_augmented_segment,
 )
 
@@ -659,6 +663,7 @@ def test_pair_dataset_refits_augmented_spline_only_during_training(monkeypatch) 
         raw_dataset_dir="unused",
         cfg=config,
         training=True,
+        initial_previous_actions=[np.zeros(7, dtype=np.float32)],
         boundary_contexts=[context],
     )[0]
     validation = FSQTrajectoryDataset(
@@ -669,6 +674,7 @@ def test_pair_dataset_refits_augmented_spline_only_during_training(monkeypatch) 
         raw_dataset_dir="unused",
         cfg=config,
         training=False,
+        initial_previous_actions=[np.zeros(7, dtype=np.float32)],
     )[0]
 
     assert training["length"].item() == 4
@@ -677,6 +683,48 @@ def test_pair_dataset_refits_augmented_spline_only_during_training(monkeypatch) 
     assert training["augmentation_offset"].item() == -2
     assert training["augmented_ctrl"].shape == training["ctrl"].shape
     assert "augmented_ctrl" not in validation
+
+
+def test_previous_action_context_crosses_skill_boundary_and_bos_only_at_episode_start() -> None:
+    states = [np.zeros((2, 8), dtype=np.float32) for _ in range(2)]
+    actions = [
+        np.asarray([[0.1] * 7, [0.2] * 7], dtype=np.float32),
+        np.asarray([[0.3] * 7, [0.4] * 7], dtype=np.float32),
+    ]
+    metadata = [
+        {
+            "episode_id": 0,
+            "task_id": 0,
+            "skill_index": 0,
+            "frame_start": 0,
+            "frame_end": 2,
+        },
+        {
+            "episode_id": 0,
+            "task_id": 0,
+            "skill_index": 1,
+            "frame_start": 2,
+            "frame_end": 4,
+        },
+    ]
+    initial = build_skill_initial_previous_actions(actions, metadata, action_dim=7)
+    assert initial[0] is None
+    np.testing.assert_allclose(initial[1], actions[0][-1])
+
+    dataset = FSQTrajectoryDataset(
+        segments=states,
+        states=states,
+        actions=actions,
+        metadata=metadata,
+        raw_dataset_dir="unused",
+        cfg=_state_rnn_config(length_max=2.0),
+        training=False,
+        initial_previous_actions=initial,
+    )
+
+    np.testing.assert_allclose(dataset.previous_actions[0][0], 0.0)
+    np.testing.assert_allclose(dataset.previous_actions[1][0], actions[0][-1], atol=1e-7)
+    np.testing.assert_allclose(dataset.previous_actions[1][1], actions[1][0], atol=1e-7)
 
 
 def _state_rnn_config(**overrides) -> SplineFSQAEConfig:
@@ -718,6 +766,100 @@ def _state_rnn_config(**overrides) -> SplineFSQAEConfig:
     )
     values.update(overrides)
     return SplineFSQAEConfig(**values)
+
+
+@pytest.mark.parametrize(
+    ("mode", "input_mode"),
+    [("raw", "raw_state"), ("zero", "zero_grounded")],
+)
+def test_spline_autoencoders_weight_both_gripper_state_axes(
+    mode: str,
+    input_mode: str,
+) -> None:
+    common = dict(
+        autoencoder_mode=mode,
+        encoder_input_mode=input_mode,
+        reconstructor_arch="oneshot",
+        reconstructor_output_mode=input_mode,
+        reconstructor_start_state=False,
+        reconstructor_only=True,
+        terminator_only=False,
+        terminator_progress=False,
+        terminator_termination=False,
+        terminator_termination_only=False,
+        state_rnn_terminator=False,
+        samples_per_skill=1,
+    )
+    base_config = _state_rnn_config(**common, action_gripper_weight=1.0)
+    weighted_config = _state_rnn_config(**common, action_gripper_weight=0.25)
+    states = np.zeros((6, 8), dtype=np.float32)
+    states[:, :6] = np.linspace(-0.8, 0.8, 6)[:, None]
+    states[:, 6] = np.linspace(-1.0, 1.0, 6)
+    states[:, 7] = np.linspace(1.0, -1.0, 6)
+    actions = np.zeros((6, 7), dtype=np.float32)
+    metadata = [{"episode_id": 0, "task_id": 0, "skill_index": 0, "frame_start": 0}]
+
+    def item(config):
+        return FSQTrajectoryDataset(
+            segments=[states],
+            states=[states],
+            actions=[actions],
+            metadata=metadata,
+            raw_dataset_dir="unused",
+            cfg=config,
+            training=False,
+        )[0]
+
+    base = item(base_config)
+    weighted = item(weighted_config)
+    for key in ("ctrl", "reconstructor_ctrl"):
+        torch.testing.assert_close(weighted[key][..., :-2], base[key][..., :-2])
+        torch.testing.assert_close(
+            weighted[key][..., -2:], base[key][..., -2:] * 0.5
+        )
+    torch.testing.assert_close(
+        weighted["start_state"][..., :-2], base["start_state"][..., :-2]
+    )
+    torch.testing.assert_close(
+        weighted["start_state"][..., -2:], base["start_state"][..., -2:] * 0.5
+    )
+
+
+def test_adaln_start_state_uses_exact_state_minmax_not_legacy_quantiles() -> None:
+    config = _state_rnn_config(
+        reconstructor_arch="oneshot",
+        reconstructor_start_state=True,
+        reconstructor_start_state_conditioning="adaln",
+        samples_per_skill=1,
+        state_min=np.zeros(8, dtype=np.float32),
+        state_max=np.full(8, 10.0, dtype=np.float32),
+        state_q01=np.full(8, -100.0, dtype=np.float32),
+        state_q99=np.full(8, 100.0, dtype=np.float32),
+    )
+    states = np.full((4, 8), 5.0, dtype=np.float32)
+    dataset = FSQTrajectoryDataset(
+        segments=[states],
+        states=[states],
+        actions=[np.zeros((4, 7), dtype=np.float32)],
+        metadata=[{"episode_id": 0, "skill_index": 0, "frame_start": 0}],
+        raw_dataset_dir="unused",
+        cfg=config,
+        training=False,
+    )
+
+    torch.testing.assert_close(dataset[0]["start_state"], torch.zeros(1, 8))
+
+
+def test_resolved_autoencoder_mode_rejects_a_mixed_contract() -> None:
+    config = _state_rnn_config(
+        autoencoder_mode="raw",
+        reconstructor_arch="oneshot",
+        reconstructor_output_mode="zero_grounded",
+        reconstructor_start_state=False,
+    )
+
+    with pytest.raises(ValueError, match="autoencoder_mode='raw' requires"):
+        SplineFSQAE(config)
 
 
 def test_fsq_z_head_calibration_uses_clean_cached_trajectories() -> None:
@@ -770,9 +912,12 @@ def test_full_model_encodes_adjacent_negative_for_contrastive_mode(
     config = _state_rnn_config(
         quantizer=quantizer,
         bsq_code_dim=5,
+        autoencoder_mode="raw",
         reconstructor_arch="oneshot",
+        reconstructor_start_state=False,
         samples_per_skill=1,
         pair_loss="contrastive",
+        route_loss=True,
         boundary_aug_pmax=1,
         state_rnn_terminator=False,
         terminator_model="default",
@@ -799,6 +944,14 @@ def test_full_model_encodes_adjacent_negative_for_contrastive_mode(
     assert output["augmented_u_cont"].shape == output["u_cont"].shape
     assert output["negative_u_cont"].shape == output["u_cont"].shape
     assert output["negative_indices"].shape == output["indices"].shape
+    expected_codes = 27 if quantizer == "fsq" else 32
+    assert output["route_candidate_ctrl"].shape == (
+        2,
+        expected_codes,
+        config.n_control,
+        config.enc_dim,
+    )
+    assert output["route_candidate_ctrl"].requires_grad is False
 
 
 def test_state_rnn_model_builds_without_a_vision_encoder(monkeypatch) -> None:
@@ -847,8 +1000,10 @@ def test_state_rnn_dataset_caches_full_skill_and_skips_images(monkeypatch) -> No
     assert dataset.samples_per_skill == 1
     torch.testing.assert_close(item["sample_index"], torch.tensor([0]))
     assert "third" not in item and "wrist" not in item
-    assert item["terminator_state_sequence"].shape == (6, 8)
-    torch.testing.assert_close(item["terminator_state_sequence"][-4:], torch.from_numpy(states))
+    assert item["terminator_context_sequence"].shape == (6, 7)
+    torch.testing.assert_close(
+        item["terminator_context_sequence"], torch.zeros(6, 7)
+    )
     torch.testing.assert_close(
         item["terminator_progress"][:4],
         torch.tensor([0.0, 1 / 3, 2 / 3, 1.0]),
@@ -857,6 +1012,463 @@ def test_state_rnn_dataset_caches_full_skill_and_skips_images(monkeypatch) -> No
         item["terminator_termination"],
         torch.tensor([0.0, 0.0, 0.0, 1.0, 0.0, 0.0]),
     )
+
+
+@pytest.mark.parametrize(
+    "reconstructor_arch", ["action_seq", "action_seq_transformer"]
+)
+def test_action_sequence_autoencoder_uses_raw_values_and_masks_padding(
+    tmp_path: Path,
+    reconstructor_arch: str,
+) -> None:
+    config = _state_rnn_config(
+        encoder_arch="action_seq",
+        reconstructor_arch=reconstructor_arch,
+        autoencoder_mode=(
+            "action" if reconstructor_arch == "action_seq_transformer" else "legacy"
+        ),
+        encoder_input_mode=(
+            "zero_grounded"
+            if reconstructor_arch == "action_seq_transformer"
+            else "raw_state"
+        ),
+        reconstructor_output_mode=(
+            "zero_grounded"
+            if reconstructor_arch == "action_seq_transformer"
+            else "raw_state"
+        ),
+        reconstructor_start_state=False,
+        reconstructor_only=True,
+        terminator_only=False,
+        terminator_progress=False,
+        terminator_termination=False,
+        terminator_termination_only=False,
+        state_rnn_terminator=False,
+        samples_per_skill=1,
+        route_loss=True,
+        action_q01=np.full(7, -0.25, dtype=np.float32),
+        action_q99=np.full(7, 0.25, dtype=np.float32),
+    )
+    states = [
+        np.zeros((4, 8), dtype=np.float32),
+        np.zeros((3, 8), dtype=np.float32),
+    ]
+    actions = [
+        np.linspace(-0.9, 0.9, 4 * 7, dtype=np.float32).reshape(4, 7),
+        np.linspace(0.8, -0.8, 3 * 7, dtype=np.float32).reshape(3, 7),
+    ]
+    metadata = [
+        {"episode_id": i, "task_id": 0, "skill_index": 0, "frame_start": 0}
+        for i in range(2)
+    ]
+    dataset = FSQTrajectoryDataset(
+        segments=states,
+        states=states,
+        actions=actions,
+        metadata=metadata,
+        raw_dataset_dir="unused",
+        cfg=config,
+        training=False,
+    )
+    first, second = dataset[0], dataset[1]
+    np.testing.assert_array_equal(first["encoder_action_seq"][:4].numpy(), actions[0])
+    np.testing.assert_array_equal(first["reconstructor_action_seq"][:4].numpy(), actions[0])
+    model = SplineFSQAE(config)
+    np.testing.assert_array_equal(
+        model._prepare_actions_numpy(actions[0]).numpy(), actions[0]  # noqa: SLF001
+    )
+
+    batch = {
+        key: torch.stack([first[key], second[key]])
+        for key in first
+    }
+    output = model(
+        ctrl=batch["ctrl"],
+        lengths=batch["length"],
+        start_state=batch["start_state"].reshape(2, config.max_state_dim),
+        raw_state=batch["raw_state"].reshape(2, config.state_dim),
+        progress_target=batch["progress"].reshape(2),
+        third=None,
+        wrist=None,
+        samples_per_skill=1,
+        action_seq=batch["encoder_action_seq"],
+    )
+    assert output["action_sequence_hat"].shape == (2, 4, 7)
+    assert output["route_candidate_action_sequence"].shape == (2, 27, 4, 7)
+    assert output["route_candidate_action_sequence"].requires_grad is False
+    loss, metrics = fsq_reconstruction_loss(output, batch, config)
+    assert torch.isfinite(loss)
+    assert set(("action_xyz", "action_rpy", "action_gripper")).issubset(metrics)
+    assert torch.isfinite(metrics["route_loss"])
+
+    padded_changed = dict(batch)
+    padded_changed["reconstructor_action_seq"] = batch[
+        "reconstructor_action_seq"
+    ].clone()
+    padded_changed["reconstructor_action_seq"][1, 3:] = 1000.0
+    loss_with_bad_padding, _ = fsq_reconstruction_loss(output, padded_changed, config)
+    torch.testing.assert_close(loss_with_bad_padding, loss)
+
+    checkpoint = tmp_path / f"raw_{reconstructor_arch}.pt"
+    torch.save({"cfg": config, "model_state": model.state_dict()}, checkpoint)
+    encoder, loaded_config = load_fsq_encoder(checkpoint)
+    assert loaded_config.reconstructor_arch == reconstructor_arch
+    assert encoder.raw_actions is True
+    np.testing.assert_array_equal(
+        encoder._prepare_actions_numpy(actions[0]).numpy(), actions[0]  # noqa: SLF001
+    )
+
+
+def test_normalized_action_autoencoder_uses_one_transform_everywhere(
+    tmp_path: Path,
+) -> None:
+    q01 = np.array([-0.5] * 6 + [-1.0], dtype=np.float32)
+    q99 = np.array([0.5] * 6 + [1.0], dtype=np.float32)
+    config = _state_rnn_config(
+        encoder_arch="action_seq",
+        encoder_input_mode="zero_grounded",
+        autoencoder_mode="norm_action",
+        action_gripper_weight=0.1,
+        reconstructor_arch="action_seq_transformer",
+        reconstructor_output_mode="zero_grounded",
+        reconstructor_start_state=False,
+        reconstructor_only=True,
+        terminator_only=False,
+        terminator_progress=False,
+        terminator_termination=False,
+        terminator_termination_only=False,
+        state_rnn_terminator=False,
+        samples_per_skill=1,
+        action_q01=q01,
+        action_q99=q99,
+    )
+    states = np.zeros((2, 8), dtype=np.float32)
+    actions = np.array(
+        [
+            [0.0, 0.25, -0.25, 0.5, -0.5, 0.75, 1.0],
+            [0.75, -0.75, 0.1, -0.1, 0.0, 0.25, -1.0],
+        ],
+        dtype=np.float32,
+    )
+    expected = normalize_action_sequence(
+        actions,
+        q01,
+        q99,
+        gripper_weight=0.1,
+        clip=True,
+    )
+    dataset = FSQTrajectoryDataset(
+        segments=[states],
+        states=[states],
+        actions=[actions],
+        metadata=[{"episode_id": 0, "task_id": 0, "skill_index": 0, "frame_start": 0}],
+        raw_dataset_dir="unused",
+        cfg=config,
+        training=False,
+    )
+    item = dataset[0]
+
+    np.testing.assert_allclose(item["encoder_action_seq"][:2].numpy(), expected)
+    np.testing.assert_allclose(item["reconstructor_action_seq"][:2].numpy(), expected)
+    assert expected[:, :6].min() >= -1.0 and expected[:, :6].max() <= 1.0
+    np.testing.assert_allclose(
+        expected[:, -1], np.sqrt(0.1) * np.array([1.0, -1.0])
+    )
+
+    model = SplineFSQAE(config)
+    np.testing.assert_allclose(
+        model._prepare_actions_numpy(actions).numpy(),  # noqa: SLF001
+        expected,
+    )
+    checkpoint = tmp_path / "norm_action.pt"
+    torch.save({"cfg": config, "model_state": model.state_dict()}, checkpoint)
+    encoder, loaded_config = load_fsq_encoder(checkpoint)
+    assert loaded_config.autoencoder_mode == "norm_action"
+    assert loaded_config.action_gripper_weight == pytest.approx(0.1)
+    np.testing.assert_allclose(
+        encoder._prepare_actions_numpy(actions).numpy(),  # noqa: SLF001
+        expected,
+    )
+
+    class _FixedNormalizedDecoder(nn.Module):
+        state_dim = 0
+
+        def forward(self, z_norm, steps):
+            values = torch.zeros(
+                z_norm.shape[0], steps, config.action_dim, dtype=z_norm.dtype
+            )
+            values[..., -1] = np.sqrt(0.1)
+            return values, None
+
+    model.reconstructor = _FixedNormalizedDecoder()
+    decoded = model.sample_action_sequence(torch.zeros(1, 3), steps=2)
+    torch.testing.assert_close(decoded[..., :6], torch.zeros(1, 2, 6))
+    torch.testing.assert_close(decoded[..., -1], torch.ones(1, 2))
+
+
+def test_raw_action_autoencoder_weights_and_restores_gripper_command() -> None:
+    config = _state_rnn_config(
+        encoder_arch="action_seq",
+        encoder_input_mode="zero_grounded",
+        autoencoder_mode="action",
+        action_gripper_weight=0.25,
+        reconstructor_arch="action_seq_transformer",
+        reconstructor_output_mode="zero_grounded",
+        reconstructor_start_state=False,
+        reconstructor_only=True,
+        terminator_only=False,
+        terminator_progress=False,
+        terminator_termination=False,
+        terminator_termination_only=False,
+        state_rnn_terminator=False,
+        samples_per_skill=1,
+    )
+    states = np.zeros((2, 8), dtype=np.float32)
+    actions = np.array(
+        [[0.1] * 6 + [1.0], [-0.2] * 6 + [-1.0]], dtype=np.float32
+    )
+    dataset = FSQTrajectoryDataset(
+        segments=[states],
+        states=[states],
+        actions=[actions],
+        metadata=[{"episode_id": 0, "task_id": 0, "skill_index": 0, "frame_start": 0}],
+        raw_dataset_dir="unused",
+        cfg=config,
+        training=False,
+    )
+    expected = actions.copy()
+    expected[:, -1] *= 0.5
+    np.testing.assert_allclose(
+        dataset[0]["encoder_action_seq"][:2].numpy(), expected
+    )
+    np.testing.assert_allclose(
+        dataset[0]["reconstructor_action_seq"][:2].numpy(), expected
+    )
+
+    model = SplineFSQAE(config)
+    np.testing.assert_allclose(
+        model._prepare_actions_numpy(actions).numpy(),  # noqa: SLF001
+        expected,
+    )
+
+    class _FixedWeightedDecoder(nn.Module):
+        state_dim = 0
+
+        def forward(self, z_norm, steps):
+            values = torch.zeros(
+                z_norm.shape[0], steps, config.action_dim, dtype=z_norm.dtype
+            )
+            values[..., -1] = 0.5
+            return values, None
+
+    model.reconstructor = _FixedWeightedDecoder()
+    decoded = model.sample_action_sequence(torch.zeros(1, 3), steps=2)
+    torch.testing.assert_close(decoded[..., -1], torch.ones(1, 2))
+
+
+def test_causal_action_transformer_decoder_is_prefix_invariant() -> None:
+    torch.manual_seed(17)
+    decoder = CausalActionSequenceTransformerDecoder(
+        fsq_dim=3,
+        action_dim=7,
+        hidden_dim=32,
+        n_layers=2,
+        n_heads=4,
+        dropout=0.2,
+    ).eval()
+    z = torch.randn(4, 3)
+
+    short, short_term = decoder(z, steps=5)
+    long, long_term = decoder(z, steps=9)
+
+    assert short_term is None and long_term is None
+    assert short.shape == (4, 5, 7)
+    assert long.shape == (4, 9, 7)
+    torch.testing.assert_close(short, long[:, :5], atol=2e-6, rtol=2e-6)
+    assert long.abs().max() <= 1.0
+
+
+def test_causal_action_transformer_conditions_every_block_on_fsq_code() -> None:
+    torch.manual_seed(23)
+    decoder = CausalActionSequenceTransformerDecoder(
+        fsq_dim=3,
+        action_dim=7,
+        hidden_dim=32,
+        n_layers=3,
+        n_heads=4,
+        dropout=0.0,
+    )
+    z = torch.randn(4, 3, requires_grad=True)
+
+    actions, _ = decoder(z, steps=6)
+    actions.square().mean().backward()
+
+    assert z.grad is not None and torch.count_nonzero(z.grad) > 0
+    assert len(decoder.blocks) == 3
+    for block in decoder.blocks:
+        modulation = block.adaln[-1]
+        assert modulation.weight.grad is not None
+        assert torch.count_nonzero(modulation.weight.grad) > 0
+
+
+def test_causal_action_transformer_can_condition_every_block_on_start_state() -> None:
+    torch.manual_seed(29)
+    decoder = CausalActionSequenceTransformerDecoder(
+        fsq_dim=3,
+        action_dim=7,
+        hidden_dim=32,
+        n_layers=2,
+        n_heads=4,
+        dropout=0.0,
+        state_dim=8,
+    )
+    z = torch.randn(4, 3, requires_grad=True)
+    start_state = torch.randn(4, 8)
+
+    actions, _ = decoder(z, steps=6, start_state=start_state)
+    actions.square().mean().backward()
+
+    for block in decoder.blocks:
+        modulation = block.start_adaln[-1]
+        assert modulation.weight.grad is not None
+        assert torch.count_nonzero(modulation.weight.grad) > 0
+
+    with pytest.raises(ValueError, match="start-state"):
+        decoder(z.detach(), steps=2)
+
+
+def test_action_autoencoder_routes_codes_under_each_start_state_context() -> None:
+    config = _state_rnn_config(
+        encoder_arch="action_seq",
+        encoder_input_mode="zero_grounded",
+        autoencoder_mode="action",
+        reconstructor_arch="action_seq_transformer",
+        reconstructor_output_mode="zero_grounded",
+        reconstructor_start_state=True,
+        reconstructor_start_state_conditioning="adaln",
+        reconstructor_only=True,
+        terminator_only=False,
+        terminator_progress=False,
+        terminator_termination=False,
+        terminator_termination_only=False,
+        state_rnn_terminator=False,
+        samples_per_skill=1,
+        route_loss=True,
+    )
+    model = SplineFSQAE(config)
+    batch_size, steps = 2, 4
+    output = model(
+        ctrl=torch.zeros(batch_size, config.n_control, config.enc_dim),
+        lengths=torch.full((batch_size,), steps, dtype=torch.long),
+        start_state=torch.randn(batch_size, config.max_state_dim),
+        raw_state=torch.zeros(batch_size, config.state_dim),
+        progress_target=torch.zeros(batch_size),
+        third=None,
+        wrist=None,
+        samples_per_skill=1,
+        action_seq=torch.randn(batch_size, steps, config.action_dim),
+    )
+
+    assert output["action_sequence_hat"].shape == (
+        batch_size,
+        steps,
+        config.action_dim,
+    )
+    assert output["route_candidate_action_sequence"].shape == (
+        batch_size,
+        27,
+        steps,
+        config.action_dim,
+    )
+
+
+@pytest.mark.parametrize(
+    "reconstructor_arch", ["action_seq", "action_seq_transformer"]
+)
+def test_action_sequence_contrastive_pairs_use_raw_boundary_actions(
+    reconstructor_arch: str,
+) -> None:
+    config = _state_rnn_config(
+        encoder_arch="action_seq",
+        reconstructor_arch=reconstructor_arch,
+        reconstructor_only=True,
+        terminator_only=False,
+        terminator_progress=False,
+        terminator_termination=False,
+        terminator_termination_only=False,
+        state_rnn_terminator=False,
+        samples_per_skill=1,
+        pair_loss="contrastive",
+        boundary_aug_pmax=1,
+        boundary_aug_early_start_pmax=1,
+        boundary_aug_late_start_pmax=1,
+        boundary_aug_early_end_pmax=1,
+        boundary_aug_late_end_pmax=1,
+        action_q01=np.full(7, -0.1, dtype=np.float32),
+        action_q99=np.full(7, 0.1, dtype=np.float32),
+    )
+    states = [
+        np.zeros((4, 8), dtype=np.float32),
+        np.zeros((4, 8), dtype=np.float32),
+    ]
+    actions = [
+        np.full((4, 7), 0.8, dtype=np.float32),
+        np.full((4, 7), -0.7, dtype=np.float32),
+    ]
+    metadata = [
+        {
+            "episode_id": 0,
+            "task_id": 0,
+            "skill_index": i,
+            "frame_start": 4 * i,
+            "frame_end": 4 * (i + 1),
+        }
+        for i in range(2)
+    ]
+    dataset = FSQTrajectoryDataset(
+        segments=states,
+        states=states,
+        actions=actions,
+        metadata=metadata,
+        raw_dataset_dir="unused",
+        cfg=config,
+        training=True,
+        boundary_contexts=build_boundary_augmentation_contexts(
+            actions, metadata, pmax=1
+        ),
+        adjacent_skill_indices=build_adjacent_skill_indices(metadata),
+    )
+    items = [dataset[0], dataset[1]]
+    assert "augmented_action_seq" in items[0]
+    assert "negative_action_seq" in items[0]
+    assert "augmented_ctrl" not in items[0]
+    assert items[0]["encoder_action_seq"].shape == (7, 7)
+    assert items[0]["augmented_action_seq"].abs().max() <= 0.8
+    assert items[0]["negative_action_seq"].abs().max() <= 0.8
+
+    batch = {key: torch.stack([item[key] for item in items]) for key in items[0]}
+    model = SplineFSQAE(config)
+    output = model(
+        ctrl=batch["ctrl"],
+        lengths=batch["length"],
+        start_state=batch["start_state"].reshape(2, config.max_state_dim),
+        raw_state=batch["raw_state"].reshape(2, config.state_dim),
+        progress_target=batch["progress"].reshape(2),
+        third=None,
+        wrist=None,
+        samples_per_skill=1,
+        action_seq=batch["encoder_action_seq"],
+        augmented_action_seq=batch["augmented_action_seq"],
+        augmented_lengths=batch["augmented_length"],
+        negative_action_seq=batch["negative_action_seq"],
+        negative_lengths=batch["negative_length"],
+    )
+    loss, metrics = fsq_reconstruction_loss(output, batch, config)
+
+    assert torch.isfinite(loss)
+    assert output["augmented_u_cont"] is not None
+    assert output["negative_u_cont"] is not None
+    assert torch.isfinite(metrics["pair_loss"])
 
 
 def test_spline_encoder_input_and_reconstruction_output_are_independent() -> None:
@@ -976,6 +1588,176 @@ def test_reconstruction_action_loss_is_plain_sample_mean() -> None:
     assert "action_objective" not in metrics
 
 
+@pytest.mark.parametrize(
+    "reconstructor_arch", ["action_seq", "action_seq_transformer"]
+)
+def test_route_loss_updates_soft_assignment_not_candidates(
+    reconstructor_arch: str,
+) -> None:
+    config = SplineFSQAEConfig(
+        action_dim=1,
+        max_action_dim=1,
+        samples_per_skill=1,
+        fsq_levels=[3],
+        quantizer="fsq",
+        reconstructor_arch=reconstructor_arch,
+        route_loss=True,
+        pair_inv_temperature=5.0,
+        reconstructor_only=True,
+        terminator_progress=False,
+        terminator_termination=False,
+        action_loss_weight=1.0,
+        progress_loss_weight=0.0,
+        end_loss_weight=0.0,
+    )
+    bounded = torch.tensor([[0.45]], requires_grad=True)
+    candidates = torch.tensor(
+        [[[[0.0]], [[1.0]], [[2.0]]]], requires_grad=True
+    )
+    output = {
+        "actions": torch.zeros(1, 1, 1),
+        "action_sequence_hat": torch.zeros(1, 1, 1),
+        "route_candidate_action_sequence": candidates,
+        "u_cont": bounded,
+        "indices": torch.tensor([1]),
+        "progress": torch.zeros(1),
+        "term_logits": torch.zeros(1),
+    }
+    batch = {
+        "ctrl": torch.zeros(1, 1, 1),
+        "length": torch.tensor([1]),
+        "reconstructor_action_seq": torch.zeros(1, 1, 1),
+        "progress": torch.zeros(1, 1),
+        "termination": torch.zeros(1, 1),
+    }
+
+    loss, metrics = fsq_reconstruction_loss(output, batch, config)
+    loss.backward()
+
+    assert bounded.grad is not None and torch.count_nonzero(bounded.grad) > 0
+    assert candidates.grad is None
+    assert metrics["route_oracle_code_agreement"] == 0.0
+    assert metrics["route_regret"] > 0.0
+
+
+def test_joint_route_adds_weighted_termination_cost_without_training_candidates() -> None:
+    config = SplineFSQAEConfig(
+        action_dim=1,
+        max_action_dim=1,
+        samples_per_skill=1,
+        fsq_levels=[3],
+        quantizer="fsq",
+        reconstructor_arch="action_seq_transformer",
+        route_loss=True,
+        pair_inv_temperature=5.0,
+        reconstructor_only=False,
+        terminator_progress=False,
+        terminator_termination=True,
+        state_rnn_terminator=False,
+        action_loss_weight=2.0,
+        progress_loss_weight=0.0,
+        end_loss_weight=3.0,
+    )
+    bounded = torch.tensor([[0.45]], requires_grad=True)
+    reconstruction_candidates = torch.tensor(
+        [[[[0.0]], [[1.0]], [[2.0]]]], requires_grad=True
+    )
+    termination_candidates = torch.tensor(
+        [[[-4.0], [4.0], [0.0]]], requires_grad=True
+    )
+    output = {
+        "actions": torch.zeros(1, 1, 1),
+        "action_sequence_hat": torch.zeros(1, 1, 1),
+        "route_candidate_action_sequence": reconstruction_candidates,
+        "route_candidate_term_logits": termination_candidates,
+        "u_cont": bounded,
+        "indices": torch.tensor([0]),
+        "progress": torch.zeros(1),
+        "term_logits": torch.zeros(1),
+    }
+    batch = {
+        "ctrl": torch.zeros(1, 1, 1),
+        "length": torch.tensor([1]),
+        "reconstructor_action_seq": torch.zeros(1, 1, 1),
+        "progress": torch.zeros(1, 1),
+        "termination": torch.ones(1, 1),
+    }
+
+    loss, metrics = fsq_reconstruction_loss(output, batch, config)
+    loss.backward()
+
+    torch.testing.assert_close(
+        metrics["route_loss"],
+        2.0 * metrics["route_reconstruction_loss"]
+        + 3.0 * metrics["route_termination_loss"],
+    )
+    assert metrics["route_oracle_code_agreement"] == 0.0
+    assert bounded.grad is not None and torch.count_nonzero(bounded.grad) > 0
+    assert reconstruction_candidates.grad is None
+    assert termination_candidates.grad is None
+
+
+def test_legacy_checkpoint_route_flag_is_migrated() -> None:
+    config = SplineFSQAEConfig()
+    vars(config).pop("route_loss")
+    vars(config)["reconstruction_route_loss"] = True
+
+    loaded = fsq_module._checkpoint_config({"cfg": config})
+
+    assert loaded.route_loss is True
+
+
+def test_oneshot_route_loss_uses_the_same_b_by_k_contract() -> None:
+    config = SplineFSQAEConfig(
+        action_dim=1,
+        max_action_dim=1,
+        enc_dim=1,
+        n_control=2,
+        samples_per_skill=1,
+        fsq_levels=[3],
+        quantizer="fsq",
+        reconstructor_arch="oneshot",
+        route_loss=True,
+        pair_inv_temperature=5.0,
+        reconstructor_only=True,
+        terminator_progress=False,
+        terminator_termination=False,
+        action_loss_weight=1.0,
+        progress_loss_weight=0.0,
+        end_loss_weight=0.0,
+    )
+    bounded = torch.tensor([[-0.45], [0.45]], requires_grad=True)
+    candidates = torch.tensor(
+        [
+            [[[-1.0], [-1.0]], [[0.0], [0.0]], [[1.0], [1.0]]],
+            [[[-1.0], [-1.0]], [[0.0], [0.0]], [[1.0], [1.0]]],
+        ]
+    )
+    target = torch.tensor([[[-1.0], [-1.0]], [[1.0], [1.0]]])
+    output = {
+        "actions": torch.zeros(2, 1, 1),
+        "ctrl_hat": target.clone(),
+        "route_candidate_ctrl": candidates,
+        "u_cont": bounded,
+        "indices": torch.tensor([1, 1]),
+        "progress": torch.zeros(2),
+        "term_logits": torch.zeros(2),
+    }
+    batch = {
+        "ctrl": torch.zeros(2, 2, 1),
+        "reconstructor_ctrl": target,
+        "progress": torch.zeros(2, 1),
+        "termination": torch.zeros(2, 1),
+    }
+
+    loss, metrics = fsq_reconstruction_loss(output, batch, config)
+    loss.backward()
+
+    assert bounded.grad is not None and torch.count_nonzero(bounded.grad) > 0
+    assert metrics["route_oracle_code_agreement"] == 0.0
+    torch.testing.assert_close(metrics["route_oracle_distortion"], torch.tensor(0.0))
+
+
 def test_zero_scheduled_pair_weight_keeps_overlap_diagnostic_but_not_objective() -> None:
     config = SplineFSQAEConfig(
         action_dim=1,
@@ -1013,6 +1795,46 @@ def test_zero_scheduled_pair_weight_keeps_overlap_diagnostic_but_not_objective()
     assert metrics["pair_overlap_loss"] > 0
     torch.testing.assert_close(metrics["pair_weight"], torch.tensor(0.0))
     torch.testing.assert_close(metrics["pair_weighted_loss"], torch.tensor(0.0))
+    torch.testing.assert_close(metrics["pair_forward_skipped"], torch.tensor(0.0))
+
+
+def test_zero_scheduled_pair_weight_can_skip_pair_forward() -> None:
+    config = SplineFSQAEConfig(
+        action_dim=1,
+        max_action_dim=1,
+        chunk_size=1,
+        samples_per_skill=1,
+        action_loss_weight=1.0,
+        progress_loss_weight=0.0,
+        end_loss_weight=0.0,
+        pair_loss="overlap",
+        pair_weight=0.1,
+        fsq_levels=[3],
+    )
+    output = {
+        "actions": torch.tensor([[[1.0]]]),
+        "progress": torch.zeros(1),
+        "term_logits": torch.zeros(1),
+        "indices": torch.tensor([1]),
+    }
+    batch = {
+        "ctrl": torch.zeros(1, 1, 1),
+        "actions": torch.zeros(1, 1, 1, 1),
+        "progress": torch.zeros(1, 1),
+        "termination": torch.zeros(1, 1),
+    }
+
+    loss, metrics = fsq_reconstruction_loss(
+        output, batch, config, pair_weight=0.0
+    )
+
+    torch.testing.assert_close(loss, torch.tensor(1.0))
+    torch.testing.assert_close(metrics["pair_weight"], torch.tensor(0.0))
+    torch.testing.assert_close(metrics["pair_weighted_loss"], torch.tensor(0.0))
+    torch.testing.assert_close(metrics["pair_forward_skipped"], torch.tensor(1.0))
+
+    with pytest.raises(ValueError, match="positive FSQ pair weight"):
+        fsq_reconstruction_loss(output, batch, config, pair_weight=0.01)
 
 
 def test_js_pair_loss_is_selected_as_the_weighted_objective() -> None:
@@ -1263,6 +2085,7 @@ def test_bsq_fusion_full_model_emits_shuffle_diagnostics_with_one_vision_call(
         start_pose=None,
         start_state=torch.randn(bsize * samples, config.max_state_dim),
         raw_state=torch.randn(bsize * samples, config.state_dim),
+        prev_action=torch.zeros(bsize * samples, config.action_dim),
         progress_target=torch.rand(bsize * samples),
         third=torch.rand(bsize * samples, 3, 64, 64),
         wrist=torch.rand(bsize * samples, 3, 64, 64),
@@ -1274,6 +2097,57 @@ def test_bsq_fusion_full_model_emits_shuffle_diagnostics_with_one_vision_call(
     assert output["progress"].shape == (bsize * samples,)
     assert output["skill_shuffle_progress"].shape == (bsize * samples,)
     assert output["skill_shuffle_valid"].shape == (bsize,)
+    assert tower.calls == 1
+
+
+def test_joint_route_scores_every_termination_code_with_one_vision_call(
+    monkeypatch,
+) -> None:
+    tower = _CountingResNet()
+    monkeypatch.setattr(
+        fsq_module,
+        "_build_resnet18_vision_tower",
+        lambda: tower,
+    )
+    config = _state_rnn_config(
+        autoencoder_mode="raw",
+        reconstructor_arch="oneshot",
+        reconstructor_start_state=False,
+        route_loss=True,
+        terminator_arch="fusion",
+        terminator_input_space="both",
+        terminator_model="default",
+        terminator_progress=False,
+        terminator_termination=True,
+        state_rnn_terminator=False,
+        terminator_termination_only=True,
+        reconstructor_only=False,
+        terminator_only=False,
+        vision_backbone="resnet",
+        freeze_vision_encoder=True,
+        resnet_image_size=224,
+        image_encoder_layers=1,
+        image_encoder_heads=4,
+        samples_per_skill=1,
+        end_loss_weight=1.0,
+    )
+    model = SplineFSQAE(config).eval()
+    bsize = 2
+    output = model(
+        ctrl=torch.randn(bsize, config.n_control, config.enc_dim),
+        lengths=torch.tensor([4, 5]),
+        start_pose=None,
+        start_state=torch.randn(bsize, config.max_state_dim),
+        raw_state=torch.randn(bsize, config.state_dim),
+        prev_action=torch.zeros(bsize, config.action_dim),
+        progress_target=torch.rand(bsize),
+        third=torch.rand(bsize, 3, 64, 64),
+        wrist=torch.rand(bsize, 3, 64, 64),
+        samples_per_skill=1,
+    )
+
+    assert output["route_candidate_term_logits"].shape == (bsize, 27, 1)
+    assert output["route_candidate_term_logits"].requires_grad is False
     assert tower.calls == 1
 
 

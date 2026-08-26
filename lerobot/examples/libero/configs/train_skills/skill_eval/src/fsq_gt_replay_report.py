@@ -61,6 +61,7 @@ def report_payload(manifest: dict) -> dict:
             len(values) for values in signature["selected_episodes"].values()
         ),
         "occurrence_count": len(manifest["records"]),
+        "train_codebook_counts": manifest.get("train_codebook_counts"),
         "train_codebook_used": manifest.get("train_codebook_used"),
         "train_codebook_effective": manifest.get("train_codebook_effective"),
         "skills": skills,
@@ -343,8 +344,9 @@ def write_html_report(output_dir: str | Path, payload: dict) -> Path:
     .controls{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:9px}.control{display:flex;align-items:center;gap:7px;font-size:12px;font-weight:700}.control select,.range-input{padding:5px 8px;border:1px solid var(--line);border-radius:6px;background:#fff}.range-input{width:72px}.range{display:flex;align-items:center;gap:5px}.tasks{display:flex;align-items:center;gap:5px;flex-wrap:wrap}.task-chip{padding:4px 7px;border:1px solid var(--line);border-radius:12px;background:#f8fafc;font-weight:500}.task-chip input{margin:0 4px 0 0}.small-button{padding:4px 7px;border:1px solid var(--line);border-radius:6px;background:#fff;cursor:pointer}
     .layout{display:grid;grid-template-columns:minmax(420px,580px) 1fr;gap:16px;padding:16px;align-items:start}
     .sidebar{position:sticky;top:126px;background:#fff;border:1px solid var(--line);border-radius:10px;padding:12px}
-    .cube{width:100%;height:auto;display:block}.legend{display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12px;color:var(--muted)}
+    .cube,.full-cube{width:100%;height:auto;display:block}.legend{display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12px;color:var(--muted)}
     .cube-modes{display:flex;gap:6px;margin:8px 0}.cube-mode.active{background:var(--blue);color:#fff;border-color:var(--blue)}
+    .cube-section-title{margin:14px 0 0;padding-top:13px;border-top:1px solid var(--line);font-size:13px;font-weight:800}.cube-section-hint{margin:3px 0 0;color:var(--muted);font-size:11px}
     .grad{display:inline-block;width:110px;height:10px;background:linear-gradient(to right,rgb(253,235,232),rgb(136,8,8));border:1px solid var(--line);border-radius:3px;vertical-align:middle}
     .dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:4px}.selected{margin-top:9px;padding:9px;background:#f6f9fd;border-radius:7px;font-weight:700}
     .task-group{margin-bottom:18px}.task-group-title{display:flex;align-items:baseline;gap:7px;margin:0 0 7px;padding:8px 10px;background:#e9eef6;border:1px solid var(--line);border-radius:8px;font-size:13px;font-weight:800}.task-count{color:var(--muted);font-size:11px;font-weight:600}.occ-row{display:flex;align-items:flex-start;gap:10px;overflow-x:auto;padding:1px 1px 10px;scrollbar-gutter:stable}.occ{flex:0 0 340px;max-width:76vw;background:#fff;border:1px solid var(--line);border-radius:10px;overflow:hidden}
@@ -382,6 +384,11 @@ def write_html_report(output_dir: str | Path, payload: dict) -> Path:
     <div class="cube-modes"><button type="button" class="small-button cube-mode active" data-mode="usage">usage</button><button type="button" class="small-button cube-mode" data-mode="length">length</button><button type="button" class="small-button cube-mode" data-mode="count">count</button></div>
     <div class="legend" id="cubeLegend"></div>
     <div class="selected" id="selected"></div>
+    <div class="cube-section-title">Full training skillset · count</div>
+    <p class="cube-section-hint">All skills in this checkpoint's training latent artifact; unaffected by task and position filters.</p>
+    <svg class="full-cube" viewBox="0 0 600 520"></svg>
+    <div class="legend" id="fullCubeLegend"></div>
+    <div class="selected" id="fullSelected">Click a used code to show its full-data count.</div>
   </aside>
   <div class="main-col">
     <div class="tables" id="tables"></div>
@@ -410,7 +417,7 @@ function project(c,levels){const n=levels.length,maxL=Math.max(...levels),scaleD
   const HD=[[46,-24,.3],[20,10,.15],[10,-6,.08]];
   for(let d=3;d<n;d++){const o=HD[Math.min(d-3,HD.length-1)];x+=(v[d]||0)*o[0];y+=(v[d]||0)*o[1];z+=(v[d]||0)*o[2]}
   return[x,y,z]}
-let cubeMode='usage',selectedToken=-1;
+let cubeMode='usage',selectedToken=-1;const COUNT_BORDER_THRESHOLD=10;
 function cubeColor(t){const from=[253,235,232],to=[136,8,8];const rgb=from.map((v,i)=>Math.round(v+(to[i]-v)*t));return `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`}
 function renderCube(selected){selectedToken=selected;const levels=current().levels,svg=document.querySelector('.cube'),NS='http://www.w3.org/2000/svg';svg.innerHTML='';
   const make=(name,attrs)=>{const e=document.createElementNS(NS,name);Object.entries(attrs).forEach(([k,v])=>e.setAttribute(k,v));svg.appendChild(e);return e};
@@ -423,16 +430,43 @@ function renderCube(selected){selectedToken=selected;const levels=current().leve
   points.forEach(({t,p,used})=>{
     let fill=used?'#2878b5':'#d7dde8';
     if(used&&cubeMode!=='usage'){const value=metric(stats.get(t));const norm=scale.hi>scale.lo?(value-scale.lo)/(scale.hi-scale.lo):0.6;fill=cubeColor(0.1+0.9*norm)}
-    else if(cubeMode==='usage'&&t===selected)fill='#d62728';
-    const e=make('circle',{cx:p[0],cy:p[1],r:t===selected?9:(used?6:3.5),fill,stroke:t===selected?'#17202a':'#26384d','stroke-width':t===selected?2.4:.8,style:used?'cursor:pointer':'cursor:default'});
+    const selectedCode=used&&t===selected;
+    const countOutlined=used&&cubeMode==='count'&&stats.get(t).count>COUNT_BORDER_THRESHOLD;
+    const stroke=selectedCode?'#d62728':cubeMode==='count'?(countOutlined?'#111':'none'):'#26384d';
+    const strokeWidth=selectedCode?3:countOutlined?2:cubeMode==='count'?0:.8;
+    const e=make('circle',{cx:p[0],cy:p[1],r:selectedCode?9:(used?6:3.5),fill,stroke,'stroke-width':strokeWidth,style:used?'cursor:pointer':'cursor:default'});
     if(used){const stat=stats.get(t);const title=document.createElementNS(NS,'title');title.textContent=`#${t} · ${stat.count} skills · mean length ${stat.meanLength.toFixed(1)} frames`;e.appendChild(title);e.addEventListener('click',()=>selectToken(t))}});
   renderCubeLegend(scale)}
 function renderCubeLegend(scale){const box=document.getElementById('cubeLegend');
-  if(cubeMode==='usage'){box.innerHTML='<span><i class="dot" style="background:#d62728"></i>selected</span><span><i class="dot" style="background:#2878b5"></i>used</span><span><i class="dot" style="background:#d7dde8"></i>unused</span>';return}
+  if(cubeMode==='usage'){box.innerHTML='<span><i class="dot" style="background:#2878b5;border:2px solid #d62728"></i>selected</span><span><i class="dot" style="background:#2878b5"></i>used</span><span><i class="dot" style="background:#d7dde8"></i>unused</span>';return}
   const label=cubeMode==='length'?'mean skill length (frames)':'skill count';
   if(!scale){box.innerHTML=`<span>${label}: no used codes</span>`;return}
   const fmt=value=>cubeMode==='length'?value.toFixed(0):String(Math.round(value));
-  box.innerHTML=`<span>${label}</span><span>${fmt(scale.lo)}</span><i class="grad"></i><span>${fmt(scale.hi)}</span><span><i class="dot" style="background:#d7dde8"></i>unused</span>`}
+  const countBorders=cubeMode==='count'?`<span><i class="dot" style="background:#fff;border:2px solid #111"></i>&gt;${COUNT_BORDER_THRESHOLD} elements</span><span><i class="dot" style="background:#fff"></i>\\u2264${COUNT_BORDER_THRESHOLD} elements</span>`:'';
+  box.innerHTML=`<span>${label}</span><span>${fmt(scale.lo)}</span><i class="grad"></i><span>${fmt(scale.hi)}</span>${countBorders}<span><i class="dot" style="background:#fff;border:2px solid #d62728"></i>selected</span><span><i class="dot" style="background:#d7dde8"></i>unused</span>`}
+let selectedFullToken=-1;
+function renderFullCube(selected=selectedFullToken){
+  const cp=current(),levels=cp.levels,svg=document.querySelector('.full-cube'),NS='http://www.w3.org/2000/svg';svg.innerHTML='';
+  const make=(name,attrs)=>{const e=document.createElementNS(NS,name);Object.entries(attrs).forEach(([k,v])=>e.setAttribute(k,v));svg.appendChild(e);return e};
+  const total=levels.reduce((a,b)=>a*b,1),raw=Array.isArray(cp.train_codebook_counts)?cp.train_codebook_counts:[];
+  const counts=Array.from({length:total},(_,token)=>Number(raw[token]||0)),usedCounts=counts.filter(count=>count>0);
+  if(selected<0||selected>=total||counts[selected]<=0)selected=-1;
+  selectedFullToken=selected;
+  const scale=usedCounts.length?{lo:Math.min(...usedCounts),hi:Math.max(...usedCounts)}:null;
+  for(let t=0;t<total;t++){const c=coord(t,levels);for(let d=0;d<levels.length;d++){if(c[d]+1<levels[d]){const n=c.slice();n[d]++;const a=project(c,levels),b=project(n,levels);const hi=d>=3;make('line',{x1:a[0],y1:a[1],x2:b[0],y2:b[1],stroke:hi?'rgba(120,120,170,.22)':'rgba(100,100,100,.42)','stroke-width':hi?0.8:1.2})}}}
+  const points=[];for(let t=0;t<total;t++){const p=project(coord(t,levels),levels);points.push({t,p,count:counts[t]})}points.sort((a,b)=>a.p[2]-b.p[2]);
+  points.forEach(({t,p,count})=>{const used=count>0,selectedCode=used&&t===selected;let fill='#d7dde8';
+    if(used){const norm=scale.hi>scale.lo?(count-scale.lo)/(scale.hi-scale.lo):0.6;fill=cubeColor(0.1+0.9*norm)}
+    const countOutlined=used&&count>COUNT_BORDER_THRESHOLD,stroke=selectedCode?'#d62728':countOutlined?'#111':'none',strokeWidth=selectedCode?3:countOutlined?2:0;
+    const e=make('circle',{cx:p[0],cy:p[1],r:selectedCode?9:(used?6:3.5),fill,stroke,'stroke-width':strokeWidth,style:used?'cursor:pointer':'cursor:default'});
+    if(used){const title=document.createElementNS(NS,'title');title.textContent=`#${t} · ${count} full-data skills`;e.appendChild(title);e.addEventListener('click',()=>selectFullToken(t))}});
+  renderFullCubeLegend(scale);
+  const selectedBox=document.getElementById('fullSelected');
+  selectedBox.textContent=selected>=0?`token #${selected} [${coord(selected,levels).join(', ')}] · ${counts[selected]} full-data elements`:usedCounts.length?'Click a used code to show its full-data count.':'Full-data token histogram unavailable.'}
+function renderFullCubeLegend(scale){const box=document.getElementById('fullCubeLegend');
+  if(!scale){box.innerHTML='<span>full skill count: unavailable</span>';return}
+  box.innerHTML=`<span>full skill count</span><span>${Math.round(scale.lo)}</span><i class="grad"></i><span>${Math.round(scale.hi)}</span><span><i class="dot" style="background:#fff;border:2px solid #111"></i>&gt;${COUNT_BORDER_THRESHOLD} elements</span><span><i class="dot" style="background:#fff"></i>\\u2264${COUNT_BORDER_THRESHOLD} elements</span><span><i class="dot" style="background:#fff;border:2px solid #d62728"></i>selected</span><span><i class="dot" style="background:#d7dde8"></i>unused</span>`}
+function selectFullToken(token){renderFullCube(Number(token))}
 function buildPositionMap(cp){const groups=new Map(),result=new Map();cp.skills.flatMap(skill=>skill.occurrences).forEach(o=>{const key=`${o.task_id}:${o.episode_id}`;if(!groups.has(key))groups.set(key,[]);groups.get(key).push(o)});groups.forEach(occurrences=>{occurrences.sort((a,b)=>Number(a.skill_index)-Number(b.skill_index)||Number(a.frame_start)-Number(b.frame_start));const total=occurrences.length;occurrences.forEach((o,index)=>result.set(o,{rank:index+1,total,percent:100*(index+.5)/total,id:Number(o.skill_index)}))});return result}
 const positionCache=new Map();
 function positionsFor(cp){if(!positionCache.has(cp))positionCache.set(cp,buildPositionMap(cp));return positionCache.get(cp)}
@@ -465,12 +499,12 @@ function cohesionStats(cp){
   const mean=values=>values.length?values.reduce((a,b)=>a+b,0)/values.length:0;
   const entries=entriesFor(cp);const cells=new Map();
   entries.forEach(entry=>{const key=`${Number(entry.o.task_id)}:${columnKey(entry.info)}`;if(!cells.has(key))cells.set(key,[]);cells.get(key).push(Number(entry.o.token))});
-  let majorityMatches=0;
-  const perCell=[...cells.values()].map(tokens=>{const counts=new Map();tokens.forEach(token=>counts.set(token,(counts.get(token)||0)+1));let entropy=0,top=0;counts.forEach(count=>{const p=count/tokens.length;entropy-=p*Math.log(p);if(count>top)top=count});majorityMatches+=top;return{distinct:counts.size,effective:Math.exp(entropy)}});
+  const perCell=[...cells.values()].map(tokens=>{const counts=new Map();tokens.forEach(token=>counts.set(token,(counts.get(token)||0)+1));let entropy=0;counts.forEach(count=>{const p=count/tokens.length;entropy-=p*Math.log(p)});return{distinct:counts.size,effective:Math.exp(entropy)}});
   const size=cp.levels.reduce((a,b)=>a*b,1);const used=cp.train_codebook_used;
   const effective=mean(perCell.map(s=>s.effective));
   const globalEffective=cp.train_codebook_effective==null?null:Number(cp.train_codebook_effective);
-  return{effective,purity:entries.length?majorityMatches/entries.length:0,norm:globalEffective?effective/globalEffective:null,globalEffective,distinct:mean(perCell.map(s=>s.distinct)),occurrences:entries.length,usage:used==null?'?':`${used}/${size} (${(100*used/size).toFixed(1)}%)`}}
+  const utilization=used==null?null:100*Number(used)/size;
+  return{effective,utilization,norm:globalEffective?effective/globalEffective:null,globalEffective,distinct:mean(perCell.map(s=>s.distinct)),occurrences:entries.length,usage:used==null?'?':`${used}/${size} (${utilization.toFixed(1)}%)`}}
 function cohesionTable(){
   const stats=new Map();
   models.forEach((model,index)=>model.checkpoints.forEach(cp=>stats.set(`${index}:${cp.epoch_tag}`,cohesionStats(cp))));
@@ -491,7 +525,8 @@ function cohesionTable(){
         style=` style="background:rgb(${mix(250,105)},${mix(252,178)},${mix(250,105)})"`;
         if(rank===0)cls=' class="best"';
       }
-      const value=`${cell.effective.toFixed(2)} (${(100*cell.purity).toFixed(0)}%)`;
+      const utilization=cell.utilization==null?'?':`${cell.utilization.toFixed(1)}%`;
+      const value=`${cell.effective.toFixed(2)} (${utilization})`;
       const normPart=cell.norm==null?'':`normalized ${cell.norm.toFixed(3)} \\u00b7 `;
       const globalPart=cell.globalEffective==null?'':`train-wide effective ${cell.globalEffective.toFixed(2)} \\u00b7 `;
       return `<td${cls}${style} title="${normPart}${globalPart}distinct ${cell.distinct.toFixed(2)} \\u00b7 codebook used (train) ${cell.usage} \\u00b7 ${cell.occurrences} occurrences">${value}</td>`}).join('');
@@ -509,20 +544,20 @@ function renderTables(){
   if(selectionRows.length>1)selectionRows.push({checkpoint:cp.epoch_tag,task:'all tasks',entries:selectionEntries,summary:true});
   const overviewRows=checkpoints.flatMap(item=>taskRows(item,entriesFor(item)));
   document.getElementById('tables').innerHTML=
-    `<details class="panel" open><summary>Cohesion \\u00b7 mean effective codes per cell (purity) \\u00b7 lower effective is better</summary><p class="hint">Rows are checkpoints, columns are models; each cell shows "effective (purity)". Effective is the mean entropy-based code count over task \\u00d7 skill-order cells ("Table order" above picks the order unit): two codes split 90/10 score 1.38 while 50/50 scores 2.00 \\u2014 lower means the same situation maps to fewer codes. Purity is the share of occurrences matching their cell's majority code \\u2014 higher is better, and it equals the top-1 accuracy of predicting the code from (task, order) alone. Cells are shaded green by rank within each checkpoint row: the lowest effective value is darkest and later ranks fade toward white (ties share a rank). Hover a value for normalized cohesion (effective \\u00f7 train-wide effective \\u2014 a diagnostic for codebook under-use when picking a checkpoint within one model, not a cross-model ranking), train-wide effective codes, distinct codes, codebook used, and occurrence count. Covers every model tab, task and order, ignoring the tab and filter controls. \\u26a0 marks models whose replay selection differs from the first model \\u2014 excluded from the highlight.</p>${cohesionTable()}</details>`+
+    `<details class="panel" open><summary>Cohesion \\u00b7 mean effective codes per cell (full-data codebook utilization) \\u00b7 lower effective is better</summary><p class="hint">Rows are checkpoints, columns are models; each cell shows "effective (utilization)". Effective is the mean entropy-based code count over task \\u00d7 skill-order cells ("Table order" above picks the order unit): two codes split 90/10 score 1.38 while 50/50 scores 2.00 \\u2014 lower means the same situation maps to fewer codes. Utilization is the percentage of the full codebook used by the checkpoint's entire training latent artifact, independent of this report's task_ids selection. Cells are shaded green by effective-value rank within each checkpoint row: the lowest effective value is darkest and later ranks fade toward white (ties share a rank); utilization does not affect the shading. Hover a value for normalized cohesion (effective \\u00f7 train-wide effective \\u2014 a diagnostic for codebook under-use when picking a checkpoint within one model, not a cross-model ranking), train-wide effective codes, distinct codes, codebook used, and occurrence count. Cohesion covers every model tab, task and order, ignoring the tab and filter controls. \\u26a0 marks models whose replay selection differs from the first model \\u2014 excluded from the highlight.</p>${cohesionTable()}</details>`+
     `<details class="panel" open><summary>Skill variety \\u00b7 checkpoint \\u00d7 task</summary><p class="hint">Distinct FSQ codes used in each task, over every skill order in that task. Independent of the controls above. Codebook size ${size}.</p>${checkpointTaskTable()}</details>`+
     `<details class="panel" open><summary>Codebook usage \\u00b7 current filters</summary><p class="hint">Distinct FSQ codes per checkpoint \\u00d7 task \\u00d7 skill order, limited to the checkpoint, tasks and skill-position range selected above. Cell titles show the occurrence count; "all orders" is the union over orders, not the column sum. Codebook size ${size}.</p>${usageTable(selectionRows)}</details>`+
     `<details class="panel" open><summary>Codebook usage \\u00b7 every checkpoint (unfiltered)</summary><p class="hint">The same counts over every checkpoint, task and skill order in this report, ignoring the controls above.</p>${usageTable(overviewRows)}</details>`}
 function occurrenceCard(o){const info=positionByOccurrence.get(o),position=info?`${info.rank}/${info.total} · ${info.percent.toFixed(1)}%`:'';const figure=(src,label)=>src?`<figure><img loading="lazy" src="${esc(src)}" alt="${label}"><figcaption>${label}</figcaption></figure>`:'';return `<article class="occ"><div class="occ-title">episode ${o.episode_id} · skill ${o.skill_index}</div><div class="meta">position ${position} · frames [${o.frame_start}, ${o.frame_end}) · length ${o.length}</div><div class="pair">${figure(o.start_image_path,'GT start')}${figure(o.final_image_path,'GT end')}</div></article>`}
 function selectToken(token){const skill=byToken.get(Number(token));if(!skill)return;renderCube(token);document.getElementById('selected').innerHTML=`token #${token} [${skill.coord.join(', ')}] <span class="count">${skill.occurrences.length} occurrences</span>`;const groups=new Map();skill.occurrences.forEach(o=>{const task=Number(o.task_id);if(!groups.has(task))groups.set(task,[]);groups.get(task).push(o)});document.getElementById('content').innerHTML=[...groups.entries()].sort((a,b)=>a[0]-b[0]).map(([task,occurrences])=>`<section class="task-group"><div class="task-group-title">Task ${task}: ${esc(occurrences[0].task_description||'')} <span class="task-count">${occurrences.length} videos</span></div><div class="occ-row">${occurrences.map(occurrenceCard).join('')}</div></section>`).join('')}
 function renderTaskFilters(reset){const tasks=current().task_ids.map(Number);if(reset)selectedTasks=new Set(tasks);else selectedTasks=new Set([...selectedTasks].filter(t=>tasks.includes(t)));const box=document.getElementById('tasks');box.innerHTML=tasks.map(t=>`<label class="task-chip"><input type="checkbox" value="${t}" ${selectedTasks.has(t)?'checked':''}>${t}</label>`).join('');box.querySelectorAll('input').forEach(input=>input.addEventListener('change',()=>{const task=Number(input.value);if(input.checked)selectedTasks.add(task);else selectedTasks.delete(task);refresh()}))}
-function refresh(){const model=models[modelIndex],cp=current();positionByOccurrence=positionsFor(cp);renderTables();activeSkills=cp.skills.map(skill=>({...skill,occurrences:skill.occurrences.filter(o=>selectedTasks.has(Number(o.task_id))&&positionMatches(o))})).filter(skill=>skill.occurrences.length);byToken=new Map(activeSkills.map(skill=>[Number(skill.token),skill]));const tasks=[...selectedTasks].sort((a,b)=>a-b);const occurrences=activeSkills.reduce((sum,skill)=>sum+skill.occurrences.length,0),range=positionMode==='all'?'all':`${positionRanges[positionMode][0]}–${positionRanges[positionMode][1]}${positionMode==='percent'?'%':' ID'}`;document.getElementById('summary').textContent=`${model.name} · ${cp.epoch_tag} · GT start/end frames · ${model.target_task} · tasks ${tasks.length?tasks.join(', '):'none'} · position ${range} · ${occurrences} skill occurrences${(model.excluded_epoch_tags||[]).length?` \\u00b7 excluded (different replay settings): ${model.excluded_epoch_tags.join(', ')}`:''}`;if(activeSkills.length){const initial=activeSkills.slice().sort((a,b)=>b.occurrences.length-a.occurrences.length||a.token-b.token)[0].token;selectToken(initial)}else{renderCube(-1);document.getElementById('selected').textContent='No used code for the selected filters';document.getElementById('content').innerHTML='<div class="empty">No occurrences for the selected task and skill-position filters.</div>'}}
+function refresh(){const model=models[modelIndex],cp=current();positionByOccurrence=positionsFor(cp);renderTables();renderFullCube();activeSkills=cp.skills.map(skill=>({...skill,occurrences:skill.occurrences.filter(o=>selectedTasks.has(Number(o.task_id))&&positionMatches(o))})).filter(skill=>skill.occurrences.length);byToken=new Map(activeSkills.map(skill=>[Number(skill.token),skill]));const tasks=[...selectedTasks].sort((a,b)=>a-b);const occurrences=activeSkills.reduce((sum,skill)=>sum+skill.occurrences.length,0),range=positionMode==='all'?'all':`${positionRanges[positionMode][0]}–${positionRanges[positionMode][1]}${positionMode==='percent'?'%':' ID'}`;document.getElementById('summary').textContent=`${model.name} · ${cp.epoch_tag} · GT start/end frames · ${model.target_task} · tasks ${tasks.length?tasks.join(', '):'none'} · position ${range} · ${occurrences} skill occurrences${(model.excluded_epoch_tags||[]).length?` \\u00b7 excluded (different replay settings): ${model.excluded_epoch_tags.join(', ')}`:''}`;if(activeSkills.length){const initial=activeSkills.slice().sort((a,b)=>b.occurrences.length-a.occurrences.length||a.token-b.token)[0].token;selectToken(initial)}else{renderCube(-1);document.getElementById('selected').textContent='No used code for the selected filters';document.getElementById('content').innerHTML='<div class="empty">No occurrences for the selected task and skill-position filters.</div>'}}
 function configurePositionRange(){const range=document.getElementById('positionRange'),start=document.getElementById('positionStart'),end=document.getElementById('positionEnd'),unit=document.getElementById('positionUnit');range.hidden=positionMode==='all';if(positionMode==='all')return;const values=positionRanges[positionMode],percent=positionMode==='percent';start.min=0;end.min=0;start.max=percent?100:maximumSkillId;end.max=percent?100:maximumSkillId;start.step=percent?'0.1':'1';end.step=start.step;start.value=values[0];end.value=values[1];unit.textContent=percent?'%':'ID'}
 const checkpointSelect=document.getElementById('checkpoint');
 function renderCheckpointSelect(){checkpointSelect.innerHTML=checkpoints.map((cp,index)=>`<option value="${index}">${esc(cp.epoch_tag)}</option>`).join('');checkpointSelect.value=String(checkpointIndex)}
-checkpointSelect.addEventListener('change',()=>{checkpointIndex=Number(checkpointSelect.value);renderTaskFilters(false);refresh()});
+checkpointSelect.addEventListener('change',()=>{checkpointIndex=Number(checkpointSelect.value);selectedFullToken=-1;renderTaskFilters(false);refresh()});
 function renderModelTabs(){const box=document.getElementById('modelTabs');if(models.length<2){box.hidden=true;return}box.hidden=false;box.innerHTML=models.map((model,index)=>`<button type="button" class="tab${index===modelIndex?' active':''}" data-index="${index}">${esc(model.name)}${model.mismatched?' \\u26a0':''}</button>`).join('');box.querySelectorAll('button').forEach(button=>button.addEventListener('click',()=>selectModel(Number(button.dataset.index))))}
-function selectModel(index){if(index===modelIndex)return;modelIndex=index;checkpoints=models[index].checkpoints;checkpointIndex=0;renderModelTabs();renderCheckpointSelect();renderTaskFilters(true);refresh()}
+function selectModel(index){if(index===modelIndex)return;modelIndex=index;checkpoints=models[index].checkpoints;checkpointIndex=0;selectedFullToken=-1;renderModelTabs();renderCheckpointSelect();renderTaskFilters(true);refresh()}
 const positionModeSelect=document.getElementById('positionMode'),positionStart=document.getElementById('positionStart'),positionEnd=document.getElementById('positionEnd');positionModeSelect.addEventListener('change',()=>{positionMode=positionModeSelect.value;configurePositionRange();refresh()});positionStart.addEventListener('input',()=>{positionRanges[positionMode][0]=Number(positionStart.value);refresh()});positionEnd.addEventListener('input',()=>{positionRanges[positionMode][1]=Number(positionEnd.value);refresh()});configurePositionRange();
 const tableUnitSelect=document.getElementById('tableUnit');tableUnitSelect.addEventListener('change',()=>{tableUnit=tableUnitSelect.value;renderTables()});
 document.getElementById('allTasks').addEventListener('click',()=>{renderTaskFilters(true);refresh()});document.getElementById('clearTasks').addEventListener('click',()=>{selectedTasks.clear();renderTaskFilters(false);refresh()});
@@ -556,10 +591,15 @@ def maybe_merge_chunks(output_dir: str | Path, *, expected_chunks: int) -> Path 
         if not all(chunk.get("completed", False) for chunk in chunks):
             return None
         signature = chunks[0]["signature"]
+        request = chunks[0].get("request")
         levels = chunks[0]["levels"]
         records: dict[str, dict] = {}
         for index, chunk in enumerate(chunks):
-            if chunk["signature"] != signature or chunk["levels"] != levels:
+            if (
+                chunk["signature"] != signature
+                or chunk.get("request") != request
+                or chunk["levels"] != levels
+            ):
                 raise ValueError(f"FSQ GT replay chunk {index} contract mismatch.")
             if int(chunk["chunk_index"]) != index or int(chunk["chunk_count"]) != expected_chunks:
                 raise ValueError(f"FSQ GT replay chunk {index} has invalid worker identity.")
@@ -569,11 +609,13 @@ def maybe_merge_chunks(output_dir: str | Path, *, expected_chunks: int) -> Path 
             records.update(chunk["records"])
         merged = {
             "signature": signature,
+            "request": request,
             "run_name": chunks[0]["run_name"],
             "model_name": chunks[0].get("model_name") or chunks[0]["run_name"],
             "report_title": chunks[0].get("report_title") or "",
             "epoch_tag": chunks[0]["epoch_tag"],
             "levels": levels,
+            "train_codebook_counts": chunks[0].get("train_codebook_counts"),
             "train_codebook_used": chunks[0].get("train_codebook_used"),
             "train_codebook_effective": chunks[0].get("train_codebook_effective"),
             "records": records,
@@ -596,7 +638,8 @@ def _tag_sort_key(tag: str) -> tuple[int, int, str]:
 def _backfill_train_codebook_used(path: Path, manifest: dict) -> None:
     """Fill codebook-usage fields on manifests written before they existed."""
     if (
-        manifest.get("train_codebook_used") is not None
+        manifest.get("train_codebook_counts") is not None
+        and manifest.get("train_codebook_used") is not None
         and manifest.get("train_codebook_effective") is not None
     ):
         return
@@ -612,8 +655,11 @@ def _backfill_train_codebook_used(path: Path, manifest: dict) -> None:
         )
         return
     tokens = np.asarray(np.load(latents_path)["tokens"], dtype=np.int64)
-    counts = np.bincount(tokens)
+    levels = [int(value) for value in manifest.get("levels") or []]
+    codebook_size = int(np.prod(levels)) if levels else 0
+    counts = np.bincount(tokens, minlength=codebook_size)
     probabilities = counts[counts > 0] / tokens.size
+    manifest["train_codebook_counts"] = [int(count) for count in counts]
     manifest["train_codebook_used"] = int((counts > 0).sum())
     manifest["train_codebook_effective"] = float(
         np.exp(-(probabilities * np.log(probabilities)).sum())

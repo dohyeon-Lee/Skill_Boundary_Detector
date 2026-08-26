@@ -67,6 +67,8 @@ mkdir -p "${FSQ_OUTPUT_DIR}"
 cat > "${FSQ_OUTPUT_DIR}/fsq_original_meta.json" <<JSON
 {
   "variant": "fsq_original_oneshot",
+  "fsq_exp": "${FSQ_EXP}",
+  "fsq_levels": [${FSQ_LEVELS_STR// /, }],
   "fsq_dataset_root": "${FSQ_DATASET_ROOT_NAME}",
   "target_dataset": "${TARGET_DATASET}",
   "fsq_inputs_name": "${FSQ_INPUTS_NAME}",
@@ -83,6 +85,7 @@ cat > "${FSQ_OUTPUT_DIR}/fsq_original_meta.json" <<JSON
   "skillset_output_suffix": "${SKILLSET_OUTPUT_SUFFIX}",
   "encoder_input_mode": "${FSQ_ENCODER_INPUT_MODE}",
   "encoder_arch": "${FSQ_ORIG_ENCODER_ARCH}",
+  "action_convention": "raw_controller_action_v1",
   "encoder_length_token": ${FSQ_ORIG_ENCODER_LENGTH_TOKEN},
   "fsq_entropy": ${FSQ_ORIG_ENTROPY},
   "bsq_entropy_joint": ${BSQ_ENTROPY_JOINT},

@@ -12,48 +12,68 @@
 # 길이토큰 세대 run(구 noLenTok 미표기 시절)은 LenTok/에 보관 — noLenTok 라벨 폐지(무토큰이 기본).
 # loss 구조 태그 전 run 필수: ReconOnly(entropy 항 없음) | withEntH(entropy 항 포함; BSQ는 항상 withEntH).
 
-# output_name: "FSQ_decoder_term_recon_combination"
-# # Pair the actual run folder with its HTML display name in one entry.
-# # Spaces and Korean text are allowed in model_name; it does not affect folder paths.
-# fsq_eval_models:
-#   - {"model_name": "term w=0.1 (new)", "run_name": "libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_resnet_tuned_fusion_raw_raw__js_bj10_w01_warm50_ramp50_new_initcal"}
-#   - {"model_name": "term w=0.1", "run_name": "libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_resnet_tuned_raw_raw__js_bj10_w01_warm50_ramp50_new_initcal"}
-#   - {"model_name": "term w=1", "run_name": "libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_resnet_tuned_raw_raw__js_bj10_w1_warm50_ramp50_new_initcal"}
-#   - {"model_name": "recon w=1", "run_name": "libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_raw_raw__recon_js_bj10_w1_warm50_ramp50_new_initcal"}
-#   - {"model_name": "recon w=2", "run_name": "libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_raw_raw__recon_js_bj10_w2_warm50_ramp50_new_initcal"}
-#   - {"model_name": "recon w0.1 (old)", "run_name": "libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_raw_raw__recon_js_bj10_w01_warm50_ramp50_cal_initcal"}
-#   - {"model_name": "recon w=1 (old)", "run_name": "libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_raw_raw__recon_js_bj10_w1_warm50_ramp50_cal_initcal"}
-#   - {"model_name": "recon w=2 (old)", "run_name": "libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_raw_raw__recon_js_bj10_w2_warm50_ramp50_cal_initcal"}
-#   - {"model_name": "recon w=5 (old)", "run_name": "libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_raw_raw__recon_js_bj10_w5_warm50_ramp50_cal_initcal"}
-#   - {"model_name": "recon w=10 (old)", "run_name": "libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_raw_raw__recon_js_bj10_w10_warm50_ramp50_cal_initcal"}
-#   - {"model_name": "recon (0.1) + term w=0.1 (new)", "run_name": "libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_resnet_tuned_fusion_raw_raw__recon01_js_bj10_w01_warm50_ramp50_new_prox_initcal"}
-#   - {"model_name": "recon (0.1) + term w=0.1", "run_name": "libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_resnet_tuned_raw_raw__recon01_js_bj10_w01_warm50_ramp50_new_initcal"}
-#   - {"model_name": "recon + term w=0.1", "run_name": "libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_resnet_tuned_raw_raw__recon_js_bj10_w01_warm50_ramp50_new_initcal"}
-#   - {"model_name": "recon + term w=1", "run_name": "libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_resnet_tuned_raw_raw__recon_js_bj10_w1_warm50_ramp50_new_initcal"}
-#   - {"model_name": "recon + term w=2", "run_name": "libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_resnet_tuned_raw_raw__recon_js_bj10_w2_warm50_ramp50_new_initcal"}
 
-# output_name: "contrastive_recon"
-# # Pair the actual run folder with its HTML display name in one entry.
-# # Spaces and Korean text are allowed in model_name; it does not affect folder paths.
+# output_name: "recon_only_routing_2layer"
 # fsq_eval_models:
-#   - {"model_name": "recon w0.1 contrastive", "run_name": "libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_fusion_raw_raw__recon_lincontrast_bj10_w01_warm50_ramp50_new_initcal"}
-#   - {"model_name": "recon w0.1 (old) JS", "run_name": "libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_raw_raw__recon_js_bj10_w01_warm50_ramp50_cal_initcal"}
-#   # - {"model_name": "term w0.1 contrastive", "run_name": "libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_resnet_tuned_fusion_raw_raw__lincontrast_bj10_w01_warm50_ramp50_new_initcal"}
-#   # - {"model_name": "term w0.1 JS", "run_name": "libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_resnet_tuned_fusion_raw_raw__js_bj10_w01_warm50_ramp50_new_initcal"}
+#   - {"model_name": "route_OFF", "run_name": "zero_recon_only__contrastiveON_routeOFF_loss"}
+#   - {"model_name": "route_ON", "run_name": "zero_recon_only__contrastiveON_routeON_loss_"}
 
-output_name: "contrastive_recon_full"
+# output_name: "contrastive_vs_js_2layer"
+# fsq_eval_models:
+#   - {"model_name": "cont_route_OFF", "run_name": "zero_recon_only__contrastiveON_routeOFF_loss"}
+#   - {"model_name": "cont_route_ON", "run_name": "zero_recon_only__contrastiveON_routeON_loss_"}
+#   - {"model_name": "js_route_OFF", "run_name": "zero_recon_only__jsON_routeOFF_loss"}
+#   - {"model_name": "js_route_ON", "run_name": "zero_recon_only__jsON_routeON_loss"}
+
+# output_name: "2layer_vs_1layer"
+# fsq_eval_models:
+#   - {"model_name": "2layer_route_OFF", "run_name": "zero_recon_only__contrastiveON_routeOFF_loss"}
+#   - {"model_name": "2layer_route_ON", "run_name": "zero_recon_only__contrastiveON_routeON_loss_"}
+#   - {"model_name": "1layer_route_OFF", "run_name": "zero_recon_only__contrastiveON_routeOFF_loss__layer1"}
+#   - {"model_name": "1layer_route_ON", "run_name": "zero_recon_only__contrastiveON_routeON_loss__layer1"}
+
+
+# output_name: "2layer_full"
+# fsq_eval_models:
+#   - {"model_name": "cont_route_OFF", "run_name": "zero_recon_only__contrastiveON_routeOFF_loss"}
+#   - {"model_name": "cont_route_ON", "run_name": "zero_recon_only__contrastiveON_routeON_loss_"}
+#   - {"model_name": "js_route_OFF", "run_name": "zero_recon_only__jsON_routeOFF_loss"}
+#   - {"model_name": "js_route_ON", "run_name": "zero_recon_only__jsON_routeON_loss"}
+#   - {"model_name": "none_route_OFF", "run_name": "zero_recon_only__pairOFF_routeOFF_loss"}
+#   - {"model_name": "none_route_ON", "run_name": "zero_recon_only__pairOFF_routeON_loss"}
+
+# output_name: "routeON_action"
+# fsq_eval_models:
+#   - {"model_name": "cont", "run_name": "zero_recon_only__contrastiveON_routeON_loss_"}
+#   - {"model_name": "js_zero", "run_name": "zero_recon_only__jsON_routeON_loss"}
+#   - {"model_name": "js_action", "run_name": "action_recon_only__jsON_routeON_loss"}
+#   - {"model_name": "none_zero", "run_name": "zero_recon_only__pairOFF_routeON_loss"}
+#   - {"model_name": "none_action", "run_name": "action_recon_only__pairOFF_routeON_loss"}
+
+# output_name: "normalized_action"
+# fsq_eval_models:
+#   - {"model_name": "action_js", "run_name": "action_recon_only__jsON_routeON_loss"}
+#   - {"model_name": "norm_action_js", "run_name": "norm_action1_recon_only__jsON_routeON_loss"}
+#   - {"model_name": "norm01_action_js", "run_name": "norm_action01_recon_only__jsON_routeON_loss"}
+#   - {"model_name": "norm01_action_none", "run_name": "norm_action01_recon_only__pairOFF_routeON_loss"}
+
+# output_name: "gripper_effect"
+# fsq_eval_models:
+#   - {"model_name": "js_norm_action", "run_name": "norm_action1_recon_only__jsON_routeON_loss"}
+#   - {"model_name": "js_norm_action01", "run_name": "norm_action01_recon_only__jsON_routeON_loss"}
+#   - {"model_name": "js_zero", "run_name": "zero_recon_only__jsON_routeON_loss"}
+#   - {"model_name": "js_zero01", "run_name": "zero01_recon_only__jsON_routeON_loss"}
+#   - {"model_name": "none_zero", "run_name": "zero_recon_only__pairOFF_routeON_loss"}
+#   - {"model_name": "none_zero01", "run_name": "zero01_recon_only__pairOFF_routeON_loss"}
+
+output_name: "terminator_effect"
 fsq_eval_models:
-  - {"model_name": "recon w1 contrastive", "run_name": "libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_fusion_raw_raw__recon_lincontrast_bj10_w1_warm50_ramp50_new_initcal"}
-  - {"model_name": "recon w0.1 contrastive", "run_name": "libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_fusion_raw_raw__recon_lincontrast_bj10_w01_warm50_ramp50_new_initcal"}
-  - {"model_name": "recon w0.01 contrastive", "run_name": "libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_fusion_raw_raw__recon_lincontrast_bj10_w001_warm50_ramp50_new_initcal"}
-  - {"model_name": "term w0.1 contrastive", "run_name": "libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_resnet_tuned_fusion_raw_raw__lincontrast_bj10_w01_warm50_ramp50_new_initcal"}
-  - {"model_name": "term+recon w0.1 contrastive", "run_name": "libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_resnet_tuned_fusion_raw_raw__recon_lincontrast_bj10_w01_warm50_ramp50_new_initcal"}
+  - {"model_name": "norm_action01", "run_name": "norm_action01_recon_only__jsON_routeON_loss"}
+  - {"model_name": "norm_action01_term", "run_name": "norm_action01_recon_termRES__jsON_routeON_loss__layer2_base"}
+  - {"model_name": "zero01", "run_name": "zero01_recon_only__jsON_routeON_loss"}
+  - {"model_name": "zero01_term", "run_name": "zero01_recon_termRES__jsON_routeON_loss__layer2_base"}
 
 fsq_eval_checkpoint: [50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1500, 2000]
-
-# fsq_eval_checkpoint: [50, 100, 150, 200, 250, 300, 350, 400, 450, 500, 550, 600, 650, 700]
-# fsq_eval_checkpoint: [400, 500, 600]
-
 
 # How episodes get their task id.
 #   exact   : from the rendered episode-exact map (skillvla_dataset/<ds>/eval_init_states.npz).
@@ -71,7 +91,6 @@ target_task: libero_90 # langgap_56 | libero_90
 # enough episodes in the dataset are skipped with a warning.
 # The list below picks one task per libero_90 scene (20 scenes; task 51 is
 # absent from the filtered dataset).
-# task_ids: [3, 4, 5]
 task_ids: [0, 3, 4, 5, 6, 11, 18, 22, 28, 33, 35, 38, 40, 46, 50, 55, 60, 65, 69, 73, 77, 81, 86]
 # task_ids: all
 episodes_per_task: 20
@@ -104,8 +123,8 @@ slurm:
   replay_gres: ""
   # Blank -> global_config.yaml train_partition/train_qos + one GPU reservation.
   # For CPU-only, explicitly set dell_cpu/cpu_qos and leave replay_gres blank.
-  replay_partition: ""
-  replay_qos: ""
+  replay_partition: "" # "dell_cpu"
+  replay_qos: "" # "cpu_qos"
   # dell_cpu is only 4 nodes (52 CPUs / 450G each), so a smaller footprint fits
   # many more replay tasks at once: 8 CPU/64G allows 6 per node, 4 CPU/16G
   # allows 13. The replay itself just decodes two frames per occurrence.

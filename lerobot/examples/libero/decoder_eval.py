@@ -22,7 +22,12 @@ import torch
 from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).parent))
-from FSQ import SplineFSQAE, SplineFSQAEConfig, load_fsq_model
+from FSQ import (
+    SplineFSQAE,
+    SplineFSQAEConfig,
+    build_skill_initial_previous_actions,
+    load_fsq_model,
+)
 from train_FSQ import attach_episode_offsets, load_skill_files
 
 
@@ -43,6 +48,8 @@ def run_decode_single(
     model: SplineFSQAE,
     z_q: np.ndarray,              # (D,)  FSQ latent vector
     states: np.ndarray,          # (T, state_dim)
+    emitted_actions: np.ndarray, # (T, action_dim), shifted internally for terminator
+    initial_previous_action: np.ndarray | None,
     third_images: torch.Tensor,  # (T,3,H,W)
     wrist_images: torch.Tensor,  # (T,3,H,W)
     device: str,
@@ -58,11 +65,25 @@ def run_decode_single(
     T = len(states)
     z_t  = torch.from_numpy(z_q.astype(np.float32)).unsqueeze(0).to(device)
     s_t  = torch.from_numpy(states.astype(np.float32)).unsqueeze(0).to(device)
+    a_t = torch.from_numpy(emitted_actions[:T].astype(np.float32)).unsqueeze(0).to(device)
+    initial_a_t = (
+        None
+        if initial_previous_action is None
+        else torch.from_numpy(initial_previous_action.astype(np.float32)).unsqueeze(0).to(device)
+    )
     d_t = third_images[:T].float().unsqueeze(0).to(device)
     dw_t = wrist_images[:T].float().unsqueeze(0).to(device)
     progress = (torch.arange(T, dtype=torch.float32) / max(T - 1, 1)).unsqueeze(0).to(device)
 
-    pred_d, _pred_prog, pred_term = model.decode(z_t, s_t, d_t, dw_t, progress)
+    pred_d, _pred_prog, pred_term = model.decode(
+        z_t,
+        s_t,
+        d_t,
+        dw_t,
+        progress,
+        emitted_actions=a_t,
+        initial_previous_action=initial_a_t,
+    )
     return pred_d.squeeze(0).cpu().numpy(), torch.sigmoid(pred_term).squeeze(0).cpu().numpy()
 
 
@@ -449,6 +470,9 @@ def main():
 
     print("[EVAL] Loading skill files …")
     segments, dec_states, dec_targets, metadata = load_skill_files(Path(args.skills_dir))
+    initial_previous_actions = build_skill_initial_previous_actions(
+        dec_targets, metadata, dec_targets[0].shape[-1]
+    )
     N = len(segments)
     A = dec_targets[0].shape[-1]
     dim_labels = [f"a{i}" for i in range(A - 1)] + ["grip"]
@@ -481,7 +505,16 @@ def main():
         image_i = torch.stack([frame["observation.images.image"] for frame in frames])
         wrist_i = torch.stack([frame["observation.images.wrist_image"] for frame in frames])
 
-        pred_d, pred_p = run_decode_single(model, z_q_i, states_i, image_i, wrist_i, device)
+        pred_d, pred_p = run_decode_single(
+            model,
+            z_q_i,
+            states_i,
+            gt_i[:T],
+            initial_previous_actions[i],
+            image_i,
+            wrist_i,
+            device,
+        )
 
         # trim to T (padding safeguard)
         pred_d = pred_d[:T]

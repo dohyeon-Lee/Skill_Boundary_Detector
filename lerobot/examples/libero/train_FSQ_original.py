@@ -1,8 +1,9 @@
-"""Train the one-shot (original-style) FSQ trajectory autoencoder.
+"""Train the whole-skill (original-style) FSQ trajectory autoencoder.
 
-The model reconstructs the encoder-input representation itself — normalized
-spline control points + normalized length — in one shot from z_q. No images,
-no terminator, no raw-dataset access: only the per-skill .npz files are read.
+The spline+oneshot contract reconstructs normalized state control points from
+z_q. The action_seq+rnn contract reconstructs the native raw controller-action
+sequence from z_q and predicts its end. Neither path uses images; only the
+per-skill .npz files are read.
 
 Usage:
     python examples/libero/train_FSQ_original.py \
@@ -73,7 +74,7 @@ class Args:
     """One-shot decoder MLP depth; rnn arch: GRU layer count."""
     decoder_arch: str = "oneshot"
     """oneshot: full control-point grid in one MLP pass. rnn: z-only GRU unroll
-    emitting one normalized action + one termination logit per step (length is
+    emitting one raw controller action + one termination logit per step (length is
     implicit in the termination signal)."""
     reconstruct_length: bool = True
     """oneshot only. False: reconstruct ONLY the control points — no length head,
@@ -164,14 +165,24 @@ def main(args: Args) -> None:
         encoder_start_max = grounding_positions.max(0)
     lengths = [int(m["length"]) for m in metadata]
     length_min, length_max = float(min(lengths)), float(max(lengths))
-    # rnn arch: q01/q99 action normalization computed from the skill data itself
-    # (self-contained; robust to outliers, same convention as v3's dataset stats).
-    action_q01 = action_q99 = None
+    # RNN/action-sequence contract: use the dataset's native controller action
+    # verbatim. LIBERO commands are already bounded to [-1, 1], so another
+    # dataset-dependent min/max or q01/q99 transform would only redefine the
+    # geometry seen by FSQ. The decoder's tanh has the same native bounds.
+    action_min = action_max = None
     action_dim = actions[0].shape[-1]
     if args.decoder_arch == "rnn" or args.encoder_arch == "action_seq":
         all_actions = np.concatenate(actions)
-        action_q01 = np.quantile(all_actions, 0.01, axis=0).astype(np.float32)
-        action_q99 = np.quantile(all_actions, 0.99, axis=0).astype(np.float32)
+        if not np.isfinite(all_actions).all():
+            raise ValueError("Raw action sequences contain NaN or infinity.")
+        action_min = all_actions.min(axis=0).astype(np.float32)
+        action_max = all_actions.max(axis=0).astype(np.float32)
+        if float(np.abs(all_actions).max()) > 1.0001:
+            raise ValueError(
+                "Raw-action FSQ expects native controller commands in [-1, 1] "
+                f"because the RNN decoder uses tanh; observed range "
+                f"[{all_actions.min():.6f}, {all_actions.max():.6f}]."
+            )
 
     stats = dict(
         encoder_min=encoder_min, encoder_max=encoder_max,
@@ -181,8 +192,14 @@ def main(args: Args) -> None:
     )
     if encoder_start_min is not None:
         stats.update(encoder_start_min=encoder_start_min, encoder_start_max=encoder_start_max)
-    if action_q01 is not None:
-        stats.update(action_q01=action_q01, action_q99=action_q99)
+    if action_min is not None:
+        # Diagnostic provenance only; these values are never used to transform
+        # an input or reconstruction target.
+        stats.update(
+            action_convention=np.asarray("raw_controller_action_v1"),
+            action_min=action_min,
+            action_max=action_max,
+        )
     np.savez(str(output_dir / "encoder_stats.npz"), **stats)
     print(f"[FSQ-orig] encoder input mode: {args.encoder_input_mode}")
     print(f"[FSQ-orig] encoder_min: {np.round(encoder_min, 4)}")
@@ -207,8 +224,12 @@ def main(args: Args) -> None:
             f"entropy conf/div={args.bsq_entropy_conf_weight}/{args.bsq_entropy_div_weight} "
             f"dataset_entropy={'joint' if args.bsq_entropy_joint else 'factorized'}"
         )
-    if action_q01 is not None:
-        print(f"[FSQ-orig] action q01/q99: {np.round(action_q01, 4)} / {np.round(action_q99, 4)}")
+    if action_min is not None:
+        print("[FSQ-orig] action convention: raw controller action (no normalization)")
+        print(
+            f"[FSQ-orig] raw action min/max: "
+            f"{np.round(action_min, 4)} / {np.round(action_max, 4)}"
+        )
 
     device = args.device if torch.cuda.is_available() else "cpu"
     enc_dim = segments[0].shape[-1]
@@ -288,8 +309,6 @@ def main(args: Args) -> None:
         encoder_max=encoder_max,
         encoder_start_min=encoder_start_min,
         encoder_start_max=encoder_start_max,
-        action_q01=action_q01,
-        action_q99=action_q99,
     )
 
     train_fsq_original(

@@ -39,6 +39,7 @@ log = logging.getLogger("fsq_terminator_eval")
 
 THIRD_KEY = "observation.images.image"
 WRIST_KEY = "observation.images.wrist_image"
+MANIFEST_FORMAT = "fsq_terminator_eval_v2"
 
 
 def terminator_kind(module) -> str:
@@ -62,20 +63,27 @@ def needs_images(kind: str) -> bool:
     return kind in {"state_image", "image_only", "wrist_only"}
 
 
+def needs_context(kind: str) -> bool:
+    """Whether this terminator variant consumes proprio/previous-action context."""
+    return kind in {"state_image", "state_mlp", "state_rnn"}
+
+
 @torch.no_grad()
-def _step_terminator(module, kind, z_norm, state, third, wrist, hidden):
+def _step_terminator(module, kind, z_norm, context, third, wrist, hidden):
     """One terminator step for a batch of skills; returns (progress, prob, hidden)."""
     if kind == "state_image":
-        progress, logits = module(z_norm, state, third, wrist)
+        progress, logits = module(z_norm, context, third, wrist)
     elif kind == "image_only":
         progress, logits = module(z_norm, third, wrist)
     elif kind == "wrist_only":
         progress, logits = module(z_norm, wrist)
     elif kind == "state_mlp":
-        progress, logits = module.forward_outputs(z_norm, state[..., : module.state_dim])
+        progress, logits = module.forward_outputs(
+            z_norm, context[..., : module.state_dim]
+        )
     elif kind == "state_rnn":
         progress, logits, hidden = module.step_outputs(
-            z_norm, state[..., : module.state_dim], hidden
+            z_norm, context[..., : module.state_dim], hidden
         )
     else:
         raise ValueError(f"This checkpoint has no usable terminator (kind={kind!r}).")
@@ -87,7 +95,7 @@ def run_terminator(
     model,
     kind: str,
     latents: np.ndarray,
-    states: list[np.ndarray],
+    contexts: list[np.ndarray],
     metadata: list[dict],
     lengths: list[int],
     raw_dataset,
@@ -127,8 +135,8 @@ def run_terminator(
                 z_norm_all = z_norm_all[active]
                 if hidden is not None:
                     hidden = hidden[:, active] if hidden.ndim == 3 else hidden[active]
-            state = torch.from_numpy(
-                np.stack([states[i][step] for i in group]).astype(np.float32)
+            context = torch.from_numpy(
+                np.stack([contexts[i][step] for i in group]).astype(np.float32)
             ).to(device)
             third = wrist = None
             if wants_images:
@@ -143,7 +151,7 @@ def run_terminator(
                 third = torch.stack([frame[THIRD_KEY] for frame in frames]).to(device)
                 wrist = torch.stack([frame[WRIST_KEY] for frame in frames]).to(device)
             progress, prob, hidden = _step_terminator(
-                module, kind, z_norm_all, state, third, wrist, hidden
+                module, kind, z_norm_all, context, third, wrist, hidden
             )
             prob_np = prob.reshape(-1).float().cpu().numpy()
             progress_np = progress.reshape(-1).float().cpu().numpy()
@@ -218,14 +226,18 @@ def index_skill_files(skills_dir: Path) -> list[dict]:
     return entries
 
 
-def load_selected_skills(entries: list[dict]) -> tuple[list, list, list[dict]]:
+def load_selected_skills(
+    entries: list[dict],
+) -> tuple[list[np.ndarray], list[np.ndarray], list[np.ndarray], list[dict]]:
     """Open only the chosen skill files, matching train_FSQ.load_skill_files."""
-    segments, states, metadata = [], [], []
+    segments, states, actions, metadata = [], [], [], []
     for entry in entries:
         data = np.load(str(entry["path"]))
         raw_states = data["states"].astype(np.float32)
+        raw_actions = data["actions"].astype(np.float32)
         segments.append(raw_states)
         states.append(raw_states)
+        actions.append(raw_actions)
         metadata.append(
             {
                 "file": entry["path"].name,
@@ -237,7 +249,188 @@ def load_selected_skills(entries: list[dict]) -> tuple[list, list, list[dict]]:
                 "length": int(len(data["actions"])),
             }
         )
-    return segments, states, metadata
+    return segments, states, actions, metadata
+
+
+def recover_initial_previous_actions(
+    selected_entries: list[dict],
+    selected_actions: list[np.ndarray],
+    metadata: list[dict],
+    all_entries: list[dict],
+    *,
+    action_dim: int,
+) -> list[np.ndarray | None]:
+    """Recover raw action[t-1] at each selected skill's first frame.
+
+    Only selected skills are opened by the main loader. For an interior skill,
+    however, training used the final action of its exactly contiguous preceding
+    skill rather than a synthetic BOS value. The filename index identifies that
+    predecessor without opening the full 11k-file skillset.
+    """
+    if not len(selected_entries) == len(selected_actions) == len(metadata):
+        raise ValueError("Selected entries/actions/metadata must have equal lengths.")
+
+    def key(item: dict, skill_index: int | None = None) -> tuple[int, int, int]:
+        return (
+            int(item["task_id"]),
+            int(item["episode_id"]),
+            int(item["skill_index"] if skill_index is None else skill_index),
+        )
+
+    by_key = {key(entry): entry for entry in all_entries}
+    selected_by_key = {
+        key(entry): (np.asarray(action, dtype=np.float32), int(item["frame_end"]))
+        for entry, action, item in zip(
+            selected_entries, selected_actions, metadata, strict=True
+        )
+    }
+    initial: list[np.ndarray | None] = []
+    for entry, item in zip(selected_entries, metadata, strict=True):
+        frame_start = int(item["frame_start"])
+        if frame_start == 0:
+            initial.append(None)
+            continue
+        skill_index = int(item["skill_index"])
+        previous_key = key(entry, skill_index - 1)
+        previous_entry = by_key.get(previous_key)
+        if previous_entry is None:
+            raise ValueError(
+                "Cannot recover action[t-1] for non-episode-start skill "
+                f"task={item['task_id']} episode={item['episode_id']} "
+                f"skill={skill_index}: preceding skill is absent."
+            )
+        selected_previous = selected_by_key.get(previous_key)
+        if selected_previous is None:
+            with np.load(str(previous_entry["path"])) as previous_data:
+                previous_action = previous_data["actions"].astype(np.float32)
+                previous_frame_end = int(previous_data["frame_end"])
+        else:
+            previous_action, previous_frame_end = selected_previous
+        if previous_frame_end != frame_start:
+            raise ValueError(
+                "Previous skill is not exactly contiguous: "
+                f"task={item['task_id']} episode={item['episode_id']} "
+                f"skill={skill_index}, previous_end={previous_frame_end}, "
+                f"start={frame_start}."
+            )
+        if len(previous_action) == 0 or previous_action.shape[-1] < action_dim:
+            raise ValueError(
+                f"Invalid preceding action sequence {previous_entry['path']}: "
+                f"shape={previous_action.shape}, action_dim={action_dim}."
+            )
+        initial.append(previous_action[-1, :action_dim].copy())
+    return initial
+
+
+@torch.no_grad()
+def build_terminator_contexts(
+    model,
+    kind: str,
+    states: list[np.ndarray],
+    actions: list[np.ndarray],
+    selected_entries: list[dict],
+    metadata: list[dict],
+    all_entries: list[dict],
+) -> list[np.ndarray]:
+    """Reproduce the checkpoint's terminator context contract exactly."""
+    module = model.terminator
+    if module is None or not needs_context(kind):
+        return states
+    context_mode = str(
+        getattr(module, "context_mode", getattr(model.cfg, "terminator_context", "proprio"))
+    )
+    if context_mode == "proprio":
+        return states
+    if context_mode != "prev_action":
+        raise ValueError(f"Unsupported terminator context_mode={context_mode!r}.")
+
+    action_dim = int(model.cfg.action_dim)
+    initial = recover_initial_previous_actions(
+        selected_entries,
+        actions,
+        metadata,
+        all_entries,
+        action_dim=action_dim,
+    )
+    contexts: list[np.ndarray] = []
+    for action, first_previous, item in zip(actions, initial, metadata, strict=True):
+        length = int(item["length"])
+        if len(action) < length or action.shape[-1] < action_dim:
+            raise ValueError(
+                f"Skill action sequence is too short/narrow: shape={action.shape}, "
+                f"length={length}, action_dim={action_dim}."
+            )
+        emitted = torch.from_numpy(
+            np.asarray(action[:length, :action_dim], dtype=np.float32)
+        ).unsqueeze(0)
+        first = (
+            None
+            if first_previous is None
+            else torch.from_numpy(first_previous.astype(np.float32)).unsqueeze(0)
+        )
+        context = model._previous_action_context(
+            emitted,
+            initial_previous_action=first,
+        )
+        contexts.append(context[0].float().cpu().numpy())
+    return contexts
+
+
+@torch.no_grad()
+def batched_encode_action_sequences(
+    model,
+    actions: list[np.ndarray],
+    lengths: list[int],
+    device: torch.device,
+    batch_size: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Encode raw action sequences with the checkpoint's own value transform."""
+    prepared = []
+    for action, length in zip(actions, lengths, strict=True):
+        if len(action) < int(length):
+            raise ValueError(
+                f"Action sequence has {len(action)} frames but metadata length is {length}."
+            )
+        prepared.append(model._prepare_actions_numpy(action[: int(length)]).float())
+    latents = np.zeros((len(actions), int(model.fsq.latent_dim)), dtype=np.float32)
+    tokens = np.zeros(len(actions), dtype=np.int32)
+    order = sorted(range(len(actions)), key=lambda index: int(lengths[index]))
+    for start in range(0, len(order), batch_size):
+        indices = order[start : start + batch_size]
+        horizon = max(int(lengths[index]) for index in indices)
+        action_dim = int(prepared[indices[0]].shape[-1])
+        batch = torch.zeros(len(indices), horizon, action_dim, dtype=torch.float32)
+        batch_lengths = torch.zeros(len(indices), dtype=torch.long)
+        for slot, index in enumerate(indices):
+            length = int(lengths[index])
+            if prepared[index].shape[-1] != action_dim:
+                raise ValueError("Action feature dimensions differ within one eval batch.")
+            batch[slot, :length] = prepared[index][:length]
+            batch_lengths[slot] = length
+        z_q, index_tensor = model.encoder(batch.to(device), batch_lengths.to(device))
+        z_np = z_q.float().cpu().numpy()
+        index_np = index_tensor.cpu().numpy()
+        for slot, index in enumerate(indices):
+            latents[index] = z_np[slot]
+            tokens[index] = int(index_np[slot])
+    return latents, tokens
+
+
+def encode_selected_skills(
+    model,
+    cfg,
+    segments: list[np.ndarray],
+    actions: list[np.ndarray],
+    lengths: list[int],
+    device: torch.device,
+    batch_size: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Dispatch to the state-spline or action-sequence encoder contract."""
+    if str(getattr(cfg, "encoder_arch", "spline")) == "action_seq":
+        return batched_encode_action_sequences(
+            model, actions, lengths, device, batch_size
+        )
+    return batched_encode(model, segments, lengths, device, batch_size)
 
 
 def select_skills(metadata, *, task_ids, episodes_per_task, selection, seed, episode_ids):
@@ -395,10 +588,16 @@ def main() -> None:
     manifest_path = output_dir / "metrics" / "manifest.json"
     if manifest_path.is_file() and args.resume:
         existing = json.loads(manifest_path.read_text())
-        if existing.get("completed"):
+        if existing.get("completed") and existing.get("format") == MANIFEST_FORMAT:
             log.info("Already complete, reusing: %s", manifest_path)
             maybe_report(args)
             return
+        if existing.get("completed"):
+            log.info(
+                "Ignoring pre-%s manifest and rebuilding with the current input contract: %s",
+                MANIFEST_FORMAT,
+                manifest_path,
+            )
 
     # Inline CUDA guard: importing torch costs minutes on this cluster's shared
     # venv, so the health check runs here instead of in a second interpreter.
@@ -415,6 +614,15 @@ def main() -> None:
     model, cfg = load_model(args.model_path, str(device), "fsq", None)
     kind = terminator_kind(model.terminator)
     log.info("terminator variant: %s", kind)
+    log.info(
+        "checkpoint contract: encoder=%s terminator_context=%s",
+        getattr(cfg, "encoder_arch", "spline"),
+        getattr(
+            model.terminator,
+            "context_mode",
+            getattr(cfg, "terminator_context", "proprio"),
+        ),
+    )
     if kind == "none":
         raise SystemExit(
             f"{args.model_label}: this checkpoint has no terminator (reconstructor_only)."
@@ -442,9 +650,29 @@ def main() -> None:
         episode_ids=[int(v) for v in json.loads(args.episode_ids)],
     )
     log.info("scoring %d skills of %d", len(picked), len(entries))
-    segments, dec_states, metadata = load_selected_skills([entries[i] for i in picked])
+    selected_entries = [entries[i] for i in picked]
+    segments, dec_states, skill_actions, metadata = load_selected_skills(selected_entries)
     attach_episode_offsets(args.dataset_dir, metadata)
     lengths = [int(item["length"]) for item in metadata]
+
+    latents, tokens = encode_selected_skills(
+        model,
+        cfg,
+        segments,
+        skill_actions,
+        lengths,
+        device,
+        args.batch_size,
+    )
+    terminator_contexts = build_terminator_contexts(
+        model,
+        kind,
+        dec_states,
+        skill_actions,
+        selected_entries,
+        metadata,
+        entries,
+    )
 
     raw_dataset = None
     if needs_images(kind):
@@ -456,18 +684,13 @@ def main() -> None:
             video_keys_to_load=[THIRD_KEY, WRIST_KEY],
         )
 
-    sub_segments, sub_states, sub_metadata, sub_lengths = (
-        segments, dec_states, metadata, lengths
-    )
-    latents, tokens = batched_encode(model, sub_segments, sub_lengths, device, args.batch_size)
-
     terms, progs = run_terminator(
         model,
         kind,
         latents,
-        sub_states,
-        sub_metadata,
-        sub_lengths,
+        terminator_contexts,
+        metadata,
+        lengths,
         raw_dataset,
         device,
         skills_per_batch=max(1, args.batch_size // 8),
@@ -497,7 +720,7 @@ def main() -> None:
         )
 
     manifest = {
-        "format": "fsq_terminator_eval_v1",
+        "format": MANIFEST_FORMAT,
         "completed": True,
         "label": args.model_label,
         "run_name": args.model_run,
@@ -508,6 +731,14 @@ def main() -> None:
         "skills_dir": str(Path(args.skills_dir).resolve()),
         "dataset_dir": str(Path(args.dataset_dir).resolve()),
         "terminator_kind": kind,
+        "terminator_context": str(
+            getattr(
+                model.terminator,
+                "context_mode",
+                getattr(cfg, "terminator_context", "proprio"),
+            )
+        ),
+        "encoder_arch": str(getattr(cfg, "encoder_arch", "spline")),
         "termination_only": bool(getattr(model.terminator, "termination_only", False)),
         "fsq_levels": [int(level) for level in cfg.fsq_levels],
         "codebook_size": int(model.fsq.codebook_size),

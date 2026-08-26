@@ -307,6 +307,125 @@ def test_missing_latents_is_empty_once_every_checkpoint_is_encoded(tmp_path: Pat
     assert settings["fsq_missing_latents_count"] == 0
 
 
+def _write_complete_replay_manifest(
+    collection_dir: Path,
+    run_dir: Path,
+    *,
+    epoch: int,
+    request: dict,
+) -> None:
+    tag = f"epoch{epoch:04d}"
+    output_dir = collection_dir / "checkpoints" / tag
+    image_dir = output_dir / "images"
+    image_dir.mkdir(parents=True)
+    (image_dir / "start.png").write_bytes(b"start")
+    (image_dir / "final.png").write_bytes(b"final")
+    manifest = {
+        "signature": {
+            "format": "fsq_gt_replay_v3",
+            "model_path": str((run_dir / f"FSQ_epoch{epoch:04d}.pt").resolve()),
+            "latents_path": str((run_dir / f"skill_latents_{tag}.npz").resolve()),
+            "target_task": request["target_task"],
+            "selected_episodes": {"3": [10, 11]},
+            "seed": request["seed"],
+        },
+        "request": request,
+        "run_name": "run",
+        "epoch_tag": tag,
+        "completed": True,
+        "records": {
+            "occ": {
+                "start_image_path": "images/start.png",
+                "final_image_path": "images/final.png",
+            }
+        },
+    }
+    manifest_path = output_dir / "metrics" / "manifest.json"
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_text(json.dumps(manifest))
+
+
+def test_incremental_submission_keeps_only_new_or_incomplete_checkpoints(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """Completed work submits no no-op job; a later checkpoint is still added."""
+    monkeypatch.setattr(CONFIG, "_HERE", tmp_path / "skill_eval" / "src")
+    config = _replay_run(tmp_path, epochs=[50, 100])
+    config["resume"] = True
+    run_dir = tmp_path / "outputs" / "FSQ" / "run"
+    for tag in ("epoch0050", "epoch0100"):
+        (run_dir / f"skill_latents_{tag}.npz").write_bytes(b"latent")
+
+    initial = CONFIG.build_settings(config)
+    assert initial["fsq_pending_checkpoints"] == "50 100"
+    request = CONFIG._replay_request(
+        episode_source="exact",
+        target_task="libero_90",
+        task_ids=[3],
+        episode_ids=[],
+        episodes_per_task=2,
+        episode_selection="first",
+        seed=42,
+    )
+    collection_dir = Path(initial["eval_collection_dir"])
+    for epoch in (50, 100):
+        _write_complete_replay_manifest(
+            collection_dir, run_dir, epoch=epoch, request=request
+        )
+
+    complete = CONFIG.build_settings(config)
+    assert complete["fsq_pending_checkpoints"] == ""
+    assert complete["fsq_pending_checkpoint_count"] == 0
+    assert complete["fsq_completed_checkpoints"] == "50 100"
+    assert complete["fsq_missing_latents"] == ""
+    assert complete["eval_max_concurrent"] == 0
+
+    # Training later produces another requested checkpoint: only that one is
+    # submitted, while the two completed checkpoints stay untouched.
+    (run_dir / "FSQ_epoch0150.pt").write_bytes(b"checkpoint")
+    (run_dir / "skill_latents_epoch0150.npz").write_bytes(b"latent")
+    incremental = CONFIG.build_settings(config)
+    assert incremental["fsq_pending_checkpoints"] == "150"
+    assert incremental["fsq_pending_checkpoint_count"] == 1
+    assert incremental["fsq_completed_checkpoints"] == "50 100"
+    assert incremental["eval_checkpoints_per_job"] == 1
+    assert incremental["eval_max_concurrent"] == 1
+
+
+def test_incremental_submission_replays_a_checkpoint_with_incomplete_records(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(CONFIG, "_HERE", tmp_path / "skill_eval" / "src")
+    config = _replay_run(tmp_path, epochs=[50])
+    config["resume"] = True
+    run_dir = tmp_path / "outputs" / "FSQ" / "run"
+    (run_dir / "skill_latents_epoch0050.npz").write_bytes(b"latent")
+    settings = CONFIG.build_settings(config)
+    request = CONFIG._replay_request(
+        episode_source="exact",
+        target_task="libero_90",
+        task_ids=[3],
+        episode_ids=[],
+        episodes_per_task=2,
+        episode_selection="first",
+        seed=42,
+    )
+    _write_complete_replay_manifest(
+        Path(settings["eval_collection_dir"]), run_dir, epoch=50, request=request
+    )
+    manifest_path = (
+        Path(settings["eval_collection_dir"])
+        / "checkpoints/epoch0050/metrics/manifest.json"
+    )
+    manifest = json.loads(manifest_path.read_text())
+    manifest["records"]["occ"].pop("final_image_path")
+    manifest_path.write_text(json.dumps(manifest))
+
+    incomplete = CONFIG.build_settings(config)
+    assert incomplete["fsq_pending_checkpoints"] == "50"
+    assert incomplete["fsq_completed_checkpoints"] == ""
+
+
 def test_blank_replay_qos_inherits_train_gpu_reservation(tmp_path: Path) -> None:
     """Inherited GPU QOS gets a GPU reservation although replay remains CPU-only."""
     config = _replay_run(tmp_path, epochs=[50])
@@ -571,6 +690,7 @@ def test_report_groups_occurrences_by_fsq_token() -> None:
         "levels": [3, 3, 3],
         "run_name": "fsq333",
         "epoch_tag": "epoch0500",
+        "train_codebook_counts": [0, 0, 0, 0, 2] + [0] * 22,
         "train_codebook_used": 18,
         "signature": {
             "target_task": "libero_90",
@@ -595,6 +715,7 @@ def test_report_groups_occurrences_by_fsq_token() -> None:
     payload = REPORT.report_payload(manifest)
 
     assert payload["occurrence_count"] == 2
+    assert payload["train_codebook_counts"][4] == 2
     assert payload["train_codebook_used"] == 18
     assert payload["skills"][0]["token"] == 4
     assert payload["skills"][0]["coord"] == [1, 1, 0]
@@ -624,6 +745,7 @@ def test_report_shows_start_and_final_image_pair(tmp_path: Path) -> None:
         "task_ids": [0],
         "episode_count": 1,
         "occurrence_count": 1,
+        "train_codebook_counts": [1] + [0] * 26,
         "skills": [
             {
                 "token": 0,
@@ -674,10 +796,22 @@ def test_report_shows_start_and_final_image_pair(tmp_path: Path) -> None:
     assert "cohesionTable()" in html
     assert "codebook used (train)" in html
     assert "mean effective codes per cell" in html
+    assert "full-data codebook utilization" in html
+    assert "independent of this report's task_ids selection" in html
+    assert "effective (purity)" not in html
     assert 'id="modelTabs"' in html
     assert 'class="small-button cube-mode' in html
     assert 'data-mode="length"' in html
     assert 'data-mode="count"' in html
+    assert 'class="full-cube"' in html
+    assert 'id="fullCubeLegend"' in html
+    assert "Full training skillset" in html
+    assert "renderFullCube()" in html
+    assert "full-data elements" in html
+    assert "COUNT_BORDER_THRESHOLD=10" in html
+    assert "stats.get(t).count>COUNT_BORDER_THRESHOLD" in html
+    assert "selectedCode?'#d62728'" in html
+    assert "&gt;${COUNT_BORDER_THRESHOLD} elements" in html
     assert "renderCubeLegend" in html
     assert "Math.max(0,...models.flatMap" not in html
     assert "maximumSkillId=Math.max(maximumSkillId" in html
@@ -777,9 +911,29 @@ def test_backfill_train_codebook_used_from_latents(tmp_path: Path) -> None:
 
     assert manifest["train_codebook_used"] == 3
     assert manifest["train_codebook_effective"] == pytest.approx(2.8284, abs=1e-3)
+    assert manifest["train_codebook_counts"] == [1, 0, 0, 0, 2, 0, 0, 1]
     saved = json.loads(manifest_path.read_text())
     assert saved["train_codebook_used"] == 3
     assert saved["train_codebook_effective"] == pytest.approx(2.8284, abs=1e-3)
+    assert saved["train_codebook_counts"] == [1, 0, 0, 0, 2, 0, 0, 1]
+
+
+def test_backfill_adds_histogram_when_usage_summary_already_exists(tmp_path: Path) -> None:
+    latents = tmp_path / "skill_latents.npz"
+    np.savez(latents, tokens=np.asarray([1, 1, 2], dtype=np.int32))
+    manifest_path = tmp_path / "manifest.json"
+    manifest = {
+        "signature": {"latents_path": str(latents)},
+        "levels": [2, 2],
+        "train_codebook_used": 2,
+        "train_codebook_effective": 1.8899,
+        "completed": True,
+    }
+    manifest_path.write_text(json.dumps(manifest))
+
+    REPORT._backfill_train_codebook_used(manifest_path, manifest)
+
+    assert manifest["train_codebook_counts"] == [0, 2, 1, 0]
 
 
 def test_collection_keeps_checkpoint_codebooks_and_prefixes_media() -> None:

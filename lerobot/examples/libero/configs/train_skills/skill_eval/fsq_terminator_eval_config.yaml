@@ -6,20 +6,21 @@
 # to the known end?". Entries must therefore share one FSQ skillset; the config
 # resolver refuses the run otherwise.
 #
-# The terminator variant (state+image / image-only / state MLP / state RNN) is
-# read from each checkpoint's own cfg, so nothing about it is configured here.
+# The encoder convention and terminator variant/context (including normalized
+# previous action versus legacy proprio) are read from each checkpoint's own
+# cfg, so nothing about them is configured here.
 
-output_name: "contrastive_terminator_2"
+output_name: "RESNET_terminator"
 
 # Checkpoints are named explicitly, one per row -- no sweeping.
 # Only FSQ v3 runs have a terminator module to probe. FSQ-original runs keep
 # their termination inside the rnn decoder, so the resolver rejects them here.
 terminator_models:
-  - label: term_recon_w01_contrastive
-    run_name: libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_resnet_tuned_fusion_raw_raw__recon_lincontrast_bj10_w01_warm50_ramp50_new_initcal
+  - label: norm_action01_term
+    run_name: norm_action01_recon_termRES__jsON_routeON_loss__layer2_base
     checkpoint: "500"
-  - label: term_w01_contrastive
-    run_name: libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_resnet_tuned_fusion_raw_raw__lincontrast_bj10_w01_warm50_ramp50_new_initcal
+  - label: zero01_term
+    run_name: zero01_recon_termRES__jsON_routeON_loss__layer2_base
     checkpoint: "500"
 
 target_task: libero_90

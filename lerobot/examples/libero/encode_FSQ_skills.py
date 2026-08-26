@@ -171,8 +171,8 @@ def _encode_one(
 
     latents = []
     tokens = []
-    # action_seq (FSQ-original probe) encodes ACTION sequences; every other
-    # variant encodes the state trajectory. No images either way.
+    # action_seq checkpoints encode ACTION sequences; every other variant
+    # encodes the state trajectory. No images either way.
     action_seq_encoder = getattr(getattr(model, "cfg", None), "encoder_arch", "spline") == "action_seq"
     source = skill_actions if action_seq_encoder else segments
     for item in tqdm(source, desc="Encoding FSQ skills"):

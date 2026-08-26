@@ -86,6 +86,7 @@ cat > "${FSQ_OUTPUT_DIR}/fsq_original_meta.json" <<JSON
   "skillset_output_suffix": "${SKILLSET_OUTPUT_SUFFIX}",
   "encoder_input_mode": "${FSQ_ENCODER_INPUT_MODE}",
   "encoder_arch": "${FSQ_ORIG_ENCODER_ARCH}",
+  "action_convention": "raw_controller_action_v1",
   "encoder_length_token": ${FSQ_ORIG_ENCODER_LENGTH_TOKEN},
   "decoder_layers": ${FSQ_ORIG_DECODER_LAYERS},
   "decoder_arch": "${FSQ_ORIG_DECODER_ARCH}",

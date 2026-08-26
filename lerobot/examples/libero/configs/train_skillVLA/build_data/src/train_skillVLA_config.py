@@ -220,20 +220,34 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
             f"skillset_min_skill_len must be >= 1, got {skillset_min_skill_len}."
         )
 
-    # Parse codebook levels from the FSQ folder. The remaining suffix identifies
-    # its live vision backbone / freeze mode / terminator architecture.
-    lv_match = re.search(r"fsq(\d+)", fsq_run_name)
-    if not lv_match:
-        raise ValueError(
-            f"fsq_run_name must contain an 'fsq<levels>' tag, got: {fsq_run_name}"
-        )
-    fsq_digits = lv_match.group(1)
-    fsq_levels = [int(d) for d in fsq_digits]
-    # Short run names end at the fsq<levels> tag, so the variant may be empty;
-    # an empty variant is simply omitted from downstream folder names.
-    fsq_variant = fsq_run_name[lv_match.end() :].strip("_")
-    fsq_exp_suffix = f"_{fsq_variant}" if fsq_variant else ""
-    fsq_exp = fsq_variant
+    # New runs store model identity in metadata because their folder name is
+    # exactly the user-owned fsq_exp and deliberately encodes no parameters.
+    # Keep folder parsing only as a read-only fallback for historical runs.
+    meta_levels = fsq_meta.get("fsq_levels")
+    if meta_levels is not None:
+        if isinstance(meta_levels, str):
+            fsq_levels = [
+                int(value)
+                for value in meta_levels.replace(",", " ").split()
+            ]
+        else:
+            fsq_levels = [int(value) for value in meta_levels]
+        if not fsq_levels or any(level < 2 for level in fsq_levels):
+            raise ValueError(
+                f"Invalid fsq_levels in FSQ metadata: {meta_levels!r}"
+            )
+        fsq_exp = str(fsq_meta.get("fsq_exp") or fsq_run_name)
+    else:
+        lv_match = re.search(r"fsq(\d+)", fsq_run_name)
+        if not lv_match:
+            raise ValueError(
+                "Historical FSQ metadata has no fsq_levels and its folder name "
+                f"has no 'fsq<levels>' fallback tag: {fsq_run_name}"
+            )
+        fsq_levels = [int(digit) for digit in lv_match.group(1)]
+        fsq_exp = fsq_run_name[lv_match.end() :].strip("_")
+    fsq_digits = "".join(str(level) for level in fsq_levels)
+    fsq_exp_suffix = f"_{fsq_exp}" if fsq_exp else ""
 
     jitter_distribution = str(
         get_value(cfg, "transition_jitter_distribution", "half_normal")

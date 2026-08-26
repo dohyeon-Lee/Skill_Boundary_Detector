@@ -41,6 +41,8 @@ SKILL_CODE = "skill_code"
 SKILL_CODE_TRUE = "skill_code_true"
 SKILL_PROGRESS = "skill_progress"
 SKILL_EFFECTIVE_DE = "skill_effective_de"
+SKILL_PREVIOUS_ACTION = "skill_previous_action"
+SKILL_PREVIOUS_ACTION_BOS = "skill_previous_action_bos"
 SAME_SKILL_PAIR_ID = "same_skill_pair_id"
 SAME_SKILL_PAIR_FALLBACK = "same_skill_pair_fallback"
 
@@ -174,7 +176,25 @@ class SkillVLADataset(LeRobotDataset):
                     "Expected grouped sample index (index, pair_id, fallback[, k_prime, offset]), "
                     f"got {idx!r}."
                 )
-        item = super().__getitem__(int(idx))
+        item_index = int(idx)
+        item = super().__getitem__(item_index)
+
+        # Terminator context is the action that produced the current
+        # observation. Episode starts receive an exact raw zero placeholder;
+        # the terminator adapter turns it into an exact normalized BOS token.
+        raw_row = self.hf_dataset[item_index]
+        current_action = np.asarray(raw_row["action"], dtype=np.float32)
+        frame_index = _scalar(item["frame_index"])
+        if frame_index == 0:
+            previous_action = np.zeros_like(current_action)
+        else:
+            previous_action = np.asarray(
+                self.hf_dataset[item_index - 1]["action"], dtype=np.float32
+            )
+        item[SKILL_PREVIOUS_ACTION] = torch.from_numpy(previous_action.copy())
+        item[SKILL_PREVIOUS_ACTION_BOS] = torch.tensor(
+            frame_index == 0, dtype=torch.bool
+        )
 
         ep_idx = _scalar(item["episode_index"])
         k = _scalar(item["skill_index"])

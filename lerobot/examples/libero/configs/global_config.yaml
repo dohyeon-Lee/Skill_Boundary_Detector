@@ -69,7 +69,7 @@ train_partition:
 
 
 
-train_qos: base_qos # pro6000_qos | base_qos | big_qos
+train_qos: big_qos # pro6000_qos | base_qos | big_qos
 train_nodelist: ""
 train_exclude_nodes:
   - node19
@@ -98,6 +98,6 @@ train_exclude_nodes:
   # - node12
   # - node37
   # - node34
-  # - node33
+  - node33
   # - node38
   # - node06

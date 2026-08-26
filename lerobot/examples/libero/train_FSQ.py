@@ -53,8 +53,8 @@ class Args:
     skills_dir: str = ""
     """Directory (recursively searched) for per-skill .npz files."""
     raw_dataset_dir: str = ""
-    """Raw LeRobot dataset. State-RNN mode reads only normalization metadata;
-    the visual terminator reads selected camera frames from cache or live video."""
+    """Raw LeRobot dataset. The default/both terminator reads selected camera
+    frames from cache or live video when its termination objective is enabled."""
     output_dir: str = ""
     """Output directory. Defaults to parent of skills_dir."""
 
@@ -68,8 +68,18 @@ class Args:
     dropout: float = 0.1
     n_control: int = 30
     spline_degree: int = 3
+    autoencoder_mode: str = "action"
+    """Indivisible encoder/decoder preset: raw | zero | action | norm_action."""
+    action_gripper_weight: float = 1.0
+    """Trailing gripper-axis MSE weight for every autoencoder mode."""
+    start_state_conditioning: str = "none"
+    """Optional decoder context in every preset: none | adaln."""
     encoder_input_mode: str = "zero_grounded"
-    """raw | zero_grounded | optimal (raw is normalized internally to raw_state)."""
+    """raw | zero_grounded | start_grounded | optimal.
+
+    start_grounded expresses XYZ and axis-angle rotation relative to the first
+    EEF pose while leaving gripper state unchanged.
+    """
     encoder_length_token: bool = False
     """Fixed false by the standard YAML path; retained only for direct CLI compatibility."""
     encoder_arch: str = "spline"
@@ -77,14 +87,15 @@ class Args:
     sequence transformer (no spline codec / grounding / length-token choices)."""
     fsq_entropy: bool = False
     """Apply BSQ-style entropy terms to the FSQ grid (confidence + diversity)."""
-    reconstructor_start_state: bool = True
-    """False: reconstructor drops the skill-start-state token — the action chunk
-    becomes a pure (z, progress) lookup."""
-    reconstructor_arch: str = "chunk"
-    """chunk: per-timestep action chunks. skill/oneshot: FSQ-original-style
-    full ctrl-grid reconstruction once per trajectory (M applies to terminator only)."""
+    reconstructor_start_state: bool = False
+    """Internal compatibility flag resolved from start_state_conditioning."""
+    reconstructor_arch: str = "oneshot"
+    """skill/oneshot: FSQ-original-style full ctrl-grid reconstruction once
+    per trajectory. action_seq: raw full
+    action sequence reconstructed from z by a GRU. action_seq_transformer:
+    the same raw target decoded by a z-AdaLN causal query Transformer."""
     reconstructor_output_mode: str = "match_encoder"
-    """Spline/oneshot output: raw | zero_grounded | match_encoder."""
+    """Spline/oneshot output: raw | zero_grounded | start_grounded | match_encoder."""
     entropy_conf_weight: float = 0.1
     entropy_conf_ceiling: float = 0.0
     """Normalized per-sample entropy ceiling. At or below it the confidence
@@ -102,6 +113,9 @@ class Args:
     repels one randomly selected adjacent skill by full-code overlap."""
     pair_weight: float = 0.1
     pair_inv_temperature: float = 5.0
+    route_loss: bool = False
+    """Use detached all-code reconstructor/termination costs for encoder routing.
+    Reuses pair_inv_temperature, with no schedule or separate loss weight."""
     pair_warmup: bool = False
     """Enable reconstruction-only warm-up and pair-weight ramp."""
     pair_warmup_epochs: int = 0
@@ -119,23 +133,18 @@ class Args:
     decoder_reconstructor: bool = True
     decoder_terminator_progress: bool = True
     decoder_terminator_termination: bool = True
-    terminator_input_space: str = "both"
-    """state | image (third+wrist) | both."""
-    terminator_model: str = "default"
-    """default | rnn. The RNN currently supports state input only."""
+    terminator_context: str = "prev_action"
+    """prev_action for new models; proprio only for legacy snapshot replay."""
     visual_terminator_arch: str = "small"
-    """small | fusion; used only by the default image/both terminator."""
+    """small | fusion; the terminator is always the default multimodal model."""
     vision_backbone: str = "dino"
     """dino, siglip, or resnet; shared by third-person and wrist images."""
     freeze_vision_encoder: bool = True
-    dino_model_path: str = "../models/dinov3-vits16"
     dino_image_size: int = 224
     siglip_image_size: int = 224
     resnet_image_size: int = 224
     frame_cache_dir: str = ""
     """Completed exact RGB frame cache; blank retains live video decoding."""
-    image_encoder_layers: int = 1
-    image_encoder_heads: int = 4
     skill_cond_mode: str = "token"
     """Skill conditioning shared by reconstructor and terminator: token/AdaRMS or hidden broadcast."""
     chunk_size: int = 10
@@ -160,11 +169,10 @@ class Args:
 
     # ── training
     epochs: int = 300
-    encoder_lr: float = 3e-4
-    terminator_lr: float = 3e-4
-    reconstructor_lr: float = 3e-4
+    lr: float = 3e-4
+    """Shared learning rate for encoder, reconstructor, and terminator."""
     lr_schedule: str = "cosine"
-    """cosine: decay to 1% of each configured LR; constant: keep each LR fixed."""
+    """cosine: decay to 1% of lr; constant: keep lr fixed."""
     batch_size: int = 64
     num_workers: int = 8
     val_num_workers: int = 0
@@ -281,6 +289,8 @@ def attach_episode_offsets(raw_dataset_dir: str, metadata: list[dict]) -> None:
 def main(args: Args) -> None:
     from FSQ import (
         SplineFSQAEConfig,
+        encoder_grounding_convention,
+        is_action_sequence_reconstructor_arch,
         prepare_encoder_trajectory,
         resolve_boundary_augmentation_pmaxes,
         train_spline_fsqae,
@@ -297,51 +307,66 @@ def main(args: Args) -> None:
 
     if not args.raw_dataset_dir:
         raise ValueError("--raw_dataset_dir is required for dataset normalization metadata.")
-    args.encoder_input_mode = {
-        "raw": "raw_state",
-        "raw_state": "raw_state",
-        "zero_grounded": "zero_grounded",
-        "optimal": "optimal",
-    }.get(args.encoder_input_mode, args.encoder_input_mode)
-    args.reconstructor_output_mode = {
-        "raw": "raw_state",
-        "raw_state": "raw_state",
-        "zero_grounded": "zero_grounded",
-        "match_encoder": (
-            "raw_state" if args.encoder_input_mode == "raw_state" else "zero_grounded"
+    args.autoencoder_mode = args.autoencoder_mode.strip().lower()
+    autoencoder_presets = {
+        "raw": ("spline", "raw_state", "oneshot", "raw_state"),
+        "zero": ("spline", "zero_grounded", "oneshot", "zero_grounded"),
+        "action": (
+            "action_seq",
+            "zero_grounded",
+            "action_seq_transformer",
+            "zero_grounded",
         ),
-    }.get(args.reconstructor_output_mode, args.reconstructor_output_mode)
-    args.reconstructor_arch = {
-        "chunk": "chunk",
-        "skill": "oneshot",
-        "oneshot": "oneshot",
-    }.get(args.reconstructor_arch, args.reconstructor_arch)
+        "norm_action": (
+            "action_seq",
+            "zero_grounded",
+            "action_seq_transformer",
+            "zero_grounded",
+        ),
+    }
+    if args.autoencoder_mode not in autoencoder_presets:
+        raise ValueError(
+            "--autoencoder_mode must be raw|zero|action|norm_action, "
+            f"got {args.autoencoder_mode!r}."
+        )
+    (
+        args.encoder_arch,
+        args.encoder_input_mode,
+        args.reconstructor_arch,
+        args.reconstructor_output_mode,
+    ) = autoencoder_presets[args.autoencoder_mode]
+    if (
+        not np.isfinite(args.action_gripper_weight)
+        or not 0.0 < args.action_gripper_weight <= 1.0
+    ):
+        raise ValueError("--action_gripper_weight must be in (0, 1].")
+    args.start_state_conditioning = args.start_state_conditioning.strip().lower()
+    if args.start_state_conditioning not in {"none", "adaln"}:
+        raise ValueError(
+            "--start_state_conditioning must be none|adaln, "
+            f"got {args.start_state_conditioning!r}."
+        )
+    args.reconstructor_start_state = args.start_state_conditioning == "adaln"
+    terminator_input_space = "both"
+    terminator_model = "default"
+    dino_model_path = "../models/dinov3-vits16"
     terminator_enabled = (
         args.decoder_terminator_progress or args.decoder_terminator_termination
     )
     if not args.decoder_reconstructor and not terminator_enabled:
         raise ValueError("At least one decoder output must be enabled.")
-    if args.terminator_input_space not in {"state", "image", "both"}:
-        raise ValueError("--terminator_input_space must be state|image|both.")
-    if args.terminator_model not in {"default", "rnn"}:
-        raise ValueError("--terminator_model must be default|rnn.")
-    if (
-        terminator_enabled
-        and args.terminator_model == "rnn"
-        and args.terminator_input_space != "state"
-    ):
-        raise ValueError("The RNN terminator currently supports state input only.")
-
+    if args.route_loss and not args.decoder_reconstructor:
+        raise ValueError(
+            "--route_loss requires --decoder_reconstructor."
+        )
     reconstructor_only = args.decoder_reconstructor and not terminator_enabled
     terminator_only = not args.decoder_reconstructor and terminator_enabled
-    state_rnn_terminator = terminator_enabled and args.terminator_model == "rnn"
+    state_rnn_terminator = False
     terminator_termination_only = (
         args.decoder_terminator_termination
         and not args.decoder_terminator_progress
     )
-    uses_visual_terminator = (
-        terminator_enabled and args.terminator_input_space in {"image", "both"}
-    )
+    uses_visual_terminator = terminator_enabled
     if uses_visual_terminator:
         attach_episode_offsets(args.raw_dataset_dir, metadata)
 
@@ -354,14 +379,19 @@ def main(args: Args) -> None:
         raise ValueError(
             "The BSQ path is recon + pair-loss only; pass --no-fsq_entropy."
         )
-    if args.encoder_input_mode not in {"zero_grounded", "raw_state", "optimal"}:
+    if args.encoder_input_mode not in {
+        "zero_grounded", "start_grounded", "raw_state", "optimal"
+    }:
         raise ValueError(
-            "--encoder_input_mode must be zero_grounded|raw_state|optimal, "
+            "--encoder_input_mode must be zero_grounded|start_grounded|raw_state|optimal, "
             f"got {args.encoder_input_mode!r}."
         )
-    if args.reconstructor_output_mode not in {"zero_grounded", "raw_state"}:
+    if args.reconstructor_output_mode not in {
+        "zero_grounded", "start_grounded", "raw_state"
+    }:
         raise ValueError(
-            "--reconstructor_output_mode must be raw|zero_grounded|match_encoder, "
+            "--reconstructor_output_mode must be "
+            "raw|zero_grounded|start_grounded|match_encoder, "
             f"got {args.reconstructor_output_mode!r}."
         )
     if args.encoder_arch not in {"spline", "action_seq"}:
@@ -378,8 +408,6 @@ def main(args: Args) -> None:
             "--pair_loss must be none|overlap|js|contrastive, "
             f"got {args.pair_loss!r}."
         )
-    if args.pair_loss != "none" and args.encoder_arch != "spline":
-        raise ValueError("--pair_loss requires --encoder_arch spline.")
     directional_pmaxes = resolve_boundary_augmentation_pmaxes(
         args.boundary_aug_pmax,
         early_start_pmax=args.boundary_aug_early_start_pmax,
@@ -400,12 +428,23 @@ def main(args: Args) -> None:
         )
     if args.pair_warmup_epochs < 0 or args.pair_ramp_epochs < 0:
         raise ValueError("--pair_warmup_epochs and --pair_ramp_epochs must be non-negative.")
-    if args.reconstructor_arch not in {"chunk", "oneshot"}:
+    if args.reconstructor_arch not in {
+        "oneshot", "action_seq", "action_seq_transformer"
+    }:
         raise ValueError(
-            f"--reconstructor_arch must be chunk|skill, got {args.reconstructor_arch!r}."
+            "--reconstructor_arch must be skill|action_seq|"
+            "action_seq_transformer, "
+            f"got {args.reconstructor_arch!r}."
         )
+    if is_action_sequence_reconstructor_arch(args.reconstructor_arch):
+        if args.encoder_arch != "action_seq":
+            raise ValueError(
+                "An action-sequence reconstructor requires --encoder_arch action_seq."
+            )
     print(
-        f"[FSQ] encoder arch: {args.encoder_arch}, length token: {args.encoder_length_token}, "
+        f"[FSQ] autoencoder mode: {args.autoencoder_mode}; "
+        f"encoder arch: {args.encoder_arch}, length token: {args.encoder_length_token}, "
+        f"start-state conditioning: {args.start_state_conditioning}, "
         f"fsq_entropy: {args.fsq_entropy}"
         + (
             f" (tau={args.entropy_inv_temperature} conf/div="
@@ -442,6 +481,15 @@ def main(args: Args) -> None:
             else ""
         )
     )
+    print(
+        "[FSQ] joint decoder-aware routing: "
+        + (
+            "enabled (all codes, detached distortion, "
+            f"inv_temperature={args.pair_inv_temperature:g})"
+            if args.route_loss
+            else "disabled"
+        )
+    )
 
     # Encoder normalization stats must follow the exact checkpointed input convention used before
     # spline fitting. Length stats are data-driven min/max over skill lengths.
@@ -450,6 +498,7 @@ def main(args: Args) -> None:
         for s in segments
     ])
     encoder_min, encoder_max = encoder_trajectories.min(0), encoder_trajectories.max(0)
+    grounding_convention = encoder_grounding_convention(args.encoder_input_mode)
     reconstructor_trajectories = np.concatenate([
         prepare_encoder_trajectory(s, args.reconstructor_output_mode)
         for s in segments
@@ -488,29 +537,76 @@ def main(args: Args) -> None:
             f"Dataset stats dimensionality mismatch: state {len(state_q01)}!={state_dim}, "
             f"action {len(action_q01)}!={action_dim}."
         )
+    raw_action_min = np.concatenate(dec_targets).min(axis=0).astype(np.float32)
+    raw_action_max = np.concatenate(dec_targets).max(axis=0).astype(np.float32)
+    if args.autoencoder_mode == "action":
+        max_abs_action = max(
+            float(np.abs(raw_action_min).max()),
+            float(np.abs(raw_action_max).max()),
+        )
+        if max_abs_action > 1.0001:
+            raise ValueError(
+                "Raw action-sequence reconstruction requires native controller "
+                "commands in [-1, 1] because the decoder output uses tanh; "
+                f"observed min/max={raw_action_min}/{raw_action_max}."
+            )
     stats = dict(
         encoder_min=encoder_min, encoder_max=encoder_max,
         encoder_input_mode=np.asarray(args.encoder_input_mode),
-        encoder_grounding_convention=np.asarray("trajectory_mean_xyz_v1"),
+        encoder_grounding_convention=np.asarray(grounding_convention),
         reconstructor_min=reconstructor_min, reconstructor_max=reconstructor_max,
         reconstructor_output_mode=np.asarray(args.reconstructor_output_mode),
         state_q01=state_q01, state_q99=state_q99,
         action_q01=action_q01, action_q99=action_q99,
         state_min=state_min, state_max=state_max,
+        raw_action_min=raw_action_min, raw_action_max=raw_action_max,
+        action_gripper_weight=np.float32(args.action_gripper_weight),
         length_min=np.float32(length_min), length_max=np.float32(length_max),
     )
+    if args.autoencoder_mode == "action":
+        stats["action_sequence_convention"] = np.asarray(
+            "raw_controller_action_gripper_weighted_v1"
+        )
+    elif args.autoencoder_mode == "norm_action":
+        stats["action_sequence_convention"] = np.asarray(
+            "q01_q99_clipped_gripper_scaled_v1"
+        )
     if encoder_start_min is not None:
         stats.update(encoder_start_min=encoder_start_min, encoder_start_max=encoder_start_max)
     np.savez(str(output_dir / "action_stats.npz"), **stats)
     print(f"[FSQ] encoder input mode: {args.encoder_input_mode}")
+    print(f"[FSQ] encoder grounding convention: {grounding_convention}")
     print(f"[FSQ] reconstructor output mode: {args.reconstructor_output_mode}")
+    print(
+        "[FSQ] autoencoder gripper MSE weight: "
+        f"{args.action_gripper_weight:g}"
+    )
     print(f"[FSQ] encoder_min: {np.round(encoder_min, 4)}")
     print(f"[FSQ] encoder_max: {np.round(encoder_max, 4)}")
     if encoder_start_min is not None:
         print(f"[FSQ] optimal grounding mean-XYZ min/max: {np.round(encoder_start_min, 4)} / "
               f"{np.round(encoder_start_max, 4)}")
     print(f"[FSQ] state q01/q99: {np.round(state_q01, 4)} / {np.round(state_q99, 4)}")
-    print(f"[FSQ] action q01/q99: {np.round(action_q01, 4)} / {np.round(action_q99, 4)}")
+    if args.autoencoder_mode == "action":
+        print(
+            "[FSQ] action-sequence convention: raw controller action; "
+            f"gripper_weight={args.action_gripper_weight:g}"
+        )
+        print(
+            f"[FSQ] raw action min/max: {np.round(raw_action_min, 4)} / "
+            f"{np.round(raw_action_max, 4)}"
+        )
+    elif args.autoencoder_mode == "norm_action":
+        print(
+            "[FSQ] action-sequence convention: q01/q99 -> [-1, 1], "
+            f"clipped; gripper_weight={args.action_gripper_weight:g}"
+        )
+        print(
+            f"[FSQ] action q01/q99: {np.round(action_q01, 4)} / "
+            f"{np.round(action_q99, 4)}"
+        )
+    else:
+        print(f"[FSQ] action q01/q99: {np.round(action_q01, 4)} / {np.round(action_q99, 4)}")
     print(f"[FSQ] state_min:  {np.round(state_min,  4)}")
     print(f"[FSQ] state_max:  {np.round(state_max,  4)}")
     print(f"[FSQ] length_min/max: {length_min:.0f} / {length_max:.0f}")
@@ -549,8 +645,11 @@ def main(args: Args) -> None:
         n_control=args.n_control,
         spline_degree=args.spline_degree,
         encoder_input_mode=args.encoder_input_mode,
+        encoder_grounding_convention=grounding_convention,
         encoder_length_token=args.encoder_length_token,
         encoder_arch=args.encoder_arch,
+        autoencoder_mode=args.autoencoder_mode,
+        action_gripper_weight=args.action_gripper_weight,
         quantizer=args.quantizer,
         bsq_code_dim=args.bsq_code_dim,
         fsq_entropy=args.fsq_entropy,
@@ -564,6 +663,7 @@ def main(args: Args) -> None:
         pair_loss=args.pair_loss,
         pair_weight=args.pair_weight,
         pair_inv_temperature=args.pair_inv_temperature,
+        route_loss=args.route_loss,
         pair_warmup=args.pair_warmup,
         pair_warmup_epochs=args.pair_warmup_epochs,
         pair_ramp_epochs=args.pair_ramp_epochs,
@@ -574,6 +674,9 @@ def main(args: Args) -> None:
         boundary_aug_late_end_pmax=args.boundary_aug_late_end_pmax,
         boundary_aug_distribution=args.boundary_aug_distribution,
         reconstructor_start_state=args.reconstructor_start_state,
+        reconstructor_start_state_conditioning=(
+            "adaln" if args.reconstructor_start_state else "concat"
+        ),
         reconstructor_arch=args.reconstructor_arch,
         reconstructor_output_mode=args.reconstructor_output_mode,
         hidden_dim=args.hidden_dim,
@@ -585,8 +688,9 @@ def main(args: Args) -> None:
         skill_cond_mode=args.skill_cond_mode,
         pi_base=args.pi_base,
         terminator_arch=args.visual_terminator_arch,
-        terminator_input_space=args.terminator_input_space,
-        terminator_model=args.terminator_model,
+        terminator_input_space=terminator_input_space,
+        terminator_context=args.terminator_context,
+        terminator_model=terminator_model,
         terminator_progress=args.decoder_terminator_progress,
         terminator_termination=args.decoder_terminator_termination,
         terminator_termination_only=terminator_termination_only,
@@ -595,13 +699,13 @@ def main(args: Args) -> None:
         state_rnn_terminator=state_rnn_terminator,
         vision_backbone=args.vision_backbone,
         freeze_vision_encoder=args.freeze_vision_encoder,
-        dino_model_path=args.dino_model_path,
+        dino_model_path=dino_model_path,
         dino_image_size=args.dino_image_size,
         siglip_image_size=args.siglip_image_size,
         resnet_image_size=args.resnet_image_size,
         frame_cache_dir=args.frame_cache_dir,
-        image_encoder_layers=args.image_encoder_layers,
-        image_encoder_heads=args.image_encoder_heads,
+        image_encoder_layers=3,
+        image_encoder_heads=4,
         chunk_size=args.chunk_size,
         samples_per_skill=args.samples_per_skill,
         length_min=length_min,
@@ -612,9 +716,7 @@ def main(args: Args) -> None:
         end_pos_weight=args.end_pos_weight,
         end_threshold=args.end_threshold,
         end_target_sigma=args.end_target_sigma,
-        encoder_lr=args.encoder_lr,
-        terminator_lr=args.terminator_lr,
-        reconstructor_lr=args.reconstructor_lr,
+        lr=args.lr,
         lr_schedule=args.lr_schedule,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
