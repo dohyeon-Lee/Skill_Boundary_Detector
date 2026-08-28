@@ -7,6 +7,10 @@ from typing import Any
 import torch
 
 from lerobot.policies.skill_expert.configuration_skill_expert import SkillExpertConfig
+from lerobot.policies.skillVLA.dataset_skillVLA import (
+    SKILL_PREVIOUS_ACTION,
+    SKILL_PREVIOUS_ACTION_BOS,
+)
 from lerobot.policies.skillVLA.processor_skillVLA import (
     SAME_SKILL_PAIR_FALLBACK,
     SAME_SKILL_PAIR_ID,
@@ -59,6 +63,8 @@ SKILL_BATCH_KEYS = (
     SKILL_PROGRESS,
     SAME_SKILL_PAIR_ID,
     SAME_SKILL_PAIR_FALLBACK,
+    SKILL_PREVIOUS_ACTION,
+    SKILL_PREVIOUS_ACTION_BOS,
 )
 
 

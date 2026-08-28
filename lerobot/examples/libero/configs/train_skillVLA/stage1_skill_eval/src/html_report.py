@@ -48,6 +48,9 @@ def write_html_report(output_dir: str | Path, payload: dict) -> Path:
     .review-status.error { color:#a12d27; }
     .layout { display:grid; grid-template-columns:minmax(440px,600px) 1fr; gap:16px; padding:16px; align-items:start; }
     .sidebar { position:sticky; top:170px; background:#fff; border:1px solid var(--line); border-radius:10px; padding:12px; }
+    .codebooks { display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); gap:10px; }
+    .codebook-card { min-width:0; padding:8px; border:1px solid #e0e6ef; border-radius:8px; background:#fbfcfe; }
+    .codebook-title { overflow:hidden; margin:0 0 2px; color:#344054; font-size:11px; font-weight:800; text-overflow:ellipsis; white-space:nowrap; }
     .cube { width:100%; height:auto; display:block; }
     .legend { display:flex; gap:14px; align-items:center; flex-wrap:wrap; font-size:12px; color:var(--muted); }
     .dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:4px; }
@@ -99,9 +102,10 @@ def write_html_report(output_dir: str | Path, payload: dict) -> Path:
 </header>
 <main class="layout">
   <aside class="sidebar">
-    <svg class="cube" viewBox="0 0 600 540" aria-label="FSQ skill cube"></svg>
+    <div class="codebooks" id="codebooks"></div>
     <div class="legend">
-      <span><i class="dot" style="background:#d62728"></i>selected</span>
+      <span><i class="dot" style="background:#d62728"></i>clicked code</span>
+      <span><i class="dot" style="background:#f39c4a"></i>linked code(s)</span>
       <span><i class="dot" style="background:#2878b5"></i>used in selected episodes</span>
       <span><i class="dot" style="background:#d7dde8"></i>unused</span>
     </div>
@@ -111,13 +115,19 @@ def write_html_report(output_dir: str | Path, payload: dict) -> Path:
 </main>
 <script>
 const DATA = __DATA__;
-const byToken = new Map(DATA.skills.map(s => [Number(s.token), s]));
-const allOccurrences = DATA.skills.flatMap(skill=>skill.occurrences||[]);
+const skillSpaces=(DATA.skill_spaces&&DATA.skill_spaces.length)?DATA.skill_spaces:[{
+  model_index:0,label:(DATA.models&&DATA.models[0]&&DATA.models[0].label)||"skill space",
+  levels:DATA.levels,skills:DATA.skills||[],
+}];
+const spaceByModel=new Map(skillSpaces.map(space=>[Number(space.model_index),space]));
+const allOccurrences=(DATA.occurrences&&DATA.occurrences.length)
+  ? DATA.occurrences
+  : DATA.skills.flatMap(skill=>skill.occurrences||[]);
 const occurrenceByUid = new Map(allOccurrences.map(occ=>[String(occ.uid),occ]));
 const REVIEW_SCHEMA = "stage1_skill_eval_human_review_v1";
 const STORAGE_KEY = `${REVIEW_SCHEMA}:${DATA.review_id||location.pathname}`;
 let storageAvailable = true;
-let selectedToken = null;
+let selectedSkill = null;
 let reviewServerAvailable = false;
 let serverSaveChain = Promise.resolve();
 
@@ -331,8 +341,21 @@ function coordForToken(token, levels) {
   return c;
 }
 
-function renderCube(selectedToken) {
-  const svg=document.querySelector(".cube"), levels=DATA.levels;
+function memberIds(skill) {
+  if(Array.isArray(skill.member_ids)) return skill.member_ids.map(String);
+  return [...new Set((skill.occurrences||[]).map(occ=>String(occ.occurrence_uid||occ.uid)))];
+}
+
+function selectedMembers() {
+  if(!selectedSkill) return new Set();
+  const space=spaceByModel.get(Number(selectedSkill.model_index));
+  const skill=space&&(space.skills||[]).find(item=>Number(item.token)===Number(selectedSkill.token));
+  return new Set(skill?memberIds(skill):[]);
+}
+
+function renderCube(space,svg,members) {
+  const levels=space.levels;
+  const byToken=new Map((space.skills||[]).map(skill=>[Number(skill.token),skill]));
   const maxToken=levels.reduce((a,b)=>a*b,1), NS="http://www.w3.org/2000/svg";
   svg.innerHTML="";
   const make=(name,attrs)=>{
@@ -362,18 +385,46 @@ function renderCube(selectedToken) {
   }
   pts.sort((a,b)=>a.p[2]-b.p[2]);
   pts.forEach(({t,p,used})=>{
+    const skill=byToken.get(t);
+    const overlap=skill?memberIds(skill).filter(uid=>members.has(uid)).length:0;
+    const clicked=Boolean(selectedSkill)
+      && Number(selectedSkill.model_index)===Number(space.model_index)
+      && Number(selectedSkill.token)===t;
+    const linked=!clicked&&overlap>0;
     const point=make("circle",{
-      cx:p[0],cy:p[1],r:t===selectedToken?9:(used?6:3.8),
-      fill:t===selectedToken?"#d62728":(used?"#2878b5":"#d7dde8"),
-      stroke:t===selectedToken?"#8b0000":"#26384d",
-      "stroke-width":t===selectedToken?2:.9,
+      cx:p[0],cy:p[1],r:clicked?9:(linked?8:(used?6:3.8)),
+      fill:clicked?"#d62728":(linked?"#f39c4a":(used?"#2878b5":"#d7dde8")),
+      stroke:(clicked||linked)?"#8b1a1a":"#26384d",
+      "stroke-width":(clicked||linked)?2.2:.9,
       style:used?"cursor:pointer":"cursor:default"
     });
-    if(used) point.addEventListener("click",()=>selectToken(t));
+    if(used) point.addEventListener("click",()=>selectSkillCode(space.model_index,t));
     const title=document.createElementNS(NS,"title");
-    title.textContent=used?`token #${t}: ${byToken.get(t).occurrences.length} policy evaluations`:`token #${t}: unused`;
+    title.textContent=used
+      ? `code #${t}: ${memberIds(skill).length} GT skills${overlap?` · ${overlap} linked`:""}`
+      : `code #${t}: unused`;
     point.appendChild(title);
   });
+}
+
+function renderCodebooks() {
+  const root=document.getElementById("codebooks");
+  root.innerHTML="";
+  const members=selectedMembers();
+  for(const space of skillSpaces) {
+    const card=document.createElement("section");
+    card.className="codebook-card";
+    const title=document.createElement("div");
+    title.className="codebook-title";
+    title.textContent=`${space.label} · FSQ[${space.levels.join("×")}]`;
+    title.title=space.label;
+    const svg=document.createElementNS("http://www.w3.org/2000/svg","svg");
+    svg.setAttribute("class","cube");
+    svg.setAttribute("viewBox","0 0 600 540");
+    svg.setAttribute("aria-label",`${space.label} FSQ skill cube`);
+    card.append(title,svg); root.appendChild(card);
+    renderCube(space,svg,members);
+  }
 }
 
 function escapeHtml(value) {
@@ -392,7 +443,9 @@ function comparisonCard(occ) {
   }
   // The combined video has one 128px shared label gutter, five 256px branch
   // panels, and one signal row per display model plus the configured MAIN.
-  const signalRows=(DATA.terminator_models||[]).length+1;
+  const signalRows=(DATA.terminator_models||[]).filter(
+    model=>model.model_index==null||Number(model.model_index)===Number(occ.model_index||0)
+  ).length+1;
   const aspect=`${(128+5*256)/(256+36*signalRows)} / 1`;
   const totalWidth=128+5*256;
   const cameraPercent=100*256/(256+36*signalRows);
@@ -432,17 +485,30 @@ function successCards(stats) {
   return (stats||[]).map(stat=>`<div class="success-card" title="${escapeHtml(stat.label)}"><div class="success-model">${escapeHtml(stat.label)}</div><div class="success-metrics">${successMetric("ID",stat.id)}${successMetric("OOD",stat.ood)}</div></div>`).join("");
 }
 
-function selectToken(token) {
-  const skill=byToken.get(Number(token)); if(!skill) return;
-  selectedToken=Number(token);
-  renderCube(Number(token));
+function selectSkillCode(modelIndex,token) {
+  const space=spaceByModel.get(Number(modelIndex));
+  const skill=space&&(space.skills||[]).find(item=>Number(item.token)===Number(token));
+  if(!skill) return;
+  selectedSkill={model_index:Number(modelIndex),token:Number(token)};
+  const members=new Set(memberIds(skill));
+  renderCodebooks();
+  const links=skillSpaces.map(other=>{
+    const hits=(other.skills||[]).map(item=>({
+      token:Number(item.token),
+      count:memberIds(item).filter(uid=>members.has(uid)).length,
+    })).filter(item=>item.count>0).sort((a,b)=>b.count-a.count||a.token-b.token);
+    return `${escapeHtml(other.label)}: ${hits.map(hit=>`#${hit.token} (${hit.count})`).join(", ")||"none"}`;
+  }).join("<br>");
+  const selectedOccurrences=allOccurrences.filter(
+    occ=>members.has(String(occ.occurrence_uid||occ.uid))
+  ).sort((a,b)=>a.task_id-b.task_id||a.episode_id-b.episode_id||a.frame_start-b.frame_start||a.model_index-b.model_index);
   document.getElementById("selected-info").innerHTML=
-    `token #${skill.token} &nbsp; [${skill.coord.join(", ")}] <span class="count">${skill.occurrences.length} policy evaluations</span>`;
+    `${escapeHtml(space.label)} · code #${skill.token} &nbsp; [${skill.coord.join(", ")}] <span class="count">${members.size} GT skills</span><div class="muted" style="margin-top:6px;line-height:1.5">${links}</div>`;
   const content=document.getElementById("content");
-  if(!skill.occurrences.length) { content.innerHTML='<div class="empty">No occurrence.</div>'; return; }
-  const tokenSuccess=`<section class="token-success"><div class="token-success-title">Token #${skill.token} skill success · ID / OOD</div><div class="success-summary">${successCards(successStats(skill.occurrences))}</div></section>`;
-  content.innerHTML=tokenSuccess+skill.occurrences.map(occ=>`<section class="occurrence">
-    <div class="occ-title">${escapeHtml(occ.model_label||"policy")} · ${escapeHtml(occ.architecture_label||"")} · Task ${occ.task_id}: ${escapeHtml(occ.task_description||"")}
+  if(!selectedOccurrences.length) { content.innerHTML='<div class="empty">No occurrence.</div>'; return; }
+  const tokenSuccess=`<section class="token-success"><div class="token-success-title">Linked GT skill set · ID / OOD success</div><div class="success-summary">${successCards(successStats(selectedOccurrences))}</div></section>`;
+  content.innerHTML=tokenSuccess+selectedOccurrences.map(occ=>`<section class="occurrence">
+    <div class="occ-title">${escapeHtml(occ.model_label||"policy")} · code #${occ.token} · ${escapeHtml(occ.architecture_label||"")} · Task ${occ.task_id}: ${escapeHtml(occ.task_description||"")}
     </div>
     <div class="videos">${comparisonCard(occ)}</div>
   </section>`).join("");
@@ -451,7 +517,7 @@ function selectToken(token) {
 function renderReviewedResults() {
   document.getElementById("success-summary").innerHTML=successCards(successStats(allOccurrences));
   updateReviewCount();
-  if(selectedToken!==null && byToken.has(selectedToken)) selectToken(selectedToken);
+  if(selectedSkill) selectSkillCode(selectedSkill.model_index,selectedSkill.token);
 }
 
 function toggleCorrection(occ,branch) {
@@ -475,7 +541,9 @@ function handleFinalImageClick(event) {
   if(!occ) return;
   const rect=image.getBoundingClientRect();
   const sourceX=(event.clientX-rect.left)/rect.width*(128+5*256);
-  const signalRows=(DATA.terminator_models||[]).length+1;
+  const signalRows=(DATA.terminator_models||[]).filter(
+    model=>model.model_index==null||Number(model.model_index)===Number(occ.model_index||0)
+  ).length+1;
   const sourceY=(event.clientY-rect.top)/rect.height*(256+36*signalRows);
   if(sourceX<128 || sourceY>=256) {
     setReviewStatus("Click a policy camera panel, not the label/signal area.",true);
@@ -524,11 +592,20 @@ async function importCorrections(file) {
   }
 }
 
-const displayLabels=(DATA.terminator_models||[]).map(model=>`${model.label}:${model.variant}`).join(", ");
+const displayLabels=(DATA.terminator_models||[]).map(model=>{
+  const policy=(DATA.models||[])[Number(model.model_index||0)];
+  return `${policy?policy.label+"→":""}${model.label}:${model.variant}`;
+}).join(", ");
 const policyLabels=(DATA.models||[]).map(model=>model.label).join(", ");
 const mainTerm=DATA.main_terminator||{};
+const mainLabels=(DATA.main_terminators&&DATA.main_terminators.length)
+  ? DATA.main_terminators.map(model=>{
+      const policy=(DATA.models||[])[Number(model.model_index||0)];
+      return `${policy?policy.label+"→":""}${model.label}:${model.variant}`;
+    }).join(", ")
+  : `${mainTerm.label||"FSQ_INIT"}:${mainTerm.variant||"fsq_initial"}`;
 document.getElementById("summary").textContent=
-  `${policyLabels} · MAIN ${mainTerm.label||"FSQ_INIT"}:${mainTerm.variant||"fsq_initial"} · display-only ${displayLabels} · ${DATA.target_task} tasks ${DATA.task_ids.join(", ")} · ${DATA.selected_episode_count} episodes · ${DATA.occurrence_count} occurrences / ${DATA.evaluation_count} policy evaluations · shift ±${DATA.time_shift_offset}`;
+  `${policyLabels} · MAIN ${mainLabels} · display-only ${displayLabels} · ${DATA.target_task} tasks ${DATA.task_ids.join(", ")} · ${DATA.selected_episode_count} episodes · ${DATA.occurrence_count} occurrences / ${DATA.evaluation_count} policy evaluations · shift ±${DATA.time_shift_offset}`;
 document.getElementById("content").addEventListener("click",handleFinalImageClick);
 document.getElementById("review-export").addEventListener("click",exportCorrections);
 document.getElementById("review-import").addEventListener("change",event=>{
@@ -548,8 +625,12 @@ document.getElementById("review-clear").addEventListener("click",()=>{
 document.getElementById("success-summary").innerHTML=successCards(successStats(allOccurrences));
 updateReviewCount();
 if(!storageAvailable) setReviewStatus("Browser storage unavailable; export corrections to keep them.",true);
-const initial=DATA.skills.length?DATA.skills.slice().sort((a,b)=>b.occurrences.length-a.occurrences.length||a.token-b.token)[0].token:0;
-if(DATA.skills.length) selectToken(initial); else { renderCube(-1); document.getElementById("content").innerHTML='<div class="empty">No skill occurrences selected.</div>'; }
+const firstSpace=skillSpaces[0];
+const initialSkill=firstSpace&&(firstSpace.skills||[]).slice().sort(
+  (a,b)=>memberIds(b).length-memberIds(a).length||a.token-b.token
+)[0];
+if(initialSkill) selectSkillCode(firstSpace.model_index,initialSkill.token);
+else { renderCodebooks(); document.getElementById("content").innerHTML='<div class="empty">No skill occurrences selected.</div>'; }
 connectReviewServer();
 </script>
 </body>

@@ -112,7 +112,15 @@ def build_fsq_terminator(path: str | Path):
     return terminator
 
 
-def build_trainable_fsq_terminator(path: str | Path, termination_only: bool | None = None):
+def build_trainable_fsq_terminator(
+    path: str | Path,
+    termination_only: bool | None = None,
+    *,
+    context: str | None = None,
+    default_arch: str | None = None,
+    vision_backbone: str | None = None,
+    freeze_vision_encoder: bool | None = None,
+):
     """Build a trainable/overlayable terminator from joint-v3 or FSQ-original."""
     examples_root = Path(__file__).resolve().parents[4] / "examples" / "libero"
     if str(examples_root) not in sys.path:
@@ -120,7 +128,13 @@ def build_trainable_fsq_terminator(path: str | Path, termination_only: bool | No
     from FSQ import build_trainable_fsq_terminator as build_trainable  # noqa: PLC0415
 
     terminator, _ = build_trainable(
-        str(path), device="cpu", termination_only=termination_only
+        str(path),
+        device="cpu",
+        termination_only=termination_only,
+        context=context,
+        default_arch=default_arch,
+        vision_backbone=vision_backbone,
+        freeze_vision_encoder=freeze_vision_encoder,
     )
     return terminator
 

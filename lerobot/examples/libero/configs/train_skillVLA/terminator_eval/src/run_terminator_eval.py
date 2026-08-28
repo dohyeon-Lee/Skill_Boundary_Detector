@@ -78,6 +78,7 @@ class IndependentTerminator:
         self.variant = variant
         self.termination_only = bool(getattr(module, "termination_only", False))
         self.requires_normalized_state = variant in {"state_only", "state_rnn"}
+        self.context_mode = str(getattr(module, "context_mode", "proprio"))
         self.hidden: torch.Tensor | None = None
 
     def reset(self) -> None:
@@ -91,6 +92,7 @@ class IndependentTerminator:
         state: torch.Tensor | None,
         image: torch.Tensor,
         wrist_image: torch.Tensor,
+        previous_action: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         device = next(self.module.parameters()).device
         dtype = next(self.module.parameters()).dtype
@@ -98,11 +100,25 @@ class IndependentTerminator:
             codes.to(self.policy_model._fsq_strides.device)  # noqa: SLF001
         ).to(device=device, dtype=dtype)
         if self.variant in {"state_image", "fsq_initial"}:
-            if state is None:
-                raise ValueError(f"{self.variant} terminator requires robot state.")
+            if self.context_mode == "prev_action":
+                if previous_action is None:
+                    context = torch.zeros(
+                        codes.shape[0],
+                        int(self.module.state_dim),
+                        device=device,
+                        dtype=dtype,
+                    )
+                else:
+                    context = self.module.normalize_previous_action(
+                        previous_action.to(device=device, dtype=dtype)
+                    )
+            else:
+                if state is None:
+                    raise ValueError(f"{self.variant} terminator requires robot state.")
+                context = state.to(device=device, dtype=dtype)
             progress, logits = self.module(
                 z_q,
-                state.to(device=device, dtype=dtype),
+                context,
                 image.to(device=device, dtype=dtype),
                 wrist_image.to(device=device, dtype=dtype),
             )
@@ -176,10 +192,17 @@ def _load_display_terminator(policy, model_spec: dict, fsq_path: str | Path):
         module = build_fsq_terminator(checkpoint_path)
         prefix = "model.fsq_term_train."
     elif variant == "state_image":
+        assert source_config is not None
         module = build_trainable_fsq_terminator(
             fsq_path,
             termination_only=_checkpoint_termination_only(
                 checkpoint_path, "terminator_termination_only"
+            ),
+            context=source_config.get("terminator_context"),
+            default_arch=source_config.get("terminator_arch"),
+            vision_backbone=source_config.get("terminator_vision_backbone"),
+            freeze_vision_encoder=source_config.get(
+                "terminator_freeze_vision_encoder"
             ),
         )
         prefix = "model.fsq_term_train."
@@ -251,7 +274,14 @@ def _build_context(spec: dict, cfg, device: torch.device) -> dict:
     use_independent_main = (
         str(spec.get("advance_mode", "")) == "external"
         and external_variant
-        in {"fsq_initial", "image_only", "wrist_only", "state_only", "state_rnn"}
+        in {
+            "state_image",
+            "fsq_initial",
+            "image_only",
+            "wrist_only",
+            "state_only",
+            "state_rnn",
+        }
     )
     if not use_independent_main:
         return _build_stage1_context(spec, cfg, device)
@@ -378,6 +408,7 @@ def _query_terminator(
     token: int,
     context: dict,
     env_preprocessor,
+    previous_action: np.ndarray | torch.Tensor | None = None,
 ) -> tuple[
     dict[str, Any],
     np.ndarray,
@@ -397,6 +428,18 @@ def _query_terminator(
         raise RuntimeError("Predicted-end skill eval requires a terminator.")
     device = next(policy.parameters()).device
     codes = torch.tensor([int(token)], dtype=torch.long, device=device)
+    previous_action_tensor = None
+    if previous_action is not None:
+        previous_action_tensor = torch.as_tensor(
+            previous_action, dtype=torch.float32, device=device
+        )
+        if previous_action_tensor.ndim == 1:
+            previous_action_tensor = previous_action_tensor.unsqueeze(0)
+        if previous_action_tensor.ndim != 2:
+            raise ValueError(
+                "previous_action must have shape (A,) or (B,A), got "
+                f"{tuple(previous_action_tensor.shape)}."
+            )
     missing = [key for key in (RAW_STATE, RAW_IMAGE, RAW_WRIST) if key not in batch]
     state_terminators = [
         terminator,
@@ -425,6 +468,7 @@ def _query_terminator(
         main_state,
         batch[RAW_IMAGE],
         batch[RAW_WRIST],
+        previous_action=previous_action_tensor,
     )
     display_signals = []
     for display_entry in context.get("display_terminators", []):
@@ -439,6 +483,7 @@ def _query_terminator(
             ),
             batch[RAW_IMAGE],
             batch[RAW_WRIST],
+            previous_action=previous_action_tensor,
         )
         display_signals.append(
             (
@@ -859,6 +904,7 @@ def _run_gt_actions(
     token: int,
     context: dict,
     env_preprocessor,
+    initial_previous_action: np.ndarray | None = None,
 ) -> dict:
     _reset_terminators(context)
     raw_obs = _restore_state(base_env, state)
@@ -877,6 +923,11 @@ def _run_gt_actions(
     # `self.done` inside robosuite stays horizon-driven, so stepping past a
     # success is safe.
     environment_done_step: int | None = None
+    previous_action = (
+        None
+        if initial_previous_action is None
+        else np.asarray(initial_previous_action, dtype=np.float32).copy()
+    )
     for action in np.asarray(actions, dtype=np.float32):
         batch, _, progress, termination, display_signals = _query_terminator(
             base_env=base_env,
@@ -884,11 +935,13 @@ def _run_gt_actions(
             token=token,
             context=context,
             env_preprocessor=env_preprocessor,
+            previous_action=previous_action,
         )
         progress_values.append(progress)
         termination_values.append(termination)
         _append_display_signals(display_traces, display_signals)
         raw_obs, _, done, _ = base_env._env.step(action)
+        previous_action = np.asarray(action, dtype=np.float32).copy()
         steps += 1
         frames.append(_render(base_env))
         if bool(done) and environment_done_step is None:
@@ -900,6 +953,7 @@ def _run_gt_actions(
         token=token,
         context=context,
         env_preprocessor=env_preprocessor,
+        previous_action=previous_action,
     )
     progress_values.append(progress)
     termination_values.append(termination)
@@ -931,6 +985,7 @@ def _run_policy(
     progress_threshold: float,
     finish_action_chunk_on_end: bool,
     seed: int,
+    initial_previous_action: np.ndarray | None = None,
 ) -> dict:
     set_seed(int(seed))
     policy = context["policy"].policy
@@ -946,6 +1001,11 @@ def _run_policy(
     stop_reason = "max_skill_length"
     steps = 0
     restored_state_rms = None
+    previous_action = (
+        None
+        if initial_previous_action is None
+        else np.asarray(initial_previous_action, dtype=np.float32).copy()
+    )
     while steps < int(max_skill_length):
         (
             batch,
@@ -959,6 +1019,7 @@ def _run_policy(
             token=token,
             context=context,
             env_preprocessor=env_preprocessor,
+            previous_action=previous_action,
         )
         if restored_state_rms is None:
             expected = np.asarray(expected_filtered_state, dtype=np.float32)
@@ -994,6 +1055,7 @@ def _run_policy(
             env_postprocessor,
         )
         raw_obs, _, done, _ = base_env._env.step(action_numpy)
+        previous_action = np.asarray(action_numpy, dtype=np.float32).copy()
         steps += 1
         frames.append(_render(base_env))
         if bool(done):
@@ -1043,7 +1105,7 @@ def _branch_start_frame(occurrence: SkillOccurrence, branch: str, offset: int) -
 
 def _manifest_signature(spec: dict, cfg, selected: dict[int, list[int]]) -> dict:
     return {
-        "format": "terminator_eval_v4_shared_label_gutter",
+        "format": "terminator_eval_v5_prev_action_context",
         "policy_path": str(spec["policy_path"]),
         "external_skill_model": str(spec.get("external_skill_model") or ""),
         "external_skill_model_variant": str(
@@ -1296,6 +1358,14 @@ def eval_main(cfg: EvalPipelineConfig):
                             continue
                         assert start_frame is not None
                         state = aligned.state_at(start_frame)
+                        initial_previous_action = (
+                            None
+                            if start_frame == 0
+                            else np.asarray(
+                                aligned.filtered_actions[start_frame - 1],
+                                dtype=np.float32,
+                            ).copy()
+                        )
                         offset = start_frame - occurrence.frame_start
                         relative_path = (
                             Path("videos")
@@ -1325,6 +1395,7 @@ def eval_main(cfg: EvalPipelineConfig):
                                 token=occurrence.token,
                                 context=context,
                                 env_preprocessor=env_preprocessor,
+                                initial_previous_action=initial_previous_action,
                             )
                         else:
                             result = _run_policy(
@@ -1342,6 +1413,7 @@ def eval_main(cfg: EvalPipelineConfig):
                                 progress_threshold=progress_threshold,
                                 finish_action_chunk_on_end=finish_chunk,
                                 seed=branch_seed,
+                                initial_previous_action=initial_previous_action,
                             )
                         _write_branch_video(
                             output_dir / relative_path,

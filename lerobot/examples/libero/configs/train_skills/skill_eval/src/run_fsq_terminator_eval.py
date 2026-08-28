@@ -24,6 +24,13 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from lerobot.policies.skill_expert.modeling_skill_expert import (
+    _load_complete_terminator_parameters,
+)
+from lerobot.policies.skill_expert.modeling_utils import (
+    build_trainable_fsq_terminator,
+)
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 
 from FSQ import (  # noqa: E402
@@ -39,7 +46,58 @@ log = logging.getLogger("fsq_terminator_eval")
 
 THIRD_KEY = "observation.images.image"
 WRIST_KEY = "observation.images.wrist_image"
-MANIFEST_FORMAT = "fsq_terminator_eval_v2"
+MANIFEST_FORMAT = "fsq_terminator_eval_v3_auxiliary_overlay"
+
+
+def attach_auxiliary_terminator(
+    model,
+    cfg,
+    *,
+    fsq_path: str,
+    checkpoint_path: str,
+    device,
+) -> dict:
+    """Rebuild and attach the terminator contract saved by a ``skill_aux`` run."""
+    checkpoint = Path(checkpoint_path)
+    config_path = checkpoint / "config.json"
+    weights_path = checkpoint / "model.safetensors"
+    if not config_path.is_file() or not weights_path.is_file():
+        raise FileNotFoundError(f"Incomplete auxiliary terminator checkpoint: {checkpoint}")
+    source = json.loads(config_path.read_text())
+    if source.get("type") != "skill_aux" or not bool(
+        source.get("train_terminator", False)
+    ):
+        raise ValueError(
+            "Terminator overlay must be a skill_aux checkpoint with "
+            f"train_terminator=true: {checkpoint}."
+        )
+    source_levels = [int(value) for value in source.get("skill_fsq_levels", [])]
+    base_levels = [int(value) for value in cfg.fsq_levels]
+    if source_levels != base_levels:
+        raise ValueError(
+            "Auxiliary/FSQ level mismatch: "
+            f"auxiliary={source_levels}, FSQ={base_levels}."
+        )
+    # Old auxiliary checkpoints predate explicit contract fields. Passing None
+    # for those fields preserves the original FSQ checkpoint convention.
+    module = build_trainable_fsq_terminator(
+        fsq_path,
+        termination_only=bool(source.get("terminator_termination_only", False)),
+        context=source.get("terminator_context"),
+        default_arch=source.get("terminator_arch"),
+        vision_backbone=source.get("terminator_vision_backbone"),
+        freeze_vision_encoder=source.get("terminator_freeze_vision_encoder"),
+    )
+    _load_complete_terminator_parameters(
+        module,
+        checkpoint,
+        prefix="model.fsq_term_train.",
+        label="auxiliary state+image terminator",
+    )
+    module.to(device=device, dtype=torch.float32)
+    module.requires_grad_(False).eval()
+    model.terminator = module
+    return source
 
 
 def terminator_kind(module) -> str:
@@ -499,7 +557,8 @@ def suite_to_dataset_task_ids(
     table = pd.read_parquet(dataset_dir / "meta" / "tasks.parquet").reset_index()
     by_description = {str(row.task).strip(): int(row.task_index) for row in table.itertuples()}
     suite = benchmark.get_benchmark_dict()[suite_name]()
-    translated, missing = [], []
+    translated, missing, mappings = [], [], []
+    seen_dataset_ids: set[int] = set()
     for suite_id in wanted:
         if not 0 <= suite_id < len(suite.tasks):
             missing.append(suite_id)
@@ -508,7 +567,10 @@ def suite_to_dataset_task_ids(
         if dataset_id is None:
             missing.append(suite_id)
         else:
-            translated.append(dataset_id)
+            mappings.append((suite_id, dataset_id))
+            if dataset_id not in seen_dataset_ids:
+                translated.append(dataset_id)
+                seen_dataset_ids.add(dataset_id)
     if missing:
         log.warning("suite task ids absent from this dataset: %s", missing)
     if not translated:
@@ -517,14 +579,23 @@ def suite_to_dataset_task_ids(
         )
     log.info(
         "task ids (suite -> dataset): %s",
-        ", ".join(f"{a}->{b}" for a, b in zip(wanted, translated, strict=False)),
+        ", ".join(f"{suite_id}->{dataset_id}" for suite_id, dataset_id in mappings),
     )
+    duplicate_count = len(mappings) - len(translated)
+    if duplicate_count:
+        log.info(
+            "deduplicated %d repeated dataset task id(s) after suite translation",
+            duplicate_count,
+        )
     return translated
 
 
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model-path", required=True)
+    parser.add_argument("--terminator-overlay", default="")
+    parser.add_argument("--model-source", choices=("fsq", "auxiliary"), default="fsq")
+    parser.add_argument("--code-space-id", default="")
     parser.add_argument("--model-label", required=True)
     parser.add_argument("--model-run", default="")
     parser.add_argument("--epoch-tag", default="")
@@ -612,6 +683,17 @@ def main() -> None:
         args.device if args.device == "cuda" and torch.cuda.is_available() else "cpu"
     )
     model, cfg = load_model(args.model_path, str(device), "fsq", None)
+    if args.terminator_overlay:
+        attach_auxiliary_terminator(
+            model,
+            cfg,
+            fsq_path=args.model_path,
+            checkpoint_path=args.terminator_overlay,
+            device=device,
+        )
+        log.info("attached auxiliary terminator: %s", args.terminator_overlay)
+    elif args.model_source == "auxiliary":
+        raise ValueError("model_source=auxiliary requires --terminator-overlay.")
     kind = terminator_kind(model.terminator)
     log.info("terminator variant: %s", kind)
     log.info(
@@ -726,6 +808,13 @@ def main() -> None:
         "run_name": args.model_run,
         "epoch_tag": args.epoch_tag,
         "model_path": str(Path(args.model_path).resolve()),
+        "model_source": args.model_source,
+        "code_space_id": args.code_space_id,
+        "terminator_overlay_path": (
+            str(Path(args.terminator_overlay).resolve())
+            if args.terminator_overlay
+            else ""
+        ),
         # The report renders GT frames once for every model, so it needs to know
         # where the shared skills and dataset live without re-reading the config.
         "skills_dir": str(Path(args.skills_dir).resolve()),

@@ -2,9 +2,9 @@
 """Combine per-model terminator probes into one comparison page.
 
 Every model scored the SAME GT skills, so the comparison axis is the skill: one
-GT video per skill with each model's termination signal drawn under it. The
-codebook grid is only a navigation device and belongs to one grouping model --
-token 5 of one FSQ run is unrelated to token 5 of another.
+GT video per skill with each model's termination signal drawn under it. Each
+model keeps its own codebook grid; selection is linked through original GT skill
+identity because token 5 of one FSQ run is unrelated to token 5 of another.
 """
 
 from __future__ import annotations
@@ -45,8 +45,17 @@ def load_manifests(collection_dir: Path) -> dict[str, dict]:
     return manifests
 
 
-def _skill_key(record: dict) -> tuple[int, int, int]:
-    return (int(record["task_id"]), int(record["episode_id"]), int(record["skill_index"]))
+def _skill_key(record: dict) -> tuple[int, ...]:
+    # All compared models share one skillset. Its index is the unambiguous
+    # cross-model identity and also collapses legacy manifests where duplicate
+    # suite task ids translated to the same dataset task.
+    if "skillset_index" in record:
+        return (int(record["skillset_index"]),)
+    return (
+        int(record["task_id"]),
+        int(record["episode_id"]),
+        int(record["skill_index"]),
+    )
 
 
 def align_skills(manifests: dict[str, dict], labels: list[str]) -> list[dict]:
@@ -64,9 +73,10 @@ def align_skills(manifests: dict[str, dict], labels: list[str]) -> list[dict]:
         first = per_label[labels[0]][key]
         skills.append(
             {
-                "task_id": key[0],
-                "episode_id": key[1],
-                "skill_index": key[2],
+                "skillset_index": int(first.get("skillset_index", -1)),
+                "task_id": int(first["task_id"]),
+                "episode_id": int(first["episode_id"]),
+                "skill_index": int(first["skill_index"]),
                 "frame_start": int(first["frame_start"]),
                 "frame_end": int(first["frame_end"]),
                 "length": int(first["length"]),
@@ -100,27 +110,44 @@ def timing_histogram(records: list[dict], limit: int = 15) -> dict:
     }
 
 
-def select_display_skills(
-    skills: list[dict], grouping_label: str, *, max_entries: int, max_samples: int, seed: int
-) -> dict[int, list[int]]:
-    """Skill indices to render, grouped by the grouping model's codebook entry."""
-    by_token: dict[int, list[int]] = defaultdict(list)
-    for index, skill in enumerate(skills):
-        by_token[int(skill["models"][grouping_label]["token"])].append(index)
-    tokens = sorted(by_token, key=lambda t: (-len(by_token[t]), t))
-    if max_entries > 0:
-        tokens = tokens[:max_entries]
-    rng = np.random.default_rng(int(seed))
-    chosen: dict[int, list[int]] = {}
-    for token in sorted(tokens):
-        pool = by_token[token]
-        take = min(max_samples, len(pool)) if max_samples > 0 else 0
-        if take <= 0:
-            chosen[token] = []
-            continue
-        picked = rng.choice(len(pool), size=take, replace=False)
-        chosen[token] = sorted(pool[int(i)] for i in picked)
-    return chosen
+def build_codebook_views(
+    skills: list[dict],
+    labels: list[str],
+    *,
+    max_entries: int,
+    max_samples: int,
+    seed: int,
+) -> dict[str, dict]:
+    """Independent code membership and rendered samples for every model.
+
+    Membership always covers every aligned GT skill and drives cross-codebook
+    highlighting. The display subset only limits media rendering cost.
+    """
+    views: dict[str, dict] = {}
+    for slot, label in enumerate(labels):
+        by_token: dict[int, list[int]] = defaultdict(list)
+        for index, skill in enumerate(skills):
+            by_token[int(skill["models"][label]["token"])].append(index)
+        render_tokens = sorted(by_token, key=lambda token: (-len(by_token[token]), token))
+        if max_entries > 0:
+            render_tokens = render_tokens[:max_entries]
+        rng = np.random.default_rng(int(seed) + 1009 * slot)
+        display: dict[str, list[int]] = {}
+        for token in sorted(render_tokens):
+            pool = by_token[token]
+            take = min(max_samples, len(pool)) if max_samples > 0 else 0
+            if take <= 0:
+                display[str(token)] = []
+                continue
+            picked = rng.choice(len(pool), size=take, replace=False)
+            display[str(token)] = sorted(pool[int(i)] for i in picked)
+        views[label] = {
+            "members": {
+                str(token): indices for token, indices in sorted(by_token.items())
+            },
+            "display": display,
+        }
+    return views
 
 
 class _FrameReader:
@@ -186,7 +213,7 @@ class _FrameReader:
 
 def render_media(
     skills: list[dict],
-    display: dict[int, list[int]],
+    codebooks: dict[str, dict],
     labels: list[str],
     *,
     dataset_dir: Path,
@@ -205,7 +232,14 @@ def render_media(
 
     reader = _FrameReader(dataset_dir)
     media: dict[int, dict] = {}
-    wanted = sorted({index for indices in display.values() for index in indices})
+    wanted = sorted(
+        {
+            index
+            for view in codebooks.values()
+            for indices in view["display"].values()
+            for index in indices
+        }
+    )
     for position, index in enumerate(wanted):
         skill = skills[index]
         episode = int(skill["episode_id"])
@@ -294,14 +328,16 @@ def build_payload(
     dropped = {
         label: len(manifests[label]["records"]) - len(skills) for label in labels
     }
-    grouping = labels[0]
-    display = select_display_skills(
-        skills, grouping, max_entries=max_entries, max_samples=max_samples, seed=seed
+    codebooks = build_codebook_views(
+        skills,
+        labels,
+        max_entries=max_entries,
+        max_samples=max_samples,
+        seed=seed,
     )
     return {
-        "format": "fsq_terminator_eval_compare_v1",
+        "format": "fsq_terminator_eval_compare_v2",
         "labels": labels,
-        "grouping_label": grouping,
         "models": {
             label: {
                 "label": label,
@@ -320,7 +356,7 @@ def build_payload(
             for label in labels
         },
         "skills": skills,
-        "display": {str(token): indices for token, indices in display.items()},
+        "codebooks": codebooks,
     }
 
 
@@ -351,13 +387,18 @@ def write_html(output_dir: Path, payload: dict, media: dict[int, dict]) -> Path:
     data = {
         "labels": labels,
         "colors": [MODEL_COLORS[i % len(MODEL_COLORS)] for i in range(len(labels))],
-        "grouping": payload["grouping_label"],
-        "codebookSize": models[payload["grouping_label"]]["codebook_size"],
-        "levels": models[payload["grouping_label"]]["fsq_levels"],
+        "models": {
+            label: {
+                "codebookSize": models[label]["codebook_size"],
+                "levels": models[label]["fsq_levels"],
+            }
+            for label in labels
+        },
         "threshold": models[labels[0]]["end_threshold"],
-        "display": payload["display"],
+        "codebooks": payload["codebooks"],
         "skills": [
             {
+                "skillset_index": skill["skillset_index"],
                 "task_id": skill["task_id"],
                 "episode_id": skill["episode_id"],
                 "skill_index": skill["skill_index"],
@@ -397,9 +438,13 @@ table{border-collapse:collapse;font-size:12px;background:#fff;margin-bottom:12px
 th,td{border:1px solid #e0e0e0;padding:4px 8px;text-align:right}
 th{background:#f0f0f0;text-align:center}td:first-child{text-align:left}
 .dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px}
-.note{color:#666;font-size:12px;margin:4px 0 10px}
-#grid{background:#fff;border:1px solid #ddd;border-radius:6px;padding:8px;display:inline-block}
+.note{color:#666;font-size:12px;margin:4px 0 10px;max-width:980px}
+#grids{display:flex;gap:12px;flex-wrap:wrap;align-items:flex-start}
+.grid{background:#fff;border:1px solid #ddd;border-radius:6px;padding:8px}
+.grid h2{margin:0 0 5px}.grid .meta{font-size:11px;color:#777;margin-bottom:6px}
 #panel{margin-top:12px;background:#fff;border:1px solid #ddd;border-radius:6px;padding:10px;display:none}
+.mapping{display:flex;gap:6px;flex-wrap:wrap;margin:4px 0 10px}
+.chip{background:#f1f1f1;border:1px solid #ddd;border-radius:10px;padding:2px 7px;font-size:11px}
 .skill{display:flex;gap:12px;align-items:flex-start;border-top:1px solid #eee;padding:10px 0}
 .skill video{width:260px;border-radius:4px;background:#000}
 .stills img{width:84px;border:1px solid #ddd;border-radius:3px;margin-right:4px}
@@ -410,37 +455,61 @@ canvas.cb{cursor:pointer;display:block}
 <table><tr><th>model</th><th>variant</th><th>heads</th><th>skills</th><th>|err| mean</th>
 <th>|err| med</th><th>&le;3</th><th>early</th><th>late</th><th>no-fire</th><th>ckpt</th></tr>__ROWS__</table>
 <p class="note">Every model was scored on the same GT skills, so the rows are directly comparable.
-The codebook grid below belongs to the <b id="grpname"></b> run only — it is a way to find skills,
-not a shared axis, because each run assigns its own codes.</p>
-<div id="grid"><canvas class="cb" id="cb"></canvas></div>
-<div id="panel"><h2 id="ptitle"></h2><div id="skills"></div></div>
+Each grid is that model's own skill space. Clicking a code selects its original GT skills; cells in
+the other grids are then outlined when those same skills map there. One code can legitimately map
+to several codes in another model.</p>
+<div id="grids"></div>
+<div id="panel"><h2 id="ptitle"></h2><div class="mapping" id="mapping"></div><div id="skills"></div></div>
 <script>
 const D = __DATA__;
-document.getElementById('grpname').textContent = D.grouping;
-const counts = {};
-Object.entries(D.display).forEach(([tok, list]) => { counts[tok] = list.length; });
-const tokens = Object.keys(D.display).map(Number).sort((a,b)=>a-b);
-const cv = document.getElementById('cb'), ctx = cv.getContext('2d');
-const COLS = Math.min(16, Math.max(1, tokens.length)), CELL = 34;
-cv.width = COLS*CELL+2; cv.height = Math.ceil(tokens.length/COLS)*CELL+2;
-let SEL = -1;
+const CELL=42, COLS=9, grids={};
+let SEL={label:null,token:-1};
+const gridRoot=document.getElementById('grids');
+D.labels.forEach((label,slot)=>{
+  const box=document.createElement('div'); box.className='grid';
+  const title=document.createElement('h2'); title.textContent=label; box.appendChild(title);
+  const meta=document.createElement('div'); meta.className='meta';
+  meta.textContent=`levels ${D.models[label].levels.join('×')} · ${D.models[label].codebookSize} codes`;
+  box.appendChild(meta);
+  const cv=document.createElement('canvas'); cv.className='cb'; box.appendChild(cv);
+  const size=D.models[label].codebookSize;
+  cv.width=COLS*CELL+2; cv.height=Math.ceil(size/COLS)*CELL+2;
+  cv.addEventListener('click',e=>{
+    const r=cv.getBoundingClientRect();
+    const col=Math.floor((e.clientX-r.left)*cv.width/r.width/CELL);
+    const row=Math.floor((e.clientY-r.top)*cv.height/r.height/CELL);
+    const tok=row*COLS+col;
+    if(tok>=0&&tok<size) select(label,tok);
+  });
+  grids[label]={cv,ctx:cv.getContext('2d'),slot}; gridRoot.appendChild(box);
+});
+function selectedMembers(){
+  if(!SEL.label) return [];
+  return D.codebooks[SEL.label].members[String(SEL.token)]||[];
+}
+function linkedCounts(label,members){
+  const out={};
+  members.forEach(idx=>{const tok=D.skills[idx].models[label].token;out[tok]=(out[tok]||0)+1;});
+  return out;
+}
 function draw(){
-  ctx.clearRect(0,0,cv.width,cv.height);
-  tokens.forEach((tok,i)=>{
-    const x=(i%COLS)*CELL+1, y=Math.floor(i/COLS)*CELL+1;
-    ctx.fillStyle = tok===SEL ? '#f44336' : (counts[tok] ? '#1976d2' : '#ccc');
-    ctx.fillRect(x,y,CELL-3,CELL-3);
-    ctx.fillStyle='#fff'; ctx.font='10px sans-serif'; ctx.textAlign='center';
-    ctx.fillText(tok, x+(CELL-3)/2, y+(CELL-3)/2+3);
+  const members=selectedMembers();
+  D.labels.forEach((label,slot)=>{
+    const {cv,ctx}=grids[label], size=D.models[label].codebookSize;
+    const own=D.codebooks[label].members, linked=linkedCounts(label,members);
+    ctx.clearRect(0,0,cv.width,cv.height);
+    for(let tok=0;tok<size;tok++){
+      const x=(tok%COLS)*CELL+1,y=Math.floor(tok/COLS)*CELL+1,count=(own[String(tok)]||[]).length;
+      ctx.fillStyle=count?D.colors[slot]:'#dedede';ctx.globalAlpha=count?0.78:1;
+      ctx.fillRect(x,y,CELL-4,CELL-4);ctx.globalAlpha=1;
+      if(SEL.label===label&&SEL.token===tok){ctx.strokeStyle='#e53935';ctx.lineWidth=4;ctx.strokeRect(x+1,y+1,CELL-6,CELL-6);}
+      else if(linked[tok]){ctx.strokeStyle='#ffb300';ctx.lineWidth=Math.min(5,1+linked[tok]);ctx.strokeRect(x+2,y+2,CELL-8,CELL-8);}
+      ctx.fillStyle=count?'#fff':'#666';ctx.textAlign='center';ctx.font='bold 10px sans-serif';
+      ctx.fillText(tok,x+(CELL-4)/2,y+15);ctx.font='9px sans-serif';
+      ctx.fillText(`n=${count}`,x+(CELL-4)/2,y+29);
+    }
   });
 }
-cv.addEventListener('click', e=>{
-  const r=cv.getBoundingClientRect();
-  const col=Math.floor((e.clientX-r.left)*cv.width/r.width/CELL);
-  const row=Math.floor((e.clientY-r.top)*cv.height/r.height/CELL);
-  const i=row*COLS+col;
-  if(i>=0 && i<tokens.length) select(tokens[i]);
-});
 function curve(sig, gtEnd, color, w, h){
   if(!sig.length) return '';
   const pts = sig.map((v,i)=>`${(i/(sig.length-1||1))*w},${h-v*h}`).join(' ');
@@ -448,11 +517,18 @@ function curve(sig, gtEnd, color, w, h){
   return `<polyline fill="none" stroke="${color}" stroke-width="1.6" points="${pts}"/>`
        + `<line x1="${gx}" y1="0" x2="${gx}" y2="${h}" stroke="#0d47a1" stroke-dasharray="3,2"/>`;
 }
-function select(tok){
-  SEL=tok; draw();
-  const list=D.display[String(tok)]||[];
+function select(label,tok){
+  SEL={label,token:tok}; draw();
+  const members=D.codebooks[label].members[String(tok)]||[];
+  const list=D.codebooks[label].display[String(tok)]||[];
   document.getElementById('ptitle').textContent =
-    `${D.grouping} code ${tok} — ${list.length} skill(s) shown`;
+    `${label} code ${tok} — ${members.length} skill(s), ${list.length} rendered`;
+  document.getElementById('mapping').innerHTML=D.labels.map((lb,si)=>{
+    const counts=linkedCounts(lb,members);
+    const text=Object.entries(counts).sort((a,b)=>b[1]-a[1]||a[0]-b[0])
+      .map(([code,n])=>`code ${code}: ${n}`).join(' · ')||'none';
+    return `<span class="chip"><span class="dot" style="background:${D.colors[si]}"></span>${lb} → ${text}</span>`;
+  }).join('');
   const W=260,H=54;
   document.getElementById('skills').innerHTML = list.map(idx=>{
     const s=D.skills[idx];
@@ -472,11 +548,13 @@ function select(tok){
     }).join('');
     return `<div class="skill"><div><div class="cap">task ${s.task_id} · ep ${s.episode_id}`
          + ` · skill ${s.skill_index} · len ${s.length}</div>${vid}${stills}</div><div>${rows}</div></div>`;
-  }).join('') || '<div class="cap">No skills rendered for this code.</div>';
+  }).join('') || '<div class="cap">This code has no rendered sample under the current rendering limit.</div>';
   document.getElementById('panel').style.display='block';
 }
 draw();
-if(tokens.length) select(tokens[0]);
+const firstLabel=D.labels[0];
+const firstActive=Object.keys(D.codebooks[firstLabel].members).map(Number).sort((a,b)=>a-b)[0];
+if(firstActive!==undefined) select(firstLabel,firstActive);
 </script></body></html>
 """
 
@@ -514,12 +592,11 @@ def build(
     payload = build_payload(
         manifests, labels, max_entries=max_entries, max_samples=max_samples, seed=seed
     )
-    display = {int(token): indices for token, indices in payload["display"].items()}
     media: dict[int, dict] = {}
     if render_video:
         media = render_media(
             payload["skills"],
-            display,
+            payload["codebooks"],
             labels,
             dataset_dir=Path(manifests[labels[0]]["dataset_dir"]),
             output_dir=collection_dir,

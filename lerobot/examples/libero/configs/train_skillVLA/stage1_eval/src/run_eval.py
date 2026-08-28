@@ -161,6 +161,7 @@ class CheckpointTerminator:
         # Exposed so progress-gated advance modes can reject a terminator whose
         # progress output is a constant zero by construction.
         self.termination_only = bool(getattr(module, "termination_only", False))
+        self.context_mode = str(getattr(module, "context_mode", "proprio"))
 
     @torch.no_grad()
     def terminate(
@@ -169,10 +170,31 @@ class CheckpointTerminator:
         state: torch.Tensor | None,
         image: torch.Tensor,
         wrist_image: torch.Tensor,
+        previous_action: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         if self.variant == "image_only":
             progress, logits = self.policy.image_only_terminator_predict(
                 codes, image, wrist_image
+            )
+        elif self.context_mode == "prev_action":
+            module = self.policy.model.fsq_term_train
+            if previous_action is None:
+                context = torch.zeros(
+                    codes.shape[0],
+                    int(module.state_dim),
+                    device=codes.device,
+                    dtype=next(module.parameters()).dtype,
+                )
+            else:
+                context = module.normalize_previous_action(previous_action)
+            z_q = self.policy.model._code_to_zq(
+                codes.to(self.policy.model._fsq_strides.device)
+            ).to(device=next(module.parameters()).device, dtype=next(module.parameters()).dtype)
+            progress, logits = module(
+                z_q,
+                context.to(device=z_q.device, dtype=z_q.dtype),
+                image.to(device=z_q.device, dtype=z_q.dtype),
+                wrist_image.to(device=z_q.device, dtype=z_q.dtype),
             )
         else:
             progress, logits = self.policy.model.terminator_predict(
@@ -298,9 +320,17 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         self._pending_advance: set[int] = set()
         self._predicted_codes: torch.Tensor | None = None
         self._stage2_vlm_start: dict[str, torch.Tensor] | None = None
+        # Updated through ``record_executed_action`` after both the policy and
+        # environment postprocessors have run.  A prev-action terminator was
+        # trained on this raw action space, not on the policy-normalized chunk.
+        self._last_executed_action: torch.Tensor | None = None
         self._trace: list[dict] = []
         self._episode_step = 0
         self._started = False
+
+    def record_executed_action(self, action: torch.Tensor) -> None:
+        """Remember the action actually sent to the environment for obs_(t+1)."""
+        self._last_executed_action = action.detach().clone()
 
     def _predict_codes(self, batch: dict) -> torch.Tensor:
         return self.policy.predict_skill_code(batch).view(-1).long()
@@ -473,6 +503,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
                 batch.get(RAW_STATE),
                 batch[RAW_IMAGE],
                 batch[RAW_WRIST],
+                previous_action=self._last_executed_action,
             )
 
         for batch_index in range(batch_size):

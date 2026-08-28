@@ -197,7 +197,9 @@ def maybe_build_compare(
             return None
         payload = compare_payload(collection_dirs, output_dir=output_dir)
         _atomic_json(metrics / "compare.json", payload)
-        return write_html_report(output_dir, payload)
+        report = write_html_report(output_dir, payload)
+        write_linked_codebooks_report(output_dir, payload)
+        return report
 
 
 def _atomic_json(path: Path, payload: dict) -> None:
@@ -285,6 +287,27 @@ def _report_data_chunks(
     return _script_json(bootstrap), chunks
 
 
+def _write_report_data_assets(
+    output_dir: Path, payload: dict
+) -> tuple[str, list[Path]]:
+    """Write reusable payload scripts shared by the standard and linked pages."""
+    bootstrap, data_chunks = _report_data_chunks(payload)
+    digest = hashlib.sha256()
+    digest.update(bootstrap.encode("utf-8"))
+    for chunk in data_chunks:
+        digest.update(chunk.encode("utf-8"))
+    generation = digest.hexdigest()[:12]
+    data_paths = [
+        output_dir / f"report-data-{generation}-{index:03d}.js"
+        for index in range(len(data_chunks))
+    ]
+    for data_path, chunk in zip(data_paths, data_chunks, strict=True):
+        temporary = data_path.with_name(data_path.name + ".tmp")
+        temporary.write_text(chunk, encoding="utf-8")
+        temporary.replace(data_path)
+    return bootstrap, data_paths
+
+
 def write_html_report(output_dir: str | Path, payload: dict) -> Path:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -312,22 +335,14 @@ def write_html_report(output_dir: str | Path, payload: dict) -> Path:
             "models": [model],
         }
     report_title = str(payload.get("title") or "FSQ GT skill replay")
-    bootstrap, data_chunks = _report_data_chunks(payload)
-    digest = hashlib.sha256()
-    digest.update(bootstrap.encode("utf-8"))
-    for chunk in data_chunks:
-        digest.update(chunk.encode("utf-8"))
-    generation = digest.hexdigest()[:12]
-    data_paths = [
-        output_dir / f"report-data-{generation}-{index:03d}.js"
-        for index in range(len(data_chunks))
-    ]
-    for data_path, chunk in zip(data_paths, data_chunks, strict=True):
-        temporary = data_path.with_name(data_path.name + ".tmp")
-        temporary.write_text(chunk, encoding="utf-8")
-        temporary.replace(data_path)
+    bootstrap, data_paths = _write_report_data_assets(output_dir, payload)
     data_scripts = "\n".join(
         f'<script src="{path.name}"></script>' for path in data_paths
+    )
+    linked_link = (
+        '<a class="linked-link" href="linked_codebooks.html">Linked codebooks</a>'
+        if len(payload["models"]) > 1
+        else ""
     )
     html = """<!doctype html>
 <html lang="en">
@@ -340,6 +355,7 @@ def write_html_report(output_dir: str | Path, payload: dict) -> Path:
     *{box-sizing:border-box} body{margin:0;font-family:Inter,Arial,sans-serif;background:#f4f6f9;color:var(--ink)}
     header{position:sticky;top:0;z-index:5;padding:12px 20px;background:#fff;border-bottom:1px solid var(--line)}
     h1{margin:0 0 5px;font-size:20px}.subtitle{color:var(--muted);font-size:12px}
+    .linked-link{display:inline-block;margin-top:7px;padding:5px 10px;border:1px solid #8fb6d3;border-radius:7px;color:#205f8c;background:#f2f8fc;font-size:12px;font-weight:800;text-decoration:none}.linked-link:hover{background:#e5f1f9}
     .tabs{display:flex;gap:6px;flex-wrap:wrap;margin-top:9px}.tab{padding:5px 11px;border:1px solid var(--line);border-radius:8px;background:#fff;cursor:pointer;font-size:12px;font-weight:700;color:var(--ink)}.tab.active{background:var(--blue);border-color:var(--blue);color:#fff}
     .controls{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:9px}.control{display:flex;align-items:center;gap:7px;font-size:12px;font-weight:700}.control select,.range-input{padding:5px 8px;border:1px solid var(--line);border-radius:6px;background:#fff}.range-input{width:72px}.range{display:flex;align-items:center;gap:5px}.tasks{display:flex;align-items:center;gap:5px;flex-wrap:wrap}.task-chip{padding:4px 7px;border:1px solid var(--line);border-radius:12px;background:#f8fafc;font-weight:500}.task-chip input{margin:0 4px 0 0}.small-button{padding:4px 7px;border:1px solid var(--line);border-radius:6px;background:#fff;cursor:pointer}
     .layout{display:grid;grid-template-columns:minmax(420px,580px) 1fr;gap:16px;padding:16px;align-items:start}
@@ -369,7 +385,7 @@ def write_html_report(output_dir: str | Path, payload: dict) -> Path:
   </style>
 </head>
 <body>
-<header><h1>__REPORT_TITLE__</h1><div class="subtitle" id="summary"></div>
+<header><h1>__REPORT_TITLE__</h1><div class="subtitle" id="summary"></div>__LINKED_LINK__
   <div class="tabs" id="modelTabs" hidden></div>
   <div class="controls">
     <label class="control">Checkpoint <select id="checkpoint"></select></label>
@@ -531,7 +547,33 @@ function cohesionTable(){
       const globalPart=cell.globalEffective==null?'':`train-wide effective ${cell.globalEffective.toFixed(2)} \\u00b7 `;
       return `<td${cls}${style} title="${normPart}${globalPart}distinct ${cell.distinct.toFixed(2)} \\u00b7 codebook used (train) ${cell.usage} \\u00b7 ${cell.occurrences} occurrences">${value}</td>`}).join('');
     return `<tr><td class="label">${esc(tag)}</td>${rendered}</tr>`}).join('');
-  return `<div class="table-scroll"><table class="usage"><thead>${head}</thead><tbody>${body}</tbody></table></div>`}
+  return `<div class="table-scroll"><table class="usage"><thead>${head}</thead><tbody>${body}</tbody></table></div>${cohesionBarChart()}`}
+function cohesionBarChart(){
+  const specs=[
+    {report:'2layer_full',wanted:['none_route_OFF','none_route_ON'],title:'none route OFF vs ON'},
+    {report:'norm_action_01',wanted:['none','js'],title:'none vs JS'},
+  ];
+  const spec=specs.find(candidate=>candidate.report===DATA.title&&candidate.wanted.every(name=>models.some(model=>model.name===name)));
+  if(!spec)return '';
+  const selected=spec.wanted.map(name=>models.find(model=>model.name===name));
+  const epochOf=tag=>{const match=/^epoch(\\d+)$/.exec(tag);return match?Number(match[1]):null};
+  const epochs=[...new Set(selected.flatMap(model=>model.checkpoints.map(cp=>epochOf(cp.epoch_tag)).filter(epoch=>epoch!==null&&epoch<=1000)))].sort((a,b)=>a-b);
+  if(!epochs.length)return '<div class="no-rows">No checkpoints through epoch 1000.</div>';
+  const valueMaps=selected.map(model=>new Map(model.checkpoints.map(cp=>[epochOf(cp.epoch_tag),cohesionStats(cp).effective])));
+  const allValues=valueMaps.flatMap(map=>epochs.map(epoch=>map.get(epoch)).filter(Number.isFinite));
+  const yMax=Math.max(1,Math.ceil(Math.max(...allValues)*1.18*2)/2);
+  const width=Math.max(820,120+epochs.length*82),height=390,left=62,right=20,top=46,bottom=58;
+  const plotW=width-left-right,plotH=height-top-bottom,groupW=plotW/epochs.length,barW=Math.min(28,groupW/(selected.length+1));
+  const y=value=>top+plotH*(1-value/yMax),colors=['#64748b','#2563eb'];
+  let svg=`<svg class="effective-chart" viewBox="0 0 ${width} ${height}" style="display:block;width:100%;min-width:820px;height:auto" role="img" aria-label="${esc(spec.title)} cohesion effective through epoch 1000">`;
+  for(let tick=0;tick<=5;tick++){const value=yMax*tick/5,py=y(value);svg+=`<line x1="${left}" y1="${py}" x2="${width-right}" y2="${py}" stroke="#dbe2ea"/><text x="${left-9}" y="${py+4}" text-anchor="end" font-size="11" fill="#667085">${value.toFixed(1)}</text>`}
+  epochs.forEach((epoch,epochIndex)=>{
+    const center=left+groupW*(epochIndex+.5);
+    svg+=`<text x="${center}" y="${height-25}" text-anchor="middle" font-size="11" fill="#475467">${epoch}</text>`;
+    selected.forEach((model,modelIndex)=>{const value=valueMaps[modelIndex].get(epoch);if(!Number.isFinite(value))return;const x=center+(modelIndex-(selected.length-1)/2)*barW*1.18-barW/2,py=y(value),h=top+plotH-py;svg+=`<rect x="${x}" y="${py}" width="${barW}" height="${h}" rx="3" fill="${colors[modelIndex]}"/><text x="${x+barW/2}" y="${Math.max(top+10,py-5)}" text-anchor="middle" font-size="9.5" font-weight="700" fill="#344054">${value.toFixed(2)}</text>`})});
+  svg+=`<text x="${left+plotW/2}" y="${height-5}" text-anchor="middle" font-size="12" font-weight="700" fill="#344054">checkpoint epoch</text><text transform="translate(15 ${top+plotH/2}) rotate(-90)" text-anchor="middle" font-size="12" font-weight="700" fill="#344054">cohesion effective (before parentheses)</text>`;
+  selected.forEach((model,index)=>{const lx=left+index*180;svg+=`<rect x="${lx}" y="14" width="13" height="13" rx="2" fill="${colors[index]}"/><text x="${lx+19}" y="25" font-size="12" font-weight="700" fill="#344054">${esc(model.name)}</text>`});
+  return `<h3 style="font-size:13px;margin:18px 0 2px">${esc(spec.title)} · cohesion effective before parentheses (epoch ≤ 1000)</h3><p class="hint">Plots only the number before parentheses in the selected columns. Parenthesized utilization percentages are excluded. Lower is better.</p><div class="table-scroll">${svg}</svg></div>`}
 function taskRows(cp,entries){
   const tasks=[...new Set(entries.map(entry=>Number(entry.o.task_id)))].sort((a,b)=>a-b);
   const rows=tasks.map(task=>({checkpoint:cp.epoch_tag,task:`task ${task}`,entries:entries.filter(entry=>Number(entry.o.task_id)===task)}));
@@ -567,6 +609,7 @@ if(models.length&&checkpoints.length){renderModelTabs();renderCheckpointSelect()
         "__REPORT_TITLE__", escape_html(report_title)
     ).replace("__DATA_BOOTSTRAP__", bootstrap).replace("__DATA_SCRIPTS__", data_scripts)
     path = output_dir / "index.html"
+    html = html.replace("__LINKED_LINK__", linked_link)
     temporary = path.with_suffix(".html.tmp")
     temporary.write_text(html, encoding="utf-8")
     temporary.replace(path)
@@ -574,6 +617,83 @@ if(models.length&&checkpoints.length){renderModelTabs();renderCheckpointSelect()
     for stale_path in output_dir.glob("report-data-*.js"):
         if stale_path.name not in active_data_names:
             stale_path.unlink()
+    return path
+
+
+def write_linked_codebooks_report(output_dir: str | Path, payload: dict) -> Path:
+    """Write a checkpoint-aligned, cross-model codebook browser.
+
+    Numeric FSQ codes have no cross-model identity. Selection is therefore
+    propagated through the exact GT segment identity and may highlight several
+    codes in another model when one code has been split there.
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    if len(payload.get("models") or []) < 2:
+        raise ValueError("Linked codebooks require at least two compared models.")
+    report_title = str(payload.get("title") or "FSQ GT skill replay")
+    bootstrap, data_paths = _write_report_data_assets(output_dir, payload)
+    data_scripts = "\n".join(
+        f'<script src="{path.name}"></script>' for path in data_paths
+    )
+    html = """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>__REPORT_TITLE__ · linked codebooks</title>
+  <style>
+    :root{--ink:#17202a;--muted:#667085;--line:#d4dbe6;--blue:#2878b5;--red:#d62728;--linked:#f39c4a}
+    *{box-sizing:border-box}body{margin:0;font-family:Inter,Arial,sans-serif;background:#f4f6f9;color:var(--ink)}
+    header{position:sticky;top:0;z-index:5;padding:12px 20px;background:#fff;border-bottom:1px solid var(--line)}
+    h1{margin:0 0 5px;font-size:20px}.subtitle{color:var(--muted);font-size:12px}.toolbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:9px}.control{display:flex;align-items:center;gap:7px;font-size:12px;font-weight:800}.control select{padding:5px 8px;border:1px solid var(--line);border-radius:6px;background:#fff}.back{padding:5px 9px;border:1px solid #8fb6d3;border-radius:7px;color:#205f8c;background:#f2f8fc;font-size:12px;font-weight:800;text-decoration:none}
+    main{padding:16px}.codebooks{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:12px;align-items:start}.codebook{min-width:0;padding:10px;background:#fff;border:1px solid var(--line);border-radius:10px}.codebook-title{overflow:hidden;margin:0;color:#344054;font-size:12px;font-weight:800;text-overflow:ellipsis;white-space:nowrap}.cube{display:block;width:100%;height:auto}.unavailable{display:grid;place-items:center;min-height:230px;color:var(--muted);font-size:12px}.legend{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:9px;color:var(--muted);font-size:12px}.dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:4px}.selected-info{margin:12px 0;padding:9px 11px;background:#fff;border:1px solid var(--line);border-radius:8px;font-size:12px;font-weight:700;line-height:1.55}.count{margin-left:6px;padding:1px 6px;border-radius:10px;background:#e8eef7;color:#35516f;font-size:11px}
+    .color-panel{margin:0 0 12px;padding:9px 11px;background:#fff;border:1px solid var(--line);border-radius:8px}.color-row{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.color-label{margin-right:3px;color:#475467;font-size:11px;font-weight:900}.color-model{padding:4px 8px;border:1px solid var(--line);border-radius:7px;background:#fff;color:#344054;font-size:11px;font-weight:800;cursor:pointer}.color-model.active{border-color:#2878b5;background:#2878b5;color:#fff}.color-legend{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-top:7px;color:#667085;font-size:10px}.legend-chip{display:inline-flex;align-items:center;gap:4px;padding:2px 6px;border:1px solid var(--line);border-radius:9px;background:#fff;font-weight:800}.legend-swatch{width:11px;height:11px;border:1px solid var(--swatch-border);border-radius:3px;background:var(--swatch)}
+    .task-group{margin:0 0 18px}.task-title{display:flex;align-items:baseline;gap:7px;margin:0 0 7px;padding:8px 10px;background:#e9eef6;border:1px solid var(--line);border-radius:8px;font-size:13px;font-weight:800}.task-count{color:var(--muted);font-size:11px;font-weight:600}.samples{display:flex;align-items:flex-start;gap:10px;overflow-x:auto;padding:1px 1px 10px;scrollbar-gutter:stable}.sample{flex:0 0 360px;max-width:82vw;background:#fff;border:2px solid var(--sample-border,var(--line));border-radius:10px;overflow:hidden}.sample-title{padding:9px 12px;background:var(--sample-color,#f8fafc);border-bottom:1px solid var(--line);font-size:13px;font-weight:800}.sample.colored .meta,.sample.colored .assignments{background:color-mix(in srgb,var(--sample-color) 45%,white)}.meta{padding:6px 12px;color:var(--muted);font-size:11px;border-bottom:1px solid var(--line);line-height:1.45}.assignments{padding:6px 12px;border-bottom:1px solid var(--line);font-size:10px;line-height:1.6}.badge{display:inline-block;margin:1px 4px 1px 0;padding:2px 5px;border-radius:8px;background:#eef3fa;color:#35516f;font-weight:800}.color-code{float:right;margin-left:5px;padding:2px 6px;border:1px solid var(--sample-border,var(--line));border-radius:8px;background:rgba(255,255,255,.7);font-size:10px;font-weight:900}.pair{display:flex;gap:6px;padding:8px}.pair figure{margin:0;flex:1;min-width:0}.pair img{display:block;width:100%;height:auto;border:1px solid var(--line)}.pair figcaption{text-align:center;color:var(--muted);font-size:10px;font-weight:700;margin-top:3px}.empty{padding:32px;background:#fff;border:1px solid var(--line);border-radius:10px;text-align:center;color:var(--muted)}
+  </style>
+</head>
+<body>
+<header><h1>__REPORT_TITLE__ · linked codebooks</h1><div class="subtitle" id="summary"></div><div class="toolbar"><label class="control">Checkpoint <select id="checkpoint"></select></label><a class="back" href="index.html">Standard report</a></div></header>
+<main><section class="codebooks" id="codebooks"></section><div class="legend"><span><i class="dot" style="background:#d62728"></i>clicked code</span><span><i class="dot" style="background:#f39c4a"></i>linked code(s)</span><span><i class="dot" style="background:#2878b5"></i>used</span><span><i class="dot" style="background:#d7dde8"></i>unused</span></div><div class="selected-info" id="selectedInfo"></div><section class="color-panel" id="colorPanel"></section><section id="content"></section></main>
+<script>window.FSQ_GT_REPLAY_DATA=__DATA_BOOTSTRAP__;</script>
+__DATA_SCRIPTS__
+<script>
+const DATA=window.FSQ_GT_REPLAY_DATA,models=DATA.models||[];
+const esc=value=>String(value).replace(/[&<>'"]/g,char=>({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[char]));
+const tagKey=tag=>{const match=/^epoch(\\d+)$/.exec(String(tag));return match?[0,Number(match[1]),""]:[1,0,String(tag)]};
+const checkpointSets=models.map(model=>new Set((model.checkpoints||[]).map(cp=>String(cp.epoch_tag))));
+const checkpointTags=checkpointSets.length?[...checkpointSets[0]].filter(tag=>checkpointSets.every(set=>set.has(tag))).sort((a,b)=>{const ka=tagKey(a),kb=tagKey(b);return ka[0]-kb[0]||ka[1]-kb[1]||ka[2].localeCompare(kb[2])}):[];
+let checkpointTag=checkpointTags.length?checkpointTags[checkpointTags.length-1]:null,selection=null,colorModelIndex=null;
+const checkpointFor=model=>(model.checkpoints||[]).find(cp=>String(cp.epoch_tag)===checkpointTag);
+const sampleKey=o=>[Number(o.task_id),Number(o.episode_id),o.skill_index==null?"":Number(o.skill_index),Number(o.frame_start),o.frame_end==null?Number(o.frame_start)+Number(o.length||0):Number(o.frame_end)].join("|");
+const memberKeys=skill=>new Set((skill.occurrences||[]).map(sampleKey));
+const codeIndexCache=new WeakMap();
+function codeIndex(cp){if(codeIndexCache.has(cp))return codeIndexCache.get(cp);const byToken=new Map(),keysByToken=new Map(),tokensByKey=new Map();for(const skill of cp.skills||[]){const token=Number(skill.token),keys=memberKeys(skill);byToken.set(token,skill);keysByToken.set(token,keys);for(const key of keys){if(!tokensByKey.has(key))tokensByKey.set(key,new Set());tokensByKey.get(key).add(token)}}const index={byToken,keysByToken,tokensByKey};codeIndexCache.set(cp,index);return index}
+function coord(token,levels){const result=[];let base=1;for(const level of levels){result.push(Math.floor(token/base)%level);base*=level}return result}
+function project(c,levels){const dims=levels.length,maxLevel=Math.max(...levels),den=Math.max(1,maxLevel-1)/2,values=levels.map((level,index)=>((c[index]||0)-(level-1)/2)/den),ox=300,oy=265;if(dims<3)return[ox+(values[0]||0)*190,oy-(values[1]||0)*190,0];const yaw=-.63,pitch=.46,cy=Math.cos(yaw),sy=Math.sin(yaw),cp=Math.cos(pitch),sp=Math.sin(pitch),xr=cy*values[0]-sy*values[1],yr=sy*values[0]+cy*values[1],zr=values[2]||0;let x=ox+xr*145,y=oy+yr*145*sp-zr*145*cp,z=yr*cp+zr*sp;const offsets=[[46,-24,.3],[20,10,.15],[10,-6,.08]];for(let d=3;d<dims;d++){const offset=offsets[Math.min(d-3,offsets.length-1)];x+=(values[d]||0)*offset[0];y+=(values[d]||0)*offset[1];z+=(values[d]||0)*offset[2]}return[x,y,z]}
+function selectedKeys(){if(!selection)return new Set();const cp=checkpointFor(models[selection.modelIndex]);return cp?(codeIndex(cp).keysByToken.get(selection.token)||new Set()):new Set()}
+function renderCube(svg,modelIndex,cp,keys){const levels=cp.levels,index=codeIndex(cp),skills=index.byToken,NS="http://www.w3.org/2000/svg";svg.innerHTML="";const make=(name,attrs)=>{const element=document.createElementNS(NS,name);Object.entries(attrs).forEach(([key,value])=>element.setAttribute(key,value));svg.appendChild(element);return element};const total=levels.reduce((a,b)=>a*b,1);for(let token=0;token<total;token++){const c=coord(token,levels);for(let dim=0;dim<levels.length;dim++){if(c[dim]+1<levels[dim]){const next=c.slice();next[dim]++;const a=project(c,levels),b=project(next,levels),high=dim>=3;make("line",{x1:a[0],y1:a[1],x2:b[0],y2:b[1],stroke:high?"rgba(120,120,170,.22)":"rgba(100,100,100,.42)","stroke-width":high?0.8:1.2})}}}const points=[];for(let token=0;token<total;token++){const point=project(coord(token,levels),levels);points.push({token,point,skill:skills.get(token)})}points.sort((a,b)=>a.point[2]-b.point[2]);for(const {token,point,skill} of points){const used=Boolean(skill),skillKeys=index.keysByToken.get(token)||new Set(),overlap=used?[...skillKeys].filter(key=>keys.has(key)).length:0,clicked=Boolean(selection)&&selection.modelIndex===modelIndex&&selection.token===token,linked=!clicked&&overlap>0;const circle=make("circle",{cx:point[0],cy:point[1],r:clicked?9:(linked?8:(used?6:3.5)),fill:clicked?"#d62728":(linked?"#f39c4a":(used?"#2878b5":"#d7dde8")),stroke:(clicked||linked)?"#8b1a1a":"#26384d","stroke-width":(clicked||linked)?2.4:0.8,style:used?"cursor:pointer":"cursor:default"});if(used){const title=document.createElementNS(NS,"title");title.textContent=`#${token} · ${skill.occurrences.length} samples${overlap?` · ${overlap} linked`:""}`;circle.appendChild(title);circle.addEventListener("click",()=>selectCode(modelIndex,token))}}}
+function renderCodebooks(){const root=document.getElementById("codebooks"),keys=selectedKeys();root.innerHTML="";models.forEach((model,modelIndex)=>{const card=document.createElement("article");card.className="codebook";const title=document.createElement("h2");title.className="codebook-title";title.textContent=model.name+(model.mismatched?" ⚠":"");title.title=title.textContent;card.appendChild(title);const cp=checkpointFor(model);if(!cp){const unavailable=document.createElement("div");unavailable.className="unavailable";unavailable.textContent=`${checkpointTag}: unavailable`;card.appendChild(unavailable)}else{const svg=document.createElementNS("http://www.w3.org/2000/svg","svg");svg.setAttribute("class","cube");svg.setAttribute("viewBox","0 0 600 520");svg.setAttribute("aria-label",`${model.name} FSQ codebook`);card.appendChild(svg);renderCube(svg,modelIndex,cp,keys)}root.appendChild(card)})}
+function linkedCodes(keys){return models.map(model=>{const cp=checkpointFor(model),index=cp?codeIndex(cp):null,hits=index?[...index.keysByToken].map(([token,skillKeys])=>({token,count:[...skillKeys].filter(key=>keys.has(key)).length})).filter(hit=>hit.count>0).sort((a,b)=>b.count-a.count||a.token-b.token):[];return `${esc(model.name)}: ${hits.map(hit=>`#${hit.token} (${hit.count})`).join(", ")||"none"}`}).join("<br>")}
+function assignments(key){return models.flatMap(model=>{const cp=checkpointFor(model),tokens=cp?codeIndex(cp).tokensByKey.get(key):null;return tokens?[...tokens].sort((a,b)=>a-b).map(token=>`<span class="badge">${esc(model.name)} · #${token}</span>`):[]}).join("")}
+const colorHues=[125,5,210,45,285,170,25,330,75,245,145,355,195,55,310,105,15,225,160,275,35,340,90,185,260,120,0];
+function sampleColorMap(keys){const cp=colorModelIndex==null?null:checkpointFor(models[colorModelIndex]),index=cp?codeIndex(cp):null,tokens=index?[...new Set([...keys].flatMap(key=>[...(index.tokensByKey.get(key)||[])]))].sort((a,b)=>a-b):[];return new Map(tokens.map((token,rank)=>{const hue=colorHues[rank%colorHues.length];return[token,{fill:`hsl(${hue} 68% 88%)`,border:`hsl(${hue} 52% 57%)`}] }))}
+function renderColorPanel(keys,colorMap){const panel=document.getElementById("colorPanel"),choices=models.map((model,index)=>({model,index})).filter(item=>item.index!==selection.modelIndex);if(colorModelIndex==null||colorModelIndex===selection.modelIndex||!checkpointFor(models[colorModelIndex]))colorModelIndex=(choices.find(item=>checkpointFor(item.model))||{}).index??null;const buttons=choices.map(({model,index})=>`<button type="button" class="color-model${index===colorModelIndex?" active":""}" data-index="${index}">${esc(model.name)}</button>`).join("");const cp=colorModelIndex==null?null:checkpointFor(models[colorModelIndex]),index=cp?codeIndex(cp):null,tokens=[...colorMap.keys()];const legend=tokens.map(token=>{const color=colorMap.get(token),count=[...keys].filter(key=>(index.tokensByKey.get(key)||new Set()).has(token)).length;return `<span class="legend-chip"><i class="legend-swatch" style="--swatch:${color.fill};--swatch-border:${color.border}"></i>${esc(models[colorModelIndex].name)} #${token} · ${count}</span>`}).join("");panel.innerHTML=`<div class="color-row"><span class="color-label">Color samples by</span>${buttons}</div><div class="color-legend">${legend||'<span>No matching target-model code.</span>'}</div>`;panel.querySelectorAll(".color-model").forEach(button=>button.addEventListener("click",()=>{colorModelIndex=Number(button.dataset.index);renderSamples()}))}
+function occurrenceCard(o,colorMap){const key=sampleKey(o),language=o.task_description||"",source=[o.scene_file,o.demo].filter(Boolean).join(" · "),cp=colorModelIndex==null?null:checkpointFor(models[colorModelIndex]),tokens=cp?[...(codeIndex(cp).tokensByKey.get(key)||[])].sort((a,b)=>a-b):[],token=tokens[0],color=colorMap.get(token),style=color?` style="--sample-color:${color.fill};--sample-border:${color.border}"`:"",colorClass=color?" colored":"",codeLabel=token==null?"unassigned":`#${token}`,figure=(path,label)=>path?`<figure><img loading="lazy" src="${esc(path)}" alt="${label}"><figcaption>${label}</figcaption></figure>`:"";return `<article class="sample${colorClass}"${style}><div class="sample-title">episode ${o.episode_id} · skill ${o.skill_index}<span class="color-code">${colorModelIndex==null?"":esc(models[colorModelIndex].name)+" "}${codeLabel}</span></div><div class="meta">frames [${o.frame_start}, ${o.frame_end}) · length ${o.length}${source?`<br>${esc(source)}`:""}${language?`<br>${esc(language)}`:""}</div><div class="assignments">${assignments(key)}</div><div class="pair">${figure(o.start_image_path,"GT start")}${figure(o.final_image_path,"GT end")}</div></article>`}
+function renderSamples(){const info=document.getElementById("selectedInfo"),content=document.getElementById("content"),colorPanel=document.getElementById("colorPanel");if(!selection){info.textContent="No selectable code.";colorPanel.innerHTML="";content.innerHTML='<div class="empty">No common checkpoint samples.</div>';return}const model=models[selection.modelIndex],cp=checkpointFor(model),skill=cp&&(cp.skills||[]).find(item=>Number(item.token)===selection.token);if(!skill){info.textContent="Selected code is unavailable.";colorPanel.innerHTML="";content.innerHTML='<div class="empty">No samples.</div>';return}const keys=memberKeys(skill),occurrences=[...(skill.occurrences||[])].sort((a,b)=>Number(a.task_id)-Number(b.task_id)||Number(a.episode_id)-Number(b.episode_id)||Number(a.frame_start)-Number(b.frame_start));info.innerHTML=`${esc(model.name)} · code #${selection.token} [${skill.coord.join(", ")}] <span class="count">${keys.size} samples</span><div style="margin-top:5px;color:#667085;font-weight:600">${linkedCodes(keys)}</div>`;if(colorModelIndex==null||colorModelIndex===selection.modelIndex)colorModelIndex=models.findIndex((_,index)=>index!==selection.modelIndex);let colorMap=sampleColorMap(keys);renderColorPanel(keys,colorMap);colorMap=sampleColorMap(keys);const groups=new Map();for(const occurrence of occurrences){const task=Number(occurrence.task_id);if(!groups.has(task))groups.set(task,[]);groups.get(task).push(occurrence)}content.innerHTML=[...groups.entries()].sort((a,b)=>a[0]-b[0]).map(([task,rows])=>`<section class="task-group"><div class="task-title">Task ${task}: ${esc(rows[0].task_description||"")} <span class="task-count">${rows.length} samples</span></div><div class="samples">${rows.map(row=>occurrenceCard(row,colorMap)).join("")}</div></section>`).join("")}
+function renderAll(){renderCodebooks();renderSamples();document.getElementById("summary").textContent=`${checkpointTag||"no common checkpoint"} · ${models.length} model codebooks · selection linked by exact GT segment`}
+function selectCode(modelIndex,token){const nextModel=Number(modelIndex);if(colorModelIndex===nextModel)colorModelIndex=null;selection={modelIndex:nextModel,token:Number(token)};renderAll()}
+function chooseInitial(){selection=null;colorModelIndex=null;for(let modelIndex=0;modelIndex<models.length;modelIndex++){const cp=checkpointFor(models[modelIndex]);if(cp&&(cp.skills||[]).length){const skill=[...cp.skills].sort((a,b)=>(b.occurrences||[]).length-(a.occurrences||[]).length||Number(a.token)-Number(b.token))[0];selection={modelIndex,token:Number(skill.token)};break}}}
+const checkpointSelect=document.getElementById("checkpoint");checkpointSelect.innerHTML=checkpointTags.map(tag=>`<option value="${esc(tag)}">${esc(tag)}</option>`).join("");if(checkpointTag)checkpointSelect.value=checkpointTag;checkpointSelect.addEventListener("change",()=>{checkpointTag=checkpointSelect.value;chooseInitial();renderAll()});
+if(checkpointTags.length){chooseInitial();renderAll()}else{document.getElementById("summary").textContent="No checkpoint tag is shared by every model.";document.getElementById("codebooks").innerHTML='<div class="empty">No common checkpoint.</div>';document.getElementById("selectedInfo").textContent="No common checkpoint.";document.getElementById("content").innerHTML=""}
+</script>
+</body></html>""".replace(
+        "__REPORT_TITLE__", escape_html(report_title)
+    ).replace("__DATA_BOOTSTRAP__", bootstrap).replace("__DATA_SCRIPTS__", data_scripts)
+    path = output_dir / "linked_codebooks.html"
+    temporary = path.with_suffix(".html.tmp")
+    temporary.write_text(html, encoding="utf-8")
+    temporary.replace(path)
     return path
 
 
@@ -817,11 +937,13 @@ def main() -> None:
         payload = compare_payload(args.compare, output_dir=output_dir)
         _atomic_json(output_dir / "metrics" / "compare.json", payload)
         path = write_html_report(output_dir, payload)
+        linked_path = write_linked_codebooks_report(output_dir, payload)
         for model in payload["models"]:
             tags = ", ".join(item["epoch_tag"] for item in model["checkpoints"])
             note = " (mismatched replay settings)" if model.get("mismatched") else ""
             print(f"model {model['name']}{note}: {tags}")
         print(f"report: {path}")
+        print(f"linked codebooks: {linked_path}")
         return
     if args.collection_dir is None:
         raise SystemExit("collection_dir is required unless --compare is used.")

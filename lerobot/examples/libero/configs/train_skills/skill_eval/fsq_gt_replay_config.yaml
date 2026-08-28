@@ -66,12 +66,31 @@
 #   - {"model_name": "none_zero", "run_name": "zero_recon_only__pairOFF_routeON_loss"}
 #   - {"model_name": "none_zero01", "run_name": "zero01_recon_only__pairOFF_routeON_loss"}
 
-output_name: "terminator_effect"
+# output_name: "terminator_effect3"
+# fsq_eval_models:
+#   - {"model_name": "norm_action", "run_name": "norm_action01_recon_only__jsON_routeON_loss"}
+#   - {"model_name": "norm_action_RESNET", "run_name": "norm_action01_recon_termRES__jsON_routeON_loss__layer2_base"}
+#   - {"model_name": "norm_action_RESNET_01", "run_name": "norm_action01_recon_termRES__jsON_routeON_loss__term01"}
+#   - {"model_name": "norm_action_RESNET_unfrez_01", "run_name": "norm_action01_recon_termRES__jsON_routeON_loss__vis_unfreeze_term01"}
+
+# output_name: "raw_proprio_conditioned"
+# fsq_eval_models:
+#   - {"model_name": "raw_js_proprio", "run_name": "raw_recon_only__jsON_routeON_loss__inital_proprio_conditioned"}
+#   - {"model_name": "raw_none", "run_name": "raw_recon_only__pairOFF_routeON_loss"}
+#   - {"model_name": "raw_none_proprio", "run_name": "raw_recon_only__pairOFF_routeON_loss__inital_proprio_conditioned"}
+
+# output_name: "norm_action_01"
+# fsq_eval_models:
+#   - {"model_name": "cont",  "run_name": "norm_action01_recon_only__contrastiveON_routeON_loss"}
+#   - {"model_name": "js",    "run_name": "norm_action01_recon_only__jsON_routeON_loss"}
+#   - {"model_name": "none",  "run_name": "norm_action01_recon_only__pairOFF_routeON_loss"}
+
+output_name: "norm_action_series"
 fsq_eval_models:
-  - {"model_name": "norm_action01", "run_name": "norm_action01_recon_only__jsON_routeON_loss"}
-  - {"model_name": "norm_action01_term", "run_name": "norm_action01_recon_termRES__jsON_routeON_loss__layer2_base"}
-  - {"model_name": "zero01", "run_name": "zero01_recon_only__jsON_routeON_loss"}
-  - {"model_name": "zero01_term", "run_name": "zero01_recon_termRES__jsON_routeON_loss__layer2_base"}
+  - {"model_name": "contrastive",  "run_name": "norm_action01_recon_only__contrastiveON_routeON_loss"}
+  - {"model_name": "JS", "run_name": "norm_action01_recon_only__jsON_routeON_loss"}
+  - {"model_name": "JS + frez_termination", "run_name": "norm_action01_recon_termRES__jsON_routeON_loss__term01"}
+  - {"model_name": "JS + unfrez_termination", "run_name": "norm_action01_recon_termRES__jsON_routeON_loss__vis_unfreeze_term01"}
 
 fsq_eval_checkpoint: [50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1500, 2000]
 

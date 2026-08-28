@@ -134,6 +134,7 @@ def test_model_defaults_are_inherited_and_model_values_override_them() -> None:
         # Inherited from model_defaults; one value covers both overlays.
         "external_predictor_model_value": "outputs/shared/ckpt",
         "external_terminator_model_value": "outputs/shared/ckpt",
+        "external_terminator_checkpoint": "last",
     }
     assert entries[1] == {
         "model_dir": "current",
@@ -149,6 +150,7 @@ def test_model_defaults_are_inherited_and_model_values_override_them() -> None:
         # A per-entry value wins, so each target can use its own terminator.
         "external_predictor_model_value": "outputs/own/ckpt",
         "external_terminator_model_value": "outputs/own/ckpt",
+        "external_terminator_checkpoint": "last",
     }
 
 
@@ -750,6 +752,40 @@ def test_predictor_and_terminator_externals_can_name_different_checkpoints() -> 
         "both": ("outputs/both/ckpt", "outputs/both/ckpt"),
         "mixed": ("outputs/both/ckpt", "outputs/term/ckpt"),
     }
+
+
+def test_external_terminator_run_name_and_checkpoint_expand_under_outputs_root(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    project = Path(config["project_root"])
+    checkpoint = (
+        project
+        / "outputs/skillVLA_terminator/aux-run/checkpoints/004000/pretrained_model"
+    )
+    checkpoint.mkdir(parents=True)
+    (checkpoint / "config.json").write_text(
+        json.dumps(
+            {
+                "type": "skill_aux",
+                "train_terminator": True,
+                "skill_fsq_levels": [3, 3, 3],
+            }
+        )
+    )
+    (checkpoint / "model.safetensors").touch()
+    config["models"][0].update(
+        {
+            "advance_mode": "external",
+            "external_terminator_model": "aux-run",
+            "external_terminator_checkpoint": "004000",
+        }
+    )
+
+    model = json.loads(build_settings(config)["models_json"])[0]
+
+    assert Path(model["external_terminator_model"]) == checkpoint
+    assert model["external_terminator_checkpoint"] == "004000"
 
 
 @pytest.mark.parametrize("target_has_predictor", [False, True])

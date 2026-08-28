@@ -1,0 +1,57 @@
+# Skill predictor + FSQ terminator training.
+#
+# pt: use the PT-only model sections below.
+# ft: ignore those model sections; a non-empty component checkpoint enables
+#     that component and inherits its complete PT contract.
+mode: pt  # pt | ft
+
+
+# ── Data ────────────────────────────────────────────────────────────────────────────
+dataset:
+  skillvla_root: skillvla_dataset
+  source: libero_90_full_firsthalf_scene
+  # run: FSQ333_zero01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal
+  run: FSQ333_norm_action01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal
+
+# Optional label appended to the automatic pt/ft + target run name.
+run: {suffix: "DINO_unfrez"}
+
+
+# ── Initialization ─────────────────────────────────────────────────────────────────────
+warm_start:
+  # PT predictor initialization. The FSQ path is always dataset.source/run/FSQ.pt.
+  pi_base: models/pi05_base
+  tokenizer: models/paligemma-3b-pt-224-tokenizer
+  # FT only. Each non-empty path enables and warm-starts that component. They
+  # may point to different mode=pt skill_aux pretrained_model directories.
+  predictor_checkpoint: ""
+  terminator_checkpoint: ""
+
+
+# ── Train targets ─────────────────────────────────────────────────────────────────────────
+# PT only. If this contract exactly matches a terminator stored in FSQ.pt, its
+# weights are warm-started; any contract difference creates a fresh terminator.
+# Ignored in mode=ft because the terminator checkpoint owns this contract.
+fsq_terminator: {termination: true, context: prev_action, default_arch: fusion, vision_backbone: DINO, freeze_vision_encoder: false}
+termination_loss: {target_sigma: 2.0, positive_weight: 1.0}
+
+# PT only; ignored in mode=ft because the predictor checkpoint owns it.
+skill_predictor:
+  train: false
+  all_layers: true
+  lora: {enabled: true, targets: "q,k,v,o", rank: 8, alpha: 16.0, dropout: 0.0}
+  reader: {tokens: 4, depth: 2, heads: 8, deadzone_frac: 0.8}
+  token_access: {image: true, language: true}
+
+training:
+  # mode=ft inherits batch_size from its component PT checkpoint(s); the value
+  # below is used only by mode=pt. Other optimizer/schedule settings remain active.
+  dataloader: {batch_size: 32, workers: 8, gpus: 1}
+  optimizer: {base_lr: 2.5e-05, terminator_lr_scale: 1.0, predictor_lr_scale: 1.0, predictor_lora_lr_scale: 10.0, grad_clip_norm: 1.0}
+  gradient_checkpointing: true
+  schedule: {steps: 100000, lr_mode: warmup_constant, warmup_steps: 2500, lr_decay_steps: 50000, log_every: 100, save_every: 5000}
+
+logging:
+  wandb: {enable: true, project: VLA_auxiliary}
+
+slurm: {gres: "gpu:1", cpus: 12, memory: 128G, time: "48:00:00"}

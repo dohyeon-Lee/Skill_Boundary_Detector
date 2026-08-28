@@ -72,6 +72,9 @@ PYTHONPATH="${LEROBOT_ROOT}/src:${LEROBOT_ROOT}/examples/libero" \
   run_with_startup_guard "${STALL_GUARD_TIMEOUT:-900}" "terminator variant" -- \
   "${PROJECT_ROOT}/.venv/bin/python" "${SRC_DIR}/run_fsq_terminator_eval.py" \
     --model-path "${FSQ_MODEL_PATH}" \
+    --terminator-overlay "${FSQ_TERMINATOR_OVERLAY_PATH}" \
+    --model-source "${FSQ_MODEL_SOURCE}" \
+    --code-space-id "${FSQ_CODE_SPACE_ID}" \
     --model-label "${FSQ_MODEL_LABEL}" \
     --model-run "${FSQ_MODEL_RUN}" \
     --epoch-tag "${FSQ_MODEL_EPOCH_TAG}" \

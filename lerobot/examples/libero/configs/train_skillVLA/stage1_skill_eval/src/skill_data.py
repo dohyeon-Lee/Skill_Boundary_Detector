@@ -32,6 +32,14 @@ class SkillOccurrence:
             f"skill{self.skill_index:02d}_token{self.token:04d}_f{self.frame_start:04d}"
         )
 
+    @property
+    def identity_uid(self) -> str:
+        """Token-independent identity shared by aligned FSQ code spaces."""
+        return (
+            f"task{self.task_id:02d}_ep{self.episode_id:05d}_"
+            f"skill{self.skill_index:02d}_f{self.frame_start:04d}_{self.frame_end:04d}"
+        )
+
 
 @dataclass(frozen=True)
 class EpisodeSource:
@@ -381,4 +389,3 @@ class SkillEvaluationDataset:
         )
         self._aligned_cache[episode_id] = aligned
         return aligned
-

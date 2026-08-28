@@ -40,13 +40,27 @@ def _contract(tmp_path: Path, *, architecture_label: str) -> dict:
 def _config(tmp_path: Path) -> dict:
     original = tmp_path / "libero_original_dataset/libero_90"
     original.mkdir(parents=True)
+    terminator_model = {
+        "label": "TERM",
+        "model_dir": "shared_term",
+        "checkpoint": "020000",
+        "end_threshold": 0.9,
+    }
     return {
         "project_root": str(tmp_path),
         "outputs_root": "outputs",
         "model_defaults": {"checkpoint": "010000"},
         "models": [
-            {"model_dir": "policy_a", "label": "A"},
-            {"model_dir": "policy_b", "label": "B"},
+            {
+                "model_dir": "policy_a",
+                "label": "A",
+                "terminator_model": dict(terminator_model),
+            },
+            {
+                "model_dir": "policy_b",
+                "label": "B",
+                "terminator_model": dict(terminator_model),
+            },
         ],
         "main_terminator": {
             "label": "FSQ_INIT",
@@ -56,16 +70,6 @@ def _config(tmp_path: Path) -> dict:
             "progress_threshold": 0.8,
             "max_skill_length": 123,
             "finish_action_chunk_on_end": True,
-        },
-        "terminator_model": {
-            "label": "TERM",
-            "variant": "state_image",
-            "group": "skillVLA_terminator",
-            "model_dir": "shared_term",
-            "checkpoint": "020000",
-            "end_mode": "termination",
-            "end_threshold": 0.9,
-            "progress_threshold": 0.7,
         },
         "episode_exact": True,
         "target_task": "libero_90",
@@ -124,7 +128,7 @@ def test_multiple_policies_share_one_external_terminator(
     assert settings["skill_end_progress_threshold"] == 0.8
     assert settings["inference_skill_max_length"] == 123
     assert settings["terminator_model_end_threshold"] == 0.9
-    assert settings["terminator_model_progress_threshold"] == 0.7
+    assert settings["terminator_model_progress_threshold"] == 0.95
 
 
 def test_gpu_count_is_capped_by_policy_episode_pairs(
@@ -148,6 +152,37 @@ def test_gpu_count_is_capped_by_policy_episode_pairs(
     settings = MODULE.build_settings(config)
 
     assert settings["eval_num_gpus"] == 2
+
+
+def test_same_space_models_can_select_individual_checkpoints(
+    tmp_path: Path, monkeypatch
+) -> None:
+    contracts = iter(
+        [
+            _contract(tmp_path, architecture_label="arch_a"),
+            _contract(tmp_path, architecture_label="arch_b"),
+        ]
+    )
+    monkeypatch.setattr(MODULE, "_checkpoint_contract", lambda *_args: next(contracts))
+    monkeypatch.setattr(
+        MODULE,
+        "_validate_external_terminator",
+        lambda *_args, **_kwargs: None,
+    )
+    config = _config(tmp_path)
+    config["models"][0]["checkpoint"] = "030000"
+    config["models"][1]["checkpoint"] = "080000"
+
+    settings = MODULE.build_settings(config)
+    models = json.loads(settings["models_json"])
+
+    assert [model["checkpoint"] for model in models] == ["030000", "080000"]
+    assert models[0]["policy_path"].endswith(
+        "policy_a/checkpoints/030000/pretrained_model"
+    )
+    assert models[1]["policy_path"].endswith(
+        "policy_b/checkpoints/080000/pretrained_model"
+    )
 
 
 def test_main_terminator_rejects_unknown_variant() -> None:
@@ -204,7 +239,7 @@ def test_main_terminator_can_share_trained_display_checkpoint(
     # Display-only rules remain independent despite sharing the weights.
     assert settings["terminator_model_end_mode"] == "termination"
     assert settings["terminator_model_end_threshold"] == 0.9
-    assert settings["terminator_model_progress_threshold"] == 0.7
+    assert settings["terminator_model_progress_threshold"] == 0.95
 
 
 def test_short_main_config_fully_inherits_terminator_model(
@@ -271,14 +306,120 @@ def test_trained_main_explicit_variant_must_match_display_variant() -> None:
         )
 
 
-def test_policies_with_different_exact_datasets_are_rejected(
+def test_policies_with_different_fsq_spaces_are_resolved_independently(
     tmp_path: Path, monkeypatch
 ) -> None:
     first = _contract(tmp_path / "first", architecture_label="arch_a")
     second = _contract(tmp_path / "second", architecture_label="arch_b")
+    second["eval_init_states_path"] = first["eval_init_states_path"]
     contracts = iter([first, second])
     monkeypatch.setattr(MODULE, "_checkpoint_contract", lambda *_args: next(contracts))
     monkeypatch.setattr(MODULE, "_validate_external_terminator", lambda *_args, **_kwargs: None)
 
-    with pytest.raises(ValueError, match="same skill_dataset_dir"):
+    settings = MODULE.build_settings(_config(tmp_path))
+    models = json.loads(settings["models_json"])
+
+    assert models[0]["fsq_path"] != models[1]["fsq_path"]
+    assert models[0]["skill_latents_path"] != models[1]["skill_latents_path"]
+    assert models[0]["fsq_levels"] == models[1]["fsq_levels"] == [3, 3, 3]
+
+
+def test_each_skill_space_can_override_its_terminator(
+    tmp_path: Path, monkeypatch
+) -> None:
+    first = _contract(tmp_path / "first", architecture_label="arch_a")
+    second = _contract(tmp_path / "second", architecture_label="arch_b")
+    second["eval_init_states_path"] = first["eval_init_states_path"]
+    contracts = iter([first, second])
+    monkeypatch.setattr(MODULE, "_checkpoint_contract", lambda *_args: next(contracts))
+    monkeypatch.setattr(MODULE, "_validate_external_terminator", lambda *_args, **_kwargs: None)
+    config = _config(tmp_path)
+    config["models"][1]["terminator_model"] = {
+        "label": "TERM_B",
+        "model_dir": "term_b",
+        "checkpoint": "030000",
+    }
+
+    models = json.loads(MODULE.build_settings(config)["models_json"])
+
+    assert models[0]["terminator_models"][0]["label"] == "TERM"
+    assert models[1]["terminator_models"][0]["label"] == "TERM_B"
+    assert models[1]["terminator_models"][0]["variant"] == "state_image"
+    assert "term_b/checkpoints/030000" in models[1]["terminator_models"][0]["path"]
+
+
+def test_every_model_requires_its_own_terminator_block(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        MODULE,
+        "_checkpoint_contract",
+        lambda *_args: _contract(tmp_path, architecture_label="arch"),
+    )
+    monkeypatch.setattr(MODULE, "_validate_external_terminator", lambda *_args, **_kwargs: None)
+    config = _config(tmp_path)
+    config["models"][1].pop("terminator_model")
+
+    with pytest.raises(ValueError, match=r"models\[1\]\.terminator_model"):
+        MODULE.build_settings(config)
+
+
+def test_top_level_terminator_default_is_rejected(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    config["terminator_model"] = config["models"][0].pop("terminator_model")
+
+    with pytest.raises(ValueError, match="Top-level terminator_model was removed"):
+        MODULE.build_settings(config)
+
+
+@pytest.mark.parametrize("obsolete", ["end_mode", "progress_threshold"])
+def test_terminator_model_rejects_obsolete_end_options(
+    tmp_path: Path, monkeypatch, obsolete: str
+) -> None:
+    monkeypatch.setattr(
+        MODULE,
+        "_checkpoint_contract",
+        lambda *_args: _contract(tmp_path, architecture_label="arch"),
+    )
+    config = _config(tmp_path)
+    config["models"][0]["terminator_model"][obsolete] = (
+        "termination" if obsolete == "end_mode" else 0.95
+    )
+
+    with pytest.raises(ValueError, match="termination mode is fixed"):
+        MODULE.build_settings(config)
+
+
+@pytest.mark.parametrize(
+    ("fixed_field", "value"),
+    [("variant", "state_image"), ("group", "skillVLA_terminator")],
+)
+def test_terminator_model_rejects_repeated_fixed_options(
+    tmp_path: Path, monkeypatch, fixed_field: str, value: str
+) -> None:
+    monkeypatch.setattr(
+        MODULE,
+        "_checkpoint_contract",
+        lambda *_args: _contract(tmp_path, architecture_label="arch"),
+    )
+    config = _config(tmp_path)
+    config["models"][0]["terminator_model"][fixed_field] = value
+
+    with pytest.raises(ValueError, match="variant=state_image"):
+        MODULE.build_settings(config)
+
+
+def test_different_exact_episode_maps_are_rejected(
+    tmp_path: Path, monkeypatch
+) -> None:
+    contracts = iter(
+        [
+            _contract(tmp_path / "first", architecture_label="arch_a"),
+            _contract(tmp_path / "second", architecture_label="arch_b"),
+        ]
+    )
+    monkeypatch.setattr(MODULE, "_checkpoint_contract", lambda *_args: next(contracts))
+    monkeypatch.setattr(MODULE, "_validate_external_terminator", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(ValueError, match="same exact source episodes"):
         MODULE.build_settings(_config(tmp_path))

@@ -229,6 +229,73 @@ def test_independent_training_switches(
     assert any(key.startswith("skill_predictor/") for key in metrics) is predictor
 
 
+def test_component_specific_ft_warm_starts_can_use_different_checkpoints(
+    monkeypatch,
+):
+    loaded = []
+    monkeypatch.setattr(
+        skill_aux_module.SkillAuxPolicy,
+        "_load_complete_predictor_warm_start",
+        lambda self, path: loaded.append(("predictor", str(path))),
+    )
+    monkeypatch.setattr(
+        skill_aux_module.SkillAuxPolicy,
+        "_load_terminator_warm_start",
+        lambda self, path: loaded.append(("terminator", str(path))),
+    )
+    config = _config(terminator=True, predictor=True)
+    config.skill_predictor_checkpoint_path = "/tmp/predictor_pt"
+    config.terminator_checkpoint_path = "/tmp/terminator_pt"
+
+    skill_aux_module.SkillAuxPolicy(config)
+
+    assert loaded == [
+        ("terminator", "/tmp/terminator_pt"),
+        ("predictor", "/tmp/predictor_pt"),
+    ]
+
+
+def test_policy_accepts_generic_factory_dataset_metadata():
+    policy = skill_aux_module.SkillAuxPolicy(
+        _config(terminator=True, predictor=False),
+        dataset_stats={"action": {}},
+        dataset_meta=object(),
+    )
+
+    assert policy.model.fsq_term_train is not None
+
+
+def test_component_specific_ft_loads_complete_weights_from_separate_files(
+    tmp_path,
+):
+    predictor_source = skill_aux_module.SkillAuxPolicy(
+        _config(terminator=False, predictor=True)
+    )
+    with torch.no_grad():
+        predictor_source.model.skill_predictor.reader.weight.fill_(7.0)
+    predictor_dir = tmp_path / "predictor_pt"
+    predictor_source.save_pretrained(predictor_dir)
+
+    terminator_source = skill_aux_module.SkillAuxPolicy(
+        _config(terminator=True, predictor=False)
+    )
+    with torch.no_grad():
+        terminator_source.model.fsq_term_train.end.fill_(4.0)
+    terminator_dir = tmp_path / "terminator_pt"
+    terminator_source.save_pretrained(terminator_dir)
+
+    target_config = _config(terminator=True, predictor=True)
+    target_config.skill_predictor_checkpoint_path = str(predictor_dir)
+    target_config.terminator_checkpoint_path = str(terminator_dir)
+    target = skill_aux_module.SkillAuxPolicy(target_config)
+
+    assert torch.all(
+        target.model.skill_predictor.reader.weight
+        == torch.full_like(target.model.skill_predictor.reader.weight, 7.0)
+    )
+    assert target.model.fsq_term_train.end.item() == 4.0
+
+
 def test_both_disabled_is_rejected():
     with pytest.raises(ValueError, match="terminator.train"):
         _config(terminator=False, predictor=False)

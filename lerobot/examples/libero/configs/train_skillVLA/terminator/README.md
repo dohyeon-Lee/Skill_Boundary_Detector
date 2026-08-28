@@ -1,78 +1,42 @@
-# Auxiliary-only training
+# Predictor + terminator auxiliary training
 
-This directory trains the Stage-1 FSQ terminator, image-only terminator,
-wrist-only terminator, two proprio-only terminators, and skill predictor
-without constructing or optimizing an action/VSA model.
+`auxiliary_train_config.yaml` is the only user-facing training config in this
+directory. It can train the skill predictor, the FSQ terminator, or both.
 
-Select the training target in `terminator_train_config.yaml`:
+## PT and FT
 
-`terminator.train`, `image_only_terminator.train`,
-`wrist_only_terminator.train`, `state_only_terminator.train`,
-`state_rnn_terminator.train`, and `skill_predictor.train` are independent
-booleans. Any non-empty combination is valid; setting all six to `false` is a
-configuration error.
+- `mode: pt` initializes the predictor from pi0.5. The terminator is warm-started
+  from the selected `dataset.source/run/FSQ.pt` only when its full context/architecture/
+  backbone/freeze contract matches `fsq_terminator`; otherwise the requested
+  terminator is initialized fresh.
+- `mode: ft` infers its train targets from `warm_start.predictor_checkpoint` and
+  `warm_start.terminator_checkpoint`. The paths may refer to different PT
+  `skill_aux` checkpoints. Each non-empty path enables that component and its
+  PT config owns the component contract; the PT-only YAML model sections are
+  ignored.
+- When both FT paths are present, their FSQ code-space identity must also match
+  the target dataset. Equal codebook dimensions alone are not accepted as proof
+  that integer codes have the same meaning.
+- FT also inherits its batch size from the component PT checkpoint. Two FT
+  component sources with different PT batch sizes are rejected.
 
-The normal state+image terminator supports both FSQ implementations. A joint
-FSQ-v3 checkpoint warm-starts its saved `terminator.*` tensors. An
-`FSQOriginalConfig` checkpoint contains no terminator tensors, so its FSQ
-levels, hidden size, attention shape, and encoder state bounds are used to
-construct a fresh terminator instead. The raw `fsq_initial` evaluation remains
-v3-only because an FSQ-original checkpoint has no pretrained terminator to
-evaluate.
+The supported terminator is the same default state/image query terminator used
+by current FSQ training. Historical image-only, wrist-only, state-only, and
+state-RNN variants are intentionally not exposed by this trainer config.
 
-The image-only model consumes the current skill code plus top/wrist images. It
-uses the same progress and termination targets as the normal terminator, does
-not consume transition-randomized predictor inputs, and loads no model tensor
-from `FSQ.pt`. DINO comes from its original pretrained path and stays frozen;
-the image projection, query decoder, and heads start from scratch. The FSQ file
-is read only for the matching architecture and code contract.
-
-The wrist-only model consumes the current skill code and current wrist-camera
-image only. It has no state or top-camera input and, like the image-only model,
-starts every terminator-specific tensor from scratch while keeping the original
-DINO encoder frozen. Its checkpoint prefix is `model.fsq_wrist_term_train.*`.
-
-The state-only model concatenates the normalized current proprio state with
-the three-dimensional FSQ latent and passes it through a small MLP. The
-state-RNN model applies the same conditioning at every step of an
-endpoint-anchored full-skill sequence and predicts with a vanilla tanh RNN.
-Every valid timestep receives its own termination loss (and progress loss when
-enabled). With `full_skill_sequence: true`, samples are anchored at skill
-endpoints and `sequence_length` must cover the longest skill. With
-`full_skill_sequence: false`, current frames are sampled normally from the
-whole dataset and only the preceding `sequence_length`-frame rolling window is
-used; every valid step in that window is still supervised. The optional
-`balance_positive_negative` switch averages positive and negative timestep
-losses separately; `false` uses one ordinary masked BCE mean. Online inference
-still consumes one current state plus the previous hidden state and returns the
-next hidden state; pass `None` when a rollout or skill begins. Both models start
-from scratch, require no image/DINO tensors, and do not warm-start any weights
-from `FSQ.pt`. Each state model has an independent `termination_only` switch.
-Its default `true` preserves the original termination-only parameter set and
-objective; `false` adds a progress head on the shared MLP feature or RNN hidden
-state and jointly optimizes smooth-L1 progress loss.
-
-Submit with:
+Submit from this directory with:
 
 ```bash
 ./submit_train.sh
 ```
 
-Single-GPU runs invoke `lerobot-train` directly so the `accelerate` launcher
-does not perform a redundant cold Python/Torch import. Multi-GPU runs retain
-`accelerate launch` with one process per configured GPU.
+Output names omit a separate `pt`/`ft` token and preserve the dataset lineage:
 
-Runs use the separate `VLA_terminator` W&B project by default. Metrics are
-reported under `train_terminator/*`, `train_image_terminator/*`,
-`train_wrist_terminator/*`, `train_state_terminator/*`,
-`train_state_rnn_terminator/*`, and `train_skill_predictor/*`; action/VSA loss
-and optimizer panels are not produced. Checkpoints use
-`model.fsq_term_train.*`, `model.fsq_image_term_train.*`,
-`model.fsq_wrist_term_train.*`, `model.fsq_state_term_train.*`,
-`model.fsq_state_rnn_term_train.*`, and `model.skill_predictor.*` prefixes.
+```text
+bs{PT batch}_{FSQ run}_{PT source}[_{FT source}...]_{enabled targets}
+```
 
-For image-only Stage-1 evaluation, point `external_skill_model` at this
-checkpoint, set `advance_mode: external`, and set
-`terminator.variant: image_only` in `stage1_eval_config.yaml`. A model entry may
-override the global choice with `terminator_variant: image_only`, which also
-allows normal and image-only terminator panels in one comparison run.
+Each FT stage appends its current dataset source before the enabled target name.
+PT suffixes are inherited separately from the dataset lineage and are always
+re-attached after the current target name. A new FT suffix is appended after
+the inherited suffixes.

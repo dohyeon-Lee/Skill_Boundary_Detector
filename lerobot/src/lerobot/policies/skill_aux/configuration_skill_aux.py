@@ -28,9 +28,23 @@ class SkillAuxConfig(PreTrainedConfig):
     max_action_dim: int = 32
     skill_vocab_size: int = 27
     skill_fsq_levels: list[int] = field(default_factory=lambda: [3, 3, 3])
+    # Stable semantic identity of the FSQ model that generated the dataset's
+    # integer labels. Equal level counts alone do not imply equal code meaning.
+    skill_code_space_id: str = ""
+    # Training lineage is stored in the policy checkpoint so FT naming and
+    # batch size are inherited from PT rather than duplicated in the FT YAML.
+    training_batch_size: int = 0
+    dataset_source_lineage: list[str] = field(default_factory=list)
+    run_suffix_lineage: list[str] = field(default_factory=list)
 
     train_terminator: bool = True
     fsq_path: str | None = "FSQ.pt"
+    terminator_checkpoint_path: str | None = None
+    # Legacy joint warm-start path, kept only so old checkpoints still load.
+    auxiliary_checkpoint_path: str | None = None
+    terminator_context: str = "prev_action"
+    terminator_arch: str = "fusion"
+    terminator_vision_backbone: str = "resnet"
     terminator_freeze_vision_encoder: bool = True
     terminator_lr_scale: float = 1.0
     terminator_end_target_sigma: float = 2.0
@@ -78,6 +92,7 @@ class SkillAuxConfig(PreTrainedConfig):
     state_rnn_terminator_termination_only: bool = True
 
     train_skill_predictor: bool = False
+    # Component-specific FT source. It may differ from the terminator source.
     skill_predictor_checkpoint_path: str | None = None
     skill_predictor_lr_scale: float = 1.0
     skill_predictor_all_layers: bool = True
@@ -146,6 +161,12 @@ class SkillAuxConfig(PreTrainedConfig):
             )
         if min(self.max_state_dim, self.max_action_dim) <= 0:
             raise ValueError("State and action dimensions must be positive.")
+        if self.training_batch_size < 0:
+            raise ValueError("training_batch_size must be non-negative.")
+        if any(not str(source).strip() for source in self.dataset_source_lineage):
+            raise ValueError("dataset_source_lineage cannot contain empty values.")
+        if any(not str(suffix).strip() for suffix in self.run_suffix_lineage):
+            raise ValueError("run_suffix_lineage cannot contain empty values.")
         if (
             self.train_terminator
             or self.train_image_only_terminator
@@ -154,6 +175,20 @@ class SkillAuxConfig(PreTrainedConfig):
             if not str(self.fsq_path or "").strip():
                 raise ValueError("Terminator training requires fsq_path.")
         if self.train_terminator:
+            if self.terminator_context not in {"prev_action", "proprio"}:
+                raise ValueError(
+                    "terminator_context must be prev_action or proprio."
+                )
+            if self.terminator_arch not in {"small", "fusion"}:
+                raise ValueError("terminator_arch must be small or fusion.")
+            if self.terminator_vision_backbone not in {
+                "dino",
+                "siglip",
+                "resnet",
+            }:
+                raise ValueError(
+                    "terminator_vision_backbone must be dino, siglip, or resnet."
+                )
             if self.terminator_lr_scale <= 0.0:
                 raise ValueError("terminator_lr_scale must be positive.")
             if self.terminator_end_target_sigma < 0.0:

@@ -71,6 +71,31 @@ def _relocate_project_path(project_root: Path, value: str | Path | None) -> Path
     return path
 
 
+def _resolve_external_terminator_path(
+    project_root: Path,
+    outputs_root: Path,
+    run_or_path: str,
+    checkpoint: str,
+) -> Path:
+    """Resolve a concise skillVLA_terminator run name or a legacy full path."""
+    raw = str(run_or_path or "").strip()
+    path = Path(raw).expanduser()
+    if raw and not path.is_absolute() and len(path.parts) == 1:
+        run_name = _safe_name(raw, field="external_terminator_model")
+        checkpoint_name = _safe_name(
+            str(checkpoint), field="external_terminator_checkpoint"
+        )
+        return (
+            outputs_root
+            / "skillVLA_terminator"
+            / run_name
+            / "checkpoints"
+            / checkpoint_name
+            / "pretrained_model"
+        )
+    return _relocate_project_path(project_root, raw)
+
+
 def _safe_name(value: str, *, field: str) -> str:
     value = value.strip()
     if not value or value in {".", ".."} or "/" in value or "\0" in value:
@@ -556,6 +581,17 @@ def _validate_external_terminator(
             f"terminator={source.get('skill_fsq_levels')!r}, "
             f"target={target_policy.get('skill_fsq_levels')!r}"
         )
+    source_space = str(source.get("skill_code_space_id", "") or "").strip()
+    target_space = str(target_policy.get("skill_code_space_id", "") or "").strip()
+    if not target_space:
+        target_fsq = str(target_policy.get("fsq_path", "") or "").strip()
+        if target_fsq:
+            target_space = Path(target_fsq).parent.name
+    if source_space and target_space and source_space != target_space:
+        raise ValueError(
+            "External terminator skill-code space mismatch: "
+            f"terminator={source_space!r}, target={target_space!r}."
+        )
 
 
 def _model_entries(config: dict) -> list[dict]:
@@ -571,6 +607,7 @@ def _model_entries(config: dict) -> list[dict]:
         "external_skill_model",
         "external_predictor_model",
         "external_terminator_model",
+        "external_terminator_checkpoint",
     }
     unknown_defaults = sorted(set(model_defaults) - supported_defaults)
     if unknown_defaults:
@@ -607,6 +644,16 @@ def _model_entries(config: dict) -> list[dict]:
     )
     default_external_terminator_model = _external_default(
         "external_terminator_model", default_external_skill_model
+    )
+    default_external_terminator_checkpoint = _safe_name(
+        str(
+            model_defaults.get(
+                "external_terminator_checkpoint",
+                get_value(config, "external_terminator_checkpoint", "last"),
+            )
+            or "last"
+        ),
+        field="model_defaults.external_terminator_checkpoint",
     )
     default_advance = str(
         model_defaults.get(
@@ -733,6 +780,16 @@ def _model_entries(config: dict) -> list[dict]:
                     )
                     or ""
                 ).strip(),
+                "external_terminator_checkpoint": _safe_name(
+                    str(
+                        raw.get(
+                            "external_terminator_checkpoint",
+                            default_external_terminator_checkpoint,
+                        )
+                        or default_external_terminator_checkpoint
+                    ),
+                    field="models[].external_terminator_checkpoint",
+                ),
             }
         )
     labels = [row["label"] for row in rows]
@@ -786,6 +843,9 @@ def _model_entries(config: dict) -> list[dict]:
                     ],
                     "external_terminator_model_value": row[
                         "external_terminator_model_value"
+                    ],
+                    "external_terminator_checkpoint": row[
+                        "external_terminator_checkpoint"
                     ],
                 }
             )
@@ -854,7 +914,12 @@ def build_settings(config: dict) -> dict:
             else external_skill_model
         )
         entry_terminator = (
-            _relocate_project_path(project_root, terminator_value)
+            _resolve_external_terminator_path(
+                project_root,
+                outputs_root,
+                terminator_value,
+                entry["external_terminator_checkpoint"],
+            )
             if terminator_value
             else external_skill_model
         )

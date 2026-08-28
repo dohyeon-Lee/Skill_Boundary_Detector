@@ -896,8 +896,33 @@ def test_maybe_build_compare_waits_for_every_collection(tmp_path: Path) -> None:
     path = REPORT.maybe_build_compare(dirs, output_dir=compare_dir)
     assert path == compare_dir / "index.html"
     assert path.is_file()
+    linked_path = compare_dir / "linked_codebooks.html"
+    assert linked_path.is_file()
     payload = json.loads((compare_dir / "metrics" / "compare.json").read_text())
     assert [model["name"] for model in payload["models"]] == ["a", "b"]
+    standard_html = path.read_text(encoding="utf-8")
+    linked_html = linked_path.read_text(encoding="utf-8")
+    assert 'href="linked_codebooks.html"' in standard_html
+    assert 'id="checkpoint"' in linked_html
+    assert 'id="codebooks"' in linked_html
+    assert 'id="colorPanel"' in linked_html
+    assert "function selectCode(modelIndex,token)" in linked_html
+    assert "function sampleColorMap(keys)" in linked_html
+    assert "function renderColorPanel(keys,colorMap)" in linked_html
+    assert "const sampleKey=o=>" in linked_html
+    assert "memberKeys(skill)" in linked_html
+    assert "Color samples by" in linked_html
+    assert "color-model" in linked_html
+    assert "color-legend" in linked_html
+    assert "color-code" in linked_html
+    assert "clicked code" in linked_html
+    assert "linked code(s)" in linked_html
+    assert "GT start" in linked_html
+    assert "GT end" in linked_html
+    assert "task_description" in linked_html
+    assert "Cohesion" not in linked_html
+    assert "Skill variety" not in linked_html
+    assert "Codebook usage" not in linked_html
 
 
 def test_backfill_train_codebook_used_from_latents(tmp_path: Path) -> None:

@@ -7,87 +7,56 @@
 
 outputs_root: outputs_filtered
 
+# model:
+#   previous: false
+#   model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_norm_action01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask_visunfreeze
+#   checkpoint: "030000"
+#   label: norm_action
+#   terminator_source: external # own | external
+
+# external_skill_model:
+#   variant: state_image
+#   group: skillVLA_terminator
+#   model_dir: bs32_FSQ333_norm_action01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_libero_90_full_firsthalf_scene_terminator_resnet_unfrez
+#   checkpoint: "050000"
+
+# terminator_models:
+#   - label: RESNET_unfreeze
+#     variant: state_image
+#     model_dir: bs32_FSQ333_norm_action01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_libero_90_full_firsthalf_scene_terminator_resnet_unfrez
+#     checkpoint: "050000"
+#   - label: DINO_unfreeze
+#     variant: state_image
+#     model_dir: bs32_FSQ333_norm_action01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_libero_90_full_firsthalf_scene_terminator_DINO_unfrez
+#     checkpoint: "050000"
+
+# output_name: "norm_action_visunfreeze"
+
 model:
   previous: false
-  model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fusion_raw_raw__recon_lincontrast_bj10_w01_warm50_ramp50_new_initcal_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask
-  checkpoint: "060000"
-  label: arch0_skillendmask
-  # own: use the terminator stored in this checkpoint.
-  # external: overlay only the terminator from external_skill_model.
-  terminator_source: external
+  model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_zero01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask_visunfreeze
+  checkpoint: "030000"
+  label: norm_action
+  terminator_source: external # own | external
 
-# Use the pristine state+image terminator stored in the selected policy's raw
-# FSQ.pt, before any Stage-1 or specialist terminator training.
-# external_skill_model:
-#   variant: fsq_initial
-
-# A trained checkpoint can instead be selected with:
 external_skill_model:
   variant: state_image
   group: skillVLA_terminator
-  model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fusion_raw_raw__recon_lincontrast_bj10_w01_warm50_ramp50_new_initcal_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_terminator_visfreeze
+  model_dir: bs32_FSQ333_zero01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_libero_90_full_firsthalf_scene_terminator_DINO_unfrez
   checkpoint: "050000"
 
-# Trained entries resolve as:
-#   <outputs_root>/skillVLA_terminator/<model_dir>/checkpoints/<checkpoint>/pretrained_model
-# All entries are display-only. Only MAIN controls rollout stopping.
-# variant: state_image | image_only | wrist_only | state_only | state_rnn | fsq_initial
 terminator_models:
-
-  - label: half_unfrez_1k
+  - label: RESNET_unfreeze
     variant: state_image
-    model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fusion_raw_raw__recon_lincontrast_bj10_w01_warm50_ramp50_new_initcal_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_terminator
-    checkpoint: "010000"
-  - label: half_unfrez_3k
-    variant: state_image
-    model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fusion_raw_raw__recon_lincontrast_bj10_w01_warm50_ramp50_new_initcal_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_terminator
-    checkpoint: "030000"
-  - label: half_unfrez_5k
-    variant: state_image
-    model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fusion_raw_raw__recon_lincontrast_bj10_w01_warm50_ramp50_new_initcal_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_terminator
+    model_dir: bs32_FSQ333_zero01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_libero_90_full_firsthalf_scene_terminator_resnet_unfrez
     checkpoint: "050000"
-  - label: half_unfrez_9k
+  - label: DINO_unfreeze
     variant: state_image
-    model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fusion_raw_raw__recon_lincontrast_bj10_w01_warm50_ramp50_new_initcal_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_terminator
-    checkpoint: "090000"
-
-  - label: half_frez_1k
-    variant: state_image
-    model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fusion_raw_raw__recon_lincontrast_bj10_w01_warm50_ramp50_new_initcal_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_terminator_visfreeze
-    checkpoint: "010000"
-  - label: half_frez_3k
-    variant: state_image
-    model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fusion_raw_raw__recon_lincontrast_bj10_w01_warm50_ramp50_new_initcal_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_terminator_visfreeze
-    checkpoint: "030000"
-  - label: half_frez_5k
-    variant: state_image
-    model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fusion_raw_raw__recon_lincontrast_bj10_w01_warm50_ramp50_new_initcal_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_terminator_visfreeze
+    model_dir: bs32_FSQ333_zero01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_libero_90_full_firsthalf_scene_terminator_DINO_unfrez
     checkpoint: "050000"
-  - label: half_frez_9k
-    variant: state_image
-    model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fusion_raw_raw__recon_lincontrast_bj10_w01_warm50_ramp50_new_initcal_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_terminator_visfreeze
-    checkpoint: "090000"
 
-  - label: full_unfrez_1k
-    variant: state_image
-    model_dir: bs32_libero_90_full_full_FSQ333_fusion_raw_raw__recon_lincontrast_bj10_w01_warm50_ramp50_new_initcal_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_terminator
-    checkpoint: "010000"
-  - label: full_unfrez_3k
-    variant: state_image
-    model_dir: bs32_libero_90_full_full_FSQ333_fusion_raw_raw__recon_lincontrast_bj10_w01_warm50_ramp50_new_initcal_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_terminator
-    checkpoint: "030000"
-  - label: full_unfrez_5k
-    variant: state_image
-    model_dir: bs32_libero_90_full_full_FSQ333_fusion_raw_raw__recon_lincontrast_bj10_w01_warm50_ramp50_new_initcal_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_terminator
-    checkpoint: "050000"
-  - label: full_unfrez_9k
-    variant: state_image
-    model_dir: bs32_libero_90_full_full_FSQ333_fusion_raw_raw__recon_lincontrast_bj10_w01_warm50_ramp50_new_initcal_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_terminator
-    checkpoint: "090000"
+output_name: "zero_visunfreeze"
 
-
-# Empty creates a timestamped output under terminator_eval/outputs/.
-output_name: "new_new2"
 resume: true
 
 target_task: libero_90

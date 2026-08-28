@@ -16,7 +16,9 @@ sys.path.insert(0, str(_EVAL_SRC))
 
 import run_eval
 from run_eval import CheckpointTerminator, Stage1OraclePolicy
+from lerobot.policies.skill_expert import modeling_skill_expert
 from lerobot.policies.skill_expert.configuration_skill_expert import SkillExpertConfig
+from lerobot.policies.skill_expert.modeling_skill_expert import SkillExpertPolicy
 from lerobot.scripts.lerobot_skillvla_eval import (
     _annotate_eval_video,
     _progress_values_from_trace,
@@ -135,6 +137,77 @@ def test_attach_original_terminator_replaces_checkpoint_copy(
     assert all(parameter.requires_grad is False for parameter in original.parameters())
 
 
+def test_external_terminator_is_rebuilt_from_its_saved_contract(
+    monkeypatch, tmp_path: Path
+) -> None:
+    checkpoint = tmp_path / "terminator"
+    checkpoint.mkdir()
+    (checkpoint / "config.json").write_text(
+        """{
+          "type": "skill_aux",
+          "train_terminator": true,
+          "skill_fsq_levels": [3, 3, 3],
+          "terminator_context": "prev_action",
+          "terminator_arch": "fusion",
+          "terminator_vision_backbone": "dino",
+          "terminator_freeze_vision_encoder": false,
+          "terminator_termination_only": true
+        }"""
+    )
+
+    class _Terminator(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.anchor = nn.Parameter(torch.ones(()))
+
+    class _Model(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.anchor = nn.Parameter(torch.zeros(()))
+            self.fsq_term_train = _Terminator()
+
+    built = _Terminator()
+    builder_calls = []
+
+    def _build(path, **kwargs):
+        builder_calls.append((path, kwargs))
+        return built
+
+    loaded = []
+    monkeypatch.setattr(
+        modeling_skill_expert, "build_trainable_fsq_terminator", _build
+    )
+    monkeypatch.setattr(
+        modeling_skill_expert,
+        "_load_complete_terminator_parameters",
+        lambda module, path: loaded.append((module, path)) or 1,
+    )
+    owner = SimpleNamespace(
+        config=SimpleNamespace(
+            fsq_path="/target/FSQ.pt", skill_fsq_levels=[3, 3, 3]
+        ),
+        model=_Model(),
+    )
+
+    SkillExpertPolicy.load_external_terminator(owner, checkpoint)
+
+    assert builder_calls == [
+        (
+            "/target/FSQ.pt",
+            {
+                "termination_only": True,
+                "context": "prev_action",
+                "default_arch": "fusion",
+                "vision_backbone": "dino",
+                "freeze_vision_encoder": False,
+            },
+        )
+    ]
+    assert loaded == [(built, checkpoint)]
+    assert owner.model.fsq_term_train is built
+    assert built.training is False
+
+
 def test_normalize_advance_mode_accepts_original() -> None:
     assert run_eval._normalize_advance_mode("original") == "original"
 
@@ -145,7 +218,8 @@ class _FakeTerminator:
     def __init__(self):
         self.step = 0
 
-    def terminate(self, codes, state, image, wrist):
+    def terminate(self, codes, state, image, wrist, previous_action=None):
+        del state, image, wrist, previous_action
         self.step += 1
         probability = (
             torch.ones_like(codes, dtype=torch.float32)
@@ -593,6 +667,88 @@ def test_oracle_can_interrupt_chunk_and_replan_on_terminator_advance() -> None:
     assert wrapper.select_action(_batch()).item() == 7
     assert wrapper.select_action(_batch()).item() == 7
     assert [call.item() for call in expert.calls] == [3, 7]
+
+
+def test_oracle_passes_the_previous_executed_action_to_the_terminator() -> None:
+    class _RecordingTerminator:
+        requires_state = True
+
+        def __init__(self):
+            self.previous_actions = []
+
+        def terminate(
+            self, codes, state, image, wrist, previous_action=None
+        ):
+            del state, image, wrist
+            self.previous_actions.append(
+                None if previous_action is None else previous_action.detach().clone()
+            )
+            zeros = torch.zeros_like(codes, dtype=torch.float32)
+            return zeros, zeros
+
+    terminator = _RecordingTerminator()
+    wrapper = Stage1OraclePolicy(
+        _FakeExpert(),
+        terminator,
+        advance_mode="terminator",
+        end_mode="termination",
+        end_threshold=0.5,
+        progress_threshold=0.95,
+        max_skill_length=0,
+        n_action_steps=2,
+    )
+    wrapper.set_forced_skill_token_sequences(
+        [[{"token": 3, "gt_length": 5}, {"token": 7, "gt_length": 5}]]
+    )
+
+    wrapper.select_action(_batch())
+    assert terminator.previous_actions == [None]
+
+    executed = torch.tensor([[0.1, -0.2, 0.3, 0.4, -0.5, 0.6, 1.0]])
+    wrapper.record_executed_action(executed)
+    wrapper.select_action(_batch())
+    torch.testing.assert_close(terminator.previous_actions[1], executed)
+
+    wrapper.reset()
+    wrapper.set_forced_skill_token_sequences(
+        [[{"token": 3, "gt_length": 5}, {"token": 7, "gt_length": 5}]]
+    )
+    wrapper.select_action(_batch())
+    assert terminator.previous_actions[-1] is None
+
+
+def test_episode_exact_gt_codes_are_resolved_per_model_skill_space(
+    monkeypatch,
+) -> None:
+    def _load(dataset_dir, init_states_path, suite_name):
+        del init_states_path, suite_name
+        token = 4 if str(dataset_dir) == "zero-space" else 19
+        return {
+            0: [
+                {
+                    "episode_index": 12,
+                    "init_state": np.asarray([1.0, 2.0]),
+                    "skills": [{"token": token, "gt_length": 7}],
+                }
+            ]
+        }
+
+    monkeypatch.setattr(run_eval, "load_episode_exact_data", _load)
+    init_states = {}
+    maps = run_eval._episode_exact_oracle_maps(
+        {"libero_90": {0: object()}},
+        [
+            {"skill_dataset_dir": "zero-space", "eval_init_states_path": "same"},
+            {"skill_dataset_dir": "action-space", "eval_init_states_path": "same"},
+        ],
+        "libero_90",
+        1,
+        init_states,
+    )
+
+    assert maps[0][("libero_90", 0)][0][0]["token"] == 4
+    assert maps[1][("libero_90", 0)][0][0]["token"] == 19
+    np.testing.assert_array_equal(init_states[("libero_90", 0)], [[1.0, 2.0]])
 
 
 @pytest.mark.parametrize("stage2_mode", ["likelihood", "dsbc"])

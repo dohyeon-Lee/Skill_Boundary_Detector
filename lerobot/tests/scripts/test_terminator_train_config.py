@@ -20,16 +20,16 @@ SPEC.loader.exec_module(MODULE)
 def _config(
     tmp_path: Path,
     *,
-    terminator: bool,
-    predictor: bool,
-    image_terminator: bool = False,
-    wrist_terminator: bool = False,
-    state_terminator: bool = False,
-    state_rnn_terminator: bool = False,
+    mode: str = "pt",
+    terminator: bool = True,
+    predictor: bool = True,
+    predictor_checkpoint: str = "",
+    terminator_checkpoint: str = "",
+    dataset_source: str = "source",
 ) -> dict:
     run = "FSQ345_test"
     dataset_dir = (
-        tmp_path / "dataset/skillvla_dataset/source" / run / "skillvla"
+        tmp_path / "dataset/skillvla_dataset" / dataset_source / run / "skillvla"
     )
     (dataset_dir / "meta").mkdir(parents=True)
     (dataset_dir / "meta/info.json").write_text(
@@ -44,6 +44,7 @@ def _config(
         )
     )
     (dataset_dir.parent / "FSQ.pt").touch()
+
     pi_base = tmp_path / "models/pi05_base"
     pi_base.mkdir(parents=True)
     (pi_base / "model.safetensors").touch()
@@ -51,194 +52,387 @@ def _config(
     tokenizer.mkdir(parents=True)
     for name in ("config.json", "tokenizer_config.json", "tokenizer.json"):
         (tokenizer / name).write_text("{}")
+
     return {
         "project_root": str(tmp_path),
         "dataset_root": "dataset",
         "outputs_root": "outputs",
+        "mode": mode,
         "dataset": {
             "skillvla_root": "skillvla_dataset",
-            "source": "source",
+            "source": dataset_source,
             "run": run,
         },
         "run": {"suffix": "test"},
         "warm_start": {
             "pi_base": "models/pi05_base",
             "tokenizer": "models/tokenizer",
-            "fsq": "",
-            "predictor_checkpoint": "",
+            "predictor_checkpoint": predictor_checkpoint,
+            "terminator_checkpoint": terminator_checkpoint,
         },
-        "terminator": {"train": terminator},
-        "image_only_terminator": {"train": image_terminator},
-        "wrist_only_terminator": {"train": wrist_terminator},
-        "state_only_terminator": {
-            "train": state_terminator,
-            "hidden_dim": 32,
-            "num_layers": 2,
-            "balance_positive_negative": False,
-            "termination_only": False,
-        },
-        "state_rnn_terminator": {
-            "train": state_rnn_terminator,
-            "sequence_length": 8,
-            "full_skill_sequence": False,
-            "input_dim": 24,
-            "hidden_dim": 32,
-            "num_layers": 1,
-            "dropout": 0.0,
-            "balance_positive_negative": False,
-            "termination_only": False,
+        "fsq_terminator": {
+            "termination": terminator,
+            "context": "prev_action",
+            "default_arch": "fusion",
+            "vision_backbone": "resnet",
+            "freeze_vision_encoder": True,
         },
         "skill_predictor": {
             "train": predictor,
-            "lora": {"enabled": True},
+            "all_layers": True,
+            "lora": {
+                "enabled": True,
+                "targets": "q,k,v,o",
+                "rank": 8,
+                "alpha": 16.0,
+                "dropout": 0.0,
+            },
+            "reader": {
+                "tokens": 4,
+                "depth": 2,
+                "heads": 8,
+                "deadzone_frac": 0.8,
+            },
+            "token_access": {"image": True, "language": True},
         },
+        "termination_loss": {"target_sigma": 2.0, "positive_weight": 1.0},
         "training": {
             "dataloader": {"batch_size": 2, "workers": 0, "gpus": 1},
-            "schedule": {"steps": 10},
+            "optimizer": {
+                "base_lr": 2.5e-5,
+                "terminator_lr_scale": 1.0,
+                "predictor_lr_scale": 1.0,
+                "predictor_lora_lr_scale": 10.0,
+                "grad_clip_norm": 1.0,
+            },
+            "schedule": {
+                "steps": 10,
+                "lr_mode": "warmup_constant",
+                "warmup_steps": 1,
+                "lr_decay_steps": 5,
+                "log_every": 1,
+                "save_every": 5,
+            },
         },
-        "logging": {"wandb": {"project": "VLA_terminator"}},
+        "logging": {"wandb": {"enable": True, "project": "VLA_auxiliary"}},
     }
 
 
+def _write_auxiliary_checkpoint(
+    tmp_path: Path,
+    *,
+    name: str,
+    predictor: bool = True,
+    terminator: bool = True,
+    code_space_id: str = "FSQ345_test",
+    terminator_context: str = "prev_action",
+    terminator_arch: str = "fusion",
+    terminator_vision_backbone: str = "resnet",
+    terminator_freeze_vision_encoder: bool = True,
+    training_batch_size: int = 2,
+    dataset_source_lineage: list[str] | None = None,
+    run_suffix_lineage: list[str] | None = None,
+) -> str:
+    checkpoint = tmp_path / "checkpoints" / name
+    checkpoint.mkdir(parents=True)
+    source = {
+        "type": "skill_aux",
+        "train_skill_predictor": predictor,
+        "train_terminator": terminator,
+        "skill_fsq_levels": [3, 4, 5],
+        "skill_vocab_size": 60,
+        "skill_code_space_id": code_space_id,
+        "training_batch_size": training_batch_size,
+        "dataset_source_lineage": dataset_source_lineage or ["pt_source"],
+        "run_suffix_lineage": run_suffix_lineage or [],
+        "fsq_path": str(tmp_path / f"dataset/source/{code_space_id}/FSQ.pt"),
+        "terminator_context": terminator_context,
+        "terminator_arch": terminator_arch,
+        "terminator_vision_backbone": terminator_vision_backbone,
+        "terminator_freeze_vision_encoder": terminator_freeze_vision_encoder,
+        "terminator_termination_only": True,
+        "terminator_end_target_sigma": 1.5,
+        "terminator_end_pos_weight": 2.0,
+        "skill_predictor_vlm_variant": "gemma_2b",
+        "skill_predictor_image_size": 224,
+        "skill_predictor_reader_tokens": 4,
+        "skill_predictor_reader_depth": 2,
+        "skill_predictor_reader_heads": 8,
+        "skill_predictor_all_layers": True,
+        "skill_predictor_detach_vlm": False,
+        "skill_predictor_lora": True,
+        "skill_predictor_lora_targets": "q,k,v,o",
+        "skill_predictor_lora_rank": 8,
+        "skill_predictor_lora_alpha": 16.0,
+        "skill_predictor_lora_dropout": 0.0,
+        "skill_predictor_deadzone_frac": 0.8,
+        "skill_predictor_attend_image": True,
+        "skill_predictor_attend_language": True,
+        "tokenizer_path": str(tmp_path / "models/tokenizer"),
+        "tokenizer_max_length": 200,
+    }
+    (checkpoint / "config.json").write_text(json.dumps(source))
+    (checkpoint / "model.safetensors").touch()
+    return str(checkpoint.relative_to(tmp_path))
+
+
 @pytest.mark.parametrize(
-    ("terminator", "image_terminator", "wrist_terminator", "predictor", "mode"),
+    ("terminator", "predictor", "training_mode"),
     [
-        (True, False, False, False, "terminator"),
-        (False, True, False, False, "image_terminator"),
-        (False, False, True, False, "wrist_terminator"),
-        (False, False, False, True, "predictor"),
-        (True, True, False, False, "terminator_image_terminator"),
-        (True, False, True, False, "terminator_wrist_terminator"),
-        (True, False, False, True, "terminator_predictor"),
-        (False, True, True, False, "image_terminator_wrist_terminator"),
-        (False, True, False, True, "image_terminator_predictor"),
-        (False, False, True, True, "wrist_terminator_predictor"),
-        (
-            True,
-            True,
-            True,
-            False,
-            "terminator_image_terminator_wrist_terminator",
-        ),
-        (
-            True,
-            True,
-            False,
-            True,
-            "terminator_image_terminator_predictor",
-        ),
-        (
-            True,
-            False,
-            True,
-            True,
-            "terminator_wrist_terminator_predictor",
-        ),
-        (
-            False,
-            True,
-            True,
-            True,
-            "image_terminator_wrist_terminator_predictor",
-        ),
-        (
-            True,
-            True,
-            True,
-            True,
-            "terminator_image_terminator_wrist_terminator_predictor",
-        ),
+        (True, False, "terminator"),
+        (False, True, "predictor"),
+        (True, True, "predictor_terminator"),
     ],
 )
-def test_yaml_switch_combinations(
-    tmp_path, terminator, image_terminator, wrist_terminator, predictor, mode
-):
+def test_pt_target_combinations(tmp_path, terminator, predictor, training_mode):
+    settings = MODULE.build_settings(
+        _config(tmp_path, terminator=terminator, predictor=predictor)
+    )
+
+    assert settings["initialization_mode"] == "pt"
+    assert settings["training_mode"] == training_mode
+    assert settings["train_terminator"] is terminator
+    assert settings["train_skill_predictor"] is predictor
+    assert settings["wandb_project"] == "VLA_auxiliary"
+    assert settings["output_dir"].parent.name == "skillVLA_terminator"
+    assert settings["run_name"] == (
+        f"bs2_FSQ345_test_source_{training_mode}_test"
+    )
+
+
+def test_all_targets_false_is_rejected(tmp_path):
+    with pytest.raises(ValueError, match="Enable fsq_terminator"):
+        MODULE.build_settings(
+            _config(tmp_path, terminator=False, predictor=False)
+        )
+
+
+@pytest.mark.parametrize(
+    "legacy_key",
+    [
+        "terminator",
+        "image_only_terminator",
+        "wrist_only_terminator",
+        "state_only_terminator",
+        "state_rnn_terminator",
+    ],
+)
+def test_legacy_terminator_sections_are_rejected(tmp_path, legacy_key):
+    config = _config(tmp_path)
+    config[legacy_key] = {"train": True}
+    with pytest.raises(ValueError, match="Legacy terminator sections were removed"):
+        MODULE.build_settings(config)
+
+
+def test_fsq_terminator_contract_is_exported(tmp_path):
+    settings = MODULE.build_settings(_config(tmp_path))
+
+    assert settings["terminator_context"] == "prev_action"
+    assert settings["terminator_arch"] == "fusion"
+    assert settings["terminator_vision_backbone"] == "resnet"
+    assert settings["terminator_freeze_vision_encoder"] is True
+    assert settings["terminator_termination_only"] is True
+
+
+def test_pt_rejects_component_checkpoint(tmp_path):
+    checkpoint = _write_auxiliary_checkpoint(tmp_path, name="predictor_pt")
+    config = _config(tmp_path, predictor_checkpoint=checkpoint)
+
+    with pytest.raises(ValueError, match="mode=pt must leave"):
+        MODULE.build_settings(config)
+
+
+def test_fsq_override_is_rejected(tmp_path):
+    config = _config(tmp_path)
+    config["warm_start"]["fsq"] = "models/some_other_fsq.pt"
+
+    with pytest.raises(ValueError, match="FSQ checkpoint is always"):
+        MODULE.build_settings(config)
+
+
+def test_ft_requires_at_least_one_component_checkpoint(tmp_path):
+    with pytest.raises(ValueError, match="mode=ft requires"):
+        MODULE.build_settings(_config(tmp_path, mode="ft"))
+
+
+def test_ft_predictor_only_is_inferred_from_checkpoint_path(tmp_path):
+    checkpoint = _write_auxiliary_checkpoint(
+        tmp_path,
+        name="predictor_pt",
+        predictor=True,
+        terminator=False,
+        training_batch_size=8,
+        dataset_source_lineage=["libero_90_full_firsthalf_scene"],
+        run_suffix_lineage=["pttag"],
+    )
     settings = MODULE.build_settings(
         _config(
             tmp_path,
-            terminator=terminator,
-            image_terminator=image_terminator,
-            wrist_terminator=wrist_terminator,
-            predictor=predictor,
+            mode="ft",
+            predictor=False,
+            terminator=True,
+            predictor_checkpoint=checkpoint,
+            dataset_source="libero_10_full_1",
         )
     )
-    assert settings["training_mode"] == mode
-    assert settings["train_terminator"] is terminator
-    assert settings["train_image_only_terminator"] is image_terminator
-    assert settings["train_wrist_only_terminator"] is wrist_terminator
-    assert settings["train_skill_predictor"] is predictor
-    assert settings["wandb_project"] == "VLA_terminator"
-    assert settings["pt_output_dir"].parent.name == "skillVLA_terminator"
-    assert settings["pt_run_name"] == (
-        "bs2_source_FSQ345_test_test"
+
+    assert settings["initialization_mode"] == "ft"
+    assert settings["train_skill_predictor"] is True
+    assert settings["train_terminator"] is False
+    assert settings["predictor_checkpoint_path"] == tmp_path / checkpoint
+    assert settings["terminator_checkpoint_path"] == ""
+    assert settings["batch_size"] == 8
+    assert settings["training_batch_size"] == 8
+    assert settings["run_name"] == (
+        "bs8_FSQ345_test_libero_90_full_firsthalf_scene_"
+        "libero_10_full_1_predictor_pttag_test"
+    )
+    assert settings["run_suffix_lineage"] == '["pttag", "test"]'
+
+
+def test_ft_terminator_only_inherits_checkpoint_contract(tmp_path):
+    checkpoint = _write_auxiliary_checkpoint(
+        tmp_path,
+        name="terminator_pt",
+        predictor=False,
+        terminator=True,
+        terminator_context="proprio",
+        terminator_arch="small",
+        terminator_vision_backbone="dino",
+        terminator_freeze_vision_encoder=False,
+    )
+    settings = MODULE.build_settings(
+        _config(
+            tmp_path,
+            mode="ft",
+            predictor=True,
+            terminator=False,
+            terminator_checkpoint=checkpoint,
+        )
+    )
+
+    assert settings["train_skill_predictor"] is False
+    assert settings["train_terminator"] is True
+    assert settings["terminator_context"] == "proprio"
+    assert settings["terminator_arch"] == "small"
+    assert settings["terminator_vision_backbone"] == "dino"
+    assert settings["terminator_freeze_vision_encoder"] is False
+    assert settings["terminator_end_target_sigma"] == 1.5
+    assert settings["terminator_end_pos_weight"] == 2.0
+    assert settings["run_name"] == "bs2_FSQ345_test_pt_source_source_terminator_test"
+
+
+def test_ft_combines_different_predictor_and_terminator_checkpoints(tmp_path):
+    predictor_checkpoint = _write_auxiliary_checkpoint(
+        tmp_path,
+        name="predictor_pt",
+        predictor=True,
+        terminator=False,
+        dataset_source_lineage=["predictor_pt_source"],
+    )
+    terminator_checkpoint = _write_auxiliary_checkpoint(
+        tmp_path,
+        name="terminator_pt",
+        predictor=False,
+        terminator=True,
+        dataset_source_lineage=["terminator_pt_source"],
+    )
+    settings = MODULE.build_settings(
+        _config(
+            tmp_path,
+            mode="ft",
+            predictor_checkpoint=predictor_checkpoint,
+            terminator_checkpoint=terminator_checkpoint,
+        )
+    )
+
+    assert settings["train_skill_predictor"] is True
+    assert settings["train_terminator"] is True
+    assert settings["predictor_checkpoint_path"] == tmp_path / predictor_checkpoint
+    assert settings["terminator_checkpoint_path"] == tmp_path / terminator_checkpoint
+    assert settings["run_name"] == (
+        "bs2_FSQ345_test_predictor_pt_source_terminator_pt_source_"
+        "source_predictor_terminator_test"
     )
 
 
-def test_all_yaml_switches_false_is_rejected(tmp_path):
-    with pytest.raises(ValueError, match="all false"):
-        MODULE.build_settings(
-            _config(
-                tmp_path,
-                terminator=False,
-                image_terminator=False,
-                predictor=False,
-            )
-        )
+def test_ft_rejects_different_component_pt_batch_sizes(tmp_path):
+    predictor_checkpoint = _write_auxiliary_checkpoint(
+        tmp_path,
+        name="predictor_pt",
+        predictor=True,
+        terminator=False,
+        training_batch_size=8,
+    )
+    terminator_checkpoint = _write_auxiliary_checkpoint(
+        tmp_path,
+        name="terminator_pt",
+        predictor=False,
+        terminator=True,
+        training_batch_size=16,
+    )
+    config = _config(
+        tmp_path,
+        mode="ft",
+        predictor_checkpoint=predictor_checkpoint,
+        terminator_checkpoint=terminator_checkpoint,
+    )
+
+    with pytest.raises(ValueError, match="same PT batch size"):
+        MODULE.build_settings(config)
+
+
+def test_ft_rejects_checkpoint_without_requested_component(tmp_path):
+    checkpoint = _write_auxiliary_checkpoint(
+        tmp_path, name="terminator_pt", predictor=False, terminator=True
+    )
+    config = _config(
+        tmp_path, mode="ft", predictor_checkpoint=checkpoint
+    )
+
+    with pytest.raises(ValueError, match="no trained predictor"):
+        MODULE.build_settings(config)
+
+
+def test_ft_rejects_different_code_space(tmp_path):
+    checkpoint = _write_auxiliary_checkpoint(
+        tmp_path,
+        name="predictor_pt",
+        predictor=True,
+        terminator=False,
+        code_space_id="FSQ345_other",
+    )
+    config = _config(tmp_path, mode="ft", predictor_checkpoint=checkpoint)
+
+    with pytest.raises(ValueError, match="code-space mismatch"):
+        MODULE.build_settings(config)
+
+
+def test_ft_ignores_pt_only_model_sections(tmp_path):
+    checkpoint = _write_auxiliary_checkpoint(
+        tmp_path, name="predictor_pt", predictor=True, terminator=False
+    )
+    config = _config(tmp_path, mode="ft", predictor_checkpoint=checkpoint)
+    config["fsq_terminator"] = {"this_would_be_invalid_in_pt": True}
+    config["skill_predictor"] = {"train": False, "reader": {"tokens": -123}}
+
+    settings = MODULE.build_settings(config)
+
+    assert settings["training_mode"] == "predictor"
+    assert settings["skill_predictor_reader_tokens"] == 4
 
 
 @pytest.mark.parametrize(
-    ("state_terminator", "state_rnn_terminator", "mode"),
+    ("key", "value", "error"),
     [
-        (True, False, "state_terminator"),
-        (False, True, "state_rnn_terminator"),
-        (True, True, "state_terminator_state_rnn_terminator"),
+        ("context", "state", "context must be"),
+        ("default_arch", "gru", "default_arch must be"),
+        ("vision_backbone", "vit", "vision_backbone must be"),
     ],
 )
-def test_state_terminator_yaml_switches(
-    tmp_path,
-    state_terminator,
-    state_rnn_terminator,
-    mode,
-):
-    config = _config(
-        tmp_path,
-        terminator=False,
-        predictor=False,
-        state_terminator=state_terminator,
-        state_rnn_terminator=state_rnn_terminator,
-    )
+def test_invalid_terminator_contract_is_rejected(tmp_path, key, value, error):
+    config = _config(tmp_path)
+    config["fsq_terminator"][key] = value
 
-    settings = MODULE.build_settings(config)
-
-    assert settings["training_mode"] == mode
-    assert settings["train_state_only_terminator"] is state_terminator
-    assert settings["train_state_rnn_terminator"] is state_rnn_terminator
-    assert settings["state_only_terminator_hidden_dim"] == 32
-    assert settings["state_rnn_terminator_sequence_length"] == 8
-    assert settings["state_rnn_terminator_full_skill_sequence"] is False
-    assert settings["state_rnn_terminator_input_dim"] == 24
-    assert settings["state_rnn_terminator_hidden_dim"] == 32
-    assert settings["state_only_terminator_termination_only"] is False
-    assert settings["state_rnn_terminator_termination_only"] is False
-    assert settings["state_only_terminator_balance_positive_negative"] is False
-    assert settings["state_rnn_terminator_balance_positive_negative"] is False
-
-
-def test_state_terminators_do_not_require_fsq_checkpoint(tmp_path):
-    config = _config(
-        tmp_path,
-        terminator=False,
-        predictor=False,
-        state_terminator=True,
-        state_rnn_terminator=True,
-    )
-    fsq_path = (
-        tmp_path
-        / "dataset/skillvla_dataset/source/FSQ345_test/FSQ.pt"
-    )
-    fsq_path.unlink()
-
-    settings = MODULE.build_settings(config)
-
-    assert settings["train_state_only_terminator"] is True
-    assert settings["train_state_rnn_terminator"] is True
+    with pytest.raises(ValueError, match=error):
+        MODULE.build_settings(config)

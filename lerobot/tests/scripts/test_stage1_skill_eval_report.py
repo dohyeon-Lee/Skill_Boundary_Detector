@@ -166,8 +166,9 @@ def test_report_counts_one_occurrence_and_two_policy_evaluations(
     assert "Server autosave connected" in html
     assert "connectReviewServer();" in html
     assert "GT is excluded from human-review success rates." in html
-    assert "Token #${skill.token} skill success" in html
-    assert "successCards(successStats(skill.occurrences))" in html
+    assert "Linked GT skill set · ID / OOD success" in html
+    assert "function selectSkillCode(modelIndex,token)" in html
+    assert "function renderCodebooks()" in html
     assert "boundary-values" not in html
     assert "FIRED BEFORE MAIN" not in html
 
@@ -223,6 +224,60 @@ def test_each_token_has_its_own_success_rates() -> None:
     assert payload["model_skill_success"][0]["id"]["success_rate"] == 0.5
     assert skills[1]["model_skill_success"][0]["id"]["success_rate"] == 1.0
     assert skills[2]["model_skill_success"][0]["id"]["success_rate"] == 0.0
+
+
+def test_different_skill_spaces_link_by_occurrence_not_numeric_token() -> None:
+    manifest = {
+        "model_label": "2 policies",
+        "model_levels": [[3, 3, 3], [3, 3, 3]],
+        "signature": {
+            "policies": [
+                {"label": "zero", "fsq_levels": [3, 3, 3]},
+                {"label": "action", "fsq_levels": [3, 3, 3]},
+            ],
+            "target_task": "libero_90",
+            "selected_episodes": {"0": [4]},
+            "time_shift_offset": 15,
+        },
+        "records": {
+            "zero_a": {
+                "uid": "zero_a", "occurrence_uid": "occ_a", "model_index": 0,
+                "token": 2, "task_id": 0, "episode_id": 4, "frame_start": 0,
+                "branches": [],
+            },
+            "zero_b": {
+                "uid": "zero_b", "occurrence_uid": "occ_b", "model_index": 0,
+                "token": 2, "task_id": 0, "episode_id": 4, "frame_start": 10,
+                "branches": [],
+            },
+            "action_a": {
+                "uid": "action_a", "occurrence_uid": "occ_a", "model_index": 1,
+                "token": 7, "task_id": 0, "episode_id": 4, "frame_start": 0,
+                "branches": [],
+            },
+            "action_b": {
+                "uid": "action_b", "occurrence_uid": "occ_b", "model_index": 1,
+                "token": 8, "task_id": 0, "episode_id": 4, "frame_start": 10,
+                "branches": [],
+            },
+        },
+    }
+
+    payload = MODULE.report_payload(manifest)
+    spaces = payload["skill_spaces"]
+
+    assert spaces[0]["skills"] == [
+        {
+            "token": 2,
+            "coord": [2, 0, 0],
+            "member_ids": ["occ_a", "occ_b"],
+        }
+    ]
+    assert [(skill["token"], skill["member_ids"]) for skill in spaces[1]["skills"]] == [
+        (7, ["occ_a"]),
+        (8, ["occ_b"]),
+    ]
+    assert payload["skills"][0]["member_ids"] == ["occ_a", "occ_b"]
 
 
 def test_id_and_ood_are_ranked_independently_with_dense_ties() -> None:

@@ -1533,17 +1533,24 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 f"current={self.config.skill_fsq_levels!r}."
             )
 
-        terminator = self.model.fsq_term_train
-        if terminator is None:
-            # A termination-only source keeps its (untrained) progress head for
-            # shape compatibility, so build with the same contract rather than
-            # exposing a random progress output to progress-based advance modes.
-            terminator = build_trainable_fsq_terminator(
-                self.config.fsq_path,
-                termination_only=bool(
-                    source_config.get("terminator_termination_only", False)
-                ),
-            ).to(dtype=torch.float32)
+        # Rebuild from the source checkpoint's complete terminator contract.
+        # Reusing the target policy's attached module is incorrect when an
+        # external overlay changes context (proprio/prev_action), fusion
+        # architecture, or vision backbone (ResNet/DINO).
+        def optional_bool(key: str) -> bool | None:
+            value = source_config.get(key)
+            return None if value is None else bool(value)
+
+        terminator = build_trainable_fsq_terminator(
+            self.config.fsq_path,
+            termination_only=optional_bool("terminator_termination_only"),
+            context=source_config.get("terminator_context"),
+            default_arch=source_config.get("terminator_arch"),
+            vision_backbone=source_config.get("terminator_vision_backbone"),
+            freeze_vision_encoder=optional_bool(
+                "terminator_freeze_vision_encoder"
+            ),
+        ).to(dtype=torch.float32)
         loaded = _load_complete_terminator_parameters(terminator, path)
         device = next(self.model.parameters()).device
         terminator.to(device=device, dtype=torch.float32)

@@ -1,160 +1,62 @@
-# ./review.sh                                      # 가장 최근의 병합 완료된 결과 자동 선택
-# ./review.sh previous    # 특정 결과 지정
-# ./review.sh compare_5policies_20260807_215617 --port 9000   # 포트 변경 등 추가 옵션
-
-
-
-# Multi-policy, configurable-MAIN plus one display-terminator Stage-1 skill evaluation.
+# Episode-exact Stage-1 skill rollout:
+#   GT actions | exact | exact with different noise | early | late
 #
-# For every selected training episode, each FSQ skill occurrence is evaluated
-# independently from its exact simulator state. Each HTML entry plays one
-# synchronized horizontal comparison:
-#   GT | exact | exact with different noise | early | late
+# Every model uses its own FSQ code space and token assignment. The report
+# draws one linked codebook per model; clicking either side selects the same
+# underlying GT skill occurrences in every space. GT segmentation boundaries
+# must match, but numeric codes and FSQ checkpoints may differ.
 
 outputs_root: outputs_filtered
 
-# model_defaults:
-#   previous: false
-#   checkpoint: "050000"
-# models:
-#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch0
-#     label: state_cond_nonmask
-#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch0_skillendmask
-#     label: state_cond
-#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch0_1_skillendmask
-#     label: state_expert
-#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch0_2_sep_skillendmask
-#     label: state_both
-#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch0_3_skillendmask
-#     label: state_expert_wrist
-
-# model_defaults:
-#   previous: false
-#   checkpoint: "050000"
-# models:
-#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch3
-#     label: A
-#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch2_2
-#     label: B
-#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch2_1
-#     label: C
-#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch1_2
-#     label: D
-#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch4
-#     label: E
-
 model_defaults:
   previous: false
-  checkpoint: "100000"
+# Each model owns both its policy checkpoint and the terminator trained for
+# that model's FSQ space. There is deliberately no top-level default.
 models:
-  # - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_arch0_skillendmask
-  #   label: previous
-  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask
-    label: skill_broadcast
-  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_adarms_zero_skillendmask
-    label: skill_adaRMS
-  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_token_skillendmask
-    label: skill_token
-  # - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_token_iso_skillendmask
-  #   label: skill_token_iso
-output_name: "skill_conditioning"
+  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_norm_action01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask_visunfreeze
+    checkpoint: "070000"
+    label: action_unfrez_70k
+    terminator_model: {label: DINO_unfrez, model_dir: bs32_FSQ333_norm_action01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_libero_90_full_firsthalf_scene_terminator_DINO_unfrez, checkpoint: "100000", end_threshold: 0.5}
+  
+  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_norm_action01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask_visfreeze
+    checkpoint: "070000"
+    label: action_frez_70k
+    terminator_model: {label: DINO_unfrez, model_dir: bs32_FSQ333_norm_action01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_libero_90_full_firsthalf_scene_terminator_DINO_unfrez, checkpoint: "100000", end_threshold: 0.5}
 
-# model_defaults:
-#   previous: false
-#   checkpoint: "100000"
-# models:
-#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask
-#     label: skill_broadcast
-#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask_cumxyz0p5_pro
-#     label: skill_broadcast_cum
-# output_name: "cumulative_loss"
+  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_zero01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask_visunfreeze
+    checkpoint: "070000"
+    label: zero_unfrez_70k
+    terminator_model: {label: DINO_unfrez, model_dir: bs32_FSQ333_zero01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_libero_90_full_firsthalf_scene_terminator_DINO_unfrez, checkpoint: "100000", end_threshold: 0.5}
 
-# model_defaults:
-#   previous: false
-#   checkpoint: "100000"
-# models:
-#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask
-#     label: skill_broadcast
-#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask_visfrez
-#     label: skill_broadcast_DINOfreeze
-# output_name: "vision_freeze"
+  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_zero01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask_visfreeze
+    checkpoint: "070000"
+    label: zero_frez_70k
+    terminator_model: {label: DINO_unfrez, model_dir: bs32_FSQ333_zero01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_libero_90_full_firsthalf_scene_terminator_DINO_unfrez, checkpoint: "100000", end_threshold: 0.5}
+output_name: "action_zero_70k"
 
-# model_defaults:
-#   previous: false
-#   checkpoint: "100000"
-# models:
-#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask
-#     label: 100p_broadcast_expert
-#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_cond_skillendmask
-#     label: 100p_broadcast_cond
-# output_name: "skill_conditioning_pos_100K"
-
-# model_defaults:
-#   previous: false
-#   checkpoint: "100000"
-# models:
-#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask
-#     label: adamW
-#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask_muon
-#     label: muon
-# output_name: "optimizor_100K"
 
 main_terminator:
-  # Base budget per occurrence: ceil(GT action length L * scale). The early
-  # branch additionally receives time_shift_offset steps.
   max_skill_length_scale: 1.50
   finish_action_chunk_on_end: false
-
-terminator_model:
-  label: image_only
-  variant: image_only      # state_image | image_only
-  group: skillVLA_terminator
-  model_dir: bs256_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_terminator
-  checkpoint: "020000"
-  end_mode: termination      # termination | progress | or | and
-  end_threshold: 0.5
-  progress_threshold: 0.95
 
 resume: false
 
 target_task: libero_90
-task_ids: [3,4,5]
+task_ids: [3, 4, 5]
 
-# Episode-exact is mandatory for this evaluator and cannot fall back to a
-# language-matched or standard LIBERO init state.
+# Exact simulator states are mandatory; no approximate LIBERO init-state
+# fallback is used.
 episode_exact: true
 episodes_per_task: 5
 episode_selection: first     # first | random
 episode_ids: []              # optional exact global dataset episode ids
 seed: 42
 
-# Policy branches start at frame_start-offset, frame_start, frame_start+offset.
 time_shift_offset: 15
 n_action_steps: 5
+eval_num_gpus: 10
 
-# Selected skill occurrences are distributed over this many one-GPU Slurm
-# array workers. The resolver caps it to policy count x selected episode count.
-eval_num_gpus: 50
+video: {frame_stride: 2, fps: 10}
 
-video:
-  frame_stride: 2
-  fps: 10
-
-# Explicit for auditability. The resolver checks that every scene/demo named by
-# eval_init_states.npz exists here.
 original_dataset_dir: libero_original_dataset/libero_90
-
 slurm: {gres: "gpu:1", cpus: 8, memory: 64G, time: "00:30:00"}
-
-
-# This trained terminator is display-only unless main_terminator selects it too.
-# A direct `path:` is also accepted instead of group/model_dir/checkpoint.
-# terminator_model:
-#   label: image_only
-#   variant: image_only      # state_image | image_only
-#   group: skillVLA_terminator
-#   model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_fast_500_std_pt_episodemean_80p_snap10_pmax15_halfnormal_terminator_3
-#   checkpoint: "030000"
-#   end_mode: termination      # termination | progress | or | and
-#   end_threshold: 0.5
-#   progress_threshold: 0.95

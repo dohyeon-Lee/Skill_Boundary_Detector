@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Resolve the auxiliary-only terminator/predictor YAML into shell exports."""
+"""Resolve the unified PT/FT predictor + FSQ terminator config."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ _HERE = Path(__file__).resolve()
 sys.path.insert(0, str(_HERE.parent.parent.parent.parent / "train_skills" / "src"))
 from train_skills_config import as_bool, as_list, load_config, print_shell, resolve_path  # noqa: E402
 
-DEFAULT_CONFIG_PATH = _HERE.parent.parent / "terminator_train_config.yaml"
+DEFAULT_CONFIG_PATH = _HERE.parent.parent / "auxiliary_train_config.yaml"
 
 
 def _at(config: dict, *path: str, default=None):
@@ -100,33 +100,188 @@ def _predictor_contract(config: dict) -> dict:
     }
 
 
-def _validate_predictor_checkpoint(
-    checkpoint: Path, levels: list[int], contract: dict
-) -> None:
+def _terminator_contract(config: dict) -> dict:
+    raw = config.get("fsq_terminator", {})
+    if not isinstance(raw, dict):
+        raise ValueError("fsq_terminator must be an inline mapping.")
+    allowed = {
+        "termination",
+        "context",
+        "default_arch",
+        "vision_backbone",
+        "freeze_vision_encoder",
+    }
+    unknown = sorted(set(raw) - allowed)
+    if unknown:
+        raise ValueError(f"Unsupported fsq_terminator keys: {unknown}")
+    contract = {
+        "train_terminator": as_bool(raw.get("termination", False)),
+        "terminator_context": str(raw.get("context", "prev_action")).strip().lower(),
+        "terminator_arch": str(raw.get("default_arch", "fusion")).strip().lower(),
+        "terminator_vision_backbone": str(
+            raw.get("vision_backbone", "resnet")
+        ).strip().lower(),
+        "terminator_freeze_vision_encoder": as_bool(
+            raw.get("freeze_vision_encoder", True)
+        ),
+        # The simplified FSQ contract trains termination only; progress is gone.
+        "terminator_termination_only": True,
+    }
+    if contract["terminator_context"] not in {"prev_action", "proprio"}:
+        raise ValueError("fsq_terminator.context must be prev_action or proprio.")
+    if contract["terminator_arch"] not in {"small", "fusion"}:
+        raise ValueError("fsq_terminator.default_arch must be small or fusion.")
+    if contract["terminator_vision_backbone"] not in {"dino", "siglip", "resnet"}:
+        raise ValueError(
+            "fsq_terminator.vision_backbone must be dino, siglip, or resnet."
+        )
+    return contract
+
+
+def _load_auxiliary_checkpoint(checkpoint: Path, component: str) -> dict:
     config_path = checkpoint / "config.json"
     weights_path = checkpoint / "model.safetensors"
     if not config_path.is_file() or not weights_path.is_file():
-        raise FileNotFoundError(f"Incomplete predictor checkpoint: {checkpoint}")
+        raise FileNotFoundError(f"Incomplete auxiliary checkpoint: {checkpoint}")
     source = json.loads(config_path.read_text())
-    if source.get("type") not in {"skill_expert", "skill_aux"}:
-        raise ValueError(f"Unsupported predictor checkpoint type {source.get('type')!r}.")
-    if not source.get("train_skill_predictor", False):
-        raise ValueError(f"Checkpoint has no trained skill predictor: {checkpoint}")
+    if source.get("type") != "skill_aux":
+        raise ValueError(
+            f"FT {component}_checkpoint must be a skill_aux PT checkpoint, "
+            f"got {source.get('type')!r}."
+        )
+    flag = {
+        "predictor": "train_skill_predictor",
+        "terminator": "train_terminator",
+    }[component]
+    if not source.get(flag, False):
+        raise ValueError(f"FT {component} checkpoint has no trained {component}.")
+    return source
+
+
+def _checkpoint_code_space_id(source: dict, checkpoint: Path) -> str:
+    explicit = str(source.get("skill_code_space_id", "") or "").strip()
+    if explicit:
+        return explicit
+    fsq_path = str(source.get("fsq_path", "") or "").strip()
+    if fsq_path:
+        # Backward-compatible identity for checkpoints saved before the explicit
+        # field existed. SkillVLA datasets use the FSQ run name as their run dir.
+        return Path(fsq_path).parent.name
+    raise ValueError(
+        f"FT checkpoint does not identify its FSQ code space: {checkpoint}"
+    )
+
+
+def _checkpoint_training_lineage(
+    source: dict, checkpoint: Path
+) -> tuple[int, list[str], list[str]]:
+    batch_size = int(source.get("training_batch_size", 0) or 0)
+    raw_lineage = source.get("dataset_source_lineage", [])
+    lineage = (
+        [str(value).strip() for value in raw_lineage if str(value).strip()]
+        if isinstance(raw_lineage, list)
+        else []
+    )
+    raw_suffixes = source.get("run_suffix_lineage", [])
+    suffixes = (
+        [str(value).strip() for value in raw_suffixes if str(value).strip()]
+        if isinstance(raw_suffixes, list)
+        else []
+    )
+    if batch_size <= 0 or not lineage:
+        raise ValueError(
+            "FT checkpoint is missing training_batch_size or "
+            f"dataset_source_lineage: {checkpoint}. Recreate it with the unified PT trainer."
+        )
+    return batch_size, lineage, suffixes
+
+
+def _merge_lineages(*lineages: list[str]) -> list[str]:
+    merged = []
+    for lineage in lineages:
+        for source in lineage:
+            if source not in merged:
+                merged.append(source)
+    return merged
+
+
+def _validate_checkpoint_code_space(
+    source: dict,
+    checkpoint: Path,
+    *,
+    levels: list[int],
+    code_space_id: str,
+) -> None:
     expected = {
         "skill_fsq_levels": levels,
         "skill_vocab_size": math.prod(levels),
-        **contract,
     }
     mismatches = [
-        f"{key}: checkpoint={source.get(key)!r}, requested={value!r}"
+        f"{key}: checkpoint={source.get(key)!r}, dataset={value!r}"
         for key, value in expected.items()
         if source.get(key) != value
     ]
+    source_id = _checkpoint_code_space_id(source, checkpoint)
+    if source_id != code_space_id:
+        mismatches.append(
+            f"skill_code_space_id: checkpoint={source_id!r}, dataset={code_space_id!r}"
+        )
     if mismatches:
-        raise ValueError("Predictor checkpoint contract mismatch: " + "; ".join(mismatches))
+        raise ValueError(
+            "Auxiliary checkpoint code-space mismatch: " + "; ".join(mismatches)
+        )
+
+
+def _checkpoint_predictor_contract(source: dict, checkpoint: Path) -> dict:
+    contract = _predictor_contract({})
+    missing = [key for key in contract if key not in source]
+    if missing:
+        raise ValueError(
+            f"FT predictor checkpoint is missing contract fields {missing}: {checkpoint}"
+        )
+    return {key: source[key] for key in contract}
+
+
+def _checkpoint_terminator_contract(source: dict, checkpoint: Path) -> dict:
+    source_fields = {
+        "terminator_context": "terminator_context",
+        "terminator_arch": "terminator_arch",
+        "terminator_vision_backbone": "terminator_vision_backbone",
+        "terminator_freeze_vision_encoder": "terminator_freeze_vision_encoder",
+        "terminator_termination_only": "terminator_termination_only",
+    }
+    missing = [source_key for source_key in source_fields.values() if source_key not in source]
+    if missing:
+        raise ValueError(
+            f"FT terminator checkpoint is missing contract fields {missing}: {checkpoint}"
+        )
+    return {
+        "train_terminator": True,
+        **{
+            target_key: source[source_key]
+            for target_key, source_key in source_fields.items()
+        },
+    }
 
 
 def build_settings(config: dict) -> dict:
+    removed = {
+        "terminator",
+        "image_only_terminator",
+        "wrist_only_terminator",
+        "state_only_terminator",
+        "state_rnn_terminator",
+    } & set(config)
+    if removed:
+        raise ValueError(
+            "Legacy terminator sections were removed; use fsq_terminator only: "
+            f"{sorted(removed)}"
+        )
+
+    initialization_mode = str(config.get("mode", "pt")).strip().lower()
+    if initialization_mode not in {"pt", "ft"}:
+        raise ValueError("mode must be pt or ft.")
+
     project_root = Path(str(config["project_root"])).expanduser()
     dataset_root = project_root / str(config.get("dataset_root", "dataset"))
     outputs_root = project_root / str(config.get("outputs_root", "outputs"))
@@ -140,50 +295,6 @@ def build_settings(config: dict) -> dict:
         / "skillvla"
     )
     dataset = _dataset_contract(dataset_dir, run_tag)
-
-    train_terminator = as_bool(_at(config, "terminator", "train", default=False))
-    train_image_terminator = as_bool(
-        _at(config, "image_only_terminator", "train", default=False)
-    )
-    train_wrist_terminator = as_bool(
-        _at(config, "wrist_only_terminator", "train", default=False)
-    )
-    train_state_terminator = as_bool(
-        _at(config, "state_only_terminator", "train", default=False)
-    )
-    train_state_rnn_terminator = as_bool(
-        _at(config, "state_rnn_terminator", "train", default=False)
-    )
-    train_predictor = as_bool(_at(config, "skill_predictor", "train", default=False))
-    if not (
-        train_terminator
-        or train_image_terminator
-        or train_wrist_terminator
-        or train_state_terminator
-        or train_state_rnn_terminator
-        or train_predictor
-    ):
-        raise ValueError(
-            "Set terminator.train, image_only_terminator.train, "
-            "wrist_only_terminator.train, state_only_terminator.train, "
-            "state_rnn_terminator.train, and/or skill_predictor.train to true; "
-            "all false is empty."
-        )
-    enabled = []
-    if train_terminator:
-        enabled.append("terminator")
-    if train_image_terminator:
-        enabled.append("image_terminator")
-    if train_wrist_terminator:
-        enabled.append("wrist_terminator")
-    if train_state_terminator:
-        enabled.append("state_terminator")
-    if train_state_rnn_terminator:
-        enabled.append("state_rnn_terminator")
-    if train_predictor:
-        enabled.append("predictor")
-    mode = "_".join(enabled)
-
     pi_base = _local_path(
         project_root, str(_at(config, "warm_start", "pi_base", default="models/pi05_base"))
     )
@@ -199,35 +310,182 @@ def build_settings(config: dict) -> dict:
         ),
     )
     fsq_value = str(_at(config, "warm_start", "fsq", default="") or "").strip()
-    fsq_path = _local_path(project_root, fsq_value) if fsq_value else dataset_dir.parent / "FSQ.pt"
+    if fsq_value:
+        raise ValueError(
+            "warm_start.fsq override was removed; the FSQ checkpoint is always "
+            "the FSQ.pt beside dataset.source/run."
+        )
+    fsq_path = dataset_dir.parent / "FSQ.pt"
+    legacy_auxiliary = str(
+        _at(config, "warm_start", "auxiliary_checkpoint", default="") or ""
+    ).strip()
+    if legacy_auxiliary:
+        raise ValueError(
+            "warm_start.auxiliary_checkpoint was split into predictor_checkpoint "
+            "and terminator_checkpoint."
+        )
     predictor_value = str(
         _at(config, "warm_start", "predictor_checkpoint", default="") or ""
     ).strip()
-    predictor_checkpoint = _local_path(project_root, predictor_value) if predictor_value else None
-    predictor_contract = _predictor_contract(config)
+    terminator_value = str(
+        _at(config, "warm_start", "terminator_checkpoint", default="") or ""
+    ).strip()
+    predictor_checkpoint = (
+        _local_path(project_root, predictor_value) if predictor_value else None
+    )
+    terminator_checkpoint = (
+        _local_path(project_root, terminator_value) if terminator_value else None
+    )
+    requested_batch_size = int(
+        _at(config, "training", "dataloader", "batch_size", default=16)
+    )
+    requested_suffix = str(
+        _at(config, "run", "suffix", default="") or ""
+    ).strip().strip("_")
+    if requested_suffix and re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9._-]*", requested_suffix
+    ) is None:
+        raise ValueError("run.suffix contains unsupported characters.")
 
-    if (
-        train_terminator
-        or train_image_terminator
-        or train_wrist_terminator
-    ) and not fsq_path.is_file():
-        raise FileNotFoundError(f"FSQ terminator checkpoint not found: {fsq_path}")
-    if train_predictor:
-        if not (pi_base / "model.safetensors").is_file():
+    if initialization_mode == "pt":
+        if predictor_checkpoint is not None or terminator_checkpoint is not None:
+            raise ValueError(
+                "mode=pt must leave warm_start predictor/terminator checkpoints empty."
+            )
+        predictor_contract = _predictor_contract(config)
+        terminator_contract = _terminator_contract(config)
+        train_predictor = as_bool(
+            _at(config, "skill_predictor", "train", default=False)
+        )
+        train_terminator = terminator_contract["train_terminator"]
+        batch_size = requested_batch_size
+        dataset_source_lineage = [source]
+        run_suffix_lineage = [requested_suffix] if requested_suffix else []
+        if not (train_predictor or train_terminator):
+            raise ValueError(
+                "Enable fsq_terminator.termination and/or skill_predictor.train."
+            )
+        if train_terminator and not fsq_path.is_file():
+            raise FileNotFoundError(f"FSQ checkpoint not found: {fsq_path}")
+        if train_predictor and not (pi_base / "model.safetensors").is_file():
             raise FileNotFoundError(f"pi0.5 predictor base not found: {pi_base}")
+        termination_sigma = float(
+            _at(config, "termination_loss", "target_sigma", default=2.0)
+        )
+        termination_positive_weight = float(
+            _at(config, "termination_loss", "positive_weight", default=1.0)
+        )
+    else:
+        # FT targets are inferred exclusively from the component checkpoint
+        # paths. The PT-only model sections in this YAML are intentionally ignored.
+        train_predictor = predictor_checkpoint is not None
+        train_terminator = terminator_checkpoint is not None
+        if not (train_predictor or train_terminator):
+            raise ValueError(
+                "mode=ft requires warm_start.predictor_checkpoint and/or "
+                "warm_start.terminator_checkpoint."
+            )
+        predictor_contract = _predictor_contract({})
+        terminator_contract = _terminator_contract({})
+        predictor_source = None
+        terminator_source = None
+        checkpoint_batches = []
+        checkpoint_lineages = []
+        checkpoint_suffixes = []
+        if predictor_checkpoint is not None:
+            predictor_source = _load_auxiliary_checkpoint(
+                predictor_checkpoint, "predictor"
+            )
+            _validate_checkpoint_code_space(
+                predictor_source,
+                predictor_checkpoint,
+                levels=dataset["levels"],
+                code_space_id=run_tag,
+            )
+            predictor_contract = _checkpoint_predictor_contract(
+                predictor_source, predictor_checkpoint
+            )
+            (
+                predictor_batch,
+                predictor_lineage,
+                predictor_suffixes,
+            ) = _checkpoint_training_lineage(predictor_source, predictor_checkpoint)
+            checkpoint_batches.append(predictor_batch)
+            checkpoint_lineages.append(predictor_lineage)
+            checkpoint_suffixes.append(predictor_suffixes)
+            tokenizer_value = str(
+                predictor_source.get("tokenizer_path", "") or ""
+            ).strip()
+            if not tokenizer_value:
+                raise ValueError(
+                    f"FT predictor checkpoint has no tokenizer_path: {predictor_checkpoint}"
+                )
+            tokenizer = _local_path(project_root, tokenizer_value)
+        if terminator_checkpoint is not None:
+            terminator_source = _load_auxiliary_checkpoint(
+                terminator_checkpoint, "terminator"
+            )
+            _validate_checkpoint_code_space(
+                terminator_source,
+                terminator_checkpoint,
+                levels=dataset["levels"],
+                code_space_id=run_tag,
+            )
+            terminator_contract = _checkpoint_terminator_contract(
+                terminator_source, terminator_checkpoint
+            )
+            (
+                terminator_batch,
+                terminator_lineage,
+                terminator_suffixes,
+            ) = _checkpoint_training_lineage(terminator_source, terminator_checkpoint)
+            checkpoint_batches.append(terminator_batch)
+            checkpoint_lineages.append(terminator_lineage)
+            checkpoint_suffixes.append(terminator_suffixes)
+        if predictor_source is not None and terminator_source is not None:
+            predictor_space = _checkpoint_code_space_id(
+                predictor_source, predictor_checkpoint
+            )
+            terminator_space = _checkpoint_code_space_id(
+                terminator_source, terminator_checkpoint
+            )
+            if predictor_space != terminator_space:
+                raise ValueError(
+                    "FT predictor and terminator checkpoints use different FSQ "
+                    f"code spaces: {predictor_space!r} != {terminator_space!r}."
+                )
+        if len(set(checkpoint_batches)) != 1:
+            raise ValueError(
+                "FT predictor and terminator checkpoints must have the same PT "
+                f"batch size, got {checkpoint_batches}."
+            )
+        batch_size = checkpoint_batches[0]
+        dataset_source_lineage = _merge_lineages(*checkpoint_lineages)
+        # Unlike component-source merging, the current FT dataset is always
+        # appended so repeated fine-tuning remains visible in the lineage.
+        dataset_source_lineage.append(source)
+        run_suffix_lineage = _merge_lineages(*checkpoint_suffixes)
+        if requested_suffix and requested_suffix not in run_suffix_lineage:
+            run_suffix_lineage.append(requested_suffix)
+        if train_terminator and not fsq_path.is_file():
+            raise FileNotFoundError(f"FSQ checkpoint not found: {fsq_path}")
+        termination_sigma = float(
+            terminator_source.get("terminator_end_target_sigma", 2.0)
+            if terminator_source is not None
+            else 2.0
+        )
+        termination_positive_weight = float(
+            terminator_source.get("terminator_end_pos_weight", 1.0)
+            if terminator_source is not None
+            else 1.0
+        )
+
+    if train_predictor:
         required_tokenizer = ("config.json", "tokenizer_config.json", "tokenizer.json")
         missing = [name for name in required_tokenizer if not (tokenizer / name).is_file()]
         if missing:
             raise FileNotFoundError(f"Tokenizer is incomplete at {tokenizer}: missing={missing}")
-        if predictor_checkpoint is not None:
-            _validate_predictor_checkpoint(
-                predictor_checkpoint, dataset["levels"], predictor_contract
-            )
 
-    suffix = str(_at(config, "run", "suffix", default="") or "").strip().strip("_")
-    if suffix and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", suffix) is None:
-        raise ValueError("run.suffix contains unsupported characters.")
-    batch_size = int(_at(config, "training", "dataloader", "batch_size", default=32))
     num_gpus = int(_at(config, "training", "dataloader", "gpus", default=1))
     steps = int(_at(config, "training", "schedule", "steps", default=100000))
     warmup_steps = int(
@@ -246,169 +504,55 @@ def build_settings(config: dict) -> dict:
     if warmup_steps < 0 or decay_steps <= 0:
         raise ValueError("Invalid scheduler step counts.")
 
-    run_name = f"bs{batch_size}_{source}_{run_tag}"
-    if suffix:
-        run_name += f"_{suffix}"
+    target_names = []
+    if train_predictor:
+        target_names.append("predictor")
+    if train_terminator:
+        target_names.append("terminator")
+    target_mode = "_".join(target_names)
+    lineage_name = "_".join(dataset_source_lineage)
+    run_name = f"bs{batch_size}_{run_tag}_{lineage_name}_{target_mode}"
+    if run_suffix_lineage:
+        run_name += "_" + "_".join(run_suffix_lineage)
+
     base_lr = float(_at(config, "training", "optimizer", "base_lr", default=2.5e-5))
     settings = {
         "project_root": project_root,
         "lerobot_root": project_root / "lerobot",
         "skillvla_dataset_dir": dataset_dir,
         "repo_id": f"dohyeon/{source}",
+        "initialization_mode": initialization_mode,
+        "training_mode": target_mode,
         "pi_base": pi_base,
         "tokenizer_path": tokenizer,
         "fsq_path": fsq_path,
         "predictor_checkpoint_path": predictor_checkpoint or "",
+        "terminator_checkpoint_path": terminator_checkpoint or "",
+        # Retained empty for old saved SkillAux configs; new jobs use the two
+        # component-specific paths above.
+        "auxiliary_checkpoint_path": "",
         "train_terminator": train_terminator,
-        "train_image_only_terminator": train_image_terminator,
-        "train_wrist_only_terminator": train_wrist_terminator,
-        "train_state_only_terminator": train_state_terminator,
-        "train_state_rnn_terminator": train_state_rnn_terminator,
         "train_skill_predictor": train_predictor,
-        "training_mode": mode,
+        "skill_code_space_id": run_tag,
+        "training_batch_size": batch_size,
+        "dataset_source_lineage": json.dumps(dataset_source_lineage),
+        "run_suffix_lineage": json.dumps(run_suffix_lineage),
         "skill_fsq_levels": "[" + ",".join(str(level) for level in dataset["levels"]) + "]",
         "skill_vocab_size": math.prod(dataset["levels"]),
         "max_state_dim": dataset["state_dim"],
         "max_action_dim": dataset["action_dim"],
-        "terminator_freeze_vision_encoder": as_bool(
-            _at(config, "terminator", "freeze_vision", default=True)
-        ),
-        "terminator_end_target_sigma": float(
-            _at(config, "terminator", "end_target_sigma", default=2.0)
-        ),
-        "terminator_end_pos_weight": float(
-            _at(config, "terminator", "end_pos_weight", default=1.0)
-        ),
-        "terminator_termination_only": as_bool(
-            _at(config, "terminator", "termination_only", default=False)
-        ),
-        "image_only_terminator_freeze_vision_encoder": as_bool(
-            _at(config, "image_only_terminator", "freeze_vision", default=True)
-        ),
-        "image_only_terminator_end_target_sigma": float(
-            _at(config, "image_only_terminator", "end_target_sigma", default=2.0)
-        ),
-        "image_only_terminator_end_pos_weight": float(
-            _at(config, "image_only_terminator", "end_pos_weight", default=1.0)
-        ),
-        "image_only_terminator_termination_only": as_bool(
-            _at(config, "image_only_terminator", "termination_only", default=False)
-        ),
-        "wrist_only_terminator_freeze_vision_encoder": as_bool(
-            _at(config, "wrist_only_terminator", "freeze_vision", default=True)
-        ),
-        "wrist_only_terminator_end_target_sigma": float(
-            _at(config, "wrist_only_terminator", "end_target_sigma", default=2.0)
-        ),
-        "wrist_only_terminator_end_pos_weight": float(
-            _at(config, "wrist_only_terminator", "end_pos_weight", default=1.0)
-        ),
-        "wrist_only_terminator_termination_only": as_bool(
-            _at(config, "wrist_only_terminator", "termination_only", default=False)
-        ),
-        "state_only_terminator_hidden_dim": int(
-            _at(config, "state_only_terminator", "hidden_dim", default=64)
-        ),
-        "state_only_terminator_num_layers": int(
-            _at(config, "state_only_terminator", "num_layers", default=2)
-        ),
-        "state_only_terminator_end_target_sigma": float(
-            _at(config, "state_only_terminator", "end_target_sigma", default=2.0)
-        ),
-        "state_only_terminator_end_pos_weight": float(
-            _at(config, "state_only_terminator", "end_pos_weight", default=1.0)
-        ),
-        "state_only_terminator_balance_positive_negative": as_bool(
-            _at(
-                config,
-                "state_only_terminator",
-                "balance_positive_negative",
-                default=True,
-            )
-        ),
-        "state_only_terminator_termination_only": as_bool(
-            _at(config, "state_only_terminator", "termination_only", default=True)
-        ),
-        "state_rnn_terminator_sequence_length": int(
-            _at(config, "state_rnn_terminator", "sequence_length", default=16)
-        ),
-        "state_rnn_terminator_full_skill_sequence": as_bool(
-            _at(config, "state_rnn_terminator", "full_skill_sequence", default=True)
-        ),
-        "state_rnn_terminator_input_dim": int(
-            _at(config, "state_rnn_terminator", "input_dim", default=64)
-        ),
-        "state_rnn_terminator_hidden_dim": int(
-            _at(config, "state_rnn_terminator", "hidden_dim", default=64)
-        ),
-        "state_rnn_terminator_num_layers": int(
-            _at(config, "state_rnn_terminator", "num_layers", default=1)
-        ),
-        "state_rnn_terminator_dropout": float(
-            _at(config, "state_rnn_terminator", "dropout", default=0.0)
-        ),
-        "state_rnn_terminator_end_target_sigma": float(
-            _at(config, "state_rnn_terminator", "end_target_sigma", default=2.0)
-        ),
-        "state_rnn_terminator_end_pos_weight": float(
-            _at(config, "state_rnn_terminator", "end_pos_weight", default=1.0)
-        ),
-        "state_rnn_terminator_balance_positive_negative": as_bool(
-            _at(
-                config,
-                "state_rnn_terminator",
-                "balance_positive_negative",
-                default=True,
-            )
-        ),
-        "state_rnn_terminator_termination_only": as_bool(
-            _at(config, "state_rnn_terminator", "termination_only", default=True)
-        ),
+        **terminator_contract,
+        "terminator_end_target_sigma": termination_sigma,
+        "terminator_end_pos_weight": termination_positive_weight,
         **predictor_contract,
+        "terminator_lr_scale": float(
+            _at(config, "training", "optimizer", "terminator_lr_scale", default=1.0)
+        ),
         "skill_predictor_lr_scale": float(
             _at(config, "training", "optimizer", "predictor_lr_scale", default=1.0)
         ),
         "skill_predictor_lora_lr_scale": float(
             _at(config, "training", "optimizer", "predictor_lora_lr_scale", default=10.0)
-        ),
-        "terminator_lr_scale": float(
-            _at(config, "training", "optimizer", "terminator_lr_scale", default=1.0)
-        ),
-        "image_only_terminator_lr_scale": float(
-            _at(
-                config,
-                "training",
-                "optimizer",
-                "image_only_terminator_lr_scale",
-                default=1.0,
-            )
-        ),
-        "wrist_only_terminator_lr_scale": float(
-            _at(
-                config,
-                "training",
-                "optimizer",
-                "wrist_only_terminator_lr_scale",
-                default=1.0,
-            )
-        ),
-        "state_only_terminator_lr_scale": float(
-            _at(
-                config,
-                "training",
-                "optimizer",
-                "state_only_terminator_lr_scale",
-                default=1.0,
-            )
-        ),
-        "state_rnn_terminator_lr_scale": float(
-            _at(
-                config,
-                "training",
-                "optimizer",
-                "state_rnn_terminator_lr_scale",
-                default=1.0,
-            )
         ),
         "optimizer_grad_clip_norm": float(
             _at(config, "training", "optimizer", "grad_clip_norm", default=1.0)
@@ -426,11 +570,11 @@ def build_settings(config: dict) -> dict:
         "scheduler_decay_steps": decay_steps,
         "log_freq": int(_at(config, "training", "schedule", "log_every", default=100)),
         "save_freq": int(_at(config, "training", "schedule", "save_every", default=5000)),
-        "pt_run_name": run_name,
-        "pt_output_dir": outputs_root / "skillVLA_terminator" / run_name,
+        "run_name": run_name,
+        "output_dir": outputs_root / "skillVLA_terminator" / run_name,
         "wandb_enable": as_bool(_at(config, "logging", "wandb", "enable", default=True)),
         "wandb_project": str(
-            _at(config, "logging", "wandb", "project", default="VLA_terminator")
+            _at(config, "logging", "wandb", "project", default="VLA_auxiliary")
         ),
         "train_partition": ",".join(as_list(config.get("train_partition", ["big"]))) or "big",
         "train_qos": str(config.get("train_qos", "big_qos")),
@@ -441,29 +585,17 @@ def build_settings(config: dict) -> dict:
         "train_nodelist": str(config.get("train_nodelist", "")),
         "train_exclude_nodes": ",".join(as_list(config.get("train_exclude_nodes", []))),
     }
-    positive_state_settings = (
-        "state_only_terminator_hidden_dim",
-        "state_only_terminator_num_layers",
-        "state_rnn_terminator_sequence_length",
-        "state_rnn_terminator_input_dim",
-        "state_rnn_terminator_hidden_dim",
-        "state_rnn_terminator_num_layers",
-        "state_only_terminator_lr_scale",
-        "state_rnn_terminator_lr_scale",
-        "state_only_terminator_end_pos_weight",
-        "state_rnn_terminator_end_pos_weight",
+    positive = (
+        "terminator_lr_scale",
+        "skill_predictor_lr_scale",
+        "skill_predictor_lora_lr_scale",
+        "terminator_end_pos_weight",
     )
-    invalid = [key for key in positive_state_settings if settings[key] <= 0]
+    invalid = [key for key in positive if settings[key] <= 0]
     if invalid:
-        raise ValueError(f"State terminator settings must be positive: {invalid}.")
-    for key in (
-        "state_only_terminator_end_target_sigma",
-        "state_rnn_terminator_end_target_sigma",
-    ):
-        if settings[key] < 0:
-            raise ValueError(f"{key} must be non-negative.")
-    if not 0.0 <= settings["state_rnn_terminator_dropout"] < 1.0:
-        raise ValueError("state_rnn_terminator.dropout must be in [0, 1).")
+        raise ValueError(f"Auxiliary settings must be positive: {invalid}.")
+    if settings["terminator_end_target_sigma"] < 0:
+        raise ValueError("termination_loss.target_sigma must be non-negative.")
     return settings
 
 

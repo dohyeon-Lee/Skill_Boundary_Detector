@@ -74,7 +74,7 @@ def _safe_label(value: object, *, index: int) -> str:
 
 
 def _model_entries(config: dict) -> list[dict]:
-    """The (label, run, checkpoint) triples to probe, in listed order.
+    """The (label, source, run, checkpoint) rows to probe, in listed order.
 
     Checkpoints are named explicitly rather than swept: each entry is a
     terminator the user picked, mirroring terminator_eval's terminator_models.
@@ -90,6 +90,17 @@ def _model_entries(config: dict) -> list[dict]:
             raise ValueError(
                 "terminator_models entries must be mappings with run_name and checkpoint."
             )
+        unknown = sorted(set(item) - {"label", "source", "run_name", "checkpoint"})
+        if unknown:
+            raise ValueError(
+                f"terminator_models[{index}] has unsupported fields {unknown}."
+            )
+        source = str(item.get("source", "fsq")).strip().lower()
+        source = {"aux": "auxiliary", "skill_aux": "auxiliary"}.get(source, source)
+        if source not in {"fsq", "auxiliary"}:
+            raise ValueError(
+                f"terminator_models[{index}].source must be fsq|auxiliary, got {source!r}."
+            )
         run_name = str(item.get("run_name", "")).strip()
         if not run_name:
             raise ValueError(f"terminator_models[{index}] is missing run_name.")
@@ -99,6 +110,7 @@ def _model_entries(config: dict) -> list[dict]:
         entries.append(
             {
                 "label": _safe_label(item.get("label"), index=index),
+                "source": source,
                 "run_name": run_name,
                 "checkpoint": checkpoint,
             }
@@ -109,6 +121,121 @@ def _model_entries(config: dict) -> list[dict]:
     if len(labels) != len(set(labels)):
         raise ValueError(f"terminator_models labels must be unique: {labels}.")
     return entries
+
+
+def _resolve_auxiliary_checkpoint(run_dir: Path, checkpoint: str) -> tuple[Path, str]:
+    """Resolve one LeRobot ``pretrained_model`` directory by training step."""
+    candidates: list[tuple[int, Path]] = []
+    checkpoints_dir = run_dir / "checkpoints"
+    if checkpoints_dir.is_dir():
+        for path in checkpoints_dir.iterdir():
+            if path.is_dir() and path.name.isdigit():
+                model_dir = path / "pretrained_model"
+                if (model_dir / "config.json").is_file() and (
+                    model_dir / "model.safetensors"
+                ).is_file():
+                    candidates.append((int(path.name), model_dir))
+    if not candidates:
+        raise FileNotFoundError(
+            f"No complete auxiliary checkpoints found under {checkpoints_dir}."
+        )
+    if checkpoint == "last":
+        step, model_dir = max(candidates, key=lambda item: item[0])
+        return model_dir, str(step)
+    if not checkpoint.isdigit() or int(checkpoint) <= 0:
+        raise ValueError(
+            "Auxiliary checkpoint must be 'last' or a positive training step, "
+            f"got {checkpoint!r}."
+        )
+    wanted = int(checkpoint)
+    matches = [item for item in candidates if item[0] == wanted]
+    if len(matches) != 1:
+        raise FileNotFoundError(
+            f"Auxiliary checkpoint step {wanted} not found under {checkpoints_dir}."
+        )
+    step, model_dir = matches[0]
+    return model_dir, str(step)
+
+
+def _resolve_auxiliary_artifact(
+    entry: dict,
+    *,
+    project_root: Path,
+    dataset_root: Path,
+    outputs_root: Path,
+) -> dict:
+    """Resolve a standalone ``skill_aux`` terminator plus its immutable FSQ space."""
+    run_dir = outputs_root / "skillVLA_terminator" / entry["run_name"]
+    if not run_dir.is_dir():
+        raise FileNotFoundError(f"Auxiliary terminator run folder not found: {run_dir}")
+    checkpoint_dir, step = _resolve_auxiliary_checkpoint(run_dir, entry["checkpoint"])
+    source = json.loads((checkpoint_dir / "config.json").read_text())
+    if source.get("type") != "skill_aux" or not as_bool(
+        source.get("train_terminator", False)
+    ):
+        raise ValueError(
+            "Auxiliary terminator eval requires policy.type=skill_aux with "
+            f"train_terminator=true: {checkpoint_dir}."
+        )
+    fsq_path = Path(str(source.get("fsq_path", "") or "")).expanduser()
+    if not fsq_path.is_absolute():
+        fsq_path = project_root / fsq_path
+    if not fsq_path.is_file():
+        raise FileNotFoundError(f"Auxiliary checkpoint FSQ.pt not found: {fsq_path}")
+    code_space = str(source.get("skill_code_space_id", "") or "").strip()
+    if not code_space:
+        code_space = fsq_path.parent.name
+    levels = source.get("skill_fsq_levels")
+    if not isinstance(levels, list) or not levels:
+        raise ValueError(
+            f"Auxiliary checkpoint is missing skill_fsq_levels: {checkpoint_dir}."
+        )
+    # SkillVLA data identities wrap the original FSQ run as
+    # FSQ<levels>_<fsq-run>_<epoch>_<segmentation...>. Recover that immutable
+    # source from existing FSQ run folders instead of guessing at underscores
+    # inside the run name.
+    fsq_prefix = "FSQ" + "".join(str(int(level)) for level in levels) + "_"
+    source_candidates: list[tuple[int, str, str]] = []
+    fsq_outputs = outputs_root / "FSQ"
+    if fsq_outputs.is_dir():
+        for candidate in fsq_outputs.iterdir():
+            if not candidate.is_dir() or not (candidate / "fsq_meta.json").is_file():
+                continue
+            prefix = fsq_prefix + candidate.name + "_"
+            if not code_space.startswith(prefix):
+                continue
+            checkpoint_tag = code_space[len(prefix) :].split("_", 1)[0]
+            if checkpoint_tag == "best" or (
+                checkpoint_tag.isdigit() and int(checkpoint_tag) > 0
+            ):
+                source_candidates.append(
+                    (len(candidate.name), candidate.name, checkpoint_tag)
+                )
+    if not source_candidates:
+        raise FileNotFoundError(
+            "Could not map auxiliary skill_code_space_id back to an FSQ run: "
+            f"{code_space!r} under {fsq_outputs}."
+        )
+    _, fsq_run_name, fsq_checkpoint = max(source_candidates)
+    base = _resolve_fsq_artifact(
+        {"fsq_eval_run_name": fsq_run_name},
+        dataset_root=dataset_root,
+        outputs_root=outputs_root,
+        checkpoint=fsq_checkpoint,
+    )
+    return {
+        **base,
+        "fsq_eval_run_name": entry["run_name"],
+        "fsq_eval_selected_checkpoint": entry["checkpoint"],
+        "fsq_eval_resolved_checkpoint": step,
+        "fsq_eval_model_dir": str(run_dir),
+        # The original FSQ model still owns the encoder/code assignment.
+        "fsq_eval_model_path": str(fsq_path),
+        "fsq_eval_epoch_tag": f"step{int(step):06d}",
+        "fsq_eval_terminator_overlay_path": str(checkpoint_dir),
+        "fsq_eval_model_source": "auxiliary",
+        "fsq_eval_code_space_id": code_space,
+    }
 
 
 def build_settings(config: dict, *, model_override: str | None = None) -> dict:
@@ -123,12 +250,23 @@ def build_settings(config: dict, *, model_override: str | None = None) -> dict:
 
     resolved = []
     for entry in entries:
-        artifact = _resolve_fsq_artifact(
-            {**config, "fsq_eval_run_name": entry["run_name"]},
-            dataset_root=dataset_root,
-            outputs_root=outputs_root,
-            checkpoint=entry["checkpoint"],
-        )
+        if entry["source"] == "auxiliary":
+            artifact = _resolve_auxiliary_artifact(
+                entry,
+                project_root=project_root,
+                dataset_root=dataset_root,
+                outputs_root=outputs_root,
+            )
+        else:
+            artifact = _resolve_fsq_artifact(
+                {**config, "fsq_eval_run_name": entry["run_name"]},
+                dataset_root=dataset_root,
+                outputs_root=outputs_root,
+                checkpoint=entry["checkpoint"],
+            )
+            artifact["fsq_eval_terminator_overlay_path"] = ""
+            artifact["fsq_eval_model_source"] = "fsq"
+            artifact["fsq_eval_code_space_id"] = entry["run_name"]
         resolved.append({**entry, **artifact})
 
     # FSQ-original checkpoints carry no terminator module at all: their only
@@ -212,6 +350,11 @@ def build_settings(config: dict, *, model_override: str | None = None) -> dict:
         "fsq_model_count": len(resolved),
         "fsq_model_label": selected["label"],
         "fsq_model_path": selected["fsq_eval_model_path"],
+        "fsq_terminator_overlay_path": selected[
+            "fsq_eval_terminator_overlay_path"
+        ],
+        "fsq_model_source": selected["fsq_eval_model_source"],
+        "fsq_code_space_id": selected["fsq_eval_code_space_id"],
         "fsq_model_run": selected["run_name"],
         "fsq_model_epoch_tag": selected["fsq_eval_epoch_tag"],
         "fsq_skills_dir": str(Path(selected["fsq_eval_skillset_dir"]) / "skills"),

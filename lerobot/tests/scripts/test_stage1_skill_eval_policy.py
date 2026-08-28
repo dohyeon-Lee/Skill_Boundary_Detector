@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -24,6 +25,37 @@ class _DummyTerminator(nn.Module):
     def __init__(self) -> None:
         super().__init__()
         self.anchor = nn.Parameter(torch.zeros(()))
+
+
+class _DummyPolicyModel(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.anchor = nn.Parameter(torch.zeros(()))
+        self.register_buffer("_fsq_strides", torch.ones(1, dtype=torch.long))
+
+    def _code_to_zq(self, codes: torch.Tensor) -> torch.Tensor:
+        return torch.ones(codes.shape[0], 3, device=codes.device)
+
+
+class _RecordingPrevActionTerminator(nn.Module):
+    state_dim = 2
+    context_mode = "prev_action"
+    termination_only = True
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.anchor = nn.Parameter(torch.zeros(()))
+        self.raw_actions: list[torch.Tensor] = []
+        self.contexts: list[torch.Tensor] = []
+
+    def normalize_previous_action(self, action: torch.Tensor) -> torch.Tensor:
+        self.raw_actions.append(action.detach().clone())
+        return action[..., :2] * 2.0
+
+    def forward(self, z_q, context, image, wrist):
+        del z_q, image, wrist
+        self.contexts.append(context.detach().clone())
+        return torch.zeros(context.shape[0]), torch.zeros(context.shape[0])
 
 
 def test_restore_state_synchronizes_controller_before_first_action() -> None:
@@ -172,6 +204,114 @@ def test_trained_main_uses_standard_external_terminator_loader(monkeypatch) -> N
 
     assert result is context
     assert seen == [spec]
+
+
+def test_state_image_prev_action_adapter_normalizes_previous_action() -> None:
+    module = _RecordingPrevActionTerminator()
+    adapter = MODULE.IndependentTerminator(
+        SimpleNamespace(model=_DummyPolicyModel()), module, "state_image"
+    )
+    image = torch.zeros(1, 3, 4, 4)
+
+    adapter.terminate(
+        torch.tensor([2]),
+        torch.full((1, 8), 99.0),
+        image,
+        image,
+        previous_action=torch.tensor([[1.0, 3.0]]),
+    )
+
+    torch.testing.assert_close(module.raw_actions[0], torch.tensor([[1.0, 3.0]]))
+    torch.testing.assert_close(module.contexts[0], torch.tensor([[2.0, 6.0]]))
+
+
+def test_state_image_loader_rebuilds_saved_auxiliary_contract(
+    tmp_path: Path, monkeypatch
+) -> None:
+    checkpoint = tmp_path / "state_image"
+    checkpoint.mkdir()
+    (checkpoint / "config.json").write_text(
+        json.dumps(
+            {
+                "terminator_context": "prev_action",
+                "terminator_arch": "fusion",
+                "terminator_vision_backbone": "resnet",
+                "terminator_freeze_vision_encoder": False,
+                "terminator_termination_only": True,
+            }
+        )
+    )
+    built: list[tuple] = []
+    module = _RecordingPrevActionTerminator()
+
+    def build(path, termination_only=None, **kwargs):
+        built.append((path, termination_only, kwargs))
+        return module
+
+    monkeypatch.setattr(MODULE, "build_trainable_fsq_terminator", build)
+    monkeypatch.setattr(
+        MODULE, "_load_complete_terminator_parameters", lambda *_args, **_kwargs: 1
+    )
+    adapter = MODULE._load_display_terminator(
+        SimpleNamespace(model=_DummyPolicyModel()),
+        {"variant": "state_image", "path": str(checkpoint)},
+        tmp_path / "FSQ.pt",
+    )
+
+    assert adapter.module is module
+    assert adapter.context_mode == "prev_action"
+    assert built == [
+        (
+            tmp_path / "FSQ.pt",
+            True,
+            {
+                "context": "prev_action",
+                "default_arch": "fusion",
+                "vision_backbone": "resnet",
+                "freeze_vision_encoder": False,
+            },
+        )
+    ]
+
+
+def test_gt_rollout_seeds_and_advances_previous_action(monkeypatch) -> None:
+    seen: list[np.ndarray | None] = []
+
+    def query(**kwargs):
+        previous = kwargs.get("previous_action")
+        seen.append(None if previous is None else np.asarray(previous).copy())
+        return {}, np.zeros(2, dtype=np.float32), 0.0, 0.0, []
+
+    class _Env:
+        def __init__(self) -> None:
+            self._env = self
+
+        @staticmethod
+        def step(_action):
+            return object(), 0.0, False, {}
+
+    monkeypatch.setattr(MODULE, "_query_terminator", query)
+    monkeypatch.setattr(MODULE, "_restore_state", lambda *_args: object())
+    monkeypatch.setattr(
+        MODULE, "_render", lambda *_args: np.zeros((2, 2, 3), dtype=np.uint8)
+    )
+    result = MODULE._run_gt_actions(
+        base_env=_Env(),
+        state=np.zeros(2, dtype=np.float32),
+        actions=np.asarray([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32),
+        token=1,
+        context={
+            "policy": SimpleNamespace(terminator=SimpleNamespace(reset=lambda: None)),
+            "display_terminators": [],
+        },
+        env_preprocessor=object(),
+        initial_previous_action=np.asarray([9.0, 8.0], dtype=np.float32),
+    )
+
+    assert result["steps"] == 2
+    np.testing.assert_array_equal(seen[0], [9.0, 8.0])
+    np.testing.assert_array_equal(seen[1], [1.0, 2.0])
+    np.testing.assert_array_equal(seen[2], [3.0, 4.0])
 
 
 def test_same_main_and_display_source_reuses_one_forward(monkeypatch) -> None:

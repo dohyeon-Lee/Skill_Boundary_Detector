@@ -9,6 +9,10 @@ import torch
 
 from lerobot.configs.types import PipelineFeatureType, PolicyFeature
 from lerobot.policies.skillVLA.configuration_skillVLA import SkillVLAConfig
+from lerobot.policies.skillVLA.dataset_skillVLA import (
+    SKILL_PREVIOUS_ACTION,
+    SKILL_PREVIOUS_ACTION_BOS,
+)
 from lerobot.processor import (
     AddBatchDimensionProcessorStep,
     DeviceProcessorStep,
@@ -65,6 +69,8 @@ SKILL_VLA_BATCH_KEYS = (
     "skill_ds",
     "skill_de",
     SKILL_EFFECTIVE_DE,
+    SKILL_PREVIOUS_ACTION,
+    SKILL_PREVIOUS_ACTION_BOS,
 )
 
 

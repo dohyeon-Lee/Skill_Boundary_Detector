@@ -14,7 +14,7 @@ skillset_name: skillset
 # Optional suffix appended after the automatic mode/decoder/loss run name.
 # Two layers are the default and therefore carry no suffix; set this only for
 # a genuinely separate experiment (for example "layer3").
-fsq_exp: ""
+fsq_exp: "term01"
 fsq_levels: [3, 3, 3]              # 27 codes
 fsq_hidden_dim: 256
 fsq_num_layers: 2
@@ -31,7 +31,7 @@ fsq_num_layers: 2
 # in both encoder input and decoder target so route/recon agree.
 # 1.0 is the untuned normalized baseline.
 # Every mode name includes the compact value: zero/0.1 -> zero01.
-fsq_autoencoder: {mode: zero, gripper_weight: 0.1}  # raw | zero | action | norm_action
+fsq_autoencoder: {mode: norm_action, gripper_weight: 0.1}  # raw | zero | action | norm_action
 # Optional decoder context, available in every autoencoder mode.  The FSQ code
 # remains the decoder content; the normalized skill-start proprio state only
 # modulates decoder blocks through a separate zero-init AdaLN path.
@@ -51,7 +51,7 @@ fsq_entropy: false
 fsq_pair_loss: {type: js, weight: 0.1, inv_temperature: 5.0}
 fsq_route_loss: {enabled: true}
 fsq_action_loss: {weight: 1.0}
-fsq_end_loss: {weight: 1.0, target_sigma: 2.0}
+fsq_end_loss: {weight: 0.1, target_sigma: 2.0}
 
 # Reconstruction-only warm-up, followed by a linear pair-weight ramp.
 fsq_pair_warmup: {enabled: true, epochs: 50, ramp_epochs: 50}

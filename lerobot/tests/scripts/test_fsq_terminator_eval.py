@@ -72,6 +72,7 @@ def _manifest(label, records, **extra):
 def _probe_run(tmp_path: Path, name: str, *, epochs: list[int], original: bool = False) -> None:
     run_dir = tmp_path / "outputs" / "FSQ" / name
     run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "FSQ.pt").write_bytes(b"best")
     for epoch in epochs:
         (run_dir / f"FSQ_epoch{epoch:04d}.pt").write_bytes(b"x")
     meta = "fsq_original_meta.json" if original else "fsq_meta.json"
@@ -122,6 +123,50 @@ def test_config_resolves_each_listed_checkpoint(tmp_path: Path) -> None:
     # Without an override the first entry is the one this task runs.
     assert settings["fsq_model_label"] == "A"
     assert CONFIG.build_settings(config, model_override="B")["fsq_model_label"] == "B"
+
+
+def test_config_resolves_auxiliary_terminator_and_its_fsq_space(tmp_path: Path) -> None:
+    _probe_run(tmp_path, "space", epochs=[100])
+    code_space = "FSQ333_space_100_std_pt_episodemean_100p"
+    embedded_fsq = tmp_path / f"dataset/skillvla_dataset/ds/{code_space}/FSQ.pt"
+    embedded_fsq.parent.mkdir(parents=True)
+    embedded_fsq.write_bytes(b"embedded")
+    checkpoint = (
+        tmp_path
+        / "outputs/skillVLA_terminator/aux_run/checkpoints/001000/pretrained_model"
+    )
+    checkpoint.mkdir(parents=True)
+    (checkpoint / "config.json").write_text(
+        json.dumps(
+            {
+                "type": "skill_aux",
+                "train_terminator": True,
+                "fsq_path": str(embedded_fsq),
+                "skill_code_space_id": code_space,
+                "skill_fsq_levels": [3, 3, 3],
+            }
+        )
+    )
+    (checkpoint / "model.safetensors").write_bytes(b"weights")
+    config = _probe_config(
+        tmp_path,
+        [
+            {
+                "label": "AUX",
+                "source": "auxiliary",
+                "run_name": "aux_run",
+                "checkpoint": "last",
+            }
+        ],
+    )
+
+    settings = CONFIG.build_settings(config)
+
+    assert settings["fsq_model_source"] == "auxiliary"
+    assert settings["fsq_model_path"] == str(embedded_fsq)
+    assert settings["fsq_terminator_overlay_path"] == str(checkpoint)
+    assert settings["fsq_code_space_id"] == code_space
+    assert settings["fsq_model_epoch_tag"] == "step001000"
 
 
 def test_config_rejects_fsq_original_runs(tmp_path: Path) -> None:
@@ -308,6 +353,66 @@ def test_action_sequence_encoder_uses_actions_and_checkpoint_transform() -> None
     np.testing.assert_array_equal(tokens, [2, 1])
 
 
+def test_auxiliary_overlay_rebuilds_saved_terminator_contract(
+    tmp_path: Path, monkeypatch
+) -> None:
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    (checkpoint / "config.json").write_text(
+        json.dumps(
+            {
+                "type": "skill_aux",
+                "train_terminator": True,
+                "skill_fsq_levels": [3, 3, 3],
+                "terminator_context": "prev_action",
+                "terminator_arch": "fusion",
+                "terminator_vision_backbone": "resnet",
+                "terminator_freeze_vision_encoder": False,
+                "terminator_termination_only": True,
+            }
+        )
+    )
+    (checkpoint / "model.safetensors").write_bytes(b"weights")
+    module = torch.nn.Linear(1, 1)
+    built: list[tuple] = []
+    loaded: list[tuple] = []
+
+    def build(path, termination_only=None, **kwargs):
+        built.append((path, termination_only, kwargs))
+        return module
+
+    monkeypatch.setattr(RUNNER, "build_trainable_fsq_terminator", build)
+    monkeypatch.setattr(
+        RUNNER,
+        "_load_complete_terminator_parameters",
+        lambda target, path, **kwargs: loaded.append((target, path, kwargs)),
+    )
+    model = SimpleNamespace(terminator=None)
+    RUNNER.attach_auxiliary_terminator(
+        model,
+        SimpleNamespace(fsq_levels=[3, 3, 3]),
+        fsq_path="FSQ.pt",
+        checkpoint_path=str(checkpoint),
+        device=torch.device("cpu"),
+    )
+
+    assert model.terminator is module
+    assert built == [
+        (
+            "FSQ.pt",
+            True,
+            {
+                "context": "prev_action",
+                "default_arch": "fusion",
+                "vision_backbone": "resnet",
+                "freeze_vision_encoder": False,
+            },
+        )
+    ]
+    assert loaded[0][0] is module
+    assert loaded[0][2]["prefix"] == "model.fsq_term_train."
+
+
 # ── report ────────────────────────────────────────────────────────────────────
 
 
@@ -337,28 +442,30 @@ def test_timing_histogram_clips_into_a_window_and_counts_overflow() -> None:
     assert hist["under"] == 1 and hist["over"] == 1
 
 
-def test_display_selection_groups_by_the_first_model_codebook() -> None:
+def test_codebook_views_keep_each_model_skill_space_independent() -> None:
     skills = [
         {"models": {"A": {"token": 1}, "B": {"token": 9}}},
         {"models": {"A": {"token": 1}, "B": {"token": 2}}},
         {"models": {"A": {"token": 5}, "B": {"token": 9}}},
     ]
-    display = REPORT.select_display_skills(
-        skills, "A", max_entries=0, max_samples=5, seed=0
+    views = REPORT.build_codebook_views(
+        skills, ["A", "B"], max_entries=0, max_samples=5, seed=0
     )
-    assert sorted(display) == [1, 5]
-    assert sorted(display[1]) == [0, 1]
-    assert display[5] == [2]
+    assert sorted(views["A"]["members"]) == ["1", "5"]
+    assert views["A"]["members"]["1"] == [0, 1]
+    assert views["B"]["members"]["9"] == [0, 2]
+    assert views["A"]["display"]["5"] == [2]
 
 
 def test_display_selection_caps_entries_and_samples() -> None:
     skills = [{"models": {"A": {"token": t}}} for t in (1, 1, 1, 2)]
-    display = REPORT.select_display_skills(
-        skills, "A", max_entries=1, max_samples=2, seed=0
+    views = REPORT.build_codebook_views(
+        skills, ["A"], max_entries=1, max_samples=2, seed=0
     )
     # Entry 1 has the most skills, so the cap keeps it and drops entry 2.
-    assert sorted(display) == [1]
-    assert len(display[1]) == 2
+    assert sorted(views["A"]["members"]) == ["1", "2"]
+    assert sorted(views["A"]["display"]) == ["1"]
+    assert len(views["A"]["display"]["1"]) == 2
 
 
 def test_maybe_build_waits_for_every_model(tmp_path: Path) -> None:
@@ -411,5 +518,7 @@ def test_report_builds_once_every_model_is_present(tmp_path: Path) -> None:
     assert '"token": 1' in page.replace(" ", " ") or '"token":1' in page
     payload = json.loads((collection / "metrics" / "compare.json").read_text())
     assert payload["labels"] == ["A", "B"]
-    assert payload["grouping_label"] == "A"
+    assert payload["format"] == "fsq_terminator_eval_compare_v2"
+    assert payload["codebooks"]["A"]["members"]["1"] == [0]
+    assert payload["codebooks"]["B"]["members"]["4"] == [0]
     assert len(payload["skills"]) == 1

@@ -395,10 +395,25 @@ def task6_summary(
 def model_metrics(
     collection_path: Path,
     dataset: dict[str, Any],
+    epoch_tag: str | None = None,
 ) -> dict[str, Any]:
     model_root = collection_path.parent.parent
     collection = json.loads(collection_path.read_text())
-    checkpoint = collection["checkpoints"][-1]
+    if epoch_tag is None:
+        checkpoint = collection["checkpoints"][-1]
+    else:
+        matching = [
+            checkpoint
+            for checkpoint in collection["checkpoints"]
+            if checkpoint["epoch_tag"] == epoch_tag
+        ]
+        if len(matching) != 1:
+            available = [checkpoint["epoch_tag"] for checkpoint in collection["checkpoints"]]
+            raise ValueError(
+                f"Requested {epoch_tag} is unavailable for {model_root.name}; "
+                f"available={available}"
+            )
+        checkpoint = matching[0]
     epoch = checkpoint["epoch_tag"]
     manifest = json.loads((model_root / "checkpoints" / epoch / "metrics" / "manifest.json").read_text())
     with np.load(manifest["signature"]["latents_path"], allow_pickle=False) as data:

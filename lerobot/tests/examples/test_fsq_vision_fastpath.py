@@ -2331,11 +2331,56 @@ def test_trainable_terminator_keeps_v3_warm_start(monkeypatch) -> None:
     )
 
     terminator, loaded_config = fsq_module.build_trainable_fsq_terminator(
-        "FSQ.pt"
+        "FSQ.pt",
+        context=config.terminator_context,
+        default_arch=config.terminator_arch,
+        vision_backbone=config.vision_backbone,
+        freeze_vision_encoder=config.freeze_vision_encoder,
     )
 
     assert loaded_config is config
     assert terminator.anchor.item() == 3.0
+    assert terminator.training is False
+
+
+def test_trainable_terminator_contract_change_forces_fresh_init(monkeypatch) -> None:
+    config = SplineFSQAEConfig(
+        terminator_context="proprio",
+        terminator_arch="fusion",
+        vision_backbone="resnet",
+        freeze_vision_encoder=True,
+    )
+
+    class _FreshTerminator(nn.Module):
+        def __init__(self, **kwargs):
+            super().__init__()
+            self.kwargs = kwargs
+            self.anchor = nn.Parameter(torch.zeros(()))
+
+    monkeypatch.setattr(
+        fsq_module.torch,
+        "load",
+        lambda *args, **kwargs: {
+            "cfg": config,
+            "model_state": {"terminator.anchor": torch.tensor(3.0)},
+        },
+    )
+    monkeypatch.setattr(fsq_module, "FSQQueryTerminator", _FreshTerminator)
+
+    terminator, loaded_config = fsq_module.build_trainable_fsq_terminator(
+        "FSQ.pt",
+        context="prev_action",
+        default_arch="small",
+        vision_backbone="dino",
+        freeze_vision_encoder=False,
+    )
+
+    assert loaded_config is config
+    assert terminator.anchor.item() == 0.0
+    assert terminator.kwargs["context_mode"] == "prev_action"
+    assert terminator.kwargs["arch"] == "small"
+    assert terminator.kwargs["vision_backbone"] == "dino"
+    assert terminator.kwargs["freeze_vision_encoder"] is False
     assert terminator.training is False
 
 

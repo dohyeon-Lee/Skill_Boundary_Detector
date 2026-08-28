@@ -73,6 +73,11 @@ class IndependentTerminator:
         self.policy_model = policy.model
         self.module = module
         self.variant = variant
+        self.termination_only = bool(getattr(module, "termination_only", False))
+        self.context_mode = str(getattr(module, "context_mode", "proprio"))
+
+    def reset(self) -> None:
+        """Keep one reset interface for independent rollout boundaries."""
 
     @torch.no_grad()
     def terminate(
@@ -81,48 +86,109 @@ class IndependentTerminator:
         state: torch.Tensor | None,
         image: torch.Tensor,
         wrist_image: torch.Tensor,
+        previous_action: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         device = next(self.module.parameters()).device
         dtype = next(self.module.parameters()).dtype
         z_q = self.policy_model._code_to_zq(  # noqa: SLF001
             codes.to(self.policy_model._fsq_strides.device)  # noqa: SLF001
         ).to(device=device, dtype=dtype)
-        image = image.to(device=device, dtype=dtype)
-        wrist_image = wrist_image.to(device=device, dtype=dtype)
         if self.variant in {"state_image", "fsq_initial"}:
-            if state is None:
-                raise ValueError(f"{self.variant} terminator requires robot state.")
+            if self.context_mode == "prev_action":
+                if previous_action is None:
+                    context = torch.zeros(
+                        codes.shape[0],
+                        int(self.module.state_dim),
+                        device=device,
+                        dtype=dtype,
+                    )
+                else:
+                    context = self.module.normalize_previous_action(
+                        previous_action.to(device=device, dtype=dtype)
+                    )
+            else:
+                if state is None:
+                    raise ValueError(f"{self.variant} terminator requires robot state.")
+                context = state.to(device=device, dtype=dtype)
             progress, logits = self.module(
                 z_q,
-                state.to(device=device, dtype=dtype),
-                image,
-                wrist_image,
+                context,
+                image.to(device=device, dtype=dtype),
+                wrist_image.to(device=device, dtype=dtype),
             )
         elif self.variant == "image_only":
-            progress, logits = self.module(z_q, image, wrist_image)
+            progress, logits = self.module(
+                z_q,
+                image.to(device=device, dtype=dtype),
+                wrist_image.to(device=device, dtype=dtype),
+            )
         elif self.variant == "wrist_only":
-            progress, logits = self.module(z_q, wrist_image)
+            progress, logits = self.module(
+                z_q,
+                wrist_image.to(device=device, dtype=dtype),
+            )
         else:
             raise ValueError(f"Unknown display terminator variant: {self.variant!r}.")
         return progress, torch.sigmoid(logits)
 
 
+def _checkpoint_termination_only(checkpoint_path: str, field: str) -> bool:
+    if not checkpoint_path:
+        return False
+    config_path = Path(checkpoint_path) / "config.json"
+    if not config_path.is_file():
+        return False
+    return bool(json.loads(config_path.read_text()).get(field, False))
+
+
+def _checkpoint_config(checkpoint_path: str) -> dict:
+    config_path = Path(checkpoint_path) / "config.json"
+    if not config_path.is_file():
+        raise FileNotFoundError(f"Terminator config not found: {config_path}")
+    return json.loads(config_path.read_text())
+
+
 def _load_display_terminator(policy, model_spec: dict, fsq_path: str | Path):
     variant = str(model_spec["variant"])
     checkpoint_path = str(model_spec.get("path") or "")
+    source_config = None
+    if variant != "fsq_initial":
+        source_config = _checkpoint_config(checkpoint_path)
     if variant == "fsq_initial":
         if not checkpoint_path:
             raise ValueError("fsq_initial requires its resolved raw FSQ.pt path.")
         module = build_fsq_terminator(checkpoint_path)
         prefix = "model.fsq_term_train."
     elif variant == "state_image":
-        module = build_trainable_fsq_terminator(fsq_path)
+        assert source_config is not None
+        module = build_trainable_fsq_terminator(
+            fsq_path,
+            termination_only=_checkpoint_termination_only(
+                checkpoint_path, "terminator_termination_only"
+            ),
+            context=source_config.get("terminator_context"),
+            default_arch=source_config.get("terminator_arch"),
+            vision_backbone=source_config.get("terminator_vision_backbone"),
+            freeze_vision_encoder=source_config.get(
+                "terminator_freeze_vision_encoder"
+            ),
+        )
         prefix = "model.fsq_term_train."
     elif variant == "image_only":
-        module = build_fsq_image_only_terminator(fsq_path)
+        module = build_fsq_image_only_terminator(
+            fsq_path,
+            termination_only=_checkpoint_termination_only(
+                checkpoint_path, "image_only_terminator_termination_only"
+            ),
+        )
         prefix = "model.fsq_image_term_train."
     elif variant == "wrist_only":
-        module = build_fsq_wrist_only_terminator(fsq_path)
+        module = build_fsq_wrist_only_terminator(
+            fsq_path,
+            termination_only=_checkpoint_termination_only(
+                checkpoint_path, "wrist_only_terminator_termination_only"
+            ),
+        )
         prefix = "model.fsq_wrist_term_train."
     else:
         raise ValueError(f"Unknown display terminator variant: {variant!r}.")
@@ -287,6 +353,7 @@ def _query_terminator(
     token: int,
     context: dict,
     env_preprocessor,
+    previous_action: np.ndarray | torch.Tensor | None = None,
 ) -> tuple[
     dict[str, Any],
     np.ndarray,
@@ -306,6 +373,20 @@ def _query_terminator(
         raise RuntimeError("Predicted-end skill eval requires a terminator.")
     device = next(policy.parameters()).device
     codes = torch.tensor([int(token)], dtype=torch.long, device=device)
+    previous_action_tensor = None
+    if previous_action is not None:
+        previous_action_tensor = torch.as_tensor(
+            previous_action,
+            dtype=torch.float32,
+            device=device,
+        )
+        if previous_action_tensor.ndim == 1:
+            previous_action_tensor = previous_action_tensor.unsqueeze(0)
+        if previous_action_tensor.ndim != 2:
+            raise ValueError(
+                "previous_action must have shape (A,) or (B,A), got "
+                f"{tuple(previous_action_tensor.shape)}."
+            )
     missing = [key for key in (RAW_STATE, RAW_IMAGE, RAW_WRIST) if key not in batch]
     if missing:
         raise ValueError(f"Policy preprocessor omitted terminator inputs: {missing}.")
@@ -314,6 +395,7 @@ def _query_terminator(
         batch[RAW_STATE],
         batch[RAW_IMAGE],
         batch[RAW_WRIST],
+        previous_action=previous_action_tensor,
     )
     display_signals = []
     for display_entry in context.get("display_terminators", []):
@@ -328,6 +410,7 @@ def _query_terminator(
                 batch[RAW_STATE],
                 batch[RAW_IMAGE],
                 batch[RAW_WRIST],
+                previous_action=previous_action_tensor,
             )
         display_signals.append(
             (
@@ -342,6 +425,22 @@ def _query_terminator(
         float(current_termination[0]),
         display_signals,
     )
+
+
+def _reset_terminators(context: dict) -> None:
+    """Reset MAIN/display terminator state before each independent rollout."""
+    terminators = [
+        getattr(context["policy"], "terminator", None),
+        *[
+            entry.get("terminator")
+            for entry in context.get("display_terminators", [])
+            if not entry.get("reuse_main", False)
+        ],
+    ]
+    for terminator in terminators:
+        reset = getattr(terminator, "reset", None)
+        if callable(reset):
+            reset()
 
 
 def _load_font(size: int):
@@ -783,7 +882,9 @@ def _run_gt_actions(
     token: int,
     context: dict,
     env_preprocessor,
+    initial_previous_action: np.ndarray | None = None,
 ) -> dict:
+    _reset_terminators(context)
     raw_obs = _restore_state(base_env, state)
     frames = [_render(base_env)]
     progress_values: list[float | None] = []
@@ -791,6 +892,11 @@ def _run_gt_actions(
     display_traces = _new_display_traces(context)
     stop_reason = "gt_frame_end"
     steps = 0
+    previous_action = (
+        None
+        if initial_previous_action is None
+        else np.asarray(initial_previous_action, dtype=np.float32).copy()
+    )
     for action in np.asarray(actions, dtype=np.float32):
         batch, _, progress, termination, display_signals = _query_terminator(
             base_env=base_env,
@@ -798,11 +904,13 @@ def _run_gt_actions(
             token=token,
             context=context,
             env_preprocessor=env_preprocessor,
+            previous_action=previous_action,
         )
         progress_values.append(progress)
         termination_values.append(termination)
         _append_display_signals(display_traces, display_signals)
         raw_obs, _, done, _ = base_env._env.step(action)
+        previous_action = np.asarray(action, dtype=np.float32).copy()
         steps += 1
         frames.append(_render(base_env))
         if bool(done):
@@ -815,6 +923,7 @@ def _run_gt_actions(
         token=token,
         context=context,
         env_preprocessor=env_preprocessor,
+        previous_action=previous_action,
     )
     progress_values.append(progress)
     termination_values.append(termination)
@@ -845,10 +954,12 @@ def _run_policy(
     progress_threshold: float,
     finish_action_chunk_on_end: bool,
     seed: int,
+    initial_previous_action: np.ndarray | None = None,
 ) -> dict:
     set_seed(int(seed))
     policy = context["policy"].policy
     policy.reset()
+    _reset_terminators(context)
     action_queue: deque[torch.Tensor] = deque()
     raw_obs = _restore_state(base_env, state)
     frames = [_render(base_env)]
@@ -861,6 +972,11 @@ def _run_policy(
     restored_state_rms = None
     main_boundary: dict[str, Any] | None = None
     boundary_display_signals: list[tuple[float, float]] | None = None
+    previous_action = (
+        None
+        if initial_previous_action is None
+        else np.asarray(initial_previous_action, dtype=np.float32).copy()
+    )
 
     while steps < int(max_skill_length):
         (
@@ -875,6 +991,7 @@ def _run_policy(
             token=token,
             context=context,
             env_preprocessor=env_preprocessor,
+            previous_action=previous_action,
         )
         if restored_state_rms is None:
             expected = np.asarray(expected_filtered_state, dtype=np.float32)
@@ -958,6 +1075,7 @@ def _run_policy(
             env_postprocessor,
         )
         raw_obs, _, done, _ = base_env._env.step(action_numpy)
+        previous_action = np.asarray(action_numpy, dtype=np.float32).copy()
         steps += 1
         frames.append(_render(base_env))
         if bool(done):
@@ -1052,14 +1170,32 @@ def _branch_max_skill_length(
 
 
 def _manifest_signature(specs: list[dict], cfg, selected: dict[int, list[int]]) -> dict:
+    terminator_models = []
+    main_terminators = []
+    for model_index, spec in enumerate(specs):
+        for model in spec.get("terminator_models", []):
+            terminator_models.append({"model_index": model_index, **model})
+        main_spec = spec.get("main_terminator", {})
+        main_terminators.append(
+            {
+                "model_index": model_index,
+                "label": str(
+                    main_spec.get("label", os.environ["MAIN_TERMINATOR_LABEL"])
+                ),
+                "variant": str(spec["external_skill_model_variant"]),
+                "path": str(spec["external_skill_model"]),
+            }
+        )
     return {
-        "format": "stage1_skill_eval_v13_early_start_budget",
+        "format": "stage1_skill_eval_v15_multi_skill_space",
         "policies": [
             {
                 "label": str(spec["label"]),
                 "policy_path": str(spec["policy_path"]),
                 "architecture_label": str(spec.get("architecture_label", "")),
                 "fsq_path": str(spec["fsq_path"]),
+                "skill_latents_path": str(spec["skill_latents_path"]),
+                "fsq_levels": [int(value) for value in spec["fsq_levels"]],
             }
             for spec in specs
         ],
@@ -1087,7 +1223,8 @@ def _manifest_signature(specs: list[dict], cfg, selected: dict[int, list[int]]) 
                 os.environ["FINISH_ACTION_CHUNK_ON_END"]
             ),
         },
-        "terminator_models": specs[0].get("terminator_models", []),
+        "main_terminators": main_terminators,
+        "terminator_models": terminator_models,
         "target_task": str(cfg.env.task),
         "selected_episodes": {str(key): value for key, value in selected.items()},
         "time_shift_offset": int(os.environ["TIME_SHIFT_OFFSET"]),
@@ -1184,9 +1321,33 @@ def eval_main(cfg: EvalPipelineConfig):
         seed=cfg.seed,
         explicit_episode_ids=json.loads(os.environ.get("EPISODE_IDS", "[]")),
     )
-    all_occurrences = dataset.occurrences(selected)
-    if not all_occurrences:
+    datasets = [
+        SkillEvaluationDataset(
+            # The filtered observations/actions and exact simulator provenance
+            # are shared. Only the FSQ assignment file changes by skill space.
+            skill_dataset_dir=os.environ["SKILL_DATASET_DIR"],
+            skill_latents_path=spec["skill_latents_path"],
+            eval_init_states_path=os.environ["EVAL_INIT_STATES_PATH"],
+            original_dataset_dir=os.environ["ORIGINAL_DATASET_DIR"],
+            suite_name=cfg.env.task,
+        )
+        for spec in specs
+    ]
+    occurrences_by_model = [model_dataset.occurrences(selected) for model_dataset in datasets]
+    if not occurrences_by_model[0]:
         raise RuntimeError("No skill occurrences were found in the selected exact episodes.")
+    reference_ids = [occurrence.identity_uid for occurrence in occurrences_by_model[0]]
+    for model_index, occurrences in enumerate(occurrences_by_model[1:], start=1):
+        candidate_ids = [occurrence.identity_uid for occurrence in occurrences]
+        if candidate_ids != reference_ids:
+            missing = sorted(set(reference_ids) - set(candidate_ids))
+            extra = sorted(set(candidate_ids) - set(reference_ids))
+            raise ValueError(
+                "Different FSQ spaces may assign different tokens, but must use the "
+                "same GT segmentation for linked evaluation. "
+                f"model={specs[model_index]['label']!r}, "
+                f"missing={missing[:5]}, extra={extra[:5]}."
+            )
     worker_count = int(os.environ.get("SKILL_EVAL_WORKER_COUNT", "1"))
     worker_index = int(os.environ.get("SKILL_EVAL_WORKER_INDEX", "0"))
     assigned_by_model = _worker_model_episode_units(
@@ -1259,6 +1420,10 @@ def eval_main(cfg: EvalPipelineConfig):
             ),
             "chunk_index": worker_index,
             "chunk_count": worker_count,
+            "levels": [int(value) for value in specs[0]["fsq_levels"]],
+            "model_levels": [
+                [int(value) for value in spec["fsq_levels"]] for spec in specs
+            ],
             "completed": False,
             "records": {},
         }
@@ -1269,7 +1434,6 @@ def eval_main(cfg: EvalPipelineConfig):
             env_cfg=cfg.env,
             policy_cfg=cfg.policy,
         )
-        levels: list[int] | None = None
         for model_index, spec in enumerate(specs):
             model_episode_ids = assigned_by_model.get(model_index)
             if not model_episode_ids:
@@ -1277,7 +1441,7 @@ def eval_main(cfg: EvalPipelineConfig):
             model_episode_id_set = set(model_episode_ids)
             occurrences = [
                 occurrence
-                for occurrence in all_occurrences
+                for occurrence in occurrences_by_model[model_index]
                 if occurrence.episode_id in model_episode_id_set
             ]
             if not occurrences:
@@ -1293,8 +1457,13 @@ def eval_main(cfg: EvalPipelineConfig):
                 spec["label"],
                 model_episode_ids,
                 len(occurrences),
-                os.environ["MAIN_TERMINATOR_LABEL"],
-                os.environ["TERMINATOR_MODEL_LABEL"],
+                spec.get("main_terminator", {}).get(
+                    "label", os.environ["MAIN_TERMINATOR_LABEL"]
+                ),
+                ",".join(
+                    str(model.get("label", "terminator"))
+                    for model in spec.get("terminator_models", [])
+                ),
             )
             context = _build_context(spec, cfg, device)
             try:
@@ -1346,7 +1515,12 @@ def eval_main(cfg: EvalPipelineConfig):
                 if not context["display_terminators"]:
                     raise RuntimeError("No display terminators were configured.")
                 levels = [int(value) for value in context["config"].skill_fsq_levels]
-                manifest["levels"] = levels
+                expected_levels = [int(value) for value in spec["fsq_levels"]]
+                if levels != expected_levels:
+                    raise ValueError(
+                        f"Policy {spec['label']} runtime FSQ levels {levels} do not "
+                        f"match its checkpoint contract {expected_levels}."
+                    )
                 _save_manifest(manifest_path, manifest)
                 max_token = int(np.prod(levels))
                 invalid_tokens = sorted({occ.token for occ in occurrences if not 0 <= occ.token < max_token})
@@ -1356,19 +1530,38 @@ def eval_main(cfg: EvalPipelineConfig):
                 shift = int(os.environ["TIME_SHIFT_OFFSET"])
                 frame_stride = int(os.environ["VIDEO_FRAME_STRIDE"])
                 video_fps = int(os.environ["VIDEO_FPS"])
-                end_mode = os.environ["SKILL_END_MODE"]
-                end_threshold = float(os.environ["SKILL_END_THRESHOLD"])
-                progress_threshold = float(os.environ["SKILL_END_PROGRESS_THRESHOLD"])
-                max_skill_length_mode = os.environ.get(
-                    "SKILL_MAX_LENGTH_MODE", "fixed"
+                main_rule = spec.get("main_terminator", {})
+                end_mode = str(main_rule.get("end_mode", os.environ["SKILL_END_MODE"]))
+                end_threshold = float(
+                    main_rule.get("end_threshold", os.environ["SKILL_END_THRESHOLD"])
                 )
-                fixed_max_skill_length = int(
-                    os.environ["INFERENCE_SKILL_MAX_LENGTH"]
+                progress_threshold = float(
+                    main_rule.get(
+                        "progress_threshold",
+                        os.environ["SKILL_END_PROGRESS_THRESHOLD"],
+                    )
                 )
-                max_skill_length_scale = float(
-                    os.environ.get("SKILL_MAX_LENGTH_SCALE", "0")
+                if main_rule.get("max_skill_length_scale") is not None:
+                    max_skill_length_mode = "gt_scale"
+                    fixed_max_skill_length = 1
+                    max_skill_length_scale = float(
+                        main_rule["max_skill_length_scale"]
+                    )
+                else:
+                    max_skill_length_mode = "fixed"
+                    fixed_max_skill_length = int(
+                        main_rule.get(
+                            "max_skill_length",
+                            os.environ["INFERENCE_SKILL_MAX_LENGTH"],
+                        )
+                    )
+                    max_skill_length_scale = 0.0
+                finish_chunk = bool(
+                    main_rule.get(
+                        "finish_action_chunk_on_end",
+                        _as_bool(os.environ["FINISH_ACTION_CHUNK_ON_END"]),
+                    )
                 )
-                finish_chunk = _as_bool(os.environ["FINISH_ACTION_CHUNK_ON_END"])
                 task_descriptions = _libero_task_descriptions(cfg.env.task)
 
                 inference_context = (
@@ -1387,12 +1580,12 @@ def eval_main(cfg: EvalPipelineConfig):
                         aligned = dataset.load_aligned_episode(occurrence.episode_id)
                         vec_env = envs[cfg.env.task][occurrence.task_id]
                         base_env = vec_env.envs[0].unwrapped
-                        record_uid = f"model_{model_index:02d}__{occurrence.uid}"
+                        record_uid = f"model_{model_index:02d}__{occurrence.identity_uid}"
                         record = manifest["records"].get(record_uid)
                         if record is None:
                             record = {
                                 "uid": record_uid,
-                                "occurrence_uid": occurrence.uid,
+                                "occurrence_uid": occurrence.identity_uid,
                                 "model_index": model_index,
                                 "model_label": spec["label"],
                                 "architecture_label": spec.get("architecture_label", ""),
@@ -1459,6 +1652,14 @@ def eval_main(cfg: EvalPipelineConfig):
                                 continue
                             assert start_frame is not None
                             state = aligned.state_at(start_frame)
+                            initial_previous_action = (
+                                None
+                                if start_frame == 0
+                                else np.asarray(
+                                    aligned.filtered_actions[start_frame - 1],
+                                    dtype=np.float32,
+                                ).copy()
+                            )
                             offset = start_frame - occurrence.frame_start
                             relative_path = (
                                 Path("models")
@@ -1493,6 +1694,7 @@ def eval_main(cfg: EvalPipelineConfig):
                                     token=occurrence.token,
                                     context=context,
                                     env_preprocessor=env_preprocessor,
+                                    initial_previous_action=initial_previous_action,
                                 )
                             else:
                                 result = _run_policy(
@@ -1510,6 +1712,7 @@ def eval_main(cfg: EvalPipelineConfig):
                                     progress_threshold=progress_threshold,
                                     finish_action_chunk_on_end=finish_chunk,
                                     seed=branch_seed,
+                                    initial_previous_action=initial_previous_action,
                                 )
                             _write_branch_video(
                                 output_dir / relative_path,
@@ -1598,7 +1801,13 @@ def eval_main(cfg: EvalPipelineConfig):
                                 str(model["label"])
                                 for model in spec.get("terminator_models", [])
                             ]
-                            + [os.environ["MAIN_TERMINATOR_LABEL"]],
+                            + [
+                                str(
+                                    spec.get("main_terminator", {}).get(
+                                        "label", os.environ["MAIN_TERMINATOR_LABEL"]
+                                    )
+                                )
+                            ],
                                 fps=video_fps,
                             )
                         if not (
@@ -1624,11 +1833,9 @@ def eval_main(cfg: EvalPipelineConfig):
         manifest["completed"] = True
         _save_manifest(manifest_path, manifest)
         if worker_count == 1:
-            if levels is None:
-                raise RuntimeError("No policy was evaluated by the single worker.")
             report = write_html_report(
                 output_dir,
-                report_payload(manifest, levels=levels),
+                report_payload(manifest),
             )
             print(f"Saved report: {report}")
         else:

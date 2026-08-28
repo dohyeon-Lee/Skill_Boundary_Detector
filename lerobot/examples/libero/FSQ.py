@@ -22,6 +22,7 @@ There is intentionally no PI05/Gemma action expert in this FSQ variant.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import logging
 import math
@@ -4600,36 +4601,72 @@ def build_trainable_fsq_terminator(
     device: str | torch.device = "cpu",
     dino_model_path: str | None = None,
     termination_only: bool | None = None,
+    context: str | None = None,
+    default_arch: str | None = None,
+    vision_backbone: str | None = None,
+    freeze_vision_encoder: bool | None = None,
 ) -> tuple[FSQQueryTerminator, Any]:
     """Build the state+image terminator used by standalone training.
 
-    Joint-v3 FSQ checkpoints warm-start their saved ``terminator.*`` tensors.
-    FSQ-original checkpoints have no such component, so the same terminator
-    architecture is initialized fresh from their FSQ/state contract.
+    Joint-v3 FSQ checkpoints warm-start their saved ``terminator.*`` tensors
+    only when the requested contract is identical. A changed context,
+    architecture, backbone, or vision-freeze setting intentionally creates a
+    fresh terminator while retaining the FSQ/state normalization contract.
     """
     checkpoint = torch.load(str(path), map_location="cpu", weights_only=False)
     cfg, source_cfg, has_terminator_weights = _terminator_build_config(checkpoint)
-    if (
+    cfg = copy.copy(cfg)
+    source_is_state_image = not (
         getattr(cfg, "state_rnn_terminator", False)
         or getattr(cfg, "terminator_input_space", "both") != "both"
-    ):
-        # State-only and image-only checkpoints have no compatible state+image
-        # query tensor set. Keep the FSQ contract and initialize this requested
-        # standalone variant fresh, as for FSQ-original checkpoints.
-        has_terminator_weights = False
+    )
+
+    requested = {
+        "terminator_context": context,
+        "terminator_arch": default_arch,
+        "vision_backbone": vision_backbone,
+        "freeze_vision_encoder": freeze_vision_encoder,
+    }
+    mismatches = []
+    if has_terminator_weights and not source_is_state_image:
+        mismatches.append(
+            "variant: checkpoint is not the requested state+image terminator"
+        )
+    if has_terminator_weights:
+        mismatches.extend(
+            f"{field}: checkpoint={getattr(cfg, field)!r}, requested={value!r}"
+            for field, value in requested.items()
+            if value is not None
+            and getattr(cfg, field) != (
+                bool(value) if field == "freeze_vision_encoder" else value
+            )
+        )
+    for field, value in requested.items():
+        if value is not None:
+            setattr(
+                cfg,
+                field,
+                bool(value) if field == "freeze_vision_encoder" else value,
+            )
+    warm_start = has_terminator_weights and not mismatches
     terminator = _new_fsq_terminator(
         FSQQueryTerminator,
         cfg,
         dino_model_path=dino_model_path,
         termination_only=termination_only,
     )
-    if has_terminator_weights:
+    if warm_start:
         _load_prefixed(terminator, checkpoint["model_state"], "terminator.")
-    else:
         log.info(
-            "FSQ checkpoint has no compatible terminator tensors; initializing "
-            "a fresh state+image terminator from %s.",
+            "Warm-started state+image terminator from matching FSQ contract: %s.",
             path,
+        )
+    else:
+        reason = "; ".join(mismatches) if mismatches else "no terminator tensors"
+        log.info(
+            "Initializing a fresh state+image terminator from %s (%s).",
+            path,
+            reason,
         )
     terminator.to(device).eval()
     return terminator, source_cfg

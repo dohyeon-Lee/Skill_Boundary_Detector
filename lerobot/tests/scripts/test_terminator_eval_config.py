@@ -108,6 +108,33 @@ def test_state_terminator_validation_uses_matching_checkpoint_field(
     )
 
 
+def test_state_image_validation_rejects_different_skill_code_space(
+    tmp_path: Path,
+) -> None:
+    checkpoint = tmp_path / "state_image"
+    checkpoint.mkdir()
+    (checkpoint / "config.json").write_text(
+        json.dumps(
+            {
+                "type": "skill_aux",
+                "train_terminator": True,
+                "skill_fsq_levels": [3, 3, 3],
+                "skill_code_space_id": "norm_action_space",
+            }
+        )
+    )
+    (checkpoint / "model.safetensors").touch()
+
+    with pytest.raises(ValueError, match="skill-code space mismatch"):
+        MODULE._validate_display_model(
+            {"variant": "state_image", "path": str(checkpoint)},
+            target_policy={
+                "skill_fsq_levels": [3, 3, 3],
+                "fsq_path": str(tmp_path / "zero_space/FSQ.pt"),
+            },
+        )
+
+
 @pytest.mark.parametrize("variant", ["state_only", "state_rnn"])
 def test_external_main_accepts_state_terminator_variants(
     tmp_path: Path,

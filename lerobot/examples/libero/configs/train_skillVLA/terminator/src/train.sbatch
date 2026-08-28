@@ -12,7 +12,7 @@ set -euo pipefail
 mkdir -p logs
 SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 SRC_DIR="${SUBMIT_DIR}/src"
-CONFIG_PATH="${TERMINATOR_TRAIN_CONFIG:-${SUBMIT_DIR}/terminator_train_config.yaml}"
+CONFIG_PATH="${SKILL_AUX_TRAIN_CONFIG:-${TERMINATOR_TRAIN_CONFIG:-${SUBMIT_DIR}/auxiliary_train_config.yaml}}"
 
 BOOTSTRAP_PYTHON="${SUBMIT_DIR}/../../../../../../.venv/bin/python"
 if [ ! -x "${BOOTSTRAP_PYTHON}" ]; then
@@ -35,35 +35,34 @@ unset LD_LIBRARY_PATH
 
 echo "START AUXILIARY-ONLY TRAINING"
 echo "host      : $(hostname)"
-echo "mode      : ${TRAINING_MODE}"
+echo "init      : ${INITIALIZATION_MODE}"
+echo "targets   : ${TRAINING_MODE}"
 echo "dataset   : ${SKILLVLA_DATASET_DIR}"
-echo "terminator: enabled=${TRAIN_TERMINATOR} fsq=${FSQ_PATH} vision_frozen=${TERMINATOR_FREEZE_VISION_ENCODER}"
-echo "image term: enabled=${TRAIN_IMAGE_ONLY_TERMINATOR} fresh=true vision_frozen=${IMAGE_ONLY_TERMINATOR_FREEZE_VISION_ENCODER}"
-echo "wrist term: enabled=${TRAIN_WRIST_ONLY_TERMINATOR} fresh=true vision_frozen=${WRIST_ONLY_TERMINATOR_FREEZE_VISION_ENCODER}"
-echo "state term: enabled=${TRAIN_STATE_ONLY_TERMINATOR} fresh=true hidden=${STATE_ONLY_TERMINATOR_HIDDEN_DIM}x${STATE_ONLY_TERMINATOR_NUM_LAYERS} balanced=${STATE_ONLY_TERMINATOR_BALANCE_POSITIVE_NEGATIVE} termination_only=${STATE_ONLY_TERMINATOR_TERMINATION_ONLY}"
-echo "state RNN : enabled=${TRAIN_STATE_RNN_TERMINATOR} fresh=true seq=${STATE_RNN_TERMINATOR_SEQUENCE_LENGTH} full_skill=${STATE_RNN_TERMINATOR_FULL_SKILL_SEQUENCE} balanced=${STATE_RNN_TERMINATOR_BALANCE_POSITIVE_NEGATIVE} hidden=${STATE_RNN_TERMINATOR_HIDDEN_DIM}x${STATE_RNN_TERMINATOR_NUM_LAYERS} termination_only=${STATE_RNN_TERMINATOR_TERMINATION_ONLY}"
-echo "predictor : enabled=${TRAIN_SKILL_PREDICTOR} pi_base=${PI_BASE} warm_start=${PREDICTOR_CHECKPOINT_PATH:-none}"
+echo "terminator: enabled=${TRAIN_TERMINATOR} fsq=${FSQ_PATH} ${TERMINATOR_CONTEXT}/${TERMINATOR_ARCH}/${TERMINATOR_VISION_BACKBONE} vision_frozen=${TERMINATOR_FREEZE_VISION_ENCODER}"
+echo "predictor : enabled=${TRAIN_SKILL_PREDICTOR} pi_base=${PI_BASE}"
+echo "predictor warm start: ${PREDICTOR_CHECKPOINT_PATH:-none}"
+echo "terminator warm start: ${TERMINATOR_CHECKPOINT_PATH:-none}"
 echo "schedule  : steps=${STEPS} mode=${SCHEDULER_MODE} warmup=${SCHEDULER_WARMUP_STEPS}"
 echo "wandb     : ${WANDB_PROJECT}"
-echo "output    : ${PT_OUTPUT_DIR}"
+echo "output    : ${OUTPUT_DIR}"
 
 if [ ! -e "${SKILLVLA_DATASET_DIR}" ]; then
   echo "Missing auxiliary dataset: ${SKILLVLA_DATASET_DIR}" >&2
   exit 1
 fi
 
-CONFIG_JSON="${PT_OUTPUT_DIR}/checkpoints/last/pretrained_model/train_config.json"
+CONFIG_JSON="${OUTPUT_DIR}/checkpoints/last/pretrained_model/train_config.json"
 RESUME_ARGS=()
 if [ -f "${CONFIG_JSON}" ]; then
   echo "Checkpoint found; resuming from ${CONFIG_JSON}"
   RESUME_ARGS=(--resume=true --config_path="${CONFIG_JSON}")
-elif [ -e "${PT_OUTPUT_DIR}" ]; then
-  echo "Output exists without a resumable checkpoint: ${PT_OUTPUT_DIR}" >&2
+elif [ -e "${OUTPUT_DIR}" ]; then
+  echo "Output exists without a resumable checkpoint: ${OUTPUT_DIR}" >&2
   exit 1
 fi
 
 PRETRAIN_ARGS=()
-if [ "${TRAIN_SKILL_PREDICTOR}" = true ]; then
+if [ "${INITIALIZATION_MODE}" = pt ] && [ "${TRAIN_SKILL_PREDICTOR}" = true ]; then
   PRETRAIN_ARGS=(--policy.pretrained_path="${PI_BASE}")
 fi
 
@@ -88,43 +87,15 @@ if PYTHONUNBUFFERED=1 PYTORCH_ALLOC_CONF=expandable_segments:True \
     "${PRETRAIN_ARGS[@]}" \
     --policy.train_terminator="${TRAIN_TERMINATOR}" \
     --policy.fsq_path="${FSQ_PATH}" \
+    --policy.terminator_checkpoint_path="${TERMINATOR_CHECKPOINT_PATH}" \
+    --policy.terminator_context="${TERMINATOR_CONTEXT}" \
+    --policy.terminator_arch="${TERMINATOR_ARCH}" \
+    --policy.terminator_vision_backbone="${TERMINATOR_VISION_BACKBONE}" \
     --policy.terminator_freeze_vision_encoder="${TERMINATOR_FREEZE_VISION_ENCODER}" \
     --policy.terminator_lr_scale="${TERMINATOR_LR_SCALE}" \
     --policy.terminator_end_target_sigma="${TERMINATOR_END_TARGET_SIGMA}" \
     --policy.terminator_end_pos_weight="${TERMINATOR_END_POS_WEIGHT}" \
     --policy.terminator_termination_only="${TERMINATOR_TERMINATION_ONLY}" \
-    --policy.train_image_only_terminator="${TRAIN_IMAGE_ONLY_TERMINATOR}" \
-    --policy.image_only_terminator_freeze_vision_encoder="${IMAGE_ONLY_TERMINATOR_FREEZE_VISION_ENCODER}" \
-    --policy.image_only_terminator_lr_scale="${IMAGE_ONLY_TERMINATOR_LR_SCALE}" \
-    --policy.image_only_terminator_end_target_sigma="${IMAGE_ONLY_TERMINATOR_END_TARGET_SIGMA}" \
-    --policy.image_only_terminator_end_pos_weight="${IMAGE_ONLY_TERMINATOR_END_POS_WEIGHT}" \
-    --policy.image_only_terminator_termination_only="${IMAGE_ONLY_TERMINATOR_TERMINATION_ONLY}" \
-    --policy.train_wrist_only_terminator="${TRAIN_WRIST_ONLY_TERMINATOR}" \
-    --policy.wrist_only_terminator_freeze_vision_encoder="${WRIST_ONLY_TERMINATOR_FREEZE_VISION_ENCODER}" \
-    --policy.wrist_only_terminator_lr_scale="${WRIST_ONLY_TERMINATOR_LR_SCALE}" \
-    --policy.wrist_only_terminator_end_target_sigma="${WRIST_ONLY_TERMINATOR_END_TARGET_SIGMA}" \
-    --policy.wrist_only_terminator_end_pos_weight="${WRIST_ONLY_TERMINATOR_END_POS_WEIGHT}" \
-    --policy.wrist_only_terminator_termination_only="${WRIST_ONLY_TERMINATOR_TERMINATION_ONLY}" \
-    --policy.train_state_only_terminator="${TRAIN_STATE_ONLY_TERMINATOR}" \
-    --policy.state_only_terminator_hidden_dim="${STATE_ONLY_TERMINATOR_HIDDEN_DIM}" \
-    --policy.state_only_terminator_num_layers="${STATE_ONLY_TERMINATOR_NUM_LAYERS}" \
-    --policy.state_only_terminator_lr_scale="${STATE_ONLY_TERMINATOR_LR_SCALE}" \
-    --policy.state_only_terminator_end_target_sigma="${STATE_ONLY_TERMINATOR_END_TARGET_SIGMA}" \
-    --policy.state_only_terminator_end_pos_weight="${STATE_ONLY_TERMINATOR_END_POS_WEIGHT}" \
-    --policy.state_only_terminator_balance_positive_negative="${STATE_ONLY_TERMINATOR_BALANCE_POSITIVE_NEGATIVE}" \
-    --policy.state_only_terminator_termination_only="${STATE_ONLY_TERMINATOR_TERMINATION_ONLY}" \
-    --policy.train_state_rnn_terminator="${TRAIN_STATE_RNN_TERMINATOR}" \
-    --policy.state_rnn_terminator_sequence_length="${STATE_RNN_TERMINATOR_SEQUENCE_LENGTH}" \
-    --policy.state_rnn_terminator_full_skill_sequence="${STATE_RNN_TERMINATOR_FULL_SKILL_SEQUENCE}" \
-    --policy.state_rnn_terminator_input_dim="${STATE_RNN_TERMINATOR_INPUT_DIM}" \
-    --policy.state_rnn_terminator_hidden_dim="${STATE_RNN_TERMINATOR_HIDDEN_DIM}" \
-    --policy.state_rnn_terminator_num_layers="${STATE_RNN_TERMINATOR_NUM_LAYERS}" \
-    --policy.state_rnn_terminator_dropout="${STATE_RNN_TERMINATOR_DROPOUT}" \
-    --policy.state_rnn_terminator_lr_scale="${STATE_RNN_TERMINATOR_LR_SCALE}" \
-    --policy.state_rnn_terminator_end_target_sigma="${STATE_RNN_TERMINATOR_END_TARGET_SIGMA}" \
-    --policy.state_rnn_terminator_end_pos_weight="${STATE_RNN_TERMINATOR_END_POS_WEIGHT}" \
-    --policy.state_rnn_terminator_balance_positive_negative="${STATE_RNN_TERMINATOR_BALANCE_POSITIVE_NEGATIVE}" \
-    --policy.state_rnn_terminator_termination_only="${STATE_RNN_TERMINATOR_TERMINATION_ONLY}" \
     --policy.train_skill_predictor="${TRAIN_SKILL_PREDICTOR}" \
     --policy.skill_predictor_checkpoint_path="${PREDICTOR_CHECKPOINT_PATH}" \
     --policy.skill_predictor_lr_scale="${SKILL_PREDICTOR_LR_SCALE}" \
@@ -148,6 +119,10 @@ if PYTHONUNBUFFERED=1 PYTORCH_ALLOC_CONF=expandable_segments:True \
     --policy.tokenizer_max_length="${TOKENIZER_MAX_LENGTH}" \
     --policy.skill_vocab_size="${SKILL_VOCAB_SIZE}" \
     --policy.skill_fsq_levels="${SKILL_FSQ_LEVELS}" \
+    --policy.skill_code_space_id="${SKILL_CODE_SPACE_ID}" \
+    --policy.training_batch_size="${TRAINING_BATCH_SIZE}" \
+    --policy.dataset_source_lineage="${DATASET_SOURCE_LINEAGE}" \
+    --policy.run_suffix_lineage="${RUN_SUFFIX_LINEAGE}" \
     --policy.max_state_dim="${MAX_STATE_DIM}" \
     --policy.max_action_dim="${MAX_ACTION_DIM}" \
     --policy.gradient_checkpointing="${GRADIENT_CHECKPOINTING}" \
@@ -159,8 +134,8 @@ if PYTHONUNBUFFERED=1 PYTORCH_ALLOC_CONF=expandable_segments:True \
     --policy.scheduler_mode="${SCHEDULER_MODE}" \
     --policy.scheduler_warmup_steps="${SCHEDULER_WARMUP_STEPS}" \
     --policy.scheduler_decay_steps="${SCHEDULER_DECAY_STEPS}" \
-    --output_dir="${PT_OUTPUT_DIR}" \
-    --job_name="${PT_RUN_NAME}" \
+    --output_dir="${OUTPUT_DIR}" \
+    --job_name="${RUN_NAME}" \
     --batch_size="${BATCH_SIZE}" \
     --num_workers="${NUM_WORKERS}" \
     --steps="${STEPS}" \
@@ -180,4 +155,4 @@ if (( TRAIN_STATUS != 0 )); then
   exit "${TRAIN_STATUS}"
 fi
 
-echo "DONE -> ${PT_OUTPUT_DIR}"
+echo "DONE -> ${OUTPUT_DIR}"

@@ -1,4 +1,4 @@
-# GT-skill probe of FSQ co-trained terminators.
+# GT-skill probe of FSQ co-trained or standalone auxiliary terminators.
 #
 # Every listed model is scored against the SAME GT skills: the skillset fixes
 # each skill's start and end frame, so no policy rollout and no MAIN terminator
@@ -6,22 +6,43 @@
 # to the known end?". Entries must therefore share one FSQ skillset; the config
 # resolver refuses the run otherwise.
 #
-# The encoder convention and terminator variant/context (including normalized
-# previous action versus legacy proprio) are read from each checkpoint's own
-# cfg, so nothing about them is configured here.
+# Each row owns its FSQ encoder/code space. For source=auxiliary, the resolver
+# loads the source FSQ.pt named by the skill_aux checkpoint and overlays only
+# model.fsq_term_train.*. Thus zero/norm_action models may be compared on the
+# same GT skill occurrences without sharing integer code meanings.
 
-output_name: "RESNET_terminator"
+output_name: "AUX_terminator_and_cotrained_terminator_last2"
 
-# Checkpoints are named explicitly, one per row -- no sweeping.
-# Only FSQ v3 runs have a terminator module to probe. FSQ-original runs keep
-# their termination inside the rnn decoder, so the resolver rejects them here.
+# source: auxiliary resolves:
+#   <outputs_root>/skillVLA_terminator/<run_name>/checkpoints/<step>/pretrained_model
+# checkpoint: last selects the greatest complete training step at submission.
+# source: fsq remains supported for historical co-trained FSQ checkpoints.
 terminator_models:
-  - label: norm_action01_term
-    run_name: norm_action01_recon_termRES__jsON_routeON_loss__layer2_base
-    checkpoint: "500"
-  - label: zero01_term
+  - label: co_zero_RES_frez
+    source: fsq
     run_name: zero01_recon_termRES__jsON_routeON_loss__layer2_base
-    checkpoint: "500"
+    checkpoint: 1500
+  - label: co_norm_action_RES_frez
+    source: fsq
+    run_name: norm_action01_recon_termRES__jsON_routeON_loss__layer2_base
+    checkpoint: 1500
+  
+  - label: zero_RES
+    source: auxiliary
+    run_name: bs32_FSQ333_zero01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_libero_90_full_firsthalf_scene_terminator_resnet_unfrez
+    checkpoint: last
+  - label: zero_DINO
+    source: auxiliary
+    run_name: bs32_FSQ333_zero01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_libero_90_full_firsthalf_scene_terminator_DINO_unfrez
+    checkpoint: last
+  - label: norm_action_RES
+    source: auxiliary
+    run_name: bs32_FSQ333_norm_action01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_libero_90_full_firsthalf_scene_terminator_resnet_unfrez
+    checkpoint: last
+  - label: norm_action_DINO
+    source: auxiliary
+    run_name: bs32_FSQ333_norm_action01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_libero_90_full_firsthalf_scene_terminator_DINO_unfrez
+    checkpoint: last
 
 target_task: libero_90
 # Which numbering task_ids uses. The skillset numbers tasks by the SOURCE
@@ -32,7 +53,8 @@ target_task: libero_90
 # then logs the translation it applied.
 task_id_space: suite        # dataset | suite
 # Task ids, or "all" for every task the skillset covers.
-task_ids: [0, 3, 4, 5, 6, 11, 18, 22, 28, 33, 35, 38, 40, 46, 50, 55, 60, 65, 69, 73, 77, 81, 86]
+task_ids: [0, 3]
+# task_ids: [0, 3, 4, 5, 6, 11, 18, 22, 28, 33, 35, 38, 40, 46, 50, 55, 60, 65, 69, 73, 77, 81, 86]
 episodes_per_task: 3
 episode_selection: first       # first | random
 episode_ids: []                # optional exact global episode ids
@@ -52,5 +74,5 @@ video:
   fps: 10
 
 resume: true
-eval_num_gpus: 3
+eval_num_gpus: 4
 slurm: {gres: "gpu:1", cpus: 8, memory: 64G, time: "01:00:00"}

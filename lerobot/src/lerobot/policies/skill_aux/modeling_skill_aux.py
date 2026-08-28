@@ -15,6 +15,7 @@ from lerobot.policies.pi05.lora import route_plain_to_base
 from lerobot.policies.pretrained import PreTrainedPolicy
 from lerobot.policies.skill_expert.modeling_skill_expert import (
     _PREDICTOR_CHECKPOINT_CONTRACT_FIELDS,
+    _load_complete_predictor_parameters,
     _load_learned_predictor_parameters,
 )
 from lerobot.policies.skill_expert.modeling_skill_predictor import FrozenVLMSkillPredictor
@@ -27,6 +28,10 @@ from lerobot.utils.constants import (
     OBS_LANGUAGE_ATTENTION_MASK,
     OBS_LANGUAGE_TOKENS,
     OBS_STATE,
+)
+from lerobot.policies.skillVLA.dataset_skillVLA import (
+    SKILL_PREVIOUS_ACTION,
+    SKILL_PREVIOUS_ACTION_BOS,
 )
 
 from .configuration_skill_aux import SkillAuxConfig
@@ -51,6 +56,10 @@ class SkillAuxModules(nn.Module):
             terminator = build_trainable_fsq_terminator(
                 config.fsq_path,
                 termination_only=config.terminator_termination_only,
+                context=config.terminator_context,
+                default_arch=config.terminator_arch,
+                vision_backbone=config.terminator_vision_backbone,
+                freeze_vision_encoder=config.terminator_freeze_vision_encoder,
             )
             terminator.freeze_vision_encoder = bool(config.terminator_freeze_vision_encoder)
             terminator.requires_grad_(True)
@@ -116,11 +125,41 @@ class SkillAuxPolicy(PreTrainedPolicy):
     name = "skill_aux"
 
     def __init__(self, config: SkillAuxConfig, **kwargs):
-        del kwargs
+        skip_auxiliary_warm_start = bool(
+            kwargs.pop("_skip_auxiliary_warm_start", False)
+        )
+        # The generic policy factory supplies these for policies that build
+        # internal normalizers. SkillAux uses the shared preprocessing pipeline.
+        kwargs.pop("dataset_stats", None)
+        kwargs.pop("dataset_meta", None)
+        if kwargs:
+            raise TypeError(f"Unexpected SkillAuxPolicy arguments: {sorted(kwargs)}")
         super().__init__(config)
         config.validate_features()
         self.config = config
         self.model = SkillAuxModules(config)
+        predictor_checkpoint = str(
+            config.skill_predictor_checkpoint_path
+            or config.auxiliary_checkpoint_path
+            or ""
+        ).strip()
+        terminator_checkpoint = str(
+            config.terminator_checkpoint_path
+            or config.auxiliary_checkpoint_path
+            or ""
+        ).strip()
+        if (
+            config.train_terminator
+            and terminator_checkpoint
+            and not skip_auxiliary_warm_start
+        ):
+            self._load_terminator_warm_start(terminator_checkpoint)
+        if (
+            config.train_skill_predictor
+            and predictor_checkpoint
+            and not skip_auxiliary_warm_start
+        ):
+            self._load_complete_predictor_warm_start(predictor_checkpoint)
 
         levels = torch.tensor(config.skill_fsq_levels, dtype=torch.long)
         strides = torch.ones_like(levels)
@@ -149,10 +188,13 @@ class SkillAuxPolicy(PreTrainedPolicy):
             self.model.fsq_state_rnn_term_train.to(dtype=torch.float32)
         self.to(device=config.device)
         log.info(
-            "Auxiliary-only policy: terminator=%s, image_only_terminator=%s, "
+            "Auxiliary-only policy: terminator=%s (%s/%s/%s), image_only_terminator=%s, "
             "wrist_only_terminator=%s, state_only_terminator=%s, "
             "state_rnn_terminator=%s, skill_predictor=%s",
             config.train_terminator,
+            config.terminator_context,
+            config.terminator_arch,
+            config.terminator_vision_backbone,
             config.train_image_only_terminator,
             config.train_wrist_only_terminator,
             config.train_state_only_terminator,
@@ -467,33 +509,55 @@ class SkillAuxPolicy(PreTrainedPolicy):
         return objective, metrics
 
     def _terminator_objective(self, batch: dict) -> tuple[Tensor, dict[str, float]]:
-        required = (
+        required = [
             "skill_ds",
             "skill_de",
-            "skill_decoder_state",
             "observation.images.image",
             "observation.images.wrist_image",
-        )
-        missing = [key for key in required if key not in batch]
-        if missing:
-            raise ValueError(f"Terminator training batch is missing {missing}.")
+        ]
         terminator = self.model.fsq_term_train
         if terminator is None:
             raise RuntimeError("Terminator training is disabled.")
+        context_mode = str(getattr(terminator, "context_mode", "proprio"))
+        if context_mode == "prev_action":
+            required.extend((SKILL_PREVIOUS_ACTION, SKILL_PREVIOUS_ACTION_BOS))
+        else:
+            required.append("skill_decoder_state")
+        missing = [key for key in required if key not in batch]
+        if missing:
+            raise ValueError(f"Terminator training batch is missing {missing}.")
         device = next(terminator.parameters()).device
         dtype = next(terminator.parameters()).dtype
         true_code = self._true_skill_code(batch)
-        raw_state = batch["skill_decoder_state"].to(device=device, dtype=dtype)[
-            ..., : int(terminator.state_dim)
-        ]
-        if raw_state.ndim == 3:
-            raw_state = raw_state[:, -1]
+        if context_mode == "prev_action":
+            action = batch[SKILL_PREVIOUS_ACTION].to(device=device, dtype=dtype)
+            if action.ndim == 3 and action.shape[1] == 1:
+                action = action[:, 0]
+            if action.ndim != 2 or action.shape[-1] < int(terminator.state_dim):
+                raise ValueError(
+                    "Previous terminator action must be (B,A) with "
+                    f"A>={terminator.state_dim}, got {tuple(action.shape)}."
+                )
+            context = terminator.normalize_previous_action(
+                action[..., : int(terminator.state_dim)]
+            )
+            bos = batch[SKILL_PREVIOUS_ACTION_BOS].to(
+                device=device, dtype=torch.bool
+            ).view(-1)
+            context = context.clone()
+            context[bos] = 0.0
+        else:
+            context = batch["skill_decoder_state"].to(device=device, dtype=dtype)[
+                ..., : int(terminator.state_dim)
+            ]
+            if context.ndim == 3:
+                context = context[:, -1]
         z_q = self._code_to_zq(true_code.to(self._fsq_strides.device)).to(
             device=device, dtype=dtype
         )
         progress_prediction, termination_logits = terminator(
             z_q,
-            raw_state,
+            context,
             self._as_channels_first(batch["observation.images.image"]).to(
                 device=device, dtype=dtype
             ),
@@ -1043,6 +1107,78 @@ class SkillAuxPolicy(PreTrainedPolicy):
             "skill_predictor": count(self.model.skill_predictor),
         }
 
+    def _load_terminator_warm_start(self, checkpoint_path: str | Path) -> None:
+        terminator = self.model.fsq_term_train
+        if terminator is None:
+            return
+        path = Path(checkpoint_path)
+        config_path = path / "config.json"
+        weights_path = path / "model.safetensors"
+        if not config_path.is_file() or not weights_path.is_file():
+            raise FileNotFoundError(
+                f"Incomplete auxiliary warm-start checkpoint: {path}"
+            )
+        source = json.loads(config_path.read_text())
+        if source.get("type") != "skill_aux" or not source.get(
+            "train_terminator", False
+        ):
+            raise ValueError(
+                "Terminator warm-start requires a skill_aux checkpoint with "
+                "train_terminator=true."
+            )
+        expected_contract = {
+            "skill_fsq_levels": self.config.skill_fsq_levels,
+            "skill_vocab_size": self.config.skill_vocab_size,
+            "terminator_context": self.config.terminator_context,
+            "terminator_arch": self.config.terminator_arch,
+            "terminator_vision_backbone": self.config.terminator_vision_backbone,
+            "terminator_termination_only": self.config.terminator_termination_only,
+        }
+        mismatches = [
+            f"{field}: checkpoint={source.get(field)!r}, current={value!r}"
+            for field, value in expected_contract.items()
+            if source.get(field) != value
+        ]
+        source_space = str(source.get("skill_code_space_id", "") or "").strip()
+        current_space = str(self.config.skill_code_space_id or "").strip()
+        if source_space and current_space and source_space != current_space:
+            mismatches.append(
+                "skill_code_space_id: "
+                f"checkpoint={source_space!r}, current={current_space!r}"
+            )
+        if mismatches:
+            raise ValueError(
+                "Terminator warm-start contract mismatch: " + "; ".join(mismatches)
+            )
+
+        prefix = "model.fsq_term_train."
+        target_state = terminator.state_dict()
+        with safe_open(str(weights_path), framework="pt", device="cpu") as checkpoint:
+            source_keys = {
+                key.removeprefix(prefix)
+                for key in checkpoint.keys()
+                if key.startswith(prefix)
+            }
+            missing = set(target_state) - source_keys
+            unexpected = source_keys - set(target_state)
+            if missing or unexpected:
+                raise RuntimeError(
+                    "Terminator warm-start tensor mismatch: "
+                    f"missing={sorted(missing)}, unexpected={sorted(unexpected)}"
+                )
+            with torch.no_grad():
+                for key, target in target_state.items():
+                    value = checkpoint.get_tensor(prefix + key)
+                    if value.shape != target.shape:
+                        raise RuntimeError(
+                            f"Terminator warm-start shape mismatch for {key}: "
+                            f"checkpoint={tuple(value.shape)}, current={tuple(target.shape)}"
+                        )
+                    target.copy_(value.to(device=target.device, dtype=target.dtype))
+        log.info(
+            "Loaded %d terminator tensors from %s.", len(target_state), path
+        )
+
     def _load_pi05_predictor_base(self, pretrained_path: str | Path) -> None:
         predictor = self.model.skill_predictor
         if predictor is None:
@@ -1108,6 +1244,45 @@ class SkillAuxPolicy(PreTrainedPolicy):
         loaded = _load_learned_predictor_parameters(predictor, path)
         log.info("Loaded %d learned predictor tensors from %s.", loaded, path)
 
+    def _load_complete_predictor_warm_start(
+        self, checkpoint_path: str | Path
+    ) -> None:
+        predictor = self.model.skill_predictor
+        if predictor is None:
+            return
+        path = Path(checkpoint_path)
+        config_path = path / "config.json"
+        if not config_path.is_file():
+            raise FileNotFoundError(
+                f"Predictor warm-start config not found: {config_path}"
+            )
+        source = json.loads(config_path.read_text())
+        if source.get("type") != "skill_aux" or not source.get(
+            "train_skill_predictor", False
+        ):
+            raise ValueError(
+                "Complete predictor warm-start requires a skill_aux checkpoint "
+                "with train_skill_predictor=true."
+            )
+        mismatches = [
+            f"{field}: checkpoint={source.get(field)!r}, current={getattr(self.config, field)!r}"
+            for field in _PREDICTOR_CHECKPOINT_CONTRACT_FIELDS
+            if source.get(field) != getattr(self.config, field)
+        ]
+        source_space = str(source.get("skill_code_space_id", "") or "").strip()
+        current_space = str(self.config.skill_code_space_id or "").strip()
+        if source_space and current_space and source_space != current_space:
+            mismatches.append(
+                "skill_code_space_id: "
+                f"checkpoint={source_space!r}, current={current_space!r}"
+            )
+        if mismatches:
+            raise ValueError(
+                "Predictor warm-start contract mismatch: " + "; ".join(mismatches)
+            )
+        loaded = _load_complete_predictor_parameters(predictor, path)
+        log.info("Loaded %d complete predictor tensors from %s.", loaded, path)
+
     @classmethod
     def from_pretrained(
         cls,
@@ -1122,6 +1297,7 @@ class SkillAuxPolicy(PreTrainedPolicy):
         if config_path.is_file():
             source_type = json.loads(config_path.read_text()).get("type")
         if source_type == "skill_aux":
+            kwargs["_skip_auxiliary_warm_start"] = True
             return super().from_pretrained(
                 pretrained_name_or_path,
                 config=config,
@@ -1133,8 +1309,13 @@ class SkillAuxPolicy(PreTrainedPolicy):
         policy = cls(config, **kwargs)
         if config.train_skill_predictor:
             policy._load_pi05_predictor_base(pretrained_name_or_path)
-            if str(config.skill_predictor_checkpoint_path or "").strip():
-                policy._load_predictor_warm_start(config.skill_predictor_checkpoint_path)
+            predictor_checkpoint = str(
+                config.skill_predictor_checkpoint_path
+                or config.auxiliary_checkpoint_path
+                or ""
+            ).strip()
+            if predictor_checkpoint:
+                policy._load_predictor_warm_start(predictor_checkpoint)
         return policy
 
     def predict_action_chunk(self, batch: dict, **kwargs) -> Tensor:

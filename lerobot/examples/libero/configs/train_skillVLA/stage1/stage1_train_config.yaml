@@ -7,7 +7,7 @@ dataset:
 
 # Optional user label. It is appended at the very end of the automatic output
 # and W&B run name. Empty keeps the standard ablation naming unchanged.
-run: {suffix: "visfreeze"}
+run: {suffix: "visfreeze_slow"}
 
 warm_start:
   pi_base: models/pi05_base
@@ -130,5 +130,5 @@ training:
 logging:
   wandb: {enable: true, project: VLA_stage1}
 
-# slurm: {gres: "gpu:1", cpus: 10, memory: 128G, time: "48:00:00"}
+# slurm: {gres: "gpu:1", cpus: 10, memory: 128G, time: "12:00:00"}
 slurm: {gres: "gpu:1", cpus: 12, memory: 128G, time: "48:00:00"}

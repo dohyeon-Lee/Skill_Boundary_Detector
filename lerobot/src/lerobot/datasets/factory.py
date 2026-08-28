@@ -120,7 +120,10 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
                     needs_predictor_start = bool(
                         getattr(cfg.policy, "train_skill_predictor", False)
                     )
-                    if needs_predictor_start:
+                    needs_previous_action = bool(
+                        getattr(cfg.policy, "train_terminator", False)
+                    )
+                    if needs_predictor_start or needs_previous_action:
                         from functools import partial
 
                         from lerobot.policies.skillVLA.dataset_skillVLA import (
@@ -129,10 +132,10 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
 
                         dataset_cls = partial(
                             SkillVLADataset,
-                            include_predictor_start_inputs=True,
+                            include_predictor_start_inputs=needs_predictor_start,
                         )
                     else:
-                        # Current-view terminators consume no skill-start frame.
+                        # Legacy state-only auxiliaries need neither extra field.
                         dataset_cls = LeRobotDataset
                 elif policy_type == "skill_vla" and _packs:
                     from functools import partial

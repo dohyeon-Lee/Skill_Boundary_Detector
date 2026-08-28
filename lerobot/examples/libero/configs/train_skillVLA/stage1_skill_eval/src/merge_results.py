@@ -89,12 +89,72 @@ def _model_skill_success(
     return stats
 
 
-def report_payload(manifest: dict, *, levels: list[int]) -> dict:
-    by_token: dict[int, list[dict]] = {}
-    for record in manifest["records"].values():
-        by_token.setdefault(int(record["token"]), []).append(record)
+def _model_levels(manifest: dict, levels: list[int] | None) -> list[list[int]]:
+    policies = manifest["signature"].get("policies", [])
+    configured = manifest.get("model_levels")
+    if configured:
+        return [[int(value) for value in row] for row in configured]
+    from_policies = [policy.get("fsq_levels") for policy in policies]
+    if from_policies and all(row for row in from_policies):
+        return [[int(value) for value in row] for row in from_policies]
+    fallback = levels or manifest.get("levels")
+    if fallback is None:
+        raise ValueError("Report manifest does not contain FSQ levels.")
+    return [[int(value) for value in fallback] for _ in policies]
+
+
+def report_payload(manifest: dict, *, levels: list[int] | None = None) -> dict:
+    signature = manifest["signature"]
+    model_levels = _model_levels(manifest, levels)
+    records_all = list(manifest["records"].values())
+    skill_spaces = []
+    for model_index, policy in enumerate(signature.get("policies", [])):
+        by_model_token: dict[int, list[dict]] = {}
+        for record in records_all:
+            if int(record.get("model_index", 0)) == model_index:
+                by_model_token.setdefault(int(record["token"]), []).append(record)
+        entries = []
+        for token, records in sorted(by_model_token.items()):
+            records.sort(
+                key=lambda value: (
+                    value["task_id"],
+                    value["episode_id"],
+                    value["frame_start"],
+                )
+            )
+            entries.append(
+                {
+                    "token": token,
+                    "coord": token_to_coord(token, model_levels[model_index]),
+                    "member_ids": sorted(
+                        {
+                            str(record.get("occurrence_uid", record["uid"]))
+                            for record in records
+                        }
+                    ),
+                }
+            )
+        skill_spaces.append(
+            {
+                "model_index": model_index,
+                "label": str(policy.get("label", f"model_{model_index:02d}")),
+                "levels": model_levels[model_index],
+                "skills": entries,
+            }
+        )
+
+    # Retain the original primary-space `skills` payload for old consumers.
+    # Each primary token now contains every policy evaluation of the same GT
+    # occurrences, rather than grouping unrelated spaces by numeric token.
     skills = []
-    for token, records in sorted(by_token.items()):
+    primary_skills = skill_spaces[0]["skills"] if skill_spaces else []
+    for primary_skill in primary_skills:
+        member_ids = set(primary_skill["member_ids"])
+        records = [
+            record
+            for record in records_all
+            if str(record.get("occurrence_uid", record["uid"])) in member_ids
+        ]
         records.sort(
             key=lambda value: (
                 value["task_id"],
@@ -105,20 +165,20 @@ def report_payload(manifest: dict, *, levels: list[int]) -> dict:
         )
         skills.append(
             {
-                "token": token,
-                "coord": token_to_coord(token, levels),
+                "token": primary_skill["token"],
+                "coord": primary_skill["coord"],
+                "member_ids": primary_skill["member_ids"],
                 "model_skill_success": _model_skill_success(
                     manifest,
                     records=records,
                 ),
-                "occurrences": records,
             }
         )
-    signature = manifest["signature"]
     review_id = review_id_for_signature(signature)
     return {
         "review_id": review_id,
-        "levels": levels,
+        "levels": model_levels[0] if model_levels else [],
+        "model_levels": model_levels,
         "model_label": manifest["model_label"],
         "models": signature.get("policies", manifest.get("models", [])),
         "main_terminator": signature.get("main_terminator", {}),
@@ -137,6 +197,9 @@ def report_payload(manifest: dict, *, levels: list[int]) -> dict:
         "model_skill_success": _model_skill_success(manifest),
         "time_shift_offset": signature["time_shift_offset"],
         "terminator_models": signature.get("terminator_models", []),
+        "main_terminators": signature.get("main_terminators", []),
+        "occurrences": records_all,
+        "skill_spaces": skill_spaces,
         "skills": skills,
     }
 
@@ -172,11 +235,16 @@ def maybe_merge_chunks(
             return None
         signature = chunks[0].get("signature")
         levels = chunks[0].get("levels")
+        model_levels = chunks[0].get("model_levels")
         for index, chunk in enumerate(chunks):
             if chunk.get("signature") != signature:
                 raise ValueError(f"Chunk {index} signature does not match chunk 0.")
             if chunk.get("levels") != levels:
                 raise ValueError(f"Chunk {index} FSQ levels do not match chunk 0.")
+            if chunk.get("model_levels") != model_levels:
+                raise ValueError(
+                    f"Chunk {index} per-model FSQ levels do not match chunk 0."
+                )
             if int(chunk.get("chunk_index", -1)) != index:
                 raise ValueError(
                     f"Expected chunk_index={index}, got {chunk.get('chunk_index')}."
@@ -210,13 +278,14 @@ def maybe_merge_chunks(
             "models": chunks[0].get("models", []),
             "architecture_label": chunks[0].get("architecture_label", ""),
             "levels": levels,
+            "model_levels": model_levels,
             "chunk_count": expected_chunks,
             "records": records,
         }
         _atomic_json(manifest_path, merged)
         return write_html_report(
             output_dir,
-            report_payload(merged, levels=[int(value) for value in levels]),
+            report_payload(merged),
         )
 
 

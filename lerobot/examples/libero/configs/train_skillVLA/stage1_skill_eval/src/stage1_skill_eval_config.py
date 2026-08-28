@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Resolve the multi-policy, single-terminator Stage-1 skill evaluation config."""
+"""Resolve multi-policy Stage-1 evaluation across one or more FSQ spaces."""
 
 from __future__ import annotations
 
@@ -84,22 +84,19 @@ def _resolve_end_rule(
 
 
 def _resolve_terminator_model(
-    config: dict,
+    raw: object,
     *,
     project_root: Path,
     outputs_root: Path,
+    field: str = "terminator_model",
 ) -> tuple[Path, str, str, dict[str, str | float]]:
-    raw = get_value(config, "terminator_model", None)
-    if raw is None:
-        # Keep old configs readable while making the new singular role explicit.
-        raw = get_value(config, "external_skill_model", None)
     if raw is None or raw == "":
-        raise ValueError("Set the shared top-level terminator_model.")
+        raise ValueError(f"Set {field} or a top-level terminator_model default.")
     if not isinstance(raw, dict):
         path = _relocate_project_path(project_root, str(raw).strip())
         return path, "state_image", "shared-terminator", _resolve_end_rule(
             {},
-            field="terminator_model",
+            field=field,
             default_mode="termination",
             default_end_threshold=0.5,
             default_progress_threshold=0.95,
@@ -109,60 +106,50 @@ def _resolve_terminator_model(
         set(raw)
         - {
             "label",
-            "variant",
             "path",
-            "group",
             "model_dir",
             "checkpoint",
-            "end_mode",
             "end_threshold",
-            "progress_threshold",
         }
     )
     if unknown:
         raise ValueError(
-            "terminator_model supports checkpoint selection plus its own "
-            "end_mode/end_threshold/progress_threshold; "
+            f"{field} supports label/model_dir/checkpoint/end_threshold; "
+            "variant=state_image and group=skillVLA_terminator are fixed; "
+            "termination mode is fixed; "
             f"unknown={unknown}."
         )
-    aliases = {
-        "normal": "state_image",
-        "state_image": "state_image",
-        "state+image": "state_image",
-        "image": "image_only",
-        "image_only": "image_only",
-        "image-only": "image_only",
-    }
-    variant = aliases.get(str(raw.get("variant", "state_image")).strip().lower())
-    if variant is None:
-        raise ValueError("terminator_model.variant must be state_image|image_only.")
+    variant = "state_image"
     label = _clean_label(str(raw.get("label", "shared-terminator")))
     path_value = str(raw.get("path", "") or "").strip()
-    checkpoint_fields = any(raw.get(field) for field in ("group", "model_dir", "checkpoint"))
+    checkpoint_fields = any(raw.get(name) for name in ("model_dir", "checkpoint"))
     if path_value and checkpoint_fields:
         raise ValueError(
-            "terminator_model cannot mix path with group/model_dir/checkpoint."
+            f"{field} cannot mix path with group/model_dir/checkpoint."
         )
     if path_value:
         path = _relocate_project_path(project_root, path_value)
     else:
-        group = _safe_name(
-            str(raw.get("group", "skillVLA_stage1")), field="terminator_model.group"
-        )
+        group = "skillVLA_terminator"
         model_dir = _safe_name(
-            str(raw.get("model_dir", "")), field="terminator_model.model_dir"
+            str(raw.get("model_dir", "")), field=f"{field}.model_dir"
         )
         checkpoint = _safe_name(
-            str(raw.get("checkpoint", "")), field="terminator_model.checkpoint"
+            str(raw.get("checkpoint", "")), field=f"{field}.checkpoint"
         )
         path = outputs_root / group / model_dir / "checkpoints" / checkpoint / "pretrained_model"
-    end_rule = _resolve_end_rule(
-        raw,
-        field="terminator_model",
-        default_mode="termination",
-        default_end_threshold=0.5,
-        default_progress_threshold=0.95,
-    )
+    end_threshold = float(raw.get("end_threshold", 0.5))
+    if not 0.0 <= end_threshold <= 1.0:
+        raise ValueError(
+            f"{field}.end_threshold must be in [0, 1], got {end_threshold}."
+        )
+    end_rule = {
+        "end_mode": "termination",
+        "end_threshold": end_threshold,
+        # Retained only for the common runtime/report schema; termination mode
+        # never reads this value.
+        "progress_threshold": 0.95,
+    }
     return path, variant, label, end_rule
 
 
@@ -304,48 +291,40 @@ def _resolve_main_terminator(
 def build_settings(config: dict) -> dict:
     project_root = Path(str(get_value(config, "project_root", _PROJECT_ROOT_DEFAULT))).expanduser()
     outputs_root = project_root / str(get_value(config, "outputs_root", "outputs"))
-    (
-        terminator_path,
-        terminator_variant,
-        terminator_label,
-        terminator_end_rule,
-    ) = _resolve_terminator_model(
-        config,
-        project_root=project_root,
-        outputs_root=outputs_root,
-    )
-    main_terminator = _resolve_main_terminator(
-        config,
-        terminator_variant=terminator_variant,
-        terminator_label=terminator_label,
-        terminator_end_rule=terminator_end_rule,
-    )
+    if get_value(config, "terminator_model", None) is not None:
+        raise ValueError(
+            "Top-level terminator_model was removed. Set "
+            "models[].terminator_model explicitly for every policy."
+        )
 
     model_config = dict(config)
     defaults = dict(get_value(config, "model_defaults", {}) or {})
     defaults.setdefault("skill_source", "gt")
     defaults["advance_mode"] = "external"
-    defaults["terminator_variant"] = terminator_variant
+    # _model_entries requires a variant even though the authoritative value is
+    # resolved independently from each model's terminator_model below.
+    defaults.setdefault("terminator_variant", "state_image")
     model_config["model_defaults"] = defaults
     entries = _model_entries(model_config)
     if any(entry["skill_source"] != "gt" for entry in entries):
         raise ValueError("stage1_skill_eval models always use skill_source=gt.")
     if any(entry["advance_mode"] != "external" for entry in entries):
         raise ValueError(
-            "stage1_skill_eval uses the one shared terminator_model for every policy; "
+            "stage1_skill_eval uses an external terminator for every policy; "
             "models[].advance_mode must be external."
         )
-    if any(entry["terminator_variant"] != terminator_variant for entry in entries):
-        raise ValueError(
-            "models[].terminator_variant cannot override shared terminator_model.variant."
-        )
+
+    raw_models = get_value(config, "models", None)
+    if not isinstance(raw_models, list) or not raw_models:
+        raw_models = [{}]
 
     resolved = []
     for entry in entries:
-        # This evaluator drives both overlays from the one terminator_model, so
-        # drop stage1_eval's per-role raw values instead of exporting them.
+        # Stage1 eval's legacy external-model fields are superseded by the
+        # concise terminator_model block (per model, with a top-level default).
         entry.pop("external_predictor_model_value", None)
         entry.pop("external_terminator_model_value", None)
+        entry.pop("external_terminator_checkpoint", None)
         model_root = outputs_root / "skillVLA_stage1"
         if entry["previous_checkpoint"]:
             model_root = model_root / "previous"
@@ -357,6 +336,29 @@ def build_settings(config: dict) -> dict:
             / "pretrained_model"
         )
         contract = _checkpoint_contract(policy_path, project_root)
+        raw_model = raw_models[int(entry.get("model_index", 0))]
+        terminator_raw = (
+            raw_model.get("terminator_model")
+            if isinstance(raw_model, dict)
+            else None
+        )
+        (
+            terminator_path,
+            terminator_variant,
+            terminator_label,
+            terminator_end_rule,
+        ) = _resolve_terminator_model(
+            terminator_raw,
+            project_root=project_root,
+            outputs_root=outputs_root,
+            field=f"models[{int(entry.get('model_index', 0))}].terminator_model",
+        )
+        main_terminator = _resolve_main_terminator(
+            config,
+            terminator_variant=terminator_variant,
+            terminator_label=terminator_label,
+            terminator_end_rule=terminator_end_rule,
+        )
         _validate_external_terminator(
             terminator_path,
             target_policy=contract["policy"],
@@ -378,6 +380,7 @@ def build_settings(config: dict) -> dict:
                     else terminator_path
                 ),
                 "external_skill_model_variant": main_terminator["variant"],
+                "main_terminator": main_terminator,
                 "terminator_models": [
                     {
                         "label": terminator_label,
@@ -387,23 +390,27 @@ def build_settings(config: dict) -> dict:
                     }
                 ],
                 **contract,
+                "fsq_levels": [
+                    int(value) for value in contract["policy"]["skill_fsq_levels"]
+                ],
             }
         )
 
     primary = resolved[0]
-    shared_artifact_fields = (
-        "skill_dataset_dir",
-        "skill_latents_path",
-        "eval_init_states_path",
-        "fsq_path",
-    )
-    for field in shared_artifact_fields:
-        paths = {Path(model[field]).resolve() for model in resolved}
-        if len(paths) != 1:
-            raise ValueError(
-                "Multi-policy skill comparison requires every policy to share "
-                f"the same {field}; got {sorted(map(str, paths))}."
-            )
+    main_terminator = primary["main_terminator"]
+    terminator_path = Path(primary["terminator_models"][0]["path"])
+    terminator_variant = str(primary["terminator_models"][0]["variant"])
+    terminator_label = str(primary["terminator_models"][0]["label"])
+    terminator_end_rule = {
+        key: primary["terminator_models"][0][key]
+        for key in ("end_mode", "end_threshold", "progress_threshold")
+    }
+    exact_maps = {Path(model["eval_init_states_path"]).resolve() for model in resolved}
+    if len(exact_maps) != 1:
+        raise ValueError(
+            "Different skill spaces must still refer to the same exact source "
+            f"episodes (eval_init_states_path); got {sorted(map(str, exact_maps))}."
+        )
 
     if not as_bool(get_value(config, "episode_exact", True)):
         raise ValueError(
@@ -414,8 +421,12 @@ def build_settings(config: dict) -> dict:
             "Episode-exact map not found: "
             f"{primary['eval_init_states_path']}. Build it with stage1_eval/oracle_matching."
         )
-    if not primary["skill_latents_path"].is_file():
-        raise FileNotFoundError(f"Skill occurrence metadata not found: {primary['skill_latents_path']}")
+    for model in resolved:
+        if not model["skill_latents_path"].is_file():
+            raise FileNotFoundError(
+                f"Skill occurrence metadata not found for {model['label']}: "
+                f"{model['skill_latents_path']}"
+            )
 
     target_task = str(get_value(config, "target_task", "libero_90")).strip()
     task_ids = get_value(config, "task_ids", [0])

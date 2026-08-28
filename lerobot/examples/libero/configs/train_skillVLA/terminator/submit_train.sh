@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Submit auxiliary-only terminator / skill predictor training.
+# Submit unified PT/FT skill predictor + FSQ terminator training.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC_DIR="${SCRIPT_DIR}/src"
-CONFIG_PATH="${TERMINATOR_TRAIN_CONFIG:-${SCRIPT_DIR}/terminator_train_config.yaml}"
+CONFIG_PATH="${SKILL_AUX_TRAIN_CONFIG:-${TERMINATOR_TRAIN_CONFIG:-${SCRIPT_DIR}/auxiliary_train_config.yaml}}"
 if [ "$#" -ne 0 ]; then
-  echo "Usage: $0 (select train targets in terminator_train_config.yaml)" >&2
+  echo "Usage: $0 (configure mode and train targets in auxiliary_train_config.yaml)" >&2
   exit 2
 fi
 
@@ -53,10 +53,11 @@ fi
 cd "${SCRIPT_DIR}"
 mkdir -p logs
 echo "Submit auxiliary-only training"
-echo "  mode    : ${TRAINING_MODE}"
-echo "  run     : ${PT_RUN_NAME}"
+echo "  init    : ${INITIALIZATION_MODE}"
+echo "  targets : ${TRAINING_MODE}"
+echo "  run     : ${RUN_NAME}"
 echo "  dataset : ${SKILLVLA_DATASET_DIR}"
-echo "  output  : ${PT_OUTPUT_DIR}"
+echo "  output  : ${OUTPUT_DIR}"
 
-TERMINATOR_TRAIN_CONFIG="${CONFIG_PATH}" \
+SKILL_AUX_TRAIN_CONFIG="${CONFIG_PATH}" \
   sbatch "${SBATCH_ARGS[@]}" "${SRC_DIR}/train.sbatch"
