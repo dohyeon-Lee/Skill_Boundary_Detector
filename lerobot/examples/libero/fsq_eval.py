@@ -51,9 +51,9 @@ from FSQ import (  # noqa: E402
     encoder_grounding_position,
     load_fsq_model as load_original_fsq_model,
     prepare_encoder_trajectory,
+    spline_decode,
     spline_encode,
 )
-from FSQ_original import spline_decode  # noqa: E402
 from train_FSQ import attach_episode_offsets, load_skill_files  # noqa: E402
 
 

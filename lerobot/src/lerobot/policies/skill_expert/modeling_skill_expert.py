@@ -1807,6 +1807,25 @@ class SkillExpertPolicy(PreTrainedPolicy):
             from lerobot.policies.skillVLA.skill_jitter import choose_jitter_torch  # noqa: PLC0415
 
             original_index = index
+            directional_values = {
+                "early_start_pmax": getattr(
+                    self.config, "transition_jitter_early_start_pmax", -1
+                ),
+                "late_start_pmax": getattr(
+                    self.config, "transition_jitter_late_start_pmax", -1
+                ),
+                "early_end_pmax": getattr(
+                    self.config, "transition_jitter_early_end_pmax", -1
+                ),
+                "late_end_pmax": getattr(
+                    self.config, "transition_jitter_late_end_pmax", -1
+                ),
+            }
+            directional_kwargs = (
+                directional_values
+                if any(value >= 0 for value in directional_values.values())
+                else {}
+            )
             index, _ = choose_jitter_torch(
                 index,
                 batch["skill_ds"].long().reshape(-1),
@@ -1814,6 +1833,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 batch["skill_sequence_len"].long().reshape(-1),
                 self.config.transition_jitter_pmax,
                 distribution=self.config.transition_jitter_distribution,
+                **directional_kwargs,
             )
             index = index.clamp(0, sequence.shape[1] - 1)
             self._last_transition_jitter_fraction = (index != original_index).float().mean()

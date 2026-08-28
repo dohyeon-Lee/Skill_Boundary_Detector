@@ -11,11 +11,16 @@ skillset_name: skillset
 
 
 # ── Experiment / bottleneck ──────────────────────────────────────────────────
-# Optional suffix appended after the automatic mode/decoder/loss run name.
+# Optional suffix appended after the automatic quantizer/mode/decoder/loss name.
+# FSQ starts with its levels (FSQ333_...); BSQ shows one binary level per
+# latent dimension (for example, code_dim=4 becomes BSQ2222_...).
 # Two layers are the default and therefore carry no suffix; set this only for
 # a genuinely separate experiment (for example "layer3").
-fsq_exp: "term01"
-fsq_levels: [3, 3, 3]              # 27 codes
+fsq_exp: ""
+# Choose exactly one of the following forms.
+fsq_quantizer: {type: fsq, levels: [3,3,3,3]}  # 27 scalar-grid codes
+# fsq_quantizer: {type: fsq, levels: [2,2,2,2,2]}  # 27 scalar-grid codes
+# fsq_quantizer: {type: bsq, code_dim: 5}       # 32 spherical binary codes
 fsq_hidden_dim: 256
 fsq_num_layers: 2
 
@@ -36,7 +41,7 @@ fsq_autoencoder: {mode: norm_action, gripper_weight: 0.1}  # raw | zero | action
 # remains the decoder content; the normalized skill-start proprio state only
 # modulates decoder blocks through a separate zero-init AdaLN path.
 fsq_start_state_conditioning: none      # none | adaln
-fsq_terminator: {termination: true, context: prev_action, default_arch: fusion, vision_backbone: resnet, freeze_vision_encoder: true}
+fsq_terminator: {termination: false, context: prev_action, default_arch: fusion, vision_backbone: resnet, freeze_vision_encoder: false}
 fsq_decoder_reconstructor: true
 
 
@@ -44,11 +49,10 @@ fsq_decoder_reconstructor: true
 # One-time z_head calibration only; samples=0 uses all training skills.
 fsq_init_calibration: {enabled: true, gain: 1.0, samples: 0}
 
-fsq_entropy: false
 
 # Losses are each configured in one place. pair type: none | contrastive | overlap | js.
 # type=none disables pair loss and names the run pairOFF.
-fsq_pair_loss: {type: js, weight: 0.1, inv_temperature: 5.0}
+fsq_pair_loss: {type: contrastive, weight: 0.1, inv_temperature: 5.0}
 fsq_route_loss: {enabled: true}
 fsq_action_loss: {weight: 1.0}
 fsq_end_loss: {weight: 0.1, target_sigma: 2.0}
@@ -71,7 +75,7 @@ fsq_lr_schedule: constant           # constant | cosine
 
 fsq_batch_size: 64
 fsq_num_epochs: 2000
-fsq_samples_per_skill: 1            # full sequence is decoded once per skill
+fsq_samples_per_skill: 1            # train: random timestep; val: fixed start/mid/end
 fsq_num_workers: 10 # 10
 fsq_val_num_workers: 0
 fsq_val_every: 25

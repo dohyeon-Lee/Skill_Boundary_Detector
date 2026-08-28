@@ -196,10 +196,32 @@ def maybe_build_compare(
         ):
             return None
         payload = compare_payload(collection_dirs, output_dir=output_dir)
+        _maybe_add_categorization_report(
+            payload, collection_dirs=collection_dirs, output_dir=output_dir
+        )
         _atomic_json(metrics / "compare.json", payload)
         report = write_html_report(output_dir, payload)
         write_linked_codebooks_report(output_dir, payload)
         return report
+
+
+def _maybe_add_categorization_report(
+    payload: dict,
+    *,
+    collection_dirs: list[str | Path],
+    output_dir: str | Path,
+) -> Path | None:
+    """Build the optional full-dataset analysis without risking replay results."""
+    try:
+        from fsq_gt_replay_categorization import build_report
+
+        path = build_report(collection_dirs, output_dir=output_dir)
+    except Exception as error:  # The replay itself remains useful if analysis artifacts are absent.
+        print(f"categorization analysis unavailable: {error}")
+        payload.pop("categorization_analysis", None)
+        return None
+    payload["categorization_analysis"] = path.name
+    return path
 
 
 def _atomic_json(path: Path, payload: dict) -> None:
@@ -339,11 +361,16 @@ def write_html_report(output_dir: str | Path, payload: dict) -> Path:
     data_scripts = "\n".join(
         f'<script src="{path.name}"></script>' for path in data_paths
     )
-    linked_link = (
-        '<a class="linked-link" href="linked_codebooks.html">Linked codebooks</a>'
-        if len(payload["models"]) > 1
-        else ""
-    )
+    report_links = []
+    if len(payload["models"]) > 1:
+        report_links.append(
+            '<a class="linked-link" href="linked_codebooks.html">Linked codebooks</a>'
+        )
+    if payload.get("categorization_analysis"):
+        report_links.append(
+            f'<a class="linked-link" href="{escape_html(str(payload["categorization_analysis"]))}">Categorization analysis</a>'
+        )
+    linked_link = " ".join(report_links)
     html = """<!doctype html>
 <html lang="en">
 <head>
@@ -636,6 +663,11 @@ def write_linked_codebooks_report(output_dir: str | Path, payload: dict) -> Path
     data_scripts = "\n".join(
         f'<script src="{path.name}"></script>' for path in data_paths
     )
+    analysis_link = (
+        f'<a class="back" href="{escape_html(str(payload["categorization_analysis"]))}">Categorization analysis</a>'
+        if payload.get("categorization_analysis")
+        else ""
+    )
     html = """<!doctype html>
 <html lang="en">
 <head>
@@ -653,7 +685,7 @@ def write_linked_codebooks_report(output_dir: str | Path, payload: dict) -> Path
   </style>
 </head>
 <body>
-<header><h1>__REPORT_TITLE__ · linked codebooks</h1><div class="subtitle" id="summary"></div><div class="toolbar"><label class="control">Checkpoint <select id="checkpoint"></select></label><a class="back" href="index.html">Standard report</a></div></header>
+<header><h1>__REPORT_TITLE__ · linked codebooks</h1><div class="subtitle" id="summary"></div><div class="toolbar"><label class="control">Checkpoint <select id="checkpoint"></select></label><a class="back" href="index.html">Standard report</a>__ANALYSIS_LINK__</div></header>
 <main><section class="codebooks" id="codebooks"></section><div class="legend"><span><i class="dot" style="background:#d62728"></i>clicked code</span><span><i class="dot" style="background:#f39c4a"></i>linked code(s)</span><span><i class="dot" style="background:#2878b5"></i>used</span><span><i class="dot" style="background:#d7dde8"></i>unused</span></div><div class="selected-info" id="selectedInfo"></div><section class="color-panel" id="colorPanel"></section><section id="content"></section></main>
 <script>window.FSQ_GT_REPLAY_DATA=__DATA_BOOTSTRAP__;</script>
 __DATA_SCRIPTS__
@@ -689,7 +721,9 @@ if(checkpointTags.length){chooseInitial();renderAll()}else{document.getElementBy
 </script>
 </body></html>""".replace(
         "__REPORT_TITLE__", escape_html(report_title)
-    ).replace("__DATA_BOOTSTRAP__", bootstrap).replace("__DATA_SCRIPTS__", data_scripts)
+    ).replace("__ANALYSIS_LINK__", analysis_link).replace(
+        "__DATA_BOOTSTRAP__", bootstrap
+    ).replace("__DATA_SCRIPTS__", data_scripts)
     path = output_dir / "linked_codebooks.html"
     temporary = path.with_suffix(".html.tmp")
     temporary.write_text(html, encoding="utf-8")
@@ -935,6 +969,9 @@ def main() -> None:
             Path(os.path.commonpath([str(path) for path in args.compare])) / "compare"
         )
         payload = compare_payload(args.compare, output_dir=output_dir)
+        categorization_path = _maybe_add_categorization_report(
+            payload, collection_dirs=args.compare, output_dir=output_dir
+        )
         _atomic_json(output_dir / "metrics" / "compare.json", payload)
         path = write_html_report(output_dir, payload)
         linked_path = write_linked_codebooks_report(output_dir, payload)
@@ -944,6 +981,8 @@ def main() -> None:
             print(f"model {model['name']}{note}: {tags}")
         print(f"report: {path}")
         print(f"linked codebooks: {linked_path}")
+        if categorization_path is not None:
+            print(f"categorization analysis: {categorization_path}")
         return
     if args.collection_dir is None:
         raise SystemExit("collection_dir is required unless --compare is used.")

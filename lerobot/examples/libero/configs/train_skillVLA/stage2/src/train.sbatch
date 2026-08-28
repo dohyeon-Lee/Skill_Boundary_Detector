@@ -114,6 +114,10 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.skill_vocab_size="${SKILL_VOCAB_SIZE}" \
     --policy.skill_fsq_levels="${SKILL_FSQ_LEVELS}" \
     --policy.transition_jitter_pmax="${TRANSITION_JITTER_PMAX}" \
+    --policy.transition_jitter_early_start_pmax="${TRANSITION_JITTER_EARLY_START_PMAX}" \
+    --policy.transition_jitter_late_start_pmax="${TRANSITION_JITTER_LATE_START_PMAX}" \
+    --policy.transition_jitter_early_end_pmax="${TRANSITION_JITTER_EARLY_END_PMAX}" \
+    --policy.transition_jitter_late_end_pmax="${TRANSITION_JITTER_LATE_END_PMAX}" \
     --policy.transition_jitter_distribution="${TRANSITION_JITTER_DISTRIBUTION}" \
     --policy.train_skill_predictor="${TRAIN_SKILL_PREDICTOR}" \
     --policy.skill_predictor_vlm_variant="${SKILL_PREDICTOR_VLM_VARIANT}" \

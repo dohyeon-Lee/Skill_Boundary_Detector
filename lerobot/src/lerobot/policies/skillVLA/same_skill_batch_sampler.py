@@ -261,6 +261,10 @@ class SameSkillDifferentTaskBatchSampler(BatchSampler):
                     self.dataset.jitter_pmax,
                     rng,
                     self.dataset.jitter_distribution,
+                    early_start_pmax=self.dataset.jitter_directional_pmaxes["early_start"],
+                    late_start_pmax=self.dataset.jitter_directional_pmaxes["late_start"],
+                    early_end_pmax=self.dataset.jitter_directional_pmaxes["early_end"],
+                    late_end_pmax=self.dataset.jitter_directional_pmaxes["late_end"],
                 )
                 anchor = partner = None
                 anchor_jitter = partner_jitter = None

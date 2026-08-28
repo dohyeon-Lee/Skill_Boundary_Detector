@@ -14,7 +14,6 @@ _ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(_ROOT / "lerobot/examples/libero"))
 
 import FSQ as fsq_module  # noqa: E402
-from FSQ_original import FSQOriginalConfig  # noqa: E402
 from FSQ import (  # noqa: E402
     BSQ,
     BoundaryAugmentationContext,
@@ -35,7 +34,6 @@ from FSQ import (  # noqa: E402
     build_skill_initial_previous_actions,
     calibrate_fsq_z_head_,
     episode_grouped_train_val_ids,
-    fsq_entropy_terms,
     fsq_js_pair_loss,
     fsq_lr_factor,
     fsq_overlap_pair_loss,
@@ -307,64 +305,6 @@ def test_linear_contrastive_overlap_uses_symmetric_positive_and_negative_terms(
     assert torch.isfinite(clean.grad).all()
     assert torch.isfinite(positive.grad).all()
     assert torch.isfinite(negative.grad).all()
-
-
-def test_entropy_conf_ceiling_is_an_exact_per_sample_hinge() -> None:
-    config = SplineFSQAEConfig(
-        action_dim=1,
-        max_action_dim=1,
-        chunk_size=1,
-        samples_per_skill=1,
-        action_loss_weight=0.0,
-        progress_loss_weight=0.0,
-        end_loss_weight=0.0,
-        fsq_entropy=True,
-        entropy_conf_weight=1.0,
-        entropy_conf_ceiling=0.1,
-        entropy_div_weight=0.0,
-        entropy_inv_temperature=10.0,
-        fsq_levels=[3],
-    )
-    bounded = torch.tensor([[0.0], [0.4]], requires_grad=True)
-    output = {
-        "actions": torch.zeros(2, 1, 1),
-        "progress": torch.zeros(2),
-        "term_logits": torch.zeros(2),
-        "u_cont": bounded,
-    }
-    batch = {
-        "ctrl": torch.zeros(2, 1, 1),
-        "actions": torch.zeros(2, 1, 1, 1),
-        "progress": torch.zeros(2, 1),
-        "termination": torch.zeros(2, 1),
-    }
-
-    raw_entropy, _ = fsq_entropy_terms(bounded, [3], 10.0, joint_dataset=True)
-    loss, metrics = fsq_reconstruction_loss(output, batch, config)
-
-    torch.testing.assert_close(metrics["entropy_sample"], raw_entropy)
-    torch.testing.assert_close(loss, metrics["entropy_conf_loss"])
-    torch.testing.assert_close(
-        metrics["entropy_conf_active_fraction"], torch.tensor(0.5)
-    )
-    assert metrics["entropy_conf_ceiling_nats"].item() == pytest.approx(
-        0.1 * np.log(3)
-    )
-    loss.backward()
-    torch.testing.assert_close(bounded.grad[0], torch.zeros(1), atol=0, rtol=0)
-    assert bounded.grad[1].abs().item() > 0
-
-    config.entropy_conf_ceiling = 0.0
-    legacy_bounded = torch.tensor([[0.0], [0.4]])
-    legacy_output = {**output, "u_cont": legacy_bounded}
-    legacy_raw_entropy, _ = fsq_entropy_terms(
-        legacy_bounded, [3], 10.0, joint_dataset=True
-    )
-    legacy_loss, legacy_metrics = fsq_reconstruction_loss(
-        legacy_output, batch, config
-    )
-    torch.testing.assert_close(legacy_metrics["entropy_conf_loss"], legacy_raw_entropy)
-    torch.testing.assert_close(legacy_loss, legacy_raw_entropy)
 
 
 def test_shuffle_delta_metrics_use_probabilities_and_only_different_codes() -> None:
@@ -1552,11 +1492,64 @@ def test_training_samples_are_uniform_over_the_full_skill(monkeypatch) -> None:
     np.testing.assert_array_equal(sample, [0, 2, 4, 6, 8])
 
 
-def test_validation_samples_are_a_deterministic_linspace() -> None:
+def test_validation_samples_are_fixed_start_mid_end_anchors() -> None:
     dataset = _sampling_only_dataset()
     dataset.training = False
 
-    np.testing.assert_array_equal(dataset._sample_indices(10), [0, 2, 4, 7, 9])
+    np.testing.assert_array_equal(dataset._sample_indices(10), [0, 4, 9])
+
+
+def test_validation_termination_anchor_metrics_report_each_position() -> None:
+    logits = torch.tensor([[0.0, -1.0, 2.0], [-2.0, 1.0, 0.0]])
+    target = torch.tensor([[0.0, 0.0, 1.0], [0.0, 0.0, 1.0]])
+
+    metrics = fsq_module.validation_termination_anchor_metrics(
+        logits,
+        target,
+        pos_weight=1.0,
+    )
+
+    probabilities = logits.sigmoid()
+    losses = torch.nn.functional.binary_cross_entropy_with_logits(
+        logits, target, reduction="none"
+    )
+    for index, name in enumerate(("start", "mid", "end")):
+        torch.testing.assert_close(
+            metrics[f"termination_{name}_probability"],
+            probabilities[:, index].mean(),
+        )
+        torch.testing.assert_close(
+            metrics[f"termination_{name}_bce"], losses[:, index].mean()
+        )
+
+
+def test_reconstruction_loss_uses_validation_sample_count_from_batch() -> None:
+    config = SplineFSQAEConfig(
+        action_dim=1,
+        max_action_dim=1,
+        chunk_size=1,
+        samples_per_skill=1,
+        action_loss_weight=0.0,
+        progress_loss_weight=0.0,
+        end_loss_weight=1.0,
+    )
+    output = {
+        "actions": torch.zeros(6, 1, 1),
+        "progress": torch.zeros(6),
+        "term_logits": torch.zeros(6),
+    }
+    batch = {
+        "ctrl": torch.zeros(2, 1, 1),
+        "actions": torch.zeros(2, 3, 1, 1),
+        "progress": torch.zeros(2, 3),
+        "termination": torch.tensor([[0.0, 0.0, 1.0], [0.0, 0.0, 1.0]]),
+        "sample_index": torch.tensor([[0, 4, 9], [0, 3, 7]]),
+    }
+
+    loss, metrics = fsq_reconstruction_loss(output, batch, config)
+
+    torch.testing.assert_close(loss, torch.tensor(np.log(2.0), dtype=torch.float32))
+    torch.testing.assert_close(metrics["termination"], loss)
 
 
 def test_reconstruction_action_loss_is_plain_sample_mean() -> None:
@@ -2256,57 +2249,6 @@ def test_image_only_builder_uses_fsq_config_but_no_fsq_model_weights(
     assert terminator.training is False
 
 
-def test_trainable_terminator_accepts_fsq_original_as_fresh_contract(
-    monkeypatch,
-) -> None:
-    state_min = np.arange(8, dtype=np.float32)
-    state_max = state_min + 10.0
-    config = FSQOriginalConfig(
-        enc_dim=8,
-        hidden_dim=256,
-        fsq_levels=[3, 3, 3],
-        num_layers=3,
-        num_heads=4,
-        encoder_input_mode="raw_state",
-        encoder_min=state_min,
-        encoder_max=state_max,
-    )
-
-    class _FreshStateImageTerminator(nn.Module):
-        def __init__(self, **kwargs):
-            super().__init__()
-            self.kwargs = kwargs
-            self.anchor = nn.Parameter(torch.zeros(()))
-
-    monkeypatch.setattr(
-        fsq_module.torch,
-        "load",
-        lambda *args, **kwargs: {
-            "cfg": config,
-            "model_state": {"encoder.unused": torch.ones(())},
-        },
-    )
-    monkeypatch.setattr(
-        fsq_module,
-        "FSQQueryTerminator",
-        _FreshStateImageTerminator,
-    )
-
-    terminator, loaded_config = fsq_module.build_trainable_fsq_terminator(
-        "FSQ.pt"
-    )
-
-    assert loaded_config is config
-    assert terminator.kwargs["state_dim"] == 8
-    assert terminator.kwargs["fsq_levels"] == [3, 3, 3]
-    assert terminator.kwargs["n_layers"] == 3
-    assert terminator.kwargs["n_heads"] == 4
-    assert terminator.kwargs["skill_cond_mode"] == "broadcast"
-    np.testing.assert_array_equal(terminator.kwargs["state_min"], state_min)
-    np.testing.assert_array_equal(terminator.kwargs["state_max"], state_max)
-    assert terminator.training is False
-
-
 def test_trainable_terminator_keeps_v3_warm_start(monkeypatch) -> None:
     config = SplineFSQAEConfig()
 
@@ -2421,21 +2363,6 @@ def test_trainable_terminator_initializes_fresh_from_reconstructor_only_v3(
     assert terminator.kwargs["arch"] == config.terminator_arch
     assert terminator.kwargs["vision_backbone"] == config.vision_backbone
     assert terminator.training is False
-
-
-def test_pristine_fsq_terminator_still_rejects_fsq_original(monkeypatch) -> None:
-    config = FSQOriginalConfig(
-        encoder_min=np.zeros(8, dtype=np.float32),
-        encoder_max=np.ones(8, dtype=np.float32),
-    )
-    monkeypatch.setattr(
-        fsq_module.torch,
-        "load",
-        lambda *args, **kwargs: {"cfg": config, "model_state": {}},
-    )
-
-    with pytest.raises(ValueError, match="Legacy FSQ checkpoint is unsupported"):
-        fsq_module.load_fsq_terminator("FSQ.pt")
 
 
 def test_wrist_only_builder_uses_fsq_config_but_no_fsq_model_weights(

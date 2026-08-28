@@ -69,14 +69,13 @@ def _manifest(label, records, **extra):
 # ── config ────────────────────────────────────────────────────────────────────
 
 
-def _probe_run(tmp_path: Path, name: str, *, epochs: list[int], original: bool = False) -> None:
+def _probe_run(tmp_path: Path, name: str, *, epochs: list[int]) -> None:
     run_dir = tmp_path / "outputs" / "FSQ" / name
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "FSQ.pt").write_bytes(b"best")
     for epoch in epochs:
         (run_dir / f"FSQ_epoch{epoch:04d}.pt").write_bytes(b"x")
-    meta = "fsq_original_meta.json" if original else "fsq_meta.json"
-    (run_dir / meta).write_text(
+    (run_dir / "fsq_meta.json").write_text(
         json.dumps(
             {
                 "fsq_dataset_root": "FSQ_dataset",
@@ -167,14 +166,6 @@ def test_config_resolves_auxiliary_terminator_and_its_fsq_space(tmp_path: Path) 
     assert settings["fsq_terminator_overlay_path"] == str(checkpoint)
     assert settings["fsq_code_space_id"] == code_space
     assert settings["fsq_model_epoch_tag"] == "step001000"
-
-
-def test_config_rejects_fsq_original_runs(tmp_path: Path) -> None:
-    """FSQ-original checkpoints have no terminator module to probe at all."""
-    _probe_run(tmp_path, "legacy", epochs=[100], original=True)
-    config = _probe_config(tmp_path, [{"label": "L", "run_name": "legacy", "checkpoint": "100"}])
-    with pytest.raises(ValueError, match="FSQ-original"):
-        CONFIG.build_settings(config)
 
 
 def test_config_rejects_duplicate_labels(tmp_path: Path) -> None:

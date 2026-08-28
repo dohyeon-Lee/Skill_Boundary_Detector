@@ -133,6 +133,7 @@ def test_model_defaults_are_inherited_and_model_values_override_them() -> None:
         "previous_checkpoint": True,
         # Inherited from model_defaults; one value covers both overlays.
         "external_predictor_model_value": "outputs/shared/ckpt",
+        "external_predictor_checkpoint": "last",
         "external_terminator_model_value": "outputs/shared/ckpt",
         "external_terminator_checkpoint": "last",
     }
@@ -149,6 +150,7 @@ def test_model_defaults_are_inherited_and_model_values_override_them() -> None:
         "previous_checkpoint": False,
         # A per-entry value wins, so each target can use its own terminator.
         "external_predictor_model_value": "outputs/own/ckpt",
+        "external_predictor_checkpoint": "last",
         "external_terminator_model_value": "outputs/own/ckpt",
         "external_terminator_checkpoint": "last",
     }
@@ -248,6 +250,7 @@ def test_eval_accepts_new_architecture_and_exports_it(tmp_path: Path) -> None:
     assert settings["panel_count"] == 1
     assert settings["grid_columns"] == 1
     assert settings["n_action_steps"] == 5
+    assert settings["eval_expected_tasks"] == 1
     assert settings["immediate_replan_on_skill_end"] is False
     assert models[0]["architecture"] == "vsa_perceiver_crossattn"
     assert models[0]["architecture_revision"] == "interleaved_direct1024_v3"
@@ -786,6 +789,52 @@ def test_external_terminator_run_name_and_checkpoint_expand_under_outputs_root(
 
     assert Path(model["external_terminator_model"]) == checkpoint
     assert model["external_terminator_checkpoint"] == "004000"
+
+
+def test_external_predictor_run_name_and_checkpoint_expand_under_outputs_root(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    project = Path(config["project_root"])
+    checkpoint = (
+        project
+        / "outputs/skillVLA_terminator/predictor-run/checkpoints/005000/pretrained_model"
+    )
+    checkpoint.mkdir(parents=True)
+    tokenizer = project / "models/tokenizer"
+    tokenizer.mkdir(parents=True)
+    target = (
+        project
+        / "outputs/skillVLA_stage1/new-vsa/checkpoints/000100/pretrained_model"
+    )
+    target_policy = json.loads((target / "config.json").read_text())
+    fsq = project / "dataset/skillvla_dataset/source/run/FSQ.pt"
+    fsq.touch()
+    target_policy["fsq_path"] = str(fsq)
+    (target / "config.json").write_text(json.dumps(target_policy))
+    (checkpoint / "config.json").write_text(
+        json.dumps(
+            {
+                **target_policy,
+                "type": "skill_aux",
+                "train_skill_predictor": True,
+                "tokenizer_path": str(tokenizer),
+            }
+        )
+    )
+    (checkpoint / "model.safetensors").touch()
+    config["models"][0].update(
+        {
+            "skill_source": "external",
+            "external_predictor_model": "predictor-run",
+            "external_predictor_checkpoint": "005000",
+        }
+    )
+
+    model = json.loads(build_settings(config)["models_json"])[0]
+
+    assert Path(model["external_predictor_model"]) == checkpoint
+    assert model["external_predictor_checkpoint"] == "005000"
 
 
 @pytest.mark.parametrize("target_has_predictor", [False, True])

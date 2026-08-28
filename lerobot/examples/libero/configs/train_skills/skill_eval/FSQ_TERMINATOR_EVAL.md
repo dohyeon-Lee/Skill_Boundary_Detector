@@ -19,10 +19,6 @@ What is *not* shared is the code space: token 5 of one run is unrelated to token
 of another. The codebook grid in the report therefore belongs to the **first listed
 model** and is only a way to navigate to skills.
 
-FSQ-original checkpoints are rejected: `FSQ_original.py` defines no terminator
-module at all (its `rnn` decoder emits termination inline, `oneshot` emits none).
-Score those with `fsq_original_eval.py`.
-
 ## Variants
 
 The terminator's input contract is read from the checkpoint, never configured:

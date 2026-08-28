@@ -64,7 +64,7 @@ VIDEO_KEY = "observation.images.image"
 
 
 def _fsq_levels(model_path: Path) -> list[int]:
-    """Read the codebook shape from FSQ v3 / FSQ-original / BSQ checkpoints.
+    """Read the codebook shape from current FSQ or BSQ checkpoints.
 
     FSQ variants store `cfg.fsq_levels` directly. BSQ checkpoints carry
     quantizer="bsq" and an unused fsq_levels placeholder; their bit indexing is

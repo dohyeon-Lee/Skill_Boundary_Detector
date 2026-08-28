@@ -81,7 +81,6 @@ def test_joint_model_can_replace_fsq_grid_with_bsq5() -> None:
     model = _model(
         quantizer="bsq",
         bsq_code_dim=5,
-        fsq_entropy=False,
         reconstructor_arch="oneshot",
         reconstructor_start_state=False,
         reconstructor_only=True,
@@ -98,7 +97,6 @@ def test_joint_bsq_checkpoint_round_trip(tmp_path: Path) -> None:
     model = _model(
         quantizer="bsq",
         bsq_code_dim=5,
-        fsq_entropy=False,
         reconstructor_arch="oneshot",
         reconstructor_start_state=False,
         reconstructor_only=True,

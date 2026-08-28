@@ -88,12 +88,7 @@ def _resolve_fsq_artifact(
 
     meta_path = model_dir / "fsq_meta.json"
     if not meta_path.is_file():
-        # FSQ-original (one-shot) runs write the same component keys here.
-        original_meta_path = model_dir / "fsq_original_meta.json"
-        if original_meta_path.is_file():
-            meta_path = original_meta_path
-        else:
-            raise FileNotFoundError(f"FSQ training metadata not found: {meta_path}")
+        raise FileNotFoundError(f"FSQ training metadata not found: {meta_path}")
     try:
         meta = json.loads(meta_path.read_text())
     except (OSError, json.JSONDecodeError) as error:

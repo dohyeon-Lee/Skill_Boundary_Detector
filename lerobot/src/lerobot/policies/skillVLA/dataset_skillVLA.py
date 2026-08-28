@@ -31,6 +31,7 @@ from lerobot.policies.skillVLA.skill_jitter import (
     choose_jitter,
     effective_jittered_skill_de,
     normalize_jitter_distribution,
+    resolve_transition_jitter_pmaxes,
 )
 
 # Batch keys this dataset adds (the model + processor consume these).
@@ -86,6 +87,10 @@ class SkillVLADataset(LeRobotDataset):
 
     def __init__(self, *args, **kwargs):
         jitter_pmax_override = kwargs.pop("jitter_pmax", None)
+        directional_overrides = {
+            name: kwargs.pop(f"jitter_{name}_pmax", None)
+            for name in ("early_start", "late_start", "early_end", "late_end")
+        }
         self._include_predictor_start_inputs = bool(
             kwargs.pop("include_predictor_start_inputs", True)
         )
@@ -110,15 +115,51 @@ class SkillVLADataset(LeRobotDataset):
                 "Dataset skill_pmax does not match the ISS window: "
                 f"info.json={dataset_pmax}, ISS={self._iss.pmax}."
             )
-        self._pmax = (
-            dataset_pmax
-            if jitter_pmax_override is None
-            else int(jitter_pmax_override)
-        )
-        if self._pmax < 0 or self._pmax > dataset_pmax:
+        dataset_directional = {
+            name: int(info.get(f"skill_jitter_{name}_pmax", dataset_pmax))
+            for name in ("early_start", "late_start", "early_end", "late_end")
+        }
+        if any(
+            value is not None and int(value) >= 0
+            for value in directional_overrides.values()
+        ):
+            runtime_directional = dict(
+                zip(
+                    dataset_directional,
+                    resolve_transition_jitter_pmaxes(
+                        dataset_pmax if jitter_pmax_override is None else int(jitter_pmax_override),
+                        early_start_pmax=directional_overrides["early_start"],
+                        late_start_pmax=directional_overrides["late_start"],
+                        early_end_pmax=directional_overrides["early_end"],
+                        late_end_pmax=directional_overrides["late_end"],
+                    ),
+                    strict=True,
+                )
+            )
+        elif jitter_pmax_override is not None:
+            # Historical callers overriding the scalar contract still mean one
+            # common runtime window in all four directions.
+            runtime_directional = {
+                name: int(jitter_pmax_override) for name in dataset_directional
+            }
+        else:
+            runtime_directional = dataset_directional
+        oversized = {
+            name: value
+            for name, value in runtime_directional.items()
+            if value < 0 or value > dataset_directional[name]
+        }
+        if oversized:
             raise ValueError(
-                "Requested transition jitter pmax must be within the prebuilt ISS "
-                f"window [0, {dataset_pmax}], got {self._pmax}."
+                "Requested transition jitter directional windows must be within "
+                f"the built dataset contract {dataset_directional}, got {oversized}."
+            )
+        self._directional_pmaxes = runtime_directional
+        self._pmax = max(runtime_directional.values())
+        if self._pmax > dataset_pmax:
+            raise ValueError(
+                "Requested transition jitter exceeds the prebuilt ISS window "
+                f"[0, {dataset_pmax}], got {self._pmax}."
             )
         self._jitter_distribution = normalize_jitter_distribution(
             info.get("skill_jitter_distribution", "half_normal"))
@@ -126,6 +167,10 @@ class SkillVLADataset(LeRobotDataset):
     @property
     def jitter_pmax(self) -> int:
         return self._pmax
+
+    @property
+    def jitter_directional_pmaxes(self) -> dict[str, int]:
+        return dict(self._directional_pmaxes)
 
     @property
     def jitter_distribution(self) -> str:
@@ -222,6 +267,10 @@ class SkillVLADataset(LeRobotDataset):
                     seq_len,
                     self._pmax,
                     distribution=self._jitter_distribution,
+                    early_start_pmax=self._directional_pmaxes["early_start"],
+                    late_start_pmax=self._directional_pmaxes["late_start"],
+                    early_end_pmax=self._directional_pmaxes["early_end"],
+                    late_end_pmax=self._directional_pmaxes["late_end"],
                 )
             else:
                 kp, offset = jitter_override

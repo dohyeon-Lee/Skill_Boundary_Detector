@@ -254,6 +254,33 @@ def spline_encode(
     return ctrl, length
 
 
+def spline_decode(ctrl_pts: np.ndarray, length: int, degree: int) -> np.ndarray:
+    """Reconstruct a trajectory from the spline control-point representation."""
+    from scipy.interpolate import make_interp_spline
+
+    ctrl_pts = np.asarray(ctrl_pts, dtype=np.float32)
+    if ctrl_pts.ndim != 2:
+        raise ValueError(
+            f"Spline control points must have shape (control, dim), got {ctrl_pts.shape}."
+        )
+    n_control, dim = ctrl_pts.shape
+    length = int(length)
+    if length < 1:
+        raise ValueError(f"Decoded length must be >= 1, got {length}.")
+    if length == 1:
+        return ctrl_pts[:1].copy()
+    t_ctrl = np.linspace(0.0, 1.0, n_control)
+    t_out = np.linspace(0.0, 1.0, length)
+    recon = np.zeros((length, dim), dtype=np.float32)
+    for axis in range(dim):
+        spline_degree = 1 if axis >= dim - N_GRIPPER_DIMS else degree
+        spline_degree = min(spline_degree, n_control - 1)
+        recon[:, axis] = make_interp_spline(
+            t_ctrl, ctrl_pts[:, axis], k=spline_degree
+        )(t_out)
+    return recon
+
+
 class TokenTransformerPool(nn.Module):
     """Transformer over an ordered token set followed by learned-query pooling."""
 
@@ -722,7 +749,7 @@ class ActionSeqEncoder(nn.Module):
     """Variable-length ACTION-sequence encoder (encoder_arch='action_seq').
 
     Consumes the caller-provided action sequence directly. The matched main
-    action_seq autoencoder and FSQ-original v2 supply native raw controller
+    The action-sequence autoencoder supplies native raw controller
     actions; legacy main action_seq-to-chunk checkpoints retain their historical
     q01/q99 convention. There is no spline codec, grounding decision
     (delta actions carry no absolute pose), or length token (duration is
@@ -1043,59 +1070,6 @@ def fsq_js_pair_loss(
     return js.mean()
 
 
-def fsq_entropy_statistics(
-    bounded: Tensor,
-    fsq_levels: list[int],
-    inv_temperature: float,
-    *,
-    joint_dataset: bool = False,
-) -> tuple[Tensor, Tensor]:
-    """Per-sample confidence entropy and dataset entropy for the FSQ grid.
-
-    ``bounded`` is FSQ.bound's continuous coordinate (grid spacing 1, centers
-    at integers). Each dim gets a soft level assignment
-    p ∝ softmax(-τ·(bounded - center)²), so τ is in grid-step units: the
-    confidence term's gradient lives near rounding boundaries (distance 0.5)
-    and vanishes at bin centers. Returns one summed entropy per sample plus the
-    scalar dataset entropy, both in nats. The joint dataset mode enumerates all
-    prod(levels) codes in FSQ's index order (dim 0 fastest) — the factorized
-    mode is an upper bound blind to inter-dim correlations.
-    """
-    probs = fsq_soft_assignments(bounded, fsq_levels, inv_temperature)
-    sample_entropies = sum(-(p * p.log()).sum(dim=-1) for p in probs)
-    if not joint_dataset:
-        dataset_entropy = bounded.new_zeros(())
-        for p in probs:
-            p_bar = p.mean(dim=0)
-            p_bar = p_bar / p_bar.sum()
-            dataset_entropy = dataset_entropy - (p_bar * p_bar.log()).sum()
-        return sample_entropies, dataset_entropy
-    q = probs[0]
-    for p in probs[1:]:
-        q = (p[:, :, None] * q[:, None, :]).reshape(q.shape[0], -1)
-    q_bar = q.mean(dim=0).clamp_min(1e-12)
-    q_bar = q_bar / q_bar.sum()
-    dataset_entropy = -(q_bar * q_bar.log()).sum()
-    return sample_entropies, dataset_entropy
-
-
-def fsq_entropy_terms(
-    bounded: Tensor,
-    fsq_levels: list[int],
-    inv_temperature: float,
-    *,
-    joint_dataset: bool = False,
-) -> tuple[Tensor, Tensor]:
-    """BSQ-style mean sample entropy and dataset entropy in nats."""
-    sample_entropies, dataset_entropy = fsq_entropy_statistics(
-        bounded,
-        fsq_levels,
-        inv_temperature,
-        joint_dataset=joint_dataset,
-    )
-    return sample_entropies.mean(), dataset_entropy
-
-
 class _MLPBlock(nn.Module):
     def __init__(self, in_dim: int, out_dim: int, dropout: float):
         super().__init__()
@@ -1236,7 +1210,7 @@ class ActionSequenceRNNDecoder(nn.Module):
     remains the sole source of trajectory information. LIBERO controller
     commands already live in [-1, 1], matching the action head's tanh range.
 
-    ``predict_termination`` is used by FSQ-original, whose sequence decoder also
+    ``predict_termination`` supports sequence decoders that also
     owns the length head. The regular FSQ path keeps termination in its existing
     independently selectable terminator branch and therefore disables it here.
     """
@@ -2533,7 +2507,7 @@ class SplineFSQAEConfig:
     encoder_grounding_convention: str = ENCODER_GROUNDING_CONVENTION
     encoder_length_token: bool = True
     """False: the spline encoder consumes NO length token — duration reaches z
-    only through motion shape (probe ported from FSQ-original)."""
+    only through motion shape."""
     encoder_arch: str = "spline"
     """spline: fixed control-point tokens. action_seq: variable-length ACTION
     sequence transformer (no spline codec / grounding / length-token choices)."""
@@ -2545,20 +2519,6 @@ class SplineFSQAEConfig:
     """fsq: finite scalar grid. bsq: binary spherical codebook."""
     bsq_code_dim: int = 5
     """BSQ bit count; codebook size is 2**bsq_code_dim. Ignored for FSQ."""
-    fsq_entropy: bool = False
-    """Apply BSQ-style entropy terms to the FSQ grid: sample entropy
-    minimization (confidence — pushes samples off rounding boundaries) and
-    batch entropy maximization (code-usage diversity)."""
-    entropy_conf_weight: float = 0.1
-    entropy_conf_ceiling: float = 0.0
-    """Normalized per-sample entropy ceiling in [0, 1]. Confidence pressure is
-    a hinge: samples at or below this ceiling receive exactly zero gradient.
-    Zero reproduces the historical unconstrained entropy-minimization loss."""
-    entropy_div_weight: float = 0.1
-    entropy_inv_temperature: float = 10.0
-    entropy_joint: bool = True
-    """Exact dataset entropy over all prod(fsq_levels) codes (project standard);
-    the factorized bound exists only as a fallback for huge codebooks."""
     init_calibration: bool = False
     """One-shot data calibration of the freshly initialized encoder z_head.
 
@@ -2614,7 +2574,7 @@ class SplineFSQAEConfig:
     conditioning is enabled."""
     reconstructor_arch: str = "chunk"
     """chunk: per-timestep action-chunk reconstructor (v3 default; runs at the
-    M sampled timesteps). oneshot: FSQ-original-style decoder that reconstructs
+    M sampled timesteps). oneshot: whole-trajectory decoder that reconstructs
     the FULL control-point grid ONCE per trajectory from z alone — M then
     applies only to the terminator, and the recon loss ('action' metric slot)
     becomes the ctrl MSE. action_seq: raw full action sequence reconstructed
@@ -2756,11 +2716,6 @@ class SplineFSQAE(nn.Module):
             # Binary pseudo-levels retain that established constructor surface;
             # the encoder's actual quantizer is replaced with BSQ below.
             cfg.fsq_levels = [2] * int(cfg.bsq_code_dim)
-            if cfg.fsq_entropy:
-                raise ValueError(
-                    "BSQ in the FSQ training path intentionally supports recon + "
-                    "pair loss only; set fsq_entropy=false."
-                )
         if cfg.action_dim > cfg.max_action_dim or cfg.state_dim > cfg.max_state_dim:
             raise ValueError(
                 f"Real dimensions must fit PI05 padding: action {cfg.action_dim}/{cfg.max_action_dim}, "
@@ -2937,11 +2892,6 @@ class SplineFSQAE(nn.Module):
                 "pair_loss must be none|overlap|js|contrastive, "
                 f"got {cfg.pair_loss!r}."
             )
-        if not 0.0 <= cfg.entropy_conf_ceiling <= 1.0:
-            raise ValueError(
-                "entropy_conf_ceiling must be in [0, 1], "
-                f"got {cfg.entropy_conf_ceiling}."
-            )
         if cfg.init_calibration_gain <= 0:
             raise ValueError(
                 "init_calibration_gain must be positive, "
@@ -3038,15 +2988,6 @@ class SplineFSQAE(nn.Module):
                 # the legacy GRU silently disabled it. Keep that checkpoint
                 # behavior; the current action preset uses the Transformer.
                 cfg.reconstructor_start_state = False
-        if (
-            cfg.fsq_entropy
-            and cfg.entropy_joint
-            and math.prod(int(v) for v in cfg.fsq_levels) > 16384
-        ):
-            raise ValueError(
-                "fsq_entropy with entropy_joint enumerates prod(fsq_levels) codes; "
-                f"{cfg.fsq_levels} is too large (max 16384)."
-            )
         self.cfg = cfg
         if cfg.encoder_arch == "action_seq":
             self.encoder = ActionSeqEncoder(
@@ -3092,7 +3033,7 @@ class SplineFSQAE(nn.Module):
         if cfg.terminator_only:
             self.reconstructor = None
         elif cfg.reconstructor_arch == "oneshot":
-            # FSQ-original-style whole-trajectory decoder: z [+ start state when
+            # Whole-trajectory decoder: z [+ start state when
             # reconstructor_start_state] -> the full control-point grid. No
             # length head — termination is the terminator's job.
             self.reconstructor = OneShotTrajectoryDecoder(
@@ -3973,9 +3914,7 @@ class SplineFSQAE(nn.Module):
         # FSQ uses its bounded grid coordinate; BSQ.bound returns z/||z||.
         u_cont = (
             self.fsq.bound(z_e)
-            if self.cfg.fsq_entropy
-            or pair_configured
-            or self.cfg.route_loss
+            if pair_configured or self.cfg.route_loss
             else None
         )
         augmented_u_cont = augmented_indices = None
@@ -4234,12 +4173,6 @@ _V3_CFG_BACKFILL = (
     ("action_gripper_weight", 1.0),
     ("quantizer", "fsq"),
     ("bsq_code_dim", 5),
-    ("fsq_entropy", False),
-    ("entropy_conf_weight", 0.1),
-    ("entropy_conf_ceiling", 0.0),
-    ("entropy_div_weight", 0.1),
-    ("entropy_inv_temperature", 10.0),
-    ("entropy_joint", True),
     ("init_calibration", False),
     ("init_calibration_gain", 1.0),
     ("init_calibration_samples", 0),
@@ -4367,87 +4300,7 @@ def _checkpoint_config(checkpoint: dict[str, Any]) -> SplineFSQAEConfig:
 def _terminator_build_config(
     checkpoint: dict[str, Any],
 ) -> tuple[SplineFSQAEConfig, Any, bool]:
-    """Resolve the terminator contract for either joint-v3 or FSQ-original.
-
-    FSQ-original and reconstructor-only v3 checkpoints intentionally contain no
-    terminator tensors.  For them, derive only the shared skill/state contract
-    and construct a fresh terminator.  Joint-v3 checkpoints retain their
-    historical warm start when the component is actually present.
-    """
-    source_cfg = checkpoint.get("cfg")
-    try:
-        from FSQ_original import FSQOriginalConfig  # noqa: PLC0415
-    except ImportError:
-        FSQOriginalConfig = ()  # type: ignore[assignment,misc]
-
-    if isinstance(source_cfg, FSQOriginalConfig):
-        if str(getattr(source_cfg, "quantizer", "fsq")) != "fsq":
-            raise ValueError(
-                "Fresh terminator construction supports FSQ-original checkpoints "
-                "only; BSQ uses a different code-coordinate contract."
-            )
-        if str(getattr(source_cfg, "encoder_arch", "spline")) != "spline":
-            raise ValueError(
-                "Fresh terminator construction requires an FSQ-original spline "
-                "encoder with raw state bounds."
-            )
-        # The terminator normalizes ABSOLUTE proprioception, so encoder_min/max
-        # may stand in for the v3 state_min/max only when the encoder consumed
-        # raw states. Under zero_grounded/optimal their XYZ bounds describe
-        # mean-centered coordinates, which would silently mis-scale every state.
-        encoder_input_mode = str(getattr(source_cfg, "encoder_input_mode", "zero_grounded"))
-        if encoder_input_mode != "raw_state":
-            raise ValueError(
-                "Fresh terminator construction requires an FSQ-original checkpoint "
-                f"trained with encoder_input_mode='raw_state', got {encoder_input_mode!r}: "
-                "its encoder_min/max contain mean-centered XYZ and cannot normalize the "
-                "terminator's absolute state input."
-            )
-        state_min = getattr(source_cfg, "encoder_min", None)
-        state_max = getattr(source_cfg, "encoder_max", None)
-        if state_min is None or state_max is None:
-            raise ValueError(
-                "FSQ-original checkpoint has no encoder_min/encoder_max values "
-                "from which to derive terminator state normalization."
-            )
-        state_min = np.asarray(state_min, dtype=np.float32)
-        state_max = np.asarray(state_max, dtype=np.float32)
-        if state_min.ndim != 1 or state_max.shape != state_min.shape:
-            raise ValueError(
-                "FSQ-original state bounds must be matching 1-D arrays, got "
-                f"{state_min.shape} and {state_max.shape}."
-            )
-        cfg = SplineFSQAEConfig(
-            action_dim=int(source_cfg.action_dim),
-            enc_dim=int(source_cfg.enc_dim),
-            state_dim=int(state_min.shape[0]),
-            n_control=int(source_cfg.n_control),
-            spline_degree=int(source_cfg.spline_degree),
-            encoder_input_mode=str(source_cfg.encoder_input_mode),
-            hidden_dim=int(source_cfg.hidden_dim),
-            fsq_levels=[int(level) for level in source_cfg.fsq_levels],
-            num_layers=int(source_cfg.num_layers),
-            dropout=float(source_cfg.dropout),
-            length_min=float(source_cfg.length_min),
-            length_max=float(source_cfg.length_max),
-            terminator_arch="small",
-            vision_backbone="dino",
-            freeze_vision_encoder=True,
-            dino_model_path=_DEFAULT_IMAGE_MODEL,
-            dino_image_size=224,
-            siglip_image_size=224,
-            resnet_image_size=224,
-            image_encoder_layers=int(source_cfg.num_layers),
-            image_encoder_heads=int(source_cfg.num_heads),
-            skill_cond_mode="broadcast",
-            terminator_context="proprio",
-            encoder_min=state_min,
-            encoder_max=state_max,
-            state_min=state_min,
-            state_max=state_max,
-        )
-        return cfg, source_cfg, False
-
+    """Resolve a current joint-FSQ terminator contract and warm-start status."""
     cfg = _checkpoint_config(checkpoint)
     model_state = checkpoint.get("model_state", {})
     has_terminator_weights = any(
@@ -5047,7 +4900,13 @@ class FSQTrajectoryDataset(Dataset):
             or (not cfg.reconstructor_only and not cfg.state_rnn_terminator)
         )
         self.samples_per_skill = (
-            int(cfg.samples_per_skill) if self.sampled_timestep_required else 1
+            (
+                int(cfg.samples_per_skill)
+                if self.training
+                else 3  # fixed start/mid/end validation anchors
+            )
+            if self.sampled_timestep_required
+            else 1
         )
         if self.samples_per_skill < 1:
             raise ValueError("samples_per_skill must be >=1.")
@@ -5317,7 +5176,13 @@ class FSQTrajectoryDataset(Dataset):
         return (distance_to_end == 0).astype(np.float32)
 
     def _sample_indices(self, length: int) -> np.ndarray:
-        """Uniformly sample M training timesteps; validation uses a deterministic linspace."""
+        """Sample random training timesteps or fixed validation anchors.
+
+        A one-sample deterministic linspace always selected frame zero, making
+        validation termination loss measure only start-frame false positives.
+        Validation now probes the start, midpoint, and true final frame of every
+        skill while training retains its configured random samples.
+        """
         if not getattr(self, "sampled_timestep_required", True):
             # Oneshot reconstruction and full-sequence RNN termination consume
             # no sampled timestep. Keep one placeholder row for the shared
@@ -5330,7 +5195,7 @@ class FSQTrajectoryDataset(Dataset):
             return np.sort(
                 np.random.choice(length, size=m, replace=length < m).astype(np.int64)
             )
-        return np.rint(np.linspace(0, length - 1, m)).astype(np.int64)
+        return np.asarray([0, (length - 1) // 2, length - 1], dtype=np.int64)
 
     def _action_chunks(self, action: np.ndarray, indices: np.ndarray) -> np.ndarray:
         """Stage-1 target: normalize first, then hold beyond the current skill boundary."""
@@ -5718,7 +5583,16 @@ def fsq_reconstruction_loss(
     pair_weight: float | None = None,
 ) -> tuple[Tensor, dict[str, Tensor]]:
     bsize = int(batch["ctrl"].shape[0])
-    m = cfg.samples_per_skill
+    # Validation can intentionally use a different number of sampled
+    # timesteps than training. Derive M from the actual batch whenever the
+    # shared sample index is present; standalone loss tests retain the config
+    # fallback.
+    sample_index = batch.get("sample_index")
+    m = (
+        int(sample_index.shape[1])
+        if isinstance(sample_index, Tensor) and sample_index.ndim >= 2
+        else int(cfg.samples_per_skill)
+    )
     pred = output["actions"][..., : cfg.action_dim]
     ctrl_diag: dict[str, Tensor] = {}
     if cfg.terminator_only:
@@ -5951,35 +5825,6 @@ def fsq_reconstruction_loss(
         )
         if termination_route_loss is not None:
             metrics["route_termination_loss"] = termination_route_loss.detach()
-    if getattr(cfg, "fsq_entropy", False) and output.get("u_cont") is not None:
-        sample_entropies, dataset_entropy = fsq_entropy_statistics(
-            output["u_cont"],
-            cfg.fsq_levels,
-            cfg.entropy_inv_temperature,
-            joint_dataset=cfg.entropy_joint,
-        )
-        sample_entropy = sample_entropies.mean()
-        max_sample_entropy = sum(math.log(int(level)) for level in cfg.fsq_levels)
-        entropy_ceiling = cfg.entropy_conf_ceiling * max_sample_entropy
-        confidence_violations = (sample_entropies - entropy_ceiling).clamp_min(0.0)
-        confidence_loss = confidence_violations.mean()
-        total = (
-            total
-            + cfg.entropy_conf_weight * confidence_loss
-            - cfg.entropy_div_weight * dataset_entropy
-        )
-        metrics["entropy_sample"] = sample_entropy.detach()
-        metrics["entropy_sample_normalized"] = (
-            sample_entropy / max(max_sample_entropy, 1e-12)
-        ).detach()
-        metrics["entropy_conf_loss"] = confidence_loss.detach()
-        metrics["entropy_conf_active_fraction"] = (
-            sample_entropies > entropy_ceiling
-        ).float().mean().detach()
-        metrics["entropy_conf_ceiling_nats"] = sample_entropy.new_tensor(
-            entropy_ceiling
-        ).detach()
-        metrics["entropy_dataset"] = dataset_entropy.detach()
     if (
         getattr(cfg, "pair_loss", "none") != "none"
         and output.get("augmented_u_cont") is not None
@@ -6120,6 +5965,37 @@ def end_signal_metrics(logits: Tensor, target: Tensor, threshold: float) -> dict
         "recall": float(tp / (tp + fn).clamp_min(eps)),
         "positive_rate": float(pred.float().sum() / total),
     }
+
+
+@torch.no_grad()
+def validation_termination_anchor_metrics(
+    logits: Tensor,
+    target: Tensor,
+    *,
+    pos_weight: float,
+) -> dict[str, Tensor]:
+    """BCE and probability at fixed start/mid/end validation anchors."""
+    if target.ndim != 2 or target.shape[1] != 3:
+        raise ValueError(
+            "Validation termination anchors require target shape [B, 3], got "
+            f"{tuple(target.shape)}."
+        )
+    logits = logits.reshape_as(target)
+    target = target.to(logits)
+    losses = F.binary_cross_entropy_with_logits(
+        logits,
+        target,
+        reduction="none",
+        pos_weight=torch.as_tensor(pos_weight, device=logits.device),
+    )
+    probabilities = logits.sigmoid()
+    metrics: dict[str, Tensor] = {}
+    for index, name in enumerate(("start", "mid", "end")):
+        metrics[f"termination_{name}_bce"] = losses[:, index].mean().detach()
+        metrics[f"termination_{name}_probability"] = (
+            probabilities[:, index].mean().detach()
+        )
+    return metrics
 
 
 def absorb_z_head_calibration_(
@@ -6690,6 +6566,12 @@ def train_spline_fsqae(
         f"[FSQ-v3] data workers: train={cfg.num_workers} "
         f"val={cfg.val_num_workers}; validation every={cfg.val_every or 'off'}"
     )
+    if sampled_timestep_required:
+        print(
+            "[FSQ-v3] timestep sampling: "
+            f"train={cfg.samples_per_skill} random; "
+            "validation=3 fixed anchors (start/mid/end)"
+        )
     device = torch.device(cfg.device)
     # ``step`` moves tensors with non_blocking=True below; pinning makes that transfer genuinely
     # asynchronous instead of synchronizing the GPU after the worker has decoded the next batch.
@@ -6844,8 +6726,6 @@ def train_spline_fsqae(
             ("encoder_length_token", True),
             ("quantizer", "fsq"),
             ("bsq_code_dim", 5),
-            ("fsq_entropy", False),
-            ("entropy_conf_ceiling", 0.0),
             ("init_calibration", False),
             ("init_calibration_gain", 1.0),
             ("init_calibration_samples", 0),
@@ -7052,7 +6932,7 @@ def train_spline_fsqae(
                 "Training batch is missing the configured adjacent-skill negative pair."
             )
         bsize = moved["ctrl"].shape[0]
-        m = cfg.samples_per_skill
+        m = int(moved["sample_index"].shape[1])
         start_state = moved["start_state"].reshape(bsize * m, cfg.max_state_dim)
         raw_state = moved["raw_state"].reshape(bsize * m, cfg.state_dim)
         prev_action = moved["prev_action"].reshape(bsize * m, cfg.action_dim)
@@ -7137,6 +7017,19 @@ def train_spline_fsqae(
                 cfg,
                 pair_weight=effective_pair_weight,
             )
+            if (
+                not training
+                and not cfg.reconstructor_only
+                and cfg.terminator_termination
+                and not cfg.state_rnn_terminator
+            ):
+                metrics.update(
+                    validation_termination_anchor_metrics(
+                        output["term_logits"],
+                        moved["termination"],
+                        pos_weight=cfg.end_pos_weight,
+                    )
+                )
         if training:
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
@@ -7321,6 +7214,13 @@ def train_spline_fsqae(
                     f"prog={val_avg['progress']:.4f} "
                     f"end={val_avg['termination']:.4f} select={select:.4f}"
                 )
+                if "termination_start_probability" in val_avg:
+                    message += (
+                        " end-p(start/mid/end)="
+                        f"{val_avg['termination_start_probability']:.3f}/"
+                        f"{val_avg['termination_mid_probability']:.3f}/"
+                        f"{val_avg['termination_end_probability']:.3f}"
+                    )
                 if "skill_shuffle_mean_delta" in val_avg:
                     message += (
                         " skill-shuffle="

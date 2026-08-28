@@ -121,7 +121,7 @@ def build_trainable_fsq_terminator(
     vision_backbone: str | None = None,
     freeze_vision_encoder: bool | None = None,
 ):
-    """Build a trainable/overlayable terminator from joint-v3 or FSQ-original."""
+    """Build a trainable/overlayable terminator from a current joint checkpoint."""
     examples_root = Path(__file__).resolve().parents[4] / "examples" / "libero"
     if str(examples_root) not in sys.path:
         sys.path.insert(0, str(examples_root))

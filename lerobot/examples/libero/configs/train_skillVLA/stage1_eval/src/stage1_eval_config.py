@@ -96,6 +96,31 @@ def _resolve_external_terminator_path(
     return _relocate_project_path(project_root, raw)
 
 
+def _resolve_external_predictor_path(
+    project_root: Path,
+    outputs_root: Path,
+    run_or_path: str,
+    checkpoint: str,
+) -> Path:
+    """Resolve a concise skillVLA_terminator predictor run name or full path."""
+    raw = str(run_or_path or "").strip()
+    path = Path(raw).expanduser()
+    if raw and not path.is_absolute() and len(path.parts) == 1:
+        run_name = _safe_name(raw, field="external_predictor_model")
+        checkpoint_name = _safe_name(
+            str(checkpoint), field="external_predictor_checkpoint"
+        )
+        return (
+            outputs_root
+            / "skillVLA_terminator"
+            / run_name
+            / "checkpoints"
+            / checkpoint_name
+            / "pretrained_model"
+        )
+    return _relocate_project_path(project_root, raw)
+
+
 def _safe_name(value: str, *, field: str) -> str:
     value = value.strip()
     if not value or value in {".", ".."} or "/" in value or "\0" in value:
@@ -606,6 +631,7 @@ def _model_entries(config: dict) -> list[dict]:
         "terminator_variant",
         "external_skill_model",
         "external_predictor_model",
+        "external_predictor_checkpoint",
         "external_terminator_model",
         "external_terminator_checkpoint",
     }
@@ -641,6 +667,16 @@ def _model_entries(config: dict) -> list[dict]:
     default_external_skill_model = _external_default("external_skill_model")
     default_external_predictor_model = _external_default(
         "external_predictor_model", default_external_skill_model
+    )
+    default_external_predictor_checkpoint = _safe_name(
+        str(
+            model_defaults.get(
+                "external_predictor_checkpoint",
+                get_value(config, "external_predictor_checkpoint", "last"),
+            )
+            or "last"
+        ),
+        field="model_defaults.external_predictor_checkpoint",
     )
     default_external_terminator_model = _external_default(
         "external_terminator_model", default_external_skill_model
@@ -771,6 +807,16 @@ def _model_entries(config: dict) -> list[dict]:
                     )
                     or ""
                 ).strip(),
+                "external_predictor_checkpoint": _safe_name(
+                    str(
+                        raw.get(
+                            "external_predictor_checkpoint",
+                            default_external_predictor_checkpoint,
+                        )
+                        or default_external_predictor_checkpoint
+                    ),
+                    field="models[].external_predictor_checkpoint",
+                ),
                 "external_terminator_model_value": str(
                     raw.get(
                         "external_terminator_model",
@@ -841,6 +887,9 @@ def _model_entries(config: dict) -> list[dict]:
                     "external_predictor_model_value": row[
                         "external_predictor_model_value"
                     ],
+                    "external_predictor_checkpoint": row[
+                        "external_predictor_checkpoint"
+                    ],
                     "external_terminator_model_value": row[
                         "external_terminator_model_value"
                     ],
@@ -909,7 +958,12 @@ def build_settings(config: dict) -> dict:
         predictor_value = entry.pop("external_predictor_model_value", "")
         terminator_value = entry.pop("external_terminator_model_value", "")
         entry_predictor = (
-            _relocate_project_path(project_root, predictor_value)
+            _resolve_external_predictor_path(
+                project_root,
+                outputs_root,
+                predictor_value,
+                entry["external_predictor_checkpoint"],
+            )
             if predictor_value
             else external_skill_model
         )
@@ -1079,6 +1133,10 @@ def build_settings(config: dict) -> dict:
         "eval_out_dir": eval_outputs_root / output_name,
         "target_task": str(get_value(config, "target_task", "libero_goal")),
         "task_ids": json.dumps(task_ids, separators=(",", ":")),
+        # Preserve the full task count before array workers replace TASK_IDS
+        # with their own chunk.  Every worker runs the idempotent merge step;
+        # the last one therefore annotates and writes the complete report.
+        "eval_expected_tasks": len(task_ids),
         "eval_num_gpus": int(get_value(config, "eval_num_gpus", 1)),
         "n_episodes": int(get_value(config, "n_episodes", 3)),
         "eval_batch_size": int(get_value(config, "eval_batch_size", 1)),

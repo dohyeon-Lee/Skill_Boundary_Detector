@@ -244,7 +244,12 @@ class SkillExpertConfig(PreTrainedConfig):
     visual_perceiver_width: int = 1024
     skill_vocab_size: int = 27
     skill_fsq_levels: list[int] = field(default_factory=lambda: [3, 3, 3])
+    # Aggregate maximum retained for ISS sizing and legacy checkpoints.
     transition_jitter_pmax: int = 0
+    transition_jitter_early_start_pmax: int = -1
+    transition_jitter_late_start_pmax: int = -1
+    transition_jitter_early_end_pmax: int = -1
+    transition_jitter_late_end_pmax: int = -1
     transition_jitter_distribution: str = "half_normal"
 
     # Which skill code conditions the action path during offline training.  The
@@ -497,6 +502,26 @@ class SkillExpertConfig(PreTrainedConfig):
             raise ValueError("cumulative_xyz_loss_weight must be finite and positive.")
         if self.transition_jitter_pmax < 0:
             raise ValueError("transition_jitter_pmax must be non-negative.")
+        directional_jitter = (
+            self.transition_jitter_early_start_pmax,
+            self.transition_jitter_late_start_pmax,
+            self.transition_jitter_early_end_pmax,
+            self.transition_jitter_late_end_pmax,
+        )
+        if any(value < -1 for value in directional_jitter):
+            raise ValueError(
+                "transition jitter directional pmax values must be -1 (legacy "
+                f"fallback) or non-negative, got {directional_jitter}."
+            )
+        resolved_jitter = tuple(
+            self.transition_jitter_pmax if value < 0 else value
+            for value in directional_jitter
+        )
+        if max(resolved_jitter) > self.transition_jitter_pmax:
+            raise ValueError(
+                "transition_jitter_pmax must cover every directional window: "
+                f"storage={self.transition_jitter_pmax}, directional={resolved_jitter}."
+            )
         if self.transition_jitter_distribution not in {"half_normal", "uniform"}:
             raise ValueError(
                 "transition_jitter_distribution must be 'half_normal' or 'uniform', got "

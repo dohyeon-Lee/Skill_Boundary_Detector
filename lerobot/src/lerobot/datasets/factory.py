@@ -156,6 +156,34 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
                             jitter_pmax=int(
                                 getattr(cfg.policy, "transition_jitter_pmax", 0)
                             ),
+                            jitter_early_start_pmax=int(
+                                getattr(
+                                    cfg.policy,
+                                    "transition_jitter_early_start_pmax",
+                                    -1,
+                                )
+                            ),
+                            jitter_late_start_pmax=int(
+                                getattr(
+                                    cfg.policy,
+                                    "transition_jitter_late_start_pmax",
+                                    -1,
+                                )
+                            ),
+                            jitter_early_end_pmax=int(
+                                getattr(
+                                    cfg.policy,
+                                    "transition_jitter_early_end_pmax",
+                                    -1,
+                                )
+                            ),
+                            jitter_late_end_pmax=int(
+                                getattr(
+                                    cfg.policy,
+                                    "transition_jitter_late_end_pmax",
+                                    -1,
+                                )
+                            ),
                         )
                         if policy_type == "skill_expert"
                         else SkillVLADataset

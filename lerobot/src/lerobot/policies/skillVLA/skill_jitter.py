@@ -9,7 +9,10 @@ Inputs per frame (all from build_data columns):
   k        : skill_index (0-based; current skill the frame belongs to)
   ds, de   : distance-from-start / distance-to-end within the current skill (ds=0 at start, de=0 at last frame)
   seq_len  : skill_sequence_len = (#real skills N) + 1 (EOS).  last real skill index = seq_len-2
-  pmax     : jitter half-window (ISS window = 2*pmax+1; offset stays in [-pmax, +pmax])
+  pmax     : legacy scalar jitter half-window / ISS storage half-window
+  directional pmaxes: independent early/late start/end limits.  An early
+              transition is valid only within both early-start and early-end
+              limits; likewise a late transition obeys both late limits.
   distribution: half_normal (small shifts favored) or uniform (all magnitudes equally likely)
 
 Three cases (mirrors the previous skill_boundary_random_p logic, but as a frame-index offset):
@@ -33,7 +36,41 @@ import numpy as np
 
 
 JITTER_DISTRIBUTIONS = frozenset({"half_normal", "uniform"})
-JitterDraw = tuple[int, bool, int]  # magnitude, choose-early tie break, non-early sign
+LegacyJitterDraw = tuple[int, bool, int]
+# early-transition magnitude, late-transition magnitude, boundary tie-break,
+# and the current-skill start-frame offset.
+DirectionalJitterDraw = tuple[int, int, bool, int]
+JitterDraw = LegacyJitterDraw | DirectionalJitterDraw
+
+
+def resolve_transition_jitter_pmaxes(
+    pmax: int,
+    *,
+    early_start_pmax: int | None = None,
+    late_start_pmax: int | None = None,
+    early_end_pmax: int | None = None,
+    late_end_pmax: int | None = None,
+) -> tuple[int, int, int, int]:
+    """Resolve directional windows, falling back to the legacy scalar value."""
+    scalar = int(pmax)
+    if scalar < 0:
+        raise ValueError(f"transition jitter pmax must be non-negative, got {scalar}.")
+    raw = (
+        early_start_pmax,
+        late_start_pmax,
+        early_end_pmax,
+        late_end_pmax,
+    )
+    resolved = tuple(
+        scalar if value is None or int(value) < 0 else int(value) for value in raw
+    )
+    if any(value < 0 for value in resolved):
+        raise ValueError(f"transition jitter directional pmaxes must be non-negative: {resolved}.")
+    return resolved
+
+
+def _has_directional_override(*values: int | None) -> bool:
+    return any(value is not None and int(value) >= 0 for value in values)
 
 
 def normalize_jitter_distribution(value: str) -> str:
@@ -80,9 +117,49 @@ def sample_jitter_draw(
     pmax: int,
     rng: np.random.Generator | None = None,
     distribution: str = "half_normal",
+    *,
+    early_start_pmax: int | None = None,
+    late_start_pmax: int | None = None,
+    early_end_pmax: int | None = None,
+    late_end_pmax: int | None = None,
 ) -> JitterDraw:
     """Draw reusable jitter randomness for a paired sample without inspecting episode metadata."""
     r = np.random if rng is None else rng
+    directional = _has_directional_override(
+        early_start_pmax,
+        late_start_pmax,
+        early_end_pmax,
+        late_end_pmax,
+    )
+    if directional:
+        early_start, late_start, early_end, late_end = resolve_transition_jitter_pmaxes(
+            pmax,
+            early_start_pmax=early_start_pmax,
+            late_start_pmax=late_start_pmax,
+            early_end_pmax=early_end_pmax,
+            late_end_pmax=late_end_pmax,
+        )
+        # A transition moves one shared boundary, so it must fit both adjacent
+        # skill contracts.  Start-only jitter remains independently selectable.
+        early_transition = sample_p(min(early_start, early_end), r, distribution)
+        late_transition = sample_p(min(late_start, late_end), r, distribution)
+        choose_early = bool(r.random() < 0.5)
+        start_directions = [
+            (sign, limit)
+            for sign, limit in ((-1, early_start), (1, late_start))
+            if limit > 0
+        ]
+        if not start_directions:
+            start_offset = 0
+        else:
+            sign, limit = (
+                start_directions[0]
+                if len(start_directions) == 1 or r.random() < 0.5
+                else start_directions[1]
+            )
+            start_offset = sign * sample_p(limit, r, distribution)
+        return early_transition, late_transition, choose_early, start_offset
+
     p = sample_p(pmax, r, distribution)
     if p == 0:
         return 0, True, 1
@@ -99,6 +176,24 @@ def apply_jitter_draw(
     draw: JitterDraw,
 ) -> tuple[int, int]:
     """Resolve a pre-sampled jitter draw against one frame's boundary metadata."""
+    if len(draw) == 4:
+        early_p, late_p, choose_early, start_offset = draw
+        if early_p < 0 or late_p < 0:
+            raise ValueError(f"Invalid directional jitter draw: {draw!r}.")
+        last_real = seq_len - 2
+        can_early = early_p > 0 and de < early_p and k < last_real
+        can_late = late_p > 0 and ds < late_p and k > 0
+        if can_early and can_late:
+            if choose_early:
+                can_late = False
+            else:
+                can_early = False
+        if can_early:
+            return k + 1, -early_p
+        if can_late:
+            return k - 1, late_p
+        return k, start_offset
+
     p, choose_early, sign = draw
     if p < 0 or sign not in (-1, 1):
         raise ValueError(f"Invalid jitter draw: {draw!r}.")
@@ -123,8 +218,30 @@ def choose_jitter(
     pmax: int,
     rng: np.random.Generator | None = None,
     distribution: str = "half_normal",
+    *,
+    early_start_pmax: int | None = None,
+    late_start_pmax: int | None = None,
+    early_end_pmax: int | None = None,
+    late_end_pmax: int | None = None,
 ) -> tuple[int, int]:
     """Pick (k_prime, offset) for the skill-start jitter. See module docstring."""
+    if _has_directional_override(
+        early_start_pmax,
+        late_start_pmax,
+        early_end_pmax,
+        late_end_pmax,
+    ):
+        draw = sample_jitter_draw(
+            pmax,
+            rng,
+            distribution,
+            early_start_pmax=early_start_pmax,
+            late_start_pmax=late_start_pmax,
+            early_end_pmax=early_end_pmax,
+            late_end_pmax=late_end_pmax,
+        )
+        return apply_jitter_draw(k, ds, de, seq_len, draw)
+
     r = np.random if rng is None else rng
     last_real = seq_len - 2  # 0-based index of the last real skill (seq_len = N + EOS)
     p = sample_p(pmax, rng, distribution)
@@ -148,9 +265,75 @@ def choose_jitter(
     return k, sign * p            # this skill, ±p jitter
 
 
-def choose_jitter_torch(k, ds, de, seq_len, pmax: int, distribution: str = "half_normal"):
+def choose_jitter_torch(
+    k,
+    ds,
+    de,
+    seq_len,
+    pmax: int,
+    distribution: str = "half_normal",
+    *,
+    early_start_pmax: int | None = None,
+    late_start_pmax: int | None = None,
+    early_end_pmax: int | None = None,
+    late_end_pmax: int | None = None,
+):
     """Vectorized torch equivalent used by Stage-1 inside the training forward."""
     import torch  # local import keeps the NumPy dataset helper lightweight
+
+    directional = _has_directional_override(
+        early_start_pmax,
+        late_start_pmax,
+        early_end_pmax,
+        late_end_pmax,
+    )
+    if directional:
+        early_start, late_start, early_end, late_end = resolve_transition_jitter_pmaxes(
+            pmax,
+            early_start_pmax=early_start_pmax,
+            late_start_pmax=late_start_pmax,
+            early_end_pmax=early_end_pmax,
+            late_end_pmax=late_end_pmax,
+        )
+        distribution = normalize_jitter_distribution(distribution)
+
+        def sample_tensor(limit):
+            if limit <= 0:
+                return torch.zeros_like(k)
+            if distribution == "uniform":
+                return torch.floor(torch.rand(k.shape, device=k.device) * (limit + 1)).long()
+            return torch.round(
+                torch.abs(torch.randn(k.shape, device=k.device) * (limit / 2.0))
+            ).long().clamp(max=limit)
+
+        early_p = sample_tensor(min(early_start, early_end))
+        late_p = sample_tensor(min(late_start, late_end))
+        last_real = seq_len - 2
+        can_early = (early_p > 0) & (de < early_p) & (k < last_real)
+        can_late = (late_p > 0) & (ds < late_p) & (k > 0)
+        both = can_early & can_late
+        choose_early = torch.rand(k.shape, device=k.device) < 0.5
+        can_early = can_early & (~both | choose_early)
+        can_late = can_late & (~both | ~choose_early)
+
+        if early_start > 0 and late_start > 0:
+            use_early_start = torch.rand(k.shape, device=k.device) < 0.5
+            early_offset = -sample_tensor(early_start)
+            late_offset = sample_tensor(late_start)
+            start_offset = torch.where(use_early_start, early_offset, late_offset)
+        elif early_start > 0:
+            start_offset = -sample_tensor(early_start)
+        elif late_start > 0:
+            start_offset = sample_tensor(late_start)
+        else:
+            start_offset = torch.zeros_like(k)
+        k_prime = torch.where(can_early, k + 1, torch.where(can_late, k - 1, k))
+        offset = torch.where(
+            can_early,
+            -early_p,
+            torch.where(can_late, late_p, start_offset),
+        )
+        return k_prime, offset
 
     if pmax <= 0:
         return k, torch.zeros_like(k)

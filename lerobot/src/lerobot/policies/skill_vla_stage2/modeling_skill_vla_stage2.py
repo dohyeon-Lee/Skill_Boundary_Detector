@@ -1088,6 +1088,10 @@ _STAGE1_CONTRACT_FIELDS = (
     "skill_vocab_size",
     "skill_fsq_levels",
     "transition_jitter_pmax",
+    "transition_jitter_early_start_pmax",
+    "transition_jitter_late_start_pmax",
+    "transition_jitter_early_end_pmax",
+    "transition_jitter_late_end_pmax",
     "transition_jitter_distribution",
 )
 # Fields absent from older Stage-1 configs; when missing they unambiguously
@@ -1097,6 +1101,10 @@ _STAGE1_OPTIONAL_CONTRACT_FIELDS = (
     "visual_perceiver_width",
     "mask_actions_after_skill_end",
     "freeze_vision_encoder",
+    "transition_jitter_early_start_pmax",
+    "transition_jitter_late_start_pmax",
+    "transition_jitter_early_end_pmax",
+    "transition_jitter_late_end_pmax",
 )
 
 

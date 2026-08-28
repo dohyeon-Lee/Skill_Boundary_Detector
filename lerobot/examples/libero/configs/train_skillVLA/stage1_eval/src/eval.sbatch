@@ -134,4 +134,16 @@ PYTHONPATH="${LEROBOT_ROOT}/src:${LEROBOT_ROOT}/examples/libero:${LIBERO_REPO_RO
     --rename_map='{"observation.images.image2":"observation.images.wrist_image"}' \
     "${WANDB_ARGS[@]}"
 
+# Array workers finish independently.  Serialize the inexpensive report merge
+# so concurrent workers cannot overwrite the same temporary chart.  The last
+# worker to finish sees every chunk metric and leaves the complete result;
+# single-job evaluations follow the exact same path.
+echo "MERGE STAGE-1 EVAL METRICS"
+(
+  flock -x 9
+  "${PROJECT_ROOT}/.venv/bin/python" "${SRC_DIR}/merge_eval_chunks.py" \
+    --out_dir="${EVAL_OUT_DIR}" \
+    --expected_tasks="${EVAL_EXPECTED_TASKS}"
+) 9>"${EVAL_OUT_DIR}/.merge_eval_chunks.lock"
+
 echo "DONE -> ${EVAL_OUT_DIR}"

@@ -87,6 +87,33 @@ def test_reusable_jitter_draw_resolves_against_each_samples_metadata() -> None:
     assert skill_jitter.apply_jitter_draw(k=0, ds=4, de=5, seq_len=3, draw=draw) == (0, -2)
 
 
+def test_directional_jitter_draw_separates_start_and_end_windows() -> None:
+    # early transition uses the shared early-start/early-end magnitude
+    draw = (2, 1, True, -4)
+    assert skill_jitter.apply_jitter_draw(
+        k=0, ds=8, de=1, seq_len=3, draw=draw
+    ) == (1, -2)
+    # late transition has its own, smaller shared late window
+    assert skill_jitter.apply_jitter_draw(
+        k=1, ds=0, de=9, seq_len=3, draw=draw
+    ) == (0, 1)
+    # away from either end only the independently sampled start offset applies
+    assert skill_jitter.apply_jitter_draw(
+        k=1, ds=4, de=5, seq_len=4, draw=draw
+    ) == (1, -4)
+
+
+def test_directional_pmax_resolution_keeps_legacy_scalar_fallback() -> None:
+    assert skill_jitter.resolve_transition_jitter_pmaxes(
+        10,
+        early_start_pmax=10,
+        late_start_pmax=5,
+        early_end_pmax=10,
+        late_end_pmax=5,
+    ) == (10, 5, 10, 5)
+    assert skill_jitter.resolve_transition_jitter_pmaxes(7) == (7, 7, 7, 7)
+
+
 def test_effective_skill_end_tracks_early_and_late_virtual_boundaries() -> None:
     starts = np.array([0, 10, 20])
     lengths = np.array([10, 10, 10])

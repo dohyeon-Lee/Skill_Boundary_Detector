@@ -85,23 +85,15 @@ class Args:
     encoder_arch: str = "spline"
     """spline: fixed control-point tokens. action_seq: variable-length ACTION
     sequence transformer (no spline codec / grounding / length-token choices)."""
-    fsq_entropy: bool = False
-    """Apply BSQ-style entropy terms to the FSQ grid (confidence + diversity)."""
     reconstructor_start_state: bool = False
     """Internal compatibility flag resolved from start_state_conditioning."""
     reconstructor_arch: str = "oneshot"
-    """skill/oneshot: FSQ-original-style full ctrl-grid reconstruction once
+    """skill/oneshot: full control-point-grid reconstruction once
     per trajectory. action_seq: raw full
     action sequence reconstructed from z by a GRU. action_seq_transformer:
     the same raw target decoded by a z-AdaLN causal query Transformer."""
     reconstructor_output_mode: str = "match_encoder"
     """Spline/oneshot output: raw | zero_grounded | start_grounded | match_encoder."""
-    entropy_conf_weight: float = 0.1
-    entropy_conf_ceiling: float = 0.0
-    """Normalized per-sample entropy ceiling. At or below it the confidence
-    hinge contributes exactly zero loss and gradient; 0 preserves legacy behavior."""
-    entropy_div_weight: float = 0.1
-    entropy_inv_temperature: float = 10.0
     init_calibration: bool = False
     """Calibrate the fresh z_head once from clean training trajectories."""
     init_calibration_gain: float = 1.0
@@ -375,10 +367,6 @@ def main(args: Args) -> None:
         raise ValueError(f"--quantizer must be fsq|bsq, got {args.quantizer!r}.")
     if args.bsq_code_dim < 2:
         raise ValueError("--bsq_code_dim must be >= 2.")
-    if args.quantizer == "bsq" and args.fsq_entropy:
-        raise ValueError(
-            "The BSQ path is recon + pair-loss only; pass --no-fsq_entropy."
-        )
     if args.encoder_input_mode not in {
         "zero_grounded", "start_grounded", "raw_state", "optimal"
     }:
@@ -400,8 +388,6 @@ def main(args: Args) -> None:
         raise ValueError("--init_calibration_gain must be positive.")
     if args.init_calibration_samples < 0:
         raise ValueError("--init_calibration_samples must be non-negative.")
-    if not 0.0 <= args.entropy_conf_ceiling <= 1.0:
-        raise ValueError("--entropy_conf_ceiling must be in [0, 1].")
     args.pair_loss = args.pair_loss.strip().lower()
     if args.pair_loss not in {"none", "overlap", "js", "contrastive"}:
         raise ValueError(
@@ -444,15 +430,7 @@ def main(args: Args) -> None:
     print(
         f"[FSQ] autoencoder mode: {args.autoencoder_mode}; "
         f"encoder arch: {args.encoder_arch}, length token: {args.encoder_length_token}, "
-        f"start-state conditioning: {args.start_state_conditioning}, "
-        f"fsq_entropy: {args.fsq_entropy}"
-        + (
-            f" (tau={args.entropy_inv_temperature} conf/div="
-            f"{args.entropy_conf_weight}/{args.entropy_div_weight}, "
-            f"conf_ceiling={args.entropy_conf_ceiling:g}, joint)"
-            if args.fsq_entropy
-            else ""
-        )
+        f"start-state conditioning: {args.start_state_conditioning}"
     )
     print(
         "[FSQ] z_head init calibration: "
@@ -652,11 +630,6 @@ def main(args: Args) -> None:
         action_gripper_weight=args.action_gripper_weight,
         quantizer=args.quantizer,
         bsq_code_dim=args.bsq_code_dim,
-        fsq_entropy=args.fsq_entropy,
-        entropy_conf_weight=args.entropy_conf_weight,
-        entropy_conf_ceiling=args.entropy_conf_ceiling,
-        entropy_div_weight=args.entropy_div_weight,
-        entropy_inv_temperature=args.entropy_inv_temperature,
         init_calibration=args.init_calibration,
         init_calibration_gain=args.init_calibration_gain,
         init_calibration_samples=args.init_calibration_samples,

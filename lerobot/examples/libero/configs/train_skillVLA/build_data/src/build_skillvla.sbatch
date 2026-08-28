@@ -47,7 +47,7 @@ echo "START SKILLVLA BUILD"
 echo "Node     : ${SLURMD_NODENAME:-local}"
 echo "Source   : ${RAW_DATASET_DIR}"
 echo "Latents  : ${SKILL_LATENTS_PATH}"
-echo "ISS npz  : ${ISS_NPZ_PATH}   (pmax=${SKILL_PMAX}, distribution=${SKILL_JITTER_DISTRIBUTION})"
+echo "ISS npz  : ${ISS_NPZ_PATH}   (storage pmax=${SKILL_PMAX}, directional=${SKILL_EARLY_START_PMAX}/${SKILL_LATE_START_PMAX}/${SKILL_EARLY_END_PMAX}/${SKILL_LATE_END_PMAX}, distribution=${SKILL_JITTER_DISTRIBUTION})"
 echo "FSQ.pt   : ${FSQ_COPY_PATH}"
 echo "skillvla : ${SKILLVLA_DATASET_DIR}"
 
@@ -65,6 +65,10 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     --latents_path    "${SKILL_LATENTS_PATH}" \
     --iss_npz_path    "${ISS_NPZ_PATH}" \
     --pmax            "${SKILL_PMAX}" \
+    --early_start_pmax "${SKILL_EARLY_START_PMAX}" \
+    --late_start_pmax  "${SKILL_LATE_START_PMAX}" \
+    --early_end_pmax   "${SKILL_EARLY_END_PMAX}" \
+    --late_end_pmax    "${SKILL_LATE_END_PMAX}" \
     --jitter_distribution "${SKILL_JITTER_DISTRIBUTION}" \
     --fsq_levels      "${FSQ_LEVELS[@]}" \
     --max_order       "${MAX_ORDER}" \

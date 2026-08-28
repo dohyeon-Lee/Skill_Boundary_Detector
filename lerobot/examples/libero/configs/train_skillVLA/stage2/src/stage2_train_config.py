@@ -492,6 +492,30 @@ def build_settings(config: dict) -> dict:
         "skill_vocab_size": math.prod(stage1_levels),
         "skill_fsq_levels": "[" + ",".join(str(value) for value in stage1_levels) + "]",
         "transition_jitter_pmax": int(stage1_config["transition_jitter_pmax"]),
+        "transition_jitter_early_start_pmax": int(
+            stage1_config.get(
+                "transition_jitter_early_start_pmax",
+                stage1_config["transition_jitter_pmax"],
+            )
+        ),
+        "transition_jitter_late_start_pmax": int(
+            stage1_config.get(
+                "transition_jitter_late_start_pmax",
+                stage1_config["transition_jitter_pmax"],
+            )
+        ),
+        "transition_jitter_early_end_pmax": int(
+            stage1_config.get(
+                "transition_jitter_early_end_pmax",
+                stage1_config["transition_jitter_pmax"],
+            )
+        ),
+        "transition_jitter_late_end_pmax": int(
+            stage1_config.get(
+                "transition_jitter_late_end_pmax",
+                stage1_config["transition_jitter_pmax"],
+            )
+        ),
         "transition_jitter_distribution": stage1_config["transition_jitter_distribution"],
         "train_skill_predictor": True,
         "skill_predictor_vlm_variant": predictor_config["skill_predictor_vlm_variant"],

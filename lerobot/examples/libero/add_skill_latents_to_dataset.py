@@ -85,7 +85,12 @@ class Args:
     num_embeddings: int = 0
     """FSQ codebook size = prod(fsq_levels). EOS=K, PAD=K+1 (no BOS). fsq_levels 미지정 시 직접 입력."""
     pmax: int = 10
-    """Stage-2 transition randomization half-window (steps). ISS는 스킬 시작 ±pmax state를 저장."""
+    """ISS storage half-window; must equal the maximum directional pmax."""
+    early_start_pmax: int = -1
+    late_start_pmax: int = -1
+    early_end_pmax: int = -1
+    late_end_pmax: int = -1
+    """Directional transition-jitter windows; -1 falls back to pmax."""
     jitter_distribution: str = "half_normal"
     """Transition jitter distribution: half_normal or uniform."""
     iss_npz_path: str = ""
@@ -242,6 +247,7 @@ def build_skill_initial_state_npz(
     state_dim: int,
     out_path: Path,
     jitter_distribution: str,
+    directional_pmaxes: dict[str, int],
 ) -> int:
     """각 스킬의 시작 ±pmax 프레임 observation.state 윈도우를 flat npz로 저장.
 
@@ -272,6 +278,10 @@ def build_skill_initial_state_npz(
         frame_start=np.asarray(frame_starts, dtype=np.int32),
         iss_windows=iss,
         pmax=np.int32(pmax),
+        early_start_pmax=np.int32(directional_pmaxes["early_start"]),
+        late_start_pmax=np.int32(directional_pmaxes["late_start"]),
+        early_end_pmax=np.int32(directional_pmaxes["early_end"]),
+        late_end_pmax=np.int32(directional_pmaxes["late_end"]),
         jitter_distribution=np.str_(jitter_distribution),
         state_dim=np.int32(state_dim),
     )
@@ -325,6 +335,25 @@ def main(args: Args) -> None:
         f"skill_vocab_size={skill_vocab_size}, skill_output_vocab_size={skill_output_vocab_size}"
     )
     pmax = int(args.pmax)
+    directional_pmaxes = {
+        name: (
+            pmax
+            if int(getattr(args, f"{name}_pmax")) < 0
+            else int(getattr(args, f"{name}_pmax"))
+        )
+        for name in ("early_start", "late_start", "early_end", "late_end")
+    }
+    if pmax < 0 or any(value < 0 for value in directional_pmaxes.values()):
+        raise ValueError(
+            f"Transition-jitter pmax values must be non-negative: "
+            f"storage={pmax}, directional={directional_pmaxes}."
+        )
+    expected_storage_pmax = max(directional_pmaxes.values())
+    if pmax != expected_storage_pmax:
+        raise ValueError(
+            "--pmax must equal the largest directional pmax so the ISS window "
+            f"covers every draw: pmax={pmax}, directional={directional_pmaxes}."
+        )
     jitter_distribution = str(args.jitter_distribution).strip().lower().replace("-", "_").replace(" ", "_")
     if jitter_distribution not in {"half_normal", "uniform"}:
         raise ValueError(
@@ -335,7 +364,8 @@ def main(args: Args) -> None:
     ep_states_map: dict[int, np.ndarray] = {}   # episode_index → (ep_len, state_dim), ISS 윈도우용
     state_dim: int | None = None
     print(
-        f"  pmax={pmax}, jitter_distribution={jitter_distribution}  "
+        f"  pmax={pmax}, directional_pmaxes={directional_pmaxes}, "
+        f"jitter_distribution={jitter_distribution}  "
         f"→  ISS window={2 * pmax + 1}, npz={iss_npz_path}"
     )
 
@@ -408,7 +438,14 @@ def main(args: Args) -> None:
     if state_dim is None:
         state_dim = 0
     n_iss = build_skill_initial_state_npz(
-        skill_map, ep_states_map, pmax, state_dim, iss_npz_path, jitter_distribution)
+        skill_map,
+        ep_states_map,
+        pmax,
+        state_dim,
+        iss_npz_path,
+        jitter_distribution,
+        directional_pmaxes,
+    )
     print(f"  Wrote ISS npz: {iss_npz_path}  (skills={n_iss}, window={2 * pmax + 1}, state_dim={state_dim})")
 
     # ── Update info.json ──────────────────────────────────────────────────────
@@ -427,6 +464,10 @@ def main(args: Args) -> None:
     info["skill_observed_max_length"] = observed_max_length
     info["skill_sequence_size"] = max_seq_len
     info["skill_pmax"] = pmax                          # ISS window 반폭 (= transition randomization)
+    info["skill_jitter_early_start_pmax"] = directional_pmaxes["early_start"]
+    info["skill_jitter_late_start_pmax"] = directional_pmaxes["late_start"]
+    info["skill_jitter_early_end_pmax"] = directional_pmaxes["early_end"]
+    info["skill_jitter_late_end_pmax"] = directional_pmaxes["late_end"]
     info["skill_jitter_distribution"] = jitter_distribution
     info["skill_initial_state_path"] = str(iss_npz_path)
     info["skill_initial_state_window"] = 2 * pmax + 1

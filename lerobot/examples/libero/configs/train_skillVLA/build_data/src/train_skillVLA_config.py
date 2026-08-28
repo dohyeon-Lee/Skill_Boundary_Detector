@@ -42,6 +42,48 @@ def _scale_percent_tag(scale: float) -> str:
     return f"{scale * 100:g}".replace(".", "p") + "p"
 
 
+def _skillvla_output_suffix(cfg: dict[str, Any]) -> str:
+    """Return a validated optional suffix for the final SkillVLA run folder."""
+    raw = str(get_value(cfg, "skillvla_output_suffix", "") or "").strip()
+    if not raw:
+        return ""
+    tag = raw[1:] if raw.startswith("_") else raw
+    if not tag or not all(char.isalnum() or char in "._-" for char in tag):
+        raise ValueError(
+            "skillvla_output_suffix may contain only letters, digits, '.', '_' and '-', "
+            f"got {raw!r}."
+        )
+    return f"_{tag}"
+
+
+def _fsq_semantic_suffix(fsq_meta: dict[str, Any]) -> str:
+    """Build stable FSQ architecture/loss tags from metadata, never the run name."""
+    tags: list[str] = []
+    if as_bool(fsq_meta.get("decoder_terminator_termination", False)):
+        backbone = str(fsq_meta.get("vision_backbone", "dino")).strip().lower()
+        terminator_tags = {
+            "resnet": "termRES",
+            "dino": "termDINO",
+            "siglip": "termSIGLIP",
+        }
+        if backbone not in terminator_tags:
+            raise ValueError(
+                "FSQ metadata vision_backbone must be resnet|dino|siglip when "
+                f"termination is enabled, got {backbone!r}."
+            )
+        tags.append(terminator_tags[backbone])
+
+    pair_loss = str(fsq_meta.get("pair_loss", "none") or "none").strip().lower()
+    if pair_loss in {"js", "contrastive"}:
+        tags.append(pair_loss)
+    elif pair_loss not in {"", "none", "off", "false"}:
+        raise ValueError(
+            "FSQ metadata pair_loss must be none|js|contrastive, "
+            f"got {pair_loss!r}."
+        )
+    return "".join(f"_{tag}" for tag in tags)
+
+
 def _load_fsq_skillset_manifest(
     fsq_meta: dict[str, Any],
     *,
@@ -104,15 +146,10 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
     fsq_model_dir = fsq_outputs_root / fsq_run_name
     fsq_meta_path = fsq_model_dir / "fsq_meta.json"
     if not fsq_meta_path.is_file():
-        # FSQ-original (one-shot) runs write the same provenance keys here.
-        fsq_original_meta_path = fsq_model_dir / "fsq_original_meta.json"
-        if not fsq_original_meta_path.is_file():
-            raise FileNotFoundError(
-                f"FSQ metadata not found: {fsq_meta_path}. "
-                "Select an FSQ output folder containing fsq_meta.json "
-                "or fsq_original_meta.json."
-            )
-        fsq_meta_path = fsq_original_meta_path
+        raise FileNotFoundError(
+            f"FSQ metadata not found: {fsq_meta_path}. "
+            "Select a current FSQ output folder containing fsq_meta.json."
+        )
     fsq_meta = json.loads(fsq_meta_path.read_text())
 
     required_meta = ("dp_run_name", "dp_checkpoint", "skillset_mode")
@@ -248,6 +285,7 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
         fsq_exp = fsq_run_name[lv_match.end() :].strip("_")
     fsq_digits = "".join(str(level) for level in fsq_levels)
     fsq_exp_suffix = f"_{fsq_exp}" if fsq_exp else ""
+    fsq_semantic_suffix = _fsq_semantic_suffix(fsq_meta)
 
     jitter_distribution = str(
         get_value(cfg, "transition_jitter_distribution", "half_normal")
@@ -257,16 +295,33 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
             "transition_jitter_distribution must be half_normal|uniform, "
             f"got {jitter_distribution!r}."
         )
-    skill_pmax = int(get_value(cfg, "pmax", 10))
-    if skill_pmax < 0:
-        raise ValueError(f"pmax must be >= 0, got {skill_pmax}.")
-    jitter_tag = "halfnormal" if jitter_distribution == "half_normal" else "uniform"
+    # Keep the old scalar pmax as a read-only fallback for historical configs,
+    # while new builds carry the same four directional windows as FSQ boundary
+    # augmentation.  The ISS remains one symmetric storage window sized by the
+    # largest direction; sampling uses the four values independently.
+    legacy_pmax = int(get_value(cfg, "pmax", 10))
+    directional_pmaxes = {
+        name: int(get_value(cfg, f"transition_jitter_{name}_pmax", legacy_pmax))
+        for name in ("early_start", "late_start", "early_end", "late_end")
+    }
+    invalid_pmaxes = {
+        name: value for name, value in directional_pmaxes.items() if value < 0
+    }
+    if invalid_pmaxes:
+        raise ValueError(
+            "transition jitter directional pmax values must be >= 0, got "
+            f"{invalid_pmaxes}."
+        )
+    skill_pmax = max(directional_pmaxes.values())
     skillset_min_skills_suffix = (
         "" if skillset_min_skills == 1 else f"_ms{skillset_min_skills}"
     )
-    data_identity_suffix = (
-        f"{skillset_min_skills_suffix}_pmax{skill_pmax}_{jitter_tag}"
-    )
+    # Detailed segmentation, threshold, snap, and jitter settings are kept in
+    # metadata/config rather than the readable SkillVLA dataset folder name.
+    # Keep only a non-default minimum-skill constraint visible because it changes
+    # the basic segmentation cardinality contract.
+    data_identity_suffix = skillset_min_skills_suffix
+    output_suffix = _skillvla_output_suffix(cfg)
 
     # ── FSQ (step 4) — model path from the parsed run name + checkpoint ──
     if fsq_checkpoint in ("0", "best"):
@@ -280,30 +335,17 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
     #   {skillvla_root}/{source_dataset}/{run_tag}/   ← final outputs (FSQ.pt, skillvla/)
     #   {skillvla_root}/{source_dataset}/_work/        ← intermediates, keyed by dependency:
     #       seg_{dp}_ck{ckpt}/        (DP-dependent: skillset + skill_tokens; shared across FSQ)
-    # Segmentation mode changes both skill boundaries and the latent sequence. Keep it in the
-    # final dataset identity as well as the intermediate seg_dir so a completed dataset built with
-    # another mode can never short-circuit this build. It also makes FT snap references resolve only
-    # against a PT vocabulary produced with the same segmentation mode.
-    skillset_mode_suffix = probe_settings["skillset_probe_suffix"]
-    base_run_tag = f"FSQ{fsq_digits}{fsq_exp_suffix}_{ckpt_tag}{skillset_mode_suffix}"
-    own_threshold_scope = (
-        "episodemean" if boundary_threshold_mode == "episode_mean" else "globalmean"
-    )
-    run_threshold_scope = (
-        "globalref"
-        if boundary_threshold_mode == "global_mean" and skillvla_data_mode == "ft"
-        else own_threshold_scope
-    )
-    own_boundary_identity_suffix = f"_{own_threshold_scope}_{threshold_percent_tag}"
-    boundary_identity_suffix = f"_{run_threshold_scope}_{threshold_percent_tag}"
-    run_tag = f"{base_run_tag}_{skillvla_data_mode}{boundary_identity_suffix}"
-    # transfer 빌드(snap): 미지원 코드를 최근접 지원 코드로 snap한 빌드는 산출물(skill_latents/skillvla)이
-    # 다르므로 폴더 분리 — run_tag에 _snap{min_freq} 부착 (downstream 파서들의 run_tag 정규식은
-    # `FSQ\d+_dino\d+.*?` 꼴이라 그대로 통과). _work 중간물은 snap 무관(dino/segmentation)이라 공유 유지.
+    # fsq_exp remains exported as provenance, but is intentionally omitted from
+    # the SkillVLA folder name. Architecture/loss tags above come from stable
+    # structured metadata instead of the user-owned experiment label.
+    base_run_tag = f"FSQ{fsq_digits}{fsq_semantic_suffix}_{ckpt_tag}"
+    run_tag = f"{base_run_tag}_{skillvla_data_mode}"
+    # Snap changes the generated latent assignments but is intentionally hidden
+    # from the concise folder name. Use skillvla_output_suffix when multiple snap
+    # variants of the same FSQ/checkpoint/data mode must coexist.
     fsq_snap = as_bool(get_value(cfg, "fsq_snap_to_supported", False))
     fsq_snap_reference = ""
     if fsq_snap:
-        snap_suffix = f"_snap{int(get_value(cfg, 'fsq_snap_min_code_freq', 1))}"
         if skillvla_data_mode == "pt":
             # PT vocabulary pruning: the just-encoded raw distribution is the
             # reference, so no user-maintained path is needed.
@@ -313,8 +355,7 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
             # pruning threshold. Search source-dataset directories so the FT
             # config needs no duplicated PT dataset/path field.
             pt_run_tag = (
-                f"{base_run_tag}_pt{own_boundary_identity_suffix}"
-                f"{snap_suffix}{data_identity_suffix}"
+                f"{base_run_tag}_pt{data_identity_suffix}{output_suffix}"
             )
             pt_refs = sorted(skillvla_root.glob(f"*/{pt_run_tag}/skill_latents.npz"))
             if len(pt_refs) != 1:
@@ -326,10 +367,8 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
                     "fsq_snap_min_code_freq)."
                 )
             fsq_snap_reference = str(pt_refs[0])
-        run_tag += snap_suffix
-    # Final SkillVLA artifacts depend on episode filtering and jitter sampling. Keep those values in
-    # the identity so changing either cannot short-circuit against an older completed dataset.
-    run_tag += data_identity_suffix
+    # Append only the remaining concise identity and the optional user label.
+    run_tag += f"{data_identity_suffix}{output_suffix}"
     source_out_dir = skillvla_root / source_dataset
     run_dir = source_out_dir / run_tag
     work_dir = source_out_dir / "_work"
@@ -428,6 +467,7 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
         "fsq_run_name": fsq_run_name,
         "fsq_exp": fsq_exp,
         "fsq_exp_suffix": fsq_exp_suffix,
+        "fsq_semantic_suffix": fsq_semantic_suffix,
         "fsq_model_dir": fsq_model_dir,
         "fsq_model_path": fsq_model_path,
         "fsq_meta_path": fsq_meta_path,
@@ -442,11 +482,16 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
         "max_order": int(get_value(cfg, "max_order", 0)),
         "max_length": int(get_value(cfg, "max_length", 200)),
         "skill_pmax": skill_pmax,   # Stage-2 transition randomization 반폭 (ISS window)
+        "skill_early_start_pmax": directional_pmaxes["early_start"],
+        "skill_late_start_pmax": directional_pmaxes["late_start"],
+        "skill_early_end_pmax": directional_pmaxes["early_end"],
+        "skill_late_end_pmax": directional_pmaxes["late_end"],
         "skill_jitter_distribution": jitter_distribution,
         "skill_decoder_state_indices": str(get_value(cfg, "skill_decoder_state_indices", "[0,1,2,3,4,5,6,7]")),
         "cleanup_intermediate": str(get_value(cfg, "cleanup_intermediate", True)).lower(),
         # output layout
         "run_tag": run_tag,
+        "skillvla_output_suffix": output_suffix,
         "skillvla_run_dir": run_dir,
         "skillvla_work_dir": work_dir,
         "skillvla_seg_dir": seg_dir,   # DP-keyed intermediates (skillset + skill_tokens)

@@ -173,11 +173,6 @@ cat > "${FSQ_OUTPUT_DIR}/fsq_meta.json" <<JSON
   "encoder_length_token": ${FSQ_ENCODER_LENGTH_TOKEN},
   "quantizer": "${FSQ_QUANTIZER}",
   "bsq_code_dim": ${BSQ_CODE_DIM},
-  "fsq_entropy": ${FSQ_ENTROPY},
-  "entropy_conf_weight": ${FSQ_ENTROPY_CONF_WEIGHT},
-  "entropy_conf_ceiling": ${FSQ_ENTROPY_CONF_CEILING},
-  "entropy_div_weight": ${FSQ_ENTROPY_DIV_WEIGHT},
-  "entropy_inv_temperature": ${FSQ_ENTROPY_INV_TEMPERATURE},
   "init_calibration": ${FSQ_INIT_CALIBRATION},
   "init_calibration_gain": ${FSQ_INIT_CALIBRATION_GAIN},
   "init_calibration_samples": ${FSQ_INIT_CALIBRATION_SAMPLES},
@@ -217,11 +212,6 @@ fi
 SAVE_BEST_ARG=(--no-save_best_model)
 if [ "${FSQ_SAVE_BEST_MODEL:-false}" = "true" ]; then
   SAVE_BEST_ARG=(--save_best_model)
-fi
-
-FSQ_ENTROPY_ARG=(--no-fsq_entropy)
-if [ "${FSQ_ENTROPY:-false}" = "true" ]; then
-  FSQ_ENTROPY_ARG=(--fsq_entropy)
 fi
 
 INIT_CALIBRATION_ARG=(--no-init-calibration)
@@ -280,14 +270,9 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     --autoencoder_mode        "${FSQ_AUTOENCODER_MODE}" \
     --action_gripper_weight   "${FSQ_ACTION_GRIPPER_WEIGHT}" \
     --start_state_conditioning "${FSQ_START_STATE_CONDITIONING}" \
-    "${FSQ_ENTROPY_ARG[@]}" \
     "${INIT_CALIBRATION_ARG[@]}" \
     --init-calibration-gain   "${FSQ_INIT_CALIBRATION_GAIN}" \
     --init-calibration-samples "${FSQ_INIT_CALIBRATION_SAMPLES}" \
-    --entropy_conf_weight     "${FSQ_ENTROPY_CONF_WEIGHT}" \
-    --entropy_conf_ceiling    "${FSQ_ENTROPY_CONF_CEILING}" \
-    --entropy_div_weight      "${FSQ_ENTROPY_DIV_WEIGHT}" \
-    --entropy_inv_temperature "${FSQ_ENTROPY_INV_TEMPERATURE}" \
     --pair_loss               "${FSQ_PAIR_LOSS}" \
     --pair_weight             "${FSQ_PAIR_WEIGHT}" \
     --pair_inv_temperature    "${FSQ_PAIR_INV_TEMPERATURE}" \

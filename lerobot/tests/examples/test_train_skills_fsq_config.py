@@ -27,7 +27,7 @@ def _minimal_fsq_config(tmp_path: Path) -> dict:
             "std_episodemean_80p_trial"
         ),
         "skillset_name": "skillset",
-        "fsq_levels": [3, 3, 3],
+        "fsq_quantizer": {"type": "fsq", "levels": [3, 3, 3]},
         "fsq_exp": "test_fsq_run",
         "fsq_autoencoder_mode": "zero",
     }
@@ -117,7 +117,7 @@ def test_fsq_selects_skillset_by_folders_and_reads_manifest(tmp_path: Path) -> N
     )
     assert settings["fsq_frame_cache_dir"] == ""
     assert settings["fsq_run_name"] == (
-        "zero1_recon_termDINO__pairOFF_routeOFF_loss__test_fsq_run"
+        "FSQ333_zero1_recon_termDINO__pairOFF_routeOFF_loss__test_fsq_run"
     )
 
 
@@ -229,7 +229,7 @@ def test_fsq_run_name_uses_mode_decoder_loss_and_optional_exp_suffix(
     assert settings["fsq_decoder_name"] == "recon_termRES"
     assert settings["fsq_loss_name"] == "pairOFF_routeOFF_loss"
     assert settings["fsq_run_name"] == (
-        "zero1_recon_termRES__pairOFF_routeOFF_loss__my_exact_name"
+        "FSQ333_zero1_recon_termRES__pairOFF_routeOFF_loss__my_exact_name"
     )
     assert settings["fsq_output_dir"].name == settings["fsq_run_name"]
 
@@ -242,8 +242,21 @@ def test_fsq_exp_can_be_empty(tmp_path: Path) -> None:
     settings = train_settings(config)
 
     assert settings["fsq_run_name"] == (
-        "zero1_recon_termDINO__pairOFF_routeOFF_loss"
+        "FSQ333_zero1_recon_termDINO__pairOFF_routeOFF_loss"
     )
+
+
+def test_fsq_run_name_starts_with_compact_codebook_levels(tmp_path: Path) -> None:
+    config = _minimal_fsq_config(tmp_path)
+    config.update(
+        fsq_quantizer={"type": "fsq", "levels": [3, 4, 5]}, fsq_exp=""
+    )
+    _write_manifest(tmp_path, config)
+
+    settings = train_settings(config)
+
+    assert settings["fsq_levels_str"] == "3 4 5"
+    assert settings["fsq_run_name"].startswith("FSQ345_")
 
 
 @pytest.mark.parametrize(
@@ -278,7 +291,7 @@ def test_fsq_decoder_name_covers_reconstructor_and_terminator_compositions(
 
     assert settings["fsq_decoder_name"] == decoder_name
     assert settings["fsq_run_name"] == (
-        f"zero1_{decoder_name}__pairOFF_routeOFF_loss"
+        f"FSQ333_zero1_{decoder_name}__pairOFF_routeOFF_loss"
     )
 
 
@@ -297,7 +310,7 @@ def test_fsq_loss_name_matches_pair_type_and_route_switch(tmp_path: Path) -> Non
 
     assert settings["fsq_loss_name"] == "contrastiveON_routeON_loss"
     assert settings["fsq_run_name"] == (
-        "zero1_recon_only__contrastiveON_routeON_loss"
+        "FSQ333_zero1_recon_only__contrastiveON_routeON_loss"
     )
 
 
@@ -322,7 +335,7 @@ def test_fsq_pair_loss_type_none_disables_pair_loss_and_updates_name(
     assert settings["fsq_pair_weight"] == "0.2"
     assert settings["fsq_pair_inv_temperature"] == "7.5"
     assert settings["fsq_loss_name"] == "pairOFF_routeOFF_loss"
-    assert settings["fsq_run_name"] == "zero1_recon_only__pairOFF_routeOFF_loss"
+    assert settings["fsq_run_name"] == "FSQ333_zero1_recon_only__pairOFF_routeOFF_loss"
 
 
 @pytest.mark.parametrize("exp", ["../escape", "nested/run", "bad name"])
@@ -431,7 +444,7 @@ def test_fsq_normalized_action_mapping_scales_gripper_and_names_weight(
     assert settings["fsq_encoder_arch"] == "action_seq"
     assert settings["fsq_reconstructor_arch"] == "action_seq_transformer"
     assert settings["fsq_run_name"] == (
-        "norm_action01_recon_only__pairOFF_routeOFF_loss"
+        "FSQ333_norm_action01_recon_only__pairOFF_routeOFF_loss"
     )
 
 
@@ -451,7 +464,7 @@ def test_fsq_gripper_weight_is_available_in_every_autoencoder_mode(
     settings = train_settings(config)
 
     assert settings["fsq_action_gripper_weight"] == "0.1"
-    assert settings["fsq_run_name"].startswith(f"{mode}01_")
+    assert settings["fsq_run_name"].startswith(f"FSQ333_{mode}01_")
 
 
 @pytest.mark.parametrize("mode", ["raw", "zero", "action", "norm_action"])
@@ -582,7 +595,7 @@ def test_fsq_resnet_vision_option_resolves(tmp_path: Path) -> None:
     assert settings["fsq_vision_backbone"] == "resnet"
     assert settings["fsq_resnet_image_size"] == 256
     assert settings["fsq_run_name"] == (
-        "zero1_recon_termRES__pairOFF_routeOFF_loss__test_fsq_run"
+        "FSQ333_zero1_recon_termRES__pairOFF_routeOFF_loss__test_fsq_run"
     )
 
 
@@ -597,7 +610,7 @@ def test_fsq_fusion_terminator_option_does_not_rename_checkpoint(
 
     assert settings["fsq_terminator_default_arch"] == "fusion"
     assert settings["fsq_run_name"] == (
-        "zero1_recon_termDINO__pairOFF_routeOFF_loss__test_fsq_run"
+        "FSQ333_zero1_recon_termDINO__pairOFF_routeOFF_loss__test_fsq_run"
     )
 
 
@@ -761,7 +774,7 @@ def test_fsq_route_loss_resolves_and_updates_run_name(
     assert settings["fsq_route_loss"] is True
     assert settings["fsq_pair_inv_temperature"] == "7.5"
     assert settings["fsq_run_name"] == (
-        "action1_recon_only__pairOFF_routeON_loss__test_fsq_run"
+        "FSQ333_action1_recon_only__pairOFF_routeON_loss__test_fsq_run"
     )
 
 
@@ -799,12 +812,10 @@ def test_fsq_chunk_reconstructor_is_no_longer_selectable(tmp_path: Path) -> None
         train_settings(config)
 
 
-def test_bsq5_selects_distinct_tag_and_binary_latent_contract(tmp_path: Path) -> None:
+def test_bsq4_selects_distinct_tag_and_binary_latent_contract(tmp_path: Path) -> None:
     config = _minimal_fsq_config(tmp_path)
     config.update(
-        fsq_quantizer="bsq",
-        bsq_code_dim=5,
-        fsq_entropy=False,
+        fsq_quantizer={"type": "bsq", "code_dim": 4},
         fsq_pair_loss={"type": "js"},
         fsq_boundary_aug_pmax=10,
     )
@@ -813,46 +824,14 @@ def test_bsq5_selects_distinct_tag_and_binary_latent_contract(tmp_path: Path) ->
     settings = train_settings(config)
 
     assert settings["fsq_quantizer"] == "bsq"
-    assert settings["bsq_code_dim"] == 5
-    assert settings["fsq_tag"] == "bsq5"
-    assert settings["fsq_dim"] == 5
-    assert settings["fsq_num_embeddings"] == 32
-    assert settings["fsq_levels_str"] == "2 2 2 2 2"
+    assert settings["bsq_code_dim"] == 4
+    assert settings["fsq_tag"] == "bsq4"
+    assert settings["fsq_dim"] == 4
+    assert settings["fsq_num_embeddings"] == 16
+    assert settings["fsq_levels_str"] == "2 2 2 2"
     assert settings["fsq_run_name"] == (
-        "zero1_recon_termDINO__jsON_routeOFF_loss__test_fsq_run"
+        "BSQ2222_zero1_recon_termDINO__jsON_routeOFF_loss__test_fsq_run"
     )
-
-
-def test_bsq_rejects_fsq_entropy_objective(tmp_path: Path) -> None:
-    config = _minimal_fsq_config(tmp_path)
-    config.update(fsq_quantizer="bsq", bsq_code_dim=5, fsq_entropy=True)
-    _write_manifest(tmp_path, config)
-
-    with pytest.raises(ValueError, match="set fsq_entropy=false"):
-        train_settings(config)
-
-
-def test_fsq_entropy_conf_ceiling_resolves(tmp_path: Path) -> None:
-    config = _minimal_fsq_config(tmp_path)
-    config.update(fsq_entropy=True, fsq_entropy_conf_ceiling=0.1)
-    _write_manifest(tmp_path, config)
-
-    settings = train_settings(config)
-
-    assert settings["fsq_entropy"] is True
-    assert settings["fsq_entropy_conf_ceiling"] == "0.1"
-
-
-@pytest.mark.parametrize("ceiling", [-0.01, 1.01])
-def test_fsq_entropy_conf_ceiling_rejects_values_outside_unit_interval(
-    tmp_path: Path, ceiling: float
-) -> None:
-    config = _minimal_fsq_config(tmp_path)
-    config["fsq_entropy_conf_ceiling"] = ceiling
-    _write_manifest(tmp_path, config)
-
-    with pytest.raises(ValueError, match="fsq_entropy_conf_ceiling must be in"):
-        train_settings(config)
 
 
 def test_fsq_init_calibration_does_not_mutate_exp_name(tmp_path: Path) -> None:
@@ -869,7 +848,7 @@ def test_fsq_init_calibration_does_not_mutate_exp_name(tmp_path: Path) -> None:
     assert settings["fsq_init_calibration_gain"] == "0.8"
     assert settings["fsq_init_calibration_samples"] == 4096
     assert settings["fsq_run_name"] == (
-        "zero1_recon_termDINO__pairOFF_routeOFF_loss__recon"
+        "FSQ333_zero1_recon_termDINO__pairOFF_routeOFF_loss__recon"
     )
 
 

@@ -12,6 +12,7 @@ _CONFIG_SRC = (
 sys.path.insert(0, str(_CONFIG_SRC))
 
 from train_skillVLA_config import build_settings
+from check_jitter_contract import contract_matches
 
 
 def _config(
@@ -105,7 +106,11 @@ def test_episode_mean_has_disjoint_work_and_final_paths(tmp_path: Path) -> None:
     assert settings["skillset_boundary_threshold_mode"] == "episode_mean"
     assert settings["skillset_global_threshold_source"] == ""
     assert settings["skillvla_seg_dir"].name.endswith("_episodemean_100p")
-    assert "_pt_episodemean_100p_" in settings["run_tag"]
+    assert settings["run_tag"].endswith("_pt")
+    assert "std" not in settings["run_tag"]
+    assert "episodemean" not in settings["run_tag"]
+    assert "100p" not in settings["run_tag"]
+    assert "halfnormal" not in settings["run_tag"]
     assert "_ms1" not in settings["skillvla_seg_dir"].name
     assert "_ms1" not in settings["run_tag"]
     assert settings["skillset_min_skill_len"] == 10
@@ -113,7 +118,93 @@ def test_episode_mean_has_disjoint_work_and_final_paths(tmp_path: Path) -> None:
     assert "minlen" not in settings["run_tag"]
 
 
-def test_exp_only_fsq_folder_uses_metadata_instead_of_name_parsing(
+def test_directional_jitter_is_exported_but_hidden_from_dataset_name(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path, "episode_mean")
+    config.update(
+        transition_jitter_early_start_pmax=10,
+        transition_jitter_late_start_pmax=5,
+        transition_jitter_early_end_pmax=10,
+        transition_jitter_late_end_pmax=5,
+    )
+
+    settings = build_settings(config)
+
+    assert settings["skill_pmax"] == 10
+    assert settings["skill_early_start_pmax"] == 10
+    assert settings["skill_late_start_pmax"] == 5
+    assert settings["skill_early_end_pmax"] == 10
+    assert settings["skill_late_end_pmax"] == 5
+    assert "pmax" not in settings["run_tag"].lower()
+
+
+def test_snap_settings_are_hidden_from_dataset_name(tmp_path: Path) -> None:
+    config = _config(tmp_path, "episode_mean")
+    config.update(fsq_snap_to_supported=True, fsq_snap_min_code_freq=10)
+
+    settings = build_settings(config)
+
+    assert settings["fsq_snap_to_supported"] is True
+    assert settings["fsq_snap_min_code_freq"] == 10
+    assert "snap" not in settings["run_tag"].lower()
+    assert settings["run_tag"].endswith("_pt")
+
+
+def test_custom_skillvla_output_suffix_is_appended_last(tmp_path: Path) -> None:
+    config = _config(tmp_path, "episode_mean")
+    config["skillvla_output_suffix"] = "_pmax15"
+
+    settings = build_settings(config)
+
+    assert settings["skillvla_output_suffix"] == "_pmax15"
+    assert settings["run_tag"].endswith("_pt_pmax15")
+    assert settings["skillvla_run_dir"].name == settings["run_tag"]
+
+
+def test_invalid_skillvla_output_suffix_fails_early(tmp_path: Path) -> None:
+    config = _config(tmp_path, "episode_mean")
+    config["skillvla_output_suffix"] = "../pmax15"
+
+    with pytest.raises(ValueError, match="skillvla_output_suffix"):
+        build_settings(config)
+
+
+def test_hidden_directional_contract_prevents_stale_dataset_reuse(
+    tmp_path: Path,
+) -> None:
+    dataset_dir = tmp_path / "skillvla"
+    (dataset_dir / "meta").mkdir(parents=True)
+    (dataset_dir / "meta/info.json").write_text(
+        json.dumps(
+            {
+                "skill_pmax": 10,
+                "skill_jitter_early_start_pmax": 10,
+                "skill_jitter_late_start_pmax": 5,
+                "skill_jitter_early_end_pmax": 10,
+                "skill_jitter_late_end_pmax": 5,
+                "skill_jitter_distribution": "half_normal",
+            }
+        )
+    )
+    kwargs = {
+        "storage_pmax": 10,
+        "early_start_pmax": 10,
+        "late_start_pmax": 5,
+        "early_end_pmax": 10,
+        "late_end_pmax": 5,
+        "distribution": "half_normal",
+    }
+
+    assert contract_matches(dataset_dir, **kwargs) == (True, "")
+    matched, detail = contract_matches(
+        dataset_dir, **{**kwargs, "late_end_pmax": 4}
+    )
+    assert matched is False
+    assert "skill_jitter_late_end_pmax" in detail
+
+
+def test_exp_is_exported_but_omitted_from_skillvla_name(
     tmp_path: Path,
 ) -> None:
     config = _config(
@@ -129,7 +220,57 @@ def test_exp_only_fsq_folder_uses_metadata_instead_of_name_parsing(
     assert settings["fsq_run_name"] == "motion_categories_v2"
     assert settings["fsq_exp"] == "motion_categories_v2"
     assert settings["fsq_levels_str"] == "3 3 3"
-    assert "FSQ333_motion_categories_v2_" in settings["run_tag"]
+    assert settings["run_tag"] == "FSQ333_best_pt"
+    assert "motion_categories_v2" not in settings["run_tag"]
+
+
+def test_fsq_semantic_tags_come_from_structured_metadata(tmp_path: Path) -> None:
+    config = _config(
+        tmp_path,
+        "episode_mean",
+        fsq_run_name="unstable-folder-name",
+        fsq_levels=[3, 3, 3],
+        fsq_exp="custom",
+    )
+    meta_path = tmp_path / "outputs/FSQ/unstable-folder-name/fsq_meta.json"
+    metadata = json.loads(meta_path.read_text())
+    metadata.update(
+        decoder_terminator_termination=True,
+        vision_backbone="resnet",
+        pair_loss="contrastive",
+    )
+    meta_path.write_text(json.dumps(metadata))
+
+    settings = build_settings(config)
+
+    assert settings["fsq_semantic_suffix"] == "_termRES_contrastive"
+    assert settings["run_tag"] == "FSQ333_termRES_contrastive_best_pt"
+    assert "custom" not in settings["run_tag"]
+
+
+def test_recon_only_js_omits_terminator_tag(tmp_path: Path) -> None:
+    config = _config(
+        tmp_path,
+        "episode_mean",
+        fsq_run_name="folder-containing-termRES",
+        fsq_levels=[3, 3, 3],
+        fsq_exp="custom",
+    )
+    meta_path = tmp_path / "outputs/FSQ/folder-containing-termRES/fsq_meta.json"
+    metadata = json.loads(meta_path.read_text())
+    metadata.update(
+        decoder_terminator_termination=False,
+        vision_backbone="resnet",
+        pair_loss="js",
+    )
+    meta_path.write_text(json.dumps(metadata))
+
+    settings = build_settings(config)
+
+    assert settings["fsq_semantic_suffix"] == "_js"
+    assert settings["run_tag"] == "FSQ333_js_best_pt"
+    assert "termRES" not in settings["run_tag"]
+    assert "custom" not in settings["run_tag"]
 
 
 def test_global_mean_has_explicit_threshold_identity(tmp_path: Path) -> None:
@@ -137,7 +278,9 @@ def test_global_mean_has_explicit_threshold_identity(tmp_path: Path) -> None:
 
     assert settings["skillset_boundary_threshold_mode"] == "global_mean"
     assert settings["skillvla_seg_dir"].name.endswith("_globalmean_100p")
-    assert "_pt_globalmean_100p_" in settings["run_tag"]
+    assert settings["run_tag"].endswith("_pt")
+    assert "globalmean" not in settings["run_tag"]
+    assert "100p" not in settings["run_tag"]
 
 
 def test_scaled_mean_threshold_is_named_and_exported(tmp_path: Path) -> None:
@@ -145,14 +288,16 @@ def test_scaled_mean_threshold_is_named_and_exported(tmp_path: Path) -> None:
 
     assert settings["skillset_boundary_threshold_scale"] == 0.8
     assert settings["skillvla_seg_dir"].name.endswith("_globalmean_80p")
-    assert "_pt_globalmean_80p_" in settings["run_tag"]
+    assert settings["run_tag"].endswith("_pt")
+    assert "globalmean" not in settings["run_tag"]
+    assert "80p" not in settings["run_tag"]
 
 
 def test_nondefault_min_skills_remains_in_identity(tmp_path: Path) -> None:
     settings = build_settings(_config(tmp_path, "episode_mean", min_skills=2))
 
     assert "_ms2_" in settings["skillvla_seg_dir"].name
-    assert "_ms2_" in settings["run_tag"]
+    assert settings["run_tag"].endswith("_pt_ms2")
 
 
 def test_ft_episode_mean_does_not_require_pt_global_threshold(tmp_path: Path) -> None:
@@ -176,18 +321,6 @@ def test_missing_fsq_metadata_fails_early(tmp_path: Path) -> None:
 
     with pytest.raises(FileNotFoundError, match="fsq_meta.json"):
         build_settings(config)
-
-
-def test_fsq_original_metadata_is_accepted(tmp_path: Path) -> None:
-    """FSQ-original (one-shot) runs carry the same provenance under another filename."""
-    config = _config(tmp_path, "episode_mean")
-    fsq_dir = tmp_path / "outputs/FSQ/libero_90_std_global_fsq333_dino"
-    (fsq_dir / "fsq_meta.json").rename(fsq_dir / "fsq_original_meta.json")
-
-    settings = build_settings(config)
-
-    assert settings["fsq_meta_path"].name == "fsq_original_meta.json"
-    assert settings["run_tag"] == build_settings(_config(tmp_path, "episode_mean"))["run_tag"]
 
 
 def test_fsq_metadata_mode_beats_stale_environment(

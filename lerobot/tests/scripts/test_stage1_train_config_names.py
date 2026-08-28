@@ -190,6 +190,33 @@ def test_skill_end_loss_mask_supports_jitter_and_has_distinct_name(
     assert settings["pt_run_name"].endswith("_arch2_2_skillendmask")
 
 
+def test_stage1_reads_directional_jitter_contract(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    info_path = (
+        Path(config["project_root"])
+        / "dataset/skillvla_dataset/source"
+        / config["dataset"]["run"]
+        / "skillvla/meta/info.json"
+    )
+    info = json.loads(info_path.read_text())
+    info.update(
+        skill_pmax=10,
+        skill_jitter_early_start_pmax=10,
+        skill_jitter_late_start_pmax=5,
+        skill_jitter_early_end_pmax=10,
+        skill_jitter_late_end_pmax=5,
+    )
+    info_path.write_text(json.dumps(info))
+
+    settings = build_settings(config)
+
+    assert settings["transition_jitter_pmax"] == 10
+    assert settings["transition_jitter_early_start_pmax"] == 10
+    assert settings["transition_jitter_late_start_pmax"] == 5
+    assert settings["transition_jitter_early_end_pmax"] == 10
+    assert settings["transition_jitter_late_end_pmax"] == 5
+
+
 def test_stage1_muon_probe_defaults_off_and_keeps_names(tmp_path: Path) -> None:
     settings = build_settings(_config(tmp_path))
     assert settings["use_muon"] is False

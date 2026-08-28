@@ -766,31 +766,48 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         else fsq_inputs_dir / f"seg_{dp_policy}_ck{dp_checkpoint}{skillset_suffix}"
     )
 
-    fsq_quantizer = str(get_value(cfg, "fsq_quantizer", "fsq")).strip().lower()
+    raw_quantizer = cfg.get("fsq_quantizer")
+    if not isinstance(raw_quantizer, dict):
+        raise ValueError(
+            "fsq_quantizer must be an inline mapping: "
+            "{type: fsq, levels: [...]} or {type: bsq, code_dim: N}."
+        )
+    fsq_quantizer = str(raw_quantizer.get("type", "")).strip().lower()
     if fsq_quantizer not in {"fsq", "bsq"}:
         raise ValueError(
-            f"fsq_quantizer must be fsq|bsq, got {fsq_quantizer!r}."
+            f"fsq_quantizer.type must be fsq|bsq, got {fsq_quantizer!r}."
         )
-    bsq_code_dim = int(get_value(cfg, "bsq_code_dim", 5))
-    if bsq_code_dim < 2:
-        raise ValueError(f"bsq_code_dim must be >= 2, got {bsq_code_dim}.")
-    configured_fsq_levels = as_levels(get_value(cfg, "fsq_levels", [5, 5, 5]))
-    fsq_levels = (
-        [2] * bsq_code_dim
-        if fsq_quantizer == "bsq"
-        else configured_fsq_levels
+    allowed_quantizer_keys = (
+        {"type", "levels"} if fsq_quantizer == "fsq" else {"type", "code_dim"}
     )
+    unknown_quantizer_keys = sorted(set(raw_quantizer) - allowed_quantizer_keys)
+    if unknown_quantizer_keys:
+        raise ValueError(
+            f"fsq_quantizer.type={fsq_quantizer} does not support: "
+            + ", ".join(unknown_quantizer_keys)
+        )
+    if fsq_quantizer == "fsq":
+        if "levels" not in raw_quantizer:
+            raise ValueError("fsq_quantizer.type=fsq requires levels.")
+        fsq_levels = as_levels(raw_quantizer["levels"])
+        bsq_code_dim = len(fsq_levels)
+        quantizer_run_name = "FSQ" + "".join(str(level) for level in fsq_levels)
+    else:
+        if "code_dim" not in raw_quantizer:
+            raise ValueError("fsq_quantizer.type=bsq requires code_dim.")
+        bsq_code_dim = int(raw_quantizer["code_dim"])
+        if bsq_code_dim < 2:
+            raise ValueError(
+                f"fsq_quantizer.code_dim must be >= 2, got {bsq_code_dim}."
+            )
+        fsq_levels = [2] * bsq_code_dim
+        quantizer_run_name = "BSQ" + ("2" * bsq_code_dim)
     fsq_tag = (
         f"bsq{bsq_code_dim}"
         if fsq_quantizer == "bsq"
         else "fsq" + "".join(str(v) for v in fsq_levels)
     )
-    # Main FSQ uses the compact preset interface below. FSQ-original and BSQ
-    # intentionally keep their historical surfaces and launcher contracts.
-    legacy_original_config = "fsq_orig_encoder_arch" in cfg
     fsq_exp = str(get_value(cfg, "fsq_exp", "")).strip()
-    if legacy_original_config and not fsq_exp:
-        raise ValueError("fsq_exp is required for legacy FSQ-original/BSQ runs.")
     if fsq_exp and (
         fsq_exp in {".", ".."}
         or Path(fsq_exp).name != fsq_exp
@@ -807,42 +824,29 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
     # resolution. Slurm inherits those outputs and resolves the snapshot a
     # second time, so allowing env precedence here would replace a mapping with
     # a scalar (for example {enabled: ...} -> "true").
-    raw_calibration = cfg.get("fsq_init_calibration", False)
-    if not legacy_original_config:
-        exposed = sorted(
-            {"fsq_init_calibration_gain", "fsq_init_calibration_samples"}.intersection(
-                cfg
-            )
+    raw_calibration = cfg.get("fsq_init_calibration", {})
+    exposed = sorted(
+        {"fsq_init_calibration_gain", "fsq_init_calibration_samples"}.intersection(
+            cfg
         )
-        if exposed or (
-            "fsq_init_calibration" in cfg and not isinstance(raw_calibration, dict)
-        ):
-            details = exposed or ["fsq_init_calibration"]
-            raise ValueError(
-                "Main FSQ calibration uses one fsq_init_calibration mapping; "
-                "remove split/scalar keys: " + ", ".join(details)
-            )
-    if isinstance(raw_calibration, dict):
-        unknown = sorted(
-            set(raw_calibration).difference({"enabled", "gain", "samples"})
+    )
+    if exposed or not isinstance(raw_calibration, dict):
+        details = exposed or ["fsq_init_calibration"]
+        raise ValueError(
+            "Main FSQ calibration uses one fsq_init_calibration mapping; "
+            "remove split/scalar keys: " + ", ".join(details)
         )
-        if unknown:
-            raise ValueError(
-                "fsq_init_calibration supports enabled|gain|samples, got: "
-                + ", ".join(unknown)
-            )
-        fsq_init_calibration = as_bool(raw_calibration.get("enabled", False))
-        fsq_init_calibration_gain = float(raw_calibration.get("gain", 1.0))
-        fsq_init_calibration_samples = int(raw_calibration.get("samples", 0))
-    else:
-        # Backward-compatible parsing for FSQ-original/BSQ and old configs.
-        fsq_init_calibration = as_bool(raw_calibration)
-        fsq_init_calibration_gain = float(
-            get_value(cfg, "fsq_init_calibration_gain", 1.0)
+    unknown = sorted(
+        set(raw_calibration).difference({"enabled", "gain", "samples"})
+    )
+    if unknown:
+        raise ValueError(
+            "fsq_init_calibration supports enabled|gain|samples, got: "
+            + ", ".join(unknown)
         )
-        fsq_init_calibration_samples = int(
-            get_value(cfg, "fsq_init_calibration_samples", 0)
-        )
+    fsq_init_calibration = as_bool(raw_calibration.get("enabled", False))
+    fsq_init_calibration_gain = float(raw_calibration.get("gain", 1.0))
+    fsq_init_calibration_samples = int(raw_calibration.get("samples", 0))
     if fsq_init_calibration_gain <= 0:
         raise ValueError(
             "fsq_init_calibration_gain must be positive, "
@@ -857,126 +861,82 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
     fsq_lr_schedule = str(get_value(cfg, "fsq_lr_schedule", "cosine")).strip().lower()
     if fsq_lr_schedule not in {"cosine", "constant"}:
         raise ValueError(f"fsq_lr_schedule must be cosine|constant, got {fsq_lr_schedule!r}.")
-    if legacy_original_config:
-        fsq_encoder_lr = str(get_value(cfg, "fsq_encoder_lr", "3e-4"))
-        fsq_terminator_lr = str(
-            get_value(cfg, "fsq_terminator_lr", fsq_encoder_lr)
+    split_lr_keys = {
+        "fsq_encoder_lr",
+        "fsq_reconstructor_lr",
+        "fsq_terminator_lr",
+    }
+    exposed = sorted(split_lr_keys.intersection(cfg))
+    if exposed:
+        raise ValueError(
+            "Main FSQ uses one fsq_lr for encoder, reconstructor, and "
+            "terminator; remove split LR keys: " + ", ".join(exposed)
         )
-        fsq_reconstructor_lr = str(
-            get_value(cfg, "fsq_reconstructor_lr", fsq_encoder_lr)
-        )
-        fsq_lr = str(get_value(cfg, "fsq_lr", fsq_encoder_lr))
-    else:
-        split_lr_keys = {
-            "fsq_encoder_lr",
-            "fsq_reconstructor_lr",
-            "fsq_terminator_lr",
-        }
-        exposed = sorted(split_lr_keys.intersection(cfg))
-        if exposed:
-            raise ValueError(
-                "Main FSQ uses one fsq_lr for encoder, reconstructor, and "
-                "terminator; remove split LR keys: " + ", ".join(exposed)
-            )
-        fsq_lr = str(get_value(cfg, "fsq_lr", "3e-4"))
-        fsq_encoder_lr = fsq_lr
-        fsq_reconstructor_lr = fsq_lr
-        fsq_terminator_lr = fsq_lr
+    fsq_lr = str(get_value(cfg, "fsq_lr", "3e-4"))
+    fsq_encoder_lr = fsq_lr
+    fsq_reconstructor_lr = fsq_lr
+    fsq_terminator_lr = fsq_lr
     try:
         parsed_fsq_lr = float(fsq_lr)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"fsq_lr must be numeric, got {fsq_lr!r}.") from exc
     if parsed_fsq_lr <= 0:
         raise ValueError(f"fsq_lr must be positive, got {fsq_lr!r}.")
-    if legacy_original_config:
-        raw_terminator_arch = str(
-            get_value(cfg, "fsq_terminator_arch", "default")
-        ).strip().lower()
-        # Legacy configs used fsq_terminator_arch for small/fusion as well as
-        # for the later default/rnn model choice.
-        if raw_terminator_arch in {"small", "fusion"}:
-            fsq_terminator_model = "default"
-            legacy_visual_arch = raw_terminator_arch
-        elif raw_terminator_arch in {"default", "rnn"}:
-            fsq_terminator_model = raw_terminator_arch
-            legacy_visual_arch = "small"
-        else:
-            raise ValueError(
-                "fsq_terminator_arch must be default|rnn (or legacy "
-                f"small|fusion), got {raw_terminator_arch!r}."
-            )
-        fsq_terminator_default_arch = str(
-            get_value(cfg, "fsq_terminator_default_arch", legacy_visual_arch)
-        ).strip().lower()
-        fsq_vision_backbone = str(
-            get_value(cfg, "fsq_vision_backbone", "dino")
-        ).strip().lower()
-        fsq_freeze_vision_encoder = as_bool(
-            get_value(cfg, "fsq_freeze_vision_encoder", True)
+    hidden_terminator_keys = {
+        "fsq_decoder_terminator_progress",
+        "fsq_decoder_terminator_termination",
+        "fsq_terminator_arch",
+        "fsq_terminator_input_space",
+        "fsq_state_rnn_terminator",
+        "fsq_terminator_default_arch",
+        "fsq_terminator_layers",
+        "fsq_terminator_heads",
+        "fsq_vision_backbone",
+        "fsq_freeze_vision_encoder",
+        "fsq_dino_model_path",
+    }
+    exposed = sorted(hidden_terminator_keys.intersection(cfg))
+    if exposed:
+        raise ValueError(
+            "Main FSQ terminator is configured only with the compact "
+            "fsq_terminator mapping; remove hidden keys: "
+            + ", ".join(exposed)
         )
-        fsq_terminator_context = str(
-            get_value(cfg, "fsq_terminator_context", "proprio")
-        ).strip().lower()
-    else:
-        hidden_terminator_keys = {
-            "fsq_decoder_terminator_progress",
-            "fsq_decoder_terminator_termination",
-            "fsq_terminator_arch",
-            "fsq_terminator_input_space",
-            "fsq_state_rnn_terminator",
-            "fsq_terminator_default_arch",
-            "fsq_terminator_layers",
-            "fsq_terminator_heads",
-            "fsq_vision_backbone",
-            "fsq_freeze_vision_encoder",
-            "fsq_dino_model_path",
-        }
-        exposed = sorted(hidden_terminator_keys.intersection(cfg))
-        if exposed:
-            raise ValueError(
-                "Main FSQ terminator is configured only with the compact "
-                "fsq_terminator mapping; remove hidden keys: "
-                + ", ".join(exposed)
-            )
-        terminator = cfg.get("fsq_terminator", {})
-        if terminator is None:
-            terminator = {}
-        if not isinstance(terminator, dict):
-            raise ValueError("fsq_terminator must be an inline mapping.")
-        unknown = sorted(
-            set(terminator).difference(
-                {
-                    "termination",
-                    "context",
-                    "default_arch",
-                    "vision_backbone",
-                    "freeze_vision_encoder",
-                }
-            )
+    terminator = cfg.get("fsq_terminator", {})
+    if terminator is None:
+        terminator = {}
+    if not isinstance(terminator, dict):
+        raise ValueError("fsq_terminator must be an inline mapping.")
+    unknown = sorted(
+        set(terminator).difference(
+            {
+                "termination",
+                "context",
+                "default_arch",
+                "vision_backbone",
+                "freeze_vision_encoder",
+            }
         )
-        if unknown:
-            raise ValueError(
-                "fsq_terminator supports termination|context|default_arch|"
-                "vision_backbone|freeze_vision_encoder, got: "
-                + ", ".join(unknown)
-            )
-        # The cleaned trainer always uses the default multimodal terminator.
-        fsq_terminator_model = "default"
-        fsq_terminator_default_arch = str(
-            terminator.get("default_arch", "small")
-        ).strip().lower()
-        fsq_vision_backbone = str(
-            terminator.get("vision_backbone", "dino")
-        ).strip().lower()
-        fsq_freeze_vision_encoder = as_bool(
-            terminator.get("freeze_vision_encoder", True)
+    )
+    if unknown:
+        raise ValueError(
+            "fsq_terminator supports termination|context|default_arch|"
+            "vision_backbone|freeze_vision_encoder, got: "
+            + ", ".join(unknown)
         )
-        # Missing means an immutable pre-migration snapshot: keep its original
-        # absolute-proprio architecture on requeue. New configs state the fixed
-        # prev_action contract explicitly in the compact mapping.
-        fsq_terminator_context = str(
-            terminator.get("context", "proprio")
-        ).strip().lower()
+    fsq_terminator_model = "default"
+    fsq_terminator_default_arch = str(
+        terminator.get("default_arch", "small")
+    ).strip().lower()
+    fsq_vision_backbone = str(
+        terminator.get("vision_backbone", "dino")
+    ).strip().lower()
+    fsq_freeze_vision_encoder = as_bool(
+        terminator.get("freeze_vision_encoder", True)
+    )
+    fsq_terminator_context = str(
+        terminator.get("context", "proprio")
+    ).strip().lower()
     if fsq_terminator_context not in {"prev_action", "proprio"}:
         raise ValueError(
             "fsq_terminator context must be prev_action|proprio, "
@@ -987,37 +947,15 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
             "fsq_terminator_default_arch must be small|fusion, "
             f"got {fsq_terminator_default_arch!r}."
         )
-    if legacy_original_config:
-        fsq_terminator_layers = int(get_value(cfg, "fsq_terminator_layers", 2))
-        fsq_terminator_heads = int(get_value(cfg, "fsq_terminator_heads", 4))
-        if fsq_terminator_layers < 1 or fsq_terminator_heads < 1:
-            raise ValueError(
-                "fsq_terminator_layers and fsq_terminator_heads must both be >= 1."
-            )
-    else:
-        fsq_terminator_layers = 3
-        fsq_terminator_heads = 4
-    if not legacy_original_config:
-        fsq_decoder_reconstructor = as_bool(
-            get_value(cfg, "fsq_decoder_reconstructor", True)
-        )
-        fsq_decoder_terminator_progress = False
-        fsq_decoder_terminator_termination = as_bool(
-            terminator.get("termination", True)
-        )
-    else:
-        # Backward-compatible read of the old mutually-dependent booleans.
-        legacy_reconstructor_only = as_bool(get_value(cfg, "fsq_reconstructor_only", False))
-        legacy_terminator_only = as_bool(get_value(cfg, "fsq_terminator_only", False))
-        legacy_termination_only = as_bool(
-            get_value(cfg, "fsq_terminator_termination_only", False)
-        )
-        if legacy_reconstructor_only and legacy_terminator_only:
-            raise ValueError("Legacy reconstructor_only and terminator_only cannot both be true.")
-        fsq_decoder_reconstructor = not legacy_terminator_only
-        terminator_enabled = not legacy_reconstructor_only
-        fsq_decoder_terminator_progress = terminator_enabled and not legacy_termination_only
-        fsq_decoder_terminator_termination = terminator_enabled
+    fsq_terminator_layers = 3
+    fsq_terminator_heads = 4
+    fsq_decoder_reconstructor = as_bool(
+        get_value(cfg, "fsq_decoder_reconstructor", True)
+    )
+    fsq_decoder_terminator_progress = False
+    fsq_decoder_terminator_termination = as_bool(
+        terminator.get("termination", True)
+    )
     terminator_enabled = (
         fsq_decoder_terminator_progress or fsq_decoder_terminator_termination
     )
@@ -1028,164 +966,109 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
     fsq_terminator_termination_only = (
         fsq_decoder_terminator_termination and not fsq_decoder_terminator_progress
     )
-    if legacy_original_config:
-        legacy_state_rnn = as_bool(
-            get_value(cfg, "fsq_state_rnn_terminator", False)
-        )
-        fsq_terminator_input_space = str(
-            get_value(
-                cfg,
-                "fsq_terminator_input_space",
-                "state" if legacy_state_rnn else "both",
-            )
-        ).strip().lower()
-        if fsq_terminator_input_space not in {"state", "image", "both"}:
-            raise ValueError(
-                "fsq_terminator_input_space must be state|image|both, "
-                f"got {fsq_terminator_input_space!r}."
-            )
-        if legacy_state_rnn and "fsq_terminator_arch" not in cfg:
-            fsq_terminator_model = "rnn"
-        fsq_state_rnn_terminator = (
-            terminator_enabled and fsq_terminator_model == "rnn"
-        )
-        if fsq_state_rnn_terminator and fsq_terminator_input_space != "state":
-            raise ValueError(
-                "The RNN terminator currently supports input_space=state only."
-            )
-    else:
-        fsq_terminator_input_space = "both"
-        fsq_state_rnn_terminator = False
+    fsq_terminator_input_space = "both"
+    fsq_state_rnn_terminator = False
     if fsq_vision_backbone not in {"dino", "siglip", "resnet"}:
         raise ValueError(
             "fsq_vision_backbone must be dino|siglip|resnet, "
             f"got {fsq_vision_backbone!r}."
         )
-    # Main FSQ exposes one indivisible encoder/decoder preset. The older
-    # FSQ-original/BSQ launchers still carry their own fsq_orig_* architecture
-    # surface and are resolved below only for backward compatibility.
-    if legacy_original_config:
-        fsq_autoencoder_mode = "legacy_original"
+    hidden_architecture_keys = {
+        "fsq_encoder_arch",
+        "fsq_encoder_input_mode",
+        "fsq_encoder_length_token",
+        "fsq_reconstructor_arch",
+        "fsq_reconstructor_output_mode",
+        "fsq_reconstructor_start_state",
+    }
+    exposed = sorted(hidden_architecture_keys.intersection(cfg))
+    if exposed:
+        raise ValueError(
+            "Main FSQ architecture is selected only with "
+            "fsq_autoencoder={mode: raw|zero|action|norm_action, ...}; "
+            "remove hidden keys: " + ", ".join(exposed)
+        )
+    raw_autoencoder = cfg.get("fsq_autoencoder")
+    if raw_autoencoder is None:
+        # Read-only compatibility for immutable pre-migration snapshots.
+        fsq_autoencoder_mode = str(
+            get_value(cfg, "fsq_autoencoder_mode", "")
+        ).strip().lower()
         fsq_action_gripper_weight = 1.0
-        fsq_start_state_conditioning = "none"
-        fsq_encoder_input_mode = str(
-            get_value(cfg, "fsq_encoder_input_mode", "zero_grounded")
-        ).strip().lower()
-        fsq_encoder_input_mode = (
-            "raw_state" if fsq_encoder_input_mode == "raw" else fsq_encoder_input_mode
-        )
-        fsq_encoder_arch = "spline"
-        fsq_reconstructor_arch = "oneshot"
-        fsq_reconstructor_output_mode = (
-            "raw_state"
-            if fsq_encoder_input_mode == "raw_state"
-            else "zero_grounded"
-        )
-        fsq_reconstructor_start_state = False
     else:
-        hidden_architecture_keys = {
-            "fsq_encoder_arch",
-            "fsq_encoder_input_mode",
-            "fsq_encoder_length_token",
-            "fsq_reconstructor_arch",
-            "fsq_reconstructor_output_mode",
-            "fsq_reconstructor_start_state",
-        }
-        exposed = sorted(hidden_architecture_keys.intersection(cfg))
-        if exposed:
+        if "fsq_autoencoder_mode" in cfg:
             raise ValueError(
-                "Main FSQ architecture is selected only with "
-                "fsq_autoencoder={mode: raw|zero|action|norm_action, ...}; "
-                "remove hidden keys: "
-                + ", ".join(exposed)
+                "Use fsq_autoencoder only; remove legacy fsq_autoencoder_mode."
             )
-        raw_autoencoder = cfg.get("fsq_autoencoder")
-        if raw_autoencoder is None:
-            # Read-only compatibility for existing snapshots and tests. New
-            # main-FSQ configs use the single compact mapping below.
-            fsq_autoencoder_mode = str(
-                get_value(cfg, "fsq_autoencoder_mode", "")
-            ).strip().lower()
-            fsq_action_gripper_weight = 1.0
-        else:
-            if "fsq_autoencoder_mode" in cfg:
-                raise ValueError(
-                    "Use fsq_autoencoder only; remove legacy fsq_autoencoder_mode."
-                )
-            if not isinstance(raw_autoencoder, dict):
-                raise ValueError("fsq_autoencoder must be an inline mapping.")
-            unknown = sorted(
-                set(raw_autoencoder).difference({"mode", "gripper_weight"})
-            )
-            if unknown:
-                raise ValueError(
-                    "fsq_autoencoder supports mode|gripper_weight, got: "
-                    + ", ".join(unknown)
-                )
-            fsq_autoencoder_mode = str(
-                raw_autoencoder.get("mode", "")
-            ).strip().lower()
-            fsq_action_gripper_weight = float(
-                raw_autoencoder.get("gripper_weight", 1.0)
-            )
-        if (
-            not math.isfinite(fsq_action_gripper_weight)
-            or not 0.0 < fsq_action_gripper_weight <= 1.0
-        ):
+        if not isinstance(raw_autoencoder, dict):
+            raise ValueError("fsq_autoencoder must be an inline mapping.")
+        unknown = sorted(
+            set(raw_autoencoder).difference({"mode", "gripper_weight"})
+        )
+        if unknown:
             raise ValueError(
-                "fsq_autoencoder.gripper_weight must be in (0, 1], got "
-                f"{fsq_action_gripper_weight}."
+                "fsq_autoencoder supports mode|gripper_weight, got: "
+                + ", ".join(unknown)
             )
-        presets = {
-            "raw": {
-                "encoder_input_mode": "raw_state",
-                "encoder_arch": "spline",
-                "reconstructor_arch": "oneshot",
-                "reconstructor_output_mode": "raw_state",
-            },
-            "zero": {
-                "encoder_input_mode": "zero_grounded",
-                "encoder_arch": "spline",
-                "reconstructor_arch": "oneshot",
-                "reconstructor_output_mode": "zero_grounded",
-            },
-            "action": {
-                # These coordinate flags are ignored by action-sequence modules;
-                # retaining zero_grounded internally avoids expanding old APIs.
-                "encoder_input_mode": "zero_grounded",
-                "encoder_arch": "action_seq",
-                "reconstructor_arch": "action_seq_transformer",
-                "reconstructor_output_mode": "zero_grounded",
-            },
-            "norm_action": {
-                # q01/q99-normalized controller actions, clipped to [-1, 1].
-                # sqrt(gripper_weight) scales the final action axis in both
-                # encoder input and target, yielding that exact MSE weight.
-                "encoder_input_mode": "zero_grounded",
-                "encoder_arch": "action_seq",
-                "reconstructor_arch": "action_seq_transformer",
-                "reconstructor_output_mode": "zero_grounded",
-            },
-        }
-        if fsq_autoencoder_mode not in presets:
-            raise ValueError(
-                "fsq_autoencoder.mode must be raw|zero|action|norm_action, "
-                f"got {fsq_autoencoder_mode!r}."
-            )
-        preset = presets[fsq_autoencoder_mode]
-        fsq_encoder_input_mode = preset["encoder_input_mode"]
-        fsq_encoder_arch = preset["encoder_arch"]
-        fsq_reconstructor_arch = preset["reconstructor_arch"]
-        fsq_reconstructor_output_mode = preset["reconstructor_output_mode"]
-        fsq_start_state_conditioning = str(
-            get_value(cfg, "fsq_start_state_conditioning", "none")
+        fsq_autoencoder_mode = str(
+            raw_autoencoder.get("mode", "")
         ).strip().lower()
-        if fsq_start_state_conditioning not in {"none", "adaln"}:
-            raise ValueError(
-                "fsq_start_state_conditioning must be none|adaln, "
-                f"got {fsq_start_state_conditioning!r}."
-            )
-        fsq_reconstructor_start_state = fsq_start_state_conditioning == "adaln"
+        fsq_action_gripper_weight = float(
+            raw_autoencoder.get("gripper_weight", 1.0)
+        )
+    if (
+        not math.isfinite(fsq_action_gripper_weight)
+        or not 0.0 < fsq_action_gripper_weight <= 1.0
+    ):
+        raise ValueError(
+            "fsq_autoencoder.gripper_weight must be in (0, 1], got "
+            f"{fsq_action_gripper_weight}."
+        )
+    presets = {
+        "raw": {
+            "encoder_input_mode": "raw_state",
+            "encoder_arch": "spline",
+            "reconstructor_arch": "oneshot",
+            "reconstructor_output_mode": "raw_state",
+        },
+        "zero": {
+            "encoder_input_mode": "zero_grounded",
+            "encoder_arch": "spline",
+            "reconstructor_arch": "oneshot",
+            "reconstructor_output_mode": "zero_grounded",
+        },
+        "action": {
+            "encoder_input_mode": "zero_grounded",
+            "encoder_arch": "action_seq",
+            "reconstructor_arch": "action_seq_transformer",
+            "reconstructor_output_mode": "zero_grounded",
+        },
+        "norm_action": {
+            "encoder_input_mode": "zero_grounded",
+            "encoder_arch": "action_seq",
+            "reconstructor_arch": "action_seq_transformer",
+            "reconstructor_output_mode": "zero_grounded",
+        },
+    }
+    if fsq_autoencoder_mode not in presets:
+        raise ValueError(
+            "fsq_autoencoder.mode must be raw|zero|action|norm_action, "
+            f"got {fsq_autoencoder_mode!r}."
+        )
+    preset = presets[fsq_autoencoder_mode]
+    fsq_encoder_input_mode = preset["encoder_input_mode"]
+    fsq_encoder_arch = preset["encoder_arch"]
+    fsq_reconstructor_arch = preset["reconstructor_arch"]
+    fsq_reconstructor_output_mode = preset["reconstructor_output_mode"]
+    fsq_start_state_conditioning = str(
+        get_value(cfg, "fsq_start_state_conditioning", "none")
+    ).strip().lower()
+    if fsq_start_state_conditioning not in {"none", "adaln"}:
+        raise ValueError(
+            "fsq_start_state_conditioning must be none|adaln, "
+            f"got {fsq_start_state_conditioning!r}."
+        )
+    fsq_reconstructor_start_state = fsq_start_state_conditioning == "adaln"
 
     if fsq_encoder_input_mode not in {
         "zero_grounded", "start_grounded", "raw_state", "optimal"
@@ -1200,64 +1083,35 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         else "trajectory_mean_xyz_v1"
     )
     fsq_encoder_length_token = False
-    fsq_entropy = as_bool(get_value(cfg, "fsq_entropy", False))
-    if fsq_quantizer == "bsq" and fsq_entropy:
-        raise ValueError(
-            "BSQ in fsq_config uses the recon + pair-loss path only; "
-            "set fsq_entropy=false."
-        )
-    fsq_entropy_conf_ceiling = float(
-        get_value(cfg, "fsq_entropy_conf_ceiling", 0.0)
+    exposed = sorted(
+        {
+            "fsq_pair_weight",
+            "fsq_pair_inv_temperature",
+            "fsq_action_loss_weight",
+            "fsq_delta_loss_weight",
+            "fsq_end_loss_weight",
+            "fsq_end_target_sigma",
+        }.intersection(cfg)
     )
-    if not 0.0 <= fsq_entropy_conf_ceiling <= 1.0:
+    if exposed:
         raise ValueError(
-            "fsq_entropy_conf_ceiling must be in [0, 1], "
-            f"got {fsq_entropy_conf_ceiling}."
+            "Main FSQ losses use the compact per-loss mappings; remove "
+            "split keys: " + ", ".join(exposed)
         )
-    if not legacy_original_config:
-        exposed = sorted(
-            {
-                "fsq_pair_weight",
-                "fsq_pair_inv_temperature",
-                "fsq_action_loss_weight",
-                "fsq_delta_loss_weight",
-                "fsq_end_loss_weight",
-                "fsq_end_target_sigma",
-            }.intersection(cfg)
-        )
-        if exposed:
-            raise ValueError(
-                "Main FSQ losses use the compact per-loss mappings; remove "
-                "split keys: " + ", ".join(exposed)
-            )
-    raw_pair_loss = cfg.get("fsq_pair_loss", "none")
-    if (
-        not legacy_original_config
-        and "fsq_pair_loss" in cfg
-        and not isinstance(raw_pair_loss, dict)
-    ):
+    raw_pair_loss = cfg.get("fsq_pair_loss", {})
+    if not isinstance(raw_pair_loss, dict):
         raise ValueError("Main FSQ fsq_pair_loss must be an inline mapping.")
-    if isinstance(raw_pair_loss, dict):
-        unknown = sorted(
-            set(raw_pair_loss).difference({"type", "weight", "inv_temperature"})
+    unknown = sorted(
+        set(raw_pair_loss).difference({"type", "weight", "inv_temperature"})
+    )
+    if unknown:
+        raise ValueError(
+            "fsq_pair_loss supports type|weight|inv_temperature, got: "
+            + ", ".join(unknown)
         )
-        if unknown:
-            raise ValueError(
-                "fsq_pair_loss supports type|weight|inv_temperature, got: "
-                + ", ".join(unknown)
-            )
-        fsq_pair_loss = str(raw_pair_loss.get("type", "none")).strip().lower()
-        fsq_pair_weight = float(raw_pair_loss.get("weight", 0.1))
-        fsq_pair_inv_temperature = float(
-            raw_pair_loss.get("inv_temperature", 5.0)
-        )
-    else:
-        # Backward-compatible parsing for older experiment configs.
-        fsq_pair_loss = str(raw_pair_loss).strip().lower()
-        fsq_pair_weight = float(get_value(cfg, "fsq_pair_weight", 0.1))
-        fsq_pair_inv_temperature = float(
-            get_value(cfg, "fsq_pair_inv_temperature", 5.0)
-        )
+    fsq_pair_loss = str(raw_pair_loss.get("type", "none")).strip().lower()
+    fsq_pair_weight = float(raw_pair_loss.get("weight", 0.1))
+    fsq_pair_inv_temperature = float(raw_pair_loss.get("inv_temperature", 5.0))
     if fsq_pair_loss not in {"none", "overlap", "js", "contrastive"}:
         raise ValueError(
             "fsq_pair_loss must be none|overlap|js|contrastive, "
@@ -1325,38 +1179,27 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         raise ValueError("FSQ action/end loss weights must be non-negative.")
     if fsq_end_target_sigma < 0:
         raise ValueError("fsq_end_loss.target_sigma must be non-negative.")
-    raw_pair_warmup = cfg.get("fsq_pair_warmup", False)
-    if not legacy_original_config:
-        exposed = sorted(
-            {"fsq_pair_warmup_epochs", "fsq_pair_ramp_epochs"}.intersection(cfg)
+    raw_pair_warmup = cfg.get("fsq_pair_warmup", {})
+    exposed = sorted(
+        {"fsq_pair_warmup_epochs", "fsq_pair_ramp_epochs"}.intersection(cfg)
+    )
+    if exposed or not isinstance(raw_pair_warmup, dict):
+        details = exposed or ["fsq_pair_warmup"]
+        raise ValueError(
+            "Main FSQ pair warm-up uses one fsq_pair_warmup mapping; "
+            "remove split/scalar keys: " + ", ".join(details)
         )
-        if exposed or (
-            "fsq_pair_warmup" in cfg and not isinstance(raw_pair_warmup, dict)
-        ):
-            details = exposed or ["fsq_pair_warmup"]
-            raise ValueError(
-                "Main FSQ pair warm-up uses one fsq_pair_warmup mapping; "
-                "remove split/scalar keys: " + ", ".join(details)
-            )
-    if isinstance(raw_pair_warmup, dict):
-        unknown = sorted(
-            set(raw_pair_warmup).difference({"enabled", "epochs", "ramp_epochs"})
+    unknown = sorted(
+        set(raw_pair_warmup).difference({"enabled", "epochs", "ramp_epochs"})
+    )
+    if unknown:
+        raise ValueError(
+            "fsq_pair_warmup supports enabled|epochs|ramp_epochs, got: "
+            + ", ".join(unknown)
         )
-        if unknown:
-            raise ValueError(
-                "fsq_pair_warmup supports enabled|epochs|ramp_epochs, got: "
-                + ", ".join(unknown)
-            )
-        fsq_pair_warmup = as_bool(raw_pair_warmup.get("enabled", False))
-        fsq_pair_warmup_epochs = int(raw_pair_warmup.get("epochs", 0))
-        fsq_pair_ramp_epochs = int(raw_pair_warmup.get("ramp_epochs", 0))
-    else:
-        # Backward-compatible parsing for older experiment configs.
-        fsq_pair_warmup = as_bool(raw_pair_warmup)
-        fsq_pair_warmup_epochs = int(
-            get_value(cfg, "fsq_pair_warmup_epochs", 0)
-        )
-        fsq_pair_ramp_epochs = int(get_value(cfg, "fsq_pair_ramp_epochs", 0))
+    fsq_pair_warmup = as_bool(raw_pair_warmup.get("enabled", False))
+    fsq_pair_warmup_epochs = int(raw_pair_warmup.get("epochs", 0))
+    fsq_pair_ramp_epochs = int(raw_pair_warmup.get("ramp_epochs", 0))
     if fsq_pair_warmup_epochs < 0 or fsq_pair_ramp_epochs < 0:
         raise ValueError(
             "fsq_pair_warmup_epochs and fsq_pair_ramp_epochs must be non-negative, "
@@ -1378,22 +1221,12 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
             raise ValueError(f"{key} must be non-negative, got {value}.")
         directional_boundary_aug_pmaxes[direction] = value
     fsq_boundary_aug_pmax = max(directional_boundary_aug_pmaxes.values())
-    if legacy_original_config:
-        fsq_boundary_aug_distribution = str(
-            get_value(cfg, "fsq_boundary_aug_distribution", "half_normal")
-        ).strip().lower().replace("-", "_").replace(" ", "_")
-        if fsq_boundary_aug_distribution not in {"half_normal", "uniform"}:
-            raise ValueError(
-                "fsq_boundary_aug_distribution must be half_normal|uniform, "
-                f"got {fsq_boundary_aug_distribution!r}."
-            )
-    else:
-        if "fsq_boundary_aug_distribution" in cfg:
-            raise ValueError(
-                "Main FSQ boundary augmentation distribution is fixed to "
-                "half_normal; remove fsq_boundary_aug_distribution."
-            )
-        fsq_boundary_aug_distribution = "half_normal"
+    if "fsq_boundary_aug_distribution" in cfg:
+        raise ValueError(
+            "Main FSQ boundary augmentation distribution is fixed to "
+            "half_normal; remove fsq_boundary_aug_distribution."
+        )
+    fsq_boundary_aug_distribution = "half_normal"
     if fsq_pair_loss != "none":
         if not any(directional_boundary_aug_pmaxes.values()):
             raise ValueError(
@@ -1406,38 +1239,33 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
             "fsq_skill_cond_mode must be token|broadcast, "
             f"got {fsq_skill_cond_mode!r}."
         )
-    if legacy_original_config:
-        # FSQ-original/BSQ retain their historical explicit folder names.
-        fsq_decoder_name = "legacy"
-        fsq_loss_name = "legacy"
-        fsq_run_name = fsq_exp
+    vision_name = {
+        "dino": "DINO",
+        "resnet": "RES",
+        "siglip": "SIGLIP",
+    }[fsq_vision_backbone]
+    if fsq_decoder_reconstructor and not terminator_enabled:
+        fsq_decoder_name = "recon_only"
+    elif not fsq_decoder_reconstructor and terminator_enabled:
+        fsq_decoder_name = f"term{vision_name}_only"
     else:
-        vision_name = {
-            "dino": "DINO",
-            "resnet": "RES",
-            "siglip": "SIGLIP",
-        }[fsq_vision_backbone]
-        if fsq_decoder_reconstructor and not terminator_enabled:
-            fsq_decoder_name = "recon_only"
-        elif not fsq_decoder_reconstructor and terminator_enabled:
-            fsq_decoder_name = f"term{vision_name}_only"
-        else:
-            fsq_decoder_name = f"recon_term{vision_name}"
+        fsq_decoder_name = f"recon_term{vision_name}"
 
-        pair_name = "pairOFF" if fsq_pair_loss == "none" else f"{fsq_pair_loss}ON"
-        route_name = "routeON" if fsq_route_loss else "routeOFF"
-        fsq_loss_name = f"{pair_name}_{route_name}_loss"
-        fsq_autoencoder_name = (
-            fsq_autoencoder_mode
-            + _compact_decimal_tag(fsq_action_gripper_weight)
-        )
-        fsq_run_name = (
-            f"{fsq_autoencoder_name}_{fsq_decoder_name}__{fsq_loss_name}"
-        )
-        if fsq_start_state_conditioning == "adaln":
-            fsq_run_name += "__inital_proprio_conditioned"
-        if fsq_exp:
-            fsq_run_name += f"__{fsq_exp}"
+    pair_name = "pairOFF" if fsq_pair_loss == "none" else f"{fsq_pair_loss}ON"
+    route_name = "routeON" if fsq_route_loss else "routeOFF"
+    fsq_loss_name = f"{pair_name}_{route_name}_loss"
+    fsq_autoencoder_name = (
+        fsq_autoencoder_mode
+        + _compact_decimal_tag(fsq_action_gripper_weight)
+    )
+    fsq_run_name = (
+        f"{quantizer_run_name}_{fsq_autoencoder_name}_"
+        f"{fsq_decoder_name}__{fsq_loss_name}"
+    )
+    if fsq_start_state_conditioning == "adaln":
+        fsq_run_name += "__inital_proprio_conditioned"
+    if fsq_exp:
+        fsq_run_name += f"__{fsq_exp}"
     # Slurm partition/qos/nodelist/exclude are canonical (read from global_config.yaml's train_*);
     # output keys below keep their per-job prefix so submit scripts read the same $..._PARTITION vars.
     slurm_partitions = as_list(get_value(cfg, "train_partition", ["debug"]))
@@ -1539,11 +1367,6 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "fsq_encoder_grounding_convention": fsq_encoder_grounding_convention,
         "fsq_encoder_length_token": fsq_encoder_length_token,
         "fsq_encoder_arch": fsq_encoder_arch,
-        "fsq_entropy": fsq_entropy,
-        "fsq_entropy_conf_weight": str(get_value(cfg, "fsq_entropy_conf_weight", 0.1)),
-        "fsq_entropy_conf_ceiling": str(fsq_entropy_conf_ceiling),
-        "fsq_entropy_div_weight": str(get_value(cfg, "fsq_entropy_div_weight", 0.1)),
-        "fsq_entropy_inv_temperature": str(get_value(cfg, "fsq_entropy_inv_temperature", 10.0)),
         "fsq_init_calibration": fsq_init_calibration,
         "fsq_init_calibration_gain": str(fsq_init_calibration_gain),
         "fsq_init_calibration_samples": fsq_init_calibration_samples,
@@ -1585,31 +1408,14 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "fsq_image_token_dim": int(get_value(cfg, "fsq_image_token_dim", 128)),
         "fsq_terminator_use_third": as_bool(get_value(cfg, "fsq_terminator_use_third", True)),
         "fsq_terminator_use_wrist": as_bool(get_value(cfg, "fsq_terminator_use_wrist", False)),
-        # Main FSQ fixes DINO to the project-local v3-S/16 model. Legacy
-        # FSQ-original/BSQ configs may still provide their historical override.
+        # Main FSQ fixes DINO to the project-local v3-S/16 model.
         "fsq_dino_model_path": resolve_path(
             root,
-            (
-                get_value(
-                    cfg,
-                    "fsq_dino_model_path",
-                    f"models/{DINO_IMAGE_MODEL_DIR}",
-                )
-                if legacy_original_config
-                else f"models/{DINO_IMAGE_MODEL_DIR}"
-            ),
+            f"models/{DINO_IMAGE_MODEL_DIR}",
         ),
         "dino_image_model_path": resolve_path(
             root,
-            (
-                get_value(
-                    cfg,
-                    "fsq_dino_model_path",
-                    f"models/{DINO_IMAGE_MODEL_DIR}",
-                )
-                if legacy_original_config
-                else f"models/{DINO_IMAGE_MODEL_DIR}"
-            ),
+            f"models/{DINO_IMAGE_MODEL_DIR}",
         ),
         "dino_feature_dim": int(get_value(cfg, "dino_feature_dim", get_value(cfg, "fsq_dino_feature_dim", 384))),
         "dino_image_size": int(get_value(cfg, "dino_image_size", get_value(cfg, "fsq_dino_image_size", 224))),

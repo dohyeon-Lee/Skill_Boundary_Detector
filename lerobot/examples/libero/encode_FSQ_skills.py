@@ -59,26 +59,19 @@ class Args:
 
 
 def load_model(model_path: Path, device: str) -> SplineFSQEncoder:
-    try:
-        model, _ = load_fsq_encoder(model_path, device)
-    except Exception as v3_error:
-        # FSQ-original (one-shot) checkpoints carry an FSQOriginalConfig `cfg`;
-        # their model wraps the same SplineFSQEncoder and exposes the identical
-        # encode_numpy / encode_index interface.
-        try:
-            from FSQ_original import load_fsq_original_model
-
-            model, _ = load_fsq_original_model(model_path, device)
-        except Exception:
-            raise v3_error
-        print(f"[FSQ encode] FSQ-original (one-shot) checkpoint: {model_path}")
+    model, _ = load_fsq_encoder(model_path, device)
     return model
 
 
 def _grid_coords(model: SplineFSQEncoder) -> np.ndarray:
-    """All C codes → their integer cell coords (C, D), matching FSQ.forward's index convention:
-    level_d = (code // stride_d) % L_d ; coord_d = level_d - half_width_d.  (== encode_numpy's z_q space)"""
+    """All code vectors in the quantizer's native encoder-output space."""
     fsq = model.fsq
+    if hasattr(fsq, "bit_weights"):
+        codes = torch.arange(fsq.codebook_size, device=fsq.bit_weights.device)
+        normalized = fsq.code_to_normalized(codes)
+        return (normalized / np.sqrt(fsq.latent_dim)).cpu().numpy().astype(np.float32)
+
+    # FSQ.forward returns integer-spaced raw grid coordinates.
     L = np.array([int(round(2 * h + 1)) for h in fsq.levels_half.cpu().tolist()])   # levels_half=(L-1)/2
     strides = fsq.strides.cpu().numpy()
     half = fsq.half_width.cpu().numpy()
@@ -107,8 +100,6 @@ def _load_supported(ref_path: Path, n_codes: int, min_freq: int) -> np.ndarray:
 def _snap_to_supported(latents: np.ndarray, tokens: np.ndarray, model: SplineFSQEncoder, args: Args):
     """Remap each skill whose raw code is unsupported → nearest supported code (grid distance in the
     integer cell-coord space, which is exactly what `latents` holds). Returns (latents, tokens)."""
-    if type(model).__name__ == "SplineFSQOriginalAE":
-        model = model.encoder
     coords = _grid_coords(model)                                    # (C, D)
     if str(args.supported_freq_path).strip().lower() == "self":
         # self-pruning: 방금 인코딩한 RAW 토큰 분포가 곧 기준표 (외부 파일 불필요 — 1-pass 자기완결).

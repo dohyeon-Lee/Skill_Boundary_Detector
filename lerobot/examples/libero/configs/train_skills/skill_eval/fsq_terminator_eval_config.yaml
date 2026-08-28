@@ -11,7 +11,7 @@
 # model.fsq_term_train.*. Thus zero/norm_action models may be compared on the
 # same GT skill occurrences without sharing integer code meanings.
 
-output_name: "AUX_terminator_and_cotrained_terminator_last2"
+output_name: "cotrained_terminator"
 
 # source: auxiliary resolves:
 #   <outputs_root>/skillVLA_terminator/<run_name>/checkpoints/<step>/pretrained_model
@@ -26,23 +26,31 @@ terminator_models:
     source: fsq
     run_name: norm_action01_recon_termRES__jsON_routeON_loss__layer2_base
     checkpoint: 1500
+  - label: co_norm_action_RES_frez_01
+    source: fsq
+    run_name: norm_action01_recon_termRES__jsON_routeON_loss__term01
+    checkpoint: 1500
+  - label: co_norm_action_RES_unfrez_01
+    source: fsq
+    run_name: norm_action01_recon_termRES__jsON_routeON_loss__vis_unfreeze_term01
+    checkpoint: 1500
   
-  - label: zero_RES
-    source: auxiliary
-    run_name: bs32_FSQ333_zero01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_libero_90_full_firsthalf_scene_terminator_resnet_unfrez
-    checkpoint: last
-  - label: zero_DINO
-    source: auxiliary
-    run_name: bs32_FSQ333_zero01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_libero_90_full_firsthalf_scene_terminator_DINO_unfrez
-    checkpoint: last
-  - label: norm_action_RES
-    source: auxiliary
-    run_name: bs32_FSQ333_norm_action01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_libero_90_full_firsthalf_scene_terminator_resnet_unfrez
-    checkpoint: last
-  - label: norm_action_DINO
-    source: auxiliary
-    run_name: bs32_FSQ333_norm_action01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_libero_90_full_firsthalf_scene_terminator_DINO_unfrez
-    checkpoint: last
+  # - label: zero_RES
+  #   source: auxiliary
+  #   run_name: bs32_FSQ333_zero01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_libero_90_full_firsthalf_scene_terminator_resnet_unfrez
+  #   checkpoint: last
+  # - label: zero_DINO
+  #   source: auxiliary
+  #   run_name: bs32_FSQ333_zero01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_libero_90_full_firsthalf_scene_terminator_DINO_unfrez
+  #   checkpoint: last
+  # - label: norm_action_RES
+  #   source: auxiliary
+  #   run_name: bs32_FSQ333_norm_action01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_libero_90_full_firsthalf_scene_terminator_resnet_unfrez
+  #   checkpoint: last
+  # - label: norm_action_DINO
+  #   source: auxiliary
+  #   run_name: bs32_FSQ333_norm_action01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_libero_90_full_firsthalf_scene_terminator_DINO_unfrez
+  #   checkpoint: last
 
 target_task: libero_90
 # Which numbering task_ids uses. The skillset numbers tasks by the SOURCE

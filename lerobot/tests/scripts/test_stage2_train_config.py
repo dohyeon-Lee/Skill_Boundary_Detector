@@ -86,6 +86,10 @@ def _config(tmp_path: Path, *, policy_type: str = "skill_expert") -> dict:
             "skill_vocab_size": 27,
             "skill_fsq_levels": [3, 3, 3],
             "transition_jitter_pmax": 15,
+            "transition_jitter_early_start_pmax": 15,
+            "transition_jitter_late_start_pmax": 7,
+            "transition_jitter_early_end_pmax": 15,
+            "transition_jitter_late_end_pmax": 7,
             "transition_jitter_distribution": "half_normal",
             "train_skill_predictor": False,
             "train_terminator": False,
@@ -193,6 +197,11 @@ def test_stage2_resolver_reads_checkpoint_config_without_parsing_run_name(
     assert settings["train_skill_predictor"] is True
     assert settings["train_terminator"] is False
     assert settings["mask_actions_after_skill_end"] is True
+    assert settings["transition_jitter_pmax"] == 15
+    assert settings["transition_jitter_early_start_pmax"] == 15
+    assert settings["transition_jitter_late_start_pmax"] == 7
+    assert settings["transition_jitter_early_end_pmax"] == 15
+    assert settings["transition_jitter_late_end_pmax"] == 7
     assert settings["same_skill_batch_enabled"] is False
     assert settings["pt_run_name"] == "stage1_exact_name_last_gt_batchOFF"
 

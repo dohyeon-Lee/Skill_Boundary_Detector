@@ -14,7 +14,7 @@ dataset:
   run: FSQ333_norm_action01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal
 
 # Optional label appended to the automatic pt/ft + target run name.
-run: {suffix: "DINO_unfrez"}
+run: {suffix: ""}
 
 
 # ── Initialization ─────────────────────────────────────────────────────────────────────
@@ -32,12 +32,12 @@ warm_start:
 # PT only. If this contract exactly matches a terminator stored in FSQ.pt, its
 # weights are warm-started; any contract difference creates a fresh terminator.
 # Ignored in mode=ft because the terminator checkpoint owns this contract.
-fsq_terminator: {termination: true, context: prev_action, default_arch: fusion, vision_backbone: DINO, freeze_vision_encoder: false}
+fsq_terminator: {termination: false, context: prev_action, default_arch: fusion, vision_backbone: DINO, freeze_vision_encoder: false}
 termination_loss: {target_sigma: 2.0, positive_weight: 1.0}
 
 # PT only; ignored in mode=ft because the predictor checkpoint owns it.
 skill_predictor:
-  train: false
+  train: true
   all_layers: true
   lora: {enabled: true, targets: "q,k,v,o", rank: 8, alpha: 16.0, dropout: 0.0}
   reader: {tokens: 4, depth: 2, heads: 8, deadzone_frac: 0.8}

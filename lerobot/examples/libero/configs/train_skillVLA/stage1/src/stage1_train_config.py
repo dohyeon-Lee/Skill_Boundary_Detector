@@ -81,11 +81,25 @@ def _read_dataset_contract(dataset_dir: Path, run_tag: str) -> dict:
     features = info.get("features", {})
     state_dim = int(features["observation.state"]["shape"][0])
     action_dim = int(features["action"]["shape"][0])
+    jitter_pmax = int(info.get("skill_pmax", 0))
+    directional_jitter = {
+        name: int(info.get(f"skill_jitter_{name}_pmax", jitter_pmax))
+        for name in ("early_start", "late_start", "early_end", "late_end")
+    }
+    if any(value < 0 or value > jitter_pmax for value in directional_jitter.values()):
+        raise ValueError(
+            f"Invalid directional jitter contract in {info_path}: "
+            f"storage={jitter_pmax}, directional={directional_jitter}."
+        )
     return {
         "levels": levels,
         "state_dim": state_dim,
         "action_dim": action_dim,
-        "jitter_pmax": int(info.get("skill_pmax", 0)),
+        "jitter_pmax": jitter_pmax,
+        "jitter_early_start_pmax": directional_jitter["early_start"],
+        "jitter_late_start_pmax": directional_jitter["late_start"],
+        "jitter_early_end_pmax": directional_jitter["early_end"],
+        "jitter_late_end_pmax": directional_jitter["late_end"],
         "jitter_distribution": str(
             info.get("skill_jitter_distribution", "half_normal")
         ).replace("-", "_"),
@@ -431,6 +445,10 @@ def build_settings(config: dict) -> dict:
         _at(config, "transition_randomization", "enabled", default=True)
     )
     jitter_pmax = contract["jitter_pmax"] if transition_jitter else 0
+    directional_jitter = {
+        name: contract[f"jitter_{name}_pmax"] if transition_jitter else 0
+        for name in ("early_start", "late_start", "early_end", "late_end")
+    }
     jitter_distribution = contract["jitter_distribution"] if transition_jitter else "half_normal"
     if jitter_distribution not in {"half_normal", "uniform"}:
         raise ValueError(f"Unsupported dataset jitter distribution: {jitter_distribution!r}")
@@ -555,6 +573,10 @@ def build_settings(config: dict) -> dict:
         "skill_fsq_levels": "[" + ",".join(str(level) for level in levels) + "]",
         "skill_vocab_size": math.prod(levels),
         "transition_jitter_pmax": jitter_pmax,
+        "transition_jitter_early_start_pmax": directional_jitter["early_start"],
+        "transition_jitter_late_start_pmax": directional_jitter["late_start"],
+        "transition_jitter_early_end_pmax": directional_jitter["early_end"],
+        "transition_jitter_late_end_pmax": directional_jitter["late_end"],
         "transition_jitter_distribution": jitter_distribution,
         "training_skill_source": training_skill_source,
         "skill_predictor_checkpoint_path": predictor_checkpoint or "",

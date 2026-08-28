@@ -7,7 +7,6 @@
 #   source dataset : {project_root}/{dataset_root}/{source_dataset}
 #   base DINO      : {project_root}/{dataset_root}/{dino_base_dataset}_DINO/pg{grid}/
 #   DP policy      : resolved from the selected FSQ folder's fsq_meta.json
-#                    (fsq_original_meta.json for FSQ-original one-shot runs)
 # Outputs (intermediate, removed at end of full pipeline):
 #   per-episode DINO : {skillvla_dataset}/{source}/_work/dino/pg{grid}/
 #   skillset         : {skillvla_dataset}/{source}/_work/seg_{dp}_ck{ckpt}/skillset/skills/

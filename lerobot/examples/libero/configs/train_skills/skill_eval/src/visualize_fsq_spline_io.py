@@ -22,8 +22,12 @@ LIBERO_ROOT = Path(__file__).resolve().parents[4]
 if str(LIBERO_ROOT) not in sys.path:
     sys.path.insert(0, str(LIBERO_ROOT))
 
-from FSQ import load_fsq_model, prepare_encoder_trajectory, spline_encode  # noqa: E402
-from FSQ_original import spline_decode  # noqa: E402
+from FSQ import (  # noqa: E402
+    load_fsq_model,
+    prepare_encoder_trajectory,
+    spline_decode,
+    spline_encode,
+)
 
 
 DIM_NAMES = ("EE x", "EE y", "EE z", "rotvec x", "rotvec y", "rotvec z", "grip 0", "grip 1")

@@ -34,7 +34,15 @@ source "${SNAPSHOT_ENV}"
 # ── short-circuit: whole pipeline already done? (final outputs survive cleanup) ──
 build_complete () {
   [ -f "${ISS_NPZ_PATH}" ] && [ -f "${FSQ_COPY_PATH}" ] \
-    && [ -d "${SKILLVLA_DATASET_DIR}" ] && [ -n "$(ls -A "${SKILLVLA_DATASET_DIR}" 2>/dev/null)" ]
+    && [ -d "${SKILLVLA_DATASET_DIR}" ] && [ -n "$(ls -A "${SKILLVLA_DATASET_DIR}" 2>/dev/null)" ] \
+    && "${BOOTSTRAP_PYTHON}" "${SRC_DIR}/check_jitter_contract.py" \
+      --dataset-dir "${SKILLVLA_DATASET_DIR}" \
+      --storage-pmax "${SKILL_PMAX}" \
+      --early-start-pmax "${SKILL_EARLY_START_PMAX}" \
+      --late-start-pmax "${SKILL_LATE_START_PMAX}" \
+      --early-end-pmax "${SKILL_EARLY_END_PMAX}" \
+      --late-end-pmax "${SKILL_LATE_END_PMAX}" \
+      --distribution "${SKILL_JITTER_DISTRIBUTION}" >/dev/null
 }
 if build_complete; then
   echo "SkillVLA outputs already exist → nothing to do (${SKILLVLA_RUN_DIR})"

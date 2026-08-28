@@ -25,6 +25,9 @@ def _load(name: str, filename: str):
 
 CONFIG = _load("fsq_gt_replay_config_test", "fsq_gt_replay_config.py")
 REPORT = _load("fsq_gt_replay_report_test", "fsq_gt_replay_report.py")
+CATEGORIZATION = _load(
+    "fsq_gt_replay_categorization_test", "fsq_gt_replay_categorization.py"
+)
 RUNNER = _load("run_fsq_gt_replay_test", "run_fsq_gt_replay.py")
 
 
@@ -186,33 +189,6 @@ def test_fsq_levels_reads_dict_and_dataclass_cfg(tmp_path: Path) -> None:
         joint_bsq_path,
     )
     assert RUNNER._fsq_levels(joint_bsq_path) == [2, 2, 2, 2, 2]
-
-
-def test_resolve_artifact_accepts_fsq_original_meta(tmp_path: Path) -> None:
-    run_dir = tmp_path / "outputs" / "FSQ" / "oneshot_run"
-    run_dir.mkdir(parents=True)
-    (run_dir / "FSQ_epoch0100.pt").write_bytes(b"x")
-    components = {
-        "fsq_dataset_root": "FSQ_dataset",
-        "target_dataset": "ds",
-        "fsq_inputs_name": "FSQ_inputs",
-        "skillset_seg_name": "seg",
-        "skillset_name": "skillset",
-    }
-    (run_dir / "fsq_original_meta.json").write_text(json.dumps(components))
-    dataset_root = tmp_path / "dataset"
-    (dataset_root / "FSQ_dataset" / "ds" / "FSQ_inputs" / "seg" / "skillset" / "skills").mkdir(
-        parents=True
-    )
-    (dataset_root / "ds" / "videos").mkdir(parents=True)
-
-    artifact = CONFIG._resolve_fsq_artifact(
-        {"fsq_eval_run_name": "oneshot_run"},
-        dataset_root=dataset_root,
-        outputs_root=tmp_path / "outputs",
-        checkpoint="100",
-    )
-    assert artifact["fsq_eval_meta_path"].endswith("fsq_original_meta.json")
 
 
 def _replay_run(tmp_path: Path, *, epochs: list[int]) -> dict:
@@ -923,6 +899,97 @@ def test_maybe_build_compare_waits_for_every_collection(tmp_path: Path) -> None:
     assert "Cohesion" not in linked_html
     assert "Skill variety" not in linked_html
     assert "Codebook usage" not in linked_html
+
+
+def test_categorization_partition_metrics_and_neighbor_adjustment() -> None:
+    labels = np.asarray([0, 0, 1, 1, 2, 2], dtype=np.int64)
+    permuted = np.asarray([2, 2, 0, 0, 1, 1], dtype=np.int64)
+    assert CATEGORIZATION._normalized_mutual_info(labels, permuted) == pytest.approx(1.0)
+    assert CATEGORIZATION._adjusted_rand(labels, permuted) == pytest.approx(1.0)
+
+    tokens = np.asarray([0, 0, 1, 1], dtype=np.int64)
+    neighbors = np.asarray([[1], [0], [3], [2]], dtype=np.int64)
+    assert CATEGORIZATION._motion_neighbor_consistency(tokens, neighbors) == pytest.approx(1.0)
+    collapsed = np.zeros(4, dtype=np.int64)
+    assert CATEGORIZATION._motion_neighbor_consistency(collapsed, neighbors) == 0.0
+
+
+def test_categorization_checkpoint_scalars_read_only_pickle_metadata(tmp_path: Path) -> None:
+    import pickle
+    import zipfile
+
+    checkpoint = tmp_path / "checkpoint.pt"
+    with zipfile.ZipFile(checkpoint, "w") as archive:
+        archive.writestr(
+            "checkpoint/data.pkl",
+            pickle.dumps({"val_loss": 0.125, "val_select": 0.0625}, protocol=2),
+        )
+
+    assert CATEGORIZATION._checkpoint_scalars(checkpoint) == {
+        "validation_total": 0.125,
+        "validation_reconstruction": 0.0625,
+    }
+
+
+def test_categorization_report_has_checkpoint_driven_views(tmp_path: Path) -> None:
+    checkpoint = {
+        "epoch_tag": "epoch0100",
+        "sample_count": 4,
+        "metrics": {
+            "motion_neighbor_consistency": 0.5,
+            "motion_cohesion": 0.4,
+            "direction_nmi": 0.3,
+            "direction_coherence": 0.6,
+            "opposite_adjacent_collision": 0.1,
+            "validation_reconstruction": 0.05,
+            "used_codes": 2,
+            "effective_codes": 1.8,
+            "largest_code_share": 0.6,
+            "task_nmi": 0.2,
+            "skill_index_nmi": 0.1,
+            "gripper_nmi": 0.15,
+            "adjacent_same_code": 0.25,
+        },
+        "group_predictability": {"Relative translation": 0.7},
+        "correlation_features": ["disp_x"],
+        "axis_correlations": [[0.5], [0.0], [-0.5]],
+        "axis_strengths": [[0.4], [0.0], [0.4]],
+        "code_features": ["disp_x"],
+        "code_feature_means": [[1.0], [-1.0]],
+        "direction_labels": list(CATEGORIZATION.DIRECTION_LABELS),
+        "direction_colors": list(CATEGORIZATION.DIRECTION_COLORS),
+        "direction_composition": [[1, 0, 0, 0, 0, 0, 0], [0, 1, 0, 0, 0, 0, 0]],
+        "counts": [2, 2],
+    }
+    payload = {
+        "format": CATEGORIZATION.FORMAT,
+        "title": "analysis",
+        "sample_count": 4,
+        "feature_labels": CATEGORIZATION.FEATURE_LABELS,
+        "models": [
+            {
+                "name": "model",
+                "mode": "zero",
+                "pair_loss": "js",
+                "route_loss": True,
+                "checkpoints": [checkpoint],
+            }
+        ],
+        "common_checkpoints": ["epoch0100"],
+        "pairwise": {"epoch0100": {"nmi": [[1.0]], "ari": [[1.0]]}},
+    }
+
+    path = CATEGORIZATION.write_report(tmp_path, payload)
+
+    document = path.read_text(encoding="utf-8")
+    assert 'id="model"' in document
+    assert 'id="checkpoint"' in document
+    assert "Motion-neighbor consistency" in document
+    assert "FSQ axis ↔ trajectory feature map" in document
+    assert "Code × semantic feature heatmap" in document
+    assert "function renderTrend()" in document
+    assert (tmp_path / "categorization-data.js").is_file()
+    assert (tmp_path / "metrics" / CATEGORIZATION.DATA_NAME).is_file()
 
 
 def test_backfill_train_codebook_used_from_latents(tmp_path: Path) -> None:

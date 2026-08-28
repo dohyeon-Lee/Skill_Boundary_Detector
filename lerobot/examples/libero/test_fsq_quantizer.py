@@ -30,6 +30,22 @@ def test_binary_level_reaches_both_codes_and_normalized_endpoints() -> None:
     assert torch.equal(torch.unique(quantizer.normalized(z_q)), torch.tensor([-1.0, 1.0]))
 
 
+def test_222_reaches_all_codes_round_trips_and_keeps_ste_gradients() -> None:
+    quantizer = FSQ([2, 2, 2])
+    z = torch.cartesian_prod(*([torch.tensor([-1.0, 1.0])] * 3)).requires_grad_(True)
+
+    z_q, codes = quantizer(z)
+
+    assert torch.equal(torch.sort(codes).values, torch.arange(8))
+    torch.testing.assert_close(
+        quantizer.normalized(z_q),
+        quantizer.code_to_normalized(codes),
+    )
+    z_q.sum().backward()
+    assert z.grad is not None and torch.isfinite(z.grad).all()
+    assert bool((z.grad.abs() > 0).all())
+
+
 def test_mixed_levels_with_a_binary_axis_reach_the_full_codebook() -> None:
     quantizer = FSQ([3, 3, 2])
     values = torch.tensor([-20.0, 0.0, 20.0])

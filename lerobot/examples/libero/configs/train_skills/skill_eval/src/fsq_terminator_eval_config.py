@@ -269,23 +269,6 @@ def build_settings(config: dict, *, model_override: str | None = None) -> dict:
             artifact["fsq_eval_code_space_id"] = entry["run_name"]
         resolved.append({**entry, **artifact})
 
-    # FSQ-original checkpoints carry no terminator module at all: their only
-    # termination signal lives inside the rnn decoder's open-loop unroll, which
-    # cannot be queried against real GT frames. Catch them here rather than
-    # letting the v3 loader fail mid-job with a "legacy format_version" message.
-    original = [
-        item["label"]
-        for item in resolved
-        if Path(item["fsq_eval_meta_path"]).name == "fsq_original_meta.json"
-    ]
-    if original:
-        raise ValueError(
-            f"terminator_models {original} are FSQ-original runs, which have no "
-            "co-trained terminator module to probe (FSQ_original.py defines none; "
-            "its rnn decoder emits termination inline and oneshot emits none). "
-            "List FSQ v3 runs here, or score those runs with fsq_original_eval.py."
-        )
-
     # Per-skill comparison only means anything when every model segmented the
     # dataset the same way: same skillset -> same GT skills and same GT end
     # frames. Different skillsets would silently compare different questions.
