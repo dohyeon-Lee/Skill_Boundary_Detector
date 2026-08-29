@@ -152,6 +152,31 @@ def test_gpu_count_is_capped_by_policy_episode_pairs(
     settings = MODULE.build_settings(config)
 
     assert settings["eval_num_gpus"] == 2
+    assert settings["eval_max_workers_per_gpu"] == 4
+    assert settings["eval_work_unit_count"] == 2
+
+
+@pytest.mark.parametrize("workers", [0, 5])
+def test_eval_workers_per_gpu_is_bounded(
+    tmp_path: Path, monkeypatch, workers: int
+) -> None:
+    contracts = iter(
+        [
+            _contract(tmp_path, architecture_label="arch_a"),
+            _contract(tmp_path, architecture_label="arch_b"),
+        ]
+    )
+    monkeypatch.setattr(MODULE, "_checkpoint_contract", lambda *_args: next(contracts))
+    monkeypatch.setattr(
+        MODULE,
+        "_validate_external_terminator",
+        lambda *_args, **_kwargs: None,
+    )
+    config = _config(tmp_path)
+    config["eval_max_workers_per_gpu"] = workers
+
+    with pytest.raises(ValueError, match="between 1 and 4"):
+        MODULE.build_settings(config)
 
 
 def test_same_space_models_can_select_individual_checkpoints(
@@ -348,7 +373,7 @@ def test_each_skill_space_can_override_its_terminator(
     assert "term_b/checkpoints/030000" in models[1]["terminator_models"][0]["path"]
 
 
-def test_every_model_requires_its_own_terminator_block(
+def test_external_mode_requires_a_terminator_source(
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.setattr(
@@ -360,7 +385,128 @@ def test_every_model_requires_its_own_terminator_block(
     config = _config(tmp_path)
     config["models"][1].pop("terminator_model")
 
-    with pytest.raises(ValueError, match=r"models\[1\]\.terminator_model"):
+    with pytest.raises(ValueError, match=r"models\[1\].*external_terminator_model"):
+        MODULE.build_settings(config)
+
+
+def test_stage1_eval_style_external_terminator_uses_shared_defaults(
+    tmp_path: Path, monkeypatch
+) -> None:
+    contracts = iter(
+        [
+            _contract(tmp_path, architecture_label="arch_a"),
+            _contract(tmp_path, architecture_label="arch_b"),
+        ]
+    )
+    validations: list[Path] = []
+    monkeypatch.setattr(MODULE, "_checkpoint_contract", lambda *_args: next(contracts))
+    monkeypatch.setattr(
+        MODULE,
+        "_validate_external_terminator",
+        lambda path, **_kwargs: validations.append(path),
+    )
+    config = _config(tmp_path)
+    config["model_defaults"].update(
+        {
+            "advance_mode": "external",
+            "terminator_variant": "state_image",
+            "external_terminator_checkpoint": "020000",
+        }
+    )
+    for model in config["models"]:
+        model.pop("terminator_model")
+        model["external_terminator_model"] = "shared_term"
+    config["terminator"] = {
+        "end_mode": "termination",
+        "end_threshold": 0.9,
+        "progress_threshold": 0.95,
+    }
+    config["main_terminator"] = {
+        "max_skill_length_scale": 1.5,
+        "finish_action_chunk_on_end": False,
+    }
+
+    settings = MODULE.build_settings(config)
+    models = json.loads(settings["models_json"])
+    expected = (
+        tmp_path
+        / "outputs/skillVLA_terminator/shared_term/checkpoints/020000/pretrained_model"
+    )
+
+    assert {model["checkpoint"] for model in models} == {"010000"}
+    assert {model["skill_source"] for model in models} == {"gt"}
+    assert {model["advance_mode"] for model in models} == {"external"}
+    assert {model["external_skill_model"] for model in models} == {str(expected)}
+    assert {
+        model["terminator_models"][0]["end_threshold"] for model in models
+    } == {0.9}
+    assert validations == [expected, expected]
+
+
+def test_original_selector_uses_each_policys_fsq_terminator(
+    tmp_path: Path, monkeypatch
+) -> None:
+    first = _contract(tmp_path / "first", architecture_label="arch_a")
+    second = _contract(tmp_path / "second", architecture_label="arch_b")
+    second["eval_init_states_path"] = first["eval_init_states_path"]
+    contracts = iter([first, second])
+    validations: list[Path] = []
+    monkeypatch.setattr(MODULE, "_checkpoint_contract", lambda *_args: next(contracts))
+    monkeypatch.setattr(
+        MODULE,
+        "_validate_external_terminator",
+        lambda path, **_kwargs: validations.append(path),
+    )
+    config = _config(tmp_path)
+    for model in config["models"]:
+        model.pop("terminator_model")
+        model["external_terminator_model"] = "original"
+    config["terminator"] = {
+        "end_mode": "termination",
+        "end_threshold": 0.7,
+        "progress_threshold": 0.95,
+    }
+    config["main_terminator"] = {
+        "max_skill_length_scale": 1.5,
+        "finish_action_chunk_on_end": False,
+    }
+
+    settings = MODULE.build_settings(config)
+    models = json.loads(settings["models_json"])
+
+    assert {model["advance_mode"] for model in models} == {"original"}
+    assert [model["external_skill_model"] for model in models] == [
+        str(first["fsq_path"]),
+        str(second["fsq_path"]),
+    ]
+    assert {model["external_skill_model_variant"] for model in models} == {
+        "fsq_initial"
+    }
+    assert {
+        model["terminator_models"][0]["label"] for model in models
+    } == {"original"}
+    assert {
+        model["main_terminator"]["end_threshold"] for model in models
+    } == {0.7}
+    assert validations == []
+
+
+@pytest.mark.parametrize(
+    ("scope", "field"),
+    [
+        ("defaults", "skill_source"),
+        ("defaults", "external_predictor_checkpoint"),
+        ("model", "external_predictor_model"),
+    ],
+)
+def test_predictor_fields_are_rejected(
+    tmp_path: Path, scope: str, field: str
+) -> None:
+    config = _config(tmp_path)
+    target = config["model_defaults"] if scope == "defaults" else config["models"][0]
+    target[field] = "unused"
+
+    with pytest.raises(ValueError, match="always replays GT skill occurrences"):
         MODULE.build_settings(config)
 
 

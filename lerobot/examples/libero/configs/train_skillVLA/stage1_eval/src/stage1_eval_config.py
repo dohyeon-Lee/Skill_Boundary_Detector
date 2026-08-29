@@ -1170,6 +1170,9 @@ def build_settings(config: dict) -> dict:
         # the last one therefore annotates and writes the complete report.
         "eval_expected_tasks": len(task_ids),
         "eval_num_gpus": int(get_value(config, "eval_num_gpus", 1)),
+        "eval_max_workers_per_gpu": int(
+            get_value(config, "eval_max_workers_per_gpu", 4)
+        ),
         "n_episodes": int(get_value(config, "n_episodes", 3)),
         "eval_batch_size": int(get_value(config, "eval_batch_size", 1)),
         "max_parallel_tasks": int(get_value(config, "max_parallel_tasks", 1)),
@@ -1208,6 +1211,10 @@ def build_settings(config: dict) -> dict:
     }
     if settings["n_episodes"] <= 0 or settings["eval_batch_size"] <= 0:
         raise ValueError("n_episodes and eval_batch_size must be positive.")
+    if settings["eval_num_gpus"] <= 0:
+        raise ValueError("eval_num_gpus must be positive.")
+    if not 1 <= settings["eval_max_workers_per_gpu"] <= 4:
+        raise ValueError("eval_max_workers_per_gpu must be between 1 and 4.")
     if settings["max_parallel_tasks"] != 1:
         raise ValueError("Stage-1 policies are stateful; max_parallel_tasks must remain 1.")
     settings.update(

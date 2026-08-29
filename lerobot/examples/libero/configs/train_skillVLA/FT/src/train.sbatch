@@ -37,6 +37,7 @@ echo "schedule : ${SCHEDULER_MODE} warmup=${SCHEDULER_WARMUP_STEPS}"
 echo "output   : ${PT_OUTPUT_DIR}"
 echo "dino     : ${POLICY_DINO_MODEL_PATH}"
 echo "tokenizer: ${POLICY_TOKENIZER_PATH}"
+echo "base VLM : ${POLICY_VLM_BASE_PATH}"
 nvidia-smi || true
 
 if [ ! -d "${SKILLVLA_DATASET_DIR}" ]; then
@@ -97,6 +98,8 @@ POLICY_PATH_ARGS=()
   POLICY_PATH_ARGS+=(--policy.dino_model_path="${POLICY_DINO_MODEL_PATH}")
 [ -z "${POLICY_TOKENIZER_PATH}" ] || \
   POLICY_PATH_ARGS+=(--policy.tokenizer_path="${POLICY_TOKENIZER_PATH}")
+[ -z "${POLICY_VLM_BASE_PATH}" ] || \
+  POLICY_PATH_ARGS+=(--policy.vlm_base_path="${POLICY_VLM_BASE_PATH}")
 [ -z "${POLICY_STAGE1_CHECKPOINT_PATH}" ] || \
   POLICY_PATH_ARGS+=(--policy.stage1_checkpoint_path="${POLICY_STAGE1_CHECKPOINT_PATH}")
 [ -z "${POLICY_SKILL_PREDICTOR_CHECKPOINT_PATH}" ] || \

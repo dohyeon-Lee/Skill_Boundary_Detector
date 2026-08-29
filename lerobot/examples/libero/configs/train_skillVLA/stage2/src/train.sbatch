@@ -44,7 +44,12 @@ unset LD_LIBRARY_PATH
 echo "START STAGE 2 (${STAGE2_MODE})"
 echo "dataset  : ${SKILLVLA_DATASET_DIR}"
 echo "prior    : ${STAGE1_CHECKPOINT_PATH} (fully frozen, ${ARCHITECTURE}/${ARCHITECTURE_REVISION})"
-echo "predictor: ${PREDICTOR_CHECKPOINT_PATH} (fully frozen VLM)"
+echo "base VLM : ${VLM_BASE_PATH} (fully frozen)"
+if [ -n "${PREDICTOR_CHECKPOINT_PATH}" ]; then
+  echo "predictor: ${PREDICTOR_CHECKPOINT_PATH} (learned overlay, fully frozen)"
+else
+  echo "predictor: none (GT skill source)"
+fi
 if [ "${STAGE2_MODE}" = dsbc ]; then
   echo "train    : VLM projection + ${LIKELIHOOD_NUM_LAYERS} blocks + noise head (Stage-1 head frozen)"
   echo "DSBC     : output=${DSBC_NOISE_OUTPUT_MODE}, online FRS steps=${DSBC_FRS_NUM_STEPS}, anchor seed=${DSBC_ANCHOR_SEED}"
@@ -73,6 +78,11 @@ elif [ -e "${PT_OUTPUT_DIR}" ]; then
   exit 1
 fi
 
+PREDICTOR_ARGS=()
+if [ -n "${PREDICTOR_CHECKPOINT_PATH}" ]; then
+  PREDICTOR_ARGS+=(--policy.skill_predictor_checkpoint_path="${PREDICTOR_CHECKPOINT_PATH}")
+fi
+
 PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="${NUM_GPUS}" \
   "${PROJECT_ROOT}/.venv/bin/lerobot-train" \
     --dataset.repo_id="${REPO_ID}" \
@@ -80,7 +90,8 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --dataset.video_backend=pyav \
     --policy.type=skill_vla_stage2 \
     --policy.stage1_checkpoint_path="${STAGE1_CHECKPOINT_PATH}" \
-    --policy.skill_predictor_checkpoint_path="${PREDICTOR_CHECKPOINT_PATH}" \
+    --policy.vlm_base_path="${VLM_BASE_PATH}" \
+    "${PREDICTOR_ARGS[@]}" \
     --policy.architecture="${ARCHITECTURE}" \
     --policy.architecture_revision="${ARCHITECTURE_REVISION}" \
     --policy.architecture_label="${ARCHITECTURE_LABEL}" \

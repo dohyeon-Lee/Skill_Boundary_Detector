@@ -22,6 +22,7 @@ from lerobot.policies.skill_vla_stage2.modeling_skill_vla_stage2 import (
     LikelihoodBlock,
     SkillVLAStage2Policy,
     SkillVLAStage2Pytorch,
+    _load_pi05_base_vlm_parameters,
 )
 from lerobot.utils.constants import (
     ACTION,
@@ -35,7 +36,7 @@ from lerobot.utils.constants import (
 def _config(**overrides) -> SkillVLAStage2Config:
     values = {
         "stage1_checkpoint_path": "/tmp/stage1",
-        "skill_predictor_checkpoint_path": "/tmp/predictor",
+        "vlm_base_path": "/tmp/pi05_base",
         "fsq_path": "/tmp/FSQ.pt",
     }
     values.update(overrides)
@@ -72,6 +73,8 @@ def test_stage2_config_fixes_bayesvla_contract() -> None:
         _config(likelihood_num_layers=3)
     with pytest.raises(ValueError, match="fixed to 'flow'"):
         _config(action_loss_mode="flow_endpoint_xyz")
+    with pytest.raises(ValueError, match="complete action chunk"):
+        _config(mask_actions_after_skill_end=True)
     with pytest.raises(ValueError, match="last.*layer_mix"):
         _config(likelihood_vlm_memory="every_layer")
     with pytest.raises(ValueError, match="gate_lr_scale"):
@@ -79,8 +82,21 @@ def test_stage2_config_fixes_bayesvla_contract() -> None:
     assert _config(likelihood_vlm_memory="layer_mix").likelihood_vlm_memory == "layer_mix"
     with pytest.raises(ValueError, match="gt.*predictor"):
         _config(training_skill_source="mixed")
+    assert _config(skill_predictor_checkpoint_path=None).training_skill_source == "gt"
+    with pytest.raises(ValueError, match="vlm_base_path"):
+        _config(vlm_base_path="")
     with pytest.raises(ValueError, match="skill_predictor_checkpoint_path"):
-        _config(skill_predictor_checkpoint_path=None)
+        _config(
+            training_skill_source="predictor",
+            skill_predictor_checkpoint_path=None,
+        )
+    assert (
+        _config(
+            training_skill_source="predictor",
+            skill_predictor_checkpoint_path="/tmp/predictor",
+        ).training_skill_source
+        == "predictor"
+    )
     with pytest.raises(ValueError, match="train_skill_predictor=True"):
         _config(train_skill_predictor=False)
     with pytest.raises(ValueError, match="without a terminator"):
@@ -106,6 +122,43 @@ def test_stage2_config_fixes_bayesvla_contract() -> None:
         _config(stage2_mode="dsbc", dsbc_noise_output_bound=0.0)
     with pytest.raises(ValueError, match="FRS noise"):
         _config(stage2_mode="dsbc", cumulative_xyz_loss_enabled=True)
+
+
+def test_stage2_loads_only_base_vlm_tensors(monkeypatch) -> None:
+    class TinyPredictor(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.vlm = nn.Linear(2, 3)
+            self.reader = nn.Linear(3, 1)
+
+    predictor = TinyPredictor()
+    expected_weight = torch.arange(6, dtype=torch.float32).reshape(3, 2)
+    expected_bias = torch.arange(3, dtype=torch.float32)
+
+    def fake_load(*args, **kwargs):
+        assert kwargs["include_predictor_vlm"] is True
+        return (
+            {
+                "model.skill_predictor.vlm.weight": expected_weight,
+                "model.skill_predictor.vlm.bias": expected_bias,
+                "model.action_out_proj.weight": torch.ones(1),
+            },
+            True,
+        )
+
+    monkeypatch.setattr(
+        "lerobot.policies.skill_vla_stage2.modeling_skill_vla_stage2."
+        "_load_pretrained_state_dict",
+        fake_load,
+    )
+    reader_before = predictor.reader.weight.detach().clone()
+
+    loaded = _load_pi05_base_vlm_parameters(predictor, "/tmp/pi05_base")
+
+    assert loaded == 2
+    torch.testing.assert_close(predictor.vlm.weight, expected_weight)
+    torch.testing.assert_close(predictor.vlm.bias, expected_bias)
+    torch.testing.assert_close(predictor.reader.weight, reader_before)
 
 
 def test_fresh_likelihood_block_is_exact_identity() -> None:

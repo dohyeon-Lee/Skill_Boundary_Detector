@@ -220,6 +220,15 @@ def test_grid_uses_models_as_columns_and_checkpoints_as_rows(tmp_path: Path) -> 
     ]
 
 
+@pytest.mark.parametrize("workers", [0, 5])
+def test_eval_workers_per_gpu_is_bounded(tmp_path: Path, workers: int) -> None:
+    config = _config(tmp_path)
+    config["eval_max_workers_per_gpu"] = workers
+
+    with pytest.raises(ValueError, match="between 1 and 4"):
+        build_settings(config)
+
+
 def test_checkpoint_grid_rejects_different_columns_per_model() -> None:
     with pytest.raises(ValueError, match="same ordered checkpoint list"):
         _model_entries(

@@ -51,6 +51,7 @@ prepare_node_local_venv_archive() {
   } | sha256sum | cut -d' ' -f1)" || return 1
 
   local archive="${archive_root}/venv-${fingerprint:0:16}.tar.zst"
+  local size_file="${archive}.unpacked_size"
   local lock_file="${archive}.lock"
   if ! (
     flock 9
@@ -70,6 +71,12 @@ prepare_node_local_venv_archive() {
       trap - EXIT
       echo "${label}: archive ready." >&2
     fi
+    if [ ! -s "${size_file}" ]; then
+      local size_tmp="${size_file}.tmp.$$"
+      du -s --apparent-size --block-size=1 "${source_venv}" \
+        | awk '{print $1}' > "${size_tmp}"
+      mv "${size_tmp}" "${size_file}"
+    fi
   ) 9>"${lock_file}"; then
     return 1
   fi
@@ -81,37 +88,97 @@ stage_node_local_venv() {
   local archive="${1:?stage_node_local_venv needs an archive}"
   local shared_venv="${2:?stage_node_local_venv needs a fallback venv}"
   local label="${3:-Node-local venv}"
-  if [ ! -s "${archive}" ] || [ -z "${SLURM_TMPDIR:-}" ] || [ ! -d "${SLURM_TMPDIR:-}" ]; then
-    echo "${label}: archive or SLURM_TMPDIR unavailable; using ${shared_venv}." >&2
+  if [ ! -s "${archive}" ]; then
+    echo "${label}: archive unavailable; using ${shared_venv}." >&2
     return 1
   fi
-  if ! command -v zstd >/dev/null 2>&1; then
-    echo "${label}: zstd unavailable on compute node; using ${shared_venv}." >&2
+  if ! command -v zstd >/dev/null 2>&1 || ! command -v flock >/dev/null 2>&1; then
+    echo "${label}: zstd/flock unavailable on compute node; using ${shared_venv}." >&2
     return 1
   fi
 
-  local job_tag="${SLURM_JOB_ID:-local}_${SLURM_ARRAY_TASK_ID:-0}_${SLURM_RESTART_COUNT:-0}_$$"
-  job_tag="${job_tag//[^A-Za-z0-9_.-]/_}"
-  local local_root="${SLURM_TMPDIR}/node_local_venv_${job_tag}"
-  local local_archive="${SLURM_TMPDIR}/venv_${job_tag}.tar.zst"
-  mkdir -p "${local_root}"
-  echo "${label}: copying $(basename "${archive}") to ${SLURM_TMPDIR}." >&2
-  if ! cp "${archive}" "${local_archive}"; then
-    rm -f -- "${local_archive}"
-    echo "${label}: copy failed; using ${shared_venv}." >&2
+  local owner="${USER:-}"
+  [ -n "${owner}" ] || owner="$(id -un)"
+  local cache_root="${NODE_LOCAL_VENV_ROOT:-}"
+  # Prefer a host-wide local cache so array tasks sharing one node also share
+  # one extraction. This cluster does not define SLURM_TMPDIR.
+  if [ -z "${cache_root}" ] && [ -d /dev/shm ] && [ -w /dev/shm ]; then
+    cache_root="/dev/shm/${owner}/node_local_venv"
+  elif [ -z "${cache_root}" ] && [ -n "${SLURM_TMPDIR:-}" ] \
+    && [ -d "${SLURM_TMPDIR}" ]; then
+    cache_root="${SLURM_TMPDIR}/node_local_venv"
+  elif [ -z "${cache_root}" ] && [ -d /tmp ] && [ -w /tmp ]; then
+    cache_root="/tmp/${owner}/node_local_venv"
+  fi
+  if [ -z "${cache_root}" ] || [[ "${cache_root}" != /* ]]; then
+    echo "${label}: no writable node-local cache root; using ${shared_venv}." >&2
     return 1
   fi
-  echo "${label}: extracting the node-local Python environment." >&2
-  if ! (set -o pipefail; zstd -q -d -c "${local_archive}" | \
-    tar --no-same-owner -C "${local_root}" -xf -); then
-    rm -f -- "${local_archive}"
-    echo "${label}: extraction failed; using ${shared_venv}." >&2
+  if ! mkdir -p "${cache_root}"; then
+    echo "${label}: cannot create ${cache_root}; using ${shared_venv}." >&2
     return 1
   fi
-  rm -f -- "${local_archive}"
-  if [ ! -x "${local_root}/bin/python" ]; then
-    echo "${label}: extracted interpreter is invalid; using ${shared_venv}." >&2
-    return 1
-  fi
-  printf '%s\n' "${local_root}"
+
+  local archive_name fingerprint
+  archive_name="$(basename "${archive}")"
+  fingerprint="${archive_name%.tar.zst}"
+  case "${fingerprint}" in
+    *[!A-Za-z0-9._-]*)
+      echo "${label}: unsafe archive name ${archive_name}; using ${shared_venv}." >&2
+      return 1
+      ;;
+  esac
+  local final_root="${cache_root}/${fingerprint}"
+  local lock_file="${cache_root}/.${fingerprint}.lock"
+
+  (
+    flock -x 9
+    if [ -x "${final_root}/bin/python" ] \
+      && [ -f "${final_root}/.node_local_venv_archive" ] \
+      && [ "$(cat "${final_root}/.node_local_venv_archive")" = "${archive_name}" ]; then
+      echo "${label}: reusing ${final_root}." >&2
+      printf '%s\n' "${final_root}"
+      exit 0
+    fi
+
+    local expected_bytes
+    if [ -s "${archive}.unpacked_size" ]; then
+      expected_bytes="$(tr -dc '0-9' < "${archive}.unpacked_size")"
+    else
+      expected_bytes=$(( $(stat -c %s "${archive}") * 3 ))
+    fi
+    local available_bytes reserve_bytes
+    available_bytes="$(df -P --block-size=1 "${cache_root}" | awk 'NR == 2 {print $4}')"
+    reserve_bytes=$(( ${NODE_LOCAL_VENV_RESERVE_GB:-8} * 1024 * 1024 * 1024 ))
+    if [ -z "${expected_bytes}" ] \
+      || (( expected_bytes > available_bytes \
+        || available_bytes - expected_bytes < reserve_bytes )); then
+      echo "${label}: insufficient space in ${cache_root}; using ${shared_venv}." >&2
+      exit 1
+    fi
+
+    if [ -e "${final_root}" ]; then
+      local invalid_root="${cache_root}/.invalid"
+      mkdir -p "${invalid_root}"
+      mv "${final_root}" "${invalid_root}/${fingerprint}.$(date +%s).$$"
+    fi
+    local partial_root="${cache_root}/.${fingerprint}.partial.$$"
+    mkdir -p "${partial_root}"
+    trap 'rm -rf -- "${partial_root}"' EXIT
+    echo "${label}: extracting $(basename "${archive}") to ${final_root}." >&2
+    if ! (set -o pipefail; zstd -q -d -c "${archive}" | \
+      tar --no-same-owner -C "${partial_root}" -xf -); then
+      echo "${label}: extraction failed; using ${shared_venv}." >&2
+      exit 1
+    fi
+    if [ ! -x "${partial_root}/bin/python" ]; then
+      echo "${label}: extracted interpreter is invalid; using ${shared_venv}." >&2
+      exit 1
+    fi
+    printf '%s\n' "${archive_name}" > "${partial_root}/.node_local_venv_archive"
+    mv "${partial_root}" "${final_root}"
+    trap - EXIT
+    echo "${label}: node-local environment ready." >&2
+    printf '%s\n' "${final_root}"
+  ) 9>"${lock_file}"
 }

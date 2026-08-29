@@ -11,13 +11,34 @@ while [ ! -f "${CONFIG_LIB}/snapshot_config.sh" ]; do CONFIG_LIB="$(dirname "${C
 source "${CONFIG_LIB}/snapshot_config.sh"
 CONFIG_PATH="$(snapshot_config "${CONFIG_PATH}")"
 
-BOOTSTRAP_PYTHON="${SCRIPT_DIR}/../../../../../../.venv/bin/python"
-[ -x "${BOOTSTRAP_PYTHON}" ] || BOOTSTRAP_PYTHON=python3
+BOOTSTRAP_PYTHON=/usr/bin/python3
 STAGE1_EVAL_EXPORTS="$(
   "${BOOTSTRAP_PYTHON}" "${SRC_DIR}/stage1_eval_config.py" \
     --config "${CONFIG_PATH}" --shell
 )"
 eval "${STAGE1_EVAL_EXPORTS}"
+
+PLANNED_GPUS="${EVAL_NUM_GPUS}"
+[ -z "${SLURM_JOB_ID:-}" ] || PLANNED_GPUS=1
+PACKING_EXPORTS="$(
+  "${BOOTSTRAP_PYTHON}" "${SCRIPT_DIR}/../eval_gpu_packing.py" \
+    --items-json "${TASK_IDS}" \
+    --gpus "${PLANNED_GPUS}" \
+    --max-workers-per-gpu "${EVAL_MAX_WORKERS_PER_GPU}" \
+    --shell
+)"
+eval "${PACKING_EXPORTS}"
+
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/node_local_venv.sh"
+EVAL_VENV_ARCHIVE=""
+if [ "${EVAL_NODE_LOCAL_VENV:-1}" = "1" ]; then
+  if ! EVAL_VENV_ARCHIVE="$(prepare_node_local_venv_archive \
+    "${PROJECT_ROOT}" "Stage-1 eval venv")"; then
+    EVAL_VENV_ARCHIVE=""
+    echo "Stage-1 eval: venv archive unavailable; using shared venv." >&2
+  fi
+fi
+export EVAL_VENV_ARCHIVE
 
 for artifact in "${POLICY_PATH}" "${FSQ_PATH}" "${SKILL_DATASET_DIR}"; do
   [ -e "${artifact}" ] || { echo "Missing artifact: ${artifact}" >&2; exit 1; }
@@ -40,35 +61,20 @@ mkdir -p logs
 echo "Submit Stage-1 eval"
 echo "  models : ${MODEL_ARCHITECTURES}"
 echo "  output : ${EVAL_OUT_DIR}"
+echo "  GPUs   : ${EVAL_PHYSICAL_GPU_COUNT} physical (requested ${EVAL_NUM_GPUS})"
+echo "  workers: ${EVAL_LOGICAL_WORKER_COUNT} total, max ${EVAL_MAX_WORKERS_PER_GPU}/GPU"
 
 if [ -n "${SLURM_JOB_ID:-}" ]; then
   echo "  mode   : srun in allocation ${SLURM_JOB_ID}"
   STAGE1_EVAL_DIR="${SCRIPT_DIR}" STAGE1_EVAL_CONFIG="${CONFIG_PATH}" \
     srun "${SRC_DIR}/eval.sbatch"
-elif [ "${EVAL_NUM_GPUS}" -le 1 ]; then
+elif [ "${EVAL_PHYSICAL_GPU_COUNT}" -le 1 ]; then
   echo "  mode   : one sbatch job"
   STAGE1_EVAL_DIR="${SCRIPT_DIR}" STAGE1_EVAL_CONFIG="${CONFIG_PATH}" \
     sbatch "${SBATCH_ARGS[@]}" "${SRC_DIR}/eval.sbatch"
 else
-  CHUNKS="$("${BOOTSTRAP_PYTHON}" - "${TASK_IDS}" "${EVAL_NUM_GPUS}" <<'PY'
-import json, sys
-task_ids = json.loads(sys.argv[1])
-jobs = min(max(1, int(sys.argv[2])), len(task_ids))
-base, extra = divmod(len(task_ids), jobs)
-start = 0
-for index in range(jobs):
-    end = start + base + (index < extra)
-    chunk = task_ids[start:end]
-    start = end
-    print(json.dumps(chunk, separators=(",", ":")) + f"|t{chunk[0]}-{chunk[-1]}")
-PY
-)"
-  EVAL_FANOUT="${CHUNKS}"$'\n'
-  ARRAY_SIZE="$(printf '%s\n' "${CHUNKS}" | sed '/^$/d' | wc -l)"
-  ARRAY_SPEC="0-$((ARRAY_SIZE - 1))%${EVAL_NUM_GPUS}"
+  ARRAY_SPEC="0-$((EVAL_PHYSICAL_GPU_COUNT - 1))%${EVAL_PHYSICAL_GPU_COUNT}"
   echo "  mode   : array ${ARRAY_SPEC}"
-  printf '  chunks :\n%s\n' "${CHUNKS}"
-  export EVAL_FANOUT
   STAGE1_EVAL_DIR="${SCRIPT_DIR}" STAGE1_EVAL_CONFIG="${CONFIG_PATH}" \
     sbatch --array="${ARRAY_SPEC}" \
       --output=logs/%x_%A_%a.out --error=logs/%x_%A_%a.err \

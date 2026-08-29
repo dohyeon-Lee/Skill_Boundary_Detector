@@ -90,6 +90,13 @@ def _run_inline_cuda_guard() -> None:
     raise SystemExit(_INLINE_CUDA_GUARD_EXIT_CODE)
 
 
+def _mark_startup_ready() -> None:
+    """Tell the Slurm parent that imports and CUDA initialization completed."""
+    marker = os.environ.get("LEROBOT_STARTUP_READY_MARKER", "")
+    if marker:
+        Path(marker).touch()
+
+
 def _normalize_skill_source(value: str) -> str:
     aliases = {
         "gt": "gt",
@@ -1578,6 +1585,7 @@ def _maybe_log_wandb(cfg, infos: dict[str, dict], specs: list[dict]) -> None:
 @parser.wrap()
 def eval_main(cfg: EvalPipelineConfig):
     _run_inline_cuda_guard()
+    _mark_startup_ready()
     supported = {"skill_expert", "skill_vla_stage2"}
     if cfg.policy is None or cfg.policy.type not in supported:
         raise ValueError(

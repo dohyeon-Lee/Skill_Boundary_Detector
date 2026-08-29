@@ -44,9 +44,12 @@ def _config(tmp_path: Path, *, policy_type: str = "skill_expert") -> dict:
         )
     )
     dino = project / "models/dino"
-    tokenizer = project / "models/tokenizer"
+    tokenizer = project / "models/paligemma-3b-pt-224-tokenizer"
+    vlm_base = project / "models/pi05_base"
     dino.mkdir(parents=True)
     tokenizer.mkdir(parents=True)
+    vlm_base.mkdir(parents=True)
+    (vlm_base / "model.safetensors").touch()
     fsq = project / "dataset/skillvla_dataset/stage1_source/FSQ333_stage2/FSQ.pt"
     fsq.parent.mkdir(parents=True)
     fsq.touch()
@@ -102,7 +105,7 @@ def _config(tmp_path: Path, *, policy_type: str = "skill_expert") -> dict:
 
     predictor_checkpoint = (
         project
-        / "outputs/skillVLA_stage1/predictor_exact_name/checkpoints/last/pretrained_model"
+        / "outputs/skillVLA_terminator/predictor_exact_name/checkpoints/last/pretrained_model"
     )
     _write_checkpoint(
         predictor_checkpoint,
@@ -143,7 +146,6 @@ def _config(tmp_path: Path, *, policy_type: str = "skill_expert") -> dict:
         "warm_start": {
             "stage1_run": "stage1_exact_name",
             "checkpoint": "last",
-            "predictor": {"run": "predictor_exact_name", "checkpoint": "last"},
         },
         "likelihood": {"layers": 4, "training_skill_source": "gt"},
     }
@@ -159,7 +161,7 @@ def _stage1_config_path(config: dict) -> Path:
 def _predictor_config_path(config: dict) -> Path:
     return (
         Path(config["project_root"])
-        / "outputs/skillVLA_stage1/predictor_exact_name/checkpoints/last/pretrained_model/config.json"
+        / "outputs/skillVLA_terminator/predictor_exact_name/checkpoints/last/pretrained_model/config.json"
     )
 
 
@@ -176,12 +178,8 @@ def test_stage2_resolver_reads_checkpoint_config_without_parsing_run_name(
         "last",
         "pretrained_model",
     )
-    assert settings["predictor_checkpoint_path"].parts[-4:] == (
-        "predictor_exact_name",
-        "checkpoints",
-        "last",
-        "pretrained_model",
-    )
+    assert settings["vlm_base_path"].parts[-2:] == ("models", "pi05_base")
+    assert settings["predictor_checkpoint_path"] == ""
     assert settings["architecture"] == "cond_gemma"
     assert settings["architecture_revision"] == "skillvla_real_v1"
     assert settings["architecture_label"] == "arch0"
@@ -196,28 +194,52 @@ def test_stage2_resolver_reads_checkpoint_config_without_parsing_run_name(
     assert settings["cumulative_xyz_loss_weight"] == pytest.approx(0.5)
     assert settings["train_skill_predictor"] is True
     assert settings["train_terminator"] is False
-    assert settings["mask_actions_after_skill_end"] is True
+    assert settings["mask_actions_after_skill_end"] is False
     assert settings["transition_jitter_pmax"] == 15
     assert settings["transition_jitter_early_start_pmax"] == 15
     assert settings["transition_jitter_late_start_pmax"] == 7
     assert settings["transition_jitter_early_end_pmax"] == 15
     assert settings["transition_jitter_late_end_pmax"] == 7
     assert settings["same_skill_batch_enabled"] is False
-    assert settings["pt_run_name"] == "stage1_exact_name_last_gt_batchOFF"
+    assert settings["pt_run_name"] == "stage1_exact_name_last_vlmlast"
 
 
-def test_stage2_predictor_module_fields_come_from_predictor_checkpoint(
+def test_stage2_base_vlm_is_default_without_predictor_checkpoint(
     tmp_path: Path,
 ) -> None:
     config = _config(tmp_path)
     settings = stage2_train_config.build_settings(config)
 
+    assert settings["skill_predictor_lora"] is False
+    assert settings["skill_predictor_detach_vlm"] is True
+    assert settings["skill_predictor_all_layers"] is False
+    assert settings["skill_predictor_deadzone_frac"] == 0.0
+    assert settings["tokenizer_max_length"] == 200
+    assert settings["tokenizer_path"].name == "paligemma-3b-pt-224-tokenizer"
+
+
+def test_stage2_predictor_module_fields_come_from_optional_checkpoint(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    config["warm_start"]["predictor"] = {
+        "model_dir": "predictor_exact_name",
+        "checkpoint": "last",
+    }
+    config["likelihood"]["training_skill_source"] = "predictor"
+
+    settings = stage2_train_config.build_settings(config)
+
+    assert settings["predictor_checkpoint_path"].parts[-4:] == (
+        "predictor_exact_name",
+        "checkpoints",
+        "last",
+        "pretrained_model",
+    )
     assert settings["skill_predictor_lora"] is True
     assert settings["skill_predictor_detach_vlm"] is False
     assert settings["skill_predictor_all_layers"] is True
     assert settings["skill_predictor_deadzone_frac"] == 0.8
-    assert settings["tokenizer_max_length"] == 200
-    assert settings["tokenizer_path"].name == "tokenizer"
 
 
 def test_stage2_inherits_conditioning_route_from_stage1_checkpoint(
@@ -249,7 +271,7 @@ def test_stage2_cumulative_xyz_loss_is_validated_exported_and_named(
 
     assert settings["cumulative_xyz_loss_enabled"] is True
     assert settings["cumulative_xyz_loss_weight"] == pytest.approx(0.25)
-    assert settings["pt_run_name"] == "stage1_exact_name_last_gt_batchOFF_cumxyz0p25"
+    assert settings["pt_run_name"] == "stage1_exact_name_last_cumxyz0p25_vlmlast"
 
     config["cumulative_xyz_loss"] = {"enabled": True, "weight": 0.0}
     with pytest.raises(ValueError, match="weight must be finite and positive"):
@@ -263,6 +285,7 @@ def test_stage2_layer_mix_gate_scale_and_scheduler_knobs(tmp_path: Path) -> None
     assert settings["likelihood_vlm_memory"] == "last"
     assert settings["likelihood_gate_lr_scale"] == pytest.approx(1.0)
     assert settings["scheduler_mode"] == "cosine_decay"
+    assert settings["pt_run_name"] == "stage1_exact_name_last_vlmlast"
 
     config["likelihood"].update({"vlm_memory": "layer_mix", "gate_lr_scale": 10})
     config["training"] = {
@@ -273,9 +296,7 @@ def test_stage2_layer_mix_gate_scale_and_scheduler_knobs(tmp_path: Path) -> None
     assert settings["likelihood_gate_lr_scale"] == pytest.approx(10.0)
     assert settings["scheduler_mode"] == "warmup_constant"
     assert settings["scheduler_warmup_steps"] == 1000
-    assert settings["pt_run_name"] == (
-        "stage1_exact_name_last_gt_batchOFF_layermix_glr10"
-    )
+    assert settings["pt_run_name"] == "stage1_exact_name_last"
 
     config["likelihood"]["vlm_memory"] = "everything"
     with pytest.raises(ValueError, match="last|layer_mix"):
@@ -303,8 +324,12 @@ def test_stage2_dsbc_settings_are_exported_and_use_a_separate_run(tmp_path: Path
     assert settings["dsbc_noise_output_bound"] == pytest.approx(4.5)
     assert settings["dsbc_frs_num_steps"] == 8
     assert settings["dsbc_anchor_seed"] == 17
+    assert settings["pt_run_name"] == "stage1_exact_name_last_dsbc_vlmlast"
+
+    config["dsbc"]["noise_output_mode"] = "shared"
+    settings = stage2_train_config.build_settings(config)
     assert settings["pt_run_name"] == (
-        "stage1_exact_name_last_gt_batchOFF_dsbc_per_step_frs8"
+        "stage1_exact_name_last_dsbc_shared_vlmlast"
     )
 
     config["cumulative_xyz_loss"] = {"enabled": True, "weight": 0.5}
@@ -312,24 +337,22 @@ def test_stage2_dsbc_settings_are_exported_and_use_a_separate_run(tmp_path: Path
         stage2_train_config.build_settings(config)
 
 
-def test_stage2_skill_end_mask_inherits_and_overrides(tmp_path: Path) -> None:
+def test_stage2_skill_end_mask_is_fixed_to_full_chunk(tmp_path: Path) -> None:
     config = _config(tmp_path)
 
-    # No override: inherit the Stage-1 checkpoint's value (fixture sets true).
     settings = stage2_train_config.build_settings(config)
-    assert settings["mask_actions_after_skill_end"] is True
-    assert "_nomask" not in settings["pt_run_name"]
+    assert settings["mask_actions_after_skill_end"] is False
+    assert "mask" not in settings["pt_run_name"]
 
+    # A legacy explicit false is accepted as the same fixed contract.
     config["mask_actions_after_skill_end"] = False
     settings = stage2_train_config.build_settings(config)
     assert settings["mask_actions_after_skill_end"] is False
-    assert settings["pt_run_name"] == "stage1_exact_name_last_gt_batchOFF_nomask"
+    assert settings["pt_run_name"] == "stage1_exact_name_last_vlmlast"
 
-    # Overriding to the inherited value adds no tag.
     config["mask_actions_after_skill_end"] = True
-    settings = stage2_train_config.build_settings(config)
-    assert settings["mask_actions_after_skill_end"] is True
-    assert settings["pt_run_name"] == "stage1_exact_name_last_gt_batchOFF"
+    with pytest.raises(ValueError, match="complete action chunk"):
+        stage2_train_config.build_settings(config)
 
 
 def test_stage2_rejects_legacy_loss_selector(tmp_path: Path) -> None:
@@ -358,7 +381,7 @@ def test_stage2_exports_same_skill_different_task_batching(tmp_path: Path) -> No
     assert settings["same_skill_batch_enabled"] is True
     assert settings["same_skill_batch_fraction"] == pytest.approx(0.5)
     assert settings["same_skill_progress_temperature"] == pytest.approx(0.2)
-    assert settings["pt_run_name"] == "stage1_exact_name_last_gt_batchON"
+    assert settings["pt_run_name"] == "stage1_exact_name_last_vlmlast"
 
 
 def test_stage2_name_uses_checkpoint_skill_source_and_manual_suffix(
@@ -366,12 +389,16 @@ def test_stage2_name_uses_checkpoint_skill_source_and_manual_suffix(
 ) -> None:
     config = _config(tmp_path)
     config["likelihood"]["training_skill_source"] = "predictor"
+    config["warm_start"]["predictor"] = {
+        "model_dir": "predictor_exact_name",
+        "checkpoint": "last",
+    }
     config["run"] = {"suffix": "ablation_a"}
 
     settings = stage2_train_config.build_settings(config)
 
     assert settings["pt_run_name"] == (
-        "stage1_exact_name_last_predictor_batchOFF_ablation_a"
+        "stage1_exact_name_last_vlmlast_ablation_a"
     )
 
 
@@ -391,16 +418,28 @@ def test_stage2_rejects_legacy_auxiliary_section(tmp_path: Path) -> None:
         stage2_train_config.build_settings(config)
 
 
-def test_stage2_requires_predictor_source(tmp_path: Path) -> None:
+def test_stage2_gt_source_does_not_require_predictor(tmp_path: Path) -> None:
     config = _config(tmp_path)
-    del config["warm_start"]["predictor"]
+    settings = stage2_train_config.build_settings(config)
 
-    with pytest.raises(ValueError, match="warm_start.predictor"):
+    assert settings["training_skill_source"] == "gt"
+    assert settings["predictor_checkpoint_path"] == ""
+
+
+def test_stage2_predictor_source_requires_predictor_checkpoint(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    config["likelihood"]["training_skill_source"] = "predictor"
+
+    with pytest.raises(ValueError, match="requires warm_start.predictor"):
         stage2_train_config.build_settings(config)
 
 
 def test_stage2_rejects_predictor_without_trained_predictor(tmp_path: Path) -> None:
     config = _config(tmp_path)
+    config["warm_start"]["predictor"] = {
+        "model_dir": "predictor_exact_name",
+        "checkpoint": "last",
+    }
     predictor_config_path = _predictor_config_path(config)
     predictor = json.loads(predictor_config_path.read_text())
     predictor["train_skill_predictor"] = False
@@ -410,21 +449,31 @@ def test_stage2_rejects_predictor_without_trained_predictor(tmp_path: Path) -> N
         stage2_train_config.build_settings(config)
 
 
-def test_stage2_predictor_path_overrides_run(tmp_path: Path) -> None:
+def test_stage2_rejects_legacy_vlm_source(tmp_path: Path) -> None:
     config = _config(tmp_path)
-    explicit = (
-        Path(config["project_root"])
-        / "outputs/skillVLA_stage1/predictor_exact_name/checkpoints/last/pretrained_model"
-    )
-    config["warm_start"]["predictor"] = {"path": str(explicit)}
+    config["warm_start"]["vlm_source"] = {
+        "model_dir": "predictor_exact_name",
+        "checkpoint": "last",
+    }
 
-    settings = stage2_train_config.build_settings(config)
+    with pytest.raises(ValueError, match="no longer needed"):
+        stage2_train_config.build_settings(config)
 
-    assert settings["predictor_checkpoint_path"] == explicit
+
+def test_stage2_predictor_source_rejects_full_path(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    config["warm_start"]["predictor"] = {"path": "/legacy/full/path"}
+
+    with pytest.raises(ValueError, match="supports only model_dir and checkpoint"):
+        stage2_train_config.build_settings(config)
 
 
 def test_stage2_rejects_predictor_from_a_different_fsq_run(tmp_path: Path) -> None:
     config = _config(tmp_path)
+    config["warm_start"]["predictor"] = {
+        "model_dir": "predictor_exact_name",
+        "checkpoint": "last",
+    }
     project = Path(config["project_root"])
     other_fsq = project / "dataset/skillvla_dataset/stage1_source/FSQ333_other/FSQ.pt"
     other_fsq.parent.mkdir(parents=True)

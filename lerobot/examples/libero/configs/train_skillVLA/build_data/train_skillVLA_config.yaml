@@ -3,7 +3,7 @@
 
 # Source
 skillvla_dataset_root: skillvla_dataset
-source_dataset: libero_90_full_firsthalf_scene # libero_90_full_firsthalf_scene | langgap_56_full_firsthalf | libero_90_full_lasthalf_scene | libero_10_full_1
+source_dataset: libero_90_full_lasthalf_scene # libero_90_full_firsthalf_scene | langgap_56_full_firsthalf | libero_90_full_lasthalf_scene | libero_10_full_1
 skillvla_data_mode: pt  # pt | ft | ft_own
 
 # Skill segmentation
@@ -16,26 +16,28 @@ skillset_max_sweeps: 2
 # FSQ encoder
 
 # fsq_run_name: zero01_recon_only__jsON_routeON_loss
-fsq_run_name: norm_action01_recon_termRES__jsON_routeON_loss__vis_unfreeze_term01
-# fsq_run_name: 333_norm_action01_recon_termRES__contrastiveON_routeON_loss__term01_visunfrez
+# fsq_run_name: norm_action01_recon_termRES__jsON_routeON_loss__vis_unfreeze_term01
+fsq_run_name: 333_norm_action01_recon_termRES__contrastiveON_routeON_loss__term01_visunfrez
+# fsq_run_name: FSQ3333_norm_action01_recon_termRES__contrastiveON_routeON_loss
+# fsq_run_name: FSQ22222_norm_action01_recon_termRES__contrastiveON_routeON_loss
 
-fsq_checkpoint: 2000 # 125               # epoch | best
+fsq_checkpoint: 2000 # 1750                # epoch | best
 fsq_snap_to_supported: true
 fsq_snap_min_code_freq: 10
 
 # SkillVLA dataset
-skillvla_output_suffix: ""         # optional custom suffix appended to the run folder
+skillvla_output_suffix: "pmax15"         # optional custom suffix appended to the run folder
 max_order: 0                      # 0 = auto
 max_length: 500
-transition_jitter_early_start_pmax: 10  # predictor start before the GT boundary
-transition_jitter_late_start_pmax: 5    # predictor start after the GT boundary
-transition_jitter_early_end_pmax: 10    # switch to the next skill before the GT end
-transition_jitter_late_end_pmax: 5      # keep the previous skill after its GT end
+# transition_jitter_early_start_pmax: 10  # predictor start before the GT boundary
+# transition_jitter_late_start_pmax: 5    # predictor start after the GT boundary
+# transition_jitter_early_end_pmax: 10    # switch to the next skill before the GT end
+# transition_jitter_late_end_pmax: 5      # keep the previous skill after its GT end
 
-# transition_jitter_early_start_pmax: 15  # predictor start before the GT boundary
-# transition_jitter_late_start_pmax: 15    # predictor start after the GT boundary
-# transition_jitter_early_end_pmax: 15    # switch to the next skill before the GT end
-# transition_jitter_late_end_pmax: 15      # keep the previous skill after its GT end
+transition_jitter_early_start_pmax: 15  # predictor start before the GT boundary
+transition_jitter_late_start_pmax: 15    # predictor start after the GT boundary
+transition_jitter_early_end_pmax: 15    # switch to the next skill before the GT end
+transition_jitter_late_end_pmax: 15      # keep the previous skill after its GT end
 
 
 transition_jitter_distribution: half_normal  # half_normal | uniform

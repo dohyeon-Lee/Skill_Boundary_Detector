@@ -2,12 +2,14 @@ dataset:
   skillvla_root: skillvla_dataset
   source: libero_90_full_firsthalf_scene # langgap_56_full_firsthalf | libero_90_full_firsthalf_scene
   # run: FSQ333_norm_action01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal
-  run: FSQ333_zero01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal
+  # run: FSQ3333_termRES_contrastive_1750_pt
+  run: FSQ22222_termRES_contrastive_1750_pt
+
 
 
 # Optional user label. It is appended at the very end of the automatic output
 # and W&B run name. Empty keeps the standard ablation naming unchanged.
-run: {suffix: "visfreeze_slow"}
+run: {suffix: "visunfreeze"}
 
 warm_start:
   pi_base: models/pi05_base
@@ -17,7 +19,7 @@ warm_start:
 vision:
   dino_model: models/dinov3-vitl16
   image_size: 224
-  freeze: true
+  freeze: false
 
 architecture:
   # Select with this value or

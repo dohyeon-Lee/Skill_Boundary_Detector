@@ -1004,6 +1004,10 @@ def test_categorization_report_has_checkpoint_driven_views(tmp_path: Path) -> No
     assert "FSQ axis ↔ trajectory feature map" in document
     assert "Code × semantic feature heatmap" in document
     assert "function renderTrend()" in document
+    assert "function trendColor(index)" in document
+    assert "function bindTrendInteractions()" in document
+    assert 'class="trend-legend-item"' in document
+    assert 'id="trendStatus"' in document
     assert (tmp_path / "categorization-data.js").is_file()
     assert (tmp_path / "metrics" / CATEGORIZATION.DATA_NAME).is_file()
 

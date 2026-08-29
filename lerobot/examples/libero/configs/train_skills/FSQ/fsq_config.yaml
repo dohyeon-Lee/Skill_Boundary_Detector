@@ -52,7 +52,7 @@ fsq_init_calibration: {enabled: true, gain: 1.0, samples: 0}
 
 # Losses are each configured in one place. pair type: none | contrastive | overlap | js.
 # type=none disables pair loss and names the run pairOFF.
-fsq_pair_loss: {type: contrastive, weight: 0.1, inv_temperature: 5.0}
+fsq_pair_loss: {type: js, weight: 0.1, inv_temperature: 5.0}
 fsq_route_loss: {enabled: true}
 fsq_action_loss: {weight: 1.0}
 fsq_end_loss: {weight: 0.1, target_sigma: 2.0}

@@ -7,21 +7,23 @@ dataset:
   source: libero_90_full_lasthalf_scene # libero_90_full_full | libero_90_full_firsthalf_scene
   # run is inherited from the Stage-1 checkpoint's train_config.json.
 
-# Stage 2 assembles two independently trained frozen sources; architecture is
-# never parsed from run names, only from each checkpoint's config.json.
+# Stage 2 assembles the Stage-1 prior with the frozen base VLM from
+# models/pi05_base. Architecture is never parsed from run names.
 #   stage1_run : cond_gemma (arch0-family) VSA prior. Needs no predictor or
 #                terminator of its own.
-#   predictor  : any Stage-1/skill_aux run with train_skill_predictor=true.
-#                Its frozen VLM provides the cross-attention memory.
+#   predictor  : optional; needed only when training_skill_source=predictor.
+#                Its learned reader/head/LoRA are overlaid on the base VLM.
 # Terminators stay out of Stage 2; attach one at evaluation time.
 warm_start:
-  stage1_run: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask
-  checkpoint: "100000"
-  predictor:
-    # Either run/checkpoint under outputs skillVLA_stage1, or an explicit
-    # pretrained_model directory via path (relative paths resolve from
-    # project_root). The predictor must share the Stage-1 prior's FSQ run.
-    path: outputs_filtered/skillVLA_terminator/bs16_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal/checkpoints/050000/pretrained_model
+  stage1_run: bs32_libero_90_full_firsthalf_scene_FSQ333_termRES_js_2000_pt_pmax15_arch0_skillendmask_visunfreeze
+  # stage1_run: bs32_libero_90_full_firsthalf_scene_FSQ333_termRES_contrastive_2000_pt_pmax15_arch0_skillendmask_visunfreeze
+  # stage1_run: bs32_libero_90_full_firsthalf_scene_FSQ333_termRES_contrastive_2000_pt_arch0_skillendmask_visunfreeze
+  checkpoint: "200000"
+  # Uncomment only for likelihood.training_skill_source: predictor. Resolved as
+  # outputs_root/skillVLA_terminator/<model_dir>/checkpoints/<checkpoint>/pretrained_model.
+  # predictor:
+  #   model_dir: bs16_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal
+  #   checkpoint: "050000"
 
 # likelihood preserves the corrected legacy Stage-2 objective. dsbc freezes the
 # complete Stage-1 VSA and learns only an FRS-supervised initial-noise selector.
@@ -29,17 +31,17 @@ stage2_mode: dsbc  # likelihood | dsbc
 
 likelihood:
   layers: 4
-  # gt is the default; predictor conditions training on the frozen predictor's
-  # skill-start predictions and requires a matching-FSQ predictor.
+  # gt needs only the canonical base VLM. predictor conditions training on a
+  # frozen predictor's skill-start predictions and requires warm_start.predictor.
   training_skill_source: gt
   # last: cross-attend the VLM's final hidden (original design).
   # layer_mix: each block learns a softmax mixture over all 18 VLM layers,
-  # initialized near the final layer. Adds a _layermix run-name tag.
+  # initialized near the final layer. layer_mix is the default name contract;
+  # selecting last adds _vlmlast.
   vlm_memory: layer_mix
   # LR multiplier for the language-pathway bootstrap parameters (gate dense,
   # VLM projection, layer mix) to escape the zero-gate cold start. Diagnosis of
   # the first four runs showed the projection stuck at its random init.
-  # Adds a _glr{n} run-name tag when != 1.
   gate_lr_scale: 10
 
 dsbc:
@@ -53,10 +55,8 @@ dsbc:
   # Seed for the fixed Gaussian selector anchor (not the predicted VSA noise).
   anchor_seed: 0
 
-# Loss-mask override. Omit (or comment out) to inherit the Stage-1 checkpoint's
-# setting; false supervises the full action chunk even past the skill end.
-# Overriding away from the Stage-1 value adds a _nomask/_endmask run-name tag.
-mask_actions_after_skill_end: false
+# Stage 2 always supervises the complete action chunk, including actions after
+# the skill end. mask_actions_after_skill_end is fixed to false in code.
 
 # Optional relative-trajectory auxiliary, identical to Stage 1. The fixed flow
 # loss keeps weight 1.0; this adds weight * prefix cumulative clean-action XYZ
@@ -65,7 +65,8 @@ cumulative_xyz_loss:
   enabled: false
   weight: 0.5
 
-# Auto name: {stage1_run}_{checkpoint}_{gt|predictor}_{batchON|batchOFF}[_cumxyz{weight}][_{suffix}]
+# Auto name: {stage1_run}_{checkpoint}[_dsbc][_shared]
+#            [_cumxyz{weight}][_vlmlast][_{suffix}]
 run: {suffix: "lasthalf"}
 
 training:

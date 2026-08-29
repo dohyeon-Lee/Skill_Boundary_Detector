@@ -20,6 +20,7 @@ from stage1_eval_config import (  # noqa: E402
     _checkpoint_contract,
     _model_entries,
     _relocate_project_path,
+    _resolve_external_terminator_path,
     _validate_external_terminator,
 )
 from train_skills_config import as_bool, as_list, get_value, load_config, print_shell  # noqa: E402
@@ -210,6 +211,7 @@ def _resolve_main_terminator(
         "image_only": "image_only",
         "image-only": "image_only",
     }
+    shares_selected_terminator = requested_variant in shared_aliases
     if requested_variant in fsq_aliases:
         variant = "fsq_initial"
         default_label = "FSQ_INIT"
@@ -236,7 +238,11 @@ def _resolve_main_terminator(
         "end_threshold": 0.5,
         "progress_threshold": 0.95,
     }
-    inherits_shared_rule = variant != "fsq_initial"
+    # A short ``main_terminator`` block means "use the model-selected
+    # terminator".  That remains true when the selected source is the
+    # ``original`` FSQ terminator.  An explicitly requested ``fsq_initial``
+    # remains the independent historical baseline with its own defaults.
+    inherits_shared_rule = shares_selected_terminator
     end_rule = _resolve_end_rule(
         raw,
         field="main_terminator",
@@ -293,38 +299,57 @@ def build_settings(config: dict) -> dict:
     outputs_root = project_root / str(get_value(config, "outputs_root", "outputs"))
     if get_value(config, "terminator_model", None) is not None:
         raise ValueError(
-            "Top-level terminator_model was removed. Set "
-            "models[].terminator_model explicitly for every policy."
+            "Top-level terminator_model was removed. Use model_defaults and "
+            "models[].external_terminator_model, matching stage1_eval."
         )
 
     model_config = dict(config)
     defaults = dict(get_value(config, "model_defaults", {}) or {})
+    predictor_fields = {
+        "skill_source",
+        "external_predictor_model",
+        "external_predictor_checkpoint",
+    }
+    invalid_defaults = sorted(set(defaults) & predictor_fields)
+    if invalid_defaults:
+        raise ValueError(
+            "stage1_skill_eval always replays GT skill occurrences; remove "
+            f"predictor fields from model_defaults: {invalid_defaults}."
+        )
+    raw_models = get_value(config, "models", None)
+    if isinstance(raw_models, list):
+        for model_index, raw_model in enumerate(raw_models):
+            if not isinstance(raw_model, dict):
+                continue
+            invalid = sorted(set(raw_model) & predictor_fields)
+            if invalid:
+                raise ValueError(
+                    "stage1_skill_eval always replays GT skill occurrences; "
+                    f"remove predictor fields from models[{model_index}]: {invalid}."
+                )
     defaults.setdefault("skill_source", "gt")
-    defaults["advance_mode"] = "external"
-    # _model_entries requires a variant even though the authoritative value is
-    # resolved independently from each model's terminator_model below.
+    defaults.setdefault("advance_mode", "external")
+    # _model_entries is shared with stage1_eval; skill_source is injected only
+    # internally because this evaluator never invokes a predictor.
     defaults.setdefault("terminator_variant", "state_image")
     model_config["model_defaults"] = defaults
     entries = _model_entries(model_config)
-    if any(entry["skill_source"] != "gt" for entry in entries):
-        raise ValueError("stage1_skill_eval models always use skill_source=gt.")
-    if any(entry["advance_mode"] != "external" for entry in entries):
-        raise ValueError(
-            "stage1_skill_eval uses an external terminator for every policy; "
-            "models[].advance_mode must be external."
-        )
 
-    raw_models = get_value(config, "models", None)
     if not isinstance(raw_models, list) or not raw_models:
         raw_models = [{}]
 
     resolved = []
     for entry in entries:
-        # Stage1 eval's legacy external-model fields are superseded by the
-        # concise terminator_model block (per model, with a top-level default).
+        # Stage1 skill evaluation always replays the exact GT skill occurrence;
+        # only the stage1_eval-compatible terminator selector is authoritative.
         entry.pop("external_predictor_model_value", None)
-        entry.pop("external_terminator_model_value", None)
-        entry.pop("external_terminator_checkpoint", None)
+        entry.pop("external_predictor_checkpoint", None)
+        terminator_value = str(
+            entry.pop("external_terminator_model_value", "") or ""
+        ).strip()
+        terminator_checkpoint = str(
+            entry.pop("external_terminator_checkpoint", "last") or "last"
+        ).strip()
         model_root = outputs_root / "skillVLA_stage1"
         if entry["previous_checkpoint"]:
             model_root = model_root / "previous"
@@ -337,39 +362,98 @@ def build_settings(config: dict) -> dict:
         )
         contract = _checkpoint_contract(policy_path, project_root)
         raw_model = raw_models[int(entry.get("model_index", 0))]
-        terminator_raw = (
+        legacy_terminator_raw = (
             raw_model.get("terminator_model")
             if isinstance(raw_model, dict)
             else None
         )
-        (
-            terminator_path,
-            terminator_variant,
-            terminator_label,
-            terminator_end_rule,
-        ) = _resolve_terminator_model(
-            terminator_raw,
-            project_root=project_root,
-            outputs_root=outputs_root,
-            field=f"models[{int(entry.get('model_index', 0))}].terminator_model",
-        )
+        model_index = int(entry.get("model_index", 0))
+        if legacy_terminator_raw not in (None, ""):
+            if terminator_value or entry["advance_mode"] != "external":
+                raise ValueError(
+                    f"models[{model_index}] cannot mix legacy terminator_model "
+                    "with stage1_eval's external_terminator_model/advance_mode."
+                )
+            (
+                terminator_path,
+                terminator_variant,
+                terminator_label,
+                terminator_end_rule,
+            ) = _resolve_terminator_model(
+                legacy_terminator_raw,
+                project_root=project_root,
+                outputs_root=outputs_root,
+                field=f"models[{model_index}].terminator_model",
+            )
+            _validate_external_terminator(
+                terminator_path,
+                target_policy=contract["policy"],
+                variant=terminator_variant,
+            )
+        else:
+            terminator_end_rule = _resolve_end_rule(
+                get_value(config, "terminator", {}) or {},
+                field="terminator",
+                default_mode="termination",
+                default_end_threshold=0.5,
+                default_progress_threshold=0.95,
+            )
+            advance_mode = str(entry["advance_mode"])
+            if advance_mode == "external":
+                if not terminator_value:
+                    raise ValueError(
+                        f"models[{model_index}] uses advance_mode=external but "
+                        "no external_terminator_model was set on the entry or "
+                        "in model_defaults."
+                    )
+                terminator_path = _resolve_external_terminator_path(
+                    project_root,
+                    outputs_root,
+                    terminator_value,
+                    terminator_checkpoint,
+                )
+                terminator_variant = str(entry["terminator_variant"])
+                terminator_label = "external"
+                _validate_external_terminator(
+                    terminator_path,
+                    target_policy=contract["policy"],
+                    variant=terminator_variant,
+                )
+            elif advance_mode == "original":
+                terminator_path = Path(contract["fsq_path"])
+                if not terminator_path.is_file():
+                    raise FileNotFoundError(
+                        "advance_mode=original requires the FSQ checkpoint "
+                        f"referenced by the Stage-1 policy: {terminator_path}"
+                    )
+                terminator_variant = "fsq_initial"
+                terminator_label = "original"
+            elif advance_mode == "own":
+                if not contract.get("has_terminator", False):
+                    raise ValueError(
+                        "advance_mode=own but checkpoint has no trained "
+                        f"terminator: {policy_path}"
+                    )
+                terminator_path = policy_path
+                terminator_variant = str(entry["terminator_variant"])
+                terminator_label = "own"
+            else:
+                raise ValueError(
+                    "stage1_skill_eval evaluates a learned terminator and "
+                    "therefore supports advance_mode=external|original|own; "
+                    f"got {advance_mode!r}."
+                )
         main_terminator = _resolve_main_terminator(
             config,
             terminator_variant=terminator_variant,
             terminator_label=terminator_label,
             terminator_end_rule=terminator_end_rule,
         )
-        _validate_external_terminator(
-            terminator_path,
-            target_policy=contract["policy"],
-            variant=terminator_variant,
-        )
         resolved.append(
             {
                 **entry,
                 "policy_path": policy_path,
                 "skill_source": "gt",
-                "advance_mode": "external",
                 "terminator_variant": terminator_variant,
                 # MAIN can use either the pristine FSQ terminator or the same
                 # trained checkpoint as the display terminator. Their stopping
@@ -456,15 +540,18 @@ def build_settings(config: dict) -> dict:
     requested_eval_gpus = int(get_value(config, "eval_num_gpus", 1))
     if requested_eval_gpus <= 0:
         raise ValueError("eval_num_gpus must be positive.")
+    eval_max_workers_per_gpu = int(
+        get_value(config, "eval_max_workers_per_gpu", 4)
+    )
+    if not 1 <= eval_max_workers_per_gpu <= 4:
+        raise ValueError("eval_max_workers_per_gpu must be between 1 and 4.")
     selected_episode_upper_bound = (
         len(episode_ids) if episode_ids else len(task_ids) * episodes_per_task
     )
     # Rollouts are independent for every policy x episode pair.  Cap the
     # Slurm array at that many useful workers instead of at the episode count.
-    eval_num_gpus = min(
-        requested_eval_gpus,
-        len(resolved) * selected_episode_upper_bound,
-    )
+    eval_work_unit_count = len(resolved) * selected_episode_upper_bound
+    eval_num_gpus = min(requested_eval_gpus, eval_work_unit_count)
 
     time_shift_offset = int(get_value(config, "time_shift_offset", 15))
     if time_shift_offset <= 0:
@@ -538,6 +625,8 @@ def build_settings(config: dict) -> dict:
         "episode_selection": episode_selection,
         "episode_exact": True,
         "eval_num_gpus": eval_num_gpus,
+        "eval_max_workers_per_gpu": eval_max_workers_per_gpu,
+        "eval_work_unit_count": eval_work_unit_count,
         "eval_seed": int(get_value(config, "seed", 42)),
         "time_shift_offset": time_shift_offset,
         "n_action_steps": n_action_steps,

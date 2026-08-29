@@ -1,12 +1,12 @@
 """Selectable likelihood or FRS/DSBC Stage 2 on a frozen Cond-Gemma VSA.
 
-Stage 2 assembles two independently trained frozen pieces:
+Stage 2 assembles a frozen prior and the canonical pi0.5 VLM:
 
 * ``stage1_checkpoint_path``: a cond_gemma (Arch0-family) Stage-1 VSA prior.
   It carries no predictor or terminator of its own.
-* ``skill_predictor_checkpoint_path``: any Stage-1/skill_aux checkpoint whose
-  frozen VLM (and trained reader/head) is loaded completely into the predictor
-  module built from that checkpoint's own architecture fields.
+* ``vlm_base_path``: the pi0.5 checkpoint supplying the frozen PaliGemma VLM.
+* optional ``skill_predictor_checkpoint_path``: a Stage-1/skill_aux checkpoint
+  supplying only learned reader/head/LoRA tensors for predicted-skill training.
 
 Likelihood mode trains the four extra blocks, VLM projection, and warm-started
 action head. DSBC instead freezes the complete Stage-1 VSA and trains the same
@@ -26,6 +26,7 @@ import torch.utils.checkpoint
 from torch import Tensor, nn
 
 from lerobot.configs.policies import PreTrainedConfig
+from lerobot.policies.pi05.lora import route_plain_to_base
 from lerobot.policies.pi05.modeling_pi05 import (
     OPENPI_ATTENTION_MASK_VALUE,
     make_att_2d_masks,
@@ -49,7 +50,7 @@ from lerobot.policies.skill_expert.configuration_skill_expert import (
 from lerobot.policies.skill_expert.modeling_skill_expert import (
     _PREDICTOR_CHECKPOINT_CONTRACT_FIELDS,
     SkillExpertPolicy,
-    _load_complete_predictor_parameters,
+    _load_learned_predictor_parameters,
     _load_pretrained_state_dict,
 )
 from lerobot.policies.skillVLA.dataset_skillVLA import (
@@ -68,6 +69,69 @@ from lerobot.utils.constants import (
 from .configuration_skill_vla_stage2 import SkillVLAStage2Config
 
 log = logging.getLogger(__name__)
+
+
+def _load_pi05_base_vlm_parameters(
+    predictor: nn.Module,
+    checkpoint_path: str | Path,
+) -> int:
+    """Load only PaliGemma base tensors from a pi0.5 checkpoint.
+
+    Reader/head parameters remain unused frozen placeholders for GT-skill
+    Stage 2. If the target module contains skill LoRA, plain pi0.5 projection
+    tensors are routed into the wrapped ``base`` slots before the learned
+    adapter is optionally overlaid from a predictor checkpoint.
+    """
+    path = Path(str(checkpoint_path or ""))
+    loaded = _load_pretrained_state_dict(
+        path,
+        {},
+        architecture=COND_GEMMA_ARCHITECTURE,
+        include_predictor_vlm=True,
+    )
+    if loaded is None:
+        raise FileNotFoundError(f"pi0.5 base VLM weights not found: {path}")
+    state_dict, is_pi05 = loaded
+    if not is_pi05:
+        raise ValueError(f"VLM base must be a pi0.5 checkpoint: {path}")
+
+    prefix = "model.skill_predictor."
+    source = {
+        key.removeprefix(prefix): value
+        for key, value in state_dict.items()
+        if key.startswith(prefix)
+    }
+    target_state = predictor.state_dict()
+    source, routed = route_plain_to_base(source, set(target_state))
+    expected = {
+        key
+        for key in target_state
+        if key.startswith("vlm.") and ".adapters." not in key
+    }
+    missing = expected - set(source)
+    unexpected = set(source) - expected
+    if missing or unexpected:
+        raise RuntimeError(
+            "pi0.5 base VLM tensor mismatch: "
+            f"missing={sorted(missing)}, unexpected={sorted(unexpected)}"
+        )
+    with torch.no_grad():
+        for key in sorted(expected):
+            value = source[key]
+            target = target_state[key]
+            if value.shape != target.shape:
+                raise RuntimeError(
+                    f"pi0.5 base VLM shape mismatch for {key}: "
+                    f"checkpoint={tuple(value.shape)}, model={tuple(target.shape)}"
+                )
+            target.copy_(value.to(device=target.device, dtype=target.dtype))
+    log.info(
+        "Stage 2 <- frozen pi0.5 base VLM %s: loaded=%d, LoRA-routed=%d.",
+        path,
+        len(expected),
+        routed,
+    )
+    return len(expected)
 
 
 class GemmaCrossAttention(nn.Module):
@@ -1131,7 +1195,9 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
         self.model.to(device=config.device, dtype=self._torch_dtype())
         if initialize_from_sources:
             self._initialize_from_stage1(config.stage1_checkpoint_path)
-            self._initialize_predictor(config.skill_predictor_checkpoint_path)
+            self._initialize_base_vlm(config.vlm_base_path)
+            if str(config.skill_predictor_checkpoint_path or "").strip():
+                self._initialize_predictor(config.skill_predictor_checkpoint_path)
         self.model._freeze_stage1_prior()
         self.reset()
 
@@ -1319,6 +1385,13 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
                 self.model.action_out_proj.weight.detach().float().cpu().clone()
             )
 
+    def _initialize_base_vlm(self, checkpoint_path: str | Path | None) -> None:
+        predictor = self.model.skill_predictor
+        if predictor is None:
+            raise RuntimeError("Stage 2 has no frozen VLM module to initialize.")
+        _load_pi05_base_vlm_parameters(predictor, checkpoint_path or "")
+        predictor.requires_grad_(False).eval()
+
     def _initialize_predictor(self, checkpoint_path: str | Path | None) -> None:
         predictor = self.model.skill_predictor
         if predictor is None:
@@ -1345,10 +1418,10 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
             raise ValueError(
                 "Predictor module contract mismatch: " + "; ".join(mismatches)
             )
-        loaded = _load_complete_predictor_parameters(predictor, path)
+        loaded = _load_learned_predictor_parameters(predictor, path)
         predictor.requires_grad_(False).eval()
         log.info(
-            "Stage 2 <- frozen predictor %s: loaded %d tensors.",
+            "Stage 2 <- frozen predictor overlay %s: loaded %d learned tensors.",
             path,
             loaded,
         )

@@ -150,7 +150,10 @@ def test_policy_episode_units_group_each_workers_models() -> None:
     ) == 9
 
 
-def test_fsq_initial_is_attached_as_main_terminator(tmp_path: Path, monkeypatch) -> None:
+@pytest.mark.parametrize("advance_mode", ["external", "original"])
+def test_fsq_initial_is_attached_as_main_terminator(
+    tmp_path: Path, monkeypatch, advance_mode: str
+) -> None:
     fsq_path = tmp_path / "FSQ.pt"
     fsq_path.touch()
     action_policy = SimpleNamespace(model=nn.Linear(1, 1))
@@ -169,7 +172,7 @@ def test_fsq_initial_is_attached_as_main_terminator(tmp_path: Path, monkeypatch)
     result = MODULE._build_context(
         {
             "label": "POLICY",
-            "advance_mode": "external",
+            "advance_mode": advance_mode,
             "external_skill_model": str(fsq_path),
             "external_skill_model_variant": "fsq_initial",
         },
@@ -179,6 +182,7 @@ def test_fsq_initial_is_attached_as_main_terminator(tmp_path: Path, monkeypatch)
 
     assert result is context
     assert base_specs[0]["advance_mode"] == "gt"
+    assert base_specs[0]["terminator_variant"] == "state_image"
     assert isinstance(wrapper.terminator, MODULE.IndependentTerminator)
     assert wrapper.terminator.variant == "fsq_initial"
     assert wrapper.advance_mode == "external"

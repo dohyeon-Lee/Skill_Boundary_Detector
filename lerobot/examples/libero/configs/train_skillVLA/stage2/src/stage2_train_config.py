@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """Resolve clean BayesVLA-style Stage-2 training settings.
 
-Stage 2 assembles two independently trained frozen sources:
+Stage 2 assembles a frozen prior and the canonical pi0.5 VLM:
 
 * ``warm_start.stage1_run``: a cond_gemma (arch0-family) Stage-1 prior. It
   needs neither predictor nor terminator.
-* ``warm_start.predictor``: any Stage-1/skill_aux run whose config records
-  ``train_skill_predictor=true``; its frozen VLM provides the cross-attention
-  memory and its architecture fields are inherited verbatim.
+* ``models/pi05_base``: the frozen PaliGemma VLM that provides cross-attention
+  memory. No trained predictor is needed for GT-skill training.
+* optional ``warm_start.predictor``: a trained predictor whose reader/head/LoRA
+  are overlaid only when predicted skill codes are requested.
 
 Terminators stay out of Stage 2 entirely; evaluation attaches one externally.
 """
@@ -35,7 +36,7 @@ _CONDITIONING_ROUTES = {
     "visiononly_cond",
 }
 
-# Module-shape fields adopted verbatim from the predictor checkpoint's config.
+# Module-shape fields adopted verbatim from an optional predictor checkpoint.
 _PREDICTOR_MODULE_FIELDS = (
     "skill_predictor_vlm_variant",
     "skill_predictor_image_size",
@@ -52,6 +53,25 @@ _PREDICTOR_MODULE_FIELDS = (
     "skill_predictor_deadzone_frac",
     "tokenizer_max_length",
 )
+
+_BASE_VLM_MODULE_CONFIG = {
+    "skill_predictor_vlm_variant": "gemma_2b",
+    "skill_predictor_image_size": 224,
+    "skill_predictor_reader_tokens": 4,
+    "skill_predictor_reader_depth": 2,
+    "skill_predictor_reader_heads": 8,
+    "skill_predictor_all_layers": False,
+    "skill_predictor_detach_vlm": True,
+    "skill_predictor_lora": False,
+    "skill_predictor_lora_targets": "q,k,v,o",
+    "skill_predictor_lora_rank": 8,
+    "skill_predictor_lora_alpha": 16.0,
+    "skill_predictor_lora_dropout": 0.0,
+    "skill_predictor_deadzone_frac": 0.0,
+    "skill_predictor_attend_image": True,
+    "skill_predictor_attend_language": True,
+    "tokenizer_max_length": 200,
+}
 
 
 def _at(config: dict, *path: str, default=None):
@@ -122,7 +142,7 @@ def _require_stage1_prior_contract(config: dict, checkpoint: Path) -> None:
     config["conditioning_route"] = conditioning_route
 
 
-def _require_predictor_contract(config: dict, checkpoint: Path) -> None:
+def _require_predictor_source_contract(config: dict, checkpoint: Path) -> None:
     if config.get("type") not in {"skill_expert", "skill_aux"}:
         raise ValueError(
             "Predictor source must be a skill_expert or skill_aux checkpoint, got "
@@ -130,19 +150,20 @@ def _require_predictor_contract(config: dict, checkpoint: Path) -> None:
         )
     if not as_bool(config.get("train_skill_predictor", False)):
         raise ValueError(
-            f"Predictor run has no trained predictor (train_skill_predictor=false): {checkpoint}"
+            "Predictor-source run has no trained predictor "
+            f"(train_skill_predictor=false): {checkpoint}"
         )
     if not (
         as_bool(config.get("skill_predictor_attend_image", False))
         and as_bool(config.get("skill_predictor_attend_language", False))
     ):
         raise ValueError(
-            "Stage 2 needs both image and language tokens in the frozen VLM memory."
+            "Stage 2 predictor must attend both image and language tokens."
         )
     missing = [field for field in _PREDICTOR_MODULE_FIELDS if field not in config]
     if missing:
         raise ValueError(
-            f"Predictor checkpoint config is missing module fields {missing}: {checkpoint}"
+            f"Predictor-source config is missing module fields {missing}: {checkpoint}"
         )
 
 
@@ -169,11 +190,16 @@ def _stage1_dataset_run(checkpoint: Path) -> str:
 
 
 def _pretrained_model_dir(
-    outputs_root: Path, run: str, checkpoint: str, label: str
+    outputs_root: Path,
+    run: str,
+    checkpoint: str,
+    label: str,
+    *,
+    group: str = "skillVLA_stage1",
 ) -> Path:
     path = (
         outputs_root
-        / "skillVLA_stage1"
+        / group
         / run
         / "checkpoints"
         / checkpoint
@@ -184,6 +210,49 @@ def _pretrained_model_dir(
     if not (path / "model.safetensors").is_file():
         raise FileNotFoundError(f"{label} weights not found: {path / 'model.safetensors'}")
     return path
+
+
+def _path_component(value: object, label: str) -> str:
+    text = str(value or "").strip()
+    if not text or text in {".", ".."} or Path(text).name != text:
+        raise ValueError(f"{label} must be one non-empty directory component, got {text!r}.")
+    return text
+
+
+def _optional_predictor_source_dir(outputs_root: Path, config: dict) -> Path | None:
+    legacy = _at(config, "warm_start", "vlm_source", default=None)
+    if legacy is not None:
+        raise ValueError(
+            "warm_start.vlm_source is no longer needed. Stage 2 loads the base "
+            "VLM directly; use optional warm_start.predictor only when "
+            "likelihood.training_skill_source=predictor."
+        )
+    source = _at(config, "warm_start", "predictor", default=None)
+    if source is None:
+        return None
+    if not isinstance(source, dict):
+        raise ValueError(
+            "warm_start.predictor must be a mapping with model_dir and checkpoint."
+        )
+    unknown = sorted(set(source).difference({"model_dir", "checkpoint"}))
+    if unknown:
+        raise ValueError(
+            "warm_start.predictor supports only model_dir and checkpoint, got: "
+            + ", ".join(unknown)
+        )
+    model_dir = _path_component(
+        source.get("model_dir"), "warm_start.predictor.model_dir"
+    )
+    checkpoint = _path_component(
+        source.get("checkpoint"), "warm_start.predictor.checkpoint"
+    )
+    return _pretrained_model_dir(
+        outputs_root,
+        model_dir,
+        checkpoint,
+        "Predictor source",
+        group="skillVLA_terminator",
+    )
 
 
 def build_settings(config: dict) -> dict:
@@ -211,54 +280,44 @@ def build_settings(config: dict) -> dict:
     stage1_config = _read_json(stage1_path / "config.json", "Stage-1 policy config")
     _require_stage1_prior_contract(stage1_config, stage1_path)
 
-    predictor_path_setting = str(
-        _at(config, "warm_start", "predictor", "path", default="") or ""
-    ).strip()
-    if predictor_path_setting:
-        predictor_path = _local_path(project_root, predictor_path_setting)
-        for name in ("config.json", "model.safetensors"):
-            if not (predictor_path / name).is_file():
-                raise FileNotFoundError(
-                    f"Predictor {name} not found: {predictor_path / name}"
-                )
-    else:
-        predictor_run = str(
-            _at(config, "warm_start", "predictor", "run", default="") or ""
-        ).strip()
-        if not predictor_run:
-            raise ValueError(
-                "warm_start.predictor.run (or .path) must name the run providing "
-                "the trained frozen-VLM skill predictor."
-            )
-        predictor_checkpoint = str(
-            _at(config, "warm_start", "predictor", "checkpoint", default="last")
-        ).strip()
-        predictor_path = _pretrained_model_dir(
-            outputs_root, predictor_run, predictor_checkpoint, "Predictor"
-        )
-    predictor_config = _read_json(predictor_path / "config.json", "Predictor policy config")
-    _require_predictor_contract(predictor_config, predictor_path)
-
     stage1_levels = [int(value) for value in stage1_config["skill_fsq_levels"]]
-    predictor_levels = [int(value) for value in predictor_config["skill_fsq_levels"]]
-    if predictor_levels != stage1_levels:
-        raise ValueError(
-            f"Predictor FSQ levels {predictor_levels} do not match Stage 1 {stage1_levels}."
-        )
     skill_source = str(
         _at(config, "likelihood", "training_skill_source", default="gt")
     ).strip().lower()
     if skill_source not in {"gt", "predictor"}:
         raise ValueError("likelihood.training_skill_source must be gt or predictor.")
-    stage1_fsq_run = _fsq_run_tag(stage1_config, "Stage-1")
-    predictor_fsq_run = _fsq_run_tag(predictor_config, "Predictor")
-    if predictor_fsq_run != stage1_fsq_run:
+    predictor_path = _optional_predictor_source_dir(outputs_root, config)
+    if skill_source == "predictor" and predictor_path is None:
         raise ValueError(
-            "Predictor FSQ run does not match the Stage-1 prior: "
-            f"stage1={stage1_fsq_run!r}, predictor={predictor_fsq_run!r}. "
-            "Codes with the same index mean different skills across FSQ runs, "
-            "so the assembled policy would predict skills in the wrong space."
+            "likelihood.training_skill_source=predictor requires "
+            "warm_start.predictor with model_dir and checkpoint."
         )
+
+    predictor_config = dict(_BASE_VLM_MODULE_CONFIG)
+    if predictor_path is not None:
+        predictor_config = _read_json(
+            predictor_path / "config.json", "Predictor-source policy config"
+        )
+        _require_predictor_source_contract(predictor_config, predictor_path)
+        predictor_levels = [
+            int(value) for value in predictor_config["skill_fsq_levels"]
+        ]
+        if predictor_levels != stage1_levels:
+            raise ValueError(
+                f"Predictor FSQ levels {predictor_levels} do not match "
+                f"Stage 1 {stage1_levels}."
+            )
+
+    stage1_fsq_run = _fsq_run_tag(stage1_config, "Stage-1")
+    if predictor_path is not None:
+        predictor_fsq_run = _fsq_run_tag(predictor_config, "Predictor")
+        if predictor_fsq_run != stage1_fsq_run:
+            raise ValueError(
+                "Predictor FSQ run does not match the Stage-1 prior: "
+                f"stage1={stage1_fsq_run!r}, predictor={predictor_fsq_run!r}. "
+                "Codes with the same index mean different skills across FSQ runs, "
+                "so the assembled policy would predict skills in the wrong space."
+            )
 
     source = str(_at(config, "dataset", "source")).strip()
     if not source:
@@ -288,18 +347,22 @@ def build_settings(config: dict) -> dict:
     dino_path = _local_path(
         project_root, stage1_config["dino_model_path"], marker="models"
     )
-    tokenizer_path = _local_path(
-        project_root, predictor_config["tokenizer_path"], marker="models"
-    )
+    vlm_base_path = project_root / "models" / "pi05_base"
+    tokenizer_path = project_root / "models" / "paligemma-3b-pt-224-tokenizer"
     fsq_path = _local_path(
         project_root, stage1_config["fsq_path"], marker=dataset_root.name
     )
     for path, label in (
         (dino_path, "DINO model"),
+        (vlm_base_path, "pi0.5 base VLM"),
         (tokenizer_path, "PaliGemma tokenizer"),
     ):
         if not path.exists():
             raise FileNotFoundError(f"Inherited {label} not found: {path}")
+    if not (vlm_base_path / "model.safetensors").is_file():
+        raise FileNotFoundError(
+            f"pi0.5 base VLM weights not found: {vlm_base_path / 'model.safetensors'}"
+        )
     if not fsq_path.is_file():
         raise FileNotFoundError(f"Inherited FSQ checkpoint not found: {fsq_path}")
 
@@ -378,13 +441,12 @@ def build_settings(config: dict) -> dict:
         raise ValueError(
             "cumulative_xyz_loss is unavailable in DSBC mode; DSBC trains on FRS noise."
         )
-    stage1_skill_end_mask = as_bool(
-        stage1_config.get("mask_actions_after_skill_end", False)
-    )
-    mask_override = config.get("mask_actions_after_skill_end")
-    mask_actions_after_skill_end = (
-        stage1_skill_end_mask if mask_override is None else as_bool(mask_override)
-    )
+    if as_bool(config.get("mask_actions_after_skill_end", False)):
+        raise ValueError(
+            "Stage 2 fixes mask_actions_after_skill_end=false and supervises "
+            "the complete action chunk."
+        )
+    mask_actions_after_skill_end = False
     batch_size = int(
         _at(config, "training", "dataloader", "batch_size", default=16)
     )
@@ -431,20 +493,16 @@ def build_settings(config: dict) -> dict:
             "same_skill_different_task needs dataloader.batch_size >= 4."
         )
     suffix = str(_at(config, "run", "suffix", default="")).strip().strip("_")
-    batch_tag = "batchON" if same_skill_batch_enabled else "batchOFF"
-    run_name = f"{stage1_run}_{stage1_checkpoint}_{skill_source}_{batch_tag}"
+    run_name = f"{stage1_run}_{stage1_checkpoint}"
     if stage2_mode == "dsbc":
-        run_name += f"_dsbc_{dsbc_noise_output_mode}_frs{dsbc_frs_num_steps}"
-    if mask_actions_after_skill_end != stage1_skill_end_mask:
-        # Keep overridden-mask runs out of the inherited-mask output directory.
-        run_name += "_nomask" if not mask_actions_after_skill_end else "_endmask"
+        run_name += "_dsbc"
+        if dsbc_noise_output_mode != "per_step":
+            run_name += f"_{dsbc_noise_output_mode}"
     if cumulative_xyz_loss_enabled:
         cumulative_weight_label = f"{cumulative_xyz_loss_weight:g}".replace(".", "p")
         run_name += f"_cumxyz{cumulative_weight_label}"
-    if likelihood_vlm_memory == "layer_mix":
-        run_name += "_layermix"
-    if likelihood_gate_lr_scale != 1.0:
-        run_name += f"_glr{likelihood_gate_lr_scale:g}".replace(".", "p")
+    if likelihood_vlm_memory != "layer_mix":
+        run_name += f"_vlm{likelihood_vlm_memory}"
     if suffix:
         run_name += f"_{suffix}"
 
@@ -456,7 +514,8 @@ def build_settings(config: dict) -> dict:
         "skillvla_dataset_dir": dataset_dir,
         "repo_id": f"dohyeon/{source}",
         "stage1_checkpoint_path": stage1_path,
-        "predictor_checkpoint_path": predictor_path,
+        "vlm_base_path": vlm_base_path,
+        "predictor_checkpoint_path": predictor_path or "",
         "dino_model_path": dino_path,
         "tokenizer_path": tokenizer_path,
         "fsq_path": fsq_path,

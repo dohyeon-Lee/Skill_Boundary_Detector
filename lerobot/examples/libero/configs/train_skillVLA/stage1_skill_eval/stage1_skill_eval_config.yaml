@@ -10,30 +10,36 @@ outputs_root: outputs_filtered
 
 model_defaults:
   previous: false
-# Each model owns both its policy checkpoint and the terminator trained for
-# that model's FSQ space. There is deliberately no top-level default.
+  checkpoint: "150000"
+  advance_mode: external           # external | original | own
+  terminator_variant: state_image  # state_image | image_only
+  external_terminator_checkpoint: "100000"
+
+# This block intentionally matches stage1_eval. Skill-predictor fields are
+# omitted because stage1_skill_eval always supplies the exact GT skill code.
+# Set external_terminator_model: original to use the terminator in FSQ.pt.
 models:
   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_norm_action01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask_visunfreeze
-    checkpoint: "350000"
-    label: action_unfrez
-    terminator_model: {label: DINO_unfrez, model_dir: bs32_FSQ333_norm_action01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_libero_90_full_firsthalf_scene_terminator_DINO_unfrez, checkpoint: "100000", end_threshold: 0.5}
-  
-  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_norm_action01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask_visfreeze
-    checkpoint: "350000"
-    label: action_frez
-    terminator_model: {label: DINO_unfrez, model_dir: bs32_FSQ333_norm_action01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_libero_90_full_firsthalf_scene_terminator_DINO_unfrez, checkpoint: "100000", end_threshold: 0.5}
+    label: action_js_15
+    external_terminator_model: bs32_FSQ333_norm_action01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_libero_90_full_firsthalf_scene_terminator_DINO_unfrez
 
-  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_zero01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask_visunfreeze
-    checkpoint: "350000"
-    label: zero_unfrez
-    terminator_model: {label: DINO_unfrez, model_dir: bs32_FSQ333_zero01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_libero_90_full_firsthalf_scene_terminator_DINO_unfrez, checkpoint: "100000", end_threshold: 0.5}
+  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_termRES_js_2000_pt_pmax15_arch0_skillendmask_visunfreeze
+    label: action_js_term_15
+    external_terminator_model: original
 
-  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_zero01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask_visfreeze
-    checkpoint: "350000"
-    label: zero_frez
-    terminator_model: {label: DINO_unfrez, model_dir: bs32_FSQ333_zero01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_libero_90_full_firsthalf_scene_terminator_DINO_unfrez, checkpoint: "100000", end_threshold: 0.5}
-output_name: "action_zero_350k"
+  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_termRES_contrastive_2000_pt_pmax15_arch0_skillendmask_visunfreeze
+    label: cont_term_15
+    external_terminator_model: original
 
+  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_termRES_contrastive_2000_pt_arch0_skillendmask_visunfreeze
+    label: cont_term
+    external_terminator_model: original
+output_name: "js_vs_cont_vs_addterm_vs_pmax15"
+
+terminator:
+  end_mode: termination
+  end_threshold: 0.5
+  progress_threshold: 0.95
 
 main_terminator:
   max_skill_length_scale: 1.50
@@ -54,7 +60,8 @@ seed: 42
 
 time_shift_offset: 15
 n_action_steps: 5
-eval_num_gpus: 10
+eval_num_gpus: 5                  # upper bound; unused GPUs are not requested
+eval_max_workers_per_gpu: 4  # pack at most four independent eval workers per GPU
 
 video: {frame_stride: 2, fps: 10}
 

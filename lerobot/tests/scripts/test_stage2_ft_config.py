@@ -35,6 +35,7 @@ def _config(tmp_path: Path) -> tuple[dict, dict[str, Path]]:
     current = {
         "dino": tmp_path / "models/dinov3-vitl16",
         "tokenizer": tmp_path / "models/tokenizer",
+        "vlm_base": tmp_path / "models/pi05_base",
         "stage1": tmp_path / "outputs/skillVLA_stage1/prior/checkpoints/last/pretrained_model",
         "predictor": tmp_path
         / "outputs/skillVLA_terminator/predictor/checkpoints/last/pretrained_model",
@@ -62,6 +63,7 @@ def _config(tmp_path: Path) -> tuple[dict, dict[str, Path]]:
             "max_action_dim": 32,
             "dino_model_path": str(legacy_root / "models/dinov3-vitl16"),
             "tokenizer_path": str(legacy_root / "models/tokenizer"),
+            "vlm_base_path": str(legacy_root / "models/pi05_base"),
             "stage1_checkpoint_path": str(
                 legacy_root
                 / "outputs/skillVLA_stage1/prior/checkpoints/last/pretrained_model"
@@ -121,6 +123,7 @@ def test_ft_rebases_all_checkpoint_owned_project_paths(tmp_path: Path) -> None:
 
     assert settings["policy_dino_model_path"] == str(current["dino"])
     assert settings["policy_tokenizer_path"] == str(current["tokenizer"])
+    assert settings["policy_vlm_base_path"] == str(current["vlm_base"])
     assert settings["policy_stage1_checkpoint_path"] == str(current["stage1"])
     assert settings["policy_skill_predictor_checkpoint_path"] == str(
         current["predictor"]

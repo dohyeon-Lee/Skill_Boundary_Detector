@@ -52,6 +52,8 @@ from skill_data import SkillEvaluationDataset, SkillOccurrence  # noqa: E402
 
 log = logging.getLogger(__name__)
 
+_INLINE_CUDA_GUARD_EXIT_CODE = 86
+
 BRANCHES = (
     ("gt", "GT actions", "#2e7d32"),
     ("policy", "Policy · exact start", "#1565c0"),
@@ -60,6 +62,28 @@ BRANCHES = (
     ("policy_late", "Policy · late start", "#8e24aa"),
 )
 ALT_NOISE_SEED_OFFSET = 1_000_003
+
+
+def _run_inline_cuda_guard() -> None:
+    """Validate CUDA in this evaluator process, avoiding a second torch import."""
+    if os.environ.get("LEROBOT_INLINE_CUDA_GUARD", "0") != "1":
+        return
+    if torch.cuda.is_available():
+        return
+    marker = os.environ.get("LEROBOT_CUDA_GUARD_FAILURE_MARKER", "")
+    if marker:
+        Path(marker).write_text("torch.cuda.is_available()=false\n", encoding="utf-8")
+    print(
+        "GPU GUARD: torch.cuda.is_available() is false; refusing CPU fallback.",
+        flush=True,
+    )
+    raise SystemExit(_INLINE_CUDA_GUARD_EXIT_CODE)
+
+
+def _mark_startup_ready() -> None:
+    marker = os.environ.get("LEROBOT_STARTUP_READY_MARKER", "")
+    if marker:
+        Path(marker).touch()
 
 
 def _as_bool(value: object) -> bool:
@@ -222,7 +246,7 @@ def _display_reuses_main(spec: dict, display_model: dict) -> bool:
 def _build_context(spec: dict, cfg, device: torch.device) -> dict:
     """Build evaluation context, including the raw-FSQ MAIN special case."""
     use_fsq_initial_main = (
-        str(spec.get("advance_mode", "")) == "external"
+        str(spec.get("advance_mode", "")) in {"external", "original"}
         and str(spec.get("external_skill_model_variant", "checkpoint"))
         == "fsq_initial"
     )
@@ -234,6 +258,9 @@ def _build_context(spec: dict, cfg, device: torch.device) -> dict:
     # then attach the pristine terminator reconstructed directly from FSQ.pt.
     base_spec = dict(spec)
     base_spec["advance_mode"] = "gt"
+    # The shared loader validates this field before it examines advance_mode.
+    # It is unused in GT mode, but must still carry one of its public variants.
+    base_spec["terminator_variant"] = "state_image"
     context = _build_stage1_context(base_spec, cfg, device)
     _ensure_skill_runtime_steps(
         context["preprocessor"],
@@ -1301,6 +1328,8 @@ def _worker_model_episode_units(
 
 @parser.wrap()
 def eval_main(cfg: EvalPipelineConfig):
+    _run_inline_cuda_guard()
+    _mark_startup_ready()
     specs = json.loads(os.environ.get("MODELS_JSON", "") or "[]")
     if not specs:
         raise ValueError("MODELS_JSON is empty; resolve stage1_skill_eval_config.yaml first.")

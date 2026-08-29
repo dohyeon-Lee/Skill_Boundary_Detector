@@ -18,11 +18,10 @@ class SkillVLAStage2Config(SkillExpertConfig):
     """Frozen Stage-1 prior with likelihood-refinement or DSBC Stage-2 blocks.
 
     The Stage-1 prior checkpoint carries no predictor or terminator of its own.
-    The frozen VLM memory comes from a separate ``skill_predictor_checkpoint_path``
-    (any Stage-1/skill_aux run with a trained predictor); the module fields
-    describing that predictor are inherited from that checkpoint's config.
-    Terminators are attached externally at evaluation time and are never part
-    of Stage-2 training.
+    Frozen VLM memory comes directly from the canonical pi0.5 base checkpoint.
+    ``skill_predictor_checkpoint_path`` is optional and contributes only the
+    learned reader/head/LoRA needed when predicted skill codes are requested.
+    Terminators are attached externally at evaluation time.
     """
 
     model_type: str = "skill_vla_stage2"
@@ -32,6 +31,7 @@ class SkillVLAStage2Config(SkillExpertConfig):
     # enabled); Stage 2 never trains it.
     train_skill_predictor: bool = True
     stage1_checkpoint_path: str | None = None
+    vlm_base_path: str = "models/pi05_base"
     # likelihood preserves the original Stage-2 flow-refinement objective.
     # dsbc learns an initial-noise selector from online FRS targets while the
     # complete Stage-1 VSA, including its action head, remains frozen.
@@ -61,10 +61,16 @@ class SkillVLAStage2Config(SkillExpertConfig):
         super().__post_init__()
         if not str(self.stage1_checkpoint_path or "").strip():
             raise ValueError("Stage 2 requires stage1_checkpoint_path.")
-        if not str(self.skill_predictor_checkpoint_path or "").strip():
+        if not str(self.vlm_base_path or "").strip():
             raise ValueError(
-                "Stage 2 requires skill_predictor_checkpoint_path; the frozen "
-                "VLM memory is assembled separately from the Stage-1 prior."
+                "Stage 2 requires vlm_base_path for its frozen VLM memory."
+            )
+        if self.training_skill_source == "predictor" and not str(
+            self.skill_predictor_checkpoint_path or ""
+        ).strip():
+            raise ValueError(
+                "training_skill_source='predictor' requires "
+                "skill_predictor_checkpoint_path."
             )
         if self.architecture != COND_GEMMA_ARCHITECTURE:
             raise ValueError(
@@ -82,6 +88,11 @@ class SkillVLAStage2Config(SkillExpertConfig):
                 "Stage 2 matches Stage 1: action_loss_mode is fixed to 'flow'; "
                 "configure only cumulative_xyz_loss_enabled and "
                 "cumulative_xyz_loss_weight."
+            )
+        if self.mask_actions_after_skill_end:
+            raise ValueError(
+                "Stage 2 fixes mask_actions_after_skill_end=False and "
+                "supervises the complete action chunk."
             )
         if self.training_skill_source not in {"gt", "predictor"}:
             raise ValueError(

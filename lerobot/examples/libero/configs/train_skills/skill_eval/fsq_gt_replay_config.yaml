@@ -44,6 +44,12 @@ fsq_eval_models:
   - {"model_name": "22222_cont + term", "run_name": "FSQ22222_norm_action01_recon_termRES__contrastiveON_routeON_loss"}
   - {"model_name": "333_cont", "run_name": "norm_action01_recon_only__contrastiveON_routeON_loss"}
   - {"model_name": "333_cont + term", "run_name": "333_norm_action01_recon_termRES__contrastiveON_routeON_loss__term01_visunfrez"}
+  - {"model_name": "3333_js", "run_name": "FSQ3333_norm_action01_recon_only__jsON_routeON_loss"}
+  - {"model_name": "3333_js + term", "run_name": ""}
+  - {"model_name": "22222_js", "run_name": "FSQ22222_norm_action01_recon_only__jsON_routeON_loss"}
+  - {"model_name": "22222_js + term", "run_name": ""}
+  - {"model_name": "333_js", "run_name": "norm_action01_recon_only__jsON_routeON_loss"}
+  - {"model_name": "333_js + term", "run_name": "norm_action01_recon_termRES__jsON_routeON_loss__vis_unfreeze_term01"}
 
 
 fsq_eval_checkpoint: [50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1500, 2000]

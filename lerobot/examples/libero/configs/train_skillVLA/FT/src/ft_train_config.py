@@ -182,6 +182,12 @@ def build_settings(config: dict) -> dict:
         field="tokenizer_path",
         require_local=True,
     )
+    policy_vlm_base_path = _relocate_checkpoint_reference(
+        project_root,
+        parent.get("vlm_base_path", "models/pi05_base"),
+        field="vlm_base_path",
+        require_local=True,
+    )
     policy_stage1_checkpoint_path = _relocate_checkpoint_reference(
         project_root,
         parent.get("stage1_checkpoint_path"),
@@ -284,6 +290,7 @@ def build_settings(config: dict) -> dict:
         # them. Export rebased overrides so both fresh FT and resume are portable.
         "policy_dino_model_path": policy_dino_model_path,
         "policy_tokenizer_path": policy_tokenizer_path,
+        "policy_vlm_base_path": policy_vlm_base_path,
         "policy_stage1_checkpoint_path": policy_stage1_checkpoint_path,
         "policy_skill_predictor_checkpoint_path": policy_skill_predictor_checkpoint_path,
         "policy_fsq_path": parent_fsq,
