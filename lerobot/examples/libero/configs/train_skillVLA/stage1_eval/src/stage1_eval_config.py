@@ -732,7 +732,25 @@ def _model_entries(config: dict) -> list[dict]:
             raw.get("checkpoint", default_checkpoints),
             field="models[].checkpoint",
         )
-        skill_source = str(raw.get("skill_source", default_skill_source)).lower()
+        # Role-specific model fields are selectors as well as paths.  This keeps
+        # per-panel YAML concise: naming an external predictor/terminator opts
+        # that role into external mode unless the entry explicitly says
+        # otherwise.  ``original`` is a terminator-only sentinel which follows
+        # the FSQ checkpoint recorded by this Stage-1 model.
+        explicit_predictor = str(
+            raw.get("external_predictor_model", "") or ""
+        ).strip()
+        explicit_terminator = str(
+            raw.get("external_terminator_model", "") or ""
+        ).strip()
+        original_terminator = explicit_terminator.lower() == "original"
+
+        skill_source = str(
+            raw.get(
+                "skill_source",
+                "external" if explicit_predictor else default_skill_source,
+            )
+        ).lower()
         aliases = {
             "gt": "gt",
             "oracle": "gt",
@@ -745,7 +763,14 @@ def _model_entries(config: dict) -> list[dict]:
         skill_source = aliases.get(skill_source, "")
         if not skill_source:
             raise ValueError("models[].skill_source must be external|own|gt.")
-        advance_mode = str(raw.get("advance_mode", default_advance)).lower()
+        inferred_advance = (
+            "original"
+            if original_terminator
+            else "external"
+            if explicit_terminator
+            else default_advance
+        )
+        advance_mode = str(raw.get("advance_mode", inferred_advance)).lower()
         advance_aliases = {
             "gt": "gt",
             "own": "own",
@@ -757,6 +782,11 @@ def _model_entries(config: dict) -> list[dict]:
         if not advance_mode:
             raise ValueError(
                 "models[].advance_mode must be external|own|original|gt."
+            )
+        if original_terminator and advance_mode != "original":
+            raise ValueError(
+                "external_terminator_model=original conflicts with explicit "
+                f"advance_mode={advance_mode!r}; omit advance_mode or set it to original."
             )
         variant_aliases = {
             "normal": "state_image",
@@ -818,7 +848,9 @@ def _model_entries(config: dict) -> list[dict]:
                     field="models[].external_predictor_checkpoint",
                 ),
                 "external_terminator_model_value": str(
-                    raw.get(
+                    ""
+                    if original_terminator
+                    else raw.get(
                         "external_terminator_model",
                         raw.get(
                             "external_skill_model", default_external_terminator_model

@@ -47,8 +47,20 @@ for RUN_NAME in "${RUN_NAMES[@]}"; do
   # multi-minute torch/lerobot import is paid once per chunk instead of once per
   # checkpoint.
   CHUNK="${EVAL_CHECKPOINTS_PER_JOB}"
-  CHUNK_COUNT=$(( (FSQ_CHECKPOINT_COUNT + CHUNK - 1) / CHUNK ))
-  TOTAL_JOBS=$((CHUNK_COUNT * EVAL_WORKER_COUNT))
+  PENDING_COUNT="${#FSQ_CHECKPOINTS[@]}"
+  if [ "${PENDING_COUNT}" -ne "${FSQ_PENDING_CHECKPOINT_COUNT}" ]; then
+    echo "Pending checkpoint count mismatch: list=${PENDING_COUNT}, resolver=${FSQ_PENDING_CHECKPOINT_COUNT}." >&2
+    exit 1
+  fi
+  # The resolver owns this calculation.  In particular, do not use
+  # FSQ_CHECKPOINT_COUNT here: it includes completed checkpoints and used to
+  # create invalid trailing array tasks whenever resume left only one pending.
+  TOTAL_JOBS="${EVAL_TOTAL_JOBS}"
+  EXPECTED_TOTAL_JOBS=$(( ((PENDING_COUNT + CHUNK - 1) / CHUNK) * EVAL_WORKER_COUNT ))
+  if [ "${TOTAL_JOBS}" -ne "${EXPECTED_TOTAL_JOBS}" ]; then
+    echo "Replay job count mismatch: resolver=${TOTAL_JOBS}, expected=${EXPECTED_TOTAL_JOBS}." >&2
+    exit 1
+  fi
   export FSQ_GT_REPLAY_CHECKPOINTS="${FSQ_PENDING_CHECKPOINTS}"
   export FSQ_GT_REPLAY_WORKER_COUNT="${EVAL_WORKER_COUNT}"
   export FSQ_GT_REPLAY_CHUNK="${CHUNK}"

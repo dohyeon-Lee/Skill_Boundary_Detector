@@ -757,6 +757,59 @@ def test_predictor_and_terminator_externals_can_name_different_checkpoints() -> 
     }
 
 
+def test_role_specific_model_fields_infer_their_modes() -> None:
+    entries = _model_entries(
+        {
+            "model_defaults": {
+                "checkpoint": "100000",
+                "skill_source": "gt",
+                "advance_mode": "gt",
+            },
+            "models": [
+                {
+                    "model_dir": "predictor",
+                    "external_predictor_model": "predictor-run",
+                },
+                {
+                    "model_dir": "terminator",
+                    "external_terminator_model": "terminator-run",
+                },
+                {
+                    "model_dir": "original",
+                    "external_terminator_model": "original",
+                },
+                {
+                    "model_dir": "explicit-gt",
+                    "skill_source": "gt",
+                    "external_predictor_model": "unused-predictor",
+                },
+            ],
+        }
+    )
+    by_model = {entry["model_dir"]: entry for entry in entries}
+
+    assert by_model["predictor"]["skill_source"] == "external"
+    assert by_model["terminator"]["advance_mode"] == "external"
+    assert by_model["original"]["advance_mode"] == "original"
+    assert by_model["original"]["external_terminator_model_value"] == ""
+    assert by_model["explicit-gt"]["skill_source"] == "gt"
+
+
+def test_original_terminator_selector_rejects_a_conflicting_mode() -> None:
+    with pytest.raises(ValueError, match="conflicts"):
+        _model_entries(
+            {
+                "models": [
+                    {
+                        "model_dir": "model",
+                        "advance_mode": "external",
+                        "external_terminator_model": "original",
+                    }
+                ]
+            }
+        )
+
+
 def test_external_terminator_run_name_and_checkpoint_expand_under_outputs_root(
     tmp_path: Path,
 ) -> None:

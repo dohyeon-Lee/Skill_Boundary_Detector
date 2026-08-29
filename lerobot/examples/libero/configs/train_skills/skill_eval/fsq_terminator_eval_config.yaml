@@ -11,28 +11,28 @@
 # model.fsq_term_train.*. Thus zero/norm_action models may be compared on the
 # same GT skill occurrences without sharing integer code meanings.
 
-output_name: "cotrained_terminator"
+output_name: "cotrained_terminator_2"
 
 # source: auxiliary resolves:
 #   <outputs_root>/skillVLA_terminator/<run_name>/checkpoints/<step>/pretrained_model
 # checkpoint: last selects the greatest complete training step at submission.
 # source: fsq remains supported for historical co-trained FSQ checkpoints.
 terminator_models:
-  - label: co_zero_RES_frez
-    source: fsq
-    run_name: zero01_recon_termRES__jsON_routeON_loss__layer2_base
-    checkpoint: 1500
-  - label: co_norm_action_RES_frez
-    source: fsq
-    run_name: norm_action01_recon_termRES__jsON_routeON_loss__layer2_base
-    checkpoint: 1500
-  - label: co_norm_action_RES_frez_01
-    source: fsq
-    run_name: norm_action01_recon_termRES__jsON_routeON_loss__term01
-    checkpoint: 1500
-  - label: co_norm_action_RES_unfrez_01
+  - label: 333_js
     source: fsq
     run_name: norm_action01_recon_termRES__jsON_routeON_loss__vis_unfreeze_term01
+    checkpoint: 1500
+  - label: 333_cont
+    source: fsq
+    run_name: 333_norm_action01_recon_termRES__contrastiveON_routeON_loss__term01_visunfrez
+    checkpoint: 1500
+  - label: 3333_cont
+    source: fsq
+    run_name: FSQ3333_norm_action01_recon_termRES__contrastiveON_routeON_loss
+    checkpoint: 1500
+  - label: 22222_cont
+    source: fsq
+    run_name: FSQ22222_norm_action01_recon_termRES__contrastiveON_routeON_loss
     checkpoint: 1500
   
   # - label: zero_RES

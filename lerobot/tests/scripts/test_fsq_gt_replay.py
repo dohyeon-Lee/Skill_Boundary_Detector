@@ -355,6 +355,7 @@ def test_incremental_submission_keeps_only_new_or_incomplete_checkpoints(
     assert complete["fsq_completed_checkpoints"] == "50 100"
     assert complete["fsq_missing_latents"] == ""
     assert complete["eval_max_concurrent"] == 0
+    assert complete["eval_total_jobs"] == 0
 
     # Training later produces another requested checkpoint: only that one is
     # submitted, while the two completed checkpoints stay untouched.
@@ -366,6 +367,7 @@ def test_incremental_submission_keeps_only_new_or_incomplete_checkpoints(
     assert incremental["fsq_completed_checkpoints"] == "50 100"
     assert incremental["eval_checkpoints_per_job"] == 1
     assert incremental["eval_max_concurrent"] == 1
+    assert incremental["eval_total_jobs"] == 1
 
 
 def test_incremental_submission_replays_a_checkpoint_with_incomplete_records(
@@ -470,6 +472,19 @@ def test_max_concurrent_wins_over_the_old_name(tmp_path: Path) -> None:
     assert CONFIG.build_settings(config)["eval_max_concurrent"] == 3
 
 
+def test_total_jobs_uses_pending_chunks_and_workers(tmp_path: Path) -> None:
+    config = _replay_run(tmp_path, epochs=[50, 100, 150])
+    config["checkpoints_per_job"] = 2
+    config["workers_per_checkpoint"] = 3
+    config["episodes_per_task"] = 4
+
+    settings = CONFIG.build_settings(config)
+
+    assert settings["fsq_checkpoint_count"] == 3
+    assert settings["fsq_pending_checkpoint_count"] == 3
+    assert settings["eval_total_jobs"] == 6
+
+
 def test_max_concurrent_is_capped_by_the_number_of_tasks(tmp_path: Path) -> None:
     """Asking for more slots than there are tasks must not inflate the array."""
     config = _replay_run(tmp_path, epochs=[50])
@@ -487,6 +502,7 @@ def test_checkpoints_per_job_all_packs_one_replay_task_per_run(tmp_path: Path) -
 
     assert settings["eval_checkpoints_per_job"] == 3
     assert settings["eval_max_concurrent"] == 1
+    assert settings["eval_total_jobs"] == 1
 
 
 def test_expected_epoch_tags_track_disk_without_a_frozen_list(tmp_path: Path) -> None:

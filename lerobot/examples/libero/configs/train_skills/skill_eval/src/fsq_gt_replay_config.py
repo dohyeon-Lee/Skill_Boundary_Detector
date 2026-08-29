@@ -552,6 +552,7 @@ def build_settings(
         if chunk_count
         else 0
     )
+    total_jobs = chunk_count * worker_count
     exclude = as_list(get_value(config, "train_exclude_nodes", []))
     # A blank replay override inherits the canonical global train_* Slurm
     # settings. Clusters that reject zero-GPU jobs on their GPU partitions can
@@ -619,6 +620,10 @@ def build_settings(
         "episode_selection": episode_selection,
         "eval_seed": seed,
         "eval_max_concurrent": concurrent_jobs,
+        # Authoritative array size.  This must be based on pending checkpoints,
+        # not every checkpoint present on disk: resume mode may leave only one
+        # new checkpoint even when the run contains many historical ones.
+        "eval_total_jobs": total_jobs,
         "eval_worker_count": worker_count,
         "eval_resume": str(as_bool(get_value(config, "resume", False))).lower(),
         "eval_report_title": report_title,

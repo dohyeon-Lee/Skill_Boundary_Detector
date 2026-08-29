@@ -18,8 +18,8 @@ skillset_name: skillset
 # a genuinely separate experiment (for example "layer3").
 fsq_exp: ""
 # Choose exactly one of the following forms.
-fsq_quantizer: {type: fsq, levels: [3,3,3,3]}  # 27 scalar-grid codes
-# fsq_quantizer: {type: fsq, levels: [2,2,2,2,2]}  # 27 scalar-grid codes
+# fsq_quantizer: {type: fsq, levels: [3,3,3,3]}  
+fsq_quantizer: {type: fsq, levels: [2,2,2,2,2]}  
 # fsq_quantizer: {type: bsq, code_dim: 5}       # 32 spherical binary codes
 fsq_hidden_dim: 256
 fsq_num_layers: 2
@@ -41,7 +41,7 @@ fsq_autoencoder: {mode: norm_action, gripper_weight: 0.1}  # raw | zero | action
 # remains the decoder content; the normalized skill-start proprio state only
 # modulates decoder blocks through a separate zero-init AdaLN path.
 fsq_start_state_conditioning: none      # none | adaln
-fsq_terminator: {termination: false, context: prev_action, default_arch: fusion, vision_backbone: resnet, freeze_vision_encoder: false}
+fsq_terminator: {termination: true, context: prev_action, default_arch: fusion, vision_backbone: resnet, freeze_vision_encoder: false}
 fsq_decoder_reconstructor: true
 
 
