@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Submit clean Stage-2 evaluation; eval_num_gpus caps how many jobs (GPUs) run,
-# and (task x panel) units are packed into that many chunks.
+# Submit Stage-2 evaluation with several independent evaluators per GPU.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -12,166 +11,103 @@ while [ ! -f "${CONFIG_LIB}/snapshot_config.sh" ]; do CONFIG_LIB="$(dirname "${C
 source "${CONFIG_LIB}/snapshot_config.sh"
 CONFIG_PATH="$(snapshot_config "${CONFIG_PATH}")"
 
-# Config resolution is stdlib-only; do not traverse the shared project venv on
-# the submit host before the actual evaluation needs it.
 BOOTSTRAP_PYTHON=/usr/bin/python3
-eval "$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/stage2_eval_config.py" --config "${CONFIG_PATH}" --shell)"
+STAGE2_EVAL_EXPORTS="$(
+  "${BOOTSTRAP_PYTHON}" "${SRC_DIR}/stage2_eval_config.py" \
+    --config "${CONFIG_PATH}" --shell
+)"
+eval "${STAGE2_EVAL_EXPORTS}"
+
+# eval_num_gpus is a ceiling. Request only the GPUs needed by the task x panel
+# grid and pack at most eval_max_workers_per_gpu evaluators onto each device.
+PLANNED_GPUS="${EVAL_NUM_GPUS}"
+[ -z "${SLURM_JOB_ID:-}" ] || PLANNED_GPUS=1
+PACKING_EXPORTS="$(
+  "${BOOTSTRAP_PYTHON}" "${SCRIPT_DIR}/../eval_gpu_packing.py" \
+    --items-json "${TASK_IDS}" \
+    --panel-count "${MODEL_COUNT}" \
+    --gpus "${PLANNED_GPUS}" \
+    --max-workers-per-gpu "${EVAL_MAX_WORKERS_PER_GPU}" \
+    --shell
+)"
+eval "${PACKING_EXPORTS}"
+
+# Keep the historical Stage-2 meaning of slurm.time: it is the budget for one
+# task x panel unit. Workers on the same GPU run concurrently, so scale only by
+# the largest sequential unit count owned by one logical worker.
+JOB_TIME="$(
+  "${BOOTSTRAP_PYTHON}" - "${EVAL_TIME}" "${EVAL_MAX_UNITS_PER_WORKER}" <<'PY'
+import math, sys
+
+spec, factor = sys.argv[1].strip(), int(sys.argv[2])
+days = 0
+if "-" in spec:
+    day_part, spec = spec.split("-", 1)
+    days = int(day_part)
+parts = [int(value) for value in spec.split(":")]
+if len(parts) == 1:
+    hours, minutes, seconds = 0, parts[0], 0
+elif len(parts) == 2:
+    hours, minutes, seconds = 0, parts[0], parts[1]
+else:
+    hours, minutes, seconds = parts
+seconds = (((days * 24 + hours) * 60 + minutes) * 60 + seconds) * factor
+minutes = math.ceil(seconds / 60)
+out_days, minutes = divmod(minutes, 24 * 60)
+out_hours, out_minutes = divmod(minutes, 60)
+print(f"{out_days}-{out_hours:02d}:{out_minutes:02d}:00")
+PY
+)"
+
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/node_local_venv.sh"
+EVAL_VENV_ARCHIVE=""
+if [ "${EVAL_NODE_LOCAL_VENV:-1}" = "1" ]; then
+  if ! EVAL_VENV_ARCHIVE="$(prepare_node_local_venv_archive \
+    "${PROJECT_ROOT}" "Stage-2 eval venv")"; then
+    EVAL_VENV_ARCHIVE=""
+    echo "Stage-2 eval: venv archive unavailable; using shared venv." >&2
+  fi
+fi
+export EVAL_VENV_ARCHIVE
 
 for artifact in "${POLICY_PATH}" "${FSQ_PATH}" "${SKILL_DATASET_DIR}"; do
   [ -e "${artifact}" ] || { echo "Missing artifact: ${artifact}" >&2; exit 1; }
 done
 
-# Build one immutable venv archive on the submit host. Each compute node then
-# does one sequential Lustre read and imports PyTorch from its local scratch.
-# Set STAGE2_EVAL_NODE_LOCAL_VENV=0 to retain the old shared-venv behavior.
-STAGE2_EVAL_VENV_ARCHIVE="${STAGE2_EVAL_VENV_ARCHIVE:-}"
-if [ "${STAGE2_EVAL_NODE_LOCAL_VENV:-1}" = "1" ]; then
-  source "${SCRIPT_DIR}/../../node_local_venv.sh"
-  if [ -z "${STAGE2_EVAL_VENV_ARCHIVE}" ] && \
-     ! STAGE2_EVAL_VENV_ARCHIVE="$(prepare_node_local_venv_archive "${PROJECT_ROOT}" "Stage-2 eval venv")"; then
-    STAGE2_EVAL_VENV_ARCHIVE=""
-    echo "Stage-2 eval venv: preparation failed; jobs will use the shared venv." >&2
-  fi
-else
-  STAGE2_EVAL_VENV_ARCHIVE=""
-fi
-export STAGE2_EVAL_VENV_ARCHIVE
-export STAGE2_EVAL_VENV_LABEL="Stage-2 eval venv"
-
 SBATCH_ARGS=(
+  --job-name="${STAGE2_EVAL_JOB_NAME:-S2eval}"
   --partition="${EVAL_PARTITION}"
   --qos="${EVAL_QOS}"
   --gres="${EVAL_GRES}"
   --cpus-per-task="${EVAL_CPUS_PER_TASK}"
   --mem="${EVAL_MEM}"
+  --time="${JOB_TIME}"
 )
-
-# slurm.time budgets one (task x panel) unit; a chunked job needs that budget
-# once per unit it carries.
-scale_time() {
-  "${BOOTSTRAP_PYTHON}" - "$1" "$2" <<'PY'
-import math, sys
-
-spec, factor = sys.argv[1].strip(), int(sys.argv[2])
-if factor <= 1:
-    print(spec)
-    raise SystemExit
-days = 0
-if "-" in spec:
-    day_part, rest = spec.split("-", 1)
-    days = int(day_part)
-    parts = [int(p) for p in rest.split(":")]
-    parts += [0] * (3 - len(parts))  # days-H[:M[:S]]
-    hours, minutes, seconds = parts
-else:
-    parts = [int(p) for p in spec.split(":")]
-    if len(parts) == 1:
-        hours, minutes, seconds = 0, parts[0], 0  # bare minutes
-    elif len(parts) == 2:
-        hours, minutes, seconds = 0, parts[0], parts[1]
-    else:
-        hours, minutes, seconds = parts
-total_seconds = (((days * 24 + hours) * 60 + minutes) * 60 + seconds) * factor
-total_minutes = math.ceil(total_seconds / 60)
-out_days, rem = divmod(total_minutes, 24 * 60)
-out_hours, out_minutes = divmod(rem, 60)
-print(f"{out_days}-{out_hours:02d}:{out_minutes:02d}:00")
-PY
-}
 [ -z "${EVAL_NODELIST}" ] || SBATCH_ARGS+=(--nodelist="${EVAL_NODELIST}")
 [ -z "${EVAL_EXCLUDE_NODES}" ] || SBATCH_ARGS+=(--exclude="${EVAL_EXCLUDE_NODES}")
 
 cd "${SCRIPT_DIR}"
 mkdir -p logs
 echo "Submit Stage-2 eval"
-echo "  panels    : ${MODEL_COUNT}"
-echo "  policy    : ${POLICY_PATH}"
-echo "  predictor : ${EXTERNAL_PREDICTOR_MODEL:-<none>}"
-echo "  terminator: ${EXTERNAL_TERMINATOR_MODEL:-<none>}"
-echo "  output    : ${EVAL_OUT_DIR}"
-if [ -n "${STAGE2_EVAL_VENV_ARCHIVE}" ]; then
-  echo "  Python    : node-local copy from ${STAGE2_EVAL_VENV_ARCHIVE}"
-else
-  echo "  Python    : shared ${PROJECT_ROOT}/.venv"
-fi
+echo "  panels : ${MODEL_COUNT} (stage2/prior structure preserved)"
+echo "  output : ${EVAL_OUT_DIR}"
+echo "  GPUs   : ${EVAL_PHYSICAL_GPU_COUNT} physical (requested ${EVAL_NUM_GPUS})"
+echo "  workers: ${EVAL_LOGICAL_WORKER_COUNT} total, max ${EVAL_MAX_WORKERS_PER_GPU}/GPU"
+echo "  time   : ${EVAL_TIME} x ${EVAL_MAX_UNITS_PER_WORKER} max sequential units -> ${JOB_TIME}"
 
 if [ -n "${SLURM_JOB_ID:-}" ]; then
-  echo "  mode   : srun in allocation ${SLURM_JOB_ID}"
+  echo "  mode   : local worker group via srun in allocation ${SLURM_JOB_ID}"
   STAGE2_EVAL_DIR="${SCRIPT_DIR}" STAGE2_EVAL_CONFIG="${CONFIG_PATH}" \
     srun "${SRC_DIR}/eval.sbatch"
-elif [ "${EVAL_NUM_GPUS}" -le 1 ]; then
-  UNITS_TOTAL="$("${BOOTSTRAP_PYTHON}" -c \
-    'import json, sys; print(len(json.loads(sys.argv[1])) * max(1, int(sys.argv[2])))' \
-    "${TASK_IDS}" "${MODEL_COUNT}")"
-  JOB_TIME="$(scale_time "${EVAL_TIME}" "${UNITS_TOTAL}")"
-  echo "  mode   : one sbatch job (${UNITS_TOTAL} task x panel units)"
-  echo "  time   : ${EVAL_TIME} x ${UNITS_TOTAL} units -> ${JOB_TIME}"
+elif [ "${EVAL_PHYSICAL_GPU_COUNT}" -le 1 ]; then
+  echo "  mode   : one sbatch job"
   STAGE2_EVAL_DIR="${SCRIPT_DIR}" STAGE2_EVAL_CONFIG="${CONFIG_PATH}" \
-    sbatch --time="${JOB_TIME}" "${SBATCH_ARGS[@]}" "${SRC_DIR}/eval.sbatch"
+    sbatch "${SBATCH_ARGS[@]}" "${SRC_DIR}/eval.sbatch"
 else
-  # Pack (task x panel) units into at most eval_num_gpus chunks: one array
-  # element per chunk, so each job loads its models once and walks its share
-  # sequentially. With eval_num_gpus >= units this degenerates to the old
-  # one-unit-per-element fanout (maximum parallelism). First output line is
-  # the largest chunk's unit count, used to scale the per-job time limit.
-  FANOUT_RAW="$("${BOOTSTRAP_PYTHON}" - "${TASK_IDS}" "${MODEL_COUNT}" "${EVAL_NUM_GPUS}" <<'PY'
-import json, sys
-
-task_ids = json.loads(sys.argv[1])
-panels = max(1, int(sys.argv[2]))
-n_gpus = max(1, int(sys.argv[3]))
-
-
-def split(seq, k):
-    """Split seq into k (capped at len) near-equal contiguous groups."""
-    k = max(1, min(k, len(seq)))
-    base, rem = divmod(len(seq), k)
-    groups, start = [], 0
-    for index in range(k):
-        size = base + (1 if index < rem else 0)
-        groups.append(seq[start : start + size])
-        start += size
-    return groups
-
-
-chunks = []
-if n_gpus >= panels:
-    # Hand each panel its share of the job slots, then split its tasks over
-    # them; every chunk stays a single-panel task group.
-    slot_base, slot_rem = divmod(min(n_gpus, len(task_ids) * panels), panels)
-    for panel in range(panels):
-        slots = slot_base + (1 if panel < slot_rem else 0)
-        for group in split(task_ids, slots):
-            chunks.append((group, [panel]))
-else:
-    # Fewer jobs than panels: each job takes every task for a panel group.
-    for panel_group in split(list(range(panels)), n_gpus):
-        chunks.append((list(task_ids), panel_group))
-
-
-def tag(ids, ps):
-    t = f"t{ids[0]}" if len(ids) == 1 else f"t{ids[0]}-{ids[-1]}"
-    p = f"p{ps[0]:02d}" if len(ps) == 1 else f"p{ps[0]:02d}-{ps[-1]:02d}"
-    return f"{t}_{p}"
-
-
-print(max(len(ids) * len(ps) for ids, ps in chunks))
-for ids, ps in chunks:
-    ids_json = json.dumps(ids, separators=(",", ":"))
-    print(f"{ids_json}|{tag(ids, ps)}|{','.join(str(p) for p in ps)}")
-PY
-)"
-  MAX_UNITS="$(printf '%s\n' "${FANOUT_RAW}" | head -n 1)"
-  CHUNKS="$(printf '%s\n' "${FANOUT_RAW}" | tail -n +2)"
-  EVAL_FANOUT="${CHUNKS}"$'\n'
-  ARRAY_SIZE="$(printf '%s\n' "${CHUNKS}" | sed '/^$/d' | wc -l)"
-  ARRAY_SPEC="0-$((ARRAY_SIZE - 1))%${EVAL_NUM_GPUS}"
-  CHUNK_TIME="$(scale_time "${EVAL_TIME}" "${MAX_UNITS}")"
-  echo "  mode   : array ${ARRAY_SPEC} (${ARRAY_SIZE} chunks, <=${MAX_UNITS} task x panel units each)"
-  echo "  time   : ${EVAL_TIME} x ${MAX_UNITS} units -> ${CHUNK_TIME}"
-  export EVAL_FANOUT
+  ARRAY_SPEC="0-$((EVAL_PHYSICAL_GPU_COUNT - 1))%${EVAL_PHYSICAL_GPU_COUNT}"
+  echo "  mode   : Slurm array ${ARRAY_SPEC}"
   STAGE2_EVAL_DIR="${SCRIPT_DIR}" STAGE2_EVAL_CONFIG="${CONFIG_PATH}" \
-    sbatch --job-name=S2eval --array="${ARRAY_SPEC}" \
+    sbatch --array="${ARRAY_SPEC}" \
       --output=logs/%x_%A_%a.out --error=logs/%x_%A_%a.err \
-      --time="${CHUNK_TIME}" "${SBATCH_ARGS[@]}" "${SRC_DIR}/eval.sbatch"
+      "${SBATCH_ARGS[@]}" "${SRC_DIR}/eval.sbatch"
 fi

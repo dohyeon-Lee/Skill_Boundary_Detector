@@ -3,7 +3,7 @@
 
 # Source
 skillvla_dataset_root: skillvla_dataset
-source_dataset: libero_90_full_lasthalf_scene # libero_90_full_firsthalf_scene | langgap_56_full_firsthalf | libero_90_full_lasthalf_scene | libero_10_full_1
+source_dataset: libero_90_full_full # libero_90_full_firsthalf_scene | langgap_56_full_firsthalf | libero_90_full_lasthalf_scene | libero_10_full_1
 skillvla_data_mode: pt  # pt | ft | ft_own
 
 # Skill segmentation
@@ -15,9 +15,8 @@ skillset_max_sweeps: 2
 
 # FSQ encoder
 
-# fsq_run_name: zero01_recon_only__jsON_routeON_loss
-# fsq_run_name: norm_action01_recon_termRES__jsON_routeON_loss__vis_unfreeze_term01
-fsq_run_name: 333_norm_action01_recon_termRES__contrastiveON_routeON_loss__term01_visunfrez
+fsq_run_name: norm_action01_recon_termRES__jsON_routeON_loss__vis_unfreeze_term01
+# fsq_run_name: 333_norm_action01_recon_termRES__contrastiveON_routeON_loss__term01_visunfrez
 # fsq_run_name: FSQ3333_norm_action01_recon_termRES__contrastiveON_routeON_loss
 # fsq_run_name: FSQ22222_norm_action01_recon_termRES__contrastiveON_routeON_loss
 

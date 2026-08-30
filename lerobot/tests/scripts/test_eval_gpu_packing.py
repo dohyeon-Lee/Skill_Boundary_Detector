@@ -65,3 +65,43 @@ def test_item_chunks_remain_balanced_when_tasks_outnumber_workers() -> None:
     assert plan["logical_worker_count"] == 8
     assert max(sizes) - min(sizes) == 1
     assert sum(sizes) == 25
+
+
+def test_panel_item_plan_covers_cartesian_grid_once() -> None:
+    plan = MODULE.plan_panel_item_chunks(list(range(10)), 2, 2, 4)
+
+    assert plan["physical_gpu_count"] == 2
+    assert plan["logical_worker_count"] == 8
+    assert [len(group) for group in plan["groups"]] == [4, 4]
+    covered = [
+        (item, panel)
+        for group in plan["groups"]
+        for worker in group
+        for item in worker["items"]
+        for panel in worker["panels"]
+    ]
+    assert sorted(covered) == [
+        (item, panel) for item in range(10) for panel in range(2)
+    ]
+
+
+def test_panel_item_plan_uses_only_needed_gpus() -> None:
+    plan = MODULE.plan_panel_item_chunks([0, 1], 2, 10, 4)
+
+    assert plan["physical_gpu_count"] == 1
+    assert plan["logical_worker_count"] == 4
+    assert len(plan["groups"][0]) == 4
+
+
+def test_panel_item_plan_groups_panels_when_worker_slots_are_scarce() -> None:
+    plan = MODULE.plan_panel_item_chunks([7], 10, 2, 4)
+
+    assert plan["physical_gpu_count"] == 2
+    assert plan["logical_worker_count"] == 8
+    covered_panels = [
+        panel
+        for group in plan["groups"]
+        for worker in group
+        for panel in worker["panels"]
+    ]
+    assert sorted(covered_panels) == list(range(10))

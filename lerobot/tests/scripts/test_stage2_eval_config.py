@@ -411,6 +411,92 @@ def test_stage2_eval_requires_external_terminator(tmp_path: Path) -> None:
         build_settings(config)
 
 
+def test_stage2_eval_resolves_concise_overlay_run_and_checkpoint(
+    tmp_path: Path,
+) -> None:
+    config = _checkpoint_tree(tmp_path)
+    project = Path(config["project_root"])
+    expected_predictor = Path(config["external_predictor_model"])
+    expected_terminator = Path(config["external_terminator_model"])
+    config.update(
+        {
+            "external_predictor_model": "predictor_run",
+            "external_predictor_checkpoint": "050000",
+            "external_terminator_model": "terminator_run",
+            "external_terminator_checkpoint": "020000",
+        }
+    )
+
+    panels = json.loads(build_settings(config)["models_json"])
+
+    assert all(
+        panel["external_predictor_model"] == str(expected_predictor)
+        for panel in panels
+    )
+    assert all(
+        panel["external_terminator_model"] == str(expected_terminator)
+        for panel in panels
+    )
+    assert expected_predictor.is_relative_to(project)
+    assert expected_terminator.is_relative_to(project)
+
+
+def test_stage2_eval_supports_original_fsq_terminator(tmp_path: Path) -> None:
+    config = _checkpoint_tree(tmp_path)
+    config["external_terminator_model"] = "original"
+
+    panels = json.loads(build_settings(config)["models_json"])
+
+    assert [panel["advance_mode"] for panel in panels] == [
+        "original",
+        "original",
+    ]
+    assert all(not panel["external_terminator_model"] for panel in panels)
+
+
+def test_stage2_eval_infers_sources_from_model_selectors(tmp_path: Path) -> None:
+    config = _checkpoint_tree(tmp_path)
+    config.pop("skill_source")
+    config["oracle"].pop("advance_mode")
+    config["external_predictor_model"] = "gt"
+    config["external_terminator_model"] = "original"
+
+    panels = json.loads(build_settings(config)["models_json"])
+
+    assert all(panel["skill_source"] == "gt" for panel in panels)
+    assert all(panel["advance_mode"] == "original" for panel in panels)
+    assert all(not panel["external_predictor_model"] for panel in panels)
+    assert all(not panel["external_terminator_model"] for panel in panels)
+
+
+def test_stage2_eval_folder_selectors_imply_external_sources(
+    tmp_path: Path,
+) -> None:
+    config = _checkpoint_tree(tmp_path)
+    config.pop("skill_source")
+    config["oracle"].pop("advance_mode")
+
+    panels = json.loads(build_settings(config)["models_json"])
+
+    assert all(panel["skill_source"] == "external" for panel in panels)
+    assert all(panel["advance_mode"] == "external" for panel in panels)
+
+
+def test_stage2_eval_gt_terminator_selector_uses_gt_boundaries(
+    tmp_path: Path,
+) -> None:
+    config = _checkpoint_tree(tmp_path)
+    config.pop("skill_source")
+    config["oracle"].pop("advance_mode")
+    config["external_predictor_model"] = "gt"
+    config["external_terminator_model"] = "gt"
+
+    panels = json.loads(build_settings(config)["models_json"])
+
+    assert all(panel["skill_source"] == "gt" for panel in panels)
+    assert all(panel["advance_mode"] == "gt" for panel in panels)
+
+
 def test_stage2_eval_prior_panel_requires_external_predictor(tmp_path: Path) -> None:
     config = _checkpoint_tree(tmp_path)
     del config["external_predictor_model"]

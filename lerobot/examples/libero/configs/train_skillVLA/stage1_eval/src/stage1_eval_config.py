@@ -85,7 +85,7 @@ def _resolve_external_terminator_path(
         checkpoint_name = _safe_name(
             str(checkpoint), field="external_terminator_checkpoint"
         )
-        return (
+        resolved = (
             outputs_root
             / "skillVLA_terminator"
             / run_name
@@ -93,6 +93,21 @@ def _resolve_external_terminator_path(
             / checkpoint_name
             / "pretrained_model"
         )
+        if (resolved / "config.json").is_file():
+            return resolved
+        for archive_name in ("PREV", "previous"):
+            archived = (
+                outputs_root
+                / "skillVLA_terminator"
+                / archive_name
+                / run_name
+                / "checkpoints"
+                / checkpoint_name
+                / "pretrained_model"
+            )
+            if (archived / "config.json").is_file():
+                return archived
+        return resolved
     return _relocate_project_path(project_root, raw)
 
 
@@ -110,7 +125,7 @@ def _resolve_external_predictor_path(
         checkpoint_name = _safe_name(
             str(checkpoint), field="external_predictor_checkpoint"
         )
-        return (
+        resolved = (
             outputs_root
             / "skillVLA_terminator"
             / run_name
@@ -118,6 +133,21 @@ def _resolve_external_predictor_path(
             / checkpoint_name
             / "pretrained_model"
         )
+        if (resolved / "config.json").is_file():
+            return resolved
+        for archive_name in ("PREV", "previous"):
+            archived = (
+                outputs_root
+                / "skillVLA_terminator"
+                / archive_name
+                / run_name
+                / "checkpoints"
+                / checkpoint_name
+                / "pretrained_model"
+            )
+            if (archived / "config.json").is_file():
+                return archived
+        return resolved
     return _relocate_project_path(project_root, raw)
 
 

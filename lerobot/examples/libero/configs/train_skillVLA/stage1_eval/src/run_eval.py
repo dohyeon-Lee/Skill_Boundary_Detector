@@ -1151,10 +1151,10 @@ def _build_context(spec: dict, cfg, device: torch.device) -> dict:
             external_terminator_model,
         )
     elif advance_mode == "original":
-        if policy_config.type != "skill_expert":
+        if policy_config.type not in {"skill_expert", "skill_vla_stage2"}:
             raise ValueError(
                 f"[{spec['label']}] original FSQ terminator is supported only "
-                "for skill_expert checkpoints."
+                "for skill_expert and skill_vla_stage2 checkpoints."
             )
         if terminator_variant != "state_image":
             raise ValueError(

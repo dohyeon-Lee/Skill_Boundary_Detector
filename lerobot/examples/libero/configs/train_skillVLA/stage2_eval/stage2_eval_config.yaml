@@ -1,42 +1,30 @@
-# Stage-2 evaluation assembles three frozen sources: the Stage-2 checkpoint,
-# an external predictor, and an external terminator. Every entry in models[]
-# expands into up to two panels rendered side by side in one video:
+# Every models[] entry expands into two independently saved panels and one
+# side-by-side comparison video:
 #   stage2: the full policy; likelihood/DSBC is read from its checkpoint
 #   prior : the frozen Stage-1 prior recorded in the Stage-2 checkpoint,
 #           evaluated standalone under the same predictor/terminator/oracle
+model_defaults:
+  checkpoint: "400000"
+  modes: [stage2, prior]
+  terminator_variant: state_image   # state_image | image_only
+
+# predictor: gt | own | a folder under outputs_filtered/skillVLA_terminator
+# terminator: gt | original | a folder under outputs_filtered/skillVLA_terminator
 models:
-  # - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask_100000_gt_batchOFF_half
-  # - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask_100000_gt_batchOFF_full
-  # - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask_100000_gt_batchON_half
-  # - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask_100000_gt_batchON_full
-  # - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask_100000_gt_batchOFF_nomask_layermix_glr10_full
-  
   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask_100000_gt_batchOFF_nomask_layermix_glr10_lasthalf_fixed
-  # - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask_100000_gt_batchOFF_nomask_layermix_glr10_lasthalf_bs256
-  # - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask_100000_gt_batchOFF_dsbc_shared_frs10_nomask_layermix_glr10_lasthalf
-  # - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask_100000_gt_batchOFF_dsbc_shared_frs10_nomask_layermix_glr10_lasthalf_bs256
-
-    checkpoint: "400000"
-    skill_source: gt          # gt | predictor
-    advance_mode: terminator  # terminator | gt (gt skill only)
-    modes: [stage2, prior]    # subset of [stage2, prior]
     label: lasthalf_400k_gt_libero10
-
-# Frozen overlays shared by every panel; both must live in the same FSQ run as
-# the Stage-2 checkpoint. The prior panel always needs them (the Stage-1 prior
-# has neither), and applying the same pair to the stage2 panel keeps the
-# comparison about the selected Stage-2 method alone.
-# external_predictor_model: outputs_filtered/skillVLA_terminator/bs16_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal/checkpoints/050000/pretrained_model
-external_predictor_model: outputs_filtered/skillVLA_terminator/bs8_libero_10_full_5_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_predictor_ft_small/checkpoints/002500/pretrained_model
-
-external_terminator_model: outputs_filtered/skillVLA_terminator/bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_terminator/checkpoints/030000/pretrained_model
+    external_predictor_model: gt
+    # external_predictor_checkpoint: "002500"  # only for a predictor folder
+    external_terminator_model: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_terminator
+    external_terminator_checkpoint: "030000"
 
 models_per_row: 2
 output_name: "lasthalf_400k_gt_libero10"  # empty: timestamped name under stage2_eval/outputs
 
 target_task: libero_10
 task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
-eval_num_gpus: 2
+eval_num_gpus: 2                  # upper bound; unused GPUs are not requested
+eval_max_workers_per_gpu: 4       # at most four evaluators share one GPU
 n_episodes: 3
 eval_batch_size: 3
 n_action_steps: 5
@@ -50,12 +38,8 @@ oracle:
   # Empty or omitted: use each model_dir checkpoint's training dataset.
   skill_dataset_dir: dataset_filtered/skillvla_dataset/libero_10_full_5/FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal/skillvla
   episode_exact: false
-  advance_mode: terminator
 
 terminator:
-  # state_image uses the co-trained state+image terminator; image_only requires
-  # an external_terminator_model with train_image_only_terminator: true.
-  variant: state_image              # state_image | image_only
   end_mode: termination             # termination | progress | or | and
   end_threshold: 0.5
   progress_threshold: 0.9
