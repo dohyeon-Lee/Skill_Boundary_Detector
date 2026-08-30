@@ -168,6 +168,109 @@ def test_config_resolves_auxiliary_terminator_and_its_fsq_space(tmp_path: Path) 
     assert settings["fsq_model_epoch_tag"] == "step001000"
 
 
+def test_config_resolves_concise_auxiliary_code_space_by_copied_checkpoint(
+    tmp_path: Path,
+) -> None:
+    run_name = "FSQ3333_norm_action01_recon_termRES__contrastiveON_routeON_loss"
+    _probe_run(tmp_path, run_name, epochs=[1750])
+    meta_path = tmp_path / "outputs" / "FSQ" / run_name / "fsq_meta.json"
+    meta = json.loads(meta_path.read_text())
+    meta["fsq_levels"] = [3, 3, 3, 3]
+    meta_path.write_text(json.dumps(meta))
+
+    code_space = "FSQ3333_termRES_contrastive_1750_pt"
+    embedded_fsq = tmp_path / f"dataset/skillvla_dataset/ds/{code_space}/FSQ.pt"
+    embedded_fsq.parent.mkdir(parents=True)
+    embedded_fsq.write_bytes(b"x")
+    checkpoint = (
+        tmp_path
+        / "outputs/skillVLA_terminator/aux_run/checkpoints/001000/pretrained_model"
+    )
+    checkpoint.mkdir(parents=True)
+    (checkpoint / "config.json").write_text(
+        json.dumps(
+            {
+                "type": "skill_aux",
+                "train_terminator": True,
+                "fsq_path": str(embedded_fsq),
+                "skill_code_space_id": code_space,
+                "skill_fsq_levels": [3, 3, 3, 3],
+            }
+        )
+    )
+    (checkpoint / "model.safetensors").write_bytes(b"weights")
+
+    settings = CONFIG.build_settings(
+        _probe_config(
+            tmp_path,
+            [
+                {
+                    "label": "AUX",
+                    "source": "auxiliary",
+                    "run_name": "aux_run",
+                    "checkpoint": "last",
+                }
+            ],
+        )
+    )
+
+    assert settings["fsq_model_source"] == "auxiliary"
+    assert settings["fsq_model_path"] == str(embedded_fsq)
+    assert settings["fsq_code_space_id"] == code_space
+    assert settings["fsq_skills_dir"].endswith("/FSQ_inputs/seg/skillset/skills")
+
+
+def test_config_prefers_explicit_dataset_fsq_provenance(tmp_path: Path) -> None:
+    run_name = "FSQ3333_source"
+    _probe_run(tmp_path, run_name, epochs=[1750])
+    code_space = "FSQ3333_concise_1750_pt"
+    embedded_fsq = tmp_path / f"dataset/skillvla_dataset/ds/{code_space}/FSQ.pt"
+    embedded_fsq.parent.mkdir(parents=True)
+    # Explicit provenance avoids hashing future datasets at submission time.
+    embedded_fsq.write_bytes(b"copied-by-a-future-builder")
+    (embedded_fsq.parent / "fsq_source.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "source_fsq_run_name": run_name,
+                "source_fsq_checkpoint": "1750",
+            }
+        )
+    )
+    checkpoint = (
+        tmp_path
+        / "outputs/skillVLA_terminator/aux_run/checkpoints/001000/pretrained_model"
+    )
+    checkpoint.mkdir(parents=True)
+    (checkpoint / "config.json").write_text(
+        json.dumps(
+            {
+                "type": "skill_aux",
+                "train_terminator": True,
+                "fsq_path": str(embedded_fsq),
+                "skill_code_space_id": code_space,
+                "skill_fsq_levels": [3, 3, 3],
+            }
+        )
+    )
+    (checkpoint / "model.safetensors").write_bytes(b"weights")
+
+    settings = CONFIG.build_settings(
+        _probe_config(
+            tmp_path,
+            [
+                {
+                    "label": "AUX",
+                    "source": "auxiliary",
+                    "run_name": "aux_run",
+                    "checkpoint": "last",
+                }
+            ],
+        )
+    )
+    assert settings["fsq_model_path"] == str(embedded_fsq)
+
+
 def test_config_rejects_duplicate_labels(tmp_path: Path) -> None:
     _probe_run(tmp_path, "a", epochs=[100, 200])
     config = _probe_config(

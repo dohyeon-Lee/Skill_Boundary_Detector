@@ -26,6 +26,9 @@ def write_html_report(output_dir: str | Path, payload: dict) -> Path:
     .subtitle,.muted { color:var(--muted); font-size:12px; }
     .layout { display:grid; grid-template-columns:minmax(440px,600px) 1fr; gap:16px; padding:16px; align-items:start; }
     .sidebar { position:sticky; top:86px; background:#fff; border:1px solid var(--line); border-radius:10px; padding:12px; }
+    .cube-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(165px,1fr)); gap:8px; margin-bottom:8px; }
+    .cube-panel { min-width:0; border:1px solid #e1e6ee; border-radius:8px; background:#fbfcfe; overflow:hidden; }
+    .cube-slice-label { padding:5px 7px; border-bottom:1px solid #e1e6ee; color:#475467; font-size:11px; font-weight:700; text-align:center; }
     .cube { width:100%; height:auto; display:block; }
     .legend { display:flex; gap:14px; align-items:center; flex-wrap:wrap; font-size:12px; color:var(--muted); }
     .dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:4px; }
@@ -56,7 +59,7 @@ def write_html_report(output_dir: str | Path, payload: dict) -> Path:
 </header>
 <main class="layout">
   <aside class="sidebar">
-    <svg class="cube" viewBox="0 0 600 540" aria-label="FSQ skill cube"></svg>
+    <div class="cube-grid" id="cube-grid"></div>
     <div class="legend">
       <span><i class="dot" style="background:#d62728"></i>selected</span>
       <span><i class="dot" style="background:#2878b5"></i>used in selected episodes</span>
@@ -88,8 +91,19 @@ function coordForToken(token, levels) {
   return c;
 }
 
-function renderCube(selectedToken) {
-  const svg=document.querySelector(".cube"), levels=DATA.levels;
+function extraSliceCoordinates(levels) {
+  let slices=[[]];
+  for(const level of levels.slice(3)) {
+    const next=[];
+    for(const prefix of slices) for(let value=0;value<level;value++) next.push([...prefix,value]);
+    slices=next;
+  }
+  return slices;
+}
+
+function renderCubeSlice(svg, selectedToken, sliceCoord) {
+  const levels=DATA.levels;
+  const spatialLevels=[levels[0]||1,levels[1]||1,levels[2]||1];
   const maxToken=levels.reduce((a,b)=>a*b,1), NS="http://www.w3.org/2000/svg";
   svg.innerHTML="";
   const make=(name,attrs)=>{
@@ -99,26 +113,29 @@ function renderCube(selectedToken) {
   };
   for(let t=0;t<maxToken;t++) {
     const c=coordForToken(t,levels);
+    if(c.slice(3).some((value,index)=>value!==sliceCoord[index])) continue;
     for(let d=0;d<Math.min(3,levels.length);d++) {
       const n=c.slice(); n[d]+=1;
       if(n[d]<levels[d]) {
-        const [x1,y1]=project(c,levels),[x2,y2]=project(n,levels);
+        const [x1,y1]=project(c,spatialLevels),[x2,y2]=project(n,spatialLevels);
         make("line",{x1,y1,x2,y2,stroke:"rgba(100,100,100,.48)","stroke-width":1.5});
       }
     }
   }
-  const BL=levels.map(l=>l-1);
+  const BL=spatialLevels.map(l=>l-1);
   const corners=[0,1,2,3,4,5,6,7].map(b=>[BL[0]*(b&1),BL[1]*((b>>1)&1),(BL[2]||0)*((b>>2)&1)]);
   [[0,1],[0,2],[0,4],[1,3],[1,5],[2,3],[2,6],[3,7],[4,5],[4,6],[5,7],[6,7]].forEach(([a,b])=>{
-    const [x1,y1]=project(corners[a],levels),[x2,y2]=project(corners[b],levels);
+    const [x1,y1]=project(corners[a],spatialLevels),[x2,y2]=project(corners[b],spatialLevels);
     make("line",{x1,y1,x2,y2,stroke:"rgba(50,50,50,.75)","stroke-width":2.2});
   });
   const pts=[];
   for(let t=0;t<maxToken;t++) {
-    const p=project(coordForToken(t,levels),levels); pts.push({t,p,used:byToken.has(t)});
+    const c=coordForToken(t,levels);
+    if(c.slice(3).some((value,index)=>value!==sliceCoord[index])) continue;
+    const p=project(c,spatialLevels); pts.push({t,p,c,used:byToken.has(t)});
   }
   pts.sort((a,b)=>a.p[2]-b.p[2]);
-  pts.forEach(({t,p,used})=>{
+  pts.forEach(({t,p,c,used})=>{
     const point=make("circle",{
       cx:p[0],cy:p[1],r:t===selectedToken?9:(used?6:3.8),
       fill:t===selectedToken?"#d62728":(used?"#2878b5":"#d7dde8"),
@@ -128,9 +145,32 @@ function renderCube(selectedToken) {
     });
     if(used) point.addEventListener("click",()=>selectToken(t));
     const title=document.createElementNS(NS,"title");
-    title.textContent=used?`token #${t}: ${byToken.get(t).occurrences.length} occurrences`:`token #${t}: unused`;
+    title.textContent=(used?`token #${t}: ${byToken.get(t).occurrences.length} occurrences`:`token #${t}: unused`)+` · [${c.join(", ")}]`;
     point.appendChild(title);
   });
+}
+
+function renderCube(selectedToken) {
+  const grid=document.getElementById("cube-grid"), levels=DATA.levels;
+  const NS="http://www.w3.org/2000/svg";
+  grid.innerHTML="";
+  for(const sliceCoord of extraSliceCoordinates(levels)) {
+    const panel=document.createElement("div");
+    panel.className="cube-panel";
+    if(levels.length>3) {
+      const label=document.createElement("div");
+      label.className="cube-slice-label";
+      label.textContent=sliceCoord.map((value,index)=>`dim ${index+4} = ${value}`).join(" · ");
+      panel.appendChild(label);
+    }
+    const svg=document.createElementNS(NS,"svg");
+    svg.setAttribute("class","cube");
+    svg.setAttribute("viewBox","0 0 600 540");
+    svg.setAttribute("aria-label",levels.length>3?`FSQ skill cube slice ${sliceCoord.join(",")}`:"FSQ skill cube");
+    panel.appendChild(svg);
+    grid.appendChild(panel);
+    renderCubeSlice(svg,selectedToken,sliceCoord);
+  }
 }
 
 function escapeHtml(value) {

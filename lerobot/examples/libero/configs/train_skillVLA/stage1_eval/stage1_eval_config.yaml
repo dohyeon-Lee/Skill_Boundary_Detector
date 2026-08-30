@@ -1,0 +1,117 @@
+outputs_root: outputs_filtered
+
+# A Stage-1 policy and its terminator must use the same FSQ skill space.
+# With episode_exact enabled, each entry receives the GT code sequence from its
+# own skill dataset while every panel replays the same shared source episode.
+model_defaults:
+  previous: false
+  checkpoint: "150000"
+  skill_source: gt                 # gt | own | external
+  advance_mode: original           # gt | own | external | original
+  terminator_variant: state_image  # state_image | image_only
+  external_predictor_checkpoint: "last"
+  external_terminator_checkpoint: "100000"
+
+# models:
+#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_norm_action01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask_visunfreeze
+#     label: action_unfrez_350k_pred
+#     external_predictor_model: bs32_FSQ333_norm_action01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_libero_90_full_firsthalf_scene_predictor
+#     external_terminator_model: bs32_FSQ333_norm_action01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_libero_90_full_firsthalf_scene_terminator_DINO_unfrez
+
+#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_norm_action01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask_visfreeze
+#     label: action_frez_350k_pred
+#     external_predictor_model: bs32_FSQ333_norm_action01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_libero_90_full_firsthalf_scene_predictor
+#     external_terminator_model: bs32_FSQ333_norm_action01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_libero_90_full_firsthalf_scene_terminator_DINO_unfrez
+
+#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_norm_action01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask_visunfreeze
+#     label: action_unfrez_350k
+#     external_terminator_model: bs32_FSQ333_norm_action01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_libero_90_full_firsthalf_scene_terminator_DINO_unfrez
+
+#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_norm_action01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask_visfreeze
+#     label: action_frez_350k
+#     external_terminator_model: bs32_FSQ333_norm_action01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_libero_90_full_firsthalf_scene_terminator_DINO_unfrez
+
+#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_zero01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask_visunfreeze
+#     label: zero_unfrez_350k
+#     external_terminator_model: bs32_FSQ333_zero01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_libero_90_full_firsthalf_scene_terminator_DINO_unfrez
+
+#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_zero01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask_visfreeze
+#     label: zero_frez_350k
+#     external_terminator_model: bs32_FSQ333_zero01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_libero_90_full_firsthalf_scene_terminator_DINO_unfrez
+
+# output_name: "zero_vs_norm_action_350k"
+
+# models:
+#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_norm_action01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask_visunfreeze
+#     label: action_js_15
+#     # external_terminator_model: bs32_FSQ333_norm_action01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_libero_90_full_firsthalf_scene_terminator_DINO_unfrez
+
+#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_termRES_js_2000_pt_pmax15_arch0_skillendmask_visunfreeze
+#     label: action_js_term_15
+#     # external_terminator_model: original
+
+#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_termRES_contrastive_2000_pt_pmax15_arch0_skillendmask_visunfreeze
+#     label: cont_term_15
+#     # external_terminator_model: original
+
+#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_termRES_contrastive_2000_pt_arch0_skillendmask_visunfreeze
+#     label: cont_term
+#     # external_terminator_model: original
+# output_name: "js_vs_cont_vs_addterm_vs_pmax15_gt"
+
+
+# models:
+#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_termRES_contrastive_2000_pt_arch0_skillendmask_visunfreeze
+#     label: cont_333
+#     external_terminator_model: original
+#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ3333_termRES_contrastive_1750_pt_arch0_skillendmask_visunfreeze
+#     label: cont_3333
+#     external_terminator_model: bs32_FSQ3333_termRES_contrastive_1750_pt_libero_90_full_full_terminator
+
+#   # - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ22222_termRES_contrastive_1750_pt_arch0_skillendmask_visunfreeze
+#   #   label: cont_22222
+#   #   external_terminator_model: original
+
+# output_name: "codebook_compare_333vs3333_term"
+
+models:
+  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ3333_termRES_contrastive_1750_pt_arch0_skillendmask_visunfreeze
+    label: gt
+    external_terminator_model: original
+  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ3333_termRES_contrastive_1750_pt_arch0_skillendmask_visunfreeze
+    label: term
+    external_terminator_model: bs32_FSQ3333_termRES_contrastive_1750_pt_libero_90_full_full_terminator
+
+output_name: "3333_terminator"
+
+resume: false
+
+
+target_task: libero_90
+task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+
+eval_num_gpus: 10                  # upper bound; unused GPUs are not requested
+eval_max_workers_per_gpu: 4  # pack at most four independent task workers per GPU
+n_episodes: 3
+eval_batch_size: 1
+max_parallel_tasks: 1
+n_action_steps: 5
+
+oracle:
+  episode_exact: true
+
+terminator:
+  end_mode: termination             # termination | progress | or | and
+  end_threshold: 0.5
+  progress_threshold: 0.95
+  immediate_replan_on_skill_end: true
+  max_skill_length: 200
+
+video: {max_per_task: 15, frame_stride: 4, fps: 10}
+skill_html: true
+skill_html_train_samples: 5
+
+logging:
+  wandb: {enable: true, project: VLA_stage1_eval}
+
+slurm: {gres: "gpu:1", cpus: 8, memory: 64G, time: "6:00:00"}

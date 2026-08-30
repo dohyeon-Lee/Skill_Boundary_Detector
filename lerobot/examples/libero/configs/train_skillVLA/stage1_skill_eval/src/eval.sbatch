@@ -172,6 +172,7 @@ for worker_index in "${LOCAL_WORKER_INDICES[@]}"; do
         --env.task="${TARGET_TASK}" \
         --env.task_ids="${TASK_IDS}" \
         --env.init_states=false \
+        --env.terminate_on_success=false \
         --env.fps=20 \
         --env.max_parallel_tasks=1 \
         --eval.batch_size=1 \

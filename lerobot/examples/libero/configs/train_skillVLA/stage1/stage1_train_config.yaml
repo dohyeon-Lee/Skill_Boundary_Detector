@@ -3,7 +3,7 @@ dataset:
   source: libero_90_full_firsthalf_scene # langgap_56_full_firsthalf | libero_90_full_firsthalf_scene
   # run: FSQ333_norm_action01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal
   # run: FSQ3333_termRES_contrastive_1750_pt
-  run: FSQ22222_termRES_contrastive_1750_pt
+  run: FSQ3333_termRES_js_1750_pt
 
 
 

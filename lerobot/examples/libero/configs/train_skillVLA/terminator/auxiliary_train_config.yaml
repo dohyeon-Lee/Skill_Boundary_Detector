@@ -11,8 +11,8 @@ dataset:
   skillvla_root: skillvla_dataset
   source: libero_90_full_full # libero_90_full_firsthalf_scene
   # run: FSQ333_zero01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal
-  run: FSQ333_termRES_js_2000_pt_pmax15
-  # run: FSQ333_termRES_contrastive_2000_pt_pmax15
+  # run: FSQ333_termRES_js_2000_pt_pmax15
+  run: FSQ333_termRES_contrastive_2000_pt_pmax15
   # run: FSQ333_termRES_contrastive_2000_pt
   # run: FSQ22222_termRES_contrastive_1750_pt
   # run: FSQ3333_termRES_contrastive_1750_pt
@@ -36,12 +36,12 @@ warm_start:
 # PT only. If this contract exactly matches a terminator stored in FSQ.pt, its
 # weights are warm-started; any contract difference creates a fresh terminator.
 # Ignored in mode=ft because the terminator checkpoint owns this contract.
-fsq_terminator: {termination: true, context: prev_action, default_arch: fusion, vision_backbone: DINO, freeze_vision_encoder: true}
+fsq_terminator: {termination: false, context: prev_action, default_arch: fusion, vision_backbone: DINO, freeze_vision_encoder: true}
 termination_loss: {target_sigma: 2.0, positive_weight: 2.0}
 
 # PT only; ignored in mode=ft because the predictor checkpoint owns it.
 skill_predictor:
-  train: false
+  train: true
   all_layers: true
   lora: {enabled: true, targets: "q,k,v,o", rank: 8, alpha: 16.0, dropout: 0.0}
   reader: {tokens: 4, depth: 2, heads: 8, deadzone_frac: 0.8}

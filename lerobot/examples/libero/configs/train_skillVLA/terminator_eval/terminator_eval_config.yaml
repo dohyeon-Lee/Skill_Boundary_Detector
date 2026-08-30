@@ -12,7 +12,7 @@ outputs_root: outputs_filtered
 #   model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_norm_action01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask_visunfreeze
 #   checkpoint: "030000"
 #   label: norm_action
-#   terminator_source: external # own | external
+#   terminator_source: external # own (Stage-1) | original (source FSQ) | external
 
 # external_skill_model:
 #   variant: state_image
@@ -34,28 +34,24 @@ outputs_root: outputs_filtered
 
 model:
   previous: false
-  model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_zero01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask_visunfreeze
-  checkpoint: "030000"
+  model_dir: bs32_libero_90_full_firsthalf_scene_FSQ3333_termRES_contrastive_1750_pt_arch0_skillendmask_visunfreeze
+  checkpoint: "180000"
   label: norm_action
-  terminator_source: external # own | external
+  terminator_source: original # own (Stage-1) | original (source FSQ) | external
 
-external_skill_model:
-  variant: state_image
-  group: skillVLA_terminator
-  model_dir: bs32_FSQ333_zero01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_libero_90_full_firsthalf_scene_terminator_DINO_unfrez
-  checkpoint: "050000"
+# external_skill_model:
+#   variant: state_image
+#   group: skillVLA_terminator
+#   model_dir: bs32_FSQ333_zero01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_libero_90_full_firsthalf_scene_terminator_DINO_unfrez
+#   checkpoint: "050000"
 
 terminator_models:
-  - label: RESNET_unfreeze
+  - label: DINO_freeze
     variant: state_image
-    model_dir: bs32_FSQ333_zero01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_libero_90_full_firsthalf_scene_terminator_resnet_unfrez
-    checkpoint: "050000"
-  - label: DINO_unfreeze
-    variant: state_image
-    model_dir: bs32_FSQ333_zero01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_libero_90_full_firsthalf_scene_terminator_DINO_unfrez
-    checkpoint: "050000"
+    model_dir: bs32_FSQ3333_termRES_contrastive_1750_pt_libero_90_full_full_terminator
+    checkpoint: "100000"
 
-output_name: "zero_visunfreeze"
+output_name: "cotrained_vs_seperate_successX"
 
 resume: true
 
@@ -74,16 +70,19 @@ seed: 42
 time_shift_offset: 15
 n_action_steps: 5
 
-# Selected skill occurrences are distributed over this many one-GPU Slurm
-# array workers. The resolver caps it to the number of selected episodes.
+# Upper bound on physical GPUs. Multiple independent occurrence workers share
+# each GPU, and unused GPUs are never requested.
 eval_num_gpus: 10
+eval_max_workers_per_gpu: 4
 
 terminator:
   end_mode: termination               # termination | progress | or | and
   # Each termination bar freezes at its first crossing of this threshold.
   end_threshold: 0.5
   progress_threshold: 0.95
-  max_skill_length: 200
+  # Per-occurrence rollout budget = ceil(GT skill length × this scale).
+  # Use max_skill_length instead only when a fixed budget is intentionally needed.
+  max_skill_length_scale: 2 #1.50
   # true preserves the fixed-replanning behavior: a detected boundary stops
   # only after the already-generated action chunk has been consumed.
   finish_action_chunk_on_end: true

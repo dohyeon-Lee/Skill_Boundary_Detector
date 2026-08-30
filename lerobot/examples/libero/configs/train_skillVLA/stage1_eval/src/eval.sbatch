@@ -181,6 +181,7 @@ for row in "${LOCAL_WORKER_ROWS[@]}"; do
         --env.type=libero \
         --env.task="${TARGET_TASK}" \
         --env.fps=20 \
+        --env.terminate_on_success=false \
         --env.task_ids="${worker_task_ids}" \
         --env.max_parallel_tasks="${MAX_PARALLEL_TASKS}" \
         --eval.batch_size="${EVAL_BATCH_SIZE}" \

@@ -385,6 +385,105 @@ def test_gt_rollout_seeds_and_advances_previous_action(monkeypatch) -> None:
     np.testing.assert_array_equal(seen[2], [3.0, 4.0])
 
 
+def test_rollout_max_skill_length_scales_each_occurrence_and_early_start() -> None:
+    base = MODULE._rollout_max_skill_length(
+        gt_length=45,
+        mode="gt_scale",
+        fixed_length=1,
+        scale=1.5,
+    )
+
+    assert base == 68
+    assert MODULE._branch_max_skill_length(
+        base_max_skill_length=base,
+        branch="policy_early",
+        time_shift_offset=15,
+    ) == 83
+    assert MODULE._branch_max_skill_length(
+        base_max_skill_length=base,
+        branch="policy",
+        time_shift_offset=15,
+    ) == 68
+
+
+def test_policy_rollout_records_but_does_not_stop_on_task_success(monkeypatch) -> None:
+    class _Policy(nn.Linear):
+        def __init__(self) -> None:
+            super().__init__(1, 1)
+
+        def reset(self) -> None:
+            pass
+
+        def predict_action_chunk(self, _batch):
+            return torch.zeros(1, 1, 7)
+
+    class _Env:
+        def __init__(self) -> None:
+            self._env = self
+            self.steps = 0
+
+        def step(self, _action):
+            self.steps += 1
+            # LIBERO's raw env reports done on task success. That signal must
+            # not terminate a learned-terminator rollout.
+            return object(), 0.0, self.steps >= 1, {}
+
+        def check_success(self) -> bool:
+            return self.steps >= 1
+
+    signals = iter([0.0, 0.0, 1.0])
+
+    def query(**_kwargs):
+        termination = next(signals)
+        return (
+            {MODULE.RAW_IMAGE: torch.zeros(1, 3, 8, 8)},
+            np.zeros(7, dtype=np.float32),
+            0.0,
+            termination,
+            [],
+        )
+
+    monkeypatch.setattr(MODULE, "_query_terminator", query)
+    monkeypatch.setattr(MODULE, "_restore_state", lambda *_args: object())
+    monkeypatch.setattr(
+        MODULE, "_render", lambda *_args: np.zeros((8, 8, 3), dtype=np.uint8)
+    )
+    monkeypatch.setattr(
+        MODULE,
+        "_postprocess_action",
+        lambda *_args: np.zeros(7, dtype=np.float32),
+    )
+    result = MODULE._run_policy(
+        base_env=_Env(),
+        state=np.zeros(7, dtype=np.float32),
+        expected_filtered_state=np.zeros(7, dtype=np.float32),
+        token=1,
+        context={
+            "policy": SimpleNamespace(
+                policy=_Policy(),
+                terminator=SimpleNamespace(reset=lambda: None),
+            ),
+            "postprocessor": object(),
+            "display_terminators": [],
+        },
+        env_preprocessor=object(),
+        env_postprocessor=object(),
+        max_skill_length=10,
+        n_action_steps=1,
+        end_mode="termination",
+        end_threshold=0.5,
+        progress_threshold=0.95,
+        finish_action_chunk_on_end=False,
+        seed=1,
+    )
+
+    assert result["task_success_seen"] is True
+    assert result["task_success_step"] == 1
+    assert result["steps"] == 2
+    assert result["stop_reason"] == "predicted_end"
+    assert result["environment_done_step"] is None
+
+
 @pytest.mark.parametrize(
     ("variant", "expected_type", "expected_prefix"),
     [

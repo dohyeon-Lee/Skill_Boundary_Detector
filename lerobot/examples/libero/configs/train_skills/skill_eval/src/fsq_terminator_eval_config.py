@@ -10,6 +10,7 @@ decide. Every listed model is scored the same way, against the same GT skills.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -157,6 +158,142 @@ def _resolve_auxiliary_checkpoint(run_dir: Path, checkpoint: str) -> tuple[Path,
     return model_dir, str(step)
 
 
+def _fsq_checkpoint_path(run_dir: Path, checkpoint: str) -> Path:
+    if checkpoint == "best":
+        return run_dir / "FSQ.pt"
+    if checkpoint.isdigit() and int(checkpoint) > 0:
+        return run_dir / f"FSQ_epoch{int(checkpoint):04d}.pt"
+    raise ValueError(f"Invalid source FSQ checkpoint tag: {checkpoint!r}.")
+
+
+def _validate_source_fsq_reference(
+    *,
+    run_name: str,
+    checkpoint: str,
+    outputs_root: Path,
+    levels: list[int],
+    provenance_path: Path,
+) -> tuple[str, str]:
+    run_dir = outputs_root / "FSQ" / run_name
+    meta_path = run_dir / "fsq_meta.json"
+    model_path = _fsq_checkpoint_path(run_dir, checkpoint)
+    if not meta_path.is_file() or not model_path.is_file():
+        raise FileNotFoundError(
+            "Recorded FSQ provenance points to an incomplete source: "
+            f"run={run_name!r}, checkpoint={checkpoint!r}, metadata={provenance_path}."
+        )
+    meta = json.loads(meta_path.read_text())
+    meta_levels = meta.get("fsq_levels")
+    if meta_levels is not None and [int(value) for value in meta_levels] != levels:
+        raise ValueError(
+            "Recorded FSQ provenance has a different code space: "
+            f"levels={meta_levels!r}, expected={levels!r}, metadata={provenance_path}."
+        )
+    return run_name, checkpoint
+
+
+def _explicit_source_fsq_reference(
+    source: dict,
+    *,
+    fsq_path: Path,
+    outputs_root: Path,
+    levels: list[int],
+) -> tuple[str, str] | None:
+    """Read immutable source provenance saved by current dataset builders."""
+    run_name = str(source.get("source_fsq_run_name", "") or "").strip()
+    checkpoint = str(source.get("source_fsq_checkpoint", "") or "").strip().lower()
+    checkpoint = "best" if checkpoint == "0" else checkpoint
+    provenance_path = fsq_path.parent / "fsq_source.json"
+    if provenance_path.is_file():
+        provenance = json.loads(provenance_path.read_text())
+        manifest_run = str(provenance.get("source_fsq_run_name", "") or "").strip()
+        manifest_checkpoint = str(
+            provenance.get("source_fsq_checkpoint", "") or ""
+        ).strip().lower()
+        manifest_checkpoint = (
+            "best" if manifest_checkpoint == "0" else manifest_checkpoint
+        )
+        if run_name and manifest_run and run_name != manifest_run:
+            raise ValueError(
+                "Auxiliary checkpoint and dataset disagree on source_fsq_run_name: "
+                f"{run_name!r} vs {manifest_run!r}."
+            )
+        if checkpoint and manifest_checkpoint and checkpoint != manifest_checkpoint:
+            raise ValueError(
+                "Auxiliary checkpoint and dataset disagree on source_fsq_checkpoint: "
+                f"{checkpoint!r} vs {manifest_checkpoint!r}."
+            )
+        run_name = run_name or manifest_run
+        checkpoint = checkpoint or manifest_checkpoint
+    if not run_name and not checkpoint:
+        return None
+    if not run_name or not checkpoint:
+        raise ValueError(
+            "FSQ source provenance must contain both source_fsq_run_name and "
+            f"source_fsq_checkpoint: {provenance_path}."
+        )
+    return _validate_source_fsq_reference(
+        run_name=run_name,
+        checkpoint=checkpoint,
+        outputs_root=outputs_root,
+        levels=levels,
+        provenance_path=provenance_path,
+    )
+
+
+def _checkpoint_tag_from_code_space(code_space: str) -> str | None:
+    # Current concise identities end in ``_<epoch>_pt`` (or ft/ft_own). Keep
+    # the mode anchor so pmax and percentage numbers cannot be mistaken for it.
+    matches = re.findall(r"_(best|[1-9][0-9]*)_(?:pt|ft|ft_own)(?:_|$)", code_space)
+    return matches[-1] if matches else None
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(8 * 1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _match_copied_fsq_checkpoint(
+    *,
+    fsq_path: Path,
+    code_space: str,
+    outputs_root: Path,
+    levels: list[int],
+) -> tuple[str, str] | None:
+    """Recover concise pre-provenance datasets by exact checkpoint content."""
+    checkpoint = _checkpoint_tag_from_code_space(code_space)
+    if checkpoint is None:
+        return None
+    fsq_outputs = outputs_root / "FSQ"
+    source_size = fsq_path.stat().st_size
+    source_hash: str | None = None
+    matches: list[str] = []
+    for run_dir in fsq_outputs.iterdir() if fsq_outputs.is_dir() else ():
+        meta_path = run_dir / "fsq_meta.json"
+        if not run_dir.is_dir() or not meta_path.is_file():
+            continue
+        meta = json.loads(meta_path.read_text())
+        meta_levels = meta.get("fsq_levels")
+        if meta_levels is not None and [int(value) for value in meta_levels] != levels:
+            continue
+        candidate = _fsq_checkpoint_path(run_dir, checkpoint)
+        if not candidate.is_file() or candidate.stat().st_size != source_size:
+            continue
+        if source_hash is None:
+            source_hash = _sha256(fsq_path)
+        if _sha256(candidate) == source_hash:
+            matches.append(run_dir.name)
+    if len(matches) > 1:
+        raise ValueError(
+            "Copied auxiliary FSQ checkpoint matches multiple source runs; add "
+            f"fsq_source.json beside {fsq_path}: {sorted(matches)}."
+        )
+    return (matches[0], checkpoint) if matches else None
+
+
 def _resolve_auxiliary_artifact(
     entry: dict,
     *,
@@ -190,14 +327,21 @@ def _resolve_auxiliary_artifact(
         raise ValueError(
             f"Auxiliary checkpoint is missing skill_fsq_levels: {checkpoint_dir}."
         )
+    levels = [int(level) for level in levels]
+    explicit_source = _explicit_source_fsq_reference(
+        source,
+        fsq_path=fsq_path,
+        outputs_root=outputs_root,
+        levels=levels,
+    )
     # SkillVLA data identities wrap the original FSQ run as
     # FSQ<levels>_<fsq-run>_<epoch>_<segmentation...>. Recover that immutable
     # source from existing FSQ run folders instead of guessing at underscores
     # inside the run name.
-    fsq_prefix = "FSQ" + "".join(str(int(level)) for level in levels) + "_"
+    fsq_prefix = "FSQ" + "".join(str(level) for level in levels) + "_"
     source_candidates: list[tuple[int, str, str]] = []
     fsq_outputs = outputs_root / "FSQ"
-    if fsq_outputs.is_dir():
+    if explicit_source is None and fsq_outputs.is_dir():
         for candidate in fsq_outputs.iterdir():
             if not candidate.is_dir() or not (candidate / "fsq_meta.json").is_file():
                 continue
@@ -211,12 +355,25 @@ def _resolve_auxiliary_artifact(
                 source_candidates.append(
                     (len(candidate.name), candidate.name, checkpoint_tag)
                 )
-    if not source_candidates:
-        raise FileNotFoundError(
-            "Could not map auxiliary skill_code_space_id back to an FSQ run: "
-            f"{code_space!r} under {fsq_outputs}."
+    if explicit_source is not None:
+        fsq_run_name, fsq_checkpoint = explicit_source
+    elif source_candidates:
+        _, fsq_run_name, fsq_checkpoint = max(source_candidates)
+    else:
+        copied_source = _match_copied_fsq_checkpoint(
+            fsq_path=fsq_path,
+            code_space=code_space,
+            outputs_root=outputs_root,
+            levels=levels,
         )
-    _, fsq_run_name, fsq_checkpoint = max(source_candidates)
+        if copied_source is not None:
+            fsq_run_name, fsq_checkpoint = copied_source
+        else:
+            raise FileNotFoundError(
+                "Could not map auxiliary skill_code_space_id back to an FSQ run: "
+                f"{code_space!r} under {fsq_outputs}. No explicit provenance, "
+                "legacy name match, or byte-identical source checkpoint was found."
+            )
     base = _resolve_fsq_artifact(
         {"fsq_eval_run_name": fsq_run_name},
         dataset_root=dataset_root,

@@ -77,6 +77,29 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
 # ── (c) copy the FSQ checkpoint used ──
 cp -f "${FSQ_MODEL_PATH}" "${FSQ_COPY_PATH}"
 echo "Copied FSQ checkpoint → ${FSQ_COPY_PATH}"
+"${PROJECT_ROOT}/.venv/bin/python" - \
+  "${SKILLVLA_RUN_DIR}/fsq_source.json" \
+  "${FSQ_RUN_NAME}" "${FSQ_CHECKPOINT}" \
+  "${FSQ_MODEL_PATH}" "${FSQ_COPY_PATH}" <<'PY'
+import json
+import os
+import sys
+from pathlib import Path
+
+output = Path(sys.argv[1])
+checkpoint = "best" if sys.argv[3] == "0" else sys.argv[3]
+payload = {
+    "schema_version": 1,
+    "source_fsq_run_name": sys.argv[2],
+    "source_fsq_checkpoint": checkpoint,
+    "source_fsq_model_path": sys.argv[4],
+    "copied_fsq_path": sys.argv[5],
+}
+temporary = output.with_name(f"{output.name}.tmp.{os.getpid()}")
+temporary.write_text(json.dumps(payload, indent=2) + "\n")
+temporary.replace(output)
+PY
+echo "Recorded FSQ provenance → ${SKILLVLA_RUN_DIR}/fsq_source.json"
 
 # ── (d) transition pack — stage-3 / FT-replay training set (segment-level skill-start pairs).
 # Built here so every fresh dataset ships with it; rebuild old packs that lack the raw start-state window.

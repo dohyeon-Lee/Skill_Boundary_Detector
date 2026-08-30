@@ -4,8 +4,10 @@ This evaluator is the episode-exact, single-skill evaluation separated from
 `stage1_skill_eval`. It loads one controlling terminator and any number of
 independent display-only terminators:
 
-- `external_skill_model` (or the action checkpoint's own terminator) is the
-  **MAIN** terminator and controls rollout stopping. Its mapping
+- `model.terminator_source` selects the **MAIN** terminator that controls
+  rollout stopping: `own` uses the Stage-1 checkpoint copy, `original` follows
+  that checkpoint's `fsq_path` and reconstructs the co-trained FSQ terminator,
+  and `external` uses `external_skill_model`. The external mapping
   can be `{variant: fsq_initial}` to reconstruct the pristine terminator from
   the selected action policy's raw `FSQ.pt`, or can select a trained overlay
   using `variant: state_image|image_only|wrist_only|state_only|state_rnn` plus
@@ -59,6 +61,12 @@ Edit `terminator_eval_config.yaml`, then submit with:
 ```bash
 ./submit_terminator_eval.sh
 ```
+
+`eval_num_gpus` is a physical-GPU ceiling and
+`eval_max_workers_per_gpu` controls how many independent evaluator processes
+share each GPU (maximum 4). The planner requests only the number of GPUs needed
+for the selected episodes; for example, six episode workers with a limit of
+four workers per GPU request two GPUs, not six or the full configured ceiling.
 
 Outputs, logs, and config snapshots remain under this `terminator_eval`
 directory and do not overlap `stage1_skill_eval` artifacts.

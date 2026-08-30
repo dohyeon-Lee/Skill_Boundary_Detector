@@ -330,14 +330,17 @@ def build_settings(config: dict) -> dict:
     contract = _checkpoint_contract(policy_path, project_root)
 
     terminator_source = str(model.get("terminator_source", "own")).strip().lower()
-    if terminator_source not in {"own", "external"}:
-        raise ValueError("model.terminator_source must be own|external.")
-    external_skill_model, external_skill_model_variant = _resolve_external_model(
-        config,
-        project_root,
-        outputs_root,
-        fsq_path=Path(contract["fsq_path"]),
-    )
+    if terminator_source not in {"own", "original", "external"}:
+        raise ValueError("model.terminator_source must be own|original|external.")
+    external_skill_model = None
+    external_skill_model_variant = "checkpoint"
+    if terminator_source == "external":
+        external_skill_model, external_skill_model_variant = _resolve_external_model(
+            config,
+            project_root,
+            outputs_root,
+            fsq_path=Path(contract["fsq_path"]),
+        )
     display_terminator_models = _resolve_display_models(
         config,
         project_root,
@@ -353,6 +356,13 @@ def build_settings(config: dict) -> dict:
         if not contract["has_terminator"]:
             raise ValueError(
                 f"terminator_source=own but checkpoint has no trained terminator: {policy_path}"
+            )
+    elif terminator_source == "original":
+        fsq_path = Path(contract["fsq_path"])
+        if not fsq_path.is_file():
+            raise FileNotFoundError(
+                "terminator_source=original could not find the selected policy's "
+                f"source FSQ checkpoint: {fsq_path}"
             )
     else:
         if external_skill_model is None:
@@ -421,10 +431,20 @@ def build_settings(config: dict) -> dict:
     requested_eval_gpus = int(get_value(config, "eval_num_gpus", 1))
     if requested_eval_gpus <= 0:
         raise ValueError("eval_num_gpus must be positive.")
+    eval_max_workers_per_gpu = int(
+        get_value(config, "eval_max_workers_per_gpu", 4)
+    )
+    if not 1 <= eval_max_workers_per_gpu <= 4:
+        raise ValueError("eval_max_workers_per_gpu must be between 1 and 4.")
     selected_episode_upper_bound = (
         len(episode_ids) if episode_ids else len(task_ids) * episodes_per_task
     )
-    eval_num_gpus = min(requested_eval_gpus, selected_episode_upper_bound)
+    # Every selected episode contains at least one independent skill
+    # occurrence, so this is a safe upper bound for logical workers before the
+    # exact occurrence list is loaded on the compute node. The shared packing
+    # planner may place several such workers on one physical GPU.
+    eval_work_unit_count = selected_episode_upper_bound
+    eval_num_gpus = min(requested_eval_gpus, eval_work_unit_count)
 
     time_shift_offset = int(get_value(config, "time_shift_offset", 15))
     if time_shift_offset <= 0:
@@ -439,9 +459,24 @@ def build_settings(config: dict) -> dict:
     end_mode = str(_at(config, "terminator", "end_mode", default="or")).strip().lower()
     if end_mode not in {"termination", "progress", "or", "and"}:
         raise ValueError("terminator.end_mode must be termination|progress|or|and.")
-    max_skill_length = int(_at(config, "terminator", "max_skill_length", default=200))
-    if max_skill_length <= 0:
-        raise ValueError("terminator.max_skill_length must be positive.")
+    fixed_max = _at(config, "terminator", "max_skill_length", default=None)
+    scaled_max = _at(config, "terminator", "max_skill_length_scale", default=None)
+    if fixed_max is not None and scaled_max is not None:
+        raise ValueError(
+            "terminator cannot set both max_skill_length and max_skill_length_scale."
+        )
+    if scaled_max is not None:
+        max_skill_length = 1  # Imported Stage-1 wrapper requires an integer.
+        max_skill_length_mode = "gt_scale"
+        max_skill_length_scale = float(scaled_max)
+        if max_skill_length_scale < 1.0:
+            raise ValueError("terminator.max_skill_length_scale must be >= 1.0.")
+    else:
+        max_skill_length = int(200 if fixed_max is None else fixed_max)
+        max_skill_length_mode = "fixed"
+        max_skill_length_scale = 0.0
+        if max_skill_length <= 0:
+            raise ValueError("terminator.max_skill_length must be positive.")
 
     original_dataset_dir = _resolve_path(
         project_root,
@@ -499,6 +534,8 @@ def build_settings(config: dict) -> dict:
         "episode_selection": episode_selection,
         "episode_exact": True,
         "eval_num_gpus": eval_num_gpus,
+        "eval_max_workers_per_gpu": eval_max_workers_per_gpu,
+        "eval_work_unit_count": eval_work_unit_count,
         "eval_seed": int(get_value(config, "seed", 42)),
         "time_shift_offset": time_shift_offset,
         "n_action_steps": n_action_steps,
@@ -510,6 +547,8 @@ def build_settings(config: dict) -> dict:
             _at(config, "terminator", "progress_threshold", default=0.95)
         ),
         "inference_skill_max_length": max_skill_length,
+        "skill_max_length_mode": max_skill_length_mode,
+        "skill_max_length_scale": max_skill_length_scale,
         "finish_action_chunk_on_end": as_bool(
             _at(config, "terminator", "finish_action_chunk_on_end", default=True)
         ),

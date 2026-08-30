@@ -119,6 +119,7 @@ class LiberoEnv(gym.Env):
         camera_name_mapping: dict[str, str] | None = None,
         num_steps_wait: int = 10,
         control_mode: str = "relative",
+        terminate_on_success: bool = True,
     ):
         super().__init__()
         self.task_id = task_id
@@ -161,6 +162,7 @@ class LiberoEnv(gym.Env):
             else self.episode_length
         )
         self.control_mode = control_mode
+        self.terminate_on_success = bool(terminate_on_success)
         images = {}
         for cam in self.camera_name:
             images[self.camera_name_mapping[cam]] = spaces.Box(
@@ -337,7 +339,14 @@ class LiberoEnv(gym.Env):
         raw_obs, reward, done, info = self._env.step(action)
 
         is_success = self._env.check_success()
-        terminated = done or is_success
+        # LIBERO reports ``done=True`` when the task succeeds. Skill-aware
+        # evaluation must keep stepping after success so its learned terminator
+        # can observe post-success frames. Preserve non-success environment
+        # termination while excluding success-derived ``done`` in that mode.
+        environment_done = bool(done) and not bool(is_success)
+        terminated = environment_done or (
+            bool(is_success) and self.terminate_on_success
+        )
         info.update(
             {
                 "task": self.task,

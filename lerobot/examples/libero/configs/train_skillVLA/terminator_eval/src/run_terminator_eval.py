@@ -4,6 +4,7 @@
 import gc
 import json
 import logging
+import math
 import os
 import sys
 from collections import deque
@@ -50,6 +51,8 @@ from run_eval import (  # noqa: E402
     RAW_WRIST,
     _build_context as _build_stage1_context,
     _ensure_skill_runtime_steps,
+    _mark_startup_ready,
+    _run_inline_cuda_guard,
 )
 from skill_data import SkillEvaluationDataset, SkillOccurrence  # noqa: E402
 
@@ -896,6 +899,16 @@ def _append_display_signals(
         trace["termination"].append(termination)
 
 
+def _task_success(base_env) -> bool:
+    checker = getattr(base_env._env, "check_success", None)
+    return bool(checker()) if callable(checker) else False
+
+
+def _is_environment_done(*, raw_done: bool, task_success: bool) -> bool:
+    """Exclude LIBERO's success-derived ``done`` from rollout termination."""
+    return bool(raw_done) and not bool(task_success)
+
+
 def _run_gt_actions(
     *,
     base_env,
@@ -914,15 +927,12 @@ def _run_gt_actions(
     display_traces = _new_display_traces(context)
     stop_reason = "gt_frame_end"
     steps = 0
-    # LIBERO overrides `done` with `_check_success()`, and a demonstration keeps
-    # recording for several frames after the task first succeeds. Breaking there
-    # ended the GT replay ~9 frames short of the skill boundary on every
-    # episode-final skill, so the terminator was read at de≈9 for those and at
-    # de=0 for every mid-episode skill — the two were never comparable. Replay
-    # the full GT action sequence instead and record where success first fired.
-    # `self.done` inside robosuite stays horizon-driven, so stepping past a
-    # success is safe.
+    # Replay the full GT action sequence. Task success is read separately via
+    # check_success() and never truncates the skill; raw robosuite done remains
+    # a horizon diagnostic here.
     environment_done_step: int | None = None
+    task_success_seen = _task_success(base_env)
+    task_success_step = 0 if task_success_seen else None
     previous_action = (
         None
         if initial_previous_action is None
@@ -944,7 +954,14 @@ def _run_gt_actions(
         previous_action = np.asarray(action, dtype=np.float32).copy()
         steps += 1
         frames.append(_render(base_env))
-        if bool(done) and environment_done_step is None:
+        task_success_now = _task_success(base_env)
+        if not task_success_seen and task_success_now:
+            task_success_seen = True
+            task_success_step = steps
+        if (
+            _is_environment_done(raw_done=done, task_success=task_success_now)
+            and environment_done_step is None
+        ):
             environment_done_step = steps
     # Also annotate the state reached by the final GT action.
     _, _, progress, termination, display_signals = _query_terminator(
@@ -963,6 +980,8 @@ def _run_gt_actions(
         "steps": steps,
         "stop_reason": stop_reason,
         "environment_done_step": environment_done_step,
+        "task_success_seen": task_success_seen,
+        "task_success_step": task_success_step,
         "progress": progress_values,
         "termination": termination_values,
         "display_traces": display_traces,
@@ -1000,6 +1019,9 @@ def _run_policy(
     pending_end = False
     stop_reason = "max_skill_length"
     steps = 0
+    environment_done_step: int | None = None
+    task_success_seen = _task_success(base_env)
+    task_success_step = 0 if task_success_seen else None
     restored_state_rms = None
     previous_action = (
         None
@@ -1058,7 +1080,14 @@ def _run_policy(
         previous_action = np.asarray(action_numpy, dtype=np.float32).copy()
         steps += 1
         frames.append(_render(base_env))
-        if bool(done):
+        # Task success is a latched diagnostic signal only. Do not terminate or
+        # reset before the learned skill terminator sees post-success frames.
+        task_success_now = _task_success(base_env)
+        if not task_success_seen and task_success_now:
+            task_success_seen = True
+            task_success_step = steps
+        if _is_environment_done(raw_done=done, task_success=task_success_now):
+            environment_done_step = steps
             stop_reason = "environment_done"
             break
 
@@ -1082,6 +1111,9 @@ def _run_policy(
         "termination": termination_values,
         "display_traces": display_traces,
         "restored_state_rms": restored_state_rms,
+        "task_success_seen": task_success_seen,
+        "task_success_step": task_success_step,
+        "environment_done_step": environment_done_step,
     }
 
 
@@ -1103,9 +1135,42 @@ def _branch_start_frame(occurrence: SkillOccurrence, branch: str, offset: int) -
     raise ValueError(f"Unknown branch {branch!r}.")
 
 
+def _rollout_max_skill_length(
+    *, gt_length: int, mode: str, fixed_length: int, scale: float
+) -> int:
+    if int(gt_length) <= 0:
+        raise ValueError(f"GT skill length must be positive, got {gt_length}.")
+    if mode == "gt_scale":
+        if float(scale) < 1.0:
+            raise ValueError(f"GT max-length scale must be >= 1.0, got {scale}.")
+        return int(math.ceil(int(gt_length) * float(scale)))
+    if mode == "fixed":
+        if int(fixed_length) <= 0:
+            raise ValueError(f"Fixed max skill length must be positive, got {fixed_length}.")
+        return int(fixed_length)
+    raise ValueError(f"Unknown max skill length mode: {mode!r}.")
+
+
+def _branch_max_skill_length(
+    *, base_max_skill_length: int, branch: str, time_shift_offset: int
+) -> int:
+    """Give an early-start rollout enough budget to reach the GT start."""
+    if int(base_max_skill_length) <= 0:
+        raise ValueError(
+            f"Base max skill length must be positive, got {base_max_skill_length}."
+        )
+    if int(time_shift_offset) < 0:
+        raise ValueError(
+            f"Time-shift offset must be non-negative, got {time_shift_offset}."
+        )
+    return int(base_max_skill_length) + (
+        int(time_shift_offset) if branch == "policy_early" else 0
+    )
+
+
 def _manifest_signature(spec: dict, cfg, selected: dict[int, list[int]]) -> dict:
     return {
-        "format": "terminator_eval_v5_prev_action_context",
+        "format": "terminator_eval_v7_ignore_success_done",
         "policy_path": str(spec["policy_path"]),
         "external_skill_model": str(spec.get("external_skill_model") or ""),
         "external_skill_model_variant": str(
@@ -1120,7 +1185,15 @@ def _manifest_signature(spec: dict, cfg, selected: dict[int, list[int]]) -> dict
         "end_mode": os.environ["SKILL_END_MODE"],
         "end_threshold": float(os.environ["SKILL_END_THRESHOLD"]),
         "progress_threshold": float(os.environ["SKILL_END_PROGRESS_THRESHOLD"]),
-        "max_skill_length": int(os.environ["INFERENCE_SKILL_MAX_LENGTH"]),
+        "max_skill_length_mode": os.environ.get("SKILL_MAX_LENGTH_MODE", "fixed"),
+        "max_skill_length": (
+            int(os.environ["INFERENCE_SKILL_MAX_LENGTH"])
+            if os.environ.get("SKILL_MAX_LENGTH_MODE", "fixed") == "fixed"
+            else None
+        ),
+        "max_skill_length_scale": float(
+            os.environ.get("SKILL_MAX_LENGTH_SCALE", "0")
+        ),
         "finish_action_chunk_on_end": _as_bool(os.environ["FINISH_ACTION_CHUNK_ON_END"]),
         "seed": int(cfg.seed),
     }
@@ -1135,6 +1208,8 @@ def _save_manifest(path: Path, manifest: dict) -> None:
 
 @parser.wrap()
 def eval_main(cfg: EvalPipelineConfig):
+    _run_inline_cuda_guard()
+    _mark_startup_ready()
     spec = json.loads(os.environ.get("SPEC_JSON", "") or "{}")
     if not spec:
         raise ValueError("SPEC_JSON is empty; resolve terminator_eval_config.yaml first.")
@@ -1274,7 +1349,15 @@ def eval_main(cfg: EvalPipelineConfig):
             end_mode = os.environ["SKILL_END_MODE"]
             end_threshold = float(os.environ["SKILL_END_THRESHOLD"])
             progress_threshold = float(os.environ["SKILL_END_PROGRESS_THRESHOLD"])
-            max_skill_length = int(os.environ["INFERENCE_SKILL_MAX_LENGTH"])
+            max_skill_length_mode = os.environ.get(
+                "SKILL_MAX_LENGTH_MODE", "fixed"
+            )
+            fixed_max_skill_length = int(
+                os.environ["INFERENCE_SKILL_MAX_LENGTH"]
+            )
+            max_skill_length_scale = float(
+                os.environ.get("SKILL_MAX_LENGTH_SCALE", "0")
+            )
             finish_chunk = _as_bool(os.environ["FINISH_ACTION_CHUNK_ON_END"])
             # A termination-only MAIN terminator emits a constant zero progress, so
             # a progress-gated end_mode would either never fire ("progress"/"and")
@@ -1298,6 +1381,12 @@ def eval_main(cfg: EvalPipelineConfig):
             )
             with torch.inference_mode(), inference_context:
                 for occurrence_index, occurrence in enumerate(occurrences):
+                    max_skill_length = _rollout_max_skill_length(
+                        gt_length=occurrence.length,
+                        mode=max_skill_length_mode,
+                        fixed_length=fixed_max_skill_length,
+                        scale=max_skill_length_scale,
+                    )
                     aligned = dataset.load_aligned_episode(occurrence.episode_id)
                     vec_env = envs[cfg.env.task][occurrence.task_id]
                     base_env = vec_env.envs[0].unwrapped
@@ -1324,6 +1413,11 @@ def eval_main(cfg: EvalPipelineConfig):
                     branch_records = []
                     common_seed = int(cfg.seed) + occurrence.episode_id * 1009 + occurrence.skill_index * 17
                     for branch_name, branch_label, branch_color in BRANCHES:
+                        branch_max_skill_length = _branch_max_skill_length(
+                            base_max_skill_length=max_skill_length,
+                            branch=branch_name,
+                            time_shift_offset=shift,
+                        )
                         branch_seed = common_seed + (
                             ALT_NOISE_SEED_OFFSET
                             if branch_name == "policy_alt_noise"
@@ -1350,6 +1444,7 @@ def eval_main(cfg: EvalPipelineConfig):
                                         -shift if branch_name == "policy_early" else shift
                                     ),
                                     "steps": 0,
+                                    "max_skill_length": branch_max_skill_length,
                                     "stop_reason": "invalid_shift",
                                     "final_progress": None,
                                     "final_termination": None,
@@ -1375,7 +1470,8 @@ def eval_main(cfg: EvalPipelineConfig):
                             / f"{branch_name}.mp4"
                         )
                         log.info(
-                            "[%d/%d] token=%d ep=%d skill=%d branch=%s start=%d (offset=%+d)",
+                            "[%d/%d] token=%d ep=%d skill=%d branch=%s start=%d "
+                            "(offset=%+d max_steps=%d gt_length=%d)",
                             occurrence_index + 1,
                             len(occurrences),
                             occurrence.token,
@@ -1384,6 +1480,8 @@ def eval_main(cfg: EvalPipelineConfig):
                             branch_name,
                             start_frame,
                             offset,
+                            branch_max_skill_length,
+                            occurrence.length,
                         )
                         if branch_name == "gt":
                             result = _run_gt_actions(
@@ -1406,7 +1504,7 @@ def eval_main(cfg: EvalPipelineConfig):
                                 context=context,
                                 env_preprocessor=env_preprocessor,
                                 env_postprocessor=env_postprocessor,
-                                max_skill_length=max_skill_length,
+                                max_skill_length=branch_max_skill_length,
                                 n_action_steps=int(cfg.policy.n_action_steps),
                                 end_mode=end_mode,
                                 end_threshold=end_threshold,
@@ -1437,10 +1535,16 @@ def eval_main(cfg: EvalPipelineConfig):
                                 "original_start_frame": aligned.original_frame_at(start_frame),
                                 "requested_offset": offset,
                                 "steps": int(result["steps"]),
+                                "max_skill_length": branch_max_skill_length,
                                 "stop_reason": result["stop_reason"],
-                                # GT branch only: step at which LIBERO first
-                                # reported task success, or None. The replay no
-                                # longer stops there, so this is diagnostic.
+                                "task_success_seen": bool(
+                                    result.get("task_success_seen", False)
+                                ),
+                                "task_success_step": result.get(
+                                    "task_success_step"
+                                ),
+                                # Legacy raw-simulator done diagnostic. Task
+                                # success is tracked separately above.
                                 "environment_done_step": (
                                     None
                                     if result.get("environment_done_step") is None

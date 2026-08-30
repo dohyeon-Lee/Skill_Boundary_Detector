@@ -901,6 +901,16 @@ def _append_display_signals(
         )
 
 
+def _task_success(base_env) -> bool:
+    checker = getattr(base_env._env, "check_success", None)
+    return bool(checker()) if callable(checker) else False
+
+
+def _is_environment_done(*, raw_done: bool, task_success: bool) -> bool:
+    """Exclude LIBERO's success-derived ``done`` from rollout termination."""
+    return bool(raw_done) and not bool(task_success)
+
+
 def _run_gt_actions(
     *,
     base_env,
@@ -919,6 +929,9 @@ def _run_gt_actions(
     display_traces = _new_display_traces(context)
     stop_reason = "gt_frame_end"
     steps = 0
+    environment_done_step: int | None = None
+    task_success_seen = _task_success(base_env)
+    task_success_step = 0 if task_success_seen else None
     previous_action = (
         None
         if initial_previous_action is None
@@ -940,7 +953,12 @@ def _run_gt_actions(
         previous_action = np.asarray(action, dtype=np.float32).copy()
         steps += 1
         frames.append(_render(base_env))
-        if bool(done):
+        task_success_now = _task_success(base_env)
+        if not task_success_seen and task_success_now:
+            task_success_seen = True
+            task_success_step = steps
+        if _is_environment_done(raw_done=done, task_success=task_success_now):
+            environment_done_step = steps
             stop_reason = "environment_done"
             break
     # Also annotate the state reached by the final GT action.
@@ -962,6 +980,9 @@ def _run_gt_actions(
         "progress": progress_values,
         "termination": termination_values,
         "display_traces": display_traces,
+        "task_success_seen": task_success_seen,
+        "task_success_step": task_success_step,
+        "environment_done_step": environment_done_step,
     }
 
 
@@ -996,6 +1017,9 @@ def _run_policy(
     pending_end = False
     stop_reason = "max_skill_length"
     steps = 0
+    environment_done_step: int | None = None
+    task_success_seen = _task_success(base_env)
+    task_success_step = 0 if task_success_seen else None
     restored_state_rms = None
     main_boundary: dict[str, Any] | None = None
     boundary_display_signals: list[tuple[float, float]] | None = None
@@ -1105,7 +1129,15 @@ def _run_policy(
         previous_action = np.asarray(action_numpy, dtype=np.float32).copy()
         steps += 1
         frames.append(_render(base_env))
-        if bool(done):
+        # Task success is diagnostic only. As in the raw skill evaluator, it
+        # must not stop/reset the rollout before the learned terminator sees the
+        # resulting observations.
+        task_success_now = _task_success(base_env)
+        if not task_success_seen and task_success_now:
+            task_success_seen = True
+            task_success_step = steps
+        if _is_environment_done(raw_done=done, task_success=task_success_now):
+            environment_done_step = steps
             stop_reason = "environment_done"
             break
 
@@ -1131,6 +1163,9 @@ def _run_policy(
         "display_traces": display_traces,
         "main_boundary": main_boundary,
         "restored_state_rms": restored_state_rms,
+        "task_success_seen": task_success_seen,
+        "task_success_step": task_success_step,
+        "environment_done_step": environment_done_step,
     }
 
 
@@ -1214,7 +1249,7 @@ def _manifest_signature(specs: list[dict], cfg, selected: dict[int, list[int]]) 
             }
         )
     return {
-        "format": "stage1_skill_eval_v15_multi_skill_space",
+        "format": "stage1_skill_eval_v16_ignore_success_done",
         "policies": [
             {
                 "label": str(spec["label"]),
@@ -1767,6 +1802,15 @@ def eval_main(cfg: EvalPipelineConfig):
                                     "steps": int(result["steps"]),
                                     "max_skill_length": branch_max_skill_length,
                                     "stop_reason": result["stop_reason"],
+                                    "task_success_seen": bool(
+                                        result.get("task_success_seen", False)
+                                    ),
+                                    "task_success_step": result.get(
+                                        "task_success_step"
+                                    ),
+                                    "environment_done_step": result.get(
+                                        "environment_done_step"
+                                    ),
                                     "final_progress": (
                                         None
                                         if not result["progress"] or result["progress"][-1] is None

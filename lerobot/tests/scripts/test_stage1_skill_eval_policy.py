@@ -488,9 +488,14 @@ def test_display_value_is_frozen_at_first_fsq_main_boundary(monkeypatch) -> None
     class _BaseEnv:
         def __init__(self) -> None:
             self._env = self
+            self.steps = 0
 
         def step(self, _action):
-            return object(), 0.0, False, {}
+            self.steps += 1
+            return object(), 0.0, self.steps >= 1, {}
+
+        def check_success(self) -> bool:
+            return self.steps >= 1
 
     signals = iter(
         [
@@ -543,6 +548,10 @@ def test_display_value_is_frozen_at_first_fsq_main_boundary(monkeypatch) -> None
     )
 
     assert result["steps"] == 3
+    assert result["stop_reason"] == "predicted_end"
+    assert result["task_success_seen"] is True
+    assert result["task_success_step"] == 1
+    assert result["environment_done_step"] is None
     assert result["main_boundary"]["step"] == 1
     assert result["main_boundary"]["termination"] == pytest.approx(0.95)
     assert result["main_boundary"]["display_terminators"][0]["termination"] == pytest.approx(0.4)

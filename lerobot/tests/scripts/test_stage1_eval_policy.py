@@ -669,6 +669,31 @@ def test_oracle_can_interrupt_chunk_and_replan_on_terminator_advance() -> None:
     assert [call.item() for call in expert.calls] == [3, 7]
 
 
+def test_oracle_marks_a_fired_final_skill_as_episode_done() -> None:
+    wrapper = Stage1OraclePolicy(
+        _FakeExpert(),
+        _FakeTerminator(),
+        advance_mode="terminator",
+        end_mode="termination",
+        end_threshold=0.5,
+        progress_threshold=0.95,
+        max_skill_length=0,
+        n_action_steps=2,
+        immediate_replan_on_skill_end=True,
+    )
+    wrapper.set_forced_skill_token_sequences(
+        [[{"token": 3, "gt_length": 5}]]
+    )
+
+    wrapper.select_action(_batch())
+    assert wrapper.get_episode_done() == [False]
+    assert wrapper.get_skill_end_fired() == [False]
+
+    wrapper.select_action(_batch())
+    assert wrapper.get_episode_done() == [True]
+    assert wrapper.get_skill_end_fired() == [True]
+
+
 def test_oracle_passes_the_previous_executed_action_to_the_terminator() -> None:
     class _RecordingTerminator:
         requires_state = True

@@ -325,6 +325,9 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         self._skill_order = [-1] * count
         self._active_trace = [None] * count
         self._pending_advance: set[int] = set()
+        self._pending_episode_done: set[int] = set()
+        self._episode_done = [False] * count
+        self._skill_end_fired = [False] * count
         self._predicted_codes: torch.Tensor | None = None
         self._stage2_vlm_start: dict[str, torch.Tensor] | None = None
         # Updated through ``record_executed_action`` after both the policy and
@@ -469,6 +472,9 @@ class Stage1OraclePolicy(PreTrainedPolicy):
     def select_action(self, batch: dict) -> torch.Tensor:
         device = next(self.policy.parameters()).device
         batch_size = int(batch[OBS_STATE].shape[0])
+        if len(self._episode_done) != batch_size:
+            self._episode_done = [False] * batch_size
+        self._skill_end_fired = [False] * batch_size
         if not self._started:
             if self.skill_source != "gt":
                 if self._references is None or len(self._references) != batch_size:
@@ -492,6 +498,14 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             if self.immediate_replan_on_skill_end:
                 self._action_queue.clear()
             activated_at_start = self._activate_pending_advances(batch, device)
+        if self._pending_episode_done and (
+            not self._action_queue or self.immediate_replan_on_skill_end
+        ):
+            if self.immediate_replan_on_skill_end:
+                self._action_queue.clear()
+            for batch_index in self._pending_episode_done:
+                self._episode_done[batch_index] = True
+            self._pending_episode_done.clear()
 
         codes = self._current_codes(batch_size, device)
         progress = probability = None
@@ -547,8 +561,13 @@ class Stage1OraclePolicy(PreTrainedPolicy):
 
             if not fired:
                 continue
+            self._skill_end_fired[batch_index] = True
             if self._can_advance(batch_index):
                 self._pending_advance.add(batch_index)
+            elif self.immediate_replan_on_skill_end or not self._action_queue:
+                self._episode_done[batch_index] = True
+            else:
+                self._pending_episode_done.add(batch_index)
 
         # Immediate mode interrupts the current action chunk as soon as this
         # observation fires the boundary. Fixed mode preserves the old behavior:
@@ -582,6 +601,14 @@ class Stage1OraclePolicy(PreTrainedPolicy):
 
     def get_skill_trace(self) -> list[dict]:
         return self._trace
+
+    def get_episode_done(self) -> list[bool]:
+        """Return final-skill completion flags for the current batch."""
+        return list(self._episode_done)
+
+    def get_skill_end_fired(self) -> list[bool]:
+        """Return terminator/GT-boundary events detected on the current observation."""
+        return list(self._skill_end_fired)
 
     def get_progress_threshold(self) -> float:
         return self.progress_threshold

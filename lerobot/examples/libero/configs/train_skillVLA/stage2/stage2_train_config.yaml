@@ -15,9 +15,10 @@ dataset:
 #                Its learned reader/head/LoRA are overlaid on the base VLM.
 # Terminators stay out of Stage 2; attach one at evaluation time.
 warm_start:
-  stage1_run: bs32_libero_90_full_firsthalf_scene_FSQ333_termRES_js_2000_pt_pmax15_arch0_skillendmask_visunfreeze
+  # stage1_run: bs32_libero_90_full_firsthalf_scene_FSQ333_termRES_js_2000_pt_pmax15_arch0_skillendmask_visunfreeze
   # stage1_run: bs32_libero_90_full_firsthalf_scene_FSQ333_termRES_contrastive_2000_pt_pmax15_arch0_skillendmask_visunfreeze
   # stage1_run: bs32_libero_90_full_firsthalf_scene_FSQ333_termRES_contrastive_2000_pt_arch0_skillendmask_visunfreeze
+  stage1_run: bs32_libero_90_full_firsthalf_scene_FSQ3333_termRES_contrastive_1750_pt_arch0_skillendmask_visunfreeze
   checkpoint: "200000"
   # Uncomment only for likelihood.training_skill_source: predictor. Resolved as
   # outputs_root/skillVLA_terminator/<model_dir>/checkpoints/<checkpoint>/pretrained_model.
@@ -27,7 +28,7 @@ warm_start:
 
 # likelihood preserves the corrected legacy Stage-2 objective. dsbc freezes the
 # complete Stage-1 VSA and learns only an FRS-supervised initial-noise selector.
-stage2_mode: dsbc  # likelihood | dsbc
+stage2_mode: likelihood  # likelihood | dsbc
 
 likelihood:
   layers: 4

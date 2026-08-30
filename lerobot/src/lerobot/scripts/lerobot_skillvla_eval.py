@@ -133,6 +133,49 @@ _EVAL_GAUGE_CACHE: dict[tuple[int, int, str, int, int, str], np.ndarray] = {}
 _EVAL_GAUGE_CACHE_MAX_SIZE = 512
 
 
+def _vector_successes(info: dict[str, Any], num_envs: int) -> np.ndarray:
+    """Read per-environment success without requiring episode termination.
+
+    Gymnasium exposes ordinary step info directly, whereas auto-reset metadata
+    is nested under ``final_info``. Skill-aware evaluation disables
+    terminate-on-success, so the direct signal is the primary source.
+    """
+
+    def _as_vector(value: Any) -> np.ndarray:
+        array = np.asarray(value, dtype=bool).reshape(-1)
+        if array.size == 1 and num_envs != 1:
+            array = np.repeat(array, num_envs)
+        if array.size != num_envs:
+            raise RuntimeError(
+                f"Expected {num_envs} success values, got shape {np.asarray(value).shape}."
+            )
+        return array
+
+    if "is_success" in info:
+        values = _as_vector(info["is_success"])
+        mask = info.get("_is_success")
+        return values if mask is None else values & _as_vector(mask)
+
+    final_info = info.get("final_info")
+    if isinstance(final_info, dict) and "is_success" in final_info:
+        values = _as_vector(final_info["is_success"])
+        mask = info.get("_final_info")
+        return values if mask is None else values & _as_vector(mask)
+    return np.zeros(num_envs, dtype=bool)
+
+
+def _policy_bool_vector(policy: nn.Module, method_name: str, num_envs: int) -> np.ndarray:
+    method = getattr(policy, method_name, None)
+    if not callable(method):
+        return np.zeros(num_envs, dtype=bool)
+    values = np.asarray(method(), dtype=bool).reshape(-1)
+    if values.size != num_envs:
+        raise RuntimeError(
+            f"{method_name} returned {values.size} values for {num_envs} environments."
+        )
+    return values
+
+
 def rollout(
     env: gym.vector.VectorEnv,
     policy: PreTrainedPolicy,
@@ -192,6 +235,7 @@ def rollout(
     step = 0
     # Keep track of which environments are done.
     done = np.array([False] * env.num_envs)
+    success_seen = np.zeros(env.num_envs, dtype=bool)
     max_steps = env.call("_max_episode_steps")[0]
     progbar = trange(
         max_steps,
@@ -218,6 +262,24 @@ def rollout(
             action = policy.select_action(observation)
         action = postprocessor(action)
 
+        # A skill-aware wrapper can finish a known final skill independently
+        # of environment success. For open-ended predictor rollouts, the first
+        # learned skill boundary observed after task success closes the episode.
+        policy_done = _policy_bool_vector(policy, "get_episode_done", env.num_envs)
+        skill_end_fired = _policy_bool_vector(
+            policy, "get_skill_end_fired", env.num_envs
+        )
+        policy_done |= success_seen & skill_end_fired
+        if np.any(policy_done):
+            done |= policy_done
+            if all_dones:
+                all_dones[-1] = torch.from_numpy(done.copy())
+            # The current observation was produced by the previous action and
+            # has already been rendered. Do not execute another action once all
+            # batch elements have reached their learned final boundary.
+            if np.all(done) and all_actions:
+                break
+
         action_transition = {ACTION: action}
         action_transition = env_postprocessor(action_transition)
         action = action_transition[ACTION]
@@ -234,18 +296,9 @@ def rollout(
         if render_callback is not None:
             render_callback(env)
 
-        # VectorEnv stores is_success in `info["final_info"][env_index]["is_success"]`. "final_info" isn't
-        # available if none of the envs finished.
-        if "final_info" in info:
-            final_info = info["final_info"]
-            if not isinstance(final_info, dict):
-                raise RuntimeError(
-                    "Unsupported `final_info` format: expected dict (Gymnasium >= 1.0). "
-                    "You're likely using an older version of gymnasium (< 1.0). Please upgrade."
-                )
-            successes = final_info["is_success"].tolist()
-        else:
-            successes = [False] * env.num_envs
+        # Success is a latched metric, not necessarily an episode stop. This is
+        # what lets a terminator inspect the post-success observation window.
+        success_seen |= _vector_successes(info, env.num_envs)
 
         # Keep track of which environments are done so far.
         # Mark the episode as done if we reach the maximum step limit.
@@ -258,7 +311,7 @@ def rollout(
         all_actions.append(torch.from_numpy(action_numpy))
         all_rewards.append(torch.from_numpy(reward))
         all_dones.append(torch.from_numpy(done))
-        all_successes.append(torch.tensor(successes))
+        all_successes.append(torch.from_numpy(success_seen.copy()))
 
         step += 1
         running_success_rate = (
