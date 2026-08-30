@@ -14,7 +14,32 @@ set -euo pipefail
 SUBMIT_DIR="${STAGE2_EVAL_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 SRC_DIR="${SUBMIT_DIR}/src"
 CONFIG_PATH="${STAGE2_EVAL_CONFIG:-${SUBMIT_DIR}/stage2_eval_config.yaml}"
-BOOTSTRAP_PYTHON=/usr/bin/python3
+PROJECT_ROOT_HINT="$(cd "${SUBMIT_DIR}/../../../../../.." && pwd)"
+select_bootstrap_python() {
+  local candidate resolved
+  for candidate in \
+    "${STAGE2_EVAL_BOOTSTRAP_PYTHON:-}" \
+    "${PROJECT_ROOT_HINT}/.venv/bin/python" \
+    python3.12 python3.11 python3.10 python3 /usr/bin/python3; do
+    [ -n "${candidate}" ] || continue
+    if [[ "${candidate}" == */* ]]; then
+      [ -x "${candidate}" ] || continue
+      resolved="${candidate}"
+    else
+      resolved="$(command -v "${candidate}" 2>/dev/null || true)"
+      [ -n "${resolved}" ] || continue
+    fi
+    if "${resolved}" -c \
+      'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' \
+      >/dev/null 2>&1; then
+      printf '%s\n' "${resolved}"
+      return 0
+    fi
+  done
+  echo "Stage-2 eval requires Python >= 3.10; no compatible interpreter found." >&2
+  return 1
+}
+BOOTSTRAP_PYTHON="$(select_bootstrap_python)"
 
 if [ -z "${POLICY_PATH:-}" ]; then
   STAGE2_EVAL_EXPORTS="$(

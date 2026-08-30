@@ -11,7 +11,32 @@ while [ ! -f "${CONFIG_LIB}/snapshot_config.sh" ]; do CONFIG_LIB="$(dirname "${C
 source "${CONFIG_LIB}/snapshot_config.sh"
 CONFIG_PATH="$(snapshot_config "${CONFIG_PATH}")"
 
-BOOTSTRAP_PYTHON=/usr/bin/python3
+PROJECT_ROOT_HINT="$(cd "${SCRIPT_DIR}/../../../../../.." && pwd)"
+select_bootstrap_python() {
+  local candidate resolved
+  for candidate in \
+    "${STAGE2_EVAL_BOOTSTRAP_PYTHON:-}" \
+    "${PROJECT_ROOT_HINT}/.venv/bin/python" \
+    python3.12 python3.11 python3.10 python3 /usr/bin/python3; do
+    [ -n "${candidate}" ] || continue
+    if [[ "${candidate}" == */* ]]; then
+      [ -x "${candidate}" ] || continue
+      resolved="${candidate}"
+    else
+      resolved="$(command -v "${candidate}" 2>/dev/null || true)"
+      [ -n "${resolved}" ] || continue
+    fi
+    if "${resolved}" -c \
+      'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' \
+      >/dev/null 2>&1; then
+      printf '%s\n' "${resolved}"
+      return 0
+    fi
+  done
+  echo "Stage-2 eval requires Python >= 3.10; no compatible interpreter found." >&2
+  return 1
+}
+BOOTSTRAP_PYTHON="$(select_bootstrap_python)"
 STAGE2_EVAL_EXPORTS="$(
   "${BOOTSTRAP_PYTHON}" "${SRC_DIR}/stage2_eval_config.py" \
     --config "${CONFIG_PATH}" --shell
@@ -91,6 +116,7 @@ mkdir -p logs
 echo "Submit Stage-2 eval"
 echo "  panels : ${MODEL_COUNT} (stage2/prior structure preserved)"
 echo "  output : ${EVAL_OUT_DIR}"
+echo "  config Python: ${BOOTSTRAP_PYTHON}"
 echo "  GPUs   : ${EVAL_PHYSICAL_GPU_COUNT} physical (requested ${EVAL_NUM_GPUS})"
 echo "  workers: ${EVAL_LOGICAL_WORKER_COUNT} total, max ${EVAL_MAX_WORKERS_PER_GPU}/GPU"
 echo "  time   : ${EVAL_TIME} x ${EVAL_MAX_UNITS_PER_WORKER} max sequential units -> ${JOB_TIME}"
