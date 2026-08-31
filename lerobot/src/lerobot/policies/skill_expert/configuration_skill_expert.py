@@ -205,6 +205,9 @@ class SkillExpertConfig(PreTrainedConfig):
     n_action_steps: int = 5
     max_state_dim: int = 32
     max_action_dim: int = 32
+    # Dataset/runtime proprio coordinate contract. Historical checkpoints use
+    # world-frame EEF xyz (none); new grounded datasets subtract episode-start xyz.
+    proprio_grounding: str = "none"
 
     num_inference_steps: int = 10
     time_sampling_beta_alpha: float = 1.5
@@ -223,12 +226,16 @@ class SkillExpertConfig(PreTrainedConfig):
     # cumulative clean-action XYZ error. Flow always retains coefficient 1.
     cumulative_xyz_loss_enabled: bool = False
     cumulative_xyz_loss_weight: float = 0.5
-    # Arch0_skill training-only objective. It reuses the exact Arch0 Action
-    # Expert and predicts the selected code's complete canonical trajectory
-    # without image/state/Cond-Gemma inputs. It is never called at inference.
+    # Training-only skill flow objective. Arch0_skill predicts the selected
+    # code's complete canonical trajectory. The *_skill_chunk probes instead
+    # predict an extended current-frame action chunk. All variants reuse the
+    # exact Action Expert and are absent at inference.
     skill_flow_enabled: bool = False
     skill_flow_weight: float = 1.0
     skill_flow_max_length: int = 0
+    skill_flow_target: str = "canonical"
+    skill_flow_state_conditioned: bool = False
+    skill_flow_chunk_multiplier: int = 1
 
     vision_backbone: str = "dino"
     dino_model_path: str = "models/dinov3-vitl16"
@@ -332,11 +339,20 @@ class SkillExpertConfig(PreTrainedConfig):
 
     def __post_init__(self) -> None:
         self.architecture_label = str(self.architecture_label).strip().lower()
+        self.skill_flow_target = str(self.skill_flow_target).strip().lower()
+        self.proprio_grounding = (
+            str(self.proprio_grounding or "none").strip().lower().replace("-", "_")
+        )
         self.conditioning_route = normalize_conditioning_route(self.conditioning_route)
         self.vsa_debug_schedule = tuple(int(step) for step in self.vsa_debug_schedule)
         super().__post_init__()
         if self.dtype not in {"float32", "bfloat16"}:
             raise ValueError(f"dtype must be float32 or bfloat16, got {self.dtype!r}.")
+        if self.proprio_grounding not in {"none", "episode_start_xyz"}:
+            raise ValueError(
+                "proprio_grounding must be none|episode_start_xyz, "
+                f"got {self.proprio_grounding!r}."
+            )
         if self.action_expert_variant != "gemma_300m":
             raise ValueError(
                 "Stage 1 fixes the 18-layer expert to gemma_300m; got "
@@ -436,12 +452,20 @@ class SkillExpertConfig(PreTrainedConfig):
                 and self.architecture_revision == COND_GEMMA_ARCHITECTURE_REVISION
                 and self.architecture_label == "arch1"
             )
-            # Arch0_skill shares Arch0's parameter/state-dict contract and
-            # differs only by a training-time auxiliary objective.
+            # Arch0 skill auxiliaries share Arch0's parameter/state-dict
+            # contract and differ only by a training-time objective.
             and not (
                 self.architecture == COND_GEMMA_ARCHITECTURE
                 and self.architecture_revision == COND_GEMMA_ARCHITECTURE_REVISION
-                and self.architecture_label == "arch0_skill"
+                and self.architecture_label
+                in {"arch0_skill", "arch0_skill_chunk"}
+            )
+            # Arch0_2_skill_chunk similarly shares Arch0_2's exact parameter
+            # and rollout contract.
+            and not (
+                self.architecture == COND_GEMMA_ARCHITECTURE
+                and self.architecture_revision == COND_GEMMA_DUAL_STATE_REVISION
+                and self.architecture_label == "arch0_2_skill_chunk"
             )
             # Checkpoints from before the rename saved the current alternating
             # cross-attention revision as "arch2"; it is now called Arch2_2.
@@ -517,23 +541,71 @@ class SkillExpertConfig(PreTrainedConfig):
             raise ValueError("skill_flow_weight must be finite and positive.")
         if self.skill_flow_max_length < 0:
             raise ValueError("skill_flow_max_length must be non-negative.")
+        if self.skill_flow_target not in {"canonical", "extended_chunk"}:
+            raise ValueError(
+                "skill_flow_target must be canonical|extended_chunk, got "
+                f"{self.skill_flow_target!r}."
+            )
+        if self.skill_flow_chunk_multiplier <= 0:
+            raise ValueError("skill_flow_chunk_multiplier must be positive.")
         if self.skill_flow_enabled:
+            supported_skill_flow = {
+                "arch0_skill": (
+                    COND_GEMMA_ARCHITECTURE_REVISION,
+                    "canonical",
+                    False,
+                ),
+                "arch0_skill_chunk": (
+                    COND_GEMMA_ARCHITECTURE_REVISION,
+                    "extended_chunk",
+                    False,
+                ),
+                "arch0_2_skill_chunk": (
+                    COND_GEMMA_DUAL_STATE_REVISION,
+                    "extended_chunk",
+                    True,
+                ),
+            }
+            expected = supported_skill_flow.get(self.architecture_label)
+            actual = (
+                self.architecture_revision,
+                self.skill_flow_target,
+                self.skill_flow_state_conditioned,
+            )
             if not (
                 self.architecture == COND_GEMMA_ARCHITECTURE
-                and self.architecture_revision == COND_GEMMA_ARCHITECTURE_REVISION
-                and self.architecture_label == "arch0_skill"
                 and self.conditioning_route == "state_cond"
+                and expected == actual
             ):
                 raise ValueError(
-                    "skill_flow_enabled is supported only by arch0_skill."
+                    "skill_flow_enabled requires one of "
+                    "arch0_skill|arch0_skill_chunk|arch0_2_skill_chunk with its "
+                    f"fixed target/state contract; got label={self.architecture_label!r}, "
+                    f"revision={self.architecture_revision!r}, "
+                    f"target={self.skill_flow_target!r}, "
+                    f"state_conditioned={self.skill_flow_state_conditioned}."
                 )
             if self.skill_flow_max_length <= 0:
                 raise ValueError(
-                    "arch0_skill requires a positive skill_flow_max_length."
+                    "Skill-flow architectures require a positive skill_flow_max_length."
                 )
-            if self.training_skill_source != "gt":
+            if (
+                self.skill_flow_target == "canonical"
+                and self.training_skill_source != "gt"
+            ):
                 raise ValueError(
                     "arch0_skill currently requires training_skill_source='gt'."
+                )
+            if (
+                self.skill_flow_target == "extended_chunk"
+                and self.skill_flow_max_length
+                != self.chunk_size * self.skill_flow_chunk_multiplier
+            ):
+                raise ValueError(
+                    "Extended skill-flow length must equal chunk_size * "
+                    "skill_flow_chunk_multiplier, got "
+                    f"{self.skill_flow_max_length} != {self.chunk_size} * "
+                    f"{self.skill_flow_chunk_multiplier}."
                 )
         if self.transition_jitter_pmax < 0:
             raise ValueError("transition_jitter_pmax must be non-negative.")
@@ -672,7 +744,10 @@ class SkillExpertConfig(PreTrainedConfig):
 
     @property
     def action_delta_indices(self) -> list[int]:
-        return list(range(self.chunk_size))
+        horizon = self.chunk_size
+        if self.skill_flow_enabled and self.skill_flow_target == "extended_chunk":
+            horizon = max(horizon, self.skill_flow_max_length)
+        return list(range(horizon))
 
     @property
     def reward_delta_indices(self) -> None:

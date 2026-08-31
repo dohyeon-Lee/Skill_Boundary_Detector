@@ -25,7 +25,7 @@ vision:
 
 architecture:
   # Select with this value or
-  # `./submit_train.sh arch0|arch0_skill|arch0_1|arch0_2|arch0_2_sep|arch0_3|arch0_adaRMS|arch0_adaRMS_zero|arch0_token|arch0_token_iso|arch0_cond|arch0_both|arch1_1|arch1_2|arch1_3|arch2_1|arch2_2|arch3|arch4`.
+  # `./submit_train.sh arch0|arch0_skill|arch0_skill_chunk|arch0_1|arch0_2|arch0_2_skill_chunk|arch0_2_sep|arch0_3|arch0_adaRMS|arch0_adaRMS_zero|arch0_token|arch0_token_iso|arch0_cond|arch0_both|arch1_1|arch1_2|arch1_3|arch2_1|arch2_2|arch3|arch4`.
   #
   # Reference map (idea-level references, not exact paper reproductions):
   # - Shared visual compressor:
@@ -40,10 +40,17 @@ architecture:
   #   a second image/state-free flow path. That path uses the same jittered GT
   #   code and shared Action Expert to reconstruct the code's complete original
   #   (canonical) action trajectory; it is absent during rollout.
+  # - arch0_skill_chunk: the exact Arch0 inference architecture, plus a
+  #   training-only image/state/Cond-Gemma-free route. Given only the skill and
+  #   flow timestep, the shared Expert predicts the current action chunk with
+  #   chunk_size * skill_flow.chunk_multiplier steps.
   # - arch0_1: Arch0 visual/skill paths, but state leaves Cond-Gemma and joins
   #   timestep conditioning in the action Expert AdaRMS at every layer.
   # - arch0_2: the same projected state conditions both all Cond-Gemma tokens
   #   and the action Expert AdaRMS; no second state projection is introduced.
+  # - arch0_2_skill_chunk: the exact Arch0_2 inference architecture and the
+  #   same extended-chunk auxiliary, but its Expert-only auxiliary also keeps
+  #   the shared current-state projection in Expert AdaRMS.
   # - arch0_2_sep: Arch0_2 with independent Cond and Expert state projections;
   #   all downstream conditioning paths, masks, and transformer weights match.
   # - arch0_3: Arch0_2, except direct Cond-Gemma state AdaRMS is masked to wrist
@@ -85,7 +92,7 @@ architecture:
   # Historical checkpoints with the same arch2_1/arch2_2 labels remain
   # evaluation-only under previous/ and are distinguished by revision metadata.
 
-  # arch0 arch0_skill arch0_1 arch0_2 arch0_2_sep arch0_3 arch0_adaRMS arch0_adaRMS_zero arch0_token arch0_token_iso arch0_cond arch0_both arch1_1 arch1_2 arch1_3 arch2_1 arch2_2 arch3 arch4
+  # arch0 arch0_skill arch0_skill_chunk arch0_1 arch0_2 arch0_2_skill_chunk arch0_2_sep arch0_3 arch0_adaRMS arch0_adaRMS_zero arch0_token arch0_token_iso arch0_cond arch0_both arch1_1 arch1_2 arch1_3 arch2_1 arch2_2 arch3 arch4
   # arch0 arch0_adaRMS arch0_adaRMS_zero arch0_token arch0_token_iso
   name: arch0_skill
 
@@ -112,9 +119,12 @@ cumulative_xyz_loss:
   enabled: false
   weight: 0.5
 
-# Used only when architecture.name=arch0_skill. Main and skill-only flow losses
-# share one sampled timestep per sample but use independent Gaussian noise.
-skill_flow: {weight: 1.0}
+# Used by arch0_skill and the two *_skill_chunk probes. All share one sampled
+# timestep. arch0_skill keeps independent noise because its canonical timeline
+# differs; *_skill_chunk shares the main noise over the first chunk and samples
+# only the extended tail independently. chunk_multiplier is used only by
+# *_skill_chunk (10 -> 30 by default).
+skill_flow: {weight: 1.0, chunk_multiplier: 3}
 
 # gt: teacher-forced jittered GT code.
 # predictor: frozen checkpoint predictor(jittered skill-start input) -> hard code -> VSA.

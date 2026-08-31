@@ -56,6 +56,25 @@ def _skillvla_output_suffix(cfg: dict[str, Any]) -> str:
     return f"_{tag}"
 
 
+def _proprio_grounding(cfg: dict[str, Any]) -> tuple[str, str]:
+    """Return the canonical grounding contract and its dataset identity tag."""
+    mode = str(get_value(cfg, "proprio_grounding", "none") or "none").strip().lower()
+    aliases = {
+        "none": "none",
+        "off": "none",
+        "false": "none",
+        "episode_start_xyz": "episode_start_xyz",
+        "episode-start-xyz": "episode_start_xyz",
+    }
+    if mode not in aliases:
+        raise ValueError(
+            "proprio_grounding must be none|episode_start_xyz, "
+            f"got {mode!r}."
+        )
+    canonical = aliases[mode]
+    return canonical, "" if canonical == "none" else "_grounded"
+
+
 def _fsq_semantic_suffix(fsq_meta: dict[str, Any]) -> str:
     """Build stable FSQ architecture/loss tags from metadata, never the run name."""
     tags: list[str] = []
@@ -322,6 +341,7 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
     # the basic segmentation cardinality contract.
     data_identity_suffix = skillset_min_skills_suffix
     output_suffix = _skillvla_output_suffix(cfg)
+    proprio_grounding, proprio_grounding_suffix = _proprio_grounding(cfg)
 
     # ── FSQ (step 4) — model path from the parsed run name + checkpoint ──
     if fsq_checkpoint in ("0", "best"):
@@ -355,7 +375,8 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
             # pruning threshold. Search source-dataset directories so the FT
             # config needs no duplicated PT dataset/path field.
             pt_run_tag = (
-                f"{base_run_tag}_pt{data_identity_suffix}{output_suffix}"
+                f"{base_run_tag}_pt{data_identity_suffix}"
+                f"{proprio_grounding_suffix}{output_suffix}"
             )
             pt_refs = sorted(skillvla_root.glob(f"*/{pt_run_tag}/skill_latents.npz"))
             if len(pt_refs) != 1:
@@ -368,7 +389,9 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
                 )
             fsq_snap_reference = str(pt_refs[0])
     # Append only the remaining concise identity and the optional user label.
-    run_tag += f"{data_identity_suffix}{output_suffix}"
+    run_tag += (
+        f"{data_identity_suffix}{proprio_grounding_suffix}{output_suffix}"
+    )
     source_out_dir = skillvla_root / source_dataset
     run_dir = source_out_dir / run_tag
     work_dir = source_out_dir / "_work"
@@ -487,6 +510,7 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
         "skill_early_end_pmax": directional_pmaxes["early_end"],
         "skill_late_end_pmax": directional_pmaxes["late_end"],
         "skill_jitter_distribution": jitter_distribution,
+        "proprio_grounding": proprio_grounding,
         "skill_decoder_state_indices": str(get_value(cfg, "skill_decoder_state_indices", "[0,1,2,3,4,5,6,7]")),
         "cleanup_intermediate": str(get_value(cfg, "cleanup_intermediate", True)).lower(),
         # output layout

@@ -50,6 +50,7 @@ echo "Latents  : ${SKILL_LATENTS_PATH}"
 echo "ISS npz  : ${ISS_NPZ_PATH}   (storage pmax=${SKILL_PMAX}, directional=${SKILL_EARLY_START_PMAX}/${SKILL_LATE_START_PMAX}/${SKILL_EARLY_END_PMAX}/${SKILL_LATE_END_PMAX}, distribution=${SKILL_JITTER_DISTRIBUTION})"
 echo "FSQ.pt   : ${FSQ_COPY_PATH}"
 echo "skillvla : ${SKILLVLA_DATASET_DIR}"
+echo "proprio  : grounding=${PROPRIO_GROUNDING}"
 
 mkdir -p "${SKILLVLA_RUN_DIR}"
 
@@ -70,6 +71,7 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     --early_end_pmax   "${SKILL_EARLY_END_PMAX}" \
     --late_end_pmax    "${SKILL_LATE_END_PMAX}" \
     --jitter_distribution "${SKILL_JITTER_DISTRIBUTION}" \
+    --proprio_grounding "${PROPRIO_GROUNDING}" \
     --fsq_levels      "${FSQ_LEVELS[@]}" \
     --max_order       "${MAX_ORDER}" \
     --max_length      "${MAX_LENGTH}"

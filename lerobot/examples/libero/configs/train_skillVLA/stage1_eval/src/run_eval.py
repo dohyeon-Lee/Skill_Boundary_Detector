@@ -319,6 +319,9 @@ class Stage1OraclePolicy(PreTrainedPolicy):
     def reset(self) -> None:
         if hasattr(self, "policy"):
             self.policy.reset()
+        runtime_preprocessor = getattr(self, "_runtime_preprocessor", None)
+        if runtime_preprocessor is not None:
+            runtime_preprocessor.reset()
         self._action_queue.clear()
         source = self._sequences if self.skill_source == "gt" else self._references
         count = len(source) if source is not None else 0
@@ -985,6 +988,9 @@ def _ensure_skill_runtime_steps(
         SkillVLAPrepareStateTokenizerProcessorStep,
         SkillVLAPreserveRawStateProcessorStep,
     )
+    from lerobot.policies.skill_expert.processor_skill_expert import (  # noqa: PLC0415
+        EpisodeStartXYZGroundingProcessorStep,
+    )
     from lerobot.processor import (  # noqa: PLC0415
         DeviceProcessorStep,
         NormalizerProcessorStep,
@@ -992,6 +998,51 @@ def _ensure_skill_runtime_steps(
     )
 
     steps = list(preprocessor.steps)
+    proprio_grounding = str(
+        getattr(policy_config, "proprio_grounding", "none") or "none"
+    ).strip().lower().replace("-", "_")
+    # This first rollout implementation is intentionally scoped to Stage 1.
+    # Stage-2 evaluation shares this module but keeps its existing input path.
+    if policy_config.type == "skill_expert" and proprio_grounding == "episode_start_xyz":
+        if not any(
+            isinstance(step, EpisodeStartXYZGroundingProcessorStep)
+            for step in steps
+        ):
+            normalizer_index = next(
+                (
+                    index
+                    for index, step in enumerate(steps)
+                    if isinstance(step, NormalizerProcessorStep)
+                ),
+                None,
+            )
+            if normalizer_index is None:
+                raise ValueError(
+                    "Cannot add episode-start proprio grounding: saved "
+                    "preprocessor has no normalizer step."
+                )
+            preserve_index = next(
+                (
+                    index
+                    for index, step in enumerate(steps)
+                    if isinstance(step, SkillVLAPreserveRawStateProcessorStep)
+                ),
+                normalizer_index,
+            )
+            steps.insert(
+                min(normalizer_index, preserve_index),
+                EpisodeStartXYZGroundingProcessorStep(),
+            )
+    elif proprio_grounding != "none" and policy_config.type == "skill_expert":
+        raise ValueError(
+            f"Unsupported Stage-1 proprio_grounding={proprio_grounding!r}."
+        )
+    elif proprio_grounding != "none":
+        raise ValueError(
+            "episode-start proprio grounding is currently implemented only for "
+            "Stage-1 skill_expert evaluation; refusing to evaluate "
+            f"policy.type={policy_config.type!r} with an ungrounded input."
+        )
     if needs_terminator and not any(
         isinstance(step, SkillVLAPreserveRawStateProcessorStep) for step in steps
     ):
@@ -1093,6 +1144,11 @@ def _build_context(spec: dict, cfg, device: torch.device) -> dict:
         spec.get("external_terminator_model") or external_skill_model
     ).strip()
     policy_config = _policy_config(spec, cfg.policy, device)
+    log.info(
+        "[%s] proprio grounding=%s (checkpoint contract; no eval YAML override).",
+        spec["label"],
+        getattr(policy_config, "proprio_grounding", "none"),
+    )
     if policy_config.type == "skill_vla_stage2":
         stage2_mode = str(getattr(policy_config, "stage2_mode", "likelihood"))
         dsbc_detail = (
@@ -1257,6 +1313,9 @@ def _build_context(spec: dict, cfg, device: torch.device) -> dict:
         needs_predictor=skill_source != "gt",
         needs_terminator=advance_mode != "gt",
     )
+    # rollout() resets the policy but not its separately-owned preprocessor.
+    # Let the wrapper clear the cached episode-start xyz at every rollout reset.
+    wrapper._runtime_preprocessor = preprocessor
     return {
         "policy": wrapper,
         "preprocessor": preprocessor,
@@ -1336,6 +1395,7 @@ def _panel_signature(spec: dict, task_names: set[str], cfg) -> dict:
         "architecture_label": spec.get("architecture_label"),
         "architecture_revision": spec.get("architecture_revision"),
         "conditioning_route": spec.get("conditioning_route"),
+        "proprio_grounding": spec.get("proprio_grounding", "none"),
         "stage2_mode": spec.get("stage2_mode"),
         "dsbc_noise_output_mode": spec.get("dsbc_noise_output_mode"),
         "dsbc_frs_num_steps": spec.get("dsbc_frs_num_steps"),
@@ -1552,6 +1612,9 @@ def _maybe_log_wandb(cfg, infos: dict[str, dict], specs: list[dict]) -> None:
                         "architecture_label": spec.get("architecture_label"),
                         "architecture_revision": spec.get("architecture_revision"),
                         "conditioning_route": spec.get("conditioning_route"),
+                        "proprio_grounding": spec.get(
+                            "proprio_grounding", "none"
+                        ),
                         "stage2_mode": spec.get("stage2_mode"),
                         "dsbc_noise_output_mode": spec.get(
                             "dsbc_noise_output_mode"

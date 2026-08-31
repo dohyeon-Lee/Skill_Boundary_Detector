@@ -217,6 +217,23 @@ def test_stage1_reads_directional_jitter_contract(tmp_path: Path) -> None:
     assert settings["transition_jitter_late_end_pmax"] == 5
 
 
+def test_stage1_inherits_proprio_grounding_from_dataset(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    info_path = (
+        Path(config["project_root"])
+        / "dataset/skillvla_dataset/source"
+        / config["dataset"]["run"]
+        / "skillvla/meta/info.json"
+    )
+    info = json.loads(info_path.read_text())
+    info["proprio_grounding"] = "episode_start_xyz"
+    info_path.write_text(json.dumps(info))
+
+    settings = build_settings(config)
+
+    assert settings["proprio_grounding"] == "episode_start_xyz"
+
+
 def test_stage1_muon_probe_defaults_off_and_keeps_names(tmp_path: Path) -> None:
     settings = build_settings(_config(tmp_path))
     assert settings["use_muon"] is False
@@ -344,7 +361,7 @@ def test_stage1_rejects_any_other_architecture(tmp_path: Path) -> None:
 
     with pytest.raises(
         ValueError,
-        match=r"must be arch0\|arch0_skill\|arch0_1\|arch0_2\|arch0_2_sep\|arch0_3",
+        match=r"must be arch0\|arch0_skill\|arch0_skill_chunk\|arch0_1\|arch0_2\|arch0_2_skill_chunk",
     ):
         build_settings(config)
 
@@ -484,6 +501,8 @@ def test_arch0_skill_exports_canonical_flow_contract(tmp_path: Path) -> None:
     assert settings["skill_flow_enabled"] is True
     assert settings["skill_flow_weight"] == pytest.approx(0.75)
     assert settings["skill_flow_max_length"] == 171
+    assert settings["skill_flow_target"] == "canonical"
+    assert settings["skill_flow_state_conditioned"] is False
     assert settings["pt_run_name"].endswith("_arch0_skill")
 
     config["action_conditioning"]["training_skill_source"] = "predictor"
@@ -494,6 +513,38 @@ def test_arch0_skill_exports_canonical_flow_contract(tmp_path: Path) -> None:
         (tokenizer / filename).write_text("{}")
     with pytest.raises(ValueError, match="arch0_skill currently requires"):
         build_settings(config)
+
+
+@pytest.mark.parametrize(
+    ("label", "revision", "state_conditioned"),
+    [
+        ("arch0_skill_chunk", "skillvla_real_v1", False),
+        ("arch0_2_skill_chunk", "cond_expert_state_adarms_v1", True),
+    ],
+)
+def test_skill_chunk_architectures_export_extended_flow_contract(
+    tmp_path: Path,
+    label: str,
+    revision: str,
+    state_conditioned: bool,
+) -> None:
+    config = _config(tmp_path)
+    config["architecture"].update({"name": label, "chunk_size": 10})
+    config["skill_flow"] = {"weight": 0.6, "chunk_multiplier": 3}
+    config["mask_actions_after_skill_end"] = True
+
+    settings = build_settings(config)
+
+    assert settings["architecture"] == "cond_gemma"
+    assert settings["architecture_label"] == label
+    assert settings["architecture_revision"] == revision
+    assert settings["skill_flow_enabled"] is True
+    assert settings["skill_flow_target"] == "extended_chunk"
+    assert settings["skill_flow_state_conditioned"] is state_conditioned
+    assert settings["skill_flow_chunk_multiplier"] == 3
+    assert settings["skill_flow_max_length"] == 30
+    assert settings["mask_actions_after_skill_end"] is True
+    assert settings["pt_run_name"].endswith(f"_{label}_skillendmask")
 
 
 @pytest.mark.parametrize(

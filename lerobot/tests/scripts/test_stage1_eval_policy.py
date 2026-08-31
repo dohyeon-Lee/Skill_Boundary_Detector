@@ -19,6 +19,9 @@ from run_eval import CheckpointTerminator, Stage1OraclePolicy
 from lerobot.policies.skill_expert import modeling_skill_expert
 from lerobot.policies.skill_expert.configuration_skill_expert import SkillExpertConfig
 from lerobot.policies.skill_expert.modeling_skill_expert import SkillExpertPolicy
+from lerobot.policies.skill_expert.processor_skill_expert import (
+    EpisodeStartXYZGroundingProcessorStep,
+)
 from lerobot.scripts.lerobot_skillvla_eval import (
     _annotate_eval_video,
     _progress_values_from_trace,
@@ -27,6 +30,48 @@ from lerobot.scripts.lerobot_skillvla_eval import (
     _termination_values_from_trace,
 )
 from lerobot.utils.constants import STAGE2_VLM_CACHE_ID
+from lerobot.types import TransitionKey
+from lerobot.utils.constants import OBS_STATE
+
+
+def test_episode_start_grounding_is_stateful_and_resettable() -> None:
+    step = EpisodeStartXYZGroundingProcessorStep()
+
+    first = step(
+        {
+            TransitionKey.OBSERVATION: {
+                OBS_STATE: torch.tensor([[10.0, 20.0, 30.0, 4.0]])
+            }
+        }
+    )
+    second = step(
+        {
+            TransitionKey.OBSERVATION: {
+                OBS_STATE: torch.tensor([[11.0, 18.0, 33.0, 5.0]])
+            }
+        }
+    )
+    torch.testing.assert_close(
+        first[TransitionKey.OBSERVATION][OBS_STATE],
+        torch.tensor([[0.0, 0.0, 0.0, 4.0]]),
+    )
+    torch.testing.assert_close(
+        second[TransitionKey.OBSERVATION][OBS_STATE],
+        torch.tensor([[1.0, -2.0, 3.0, 5.0]]),
+    )
+
+    step.reset()
+    reset_first = step(
+        {
+            TransitionKey.OBSERVATION: {
+                OBS_STATE: torch.tensor([[100.0, 200.0, 300.0, 6.0]])
+            }
+        }
+    )
+    torch.testing.assert_close(
+        reset_first[TransitionKey.OBSERVATION][OBS_STATE],
+        torch.tensor([[0.0, 0.0, 0.0, 6.0]]),
+    )
 
 
 def test_inline_cuda_guard_is_opt_in(monkeypatch, tmp_path: Path) -> None:

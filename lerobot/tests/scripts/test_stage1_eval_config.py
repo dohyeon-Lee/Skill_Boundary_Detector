@@ -220,6 +220,42 @@ def test_grid_uses_models_as_columns_and_checkpoints_as_rows(tmp_path: Path) -> 
     ]
 
 
+def test_eval_infers_grounding_from_checkpoint_without_yaml_override(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    project = Path(config["project_root"])
+    policy_path = (
+        project
+        / "outputs/skillVLA_stage1/new-vsa/checkpoints/000100/pretrained_model/config.json"
+    )
+    policy = json.loads(policy_path.read_text())
+    policy["proprio_grounding"] = "episode_start_xyz"
+    policy_path.write_text(json.dumps(policy))
+    info_path = project / "dataset/skillvla_dataset/source/run/skillvla/meta/info.json"
+    info_path.write_text(json.dumps({"proprio_grounding": "episode_start_xyz"}))
+
+    settings = build_settings(config)
+    models = json.loads(settings["models_json"])
+
+    assert models[0]["proprio_grounding"] == "episode_start_xyz"
+
+
+def test_eval_rejects_checkpoint_dataset_grounding_mismatch(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    project = Path(config["project_root"])
+    policy_path = (
+        project
+        / "outputs/skillVLA_stage1/new-vsa/checkpoints/000100/pretrained_model/config.json"
+    )
+    policy = json.loads(policy_path.read_text())
+    policy["proprio_grounding"] = "episode_start_xyz"
+    policy_path.write_text(json.dumps(policy))
+
+    with pytest.raises(ValueError, match="grounding mismatch"):
+        build_settings(config)
+
+
 @pytest.mark.parametrize("workers", [0, 5])
 def test_eval_workers_per_gpu_is_bounded(tmp_path: Path, workers: int) -> None:
     config = _config(tmp_path)
@@ -382,11 +418,30 @@ def test_eval_accepts_current_explicit_cond_checkpoint(tmp_path: Path) -> None:
     assert model["visual_crossattn_queries"] == "not_applicable"
 
 
-def test_eval_preserves_arch0_skill_training_only_alias(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("label", "revision", "target", "state_conditioned"),
+    [
+        ("arch0_skill", "skillvla_real_v1", "canonical", False),
+        ("arch0_skill_chunk", "skillvla_real_v1", "extended_chunk", False),
+        (
+            "arch0_2_skill_chunk",
+            "cond_expert_state_adarms_v1",
+            "extended_chunk",
+            True,
+        ),
+    ],
+)
+def test_eval_preserves_skill_flow_training_only_aliases(
+    tmp_path: Path,
+    label: str,
+    revision: str,
+    target: str,
+    state_conditioned: bool,
+) -> None:
     config = _config(
         tmp_path,
         architecture="cond_gemma",
-        architecture_revision="skillvla_real_v1",
+        architecture_revision=revision,
         conditioning_route="state_cond",
     )
     project = Path(config["project_root"])
@@ -397,10 +452,13 @@ def test_eval_preserves_arch0_skill_training_only_alias(tmp_path: Path) -> None:
     policy = json.loads(policy_path.read_text())
     policy.update(
         {
-            "architecture_label": "arch0_skill",
+            "architecture_label": label,
             "skill_flow_enabled": True,
             "skill_flow_weight": 1.0,
-            "skill_flow_max_length": 171,
+            "skill_flow_max_length": 171 if target == "canonical" else 30,
+            "skill_flow_target": target,
+            "skill_flow_state_conditioned": state_conditioned,
+            "skill_flow_chunk_multiplier": 3,
         }
     )
     policy_path.write_text(json.dumps(policy))
@@ -408,8 +466,8 @@ def test_eval_preserves_arch0_skill_training_only_alias(tmp_path: Path) -> None:
     settings = build_settings(config)
     model = json.loads(settings["models_json"])[0]
 
-    assert model["architecture_revision"] == "skillvla_real_v1"
-    assert model["architecture_label"] == "arch0_skill"
+    assert model["architecture_revision"] == revision
+    assert model["architecture_label"] == label
     assert model["conditioning_route"] == "state_cond"
 
 

@@ -481,6 +481,7 @@ class CondGemmaSkillExpert(nn.Module):
             )
         self._last_predicted_actions: Tensor | None = None
         self._last_flow_time: Tensor | None = None
+        self._last_flow_noise: Tensor | None = None
         # The current trainer calls this common observability surface.  Keeping
         # it empty adds no work to the original skillVLA_real forward path.
         self._last_vsa_debug_stats: dict[str, float] = {}
@@ -1214,6 +1215,7 @@ class CondGemmaSkillExpert(nn.Module):
         self._last_flow_time = time.detach()
         source = self.sample_noise(actions.shape, actions.device) if noise is None else noise
         source = source.to(actions.dtype)
+        self._last_flow_noise = source.detach()
         x_t = time[:, None, None] * source + (1.0 - time[:, None, None]) * actions
         target_velocity = source - actions
         condition_tokens = self._condition_tokens(images, batch_size=batch_size)
@@ -1489,13 +1491,16 @@ class CondGemmaSkillExpert(nn.Module):
         *,
         time: Tensor,
         noise: Tensor | None = None,
+        state: Tensor | None = None,
     ) -> Tensor:
-        """Training-only Arch0_skill flow over a complete canonical trajectory.
+        """Training-only skill flow over a canonical or extended trajectory.
 
-        This deliberately bypasses image encoding, robot state, Cond-Gemma, and
-        its KV cache. The Action Expert, action projections, timestep path,
-        layerwise skill broadcast, and output head are the exact same modules as
-        the ordinary Arch0 route.
+        This deliberately bypasses image encoding, Cond-Gemma, and its KV
+        cache. Arch0_skill/arch0_skill_chunk also bypass robot state;
+        arch0_2_skill_chunk keeps only the ordinary Expert-side state AdaRMS.
+        The Action Expert, action projections, timestep path, layerwise skill
+        broadcast, and output head are the exact same modules as the rollout
+        route.
         """
         if not getattr(self.config, "skill_flow_enabled", False):
             raise RuntimeError("The canonical skill-flow path is disabled.")
@@ -1533,7 +1538,13 @@ class CondGemmaSkillExpert(nn.Module):
             raise RuntimeError(
                 "arch0_skill requires Arch0's expert-only layerwise skill broadcast."
             )
-        expert_condition = self._expert_condition(time)
+        expert_projected_state = None
+        if getattr(self.config, "skill_flow_state_conditioned", False):
+            projected_state = self._project_state(state)
+            expert_projected_state = self._project_expert_state(
+                state, projected_state
+            )
+        expert_condition = self._expert_condition(time, expert_projected_state)
         hidden = self.gemma_expert.model.forward(
             inputs_embeds=action_tokens,
             attention_mask=attention_mask,

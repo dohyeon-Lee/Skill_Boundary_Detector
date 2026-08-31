@@ -431,10 +431,20 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         and resolved_architecture_revision == COND_GEMMA_ARCHITECTURE_REVISION
         and saved_architecture_label == "arch1"
     )
-    arch0_skill_alias = (
+    skill_aux_alias = (
         architecture == COND_GEMMA_ARCHITECTURE
-        and resolved_architecture_revision == COND_GEMMA_ARCHITECTURE_REVISION
-        and saved_architecture_label == "arch0_skill"
+        and (
+            (
+                resolved_architecture_revision
+                == COND_GEMMA_ARCHITECTURE_REVISION
+                and saved_architecture_label
+                in {"arch0_skill", "arch0_skill_chunk"}
+            )
+            or (
+                resolved_architecture_revision == "cond_expert_state_adarms_v1"
+                and saved_architecture_label == "arch0_2_skill_chunk"
+            )
+        )
     )
     historical_arch2_alias = (
         architecture == VSA_ARCHITECTURE
@@ -447,7 +457,7 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         saved_architecture_label
         and saved_architecture_label != architecture_label
         and not historical_arch0_alias
-        and not arch0_skill_alias
+        and not skill_aux_alias
         and not historical_arch2_alias
     ):
         raise ValueError(
@@ -455,8 +465,8 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
             f"match its architecture contract; expected {architecture_label!r} at "
             f"{policy_path}."
         )
-    if arch0_skill_alias:
-        architecture_label = "arch0_skill"
+    if skill_aux_alias:
+        architecture_label = saved_architecture_label
     action_loss_mode = str(policy.get("action_loss_mode", "")).strip().lower()
     if action_loss_mode != "flow":
         raise ValueError(
@@ -503,9 +513,29 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
     if not dataset_value:
         raise ValueError(f"Stage-1 train_config has no dataset.root: {policy_path}")
     skill_dataset_dir = _relocate_project_path(project_root, dataset_value)
-    if not (skill_dataset_dir / "meta" / "info.json").is_file():
+    dataset_info_path = skill_dataset_dir / "meta" / "info.json"
+    if not dataset_info_path.is_file():
         raise FileNotFoundError(
             f"Stage-1 SkillVLA dataset not found: {skill_dataset_dir}"
+        )
+    dataset_info = json.loads(dataset_info_path.read_text())
+    dataset_proprio_grounding = str(
+        dataset_info.get("proprio_grounding", "none") or "none"
+    ).strip().lower().replace("-", "_")
+    policy_proprio_grounding = str(
+        policy.get("proprio_grounding", "none") or "none"
+    ).strip().lower().replace("-", "_")
+    supported_proprio_grounding = {"none", "episode_start_xyz"}
+    if policy_proprio_grounding not in supported_proprio_grounding:
+        raise ValueError(
+            "Unsupported checkpoint proprio_grounding="
+            f"{policy_proprio_grounding!r} at {policy_path}."
+        )
+    if dataset_proprio_grounding != policy_proprio_grounding:
+        raise ValueError(
+            "Stage-1 checkpoint/dataset proprio grounding mismatch: "
+            f"checkpoint={policy_proprio_grounding!r}, "
+            f"dataset={dataset_proprio_grounding!r} at {dataset_info_path}."
         )
     run_dir = skill_dataset_dir.parent
     source_dir = run_dir.parent
@@ -555,6 +585,7 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         "action_loss_mode": action_loss_mode,
         "has_predictor": has_predictor,
         "has_terminator": has_terminator,
+        "proprio_grounding": policy_proprio_grounding,
         **paths,
     }
     if architecture == COND_GEMMA_ARCHITECTURE:

@@ -162,6 +162,25 @@ def test_custom_skillvla_output_suffix_is_appended_last(tmp_path: Path) -> None:
     assert settings["skillvla_run_dir"].name == settings["run_tag"]
 
 
+def test_episode_start_grounding_has_distinct_dataset_identity(tmp_path: Path) -> None:
+    config = _config(tmp_path, "episode_mean")
+    config["proprio_grounding"] = "episode_start_xyz"
+    config["skillvla_output_suffix"] = "probe"
+
+    settings = build_settings(config)
+
+    assert settings["proprio_grounding"] == "episode_start_xyz"
+    assert settings["run_tag"].endswith("_pt_grounded_probe")
+
+
+def test_invalid_proprio_grounding_fails_early(tmp_path: Path) -> None:
+    config = _config(tmp_path, "episode_mean")
+    config["proprio_grounding"] = "robot_base"
+
+    with pytest.raises(ValueError, match="proprio_grounding"):
+        build_settings(config)
+
+
 def test_invalid_skillvla_output_suffix_fails_early(tmp_path: Path) -> None:
     config = _config(tmp_path, "episode_mean")
     config["skillvla_output_suffix"] = "../pmax15"

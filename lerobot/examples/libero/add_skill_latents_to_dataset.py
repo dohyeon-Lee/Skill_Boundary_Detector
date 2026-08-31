@@ -67,6 +67,21 @@ import tyro
 from tqdm import tqdm
 
 
+PROPRIO_GROUNDING_NONE = "none"
+PROPRIO_GROUNDING_EPISODE_START_XYZ = "episode_start_xyz"
+PROPRIO_GROUNDING_MODES = {
+    PROPRIO_GROUNDING_NONE,
+    PROPRIO_GROUNDING_EPISODE_START_XYZ,
+}
+STAT_QUANTILES = (
+    ("q01", 0.01),
+    ("q10", 0.10),
+    ("q50", 0.50),
+    ("q90", 0.90),
+    ("q99", 0.99),
+)
+
+
 @dataclass
 class Args:
     src_dataset_dir: str
@@ -97,6 +112,58 @@ class Args:
     """skill-initial-state npz 출력 경로. 비우면 dst_dataset_dir 옆 skill_initial_state.npz."""
     state_column: str = "observation.state"
     """ISS/decoder-state로 쓸 로봇 state 컬럼."""
+    proprio_grounding: str = PROPRIO_GROUNDING_NONE
+    """none or episode_start_xyz. Applied in raw units before state stats."""
+
+
+def normalize_proprio_grounding(value: str) -> str:
+    mode = str(value or PROPRIO_GROUNDING_NONE).strip().lower().replace("-", "_")
+    aliases = {"off": PROPRIO_GROUNDING_NONE, "false": PROPRIO_GROUNDING_NONE}
+    mode = aliases.get(mode, mode)
+    if mode not in PROPRIO_GROUNDING_MODES:
+        raise ValueError(
+            "proprio_grounding must be none|episode_start_xyz, "
+            f"got {value!r}."
+        )
+    return mode
+
+
+def ground_episode_state_xyz(
+    states: np.ndarray,
+    mode: str,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Ground raw EEF xyz to the first available frame of one episode."""
+    values = np.asarray(states, dtype=np.float32)
+    if values.ndim != 2 or values.shape[0] == 0 or values.shape[1] < 3:
+        raise ValueError(
+            "Episode proprio state must have shape (T,D), T>0, D>=3; "
+            f"got {values.shape}."
+        )
+    reference = values[0, :3].copy()
+    if mode == PROPRIO_GROUNDING_NONE:
+        return values.copy(), reference
+    if mode != PROPRIO_GROUNDING_EPISODE_START_XYZ:
+        raise ValueError(f"Unsupported proprio grounding mode: {mode!r}.")
+    grounded = values.copy()
+    grounded[:, :3] -= reference
+    return grounded, reference
+
+
+def exact_vector_stats(values: np.ndarray) -> dict[str, list[float] | list[int]]:
+    """Compute the global non-video stats contract used by LeRobot normalizers."""
+    array = np.asarray(values, dtype=np.float64)
+    if array.ndim != 2 or array.shape[0] == 0:
+        raise ValueError(f"Stats input must be a non-empty (N,D) array, got {array.shape}.")
+    result: dict[str, list[float] | list[int]] = {
+        "min": array.min(axis=0).tolist(),
+        "max": array.max(axis=0).tolist(),
+        "mean": array.mean(axis=0).tolist(),
+        "std": array.std(axis=0).tolist(),
+        "count": [int(array.shape[0])],
+    }
+    for key, quantile in STAT_QUANTILES:
+        result[key] = np.quantile(array, quantile, axis=0).tolist()
+    return result
 
 
 # ── latents .npz 파싱 ─────────────────────────────────────────────────────────
@@ -248,6 +315,7 @@ def build_skill_initial_state_npz(
     out_path: Path,
     jitter_distribution: str,
     directional_pmaxes: dict[str, int],
+    proprio_grounding: str = PROPRIO_GROUNDING_NONE,
 ) -> int:
     """각 스킬의 시작 ±pmax 프레임 observation.state 윈도우를 flat npz로 저장.
 
@@ -283,6 +351,7 @@ def build_skill_initial_state_npz(
         early_end_pmax=np.int32(directional_pmaxes["early_end"]),
         late_end_pmax=np.int32(directional_pmaxes["late_end"]),
         jitter_distribution=np.str_(jitter_distribution),
+        proprio_grounding=np.str_(proprio_grounding),
         state_dim=np.int32(state_dim),
     )
     return len(windows)
@@ -293,6 +362,7 @@ def build_skill_initial_state_npz(
 def main(args: Args) -> None:
     src_dir = Path(args.src_dataset_dir)
     dst_dir = Path(args.dst_dataset_dir)
+    proprio_grounding = normalize_proprio_grounding(args.proprio_grounding)
 
     # num_embeddings 결정: fsq_levels 우선, 없으면 num_embeddings 직접 사용
     if args.fsq_levels:
@@ -368,6 +438,7 @@ def main(args: Args) -> None:
         f"jitter_distribution={jitter_distribution}  "
         f"→  ISS window={2 * pmax + 1}, npz={iss_npz_path}"
     )
+    print(f"  proprio_grounding={proprio_grounding}")
 
     if dst_dir.exists():
         print(f"Removing existing {dst_dir} ...")
@@ -379,6 +450,7 @@ def main(args: Args) -> None:
     print(f"Processing {len(data_files)} parquet files ...")
 
     n_zero_fill_eps: int = 0
+    grounded_ee_states: list[np.ndarray] = []
 
     for parquet_path in tqdm(data_files):
         df = pd.read_parquet(parquet_path)
@@ -406,9 +478,33 @@ def main(args: Args) -> None:
             "skill_max_length": [],
             "skill_decoder_state": [],
         }
+        grounded_state_rows: list[np.ndarray] = []
+        grounded_ee_rows: list[np.ndarray] = []
+        has_ee_state = "observation.states.ee_state" in df.columns
 
         for ep_id, ep_df in df.groupby("episode_index"):
-            ep_df  = ep_df.sort_values("frame_index")
+            ep_df = ep_df.sort_values("frame_index").copy()
+            raw_states = np.stack(ep_df[args.state_column].to_numpy()).astype(np.float32)
+            ep_states, episode_start_xyz = ground_episode_state_xyz(
+                raw_states, proprio_grounding
+            )
+            ep_df[args.state_column] = list(ep_states)
+            grounded_state_rows.extend(ep_states)
+            if has_ee_state:
+                ee_states = np.stack(
+                    ep_df["observation.states.ee_state"].to_numpy()
+                ).astype(np.float32)
+                if ee_states.ndim != 2 or ee_states.shape[1] < 3:
+                    raise ValueError(
+                        "observation.states.ee_state must have shape (T,D), D>=3; "
+                        f"got {ee_states.shape}."
+                    )
+                ee_states = ee_states.copy()
+                if proprio_grounding == PROPRIO_GROUNDING_EPISODE_START_XYZ:
+                    ee_states[:, :3] -= episode_start_xyz
+                ep_df["observation.states.ee_state"] = list(ee_states)
+                grounded_ee_rows.extend(ee_states)
+                grounded_ee_states.append(ee_states)
             skills = skill_map.get(int(ep_id), [])
             cols   = compute_skill_columns(
                 ep_df,
@@ -429,6 +525,9 @@ def main(args: Args) -> None:
 
         for k, vals in col_buffers.items():
             df[k] = vals
+        df[args.state_column] = grounded_state_rows
+        if has_ee_state:
+            df["observation.states.ee_state"] = grounded_ee_rows
 
         df.to_parquet(parquet_path, index=False)
 
@@ -445,6 +544,7 @@ def main(args: Args) -> None:
         iss_npz_path,
         jitter_distribution,
         directional_pmaxes,
+        proprio_grounding,
     )
     print(f"  Wrote ISS npz: {iss_npz_path}  (skills={n_iss}, window={2 * pmax + 1}, state_dim={state_dim})")
 
@@ -471,6 +571,13 @@ def main(args: Args) -> None:
     info["skill_jitter_distribution"] = jitter_distribution
     info["skill_initial_state_path"] = str(iss_npz_path)
     info["skill_initial_state_window"] = 2 * pmax + 1
+    info["proprio_grounding"] = proprio_grounding
+    info["proprio_grounding_reference"] = (
+        "episode_first_frame_observation.state[:3]"
+        if proprio_grounding == PROPRIO_GROUNDING_EPISODE_START_XYZ
+        else "none"
+    )
+    info["proprio_grounding_xyz_indices"] = [0, 1, 2]
 
     info["features"].update({
         "skill_index": {"dtype": "int32", "shape": [1], "names": ["skill_index"]},
@@ -507,6 +614,30 @@ def main(args: Args) -> None:
         },
     })
     info_path.write_text(json.dumps(info, indent=2))
+
+    if proprio_grounding == PROPRIO_GROUNDING_EPISODE_START_XYZ:
+        # The copied source stats describe world-frame xyz and must never reach
+        # the grounded model. All state-derived columns use the same exact global
+        # distribution; action/image statistics remain byte-for-byte unchanged.
+        all_states = np.concatenate(
+            [ep_states_map[episode_id] for episode_id in sorted(ep_states_map)],
+            axis=0,
+        )
+        stats_path = dst_dir / "meta" / "stats.json"
+        stats = json.loads(stats_path.read_text()) if stats_path.is_file() else {}
+        state_stats = exact_vector_stats(all_states)
+        stats[args.state_column] = state_stats
+        stats["skill_decoder_state"] = state_stats
+        if grounded_ee_states:
+            stats["observation.states.ee_state"] = exact_vector_stats(
+                np.concatenate(grounded_ee_states, axis=0)
+            )
+        stats_path.write_text(json.dumps(stats, indent=2))
+        print(
+            "  Recomputed grounded state stats: "
+            f"{args.state_column}, skill_decoder_state"
+            + (", observation.states.ee_state" if grounded_ee_states else "")
+        )
 
     print(f"\n완료: {dst_dir}")
     print(f"  추가된 컬럼: skill_index, skill_sequence, skill_length_sequence, skill_initial_frame, "

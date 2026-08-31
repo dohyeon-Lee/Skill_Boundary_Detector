@@ -34,8 +34,14 @@ COND_GEMMA_LABEL_TO_REVISION = {
     # Same parameter/state-dict contract as Arch0; the difference is the
     # training-only canonical skill-trajectory flow objective.
     "arch0_skill": "skillvla_real_v1",
+    # Same Arch0 rollout graph, but the training-only route predicts an
+    # extended current-frame action chunk instead of a canonical trajectory.
+    "arch0_skill_chunk": "skillvla_real_v1",
     "arch0_1": "expert_state_adarms_v1",
     "arch0_2": "cond_expert_state_adarms_v1",
+    # Same Arch0_2 rollout graph. Its auxiliary route keeps Expert-side state
+    # AdaRMS while bypassing vision and Cond-Gemma.
+    "arch0_2_skill_chunk": "cond_expert_state_adarms_v1",
     "arch0_2_sep": "cond_expert_separate_state_adarms_v1",
     "arch0_3": "wrist_cond_expert_state_adarms_v1",
     "arch0_adarms": "expert_skill_adarms_v1",
@@ -94,10 +100,16 @@ def _read_dataset_contract(dataset_dir: Path, run_tag: str) -> dict:
             f"Invalid directional jitter contract in {info_path}: "
             f"storage={jitter_pmax}, directional={directional_jitter}."
         )
+    proprio_grounding = str(info.get("proprio_grounding", "none") or "none").strip().lower()
+    if proprio_grounding not in {"none", "episode_start_xyz"}:
+        raise ValueError(
+            f"Invalid proprio_grounding in {info_path}: {proprio_grounding!r}."
+        )
     return {
         "levels": levels,
         "state_dim": state_dim,
         "action_dim": action_dim,
+        "proprio_grounding": proprio_grounding,
         "skill_observed_max_length": int(
             info.get("skill_observed_max_length", 0)
         ),
@@ -297,8 +309,10 @@ def build_settings(config: dict) -> dict:
     misplaced_keys = {
         "arch0",
         "arch0_skill",
+        "arch0_skill_chunk",
         "arch0_1",
         "arch0_2",
+        "arch0_2_skill_chunk",
         "arch0_2_sep",
         "arch0_3",
         "arch0_adarms",
@@ -338,7 +352,8 @@ def build_settings(config: dict) -> dict:
     }:
         raise ValueError(
             "architecture.name must be "
-            "arch0|arch0_skill|arch0_1|arch0_2|arch0_2_sep|arch0_3|arch0_adaRMS|arch0_adaRMS_zero|"
+            "arch0|arch0_skill|arch0_skill_chunk|arch0_1|arch0_2|arch0_2_skill_chunk|"
+            "arch0_2_sep|arch0_3|arch0_adaRMS|arch0_adaRMS_zero|"
             "arch0_token|arch0_token_iso|arch0_cond|arch0_both|"
             "arch1_1|arch1_2|arch1_3|"
             "arch2_1|arch2_2|arch3|arch4, got "
@@ -448,12 +463,34 @@ def build_settings(config: dict) -> dict:
     skill_flow_config = config.get("skill_flow", {})
     if not isinstance(skill_flow_config, dict):
         raise ValueError("skill_flow must be a mapping.")
-    skill_flow_enabled = architecture_label == "arch0_skill"
+    unknown_skill_flow_keys = set(skill_flow_config) - {"weight", "chunk_multiplier"}
+    if unknown_skill_flow_keys:
+        raise ValueError(
+            f"Unsupported skill_flow settings: {sorted(unknown_skill_flow_keys)}."
+        )
+    skill_flow_enabled = architecture_label in {
+        "arch0_skill",
+        "arch0_skill_chunk",
+        "arch0_2_skill_chunk",
+    }
     skill_flow_weight = float(skill_flow_config.get("weight", 1.0))
     if not math.isfinite(skill_flow_weight) or skill_flow_weight <= 0:
         raise ValueError("skill_flow.weight must be finite and positive.")
-    skill_flow_max_length = int(contract["skill_observed_max_length"])
-    if skill_flow_enabled:
+    skill_flow_chunk_multiplier = int(skill_flow_config.get("chunk_multiplier", 3))
+    if skill_flow_chunk_multiplier <= 0:
+        raise ValueError("skill_flow.chunk_multiplier must be positive.")
+    skill_flow_target = (
+        "extended_chunk"
+        if architecture_label in {"arch0_skill_chunk", "arch0_2_skill_chunk"}
+        else "canonical"
+    )
+    skill_flow_state_conditioned = architecture_label == "arch0_2_skill_chunk"
+    skill_flow_max_length = (
+        int(contract["skill_observed_max_length"])
+        if skill_flow_target == "canonical"
+        else chunk_size * skill_flow_chunk_multiplier
+    )
+    if architecture_label == "arch0_skill":
         if training_skill_source != "gt":
             raise ValueError(
                 "architecture.name=arch0_skill currently requires "
@@ -622,6 +659,7 @@ def build_settings(config: dict) -> dict:
         "tokenizer_max_length": predictor_contract["tokenizer_max_length"],
         "max_state_dim": max_state_dim,
         "max_action_dim": max_action_dim,
+        "proprio_grounding": contract["proprio_grounding"],
         "chunk_size": chunk_size,
         "mask_actions_after_skill_end": mask_actions_after_skill_end,
         "cumulative_xyz_loss_enabled": cumulative_xyz_loss_enabled,
@@ -629,6 +667,9 @@ def build_settings(config: dict) -> dict:
         "skill_flow_enabled": skill_flow_enabled,
         "skill_flow_weight": skill_flow_weight,
         "skill_flow_max_length": skill_flow_max_length if skill_flow_enabled else 0,
+        "skill_flow_target": skill_flow_target,
+        "skill_flow_state_conditioned": skill_flow_state_conditioned,
+        "skill_flow_chunk_multiplier": skill_flow_chunk_multiplier,
         "n_action_steps": n_action_steps,
         "min_period": float(_at(config, "flow", "min_period", default=4e-3)),
         "max_period": float(_at(config, "flow", "max_period", default=4.0)),
@@ -695,8 +736,10 @@ def main() -> None:
         choices=(
             "arch0",
             "arch0_skill",
+            "arch0_skill_chunk",
             "arch0_1",
             "arch0_2",
+            "arch0_2_skill_chunk",
             "arch0_2_sep",
             "arch0_3",
             "arch0_adarms",

@@ -1918,7 +1918,18 @@ class SkillExpertPolicy(PreTrainedPolicy):
         """Return action offsets supervised by the selected loss-mask contract."""
         valid = torch.ones(actions.shape[:2], dtype=torch.bool, device=actions.device)
         if "action_is_pad" in batch:
-            valid &= ~batch["action_is_pad"].to(actions.device).bool()
+            action_is_pad = batch["action_is_pad"].to(actions.device).bool()
+            if action_is_pad.ndim != 2 or action_is_pad.shape[0] != actions.shape[0]:
+                raise ValueError(
+                    "action_is_pad must have shape [B,T], got "
+                    f"{tuple(action_is_pad.shape)} for actions {tuple(actions.shape)}."
+                )
+            if action_is_pad.shape[1] < actions.shape[1]:
+                raise ValueError(
+                    "action_is_pad is shorter than the requested action horizon: "
+                    f"{action_is_pad.shape[1]} < {actions.shape[1]}."
+                )
+            valid &= ~action_is_pad[:, : actions.shape[1]]
         if getattr(self.config, "mask_actions_after_skill_end", False):
             boundary_key = (
                 "skill_effective_de"
@@ -2075,7 +2086,17 @@ class SkillExpertPolicy(PreTrainedPolicy):
         return dict(zip(tensor_metrics, values, strict=True))
 
     def forward(self, batch: dict, reduction: str = "mean"):
-        actions = pad_vector(batch[ACTION], self.config.max_action_dim)
+        if batch[ACTION].shape[1] < self.config.chunk_size:
+            raise ValueError(
+                "Training action horizon is shorter than chunk_size: "
+                f"{batch[ACTION].shape[1]} < {self.config.chunk_size}."
+            )
+        # *_skill_chunk asks the dataset for a longer auxiliary horizon. The
+        # rollout/main flow contract remains exactly chunk_size steps.
+        actions = pad_vector(
+            batch[ACTION][:, : self.config.chunk_size],
+            self.config.max_action_dim,
+        )
         real_dim = self.config.output_features[ACTION].shape[0]
         if self.config.architecture == COND_GEMMA_ARCHITECTURE:
             route = normalize_conditioning_route(self.config.conditioning_route)
@@ -2135,41 +2156,95 @@ class SkillExpertPolicy(PreTrainedPolicy):
             objective_per_sample = per_sample + cumulative_weight * cumulative_xyz_per_sample
         skill_flow_loss = None
         skill_flow_per_sample = None
+        skill_flow_is_pad = None
         if getattr(self.config, "skill_flow_enabled", False):
             if self.config.architecture != COND_GEMMA_ARCHITECTURE:
                 raise RuntimeError("skill_flow_enabled requires the Cond-Gemma Arch0 model.")
-            if SKILL_CANONICAL_ACTIONS not in batch:
-                raise KeyError(
-                    "arch0_skill requires batch['skill_canonical_actions']; "
-                    "construct training data with SkillVLADataset."
+            if self.config.skill_flow_target == "canonical":
+                if SKILL_CANONICAL_ACTIONS not in batch:
+                    raise KeyError(
+                        "arch0_skill requires batch['skill_canonical_actions']; "
+                        "construct training data with SkillVLADataset."
+                    )
+                if SKILL_CANONICAL_ACTION_IS_PAD not in batch:
+                    raise KeyError(
+                        "arch0_skill requires batch['skill_canonical_action_is_pad']."
+                    )
+                skill_flow_actions = pad_vector(
+                    batch[SKILL_CANONICAL_ACTIONS], self.config.max_action_dim
                 )
-            if SKILL_CANONICAL_ACTION_IS_PAD not in batch:
-                raise KeyError(
-                    "arch0_skill requires batch['skill_canonical_action_is_pad']."
+                skill_flow_is_pad = batch[SKILL_CANONICAL_ACTION_IS_PAD].to(
+                    skill_flow_actions.device
+                ).bool()
+            elif self.config.skill_flow_target == "extended_chunk":
+                horizon = int(self.config.skill_flow_max_length)
+                if batch[ACTION].shape[1] < horizon:
+                    raise ValueError(
+                        "Extended skill-flow target is shorter than its configured "
+                        f"horizon: {batch[ACTION].shape[1]} < {horizon}."
+                    )
+                skill_flow_actions = pad_vector(
+                    batch[ACTION][:, :horizon], self.config.max_action_dim
                 )
-            canonical_actions = pad_vector(
-                batch[SKILL_CANONICAL_ACTIONS], self.config.max_action_dim
-            )
-            canonical_is_pad = batch[SKILL_CANONICAL_ACTION_IS_PAD].to(
-                canonical_actions.device
-            ).bool()
+                skill_flow_is_pad = ~self._valid_action_steps(
+                    skill_flow_actions, batch
+                )
+            else:
+                raise RuntimeError(
+                    f"Unsupported skill_flow_target={self.config.skill_flow_target!r}."
+                )
             shared_time = getattr(self.model, "_last_flow_time", None)
             if shared_time is None:
                 raise RuntimeError("Main Arch0 flow did not expose its sampled timestep.")
+            skill_flow_kwargs = {"time": shared_time}
+            if self.config.skill_flow_target == "extended_chunk":
+                main_noise = getattr(self.model, "_last_flow_noise", None)
+                if main_noise is None:
+                    raise RuntimeError(
+                        "Main Arch0 flow did not expose its sampled noise."
+                    )
+                if (
+                    main_noise.shape[0] != skill_flow_actions.shape[0]
+                    or main_noise.shape[2] != skill_flow_actions.shape[2]
+                    or main_noise.shape[1] > skill_flow_actions.shape[1]
+                ):
+                    raise ValueError(
+                        "Main and extended skill-flow noise shapes are incompatible: "
+                        f"main={tuple(main_noise.shape)}, "
+                        f"extended={tuple(skill_flow_actions.shape)}."
+                    )
+                tail_length = skill_flow_actions.shape[1] - main_noise.shape[1]
+                tail_noise = self.model.sample_noise(
+                    (
+                        skill_flow_actions.shape[0],
+                        tail_length,
+                        skill_flow_actions.shape[2],
+                    ),
+                    skill_flow_actions.device,
+                )
+                skill_flow_kwargs["noise"] = torch.cat(
+                    (
+                        main_noise.to(skill_flow_actions.dtype),
+                        tail_noise.to(skill_flow_actions.dtype),
+                    ),
+                    dim=1,
+                )
+            if getattr(self.config, "skill_flow_state_conditioned", False):
+                skill_flow_kwargs["state"] = state
             skill_residual = self.model.skill_only_flow_residual(
-                canonical_actions,
+                skill_flow_actions,
                 skill_code,
-                canonical_is_pad,
-                time=shared_time,
+                skill_flow_is_pad,
+                **skill_flow_kwargs,
             )[..., :real_dim]
             skill_squared_error = skill_residual.square()
-            skill_valid = ~canonical_is_pad
+            skill_valid = ~skill_flow_is_pad
             skill_valid_float = skill_valid.to(skill_squared_error.dtype).unsqueeze(-1)
             skill_valid_per_sample = skill_valid.sum(dim=1).to(
                 skill_squared_error.dtype
             )
             if bool((skill_valid_per_sample == 0).any()):
-                raise ValueError("Canonical skill-flow batch contains an empty trajectory.")
+                raise ValueError("Skill-flow batch contains an empty trajectory.")
             # First average timesteps within each trajectory, then average the
             # batch. Long skills therefore do not receive a larger coefficient.
             skill_flow_per_sample = (
@@ -2192,7 +2267,9 @@ class SkillExpertPolicy(PreTrainedPolicy):
         if getattr(self.config, "mask_actions_after_skill_end", False):
             unpadded = torch.ones_like(valid)
             if "action_is_pad" in batch:
-                unpadded &= ~batch["action_is_pad"].to(valid.device).bool()
+                unpadded &= ~batch["action_is_pad"].to(valid.device).bool()[
+                    :, : valid.shape[1]
+                ]
             unpadded_count = unpadded.sum().clamp(min=1)
             boundary_masked = unpadded & ~valid
             loss_dict.update(
@@ -2276,17 +2353,24 @@ class SkillExpertPolicy(PreTrainedPolicy):
             )
         if skill_flow_loss is not None and skill_flow_per_sample is not None:
             weighted_skill_flow = self.config.skill_flow_weight * skill_flow_loss
-            canonical_is_pad = batch[SKILL_CANONICAL_ACTION_IS_PAD].bool()
+            if skill_flow_is_pad is None:
+                raise RuntimeError("Skill-flow loss is missing its padding mask.")
             loss_dict.update(
                 {
                     "skill_flow/loss": skill_flow_loss.detach().item(),
                     "skill_flow/weighted": weighted_skill_flow.detach().item(),
                     "skill_flow/weight": float(self.config.skill_flow_weight),
-                    "skill_flow/valid_steps_mean": (~canonical_is_pad)
+                    "skill_flow/valid_steps_mean": (~skill_flow_is_pad)
                     .sum(dim=1)
                     .float()
                     .mean()
                     .item(),
+                    "skill_flow/extended_chunk": float(
+                        self.config.skill_flow_target == "extended_chunk"
+                    ),
+                    "skill_flow/state_conditioned": float(
+                        self.config.skill_flow_state_conditioned
+                    ),
                     "skill_flow/to_main_flow_ratio": (
                         weighted_skill_flow.detach()
                         / action_loss.detach().clamp(

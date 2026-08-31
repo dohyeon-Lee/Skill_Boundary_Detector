@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Any
 
 import torch
@@ -73,6 +74,64 @@ SKILL_BATCH_KEYS = (
     SKILL_CANONICAL_ACTION_IS_PAD,
     SKILL_CANONICAL_ACTION_LENGTH,
 )
+
+
+@dataclass
+@ProcessorStepRegistry.register(name="episode_start_xyz_grounding_processor_step")
+class EpisodeStartXYZGroundingProcessorStep(ProcessorStep):
+    """Subtract each rollout's first raw EEF xyz before state normalization."""
+
+    mode: str = "episode_start_xyz"
+    _reference_xyz: torch.Tensor | None = field(default=None, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self.mode = str(self.mode).strip().lower().replace("-", "_")
+        if self.mode != "episode_start_xyz":
+            raise ValueError(
+                "EpisodeStartXYZGroundingProcessorStep supports only "
+                f"episode_start_xyz, got {self.mode!r}."
+            )
+
+    def reset(self) -> None:
+        self._reference_xyz = None
+
+    def get_config(self) -> dict[str, Any]:
+        return {"mode": self.mode}
+
+    def __call__(self, transition: EnvTransition) -> EnvTransition:
+        observation = transition.get(TransitionKey.OBSERVATION, {}) or {}
+        state = observation.get(OBS_STATE)
+        if state is None:
+            raise KeyError(
+                "episode_start_xyz grounding requires observation.state before normalization."
+            )
+        if not isinstance(state, torch.Tensor):
+            state = torch.as_tensor(state)
+        if state.ndim != 2 or state.shape[-1] < 3:
+            raise ValueError(
+                "Rollout observation.state must have shape (B,D), D>=3 for "
+                f"episode_start_xyz grounding; got {tuple(state.shape)}."
+            )
+        if self._reference_xyz is None:
+            self._reference_xyz = state[:, :3].detach().clone()
+        elif self._reference_xyz.shape != state[:, :3].shape:
+            raise ValueError(
+                "Rollout batch shape changed before the grounding processor was reset: "
+                f"reference={tuple(self._reference_xyz.shape)}, "
+                f"current={tuple(state[:, :3].shape)}."
+            )
+        grounded = state.clone()
+        grounded[:, :3] -= self._reference_xyz.to(
+            device=state.device, dtype=state.dtype
+        )
+        transition = transition.copy()
+        observation = dict(observation)
+        observation[OBS_STATE] = grounded
+        transition[TransitionKey.OBSERVATION] = observation
+        return transition
+
+    def transform_features(self, features: dict) -> dict:
+        return features
 
 
 @ProcessorStepRegistry.register(name="skill_expert_normalizer_processor_step")
