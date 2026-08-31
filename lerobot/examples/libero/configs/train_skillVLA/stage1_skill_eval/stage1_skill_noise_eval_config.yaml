@@ -1,0 +1,77 @@
+# Exact-start noise robustness visualization.
+#
+# For every selected task/environment/GT skill, run the same policy skill code
+# repeatedly with independent policy noise. No MP4 is written: the report draws
+# all end-effector trajectories over the exact skill-start camera image.
+
+outputs_root: outputs_filtered
+
+# model_defaults:
+#   previous: false
+#   checkpoint: "200000"
+#   advance_mode: external           # external | original | own
+#   terminator_variant: state_image  # state_image | image_only
+#   external_terminator_checkpoint: "100000"
+
+# # Syntax is identical to stage1_skill_eval_config.yaml. Different models may
+# # use different FSQ spaces; matching GT occurrences link their codebook cubes.
+# models:
+#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_termRES_js_2000_pt_pmax15_arch0_skillendmask_visunfreeze
+#     label: 333_js_15
+#     external_terminator_model: bs32_FSQ333_termRES_js_2000_pt_pmax15_libero_90_full_full_terminator
+
+#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_termRES_contrastive_2000_pt_pmax15_arch0_skillendmask_visunfreeze
+#     label: 333_cont_15
+#     external_terminator_model: bs32_FSQ333_termRES_contrastive_2000_pt_pmax15_libero_90_full_full_terminator
+
+# output_name: "exact_noise_trajectory_overlay"
+# resume: false
+
+model_defaults:
+  previous: false
+  checkpoint: "250000"
+  advance_mode: external           # external | original | own
+  terminator_variant: state_image  # state_image | image_only
+  external_terminator_checkpoint: "100000"
+
+# Syntax is identical to stage1_skill_eval_config.yaml. Different models may
+# use different FSQ spaces; matching GT occurrences link their codebook cubes.
+models:
+  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_norm_action01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask_visfreeze
+    label: visfreeze
+    external_terminator_model: bs32_FSQ333_norm_action01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_libero_90_full_firsthalf_scene_terminator_DINO_unfrez
+
+  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_norm_action01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask_visunfreeze
+    label: visunfreeze
+    external_terminator_model: bs32_FSQ333_norm_action01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_libero_90_full_firsthalf_scene_terminator_DINO_unfrez
+
+output_name: "exact_noise_trajectory_overlay_visfreez_vs_visunfreez_all_code"
+resume: false
+
+terminator: {end_mode: termination, end_threshold: 0.5, progress_threshold: 0.95}
+main_terminator: {max_skill_length_scale: 1.50, finish_action_chunk_on_end: false}
+
+target_task: libero_90
+task_ids: [3, 4, 5]
+episode_exact: true
+
+# Example: 2 exact environments per task x 50 independent noise rollouts for
+# every skill occurrence in each environment.
+envs_per_task: 1
+noise_rollouts_per_env: 20
+# off: assigned code only
+# neighbor: assigned + every Manhattan-distance-1 code (FSQ333: 4--7 total)
+# all: every code in the model's codebook (FSQ333: 27 total)
+# Legacy true/false remain accepted as neighbor/off.
+neighbor_code_probe: all      # off | neighbor | all
+episode_selection: first           # first | random
+episode_ids: []                    # optional exact global dataset episode ids
+seed: 42
+
+n_action_steps: 5
+trajectory_stride: 1               # keep every Nth projected trajectory point
+eval_num_gpus: 5                   # upper bound; unused GPUs are not requested
+eval_max_workers_per_gpu: 4
+
+original_dataset_dir: libero_original_dataset/libero_90
+slurm: {gres: "gpu:1", cpus: 8, memory: 64G, time: "12:00:00"}

@@ -389,6 +389,7 @@ def build_settings(config: dict) -> dict:
                 terminator_path,
                 target_policy=contract["policy"],
                 variant=terminator_variant,
+                project_root=project_root,
             )
         else:
             terminator_end_rule = _resolve_end_rule(
@@ -418,6 +419,7 @@ def build_settings(config: dict) -> dict:
                     terminator_path,
                     target_policy=contract["policy"],
                     variant=terminator_variant,
+                    project_root=project_root,
                 )
             elif advance_mode == "original":
                 terminator_path = Path(contract["fsq_path"])

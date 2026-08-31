@@ -7,7 +7,7 @@
 #
 # Submit the FSQ reconstruction/termination/progress eval. The FSQ reads its OWN
 # skillset (recorded in fsq_meta.json), which already exists since the FSQ trained
-# on it — so no build_data auto-chaining is needed here (unlike submit_dp_eval.sh).
+# on it. Both eval launchers require their selected artifacts to exist up front.
 
 set -euo pipefail
 

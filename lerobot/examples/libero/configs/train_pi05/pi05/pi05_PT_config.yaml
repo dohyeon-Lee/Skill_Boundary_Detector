@@ -9,10 +9,9 @@ pi_base: models/pi05_base   # project_root(global_config) 기준 상대경로 �
 pi05_tokenizer: models/paligemma-3b-pt-224-tokenizer
 
 # ── pi05 PT ───────────────────────────────────────────────────
-pt_dataset: libero_90_full_full_rel
-pt_eef_relative: true  # OSC scale/statistics are loaded from this dataset's meta contract.
+pt_dataset: libero_90_full_full
 pt_batch_size: 16
-pt_chunk_size: 10  # Existing PI0.5 PT horizon; relative stats currently cover offsets through 50.
+pt_chunk_size: 10
 pt_num_gpus: 1
 pt_num_workers: 4
 pt_exp: "pro"

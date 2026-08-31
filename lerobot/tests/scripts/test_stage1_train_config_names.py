@@ -344,7 +344,7 @@ def test_stage1_rejects_any_other_architecture(tmp_path: Path) -> None:
 
     with pytest.raises(
         ValueError,
-        match=r"must be arch0\|arch0_1\|arch0_2\|arch0_2_sep\|arch0_3",
+        match=r"must be arch0\|arch0_skill\|arch0_1\|arch0_2\|arch0_2_sep\|arch0_3",
     ):
         build_settings(config)
 
@@ -458,6 +458,42 @@ def test_unified_config_selects_arch0_and_applies_relative_dino_lr(tmp_path: Pat
     batch64 = build_settings(config)
     assert batch64["pt_run_name"].startswith("bs64_")
     assert batch64["pt_run_name"].endswith("_arch0")
+
+
+def test_arch0_skill_exports_canonical_flow_contract(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    info_path = (
+        Path(config["project_root"])
+        / "dataset/skillvla_dataset/source"
+        / config["dataset"]["run"]
+        / "skillvla/meta/info.json"
+    )
+    info = json.loads(info_path.read_text())
+    info["skill_observed_max_length"] = 171
+    info_path.write_text(json.dumps(info))
+    config["architecture"]["name"] = "arch0_skill"
+    config["skill_flow"] = {"weight": 0.75}
+    config["action_conditioning"] = {"training_skill_source": "gt"}
+
+    settings = build_settings(config)
+
+    assert settings["architecture"] == "cond_gemma"
+    assert settings["architecture_label"] == "arch0_skill"
+    assert settings["architecture_revision"] == "skillvla_real_v1"
+    assert settings["conditioning_route"] == "state_cond"
+    assert settings["skill_flow_enabled"] is True
+    assert settings["skill_flow_weight"] == pytest.approx(0.75)
+    assert settings["skill_flow_max_length"] == 171
+    assert settings["pt_run_name"].endswith("_arch0_skill")
+
+    config["action_conditioning"]["training_skill_source"] = "predictor"
+    config["warm_start"]["predictor_checkpoint"] = "missing"
+    tokenizer = Path(config["project_root"]) / "models/paligemma-3b-pt-224-tokenizer"
+    tokenizer.mkdir(parents=True)
+    for filename in ("config.json", "tokenizer_config.json", "tokenizer.json"):
+        (tokenizer / filename).write_text("{}")
+    with pytest.raises(ValueError, match="arch0_skill currently requires"):
+        build_settings(config)
 
 
 @pytest.mark.parametrize(

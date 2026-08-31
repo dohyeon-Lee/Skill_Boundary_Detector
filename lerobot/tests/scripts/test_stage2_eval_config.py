@@ -223,6 +223,41 @@ def test_stage2_eval_expands_into_stage2_and_prior_panels(tmp_path: Path) -> Non
     assert settings["eval_out_dir"] == _EVAL_SRC.parent / "outputs/smoke"
 
 
+def test_stage2_eval_external_predictor_owns_module_contract_and_tokenizer(
+    tmp_path: Path,
+) -> None:
+    config = _checkpoint_tree(tmp_path)
+    project = Path(config["project_root"])
+    # Stage-2 training used only a pristine pi0.5 VLM placeholder. The eval
+    # predictor legitimately adds its own all-layer reader and skill LoRA.
+    stage2_config = _stage2_config_path(config)
+    stage2_policy = json.loads(stage2_config.read_text())
+    stage2_policy.update(
+        {
+            "skill_predictor_all_layers": False,
+            "skill_predictor_detach_vlm": True,
+            "skill_predictor_lora": False,
+            "skill_predictor_deadzone_frac": 0.0,
+        }
+    )
+    stage2_config.write_text(json.dumps(stage2_policy))
+
+    predictor_path = Path(config["external_predictor_model"])
+    predictor_config = predictor_path / "config.json"
+    predictor_policy = json.loads(predictor_config.read_text())
+    external_tokenizer = project / "models/external_predictor_tokenizer"
+    external_tokenizer.mkdir()
+    predictor_policy["tokenizer_path"] = str(external_tokenizer)
+    predictor_config.write_text(json.dumps(predictor_policy))
+
+    panels = json.loads(build_settings(config)["models_json"])
+
+    assert {panel["tokenizer_path"] for panel in panels} == {
+        str(external_tokenizer)
+    }
+    assert all(panel["skill_source"] == "external" for panel in panels)
+
+
 def test_stage2_eval_automatically_reads_dsbc_mode_from_checkpoint(
     tmp_path: Path,
 ) -> None:
@@ -375,6 +410,32 @@ def test_stage2_eval_single_mode_selection(tmp_path: Path) -> None:
         build_settings(config)
 
 
+def test_stage2_only_does_not_require_recorded_stage1_checkpoint(
+    tmp_path: Path,
+) -> None:
+    config = _checkpoint_tree(tmp_path)
+    config["modes"] = ["stage2"]
+    stage2_config = json.loads(_stage2_config_path(config).read_text())
+    stage1_path = Path(stage2_config["stage1_checkpoint_path"])
+    (stage1_path / "config.json").unlink()
+
+    panels = json.loads(build_settings(config)["models_json"])
+
+    assert [panel["mode"] for panel in panels] == ["stage2"]
+
+
+def test_prior_mode_still_requires_recorded_stage1_checkpoint(
+    tmp_path: Path,
+) -> None:
+    config = _checkpoint_tree(tmp_path)
+    stage2_config = json.loads(_stage2_config_path(config).read_text())
+    stage1_path = Path(stage2_config["stage1_checkpoint_path"])
+    (stage1_path / "config.json").unlink()
+
+    with pytest.raises(FileNotFoundError, match="Stage-1 prior recorded"):
+        build_settings(config)
+
+
 def test_stage2_eval_supports_an_alternate_outputs_subdir(tmp_path: Path) -> None:
     config = _checkpoint_tree(tmp_path)
     project = Path(config["project_root"])
@@ -439,6 +500,27 @@ def test_stage2_eval_resolves_concise_overlay_run_and_checkpoint(
     )
     assert expected_predictor.is_relative_to(project)
     assert expected_terminator.is_relative_to(project)
+
+
+def test_stage2_eval_last_selects_latest_numeric_overlay_checkpoint(
+    tmp_path: Path,
+) -> None:
+    config = _checkpoint_tree(tmp_path)
+    source = Path(config["external_predictor_model"])
+    latest = source.parents[2] / "checkpoints/100000/pretrained_model"
+    _write_checkpoint(latest, json.loads((source / "config.json").read_text()))
+    config.update(
+        {
+            "external_predictor_model": "predictor_run",
+            "external_predictor_checkpoint": "last",
+        }
+    )
+
+    panels = json.loads(build_settings(config)["models_json"])
+
+    assert all(
+        panel["external_predictor_model"] == str(latest) for panel in panels
+    )
 
 
 def test_stage2_eval_supports_original_fsq_terminator(tmp_path: Path) -> None:
@@ -510,13 +592,61 @@ def test_stage2_eval_rejects_fsq_mismatched_terminator(tmp_path: Path) -> None:
     project = Path(config["project_root"])
     other_fsq = project / "dataset_filtered/skillvla_dataset/libero_90_full_full/FSQ333_other/FSQ.pt"
     other_fsq.parent.mkdir(parents=True)
-    other_fsq.touch()
+    other_fsq.write_bytes(b"different-fsq-checkpoint")
     terminator_config = Path(config["external_terminator_model"]) / "config.json"
     terminator = json.loads(terminator_config.read_text())
     terminator["fsq_path"] = str(other_fsq)
     terminator_config.write_text(json.dumps(terminator))
 
-    with pytest.raises(ValueError, match="FSQ run does not match"):
+    with pytest.raises(ValueError, match="skill-code space mismatch"):
+        build_settings(config)
+
+
+def test_stage2_eval_accepts_aliased_code_space_for_identical_fsq(
+    tmp_path: Path,
+) -> None:
+    config = _checkpoint_tree(tmp_path)
+    terminator_config = Path(config["external_terminator_model"]) / "config.json"
+    terminator = json.loads(terminator_config.read_text())
+    terminator["skill_code_space_id"] = "FSQ333_same_weights_different_suffix"
+    terminator_config.write_text(json.dumps(terminator))
+
+    panels = json.loads(build_settings(config)["models_json"])
+
+    assert len(panels) == 2
+
+
+def test_stage2_eval_accepts_aliased_predictor_for_identical_fsq(
+    tmp_path: Path,
+) -> None:
+    config = _checkpoint_tree(tmp_path)
+    predictor_config = Path(config["external_predictor_model"]) / "config.json"
+    predictor = json.loads(predictor_config.read_text())
+    predictor["skill_code_space_id"] = "FSQ333_same_weights_different_suffix"
+    predictor_config.write_text(json.dumps(predictor))
+
+    panels = json.loads(build_settings(config)["models_json"])
+
+    assert len(panels) == 2
+
+
+def test_stage2_eval_rejects_aliased_predictor_for_different_fsq(
+    tmp_path: Path,
+) -> None:
+    config = _checkpoint_tree(tmp_path)
+    project = Path(config["project_root"])
+    other_fsq = (
+        project
+        / "dataset_filtered/skillvla_dataset/libero_90_full_full/FSQ333_other/FSQ.pt"
+    )
+    other_fsq.parent.mkdir(parents=True)
+    other_fsq.write_bytes(b"different-fsq-checkpoint")
+    predictor_config = Path(config["external_predictor_model"]) / "config.json"
+    predictor = json.loads(predictor_config.read_text())
+    predictor["fsq_path"] = str(other_fsq)
+    predictor_config.write_text(json.dumps(predictor))
+
+    with pytest.raises(ValueError, match="predictor skill-code space mismatch"):
         build_settings(config)
 
 

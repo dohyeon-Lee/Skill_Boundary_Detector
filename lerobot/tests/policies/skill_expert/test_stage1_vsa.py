@@ -8,6 +8,7 @@ from torch import nn
 from transformers.models.auto import CONFIG_MAPPING
 from transformers.models.gemma.modeling_gemma import GemmaRotaryEmbedding
 
+from lerobot.configs.types import FeatureType, PolicyFeature
 from lerobot.policies.skill_expert.configuration_skill_expert import (
     COND_GEMMA_ARCHITECTURE,
     COND_GEMMA_ARCHITECTURE_REVISION,
@@ -53,11 +54,16 @@ from lerobot.policies.skill_expert.vsa_perceiver_crossattn import (
     InterleavedExpertBlock,
     VSAActionExpert,
 )
+from lerobot.policies.skillVLA.dataset_skillVLA import (
+    SKILL_CANONICAL_ACTION_IS_PAD,
+    SKILL_CANONICAL_ACTIONS,
+)
 from lerobot.policies.pi_gemma import (
     PiGemmaForCausalLM,
     PiGemmaRMSNorm,
     _gated_residual,
 )
+from lerobot.utils.constants import ACTION, OBS_STATE
 
 
 def _tiny_gemma_config(depth: int = 4):
@@ -634,6 +640,61 @@ def test_arch0_routes_state_to_cond_and_skill_to_expert_broadcast() -> None:
     assert condition_skill is None
     assert expert_skill is not None
     assert expert_skill.shape == (2, 32)
+
+
+def test_arch0_skill_runs_expert_only_full_trajectory_flow_with_padding() -> None:
+    torch.manual_seed(29)
+    config = SkillExpertConfig(
+        architecture=COND_GEMMA_ARCHITECTURE,
+        architecture_label="arch0_skill",
+        architecture_revision=COND_GEMMA_ARCHITECTURE_REVISION,
+        conditioning_route="state_cond",
+        max_state_dim=4,
+        max_action_dim=4,
+        chunk_size=3,
+        n_action_steps=3,
+        dino_model_path="unused",
+        skill_flow_enabled=True,
+        skill_flow_weight=1.0,
+        skill_flow_max_length=5,
+    )
+    tiny_geometry = SimpleNamespace(width=32, depth=2)
+    with (
+        patch(
+            "lerobot.policies.skill_expert.cond_gemma.get_gemma_config",
+            return_value=tiny_geometry,
+        ),
+        patch(
+            "lerobot.policies.skill_expert.cond_gemma.build_gemma",
+            side_effect=lambda _variant, *, use_adarms: _tiny_projection_gemma_pi05_heads(
+                use_adarms=use_adarms
+            ),
+        ),
+        patch(
+            "lerobot.policies.skill_expert.cond_gemma.AutoModel.from_pretrained",
+            return_value=_TinyDino(),
+        ),
+    ):
+        model = CondGemmaSkillExpert(config).train()
+
+    actions = torch.randn(2, 5, 4)
+    noise = torch.randn_like(actions)
+    skill = torch.tensor([3, 5])
+    time = torch.tensor([0.3, 0.7])
+    is_pad = torch.tensor(
+        [[False, False, False, True, True], [False, False, False, False, False]]
+    )
+    residual = model.skill_only_flow_residual(
+        actions, skill, is_pad, time=time, noise=noise
+    )
+
+    assert residual.shape == actions.shape
+    residual[~is_pad].square().mean().backward()
+    assert model.action_in_proj.weight.grad is not None
+    assert model.action_out_proj.weight.grad is not None
+    assert model.skill_proj.weight.grad is not None
+    # This route is intentionally independent of all Cond-Gemma parameters.
+    assert all(parameter.grad is None for parameter in model.cond_encoder.parameters())
 
 
 def test_arch0_adarms_replaces_skill_broadcast_with_normalized_expert_adarms() -> None:
@@ -2141,6 +2202,83 @@ def test_cumulative_xyz_loss_uses_one_horizon_normalizer_per_sample() -> None:
     )
     torch.testing.assert_close(raw, torch.tensor(43.0 / 12.0))
     torch.testing.assert_close(normalized, torch.tensor(2.0))
+
+
+def test_arch0_skill_policy_combines_main_and_per_trajectory_aux_flow_once() -> None:
+    class _FakeArch0SkillModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.scale = nn.Parameter(torch.tensor(1.0))
+            self._last_flow_time = None
+            self._last_predicted_actions = None
+            self._last_vsa_debug_stats = {}
+
+        def forward(self, images, state, skill_code, actions):
+            del images, state, skill_code
+            self._last_flow_time = torch.tensor([0.25, 0.75])
+            return torch.ones_like(actions) * self.scale
+
+        def skill_only_flow_residual(
+            self, actions, skill_code, action_is_pad, *, time
+        ):
+            del skill_code, action_is_pad
+            torch.testing.assert_close(time, self._last_flow_time)
+            return torch.ones_like(actions) * (2.0 * self.scale)
+
+    config = SkillExpertConfig(
+        architecture=COND_GEMMA_ARCHITECTURE,
+        architecture_label="arch0_skill",
+        architecture_revision=COND_GEMMA_ARCHITECTURE_REVISION,
+        conditioning_route="state_cond",
+        max_state_dim=4,
+        max_action_dim=2,
+        chunk_size=3,
+        n_action_steps=3,
+        dino_model_path="unused",
+        skill_flow_enabled=True,
+        skill_flow_weight=1.0,
+        skill_flow_max_length=5,
+        input_features={
+            OBS_STATE: PolicyFeature(type=FeatureType.STATE, shape=(4,))
+        },
+        output_features={
+            ACTION: PolicyFeature(type=FeatureType.ACTION, shape=(2,))
+        },
+    )
+    policy = SkillExpertPolicy.__new__(SkillExpertPolicy)
+    nn.Module.__init__(policy)
+    policy.config = config
+    policy.model = _FakeArch0SkillModel()
+    batch = {
+        ACTION: torch.zeros(2, 3, 2),
+        OBS_STATE: torch.zeros(2, 4),
+        "observation.images.image": torch.zeros(2, 3, 8, 8),
+        "observation.images.wrist_image": torch.zeros(2, 3, 8, 8),
+        "skill_code": torch.tensor([3, 5]),
+        SKILL_CANONICAL_ACTIONS: torch.zeros(2, 5, 2),
+        SKILL_CANONICAL_ACTION_IS_PAD: torch.tensor(
+            [
+                [False, False, True, True, True],
+                [False, False, False, False, False],
+            ]
+        ),
+    }
+
+    loss, metrics = policy(batch)
+    per_sample, _ = policy(batch, reduction="none")
+
+    # Main residual=1 -> MSE 1. Aux residual=2 -> MSE 4 for both
+    # trajectories even though their valid lengths differ. One combined
+    # objective is returned to the ordinary trainer for one backward pass.
+    torch.testing.assert_close(loss, torch.tensor(5.0))
+    torch.testing.assert_close(per_sample, torch.tensor([5.0, 5.0]))
+    assert metrics["action_loss"] == pytest.approx(1.0)
+    assert metrics["skill_flow/loss"] == pytest.approx(4.0)
+    assert metrics["skill_flow/valid_steps_mean"] == pytest.approx(3.5)
+    assert metrics["skill_flow/total_objective"] == pytest.approx(5.0)
+    assert "action_objective" not in metrics
+    loss.backward()
+    assert policy.model.scale.grad is not None
 
 
 @pytest.mark.parametrize(

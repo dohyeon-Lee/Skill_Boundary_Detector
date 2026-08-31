@@ -5,8 +5,8 @@
 # Pipeline order: DP (this) → build_data (skillset) → FSQ → DP_FSQ_eval.
 # The DP folder name produced here is what build_data / FSQ / eval reference as dp_run_name.
 
-# libero_90_full_full_rel | langgap_56_full_full
-target_dataset: libero_90_full_full_rel
+# libero_90_full_full | langgap_56_full_full
+target_dataset: langgap_ext_full_full
 
 
 # ── DP encoder / temporal ──
@@ -18,11 +18,6 @@ dp_vision: state   # resnet | state
 # SBD probe가 도는 relative 공간과 정합. gripper dims는 absolute 유지(stats 파일의 exclude 규약).
 # 데이터셋에 meta/relative_action_stats.json(ABC_dataset build ④-b) 필요. LIBERO(delta EEF)면 false.
 dp_relative: false # true
-# LIBERO 전용 opt-in: 위 builder가 만든 absolute EEF command를 current-pose anchor 기준
-# SE(3) relative target으로 학습하고, 추론 결과를 다시 normalized OSC_POSE로 변환한다.
-# dp_relative와 동시 사용 불가. true일 때 n_action_steps는 기본/필수 1.
-# OSC position/rotation scale은 dataset의 action_contract.json에서 자동으로 읽어 checkpoint에 저장한다.
-dp_eef_relative: true
 dp_n_obs_steps: 20                          # observation history length
 dp_horizon: 24                              # UNet horizon (multiple of 2^len(down_dims)=8; > n_obs)
 # dp_n_action_steps: auto = horizon - n_obs_steps + 1 (override only if needed)

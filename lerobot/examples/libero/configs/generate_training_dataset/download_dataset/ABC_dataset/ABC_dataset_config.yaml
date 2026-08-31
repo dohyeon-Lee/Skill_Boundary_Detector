@@ -1,0 +1,111 @@
+# Shared config for ABC (XDOF/ABC-130k) dataset download/convert utilities.
+# project_root comes from configs/global_config.yaml.
+#
+# ABC = bimanual(YAM) 실로봇 teleop 데이터. HF에는 풀해상도 MCAP 원본(data/{split}/**)으로
+# 배포되므로 그대로는 못 쓰고, 여기서:
+#   download (mcap subset) → mcap→abcdl (30Hz 고정클록 리샘플 + 정방 다운스케일, abcdl_RLLAB 패키지)
+#   → abcdl→LeRobot v3 (per-camera mp4 + parquet, pyav 기반 — torchcodec 불필요) → quantile stats
+# 최종 산출물은 LIBERO와 동일한 v3 레이아웃이라 하류 파이프라인(DP/SBD/FSQ/skillvla)이 무수정 소비.
+#
+# state/action: 14D bimanual [L_arm(6), L_grip(1), R_arm(6), R_grip(1)], fps 30 고정.
+# 카메라: 스테이션 따라 top(+left_wrist,right_wrist) 등 — mcap 메타에서 자동 발견,
+# v3 feature 키는 observation.images.{cam} 로 생성됨 (하류 3-슬롯 매핑은 별도 작업).
+
+# ── Output root ───────────────────────────────────────────────
+# Final datasets land at {project_root}/{abc_dataset_root}/{name};
+# staging: mcap 원본 → {abc_dataset_root}/_mcap/{name}/, abcdl 캐시 → {abc_dataset_root}/_abcdl/{name}/.
+# abcdl 캐시는 지우지 말 것 — 재변환 소스이자, 추후 AbcdlDataset 직결(스트리밍/memmap)용.
+
+# ABC_ONLY="abc_toy" ./submit_build_ABC.sh
+
+abc_dataset_root: dataset_ABC
+
+# ── Sources ───────────────────────────────────────────────────
+abc_hf_repo: XDOF/ABC-130k
+# abcdl 패키지 저장소 (PYTHONPATH 주입; pip 설치 불필요). 상대경로면 project_root 기준
+# → 클러스터 무관하게 {project_root}/abcdl_RLLAB (절대경로도 허용).
+abcdl_repo: abcdl_RLLAB
+
+# ── Subsets: local name -> 다운로드 선택 (abcdl_RLLAB/download 툴 스키마) ──
+# 로컬 이름이 곧 하류 source_dataset 이름 ({abc_dataset_root}/{name}) — LIBERO의
+# libero_90_full_full 자리에 그대로 들어감. 이름은 파일시스템-safe하게(소문자+underscore).
+#
+# 다운로드 엔진 = {abcdl_repo}/download/src/download_abc.py (그룹/태스크/에피소드 선택형).
+# 논문 공식 7개 primitive 카테고리 → 197개 태스크 매핑(groups)은
+# {abcdl_repo}/download/config.yaml 을 단일 소스로 읽어옴:
+#   pick_and_place / fine_pick_and_place / folding / insertion_ejection /
+#   tool_use / sorting / tying_untying
+#
+# subset 키:
+#   split     : data/{split}/ 기본값 (train | val; entry별 split: 으로 오버라이드 가능)
+#   downloads : entry 리스트. entry = {group | task | tasks:[...]} + episodes
+#       episodes: N                  -> 태스크당 앞에서 N개 (uuid 정렬, 결정적)
+#       episodes: all                -> 전부
+#       episodes: [0,1,2]            -> 해당 인덱스
+#       episodes: ["<uuid부분문자열>"] -> uuid 매칭
+# 태스크명 확인: ./download_ABC.sh --list-tasks (--counts 붙이면 에피소드 수까지, 느림)
+# 계획만 보기:  ./download_ABC.sh --dry-run
+# 완료 판정: _mcap/{name}/.download_complete.json의 요청 hash + MCAP manifest.
+#              subset 추가/선택 변경 시 해당 subset만 재검증하고, 부분 다운로드는 이어받기.
+abc_subsets:
+  abc_toy:
+    split: train
+    downloads:
+      - group: pick_and_place
+        episodes: 20
+      # - task: arrange_the_flowers_into_the_vase
+      #   episodes: 10
+      # - tasks: [tie_the_shoes, open_the_umbrella]
+      #   episodes: all
+
+# groups 확장/오버라이드 (선택): download/config.yaml 의 공식 7그룹에 병합됨.
+# extra_groups:
+#   my_pilot: [open_the_umbrella, tie_the_shoes]
+
+# ── abcdl 캐시 인코딩 ─────────────────────────────────────────
+# 정방 해상도(픽셀): 카메라별 AR 보존 스케일+패드. LIBERO(256)와 정합 위해 256.
+# (ABC 논문 캐시 컨벤션은 abcdl_224 — 바꾸면 _abcdl 캐시 이름에도 반영됨)
+abc_image_size: 256
+abc_fps: 30            # mcap→abcdl 고정클록 리샘플 결과 (abcdl 규약; 바꿀 일 없음)
+
+# ── ③ v3 카메라 정규화/필터 (스테이션 혼재 대응) ────────────
+# ABC는 RealSense(top,left_wrist,right_wrist 3캠)와 ZED-X(top_left,top_right,left_wrist,
+# right_wrist 4캠 스테레오)가 섞여 있다. 해상도는 ②에서 전부 256×256으로 통일됐으므로, ZED-X의
+# 스테레오 오른쪽 눈(top_right)만 버리고 top_left→top으로 이름 바꾸면 RealSense와 동일 스키마가 된다.
+#   camera_rename: raw명 → canonical명   /   camera_drop: 버릴 raw 카메라
+#   v3_cameras   : 정규화 후 이 카메라 집합과 일치하는 에피소드만 v3에 포함 (나머지 스킵)
+# 현재: 전체 1620개 사용 (ZED-X는 top_right 드롭 + top_left→top 정규화). ee_pose는 설계 제외.
+v3_cameras: [top, left_wrist, right_wrist]
+camera_rename: {top_left: top}
+camera_drop: [top_right]
+
+# ── ③ 병렬화 (샤드 빌드 + aggregate 병합) ────────────────────
+# LeRobot v3 writer는 single-writer라 에피소드 병렬 불가 → n샤드로 나눠 병렬 빌드 후
+# lerobot 공식 aggregate_datasets로 병합(인덱스 재매핑·stats 병합). 완성 샤드는 재실행 시
+# 재사용(재개 가능). 샤드 위치 {abc_dataset_root}/_v3_shards/{name}/ (병합 검증 후 자동삭제,
+# KEEP_SHARDS=1로 보존). 실측: 1워커 순차 ~20h → 16샤드 ~1.5-2h.
+v3_shards: 16            # 병렬 샤드 수 (≈ 동시 writer 수)
+v3_encoder_threads: 2    # 샤드당 h264 인코더 스레드 (16샤드×(3캠×2) ≈ cpus-per-task 32에 맞춤)
+
+# ── 병렬도 / 다운로드 안정성 ──────────────────────────────────
+# 대용량 mcap이 HF Xet 경로로 자주 스톨 → download_ABC.sh가 HF_HUB_DISABLE_XET=1로 재래식 LFS 전환
+# (original_dataset 검증 레시피). 그 경로에선 hf_transfer 없이 workers 낮추고 타임아웃 길게가 안정적.
+download_workers: 4    # ①: 동시 다운로드 수. Xet-off 재래식 경로. 2=원본 검증값(안전), 4=실측 실험중.
+                       #     8은 Xet-on 시절 100초 하드스톨 확인됨 → 상한으로 쓰지 말 것.
+download_hf_transfer: false  # Xet-off + 순정 백엔드 + 타임아웃(60s, 래퍼)이 original_dataset의 검증 조합.
+                       #     회선 안정적이면 true(hf_transfer 가속)로 실험 가능 — 단 워치독이 백스톱.
+convert_workers: 16    # ②(mcap→abcdl): 에피소드 단위 프로세스 병렬 (ffmpeg가 무거움).
+                       #     노드 코어 많으면 올려라 (submit의 --cpus-per-task도 함께). 워커당 ffmpeg가
+                       #     디코드에 2~3스레드 쓰므로 cpus-per-task ≈ workers×2 권장.
+
+# ── Stats 계산 범위 (filtered_dataset과 동일 의미) ────────────
+# false (기본/fast): quantile(q01..q99)은 비-비디오 feature만 parquet에서 계산 — 몇 분.
+# true (full): 비디오 포함 전 feature 재계산 — 수 시간. (하류는 이미지 quantile 안 씀)
+stats_include_videos: false
+
+# ── ④-b: relative action stats (pi 계열 relative 학습용) ─────
+# 데이터/stats.json 무변형 — meta/relative_action_stats.json 별도 파일로.
+# 공식 to_relative_actions + 이름기반 exclude(RelativeActionsProcessorStep 규약) 그대로 사용.
+# chunk_size는 relative 학습의 action horizon과 정합 (pi05 기본 50).
+relative_chunk_size: 50
+relative_exclude_joints: [gripper]   # 이름 토큰 매칭 → left_gripper/right_gripper absolute 유지

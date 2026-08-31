@@ -16,6 +16,7 @@ at evaluation time and are never part of Stage-2 training.
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 from pathlib import Path
@@ -49,9 +50,15 @@ from lerobot.policies.skill_expert.configuration_skill_expert import (
 )
 from lerobot.policies.skill_expert.modeling_skill_expert import (
     _PREDICTOR_CHECKPOINT_CONTRACT_FIELDS,
+    _PREDICTOR_MODULE_FIELDS,
+    _PREDICTOR_SKILL_GEOMETRY_FIELDS,
     SkillExpertPolicy,
+    _load_complete_predictor_parameters,
     _load_learned_predictor_parameters,
     _load_pretrained_state_dict,
+)
+from lerobot.policies.skill_expert.modeling_skill_predictor import (
+    FrozenVLMSkillPredictor,
 )
 from lerobot.policies.skillVLA.dataset_skillVLA import (
     SAME_SKILL_PAIR_FALLBACK,
@@ -1392,7 +1399,9 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
         _load_pi05_base_vlm_parameters(predictor, checkpoint_path or "")
         predictor.requires_grad_(False).eval()
 
-    def _initialize_predictor(self, checkpoint_path: str | Path | None) -> None:
+    def _validated_predictor_source(
+        self, checkpoint_path: str | Path | None
+    ) -> Path:
         predictor = self.model.skill_predictor
         if predictor is None:
             raise RuntimeError("Stage 2 has no predictor module to initialize.")
@@ -1418,10 +1427,94 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
             raise ValueError(
                 "Predictor module contract mismatch: " + "; ".join(mismatches)
             )
+        return path
+
+    def _initialize_predictor(self, checkpoint_path: str | Path | None) -> None:
+        predictor = self.model.skill_predictor
+        if predictor is None:
+            raise RuntimeError("Stage 2 has no predictor module to initialize.")
+        path = self._validated_predictor_source(checkpoint_path)
         loaded = _load_learned_predictor_parameters(predictor, path)
         predictor.requires_grad_(False).eval()
         log.info(
             "Stage 2 <- frozen predictor overlay %s: loaded %d learned tensors.",
+            path,
+            loaded,
+        )
+
+    def load_external_skill_predictor(
+        self, checkpoint_path: str | Path | None
+    ) -> None:
+        """Replace the eval VLM and predictor from one external checkpoint.
+
+        Stage-2 training initializes its frozen base VLM directly from pi0.5 and
+        overlays only the learned reader/head/skill-LoRA tensors. Evaluation is
+        different: when the caller explicitly selects an external predictor,
+        that checkpoint owns the complete VLM lineage. Load all predictor
+        tensors here. Predictor inference activates its ``skill`` LoRA, whereas
+        Stage-2 likelihood memory uses ``encode_base_*`` and disables adapters,
+        so both paths share the checkpoint's base VLM without leaking LoRA into
+        the Stage-2 action model.
+        """
+        path = Path(str(checkpoint_path or ""))
+        config_path = path / "config.json"
+        if not config_path.is_file():
+            raise FileNotFoundError(
+                f"Stage-2 external predictor config not found: {config_path}"
+            )
+        source_config = json.loads(config_path.read_text())
+        if source_config.get("type") not in {"skill_expert", "skill_aux"}:
+            raise ValueError(
+                "Predictor source must be a skill_expert or skill_aux checkpoint, got "
+                f"{source_config.get('type')!r}."
+            )
+        if not source_config.get("train_skill_predictor", False):
+            raise ValueError("Predictor source has no trained predictor.")
+        # Stage 2's saved module may be only a pristine pi0.5 VLM placeholder,
+        # so reader/head/LoRA settings are owned by the selected eval predictor.
+        # Geometry and the base VLM interface still have to match the trained
+        # Stage-2 projection.
+        compatible_fields = (
+            *_PREDICTOR_SKILL_GEOMETRY_FIELDS,
+            "skill_predictor_vlm_variant",
+            "skill_predictor_image_size",
+        )
+        mismatches = [
+            f"{field}: predictor={source_config.get(field)!r}, "
+            f"stage2={getattr(self.config, field)!r}"
+            for field in compatible_fields
+            if source_config.get(field) != getattr(self.config, field)
+        ]
+        if mismatches:
+            raise ValueError(
+                "External predictor Stage-2 interface mismatch: "
+                + "; ".join(mismatches)
+            )
+
+        predictor_config = copy.deepcopy(self.config)
+        for field in _PREDICTOR_MODULE_FIELDS:
+            if field in source_config:
+                setattr(predictor_config, field, source_config[field])
+        predictor = FrozenVLMSkillPredictor(predictor_config).to(
+            dtype=self._torch_dtype()
+        )
+        loaded = _load_complete_predictor_parameters(predictor, path)
+        predictor.requires_grad_(False).eval()
+        device = next(self.model.parameters()).device
+        # Release the Stage-2 checkpoint's placeholder VLM before moving the
+        # complete external predictor to GPU; holding both can transiently OOM.
+        self.model.skill_predictor = None
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
+        predictor.to(device=device)
+        self.model.skill_predictor = predictor
+        # Cached likelihood memories may have been encoded by the VLM stored in
+        # the Stage-2 checkpoint. They cannot survive an external VLM swap.
+        self._eval_vlm_cache_ids = None
+        self._eval_vlm_cache = None
+        log.info(
+            "Stage 2 eval <- complete external predictor/VLM %s: loaded %d "
+            "tensors (skill LoRA only for predictor inference).",
             path,
             loaded,
         )

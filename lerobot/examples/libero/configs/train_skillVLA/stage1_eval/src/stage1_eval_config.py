@@ -4,11 +4,13 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
 import sys
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 
 _HERE = Path(__file__).resolve()
@@ -71,6 +73,34 @@ def _relocate_project_path(project_root: Path, value: str | Path | None) -> Path
     return path
 
 
+def _resolve_run_checkpoint(run_dir: Path, checkpoint: str) -> Path:
+    """Return a run's pretrained_model directory, resolving ``last`` safely."""
+    checkpoint_name = _safe_name(str(checkpoint), field="checkpoint")
+    checkpoints_dir = run_dir / "checkpoints"
+    direct = checkpoints_dir / checkpoint_name / "pretrained_model"
+    if checkpoint_name.lower() != "last":
+        return direct
+    if (direct / "config.json").is_file():
+        # Canonicalize an existing ``last`` symlink so the resolved settings
+        # record the concrete checkpoint that was actually evaluated.
+        return direct.resolve()
+
+    # Training outputs normally use zero-padded numeric checkpoint folders and
+    # do not create a ``last`` symlink.  Select the greatest numeric checkpoint
+    # only after the caller has identified the exact run directory.
+    candidates: list[tuple[int, Path]] = []
+    if checkpoints_dir.is_dir():
+        for child in checkpoints_dir.iterdir():
+            pretrained = child / "pretrained_model"
+            if child.is_dir() and child.name.isdigit() and (
+                pretrained / "config.json"
+            ).is_file():
+                candidates.append((int(child.name), pretrained))
+    if candidates:
+        return max(candidates, key=lambda item: item[0])[1]
+    return direct
+
+
 def _resolve_external_terminator_path(
     project_root: Path,
     outputs_root: Path,
@@ -85,25 +115,16 @@ def _resolve_external_terminator_path(
         checkpoint_name = _safe_name(
             str(checkpoint), field="external_terminator_checkpoint"
         )
-        resolved = (
-            outputs_root
-            / "skillVLA_terminator"
-            / run_name
-            / "checkpoints"
-            / checkpoint_name
-            / "pretrained_model"
+        resolved = _resolve_run_checkpoint(
+            outputs_root / "skillVLA_terminator" / run_name,
+            checkpoint_name,
         )
         if (resolved / "config.json").is_file():
             return resolved
         for archive_name in ("PREV", "previous"):
-            archived = (
-                outputs_root
-                / "skillVLA_terminator"
-                / archive_name
-                / run_name
-                / "checkpoints"
-                / checkpoint_name
-                / "pretrained_model"
+            archived = _resolve_run_checkpoint(
+                outputs_root / "skillVLA_terminator" / archive_name / run_name,
+                checkpoint_name,
             )
             if (archived / "config.json").is_file():
                 return archived
@@ -125,25 +146,16 @@ def _resolve_external_predictor_path(
         checkpoint_name = _safe_name(
             str(checkpoint), field="external_predictor_checkpoint"
         )
-        resolved = (
-            outputs_root
-            / "skillVLA_terminator"
-            / run_name
-            / "checkpoints"
-            / checkpoint_name
-            / "pretrained_model"
+        resolved = _resolve_run_checkpoint(
+            outputs_root / "skillVLA_terminator" / run_name,
+            checkpoint_name,
         )
         if (resolved / "config.json").is_file():
             return resolved
         for archive_name in ("PREV", "previous"):
-            archived = (
-                outputs_root
-                / "skillVLA_terminator"
-                / archive_name
-                / run_name
-                / "checkpoints"
-                / checkpoint_name
-                / "pretrained_model"
+            archived = _resolve_run_checkpoint(
+                outputs_root / "skillVLA_terminator" / archive_name / run_name,
+                checkpoint_name,
             )
             if (archived / "config.json").is_file():
                 return archived
@@ -419,6 +431,11 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         and resolved_architecture_revision == COND_GEMMA_ARCHITECTURE_REVISION
         and saved_architecture_label == "arch1"
     )
+    arch0_skill_alias = (
+        architecture == COND_GEMMA_ARCHITECTURE
+        and resolved_architecture_revision == COND_GEMMA_ARCHITECTURE_REVISION
+        and saved_architecture_label == "arch0_skill"
+    )
     historical_arch2_alias = (
         architecture == VSA_ARCHITECTURE
         and resolved_architecture_revision == VSA_ARCHITECTURE_REVISION
@@ -430,6 +447,7 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         saved_architecture_label
         and saved_architecture_label != architecture_label
         and not historical_arch0_alias
+        and not arch0_skill_alias
         and not historical_arch2_alias
     ):
         raise ValueError(
@@ -437,6 +455,8 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
             f"match its architecture contract; expected {architecture_label!r} at "
             f"{policy_path}."
         )
+    if arch0_skill_alias:
+        architecture_label = "arch0_skill"
     action_loss_mode = str(policy.get("action_loss_mode", "")).strip().lower()
     if action_loss_mode != "flow":
         raise ValueError(
@@ -542,6 +562,56 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
     return contract
 
 
+def _policy_code_space_id(policy: dict) -> str:
+    value = str(policy.get("skill_code_space_id", "") or "").strip()
+    if value:
+        return value
+    fsq_path = str(policy.get("fsq_path", "") or "").strip()
+    return Path(fsq_path).parent.name if fsq_path else ""
+
+
+def _policies_share_fsq_checkpoint(
+    source: dict,
+    target: dict,
+    *,
+    project_root: Path | None,
+) -> bool:
+    if project_root is None:
+        return False
+    source_fsq = _relocate_project_path(project_root, source.get("fsq_path"))
+    target_fsq = _relocate_project_path(project_root, target.get("fsq_path"))
+    if not source_fsq.is_file() or not target_fsq.is_file():
+        return False
+    return source_fsq.resolve() == target_fsq.resolve() or (
+        source_fsq.stat().st_size == target_fsq.stat().st_size
+        and _checkpoint_sha256(source_fsq) == _checkpoint_sha256(target_fsq)
+    )
+
+
+def _validate_policy_code_space(
+    source: dict,
+    target: dict,
+    *,
+    component: str,
+    project_root: Path | None,
+) -> None:
+    source_space = _policy_code_space_id(source)
+    target_space = _policy_code_space_id(target)
+    if not source_space or not target_space or source_space == target_space:
+        return
+    # Human-readable dataset/output suffixes may differ even when the copied
+    # quantizer checkpoint is byte-identical. Geometry alone is insufficient:
+    # accept the alias only after comparing the actual FSQ checkpoint bytes.
+    if _policies_share_fsq_checkpoint(
+        source, target, project_root=project_root
+    ):
+        return
+    raise ValueError(
+        f"External {component} skill-code space mismatch: "
+        f"{component}={source_space!r}, target={target_space!r}."
+    )
+
+
 def _external_predictor_contract(
     checkpoint: Path,
     *,
@@ -565,16 +635,29 @@ def _external_predictor_contract(
         raise ValueError(
             f"External predictor checkpoint has no trained predictor: {checkpoint}"
         )
-    # A target that trained its own predictor already owns a fixed module, so the
-    # overlay must match it exactly. A predictor-free target instead rebuilds the
-    # module from this checkpoint, so only the skill geometry has to agree --
-    # mirroring SkillExpertPolicy.load_external_skill_predictor.
+    # A Stage-1 target that trained its own predictor owns a fixed module, so the
+    # overlay must match it exactly. Predictor-free Stage 1 rebuilds the module
+    # and checks only skill geometry. Stage 2 always stores a frozen VLM module,
+    # but it may be only the pristine pi0.5 placeholder used by its action path;
+    # eval replaces that module from the selected predictor checkpoint. In that
+    # case reader/head/LoRA settings may differ, while geometry and the base VLM
+    # interface must remain compatible with the trained Stage-2 projection.
     target_has_predictor = as_bool(target_policy.get("train_skill_predictor", False))
-    checked_fields = (
-        _PREDICTOR_CHECKPOINT_CONTRACT_FIELDS
-        if target_has_predictor
-        else ("skill_vocab_size", "skill_fsq_levels")
-    )
+    target_type = target_policy.get("type", target_policy.get("model_type"))
+    if target_type == "skill_vla_stage2":
+        checked_fields = (
+            "skill_vocab_size",
+            "skill_fsq_levels",
+            "skill_predictor_vlm_variant",
+            "skill_predictor_image_size",
+        )
+        mismatch_label = "Stage-2 interface"
+    elif target_has_predictor:
+        checked_fields = _PREDICTOR_CHECKPOINT_CONTRACT_FIELDS
+        mismatch_label = "module contract"
+    else:
+        checked_fields = ("skill_vocab_size", "skill_fsq_levels")
+        mismatch_label = "skill geometry"
     mismatches = [
         f"{field}: predictor={source.get(field)!r}, target={target_policy.get(field)!r}"
         for field in checked_fields
@@ -582,11 +665,15 @@ def _external_predictor_contract(
     ]
     if mismatches:
         raise ValueError(
-            "External predictor "
-            + ("module contract" if target_has_predictor else "skill geometry")
-            + " mismatch: "
+            "External predictor " + mismatch_label + " mismatch: "
             + "; ".join(mismatches)
         )
+    _validate_policy_code_space(
+        source,
+        target_policy,
+        component="predictor",
+        project_root=project_root,
+    )
     tokenizer_path = _relocate_project_path(
         project_root, source.get("tokenizer_path")
     )
@@ -602,6 +689,7 @@ def _validate_external_terminator(
     *,
     target_policy: dict,
     variant: str = "state_image",
+    project_root: Path | None = None,
 ) -> None:
     """Validate an eval-time co-trained terminator source."""
     config_path = checkpoint / "config.json"
@@ -636,17 +724,21 @@ def _validate_external_terminator(
             f"terminator={source.get('skill_fsq_levels')!r}, "
             f"target={target_policy.get('skill_fsq_levels')!r}"
         )
-    source_space = str(source.get("skill_code_space_id", "") or "").strip()
-    target_space = str(target_policy.get("skill_code_space_id", "") or "").strip()
-    if not target_space:
-        target_fsq = str(target_policy.get("fsq_path", "") or "").strip()
-        if target_fsq:
-            target_space = Path(target_fsq).parent.name
-    if source_space and target_space and source_space != target_space:
-        raise ValueError(
-            "External terminator skill-code space mismatch: "
-            f"terminator={source_space!r}, target={target_space!r}."
-        )
+    _validate_policy_code_space(
+        source,
+        target_policy,
+        component="terminator",
+        project_root=project_root,
+    )
+
+
+@lru_cache(maxsize=64)
+def _checkpoint_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _model_entries(config: dict) -> list[dict]:
@@ -1063,6 +1155,7 @@ def build_settings(config: dict) -> dict:
                 entry_terminator,
                 target_policy=contract["policy"],
                 variant=entry["terminator_variant"],
+                project_root=project_root,
             )
         if entry["advance_mode"] == "original" and not contract["fsq_path"].is_file():
             raise FileNotFoundError(

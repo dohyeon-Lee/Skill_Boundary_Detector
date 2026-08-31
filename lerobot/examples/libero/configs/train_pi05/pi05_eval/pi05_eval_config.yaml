@@ -18,7 +18,7 @@ eval_checkpoint: "010000"      # default checkpoint (per-model `checkpoint:` ove
 # panels/{label}/ 아래. `models:`가 비어있으면 `eval_model:` 단일 경로로 폴백.
 # eval_model: "PT_libero_90_full_full_pi05_batch128_freeze_LANG"
 models:
-  - {model_dir: PT_libero_90_full_full_rel_pi05_batch16_ff_ff_eefrel_pro, label: eef_relative}
+  - {model_dir: PT_libero_90_full_full_pi05_batch16_ff_ff, label: full_finetune}
   # - {model_dir: PT_libero_90_full_full_pi05_batch16_ft_ff, label: freeze_llm_lora_none}
   # - {model_dir: PT_libero_90_full_full_pi05_batch16_tf_ff, label: freeze_vis_lora_none}
   # - {model_dir: PT_libero_90_full_full_pi05_batch16_ft_ft, label: freeze_llm_lora_llm}
@@ -32,9 +32,6 @@ eval_target_task: libero_90
 eval_task_ids: "[1,2,3,4,5,6,7,8,9,10]"
 eval_n_episodes: 5
 eval_episode_offset: 25
-# Ordinary checkpoints use this value. EEF-relative checkpoints are detected
-# from config.json and automatically forced to 1 in eval.sbatch so every action
-# uses the live pose that produced its relative plan anchor.
 eval_n_action_steps: 5
 eval_batch_size: 1
 eval_max_parallel_tasks: 1

@@ -253,7 +253,12 @@ def _resolve_display_models(
     return models
 
 
-def _validate_display_model(model: dict[str, str], *, target_policy: dict) -> None:
+def _validate_display_model(
+    model: dict[str, str],
+    *,
+    target_policy: dict,
+    project_root: Path | None = None,
+) -> None:
     variant = model["variant"]
     if variant == "fsq_initial":
         fsq_path = Path(model["path"])
@@ -268,6 +273,7 @@ def _validate_display_model(model: dict[str, str], *, target_policy: dict) -> No
             checkpoint,
             target_policy=target_policy,
             variant=variant,
+            project_root=project_root,
         )
         return
     config_path = checkpoint / "config.json"
@@ -376,6 +382,7 @@ def build_settings(config: dict) -> dict:
             _validate_external_terminator(
                 external_skill_model,
                 target_policy=contract["policy"],
+                project_root=project_root,
             )
         else:
             _validate_display_model(
@@ -384,11 +391,13 @@ def build_settings(config: dict) -> dict:
                     "path": str(external_skill_model),
                 },
                 target_policy=contract["policy"],
+                project_root=project_root,
             )
     for display_model in display_terminator_models:
         _validate_display_model(
             display_model,
             target_policy=contract["policy"],
+            project_root=project_root,
         )
 
     if not as_bool(get_value(config, "episode_exact", True)):

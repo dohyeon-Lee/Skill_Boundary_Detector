@@ -117,14 +117,6 @@ def _default_output_name(entries: list[dict]) -> str:
     return raw if len(raw) <= 200 else f"stage2_{entries[0]['checkpoint']}_{stamp}"
 
 
-def _fsq_run_tag(policy_config: dict, label: str) -> str:
-    """Return the FSQ dataset-run directory name recorded in fsq_path."""
-    fsq_path = Path(str(policy_config.get("fsq_path") or ""))
-    if not fsq_path.name:
-        raise ValueError(f"{label} config records no fsq_path.")
-    return fsq_path.parent.name
-
-
 def _stage2_checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
     required = (
         "config.json",
@@ -181,11 +173,6 @@ def _stage2_checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
     stage1_prior_path = _resolve_recorded_stage1_prior(
         project_root, policy.get("stage1_checkpoint_path")
     )
-    if not (stage1_prior_path / "config.json").is_file():
-        raise FileNotFoundError(
-            "Stage-1 prior recorded in the Stage-2 checkpoint not found: "
-            f"{stage1_prior_path}"
-        )
 
     train_config = json.loads((policy_path / "train_config.json").read_text())
     dataset_value = str((train_config.get("dataset") or {}).get("root") or "").strip()
@@ -599,8 +586,20 @@ def build_settings(config: dict) -> dict:
             / "pretrained_model"
         )
         contract = _stage2_checkpoint_contract(stage2_path, project_root)
+        # A saved Stage-2 policy is self-contained: its safetensors already
+        # include the frozen Stage-1 prior and from_pretrained deliberately
+        # loads it with initialize_from_sources=False.  The original Stage-1
+        # directory is needed only when eval explicitly requests a standalone
+        # ``prior`` panel.
+        if (
+            "prior" in entry["modes"]
+            and not (contract["stage1_prior_path"] / "config.json").is_file()
+        ):
+            raise FileNotFoundError(
+                "Stage-1 prior recorded in the Stage-2 checkpoint not found: "
+                f"{contract['stage1_prior_path']}"
+            )
         stage2_policy = contract["policy"]
-        stage2_fsq_run = _fsq_run_tag(stage2_policy, "Stage-2")
 
         predictor_value = entry.pop("external_predictor_model_value", "")
         terminator_value = entry.pop("external_terminator_model_value", "")
@@ -639,17 +638,9 @@ def build_settings(config: dict) -> dict:
                 terminator_path,
                 target_policy=stage2_policy,
                 variant=terminator_variant,
+                project_root=project_root,
             )
-            terminator_policy = json.loads(
-                (terminator_path / "config.json").read_text()
-            )
-            terminator_fsq_run = _fsq_run_tag(terminator_policy, "Terminator")
-            if terminator_fsq_run != stage2_fsq_run:
-                raise ValueError(
-                    "External terminator FSQ run does not match the Stage-2 "
-                    f"checkpoint: terminator={terminator_fsq_run!r}, "
-                    f"stage2={stage2_fsq_run!r}."
-                )
+        predictor_contract = None
         if needs_predictor:
             if predictor_path is None:
                 raise ValueError(
@@ -657,21 +648,11 @@ def build_settings(config: dict) -> dict:
                     "skill_source=external but no external_predictor_model "
                     "was set."
                 )
-            _external_predictor_contract(
+            predictor_contract = _external_predictor_contract(
                 predictor_path,
                 target_policy=stage2_policy,
                 project_root=project_root,
             )
-            predictor_policy = json.loads(
-                (predictor_path / "config.json").read_text()
-            )
-            predictor_fsq_run = _fsq_run_tag(predictor_policy, "Predictor")
-            if predictor_fsq_run != stage2_fsq_run:
-                raise ValueError(
-                    "External predictor FSQ run does not match the Stage-2 "
-                    f"checkpoint: predictor={predictor_fsq_run!r}, "
-                    f"stage2={stage2_fsq_run!r}."
-                )
         elif entry["skill_source"] == "own" and "prior" in entry["modes"]:
             raise ValueError(
                 f"models[].label={entry['label']!r} uses skill_source=own, "
@@ -694,6 +675,11 @@ def build_settings(config: dict) -> dict:
         }
         if oracle_dataset is not None:
             eval_data_fields.update(oracle_dataset)
+        eval_tokenizer_path = (
+            predictor_contract["tokenizer_path"]
+            if predictor_contract is not None
+            else contract["tokenizer_path"]
+        )
         stage2_architecture_fields = {
             "architecture": contract["architecture"],
             "architecture_label": contract["architecture_label"],
@@ -718,7 +704,7 @@ def build_settings(config: dict) -> dict:
                         policy_config=stage2_policy,
                         architecture_fields=stage2_architecture_fields,
                         eval_data_fields=eval_data_fields,
-                        tokenizer_path=contract["tokenizer_path"],
+                        tokenizer_path=eval_tokenizer_path,
                         predictor_path=predictor_path,
                         terminator_path=terminator_path,
                         terminator_variant=terminator_variant,
@@ -760,7 +746,7 @@ def build_settings(config: dict) -> dict:
                 policy_config=prior_contract["policy"],
                 architecture_fields=prior_architecture_fields,
                 eval_data_fields=eval_data_fields,
-                tokenizer_path=contract["tokenizer_path"],
+                tokenizer_path=eval_tokenizer_path,
                 predictor_path=predictor_path,
                 terminator_path=terminator_path,
                 terminator_variant=terminator_variant,

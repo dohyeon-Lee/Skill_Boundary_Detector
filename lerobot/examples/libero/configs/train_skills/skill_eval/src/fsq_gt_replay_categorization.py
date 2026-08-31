@@ -10,6 +10,7 @@ later report rebuild is normally a no-op.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import math
 import os
@@ -677,26 +678,109 @@ def _checkpoint_metrics(
     return result
 
 
-def _infer_bundle(model_path: Path) -> tuple[Path, dict[str, Any]]:
-    meta_path = model_path.parent / "fsq_meta.json"
-    if not meta_path.is_file():
-        raise CategorizationUnavailable(f"fsq_meta.json is missing: {meta_path}")
-    meta = json.loads(meta_path.read_text())
-    repository = Path(__file__).resolve().parents[7]
-    dataset_root = Path(str(meta.get("fsq_dataset_root") or "FSQ_dataset"))
-    if not dataset_root.is_absolute():
-        dataset_root = repository / "dataset_filtered" / dataset_root
+def _global_dataset_root_name(repository: Path) -> str:
+    """Read the active dataset root without hard-coding a server layout."""
+    config_path = repository / "lerobot/examples/libero/configs/global_config.yaml"
+    if not config_path.is_file():
+        return ""
+    try:
+        import yaml
+
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        return str(config.get("dataset_root") or "").strip()
+    except ImportError:
+        # The report environment normally has PyYAML.  Keep a small fallback so
+        # bundle discovery still works in a bootstrap-only Python environment.
+        for raw_line in config_path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if line.startswith("dataset_root:"):
+                return line.split(":", 1)[1].split("#", 1)[0].strip().strip("\"'")
+    return ""
+
+
+def _skillset_relative_path(meta: dict[str, Any]) -> Path:
     required = ("target_dataset", "fsq_inputs_name", "skillset_seg_name", "skillset_name")
     missing = [key for key in required if not str(meta.get(key) or "")]
     if missing:
         raise CategorizationUnavailable(f"fsq_meta.json cannot locate skill bundle; missing {missing}")
-    bundle = dataset_root
+    relative = Path()
     for key in required:
-        bundle /= str(meta[key])
-    bundle /= "skills_bundle.npz"
-    if not bundle.is_file():
-        raise CategorizationUnavailable(f"skill bundle is missing: {bundle}")
-    return bundle, meta
+        relative /= str(meta[key])
+    return relative
+
+
+def _dataset_root_candidates(
+    meta: dict[str, Any], repository: Path, fsq_dataset_root: Path
+) -> list[Path]:
+    if fsq_dataset_root.is_absolute():
+        return [fsq_dataset_root]
+
+    root_names: list[str] = []
+    for value in (
+        meta.get("dataset_root_name"),
+        _global_dataset_root_name(repository),
+        "dataset",
+        "dataset_filtered",
+    ):
+        name = str(value or "").strip()
+        if name and name not in root_names:
+            root_names.append(name)
+    # Older fsq_meta.json files did not record dataset_root_name.  Discover
+    # custom roots such as dataset_ABC while still preferring the active global
+    # root and the two historical defaults above.
+    for path in sorted(repository.glob("dataset*")):
+        if path.is_dir() and path.name not in root_names:
+            root_names.append(path.name)
+    return [repository / name / fsq_dataset_root for name in root_names]
+
+
+def _build_missing_bundle(skills_dir: Path, bundle_path: Path) -> None:
+    module_path = Path(__file__).resolve().parents[4] / "skills_bundle.py"
+    if not module_path.is_file():
+        raise CategorizationUnavailable(
+            f"skill bundle builder is missing: {module_path}"
+        )
+    spec = importlib.util.spec_from_file_location("fsq_replay_skills_bundle", module_path)
+    if spec is None or spec.loader is None:
+        raise CategorizationUnavailable(f"could not load skill bundle builder: {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    print(f"categorization analysis: building missing skill bundle from {skills_dir}")
+    try:
+        module.build_bundle(skills_dir, bundle_path)
+    except Exception as error:
+        raise CategorizationUnavailable(
+            f"could not build skill bundle from {skills_dir}: {error}"
+        ) from error
+
+
+def _infer_bundle(
+    model_path: Path, *, repository: Path | None = None
+) -> tuple[Path, dict[str, Any]]:
+    meta_path = model_path.parent / "fsq_meta.json"
+    if not meta_path.is_file():
+        raise CategorizationUnavailable(f"fsq_meta.json is missing: {meta_path}")
+    meta = json.loads(meta_path.read_text())
+    repository = repository or Path(__file__).resolve().parents[7]
+    fsq_dataset_root = Path(str(meta.get("fsq_dataset_root") or "FSQ_dataset"))
+    skillset_relative = _skillset_relative_path(meta)
+    attempted: list[Path] = []
+    for dataset_root in _dataset_root_candidates(meta, repository, fsq_dataset_root):
+        skillset_dir = dataset_root / skillset_relative
+        attempted.append(skillset_dir)
+        bundle = skillset_dir / "skills_bundle.npz"
+        if bundle.is_file():
+            return bundle, meta
+        skills_dir = skillset_dir / "skills"
+        if skills_dir.is_dir():
+            _build_missing_bundle(skills_dir, bundle)
+            if bundle.is_file():
+                return bundle, meta
+    rendered = "\n  - ".join(str(path) for path in attempted)
+    raise CategorizationUnavailable(
+        "could not locate the FSQ training skillset under any dataset root:\n"
+        f"  - {rendered}"
+    )
 
 
 def _collection_sources(collection_dir: Path) -> tuple[str, str, list[tuple[Path, dict[str, Any]]]]:

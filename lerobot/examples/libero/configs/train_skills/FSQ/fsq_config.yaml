@@ -4,9 +4,9 @@
 
 # ── Data artifact ─────────────────────────────────────────────────────────────
 fsq_dataset_root: FSQ_dataset
-target_dataset: libero_90_full_full
+target_dataset: langgap_ext_full_full # libero_90_full_full
 fsq_inputs_name: FSQ_inputs
-skillset_seg_name: seg_libero_90_full_full_state_obs20_ck100000_std_episodemean_100p
+skillset_seg_name: seg_langgap_ext_full_full_state_obs20_ck100000_std_episodemean_100p # seg_libero_90_full_full_state_obs20_ck100000_std_episodemean_100p
 skillset_name: skillset
 
 
@@ -19,14 +19,14 @@ skillset_name: skillset
 fsq_exp: ""
 # Choose exactly one of the following forms.
 # fsq_quantizer: {type: fsq, levels: [3,3,3,3]}  
-fsq_quantizer: {type: fsq, levels: [2,2,2,2,2]}  
+fsq_quantizer: {type: fsq, levels: [3,3,3]}  
 # fsq_quantizer: {type: bsq, code_dim: 5}       # 32 spherical binary codes
 fsq_hidden_dim: 256
 fsq_num_layers: 2
 
 
 # ── Architecture ─────────────────────────────────────────────────────────────
-# raw    : absolute proprio B-spline -> FSQ -> absolute proprio B-spline
+# raw    : absolute proprio B-spline -> FSQ -> absolute proprio B-splineㅇ
 # zero   : zero-grounded proprio B-spline -> FSQ -> zero-grounded B-spline
 # action      : raw controller actions -> FSQ -> causal Transformer raw actions
 # norm_action : dataset q01/q99-normalized actions -> FSQ -> normalized actions
@@ -52,7 +52,7 @@ fsq_init_calibration: {enabled: true, gain: 1.0, samples: 0}
 
 # Losses are each configured in one place. pair type: none | contrastive | overlap | js.
 # type=none disables pair loss and names the run pairOFF.
-fsq_pair_loss: {type: js, weight: 0.1, inv_temperature: 5.0}
+fsq_pair_loss: {type: contrastive, weight: 0.1, inv_temperature: 5.0}
 fsq_route_loss: {enabled: true}
 fsq_action_loss: {weight: 1.0}
 fsq_end_loss: {weight: 0.1, target_sigma: 2.0}

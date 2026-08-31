@@ -138,100 +138,6 @@ def run_name(prefix: str, dataset: str, batch_size: int, exp: str, tag: str = ""
     return name
 
 
-def resolve_pt_eef_contract(
-    dataset_dir: Path,
-    policy_chunk_size: int,
-) -> dict[str, Any]:
-    """Resolve PI0.5 EEF-relative settings from the derived dataset itself.
-
-    The dataset contract is the single source of truth for OSC scales. The
-    relative statistics must also cover the full PI0.5 prediction chunk, even
-    though only one action is executed at a time.
-    """
-    contract_path = dataset_dir / "meta" / "action_contract.json"
-    stats_path = dataset_dir / "meta" / "relative_action_stats.json"
-    missing = [path for path in (contract_path, stats_path) if not path.is_file()]
-    if missing:
-        raise FileNotFoundError(
-            "pt_eef_relative=true requires the derived LIBERO dataset contract/stats; missing: "
-            + ", ".join(str(path) for path in missing)
-        )
-
-    try:
-        contract = json.loads(contract_path.read_text())
-        stats = json.loads(stats_path.read_text())
-    except (OSError, json.JSONDecodeError) as error:
-        raise ValueError(f"Invalid PI0.5 EEF-relative metadata: {error}") from error
-
-    expected_contract = {
-        "storage_representation": "absolute_eef_command",
-        "model_representation": "eef_anchor_relative_so3",
-        "rotation_representation": "axis_angle_rotation_vector",
-        "rotation_composition": "left_world",
-    }
-    contract_mismatches = {
-        key: (contract.get(key), expected)
-        for key, expected in expected_contract.items()
-        if contract.get(key) != expected
-    }
-    if contract_mismatches:
-        raise ValueError(
-            f"Unsupported EEF action contract in {contract_path}: {contract_mismatches}"
-        )
-
-    expected_stats = {
-        "representation": "eef_anchor_relative_so3",
-        "storage_representation": "absolute_eef_command",
-        "rotation_representation": "axis_angle_rotation_vector",
-        "rotation_composition": "left_world",
-    }
-    stats_mismatches = {
-        key: (stats.get(key), expected)
-        for key, expected in expected_stats.items()
-        if stats.get(key) != expected
-    }
-    if stats_mismatches:
-        raise ValueError(
-            f"Unsupported EEF relative stats contract in {stats_path}: {stats_mismatches}"
-        )
-
-    try:
-        stats_chunk_size = int(stats["chunk_size"])
-    except (KeyError, TypeError, ValueError) as error:
-        raise ValueError(f"Missing or invalid chunk_size in {stats_path}") from error
-    if stats_chunk_size < policy_chunk_size:
-        raise ValueError(
-            f"EEF relative stats chunk_size={stats_chunk_size} "
-            f"< PI0.5 chunk_size={policy_chunk_size}"
-        )
-
-    resolved_scales: dict[str, float] = {}
-    for key in ("osc_position_scale", "osc_rotation_scale"):
-        try:
-            contract_value = float(contract[key])
-            stats_value = float(stats[key])
-        except (KeyError, TypeError, ValueError) as error:
-            raise ValueError(
-                f"Invalid or missing {key} in {contract_path} or {stats_path}"
-            ) from error
-        if not math.isfinite(contract_value) or contract_value <= 0.0:
-            raise ValueError(f"{key} must be finite and positive, got {contract_value}")
-        if not math.isclose(contract_value, stats_value, rel_tol=1e-7, abs_tol=1e-9):
-            raise ValueError(
-                f"{key} mismatch inside derived dataset: "
-                f"action_contract={contract_value}, relative_stats={stats_value}"
-            )
-        resolved_scales[key] = contract_value
-
-    return {
-        "stats_path": stats_path,
-        "contract_path": contract_path,
-        "position_scale": resolved_scales["osc_position_scale"],
-        "rotation_scale": resolved_scales["osc_rotation_scale"],
-        "chunk_size": policy_chunk_size,
-    }
-
-
 def frz_lora_tag(fv: bool, fl: bool, lora_enable: bool, lora_llm: bool, lora_vision: bool) -> str:
     """Run-name tag: '{freeze_vision}{freeze_language}_{lora_vision}{lora_language}' as t/f, e.g. 'tt_ff'.
     BOTH halves read vision-then-language (freeze half, then LoRA half) so the position of each char is
@@ -363,35 +269,7 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
     pt_lora_enable = as_bool(get_value(cfg, "pt_lora_enable", False, env="PI05_PT_LORA_ENABLE"))
     pt_lora_llm = as_bool(get_value(cfg, "pt_lora_llm", True, env="PI05_PT_LORA_LLM"))
     pt_lora_vision = as_bool(get_value(cfg, "pt_lora_vision", False, env="PI05_PT_LORA_VISION"))
-    pt_eef_relative = as_bool(
-        get_value(cfg, "pt_eef_relative", False, env="PT_EEF_RELATIVE")
-    )
-    if pt_eef_relative:
-        manual_scale_keys = [
-            key
-            for key, env_key in (
-                ("pt_eef_position_scale", "PT_EEF_POSITION_SCALE"),
-                ("pt_eef_rotation_scale", "PT_EEF_ROTATION_SCALE"),
-            )
-            if key in cfg or env_key in os.environ
-        ]
-        if manual_scale_keys:
-            raise ValueError(
-                "Remove manual EEF scale settings; they are loaded from the dataset contract: "
-                f"{manual_scale_keys}"
-            )
-        pt_eef = resolve_pt_eef_contract(pt_dataset_dir, pt_chunk_size)
-    else:
-        pt_eef = {
-            "stats_path": "",
-            "contract_path": "",
-            "position_scale": 0.05,
-            "rotation_scale": 0.5,
-            "chunk_size": 0,
-        }
     pt_tag = frz_lora_tag(pt_freeze_vis, pt_freeze_lang, pt_lora_enable, pt_lora_llm, pt_lora_vision)
-    if pt_eef_relative:
-        pt_tag = f"{pt_tag}_eefrel"
     if pt_lr_mode == "warmup_constant":
         pt_tag = f"{pt_tag}_constlr"
     pt_run_name = run_name("PT", pt_dataset, pt_batch_size, pt_exp, tag=pt_tag)
@@ -482,12 +360,6 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         "pt_dataset": pt_dataset,
         "pt_dataset_root": pt_dataset_root,
         "pt_dataset_dir": pt_dataset_dir,
-        "pt_eef_relative": pt_eef_relative,
-        "pt_eef_relative_stats_path": pt_eef["stats_path"],
-        "pt_eef_action_contract_path": pt_eef["contract_path"],
-        "pt_eef_position_scale": pt_eef["position_scale"],
-        "pt_eef_rotation_scale": pt_eef["rotation_scale"],
-        "pt_eef_chunk_size": pt_eef["chunk_size"],
         "pt_batch_size": pt_batch_size,
         "pt_chunk_size": pt_chunk_size,
         "pt_num_gpus": pt_num_gpus,

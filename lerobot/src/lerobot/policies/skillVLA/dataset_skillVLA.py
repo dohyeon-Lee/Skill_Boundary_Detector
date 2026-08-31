@@ -44,6 +44,9 @@ SKILL_PROGRESS = "skill_progress"
 SKILL_EFFECTIVE_DE = "skill_effective_de"
 SKILL_PREVIOUS_ACTION = "skill_previous_action"
 SKILL_PREVIOUS_ACTION_BOS = "skill_previous_action_bos"
+SKILL_CANONICAL_ACTIONS = "skill_canonical_actions"
+SKILL_CANONICAL_ACTION_IS_PAD = "skill_canonical_action_is_pad"
+SKILL_CANONICAL_ACTION_LENGTH = "skill_canonical_action_length"
 SAME_SKILL_PAIR_ID = "same_skill_pair_id"
 SAME_SKILL_PAIR_FALLBACK = "same_skill_pair_fallback"
 
@@ -87,6 +90,12 @@ class SkillVLADataset(LeRobotDataset):
 
     def __init__(self, *args, **kwargs):
         jitter_pmax_override = kwargs.pop("jitter_pmax", None)
+        self._include_canonical_skill_actions = bool(
+            kwargs.pop("include_canonical_skill_actions", False)
+        )
+        canonical_max_length_override = kwargs.pop(
+            "canonical_skill_action_max_length", None
+        )
         directional_overrides = {
             name: kwargs.pop(f"jitter_{name}_pmax", None)
             for name in ("early_start", "late_start", "early_end", "late_end")
@@ -104,6 +113,41 @@ class SkillVLADataset(LeRobotDataset):
         kwargs["episodes"] = sorted(valid) if requested is None else [e for e in requested if e in valid]
         super().__init__(*args, **kwargs)
         info = self.meta.info
+        self._canonical_skill_action_max_length = int(
+            info.get("skill_observed_max_length", 0)
+            if canonical_max_length_override is None
+            else canonical_max_length_override
+        )
+        if self._include_canonical_skill_actions:
+            dataset_max_length = int(info.get("skill_observed_max_length", 0))
+            if dataset_max_length <= 0:
+                raise ValueError(
+                    "arch0_skill requires a positive skill_observed_max_length "
+                    "in the dataset info.json."
+                )
+            if self._canonical_skill_action_max_length != dataset_max_length:
+                raise ValueError(
+                    "Configured canonical skill-action length does not match the "
+                    "dataset contract: "
+                    f"configured={self._canonical_skill_action_max_length}, "
+                    f"dataset={dataset_max_length}."
+                )
+            if not self._include_predictor_start_inputs:
+                raise ValueError(
+                    "Canonical skill actions require jitter resolution and therefore "
+                    "include_predictor_start_inputs=True."
+                )
+            values = (
+                self.hf_dataset.select_columns(["action"])
+                .with_format("numpy")[:]["action"]
+            )
+            self._canonical_action_cache = (
+                torch.from_numpy(np.asarray(values, dtype=np.float32))
+                .clone()
+                .contiguous()
+            )
+        else:
+            self._canonical_action_cache = None
         iss_path = self._resolve_iss_path(info.get("skill_initial_state_path"), self.root)
         self._iss = (
             _ISSStore(iss_path) if self._include_predictor_start_inputs else None
@@ -175,6 +219,54 @@ class SkillVLADataset(LeRobotDataset):
     @property
     def jitter_distribution(self) -> str:
         return self._jitter_distribution
+
+    @property
+    def canonical_skill_action_max_length(self) -> int:
+        return self._canonical_skill_action_max_length
+
+    def _canonical_skill_actions(
+        self,
+        *,
+        episode_index: int,
+        skill_start_frame: int,
+        skill_length: int,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return the selected skill's original (non-jittered) padded trajectory."""
+        if self._canonical_action_cache is None:
+            raise RuntimeError("Canonical skill-action caching is disabled.")
+        if not 0 < skill_length <= self._canonical_skill_action_max_length:
+            raise ValueError(
+                "Canonical skill length is outside the dataset contract: "
+                f"length={skill_length}, max={self._canonical_skill_action_max_length}."
+            )
+        episode = self.meta.episodes[episode_index]
+        episode_length = _scalar(episode["length"])
+        if skill_start_frame < 0 or skill_start_frame + skill_length > episode_length:
+            raise ValueError(
+                "Canonical skill range leaves its episode: "
+                f"episode={episode_index}, start={skill_start_frame}, "
+                f"length={skill_length}, episode_length={episode_length}."
+            )
+        absolute_start = _scalar(episode["dataset_from_index"]) + skill_start_frame
+        absolute_indices = range(absolute_start, absolute_start + skill_length)
+        mapping = self.reader._absolute_to_relative_idx  # noqa: SLF001
+        relative_indices = (
+            list(absolute_indices)
+            if mapping is None
+            else [mapping[index] for index in absolute_indices]
+        )
+        selected = self._canonical_action_cache.index_select(
+            0, torch.as_tensor(relative_indices, dtype=torch.long)
+        )
+        padded = selected.new_zeros(
+            self._canonical_skill_action_max_length, selected.shape[-1]
+        )
+        padded[:skill_length] = selected
+        is_pad = torch.ones(
+            self._canonical_skill_action_max_length, dtype=torch.bool
+        )
+        is_pad[:skill_length] = False
+        return padded, is_pad
 
     @staticmethod
     def _resolve_iss_path(iss_path: str | None, root) -> str:
@@ -307,6 +399,17 @@ class SkillVLADataset(LeRobotDataset):
             # GT progress of the current frame within the chosen (possibly
             # jittered) predictor skill.
             lens = np.asarray(item["skill_length_sequence"]).reshape(-1)
+            if self._include_canonical_skill_actions:
+                canonical_actions, canonical_is_pad = self._canonical_skill_actions(
+                    episode_index=ep_idx,
+                    skill_start_frame=gt_start,
+                    skill_length=int(lens[kp]),
+                )
+                item[SKILL_CANONICAL_ACTIONS] = canonical_actions
+                item[SKILL_CANONICAL_ACTION_IS_PAD] = canonical_is_pad
+                item[SKILL_CANONICAL_ACTION_LENGTH] = torch.tensor(
+                    int(lens[kp]), dtype=torch.long
+                )
             current_frame = int(ifs[k]) + int(ds)
             effective_de = effective_jittered_skill_de(
                 k=k,

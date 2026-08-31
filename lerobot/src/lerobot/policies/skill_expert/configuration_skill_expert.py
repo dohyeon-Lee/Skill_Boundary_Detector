@@ -223,6 +223,12 @@ class SkillExpertConfig(PreTrainedConfig):
     # cumulative clean-action XYZ error. Flow always retains coefficient 1.
     cumulative_xyz_loss_enabled: bool = False
     cumulative_xyz_loss_weight: float = 0.5
+    # Arch0_skill training-only objective. It reuses the exact Arch0 Action
+    # Expert and predicts the selected code's complete canonical trajectory
+    # without image/state/Cond-Gemma inputs. It is never called at inference.
+    skill_flow_enabled: bool = False
+    skill_flow_weight: float = 1.0
+    skill_flow_max_length: int = 0
 
     vision_backbone: str = "dino"
     dino_model_path: str = "models/dinov3-vitl16"
@@ -430,6 +436,13 @@ class SkillExpertConfig(PreTrainedConfig):
                 and self.architecture_revision == COND_GEMMA_ARCHITECTURE_REVISION
                 and self.architecture_label == "arch1"
             )
+            # Arch0_skill shares Arch0's parameter/state-dict contract and
+            # differs only by a training-time auxiliary objective.
+            and not (
+                self.architecture == COND_GEMMA_ARCHITECTURE
+                and self.architecture_revision == COND_GEMMA_ARCHITECTURE_REVISION
+                and self.architecture_label == "arch0_skill"
+            )
             # Checkpoints from before the rename saved the current alternating
             # cross-attention revision as "arch2"; it is now called Arch2_2.
             and not (
@@ -500,6 +513,28 @@ class SkillExpertConfig(PreTrainedConfig):
             )
         if not math.isfinite(self.cumulative_xyz_loss_weight) or self.cumulative_xyz_loss_weight <= 0:
             raise ValueError("cumulative_xyz_loss_weight must be finite and positive.")
+        if not math.isfinite(self.skill_flow_weight) or self.skill_flow_weight <= 0:
+            raise ValueError("skill_flow_weight must be finite and positive.")
+        if self.skill_flow_max_length < 0:
+            raise ValueError("skill_flow_max_length must be non-negative.")
+        if self.skill_flow_enabled:
+            if not (
+                self.architecture == COND_GEMMA_ARCHITECTURE
+                and self.architecture_revision == COND_GEMMA_ARCHITECTURE_REVISION
+                and self.architecture_label == "arch0_skill"
+                and self.conditioning_route == "state_cond"
+            ):
+                raise ValueError(
+                    "skill_flow_enabled is supported only by arch0_skill."
+                )
+            if self.skill_flow_max_length <= 0:
+                raise ValueError(
+                    "arch0_skill requires a positive skill_flow_max_length."
+                )
+            if self.training_skill_source != "gt":
+                raise ValueError(
+                    "arch0_skill currently requires training_skill_source='gt'."
+                )
         if self.transition_jitter_pmax < 0:
             raise ValueError("transition_jitter_pmax must be non-negative.")
         directional_jitter = (

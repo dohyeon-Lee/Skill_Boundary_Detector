@@ -36,23 +36,25 @@
 #   - {"model_name": "FSQ22222_cont", "run_name": "FSQ22222_norm_action01_recon_only__contrastiveON_routeON_loss"}
 #   - {"model_name": "FSQ333_cont", "run_name": "norm_action01_recon_only__contrastiveON_routeON_loss"}
 
-output_name: "cont_level"
+# output_name: "final_FSQ_evaluation"
+# fsq_eval_models:
+#   - {"model_name": "3333_cont", "run_name": "FSQ3333_norm_action01_recon_only__contrastiveON_routeON_loss"}
+#   - {"model_name": "3333_cont + term", "run_name": "FSQ3333_norm_action01_recon_termRES__contrastiveON_routeON_loss"}
+#   - {"model_name": "333_cont", "run_name": "norm_action01_recon_only__contrastiveON_routeON_loss"}
+#   - {"model_name": "333_cont + term", "run_name": "333_norm_action01_recon_termRES__contrastiveON_routeON_loss__term01_visunfrez"}
+#   - {"model_name": "3333_js", "run_name": "FSQ3333_norm_action01_recon_only__jsON_routeON_loss"}
+#   - {"model_name": "3333_js + term", "run_name": "FSQ3333_norm_action01_recon_termRES__jsON_routeON_loss"}
+#   - {"model_name": "333_js", "run_name": "norm_action01_recon_only__jsON_routeON_loss"}
+#   - {"model_name": "333_js + term", "run_name": "norm_action01_recon_termRES__jsON_routeON_loss__vis_unfreeze_term01"}
+# episode_source: exact        # exact | dataset
+## ------------------------- langgap -------------------------
+
+output_name: "langgap_js_vs_cont"
 fsq_eval_models:
-  - {"model_name": "3333_cont", "run_name": "FSQ3333_norm_action01_recon_only__contrastiveON_routeON_loss"}
-  - {"model_name": "3333_cont + term", "run_name": "FSQ3333_norm_action01_recon_termRES__contrastiveON_routeON_loss"}
-  - {"model_name": "22222_cont", "run_name": "FSQ22222_norm_action01_recon_only__contrastiveON_routeON_loss"}
-  - {"model_name": "22222_cont + term", "run_name": "FSQ22222_norm_action01_recon_termRES__contrastiveON_routeON_loss"}
-  - {"model_name": "333_cont", "run_name": "norm_action01_recon_only__contrastiveON_routeON_loss"}
-  - {"model_name": "333_cont + term", "run_name": "333_norm_action01_recon_termRES__contrastiveON_routeON_loss__term01_visunfrez"}
-  - {"model_name": "3333_js", "run_name": "FSQ3333_norm_action01_recon_only__jsON_routeON_loss"}
-  - {"model_name": "3333_js + term", "run_name": ""}
-  - {"model_name": "22222_js", "run_name": "FSQ22222_norm_action01_recon_only__jsON_routeON_loss"}
-  - {"model_name": "22222_js + term", "run_name": ""}
-  - {"model_name": "333_js", "run_name": "norm_action01_recon_only__jsON_routeON_loss"}
-  - {"model_name": "333_js + term", "run_name": "norm_action01_recon_termRES__jsON_routeON_loss__vis_unfreeze_term01"}
+  - {"model_name": "333_cont", "run_name": "FSQ333_norm_action01_recon_only__contrastiveON_routeON_loss"}
+  - {"model_name": "333_js", "run_name": "FSQ333_norm_action01_recon_only__jsON_routeON_loss"}
 
-
-fsq_eval_checkpoint: [50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1500, 2000]
+fsq_eval_checkpoint: [50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1500, 1750, 2000]
 
 # How episodes get their task id.
 #   exact   : from the rendered episode-exact map (skillvla_dataset/<ds>/eval_init_states.npz).
@@ -63,15 +65,15 @@ fsq_eval_checkpoint: [50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 150
 #             langgap_ext + libero_spatial + libero_object + libero_goal + libero_10),
 #             needs neither the exact map nor libero_original_dataset, and makes
 #             target_task a report label only.  No original-HDF5 demo provenance.
-episode_source: exact        # exact | dataset
+episode_source: dataset        # exact | dataset
 
 target_task: libero_90 # langgap_56 | libero_90
 # List of task ids, or "all" for every task the dataset can serve. Ids without
 # enough episodes in the dataset are skipped with a warning.
 # The list below picks one task per libero_90 scene (20 scenes; task 51 is
 # absent from the filtered dataset).
-task_ids: [0, 3, 4, 5, 6, 11, 18, 22, 28, 33, 35, 38, 40, 46, 50, 55, 60, 65, 69, 73, 77, 81, 86]
-# task_ids: all
+# task_ids: [0, 3, 4, 5, 6, 11, 18, 22, 28, 33, 35, 38, 40, 46, 50, 55, 60, 65, 69, 73, 77, 81, 86]
+task_ids: all
 episodes_per_task: 20
 episode_selection: first       # first | random
 episode_ids: []                # optional exact global episode IDs

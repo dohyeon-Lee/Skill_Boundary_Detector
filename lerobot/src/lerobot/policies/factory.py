@@ -351,43 +351,6 @@ def make_pre_post_processors(
             dataset_stats=kwargs.get("dataset_stats"),
         )
 
-    if isinstance(policy_cfg, PI05Config) and policy_cfg.use_eef_relative_actions:
-        from lerobot.policies.pi05.processor_pi05 import (
-            make_pi05_pre_post_processors,
-            reconnect_pi05_eef_relative_processors,
-        )
-
-        # Fresh PT starts from the ordinary PI0.5 base weights, but must build a
-        # new processor containing the EEF-relative target conversion. Resume
-        # and eval instead load that saved processor and reconnect its paired
-        # pre/post steps (the runtime object link is intentionally not JSON).
-        if pretrained_path and kwargs.get("dataset_stats") is None:
-            preprocessor = PolicyProcessorPipeline.from_pretrained(
-                pretrained_model_name_or_path=pretrained_path,
-                config_filename=kwargs.get(
-                    "preprocessor_config_filename", f"{POLICY_PREPROCESSOR_DEFAULT_NAME}.json"
-                ),
-                overrides=kwargs.get("preprocessor_overrides", {}),
-                to_transition=batch_to_transition,
-                to_output=transition_to_batch,
-            )
-            postprocessor = PolicyProcessorPipeline.from_pretrained(
-                pretrained_model_name_or_path=pretrained_path,
-                config_filename=kwargs.get(
-                    "postprocessor_config_filename", f"{POLICY_POSTPROCESSOR_DEFAULT_NAME}.json"
-                ),
-                overrides=kwargs.get("postprocessor_overrides", {}),
-                to_transition=policy_action_to_transition,
-                to_output=transition_to_policy_action,
-            )
-            reconnect_pi05_eef_relative_processors(preprocessor, postprocessor)
-            return preprocessor, postprocessor
-
-        return make_pi05_pre_post_processors(
-            config=policy_cfg,
-            dataset_stats=kwargs.get("dataset_stats"),
-        )
-
     if pretrained_path:
         reconnect_relative_diffusion = None
         if isinstance(policy_cfg, DiffusionConfig) and policy_cfg.use_relative_actions:
@@ -397,14 +360,6 @@ def make_pre_post_processors(
             )
 
             reconnect_relative_diffusion = reconnect_diffusion_relative_processors
-        elif isinstance(policy_cfg, DiffusionConfig) and policy_cfg.use_eef_relative_actions:
-            # Import before deserialization so both EEF processor steps are registered.
-            from lerobot.policies.diffusion.processor_diffusion import (
-                reconnect_diffusion_eef_relative_processors,
-            )
-
-            reconnect_relative_diffusion = reconnect_diffusion_eef_relative_processors
-
         # TODO(Steven): Temporary patch, implement correctly the processors for Gr00t
         if isinstance(policy_cfg, GrootConfig):
             # GROOT handles normalization in groot_pack_inputs_v3 step

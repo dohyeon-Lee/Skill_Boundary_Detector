@@ -84,25 +84,7 @@ BASE_RN="${EVAL_WANDB_RUN_NAME}"
 # policy + output are the arguments; ONTASK = --eval.on_task_done_cmd for progressive per-task stitch).
 run_eval() {
   local out="$1" job="$2" ppath="$3" ontask="${4:-}"
-  local policy_n_action_steps
-  policy_n_action_steps="$("${PYTHON_BIN}" - "${ppath}/config.json" "${EVAL_N_ACTION_STEPS}" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-config_path = Path(sys.argv[1])
-default_steps = int(sys.argv[2])
-config = json.loads(config_path.read_text()) if config_path.is_file() else {}
-enabled = str(config.get("use_eef_relative_actions", False)).strip().lower() in {
-    "1", "true", "yes", "on"
-}
-print(1 if enabled else default_steps)
-PY
-)"
   mkdir -p "${out}"
-  if [ "${policy_n_action_steps}" = "1" ] && [ "${EVAL_N_ACTION_STEPS}" != "1" ]; then
-    echo "EEF-relative checkpoint: overriding n_action_steps=${EVAL_N_ACTION_STEPS} -> 1"
-  fi
   PYTORCH_ALLOC_CONF=expandable_segments:True \
   PYTHONPATH="${LEROBOT_ROOT}/src:${LIBERO_REPO_ROOT}" "${EVAL_BIN}" \
     --policy.path="${ppath}" \
@@ -119,7 +101,7 @@ PY
     --eval.video_fps="${EVAL_VIDEO_FPS}" \
     --eval.on_task_done_cmd="${ontask}" \
     --policy.device=cuda \
-    --policy.n_action_steps="${policy_n_action_steps}" \
+    --policy.n_action_steps="${EVAL_N_ACTION_STEPS}" \
     --wandb_project "${EVAL_WANDB_PROJECT}" \
     --job_name "${job}" \
     --output_dir="${out}" \

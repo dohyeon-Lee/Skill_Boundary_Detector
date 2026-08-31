@@ -11,35 +11,27 @@
 # model.fsq_term_train.*. Thus zero/norm_action models may be compared on the
 # same GT skill occurrences without sharing integer code meanings.
 
-output_name: "3333_2"
+output_name: "3333_js_term_vs_recon_external"
 
 # source: auxiliary resolves:
 #   <outputs_root>/skillVLA_terminator/<run_name>/checkpoints/<step>/pretrained_model
 # checkpoint: last selects the greatest complete training step at submission.
 # source: fsq remains supported for historical co-trained FSQ checkpoints.
 terminator_models:
-  - label: 3333_cont_own
-    source: fsq
-    run_name: FSQ3333_norm_action01_recon_termRES__contrastiveON_routeON_loss
-    checkpoint: 1750
-  
-  - label: 3333_cont_DINO_frez
+  # - label: 3333_cont_own
+  #   source: fsq
+  #   run_name: FSQ3333_norm_action01_recon_termRES__contrastiveON_routeON_loss
+  #   checkpoint: 1750
+
+  - label: 3333_js_recon_only
     source: auxiliary
-    run_name: bs32_FSQ3333_termRES_contrastive_1750_pt_libero_90_full_full_terminator
+    run_name: bs32_FSQ3333_js_1750_pt_libero_90_full_full_terminator
+    checkpoint: 100000
+  - label: 3333_js_recon_term
+    source: auxiliary
+    run_name: bs32_FSQ3333_termRES_js_1750_pt_libero_90_full_full_terminator
     checkpoint: 100000
 
-  # - label: zero_DINO
-  #   source: auxiliary
-  #   run_name: bs32_FSQ333_zero01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_libero_90_full_firsthalf_scene_terminator_DINO_unfrez
-  #   checkpoint: last
-  # - label: norm_action_RES
-  #   source: auxiliary
-  #   run_name: bs32_FSQ333_norm_action01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_libero_90_full_firsthalf_scene_terminator_resnet_unfrez
-  #   checkpoint: last
-  # - label: norm_action_DINO
-  #   source: auxiliary
-  #   run_name: bs32_FSQ333_norm_action01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_libero_90_full_firsthalf_scene_terminator_DINO_unfrez
-  #   checkpoint: last
 
 target_task: libero_90
 # Which numbering task_ids uses. The skillset numbers tasks by the SOURCE

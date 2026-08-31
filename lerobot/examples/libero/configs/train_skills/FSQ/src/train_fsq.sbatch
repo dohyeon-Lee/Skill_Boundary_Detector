@@ -127,6 +127,7 @@ cat > "${FSQ_OUTPUT_DIR}/fsq_meta.json" <<JSON
   "decoder_name": "${FSQ_DECODER_NAME}",
   "loss_name": "${FSQ_LOSS_NAME}",
   "fsq_levels": [${FSQ_LEVELS_STR// /, }],
+  "dataset_root_name": "${DATASET_ROOT_NAME}",
   "fsq_dataset_root": "${FSQ_DATASET_ROOT_NAME}",
   "target_dataset": "${TARGET_DATASET}",
   "fsq_inputs_name": "${FSQ_INPUTS_NAME}",

@@ -421,65 +421,274 @@ def _selected_skillset(
     }
 
 
-def resolve_dp_eef_scales(dataset_dir: Path) -> tuple[float, float]:
-    """Load the OSC execution scales from one derived LIBERO dataset contract."""
-    contract_path = dataset_dir / "meta" / "action_contract.json"
-    stats_path = dataset_dir / "meta" / "relative_action_stats.json"
-    missing = [path for path in (contract_path, stats_path) if not path.is_file()]
-    if missing:
-        raise FileNotFoundError(
-            "dp_eef_relative=true requires the derived LIBERO dataset contract and stats; "
-            f"missing: {', '.join(str(path) for path in missing)}"
-        )
+def dp_train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str, Any]:
+    """Resolve only settings used by DP submission/training.
 
-    contract = json.loads(contract_path.read_text())
-    stats = json.loads(stats_path.read_text())
-    expected_contract = {
-        "storage_representation": "absolute_eef_command",
-        "model_representation": "eef_anchor_relative_so3",
-        "rotation_representation": "axis_angle_rotation_vector",
-        "rotation_composition": "left_world",
-    }
-    contract_mismatches = {
-        key: (contract.get(key), expected)
-        for key, expected in expected_contract.items()
-        if contract.get(key) != expected
-    }
-    if contract_mismatches:
-        raise ValueError(
-            f"Unsupported EEF action contract in {contract_path}: {contract_mismatches}"
-        )
-
-    resolved: list[float] = []
-    for key in ("osc_position_scale", "osc_rotation_scale"):
-        try:
-            contract_value = float(contract[key])
-            stats_value = float(stats[key])
-        except (KeyError, TypeError, ValueError) as error:
-            raise ValueError(
-                f"Invalid or missing {key} in {contract_path} or {stats_path}"
-            ) from error
-        if not math.isfinite(contract_value) or contract_value <= 0.0:
-            raise ValueError(f"{key} must be finite and positive, got {contract_value}")
-        if not math.isclose(contract_value, stats_value, rel_tol=1e-7, abs_tol=1e-9):
-            raise ValueError(
-                f"{key} mismatch inside derived dataset: "
-                f"action_contract={contract_value}, relative_stats={stats_value}"
-            )
-        resolved.append(contract_value)
-    return resolved[0], resolved[1]
-
-
-def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str, Any]:
-    target_dataset = dataset or str(get_value(cfg, "target_dataset", "libero_90", env="TARGET_DATASET"))
+    DP is the first pipeline stage and must not depend on downstream skillset,
+    FSQ, or BSQ configuration.  Keep this resolver deliberately stage-local so
+    stricter validation added to later stages cannot break DP submission.
+    """
+    target_dataset = dataset or str(
+        get_value(cfg, "target_dataset", "libero_90", env="TARGET_DATASET")
+    )
     root = Path(str(get_value(cfg, "project_root"))).expanduser()
     dataset_root_name = str(
         get_value(cfg, "dataset_root", "libero_dataset", env="DATASET_ROOT_NAME")
     )
     dataset_root = root / dataset_root_name
     outputs_root = root / str(get_value(cfg, "outputs_root", "outputs"))
-    # Fixed per-stage subdirs under the single outputs root (not configurable in yaml).
     dp_outputs_root = outputs_root / "DP"
+    raw_dataset_dir = dataset_root / target_dataset
+
+    dp_n_obs_steps = int(get_value(cfg, "dp_n_obs_steps", 10))
+    dp_horizon = int(get_value(cfg, "dp_horizon", 16))
+    dp_relative = as_bool(get_value(cfg, "dp_relative", False))
+    dp_n_action_steps = int(
+        get_value(
+            cfg,
+            "dp_n_action_steps",
+            dp_horizon - dp_n_obs_steps + 1,
+        )
+    )
+    train_dp = as_bool(
+        get_value(
+            cfg,
+            "train_DP",
+            get_value(cfg, "train_dp", True),
+            env="TRAIN_DP",
+        )
+    )
+    dp_vision = str(get_value(cfg, "dp_vision", "state")).strip().lower()
+    dp_policy_template = str(
+        get_value(
+            cfg,
+            "dp_policy_name",
+            "dp_{target_dataset}_{dp_vision_tag}_obs{dp_n_obs_steps}_horizon{dp_horizon}",
+        )
+    )
+    dp_policy = dp_policy_template.format(
+        target_dataset=target_dataset,
+        dp_vision=dp_vision,
+        dp_vision_tag=dp_vision,
+        dp_n_obs_steps=dp_n_obs_steps,
+        dp_horizon=dp_horizon,
+    )
+
+    dp_run_name = str(get_value(cfg, "dp_run_name", "")).strip()
+    if dp_run_name:
+        dp_policy = dp_run_name
+        if "_state" in dp_run_name:
+            dp_vision = "state"
+        elif "_resnet" in dp_run_name:
+            dp_vision = "resnet"
+        elif "_dino" in dp_run_name:
+            dp_vision = "dino"
+    if dp_vision not in {"state", "resnet", "dino"}:
+        raise ValueError(f"dp_vision must be state|resnet|dino, got {dp_vision!r}.")
+
+    dp_checkpoint = str(get_value(cfg, "dp_checkpoint", "100000"))
+    if dp_checkpoint.isdigit():
+        dp_checkpoint = dp_checkpoint.zfill(6)
+
+    slurm_partitions = as_list(get_value(cfg, "train_partition", ["debug"]))
+    slurm_partition = ",".join(slurm_partitions) or "debug"
+    dp_base_config = str(
+        get_value(
+            cfg,
+            "dp_base_config",
+            "examples/libero/configs/train_skills/DP/src/train_dp_base.yaml",
+        )
+    )
+    return {
+        "project_root": root,
+        "lerobot_root": root / "lerobot",
+        "dataset_root": dataset_root,
+        "dataset_root_name": dataset_root_name,
+        "outputs_root": outputs_root,
+        "dp_outputs_root": dp_outputs_root,
+        "target_dataset": target_dataset,
+        "raw_dataset_dir": raw_dataset_dir,
+        "dp_base_config": root / "lerobot" / dp_base_config,
+        "dp_policy": dp_policy,
+        "dp_output_dir": dp_outputs_root / dp_policy,
+        "dp_policy_path": (
+            dp_outputs_root
+            / dp_policy
+            / "checkpoints"
+            / dp_checkpoint
+            / "pretrained_model"
+        ),
+        "dp_checkpoint": dp_checkpoint,
+        "dp_vision": dp_vision,
+        "dp_vision_backbone": str(get_value(cfg, "dp_vision_backbone", "resnet18")),
+        "train_DP": train_dp,
+        "dp_n_obs_steps": dp_n_obs_steps,
+        "dp_n_action_steps": dp_n_action_steps,
+        "dp_horizon": dp_horizon,
+        "dp_batch_size": int(get_value(cfg, "dp_batch_size", 64)),
+        "dp_relative": dp_relative,
+        "dp_steps": int(get_value(cfg, "dp_steps", 100000)),
+        "dp_num_workers": int(get_value(cfg, "dp_num_workers", 4)),
+        "dp_save_freq": int(get_value(cfg, "dp_save_freq", 50000)),
+        "dp_log_freq": int(get_value(cfg, "dp_log_freq", 200)),
+        "dp_eval_freq": int(get_value(cfg, "dp_eval_freq", 0)),
+        "dp_seed": int(get_value(cfg, "dp_seed", 42)),
+        "dp_wandb_project": str(get_value(cfg, "dp_wandb_project", "DP_train")),
+        "dp_wandb_enable": as_bool(get_value(cfg, "dp_wandb_enable", True)),
+        "dp_overwrite_output": as_bool(get_value(cfg, "dp_overwrite_output", True)),
+        "dp_partition": slurm_partition,
+        "dp_nodelist": str(get_value(cfg, "train_nodelist", "")),
+        "dp_exclude_nodes": as_list(get_value(cfg, "train_exclude_nodes", [])),
+        "dp_qos": str(get_value(cfg, "train_qos", "base_qos")),
+        "dp_gres": str(get_value(cfg, "dp_gres", "gpu:1")),
+        "dp_cpus_per_task": int(get_value(cfg, "dp_cpus_per_task", 8)),
+        "dp_mem": str(get_value(cfg, "dp_mem", "64G")),
+        "dp_time": str(get_value(cfg, "dp_time", "48:00:00")),
+    }
+
+
+def build_data_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str, Any]:
+    """Resolve only settings used to build the DP-segmented skill dataset.
+
+    This stage produces the input artifact consumed later by FSQ or BSQ.  Its
+    paths depend on the trained DP and boundary-detector settings, but never on
+    the downstream quantizer, autoencoder, decoder, or FSQ optimization config.
+    """
+    dp_settings = dp_train_settings(cfg, dataset)
+    target_dataset = dp_settings["target_dataset"]
+    root = dp_settings["project_root"]
+    dataset_root = dp_settings["dataset_root"]
+    dp_policy = dp_settings["dp_policy"]
+    dp_checkpoint = dp_settings["dp_checkpoint"]
+
+    fsq_dataset_root_name = str(
+        get_value(
+            cfg,
+            "fsq_dataset_root",
+            "FSQ_dataset",
+            env="FSQ_DATASET_ROOT_NAME",
+        )
+    )
+    fsq_dataset_root = dataset_root / fsq_dataset_root_name
+    fsq_inputs_name = str(get_value(cfg, "fsq_inputs_name", "FSQ_inputs"))
+    fsq_inputs_dir = fsq_dataset_root / target_dataset / fsq_inputs_name
+
+    probe_settings = skillset_probe_settings(cfg)
+    skillset_min_skills = resolve_skillset_min_skills(cfg, root)
+    skillset_min_skill_len = resolve_skillset_min_skill_len(cfg)
+    skillset_boundary_threshold_mode = resolve_skillset_threshold_mode(cfg, root)
+    if skillset_boundary_threshold_mode not in {"episode_mean", "global_mean"}:
+        raise ValueError(
+            "skillset_boundary_threshold_mode must be 'episode_mean' or 'global_mean', "
+            f"got {skillset_boundary_threshold_mode!r}."
+        )
+    skillset_boundary_threshold_scale = resolve_skillset_threshold_scale(cfg)
+    skillset_global_threshold_source = resolve_skillset_global_threshold_source(cfg, root)
+    if skillset_global_threshold_source and skillset_boundary_threshold_mode != "global_mean":
+        raise ValueError(
+            "skillset_global_threshold_source requires skillset_boundary_threshold_mode=global_mean."
+        )
+
+    if skillset_boundary_threshold_mode == "global_mean":
+        threshold_scope_tag = (
+            "globalref" if skillset_global_threshold_source else "globalmean"
+        )
+    else:
+        threshold_scope_tag = "episodemean"
+    threshold_percent_tag = _scale_percent_tag(skillset_boundary_threshold_scale)
+    skillset_threshold_name = f"{threshold_scope_tag}_{threshold_percent_tag}"
+    skillset_threshold_suffix = f"_{skillset_threshold_name}"
+    skillset_min_skills_suffix = (
+        "" if skillset_min_skills == 1 else f"_ms{skillset_min_skills}"
+    )
+    skillset_output_suffix = resolve_skillset_output_suffix(cfg, root)
+    skillset_suffix = (
+        probe_settings["skillset_probe_suffix"]
+        + skillset_threshold_suffix
+        + skillset_min_skills_suffix
+        + skillset_output_suffix
+    )
+    fsq_seg_dir = fsq_inputs_dir / f"seg_{dp_policy}_ck{dp_checkpoint}{skillset_suffix}"
+    skillset_name = str(get_value(cfg, "skillset_name", "skillset"))
+    skillset_dir = fsq_seg_dir / skillset_name
+
+    slurm_partitions = as_list(get_value(cfg, "train_partition", ["debug"]))
+    slurm_partition = ",".join(slurm_partitions) or "debug"
+    return {
+        "project_root": root,
+        "lerobot_root": dp_settings["lerobot_root"],
+        "dataset_root": dataset_root,
+        "dataset_root_name": dp_settings["dataset_root_name"],
+        "outputs_root": dp_settings["outputs_root"],
+        "dp_outputs_root": dp_settings["dp_outputs_root"],
+        "target_dataset": target_dataset,
+        "raw_dataset_dir": dp_settings["raw_dataset_dir"],
+        "dp_policy": dp_policy,
+        "dp_policy_path": dp_settings["dp_policy_path"],
+        "dp_checkpoint": dp_checkpoint,
+        "dp_vision": dp_settings["dp_vision"],
+        "fsq_dataset_root": fsq_dataset_root,
+        "fsq_dataset_root_name": fsq_dataset_root_name,
+        "fsq_inputs_name": fsq_inputs_name,
+        "fsq_inputs_dir": fsq_inputs_dir,
+        "fsq_seg_dir": fsq_seg_dir,
+        "skillset_name": skillset_name,
+        "skillset_dir": skillset_dir,
+        "skillset_done_path": skillset_dir / ".complete",
+        "skillset_seg_name": fsq_seg_dir.name,
+        "skillset_manifest_path": skillset_dir / "skillset_manifest.json",
+        "skillset_tasks_per_job": int(get_value(cfg, "skillset_tasks_per_job", 5)),
+        "skillset_wandb_project": str(
+            get_value(cfg, "skillset_wandb_project", "Skill_dataset")
+        ),
+        "skillset_dn_step": int(get_value(cfg, "skillset_dn_step", 7)),
+        "skillset_n_gmm": int(get_value(cfg, "skillset_n_gmm", 5)),
+        "skillset_smooth_window": int(get_value(cfg, "skillset_smooth_window", 7)),
+        "skillset_savgol_polyorder": int(
+            get_value(cfg, "skillset_savgol_polyorder", 4)
+        ),
+        "skillset_replan_interval": int(
+            get_value(cfg, "skillset_replan_interval", 3)
+        ),
+        "skillset_nms_dist": int(get_value(cfg, "skillset_nms_dist", 25)),
+        "skillset_min_skills": skillset_min_skills,
+        "skillset_min_skills_suffix": skillset_min_skills_suffix,
+        "skillset_min_skill_len": skillset_min_skill_len,
+        **probe_settings,
+        "skillset_boundary_threshold_mode": skillset_boundary_threshold_mode,
+        "skillset_boundary_threshold_scale": skillset_boundary_threshold_scale,
+        "skillset_boundary_threshold_scale_tag": threshold_percent_tag,
+        "skillset_boundary_threshold_name": skillset_threshold_name,
+        "skillset_boundary_threshold_suffix": skillset_threshold_suffix,
+        "skillset_global_threshold_source": skillset_global_threshold_source,
+        "skillset_output_suffix": skillset_output_suffix,
+        "skillset_global_threshold_path": skillset_dir / "global_boundary_threshold.json",
+        "skillset_dino_feature_dir": resolve_path(
+            root, get_value(cfg, "skillset_dino_feature_dir", "")
+        ),
+        "skillset_cpus_per_task": int(
+            get_value(cfg, "skillset_cpus_per_task", 4)
+        ),
+        "skillset_mem": str(get_value(cfg, "skillset_mem", "32G")),
+        "skillset_time": str(get_value(cfg, "skillset_time", "4:00:00")),
+        "slurm_partitions": slurm_partitions,
+        "slurm_partition": slurm_partition,
+        "slurm_nodelist": str(get_value(cfg, "train_nodelist", "")),
+        "slurm_exclude_nodes": as_list(get_value(cfg, "train_exclude_nodes", [])),
+        "slurm_qos": str(get_value(cfg, "train_qos", "base_qos")),
+        "slurm_gres": str(get_value(cfg, "slurm_gres", "gpu:1")),
+    }
+
+
+def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str, Any]:
+    dp_settings = dp_train_settings(cfg, dataset)
+    target_dataset = dp_settings["target_dataset"]
+    root = dp_settings["project_root"]
+    dataset_root_name = dp_settings["dataset_root_name"]
+    dataset_root = dp_settings["dataset_root"]
+    outputs_root = dp_settings["outputs_root"]
+    # Fixed per-stage subdirs under the single outputs root (not configurable in yaml).
+    dp_outputs_root = dp_settings["dp_outputs_root"]
     fsq_outputs_root = outputs_root / "FSQ"
     fsq_dataset_root_name = str(
         get_value(
@@ -498,7 +707,7 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         target_dataset=target_dataset,
     )
 
-    raw_dataset_dir = dataset_root / target_dataset
+    raw_dataset_dir = dp_settings["raw_dataset_dir"]
     fsq_frame_cache_enabled = as_bool(
         get_value(cfg, "fsq_frame_cache_enabled", True)
     )
@@ -567,78 +776,14 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
             "FSQ frame-cache cpus_per_task, workers, and decoder_threads must all be >= 1."
         )
 
-    dp_n_obs_steps = int(get_value(cfg, "dp_n_obs_steps", 10))
-    dp_horizon = int(get_value(cfg, "dp_horizon", 16))
-    dp_relative = as_bool(get_value(cfg, "dp_relative", False))
-    dp_eef_relative = as_bool(get_value(cfg, "dp_eef_relative", False))
-    if dp_relative and dp_eef_relative:
-        raise ValueError("dp_relative and dp_eef_relative are mutually exclusive.")
-    dp_n_action_steps = int(
-        get_value(
-            cfg,
-            "dp_n_action_steps",
-            1 if dp_eef_relative else dp_horizon - dp_n_obs_steps + 1,
-        )
-    )
-    if dp_eef_relative and dp_n_action_steps != 1:
-        raise ValueError("dp_eef_relative requires dp_n_action_steps=1.")
-    if dp_eef_relative:
-        deprecated_scale_keys = [
-            key
-            for key in ("dp_eef_position_scale", "dp_eef_rotation_scale")
-            if key in cfg or key.upper() in os.environ
-        ]
-        if deprecated_scale_keys:
-            raise ValueError(
-                "Remove manual EEF scale settings; they are loaded from the dataset contract: "
-                f"{deprecated_scale_keys}"
-            )
-        dp_eef_position_scale, dp_eef_rotation_scale = resolve_dp_eef_scales(
-            raw_dataset_dir
-        )
-    else:
-        # Inert compatibility values; they are not passed to the policy unless EEF-relative mode is on.
-        dp_eef_position_scale, dp_eef_rotation_scale = 0.05, 0.5
-    dp_action_suffix = "_eefrel" if dp_eef_relative else ""
-    train_dp = as_bool(get_value(cfg, "train_DP", get_value(cfg, "train_dp", True), env="TRAIN_DP"))
-    dp_vision = str(get_value(cfg, "dp_vision", "state")).strip().lower()
-    dp_vision_tag = dp_vision
-    dp_policy_template = str(
-        get_value(
-            cfg,
-            "dp_policy_name",
-            "dp_{target_dataset}_{dp_vision_tag}_obs{dp_n_obs_steps}_horizon{dp_horizon}",
-        )
-    )
-    dp_policy = dp_policy_template.format(
-        target_dataset=target_dataset,
-        dp_vision=dp_vision,
-        dp_vision_tag=dp_vision_tag,
-        dp_n_obs_steps=dp_n_obs_steps,
-        dp_horizon=dp_horizon,
-        dp_action_suffix=dp_action_suffix,
-    )
-    if dp_eef_relative and "{dp_action_suffix}" not in dp_policy_template:
-        dp_policy += dp_action_suffix
-    # dp_run_name (or env DP_RUN_NAME) names a trained DP folder DIRECTLY (outputs/DP/<name>).
-    # Downstream stages (build_data / FSQ / eval) set it to target a DP without re-deriving the
-    # name from vision/grid/n_obs. Empty → use the name generated above.
-    _dp_run_name = str(get_value(cfg, "dp_run_name", "")).strip()
-    if _dp_run_name:
-        dp_policy = _dp_run_name
-        if "_state" in _dp_run_name:
-            dp_vision = "state"
-        elif "_resnet" in _dp_run_name:
-            dp_vision = "resnet"
-        elif "_dino" in _dp_run_name:
-            dp_vision = "dino"
-    if dp_vision not in {"state", "resnet", "dino"}:
-        raise ValueError(f"dp_vision must be state|resnet|dino, got {dp_vision!r}.")
-    dp_checkpoint = str(get_value(cfg, "dp_checkpoint", "100000"))
-    # lerobot checkpoint folders are zero-padded to 6 digits (050000); normalize numeric
-    # values so `50000` and `050000` resolve to the same checkpoint AND seg_* skillset dir.
-    if dp_checkpoint.isdigit():
-        dp_checkpoint = dp_checkpoint.zfill(6)
+    dp_n_obs_steps = dp_settings["dp_n_obs_steps"]
+    dp_horizon = dp_settings["dp_horizon"]
+    dp_relative = dp_settings["dp_relative"]
+    dp_n_action_steps = dp_settings["dp_n_action_steps"]
+    train_dp = dp_settings["train_DP"]
+    dp_vision = dp_settings["dp_vision"]
+    dp_policy = dp_settings["dp_policy"]
+    dp_checkpoint = dp_settings["dp_checkpoint"]
     skillset_cfg = cfg
     if selected_skillset is not None:
         dp_policy = selected_skillset["dp_policy"]
@@ -1319,9 +1464,6 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "dp_horizon": dp_horizon,
         "dp_batch_size": int(get_value(cfg, "dp_batch_size", 64)),
         "dp_relative": dp_relative,
-        "dp_eef_relative": dp_eef_relative,
-        "dp_eef_position_scale": dp_eef_position_scale,
-        "dp_eef_rotation_scale": dp_eef_rotation_scale,
         "dp_steps": int(get_value(cfg, "dp_steps", 100000)),
         "dp_num_workers": int(get_value(cfg, "dp_num_workers", 4)),
         "dp_save_freq": int(get_value(cfg, "dp_save_freq", 50000)),
@@ -1520,11 +1662,22 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
     parser.add_argument("--dataset", default=None)
+    parser.add_argument(
+        "--stage",
+        choices=("all", "dp", "build_data"),
+        default="all",
+        help="Resolve the full pipeline or one stage-local settings subset.",
+    )
     parser.add_argument("--shell", action="store_true")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
-    settings = train_settings(cfg, dataset=args.dataset)
+    if args.stage == "dp":
+        settings = dp_train_settings(cfg, dataset=args.dataset)
+    elif args.stage == "build_data":
+        settings = build_data_settings(cfg, dataset=args.dataset)
+    else:
+        settings = train_settings(cfg, dataset=args.dataset)
     if args.shell:
         print_shell(settings)
         return

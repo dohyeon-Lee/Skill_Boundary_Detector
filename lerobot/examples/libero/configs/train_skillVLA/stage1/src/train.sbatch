@@ -134,6 +134,9 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.mask_actions_after_skill_end="${MASK_ACTIONS_AFTER_SKILL_END}" \
     --policy.cumulative_xyz_loss_enabled="${CUMULATIVE_XYZ_LOSS_ENABLED}" \
     --policy.cumulative_xyz_loss_weight="${CUMULATIVE_XYZ_LOSS_WEIGHT}" \
+    --policy.skill_flow_enabled="${SKILL_FLOW_ENABLED}" \
+    --policy.skill_flow_weight="${SKILL_FLOW_WEIGHT}" \
+    --policy.skill_flow_max_length="${SKILL_FLOW_MAX_LENGTH}" \
     --policy.n_action_steps="${N_ACTION_STEPS}" \
     --policy.min_period="${MIN_PERIOD}" \
     --policy.max_period="${MAX_PERIOD}" \

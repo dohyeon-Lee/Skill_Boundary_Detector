@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -159,6 +160,81 @@ def test_stage2_loads_only_base_vlm_tensors(monkeypatch) -> None:
     torch.testing.assert_close(predictor.vlm.weight, expected_weight)
     torch.testing.assert_close(predictor.vlm.bias, expected_bias)
     torch.testing.assert_close(predictor.reader.weight, reader_before)
+
+
+def test_external_predictor_replaces_complete_vlm_and_clears_eval_cache(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    policy = SkillVLAStage2Policy.__new__(SkillVLAStage2Policy)
+    nn.Module.__init__(policy)
+    holder = nn.Module()
+    holder.skill_predictor = nn.Linear(2, 2)
+    policy.model = holder
+    policy._eval_vlm_cache_ids = torch.tensor([3])
+    policy._eval_vlm_cache = ([torch.ones(1, 1, 1)], torch.zeros(1, 1))
+    policy.config = SimpleNamespace(
+        skill_vocab_size=27,
+        skill_fsq_levels=[3, 3, 3],
+        skill_predictor_vlm_variant="gemma_2b",
+        skill_predictor_image_size=224,
+        dtype="bfloat16",
+    )
+    source = tmp_path / "external_predictor"
+    source.mkdir()
+    (source / "config.json").write_text(
+        json.dumps(
+            {
+                "type": "skill_aux",
+                "train_skill_predictor": True,
+                "skill_vocab_size": 27,
+                "skill_fsq_levels": [3, 3, 3],
+                "skill_predictor_vlm_variant": "gemma_2b",
+                "skill_predictor_image_size": 224,
+            }
+        )
+    )
+    calls = []
+
+    class TinyExternalPredictor(nn.Linear):
+        def __init__(self, _config):
+            super().__init__(2, 2)
+
+    def load_complete(predictor, path):
+        calls.append((predictor, path))
+        return 17
+
+    monkeypatch.setattr(
+        "lerobot.policies.skill_vla_stage2.modeling_skill_vla_stage2."
+        "_load_complete_predictor_parameters",
+        load_complete,
+    )
+    monkeypatch.setattr(
+        "lerobot.policies.skill_vla_stage2.modeling_skill_vla_stage2."
+        "FrozenVLMSkillPredictor",
+        TinyExternalPredictor,
+    )
+    monkeypatch.setattr(
+        "lerobot.policies.skill_vla_stage2.modeling_skill_vla_stage2."
+        "_load_learned_predictor_parameters",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("eval must load the complete predictor/VLM")
+        ),
+    )
+
+    policy.load_external_skill_predictor(source)
+
+    assert len(calls) == 1
+    assert calls[0][0] is holder.skill_predictor
+    assert calls[0][1] == source
+    assert isinstance(holder.skill_predictor, TinyExternalPredictor)
+    assert not holder.skill_predictor.training
+    assert not any(
+        parameter.requires_grad
+        for parameter in holder.skill_predictor.parameters()
+    )
+    assert policy._eval_vlm_cache_ids is None
+    assert policy._eval_vlm_cache is None
 
 
 def test_fresh_likelihood_block_is_exact_identity() -> None:

@@ -1,0 +1,40 @@
+# Shared config for visualize_training_dataset.py and inspect_training_dataset.py.
+# Both programs are intentionally argument-free:
+#   python visualize_training_dataset.py
+#   python inspect_training_dataset.py
+#
+# project_root and the default dataset_root are inherited from the nearest
+# configs/global_config.yaml. This file overrides only visualization-local settings.
+
+# ── Shared by both programs ────────────────────────────────────────────────
+# dataset: libero_10_full_full
+dataset: calvin_debug_full_full
+# Blank: use {project_root}/{dataset_root} from global_config.yaml.
+# Relative paths are resolved from project_root; absolute paths are also accepted.
+dataset_root_override: ""
+
+# ── HTML visualization only ───────────────────────────────────────────────
+visualize:
+  # true: print task indexes/languages/counts and exit without making HTML.
+  list_tasks_only: false
+
+  # Task selector: integer, task02, exact/unique partial language, all, or "*".
+  task: all
+
+  # Maximum episodes per selected task. If fewer exist, all available episodes are shown.
+  samples: 3
+  sampling: first          # first | random
+  seed: 0                  # used only for random sampling
+
+  # Front camera only by default. Add wrist_image as another list entry if needed.
+  cameras:
+    - observation.images.image
+
+  # Blank: previews/{dataset}/{selection...}/index.html under this folder.
+  # A relative custom path is resolved from this visualized_dataset folder.
+  output: ""
+
+  force: false             # true: ignore matching media cache and re-encode
+  ffmpeg: ffmpeg           # executable name in PATH, or an absolute path
+  crf: 23                  # H.264 quality: 0..51, lower is higher quality
+  preset: veryfast         # ultrafast|superfast|veryfast|faster|fast|medium|slow

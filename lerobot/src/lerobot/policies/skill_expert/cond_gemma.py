@@ -1480,3 +1480,70 @@ class CondGemmaSkillExpert(nn.Module):
             broadcast_cond=expert_skill,
         ).last_hidden_state
         return hidden
+
+    def skill_only_flow_residual(
+        self,
+        actions: Tensor,
+        skill_code: Tensor,
+        action_is_pad: Tensor,
+        *,
+        time: Tensor,
+        noise: Tensor | None = None,
+    ) -> Tensor:
+        """Training-only Arch0_skill flow over a complete canonical trajectory.
+
+        This deliberately bypasses image encoding, robot state, Cond-Gemma, and
+        its KV cache. The Action Expert, action projections, timestep path,
+        layerwise skill broadcast, and output head are the exact same modules as
+        the ordinary Arch0 route.
+        """
+        if not getattr(self.config, "skill_flow_enabled", False):
+            raise RuntimeError("The canonical skill-flow path is disabled.")
+        if actions.ndim != 3 or action_is_pad.shape != actions.shape[:2]:
+            raise ValueError(
+                "Canonical actions/mask must have shapes [B,T,D] and [B,T], got "
+                f"{tuple(actions.shape)} and {tuple(action_is_pad.shape)}."
+            )
+        if time.shape != (actions.shape[0],):
+            raise ValueError(
+                f"Shared flow time must have shape {(actions.shape[0],)}, got {tuple(time.shape)}."
+            )
+        valid = ~action_is_pad.to(device=actions.device, dtype=torch.bool)
+        if bool((valid.sum(dim=1) == 0).any()):
+            raise ValueError("Every canonical skill trajectory needs at least one valid step.")
+
+        source = self.sample_noise(actions.shape, actions.device) if noise is None else noise
+        source = source.to(actions.dtype)
+        x_t = time[:, None, None] * source + (1.0 - time[:, None, None]) * actions
+        target_velocity = source - actions
+
+        action_tokens = self.action_in_proj(x_t.to(self.working_dtype))
+        # All real trajectory tokens are one bidirectional block. Padding is
+        # invisible both as key and query, and is also excluded from the loss.
+        block_starts = torch.zeros_like(valid)
+        block_starts[:, 0] = True
+        attention_mask = make_att_2d_masks(valid, block_starts)[:, None]
+        attention_mask = torch.where(
+            attention_mask, 0.0, OPENPI_ATTENTION_MASK_VALUE
+        )
+        position_ids = (torch.cumsum(valid, dim=1) - 1).clamp_min(0)
+
+        condition_skill, expert_skill = self._skill_broadcasts(skill_code)
+        if condition_skill is not None or expert_skill is None:
+            raise RuntimeError(
+                "arch0_skill requires Arch0's expert-only layerwise skill broadcast."
+            )
+        expert_condition = self._expert_condition(time)
+        hidden = self.gemma_expert.model.forward(
+            inputs_embeds=action_tokens,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=None,
+            use_cache=False,
+            adarms_cond=expert_condition,
+            broadcast_cond=expert_skill,
+        ).last_hidden_state
+        predicted_velocity = self.action_out_proj(
+            hidden.to(self.working_dtype)
+        ).float()
+        return target_velocity - predicted_velocity

@@ -1,3 +1,5 @@
+dataset_root: dataset_filtered
+
 dataset:
   skillvla_root: skillvla_dataset
   source: libero_90_full_firsthalf_scene # langgap_56_full_firsthalf | libero_90_full_firsthalf_scene
@@ -23,7 +25,7 @@ vision:
 
 architecture:
   # Select with this value or
-  # `./submit_train.sh arch0|arch0_1|arch0_2|arch0_2_sep|arch0_3|arch0_adaRMS|arch0_adaRMS_zero|arch0_token|arch0_token_iso|arch0_cond|arch0_both|arch1_1|arch1_2|arch1_3|arch2_1|arch2_2|arch3|arch4`.
+  # `./submit_train.sh arch0|arch0_skill|arch0_1|arch0_2|arch0_2_sep|arch0_3|arch0_adaRMS|arch0_adaRMS_zero|arch0_token|arch0_token_iso|arch0_cond|arch0_both|arch1_1|arch1_2|arch1_3|arch2_1|arch2_2|arch3|arch4`.
   #
   # Reference map (idea-level references, not exact paper reproductions):
   # - Shared visual compressor:
@@ -34,6 +36,10 @@ architecture:
   #   motion-level skill bypasses Cond-Gemma and is broadcast to the action
   #   expert at every layer. Historical skillVLA_real checkpoints keep their
   #   saved Cond-Gemma skill broadcast when evaluated.
+  # - arch0_skill: the exact Arch0 inference architecture, jointly trained with
+  #   a second image/state-free flow path. That path uses the same jittered GT
+  #   code and shared Action Expert to reconstruct the code's complete original
+  #   (canonical) action trajectory; it is absent during rollout.
   # - arch0_1: Arch0 visual/skill paths, but state leaves Cond-Gemma and joins
   #   timestep conditioning in the action Expert AdaRMS at every layer.
   # - arch0_2: the same projected state conditions both all Cond-Gemma tokens
@@ -79,9 +85,9 @@ architecture:
   # Historical checkpoints with the same arch2_1/arch2_2 labels remain
   # evaluation-only under previous/ and are distinguished by revision metadata.
 
-  # arch0 arch0_1 arch0_2 arch0_2_sep arch0_3 arch0_adaRMS arch0_adaRMS_zero arch0_token arch0_token_iso arch0_cond arch0_both arch1_1 arch1_2 arch1_3 arch2_1 arch2_2 arch3 arch4
+  # arch0 arch0_skill arch0_1 arch0_2 arch0_2_sep arch0_3 arch0_adaRMS arch0_adaRMS_zero arch0_token arch0_token_iso arch0_cond arch0_both arch1_1 arch1_2 arch1_3 arch2_1 arch2_2 arch3 arch4
   # arch0 arch0_adaRMS arch0_adaRMS_zero arch0_token arch0_token_iso
-  name: arch0
+  name: arch0_skill
 
   # Shared by Arch0--4.
   expert_variant: gemma_300m
@@ -105,6 +111,10 @@ mask_actions_after_skill_end: true
 cumulative_xyz_loss:
   enabled: false
   weight: 0.5
+
+# Used only when architecture.name=arch0_skill. Main and skill-only flow losses
+# share one sampled timestep per sample but use independent Gaussian noise.
+skill_flow: {weight: 1.0}
 
 # gt: teacher-forced jittered GT code.
 # predictor: frozen checkpoint predictor(jittered skill-start input) -> hard code -> VSA.

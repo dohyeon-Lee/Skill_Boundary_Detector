@@ -586,30 +586,6 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
         processor_dataset_stats = with_diffusion_relative_action_stats(
             policy.config, processor_dataset_stats
         )
-    elif cfg.policy.pretrained_path is not None and getattr(
-        policy.config, "use_eef_relative_actions", False
-    ):
-        if policy.config.type == "diffusion":
-            from lerobot.policies.diffusion.processor_diffusion import (
-                with_diffusion_eef_relative_action_stats,
-            )
-
-            processor_dataset_stats = with_diffusion_eef_relative_action_stats(
-                policy.config, processor_dataset_stats
-            )
-        elif policy.config.type == "pi05":
-            from lerobot.policies.pi05.processor_pi05 import (
-                with_pi05_eef_relative_action_stats,
-            )
-
-            processor_dataset_stats = with_pi05_eef_relative_action_stats(
-                policy.config, processor_dataset_stats
-            )
-        else:
-            raise ValueError(
-                "EEF-relative action preprocessing is not implemented for "
-                f"policy type {policy.config.type!r}."
-            )
     if (cfg.policy.pretrained_path and not cfg.resume) or not cfg.policy.pretrained_path:
         # Only provide dataset_stats when not resuming from saved processor state
         processor_kwargs["dataset_stats"] = processor_dataset_stats
@@ -991,6 +967,13 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                     k[len("optimizer/"):]: v for k, v in wandb_log_dict.items()
                     if k.startswith("optimizer/")
                 }
+                # Keep the historical Stage-1 action-loss panel directly
+                # comparable. Arch0_skill's auxiliary and combined objective
+                # live under a separate W&B namespace.
+                skill_flow_metrics = {
+                    k[len("skill_flow/"):]: v for k, v in wandb_log_dict.items()
+                    if k.startswith("skill_flow/")
+                }
                 main_metrics = {k: v for k, v in wandb_log_dict.items()
                                 if not k.startswith(
                                     (
@@ -1004,6 +987,7 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                                         "wrong_language/",
                                         "vsa_debug/",
                                         "optimizer/",
+                                        "skill_flow/",
                                     ))}
                 dynamic_auxiliary_metrics: dict[str, dict[str, float]] = {}
                 if getattr(cfg.policy, "model_type", None) == "skill_aux":
@@ -1028,6 +1012,10 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                         wrist_term_metrics,
                         step,
                         mode="train_wrist_terminator",
+                    )
+                if skill_flow_metrics:
+                    wandb_logger.log_dict(
+                        skill_flow_metrics, step, mode="train_skill_flow"
                     )
                 if regime_metrics:
                     wandb_logger.log_dict(regime_metrics, step, mode="train_regime")

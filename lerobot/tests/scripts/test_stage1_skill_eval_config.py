@@ -95,7 +95,9 @@ def test_multiple_policies_share_one_external_terminator(
     monkeypatch.setattr(
         MODULE,
         "_validate_external_terminator",
-        lambda path, *, target_policy, variant: validations.append((path, variant)),
+        lambda path, *, target_policy, variant, **_kwargs: validations.append(
+            (path, variant)
+        ),
     )
 
     settings = MODULE.build_settings(_config(tmp_path))

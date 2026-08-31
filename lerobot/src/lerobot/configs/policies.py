@@ -185,6 +185,16 @@ class PreTrainedConfig(draccus.ChoiceRegistry, HubMixin, abc.ABC):  # type: igno
             draccus.dump(self, f, indent=4)
 
     @classmethod
+    def _migrate_legacy_config(cls, config: dict[str, Any]) -> dict[str, Any]:
+        """Return a current-schema copy of a serialized policy config.
+
+        Policy subclasses can override this hook to keep old checkpoints loadable
+        after an obsolete configuration field has been removed. Migrations must
+        not silently enable behavior that the current policy no longer supports.
+        """
+        return dict(config)
+
+    @classmethod
     def from_pretrained(
         cls: builtins.type[T],
         pretrained_name_or_path: str | Path,
@@ -223,18 +233,31 @@ class PreTrainedConfig(draccus.ChoiceRegistry, HubMixin, abc.ABC):  # type: igno
                     f"{CONFIG_NAME} not found on the HuggingFace Hub in {model_id}"
                 ) from e
 
-        # HACK: Parse the original config to get the config subclass, so that we can
-        # apply cli overrides.
-        # This is very ugly, ideally we'd like to be able to do that natively with draccus
-        # something like --policy.path (in addition to --policy.type)
-        with draccus.config_type("json"):
-            orig_config = draccus.parse(cls, config_file, args=[])
-
         if config_file is None:
             raise FileNotFoundError(f"{CONFIG_NAME} not found in {model_id}")
 
         with open(config_file) as f:
             config = json.load(f)
+
+        config_type = config.get("type")
+        config_cls = cls
+        if isinstance(config_type, str):
+            try:
+                config_cls = cls.get_choice_class(config_type)
+            except KeyError:
+                # Preserve draccus' existing unknown-policy error below.
+                pass
+        config = config_cls._migrate_legacy_config(config)
+
+        # HACK: Parse the original config to get the config subclass, so that we can
+        # apply cli overrides.
+        # This is very ugly, ideally we'd like to be able to do that natively with draccus
+        # something like --policy.path (in addition to --policy.type)
+        with tempfile.NamedTemporaryFile("w+", delete=False, suffix=".json") as f:
+            json.dump(config, f)
+            migrated_config_file = f.name
+        with draccus.config_type("json"):
+            orig_config = draccus.parse(cls, migrated_config_file, args=[])
 
         config.pop("type")
         with tempfile.NamedTemporaryFile("w+", delete=False, suffix=".json") as f:

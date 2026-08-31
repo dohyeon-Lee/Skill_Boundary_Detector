@@ -382,6 +382,37 @@ def test_eval_accepts_current_explicit_cond_checkpoint(tmp_path: Path) -> None:
     assert model["visual_crossattn_queries"] == "not_applicable"
 
 
+def test_eval_preserves_arch0_skill_training_only_alias(tmp_path: Path) -> None:
+    config = _config(
+        tmp_path,
+        architecture="cond_gemma",
+        architecture_revision="skillvla_real_v1",
+        conditioning_route="state_cond",
+    )
+    project = Path(config["project_root"])
+    policy_path = (
+        project
+        / "outputs/skillVLA_stage1/new-vsa/checkpoints/000100/pretrained_model/config.json"
+    )
+    policy = json.loads(policy_path.read_text())
+    policy.update(
+        {
+            "architecture_label": "arch0_skill",
+            "skill_flow_enabled": True,
+            "skill_flow_weight": 1.0,
+            "skill_flow_max_length": 171,
+        }
+    )
+    policy_path.write_text(json.dumps(policy))
+
+    settings = build_settings(config)
+    model = json.loads(settings["models_json"])[0]
+
+    assert model["architecture_revision"] == "skillvla_real_v1"
+    assert model["architecture_label"] == "arch0_skill"
+    assert model["conditioning_route"] == "state_cond"
+
+
 def test_eval_accepts_implicit_skillvla_real_checkpoint(tmp_path: Path) -> None:
     config = _config(
         tmp_path,

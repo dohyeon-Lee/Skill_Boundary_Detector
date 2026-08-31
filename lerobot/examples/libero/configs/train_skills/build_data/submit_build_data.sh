@@ -29,10 +29,13 @@ if [ ! -x "${BOOTSTRAP_PYTHON}" ]; then
 fi
 
 if [ -n "${TARGET_DATASET}" ]; then
-  eval "$("${BOOTSTRAP_PYTHON}" "${COMMON_SRC_DIR}/train_skills_config.py" --config "${CONFIG_PATH}" --dataset "${TARGET_DATASET}" --shell)"
+  RESOLVED_SETTINGS="$("${BOOTSTRAP_PYTHON}" "${COMMON_SRC_DIR}/train_skills_config.py" \
+    --config "${CONFIG_PATH}" --dataset "${TARGET_DATASET}" --stage build_data --shell)"
 else
-  eval "$("${BOOTSTRAP_PYTHON}" "${COMMON_SRC_DIR}/train_skills_config.py" --config "${CONFIG_PATH}" --shell)"
+  RESOLVED_SETTINGS="$("${BOOTSTRAP_PYTHON}" "${COMMON_SRC_DIR}/train_skills_config.py" \
+    --config "${CONFIG_PATH}" --stage build_data --shell)"
 fi
+eval "${RESOLVED_SETTINGS}"
 
 # This build produces only the state-DP skillset. It neither stages visual features nor decodes
 # episode videos; FSQ handles its own raw-frame vision inputs later during FSQ training/evaluation.

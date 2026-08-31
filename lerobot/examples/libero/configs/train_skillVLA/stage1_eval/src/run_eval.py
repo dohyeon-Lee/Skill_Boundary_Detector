@@ -59,7 +59,9 @@ CURRENT_WRIST = "observation.images.wrist_image"
 # Bump this string whenever the Stage-2 VLM snapshot semantics change so
 # completed eval artifacts are never silently reused under a different input
 # contract.
-STAGE2_VLM_START_CONTRACT = "skill_boundary_image_state_v1"
+STAGE2_VLM_START_CONTRACT = (
+    "skill_boundary_image_state_external_predictor_base_v2"
+)
 log = logging.getLogger(__name__)
 
 _INLINE_CUDA_GUARD_EXIT_CODE = 86

@@ -1,0 +1,46 @@
+# Shared config for configs/generate_training_dataset.
+# Update project_root when moving this workflow to another server.
+
+# project_root/dataset_root come from configs/global_config.yaml.
+
+# ── build_training_dataset.py 기본값 ──────────────────────────────────────
+# 인자 없이 `python build_training_dataset.py`만 치면 아래 값으로 실행된다 (CLI --는 override용).
+# 출력 이름: {dataset의 _full_full 뗀 것}_{task_range}_{episodes_per_task}
+#   예) libero_90_full_full + 00to20 + 10      → libero_90_00to20_10
+#       langgap_56_full_full + 40to55 + firsthalf → langgap_56_40to55_firsthalf
+#
+# build_task_range 가능한 값:
+#   full            전체 태스크
+#   00to20          task_index 0~20 (연속 구간; 0-20, task00-task20 표기도 동일)
+#   7               단일 태스크
+# build_episodes_per_task 가능한 값:
+#   full            태스크별 전체 에피소드
+#   10              태스크별 앞에서 10개
+#   firsthalf       태스크별 앞쪽 절반 (n//2개)
+#   lasthalf        태스크별 뒤쪽 절반 (홀수면 firsthalf보다 1개 더; first∪last = full, 서로소)
+#   LIBERO는 아래 build_libero_scene_aware_halves=true일 때 같은 language를 공유하는
+#   서로 다른 원본 scene-task를 각각 나누고, 자동 출력 이름 끝에 `_scene`을 붙인다.
+#   LangGap 등 다른 데이터셋은 기존 task_index 기준이며 `_scene`이 붙지 않는다.
+#
+# 자주 쓰는 조합 (dataset / task_range / episodes_per_task):
+#   libero_90_full_full  / full   / full       → libero_90 전체 복제 (사실상 무의미)
+#   libero_90_full_full  / 00to20 / 10         → 앞 21개 태스크, 태스크당 10 에피소드
+#   libero_90_full_full  / full   / firsthalf  → libero_90_full_firsthalf_scene
+#   libero_90_full_full  / full   / lasthalf   → libero_90_full_lasthalf_scene (위와 쌍)
+#   langgap_56_full_full / 40to55 / full       → LangGap 확장 16태스크만
+#   langgap_56_full_full / 00to39 / full       → LangGap 공식 40태스크만 (저자 재수집 replay)
+#   langgap_56_full_full / 40to55 / firsthalf  → 확장 태스크 train 절반
+#   langgap_56_full_full / 40to55 / lasthalf   → 확장 태스크 heldout 절반
+#   (langgap task_index 40~55 = 확장 16태스크: 변환기의 task-order 검증이 배치를 보증)
+build_dataset: libero_10_full_full
+build_task_range: full
+build_episodes_per_task: 5
+build_output_name: ""     # 비우면 위 규칙으로 자동 명명
+build_overwrite: false    # false: fail if the output dataset already exists; true: replace it.
+build_allow_fewer: false  # false: fail if a task has fewer episodes than requested; true: use all available.
+                          # (숫자 지정에만 적용; full/firsthalf/lasthalf 와는 무관)
+build_libero_scene_aware_halves: false # true
+# LIBERO half split에 사용할 full source의 eval_init_states.npz.
+# 비우면 {dataset_root}/skillvla_dataset/{build_dataset}/eval_init_states.npz를 자동 사용한다.
+# 새 subset용 oracle map은 새 episode_index에 맞춰 자동 생성된다.
+build_libero_scene_map: ""

@@ -1,0 +1,104 @@
+# Shared config for LangGap dataset download/convert utilities.
+# project_root / dataset_root come from configs/global_config.yaml.
+#
+# LangGap (YC11Hou/langgap_*, arXiv 2603.00592) = same-scene semantic-perturbation LIBERO
+# extension. HF distributes already-converted LeRobot v3.0 (image/image2/state/action) but:
+#   - fps metadata says 10 while the data is really 20 Hz (collect control_freq=20, frame_skip=1)
+#   - camera key is image2 instead of wrist_image
+#   - no observation.states.* sub-features (joint_state is not recoverable → omitted; unused by training)
+#   - official 40 tasks are already canonical, but author-collected ext tasks were
+#     stored with [::-1] rather than [::-1, ::-1]
+# The build here:
+#   download (HF v3.0) → verify orientation → full rewrite at 20 Hz (rename/flip/gripper) → quantile stats
+
+# ── Output root ───────────────────────────────────────────────
+# Final datasets land at {project_root}/{langgap_dataset_root}/{name};
+# HF staging downloads live under {project_root}/{langgap_dataset_root}/_hf/{name}.
+# Blank -> global dataset_root from global_config.yaml (so training mixes it directly).
+langgap_dataset_root: ""
+
+# ── Sets: local name -> HF repo id (전체 후보 목록; 여기는 건드릴 일 없음) ──
+# 로컬 이름은 repo 변환 산출물 컨벤션({suite}_full_full)을 따름 — 하류 설정의
+# source_dataset과 일치해야 global dataset_root 전환만으로 물림.
+langgap_sets:
+  langgap_ext_full_full: YC11Hou/langgap_ext    # 확장 16태스크만, 2,400 에피소드 (권장)
+  langgap_56_full_full: YC11Hou/langgap_full    # 공식 40(저자 재수집) + 확장 16, 4,093 에피소드
+  langgap_preext_full_full: YC11Hou/langgap_full # ext 16의 source env에 해당하는 공식 9태스크만
+  langgap_45_full_full: YC11Hou/langgap_45      # 초기 공식 40 + 확장 5 (5개 중 현행 확장 16과 동일한 것은 4개)
+  langgap_6_smoke: YC11Hou/langgap_6            # 스모크 테스트용 최소 서브셋, 300 에피소드
+
+# 같은 HF repo에서 일부 task만 만드는 set. downloader가 meta/data를 먼저 받은 뒤 필요한
+# packed MP4 shard만 골라 받고, staging parquet/task/episode metadata를 아래 task만 남긴다.
+# packed MP4 자체에는 shard를 공유하는 다른 task의 byte range가 포함될 수 있지만,
+# canonical 변환 결과에는 선택한 episode만 기록된다. 출력 task_index는 목록 순서대로 0..8.
+download_task_ids_by_set:
+  langgap_preext_full_full: [10, 17, 18, 21, 22, 26, 31, 34, 38]
+
+# 원본 40태스크만 제공하는 별도 HF repo는 없다. 이미 받은 canonical full에서 아래
+# task 범위를 분리하면 저자 재수집 원본-only 세트가 된다.
+langgap_derived_sets:
+  langgap_original_full_full: {source: langgap_56_full_full, task_range: 00to39} # 1,693 에피소드
+  langgap_ext_full_full: {source: langgap_56_full_full, task_range: 40to55} # 2,400 에피소드
+
+# ── 다운로드/빌드할 세트 선택 (여기서만 고르면 됨; 주석 해제로 전환) ──
+# 여러 개면 리스트 또는 공백 구분. download/build/submit 스크립트가 모두 이 값을 따른다.
+# langgap_ext(기본): 공식 40태스크는 로컬 자체 변환본(libero_*_full_full)을 학습 믹싱에서
+#   조합 → 출처/컨벤션 통일, 중복 없음. langgap_56은 논문 56-task 재현 실험 전용
+#   (공식/확장 구분은 task 문자열로 가능).
+# NOTE: langgap_56 ⊃ langgap_ext (확장 2,400 에피소드가 langgap_56 안에 그대로 포함).
+#   둘을 같이 받거나 같이 학습에 넣으면 확장 데이터가 중복되므로 하나만 고를 것.
+# download_sets: langgap_ext_full_full
+download_sets: langgap_56_full_full
+# download_sets: langgap_preext_full_full
+# download_sets: langgap_45_full_full
+# download_sets: langgap_6_smoke
+
+# ── Orientation verification ──────────────────────────────────
+# convert_flip_image / convert_flip_wrist: none | h | w | hw | auto
+#   auto = src/verify_image_orientation.py의 verdict(json)를 사용; 낮은 신뢰도면 빌드 중단.
+# 판정 기준 데이터셋(공통 task 문자열로 매칭; blank -> {global dataset_root}에서 자동 탐색).
+# Base policy applies to the canonical official prefix. Ext tasks receive the explicit
+# additional W flip below; a single global verdict cannot represent the mixed langgap_56 set.
+orientation_reference: ""
+convert_flip_image: none
+convert_flip_wrist: none
+
+# Author source_to_lerobot.py uses obs[..., ::-1] (H only) for both cameras, whereas
+# LeRobot's LIBERO processor evaluates with H+W. Add the missing W only to ext tasks.
+convert_ext_flip_image: w
+convert_ext_flip_wrist: w
+convert_ext_task_start_by_set:
+  langgap_56_full_full: 40  # official 0..39, ext 40..55
+  langgap_45_full_full: 40  # official 0..39, early ext 40..44
+  langgap_ext_full_full: 0  # every task is ext
+  langgap_6_smoke: 0        # ext-only smoke set
+
+# ── Convert (HF LeRobot v3 @10fps-label → canonical v3 @20fps) ──
+# Canonical LeRobot dataset whose meta/info.json feature contract is copied for the
+# features we emit (images/state/action). observation.states.* sub-features는 LangGap에
+# joint_state가 없어 생략(학습 미사용 확인됨) — schema는 그 4개 feature만 검증.
+convert_schema_reference: dataset_filtered/libero_90_full_full
+convert_image_size: 256
+convert_fps: 20
+
+# Exact parity with current local datasets uses libsvtav1/AV1.
+convert_vcodec: libsvtav1
+# Encode each episode as before, but retain its temporary MP4 until a ~200 MB
+# LeRobot shard is ready and concatenate that shard once. Codec/FPS/timestamps
+# stay unchanged while the growing-file O(N^2) remux is removed.
+convert_deferred_video_packing: true
+convert_image_writer_threads: 10
+convert_image_writer_processes: 5
+convert_overwrite: false
+
+# Debug limits. Blank = full.
+convert_max_episodes: ""
+
+# ── Stats 계산 범위 (filtered_dataset과 동일 의미) ─────────────
+stats_include_videos: false
+
+# ── Slurm for conversion (partition/qos/exclude from configs/global_config.yaml) ──
+convert_gres: gpu:1
+convert_cpus_per_task: 32
+convert_mem: 128G
+convert_time: "48:00:00"

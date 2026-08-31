@@ -1,7 +1,7 @@
 # libero_90_full_full | abc_toy | langgap_56_full_full
-target_dataset: libero_90_full_full_rel
-# libero_90_full_full_state_obs20 | abc_toy_full_full_state_obs20 | langgap_56_full_full_state_obs20 | libero_90_full_full_rel_state_obs20
-dp_run_name: libero_90_full_full_rel_state_obs20
+target_dataset: langgap_ext_full_full
+# libero_90_full_full_state_obs20 | abc_toy_full_full_state_obs20 | langgap_56_full_full_state_obs20
+dp_run_name: langgap_ext_full_full_state_obs20
 dp_checkpoint: "100000"
 
 # Skillset output roots.

@@ -930,6 +930,47 @@ def test_categorization_partition_metrics_and_neighbor_adjustment() -> None:
     assert CATEGORIZATION._motion_neighbor_consistency(collapsed, neighbors) == 0.0
 
 
+def test_categorization_infers_global_dataset_root_and_builds_bundle(tmp_path: Path) -> None:
+    repository = tmp_path / "repo"
+    config_dir = repository / "lerobot/examples/libero/configs"
+    config_dir.mkdir(parents=True)
+    (config_dir / "global_config.yaml").write_text("dataset_root: dataset\n")
+
+    model_path = repository / "outputs/FSQ/run/FSQ_epoch1.pt"
+    model_path.parent.mkdir(parents=True)
+    meta = {
+        "fsq_dataset_root": "FSQ_dataset",
+        "target_dataset": "langgap_ext_full_full",
+        "fsq_inputs_name": "FSQ_inputs",
+        "skillset_seg_name": "seg_test",
+        "skillset_name": "skillset",
+    }
+    (model_path.parent / "fsq_meta.json").write_text(json.dumps(meta))
+    skills_dir = (
+        repository
+        / "dataset/FSQ_dataset/langgap_ext_full_full/FSQ_inputs/seg_test/skillset/skills"
+    )
+    skills_dir.mkdir(parents=True)
+    np.savez(
+        skills_dir / "ep000_skill0.npz",
+        actions=np.zeros((3, 7), dtype=np.float32),
+        states=np.zeros((3, 8), dtype=np.float32),
+        episode_id=np.int64(0),
+        task_id=np.int64(0),
+        skill_index=np.int64(0),
+        frame_start=np.int64(0),
+        frame_end=np.int64(3),
+    )
+
+    bundle, inferred_meta = CATEGORIZATION._infer_bundle(
+        model_path, repository=repository
+    )
+
+    assert bundle == skills_dir.parent / "skills_bundle.npz"
+    assert bundle.is_file()
+    assert inferred_meta == meta
+
+
 def test_categorization_checkpoint_scalars_read_only_pickle_metadata(tmp_path: Path) -> None:
     import pickle
     import zipfile

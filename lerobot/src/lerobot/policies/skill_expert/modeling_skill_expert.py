@@ -25,6 +25,10 @@ from lerobot.policies.pi05.modeling_pi05 import (
 )
 from lerobot.policies.pi_gemma import PiGemmaRMSNorm
 from lerobot.policies.pretrained import PreTrainedPolicy
+from lerobot.policies.skillVLA.dataset_skillVLA import (
+    SKILL_CANONICAL_ACTION_IS_PAD,
+    SKILL_CANONICAL_ACTIONS,
+)
 from lerobot.utils.constants import (
     ACTION,
     OBS_LANGUAGE_ATTENTION_MASK,
@@ -2129,6 +2133,55 @@ class SkillExpertPolicy(PreTrainedPolicy):
             )
             action_objective = action_loss + cumulative_weight * cumulative_xyz_loss
             objective_per_sample = per_sample + cumulative_weight * cumulative_xyz_per_sample
+        skill_flow_loss = None
+        skill_flow_per_sample = None
+        if getattr(self.config, "skill_flow_enabled", False):
+            if self.config.architecture != COND_GEMMA_ARCHITECTURE:
+                raise RuntimeError("skill_flow_enabled requires the Cond-Gemma Arch0 model.")
+            if SKILL_CANONICAL_ACTIONS not in batch:
+                raise KeyError(
+                    "arch0_skill requires batch['skill_canonical_actions']; "
+                    "construct training data with SkillVLADataset."
+                )
+            if SKILL_CANONICAL_ACTION_IS_PAD not in batch:
+                raise KeyError(
+                    "arch0_skill requires batch['skill_canonical_action_is_pad']."
+                )
+            canonical_actions = pad_vector(
+                batch[SKILL_CANONICAL_ACTIONS], self.config.max_action_dim
+            )
+            canonical_is_pad = batch[SKILL_CANONICAL_ACTION_IS_PAD].to(
+                canonical_actions.device
+            ).bool()
+            shared_time = getattr(self.model, "_last_flow_time", None)
+            if shared_time is None:
+                raise RuntimeError("Main Arch0 flow did not expose its sampled timestep.")
+            skill_residual = self.model.skill_only_flow_residual(
+                canonical_actions,
+                skill_code,
+                canonical_is_pad,
+                time=shared_time,
+            )[..., :real_dim]
+            skill_squared_error = skill_residual.square()
+            skill_valid = ~canonical_is_pad
+            skill_valid_float = skill_valid.to(skill_squared_error.dtype).unsqueeze(-1)
+            skill_valid_per_sample = skill_valid.sum(dim=1).to(
+                skill_squared_error.dtype
+            )
+            if bool((skill_valid_per_sample == 0).any()):
+                raise ValueError("Canonical skill-flow batch contains an empty trajectory.")
+            # First average timesteps within each trajectory, then average the
+            # batch. Long skills therefore do not receive a larger coefficient.
+            skill_flow_per_sample = (
+                (skill_squared_error * skill_valid_float).sum(dim=(1, 2))
+                / (skill_valid_per_sample * real_dim)
+            )
+            skill_flow_loss = skill_flow_per_sample.mean()
+            skill_flow_weight = float(self.config.skill_flow_weight)
+            action_objective = action_objective + skill_flow_weight * skill_flow_loss
+            objective_per_sample = (
+                objective_per_sample + skill_flow_weight * skill_flow_per_sample
+            )
         loss_dict = {
             "action_loss": action_loss.detach().item(),
             "conditioning/skill_source_predictor": float(
@@ -2219,6 +2272,28 @@ class SkillExpertPolicy(PreTrainedPolicy):
                     "action_objective": action_objective.detach().item(),
                     "action_flow_weight": 1.0,
                     "action_cumulative_xyz_weight": float(cumulative_weight),
+                }
+            )
+        if skill_flow_loss is not None and skill_flow_per_sample is not None:
+            weighted_skill_flow = self.config.skill_flow_weight * skill_flow_loss
+            canonical_is_pad = batch[SKILL_CANONICAL_ACTION_IS_PAD].bool()
+            loss_dict.update(
+                {
+                    "skill_flow/loss": skill_flow_loss.detach().item(),
+                    "skill_flow/weighted": weighted_skill_flow.detach().item(),
+                    "skill_flow/weight": float(self.config.skill_flow_weight),
+                    "skill_flow/valid_steps_mean": (~canonical_is_pad)
+                    .sum(dim=1)
+                    .float()
+                    .mean()
+                    .item(),
+                    "skill_flow/to_main_flow_ratio": (
+                        weighted_skill_flow.detach()
+                        / action_loss.detach().clamp(
+                            min=torch.finfo(action_loss.dtype).eps
+                        )
+                    ).item(),
+                    "skill_flow/total_objective": action_objective.detach().item(),
                 }
             )
         if reduction == "none":

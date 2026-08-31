@@ -40,10 +40,13 @@ if [ ! -x "${BOOTSTRAP_PYTHON}" ]; then
 fi
 
 if [ -n "${TRAIN_DATA:-}" ]; then
-  eval "$("${BOOTSTRAP_PYTHON}" "${COMMON_SRC_DIR}/train_skills_config.py" --config "${CONFIG_PATH}" --dataset "${TRAIN_DATA}" --shell)"
+  RESOLVED_SETTINGS="$("${BOOTSTRAP_PYTHON}" "${COMMON_SRC_DIR}/train_skills_config.py" \
+    --config "${CONFIG_PATH}" --dataset "${TRAIN_DATA}" --stage build_data --shell)"
 else
-  eval "$("${BOOTSTRAP_PYTHON}" "${COMMON_SRC_DIR}/train_skills_config.py" --config "${CONFIG_PATH}" --shell)"
+  RESOLVED_SETTINGS="$("${BOOTSTRAP_PYTHON}" "${COMMON_SRC_DIR}/train_skills_config.py" \
+    --config "${CONFIG_PATH}" --stage build_data --shell)"
 fi
+eval "${RESOLVED_SETTINGS}"
 
 cd "${LEROBOT_ROOT}"
 source "${PROJECT_ROOT}/.venv/bin/activate"

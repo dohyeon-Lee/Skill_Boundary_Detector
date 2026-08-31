@@ -100,7 +100,13 @@ echo "display rule: mode=${TERMINATOR_MODEL_END_MODE} term=${TERMINATOR_MODEL_EN
 echo "suite     : ${TARGET_TASK} task_ids=${TASK_IDS}"
 echo "episodes  : ${EPISODES_PER_TASK}/task selection=${EPISODE_SELECTION} explicit=${EPISODE_IDS}"
 echo "exact     : ${EPISODE_EXACT} (mandatory)"
-echo "branches  : GT | policy@0 | policy@0 alt-noise | policy@-${TIME_SHIFT_OFFSET} | policy@+${TIME_SHIFT_OFFSET}"
+if [ "${STAGE1_SKILL_EVAL_MODE:-comparison}" = "noise_overlay" ]; then
+  echo "rollouts  : ${NOISE_ROLLOUTS_PER_ENV}/environment exact-start noise samples"
+  echo "code probe: ${NEIGHBOR_CODE_PROBE:-off} (off | neighbor | all)"
+  echo "rendering : start image + projected EEF trajectory overlay (no videos)"
+else
+  echo "branches  : GT | policy@0 | policy@0 alt-noise | policy@-${TIME_SHIFT_OFFSET} | policy@+${TIME_SHIFT_OFFSET}"
+fi
 echo "stopping  : MAIN-only mode=${SKILL_END_MODE} max=${SKILL_MAX_LENGTH_MODE}:${SKILL_MAX_LENGTH_SCALE} finish_chunk=${FINISH_ACTION_CHUNK_ON_END}"
 echo "output    : ${EVAL_OUT_DIR}"
 nvidia-smi || true
@@ -159,7 +165,7 @@ for worker_index in "${LOCAL_WORKER_INDICES[@]}"; do
     export MKL_NUM_THREADS="${LOCAL_CPU_THREADS}"
     PYTORCH_ALLOC_CONF=expandable_segments:True \
     PYTHONPATH="${LEROBOT_ROOT}/src:${LEROBOT_ROOT}/examples/libero:${LIBERO_REPO_ROOT}" \
-      "${EVAL_PYTHON}" "${SRC_DIR}/run_skill_eval.py" \
+      "${EVAL_PYTHON}" "${SRC_DIR}/${STAGE1_SKILL_EVAL_RUNNER:-run_skill_eval.py}" \
         --policy.path="${POLICY_PATH}" \
         --policy.fsq_path="${FSQ_PATH}" \
         --policy.dino_model_path="${DINO_MODEL_PATH}" \

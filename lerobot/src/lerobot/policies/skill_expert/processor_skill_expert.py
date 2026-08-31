@@ -8,6 +8,9 @@ import torch
 
 from lerobot.policies.skill_expert.configuration_skill_expert import SkillExpertConfig
 from lerobot.policies.skillVLA.dataset_skillVLA import (
+    SKILL_CANONICAL_ACTION_IS_PAD,
+    SKILL_CANONICAL_ACTION_LENGTH,
+    SKILL_CANONICAL_ACTIONS,
     SKILL_PREVIOUS_ACTION,
     SKILL_PREVIOUS_ACTION_BOS,
 )
@@ -30,6 +33,7 @@ from lerobot.processor import (
     PolicyAction,
     PolicyProcessorPipeline,
     ProcessorStep,
+    ProcessorStepRegistry,
     RenameObservationsProcessorStep,
     TokenizerProcessorStep,
     UnnormalizerProcessorStep,
@@ -65,7 +69,29 @@ SKILL_BATCH_KEYS = (
     SAME_SKILL_PAIR_FALLBACK,
     SKILL_PREVIOUS_ACTION,
     SKILL_PREVIOUS_ACTION_BOS,
+    SKILL_CANONICAL_ACTIONS,
+    SKILL_CANONICAL_ACTION_IS_PAD,
+    SKILL_CANONICAL_ACTION_LENGTH,
 )
+
+
+@ProcessorStepRegistry.register(name="skill_expert_normalizer_processor_step")
+class SkillExpertNormalizerProcessorStep(NormalizerProcessorStep):
+    """Normalize the main chunk and canonical skill target with one action contract."""
+
+    def __call__(self, transition: EnvTransition) -> EnvTransition:
+        normalized = super().__call__(transition)
+        complementary = dict(
+            normalized.get(TransitionKey.COMPLEMENTARY_DATA, {}) or {}
+        )
+        canonical = complementary.get(SKILL_CANONICAL_ACTIONS)
+        if canonical is not None:
+            canonical_tensor = torch.as_tensor(canonical)
+            complementary[SKILL_CANONICAL_ACTIONS] = self._normalize_action(
+                canonical_tensor, inverse=False
+            )
+            normalized[TransitionKey.COMPLEMENTARY_DATA] = complementary
+        return normalized
 
 
 def skill_expert_batch_to_transition(batch: dict[str, Any]) -> EnvTransition:
@@ -126,8 +152,13 @@ def make_skill_expert_pre_post_processors(
     # even when the inherited terminator stays frozen.
     if config.train_terminator:
         input_steps.append(SkillVLAPreserveRawStateProcessorStep())
+    normalizer_cls = (
+        SkillExpertNormalizerProcessorStep
+        if getattr(config, "skill_flow_enabled", False)
+        else NormalizerProcessorStep
+    )
     input_steps.append(
-        NormalizerProcessorStep(
+        normalizer_cls(
             features={**config.input_features, **config.output_features},
             norm_map=config.normalization_mapping,
             stats=dataset_stats,

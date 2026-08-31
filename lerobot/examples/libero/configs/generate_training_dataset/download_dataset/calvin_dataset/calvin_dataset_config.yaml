@@ -1,0 +1,134 @@
+# Shared config for the raw CALVIN downloader.
+# project_root and dataset_root are inherited from configs/global_config.yaml.
+#
+# Run from this folder:
+#   ./download_calvin.sh                     # variants listed below
+#   CALVIN_ONLY="D" ./download_calvin.sh     # one configured variant
+#   ./download_calvin.sh --list-variants
+#   ./download_calvin.sh --dry-run
+
+# Raw CALVIN is pinned separately so switching global dataset_root for LIBERO
+# training does not make a completed 166+ GB download disappear from this pipeline.
+# Relative paths resolve from project_root.
+calvin_dataset_root: dataset_calvin
+
+# Raw official archives and extracted play data are staging inputs for the later
+# task split + LeRobot conversion. Final converted datasets follow the global
+# dataset_root.
+calvin_raw_subdir: _calvin_raw
+
+# Safe default while developing the downloader/converter. Change to [D] for the
+# actual environment-D experiment. Multiple entries are allowed.
+calvin_download_variants: [D]
+
+# Keep the verified ZIP after successful extraction. Set false to save 1.3/166/517/656 GB,
+# but recovery then requires downloading it again.
+calvin_keep_archives: true
+
+# curl/wget robustness knobs for the large official HTTP archives.
+calvin_download_retries: 20
+calvin_connect_timeout_seconds: 30
+calvin_stall_timeout_seconds: 120
+
+# Official variants. These are environment splits, not task-disjoint splits.
+# SHA-256 values come from:
+#   http://calvin.cs.uni-freiburg.de/dataset/sha256sum.txt
+calvin_variants:
+  debug:
+    archive: calvin_debug_dataset.zip
+    extracted_dir: calvin_debug_dataset
+    url: http://calvin.cs.uni-freiburg.de/dataset/calvin_debug_dataset.zip
+    sha256: c66d09147e2c806b244f18ea7d61e388d4dac11f828929779437f728d03e1204
+    approximate_size_gb: 1.3
+    train_environments: [debug]
+    eval_environment: debug
+
+  D:
+    archive: task_D_D.zip
+    extracted_dir: task_D_D
+    url: http://calvin.cs.uni-freiburg.de/dataset/task_D_D.zip
+    sha256: 45efc2fb24a09a50ab3ed6cdc7637604ee857d3ba1bab23d63925c2d71e79d4f
+    approximate_size_gb: 166
+    train_environments: [D]
+    eval_environment: D
+
+  ABC:
+    archive: task_ABC_D.zip
+    extracted_dir: task_ABC_D
+    url: http://calvin.cs.uni-freiburg.de/dataset/task_ABC_D.zip
+    sha256: c2036c67eb4c06966af1d1e1665bdb572c69e1404f5e77ffd46b384ff2b79f74
+    approximate_size_gb: 517
+    train_environments: [A, B, C]
+    eval_environment: D
+
+  ABCD:
+    archive: task_ABCD_D.zip
+    extracted_dir: task_ABCD_D
+    url: http://calvin.cs.uni-freiburg.de/dataset/task_ABCD_D.zip
+    sha256: 741c120b2340f07ca4b8141509d8a49bd58491d9ef312575bee505c9930695b0
+    approximate_size_gb: 656
+    train_environments: [A, B, C, D]
+    eval_environment: D
+
+# ── Raw CALVIN -> canonical LeRobot v3 ──────────────────────────────────────
+calvin_convert_variant: debug
+calvin_convert_split: training            # training | validation
+
+# annotated: one language annotation [start, end] -> one LeRobot episode
+# play:      original ep_start_end_ids.npy recording boundaries -> episodes;
+#            pretrain additionally removes held-out annotation intervals and
+#            never joins the play on opposite sides of a removed interval.
+calvin_convert_mode: annotated             # annotated | play
+
+# all:      do not perform a task-disjoint split
+# pretrain: exclude every annotation whose task ID is in calvin_heldout_tasks
+# heldout:  keep only those annotations (annotated mode only)
+calvin_task_split: all                     # all | pretrain | heldout
+calvin_heldout_tasks: []
+
+# Converted output is named automatically under the global dataset_root:
+#   annotated + all      -> calvin_<variant>_full_full
+#   annotated + pretrain -> calvin_<variant>_pretrain_full_full
+#   annotated + heldout  -> calvin_<variant>_heldout_full_full
+#   play      + all      -> calvin_<variant>_play_full_full
+#   play      + pretrain -> calvin_<variant>_play_pretrain_full_full
+# Raw validation builds insert "_validation" immediately after <variant>.
+# For this config, the result is dataset/calvin_debug_full_full.
+calvin_convert_overwrite: false
+
+# Canonical model-facing contract. All source alternatives remain preserved as
+# calvin.* columns and/or exact raw NPZ hardlinks.
+calvin_policy_action: relative             # relative | absolute
+calvin_policy_state: robot_obs             # robot_obs | tcp_pose_gripper | joint_gripper
+
+# pi0.5/SkillVLA consume 224x224 images. Set "native" to keep static=200x200
+# and wrist=84x84 in the canonical video features instead.
+calvin_convert_image_size: 224
+calvin_convert_fps: 30
+calvin_convert_annotation_folder: lang_annotations
+
+# The unmodified source split is retained inside the output by default, including
+# unannotated play frames, language annotations, depth/tactile signals, and configs.
+# hardlink: exact, independently retained files without duplicating data blocks
+# copy:     exact full copy (needed only across filesystems)
+# none:     do not retain raw source inside the converted output
+calvin_preserve_raw_mode: hardlink         # hardlink | copy | none
+
+calvin_convert_vcodec: libsvtav1
+calvin_convert_streaming_encoding: false
+calvin_convert_encoder_queue_maxsize: 30
+calvin_convert_encoder_threads: ""
+calvin_convert_batch_encoding_size: 1
+calvin_convert_image_writer_threads: 10
+calvin_convert_image_writer_processes: 5
+
+# Debug limits. Blank means every selected episode and every frame in its
+# inclusive boundary. Do not use limits for a canonical full_full build.
+calvin_convert_max_episodes: ""
+calvin_convert_max_frames_per_episode: ""
+
+# Slurm conversion resources; partition/qos/nodelist/exclude follow global config.
+calvin_convert_gres: gpu:1
+calvin_convert_cpus_per_task: 16
+calvin_convert_mem: 64G
+calvin_convert_time: "24:00:00"

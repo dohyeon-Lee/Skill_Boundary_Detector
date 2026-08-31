@@ -72,16 +72,6 @@ class PI05Config(PreTrainedConfig):
     # required on compute nodes. None retains the upstream Hub fallback.
     tokenizer_path: str | None = None
 
-    # Opt-in LIBERO EEF contract. The derived dataset stores absolute commanded
-    # EEF targets; preprocessing maps them to one-anchor SE(3)-relative targets,
-    # and postprocessing maps predictions back to normalized OSC delta inputs.
-    # This is separate from ordinary PI0.5 so existing datasets/checkpoints keep
-    # their original processor layout and action semantics.
-    use_eef_relative_actions: bool = False
-    eef_relative_stats_path: str | None = None
-    eef_position_scale: float = 0.05
-    eef_rotation_scale: float = 0.5
-
     normalization_mapping: dict[str, NormalizationMode] = field(
         default_factory=lambda: {
             "VISUAL": NormalizationMode.IDENTITY,
@@ -142,15 +132,6 @@ class PI05Config(PreTrainedConfig):
             raise ValueError(
                 f"n_action_steps ({self.n_action_steps}) cannot be greater than chunk_size ({self.chunk_size})"
             )
-
-        if self.use_eef_relative_actions:
-            if self.n_action_steps != 1:
-                raise ValueError(
-                    "EEF anchor-relative execution currently requires n_action_steps=1 so each "
-                    "prediction is interpreted with the same live pose used as its plan anchor."
-                )
-            if self.eef_position_scale <= 0 or self.eef_rotation_scale <= 0:
-                raise ValueError("EEF OSC position and rotation scales must be positive.")
 
         if self.paligemma_variant not in ["gemma_300m", "gemma_2b"]:
             raise ValueError(f"Invalid paligemma_variant: {self.paligemma_variant}")

@@ -31,6 +31,9 @@ VSA_LABEL_TO_REVISION = {
 }
 COND_GEMMA_LABEL_TO_REVISION = {
     "arch0": "skillvla_real_v1",
+    # Same parameter/state-dict contract as Arch0; the difference is the
+    # training-only canonical skill-trajectory flow objective.
+    "arch0_skill": "skillvla_real_v1",
     "arch0_1": "expert_state_adarms_v1",
     "arch0_2": "cond_expert_state_adarms_v1",
     "arch0_2_sep": "cond_expert_separate_state_adarms_v1",
@@ -95,6 +98,9 @@ def _read_dataset_contract(dataset_dir: Path, run_tag: str) -> dict:
         "levels": levels,
         "state_dim": state_dim,
         "action_dim": action_dim,
+        "skill_observed_max_length": int(
+            info.get("skill_observed_max_length", 0)
+        ),
         "jitter_pmax": jitter_pmax,
         "jitter_early_start_pmax": directional_jitter["early_start"],
         "jitter_late_start_pmax": directional_jitter["late_start"],
@@ -290,6 +296,7 @@ def build_settings(config: dict) -> dict:
         raise ValueError("architecture must be a mapping.")
     misplaced_keys = {
         "arch0",
+        "arch0_skill",
         "arch0_1",
         "arch0_2",
         "arch0_2_sep",
@@ -331,7 +338,7 @@ def build_settings(config: dict) -> dict:
     }:
         raise ValueError(
             "architecture.name must be "
-            "arch0|arch0_1|arch0_2|arch0_2_sep|arch0_3|arch0_adaRMS|arch0_adaRMS_zero|"
+            "arch0|arch0_skill|arch0_1|arch0_2|arch0_2_sep|arch0_3|arch0_adaRMS|arch0_adaRMS_zero|"
             "arch0_token|arch0_token_iso|arch0_cond|arch0_both|"
             "arch1_1|arch1_2|arch1_3|"
             "arch2_1|arch2_2|arch3|arch4, got "
@@ -438,6 +445,25 @@ def build_settings(config: dict) -> dict:
     cumulative_xyz_loss_weight = float(cumulative_xyz_config.get("weight", 0.5))
     if not math.isfinite(cumulative_xyz_loss_weight) or cumulative_xyz_loss_weight <= 0:
         raise ValueError("cumulative_xyz_loss.weight must be finite and positive.")
+    skill_flow_config = config.get("skill_flow", {})
+    if not isinstance(skill_flow_config, dict):
+        raise ValueError("skill_flow must be a mapping.")
+    skill_flow_enabled = architecture_label == "arch0_skill"
+    skill_flow_weight = float(skill_flow_config.get("weight", 1.0))
+    if not math.isfinite(skill_flow_weight) or skill_flow_weight <= 0:
+        raise ValueError("skill_flow.weight must be finite and positive.")
+    skill_flow_max_length = int(contract["skill_observed_max_length"])
+    if skill_flow_enabled:
+        if training_skill_source != "gt":
+            raise ValueError(
+                "architecture.name=arch0_skill currently requires "
+                "action_conditioning.training_skill_source=gt."
+            )
+        if skill_flow_max_length <= 0:
+            raise ValueError(
+                "architecture.name=arch0_skill requires a positive "
+                "skill_observed_max_length in the dataset info.json."
+            )
     n_action_steps = int(
         _at(config, "execution", "action_steps", default=chunk_size)
     )
@@ -600,6 +626,9 @@ def build_settings(config: dict) -> dict:
         "mask_actions_after_skill_end": mask_actions_after_skill_end,
         "cumulative_xyz_loss_enabled": cumulative_xyz_loss_enabled,
         "cumulative_xyz_loss_weight": cumulative_xyz_loss_weight,
+        "skill_flow_enabled": skill_flow_enabled,
+        "skill_flow_weight": skill_flow_weight,
+        "skill_flow_max_length": skill_flow_max_length if skill_flow_enabled else 0,
         "n_action_steps": n_action_steps,
         "min_period": float(_at(config, "flow", "min_period", default=4e-3)),
         "max_period": float(_at(config, "flow", "max_period", default=4.0)),
@@ -665,6 +694,7 @@ def main() -> None:
         type=str.lower,
         choices=(
             "arch0",
+            "arch0_skill",
             "arch0_1",
             "arch0_2",
             "arch0_2_sep",

@@ -25,10 +25,8 @@ mkdir -p logs
 # srun-in-salloc (where SLURM_SUBMIT_DIR points to the allocation's launch dir, not FSQ_eval).
 # Fall back to SLURM_SUBMIT_DIR, then to the spool path.
 EVAL_DIR="${FSQ_EVAL_DIR:-${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}}"   # skill_eval
-COMMON_SRC_DIR="${EVAL_DIR}/../src"                          # train_skills/src
 # Two configs exist now (dp_eval_config.yaml / fsq_eval_config.yaml), so there is no safe
-# default — always launch through submit_dp_eval.sh / submit_fsq_eval.sh, which pass these.
-TRAIN_CONFIG="${TRAIN_SKILLS_CONFIG:-}"
+# default — always launch through submit_dp_eval.sh / submit_fsq_eval.sh, which pass this.
 EVAL_CONFIG="${FSQ_EVAL_CONFIG:?launch via submit_dp_eval.sh or submit_fsq_eval.sh}"
 
 BOOTSTRAP_PYTHON="${EVAL_DIR}/../../../../../../.venv/bin/python"
@@ -60,18 +58,6 @@ if ! RESOLVED_EVAL="$(
   exit 1
 fi
 eval "${RESOLVED_EVAL}"
-if [ "${EVAL_RUN_DP}" = "true" ]; then
-  if [ -z "${TRAIN_CONFIG}" ]; then
-    echo "DP eval requires TRAIN_SKILLS_CONFIG; launch via submit_dp_eval.sh" >&2
-    exit 1
-  fi
-  if [ -n "${TRAIN_DATA:-}" ]; then
-    RESOLVED_TRAIN="$("${BOOTSTRAP_PYTHON}" "${COMMON_SRC_DIR}/train_skills_config.py" --config "${TRAIN_CONFIG}" --dataset "${TRAIN_DATA}" --shell)"
-  else
-    RESOLVED_TRAIN="$("${BOOTSTRAP_PYTHON}" "${COMMON_SRC_DIR}/train_skills_config.py" --config "${TRAIN_CONFIG}" --shell)"
-  fi
-  eval "${RESOLVED_TRAIN}"
-fi
 
 cd "${LEROBOT_ROOT}"
 source "${PROJECT_ROOT}/.venv/bin/activate"
@@ -94,51 +80,85 @@ fi
 
 # ── DP skill-boundary eval (FSQ-independent; off the FSQ_dataset skillset npz + curves) ──
 if [ "${EVAL_RUN_DP}" = "true" ]; then
-  DATASET_VIDEO_DIR="${DATASET_ROOT}/${TARGET_DATASET}"
-  DP_SKILLSET_DIR="${SKILLSET_DIR}"
-  DP_DATASET_VIDEO_DIR="${DATASET_VIDEO_DIR}"
-  DP_IMAGE_KEY="${FSQ_EVAL_IMAGE_KEY}"
-  DP_SUFFIX="${SKILLSET_PROBE_SUFFIX}"
-  DP_OUTPUT_DATASET="${TARGET_DATASET}"
-  DP_OUTPUT_POLICY="${DP_POLICY}"
-  DP_OUTPUT_CHECKPOINT="${DP_CHECKPOINT}"
-  DP_SUFFIX+="${SKILLSET_BOUNDARY_THRESHOLD_SUFFIX}"
-  if [ -n "${DP_EVAL_SKILLSET_DIR:-}" ]; then
-    if [[ "${DP_EVAL_SKILLSET_DIR}" = /* ]]; then
-      DP_SKILLSET_DIR="${DP_EVAL_SKILLSET_DIR}"
+  if [ -z "${DP_EVAL_SKILLSET_DIR:-}" ]; then
+    echo "DP eval requires a selected skillset artifact; launch via submit_dp_eval.sh." >&2
+    exit 1
+  fi
+  if [[ "${DP_EVAL_SKILLSET_DIR}" = /* ]]; then
+    DP_SKILLSET_DIR="${DP_EVAL_SKILLSET_DIR}"
+  else
+    DP_SKILLSET_DIR="${PROJECT_ROOT}/${DP_EVAL_SKILLSET_DIR}"
+  fi
+  DP_MANIFEST="${DP_SKILLSET_DIR}/skillset_manifest.json"
+  if [ ! -f "${DP_MANIFEST}" ]; then
+    echo "Skillset manifest not found: ${DP_MANIFEST}" >&2
+    exit 1
+  fi
+  if ! DP_MANIFEST_EXPORTS="$("${BOOTSTRAP_PYTHON}" - "${DP_MANIFEST}" <<'PY'
+import json
+import shlex
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+manifest = json.loads(path.read_text())
+dataset_name = str(manifest.get("dataset_name", "")).strip()
+dataset_dir = str(manifest.get("dataset_dir", "")).strip()
+policy_raw = str(manifest.get("policy_path", "")).strip()
+if not dataset_name:
+    raise ValueError("dataset_name is empty")
+if not dataset_dir:
+    raise ValueError("dataset_dir is empty")
+policy_path = Path(policy_raw)
+if not policy_raw or len(policy_path.parents) < 3:
+    raise ValueError(f"invalid policy_path: {policy_raw!r}")
+values = {
+    "DP_DATASET_VIDEO_DIR": dataset_dir,
+    "DP_IMAGE_KEY": str(manifest.get("image_key", "observation.images.image")),
+    "DP_MODE": str(manifest.get("mode", "custom")),
+    "DP_THRESHOLD_MODE": str(
+        (manifest.get("detector") or {}).get("boundary_threshold_mode", "episode_mean")
+    ),
+    "DP_THRESHOLD_SCALE": str(
+        (manifest.get("detector") or {}).get("boundary_threshold_scale", 1.0)
+    ),
+    "DP_OUTPUT_DATASET": dataset_name,
+    "DP_MANIFEST_POLICY": policy_raw,
+    "DP_OUTPUT_POLICY": policy_path.parents[2].name,
+    "DP_OUTPUT_CHECKPOINT": policy_path.parent.name,
+}
+for key, value in values.items():
+    print(f"{key}={shlex.quote(value)}")
+PY
+  )"; then
+    echo "Invalid skillset manifest: ${DP_MANIFEST}" >&2
+    exit 1
+  fi
+  eval "${DP_MANIFEST_EXPORTS}"
+  if [ ! -d "${DP_SKILLSET_DIR}/skills" ]; then
+    echo "Skillset skills directory not found: ${DP_SKILLSET_DIR}/skills" >&2
+    exit 1
+  fi
+  if [ ! -d "${DP_DATASET_VIDEO_DIR}/videos" ]; then
+    echo "Source dataset videos not found: ${DP_DATASET_VIDEO_DIR}/videos" >&2
+    exit 1
+  fi
+
+  # Preserve the complete canonical artifact identity, including globalref
+  # and any manual output suffix, directly from the selected seg_* folder.
+  DP_SEG_NAME="$(basename "$(dirname "${DP_SKILLSET_DIR}")")"
+  DP_SEG_PREFIX="seg_${DP_OUTPUT_POLICY}_ck${DP_OUTPUT_CHECKPOINT}"
+  if [[ "${DP_SEG_NAME}" = "${DP_SEG_PREFIX}"* ]]; then
+    DP_SUFFIX="${DP_SEG_NAME#${DP_SEG_PREFIX}}"
+  else
+    DP_SUFFIX="_${DP_MODE}"
+    if [ "${DP_THRESHOLD_MODE}" = "global_mean" ]; then
+      DP_THRESHOLD_SCOPE="globalmean"
     else
-      DP_SKILLSET_DIR="${PROJECT_ROOT}/${DP_EVAL_SKILLSET_DIR}"
+      DP_THRESHOLD_SCOPE="episodemean"
     fi
-    DP_MANIFEST="${DP_SKILLSET_DIR}/skillset_manifest.json"
-    if [ ! -f "${DP_MANIFEST}" ]; then
-      echo "Skillset manifest not found: ${DP_MANIFEST}" >&2
-      exit 1
-    fi
-    DP_DATASET_VIDEO_DIR=$("${BOOTSTRAP_PYTHON}" -c 'import json,sys; print(json.load(open(sys.argv[1]))["dataset_dir"])' "${DP_MANIFEST}")
-    DP_IMAGE_KEY=$("${BOOTSTRAP_PYTHON}" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("image_key", "observation.images.image"))' "${DP_MANIFEST}")
-    DP_MODE=$("${BOOTSTRAP_PYTHON}" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("mode", "custom"))' "${DP_MANIFEST}")
-    DP_THRESHOLD_MODE=$("${BOOTSTRAP_PYTHON}" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("detector", {}).get("boundary_threshold_mode", "episode_mean"))' "${DP_MANIFEST}")
-    DP_THRESHOLD_SCALE=$("${BOOTSTRAP_PYTHON}" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("detector", {}).get("boundary_threshold_scale", 1.0))' "${DP_MANIFEST}")
-    DP_OUTPUT_DATASET=$("${BOOTSTRAP_PYTHON}" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("dataset_name", "dataset"))' "${DP_MANIFEST}")
-    DP_MANIFEST_POLICY=$("${BOOTSTRAP_PYTHON}" -c 'import json,sys; print(json.load(open(sys.argv[1]))["policy_path"])' "${DP_MANIFEST}")
-    DP_OUTPUT_POLICY=$("${BOOTSTRAP_PYTHON}" -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).parents[2].name)' "${DP_MANIFEST_POLICY}")
-    DP_OUTPUT_CHECKPOINT=$("${BOOTSTRAP_PYTHON}" -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).parent.name)' "${DP_MANIFEST_POLICY}")
-    # Preserve the complete canonical artifact identity, including globalref
-    # and any manual output suffix, directly from the selected seg_* folder.
-    DP_SEG_NAME="$(basename "$(dirname "${DP_SKILLSET_DIR}")")"
-    DP_SEG_PREFIX="seg_${DP_OUTPUT_POLICY}_ck${DP_OUTPUT_CHECKPOINT}"
-    if [[ "${DP_SEG_NAME}" = "${DP_SEG_PREFIX}"* ]]; then
-      DP_SUFFIX="${DP_SEG_NAME#${DP_SEG_PREFIX}}"
-    else
-      DP_SUFFIX="_${DP_MODE}"
-      if [ "${DP_THRESHOLD_MODE}" = "global_mean" ]; then
-        DP_THRESHOLD_SCOPE="globalmean"
-      else
-        DP_THRESHOLD_SCOPE="episodemean"
-      fi
-      DP_THRESHOLD_PERCENT=$("${BOOTSTRAP_PYTHON}" -c 'import sys; v=float(sys.argv[1]); print(f"{v*100:g}".replace(".","p")+"p")' "${DP_THRESHOLD_SCALE}")
-      DP_SUFFIX+="_${DP_THRESHOLD_SCOPE}_${DP_THRESHOLD_PERCENT}"
-    fi
+    DP_THRESHOLD_PERCENT=$("${BOOTSTRAP_PYTHON}" -c 'import sys; v=float(sys.argv[1]); print(f"{v*100:g}".replace(".","p")+"p")' "${DP_THRESHOLD_SCALE}")
+    DP_SUFFIX+="_${DP_THRESHOLD_SCOPE}_${DP_THRESHOLD_PERCENT}"
   fi
   # Shallow folder + DP-named HTML so different DPs don't overwrite each other (no deep nesting).
   # Strip the redundant dataset prefix from the run name (libero_90_full_full_state_obs10 → state_obs10).

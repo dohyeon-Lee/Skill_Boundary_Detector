@@ -153,6 +153,13 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
                     dataset_cls = (
                         partial(
                             SkillVLADataset,
+                            include_canonical_skill_actions=bool(
+                                getattr(cfg.policy, "skill_flow_enabled", False)
+                            ),
+                            canonical_skill_action_max_length=int(
+                                getattr(cfg.policy, "skill_flow_max_length", 0)
+                            )
+                            or None,
                             jitter_pmax=int(
                                 getattr(cfg.policy, "transition_jitter_pmax", 0)
                             ),
